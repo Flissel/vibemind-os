@@ -1,0 +1,79 @@
+import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
+import { injectBrowserAction } from 'electron-chrome-extensions/browser-action';
+import { ipc as ipcShared, flags } from '@x/shared';
+
+// Expose the <browser-action-list> custom element (extension action icons +
+// popups for the embedded browser pane). App documents only — this preload
+// is attached solely to the app window, but guard against it ever being
+// reused for remote content.
+if (location.protocol === 'app:' || location.origin === 'http://localhost:5173') {
+  try {
+    injectBrowserAction();
+  } catch (error) {
+    console.error('[preload] injectBrowserAction failed:', error);
+  }
+}
+
+type InvokeChannels = ipcShared.InvokeChannels;
+type IPCChannels = ipcShared.IPCChannels;
+type SendChannels = ipcShared.SendChannels;
+const { validateRequest } = ipcShared;
+
+const ipc = {
+  /**
+   * Invoke a channel that expects a response (request/response pattern)
+   * Only channels with non-null responses can be invoked
+   */
+  invoke<K extends InvokeChannels>(
+    channel: K,
+    args: IPCChannels[K]['req']
+  ): Promise<IPCChannels[K]['res']> {
+    // Runtime validation of request payload
+    const validatedArgs = validateRequest(channel, args);
+    return ipcRenderer.invoke(channel, validatedArgs);
+  },
+
+  /**
+   * Send a message to a channel without expecting a response (fire-and-forget)
+   * Only channels with null responses can be sent
+   */
+  send<K extends SendChannels>(
+    channel: K,
+    args: IPCChannels[K]['req']
+  ): void {
+    // Runtime validation of request payload
+    const validatedArgs = validateRequest(channel, args);
+    ipcRenderer.send(channel, validatedArgs);
+  },
+
+  /**
+   * Listen to a send channel event
+   * Returns a cleanup function to remove the listener
+   */
+  on<K extends SendChannels>(
+    channel: K,
+    handler: (event: IPCChannels[K]['req']) => void
+  ): () => void {
+    const listener = (_event: unknown, data: IPCChannels[K]['req']) => {
+      handler(data);
+    };
+    ipcRenderer.on(channel, listener);
+    return () => {
+      ipcRenderer.removeListener(channel, listener);
+    };
+  },
+};
+
+contextBridge.exposeInMainWorld('ipc', ipc);
+
+// Feature flags. The renderer runs sandboxed with no env access; the preload's
+// polyfilled process.env carries the main process's environment (including the
+// login-shell merge), so flags resolve synchronously before any renderer code.
+contextBridge.exposeInMainWorld('featureFlags', {
+  spaces: flags.spacesEnabled(),
+});
+
+contextBridge.exposeInMainWorld('electronUtils', {
+  getPathForFile: (file: File) => webUtils.getPathForFile(file),
+  getZoomFactor: () => webFrame.getZoomFactor(),
+});

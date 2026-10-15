@@ -1,0 +1,24 @@
+{
+  "name": "@x/shared",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "dev": "tsc -w",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@rowboat/spaces-protocol": "link:../../../harbor/packages/protocol",
+    "fast-xml-parser": "^5.10.1",
+    "jszip": "^3.10.1",
+    "zod": "^4.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.3",
+    "vitest": "catalog:"
+  }
+}

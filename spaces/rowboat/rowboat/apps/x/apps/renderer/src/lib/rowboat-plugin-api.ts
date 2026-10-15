@@ -1,3 +1,4 @@
+// VibeMind addition (Flissel/rowboat vibemind): plugin settings (vibemind-os 3b282629 and follow-ups).
 import { z } from 'zod';
 
 export const PLUGIN_STATUSES = [

@@ -1,0 +1,647 @@
+import type { z } from 'zod'
+import type {
+  AskHumanRequestEvent,
+  ToolPermissionAutoDecisionEvent,
+  ToolPermissionMetadata,
+  ToolPermissionRequestEvent,
+} from '@x/shared/src/runs.js'
+import {
+  MODEL_CALL_LIMIT_ERROR_CODE,
+  deriveTurnStatus,
+  outstandingAsyncTools,
+  outstandingPermissions,
+  type ToolCallState,
+  type TurnState,
+  type TurnStreamEvent,
+} from '@x/shared/src/turns.js'
+import type { CodeRunEvent, PermissionAsk } from '@x/shared/src/code-mode.js'
+import type {
+  ChatMessage,
+  ConversationItem,
+  ErrorMessage,
+  MessageAttachment,
+  PermissionResponse,
+  ReasoningMessage,
+  TokenUsage,
+  ToolCall,
+} from '@/lib/chat-conversation'
+import { addTokenUsage, hasTokenUsage } from '@/lib/token-usage'
+
+// Pure derivations from reduced turn state (+ the ephemeral live overlay) to
+// the view shapes the existing chat components already consume. No IPC, no
+// React — everything here is unit-testable with plain state values.
+
+// ---------------------------------------------------------------------------
+// Live overlay: ephemeral streaming buffers (turn-runtime-design.md §14.4).
+// ---------------------------------------------------------------------------
+
+export type LiveOverlay = {
+  text: string
+  reasoning: string
+  toolOutput: Record<string, string>
+  // Speakable segments seen while streaming, in order, monotonically growing
+  // for the lifetime of the overlay (i.e. one active turn). Usually the
+  // contents of completed <voice>…</voice> blocks, but a long still-open
+  // block may emit an early clause (see EARLY_SPEECH_MIN_CHARS) so speech
+  // can start before the sentence finishes generating. Consumers speak
+  // segments beyond what they've already spoken; the overlay reset on turn
+  // switch starts a fresh list.
+  voiceSegments: string[]
+  // Scan cursor into `text` — everything before it has been checked for
+  // complete voice blocks.
+  voiceScanIndex: number
+  // Chars of the currently-open voice block's content already emitted as an
+  // early clause — the block's remainder (on close) excludes them.
+  voicePartialConsumed: number
+}
+
+export const emptyOverlay = (): LiveOverlay => ({
+  text: '',
+  reasoning: '',
+  toolOutput: {},
+  voiceSegments: [],
+  voiceScanIndex: 0,
+  voicePartialConsumed: 0,
+})
+
+// The model emits <voice>…</voice> around speakable text when voice output
+// is enabled; tags are never shown to the user.
+export function stripVoiceTags(text: string): string {
+  return text.replace(/<\/?voice>/g, '')
+}
+
+const VOICE_BLOCK = /<voice>([\s\S]*?)<\/voice>/g
+const VOICE_OPEN_TAG = '<voice>'
+
+// Early speech: once an open block has this many unconsumed chars, its last
+// complete clause is emitted immediately instead of waiting for </voice> —
+// TTS starts on the first clause while the rest of the sentence generates.
+// 40 (down from 60): voice-to-first-audio was the companion's biggest
+// perceived lag, and a shorter first clause is worth the prosody risk.
+const EARLY_SPEECH_MIN_CHARS = 40
+// ...but never emit a fragment shorter than this (prosody suffers).
+const EARLY_SPEECH_MIN_EMIT = 30
+// Clause boundaries (punctuation, optionally inside closing quote/paren,
+// followed by whitespace or end-of-buffer).
+const CLAUSE_BOUNDARY = /[,;:.!?…—]["')\]]*(?=\s|$)/g
+
+// Accumulates deltas; canonical durable events supersede the buffers (the
+// committed transcript now contains what was streaming).
+export function applyOverlay(overlay: LiveOverlay, event: TurnStreamEvent): LiveOverlay {
+  switch (event.type) {
+    case 'text_delta': {
+      const text = overlay.text + event.delta
+      // Extract complete voice blocks past the scan cursor. Incomplete
+      // blocks (opening tag seen, closing not yet) stay unconsumed until a
+      // later delta completes them. The first complete block may have had an
+      // early clause emitted while it was open — skip those chars.
+      const segments: string[] = []
+      let scanIndex = overlay.voiceScanIndex
+      let partialConsumed = overlay.voicePartialConsumed
+      VOICE_BLOCK.lastIndex = scanIndex
+      for (let m = VOICE_BLOCK.exec(text); m; m = VOICE_BLOCK.exec(text)) {
+        const content = m[1].slice(partialConsumed).trim()
+        partialConsumed = 0
+        if (content) segments.push(content)
+        scanIndex = m.index + m[0].length
+      }
+
+      // Early speech: if a voice block is still open and has accumulated a
+      // long unconsumed run, emit its last complete clause now — speech can
+      // start while the rest of the sentence is still generating.
+      const openIdx = text.indexOf(VOICE_OPEN_TAG, scanIndex)
+      if (openIdx !== -1) {
+        const unconsumed = text.slice(openIdx + VOICE_OPEN_TAG.length + partialConsumed)
+        if (unconsumed.length >= EARLY_SPEECH_MIN_CHARS) {
+          let lastBoundaryEnd = -1
+          CLAUSE_BOUNDARY.lastIndex = 0
+          for (let b = CLAUSE_BOUNDARY.exec(unconsumed); b; b = CLAUSE_BOUNDARY.exec(unconsumed)) {
+            lastBoundaryEnd = b.index + b[0].length
+          }
+          if (lastBoundaryEnd >= EARLY_SPEECH_MIN_EMIT) {
+            const clause = unconsumed.slice(0, lastBoundaryEnd).trim()
+            if (clause) segments.push(clause)
+            partialConsumed += lastBoundaryEnd
+          }
+        }
+      } else {
+        // No open block — any partial bookkeeping belongs to a block that
+        // has since closed.
+        partialConsumed = 0
+      }
+
+      return {
+        ...overlay,
+        text,
+        ...(segments.length > 0
+          ? { voiceSegments: [...overlay.voiceSegments, ...segments] }
+          : {}),
+        voiceScanIndex: scanIndex,
+        voicePartialConsumed: partialConsumed,
+      }
+    }
+    case 'reasoning_delta':
+      return { ...overlay, reasoning: overlay.reasoning + event.delta }
+    case 'model_call_completed':
+      return { ...overlay, text: '', reasoning: '', voiceScanIndex: 0, voicePartialConsumed: 0 }
+    case 'tool_progress': {
+      const progress = event.progress
+      if (
+        progress &&
+        typeof progress === 'object' &&
+        !Array.isArray(progress) &&
+        (progress as { kind?: unknown }).kind === 'tool-output' &&
+        typeof (progress as { chunk?: unknown }).chunk === 'string'
+      ) {
+        const chunk = (progress as { chunk: string }).chunk
+        return {
+          ...overlay,
+          toolOutput: {
+            ...overlay.toolOutput,
+            [event.toolCallId]: (overlay.toolOutput[event.toolCallId] ?? '') + chunk,
+          },
+        }
+      }
+      return overlay
+    }
+    case 'tool_result': {
+      if (!(event.toolCallId in overlay.toolOutput)) return overlay
+      const toolOutput = { ...overlay.toolOutput }
+      delete toolOutput[event.toolCallId]
+      return { ...overlay, toolOutput }
+    }
+    default:
+      return overlay
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Conversation items
+// ---------------------------------------------------------------------------
+
+// THE single source of a model call's item ids. The live overlay renders
+// synthetic items under these same ids while the call streams, so the
+// durable items produced at completion reconcile onto the same mounted
+// nodes (no unmount/remount flash) — any drift between the two would
+// silently reintroduce the flash, which is why both sides call these.
+export function assistantMessageId(turnId: string, callIndex: number): string {
+  return `${turnId}:a${callIndex}`
+}
+export function reasoningMessageId(turnId: string, callIndex: number): string {
+  return `${turnId}:r${callIndex}`
+}
+
+type UserContent = TurnState['definition']['input']['content']
+
+function extractText(content: UserContent): string {
+  if (typeof content === 'string') return content
+  return content
+    .map((part) => (part.type === 'text' ? part.text : ''))
+    .filter(Boolean)
+    .join('\n')
+}
+
+function extractAttachments(content: UserContent): MessageAttachment[] | undefined {
+  if (typeof content === 'string') return undefined
+  const attachments = content.flatMap((part) =>
+    part.type === 'attachment'
+      ? [
+          {
+            path: part.path,
+            filename: part.filename,
+            mimeType: part.mimeType,
+            ...(part.size === undefined ? {} : { size: part.size }),
+          },
+        ]
+      : [],
+  )
+  return attachments.length > 0 ? attachments : undefined
+}
+
+function toolStatus(tc: ToolCallState): ToolCall['status'] {
+  if (tc.result) return tc.result.result.isError ? 'error' : 'completed'
+  if (tc.permission && !tc.permission.resolved) return 'pending'
+  return 'running'
+}
+
+// code_agent_run's durable trail in tool_progress (see the publish bridge in
+// real-tool-registry.ts): ONE settle-time 'code-run-events' batch carrying the
+// whole timeline (the live per-event stream travels over the ephemeral
+// CodeRunFeed and never reaches turn state), plus per-ask
+// 'code-run-permission-request' / 'code-run-permission-resolved' pairs keyed by
+// requestId. An ask is pending until ITS id is resolved and the tool settles.
+//
+// Pairing is by id, not by count (2026-09-23): a count treats any resolution as
+// answering any ask, and automatic approvals used to emit resolutions with no
+// request behind them, so the tally went negative and hid every later ask while
+// the coding agent sat blocked on it. Only the oldest pending ask renders - the
+// agent is blocked on all of them, and answering one surfaces the next.
+function codeRunViewOf(
+  tc: ToolCallState,
+): Pick<ToolCall, 'codeRunEvents' | 'pendingCodePermission'> {
+  let events: CodeRunEvent[] | undefined
+  const pending = new Map<string, PermissionAsk>()
+  for (const p of tc.progress) {
+    const entry = p.progress
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
+    const kind = (entry as { kind?: unknown }).kind
+    if (kind === 'code-run-events') {
+      const batch = (entry as { events?: unknown }).events
+      if (Array.isArray(batch)) events = batch as CodeRunEvent[]
+    } else if (kind === 'code-run-permission-request') {
+      const { requestId, ask } = entry as { requestId?: unknown; ask?: unknown }
+      if (typeof requestId === 'string' && ask) {
+        pending.set(requestId, ask as PermissionAsk)
+      }
+    } else if (kind === 'code-run-permission-resolved') {
+      const { requestId } = entry as { requestId?: unknown }
+      if (typeof requestId === 'string') {
+        pending.delete(requestId)
+      } else {
+        // Pre-2026-09-23 logs: the marker carried no id. Those runs are long
+        // settled (a settled tool shows no card at all), so clearing the oldest
+        // is only about not stranding a card on a turn caught mid-upgrade.
+        const oldest = pending.keys().next()
+        if (!oldest.done) pending.delete(oldest.value)
+      }
+    }
+  }
+  const oldest = pending.entries().next()
+  return {
+    ...(events && events.length > 0 ? { codeRunEvents: events } : {}),
+    ...(!oldest.done && !tc.result
+      ? { pendingCodePermission: { requestId: oldest.value[0], ask: oldest.value[1] } }
+      : {}),
+  }
+}
+
+// spawn-agent's durable trail in tool_progress: one 'subagent' entry recorded
+// the moment the child turn exists (see the spawn-agent branch in
+// real-tool-registry.ts). It is the parent→child link the card uses to fetch
+// and render the child transcript.
+function subAgentViewOf(tc: ToolCallState): Pick<ToolCall, 'subAgent'> {
+  for (const p of tc.progress) {
+    const entry = p.progress
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
+    const { kind, childTurnId, agentName, task } = entry as {
+      kind?: unknown
+      childTurnId?: unknown
+      agentName?: unknown
+      task?: unknown
+    }
+    if (kind === 'subagent' && typeof childTurnId === 'string') {
+      return {
+        subAgent: {
+          childTurnId,
+          agentName: typeof agentName === 'string' ? agentName : 'subagent',
+          task: typeof task === 'string' ? task : '',
+        },
+      }
+    }
+  }
+  return {}
+}
+
+// One turn's contribution to the conversation: the user input, then per
+// completed model call its text and tool calls (with live status/results).
+export function buildTurnConversation(state: TurnState): ConversationItem[] {
+  const items: ConversationItem[] = []
+  const turnId = state.definition.turnId
+  let seq = 0
+  const ts = () => Date.parse(state.definition.ts) + seq++
+
+  const pushUser = (
+    message: TurnState['definition']['input'],
+    idSuffix: string,
+  ) => {
+    const userText = extractText(message.content)
+    const attachments = extractAttachments(message.content)
+    if (userText || attachments) {
+      items.push({
+        id: `${turnId}:user${idSuffix}`,
+        role: 'user',
+        content: userText,
+        timestamp: ts(),
+        ...(attachments ? { attachments } : {}),
+      } satisfies ChatMessage)
+    }
+  }
+  pushUser(state.definition.input, '')
+  // Steered messages (input_added) render at the boundary the model saw
+  // them: before the model call that first transmitted them.
+  const pushAddedInputs = (boundary: number) => {
+    for (const added of state.addedInputs) {
+      if (added.firstAffectedModelCallIndex === boundary) {
+        pushUser(added.event.message, `:${added.event.inputIndex}`)
+      }
+    }
+  }
+
+  const toolCallsById = new Map(state.toolCalls.map((tc) => [tc.toolCallId, tc]))
+  for (const call of state.modelCalls) {
+    pushAddedInputs(call.index)
+    if (call.response === undefined) continue
+    const content = call.response.content
+    // The model's thought process precedes what it produced. Encrypted-only
+    // reasoning has no text and yields no item.
+    const reasoning = Array.isArray(content)
+      ? content
+          .map((part) => (part.type === 'reasoning' ? part.text : ''))
+          .filter((text) => text.trim())
+          .join('\n\n')
+      : ''
+    if (reasoning) {
+      items.push({
+        id: reasoningMessageId(turnId, call.index),
+        kind: 'reasoning',
+        content: reasoning,
+        timestamp: ts(),
+      } satisfies ReasoningMessage)
+    }
+    // Voice tags are model-facing markup, never shown (parity with the
+    // legacy path's display-time strip).
+    const text = stripVoiceTags(
+      typeof content === 'string'
+        ? content
+        : content
+            .map((part) => (part.type === 'text' ? part.text : ''))
+            .filter(Boolean)
+            .join('\n'),
+    )
+    if (text) {
+      items.push({
+        id: assistantMessageId(turnId, call.index),
+        role: 'assistant',
+        content: text,
+        timestamp: ts(),
+      } satisfies ChatMessage)
+    }
+    if (Array.isArray(content)) {
+      for (const part of content) {
+        if (part.type !== 'tool-call') continue
+        const tc = toolCallsById.get(part.toolCallId)
+        items.push({
+          id: part.toolCallId,
+          name: part.toolName,
+          input: part.arguments as ToolCall['input'],
+          ...(tc?.result ? { result: tc.result.result.output as ToolCall['result'] } : {}),
+          status: tc ? toolStatus(tc) : 'running',
+          timestamp: ts(),
+          ...(tc ? codeRunViewOf(tc) : {}),
+          ...(tc ? subAgentViewOf(tc) : {}),
+        } satisfies ToolCall)
+      }
+    }
+  }
+
+  // Inputs accepted after the last requested call (turn stopped before the
+  // next request) still render — they were durably accepted.
+  pushAddedInputs(state.modelCalls.length)
+
+  if (state.terminal?.type === 'turn_failed') {
+    // Interactive turns normally wrap up gracefully before hitting the
+    // limit; if a hard limit failure still lands here, explain it and point
+    // at the setting instead of showing the raw runtime error.
+    const message = state.terminal.code === MODEL_CALL_LIMIT_ERROR_CODE
+      ? `This turn hit its model-call limit of ${state.definition.config.maxModelCalls} before it could finish. ` +
+        'You can raise the limit in Settings → Advanced.'
+      : state.terminal.error
+    items.push({
+      id: `${turnId}:error`,
+      kind: 'error',
+      message,
+      timestamp: ts(),
+    } satisfies ErrorMessage)
+  }
+
+  if (hasTokenUsage(state.usage)) {
+    const reasoningEffort = state.definition.config.reasoningEffort
+    items.push({
+      id: `${turnId}:usage`,
+      kind: 'turn-usage',
+      usage: state.usage,
+      modelCallCount: state.modelCalls.filter((call) => call.usage !== undefined).length,
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+      timestamp: ts(),
+    })
+  }
+
+  return items
+}
+
+// ---------------------------------------------------------------------------
+// Session chat state (superset of the ChatTabViewState fields)
+// ---------------------------------------------------------------------------
+
+type PermMeta = z.infer<typeof ToolPermissionMetadata>
+
+export type SessionChatState = {
+  conversation: ConversationItem[]
+  currentAssistantMessage: string
+  // Reasoning text streaming for the in-flight model call; the durable
+  // reasoning item supersedes it when the call completes (same lifecycle as
+  // currentAssistantMessage).
+  currentReasoning: string
+  sessionUsage: TokenUsage
+  // See LiveOverlay.voiceSegments.
+  voiceSegments: string[]
+  pendingAskHumanRequests: Map<string, z.infer<typeof AskHumanRequestEvent>>
+  allPermissionRequests: Map<string, z.infer<typeof ToolPermissionRequestEvent>>
+  permissionResponses: Map<string, PermissionResponse>
+  autoPermissionDecisions: Map<string, z.infer<typeof ToolPermissionAutoDecisionEvent>>
+  // Composer blocked / Stop shown until the latest turn settles (waiting on a
+  // permission or ask-human still counts as processing).
+  isProcessing: boolean
+  // True only between reasoning_start and reasoning_end for the latest open
+  // model call. This describes model activity, not whole-turn liveness.
+  isReasoning: boolean
+  // Kept separate from processing so permission/ask-human controls remain
+  // interactive while the turn is suspended for user input.
+  isWaitingOnHuman: boolean
+  // The latest turn's model selection — resolved model + the reasoning
+  // effort it ran with. A reopened session's composer restores its
+  // selection from this (settings only seed brand-new chats).
+  lastSelection: { provider: string; model: string; effort?: 'low' | 'medium' | 'high' } | null
+}
+
+function toolCallPartOf(tc: ToolCallState) {
+  return {
+    type: 'tool-call' as const,
+    toolCallId: tc.toolCallId,
+    toolName: tc.toolName,
+    arguments: tc.input,
+  }
+}
+
+// An unresolved permission is not necessarily waiting on the user. In auto
+// mode the classifier advances it without human input unless it defers,
+// denies (a deny with a human available escalates to them rather than
+// resolving), or cannot classify the request. Keeping this distinction here
+// prevents both a transient permission card and a false human-wait state
+// while the classifier is working.
+function permissionNeedsHuman(state: TurnState, tc: ToolCallState): boolean {
+  if (!state.definition.config.humanAvailable) return false
+  if (!state.definition.config.autoPermission) return true
+  const permission = tc.permission
+  return (
+    permission?.required.checkerError !== undefined ||
+    permission?.classificationFailed === true ||
+    permission?.classification?.decision === 'defer' ||
+    permission?.classification?.decision === 'deny'
+  )
+}
+
+function isModelReasoning(state: TurnState): boolean {
+  const call = state.modelCalls[state.modelCalls.length - 1]
+  if (!call || call.response !== undefined || call.error !== undefined) return false
+
+  let reasoning = false
+  for (const event of call.stepEvents) {
+    if (event.type === 'reasoning_start') reasoning = true
+    if (event.type === 'reasoning_end') reasoning = false
+  }
+  return reasoning
+}
+
+// Compose the whole session's conversation: prior (settled) turns plus the
+// latest turn, with the live overlay stitched onto the latest turn's items.
+export function buildSessionChatState(
+  turns: TurnState[],
+  overlay: LiveOverlay,
+): SessionChatState {
+  const conversation: ConversationItem[] = []
+  let sessionUsage: TokenUsage = {}
+  for (const turn of turns) {
+    conversation.push(...buildTurnConversation(turn))
+    sessionUsage = addTokenUsage(sessionUsage, turn.usage)
+  }
+  for (let i = 0; i < conversation.length; i++) {
+    const item = conversation[i]
+    if ('name' in item && overlay.toolOutput[item.id]) {
+      conversation[i] = { ...item, streamingOutput: overlay.toolOutput[item.id] }
+    }
+  }
+
+  const latest = turns[turns.length - 1]
+  const status = latest ? deriveTurnStatus(latest) : undefined
+  const latestTurnId = latest?.definition.turnId ?? ''
+
+  const allPermissionRequests = new Map<string, z.infer<typeof ToolPermissionRequestEvent>>()
+  const permissionResponses = new Map<string, PermissionResponse>()
+  const autoPermissionDecisions = new Map<
+    string,
+    z.infer<typeof ToolPermissionAutoDecisionEvent>
+  >()
+  const pendingAskHumanRequests = new Map<string, z.infer<typeof AskHumanRequestEvent>>()
+
+  if (latest) {
+    for (const tc of outstandingPermissions(latest)) {
+      if (!permissionNeedsHuman(latest, tc)) continue
+      allPermissionRequests.set(tc.toolCallId, {
+        runId: latestTurnId,
+        type: 'tool-permission-request',
+        subflow: [],
+        toolCall: toolCallPartOf(tc),
+        permission: tc.permission?.required.request as PermMeta,
+      })
+    }
+    for (const tc of latest.toolCalls) {
+      const resolved = tc.permission?.resolved
+      if (!resolved) continue
+      if (resolved.source === 'human') {
+        permissionResponses.set(tc.toolCallId, resolved.decision === 'allow' ? 'approve' : 'deny')
+      } else if (resolved.source === 'classifier') {
+        autoPermissionDecisions.set(tc.toolCallId, {
+          runId: latestTurnId,
+          type: 'tool-permission-auto-decision',
+          subflow: [],
+          toolCallId: tc.toolCallId,
+          toolCall: toolCallPartOf(tc),
+          permission: tc.permission?.required.request as PermMeta,
+          decision: resolved.decision,
+          reason: resolved.reason ?? '',
+        })
+      }
+    }
+    for (const tc of outstandingAsyncTools(latest)) {
+      if (tc.toolName !== 'ask-human') continue
+      const input = (tc.input ?? {}) as { question?: unknown; options?: unknown; multiSelect?: unknown }
+      const hasOptions = Array.isArray(input.options) && input.options.every((o) => typeof o === 'string')
+      pendingAskHumanRequests.set(tc.toolCallId, {
+        runId: latestTurnId,
+        type: 'ask-human-request',
+        toolCallId: tc.toolCallId,
+        subflow: [],
+        query: typeof input.question === 'string' ? input.question : '',
+        ...(hasOptions ? { options: input.options as string[] } : {}),
+        ...(hasOptions && input.multiSelect === true ? { multiSelect: true } : {}),
+      })
+    }
+  }
+
+  const settled = status === 'completed' || status === 'failed' || status === 'cancelled'
+  const waitingOnHuman = allPermissionRequests.size > 0 || pendingAskHumanRequests.size > 0
+
+  // The live model call's thought/text stream, rendered as ordinary trailing
+  // conversation items under the SAME ids their durable versions will get
+  // (assistantMessageId / reasoningMessageId): when the call completes, the
+  // durable items land at the same position with the same keys and React
+  // updates the mounted nodes in place — instead of unmounting the streaming
+  // bubble and remounting a fresh subtree, which replayed Streamdown's
+  // async syntax highlighting and mermaid/chart rendering as a visible
+  // end-of-generation flash. An open call contributes nothing durable (its
+  // buildTurnConversation branch skips until the response lands), so these
+  // never duplicate. When no open call exists (e.g. a failed turn with
+  // unflushed overlay text), no synthetic is emitted — the pane's fallback
+  // slot covers that via currentAssistantMessage, exactly as before.
+  const openCall = latest?.modelCalls[latest.modelCalls.length - 1]
+  const openCallLive =
+    !settled &&
+    openCall !== undefined &&
+    openCall.response === undefined &&
+    openCall.error === undefined
+  if (latest && openCallLive) {
+    if (overlay.reasoning) {
+      conversation.push({
+        id: reasoningMessageId(latestTurnId, openCall.index),
+        kind: 'reasoning',
+        content: overlay.reasoning,
+        streaming: isModelReasoning(latest),
+        timestamp: Date.now(),
+      } satisfies ReasoningMessage)
+    }
+    const liveText = stripVoiceTags(overlay.text)
+    if (liveText) {
+      conversation.push({
+        id: assistantMessageId(latestTurnId, openCall.index),
+        role: 'assistant',
+        content: liveText,
+        streaming: true,
+        timestamp: Date.now(),
+      } satisfies ChatMessage)
+    }
+  }
+  const lastModel = latest?.definition.agent.resolved.model
+  const lastEffort = latest?.definition.config.reasoningEffort
+  return {
+    lastSelection: lastModel
+      ? {
+          provider: lastModel.provider,
+          model: lastModel.model,
+          ...(lastEffort ? { effort: lastEffort } : {}),
+        }
+      : null,
+    conversation,
+    currentAssistantMessage: stripVoiceTags(overlay.text),
+    currentReasoning: overlay.reasoning,
+    sessionUsage,
+    voiceSegments: overlay.voiceSegments,
+    pendingAskHumanRequests,
+    allPermissionRequests,
+    permissionResponses,
+    autoPermissionDecisions,
+    isProcessing: latest !== undefined && !settled,
+    isReasoning: latest !== undefined && !settled && isModelReasoning(latest),
+    isWaitingOnHuman: waitingOnHuman,
+  }
+}

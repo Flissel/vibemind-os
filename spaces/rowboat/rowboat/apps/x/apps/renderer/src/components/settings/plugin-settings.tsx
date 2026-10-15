@@ -1,3 +1,4 @@
+// VibeMind addition (Flissel/rowboat vibemind): plugin settings (vibemind-os 3b282629 and follow-ups).
 import { useEffect, useState } from 'react';
 
 import { usePlugins, type PluginsState, type ScopedPluginPreview } from '@/hooks/usePlugins';

@@ -1,6 +1,5 @@
-import { Node, mergeAttributes } from '@tiptap/react'
-import { InputRule, inputRules } from '@tiptap/pm/inputrules'
-import { ensureMarkdownExtension, normalizeWikiPath, wikiLabel } from '@/lib/wiki-links'
+import { InputRule, Node, mergeAttributes } from '@tiptap/core'
+import { ensureMarkdownExtension, normalizeWikiPath, splitWikiAlias, splitWikiFragment, wikiLabel } from '@/lib/wiki-links'
 
 const wikiLinkInputRegex = /\[\[([^[\]]+)\]\]$/
 const wikiLinkTokenRegex = /\[\[([^[\]]+)\]\]/g
@@ -26,9 +25,12 @@ const replaceWikiLinksInTextNode = (textNode: Text) => {
   for (const match of matches) {
     const matchIndex = match.index ?? 0
     const matchText = match[0] ?? ''
-    const rawPath = match[1]?.trim() ?? ''
-    const normalizedPath = rawPath ? normalizeWikiPath(rawPath) : ''
-    const isValidPath = normalizedPath && !normalizedPath.endsWith('/') && !normalizedPath.includes('..')
+    const rawLink = match[1]?.trim() ?? ''
+    const { label } = splitWikiAlias(rawLink)
+    const normalizedPath = rawLink ? normalizeWikiPath(rawLink) : ''
+    const { path: basePath, heading } = splitWikiFragment(normalizedPath)
+    const isHeadingOnlyLink = !basePath && Boolean(heading)
+    const isValidPath = isHeadingOnlyLink || (normalizedPath && !basePath.endsWith('/') && !basePath.includes('..'))
 
     if (matchIndex > lastIndex) {
       fragment.appendChild(document.createTextNode(text.slice(lastIndex, matchIndex)))
@@ -36,7 +38,8 @@ const replaceWikiLinksInTextNode = (textNode: Text) => {
 
     if (isValidPath) {
       const el = document.createElement('wiki-link')
-      el.setAttribute('data-path', ensureMarkdownExtension(normalizedPath))
+      el.setAttribute('data-path', isHeadingOnlyLink ? normalizedPath : ensureMarkdownExtension(normalizedPath))
+      if (label) el.setAttribute('data-label', label)
       fragment.appendChild(el)
     } else {
       fragment.appendChild(document.createTextNode(matchText))
@@ -81,6 +84,9 @@ export const WikiLink = Node.create<WikiLinkOptions>({
       path: {
         default: '',
       },
+      label: {
+        default: null,
+      },
     }
   },
 
@@ -88,30 +94,36 @@ export const WikiLink = Node.create<WikiLinkOptions>({
     return [
       {
         tag: 'wiki-link[data-path]',
-        getAttrs: (element) => ({
+        getAttrs: (element: Element) => ({
           path: (element as HTMLElement).getAttribute('data-path') ?? '',
+          label: (element as HTMLElement).getAttribute('data-label'),
         }),
       },
       {
         tag: 'a[data-type="wiki-link"]',
-        getAttrs: (element) => ({
+        getAttrs: (element: Element) => ({
           path: (element as HTMLElement).getAttribute('data-path') ?? '',
+          label: (element as HTMLElement).getAttribute('data-label'),
         }),
       },
     ]
   },
 
   renderHTML({ node, HTMLAttributes }) {
-    const label = wikiLabel(node.attrs.path) || node.attrs.path
+    const label = node.attrs.label || wikiLabel(node.attrs.path) || node.attrs.path
     return [
       'a',
-      mergeAttributes(HTMLAttributes, {
-        'data-type': 'wiki-link',
-        'data-path': node.attrs.path,
-        'href': '#',
-        'class': 'wiki-link',
-        'aria-label': node.attrs.path,
-      }),
+      mergeAttributes(
+        HTMLAttributes,
+        {
+          'data-type': 'wiki-link',
+          'data-path': node.attrs.path,
+          'href': '#',
+          'class': 'wiki-link',
+          'aria-label': node.attrs.path,
+        },
+        node.attrs.label ? { 'data-label': node.attrs.label } : {}
+      ),
       label,
     ]
   },
@@ -121,7 +133,8 @@ export const WikiLink = Node.create<WikiLinkOptions>({
       markdown: {
         serialize(state: { write: (text: string) => void }, node: { attrs: { path?: string } }) {
           const path = node.attrs.path ?? ''
-          state.write(`[[${path}]]`)
+          const label = (node.attrs as { label?: string }).label
+          state.write(`[[${path}${label ? `|${label}` : ''}]]`)
         },
         parse: {
           updateDOM(element: HTMLElement) {
@@ -132,23 +145,29 @@ export const WikiLink = Node.create<WikiLinkOptions>({
     }
   },
 
-  addProseMirrorPlugins() {
+  addInputRules() {
     const onCreate = this.options.onCreate
-    const rules = [
-      new InputRule(wikiLinkInputRegex, (state, match, start, end) => {
-        const rawPath = match[1]?.trim()
-        const normalizedPath = rawPath ? normalizeWikiPath(rawPath) : ''
-        if (!normalizedPath || normalizedPath.endsWith('/') || normalizedPath.includes('..')) return null
-        if (state.selection.$from.parent.type.spec.code) return null
-        if (state.selection.$from.marks().some((mark) => mark.type.spec.code)) return null
+    return [
+      new InputRule({
+        find: wikiLinkInputRegex,
+        handler: ({ state, range, match }) => {
+          const rawLink = match[1]?.trim()
+          const { label } = splitWikiAlias(rawLink ?? '')
+          const normalizedPath = rawLink ? normalizeWikiPath(rawLink) : ''
+          const { path: basePath, heading } = splitWikiFragment(normalizedPath)
+          const isHeadingOnlyLink = !basePath && Boolean(heading)
+          if (
+            !normalizedPath
+            || (!isHeadingOnlyLink && (basePath.endsWith('/') || basePath.includes('..')))
+          ) return null
+          if (state.selection.$from.parent.type.spec.code) return null
+          if (state.selection.$from.marks().some((mark) => mark.type.spec.code)) return null
 
-        const finalPath = ensureMarkdownExtension(normalizedPath)
-        const tr = state.tr.replaceWith(start, end, this.type.create({ path: finalPath }))
-        onCreate?.(finalPath)
-        return tr
+          const finalPath = isHeadingOnlyLink ? normalizedPath : ensureMarkdownExtension(normalizedPath)
+          state.tr.replaceWith(range.from, range.to, this.type.create({ path: finalPath, label }))
+          onCreate?.(finalPath)
+        },
       }),
     ]
-
-    return [inputRules({ rules })]
   },
 })

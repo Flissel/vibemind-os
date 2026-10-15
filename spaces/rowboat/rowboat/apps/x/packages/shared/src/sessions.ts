@@ -1,0 +1,249 @@
+import { z } from "zod";
+import type { UserMessage } from "./message.js";
+import { SessionOrigin, type InputOrigin } from "./origins.js";
+import { ModelDescriptor, type TurnStatus } from "./turns.js";
+
+// Durable session contract for the session layer (see
+// packages/core/docs/session-design.md). A session is an append-only chain
+// of turn references plus presentation metadata; conversation content lives
+// exclusively in turn files. Pure module shared by core and renderer.
+
+// ---------------------------------------------------------------------------
+// Durable events
+// ---------------------------------------------------------------------------
+
+export const SessionCreated = z.object({
+    type: z.literal("session_created"),
+    schemaVersion: z.literal(1),
+    sessionId: z.string(),
+    ts: z.string(),
+    title: z.string().optional(),
+    // What owns this conversation, when something outside the runtime does
+    // (a space thread). Absent for a person's own chats. See origins.ts.
+    origin: SessionOrigin.optional(),
+});
+
+// agentId/model are denormalized from the turn so the session index can fold
+// without opening turn files; the turn file stays authoritative.
+export const SessionTurnAppended = z.object({
+    type: z.literal("turn_appended"),
+    sessionId: z.string(),
+    ts: z.string(),
+    turnId: z.string(),
+    sessionSeq: z.number().int().positive(),
+    agentId: z.string(),
+    model: ModelDescriptor,
+});
+
+export const SessionTitleChanged = z.object({
+    type: z.literal("title_changed"),
+    sessionId: z.string(),
+    ts: z.string(),
+    title: z.string(),
+});
+
+export const SessionEvent = z.discriminatedUnion("type", [
+    SessionCreated,
+    SessionTurnAppended,
+    SessionTitleChanged,
+]);
+
+// ---------------------------------------------------------------------------
+// Derived session state
+// ---------------------------------------------------------------------------
+
+export class SessionCorruptionError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "SessionCorruptionError";
+    }
+}
+
+export interface SessionTurnRef {
+    turnId: string;
+    sessionSeq: number;
+    agentId: string;
+    model: z.infer<typeof ModelDescriptor>;
+    ts: string;
+}
+
+export interface SessionState {
+    definition: z.infer<typeof SessionCreated>;
+    title?: string;
+    origin?: SessionOrigin;
+    turns: SessionTurnRef[];
+    latestTurnId?: string;
+    createdAt: string;
+    updatedAt: string;
+}
+
+function fail(message: string): never {
+    throw new SessionCorruptionError(message);
+}
+
+export function reduceSession(
+    events: Array<z.infer<typeof SessionEvent>>,
+): SessionState {
+    if (events.length === 0) {
+        fail("session log is empty");
+    }
+    const [first, ...rest] = events;
+    if (first.type !== "session_created") {
+        fail(`first event must be session_created, got ${first.type}`);
+    }
+    if (first.schemaVersion !== 1) {
+        fail(`unsupported session schema version: ${String(first.schemaVersion)}`);
+    }
+
+    const state: SessionState = {
+        definition: first,
+        title: first.title,
+        ...(first.origin === undefined ? {} : { origin: first.origin }),
+        turns: [],
+        createdAt: first.ts,
+        updatedAt: first.ts,
+    };
+
+    for (const event of rest) {
+        if (event.sessionId !== first.sessionId) {
+            fail(
+                `event sessionId ${event.sessionId} does not match session ${first.sessionId}`,
+            );
+        }
+        switch (event.type) {
+            case "session_created":
+                fail("duplicate session_created event");
+                break;
+            case "turn_appended": {
+                const expectedSeq = state.turns.length + 1;
+                if (event.sessionSeq !== expectedSeq) {
+                    fail(
+                        `sessionSeq ${event.sessionSeq} out of order; expected ${expectedSeq}`,
+                    );
+                }
+                if (state.turns.some((t) => t.turnId === event.turnId)) {
+                    fail(`duplicate turnId in session: ${event.turnId}`);
+                }
+                state.turns.push({
+                    turnId: event.turnId,
+                    sessionSeq: event.sessionSeq,
+                    agentId: event.agentId,
+                    model: event.model,
+                    ts: event.ts,
+                });
+                state.latestTurnId = event.turnId;
+                break;
+            }
+            case "title_changed":
+                state.title = event.title;
+                break;
+            default: {
+                const unknown: never = event;
+                fail(
+                    `unknown session event type: ${(unknown as { type: string }).type}`,
+                );
+            }
+        }
+        state.updatedAt = event.ts;
+    }
+
+    return state;
+}
+
+// ---------------------------------------------------------------------------
+// Session index (in-memory projection; never a source of truth)
+// ---------------------------------------------------------------------------
+
+// "none" = the session has no turns yet. The remaining values are the latest
+// turn's derived status (deriveTurnStatus in turns.ts).
+export type SessionLatestTurnStatus = "none" | TurnStatus;
+
+export interface SessionIndexEntry {
+    sessionId: string;
+    title?: string;
+    // Denormalized from session_created so lists can filter and group
+    // without reading session files. Absent = a person's own chat.
+    origin?: SessionOrigin;
+    createdAt: string;
+    updatedAt: string;
+    turnCount: number;
+    lastAgentId?: string;
+    lastModel?: z.infer<typeof ModelDescriptor>;
+    latestTurnId?: string;
+    latestTurnStatus: SessionLatestTurnStatus;
+    // Set when the session (or its latest turn) failed to load/validate; the
+    // entry is surfaced in an errored state instead of aborting the startup
+    // scan.
+    error?: string;
+}
+
+// A message accepted while the session's latest turn was still running,
+// waiting in the EPHEMERAL pending queue (deliberately not durable: it
+// becomes durable only at delivery — as an input_added turn event when it
+// steers the live turn, or as turn_created.input when it is promoted to a
+// new turn after settle; see session-design.md §12.1). Held in main-process
+// memory, mirrored to the renderer via queue-changed, editable and removable
+// until delivered. A crash loses it along with the turn it was steering.
+export interface QueuedSessionMessage {
+    queueId: string;
+    message: z.infer<typeof UserMessage>;
+    ts: string;
+    // Carried from the send config until delivery, where it lands on the
+    // turn event (turn_created or input_added) — see origins.ts.
+    origin?: InputOrigin;
+}
+
+// What the renderer's session-feed consumer receives over IPC: session index
+// updates and pending-queue mirrors. Turn events (durable + deltas) travel on
+// the turns:events spine (TurnBusEvent in turns.ts). entry: null signals
+// deletion. queue-changed carries the full pending queue (small by nature),
+// so consumers replace rather than patch.
+export type SessionBusEvent =
+    | {
+          kind: "index-changed";
+          sessionId: string;
+          entry: SessionIndexEntry | null;
+      }
+    | {
+          kind: "queue-changed";
+          sessionId: string;
+          queue: QueuedSessionMessage[];
+      }
+    // A plain chat BECAME a code session (adoption wrote its meta). Every
+    // cache of "what kind of session is this" — the code status tracker,
+    // the Home registry, future ones — corrects itself from this one event
+    // instead of relying on per-cache hand-pokes.
+    | {
+          kind: "code-adopted";
+          sessionId: string;
+      };
+
+export function sessionIndexEntry(
+    state: SessionState,
+    latestTurnStatus: SessionLatestTurnStatus,
+): SessionIndexEntry {
+    const lastTurn = state.turns[state.turns.length - 1];
+    return {
+        sessionId: state.definition.sessionId,
+        title: state.title,
+        ...(state.origin === undefined ? {} : { origin: state.origin }),
+        createdAt: state.createdAt,
+        updatedAt: state.updatedAt,
+        turnCount: state.turns.length,
+        lastAgentId: lastTurn?.agentId,
+        lastModel: lastTurn?.model,
+        latestTurnId: state.latestTurnId,
+        latestTurnStatus,
+    };
+}
+
+// The ONE rule every chat list applies (sidebar, dock, chat header, quick-ask
+// switcher, mobile, the agent's chat-history read view): sessions owned by
+// something outside the runtime stay out of the default list and are reached
+// from their owner (the space thread) or from the history pane's explicit
+// filter. sessions:list and the index-changed feed still carry every session
+// — this predicate is applied at the edge, on the seed and on each feed
+// event alike, so the two paths cannot disagree.
+export function isChatListSession(entry: Pick<SessionIndexEntry, "origin">): boolean {
+    return entry.origin === undefined;
+}

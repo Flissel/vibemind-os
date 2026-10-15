@@ -1,0 +1,1434 @@
+import { invokeSpace } from '@/lib/spaces-invoke'
+import { useSpaceAccess, JoinSpacePrompt } from '@/lib/spaces-access'
+import { MESSAGE_PROSE } from '@/components/spaces/message-prose'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { cn } from '@/lib/utils'
+import { Anchor, Archive, ArchiveRestore, ArrowDown, ArrowLeft, ArrowUp, Bell, BellOff, Bot, FileText, Link as LinkIcon, Loader2, MessageSquareOff, MoreHorizontal, Maximize2, Minimize2, Paperclip, Pencil, ShieldAlert, Square, Tag, Unlink, X } from 'lucide-react'
+import type { spaces } from '@x/shared'
+import { messageUrl } from '@x/shared/dist/spaces.js'
+import { copySpacesLink } from '@/lib/spaces-copy-link'
+import { Button } from '@/components/ui/button'
+import {
+    DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { ArtifactsSummary } from '@/components/spaces/artifacts'
+import { AttachDocumentDialog } from '@/components/spaces/attach-document-dialog'
+import { AgentMark, MemberAvatar, MemberProfilePopover } from '@/components/spaces/atoms'
+import { Composer, type AgentOptions } from '@/components/spaces/composer'
+import { ForwardDialog } from '@/components/spaces/forward-dialog'
+import { MemberName, MemberText } from '@/components/spaces/member-text'
+import { SpaceMarkdown } from '@/components/spaces/space-markdown'
+import { MessageRow, NewDivider, TypingIndicator } from '@/components/spaces/message-row'
+import type { ChatMessage, SpacePresence } from '@/hooks/use-space-chat'
+import { buildPendingMessage, getThreadSnapshot, ingestTopic, putThreadSnapshot, removeTopicByRoot, updateStreamMessage, usePresenceSender } from '@/hooks/use-space-chat'
+import { useTopicAgentPermissionWait } from '@/hooks/use-topic-agent-permission'
+import { useSpaceAgentActivity } from '@/lib/spaces-agent-activity'
+import { useSpaceNames, type OrgWithSpaces } from '@/hooks/use-spaces'
+import { subscribeComposeInsert } from '@/lib/spaces-compose'
+import {
+    clearStagedThreadDraft, peekStagedReply, releaseStagedThreadDraft, stageThreadDraft, subscribeStagedThreadDraft, threadDraftKey, useStagedThreadDraft,
+} from '@/lib/spaces-thread-draft'
+import { AUTO_TOAST, collectRouteCandidates, routeDraft, routeThreadLabel } from '@/lib/spaces-auto-route'
+import { agentOptionsPayload, postStreamMessage } from '@/lib/spaces-post'
+import { noteInvocations } from '@/hooks/use-space-invocations'
+import { getStreamState, jumpToLatest } from '@/hooks/use-space-chat'
+import { AutoBanner } from '@/components/spaces/auto-banner'
+import { FindBanner } from '@/components/spaces/find-banner'
+// The Spaces toast queue has no renderer; sonner is what the person sees.
+import { toast as notify } from 'sonner'
+import { applyReaction, artifactsForThread, isContinuation, mergeMessages, threadLabelOf } from '@/lib/spaces-conventions'
+import { consumeJump, jumpFailureMessage, resolveJumpOffset, scrollToMessage, subscribeJump, type JumpAnchor } from '@/lib/spaces-jump'
+import { PollDialogHost } from '@/components/spaces/poll-dialog'
+import { applyPollVote, myPollVotes, postPoll } from '@/lib/spaces-poll'
+import { attributionLabel, formatFeedTime, resolveMentions, shortId } from '@/lib/spaces-presentation'
+import { formatScheduleTime, parseRemindArgs } from '@/lib/spaces-schedule'
+import { getThreadReadState, markThreadRead, noteThread, useReadStateVersion } from '@/lib/spaces-read-state'
+import { toggleSaved, useSaved } from '@/lib/spaces-saved'
+import { maybeInvokeRowboat } from '@/lib/spaces-rowboat'
+import { openResponseChat } from '@/lib/spaces-response-chat'
+import { toast } from '@/lib/toast'
+import * as analytics from '@/lib/analytics'
+import { containsRowboatAddress } from '@/lib/spaces-mentions'
+
+// One flat thread (annotation model): the root on top, the artifacts it
+// produced, the replies, a reply composer. A Discussion is the same pane with
+// a topic annotation on it — a stated goal in the header and lifecycle
+// actions in the menu. Replying never creates anything; giving the thread a
+// goal is the one deliberate ceremony.
+
+/** How long the New line lingers once the reader has caught up with it. */
+const NEW_LINGER_MS = 5_000
+/** Clear delay after the fade starts — must outlast the divider's duration-700. */
+const NEW_FADE_MS = 800
+
+export function ThreadPane({
+    org, space, rootMessageId, rootFromStream, topicFromStream, changeSets, entries, presence, memberNames, refreshTick,
+    showBack, onBack, expanded = false, onToggleExpanded, onCloseColumn, onOpenFile, onOpenSession, onOpenThread, artifactsRailOpen, onToggleArtifactsRail, onFolding, visible = true,
+}: {
+    org: OrgWithSpaces
+    space: spaces.Space
+    /** The thread's identity — permanent, whether or not a topic annotates it. */
+    rootMessageId: string
+    /** The root as the stream already holds it — paints the parent card before the fetch lands. */
+    rootFromStream: spaces.Message | undefined
+    topicFromStream: spaces.Topic | undefined
+    changeSets: spaces.ChangeSet[]
+    entries: spaces.SpacesAssetEntry[]
+    presence: SpacePresence
+    memberNames: Map<string, string>
+    refreshTick: number
+    showBack: boolean
+    onBack: () => void
+    expanded?: boolean
+    onToggleExpanded?: () => void
+    /** Set while a doc column sits beside the chat: closes the chat column, the doc takes the width. */
+    onCloseColumn?: () => void
+    /** Opens a file of this space by asset id (beside the thread, with a crumb back). */
+    onOpenFile: (assetId: string) => void
+    onOpenSession?: (sessionId: string) => void
+    /** Opens another thread of this space (Auto's "try another thread" re-stages the reply there). */
+    onOpenThread?: (rootMessageId: string) => void
+    /** Whether the artifacts rail is showing; the summary line under the opener toggles it. */
+    artifactsRailOpen: boolean
+    onToggleArtifactsRail: () => void
+    /** Lets a parent (the rail) share the fold-busy state. */
+    onFolding?: (busy: boolean) => void
+    /** False while kept mounted but off screen (read mode, hidden Spaces view) — no presence, no read marks. */
+    visible?: boolean
+}) {
+    const { member } = useSpaceAccess()
+    // The cached copy from the last open — plus any replies that streamed in
+    // live while the pane was closed. Seeding paints the whole thread in the
+    // first frame; the fetch below reconciles right behind it. A PARTIAL
+    // snapshot (live replies grafted without a full fetch) paints too, but
+    // doesn't count as loaded — earlier replies may still be missing.
+    const [seeded] = useState(() => getThreadSnapshot(org.id, space.id, rootMessageId))
+    const [root, setRoot] = useState<spaces.Message | null>(rootFromStream ?? seeded?.root ?? null)
+    const [topic, setTopic] = useState<spaces.Topic | null>(topicFromStream ?? seeded?.topic ?? null)
+    const [messages, setMessages] = useState<ChatMessage[]>(seeded?.messages ?? [])
+    const [loaded, setLoaded] = useState(!!seeded && !seeded.partial)
+    const [hasMore, setHasMore] = useState(seeded?.hasMore ?? false)
+    const [loadingOlder, setLoadingOlder] = useState(false)
+    // DETACHED: a jump landed on a reply the newest page did not hold, and
+    // the window is the page around it — newer replies exist above it. The
+    // bottom pin is off, the bottom edge pages forward, live replies are
+    // counted for the pill instead of merged, and a send snaps back first.
+    // The ref is for the async continuations (refetches, pages in flight).
+    const [hasMoreAfter, setHasMoreAfterState] = useState(false)
+    const hasMoreAfterRef = useRef(false)
+    const setDetached = (next: boolean) => {
+        hasMoreAfterRef.current = next
+        setHasMoreAfterState(next)
+    }
+    /** Replies above a detached window (the pill's count); null = more than a page — unknown. */
+    const [newerCount, setNewerCount] = useState<number | null>(0)
+    const loadingNewerRef = useRef(false)
+    /** Bumped whenever a page REPLACES the window: a page fetched for the window that left must not merge into the new one. */
+    const windowGenRef = useRef(0)
+    // The deepest (oldest) offset any fetch has reached — a refetch of the
+    // newest page must not reset hasMore after the reader paged further back.
+    // Starts at the cache's depth: hasMore above describes exactly that.
+    const oldestLoadedRef = useRef<number | null>(seeded?.messages[0]?.offset ?? null)
+    const [folding, setFolding] = useState(false)
+    const scrollRef = useRef<HTMLDivElement | null>(null)
+    /** The list's one measurable child — the tail pin observes its size. */
+    const contentRef = useRef<HTMLDivElement | null>(null)
+    /** null = following the tail; a number = where the reader parked (kept across hide/show). */
+    const parkedTopRef = useRef<number | null>(null)
+    /** Composer prefill (quote-reply, mention-from-profile); a new nonce re-applies it. */
+    const [seed, setSeed] = useState<{ text: string; nonce: number; append?: boolean } | null>(null)
+    const { onType } = usePresenceSender(org.id, space.id, rootMessageId, visible && member)
+    // The plain-text faces (quotes, titles, copies) name a space token by its current name.
+    const spaceNames = useSpaceNames(org.id)
+
+    // The profile popover's "Mention" lands in whichever composer is visible.
+    useEffect(() => {
+        if (!visible) return
+        return subscribeComposeInsert((insert) => setSeed({ text: insert.text, nonce: Date.now(), append: true }))
+    }, [visible])
+    // Auto (Preview) staged a reply for THIS thread while the pane was already
+    // up: seed it in. A pane mounting fresh reads it off the stored draft.
+    const draftKey = threadDraftKey(org.id, space.id, rootMessageId)
+    useEffect(() => {
+        return subscribeStagedThreadDraft((staged) => {
+            if (staged.draftKey === draftKey) setSeed({ text: staged.text, nonce: Date.now(), append: true })
+        })
+    }, [draftKey])
+
+    // The banner above the composer while a routed reply is staged here: the
+    // corrections. Each reads the reply as it stands now (edits included) off
+    // the composer's stored draft, and taking it back seeds the editor with
+    // whatever was drafted here before.
+    const staged = useStagedThreadDraft(draftKey)
+    const [correcting, setCorrecting] = useState(false)
+    const takeBack = () => {
+        const released = releaseStagedThreadDraft(draftKey)
+        setSeed({ text: released?.before ?? '', nonce: Date.now() })
+        return released
+    }
+    const postToStreamInstead = async () => {
+        if (correcting) return
+        const text = peekStagedReply(draftKey)
+        if (!text) {
+            clearStagedThreadDraft(draftKey)
+            return
+        }
+        setCorrecting(true)
+        try {
+            // A detached stream window has no tail for the row to land on.
+            if (getStreamState(org.id, space.id).hasMoreAfter) await jumpToLatest(org.id, space.id)
+        } catch (err) {
+            notify.error('Could not reach the stream', { ...AUTO_TOAST, description: err instanceof Error ? err.message : 'Try again' })
+            setCorrecting(false)
+            return
+        }
+        takeBack()
+        postStreamMessage(org, space, text)
+        setCorrecting(false)
+        notify.success('Posted to the stream', AUTO_TOAST)
+        onBack()
+    }
+    const tryAnotherThread = async () => {
+        if (!staged || correcting) return
+        const text = peekStagedReply(draftKey)
+        if (!text) {
+            clearStagedThreadDraft(draftKey)
+            return
+        }
+        const rejected = [...staged.rejected, rootMessageId]
+        const candidates = collectRouteCandidates(org.id, space.id, getStreamState(org.id, space.id), memberNames, spaceNames)
+            .filter((c) => !rejected.includes(c.rootMessageId))
+        if (candidates.length === 0) {
+            notify.info('No other thread to try', { ...AUTO_TOAST, description: 'Send it here, or post it to the stream instead.' })
+            return
+        }
+        setCorrecting(true)
+        try {
+            const authorName = memberNames.get(org.memberId)
+            const outcome = await routeDraft({ spaceName: space.name, draft: text, ...(authorName ? { authorName } : {}), candidates })
+            if (outcome.destination === 'thread' && outcome.threadRootId) {
+                const next = outcome.threadRootId
+                takeBack()
+                stageThreadDraft(org.id, space.id, next, text, { rejected })
+                notify.info(`Auto picked “${routeThreadLabel(org.id, space.id, next, memberNames, spaceNames)}” instead`, AUTO_TOAST)
+                onOpenThread?.(next)
+                return
+            }
+            // Nothing else fits: no surprise post. The banner stays for the
+            // person to send here or post to the stream.
+            notify.info(outcome.reason === 'error' ? `Auto could not decide: ${outcome.error}` : 'No other thread fits', {
+                ...AUTO_TOAST,
+                description: 'Send it here, or post it to the stream instead.',
+            })
+        } finally {
+            setCorrecting(false)
+        }
+    }
+    const keepAsDraft = () => clearStagedThreadDraft(draftKey)
+    // A ref, not an effect dep: visibility flips must not refetch the thread.
+    const visibleRef = useRef(visible)
+    visibleRef.current = visible
+
+    // Esc goes back to Messages. Not from a field (typing must keep its Esc
+    // semantics — and a drafted reply must not vanish), and not when an
+    // overlay already claimed the key (Radix prevents default on those).
+    useEffect(() => {
+        if (!visible) return
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key !== 'Escape' || e.defaultPrevented) return
+            const t = e.target as HTMLElement | null
+            if (t?.closest('input, textarea, [contenteditable="true"], [role="dialog"], [role="menu"]')) return
+            onBack()
+        }
+        window.addEventListener('keydown', onKey)
+        return () => window.removeEventListener('keydown', onKey)
+    }, [visible, onBack])
+
+    // Marks are offsets now (org-owned); only a followed thread has one, and 0 = no line.
+    const armedMark = (): number | null => {
+        const t = getThreadReadState(org.id, space.id, rootMessageId)
+        return t?.following && t.readOffset > 0 ? t.readOffset : null
+    }
+    const newestOffset = (list: ChatMessage[], fallback: number): number =>
+        list.reduce((max, m) => (!m.pending && !m.failed && m.offset > max ? m.offset : max), fallback)
+    const [newSince, setNewSince] = useState<number | null>(armedMark)
+    const [newFading, setNewFading] = useState(false)
+    // Each return to the thread re-arms the line at the catch-up point: the
+    // read mark as it stood while hidden. Declared BEFORE the visible
+    // mark-read effect below — same flip, and the snapshot must win the race.
+    const newArmedVisibleRef = useRef(visible)
+    useEffect(() => {
+        const was = newArmedVisibleRef.current
+        newArmedVisibleRef.current = visible
+        if (!visible || was) return
+        setNewFading(false)
+        setNewSince(armedMark())
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [visible, org.id, space.id, rootMessageId])
+
+    // The messages as the refetch below sees them: a detached window's newest row is where its count starts.
+    const messagesRef = useRef(messages)
+    messagesRef.current = messages
+    /** A newest page landed (the refetch, the snap back to latest): everything on it but the replies. */
+    const noteNewestPage = (res: spaces.SpacesThreadPage) => {
+        setRoot(res.root)
+        setTopic(res.topic)
+        // Keep the stream's copy of the chip data current too.
+        updateStreamMessage(org.id, space.id, res.root)
+        if (res.topic) ingestTopic(org.id, space.id, res.topic)
+        // The org's word on this thread for us: following + mark. It
+        // arms the New line when nothing did yet, then reading starts.
+        setNewSince((current) => current ?? (res.following && res.readOffset ? res.readOffset : null))
+        noteThread(org.id, space.id, rootMessageId, {
+            following: res.following,
+            readOffset: res.readOffset,
+            ...(res.root.lastReplyOffset !== undefined ? { lastReplyOffset: res.root.lastReplyOffset } : {}),
+        })
+    }
+    useEffect(() => {
+        let cancelled = false
+        // Detached: the newest page cannot merge into a window that floats
+        // below it, so the refetch asks for what lies ABOVE the window
+        // instead — the pill's count (exact within a page), with the root
+        // and topic refreshed off the same response. Live replies reach the
+        // pane this way (every event ticks); they stay out of the window.
+        const detachedAt = hasMoreAfterRef.current ? newestOffset(messagesRef.current, 0) : null
+        const gen = windowGenRef.current
+        void invokeSpace('spaces:listThread', {
+                orgId: org.id, spaceId: space.id, rootMessageId, ...(detachedAt !== null ? { afterOffset: detachedAt } : {}),
+            })
+            .then((res) => {
+                if (cancelled) return
+                // A jump landed while this page was in flight: not this window's —
+                // neither its rows nor its count.
+                if (gen !== windowGenRef.current) return
+                noteNewestPage(res)
+                if (detachedAt !== null) {
+                    setNewerCount(res.hasMoreAfter ? null : res.messages.length)
+                    return
+                }
+                // A refetch merges (older loaded pages stay put) and must not
+                // eat optimistic sends: pending/failed rows the response
+                // doesn't already contain are carried over.
+                setMessages((prev) => [
+                    ...mergeMessages(prev.filter((m) => !m.pending && !m.failed && m.threadRoot === res.root.id), res.messages),
+                    ...prev.filter(
+                        (m) => (m.pending || m.failed) && !res.messages.some((r) => r.author.memberId === m.author.memberId && r.body === m.body),
+                    ),
+                ])
+                const windowOldest = res.messages[0]?.offset ?? null
+                if (oldestLoadedRef.current === null || windowOldest === null || windowOldest <= oldestLoadedRef.current) {
+                    oldestLoadedRef.current = windowOldest ?? oldestLoadedRef.current
+                    setHasMore(res.hasMore)
+                }
+                setLoaded(true)
+                if (member && visibleRef.current) markThreadRead(org.id, space.id, rootMessageId, newestOffset(res.messages, res.root.offset))
+            })
+            .catch(() => {})
+        return () => {
+            cancelled = true
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [org.id, space.id, rootMessageId, refreshTick])
+    // Write the settled thread back to the cache: the next open (and live
+    // replies arriving while it is closed) paints from it, no round trip.
+    // Never a detached window — the cache is the tail.
+    useEffect(() => {
+        if (!loaded || !root || hasMoreAfter) return
+        putThreadSnapshot(org.id, space.id, rootMessageId, {
+            root,
+            topic,
+            messages: messages.filter((m) => !m.pending && !m.failed),
+            hasMore,
+        })
+    }, [org.id, space.id, rootMessageId, loaded, root, topic, messages, hasMore, hasMoreAfter])
+    // Refetches that landed while hidden left the thread unread on purpose —
+    // becoming visible again is the moment the reader actually sees them.
+    // Marks only advance, so a detached window never regresses one, and
+    // paging forward (or snapping back) moves it on.
+    useEffect(() => {
+        if (member && visible && loaded && root) markThreadRead(org.id, space.id, rootMessageId, newestOffset(messages, root.offset))
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [visible, loaded, org.id, space.id, rootMessageId, messages.length, hasMoreAfter])
+
+    const loadOlderReplies = async () => {
+        const oldest = messages.find((m) => !m.pending && !m.failed)
+        if (!oldest || loadingOlder) return
+        setLoadingOlder(true)
+        const gen = windowGenRef.current
+        try {
+            const res = await invokeSpace('spaces:listThread', {
+                orgId: org.id, spaceId: space.id, rootMessageId, beforeOffset: oldest.offset,
+            })
+            if (gen !== windowGenRef.current) return
+            setMessages((prev) => mergeMessages(prev, res.messages))
+            oldestLoadedRef.current = res.messages[0]?.offset ?? oldestLoadedRef.current
+            setHasMore(res.hasMore)
+        } catch (err) {
+            toast(err instanceof Error ? err.message : 'Could not load earlier replies', 'error')
+        } finally {
+            setLoadingOlder(false)
+        }
+    }
+    /** Scroll-down pagination while detached: the page above the window, appended; reaching the head re-attaches. */
+    const loadNewerReplies = async () => {
+        const newest = newestOffset(messages, 0)
+        if (!hasMoreAfter || loadingNewerRef.current || newest === 0) return
+        loadingNewerRef.current = true
+        const gen = windowGenRef.current
+        try {
+            const res = await invokeSpace('spaces:listThread', {
+                orgId: org.id, spaceId: space.id, rootMessageId, afterOffset: newest,
+            })
+            if (gen !== windowGenRef.current) return
+            setMessages((prev) => mergeMessages(prev, res.messages))
+            const more = res.hasMoreAfter ?? false
+            setDetached(more)
+            if (!more) setNewerCount(0)
+        } catch {
+            // The next scroll to the edge retries.
+        } finally {
+            loadingNewerRef.current = false
+        }
+    }
+    // The detached pill's action: the newest page replaces the window and
+    // the bottom pin takes over again. Sends go through here first — an
+    // optimistic reply belongs at the tail the reader would otherwise not see.
+    const [snapping, setSnapping] = useState(false)
+    const snapToLatest = async () => {
+        if (!hasMoreAfterRef.current) return
+        setSnapping(true)
+        try {
+            const res = await invokeSpace('spaces:listThread', { orgId: org.id, spaceId: space.id, rootMessageId })
+            windowGenRef.current += 1
+            noteNewestPage(res)
+            setMessages(res.messages)
+            oldestLoadedRef.current = res.messages[0]?.offset ?? null
+            setHasMore(res.hasMore)
+            setDetached(false)
+            setNewerCount(0)
+            parkedTopRef.current = null
+        } catch (err) {
+            toast(err instanceof Error ? err.message : 'Could not load the latest replies', 'error')
+        } finally {
+            setSnapping(false)
+        }
+    }
+
+    const workingAgents = presence.working.get(rootMessageId) ?? []
+    const ownActivity = useSpaceAgentActivity(org.id, space.id)
+    // Your own agent, blocked mid-turn on a tool permission: surface it here
+    // instead of letting it idle behind a "working…" spinner (or silence).
+    const permissionWait = useTopicAgentPermissionWait(org.id, space.id, rootMessageId, visible && member)
+    // While blocked, the amber pill replaces the own-agent spinner.
+    const spinningAgents = permissionWait.length > 0 ? workingAgents.filter((id) => id !== org.memberId) : workingAgents
+
+    // Jump-to-message (search, pinned, saved, a link): a pending jump wins
+    // over the bottom pin for the commit it lands in — the pin effect checks
+    // the ref, which clears a tick later (after that commit's effects ran).
+    // A reply the loaded window lacks is fetched ONCE, around its offset (the
+    // page replaces the window, detached when newer replies exist above it);
+    // a window that still lacks it after that is a real miss — give up.
+    const pendingJumpRef = useRef<{ anchor: JumpAnchor; sought: boolean; settled: boolean } | null>(null)
+    const [jumpNonce, setJumpNonce] = useState(0)
+    useEffect(() => {
+        if (!visible) return
+        const attempt = () => {
+            const anchor = consumeJump(rootMessageId)
+            if (!anchor) return
+            pendingJumpRef.current = { anchor, sought: false, settled: false }
+            setJumpNonce((n) => n + 1)
+        }
+        attempt()
+        return subscribeJump(attempt)
+    }, [visible, rootMessageId])
+    useLayoutEffect(() => {
+        const jump = pendingJumpRef.current
+        if (!jump) return
+        const el = scrollRef.current
+        if (!el) return
+        const done = () => {
+            setTimeout(() => {
+                if (pendingJumpRef.current === jump) pendingJumpRef.current = null
+            }, 0)
+        }
+        if (scrollToMessage(el, jump.anchor.messageId)) {
+            // The landing spot is the reader's own now — the tail pin lets go.
+            parkedTopRef.current = el.scrollTop
+            done()
+            return
+        }
+        if (!loaded) return
+        if (jump.settled) {
+            // The org sent the window around it and the row still isn't rendered: deleted, or not a reply here.
+            if (messages.some((m) => m.id === jump.anchor.messageId)) toast('That message is no longer here', 'info')
+            done()
+            return
+        }
+        if (jump.sought) return
+        jump.sought = true
+        void (async () => {
+            try {
+                const offset = await resolveJumpOffset(org.id, space.id, jump.anchor)
+                const res = await invokeSpace('spaces:listThread', {
+                    orgId: org.id, spaceId: space.id, rootMessageId, aroundOffset: offset,
+                })
+                if (pendingJumpRef.current !== jump) return
+                windowGenRef.current += 1
+                noteNewestPage(res)
+                // The page REPLACES the window; optimistic rows belong to the tail and come back with it.
+                setMessages(res.messages)
+                oldestLoadedRef.current = res.messages[0]?.offset ?? null
+                setHasMore(res.hasMore)
+                setDetached(res.hasMoreAfter ?? false)
+                setNewerCount(0)
+                jump.settled = true
+                setJumpNonce((n) => n + 1)
+            } catch (err) {
+                if (pendingJumpRef.current !== jump) return
+                toast(jumpFailureMessage(err), 'info')
+                pendingJumpRef.current = null
+            }
+        })()
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [jumpNonce, loaded, messages.length])
+
+    // Opening lands on the newest replies: the bottom, pinned before paint (a
+    // layout effect — no flash of the top). The pin is not one-shot: bodies
+    // keep growing after first layout (lazy images, code highlighting, the
+    // code-block chunk), and each late growth above the viewport would
+    // strand a one-time scroll mid-thread. While the reader is following
+    // the tail, any content-size change re-pins it; the moment they scroll
+    // away the pin lets go and their spot is kept — across a hide/show too
+    // (display:none drops the scroll geometry; the flip back restores it).
+    // Only a scroll the READER made may unpin: the browser fires scroll
+    // events of its own (anchoring compensates for a late layout above the
+    // viewport), indistinguishable by position alone — so track intent: a
+    // wheel/touch stamps a time, a pointer held down (the scrollbar, a
+    // selection drag) counts for as long as it's down.
+    const userScrollAtRef = useRef(0)
+    const pointerDownRef = useRef(false)
+    useEffect(() => {
+        const up = () => {
+            pointerDownRef.current = false
+        }
+        window.addEventListener('pointerup', up)
+        window.addEventListener('pointercancel', up)
+        return () => {
+            window.removeEventListener('pointerup', up)
+            window.removeEventListener('pointercancel', up)
+        }
+    }, [])
+    const pinBottom = () => {
+        const el = scrollRef.current
+        if (el && parkedTopRef.current === null && !pendingJumpRef.current && !hasMoreAfterRef.current) el.scrollTop = el.scrollHeight
+    }
+    const typingCount = presence.typing.get(rootMessageId)?.length ?? 0
+    // hasMoreAfter: re-attaching (the snap back to latest) pins the head page's bottom.
+    useLayoutEffect(pinBottom, [loaded, root?.id, messages.length, spinningAgents.length, permissionWait.length, typingCount, hasMoreAfter])
+    useEffect(() => {
+        const el = scrollRef.current
+        const content = contentRef.current
+        if (!el || !content) return
+        const ro = new ResizeObserver(pinBottom)
+        // The content's growth, and the viewport's own (the column resized,
+        // the composer growing under it).
+        ro.observe(content)
+        ro.observe(el)
+        return () => ro.disconnect()
+    }, [])
+    const wasVisibleRef = useRef(visible)
+    useLayoutEffect(() => {
+        const was = wasVisibleRef.current
+        wasVisibleRef.current = visible
+        const el = scrollRef.current
+        if (!el || !visible || was) return
+        el.scrollTop = parkedTopRef.current ?? el.scrollHeight
+    }, [visible])
+
+    const groups = useMemo(() => artifactsForThread(changeSets, rootMessageId), [changeSets, rootMessageId])
+
+    const replies = messages
+
+    // Once the reader has caught up (this pane pins to the bottom, so visible
+    // = with the new messages) the line lingers a beat, fades, drops.
+    const hasNewLine = !!newSince && replies.some((m) => !m.deletedAt && m.offset > newSince && m.author.memberId !== org.memberId)
+    // Jump-to-unread: the pane opens at the bottom; when the New line sits
+    // above the fold a pill scrolls to it. Dismissed by use; re-arms with the
+    // divider (adjust-on-change).
+    const newCount = newSince
+        ? replies.filter((m) => !m.deletedAt && m.offset > newSince && m.author.memberId !== org.memberId).length
+        : 0
+    const [newJumped, setNewJumped] = useState(false)
+    const [lastNewSince, setLastNewSince] = useState(newSince)
+    if (newSince !== lastNewSince) {
+        setLastNewSince(newSince)
+        setNewJumped(false)
+    }
+    const jumpToNew = () => {
+        setNewJumped(true)
+        const el = scrollRef.current
+        el?.querySelector<HTMLElement>('[data-new-divider]')?.scrollIntoView({ block: 'center' })
+        // The reader's own spot now — the tail pin lets go.
+        if (el) parkedTopRef.current = el.scrollTop
+    }
+    useEffect(() => {
+        if (!visible || !loaded || !hasNewLine || newFading) return
+        const t = window.setTimeout(() => setNewFading(true), NEW_LINGER_MS)
+        return () => window.clearTimeout(t)
+    }, [visible, loaded, hasNewLine, newFading])
+    useEffect(() => {
+        if (!newFading) return
+        const t = window.setTimeout(() => {
+            setNewSince(null)
+            setNewFading(false)
+        }, NEW_FADE_MS)
+        return () => window.clearTimeout(t)
+    }, [newFading])
+
+    // Echo a just-posted reply into the pane — the live event that would
+    // otherwise render it may be seconds away, or never come at all when the
+    // socket went half-open (sleep). Dedupe keeps the eventual frame a no-op.
+    const echo = (message: spaces.Message) => {
+        setMessages((prev) => (prev.some((m) => m.id === message.id) ? prev : [...prev, message]))
+    }
+
+    /** What @rowboat and sessions call this conversation. */
+    const threadLabel = topic?.title ?? threadLabelOf(root?.body ?? '')
+
+    // Following (org-owned read state): only a followed thread badges you.
+    // The org follows you in when you reply, when someone replies to your
+    // root, or when you are mentioned; this is the manual override.
+    useReadStateVersion()
+    const following = getThreadReadState(org.id, space.id, rootMessageId)?.following ?? false
+    const toggleFollow = async () => {
+        const next = !following
+        const current = getThreadReadState(org.id, space.id, rootMessageId)
+        noteThread(org.id, space.id, rootMessageId, {
+            following: next,
+            readOffset: current?.readOffset ?? null,
+            ...(root?.lastReplyOffset !== undefined ? { lastReplyOffset: root.lastReplyOffset } : {}),
+        })
+        try {
+            const res = await invokeSpace('spaces:followThread', { orgId: org.id, spaceId: space.id, rootMessageId, following: next })
+            noteThread(org.id, space.id, rootMessageId, { following: res.following, readOffset: res.readOffset })
+        } catch (err) {
+            toast(err instanceof Error ? err.message : 'Could not update following', 'error')
+        }
+    }
+
+    // Optimistic send, same shape as the stream's: render now (dimmed as
+    // pending), confirm — or fail into a retry/discard row — in the
+    // background. The composer never waits on the round trip.
+    const post = async (body: string, agent?: AgentOptions) => {
+        // Sending settles a routed reply: whatever leaves this box is the person's own.
+        clearStagedThreadDraft(draftKey)
+        if (hasMoreAfterRef.current) {
+            await snapToLatest()
+            // The snap toasts its own failure; a reply must not land in an old window.
+            if (hasMoreAfterRef.current) return
+        }
+        const pending = buildPendingMessage(space.id, org.memberId, body, rootMessageId)
+        setMessages((prev) => [...prev, pending])
+        void invokeSpace('spaces:postMessage', { orgId: org.id, spaceId: space.id, threadRoot: rootMessageId, body, ...agentOptionsPayload(agent) })
+            .then((result) => {
+                noteInvocations(org.id, space.id, result.invocations)
+                setMessages((prev) => {
+                    const rest = prev.filter((m) => m.id !== pending.id)
+                    // A jump landed while the send was in flight: the reply lives
+                    // above the detached window, where the pill's count finds it.
+                    if (hasMoreAfterRef.current) return rest
+                    return rest.some((m) => m.id === result.message.id) ? rest : [...rest, result.message].sort((a, b) => a.offset - b.offset)
+                })
+                // Replying follows the thread and reads it up to our reply (the org's rule); mirror it.
+                noteThread(org.id, space.id, rootMessageId, { following: true, readOffset: result.message.offset, lastReplyOffset: result.message.offset })
+                analytics.spacesMessagePosted({ kind: 'topic', mentionsRowboat: containsRowboatAddress(body) })
+                maybeInvokeRowboat(org, space, { rootMessageId, label: threadLabel }, result.message.id, body, agent)
+            })
+            .catch(() => {
+                setMessages((prev) => {
+                    // A jump swept the row away meanwhile: say so rather than lose the words.
+                    if (!prev.some((m) => m.id === pending.id)) {
+                        const flat = body.replace(/\s+/g, ' ').trim()
+                        toast(`Could not send: “${flat.length > 60 ? `${flat.slice(0, 59)}…` : flat}”`, 'error')
+                        return prev
+                    }
+                    return prev.map((m) => (m.id === pending.id ? { ...m, pending: false, failed: true } : m))
+                })
+            })
+    }
+
+    const retryFailed = (message: spaces.Message) => {
+        setMessages((prev) => prev.filter((m) => m.id !== message.id))
+        void post(message.body)
+    }
+    const discardFailed = (message: spaces.Message) => setMessages((prev) => prev.filter((m) => m.id !== message.id))
+
+    // Fold = a visible ask to your own agent, posted in the thread, then invoked.
+    const fold = async (file: { assetId: string; path: string }) => {
+        setFolding(true)
+        onFolding?.(true)
+        try {
+            const body = `[@rowboat](#rowboat) fold this thread’s decision into \`${file.path}\` (assetId ${file.assetId}) — keep the file’s structure and put it under the right section. End your change reason with “· thread:${rootMessageId}”.`
+            const result = await invokeSpace('spaces:postMessage', { orgId: org.id, spaceId: space.id, threadRoot: rootMessageId, body })
+            echo(result.message)
+            noteThread(org.id, space.id, rootMessageId, { following: true, readOffset: result.message.offset, lastReplyOffset: result.message.offset })
+            analytics.spacesFoldRequested()
+            maybeInvokeRowboat(org, space, { rootMessageId, label: threadLabel }, result.message.id, body)
+        } catch (err) {
+            toast(err instanceof Error ? err.message : 'Could not ask Rowboat', 'error')
+        } finally {
+            setFolding(false)
+            onFolding?.(false)
+        }
+    }
+
+    // Toggle: add when the viewer isn't in the group yet, remove when they are.
+    // Optimistic like the stream's — the chip moves on click, the org reconciles.
+    const toggleReaction = async (message: spaces.Message, emoji: string) => {
+        const mine = (message.reactions ?? []).find((g) => g.emoji === emoji)?.memberIds.includes(org.memberId)
+        const action = mine ? 'remove' : 'add'
+        const fold_ = (m: spaces.Message) => ({ ...m, reactions: applyReaction(m.reactions, { emoji, memberId: org.memberId, action: action === 'add' ? 'added' : 'removed' }) })
+        if (message.id === root?.id) setRoot(fold_(root))
+        else setMessages((prev) => prev.map((m) => (m.id === message.id ? fold_(m) : m)))
+        try {
+            const { message: updated } = await invokeSpace('spaces:reactToMessage', {
+                orgId: org.id, spaceId: space.id, messageId: message.id, emoji, action,
+            })
+            if (updated.id === root?.id) setRoot(updated)
+            else setMessages((prev) => prev.map((m) => (m.id === updated.id ? updated : m)))
+            analytics.spacesReactionToggled({ action })
+        } catch (err) {
+            if (message.id === root?.id) setRoot(message)
+            else setMessages((prev) => prev.map((m) => (m.id === message.id ? message : m)))
+            toast(err instanceof Error ? err.message : 'Could not react', 'error')
+        }
+    }
+
+    // Quote-reply, mirroring the stream's: the quoted copy seeds the reply
+    // composer — plain markdown on the wire; image embeds drop, names not ids.
+    const quoteReply = (message: spaces.Message) => {
+        const name = memberNames.get(message.author.memberId) ?? message.author.memberId
+        const text = resolveMentions(message.body, memberNames, spaceNames).replace(/!\[[^\]]*\]\([^)]*\)/g, '').trim()
+        if (!text) return
+        const quote = text.split('\n').map((l) => `> ${l}`).join('\n')
+        setSeed({ text: `${quote}\n> — ${name}\n\n`, nonce: Date.now() })
+    }
+
+    // Saved-for-later: personal, local; the row menu needs the membership.
+    const savedList = useSaved(org.id, space.id)
+    const savedIds = useMemo(() => new Set(savedList.map((s) => s.messageId)), [savedList])
+    const toggleSave = (message: spaces.Message) => {
+        const nowSaved = toggleSaved(org.id, space.id, message)
+        toast(nowSaved ? 'Saved for later' : 'Removed from saved', 'success')
+    }
+
+    /** The message being forwarded — non-null renders the destination dialog. */
+    const [forwarding, setForwarding] = useState<spaces.Message | null>(null)
+
+    /** Opens the poll dialog (state lives in PollDialogHost — see its doc). */
+    const openPollRef = useRef<(() => void) | null>(null)
+    const createPoll = async (input: spaces.SpacesNewPollInput) => {
+        try {
+            if (hasMoreAfterRef.current) await snapToLatest()
+            const { message: posted } = await postPoll({ orgId: org.id, spaceId: space.id, rootMessageId, input })
+            echo(posted)
+            noteThread(org.id, space.id, rootMessageId, { following: true, readOffset: posted.offset, lastReplyOffset: posted.offset })
+            analytics.spacesMessagePosted({ kind: 'topic', mentionsRowboat: false })
+        } catch (err) {
+            toast(err instanceof Error ? err.message : 'Could not post the poll', 'error')
+            throw err
+        }
+    }
+
+    /** Replace one message in place (the folded result of a poll call). */
+    const reconcile = (updated: spaces.Message) =>
+        setMessages((prev) => prev.map((m) => (m.id === updated.id ? updated : m)))
+
+    // Poll votes, mirroring general's: optimistic fold, confirm, revert on failure.
+    const votePoll = async (message: spaces.Message, answerIds: number[]) => {
+        if (!message.poll || answerIds.length === 0) return
+        let optimistic = message.poll
+        for (const answerId of answerIds) {
+            optimistic = applyPollVote(optimistic, { answerId, memberId: org.memberId, action: 'added' })
+        }
+        reconcile({ ...message, poll: optimistic })
+        try {
+            let updated: spaces.Message | undefined
+            for (const answerId of answerIds) {
+                const res = await invokeSpace('spaces:votePoll', {
+                    orgId: org.id, spaceId: space.id, messageId: message.id, answerId, action: 'add',
+                })
+                updated = res.message
+            }
+            if (updated) reconcile(updated)
+        } catch (err) {
+            reconcile(message)
+            toast(err instanceof Error ? err.message : 'Could not vote', 'error')
+        }
+    }
+
+    const removePollVote = async (message: spaces.Message) => {
+        if (!message.poll) return
+        const mine = myPollVotes(message.poll, org.memberId)
+        if (mine.length === 0) return
+        let optimistic = message.poll
+        for (const answerId of mine) {
+            optimistic = applyPollVote(optimistic, { answerId, memberId: org.memberId, action: 'removed' })
+        }
+        reconcile({ ...message, poll: optimistic })
+        try {
+            let updated: spaces.Message | undefined
+            for (const answerId of mine) {
+                const res = await invokeSpace('spaces:votePoll', {
+                    orgId: org.id, spaceId: space.id, messageId: message.id, answerId, action: 'remove',
+                })
+                updated = res.message
+            }
+            if (updated) reconcile(updated)
+        } catch (err) {
+            reconcile(message)
+            toast(err instanceof Error ? err.message : 'Could not remove the vote', 'error')
+        }
+    }
+
+    const endPoll = async (message: spaces.Message) => {
+        if (!window.confirm('End this poll now? Voting stops immediately.')) return
+        try {
+            const { message: updated } = await invokeSpace('spaces:endPoll', {
+                orgId: org.id, spaceId: space.id, messageId: message.id,
+            })
+            reconcile(updated)
+        } catch (err) {
+            toast(err instanceof Error ? err.message : 'Could not end the poll', 'error')
+        }
+    }
+
+    // Optimistic rewrite, mirroring the stream's.
+    const editMessage = async (message: spaces.Message, body: string) => {
+        setMessages((prev) => prev.map((m) => (m.id === message.id ? { ...m, body, editedAt: new Date().toISOString() } : m)))
+        try {
+            const { message: updated } = await invokeSpace('spaces:editMessage', {
+                orgId: org.id, spaceId: space.id, messageId: message.id, body,
+            })
+            setMessages((prev) => prev.map((m) => (m.id === updated.id ? updated : m)))
+        } catch (err) {
+            setMessages((prev) => prev.map((m) => (m.id === message.id ? message : m)))
+            toast(err instanceof Error ? err.message : 'Could not edit', 'error')
+        }
+    }
+
+    const deleteMessage = async (message: spaces.Message) => {
+        if (!window.confirm('Delete this message? This cannot be undone.')) return
+        try {
+            const { message: deleted } = await invokeSpace('spaces:deleteMessage', {
+                orgId: org.id, spaceId: space.id, messageId: message.id,
+            })
+            setMessages((prev) => prev.map((m) => (m.id === deleted.id ? deleted : m)))
+            analytics.spacesMessageDeleted()
+        } catch (err) {
+            toast(err instanceof Error ? err.message : 'Could not delete', 'error')
+        }
+    }
+
+    // Topic lifecycle — every action is a one-row op on the annotation; the
+    // messages are untouchable by construction.
+    const manage = async (action: spaces.SpacesManageTopicAction) => {
+        if (!topic) return
+        try {
+            const res = await invokeSpace('spaces:manageTopic', { orgId: org.id, spaceId: space.id, topicId: topic.id, action })
+            if (action.action === 'remove') {
+                setTopic(null)
+                removeTopicByRoot(org.id, space.id, rootMessageId)
+            } else {
+                setTopic(res.topic)
+                ingestTopic(org.id, space.id, res.topic)
+            }
+        } catch (err) {
+            toast(err instanceof Error ? err.message : 'Could not update the discussion', 'error')
+        }
+    }
+
+    /** The deliberate ceremony: a stated goal annotates this thread. */
+    const createTopic = async (title: string) => {
+        const trimmed = title.trim()
+        if (!trimmed) return
+        try {
+            const res = await invokeSpace('spaces:createTopic', { orgId: org.id, spaceId: space.id, rootMessageId, title: trimmed })
+            setTopic(res.topic)
+            ingestTopic(org.id, space.id, res.topic)
+            analytics.spacesTopicStarted()
+        } catch (err) {
+            toast(err instanceof Error ? err.message : 'Could not create the discussion', 'error')
+        }
+    }
+
+    // The one file this discussion is about: picked from the space's live
+    // files; the org keeps the link by asset id, so it survives renames.
+    const [attaching, setAttaching] = useState(false)
+
+    // Inline title editing (window.prompt is a no-op in Electron). null = not
+    // editing; the same field serves rename AND first-time goal setting.
+    const [editingTitle, setEditingTitle] = useState<string | null>(null)
+    const commitTitle = async () => {
+        const title = editingTitle?.trim()
+        setEditingTitle(null)
+        if (!title || title === topic?.title) return
+        if (topic) await manage({ action: 'retitle', title })
+        else await createTopic(title)
+    }
+
+    const openTopicSession = async () => {
+        // A live record names the session outright; the registry lookup
+        // covers a thread whose agent is idle.
+        const live = ownActivity.get(rootMessageId)
+        if (live && onOpenSession) {
+            onOpenSession(live.sessionId)
+            return
+        }
+        try {
+            const { sessionId } = await invokeSpace('spaces:topicSession', { orgId: org.id, spaceId: space.id, threadRootId: rootMessageId })
+            if (sessionId && onOpenSession) onOpenSession(sessionId)
+            else if (!sessionId) toast('No agent session for this thread yet', 'info')
+        } catch {
+            toast('Could not open the agent session', 'error')
+        }
+    }
+
+    // "Open agent chat" on one of your Rowboat's replies: the run that wrote
+    // it, not merely the thread's session (see lib/spaces-response-chat.ts).
+    const openResponse = (message: spaces.Message) => {
+        if (onOpenSession) void openResponseChat({ orgId: org.id, spaceId: space.id, message, onOpenSession })
+    }
+
+    // Whether an agent session exists for this thread — powers the header's
+    // persistent "Chat" link (the working chip only exists while a turn runs).
+    const [hasSession, setHasSession] = useState(false)
+    useEffect(() => {
+        let cancelled = false
+        void invokeSpace('spaces:topicSession', { orgId: org.id, spaceId: space.id, threadRootId: rootMessageId })
+            .then((res) => {
+                if (!cancelled) setHasSession(!!res.sessionId)
+            })
+            .catch(() => {})
+        return () => {
+            cancelled = true
+        }
+        // workingAgents.length: the session is born on first invoke — the
+        // moment a chip appears is the moment the link becomes real.
+    }, [org.id, space.id, rootMessageId, refreshTick, workingAgents.length])
+
+    // The stop square beside your working chip: cancel the run from here.
+    // The chip clears when the cancelled turn releases its presence lease.
+    const [stopping, setStopping] = useState(false)
+    const stopRowboat = async () => {
+        setStopping(true)
+        try {
+            const { stopped } = await invokeSpace('spaces:stopRowboat', { orgId: org.id, spaceId: space.id, threadRootId: rootMessageId })
+            if (!stopped) toast('Nothing to stop — the run already finished', 'info')
+        } catch (err) {
+            toast(err instanceof Error ? err.message : 'Could not stop the run', 'error')
+        } finally {
+            setStopping(false)
+        }
+    }
+
+    // Replies with compaction and the New line. Deleted replies disappear
+    // (nothing anchors to a reply, so no tombstone row is needed here).
+    const visibleReplies = replies.filter((m) => !m.deletedAt)
+    const rows: ReactNode[] = []
+    let prev: spaces.Message | undefined
+    let newShown = false
+    for (const message of visibleReplies) {
+        if (!newShown && newSince && message.offset > newSince && message.author.memberId !== org.memberId) {
+            rows.push(<NewDivider key="new" fading={newFading} />)
+            newShown = true
+            prev = undefined
+        }
+        rows.push(
+            <MessageRow
+                orgId={org.id}
+                visible={visible}
+                key={message.id}
+                message={message}
+                memberNames={memberNames}
+                spaceNames={spaceNames}
+                continuation={isContinuation(prev, message)}
+                selfMemberId={org.memberId}
+                onCopyLink={(m) => void copySpacesLink(messageUrl(org.address, space.id, m.id))}
+                onReact={(m, emoji) => void toggleReaction(m, emoji)}
+                onDelete={(m) => void deleteMessage(m)}
+                onEdit={(m, body) => void editMessage(m, body)}
+                onQuoteReply={quoteReply}
+                onForward={setForwarding}
+                onToggleSave={toggleSave}
+                saved={savedIds.has(message.id)}
+                onOpenResponseChat={onOpenSession ? openResponse : undefined}
+                onRetryFailed={retryFailed}
+                onDiscardFailed={discardFailed}
+                onVotePoll={(m, answerIds) => void votePoll(m, answerIds)}
+                onRemovePollVote={(m) => void removePollVote(m)}
+                onEndPoll={(m) => void endPoll(m)}
+                dense
+            />,
+        )
+        prev = message
+    }
+
+    const typingNames = (presence.typing.get(rootMessageId) ?? []).map((id) => memberNames.get(id) ?? id)
+    const parentName = root ? memberNames.get(root.author.memberId) ?? root.author.memberId : ''
+    // Reply-to-activity-row provenance: the change-set this root answers.
+    const anchorChange = root?.anchorChangeSetId ? changeSets.find((c) => c.id === root.anchorChangeSetId) ?? null : null
+    const replyCountLabel = Math.max(visibleReplies.length, root?.replyCount ?? 0)
+
+    return (
+        <div className="flex h-full min-h-0 flex-col bg-background">
+            <div className="spaces-pane-header flex shrink-0 items-center gap-1.5 border-b border-border">
+                {showBack && (
+                    <>
+                        <Button variant="ghost" size="xs" className="gap-1 bg-primary/10 px-2 font-semibold text-primary hover:bg-primary/15 hover:text-primary" onClick={onBack} title="Back to Messages (Esc)" aria-label="Back to messages">
+                            <ArrowLeft className="size-3.5" /> Messages
+                        </Button>
+                        <span className="h-4 w-px shrink-0 bg-border" />
+                    </>
+                )}
+                <span className="pl-1 text-[15px] font-semibold">{topic ? 'Discussion' : 'Thread'}</span>
+                <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                    {editingTitle !== null ? (
+                        <input
+                            autoFocus
+                            value={editingTitle}
+                            onChange={(e) => setEditingTitle(e.target.value)}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter') void commitTitle()
+                                if (e.key === 'Escape') setEditingTitle(null)
+                            }}
+                            onBlur={() => setEditingTitle(null)}
+                            placeholder={topic ? 'Discussion goal' : 'What needs to get resolved?'}
+                            className="w-full min-w-0 rounded-md border border-foreground/30 bg-background px-1.5 py-0.5 text-xs text-foreground outline-none"
+                        />
+                    ) : (
+                        <>
+                            {topic ? <MemberText text={topic.title} /> : 'from a message'}
+                            {groups.length > 0 ? ` · ${groups.length} ${groups.length === 1 ? 'file' : 'files'} changed` : ''}
+                        </>
+                    )}
+                </span>
+                {topic?.documentAssetId && (() => {
+                    // The org projects the link as an id even while the file is
+                    // in Trash; the live listing says whether it can open.
+                    const linked = entries.find((e) => e.id === topic.documentAssetId && e.state !== 'deleted')
+                    return (
+                        <button
+                            type="button"
+                            disabled={!linked}
+                            onClick={() => onOpenFile(topic.documentAssetId!)}
+                            title={linked ? `Open ${linked.path} beside this discussion` : 'The linked file is in Trash'}
+                            className="inline-flex h-6 max-w-[12rem] shrink-0 items-center gap-1 rounded-md border border-border bg-background px-1.5 text-[11px] text-muted-foreground hover:bg-accent/50 hover:text-foreground disabled:opacity-60 disabled:hover:bg-background"
+                        >
+                            <FileText className="size-3 shrink-0" />
+                            <span className="truncate font-mono">{linked ? linked.path.split('/').pop() : 'linked file'}</span>
+                        </button>
+                    )
+                })()}
+                <span className="flex-1" />
+                {hasSession && onOpenSession && (
+                    // Persistent, unlike the working chip: the conversation the
+                    // agent had about this thread stays one click away after
+                    // the run ends.
+                    <Button variant="ghost" size="xs" className="gap-1 px-2 text-muted-foreground" onClick={() => void openTopicSession()} title="Open the agent chat for this thread">
+                        <Bot className="size-3.5" /> Chat
+                    </Button>
+                )}
+                {root && (
+                    <Button
+                        variant="ghost"
+                        size="xs"
+                        className={cn('gap-1 px-2', following ? 'text-foreground' : 'text-muted-foreground')}
+                        disabled={!member} onClick={() => void toggleFollow()}
+                        title={following ? 'Following — new replies here badge you. Click to stop.' : 'Follow — new replies here will badge you.'}
+                    >
+                        {following ? <BellOff className="size-3.5" /> : <Bell className="size-3.5" />} {following ? 'Following' : 'Follow'}
+                    </Button>
+                )}
+                {topic?.archived && <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10.5px] text-muted-foreground">archived</span>}
+                <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" aria-label="Thread options" className="size-8 shrink-0 text-muted-foreground"><MoreHorizontal className="size-4" /></Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                        <DropdownMenuItem onSelect={() => void copySpacesLink(messageUrl(org.address, space.id, rootMessageId))}>
+                            <LinkIcon className="size-3.5 mr-2" /> Copy link
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        {topic ? (
+                            <>
+                                <DropdownMenuItem disabled={!member} onClick={() => setEditingTitle(topic.title)}>
+                                    <Pencil className="size-3.5 mr-2" /> Rename
+                                </DropdownMenuItem>
+                                <DropdownMenuItem disabled={!member} onClick={() => setAttaching(true)}>
+                                    <Paperclip className="size-3.5 mr-2" /> {topic.documentAssetId ? 'Change linked file…' : 'Link a file…'}
+                                </DropdownMenuItem>
+                                {topic.documentAssetId && (
+                                    <DropdownMenuItem disabled={!member} onClick={() => void manage({ action: 'detach_document' })}>
+                                        <Unlink className="size-3.5 mr-2" /> Unlink file
+                                    </DropdownMenuItem>
+                                )}
+                                {topic.archived ? (
+                                    <DropdownMenuItem disabled={!member} onClick={() => void manage({ action: 'unarchive' })}><ArchiveRestore className="size-3.5 mr-2" /> Unarchive</DropdownMenuItem>
+                                ) : (
+                                    <DropdownMenuItem disabled={!member} onClick={() => void manage({ action: 'archive' })}><Archive className="size-3.5 mr-2" /> Archive</DropdownMenuItem>
+                                )}
+                                <DropdownMenuItem disabled={!member} onClick={() => void manage({ action: 'remove' })}>
+                                    <MessageSquareOff className="size-3.5 mr-2" /> Convert back to thread
+                                </DropdownMenuItem>
+                            </>
+                        ) : (
+                            <DropdownMenuItem disabled={!member} onClick={() => setEditingTitle('')}>
+                                <Tag className="size-3.5 mr-2" /> Make this a discussion…
+                            </DropdownMenuItem>
+                        )}
+                        {!showBack && (
+                            <>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem onClick={onBack}><X className="size-3.5 mr-2" /> Close</DropdownMenuItem>
+                            </>
+                        )}
+                    </DropdownMenuContent>
+                </DropdownMenu>
+                {onToggleExpanded && (
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-8 shrink-0 text-muted-foreground"
+                        onClick={onToggleExpanded}
+                        aria-label={expanded ? 'Show alongside Messages' : 'Expand thread'}
+                        title={expanded ? 'Show alongside Messages' : 'Expand thread'}
+                    >
+                        {expanded ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
+                    </Button>
+                )}
+                {!showBack && (
+                    <Button variant="ghost" size="icon" className="size-7 text-muted-foreground" onClick={onBack} aria-label="Close thread">
+                        <X className="size-4" />
+                    </Button>
+                )}
+                {onCloseColumn && (
+                    <Button variant="ghost" size="icon" className="size-7 text-muted-foreground" onClick={onCloseColumn} title="Close the chat — the file takes the width" aria-label="Close chat">
+                        <X className="size-4" />
+                    </Button>
+                )}
+            </div>
+
+            <div className="relative flex-1 min-h-0 flex flex-col">
+            <div
+                ref={scrollRef}
+                className="flex-1 min-h-0 spaces-message-list overflow-y-auto py-2"
+                onWheel={() => {
+                    userScrollAtRef.current = performance.now()
+                }}
+                onTouchMove={() => {
+                    userScrollAtRef.current = performance.now()
+                }}
+                onPointerDown={() => {
+                    pointerDownRef.current = true
+                }}
+                onScroll={(e) => {
+                    const el = e.currentTarget
+                    const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+                    const userScroll = pointerDownRef.current || performance.now() - userScrollAtRef.current < 250
+                    if (hasMoreAfter) {
+                        // The window's bottom is not the tail: every position
+                        // is the reader's own, and the bottom edge pages forward.
+                        parkedTopRef.current = el.scrollTop
+                        if (fromBottom < 80) void loadNewerReplies()
+                    } else if (fromBottom < 8) {
+                        // At the bottom = following the tail.
+                        parkedTopRef.current = null
+                    } else if (userScroll || parkedTopRef.current !== null) {
+                        parkedTopRef.current = el.scrollTop
+                    } else if (!pendingJumpRef.current) {
+                        // A scroll the reader didn't make, while following —
+                        // anchoring's compensation for a late layout. Re-pin.
+                        el.scrollTop = el.scrollHeight
+                    }
+                }}
+            >
+                <div ref={contentRef}>
+                {!loaded && !root && <div className="px-2 py-2 text-sm text-muted-foreground">Loading…</div>}
+
+                {/* Reply-to-activity-row provenance: the change this root answers. */}
+                {anchorChange && (
+                    <button
+                        type="button"
+                        onClick={() => onOpenFile(anchorChange.assetId)}
+                        className="mb-2 flex w-full items-start gap-2.5 rounded-lg border border-border bg-muted/30 px-3 py-2 text-left hover:border-foreground/20"
+                    >
+                        <Anchor className="mt-1 size-3.5 shrink-0 text-muted-foreground" />
+                        <div className="min-w-0 flex-1 text-xs">
+                            <div className="text-[12.5px]">
+                                <span className="font-semibold">{attributionLabel(anchorChange.attribution, memberNames)}</span>
+                                <span className="text-muted-foreground"> · 1 change · </span><code className="text-[11.5px]">{anchorChange.assetPath}</code>
+                                <span className="text-muted-foreground"> · {formatFeedTime(anchorChange.committedAt)} · v{anchorChange.resultVersion}</span>
+                            </div>
+                            {anchorChange.reason && <div className="mt-0.5 text-muted-foreground">“{anchorChange.reason}”</div>}
+                            <div className="mt-1 text-[11px] text-muted-foreground">anchored to {shortId(anchorChange.id)} · open file</div>
+                        </div>
+                    </button>
+                )}
+                {root && (
+                    <div className="spaces-thread-root flex items-start gap-3">
+                        <MemberProfilePopover id={root.author.memberId}>
+                            <button type="button" aria-label={`${parentName}’s profile`} className="mt-0.5 shrink-0 cursor-pointer rounded-full">
+                                <MemberAvatar id={root.author.memberId} name={parentName} size="xl" />
+                            </button>
+                        </MemberProfilePopover>
+                        <div className="min-w-0 flex-1">
+                            <div className="flex items-baseline gap-1.5 text-xs">
+                                <MemberProfilePopover id={root.author.memberId}>
+                                    <button type="button" className="cursor-pointer text-[15px] font-bold hover:underline">{parentName}</button>
+                                </MemberProfilePopover>
+                                <AgentMark id={root.author.memberId} />
+                                {root.author.actingMode !== 'direct' && (
+                                    <span className="text-muted-foreground">via {root.author.agentName ?? 'agent'}</span>
+                                )}
+                                <span className="text-muted-foreground">{formatFeedTime(root.postedAt)} · in Messages</span>
+                            </div>
+                            <div className={MESSAGE_PROSE}>
+                                {root.deletedAt ? (
+                                    <span className="italic text-muted-foreground">This message was deleted</span>
+                                ) : (
+                                    <SpaceMarkdown body={root.body} />
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                <ArtifactsSummary
+                    groups={groups}
+                    working={workingAgents.length > 0}
+                    railOpen={artifactsRailOpen}
+                    onToggleRail={onToggleArtifactsRail}
+                    entries={entries}
+                    onFold={(file) => void fold(file)}
+                    folding={folding}
+                />
+
+                <div className="mx-5 flex items-center gap-2 pb-2 pt-4">
+                    <span className="text-[11px] font-medium text-muted-foreground">
+                        {replyCountLabel} {replyCountLabel === 1 ? 'reply' : 'replies'}
+                    </span>
+                    <span className="h-px flex-1 bg-border" />
+                    {hasMore && (
+                        <button
+                            type="button"
+                            className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                            disabled={loadingOlder}
+                            onClick={() => void loadOlderReplies()}
+                        >
+                            {loadingOlder ? <Loader2 className="size-3 animate-spin" /> : null} show earlier replies
+                        </button>
+                    )}
+                </div>
+                {rows}
+
+                {/* Your agent is stopped, not working — it wants an answer. */}
+                {permissionWait.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-2 pl-10 pt-1">
+                        <button
+                            type="button"
+                            onClick={() => void openTopicSession()}
+                            title="Open the agent session to review the request"
+                            className="flex items-center gap-1.5 rounded-full border border-amber-500/50 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-700 hover:bg-amber-500/20 dark:text-amber-400"
+                        >
+                            <ShieldAlert className="size-3" />
+                            Your Rowboat needs permission — {permissionWait[0]}
+                            {permissionWait.length > 1 ? ` +${permissionWait.length - 1} more` : ''} · Review
+                        </button>
+                    </div>
+                )}
+                {/* Typing-indicator position: below the last message, where eyes rest. */}
+                {spinningAgents.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-2 pl-10 pt-1">
+                        {spinningAgents.map((memberId) => {
+                            const own = memberId === org.memberId
+                            const label = own ? 'Your Rowboat is working…' : <><MemberName id={memberId} />’s Rowboat is working…</>
+                            return own ? (
+                                <span key={memberId} className="flex items-center gap-1">
+                                    <button className="flex items-center gap-1.5 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground" title="Open the agent chat for this thread" onClick={() => void openTopicSession()}>
+                                        <Loader2 className="size-3 animate-spin" />{label}
+                                        <span className="font-medium text-[var(--stream-link)]">Open chat</span>
+                                    </button>
+                                    <button
+                                        className="flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-60"
+                                        title="Stop your Rowboat"
+                                        disabled={!member || stopping}
+                                        onClick={() => void stopRowboat()}
+                                    >
+                                        {stopping ? <Loader2 className="size-2.5 animate-spin" /> : <Square className="size-2.5 fill-current" />} Stop
+                                    </button>
+                                </span>
+                            ) : (
+                                <span key={memberId} className="flex items-center gap-1.5 rounded-full border border-border/60 px-2 py-0.5 text-xs text-muted-foreground"><Bot className="size-3" />{label}</span>
+                            )
+                        })}
+                    </div>
+                )}
+                <TypingIndicator names={typingNames} />
+                </div>
+            </div>
+            {hasNewLine && newCount > 0 && !newJumped && (
+                <button
+                    type="button"
+                    onClick={jumpToNew}
+                    className="absolute top-2 left-1/2 z-20 inline-flex -translate-x-1/2 animate-in fade-in slide-in-from-top-2 items-center gap-1.5 rounded-full border border-orange-500/40 bg-background/95 px-3 py-1 text-xs font-medium text-orange-600 shadow-md hover:bg-accent"
+                >
+                    <ArrowUp className="size-3" />
+                    {newCount} new — jump to unread
+                </button>
+            )}
+            {hasMoreAfter && (
+                // Detached: the newest replies are not in the window at all —
+                // the pill fetches them, with what arrived since when known.
+                <button
+                    type="button"
+                    onClick={() => void snapToLatest()}
+                    disabled={snapping}
+                    className="absolute bottom-3 left-1/2 z-20 inline-flex -translate-x-1/2 animate-in fade-in slide-in-from-bottom-2 items-center gap-1.5 rounded-full border-none bg-[var(--rowboat-raised)] px-3 py-1 text-xs font-medium shadow-[var(--rowboat-shadow-soft)] hover:bg-accent disabled:opacity-60"
+                >
+                    {newerCount ? `Jump to latest · ${newerCount} new` : 'Jump to latest'}
+                    <ArrowDown className="size-3" />
+                </button>
+            )}
+            </div>
+
+            {member && attaching && topic && (
+                <AttachDocumentDialog
+                    entries={entries}
+                    current={topic.documentAssetId}
+                    onClose={() => setAttaching(false)}
+                    onPick={(assetId) => {
+                        setAttaching(false)
+                        if (assetId !== topic.documentAssetId) void manage({ action: 'attach_document', assetId })
+                    }}
+                />
+            )}
+            {member && forwarding && (
+                <ForwardDialog org={org} space={space} message={forwarding} memberNames={memberNames} onClose={() => setForwarding(null)} />
+            )}
+            {member && <PollDialogHost openRef={openPollRef} onSubmit={createPoll} />}
+            <FindBanner
+                orgId={org.id}
+                spaceId={space.id}
+                pane={{ pane: 'thread', rootMessageId }}
+                nav={{ openThread: (id) => onOpenThread?.(id), openStream: onBack }}
+            />
+            {staged && (
+                <AutoBanner
+                    message="Auto put this reply here."
+                    busy={correcting}
+                    actions={[
+                        { label: 'Post to the stream instead', onClick: () => void postToStreamInstead() },
+                        { label: 'Try another thread', onClick: () => void tryAnotherThread() },
+                    ]}
+                    onDismiss={keepAsDraft}
+                    dismissTitle="Looks right: keep it here as a draft"
+                />
+            )}
+            {member ? <Composer
+                placeholder="Reply…"
+                busy={false}
+                onSend={post}
+                onSchedule={async (body, at) => {
+                    clearStagedThreadDraft(draftKey)
+                    await invokeSpace('spaces:schedule', {
+                        orgId: org.id, spaceId: space.id, threadRootId: rootMessageId, body, at: at.toISOString(), kind: 'message',
+                    })
+                    toast(`Scheduled — sends ${formatScheduleTime(at)}`, 'success')
+                }}
+                onCreatePoll={() => openPollRef.current?.()}
+                onType={onType}
+                seed={seed}
+                autoFocus
+                draftKey={draftKey}
+                commands={[
+                    {
+                        name: 'fold',
+                        args: '<file>',
+                        hint: 'Ask your Rowboat to fold this thread into a file',
+                        run: (args) => {
+                            const name = args.trim()
+                            const file = entries.find((e) => e.state !== 'deleted' && (e.path === name || e.path.endsWith(`/${name}`)))
+                            if (!file) {
+                                toast(`No file named ${name} in this space`, 'error')
+                                return
+                            }
+                            void fold({ assetId: file.id, path: file.path })
+                        },
+                    },
+                    topic
+                        ? {
+                              name: 'rename',
+                              args: '<goal>',
+                              hint: 'Rename this discussion',
+                              run: (args) => void manage({ action: 'retitle', title: args }),
+                          }
+                        : {
+                              name: 'discussion',
+                              args: '<goal>',
+                              hint: 'Make this thread a discussion with a stated goal',
+                              run: (args) => void createTopic(args),
+                          },
+                    {
+                        name: 'poll',
+                        hint: 'Create a poll — pick answers, votes tally live',
+                        run: () => openPollRef.current?.(),
+                    },
+                    ...(topic
+                        ? [
+                              topic.archived
+                                  ? { name: 'unarchive', hint: 'Unarchive this discussion', run: () => void manage({ action: 'unarchive' }) }
+                                  : { name: 'archive', hint: 'Archive this discussion — it leaves the rail until a new reply revives it', run: () => void manage({ action: 'archive' }) },
+                          ]
+                        : []),
+                    {
+                        name: 'remind',
+                        args: '<when> <text>',
+                        hint: 'Set a reminder — 20m, 2h, 9:30, tomorrow',
+                        run: async (args) => {
+                            const parsed = parseRemindArgs(args)
+                            if (typeof parsed === 'string') {
+                                toast(parsed, 'info')
+                                return
+                            }
+                            try {
+                                await invokeSpace('spaces:schedule', {
+                                    orgId: org.id, spaceId: space.id, threadRootId: rootMessageId, body: parsed.text, at: parsed.at.toISOString(), kind: 'reminder',
+                                })
+                                toast(`Reminder set for ${formatScheduleTime(parsed.at)}`, 'success')
+                            } catch (err) {
+                                toast(err instanceof Error ? err.message : 'Could not set the reminder', 'error')
+                            }
+                        },
+                    },
+                    {
+                        name: 'invite',
+                        hint: 'Copy an invite link to this space',
+                        run: async () => {
+                            try {
+                                const result = await invokeSpace('spaces:createInvite', { orgId: org.id, spaceId: space.id })
+                                await navigator.clipboard.writeText(result.link)
+                                analytics.spacesInviteLinkCopied()
+                                toast('Invite link copied to clipboard', 'success')
+                            } catch (err) {
+                                toast(err instanceof Error ? err.message : 'Could not create an invite', 'error')
+                            }
+                        },
+                    },
+                ]}
+            /> : <JoinSpacePrompt />}
+
+        </div>
+    )
+}

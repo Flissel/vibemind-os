@@ -2,6 +2,15 @@ import '@testing-library/jest-dom/vitest';
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+// The 72e9d8c renderer subscribes to IPC feeds while its modules load (spaces-feed via the
+// SettingsDialog import chain), so window.ipc must exist before the imports below are evaluated.
+vi.hoisted(() => {
+  Object.defineProperty(window, 'ipc', { configurable: true, value: {
+    invoke: async () => null,
+    on: () => () => undefined,
+  } });
+});
+
 import { PluginInstallFeedback, PluginInstallReview, PluginSettings, type PluginSettingsItem } from './plugin-settings';
 import { usePlugins } from '@/hooks/usePlugins';
 import { SettingsDialog } from '@/components/settings-dialog';
@@ -17,12 +26,15 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); window
 describe('PluginSettings', () => {
   it('integrates an accessible Plugins tab into Settings', async () => {
     Object.defineProperty(window, 'ipc', { configurable: true, value: {
-      invoke: vi.fn(async () => ({ config: { rowboat: { connected: true } } })),
+      // Per channel: the 72e9d8c dialog also asks for billing, models, spaces state, ... (null for those).
+      invoke: vi.fn(async (channel: string) => channel === 'oauth:getState'
+        ? { config: { rowboat: { connected: true } } } : null),
       on: vi.fn(() => () => undefined),
     } });
     render(<SettingsDialog><button type="button">Open settings</button></SettingsDialog>);
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
     expect(await screen.findByRole('tab', { name: 'Plugins' })).toBeVisible();
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeVisible();
   });
 
   it.each([
@@ -177,9 +189,10 @@ describe('rowboatPluginApiAccess', () => {
     let token = 'token-a';
     let actor = 'user-1';
     Object.defineProperty(window, 'ipc', { configurable: true, value: {
-      invoke: vi.fn(async () => ({ signedIn: true, accessToken: token, config: {
-        appUrl: 'https://rowboat.example/', websocketApiUrl: 'wss://rowboat.example/', supabaseUrl: 'https://supabase.example/',
-      } })),
+      invoke: vi.fn(async (channel: string) => channel === 'account:getRowboat'
+        ? { signedIn: true, accessToken: token }
+        : { appUrl: 'https://rowboat.example/', websocketApiUrl: 'wss://rowboat.example/',
+            supabaseUrl: 'https://supabase.example/', billing: { plans: [] } }),
       on: vi.fn(() => () => undefined),
     } });
     const authorizations: Array<string | null> = [];
@@ -215,5 +228,22 @@ describe('rowboatPluginApiAccess', () => {
     } });
     await expect(rowboatPluginApiAccess.listCatalog(digest)).rejects.toThrow('plugin_session_unavailable');
     await expect(rowboatPluginApiAccess.listCatalog(digest)).rejects.not.toThrow('raw-provider-secret');
+  });
+
+  it('returns signed_out without reading the service config', async () => {
+    const invoke = vi.fn(async (channel: string) => channel === 'account:getRowboat'
+      ? { signedIn: false, accessToken: null } : null);
+    Object.defineProperty(window, 'ipc', { configurable: true, value: { invoke, on: vi.fn(() => () => undefined) } });
+    await expect(rowboatPluginApiAccess.listCatalog(digest)).resolves.toEqual({ kind: 'signed_out' });
+    expect(invoke).not.toHaveBeenCalledWith('rowboat:getConfig', null);
+  });
+
+  it('is unavailable when signed in but the service config is missing', async () => {
+    Object.defineProperty(window, 'ipc', { configurable: true, value: {
+      invoke: vi.fn(async (channel: string) => channel === 'account:getRowboat'
+        ? { signedIn: true, accessToken: 'token-a' } : null),
+      on: vi.fn(() => () => undefined),
+    } });
+    await expect(rowboatPluginApiAccess.listCatalog(digest)).rejects.toThrow('plugin_session_unavailable');
   });
 });

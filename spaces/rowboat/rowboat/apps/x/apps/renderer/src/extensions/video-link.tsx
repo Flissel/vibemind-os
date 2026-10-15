@@ -1,3 +1,6 @@
+// VibeMind addition (Flissel/rowboat vibemind): video links as inline players (vibemind-os f6695d46).
+// Fix (Flissel/rowboat vibemind): replacement positions are mapped through the transaction, so several video links in one note all load.
+// Fix (Flissel/rowboat vibemind): only top-level paragraphs become players, so video links in lists, quotes and tables survive saving.
 /**
  * Video Link Extension for TipTap
  *
@@ -11,26 +14,12 @@
 import { Node, mergeAttributes } from '@tiptap/react'
 import { ReactNodeViewRenderer, NodeViewWrapper } from '@tiptap/react'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
-import { useState, useRef } from 'react'
-import { Play, Pause, Maximize2, Volume2, VolumeX } from 'lucide-react'
 
 const VIDEO_EXTENSIONS = /\.(mp4|webm|mov|avi)(\?.*)?$/i
 
-function VideoPlayerView({ node }: { node: { attrs: { src: string; title: string } } }) {
-  const { src, title } = node.attrs
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const [playing, setPlaying] = useState(false)
-  const [muted, setMuted] = useState(false)
-
-  const togglePlay = () => {
-    if (!videoRef.current) return
-    if (playing) {
-      videoRef.current.pause()
-    } else {
-      videoRef.current.play()
-    }
-    setPlaying(!playing)
-  }
+function VideoPlayerView({ node }: { node: { attrs: Record<string, unknown> } }) {
+  const src = (node.attrs.src as string) || ''
+  const title = (node.attrs.title as string) || ''
 
   return (
     <NodeViewWrapper className="video-link-wrapper" data-type="video-link" contentEditable={false}>
@@ -42,14 +31,10 @@ function VideoPlayerView({ node }: { node: { attrs: { src: string; title: string
         maxWidth: '100%',
       }}>
         <video
-          ref={videoRef}
           src={src}
           style={{ width: '100%', display: 'block', maxHeight: '400px' }}
           controls
           preload="metadata"
-          onPlay={() => setPlaying(true)}
-          onPause={() => setPlaying(false)}
-          onEnded={() => setPlaying(false)}
         />
         {title && (
           <div style={{
@@ -111,7 +96,8 @@ export const VideoLinkExtension = Node.create({
           let tr = newState.tr
           let modified = false
 
-          newState.doc.descendants((node, pos) => {
+          // Top-level paragraphs only: the editor's nested serializers (lists, blockquotes, tables) drop atom nodes.
+          newState.doc.forEach((node, pos) => {
             // Find paragraph nodes that contain a single link to a video file
             if (node.type.name !== 'paragraph') return
             if (node.childCount !== 1) return
@@ -131,7 +117,10 @@ export const VideoLinkExtension = Node.create({
               title: child.text || '',
             })
             if (videoNode) {
-              tr = tr.replaceWith(pos, pos + node.nodeSize, videoNode)
+              // forEach() reports positions in newState.doc; earlier replacements already shifted tr.doc.
+              const from = tr.mapping.map(pos)
+              const to = tr.mapping.map(pos + node.nodeSize)
+              tr = tr.replaceWith(from, to, videoNode)
               modified = true
             }
           })

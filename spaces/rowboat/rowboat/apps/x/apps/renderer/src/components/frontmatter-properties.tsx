@@ -15,12 +15,12 @@ function fieldsFromRaw(raw: string | null): FieldEntry[] {
   return Object.entries(record).map(([key, value]) => ({ key, value }))
 }
 
-function fieldsToRaw(fields: FieldEntry[]): string | null {
+function fieldsToRaw(fields: FieldEntry[], preserveRaw: string | null): string | null {
   const record: Record<string, string | string[]> = {}
   for (const { key, value } of fields) {
     if (key.trim()) record[key.trim()] = value
   }
-  return buildFrontmatter(record)
+  return buildFrontmatter(record, preserveRaw)
 }
 
 export function FrontmatterProperties({ raw, onRawChange, editable = true }: FrontmatterPropertiesProps) {
@@ -45,10 +45,12 @@ export function FrontmatterProperties({ raw, onRawChange, editable = true }: Fro
   }, [editingNewKey])
 
   const commit = useCallback((updated: FieldEntry[]) => {
-    const newRaw = fieldsToRaw(updated)
+    // Use the latest raw seen as the preserve-source so structured keys
+    // (like `live:`) survive a round-trip through this UI.
+    const newRaw = fieldsToRaw(updated, raw ?? lastCommittedRaw.current)
     lastCommittedRaw.current = newRaw
     onRawChange(newRaw)
-  }, [onRawChange])
+  }, [onRawChange, raw])
 
   // For scalar fields: update local state immediately, commit on blur
   const updateLocalValue = useCallback((index: number, newValue: string) => {

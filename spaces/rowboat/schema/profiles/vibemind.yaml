@@ -1,0 +1,31 @@
+# VibeMind vault (~/.rowboat/knowledge). Spec: docs/superpowers/specs/2026-10-13-vault-folder-rules-design.md
+# First matching rule wins. Paths are vault-relative, without ".md". Notes no rule matches fall back to the
+# default rule (first folder = type name, e.g. Agents/**, Workflows/**, Topics/**, People/**).
+company: VibeMind
+exclude:                     # never in the map, no warning
+  - "Diary/**"
+  - "Bewerbung/**"
+  - "Welcome"                # Rowboat's own welcome note
+rules:
+  - {match: "Projects/VibeMind - TODO */_overview", type: Tasks}
+  - {match: "Projects/VibeMind - TODO */**",        type: Tasks}
+  - {match: "Projects/{p}/_overview",               type: Projects}
+  - {match: "Projects/{p}/**",                      type: Requirements, parent: "Projects/{p}/_overview"}
+  - {match: "Projects/*",                           type: Projects}
+  - {match: "Coding-Projects/**",                   type: Projects}
+  - {match: "Bubbles/**",                           type: Ideas}
+  - {match: "Hubs/Agents",                          type: Hubs, parent: "Areas/Agents"}
+  - {match: "Hubs/Bubbles",                         type: Hubs, parent: "Areas/Roadmap"}
+  - {match: "Hubs/People",                          type: Hubs, parent: "Areas/Contacts"}
+  - {match: "Hubs/System",                          type: Hubs, parent: "Areas/Infrastructure"}
+  - {match: "Hubs/*",                               type: Hubs, parent: "Areas/Topics"}
+  - {match: "companys/{c}/Marke",                   type: Brands}
+  - {match: "companys/{c}/Markenhandbuch",          type: Content, parent: "companys/{c}/Marke"}
+  - {match: "companys/{c}/Marke-Verlauf/**",        type: Content, parent: "companys/{c}/Marke"}
+  - {match: "companys/{c}/Agent-Notizen/**",        type: Agent Notes, parent: "companys/{c}/Marke"}
+  - {match: "vibemind-discourse/**",                type: Discourse}
+  - {match: "Videos/**",                            type: Assets}
+  - {match: "System/**",                            type: Systems}
+  - {match: "Notes/Traction Metrics*",              type: KPIs}
+  - {match: "Notes/**",                             type: Topics}
+  - {match: "Investor Programs/**",                 type: Funding}

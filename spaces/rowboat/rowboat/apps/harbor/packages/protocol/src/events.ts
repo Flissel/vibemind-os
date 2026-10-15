@@ -1,0 +1,340 @@
+import { z } from 'zod';
+import { ChangeSet } from './changeset.js';
+import { Attribution, Membership, Message, MessageDeletion, MessageEdit, PollEnd, PollVote, Reaction, Space, SpaceKind, Topic, TopicRemoval } from './core.js';
+import { AssetId, MemberId, MessageId, SpaceId, StreamOffset } from './ids.js';
+import { Approval } from './approval.js';
+import { Invocation, InvocationId } from './invocation.js';
+
+// Decision 2 (CONTRACT.md): one WebSocket per org, per-space subscriptions,
+// offset-based catch-up. Subscribing with `afterOffset` replays durable events
+// after that offset, then goes live — the same resume pattern as the app's
+// turn-event spine. Presence is ephemeral and carries no offset.
+
+/** Someone joined, left, or was removed from the space. */
+export const MembershipEvent = z.object({
+  type: z.literal('membership'),
+  membership: Membership,
+  action: z.enum(['joined', 'left', 'removed']),
+  /**
+   * Who acted on someone else's membership (2026-09-29): on `joined`, the
+   * member who added them (addMembers). Absent when the member acted
+   * themselves — an accepted invite, a self-join, leaving. A field rather
+   * than an `added` action, so older clients still parse the frame.
+   */
+  by: Attribution.optional(),
+});
+export type MembershipEvent = z.infer<typeof MembershipEvent>;
+
+/**
+ * A log event the stream shows as a line between its messages (listStream
+ * `events`, 2026-09-29): membership only in v1, the Matrix model — the fact
+ * stays in the log and the client draws it, never a system message. Carries
+ * its offset so a client merges it with the messages in log order.
+ */
+export const StreamEvent = z.object({
+  offset: StreamOffset,
+  at: z.iso.datetime(),
+  event: z.discriminatedUnion('type', [MembershipEvent]),
+});
+export type StreamEvent = z.infer<typeof StreamEvent>;
+
+/** Durable, offsetted facts. The feed's activity strand renders these (spec §7). */
+export const SpaceEvent = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('change'), changeSet: ChangeSet }),
+  z.object({ type: z.literal('message'), message: Message }),
+  /**
+   * A topic's lifecycle: created (promote or from-scratch), retitled,
+   * archived, unarchived, document attached/detached — the full row plus
+   * who did it, so clients can render attributed lifecycle lines in the
+   * thread. Idempotent re-archives emit nothing; a reply reviving an
+   * archived topic emits 'unarchived' attributed to the replier.
+   */
+  z.object({
+    type: z.literal('topic'),
+    topic: Topic,
+    action: z.enum(['created', 'retitled', 'archived', 'unarchived', 'document_attached', 'document_detached']),
+    by: Attribution,
+  }),
+  /** The row deleted ("convert back to thread") — the thread itself is untouched. */
+  z.object({ type: z.literal('topic_removed'), removal: TopicRemoval }),
+  MembershipEvent,
+  /** A reaction toggled on or off a message. Idempotent re-adds/re-removes emit nothing. */
+  z.object({
+    type: z.literal('reaction'),
+    reaction: Reaction,
+    action: z.enum(['added', 'removed']),
+  }),
+  /**
+   * A message tombstoned by its author. The stored `message` event is
+   * redacted in place (body '', deletedAt set) — the one mutation the log
+   * allows, because deletion's whole point is that the content is gone,
+   * replay included. This event is what live/folding clients apply.
+   * Re-deleting is an idempotent no-op and emits nothing.
+   */
+  z.object({
+    type: z.literal('message_deleted'),
+    deletion: MessageDeletion,
+  }),
+  /**
+   * A message body rewritten by its author. The stored `message` event is
+   * rewritten in place (body + editedAt) — same posture as deletion: the old
+   * text must be unrecoverable, replay included. Live/folding clients apply
+   * this event; an identical-body edit emits nothing.
+   */
+  z.object({
+    type: z.literal('message_edited'),
+    edit: MessageEdit,
+  }),
+  /**
+   * A vote toggled on or off a poll answer — reaction semantics (idempotent
+   * re-adds/re-removes emit nothing). On single-select polls a vote move is
+   * two events (removed, then added) appended under one space lock.
+   */
+  z.object({
+    type: z.literal('poll_vote'),
+    vote: PollVote,
+    action: z.enum(['added', 'removed']),
+  }),
+  /**
+   * The author ended a poll early. Natural expiry emits NO event — a poll is
+   * closed the moment `expiresAt` passes, computed from data already on the
+   * wire (lazy expiry, no server job). The stored `message` event keeps its
+   * at-post poll; folding clients apply this to set `endedAt`.
+   */
+  z.object({
+    type: z.literal('poll_ended'),
+    end: PollEnd,
+  }),
+  /**
+   * An approval changed (spec §8 part 4, 2026-10-01): decided, or closed by
+   * its connector. Carries the whole approval; the stored card message keeps
+   * the at-request one, and folding clients replace the card's `approval`
+   * with this, the way they fold poll votes.
+   */
+  z.object({
+    type: z.literal('approval'),
+    approval: Approval,
+  }),
+  /**
+   * The space was renamed (api.ts renameSpace) — the full row plus who did
+   * it, so clients update their listings and the feed can render an
+   * attributed "renamed the space" line. Identical-name renames emit nothing.
+   */
+  z.object({
+    type: z.literal('space_renamed'),
+    space: Space,
+    by: Attribution,
+  }),
+]);
+export type SpaceEvent = z.infer<typeof SpaceEvent>;
+
+/**
+ * A member holds two independent leases per conversation: a human one
+ * (viewing / typing, ended by `idle`) and an agent one (`agent_working`,
+ * ended by `agent_idle`). Both frames carry the same memberId — the agent
+ * acts as the member — so the end states must be distinct for receivers to
+ * know which lease an `idle` closes.
+ */
+export const PresenceState = z.enum(['viewing', 'typing', 'agent_working', 'agent_idle', 'idle']);
+export type PresenceState = z.infer<typeof PresenceState>;
+
+/**
+ * Why the org is telling you about a message (notifications, 2026-09-10):
+ * a token named you, `@here` named everyone, it landed in your DM, or it is
+ * a reply in a thread you follow. Priority in that order when several hold.
+ * GitHub's inbox reasons, cut to what the org can decide today.
+ */
+export const NotifyReason = z.enum(['mention', 'here', 'dm', 'reply']);
+export type NotifyReason = z.infer<typeof NotifyReason>;
+
+/** Server → client frames. */
+export const ServerFrame = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('event'),
+    spaceId: SpaceId,
+    offset: StreamOffset,
+    at: z.iso.datetime(),
+    event: SpaceEvent,
+  }),
+  /** Ephemeral; never replayed; no offset. */
+  z.object({
+    kind: z.literal('presence'),
+    spaceId: SpaceId,
+    memberId: MemberId,
+    state: PresenceState,
+    /** Scopes the state to one thread (its root message id); absent = the stream / space-wide. */
+    threadRootId: MessageId.optional(),
+    at: z.iso.datetime(),
+  }),
+  /** Acknowledges a subscription; replay (if any) starts immediately after this frame. */
+  z.object({
+    kind: z.literal('subscribed'),
+    spaceId: SpaceId,
+    /** The offset replay starts after — echo of `afterOffset`, or the current head when omitted. */
+    fromOffset: StreamOffset,
+  }),
+  z.object({
+    kind: z.literal('error'),
+    spaceId: SpaceId.optional(),
+    code: z.string(),
+    message: z.string(),
+  }),
+  /**
+   * Liveness beacon, sent to every connection every ~25s regardless of
+   * subscriptions. Carries no state — its arrival IS the signal: clients
+   * treat prolonged silence as a half-open socket (laptop sleep, network
+   * change, a proxy vanishing without FIN) and bounce the connection, which
+   * replays from the last seen offset. Pre-ping clients ignore unknown frame
+   * kinds by contract, so this is a v0-legal addition.
+   */
+  z.object({ kind: z.literal('ping'), at: z.iso.datetime() }),
+  /**
+   * Addressed to a MEMBER, not a space: refresh joined-space listings when
+   * someone adds you to a DM, or you self-join on another device (spec §5,
+   * 2026-09-23). Ephemeral and never replayed: the membership row and joined
+   * event are the durable truth. On receipt, refresh the listing and resume
+   * the space subscription from the client's known offset, or 0 if unknown.
+   * Pre-DM clients ignore unknown frame kinds by contract.
+   */
+  z.object({
+    kind: z.literal('space_added'),
+    spaceId: SpaceId,
+    spaceKind: SpaceKind,
+    /** Who put you here. */
+    by: MemberId,
+    at: z.iso.datetime(),
+  }),
+  /**
+   * Addressed to a MEMBER (2026-09-22), the mirror of `space_added`: your
+   * membership of a space ended — you left it (on this device or another)
+   * today; an admin removed you tomorrow. The live face drops the space's
+   * subscription on this frame BEFORE forwarding it, so no frame of that
+   * space reaches you after your departure, and a re-subscribe to a private space is refused.
+   * Ephemeral, never replayed: the durable truth is the `membership` event
+   * (`left` / `removed`) on the space's own log. Pre-2026-09-22 clients drop
+   * the unknown frame by contract.
+   */
+  z.object({
+    kind: z.literal('space_removed'),
+    spaceId: SpaceId,
+    /** Who ended it: yourself on leave, the remover once removal exists. */
+    by: MemberId,
+    at: z.iso.datetime(),
+  }),
+  /**
+   * Addressed to EVERY member of the org (2026-10-07): the org's shape
+   * changed — today, a second space made a group chat a workspace, DMs on.
+   * It reaches members the new space does not include, which is why it is
+   * not a space event. Ephemeral, never replayed: refetch the listing
+   * (`groupChat` on listSpaces is the truth). Older clients drop the
+   * unknown frame by contract.
+   */
+  z.object({ kind: z.literal('org_changed'), at: z.iso.datetime() }),
+  /**
+   * Addressed to a MEMBER (read state, 2026-09-09): one of your own
+   * connections advanced a read mark — the stream's (no threadRootId) or a
+   * followed thread's — so your other devices apply it and badges agree
+   * everywhere (Slack broadcasts marks to the member's connections the same
+   * way). Ephemeral, never replayed: a mark is private per-member state, not
+   * a space fact; a reconnecting client refetches GET /v1/unread instead.
+   */
+  z.object({
+    kind: z.literal('read_mark'),
+    spaceId: SpaceId,
+    threadRootId: MessageId.optional(),
+    offset: StreamOffset,
+    at: z.iso.datetime(),
+  }),
+  /**
+   * Addressed to a MEMBER (notifications, 2026-09-10): the org decided this
+   * message deserves your attention and tells every connection you hold —
+   * Slack's `desktop_notification` shape, where the server decides and the
+   * client only shows. One decision serves every surface: the same rows the
+   * push sender delivers to phones ride here to desktops, so a banner and a
+   * toast never disagree. `title`/`body` are the org's rendering (names
+   * resolved, tokens flattened, excerpt cut); the ids are for the deep link.
+   * Ephemeral, never replayed: a closed client catches up from badges
+   * (`GET /v1/unread`), a phone from push. Policy (levels, DND, presence) is
+   * the org's business too and lands in a later layer; this frame's shape
+   * does not change when it does.
+   */
+  z.object({
+    kind: z.literal('notify'),
+    spaceId: SpaceId,
+    /** The thread the message lives in (absent = a stream root). */
+    threadRootId: MessageId.optional(),
+    messageId: MessageId,
+    reason: NotifyReason,
+    author: Attribution,
+    title: z.string(),
+    body: z.string(),
+    at: z.iso.datetime(),
+  }),
+  /**
+   * Ephemeral whiteboard collaboration traffic (scene diffs, cursors, idle
+   * state), fanned out to the space's subscribers. The payload is opaque to
+   * the org on purpose — the same content-blind posture as the relay servers
+   * whiteboard tools ship: membership is checked, bytes are relayed, nothing
+   * is inspected. Never persisted, never replayed, no offset; durable board
+   * state travels the normal asset path as blob snapshots, so a dropped frame
+   * costs smoothness, not data. Pre-whiteboard clients ignore unknown frame
+   * kinds by contract.
+   */
+  z.object({
+    kind: z.literal('whiteboard'),
+    spaceId: SpaceId,
+    /** The board's asset id (a board IS an asset; a rename never splits a session). */
+    boardId: AssetId,
+    memberId: MemberId,
+    at: z.iso.datetime(),
+    payload: z.unknown(),
+  }),
+  /**
+   * Addressed to an AGENT member's connections (spec §8 Invoking agent
+   * members, 2026-09-30): an invocation is ready for it — new, or next out of
+   * its conversation's queue. Ephemeral: a connector that was away lists the
+   * pending ones (listAgentInvocations), so nothing depends on this arriving.
+   */
+  z.object({ kind: z.literal('invocation'), invocation: Invocation }),
+  /** Addressed to an AGENT member's connections: stop this running invocation, then report it cancelled. */
+  z.object({ kind: z.literal('invocation_stop'), invocationId: InvocationId }),
+  /**
+   * Addressed to an AGENT member's connections: a person decided one of its
+   * approvals (spec §8 part 4). Ephemeral like `invocation`: the connector's
+   * listing returns every decision it has not confirmed applying.
+   */
+  z.object({ kind: z.literal('approval_decided'), approval: Approval }),
+  /**
+   * To a space's subscribers, on every change of state of an invocation in
+   * it: the working indicator, what it waits for, a refused line. Ephemeral,
+   * never replayed; listInvocations is the snapshot. Older clients ignore
+   * unknown frame kinds by contract.
+   */
+  z.object({ kind: z.literal('invocation_state'), spaceId: SpaceId, invocation: Invocation }),
+]);
+export type ServerFrame = z.infer<typeof ServerFrame>;
+
+/** Client → server frames. */
+export const ClientFrame = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('subscribe'),
+    spaceId: SpaceId,
+    /** Omit to skip replay and go live from the current head. */
+    afterOffset: StreamOffset.optional(),
+  }),
+  z.object({ kind: z.literal('unsubscribe'), spaceId: SpaceId }),
+  z.object({
+    kind: z.literal('presence'),
+    spaceId: SpaceId,
+    state: PresenceState,
+    threadRootId: MessageId.optional(),
+  }),
+  /** Ephemeral whiteboard traffic; relayed to the space's subscribers with the sender stamped on. */
+  z.object({
+    kind: z.literal('whiteboard'),
+    spaceId: SpaceId,
+    boardId: AssetId,
+    payload: z.unknown(),
+  }),
+]);
+export type ClientFrame = z.infer<typeof ClientFrame>;

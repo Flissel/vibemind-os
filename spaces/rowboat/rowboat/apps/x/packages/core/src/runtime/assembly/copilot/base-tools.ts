@@ -1,0 +1,51 @@
+// The copilot's always-attached toolset. Everything else is skill-scoped:
+// skills declare the BuiltinTools they own, and loading a skill attaches its
+// tools for the rest of the session. Keep this list small — every entry is
+// schema bytes on every single model call, and tool-selection accuracy
+// degrades as the attached count grows.
+//
+// code_agent_run and launch-code-task are here for the legacy code-mode path
+// (runs/), which shares buildCopilotAgent and cannot gain tools mid-run;
+// revisit once code-mode migrates to the turns runtime.
+
+// The harness: one Claude Code / Codex run inside a directory. Named on its
+// own because a chat only gets it once it HAS a directory — RealAgentResolver
+// drops it from work-directory agents that have none (2026-09-30).
+export const HARNESS_TOOL = "code_agent_run";
+
+export const COPILOT_BASE_TOOLS: readonly string[] = [
+    "loadSkill",
+    // Blocking user question (async, requiresHuman) — resolved as a special
+    // descriptor in real-agent-resolver, not a BuiltinTools catalog entry.
+    // Headless/background turns run humanAvailable:false, where the runtime
+    // answers it immediately with "Human input is unavailable for this turn."
+    "ask-human",
+    "file-getRoot",
+    "file-exists",
+    "file-list",
+    "file-readText",
+    "file-glob",
+    "file-grep",
+    // Attachment reading is a hot path with no skill signal: users drop PDFs,
+    // Office docs, and images into chat/calls as path references the model
+    // must read immediately.
+    "parseFile",
+    "LLMParse",
+    "web-search",
+    "fetch-url",
+    "save-to-memory",
+    // "Add X to my list" must work in any chat — the to-do list is the home
+    // surface and list-writing has no skill signal to trigger on.
+    "todo-add",
+    // "What's running / what needs me?" reads the live thread registry —
+    // essential on the Command Center channel, useful in any chat, and like
+    // todo-add it has no skill signal to trigger on.
+    "home-status",
+    // Ghostwriter: "write this into my email" from the companion must work
+    // without a skill hop — availability-gated to macOS + registered service.
+    "paste-at-cursor",
+    "executeCommand",
+    "spawn-agent",
+    HARNESS_TOOL,
+    "launch-code-task",
+];
