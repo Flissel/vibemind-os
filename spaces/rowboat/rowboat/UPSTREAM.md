@@ -8,13 +8,23 @@ To re-pin the kernel plugin catalog, change `DESKTOP_PLUGIN_CATALOG_PIN` on bran
 Flissel/rowboat (in `apps/x/apps/renderer/src/lib/rowboat-plugin-api.ts`), then run the sync.
 
 - Fork: https://github.com/Flissel/rowboat (branch `vibemind`)
-- Fork commit: `ef2b538fdc5fda0c8eaaf063867fd2ffa31c990f`
+- Fork commit: `dfb4f38a70f60db1f41817ca9681abafc156db56`
 - Upstream base: rowboatlabs/rowboat `72e9d8c`
 - EHL repo: https://github.com/Flissel/ehl-munich-2026 (`schema/`)
 - EHL commit: `44c1024c7804c696bc283bd14a9d08bd87a38230`
 
 ## Patches on top of upstream (EHL hierarchy graph, VibeMind)
 
+- dfb4f38a fix(vibemind): Integrationen-Listen nur bei Verbindung ok, schnelle Abfrage sofort neu planen
+- f17a38bd fix(vibemind): OpenFang-Schluessel aus Kindprozess-Umgebung entfernen, detail nur wo gezeigt, gepruefte URL oeffnen
+- 5ea5159e fix(vibemind): Integrationen in Typen, Palette, Tour und ausgeklappter Seitenleiste
+- e312d34e feat(vibemind): Seitenleisten-Eintrag Integrationen unter Apps
+- 18269618 feat(vibemind): Seite Integrationen (Zustand, Knoepfe, Rueckfragen, Freigaben-Abzeichen, Abfrage nur sichtbar)
+- 32523b9b feat(vibemind): Main-Prozess bedient die Integrationen-Kanaele (OpenFang auf 127.0.0.1:4200)
+- bb4e8921 fix(vibemind): werkzeuge nur als Ganzzahl >= 0 an den Renderer, Schema-Tests ergaenzt
+- aaf21f3d feat(vibemind): IPC-Vertrag fuer die Integrationen-Seite (strikte Schemas, ID-Regel wie OpenFang)
+- 6482d569 fix(vibemind): Integrationen-Client haertet Status-Fehler, Redirect, Meldungsklassen und add-Folgefehler
+- 6ddb239b feat(vibemind): OpenFang-Integrationen-Client im Core (Positivliste, URL-Pruefung, feste Meldungen)
 - ef2b538f fix(vibemind): convert only top-level video links, give Settings dialog an accessible name
 - 163563e0 fix(vibemind): load several video links in one note, add VibeMind notices
 - e9a400ab feat(vibemind): video links that survive saving, tolerant graph file read

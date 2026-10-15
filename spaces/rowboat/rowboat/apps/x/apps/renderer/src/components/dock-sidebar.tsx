@@ -148,6 +148,7 @@ export type DockSidebarProps = {
   onOpenCode?: () => void
   onOpenBgTasks?: () => void
   onOpenApps?: () => void
+  onOpenIntegrations?: () => void
   /** Open a specific app (pinned via the Apps view) inside the Apps view. */
   onOpenApp?: (folder: string) => void
   /** Open one space (org + space) in the Spaces view. */
@@ -175,7 +176,7 @@ export type DockSidebarProps = {
   /** Starts the mascot-guided product tour. */
   onStartTour?: () => void
   /** Which primary destination is currently active, for the running dot. */
-  activeNav?: 'assistant' | 'home' | 'email' | 'meetings' | 'code' | 'knowledge' | 'agents' | 'apps' | 'spaces' | 'workspaces' | null
+  activeNav?: 'assistant' | 'home' | 'email' | 'meetings' | 'code' | 'knowledge' | 'agents' | 'apps' | 'integrations' | 'spaces' | 'workspaces' | null
   /** Live meeting recording state, so the Meetings tile can show it. */
   meetingRecordingState?: 'idle' | 'connecting' | 'recording' | 'stopping'
   recordingMeetingSource?: string | null
@@ -551,6 +552,7 @@ export function DockSidebar({
   onOpenMeetings,
   onOpenBgTasks,
   onOpenApps,
+  onOpenIntegrations,
   onOpenApp,
   onOpenSpace,
   onOpenActivity,
@@ -1028,6 +1030,13 @@ export function DockSidebar({
           onClick: () => { closeFlyouts(); onOpenApps?.() },
         },
       },
+      {
+        item: {
+          key: 'integrations', label: 'Integrationen', icon: Plug, tourId: 'nav-integrations',
+          running: activeNav === 'integrations',
+          onClick: () => { closeFlyouts(); onOpenIntegrations?.() },
+        },
+      },
       // Apps pinned from the Apps view get their own row (same AppWindow
       // glyph as the panel sidebar), right-click to remove.
       ...pinnedApps.map(({ folder, name }) => ({
@@ -1061,7 +1070,7 @@ export function DockSidebar({
   }, [
     activeNav, closeFlyouts, onOpenHome, unreadEmailCount, previewEmail, onOpenEmail,
     meetingIsRecording, meetingSublabel, onOpenMeetings,
-    knowledgeUpdatedLabel, knowledgeActions, onOpenApps, pinnedApps, onOpenApp,
+    knowledgeUpdatedLabel, knowledgeActions, onOpenApps, onOpenIntegrations, pinnedApps, onOpenApp,
     bgAgentsFailed, bgAgentsLabel,
     switcherOnly, openLastSpace, onOpenChatHistory,
     onNewChat, lastChat, onOpenRun, onOpenAssistant,

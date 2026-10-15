@@ -256,6 +256,7 @@ import {
 } from '@x/core/dist/slack/home-parse.js';
 import { browserIpcHandlers } from './browser/ipc.js';
 import { spacesIpcHandlers } from './spaces/ipc.js';
+import { integrationsHandlers } from './integrations-ipc.js';
 
 /**
  * Convert markdown to a styled HTML document for PDF/DOCX export.
@@ -973,6 +974,7 @@ export function setupIpcHandlers() {
         return { success: false };
       }
     },
+    ...integrationsHandlers(),
     'permissions:getStatus': async () => {
       const platform = process.platform === 'darwin' ? 'darwin' as const
         : process.platform === 'win32' ? 'win32' as const : 'linux' as const;

@@ -38,4 +38,5 @@ export * as turnFollower from './turn-follower.js';
 export * as spaces from './spaces.js';
 export * as autoRoute from './auto-route.js';
 export * as find from './find.js';
+export * as integrations from './integrations.js';
 export { PrefixLogger };

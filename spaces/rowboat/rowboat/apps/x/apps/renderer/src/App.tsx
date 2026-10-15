@@ -44,6 +44,7 @@ import { SuggestedTopicsView } from '@/components/suggested-topics-view';
 import { LiveNotesView } from '@/components/live-notes-view';
 import { BgTasksView } from '@/components/bg-tasks-view';
 import { AppsView } from '@/components/apps/apps-view';
+import { IntegrationsPage } from '@/components/integrations/integrations-page';
 import { SpacesView, type SpaceSelection } from '@/components/spaces-view';
 import { KeepAliveSection } from '@/components/keep-alive-section';
 import { railKey, readRailSelection, type RailSelection } from '@/lib/spaces-selection';
@@ -203,11 +204,11 @@ function toSpeakableText(markdown: string): string {
 // (overlays, file editors, the full-screen chat) mount and unmount as before.
 type MiddleView =
   | 'browser' | 'home' | 'suggested-topics' | 'meetings' | 'code' | 'live-notes'
-  | 'bg-tasks' | 'apps' | 'spaces' | 'email' | 'workspace' | 'knowledge'
+  | 'bg-tasks' | 'apps' | 'integrations' | 'spaces' | 'email' | 'workspace' | 'knowledge'
   | 'chat-history' | 'bases' | 'graph' | 'file' | 'task' | 'chat'
 
 const KEEP_ALIVE_SECTIONS: ReadonlySet<MiddleView> = new Set<MiddleView>([
-  'home', 'meetings', 'code', 'bg-tasks', 'apps', 'spaces', 'email', 'workspace', 'knowledge',
+  'home', 'meetings', 'code', 'bg-tasks', 'apps', 'integrations', 'spaces', 'email', 'workspace', 'knowledge',
 ])
 
 const MACOS_TRAFFIC_LIGHTS_RESERVED_PX = 16 + 12 * 3 + 8 * 2
@@ -659,6 +660,7 @@ type ViewState =
   | { type: 'code' }
   | { type: 'bg-tasks' }
   | { type: 'apps' }
+  | { type: 'integrations' }
   | {
       type: 'spaces'
       orgId?: string
@@ -762,6 +764,8 @@ function parseDeepLink(input: string): ViewState | null {
       return { type: 'bg-tasks' }
     case 'apps':
       return { type: 'apps' }
+    case 'integrations':
+      return { type: 'integrations' }
     case 'spaces': {
       // Only the orgId form resolves synchronously here (notifications write
       // it). The org's own landings name the org by ADDRESS and may point at
@@ -950,6 +954,7 @@ function App() {
   const [isLiveNotesOpen, setIsLiveNotesOpen] = useState(false)
   const [isBgTasksOpen, setIsBgTasksOpen] = useState(false)
   const [isAppsOpen, setIsAppsOpen] = useState(false)
+  const [isIntegrationsOpen, setIsIntegrationsOpen] = useState(false)
   const [isSpacesOpen, setIsSpacesOpen] = useState(false)
   // The space open in the Spaces view (org + space); the sidebar highlights it.
   const [spaceSelection, setSpaceSelection] = useState<SpaceSelection>(null)
@@ -4819,7 +4824,7 @@ function App() {
   // scroll controller now — see lib/chat-scroll.ts (keyed by tab.chatId).
 
   // No section, file, or task open: the Assistant page.
-  const isFullScreenChat = !selectedPath && !isGraphOpen && !isSuggestedTopicsOpen && !isMeetingsOpen && !isLiveNotesOpen && !isBgTasksOpen && !isAppsOpen && !isSpacesOpen && !isEmailOpen && !isKnowledgeViewOpen && !isChatHistoryOpen && !isHomeOpen && !isCodeOpen && !selectedBackgroundTask && !isBrowserOpen
+  const isFullScreenChat = !selectedPath && !isGraphOpen && !isSuggestedTopicsOpen && !isMeetingsOpen && !isLiveNotesOpen && !isBgTasksOpen && !isAppsOpen && !isIntegrationsOpen && !isSpacesOpen && !isEmailOpen && !isKnowledgeViewOpen && !isChatHistoryOpen && !isHomeOpen && !isCodeOpen && !selectedBackgroundTask && !isBrowserOpen
 
   const currentViewState = React.useMemo<ViewState>(() => {
     if (selectedBackgroundTask) return { type: 'task', name: selectedBackgroundTask }
@@ -4833,13 +4838,14 @@ function App() {
     if (isCodeOpen) return { type: 'code' }
     if (isBgTasksOpen) return { type: 'bg-tasks' }
     if (isAppsOpen) return { type: 'apps' }
+    if (isIntegrationsOpen) return { type: 'integrations' }
     // The org-level surface (Activity) belongs in here too: without it, history
     // records Activity as a plain space view and ‹ lands somewhere else.
     if (isSpacesOpen) return spaceSelection ? { type: 'spaces', orgId: spaceSelection.orgId, spaceId: spaceSelection.spaceId, rail: railSelection, ...(spaceSelection.view ? { view: spaceSelection.view } : {}) } : { type: 'spaces' }
     if (selectedPath) return { type: 'file', path: selectedPath }
     if (isGraphOpen) return { type: 'graph' }
     return { type: 'chat', runId }
-  }, [selectedBackgroundTask, isEmailOpen, isMeetingsOpen, isLiveNotesOpen, isBgTasksOpen, isAppsOpen, isSpacesOpen, spaceSelection, railSelection, isSuggestedTopicsOpen, selectedPath, isGraphOpen, isKnowledgeViewOpen, knowledgeViewFolderPath, knowledgeViewMode, isChatHistoryOpen, isHomeOpen, isCodeOpen, runId])
+  }, [selectedBackgroundTask, isEmailOpen, isMeetingsOpen, isLiveNotesOpen, isBgTasksOpen, isAppsOpen, isIntegrationsOpen, isSpacesOpen, spaceSelection, railSelection, isSuggestedTopicsOpen, selectedPath, isGraphOpen, isKnowledgeViewOpen, knowledgeViewFolderPath, knowledgeViewMode, isChatHistoryOpen, isHomeOpen, isCodeOpen, runId])
 
   // Navigation handlers can be invoked from closures frozen in older renders
   // (Spaces' MessageRow memoizes by data and ignores handler identity), so
@@ -4867,6 +4873,7 @@ function App() {
       case 'live-notes': return 'Live notes'
       case 'bg-tasks': return 'Background tasks'
       case 'apps': return 'Apps'
+      case 'integrations': return 'Integrationen'
       case 'spaces': {
         const org = spacesOrgs.find((o) => o.id === currentViewState.orgId)
         if (org && currentViewState.view) return currentViewState.view === 'browse' ? 'Browse spaces' : 'Activity'
@@ -4900,6 +4907,7 @@ function App() {
     setIsLiveNotesOpen(false)
     setIsBgTasksOpen(false)
     setIsAppsOpen(false)
+    setIsIntegrationsOpen(false)
     setIsSpacesOpen(false)
     setIsEmailOpen(false)
     setIsKnowledgeViewOpen(false)
@@ -5324,6 +5332,9 @@ function App() {
       case 'apps':
         setIsAppsOpen(true)
         return
+      case 'integrations':
+        setIsIntegrationsOpen(true)
+        return
       case 'spaces': {
         // Feature-flag gate: every route into Spaces (sidebar, palette, deep
         // links, notification clicks, history, relaunch restore) funnels
@@ -5494,6 +5505,8 @@ function App() {
   const openAppsView = useCallback(() => {
     void navigateToView({ type: 'apps' })
   }, [navigateToView])
+
+  const openIntegrationsView = useCallback(() => { void navigateToView({ type: 'integrations' }) }, [navigateToView])
 
   // navigateToView early-returns when the apps view is already showing, so
   // `openAppsView` alone is a no-op while an app is open — the sidebar "Apps"
@@ -5927,6 +5940,7 @@ function App() {
         case 'workspace': openProjects(); break
         case 'code': void navigateToView({ type: 'code' }); break
         case 'apps': openAppsGrid(); break
+        case 'integrations': openIntegrationsView(); break
         // Through openSpaces, like the nav item: a bare spaces view state would
         // reset the rail and close whatever discussion was open.
         case 'spaces': void openSpaces(); break
@@ -6053,7 +6067,7 @@ function App() {
         break
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [navigateToFile, navigateToView, openAppsGrid, openProjects, openSpaces, selectedPath])
+  }, [navigateToFile, navigateToView, openAppsGrid, openIntegrationsView, openProjects, openSpaces, selectedPath])
 
   // Legacy runs:events path: handleRunEvent stashes the result in a ref;
   // polled every render (the triggering event always causes one).
@@ -6690,6 +6704,7 @@ function App() {
             case 'meetings': openMeetingsView(); break
             case 'brain': knowledgeActions.openKnowledgeView(); break
             case 'apps': openAppsGrid(); break
+            case 'integrations': openIntegrationsView(); break
             case 'bg-tasks': openBgTasksView(); break
             case 'projects': knowledgeActions.openWorkspaceAt(); break
             case 'chat-history': void navigateToView({ type: 'chat-history' }); break
@@ -6767,11 +6782,14 @@ function App() {
       case 'apps':
         openAppsGrid()
         break
+      case 'integrations':
+        openIntegrationsView()
+        break
       case 'workspaces':
         knowledgeActions.openWorkspaceAt()
         break
     }
-  }, [openAssistant, openSpaces, navigateToView, openEmailView, openMeetingsView, openCodeView, knowledgeActions, openBgTasksView, openAppsGrid])
+  }, [openAssistant, openSpaces, navigateToView, openEmailView, openMeetingsView, openCodeView, knowledgeActions, openBgTasksView, openAppsGrid, openIntegrationsView])
 
   // Handler for when a voice note is created/updated
   const handleVoiceNoteCreated = useCallback(async (notePath: string) => {
@@ -7190,7 +7208,7 @@ function App() {
   const selectedTask = selectedBackgroundTask
     ? backgroundTasks.find(t => t.name === selectedBackgroundTask)
     : null
-  const isRightPaneContext = Boolean(selectedPath || isGraphOpen || isSuggestedTopicsOpen || isMeetingsOpen || isLiveNotesOpen || isBgTasksOpen || isAppsOpen || isSpacesOpen || isEmailOpen || isKnowledgeViewOpen || isChatHistoryOpen || isHomeOpen || isCodeOpen || isBrowserOpen)
+  const isRightPaneContext = Boolean(selectedPath || isGraphOpen || isSuggestedTopicsOpen || isMeetingsOpen || isLiveNotesOpen || isBgTasksOpen || isAppsOpen || isIntegrationsOpen || isSpacesOpen || isEmailOpen || isKnowledgeViewOpen || isChatHistoryOpen || isHomeOpen || isCodeOpen || isBrowserOpen)
   // Code mode with a session selected: the chat is the main surface — the
   // middle pane is just the session rail and the chat fills the rest, with
   // the workspace drawer at its edge. Before a session is picked the empty
@@ -7252,6 +7270,7 @@ function App() {
     : isLiveNotesOpen ? 'live-notes'
     : isBgTasksOpen ? 'bg-tasks'
     : isAppsOpen ? 'apps'
+    : isIntegrationsOpen ? 'integrations'
     : isSpacesOpen ? 'spaces'
     : isEmailOpen ? 'email'
     : isKnowledgeViewOpen ? 'knowledge'
@@ -7290,16 +7309,18 @@ function App() {
       : (isKnowledgeViewOpen || isGraphOpen || (selectedPath != null && selectedPath.startsWith('knowledge/'))) ? 'knowledge'
       : isBgTasksOpen ? 'agents'
       : isAppsOpen ? 'apps'
+      : isIntegrationsOpen ? 'integrations'
       : isSpacesOpen ? 'spaces'
       // Full-screen chat (no section, file, or task open) is the Assistant's
       // own surface — it carries the dock dot and the switcher's MRU rank.
       : isFullScreenChat ? 'assistant'
       : null
-    ) as 'assistant' | 'home' | 'email' | 'meetings' | 'code' | 'knowledge' | 'agents' | 'apps' | 'spaces' | 'workspaces' | null,
+    ) as 'assistant' | 'home' | 'email' | 'meetings' | 'code' | 'knowledge' | 'agents' | 'apps' | 'integrations' | 'spaces' | 'workspaces' | null,
     onOpenMeetings: openMeetingsView,
     onOpenCode: openCodeView,
     onOpenBgTasks: () => { setBgTaskInitialSlug(null); setBgTaskSlugVersion((v) => v + 1); openBgTasksView() },
     onOpenApps: openAppsGrid,
+    onOpenIntegrations: openIntegrationsView,
     onOpenApp: (folder: string) => { setAppInitialId(folder); setAppIdVersion((v) => v + 1); openAppsView() },
     onOpenSpace: openSpace,
     onOpenActivity: openActivity,
@@ -7670,6 +7691,13 @@ function App() {
                     initialVersion={appIdVersion}
                     onNewApp={() => prefillChat('Build me an app that ')}
                   />
+                </div>
+                </KeepAliveSection>
+              )}
+              {sectionMounted('integrations') && (
+                <KeepAliveSection visible={activeMiddle === 'integrations'}>
+                <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                  <IntegrationsPage visible={activeMiddle === 'integrations'} />
                 </div>
                 </KeepAliveSection>
               )}

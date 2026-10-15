@@ -124,6 +124,7 @@ export type AppView =
   | 'code'
   | 'bg-tasks'
   | 'apps'
+  | 'integrations'
   | 'spaces'
 
 // Views that count as "using a feature" — first visit sets a person property
