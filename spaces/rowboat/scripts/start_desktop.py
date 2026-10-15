@@ -27,6 +27,27 @@ PROFILE = "vibemind"
 MAP_SECONDS = 60
 POLL_SECONDS = 0.5   # wait in slices: on Windows an untimed wait() does not let Ctrl+C through
 
+DEFAULT_ENV_FILE = SPACE.parents[2] / ".env"   # Vibemind_V1/.env (Space liegt unter vibemind-os/spaces/rowboat)
+OPENFANG_KEY = "OPENFANG_API_KEY"
+
+
+def read_env_value(path: Path, name: str) -> str | None:
+    """Liest genau einen Wert aus einer .env-Datei. Gibt sonst nichts weiter."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        key, _, value = s.partition("=")
+        if key.strip() == name:
+            value = value.strip().strip('"').strip("'")
+            return value or None
+    return None
+
+
 
 @dataclass(frozen=True)
 class Layout:
@@ -120,7 +141,7 @@ def install(lay: Layout, windows: bool = IS_WINDOWS) -> int:
     return 0
 
 
-def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS) -> int:
+def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS, env_file: Path = DEFAULT_ENV_FILE) -> int:
     gaps = missing(lay, windows)
     if gaps:
         log.error("not installed yet - run start_desktop.py --install first. Missing:\n- %s", "\n- ".join(gaps))
@@ -128,6 +149,11 @@ def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS) -> int:
     if subprocess.run(map_command(venv_python(lay.venv, windows), workdir), cwd=lay.schema).returncode != 0:
         log.warning("vault map failed once; Rowboat starts anyway, the refresh retries every %d s", MAP_SECONDS)
     env = {**os.environ, "ROWBOAT_WORKDIR": str(workdir)}
+    key = read_env_value(env_file, OPENFANG_KEY) or os.environ.get(OPENFANG_KEY)
+    if key:
+        env[OPENFANG_KEY] = key
+    else:
+        log.warning("%s nicht gefunden – Integrationen-Seite zeigt Hinweis", OPENFANG_KEY)
     if not windows:
         # Closing the terminal (SIGHUP) or a plain kill (SIGTERM) must reach the finally below like Ctrl+C does:
         # the jobs run in their own sessions, so they would otherwise keep running.
@@ -167,12 +193,13 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--install", action="store_true", help="build harbor, install Rowboat and the schema venv")
+    ap.add_argument("--env-file", type=Path, default=DEFAULT_ENV_FILE, help="Datei, aus der nur OPENFANG_API_KEY gelesen wird")
     ap.add_argument("--workdir", type=Path, default=Path.home() / ".rowboat", help="Rowboat data folder")
     args = ap.parse_args(argv)
     lay = layout()
     if args.install:
         return install(lay)
-    return start(lay, args.workdir.expanduser().resolve())
+    return start(lay, args.workdir.expanduser().resolve(), env_file=args.env_file)
 
 
 if __name__ == "__main__":
