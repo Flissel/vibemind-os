@@ -189,8 +189,12 @@ def _block(dok: dict, bid: str, farben: dict, bild_basis: str) -> str:
         masse = f' width="{w}px"' if w > 0 else (f' height="{h}px"' if h > 0 else "")
         link = p.get("linkHref") or ""
         href = f' href="{_a(link)}"' if isinstance(link, str) and link.startswith("https://") else ""
+        # Kreis fuer Portraets (quadratisches Bild); sonst die Rundung aus dem Stil
+        rund = _zahl(s.get("borderRadius"), 0)
+        rundung = (' border-radius="50%"' if p.get("form") == "kreis"
+                   else f' border-radius="{rund}px"' if rund > 0 else "")
         return (f'<mj-image padding="{polster}" align="{ausr}" src="{_a(ziel)}" alt="{_a(p.get("alt") or "")}"'
-                f'{masse}{href}{hg} />')
+                f'{masse}{href}{rundung}{hg} />')
     if typ == "Button":
         url = p.get("url") or ""
         if not isinstance(url, str) or not url.startswith("https://"):
@@ -265,13 +269,19 @@ def _kinder_als_section(dok: dict, ids: list, farben: dict, bild_basis: str) -> 
             rahmen = f' border="1px solid {_a(rand)}"' if isinstance(rand, str) and rand else ""
             pol = _polster(stil) if isinstance(stil.get("padding"), dict) else "0"
             bild = bild_adresse(props.get("url") or "", bild_basis)
+            # Randloses Band: die Section reicht ueber die Inhaltsbreite bis an den Fensterrand
+            breit = ' full-width="full-width"' if props.get("randlos") is True else ""
+            if breit and not bild:
+                teile.append(f'<mj-section{breit} background-color="{_a(hg)}" padding="{pol}">'
+                             f'<mj-column>{inhalt}</mj-column></mj-section>')
+                continue
             if bild:
                 ov = stil.get("overlay") if isinstance(stil.get("overlay"), dict) else {}
                 feld = _rgba(ov.get("farbe"), ov.get("deckkraft"))
                 spalte_attr = f' background-color="{feld}"' if feld else ""
                 hoehe = _zahl(props.get("height"), 0)
                 teile.append(
-                    f'<mj-section background-url="{_a(bild)}" background-size="cover" background-repeat="no-repeat" '
+                    f'<mj-section{breit} background-url="{_a(bild)}" background-size="cover" background-repeat="no-repeat" '
                     f'background-color="{_a(hg)}" padding="{pol}"><mj-column{spalte_attr}>'
                     + (f'<mj-spacer height="{hoehe // BILD_ABSTAND_TEILER}px" />' if hoehe else "")
                     + f'{inhalt}</mj-column></mj-section>')

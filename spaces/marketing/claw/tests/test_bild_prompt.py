@@ -184,8 +184,11 @@ def test_bildstil_geht_in_die_bildbeschreibung(monkeypatch):
     assert "Bildstil der Marke: Warme Werkstattfotos" in gesendet[1][1]["prompt"]
 
 
-def test_ohne_bildstil_steht_ein_strich(monkeypatch):
+def test_ohne_bildstil_gilt_der_warme_standard(monkeypatch):
     http, gesendet = falsch("A calm team")
     monkeypatch.setattr(bp, "_ollama", http)
     bp.prompt_schreiben(PLATZ, "Oktober", "")
-    assert "Bildstil der Marke: -" in gesendet[0][1]["prompt"]
+    bp.bearbeitungs_prompt("A bike on a wall", PLATZ, "Oktober", "heller")
+    for _, nutzlast in gesendet:
+        assert f"Bildstil der Marke: {bp.BILDSTIL_STANDARD}" in nutzlast["prompt"]
+    assert "natural daylight" in bp.BILDSTIL_STANDARD and "keiner hinterlegt" in bp.BILDSTIL_STANDARD

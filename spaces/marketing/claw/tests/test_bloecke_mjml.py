@@ -410,3 +410,40 @@ def test_unbekannte_schrift_id_faellt_auf_standard():
 def test_register_vollstaendig():
     assert set(schriften.REGISTER) == {"cormorant", "dm-sans", "playfair", "poppins", "young-serif", "manrope",
                                        "bodoni", "montserrat", "josefin", "oxanium", "rajdhani"}
+
+
+def test_bild_mit_rundung():
+    d = _dok(("i", "Image", {"style": {"borderRadius": 16}, "props": {"url": "medien:a.jpg", "width": 300}}))
+    m = b.nach_mjml(d, "B", "V", {}, bild_basis="https://x.de/b/")
+    assert re.search(r'<mj-image [^>]*border-radius="16px"', m)
+
+
+def test_bild_als_kreis():
+    d = _dok(("i", "Image", {"style": {"borderRadius": 4}, "props": {"url": "medien:a.jpg", "width": 120, "form": "kreis"}}))
+    m = b.nach_mjml(d, "B", "V", {}, bild_basis="https://x.de/b/")
+    assert re.search(r'<mj-image [^>]*border-radius="50%"', m) and 'border-radius="4px"' not in m
+
+
+def test_bild_ohne_rundung_bleibt_eckig():
+    d = _dok(("i", "Image", {"style": {}, "props": {"url": "medien:a.jpg", "width": 120, "form": "quatsch"}}))
+    assert "border-radius" not in b.nach_mjml(d, "B", "V", {}, bild_basis="https://x.de/b/")
+
+
+def test_randloses_band_statt_karte():
+    d = _dok(("k", "Container", {"style": {"backgroundColor": "#c8553d", "borderRadius": 12,
+                                            "padding": {"top": 40, "right": 24, "bottom": 40, "left": 24}},
+                                  "props": {"randlos": True, "childrenIds": ["t"]}}),
+             ("t", "Text", {"style": {}, "props": {"text": "Hallo"}}))
+    d["root"]["data"]["childrenIds"] = ["k"]
+    m = b.nach_mjml(d, "B", "V", {})
+    assert '<mj-section full-width="full-width" background-color="#c8553d" padding="40px 24px 40px 24px">' in m
+    assert "<mj-wrapper" not in m and "border-radius" not in m
+    h = b.rendern(d, "B", "V", {})
+    assert "Hallo" in h and "#c8553d" in h
+
+
+def test_randloses_band_mit_hintergrundbild():
+    d = _dok(("k", "Container", {"style": {"backgroundColor": "#2f4858"},
+                                  "props": {"randlos": True, "url": "medien:kopf.jpg", "childrenIds": []}}))
+    m = b.nach_mjml(d, "B", "V", {}, bild_basis="https://x.de/b/")
+    assert '<mj-section full-width="full-width" background-url="https://x.de/b/kopf.jpg"' in m

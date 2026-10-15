@@ -398,3 +398,11 @@ def test_bezugsregel_ohne_markierung():
         '(die letzte Antwort unter BISHERIGER CHAT). Ist der Bezug nicht eindeutig, frag kurz nach und ändere '
         'nichts ("aenderungen": []).')
     assert ap.REGEL_BEZUG in ap.SYSTEM and ap.REGEL_BEZUG in ap.system(marke=True)
+
+
+def test_waerme_regeln_und_neue_mittel_im_system():
+    s = ap.system(marke=False)
+    assert "WÄRME UND RHYTHMUS" in s
+    for teil in ('"form": "kreis"', '"randlos": true', "borderRadius", "Anrede", "Gruß"):
+        assert teil in s, teil
+    assert len(ap.SYSTEM) < 12000 and "WÄRME UND RHYTHMUS" in ap.system(marke=True)

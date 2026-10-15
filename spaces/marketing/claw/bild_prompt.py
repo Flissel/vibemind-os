@@ -99,9 +99,14 @@ def bereinigen(roh: str) -> str:
     return erste[:PROMPT_MAX].strip()
 
 
+# Ohne eigenen Bildstil erzeugte FLUX neutrale, menschenleere Produktbilder - die Newsletter wirkten kalt.
+BILDSTIL_STANDARD = ("keiner hinterlegt - Standard: real people and genuine moments where it fits, "
+                     "natural daylight, warm and close, unposed, a little texture instead of studio perfection")
+
+
 def _bildstil(platz: dict) -> str:
     """Abschnitt "Bildstil" der Marke.md der Firma (bild_worker legt ihn in den Platz), einzeilig."""
-    return " ".join(str(platz.get("bildstil") or "").split())[:BILDSTIL_MAX] or "-"
+    return " ".join(str(platz.get("bildstil") or "").split())[:BILDSTIL_MAX] or BILDSTIL_STANDARD
 
 
 def prompt_schreiben(platz: dict, titel: str, hinweis: str) -> str:
