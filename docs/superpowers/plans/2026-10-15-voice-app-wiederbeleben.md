@@ -2860,12 +2860,15 @@ vibemind-os (Worktree `.worktrees\setup-agent`, `master`): nur der Gitlink `voic
   .DESCRIPTION
       Spec: vibemind-os/docs/superpowers/specs/2026-10-15-voice-app-wiederbeleben-design.md, Abschnitt 2.
         1. Abbruch, wenn der Laufzeit-Checkout eigene Aenderungen hat (aeusserer Klon oder voice).
-        2. git fetch, Checkout des origin/<Branch>-Pins, git submodule update --init voice.
+        2. git fetch, Checkout des origin/<Branch>-Pins, git submodule update --init voice spaces/video/laura
+           (Laura: User-Entscheid 15.10., damit das Video/Laura-Overlay laedt).
         3. npm ci in voice/electron-app nur, wenn sich package-lock.json geaendert hat.
         4. pip install -r requirements.txt in voice/.venv312 nur bei geaenderten Requirements;
            fehlt die venv, wird sie mit Python 3.12 angelegt.
         5. Overlay-Builds ClawPort (electron-app/dashboard) und AgentFarm (electron-app/agentfarm),
-           wenn die Quellen vorhanden sind; ein Build-Fehler ist nicht fatal (Overlay zeigt Statuskarte).
+           wenn die Quellen vorhanden sind; Laura-Embed-Build (spaces/video/laura: pnpm install --frozen-lockfile,
+           pnpm --filter @laura/desktop build:embed -> apps/desktop/dist/index.html); ein Build-Fehler ist nicht
+           fatal (Overlay zeigt Statuskarte).
         6. Ausgabe: alter und neuer Stand, was neu gebaut wurde.
       Secrets werden weder kopiert noch verschoben (die App liest VIBEMIND_ENV_FILE).
   .EXAMPLE
@@ -2957,7 +2960,7 @@ vibemind-os (Worktree `.worktrees\setup-agent`, `master`): nur der Gitlink `voic
   $null = Invoke-Git -Dir $RuntimeDir -GitArgs @('fetch', '--quiet', 'origin', $Branch)
   $pin = (Invoke-Git -Dir $RuntimeDir -GitArgs @('rev-parse', "origin/$Branch"))[0].Trim()
   $null = Invoke-Git -Dir $RuntimeDir -GitArgs @('checkout', '--quiet', '--detach', $pin)
-  $null = Invoke-Git -Dir $RuntimeDir -GitArgs @('submodule', 'update', '--init', '--quiet', 'voice')
+  $null = Invoke-Git -Dir $RuntimeDir -GitArgs @('submodule', 'update', '--init', '--quiet', 'voice', 'spaces/video/laura')
 
   # 3. npm ci nur bei geaendertem Lockfile (Marker = installierter Lockfile-Blob)
   $lockSha = Get-BlobSha $voiceDir 'electron-app/package-lock.json'
@@ -3011,6 +3014,29 @@ vibemind-os (Worktree `.worktrees\setup-agent`, `master`): nur der Gitlink `voic
           } catch {
               Write-Warning "$($ov.Name): Build fehlgeschlagen - Overlay zeigt Statuskarte ($($_.Exception.Message))"
               $neu.Add("$($ov.Name) Build fehlgeschlagen")
+          }
+      }
+  }
+
+  # 5b. Laura-Embed-Build (User-Entscheid 15.10.): nur wenn sich der Laura-Stand geaendert hat
+  if (-not $SkipOverlayBuilds) {
+      $lauraDir = Join-Path $RuntimeDir 'spacesideo\laura'
+      $lauraIndex = Join-Path $lauraDir 'apps\desktop\dist\index.html'
+      $lauraMarker = Join-Path $lauraDir 'apps\desktop\dist\.vbu-src-sha'
+      if (-not (Test-Path -LiteralPath (Join-Path $lauraDir 'package.json'))) {
+          Write-Output 'Video/Laura: Quellen fehlen - uebersprungen (Overlay zeigt Statuskarte)'
+      } else {
+          $lauraSha = Get-ShortHead $lauraDir
+          if (-not ((Test-Path -LiteralPath $lauraIndex) -and (Read-Marker $lauraMarker) -eq $lauraSha)) {
+              try {
+                  Invoke-Tool -Exe $Pnpm -Arguments @('install', '--frozen-lockfile') -WorkDir $lauraDir
+                  Invoke-Tool -Exe $Pnpm -Arguments @('--filter', '@laura/desktop', 'build:embed') -WorkDir $lauraDir
+                  Write-Marker $lauraMarker $lauraSha
+                  $neu.Add('Video/Laura gebaut')
+              } catch {
+                  Write-Warning "Video/Laura: Build fehlgeschlagen - Overlay zeigt Statuskarte ($($_.Exception.Message))"
+                  $neu.Add('Video/Laura Build fehlgeschlagen')
+              }
           }
       }
   }
@@ -3324,7 +3350,12 @@ Durchgesehen: kein „TBD“, kein „aehnlich wie“, kein „Fehlerbehandlung 
 - Update-Skript baut zusaetzlich AgentFarm (`electron-app/agentfarm/dist` ist per `voice/.gitignore:16` ignoriert; ohne Build kein AgentFarm-Overlay in `vibemind-betrieb`, Abnahme 5 verlangt es).
 - `docker-cleanup` aus: beim Beenden werden auch selbst gestartete `project-*`-Container nicht entfernt (Spec: „nichts loeschen“).
 
-### Offene Fragen an den User
+### Entscheide des Users (15.10.)
+- Video/Laura: ja, das Update-Skript initialisiert `spaces/video/laura` und baut `build:embed` (Schritt 5b). Der Umsetzer ergaenzt dafuer den Parameter `$Pnpm` (Vorgabe `pnpm`) analog zu `$Npm` und einen Pester-Fall "Laura-Build nur bei geaendertem Laura-Stand".
+- `docker-cleanup` aus: selbst gestartete `project-*`-Container bleiben beim Beenden stehen (Spec "nichts loeschen").
+- Pin-Update: liegt `origin/master` vor dem Worktree, `git merge origin/master` nur ohne Ueberschneidung mit fremden ungestagten Dateien; sonst HALT.
+
+### Offene Fragen an den User (erledigt)
 1. **Video/Laura im Laufzeit-Checkout:** `spaces/video/laura` ist ein eigenes Submodul (`vibemind-os/.gitmodules`), die Spec initialisiert nur `voice` → in `vibemind-betrieb` fehlt `spaces/video/laura/apps/desktop/dist`; das Overlay zeigt dann die Statuskarte statt „laedt“ (Abnahme 5). Soll das Update-Skript `spaces/video/laura` zusaetzlich initialisieren und `pnpm … build:embed` ausfuehren?
 2. **Selbst gestartete Coding-Engine-Container beim Beenden:** bei `docker-cleanup` aus bleiben auch `project-*`-Container dieser Sitzung stehen – so gewollt?
 3. **Pin-Update auf `master`:** der Worktree `setup-agent` traegt fremde ungestagte Aenderungen; liegt `origin/master` vor `HEAD`, stoppt T8.6 (kein Pull ueber fremden Dirty-State) – wer zieht den Worktree dann nach?
