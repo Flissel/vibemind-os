@@ -902,7 +902,7 @@
        }
       },
       "props": {
-       "text": "Hallo *Vorname*,",
+       "text": "Hallo {vorname},",
        "markdown": true
       }
      }

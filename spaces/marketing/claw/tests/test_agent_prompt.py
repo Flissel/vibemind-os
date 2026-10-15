@@ -428,3 +428,8 @@ def test_freie_flaeche_im_system():
 def test_handschrift_rolle_im_system():
     s = ap.system(marke=False)
     assert 'fontFamily "HAND"' in s and len(ap.SYSTEM) < 12000
+
+
+def test_anrede_platzhalter_vorname_im_system():
+    s = ap.system(marke=False)
+    assert "Hallo {vorname}," in s and "nie einen echten Namen" in s and len(ap.SYSTEM) < 12000
