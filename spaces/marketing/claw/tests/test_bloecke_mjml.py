@@ -460,3 +460,38 @@ def test_handschrift_als_rolle_hand():
     ohne = _dok(("t", "Text", {"style": {}, "props": {"text": "x"}}), schriften={"anzeige": "playfair", "text": "poppins"})
     assert "Caveat" not in b.nach_mjml(ohne, "B", "V", {}, schrift_basis="https://x.de/marketing/schrift/")
     assert "Deine Lena" in b.rendern(d, "B", "V", {}, schrift_basis="https://x.de/marketing/schrift/")
+
+
+# ---- Versand an Kontakte (Plan sales-claw 2026-10-15-newsletter-versand-an-kontakte.md) ----------------
+
+VERSAND_DOK = {
+    "root": {"type": "EmailLayout", "data": {"childrenIds": ["h", "t", "i", "k"]}},
+    "h": {"type": "Heading", "data": {"style": {}, "props": {"text": "Herbst", "level": "h1"}}},
+    "t": {"type": "Text", "data": {"style": {}, "props": {"text": "Hallo {vorname},\n\nschön, dass du **da** bist.", "markdown": True}}},
+    "i": {"type": "Image", "data": {"style": {}, "props": {"url": "medien:held bild.jpg", "alt": "Laden", "width": 600, "sw": True}}},
+    "k": {"type": "Button", "data": {"style": {}, "props": {"text": "Vorbeischauen", "url": "https://laden.de"}}},
+}
+PFLICHT_V = {"impressum": "Laden GmbH", "abmelde_hinweis": "Keine Newsletter mehr? {abmeldelink}"}
+
+
+def test_vorschau_zeigt_platzhalter_als_klammer():
+    h = b.rendern(VERSAND_DOK, "B", "V", PFLICHT_V, bild_basis="https://x.de/b/")
+    assert "[Vorname]" in h and "{vorname}" not in h and "[Abmeldelink]" in h
+
+
+def test_versand_behaelt_platzhalter_und_bettet_bilder_als_cid():
+    h = b.rendern(VERSAND_DOK, "B", "V", PFLICHT_V, fuer_versand=True)
+    assert "{vorname}" in h and "{abmeldelink}" in h and "[Vorname]" not in h
+    assert 'src="cid:held%20bild.jpg"' in h and "?sw=1" not in h
+
+
+def test_versand_medien_liste():
+    assert b.versand_medien(VERSAND_DOK) == [{"name": "held bild.jpg", "cid": "held%20bild.jpg", "sw": True}]
+
+
+def test_textfassung():
+    t = b.text_fassung(VERSAND_DOK, PFLICHT_V)
+    assert t.startswith("Herbst\n\nHallo {vorname},\n\nschön, dass du da bist.")
+    assert "Vorbeischauen: https://laden.de" in t
+    assert "Laden GmbH" in t and t.rstrip().endswith("Keine Newsletter mehr? {abmeldelink}")
+    assert "**" not in t and "[Bild" not in t

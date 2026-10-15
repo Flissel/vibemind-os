@@ -883,3 +883,29 @@ def test_fuellen_logo_datei_fehlt_laesst_kasten(monkeypatch, tmp_path):
                                       logo="medien:weg.png")
     p = fertig["marke_logo"]["data"]["props"]
     assert (p["width"], p["height"]) == (150, 50)
+
+
+def test_versand_nur_freigegebene_bloecke(db, c):
+    dok = {"root": {"type": "EmailLayout", "data": {"childrenIds": ["t"]}},
+           "t": {"type": "Text", "data": {"style": {}, "props": {"text": "Hallo {vorname},"}}}}
+    zeile = {"status": "freigegeben", "fassung": 3, "format": "bloecke", "bloecke": dok, "mandant": "vibemind",
+             "felder": {"betreff": "Herbst", "vorschautext": "Neu"},
+             "pflichtteil": {"impressum": "I", "abmelde_hinweis": "Abmelden: {abmeldelink}"}}
+    db.antworten = [[zeile]]
+    r = c.get(f"/api/pult/inhalte/{IID}/versand", headers=H)
+    assert r.status_code == 200
+    j = r.json()
+    assert j["betreff"] == "Herbst" and j["fassung"] == 3 and j["mandant"] == "vibemind"
+    assert "{vorname}" in j["html"] and "{abmeldelink}" in j["html"] and "{vorname}" in j["text"]
+    assert j["medien"] == []
+    assert "status = 'freigegeben'" in db.sql[0] or "freigegeben" in db.sql[0]
+
+
+def test_versand_nicht_freigegeben_409(db, c):
+    db.antworten = [[{"status": "eingereicht", "fassung": 3, "format": "bloecke", "bloecke": {}, "mandant": "v",
+                      "felder": {}, "pflichtteil": {}}]]
+    assert c.get(f"/api/pult/inhalte/{IID}/versand", headers=H).status_code == 409
+
+
+def test_versand_ohne_schluessel_401(db, c):
+    assert c.get(f"/api/pult/inhalte/{IID}/versand").status_code == 401

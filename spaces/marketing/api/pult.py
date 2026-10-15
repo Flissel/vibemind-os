@@ -496,6 +496,38 @@ def fassung_speichern(iid: str, payload: dict = Body(...), x_pult_key: str | Non
     return {"fassung": int(zeile["fassung"])}
 
 
+@router.get("/inhalte/{iid}/versand")
+def versand(iid: str, x_pult_key: str | None = Header(None)):
+    """Versandfassung eines freigegebenen Editor-Newsletters fuer sales-claw (Plan 2026-10-15-newsletter-
+    versand-an-kontakte.md): HTML mit eingebetteten Bildern (cid:), Textfassung und die Medienliste.
+    {vorname} und {abmeldelink} bleiben stehen - eingesetzt wird je Empfaenger in sales-claw, Marketing
+    sieht keine Namen. Nur die freigegebene Fassung, nie ein Entwurf."""
+    _schluessel(x_pult_key)
+    i = _uuid_oder_404(iid)
+    zeile = _lesen_einer(lambda:
+        "SELECT i.status, i.mandant, f.fassung, f.format, f.bloecke, f.felder, m.pflichtteil "
+        "FROM marketing.inhalte i "
+        "JOIN marketing.mandanten m ON m.id = i.mandant "
+        "LEFT JOIN marketing.inhalt_fassungen f ON f.inhalt = i.id AND f.fassung = i.freigegebene_fassung "
+        f"WHERE i.id = {lit(i)}::uuid")
+    if not zeile:
+        raise HTTPException(404, "Unbekannter Inhalt")
+    if zeile.get("status") != "freigegeben" or zeile.get("fassung") is None:
+        raise HTTPException(409, "Nur freigegebene Newsletter lassen sich versenden")
+    if zeile.get("format") != "bloecke":
+        raise HTTPException(422, "Versand gibt es nur fuer Editor-Newsletter")
+    felder, pflicht, dok = zeile.get("felder") or {}, zeile.get("pflichtteil") or {}, zeile["bloecke"]
+    try:
+        html = bloecke_mjml.rendern(dok, felder.get("betreff", ""), felder.get("vorschautext", ""), pflicht,
+                                    fuer_versand=True)
+    except bloecke_mjml.RenderFehler as e:
+        raise HTTPException(422, str(e))
+    return {"inhalt": i, "mandant": zeile.get("mandant"), "fassung": int(zeile["fassung"]),
+            "betreff": felder.get("betreff", ""), "vorschautext": felder.get("vorschautext", ""),
+            "html": html, "text": bloecke_mjml.text_fassung(dok, pflicht),
+            "medien": bloecke_mjml.versand_medien(dok)}
+
+
 @router.get("/inhalte/{iid}/vorschau")
 def vorschau(iid: str, fassung: int = Query(..., ge=1), format: str = "mail", bild_basis: str = "",
              x_pult_key: str | None = Header(None)):

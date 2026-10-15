@@ -75,9 +75,14 @@ def _fuss_farbe(text: str, grund: str) -> str:
         return "#111111"
 
 
+CID = "cid:"   # Versand: Bilder haengen eingebettet an der Mail (sales-claw mail_dispatch)
+
+
 def bild_adresse(url: str, bild_basis: str) -> str | None:
     if not bild_basis or not isinstance(url, str) or not url.startswith("medien:"):
         return None
+    if bild_basis == CID:
+        return CID + urllib.parse.quote(url[len("medien:"):])
     if not bild_basis.endswith("/"):
         bild_basis += "/"
     return bild_basis + urllib.parse.quote(url[len("medien:"):])
@@ -184,7 +189,7 @@ def _block(dok: dict, bid: str, farben: dict, bild_basis: str) -> str:
         if not ziel:
             name = (p.get("url") or "")[len("medien:"):] or "?"
             return f'<mj-text padding="{polster}" align="{ausr}" color="{_a(farben["text"])}"{hg}>[Bild: {_a(name)}]</mj-text>'
-        if p.get("sw") is True:
+        if p.get("sw") is True and not ziel.startswith(CID):   # beim Versand graut sales-claw das Bild selbst
             ziel += "?sw=1"
         w, h = _zahl(p.get("width"), 0), _zahl(p.get("height"), 0)
         # Mit Breite traegt die Datei das Verhaeltnis; eine feste Hoehe verzerrte das Bild am Handy.
@@ -305,7 +310,9 @@ def _nutzt_hand(dok: dict) -> bool:
 
 
 def nach_mjml(dokument: dict, betreff: str, vorschautext: str, pflichtteil: dict,
-              bild_basis: str = "", breite: int = 600, schrift_basis: str = "") -> str:
+              bild_basis: str = "", breite: int = 600, schrift_basis: str = "", fuer_versand: bool = False) -> str:
+    """fuer_versand: {vorname} und {abmeldelink} bleiben stehen - sales-claw setzt sie je Empfaenger ein.
+    Sonst (Vorschau, Export) stehen dort [Vorname] und [Abmeldelink]."""
     wurzel = (dokument.get("root") or {}).get("data") or {}
     # aussen = Flaeche um die Mail (backdropColor), innen = Inhaltsflaeche (canvasColor)
     farben = {"aussen": wurzel.get("backdropColor") or "#f2f5f7",
@@ -337,16 +344,18 @@ def nach_mjml(dokument: dict, betreff: str, vorschautext: str, pflichtteil: dict
     impressum = (pflichtteil.get("impressum") or "").strip()
     impressum_html = (_a(impressum) if impressum else
                       '<strong style="color:#ef4444">Impressum fehlt &ndash; im Mandanten hinterlegen</strong>')
-    abmelden = _a((pflichtteil.get("abmelde_hinweis") or "").replace("{abmeldelink}", "[Abmeldelink]"))
+    hinweis = pflichtteil.get("abmelde_hinweis") or ""
+    abmelden = _a(hinweis if fuer_versand else hinweis.replace("{abmeldelink}", "[Abmeldelink]"))
     fuss = (f'<mj-section padding="16px 0"><mj-column><mj-text align="center" font-size="11px" '
             f'color="{_a(fuss_farbe)}" line-height="1.5">{impressum_html}<br>{abmelden}</mj-text></mj-column></mj-section>')
-    return (f'<mjml><mj-head><mj-title>{_a(betreff)}</mj-title><mj-preview>{_a(vorschautext)}</mj-preview>{koepfe}{dunkel_meta}'
+    quelle = (f'<mjml><mj-head><mj-title>{_a(betreff)}</mj-title><mj-preview>{_a(vorschautext)}</mj-preview>{koepfe}{dunkel_meta}'
             f'<mj-attributes><mj-all font-family="{schrift_attr}" /></mj-attributes></mj-head>'
             f'<mj-body background-color="{_a(farben["aussen"])}" width="{_zahl(breite, 600)}px">{rumpf}{fuss}</mj-body></mjml>')
+    return quelle if fuer_versand else quelle.replace("{vorname}", "[Vorname]")
 
 
 def rendern(dokument: dict, betreff: str, vorschautext: str, pflichtteil: dict,
-            bild_basis: str = "", handy: bool = False, schrift_basis: str = "") -> str:
+            bild_basis: str = "", handy: bool = False, schrift_basis: str = "", fuer_versand: bool = False) -> str:
     # mjml-python erst hier laden: fehlt das Paket, faellt nur die Bloecke-
     # Vorschau aus (422 mit Grund), nicht die ganze Marketing-API.
     try:
@@ -354,9 +363,62 @@ def rendern(dokument: dict, betreff: str, vorschautext: str, pflichtteil: dict,
     except ImportError as e:
         raise RenderFehler("mjml-python fehlt auf diesem Rechner - der Newsletter laesst sich nicht setzen "
                            "(pip install -r spaces/marketing/requirements.txt)") from e
-    quelle = nach_mjml(dokument, betreff, vorschautext, pflichtteil, bild_basis, 380 if handy else 600,
-                      schrift_basis)
+    quelle = nach_mjml(dokument, betreff, vorschautext, pflichtteil, CID if fuer_versand else bild_basis,
+                       380 if handy else 600, schrift_basis, fuer_versand)
     try:
         return mjml.mjml2html(quelle)
     except Exception as e:  # mrml meldet Englisch; nach aussen deutsch
         raise RenderFehler(f"Der Newsletter liess sich nicht setzen: {e}") from e
+
+
+# ---- Versand an Kontakte (sales-claw Plan 2026-10-15-newsletter-versand-an-kontakte.md) --------------
+
+def _bloecke_in_reihe(dok: dict, ids: list) -> list[dict]:
+    """Bloecke in Lesereihenfolge (Rahmen und Spalten aufgeloest)."""
+    aus: list[dict] = []
+    for bid in ids or []:
+        b = dok.get(bid) if isinstance(dok.get(bid), dict) else {}
+        p = ((b.get("data") or {}).get("props") or {})
+        if b.get("type") == "Container":
+            aus.append(b)
+            aus += _bloecke_in_reihe(dok, p.get("childrenIds") or [])
+        elif b.get("type") == "ColumnsContainer":
+            for c in p.get("columns") or []:
+                aus += _bloecke_in_reihe(dok, (c or {}).get("childrenIds") or [])
+        else:
+            aus.append(b)
+    return aus
+
+
+def versand_medien(dok: dict) -> list[dict]:
+    """Medien, die der Versand als eingebettete Bilder anhaengt: name, cid (wie im HTML), sw (grau)."""
+    gesehen: dict[str, dict] = {}
+    wurzel = ((dok.get("root") or {}).get("data") or {}).get("childrenIds") or []
+    for b in _bloecke_in_reihe(dok, wurzel):
+        p = ((b.get("data") or {}).get("props") or {})
+        url = p.get("url")
+        if b.get("type") in ("Image", "Container") and isinstance(url, str) and url.startswith("medien:"):
+            name = url[len("medien:"):]
+            eintrag = gesehen.setdefault(name, {"name": name, "cid": urllib.parse.quote(name), "sw": False})
+            eintrag["sw"] = eintrag["sw"] or p.get("sw") is True
+    return list(gesehen.values())
+
+
+def _schlicht(text: str) -> str:
+    text = _LINK.sub(lambda m: f"{m.group(1)} ({m.group(2)})", text or "")
+    text = _FETT.sub(r"\1", text)
+    return _KURSIV.sub(r"\1", text).strip()
+
+
+def text_fassung(dok: dict, pflichtteil: dict) -> str:
+    """Reine Textfassung fuer den text/plain-Teil der Mail; Platzhalter bleiben stehen."""
+    teile: list[str] = []
+    wurzel = ((dok.get("root") or {}).get("data") or {}).get("childrenIds") or []
+    for b in _bloecke_in_reihe(dok, wurzel):
+        p = ((b.get("data") or {}).get("props") or {})
+        if b.get("type") in ("Heading", "Text") and (p.get("text") or "").strip():
+            teile.append(_schlicht(p["text"]))
+        elif b.get("type") == "Button" and isinstance(p.get("url"), str) and p["url"].startswith("https://"):
+            teile.append(f"{_schlicht(p.get('text') or 'Link')}: {p['url']}")
+    fuss = [x for x in ((pflichtteil or {}).get("impressum"), (pflichtteil or {}).get("abmelde_hinweis")) if x]
+    return "\n\n".join(teile + ["--", *fuss]) + "\n"
