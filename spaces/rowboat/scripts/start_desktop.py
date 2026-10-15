@@ -24,6 +24,7 @@ SPACE = Path(__file__).resolve().parents[1]
 IS_WINDOWS = os.name == "nt"
 PROFILE = "vibemind"
 MAP_SECONDS = 60
+POLL_SECONDS = 0.5   # wait in slices: on Windows an untimed wait() does not let Ctrl+C through
 
 
 @dataclass(frozen=True)
@@ -105,7 +106,14 @@ def stop(proc: subprocess.Popen, windows: bool = IS_WINDOWS) -> None:
 def install(lay: Layout, windows: bool = IS_WINDOWS) -> int:
     for cmd, cwd in install_steps(lay, windows):
         log.info("running in %s: %s", cwd, " ".join(cmd))
-        if subprocess.run(cmd, cwd=cwd, shell=_shell(cmd, windows)).returncode != 0:
+        try:
+            code = subprocess.run(cmd, cwd=cwd, shell=_shell(cmd, windows)).returncode
+        except FileNotFoundError:
+            tool, hint = (" ".join(cmd[:2]), " (install Python 3.12 with the py launcher)") if cmd[0] == "py" \
+                else (cmd[0], "")
+            log.error("install step failed: %s not found%s. Command: %s", tool, hint, " ".join(cmd))
+            return 1
+        if code != 0:
             log.error("install step failed: %s", " ".join(cmd))
             return 1
     return 0
@@ -134,14 +142,24 @@ def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS) -> int:
             procs.append(subprocess.Popen(cmd, cwd=cwd, env=env, shell=_shell(cmd, windows),
                                           start_new_session=not windows))
         log.info("Rowboat opens after its first build (a few minutes). Ctrl+C stops everything.")
-        procs[0].wait()
+        code = _wait(procs[0])
     except KeyboardInterrupt:
-        pass
+        return 0
     finally:
         # Runs on Ctrl+C and on a failed spawn too, so no started job is left behind.
         for proc in procs:
             stop(proc, windows)
-    return 0
+    if code != 0:
+        log.error("Rowboat stopped with exit code %s", code)
+    return code
+
+
+def _wait(proc: subprocess.Popen) -> int:
+    while True:
+        try:
+            return proc.wait(timeout=POLL_SECONDS)
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def main(argv: list[str] | None = None) -> int:

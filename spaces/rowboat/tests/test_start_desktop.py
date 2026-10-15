@@ -16,10 +16,12 @@ from start_desktop import install_steps, jobs, layout, map_command, missing, ven
 class FakeProc:
     """Stands in for subprocess.Popen; records what stop() asks of it."""
 
-    def __init__(self, pid=4242, wait_exc=None):
+    def __init__(self, pid=4242, wait_exc=None, exit_code=0, timeouts=0):
         self.pid = pid
         self.events = []
         self._wait_exc = wait_exc
+        self._exit_code = exit_code
+        self._timeouts = timeouts   # how many timed waits time out before the process "exits"
 
     def poll(self):
         return None
@@ -31,7 +33,10 @@ class FakeProc:
         self.events.append(("wait", timeout))
         if self._wait_exc is not None:
             raise self._wait_exc
-        return 0
+        if timeout is not None and self._timeouts > 0:
+            self._timeouts -= 1
+            raise subprocess.TimeoutExpired("npm", timeout)
+        return self._exit_code
 
 
 def _prereqs(tmp_path, windows):
@@ -192,3 +197,48 @@ def test_relative_workdir_is_made_absolute(tmp_path, monkeypatch):
     monkeypatch.setattr(start_desktop, "start", lambda lay, workdir, windows=False: seen.append(workdir) or 0)
     assert start_desktop.main(["--workdir", "data"]) == 0
     assert seen == [(tmp_path / "data").resolve()]
+
+
+# Review PR #151, finding 10 and the author's deferred list: Ctrl+C on Windows, exit codes, missing py launcher.
+def _start_with(tmp_path, monkeypatch, rowboat, windows=True):
+    lay = _prereqs(tmp_path, windows=windows)
+    procs = iter([rowboat, FakeProc(pid=2)])
+    stopped = []
+    monkeypatch.setattr(start_desktop.subprocess, "Popen", lambda cmd, **k: next(procs))
+    monkeypatch.setattr(start_desktop.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0))
+    monkeypatch.setattr(start_desktop, "stop", lambda proc, windows=False: stopped.append(proc.pid))
+    monkeypatch.setattr(start_desktop.signal, "signal", lambda sig, handler: None)
+    monkeypatch.setattr(signal, "SIGHUP", 1, raising=False)
+    return start_desktop.start(lay, tmp_path, windows=windows), stopped
+
+
+def test_waiting_for_rowboat_never_blocks_without_a_timeout(tmp_path, monkeypatch):
+    rowboat = FakeProc(pid=1, timeouts=3)
+    code, stopped = _start_with(tmp_path, monkeypatch, rowboat)
+    waits = [e for e in rowboat.events if isinstance(e, tuple) and e[0] == "wait"]
+    assert len(waits) == 4 and all(timeout for _, timeout in waits)   # Ctrl+C gets through between waits
+    assert code == 0 and stopped == [1, 2]
+
+
+def test_ctrl_c_stops_both_jobs(tmp_path, monkeypatch):
+    code, stopped = _start_with(tmp_path, monkeypatch, FakeProc(pid=1, wait_exc=KeyboardInterrupt()))
+    assert code == 0 and stopped == [1, 2]
+
+
+def test_a_rowboat_crash_gives_a_non_zero_exit_code(tmp_path, monkeypatch, caplog):
+    with caplog.at_level("ERROR", logger="start_desktop"):
+        code, stopped = _start_with(tmp_path, monkeypatch, FakeProc(pid=1, exit_code=3))
+    assert code == 3 and stopped == [1, 2]
+    assert "exit code 3" in caplog.text
+
+
+def test_missing_py_launcher_gives_a_clear_message(tmp_path, monkeypatch, caplog):
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[0] == "py":
+            raise FileNotFoundError(2, "The system cannot find the file specified")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(start_desktop.subprocess, "run", fake_run)
+    with caplog.at_level("ERROR", logger="start_desktop"):
+        assert start_desktop.install(layout(tmp_path), windows=True) == 1
+    assert "py -3.12" in caplog.text and "not found" in caplog.text
