@@ -123,6 +123,8 @@ def _schrift(s: dict, farben: dict) -> str:
         return f' font-family="{_af(farben["anzeige"])}"'
     if ff == "TEXT" and farben.get("textschrift"):
         return f' font-family="{_af(farben["textschrift"])}"'
+    if ff == "HAND":
+        return f' font-family="{_af(schriften.css_familie(schriften.HAND_ROLLE, schriften.HAND))}"'
     if ff in SCHRIFTEN:
         return f' font-family="{_af(SCHRIFTEN[ff])}"'
     return ""
@@ -297,6 +299,11 @@ def _kinder_als_section(dok: dict, ids: list, farben: dict, bild_basis: str) -> 
     return "".join(teile)
 
 
+def _nutzt_hand(dok: dict) -> bool:
+    return any(isinstance(b, dict) and (((b.get("data") or {}).get("style") or {}).get("fontFamily") == "HAND")
+               for b in dok.values())
+
+
 def nach_mjml(dokument: dict, betreff: str, vorschautext: str, pflichtteil: dict,
               bild_basis: str = "", breite: int = 600, schrift_basis: str = "") -> str:
     wurzel = (dokument.get("root") or {}).get("data") or {}
@@ -318,6 +325,9 @@ def nach_mjml(dokument: dict, betreff: str, vorschautext: str, pflichtteil: dict
             if sid in schriften.REGISTER:
                 koepfe += (f'<mj-font name="{_a(schriften.REGISTER[sid]["familie"])}" '
                            f'href="{_a(schrift_basis)}schriften.css" />')
+        if _nutzt_hand(dokument):
+            koepfe += (f'<mj-font name="{_a(schriften.HAND[schriften.HAND_ROLLE]["familie"])}" '
+                       f'href="{_a(schrift_basis)}schriften.css" />')
     dunkel_meta = ""
     if wurzel.get("dunkel") is True:
         dunkel_meta = ('<mj-raw><meta name="color-scheme" content="dark"><meta name="supported-color-schemes" '

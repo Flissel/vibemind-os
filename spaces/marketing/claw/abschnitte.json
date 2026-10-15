@@ -884,7 +884,7 @@
    }
   },
   "brief": {
-   "oben": "n4",
+   "oben": "n5",
    "bloecke": {
     "n1": {
      "type": "Text",
@@ -938,18 +938,40 @@
        "textAlign": "left",
        "padding": {
         "top": 0,
-        "bottom": 32,
+        "bottom": 0,
         "left": 40,
         "right": 40
        }
       },
       "props": {
-       "text": "Herzlich,  \n**Vorname**",
+       "text": "Herzlich,",
        "markdown": true
       }
      }
     },
     "n4": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{akzentText}}",
+       "fontSize": 30,
+       "fontWeight": "normal",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 32,
+        "left": 40,
+        "right": 40
+       },
+       "fontFamily": "HAND"
+      },
+      "props": {
+       "text": "Vorname",
+       "markdown": true
+      }
+     }
+    },
+    "n5": {
      "type": "Container",
      "data": {
       "style": {
@@ -964,7 +986,8 @@
        "childrenIds": [
         "n1",
         "n2",
-        "n3"
+        "n3",
+        "n4"
        ]
       }
      }
@@ -972,7 +995,7 @@
    }
   },
   "portraet_gruss": {
-   "oben": "n4",
+   "oben": "n5",
    "bloecke": {
     "n1": {
      "type": "Image",
@@ -1006,7 +1029,7 @@
        "textAlign": "left",
        "padding": {
         "top": 0,
-        "bottom": 8,
+        "bottom": 4,
         "left": 0,
         "right": 0
        }
@@ -1022,7 +1045,29 @@
      "data": {
       "style": {
        "color": "{{akzentText}}",
-       "fontSize": 16,
+       "fontSize": 28,
+       "fontWeight": "normal",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 0,
+        "left": 0,
+        "right": 0
+       },
+       "fontFamily": "HAND"
+      },
+      "props": {
+       "text": "Vorname",
+       "markdown": true
+      }
+     }
+    },
+    "n4": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{text}}",
+       "fontSize": 13,
        "fontWeight": "normal",
        "textAlign": "left",
        "padding": {
@@ -1033,12 +1078,12 @@
        }
       },
       "props": {
-       "text": "**Vorname**, Inhaberin",
+       "text": "Inhaberin",
        "markdown": true
       }
      }
     },
-    "n4": {
+    "n5": {
      "type": "ColumnsContainer",
      "data": {
       "style": {
@@ -1068,7 +1113,8 @@
         {
          "childrenIds": [
           "n2",
-          "n3"
+          "n3",
+          "n4"
          ]
         },
         {

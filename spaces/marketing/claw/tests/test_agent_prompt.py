@@ -423,3 +423,8 @@ def test_freie_flaeche_im_system():
                  "deckkraft (0-100", "caveat"):
         assert teil in s, teil
     assert len(ap.SYSTEM) < 12000
+
+
+def test_handschrift_rolle_im_system():
+    s = ap.system(marke=False)
+    assert 'fontFamily "HAND"' in s and len(ap.SYSTEM) < 12000

@@ -36,8 +36,10 @@ HAND: dict[str, dict] = {
                "dateien": [(400, "normal"), (700, "normal")]},
 }
 EBENEN_SCHRIFTEN: dict[str, dict] = {**REGISTER, **HAND}
+# Rolle "HAND" in style.fontFamily (Textbloecke, z. B. Unterschrift unter dem Gruss) - Migration 068.
+HAND_ROLLE = "caveat"
 
 
-def css_familie(sid: str) -> str:
-    s = REGISTER.get(sid) if isinstance(sid, str) else None
+def css_familie(sid: str, register: dict | None = None) -> str:
+    s = (REGISTER if register is None else register).get(sid) if isinstance(sid, str) else None
     return f"'{s['familie']}', {s['stapel']}" if s else ""

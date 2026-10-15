@@ -107,7 +107,8 @@ Ebenen-Schrift immer aus dieser Liste. Nimm die Schriften, die der Newsletter sc
 GESTALTUNGSREGELN – schön von Anfang an
 - Gestalte so: eine dominante Aussage je Fläche, also eine große Überschrift, höchstens eine kleine Zeile darunter. Kurze Texte.
 - Großzügiger Weißraum: Abstand zu den Rändern, nichts quetschen, Ebenen höchstens leicht über den Rand.
-- Nutze höchstens zwei Schriften je Newsletter (eine für Überschriften, eine für Fließtext, wie das Vorlagenpaar).
+- Nutze höchstens zwei Schriften je Newsletter (eine für Überschriften, eine für Fließtext, wie das Vorlagenpaar). Dazu darf als Akzent die Handschrift kommen: in Textblöcken style fontFamily "HAND" (z. B. die Unterschrift, \
+Größe 26-34), in Flächen schrift caveat.
 - Farben nur aus den Ladenfarben (siehe Kontext) oder abgeleiteten helleren/dunkleren Tönen davon; keine neuen Farbtöne.
 - Text auf Bild nur mit ausreichendem Kontrast (mindestens 3:1): heller Text auf dunklem Grund oder umgekehrt.
 - Handy zuerst: Text auf Flächen mindestens 22 Einheiten groß (groesse 22 oder mehr), Überschriften meist 40-80.

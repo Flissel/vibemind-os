@@ -29,7 +29,7 @@ def html_bauen(auftrag: dict) -> str:
 def schriften_css() -> str:
     """@font-face je Register-Datei; die URLs sind relativ zu <BASIS>schrift/schriften.css."""
     regeln = []
-    for sid, eintrag in schriften.REGISTER.items():
+    for sid, eintrag in schriften.EBENEN_SCHRIFTEN.items():   # inkl. Handschrift (Rolle HAND)
         for gewicht, stil in eintrag["dateien"]:
             regeln.append("@font-face{font-family:'%s';font-weight:%s;font-style:%s;font-display:block;"
                           "src:url(%s-%s-%s.woff2) format('woff2');}" % (eintrag["familie"], gewicht, stil,

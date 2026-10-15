@@ -448,3 +448,15 @@ def test_randloses_band_mit_hintergrundbild():
                                   "props": {"randlos": True, "url": "medien:kopf.jpg", "childrenIds": []}}))
     m = b.nach_mjml(d, "B", "V", {}, bild_basis="https://x.de/b/")
     assert '<mj-section full-width="full-width" background-url="https://x.de/b/kopf.jpg"' in m
+
+
+def test_handschrift_als_rolle_hand():
+    d = _dok(("t", "Text", {"style": {"fontFamily": "HAND", "fontSize": 26}, "props": {"text": "Deine Lena"}}),
+             schriften={"anzeige": "playfair", "text": "poppins"})
+    m = b.nach_mjml(d, "B", "V", {}, schrift_basis="https://x.de/marketing/schrift/")
+    assert "font-family=\"'Caveat'" in m
+    assert '<mj-font name="Caveat"' in m
+    # ohne Handschrift-Block kein Laden der Schrift
+    ohne = _dok(("t", "Text", {"style": {}, "props": {"text": "x"}}), schriften={"anzeige": "playfair", "text": "poppins"})
+    assert "Caveat" not in b.nach_mjml(ohne, "B", "V", {}, schrift_basis="https://x.de/marketing/schrift/")
+    assert "Deine Lena" in b.rendern(d, "B", "V", {}, schrift_basis="https://x.de/marketing/schrift/")

@@ -100,9 +100,9 @@ class Browser:
             raise RuntimeError("browser close kaputt")
 
 
-def test_schriften_css_hat_22_font_face_mit_relativen_urls():
+def test_schriften_css_hat_24_font_face_mit_relativen_urls():
     css = ew.schriften_css()
-    assert css.count("@font-face") == 22
+    assert css.count("@font-face") == 24 and "src:url(caveat-700-normal.woff2)" in css
     assert "src:url(cormorant-400-italic.woff2)" in css and "font-style:italic" in css
     assert "font-family:'Cormorant Garamond'" in css
 
