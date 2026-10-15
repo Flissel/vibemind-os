@@ -8,7 +8,7 @@ import re
 import secrets
 from dataclasses import dataclass, field
 
-from spaces.marketing.claw import bildplaetze, gestaltung, schriften
+from spaces.marketing.claw import abschnitte, bildplaetze, gestaltung, schriften
 
 MAX_AENDERUNGEN = 40
 MAX_SCHRITT = 80
@@ -25,7 +25,7 @@ EBENE_FELDER = {
 }
 
 WERKZEUGE: tuple[str, ...] = (
-    "block_einfuegen", "block_aendern", "block_verschieben", "block_loeschen", "farben_setzen",
+    "block_einfuegen", "abschnitt_einfuegen", "block_aendern", "block_verschieben", "block_loeschen", "farben_setzen",
     "schriften_setzen", "flaeche_anlegen", "ebene_hinzufuegen", "ebene_aendern", "ebene_reihenfolge", "ebene_loeschen",
     "format_setzen", "hintergrund_setzen", "bild_erzeugen", "bild_freistellen", "bild_aus_medien",
     "entwurf_speichern", "export_vorschlagen")
@@ -33,6 +33,7 @@ WERKZEUGE: tuple[str, ...] = (
 # werkzeug -> (Pflichtparameter, optionale Parameter)
 PARAMETER: dict[str, tuple[set, set]] = {
     "block_einfuegen": ({"typ", "nach"}, {"daten"}),
+    "abschnitt_einfuegen": ({"abschnitt", "nach"}, set()),
     "block_aendern": ({"id"}, {"props", "style"}),
     "block_verschieben": ({"id", "nach"}, set()),
     "block_loeschen": ({"id"}, set()),
@@ -210,6 +211,24 @@ class _Lauf:
         bid = self.neue_id("agent")
         self.einsetzen(bid, a["nach"])
         self.b[bid] = {"type": a["typ"], "data": {"style": copy.deepcopy(style), "props": copy.deepcopy(props)}}
+
+    def abschnitt_einfuegen(self, a: dict) -> None:
+        # Dieselben Bauplaene wie die Abschnittsleiste im Editor; Rahmen und Spalten nur auf oberster Ebene (DB).
+        if a["abschnitt"] not in abschnitte.SCHLUESSEL:
+            raise WerkzeugFehler(f"abschnitt muss einer von {', '.join(abschnitte.SCHLUESSEL)} sein")
+        nach = a["nach"]
+        if nach is not None and self.ref(nach, "nach") not in self.b["root"]["data"]["childrenIds"]:
+            raise WerkzeugFehler("Abschnitte nur auf oberster Ebene: nach muss ein Block direkt im Newsletter sein")
+        neu: set[str] = set()
+
+        def frei() -> str:
+            while (i := self.neue_id("agent")) in neu:
+                pass
+            neu.add(i)
+            return i
+        oben, bloecke = abschnitte.bauen(a["abschnitt"], self.b, frei)
+        self.b.update(bloecke)
+        self.einsetzen(oben, nach)
 
     def block_aendern(self, a: dict) -> None:
         bid = self.ref(a["id"], "id")

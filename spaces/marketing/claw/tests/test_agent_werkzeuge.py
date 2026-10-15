@@ -395,7 +395,7 @@ def test_fehler_bricht_alles_ab_und_original_bleibt():
 
 
 def test_werkzeuge_vollstaendig():
-    assert len(aw.WERKZEUGE) == 18 and set(aw.WERKZEUGE) == set(aw.PARAMETER)
+    assert len(aw.WERKZEUGE) == 19 and set(aw.WERKZEUGE) == set(aw.PARAMETER)
 
 
 def test_schritt_wird_akzeptiert_und_aendert_nichts():
@@ -486,3 +486,24 @@ def test_nachspielen_kaputte_liste_wirft():
         aw.nachspielen(DOK, "keine Liste", MEDIEN)
     with pytest.raises(WerkzeugFehler):
         aw.nachspielen({"root": {}}, [], MEDIEN)
+
+
+def test_abschnitt_einfuegen_oben_und_am_ende():
+    e = lauf([{"werkzeug": "abschnitt_einfuegen", "abschnitt": "portraet_gruss", "nach": "kopf"},
+              {"werkzeug": "abschnitt_einfuegen", "abschnitt": "farbband", "nach": None}])
+    ids = e.bloecke["root"]["data"]["childrenIds"]
+    assert len(ids) == 5 and ids[0] == "kopf"
+    assert e.bloecke[ids[1]]["type"] == "ColumnsContainer" and e.bloecke[ids[-1]]["type"] == "Container"
+    assert e.bloecke[ids[-1]]["data"]["props"]["randlos"] is True
+    kreise = [b for b in e.bloecke.values() if b["type"] == "Image" and b["data"]["props"].get("form") == "kreis"]
+    assert len(kreise) == 1 and kreise[0]["data"]["props"]["url"].startswith("medien:platzhalter-")
+    assert all(k.startswith("agent-") for k in e.bloecke if k not in DOK)
+
+
+def test_abschnitt_einfuegen_fehler():
+    fehler([{"werkzeug": "abschnitt_einfuegen", "abschnitt": "stern", "nach": None}], "abschnitt muss")
+    dok = copy.deepcopy(DOK)
+    dok["root"]["data"]["childrenIds"].append("card")
+    dok["card"] = {"type": "Container", "data": {"style": {}, "props": {"childrenIds": ["k1"]}}}
+    dok["k1"] = {"type": "Text", "data": {"style": {}, "props": {"text": "a"}}}
+    fehler([{"werkzeug": "abschnitt_einfuegen", "abschnitt": "brief", "nach": "k1"}], "oberster Ebene", dok)

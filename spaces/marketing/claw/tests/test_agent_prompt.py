@@ -406,3 +406,12 @@ def test_waerme_regeln_und_neue_mittel_im_system():
     for teil in ('"form": "kreis"', '"randlos": true', "borderRadius", "Anrede", "Gruß"):
         assert teil in s, teil
     assert len(ap.SYSTEM) < 12000 and "WÄRME UND RHYTHMUS" in ap.system(marke=True)
+
+
+def test_abschnitt_werkzeug_mit_allen_abschnitten_im_system():
+    from spaces.marketing.claw import abschnitte
+    s = ap.system(marke=False)
+    assert "- abschnitt_einfuegen: abschnitt*" in s
+    for k in abschnitte.SCHLUESSEL:
+        assert k in s, k
+    assert len(ap.SYSTEM) < 12000

@@ -1,0 +1,1488 @@
+{
+ "anzeige": "/medien/datei/",
+ "abschnitte": {
+  "kopfbild": {
+   "oben": "n4",
+   "bloecke": {
+    "n1": {
+     "type": "Image",
+     "data": {
+      "style": {
+       "padding": {
+        "top": 0,
+        "bottom": 0,
+        "left": 0,
+        "right": 0
+       },
+       "textAlign": "center"
+      },
+      "props": {
+       "url": "/medien/datei/platzhalter-2x1.png",
+       "alt": "Kopfbild zum Thema",
+       "width": 552,
+       "height": 276,
+       "contentAlignment": "middle"
+      }
+     }
+    },
+    "n2": {
+     "type": "Heading",
+     "data": {
+      "style": {
+       "color": "{{hell}}",
+       "fontWeight": "bold",
+       "textAlign": "left",
+       "padding": {
+        "top": 24,
+        "bottom": 12,
+        "left": 40,
+        "right": 40
+       },
+       "fontFamily": "ANZEIGE"
+      },
+      "props": {
+       "level": "h1",
+       "text": "Überschrift"
+      }
+     }
+    },
+    "n3": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{text}}",
+       "fontSize": 17,
+       "fontWeight": "normal",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 16,
+        "left": 40,
+        "right": 40
+       }
+      },
+      "props": {
+       "text": "Zwei, drei Sätze Einleitung.",
+       "markdown": true
+      }
+     }
+    },
+    "n4": {
+     "type": "Container",
+     "data": {
+      "style": {
+       "padding": {
+        "top": 0,
+        "bottom": 0,
+        "left": 0,
+        "right": 0
+       }
+      },
+      "props": {
+       "childrenIds": [
+        "n1",
+        "n2",
+        "n3"
+       ]
+      }
+     }
+    }
+   }
+  },
+  "bild_text": {
+   "oben": "n4",
+   "bloecke": {
+    "n1": {
+     "type": "Image",
+     "data": {
+      "style": {
+       "padding": {
+        "top": 0,
+        "bottom": 0,
+        "left": 0,
+        "right": 0
+       },
+       "textAlign": "center"
+      },
+      "props": {
+       "url": "/medien/datei/platzhalter-4x3.png",
+       "alt": "Bild zum Text",
+       "width": 268,
+       "height": 201,
+       "contentAlignment": "middle"
+      }
+     }
+    },
+    "n2": {
+     "type": "Heading",
+     "data": {
+      "style": {
+       "color": "{{hell}}",
+       "fontWeight": "bold",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 8,
+        "left": 0,
+        "right": 0
+       },
+       "fontFamily": "ANZEIGE"
+      },
+      "props": {
+       "level": "h3",
+       "text": "Thema"
+      }
+     }
+    },
+    "n3": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{text}}",
+       "fontSize": 15,
+       "fontWeight": "normal",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 8,
+        "left": 0,
+        "right": 0
+       }
+      },
+      "props": {
+       "text": "Ein kurzer Absatz.",
+       "markdown": true
+      }
+     }
+    },
+    "n4": {
+     "type": "ColumnsContainer",
+     "data": {
+      "style": {
+       "padding": {
+        "top": 0,
+        "bottom": 24,
+        "left": 24,
+        "right": 24
+       }
+      },
+      "props": {
+       "columnsCount": 2,
+       "columnsGap": 16,
+       "contentAlignment": "top",
+       "columns": [
+        {
+         "childrenIds": [
+          "n1"
+         ]
+        },
+        {
+         "childrenIds": [
+          "n2",
+          "n3"
+         ]
+        },
+        {
+         "childrenIds": []
+        }
+       ]
+      }
+     }
+    }
+   }
+  },
+  "zwei_spalten": {
+   "oben": "n7",
+   "bloecke": {
+    "n1": {
+     "type": "Image",
+     "data": {
+      "style": {
+       "padding": {
+        "top": 0,
+        "bottom": 10,
+        "left": 0,
+        "right": 0
+       },
+       "textAlign": "center"
+      },
+      "props": {
+       "url": "/medien/datei/platzhalter-4x3.png",
+       "alt": "Bild zu Punkt 1",
+       "width": 268,
+       "height": 201,
+       "contentAlignment": "middle"
+      }
+     }
+    },
+    "n2": {
+     "type": "Heading",
+     "data": {
+      "style": {
+       "color": "{{hell}}",
+       "fontWeight": "bold",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 4,
+        "left": 0,
+        "right": 0
+       },
+       "fontFamily": "ANZEIGE"
+      },
+      "props": {
+       "level": "h3",
+       "text": "Punkt 1"
+      }
+     }
+    },
+    "n3": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{text}}",
+       "fontSize": 14,
+       "fontWeight": "normal",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 0,
+        "left": 0,
+        "right": 0
+       }
+      },
+      "props": {
+       "text": "Ein Satz dazu.",
+       "markdown": true
+      }
+     }
+    },
+    "n4": {
+     "type": "Image",
+     "data": {
+      "style": {
+       "padding": {
+        "top": 0,
+        "bottom": 10,
+        "left": 0,
+        "right": 0
+       },
+       "textAlign": "center"
+      },
+      "props": {
+       "url": "/medien/datei/platzhalter-4x3.png",
+       "alt": "Bild zu Punkt 2",
+       "width": 268,
+       "height": 201,
+       "contentAlignment": "middle"
+      }
+     }
+    },
+    "n5": {
+     "type": "Heading",
+     "data": {
+      "style": {
+       "color": "{{hell}}",
+       "fontWeight": "bold",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 4,
+        "left": 0,
+        "right": 0
+       },
+       "fontFamily": "ANZEIGE"
+      },
+      "props": {
+       "level": "h3",
+       "text": "Punkt 2"
+      }
+     }
+    },
+    "n6": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{text}}",
+       "fontSize": 14,
+       "fontWeight": "normal",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 0,
+        "left": 0,
+        "right": 0
+       }
+      },
+      "props": {
+       "text": "Ein Satz dazu.",
+       "markdown": true
+      }
+     }
+    },
+    "n7": {
+     "type": "ColumnsContainer",
+     "data": {
+      "style": {
+       "padding": {
+        "top": 0,
+        "bottom": 24,
+        "left": 24,
+        "right": 24
+       }
+      },
+      "props": {
+       "columnsCount": 2,
+       "columnsGap": 16,
+       "contentAlignment": "top",
+       "columns": [
+        {
+         "childrenIds": [
+          "n1",
+          "n2",
+          "n3"
+         ]
+        },
+        {
+         "childrenIds": [
+          "n4",
+          "n5",
+          "n6"
+         ]
+        },
+        {
+         "childrenIds": []
+        }
+       ]
+      }
+     }
+    }
+   }
+  },
+  "drei_spalten": {
+   "oben": "n10",
+   "bloecke": {
+    "n1": {
+     "type": "Image",
+     "data": {
+      "style": {
+       "padding": {
+        "top": 0,
+        "bottom": 10,
+        "left": 0,
+        "right": 0
+       },
+       "textAlign": "center"
+      },
+      "props": {
+       "url": "/medien/datei/platzhalter-1x1.png",
+       "alt": "Bild zu Punkt 1",
+       "width": 172,
+       "height": 172,
+       "contentAlignment": "middle"
+      }
+     }
+    },
+    "n2": {
+     "type": "Heading",
+     "data": {
+      "style": {
+       "color": "{{hell}}",
+       "fontWeight": "bold",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 4,
+        "left": 0,
+        "right": 0
+       },
+       "fontFamily": "ANZEIGE"
+      },
+      "props": {
+       "level": "h3",
+       "text": "Punkt 1"
+      }
+     }
+    },
+    "n3": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{text}}",
+       "fontSize": 14,
+       "fontWeight": "normal",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 0,
+        "left": 0,
+        "right": 0
+       }
+      },
+      "props": {
+       "text": "Ein Satz dazu.",
+       "markdown": true
+      }
+     }
+    },
+    "n4": {
+     "type": "Image",
+     "data": {
+      "style": {
+       "padding": {
+        "top": 0,
+        "bottom": 10,
+        "left": 0,
+        "right": 0
+       },
+       "textAlign": "center"
+      },
+      "props": {
+       "url": "/medien/datei/platzhalter-1x1.png",
+       "alt": "Bild zu Punkt 2",
+       "width": 172,
+       "height": 172,
+       "contentAlignment": "middle"
+      }
+     }
+    },
+    "n5": {
+     "type": "Heading",
+     "data": {
+      "style": {
+       "color": "{{hell}}",
+       "fontWeight": "bold",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 4,
+        "left": 0,
+        "right": 0
+       },
+       "fontFamily": "ANZEIGE"
+      },
+      "props": {
+       "level": "h3",
+       "text": "Punkt 2"
+      }
+     }
+    },
+    "n6": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{text}}",
+       "fontSize": 14,
+       "fontWeight": "normal",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 0,
+        "left": 0,
+        "right": 0
+       }
+      },
+      "props": {
+       "text": "Ein Satz dazu.",
+       "markdown": true
+      }
+     }
+    },
+    "n7": {
+     "type": "Image",
+     "data": {
+      "style": {
+       "padding": {
+        "top": 0,
+        "bottom": 10,
+        "left": 0,
+        "right": 0
+       },
+       "textAlign": "center"
+      },
+      "props": {
+       "url": "/medien/datei/platzhalter-1x1.png",
+       "alt": "Bild zu Punkt 3",
+       "width": 172,
+       "height": 172,
+       "contentAlignment": "middle"
+      }
+     }
+    },
+    "n8": {
+     "type": "Heading",
+     "data": {
+      "style": {
+       "color": "{{hell}}",
+       "fontWeight": "bold",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 4,
+        "left": 0,
+        "right": 0
+       },
+       "fontFamily": "ANZEIGE"
+      },
+      "props": {
+       "level": "h3",
+       "text": "Punkt 3"
+      }
+     }
+    },
+    "n9": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{text}}",
+       "fontSize": 14,
+       "fontWeight": "normal",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 0,
+        "left": 0,
+        "right": 0
+       }
+      },
+      "props": {
+       "text": "Ein Satz dazu.",
+       "markdown": true
+      }
+     }
+    },
+    "n10": {
+     "type": "ColumnsContainer",
+     "data": {
+      "style": {
+       "padding": {
+        "top": 0,
+        "bottom": 24,
+        "left": 24,
+        "right": 24
+       }
+      },
+      "props": {
+       "columnsCount": 3,
+       "columnsGap": 16,
+       "contentAlignment": "top",
+       "columns": [
+        {
+         "childrenIds": [
+          "n1",
+          "n2",
+          "n3"
+         ]
+        },
+        {
+         "childrenIds": [
+          "n4",
+          "n5",
+          "n6"
+         ]
+        },
+        {
+         "childrenIds": [
+          "n7",
+          "n8",
+          "n9"
+         ]
+        }
+       ]
+      }
+     }
+    }
+   }
+  },
+  "zitat": {
+   "oben": "n3",
+   "bloecke": {
+    "n1": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{hell}}",
+       "fontSize": 20,
+       "fontWeight": "normal",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 8,
+        "left": 0,
+        "right": 0
+       },
+       "fontFamily": "ANZEIGE"
+      },
+      "props": {
+       "text": "„Ein Satz, der hängen bleibt.“",
+       "markdown": true
+      }
+     }
+    },
+    "n2": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{text}}",
+       "fontSize": 13,
+       "fontWeight": "normal",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 0,
+        "left": 0,
+        "right": 0
+       }
+      },
+      "props": {
+       "text": "— Name, Rolle",
+       "markdown": true
+      }
+     }
+    },
+    "n3": {
+     "type": "Container",
+     "data": {
+      "style": {
+       "backgroundColor": "{{karte}}",
+       "borderRadius": 12,
+       "padding": {
+        "top": 24,
+        "bottom": 24,
+        "left": 24,
+        "right": 24
+       }
+      },
+      "props": {
+       "childrenIds": [
+        "n1",
+        "n2"
+       ]
+      }
+     }
+    }
+   }
+  },
+  "grosse_zahl": {
+   "oben": "n3",
+   "bloecke": {
+    "n1": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{akzent}}",
+       "fontSize": 34,
+       "fontWeight": "normal",
+       "textAlign": "center",
+       "padding": {
+        "top": 0,
+        "bottom": 4,
+        "left": 0,
+        "right": 0
+       }
+      },
+      "props": {
+       "text": "**3×** schneller",
+       "markdown": true
+      }
+     }
+    },
+    "n2": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{text}}",
+       "fontSize": 15,
+       "fontWeight": "normal",
+       "textAlign": "center",
+       "padding": {
+        "top": 0,
+        "bottom": 0,
+        "left": 0,
+        "right": 0
+       }
+      },
+      "props": {
+       "text": "Ein Satz Einordnung.",
+       "markdown": true
+      }
+     }
+    },
+    "n3": {
+     "type": "Container",
+     "data": {
+      "style": {
+       "backgroundColor": "{{karte}}",
+       "borderRadius": 12,
+       "padding": {
+        "top": 24,
+        "bottom": 24,
+        "left": 24,
+        "right": 24
+       }
+      },
+      "props": {
+       "childrenIds": [
+        "n1",
+        "n2"
+       ]
+      }
+     }
+    }
+   }
+  },
+  "knopfleiste": {
+   "oben": "n3",
+   "bloecke": {
+    "n1": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{text}}",
+       "fontSize": 16,
+       "fontWeight": "normal",
+       "textAlign": "left",
+       "padding": {
+        "top": 16,
+        "bottom": 8,
+        "left": 40,
+        "right": 40
+       }
+      },
+      "props": {
+       "text": "Ein Satz, warum man klicken sollte.",
+       "markdown": true
+      }
+     }
+    },
+    "n2": {
+     "type": "Button",
+     "data": {
+      "style": {
+       "textAlign": "left",
+       "padding": {
+        "top": 8,
+        "bottom": 32,
+        "left": 40,
+        "right": 40
+       },
+       "fontSize": 16
+      },
+      "props": {
+       "text": "Mehr erfahren",
+       "url": "https://vibemind.space",
+       "buttonBackgroundColor": "{{akzent}}",
+       "buttonTextColor": "{{aufAkzent}}",
+       "buttonStyle": "rounded",
+       "size": "large"
+      }
+     }
+    },
+    "n3": {
+     "type": "Container",
+     "data": {
+      "style": {
+       "padding": {
+        "top": 0,
+        "bottom": 0,
+        "left": 0,
+        "right": 0
+       }
+      },
+      "props": {
+       "childrenIds": [
+        "n1",
+        "n2"
+       ]
+      }
+     }
+    }
+   }
+  },
+  "fussgruss": {
+   "oben": "n4",
+   "bloecke": {
+    "n1": {
+     "type": "Divider",
+     "data": {
+      "style": {
+       "padding": {
+        "top": 24,
+        "bottom": 16,
+        "left": 40,
+        "right": 40
+       }
+      },
+      "props": {
+       "lineColor": "#2c4f4b",
+       "lineHeight": 1
+      }
+     }
+    },
+    "n2": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{text}}",
+       "fontSize": 15,
+       "fontWeight": "normal",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 8,
+        "left": 40,
+        "right": 40
+       }
+      },
+      "props": {
+       "text": "Bis bald,  \n**Felix** · VibeMind",
+       "markdown": true
+      }
+     }
+    },
+    "n3": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{text}}",
+       "fontSize": 13,
+       "fontWeight": "normal",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 40,
+        "left": 40,
+        "right": 40
+       }
+      },
+      "props": {
+       "text": "[vibemind.space](https://vibemind.space)",
+       "markdown": true
+      }
+     }
+    },
+    "n4": {
+     "type": "Container",
+     "data": {
+      "style": {
+       "padding": {
+        "top": 0,
+        "bottom": 0,
+        "left": 0,
+        "right": 0
+       }
+      },
+      "props": {
+       "childrenIds": [
+        "n1",
+        "n2",
+        "n3"
+       ]
+      }
+     }
+    }
+   }
+  },
+  "brief": {
+   "oben": "n4",
+   "bloecke": {
+    "n1": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{akzentText}}",
+       "fontSize": 20,
+       "fontWeight": "normal",
+       "textAlign": "left",
+       "padding": {
+        "top": 32,
+        "bottom": 12,
+        "left": 40,
+        "right": 40
+       }
+      },
+      "props": {
+       "text": "Hallo *Vorname*,",
+       "markdown": true
+      }
+     }
+    },
+    "n2": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{text}}",
+       "fontSize": 17,
+       "fontWeight": "normal",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 16,
+        "left": 40,
+        "right": 40
+       }
+      },
+      "props": {
+       "text": "Ein paar Sätze, so wie du sie am Ladentisch sagen würdest: was gerade neu ist, worauf du dich freust und warum du an deine Kundschaft gedacht hast.",
+       "markdown": true
+      }
+     }
+    },
+    "n3": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{text}}",
+       "fontSize": 17,
+       "fontWeight": "normal",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 32,
+        "left": 40,
+        "right": 40
+       }
+      },
+      "props": {
+       "text": "Herzlich,  \n**Vorname**",
+       "markdown": true
+      }
+     }
+    },
+    "n4": {
+     "type": "Container",
+     "data": {
+      "style": {
+       "padding": {
+        "top": 0,
+        "bottom": 0,
+        "left": 0,
+        "right": 0
+       }
+      },
+      "props": {
+       "childrenIds": [
+        "n1",
+        "n2",
+        "n3"
+       ]
+      }
+     }
+    }
+   }
+  },
+  "portraet_gruss": {
+   "oben": "n4",
+   "bloecke": {
+    "n1": {
+     "type": "Image",
+     "data": {
+      "style": {
+       "padding": {
+        "top": 0,
+        "bottom": 0,
+        "left": 0,
+        "right": 0
+       },
+       "textAlign": "center"
+      },
+      "props": {
+       "url": "/medien/datei/platzhalter-1x1.png",
+       "alt": "Porträt der Inhaberin oder des Inhabers",
+       "width": 140,
+       "height": 140,
+       "contentAlignment": "middle",
+       "form": "kreis"
+      }
+     }
+    },
+    "n2": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{text}}",
+       "fontSize": 16,
+       "fontWeight": "normal",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 8,
+        "left": 0,
+        "right": 0
+       }
+      },
+      "props": {
+       "text": "*„Ich packe jede Bestellung selbst ein – und lege manchmal etwas Kleines dazu.“*",
+       "markdown": true
+      }
+     }
+    },
+    "n3": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{akzentText}}",
+       "fontSize": 16,
+       "fontWeight": "normal",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 0,
+        "left": 0,
+        "right": 0
+       }
+      },
+      "props": {
+       "text": "**Vorname**, Inhaberin",
+       "markdown": true
+      }
+     }
+    },
+    "n4": {
+     "type": "ColumnsContainer",
+     "data": {
+      "style": {
+       "padding": {
+        "top": 28,
+        "bottom": 28,
+        "left": 32,
+        "right": 32
+       },
+       "backgroundColor": "{{karte}}"
+      },
+      "props": {
+       "columnsCount": 2,
+       "columnsGap": 24,
+       "contentAlignment": "middle",
+       "fixedWidths": [
+        140,
+        null,
+        null
+       ],
+       "columns": [
+        {
+         "childrenIds": [
+          "n1"
+         ]
+        },
+        {
+         "childrenIds": [
+          "n2",
+          "n3"
+         ]
+        },
+        {
+         "childrenIds": []
+        }
+       ]
+      }
+     }
+    }
+   }
+  },
+  "kundenstimme": {
+   "oben": "n4",
+   "bloecke": {
+    "n1": {
+     "type": "Image",
+     "data": {
+      "style": {
+       "padding": {
+        "top": 0,
+        "bottom": 12,
+        "left": 0,
+        "right": 0
+       },
+       "textAlign": "center"
+      },
+      "props": {
+       "url": "/medien/datei/platzhalter-1x1.png",
+       "alt": "Foto der Kundin oder des Kunden",
+       "width": 72,
+       "height": 72,
+       "contentAlignment": "middle",
+       "form": "kreis"
+      }
+     }
+    },
+    "n2": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{hell}}",
+       "fontSize": 20,
+       "fontWeight": "normal",
+       "textAlign": "center",
+       "padding": {
+        "top": 0,
+        "bottom": 8,
+        "left": 0,
+        "right": 0
+       },
+       "fontFamily": "ANZEIGE"
+      },
+      "props": {
+       "text": "„Ein Satz, den eine Kundin wirklich gesagt hat.“",
+       "markdown": true
+      }
+     }
+    },
+    "n3": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{akzentText}}",
+       "fontSize": 14,
+       "fontWeight": "normal",
+       "textAlign": "center",
+       "padding": {
+        "top": 0,
+        "bottom": 0,
+        "left": 0,
+        "right": 0
+       }
+      },
+      "props": {
+       "text": "— Vorname, Stadt",
+       "markdown": true
+      }
+     }
+    },
+    "n4": {
+     "type": "Container",
+     "data": {
+      "style": {
+       "backgroundColor": "{{karte}}",
+       "borderRadius": 16,
+       "padding": {
+        "top": 28,
+        "bottom": 28,
+        "left": 32,
+        "right": 32
+       }
+      },
+      "props": {
+       "childrenIds": [
+        "n1",
+        "n2",
+        "n3"
+       ]
+      }
+     }
+    }
+   }
+  },
+  "farbband": {
+   "oben": "n3",
+   "bloecke": {
+    "n1": {
+     "type": "Heading",
+     "data": {
+      "style": {
+       "color": "{{aufAkzent}}",
+       "fontWeight": "bold",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 12,
+        "left": 0,
+        "right": 0
+       },
+       "fontFamily": "ANZEIGE"
+      },
+      "props": {
+       "level": "h1",
+       "text": "Eine große Aussage."
+      }
+     }
+    },
+    "n2": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{aufAkzent}}",
+       "fontSize": 18,
+       "fontWeight": "normal",
+       "textAlign": "left",
+       "padding": {
+        "top": 0,
+        "bottom": 0,
+        "left": 0,
+        "right": 0
+       }
+      },
+      "props": {
+       "text": "Ein Satz, der sie einordnet.",
+       "markdown": true
+      }
+     }
+    },
+    "n3": {
+     "type": "Container",
+     "data": {
+      "style": {
+       "backgroundColor": "{{akzent}}",
+       "padding": {
+        "top": 48,
+        "bottom": 44,
+        "left": 40,
+        "right": 40
+       }
+      },
+      "props": {
+       "randlos": true,
+       "childrenIds": [
+        "n1",
+        "n2"
+       ]
+      }
+     }
+    }
+   }
+  },
+  "einladung": {
+   "oben": "n5",
+   "bloecke": {
+    "n1": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{akzentText}}",
+       "fontSize": 13,
+       "fontWeight": "bold",
+       "textAlign": "center",
+       "letterSpacing": 2,
+       "textTransform": "uppercase",
+       "padding": {
+        "top": 0,
+        "bottom": 8,
+        "left": 0,
+        "right": 0
+       }
+      },
+      "props": {
+       "text": "Einladung"
+      }
+     }
+    },
+    "n2": {
+     "type": "Heading",
+     "data": {
+      "style": {
+       "color": "{{hell}}",
+       "fontWeight": "bold",
+       "textAlign": "center",
+       "padding": {
+        "top": 0,
+        "bottom": 8,
+        "left": 0,
+        "right": 0
+       },
+       "fontFamily": "ANZEIGE"
+      },
+      "props": {
+       "level": "h2",
+       "text": "Ein Abend im Laden"
+      }
+     }
+    },
+    "n3": {
+     "type": "Text",
+     "data": {
+      "style": {
+       "color": "{{text}}",
+       "fontSize": 16,
+       "fontWeight": "normal",
+       "textAlign": "center",
+       "padding": {
+        "top": 0,
+        "bottom": 16,
+        "left": 0,
+        "right": 0
+       }
+      },
+      "props": {
+       "text": "**Donnerstag, 18–21 Uhr**  \nMusterstraße 1 · mit Kaffee und Kuchen",
+       "markdown": true
+      }
+     }
+    },
+    "n4": {
+     "type": "Button",
+     "data": {
+      "style": {
+       "textAlign": "center",
+       "padding": {
+        "top": 0,
+        "bottom": 0,
+        "left": 0,
+        "right": 0
+       },
+       "fontSize": 16
+      },
+      "props": {
+       "text": "Ich komme",
+       "url": "https://vibemind.space",
+       "buttonBackgroundColor": "{{akzent}}",
+       "buttonTextColor": "{{aufAkzent}}",
+       "buttonStyle": "pill",
+       "size": "large"
+      }
+     }
+    },
+    "n5": {
+     "type": "Container",
+     "data": {
+      "style": {
+       "backgroundColor": "{{karte}}",
+       "borderRadius": 12,
+       "padding": {
+        "top": 24,
+        "bottom": 24,
+        "left": 24,
+        "right": 24
+       }
+      },
+      "props": {
+       "childrenIds": [
+        "n1",
+        "n2",
+        "n3",
+        "n4"
+       ]
+      }
+     }
+    }
+   }
+  }
+ },
+ "farben": [
+  {
+   "doc": {
+    "root": {
+     "type": "EmailLayout",
+     "data": {
+      "canvasColor": "#0f2422",
+      "textColor": "#cfe3df",
+      "childrenIds": []
+     }
+    }
+   },
+   "erwartet": {
+    "text": "#cfe3df",
+    "grund": "#0f2422",
+    "akzent": "#5eead4",
+    "aufAkzent": "#0f2422",
+    "akzentText": "#5eead4",
+    "hell": "#ecf4f2",
+    "karte": "#1b2f2d"
+   }
+  },
+  {
+   "doc": {
+    "root": {
+     "type": "EmailLayout",
+     "data": {
+      "canvasColor": "#FAF7F2",
+      "textColor": "#2b2724",
+      "childrenIds": [
+       "k"
+      ],
+      "rollen": {
+       "k/data/props/buttonBackgroundColor": "akzent",
+       "k/data/props/buttonTextColor": "auf_akzent",
+       "h/data/style/color": "akzent_text"
+      }
+     }
+    },
+    "k": {
+     "type": "Button",
+     "data": {
+      "props": {
+       "buttonBackgroundColor": "#B5562F",
+       "buttonTextColor": "#ffffff"
+      }
+     }
+    },
+    "h": {
+     "type": "Heading",
+     "data": {
+      "style": {
+       "color": "#8f3f1f"
+      }
+     }
+    }
+   },
+   "erwartet": {
+    "text": "#2b2724",
+    "grund": "#faf7f2",
+    "akzent": "#b5562f",
+    "aufAkzent": "#ffffff",
+    "akzentText": "#8f3f1f",
+    "hell": "#2b2724",
+    "karte": "#eeebe6"
+   }
+  },
+  {
+   "doc": {
+    "root": {
+     "type": "EmailLayout",
+     "data": {
+      "canvasColor": "#ffffff",
+      "textColor": "#242424",
+      "childrenIds": [
+       "t",
+       "k"
+      ]
+     }
+    },
+    "t": {
+     "type": "Text",
+     "data": {
+      "props": {
+       "buttonBackgroundColor": "#123456"
+      }
+     }
+    },
+    "k": {
+     "type": "Button",
+     "data": {
+      "props": {
+       "buttonBackgroundColor": "#2f6f4f"
+      }
+     }
+    }
+   },
+   "erwartet": {
+    "text": "#242424",
+    "grund": "#ffffff",
+    "akzent": "#2f6f4f",
+    "aufAkzent": "#ffffff",
+    "akzentText": "#2f6f4f",
+    "hell": "#242424",
+    "karte": "#f2f2f2"
+   }
+  },
+  {
+   "doc": {
+    "root": {
+     "type": "EmailLayout",
+     "data": {
+      "canvasColor": "#1a1a1a",
+      "textColor": "#f0f0f0",
+      "childrenIds": []
+     }
+    }
+   },
+   "erwartet": {
+    "text": "#f0f0f0",
+    "grund": "#1a1a1a",
+    "akzent": "#5eead4",
+    "aufAkzent": "#1a1a1a",
+    "akzentText": "#5eead4",
+    "hell": "#f9f9f9",
+    "karte": "#272727"
+   }
+  }
+ ]
+}

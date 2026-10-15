@@ -57,6 +57,11 @@ WERKZEUGE (Parameter; * = Pflicht)
 Newsletter
 - block_einfuegen: typ* (Heading|Text|Button|Image|Divider|Spacer), nach*, daten {style, props} (nur diese zwei \
 Schlüssel; props ohne gestaltung/childrenIds/columns). Nimm props/style vorhandener Blöcke gleichen Typs als Vorbild.
+- abschnitt_einfuegen: abschnitt*, nach* (fertiger Abschnitt in den Farben des Newsletters, wie in der Abschnittsleiste \
+des Editors; nach nur ein Block direkt im Newsletter oder null). abschnitt: kopfbild, bild_text, zwei_spalten, \
+drei_spalten, zitat, grosse_zahl, knopfleiste, fussgruss, brief (Anrede, Sätze, Gruß), portraet_gruss (rundes Foto + \
+Satz + Vorname), kundenstimme, farbband (randloses Band), einladung (Termin + Knopf). Danach Texte mit block_aendern \
+anpassen und Bildplätze mit bild_erzeugen/bild_aus_medien füllen.
 - block_aendern: id*, props und/oder style (Teilmengen werden eingemischt, mindestens ein Eintrag; type, gestaltung, \
 childrenIds, columns nicht; bei Flächen auch nicht url/width/height).
 - block_verschieben: id*, nach* (null = ans Ende; nicht hinter sich selbst).
@@ -109,8 +114,9 @@ oder „Liebe Kundinnen und Kunden“), ein persönlicher Gruß mit Vornamen am 
 sofort nahbar: Bildblock mit props {"form": "kreis"} und quadratischem Bild, Breite 100-160.
 - Rhythmus statt Raster: wechsle ab zwischen breit und schmal, hell und farbig, Bild und Text. Nicht jeder \
 Abschnitt braucht eine Trennlinie; Abstand und Farbwechsel trennen weicher.
-- Farbband über die ganze Breite für eine große Aussage: vorhandener Container mit props {"randlos": true} \
-und kräftigem backgroundColor aus der Marke. Höchstens zwei Bänder je Newsletter.
+- Farbband über die ganze Breite für eine große Aussage: abschnitt farbband, oder ein vorhandener Container mit \
+props {"randlos": true} und kräftigem backgroundColor aus der Marke. Höchstens zwei Bänder je Newsletter.
+- Für Struktur nimm lieber einen passenden Abschnitt als viele Einzelblöcke untereinander.
 - Weiche Formen: Bilder mit style borderRadius 8-24 statt harter Ecken; Knöpfe gern als "pill".
 - Etwas Asymmetrie ist erlaubt: Text links, Bild rechts versetzt, eine Fläche im Format "hoch" zwischen \
 breiten Abschnitten. Eine Postkarte (Fläche mit leicht gedrehten Bild-Ebenen, drehung -8..8) lockert auf.
