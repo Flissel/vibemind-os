@@ -16,9 +16,13 @@ python spaces/rowboat/scripts/start_desktop.py             # start Rowboat; Ctrl
 ```
 
 `--workdir <folder>` changes the data folder. The dev start sets `ROWBOAT_WORKDIR` to it, so Electron keeps its
-profile in `<workdir>/.electron-data`. While Rowboat runs, the vault map is refreshed every 60 s so the 3D brain
-graph shows the VibeMind hierarchy. The refresh never edits an existing note (it writes structure notes and
-`config/vault-map.json`).
+profile in `<workdir>/.electron-data`. Cookies and local storage from earlier `npm run dev` sessions (Electron's
+default profile) are not carried over, and because the profile, cookies included, now sits inside the data folder,
+every backup, copy or sync of that folder carries it along. While Rowboat runs, the vault map is refreshed every
+60 s so the 3D brain graph shows the VibeMind hierarchy. The refresh never touches notes it did not generate: it
+regenerates the schema's structure notes (`Company.md`, `Domains/`, `Areas/`, `Agent Notes/Vault Schema.md`) and
+`config/vault-map.json`. A structure note that is missing is created; an existing one is rewritten only when it is
+marked `managed_by: schema`, so edits to its body are overwritten.
 
 Update the pinned copies from the fork and the EHL repo:
 
@@ -30,7 +34,8 @@ The sync keeps `node_modules` and the harbor `dist`, and `npm run dev` neither r
 `pnpm install`. Run `start_desktop.py --install` after every sync so the dependencies match the new copy.
 
 Never edit `rowboat/apps/x`, `rowboat/apps/harbor` or `schema/` by hand. Change the fork or the EHL repo and sync;
-see `rowboat/UPSTREAM.md`.
+see `rowboat/UPSTREAM.md`. The sync checks the copies against the commits pinned there, so it stops when
+`UPSTREAM.md` is missing but the copies hold files. Restore it; pass `--first-sync` only for a real first sync.
 
 ## Catalog re-pin
 

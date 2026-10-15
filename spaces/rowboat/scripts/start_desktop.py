@@ -4,7 +4,8 @@
     python spaces/rowboat/scripts/start_desktop.py             # Rowboat + vault-map refresh; Ctrl+C stops both
 
 The vault map (config/vault-map.json) places VibeMind's notes in the schema hierarchy for the 3D brain graph.
-It never edits a note: no `build`, no `migrate`. Spec: Flissel/ehl-munich-2026
+It runs no `build` and no `migrate`, and never touches notes it did not generate: it regenerates the schema's
+structure notes (missing ones, and existing ones marked `managed_by: schema`) and config/vault-map.json. Spec: Flissel/ehl-munich-2026
 docs/superpowers/specs/2026-10-13-vibemind-desktop-update-design.md
 """
 from __future__ import annotations
