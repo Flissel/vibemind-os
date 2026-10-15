@@ -48,7 +48,6 @@ def read_env_value(path: Path, name: str) -> str | None:
     return None
 
 
-
 @dataclass(frozen=True)
 class Layout:
     app: Path
@@ -141,18 +140,21 @@ def install(lay: Layout, windows: bool = IS_WINDOWS) -> int:
     return 0
 
 
-def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS, env_file: Path = DEFAULT_ENV_FILE) -> int:
+def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS, env_file: Path | None = None) -> int:
+    env_file = env_file or DEFAULT_ENV_FILE
     gaps = missing(lay, windows)
     if gaps:
         log.error("not installed yet - run start_desktop.py --install first. Missing:\n- %s", "\n- ".join(gaps))
         return 2
-    if subprocess.run(map_command(venv_python(lay.venv, windows), workdir), cwd=lay.schema).returncode != 0:
-        log.warning("vault map failed once; Rowboat starts anyway, the refresh retries every %d s", MAP_SECONDS)
-    env = {**os.environ, "ROWBOAT_WORKDIR": str(workdir)}
+    # Der Schluessel gehoert nur dem Rowboat-Job (Spec 3.3): alle anderen Prozesse bekommen ihn nie, auch nicht geerbt.
+    base_env = {k: v for k, v in os.environ.items() if k != OPENFANG_KEY}
     key = read_env_value(env_file, OPENFANG_KEY) or os.environ.get(OPENFANG_KEY)
-    if key:
-        env[OPENFANG_KEY] = key
-    else:
+    if subprocess.run(map_command(venv_python(lay.venv, windows), workdir), cwd=lay.schema,
+                      env=base_env).returncode != 0:
+        log.warning("vault map failed once; Rowboat starts anyway, the refresh retries every %d s", MAP_SECONDS)
+    env = {**base_env, "ROWBOAT_WORKDIR": str(workdir)}
+    rowboat_env = {**env, OPENFANG_KEY: key} if key else env
+    if not key:
         log.warning("%s nicht gefunden – Integrationen-Seite zeigt Hinweis", OPENFANG_KEY)
     if not windows:
         # Closing the terminal (SIGHUP) or a plain kill (SIGTERM) must reach the finally below like Ctrl+C does:
@@ -166,7 +168,7 @@ def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS, env_file: Path
     try:
         for name, cmd, cwd in jobs(lay, workdir, windows):
             log.info("starting %s: %s", name, " ".join(cmd))
-            procs.append(subprocess.Popen(cmd, cwd=cwd, env=env, shell=_shell(cmd, windows),
+            procs.append(subprocess.Popen(cmd, cwd=cwd, env=rowboat_env if name == "Rowboat" else env, shell=_shell(cmd, windows),
                                           start_new_session=not windows))
         log.info("Rowboat opens after its first build (a few minutes). Ctrl+C stops everything.")
         code = _wait(procs[0])
