@@ -415,3 +415,11 @@ def test_abschnitt_werkzeug_mit_allen_abschnitten_im_system():
     for k in abschnitte.SCHLUESSEL:
         assert k in s, k
     assert len(ap.SYSTEM) < 12000
+
+
+def test_freie_flaeche_im_system():
+    s = ap.system(marke=False)
+    for teil in ('art "form"', "hintergrund (#RRGGBB", "rahmen (0-80", "kreis (bool", "schatten (bool",
+                 "deckkraft (0-100", "caveat"):
+        assert teil in s, teil
+    assert len(ap.SYSTEM) < 12000

@@ -7,7 +7,7 @@ import re
 
 from spaces.marketing.claw.agent_werkzeuge import MAX_AENDERUNGEN
 from spaces.marketing.claw.pdf_bilder import HERKUNFT as PDF_SEITE
-from spaces.marketing.claw.schriften import REGISTER
+from spaces.marketing.claw.schriften import EBENEN_SCHRIFTEN, HAND, REGISTER
 
 MAX_MEDIEN = 200
 MAX_VERLAUF = 10
@@ -24,9 +24,10 @@ class AntwortFehler(ValueError):
 
 def _schnitte() -> str:
     zeilen = []
-    for sid, s in REGISTER.items():
+    for sid, s in EBENEN_SCHRIFTEN.items():
         sn = ", ".join(f"{g}{' kursiv' if st == 'italic' else ''}" for g, st in s["dateien"])
-        zeilen.append(f"- {sid} ({s['familie']}): {sn}")
+        zusatz = " – Handschrift, nur in Flächen-Ebenen, nie mit schriften_setzen" if sid in HAND else ""
+        zeilen.append(f"- {sid} ({s['familie']}): {sn}{zusatz}")
     return "\n".join(zeilen)
 
 
@@ -77,8 +78,16 @@ Flächen (ein Image-Block mit Ebenen aus Text und Bildern; wird zu einem Bild ge
 - format_setzen: flaeche*, format*.   hintergrund_setzen: flaeche*, farbe*.
 Ebenen (Koordinaten in 600er-Einheiten, die Fläche ist 600 breit; x, y = Mittelpunkt der Ebene; x -600..1200, y -750..1500)
 - Text: art "text", x*, y*, text*, schrift*, gewicht*, groesse*, farbe*, kursiv (bool), ausrichtung \
-(links|mitte|rechts), zeilenabstand (0.8-2.0, Standard 1.2), drehung (-180..180).
-- Bild: art "bild", x*, y*, quelle* ("medien:<Dateiname>" aus der Medienliste), breite* (8-3000), drehung.
+(links|mitte|rechts), zeilenabstand (0.8-2.0, Standard 1.2), drehung (-180..180), hintergrund (#RRGGBB: \
+abgerundetes Band hinter dem Text, z. B. für Störer oder Text auf unruhigem Foto).
+- Bild: art "bild", x*, y*, quelle* ("medien:<Dateiname>" aus der Medienliste), breite* (8-3000), drehung, \
+rahmen (0-80, weißer Rand wie ein Foto-Abzug), rundung (0-300), kreis (bool, Mitte rund ausgeschnitten), \
+schatten (bool, weicher Schatten).
+- Form: art "form", x*, y*, form* (rechteck|kreis), breite*, hoehe* (8-3000), farbe*, rundung (0-1500, nur \
+rechteck), drehung. Für Farbflecken, Störer-Kreise, Bänder und Hintergrundflächen hinter Text oder Bildern.
+- Alle Ebenen: deckkraft (0-100, Standard 100).
+- Postkarte: Bilder mit rahmen 10-16, schatten true, drehung -8..8, leicht überlappend; dazu ein Satz in caveat.
+- caveat ist eine Handschrift: nur für kurze Akzente (Gruß, Notiz, „Neu!“), nie für längere Texte.
 - Keine anderen Felder. Text höchstens 200 Zeichen und 6 Zeilen, Zeilenumbruch nur mit "\\n". groesse 10-160. \
 Höchstens 20 Ebenen je Fläche. Ebenen-id nur A-Z a-z 0-9 _ - (1-32 Zeichen).
 - Formate (Höhe bei 600 Breite): quer 3:2 (400), quadrat 1:1 (600), hoch 4:5 (750), banner 3:1 (200).
@@ -176,7 +185,7 @@ def _schriften_des_newsletters(dok: dict, root_daten: dict) -> str:
         ebenen = g.get("ebenen") if isinstance(g, dict) and isinstance(g.get("ebenen"), list) else []
         for e in ebenen:
             sid = e.get("schrift") if isinstance(e, dict) and e.get("art") == "text" else None
-            if isinstance(sid, str) and sid in REGISTER and sid not in bekannt and sid not in flaechen:
+            if isinstance(sid, str) and sid in EBENEN_SCHRIFTEN and sid not in bekannt and sid not in flaechen:
                 flaechen.append(sid)
     if flaechen:
         teile.append("in Flächen: " + ", ".join(flaechen))

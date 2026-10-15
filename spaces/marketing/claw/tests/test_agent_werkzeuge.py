@@ -258,7 +258,7 @@ def test_ebene_hinzufuegen_fehler():
                    "ebene": {"art": "bild", "x": 1, "y": 1, "quelle": "medien:fremd.png", "breite": 50}}], "fremd.png")
     fehler([fl(), {"werkzeug": "ebene_hinzufuegen", "flaeche": "neu:1", "ebene": {**TEXT_EBENE, "farbe": "rot"}}], "Farbe")
     fehler([fl(), {"werkzeug": "ebene_hinzufuegen", "flaeche": "neu:1", "ebene": {**TEXT_EBENE, "tippfehler": 1}}], "tippfehler")
-    fehler([fl(), {"werkzeug": "ebene_hinzufuegen", "flaeche": "neu:1", "ebene": {**TEXT_EBENE, "art": "form"}}], "art")
+    fehler([fl(), {"werkzeug": "ebene_hinzufuegen", "flaeche": "neu:1", "ebene": {**TEXT_EBENE, "art": "stern"}}], "art")
     fehler([fl(), {"werkzeug": "ebene_hinzufuegen", "flaeche": "neu:1", "ebene": "x"}], "Objekt")
     doppelt = [fl()] + [{"werkzeug": "ebene_hinzufuegen", "flaeche": "neu:1", "ebene": {**TEXT_EBENE, "id": "a"}}] * 2
     fehler(doppelt, "doppelt")
@@ -507,3 +507,28 @@ def test_abschnitt_einfuegen_fehler():
     dok["card"] = {"type": "Container", "data": {"style": {}, "props": {"childrenIds": ["k1"]}}}
     dok["k1"] = {"type": "Text", "data": {"style": {}, "props": {"text": "a"}}}
     fehler([{"werkzeug": "abschnitt_einfuegen", "abschnitt": "brief", "nach": "k1"}], "oberster Ebene", dok)
+
+
+def test_ebenen_mit_form_handschrift_rahmen():
+    form = {"art": "form", "form": "kreis", "x": 480, "y": 90, "breite": 120, "hoehe": 120, "farbe": "#C8553D",
+            "deckkraft": 90}
+    notiz = dict(TEXT_EBENE, schrift="caveat", gewicht=700, text="Neu!", hintergrund="#C8553D")
+    e = mit_flaeche({"werkzeug": "ebene_hinzufuegen", "flaeche": "neu:1", "ebene": form},
+                    {"werkzeug": "ebene_hinzufuegen", "flaeche": "neu:1", "ebene": notiz},
+                    {"werkzeug": "ebene_hinzufuegen", "flaeche": "neu:1",
+                     "ebene": {"art": "bild", "x": 200, "y": 200, "quelle": "person-frei.png", "breite": 200,
+                               "rahmen": 12, "schatten": True, "drehung": -6}})
+    f, t, b = e.bloecke[flaeche_id(e)]["data"]["props"]["gestaltung"]["ebenen"]
+    assert (f["art"], f["form"], f["deckkraft"]) == ("form", "kreis", 90)
+    assert (t["schrift"], t["hintergrund"]) == ("caveat", "#C8553D")
+    assert (b["rahmen"], b["schatten"]) == (12, True)
+
+
+def test_ebene_form_fremdes_feld():
+    fehler([fl(), {"werkzeug": "ebene_hinzufuegen", "flaeche": "neu:1",
+                   "ebene": {"art": "form", "form": "kreis", "x": 1, "y": 1, "breite": 10, "hoehe": 10,
+                             "farbe": "#000000", "quelle": "x.png"}}], "Unbekannte Felder")
+
+
+def test_handschrift_nicht_als_schriftpaar():
+    fehler([{"werkzeug": "schriften_setzen", "anzeige": "caveat"}], "caveat")

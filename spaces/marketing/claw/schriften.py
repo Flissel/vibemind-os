@@ -29,6 +29,14 @@ REGISTER: dict[str, dict] = {
                  "dateien": [(500, "normal"), (600, "normal")]},
 }
 
+# Handschrift nur fuer Flaechen-Ebenen (Gruss, Notiz, Stoerer). Nicht in REGISTER: das ist die Liste der
+# Vorlagen-/Markenschriften und muss der DB-Liste (Migration 058/064) gleichen.
+HAND: dict[str, dict] = {
+    "caveat": {"familie": "Caveat", "stapel": "'Segoe Print', 'Bradley Hand', cursive",
+               "dateien": [(400, "normal"), (700, "normal")]},
+}
+EBENEN_SCHRIFTEN: dict[str, dict] = {**REGISTER, **HAND}
+
 
 def css_familie(sid: str) -> str:
     s = REGISTER.get(sid) if isinstance(sid, str) else None

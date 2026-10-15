@@ -32,7 +32,7 @@ def test_gut_wird_normalisiert():
     (lambda g: g["ebenen"][1].update(zeilenabstand=3), "Zeilenabstand"),
     (lambda g: g["ebenen"][1].update(drehung=181), "Drehung"),
     (lambda g: g["ebenen"][1].update(ausrichtung="block"), "Ausrichtung"),
-    (lambda g: g["ebenen"][1].update(art="form"), "Art"),
+    (lambda g: g["ebenen"][1].update(art="stern"), "Art"),
     (lambda g: g["ebenen"][1].update(x=True), "Zahl"),
 ])
 def test_fehler(aendern, grund):
@@ -52,7 +52,7 @@ def test_schriften_gleich_wie_sales_claw():
     quelle = pathlib.Path(sc) / "sales-mcp" / "static" / "schriften"
     hier = pathlib.Path(gs.ORDNER_SCHRIFTEN)
     namen = sorted(p.name for p in quelle.glob("*.woff2"))
-    assert namen == sorted(p.name for p in hier.glob("*.woff2")) and len(namen) == 22
+    assert namen == sorted(p.name for p in hier.glob("*.woff2")) and len(namen) == 24
     for n in namen:
         assert hashlib.sha256((quelle / n).read_bytes()).digest() == hashlib.sha256((hier / n).read_bytes()).digest()
 

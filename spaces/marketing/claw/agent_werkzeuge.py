@@ -19,9 +19,11 @@ FARB_ROLLEN = ("backdropColor", "canvasColor", "textColor")
 FLAECHE_GESPERRT = ("gestaltung", "url", "width", "height")
 STRUKTUR_PROPS = ("childrenIds", "columns")
 EBENE_FELDER = {
-    "bild": {"id", "art", "x", "y", "drehung", "quelle", "breite"},
+    "bild": {"id", "art", "x", "y", "drehung", "quelle", "breite", "rahmen", "rundung", "kreis", "schatten",
+             "deckkraft"},
     "text": {"id", "art", "x", "y", "drehung", "text", "schrift", "gewicht", "kursiv", "groesse", "farbe",
-             "ausrichtung", "zeilenabstand"},
+             "ausrichtung", "zeilenabstand", "hintergrund", "deckkraft"},
+    "form": {"id", "art", "x", "y", "drehung", "form", "breite", "hoehe", "farbe", "rundung", "deckkraft"},
 }
 
 WERKZEUGE: tuple[str, ...] = (
@@ -188,7 +190,7 @@ class _Lauf:
     def ebene_pruefen(self, e: dict) -> dict:
         art = e.get("art")
         if art not in EBENE_FELDER:
-            raise WerkzeugFehler("art der Ebene muss bild oder text sein")
+            raise WerkzeugFehler("art der Ebene muss bild, text oder form sein")
         fremd = sorted(set(e) - EBENE_FELDER[art])
         if fremd:
             raise WerkzeugFehler(f"Unbekannte Felder in der Ebene: {', '.join(fremd)}")

@@ -410,6 +410,7 @@ def test_unbekannte_schrift_id_faellt_auf_standard():
 def test_register_vollstaendig():
     assert set(schriften.REGISTER) == {"cormorant", "dm-sans", "playfair", "poppins", "young-serif", "manrope",
                                        "bodoni", "montserrat", "josefin", "oxanium", "rajdhani"}
+    assert set(schriften.HAND) == {"caveat"} and set(schriften.EBENEN_SCHRIFTEN) == set(schriften.REGISTER) | {"caveat"}
 
 
 def test_bild_mit_rundung():

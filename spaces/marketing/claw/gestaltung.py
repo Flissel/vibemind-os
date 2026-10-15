@@ -17,6 +17,7 @@ _FARBE = re.compile(r"^#[0-9a-fA-F]{6}$")
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 _QUELLE = re.compile(r"^medien:[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(png|jpe?g|gif|webp)$")
 _AUSRICHTUNG = ("links", "mitte", "rechts")
+_FORMEN = ("rechteck", "kreis")
 
 
 class GestaltungFehler(ValueError):
@@ -43,7 +44,7 @@ def _farbe(wert, name: str) -> str:
 
 
 def schrift_datei(sid: str, gewicht: int, kursiv: bool) -> str:
-    eintrag = schriften.REGISTER.get(sid)
+    eintrag = schriften.EBENEN_SCHRIFTEN.get(sid)
     if not eintrag:
         raise GestaltungFehler(f"Schrift {sid} gibt es nicht")
     stil = "italic" if kursiv else "normal"
@@ -68,7 +69,20 @@ def _ebene(e, gesehen: set) -> dict:
         q = e.get("quelle")
         if not isinstance(q, str) or not _QUELLE.fullmatch(q) or ".." in q:
             raise GestaltungFehler(f"Bild nur aus den Medien (medien:<datei>) in Ebene {eid}")
-        return {**basis, "art": "bild", "quelle": q, "breite": _zahl(e.get("breite"), "Breite", 8, 3000)}
+        aus = {**basis, "art": "bild", "quelle": q, "breite": _zahl(e.get("breite"), "Breite", 8, 3000)}
+        _wahlzahl(e, aus, "rahmen", "Rahmen", 80)
+        _wahlzahl(e, aus, "rundung", "Rundung", 300)
+        _wahlschalter(e, aus, "kreis", "Kreis")
+        _wahlschalter(e, aus, "schatten", "Schatten")
+        return _mit_deckkraft(e, aus)
+    if e.get("art") == "form":
+        if e.get("form") not in _FORMEN:
+            raise GestaltungFehler(f"Form muss rechteck oder kreis sein (Ebene {eid})")
+        aus = {**basis, "art": "form", "form": e["form"], "breite": _zahl(e.get("breite"), "Breite", 8, 3000),
+               "hoehe": _zahl(e.get("hoehe"), "Höhe", 8, 3000), "farbe": _farbe(e.get("farbe"), "Form")}
+        if e["form"] == "rechteck":
+            _wahlzahl(e, aus, "rundung", "Rundung", 1500)
+        return _mit_deckkraft(e, aus)
     if e.get("art") == "text":
         text = e.get("text")
         if not isinstance(text, str) or not text.strip():
@@ -84,11 +98,39 @@ def _ebene(e, gesehen: set) -> dict:
             raise GestaltungFehler("Schnitt (gewicht) muss eine ganze Zahl sein")
         kursiv = e.get("kursiv", False) is True
         schrift_datei(str(e.get("schrift")), gewicht, kursiv)
-        return {**basis, "art": "text", "text": text, "schrift": e["schrift"], "gewicht": gewicht,
-                "kursiv": kursiv, "groesse": _zahl(e.get("groesse"), "Größe", 10, 160),
-                "farbe": _farbe(e.get("farbe"), "Text"), "ausrichtung": e.get("ausrichtung", "links"),
-                "zeilenabstand": _zahl(e.get("zeilenabstand", 1.2), "Zeilenabstand", 0.8, 2.0)}
-    raise GestaltungFehler(f"Art der Ebene {eid} muss bild oder text sein")
+        aus = {**basis, "art": "text", "text": text, "schrift": e["schrift"], "gewicht": gewicht,
+               "kursiv": kursiv, "groesse": _zahl(e.get("groesse"), "Größe", 10, 160),
+               "farbe": _farbe(e.get("farbe"), "Text"), "ausrichtung": e.get("ausrichtung", "links"),
+               "zeilenabstand": _zahl(e.get("zeilenabstand", 1.2), "Zeilenabstand", 0.8, 2.0)}
+        if e.get("hintergrund") is not None:
+            aus["hintergrund"] = _farbe(e["hintergrund"], "Texthintergrund")
+        return _mit_deckkraft(e, aus)
+    raise GestaltungFehler(f"Art der Ebene {eid} muss bild, text oder form sein")
+
+
+# Optionale Felder (Paket 3) stehen nur im Ergebnis, wenn sie etwas bewirken: so behalten alte Flaechen
+# ihren Hash (Dateinamen) und ihr Aussehen.
+def _wahlzahl(e: dict, aus: dict, feld: str, name: str, hi: float) -> None:
+    if e.get(feld) is not None:
+        wert = _zahl(e[feld], name, 0, hi)
+        if wert > 0:
+            aus[feld] = wert
+
+
+def _wahlschalter(e: dict, aus: dict, feld: str, name: str) -> None:
+    if e.get(feld) is not None:
+        if not isinstance(e[feld], bool):
+            raise GestaltungFehler(f"{name} muss true oder false sein")
+        if e[feld]:
+            aus[feld] = True
+
+
+def _mit_deckkraft(e: dict, aus: dict) -> dict:
+    if e.get("deckkraft") is not None:
+        d = _zahl(e["deckkraft"], "Deckkraft", 0, 100)
+        if d < 100:
+            aus["deckkraft"] = d
+    return aus
 
 
 def pruefen(g) -> dict:
@@ -113,7 +155,7 @@ import json
 import tempfile
 import time
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from spaces.marketing.claw.schoenheit import kontrast
 
@@ -155,6 +197,77 @@ def _laden(pfad: str, name: str) -> Image.Image:
         raise GestaltungFehler(f"Bild {name} ist nicht lesbar")
 
 
+def _deckkraft(ebene: Image.Image, e: dict) -> Image.Image:
+    d = e.get("deckkraft")
+    if d is None:
+        return ebene
+    alpha = ebene.getchannel("A").point(lambda a: int(round(a * d / 100)))
+    ebene.putalpha(alpha)
+    return ebene
+
+
+def _maske(groesse: tuple[int, int], kreis: bool, radius: float) -> Image.Image:
+    m = Image.new("L", groesse, 0)
+    d = ImageDraw.Draw(m)
+    box = (0, 0, groesse[0] - 1, groesse[1] - 1)
+    if kreis:
+        d.ellipse(box, fill=255)
+    else:
+        d.rounded_rectangle(box, radius=max(0, min(radius, min(groesse) / 2)), fill=255)
+    return m
+
+
+def _form_ebene(e: dict) -> Image.Image:
+    w, h = max(1, int(round(e["breite"] * FAKTOR))), max(1, int(round(e["hoehe"] * FAKTOR)))
+    if w * h > MAX_PIXEL:
+        raise GestaltungFehler("Form ist zu groß")
+    ebene = Image.new("RGBA", (w, h), e["farbe"])
+    ebene.putalpha(_maske((w, h), e["form"] == "kreis", e.get("rundung", 0) * FAKTOR))
+    return _deckkraft(ebene, e)
+
+
+SCHATTEN_RAND = 24      # 600er-Einheiten um das Bild fuer den weichen Schatten
+SCHATTEN_VERSATZ = 6
+SCHATTEN_WEICH = 12
+
+
+def _bild_ebene(e: dict, quelle: Image.Image, name: str) -> Image.Image:
+    bw = max(1, int(round(e["breite"] * FAKTOR)))
+    if e.get("kreis"):
+        s = min(quelle.width, quelle.height)          # Mitte quadratisch zuschneiden (Portraet)
+        l, o = (quelle.width - s) // 2, (quelle.height - s) // 2
+        quelle = quelle.crop((l, o, l + s, o + s))
+    bh = max(1, int(round(quelle.height * bw / quelle.width)))
+    if bw * bh > MAX_PIXEL:
+        raise GestaltungFehler(f"Bild {name} ist zu groß")
+    ebene = quelle.resize((bw, bh), Image.LANCZOS)
+    kreis, radius = bool(e.get("kreis")), e.get("rundung", 0) * FAKTOR
+    r = int(round(e.get("rahmen", 0) * FAKTOR))
+    if kreis and not r:
+        ebene.putalpha(Image.composite(ebene.getchannel("A"), Image.new("L", ebene.size, 0), _maske(ebene.size, True, 0)))
+    if r:
+        innen = ebene
+        if kreis:   # Kreisbild auf weissem Kreis
+            innen = ebene.copy()
+            innen.putalpha(Image.composite(innen.getchannel("A"), Image.new("L", innen.size, 0),
+                                           _maske(innen.size, True, 0)))
+        ebene = Image.new("RGBA", (bw + 2 * r, bh + 2 * r), "#FFFFFF")
+        ebene.alpha_composite(innen, (r, r))
+    if (r and kreis) or (radius and not kreis):
+        ebene.putalpha(Image.composite(ebene.getchannel("A"), Image.new("L", ebene.size, 0),
+                                       _maske(ebene.size, kreis, radius)))
+    if e.get("schatten"):
+        m = int(SCHATTEN_RAND * FAKTOR)
+        gross = Image.new("RGBA", (ebene.width + 2 * m, ebene.height + 2 * m), (0, 0, 0, 0))
+        schatten = Image.new("RGBA", ebene.size, (40, 30, 20, 0))
+        schatten.putalpha(ebene.getchannel("A").point(lambda a: int(a * 0.35)))
+        gross.alpha_composite(schatten, (m, m + int(SCHATTEN_VERSATZ * FAKTOR)))
+        gross = gross.filter(ImageFilter.GaussianBlur(SCHATTEN_WEICH * FAKTOR / 2))
+        gross.alpha_composite(ebene, (m, m))
+        ebene = gross
+    return _deckkraft(ebene, e)
+
+
 def _text_ebene(e: dict) -> tuple[Image.Image, tuple[int, int]]:
     """Liefert (gepolsterte Ebene, (w, h) des ungepolsterten Textkastens). Das Polster ist
     allseitig gleich gross, die Mitte der Ebene bleibt also die Mitte des Textkastens."""
@@ -167,12 +280,17 @@ def _text_ebene(e: dict) -> tuple[Image.Image, tuple[int, int]]:
     p = int(math.ceil(e["groesse"] * FAKTOR * 0.6))
     ebene = Image.new("RGBA", (w + 2 * p, h + 2 * p), (0, 0, 0, 0))
     d = ImageDraw.Draw(ebene)
+    if e.get("hintergrund"):
+        # Band hinter dem Text: liegt im Polster (0,6 em), Mitte bleibt die Mitte des Textkastens
+        g = e["groesse"] * FAKTOR
+        d.rounded_rectangle((p - 0.4 * g, p - 0.15 * g, p + w + 0.4 * g, p + h + 0.15 * g), radius=0.25 * g,
+                            fill=e["hintergrund"])
     anker = {"links": ("la", 0), "mitte": ("ma", w / 2), "rechts": ("ra", w)}[e["ausrichtung"]]
     asc, desc = font.getmetrics()
     for i, z in enumerate(zeilen):
         # wie CSS: Inhaltsflaeche (Ascent+Descent) mittig in der Zeilenbox
         d.text((p + anker[1], p + i * zh + (zh - (asc + desc)) / 2), z, font=font, fill=e["farbe"], anchor=anker[0])
-    return ebene, (w, h)
+    return _deckkraft(ebene, e), (w, h)
 
 
 def _einsetzen(leinwand: Image.Image, ebene: Image.Image, e: dict) -> tuple[int, int, int, int]:
@@ -200,13 +318,11 @@ def bild_rechnen(g: dict, quellen: list[str]) -> tuple[Image.Image, list[str]]:
         if e["art"] == "bild":
             name = e["quelle"][len("medien:"):]
             quelle = _laden(_pfad(e["quelle"], quellen), name)
-            bw = max(1, int(round(e["breite"] * FAKTOR)))
-            bh = max(1, int(round(quelle.height * bw / quelle.width)))
-            if bw * bh > MAX_PIXEL:
-                raise GestaltungFehler(f"Bild {name} ist zu groß")
-            ebene = quelle.resize((bw, bh), Image.LANCZOS)
-            box = _einsetzen(leinwand, ebene, e)
+            box = _einsetzen(leinwand, _bild_ebene(e, quelle, name), e)
             beschreibung = f"Bild {name}"
+        elif e["art"] == "form":
+            box = _einsetzen(leinwand, _form_ebene(e), e)
+            beschreibung = "Form"
         else:
             ebene, (tw, th) = _text_ebene(e)
             # Hinweise (Kontrast, ausserhalb) gelten dem ungepolsterten Textkasten, nicht dem Polster
@@ -223,7 +339,7 @@ def bild_rechnen(g: dict, quellen: list[str]) -> tuple[Image.Image, list[str]]:
                 hinweise.append(f"{beschreibung} ist am Handy unter 12 px")
             if unter is not None and unter.width and unter.height:
                 mittel = unter.convert("RGB").resize((1, 1), Image.BOX).getpixel((0, 0))
-                grund = "#%02x%02x%02x" % mittel
+                grund = e.get("hintergrund", "#%02x%02x%02x" % mittel).lower()
                 if kontrast(e["farbe"].lower(), grund) < 3.0:
                     hinweise.append(f"{beschreibung}: Kontrast zum Untergrund unter 3:1")
         if _ausserhalb(box, w, h) > 0.15:
@@ -273,6 +389,9 @@ def umformatieren(g: dict, fmt: str) -> dict:
         e["y"] = round(h2 / 2 + (e["y"] - h1 / 2) * s, 1)
         if e["art"] == "bild":
             e["breite"] = round(min(3000, max(8, e["breite"] * s)), 1)
+        elif e["art"] == "form":
+            e["breite"] = round(min(3000, max(8, e["breite"] * s)), 1)
+            e["hoehe"] = round(min(3000, max(8, e["hoehe"] * s)), 1)
         else:
             e["groesse"] = round(min(160, max(10, e["groesse"] * s)), 1)
         neu.append(e)
