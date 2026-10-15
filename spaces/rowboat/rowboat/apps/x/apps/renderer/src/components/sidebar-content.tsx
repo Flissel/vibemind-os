@@ -195,6 +195,7 @@ type SidebarContentPanelProps = {
   onOpenCode?: () => void
   onOpenBgTasks?: () => void
   onOpenApps?: () => void
+  onOpenIntegrations?: () => void
   /** Open a specific app (pinned in the sidebar) inside the Apps view. */
   onOpenApp?: (folder: string) => void
   /** Open one space (org + space) in the Spaces view. */
@@ -218,7 +219,7 @@ type SidebarContentPanelProps = {
   /** Starts the mascot-guided product tour. */
   onStartTour?: () => void
   /** Which primary destination is currently active, for nav highlighting. */
-  activeNav?: 'assistant' | 'home' | 'email' | 'meetings' | 'code' | 'knowledge' | 'agents' | 'apps' | 'spaces' | 'workspaces' | null
+  activeNav?: 'assistant' | 'home' | 'email' | 'meetings' | 'code' | 'knowledge' | 'agents' | 'apps' | 'integrations' | 'spaces' | 'workspaces' | null
   /** Live meeting recording state, so the recording row can show its indicator/stop. */
   meetingRecordingState?: 'idle' | 'connecting' | 'recording' | 'stopping'
   recordingMeetingSource?: string | null
@@ -457,6 +458,7 @@ export function SidebarContentPanel({
   onOpenMeetings,
   onOpenBgTasks,
   onOpenApps,
+  onOpenIntegrations,
   onOpenApp,
   onOpenSpace,
   activeSpace,
@@ -1025,6 +1027,16 @@ export function SidebarContentPanel({
                 >
                   <LayoutGrid className="size-4 shrink-0" />
                   <span className="flex-1 truncate">Apps</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  data-tour-id="nav-integrations"
+                  isActive={activeNav === 'integrations'}
+                  onClick={onOpenIntegrations}
+                >
+                  <Plug className="size-4 shrink-0" />
+                  <span className="flex-1 truncate">Integrationen</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
               {pinnedApps.map(({ folder, name }) => (

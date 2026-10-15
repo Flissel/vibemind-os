@@ -27,6 +27,26 @@ PROFILE = "vibemind"
 MAP_SECONDS = 60
 POLL_SECONDS = 0.5   # wait in slices: on Windows an untimed wait() does not let Ctrl+C through
 
+DEFAULT_ENV_FILE = SPACE.parents[2] / ".env"   # Vibemind_V1/.env (Space liegt unter vibemind-os/spaces/rowboat)
+OPENFANG_KEY = "OPENFANG_API_KEY"
+
+
+def read_env_value(path: Path, name: str) -> str | None:
+    """Liest genau einen Wert aus einer .env-Datei. Gibt sonst nichts weiter."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        key, _, value = s.partition("=")
+        if key.strip() == name:
+            value = value.strip().strip('"').strip("'")
+            return value or None
+    return None
+
 
 @dataclass(frozen=True)
 class Layout:
@@ -120,14 +140,22 @@ def install(lay: Layout, windows: bool = IS_WINDOWS) -> int:
     return 0
 
 
-def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS) -> int:
+def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS, env_file: Path | None = None) -> int:
+    env_file = env_file or DEFAULT_ENV_FILE
     gaps = missing(lay, windows)
     if gaps:
         log.error("not installed yet - run start_desktop.py --install first. Missing:\n- %s", "\n- ".join(gaps))
         return 2
-    if subprocess.run(map_command(venv_python(lay.venv, windows), workdir), cwd=lay.schema).returncode != 0:
+    # Der Schluessel gehoert nur dem Rowboat-Job (Spec 3.3): alle anderen Prozesse bekommen ihn nie, auch nicht geerbt.
+    base_env = {k: v for k, v in os.environ.items() if k != OPENFANG_KEY}
+    key = read_env_value(env_file, OPENFANG_KEY) or os.environ.get(OPENFANG_KEY)
+    if subprocess.run(map_command(venv_python(lay.venv, windows), workdir), cwd=lay.schema,
+                      env=base_env).returncode != 0:
         log.warning("vault map failed once; Rowboat starts anyway, the refresh retries every %d s", MAP_SECONDS)
-    env = {**os.environ, "ROWBOAT_WORKDIR": str(workdir)}
+    env = {**base_env, "ROWBOAT_WORKDIR": str(workdir)}
+    rowboat_env = {**env, OPENFANG_KEY: key} if key else env
+    if not key:
+        log.warning("%s nicht gefunden – Integrationen-Seite zeigt Hinweis", OPENFANG_KEY)
     if not windows:
         # Closing the terminal (SIGHUP) or a plain kill (SIGTERM) must reach the finally below like Ctrl+C does:
         # the jobs run in their own sessions, so they would otherwise keep running.
@@ -140,7 +168,7 @@ def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS) -> int:
     try:
         for name, cmd, cwd in jobs(lay, workdir, windows):
             log.info("starting %s: %s", name, " ".join(cmd))
-            procs.append(subprocess.Popen(cmd, cwd=cwd, env=env, shell=_shell(cmd, windows),
+            procs.append(subprocess.Popen(cmd, cwd=cwd, env=rowboat_env if name == "Rowboat" else env, shell=_shell(cmd, windows),
                                           start_new_session=not windows))
         log.info("Rowboat opens after its first build (a few minutes). Ctrl+C stops everything.")
         code = _wait(procs[0])
@@ -167,12 +195,13 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--install", action="store_true", help="build harbor, install Rowboat and the schema venv")
+    ap.add_argument("--env-file", type=Path, default=DEFAULT_ENV_FILE, help="Datei, aus der nur OPENFANG_API_KEY gelesen wird")
     ap.add_argument("--workdir", type=Path, default=Path.home() / ".rowboat", help="Rowboat data folder")
     args = ap.parse_args(argv)
     lay = layout()
     if args.install:
         return install(lay)
-    return start(lay, args.workdir.expanduser().resolve())
+    return start(lay, args.workdir.expanduser().resolve(), env_file=args.env_file)
 
 
 if __name__ == "__main__":

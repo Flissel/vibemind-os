@@ -12,6 +12,7 @@ export type PaletteSectionKey =
     | 'meetings'
     | 'brain'
     | 'apps'
+    | 'integrations'
     | 'bg-tasks'
     | 'projects'
     | 'chat-history'
@@ -36,6 +37,7 @@ export const PALETTE_SECTIONS: readonly PaletteSection[] = [
     { key: 'meetings', label: 'Meetings', keywords: ['calls', 'recordings', 'transcripts'], digit: 5 },
     { key: 'brain', label: 'Brain', keywords: ['knowledge', 'notes', 'files'], digit: 6 },
     { key: 'apps', label: 'Apps', keywords: ['mini apps'], digit: 7 },
+    { key: 'integrations', label: 'Integrationen', keywords: ['integrations', 'verbindungen', 'openfang', 'mcp'] },
     { key: 'bg-tasks', label: 'Background agents', keywords: ['agents', 'tasks', 'automations'], digit: 8 },
     { key: 'projects', label: 'Projects', keywords: ['workspaces', 'code', 'coding', 'sessions', 'worktrees'], digit: 9 },
     { key: 'chat-history', label: 'Chat history', keywords: ['chats', 'conversations', 'history'] },

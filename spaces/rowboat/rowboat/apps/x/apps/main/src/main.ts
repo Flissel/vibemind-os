@@ -44,6 +44,7 @@ import { prepareCoreData, initCoreServices } from "@x/core/dist/boot/services.js
 import { startServerHost, stopServerHost, childServerMode, serverHostMode, whenServerReady } from "./server-host.js";
 import { getAgentSlackCliStatus } from "@x/core/dist/slack/agent-slack-exec.js";
 import { resolveWorkspacePath } from "@x/core/dist/workspace/workspace.js";
+import { takeOpenFangKey } from "@x/core/dist/integrations/openfang-integrations.js";
 import started from "electron-squirrel-startup";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -172,6 +173,10 @@ function initializeExecutionEnvironment(): void {
     ).trim();
 
     const env = JSON.parse(stdout) as Record<string, string>;
+    // VibeMind: ein OPENFANG_API_KEY aus dem Shell-Profil darf process.env nicht wieder
+    // befuellen (sonst erben ihn alle Kindprozesse). Der Schluessel wurde bereits beim
+    // Import von integrations-ipc.ts aus der Startumgebung uebernommen und entfernt.
+    takeOpenFangKey(env);
     // Let the user's shell environment win for overlapping keys like PATH.
     // Finder/launched GUI apps on macOS often start with a stripped PATH.
     process.env = { ...process.env, ...env };

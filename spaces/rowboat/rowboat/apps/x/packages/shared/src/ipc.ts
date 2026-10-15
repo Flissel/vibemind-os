@@ -48,6 +48,7 @@ import {
     type SpacesThreadPage,
 } from './spaces.js';
 import type * as SpacesTypes from './spaces.js';
+import { IntegrationIdReq, IntegrationsStatusSchema, AktionsErgebnisSchema } from './integrations.js';
 
 // ============================================================================
 // Runtime Validation Schemas (Single Source of Truth)
@@ -4512,6 +4513,15 @@ export const ipcSchemas = {
     req: z.custom<SpacesBusEvent>(),
     res: z.null(),
   },
+  // VibeMind: Integrationen (OpenFang), Teilprojekt 2
+  'integrations:status': { req: z.null(), res: IntegrationsStatusSchema },
+  'integrations:add': { req: IntegrationIdReq, res: AktionsErgebnisSchema },
+  'integrations:anmelden': { req: IntegrationIdReq, res: AktionsErgebnisSchema },
+  'integrations:abmelden': { req: IntegrationIdReq, res: AktionsErgebnisSchema },
+  'integrations:schluessel': { req: IntegrationIdReq, res: AktionsErgebnisSchema },
+  'integrations:neuVerbinden': { req: IntegrationIdReq, res: AktionsErgebnisSchema },
+  'integrations:entfernen': { req: IntegrationIdReq, res: AktionsErgebnisSchema },
+  'integrations:freigabenOeffnen': { req: z.null(), res: AktionsErgebnisSchema },
 } as const;
 
 // ============================================================================

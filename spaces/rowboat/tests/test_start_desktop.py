@@ -13,6 +13,12 @@ import start_desktop  # noqa: E402
 from start_desktop import install_steps, jobs, layout, map_command, missing, venv_python  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _no_real_env_file(tmp_path, monkeypatch):
+    """start() must never read the real Vibemind_V1/.env in tests."""
+    monkeypatch.setattr(start_desktop, "DEFAULT_ENV_FILE", tmp_path / "nie-vorhanden.env")
+
+
 class FakeProc:
     """Stands in for subprocess.Popen; records what stop() asks of it."""
 
@@ -194,7 +200,7 @@ def test_windows_installs_no_signal_handlers(tmp_path, monkeypatch):
 def test_relative_workdir_is_made_absolute(tmp_path, monkeypatch):
     seen = []
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(start_desktop, "start", lambda lay, workdir, windows=False: seen.append(workdir) or 0)
+    monkeypatch.setattr(start_desktop, "start", lambda lay, workdir, windows=False, env_file=None: seen.append(workdir) or 0)
     assert start_desktop.main(["--workdir", "data"]) == 0
     assert seen == [(tmp_path / "data").resolve()]
 
@@ -242,3 +248,68 @@ def test_missing_py_launcher_gives_a_clear_message(tmp_path, monkeypatch, caplog
     with caplog.at_level("ERROR", logger="start_desktop"):
         assert start_desktop.install(layout(tmp_path), windows=True) == 1
     assert "py -3.12" in caplog.text and "not found" in caplog.text
+
+
+def test_read_env_value_takes_only_the_named_value(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text('A=1\nOPENFANG_API_KEY = "sek-ret"\n# OPENFANG_API_KEY=alt\nOPENFANG_API_KEY_X=nein\n', encoding="utf-8")
+    assert start_desktop.read_env_value(env, "OPENFANG_API_KEY") == "sek-ret"
+    assert start_desktop.read_env_value(env, "FEHLT") is None
+    assert start_desktop.read_env_value(tmp_path / "gibtsnicht", "OPENFANG_API_KEY") is None
+
+
+def test_start_passes_only_the_openfang_key_and_never_prints_it(tmp_path, monkeypatch, caplog, capsys):
+    _prereqs(tmp_path, windows=True)
+    env = tmp_path / ".env"
+    env.write_text("OPENFANG_API_KEY=sek-ret\nANDERES=geheim\n", encoding="utf-8")
+    seen = {}
+    monkeypatch.setattr(start_desktop.subprocess, "run", lambda *a, **k: type("R", (), {"returncode": 0})())
+
+    def fake_popen(cmd, cwd=None, env=None, **k):
+        seen["vault map" if "--watch" in cmd or cwd == layout(tmp_path).schema else "Rowboat"] = env
+        return FakeProc(exit_code=0)
+
+    monkeypatch.setattr(start_desktop.subprocess, "Popen", fake_popen)
+    monkeypatch.delenv("ANDERES", raising=False)
+    monkeypatch.delenv("OPENFANG_API_KEY", raising=False)
+    caplog.set_level("INFO")
+    start_desktop.start(layout(tmp_path), tmp_path, windows=True, env_file=env)
+    assert set(seen) == {"Rowboat", "vault map"}
+    assert seen["Rowboat"]["OPENFANG_API_KEY"] == "sek-ret"
+    assert "OPENFANG_API_KEY" not in seen["vault map"]
+    assert all("ANDERES" not in e for e in seen.values())
+    out = capsys.readouterr()
+    assert "sek-ret" not in caplog.text + out.out + out.err
+
+
+def test_inherited_key_never_reaches_vault_map(tmp_path, monkeypatch):
+    _prereqs(tmp_path, windows=True)
+    envs = {}
+
+    def fake_run(*a, **k):
+        envs.setdefault("map-once", k.get("env"))
+        return type("R", (), {"returncode": 0})()
+
+    def fake_popen(cmd, cwd=None, env=None, **k):
+        envs["vault map" if cwd == layout(tmp_path).schema else "Rowboat"] = env
+        return FakeProc(exit_code=0)
+
+    monkeypatch.setattr(start_desktop.subprocess, "run", fake_run)
+    monkeypatch.setattr(start_desktop.subprocess, "Popen", fake_popen)
+    monkeypatch.setenv("OPENFANG_API_KEY", "geerbt")
+    start_desktop.start(layout(tmp_path), tmp_path, windows=True, env_file=tmp_path / "fehlt.env")
+    assert envs["Rowboat"]["OPENFANG_API_KEY"] == "geerbt"   # Fallback auf die Eltern-Umgebung bleibt
+    assert "OPENFANG_API_KEY" not in envs["vault map"]
+    assert "OPENFANG_API_KEY" not in envs["map-once"]
+
+
+def test_start_warns_and_runs_without_key(tmp_path, monkeypatch, caplog):
+    _prereqs(tmp_path, windows=True)
+    monkeypatch.setattr(start_desktop.subprocess, "run", lambda *a, **k: type("R", (), {"returncode": 0})())
+    started = []
+    monkeypatch.setattr(start_desktop.subprocess, "Popen", lambda *a, **k: started.append(k.get("env")) or FakeProc(exit_code=0))
+    monkeypatch.delenv("OPENFANG_API_KEY", raising=False)
+    caplog.set_level("WARNING")
+    start_desktop.start(layout(tmp_path), tmp_path, windows=True, env_file=tmp_path / "fehlt.env")
+    assert started, "Rowboat muss trotzdem starten"
+    assert "OPENFANG_API_KEY nicht gefunden" in caplog.text

@@ -29,6 +29,7 @@ export type TourNavTarget =
   | 'knowledge'
   | 'agents'
   | 'apps'
+  | 'integrations'
   | 'workspaces'
 
 type TourStep = {
