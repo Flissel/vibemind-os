@@ -119,6 +119,9 @@ WERKZEUGE = (
     # die Bildplaetze ab und BEAUFTRAGT; erzeugt wird nur im Bild-Arbeiter.
     werkzeuge.newsletter_bildplaetze,
     werkzeuge.newsletter_bild_beauftragen,
+    # Podcast (17.10.2026): der Agent beauftragt, gesprochen wird nur im Ton-Arbeiter am PC.
+    werkzeuge.podcast_beauftragen,
+    werkzeuge.podcast_auftraege,
 )
 
 HOST = os.environ.get("MARKETING_CLAW_MCP_HOST", "0.0.0.0")
