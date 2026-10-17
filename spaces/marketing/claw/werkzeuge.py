@@ -22,7 +22,7 @@ FEHLER_MAXLAENGE = 300
 
 
 def _ohne_schluessel(text: str) -> str:
-    for name in ("MARKETING_API_KEY", "MARKETING_PROPOSAL_API_KEY", "ROWBOAT_API_KEY"):
+    for name in ("MARKETING_API_KEY", "MARKETING_PROPOSAL_API_KEY", "MARKETING_AGENT_KEY", "ROWBOAT_API_KEY"):
         wert = os.environ.get(name, "")
         if wert and wert in text:
             text = text.replace(wert, "<schluessel>")
@@ -33,9 +33,16 @@ def _roh_anfrage(url: str, daten, kopfzeilen: dict) -> tuple:
     """Der einzige echte Netzgriff — Tests ersetzen genau diese Funktion."""
     anfrage = urllib.request.Request(
         url, data=daten, method="POST" if daten is not None else "GET",
-        headers={"Content-Type": "application/json", **kopfzeilen})
+        headers={"Content-Type": "application/json"})
+    # Schluessel folgen keiner Weiterleitung: urllib gibt normale Koepfe bei einem 30x an das neue Ziel
+    # weiter, "unredirected" Koepfe nicht (wie sales-claw marketing_pult.py; Sicherheitspruefung 17.10.).
+    for name, wert in kopfzeilen.items():
+        anfrage.add_unredirected_header(name, wert)
     with urllib.request.urlopen(anfrage, timeout=60) as antwort:
         return antwort.status, antwort.read().decode("utf-8", "replace")
+
+
+_AGENT_PFADE = ("/api/ton/", "/api/bilder/agent/")
 
 
 def _api(pfad: str, nutzlast: dict | None = None) -> dict:
@@ -44,7 +51,8 @@ def _api(pfad: str, nutzlast: dict | None = None) -> dict:
     daten = None if nutzlast is None else json.dumps(nutzlast).encode("utf-8")
     try:
         kopf = {"X-API-Key": os.environ.get("MARKETING_API_KEY", "")}
-        if os.environ.get("MARKETING_AGENT_KEY"):   # Agent-Routen ohne globalen Schluessel (PC)
+        # Agent-Schluessel nur an die Agent-Routen (PC ohne globalen Schluessel), nie an andere Pfade.
+        if os.environ.get("MARKETING_AGENT_KEY") and pfad.startswith(_AGENT_PFADE):
             kopf["X-Agent-Key"] = os.environ["MARKETING_AGENT_KEY"]
         status, rumpf = _roh_anfrage(basis + pfad, daten, kopf)
         if status != 200:

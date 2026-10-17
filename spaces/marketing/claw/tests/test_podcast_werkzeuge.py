@@ -78,3 +78,44 @@ class AgentSchluessel(unittest.TestCase):
              mock.patch.dict("os.environ", {"MARKETING_API_URL": "http://x:5510", "MARKETING_AGENT_KEY": "agent-k"}):
             werkzeuge.podcast_auftraege()
         self.assertEqual(rekorder.aufrufe[0]["kopf"].get("X-Agent-Key"), "agent-k")
+
+
+class AgentSchluesselGeheim(unittest.TestCase):
+    """Commit-Sicherheitspruefung 17.10.2026: der Agent-Schluessel darf nicht in Fehlertexte (die der Agent
+    liest), nicht an fremde Routen und nicht ueber Weiterleitungen hinaus."""
+
+    def test_fehlertext_ohne_agent_key(self):
+        with mock.patch.dict("os.environ", {"MARKETING_AGENT_KEY": "geheim-123"}):
+            self.assertNotIn("geheim-123", werkzeuge._ohne_schluessel("Echo: X-Agent-Key geheim-123"))
+
+    def test_nur_agent_routen_bekommen_den_agent_key(self):
+        rekorder = Rekorder([(200, "{}")])
+        with mock.patch.object(werkzeuge, "_roh_anfrage", rekorder), \
+             mock.patch.dict("os.environ", {"MARKETING_API_URL": "http://x:5510", "MARKETING_AGENT_KEY": "agent-k"}):
+            werkzeuge.statistik()
+        self.assertNotIn("X-Agent-Key", rekorder.aufrufe[0]["kopf"])
+
+    def test_schluessel_folgen_keiner_weiterleitung(self):
+        gesehen = {}
+
+        class Antwort:
+            status = 200
+
+            def read(self):
+                return b"{}"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def urlopen(req, timeout=None):
+            gesehen["normal"] = {k.lower() for k in req.headers}
+            gesehen["unweitergeleitet"] = {k.lower() for k in req.unredirected_hdrs}
+            return Antwort()
+        with mock.patch.object(werkzeuge.urllib.request, "urlopen", urlopen):
+            werkzeuge._roh_anfrage("http://x:5510/api/ton/auftraege", None,
+                                   {"X-API-Key": "a", "X-Agent-Key": "b"})
+        self.assertFalse({"x-api-key", "x-agent-key"} & gesehen["normal"])
+        self.assertTrue({"x-api-key", "x-agent-key"} <= gesehen["unweitergeleitet"])
