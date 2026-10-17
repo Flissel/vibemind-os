@@ -127,7 +127,8 @@ async def _api_key_check(request: Request, call_next):
             and not path.startswith("/api/pult/")
             and not path.startswith("/api/bilder/arbeiter/")
             and not path.startswith("/api/chat/arbeiter/")
-            and not path.startswith("/api/marke/arbeiter/")):
+            and not path.startswith("/api/marke/arbeiter/")
+            and not path.startswith("/api/ton/arbeiter/")):
         if request.headers.get("X-API-Key") != API_KEY:
             return JSONResponse({"error": "invalid api key"}, status_code=401)
     return await call_next(request)
@@ -3488,6 +3489,8 @@ from spaces.marketing.api import freigabe as _freigabe  # noqa: E402
 app.include_router(_freigabe.router)
 from spaces.marketing.api import medien_mandant as _medien_mandant  # noqa: E402
 app.include_router(_medien_mandant.router)
+from spaces.marketing.api import ton as _ton  # noqa: E402
+app.include_router(_ton.router)
 
 
 # ─── Static-serve of the mockup ───────────────────────────────────────

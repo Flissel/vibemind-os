@@ -354,6 +354,44 @@ def versand_beauftragen(kanal: str, nachricht: str, empfaenger: str = "",
     return {"ok": True, "daten": daten}
 
 
+def podcast_beauftragen(titel: str, skript: list, firma: str = "vibemind", sprache: str = "de") -> dict:
+    """Beauftragt eine Podcast-Folge (17.10.2026). Du schreibst das Skript, gesprochen wird lokal am PC
+    (Ton-Arbeiter, Chatterbox) - das dauert einige Minuten; der Stand steht in podcast_auftraege.
+
+    skript: Liste von Abschnitten [{"sprecher": "Anna", "text": "..."}] in Sprechreihenfolge, je Abschnitt
+    hoechstens 1000 Zeichen, zusammen hoechstens 12000 (etwa 12 Minuten). Schreib fuers Ohr: kurze Saetze,
+    keine Aufzaehlungszeichen, keine Links oder URLs, Zahlen so, wie man sie spricht. Ein Sprecher genuegt;
+    mehrere Sprecher klingen erst verschieden, wenn fuer sie Stimmproben hinterlegt sind.
+    firma: Mandant (vibemind, fin2gether ...). sprache: zwei Buchstaben, Standard de.
+
+    Fertig liegt die Folge als pod-<id>-<titel>.mp3 in den Medien. Hinaus geht sie NUR ueber
+    versand_beauftragen(..., medien_datei="pod-....mp3") - ein Mensch gibt jeden Entwurf frei."""
+    if not isinstance(skript, list) or not skript:
+        return {"ok": False, "fehler": "Das Skript ist leer - mindestens ein Abschnitt {sprecher, text}."}
+    sauber = []
+    for a in skript:
+        if not isinstance(a, dict):
+            return {"ok": False, "fehler": "Jeder Abschnitt ist ein Objekt {sprecher, text}."}
+        text, _ = stil.hausstil(str(a.get("text") or ""))
+        sauber.append({"sprecher": str(a.get("sprecher") or ""), "text": text})
+    titel_sauber, _ = stil.hausstil(titel or "")
+    antwort = _api("/api/ton/auftraege", {"firma": firma, "titel": titel_sauber, "sprache": sprache,
+                                          "skript": sauber})
+    if not antwort["ok"]:
+        return antwort
+    return {"ok": True, "daten": {"auftrag_id": (antwort.get("daten") or {}).get("auftrag"),
+                                  "hinweis": "Wird am PC gesprochen; Stand und Dateiname in podcast_auftraege."}}
+
+
+def podcast_auftraege(anzahl: int = 10) -> dict:
+    """Stand deiner Podcast-Auftraege: offen, in_arbeit, fertig (mit datei und dauer_s) oder fehler
+    (mit befund). Eine fertige datei gibst du an versand_beauftragen weiter."""
+    antwort = _api(f"/api/ton/auftraege?limit={max(1, min(int(anzahl or 10), 100))}")
+    if not antwort["ok"]:
+        return antwort
+    return {"ok": True, "daten": (antwort.get("daten") or {}).get("auftraege") or []}
+
+
 def versandauftraege_lesen(status: str = "", anzahl: int = 20) -> dict:
     """Was aus deinen Auftraegen geworden ist: offen, angenommen (mit der
     Entwurfskennung) oder abgelehnt — dann steht im Grund WOERTLICH, was

@@ -122,6 +122,27 @@ $Dienste = @(
         Cwd  = $OsRoot
         Env  = @{}
         Was  = 'Chat-Arbeiter (Gestaltungs-Agent, fragt Claude ueber den Shim :8117)'
+    },
+    @{
+        # Podcast (17.10.2026): Chatterbox Multilingual in eigener venv (Torch+CUDA), nur 127.0.0.1.
+        Name   = 'marketing_ton_dienst'
+        Port   = 8899
+        Python = 'C:\Users\User\ClaudeWork\chatterbox-venv\Scripts\python.exe'
+        Args   = @('-u', '-m', 'spaces.marketing.claw.ton_dienst')
+        Cwd    = $OsRoot
+        Env    = @{
+            HF_HOME            = 'E:\huggingface'
+            TON_STIMMEN_ORDNER = 'E:\marketing-stimmen'
+        }
+        Was    = 'Sprech-Dienst (Chatterbox Multilingual, lokal, kein API-Budget)'
+    },
+    @{
+        Name = 'marketing_ton_arbeiter'
+        Port = 8135
+        Args = @('-u', '-m', 'spaces.marketing.workers.ton_worker')
+        Cwd  = $OsRoot
+        Env  = @{ TON_STIMMEN_ORDNER = 'E:\marketing-stimmen' }
+        Was  = 'Ton-Arbeiter (Podcast-Auftraege von der VM, spricht ueber :8899, MP3 in die Medien)'
     }
 )
 
