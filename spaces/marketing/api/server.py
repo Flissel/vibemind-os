@@ -129,7 +129,10 @@ async def _api_key_check(request: Request, call_next):
             and not path.startswith("/api/bilder/arbeiter/")
             and not path.startswith("/api/chat/arbeiter/")
             and not path.startswith("/api/marke/arbeiter/")
-            and not path.startswith("/api/ton/arbeiter/")):
+            and not path.startswith("/api/ton/arbeiter/")
+            and not path.startswith("/api/video/arbeiter/")
+            # Signierter Kurzzeit-Link fuer Lauras Bild-Import (HMAC ist die Berechtigung).
+            and not path.startswith("/api/video/medien/")):
         if request.headers.get("X-API-Key") != API_KEY:
             return JSONResponse({"error": "invalid api key"}, status_code=401)
     return await call_next(request)
@@ -3495,6 +3498,9 @@ app.include_router(_ton.router)
 from spaces.marketing.api import plan as _plan  # noqa: E402
 app.include_router(_plan.pult_router)
 app.include_router(_plan.agent_router)
+from spaces.marketing.api import video as _video  # noqa: E402
+app.include_router(_video.router)
+app.include_router(_video.pult_router)
 
 
 # ─── Static-serve of the mockup ───────────────────────────────────────
