@@ -15,6 +15,7 @@ import { resolveResponseSession, startSpaceResponseIndex } from '@x/core/dist/sp
 import { SpacesClient } from '@x/spaces-client';
 import { createAgent37Instance, listAgent37Instances } from '@x/core/dist/spaces/agent37.js';
 import { fetchLinkPreview } from './link-preview.js';
+import { mirrorToEmbed, senderWindow } from '../embed-sink.js';
 
 type IPCChannels = ipc.IPCChannels;
 
@@ -152,6 +153,7 @@ function broadcastSpacesEvent(event: spacesShared.SpacesBusEvent): void {
       win.webContents.send('spaces:events', event);
     }
   }
+  mirrorToEmbed('spaces:events', event);
 }
 
 // One core-level live subscription per (org, space), fanned out to all windows.
@@ -335,7 +337,7 @@ export const spacesIpcHandlers: SpacesHandlers = {
 
   'spaces:saveBlob': async (event, args) => {
     const { bytes } = await blobCache.getBlob(args.orgId, args.spaceId, args.hash);
-    const win = BrowserWindow.fromWebContents(event.sender);
+    const win = senderWindow(event.sender);
     const options = { defaultPath: path.basename(args.suggestedName ?? args.hash.slice(0, 12)) };
     const result = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options);
     if (result.canceled || !result.filePath) return { saved: false };
@@ -345,7 +347,7 @@ export const spacesIpcHandlers: SpacesHandlers = {
 
   'spaces:saveAsset': async (event, args) => {
     const asset = await orgs.getClient(args.orgId).readAsset(args.spaceId, args.assetId);
-    const win = BrowserWindow.fromWebContents(event.sender);
+    const win = senderWindow(event.sender);
     const options = { defaultPath: path.basename(asset.path) };
     const result = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options);
     if (result.canceled || !result.filePath) return { saved: false };
@@ -361,7 +363,7 @@ export const spacesIpcHandlers: SpacesHandlers = {
   'spaces:saveImageUrl': async (event, args) => {
     const url = new URL(args.url);
     if (url.protocol !== 'https:') throw new Error('only https images can be saved');
-    const win = BrowserWindow.fromWebContents(event.sender);
+    const win = senderWindow(event.sender);
     const options = { defaultPath: path.basename(url.pathname) || 'image' };
     const result = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options);
     if (result.canceled || !result.filePath) return { saved: false };

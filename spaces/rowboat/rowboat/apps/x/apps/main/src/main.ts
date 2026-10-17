@@ -76,6 +76,7 @@ import { installAppMenu } from "./menu.js";
 import { setupZoomShortcuts } from "./zoom.js";
 import { initMeetingPopup, showMeetingPopup } from "./meeting-popup.js";
 import { initQuickAsk, onAppWindowClosed } from "./quick-ask.js";
+import { embedRequested, startEmbedHost, stopEmbedHost } from "./embed-host.js";
 
 // Captured as early as possible so it reflects actual process start. Used to
 // gate grace-eligible notifications (e.g. the burst of background-task
@@ -106,33 +107,43 @@ process.on('uncaughtException', (err) => {
 // run this as early in the main process as possible
 if (started) app.quit();
 
-// Single-instance lock: route a second launch (e.g. clicking a rowboat:// link)
-// back into the existing process via the 'second-instance' event.
-if (app.isPackaged && !app.requestSingleInstanceLock()) {
-  console.error('[Main] Another Rowboat instance is already running; exiting this process.');
-  app.quit();
-  process.exit(0);
-}
-
 // Sandboxed dev instances (ROWBOAT_WORKDIR set, e.g. via `npm run dev:sandbox`)
 // get their own Electron profile too: concurrent instances sharing the default
 // userData dir fight over Chromium's LevelDB locks and each other's
 // localStorage. Must run before 'ready' — session state is created lazily at
 // app ready, so nothing has touched the default profile yet.
+// VibeMind-Einbettung: steht VOR der Single-Instance-Sperre, weil die Sperre pro
+// userData-Ordner gilt — so sperrt jedes WorkDir fuer sich.
 if (!app.isPackaged && process.env.ROWBOAT_WORKDIR) {
   app.setPath('userData', path.join(WorkDir, '.electron-data'));
 }
 
+// Single-instance lock: route a second launch (e.g. clicking a rowboat:// link)
+// back into the existing process via the 'second-instance' event.
+// VibeMind-Einbettung: im Einbettungsmodus (und wenn start_desktop.py es verlangt) gilt die Sperre
+// auch ungebaut — nie zwei Kerne auf demselben WorkDir (die Sperre gilt pro userData-Ordner).
+const singleInstance = app.isPackaged || embedRequested() || process.env.ROWBOAT_SINGLE_INSTANCE === "1";
+if (singleInstance && !app.requestSingleInstanceLock()) {
+  console.error('[Main] Another Rowboat instance is already running; exiting this process.');
+  app.quit();
+  process.exit(0);
+}
+
 // Register as the OS handler for rowboat:// URLs.
 // In dev, point at the right argv so the OS can re-invoke us correctly.
-if (process.defaultApp) {
-  if (process.argv.length >= 2) {
-    app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME, process.execPath, [
-      path.resolve(process.argv[1]),
-    ]);
+// VibeMind-Einbettung: nicht registrieren. Die Registrierung zeigt auf diesen Kern ohne --embed;
+// ein vom OS gestarteter Deep Link liefe dann ohne Single-Instance-Sperre (ungebaut) und
+// startete einen zweiten Kern auf demselben WorkDir.
+if (!embedRequested()) {
+  if (process.defaultApp) {
+    if (process.argv.length >= 2) {
+      app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME, process.execPath, [
+        path.resolve(process.argv[1]),
+      ]);
+    }
+  } else {
+    app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME);
   }
-} else {
-  app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME);
 }
 
 // First-launch URL on Windows/Linux comes through argv.
@@ -151,6 +162,8 @@ app.on("open-url", (event, url) => {
 app.on("second-instance", (_event, argv) => {
   const url = extractDeepLinkFromArgv(argv);
   if (url) dispatchUrl(url);
+  // Einbettung: ein zweiter Start holt das versteckte Fenster der laufenden Instanz nach vorn.
+  else if (embedRequested()) showApp();
 });
 
 // Fix PATH for packaged Electron apps on macOS/Linux.
@@ -221,8 +234,9 @@ async function listSpaceAssets(orgId: string, spaceId: string): Promise<Array<{ 
   return entries;
 }
 
-function registerAppProtocol() {
-  protocol.handle("app", async (request) => {
+// VibeMind-Einbettung: der app://-Rumpf als eigene Funktion, damit der Einbettungszugang
+// dieselben Inhalte ausliefern kann (serveApp). Rumpf unveraendert.
+async function handleAppRequest(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
     if (url.host === 'file-preview') {
@@ -341,7 +355,10 @@ function registerAppProtocol() {
 
     const filePath = path.join(rendererPath, urlPath);
     return net.fetch(pathToFileURL(filePath).toString());
-  });
+}
+
+function registerAppProtocol() {
+  protocol.handle("app", handleAppRequest);
 }
 
 protocol.registerSchemesAsPrivileged([
@@ -579,7 +596,8 @@ function createWindow(options: { startHidden?: boolean } = {}) {
   // Cmd/Ctrl + (+ / − / 0) zoom shortcuts for the renderer UI.
   setupZoomShortcuts(win);
 
-  if (app.isPackaged) {
+  // Einbettung: gebaute Oberflaeche ueber app://, kein Vite-Server.
+  if (app.isPackaged || embedRequested()) {
     win.loadURL("app://-/index.html");
   } else {
     win.loadURL(DEV_SERVER_URL);
@@ -671,6 +689,13 @@ app.whenReady().then(async () => {
   setupIpcHandlers();
   setupBrowserEventForwarding();
   setupBrowserExtensions();
+
+  // VibeMind-Einbettung (Spec 2026-10-17): nur mit --embed / ROWBOAT_EMBED=1.
+  if (embedRequested()) {
+    startEmbedHost({ showApp, preloadPath, serveApp: handleAppRequest }).catch((error) => {
+      console.error("[embed] Einbettungszugang startet nicht:", error);
+    });
+  }
 
   // Quick-ask / hover companion: global ⌥⇧Space summons the Skipper over
   // whatever app the user is in. The app window owns the call engine it
@@ -876,12 +901,16 @@ app.on("window-all-closed", () => {
   // Resident app: with a tray present, keep running with no windows so
   // meeting detection/notifications stay alive (Granola-style). Without a
   // tray (creation failed), fall back to the platform-default quit.
+  // VibeMind-Einbettung: nie beenden — die eingebettete Ansicht in der voice-App braucht den Kern
+  // auch dann, wenn jemand Rowboats eigenes Fenster schliesst.
+  if (embedRequested()) return;
   if (process.platform !== "darwin" && !hasTray()) {
     app.quit();
   }
 });
 
 app.on("before-quit", () => {
+  stopEmbedHost();
   // Clean up watcher on app quit
   stopWorkspaceWatcher();
   stopRunsWatcher();

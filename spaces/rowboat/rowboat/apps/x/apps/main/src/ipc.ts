@@ -257,6 +257,7 @@ import {
 import { browserIpcHandlers } from './browser/ipc.js';
 import { spacesIpcHandlers } from './spaces/ipc.js';
 import { integrationsHandlers } from './integrations-ipc.js';
+import { mirrorToEmbed, senderWindow } from './embed-sink.js';
 
 /**
  * Convert markdown to a styled HTML document for PDF/DOCX export.
@@ -391,26 +392,39 @@ initPtt(() => {
  * 2. Handler signatures match channel definitions
  * 3. Request/response payloads are validated at runtime
  */
+// Die eine Handler-Tabelle (VibeMind-Einbettung, Spec 2026-10-17): ipcMain und der
+// Einbettungszugang rufen dieselbe Funktion, also dieselbe Zod-Pruefung und dieselben Handler.
+const invokeTable = new Map<InvokeChannels, InvokeHandler<InvokeChannels>>();
+
+export function listInvokeChannels(): InvokeChannels[] {
+  return [...invokeTable.keys()];
+}
+
+export async function invokeIpcChannel(
+  channel: string,
+  event: Electron.IpcMainInvokeEvent,
+  rawArgs: unknown,
+): Promise<unknown> {
+  const handler = invokeTable.get(channel as InvokeChannels);
+  if (!handler) throw new Error(`No handler registered for '${channel}'`);
+  const typed = channel as InvokeChannels;
+  // Validate request payload
+  const args = ipc.validateRequest(typed, rawArgs);
+  // Strangler-fig: channels migrated to rowboat-server cross localhost HTTP
+  // instead of calling their in-process handler (which stays in the map as
+  // the ROWBOAT_FORWARD_MIGRATED=0 kill switch).
+  const result = shouldForwardChannel(typed) ? await forwardRpc(typed, args) : await handler(event, args);
+  // Validate response payload
+  return ipc.validateResponse(typed, result);
+}
+
 export function registerIpcHandlers(handlers: InvokeHandlers) {
-  // Register each handler with runtime validation
   for (const [channel, handler] of Object.entries(handlers) as [
     InvokeChannels,
     InvokeHandler<InvokeChannels>
   ][]) {
-    // Strangler-fig: channels migrated to rowboat-server cross localhost HTTP
-    // instead of calling their in-process handler (which stays in the map as
-    // the ROWBOAT_FORWARD_MIGRATED=0 kill switch).
-    const forwarded = shouldForwardChannel(channel);
-    ipcMain.handle(channel, async (event, rawArgs) => {
-      // Validate request payload
-      const args = ipc.validateRequest(channel, rawArgs);
-
-      // Call handler (or the migrated channel's HTTP twin)
-      const result = forwarded ? await forwardRpc(channel, args) : await handler(event, args);
-
-      // Validate response payload
-      return ipc.validateResponse(channel, result);
-    });
+    invokeTable.set(channel, handler);
+    ipcMain.handle(channel, (event, rawArgs) => invokeIpcChannel(channel, event, rawArgs));
   }
 }
 
@@ -593,6 +607,7 @@ export function broadcastToWindows(channel: string, payload: unknown): void {
       win.webContents.send(channel, payload);
     }
   }
+  mirrorToEmbed(channel, payload);
 }
 
 /** Reload every window — used after switching servers, so all renderer state refetches. */
@@ -1052,7 +1067,7 @@ export function setupIpcHandlers() {
     // no channel to each other. Fire-and-forget: a window that has not loaded
     // yet needs no catch-up push — it reads the same localStorage on mount.
     'theme:set': async (event, args) => {
-      const sender = BrowserWindow.fromWebContents(event.sender);
+      const sender = senderWindow(event.sender);
       for (const win of BrowserWindow.getAllWindows()) {
         if (win.isDestroyed() || win === sender) continue;
         win.webContents.send('theme:changed', args);
@@ -1193,7 +1208,7 @@ export function setupIpcHandlers() {
       return workspace.remove(args.path, args.opts);
     },
     'workspace:pickImage': async (event) => {
-      const win = BrowserWindow.fromWebContents(event.sender);
+      const win = senderWindow(event.sender);
       const options = {
         properties: ['openFile' as const],
         filters: [
@@ -1228,7 +1243,7 @@ export function setupIpcHandlers() {
       // Same path scoping as every other workspace handler: the source must
       // resolve inside the workspace boundary, and this throws if it does not.
       const sourcePath = workspace.resolveWorkspacePath(args.path);
-      const win = BrowserWindow.fromWebContents(event.sender);
+      const win = senderWindow(event.sender);
       const options = { defaultPath: path.basename(sourcePath) };
       // Electron rejects an explicit null window, so use the modeless overload
       // when the sender has none rather than passing one through.
@@ -1535,15 +1550,16 @@ export function setupIpcHandlers() {
       // Concatenate the session's turn logs into one JSONL for debugging.
       const sessions = container.resolve<ISessions>('sessions');
       const state = await sessions.getSession(args.sessionId);
-      const win = BrowserWindow.fromWebContents(event.sender);
-      const result = await dialog.showSaveDialog(win!, {
+      const win = senderWindow(event.sender);
+      const options: Electron.SaveDialogOptions = {
         defaultPath: `${args.sessionId}.jsonl.log`,
         filters: [
           { name: 'Chat Log', extensions: ['log'] },
           { name: 'JSONL', extensions: ['jsonl'] },
           { name: 'All Files', extensions: ['*'] },
         ],
-      });
+      };
+      const result = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options);
       if (result.canceled || !result.filePath) {
         return { success: false };
       }
@@ -1569,15 +1585,16 @@ export function setupIpcHandlers() {
       }
 
       const sourcePath = path.join(WorkDir, 'runs', runFileName);
-      const win = BrowserWindow.fromWebContents(event.sender);
-      const result = await dialog.showSaveDialog(win!, {
+      const win = senderWindow(event.sender);
+      const options: Electron.SaveDialogOptions = {
         defaultPath: `${runFileName}.log`,
         filters: [
           { name: 'Chat Log', extensions: ['log'] },
           { name: 'JSONL', extensions: ['jsonl'] },
           { name: 'All Files', extensions: ['*'] },
         ],
-      });
+      };
+      const result = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options);
 
       if (result.canceled || !result.filePath) {
         return { success: false };
@@ -1928,6 +1945,7 @@ export function setupIpcHandlers() {
           win.webContents.send('power:caffeinateChanged', { enabled });
         }
       }
+      mirrorToEmbed('power:caffeinateChanged', { enabled });
       return { enabled };
     },
     // ── Mobile channels (WhatsApp / Telegram bridge) ─────────────
@@ -2342,9 +2360,9 @@ export function setupIpcHandlers() {
       return { app };
     },
     'apps:publish': async (event, args) => {
-      const win = BrowserWindow.fromWebContents(event.sender);
+      const sender = event.sender;
       const result = await appsPublisher.publishApp(args.folder, (step, detail) => {
-        win?.webContents.send('apps:progress', { folder: args.folder, step, detail });
+        if (!sender.isDestroyed()) sender.send('apps:progress', { folder: args.folder, step, detail });
       });
       capture('app_published', { firstPublish: true });
       return result;
@@ -2486,13 +2504,14 @@ export function setupIpcHandlers() {
       return await findInSheet(inputPath, args.sheet, args.query, args.maxMatches);
     },
     'dialog:openDirectory': async (event, args) => {
-      const win = BrowserWindow.fromWebContents(event.sender);
+      const win = senderWindow(event.sender);
       const defaultPath = args.defaultPath ? resolveShellPath(args.defaultPath) : os.homedir();
-      const result = await dialog.showOpenDialog(win!, {
+      const options: Electron.OpenDialogOptions = {
         title: args.title ?? 'Choose work directory',
         defaultPath,
         properties: ['openDirectory', 'createDirectory'],
-      });
+      };
+      const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
       if (result.canceled || result.filePaths.length === 0) {
         return { path: null };
       }
@@ -2514,12 +2533,13 @@ export function setupIpcHandlers() {
       return { success: true };
     },
     'dialog:openFiles': async (event, args) => {
-      const win = BrowserWindow.fromWebContents(event.sender);
-      const result = await dialog.showOpenDialog(win!, {
+      const win = senderWindow(event.sender);
+      const options: Electron.OpenDialogOptions = {
         title: args.title ?? 'Attach files',
         ...(args.defaultPath ? { defaultPath: resolveShellPath(args.defaultPath) } : {}),
         properties: ['openFile', 'multiSelections'],
-      });
+      };
+      const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
       return { paths: result.canceled ? [] : result.filePaths };
     },
     // Knowledge version history handlers
@@ -2587,11 +2607,12 @@ export function setupIpcHandlers() {
         docx: [{ name: 'Word Document', extensions: ['docx'] }],
       };
 
-      const win = BrowserWindow.fromWebContents(event.sender);
-      const result = await dialog.showSaveDialog(win!, {
+      const win = senderWindow(event.sender);
+      const options: Electron.SaveDialogOptions = {
         defaultPath: `${sanitizedTitle}.${format}`,
         filters: filterMap[format],
-      });
+      };
+      const result = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options);
 
       if (result.canceled || !result.filePath) {
         return { success: false };

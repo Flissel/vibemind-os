@@ -8,13 +8,20 @@ To re-pin the kernel plugin catalog, change `DESKTOP_PLUGIN_CATALOG_PIN` on bran
 Flissel/rowboat (in `apps/x/apps/renderer/src/lib/rowboat-plugin-api.ts`), then run the sync.
 
 - Fork: https://github.com/Flissel/rowboat (branch `vibemind`)
-- Fork commit: `dfb4f38a70f60db1f41817ca9681abafc156db56`
+- Fork commit: `b74e2a3f64100af1f1260672b91b5357899ee776`
 - Upstream base: rowboatlabs/rowboat `72e9d8c`
 - EHL repo: https://github.com/Flissel/ehl-munich-2026 (`schema/`)
 - EHL commit: `44c1024c7804c696bc283bd14a9d08bd87a38230`
 
 ## Patches on top of upstream (EHL hierarchy graph, VibeMind)
 
+- b74e2a3f fix(main): Einbettungsmodus registriert kein rowboat://-Protokoll und beendet sich nicht ohne Fenster
+- 65bade5c feat(main): Einbettungsmodus --embed fuer die VibeMind-Multiverse-Ansicht
+- 83ae1ef4 fix(server): Quell-Stream abbrechen, wenn der Client waehrend serveApp abbricht
+- 517544b7 feat(server): app://-Inhalte ueber den Einbettungszugang (Token, Range, Streaming)
+- ff95c720 fix(server): Einbettungszugang schliesst alle Verbindungen und faengt synchrone Fehler ab
+- 27e4a6ab feat(server): Einbettungszugang fuer die VibeMind-Multiverse-Ansicht (WebSocket)
+- eeec20a0 feat(shared): Push-Kanaele fuer die VibeMind-Einbettung einordnen
 - dfb4f38a fix(vibemind): Integrationen-Listen nur bei Verbindung ok, schnelle Abfrage sofort neu planen
 - f17a38bd fix(vibemind): OpenFang-Schluessel aus Kindprozess-Umgebung entfernen, detail nur wo gezeigt, gepruefte URL oeffnen
 - 5ea5159e fix(vibemind): Integrationen in Typen, Palette, Tour und ausgeklappter Seitenleiste
