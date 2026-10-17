@@ -122,6 +122,9 @@ WERKZEUGE = (
     # Podcast (17.10.2026): der Agent beauftragt, gesprochen wird nur im Ton-Arbeiter am PC.
     werkzeuge.podcast_beauftragen,
     werkzeuge.podcast_auftraege,
+    # Kampagnenkalender (17.10.2026): lesen und vorschlagen; bestaetigt wird im Pult.
+    werkzeuge.plan_lesen,
+    werkzeuge.plan_vorschlagen,
 )
 
 HOST = os.environ.get("MARKETING_CLAW_MCP_HOST", "0.0.0.0")
