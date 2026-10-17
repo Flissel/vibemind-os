@@ -46,7 +46,7 @@ def _roh_anfrage(url: str, daten, kopfzeilen: dict) -> tuple:
         return e.code, e.read().decode("utf-8", "replace")
 
 
-_AGENT_PFADE = ("/api/ton/", "/api/bilder/agent/", "/api/plan")
+_AGENT_PFADE = ("/api/ton/", "/api/bilder/agent/", "/api/plan", "/api/video/")
 
 
 def _api(pfad: str, nutzlast: dict | None = None) -> dict:
@@ -401,6 +401,60 @@ def podcast_auftraege(anzahl: int = 10) -> dict:
     """Stand deiner Podcast-Auftraege: offen, in_arbeit, fertig (mit datei und dauer_s) oder fehler
     (mit befund). Eine fertige datei gibst du an versand_beauftragen weiter."""
     antwort = _api(f"/api/ton/auftraege?limit={max(1, min(int(anzahl or 10), 100))}")
+    if not antwort["ok"]:
+        return antwort
+    return {"ok": True, "daten": (antwort.get("daten") or {}).get("auftraege") or []}
+
+
+def reel_beauftragen(art: str, titel: str, thema: str, sprechertext: str = "", firma: str = "vibemind",
+                     bilder: list | None = None, logo: str = "", videos: list | None = None, video: str = "",
+                     dauer_s: int = 30, stimme: str = "standard", hook: str = "",
+                     farbe_hintergrund: str = "", farbe_text: str = "") -> dict:
+    """Beauftragt ein Reel (kurzes Hochformat-Video, 15-60 s) beim Video-Claw (17.10.2026). Gebaut wird
+    am PC mit Laura - das dauert einige Minuten; der Stand steht in reel_auftraege.
+
+    art: "bilder" (Titelkarte + Markenbilder + Schlusskarte; bilder = 1-8 Bilddateien aus den Medien, logo
+         optional), "material" (vorhandene Laura-Videos; videos = Laura-IDs aus `videos`, leer = der Claw
+         sucht passend) oder "kurzfassung" (video = EINE Laura-ID eines langen Videos).
+    sprechertext: was gesprochen wird (fuers Ohr, kurze Saetze, hoechstens 900 Zeichen; bei kurzfassung
+         optional). Der Claw erfindet nichts dazu - Produktaussagen nur, was du belegen kannst.
+    hook: eine Zeile, die in den ersten 2 Sekunden klar macht, worum es geht.
+    Farben optional als #rrggbb (Markenfarben). stimme: Name einer Stimmprobe oder "standard".
+
+    Fertig liegt das Reel als vid-<id>-<titel>.mp4 (hoechstens 15 MB) in den Medien, mit Untertiteln und
+    dem Hinweis "Stimme: KI". Hinaus geht es NUR ueber versand_beauftragen(..., medien_datei="vid-....mp4")
+    (LinkedIn-Post oder WhatsApp) - ein Mensch gibt jeden Entwurf frei."""
+    titel_sauber, _ = stil.hausstil(titel or "")
+    thema_sauber, _ = stil.hausstil(thema or "")
+    text_sauber, _ = stil.hausstil(sprechertext or "")
+    hook_sauber, _ = stil.hausstil(hook or "")
+    briefing: dict = {"thema": thema_sauber.strip(), "sprechertext": text_sauber.strip(), "dauer_s": dauer_s,
+                      "stimme": stimme or "standard", "hook": hook_sauber.strip()}
+    if art == "bilder":
+        briefing["bilder"] = list(bilder or [])
+        if logo:
+            briefing["logo"] = logo
+        farben = {k: v for k, v in (("hintergrund", farbe_hintergrund), ("text", farbe_text)) if v}
+        if farben:
+            briefing["farben"] = farben
+    elif art == "material":
+        briefing["videos"] = list(videos or [])
+    elif art == "kurzfassung":
+        briefing["video"] = video
+    antwort = _api("/api/video/auftraege", {"firma": firma, "art": art, "titel": titel_sauber.strip(),
+                                            "briefing": briefing})
+    if not antwort["ok"]:
+        return antwort
+    return {"ok": True, "daten": {"auftrag_id": (antwort.get("daten") or {}).get("auftrag"),
+                                  "hinweis": "Wird am PC mit Laura gebaut; Stand und Dateiname in reel_auftraege."}}
+
+
+def reel_auftraege(firma: str = "vibemind", anzahl: int = 10) -> dict:
+    """Stand deiner Reel-Auftraege: offen, in_arbeit, fertig (mit datei, dauer_s, bytes), fehler (mit befund)
+    oder abgebrochen. protokoll zeigt, was der Video-Claw gewaehlt hat. Eine fertige datei gibst du an
+    versand_beauftragen weiter."""
+    antwort = _api(f"/api/video/auftraege?firma={urllib.parse.quote(firma or '')}"
+                   f"&limit={max(1, min(int(anzahl or 10), 100))}")
     if not antwort["ok"]:
         return antwort
     return {"ok": True, "daten": (antwort.get("daten") or {}).get("auftraege") or []}

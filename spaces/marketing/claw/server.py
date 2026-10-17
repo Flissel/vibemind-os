@@ -125,6 +125,9 @@ WERKZEUGE = (
     # Kampagnenkalender (17.10.2026): lesen und vorschlagen; bestaetigt wird im Pult.
     werkzeuge.plan_lesen,
     werkzeuge.plan_vorschlagen,
+    # Reels (17.10.2026): beauftragen beim Video-Claw; Laura bleibt fuer diesen Agenten lesend.
+    werkzeuge.reel_beauftragen,
+    werkzeuge.reel_auftraege,
 )
 
 HOST = os.environ.get("MARKETING_CLAW_MCP_HOST", "0.0.0.0")

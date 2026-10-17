@@ -51,6 +51,8 @@
     "mcp__marketing__podcast_auftraege",
     "mcp__marketing__plan_lesen",
     "mcp__marketing__plan_vorschlagen",
+    "mcp__marketing__reel_beauftragen",
+    "mcp__marketing__reel_auftraege",
     "mcp__laura__list_projects",
     "mcp__laura__list_assets",
     "mcp__laura__get_transcript",
