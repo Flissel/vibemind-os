@@ -1,6 +1,8 @@
 """Start the Rowboat desktop app of this space in dev mode on the VibeMind vault (~/.rowboat).
 
     python spaces/rowboat/scripts/start_desktop.py --install   # first time and after every sync: build harbor, install the app, schema venv
+    python spaces/rowboat/scripts/start_desktop.py --build-embed   # Einbettung bauen (VibeMind-Multiverse), nach jedem Sync
+    python spaces/rowboat/scripts/start_desktop.py --embed         # gebaute App versteckt im Einbettungsmodus + vault map
     python spaces/rowboat/scripts/start_desktop.py             # Rowboat + vault-map refresh; Ctrl+C stops both
 
 The vault map (config/vault-map.json) places VibeMind's notes in the schema hierarchy for the 3D brain graph.
@@ -13,6 +15,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -29,6 +32,7 @@ POLL_SECONDS = 0.5   # wait in slices: on Windows an untimed wait() does not let
 
 DEFAULT_ENV_FILE = SPACE.parents[2] / ".env"   # Vibemind_V1/.env (Space liegt unter vibemind-os/spaces/rowboat)
 OPENFANG_KEY = "OPENFANG_API_KEY"
+GIT_BASH_FALLBACK = Path(r"C:\Program Files\Git\bin\bash.exe")
 
 
 def read_env_value(path: Path, name: str) -> str | None:
@@ -88,19 +92,62 @@ def missing(lay: Layout, windows: bool = IS_WINDOWS) -> list[str]:
     return out
 
 
+def electron_bin(lay: Layout, windows: bool = IS_WINDOWS) -> Path:
+    return lay.app / "apps" / "main" / "node_modules" / ".bin" / ("electron.cmd" if windows else "electron")
+
+
+def embed_build_steps(lay: Layout) -> list[tuple[list[str], Path]]:
+    """Einbettung (Spec vibemind-os 2026-10-17-rowboat-einbettung): gebaute Oberflaeche statt Vite."""
+    return [(["npm", "run", "deps"], lay.app),
+            (["npm", "run", "build"], lay.app / "apps" / "renderer"),
+            (["npm", "run", "build"], lay.app / "apps" / "main")]
+
+
+def missing_embed(lay: Layout, windows: bool = IS_WINDOWS) -> list[str]:
+    out = missing(lay, windows)
+    for path, what in ((lay.app / "apps" / "renderer" / "dist" / "index.html", "Rowboat renderer build"),
+                       (lay.app / "apps" / "main" / ".package" / "dist" / "main.cjs", "Rowboat main build"),
+                       (lay.app / "apps" / "preload" / "dist" / "preload.js", "Rowboat preload build"),
+                       (electron_bin(lay, windows), "Electron")):
+        if not path.is_file():
+            out.append(f"{path} ({what})")
+    return out
+
+
+def _is_wsl_bash(path: Path) -> bool:
+    lowered = str(path).lower()
+    return "\\windows\\system32\\" in lowered or "\\windowsapps\\" in lowered
+
+
+def git_bash(windows: bool = IS_WINDOWS) -> Path | None:
+    """Git Bash fuer Rowboats Build-Skripte (rm -rf). Nie das WSL-bash aus System32/WindowsApps."""
+    if not windows:
+        return None
+    git = shutil.which("git")
+    if git:
+        candidate = Path(git).resolve().parent.parent / "bin" / "bash.exe"   # <Git>\cmd\git.exe oder <Git>\bin\git.exe
+        if candidate.is_file() and not _is_wsl_bash(candidate):
+            return candidate
+    return GIT_BASH_FALLBACK if GIT_BASH_FALLBACK.is_file() else None
+
+
 def map_command(py: Path, workdir: Path, watch: int = 0) -> list[str]:
     cmd = [str(py), "-m", "ehl_schema.cli", "map", "--workdir", str(workdir), "--profile", PROFILE]
     return cmd + (["--watch", str(watch)] if watch else [])
 
 
-def jobs(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS) -> list[tuple[str, list[str], Path]]:
+def jobs(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS,
+         embed: bool = False) -> list[tuple[str, list[str], Path]]:
     py = venv_python(lay.venv, windows)
-    return [("Rowboat", ["npm", "run", "dev"], lay.app),
-            ("vault map", map_command(py, workdir, MAP_SECONDS), lay.schema)]
+    if embed:
+        rowboat = ("Rowboat", [str(electron_bin(lay, windows)), ".", "--hidden", "--embed"], lay.app / "apps" / "main")
+    else:
+        rowboat = ("Rowboat", ["npm", "run", "dev"], lay.app)
+    return [rowboat, ("vault map", map_command(py, workdir, MAP_SECONDS), lay.schema)]
 
 
 def _shell(cmd: list[str], windows: bool) -> bool:
-    return windows and cmd[0] in ("npm", "pnpm")  # .cmd launchers on Windows
+    return windows and (cmd[0] in ("npm", "pnpm") or cmd[0].lower().endswith(".cmd"))  # .cmd launchers on Windows
 
 
 def stop(proc: subprocess.Popen, windows: bool = IS_WINDOWS) -> None:
@@ -124,11 +171,11 @@ def stop(proc: subprocess.Popen, windows: bool = IS_WINDOWS) -> None:
             pass
 
 
-def install(lay: Layout, windows: bool = IS_WINDOWS) -> int:
-    for cmd, cwd in install_steps(lay, windows):
+def _run_steps(steps: list[tuple[list[str], Path]], windows: bool, env: dict[str, str] | None = None) -> int:
+    for cmd, cwd in steps:
         log.info("running in %s: %s", cwd, " ".join(cmd))
         try:
-            code = subprocess.run(cmd, cwd=cwd, shell=_shell(cmd, windows)).returncode
+            code = subprocess.run(cmd, cwd=cwd, shell=_shell(cmd, windows), env=env).returncode
         except FileNotFoundError:
             tool, hint = (" ".join(cmd[:2]), " (install Python 3.12 with the py launcher)") if cmd[0] == "py" \
                 else (cmd[0], "")
@@ -140,11 +187,28 @@ def install(lay: Layout, windows: bool = IS_WINDOWS) -> int:
     return 0
 
 
-def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS, env_file: Path | None = None) -> int:
+def install(lay: Layout, windows: bool = IS_WINDOWS) -> int:
+    return _run_steps(install_steps(lay, windows), windows)
+
+
+def build_embed(lay: Layout, windows: bool = IS_WINDOWS) -> int:
+    env = None
+    if windows:
+        # Rowboats npm-Skripte nutzen rm -rf; unter Windows laeuft npm ueber cmd.exe ohne rm.exe -> Git Bash als Script-Shell.
+        bash = git_bash(windows)
+        if bash is None:
+            log.error("Git Bash nicht gefunden – Rowboats Build-Skripte brauchen rm -rf (Git for Windows installieren)")
+            return 1
+        env = {**os.environ, "npm_config_script_shell": str(bash)}
+    return _run_steps(embed_build_steps(lay), windows, env)
+
+
+def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS, env_file: Path | None = None, embed: bool = False) -> int:
     env_file = env_file or DEFAULT_ENV_FILE
-    gaps = missing(lay, windows)
+    gaps = missing_embed(lay, windows) if embed else missing(lay, windows)
     if gaps:
-        log.error("not installed yet - run start_desktop.py --install first. Missing:\n- %s", "\n- ".join(gaps))
+        log.error("not installed yet - run start_desktop.py %s first. Missing:\n- %s",
+                  "--install and --build-embed" if embed else "--install", "\n- ".join(gaps))
         return 2
     # Der Schluessel gehoert nur dem Rowboat-Job (Spec 3.3): alle anderen Prozesse bekommen ihn nie, auch nicht geerbt.
     base_env = {k: v for k, v in os.environ.items() if k != OPENFANG_KEY}
@@ -152,7 +216,11 @@ def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS, env_file: Path
     if subprocess.run(map_command(venv_python(lay.venv, windows), workdir), cwd=lay.schema,
                       env=base_env).returncode != 0:
         log.warning("vault map failed once; Rowboat starts anyway, the refresh retries every %d s", MAP_SECONDS)
-    env = {**base_env, "ROWBOAT_WORKDIR": str(workdir)}
+    # Single-Instance auch ungebaut (Fork, Spec 2026-10-17): ein zweiter Start holt die laufende Instanz nach vorn.
+    env = {**base_env, "ROWBOAT_WORKDIR": str(workdir), "ROWBOAT_SINGLE_INSTANCE": "1"}
+    if embed:
+        env.pop("ELECTRON_RUN_AS_NODE", None)
+        env["ROWBOAT_EMBED"] = "1"
     rowboat_env = {**env, OPENFANG_KEY: key} if key else env
     if not key:
         log.warning("%s nicht gefunden – Integrationen-Seite zeigt Hinweis", OPENFANG_KEY)
@@ -166,11 +234,15 @@ def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS, env_file: Path
             signal.signal(getattr(signal, name), _interrupt)
     procs: list[subprocess.Popen] = []
     try:
-        for name, cmd, cwd in jobs(lay, workdir, windows):
+        for name, cmd, cwd in jobs(lay, workdir, windows, embed=embed):
             log.info("starting %s: %s", name, " ".join(cmd))
             procs.append(subprocess.Popen(cmd, cwd=cwd, env=rowboat_env if name == "Rowboat" else env, shell=_shell(cmd, windows),
                                           start_new_session=not windows))
-        log.info("Rowboat opens after its first build (a few minutes). Ctrl+C stops everything.")
+        if embed:
+            log.info("Rowboat laeuft versteckt im Einbettungsmodus; die Multiverse-Ansicht verbindet sich ueber %s. Ctrl+C stoppt alles.",
+                     workdir / "embed.json")
+        else:
+            log.info("Rowboat opens after its first build (a few minutes). Ctrl+C stops everything.")
         code = _wait(procs[0])
     except KeyboardInterrupt:
         return 0
@@ -195,13 +267,17 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--install", action="store_true", help="build harbor, install Rowboat and the schema venv")
+    ap.add_argument("--build-embed", action="store_true", help="Einbettung bauen (gebaute Oberflaeche fuer die Multiverse-Ansicht)")
+    ap.add_argument("--embed", action="store_true", help="gebaute App versteckt im Einbettungsmodus starten")
     ap.add_argument("--env-file", type=Path, default=DEFAULT_ENV_FILE, help="Datei, aus der nur OPENFANG_API_KEY gelesen wird")
     ap.add_argument("--workdir", type=Path, default=Path.home() / ".rowboat", help="Rowboat data folder")
     args = ap.parse_args(argv)
     lay = layout()
     if args.install:
         return install(lay)
-    return start(lay, args.workdir.expanduser().resolve(), env_file=args.env_file)
+    if args.build_embed:
+        return build_embed(lay)
+    return start(lay, args.workdir.expanduser().resolve(), env_file=args.env_file, embed=args.embed)
 
 
 if __name__ == "__main__":

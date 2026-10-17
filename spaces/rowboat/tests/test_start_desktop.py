@@ -200,7 +200,7 @@ def test_windows_installs_no_signal_handlers(tmp_path, monkeypatch):
 def test_relative_workdir_is_made_absolute(tmp_path, monkeypatch):
     seen = []
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(start_desktop, "start", lambda lay, workdir, windows=False, env_file=None: seen.append(workdir) or 0)
+    monkeypatch.setattr(start_desktop, "start", lambda lay, workdir, windows=False, env_file=None, embed=False: seen.append(workdir) or 0)
     assert start_desktop.main(["--workdir", "data"]) == 0
     assert seen == [(tmp_path / "data").resolve()]
 
@@ -313,3 +313,151 @@ def test_start_warns_and_runs_without_key(tmp_path, monkeypatch, caplog):
     start_desktop.start(layout(tmp_path), tmp_path, windows=True, env_file=tmp_path / "fehlt.env")
     assert started, "Rowboat muss trotzdem starten"
     assert "OPENFANG_API_KEY nicht gefunden" in caplog.text
+
+
+# --- Einbettung (Spec 2026-10-17-rowboat-einbettung) ---
+from start_desktop import electron_bin, embed_build_steps, missing_embed  # noqa: E402
+
+
+def _embed_prereqs(tmp_path, windows):
+    lay = _prereqs(tmp_path, windows)
+    for p in (lay.app / "apps" / "renderer" / "dist" / "index.html",
+              lay.app / "apps" / "main" / ".package" / "dist" / "main.cjs",
+              lay.app / "apps" / "preload" / "dist" / "preload.js",
+              electron_bin(lay, windows)):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("")
+    return lay
+
+
+def test_embed_build_builds_deps_then_renderer_then_main(tmp_path):
+    lay = layout(tmp_path)
+    assert embed_build_steps(lay) == [
+        (["npm", "run", "deps"], lay.app),
+        (["npm", "run", "build"], lay.app / "apps" / "renderer"),
+        (["npm", "run", "build"], lay.app / "apps" / "main")]
+
+
+def test_embed_job_starts_the_built_electron_hidden_in_apps_main(tmp_path):
+    lay = layout(tmp_path)
+    (name, cmd, cwd), (map_name, _, _) = jobs(lay, tmp_path, windows=True, embed=True)
+    assert name == "Rowboat" and map_name == "vault map"
+    assert cmd == [str(lay.app / "apps" / "main" / "node_modules" / ".bin" / "electron.cmd"), ".", "--hidden", "--embed"]
+    assert cwd == lay.app / "apps" / "main"
+
+
+def test_missing_embed_lists_the_builds_and_electron(tmp_path):
+    lay = _prereqs(tmp_path, windows=True)
+    assert len(missing_embed(lay, windows=True)) == 4
+    assert missing_embed(_embed_prereqs(tmp_path / "b", windows=True), windows=True) == []
+
+
+def test_embed_start_sets_embed_and_single_instance_and_drops_run_as_node(tmp_path, monkeypatch):
+    lay = _embed_prereqs(tmp_path, windows=True)
+    seen = {}
+    monkeypatch.setattr(start_desktop.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0))
+
+    def fake_popen(cmd, cwd=None, env=None, shell=False, **k):
+        seen["map" if cwd == lay.schema else "rowboat"] = (cmd, env, shell)
+        return FakeProc(exit_code=0)
+
+    monkeypatch.setattr(start_desktop.subprocess, "Popen", fake_popen)
+    monkeypatch.setenv("ELECTRON_RUN_AS_NODE", "1")
+    assert start_desktop.start(lay, tmp_path, windows=True, embed=True) == 0
+    cmd, env, shell = seen["rowboat"]
+    assert cmd[-2:] == ["--hidden", "--embed"]
+    assert shell is True   # electron.cmd braucht unter Windows die Shell
+    assert env["ROWBOAT_EMBED"] == "1" and env["ROWBOAT_SINGLE_INSTANCE"] == "1"
+    assert "ELECTRON_RUN_AS_NODE" not in env
+
+
+def test_embed_start_refuses_without_builds(tmp_path, monkeypatch):
+    lay = _prereqs(tmp_path, windows=True)
+    started = []
+    monkeypatch.setattr(start_desktop.subprocess, "Popen", lambda *a, **k: started.append(a))
+    monkeypatch.setattr(start_desktop.subprocess, "run", lambda *a, **k: started.append(a))
+    assert start_desktop.start(lay, tmp_path, windows=True, embed=True) == 2
+    assert started == []
+
+
+def test_dev_start_also_asks_for_single_instance(tmp_path, monkeypatch):
+    lay = _prereqs(tmp_path, windows=True)
+    seen = {}
+    monkeypatch.setattr(start_desktop.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0))
+
+    def fake_popen(cmd, cwd=None, env=None, **k):
+        seen[str(cwd)] = env
+        return FakeProc(exit_code=0)
+
+    monkeypatch.setattr(start_desktop.subprocess, "Popen", fake_popen)
+    start_desktop.start(lay, tmp_path, windows=True)
+    assert seen[str(lay.app)]["ROWBOAT_SINGLE_INSTANCE"] == "1"
+    assert "ROWBOAT_EMBED" not in seen[str(lay.app)]
+
+
+GIT_BASH = Path(r"C:\Gitinash.exe")
+
+
+def test_build_embed_runs_the_steps_in_order_and_stops_at_the_first_failure(tmp_path, monkeypatch):
+    lay = layout(tmp_path)
+    runs = []
+    monkeypatch.setattr(start_desktop, "git_bash", lambda windows=True: GIT_BASH)
+
+    def fake_run(cmd, cwd=None, shell=False, **k):
+        runs.append((cmd, cwd))
+        return SimpleNamespace(returncode=1 if cwd == lay.app / "apps" / "renderer" else 0)
+
+    monkeypatch.setattr(start_desktop.subprocess, "run", fake_run)
+    assert start_desktop.build_embed(lay, windows=True) == 1
+    assert [c for c, _ in runs] == [["npm", "run", "deps"], ["npm", "run", "build"]]
+
+
+def test_build_embed_points_npm_at_git_bash_on_windows(tmp_path, monkeypatch):
+    lay = layout(tmp_path)
+    envs = []
+    monkeypatch.setattr(start_desktop, "git_bash", lambda windows=True: GIT_BASH)
+    monkeypatch.setattr(start_desktop.subprocess, "run",
+                        lambda cmd, cwd=None, shell=False, env=None, **k: envs.append(env) or SimpleNamespace(returncode=0))
+    assert start_desktop.build_embed(lay, windows=True) == 0
+    assert len(envs) == 3
+    assert all(e["npm_config_script_shell"] == str(GIT_BASH) for e in envs)
+
+
+def test_build_embed_without_git_bash_on_windows_runs_nothing(tmp_path, monkeypatch, caplog):
+    runs = []
+    monkeypatch.setattr(start_desktop, "git_bash", lambda windows=True: None)
+    monkeypatch.setattr(start_desktop.subprocess, "run", lambda *a, **k: runs.append(a))
+    with caplog.at_level("ERROR", logger="start_desktop"):
+        assert start_desktop.build_embed(layout(tmp_path), windows=True) == 1
+    assert runs == []
+    assert "Git Bash nicht gefunden" in caplog.text and "rm -rf" in caplog.text
+
+
+def test_git_bash_is_derived_from_git_exe_in_cmd_dir(tmp_path, monkeypatch):
+    (tmp_path / "Git" / "cmd").mkdir(parents=True)
+    (tmp_path / "Git" / "bin").mkdir(parents=True)
+    git = tmp_path / "Git" / "cmd" / "git.exe"
+    bash = tmp_path / "Git" / "bin" / "bash.exe"
+    git.write_text("")
+    bash.write_text("")
+    monkeypatch.setattr(start_desktop.shutil, "which", lambda name: str(git))
+    assert start_desktop.git_bash(windows=True) == bash
+
+
+def test_git_bash_never_returns_a_wsl_bash(tmp_path, monkeypatch):
+    sys32 = tmp_path / "Windows" / "System32"
+    sys32.mkdir(parents=True)
+    (sys32 / "git.exe").write_text("")
+    (sys32 / "bash.exe").write_text("")   # WSL-Launcher neben einem (hier erfundenen) git.exe
+    monkeypatch.setattr(start_desktop.shutil, "which", lambda name: str(sys32 / "git.exe"))
+    monkeypatch.setattr(start_desktop, "GIT_BASH_FALLBACK", tmp_path / "keine" / "bash.exe")
+    assert start_desktop.git_bash(windows=True) is None
+
+
+def test_git_bash_falls_back_and_is_none_off_windows(tmp_path, monkeypatch):
+    fb = tmp_path / "bash.exe"
+    fb.write_text("")
+    monkeypatch.setattr(start_desktop.shutil, "which", lambda name: None)
+    monkeypatch.setattr(start_desktop, "GIT_BASH_FALLBACK", fb)
+    assert start_desktop.git_bash(windows=True) == fb
+    assert start_desktop.git_bash(windows=False) is None
