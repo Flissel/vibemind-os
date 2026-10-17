@@ -3492,6 +3492,9 @@ from spaces.marketing.api import medien_mandant as _medien_mandant  # noqa: E402
 app.include_router(_medien_mandant.router)
 from spaces.marketing.api import ton as _ton  # noqa: E402
 app.include_router(_ton.router)
+from spaces.marketing.api import plan as _plan  # noqa: E402
+app.include_router(_plan.pult_router)
+app.include_router(_plan.agent_router)
 
 
 # ─── Static-serve of the mockup ───────────────────────────────────────
