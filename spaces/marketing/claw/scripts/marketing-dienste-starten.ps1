@@ -147,6 +147,39 @@ $Dienste = @(
         Cwd  = $OsRoot
         Env  = @{ TON_STIMMEN_ORDNER = 'E:\marketing-stimmen' }
         Was  = 'Ton-Arbeiter (Podcast-Auftraege von der VM, spricht ueber :8899, MP3 in die Medien)'
+    },
+    # Video-Claw (17.10.2026, Plan 2026-10-17-video-claw-reels): Werkzeuge (nur loopback), eigene Shim mit
+    # genau diesen Werkzeugen, Arbeiter. Laura-Schreibrechte gibt es nur hier, nicht beim Marketing-Agenten.
+    @{
+        Name = 'marketing_video_werkzeuge'
+        Port = 8137
+        Args = @('-u', '-m', 'spaces.marketing.video_claw.server')
+        Cwd  = $OsRoot
+        Env  = @{}
+        Was  = 'Video-Claw MCP-Sidecar (enge Laura-Huellen, 127.0.0.1)'
+    },
+    @{
+        Name = 'marketing_video_shim'
+        Port = 8118
+        Args = @((Join-Path $SpaceRoot 'claw\shim\marketing_shim.py'),
+                 '--host', '127.0.0.1', '--port', '8118', '--timeout', '1800')
+        Cwd  = $Root
+        Env  = @{
+            SHIM_EXTRA_MCP_CONFIG = (Join-Path $SpaceRoot 'video_claw\video-mcp.json')
+            # reel_bauen wartet bis zu 10 min auf Laura; Vorgabe der CLI fuer MCP-Aufrufe ist kuerzer.
+            MCP_TOOL_TIMEOUT      = '900000'
+            VIBEMIND_AGENT        = 'marketing-video'
+            VIBEMIND_BUDGET_MODUL = 'C:\Users\User\Desktop\Vibemind_V1\scripts\claude_budget.py'
+        }
+        Was  = 'Modell-Tuer :8118 nur fuer den Video-Claw (eigene Werkzeugliste, Budget marketing-video)'
+    },
+    @{
+        Name = 'marketing_video_claw'
+        Port = 8136
+        Args = @('-u', '-m', 'spaces.marketing.workers.video_claw')
+        Cwd  = $OsRoot
+        Env  = @{}
+        Was  = 'Video-Claw-Arbeiter (Reel-Auftraege von der VM, baut mit Laura, MP4 in die Medien)'
     }
 )
 

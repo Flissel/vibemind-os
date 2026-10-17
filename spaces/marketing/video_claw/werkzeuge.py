@@ -17,6 +17,7 @@ import urllib.request
 
 from spaces.marketing.claw import laura as laura_lesen
 from spaces.marketing.video_claw import laura_api
+from spaces.marketing.workers.bild_worker import tls_kontext
 
 REEL_MAX_BYTES = 15_000_000
 _ID = re.compile(r"^[0-9a-f][0-9a-f-]{7,63}$")
@@ -45,7 +46,9 @@ def _marketing(pfad: str, daten: dict) -> dict:
                                  method="POST", headers={"Content-Type": "application/json"})
     req.add_unredirected_header("X-Bild-Key", schluessel)
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
+        # TLS-Kontext des Bild-Arbeiters: die Tailnet-Kette der VM endet fuer Windows-Python sonst
+        # ueber eine abgelaufene Querzertifizierung (bild_worker.tls_kontext).
+        with urllib.request.urlopen(req, timeout=30, context=tls_kontext()) as r:
             return {"ok": True, "daten": json.loads(r.read() or b"{}")}
     except urllib.error.HTTPError as e:
         try:
