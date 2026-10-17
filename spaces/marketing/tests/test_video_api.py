@@ -208,3 +208,21 @@ def test_abruf_gefaelscht_oder_abgelaufen(db, c):
     assert c.get(f"/api/video/medien/{weit}/{video._signatur(weit, 'team.png')}/team.png").status_code == 403
     gut = video._signatur(ablauf, "team.png")
     assert c.get(f"/api/video/medien/{ablauf}/{gut}/andere.png").status_code in (403, 404)
+
+
+@pytest.mark.parametrize("name", ["Fremd.PNG", "FREMD.png", "fremd.png:x.png", "team.png:fremd.png"])
+def test_medienlink_keine_namensumgehung(db, c, name):
+    """NTFS oeffnet Gross-/Kleinvarianten und Datenstroeme - die Firmenpruefung vergleicht exakt."""
+    (db.ordner / "fremd.png").write_bytes(b"\x89PNG")
+    (db.ordner / "team.png").write_bytes(b"\x89PNG")
+    db.antworten = [_in_arbeit(db)]
+    r = c.post(f"/api/video/arbeiter/{AID}/medien-link", headers=B, json={"name": name})
+    assert r.status_code in (404, 422)
+
+
+def test_abruf_keine_namensumgehung(db, c):
+    (db.ordner / "fremd.png").write_bytes(b"\x89PNG")
+    ablauf = int(time.time()) + 600
+    for name in ("Fremd.PNG", "fremd.png:x.png"):
+        r = c.get(f"/api/video/medien/{ablauf}/{video._signatur(ablauf, name)}/{name}")
+        assert r.status_code == 404, name

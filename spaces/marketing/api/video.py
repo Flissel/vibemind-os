@@ -227,11 +227,22 @@ def _signatur(ablauf: int, name: str) -> str:
 
 
 def _medien_pfad(name: str) -> str | None:
+    """Pfad nur, wenn GENAU dieser Name im Ordner steht (Sicherheitspruefung 17.10.2026).
+
+    Die Firmenpruefung (medien_mandant.ist_fremd) vergleicht Namen exakt; NTFS am PC oeffnet
+    'Fremd.PNG' aber als 'fremd.png' und 'x:y.png' als Datenstrom von 'x'. Darum zaehlt nur ein
+    exakter Treffer in der Verzeichnisliste - derselbe Name, den die Pruefung gesehen hat."""
+    if ":" in name:
+        return None
     for o in (os.environ.get("MARKETING_MEDIEN_ORDNER", "").strip(),
               os.environ.get("MARKETING_BILD_ORDNER", "").strip()):
         if o and os.path.isdir(o):
+            try:
+                vorhanden = name in os.listdir(o)
+            except OSError:
+                continue
             pfad = os.path.join(o, name)
-            if os.path.realpath(os.path.dirname(pfad)) == os.path.realpath(o) and os.path.isfile(pfad):
+            if vorhanden and os.path.isfile(pfad) and not os.path.islink(pfad):
                 return pfad
     return None
 
