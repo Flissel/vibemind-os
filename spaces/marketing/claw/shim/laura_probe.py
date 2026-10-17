@@ -19,6 +19,9 @@ Zwei Richtungen werden geprueft, und die zweite ist die wichtigere:
     dieser Space auf "Agent entwirft, Mensch gibt frei" gebaut ist. Und
     `approve_script` genehmigt — das ist nie die Handlung des Agenten.
 
+Seit 17.10.2026 gilt zusaetzlich: kein SCHREIBEND-Werkzeug in der Liste (der Agent liest Laura nur;
+Schreiben/Rendern kommt ueber eigene Marketing-Werkzeuge mit Freigabe).
+
 Rueckgabe 0, wenn alles stimmt; sonst 1 mit sprechender Ausgabe.
 """
 from __future__ import annotations
@@ -30,6 +33,14 @@ import sys
 from pathlib import Path
 
 VERBOTEN = {"laura_api", "auto_produce", "start_production", "approve_script"}
+# Seit 17.10.2026 liest der Marketing-Agent Laura nur. Schreiben, Analysieren und Rendern laufen kuenftig
+# ueber eigene Marketing-Werkzeuge mit Freigabe durch einen Menschen - nicht direkt ueber den Shim.
+LESEND = {"list_projects", "list_assets", "get_transcript", "get_shots_and_scenes", "get_frame",
+          "get_contact_sheet", "search_material", "list_exports", "get_export", "download_url_for_asset",
+          "download_url_for_export", "import_status", "job_status", "production_status", "get_timeline"}
+SCHREIBEND = {"import_media", "analyze_asset", "propose_scenes", "confirm_scenes", "edit_scenes",
+              "save_storyline", "save_script_chapter", "edit_timeline", "timeline_undo", "render_timeline",
+              "build_narrated_reel"}
 KONF = Path(__file__).with_name("marketing-mcp.json")
 
 
@@ -79,7 +90,7 @@ def main() -> int:
         return 1
 
     fehlt = sorted(erlaubt - gefuehrt)
-    durchgerutscht = sorted(erlaubt & VERBOTEN)
+    durchgerutscht = sorted(erlaubt & (VERBOTEN | SCHREIBEND))
     print(f"   {len(gefuehrt)} Werkzeuge gefuehrt, {len(erlaubt)} freigegeben")
     if fehlt:
         print(f"   FEHL freigegeben, aber nicht vorhanden: {fehlt}")

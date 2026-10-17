@@ -45,6 +45,8 @@
     "mcp__marketing__vorlage_zur_pruefung_senden",
     "mcp__marketing__versand_beauftragen",
     "mcp__marketing__versandauftraege_lesen",
+    "mcp__marketing__newsletter_bildplaetze",
+    "mcp__marketing__newsletter_bild_beauftragen",
     "mcp__laura__list_projects",
     "mcp__laura__list_assets",
     "mcp__laura__get_transcript",
@@ -59,17 +61,6 @@
     "mcp__laura__import_status",
     "mcp__laura__job_status",
     "mcp__laura__production_status",
-    "mcp__laura__get_timeline",
-    "mcp__laura__import_media",
-    "mcp__laura__analyze_asset",
-    "mcp__laura__propose_scenes",
-    "mcp__laura__confirm_scenes",
-    "mcp__laura__edit_scenes",
-    "mcp__laura__save_storyline",
-    "mcp__laura__save_script_chapter",
-    "mcp__laura__edit_timeline",
-    "mcp__laura__timeline_undo",
-    "mcp__laura__render_timeline",
-    "mcp__laura__build_narrated_reel"
+    "mcp__laura__get_timeline"
   ]
 }
