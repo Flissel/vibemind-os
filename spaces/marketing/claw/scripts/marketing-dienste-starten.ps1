@@ -124,17 +124,21 @@ $Dienste = @(
         Was  = 'Chat-Arbeiter (Gestaltungs-Agent, fragt Claude ueber den Shim :8117)'
     },
     @{
-        # Podcast (17.10.2026): Chatterbox Multilingual in eigener venv (Torch+CUDA), nur 127.0.0.1.
+        # Podcast (17.10.2026): Chatterbox Multilingual in eigener venv (Torch+CUDA).
+        # Video-Claw (E5): zusaetzlich auf der Tailscale-Adresse des PCs, damit Laura auf der VM
+        # ueber /voiceover sprechen laesst - angenommen nur von der VM (Firewall-Regel ebenso eng).
         Name   = 'marketing_ton_dienst'
         Port   = 8899
         Python = 'C:\Users\User\ClaudeWork\chatterbox-venv\Scripts\python.exe'
         Args   = @('-u', '-m', 'spaces.marketing.claw.ton_dienst')
         Cwd    = $OsRoot
         Env    = @{
-            HF_HOME            = 'E:\huggingface'
-            TON_STIMMEN_ORDNER = 'E:\marketing-stimmen'
+            HF_HOME             = 'E:\huggingface'
+            TON_STIMMEN_ORDNER  = 'E:\marketing-stimmen'
+            TON_DIENST_ADRESSEN = '100.84.127.84'
+            TON_DIENST_ERLAUBT  = '100.67.177.45'
         }
-        Was    = 'Sprech-Dienst (Chatterbox Multilingual, lokal, kein API-Budget)'
+        Was    = 'Sprech-Dienst (Chatterbox Multilingual, kein API-Budget; Laura auf der VM via Tailscale)'
     },
     @{
         Name = 'marketing_ton_arbeiter'
