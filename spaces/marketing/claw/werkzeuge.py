@@ -46,7 +46,7 @@ def _roh_anfrage(url: str, daten, kopfzeilen: dict) -> tuple:
         return e.code, e.read().decode("utf-8", "replace")
 
 
-_AGENT_PFADE = ("/api/ton/", "/api/bilder/agent/")
+_AGENT_PFADE = ("/api/ton/", "/api/bilder/agent/", "/api/plan")
 
 
 def _api(pfad: str, nutzlast: dict | None = None) -> dict:
@@ -404,6 +404,35 @@ def podcast_auftraege(anzahl: int = 10) -> dict:
     if not antwort["ok"]:
         return antwort
     return {"ok": True, "daten": (antwort.get("daten") or {}).get("auftraege") or []}
+
+
+def plan_lesen(firma: str = "vibemind", tage: int = 30) -> dict:
+    """Kampagnenkalender der naechsten `tage` Tage (vorschlag, geplant, verschoben): was ist wann geplant?
+    Lies ihn, bevor du Newsletter, Posts oder Podcasts vorschlaegst, damit nichts doppelt oder zu dicht kommt."""
+    antwort = _api(f"/api/plan?firma={urllib.parse.quote(firma or '')}&tage={max(1, min(int(tage or 30), 120))}")
+    if not antwort["ok"]:
+        return antwort
+    return {"ok": True, "daten": (antwort.get("daten") or {}).get("eintraege") or []}
+
+
+def plan_vorschlagen(datum: str, art: str, titel: str, notiz: str = "", firma: str = "vibemind",
+                     inhalt: str = "") -> dict:
+    """Schlaegt einen Termin fuer den Kampagnenkalender vor (17.10.2026). Er steht als VORSCHLAG im Plan,
+    bis ein Mensch ihn im Pult bestaetigt oder verwirft - du traegst nie direkt etwas fest ein.
+    datum: JJJJ-MM-TT. art: newsletter | post | podcast | video | aktion | sonstiges.
+    inhalt: optional die ID eines Marketing-Entwurfs, der zu diesem Termin gehoert.
+    Ein Plan versendet nichts; hinaus geht weiterhin nur, was ueber versand_beauftragen freigegeben wird."""
+    titel_sauber, _ = stil.hausstil(titel or "")
+    if not titel_sauber.strip():
+        return {"ok": False, "fehler": "Der Titel ist leer."}
+    notiz_sauber, _ = stil.hausstil(notiz or "")
+    nutzlast = {"firma": firma, "datum": datum, "art": art, "titel": titel_sauber.strip(), "notiz": notiz_sauber}
+    if inhalt:
+        nutzlast["inhalt"] = inhalt
+    antwort = _api("/api/plan/vorschlag", nutzlast)
+    if not antwort["ok"]:
+        return antwort
+    return {"ok": True, "daten": antwort.get("daten") or {}}
 
 
 def versandauftraege_lesen(status: str = "", anzahl: int = 20) -> dict:
