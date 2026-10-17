@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "video": {
+      "type": "http",
+      "url": "http://127.0.0.1:8137/mcp"
+    }
+  },
+  "allowedTools": [
+    "mcp__video__notiz",
+    "mcp__video__material_suchen",
+    "mcp__video__transkript",
+    "mcp__video__projekt_anlegen",
+    "mcp__video__material_uebernehmen",
+    "mcp__video__bild_importieren",
+    "mcp__video__standbild",
+    "mcp__video__titelkarte",
+    "mcp__video__reel_bauen",
+    "mcp__video__reel_status"
+  ]
+}

@@ -17,8 +17,11 @@ import hmac
 import json
 import os
 import re
+import struct
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -285,18 +288,43 @@ def _ist_mp4(roh: bytes) -> bool:
     return len(roh) >= 12 and roh[4:8] == b"ftyp"
 
 
-@router.post("/arbeiter/{aid}/datei")
-async def arbeiter_datei(aid: str, request: Request, x_bild_key: str | None = Header(None)):
-    _bild_schluessel(x_bild_key)
-    a = _auftrag_id(aid)
-    ordner = _ordner()
-    roh = bytearray()
-    async for stueck in request.stream():
-        roh += stueck
-        if len(roh) > MP4_MAX:
-            raise HTTPException(413, "MP4 groesser als 15 MB")
-    if not _ist_mp4(bytes(roh)):
+def mp4_dauer(roh: bytes) -> float | None:
+    """Dauer aus dem mvhd-Kasten (moov/mvhd), ohne ffprobe. None, wenn nicht lesbar."""
+    def kaesten(daten: bytes, start: int, ende: int):
+        i = start
+        while i + 8 <= ende:
+            groesse, typ = struct.unpack(">I4s", daten[i:i + 8])
+            kopf = 8
+            if groesse == 1 and i + 16 <= ende:
+                groesse, kopf = struct.unpack(">Q", daten[i + 8:i + 16])[0], 16
+            elif groesse == 0:
+                groesse = ende - i
+            if groesse < kopf or i + groesse > ende:
+                return
+            yield typ, i + kopf, i + groesse
+            i += groesse
+    for typ, a, e in kaesten(roh, 0, len(roh)):
+        if typ != b"moov":
+            continue
+        for typ2, a2, _e2 in kaesten(roh, a, e):
+            if typ2 != b"mvhd" or a2 + 32 > len(roh):
+                continue
+            version = roh[a2]
+            if version == 1:
+                skala, dauer = struct.unpack(">IQ", roh[a2 + 20:a2 + 32])
+            else:
+                skala, dauer = struct.unpack(">II", roh[a2 + 12:a2 + 20])
+            return round(dauer / skala, 2) if skala else None
+    return None
+
+
+def _speichern(a: str, roh: bytes) -> dict:
+    """Pruefen (ftyp, Groesse), der Firma zuordnen, ablegen. Gemeinsam fuer Upload und Laura-Abholung."""
+    if len(roh) > MP4_MAX:
+        raise HTTPException(413, "MP4 groesser als 15 MB")
+    if not _ist_mp4(roh):
         raise HTTPException(422, "Nur MP4")
+    ordner = _ordner()
     auftrag = _in_arbeit(a)
     name = f"vid-{a[:8]}-{_slug(str(auftrag.get('titel') or ''))[:40].strip('-') or 'reel'}.mp4"
     medien_mandant.zuordnen([name], str(auftrag.get("mandant")))
@@ -313,7 +341,55 @@ async def arbeiter_datei(aid: str, request: Request, x_bild_key: str | None = He
         except OSError:
             pass
         raise HTTPException(503, "MP4 konnte nicht abgelegt werden")
-    return {"name": name, "bytes": len(roh)}
+    return {"name": name, "bytes": len(roh), "dauer_s": mp4_dauer(roh)}
+
+
+@router.post("/arbeiter/{aid}/datei")
+async def arbeiter_datei(aid: str, request: Request, x_bild_key: str | None = Header(None)):
+    _bild_schluessel(x_bild_key)
+    a = _auftrag_id(aid)
+    roh = bytearray()
+    async for stueck in request.stream():
+        roh += stueck
+        if len(roh) > MP4_MAX:
+            raise HTTPException(413, "MP4 groesser als 15 MB")
+    return _speichern(a, bytes(roh))
+
+
+def _laura_quelle_erlaubt(url: str) -> bool:
+    """Nur Hosts aus MARKETING_VIDEO_LAURA_QUELLEN (Lauras Objektspeicher) - sonst waere die Route ein
+    offenes Abruf-Tor (SSRF) fuer jeden mit dem Arbeiter-Schluessel."""
+    erlaubt = {h.strip().lower() for h in os.environ.get("MARKETING_VIDEO_LAURA_QUELLEN", "").split(",") if h.strip()}
+    teile = urllib.parse.urlsplit(url)
+    return teile.scheme in ("http", "https") and bool(erlaubt) and teile.netloc.lower() in erlaubt         and not teile.username and not teile.password
+
+
+def _abrufen(url: str) -> bytes:
+    """Der einzige Netzgriff dieser Route - Tests ersetzen ihn. Keine Umleitungen folgen."""
+    class _KeineUmleitung(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):  # noqa: D102
+            return None
+    oeffner = urllib.request.build_opener(_KeineUmleitung)
+    with oeffner.open(urllib.request.Request(url, method="GET"), timeout=60) as r:
+        roh = r.read(MP4_MAX + 1)
+    return roh
+
+
+@router.post("/arbeiter/{aid}/aus-laura")
+def arbeiter_aus_laura(aid: str, payload: dict = Body(...), x_bild_key: str | None = Header(None)):
+    """Fertiges Reel direkt aus Lauras Objektspeicher holen (die Marketing-API laeuft auf derselben VM,
+    der PC erreicht die interne Speicheradresse nicht). Nur erlaubte Hosts, keine Umleitungen."""
+    _bild_schluessel(x_bild_key)
+    a = _auftrag_id(aid)
+    url = payload.get("url")
+    if not isinstance(url, str) or len(url) > 4000 or not _laura_quelle_erlaubt(url):
+        raise HTTPException(422, "url: nur Lauras Objektspeicher (MARKETING_VIDEO_LAURA_QUELLEN)")
+    _in_arbeit(a)
+    try:
+        roh = _abrufen(url)
+    except (urllib.error.URLError, OSError, TimeoutError) as e:
+        raise HTTPException(502, f"Laura-Speicher nicht erreichbar: {type(e).__name__}")
+    return _speichern(a, roh)
 
 
 @router.post("/arbeiter/{aid}/fertig")

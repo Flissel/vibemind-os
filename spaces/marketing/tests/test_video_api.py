@@ -226,3 +226,65 @@ def test_abruf_keine_namensumgehung(db, c):
     for name in ("Fremd.PNG", "fremd.png:x.png"):
         r = c.get(f"/api/video/medien/{ablauf}/{video._signatur(ablauf, name)}/{name}")
         assert r.status_code == 404, name
+
+
+# --- Abholung aus Lauras Objektspeicher + Dauer --------------------------------
+
+def _mvhd_mp4(skala: int, dauer: int) -> bytes:
+    import struct
+    mvhd_inhalt = b"\x00\x00\x00\x00" + b"\x00" * 8 + struct.pack(">II", skala, dauer) + b"\x00" * 80
+    mvhd = struct.pack(">I4s", 8 + len(mvhd_inhalt), b"mvhd") + mvhd_inhalt
+    moov = struct.pack(">I4s", 8 + len(mvhd), b"moov") + mvhd
+    ftyp = struct.pack(">I4s", 16, b"ftyp") + b"isom\x00\x00\x02\x00"
+    return ftyp + moov
+
+
+def test_mp4_dauer_aus_mvhd():
+    assert video.mp4_dauer(_mvhd_mp4(1000, 24500)) == 24.5
+    assert video.mp4_dauer(b"\x00\x00\x00\x10ftypisom\x00\x00\x02\x00") is None
+    assert video.mp4_dauer(b"kaputt") is None
+
+
+def test_mp4_dauer_echt(tmp_path):
+    import shutil
+    import subprocess
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg fehlt")
+    d = tmp_path / "x.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x568:rate=30", "-t", "3",
+                    "-c:v", "libx264", str(d)], check=True)
+    assert abs(video.mp4_dauer(d.read_bytes()) - 3.0) < 0.1
+
+
+def test_aus_laura_nur_erlaubte_quelle(db, c, monkeypatch):
+    monkeypatch.setenv("MARKETING_VIDEO_LAURA_QUELLEN", "172.17.0.1:5055")
+    monkeypatch.setattr(video, "_abrufen", lambda url: pytest.fail("darf nicht abrufen"))
+    for url in ("http://169.254.169.254/latest", "http://172.17.0.1:5056/x", "file:///etc/passwd",
+                "http://user:pw@172.17.0.1:5055/x"):
+        r = c.post(f"/api/video/arbeiter/{AID}/aus-laura", headers=B, json={"url": url})
+        assert r.status_code == 422, url
+
+
+def test_aus_laura_ohne_liste_gesperrt(db, c, monkeypatch):
+    monkeypatch.delenv("MARKETING_VIDEO_LAURA_QUELLEN", raising=False)
+    r = c.post(f"/api/video/arbeiter/{AID}/aus-laura", headers=B, json={"url": "http://172.17.0.1:5055/x"})
+    assert r.status_code == 422
+
+
+def test_aus_laura_holt_und_legt_ab(db, c, monkeypatch):
+    monkeypatch.setenv("MARKETING_VIDEO_LAURA_QUELLEN", "172.17.0.1:5055")
+    inhalt = _mvhd_mp4(1000, 21000)
+    monkeypatch.setattr(video, "_abrufen", lambda url: inhalt)
+    db.antworten = [_in_arbeit(db), _in_arbeit(db)]
+    r = c.post(f"/api/video/arbeiter/{AID}/aus-laura", headers=B,
+               json={"url": "http://172.17.0.1:5055/storage/v1/object/sign/laura/exports/x.mp4?token=t"})
+    assert r.status_code == 200, r.text
+    assert r.json()["dauer_s"] == 21.0 and (db.ordner / r.json()["name"]).read_bytes() == inhalt
+
+
+def test_aus_laura_zu_gross(db, c, monkeypatch):
+    monkeypatch.setenv("MARKETING_VIDEO_LAURA_QUELLEN", "172.17.0.1:5055")
+    monkeypatch.setattr(video, "_abrufen", lambda url: MP4 + b"\x00" * video.MP4_MAX)
+    db.antworten = [_in_arbeit(db)]
+    r = c.post(f"/api/video/arbeiter/{AID}/aus-laura", headers=B, json={"url": "http://172.17.0.1:5055/x"})
+    assert r.status_code == 413
