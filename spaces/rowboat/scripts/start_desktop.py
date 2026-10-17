@@ -29,6 +29,8 @@ IS_WINDOWS = os.name == "nt"
 PROFILE = "vibemind"
 MAP_SECONDS = 60
 POLL_SECONDS = 0.5   # wait in slices: on Windows an untimed wait() does not let Ctrl+C through
+# Einbettung unter Windows: die Jobs bekommen kein Konsolenfenster (Schliessen wuerde den Kern beenden).
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
 DEFAULT_ENV_FILE = SPACE.parents[2] / ".env"   # Vibemind_V1/.env (Space liegt unter vibemind-os/spaces/rowboat)
 OPENFANG_KEY = "OPENFANG_API_KEY"
@@ -233,11 +235,13 @@ def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS, env_file: Path
         for name in ("SIGHUP", "SIGTERM"):
             signal.signal(getattr(signal, name), _interrupt)
     procs: list[subprocess.Popen] = []
+    # Nur im Einbettungsmodus versteckt: im Dev-Modus soll die Ausgabe von npm run dev sichtbar bleiben.
+    extra = {"creationflags": CREATE_NO_WINDOW} if windows and embed else {}
     try:
         for name, cmd, cwd in jobs(lay, workdir, windows, embed=embed):
             log.info("starting %s: %s", name, " ".join(cmd))
             procs.append(subprocess.Popen(cmd, cwd=cwd, env=rowboat_env if name == "Rowboat" else env, shell=_shell(cmd, windows),
-                                          start_new_session=not windows))
+                                          start_new_session=not windows, **extra))
         if embed:
             log.info("Rowboat laeuft versteckt im Einbettungsmodus; die Multiverse-Ansicht verbindet sich ueber %s. Ctrl+C stoppt alles.",
                      workdir / "embed.json")

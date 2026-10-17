@@ -395,6 +395,35 @@ def test_dev_start_also_asks_for_single_instance(tmp_path, monkeypatch):
     assert "ROWBOAT_EMBED" not in seen[str(lay.app)]
 
 
+def _popen_kwargs(tmp_path, monkeypatch, embed):
+    lay = _embed_prereqs(tmp_path, windows=True) if embed else _prereqs(tmp_path, windows=True)
+    kwargs_seen = []
+    monkeypatch.setattr(start_desktop.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0))
+
+    def fake_popen(cmd, **kwargs):
+        kwargs_seen.append(kwargs)
+        return FakeProc(exit_code=0)
+
+    monkeypatch.setattr(start_desktop.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(start_desktop, "stop", lambda proc, windows=False: None)
+    assert start_desktop.start(lay, tmp_path, windows=True, embed=embed) == 0
+    return kwargs_seen
+
+
+def test_embed_jobs_open_no_console_window_on_windows(tmp_path, monkeypatch):
+    # Ein sichtbares Konsolenfenster (Autostart) wuerde beim Schliessen den Kern mitnehmen.
+    kwargs_seen = _popen_kwargs(tmp_path, monkeypatch, embed=True)
+    assert len(kwargs_seen) == 2
+    assert all(k.get("creationflags") == start_desktop.CREATE_NO_WINDOW for k in kwargs_seen)
+    assert start_desktop.CREATE_NO_WINDOW == 0x08000000
+
+
+def test_dev_jobs_keep_their_console_output_visible(tmp_path, monkeypatch):
+    kwargs_seen = _popen_kwargs(tmp_path, monkeypatch, embed=False)
+    assert len(kwargs_seen) == 2
+    assert all(k.get("creationflags", 0) == 0 for k in kwargs_seen)
+
+
 GIT_BASH = Path(r"C:\Gitinash.exe")
 
 
