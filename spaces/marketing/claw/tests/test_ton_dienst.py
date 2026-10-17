@@ -78,6 +78,8 @@ def test_voiceover_stimme_als_name(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("aenderung, grund", [
     ({"duration_frames": 0}, "duration_frames"),
+    ({"duration_frames": 10**9}, "hoechstens"),
+    ({"duration_frames": 9001}, "hoechstens"),          # 300,03 s bei 30 fps
     ({"fps_num": True}, "fps_num"),
     ({"fps_den": "1"}, "fps_den"),
     ({"sample_rate": 4000}, "sample_rate"),

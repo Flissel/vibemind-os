@@ -42,6 +42,9 @@ SPRACHEN = {"ar", "da", "de", "el", "en", "es", "fi", "fr", "he", "hi", "it", "j
             "pl", "pt", "ru", "sv", "sw", "tr", "zh"}
 _STIMME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 RATE_MIN, RATE_MAX = 8000, 96000
+# Obergrenze der Slotlaenge: fit_to_slot fuellt per apad bis dahin mit Stille auf - ohne Grenze
+# erzeugte EINE Anfrage (duration_frames=10**9) eine beliebig grosse WAV (Sicherheitspruefung 17.10.).
+SLOT_MAX_S = 300
 
 
 class Anfragefehler(ValueError):
@@ -113,6 +116,8 @@ def voiceover_pruefen(nutzlast) -> dict:
     sprache = nutzlast.get("language") or "de"
     if sprache not in SPRACHEN:
         raise Anfragefehler("sprache wird vom Modell nicht unterstuetzt")
+    if frames * fps_den / fps_num > SLOT_MAX_S:
+        raise Anfragefehler(f"duration_frames: Slot hoechstens {SLOT_MAX_S} s")
     return {"text": text.strip(), "sprache": sprache, "probe": _stimmprobe(nutzlast.get("voice_id")),
             "sample_rate": rate, "fit": bool(nutzlast.get("fit_to_slot", False)),
             "sekunden": frames * fps_den / fps_num}
