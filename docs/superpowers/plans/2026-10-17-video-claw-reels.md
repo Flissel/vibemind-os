@@ -111,8 +111,8 @@ Grundsaetze: Der Video-Claw **versendet nie** und legt keine Marketing-Entwuerfe
 - **Mittel-Crop** schneidet Personen am Rand ab (kein Face-Tracking) – Skill weist an, Material mit zentrierter Person zu waehlen; Face-Tracking (`analysis/crop_controller.py`) ist Folgeaufgabe.
 - **Tailscale-Eingang am PC** fuer 8899: eng per Firewall auf die VM-Adresse.
 
-## Offene Fragen an den User
+## Entscheide zu den offenen Fragen (17.10.2026)
 
-1. Bestellweg: Seite `/marketing/reels` **und** Agent-Werkzeug (Empfehlung) – oder nur eines?
-2. Stimme: Podcast-Sprechdienst fuer Laura mitnutzen (Empfehlung) – passt die Firewall-Oeffnung nur fuer die VM?
-3. Laura-Deploy auf der VM gehoert zu diesem Vorhaben – einverstanden, dass Phase A in Lauras Repo `main` landet?
+- E4 Bestellweg: Seite `/marketing/reels` **und** Agent-Werkzeug `reel_beauftragen`.
+- E5 Stimme: Laura nutzt den Podcast-Sprechdienst mit; Firewall-Freigabe fuer 8899 **nur** fuer die VM-Adresse `100.67.177.45`.
+- E6 Laura-Repo: Aenderungen auf Branch, Suite gruen, Merge nach `main` und VM-Deploy erst beim Livegang nach User-OK.
