@@ -189,20 +189,26 @@ def _run_steps(steps: list[tuple[list[str], Path]], windows: bool, env: dict[str
     return 0
 
 
+def _script_shell_env(windows: bool) -> tuple[dict[str, str] | None, bool]:
+    """(env, ok): unter Windows Git Bash als npm/pnpm-Script-Shell; ok=False wenn es fehlt (Fehler ist geloggt)."""
+    if not windows:
+        return None, True
+    # Rowboats/Harbors Skripte nutzen rm -rf; unter Windows laeuft npm/pnpm ueber cmd.exe ohne rm.exe -> Git Bash als Script-Shell.
+    bash = git_bash(windows)
+    if bash is None:
+        log.error("Git Bash nicht gefunden – die Build-Skripte brauchen rm -rf (Git for Windows installieren)")
+        return None, False
+    return {**os.environ, "npm_config_script_shell": str(bash)}, True
+
+
 def install(lay: Layout, windows: bool = IS_WINDOWS) -> int:
-    return _run_steps(install_steps(lay, windows), windows)
+    env, ok = _script_shell_env(windows)
+    return _run_steps(install_steps(lay, windows), windows, env) if ok else 1
 
 
 def build_embed(lay: Layout, windows: bool = IS_WINDOWS) -> int:
-    env = None
-    if windows:
-        # Rowboats npm-Skripte nutzen rm -rf; unter Windows laeuft npm ueber cmd.exe ohne rm.exe -> Git Bash als Script-Shell.
-        bash = git_bash(windows)
-        if bash is None:
-            log.error("Git Bash nicht gefunden – Rowboats Build-Skripte brauchen rm -rf (Git for Windows installieren)")
-            return 1
-        env = {**os.environ, "npm_config_script_shell": str(bash)}
-    return _run_steps(embed_build_steps(lay), windows, env)
+    env, ok = _script_shell_env(windows)
+    return _run_steps(embed_build_steps(lay), windows, env) if ok else 1
 
 
 def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS, env_file: Path | None = None, embed: bool = False) -> int:

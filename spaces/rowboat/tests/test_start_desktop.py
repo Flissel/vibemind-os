@@ -244,6 +244,7 @@ def test_missing_py_launcher_gives_a_clear_message(tmp_path, monkeypatch, caplog
             raise FileNotFoundError(2, "The system cannot find the file specified")
         return SimpleNamespace(returncode=0)
 
+    monkeypatch.setattr(start_desktop, "git_bash", lambda windows=True: Path(r"C:\Gitinash.exe"))
     monkeypatch.setattr(start_desktop.subprocess, "run", fake_run)
     with caplog.at_level("ERROR", logger="start_desktop"):
         assert start_desktop.install(layout(tmp_path), windows=True) == 1
@@ -490,3 +491,22 @@ def test_git_bash_falls_back_and_is_none_off_windows(tmp_path, monkeypatch):
     monkeypatch.setattr(start_desktop, "GIT_BASH_FALLBACK", fb)
     assert start_desktop.git_bash(windows=True) == fb
     assert start_desktop.git_bash(windows=False) is None
+
+
+def test_install_points_pnpm_at_git_bash_on_windows(tmp_path, monkeypatch):
+    envs = []
+    monkeypatch.setattr(start_desktop, "git_bash", lambda windows=True: GIT_BASH)
+    monkeypatch.setattr(start_desktop.subprocess, "run",
+                        lambda cmd, cwd=None, shell=False, env=None, **k: envs.append(env) or SimpleNamespace(returncode=0))
+    assert start_desktop.install(layout(tmp_path), windows=True) == 0
+    assert envs and all(e["npm_config_script_shell"] == str(GIT_BASH) for e in envs)
+
+
+def test_install_without_git_bash_on_windows_runs_nothing(tmp_path, monkeypatch, caplog):
+    runs = []
+    monkeypatch.setattr(start_desktop, "git_bash", lambda windows=True: None)
+    monkeypatch.setattr(start_desktop.subprocess, "run", lambda *a, **k: runs.append(a))
+    with caplog.at_level("ERROR", logger="start_desktop"):
+        assert start_desktop.install(layout(tmp_path), windows=True) == 1
+    assert runs == []
+    assert "Git Bash nicht gefunden" in caplog.text
