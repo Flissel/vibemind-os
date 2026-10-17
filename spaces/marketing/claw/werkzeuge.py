@@ -12,6 +12,7 @@ import json
 import time
 import os
 import uuid
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -38,8 +39,11 @@ def _roh_anfrage(url: str, daten, kopfzeilen: dict) -> tuple:
     # weiter, "unredirected" Koepfe nicht (wie sales-claw marketing_pult.py; Sicherheitspruefung 17.10.).
     for name, wert in kopfzeilen.items():
         anfrage.add_unredirected_header(name, wert)
-    with urllib.request.urlopen(anfrage, timeout=60) as antwort:
-        return antwort.status, antwort.read().decode("utf-8", "replace")
+    try:
+        with urllib.request.urlopen(anfrage, timeout=60) as antwort:
+            return antwort.status, antwort.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:   # 4xx/5xx mit Begruendung statt "nicht erreichbar"
+        return e.code, e.read().decode("utf-8", "replace")
 
 
 _AGENT_PFADE = ("/api/ton/", "/api/bilder/agent/")

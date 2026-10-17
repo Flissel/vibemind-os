@@ -119,3 +119,22 @@ class AgentSchluesselGeheim(unittest.TestCase):
                                    {"X-API-Key": "a", "X-Agent-Key": "b"})
         self.assertFalse({"x-api-key", "x-agent-key"} & gesehen["normal"])
         self.assertTrue({"x-api-key", "x-agent-key"} <= gesehen["unweitergeleitet"])
+
+
+class FehlerMitGrund(unittest.TestCase):
+    """Livegang 17.10.2026: eine 422 der API kam beim Agenten als "nicht erreichbar" an - der Grund
+    (hier ein SQL-Fehler) blieb unsichtbar. HTTP-Fehler tragen jetzt Status und Begruendung."""
+
+    def test_http_fehler_mit_begruendung(self):
+        import io
+        import urllib.error
+
+        def urlopen(req, timeout=None):
+            raise urllib.error.HTTPError(req.full_url, 422, "Unprocessable", {},
+                                         io.BytesIO(b'{"detail":"Unbekannte firma"}'))
+        with mock.patch.object(werkzeuge.urllib.request, "urlopen", urlopen), \
+             mock.patch.dict("os.environ", {"MARKETING_API_URL": "http://x:5510"}):
+            r = werkzeuge.podcast_beauftragen(titel="T", skript=SKRIPT, firma="x")
+        self.assertFalse(r["ok"])
+        self.assertIn("422", r["fehler"])
+        self.assertIn("Unbekannte firma", r["fehler"])

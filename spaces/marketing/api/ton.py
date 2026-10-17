@@ -63,12 +63,10 @@ def auftrag_anlegen(payload: dict = Body(...), x_agent_key: str | None = Header(
     if not isinstance(sprache, str) or not _SPRACHE.fullmatch(sprache):
         raise HTTPException(422, "sprache: zwei Kleinbuchstaben, z. B. de")
     skript = _skript_pruefen(payload.get("skript"))
-    if not _lesen_einer(lambda: f"SELECT id FROM marketing.mandanten WHERE id = {lit(firma.strip())}"):
-        raise HTTPException(422, "Unbekannte firma")
+    # DB-Funktion (070) statt INSERT: query_via_docker liest ueber eine Unterabfrage, darin geht kein INSERT.
     zeile = _schreiben(lambda:
-        "INSERT INTO marketing.ton_auftraege (mandant, titel, sprache, skript) VALUES "
-        f"({lit(firma.strip())}, {lit(titel.strip())}, {lit(sprache)}, "
-        f"{lit(json.dumps(skript, ensure_ascii=False))}::jsonb) RETURNING id")
+        f"SELECT marketing.ton_auftrag_anlegen({lit(firma.strip())}, {lit(titel.strip())}, {lit(sprache)}, "
+        f"{lit(json.dumps(skript, ensure_ascii=False))}::jsonb) AS id")
     return {"auftrag": str(zeile.get("id"))}
 
 

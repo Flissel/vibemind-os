@@ -38,11 +38,13 @@ B = {"X-Bild-Key": BK}
 
 
 def test_auftrag_anlegen(db, c):
-    db.antworten = [[{"id": "vibemind"}], [{"id": AID}]]
+    # ueber die DB-Funktion (Migration 070): ein INSERT geht in query_via_docker nicht (Unterabfrage)
+    db.antworten = [[{"id": AID}]]
     r = c.post("/api/ton/auftraege", headers=A, json={"firma": "vibemind", "titel": "Herbst im Laden",
                                                        "skript": SKRIPT})
     assert r.status_code == 200 and r.json() == {"auftrag": AID}
-    assert "INSERT INTO marketing.ton_auftraege" in db.sql[1] and "'Herbst im Laden'" in db.sql[1]
+    assert len(db.sql) == 1 and "marketing.ton_auftrag_anlegen(" in db.sql[0] and "'Herbst im Laden'" in db.sql[0]
+    assert "INSERT" not in db.sql[0]
 
 
 @pytest.mark.parametrize("koerper, grund", [
@@ -61,9 +63,9 @@ def test_auftrag_formen(db, c, koerper, grund):
 
 
 def test_auftrag_unbekannte_firma(db, c):
-    db.antworten = [[]]
+    db.fehler = [RuntimeError("psql failed: ERROR:  Unbekannte firma\nCONTEXT: PL/pgSQL")]
     r = c.post("/api/ton/auftraege", headers=A, json={"firma": "gibtsnicht", "titel": "T", "skript": SKRIPT})
-    assert r.status_code == 422
+    assert r.status_code == 422 and r.json()["detail"] == "Unbekannte firma"
 
 
 def test_auftraege_lesen(db, c):
