@@ -356,12 +356,22 @@ async def arbeiter_datei(aid: str, request: Request, x_bild_key: str | None = He
     return _speichern(a, bytes(roh))
 
 
+_LAURA_EXPORT_PFAD = re.compile(r"^/object/sign/laura/exports/[A-Za-z0-9_-]{1,64}\.mp4$")
+_LAURA_TOKEN = re.compile(r"^token=[A-Za-z0-9._-]{10,4000}$")
+
+
 def _laura_quelle_erlaubt(url: str) -> bool:
-    """Nur Hosts aus MARKETING_VIDEO_LAURA_QUELLEN (Lauras Objektspeicher) - sonst waere die Route ein
-    offenes Abruf-Tor (SSRF) fuer jeden mit dem Arbeiter-Schluessel."""
+    """Nur Lauras signierte Export-Links: Host aus MARKETING_VIDEO_LAURA_QUELLEN UND genau der Pfad
+    /object/sign/laura/exports/<id>.mp4?token=... (Sicherheitspruefung 17.10.2026: Host allein liess
+    jeden Pfad des Speicherdienstes zu). Sonst waere die Route ein Abruf-Tor (SSRF) fuer jeden mit dem
+    Arbeiter-Schluessel."""
     erlaubt = {h.strip().lower() for h in os.environ.get("MARKETING_VIDEO_LAURA_QUELLEN", "").split(",") if h.strip()}
+    if "%" in url or ".." in url or "\\" in url:
+        return False
     teile = urllib.parse.urlsplit(url)
-    return teile.scheme in ("http", "https") and bool(erlaubt) and teile.netloc.lower() in erlaubt         and not teile.username and not teile.password
+    return (teile.scheme in ("http", "https") and bool(erlaubt) and teile.netloc.lower() in erlaubt
+            and not teile.username and not teile.password and not teile.fragment
+            and bool(_LAURA_EXPORT_PFAD.fullmatch(teile.path)) and bool(_LAURA_TOKEN.fullmatch(teile.query)))
 
 
 def _abrufen(url: str) -> bytes:

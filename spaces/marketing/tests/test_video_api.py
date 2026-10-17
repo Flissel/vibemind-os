@@ -239,6 +239,9 @@ def _mvhd_mp4(skala: int, dauer: int) -> bytes:
     return ftyp + moov
 
 
+GUT = "http://172.17.0.1:5055/object/sign/laura/exports/0a1b2c3d-e4f5.mp4?token=eyJhbGciOiJIUzI1NiJ9.x.y"
+
+
 def test_mp4_dauer_aus_mvhd():
     assert video.mp4_dauer(_mvhd_mp4(1000, 24500)) == 24.5
     assert video.mp4_dauer(b"\x00\x00\x00\x10ftypisom\x00\x00\x02\x00") is None
@@ -260,7 +263,15 @@ def test_aus_laura_nur_erlaubte_quelle(db, c, monkeypatch):
     monkeypatch.setenv("MARKETING_VIDEO_LAURA_QUELLEN", "172.17.0.1:5055")
     monkeypatch.setattr(video, "_abrufen", lambda url: pytest.fail("darf nicht abrufen"))
     for url in ("http://169.254.169.254/latest", "http://172.17.0.1:5056/x", "file:///etc/passwd",
-                "http://user:pw@172.17.0.1:5055/x"):
+                "http://user:pw@172.17.0.1:5055/x",
+                # richtiger Host, falscher Pfad (Sicherheitspruefung: Host allein genuegt nicht)
+                "http://172.17.0.1:5055/bucket", "http://172.17.0.1:5055/object/sign/anderer/exports/a.mp4?token=abcdefghijk",
+                "http://172.17.0.1:5055/object/sign/laura/assets/a.mp4?token=abcdefghijk",
+                "http://172.17.0.1:5055/object/sign/laura/exports/../x.mp4?token=abcdefghijk",
+                "http://172.17.0.1:5055/object/sign/laura/exports/a%2e.mp4?token=abcdefghijk",
+                "http://172.17.0.1:5055/object/sign/laura/exports/a.mp4",
+                "http://172.17.0.1:5055/object/sign/laura/exports/a.mp4?token=abcdefghijk&x=1",
+                GUT + "#frag"):
         r = c.post(f"/api/video/arbeiter/{AID}/aus-laura", headers=B, json={"url": url})
         assert r.status_code == 422, url
 
@@ -277,7 +288,7 @@ def test_aus_laura_holt_und_legt_ab(db, c, monkeypatch):
     monkeypatch.setattr(video, "_abrufen", lambda url: inhalt)
     db.antworten = [_in_arbeit(db), _in_arbeit(db)]
     r = c.post(f"/api/video/arbeiter/{AID}/aus-laura", headers=B,
-               json={"url": "http://172.17.0.1:5055/storage/v1/object/sign/laura/exports/x.mp4?token=t"})
+               json={"url": GUT})
     assert r.status_code == 200, r.text
     assert r.json()["dauer_s"] == 21.0 and (db.ordner / r.json()["name"]).read_bytes() == inhalt
 
@@ -286,5 +297,5 @@ def test_aus_laura_zu_gross(db, c, monkeypatch):
     monkeypatch.setenv("MARKETING_VIDEO_LAURA_QUELLEN", "172.17.0.1:5055")
     monkeypatch.setattr(video, "_abrufen", lambda url: MP4 + b"\x00" * video.MP4_MAX)
     db.antworten = [_in_arbeit(db)]
-    r = c.post(f"/api/video/arbeiter/{AID}/aus-laura", headers=B, json={"url": "http://172.17.0.1:5055/x"})
+    r = c.post(f"/api/video/arbeiter/{AID}/aus-laura", headers=B, json={"url": GUT})
     assert r.status_code == 413
