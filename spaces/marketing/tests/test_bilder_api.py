@@ -181,7 +181,9 @@ def test_zurueck_und_weiter(db, c):
 
 
 def test_agent_routen_ohne_api_key_503(db, c, monkeypatch):
+    # nur wenn die API nach aussen lauscht - auf Loopback (PC) sind Agent-Routen ohne Schluessel erlaubt
     monkeypatch.setattr(server, "API_KEY", "")
+    monkeypatch.setattr(server, "HOST", "0.0.0.0")
     r = c.get(f"/api/bilder/agent/{IID}/plaetze")
     assert r.status_code == 503 and "MARKETING_API_KEY" in r.json()["detail"]
     r = c.post(f"/api/bilder/agent/{IID}/auftrag", json={"nur_leere": True})

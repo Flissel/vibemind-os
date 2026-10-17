@@ -116,3 +116,21 @@ def test_arbeiter_fehler_melden(db, c):
     r = c.post(f"/api/ton/arbeiter/{AID}/fertig", headers=B, json={"befund": "Sprech-Dienst nicht erreichbar"})
     assert r.status_code == 200 and r.json() == {"status": "fehler"}
     assert "NULL" in db.sql[-1]
+
+
+# Agent-Routen ohne MARKETING_API_KEY (17.10.2026): am PC bindet die API nur an 127.0.0.1 und hat keinen
+# Schluessel - dort riefen Sidecar-Werkzeuge (Newsletter-Bilder, Podcast) bisher nur 503 ab. Ohne Schluessel
+# sind die Agent-Routen jetzt nur gesperrt, wenn die API nicht ausschliesslich lokal lauscht.
+
+def test_ohne_schluessel_lokal_erlaubt(db, c, monkeypatch):
+    monkeypatch.setattr(server, "API_KEY", "")
+    monkeypatch.setattr(server, "HOST", "127.0.0.1")
+    db.antworten = [[{"id": "x"}]]
+    assert c.get("/api/ton/auftraege").status_code == 200
+
+
+def test_ohne_schluessel_nach_aussen_gesperrt(db, c, monkeypatch):
+    monkeypatch.setattr(server, "API_KEY", "")
+    monkeypatch.setattr(server, "HOST", "0.0.0.0")
+    r = c.get("/api/ton/auftraege")
+    assert r.status_code == 503 and "MARKETING_API_KEY" in r.json()["detail"]

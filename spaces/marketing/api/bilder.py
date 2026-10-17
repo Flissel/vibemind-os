@@ -60,9 +60,14 @@ def _ordner() -> str:
 def _agent_schluessel() -> None:
     """Fail-closed: ohne MARKETING_API_KEY laesst die Middleware alles durch -
     die Agent-Routen legen aber Auftraege an. Gelesen wie die Middleware
-    (server.API_KEY zur Anfragezeit); Import hier, sonst Kreisimport."""
+    (server.API_KEY zur Anfragezeit); Import hier, sonst Kreisimport.
+
+    Ausnahme (17.10.2026): lauscht die API nur auf Loopback (PC, MARKETING_HTTP_BIND
+    127.0.0.1 - die "zweite Barriere" aus server.py), erreichen sie nur lokale Prozesse
+    wie der Sidecar. Dort gibt es keinen Schluessel, und die Agent-Routen (Newsletter-
+    Bilder, Podcast) lieferten bisher nur 503."""
     from spaces.marketing.api import server
-    if not server.API_KEY:
+    if not server.API_KEY and server.HOST not in ("127.0.0.1", "::1", "localhost"):
         raise HTTPException(503, "misconfigured: MARKETING_API_KEY fehlt")
 
 
