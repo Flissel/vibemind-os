@@ -53,8 +53,8 @@ def _skript_pruefen(skript) -> list[dict]:
 
 
 @router.post("/auftraege")
-def auftrag_anlegen(payload: dict = Body(...)):
-    _agent_schluessel()
+def auftrag_anlegen(payload: dict = Body(...), x_agent_key: str | None = Header(None)):
+    _agent_schluessel(x_agent_key)
     firma, titel, sprache = payload.get("firma"), payload.get("titel"), payload.get("sprache", "de")
     if not isinstance(firma, str) or not firma.strip():
         raise HTTPException(422, "firma (Mandant) fehlt")
@@ -73,8 +73,8 @@ def auftrag_anlegen(payload: dict = Body(...)):
 
 
 @router.get("/auftraege")
-def auftraege_lesen(limit: int = Query(20, ge=1, le=100)):
-    _agent_schluessel()
+def auftraege_lesen(limit: int = Query(20, ge=1, le=100), x_agent_key: str | None = Header(None)):
+    _agent_schluessel(x_agent_key)
     zeilen = _lesen(lambda:
         "SELECT id, mandant, titel, status, datei, dauer_s, befund, erstellt_am, geaendert_am "
         f"FROM marketing.ton_auftraege ORDER BY erstellt_am DESC LIMIT {int(limit)}")

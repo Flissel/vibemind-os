@@ -28,7 +28,7 @@ REPO_ROOT = next((p for p in (PKG_ROOT, *PKG_ROOT.parents)
 
 # Schluessel wie die Nachbar-Sidecars: aus der repo-.env nachladen, nie
 # ueberschreiben, kein Key-Material im Launcher-Skript.
-_ENV_KEYS = ("MARKETING_API_KEY", "MARKETING_PROPOSAL_API_KEY",
+_ENV_KEYS = ("MARKETING_API_KEY", "MARKETING_PROPOSAL_API_KEY", "MARKETING_AGENT_KEY",
              "ROWBOAT_URL", "ROWBOAT_PROJECT_ID", "ROWBOAT_API_KEY",
              "LAURA_API_URL", "LAURA_TOKEN",
              # Ablage: OHNE SSH-Host schreibt post_ablegen auf den Windows-

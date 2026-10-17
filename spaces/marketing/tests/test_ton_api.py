@@ -116,3 +116,29 @@ def test_arbeiter_fehler_melden(db, c):
     r = c.post(f"/api/ton/arbeiter/{AID}/fertig", headers=B, json={"befund": "Sprech-Dienst nicht erreichbar"})
     assert r.status_code == 200 and r.json() == {"status": "fehler"}
     assert "NULL" in db.sql[-1]
+
+
+# Eigener Agent-Schluessel (17.10.2026, User-Entscheid): am PC hat die API keinen MARKETING_API_KEY; die
+# Agent-Routen (Newsletter-Bilder, Podcast) verlangen dann X-Agent-Key = MARKETING_AGENT_KEY. Ohne beide
+# Schluessel bleiben sie gesperrt (fail-closed) - kein Loopback-Durchlass (Sicherheitspruefung 17.10.).
+
+def test_agent_key_oeffnet_ohne_globalen_schluessel(db, c, monkeypatch):
+    monkeypatch.setattr(server, "API_KEY", "")
+    monkeypatch.setenv("MARKETING_AGENT_KEY", "agent-k")
+    db.antworten = [[{"id": "x"}]]
+    assert c.get("/api/ton/auftraege", headers={"X-Agent-Key": "agent-k"}).status_code == 200
+
+
+@pytest.mark.parametrize("kopf", [{}, {"X-Agent-Key": "falsch"}])
+def test_falscher_oder_fehlender_agent_key_401(db, c, monkeypatch, kopf):
+    monkeypatch.setattr(server, "API_KEY", "")
+    monkeypatch.setenv("MARKETING_AGENT_KEY", "agent-k")
+    assert c.get("/api/ton/auftraege", headers=kopf).status_code == 401
+    assert not db.sql
+
+
+def test_ohne_jeden_schluessel_503(db, c, monkeypatch):
+    monkeypatch.setattr(server, "API_KEY", "")
+    monkeypatch.delenv("MARKETING_AGENT_KEY", raising=False)
+    r = c.get("/api/ton/auftraege", headers={"X-Agent-Key": "irgendwas"})
+    assert r.status_code == 503 and "MARKETING_AGENT_KEY" in r.json()["detail"]

@@ -57,13 +57,24 @@ def _ordner() -> str:
     return o
 
 
-def _agent_schluessel() -> None:
+def _agent_schluessel(x_agent_key: str | None = None) -> None:
     """Fail-closed: ohne MARKETING_API_KEY laesst die Middleware alles durch -
     die Agent-Routen legen aber Auftraege an. Gelesen wie die Middleware
-    (server.API_KEY zur Anfragezeit); Import hier, sonst Kreisimport."""
+    (server.API_KEY zur Anfragezeit); Import hier, sonst Kreisimport.
+
+    Ohne globalen Schluessel (PC: API nur auf 127.0.0.1, kein MARKETING_API_KEY) gilt ein
+    eigener Agent-Schluessel: X-Agent-Key = MARKETING_AGENT_KEY (User-Entscheid 17.10.2026).
+    Bis dahin antworteten die Agent-Routen am PC immer 503 - Newsletter-Bilder und Podcast
+    liefen vom Sidecar nie durch. Fehlen beide Schluessel, bleibt es 503."""
     from spaces.marketing.api import server
-    if not server.API_KEY:
-        raise HTTPException(503, "misconfigured: MARKETING_API_KEY fehlt")
+    if server.API_KEY:
+        return
+    erwartet = os.environ.get("MARKETING_AGENT_KEY", "").strip()
+    if not erwartet:
+        raise HTTPException(503, "misconfigured: MARKETING_API_KEY oder MARKETING_AGENT_KEY fehlt")
+    k = (x_agent_key or "").strip()
+    if not k or not hmac.compare_digest(k.encode("utf-8", "replace"), erwartet.encode("utf-8", "replace")):
+        raise HTTPException(401, "Agent-Schluessel fehlt oder falsch")
 
 
 def _auftrag_id(wert: str) -> str:
@@ -133,8 +144,8 @@ def pult_stand(iid: str, x_pult_key: str | None = Header(None)):
 
 
 @router.get("/agent/{iid}/plaetze")
-def agent_plaetze(iid: str):
-    _agent_schluessel()
+def agent_plaetze(iid: str, x_agent_key: str | None = Header(None)):
+    _agent_schluessel(x_agent_key)
     i = _uuid_oder_404(iid)
     f = _lesen_einer(lambda:
         f"SELECT fassung, bloecke FROM marketing.inhalt_fassungen WHERE inhalt = {lit(i)}::uuid "
@@ -146,8 +157,8 @@ def agent_plaetze(iid: str):
 
 
 @router.post("/agent/{iid}/auftrag")
-def agent_auftrag(iid: str, payload: dict = Body(default={})):
-    _agent_schluessel()
+def agent_auftrag(iid: str, payload: dict = Body(default={}), x_agent_key: str | None = Header(None)):
+    _agent_schluessel(x_agent_key)
     return _anlegen(iid, payload, "agent")
 
 

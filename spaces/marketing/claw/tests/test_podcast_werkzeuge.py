@@ -68,3 +68,13 @@ class Registrierung(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AgentSchluessel(unittest.TestCase):
+
+    def test_sidecar_schickt_den_agent_key_mit(self):
+        rekorder = Rekorder([(200, json.dumps({"auftraege": []}))])
+        with mock.patch.object(werkzeuge, "_roh_anfrage", rekorder), \
+             mock.patch.dict("os.environ", {"MARKETING_API_URL": "http://x:5510", "MARKETING_AGENT_KEY": "agent-k"}):
+            werkzeuge.podcast_auftraege()
+        self.assertEqual(rekorder.aufrufe[0]["kopf"].get("X-Agent-Key"), "agent-k")

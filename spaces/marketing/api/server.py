@@ -64,7 +64,8 @@ REPO_ROOT = next((p for p in (PKG_ROOT, *PKG_ROOT.parents)
 
 # Schluessel, die dieser Dienst notfalls selbst aus der repo-.env holt.
 _ENV_KEYS = ("MARKETING_API_KEY", "MARKETING_PROPOSAL_API_KEY",
-             "MARKETING_N8N_API_KEY", "MARKETING_UNSUB_SECRET", "MARKETING_PULT_KEY")
+             "MARKETING_N8N_API_KEY", "MARKETING_UNSUB_SECRET", "MARKETING_PULT_KEY",
+             "MARKETING_AGENT_KEY")
 
 
 def _load_env_fallback() -> None:

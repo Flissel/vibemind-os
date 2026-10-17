@@ -43,8 +43,10 @@ def _api(pfad: str, nutzlast: dict | None = None) -> dict:
     basis = os.environ.get("MARKETING_API_URL", "http://127.0.0.1:5510").rstrip("/")
     daten = None if nutzlast is None else json.dumps(nutzlast).encode("utf-8")
     try:
-        status, rumpf = _roh_anfrage(
-            basis + pfad, daten, {"X-API-Key": os.environ.get("MARKETING_API_KEY", "")})
+        kopf = {"X-API-Key": os.environ.get("MARKETING_API_KEY", "")}
+        if os.environ.get("MARKETING_AGENT_KEY"):   # Agent-Routen ohne globalen Schluessel (PC)
+            kopf["X-Agent-Key"] = os.environ["MARKETING_AGENT_KEY"]
+        status, rumpf = _roh_anfrage(basis + pfad, daten, kopf)
         if status != 200:
             return {"ok": False, "fehler": _ohne_schluessel(
                 f"Marketing-API HTTP {status}: {rumpf[:FEHLER_MAXLAENGE]}")}
