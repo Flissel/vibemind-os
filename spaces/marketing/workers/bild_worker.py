@@ -5,6 +5,7 @@ Die VM schreibt die Fassung. Gestartet von marketing-dienste-starten.ps1;
 Gesundheits-Port 8133."""
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import os
@@ -31,7 +32,10 @@ FREI_MIN, FREI_MAX = 0.02, 0.98     # Vordergrundanteil (Alpha > 128) ausserhalb
 PNG_MAX = 4 * 1024 * 1024           # Obergrenze der VM-Route fuer freigestellte PNG
 QUELLE_MAX = 16 * 1024 * 1024  # Quellbild groesser -> wie fehlend (Menschen legen auch Kamera-Fotos ab)
 QUELLE_KANTE = 1536           # Quelle vor Sehen/CLIP am PC auf diese laengste Kante verkleinern
-ERZEUGUNG_ZEITLIMIT_S = 540
+ERZEUGUNG_ZEITLIMIT_S = 1200  # Vorgabe; MARKETING_BILD_ZEITLIMIT_S (.env) setzt es (FLUX.2 kalt gemessen 619 s)
+HALTEN_TAKT_S = 60            # Herzschlag waehrend der Erzeugung: Vergabe (FRIST 10 min) verlaengern
+FREMD = (404, 409, 422)       # Auftrag gehoert uns nicht mehr
+ZULETZT = {"art": None}       # Art des letzten ComfyUI-Auftrags in diesem Prozess: flux1, flux2, freistellen
 JPEG_ZIEL = 250 * 1024
 _HIER = Path(__file__).resolve()
 REPO_ROOT = next((p for p in _HIER.parents if (p / "vibemind-os").is_dir()), _HIER.parents[3])
@@ -51,11 +55,13 @@ class ApiFehler(Exception):
 
 
 def umgebung_laden() -> None:
-    """MARKETING_BILD_URL/KEY und FASTEMBED_CACHE_PATH aus Vibemind_V1/.env, wenn
-    nicht gesetzt (Muster claw/server.py). Ohne FASTEMBED_CACHE_PATH laedt CLIP
-    (bild_messen) sein Modell bei jedem Start neu in ein Temp-Verzeichnis."""
+    """MARKETING_BILD_URL/KEY, FASTEMBED_CACHE_PATH, MARKETING_BILDMODELL und MARKETING_BILD_ZEITLIMIT_S aus
+    Vibemind_V1/.env, wenn nicht gesetzt (Muster claw/server.py). Ohne FASTEMBED_CACHE_PATH laedt CLIP
+    (bild_messen) sein Modell bei jedem Start neu in ein Temp-Verzeichnis. Ohne MARKETING_BILDMODELL hier
+    erreichte der Schalter flux1 den Arbeiter nie (Schluss-Fix C1)."""
     datei = REPO_ROOT / ".env"
-    fehlend = [k for k in ("MARKETING_BILD_URL", "MARKETING_BILD_KEY", "FASTEMBED_CACHE_PATH")
+    fehlend = [k for k in ("MARKETING_BILD_URL", "MARKETING_BILD_KEY", "FASTEMBED_CACHE_PATH",
+                           "MARKETING_BILDMODELL", "MARKETING_BILD_ZEITLIMIT_S")
                if not os.environ.get(k)]
     if not fehlend or not datei.exists():
         return
@@ -63,6 +69,52 @@ def umgebung_laden() -> None:
         for k in fehlend:
             if zeile.strip().startswith(k + "="):
                 os.environ[k] = zeile.split("=", 1)[1].strip().strip('"').strip("'")
+
+
+def zeitlimit_s() -> int:
+    """Gesamtlimit je Erzeugung: MARKETING_BILD_ZEITLIMIT_S (ganze Sekunden > 0), sonst ERZEUGUNG_ZEITLIMIT_S."""
+    try:
+        wert = int(os.environ.get("MARKETING_BILD_ZEITLIMIT_S", "").strip())
+    except ValueError:
+        return ERZEUGUNG_ZEITLIMIT_S
+    return wert if wert > 0 else ERZEUGUNG_ZEITLIMIT_S
+
+
+@contextlib.contextmanager
+def _halten(api, aid):
+    """Herzschlag (Schluss-Fix I3, Muster chat_worker.halten): verlaengert die Vergabe alle HALTEN_TAKT_S, solange
+    ComfyUI rechnet (FLUX.2 kalt 619 s > Vergabe 10 min). Das gelieferte Event ist gesetzt, sobald die Vergabe
+    weg ist (weiter False oder 404/409/422); Netzstoerungen ueberspringt der Herzschlag."""
+    verloren, ende = threading.Event(), threading.Event()
+    takt = HALTEN_TAKT_S
+
+    def lauf():
+        while not ende.wait(takt):
+            try:
+                if not api.weiter(aid):
+                    verloren.set()
+                    return
+            except ApiFehler as e:
+                if e.code in FREMD:
+                    verloren.set()
+                    return
+            except (OSError, ValueError):
+                pass
+    faden = threading.Thread(target=lauf, daemon=True)
+    faden.start()
+    try:
+        yield verloren
+    finally:
+        ende.set()
+        faden.join(timeout=1)
+
+
+def _modelle_fuer(comfy, art: str) -> None:
+    """FLUX.2 (Schluss-Fix C1): nur freigeben, wenn der vorige ComfyUI-Auftrag dieses Prozesses eine andere Art
+    war (flux1, freistellen, oder Prozessstart) - zwei FLUX.2-Auftraege hintereinander laden nicht kalt neu."""
+    if ZULETZT["art"] != art:
+        comfy.freigeben()
+    ZULETZT["art"] = art
 
 
 def tls_kontext() -> ssl.SSLContext:
@@ -280,10 +332,16 @@ def _freistellen(api, aid, auftrag, ziele, comfy):
     quelle = quelle_normalisieren(roh) if roh and len(roh) <= QUELLE_MAX else None
     if quelle is None:
         return {}, [f"{platz.id}: Quellbild fehlt oder unlesbar"], {}
-    try:   # kein Ollama-Schritt: ComfyUI-Modelle bleiben geladen (Betreiber 09.10.)
-        frei = comfy.freistellen(quelle)
+    ZULETZT["art"] = "freistellen"   # kein Ollama-Schritt: ComfyUI-Modelle bleiben geladen (Betreiber 09.10.)
+    try:
+        with _halten(api, aid) as verloren:
+            frei = comfy.freistellen(quelle)
+    except bild_comfy.ComfyVoruebergehend:
+        raise                        # Zeitueberschreitung/Verbindung: wiederholbar (ein_durchlauf), nie endgueltig
     except bild_comfy.ComfyFehler as e:
         return {}, [f"Freistellen nicht verfügbar: {e}"], {}
+    if verloren.is_set():
+        return "verworfen"
     anteil = vordergrund_anteil(frei)
     if not FREI_MIN <= anteil <= FREI_MAX:
         return {}, ["Kein klares Motiv gefunden"], {}
@@ -356,6 +414,7 @@ def _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen, ohne_ersat
     titel, hinweis = str(auftrag.get("titel") or ""), str(auftrag.get("hinweis") or "")
     befunde, arbeit = [], []
     comfy.freigeben()   # Phase 1 ruft Ollama: Grafikspeicher von FLUX leeren (vorheriger Auftrag)
+    ZULETZT["art"] = "flux1"
     palette = bild_farben.palette(auftrag.get("bloecke"))
     bildstil = _bildstil(auftrag)
     for platz in ziele:
@@ -416,7 +475,9 @@ def _flux2(api, aid, auftrag, ziele, comfy, prompt, messen):
     namen = list(auftrag.get("vorlagen") or [])
     if len(namen) + (1 if modus == "aendern" else 0) > bild_comfy.MAX_REFERENZEN:   # bei aendern ist das Bild Ref. 1
         return {}, [ZU_VIELE_REFERENZEN], {}
-    comfy.freigeben()   # danach Ollama (Prompts): Grafikspeicher von FLUX leeren (vorheriger Auftrag)
+    # Nur beim Wechsel der Art freigeben (Schluss-Fix C1): FLUX.2 kalt von der HDD dauert 619 s; die Prompts
+    # (Ollama) laufen dann neben dem geladenen FLUX.2.
+    _modelle_fuer(comfy, "flux2")
     geholt = _vorlagen_holen(api, aid, namen)
     if geholt == "verworfen":
         return geholt
@@ -447,7 +508,7 @@ def _flux2(api, aid, auftrag, ziele, comfy, prompt, messen):
             text, referenzen = prompt.prompt_schreiben(daten, titel, hinweis), list(vorlagen)
         arbeit.append((platz, text, None,
                        lambda t, w, h, s, r=referenzen: comfy.erzeugen_flux2(t, w, h, s, r,
-                                                                             zeitlimit_s=ERZEUGUNG_ZEITLIMIT_S)))
+                                                                             zeitlimit_s=zeitlimit_s())))
     je_bild_freigeben = os.environ.get("BILD_SELBSTPRUEFUNG", "") == "1"
     erg = _bilder(api, aid, arbeit, 100, hinweis, comfy, prompt, messen, je_bild_freigeben, befunde)
     if erg == "verworfen":
@@ -469,14 +530,17 @@ def _bilder(api, aid, arbeit, staerke, hinweis, comfy, prompt, messen, je_bild_f
                 return "verworfen"
             try:
                 seed = random.randrange(2**31)
-                if erzeuger is None:
-                    png = comfy.erzeugen(text, platz.erzeug_breite, platz.erzeug_hoehe, seed,
-                                         zeitlimit_s=ERZEUGUNG_ZEITLIMIT_S)
-                else:
-                    png = erzeuger(text, platz.erzeug_breite, platz.erzeug_hoehe, seed)
+                with _halten(api, aid) as verloren:   # Herzschlag, solange ComfyUI rechnet (Schluss-Fix I3)
+                    if erzeuger is None:
+                        png = comfy.erzeugen(text, platz.erzeug_breite, platz.erzeug_hoehe, seed,
+                                             zeitlimit_s=zeitlimit_s())
+                    else:
+                        png = erzeuger(text, platz.erzeug_breite, platz.erzeug_hoehe, seed)
             finally:
                 if je_bild_freigeben:
                     comfy.freigeben()
+            if verloren.is_set():
+                return "verworfen"
             ok, notiz = prompt.pruefen(png, text)
             if not ok:
                 pruef_grund = notiz
@@ -503,7 +567,7 @@ def _bilder(api, aid, arbeit, staerke, hinweis, comfy, prompt, messen, je_bild_f
         if notiz:                     # z.B. "Selbstpruefung unlesbar - ungeprueft eingesetzt"
             befunde.append(f"{platz.id}: {notiz}")
         jpeg = verkleinern(png, platz.erzeug_breite, platz.erzeug_hoehe)
-        if not api.weiter(aid):   # 540 s Erzeugung + 180 s Pruefung koennen die Vergabe ueberziehen
+        if not api.weiter(aid):   # Erzeugung + 180 s Pruefung koennen die Vergabe ueberziehen
             return "verworfen"
         try:
             ergebnis[platz.id] = api.bild(aid, platz.id, jpeg)
@@ -570,7 +634,8 @@ def ein_durchlauf(api, comfy=bild_comfy, prompt=bild_prompt, starten=dienste_sta
         return "fertig"
     except (bild_comfy.ComfyFehler, ApiFehler, ValueError, OSError, TimeoutError, KeyError, TypeError) as e:
         # ValueError deckt JSONDecodeError, OSError deckt URLError und PIL.UnidentifiedImageError.
-        if isinstance(e, bild_comfy.ComfyFehler) and str(e) in COMFY_ENDGUELTIG:
+        if (isinstance(e, bild_comfy.ComfyFehler) and not isinstance(e, bild_comfy.ComfyVoruebergehend)
+                and str(e) in COMFY_ENDGUELTIG):
             # Deterministisch (fehlendes Modell, zu viele Vorlagen): ein Neuversuch scheitert gleich -
             # sofort endgueltig und im exakten Wortlaut an den Agenten (Fix I1).
             api.zurueck(aid, str(e), True)

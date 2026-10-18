@@ -121,7 +121,9 @@ class Prompt:
 @pytest.fixture(autouse=True)
 def _start_zustand(monkeypatch):
     monkeypatch.setattr(bw, "START", {"arbeiter": None, "dienste": None})
+    monkeypatch.setattr(bw, "ZULETZT", {"art": None})               # frischer Arbeiterprozess
     monkeypatch.delenv("MARKETING_BILDMODELL", raising=False)       # Vorgabe flux2
+    monkeypatch.delenv("MARKETING_BILD_ZEITLIMIT_S", raising=False)  # Vorgabe 1200 s
 
 
 AUFTRAG = {"id": "0123abcd-0000-0000-0000-000000000000", "platz": None, "nur_leere": True, "hinweis": "",
@@ -429,7 +431,7 @@ def test_verkleinern_trifft_masse_und_groesse():
     assert len(j) <= 250 * 1024
 
 
-def test_weiter_vor_jedem_versuch_und_zeitlimit_540():
+def test_weiter_vor_jedem_versuch_und_zeitlimit_1200():
     zeitlimits = []
 
     class C(Comfy):
@@ -441,7 +443,7 @@ def test_weiter_vor_jedem_versuch_und_zeitlimit_540():
     bw.ein_durchlauf(api, C(), Prompt([(False, "x"), (False, "y"), (True, "")]), starten=lambda: None)
     # vor jedem Versuch und noch einmal vor dem Abliefern
     assert [e for e in api.log if e[0] == "weiter"] == [("weiter", AUFTRAG["id"])] * 4
-    assert zeitlimits == [540, 540, 540]
+    assert zeitlimits == [1200, 1200, 1200]
 
 
 def test_tls_kontext_nimmt_certifi_wenn_vorhanden(monkeypatch):
@@ -1248,3 +1250,167 @@ def test_zu_viele_referenzen_wortlaut_wie_bild_comfy():
     with pytest.raises(bild_comfy.ComfyFehler) as e:
         bild_comfy.erzeugen_flux2("x", 512, 512, 1, [b"a"] * (bild_comfy.MAX_REFERENZEN + 1))
     assert str(e.value) == bw.ZU_VIELE_REFERENZEN and str(e.value) in bw.COMFY_ENDGUELTIG
+
+
+# --- Schluss-Fixes C1/I2/I3 (final-review 2026-10-18) -------------------------------------------
+
+def test_umgebung_laden_holt_bildmodell_und_zeitlimit(monkeypatch, tmp_path):
+    """C1: der Schalter MARKETING_BILDMODELL=flux1 aus Vibemind_V1/.env erreicht den Arbeiter."""
+    (tmp_path / ".env").write_text("MARKETING_BILD_URL=https://vm\nMARKETING_BILD_KEY=k\nFASTEMBED_CACHE_PATH=E:/c\n"
+                                   "MARKETING_BILDMODELL=flux1\nMARKETING_BILD_ZEITLIMIT_S=900\n", encoding="utf-8")
+    monkeypatch.setattr(bw, "REPO_ROOT", tmp_path)
+    for k in ("MARKETING_BILD_URL", "MARKETING_BILD_KEY", "FASTEMBED_CACHE_PATH", "MARKETING_BILDMODELL",
+              "MARKETING_BILD_ZEITLIMIT_S"):
+        monkeypatch.setenv(k, "x")
+        monkeypatch.delenv(k)                      # so stellt monkeypatch den Ausgangszustand wieder her
+    bw.umgebung_laden()
+    assert bw.modell() == "flux1" and bw.zeitlimit_s() == 900
+
+
+def test_umgebung_laden_prozess_env_gewinnt(monkeypatch, tmp_path):
+    (tmp_path / ".env").write_text("MARKETING_BILDMODELL=flux1\n", encoding="utf-8")
+    monkeypatch.setattr(bw, "REPO_ROOT", tmp_path)
+    monkeypatch.setenv("MARKETING_BILDMODELL", "flux2")
+    bw.umgebung_laden()
+    assert bw.modell() == "flux2"
+
+
+@pytest.mark.parametrize("wert, erwartet", [(None, 1200), ("900", 900), ("quatsch", 1200), ("0", 1200),
+                                            (" 1500 ", 1500)])
+def test_zeitlimit_aus_env(monkeypatch, wert, erwartet):
+    if wert is not None:
+        monkeypatch.setenv("MARKETING_BILD_ZEITLIMIT_S", wert)
+    assert bw.zeitlimit_s() == erwartet
+
+
+def test_flux2_bekommt_zeitlimit_aus_env(monkeypatch):
+    monkeypatch.setenv("MARKETING_BILD_ZEITLIMIT_S", "900")
+    zeitlimits = []
+
+    class C(Comfy):
+        def erzeugen_flux2(self, prompt, b, h, seed, referenzen=(), zeitlimit_s=300):
+            zeitlimits.append(zeitlimit_s)
+            return super().erzeugen_flux2(prompt, b, h, seed, referenzen, zeitlimit_s)
+    assert bw.ein_durchlauf(Api(dict(AUFTRAG)), C(), Prompt(), starten=lambda: None) == "fertig"
+    assert zeitlimits == [900]
+
+
+def test_kein_freigeben_zwischen_zwei_flux2_auftraegen(monkeypatch):
+    """C1: FLUX.2 bleibt zwischen zwei FLUX.2-Auftraegen geladen (kalt von der HDD 619 s)."""
+    monkeypatch.delenv("BILD_SELBSTPRUEFUNG", raising=False)
+    comfy = Comfy()
+    assert bw.ein_durchlauf(Api(dict(AUFTRAG)), comfy, Prompt(), starten=lambda: None) == "fertig"
+    assert comfy.frei == 1                                     # erster Auftrag im Prozess: einmal frei
+    assert bw.ein_durchlauf(Api(dict(AUFTRAG)), comfy, Prompt(), starten=lambda: None) == "fertig"
+    a = dict(AENDERN)
+    api = Api(a)
+    api.quellen["neben"] = ALT
+    assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None) == "fertig"
+    assert comfy.frei == 1 and len(comfy.flux2) == 3
+
+
+def test_freigeben_beim_wechsel_von_freistellen_oder_flux1(monkeypatch):
+    monkeypatch.delenv("BILD_SELBSTPRUEFUNG", raising=False)
+    comfy = Comfy()
+    bw.ein_durchlauf(Api(dict(AUFTRAG)), comfy, Prompt(), starten=lambda: None)
+    assert comfy.frei == 1
+    api = Api(dict(FREI))                                     # Freistellen: BiRefNet, kein /free davor
+    api.quellen["neben"] = ALT
+    comfy.frei_png = _rgba(0.5)
+    assert _frei_lauf(api, comfy) == "fertig" and comfy.frei == 1
+    del comfy.erzeugen, comfy.ueberarbeiten                  # _frei_lauf hat FLUX gesperrt
+    bw.ein_durchlauf(Api(dict(AUFTRAG)), comfy, Prompt(), starten=lambda: None)
+    assert comfy.frei == 2                                    # Wechsel freistellen -> flux2
+    monkeypatch.setenv("MARKETING_BILDMODELL", "flux1")
+    bw.ein_durchlauf(Api(dict(AUFTRAG)), comfy, Prompt(), starten=lambda: None)
+    assert comfy.frei == 3                                    # flux1 gibt wie bisher immer frei
+    monkeypatch.setenv("MARKETING_BILDMODELL", "flux2")
+    bw.ein_durchlauf(Api(dict(AUFTRAG)), comfy, Prompt(), starten=lambda: None)
+    assert comfy.frei == 4                                    # Wechsel flux1 -> flux2
+
+
+def test_freistellen_voruebergehend_nicht_endgueltig():
+    """I2: eine Zeitueberschreitung beim Hochladen ist kein 'Freistellen nicht verfuegbar' (endgueltig)."""
+    api = Api(dict(FREI))
+    api.quellen["neben"] = ALT
+    comfy = Comfy(fehler=bild_comfy.ComfyVoruebergehend("Vorlage/Quelle nicht an ComfyUI uebergeben: "
+                                                        "Zeitueberschreitung"))
+    assert _frei_lauf(api, comfy) == "zurueck"
+    assert api.log[-1][2] is False and "Zeitueberschreitung" in api.log[-1][1]
+
+
+def test_flux2_voruebergehend_nicht_endgueltig():
+    api = Api(dict(AUFTRAG))
+    fehler = bild_comfy.ComfyVoruebergehend("ComfyUI antwortet nicht (Zeitueberschreitung beim Auftrag)")
+    assert bw.ein_durchlauf(api, Comfy(fehler=fehler), Prompt(), starten=lambda: None) == "zurueck"
+    assert api.log[-1][2] is False and "antwortet nicht" in api.log[-1][1]
+
+
+def test_voruebergehende_texte_nie_endgueltig():
+    for text in ("ComfyUI antwortet nicht (Zeitueberschreitung beim Auftrag)",
+                 "Vorlage/Quelle nicht an ComfyUI uebergeben: Zeitueberschreitung", "Zeitlimit 1200 s ueberschritten"):
+        assert text not in bw.COMFY_ENDGUELTIG
+
+
+def _warte_auf(bedingung, s=5.0):
+    import time
+    ende = time.monotonic() + s
+    while time.monotonic() < ende:
+        if bedingung():
+            return True
+        time.sleep(0.005)
+    return False
+
+
+def test_vergabe_wird_waehrend_der_erzeugung_verlaengert(monkeypatch):
+    """I3: ein langer Poll (FLUX.2 kalt 619 s > Vergabe 10 min) haelt die Vergabe per Herzschlag."""
+    monkeypatch.setattr(bw, "HALTEN_TAKT_S", 0.01)
+    api = Api(dict(AUFTRAG))
+    schlaege = []
+
+    class Langsam(Comfy):
+        def erzeugen(self, prompt, b, h, seed, zeitlimit_s=300):
+            vorher = len([e for e in api.log if e[0] == "weiter"])
+            schlaege.append(_warte_auf(lambda: len([e for e in api.log if e[0] == "weiter"]) >= vorher + 3))
+            return super().erzeugen(prompt, b, h, seed, zeitlimit_s)
+    assert bw.ein_durchlauf(api, Langsam(), Prompt(), starten=lambda: None) == "fertig"
+    assert schlaege == [True]
+
+
+def test_vergabe_weg_waehrend_der_erzeugung_ist_verworfen(monkeypatch):
+    monkeypatch.setattr(bw, "HALTEN_TAKT_S", 0.01)
+
+    class A(Api):
+        def __init__(self, auftrag):
+            super().__init__(auftrag)
+            self.weg = False
+
+        def weiter(self, aid):
+            super().weiter(aid)
+            return not self.weg
+    api = A(dict(AUFTRAG))
+
+    class Langsam(Comfy):
+        def erzeugen(self, prompt, b, h, seed, zeitlimit_s=300):
+            api.weg = True
+            n = len(api.log)
+            _warte_auf(lambda: len(api.log) > n)              # der Herzschlag merkt es
+            return super().erzeugen(prompt, b, h, seed, zeitlimit_s)
+    assert bw.ein_durchlauf(api, Langsam(), Prompt(), starten=lambda: None) == "verworfen"
+    assert not [e for e in api.log if e[0] in ("bild", "fertig", "zurueck")]
+
+
+def test_freistellen_haelt_die_vergabe(monkeypatch):
+    monkeypatch.setattr(bw, "HALTEN_TAKT_S", 0.01)
+    api = Api(dict(FREI))
+    api.quellen["neben"] = ALT
+    schlaege = []
+
+    class Langsam(Comfy):
+        def freistellen(self, quelle, zeitlimit_s=300):
+            vorher = len([e for e in api.log if e[0] == "weiter"])
+            schlaege.append(_warte_auf(lambda: len([e for e in api.log if e[0] == "weiter"]) >= vorher + 2))
+            return super().freistellen(quelle, zeitlimit_s)
+    comfy = Langsam()
+    comfy.frei_png = _rgba(0.5)
+    assert _frei_lauf(api, comfy) == "fertig" and schlaege == [True]
