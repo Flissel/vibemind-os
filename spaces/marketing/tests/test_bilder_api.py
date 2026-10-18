@@ -700,6 +700,28 @@ def test_vorlage_route_ist_fremd_404(db, c, vorlage_ordner, monkeypatch):
     assert c.get(f"/api/bilder/arbeiter/{AID}/vorlage?name=a.jpg", headers={"X-Bild-Key": BK}).status_code == 404
 
 
+def test_vorlage_route_gross_klein_variante_404(db, c, vorlage_ordner):
+    """Schluss-Fix I1: NTFS oeffnet A.JPG als a.jpg - geliefert wird nur der exakte Verzeichniseintrag."""
+    job = dict(_VJOB, vorlagen=["A.JPG"])
+    db.antworten = [[job], _sicht(eigene=["A.JPG"])]
+    r = c.get(f"/api/bilder/arbeiter/{AID}/vorlage?name=A.JPG", headers={"X-Bild-Key": BK})
+    assert r.status_code == 404
+
+
+def test_im_ordner_nur_exakter_eintrag(tmp_path, monkeypatch):
+    from spaces.marketing.api import bilder
+    (tmp_path / "foto.jpg").write_bytes(b"F")
+    assert bilder._im_ordner(str(tmp_path), "foto.jpg") == os.path.realpath(tmp_path / "foto.jpg")
+    # Windows-Verhalten nachstellen: isfile/realpath finden die Variante, die Verzeichnisliste nicht.
+    monkeypatch.setattr(bilder.os.path, "isfile", lambda p: True)
+    assert bilder._im_ordner(str(tmp_path), "FOTO.JPG") is None
+    assert bilder._im_ordner(str(tmp_path), "FOTO~1.JPG") is None          # 8.3-Kurzname
+    assert bilder._im_ordner(str(tmp_path), "foto.jpg:strom") is None       # NTFS-Datenstrom
+    monkeypatch.setattr(bilder.os, "listdir", lambda p: ["foto.jpg"])
+    assert bilder._im_ordner(str(tmp_path), "FOTO.JPG") is None
+    assert bilder._im_ordner(str(tmp_path), "foto.jpg") is not None
+
+
 def test_vorlage_route_schluessel_und_auftrag(db, c, vorlage_ordner):
     assert c.get(f"/api/bilder/arbeiter/{AID}/vorlage?name=a.jpg").status_code == 401
     assert c.get("/api/bilder/arbeiter/kein-uuid/vorlage?name=a.jpg", headers={"X-Bild-Key": BK}).status_code == 404

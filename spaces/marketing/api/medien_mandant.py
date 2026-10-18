@@ -18,7 +18,7 @@ from spaces.marketing.sync import _db
 router = APIRouter(prefix="/api/pult")
 
 GEMEINSAM = None
-_LOGO = re.compile(r"logo-([a-z][a-z0-9_-]{0,40})-[0-9a-f]{10}\.(?:png|jpg)")
+_LOGO = re.compile(r"logo-([a-z][a-z0-9_-]{0,40})-[0-9a-f]{10}\.(?:png|jpg)", re.IGNORECASE)
 # Gleich der DB-CHECK '^[^/\\"[:cntrl:]]{1,200}$': [:cntrl:] = 0x00-0x1f und 0x7f.
 _DATEI = re.compile(r'[^/\\"\x00-\x1f\x7f]{1,200}')
 NAMEN_MAX, ZUORDNEN_MAX = 2000, 20
@@ -58,13 +58,27 @@ def sicht(mandant: str) -> dict:
             "fremde": set(zeile.get("fremde") or []), "gemeinsam": set(zeile.get("gemeinsam") or [])}
 
 
+def _gefaltet(s: dict) -> tuple[set, set, set]:
+    """(eigene, gemeinsam, fremde) ohne Gross/Klein; einmal je Sicht berechnet und in s gemerkt."""
+    merk = s.get("_gefaltet")
+    quellen = (s["eigene"], s["gemeinsam"], s["fremde"])
+    if merk is None or merk[0] != tuple(map(id, quellen)):
+        merk = (tuple(map(id, quellen)), tuple({n.casefold() for n in q} for q in quellen))
+        s["_gefaltet"] = merk
+    return merk[1]
+
+
 def ist_fremd(name: str, mandant: str, s: dict) -> bool:
-    if name in s["eigene"] or name in s["gemeinsam"]:
-        return False
-    if name in s["fremde"]:
+    """Ohne Gross/Klein (Schluss-Fix I1): NTFS am PC oeffnet FOTO.JPG als foto.jpg. Fremd zuerst (fail-closed):
+    ein Treffer bei einer anderen Firma gewinnt auch dann, wenn eine Variante eigen oder gemeinsam ist."""
+    eigene, gemeinsam, fremde = _gefaltet(s)
+    n = name.casefold()
+    if n in fremde:
         return True
+    if n in eigene or n in gemeinsam:
+        return False
     treffer = _LOGO.fullmatch(name)
-    return bool(treffer) and treffer.group(1) != mandant
+    return bool(treffer) and treffer.group(1).casefold() != mandant.casefold()
 
 
 def _array(namen: list[str]) -> str:
@@ -149,19 +163,20 @@ def medien_sichtbar(payload: dict = Body(...), x_pult_key: str | None = Header(N
     if not isinstance(namen, list) or len(namen) > NAMEN_MAX:
         raise HTTPException(422, f"namen muss eine Liste mit hoechstens {NAMEN_MAX} Eintraegen sein")
     s = sicht(m)
+    eigene, gemeinsam, _ = _gefaltet(s)
     sichtbar, zuordnung = [], {}
     for n in namen:
         if not _gueltig(n) or ist_fremd(n, m, s):
             continue
         sichtbar.append(n)
-        if n in s["eigene"]:
+        if n.casefold() in eigene:
             zuordnung[n] = m
-        elif n in s["gemeinsam"]:
+        elif n.casefold() in gemeinsam:
             zuordnung[n] = None
         else:
             logo = _LOGO.fullmatch(n)
             if logo:
-                zuordnung[n] = logo.group(1)
+                zuordnung[n] = logo.group(1).casefold()
     aktive = _lesen(lambda:
         "SELECT id, name FROM marketing.mandanten WHERE aktiv ORDER BY name")
     return {"mandant": m, "name": s["name"], "sichtbar": sichtbar, "zuordnung": zuordnung,

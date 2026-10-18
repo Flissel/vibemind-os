@@ -311,9 +311,22 @@ def _bilddatei_name_ok(name: str) -> bool:
 
 
 def _im_ordner(ordner: str, name: str) -> str | None:
-    """Datei nur liefern, wenn sie aufgeloest (Symlinks) im aufgeloesten Ordner liegt."""
+    """Datei nur liefern, wenn GENAU dieser Name im Ordner steht (Schluss-Fix I1, Muster video._medien_pfad)
+    und sie aufgeloest im aufgeloesten Ordner liegt. Die Firmenpruefung (ist_fremd) sieht den Namen; NTFS am PC
+    oeffnet aber auch 'FOTO.JPG' als 'foto.jpg', 8.3-Kurznamen ('FOTO~1.JPG') und 'x:y' als Datenstrom - darum
+    zaehlt nur ein exakter Eintrag der Verzeichnisliste. Keine Symlinks."""
+    if not name or any(z in name for z in ":/\\\x00"):
+        return None
     basis = os.path.realpath(ordner)
-    pfad = os.path.realpath(os.path.join(basis, name))
+    try:
+        if name not in os.listdir(basis):
+            return None
+    except OSError:
+        return None
+    roh = os.path.join(basis, name)
+    if os.path.islink(roh):
+        return None
+    pfad = os.path.realpath(roh)
     try:
         drin = os.path.commonpath([basis, pfad]) == basis and pfad != basis
     except ValueError:   # verschiedene Laufwerke

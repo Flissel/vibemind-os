@@ -69,6 +69,23 @@ def test_ist_fremd(name, s, erwartet):
     assert mm.ist_fremd(name, "vibemind", s) is erwartet
 
 
+# Schluss-Fix I1: NTFS am PC oeffnet FOTO.JPG als foto.jpg - Vergleich ohne Gross/Klein, fremd zuerst.
+@pytest.mark.parametrize("name,s,erwartet", [
+    ("FOTO.JPG", _s(fremde=["foto.jpg"]), True),
+    ("foto.jpg", _s(fremde=["FOTO.JPG"]), True),
+    ("FOTO.JPG", _s(eigene=["FOTO.JPG"], fremde=["foto.jpg"]), True),        # fremd gewinnt (fail-closed)
+    ("Foto.Jpg", _s(gemeinsam=["foto.jpg"], fremde=["FOTO.jpg"]), True),
+    ("FOTO.JPG", _s(eigene=["foto.jpg"]), False),
+    ("FOTO.JPG", _s(gemeinsam=["foto.jpg"]), False),
+    ("LOGO-laura-0123456789.PNG", _s(), True),                               # wie logo-laura-...png
+    ("logo-Laura-0123456789.Jpg", _s(), True),
+    ("LOGO-VIBEMIND-0123456789.PNG", _s(), False),                           # eigenes Logo bleibt eigen
+    ("LOGO-laura-0123456789.PNG", _s(gemeinsam=["logo-laura-0123456789.png"]), False),
+])
+def test_ist_fremd_ohne_gross_klein(name, s, erwartet):
+    assert mm.ist_fremd(name, "vibemind", s) is erwartet
+
+
 # --- sicht -------------------------------------------------------------
 
 
@@ -111,6 +128,17 @@ def test_sichtbar_filtert_fremde_und_behaelt_reihenfolge(umg):
     assert j["zuordnung"] == {"g.jpg": None, "e.jpg": "vibemind", LOGO_E: "vibemind"}
     assert j["mandant"] == "vibemind" and j["name"] == "Vibemind"
     assert j["mandanten"] == [{"id": "vibemind", "name": "Vibemind"}, {"id": "laura", "name": "Laura"}]
+
+
+def test_sichtbar_gross_klein_varianten(umg):
+    """Schluss-Fix I1: die Gross/Klein-Variante eines fremden Bildes ist nicht sichtbar; LOGO.PNG zaehlt wie logo.png."""
+    f, _, c = umg
+    f.antworten.append([_sicht_zeile(eigene=["e.jpg"], fremde=["f.jpg"], gemeinsam=["g.jpg"])])
+    f.antworten.append([])
+    namen = ["F.JPG", "E.JPG", "G.Jpg", "LOGO-LAURA-0123456789.PNG", "LOGO-Vibemind-0123456789.PNG"]
+    j = c.post("/api/pult/medien/sichtbar", json={"mandant": "vibemind", "namen": namen}, headers=H).json()
+    assert j["sichtbar"] == ["E.JPG", "G.Jpg", "LOGO-Vibemind-0123456789.PNG"]
+    assert j["zuordnung"] == {"E.JPG": "vibemind", "G.Jpg": None, "LOGO-Vibemind-0123456789.PNG": "vibemind"}
 
 
 def test_sichtbar_zu_viele_namen_422(umg):
