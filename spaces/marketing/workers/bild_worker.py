@@ -200,6 +200,19 @@ class ArbeiterApi:
         return self._post(f"/{aid}/zurueck", {"befund": befund[:500], "endgueltig": endgueltig}).get("status", "")
 
 
+EINBAU_MIN_LANG = 768   # Vorlagentreue: echter Lauf 19.10. bei 336x256 verlor Farben/Form der Vorlage
+
+
+def einbau_masse(breite: int, hoehe: int) -> tuple[int, int]:
+    """Rechenmass fuer FLUX.2 mit Vorlagen: lange Seite mindestens EINBAU_MIN_LANG (Seitenverhaeltnis bleibt,
+    Vielfache von 16, hoechstens 2048). Das Ergebnis verkleinert _bilder danach auf das Platzmass."""
+    lang = max(breite, hoehe)
+    if lang >= EINBAU_MIN_LANG:
+        return breite, hoehe
+    f = EINBAU_MIN_LANG / lang
+    return tuple(min(2048, max(256, round(x * f / 16) * 16)) for x in (breite, hoehe))
+
+
 def verkleinern(png: bytes, breite: int, hoehe: int) -> bytes:
     from PIL import Image
     with Image.open(io.BytesIO(png)) as bild:
@@ -507,9 +520,10 @@ def _flux2(api, aid, auftrag, ziele, comfy, prompt, messen):
         else:
             text = prompt.einbau_prompt(hinweis, daten) if vorlagen else prompt.prompt_schreiben(daten, titel, hinweis)
             referenzen = list(vorlagen)
+        gross = bool(vorlagen)     # mit Vorlagen gross rechnen, _bilder verkleinert aufs Platzmass
         arbeit.append((platz, text, None,
-                       lambda t, w, h, s, r=referenzen: comfy.erzeugen_flux2(t, w, h, s, r,
-                                                                             zeitlimit_s=zeitlimit_s())))
+                       lambda t, w, h, s, r=referenzen, g=gross: comfy.erzeugen_flux2(
+                           t, *(einbau_masse(w, h) if g else (w, h)), s, r, zeitlimit_s=zeitlimit_s())))
     je_bild_freigeben = os.environ.get("BILD_SELBSTPRUEFUNG", "") == "1"
     erg = _bilder(api, aid, arbeit, 100, hinweis, comfy, prompt, messen, je_bild_freigeben, befunde)
     if erg == "verworfen":

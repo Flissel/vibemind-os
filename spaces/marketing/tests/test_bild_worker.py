@@ -1102,6 +1102,36 @@ def test_flux2_neu_mit_vorlage_woertlich_ohne_ollama():
                                for t, _ in comfy.flux2)
 
 
+@pytest.mark.parametrize("b, h, erwartet", [
+    (336, 256, (768, 592)),      # kleiner Streifen 4:3 -> lange Seite 768, Vielfache von 16
+    (256, 336, (592, 768)),
+    (512, 512, (768, 768)),
+    (1200, 608, (1200, 608)),    # schon gross genug: unveraendert
+])
+def test_einbau_masse_mindestens_768(b, h, erwartet):
+    assert bw.einbau_masse(b, h) == erwartet
+
+
+def test_flux2_vorlagen_rechnet_gross_und_verkleinert_auf_den_platz(monkeypatch):
+    """Vorlagentreue (echter Lauf 19.10.): bei kleinen Plaetzen rechnet FLUX.2 mindestens EINBAU_MIN_LANG und
+    verkleinert danach auf das Platzmass. Ohne Vorlagen bleibt das Platzmass."""
+    monkeypatch.setattr(bw, "EINBAU_MIN_LANG", 1600)
+    hoch = []
+
+    class A(Api):
+        def bild(self, aid, platz, daten, format="jpg"):
+            hoch.append(daten)
+            return super().bild(aid, platz, daten, format)
+    api, comfy = A(dict(AUFTRAG, vorlagen=["a.jpg"])), Comfy()
+    api.vorlagen = {"a.jpg": png(30, 20)}
+    assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None) == "fertig"
+    assert comfy.masse == [(1600, 816)]
+    assert [Image.open(io.BytesIO(j)).size for j in hoch] == [(1200, 608)]
+    api, comfy = Api(dict(AUFTRAG)), Comfy()
+    assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None) == "fertig"
+    assert comfy.masse == [(1200, 608)]
+
+
 def test_flux2_neu_mit_drei_vorlagen():
     api, comfy = Api(dict(AUFTRAG, vorlagen=["a.jpg", "b.png", "c.jpg"])), Comfy()
     api.vorlagen = {"a.jpg": png(30, 20), "b.png": png(40, 20), "c.jpg": png(50, 20)}
