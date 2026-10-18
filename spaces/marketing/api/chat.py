@@ -24,8 +24,8 @@ from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
 
-from spaces.marketing.api.bilder import (_BILDTYP, _PLATZ, _anlegen, _auftrag_id, _bild_schluessel,
-                                         _im_ordner, _ordner)
+from spaces.marketing.api.bilder import (_BILDTYP, _PLATZ, VORLAGEN_MAX as BILD_VORLAGEN_MAX, _anlegen,
+                                         _auftrag_id, _bild_schluessel, _im_ordner, _ordner)
 from spaces.marketing.api.gestaltung import aufraeumen_falls_faellig, gestaltungen_rechnen, quellen
 from spaces.marketing.api.pult import (_erzeugt_ordner, _laden_lesen, _lesen, _lesen_einer, _schluessel, _schreiben,
                                        _uuid_oder_404, lit)
@@ -638,12 +638,16 @@ def _bildauftraege_formen(roh) -> list[dict]:
         platz = b.get("platz") if isinstance(b, dict) else None
         modus = b.get("modus") if isinstance(b, dict) else None
         hinweis = b.get("hinweis", "") if isinstance(b, dict) else None
+        vorlagen = b.get("vorlagen", []) if isinstance(b, dict) else None
+        vorlagen_ok = (isinstance(vorlagen, list) and len(vorlagen) <= BILD_VORLAGEN_MAX
+                       and all(isinstance(n, str) for n in vorlagen))
         if not isinstance(platz, str) or not _PLATZ.fullmatch(platz):
             erg.append({"grund": "Bildauftrag ohne gültigen Bildplatz"})
-        elif modus not in ("neu", "freistellen") or not isinstance(hinweis, str) or len(hinweis) > 500:
+        elif (modus not in ("neu", "aendern", "freistellen") or not isinstance(hinweis, str) or len(hinweis) > 500
+              or not vorlagen_ok):
             erg.append({"platz": platz, "grund": "Bildauftrag ungültig"})
         else:
-            erg.append({"platz": platz, "modus": modus, "hinweis": hinweis})
+            erg.append({"platz": platz, "modus": modus, "hinweis": hinweis, "vorlagen": vorlagen})
     return erg
 
 
@@ -694,7 +698,8 @@ def arbeiter_fertig(aid: str, payload: dict = Body(...), x_bild_key: str | None 
             continue
         try:
             ids.append(_anlegen(str(job["inhalt"]), {"platz": b["platz"], "hinweis": b["hinweis"],
-                                                     "modus": b["modus"]}, "agent")["auftrag"])
+                                                     "modus": b["modus"], "vorlagen": b["vorlagen"]},
+                                "agent")["auftrag"])
         except HTTPException as e:
             ids.append(None)
             hinweise.append(f"{b['platz']}: Bild nicht beauftragt – {e.detail}")

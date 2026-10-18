@@ -1839,7 +1839,7 @@ def test_bildauftrag_mit_fehlendem_platz_wird_verworfen():
     antwort = json.dumps({"antwort": "Bild kommt.", "aenderungen": [farbe("#ff0000", "Rot"), bild]})
     assert cw.chat_bearbeiten(api, {**AUFTRAG4, "bloecke": mit_held}, Fragen(antwort)) == "fertig"
     erst, zweit = _fertig_daten(api)
-    assert erst["bildauftraege"] == [{"platz": "held", "modus": "neu", "hinweis": "Kerzen"}]
+    assert erst["bildauftraege"] == [{"platz": "held", "modus": "neu", "hinweis": "Kerzen", "vorlagen": []}]
     assert zweit["bildauftraege"] == [] and cw.agent_werkzeuge.UEBERSPRUNGEN + "Bild beauftragen" in zweit["hinweise"]
 
 

@@ -92,7 +92,18 @@ rechteck), drehung. Für Farbflecken, Störer-Kreise, Bänder und Hintergrundfl�
 Höchstens 20 Ebenen je Fläche. Ebenen-id nur A-Z a-z 0-9 _ - (1-32 Zeichen).
 - Formate (Höhe bei 600 Breite): quer 3:2 (400), quadrat 1:1 (600), hoch 4:5 (750), banner 3:1 (200).
 Bilder (laufen im Hintergrund; sag "Bild wird erzeugt, kommt als neue Fassung" und warte nicht)
-- bild_erzeugen: platz*, hinweis* (Motivbeschreibung, höchstens 500 Zeichen). platz = id eines vorhandenen Bildblocks.
+- bild_erzeugen: platz*, hinweis* (Motivbeschreibung, höchstens 500 Zeichen), vorlagen (bis zu 3 Mediennamen aus der \
+Medienliste, z. B. ein angehängtes Produktfoto, das ins Motiv soll). platz = id eines vorhandenen Bildblocks.
+- bild_aendern: platz*, anweisung* (was sich am vorhandenen Bild ändern soll, höchstens 500 Zeichen), vorlagen (bis zu \
+2 Mediennamen). Nur für Plätze mit echtem Bild; Stärke fest 55 (Bildaufbau bleibt).
+- vorlagen immer als Liste, jeder Name einmal.
+- Ändern vor neu Erzeugen: soll nur ein Teil des Bildes anders werden, nimm bild_aendern.
+- Logos und Schrift nie über das Bildmodell: ein Logo kommt als eigener Bildblock (bild_aus_medien), nie als Vorlage \
+und nie im Hinweis.
+- Welche Vorlage gemeint ist, muss eindeutig sein; sonst frag nach und ändere nichts.
+- Befunde: „Hier ist noch kein Bild – nimm bild_erzeugen“ → bild_erzeugen. „Zu viele Vorlagen für die Grafikkarte“, \
+„Höchstens 3 Referenzbilder“ → weniger Vorlagen. „Bildmodell FLUX.2 fehlt am PC“, „Vorlagen nur mit FLUX.2“ (Bild \
+ohne Vorlagen), „Quellbild fehlt“ → dem Betreiber sagen, nicht wiederholen.
 - bild_freistellen: platz*.
 - bild_aus_medien: platz*, quelle* (Name aus der Medienliste, nie erfunden).
 platz nimmt nur vorhandene Bildplatz-ids, nie eine Fläche und nie neu:<n>; Bilder in Flächen sind Bild-Ebenen.

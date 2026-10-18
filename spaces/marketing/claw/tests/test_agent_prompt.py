@@ -6,6 +6,10 @@ from spaces.marketing.claw import agent_prompt as ap
 from spaces.marketing.claw.agent_werkzeuge import WERKZEUGE
 from spaces.marketing.claw.schriften import REGISTER
 
+# Obergrenze fuer SYSTEM: 12000 -> 13000 fuer bild_aendern, vorlagen und die Bild-Befunde
+# (Plan 2026-10-10-bilder-flux2-klein Task 6)
+PROMPT_MAX = 13000
+
 
 def test_reines_json():
     assert ap.antwort_lesen('{"antwort": "Fertig.", "aenderungen": [{"werkzeug": "block_loeschen", "id": "a"}]}') == {
@@ -73,7 +77,7 @@ def test_system_inhalt():
         assert s in ap.SYSTEM
     for sid in REGISTER:
         assert sid in ap.SYSTEM
-    assert len(ap.SYSTEM) < 12000
+    assert len(ap.SYSTEM) < PROMPT_MAX
 
 
 def _auftrag(**kw):
@@ -174,7 +178,7 @@ def test_system_nennt_markierte_elemente_und_bilder_zum_lesen():
 def test_system_verlangt_schritt_und_reihenfolge():
     assert '"schritt"' in ap.SYSTEM
     assert "zuerst Struktur, dann Inhalt, dann Feinschliff" in ap.SYSTEM
-    assert len(ap.SYSTEM) < 12000
+    assert len(ap.SYSTEM) < PROMPT_MAX
 
 
 def test_prompt_nennt_unterlagen_und_bilder_material_nie_anweisung():
@@ -405,7 +409,7 @@ def test_waerme_regeln_und_neue_mittel_im_system():
     assert "WÄRME UND RHYTHMUS" in s
     for teil in ('"form": "kreis"', '"randlos": true', "borderRadius", "Anrede", "Gruß"):
         assert teil in s, teil
-    assert len(ap.SYSTEM) < 12000 and "WÄRME UND RHYTHMUS" in ap.system(marke=True)
+    assert len(ap.SYSTEM) < PROMPT_MAX and "WÄRME UND RHYTHMUS" in ap.system(marke=True)
 
 
 def test_abschnitt_werkzeug_mit_allen_abschnitten_im_system():
@@ -414,7 +418,7 @@ def test_abschnitt_werkzeug_mit_allen_abschnitten_im_system():
     assert "- abschnitt_einfuegen: abschnitt*" in s
     for k in abschnitte.SCHLUESSEL:
         assert k in s, k
-    assert len(ap.SYSTEM) < 12000
+    assert len(ap.SYSTEM) < PROMPT_MAX
 
 
 def test_freie_flaeche_im_system():
@@ -422,14 +426,32 @@ def test_freie_flaeche_im_system():
     for teil in ('art "form"', "hintergrund (#RRGGBB", "rahmen (0-80", "kreis (bool", "schatten (bool",
                  "deckkraft (0-100", "caveat"):
         assert teil in s, teil
-    assert len(ap.SYSTEM) < 12000
+    assert len(ap.SYSTEM) < PROMPT_MAX
 
 
 def test_handschrift_rolle_im_system():
     s = ap.system(marke=False)
-    assert 'fontFamily "HAND"' in s and len(ap.SYSTEM) < 12000
+    assert 'fontFamily "HAND"' in s and len(ap.SYSTEM) < PROMPT_MAX
 
 
 def test_anrede_platzhalter_vorname_im_system():
     s = ap.system(marke=False)
-    assert "Hallo {vorname}," in s and "nie einen echten Namen" in s and len(ap.SYSTEM) < 12000
+    assert "Hallo {vorname}," in s and "nie einen echten Namen" in s and len(ap.SYSTEM) < PROMPT_MAX
+
+
+def test_bildregeln():
+    """Plan 2026-10-10-bilder-flux2-klein Task 6: bild_aendern, vorlagen und die Bildregeln."""
+    s = ap.SYSTEM
+    for teil in ("bild_aendern: platz*, anweisung*", "vorlagen (bis zu 3 Mediennamen",
+                 "Logos und Schrift nie über das Bildmodell", "Ändern vor neu Erzeugen",
+                 "fehlt das gewünschte Bild, sag es und biete bild_erzeugen an"):
+        assert teil in s, teil
+
+
+def test_bildbefunde_im_system():
+    """Die Wortlaute der Bild-Befunde kennt der Agent und weiss, wie er darauf reagiert."""
+    s = ap.SYSTEM
+    for teil in ("Hier ist noch kein Bild – nimm bild_erzeugen", "Vorlagen nur mit FLUX.2",
+                 "Bildmodell FLUX.2 fehlt am PC", "Zu viele Vorlagen für die Grafikkarte", "Quellbild fehlt",
+                 "Stärke fest 55"):
+        assert teil in s, teil

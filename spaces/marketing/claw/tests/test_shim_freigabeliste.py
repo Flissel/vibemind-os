@@ -35,3 +35,13 @@ def test_laura_nur_lesend():
     laura = {t.removeprefix("mcp__laura__") for t in FREIGABE if t.startswith("mcp__laura__")}
     assert laura == laura_probe.LESEND
     assert not laura & (laura_probe.SCHREIBEND | laura_probe.VERBOTEN)
+
+
+def test_editor_werkzeuge_brauchen_keine_freigabe():
+    """Die Werkzeuge des Gestaltungs-Agenten (agent_werkzeuge, z. B. bild_erzeugen, bild_aendern) sind keine
+    MCP-Werkzeuge: der Agent schreibt sie als JSON in seine Antwort, chat_worker wendet sie an. Sie gehoeren
+    nicht in die Freigabeliste; der Agent kennt sie aus dem Prompt (test_agent_prompt.test_system_inhalt)."""
+    from spaces.marketing.claw import agent_werkzeuge
+    assert "bild_aendern" in agent_werkzeuge.WERKZEUGE
+    assert not set(agent_werkzeuge.WERKZEUGE) & _sidecar_werkzeuge()
+    assert not {t for t in FREIGABE if t.split("__")[-1] in agent_werkzeuge.WERKZEUGE}

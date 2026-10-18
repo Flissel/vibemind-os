@@ -1193,3 +1193,55 @@ def test_medien_grosse_endung_handyfoto(umg):
     f.antworten += [[JOB], _sicht(eigene=["IMG_1234.JPG"])]
     r = c.get(f"/api/chat/arbeiter/{AID}/medien/IMG_1234.JPG", headers=HB)
     assert r.status_code == 200 and r.content == b"HANDYFOTO" and r.headers["content-type"] == "image/jpeg"
+
+
+# ─── Bildauftraege mit FLUX.2: aendern und vorlagen (Plan 2026-10-10-bilder-flux2-klein Task 6) ──────
+
+
+def _anlegen_spion(monkeypatch):
+    from spaces.marketing.api import chat
+    gesehen = []
+
+    def spion(iid, payload, urheber):
+        gesehen.append((iid, payload, urheber))
+        return {"auftrag": BID}
+    monkeypatch.setattr(chat, "_anlegen", spion)
+    return gesehen
+
+
+def test_fertig_bildauftrag_aendern_mit_vorlagen(umg, monkeypatch):
+    f, _, c = umg
+    gesehen = _anlegen_spion(monkeypatch)
+    f.antworten += [[JOB], [{"f": None}], [{"e": {"fassung": 7}}], [{"ok": True}]]
+    body = {"antwort": "Fertig", "bloecke": _dok(),
+            "bildauftraege": [{"platz": "held", "modus": "aendern", "hinweis": "x", "vorlagen": ["foto.jpg"]}]}
+    r = c.post(f"/api/chat/arbeiter/{AID}/fertig", json=body, headers=HB)
+    assert r.status_code == 200, r.text
+    assert r.json()["bildauftraege"] == [BID]
+    assert gesehen == [(IID, {"platz": "held", "hinweis": "x", "modus": "aendern", "vorlagen": ["foto.jpg"]}, "agent")]
+
+
+def test_fertig_bildauftrag_ohne_vorlagen_reicht_leere_liste(umg, monkeypatch):
+    f, _, c = umg
+    gesehen = _anlegen_spion(monkeypatch)
+    f.antworten += [[JOB], [{"f": None}], [{"e": {"fassung": 7}}], [{"ok": True}]]
+    body = {"antwort": "Fertig", "bloecke": _dok(), "bildauftraege": [{"platz": "held", "modus": "neu", "hinweis": "K"}]}
+    assert c.post(f"/api/chat/arbeiter/{AID}/fertig", json=body, headers=HB).status_code == 200
+    assert gesehen[0][1]["vorlagen"] == [] and gesehen[0][1]["modus"] == "neu"
+
+
+@pytest.mark.parametrize("vorlagen", ["foto.jpg", [1], ["a.jpg", "b.jpg", "c.jpg", "d.jpg"]])
+def test_fertig_bildauftrag_vorlagen_kaputt_wird_grund(umg, monkeypatch, vorlagen):
+    """Review Focus 4: vorlagen als String (oder falsche Form) -> Hinweis an der Runde, kein Auftrag."""
+    f, _, c = umg
+    gesehen = _anlegen_spion(monkeypatch)
+    f.antworten += [[JOB], [{"f": None}], [{"e": {"fassung": 7}}]]
+    body = {"antwort": "Fertig", "bloecke": _dok(),
+            "bildauftraege": [{"platz": "held", "modus": "neu", "hinweis": "x", "vorlagen": vorlagen}]}
+    r = c.post(f"/api/chat/arbeiter/{AID}/fertig", json=body, headers=HB)
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["bildauftraege"] == [None] and "held: Bildauftrag ungültig" in d["hinweise"]
+    assert gesehen == []
+    fertig = next(s for s in f.sql if "marketing.pult_chat_fertig(" in s)
+    assert "held: Bildauftrag ungültig" in fertig

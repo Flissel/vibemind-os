@@ -29,7 +29,7 @@ EBENE_FELDER = {
 WERKZEUGE: tuple[str, ...] = (
     "block_einfuegen", "abschnitt_einfuegen", "block_aendern", "block_verschieben", "block_loeschen", "farben_setzen",
     "schriften_setzen", "flaeche_anlegen", "ebene_hinzufuegen", "ebene_aendern", "ebene_reihenfolge", "ebene_loeschen",
-    "format_setzen", "hintergrund_setzen", "bild_erzeugen", "bild_freistellen", "bild_aus_medien",
+    "format_setzen", "hintergrund_setzen", "bild_erzeugen", "bild_aendern", "bild_freistellen", "bild_aus_medien",
     "entwurf_speichern", "export_vorschlagen")
 
 # werkzeug -> (Pflichtparameter, optionale Parameter)
@@ -48,7 +48,8 @@ PARAMETER: dict[str, tuple[set, set]] = {
     "ebene_loeschen": ({"flaeche", "id"}, set()),
     "format_setzen": ({"flaeche", "format"}, set()),
     "hintergrund_setzen": ({"flaeche", "farbe"}, set()),
-    "bild_erzeugen": ({"platz", "hinweis"}, set()),
+    "bild_erzeugen": ({"platz", "hinweis"}, {"vorlagen"}),
+    "bild_aendern": ({"platz", "anweisung"}, {"vorlagen"}),
     "bild_freistellen": ({"platz"}, set()),
     "bild_aus_medien": ({"platz", "quelle"}, set()),
     "entwurf_speichern": ({"notiz"}, set()),
@@ -374,11 +375,30 @@ class _Lauf:
         g["hintergrund"] = a["farbe"]
         self.gestaltung_schreiben(fid, g)
 
+    def vorlagen(self, wert, hoechstens: int) -> list[str]:
+        """Vorlagen = Mediennamen aus der Medienliste (mit oder ohne medien:), je einmal, hoechstens `hoechstens`.
+        Strenger als die Bild-API (die dedupliziert still): der Agent soll den Fehler sehen und korrigieren."""
+        if wert is None:
+            return []
+        if not isinstance(wert, list) or not all(isinstance(n, str) for n in wert):
+            raise WerkzeugFehler("vorlagen muss eine Liste von Mediennamen sein")
+        namen = [self.quelle(n)[len("medien:"):] for n in wert]
+        if len(set(namen)) != len(namen):
+            raise WerkzeugFehler("vorlagen: ein Name ist doppelt")
+        if len(namen) > hoechstens:
+            raise WerkzeugFehler(f"vorlagen: höchstens {hoechstens}")
+        return namen
+
     # Bild- und Abschlusswerkzeuge wirken auf den Endstand der Bloecke -> aufgeschoben
     def bild_erzeugen(self, a: dict) -> None:
         if not isinstance(a["hinweis"], str) or len(a["hinweis"]) > 500:
             raise WerkzeugFehler("hinweis muss Text sein (höchstens 500 Zeichen)")
-        self.bild.append(("bild_erzeugen", a))
+        self.bild.append(("bild_erzeugen", {**a, "vorlagen": self.vorlagen(a.get("vorlagen"), 3)}))
+
+    def bild_aendern(self, a: dict) -> None:
+        if not isinstance(a["anweisung"], str) or not a["anweisung"].strip() or len(a["anweisung"]) > 500:
+            raise WerkzeugFehler("anweisung muss Text sein (1-500 Zeichen)")
+        self.bild.append(("bild_aendern", {**a, "vorlagen": self.vorlagen(a.get("vorlagen"), 2)}))
 
     def bild_freistellen(self, a: dict) -> None:
         self.bild.append(("bild_freistellen", a))
@@ -420,16 +440,24 @@ class _Lauf:
 
     def abschliessen(self) -> tuple[list[dict], dict | None]:
         plaetze = {p.id for p in bildplaetze.finde(self.b)}
-        auftraege: list[dict] = []
         for name, a in self.bild:
             pid = a["platz"]
             if not isinstance(pid, str) or pid not in plaetze:
                 raise _Spaet(name, f"{pid} ist kein Bildplatz")
             if name == "bild_aus_medien":
                 self.props(pid)["url"] = a["quelle"]
-            else:
-                auftraege.append({"platz": pid, "modus": "neu" if name == "bild_erzeugen" else "freistellen",
-                                  "hinweis": a.get("hinweis", "") if name == "bild_erzeugen" else ""})
+        # bild_aendern braucht im Endstand ein echtes Bild (nach allen bild_aus_medien dieser Antwort)
+        echt = {p.id for p in bildplaetze.finde(self.b) if not bildplaetze.ist_leer(p.url)}
+        auftraege: list[dict] = []
+        for name, a in self.bild:
+            if name == "bild_aus_medien":
+                continue
+            if name == "bild_aendern" and a["platz"] not in echt:
+                raise _Spaet(name, "Hier ist noch kein Bild – nimm bild_erzeugen")
+            frei = name == "bild_freistellen"
+            auftraege.append({"platz": a["platz"], "modus": _MODUS[name],
+                              "hinweis": "" if frei else (a.get("hinweis") or a.get("anweisung") or ""),
+                              "vorlagen": [] if frei else list(a.get("vorlagen", []))})
         export = None
         if self.export is not None:
             alle = [b for b in self.reihenfolge() if self.ist_flaeche(b)]
@@ -442,6 +470,9 @@ class _Lauf:
                         ids.append(f)
             export = {"newsletter": self.export["newsletter"], "flaechen": ids}
         return auftraege, export
+
+
+_MODUS = {"bild_erzeugen": "neu", "bild_aendern": "aendern", "bild_freistellen": "freistellen"}
 
 
 class _Spaet(Exception):

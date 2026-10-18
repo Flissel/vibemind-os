@@ -328,8 +328,8 @@ def test_flaeche_in_vorhandenem_dokument_aendern():
 def test_bild_erzeugen_und_freistellen():
     e = lauf([{"werkzeug": "bild_erzeugen", "platz": "held", "hinweis": "Kerzenlicht"},
               {"werkzeug": "bild_freistellen", "platz": "held"}])
-    assert e.bildauftraege == [{"platz": "held", "modus": "neu", "hinweis": "Kerzenlicht"},
-                               {"platz": "held", "modus": "freistellen", "hinweis": ""}]
+    assert e.bildauftraege == [{"platz": "held", "modus": "neu", "hinweis": "Kerzenlicht", "vorlagen": []},
+                               {"platz": "held", "modus": "freistellen", "hinweis": "", "vorlagen": []}]
     assert not e.geaendert
 
 
@@ -395,7 +395,7 @@ def test_fehler_bricht_alles_ab_und_original_bleibt():
 
 
 def test_werkzeuge_vollstaendig():
-    assert len(aw.WERKZEUGE) == 19 and set(aw.WERKZEUGE) == set(aw.PARAMETER)
+    assert len(aw.WERKZEUGE) == 20 and set(aw.WERKZEUGE) == set(aw.PARAMETER)
 
 
 def test_schritt_wird_akzeptiert_und_aendert_nichts():
@@ -461,7 +461,7 @@ def test_uebersprungene_flaeche_haelt_die_nummerierung():
 def test_nachspielen_bildauftrag_ohne_platz_wird_verworfen():
     liste = [{"werkzeug": "bild_erzeugen", "platz": "held", "hinweis": "Kerzen", "schritt": "Bild beauftragen"},
              {"werkzeug": "farben_setzen", "textColor": "#000000"}]
-    assert aw.nachspielen(DOK, liste, MEDIEN).bildauftraege == [{"platz": "held", "modus": "neu", "hinweis": "Kerzen"}]
+    assert aw.nachspielen(DOK, liste, MEDIEN).bildauftraege == [{"platz": "held", "modus": "neu", "hinweis": "Kerzen", "vorlagen": []}]
     n = aw.nachspielen(_ohne(DOK, "held"), liste, MEDIEN)
     assert n.bildauftraege == [] and n.uebersprungen == [aw.UEBERSPRUNGEN + "Bild beauftragen"]
 
@@ -532,3 +532,90 @@ def test_ebene_form_fremdes_feld():
 
 def test_handschrift_nicht_als_schriftpaar():
     fehler([{"werkzeug": "schriften_setzen", "anzeige": "caveat"}], "caveat")
+
+
+# ---- Bilder mit FLUX.2: bild_aendern und vorlagen (Plan 2026-10-10-bilder-flux2-klein Task 6) --------------------
+def _bild(url):
+    return {"type": "Image", "data": {"style": {}, "props": {"url": url, "alt": "", "width": 600, "height": 300}}}
+
+
+BILD_DOK = {"root": {"type": "EmailLayout", "data": {"childrenIds": ["held", "leer"]}},
+            "held": _bild("medien:held.jpg"), "leer": _bild("medien:platzhalter-600x300.png")}
+BILD_MEDIEN = {"held.jpg", "foto.jpg", "b.jpg", "c.jpg", "d.jpg"}
+
+
+def test_bild_erzeugen_mit_vorlagen():
+    e = anwenden(BILD_DOK, [{"werkzeug": "bild_erzeugen", "platz": "leer", "hinweis": "Produkt auf Holztisch",
+                             "vorlagen": ["foto.jpg"]}], BILD_MEDIEN)
+    assert e.bildauftraege == [{"platz": "leer", "modus": "neu", "hinweis": "Produkt auf Holztisch",
+                                "vorlagen": ["foto.jpg"]}]
+
+
+def test_bild_erzeugen_vorlagen_mit_praefix_werden_mediennamen():
+    e = anwenden(BILD_DOK, [{"werkzeug": "bild_erzeugen", "platz": "leer", "hinweis": "x",
+                             "vorlagen": ["medien:foto.jpg", "b.jpg"]}], BILD_MEDIEN)
+    assert e.bildauftraege[0]["vorlagen"] == ["foto.jpg", "b.jpg"]
+
+
+def test_bild_erzeugen_ohne_vorlagen_hat_leere_liste():
+    e = anwenden(BILD_DOK, [{"werkzeug": "bild_erzeugen", "platz": "leer", "hinweis": "x"}], BILD_MEDIEN)
+    assert e.bildauftraege[0]["vorlagen"] == []
+
+
+@pytest.mark.parametrize("vorlagen,meldung", [
+    ("foto.jpg", "vorlagen muss eine Liste"), ([1], "vorlagen muss eine Liste"),
+    (["foto.jpg", "foto.jpg"], "doppelt"), (["foto.jpg", "medien:foto.jpg"], "doppelt"),
+    (["foto.jpg", "b.jpg", "c.jpg", "d.jpg"], "höchstens 3"), (["erfunden.jpg"], "gibt es nicht in den Medien")])
+def test_bild_erzeugen_vorlagen_geprueft(vorlagen, meldung):
+    """Review Focus 4: doppelte Vorlage oder vorlagen als String -> klare Ablehnung."""
+    with pytest.raises(WerkzeugFehler, match=meldung):
+        anwenden(BILD_DOK, [{"werkzeug": "bild_erzeugen", "platz": "leer", "hinweis": "x", "vorlagen": vorlagen}],
+                 BILD_MEDIEN)
+
+
+def test_bild_aendern():
+    e = anwenden(BILD_DOK, [{"werkzeug": "bild_aendern", "platz": "held", "anweisung": "Himmel abendrot",
+                             "vorlagen": ["foto.jpg"]}], BILD_MEDIEN)
+    assert e.bildauftraege == [{"platz": "held", "modus": "aendern", "hinweis": "Himmel abendrot",
+                                "vorlagen": ["foto.jpg"]}]
+    assert e.bloecke == BILD_DOK and not e.geaendert
+
+
+def test_bild_aendern_leerer_platz_abgelehnt():
+    with pytest.raises(WerkzeugFehler, match="Hier ist noch kein Bild – nimm bild_erzeugen"):
+        anwenden(BILD_DOK, [{"werkzeug": "bild_aendern", "platz": "leer", "anweisung": "x"}], BILD_MEDIEN)
+
+
+def test_bild_aendern_prueft_den_endstand():
+    """Erst bild_aus_medien fuellt den leeren Platz, dann darf bild_aendern ihn aendern."""
+    e = anwenden(BILD_DOK, [{"werkzeug": "bild_aendern", "platz": "leer", "anweisung": "heller"},
+                            {"werkzeug": "bild_aus_medien", "platz": "leer", "quelle": "foto.jpg"}], BILD_MEDIEN)
+    assert e.bildauftraege == [{"platz": "leer", "modus": "aendern", "hinweis": "heller", "vorlagen": []}]
+
+
+def test_bild_aendern_hoechstens_zwei_vorlagen():
+    with pytest.raises(WerkzeugFehler, match="höchstens 2"):
+        anwenden(BILD_DOK, [{"werkzeug": "bild_aendern", "platz": "held", "anweisung": "x",
+                             "vorlagen": ["foto.jpg", "b.jpg", "c.jpg"]}], BILD_MEDIEN)
+
+
+@pytest.mark.parametrize("anweisung", ["", "   ", 5, "x" * 501])
+def test_bild_aendern_anweisung_geprueft(anweisung):
+    with pytest.raises(WerkzeugFehler, match="anweisung"):
+        anwenden(BILD_DOK, [{"werkzeug": "bild_aendern", "platz": "held", "anweisung": anweisung}], BILD_MEDIEN)
+
+
+def test_bild_aendern_ohne_anweisung_abgelehnt():
+    with pytest.raises(WerkzeugFehler, match="Parameter fehlt: anweisung"):
+        anwenden(BILD_DOK, [{"werkzeug": "bild_aendern", "platz": "held", "hinweis": "x"}], BILD_MEDIEN)
+
+
+def test_bild_freistellen_nimmt_keine_vorlagen():
+    with pytest.raises(WerkzeugFehler, match="Unbekannter Parameter: vorlagen"):
+        anwenden(BILD_DOK, [{"werkzeug": "bild_freistellen", "platz": "held", "vorlagen": ["foto.jpg"]}], BILD_MEDIEN)
+
+
+def test_nachspielen_zieht_vorlagen_mit():
+    ns = aw.nachspielen(BILD_DOK, [{"werkzeug": "bild_aendern", "platz": "held", "anweisung": "x",
+                                    "vorlagen": ["foto.jpg"]}], BILD_MEDIEN)
+    assert ns.bildauftraege[0]["vorlagen"] == ["foto.jpg"] and ns.bildauftraege[0]["modus"] == "aendern"
