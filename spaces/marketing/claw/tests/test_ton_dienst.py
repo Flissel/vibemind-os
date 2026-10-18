@@ -141,3 +141,59 @@ def test_vorladen_fehler_kippt_nichts(monkeypatch):
         raise RuntimeError("CUDA weg")
     monkeypatch.setattr(td, "_modell_laden", kaputt)
     td.vorladen_starten().join(2)       # keine Ausnahme nach aussen
+
+
+# --- Ausspracheverzeichnis (18.10.2026: "Sales"/"Bot" deutsch ausgesprochen) ------------
+
+VERZ = {"Sales": "Sejls", "Bot": "Bott", "Bots": "Botts", "LinkedIn": "Linkt-inn"}
+
+
+@pytest.mark.parametrize("text, erwartet", [
+    ("Mein Sales-Bot macht Vorschläge.", "Mein Sejls-Bott macht Vorschläge."),
+    ("Ein guter Bot, zwei Bots!", "Ein guter Bott, zwei Botts!"),
+    ("Angebot und Botschaft bleiben.", "Angebot und Botschaft bleiben."),
+    ("sales klein bleibt", "sales klein bleibt"),
+    ("Auf LinkedIn posten", "Auf Linkt-inn posten"),
+])
+def test_aussprache_anwenden(text, erwartet):
+    assert td.aussprache_anwenden(text, VERZ) == erwartet
+
+
+def test_laengerer_eintrag_zuerst():
+    assert td.aussprache_anwenden("Sales-Bot", {"Sales": "X", "Sales-Bot": "Sejls-Bott"}) == "Sejls-Bott"
+
+
+def test_aussprache_laden(tmp_path, monkeypatch):
+    monkeypatch.delenv("TON_AUSSPRACHE", raising=False)
+    monkeypatch.setenv("TON_STIMMEN_ORDNER", str(tmp_path))
+    assert td.aussprache_laden() == {}
+    (tmp_path / "aussprache.json").write_text('{"Sales": "Sejls", "": "x", "Bot": 5}', encoding="utf-8")
+    assert td.aussprache_laden() == {"Sales": "Sejls"}
+    (tmp_path / "aussprache.json").write_text("kaputt", encoding="utf-8")
+    assert td.aussprache_laden() == {}
+
+
+# --- Regler (18.10.2026, Betonung) -------------------------------------------------
+
+def test_regler_pruefen():
+    assert td.regler_pruefen(None) == {}
+    assert td.regler_pruefen({"ausdruck": 0.3, "taktung": 0.4, "temperatur": 0.7}) == {
+        "exaggeration": 0.3, "cfg_weight": 0.4, "temperature": 0.7}
+
+
+@pytest.mark.parametrize("werte, grund", [
+    ({"ausdruck": 5}, "ausdruck"), ({"taktung": -1}, "taktung"), ({"laut": 1}, "unbekannt"),
+    ({"ausdruck": True}, "ausdruck"), ([0.3], "Objekt")])
+def test_regler_fehler(werte, grund):
+    with pytest.raises(td.Anfragefehler, match=grund):
+        td.regler_pruefen(werte)
+
+
+def test_einstellungen_je_stimme(tmp_path, monkeypatch):
+    monkeypatch.setenv("TON_STIMMEN_ORDNER", str(tmp_path))
+    assert td.einstellungen_laden("eigene-b") == {}
+    (tmp_path / "einstellungen.json").write_text(
+        '{"eigene-b": {"ausdruck": 0.3, "taktung": 0.35}, "kaputt": {"ausdruck": 9}}', encoding="utf-8")
+    assert td.einstellungen_laden("eigene-b") == {"exaggeration": 0.3, "cfg_weight": 0.35}
+    assert td.einstellungen_laden("standard") == {}
+    assert td.einstellungen_laden("kaputt") == {}
