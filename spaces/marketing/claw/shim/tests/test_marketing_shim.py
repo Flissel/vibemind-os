@@ -750,3 +750,14 @@ def test_zeitlimit_beendet_den_ganzen_baum(tmp_path, monkeypatch):
     with pytest.raises(shim.ShimError, match="timed out"):
         shim.run_claude(system_prompt="s", transcript="t", model="claude-code-sonnet", timeout=3)
     assert time.monotonic() - start < 30
+
+
+def test_stream_zeitlimit_beendet_den_ganzen_baum(tmp_path, monkeypatch):
+    """Wie test_zeitlimit_beendet_den_ganzen_baum, fuer den Streaming-Weg (Marketing-Chat):
+    proc.kill() beendete nur die CLI, das Lesen von stdout wartete auf Enkel, die es offen hielten."""
+    monkeypatch.setenv("CLAUDE_CODE_CLI", _cli_huelle(tmp_path))
+    monkeypatch.setenv("FALSCH_MODUS", "haengen_mit_kind")
+    start = time.monotonic()
+    with pytest.raises(shim.ShimError, match="timed out"):
+        list(shim.stream_claude(system_prompt="s", transcript="t", model="claude-code-sonnet", timeout=3))
+    assert time.monotonic() - start < 30

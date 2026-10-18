@@ -643,7 +643,7 @@ def stream_claude(
     proc: subprocess.Popen[str] | None = None
     timer: threading.Timer | None = None
     try:
-        with tempfile.TemporaryDirectory(prefix="claude-shim-") as workdir:
+        with tempfile.TemporaryDirectory(prefix="claude-shim-", ignore_cleanup_errors=True) as workdir:
             proc = subprocess.Popen(
                 argv,
                 stdin=subprocess.PIPE,
@@ -659,7 +659,9 @@ def stream_claude(
 
             def _abbruch() -> None:
                 zeit_ueberschritten.set()
-                proc.kill()
+                # Ganzer Baum (18.10.2026): proc.kill() allein liess Enkel stdout offen halten - das
+                # Lesen unten wartete dann endlos.
+                _baum_beenden(proc.pid)
 
             timer = threading.Timer(timeout, _abbruch)
             timer.daemon = True
@@ -690,7 +692,7 @@ def stream_claude(
         if timer:
             timer.cancel()
         if proc is not None and proc.poll() is None:
-            proc.kill()
+            _baum_beenden(proc.pid)
             proc.wait()
         fehler_datei.close()
         _unlink_quiet(system_prompt_file)
