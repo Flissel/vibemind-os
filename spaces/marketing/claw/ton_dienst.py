@@ -81,7 +81,15 @@ def absender_erlaubt(absender: str) -> bool:
 
 
 def _stimmprobe(stimme) -> Path | None:
+    """Stimmprobe zum Namen. "standard"/leer = TON_STANDARD_STIMME (User-Wahl 19.10.2026: eigene-c),
+    fehlt die Datei, die eingebaute Modellstimme. "eingebaut" = immer die eingebaute Modellstimme."""
+    if stimme == "eingebaut":
+        return None
     if stimme in (None, "", "standard"):
+        standard = os.environ.get("TON_STANDARD_STIMME", "").strip()
+        ordner = stimmen_ordner()
+        if standard and _STIMME.fullmatch(standard) and ordner and (ordner / f"{standard}.wav").is_file():
+            return ordner / f"{standard}.wav"
         return None
     if not isinstance(stimme, str) or not _STIMME.fullmatch(stimme):
         raise Anfragefehler("stimme: Kleinbuchstaben, Ziffern, - und _")

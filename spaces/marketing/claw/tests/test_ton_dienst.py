@@ -197,3 +197,21 @@ def test_einstellungen_je_stimme(tmp_path, monkeypatch):
     assert td.einstellungen_laden("eigene-b") == {"exaggeration": 0.3, "cfg_weight": 0.35}
     assert td.einstellungen_laden("standard") == {}
     assert td.einstellungen_laden("kaputt") == {}
+
+
+# --- Standardstimme (User-Wahl 19.10.2026: eigene-c) -------------------------------
+
+def test_standard_nimmt_gewaehlte_probe(tmp_path, monkeypatch):
+    (tmp_path / "eigene-c.wav").write_bytes(b"RIFF....WAVE")
+    monkeypatch.setenv("TON_STIMMEN_ORDNER", str(tmp_path))
+    monkeypatch.setenv("TON_STANDARD_STIMME", "eigene-c")
+    assert td.anfrage_pruefen({"text": "Hallo"})[2] == tmp_path / "eigene-c.wav"
+    assert td.anfrage_pruefen({"text": "Hallo", "stimme": "standard"})[2] == tmp_path / "eigene-c.wav"
+    assert td.anfrage_pruefen({"text": "Hallo", "stimme": "eingebaut"})[2] is None
+    assert td.voiceover_pruefen(_vo())["probe"] == tmp_path / "eigene-c.wav"     # auch fuer Laura
+
+
+def test_standard_ohne_datei_faellt_auf_eingebaut(tmp_path, monkeypatch):
+    monkeypatch.setenv("TON_STIMMEN_ORDNER", str(tmp_path))
+    monkeypatch.setenv("TON_STANDARD_STIMME", "fehlt")
+    assert td.anfrage_pruefen({"text": "Hallo"})[2] is None

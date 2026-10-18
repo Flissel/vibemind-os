@@ -137,6 +137,8 @@ $Dienste = @(
             TON_STIMMEN_ORDNER  = 'E:\marketing-stimmen'
             TON_DIENST_ADRESSEN = '100.84.127.84'
             TON_DIENST_ERLAUBT  = '100.67.177.45'
+            # Standardstimme (User-Wahl 19.10.2026): Probe C aus den Poetry-Aufnahmen; 'eingebaut' = Modellstimme.
+            TON_STANDARD_STIMME = 'eigene-c'
         }
         Was    = 'Sprech-Dienst (Chatterbox Multilingual, kein API-Budget; Laura auf der VM via Tailscale)'
     },
