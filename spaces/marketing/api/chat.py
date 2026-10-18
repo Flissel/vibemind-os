@@ -60,7 +60,8 @@ STOPP_GESPEICHERT = "Inzwischen gespeichert – Zwischenstand verworfen"
 _ENTWURF = re.compile(r"gs-[0-9a-f]{12}\.jpg")                                   # nur fullmatch
 _MEDIEN_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(png|jpe?g|gif|webp)")   # DB-URL-Regex ohne medien:
 # nur Arbeiter-Medienroute und Anhaenge: wie _MEDIEN_NAME, dazu Dokumente (Medienliste/DB bleiben bilderrein)
-_ARBEITER_DATEI = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(png|jpe?g|gif|webp|pdf|docx|txt|md)")
+# Nur die Endung gross/klein-unabhaengig (Handyfotos: IMG_1234.JPG); der Zeichensatz davor bleibt streng.
+_ARBEITER_DATEI = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(?i:png|jpe?g|gif|webp|pdf|docx|txt|md)")
 _DOK_TYP = {".pdf": "application/pdf", ".txt": "text/plain; charset=utf-8", ".md": "text/markdown; charset=utf-8",
             ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
 _KONTEXT_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")

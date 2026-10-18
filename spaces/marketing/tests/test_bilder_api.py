@@ -723,3 +723,25 @@ def test_auftrag_vorlage_gueltiger_name_bleibt(db, c):
     r = c.post(f"/api/pult/inhalte/{IID}/bilder", headers={"X-Pult-Key": PK},
                json={"platz": "kopf", "modus": "neu", "vorlagen": ["Team_Foto-1.v2.jpg"]})
     assert r.status_code == 200 and "'[\"Team_Foto-1.v2.jpg\"]'::jsonb" in db.sql[0]
+
+
+# Fix-Runde 2: Handyfotos mit grosser Endung (IMG_1234.JPG) - nur die Endung ist gross/klein-unabhaengig
+def test_auftrag_vorlage_grosse_endung_angenommen(db, c):
+    db.antworten = [[{"id": "a-v"}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/bilder", headers={"X-Pult-Key": PK},
+               json={"platz": "kopf", "modus": "neu", "vorlagen": ["IMG_1234.JPG", "Logo.PNG"]})
+    assert r.status_code == 200 and "'[\"IMG_1234.JPG\", \"Logo.PNG\"]'::jsonb" in db.sql[0]
+
+
+def test_vorlage_route_grosse_endung(db, c, vorlage_ordner):
+    (vorlage_ordner / "IMG_1234.JPG").write_bytes(b"HANDYFOTO")
+    db.antworten = [[dict(_VJOB, vorlagen=["IMG_1234.JPG"])], _sicht(eigene=["IMG_1234.JPG"])]
+    r = c.get(f"/api/bilder/arbeiter/{AID}/vorlage?name=IMG_1234.JPG", headers={"X-Bild-Key": BK})
+    assert r.status_code == 200 and r.content == b"HANDYFOTO" and r.headers["content-type"] == "image/jpeg"
+
+
+@pytest.mark.parametrize("name", ["IMG 1234.JPG", "IMG_1234.EXE", "img.JPG.exe"])
+def test_auftrag_vorlage_grosse_endung_zeichen_bleiben_streng(db, c, name):
+    r = c.post(f"/api/pult/inhalte/{IID}/bilder", headers={"X-Pult-Key": PK},
+               json={"platz": "kopf", "modus": "neu", "vorlagen": [name]})
+    assert r.status_code == 422 and db.sql == []

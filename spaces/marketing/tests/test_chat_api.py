@@ -1184,3 +1184,12 @@ def test_gestoppt_mit_basis_und_hinweisen(umg):
     r = c.post(GESTOPPT, json={"bloecke": _dok(), "basis": 7, "hinweise": ["Übersprungen: Titel"]}, headers=HB)
     assert r.status_code == 200 and r.json() == {"status": "fertig", "fassung": 9}
     assert f.sql[-1].rstrip().endswith(", 7) AS e") and "Übersprungen: Titel" in f.sql[-1]
+
+
+def test_medien_grosse_endung_handyfoto(umg):
+    """Fix-Runde 2 (Plan 2026-10-10-bilder-flux2-klein Task 4): IMG_1234.JPG wird geliefert, Typ nach Endung klein."""
+    f, ordner, c = umg
+    (ordner / "IMG_1234.JPG").write_bytes(b"HANDYFOTO")
+    f.antworten += [[JOB], _sicht(eigene=["IMG_1234.JPG"])]
+    r = c.get(f"/api/chat/arbeiter/{AID}/medien/IMG_1234.JPG", headers=HB)
+    assert r.status_code == 200 and r.content == b"HANDYFOTO" and r.headers["content-type"] == "image/jpeg"
