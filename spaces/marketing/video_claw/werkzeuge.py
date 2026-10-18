@@ -194,18 +194,28 @@ def titelkarte(projekt_id: str, text: str, hintergrund: str, textfarbe: str = "#
 
 def _beats_pruefen(beats) -> list[dict] | str:
     if not isinstance(beats, list) or not 1 <= len(beats) <= 12:
-        return "beats: 1 bis 12 Eintraege {text, asset_id, src_in_frame}"
+        return "beats: 1 bis 12 Eintraege {text, asset_id, src_in_frame} oder {originalton, asset_id, src_in_frame, src_out_frame}"
     aus = []
     for i, b in enumerate(beats):
         if not isinstance(b, dict):
             return f"beat {i}: Objekt erwartet"
-        text, asset, start = b.get("text"), b.get("asset_id"), b.get("src_in_frame", 0)
-        if not isinstance(text, str) or not 1 <= len(text.strip()) <= 300:
-            return f"beat {i}: text 1 bis 300 Zeichen"
+        asset, start = b.get("asset_id"), b.get("src_in_frame", 0)
         if not _id(asset, "asset_id"):
             return f"beat {i}: asset_id ungueltig"
         if isinstance(start, bool) or not isinstance(start, int) or start < 0:
             return f"beat {i}: src_in_frame ganze Zahl >= 0"
+        if b.get("originalton") is True:
+            # Phase F: die Person im Video spricht selbst - kein Voiceover, Clip src_in..src_out.
+            ende = b.get("src_out_frame")
+            if isinstance(ende, bool) or not isinstance(ende, int) or ende <= start:
+                return f"beat {i}: originalton braucht src_out_frame > src_in_frame"
+            if ende - start > 60 * 30:
+                return f"beat {i}: Originalton-Ausschnitt hoechstens 60 s"
+            aus.append({"asset_id": asset, "src_in_frame": start, "src_out_frame": ende, "originalton": True})
+            continue
+        text = b.get("text")
+        if not isinstance(text, str) or not 1 <= len(text.strip()) <= 300:
+            return f"beat {i}: text 1 bis 300 Zeichen (oder originalton: true mit src_out_frame)"
         aus.append({"text": text.strip(), "asset_id": asset, "src_in_frame": start, "pad_frames": 12})
     return aus
 
@@ -216,7 +226,10 @@ def reel_bauen(projekt_id: str, beats: list, stimme: str = "standard", hook: str
     Hochformat, KI-Hinweis nach Inhalt, hoechstens 15 MB. Startet den Render und liefert export_id -
     nenne sie am Ende als 'EXPORT: <export_id>'. Der Render selbst laeuft danach weiter.
     beats: [{"text": "Satz, der gesprochen wird", "asset_id": "<Clip>", "src_in_frame": 0}, ...]
-    (Feldnamen genau so). Dauert einige Minuten (die Stimme wird je Satz erzeugt) - nicht abbrechen
+    (Feldnamen genau so). Spricht eine Person im Video selbst: {"originalton": true, "asset_id": ...,
+    "src_in_frame": <Start>, "src_out_frame": <Ende>} - dann kein Satz, ihr eigener Ton bleibt, die
+    Untertitel kommen aus ihrem Transkript (Bildrate 30: Sekunde x 30 = Frame). Originalton geht nur mit
+    Videos im SELBEN Projekt wie dessen Analyse - baue solche Reels im Projekt des Videos. Dauert einige Minuten (die Stimme wird je Satz erzeugt) - nicht abbrechen
     und NICHT ein zweites Mal aufrufen."""
     if not _id(projekt_id, "projekt_id"):
         return _fehler("projekt_id ungueltig")
@@ -242,7 +255,7 @@ def reel_bauen(projekt_id: str, beats: list, stimme: str = "standard", hook: str
         return j
     warnungen = (j["ergebnis"] or {}).get("warnings") or []
     reel = {"vertical": True, "captions": True, "caption_preset": "reels", "kennzeichnung": "auto",
-            "max_bytes": REEL_MAX_BYTES}
+            "caption_source": "gemischt", "max_bytes": REEL_MAX_BYTES}
     if hook.strip():
         reel["hook_text"] = hook.strip()
     if logo_asset_id:

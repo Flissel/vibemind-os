@@ -152,3 +152,36 @@ def test_mcp_zeitlimit_reicht_fuer_reel_bauen():
     pfad = w.__file__.rsplit("werkzeuge.py", 1)[0] + "video-mcp.json"
     mcp = json.loads(open(pfad, encoding="utf-8").read())
     assert mcp["mcpServers"]["video"]["timeout"] >= 900_000
+
+
+# --- Phase F: Originalton ---------------------------------------------------------
+
+def test_reel_bauen_originalton_und_gemischte_untertitel(laura):
+    rek = laura([(202, {"timeline_id": "tl1", "job_id": "j1"}), (200, {"status": "succeeded", "result_json": "{}"}),
+                 (202, {"export_id": "e1e1e1e1e1"})])
+    r = w.reel_bauen(PID, [{"text": "Darum geht es.", "asset_id": AID},
+                           {"originalton": True, "asset_id": AID, "src_in_frame": 300, "src_out_frame": 600}])
+    assert r["ok"]
+    beats = rek.aufrufe[0][2]["beats"]
+    assert beats[1] == {"asset_id": AID, "src_in_frame": 300, "src_out_frame": 600, "originalton": True}
+    assert "text" not in beats[1]
+    assert rek.aufrufe[2][2]["caption_source"] == "gemischt"
+
+
+@pytest.mark.parametrize("beat", [
+    {"originalton": True, "asset_id": AID, "src_in_frame": 300},
+    {"originalton": True, "asset_id": AID, "src_in_frame": 300, "src_out_frame": 300},
+    {"originalton": True, "asset_id": AID, "src_in_frame": 0, "src_out_frame": 1801},
+    {"originalton": True, "asset_id": AID, "src_in_frame": 0, "src_out_frame": True},
+])
+def test_originalton_beat_geprueft(laura, beat):
+    rek = laura([])
+    assert not w.reel_bauen(PID, [beat])["ok"] and rek.aufrufe == []
+
+
+def test_skills_kennen_originalton():
+    from pathlib import Path
+    ordner = Path(w.__file__).parent / "skills"
+    for name in ("kurzfassung", "reel-aus-material"):
+        text = (ordner / name / "SKILL.md").read_text(encoding="utf-8")
+        assert '"originalton": true' in text and "Projekt" in text
