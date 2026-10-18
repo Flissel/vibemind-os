@@ -6,13 +6,14 @@ export const OPENFANG_BASE = 'http://127.0.0.1:4200'
 export const INTEGRATION_ID_RE = /^[a-z0-9][a-z0-9-]{0,62}$/
 const FREIGABEN_URL = `${OPENFANG_BASE}/#approvals`
 const DEFAULT_TIMEOUT_MS = 10_000
+const DEFAULT_AKTIONS_TIMEOUT_MS = 60_000
 
 export type Verbindung = 'ok' | 'openfang_aus' | 'schluessel_fehlt' | 'schluessel_falsch'
 export interface InstallierteIntegration { id: string; name: string; icon: string; zustand: string; detail: string | null; werkzeuge: number; statischerSchluessel: boolean; offeneFreigaben: number }
 export interface VerfuegbareVorlage { id: string; name: string; icon: string; beschreibung: string; kategorie: string }
 export interface IntegrationsStatus { verbindung: Verbindung; installiert: InstallierteIntegration[]; verfuegbar: VerfuegbareVorlage[] }
 export interface AktionsErgebnis { ok: boolean; zustand?: string; meldung?: string }
-export interface OpenFangDeps { fetch: typeof fetch; apiKey: () => string | undefined; openExternal: (url: string) => Promise<void>; timeoutMs?: number; log?: (line: string) => void }
+export interface OpenFangDeps { fetch: typeof fetch; apiKey: () => string | undefined; openExternal: (url: string) => Promise<void>; timeoutMs?: number; aktionsTimeoutMs?: number; log?: (line: string) => void }
 export interface OpenFangIntegrations {
   status(): Promise<IntegrationsStatus>
   add(id: string): Promise<AktionsErgebnis>
@@ -109,9 +110,10 @@ function werkzeugPraefix(id: string): string {
 
 export function createOpenFangIntegrations(deps: OpenFangDeps): OpenFangIntegrations {
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const aktionsTimeoutMs = deps.aktionsTimeoutMs ?? DEFAULT_AKTIONS_TIMEOUT_MS
   const log = deps.log ?? (() => {})
 
-  async function rufe(method: 'GET' | 'POST' | 'DELETE', path: string, label: string, body?: unknown): Promise<Antwort> {
+  async function rufe(zeitMs: number, method: 'GET' | 'POST' | 'DELETE', path: string, label: string, body?: unknown): Promise<Antwort> {
     const key = deps.apiKey()
     if (!key) throw new VerbindungsFehler('schluessel_fehlt')
     const start = Date.now()
@@ -120,7 +122,7 @@ export function createOpenFangIntegrations(deps: OpenFangDeps): OpenFangIntegrat
       res = await deps.fetch(`${OPENFANG_BASE}${path}`, {
         method,
         redirect: 'manual',
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.timeout(zeitMs),
         headers: { authorization: `Bearer ${key}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
         body: body === undefined ? undefined : JSON.stringify(body),
       })
@@ -150,7 +152,7 @@ export function createOpenFangIntegrations(deps: OpenFangDeps): OpenFangIntegrat
   const gut = (a: Antwort) => a.status >= 200 && a.status < 300
 
   async function oeffneAnmeldung(id: string): Promise<AktionsErgebnis> {
-    const a = await rufe('POST', `/api/integrations/${id}/oauth/start`, `anmelden id=${id}`, {})
+    const a = await rufe(aktionsTimeoutMs, 'POST', `/api/integrations/${id}/oauth/start`, `anmelden id=${id}`, {})
     if (!gut(a)) return fehler(a)
     const url = obj(a.body).anmelde_url
     const geprueft = typeof url === 'string' ? gepruefteAnmeldeUrl(url) : null
@@ -160,7 +162,7 @@ export function createOpenFangIntegrations(deps: OpenFangDeps): OpenFangIntegrat
   }
 
   async function oeffneSchluessel(id: string): Promise<AktionsErgebnis> {
-    const a = await rufe('POST', `/api/integrations/${id}/schluessel/link`, `schluessel id=${id}`, {})
+    const a = await rufe(aktionsTimeoutMs, 'POST', `/api/integrations/${id}/schluessel/link`, `schluessel id=${id}`, {})
     if (!gut(a)) return fehler(a)
     const url = obj(a.body).url
     const geprueft = typeof url === 'string' ? gepruefterSchluesselLink(url, id) : null
@@ -170,7 +172,7 @@ export function createOpenFangIntegrations(deps: OpenFangDeps): OpenFangIntegrat
   }
 
   async function einfach(method: 'POST' | 'DELETE', path: string, label: string): Promise<AktionsErgebnis> {
-    const a = await rufe(method, path, label, method === 'POST' ? {} : undefined)
+    const a = await rufe(aktionsTimeoutMs, method, path, label, method === 'POST' ? {} : undefined)
     return gut(a) ? { ok: true } : fehler(a)
   }
 
@@ -188,9 +190,9 @@ export function createOpenFangIntegrations(deps: OpenFangDeps): OpenFangIntegrat
     async status() {
       try {
         const [inst, verf, frei] = await Promise.all([
-          rufe('GET', '/api/integrations', 'status'),
-          rufe('GET', '/api/integrations/available', 'verfuegbar'),
-          rufe('GET', '/api/approvals', 'freigaben'),
+          rufe(timeoutMs, 'GET', '/api/integrations', 'status'),
+          rufe(timeoutMs, 'GET', '/api/integrations/available', 'verfuegbar'),
+          rufe(timeoutMs, 'GET', '/api/approvals', 'freigaben'),
         ])
         if (!gut(inst) && inst.status !== 401) throw new VerbindungsFehler('openfang_aus')
         if (!gut(verf) && verf.status !== 401) throw new VerbindungsFehler('openfang_aus')
@@ -223,7 +225,7 @@ export function createOpenFangIntegrations(deps: OpenFangDeps): OpenFangIntegrat
       }
     },
     add: (id) => aktion('add', id, async () => {
-      const a = await rufe('POST', '/api/integrations/add', `add id=${id}`, { id })
+      const a = await rufe(aktionsTimeoutMs, 'POST', '/api/integrations/add', `add id=${id}`, { id })
       if (!gut(a)) return fehler(a)
       const zustand = str(obj(a.body).zustand, 'unbekannt')
       if (zustand === 'anmeldung_noetig') { const r = await folge(zustand, () => oeffneAnmeldung(id)); return r }
