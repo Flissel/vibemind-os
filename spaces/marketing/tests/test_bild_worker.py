@@ -114,6 +114,9 @@ class Prompt:
     def aenderungs_prompt(self, anweisung, platz):
         return f"aendern {platz['id']} | {anweisung}"
 
+    def einbau_prompt(self, hinweis, platz):
+        return f"einbau {platz['id']} | {hinweis}"
+
     def pruefen(self, png_, prompt):
         return self.urteile.pop(0) if self.urteile else (True, "")
 
@@ -1081,6 +1084,22 @@ def test_flux2_neu_ohne_vorlagen():
     assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None) == "fertig"
     assert comfy.flux2 == [("bild fuer kopf", [])] and comfy.flux1 == []
     assert not [e for e in api.log if e[0] == "vorlage"]
+
+
+def test_flux2_neu_mit_vorlage_woertlich_ohne_ollama():
+    class P(Prompt):
+        def laeuft(self):
+            raise AssertionError("Einbau unter FLUX.2 fragt Ollama nicht")
+        def prompt_schreiben(self, platz, titel, hinweis):
+            raise AssertionError("Einbau nimmt den Wunsch woertlich")
+        def einbau_prompt(self, hinweis, platz):
+            return f"einbau {platz['id']} | {hinweis}"
+    api, comfy, start = Api(dict(AUFTRAG, vorlagen=["a.jpg"], hinweis="Karte auf dem Tisch")), Comfy(), []
+    api.vorlagen = {"a.jpg": png(30, 20)}
+    assert bw.ein_durchlauf(api, comfy, P(), starten=lambda: None,
+                            ollama_starten=lambda: start.append(1)) == "fertig"
+    assert start == [] and all(t.startswith("einbau ") and t.endswith("| Karte auf dem Tisch")
+                               for t, _ in comfy.flux2)
 
 
 def test_flux2_neu_mit_drei_vorlagen():

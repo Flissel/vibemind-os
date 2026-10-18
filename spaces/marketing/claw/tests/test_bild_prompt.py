@@ -205,4 +205,20 @@ def test_aenderungs_prompt_geht_woertlich_ohne_ollama(monkeypatch):
     assert text.startswith("Himmel als Sonnenuntergang.")
     assert "Keep everything else exactly as in the reference image" in text
     assert "Werkstatt" not in text
-    assert bp.aenderungs_prompt("x" * 900, PLATZ).count("x") == 500
+    gekuerzt = bp.aenderungs_prompt("x" * 900, PLATZ)
+    assert "x" * 500 in gekuerzt and "x" * 501 not in gekuerzt
+
+
+def test_einbau_prompt_geht_woertlich_ohne_ollama(monkeypatch):
+    """Echter Lauf 18.10.: mit Ollama-Umschreibung wurde aus "Visitenkarte auf dem Schreibtisch" nur das
+    Logo vor Wellen. Mit Vorlagen geht der Wunsch woertlich an FLUX.2 - Ollama wird nie gefragt."""
+    def verboten(*a, **k):
+        raise AssertionError("Einbau fragt Ollama nicht")
+    monkeypatch.setattr(bp, "_ollama", verboten)
+    platz = dict(PLATZ, bildstil="Warme Werkstattfotos", alt="Foto vom Team")
+    text = bp.einbau_prompt(" Die Karte steht auf dem Schreibtisch ", platz)
+    assert text.startswith("Die Karte steht auf dem Schreibtisch.")
+    assert "reference image" in text and "Werkstatt" not in text
+    assert bp.einbau_prompt("", platz).startswith("Foto vom Team.")
+    gekuerzt = bp.einbau_prompt("x" * 900, PLATZ)
+    assert "x" * 500 in gekuerzt and "x" * 501 not in gekuerzt

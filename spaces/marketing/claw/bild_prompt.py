@@ -177,6 +177,18 @@ AENDERUNG_RAHMEN = ("Keep everything else exactly as in the reference image: sam
                     "layout and framing. No text, no letters, no logos.")
 
 
+EINBAU_RAHMEN = ("Use the objects from the reference images exactly as they look (shape, colors, print). "
+                 "Photo, no additional text.")
+
+
+def einbau_prompt(hinweis: str, platz: dict) -> str:
+    """Prompt fuer FLUX.2 mit Vorlagen (neu): der Wunsch woertlich plus fester Rahmen, OHNE Ollama und ohne
+    Markenstil. Echter Lauf 18.10.: die Umschreibung machte aus "Visitenkarte auf dem Schreibtisch" nur das
+    Logo vor Wellen. Ohne Wunsch traegt der Alternativtext des Platzes."""
+    wunsch = ((hinweis or "").strip() or str(platz.get("alt") or "").strip())[:500].rstrip(" .")
+    return f"{wunsch}. {EINBAU_RAHMEN}" if wunsch else EINBAU_RAHMEN
+
+
 def aenderungs_prompt(anweisung: str, platz: dict) -> str:
     """Anweisung fuer FLUX.2-Aendern (Referenz 1 = das Bild selbst): der Wunsch woertlich plus fester Rahmen,
     OHNE Ollama und ohne Markenstil. Echter Lauf 18.10.: die Umschreibung machte aus "warmes Licht wie ein

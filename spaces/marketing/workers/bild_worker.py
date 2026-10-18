@@ -505,7 +505,8 @@ def _flux2(api, aid, auftrag, ziele, comfy, prompt, messen):
                 continue
             text, referenzen = prompt.aenderungs_prompt(hinweis, daten), [quelle] + vorlagen
         else:
-            text, referenzen = prompt.prompt_schreiben(daten, titel, hinweis), list(vorlagen)
+            text = prompt.einbau_prompt(hinweis, daten) if vorlagen else prompt.prompt_schreiben(daten, titel, hinweis)
+            referenzen = list(vorlagen)
         arbeit.append((platz, text, None,
                        lambda t, w, h, s, r=referenzen: comfy.erzeugen_flux2(t, w, h, s, r,
                                                                              zeitlimit_s=zeitlimit_s())))
@@ -604,8 +605,8 @@ def ein_durchlauf(api, comfy=bild_comfy, prompt=bild_prompt, starten=dienste_sta
             erg = _freistellen(api, aid, auftrag, ziele, comfy)
         else:
             modus = auftrag.get("modus")
-            # aendern unter FLUX.2 schreibt den Prompt ohne Ollama (aenderungs_prompt woertlich)
-            if not (modus == "aendern" and modell() == "flux2"):
+            # aendern und Einbau (Vorlagen) unter FLUX.2 schreiben den Prompt ohne Ollama (woertlich)
+            if not (modell() == "flux2" and (modus == "aendern" or auftrag.get("vorlagen"))):
                 bereit = _ollama_bereit(api, aid, prompt, ollama_starten, uhr, schlafen)
                 if bereit == "verworfen":
                     return "verworfen"
