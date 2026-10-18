@@ -1170,11 +1170,55 @@ def test_modell_schalter_ohne_variable(monkeypatch):
     assert bw.modell() == "flux2"
 
 
-def test_speicher_voll_wird_befund():
+@pytest.mark.parametrize("text", [bild_comfy.SPEICHER_VOLL, bild_comfy.MODELL_FEHLT,
+                                  f"Höchstens {bild_comfy.MAX_REFERENZEN} Referenzbilder"])
+def test_speicher_voll_wird_befund(text):
+    """Fix I1: deterministische FLUX.2-Befunde gehen sofort endgueltig und im exakten Wortlaut an den Agenten."""
     api = Api(dict(AUFTRAG))
-    assert bw.ein_durchlauf(api, Comfy(fehler=bild_comfy.ComfyFehler(bild_comfy.SPEICHER_VOLL)), Prompt(),
+    assert bw.ein_durchlauf(api, Comfy(fehler=bild_comfy.ComfyFehler(text)), Prompt(),
                             starten=lambda: None) == "zurueck"
-    assert api.log[-1][0] == "zurueck" and bild_comfy.SPEICHER_VOLL in api.log[-1][1]
+    assert api.log[-1] == ("zurueck", text, True)
+
+
+def test_andere_comfy_fehler_bleiben_wiederholbar():
+    api = Api(dict(AUFTRAG))
+    bw.ein_durchlauf(api, Comfy(fehler=bild_comfy.ComfyFehler("Zeitlimit 540 s")), Prompt(), starten=lambda: None)
+    assert api.log[-1] == ("zurueck", "Erzeugung unterbrochen: ComfyFehler: Zeitlimit 540 s", False)
+
+
+@pytest.mark.parametrize("platz, art", [("neben", "fehlt"), ("neben", "unlesbar"), ("neben", "zu_gross"),
+                                        ("kopf", "platzhalter")])
+def test_flux1_aendern_ohne_quelle_befund(monkeypatch, platz, art):
+    """Fix I2: Focus 2 gilt modellunabhaengig - auch der Rueckfall flux1 erzeugt kein Ersatzbild."""
+    monkeypatch.setenv("MARKETING_BILDMODELL", "flux1")
+    api, comfy, sehen = Api(dict(AENDERN, platz=platz)), Comfy(), Sehen()
+    api.quellen[platz] = {"unlesbar": b"\xff\xd8\xffkein bild", "zu_gross": b"x" * (bw.QUELLE_MAX + 1)}.get(art)
+    assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None, sehen=sehen, messen=Messen([])) == "zurueck"
+    assert comfy.flux1 == [] and comfy.flux2 == [] and sehen.gesehen == []
+    assert api.log[-1] == ("zurueck", f"{platz}: Quellbild fehlt", True)
+
+
+def test_flux1_ueberarbeiten_ohne_quelle_erzeugt_weiter_neu(monkeypatch):
+    """Focus 5 bleibt: der alte Modus ueberarbeiten erzeugt bei fehlender Quelle wie bisher neu."""
+    monkeypatch.setenv("MARKETING_BILDMODELL", "flux1")
+    api, comfy = Api(dict(UEBER)), Comfy()
+    assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None, sehen=Sehen(), messen=Messen([])) == "fertig"
+    assert len(comfy.flux1) == 1 and "neben: Quellbild fehlt - neu erzeugt" in api.log[-1][2]
+
+
+def test_aendern_zu_viele_vorlagen_endgueltig_ohne_abruf():
+    api, comfy = Api(dict(AENDERN, vorlagen=["a.jpg", "b.jpg", "c.jpg"])), Comfy()
+    api.quellen["neben"] = ALT
+    assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None) == "zurueck"
+    assert comfy.flux2 == [] and not [e for e in api.log if e[0] in ("vorlage", "quelle", "bild")]
+    assert api.log[-1] == ("zurueck", f"Höchstens {bild_comfy.MAX_REFERENZEN} Referenzbilder", True)
+
+
+def test_neu_mehr_als_drei_vorlagen_endgueltig_ohne_abruf():
+    api, comfy = Api(dict(AUFTRAG, vorlagen=["a.jpg", "b.jpg", "c.jpg", "d.jpg"])), Comfy()
+    assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None) == "zurueck"
+    assert comfy.flux2 == [] and not [e for e in api.log if e[0] == "vorlage"]
+    assert api.log[-1] == ("zurueck", f"Höchstens {bild_comfy.MAX_REFERENZEN} Referenzbilder", True)
 
 
 def test_arbeiter_api_vorlage_url_404_und_deckel(monkeypatch):
@@ -1198,3 +1242,9 @@ def test_arbeiter_api_vorlage_url_404_und_deckel(monkeypatch):
     with pytest.raises(bw.ApiFehler) as e:
         api.vorlage("a1", "kaputt")
     assert e.value.code == 500
+
+
+def test_zu_viele_referenzen_wortlaut_wie_bild_comfy():
+    with pytest.raises(bild_comfy.ComfyFehler) as e:
+        bild_comfy.erzeugen_flux2("x", 512, 512, 1, [b"a"] * (bild_comfy.MAX_REFERENZEN + 1))
+    assert str(e.value) == bw.ZU_VIELE_REFERENZEN and str(e.value) in bw.COMFY_ENDGUELTIG

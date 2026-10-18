@@ -303,6 +303,12 @@ def _freistellen(api, aid, auftrag, ziele, comfy):
     return {platz.id: name}, [f"freigestellt ({anteil:.0%} Motiv)"], {}
 
 
+# Wortlaut von bild_comfy.erzeugen_flux2 bei mehr als MAX_REFERENZEN Referenzen.
+ZU_VIELE_REFERENZEN = f"Höchstens {bild_comfy.MAX_REFERENZEN} Referenzbilder"
+# ComfyFehler, die ein Neuversuch nicht behebt: endgueltig und ohne Praefix an den Agenten.
+COMFY_ENDGUELTIG = (bild_comfy.MODELL_FEHLT, bild_comfy.SPEICHER_VOLL, ZU_VIELE_REFERENZEN)
+
+
 def modell() -> str:
     """Bildmodell per Schalter MARKETING_BILDMODELL: flux2 (Vorgabe, auch bei unbekannten Werten) oder flux1."""
     return "flux1" if os.environ.get("MARKETING_BILDMODELL", "").strip().lower() == "flux1" else "flux2"
@@ -336,13 +342,14 @@ def _bildstil(auftrag: dict) -> str:
     return profil.abschnitte.get("Bildstil", "")
 
 
-def _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen):
+def _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen, ohne_ersatz=False):
     """Phase 1 (Ollama, keep_alive 0): je Platz Quelle holen, sehen, Prompt.
     Phase 2: alle Bilder am Stueck mit FLUX. ComfyUI-Modelle bleiben danach geladen
     (Betreiber-Entscheid 09.10.: kalt von der HDD ~400 s); /free kommt nur VOR
     einem Ollama-Schritt - einmal vor Phase 1 und, bei Selbstpruefung, je Bild vor dem Sehmodell. CLIP-Messung je Bild auf der CPU.
     Ueberarbeiten = "neu mit Motiv" (Betreiber-Entscheid 30.09.): immer
     Text-zu-Bild in Platzmassen, die Quelle dient nur Sehen und Messen.
+    ohne_ersatz (Rueckfall flux1 fuer aendern): fehlt das Bild, entsteht KEIN neues, nur "Quellbild fehlt".
     Rueckgabe (ergebnis, befunde, messwerte) oder "verworfen"."""
     staerke = int(auftrag.get("staerke") if auftrag.get("staerke") is not None else 55)
     modus = auftrag.get("modus") or "ueberarbeiten"
@@ -353,6 +360,9 @@ def _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen):
     bildstil = _bildstil(auftrag)
     for platz in ziele:
         quelle = None
+        if ohne_ersatz and platz.leer:          # aendern (flux1): Platzhalter = kein Bild zum Aendern
+            befunde.append(f"{platz.id}: Quellbild fehlt")
+            continue
         if modus == "ueberarbeiten" and staerke < 100 and not platz.leer:
             # Die VM gibt die Quelle nur bei laufender Vergabe heraus, und Sehen +
             # Prompt mit kalten Modellen von der HDD dauern Minuten je Platz.
@@ -373,6 +383,9 @@ def _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen):
                 quelle = quelle_normalisieren(quelle)
                 if quelle is None:
                     befunde.append(f"{platz.id}: Quellbild unlesbar - neu erzeugt")
+            if ohne_ersatz and quelle is None:  # aendern (flux1): kein Ersatzbild, nur der Befund (Focus 2)
+                befunde[-1] = f"{platz.id}: Quellbild fehlt"
+                continue
         beschreibung = sehen.beschreiben(quelle) if quelle is not None else ""
         if quelle is not None and not beschreibung:
             befunde.append(f"{platz.id}: ohne Bildbeschreibung")
@@ -400,8 +413,11 @@ def _flux2(api, aid, auftrag, ziele, comfy, prompt, messen):
     modus = auftrag.get("modus")
     titel, hinweis = str(auftrag.get("titel") or ""), str(auftrag.get("hinweis") or "")
     befunde, arbeit = [], []
+    namen = list(auftrag.get("vorlagen") or [])
+    if len(namen) + (1 if modus == "aendern" else 0) > bild_comfy.MAX_REFERENZEN:   # bei aendern ist das Bild Ref. 1
+        return {}, [ZU_VIELE_REFERENZEN], {}
     comfy.freigeben()   # danach Ollama (Prompts): Grafikspeicher von FLUX leeren (vorheriger Auftrag)
-    geholt = _vorlagen_holen(api, aid, list(auftrag.get("vorlagen") or []))
+    geholt = _vorlagen_holen(api, aid, namen)
     if geholt == "verworfen":
         return geholt
     vorlagen, befund = geholt
@@ -534,7 +550,7 @@ def ein_durchlauf(api, comfy=bild_comfy, prompt=bild_prompt, starten=dienste_sta
                 erg = _flux2(api, aid, auftrag, ziele, comfy, prompt, messen)
             elif modus == "aendern":   # Rueckfall flux1 (R3): der Ueberarbeiten-Weg mit Staerke 55
                 erg = _erzeugen(api, aid, {**auftrag, "modus": "ueberarbeiten", "staerke": 55},
-                                ziele, comfy, prompt, sehen, messen)
+                                ziele, comfy, prompt, sehen, messen, ohne_ersatz=True)
             else:                      # neu unter flux1, ueberarbeiten (alte Auftraege, Review Focus 5)
                 erg = _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen)
             if erg != "verworfen" and modell() == "flux1" and auftrag.get("vorlagen"):
@@ -554,6 +570,11 @@ def ein_durchlauf(api, comfy=bild_comfy, prompt=bild_prompt, starten=dienste_sta
         return "fertig"
     except (bild_comfy.ComfyFehler, ApiFehler, ValueError, OSError, TimeoutError, KeyError, TypeError) as e:
         # ValueError deckt JSONDecodeError, OSError deckt URLError und PIL.UnidentifiedImageError.
+        if isinstance(e, bild_comfy.ComfyFehler) and str(e) in COMFY_ENDGUELTIG:
+            # Deterministisch (fehlendes Modell, zu viele Vorlagen): ein Neuversuch scheitert gleich -
+            # sofort endgueltig und im exakten Wortlaut an den Agenten (Fix I1).
+            api.zurueck(aid, str(e), True)
+            return "zurueck"
         api.zurueck(aid, f"Erzeugung unterbrochen: {type(e).__name__}: {e}", False)
         return "zurueck"
 
