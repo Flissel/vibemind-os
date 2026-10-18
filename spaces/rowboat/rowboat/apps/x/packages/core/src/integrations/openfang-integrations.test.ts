@@ -270,3 +270,35 @@ describe('Final fix', () => {
     for (const verboten of ['anmelde_url', 'STATE-XYZ', 'TOKEN-XYZ', 'token']) expect(flat).not.toContain(verboten)
   })
 })
+
+describe('Timeouts', () => {
+  const ROUTES = {
+    ...OK3,
+    'POST /api/integrations/vercel/oauth/abmelden': { status: 200, body: {} },
+    'POST /api/integrations/vercel/reconnect': { status: 200, body: {} },
+  }
+  function mitDeps(extra: { timeoutMs?: number; aktionsTimeoutMs?: number } = {}) {
+    const f = fakeFetch(ROUTES)
+    return createOpenFangIntegrations({ fetch: f.fn, apiKey: () => 'K', openExternal: async () => {}, ...extra })
+  }
+  it('status() nutzt 10 s', async () => {
+    const spy = vi.spyOn(AbortSignal, 'timeout')
+    try { await mitDeps().status(); expect(spy.mock.calls.map((c) => c[0])).toEqual([10000, 10000, 10000]) } finally { spy.mockRestore() }
+  })
+  it('abmelden und neuVerbinden nutzen 60 s', async () => {
+    const spy = vi.spyOn(AbortSignal, 'timeout')
+    try {
+      const c = mitDeps()
+      await c.abmelden('vercel'); await c.neuVerbinden('vercel')
+      expect(spy.mock.calls.map((x) => x[0])).toEqual([60000, 60000])
+    } finally { spy.mockRestore() }
+  })
+  it('Overrides aus deps gelten', async () => {
+    const spy = vi.spyOn(AbortSignal, 'timeout')
+    try {
+      const c = mitDeps({ timeoutMs: 5, aktionsTimeoutMs: 7 })
+      await c.status(); await c.abmelden('vercel')
+      expect(spy.mock.calls.map((x) => x[0])).toEqual([5, 5, 5, 7])
+    } finally { spy.mockRestore() }
+  })
+})

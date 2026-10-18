@@ -8,13 +8,14 @@ To re-pin the kernel plugin catalog, change `DESKTOP_PLUGIN_CATALOG_PIN` on bran
 Flissel/rowboat (in `apps/x/apps/renderer/src/lib/rowboat-plugin-api.ts`), then run the sync.
 
 - Fork: https://github.com/Flissel/rowboat (branch `vibemind`)
-- Fork commit: `b74e2a3f64100af1f1260672b91b5357899ee776`
+- Fork commit: `bc350d8c7cb2c8b97f74b2ea4ef844aa04a2c087`
 - Upstream base: rowboatlabs/rowboat `72e9d8c`
 - EHL repo: https://github.com/Flissel/ehl-munich-2026 (`schema/`)
 - EHL commit: `44c1024c7804c696bc283bd14a9d08bd87a38230`
 
 ## Patches on top of upstream (EHL hierarchy graph, VibeMind)
 
+- bc350d8c fix(vibemind): Integrationen-Aktionen warten bis 60 s auf OpenFang (Status bleibt 10 s)
 - b74e2a3f fix(main): Einbettungsmodus registriert kein rowboat://-Protokoll und beendet sich nicht ohne Fenster
 - 65bade5c feat(main): Einbettungsmodus --embed fuer die VibeMind-Multiverse-Ansicht
 - 83ae1ef4 fix(server): Quell-Stream abbrechen, wenn der Client waehrend serveApp abbricht
