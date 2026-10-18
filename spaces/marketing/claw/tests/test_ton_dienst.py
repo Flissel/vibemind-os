@@ -117,3 +117,27 @@ def test_anpassen_echt(tmp_path):
     with wave.open(io.BytesIO(daten)) as w:
         assert w.getnchannels() == 1 and w.getframerate() == 16000 and w.getsampwidth() == 2
         assert abs(w.getnframes() / 16000 - 2.5) < 0.01
+
+
+def test_vorladen_laedt_im_hintergrund(monkeypatch):
+    geladen = []
+    monkeypatch.delenv("TON_VORLADEN", raising=False)
+    monkeypatch.setattr(td, "_modell_laden", lambda: geladen.append(1))
+    t = td.vorladen_starten()
+    t.join(2)
+    assert geladen == [1] and t.daemon
+
+
+def test_vorladen_abschaltbar(monkeypatch):
+    monkeypatch.setenv("TON_VORLADEN", "0")
+    monkeypatch.setattr(td, "_modell_laden", lambda: pytest.fail("darf nicht laden"))
+    assert td.vorladen_starten() is None
+
+
+def test_vorladen_fehler_kippt_nichts(monkeypatch):
+    monkeypatch.delenv("TON_VORLADEN", raising=False)
+
+    def kaputt():
+        raise RuntimeError("CUDA weg")
+    monkeypatch.setattr(td, "_modell_laden", kaputt)
+    td.vorladen_starten().join(2)       # keine Ausnahme nach aussen

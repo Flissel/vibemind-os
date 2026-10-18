@@ -246,8 +246,27 @@ class Handler(BaseHTTPRequestHandler):
             self._antwort(500, f"{type(e).__name__}: {e}"[:300].encode("utf-8"), "text/plain; charset=utf-8")
 
 
+def vorladen_starten() -> threading.Thread | None:
+    """Modell schon beim Start laden (18.10.2026). Gemessen nach einem Neustart: der erste Satz brauchte
+    6 Minuten (Gewichte auf der HDD E:), warm 7 s - Lauras Zeitlimit (300 s) lief vorher ab und das
+    erste Reel scheiterte. TON_VORLADEN=0 schaltet es ab (Tests, Fehlersuche)."""
+    if os.environ.get("TON_VORLADEN", "1").strip() == "0":
+        return None
+
+    def laden():
+        try:
+            _modell_laden()
+            LOG.info("Modell vorgeladen")
+        except Exception:  # noqa: BLE001 - der Dienst bleibt erreichbar, die erste Anfrage laedt erneut
+            LOG.exception("Vorladen fehlgeschlagen")
+    t = threading.Thread(target=laden, name="vorladen", daemon=True)
+    t.start()
+    return t
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    vorladen_starten()
     server = [ThreadingHTTPServer((adresse, PORT), Handler) for adresse in lausch_adressen()]
     for s in server[1:]:
         threading.Thread(target=s.serve_forever, daemon=True).start()
