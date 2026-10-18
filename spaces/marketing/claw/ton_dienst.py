@@ -208,12 +208,50 @@ def aussprache_anwenden(text: str, verzeichnis: dict[str, str]) -> str:
     return text
 
 
-def sprechen(text: str, sprache: str, probe: Path | None) -> bytes:
+# Regler des Modells (18.10.2026, Betonung englischer Woerter): Name im Dienst -> (Parameter, min, max).
+REGLER = {"ausdruck": ("exaggeration", 0.25, 1.5), "taktung": ("cfg_weight", 0.0, 1.0),
+          "temperatur": ("temperature", 0.3, 1.2)}
+
+
+def regler_pruefen(werte) -> dict[str, float]:
+    """{"ausdruck": 0.3, ...} -> {"exaggeration": 0.3, ...}; Unbekanntes/ausserhalb -> Anfragefehler."""
+    if werte in (None, {}):
+        return {}
+    if not isinstance(werte, dict):
+        raise Anfragefehler("regler muss ein Objekt sein")
+    aus = {}
+    for name, wert in werte.items():
+        if name not in REGLER:
+            raise Anfragefehler(f"unbekannter Regler: {name} (erlaubt: {', '.join(REGLER)})")
+        param, lo, hi = REGLER[name]
+        if isinstance(wert, bool) or not isinstance(wert, (int, float)) or not lo <= wert <= hi:
+            raise Anfragefehler(f"{name}: {lo} bis {hi}")
+        aus[param] = float(wert)
+    return aus
+
+
+def einstellungen_laden(stimme: str) -> dict[str, float]:
+    """Vorgaben je Stimme aus <TON_STIMMEN_ORDNER>/einstellungen.json ({"eigene-b": {"ausdruck": 0.3}}).
+    Gilt fuer jede Anfrage ohne eigene Regler - auch fuer Laura. Kaputte Eintraege werden uebergangen."""
+    ordner = stimmen_ordner()
+    datei = ordner / "einstellungen.json" if ordner else None
+    if datei is None or not datei.is_file():
+        return {}
+    try:
+        roh = json.loads(datei.read_text(encoding="utf-8"))
+        return regler_pruefen((roh or {}).get(stimme) or {}) if isinstance(roh, dict) else {}
+    except (OSError, ValueError, Anfragefehler):
+        LOG.warning("Einstellungen fuer %s nicht lesbar", stimme)
+        return {}
+
+
+def sprechen(text: str, sprache: str, probe: Path | None, regler: dict[str, float] | None = None) -> bytes:
     import torchaudio
     modell = _modell_laden()
     text = aussprache_anwenden(text, aussprache_laden())
+    parameter = {**einstellungen_laden(probe.stem if probe is not None else "standard"), **(regler or {})}
     with _sprech_lock:   # ein Modell, eine GPU: nacheinander
-        kw = {"language_id": sprache}
+        kw = {"language_id": sprache, **parameter}
         if probe is not None:
             kw["audio_prompt_path"] = str(probe)
         wav = modell.generate(text, **kw)
@@ -266,11 +304,12 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 vo = None
                 text, sprache, probe = anfrage_pruefen(nutzlast)
+            regler = regler_pruefen(nutzlast.get("regler"))
         except (Anfragefehler, ValueError) as e:
             self._antwort(422, str(e).encode("utf-8"), "text/plain; charset=utf-8")
             return
         try:
-            rumpf = sprechen(text, sprache, probe)
+            rumpf = sprechen(text, sprache, probe, regler)
             if vo is not None:
                 rumpf = anpassen(rumpf, sample_rate=vo["sample_rate"], fit=vo["fit"],
                                  sekunden=vo["sekunden"])
