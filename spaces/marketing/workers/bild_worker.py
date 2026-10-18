@@ -603,13 +603,15 @@ def ein_durchlauf(api, comfy=bild_comfy, prompt=bild_prompt, starten=dienste_sta
         if auftrag.get("modus") == "freistellen":
             erg = _freistellen(api, aid, auftrag, ziele, comfy)
         else:
-            bereit = _ollama_bereit(api, aid, prompt, ollama_starten, uhr, schlafen)
-            if bereit == "verworfen":
-                return "verworfen"
-            if not bereit:
-                api.zurueck(aid, "Ollama nicht erreichbar – Bildbeschreibung nicht moeglich", False)
-                return "zurueck"
             modus = auftrag.get("modus")
+            # aendern unter FLUX.2 schreibt den Prompt ohne Ollama (aenderungs_prompt woertlich)
+            if not (modus == "aendern" and modell() == "flux2"):
+                bereit = _ollama_bereit(api, aid, prompt, ollama_starten, uhr, schlafen)
+                if bereit == "verworfen":
+                    return "verworfen"
+                if not bereit:
+                    api.zurueck(aid, "Ollama nicht erreichbar – Bildbeschreibung nicht moeglich", False)
+                    return "zurueck"
             if modus in ("neu", "aendern") and modell() == "flux2":
                 erg = _flux2(api, aid, auftrag, ziele, comfy, prompt, messen)
             elif modus == "aendern":   # Rueckfall flux1 (R3): der Ueberarbeiten-Weg mit Staerke 55

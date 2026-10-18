@@ -1108,6 +1108,28 @@ def test_flux2_aendern_quelle_ist_referenz_eins():
     assert api.log[-1] == ("fertig", {"neben": "nl-0123abcd-neben.jpg"}, "")
 
 
+def test_flux2_aendern_braucht_kein_ollama():
+    """aendern unter FLUX.2 schreibt keinen Prompt per Ollama - es darf weder gefragt noch gestartet werden."""
+    class P(Prompt):
+        def laeuft(self):
+            raise AssertionError("aendern unter FLUX.2 fragt Ollama nicht")
+    api, comfy, start = Api(dict(AENDERN)), Comfy(), []
+    api.quellen["neben"] = png(64, 32)
+    assert bw.ein_durchlauf(api, comfy, P(), starten=lambda: None,
+                            ollama_starten=lambda: start.append(1)) == "fertig"
+    assert start == [] and len(comfy.flux2) == 1
+
+
+def test_flux1_aendern_braucht_weiter_ollama(monkeypatch):
+    monkeypatch.setenv("MARKETING_BILDMODELL", "flux1")
+    uhr, start = Uhr(), []
+    api = Api(dict(AENDERN))
+    api.quellen["neben"] = ALT
+    r = bw.ein_durchlauf(api, Comfy(), OllamaAus(None), starten=lambda: None, uhr=uhr, schlafen=Schlaf(uhr),
+                         ollama_starten=lambda: start.append(1))
+    assert r == "zurueck" and start == [1]
+
+
 @pytest.mark.parametrize("platz, quelle", [("neben", None), ("neben", b"\xff\xd8\xffkein bild"), ("kopf", None)])
 def test_flux2_aendern_ohne_quelle_befund(platz, quelle):
     """Review Focus 2: Bild weg (404), unlesbar oder inzwischen Platzhalter -> kein Ersatzbild."""

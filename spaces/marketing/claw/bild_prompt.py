@@ -173,18 +173,14 @@ def bearbeitungs_prompt(beschreibung: str, platz: dict, titel: str, hinweis: str
     return f"{kern}, {farben}, {VERBOT}"
 
 
-_AENDERUNG = ("You edit an existing photo with an image model. Write ONE short English instruction for the model.\n"
-              "Wish of the operator (German): {anweisung}\n"
-              "Image style of the brand: {bildstil}\n"
-              "Rules: say exactly what changes; end with 'Keep everything else unchanged.'; no text, no letters, "
-              "no logos in the image. Answer with the instruction only.")
+AENDERUNG_RAHMEN = ("Keep everything else exactly as in the reference image: same scene, objects, composition, "
+                    "layout and framing. No text, no letters, no logos.")
 
 
 def aenderungs_prompt(anweisung: str, platz: dict) -> str:
-    """Anweisung fuer FLUX.2-Aendern (Referenz 1 = das Bild selbst). Ollama uebersetzt und schaerft; ohne Antwort
-    geht die deutsche Anweisung mit festem Rahmen durch (Qwen3 als Text-Encoder versteht sie)."""
-    anfrage = _AENDERUNG.format(anweisung=(anweisung or "-")[:500], bildstil=_bildstil(platz))
-    antwort = _ollama("/api/generate", {"model": TEXT_MODELL, "prompt": anfrage, "stream": False,
-                                        "keep_alive": 0, "options": {"temperature": 0.3, "num_ctx": NUM_CTX}})
-    kern = bereinigen(antwort.get("response", ""))
-    return kern or f"Keep the image unchanged except: {anweisung.strip()[:500]}"
+    """Anweisung fuer FLUX.2-Aendern (Referenz 1 = das Bild selbst): der Wunsch woertlich plus fester Rahmen,
+    OHNE Ollama und ohne Markenstil. Echter Lauf 18.10.: die Umschreibung machte aus "warmes Licht wie ein
+    Sonnenuntergang" eine neue Szene (Meer); woertlich blieb das Bild erhalten. Qwen3 als Text-Encoder
+    versteht auch Deutsch."""
+    wunsch = (anweisung or "").strip()[:500].rstrip(" .")
+    return f"{wunsch}. {AENDERUNG_RAHMEN}" if wunsch else AENDERUNG_RAHMEN

@@ -194,14 +194,15 @@ def test_ohne_bildstil_gilt_der_warme_standard(monkeypatch):
     assert "natural daylight" in bp.BILDSTIL_STANDARD and "keiner hinterlegt" in bp.BILDSTIL_STANDARD
 
 
-def test_aenderungs_prompt_nutzt_ollama_und_faellt_zurueck(monkeypatch):
-    http, gesendet = falsch("Make the sky a warm sunset. Keep everything else unchanged.")
-    monkeypatch.setattr(bp, "_ollama", http)
+def test_aenderungs_prompt_geht_woertlich_ohne_ollama(monkeypatch):
+    """Echter Lauf 18.10.: die Ollama-Umschreibung (mit Markenstil) machte aus "warmes Licht" eine
+    neue Szene. FLUX.2 bekommt den Wunsch woertlich mit festem Rahmen - Ollama wird nie gefragt."""
+    def verboten(*a, **k):
+        raise AssertionError("aendern fragt Ollama nicht")
+    monkeypatch.setattr(bp, "_ollama", verboten)
     platz = dict(PLATZ, bildstil="Warme Werkstattfotos")
-    assert bp.aenderungs_prompt("Himmel als Sonnenuntergang", platz) == \
-        "Make the sky a warm sunset. Keep everything else unchanged."
-    anfrage = gesendet[0][1]["prompt"]
-    assert "Himmel als Sonnenuntergang" in anfrage and "Warme Werkstattfotos" in anfrage
-    assert gesendet[0][1]["keep_alive"] == 0 and gesendet[0][1]["options"]["num_ctx"] == bp.NUM_CTX
-    monkeypatch.setattr(bp, "_ollama", falsch("")[0])
-    assert bp.aenderungs_prompt(" Himmel rot ", PLATZ) == "Keep the image unchanged except: Himmel rot"
+    text = bp.aenderungs_prompt("  Himmel als Sonnenuntergang ", platz)
+    assert text.startswith("Himmel als Sonnenuntergang.")
+    assert "Keep everything else exactly as in the reference image" in text
+    assert "Werkstatt" not in text
+    assert bp.aenderungs_prompt("x" * 900, PLATZ).count("x") == 500
