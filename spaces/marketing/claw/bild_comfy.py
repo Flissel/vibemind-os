@@ -2,12 +2,15 @@
 bilder-und-gestaltung-design.md §7.2). Das Modell steckt in der Arbeitsablauf-
 Datei (Standard bilder/flux_schnell_api.json, Env COMFYUI_ABLAUF): ein anderes
 offenes Modell ist ein Dateitausch, kein Code. Knoten-Nummern der Datei:
-4 = Prompt, 6 = Latent-Groesse, 7 = Sampler (seed), 9 = Speichern."""
+4 = Prompt, 6 = Latent-Groesse, 7 = Sampler (seed), 9 = Speichern.
+FLUX.2 klein (bilder/flux2_klein_api.json, Env COMFYUI_ABLAUF_FLUX2): 4 = Prompt, 6/7 = Groesse,
+8 = Seed; Referenzbilder haengt graph_flux2 als ReferenceLatent-Kette an."""
 from __future__ import annotations
 
 import json
 import os
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -54,8 +57,7 @@ def freigeben() -> None:
 
 
 def erzeugen(prompt: str, breite: int, hoehe: int, seed: int, zeitlimit_s: int = 300) -> bytes:
-    if breite % 16 or hoehe % 16 or not (256 <= breite <= 2048 and 256 <= hoehe <= 2048):
-        raise ComfyFehler(f"Masse {breite}x{hoehe}: je 256-2048 und Vielfache von 16")
+    _masse_pruefen(breite, hoehe)
     ablauf = json.loads(ABLAUF.read_text(encoding="utf-8"))
     ablauf["4"]["inputs"]["text"] = prompt
     ablauf["6"]["inputs"]["width"], ablauf["6"]["inputs"]["height"] = breite, hoehe
@@ -71,7 +73,15 @@ def _abfragen(pid: str) -> bytes | None:
     if not eintrag:
         return None
     if (eintrag.get("status") or {}).get("status_str") == "error":
-        raise ComfyFehler("Erzeugung in ComfyUI fehlgeschlagen")
+        meldung = ""
+        for m in (eintrag.get("status") or {}).get("messages") or []:
+            if isinstance(m, (list, tuple)) and len(m) > 1 and m[0] == "execution_error" and isinstance(m[1], dict):
+                art, text = str(m[1].get("exception_type") or ""), str(m[1].get("exception_message") or "")
+                if "OutOfMemory" in art or "out of memory" in text.lower():
+                    raise ComfyFehler(SPEICHER_VOLL)
+                meldung = text
+                break
+        raise ComfyFehler("Erzeugung in ComfyUI fehlgeschlagen" + (f": {meldung[:200]}" if meldung else ""))
     for ausgabe in (eintrag.get("outputs") or {}).values():
         for bild in ausgabe.get("images") or []:
             q = urllib.parse.urlencode({"filename": bild["filename"],
@@ -83,7 +93,13 @@ def _abfragen(pid: str) -> bytes | None:
 
 
 def _ausfuehren(ablauf: dict, zeitlimit_s: int) -> bytes:
-    _, rumpf = _http("POST", "/prompt", {"prompt": ablauf})
+    try:
+        _, rumpf = _http("POST", "/prompt", {"prompt": ablauf})
+    except urllib.error.HTTPError as e:
+        text = e.read().decode("utf-8", "replace")
+        if "not in" in text and any(n in text for n in _FLUX2_DATEIEN):
+            raise ComfyFehler(MODELL_FEHLT) from None
+        raise ComfyFehler(f"ComfyUI lehnt den Auftrag ab: {text[:200]}") from None
     pid = json.loads(rumpf or b"{}").get("prompt_id")
     if not pid:
         raise ComfyFehler("ComfyUI hat keinen Auftrag angenommen")
@@ -127,8 +143,7 @@ def _hochladen(name: str, daten: bytes) -> str:
 
 def ueberarbeiten(prompt: str, quelle: bytes, breite: int, hoehe: int, seed: int, staerke: int,
                   zeitlimit_s: int = 300) -> bytes:
-    if breite % 16 or hoehe % 16 or not (256 <= breite <= 2048 and 256 <= hoehe <= 2048):
-        raise ComfyFehler(f"Masse {breite}x{hoehe}: je 256-2048 und Vielfache von 16")
+    _masse_pruefen(breite, hoehe)
     if not quelle:
         raise ComfyFehler("Ausgangsbild fehlt")
     denoise = min(1.0, max(MIN_DENOISE, int(staerke) / 100))
@@ -154,3 +169,46 @@ def freistellen(quelle: bytes, zeitlimit_s: int = 300) -> bytes:
     ablauf = json.loads(ABLAUF_FREISTELLEN.read_text(encoding="utf-8"))
     ablauf["1"]["inputs"]["image"] = name
     return _ausfuehren(ablauf, zeitlimit_s)
+
+
+ABLAUF_FLUX2 = Path(os.environ.get("COMFYUI_ABLAUF_FLUX2") or
+                    Path(__file__).resolve().parents[1] / "bilder" / "flux2_klein_api.json")
+MAX_REFERENZEN = 3
+MODELL_FEHLT = "Bildmodell FLUX.2 fehlt am PC"
+SPEICHER_VOLL = "Zu viele Vorlagen für die Grafikkarte – mit weniger Vorlagen noch einmal"
+_FLUX2_DATEIEN = ("flux-2-klein-4b-fp8", "qwen_3_4b", "flux2-vae")
+
+
+def _masse_pruefen(breite: int, hoehe: int) -> None:
+    if breite % 16 or hoehe % 16 or not (256 <= breite <= 2048 and 256 <= hoehe <= 2048):
+        raise ComfyFehler(f"Masse {breite}x{hoehe}: je 256-2048 und Vielfache von 16")
+
+
+def graph_flux2(prompt: str, breite: int, hoehe: int, seed: int, namen: list[str]) -> dict:
+    """FLUX.2-klein-Graph (bilder/flux2_klein_api.json) mit Referenzbildern als Kette ReferenceLatent:
+    Text -> c1 -> c2 -> ... -> Guider. Knoten je Referenz i: r<i> Laden, s<i> auf 1 MP, e<i> VAE, c<i> Referenz."""
+    g = json.loads(ABLAUF_FLUX2.read_text(encoding="utf-8"))
+    g["4"]["inputs"]["text"] = prompt
+    g["6"]["inputs"].update(width=breite, height=hoehe)
+    g["7"]["inputs"].update(width=breite, height=hoehe)
+    g["8"]["inputs"]["noise_seed"] = int(seed)
+    vorher = ["4", 0]
+    for i, name in enumerate(namen, 1):
+        g[f"r{i}"] = {"class_type": "LoadImage", "inputs": {"image": name}}
+        g[f"s{i}"] = {"class_type": "ImageScaleToTotalPixels",
+                      "inputs": {"image": [f"r{i}", 0], "upscale_method": "lanczos", "megapixels": 1.0,
+                                 "resolution_steps": 1}}
+        g[f"e{i}"] = {"class_type": "VAEEncode", "inputs": {"pixels": [f"s{i}", 0], "vae": ["3", 0]}}
+        g[f"c{i}"] = {"class_type": "ReferenceLatent", "inputs": {"conditioning": vorher, "latent": [f"e{i}", 0]}}
+        vorher = [f"c{i}", 0]
+    g["5"]["inputs"]["conditioning"] = vorher
+    return g
+
+
+def erzeugen_flux2(prompt: str, breite: int, hoehe: int, seed: int, referenzen=(), zeitlimit_s: int = 300) -> bytes:
+    referenzen = list(referenzen)
+    if len(referenzen) > MAX_REFERENZEN:
+        raise ComfyFehler(f"Höchstens {MAX_REFERENZEN} Referenzbilder")
+    _masse_pruefen(breite, hoehe)
+    namen = [_hochladen(f"nl-ref-{uuid.uuid4().hex[:12]}.png", r) for r in referenzen]
+    return _ausfuehren(graph_flux2(prompt, breite, hoehe, seed, namen), zeitlimit_s)

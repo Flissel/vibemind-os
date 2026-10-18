@@ -168,3 +168,73 @@ def test_submit_timeout_bleibt_ein_fehler(monkeypatch):
     monkeypatch.setattr(bild_comfy, "_http", http)
     with pytest.raises(TimeoutError):
         bild_comfy.erzeugen("x", 512, 512, 1)
+
+
+# --- FLUX.2 klein mit Referenzbildern ---------------------------------------
+
+def test_graph_flux2_ohne_referenzen_setzt_prompt_masse_seed():
+    g = bild_comfy.graph_flux2("a red barn", 768, 512, 42, [])
+    assert g["4"]["inputs"]["text"] == "a red barn"
+    assert (g["6"]["inputs"]["width"], g["6"]["inputs"]["height"]) == (768, 512)
+    assert (g["7"]["inputs"]["width"], g["7"]["inputs"]["height"]) == (768, 512)
+    assert g["8"]["inputs"]["noise_seed"] == 42
+    assert g["5"]["inputs"]["conditioning"] == ["4", 0]
+    assert not [k for k in g if k.startswith(("r", "c"))]
+
+
+def test_graph_flux2_haengt_referenzen_als_kette_an():
+    g = bild_comfy.graph_flux2("p", 512, 512, 1, ["a.png", "b.png"])
+    assert g["r1"]["inputs"]["image"] == "a.png" and g["r2"]["inputs"]["image"] == "b.png"
+    assert g["s1"]["inputs"] == {"image": ["r1", 0], "upscale_method": "lanczos", "megapixels": 1.0, "resolution_steps": 1}
+    assert g["e1"]["inputs"] == {"pixels": ["s1", 0], "vae": ["3", 0]}
+    assert g["c1"]["inputs"] == {"conditioning": ["4", 0], "latent": ["e1", 0]}
+    assert g["c2"]["inputs"] == {"conditioning": ["c1", 0], "latent": ["e2", 0]}
+    assert g["5"]["inputs"]["conditioning"] == ["c2", 0]
+    assert g["c1"]["class_type"] == "ReferenceLatent" and g["r1"]["class_type"] == "LoadImage"
+
+
+def test_erzeugen_flux2_mehr_als_drei_referenzen_abgelehnt():
+    with pytest.raises(bild_comfy.ComfyFehler):
+        bild_comfy.erzeugen_flux2("p", 512, 512, 1, [b"x"] * 4)
+
+
+def test_erzeugen_flux2_masse_wie_flux1_geprueft():
+    with pytest.raises(bild_comfy.ComfyFehler):
+        bild_comfy.erzeugen_flux2("p", 500, 512, 1, [])
+
+
+def test_erzeugen_flux2_laedt_referenzen_hoch_und_fuehrt_aus(monkeypatch):
+    hoch, gesendet = [], {}
+    monkeypatch.setattr(bild_comfy, "_hochladen", lambda name, daten: hoch.append(daten) or f"up-{len(hoch)}.png")
+    monkeypatch.setattr(bild_comfy, "_ausfuehren", lambda ablauf, z: gesendet.setdefault("g", ablauf) and b"PNG")
+    assert bild_comfy.erzeugen_flux2("p", 512, 512, 7, [b"eins", b"zwei"]) == b"PNG"
+    assert hoch == [b"eins", b"zwei"]
+    assert gesendet["g"]["r1"]["inputs"]["image"] == "up-1.png"
+
+
+def test_fehlendes_modell_klarer_befund(monkeypatch):
+    import io, urllib.error
+    rumpf = b'{"error": {"message": "Prompt outputs failed validation"}, "node_errors": {"1": {"errors": [{"details": "unet_name: \'flux-2-klein-4b-fp8.safetensors\' not in []"}]}}}'
+    def http(methode, pfad, daten=None, zeitlimit=30):
+        raise urllib.error.HTTPError("u", 400, "Bad", {}, io.BytesIO(rumpf))
+    monkeypatch.setattr(bild_comfy, "_http", http)
+    with pytest.raises(bild_comfy.ComfyFehler, match="Bildmodell FLUX.2 fehlt am PC"):
+        bild_comfy._ausfuehren(bild_comfy.graph_flux2("p", 512, 512, 1, []), 5)
+
+
+def _historie(status: dict) -> bytes:
+    return json.dumps({"pid": {"status": status, "outputs": {}}}).encode()
+
+
+def test_speicher_voll_klarer_befund(monkeypatch):
+    st = {"status_str": "error", "messages": [["execution_error", {"exception_type": "torch.OutOfMemoryError",
+                                                                    "exception_message": "CUDA out of memory"}]]}
+    monkeypatch.setattr(bild_comfy, "_http", lambda *a, **k: (200, _historie(st)))
+    with pytest.raises(bild_comfy.ComfyFehler, match="Zu viele Vorlagen für die Grafikkarte"):
+        bild_comfy._abfragen("pid")
+
+
+def test_fehler_ohne_meldung_bleibt_allgemein(monkeypatch):
+    monkeypatch.setattr(bild_comfy, "_http", lambda *a, **k: (200, _historie({"status_str": "error"})))
+    with pytest.raises(bild_comfy.ComfyFehler, match="Erzeugung in ComfyUI fehlgeschlagen"):
+        bild_comfy._abfragen("pid")
