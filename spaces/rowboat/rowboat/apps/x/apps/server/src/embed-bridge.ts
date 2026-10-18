@@ -20,6 +20,14 @@ export const EMBED_CLOSE_UNAUTHORIZED = 4401;
 export const EMBED_CLOSE_BAD_MESSAGE = 4400;
 export const EMBED_UNSUPPORTED = 'embed_unsupported';
 export const EMBED_TOO_LARGE = 'embed_too_large';
+export const EMBED_BAD_URL = 'embed_bad_url';
+export const EMBED_MAX_URL_LENGTH = 4096;
+
+/** Nur rowboat://open (optional mit ?...) und hoechstens 4096 Zeichen; action/oauth/Picker nie. */
+export function isOpenableRowboatUrl(url: string): boolean {
+  if (url.length > EMBED_MAX_URL_LENGTH) return false;
+  return url === 'rowboat://open' || url.startsWith('rowboat://open?');
+}
 
 const EMBED_SENDER = Symbol.for('rowboat.embedSender');
 // Weit weg von echten webContents-IDs (file-previews.ts schluesselt nach sender.id).
@@ -77,6 +85,8 @@ export interface EmbedBridgeOptions {
   /** Der app://-Handler der App (Task 3). */
   serveApp(request: Request): Promise<Response>;
   onShowApp(): void;
+  /** Gepruefter rowboat://open-Link; liefert die Zahl der erreichten (anderen) Verbindungen. */
+  onOpenUrl(url: string, sender: EmbedSender): number;
   port?: number;
   helloTimeoutMs?: number;
   maxMessageBytes?: number;
@@ -86,6 +96,8 @@ export interface EmbedBridgeOptions {
 export interface EmbedBridge {
   readonly port: number;
   broadcast(channel: string, payload: unknown): void;
+  /** Wie broadcast, aber ohne `except`; liefert die Zahl der Empfaenger. */
+  broadcastExcept(channel: string, payload: unknown, except: EmbedSender): number;
   connectionCount(): number;
   close(): Promise<void>;
 }
@@ -94,6 +106,7 @@ const ClientMessage = z.discriminatedUnion('type', [
   z.object({ type: z.literal('hello'), v: z.literal(EMBED_PROTOCOL_VERSION), token: z.string() }),
   z.object({ type: z.literal('invoke'), id: z.number().int().nonnegative(), channel: z.string().min(1), args: z.unknown() }),
   z.object({ type: z.literal('show-app') }),
+  z.object({ type: z.literal('open-url'), id: z.number().int().nonnegative(), url: z.string() }),
 ]);
 
 interface Connection {
@@ -183,6 +196,21 @@ export async function startEmbedBridge(opts: EmbedBridgeOptions): Promise<EmbedB
           opts.onShowApp();
         } catch (err) {
           log(`[embed] onShowApp failed: ${errorMessage(err)}`);
+        }
+        return;
+      }
+      if (msg.type === 'open-url') {
+        const { id, url } = msg;
+        const failOpen = (err: unknown): void => sendJson({ type: 'result', id, ok: false, error: { message: errorMessage(err) } });
+        if (!isOpenableRowboatUrl(url)) {
+          sendJson({ type: 'result', id, ok: false, error: { code: EMBED_BAD_URL, message: `${EMBED_BAD_URL}: nur rowboat://open-Links bis ${EMBED_MAX_URL_LENGTH} Zeichen` } });
+          return;
+        }
+        try {
+          const delivered = opts.onOpenUrl(url, sender);
+          sendJson({ type: 'result', id, ok: true, result: { delivered } });
+        } catch (err) {
+          failOpen(err);
         }
         return;
       }
@@ -291,6 +319,15 @@ export async function startEmbedBridge(opts: EmbedBridgeOptions): Promise<EmbedB
     },
     broadcast(channel, payload) {
       for (const c of connections) c.sender.send(channel, payload);
+    },
+    broadcastExcept(channel, payload, except) {
+      let n = 0;
+      for (const c of connections) {
+        if (c.sender === except || c.sender.isDestroyed()) continue;
+        c.sender.send(channel, payload);
+        n++;
+      }
+      return n;
     },
     connectionCount: () => connections.size,
     async close() {

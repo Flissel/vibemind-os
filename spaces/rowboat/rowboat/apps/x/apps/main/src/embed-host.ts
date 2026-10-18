@@ -37,6 +37,9 @@ export async function startEmbedHost(options: {
     isUnsupported: isEmbedUnsupportedInvoke,
     serveApp: options.serveApp,
     onShowApp: options.showApp,
+    // app:openUrl ist ein Fenster-Kanal: nur an die anderen Einbettungs-Verbindungen, nie ueber
+    // mirrorToEmbed und nie an Rowboats eigenes Fenster.
+    onOpenUrl: (url, sender) => live.broadcastExcept('app:openUrl', { url }, sender),
     log: (message) => console.warn(message),
   });
   bridge = live;

@@ -15,6 +15,8 @@ afterEach(async () => { while (open.length) await open.pop()!.close() })
 async function bridge(over: Partial<EmbedBridgeOptions> = {}) {
   const calls: Array<{ channel: string; args: unknown; sender: EmbedSender }> = []
   const shown: number[] = []
+  const opened: Array<{ url: string; sender: EmbedSender }> = []
+  const b0: { broadcastExcept: EmbedBridge['broadcastExcept'] } = { broadcastExcept: () => 0 }
   const b = await startEmbedBridge({
     token: TOKEN,
     invokeChannels: () => ['workspace:exists', 'turns:subscribe'],
@@ -22,11 +24,13 @@ async function bridge(over: Partial<EmbedBridgeOptions> = {}) {
     invoke: async (channel, sender, args) => { calls.push({ channel, args, sender }); return { echo: args } },
     serveApp: async () => new Response('x'),
     onShowApp: () => { shown.push(1) },
+    onOpenUrl: (url, sender) => { opened.push({ url, sender }); return b0.broadcastExcept('app:openUrl', { url }, sender) },
     helloTimeoutMs: 300,
     ...over,
   })
+  b0.broadcastExcept = b.broadcastExcept.bind(b)
   open.push(b)
-  return { b, calls, shown }
+  return { b, calls, shown, opened }
 }
 
 function client(b: EmbedBridge, headers: Record<string, string> = {}) {
@@ -350,5 +354,51 @@ describe('Einbettungszugang: app:// ueber HTTP', () => {
     } finally {
       process.off('uncaughtException', onUncaught)
     }
+  })
+})
+
+describe('Einbettungszugang: Navigation (open-url)', () => {
+  it('gueltige URL erreicht nur die andere Verbindung, delivered: 1', async () => {
+    const { b, opened } = await bridge()
+    const a = await loggedIn(b)
+    const o = await loggedIn(b)
+    a.send({ type: 'open-url', id: 1, url: 'rowboat://open?type=file&path=a.md' })
+    expect(await a.next()).toEqual({ type: 'result', id: 1, ok: true, result: { delivered: 1 } })
+    expect(await o.next()).toEqual({ type: 'push', channel: 'app:openUrl', payload: { url: 'rowboat://open?type=file&path=a.md' } })
+    expect(opened).toHaveLength(1)
+    await new Promise((r) => setTimeout(r, 50))
+    a.send({ type: 'open-url', id: 2, url: 'rowboat://open' })
+    expect((await a.next()).id).toBe(2) // kein Push dazwischen beim Absender
+  })
+  it('ungueltige URLs ergeben embed_bad_url, onOpenUrl wird nicht gerufen', async () => {
+    const { b, opened } = await bridge()
+    const a = await loggedIn(b)
+    const urls = ['rowboat://action?type=x', 'rowboat://oauth/google/done', 'https://x', 'rowboat://openx', `rowboat://open?${'a'.repeat(4097 - 'rowboat://open?'.length)}`]
+    let id = 10
+    for (const url of urls) {
+      a.send({ type: 'open-url', id, url })
+      expect(await a.next()).toMatchObject({ type: 'result', id, ok: false, error: { code: 'embed_bad_url' } })
+      id++
+    }
+    expect(opened).toEqual([])
+  })
+  it('ohne andere Verbindung: delivered 0', async () => {
+    const { b } = await bridge()
+    const a = await loggedIn(b)
+    a.send({ type: 'open-url', id: 3, url: 'rowboat://open?type=chat' })
+    expect(await a.next()).toEqual({ type: 'result', id: 3, ok: true, result: { delivered: 0 } })
+  })
+  it('Fehler von onOpenUrl kommt als ok:false', async () => {
+    const { b } = await bridge({ onOpenUrl: () => { throw new Error('boom') } })
+    const a = await loggedIn(b)
+    a.send({ type: 'open-url', id: 4, url: 'rowboat://open' })
+    expect(await a.next()).toEqual({ type: 'result', id: 4, ok: false, error: { message: 'boom' } })
+  })
+  it('vor hello: 4401', async () => {
+    const { b, opened } = await bridge()
+    const c = client(b); await c.opened
+    c.send({ type: 'open-url', id: 1, url: 'rowboat://open' })
+    expect(await c.closed).toBe(EMBED_CLOSE_UNAUTHORIZED)
+    expect(opened).toEqual([])
   })
 })
