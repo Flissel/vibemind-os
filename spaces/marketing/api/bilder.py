@@ -33,8 +33,11 @@ PNG_MAX = 4 * 1024 * 1024
 PNG_KOPF = bytes((137, 80, 78, 71, 13, 10, 26, 10))   # PNG-Signatur
 KANTE_MIN, KANTE_MAX = 64, 2400
 FRIST = "10 minutes"
+VORLAGEN_MAX = 3            # Referenzbilder je Auftrag (FLUX.2); bei aendern ist das Bild selbst die erste
+_MODI = ("neu", "aendern", "ueberarbeiten", "freistellen")
+KEIN_BILD = "Hier ist noch kein Bild – nimm bild_erzeugen"
 _STAND_SQL = ("SELECT id, platz, nur_leere, hinweis, status, befund, versuche, urheber, "
-              "staerke, modus, messung, "
+              "staerke, modus, messung, vorlagen, "
               "erstellt_am::text AS erstellt_am, geaendert_am::text AS geaendert_am "
               "FROM marketing.bild_auftraege WHERE inhalt = {i}::uuid ORDER BY erstellt_am DESC LIMIT 30")
 
@@ -84,8 +87,9 @@ def _auftrag_id(wert: str) -> str:
         raise HTTPException(404, "Unbekannter Auftrag")
 
 
-def _echtes_bild_pruefen(i: str, platz: str) -> None:
-    """Freistellen nur fuer einen Platz der neuesten Fassung, der ein echtes Bild
+def _echtes_bild_pruefen(i: str, platz: str,
+                         meldung: str = "Freistellen geht nur bei einem Bildplatz mit echtem Bild") -> None:
+    """Freistellen/Aendern nur fuer einen Platz der neuesten Fassung, der ein echtes Bild
     traegt (kein Platzhalter, keine erzeugte Grafik - finde() laesst Grafiken weg)."""
     f = _lesen_einer(lambda:
         f"SELECT bloecke FROM marketing.inhalt_fassungen WHERE inhalt = {lit(i)}::uuid "
@@ -94,7 +98,20 @@ def _echtes_bild_pruefen(i: str, platz: str) -> None:
         raise HTTPException(404, "Unbekannter Inhalt")
     echt = [p for p in bildplaetze.finde(f.get("bloecke") or {}) if p.id == platz and not bildplaetze.ist_leer(p.url)]
     if not echt:
-        raise HTTPException(422, "Freistellen geht nur bei einem Bildplatz mit echtem Bild")
+        raise HTTPException(422, meldung)
+
+
+def _vorlagen_formen(roh) -> list[str]:
+    """Vorlagen = Mediennamen (Regel wie sales-ui), hoechstens VORLAGEN_MAX; Doppelte fallen
+    weg (Reihenfolge bleibt). Ein String statt einer Liste ist ein Formfehler (422)."""
+    if roh is None:
+        return []
+    if not isinstance(roh, list) or not all(isinstance(n, str) for n in roh):
+        raise HTTPException(422, "vorlagen muss eine Liste von Mediennamen sein")
+    namen = list(dict.fromkeys(roh))          # Doppelte raus, Reihenfolge bleibt
+    if len(namen) > VORLAGEN_MAX or not all(_bilddatei_name_ok(n) for n in namen):
+        raise HTTPException(422, f"vorlagen: hoechstens {VORLAGEN_MAX} gueltige Mediennamen")
+    return namen
 
 
 def _anlegen(iid: str, payload, urheber: str) -> dict:
@@ -114,16 +131,27 @@ def _anlegen(iid: str, payload, urheber: str) -> dict:
     if isinstance(staerke, bool) or not isinstance(staerke, int) or not 0 <= staerke <= 100:
         raise HTTPException(422, "staerke muss eine ganze Zahl von 0 bis 100 sein")
     modus = payload.get("modus", "ueberarbeiten")
-    if modus not in ("neu", "ueberarbeiten", "freistellen"):
-        raise HTTPException(422, "modus muss neu, ueberarbeiten oder freistellen sein")
+    if not isinstance(modus, str) or modus not in _MODI:
+        raise HTTPException(422, "modus muss neu, aendern, ueberarbeiten oder freistellen sein")
+    vorlagen = _vorlagen_formen(payload.get("vorlagen"))
+    if modus == "freistellen" and vorlagen:
+        raise HTTPException(422, "Freistellen nimmt keine Vorlagen")
+    if modus == "aendern" and len(vorlagen) > VORLAGEN_MAX - 1:
+        raise HTTPException(422, f"Aendern: hoechstens {VORLAGEN_MAX - 1} Vorlagen (das Bild selbst ist die erste)")
     if modus == "freistellen":
         if not platz:
             raise HTTPException(422, "Freistellen braucht einen Bildplatz (platz)")
         _echtes_bild_pruefen(i, platz)
         staerke, nur_leere = 0, False
+    elif modus == "aendern":
+        if not platz:
+            raise HTTPException(422, "Aendern braucht einen Bildplatz (platz)")
+        _echtes_bild_pruefen(i, platz, KEIN_BILD)
+        staerke = 55
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_bild_auftrag({lit(i)}::uuid, {lit(platz) if platz else 'NULL'}, "
-        f"{'true' if nur_leere else 'false'}, {lit(hinweis.strip())}, {lit(urheber)}, {int(staerke)}, {lit(modus)}) AS id")
+        f"{'true' if nur_leere else 'false'}, {lit(hinweis.strip())}, {lit(urheber)}, {int(staerke)}, {lit(modus)}, "
+        f"{lit(json.dumps(vorlagen, ensure_ascii=False))}::jsonb) AS id")
     return {"auftrag": str(zeile["id"])}
 
 
@@ -185,7 +213,7 @@ def arbeiter_naechster(x_bild_key: str | None = Header(None)):
     a = zeile.get("a")
     if isinstance(a, dict) and a.get("id"):
         z = _lesen_einer(lambda:
-            "SELECT b.staerke, b.modus, i.mandant, (SELECT m.name FROM marketing.mandanten m "
+            "SELECT b.staerke, b.modus, b.vorlagen, i.mandant, (SELECT m.name FROM marketing.mandanten m "
             "WHERE m.id = i.mandant) AS mandant_name FROM marketing.bild_auftraege b "
             f"JOIN marketing.inhalte i ON i.id = b.inhalt WHERE b.id = {lit(a['id'])}::uuid")
         a.update(z or {})
@@ -199,6 +227,23 @@ def arbeiter_weiter(aid: str, x_bild_key: str | None = Header(None)):
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_bild_verlaengern({lit(a)}::uuid, {lit(FRIST)}::interval) AS ok")
     return {"ok": bool(zeile.get("ok"))}
+
+
+@router.get("/arbeiter/{aid}/vorlage")
+def arbeiter_vorlage(aid: str, name: str = Query(""), x_bild_key: str | None = Header(None)):
+    """Vorlage eines laufenden Auftrags fuer den Bild-Arbeiter: nur ein Name aus b.vorlagen, nur solange
+    der Auftrag in Arbeit ist (gueltige Vergabe), nur wenn die Datei fuer die Firma des Newsletters nicht
+    fremd ist (chat._medien_ausliefern, die eine Stelle der Firmentrennung). Sonst 404."""
+    _bild_schluessel(x_bild_key)
+    a = _auftrag_id(aid)
+    from spaces.marketing.api.chat import _medien_ausliefern   # im Rumpf: sonst Kreisimport chat <-> bilder
+    z = _lesen_einer(lambda:
+        "SELECT b.vorlagen, b.status, coalesce(b.vergeben_bis > now(), false) AS gueltig, i.mandant "
+        "FROM marketing.bild_auftraege b JOIN marketing.inhalte i ON i.id = b.inhalt "
+        f"WHERE b.id = {lit(a)}::uuid")
+    if not z or z.get("status") != "in_arbeit" or not z.get("gueltig") or name not in (z.get("vorlagen") or []):
+        raise HTTPException(404, "Unbekannte Vorlage")
+    return _medien_ausliefern(name, z.get("mandant"))
 
 
 def _jpeg_pruefen(roh: bytes) -> None:

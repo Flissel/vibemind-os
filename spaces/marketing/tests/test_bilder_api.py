@@ -238,13 +238,13 @@ def test_auftrag_mit_staerke_und_modus(db, c):
     r = c.post(f"/api/pult/inhalte/{IID}/bilder", headers={"X-Pult-Key": PK},
                json={"platz": "kopf", "hinweis": "waermer", "staerke": 30, "modus": "ueberarbeiten"})
     assert r.status_code == 200
-    assert ", 30, 'ueberarbeiten') AS id" in db.sql[0]
+    assert ", 30, 'ueberarbeiten', '[]'::jsonb) AS id" in db.sql[0]
 
 
 def test_auftrag_standard_55_ueberarbeiten(db, c):
     db.antworten = [[{"id": "a9"}]]
     c.post(f"/api/pult/inhalte/{IID}/bilder", headers={"X-Pult-Key": PK}, json={"platz": "kopf"})
-    assert ", 55, 'ueberarbeiten') AS id" in db.sql[0]
+    assert ", 55, 'ueberarbeiten', '[]'::jsonb) AS id" in db.sql[0]
 
 
 @pytest.mark.parametrize("body", [{"staerke": 101}, {"staerke": -1}, {"staerke": True}, {"staerke": "55"},
@@ -450,7 +450,7 @@ def test_freistellen_echtes_bild_legt_auftrag_an(db, c):
     assert "marketing.inhalt_fassungen" in db.sql[0] and "ORDER BY fassung DESC LIMIT 1" in db.sql[0]
     assert "marketing.pult_bild_auftrag(" in db.sql[1]
     assert "'t1_bild'" in db.sql[1] and ", false, " in db.sql[1]
-    assert ", 0, 'freistellen') AS id" in db.sql[1]
+    assert ", 0, 'freistellen', '[]'::jsonb) AS id" in db.sql[1]
 
 
 @pytest.mark.parametrize("doc", [
@@ -577,3 +577,131 @@ def test_naechster_traegt_mandant_und_name(db, c):
     assert a["mandant"] == "radhaus" and a["mandant_name"] == "Radhaus Jena"
     sql = db.sql[1]
     assert "i.mandant" in sql and "mandant_name" in sql and "marketing.mandanten" in sql
+
+
+# --- Task 4 (Plan 2026-10-10-bilder-flux2-klein): Vorlagen und Modus aendern ---
+
+def test_auftrag_aendern_mit_vorlagen(db, c):
+    db.antworten = [[{"bloecke": _doc()}], [{"id": "a-aend"}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/bilder", headers={"X-Pult-Key": PK},
+               json={"platz": "t1_bild", "modus": "aendern", "hinweis": "Himmel abendrot", "vorlagen": ["a.jpg"]})
+    assert r.status_code == 200 and r.json() == {"auftrag": "a-aend"}
+    assert "marketing.inhalt_fassungen" in db.sql[0]
+    assert "marketing.pult_bild_auftrag(" in db.sql[1] and "'Himmel abendrot'" in db.sql[1]
+    assert ", 55, 'aendern', '[\"a.jpg\"]'::jsonb) AS id" in db.sql[1]
+
+
+@pytest.mark.parametrize("doc", [_doc(url="medien:platzhalter-2x1.png"), _doc(url=""), _doc(bid="anderer")],
+                         ids=["platzhalter", "leer", "platz-fehlt"])
+def test_auftrag_aendern_ohne_echtes_bild_422(db, c, doc):
+    db.antworten = [[{"bloecke": doc}], [{"id": "darf-nicht"}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/bilder", headers={"X-Pult-Key": PK},
+               json={"platz": "t1_bild", "modus": "aendern"})
+    assert r.status_code == 422 and r.json()["detail"] == "Hier ist noch kein Bild – nimm bild_erzeugen"
+    assert not any("pult_bild_auftrag" in s for s in db.sql)
+
+
+def test_auftrag_aendern_ohne_platz_422(db, c):
+    r = c.post(f"/api/pult/inhalte/{IID}/bilder", headers={"X-Pult-Key": PK}, json={"modus": "aendern"})
+    assert r.status_code == 422 and db.sql == []
+
+
+@pytest.mark.parametrize("vorlagen,code,erwartet", [
+    ("a.jpg", 422, None),
+    (["a.jpg", "b.jpg", "c.jpg", "d.jpg"], 422, None),
+    (["../x.jpg"], 422, None),
+    (["a.jpg", "a.jpg"], 200, '\'["a.jpg"]\'::jsonb'),
+    ([1], 422, None),
+    ({"a": 1}, 422, None),
+    (["a.exe"], 422, None),
+    (["a.jpg", "b.png", "c.jpg"], 200, '\'["a.jpg", "b.png", "c.jpg"]\'::jsonb'),
+], ids=["string", "vier", "pfad", "doppelt", "zahl", "objekt", "endung", "drei"])
+def test_auftrag_vorlagen_form(db, c, vorlagen, code, erwartet):
+    db.antworten = [[{"id": "a-v"}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/bilder", headers={"X-Pult-Key": PK},
+               json={"platz": "kopf", "modus": "neu", "vorlagen": vorlagen})
+    assert r.status_code == code
+    if erwartet:
+        assert f", 'neu', {erwartet}) AS id" in db.sql[0]
+    else:
+        assert db.sql == []
+
+
+def test_auftrag_ohne_vorlagen_leere_liste(db, c):
+    db.antworten = [[{"id": "a9"}]]
+    c.post(f"/api/pult/inhalte/{IID}/bilder", headers={"X-Pult-Key": PK}, json={"platz": "kopf"})
+    assert ", 55, 'ueberarbeiten', '[]'::jsonb) AS id" in db.sql[0]
+
+
+def test_auftrag_vorlagen_je_modus(db, c):
+    h = {"X-Pult-Key": PK}
+    r = c.post(f"/api/pult/inhalte/{IID}/bilder", headers=h,
+               json={"platz": "t1_bild", "modus": "freistellen", "vorlagen": ["a.jpg"]})
+    assert r.status_code == 422 and db.sql == []
+    r = c.post(f"/api/pult/inhalte/{IID}/bilder", headers=h,
+               json={"platz": "t1_bild", "modus": "aendern", "vorlagen": ["a.jpg", "b.jpg", "c.jpg"]})
+    assert r.status_code == 422 and db.sql == []
+
+
+def test_stand_liefert_vorlagen(db, c):
+    db.antworten = [[{"id": "a1"}]]
+    c.get(f"/api/pult/inhalte/{IID}/bilder", headers={"X-Pult-Key": PK})
+    assert "vorlagen" in db.sql[0]
+
+
+def test_naechster_liefert_vorlagen(db, c):
+    db.antworten = [[{"a": {"id": AID, "platz": "kopf"}}],
+                    [{"staerke": 55, "modus": "aendern", "vorlagen": ["a.jpg"], "mandant": "vibemind",
+                      "mandant_name": "Vibemind"}]]
+    a = c.post("/api/bilder/arbeiter/naechster", headers={"X-Bild-Key": BK}).json()["auftrag"]
+    assert "b.vorlagen" in db.sql[1]
+    assert a["vorlagen"] == ["a.jpg"] and a["modus"] == "aendern"
+
+
+def _sicht(eigene=(), fremde=(), gemeinsam=()):
+    return [{"name": "Vibemind", "eigene": list(eigene), "fremde": list(fremde), "gemeinsam": list(gemeinsam)}]
+
+
+_VJOB = {"vorlagen": ["a.jpg", "fremd.jpg"], "status": "in_arbeit", "gueltig": True, "mandant": "vibemind"}
+
+
+@pytest.fixture
+def vorlage_ordner(db, monkeypatch):
+    monkeypatch.delenv("MARKETING_MEDIEN_ORDNER", raising=False)
+    for n in ("a.jpg", "fremd.jpg", "b.jpg"):
+        (db.ordner / n).write_bytes(b"VORLAGE-" + n.encode())
+    return db.ordner
+
+
+def test_vorlage_route_gueltig(db, c, vorlage_ordner):
+    db.antworten = [[_VJOB], _sicht(eigene=["a.jpg"])]
+    r = c.get(f"/api/bilder/arbeiter/{AID}/vorlage?name=a.jpg", headers={"X-Bild-Key": BK})
+    assert r.status_code == 200 and r.content == b"VORLAGE-a.jpg"
+    assert "b.vorlagen" in db.sql[0] and "i.mandant" in db.sql[0] and f"'{AID}'" in db.sql[0]
+
+
+@pytest.mark.parametrize("job,name", [
+    (_VJOB, "b.jpg"),                                   # nicht in den Vorlagen (erfunden)
+    (dict(_VJOB, status="fertig"), "a.jpg"),            # nicht in Arbeit
+    (dict(_VJOB, gueltig=False), "a.jpg"),              # Vergabe abgelaufen
+    (_VJOB, "fremd.jpg"),                               # fremder Mandant
+    (dict(_VJOB, vorlagen=["../a.jpg"]), "../a.jpg"),   # Pfad
+], ids=["nicht-in-vorlagen", "nicht-in-arbeit", "abgelaufen", "fremd", "pfad"])
+def test_vorlage_route_404(db, c, vorlage_ordner, job, name):
+    db.antworten = [[job], _sicht(fremde=["fremd.jpg"])]
+    r = c.get(f"/api/bilder/arbeiter/{AID}/vorlage", params={"name": name}, headers={"X-Bild-Key": BK})
+    assert r.status_code == 404
+
+
+def test_vorlage_route_ist_fremd_404(db, c, vorlage_ordner, monkeypatch):
+    from spaces.marketing.api import chat
+    monkeypatch.setattr(chat, "ist_fremd", lambda name, mandant, s: True)
+    db.antworten = [[_VJOB], _sicht(eigene=["a.jpg"])]
+    assert c.get(f"/api/bilder/arbeiter/{AID}/vorlage?name=a.jpg", headers={"X-Bild-Key": BK}).status_code == 404
+
+
+def test_vorlage_route_schluessel_und_auftrag(db, c, vorlage_ordner):
+    assert c.get(f"/api/bilder/arbeiter/{AID}/vorlage?name=a.jpg").status_code == 401
+    assert c.get("/api/bilder/arbeiter/kein-uuid/vorlage?name=a.jpg", headers={"X-Bild-Key": BK}).status_code == 404
+    db.antworten = [[]]
+    assert c.get(f"/api/bilder/arbeiter/{AID}/vorlage?name=a.jpg", headers={"X-Bild-Key": BK}).status_code == 404
