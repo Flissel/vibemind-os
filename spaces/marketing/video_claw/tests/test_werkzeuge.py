@@ -144,3 +144,11 @@ def test_kein_generalwerkzeug():
                      and open(w.__file__.rsplit("werkzeuge.py", 1)[0] + "video-mcp.json", encoding="utf-8").read())
     assert sorted(mcp["allowedTools"]) == sorted(f"mcp__video__{n}" for n in namen)
     assert mcp["mcpServers"]["video"]["url"] == "http://127.0.0.1:8137/mcp"
+
+
+def test_mcp_zeitlimit_reicht_fuer_reel_bauen():
+    """Die Claude-CLI bricht stille MCP-Aufrufe nach ~300 s ab (Probe-Reel 18.10.: zweimal knapp
+    vorbei). Der Server braucht ein eigenes Zeitlimit ueber der Wartezeit von reel_bauen (600 s)."""
+    pfad = w.__file__.rsplit("werkzeuge.py", 1)[0] + "video-mcp.json"
+    mcp = json.loads(open(pfad, encoding="utf-8").read())
+    assert mcp["mcpServers"]["video"]["timeout"] >= 900_000

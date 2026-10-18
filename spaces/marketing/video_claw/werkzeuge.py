@@ -214,7 +214,10 @@ def reel_bauen(projekt_id: str, beats: list, stimme: str = "standard", hook: str
                logo_asset_id: str = "", logo_position: str = "oben_rechts") -> dict:
     """Das Reel bauen: je Beat ein gesprochener Satz ueber einem Clip, deutsche Stimme, Untertitel,
     Hochformat, KI-Hinweis nach Inhalt, hoechstens 15 MB. Startet den Render und liefert export_id -
-    nenne sie am Ende als 'EXPORT: <export_id>'. Der Render selbst laeuft danach weiter."""
+    nenne sie am Ende als 'EXPORT: <export_id>'. Der Render selbst laeuft danach weiter.
+    beats: [{"text": "Satz, der gesprochen wird", "asset_id": "<Clip>", "src_in_frame": 0}, ...]
+    (Feldnamen genau so). Dauert einige Minuten (die Stimme wird je Satz erzeugt) - nicht abbrechen
+    und NICHT ein zweites Mal aufrufen."""
     if not _id(projekt_id, "projekt_id"):
         return _fehler("projekt_id ungueltig")
     geprueft = _beats_pruefen(beats)
