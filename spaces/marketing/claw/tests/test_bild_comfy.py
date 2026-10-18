@@ -160,14 +160,129 @@ def test_poll_timeouts_ohne_ende_scheitern_am_gesamtzeitlimit(monkeypatch):
     assert 540 <= uhr.t < 540 + 3 * bild_comfy.POLL_PAUSE_MAX_S
 
 
-def test_submit_timeout_bleibt_ein_fehler(monkeypatch):
+def test_submit_timeout_ohne_comfy_ist_voruebergehend(monkeypatch):
+    """Schluss-Fix I2: ComfyUI antwortet gar nicht -> wiederholbarer ComfyVoruebergehend, kein roher TimeoutError,
+    und POST /prompt genau einmal (kein zweiter GPU-Auftrag)."""
     _uhr_einhaengen(monkeypatch)
+    posts = []
 
     def http(methode, pfad, daten=None, zeitlimit=30):
+        if pfad == "/prompt":
+            posts.append(daten)
         raise TimeoutError("timed out")
     monkeypatch.setattr(bild_comfy, "_http", http)
-    with pytest.raises(TimeoutError):
+    with pytest.raises(bild_comfy.ComfyVoruebergehend):
         bild_comfy.erzeugen("x", 512, 512, 1)
+    assert len(posts) == 1
+
+
+def test_prompt_id_vom_client_kanonische_uuid(monkeypatch):
+    import uuid
+    _uhr_einhaengen(monkeypatch)
+    gesehen = []
+
+    def http(methode, pfad, daten=None, zeitlimit=30):
+        gesehen.append((pfad, daten))
+        if pfad == "/prompt":
+            return 200, json.dumps({"prompt_id": daten["prompt_id"], "number": 1}).encode()
+        if pfad.startswith("/history/"):
+            pid = pfad.rsplit("/", 1)[1]
+            return 200, json.dumps({pid: {"outputs": {"9": {"images": [{"filename": "a.png"}]}}}}).encode()
+        return 200, PNG
+    monkeypatch.setattr(bild_comfy, "_http", http)
+    assert bild_comfy.erzeugen("x", 512, 512, 1) == PNG
+    pid = gesehen[0][1]["prompt_id"]
+    assert str(uuid.UUID(pid)) == pid                     # ComfyUI verlangt kleingeschrieben mit Bindestrichen
+    assert gesehen[1][0] == f"/history/{pid}"
+
+
+def test_submit_timeout_dann_fertig_ohne_neuen_auftrag(monkeypatch):
+    """POST /prompt laeuft in TimeoutError, ComfyUI hat den Auftrag aber angenommen: weiter pollen, nicht neu senden."""
+    _uhr_einhaengen(monkeypatch)
+    posts, gesendet = [], {}
+
+    def http(methode, pfad, daten=None, zeitlimit=30):
+        if pfad == "/prompt":
+            posts.append(daten)
+            gesendet["pid"] = daten["prompt_id"]
+            raise TimeoutError("timed out")
+        if pfad.startswith("/history/"):
+            if len([1 for p in http.pfade if p.startswith("/history/")]) < 3:
+                http.pfade.append(pfad)
+                return 200, b"{}"
+            return 200, json.dumps({gesendet["pid"]: {"outputs": {"9": {"images": [
+                {"filename": "a.png"}]}}}}).encode()
+        if pfad == "/queue":
+            return 200, json.dumps({"queue_running": [[1, gesendet["pid"], {}, {}, []]],
+                                    "queue_pending": []}).encode()
+        return 200, PNG
+    http.pfade = []
+    monkeypatch.setattr(bild_comfy, "_http", http)
+    assert bild_comfy.erzeugen("x", 512, 512, 1, zeitlimit_s=1200) == PNG
+    assert len(posts) == 1
+
+
+def test_submit_timeout_nicht_in_warteschlange_voruebergehend(monkeypatch):
+    """Nach der Gnadenfrist: weder History noch /queue kennen die id -> ComfyVoruebergehend, lange vor dem Zeitlimit."""
+    uhr = _uhr_einhaengen(monkeypatch)
+    posts = []
+
+    def http(methode, pfad, daten=None, zeitlimit=30):
+        if pfad == "/prompt":
+            posts.append(daten)
+            raise TimeoutError("timed out")
+        if pfad == "/queue":
+            return 200, b'{"queue_running": [], "queue_pending": []}'
+        return 200, b"{}"
+    monkeypatch.setattr(bild_comfy, "_http", http)
+    with pytest.raises(bild_comfy.ComfyVoruebergehend, match="antwortet nicht"):
+        bild_comfy.erzeugen("x", 512, 512, 1, zeitlimit_s=1200)
+    assert len(posts) == 1 and bild_comfy.GNADE_S <= uhr.t < 1200
+
+
+def test_zeitlimit_ist_voruebergehend(monkeypatch):
+    http = FalschesHttp([(200, b'{"prompt_id": "p1"}')] + [(200, b"{}")] * 50)
+    monkeypatch.setattr(bild_comfy, "_http", http)
+    _uhr_einhaengen(monkeypatch)
+    with pytest.raises(bild_comfy.ComfyVoruebergehend, match="Zeitlimit 4 s"):
+        bild_comfy.erzeugen("x", 512, 512, 1, zeitlimit_s=4)
+
+
+def test_http_fehler_ohne_lesbaren_rumpf(monkeypatch):
+    import urllib.error
+
+    class Kaputt:
+        def read(self, *a):
+            raise OSError("weg")
+
+        def close(self):
+            pass
+
+    def http(methode, pfad, daten=None, zeitlimit=30):
+        raise urllib.error.HTTPError("u", 400, "Bad", {}, Kaputt())
+    monkeypatch.setattr(bild_comfy, "_http", http)
+    with pytest.raises(bild_comfy.ComfyFehler, match="lehnt den Auftrag ab"):
+        bild_comfy.erzeugen("x", 512, 512, 1)
+
+
+def test_hochladen_timeout_voruebergehend_http_fehler_nicht(monkeypatch):
+    import io
+    import urllib.error
+
+    def langsam(req, timeout=None):
+        raise TimeoutError("timed out")
+    monkeypatch.setattr(bild_comfy.urllib.request, "urlopen", langsam)
+    with pytest.raises(bild_comfy.ComfyVoruebergehend, match="Zeitueberschreitung"):
+        bild_comfy._hochladen("a.png", b"x")
+    with pytest.raises(bild_comfy.ComfyVoruebergehend):
+        bild_comfy.freistellen(b"quelle")
+
+    def abgelehnt(req, timeout=None):
+        raise urllib.error.HTTPError("u", 413, "zu gross", {}, io.BytesIO(b""))
+    monkeypatch.setattr(bild_comfy.urllib.request, "urlopen", abgelehnt)
+    with pytest.raises(bild_comfy.ComfyFehler) as e:
+        bild_comfy._hochladen("a.png", b"x")
+    assert not isinstance(e.value, bild_comfy.ComfyVoruebergehend) and "413" in str(e.value)
 
 
 # --- FLUX.2 klein mit Referenzbildern ---------------------------------------

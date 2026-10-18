@@ -23,8 +23,16 @@ TAKT_S = 2
 POLL_PAUSE_MAX_S = 10   # Pause nach fehlgeschlagenem Poll waechst bis hierhin
 
 
+PROMPT_ZEITLIMIT_S = 120   # POST /prompt: ComfyUI laedt beim Annehmen u. U. Modelle von der HDD
+GNADE_S = 90               # nach einem Sende-Timeout: so lange darf die id in History und Warteschlange fehlen
+
+
 class ComfyFehler(Exception):
     pass
+
+
+class ComfyVoruebergehend(ComfyFehler):
+    """Zeitueberschreitung oder Verbindungsfehler: ein Neuversuch kann gelingen (nie endgueltig)."""
 
 
 def _UHR() -> float:
@@ -92,18 +100,43 @@ def _abfragen(pid: str) -> bytes | None:
     return None
 
 
-def _ausfuehren(ablauf: dict, zeitlimit_s: int) -> bytes:
+def _in_warteschlange(pid: str) -> bool | None:
+    """True/False: GET /queue nennt die id (laufend oder wartend) bzw. nicht; None: /queue nicht erreichbar."""
     try:
-        _, rumpf = _http("POST", "/prompt", {"prompt": ablauf})
+        _, rumpf = _http("GET", "/queue")
+    except OSError:
+        return None
+    return pid.encode() in (rumpf or b"")
+
+
+def _ausfuehren(ablauf: dict, zeitlimit_s: int) -> bytes:
+    """Schluss-Fix I2: die prompt_id erzeugt der Client (ComfyUI verlangt eine kanonische UUID). Laeuft POST /prompt
+    in eine Zeitueberschreitung, hat ComfyUI den Auftrag vielleicht doch angenommen: NIE neu senden (zweiter
+    5-10-min-Auftrag auf der GPU), sondern diese id pollen. Fehlt sie nach GNADE_S weder in History noch in /queue,
+    kam der Auftrag nie an -> ComfyVoruebergehend."""
+    pid = str(uuid.uuid4())
+    gesendet_ohne_antwort = False
+    try:
+        _, rumpf = _http("POST", "/prompt", {"prompt": ablauf, "prompt_id": pid}, zeitlimit=PROMPT_ZEITLIMIT_S)
     except urllib.error.HTTPError as e:
-        text = e.read().decode("utf-8", "replace")
+        try:
+            text = e.read().decode("utf-8", "replace")
+        except OSError:
+            text = ""
         if "not in" in text and any(n in text for n in _FLUX2_DATEIEN):
             raise ComfyFehler(MODELL_FEHLT) from None
         raise ComfyFehler(f"ComfyUI lehnt den Auftrag ab: {text[:200]}") from None
-    pid = json.loads(rumpf or b"{}").get("prompt_id")
-    if not pid:
-        raise ComfyFehler("ComfyUI hat keinen Auftrag angenommen")
-    ende = _UHR() + zeitlimit_s
+    except OSError:     # TimeoutError, URLError, ConnectionError: Antwort fehlt, Auftrag evtl. angenommen
+        gesendet_ohne_antwort, rumpf = True, b""
+    if not gesendet_ohne_antwort:
+        try:
+            pid = json.loads(rumpf or b"{}").get("prompt_id") or ""
+        except ValueError:
+            pid = ""
+        if not pid:
+            raise ComfyFehler("ComfyUI hat keinen Auftrag angenommen")
+    beginn = _UHR()
+    ende = beginn + zeitlimit_s
     fehlschlaege = 0
     while True:
         try:
@@ -116,10 +149,23 @@ def _ausfuehren(ablauf: dict, zeitlimit_s: int) -> bytes:
             fehlschlaege += 1
         if png is not None:
             return png
+        if gesendet_ohne_antwort and _UHR() - beginn >= GNADE_S:
+            bekannt = _in_warteschlange(pid)
+            if bekannt:
+                gesendet_ohne_antwort = False      # angenommen: ab jetzt normal bis zum Zeitlimit
+            elif bekannt is False:                 # letzter History-Blick: evtl. gerade fertig geworden
+                try:
+                    png = _abfragen(pid)
+                except OSError:
+                    png, bekannt = None, None      # unklar: weiter pollen
+                if png is not None:
+                    return png
+                if bekannt is False:
+                    raise ComfyVoruebergehend("ComfyUI antwortet nicht (Zeitueberschreitung beim Auftrag)")
         if _UHR() >= ende:
             break
         _SCHLAF(min(POLL_PAUSE_MAX_S, TAKT_S * fehlschlaege) if fehlschlaege else TAKT_S)
-    raise ComfyFehler(f"Zeitlimit {zeitlimit_s} s ueberschritten")
+    raise ComfyVoruebergehend(f"Zeitlimit {zeitlimit_s} s ueberschritten")
 
 ABLAUF_UEBERARBEITEN = Path(os.environ.get("COMFYUI_ABLAUF_UEBERARBEITEN") or
                             Path(__file__).resolve().parents[1] / "bilder" / "flux_schnell_img2img_api.json")
@@ -137,8 +183,16 @@ def _hochladen(name: str, daten: bytes) -> str:
              f"true\r\n--{grenze}--\r\n".encode())
     req = urllib.request.Request(URL + "/upload/image", data=rumpf, method="POST",
                                  headers={"Content-Type": f"multipart/form-data; boundary={grenze}"})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return str(json.loads(r.read() or b"{}").get("name") or name)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return str(json.loads(r.read() or b"{}").get("name") or name)
+    except urllib.error.HTTPError as e:      # vor OSError: HTTPError ist eine Unterklasse
+        art = ComfyVoruebergehend if e.code >= 500 else ComfyFehler   # 4xx: Bild abgelehnt, 5xx: Stoerung
+        raise art(f"Vorlage/Quelle nicht an ComfyUI uebergeben: {e.code}") from None
+    except OSError:                          # TimeoutError, URLError, ConnectionError
+        raise ComfyVoruebergehend("Vorlage/Quelle nicht an ComfyUI uebergeben: Zeitueberschreitung") from None
+    except ValueError:                       # Antwort kein JSON
+        raise ComfyVoruebergehend("Vorlage/Quelle nicht an ComfyUI uebergeben: Antwort unlesbar") from None
 
 
 def ueberarbeiten(prompt: str, quelle: bytes, breite: int, hoehe: int, seed: int, staerke: int,
