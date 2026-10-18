@@ -116,3 +116,20 @@ Grundsaetze: Der Video-Claw **versendet nie** und legt keine Marketing-Entwuerfe
 - E4 Bestellweg: Seite `/marketing/reels` **und** Agent-Werkzeug `reel_beauftragen`.
 - E5 Stimme: Laura nutzt den Podcast-Sprechdienst mit; Firewall-Freigabe fuer 8899 **nur** fuer die VM-Adresse `100.67.177.45`.
 - E6 Laura-Repo: Aenderungen auf Branch, Suite gruen, Merge nach `main` und VM-Deploy erst beim Livegang nach User-OK.
+
+---
+
+## Phase F – Sprechende Personen im Reel (18.10.2026, User: „plan dann los“)
+
+**Ziel:** Reels mit echtem Originalton (Person spricht selbst), auch gemischt mit Bildern/Karten und eingesprochener Stimme. Dazu die Untertitel-Schwaeche aus dem ersten Probe-Reel.
+
+**Befunde:** 8 echte Videos in Laura, alle mit Ton und abgeschlossener Analyse (Transkript) - 7 Produktvideos (36-105 s) und „Laura sales claw Aufnahme“ (485 s). Untertitel fuer Originalton kommen aus dem Transkript; eine Kopie in ein neues Projekt hat KEINE Analyse -> Reel mit Originalton im Projekt des Videos bauen. Neue Videos brauchen die Analyse-Laufzeit am PC (Docker) - nicht Teil dieser Phase.
+Probe-Reel 1 zeigte: Untertitelzeilen laufen ueber Satzgrenzen („Stimme. Die Untertitel“), weil `group_caption_lines` nur nach Wortzahl/Breite/Pause trennt.
+
+- [ ] **F1 Untertitel brechen am Satzende** (Laura `render/captions.py`): nach einem Wort, das auf `.`, `!`, `?` endet, beginnt eine neue Zeile. Test mit dem Fall aus dem Probe-Reel.
+- [ ] **F2 Beat mit Originalton** (Laura narrated-reel): `originalton: true` + `src_out_frame` -> kein Voiceover, Clip genau `src_in..src_out` (hoechstens 60 s), der Originalton bleibt. `text` dann optional. API-Pruefung (Laenge, Reihenfolge, Asset-Ende).
+- [ ] **F3 Untertitel gemischt**: `caption_source="gemischt"` = Voiceover-Woerter fuer eingesprochene Beats + Transkript-Woerter fuer Originalton-Abschnitte (ausserhalb der Voiceover-Spannen). `render-reel` nimmt `caption_source` optional an (nur gesetzt im Rezept, alte Aufrufe byte-gleich). Narrated Reel mit `ausgabe=reel` nutzt `gemischt`.
+- [ ] **F4 Video-Claw**: `reel_bauen` nimmt Beats `{originalton: true, asset_id, src_in_frame, src_out_frame}` und rendert mit `caption_source=gemischt`; Skill `reel-aus-material` und `kurzfassung` auf Originalton umgestellt (Person spricht selbst, Einordnung nur als Karte/kurzer Satz); Grundregel: Reel mit Originalton im Projekt des Videos (kein `material_uebernehmen`).
+- [ ] **F5 Livegang**: Laura main + VM-Build, vibemind-os master + PC, Probe-Reels: (a) Kurzfassung aus „Laura sales claw Aufnahme“ nur Originalton, (b) gemischt: Titelkarte + Originalton-Ausschnitt + Schlusskarte.
+
+KI-Sprecher (Persona/Lipsync) bleibt ausgeklammert: braucht Einwilligung und GPU-Laufzeiten (Docker), eigene Entscheidung.
