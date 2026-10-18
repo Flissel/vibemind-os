@@ -73,6 +73,12 @@ if "stream-json" in argv and "--thinking-display" in argv and modus not in ("den
     sys.exit(0)
 
 
+if modus == "haengen_mit_kind":
+    # Windows-Fall (18.10.2026): ein Unterprozess erbt stdout/stderr und haelt sie offen, die CLI selbst
+    # haengt. subprocess.run(timeout=...) wartete danach endlos auf die Kanaele.
+    import subprocess as _sp
+    _sp.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    time.sleep(120)
 if modus == "exit":
     sys.stderr.write("kaputt\n")
     sys.exit(3)

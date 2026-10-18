@@ -465,6 +465,37 @@ def _build_command(
     return argv, system_prompt_file, environment
 
 
+def _baum_beenden(pid: int) -> None:
+    """Prozess samt allen Unterprozessen beenden. Unter Windows beendet Popen.kill() nur den direkten
+    Prozess - Enkel (z.B. Hilfsprozesse der CLI) halten stdout/stderr offen."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True, timeout=30, check=False)
+    else:
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+
+
+def _laufen_mit_zeitlimit(argv: list[str], eingabe: str, *, timeout: float, cwd: str,
+                          env: dict[str, str]) -> subprocess.CompletedProcess:
+    """Wie subprocess.run(..., timeout=), aber verlaesslich: nach dem Zeitlimit wird der ganze Baum
+    beendet und hoechstens 10 s auf die Kanaele gewartet (18.10.2026: ein Video-Claw-Lauf hing ueber eine
+    Stunde trotz --timeout 1800 - run() wartete nach dem Kill endlos auf von Enkeln gehaltene Pipes)."""
+    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding="utf-8", errors="replace", cwd=cwd, env=env)
+    try:
+        out, err = proc.communicate(eingabe, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        _baum_beenden(proc.pid)
+        try:
+            proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        raise ShimError(f"Claude Code CLI timed out after {timeout}s") from exc
+    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+
+
 def _unlink_quiet(path: str | None) -> None:
     if path:
         try:
@@ -493,22 +524,8 @@ def run_claude(
     )
 
     try:
-        with tempfile.TemporaryDirectory(prefix="claude-shim-") as workdir:
-            try:
-                completed = subprocess.run(
-                    argv,
-                    input=transcript,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=timeout,
-                    cwd=workdir,
-                    env=environment,
-                    check=False,
-                )
-            except subprocess.TimeoutExpired as exc:
-                raise ShimError(f"Claude Code CLI timed out after {timeout}s") from exc
+        with tempfile.TemporaryDirectory(prefix="claude-shim-", ignore_cleanup_errors=True) as workdir:
+            completed = _laufen_mit_zeitlimit(argv, transcript, timeout=timeout, cwd=workdir, env=environment)
     finally:
         _unlink_quiet(system_prompt_file)
 

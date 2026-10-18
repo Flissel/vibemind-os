@@ -84,11 +84,33 @@ def material_suchen(suchwort: str = "", anzahl: int = 10) -> dict:
     return {"ok": True, "daten": videos[:max(1, min(int(anzahl or 10), 30))]}
 
 
-def transkript(asset_id: str) -> dict:
-    """Transkript eines Videos mit Zeitmarken - daraus waehlst du die Stellen (src_in_frame) fuer die Beats."""
+def transkript(asset_id: str, von_s: float = 0, bis_s: float = 0) -> dict:
+    """Transkript eines Videos, kompakt: je Segment start_frame, end_frame, text (Frame / 30 = Sekunde).
+    Daraus waehlst du die Stellen fuer die Beats. von_s/bis_s grenzen auf einen Zeitbereich ein
+    (0 = vom Anfang / bis zum Ende) - bei langen Videos erst grob ueberfliegen, dann eingrenzen."""
     if not _id(asset_id, "asset_id"):
         return _fehler("asset_id ungueltig")
-    return laura_lesen.transkript(asset_id)
+    r = laura_lesen.transkript(asset_id)
+    if not r.get("ok"):
+        return r
+    # Laura liefert je Segment auch jedes Wort mit Samples, IDs und Konfidenz - bei einer 8-Minuten-
+    # Aufnahme so viel, dass die CLI es in eine Datei auslagerte und der Claw sie stueckweise las
+    # (Probe 18.10.: Lauf blieb danach haengen). Hier nur, was fuer die Stellenwahl zaehlt.
+    try:
+        von_f, bis_f = max(0.0, float(von_s or 0)) * 30, max(0.0, float(bis_s or 0)) * 30
+    except (TypeError, ValueError):
+        return _fehler("von_s/bis_s: Sekunden als Zahl")
+    segmente = []
+    for s in (r.get("daten") or {}).get("segmente") or []:
+        if not isinstance(s, dict):
+            continue
+        start, ende = int(s.get("start_frame") or 0), int(s.get("end_frame") or s.get("start_frame") or 0)
+        if (von_f and ende < von_f) or (bis_f and start > bis_f):
+            continue
+        segmente.append({"start_frame": start, "end_frame": ende, "text": str(s.get("text") or "").strip()})
+    return {"ok": True, "daten": {"segmente": segmente[:400], "anzahl": len(segmente),
+                                  **({"hinweis": "gekuerzt auf 400 Segmente - mit von_s/bis_s eingrenzen"}
+                                     if len(segmente) > 400 else {})}}
 
 
 # --- Bauen ------------------------------------------------------------------------------------------

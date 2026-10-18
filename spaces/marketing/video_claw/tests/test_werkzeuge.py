@@ -213,3 +213,30 @@ def test_reel_bauen_vorgaben(laura):
 def test_reel_bauen_feinschliff_geprueft(laura, kw):
     rek = laura([])
     assert not w.reel_bauen(PID, [{"text": "Satz.", "asset_id": AID}], **kw)["ok"] and rek.aufrufe == []
+
+
+# --- kompaktes Transkript (Probe 18.10.: Wortlisten liessen den Lauf haengen) -----------
+
+def _segmente(monkeypatch, segmente):
+    monkeypatch.setattr(w.laura_lesen, "transkript",
+                        lambda aid: {"ok": True, "daten": {"segmente": segmente, "text": "x"}})
+
+
+def test_transkript_kompakt_ohne_woerter(monkeypatch):
+    _segmente(monkeypatch, [{"start_frame": 0, "end_frame": 90, "text": " Hallo ", "idx": 1,
+                             "words": [{"start_sample": 1, "confidence": 0.9}] * 50}])
+    r = w.transkript(AID)
+    assert r["daten"]["segmente"] == [{"start_frame": 0, "end_frame": 90, "text": "Hallo"}]
+    assert "words" not in str(r)
+
+
+def test_transkript_zeitbereich(monkeypatch):
+    _segmente(monkeypatch, [{"start_frame": f, "end_frame": f + 60, "text": str(f)} for f in range(0, 3000, 300)])
+    r = w.transkript(AID, von_s=30, bis_s=60)
+    assert [s["text"] for s in r["daten"]["segmente"]] == ["900", "1200", "1500", "1800"]
+
+
+def test_transkript_deckel(monkeypatch):
+    _segmente(monkeypatch, [{"start_frame": i, "end_frame": i, "text": "w"} for i in range(500)])
+    r = w.transkript(AID)
+    assert len(r["daten"]["segmente"]) == 400 and r["daten"]["anzahl"] == 500 and "hinweis" in r["daten"]

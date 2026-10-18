@@ -738,3 +738,15 @@ def test_tools_websuche_rueckfall_ohne_websearch(tmp_path, monkeypatch):
                              ohne_werkzeuge=True, websuche=True))
     assert len(gebaut) == 2
     assert _tools(gebaut[0]) == ["WebSearch"] and _tools(gebaut[1]) == [""]
+
+
+
+def test_zeitlimit_beendet_den_ganzen_baum(tmp_path, monkeypatch):
+    """Video-Claw 18.10.2026: ein CLI-Lauf hing ueber eine Stunde, obwohl --timeout 1800 gesetzt war -
+    subprocess.run wartete nach dem Zeitlimit endlos auf Kanaele, die ein Unterprozess offen hielt."""
+    monkeypatch.setenv("CLAUDE_CODE_CLI", _cli_huelle(tmp_path))
+    monkeypatch.setenv("FALSCH_MODUS", "haengen_mit_kind")
+    start = time.monotonic()
+    with pytest.raises(shim.ShimError, match="timed out"):
+        shim.run_claude(system_prompt="s", transcript="t", model="claude-code-sonnet", timeout=3)
+    assert time.monotonic() - start < 30
