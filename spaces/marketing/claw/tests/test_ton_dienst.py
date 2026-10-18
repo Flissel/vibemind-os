@@ -141,3 +141,33 @@ def test_vorladen_fehler_kippt_nichts(monkeypatch):
         raise RuntimeError("CUDA weg")
     monkeypatch.setattr(td, "_modell_laden", kaputt)
     td.vorladen_starten().join(2)       # keine Ausnahme nach aussen
+
+
+# --- Ausspracheverzeichnis (18.10.2026: "Sales"/"Bot" deutsch ausgesprochen) ------------
+
+VERZ = {"Sales": "Sejls", "Bot": "Bott", "Bots": "Botts", "LinkedIn": "Linkt-inn"}
+
+
+@pytest.mark.parametrize("text, erwartet", [
+    ("Mein Sales-Bot macht Vorschläge.", "Mein Sejls-Bott macht Vorschläge."),
+    ("Ein guter Bot, zwei Bots!", "Ein guter Bott, zwei Botts!"),
+    ("Angebot und Botschaft bleiben.", "Angebot und Botschaft bleiben."),
+    ("sales klein bleibt", "sales klein bleibt"),
+    ("Auf LinkedIn posten", "Auf Linkt-inn posten"),
+])
+def test_aussprache_anwenden(text, erwartet):
+    assert td.aussprache_anwenden(text, VERZ) == erwartet
+
+
+def test_laengerer_eintrag_zuerst():
+    assert td.aussprache_anwenden("Sales-Bot", {"Sales": "X", "Sales-Bot": "Sejls-Bott"}) == "Sejls-Bott"
+
+
+def test_aussprache_laden(tmp_path, monkeypatch):
+    monkeypatch.delenv("TON_AUSSPRACHE", raising=False)
+    monkeypatch.setenv("TON_STIMMEN_ORDNER", str(tmp_path))
+    assert td.aussprache_laden() == {}
+    (tmp_path / "aussprache.json").write_text('{"Sales": "Sejls", "": "x", "Bot": 5}', encoding="utf-8")
+    assert td.aussprache_laden() == {"Sales": "Sejls"}
+    (tmp_path / "aussprache.json").write_text("kaputt", encoding="utf-8")
+    assert td.aussprache_laden() == {}

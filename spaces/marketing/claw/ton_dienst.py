@@ -175,9 +175,43 @@ def _modell_laden():
         return _modell
 
 
+def aussprache_datei() -> Path | None:
+    """TON_AUSSPRACHE oder <TON_STIMMEN_ORDNER>/aussprache.json."""
+    roh = os.environ.get("TON_AUSSPRACHE", "").strip()
+    if roh:
+        return Path(roh)
+    ordner = stimmen_ordner()
+    return ordner / "aussprache.json" if ordner else None
+
+
+def aussprache_laden(datei: Path | None = None) -> dict[str, str]:
+    """{"Sales": "Sejls", ...} aus der Datei; fehlt/kaputt -> {} (Sprechen darf daran nie scheitern).
+    Bei jedem Aufruf neu gelesen: der Betreiber ergaenzt die Datei ohne Neustart."""
+    datei = datei if datei is not None else aussprache_datei()
+    if datei is None or not datei.is_file():
+        return {}
+    try:
+        roh = json.loads(datei.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        LOG.warning("Aussprache-Datei %s nicht lesbar", datei)
+        return {}
+    return {str(k): str(v) for k, v in roh.items()
+            if isinstance(roh, dict) and isinstance(k, str) and k.strip() and isinstance(v, str) and v.strip()}
+
+
+def aussprache_anwenden(text: str, verzeichnis: dict[str, str]) -> str:
+    """Ganze Woerter ersetzen (18.10.2026: das deutsche Modell sprach "Sales"/"Bot" nach deutschen Regeln).
+    Gross/klein genau wie eingetragen; Bindestrich und Satzzeichen trennen ("Sales-Bot," -> "Sejls-Bott,").
+    Laengere Eintraege zuerst, damit "Sales-Bot" vor "Sales" greift. Die Untertitel nehmen den Originaltext."""
+    for alt in sorted(verzeichnis, key=len, reverse=True):
+        text = re.sub(rf"(?<![\w]){re.escape(alt)}(?![\w])", verzeichnis[alt], text)
+    return text
+
+
 def sprechen(text: str, sprache: str, probe: Path | None) -> bytes:
     import torchaudio
     modell = _modell_laden()
+    text = aussprache_anwenden(text, aussprache_laden())
     with _sprech_lock:   # ein Modell, eine GPU: nacheinander
         kw = {"language_id": sprache}
         if probe is not None:
