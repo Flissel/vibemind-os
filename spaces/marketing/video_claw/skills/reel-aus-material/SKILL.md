@@ -21,7 +21,12 @@ description: "Reel aus vorhandenen Laura-Videos: passende Stellen im Transkript 
      `sprechertext` des Briefings (nichts dazuerfinden).
 5. **Einstieg.** Der erste Beat ist der Hook: entweder ein starker Originalton-Satz oder eine `titelkarte`
    mit dem Thema (≤ 6 Wörter). Gesamtlänge ≈ `dauer_s`.
-6. **Bauen.** `reel_bauen` mit den Beats, `stimme` aus dem Briefing, `hook` nur wenn keine Titelkarte.
-7. Notiz: welche Videos und Stellen, welche mit Originalton, ein Satz. Dann `EXPORT: <id>`.
+6. **Untertitel prüfen.** Für Originalton-Stellen offensichtliche Hörfehler der Spracherkennung als
+   `untertitel_ersetzen` sammeln (je ein Wort, z. B. `{"Kastermann": "Kunden"}`), nichts umformulieren.
+7. **Rahmung.** Bildschirmaufnahmen, Folien, breite Videos → `rahmung: "einpassen"`; Person groß vor der
+   Kamera → `"zuschnitt"` (Vorgabe).
+8. **Bauen.** `reel_bauen` mit den Beats, `stimme` aus dem Briefing, `hook` nur wenn keine Titelkarte.
+9. Notiz: welche Videos und Stellen, welche mit Originalton, Rahmung, korrigierte Wörter, ein Satz.
+   Dann `EXPORT: <id>`.
 
 Der KI-Hinweis („Stimme: KI“) kommt automatisch, sobald ein Beat eingesprochen ist.
