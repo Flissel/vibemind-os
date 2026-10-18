@@ -17,9 +17,15 @@ description: "Langes Video kürzen: die stärksten 15–60 Sekunden, in denen di
    Schlusskarte mit Handlung danach. Jeder Karten-Beat ist ein Beat mit `text` und wird **eingesprochen**
    (ein kurzer Satz, bei einer Karte von 2,5 s höchstens 6 Wörter). Ohne `sprechertext` im Briefing
    lieber ganz ohne Karten – dann besteht das Reel nur aus Originalton.
-5. **Bauen.** `reel_bauen` mit Beats `{"originalton": true, "asset_id": <Video>, "src_in_frame": <Start>,
+5. **Untertitel prüfen.** Die Untertitel kommen aus dem Transkript der Spracherkennung. Lies die gewählte
+   Stelle und sammle **offensichtliche Hörfehler** als `untertitel_ersetzen` (je ein Wort, z. B.
+   `{"Kastermann": "Kunden"}`). Nichts umformulieren, keine Füllwörter streichen.
+6. **Rahmung.** Bildschirmaufnahme, Folien oder sehr breites Video (`aufloesung` aus `material_suchen`,
+   z. B. 1898x1024 mit Oberfläche) → `rahmung: "einpassen"`; Person groß vor der Kamera → `"zuschnitt"`.
+7. **Bauen.** `reel_bauen` mit Beats `{"originalton": true, "asset_id": <Video>, "src_in_frame": <Start>,
    "src_out_frame": <Ende>}` (und ggf. den Karten-Beats davor/danach), `hook` = Thema in einer Zeile.
-6. Notiz: welche Stelle (Sekunden von–bis) und warum, ein Satz. Dann `EXPORT: <id>`.
+8. Notiz: welche Stelle (Sekunden von–bis), Rahmung und welche Wörter korrigiert, ein Satz. Dann
+   `EXPORT: <id>`.
 
 Hinweis „Stimme: KI“ erscheint nur, wenn ein Karten-Beat eingesprochen ist – reiner Originalton bekommt
 keinen KI-Hinweis.

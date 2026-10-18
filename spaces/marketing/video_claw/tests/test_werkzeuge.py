@@ -185,3 +185,31 @@ def test_skills_kennen_originalton():
     for name in ("kurzfassung", "reel-aus-material"):
         text = (ordner / name / "SKILL.md").read_text(encoding="utf-8")
         assert '"originalton": true' in text and "Projekt" in text
+
+
+# --- Feinschliff: Rahmung, Lautheit, Untertitel-Korrektur ---------------------------
+
+def test_reel_bauen_einpassen_lautheit_korrektur(laura):
+    rek = laura([(202, {"timeline_id": "tl1", "job_id": "j1"}), (200, {"status": "succeeded", "result_json": "{}"}),
+                 (202, {"export_id": "e1e1e1e1e1"})])
+    w.reel_bauen(PID, [{"originalton": True, "asset_id": AID, "src_in_frame": 0, "src_out_frame": 300}],
+                 rahmung="einpassen", untertitel_ersetzen={"Kastermann": "Kunden"})
+    reel = rek.aufrufe[2][2]
+    assert reel["rahmung"] == "einpassen" and reel["loudnorm"] is True
+    assert reel["untertitel_ersetzen"] == {"Kastermann": "Kunden"}
+
+
+def test_reel_bauen_vorgaben(laura):
+    rek = laura([(202, {"timeline_id": "tl1", "job_id": "j1"}), (200, {"status": "succeeded", "result_json": "{}"}),
+                 (202, {"export_id": "e1e1e1e1e1"})])
+    w.reel_bauen(PID, [{"text": "Satz.", "asset_id": AID}])
+    reel = rek.aufrufe[2][2]
+    assert reel["rahmung"] == "zuschnitt" and reel["loudnorm"] is True and "untertitel_ersetzen" not in reel
+
+
+@pytest.mark.parametrize("kw", [{"rahmung": "quer"}, {"untertitel_ersetzen": {"zwei woerter": "x"}},
+                                {"untertitel_ersetzen": {f"w{i}": "x" for i in range(31)}},
+                                {"untertitel_ersetzen": ["kein", "dict"]}])
+def test_reel_bauen_feinschliff_geprueft(laura, kw):
+    rek = laura([])
+    assert not w.reel_bauen(PID, [{"text": "Satz.", "asset_id": AID}], **kw)["ok"] and rek.aufrufe == []

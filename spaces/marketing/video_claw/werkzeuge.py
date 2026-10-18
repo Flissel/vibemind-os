@@ -221,7 +221,8 @@ def _beats_pruefen(beats) -> list[dict] | str:
 
 
 def reel_bauen(projekt_id: str, beats: list, stimme: str = "standard", hook: str = "",
-               logo_asset_id: str = "", logo_position: str = "oben_rechts") -> dict:
+               logo_asset_id: str = "", logo_position: str = "oben_rechts", rahmung: str = "zuschnitt",
+               untertitel_ersetzen: dict | None = None) -> dict:
     """Das Reel bauen: je Beat ein gesprochener Satz ueber einem Clip, deutsche Stimme, Untertitel,
     Hochformat, KI-Hinweis nach Inhalt, hoechstens 15 MB. Startet den Render und liefert export_id -
     nenne sie am Ende als 'EXPORT: <export_id>'. Der Render selbst laeuft danach weiter.
@@ -229,7 +230,12 @@ def reel_bauen(projekt_id: str, beats: list, stimme: str = "standard", hook: str
     (Feldnamen genau so). Spricht eine Person im Video selbst: {"originalton": true, "asset_id": ...,
     "src_in_frame": <Start>, "src_out_frame": <Ende>} - dann kein Satz, ihr eigener Ton bleibt, die
     Untertitel kommen aus ihrem Transkript (Bildrate 30: Sekunde x 30 = Frame). Originalton geht nur mit
-    Videos im SELBEN Projekt wie dessen Analyse - baue solche Reels im Projekt des Videos. Dauert einige Minuten (die Stimme wird je Satz erzeugt) - nicht abbrechen
+    Videos im SELBEN Projekt wie dessen Analyse - baue solche Reels im Projekt des Videos.
+    rahmung: "zuschnitt" (Bildmitte, fuer Personen vor der Kamera) oder "einpassen" (ganzes Bild auf
+    weichem Hintergrund - fuer Bildschirmaufnahmen, Folien, breite Videos, sonst ist nichts lesbar).
+    untertitel_ersetzen: Erkennungsfehler aus dem Transkript korrigieren, {"Kastermann": "Kunden"} -
+    je Eintrag EIN Wort, hoechstens 30; nur offensichtliche Hoerfehler, nichts umformulieren.
+    Die Lautstaerke wird immer angeglichen. Dauert einige Minuten (die Stimme wird je Satz erzeugt) - nicht abbrechen
     und NICHT ein zweites Mal aufrufen."""
     if not _id(projekt_id, "projekt_id"):
         return _fehler("projekt_id ungueltig")
@@ -244,6 +250,13 @@ def reel_bauen(projekt_id: str, beats: list, stimme: str = "standard", hook: str
         return _fehler("logo_asset_id ungueltig")
     if logo_position not in LOGO_POSITIONEN:
         return _fehler(f"logo_position: {', '.join(LOGO_POSITIONEN)}")
+    if rahmung not in ("zuschnitt", "einpassen"):
+        return _fehler("rahmung: zuschnitt oder einpassen")
+    ersatz = untertitel_ersetzen or {}
+    if not isinstance(ersatz, dict) or len(ersatz) > 30 or any(
+            not isinstance(k, str) or not isinstance(v, str) or not k or not v or len(k) > 40 or len(v) > 40
+            or any(z.isspace() for z in k) for k, v in ersatz.items()):
+        return _fehler("untertitel_ersetzen: hoechstens 30 Eintraege, je ein Wort -> Ersatz (1-40 Zeichen)")
     r = laura_api.anfrage("POST", f"/projects/{projekt_id}/narrated-reel", {
         "beats": geprueft, "backend": "sidecar", "language": "de", "render": False,
         "voice_id": None if stimme == "standard" else stimme, "crossfade_frames": 6, "final_fade_frames": 12})
@@ -255,7 +268,10 @@ def reel_bauen(projekt_id: str, beats: list, stimme: str = "standard", hook: str
         return j
     warnungen = (j["ergebnis"] or {}).get("warnings") or []
     reel = {"vertical": True, "captions": True, "caption_preset": "reels", "kennzeichnung": "auto",
-            "caption_source": "gemischt", "max_bytes": REEL_MAX_BYTES}
+            "caption_source": "gemischt", "max_bytes": REEL_MAX_BYTES, "loudnorm": True,
+            "rahmung": rahmung}
+    if ersatz:
+        reel["untertitel_ersetzen"] = ersatz
     if hook.strip():
         reel["hook_text"] = hook.strip()
     if logo_asset_id:
