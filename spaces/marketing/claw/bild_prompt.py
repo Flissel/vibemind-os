@@ -171,3 +171,20 @@ def bearbeitungs_prompt(beschreibung: str, platz: dict, titel: str, hinweis: str
         teile = [(hinweis or "").strip(), ohne_schrift(beschreibung).strip(), str(platz.get("alt") or "").strip(), titel.strip()]
         kern = ", ".join(t for t in teile if t)[:PROMPT_MAX] or "abstract network"
     return f"{kern}, {farben}, {VERBOT}"
+
+
+_AENDERUNG = ("You edit an existing photo with an image model. Write ONE short English instruction for the model.\n"
+              "Wish of the operator (German): {anweisung}\n"
+              "Image style of the brand: {bildstil}\n"
+              "Rules: say exactly what changes; end with 'Keep everything else unchanged.'; no text, no letters, "
+              "no logos in the image. Answer with the instruction only.")
+
+
+def aenderungs_prompt(anweisung: str, platz: dict) -> str:
+    """Anweisung fuer FLUX.2-Aendern (Referenz 1 = das Bild selbst). Ollama uebersetzt und schaerft; ohne Antwort
+    geht die deutsche Anweisung mit festem Rahmen durch (Qwen3 als Text-Encoder versteht sie)."""
+    anfrage = _AENDERUNG.format(anweisung=(anweisung or "-")[:500], bildstil=_bildstil(platz))
+    antwort = _ollama("/api/generate", {"model": TEXT_MODELL, "prompt": anfrage, "stream": False,
+                                        "keep_alive": 0, "options": {"temperature": 0.3, "num_ctx": NUM_CTX}})
+    kern = bereinigen(antwort.get("response", ""))
+    return kern or f"Keep the image unchanged except: {anweisung.strip()[:500]}"

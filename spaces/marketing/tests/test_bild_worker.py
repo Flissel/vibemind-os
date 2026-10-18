@@ -26,7 +26,7 @@ ALT = png(64, 32)                          # echtes Quellbild: der Arbeiter norm
 class Api:
     def __init__(self, auftrag):
         self.auftrag, self.log, self.quellen, self.messung = auftrag, [], {}, None
-        self.hochgeladen = []
+        self.hochgeladen, self.vorlagen = [], {}
 
     def naechster(self):
         a, self.auftrag = self.auftrag, None
@@ -46,6 +46,9 @@ class Api:
     def quelle(self, aid, platz):
         self.log.append(("quelle", platz)); return self.quellen.get(platz)
 
+    def vorlage(self, aid, name):
+        self.log.append(("vorlage", name)); return self.vorlagen.get(name)
+
     def fertig(self, aid, ergebnis, befund, messung=None):
         self.log.append(("fertig", ergebnis, befund)); self.messung = messung; return {"fassung": 2}
 
@@ -59,14 +62,27 @@ class Comfy:
     def __init__(self, laeuft=True, fehler=None):
         self._laeuft, self.fehler, self.masse, self.frei, self.ueber = laeuft, fehler, [], 0, []
         self.freigestellt, self.frei_png = [], None
+        self.flux1, self.flux2, self._in_flux2 = [], [], False
 
     def laeuft(self):
         return self._laeuft
 
     def erzeugen(self, prompt, b, h, seed, zeitlimit_s=300):
+        if not self._in_flux2:
+            self.flux1.append(prompt)
         if self.fehler:
             raise self.fehler
         self.masse.append((b, h)); return png(b, h)
+
+    def erzeugen_flux2(self, prompt, b, h, seed, referenzen=(), zeitlimit_s=300):
+        """Zeichnet Prompt und Referenz-Bytes auf; erzeugt ueber erzeugen(), damit Unterklassen
+        der bestehenden Tests (Folge, Zeitlimit, kaputtes PNG) auch unter FLUX.2 greifen."""
+        self.flux2.append((prompt, list(referenzen)))
+        self._in_flux2 = True
+        try:
+            return self.erzeugen(prompt, b, h, seed, zeitlimit_s=zeitlimit_s)
+        finally:
+            self._in_flux2 = False
 
     def ueberarbeiten(self, prompt, quelle, b, h, seed, staerke, zeitlimit_s=300):
         self.ueber.append((b, h, staerke, quelle)); return png(b, h)
@@ -95,6 +111,9 @@ class Prompt:
         self.nah.append(nah)
         return f"edit {platz['id']} | {beschreibung}"
 
+    def aenderungs_prompt(self, anweisung, platz):
+        return f"aendern {platz['id']} | {anweisung}"
+
     def pruefen(self, png_, prompt):
         return self.urteile.pop(0) if self.urteile else (True, "")
 
@@ -102,6 +121,7 @@ class Prompt:
 @pytest.fixture(autouse=True)
 def _start_zustand(monkeypatch):
     monkeypatch.setattr(bw, "START", {"arbeiter": None, "dienste": None})
+    monkeypatch.delenv("MARKETING_BILDMODELL", raising=False)       # Vorgabe flux2
 
 
 AUFTRAG = {"id": "0123abcd-0000-0000-0000-000000000000", "platz": None, "nur_leere": True, "hinweis": "",
@@ -1040,3 +1060,141 @@ def test_selbstpruefung_gibt_vor_dem_sehmodell_frei_nicht_danach(monkeypatch):
 
     bw.ein_durchlauf(Api(dict(AUFTRAG)), C(), P(), starten=lambda: None)
     assert folge == ["frei", "ollama", "flux", "frei", "ollama-pruefen"]
+
+
+# --- FLUX.2 [klein]: neu, aendern, Vorlagen, Rueckfall flux1 (Plan 2026-10-10, Task 5) ----------
+
+def _groesse(b: bytes) -> tuple:
+    with Image.open(io.BytesIO(b)) as bild:
+        assert bild.format == "PNG" and bild.mode == "RGB"
+        return bild.size
+
+
+AENDERN = dict(AUFTRAG, platz="neben", nur_leere=False, hinweis="Himmel als Sonnenuntergang", modus="aendern",
+               vorlagen=[])
+
+
+def test_flux2_neu_ohne_vorlagen():
+    api, comfy = Api(dict(AUFTRAG)), Comfy()
+    assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None) == "fertig"
+    assert comfy.flux2 == [("bild fuer kopf", [])] and comfy.flux1 == []
+    assert not [e for e in api.log if e[0] == "vorlage"]
+
+
+def test_flux2_neu_mit_drei_vorlagen():
+    api, comfy = Api(dict(AUFTRAG, vorlagen=["a.jpg", "b.png", "c.jpg"])), Comfy()
+    api.vorlagen = {"a.jpg": png(30, 20), "b.png": png(40, 20), "c.jpg": png(50, 20)}
+    assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None) == "fertig"
+    assert [e for e in api.log if e[0] == "vorlage"] == [("vorlage", "a.jpg"), ("vorlage", "b.png"),
+                                                          ("vorlage", "c.jpg")]
+    (text, refs), = comfy.flux2
+    assert [_groesse(r) for r in refs] == [(30, 20), (40, 20), (50, 20)] and comfy.flux1 == []
+
+
+def test_flux2_aendern_quelle_ist_referenz_eins():
+    class S(Sehen):
+        def beschreiben(self, bild):
+            raise AssertionError("aendern unter FLUX.2 braucht kein Sehmodell")
+    api, comfy, messen = Api(dict(AENDERN, vorlagen=["logo-foto.jpg"])), Comfy(), MerkMessen()
+    api.quellen["neben"] = png(64, 32)
+    api.vorlagen["logo-foto.jpg"] = png(20, 20)
+    assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None, sehen=S(), messen=messen) == "fertig"
+    (text, refs), = comfy.flux2
+    assert text == "aendern neben | Himmel als Sonnenuntergang"
+    assert [_groesse(r) for r in refs] == [(64, 32), (20, 20)]
+    assert comfy.flux1 == [] and messen.alt == [] and comfy.masse == [(1200, 608)]
+    assert api.log[-1] == ("fertig", {"neben": "nl-0123abcd-neben.jpg"}, "")
+
+
+@pytest.mark.parametrize("platz, quelle", [("neben", None), ("neben", b"\xff\xd8\xffkein bild"), ("kopf", None)])
+def test_flux2_aendern_ohne_quelle_befund(platz, quelle):
+    """Review Focus 2: Bild weg (404), unlesbar oder inzwischen Platzhalter -> kein Ersatzbild."""
+    api, comfy = Api(dict(AENDERN, platz=platz)), Comfy()
+    api.quellen[platz] = quelle
+    assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None, sehen=Sehen(), messen=Messen([])) == "zurueck"
+    assert comfy.flux2 == [] and comfy.flux1 == [] and not [e for e in api.log if e[0] in ("bild", "fertig")]
+    assert api.log[-1] == ("zurueck", f"{platz}: Quellbild fehlt", True)
+
+
+def test_vorlage_fehlt_befund():
+    api, comfy = Api(dict(AUFTRAG, vorlagen=["x.jpg"])), Comfy()
+    assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None) == "zurueck"
+    assert comfy.flux2 == [] and comfy.flux1 == []
+    assert api.log[-1][0] == "zurueck" and "Vorlage x.jpg nicht gefunden" in api.log[-1][1] and api.log[-1][2] is True
+
+
+def test_vorlage_422_nicht_mehr_in_arbeit_ist_verworfen():
+    class A(Api):
+        def vorlage(self, aid, name):
+            raise bw.ApiFehler(422, "Auftrag ist nicht (mehr) in Arbeit")
+    api, comfy = A(dict(AUFTRAG, vorlagen=["x.jpg"])), Comfy()
+    assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None) == "verworfen"
+    assert comfy.flux2 == [] and not [e for e in api.log if e[0] in ("zurueck", "fertig", "bild")]
+
+
+def test_rueckfall_flux1(monkeypatch):
+    monkeypatch.setenv("MARKETING_BILDMODELL", "flux1")
+    api, comfy = Api(dict(AUFTRAG, vorlagen=["a.jpg"])), Comfy()
+    api.vorlagen["a.jpg"] = png(20, 20)
+    assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None) == "fertig"
+    assert comfy.flux2 == [] and comfy.flux1 == ["bild fuer kopf"]
+    assert not [e for e in api.log if e[0] == "vorlage"]
+    assert api.log[-1][2].startswith("Vorlagen nur mit FLUX.2")
+
+    api, comfy, sehen, prompt = Api(dict(AENDERN)), Comfy(), Sehen(), Prompt()
+    api.quellen["neben"] = ALT
+    assert bw.ein_durchlauf(api, comfy, prompt, starten=lambda: None, sehen=sehen, messen=Messen([])) == "fertig"
+    assert comfy.flux2 == [] and comfy.flux1 == ["edit neben | a skyline"]
+    assert len(sehen.gesehen) == 1 and prompt.nah == [True]              # Staerke 55 <= GRENZE_STAERKE
+
+
+def test_alter_ueberarbeiten_auftrag_laeuft_alt():
+    """Review Focus 5: ein `ueberarbeiten`-Auftrag aus der Zeit vor FLUX.2 laeuft unter flux2 wie bisher."""
+    api, comfy, sehen, prompt = Api(dict(UEBER)), Comfy(), Sehen(), Prompt()
+    api.quellen["neben"] = ALT
+    assert bw.ein_durchlauf(api, comfy, prompt, starten=lambda: None, sehen=sehen,
+                            messen=Messen([{"aehnlich_original": 0.88, "naeher_am_hinweis": 0.04}])) == "fertig"
+    assert comfy.flux2 == [] and comfy.flux1 == ["edit neben | a skyline"] and len(sehen.gesehen) == 1
+    assert prompt.nah == [True] and api.messung == {"neben": {"aehnlich_original": 0.88, "naeher_am_hinweis": 0.04}}
+
+
+@pytest.mark.parametrize("wert, erwartet", [("", "flux2"), ("flux2", "flux2"), ("quatsch", "flux2"),
+                                            ("flux1", "flux1"), (" FLUX1 ", "flux1")])
+def test_modell_schalter(monkeypatch, wert, erwartet):
+    monkeypatch.setenv("MARKETING_BILDMODELL", wert)
+    assert bw.modell() == erwartet
+
+
+def test_modell_schalter_ohne_variable(monkeypatch):
+    monkeypatch.delenv("MARKETING_BILDMODELL", raising=False)
+    assert bw.modell() == "flux2"
+
+
+def test_speicher_voll_wird_befund():
+    api = Api(dict(AUFTRAG))
+    assert bw.ein_durchlauf(api, Comfy(fehler=bild_comfy.ComfyFehler(bild_comfy.SPEICHER_VOLL)), Prompt(),
+                            starten=lambda: None) == "zurueck"
+    assert api.log[-1][0] == "zurueck" and bild_comfy.SPEICHER_VOLL in api.log[-1][1]
+
+
+def test_arbeiter_api_vorlage_url_404_und_deckel(monkeypatch):
+    import urllib.error
+    gesehen, gelesen = [], []
+
+    def urlopen(req, timeout=None, context=None):
+        gesehen.append(req)
+        if "name=weg" in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 404, "nf", {}, None)
+        if "name=kaputt" in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 500, "x", {}, io.BytesIO(b"<html>"))
+        return _Antwort(b"y" * (bw.QUELLE_MAX + 50), gelesen)
+
+    monkeypatch.setattr(bw.urllib.request, "urlopen", urlopen)
+    api = bw.ArbeiterApi("https://vm/", "geheim")
+    assert len(api.vorlage("a1", "Mein Foto.jpg")) == bw.QUELLE_MAX + 1 and gelesen == [bw.QUELLE_MAX + 1]
+    assert gesehen[0].full_url == "https://vm/api/bilder/arbeiter/a1/vorlage?name=Mein%20Foto.jpg"
+    assert gesehen[0].unredirected_hdrs.get("X-bild-key") == "geheim"
+    assert api.vorlage("a1", "weg") is None
+    with pytest.raises(bw.ApiFehler) as e:
+        api.vorlage("a1", "kaputt")
+    assert e.value.code == 500

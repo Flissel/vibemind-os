@@ -192,3 +192,16 @@ def test_ohne_bildstil_gilt_der_warme_standard(monkeypatch):
     for _, nutzlast in gesendet:
         assert f"Bildstil der Marke: {bp.BILDSTIL_STANDARD}" in nutzlast["prompt"]
     assert "natural daylight" in bp.BILDSTIL_STANDARD and "keiner hinterlegt" in bp.BILDSTIL_STANDARD
+
+
+def test_aenderungs_prompt_nutzt_ollama_und_faellt_zurueck(monkeypatch):
+    http, gesendet = falsch("Make the sky a warm sunset. Keep everything else unchanged.")
+    monkeypatch.setattr(bp, "_ollama", http)
+    platz = dict(PLATZ, bildstil="Warme Werkstattfotos")
+    assert bp.aenderungs_prompt("Himmel als Sonnenuntergang", platz) == \
+        "Make the sky a warm sunset. Keep everything else unchanged."
+    anfrage = gesendet[0][1]["prompt"]
+    assert "Himmel als Sonnenuntergang" in anfrage and "Warme Werkstattfotos" in anfrage
+    assert gesendet[0][1]["keep_alive"] == 0 and gesendet[0][1]["options"]["num_ctx"] == bp.NUM_CTX
+    monkeypatch.setattr(bp, "_ollama", falsch("")[0])
+    assert bp.aenderungs_prompt(" Himmel rot ", PLATZ) == "Keep the image unchanged except: Himmel rot"

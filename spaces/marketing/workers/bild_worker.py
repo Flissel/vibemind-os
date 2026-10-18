@@ -127,6 +127,20 @@ class ArbeiterApi:
                 return None
             raise ApiFehler(e.code, _grund(e) or "Quellbild nicht abrufbar") from None
 
+    def vorlage(self, aid, name) -> bytes | None:
+        """Vorlage (Medienname aus b.vorlagen) von der VM; 404 (fremd, unbekannt, Vergabe weg) -> None.
+        Liest hoechstens QUELLE_MAX + 1 Bytes - laenger heisst zu gross (_vorlagen_holen)."""
+        req = urllib.request.Request(
+            f"{self.basis}/api/bilder/arbeiter/{aid}/vorlage?name={urllib.parse.quote(name)}")
+        req.add_unredirected_header("X-Bild-Key", self.schluessel)
+        try:
+            with urllib.request.urlopen(req, timeout=60, context=self.tls) as r:
+                return r.read(QUELLE_MAX + 1)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None
+            raise ApiFehler(e.code, _grund(e) or "Vorlage nicht abrufbar") from None
+
     def fertig(self, aid, ergebnis: dict, befund: str, messung: dict | None = None) -> dict:
         return self._post(f"/{aid}/fertig", {"ergebnis": ergebnis, "befund": befund, "messung": messung or {}})
 
@@ -289,6 +303,30 @@ def _freistellen(api, aid, auftrag, ziele, comfy):
     return {platz.id: name}, [f"freigestellt ({anteil:.0%} Motiv)"], {}
 
 
+def modell() -> str:
+    """Bildmodell per Schalter MARKETING_BILDMODELL: flux2 (Vorgabe, auch bei unbekannten Werten) oder flux1."""
+    return "flux1" if os.environ.get("MARKETING_BILDMODELL", "").strip().lower() == "flux1" else "flux2"
+
+
+def _vorlagen_holen(api, aid, namen) -> tuple[list[bytes], str] | str:
+    """Vorlagen als normalisierte PNGs; (liste, "") oder (leer, befund) oder "verworfen"."""
+    aus = []
+    for n in namen:
+        if not api.weiter(aid):
+            return "verworfen"
+        try:
+            roh = api.vorlage(aid, n)
+        except ApiFehler as e:
+            if e.code == 422 and "in Arbeit" in e.grund:
+                return "verworfen"
+            raise
+        png = quelle_normalisieren(roh) if roh and len(roh) <= QUELLE_MAX else None
+        if png is None:
+            return [], f"Vorlage {n} nicht gefunden oder unlesbar"
+        aus.append(png)
+    return aus, ""
+
+
 def _bildstil(auftrag: dict) -> str:
     """Abschnitt "Bildstil" aus companys/<Firma>/Marke.md der Firma des Auftrags ('' ohne Firma/Abschnitt)."""
     mandant = str(auftrag.get("mandant") or "")
@@ -345,7 +383,7 @@ def _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen):
                                               nah=staerke <= GRENZE_STAERKE)
         else:   # neu, oder Sehen gescheitert: alt + Kontext + Hinweis (Spec §7)
             text = prompt.prompt_schreiben(daten, titel, hinweis)
-        arbeit.append((platz, text, quelle))
+        arbeit.append((platz, text, quelle, None))
     je_bild_freigeben = os.environ.get("BILD_SELBSTPRUEFUNG", "") == "1"
     erg = _bilder(api, aid, arbeit, staerke, hinweis, comfy, prompt, messen, je_bild_freigeben, befunde)
     if erg == "verworfen":
@@ -354,9 +392,59 @@ def _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen):
     return ergebnis, befunde, messwerte
 
 
+def _flux2(api, aid, auftrag, ziele, comfy, prompt, messen):
+    """FLUX.2 [klein] fuer `neu` und `aendern`. Vorlagen (Mediennamen) einmal je Auftrag als Referenzen.
+    aendern: das aktuelle Bild des Platzes ist Referenz 1, Prompt aus aenderungs_prompt, kein Sehmodell.
+    Fehlt das Bild (404, unlesbar, inzwischen Platzhalter), entsteht KEIN Ersatzbild - nur der Befund.
+    Keine Aehnlichkeitsregel, keine CLIP-Messung. Rueckgabe wie _erzeugen oder "verworfen"."""
+    modus = auftrag.get("modus")
+    titel, hinweis = str(auftrag.get("titel") or ""), str(auftrag.get("hinweis") or "")
+    befunde, arbeit = [], []
+    comfy.freigeben()   # danach Ollama (Prompts): Grafikspeicher von FLUX leeren (vorheriger Auftrag)
+    geholt = _vorlagen_holen(api, aid, list(auftrag.get("vorlagen") or []))
+    if geholt == "verworfen":
+        return geholt
+    vorlagen, befund = geholt
+    if befund:
+        return {}, [befund], {}
+    palette = bild_farben.palette(auftrag.get("bloecke"))
+    bildstil = _bildstil(auftrag)
+    for platz in ziele:
+        daten = {**platz.als_dict(), "palette": palette, "bildstil": bildstil}
+        if modus == "aendern":
+            quelle = None
+            if not platz.leer:      # Platzhalter = kein Bild mehr: nichts holen
+                if not api.weiter(aid):
+                    return "verworfen"
+                try:
+                    roh = api.quelle(aid, platz.id)
+                except ApiFehler as e:
+                    if e.code == 422 and "in Arbeit" in e.grund:
+                        return "verworfen"
+                    raise
+                quelle = quelle_normalisieren(roh) if roh and len(roh) <= QUELLE_MAX else None
+            if quelle is None:
+                befunde.append(f"{platz.id}: Quellbild fehlt")
+                continue
+            text, referenzen = prompt.aenderungs_prompt(hinweis, daten), [quelle] + vorlagen
+        else:
+            text, referenzen = prompt.prompt_schreiben(daten, titel, hinweis), list(vorlagen)
+        arbeit.append((platz, text, None,
+                       lambda t, w, h, s, r=referenzen: comfy.erzeugen_flux2(t, w, h, s, r,
+                                                                             zeitlimit_s=ERZEUGUNG_ZEITLIMIT_S)))
+    je_bild_freigeben = os.environ.get("BILD_SELBSTPRUEFUNG", "") == "1"
+    erg = _bilder(api, aid, arbeit, 100, hinweis, comfy, prompt, messen, je_bild_freigeben, befunde)
+    if erg == "verworfen":
+        return erg
+    ergebnis, messwerte = erg
+    return ergebnis, befunde, messwerte
+
+
 def _bilder(api, aid, arbeit, staerke, hinweis, comfy, prompt, messen, je_bild_freigeben, befunde):
+    """arbeit: je Platz (platz, text, quelle, erzeuger). erzeuger None = FLUX.1 Text-zu-Bild (comfy.erzeugen),
+    sonst ein Callable (text, breite, hoehe, seed) -> PNG (FLUX.2 mit Referenzen)."""
     ergebnis, messwerte = {}, {}
-    for platz, text, quelle in arbeit:
+    for platz, text, quelle, erzeuger in arbeit:
         # bestes = (aehnlich, png, messung, pruef_notiz); pruef_grund und fern getrennt,
         # damit der "bestes Bild"-Befund nie einen Selbstpruefungs-Grund nennt.
         bestes, pruef_grund, fern, getroffen = None, "", "", False
@@ -364,8 +452,12 @@ def _bilder(api, aid, arbeit, staerke, hinweis, comfy, prompt, messen, je_bild_f
             if not api.weiter(aid):   # Vergabe je Versuch verlaengern (Kaltstart ~300 s, Vergabe 10 min)
                 return "verworfen"
             try:
-                png = comfy.erzeugen(text, platz.erzeug_breite, platz.erzeug_hoehe, random.randrange(2**31),
-                                     zeitlimit_s=ERZEUGUNG_ZEITLIMIT_S)
+                seed = random.randrange(2**31)
+                if erzeuger is None:
+                    png = comfy.erzeugen(text, platz.erzeug_breite, platz.erzeug_hoehe, seed,
+                                         zeitlimit_s=ERZEUGUNG_ZEITLIMIT_S)
+                else:
+                    png = erzeuger(text, platz.erzeug_breite, platz.erzeug_hoehe, seed)
             finally:
                 if je_bild_freigeben:
                     comfy.freigeben()
@@ -437,7 +529,16 @@ def ein_durchlauf(api, comfy=bild_comfy, prompt=bild_prompt, starten=dienste_sta
             if not bereit:
                 api.zurueck(aid, "Ollama nicht erreichbar – Bildbeschreibung nicht moeglich", False)
                 return "zurueck"
-            erg = _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen)
+            modus = auftrag.get("modus")
+            if modus in ("neu", "aendern") and modell() == "flux2":
+                erg = _flux2(api, aid, auftrag, ziele, comfy, prompt, messen)
+            elif modus == "aendern":   # Rueckfall flux1 (R3): der Ueberarbeiten-Weg mit Staerke 55
+                erg = _erzeugen(api, aid, {**auftrag, "modus": "ueberarbeiten", "staerke": 55},
+                                ziele, comfy, prompt, sehen, messen)
+            else:                      # neu unter flux1, ueberarbeiten (alte Auftraege, Review Focus 5)
+                erg = _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen)
+            if erg != "verworfen" and modell() == "flux1" and auftrag.get("vorlagen"):
+                erg = (erg[0], ["Vorlagen nur mit FLUX.2"] + erg[1], erg[2])
         if erg == "verworfen":
             return "verworfen"
         ergebnis, befunde, messwerte = erg
