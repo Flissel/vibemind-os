@@ -705,3 +705,21 @@ def test_vorlage_route_schluessel_und_auftrag(db, c, vorlage_ordner):
     assert c.get("/api/bilder/arbeiter/kein-uuid/vorlage?name=a.jpg", headers={"X-Bild-Key": BK}).status_code == 404
     db.antworten = [[]]
     assert c.get(f"/api/bilder/arbeiter/{AID}/vorlage?name=a.jpg", headers={"X-Bild-Key": BK}).status_code == 404
+
+
+# Fix-Runde 1: Vorlagen-Namen schon beim Anlegen nach der Regel der Arbeiter-Route (_ARBEITER_DATEI)
+@pytest.mark.parametrize("name", ["Team Foto (1).jpg", "Grüße.png", "foto(1).jpg", "a b.jpg", "-start.jpg"],
+                         ids=["leer-klammer", "umlaut", "klammer", "leerzeichen", "bindestrich-vorn"])
+def test_auftrag_vorlage_name_wie_arbeiter_route_422(db, c, name):
+    r = c.post(f"/api/pult/inhalte/{IID}/bilder", headers={"X-Pult-Key": PK},
+               json={"platz": "kopf", "modus": "neu", "vorlagen": ["ok.jpg", name]})
+    assert r.status_code == 422 and db.sql == []
+    assert r.json()["detail"] == (f"Vorlage '{name}' hat einen ungültigen Dateinamen – "
+                                  "nur Buchstaben, Ziffern, Punkt, Bindestrich, Unterstrich")
+
+
+def test_auftrag_vorlage_gueltiger_name_bleibt(db, c):
+    db.antworten = [[{"id": "a-v"}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/bilder", headers={"X-Pult-Key": PK},
+               json={"platz": "kopf", "modus": "neu", "vorlagen": ["Team_Foto-1.v2.jpg"]})
+    assert r.status_code == 200 and "'[\"Team_Foto-1.v2.jpg\"]'::jsonb" in db.sql[0]

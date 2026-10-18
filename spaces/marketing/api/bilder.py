@@ -111,6 +111,13 @@ def _vorlagen_formen(roh) -> list[str]:
     namen = list(dict.fromkeys(roh))          # Doppelte raus, Reihenfolge bleibt
     if len(namen) > VORLAGEN_MAX or not all(_bilddatei_name_ok(n) for n in namen):
         raise HTTPException(422, f"vorlagen: hoechstens {VORLAGEN_MAX} gueltige Mediennamen")
+    # Regel der Arbeiter-Route (chat._medien_ausliefern) schon hier: sonst scheitert der Auftrag erst
+    # am PC mit 404. _ARBEITER_DATEI nicht weiten - sie schuetzt alle Arbeiter-Medienrouten.
+    from spaces.marketing.api.chat import _ARBEITER_DATEI   # im Rumpf: sonst Kreisimport chat <-> bilder
+    for n in namen:
+        if not _ARBEITER_DATEI.fullmatch(n):
+            raise HTTPException(422, f"Vorlage '{n}' hat einen ungültigen Dateinamen – "
+                                     "nur Buchstaben, Ziffern, Punkt, Bindestrich, Unterstrich")
     return namen
 
 

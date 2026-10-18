@@ -38,9 +38,10 @@ DO $$ DECLARE v_i uuid := (SELECT id FROM _p073); v_id uuid; r record; BEGIN
   ASSERT r.vorlagen = '["a.jpg","b.png","c.jpg"]'::jsonb, format('1: genau die 3 Vorlagen: %s', r.vorlagen);
 END $$;
 
--- 2) 4 Vorlagen, doppelte, Zahl statt Text -> Fehler
+-- 2) 4 Vorlagen, doppelte, Zahl statt Text, Text statt Liste -> Fehler
 DO $$ DECLARE v_i uuid := (SELECT id FROM _p073); v jsonb; v_msg text; BEGIN
-  FOREACH v IN ARRAY ARRAY['["a.jpg","b.jpg","c.jpg","d.jpg"]'::jsonb, '["a.jpg","a.jpg"]'::jsonb, '[1]'::jsonb] LOOP
+  FOREACH v IN ARRAY ARRAY['["a.jpg","b.jpg","c.jpg","d.jpg"]'::jsonb, '["a.jpg","a.jpg"]'::jsonb, '[1]'::jsonb,
+                         '"a.jpg"'::jsonb] LOOP
     v_msg := NULL;
     BEGIN
       PERFORM marketing.pult_bild_auftrag(v_i, 'held', false, '', 'agent', 100, 'neu', v);

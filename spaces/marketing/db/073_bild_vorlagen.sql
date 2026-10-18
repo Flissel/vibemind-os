@@ -1,6 +1,7 @@
 -- RUNBOOK: 073 ersetzt die 7-arg-Huelle pult_bild_auftrag(uuid, text, boolean, text, text, int, text) aus 059.
 -- Nach einem Replay von 059 IMMER 073 erneut einspielen; danach verify_059 und verify_073 zusammen ueber
--- migration_probe.
+-- migration_probe. Achtung: Gibt es schon Auftraege im Modus 'aendern', scheitert ein Replay von 059 (sein
+-- Modus-Check ohne 'aendern' prueft die vorhandenen Zeilen) - dann 059 nicht erneut einspielen.
 -- 073: Bildauftraege mit Vorlagen und Modus 'aendern' (sales-claw Spec 2026-10-10-bilder-flux2-klein-design.md,
 -- Plan Task 4). Additiv, idempotent, eine Transaktion.
 --   1) marketing.bild_auftraege.vorlagen: jsonb-Liste von Mediennamen (hoechstens 3), Vorgabe []
@@ -60,7 +61,9 @@ CREATE OR REPLACE FUNCTION marketing.pult_bild_auftrag(
 LANGUAGE plpgsql AS $$
 DECLARE v_id uuid; v_v jsonb := coalesce(p_vorlagen, '[]'::jsonb);
 BEGIN
-  IF jsonb_typeof(v_v) <> 'array' OR jsonb_array_length(v_v) > 3
+  IF jsonb_typeof(v_v) <> 'array' THEN   -- eigener Schritt: OR wertet nicht garantiert von links aus
+    RAISE EXCEPTION 'Vorlagen: hoechstens 3 verschiedene Mediennamen'; END IF;
+  IF jsonb_array_length(v_v) > 3
      OR EXISTS (SELECT 1 FROM jsonb_array_elements(v_v) e WHERE jsonb_typeof(e) <> 'string')
      OR (SELECT count(DISTINCT e) FROM jsonb_array_elements_text(v_v) e) <> jsonb_array_length(v_v) THEN
     RAISE EXCEPTION 'Vorlagen: hoechstens 3 verschiedene Mediennamen'; END IF;
