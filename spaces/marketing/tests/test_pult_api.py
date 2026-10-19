@@ -433,10 +433,34 @@ def test_vorschau_bloecke_ueberspringt_gestaltpruefung(db, c):
     assert r.status_code == 200 and "Hallo Pult" in r.text
 
 
-def test_vorschau_bloecke_pdf_422(db, c):
+def test_vorschau_bloecke_pdf(db, c, monkeypatch):
+    """Paket C3: Editor-Newsletter als PDF - dasselbe Mail-HTML, von Chromium gesetzt; laden darf er nur
+    die eigenen Bild- und Schriftadressen."""
+    from spaces.marketing.claw import pdf_druck
+    gesehen = {}
+
+    def druck(html, erlaubt):
+        gesehen["html"], gesehen["erlaubt"] = html, erlaubt
+        return b"%PDF-1.7 probe"
+    monkeypatch.setattr(pdf_druck, "html_zu_pdf", druck)
+    db.antworten = [[_bloecke_zeile()]]
+    basis = "https://h.ts.net/marketing/bild/t/"
+    r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=1&format=pdf&bild_basis={basis}", headers=H)
+    assert r.status_code == 200 and r.headers["content-type"] == "application/pdf"
+    assert r.content == b"%PDF-1.7 probe"
+    assert "Hallo Pult" in gesehen["html"]
+    assert gesehen["erlaubt"] == [basis, "https://h.ts.net/marketing/schrift/"]
+
+
+def test_vorschau_bloecke_pdf_ohne_chromium_503(db, c, monkeypatch):
+    from spaces.marketing.claw import pdf_druck
+
+    def druck(html, erlaubt):
+        raise pdf_druck.PdfDruckFehler("PDF-Druck ist hier nicht eingerichtet")
+    monkeypatch.setattr(pdf_druck, "html_zu_pdf", druck)
     db.antworten = [[_bloecke_zeile()]]
     r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=1&format=pdf", headers=H)
-    assert r.status_code == 422 and "PDF" in r.json()["detail"]
+    assert r.status_code == 503 and "nicht eingerichtet" in r.json()["detail"]
 
 
 def test_vorschau_bloecke_renderfehler_422(db, c, monkeypatch):

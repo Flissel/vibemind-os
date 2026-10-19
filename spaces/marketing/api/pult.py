@@ -53,7 +53,7 @@ from typing import Callable
 from fastapi import APIRouter, Body, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response
 
-from spaces.marketing.claw import bloecke_mjml, pult_render, schriften, vorlagen_grafik, vorlagen_marke
+from spaces.marketing.claw import bloecke_mjml, pdf_druck, pult_render, schriften, vorlagen_grafik, vorlagen_marke
 from spaces.marketing.sync import _db
 
 router = APIRouter(prefix="/api/pult")
@@ -249,16 +249,22 @@ def _bild_basis(wert: str | None) -> str:
     return wert
 
 
-def _bloecke_html(dok, betreff: str, vorschautext: str, pflichtteil: dict, fmt: str, bild_basis: str) -> HTMLResponse:
-    if fmt == "pdf":
-        raise HTTPException(422, "PDF gibt es fuer Editor-Newsletter noch nicht")
+def _bloecke_html(dok, betreff: str, vorschautext: str, pflichtteil: dict, fmt: str, bild_basis: str) -> Response:
+    schrift_basis = schrift_basis_aus(bild_basis)
     try:
-        return HTMLResponse(bloecke_mjml.rendern(
+        html = bloecke_mjml.rendern(
             dok, betreff, vorschautext, pflichtteil or {},
-            bild_basis=bild_basis, handy=(fmt == "handy"),
-            schrift_basis=schrift_basis_aus(bild_basis)))
+            bild_basis=bild_basis, handy=(fmt == "handy"), schrift_basis=schrift_basis)
     except bloecke_mjml.RenderFehler as e:
         raise HTTPException(422, str(e))
+    if fmt != "pdf":
+        return HTMLResponse(html)
+    # Paket C3: dasselbe Mail-HTML als PDF (Chromium); laden darf es nur die eigenen Bild-/Schriftadressen
+    try:
+        roh = pdf_druck.html_zu_pdf(html, [bild_basis, schrift_basis])
+    except pdf_druck.PdfDruckFehler as e:
+        raise HTTPException(503, str(e))
+    return Response(roh, media_type="application/pdf")
 
 
 def _erzeugt_ordner() -> str:
