@@ -13,7 +13,16 @@ def test_druckregeln_stehen_im_kopf():
     h = pdf_druck.druck_html(HTML)
     assert h.index(pdf_druck.DRUCK_CSS) < h.index("</head>")
     assert "print-color-adjust:exact" in pdf_druck.DRUCK_CSS
-    assert "size:A4" in pdf_druck.DRUCK_CSS
+    assert "margin:0" in pdf_druck.DRUCK_CSS
+
+
+def test_eine_durchgehende_seite_wie_der_newsletter():
+    """Echter Lauf 19.10.: auf A4 sprangen grosse Bilder auf die naechste Seite und liessen Luecken - jetzt eine
+    Seite in voller Newsletter-Laenge; nur ueber der PDF-Hoechstgroesse wird auf A4 umbrochen."""
+    assert pdf_druck.seitenmass(3456) == {"width": "700px", "height": "3456px"}
+    assert pdf_druck.seitenmass(3456.2) == {"width": "700px", "height": "3457px"}
+    assert pdf_druck.seitenmass(pdf_druck.MAX_HOEHE_PX + 1) == {"format": "A4"}
+    assert pdf_druck.seitenmass(0) == {"format": "A4"}
 
 
 def test_druckregeln_ohne_kopf():
