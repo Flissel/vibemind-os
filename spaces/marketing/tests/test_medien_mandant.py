@@ -323,3 +323,131 @@ def test_ohne_schluessel_401(umg, methode, pfad, body):
         r = getattr(c, methode)(pfad, headers=kopf, **({"json": body} if body is not None else {}))
         assert r.status_code == 401
     assert f.sql == [] and p.sql == []
+
+
+# --- Editor, Entwuerfe, Bilder (Plan 2026-10-19) Task 3: Platzhalter statt Bild, Zuordnung vergessen ---
+
+def _bild_dok(url="medien:foto.jpg", extra=None):
+    d = {"root": {"type": "EmailLayout", "data": {"childrenIds": ["k"]}},
+         "k": {"type": "Image", "data": {"style": {}, "props": {"url": url, "width": 600, "height": 300}}}}
+    d.update(extra or {})
+    return d
+
+
+def _vw(iid, titel, status="entwurf", fmt="bloecke", mandant="vibemind", wo="aktuell", fassung=3):
+    return {"id": iid, "titel": titel, "status": status, "art": "newsletter", "wo": wo,
+            "mandant": mandant, "format": fmt, "fassung": fassung}
+
+
+A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+
+
+def _fassung(dok, fassung=3):
+    return {"fassung": fassung, "format": "bloecke", "bloecke": dok,
+            "felder": {"betreff": "Herbst-Betreff", "vorschautext": "Kurz"}}
+
+
+def test_platzhalter_fremdes_bild_403_ohne_schreiben(umg):
+    f, p, c = umg
+    f.antworten.append([_sicht_zeile(fremde=["Foto.jpg"])])
+    r = c.post("/api/pult/medien/platzhalter", json={"name": "foto.jpg", "mandant": "vibemind", "von": "f"},
+               headers=H)
+    assert r.status_code == 403 and r.json()["detail"] == "Das Bild gehört einer anderen Firma"
+    assert not any("pult_bloecke_speichern" in s for s in f.sql) and len(f.sql) == 1 and p.sql == []
+
+
+def test_platzhalter_stellt_nur_eigene_entwuerfe_um(umg):
+    f, _, c = umg
+    f.antworten.append([_sicht_zeile()])
+    f.antworten.append([_vw(A, "Mein Entwurf"), _vw("b", "Eingereicht", status="eingereicht"),
+                        _vw("c", "Raus", status="freigegeben", wo="freigegeben"),
+                        _vw("d", "Geheim", mandant="fin2gether")])
+    f.antworten.append([_fassung(_bild_dok())])
+    f.antworten.append([{"fassung": 4}])
+    r = c.post("/api/pult/medien/platzhalter", json={"name": "foto.jpg", "mandant": "vibemind", "von": "f"},
+               headers=H)
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["umgestellt"] == [{"id": A, "titel": "Mein Entwurf", "fassung": 4}]
+    assert {g["id"] for g in j["gesperrt"]} == {"b", "c", "d"} and len(j["gesperrt"]) == 3
+    assert all(g["grund"] for g in j["gesperrt"]) and "Geheim" not in r.text
+    speichern = [s for s in f.sql if "pult_bloecke_speichern" in s]
+    assert len(speichern) == 1
+    s = speichern[0]
+    assert f"'{A}'::uuid, 3," in s and "'Herbst-Betreff'" in s and "'Kurz'" in s and "'betreiber', false" in s
+    assert "medien:platzhalter-2x1.png" in s and "medien:foto.jpg" not in s
+    assert "'vibemind'" in f.sql[0]
+
+
+def test_platzhalter_feldfassung_gesperrt(umg):
+    f, _, c = umg
+    f.antworten.append([_sicht_zeile()])
+    f.antworten.append([_vw(A, "Alt", fmt="felder")])
+    r = c.post("/api/pult/medien/platzhalter", json={"name": "foto.jpg", "mandant": "vibemind"}, headers=H)
+    assert r.status_code == 200 and r.json()["umgestellt"] == [] and len(r.json()["gesperrt"]) == 1
+    assert not any("pult_bloecke_speichern" in s for s in f.sql)
+
+
+def test_platzhalter_db_ablehnung_wird_gesperrt(umg):
+    f, _, c = umg
+    f.antworten.append([_sicht_zeile()])
+    f.antworten.append([_vw(A, "Mein Entwurf")])
+    f.antworten.append([_fassung(_bild_dok())])
+    f.fehler = [None, None, None, RuntimeError("psql: ERROR:  Der Assistent arbeitet gerade\nCONTEXT: x")]
+    r = c.post("/api/pult/medien/platzhalter", json={"name": "foto.jpg", "mandant": "vibemind"}, headers=H)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"umgestellt": [],
+                        "gesperrt": [{"id": A, "titel": "Mein Entwurf", "grund": "Der Assistent arbeitet gerade"}]}
+
+
+def test_platzhalter_db_weg_503(umg):
+    f, _, c = umg
+    f.antworten.append([_sicht_zeile()])
+    f.antworten.append([_vw(A, "Mein Entwurf")])
+    f.antworten.append([_fassung(_bild_dok())])
+    f.fehler = [None, None, None, RuntimeError("ssh: connect to host offload-vm")]
+    r = c.post("/api/pult/medien/platzhalter", json={"name": "foto.jpg", "mandant": "vibemind"}, headers=H)
+    assert r.status_code == 503 and "offload" not in r.text
+
+
+def test_platzhalter_rest_im_dokument_sperrt(umg):
+    f, _, c = umg
+    link = {"t": {"type": "Text", "data": {"style": {}, "props": {"text": "[Bild](medien:foto.jpg)",
+                                                                  "markdown": True}}}}
+    f.antworten.append([_sicht_zeile()])
+    f.antworten.append([_vw(A, "Mein Entwurf")])
+    f.antworten.append([_fassung(_bild_dok(extra=link))])
+    r = c.post("/api/pult/medien/platzhalter", json={"name": "foto.jpg", "mandant": "vibemind"}, headers=H)
+    assert r.status_code == 200
+    assert r.json()["gesperrt"] == [{"id": A, "titel": "Mein Entwurf",
+                                     "grund": "Das Bild steckt an einer Stelle, die kein Bildplatz ist"}]
+    assert not any("pult_bloecke_speichern" in s for s in f.sql)
+
+
+@pytest.mark.parametrize("body", [{"name": "foto.jpg"}, {"name": "foto.jpg", "mandant": ""},
+                                  {"name": "../x.jpg", "mandant": "vibemind"}, {"mandant": "vibemind"}])
+def test_platzhalter_eingaben_422_ohne_sql(umg, body):
+    f, p, c = umg
+    r = c.post("/api/pult/medien/platzhalter", json=body, headers=H)
+    assert r.status_code == 422 and f.sql == [] and p.sql == []
+
+
+def test_vergessen_loescht_zuordnung(umg):
+    f, p, c = umg
+    p.ausgaben.append("1\n")
+    r = c.post("/api/pult/medien/vergessen", json={"name": "Foto.jpg"}, headers=H)
+    assert r.status_code == 200 and r.json() == {"entfernt": 1}
+    assert "DELETE FROM marketing.medien_mandant" in p.sql[0] and "dateiname = 'Foto.jpg'" in p.sql[0]
+
+
+@pytest.mark.parametrize("body", [{}, {"name": "../x"}, {"name": 5}])
+def test_vergessen_ungueltig_422(umg, body):
+    f, p, c = umg
+    assert c.post("/api/pult/medien/vergessen", json=body, headers=H).status_code == 422 and p.sql == []
+
+
+@pytest.mark.parametrize("pfad,body", [("/api/pult/medien/platzhalter", {"name": "a.jpg", "mandant": "vibemind"}),
+                                       ("/api/pult/medien/vergessen", {"name": "a.jpg"})])
+def test_platzhalter_und_vergessen_ohne_schluessel_401(umg, pfad, body):
+    f, p, c = umg
+    assert c.post(pfad, json=body).status_code == 401 and f.sql == [] and p.sql == []

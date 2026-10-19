@@ -7,6 +7,7 @@ _spalten_polster, Karte mit KARTEN_RAND. Erzeugt wird in doppelter Aufloesung,
 Kanten auf 16 aufgerundet (FLUX verlangt Vielfache von 16)."""
 from __future__ import annotations
 
+import copy
 import math
 import re
 from dataclasses import asdict, dataclass
@@ -149,3 +150,27 @@ def finde(dok: dict) -> list[Platz]:
         elif (p := _platz(dok, bid, MAIL_BREITE, oben, innen)):
             plaetze.append(p)
     return plaetze
+
+
+def platzhalter_einsetzen(dok: dict, name: str) -> tuple[dict, int]:
+    """Jeden Bildplatz mit "medien:<name>" (exakt) durch seinen Platzhalter ersetzen (Plan 2026-10-19 E4).
+    Image-Block -> medien:platzhalter-AxB.png nach width/height (fehlen sie: 4x3); Container mit diesem
+    Hintergrund -> props.url entfernt. Gibt eine neue Kopie und die Zahl der ersetzten Plaetze zurueck;
+    das Original bleibt unveraendert. Andere Stellen (Text-Links, Knoepfe) bleiben stehen - der Aufrufer
+    prueft danach, ob der Name noch vorkommt."""
+    neu = copy.deepcopy(dok) if isinstance(dok, dict) else {}
+    ziel = "medien:" + name
+    n = 0
+    for b in neu.values():
+        if not isinstance(b, dict) or b.get("type") not in ("Image", "Container"):
+            continue
+        props = (b.get("data") or {}).get("props")
+        if not isinstance(props, dict) or props.get("url") != ziel:
+            continue
+        if b["type"] == "Container":
+            del props["url"]
+        else:
+            w, h = _zahl(props.get("width"), 0), _zahl(props.get("height"), 0)
+            props["url"] = "medien:" + (platzhalter_name(w, h) if w > 0 and h > 0 else "platzhalter-4x3.png")
+        n += 1
+    return neu, n

@@ -116,3 +116,42 @@ def test_gestaltungsflaeche_ist_kein_platz():
     b["data"]["props"]["gestaltung"] = {"version": 1, "format": "quer", "hintergrund": "#FFFFFF", "ebenen": []}
     assert bp.finde(dok(["f"], f=b)) == []
     assert len(bp.finde(dok(["f"], f=bild("medien:x.png", 600, 400)))) == 1
+
+
+# --- Editor, Entwuerfe, Bilder (Plan 2026-10-19) Task 3: Platzhalter statt Bild ---
+
+def test_platzhalter_nach_seitenverhaeltnis():
+    d = dok(["k"], k=bild("medien:a.jpg", 552, 311))
+    neu, n = bp.platzhalter_einsetzen(d, "a.jpg")
+    assert n == 1 and neu["k"]["data"]["props"]["url"] == "medien:platzhalter-16x9.png"
+
+
+def test_platzhalter_ohne_masse_4x3():
+    d = dok(["k"], k=bild("medien:a.jpg", 0, None))
+    neu, n = bp.platzhalter_einsetzen(d, "a.jpg")
+    assert n == 1 and neu["k"]["data"]["props"]["url"] == "medien:platzhalter-4x3.png"
+
+
+def test_zwei_plaetze_und_container_in_einem_dokument():
+    import json
+    box = {"type": "Container", "data": {"style": {}, "props": {"url": "medien:a.jpg", "width": 600, "height": 300,
+                                                                 "childrenIds": ["t"]}}}
+    d = dok(["k", "box"], k=bild("medien:a.jpg", 600, 300), box=box, t=text("Hallo"))
+    neu, n = bp.platzhalter_einsetzen(d, "a.jpg")
+    assert n == 2
+    assert neu["k"]["data"]["props"]["url"] == "medien:platzhalter-2x1.png"
+    assert "url" not in neu["box"]["data"]["props"] and neu["box"]["data"]["props"]["childrenIds"] == ["t"]
+    assert "medien:a.jpg" not in json.dumps(neu)
+
+
+def test_aehnlicher_name_bleibt():
+    d = dok(["k", "j"], k=bild("medien:aa.jpg", 600, 300), j=bild("medien:a.jpg.bak", 600, 300))
+    neu, n = bp.platzhalter_einsetzen(d, "a.jpg")
+    assert n == 0 and neu == d
+
+
+def test_original_unveraendert():
+    d = dok(["k"], k=bild("medien:a.jpg", 600, 300))
+    vorher = repr(d)
+    neu, _ = bp.platzhalter_einsetzen(d, "a.jpg")
+    assert repr(d) == vorher and neu is not d and neu["k"] is not d["k"]

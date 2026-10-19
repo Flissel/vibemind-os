@@ -7,12 +7,15 @@ gehoert <mandant>, solange keine Zeile existiert). Alles fail-closed ueber die
 Helfer aus api.pult (DB-Fehler -> 503, DB-Ablehnung -> 422)."""
 from __future__ import annotations
 
+import json
 import re
 
 from fastapi import APIRouter, Body, Header, HTTPException
 
 from spaces.marketing.api.pult import (_NICHT_ERREICHBAR, _UNGUELTIGE_EINGABE, _db_grund, _lesen,
-                                       _lesen_einer, _mandant, _schluessel, _uuid_oder_404, lit)
+                                       _lesen_einer, _mandant, _schluessel, _schreiben, _uuid_oder_404, _von,
+                                       lit, verweise_lesen)
+from spaces.marketing.claw import bildplaetze
 from spaces.marketing.sync import _db
 
 router = APIRouter(prefix="/api/pult")
@@ -207,3 +210,92 @@ def inhalt_medien_zuordnen(iid: str, payload: dict = Body(...), x_pult_key: str 
     if not isinstance(namen, list) or not 1 <= len(namen) <= ZUORDNEN_MAX:
         raise HTTPException(422, f"namen muss 1 bis {ZUORDNEN_MAX} Eintraege haben")
     return {"zugeordnet": zuordnen_fuer_inhalt(iid, namen)}
+
+
+# --- Bilder loeschen trotz Verwendung (Plan 2026-10-19 E4-E7) -----------------------------------
+# Reihenfolge beim Aufrufer (sales-ui): pruefen -> /medien/platzhalter -> Datei loeschen -> /medien/vergessen.
+# Ist "gesperrt" nicht leer, wird die Datei NICHT geloescht (fail-closed); schon umgestellte Entwuerfe tragen
+# dann harmlose Platzhalter.
+
+_KEIN_PLATZ = "Das Bild steckt an einer Stelle, die kein Bildplatz ist"
+
+
+def _sperrgrund(v: dict) -> str | None:
+    """Grund, warum ein Verweis nicht umgestellt wird (E5), oder None (eigener Editor-Entwurf)."""
+    if not v.get("eigen"):
+        return "Entwurf einer anderen Firma"
+    if v.get("status") == "freigegeben" or v.get("wo") == "freigegeben":
+        return "Freigegeben – der Versand braucht das Bild"
+    if v.get("status") == "eingereicht":
+        return "Liegt zur Freigabe – erst zurückziehen"
+    if v.get("status") != "entwurf":
+        return "Nur Entwürfe lassen sich umstellen"
+    if v.get("format") != "bloecke":
+        return "Alter Newsletter ohne Editor – das Bild dort erst von Hand ersetzen"
+    return None
+
+
+def _umstellen(iid: str, name: str) -> tuple[int | None, str | None]:
+    """Neueste Fassung lesen, Plaetze ersetzen, als neue Fassung (Urheber betreiber) speichern.
+    (fassung, None) bei Erfolg; (None, grund) wenn gesperrt; (None, None) wenn das Bild dort nicht mehr steckt."""
+    f = _lesen_einer(lambda:
+        "SELECT fassung, format, bloecke, felder FROM marketing.inhalt_fassungen "
+        f"WHERE inhalt = {lit(iid)}::uuid ORDER BY fassung DESC LIMIT 1")
+    if not f or f.get("format") != "bloecke" or not isinstance(f.get("bloecke"), dict):
+        return None, "Alter Newsletter ohne Editor – das Bild dort erst von Hand ersetzen"
+    neu, n = bildplaetze.platzhalter_einsetzen(f["bloecke"], name)
+    rest = re.compile(r"medien:" + re.escape(name) + r"(?![\w.\-])", re.IGNORECASE)
+    if rest.search(json.dumps(neu, ensure_ascii=False)):
+        return None, _KEIN_PLATZ
+    if n == 0:
+        return None, None
+    felder = f.get("felder") if isinstance(f.get("felder"), dict) else {}
+    betreff, vorschau = str(felder.get("betreff") or ""), str(felder.get("vorschautext") or "")
+    basis = int(f["fassung"])
+    try:
+        zeile = _schreiben(lambda:
+            f"SELECT marketing.pult_bloecke_speichern({lit(iid)}::uuid, {basis}, {lit(betreff)}, "
+            f"{lit(vorschau)}, {lit(json.dumps(neu, ensure_ascii=False))}::jsonb, 'betreiber', false) AS fassung")
+    except HTTPException as e:
+        if e.status_code == 422:
+            return None, str(e.detail)
+        raise
+    return int(zeile["fassung"]), None
+
+
+@router.post("/medien/platzhalter")
+def medien_platzhalter(payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    """Vor dem Loeschen eines Bildes: eigene Editor-Entwuerfe, deren neueste Fassung es traegt, bekommen eine
+    neue Fassung mit Platzhaltern. Alles andere mit Treffer landet mit Grund in "gesperrt"."""
+    _schluessel(x_pult_key)
+    name = payload.get("name")
+    if not _gueltig(name):
+        raise HTTPException(422, "Unbekannter Dateiname")
+    m = _mandant_pflicht(payload.get("mandant"))
+    _von(payload)
+    if ist_fremd(name, m, sicht(m)):
+        raise HTTPException(403, "Das Bild gehört einer anderen Firma")
+    umgestellt, gesperrt = [], []
+    for v in verweise_lesen(name, m):
+        grund = _sperrgrund(v)
+        fassung = None
+        if grund is None:
+            fassung, grund = _umstellen(str(v["id"]), name)
+        if grund is not None:
+            gesperrt.append({"id": v.get("id"), "titel": v.get("titel") or "", "grund": grund})
+        elif fassung is not None:
+            umgestellt.append({"id": v.get("id"), "titel": v.get("titel") or "", "fassung": fassung})
+    return {"umgestellt": umgestellt, "gesperrt": gesperrt}
+
+
+@router.post("/medien/vergessen")
+def medien_vergessen(payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    """Nach dem Loeschen der Datei: Firmenzuordnung entfernen (exakter Name), sonst erbte eine spaetere
+    Datei gleichen Namens die alte Firma."""
+    _schluessel(x_pult_key)
+    name = payload.get("name")
+    if not _gueltig(name):
+        raise HTTPException(422, "Unbekannter Dateiname")
+    return {"entfernt": _schreiben_zahl(lambda: (
+        f"WITH x AS (DELETE FROM marketing.medien_mandant WHERE dateiname = {lit(name)} RETURNING 1) "
+        f"SELECT count(*)::int AS n FROM x"))}
