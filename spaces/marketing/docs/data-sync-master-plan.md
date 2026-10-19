@@ -1,3 +1,5 @@
+> **Stillgelegt 19.10.2026 (D3):** Der Abgleich DB <-> Markdown lief nie im Betrieb und ist mit Migration 076 entfernt. Dieser Plan ist überholt. Siehe `sync/README.md`.
+
 # Plan — Marketing Data Sync (pathx → Supabase ↔ Rowboat Knowledge)
 
 ## Context

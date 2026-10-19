@@ -199,7 +199,7 @@ liest dort nur, was die Routen herausgeben.
 
 `agents/` (MarketingBackendAgent mit 13 `EVENT_TO_TOOL`-Zuordnungen, `runner.py`),
 `skills/newsletter-bild`, `vorlagen/newsletter`, `bilder/` (3 ComfyUI-Workflows),
-`sync/` (Worker A/B/C: DB <-> Vault, IMAP), `mirofish/` (Qualitaetspruefung,
+`sync/` (Worker C: IMAP; Abgleich DB <-> Vault seit 076 stillgelegt), `mirofish/` (Qualitaetspruefung,
 AGPL-Hinweis in `NOTICE-AGPL.md`), `tools/`, `mockup/`, `curator/`.
 
 ## Helper scripts
@@ -212,7 +212,6 @@ In `scripts/` (Verzeichnis dieses Space):
 | `platzhalter_erzeugen.py` | Platzhalterbilder |
 | `bild_probe.py`, `freistellen_probe.py`, `ueberarbeiten_probe.py` | Proben gegen den Bild-Arbeiter |
 | `migration_probe.py`, `test_rls.py` | Pruefungen gegen die Datenbank |
-| `snapshot_pathx_data.py`, `migrate_pathx_to_supabase.py` | Einmal-Import der alten pathx-Daten |
 | `real_case_test.py` | Schleife durch echte Postfaecher; nie in einem Suitelauf |
 
 Weitere Skripte im Space: `claw/scripts/` (Dienststart) und `n8n_workflows/`

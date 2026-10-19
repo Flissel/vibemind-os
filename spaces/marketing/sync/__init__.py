@@ -7,6 +7,9 @@ Modules:
   _filename   : handle -> safe filename sanitization
   _queries    : SQL strings (centralised so trigger + render see same shape)
   _db         : thin psycopg/docker-exec wrapper for both worker contexts
-  worker_db_to_fs : LISTEN on marketing_sync, render+write files (Phase 4)
-  worker_fs_to_db : watchdog observer, propagates deletes back to DB (Phase 5)
+  worker_imap_sync: Worker C, IMAP -> marketing.inbound_messages
+  inbound_pretag  : Auto-Antwort-Erkennung fuer eingehende Mails
+
+Der Abgleich DB <-> Markdown (Worker A/B, Outbox aus 004) ist seit 076
+stillgelegt: er lief nie im Betrieb. Siehe README.md.
 """
