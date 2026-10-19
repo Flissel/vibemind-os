@@ -255,29 +255,61 @@ export function shellRadius(level: number, spacing: number = SHELL_SPACING_3D): 
   return level * spacing
 }
 
-// FNV-1a: a stable number per id, so a note always starts at the same spot.
+// FNV-1a + murmur3 finaliser: a stable number per id, so a note always starts at the same spot.
 function hashId(id: string, salt: number): number {
   let h = 2166136261 ^ salt
   for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 16777619)
+  // murmur3 finaliser: similar ids ("area1", "area2") must land far apart, not side by side.
+  h ^= h >>> 16
+  h = Math.imul(h, 0x85ebca6b)
+  h ^= h >>> 13
+  h = Math.imul(h, 0xc2b2ae35)
+  h ^= h >>> 16
   return (h >>> 0) / 4294967296
 }
 
-/**
- * Start position of a node: a fixed point on its own sphere shell. Seeding the layout there (instead of letting d3
- * pile every node into a small spiral that then explodes outward) keeps the first frames calm.
- */
-export function seedPosition3d(id: string, level: number): Point3d {
-  const r = shellRadius(level)
-  if (r === 0) return { x: 0, y: 0, z: 0 }
+/** A fixed direction (unit vector) per id, spread evenly over the sphere. */
+function hashDirection(id: string): Point3d {
   const theta = 2 * Math.PI * hashId(id, 1)
   const cosPhi = 2 * hashId(id, 2) - 1
   const sinPhi = Math.sqrt(1 - cosPhi * cosPhi)
-  return { x: r * sinPhi * Math.cos(theta), y: r * sinPhi * Math.sin(theta), z: r * cosPhi }
+  return { x: sinPhi * Math.cos(theta), y: sinPhi * Math.sin(theta), z: cosPhi }
+}
+
+/** The parent's direction, tilted by a small fixed angle per id: children fan out around their parent. */
+function nearDirection(parent: Point3d, id: string): Point3d {
+  // Any vector not parallel to the parent gives an orthonormal pair (u, v) around it.
+  const helper = Math.abs(parent.x) < 0.9 ? { x: 1, y: 0, z: 0 } : { x: 0, y: 1, z: 0 }
+  const u = normalize(cross(parent, helper))
+  const v = cross(parent, u)
+  const tilt = 0.6 * hashId(id, 3)
+  const turn = 2 * Math.PI * hashId(id, 4)
+  const c = tilt * Math.cos(turn)
+  const d = tilt * Math.sin(turn)
+  return normalize({ x: parent.x + c * u.x + d * v.x, y: parent.y + c * u.y + d * v.y, z: parent.z + c * u.z + d * v.z })
+}
+
+function cross(a: Point3d, b: Point3d): Point3d {
+  return { x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x }
+}
+
+function normalize(p: Point3d): Point3d {
+  const len = Math.hypot(p.x, p.y, p.z)
+  return len === 0 ? p : { x: p.x / len, y: p.y / len, z: p.z / len }
+}
+
+/** Start position without a parent: a fixed point on the node's own sphere shell. */
+export function seedPosition3d(id: string, level: number): Point3d {
+  const r = shellRadius(level)
+  if (r === 0) return { x: 0, y: 0, z: 0 }
+  const dir = hashDirection(id)
+  return { x: r * dir.x, y: r * dir.y, z: r * dir.z }
 }
 
 /**
  * Graph data for the 3D view. Nodes without a level go one shell beyond the deepest level. A node starts at its
- * known position (from an earlier layout) or else at its seed on the shell.
+ * known position (from an earlier layout); else on its own shell, in its parent's direction when it has a parent, so
+ * the parent links don't drag it across the shell in the first frames.
  */
 export function toGraph3d(
   nodes: InNode[],
@@ -285,10 +317,32 @@ export function toGraph3d(
   known?: ReadonlyMap<string, Point3d>,
 ): { nodes: Graph3dNode[]; links: Graph3dLink[] } {
   const deepest = nodes.reduce((max, n) => (n.level !== undefined && n.level > max ? n.level : max), 0)
+  const parentOf = new Map<string, string>()
+  for (const e of edges) if (e.kind === 'parent' && !parentOf.has(e.source)) parentOf.set(e.source, e.target)
+  const levelOf = new Map(nodes.map((n) => [n.id, n.level ?? deepest + 1]))
+  const directions = new Map<string, Point3d | null>()
+  // Direction of a node from the centre, or null for a node in the centre. Cycles fall back to the hash direction.
+  const directionOf = (id: string, seen: Set<string>): Point3d | null => {
+    if (directions.has(id)) return directions.get(id) ?? null
+    const at = known?.get(id)
+    let dir: Point3d | null
+    if (at) dir = Math.hypot(at.x, at.y, at.z) === 0 ? null : normalize(at)
+    else if (shellRadius(levelOf.get(id) ?? 0) === 0) dir = null
+    else {
+      const parent = parentOf.get(id)
+      seen.add(id)
+      const parentDir = parent && levelOf.has(parent) && !seen.has(parent) ? directionOf(parent, seen) : null
+      dir = parentDir ? nearDirection(parentDir, id) : hashDirection(id)
+    }
+    directions.set(id, dir)
+    return dir
+  }
   return {
     nodes: nodes.map((n) => {
       const level = n.level ?? deepest + 1
-      const at = known?.get(n.id) ?? seedPosition3d(n.id, level)
+      const r = shellRadius(level)
+      const dir = directionOf(n.id, new Set())
+      const at = known?.get(n.id) ?? (dir && r > 0 ? { x: r * dir.x, y: r * dir.y, z: r * dir.z } : { x: 0, y: 0, z: 0 })
       return { id: n.id, name: n.label, color: n.color, level, val: 1 + Math.min(12, n.degree), x: at.x, y: at.y, z: at.z }
     }),
     links: edges.map((e) => {

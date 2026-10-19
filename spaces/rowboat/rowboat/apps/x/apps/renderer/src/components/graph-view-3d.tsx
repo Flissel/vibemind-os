@@ -23,6 +23,7 @@ const LINK_RGB: Record<Graph3dLink['kind'], string> = {
   link: '150, 150, 150',
 }
 const CHARGE = -90
+const WARMUP_TICKS = 100
 const LINK_DISTANCE: Record<Graph3dLink['kind'], number> = {
   parent: SHELL_SPACING_3D * 0.8,
   relation: 160,
@@ -61,9 +62,15 @@ function GraphView3DInner({ nodes, edges, onSelectNode }: Props) {
   const signature = graph3dSignature(nodes, edges)
   const [input, setInput] = useState({ signature, nodes, edges })
   if (input.signature !== signature) setInput({ signature, nodes, edges })
-  const data = useMemo(() => {
+  const { data, warmupTicks } = useMemo(() => {
     rememberPositions(shownNodes)
-    return toGraph3d(input.nodes, input.edges, knownPositions)
+    // A layout of mostly unknown nodes settles before the first frame instead of on screen. Layouts that start where
+    // the nodes were barely move, so they skip this (it blocks the renderer for a moment).
+    const unknown = input.nodes.filter((n) => !knownPositions.has(n.id)).length
+    return {
+      data: toGraph3d(input.nodes, input.edges, knownPositions),
+      warmupTicks: unknown > input.nodes.length / 2 ? WARMUP_TICKS : 0,
+    }
   }, [input])
   // A hidden keep-alive section runs its effect cleanups, and that destroys the 3D scene for good: three-render-objects
   // re-inits it invisible and without the graph (19.10.: graph gone after opening a note and going back). So the
@@ -85,7 +92,7 @@ function GraphView3DInner({ nodes, edges, onSelectNode }: Props) {
   return (
     <div ref={containerRef} className="absolute inset-0">
       {visible && size && size.width > 0 && size.height > 0 && (
-        <Scene data={data} width={size.width} height={size.height} onSelectNode={onSelectNode} />
+        <Scene data={data} width={size.width} height={size.height} warmupTicks={warmupTicks} onSelectNode={onSelectNode} />
       )}
     </div>
   )
@@ -95,10 +102,11 @@ type SceneProps = {
   data: ReturnType<typeof toGraph3d>
   width: number
   height: number
+  warmupTicks: number
   onSelectNode?: (id: string) => void
 }
 
-function Scene({ data, width, height, onSelectNode }: SceneProps) {
+function Scene({ data, width, height, warmupTicks, onSelectNode }: SceneProps) {
   const graphRef = useRef<ForceGraphMethods<Node3d, Link3d>>(undefined)
   const fittedRef = useRef(false)
 
@@ -153,6 +161,7 @@ function Scene({ data, width, height, onSelectNode }: SceneProps) {
       linkWidth={linkWidth}
       linkLabel={linkLabel}
       onNodeClick={handleNodeClick}
+      warmupTicks={warmupTicks}
       cooldownTicks={200}
       onEngineStop={handleEngineStop}
     />

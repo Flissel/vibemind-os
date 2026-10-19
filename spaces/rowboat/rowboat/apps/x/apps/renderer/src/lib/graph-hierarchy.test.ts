@@ -2,6 +2,8 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_FORCES, buildHierarchyGraph, graphFileData, hierarchyForces, initialHierarchyPositions, parseHierarchy, parseVaultMap, SHELL_SPACING_3D, graph3dSignature, seedPosition3d, shellRadius, toGraph3d, vaultMapNodeId } from './graph-hierarchy'
 
+type Graph3dNodeLike = { x?: number; y?: number; z?: number }
+
 const note = (front: string, body = '# Title\n') => `---\n${front}\n---\n${body}`
 
 describe('parseHierarchy', () => {
@@ -196,6 +198,38 @@ describe('toGraph3d', () => {
     }
     expect(toGraph3d(nodes, edges).nodes[1]).toEqual(data.nodes[1])
     expect(seedPosition3d('a', 1)).not.toEqual(seedPosition3d('b', 1))
+  })
+
+  it('starts a child in the direction of its parent (no swirl across the shell)', () => {
+    const tree = [
+      { id: 'root', label: 'R', color: 'c', degree: 1, level: 0 },
+      { id: 'hub', label: 'H', color: 'c', degree: 2, level: 1 },
+      ...Array.from({ length: 20 }, (_, i) => ({ id: `kid${i}`, label: `K${i}`, color: 'c', degree: 1, level: 2 })),
+    ]
+    const parents = [
+      { source: 'hub', target: 'root', kind: 'parent' as const },
+      ...tree.slice(2).map((k) => ({ source: k.id, target: 'hub', kind: 'parent' as const })),
+    ]
+    const byId = new Map(toGraph3d(tree, parents).nodes.map((n) => [n.id, n]))
+    const hub = byId.get('hub')!
+    const angle = (a: Graph3dNodeLike, b: Graph3dNodeLike) =>
+      Math.acos((a.x! * b.x! + a.y! * b.y! + a.z! * b.z!) / (Math.hypot(a.x!, a.y!, a.z!) * Math.hypot(b.x!, b.y!, b.z!)))
+    for (let i = 0; i < 20; i++) {
+      const kid = byId.get(`kid${i}`)!
+      expect(Math.hypot(kid.x!, kid.y!, kid.z!)).toBeCloseTo(shellRadius(2), 6)
+      expect(angle(kid, hub)).toBeLessThan(0.8)
+    }
+  })
+
+  it('spreads the children of the centre node over the whole sphere', () => {
+    const tree = [
+      { id: 'root', label: 'R', color: 'c', degree: 30, level: 0 },
+      ...Array.from({ length: 30 }, (_, i) => ({ id: `area${i}`, label: `A${i}`, color: 'c', degree: 1, level: 1 })),
+    ]
+    const parents = tree.slice(1).map((k) => ({ source: k.id, target: 'root', kind: 'parent' as const }))
+    const kids = toGraph3d(tree, parents).nodes.slice(1)
+    const mean = kids.reduce((m, n) => ({ x: m.x + n.x! / kids.length, y: m.y + n.y! / kids.length, z: m.z + n.z! / kids.length }), { x: 0, y: 0, z: 0 })
+    expect(Math.hypot(mean.x, mean.y, mean.z)).toBeLessThan(0.5 * shellRadius(1))
   })
 
   it('keeps a known position instead of the seed', () => {
