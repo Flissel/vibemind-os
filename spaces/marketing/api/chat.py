@@ -27,8 +27,8 @@ from starlette.concurrency import run_in_threadpool
 from spaces.marketing.api.bilder import (_BILDTYP, _PLATZ, VORLAGEN_MAX as BILD_VORLAGEN_MAX, _anlegen,
                                          _auftrag_id, _bild_schluessel, _im_ordner, _ordner)
 from spaces.marketing.api.gestaltung import aufraeumen_falls_faellig, gestaltungen_rechnen, quellen
-from spaces.marketing.api.pult import (_erzeugt_ordner, _laden_lesen, _lesen, _lesen_einer, _schluessel, _schreiben,
-                                       _uuid_oder_404, lit)
+from spaces.marketing.api.pult import (_erzeugt_ordner, _laden_lesen, _lesen, _lesen_einer, _medien_datei, _schluessel,
+                                       _schreiben, _uuid_oder_404, lit)
 from spaces.marketing.api.medien_mandant import ist_fremd, sicht, zuordnen_fuer_inhalt
 from spaces.marketing.claw import gestaltung, schoenheit, vorlagen_marke
 
@@ -535,6 +535,18 @@ def _bloecke_fehler(bloecke: dict) -> str | None:
     return z.get("f") or None
 
 
+def _logo_einpassen(bloecke: dict) -> dict:
+    """Markenlogo (Block marke_logo, Rolle "logo") mit den echten Dateimassen in seinen Kasten einpassen, wie beim
+    Anlegen aus einer Vorlage. Paket C2: logo_einsetzen kennt die Datei nicht und setzt nur den Kasten der Vorlagen.
+    Idempotent; ohne Logo-Block oder Datei bleibt alles, wie es ist."""
+    props = (((bloecke.get("marke_logo") or {}).get("data") or {}).get("props") or {}) if isinstance(bloecke, dict) else {}
+    url = props.get("url") if isinstance(props, dict) else None
+    if not isinstance(url, str) or not url.startswith("medien:"):
+        return bloecke
+    masse = vorlagen_marke.logo_masse(_medien_datei(url, _erzeugt_ordner()))
+    return vorlagen_marke.logo_einpassen(bloecke, masse) if masse else bloecke
+
+
 def _rechnen_und_pruefen(bloecke: dict) -> tuple[dict | None, list[str], str | None]:
     """Weg einer neuen Fassung (fertig und Stopp-Behalten): Flaechen rechnen, Validator,
     Schoenheit als Hinweise. -> (bloecke, hinweise, None) oder (None, [], fehler)."""
@@ -542,6 +554,7 @@ def _rechnen_und_pruefen(bloecke: dict) -> tuple[dict | None, list[str], str | N
         bloecke, h = gestaltungen_rechnen(bloecke)
     except gestaltung.GestaltungFehler as e:
         return None, [], str(e)
+    bloecke = _logo_einpassen(bloecke)
     fehler = _bloecke_fehler(bloecke)
     if fehler:
         return None, [], str(fehler)

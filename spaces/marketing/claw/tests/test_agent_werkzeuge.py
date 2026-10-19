@@ -395,7 +395,7 @@ def test_fehler_bricht_alles_ab_und_original_bleibt():
 
 
 def test_werkzeuge_vollstaendig():
-    assert len(aw.WERKZEUGE) == 20 and set(aw.WERKZEUGE) == set(aw.PARAMETER)
+    assert len(aw.WERKZEUGE) == 21 and set(aw.WERKZEUGE) == set(aw.PARAMETER)
 
 
 def test_schritt_wird_akzeptiert_und_aendert_nichts():

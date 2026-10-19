@@ -30,7 +30,7 @@ WERKZEUGE: tuple[str, ...] = (
     "block_einfuegen", "abschnitt_einfuegen", "block_aendern", "block_verschieben", "block_loeschen", "farben_setzen",
     "schriften_setzen", "flaeche_anlegen", "ebene_hinzufuegen", "ebene_aendern", "ebene_reihenfolge", "ebene_loeschen",
     "format_setzen", "hintergrund_setzen", "bild_erzeugen", "bild_aendern", "bild_freistellen", "bild_aus_medien",
-    "entwurf_speichern", "export_vorschlagen")
+    "logo_einsetzen", "entwurf_speichern", "export_vorschlagen")
 
 # werkzeug -> (Pflichtparameter, optionale Parameter)
 PARAMETER: dict[str, tuple[set, set]] = {
@@ -52,6 +52,7 @@ PARAMETER: dict[str, tuple[set, set]] = {
     "bild_aendern": ({"platz", "anweisung"}, {"vorlagen"}),
     "bild_freistellen": ({"platz"}, set()),
     "bild_aus_medien": ({"platz", "quelle"}, set()),
+    "logo_einsetzen": ({"quelle"}, set()),
     "entwurf_speichern": ({"notiz"}, set()),
     "export_vorschlagen": ({"newsletter", "flaechen"}, set()),
 }
@@ -406,6 +407,37 @@ class _Lauf:
     def bild_aus_medien(self, a: dict) -> None:
         a = {**a, "quelle": self.quelle(a["quelle"])}
         self.bild.append(("bild_aus_medien", a))
+
+    def logo_einsetzen(self, a: dict) -> None:
+        """Schriftzug marke_wort -> Logo-Block marke_logo an derselben Stelle, wie vorlagen_marke.einsetzen es beim
+        Anlegen tut (Paket C2): alte Entwuerfe entstanden, bevor die Marke ein Logo hatte. Die echten Masse passt
+        die API beim Speichern ein (logo_einpassen); hier nur der Kasten der Vorlagen (Breite x Breite/3)."""
+        quelle = self.quelle(a["quelle"])
+        if "marke_logo" in self.b:
+            raise WerkzeugFehler("marke_logo gibt es schon - das Logo dort mit block_aendern (props.url) tauschen")
+        wort = self.b.get("marke_wort")
+        if not isinstance(wort, dict) or wort.get("type") not in ("Heading", "Text"):
+            raise WerkzeugFehler("kein Schriftzug marke_wort im Newsletter - ohne Logo-Platz nichts umbauen")
+        stil = (wort.get("data") or {}).get("style") or {}
+        groesse = stil.get("fontSize")
+        if not isinstance(groesse, (int, float)) or isinstance(groesse, bool):
+            breite = 150
+        else:
+            breite = 180 if groesse >= 44 else 150 if groesse >= 30 else 132
+        neu_stil = {"textAlign": stil.get("textAlign") if stil.get("textAlign") in ("left", "center", "right") else "left"}
+        if isinstance(stil.get("padding"), dict):
+            neu_stil = {"padding": copy.deepcopy(stil["padding"]), **neu_stil}
+        liste = self.eltern_liste("marke_wort")
+        liste[liste.index("marke_wort")] = "marke_logo"
+        del self.b["marke_wort"]
+        self.b["marke_logo"] = {"type": "Image", "data": {"style": neu_stil, "props": {
+            "url": quelle, "alt": "Logo", "width": breite, "height": breite // 3, "grafik": True,
+            "contentAlignment": "middle"}}}
+        wurzel = self.b["root"]["data"]
+        rollen = wurzel.get("rollen") if isinstance(wurzel.get("rollen"), dict) else {}
+        rollen = {k: v for k, v in rollen.items() if not k.startswith("marke_wort/")}
+        rollen["marke_logo/data/props/url"] = "logo"
+        wurzel["rollen"] = rollen
 
     def entwurf_speichern(self, a: dict) -> None:
         if self.notiz is not None:
