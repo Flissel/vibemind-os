@@ -8,6 +8,7 @@ Weitergabe. Schreiben laeuft ueber die DB-Funktionen (nie eigene Tabellen-Update
 from __future__ import annotations
 
 import hashlib
+import hmac
 import io
 import json
 import logging
@@ -102,12 +103,24 @@ _AUSSEHEN_FARBE = re.compile(r"^#[0-9a-fA-F]{6}$")
 _AUSSEHEN_LOGO = re.compile(r"^data:image/(png|jpeg);base64,[A-Za-z0-9+/=]+$")
 
 
+def _aussehen_schluessel(x_pult_key: str | None, x_aussehen_key: str | None) -> None:
+    """Pult-Schluessel ODER der schmale Aussehen-Schluessel (MARKETING_AUSSEHEN_KEY): Ivans Laden bekommt nur
+    diesen - der Pult-Schluessel oeffnet die Marketingdaten aller Firmen (C4, User-Entscheid 19.10.)."""
+    erwartet = os.environ.get("MARKETING_AUSSEHEN_KEY", "").strip()
+    kandidat = (x_aussehen_key or "").strip()
+    if erwartet and kandidat and hmac.compare_digest(kandidat.encode("utf-8", errors="replace"),
+                                                     erwartet.encode("utf-8", errors="replace")):
+        return
+    _schluessel(x_pult_key)
+
+
 @pult_router.get("/marke/aussehen")
-def marke_aussehen(mandant: str | None = None, x_pult_key: str | None = Header(None)):
+def marke_aussehen(mandant: str | None = None, x_pult_key: str | None = Header(None),
+                   x_aussehen_key: str | None = Header(None)):
     """Aussehen der Laden-Oberflaeche (Paket C4, 19.10.2026): Name, Farben, Schriften und Logo der Firma - nur
     lesend und schlank, die sales-ui fragt es je Prozess alle paar Minuten. Ungueltiges ist None (die Oberflaeche
     bleibt dort beim VibeMind-Aussehen)."""
-    _schluessel(x_pult_key)
+    _aussehen_schluessel(x_pult_key, x_aussehen_key)
     m = _mandant_pflicht(mandant)
     z = _lesen_einer(lambda:
         "SELECT m.name, s.profil->'werte' AS werte, "

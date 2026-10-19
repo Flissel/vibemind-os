@@ -1064,3 +1064,25 @@ def test_aussehen_unbekannte_firma_und_schluessel(umg):
     f.antworten += [[]]
     assert c.get("/api/pult/marke/aussehen?mandant=radhaus", headers=H).status_code == 404
     assert c.get("/api/pult/marke/aussehen?mandant=radhaus").status_code in (401, 403)
+
+
+def test_aussehen_mit_eigenem_schmalem_schluessel(umg, monkeypatch):
+    """Ivans Laden (C4, User-Entscheid "nur Aussehen"): ein eigener Schluessel, der NUR das Aussehen liest -
+    der Pult-Schluessel wuerde die Marketingdaten aller Firmen oeffnen."""
+    f, _, c = umg
+    monkeypatch.setenv("MARKETING_AUSSEHEN_KEY", "aussehen-k")
+    f.antworten += [[{"name": "fin2gether", "werte": {"akzent": "#f66c1e"}, "logo": None, "logo_dunkel": None}]]
+    r = c.get("/api/pult/marke/aussehen?mandant=radhaus", headers={"X-Aussehen-Key": "aussehen-k"})
+    assert r.status_code == 200 and r.json()["akzent"] == "#f66c1e"
+    assert c.get("/api/pult/marke/aussehen?mandant=radhaus",
+                 headers={"X-Aussehen-Key": "falsch"}).status_code == 401
+    # Er oeffnet nichts sonst
+    assert c.get("/api/pult/marke?mandant=radhaus", headers={"X-Pult-Key": "aussehen-k"}).status_code == 401
+    assert c.get("/api/pult/inhalte?mandant=radhaus", headers={"X-Pult-Key": "aussehen-k"}).status_code == 401
+    assert c.get("/api/pult/marke?mandant=radhaus", headers={"X-Aussehen-Key": "aussehen-k"}).status_code == 401
+
+
+def test_aussehen_ohne_eingerichteten_schmalen_schluessel(umg, monkeypatch):
+    f, _, c = umg
+    monkeypatch.delenv("MARKETING_AUSSEHEN_KEY", raising=False)
+    assert c.get("/api/pult/marke/aussehen?mandant=radhaus", headers={"X-Aussehen-Key": ""}).status_code == 401
