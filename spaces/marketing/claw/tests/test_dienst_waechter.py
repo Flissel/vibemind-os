@@ -140,6 +140,12 @@ def test_ein_scheiternder_start_wird_gemeldet_und_der_neustart_bleibt_gezaehlt()
     assert any("Startskript haengt" in m for m in gemeldet)
 
 
+def test_bot_token_kommt_nicht_ins_log():
+    roh = "HTTPError: https://api.telegram.org/bot123456:AAH-x_yZ09/sendMessage 401"
+    assert "AAH-x_yZ09" not in w.geschwaerzt(roh)
+    assert "bot<geschwaerzt>/sendMessage" in w.geschwaerzt(roh)
+
+
 def test_eine_kaputte_pruefung_bricht_den_lauf_nicht_ab():
     gemeldet = []
 

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 import sys
 import time
@@ -246,6 +247,11 @@ def starte_dienste(namen: list[str]) -> None:
     LOG.info("Startskript -Nur %s -> %s (Ausgabe: %s)", namen, r.returncode, ausgabe)
 
 
+def geschwaerzt(text: str) -> str:
+    """Bot-Token aus Fehlerausgaben entfernen: urllib nennt im Fehler die URL /bot<token>/sendMessage."""
+    return re.sub(r"bot\d+:[A-Za-z0-9_-]+", "bot<geschwaerzt>", text)
+
+
 def telegram(text: str) -> None:
     try:
         r = subprocess.run([sys.executable, str(TELEGRAM), text], capture_output=True, text=True,
@@ -253,7 +259,8 @@ def telegram(text: str) -> None:
         if r.returncode == 0:
             LOG.info("Telegram gesendet")
         else:
-            LOG.warning("Telegram nicht gesendet (rc=%s): %s", r.returncode, (r.stderr or r.stdout).strip()[:300])
+            LOG.warning("Telegram nicht gesendet (rc=%s): %s", r.returncode,
+                        geschwaerzt((r.stderr or r.stdout).strip())[:300])
     except Exception as fehler:  # noqa: BLE001 - die Meldung darf den Waechter nicht toeten
         LOG.warning("Telegram gescheitert: %s", fehler)
 
