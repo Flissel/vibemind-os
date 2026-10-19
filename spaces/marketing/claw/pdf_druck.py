@@ -16,13 +16,16 @@ Aufrufer aus der Server-Konfiguration fest (api/pult.py: MARKETING_PDF_HOSTS), n
 """
 from __future__ import annotations
 
+import math
 import posixpath
 from urllib.parse import unquote, urlsplit
 
-DRUCK_CSS = ("@page{size:A4;margin:0}"
-             "html,body{-webkit-print-color-adjust:exact;print-color-adjust:exact}"
-             "img{break-inside:avoid}")
+DRUCK_CSS = ("@page{margin:0}"
+             "html,body{-webkit-print-color-adjust:exact;print-color-adjust:exact}")
 TIMEOUT_S = 60
+BREITE_PX = 700          # Newsletter 600 px + Rand, wie in der Mail-Vorschau
+# PDF-Seiten duerfen hoechstens 200 Zoll hoch sein (14400 pt = 19200 px); darueber A4-Seiten.
+MAX_HOEHE_PX = 19000
 
 
 class PdfDruckFehler(RuntimeError):
@@ -38,6 +41,18 @@ def druck_html(html: str) -> str:
 
 def _pfad(roh: str) -> str:
     return posixpath.normpath("/" + unquote(roh or "/")).rstrip("/") + "/"
+
+
+def seitenmass(hoehe_px) -> dict:
+    """Eine durchgehende Seite in voller Laenge (echter Lauf 19.10.: auf A4 sprangen grosse Bilder auf die naechste
+    Seite und liessen leere Flaechen); nur wenn das nicht geht, A4-Seiten."""
+    try:
+        h = math.ceil(float(hoehe_px))
+    except (TypeError, ValueError):
+        return {"format": "A4"}
+    if h <= 0 or h > MAX_HOEHE_PX:
+        return {"format": "A4"}
+    return {"width": f"{BREITE_PX}px", "height": f"{h}px"}
 
 
 def darf_laden(url: str, praefixe) -> bool:
@@ -89,10 +104,12 @@ def html_zu_pdf(html: str, erlaubt: list, timeout_s: int = TIMEOUT_S) -> bytes:
         with sync_playwright() as p:
             browser = p.chromium.launch()
             try:
-                seite = browser.new_page(java_script_enabled=False, viewport={"width": 700, "height": 1000})
+                # Seiten-JavaScript aus; evaluate (Hoehe messen) laeuft trotzdem ueber Playwright selbst
+                seite = browser.new_page(java_script_enabled=False, viewport={"width": BREITE_PX, "height": 1000})
                 seite.route("**/*", _weiche(erlaubt, PlaywrightFehler))
                 seite.set_content(druck_html(html), wait_until="networkidle", timeout=timeout_s * 1000)
-                return seite.pdf(format="A4", print_background=True)
+                hoehe = seite.evaluate("document.documentElement.scrollHeight")
+                return seite.pdf(print_background=True, **seitenmass(hoehe))
             finally:
                 browser.close()
     except PlaywrightFehler as e:
