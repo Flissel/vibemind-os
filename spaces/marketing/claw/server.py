@@ -123,6 +123,7 @@ WERKZEUGE = (
     werkzeuge.podcast_beauftragen,
     werkzeuge.podcast_auftraege,
     # Kampagnenkalender (17.10.2026): lesen und vorschlagen; bestaetigt wird im Pult.
+    werkzeuge.geschaeftsfakten,
     werkzeuge.plan_lesen,
     werkzeuge.plan_vorschlagen,
     # Reels (17.10.2026): beauftragen beim Video-Claw; Laura bleibt fuer diesen Agenten lesend.

@@ -3502,6 +3502,8 @@ app.include_router(_plan.agent_router)
 from spaces.marketing.api import video as _video  # noqa: E402
 app.include_router(_video.router)
 app.include_router(_video.pult_router)
+from spaces.marketing.api import fakten as _fakten  # noqa: E402
+app.include_router(_fakten.router)
 
 
 # ─── Static-serve of the mockup ───────────────────────────────────────

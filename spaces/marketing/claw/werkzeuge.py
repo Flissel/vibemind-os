@@ -46,7 +46,7 @@ def _roh_anfrage(url: str, daten, kopfzeilen: dict) -> tuple:
         return e.code, e.read().decode("utf-8", "replace")
 
 
-_AGENT_PFADE = ("/api/ton/", "/api/bilder/agent/", "/api/plan", "/api/video/")
+_AGENT_PFADE = ("/api/ton/", "/api/bilder/agent/", "/api/plan", "/api/video/", "/api/fakten")
 
 
 def _api(pfad: str, nutzlast: dict | None = None) -> dict:
@@ -458,6 +458,15 @@ def reel_auftraege(firma: str = "vibemind", anzahl: int = 10) -> dict:
     if not antwort["ok"]:
         return antwort
     return {"ok": True, "daten": (antwort.get("daten") or {}).get("auftraege") or []}
+
+
+def geschaeftsfakten(firma: str = "vibemind") -> dict:
+    """Kennzahlen aus dem Sales-Bestand der Firma (Paket D2): Kontakte (Firmen/Personen), Pipeline-Stufen,
+    Herkunft, Bereiche, Einwilligungen, newsletter_hoechstens (so viele erreicht ein Newsletter hoechstens),
+    Termine, Vertraege, Empfehlungslisten, Gespraeche je Monat. Nur Zahlen - keine Namen, keine Texte.
+    Nutze sie, statt Zahlen zu erfinden ("ueber 470 Firmen aus dem bAV-Bereich"), und pruefe vor einem
+    Newsletter, wie viele ihn ueberhaupt bekommen koennen."""
+    return _api(f"/api/fakten?firma={urllib.parse.quote(firma or '', safe='')}")
 
 
 def plan_lesen(firma: str = "vibemind", tage: int = 30) -> dict:
