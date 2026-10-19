@@ -1021,3 +1021,46 @@ def test_arbeiter_profil_form_422(umg, profil):
     r = c.post("/api/marke/arbeiter/profil", headers=HB, json={"mandant": "radhaus", "profil": profil})
     assert r.status_code == 422
     assert f.sql == []
+
+
+# --- Aussehen der Laden-Oberflaeche (Paket C4, 19.10.2026) -------------------------------------------
+
+LOGO_URL = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\nlogo").decode()
+
+
+def test_aussehen_liefert_gueltige_werte_und_logo(umg):
+    f, _, c = umg
+    f.antworten += [[{"name": "fin2gether", "werte": {"akzent": "#f66c1e", "zweitfarbe": "#95c11f",
+                                                      "grund": "#ffffff", "text": "#383838",
+                                                      "schrift_anzeige": "montserrat", "schrift_text": "dm-sans",
+                                                      "webseite": "https://x"},
+                      "logo": LOGO_URL, "logo_dunkel": None}]]
+    r = c.get("/api/pult/marke/aussehen?mandant=radhaus", headers=H)
+    assert r.status_code == 200
+    assert r.json() == {"name": "fin2gether", "akzent": "#f66c1e", "zweitfarbe": "#95c11f", "grund": "#ffffff",
+                        "text": "#383838", "schrift_anzeige": "montserrat", "schrift_text": "dm-sans",
+                        "logo": LOGO_URL, "logo_dunkel": None}
+    assert len(f.sql) == 1 and "UPDATE" not in f.sql[0].upper() and "_marke_aufraeumen" not in f.sql[0]
+
+
+def test_aussehen_verwirft_ungueltiges(umg):
+    f, _, c = umg
+    f.antworten += [[{"name": "X", "werte": {"akzent": "rot", "zweitfarbe": "#12", "schrift_anzeige": "comic",
+                                             "schrift_text": "<b>"}, "logo": "javascript:alert(1)",
+                     "logo_dunkel": "data:image/svg+xml;base64,PHN2Zz4="}]]
+    j = c.get("/api/pult/marke/aussehen?mandant=radhaus", headers=H).json()
+    assert j == {"name": "X", "akzent": None, "zweitfarbe": None, "grund": None, "text": None,
+                 "schrift_anzeige": None, "schrift_text": None, "logo": None, "logo_dunkel": None}
+
+
+def test_aussehen_ohne_spiegel(umg):
+    f, _, c = umg
+    f.antworten += [[{"name": "Radhaus", "werte": None, "logo": None}]]
+    assert c.get("/api/pult/marke/aussehen?mandant=radhaus", headers=H).json()["akzent"] is None
+
+
+def test_aussehen_unbekannte_firma_und_schluessel(umg):
+    f, _, c = umg
+    f.antworten += [[]]
+    assert c.get("/api/pult/marke/aussehen?mandant=radhaus", headers=H).status_code == 404
+    assert c.get("/api/pult/marke/aussehen?mandant=radhaus").status_code in (401, 403)

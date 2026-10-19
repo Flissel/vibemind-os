@@ -98,6 +98,44 @@ def _von(payload: dict) -> str:
 # ─── Pult ───────────────────────────────────────────────────────────────
 
 
+_AUSSEHEN_FARBE = re.compile(r"^#[0-9a-fA-F]{6}$")
+_AUSSEHEN_LOGO = re.compile(r"^data:image/(png|jpeg);base64,[A-Za-z0-9+/=]+$")
+
+
+@pult_router.get("/marke/aussehen")
+def marke_aussehen(mandant: str | None = None, x_pult_key: str | None = Header(None)):
+    """Aussehen der Laden-Oberflaeche (Paket C4, 19.10.2026): Name, Farben, Schriften und Logo der Firma - nur
+    lesend und schlank, die sales-ui fragt es je Prozess alle paar Minuten. Ungueltiges ist None (die Oberflaeche
+    bleibt dort beim VibeMind-Aussehen)."""
+    _schluessel(x_pult_key)
+    m = _mandant_pflicht(mandant)
+    z = _lesen_einer(lambda:
+        "SELECT m.name, s.profil->'werte' AS werte, "
+        "l.gestalt->>'logo' AS logo, l.gestalt->>'logo_dunkel' AS logo_dunkel "
+        "FROM marketing.mandanten m LEFT JOIN marketing.marken_spiegel s ON s.mandant = m.id "
+        "LEFT JOIN marketing.layout_vorlagen l ON l.mandant = m.id AND l.standard "
+        "AND l.inhaltsart = 'newsletter' AND l.art = 'layout' "
+        f"WHERE m.id = {lit(m)}")
+    if not z:
+        raise HTTPException(404, "Unbekannter Mandant")
+    werte = z.get("werte") if isinstance(z.get("werte"), dict) else {}
+
+    def farbe(k: str):
+        v = werte.get(k)
+        return v if isinstance(v, str) and _AUSSEHEN_FARBE.match(v) else None
+
+    def schrift(k: str):
+        v = werte.get(k)
+        return v if isinstance(v, str) and v in schriften.REGISTER else None
+    def logo(k: str):
+        v = z.get(k)
+        return v if isinstance(v, str) and _AUSSEHEN_LOGO.match(v) else None
+    return {"name": str(z.get("name") or m), "akzent": farbe("akzent"), "zweitfarbe": farbe("zweitfarbe"),
+            "grund": farbe("grund"), "text": farbe("text"), "schrift_anzeige": schrift("schrift_anzeige"),
+            "schrift_text": schrift("schrift_text"),
+            "logo": logo("logo"), "logo_dunkel": logo("logo_dunkel")}
+
+
 @pult_router.get("/marke")
 def marke_stand(mandant: str | None = None, x_pult_key: str | None = Header(None)):
     _schluessel(x_pult_key)
