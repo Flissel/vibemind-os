@@ -49,6 +49,7 @@ import os
 import re
 import uuid as _uuid
 from typing import Callable
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response
@@ -249,6 +250,21 @@ def _bild_basis(wert: str | None) -> str:
     return wert
 
 
+def _pdf_erlaubt(*basen: str) -> list[str]:
+    """Bild-/Schriftbasis nur, wenn ihr Host (mit Port) in MARKETING_PDF_HOSTS steht (Komma-Liste). Ohne
+    Eintrag laedt der PDF-Druck nichts nach - Bilder fehlen dann, aber nichts verlaesst die VM."""
+    hosts = {h.strip().lower() for h in os.environ.get("MARKETING_PDF_HOSTS", "").split(",") if h.strip()}
+    aus = []
+    for b in basen:
+        try:
+            teile = urlsplit(b or "")
+        except ValueError:
+            continue
+        if teile.scheme == "https" and teile.netloc.lower() in hosts:
+            aus.append(b)
+    return aus
+
+
 def _bloecke_html(dok, betreff: str, vorschautext: str, pflichtteil: dict, fmt: str, bild_basis: str) -> Response:
     schrift_basis = schrift_basis_aus(bild_basis)
     try:
@@ -259,9 +275,10 @@ def _bloecke_html(dok, betreff: str, vorschautext: str, pflichtteil: dict, fmt: 
         raise HTTPException(422, str(e))
     if fmt != "pdf":
         return HTMLResponse(html)
-    # Paket C3: dasselbe Mail-HTML als PDF (Chromium); laden darf es nur die eigenen Bild-/Schriftadressen
+    # Paket C3: dasselbe Mail-HTML als PDF (Chromium); laden darf es nur die eigenen Bild-/Schriftadressen -
+    # und nur auf Hosts aus der Server-Konfiguration (Sicherheitspruefung 19.10.), nie aus der Anfrage allein
     try:
-        roh = pdf_druck.html_zu_pdf(html, [bild_basis, schrift_basis])
+        roh = pdf_druck.html_zu_pdf(html, _pdf_erlaubt(bild_basis, schrift_basis))
     except pdf_druck.PdfDruckFehler as e:
         raise HTTPException(503, str(e))
     return Response(roh, media_type="application/pdf")

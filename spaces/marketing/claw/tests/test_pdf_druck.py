@@ -30,6 +30,14 @@ def test_druckregeln_ohne_kopf():
     ("http://169.254.169.254/latest/meta-data", False),
     ("https://boese.example/marketing/bild/sig/a.png", False),
     ("file:///etc/passwd", False),
+    # Sicherheitspruefung 19.10.: Pfad normalisieren, Host/Port exakt
+    ("https://h.ts.net/marketing/bild/sig/../../admin", False),
+    ("https://h.ts.net/marketing/bild/sig/%2e%2e/%2e%2e/admin", False),
+    ("https://h.ts.net:8443/marketing/bild/sig/a.png", False),
+    ("https://h.ts.net.boese.example/marketing/bild/sig/a.png", False),
+    ("http://h.ts.net/marketing/bild/sig/a.png", False),
+    ("https://H.TS.NET/marketing/bild/sig/a.png", True),
+    ("https://h.ts.net/marketing/bild/sigX/a.png", False),
 ])
 def test_netzsperre(url, erlaubt):
     praefixe = ["https://h.ts.net/marketing/bild/sig/", "https://h.ts.net/marketing/schrift/"]
@@ -62,3 +70,33 @@ def test_echter_druck():
     roh = pdf_druck.html_zu_pdf(HTML, [])
     assert roh.startswith(b"%PDF-")
     assert len(roh) > 500
+
+
+class _Route:
+    def __init__(self, url, status=200):
+        self.request = type("R", (), {"url": url})()
+        self.status, self.log = status, []
+
+    def fetch(self, max_redirects=None):
+        self.log.append(("fetch", max_redirects))
+        return type("A", (), {"status": self.status})()
+
+    def fulfill(self, response=None):
+        self.log.append(("fulfill", response.status))
+
+    def abort(self):
+        self.log.append(("abort",))
+
+
+def test_weiche_folgt_keiner_weiterleitung():
+    """Sicherheitspruefung 19.10.: eine erlaubte Adresse darf nicht auf eine interne umleiten."""
+    weiche = pdf_druck._weiche(["https://h.ts.net/marketing/bild/sig/"], Exception)
+    r = _Route("https://h.ts.net/marketing/bild/sig/a.png", status=302)
+    weiche(r)
+    assert r.log == [("fetch", 0), ("abort",)]
+    r = _Route("https://h.ts.net/marketing/bild/sig/a.png", status=200)
+    weiche(r)
+    assert r.log == [("fetch", 0), ("fulfill", 200)]
+    r = _Route("http://127.0.0.1:5510/api/health")
+    weiche(r)
+    assert r.log == [("abort",)]

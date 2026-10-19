@@ -443,6 +443,7 @@ def test_vorschau_bloecke_pdf(db, c, monkeypatch):
         gesehen["html"], gesehen["erlaubt"] = html, erlaubt
         return b"%PDF-1.7 probe"
     monkeypatch.setattr(pdf_druck, "html_zu_pdf", druck)
+    monkeypatch.setenv("MARKETING_PDF_HOSTS", "h.ts.net")
     db.antworten = [[_bloecke_zeile()]]
     basis = "https://h.ts.net/marketing/bild/t/"
     r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=1&format=pdf&bild_basis={basis}", headers=H)
@@ -450,6 +451,23 @@ def test_vorschau_bloecke_pdf(db, c, monkeypatch):
     assert r.content == b"%PDF-1.7 probe"
     assert "Hallo Pult" in gesehen["html"]
     assert gesehen["erlaubt"] == [basis, "https://h.ts.net/marketing/schrift/"]
+
+
+def test_vorschau_bloecke_pdf_fremder_host_laedt_nichts(db, c, monkeypatch):
+    """Sicherheitspruefung 19.10.: die erlaubten Adressen kommen aus der Server-Konfiguration, nicht aus der
+    Anfrage - ein bild_basis auf einen anderen Host darf Chromium nichts laden lassen."""
+    from spaces.marketing.claw import pdf_druck
+    gesehen = {}
+    monkeypatch.setattr(pdf_druck, "html_zu_pdf", lambda html, erlaubt: gesehen.setdefault("e", erlaubt) and b"%PDF" or b"%PDF")
+    monkeypatch.setenv("MARKETING_PDF_HOSTS", "h.ts.net")
+    db.antworten = [[_bloecke_zeile()]]
+    r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=1&format=pdf&bild_basis=https://intern.example/marketing/bild/t/",
+              headers=H)
+    assert r.status_code == 200 and gesehen["e"] == []
+    monkeypatch.delenv("MARKETING_PDF_HOSTS")
+    db.antworten = [[_bloecke_zeile()]]
+    c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=1&format=pdf&bild_basis=https://h.ts.net/marketing/bild/t/", headers=H)
+    assert gesehen["e"] == []
 
 
 def test_vorschau_bloecke_pdf_ohne_chromium_503(db, c, monkeypatch):
