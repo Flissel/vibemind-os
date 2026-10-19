@@ -155,7 +155,10 @@ def lauf(dienste: list[dict], zustand: dict, jetzt: float, *,
             melde(f"{d['was']} :{port} kommt nicht zurueck ({KAPPE} Neustarts in "
                   f"{FENSTER_S // 3600} h) - Waechter gibt auf, bitte ansehen")
     if zu_starten:
-        starte([d["name"] for d in zu_starten])
+        try:
+            starte([d["name"] for d in zu_starten])
+        except Exception as fehler:  # noqa: BLE001 - der Zustand (gezaehlte Neustarts) muss erhalten bleiben
+            melde(f"Startskript gescheitert ({type(fehler).__name__}: {fehler})")
         for d in zu_starten:
             ergebnis = "laeuft wieder" if lauscht(d["port"]) else "START FEHLGESCHLAGEN (siehe err.log)"
             melde(f"{d['was']} :{d['port']} war ausgefallen - neu gestartet, {ergebnis}")
@@ -228,14 +231,29 @@ def dienste_lesen() -> list[dict]:
 
 
 def starte_dienste(namen: list[str]) -> None:
-    r = _startskript("-Nur", ",".join(namen))
-    LOG.info("Startskript -Nur %s -> %s\n%s%s", namen, r.returncode, r.stdout, r.stderr)
+    """Ausgabe in eine Datei, NICHT in eine Pipe: die gestarteten Dienste erben die Ausgabe-Handles des
+    Startskripts. An einer Pipe wartete der Waechter deshalb, bis die Aufgabe abgebrochen wurde
+    (gemessen 19.10.2026: Dienst lief, Zustand und Log fehlten)."""
+    ausgabe = LOG_ORDNER / "waechter-start.log"
+    with open(ausgabe, "a", encoding="utf-8") as datei:
+        datei.write(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')} -Nur {','.join(namen)}\n")
+        datei.flush()
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(STARTSKRIPT),
+             "-Nur", ",".join(namen)],
+            stdin=subprocess.DEVNULL, stdout=datei, stderr=subprocess.STDOUT, timeout=180,
+            creationflags=OHNE_FENSTER)
+    LOG.info("Startskript -Nur %s -> %s (Ausgabe: %s)", namen, r.returncode, ausgabe)
 
 
 def telegram(text: str) -> None:
     try:
-        subprocess.run([sys.executable, str(TELEGRAM), text], capture_output=True, timeout=30,
-                       creationflags=OHNE_FENSTER)
+        r = subprocess.run([sys.executable, str(TELEGRAM), text], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=30, creationflags=OHNE_FENSTER)
+        if r.returncode == 0:
+            LOG.info("Telegram gesendet")
+        else:
+            LOG.warning("Telegram nicht gesendet (rc=%s): %s", r.returncode, (r.stderr or r.stdout).strip()[:300])
     except Exception as fehler:  # noqa: BLE001 - die Meldung darf den Waechter nicht toeten
         LOG.warning("Telegram gescheitert: %s", fehler)
 

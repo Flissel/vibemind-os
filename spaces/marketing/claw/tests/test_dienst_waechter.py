@@ -126,6 +126,20 @@ def test_mcp_sidecars_werden_nicht_wegen_stille_beendet():
         assert w.REGELN[name].starten
 
 
+def test_ein_scheiternder_start_wird_gemeldet_und_der_neustart_bleibt_gezaehlt():
+    """Sonst geht der Zustand verloren, und die Kappe greift nie."""
+    gemeldet = []
+
+    def starte(namen):
+        raise TimeoutError("Startskript haengt")
+
+    z = w.lauf([_dienst("marketing_claw_mcp", 8130)], {}, 1000.0,
+               pruefe=lambda port, pfad: "tot", lauscht=lambda port: False,
+               beende=lambda d: True, starte=starte, melde=gemeldet.append)
+    assert z["marketing_claw_mcp"]["neustarts"] == [1000.0]
+    assert any("Startskript haengt" in m for m in gemeldet)
+
+
 def test_eine_kaputte_pruefung_bricht_den_lauf_nicht_ab():
     gemeldet = []
 
