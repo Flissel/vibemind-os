@@ -89,3 +89,15 @@ def test_firma_geprueft_und_schluessel_noetig(db, c):
 def test_zuordnung_rein():
     assert fakten.zuordnung("vibemind:sales,fin2gether:sales_ivan") == {"vibemind": "sales", "fin2gether": "sales_ivan"}
     assert fakten.zuordnung("") == {}
+
+
+def test_gruppen_nur_aus_festen_listen(db, c):
+    """Sicherheitspruefung 19.10.: Herkunft, Stufe, Einwilligung und Bereiche sind Freitext - ein Name dort
+    landete sonst als Gruppenschluessel beim Agenten. Nur bekannte Werte, alles andere 'sonstige'."""
+    db.antworten = [[ZEILE]]
+    c.get("/api/fakten?firma=vibemind", headers=A)
+    sql = db.sql[0]
+    assert sql.count("'sonstige'") >= 4
+    assert "l.source IN ('recherche'" in sql and "l.status IN ('new'" in sql
+    assert "l.consent_status IN ('opt_in'" in sql and "b IN ('bav'" in sql
+    assert "coalesce(l.source, 'ohne') k" not in sql

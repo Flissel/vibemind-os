@@ -29,6 +29,15 @@ from spaces.marketing.api.pult import _lesen_einer
 router = APIRouter(prefix="/api/fakten")
 
 VORGABE = "vibemind:sales"
+# Gruppen nur aus festen Listen (Sicherheitspruefung 19.10.): Herkunft, Stufe, Einwilligung und Bereiche sind
+# Freitext - ein Name dort waere sonst als Gruppenschluessel beim Agenten gelandet. Unbekanntes = 'sonstige'.
+# Quellen: Prueflisten in sales-claw db/provision.sql (status, consent_status) und server.BEREICHE; Herkunft
+# hat keine Prueflist, darum die gemessenen Werte vom 19.10.
+STUFEN = ("new", "researched", "qualified", "contacted", "replied", "meeting", "won", "lost")
+EINWILLIGUNGEN = ("opt_in", "existing_customer", "inbound", "unknown", "betreiber_auftrag")
+BEREICHE = ("bav", "mitarbeiter", "vorsorge", "immobilien", "it", "homelab")
+HERKUENFTE = ("recherche", "whatsapp", "visitenkarte", "linkedin", "email", "telegram", "postfach", "manual",
+              "system", "selbsttest")
 _PAAR = re.compile(r"^([a-z][a-z0-9_-]{0,40}):([a-z][a-z0-9_]{0,40})$")
 HINWEIS = ("Nur Zahlen aus dem Sales-Bestand dieser Firma - keine Namen, keine Texte. "
            "newsletter_hoechstens: so viele Kontakte haben ausdruecklich eingewilligt und eine E-Mail; "
@@ -49,6 +58,14 @@ def zuordnung(roh: str) -> dict[str, str]:
     return aus
 
 
+def _liste(werte: tuple[str, ...]) -> str:
+    return ", ".join(f"'{w}'" for w in werte)
+
+
+def _gruppe(ausdruck: str, werte: tuple[str, ...]) -> str:
+    return f"CASE WHEN {ausdruck} IN ({_liste(werte)}) THEN {ausdruck} ELSE 'sonstige' END"
+
+
 def _sql(s: str) -> str:
     ohne_privat = "NOT (coalesce(l.enrichment, '{}'::jsonb) ? '_privat')"
     return f"""
@@ -67,13 +84,13 @@ SELECT jsonb_build_object(
   'kontakte', z.kontakte, 'firmen', z.firmen, 'personen', z.personen, 'termine', z.termine,
   'newsletter_hoechstens', z.newsletter_hoechstens, 'vertraege', z.vertraege,
   'stufen', (SELECT coalesce(jsonb_object_agg(k, n), '{{}}') FROM
-             (SELECT coalesce(l.status, 'ohne') k, count(*) n FROM l GROUP BY 1) x),
+             (SELECT {_gruppe("l.status", STUFEN)} k, count(*) n FROM l GROUP BY 1) x),
   'herkunft', (SELECT coalesce(jsonb_object_agg(k, n), '{{}}') FROM
-               (SELECT coalesce(l.source, 'ohne') k, count(*) n FROM l GROUP BY 1) x),
+               (SELECT {_gruppe("l.source", HERKUENFTE)} k, count(*) n FROM l GROUP BY 1) x),
   'einwilligung', (SELECT coalesce(jsonb_object_agg(k, n), '{{}}') FROM
-                   (SELECT coalesce(l.consent_status, 'ohne') k, count(*) n FROM l GROUP BY 1) x),
+                   (SELECT {_gruppe("l.consent_status", EINWILLIGUNGEN)} k, count(*) n FROM l GROUP BY 1) x),
   'bereiche', (SELECT coalesce(jsonb_object_agg(k, n), '{{}}') FROM
-               (SELECT b k, count(*) n FROM l, jsonb_array_elements_text(
+               (SELECT {_gruppe("b", BEREICHE)} k, count(*) n FROM l, jsonb_array_elements_text(
                   CASE WHEN jsonb_typeof(l.enrichment->'bereiche') = 'array' THEN l.enrichment->'bereiche'
                        ELSE '[]'::jsonb END) b GROUP BY 1) x),
   'empfehlungslisten', (SELECT count(*) FROM {s}.empfehlungslisten),
