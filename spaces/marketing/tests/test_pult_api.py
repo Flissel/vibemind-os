@@ -970,3 +970,114 @@ def test_verweise_ohne_mandant_wie_bisher(db, c):
 def test_verweise_ungueltiger_mandant_422_ohne_sql(db, c):
     r = c.get("/api/pult/medien/verweise", params={"name": "a.jpg", "mandant": "X Y"}, headers=H)
     assert r.status_code == 422 and db.sql == []
+
+# --- Editor, Entwuerfe, Bilder (Plan 2026-10-19) Task 4: Vorlage anwenden, Fassung wiederherstellen ---
+
+VORLAGE_DOK = {"root": {"type": "EmailLayout", "data": {"childrenIds": ["t"], "canvasColor": "#ffffff"}},
+               "t": {"type": "Text", "data": {"style": {}, "props": {"text": "Aus der Vorlage"}}}}
+
+
+def _kopf(status="entwurf", mandant="fin2gether", art="newsletter"):
+    return {"mandant": mandant, "status": status, "art": art, "fassung": 7,
+            "felder": {"betreff": "Alter Betreff", "vorschautext": "Alter Vorschautext"}}
+
+
+def test_vorlage_anwenden_nutzt_mandant_des_inhalts(db, c, monkeypatch, tmp_path):
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    db.antworten = [[_kopf()], [{"bloecke": VORLAGE_DOK}], [{"laden": "fin2gether", "layout": None, "gestalt": None}],
+                    [{"fassung": 8}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/vorlage", headers=H,
+               json={"vorlage": "studio", "basis_fassung": 7, "von": "felix", "mandant": "vibemind"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"fassung": 8}
+    assert "newsletter_vorlagen" in db.sql[1] and "'fin2gether'" in db.sql[1] and "'vibemind'" not in db.sql[1]
+    assert "status = 'freigegeben'" in db.sql[1] and "fuer_alle" in db.sql[1]
+    s = db.sql[3]
+    assert "pult_bloecke_speichern(" in s and f"'{IID}'::uuid, 7, 'Alter Betreff', 'Alter Vorschautext'" in s
+    assert "Aus der Vorlage" in s and "'betreiber', false" in s
+
+
+def test_vorlage_anwenden_nicht_im_entwurf_422_ohne_speichern(db, c):
+    db.antworten = [[_kopf(status="eingereicht")]]
+    r = c.post(f"/api/pult/inhalte/{IID}/vorlage", headers=H, json={"vorlage": "studio", "basis_fassung": 7})
+    assert r.status_code == 422 and r.json()["detail"] == "Vorlagen lassen sich nur auf Newsletter-Entwürfe anwenden"
+    assert len(db.sql) == 1 and not any("pult_bloecke_speichern" in s for s in db.sql)
+
+
+def test_vorlage_anwenden_nur_newsletter(db, c):
+    db.antworten = [[_kopf(art="post")]]
+    r = c.post(f"/api/pult/inhalte/{IID}/vorlage", headers=H, json={"vorlage": "studio", "basis_fassung": 7})
+    assert r.status_code == 422 and len(db.sql) == 1
+
+
+def test_vorlage_anwenden_unbekannter_inhalt_404(db, c):
+    db.antworten = [[]]
+    r = c.post(f"/api/pult/inhalte/{IID}/vorlage", headers=H, json={"vorlage": "studio", "basis_fassung": 7})
+    assert r.status_code == 404
+
+
+def test_vorlage_anwenden_fremde_oder_unfreigegebene_vorlage_422(db, c):
+    db.antworten = [[_kopf()], []]
+    r = c.post(f"/api/pult/inhalte/{IID}/vorlage", headers=H, json={"vorlage": "studio", "basis_fassung": 7})
+    assert r.status_code == 422 and "studio" in r.json()["detail"]
+    assert not any("pult_bloecke_speichern" in s for s in db.sql)
+
+
+def test_vorlage_anwenden_veraltete_basis_reicht_db_grund_durch(db, c, monkeypatch, tmp_path):
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    db.antworten = [[_kopf()], [{"bloecke": VORLAGE_DOK}], [{"laden": "x", "layout": None, "gestalt": None}]]
+    db.fehler = [None, None, None, RuntimeError("ERROR:  Inzwischen gibt es Fassung 8 – bitte neu laden")]
+    r = c.post(f"/api/pult/inhalte/{IID}/vorlage", headers=H, json={"vorlage": "studio", "basis_fassung": 7})
+    assert r.status_code == 422 and r.json()["detail"] == "Inzwischen gibt es Fassung 8 – bitte neu laden"
+
+
+def test_wiederherstellen_speichert_alte_bloecke(db, c):
+    alt = {"root": {"type": "EmailLayout", "data": {"childrenIds": ["t"]}},
+           "t": {"type": "Text", "data": {"style": {}, "props": {"text": "Stand drei"}}}}
+    db.antworten = [[{"format": "bloecke", "bloecke": alt, "felder": {"betreff": "Betreff drei",
+                                                                      "vorschautext": "Vorschau drei"}}],
+                    [{"fassung": 9}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/wiederherstellen", headers=H,
+               json={"fassung": 3, "basis_fassung": 8, "von": "felix"})
+    assert r.status_code == 200 and r.json() == {"fassung": 9}
+    assert "fassung = 3" in db.sql[0]
+    s = db.sql[1]
+    assert "pult_bloecke_speichern(" in s and f"'{IID}'::uuid, 8, 'Betreff drei', 'Vorschau drei'" in s
+    assert "Stand drei" in s and "'betreiber', false" in s
+
+
+def test_wiederherstellen_feldfassung_422(db, c):
+    db.antworten = [[{"format": "felder", "bloecke": None, "felder": {"betreff": "x"}}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/wiederherstellen", headers=H, json={"fassung": 1, "basis_fassung": 8})
+    assert r.status_code == 422 and r.json()["detail"] == "Nur Editor-Fassungen lassen sich wiederherstellen"
+    assert len(db.sql) == 1
+
+
+def test_wiederherstellen_unbekannte_fassung_404(db, c):
+    db.antworten = [[]]
+    r = c.post(f"/api/pult/inhalte/{IID}/wiederherstellen", headers=H, json={"fassung": 99, "basis_fassung": 8})
+    assert r.status_code == 404
+
+
+@pytest.mark.parametrize("pfad,body", [
+    ("vorlage", {"vorlage": "studio", "basis_fassung": "7"}),
+    ("vorlage", {"vorlage": "studio", "basis_fassung": True}),
+    ("vorlage", {"vorlage": "studio", "basis_fassung": -1}),
+    ("vorlage", {"vorlage": "studio"}),
+    ("vorlage", {"vorlage": "Nicht gut", "basis_fassung": 7}),
+    ("wiederherstellen", {"fassung": 3, "basis_fassung": 1.5}),
+    ("wiederherstellen", {"fassung": 3}),
+    ("wiederherstellen", {"fassung": "3", "basis_fassung": 8}),
+    ("wiederherstellen", {"fassung": 0, "basis_fassung": 8}),
+])
+def test_basis_fassung_kein_int_422_ohne_sql(db, c, pfad, body):
+    r = c.post(f"/api/pult/inhalte/{IID}/{pfad}", headers=H, json=body)
+    assert r.status_code == 422 and db.sql == []
+
+
+@pytest.mark.parametrize("pfad", ["vorlage", "wiederherstellen"])
+def test_vorlage_und_wiederherstellen_schluessel_und_id(db, c, pfad):
+    body = {"vorlage": "studio", "fassung": 3, "basis_fassung": 7}
+    assert c.post(f"/api/pult/inhalte/{IID}/{pfad}", json=body).status_code == 401
+    assert c.post(f"/api/pult/inhalte/kein-uuid/{pfad}", headers=H, json=body).status_code == 404
+    assert db.sql == []

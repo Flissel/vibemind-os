@@ -366,6 +366,72 @@ def inhalt_aus_vorlage(payload: dict = Body(...), x_pult_key: str | None = Heade
     return {"id": str(zeile["id"])}
 
 
+def _basis_pflicht(wert) -> int:
+    if isinstance(wert, bool) or not isinstance(wert, int) or wert < 0:
+        raise HTTPException(422, "basis_fassung muss eine ganze Zahl >= 0 sein")
+    return wert
+
+
+def _bloecke_als_fassung(i: str, basis: int, felder, bloecke: dict) -> dict:
+    """Neue Editor-Fassung (Urheber betreiber) mit Betreff/Vorschautext aus felder. Die Regeln (nur
+    Entwurf, Basis = neueste Fassung, kein laufender Assistent) setzt pult_bloecke_speichern durch."""
+    felder = felder if isinstance(felder, dict) else {}
+    betreff, vorschau = str(felder.get("betreff") or ""), str(felder.get("vorschautext") or "")
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_bloecke_speichern({lit(i)}::uuid, {int(basis)}, {lit(betreff)}, "
+        f"{lit(vorschau)}, {lit(json.dumps(bloecke, ensure_ascii=False))}::jsonb, 'betreiber', false) AS fassung")
+    return {"fassung": int(zeile["fassung"])}
+
+
+@router.post("/inhalte/{iid}/vorlage")
+def vorlage_anwenden(iid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    """Vorlage auf einen Newsletter-Entwurf anwenden (Plan 2026-10-19 E9): Aufbau, Gestaltung, Texte und
+    Bilder kommen vollstaendig aus der Vorlage (mit der Marke der Firma DES INHALTS gefuellt), Betreff und
+    Vorschautext der neuesten Fassung bleiben. Legt eine neue Fassung an."""
+    _schluessel(x_pult_key)
+    i = _uuid_oder_404(iid)
+    vorlage = payload.get("vorlage")
+    if not isinstance(vorlage, str) or not _VORLAGE.match(vorlage):
+        raise HTTPException(422, "Unbekannte Vorlage")
+    basis = _basis_pflicht(payload.get("basis_fassung"))
+    _von(payload)
+    kopf = _lesen_einer(lambda:
+        "SELECT i.mandant, i.status, i.art, n.fassung, n.felder FROM marketing.inhalte i "
+        "LEFT JOIN LATERAL (SELECT fassung, felder FROM marketing.inhalt_fassungen f WHERE f.inhalt = i.id "
+        f"ORDER BY fassung DESC LIMIT 1) n ON true WHERE i.id = {lit(i)}::uuid")
+    if not kopf:
+        raise HTTPException(404, "Unbekannter Inhalt")
+    if kopf.get("art") != "newsletter" or kopf.get("status") != "entwurf":
+        raise HTTPException(422, "Vorlagen lassen sich nur auf Newsletter-Entwürfe anwenden")
+    m = _mandant(kopf.get("mandant"))
+    v = _lesen_einer(lambda:
+        "SELECT bloecke FROM marketing.newsletter_vorlagen "
+        f"WHERE name = {lit(vorlage)} AND status = 'freigegeben' AND (mandant = {lit(m)} OR fuer_alle)")
+    if not v:
+        raise HTTPException(422, f"Vorlage {vorlage} gibt es nicht oder sie ist nicht freigegeben")
+    fertig, _ = _vorlage_fuellen(v["bloecke"], m, _laden_lesen(m))
+    return _bloecke_als_fassung(i, basis, kopf.get("felder"), fertig)
+
+
+@router.post("/inhalte/{iid}/wiederherstellen")
+def fassung_wiederherstellen(iid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    """Alte Editor-Fassung als neue Fassung anlegen (Plan 2026-10-19 E12), samt ihrem Betreff und
+    Vorschautext. Die alte Fassung selbst bleibt unveraendert."""
+    _schluessel(x_pult_key)
+    i = _uuid_oder_404(iid)
+    n = _fassung_pflicht(payload.get("fassung"))
+    basis = _basis_pflicht(payload.get("basis_fassung"))
+    _von(payload)
+    alt = _lesen_einer(lambda:
+        "SELECT format, bloecke, felder FROM marketing.inhalt_fassungen "
+        f"WHERE inhalt = {lit(i)}::uuid AND fassung = {int(n)}")
+    if not alt:
+        raise HTTPException(404, "Unbekannte Fassung")
+    if alt.get("format") != "bloecke" or not isinstance(alt.get("bloecke"), dict):
+        raise HTTPException(422, "Nur Editor-Fassungen lassen sich wiederherstellen")
+    return _bloecke_als_fassung(i, basis, alt.get("felder"), alt["bloecke"])
+
+
 @router.get("/vorlagen")
 def vorlagen(mandant: str | None = None, status: str | None = None,
              x_pult_key: str | None = Header(None)):
