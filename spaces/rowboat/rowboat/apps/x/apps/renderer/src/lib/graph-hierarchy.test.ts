@@ -1,6 +1,6 @@
 // Modified for VibeMind (Flissel/rowboat vibemind): tests for graphFileData.
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_FORCES, buildHierarchyGraph, graphFileData, hierarchyForces, initialHierarchyPositions, parseHierarchy, parseVaultMap, SHELL_SPACING_3D, shellRadius, toGraph3d, vaultMapNodeId } from './graph-hierarchy'
+import { DEFAULT_FORCES, buildHierarchyGraph, graphFileData, hierarchyForces, initialHierarchyPositions, parseHierarchy, parseVaultMap, SHELL_SPACING_3D, graph3dSignature, seedPosition3d, shellRadius, toGraph3d, vaultMapNodeId } from './graph-hierarchy'
 
 const note = (front: string, body = '# Title\n') => `---\n${front}\n---\n${body}`
 
@@ -187,6 +187,28 @@ describe('toGraph3d', () => {
       ['link', 0, undefined],
     ])
     expect(links[2].opacity).toBeLessThan(links[0].opacity)
+  })
+
+  it('starts every node on its own shell, the same spot for the same id', () => {
+    const data = toGraph3d(nodes, edges)
+    for (const n of data.nodes) {
+      expect(Math.hypot(n.x ?? NaN, n.y ?? NaN, n.z ?? NaN)).toBeCloseTo(shellRadius(n.level), 6)
+    }
+    expect(toGraph3d(nodes, edges).nodes[1]).toEqual(data.nodes[1])
+    expect(seedPosition3d('a', 1)).not.toEqual(seedPosition3d('b', 1))
+  })
+
+  it('keeps a known position instead of the seed', () => {
+    const known = new Map([['d', { x: 1, y: 2, z: 3 }]])
+    const d = toGraph3d(nodes, edges, known).nodes.find((n) => n.id === 'd')
+    expect([d?.x, d?.y, d?.z]).toEqual([1, 2, 3])
+  })
+
+  it('signature ignores new array identities but sees real changes', () => {
+    const sig = graph3dSignature(nodes, edges)
+    expect(graph3dSignature(nodes.map((n) => ({ ...n })), edges.map((e) => ({ ...e })))).toBe(sig)
+    expect(graph3dSignature(nodes, edges.slice(1))).not.toBe(sig)
+    expect(graph3dSignature([...nodes, { id: 'y', label: 'New', color: 'red', degree: 0 }], edges)).not.toBe(sig)
   })
 
   it('shell radius grows with the level and level 0 sits in the centre', () => {

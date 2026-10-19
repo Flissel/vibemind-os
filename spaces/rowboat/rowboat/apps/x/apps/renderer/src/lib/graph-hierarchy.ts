@@ -228,7 +228,8 @@ export function buildHierarchyGraph(
 
 // ---- 3D view (react-force-graph-3d): nodes on one sphere shell per level ----
 
-export type Graph3dNode = { id: string; name: string; color: string; level: number; val: number }
+export type Graph3dNode = { id: string; name: string; color: string; level: number; val: number; x?: number; y?: number; z?: number }
+export type Point3d = { x: number; y: number; z: number }
 export type Graph3dLink = {
   source: string
   target: string
@@ -254,20 +255,55 @@ export function shellRadius(level: number, spacing: number = SHELL_SPACING_3D): 
   return level * spacing
 }
 
-/** Graph data for the 3D view. Nodes without a level go one shell beyond the deepest level. */
-export function toGraph3d(nodes: InNode[], edges: InEdge[]): { nodes: Graph3dNode[]; links: Graph3dLink[] } {
+// FNV-1a: a stable number per id, so a note always starts at the same spot.
+function hashId(id: string, salt: number): number {
+  let h = 2166136261 ^ salt
+  for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 16777619)
+  return (h >>> 0) / 4294967296
+}
+
+/**
+ * Start position of a node: a fixed point on its own sphere shell. Seeding the layout there (instead of letting d3
+ * pile every node into a small spiral that then explodes outward) keeps the first frames calm.
+ */
+export function seedPosition3d(id: string, level: number): Point3d {
+  const r = shellRadius(level)
+  if (r === 0) return { x: 0, y: 0, z: 0 }
+  const theta = 2 * Math.PI * hashId(id, 1)
+  const cosPhi = 2 * hashId(id, 2) - 1
+  const sinPhi = Math.sqrt(1 - cosPhi * cosPhi)
+  return { x: r * sinPhi * Math.cos(theta), y: r * sinPhi * Math.sin(theta), z: r * cosPhi }
+}
+
+/**
+ * Graph data for the 3D view. Nodes without a level go one shell beyond the deepest level. A node starts at its
+ * known position (from an earlier layout) or else at its seed on the shell.
+ */
+export function toGraph3d(
+  nodes: InNode[],
+  edges: InEdge[],
+  known?: ReadonlyMap<string, Point3d>,
+): { nodes: Graph3dNode[]; links: Graph3dLink[] } {
   const deepest = nodes.reduce((max, n) => (n.level !== undefined && n.level > max ? n.level : max), 0)
   return {
-    nodes: nodes.map((n) => ({
-      id: n.id,
-      name: n.label,
-      color: n.color,
-      level: n.level ?? deepest + 1,
-      val: 1 + Math.min(12, n.degree),
-    })),
+    nodes: nodes.map((n) => {
+      const level = n.level ?? deepest + 1
+      const at = known?.get(n.id) ?? seedPosition3d(n.id, level)
+      return { id: n.id, name: n.label, color: n.color, level, val: 1 + Math.min(12, n.degree), x: at.x, y: at.y, z: at.z }
+    }),
     links: edges.map((e) => {
       const kind = e.kind ?? 'link'
       return { source: e.source, target: e.target, kind, relation: e.relation, ...LINK_STYLE[kind] }
     }),
   }
+}
+
+/**
+ * Content fingerprint of the 3D graph input. The app rebuilds its graph arrays on every workspace change, even when
+ * no note changed; comparing this instead of array identity spares the view a needless relayout.
+ */
+export function graph3dSignature(nodes: InNode[], edges: InEdge[]): string {
+  const n = nodes.map((x) => `${x.id}\u0001${x.label}\u0001${x.color}\u0001${x.degree}\u0001${x.level ?? ''}`)
+  const e = edges.map((x) => `${x.source}\u0001${x.target}\u0001${x.kind ?? ''}\u0001${x.relation ?? ''}`)
+  return `${n.join('\u0002')}\u0003${e.join('\u0002')}`
 }
