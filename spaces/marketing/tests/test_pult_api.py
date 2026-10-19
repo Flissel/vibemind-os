@@ -470,6 +470,16 @@ def test_vorschau_bloecke_pdf_fremder_host_laedt_nichts(db, c, monkeypatch):
     assert gesehen["e"] == []
 
 
+def test_pdf_erlaubt_nur_erwartete_pfade(monkeypatch):
+    """Sicherheitspruefung 19.10. (2): auch auf erlaubtem Host nur /marketing/bild/<seg>/ und /marketing/schrift/."""
+    from spaces.marketing.api import pult
+    monkeypatch.setenv("MARKETING_PDF_HOSTS", "h.ts.net")
+    assert pult._pdf_erlaubt("https://h.ts.net/marketing/bild/t/", "https://h.ts.net/marketing/schrift/") == [
+        "https://h.ts.net/marketing/bild/t/", "https://h.ts.net/marketing/schrift/"]
+    assert pult._pdf_erlaubt("https://h.ts.net/", "https://h.ts.net/admin/") == []
+    assert pult._pdf_erlaubt("https://h.ts.net/marketing/bild/t/x/", "https://h.ts.net/marketing/schrift/a/") == []
+
+
 def test_vorschau_bloecke_pdf_ohne_chromium_503(db, c, monkeypatch):
     from spaces.marketing.claw import pdf_druck
 
