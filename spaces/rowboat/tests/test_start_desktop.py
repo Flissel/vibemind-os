@@ -510,3 +510,59 @@ def test_install_without_git_bash_on_windows_runs_nothing(tmp_path, monkeypatch,
         assert start_desktop.install(layout(tmp_path), windows=True) == 1
     assert runs == []
     assert "Git Bash nicht gefunden" in caplog.text
+
+
+def _log_start(tmp_path, monkeypatch, embed, big=False):
+    lay = _embed_prereqs(tmp_path, windows=True) if embed else _prereqs(tmp_path, windows=True)
+    if big:
+        (tmp_path / "logs").mkdir(exist_ok=True)
+        with open(tmp_path / "logs" / "embed-main.log", "wb") as f:
+            f.seek(10 * 1024 * 1024 + 5)
+            f.write(b"x")
+    seen = []
+    monkeypatch.setattr(start_desktop.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0))
+
+    def fake_popen(cmd, **kw):
+        out = kw.get("stdout")
+        seen.append({"kw": kw, "name": getattr(out, "name", None), "mode": getattr(out, "mode", None)})
+        return FakeProc(exit_code=0)
+
+    monkeypatch.setattr(start_desktop.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(start_desktop, "stop", lambda proc, windows=False: None)
+    assert start_desktop.start(lay, tmp_path, windows=True, embed=embed) == 0
+    return seen
+
+
+def test_embed_start_logs_both_jobs_to_files(tmp_path, monkeypatch):
+    seen = _log_start(tmp_path, monkeypatch, embed=True)
+    assert [Path(s["name"]).name for s in seen] == ["embed-main.log", "vault-map.log"]
+    for s in seen:
+        assert s["mode"] == "ab"
+        assert s["kw"]["stderr"] == subprocess.STDOUT
+        assert s["kw"]["stdin"] == subprocess.DEVNULL
+        assert s["kw"]["creationflags"] == start_desktop.CREATE_NO_WINDOW
+    text = (tmp_path / "logs" / "embed-main.log").read_text()
+    assert text.startswith("=== start ") and f"pid={os.getpid()} ===" in text
+
+
+def test_embed_log_handles_are_closed_after_start(tmp_path, monkeypatch):
+    kept = []
+    real_open = start_desktop.open_job_log
+    monkeypatch.setattr(start_desktop, "open_job_log", lambda w, n: kept.append(real_open(w, n)) or kept[-1])
+    _log_start(tmp_path, monkeypatch, embed=True)
+    assert len(kept) == 2 and all(f.closed for f in kept)
+
+
+def test_embed_log_over_10mb_is_rotated_once(tmp_path, monkeypatch):
+    (tmp_path / "logs").mkdir(exist_ok=True)
+    (tmp_path / "logs" / "embed-main.log.1").write_bytes(b"old")
+    _log_start(tmp_path, monkeypatch, embed=True, big=True)
+    rotated = tmp_path / "logs" / "embed-main.log.1"
+    assert rotated.stat().st_size > 10 * 1024 * 1024
+    assert (tmp_path / "logs" / "embed-main.log").stat().st_size < 1000
+
+
+def test_dev_start_does_not_redirect_output(tmp_path, monkeypatch):
+    seen = _log_start(tmp_path, monkeypatch, embed=False)
+    assert all("stdout" not in s["kw"] and "stderr" not in s["kw"] and "stdin" not in s["kw"] for s in seen)
+    assert not (tmp_path / "logs").exists()

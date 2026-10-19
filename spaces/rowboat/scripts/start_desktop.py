@@ -20,6 +20,7 @@ import signal
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 log = logging.getLogger("start_desktop")
@@ -211,6 +212,22 @@ def build_embed(lay: Layout, windows: bool = IS_WINDOWS) -> int:
     return _run_steps(embed_build_steps(lay), windows, env) if ok else 1
 
 
+LOG_MAX_BYTES = 10 * 1024 * 1024
+
+
+def open_job_log(workdir: Path, name: str):
+    """Logdatei <workdir>/logs/<name>.log im Anhaengemodus; ueber 10 MB wird einmal nach .log.1 rotiert."""
+    logs = workdir / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    path = logs / f"{name}.log"
+    if path.exists() and path.stat().st_size > LOG_MAX_BYTES:
+        os.replace(path, logs / f"{name}.log.1")
+    fh = open(path, "ab")
+    fh.write(f"=== start {datetime.now().isoformat(timespec='seconds')} pid={os.getpid()} ==={chr(10)}".encode("utf-8"))
+    fh.flush()
+    return fh
+
+
 def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS, env_file: Path | None = None, embed: bool = False) -> int:
     env_file = env_file or DEFAULT_ENV_FILE
     gaps = missing_embed(lay, windows) if embed else missing(lay, windows)
@@ -241,13 +258,20 @@ def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS, env_file: Path
         for name in ("SIGHUP", "SIGTERM"):
             signal.signal(getattr(signal, name), _interrupt)
     procs: list[subprocess.Popen] = []
+    log_files: list = []
     # Nur im Einbettungsmodus versteckt: im Dev-Modus soll die Ausgabe von npm run dev sichtbar bleiben.
     extra = {"creationflags": CREATE_NO_WINDOW} if windows and embed else {}
     try:
         for name, cmd, cwd in jobs(lay, workdir, windows, embed=embed):
             log.info("starting %s: %s", name, " ".join(cmd))
+            io: dict = {}
+            if embed:
+                # Ohne Umleitung erbt Rowboat eine versteckte Konsole, die niemand liest (Haenger bei vollem Puffer).
+                fh = open_job_log(workdir, "embed-main" if name == "Rowboat" else "vault-map")
+                log_files.append(fh)
+                io = {"stdout": fh, "stderr": subprocess.STDOUT, "stdin": subprocess.DEVNULL}
             procs.append(subprocess.Popen(cmd, cwd=cwd, env=rowboat_env if name == "Rowboat" else env, shell=_shell(cmd, windows),
-                                          start_new_session=not windows, **extra))
+                                          start_new_session=not windows, **extra, **io))
         if embed:
             log.info("Rowboat laeuft versteckt im Einbettungsmodus; die Multiverse-Ansicht verbindet sich ueber %s. Ctrl+C stoppt alles.",
                      workdir / "embed.json")
@@ -260,6 +284,8 @@ def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS, env_file: Path
         # Runs on Ctrl+C and on a failed spawn too, so no started job is left behind.
         for proc in procs:
             stop(proc, windows)
+        for fh in log_files:
+            fh.close()
     if code != 0:
         log.error("Rowboat stopped with exit code %s", code)
     return code
