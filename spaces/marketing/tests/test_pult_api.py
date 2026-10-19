@@ -445,7 +445,7 @@ def test_vorschau_bloecke_pdf(db, c, monkeypatch):
     monkeypatch.setattr(pdf_druck, "html_zu_pdf", druck)
     monkeypatch.setenv("MARKETING_PDF_HOSTS", "h.ts.net")
     db.antworten = [[_bloecke_zeile()]]
-    basis = "https://h.ts.net/marketing/bild/t/"
+    basis = "https://h.ts.net/marketing/bild/1760000000." + "a" * 64 + "/"
     r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=1&format=pdf&bild_basis={basis}", headers=H)
     assert r.status_code == 200 and r.headers["content-type"] == "application/pdf"
     assert r.content == b"%PDF-1.7 probe"
@@ -474,10 +474,16 @@ def test_pdf_erlaubt_nur_erwartete_pfade(monkeypatch):
     """Sicherheitspruefung 19.10. (2): auch auf erlaubtem Host nur /marketing/bild/<seg>/ und /marketing/schrift/."""
     from spaces.marketing.api import pult
     monkeypatch.setenv("MARKETING_PDF_HOSTS", "h.ts.net")
-    assert pult._pdf_erlaubt("https://h.ts.net/marketing/bild/t/", "https://h.ts.net/marketing/schrift/") == [
-        "https://h.ts.net/marketing/bild/t/", "https://h.ts.net/marketing/schrift/"]
+    tok = "1760000000." + "a" * 64
+    bild = f"https://h.ts.net/marketing/bild/{tok}/"
+    assert pult._pdf_erlaubt(bild, "https://h.ts.net/marketing/schrift/") == [bild, "https://h.ts.net/marketing/schrift/"]
     assert pult._pdf_erlaubt("https://h.ts.net/", "https://h.ts.net/admin/") == []
-    assert pult._pdf_erlaubt("https://h.ts.net/marketing/bild/t/x/", "https://h.ts.net/marketing/schrift/a/") == []
+    assert pult._pdf_erlaubt("https://h.ts.net/marketing/bild/t/", "https://h.ts.net/marketing/schrift/a/") == []
+    # Sicherheitspruefung 19.10. (3): kodierte Punkt-Segmente, Abfrage, Anker
+    for boese in ("https://h.ts.net/marketing/bild/%2e%2e/", "https://h.ts.net/marketing/bild/../",
+                  f"https://h.ts.net/marketing/bild/{tok}/?x=1", "https://h.ts.net/marketing/schrift/#a",
+                  "https://h.ts.net/marketing/schrift/%2e%2e/"):
+        assert pult._pdf_erlaubt(boese) == [], boese
 
 
 def test_vorschau_bloecke_pdf_ohne_chromium_503(db, c, monkeypatch):

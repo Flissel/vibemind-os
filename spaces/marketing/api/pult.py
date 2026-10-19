@@ -250,6 +250,10 @@ def _bild_basis(wert: str | None) -> str:
     return wert
 
 
+# Signierte Bildbasis der sales-ui: /marketing/bild/<ablauf>.<hex-hmac>/ (sales-mcp/ui_editor.bild_token)
+_PDF_BILD_PFAD = re.compile(r"^/marketing/bild/[0-9]{1,12}\.[0-9a-f]{64}/$")
+
+
 def _pdf_erlaubt(*basen: str) -> list[str]:
     """Bild-/Schriftbasis nur, wenn ihr Host (mit Port) in MARKETING_PDF_HOSTS steht (Komma-Liste) und der Pfad die
     erwartete Form hat (/marketing/bild/<seg>/ bzw. /marketing/schrift/). Ohne
@@ -261,8 +265,9 @@ def _pdf_erlaubt(*basen: str) -> list[str]:
             teile = urlsplit(b or "")
         except ValueError:
             continue
-        if (teile.scheme == "https" and teile.netloc.lower() in hosts
-                and (_BILD_BASIS_HOST.match(b) or teile.path == "/marketing/schrift/")):
+        if any(z in (b or "") for z in "%?#\\") or teile.scheme != "https" or teile.netloc.lower() not in hosts:
+            continue
+        if _PDF_BILD_PFAD.match(teile.path) or teile.path == "/marketing/schrift/":
             aus.append(b)
     return aus
 
