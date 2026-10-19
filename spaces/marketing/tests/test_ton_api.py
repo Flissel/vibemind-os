@@ -182,7 +182,8 @@ def test_pult_anlegen_nutzt_betreiber_und_prueft_skript(pult, c):
     pult.antworten = [[{"id": AID}]]
     r = c.post("/api/pult/ton", headers=P, json={"mandant": "vibemind", "titel": "Folge", "skript": SKRIPT})
     assert r.status_code == 200 and r.json() == {"auftrag": AID}
-    assert "ton_auftrag_anlegen(" in pult.sql[-1] and "'betreiber'" in pult.sql[-1]
+    assert "ton_auftrag_anlegen_von(" in pult.sql[-1] and "'betreiber'" in pult.sql[-1]
+    assert "'vibemind'" in pult.sql[-1]
     n = len(pult.sql)
     r = c.post("/api/pult/ton", headers=P, json={"mandant": "vibemind", "titel": "Folge",
                                                   "skript": [{"sprecher": "A", "text": "x" * 1001}]})
@@ -190,12 +191,33 @@ def test_pult_anlegen_nutzt_betreiber_und_prueft_skript(pult, c):
 
 
 def test_pult_abbrechen_ruft_funktion(pult, c):
-    pult.antworten = [[{"s": "abgebrochen"}]]
+    pult.antworten = [[{"status": "offen"}], [{"s": "abgebrochen"}]]
     r = c.post(f"/api/pult/ton/{AID}/abbrechen", headers=P)
     assert r.status_code == 200 and r.json() == {"status": "abgebrochen"}
     assert "ton_abbrechen(" in pult.sql[-1]
 
 
-def test_pult_abbrechen_unbekannte_id_404(pult, c):
+def test_pult_abbrechen_ungueltige_id_404(pult, c):
     assert c.post("/api/pult/ton/gibtsnicht/abbrechen", headers=P).status_code == 404
     assert not pult.sql
+
+
+def test_pult_abbrechen_unbekannte_folge_404(pult, c):
+    pult.antworten = [[]]
+    r = c.post(f"/api/pult/ton/{AID}/abbrechen", headers=P)
+    assert r.status_code == 404 and len(pult.sql) == 1
+
+
+@pytest.mark.parametrize("status", ["fertig", "fehler", "abgebrochen"])
+def test_pult_abbrechen_nicht_mehr_offen_409(pult, c, status):
+    pult.antworten = [[{"status": status}]]
+    r = c.post(f"/api/pult/ton/{AID}/abbrechen", headers=P)
+    assert r.status_code == 409 and r.json()["detail"] == "Folge ist nicht mehr offen"
+    assert len(pult.sql) == 1 and "ton_abbrechen(" not in pult.sql[0]
+
+
+def test_pult_abbrechen_rennen_wird_409(pult, c):
+    pult.antworten = [[{"status": "offen"}]]
+    pult.fehler = [None, RuntimeError("psql failed: ERROR:  Auftrag ist nicht mehr offen\nCONTEXT: PL/pgSQL")]
+    r = c.post(f"/api/pult/ton/{AID}/abbrechen", headers=P)
+    assert r.status_code == 409

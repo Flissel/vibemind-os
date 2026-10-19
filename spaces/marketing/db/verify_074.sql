@@ -2,15 +2,16 @@
 DO $$ DECLARE a uuid; b uuid; c uuid; j jsonb; BEGIN
   ASSERT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'marketing'
                   AND table_name = 'ton_auftraege' AND column_name = 'angelegt_von'), 'Spalte angelegt_von fehlt';
-  -- Alte 4-Argument-Form bleibt nutzbar und ergibt 'agent'.
+  -- Alte 4-Argument-Form bleibt unveraendert und ergibt 'agent'.
   a := marketing.ton_auftrag_anlegen('vibemind', 'Probe 074', 'de', '[{"sprecher":"Anna","text":"Hallo"}]'::jsonb);
   ASSERT (SELECT angelegt_von FROM marketing.ton_auftraege WHERE id = a) = 'agent', 'Standard agent';
-  b := marketing.ton_auftrag_anlegen('vibemind', 'Probe 074b', 'de', '[{"sprecher":"Anna","text":"Hallo"}]'::jsonb, 'betreiber');
+  b := marketing.ton_auftrag_anlegen_von('vibemind', 'Probe 074b', 'de', '[{"sprecher":"Anna","text":"Hallo"}]'::jsonb, 'betreiber');
   ASSERT (SELECT angelegt_von FROM marketing.ton_auftraege WHERE id = b) = 'betreiber', 'Urheber betreiber';
   BEGIN
-    PERFORM marketing.ton_auftrag_anlegen('vibemind', 'x', 'de', '[{"sprecher":"A","text":"x"}]'::jsonb, 'fremd');
+    PERFORM marketing.ton_auftrag_anlegen_von('vibemind', 'x', 'de', '[{"sprecher":"A","text":"x"}]'::jsonb, 'fremd');
     RAISE EXCEPTION 'unbekannter Urheber haette scheitern muessen';
   EXCEPTION WHEN check_violation THEN NULL; END;
+  ASSERT (SELECT count(*) FROM pg_proc WHERE proname = 'ton_auftrag_anlegen' AND pronamespace = 'marketing'::regnamespace) = 1, 'keine Ueberladung';
   -- Abbrechen aus offen, zweites Mal wirft.
   ASSERT marketing.ton_abbrechen(a) = 'abgebrochen', 'abbrechen aus offen';
   ASSERT (SELECT befund FROM marketing.ton_auftraege WHERE id = a) = 'Im Pult abgebrochen', 'Befund';
@@ -39,7 +40,7 @@ DO $$ DECLARE a uuid; b uuid; c uuid; j jsonb; BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sales_app') THEN
     ASSERT NOT has_function_privilege('sales_app', 'marketing.ton_abbrechen(uuid)', 'EXECUTE'), 'sales_app bricht nicht ab';
     ASSERT NOT has_function_privilege('sales_app',
-      'marketing.ton_auftrag_anlegen(text,text,text,jsonb,text)', 'EXECUTE'), 'sales_app legt nichts an';
+      'marketing.ton_auftrag_anlegen_von(text,text,text,jsonb,text)', 'EXECUTE'), 'sales_app legt nichts an';
   END IF;
   RAISE NOTICE 'verify_074 ok';
 END $$;

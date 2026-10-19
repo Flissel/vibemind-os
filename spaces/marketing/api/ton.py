@@ -15,7 +15,7 @@ from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
 
 from spaces.marketing.api import medien_mandant
 from spaces.marketing.api.bilder import _agent_schluessel, _auftrag_id, _bild_schluessel, _ordner
-from spaces.marketing.api.pult import _lesen, _lesen_einer, _schluessel, _schreiben, _uuid_oder_404, lit
+from spaces.marketing.api.pult import _lesen, _lesen_einer, _NAME, _schluessel, _schreiben, _uuid_oder_404, lit
 
 router = APIRouter(prefix="/api/ton")
 pult_router = APIRouter(prefix="/api/pult/ton")
@@ -25,7 +25,6 @@ MP3_MAX = 25 * 1024 * 1024
 _SPRECHER = re.compile(r"^[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß .-]{0,29}$")
 _SPRACHE = re.compile(r"^[a-z]{2}$")
 _DATEI = re.compile(r"^pod-[0-9a-f]{8}-[a-z0-9-]{1,60}\.mp3$")
-_MANDANT = re.compile(r"^[a-z][a-z0-9_-]{0,40}$")
 _SPALTEN_PULT = ("id, mandant, titel, sprache, skript, status, datei, dauer_s, befund, angelegt_von, "
                  "erstellt_am, geaendert_am")
 
@@ -166,7 +165,7 @@ def arbeiter_fertig(aid: str, payload: dict = Body(...), x_bild_key: str | None 
 # --- Pult (Betreiber, X-Pult-Key, Migration 074): Folgen sind nicht loeschbar, nur abbrechbar -------------
 
 def _mandant(wert) -> str:
-    if not isinstance(wert, str) or not _MANDANT.fullmatch(wert.strip()):
+    if not isinstance(wert, str) or not _NAME.fullmatch(wert.strip()):
         raise HTTPException(422, "mandant fehlt oder ist ungueltig")
     return wert.strip()
 
@@ -193,7 +192,7 @@ def pult_anlegen(payload: dict = Body(...), x_pult_key: str | None = Header(None
         raise HTTPException(422, "sprache: zwei Kleinbuchstaben, z. B. de")
     skript = _skript_pruefen(payload.get("skript"))
     zeile = _schreiben(lambda:
-        f"SELECT marketing.ton_auftrag_anlegen({lit(m)}, {lit(titel.strip())}, {lit(sprache)}, "
+        f"SELECT marketing.ton_auftrag_anlegen_von({lit(m)}, {lit(titel.strip())}, {lit(sprache)}, "
         f"{lit(json.dumps(skript, ensure_ascii=False))}::jsonb, 'betreiber') AS id")
     return {"auftrag": str(zeile.get("id"))}
 
@@ -202,5 +201,17 @@ def pult_anlegen(payload: dict = Body(...), x_pult_key: str | None = Header(None
 def pult_abbrechen(aid: str, x_pult_key: str | None = Header(None)):
     _schluessel(x_pult_key)
     a = _uuid_oder_404(aid)
-    zeile = _schreiben(lambda: f"SELECT marketing.ton_abbrechen({lit(a)}::uuid) AS s")
+    # Vorabpruefung trennt "gibt es nicht" (404) von "nicht mehr offen" (409); das bedingte UPDATE in
+    # ton_abbrechen bleibt die eigentliche (rennfeste) Regel.
+    auftrag = _lesen_einer(lambda: f"SELECT status FROM marketing.ton_auftraege WHERE id = {lit(a)}::uuid")
+    if not auftrag:
+        raise HTTPException(404, "Unbekannte Folge")
+    if auftrag.get("status") not in ("offen", "in_arbeit"):
+        raise HTTPException(409, "Folge ist nicht mehr offen")
+    try:
+        zeile = _schreiben(lambda: f"SELECT marketing.ton_abbrechen({lit(a)}::uuid) AS s")
+    except HTTPException as e:
+        if e.status_code == 422 and "nicht mehr offen" in str(e.detail):
+            raise HTTPException(409, "Folge ist nicht mehr offen")
+        raise
     return {"status": zeile.get("s")}
