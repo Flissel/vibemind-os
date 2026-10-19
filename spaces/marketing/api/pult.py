@@ -682,10 +682,20 @@ def entscheiden(iid: str, payload: dict = Body(...), x_pult_key: str | None = He
 
 
 def _mandant_pflicht(wert) -> str:
-    """Firma ohne Rueckfall (Loeschen, Platzhalter): fehlt sie oder passt sie nicht, 422 ohne SQL."""
+    """Firma ausdruecklich angeben, ohne Rueckfall auf vibemind (fail-closed): fehlt sie oder passt das
+    Format nicht, 422 ohne SQL. Einzige Fassung - medien_mandant importiert sie von hier."""
     if not isinstance(wert, str) or not _NAME.match(wert):
         raise HTTPException(422, "Unbekannter Mandant")
     return wert
+
+
+def _mandant_bekannt(wert) -> str:
+    """Wie _mandant_pflicht, dazu muss die Firma in marketing.mandanten stehen - geprueft mit einer reinen
+    Leseabfrage, BEVOR eine schreibende Funktion laeuft (Review M1). Unbekannt -> 422 "Unbekannter Mandant"."""
+    m = _mandant_pflicht(wert)
+    if not _lesen_einer(lambda: f"SELECT id FROM marketing.mandanten WHERE id = {lit(m)}"):
+        raise HTTPException(422, "Unbekannter Mandant")
+    return m
 
 
 def _von(payload: dict) -> str:
@@ -704,6 +714,7 @@ def inhalt_loeschen(iid: str, payload: dict = Body(...), x_pult_key: str | None 
     i = _uuid_oder_404(iid)
     m = _mandant_pflicht(payload.get("mandant"))
     von = _von(payload)
+    _mandant_bekannt(m)
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_inhalt_loeschen({lit(i)}::uuid, {lit(m)}, {lit(von)}) AS titel")
     return {"geloescht": i, "titel": zeile.get("titel") or ""}
@@ -818,5 +829,5 @@ def medien_verweise(name: str = Query(""), mandant: str | None = None,
                     x_pult_key: str | None = Header(None)):
     _schluessel(x_pult_key)
     medien_name_pruefen(name)
-    m = None if mandant in (None, "") else _mandant_pflicht(mandant)
+    m = None if mandant in (None, "") else _mandant_bekannt(mandant)
     return {"verweise": verweise_lesen(name, m)}

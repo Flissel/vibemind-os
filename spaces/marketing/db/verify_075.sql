@@ -60,6 +60,11 @@ DO $$ DECLARE r record; BEGIN
     ASSERT NOT has_function_privilege('sales_app', 'marketing.pult_inhalt_loeschen(uuid,text,text)', 'EXECUTE'),
            '0: sales_app darf nicht loeschen';
   END IF;
+  -- Die API verbindet sich wie die Probe als SUPABASE_DB_USER (Vorgabe supabase_admin, Eigentuemerin) -
+  -- diese Rolle muss die Funktion aufrufen duerfen. service_role bekommt nach REVOKE ... FROM PUBLIC kein
+  -- EXECUTE (wie bei 071/074; 003 setzt keine Default Privileges fuer supabase_admin-Objekte).
+  ASSERT has_function_privilege(current_user, 'marketing.pult_inhalt_loeschen(uuid,text,text)', 'EXECUTE'),
+         '0: die API-Rolle (Probe-Rolle) darf loeschen';
 END $$;
 
 DO $$ DECLARE v_i uuid; v_f uuid; v_a uuid; v_fehler text; v_titel text; c uuid; b uuid; n int; BEGIN
@@ -125,11 +130,27 @@ DO $$ DECLARE v_i uuid; v_f uuid; v_a uuid; v_fehler text; v_titel text; c uuid;
   v_fehler := NULL;
   BEGIN PERFORM marketing.pult_inhalt_loeschen(v_i, 'vibemind', 't'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
   ASSERT v_fehler = 'Liegt zur Freigabe – erst zurückziehen', format('d: eingereicht: %s', v_fehler);
+  -- I1: selbst gesetzte Einstellung oeffnet eingereichte Fassungen nicht
+  v_fehler := NULL;
+  BEGIN
+    PERFORM set_config('marketing.inhalt_loeschen', v_i::text, true);
+    DELETE FROM marketing.inhalt_fassungen WHERE inhalt = v_i;
+  EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+  ASSERT v_fehler LIKE 'Fassungen sind unveraenderlich%', format('d: eingereicht, Einstellung gefaelscht: %s', v_fehler);
   PERFORM marketing.pult_zurueckziehen(v_i, 'probe');
   v_fehler := NULL;
   BEGIN PERFORM marketing.pult_inhalt_loeschen(v_f, 'vibemind', 't'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
   ASSERT v_fehler = 'Freigegebene Inhalte bleiben erhalten', format('d: freigegeben: %s', v_fehler);
   ASSERT (SELECT count(*) FROM marketing.inhalt_fassungen WHERE inhalt = v_f) = 1, 'd: freigegebene Fassung bleibt';
+  -- I1: Einstellung selbst gesetzt (wie es jede Rolle mit DELETE-Recht koennte) - freigegebene Fassung bleibt hart
+  v_fehler := NULL;
+  BEGIN
+    PERFORM set_config('marketing.inhalt_loeschen', v_f::text, true);
+    DELETE FROM marketing.inhalt_fassungen WHERE inhalt = v_f;
+  EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+  ASSERT v_fehler LIKE 'Fassungen sind unveraenderlich%', format('d: freigegeben, Einstellung gefaelscht: %s', v_fehler);
+  ASSERT (SELECT count(*) FROM marketing.inhalt_fassungen WHERE inhalt = v_f) = 1, 'd: freigegebene Fassung bleibt (I1)';
+  ASSERT coalesce(current_setting('marketing.inhalt_loeschen', true), '') = '', 'd: Einstellung zurueckgerollt';
 
   -- e) Erfolg: Titel zurueck, alles Abhaengige weg, Plan verliert nur die Verknuepfung
   v_titel := marketing.pult_inhalt_loeschen(v_i, 'vibemind', 'probe');

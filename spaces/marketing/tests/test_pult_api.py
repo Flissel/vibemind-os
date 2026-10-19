@@ -972,10 +972,11 @@ def test_versand_ohne_schluessel_401(db, c):
 # --- Editor, Entwuerfe, Bilder (Plan 2026-10-19) Task 2: Inhalt loeschen, Verweise je Firma ---
 
 def test_loeschen_ruft_db_funktion_mit_mandant(db, c):
-    db.antworten = [[{"titel": "T"}]]
+    db.antworten = [[{"id": "vibemind"}], [{"titel": "T"}]]
     r = c.post(f"/api/pult/inhalte/{IID}/loeschen", headers=H, json={"mandant": "vibemind", "von": "felix"})
     assert r.status_code == 200 and r.json() == {"geloescht": IID, "titel": "T"}
-    assert "pult_inhalt_loeschen(" in db.sql[0] and "'vibemind'" in db.sql[0] and "'felix'" in db.sql[0]
+    assert "marketing.mandanten" in db.sql[0] and "pult_inhalt_loeschen" not in db.sql[0]
+    assert "pult_inhalt_loeschen(" in db.sql[1] and "'vibemind'" in db.sql[1] and "'felix'" in db.sql[1]
 
 
 @pytest.mark.parametrize("body", [{}, {"mandant": ""}, {"mandant": None}, {"mandant": 5},
@@ -986,7 +987,8 @@ def test_loeschen_ohne_mandant_422_ohne_sql(db, c, body):
 
 
 def test_loeschen_db_ablehnung_422(db, c):
-    db.fehler = [RuntimeError("psql:<stdin>:1: ERROR:  Liegt zur Freigabe – erst zurückziehen\nCONTEXT: x")]
+    db.antworten = [[{"id": "vibemind"}]]
+    db.fehler = [None, RuntimeError("psql:<stdin>:1: ERROR:  Liegt zur Freigabe – erst zurückziehen\nCONTEXT: x")]
     r = c.post(f"/api/pult/inhalte/{IID}/loeschen", headers=H, json={"mandant": "vibemind", "von": "f"})
     assert r.status_code == 422 and r.json()["detail"] == "Liegt zur Freigabe – erst zurückziehen"
 
@@ -1007,14 +1009,15 @@ def _verweis(iid, mandant, titel, fmt="bloecke", fassung=4, status="entwurf", wo
 
 
 def test_verweise_maskiert_fremde_titel(db, c):
-    db.antworten = [[_verweis("a1", "fin2gether", "Geheim"), _verweis("b2", "vibemind", "Herbst", "felder", 2)]]
+    db.antworten = [[{"id": "vibemind"}],
+                    [_verweis("a1", "fin2gether", "Geheim"), _verweis("b2", "vibemind", "Herbst", "felder", 2)]]
     r = c.get("/api/pult/medien/verweise", params={"name": "a.jpg", "mandant": "vibemind"}, headers=H)
     assert r.status_code == 200
     fremd, eigen = r.json()["verweise"]
     assert fremd["titel"] == "" and fremd["eigen"] is False and "Geheim" not in r.text
     assert eigen == {"id": "b2", "titel": "Herbst", "status": "entwurf", "art": "newsletter", "wo": "aktuell",
                      "format": "felder", "eigen": True, "fassung": 2}
-    assert "i.mandant" in db.sql[0] and "format" in db.sql[0]
+    assert "marketing.mandanten" in db.sql[0] and "i.mandant" in db.sql[1] and "format" in db.sql[1]
 
 
 def test_verweise_ohne_mandant_wie_bisher(db, c):
@@ -1139,3 +1142,18 @@ def test_vorlage_und_wiederherstellen_schluessel_und_id(db, c, pfad):
     assert c.post(f"/api/pult/inhalte/{IID}/{pfad}", json=body).status_code == 401
     assert c.post(f"/api/pult/inhalte/kein-uuid/{pfad}", headers=H, json=body).status_code == 404
     assert db.sql == []
+
+
+# --- Fix-Runde 1 (Review M1): gut geformter, aber unbekannter Mandant -> 422 vor der schreibenden Funktion ---
+
+def test_loeschen_unbekannter_mandant_422_ohne_loeschen(db, c):
+    db.antworten = [[]]
+    r = c.post(f"/api/pult/inhalte/{IID}/loeschen", headers=H, json={"mandant": "foo", "von": "f"})
+    assert r.status_code == 422 and r.json()["detail"] == "Unbekannter Mandant"
+    assert len(db.sql) == 1 and "pult_inhalt_loeschen" not in db.sql[0]
+
+
+def test_verweise_unbekannter_mandant_422(db, c):
+    db.antworten = [[]]
+    r = c.get("/api/pult/medien/verweise", params={"name": "a.jpg", "mandant": "foo"}, headers=H)
+    assert r.status_code == 422 and len(db.sql) == 1 and "inhalt_fassungen" not in db.sql[0]

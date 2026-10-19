@@ -5,7 +5,8 @@
 -- 075: Entwuerfe endgueltig loeschen (sales-claw Plan 2026-10-19-editor-entwuerfe-bilder.md, E1/E2).
 --   1) marketing._inhalt_fassung_unveraenderlich(): Trigger-Funktion NUR fuer inhalt_fassungen. Wie
 --      _fassung_unveraenderlich (050), erlaubt aber DELETE, solange die transaktionslokale Einstellung
---      marketing.inhalt_loeschen genau die id dieses Inhalts traegt (setzt nur pult_inhalt_loeschen).
+--      marketing.inhalt_loeschen genau die id dieses Inhalts traegt (setzt nur pult_inhalt_loeschen) UND
+--      der Inhalt im Status entwurf oder abgelehnt steht (eingereicht/freigegeben bleiben hart).
 --      layout_fassungen und newsletter_vorlagen_fassungen behalten _fassung_unveraenderlich.
 --   2) marketing.pult_inhalt_loeschen(p_inhalt, p_mandant, p_von) RETURNS text (Titel). Loeschbar sind
 --      nur entwurf und abgelehnt. Sperren (Klartext, in dieser Reihenfolge): Unbekannter Inhalt, fremde
@@ -16,16 +17,23 @@
 --      (verify_075 Abschnitt 0 prueft das ueber pg_constraint).
 -- Sperrreihenfolge wie 061: erst marketing.inhalte, dann Auftraege.
 -- Ersetzte Funktionen: keine. Neu: die beiden oben. Keine Ueberladung bestehender Namen.
--- Rechte: wie 071/074 - EXECUTE nicht fuer PUBLIC (service_role behaelt es ueber 003).
+-- Rechte: wie 071/074 - EXECUTE nicht fuer PUBLIC. Aufrufer ist die API-Rolle (SUPABASE_DB_USER, Vorgabe
+-- supabase_admin = Eigentuemerin); service_role hat danach kein EXECUTE (gemessen in der Probe, s. verify_075).
 -- Nachweis: verify_075.sql.
 BEGIN;
 
--- 1) Trigger-Funktion mit genau einer Ausnahme
+-- 1) Trigger-Funktion mit genau einer Ausnahme. Die Einstellung kann JEDE Rolle per set_config setzen
+--    (service_role hat DELETE auf inhalt_fassungen, ist aber nicht Eigentuemerin und kann den Trigger nicht
+--    abschalten). Darum gilt die Ausnahme zusaetzlich nur fuer Inhalte im loeschbaren Status - dieselbe Menge
+--    wie in pult_inhalt_loeschen: entwurf (auch "zurueckgegeben") und abgelehnt ("verworfen"). Fassungen
+--    eingereichter und freigegebener Inhalte bleiben hart unveraenderlich (Review I1).
 CREATE OR REPLACE FUNCTION marketing._inhalt_fassung_unveraenderlich() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP = 'DELETE'
-     AND current_setting('marketing.inhalt_loeschen', true) = OLD.inhalt::text THEN
+     AND current_setting('marketing.inhalt_loeschen', true) = OLD.inhalt::text
+     AND EXISTS (SELECT 1 FROM marketing.inhalte
+                  WHERE id = OLD.inhalt AND status IN ('entwurf', 'abgelehnt')) THEN
     RETURN OLD;
   END IF;
   RAISE EXCEPTION 'Fassungen sind unveraenderlich - speichern legt eine neue an';

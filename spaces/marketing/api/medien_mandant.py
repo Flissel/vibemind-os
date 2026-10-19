@@ -8,13 +8,16 @@ Helfer aus api.pult (DB-Fehler -> 503, DB-Ablehnung -> 422)."""
 from __future__ import annotations
 
 import json
+import os
 import re
 
 from fastapi import APIRouter, Body, Header, HTTPException
+from fastapi.responses import JSONResponse
 
 from spaces.marketing.api.pult import (_NICHT_ERREICHBAR, _UNGUELTIGE_EINGABE, _db_grund, _lesen,
-                                       _lesen_einer, _mandant, _schluessel, _schreiben, _uuid_oder_404, _von,
-                                       lit, verweise_lesen)
+                                       _lesen_einer, _mandant_pflicht, _schluessel, _schreiben, _uuid_oder_404,
+                                       _von, lit, verweise_lesen)
+# _mandant_pflicht hat nur eine Fassung (pult.py); marke.py importiert sie weiter ueber dieses Modul.
 from spaces.marketing.claw import bildplaetze
 from spaces.marketing.sync import _db
 
@@ -29,13 +32,6 @@ NAMEN_MAX, ZUORDNEN_MAX = 2000, 20
 
 def _gueltig(name) -> bool:
     return isinstance(name, str) and _DATEI.fullmatch(name) is not None and ".." not in name
-
-
-def _mandant_pflicht(wert) -> str:
-    """Mandant ausdruecklich angeben: kein Rueckfall auf vibemind (fail-closed)."""
-    if not isinstance(wert, str) or not wert:
-        raise HTTPException(422, "Unbekannter Mandant")
-    return _mandant(wert)
 
 
 def _pruefen(namen: list) -> list[str]:
@@ -280,7 +276,15 @@ def medien_platzhalter(payload: dict = Body(...), x_pult_key: str | None = Heade
         grund = _sperrgrund(v)
         fassung = None
         if grund is None:
-            fassung, grund = _umstellen(str(v["id"]), name)
+            try:
+                fassung, grund = _umstellen(str(v["id"]), name)
+            except HTTPException as e:
+                if e.status_code != 503:
+                    raise
+                # E7/Review M4: DB mitten in der Schleife weg - 503 (Datei NICHT loeschen), aber die schon
+                # umgestellten Entwuerfe nennen (sie tragen jetzt Platzhalter)
+                return JSONResponse(status_code=503, content={"detail": str(e.detail), "umgestellt": umgestellt,
+                                                              "gesperrt": gesperrt})
         if grund is not None:
             gesperrt.append({"id": v.get("id"), "titel": v.get("titel") or "", "grund": grund})
         elif fassung is not None:
@@ -288,14 +292,35 @@ def medien_platzhalter(payload: dict = Body(...), x_pult_key: str | None = Heade
     return {"umgestellt": umgestellt, "gesperrt": gesperrt}
 
 
+def _datei_existiert(name: str) -> bool:
+    """Steht GENAU dieser Name noch in einem Medienordner (MARKETING_MEDIEN_ORDNER, MARKETING_BILD_ORDNER - wie
+    gestaltung.quellen und bilder)? Exakter Eintrag der Verzeichnisliste, keine Gross/Klein-Faltung (wie
+    bilder._im_ordner). Fail-closed: ohne konfigurierten oder ohne lesbaren Ordner laesst sich das nicht
+    belegen -> 503."""
+    ordner = [o.strip() for o in (os.environ.get("MARKETING_MEDIEN_ORDNER", ""),
+                                  os.environ.get("MARKETING_BILD_ORDNER", "")) if o.strip()]
+    if not ordner:
+        raise HTTPException(503, "misconfigured: MARKETING_MEDIEN_ORDNER fehlt")
+    for o in ordner:
+        try:
+            if name in os.listdir(o):
+                return True
+        except OSError:
+            raise HTTPException(503, "Medienordner nicht lesbar")
+    return False
+
+
 @router.post("/medien/vergessen")
 def medien_vergessen(payload: dict = Body(...), x_pult_key: str | None = Header(None)):
     """Nach dem Loeschen der Datei: Firmenzuordnung entfernen (exakter Name), sonst erbte eine spaetere
-    Datei gleichen Namens die alte Firma."""
+    Datei gleichen Namens die alte Firma. Nur Aufraeumen (Controller-Ruling I2): steht die Datei noch in einem
+    Medienordner, 409 - sonst machte "vergessen" ein fremdes Bild fuer alle Firmen sichtbar."""
     _schluessel(x_pult_key)
     name = payload.get("name")
     if not _gueltig(name):
         raise HTTPException(422, "Unbekannter Dateiname")
+    if _datei_existiert(name):
+        raise HTTPException(409, "Datei existiert noch – erst löschen")
     return {"entfernt": _schreiben_zahl(lambda: (
         f"WITH x AS (DELETE FROM marketing.medien_mandant WHERE dateiname = {lit(name)} RETURNING 1) "
         f"SELECT count(*)::int AS n FROM x"))}

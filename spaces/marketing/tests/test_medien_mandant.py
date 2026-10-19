@@ -432,8 +432,19 @@ def test_platzhalter_eingaben_422_ohne_sql(umg, body):
     assert r.status_code == 422 and f.sql == [] and p.sql == []
 
 
-def test_vergessen_loescht_zuordnung(umg):
+@pytest.fixture
+def medienordner(monkeypatch, tmp_path):
+    medien, bilder = tmp_path / "medien", tmp_path / "bilder"
+    medien.mkdir()
+    bilder.mkdir()
+    monkeypatch.setenv("MARKETING_MEDIEN_ORDNER", str(medien))
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(bilder))
+    return medien, bilder
+
+
+def test_vergessen_loescht_zuordnung(umg, medienordner):
     f, p, c = umg
+    (medienordner[0] / "andere.jpg").write_bytes(b"x")
     p.ausgaben.append("1\n")
     r = c.post("/api/pult/medien/vergessen", json={"name": "Foto.jpg"}, headers=H)
     assert r.status_code == 200 and r.json() == {"entfernt": 1}
@@ -451,3 +462,73 @@ def test_vergessen_ungueltig_422(umg, body):
 def test_platzhalter_und_vergessen_ohne_schluessel_401(umg, pfad, body):
     f, p, c = umg
     assert c.post(pfad, json=body).status_code == 401 and f.sql == [] and p.sql == []
+
+
+# --- Fix-Runde 1: I2 vergessen nur ohne Datei, M4 503 nennt Umgestellte, M6 zwei Plaetze = ein Speichern ---
+
+@pytest.mark.parametrize("ordner", [0, 1])
+def test_vergessen_datei_existiert_noch_409_ohne_sql(umg, medienordner, ordner):
+    f, p, c = umg
+    (medienordner[ordner] / "Foto.jpg").write_bytes(b"x")
+    r = c.post("/api/pult/medien/vergessen", json={"name": "Foto.jpg"}, headers=H)
+    assert r.status_code == 409 and r.json()["detail"] == "Datei existiert noch – erst löschen"
+    assert p.sql == [] and f.sql == []
+
+
+def test_vergessen_geloeschte_datei_ok(umg, medienordner):
+    f, p, c = umg
+    datei = medienordner[0] / "Foto.jpg"
+    datei.write_bytes(b"x")
+    assert c.post("/api/pult/medien/vergessen", json={"name": "Foto.jpg"}, headers=H).status_code == 409
+    datei.unlink()
+    r = c.post("/api/pult/medien/vergessen", json={"name": "Foto.jpg"}, headers=H)
+    assert r.status_code == 200 and r.json() == {"entfernt": 1} and len(p.sql) == 1
+
+
+def test_vergessen_ohne_medienordner_503(umg, monkeypatch):
+    f, p, c = umg
+    monkeypatch.delenv("MARKETING_MEDIEN_ORDNER", raising=False)
+    monkeypatch.delenv("MARKETING_BILD_ORDNER", raising=False)
+    r = c.post("/api/pult/medien/vergessen", json={"name": "Foto.jpg"}, headers=H)
+    assert r.status_code == 503 and p.sql == []
+
+
+def test_vergessen_ordner_nicht_lesbar_503(umg, monkeypatch, tmp_path):
+    f, p, c = umg
+    monkeypatch.setenv("MARKETING_MEDIEN_ORDNER", str(tmp_path / "gibt-es-nicht"))
+    monkeypatch.delenv("MARKETING_BILD_ORDNER", raising=False)
+    r = c.post("/api/pult/medien/vergessen", json={"name": "Foto.jpg"}, headers=H)
+    assert r.status_code == 503 and p.sql == []
+
+
+def test_platzhalter_db_weg_mitten_in_der_schleife_nennt_umgestellte(umg):
+    f, _, c = umg
+    B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    f.antworten.append([_sicht_zeile()])
+    f.antworten.append([_vw(A, "Erster"), _vw(B, "Zweiter")])
+    f.antworten.append([_fassung(_bild_dok())])
+    f.antworten.append([{"fassung": 4}])
+    f.fehler = [None, None, None, None, RuntimeError("ssh: connect to host offload-vm")]
+    r = c.post("/api/pult/medien/platzhalter", json={"name": "foto.jpg", "mandant": "vibemind"}, headers=H)
+    assert r.status_code == 503 and "offload" not in r.text
+    j = r.json()
+    assert j["detail"] == "Marketing-Datenbank nicht erreichbar"
+    assert j["umgestellt"] == [{"id": A, "titel": "Erster", "fassung": 4}] and j["gesperrt"] == []
+
+
+def test_platzhalter_zwei_plaetze_ein_speichern(umg):
+    f, _, c = umg
+    zweiter = {"k2": {"type": "Image", "data": {"style": {}, "props": {"url": "medien:foto.jpg", "width": 300,
+                                                                     "height": 300}}},
+               "box": {"type": "Container", "data": {"style": {}, "props": {"url": "medien:foto.jpg",
+                                                                            "childrenIds": []}}}}
+    f.antworten.append([_sicht_zeile()])
+    f.antworten.append([_vw(A, "Mein Entwurf")])
+    f.antworten.append([_fassung(_bild_dok(extra=zweiter))])
+    f.antworten.append([{"fassung": 4}])
+    r = c.post("/api/pult/medien/platzhalter", json={"name": "foto.jpg", "mandant": "vibemind"}, headers=H)
+    assert r.status_code == 200 and r.json()["umgestellt"] == [{"id": A, "titel": "Mein Entwurf", "fassung": 4}]
+    speichern = [s for s in f.sql if "pult_bloecke_speichern" in s]
+    assert len(speichern) == 1
+    s = speichern[0]
+    assert "medien:foto.jpg" not in s and "medien:platzhalter-2x1.png" in s and "medien:platzhalter-1x1.png" in s
