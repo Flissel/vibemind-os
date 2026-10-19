@@ -95,6 +95,22 @@ SPACES: Dict[str, SpaceMeta] = {
         "capabilities": ["idea.create", "idea.list", "bubble.create", "bubble.enter"],
         "renderer_id": "ideas",
     },
+    "learning": {
+        "label": "Learning",
+        "event_prefix": "learning.",
+        "stream": "events:tasks:learning",
+        "aliases": ["learn", "course", "quiz", "training", "study"],
+        "description": "Source-grounded courses, adaptive practice, assessments, and learning canvases.",
+        "use_when": "User wants to create a course, study material, practice adaptively, or take an assessment",
+        "capabilities": [
+            "learning.course.create",
+            "learning.course.open",
+            "learning.session.start",
+            "learning.task.next",
+            "learning.progress.show",
+        ],
+        "renderer_id": "learning",
+    },
     "minibook": {
         "label": "Minibook",
         "event_prefix": "minibook.",
