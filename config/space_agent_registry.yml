@@ -327,6 +327,9 @@ spaces:
     prefixes: [learning.]
     enabled: true
     description: "Source-grounded course authoring and adaptive local learning."
+    # Additional loopback HTTP adapter for the same operations (Course Factory).
+    # Not a second authority: MCP events below remain canonical.
+    http_api: http://127.0.0.1:8090/api/v1
     mcp_servers: [spaces-learning]
     mcp_tools:
       spaces-learning:
