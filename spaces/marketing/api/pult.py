@@ -585,6 +585,34 @@ def entscheiden(iid: str, payload: dict = Body(...), x_pult_key: str | None = He
     return {"status": zeile["status"]}
 
 
+def _mandant_pflicht(wert) -> str:
+    """Firma ohne Rueckfall (Loeschen, Platzhalter): fehlt sie oder passt sie nicht, 422 ohne SQL."""
+    if not isinstance(wert, str) or not _NAME.match(wert):
+        raise HTTPException(422, "Unbekannter Mandant")
+    return wert
+
+
+def _von(payload: dict) -> str:
+    von = payload.get("von", "betreiber")
+    if not isinstance(von, str):
+        raise HTTPException(422, "von muss Text sein")
+    return von.strip()[:100] or "betreiber"
+
+
+@router.post("/inhalte/{iid}/loeschen")
+def inhalt_loeschen(iid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    """Entwurf endgueltig loeschen (Plan 2026-10-19 E1/E2). Die Regeln (nur entwurf/abgelehnt, eigene
+    Firma, kein laufender Assistent/Bildauftrag, alter Freigabeweg erledigt) setzt
+    marketing.pult_inhalt_loeschen (075) durch; ihre Ablehnung kommt als 422 mit Grund."""
+    _schluessel(x_pult_key)
+    i = _uuid_oder_404(iid)
+    m = _mandant_pflicht(payload.get("mandant"))
+    von = _von(payload)
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_inhalt_loeschen({lit(i)}::uuid, {lit(m)}, {lit(von)}) AS titel")
+    return {"geloescht": i, "titel": zeile.get("titel") or ""}
+
+
 @router.get("/layouts")
 def layouts(mandant: str | None = None, x_pult_key: str | None = Header(None)):
     _schluessel(x_pult_key)
@@ -645,28 +673,54 @@ def layout_standard(name: str, x_pult_key: str | None = Header(None)):
 # "a.jpg" nicht in "aa.jpg" trifft; ensure_ascii=False wie jsonb::text.
 _MEDIEN_NAME = re.compile(r'^[^/\\"\x00-\x1f]{1,200}$')
 _VERWEISE_SQL = (
-    "SELECT i.id::text AS id, i.titel, i.status, i.art, 'aktuell' AS wo FROM marketing.inhalte i "
-    "JOIN LATERAL (SELECT bloecke, felder FROM marketing.inhalt_fassungen f WHERE f.inhalt = i.id "
+    "SELECT i.id::text AS id, i.titel, i.status, i.art, 'aktuell' AS wo, i.mandant, n.format, n.fassung "
+    "FROM marketing.inhalte i "
+    "JOIN LATERAL (SELECT bloecke, felder, format, fassung FROM marketing.inhalt_fassungen f WHERE f.inhalt = i.id "
     "ORDER BY fassung DESC LIMIT 1) n ON true "
     "WHERE i.status <> 'abgelehnt' "
     "AND (strpos(coalesce(n.bloecke::text, ''), {w}) > 0 OR strpos(coalesce(n.felder::text, ''), {w}) > 0) "
     "UNION ALL "
-    "SELECT i.id::text, i.titel, i.status, i.art, 'freigegeben' FROM marketing.inhalte i "
+    "SELECT i.id::text, i.titel, i.status, i.art, 'freigegeben', i.mandant, f.format, f.fassung "
+    "FROM marketing.inhalte i "
     "JOIN marketing.inhalt_fassungen f ON f.inhalt = i.id AND f.fassung = i.freigegebene_fassung "
     "WHERE i.status = 'freigegeben' "
     "AND (strpos(coalesce(f.bloecke::text, ''), {w}) > 0 OR strpos(coalesce(f.felder::text, ''), {w}) > 0)")
 
 
-@router.get("/medien/verweise")
-def medien_verweise(name: str = Query(""), x_pult_key: str | None = Header(None)):
-    _schluessel(x_pult_key)
-    if not _MEDIEN_NAME.match(name or "") or name.strip(".") == "":
+def medien_name_pruefen(name) -> str:
+    """Dateiname einer Mediendatei pruefen (kein Pfad, keine Steuerzeichen) - sonst 422 ohne SQL."""
+    if not isinstance(name, str) or not _MEDIEN_NAME.match(name) or name.strip(".") == "":
         raise HTTPException(422, "Unbekannter Dateiname")
+    return name
+
+
+def verweise_lesen(name: str, mandant: str | None) -> list[dict]:
+    """Inhalte, deren neueste oder freigegebene Fassung "medien:<name>" exakt traegt, einmal je Inhalt.
+    Je Eintrag id, titel, status, art, wo, format (bloecke|felder), fassung und eigen. Mit mandant
+    kommen Inhalte anderer Firmen ohne Titel (eigen False); ohne mandant ist eigen immer True
+    (Altaufrufer). Der Name muss vorher geprueft sein (medien_name_pruefen)."""
     wert = json.dumps("medien:" + name, ensure_ascii=False)
     zeilen = _lesen(lambda: _VERWEISE_SQL.format(w=lit(wert)))
     gesehen, verweise = set(), []
     for z in zeilen:
-        if isinstance(z, dict) and z.get("id") not in gesehen:
-            gesehen.add(z.get("id"))
-            verweise.append({k: z.get(k) for k in ("id", "titel", "status", "art", "wo")})
-    return {"verweise": verweise}
+        if not isinstance(z, dict) or z.get("id") in gesehen:
+            continue
+        gesehen.add(z.get("id"))
+        eigen = mandant is None or z.get("mandant") == mandant
+        v = {k: z.get(k) for k in ("id", "titel", "status", "art", "wo", "format")}
+        v["eigen"] = eigen
+        f = z.get("fassung")
+        v["fassung"] = int(f) if f is not None and str(f).isdigit() else None
+        if not eigen:
+            v["titel"] = ""
+        verweise.append(v)
+    return verweise
+
+
+@router.get("/medien/verweise")
+def medien_verweise(name: str = Query(""), mandant: str | None = None,
+                    x_pult_key: str | None = Header(None)):
+    _schluessel(x_pult_key)
+    medien_name_pruefen(name)
+    m = None if mandant in (None, "") else _mandant_pflicht(mandant)
+    return {"verweise": verweise_lesen(name, m)}
