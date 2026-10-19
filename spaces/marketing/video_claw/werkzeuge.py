@@ -191,18 +191,30 @@ def standbild(projekt_id: str, bild_asset_id: str, dauer_s: float = 3.0, bewegun
     return {"ok": True, "asset_id": j["ergebnis"].get("asset_id")} if j["ok"] else j
 
 
-def titelkarte(projekt_id: str, text: str, hintergrund: str, textfarbe: str = "#ffffff",
+def _marke(auftrag: str) -> dict:
+    """Marke der Auftragsfirma (Paket C1): akzent, schrift_anzeige, schrift_text, logo - einzelne Werte koennen
+    None sein. Scheitert der Abruf, {} - das Reel entsteht dann im bisherigen Aussehen."""
+    r = _marketing(f"/{auftrag}/marke", {})
+    return r["daten"] if r.get("ok") and isinstance(r.get("daten"), dict) else {}
+
+
+def titelkarte(auftrag: str, projekt_id: str, text: str, hintergrund: str = "", textfarbe: str = "#ffffff",
                unterzeile: str = "", logo_asset_id: str = "", dauer_s: float = 2.5) -> dict:
-    """Titel- oder Schlusskarte (Farbflaeche, Text bis 90 Zeichen, optional Unterzeile und Logo).
-    Farben als #rrggbb aus dem Briefing bzw. Markenprofil. Liefert asset_id."""
-    if not _id(projekt_id, "projekt_id"):
-        return _fehler("projekt_id ungueltig")
+    """Titel- oder Schlusskarte (Farbflaeche, Text bis 90 Zeichen, optional Unterzeile und Logo) in der
+    Anzeigeschrift der Marke. auftrag: die Auftragsnummer. hintergrund leer = Akzentfarbe der Marke, sonst
+    #rrggbb aus dem Briefing. Liefert asset_id."""
+    if not _id(auftrag, "auftrag") or not _id(projekt_id, "projekt_id"):
+        return _fehler("auftrag/projekt_id ungueltig")
+    marke = _marke(auftrag)
+    hintergrund = hintergrund or marke.get("akzent") or ""
     if not isinstance(hintergrund, str) or not _FARBE.fullmatch(hintergrund) \
             or not isinstance(textfarbe, str) or not _FARBE.fullmatch(textfarbe):
         return _fehler("hintergrund/textfarbe: #rrggbb")
     if logo_asset_id and not _id(logo_asset_id, "logo_asset_id"):
         return _fehler("logo_asset_id ungueltig")
     koerper = {"text": text, "hintergrund": hintergrund, "textfarbe": textfarbe, "dauer_s": dauer_s}
+    if marke.get("schrift_anzeige"):
+        koerper["schrift"] = marke["schrift_anzeige"]
     if unterzeile:
         koerper["unterzeile"] = unterzeile
     if logo_asset_id:
@@ -242,12 +254,14 @@ def _beats_pruefen(beats) -> list[dict] | str:
     return aus
 
 
-def reel_bauen(projekt_id: str, beats: list, stimme: str = "standard", hook: str = "",
+def reel_bauen(auftrag: str, projekt_id: str, beats: list, stimme: str = "standard", hook: str = "",
                logo_asset_id: str = "", logo_position: str = "oben_rechts", rahmung: str = "zuschnitt",
                untertitel_ersetzen: dict | None = None) -> dict:
     """Das Reel bauen: je Beat ein gesprochener Satz ueber einem Clip, deutsche Stimme, Untertitel,
     Hochformat, KI-Hinweis nach Inhalt, hoechstens 15 MB. Startet den Render und liefert export_id -
     nenne sie am Ende als 'EXPORT: <export_id>'. Der Render selbst laeuft danach weiter.
+    auftrag: die Auftragsnummer - damit traegt das Reel die Marke (Untertitel in ihrer Schrift, das gesprochene Wort
+    in ihrer Akzentfarbe, Hook in der Anzeigeschrift, ihr Logo, wenn du kein eigenes logo_asset_id angibst).
     beats: [{"text": "Satz, der gesprochen wird", "asset_id": "<Clip>", "src_in_frame": 0}, ...]
     (Feldnamen genau so). Spricht eine Person im Video selbst: {"originalton": true, "asset_id": ...,
     "src_in_frame": <Start>, "src_out_frame": <Ende>} - dann kein Satz, ihr eigener Ton bleibt, die
@@ -259,8 +273,8 @@ def reel_bauen(projekt_id: str, beats: list, stimme: str = "standard", hook: str
     je Eintrag EIN Wort, hoechstens 30; nur offensichtliche Hoerfehler, nichts umformulieren.
     Die Lautstaerke wird immer angeglichen. Dauert einige Minuten (die Stimme wird je Satz erzeugt) - nicht abbrechen
     und NICHT ein zweites Mal aufrufen."""
-    if not _id(projekt_id, "projekt_id"):
-        return _fehler("projekt_id ungueltig")
+    if not _id(auftrag, "auftrag") or not _id(projekt_id, "projekt_id"):
+        return _fehler("auftrag/projekt_id ungueltig")
     geprueft = _beats_pruefen(beats)
     if isinstance(geprueft, str):
         return _fehler(geprueft)
@@ -288,12 +302,25 @@ def reel_bauen(projekt_id: str, beats: list, stimme: str = "standard", hook: str
     j = laura_api.job_warten(r["daten"]["job_id"], max_s=600)
     if not j["ok"]:
         return j
-    warnungen = (j["ergebnis"] or {}).get("warnings") or []
+    warnungen = list((j["ergebnis"] or {}).get("warnings") or [])
+    marke = _marke(auftrag)
+    if not marke:
+        warnungen.append("Marke nicht geladen - Reel im bisherigen Aussehen")
+    if not logo_asset_id and marke.get("logo"):
+        logo = bild_importieren(auftrag, projekt_id, marke["logo"])
+        if logo.get("ok"):
+            logo_asset_id = logo["asset_id"]
+        else:
+            warnungen.append(f"Logo der Marke nicht geholt: {logo.get('fehler')}")
     reel = {"vertical": True, "captions": True, "caption_preset": "reels", "kennzeichnung": "auto",
             "caption_source": "gemischt", "max_bytes": REEL_MAX_BYTES, "loudnorm": True,
             "rahmung": rahmung}
     if ersatz:
         reel["untertitel_ersetzen"] = ersatz
+    for feld, wert in (("caption_schrift", marke.get("schrift_text")), ("caption_akzent", marke.get("akzent")),
+                       ("hook_schrift", marke.get("schrift_anzeige"))):
+        if wert:
+            reel[feld] = wert
     if hook.strip():
         reel["hook_text"] = hook.strip()
     if logo_asset_id:

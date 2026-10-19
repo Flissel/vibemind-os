@@ -29,7 +29,9 @@ from fastapi.responses import FileResponse
 from spaces.marketing.api import medien_mandant
 from spaces.marketing.api.bilder import _agent_schluessel, _auftrag_id, _bild_schluessel, _ordner
 from spaces.marketing.api.pult import _lesen, _lesen_einer, _schluessel, _schreiben, _uuid_oder_404, lit
+from spaces.marketing.api.chat import _markenlogos
 from spaces.marketing.api.ton import _slug
+from spaces.marketing.claw import schriften
 
 router = APIRouter(prefix="/api/video")
 pult_router = APIRouter(prefix="/api/pult/video")
@@ -266,6 +268,31 @@ def arbeiter_medien_link(aid: str, payload: dict = Body(...), x_bild_key: str | 
     pfad = f"/api/video/medien/{ablauf}/{_signatur(ablauf, name)}/{urllib.parse.quote(name, safe='')}"
     basis = os.environ.get("MARKETING_VIDEO_MEDIEN_BASIS", "").strip().rstrip("/")
     return {"url": f"{basis}{pfad}" if basis else pfad, "gueltig_bis": ablauf}
+
+
+_FARBE_HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+@router.post("/arbeiter/{aid}/marke")
+def arbeiter_marke(aid: str, x_bild_key: str | None = Header(None)):
+    """Marke der Auftragsfirma fuer den Video-Claw (Paket C1): Akzentfarbe, Anzeige-/Textschrift, Logo-Medienname.
+    Nur gueltige Werte; fehlt etwas, ist es None und das Reel bleibt dort beim bisherigen Aussehen."""
+    _bild_schluessel(x_bild_key)
+    a = _auftrag_id(aid)
+    mandant = str(_in_arbeit(a)["mandant"])
+    zeile = _lesen_einer(lambda: "SELECT profil->'werte' AS w FROM marketing.marken_spiegel "
+                                 f"WHERE mandant = {lit(mandant)}") or {}
+    werte = zeile.get("w") if isinstance(zeile.get("w"), dict) else {}
+    akzent = werte.get("akzent")
+
+    def schrift(k: str):
+        v = werte.get(k)
+        return v if isinstance(v, str) and v in schriften.REGISTER else None
+    logo, _ = _markenlogos(mandant)
+    return {"mandant": mandant,
+            "akzent": akzent if isinstance(akzent, str) and _FARBE_HEX.match(akzent) else None,
+            "schrift_anzeige": schrift("schrift_anzeige"), "schrift_text": schrift("schrift_text"),
+            "logo": logo[len("medien:"):] if logo else None}
 
 
 @router.get("/medien/{ablauf}/{sig}/{name}")
