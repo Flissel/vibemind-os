@@ -72,6 +72,7 @@ Grundsaetze: Der Video-Claw **versendet nie** und legt keine Marketing-Entwuerfe
 - [ ] **B1 `/voiceover` + `/healthz` im Marketing-Sprechdienst** (`spaces/marketing/claw/ton_dienst.py`): nimmt Lauras Vertrag an, spricht mit dem schon geladenen Multilingual-Modell (`language` → `sprache`, `voice_id` → Stimmprobe aus `E:\marketing-stimmen`), resampelt auf `sample_rate`, bei `fit_to_slot` per ffmpeg `atempo` (0,8–1,25) auf `duration_frames` – sonst Stille anfuegen/kuerzen wie Lauras Sidecar. Ein Modell, ein Sprech-Lock fuer beide Routen.
   Tests: Vertragspruefung (Pflichtfelder, positive Ganzzahlen), Dauerberechnung, `fit_to_slot`-Faktor, unbekannte Stimme → 4xx.
 - [ ] **B2 Erreichbarkeit:** Dienst zusaetzlich auf der Tailscale-Adresse; Windows-Firewall-Regel **nur** fuer `100.67.177.45` (VM) auf Port 8899. Laura-VM: `LAURA_VOICEOVER_URL=http://100.84.127.84:8899`, `LAURA_VOICEOVER_BACKEND=sidecar` in `deploy/.env`. *(Firewall-Regel = Aenderung am Host → User-OK.)*
+  > **Nachtrag 19.10.2026:** Der Sprech-Dienst liegt jetzt auf **:8138**. 8899 gehoert Lauras LivePortrait-Container (seit Juni); die Doppelbelegung fiel erst auf, als der Container wieder lief. VM-Env, Firewallregel, Startskript und Ton-Arbeiter sind umgestellt.
 - [ ] **B3 Probe ueber denselben Weg:** von der VM `POST /timelines/{tid}/voiceover` mit deutschem Text → Export hoeren.
 
 ## Phase C – Video-Claw (vibemind-os, `spaces/marketing/video_claw/`)

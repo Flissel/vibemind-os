@@ -30,9 +30,16 @@
 
 .PARAMETER Pruefen
     Nur nachsehen und berichten, nichts starten.
+
+.PARAMETER Liste
+    Die Dienstliste als JSON ausgeben (Name, Port, Args, Was) und nichts starten. Liest der
+    Marketing-Waechter (claw/dienst_waechter.py) - die Liste steht so nur an dieser einen Stelle.
+
+.PARAMETER Nur
+    Nur diese Dienste (Namen, kommagetrennt) betrachten. Der Waechter startet damit gezielt.
 #>
 [CmdletBinding()]
-param([switch]$Pruefen)
+param([switch]$Pruefen, [switch]$Liste, [string[]]$Nur)
 
 $ErrorActionPreference = 'Stop'
 
@@ -42,14 +49,6 @@ $OsRoot    = Split-Path -Parent (Split-Path -Parent $SpaceRoot)      # vibemind-
 $Root      = Split-Path -Parent $OsRoot                             # Vibemind_V1
 $Venv      = Join-Path $Root '.venv\Scripts\python.exe'
 $LogDir    = Join-Path $Root 'logs\marketing'
-
-# reportlab liegt NUR im gemeinsamen venv. Gemessen 12.09.2026: mit
-# pyenv-Python gestartet, meldete der Agent korrekt „No module named
-# 'reportlab'" - und konnte kein einziges PDF setzen.
-if (-not (Test-Path $Venv)) {
-    throw "Das gemeinsame venv fehlt: $Venv (ohne reportlab kann der Sidecar kein PDF setzen)"
-}
-if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
 
 $Dienste = @(
     @{
@@ -127,8 +126,10 @@ $Dienste = @(
         # Podcast (17.10.2026): Chatterbox Multilingual in eigener venv (Torch+CUDA).
         # Video-Claw (E5): zusaetzlich auf der Tailscale-Adresse des PCs, damit Laura auf der VM
         # ueber /voiceover sprechen laesst - angenommen nur von der VM (Firewall-Regel ebenso eng).
+        # Port 8138 (19.10.2026): 8899 gehoert Lauras LivePortrait-Container (seit Juni, unless-stopped).
+        # Solange der nicht lief, fiel die Doppelbelegung nicht auf.
         Name   = 'marketing_ton_dienst'
-        Port   = 8899
+        Port   = 8138
         Python = 'C:\Users\User\ClaudeWork\chatterbox-venv\Scripts\python.exe'
         Args   = @('-u', '-m', 'spaces.marketing.claw.ton_dienst')
         Cwd    = $OsRoot
@@ -148,7 +149,7 @@ $Dienste = @(
         Args = @('-u', '-m', 'spaces.marketing.workers.ton_worker')
         Cwd  = $OsRoot
         Env  = @{ TON_STIMMEN_ORDNER = 'E:\marketing-stimmen' }
-        Was  = 'Ton-Arbeiter (Podcast-Auftraege von der VM, spricht ueber :8899, MP3 in die Medien)'
+        Was  = 'Ton-Arbeiter (Podcast-Auftraege von der VM, spricht ueber :8138, MP3 in die Medien)'
     },
     # Video-Claw (17.10.2026, Plan 2026-10-17-video-claw-reels): Werkzeuge (nur loopback), eigene Shim mit
     # genau diesen Werkzeugen, Arbeiter. Laura-Schreibrechte gibt es nur hier, nicht beim Marketing-Agenten.
@@ -200,6 +201,28 @@ function Initialize-Markenwissen {
         Pop-Location
     }
 }
+
+if ($Liste) {
+    # -InputObject statt Pipe: so bleibt es auch in Windows PowerShell 5.1 ein JSON-Array.
+    ConvertTo-Json -Depth 3 -Compress -InputObject @($Dienste | ForEach-Object {
+        [pscustomobject]@{ name = $_.Name; port = $_.Port; args = @($_.Args); was = $_.Was }
+    })
+    return
+}
+if ($Nur) {
+    $namen = @($Nur | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $unbekannt = @($namen | Where-Object { $_ -notin $Dienste.Name })
+    if ($unbekannt) { throw "Unbekannte Dienste: $($unbekannt -join ', ')" }
+    $Dienste = @($Dienste | Where-Object { $_.Name -in $namen })
+}
+
+# reportlab liegt NUR im gemeinsamen venv. Gemessen 12.09.2026: mit
+# pyenv-Python gestartet, meldete der Agent korrekt „No module named
+# 'reportlab'" - und konnte kein einziges PDF setzen.
+if (-not (Test-Path $Venv)) {
+    throw "Das gemeinsame venv fehlt: $Venv (ohne reportlab kann der Sidecar kein PDF setzen)"
+}
+if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
 
 function Test-Port([int]$Port) {
     $null -ne (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |

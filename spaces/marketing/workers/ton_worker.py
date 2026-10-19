@@ -1,6 +1,6 @@
 """Ton-Arbeiter am PC (Podcast, 17.10.2026). Holt Auftraege von der Marketing-API der VM (Tailnet,
 X-Bild-Key wie der Bild-Arbeiter), laesst jeden Abschnitt vom lokalen Sprech-Dienst sprechen
-(claw/ton_dienst.py, Chatterbox Multilingual, 127.0.0.1:8899), fuegt die Teile mit ffmpeg zu einer MP3
+(claw/ton_dienst.py, Chatterbox Multilingual, 127.0.0.1:8138), fuegt die Teile mit ffmpeg zu einer MP3
 zusammen und liefert sie ab. Keine Modelle auf der VM, kein API-Budget. Gestartet von
 marketing-dienste-starten.ps1; Gesundheits-Port 8135.
 
@@ -26,7 +26,7 @@ from spaces.marketing.workers.bild_worker import REPO_ROOT, ApiFehler, _grund, t
 
 PORT = 8135
 TAKT_S = 20
-DIENST = os.environ.get("TON_DIENST_URL", "http://127.0.0.1:8899")
+DIENST = os.environ.get("TON_DIENST_URL", "http://127.0.0.1:8138")
 PAUSE_S = 0.45                # Pause zwischen Abschnitten
 SPRECHEN_ZEITLIMIT_S = 300    # ein Abschnitt; der erste laedt das Modell
 STAND = {"letzter_lauf": None, "letztes_ergebnis": None}

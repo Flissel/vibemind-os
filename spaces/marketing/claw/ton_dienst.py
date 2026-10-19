@@ -36,7 +36,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 LOG = logging.getLogger("ton_dienst")
-PORT = int(os.environ.get("TON_DIENST_PORT", "8899"))
+PORT = int(os.environ.get("TON_DIENST_PORT", "8138"))
 TEXT_MAX = 1000
 SPRACHEN = {"ar", "da", "de", "el", "en", "es", "fi", "fr", "he", "hi", "it", "ja", "ko", "ms", "nl", "no",
             "pl", "pt", "ru", "sv", "sw", "tr", "zh"}
