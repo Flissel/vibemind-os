@@ -6,7 +6,12 @@
 --   1) marketing._inhalt_fassung_unveraenderlich(): Trigger-Funktion NUR fuer inhalt_fassungen. Wie
 --      _fassung_unveraenderlich (050), erlaubt aber DELETE, solange die transaktionslokale Einstellung
 --      marketing.inhalt_loeschen genau die id dieses Inhalts traegt (setzt nur pult_inhalt_loeschen) UND
---      der Inhalt im Status entwurf oder abgelehnt steht (eingereicht/freigegeben bleiben hart).
+--      der Inhalt im Status entwurf oder abgelehnt steht (eingereicht/freigegeben bleiben hart) UND die
+--      Rolle der Anweisung (current_user) Eigentuemerin von inhalt_fassungen oder Superuser ist (Final-Review
+--      I1). Die Ausnahme gilt damit nur fuer Rollen, die den Trigger ohnehin abschalten koennten - nie
+--      staerker als vor 075. Die API muss als diese Rolle verbinden, sonst scheitert Loeschen fail-closed.
+--      Trigger-Funktion und pult_inhalt_loeschen bleiben SECURITY INVOKER (bei DEFINER waere current_user
+--      immer die Eigentuemerin, und ein versehentliches EXECUTE-Grant oeffnete das Loch wieder).
 --      layout_fassungen und newsletter_vorlagen_fassungen behalten _fassung_unveraenderlich.
 --   2) marketing.pult_inhalt_loeschen(p_inhalt, p_mandant, p_von) RETURNS text (Titel). Loeschbar sind
 --      nur entwurf und abgelehnt. Sperren (Klartext, in dieser Reihenfolge): Unbekannter Inhalt, fremde
@@ -19,19 +24,30 @@
 -- Ersetzte Funktionen: keine. Neu: die beiden oben. Keine Ueberladung bestehender Namen.
 -- Rechte: wie 071/074 - EXECUTE nicht fuer PUBLIC. Aufrufer ist die API-Rolle (SUPABASE_DB_USER, Vorgabe
 -- supabase_admin = Eigentuemerin); service_role hat danach kein EXECUTE (gemessen in der Probe, s. verify_075).
+-- RUNBOOK: Die Ausnahme gilt nur fuer die Eigentuemerin von inhalt_fassungen bzw. fuer Superuser. Die API
+-- muss als diese Rolle verbinden, sonst scheitert Loeschen fail-closed. Vor dem Einspielen pruefen:
+--   SELECT tableowner FROM pg_tables WHERE schemaname='marketing' AND tablename='inhalt_fassungen';
+-- und mit SUPABASE_DB_USER der API vergleichen (VM und PC). Stand 19.10.: Eigentuemerin supabase_admin
+-- (Superuser), die API verbindet ohne SUPABASE_DB_USER als supabase_admin.
 -- Nachweis: verify_075.sql.
 BEGIN;
 
 -- 1) Trigger-Funktion mit genau einer Ausnahme. Die Einstellung kann JEDE Rolle per set_config setzen
---    (service_role hat DELETE auf inhalt_fassungen, ist aber nicht Eigentuemerin und kann den Trigger nicht
---    abschalten). Darum gilt die Ausnahme zusaetzlich nur fuer Inhalte im loeschbaren Status - dieselbe Menge
---    wie in pult_inhalt_loeschen: entwurf (auch "zurueckgegeben") und abgelehnt ("verworfen"). Fassungen
---    eingereichter und freigegebener Inhalte bleiben hart unveraenderlich (Review I1).
+--    (service_role hat DELETE auf inhalt_fassungen und UPDATE auf inhalte, ist aber nicht Eigentuemerin und
+--    kann den Trigger nicht abschalten). Den Status koennte service_role selbst auf entwurf stellen, darum
+--    reicht der Status-Filter allein nicht: die Ausnahme gilt nur, wenn current_user die Tabelle besitzt
+--    oder Superuser ist (Final-Review I1). Zusaetzlich bleibt der Status-Filter - dieselbe Menge wie in
+--    pult_inhalt_loeschen: entwurf (auch "zurueckgegeben") und abgelehnt ("verworfen"). Fassungen
+--    eingereichter und freigegebener Inhalte bleiben auch fuer die Eigentuemerin ausserhalb der Funktion hart.
+--    SECURITY INVOKER (Vorgabe) - sonst waere current_user immer die Eigentuemerin.
 CREATE OR REPLACE FUNCTION marketing._inhalt_fassung_unveraenderlich() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP = 'DELETE'
      AND current_setting('marketing.inhalt_loeschen', true) = OLD.inhalt::text
+     -- Nur wer den Trigger ohnehin abschalten koennte (Eigentuemerin/Superuser): nie staerker als vor 075.
+     AND EXISTS (SELECT 1 FROM pg_class c JOIN pg_roles r ON r.rolname = current_user
+                  WHERE c.oid = TG_RELID AND (c.relowner = r.oid OR r.rolsuper))
      AND EXISTS (SELECT 1 FROM marketing.inhalte
                   WHERE id = OLD.inhalt AND status IN ('entwurf', 'abgelehnt')) THEN
     RETURN OLD;

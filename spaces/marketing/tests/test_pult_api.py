@@ -16,6 +16,8 @@ leeren Antworten, die fail-closed 503-Gestaltpruefung in /layouts/vorschau
 (der eigentliche Sicherheitsbefund -- eine fehlgeschlagene Pruefung durfte
 NIE als "keine Beanstandung" durchgehen), die X-Pult-Key/X-API-Key-Trennung
 in server.py, und die hmac/ValueError-Randfaelle."""
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -1100,11 +1102,93 @@ def test_wiederherstellen_speichert_alte_bloecke(db, c):
                     [{"fassung": 9}]]
     r = c.post(f"/api/pult/inhalte/{IID}/wiederherstellen", headers=H,
                json={"fassung": 3, "basis_fassung": 8, "von": "felix"})
-    assert r.status_code == 200 and r.json() == {"fassung": 9}
+    assert r.status_code == 200 and r.json() == {"fassung": 9, "platzhalter": []}
     assert "fassung = 3" in db.sql[0]
     s = db.sql[1]
     assert "pult_bloecke_speichern(" in s and f"'{IID}'::uuid, 8, 'Betreff drei', 'Vorschau drei'" in s
     assert "Stand drei" in s and "'betreiber', false" in s
+
+
+def _alt_mit_bildern(bild="weg.jpg", hintergrund="weg.jpg", text=""):
+    return {"root": {"type": "EmailLayout", "data": {"childrenIds": ["b", "d", "k", "p", "t"]}},
+            "b": {"type": "Image", "data": {"style": {}, "props": {"url": f"medien:{bild}", "width": 600,
+                                                                     "height": 300}}},
+            "d": {"type": "Image", "data": {"style": {}, "props": {"url": "medien:da.jpg"}}},
+            "k": {"type": "Container", "data": {"style": {}, "props": {"url": f"medien:{hintergrund}"}}},
+            "p": {"type": "Image", "data": {"style": {}, "props": {"url": "medien:platzhalter-4x3.png"}}},
+            "t": {"type": "Text", "data": {"style": {}, "props": {"text": text or "Stand drei"}}}}
+
+
+def _gespeichert(sql: str) -> dict:
+    """Bloecke-JSON aus dem pult_bloecke_speichern-Aufruf."""
+    roh = sql.split("'betreiber', false")[0].rsplit("::jsonb", 1)[0]
+    roh = roh[roh.index("'{") + 1:roh.rindex("}'") + 1].replace("''", "'")
+    return json.loads(roh)
+
+
+def test_wiederherstellen_geloeschte_bilder_werden_platzhalter(db, c, monkeypatch, tmp_path):
+    """Final-Review I2: alte Fassung zeigt auf ein geloeschtes Bild -> Platzhalter, Name in der Antwort."""
+    mensch, erzeugt = tmp_path / "mensch", tmp_path / "erzeugt"
+    mensch.mkdir(); erzeugt.mkdir()
+    (erzeugt / "da.jpg").write_bytes(b"x")
+    monkeypatch.setenv("MARKETING_MEDIEN_ORDNER", str(mensch))
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(erzeugt))
+    db.antworten = [[{"format": "bloecke", "bloecke": _alt_mit_bildern(hintergrund="alt-hg.png"),
+                      "felder": {"betreff": "B", "vorschautext": "V"}}], [{"fassung": 9}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/wiederherstellen", headers=H, json={"fassung": 3, "basis_fassung": 8})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"fassung": 9, "platzhalter": ["alt-hg.png", "weg.jpg"]}
+    s = db.sql[1]
+    assert "medien:weg.jpg" not in s and "medien:alt-hg.png" not in s
+    neu = _gespeichert(s)
+    assert neu["b"]["data"]["props"]["url"] == "medien:platzhalter-2x1.png"
+    assert "url" not in neu["k"]["data"]["props"]
+    assert neu["d"]["data"]["props"]["url"] == "medien:da.jpg"
+    assert neu["p"]["data"]["props"]["url"] == "medien:platzhalter-4x3.png"
+
+
+def test_wiederherstellen_vorhandene_bilder_bleiben(db, c, monkeypatch, tmp_path):
+    for n in ("weg.jpg", "da.jpg"):
+        (tmp_path / n).write_bytes(b"x")
+    monkeypatch.setenv("MARKETING_MEDIEN_ORDNER", str(tmp_path))
+    monkeypatch.delenv("MARKETING_BILD_ORDNER", raising=False)
+    db.antworten = [[{"format": "bloecke", "bloecke": _alt_mit_bildern(), "felder": {}}], [{"fassung": 9}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/wiederherstellen", headers=H, json={"fassung": 3, "basis_fassung": 8})
+    assert r.status_code == 200 and r.json() == {"fassung": 9, "platzhalter": []}
+    assert _gespeichert(db.sql[1]) == _alt_mit_bildern()
+
+
+def test_wiederherstellen_name_exakt_wie_vergessen(db, c, monkeypatch, tmp_path):
+    """Wie _datei_existiert: exakter Name im Ordner, keine Gross/Klein-Faltung."""
+    (tmp_path / "WEG.jpg").write_bytes(b"x")
+    (tmp_path / "da.jpg").write_bytes(b"x")
+    monkeypatch.setenv("MARKETING_MEDIEN_ORDNER", str(tmp_path))
+    monkeypatch.delenv("MARKETING_BILD_ORDNER", raising=False)
+    db.antworten = [[{"format": "bloecke", "bloecke": _alt_mit_bildern(), "felder": {}}], [{"fassung": 9}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/wiederherstellen", headers=H, json={"fassung": 3, "basis_fassung": 8})
+    assert r.status_code == 200 and r.json()["platzhalter"] == ["weg.jpg"]
+
+
+def test_wiederherstellen_fehlendes_bild_ausserhalb_bildplatz_422(db, c, monkeypatch, tmp_path):
+    (tmp_path / "da.jpg").write_bytes(b"x")
+    monkeypatch.setenv("MARKETING_MEDIEN_ORDNER", str(tmp_path))
+    monkeypatch.delenv("MARKETING_BILD_ORDNER", raising=False)
+    alt = _alt_mit_bildern()
+    alt["t"]["data"]["props"]["url"] = "medien:weg.jpg"
+    alt["t"]["type"] = "Button"
+    db.antworten = [[{"format": "bloecke", "bloecke": alt, "felder": {}}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/wiederherstellen", headers=H, json={"fassung": 3, "basis_fassung": 8})
+    assert r.status_code == 422 and "weg.jpg" in r.json()["detail"]
+    assert len(db.sql) == 1 and not any("pult_bloecke_speichern" in s for s in db.sql)
+
+
+def test_wiederherstellen_ohne_medienordner_503_ohne_speichern(db, c, monkeypatch):
+    monkeypatch.delenv("MARKETING_MEDIEN_ORDNER", raising=False)
+    monkeypatch.delenv("MARKETING_BILD_ORDNER", raising=False)
+    db.antworten = [[{"format": "bloecke", "bloecke": _alt_mit_bildern(), "felder": {}}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/wiederherstellen", headers=H, json={"fassung": 3, "basis_fassung": 8})
+    assert r.status_code == 503
+    assert not any("pult_bloecke_speichern" in s for s in db.sql)
 
 
 def test_wiederherstellen_feldfassung_422(db, c):

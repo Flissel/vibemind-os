@@ -200,4 +200,88 @@ DO $$ DECLARE v_kanal text; v_p uuid; v_i uuid; v_fehler text; BEGIN
   ASSERT EXISTS (SELECT 1 FROM marketing.broadcast_proposals WHERE id = v_p), 'h: Proposal bleibt';
 END $$;
 
+-- i) Final-Review I1: service_role (nicht Eigentuemerin, kein Superuser) kommt nicht an der Funktion vorbei -
+--    auch nicht, wenn sie den Status selbst auf entwurf stellt und die Einstellung selbst setzt.
+--    Danach loescht die API-Rolle (Probe-Rolle = SUPABASE_DB_USER) ueber pult_inhalt_loeschen weiter normal.
+DO $$ DECLARE d jsonb; v_fg uuid; v_e uuid; v_n int; v_fehler text; v_titel text; BEGIN
+  -- Die Probe-Rolle ist die API-Rolle; sie muss Eigentuemerin oder Superuser sein, sonst scheitert Loeschen.
+  ASSERT EXISTS (SELECT 1 FROM pg_class c JOIN pg_roles r ON r.rolname = current_user
+                  WHERE c.oid = 'marketing.inhalt_fassungen'::regclass AND (c.relowner = r.oid OR r.rolsuper)),
+         format('i: API-Rolle %s ist weder Eigentuemerin von inhalt_fassungen noch Superuser', current_user);
+  d := '{"root":{"type":"EmailLayout","data":{"childrenIds":["t"]}},
+         "t":{"type":"Text","data":{"style":{},"props":{"text":"eins","markdown":false}}}}'::jsonb;
+  -- freigegeben mit zwei Fassungen
+  INSERT INTO marketing.inhalte (mandant, art, titel) VALUES ('vibemind', 'newsletter', 'Probe 075 I')
+  RETURNING id INTO v_fg;
+  PERFORM marketing.pult_bloecke_speichern(v_fg, 0, 'Probe 075 I', '', d, 'betreiber', false);
+  PERFORM marketing.pult_bloecke_speichern(v_fg, 1, 'Probe 075 I', '',
+    jsonb_set(d, '{t,data,props,text}', '"zwei"'), 'betreiber', false);
+  v_n := marketing.pult_einreichen(v_fg, 'probe');
+  PERFORM marketing.pult_entscheiden(v_fg, v_n, 'freigeben', 'probe', NULL);
+  ASSERT (SELECT status FROM marketing.inhalte WHERE id = v_fg) = 'freigegeben', 'i: Probe freigegeben';
+  ASSERT (SELECT count(*) FROM marketing.inhalt_fassungen WHERE inhalt = v_fg) = 2, 'i: zwei Fassungen';
+  -- Entwurf
+  INSERT INTO marketing.inhalte (mandant, art, titel) VALUES ('vibemind', 'newsletter', 'Probe 075 E')
+  RETURNING id INTO v_e;
+  PERFORM marketing.pult_bloecke_speichern(v_e, 0, 'Probe 075 E', '', d, 'betreiber', false);
+
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+    RAISE NOTICE 'i: keine Rolle service_role - Restweg-Probe uebersprungen';
+  ELSE
+    ASSERT NOT (SELECT rolsuper FROM pg_roles WHERE rolname = 'service_role'), 'i: service_role ist kein Superuser';
+    -- Rechte wie nach 003 (USAGE + ALL auf alle Tabellen) - live fehlen sie am 19.10. ganz, die Probe soll aber
+    -- den Trigger pruefen, nicht den Zufall fehlender Grants. Rollt mit der Probe zurueck.
+    GRANT USAGE ON SCHEMA marketing TO service_role;
+    GRANT ALL ON ALL TABLES IN SCHEMA marketing TO service_role;
+    -- freigegeben: Status per UPDATE auf entwurf, Einstellung selbst gesetzt, DELETE -> muss scheitern
+    v_fehler := NULL;
+    BEGIN
+      SET LOCAL ROLE service_role;
+      UPDATE marketing.inhalte SET status = 'entwurf' WHERE id = v_fg;
+      ASSERT (SELECT status FROM marketing.inhalte WHERE id = v_fg) = 'entwurf', 'i: service_role stellt Status um';
+      PERFORM set_config('marketing.inhalt_loeschen', v_fg::text, true);
+      DELETE FROM marketing.inhalt_fassungen WHERE inhalt = v_fg;
+    EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+    RESET ROLE;
+    ASSERT v_fehler LIKE 'Fassungen sind unveraenderlich%',
+           format('i: service_role, Status umgestellt + Einstellung gefaelscht: %s', v_fehler);
+    ASSERT (SELECT count(*) FROM marketing.inhalt_fassungen WHERE inhalt = v_fg) = 2, 'i: freigegebene Fassungen bleiben';
+    ASSERT (SELECT status FROM marketing.inhalte WHERE id = v_fg) = 'freigegeben', 'i: Status zurueckgerollt';
+    -- Entwurf: auch dort loescht service_role nicht an der Funktion vorbei
+    v_fehler := NULL;
+    BEGIN
+      SET LOCAL ROLE service_role;
+      PERFORM set_config('marketing.inhalt_loeschen', v_e::text, true);
+      DELETE FROM marketing.inhalt_fassungen WHERE inhalt = v_e;
+    EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+    RESET ROLE;
+    ASSERT v_fehler LIKE 'Fassungen sind unveraenderlich%', format('i: service_role, Entwurf: %s', v_fehler);
+    ASSERT (SELECT count(*) FROM marketing.inhalt_fassungen WHERE inhalt = v_e) = 1, 'i: Entwurfsfassung bleibt';
+    -- Selbst mit EXECUTE (z. B. per Default Privileges aus 003) scheitert die INVOKER-Funktion fuer
+    -- service_role fail-closed am Trigger - darum bleibt sie SECURITY INVOKER.
+    GRANT EXECUTE ON FUNCTION marketing.pult_inhalt_loeschen(uuid, text, text) TO service_role;
+    v_fehler := NULL;
+    BEGIN
+      SET LOCAL ROLE service_role;
+      PERFORM marketing.pult_inhalt_loeschen(v_e, 'vibemind', 'probe');
+    EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+    RESET ROLE;
+    ASSERT v_fehler LIKE 'Fassungen sind unveraenderlich%', format('i: service_role ueber die Funktion: %s', v_fehler);
+    ASSERT EXISTS (SELECT 1 FROM marketing.inhalte WHERE id = v_e), 'i: Entwurf bleibt nach service_role-Versuch';
+    REVOKE EXECUTE ON FUNCTION marketing.pult_inhalt_loeschen(uuid, text, text) FROM service_role;
+    ASSERT current_user = session_user, 'i: Rolle zurueckgesetzt';
+  END IF;
+  ASSERT coalesce(current_setting('marketing.inhalt_loeschen', true), '') = '', 'i: Einstellung zurueckgerollt';
+
+  -- Normales Loeschen ueber die Funktion als API-Rolle funktioniert weiter
+  v_titel := marketing.pult_inhalt_loeschen(v_e, 'vibemind', 'probe');
+  ASSERT v_titel = 'Probe 075 E', format('i: API-Rolle loescht: %s', v_titel);
+  ASSERT NOT EXISTS (SELECT 1 FROM marketing.inhalt_fassungen WHERE inhalt = v_e), 'i: Fassungen weg';
+  ASSERT NOT EXISTS (SELECT 1 FROM marketing.inhalte WHERE id = v_e), 'i: Inhalt weg';
+  -- und die freigegebene bleibt auch fuer die Funktion gesperrt
+  v_fehler := NULL;
+  BEGIN PERFORM marketing.pult_inhalt_loeschen(v_fg, 'vibemind', 't'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+  ASSERT v_fehler = 'Freigegebene Inhalte bleiben erhalten', format('i: freigegeben: %s', v_fehler);
+END $$;
+
 SELECT 'verify_075 ok' AS ergebnis;

@@ -54,7 +54,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Body, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response
 
-from spaces.marketing.claw import bloecke_mjml, pdf_druck, pult_render, schriften, vorlagen_grafik, vorlagen_marke
+from spaces.marketing.claw import bildplaetze, bloecke_mjml, pdf_druck, pult_render, schriften, vorlagen_grafik, vorlagen_marke
 from spaces.marketing.sync import _db
 
 router = APIRouter(prefix="/api/pult")
@@ -321,6 +321,56 @@ def _medien_datei(verweis: str, ordner: str) -> str | None:
     return None
 
 
+def _datei_existiert(name: str) -> bool:
+    """Steht GENAU dieser Name noch in einem Medienordner (MARKETING_MEDIEN_ORDNER, MARKETING_BILD_ORDNER - wie
+    gestaltung.quellen und bilder)? Exakter Eintrag der Verzeichnisliste, keine Gross/Klein-Faltung (wie
+    bilder._im_ordner). Fail-closed: ohne konfigurierten oder ohne lesbaren Ordner laesst sich das nicht
+    belegen -> 503."""
+    ordner = [o.strip() for o in (os.environ.get("MARKETING_MEDIEN_ORDNER", ""),
+                                  os.environ.get("MARKETING_BILD_ORDNER", "")) if o.strip()]
+    if not ordner:
+        raise HTTPException(503, "misconfigured: MARKETING_MEDIEN_ORDNER fehlt")
+    for o in ordner:
+        try:
+            if name in os.listdir(o):
+                return True
+        except OSError:
+            raise HTTPException(503, "Medienordner nicht lesbar")
+    return False
+
+
+def _medien_verweise(wert) -> set[str]:
+    """Alle Dateinamen, auf die ein Wert "medien:<name>" irgendwo im Dokument zeigt (ohne Platzhalter)."""
+    namen: set[str] = set()
+    if isinstance(wert, dict):
+        for x in wert.values():
+            namen |= _medien_verweise(x)
+    elif isinstance(wert, list):
+        for x in wert:
+            namen |= _medien_verweise(x)
+    elif isinstance(wert, str) and wert.startswith("medien:") and not bildplaetze.PLATZHALTER.match(wert):
+        name = wert[len("medien:"):]
+        if name:
+            namen.add(name)
+    return namen
+
+
+def _fehlende_bilder_ersetzen(bloecke: dict) -> tuple[dict, list[str]]:
+    """Final-Review I2: Verweise auf Dateien, die es in keinem Medienordner mehr gibt, werden zu Platzhaltern
+    (bildplaetze.platzhalter_einsetzen). Rueckgabe: neue Bloecke und die ersetzten Namen (sortiert). Steckt
+    ein fehlender Name danach noch an einer Stelle, die kein Bildplatz ist -> 422 (wie /medien/platzhalter).
+    Ohne konfigurierten Medienordner laesst sich nichts belegen -> 503 (fail-closed, wie _datei_existiert)."""
+    fehlend = sorted(n for n in _medien_verweise(bloecke) if not _datei_existiert(n))
+    neu = bloecke
+    for name in fehlend:
+        neu, _ = bildplaetze.platzhalter_einsetzen(neu, name)
+        rest = re.compile(r"medien:" + re.escape(name) + r"(?![\w.\-])")
+        if rest.search(json.dumps(neu, ensure_ascii=False)):
+            raise HTTPException(422, f"Bild {name} gibt es nicht mehr und steckt an einer Stelle, die kein "
+                                     "Bildplatz ist – diese Fassung lässt sich nicht wiederherstellen")
+    return neu, fehlend
+
+
 def _laden_lesen(m: str) -> dict:
     """Name und Standard-Newsletter-Layout (Gestalt) des Ladens; {} wenn es keins gibt."""
     return _lesen_einer(lambda:
@@ -446,7 +496,8 @@ def vorlage_anwenden(iid: str, payload: dict = Body(...), x_pult_key: str | None
 @router.post("/inhalte/{iid}/wiederherstellen")
 def fassung_wiederherstellen(iid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
     """Alte Editor-Fassung als neue Fassung anlegen (Plan 2026-10-19 E12), samt ihrem Betreff und
-    Vorschautext. Die alte Fassung selbst bleibt unveraendert."""
+    Vorschautext. Die alte Fassung selbst bleibt unveraendert. Bilder, die es nicht mehr gibt, werden zu
+    Platzhaltern; ihre Namen stehen in "platzhalter"."""
     _schluessel(x_pult_key)
     i = _uuid_oder_404(iid)
     n = _fassung_pflicht(payload.get("fassung"))
@@ -459,7 +510,10 @@ def fassung_wiederherstellen(iid: str, payload: dict = Body(...), x_pult_key: st
         raise HTTPException(404, "Unbekannte Fassung")
     if alt.get("format") != "bloecke" or not isinstance(alt.get("bloecke"), dict):
         raise HTTPException(422, "Nur Editor-Fassungen lassen sich wiederherstellen")
-    return _bloecke_als_fassung(i, basis, alt.get("felder"), alt["bloecke"])
+    # Final-Review I2: alte Fassungen tragen nach dem Loeschen eines Bildes noch medien:<geloescht> (E4) -
+    # diese Plaetze werden Platzhalter, damit kein totes Bild in den versendbaren Stand kommt.
+    bloecke, platzhalter = _fehlende_bilder_ersetzen(alt["bloecke"])
+    return {**_bloecke_als_fassung(i, basis, alt.get("felder"), bloecke), "platzhalter": platzhalter}
 
 
 @router.get("/vorlagen")

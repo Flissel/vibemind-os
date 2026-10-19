@@ -14,8 +14,8 @@ import re
 from fastapi import APIRouter, Body, Header, HTTPException
 from fastapi.responses import JSONResponse
 
-from spaces.marketing.api.pult import (_NICHT_ERREICHBAR, _UNGUELTIGE_EINGABE, _db_grund, _lesen,
-                                       _lesen_einer, _mandant_pflicht, _schluessel, _schreiben, _uuid_oder_404,
+from spaces.marketing.api.pult import (_NICHT_ERREICHBAR, _UNGUELTIGE_EINGABE, _datei_existiert, _db_grund,
+                                       _lesen, _lesen_einer, _mandant_pflicht, _schluessel, _schreiben, _uuid_oder_404,
                                        _von, lit, verweise_lesen)
 # _mandant_pflicht hat nur eine Fassung (pult.py); marke.py importiert sie weiter ueber dieses Modul.
 from spaces.marketing.claw import bildplaetze
@@ -290,24 +290,6 @@ def medien_platzhalter(payload: dict = Body(...), x_pult_key: str | None = Heade
         elif fassung is not None:
             umgestellt.append({"id": v.get("id"), "titel": v.get("titel") or "", "fassung": fassung})
     return {"umgestellt": umgestellt, "gesperrt": gesperrt}
-
-
-def _datei_existiert(name: str) -> bool:
-    """Steht GENAU dieser Name noch in einem Medienordner (MARKETING_MEDIEN_ORDNER, MARKETING_BILD_ORDNER - wie
-    gestaltung.quellen und bilder)? Exakter Eintrag der Verzeichnisliste, keine Gross/Klein-Faltung (wie
-    bilder._im_ordner). Fail-closed: ohne konfigurierten oder ohne lesbaren Ordner laesst sich das nicht
-    belegen -> 503."""
-    ordner = [o.strip() for o in (os.environ.get("MARKETING_MEDIEN_ORDNER", ""),
-                                  os.environ.get("MARKETING_BILD_ORDNER", "")) if o.strip()]
-    if not ordner:
-        raise HTTPException(503, "misconfigured: MARKETING_MEDIEN_ORDNER fehlt")
-    for o in ordner:
-        try:
-            if name in os.listdir(o):
-                return True
-        except OSError:
-            raise HTTPException(503, "Medienordner nicht lesbar")
-    return False
 
 
 @router.post("/medien/vergessen")
