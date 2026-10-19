@@ -299,3 +299,32 @@ def test_aus_laura_zu_gross(db, c, monkeypatch):
     db.antworten = [_in_arbeit(db)]
     r = c.post(f"/api/video/arbeiter/{AID}/aus-laura", headers=B, json={"url": GUT})
     assert r.status_code == 413
+
+
+# --- Marke in Reels (Paket C1, 19.10.2026) -------------------------------------------------------
+
+def test_marke_des_auftrags(db, c, monkeypatch):
+    monkeypatch.setattr(video, "_markenlogos", lambda m: ("medien:logo-vibemind-5ca856231b.png", None))
+    werte = {"akzent": "#5b3fd6", "zweitfarbe": "#f3e6e3", "schrift_anzeige": "oxanium", "schrift_text": "dm-sans"}
+    db.antworten = [_in_arbeit(db), [{"w": werte}]]
+    r = c.post(f"/api/video/arbeiter/{AID}/marke", headers=B)
+    assert r.status_code == 200
+    assert r.json() == {"mandant": "vibemind", "akzent": "#5b3fd6", "schrift_anzeige": "oxanium",
+                        "schrift_text": "dm-sans", "logo": "logo-vibemind-5ca856231b.png"}
+
+
+def test_marke_nur_gueltige_werte(db, c, monkeypatch):
+    monkeypatch.setattr(video, "_markenlogos", lambda m: (None, None))
+    db.antworten = [_in_arbeit(db), [{"w": {"akzent": "rot", "schrift_anzeige": "comic", "schrift_text": "dm-sans"}}]]
+    assert c.post(f"/api/video/arbeiter/{AID}/marke", headers=B).json() == {
+        "mandant": "vibemind", "akzent": None, "schrift_anzeige": None, "schrift_text": "dm-sans", "logo": None}
+
+
+def test_marke_ohne_spiegel(db, c, monkeypatch):
+    monkeypatch.setattr(video, "_markenlogos", lambda m: (None, None))
+    db.antworten = [_in_arbeit(db), []]
+    assert c.post(f"/api/video/arbeiter/{AID}/marke", headers=B).json()["akzent"] is None
+
+
+def test_marke_braucht_arbeiterschluessel(db, c):
+    assert c.post(f"/api/video/arbeiter/{AID}/marke").status_code in (401, 403)

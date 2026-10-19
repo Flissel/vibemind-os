@@ -8,6 +8,7 @@ from spaces.marketing.video_claw import laura_api, werkzeuge as w
 PID = "aaaa1111-0000-0000-0000-000000000001"
 AID = "bbbb2222-0000-0000-0000-000000000002"
 AUF = "cccc3333-0000-0000-0000-000000000003"
+OHNE_MARKE = {"mandant": "vibemind", "akzent": None, "schrift_anzeige": None, "schrift_text": None, "logo": None}
 
 
 class Laura:
@@ -25,6 +26,8 @@ class Laura:
 def laura(monkeypatch):
     monkeypatch.setenv("LAURA_API_URL", "http://vm:8765")
     monkeypatch.setenv("LAURA_TOKEN", "geheim-token")
+
+    monkeypatch.setattr(w, "_marke", lambda auftrag: dict(OHNE_MARKE))   # Firma ohne Marke
 
     def bauen(antworten):
         rek = Laura(antworten)
@@ -65,12 +68,12 @@ def test_standbild_formen(laura, args):
 
 def test_titelkarte_farben_geprueft(laura):
     rek = laura([])
-    assert not w.titelkarte(PID, "Hallo", "rot")["ok"] and rek.aufrufe == []
+    assert not w.titelkarte(AUF, PID, "Hallo", "rot")["ok"] and rek.aufrufe == []
 
 
 def test_job_fehlgeschlagen(laura):
     laura([(202, {"job_id": "j1"}), (200, {"status": "failed", "error_json": "ffmpeg kaputt"})])
-    r = w.titelkarte(PID, "Hallo", "#000000")
+    r = w.titelkarte(AUF, PID, "Hallo", "#000000")
     assert not r["ok"] and "ffmpeg kaputt" in r["fehler"]
 
 
@@ -78,7 +81,7 @@ def test_reel_bauen_zwei_schritte(laura):
     rek = laura([(202, {"timeline_id": "tl1", "job_id": "j1"}),
                  (200, {"status": "succeeded", "result_json": json.dumps({"warnings": ["beat 2 gekuerzt"]})}),
                  (202, {"export_id": "e1e1e1e1e1", "job_id": "j2"})])
-    r = w.reel_bauen(PID, [{"text": "Drei Fehler.", "asset_id": AID}], stimme="felix", hook="Drei Fehler",
+    r = w.reel_bauen(AUF, PID, [{"text": "Drei Fehler.", "asset_id": AID}], stimme="felix", hook="Drei Fehler",
                      logo_asset_id=AID)
     assert r == {"ok": True, "export_id": "e1e1e1e1e1", "timeline_id": "tl1", "warnungen": ["beat 2 gekuerzt"]}
     nr = rek.aufrufe[0][2]
@@ -93,7 +96,7 @@ def test_reel_bauen_zwei_schritte(laura):
 def test_reel_bauen_standardstimme_ohne_voice_id(laura):
     rek = laura([(202, {"timeline_id": "tl1", "job_id": "j1"}), (200, {"status": "succeeded", "result_json": "{}"}),
                  (202, {"export_id": "e1e1e1e1e1"})])
-    w.reel_bauen(PID, [{"text": "Ein Satz.", "asset_id": AID}])
+    w.reel_bauen(AUF, PID, [{"text": "Ein Satz.", "asset_id": AID}])
     assert rek.aufrufe[0][2]["voice_id"] is None and "hook_text" not in rek.aufrufe[2][2]
 
 
@@ -102,7 +105,7 @@ def test_reel_bauen_standardstimme_ohne_voice_id(laura):
                                    [{"text": "x", "asset_id": AID}] * 13])
 def test_reel_bauen_beats_geprueft(laura, beats):
     rek = laura([])
-    assert not w.reel_bauen(PID, beats)["ok"] and rek.aufrufe == []
+    assert not w.reel_bauen(AUF, PID, beats)["ok"] and rek.aufrufe == []
 
 
 def test_material_uebernehmen_gleiches_projekt(laura):
@@ -159,7 +162,7 @@ def test_mcp_zeitlimit_reicht_fuer_reel_bauen():
 def test_reel_bauen_originalton_und_gemischte_untertitel(laura):
     rek = laura([(202, {"timeline_id": "tl1", "job_id": "j1"}), (200, {"status": "succeeded", "result_json": "{}"}),
                  (202, {"export_id": "e1e1e1e1e1"})])
-    r = w.reel_bauen(PID, [{"text": "Darum geht es.", "asset_id": AID},
+    r = w.reel_bauen(AUF, PID, [{"text": "Darum geht es.", "asset_id": AID},
                            {"originalton": True, "asset_id": AID, "src_in_frame": 300, "src_out_frame": 600}])
     assert r["ok"]
     beats = rek.aufrufe[0][2]["beats"]
@@ -176,7 +179,7 @@ def test_reel_bauen_originalton_und_gemischte_untertitel(laura):
 ])
 def test_originalton_beat_geprueft(laura, beat):
     rek = laura([])
-    assert not w.reel_bauen(PID, [beat])["ok"] and rek.aufrufe == []
+    assert not w.reel_bauen(AUF, PID, [beat])["ok"] and rek.aufrufe == []
 
 
 def test_skills_kennen_originalton():
@@ -192,7 +195,7 @@ def test_skills_kennen_originalton():
 def test_reel_bauen_einpassen_lautheit_korrektur(laura):
     rek = laura([(202, {"timeline_id": "tl1", "job_id": "j1"}), (200, {"status": "succeeded", "result_json": "{}"}),
                  (202, {"export_id": "e1e1e1e1e1"})])
-    w.reel_bauen(PID, [{"originalton": True, "asset_id": AID, "src_in_frame": 0, "src_out_frame": 300}],
+    w.reel_bauen(AUF, PID, [{"originalton": True, "asset_id": AID, "src_in_frame": 0, "src_out_frame": 300}],
                  rahmung="einpassen", untertitel_ersetzen={"Kastermann": "Kunden"})
     reel = rek.aufrufe[2][2]
     assert reel["rahmung"] == "einpassen" and reel["loudnorm"] is True
@@ -202,7 +205,7 @@ def test_reel_bauen_einpassen_lautheit_korrektur(laura):
 def test_reel_bauen_vorgaben(laura):
     rek = laura([(202, {"timeline_id": "tl1", "job_id": "j1"}), (200, {"status": "succeeded", "result_json": "{}"}),
                  (202, {"export_id": "e1e1e1e1e1"})])
-    w.reel_bauen(PID, [{"text": "Satz.", "asset_id": AID}])
+    w.reel_bauen(AUF, PID, [{"text": "Satz.", "asset_id": AID}])
     reel = rek.aufrufe[2][2]
     assert reel["rahmung"] == "zuschnitt" and reel["loudnorm"] is True and "untertitel_ersetzen" not in reel
 
@@ -212,7 +215,7 @@ def test_reel_bauen_vorgaben(laura):
                                 {"untertitel_ersetzen": ["kein", "dict"]}])
 def test_reel_bauen_feinschliff_geprueft(laura, kw):
     rek = laura([])
-    assert not w.reel_bauen(PID, [{"text": "Satz.", "asset_id": AID}], **kw)["ok"] and rek.aufrufe == []
+    assert not w.reel_bauen(AUF, PID, [{"text": "Satz.", "asset_id": AID}], **kw)["ok"] and rek.aufrufe == []
 
 
 # --- kompaktes Transkript (Probe 18.10.: Wortlisten liessen den Lauf haengen) -----------
@@ -240,3 +243,86 @@ def test_transkript_deckel(monkeypatch):
     _segmente(monkeypatch, [{"start_frame": i, "end_frame": i, "text": "w"} for i in range(500)])
     r = w.transkript(AID)
     assert len(r["daten"]["segmente"]) == 400 and r["daten"]["anzahl"] == 500 and "hinweis" in r["daten"]
+
+
+
+# --- Marke in Reels (Paket C1, 19.10.2026) -------------------------------------------------------
+MARKE = {"mandant": "vibemind", "akzent": "#5b3fd6", "schrift_anzeige": "oxanium", "schrift_text": "dm-sans",
+         "logo": "logo-vibemind-5ca856231b.png"}
+LOGO_ASSET = "eeee5555-0000-0000-0000-000000000005"
+
+
+def _reel_antworten():
+    return [(202, {"timeline_id": "tl1", "job_id": "j1"}), (200, {"status": "succeeded", "result_json": "{}"}),
+            (202, {"export_id": "e1e1e1e1e1"})]
+
+
+def test_reel_bauen_traegt_die_marke(laura, monkeypatch):
+    monkeypatch.setattr(w, "_marke", lambda auftrag: dict(MARKE))
+    importe = []
+    monkeypatch.setattr(w, "bild_importieren",
+                        lambda auftrag, projekt_id, medien_name: importe.append((auftrag, projekt_id, medien_name))
+                        or {"ok": True, "asset_id": LOGO_ASSET})
+    rek = laura(_reel_antworten())
+    r = w.reel_bauen(AUF, PID, [{"text": "Ein Satz.", "asset_id": AID}], hook="Hallo")
+    assert r["ok"]
+    reel = rek.aufrufe[2][2]
+    assert (reel["caption_schrift"], reel["caption_akzent"], reel["hook_schrift"]) == ("dm-sans", "#5b3fd6", "oxanium")
+    assert reel["logo_asset_id"] == LOGO_ASSET
+    assert importe == [(AUF, PID, "logo-vibemind-5ca856231b.png")]
+
+
+def test_reel_bauen_eigenes_logo_bleibt(laura, monkeypatch):
+    monkeypatch.setattr(w, "_marke", lambda auftrag: dict(MARKE))
+    monkeypatch.setattr(w, "bild_importieren", lambda *a: pytest.fail("kein Import bei eigenem Logo"))
+    rek = laura(_reel_antworten())
+    w.reel_bauen(AUF, PID, [{"text": "Ein Satz.", "asset_id": AID}], logo_asset_id=AID)
+    assert rek.aufrufe[2][2]["logo_asset_id"] == AID
+
+
+def test_reel_bauen_ohne_marke_wie_bisher(laura):
+    rek = laura(_reel_antworten())
+    r = w.reel_bauen(AUF, PID, [{"text": "Ein Satz.", "asset_id": AID}])
+    assert r["ok"]
+    assert not {"caption_schrift", "caption_akzent", "hook_schrift", "logo_asset_id"} & set(rek.aufrufe[2][2])
+
+
+def test_reel_bauen_logo_import_scheitert_reel_entsteht_trotzdem(laura, monkeypatch):
+    monkeypatch.setattr(w, "_marke", lambda auftrag: dict(MARKE))
+    monkeypatch.setattr(w, "bild_importieren", lambda *a: {"ok": False, "fehler": "Bilddatei fehlt"})
+    rek = laura(_reel_antworten())
+    r = w.reel_bauen(AUF, PID, [{"text": "Ein Satz.", "asset_id": AID}])
+    assert r["ok"] and "logo_asset_id" not in rek.aufrufe[2][2]
+    assert any("Logo" in x for x in r["warnungen"])
+
+
+def test_reel_bauen_auftrag_geprueft(laura):
+    rek = laura([])
+    assert not w.reel_bauen("kaputt", PID, [{"text": "x", "asset_id": AID}])["ok"] and rek.aufrufe == []
+
+
+def test_titelkarte_in_markenschrift_auf_akzent(laura, monkeypatch):
+    monkeypatch.setattr(w, "_marke", lambda auftrag: dict(MARKE))
+    rek = laura([(202, {"job_id": "j1"}), (200, {"status": "succeeded", "result_json": json.dumps({"asset_id": AID})})])
+    assert w.titelkarte(AUF, PID, "Hallo")["ok"]
+    koerper = rek.aufrufe[0][2]
+    assert koerper["hintergrund"] == "#5b3fd6" and koerper["schrift"] == "oxanium"
+
+
+def test_titelkarte_eigener_hintergrund_bleibt(laura, monkeypatch):
+    monkeypatch.setattr(w, "_marke", lambda auftrag: dict(MARKE))
+    rek = laura([(202, {"job_id": "j1"}), (200, {"status": "succeeded", "result_json": json.dumps({"asset_id": AID})})])
+    w.titelkarte(AUF, PID, "Hallo", "#000000")
+    assert rek.aufrufe[0][2]["hintergrund"] == "#000000"
+
+
+def test_titelkarte_ohne_marke_braucht_hintergrund(laura):
+    rek = laura([])
+    assert not w.titelkarte(AUF, PID, "Hallo")["ok"] and rek.aufrufe == []
+
+
+def test_reel_bauen_marke_nicht_geladen_warnt(laura, monkeypatch):
+    monkeypatch.setattr(w, "_marke", lambda auftrag: {})
+    rek = laura(_reel_antworten())
+    r = w.reel_bauen(AUF, PID, [{"text": "Ein Satz.", "asset_id": AID}])
+    assert r["ok"] and any("Marke nicht geladen" in x for x in r["warnungen"])

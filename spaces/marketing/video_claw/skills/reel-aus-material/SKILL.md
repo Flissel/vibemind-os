@@ -25,7 +25,8 @@ description: "Reel aus vorhandenen Laura-Videos: passende Stellen im Transkript 
    `untertitel_ersetzen` sammeln (je ein Wort, z. B. `{"Kastermann": "Kunden"}`), nichts umformulieren.
 7. **Rahmung.** Bildschirmaufnahmen, Folien, breite Videos → `rahmung: "einpassen"`; Person groß vor der
    Kamera → `"zuschnitt"` (Vorgabe).
-8. **Bauen.** `reel_bauen` mit den Beats, `stimme` aus dem Briefing, `hook` nur wenn keine Titelkarte.
+8. **Bauen.** `reel_bauen` mit `auftrag` und den Beats, `stimme` aus dem Briefing, `hook` nur wenn keine
+   Titelkarte. Schrift, Akzentfarbe und Logo der Marke setzt `reel_bauen` selbst.
 9. Notiz: welche Videos und Stellen, welche mit Originalton, Rahmung, korrigierte Wörter, ein Satz.
    Dann `EXPORT: <id>`.
 

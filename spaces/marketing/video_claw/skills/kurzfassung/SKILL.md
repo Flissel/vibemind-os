@@ -22,7 +22,7 @@ description: "Langes Video kürzen: die stärksten 15–60 Sekunden, in denen di
    `{"Kastermann": "Kunden"}`). Nichts umformulieren, keine Füllwörter streichen.
 6. **Rahmung.** Bildschirmaufnahme, Folien oder sehr breites Video (`aufloesung` aus `material_suchen`,
    z. B. 1898x1024 mit Oberfläche) → `rahmung: "einpassen"`; Person groß vor der Kamera → `"zuschnitt"`.
-7. **Bauen.** `reel_bauen` mit Beats `{"originalton": true, "asset_id": <Video>, "src_in_frame": <Start>,
+7. **Bauen.** `reel_bauen` mit `auftrag` und Beats `{"originalton": true, "asset_id": <Video>, "src_in_frame": <Start>,
    "src_out_frame": <Ende>}` (und ggf. den Karten-Beats davor/danach), `hook` = Thema in einer Zeile.
 8. Notiz: welche Stelle (Sekunden von–bis), Rahmung und welche Wörter korrigiert, ein Satz. Dann
    `EXPORT: <id>`.
