@@ -216,15 +216,28 @@ LOG_MAX_BYTES = 10 * 1024 * 1024
 
 
 def open_job_log(workdir: Path, name: str):
-    """Logdatei <workdir>/logs/<name>.log im Anhaengemodus; ueber 10 MB wird einmal nach .log.1 rotiert."""
+    """Logdatei <workdir>/logs/<name>.log im Anhaengemodus; ueber 10 MB wird einmal nach .log.1 rotiert.
+
+    Ein Logproblem darf den Start nie blockieren: Rotation scheitert -> weiter anhaengen, open scheitert -> None.
+    """
     logs = workdir / "logs"
-    logs.mkdir(parents=True, exist_ok=True)
     path = logs / f"{name}.log"
-    if path.exists() and path.stat().st_size > LOG_MAX_BYTES:
-        os.replace(path, logs / f"{name}.log.1")
-    fh = open(path, "ab")
-    fh.write(f"=== start {datetime.now().isoformat(timespec='seconds')} pid={os.getpid()} ==={chr(10)}".encode("utf-8"))
-    fh.flush()
+    try:
+        logs.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size > LOG_MAX_BYTES:
+            try:
+                os.replace(path, logs / f"{name}.log.1")
+            except OSError as exc:
+                log.warning("Logrotation fuer %s fehlgeschlagen (%s); haenge weiter an", path, exc)
+        fh = open(path, "ab")
+    except OSError as exc:
+        log.warning("Logdatei %s nicht nutzbar (%s); Ausgabe geht ins Leere", path, exc)
+        return None
+    try:
+        fh.write(f"=== start {datetime.now().isoformat(timespec='seconds')} pid={os.getpid()} ==={chr(10)}".encode("utf-8"))
+        fh.flush()
+    except OSError as exc:
+        log.warning("Logkopf in %s nicht schreibbar (%s)", path, exc)
     return fh
 
 
@@ -268,8 +281,10 @@ def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS, env_file: Path
             if embed:
                 # Ohne Umleitung erbt Rowboat eine versteckte Konsole, die niemand liest (Haenger bei vollem Puffer).
                 fh = open_job_log(workdir, "embed-main" if name == "Rowboat" else "vault-map")
-                log_files.append(fh)
-                io = {"stdout": fh, "stderr": subprocess.STDOUT, "stdin": subprocess.DEVNULL}
+                if fh is not None:
+                    log_files.append(fh)
+                io = {"stdout": fh if fh is not None else subprocess.DEVNULL, "stderr": subprocess.STDOUT,
+                      "stdin": subprocess.DEVNULL}
             procs.append(subprocess.Popen(cmd, cwd=cwd, env=rowboat_env if name == "Rowboat" else env, shell=_shell(cmd, windows),
                                           start_new_session=not windows, **extra, **io))
         if embed:

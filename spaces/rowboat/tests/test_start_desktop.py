@@ -566,3 +566,30 @@ def test_dev_start_does_not_redirect_output(tmp_path, monkeypatch):
     seen = _log_start(tmp_path, monkeypatch, embed=False)
     assert all("stdout" not in s["kw"] and "stderr" not in s["kw"] and "stdin" not in s["kw"] for s in seen)
     assert not (tmp_path / "logs").exists()
+
+
+def test_rotation_failure_does_not_block_start_and_keeps_appending(tmp_path, monkeypatch):
+    def boom(*a, **k):
+        raise PermissionError("held by orphan")
+
+    monkeypatch.setattr(start_desktop.os, "replace", boom)
+    seen = _log_start(tmp_path, monkeypatch, embed=True, big=True)
+    assert len(seen) == 2 and Path(seen[0]["name"]).name == "embed-main.log"
+    assert (tmp_path / "logs" / "embed-main.log").stat().st_size > 10 * 1024 * 1024
+    assert not (tmp_path / "logs" / "embed-main.log.1").exists()
+
+
+def test_log_open_failure_falls_back_to_devnull_and_starts(tmp_path, monkeypatch):
+    real_open = open
+
+    def fake_open(path, mode="r", *a, **k):
+        if str(path).endswith(".log"):
+            raise PermissionError("locked")
+        return real_open(path, mode, *a, **k)
+
+    monkeypatch.setattr("builtins.open", fake_open)
+    seen = _log_start(tmp_path, monkeypatch, embed=True)
+    assert len(seen) == 2
+    for s in seen:
+        assert s["kw"]["stdout"] == subprocess.DEVNULL
+        assert s["kw"]["stderr"] == subprocess.STDOUT and s["kw"]["stdin"] == subprocess.DEVNULL
