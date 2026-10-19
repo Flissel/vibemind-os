@@ -144,3 +144,58 @@ def test_ohne_jeden_schluessel_503(db, c, monkeypatch):
     monkeypatch.delenv("MARKETING_AGENT_KEY", raising=False)
     r = c.get("/api/ton/auftraege", headers={"X-Agent-Key": "irgendwas"})
     assert r.status_code == 503 and "MARKETING_AGENT_KEY" in r.json()["detail"]
+
+
+# --- Pult (Betreiber, Migration 074) ------------------------------------------
+
+P = {"X-Pult-Key": "pult-k"}
+
+
+@pytest.fixture
+def pult(db, monkeypatch):
+    monkeypatch.setenv("MARKETING_PULT_KEY", "pult-k")
+    return db
+
+
+def test_pult_liste_filtert_mandant_und_liefert_skript(pult, c):
+    pult.antworten = [[{"id": AID, "titel": "T", "status": "offen", "angelegt_von": "betreiber"}]]
+    r = c.get("/api/pult/ton?mandant=vibemind&limit=10", headers=P)
+    assert r.status_code == 200 and r.json()["auftraege"][0]["angelegt_von"] == "betreiber"
+    assert "WHERE mandant = 'vibemind'" in pult.sql[-1] and "skript" in pult.sql[-1]
+    assert "ORDER BY erstellt_am DESC" in pult.sql[-1]
+
+
+def test_pult_liste_ohne_schluessel_abgewiesen(pult, c):
+    assert c.get("/api/pult/ton?mandant=vibemind").status_code == 401
+    assert c.post("/api/pult/ton", json={}).status_code == 401
+    assert c.post(f"/api/pult/ton/{AID}/abbrechen").status_code == 401
+    assert not pult.sql
+
+
+@pytest.mark.parametrize("mandant", ["../x", "Vibemind"])
+def test_pult_liste_mandant_ungueltig_422(pult, c, mandant):
+    r = c.get("/api/pult/ton", params={"mandant": mandant}, headers=P)
+    assert r.status_code == 422 and not pult.sql
+
+
+def test_pult_anlegen_nutzt_betreiber_und_prueft_skript(pult, c):
+    pult.antworten = [[{"id": AID}]]
+    r = c.post("/api/pult/ton", headers=P, json={"mandant": "vibemind", "titel": "Folge", "skript": SKRIPT})
+    assert r.status_code == 200 and r.json() == {"auftrag": AID}
+    assert "ton_auftrag_anlegen(" in pult.sql[-1] and "'betreiber'" in pult.sql[-1]
+    n = len(pult.sql)
+    r = c.post("/api/pult/ton", headers=P, json={"mandant": "vibemind", "titel": "Folge",
+                                                  "skript": [{"sprecher": "A", "text": "x" * 1001}]})
+    assert r.status_code == 422 and len(pult.sql) == n
+
+
+def test_pult_abbrechen_ruft_funktion(pult, c):
+    pult.antworten = [[{"s": "abgebrochen"}]]
+    r = c.post(f"/api/pult/ton/{AID}/abbrechen", headers=P)
+    assert r.status_code == 200 and r.json() == {"status": "abgebrochen"}
+    assert "ton_abbrechen(" in pult.sql[-1]
+
+
+def test_pult_abbrechen_unbekannte_id_404(pult, c):
+    assert c.post("/api/pult/ton/gibtsnicht/abbrechen", headers=P).status_code == 404
+    assert not pult.sql

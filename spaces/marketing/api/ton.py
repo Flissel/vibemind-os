@@ -15,15 +15,19 @@ from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
 
 from spaces.marketing.api import medien_mandant
 from spaces.marketing.api.bilder import _agent_schluessel, _auftrag_id, _bild_schluessel, _ordner
-from spaces.marketing.api.pult import _lesen, _lesen_einer, _schreiben, lit
+from spaces.marketing.api.pult import _lesen, _lesen_einer, _schluessel, _schreiben, _uuid_oder_404, lit
 
 router = APIRouter(prefix="/api/ton")
+pult_router = APIRouter(prefix="/api/pult/ton")
 FRIST = "20 minutes"
 TITEL_MAX, TEXT_MAX, ABSCHNITTE_MAX, GESAMT_MAX = 120, 1000, 60, 12000
 MP3_MAX = 25 * 1024 * 1024
 _SPRECHER = re.compile(r"^[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß .-]{0,29}$")
 _SPRACHE = re.compile(r"^[a-z]{2}$")
 _DATEI = re.compile(r"^pod-[0-9a-f]{8}-[a-z0-9-]{1,60}\.mp3$")
+_MANDANT = re.compile(r"^[a-z][a-z0-9_-]{0,40}$")
+_SPALTEN_PULT = ("id, mandant, titel, sprache, skript, status, datei, dauer_s, befund, angelegt_von, "
+                 "erstellt_am, geaendert_am")
 
 
 def _slug(titel: str) -> str:
@@ -157,3 +161,46 @@ def arbeiter_fertig(aid: str, payload: dict = Body(...), x_bild_key: str | None 
         f"{lit(datei) if datei else 'NULL'}, {repr(float(dauer)) if datei else 'NULL'}, "
         f"{lit(befund[:500])}) AS v")
     return {"status": zeile.get("v")}
+
+
+# --- Pult (Betreiber, X-Pult-Key, Migration 074): Folgen sind nicht loeschbar, nur abbrechbar -------------
+
+def _mandant(wert) -> str:
+    if not isinstance(wert, str) or not _MANDANT.fullmatch(wert.strip()):
+        raise HTTPException(422, "mandant fehlt oder ist ungueltig")
+    return wert.strip()
+
+
+@pult_router.get("")
+def pult_liste(mandant: str = Query(...), limit: int = Query(50, ge=1, le=200),
+               x_pult_key: str | None = Header(None)):
+    _schluessel(x_pult_key)
+    m = _mandant(mandant)
+    zeilen = _lesen(lambda:
+        f"SELECT {_SPALTEN_PULT} FROM marketing.ton_auftraege WHERE mandant = {lit(m)} "
+        f"ORDER BY erstellt_am DESC LIMIT {int(limit)}")
+    return {"auftraege": zeilen}
+
+
+@pult_router.post("")
+def pult_anlegen(payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    _schluessel(x_pult_key)
+    m = _mandant(payload.get("mandant"))
+    titel, sprache = payload.get("titel"), payload.get("sprache", "de")
+    if not isinstance(titel, str) or not 1 <= len(titel.strip()) <= TITEL_MAX:
+        raise HTTPException(422, f"titel: 1 bis {TITEL_MAX} Zeichen")
+    if not isinstance(sprache, str) or not _SPRACHE.fullmatch(sprache):
+        raise HTTPException(422, "sprache: zwei Kleinbuchstaben, z. B. de")
+    skript = _skript_pruefen(payload.get("skript"))
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.ton_auftrag_anlegen({lit(m)}, {lit(titel.strip())}, {lit(sprache)}, "
+        f"{lit(json.dumps(skript, ensure_ascii=False))}::jsonb, 'betreiber') AS id")
+    return {"auftrag": str(zeile.get("id"))}
+
+
+@pult_router.post("/{aid}/abbrechen")
+def pult_abbrechen(aid: str, x_pult_key: str | None = Header(None)):
+    _schluessel(x_pult_key)
+    a = _uuid_oder_404(aid)
+    zeile = _schreiben(lambda: f"SELECT marketing.ton_abbrechen({lit(a)}::uuid) AS s")
+    return {"status": zeile.get("s")}
