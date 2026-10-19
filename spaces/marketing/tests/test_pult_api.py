@@ -433,10 +433,68 @@ def test_vorschau_bloecke_ueberspringt_gestaltpruefung(db, c):
     assert r.status_code == 200 and "Hallo Pult" in r.text
 
 
-def test_vorschau_bloecke_pdf_422(db, c):
+def test_vorschau_bloecke_pdf(db, c, monkeypatch):
+    """Paket C3: Editor-Newsletter als PDF - dasselbe Mail-HTML, von Chromium gesetzt; laden darf er nur
+    die eigenen Bild- und Schriftadressen."""
+    from spaces.marketing.claw import pdf_druck
+    gesehen = {}
+
+    def druck(html, erlaubt):
+        gesehen["html"], gesehen["erlaubt"] = html, erlaubt
+        return b"%PDF-1.7 probe"
+    monkeypatch.setattr(pdf_druck, "html_zu_pdf", druck)
+    monkeypatch.setenv("MARKETING_PDF_HOSTS", "h.ts.net")
+    db.antworten = [[_bloecke_zeile()]]
+    basis = "https://h.ts.net/marketing/bild/1760000000." + "a" * 64 + "/"
+    r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=1&format=pdf&bild_basis={basis}", headers=H)
+    assert r.status_code == 200 and r.headers["content-type"] == "application/pdf"
+    assert r.content == b"%PDF-1.7 probe"
+    assert "Hallo Pult" in gesehen["html"]
+    assert gesehen["erlaubt"] == [basis, "https://h.ts.net/marketing/schrift/"]
+
+
+def test_vorschau_bloecke_pdf_fremder_host_laedt_nichts(db, c, monkeypatch):
+    """Sicherheitspruefung 19.10.: die erlaubten Adressen kommen aus der Server-Konfiguration, nicht aus der
+    Anfrage - ein bild_basis auf einen anderen Host darf Chromium nichts laden lassen."""
+    from spaces.marketing.claw import pdf_druck
+    gesehen = {}
+    monkeypatch.setattr(pdf_druck, "html_zu_pdf", lambda html, erlaubt: gesehen.setdefault("e", erlaubt) and b"%PDF" or b"%PDF")
+    monkeypatch.setenv("MARKETING_PDF_HOSTS", "h.ts.net")
+    db.antworten = [[_bloecke_zeile()]]
+    r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=1&format=pdf&bild_basis=https://intern.example/marketing/bild/t/",
+              headers=H)
+    assert r.status_code == 200 and gesehen["e"] == []
+    monkeypatch.delenv("MARKETING_PDF_HOSTS")
+    db.antworten = [[_bloecke_zeile()]]
+    c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=1&format=pdf&bild_basis=https://h.ts.net/marketing/bild/t/", headers=H)
+    assert gesehen["e"] == []
+
+
+def test_pdf_erlaubt_nur_erwartete_pfade(monkeypatch):
+    """Sicherheitspruefung 19.10. (2): auch auf erlaubtem Host nur /marketing/bild/<seg>/ und /marketing/schrift/."""
+    from spaces.marketing.api import pult
+    monkeypatch.setenv("MARKETING_PDF_HOSTS", "h.ts.net")
+    tok = "1760000000." + "a" * 64
+    bild = f"https://h.ts.net/marketing/bild/{tok}/"
+    assert pult._pdf_erlaubt(bild, "https://h.ts.net/marketing/schrift/") == [bild, "https://h.ts.net/marketing/schrift/"]
+    assert pult._pdf_erlaubt("https://h.ts.net/", "https://h.ts.net/admin/") == []
+    assert pult._pdf_erlaubt("https://h.ts.net/marketing/bild/t/", "https://h.ts.net/marketing/schrift/a/") == []
+    # Sicherheitspruefung 19.10. (3): kodierte Punkt-Segmente, Abfrage, Anker
+    for boese in ("https://h.ts.net/marketing/bild/%2e%2e/", "https://h.ts.net/marketing/bild/../",
+                  f"https://h.ts.net/marketing/bild/{tok}/?x=1", "https://h.ts.net/marketing/schrift/#a",
+                  "https://h.ts.net/marketing/schrift/%2e%2e/"):
+        assert pult._pdf_erlaubt(boese) == [], boese
+
+
+def test_vorschau_bloecke_pdf_ohne_chromium_503(db, c, monkeypatch):
+    from spaces.marketing.claw import pdf_druck
+
+    def druck(html, erlaubt):
+        raise pdf_druck.PdfDruckFehler("PDF-Druck ist hier nicht eingerichtet")
+    monkeypatch.setattr(pdf_druck, "html_zu_pdf", druck)
     db.antworten = [[_bloecke_zeile()]]
     r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=1&format=pdf", headers=H)
-    assert r.status_code == 422 and "PDF" in r.json()["detail"]
+    assert r.status_code == 503 and "nicht eingerichtet" in r.json()["detail"]
 
 
 def test_vorschau_bloecke_renderfehler_422(db, c, monkeypatch):

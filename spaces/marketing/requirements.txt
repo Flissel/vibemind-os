@@ -11,3 +11,6 @@ uvicorn
 reportlab
 mjml-python==1.4.2
 pillow
+# Newsletter als PDF (Paket C3, 19.10.2026): claw/pdf_druck.py setzt das Mail-HTML mit Chromium.
+# Nach der Installation einmalig: python -m playwright install chromium && sudo .venv/bin/python -m playwright install-deps chromium
+playwright

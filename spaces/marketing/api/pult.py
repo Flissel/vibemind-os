@@ -49,11 +49,12 @@ import os
 import re
 import uuid as _uuid
 from typing import Callable
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response
 
-from spaces.marketing.claw import bloecke_mjml, pult_render, schriften, vorlagen_grafik, vorlagen_marke
+from spaces.marketing.claw import bloecke_mjml, pdf_druck, pult_render, schriften, vorlagen_grafik, vorlagen_marke
 from spaces.marketing.sync import _db
 
 router = APIRouter(prefix="/api/pult")
@@ -249,16 +250,45 @@ def _bild_basis(wert: str | None) -> str:
     return wert
 
 
-def _bloecke_html(dok, betreff: str, vorschautext: str, pflichtteil: dict, fmt: str, bild_basis: str) -> HTMLResponse:
-    if fmt == "pdf":
-        raise HTTPException(422, "PDF gibt es fuer Editor-Newsletter noch nicht")
+# Signierte Bildbasis der sales-ui: /marketing/bild/<ablauf>.<hex-hmac>/ (sales-mcp/ui_editor.bild_token)
+_PDF_BILD_PFAD = re.compile(r"^/marketing/bild/[0-9]{1,12}\.[0-9a-f]{64}/$")
+
+
+def _pdf_erlaubt(*basen: str) -> list[str]:
+    """Bild-/Schriftbasis nur, wenn ihr Host (mit Port) in MARKETING_PDF_HOSTS steht (Komma-Liste) und der Pfad die
+    erwartete Form hat (/marketing/bild/<seg>/ bzw. /marketing/schrift/). Ohne
+    Eintrag laedt der PDF-Druck nichts nach - Bilder fehlen dann, aber nichts verlaesst die VM."""
+    hosts = {h.strip().lower() for h in os.environ.get("MARKETING_PDF_HOSTS", "").split(",") if h.strip()}
+    aus = []
+    for b in basen:
+        try:
+            teile = urlsplit(b or "")
+        except ValueError:
+            continue
+        if any(z in (b or "") for z in "%?#\\") or teile.scheme != "https" or teile.netloc.lower() not in hosts:
+            continue
+        if _PDF_BILD_PFAD.match(teile.path) or teile.path == "/marketing/schrift/":
+            aus.append(b)
+    return aus
+
+
+def _bloecke_html(dok, betreff: str, vorschautext: str, pflichtteil: dict, fmt: str, bild_basis: str) -> Response:
+    schrift_basis = schrift_basis_aus(bild_basis)
     try:
-        return HTMLResponse(bloecke_mjml.rendern(
+        html = bloecke_mjml.rendern(
             dok, betreff, vorschautext, pflichtteil or {},
-            bild_basis=bild_basis, handy=(fmt == "handy"),
-            schrift_basis=schrift_basis_aus(bild_basis)))
+            bild_basis=bild_basis, handy=(fmt == "handy"), schrift_basis=schrift_basis)
     except bloecke_mjml.RenderFehler as e:
         raise HTTPException(422, str(e))
+    if fmt != "pdf":
+        return HTMLResponse(html)
+    # Paket C3: dasselbe Mail-HTML als PDF (Chromium); laden darf es nur die eigenen Bild-/Schriftadressen -
+    # und nur auf Hosts aus der Server-Konfiguration (Sicherheitspruefung 19.10.), nie aus der Anfrage allein
+    try:
+        roh = pdf_druck.html_zu_pdf(html, _pdf_erlaubt(bild_basis, schrift_basis))
+    except pdf_druck.PdfDruckFehler as e:
+        raise HTTPException(503, str(e))
+    return Response(roh, media_type="application/pdf")
 
 
 def _erzeugt_ordner() -> str:
