@@ -108,6 +108,9 @@ def html_zu_pdf(html: str, erlaubt: list, timeout_s: int = TIMEOUT_S) -> bytes:
                 seite = browser.new_page(java_script_enabled=False, viewport={"width": BREITE_PX, "height": 1000})
                 seite.route("**/*", _weiche(erlaubt, PlaywrightFehler))
                 seite.set_content(druck_html(html), wait_until="networkidle", timeout=timeout_s * 1000)
+                # MJML legt das Desktop-Layout in "@media only screen" ab; im Druckmedium setzte Chromium das
+                # laengere Handy-Layout und das Ende rutschte auf eine zweite Seite (echter Lauf 19.10.)
+                seite.emulate_media(media="screen")
                 hoehe = seite.evaluate("document.documentElement.scrollHeight")
                 return seite.pdf(print_background=True, **seitenmass(hoehe))
             finally:
