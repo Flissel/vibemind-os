@@ -48,6 +48,9 @@ def _inline(text: str) -> str:
     return "".join(teile).replace("\r\n", "\n").replace("\n", "<br>")
 
 
+inline = _inline  # oeffentlich fuer die Mail-Fassung (seite_mail)
+
+
 def _familie(s: dict, rolle: str) -> str:
     """HAND und ANZEIGE: Webschrift plus Stapel. TEXT: nur der mail-sichere Stapel (nie Webschrift)."""
     sid = seite.rolle_schrift(s, rolle)

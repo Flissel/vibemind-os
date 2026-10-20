@@ -1,0 +1,191 @@
+"""Mail-Fassung einer Collage (freie Flaeche): MJML aus dem Streifen-Plan (seite_streifen), Textfassung und
+Medienliste. Textbaender werden echter Mail-Text (mj-text/mj-button, mail-sicherer Schriftstapel, nie
+Webschrift), Bildbaender werden zu Bildstuecken (mj-image, 600 breit), die seite_bilder rendert. Die Namen der
+Stuecke kommen von aussen, in der Reihenfolge von stuecke(). Pflicht-Fuss, Platzhalter und mrml-Aufruf wie
+bei den Bloecken (bloecke_mjml)."""
+from __future__ import annotations
+
+import html as _html
+import urllib.parse
+from dataclasses import dataclass
+from typing import Callable
+
+from spaces.marketing.claw import bloecke_mjml, schriften, seite_html, seite_streifen
+from spaces.marketing.claw import seite as seite_mod
+from spaces.marketing.claw.bloecke_mjml import RenderFehler
+
+ALT_MAX = 300
+_ANREDE = "{vorname}"
+_FUSS_TEXT = "#666666"
+_AUSRICHTUNG = {"links": "left", "mitte": "center", "rechts": "right"}
+
+
+@dataclass
+class Stueck:
+    nr: int
+    oben: float
+    unten: float
+    alt: str
+    link: str | None
+
+
+def _a(wert) -> str:
+    return _html.escape(str(wert if wert is not None else ""), quote=True)
+
+
+def _px(zahl: float) -> str:
+    return f"{max(0, round(float(zahl), 2)):g}px"
+
+
+def _stapel(s: dict, rolle: str) -> str:
+    """Mail-sicherer Schriftstapel der Rolle (nie die Webschrift)."""
+    return schriften.REGISTER[seite_mod.rolle_schrift(s, rolle)]["stapel"]
+
+
+def _schlicht(text: str) -> str:
+    """Text ohne Auszeichnung; Links nur mit ihrer Beschriftung."""
+    return bloecke_mjml.schlicht(seite_html._TEXTLINK.sub(lambda m: m.group(1), text))
+
+
+def _vorbereitet(seite: dict) -> tuple[dict, list[seite_streifen.Band], dict[str, dict]]:
+    s = seite_mod.pruefen(seite)
+    return s, seite_streifen.plan(s), {e["id"]: e for e in s["ebenen"]}
+
+
+def _alt(ebenen: list[dict]) -> str:
+    teile = [" ".join(_schlicht(e["text"]).split()) for e in ebenen if e["art"] in ("text", "knopf")]
+    alt = " ".join(t for t in teile if t)
+    if not alt:
+        return "Bild"
+    return alt if len(alt) <= ALT_MAX else alt[:ALT_MAX - 1].rstrip() + "…"
+
+
+def _stuecke(baender: list[seite_streifen.Band], nach_id: dict[str, dict]) -> list[Stueck]:
+    aus: list[Stueck] = []
+    for b in baender:
+        if b.art != "bild":
+            continue
+        ebenen = seite_streifen.lesereihenfolge([nach_id[i] for i in b.ebenen])
+        link = next((e["link"] for e in ebenen if e["art"] == "knopf"), None)
+        aus.append(Stueck(len(aus) + 1, b.oben, b.unten, _alt(ebenen), link))
+    return aus
+
+
+def stuecke(seite: dict) -> list[Stueck]:
+    """Die Bildstuecke der Seite (ein Stueck je Bildband), von oben nach unten, nr ab 1."""
+    _, baender, nach_id = _vorbereitet(seite)
+    return _stuecke(baender, nach_id)
+
+
+def anrede_in_bild(seite: dict) -> list[str]:
+    """IDs der Textebenen mit {vorname}, die in einem Bildband landen (dort ginge die Anrede verloren)."""
+    _, baender, nach_id = _vorbereitet(seite)
+    ids: list[str] = []
+    for b in baender:
+        if b.art == "bild":
+            ids += [i for i in b.ebenen if nach_id[i]["art"] == "text" and _ANREDE in nach_id[i]["text"]
+                    and i not in ids]
+    return ids
+
+
+def _ebene(s: dict, e: dict, oben: float, unten_abstand: float) -> str:
+    l, _, r, _ = seite_streifen.rahmen(e)
+    polster = (f'padding-top="{_px(oben)}" padding-bottom="{_px(unten_abstand)}" '
+               f'padding-left="{_px(l)}" padding-right="{_px(seite_mod.BREITE - r)}"')
+    schrift = bloecke_mjml.attr_schrift(_stapel(s, e["rolle"]))
+    if e["art"] == "knopf":
+        return (f'<mj-button {polster} href="{_a(e["link"])}" align="left" width="{_px(e["breite"])}" '
+                f'height="{_px(e["hoehe"])}" inner-padding="0px 12px" border-radius="{_px(e["rundung"])}" '
+                f'background-color="{_a(e["farbe"])}" color="{_a(e["textfarbe"])}" font-family="{schrift}" '
+                f'font-size="{_px(e["groesse"])}" font-weight="{e["gewicht"]}">{_a(e["text"])}</mj-button>')
+    extra = ""
+    if e["buchstabenabstand"]:
+        extra += f' letter-spacing="{e["buchstabenabstand"]:g}em"'
+    if e["grossbuchstaben"]:
+        extra += ' text-transform="uppercase"'
+    if e["kursiv"]:
+        extra += ' font-style="italic"'
+    return (f'<mj-text {polster} align="{_AUSRICHTUNG[e["ausrichtung"]]}" color="{_a(e["farbe"])}" '
+            f'font-family="{schrift}" font-size="{_px(e["groesse"])}" font-weight="{e["gewicht"]}" '
+            f'line-height="{e["zeilenabstand"]:g}"{extra}>{seite_html.inline(e["text"])}</mj-text>')
+
+
+def _textband(s: dict, b: seite_streifen.Band, nach_id: dict[str, dict]) -> str:
+    farbe = _a(s["hintergrund"]["farbe"])
+    ebenen = seite_streifen.lesereihenfolge([nach_id[i] for i in b.ebenen])
+    if not ebenen:
+        inhalt = f'<mj-spacer height="{_px(b.unten - b.oben)}" />'
+    else:
+        teile, cur = [], b.oben
+        for n, e in enumerate(ebenen):
+            _, o, _, u = seite_streifen.rahmen(e)
+            o, u = max(o, b.oben), min(u, b.unten)
+            rest = b.unten - u if n == len(ebenen) - 1 else 0
+            teile.append(_ebene(s, e, o - cur, rest))
+            cur = max(cur, u)
+        inhalt = "".join(teile)
+    return f'<mj-section background-color="{farbe}" padding="0"><mj-column>{inhalt}</mj-column></mj-section>'
+
+
+def _bildband(s: dict, st: Stueck, adresse: str) -> str:
+    href = f' href="{_a(st.link)}"' if st.link else ""
+    return (f'<mj-section background-color="{_a(s["hintergrund"]["farbe"])}" padding="0"><mj-column>'
+            f'<mj-image src="{_a(adresse)}" width="600px" padding="0" alt="{_a(st.alt)}"{href} />'
+            f'</mj-column></mj-section>')
+
+
+def mjml(seite: dict, stuecke_namen: list[str], *, betreff: str, vorschautext: str, pflichtteil: dict,
+         bild_adresse: Callable[[str], str], fuer_versand: bool) -> str:
+    """fuer_versand: {vorname} und {abmeldelink} bleiben stehen (sales-claw setzt sie je Empfaenger ein),
+    sonst [Vorname] und [Abmeldelink]. stuecke_namen[i] gehoert zu stuecke(seite)[i]."""
+    s, baender, nach_id = _vorbereitet(seite)
+    alle = _stuecke(baender, nach_id)
+    if len(stuecke_namen) != len(alle):
+        raise RenderFehler(f"Die Mail-Fassung passt nicht zur Seite ({len(stuecke_namen)} Bildstücke "
+                           f"statt {len(alle)}) – bitte neu erzeugen")
+    rumpf, k = [], 0
+    for b in baender:
+        if b.art == "text":
+            rumpf.append(_textband(s, b, nach_id))
+        else:
+            rumpf.append(_bildband(s, alle[k], bild_adresse(stuecke_namen[k])))
+            k += 1
+    farbe = s["hintergrund"]["farbe"]
+    fuss = bloecke_mjml.pflicht_fuss(pflichtteil or {}, _FUSS_TEXT, farbe, fuer_versand)
+    schrift = bloecke_mjml.attr_schrift(_stapel(s, "TEXT"))
+    quelle = (f'<mjml><mj-head><mj-title>{_a(betreff)}</mj-title><mj-preview>{_a(vorschautext)}</mj-preview>'
+              f'<mj-attributes><mj-all font-family="{schrift}" /></mj-attributes></mj-head>'
+              f'<mj-body background-color="{_a(farbe)}" width="{seite_mod.BREITE}px">{"".join(rumpf)}{fuss}'
+              f'</mj-body></mjml>')
+    return quelle if fuer_versand else quelle.replace(_ANREDE, "[Vorname]")
+
+
+def rendern(seite: dict, stuecke_namen: list[str], *, betreff: str, vorschautext: str, pflichtteil: dict,
+            bild_adresse: Callable[[str], str], fuer_versand: bool) -> str:
+    """MJML -> HTML ueber mrml (Fehler als RenderFehler wie bei den Bloecken)."""
+    return bloecke_mjml.mjml_zu_html(mjml(seite, stuecke_namen, betreff=betreff, vorschautext=vorschautext,
+                                          pflichtteil=pflichtteil, bild_adresse=bild_adresse,
+                                          fuer_versand=fuer_versand))
+
+
+def text_fassung(seite: dict, pflichtteil: dict) -> str:
+    """text/plain-Teil: alle sichtbaren Text- und Knopf-Ebenen in Lesereihenfolge, Knoepfe als 'Text: url',
+    dann der Pflichtteil. Platzhalter bleiben stehen."""
+    _, baender, nach_id = _vorbereitet(seite)
+    sichtbar = [nach_id[i] for b in baender for i in b.ebenen]
+    gesehen: set[str] = set()
+    teile: list[str] = []
+    for e in seite_streifen.lesereihenfolge(sichtbar):
+        if e["id"] in gesehen or e["art"] not in ("text", "knopf"):
+            continue
+        gesehen.add(e["id"])
+        if e["art"] == "knopf":
+            teile.append(f"{bloecke_mjml.schlicht(e['text'])}: {e['link']}")
+        elif bloecke_mjml.schlicht(e["text"]):
+            teile.append(bloecke_mjml.schlicht(e["text"]))
+    return bloecke_mjml.text_mit_fuss(teile, pflichtteil)
+
+
+def versand_medien(stuecke_namen: list[str]) -> list[dict]:
+    """Bildstuecke als eingebettete Bilder fuer den Versand (Form wie bloecke_mjml.versand_medien)."""
+    return [{"name": n, "cid": urllib.parse.quote(n), "sw": False} for n in stuecke_namen]

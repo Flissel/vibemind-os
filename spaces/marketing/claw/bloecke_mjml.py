@@ -309,6 +309,18 @@ def _nutzt_hand(dok: dict) -> bool:
                for b in dok.values())
 
 
+def pflicht_fuss(pflichtteil: dict, text: str, grund: str, fuer_versand: bool) -> str:
+    """Pflichtteil (Impressum, Abmelde-Hinweis) als MJML-Section; auch fuer die Collage (seite_mail)."""
+    fuss_farbe = _fuss_farbe(text, grund)
+    impressum = (pflichtteil.get("impressum") or "").strip()
+    impressum_html = (_a(impressum) if impressum else
+                      '<strong style="color:#ef4444">Impressum fehlt &ndash; im Mandanten hinterlegen</strong>')
+    hinweis = pflichtteil.get("abmelde_hinweis") or ""
+    abmelden = _a(hinweis if fuer_versand else hinweis.replace("{abmeldelink}", "[Abmeldelink]"))
+    return (f'<mj-section padding="16px 0"><mj-column><mj-text align="center" font-size="11px" '
+            f'color="{_a(fuss_farbe)}" line-height="1.5">{impressum_html}<br>{abmelden}</mj-text></mj-column></mj-section>')
+
+
 def nach_mjml(dokument: dict, betreff: str, vorschautext: str, pflichtteil: dict,
               bild_basis: str = "", breite: int = 600, schrift_basis: str = "", fuer_versand: bool = False) -> str:
     """fuer_versand: {vorname} und {abmeldelink} bleiben stehen - sales-claw setzt sie je Empfaenger ein.
@@ -340,14 +352,7 @@ def nach_mjml(dokument: dict, betreff: str, vorschautext: str, pflichtteil: dict
         dunkel_meta = ('<mj-raw><meta name="color-scheme" content="dark"><meta name="supported-color-schemes" '
                        'content="dark"></mj-raw>')
     rumpf = _kinder_als_section(dokument, wurzel.get("childrenIds") or [], farben, bild_basis)
-    fuss_farbe = _fuss_farbe(farben["text"], farben["aussen"])
-    impressum = (pflichtteil.get("impressum") or "").strip()
-    impressum_html = (_a(impressum) if impressum else
-                      '<strong style="color:#ef4444">Impressum fehlt &ndash; im Mandanten hinterlegen</strong>')
-    hinweis = pflichtteil.get("abmelde_hinweis") or ""
-    abmelden = _a(hinweis if fuer_versand else hinweis.replace("{abmeldelink}", "[Abmeldelink]"))
-    fuss = (f'<mj-section padding="16px 0"><mj-column><mj-text align="center" font-size="11px" '
-            f'color="{_a(fuss_farbe)}" line-height="1.5">{impressum_html}<br>{abmelden}</mj-text></mj-column></mj-section>')
+    fuss = pflicht_fuss(pflichtteil, farben["text"], farben["aussen"], fuer_versand)
     quelle = (f'<mjml><mj-head><mj-title>{_a(betreff)}</mj-title><mj-preview>{_a(vorschautext)}</mj-preview>{koepfe}{dunkel_meta}'
             f'<mj-attributes><mj-all font-family="{schrift_attr}" /></mj-attributes></mj-head>'
             f'<mj-body background-color="{_a(farben["aussen"])}" width="{_zahl(breite, 600)}px">{rumpf}{fuss}</mj-body></mjml>')
@@ -356,15 +361,20 @@ def nach_mjml(dokument: dict, betreff: str, vorschautext: str, pflichtteil: dict
 
 def rendern(dokument: dict, betreff: str, vorschautext: str, pflichtteil: dict,
             bild_basis: str = "", handy: bool = False, schrift_basis: str = "", fuer_versand: bool = False) -> str:
-    # mjml-python erst hier laden: fehlt das Paket, faellt nur die Bloecke-
+    quelle = nach_mjml(dokument, betreff, vorschautext, pflichtteil, CID if fuer_versand else bild_basis,
+                       380 if handy else 600, schrift_basis, fuer_versand)
+    return mjml_zu_html(quelle)
+
+
+def mjml_zu_html(quelle: str) -> str:
+    """MJML -> HTML ueber mrml; Fehler als RenderFehler mit deutschem Grund."""
+    # mjml-python erst hier laden: fehlt das Paket, faellt nur die Newsletter-
     # Vorschau aus (422 mit Grund), nicht die ganze Marketing-API.
     try:
         import mjml
     except ImportError as e:
         raise RenderFehler("mjml-python fehlt auf diesem Rechner - der Newsletter laesst sich nicht setzen "
                            "(pip install -r spaces/marketing/requirements.txt)") from e
-    quelle = nach_mjml(dokument, betreff, vorschautext, pflichtteil, CID if fuer_versand else bild_basis,
-                       380 if handy else 600, schrift_basis, fuer_versand)
     try:
         return mjml.mjml2html(quelle)
     except Exception as e:  # mrml meldet Englisch; nach aussen deutsch
@@ -420,5 +430,15 @@ def text_fassung(dok: dict, pflichtteil: dict) -> str:
             teile.append(_schlicht(p["text"]))
         elif b.get("type") == "Button" and isinstance(p.get("url"), str) and p["url"].startswith("https://"):
             teile.append(f"{_schlicht(p.get('text') or 'Link')}: {p['url']}")
+    return text_mit_fuss(teile, pflichtteil)
+
+
+def text_mit_fuss(teile: list[str], pflichtteil: dict) -> str:
+    """Absaetze, dann '--', Impressum und Abmelde-Hinweis (Platzhalter bleiben stehen)."""
     fuss = [x for x in ((pflichtteil or {}).get("impressum"), (pflichtteil or {}).get("abmelde_hinweis")) if x]
     return "\n\n".join(teile + ["--", *fuss]) + "\n"
+
+
+# Oeffentliche Namen fuer die Collage-Mail (seite_mail), damit sie nichts kopiert.
+schlicht = _schlicht
+attr_schrift = _af
