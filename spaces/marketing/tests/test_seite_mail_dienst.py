@@ -1,5 +1,5 @@
 """Mail-Fassung der Collage (Plan 2026-10-20 Stufe 4, Task 4): seite_mail_dienst.erzeugen und vorschau_html.
-Ohne echte DB (FalscheDB/FalschePsql wie test_chat_api), ohne Chromium (gefaelschtes render_png), Medien in
+Ohne echte DB (FalscheDB/FalschePsql wie test_chat_api), ohne Chromium (gefaelschtes render_und_messen), Medien in
 tmp-Ordnern."""
 import io
 import json
@@ -67,8 +67,8 @@ def umg(monkeypatch, tmp_path):
 
     def render(s, medien_lesen, **_):
         aufrufe.append(medien_lesen("probe.png"))
-        return _png(1200, int(s["hoehe"]) * 2)
-    monkeypatch.setattr(seite_bilder, "render_png", render)
+        return _png(1200, int(s["hoehe"]) * 2), {}
+    monkeypatch.setattr(seite_bilder, "render_und_messen", render)
     return f, p, erzeugt, aufrufe
 
 
@@ -171,7 +171,7 @@ def test_bild_fehlt_422(umg, monkeypatch):
         assert medien_lesen("gibt-es-nicht.png") is None
         assert medien_lesen("../probe.png") is None
         raise seite_bilder.StueckFehler("Bild gibt-es-nicht.png fehlt")
-    monkeypatch.setattr(seite_bilder, "render_png", render)
+    monkeypatch.setattr(seite_bilder, "render_und_messen", render)
     f.antworten.append([zeile()])
     with pytest.raises(HTTPException) as e:
         dienst.erzeugen(IID, 2)
@@ -184,21 +184,72 @@ def test_chromium_fehlt_503(umg, monkeypatch):
 
     def render(s, medien_lesen, **_):
         raise ImportError("No module named 'playwright' /geheim/pfad")
-    monkeypatch.setattr(seite_bilder, "render_png", render)
+    monkeypatch.setattr(seite_bilder, "render_und_messen", render)
     f.antworten.append([zeile()])
     with pytest.raises(HTTPException) as e:
         dienst.erzeugen(IID, 2)
     assert e.value.status_code == 503 and e.value.detail == dienst.NICHT_GERENDERT
 
 
-def test_nur_text_ohne_chromium_und_ohne_dateien(umg):
+def test_nur_text_ohne_dateien(umg):
+    """Reine Textseite: gerendert wird nur zum Messen (Abstaende), es entstehen keine Stuecke und keine Dateien."""
     f, p, erzeugt, aufrufe = umg
     s = seite([text(y=100), text("u", y=400, t="Zweiter Absatz")])
     assert seite_mail.stuecke(s) == []
     f.antworten += [[zeile(s)], [{"mail": {"medien": [], "bytes": 0}}]]
     dienst.erzeugen(IID, 2)
-    assert aufrufe == [] and os.listdir(erzeugt) == [] and p.sql == []
+    assert len(aufrufe) == 1 and os.listdir(erzeugt) == [] and p.sql == []
     assert "'[]'::jsonb, 0)" in f.sql[-1]
+
+
+def test_seite_ohne_ebenen_ohne_chromium(umg):
+    f, p, erzeugt, aufrufe = umg
+    f.antworten += [[zeile(seite([]))], [{"mail": {"medien": [], "bytes": 0}}]]
+    dienst.erzeugen(IID, 2)
+    assert aufrufe == [] and os.listdir(erzeugt) == [] and p.sql == []
+
+
+def test_nur_hintergrundbild_wird_gerendert(umg):
+    f, _, erzeugt, aufrufe = umg
+    s = dict(seite([]), hintergrund={"farbe": "#fafafa", "bild": "medien:probe.png"})
+    f.antworten.append([zeile(s)])
+    mail = dienst.erzeugen(IID, 2)
+    assert len(aufrufe) == 1 and [m["name"] for m in mail["medien"]] == os.listdir(erzeugt) != []
+
+
+def test_erst_rendern_und_messen_dann_planen(umg, monkeypatch):
+    """Der gemessene Titel ist hoeher als deklariert: das Bildstueck reicht bis zu seiner gemessenen Unterkante,
+    und das gespeicherte MJML ist mit denselben Massen gebaut (Spacer/Abstand ab dort)."""
+    f, _, erzeugt, _ = umg
+    titel = {"id": "t", "art": "text", "x": 330, "y": 340, "breite": 460, "hoehe": 110,
+             "text": "Neue Kurse im Herbst", "rolle": "ANZEIGE", "groesse": 46, "gewicht": 600, "drehung": -4,
+             "farbe": "#ffffff"}
+    s = seite([{"id": "b", "art": "bild", "x": 300, "y": 200, "breite": 600, "hoehe": 400,
+                "quelle": "medien:probe.png"}, titel])
+    reihenfolge, geschnitten = [], []
+    gemessen = {"b": (0, 0, 600, 400), "t": (96, 269, 564, 431.5)}
+
+    def render(s_, medien_lesen, **_):
+        reihenfolge.append("rendern")
+        return _png(1200, 1600), gemessen
+    echt_stuecke, echt_zuschnitt = seite_mail.stuecke, seite_bilder.zuschneiden
+
+    def stuecke(s_, masse=None):
+        reihenfolge.append(("planen", masse is not None))
+        return echt_stuecke(s_, masse)
+
+    def zuschneiden(png, st, **k):
+        geschnitten.extend(st)
+        return echt_zuschnitt(png, st, **k)
+    monkeypatch.setattr(seite_bilder, "render_und_messen", render)
+    monkeypatch.setattr(seite_mail, "stuecke", stuecke)
+    monkeypatch.setattr(seite_bilder, "zuschneiden", zuschneiden)
+    f.antworten.append([zeile(s)])
+    dienst.erzeugen(IID, 2)
+    assert reihenfolge == [("planen", False), "rendern", ("planen", True)]
+    assert [(g.oben, g.unten) for g in geschnitten] == [(0, 431.5)]       # nicht 410.9 (deklariert)
+    assert '<mj-spacer height="368.5px" />' in f.sql[-1]                   # 800 - 431.5 im Versand-MJML
+    assert len(os.listdir(erzeugt)) == 1
 
 
 def test_unbekannt_und_kein_collage(umg):
@@ -276,7 +327,7 @@ def test_inhaltsfehler_gemerkt_ohne_neues_rendern(umg, monkeypatch):
     def render(s, medien_lesen, **_):
         renders.append(1)
         raise seite_bilder.StueckFehler("Bild weg.png fehlt")
-    monkeypatch.setattr(seite_bilder, "render_png", render)
+    monkeypatch.setattr(seite_bilder, "render_und_messen", render)
     for _ in range(2):
         f.antworten.append([zeile()])
         with pytest.raises(HTTPException) as e:
@@ -304,7 +355,7 @@ def test_anrede_gemerkt_und_zeitlimit_nicht(umg, monkeypatch):
     def render(s, medien_lesen, **_):
         renders.append(1)
         raise seite_bilder.StueckFehler(seite_bilder.ZEITLIMIT)
-    monkeypatch.setattr(seite_bilder, "render_png", render)
+    monkeypatch.setattr(seite_bilder, "render_und_messen", render)
     for _ in range(2):
         f.antworten.append([zeile()])
         with pytest.raises(HTTPException) as e:

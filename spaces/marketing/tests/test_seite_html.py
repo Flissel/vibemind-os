@@ -159,3 +159,17 @@ def test_eingabe_bleibt_unveraendert():
     kopie = copy.deepcopy(s)
     _html(s)
     assert s == kopie
+
+
+def test_jede_ebene_traegt_ihre_id():
+    """seite_bilder misst die gerenderten Ebenen ueber data-ebene."""
+    s = _seite(_text("Hallo"),
+               {"id": "f-1", "art": "form", "x": 300, "y": 300, "breite": 100, "hoehe": 50, "form": "rechteck",
+                "farbe": "#5b3fd6"},
+               {"id": "k", "art": "knopf", "x": 300, "y": 400, "breite": 200, "hoehe": 48, "text": "Mehr",
+                "link": "https://a.de", "farbe": "#5b3fd6", "textfarbe": "#ffffff"},
+               {"id": "b", "art": "bild", "x": 300, "y": 600, "breite": 200, "hoehe": 100,
+                "quelle": "medien:foto.jpg"})
+    h = _html(s)
+    for eid in ("t", "f-1", "k", "b"):
+        assert h.count(f'data-ebene="{eid}"') == 1

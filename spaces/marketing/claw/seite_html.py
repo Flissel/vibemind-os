@@ -82,6 +82,7 @@ def _bild_url(basis: str, quelle: str) -> str:
 
 def _ebene(s: dict, e: dict, z: int, bild_basis: str) -> str:
     art = e["art"]
+    kennung = f' data-ebene="{_a(e["id"])}"'   # fuer das Messen der gerenderten Ebenen (seite_bilder)
     stil = _lage(e, hoehe_als_min=art == "text") + f"z-index:{z};box-sizing:border-box;"
     if art == "bild":
         stil += "overflow:hidden;"
@@ -94,18 +95,18 @@ def _ebene(s: dict, e: dict, z: int, bild_basis: str) -> str:
         if e["schatten"]:
             stil += "box-shadow:0 4px 14px rgba(0,0,0,0.3);"
         fit = "contain" if e["passung"] == "einpassen" else "cover"
-        return (f'<div style="{stil}"><img src="{_a(_bild_url(bild_basis, e["quelle"]))}" alt="" '
+        return (f'<div style="{stil}"{kennung}><img src="{_a(_bild_url(bild_basis, e["quelle"]))}" alt="" '
                 f'style="display:block;width:100%;height:100%;object-fit:{fit}"></div>')
     if art == "form":
         stil += f"background:{e['farbe']};"
         stil += "border-radius:50%;" if e["form"] == "kreis" else (
             f"border-radius:{_n(e['rundung'])}px;" if e["rundung"] else "")
-        return f'<div style="{stil}"></div>'
+        return f'<div style="{stil}"{kennung}></div>'
     if art == "knopf":
         stil += (f"background:{e['farbe']};color:{e['textfarbe']};border-radius:{_n(e['rundung'])}px;"
                  f"display:flex;align-items:center;justify-content:center;text-align:center;text-decoration:none;"
                  f"font-family:{_familie(s, e['rolle'])};font-size:{_n(e['groesse'])}px;font-weight:{e['gewicht']};")
-        return f'<a href="{_a(e["link"])}" style="{stil}">{_a(e["text"])}</a>'
+        return f'<a href="{_a(e["link"])}" style="{stil}"{kennung}>{_a(e["text"])}</a>'
     ausr = {"links": "left", "mitte": "center", "rechts": "right"}[e["ausrichtung"]]
     stil += (f"font-family:{_familie(s, e['rolle'])};font-size:{_n(e['groesse'])}px;font-weight:{e['gewicht']};"
              f"line-height:{_n(e['zeilenabstand'])};letter-spacing:{_n(e['buchstabenabstand'])}em;"
@@ -116,7 +117,7 @@ def _ebene(s: dict, e: dict, z: int, bild_basis: str) -> str:
         stil += "font-style:italic;"
     if e["hintergrund"]:
         stil += f"background:{e['hintergrund']};"
-    return f'<div style="{stil}">{_inline(e["text"])}</div>'
+    return f'<div style="{stil}"{kennung}>{_inline(e["text"])}</div>'
 
 
 def html(s: dict, *, betreff: str, pflichtteil: dict, bild_basis: str, schrift_basis: str) -> str:

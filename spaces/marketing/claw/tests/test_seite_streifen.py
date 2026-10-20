@@ -309,3 +309,49 @@ def test_zufallsseiten_halten_die_zusagen():
             assert st.text_tauglich(next(e for e in geprueft["ebenen"] if e["id"] == eid), geprueft["ebenen"], geprueft)
             assert not any(bo < u and o < bu for bo, bu in bildbaender)
             assert all(max(qo - u, o - qu) >= st.NAH for qo, qu in quellen)
+
+
+# ---- Gemessene Huellen (Fix nach der Live-Abnahme) ----------------------------------------------------------
+def titel(eid="t", **mehr):
+    return {"id": eid, "art": "text", "x": 330, "y": 340, "breite": 460, "hoehe": 110,
+            "text": "Neue Kurse im Herbst", "rolle": "ANZEIGE", "groesse": 46, "gewicht": 600, "drehung": -4,
+            "farbe": "#ffffff", **mehr}
+
+
+def test_hoeherer_titel_verlaengert_das_bildband():
+    s = seite([bild("b", 200, hoehe=400, breite=600), titel()], hoehe=800)
+    ohne = st.plan(s)
+    assert ohne[0].art == "bild" and ohne[0].unten == pytest.approx(410.91, abs=0.01)
+    mit = st.plan(s, {"t": (96.4, 269.1, 563.6, 431.5)})
+    lueckenlos(mit, 800)
+    assert arten(mit) == ["bild", "text"]
+    assert mit[0].unten == 431.5 and mit[0].ebenen == ["b", "t"]
+
+
+def test_gemessene_huelle_nie_kleiner_als_deklariert():
+    e = text("a", 200)
+    assert st.huelle(e, {"a": (100, 180, 500, 220)}) == st.rahmen(e)   # kleiner gemessen: deklariert gilt
+    assert st.huelle(e, {"a": (60, 150, 540, 290)}) == (60, 150, 540, 290)
+    assert st.huelle(e, None) == st.rahmen(e) and st.huelle(e, {"x": (0, 0, 1, 1)}) == st.rahmen(e)
+
+
+def test_gewachsener_text_ueberlappt_und_wird_bild():
+    s = seite([text("a", 100), text("b", 260)], hoehe=600)
+    assert arten(st.plan(s)) == ["text"]
+    # a waechst gerendert bis 230 - in b hinein (b beginnt bei 210): beide nicht mehr text-tauglich
+    mit = st.plan(s, {"a": (60, 50, 540, 230)})
+    assert arten(mit) == ["text", "bild", "text"]
+    assert (mit[1].oben, mit[1].unten) == (50, 310) and mit[1].ebenen == ["a", "b"]
+
+
+def test_textband_grenzen_aus_messung():
+    s = seite([text("a", 100), text("b", 400)], hoehe=600)
+    mit = st.plan(s, {"a": (60, 50, 540, 180)})
+    assert arten(mit) == ["text"] and mit[0].ebenen == ["a", "b"]
+
+
+def test_masse_werden_geprueft():
+    assert st.masse_pruefen({"a": (1, 2, 3, 4), "b": (1, 2), "c": (1, float("nan"), 3, 4), "d": (3, 0, 1, 4),
+                             "e": ("1", 2, 3, 4), 5: (1, 2, 3, 4), "f": [0, 0, 1, 1]}) == \
+        {"a": (1, 2, 3, 4), "f": (0, 0, 1, 1)}
+    assert st.masse_pruefen(None) == {}

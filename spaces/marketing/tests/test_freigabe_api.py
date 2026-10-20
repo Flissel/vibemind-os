@@ -81,8 +81,8 @@ def renderer(monkeypatch):
         aufrufe.append(s)
         p = io.BytesIO()
         Image.new("RGB", (1200, int(s["hoehe"]) * 2), (10, 20, 30)).save(p, "PNG")
-        return p.getvalue()
-    monkeypatch.setattr(seite_bilder, "render_png", render)
+        return p.getvalue(), {}
+    monkeypatch.setattr(seite_bilder, "render_und_messen", render)
     return aufrufe
 
 

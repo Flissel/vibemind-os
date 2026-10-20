@@ -1480,9 +1480,11 @@ def test_versand_collage_fuss_folgt_dem_aktuellen_pflichtteil(db, c, monkeypatch
     assert "Neue GmbH, Köln" in j["html"] and "Alte GmbH" not in j["html"] and "Neue GmbH, Köln" in j["text"]
 
 
-def test_versand_collage_erzeugt_bei_bedarf(db, c):
-    """Ohne gespeicherte Mail-Fassung wird sie erzeugt (reine Textseite: ohne Chromium, ohne Dateien)."""
-    from spaces.marketing.claw import seite as _s, seite_mail
+def test_versand_collage_erzeugt_bei_bedarf(db, c, monkeypatch):
+    """Ohne gespeicherte Mail-Fassung wird sie erzeugt (reine Textseite: nur zum Messen gerendert, ohne Ablage
+    und ohne Dateien)."""
+    from spaces.marketing.claw import seite as _s, seite_bilder, seite_mail
+    monkeypatch.setattr(seite_bilder, "render_und_messen", lambda s, lesen, **k: (b"", {}))
     nur_text = _s.pruefen(dict(SEITE, ebenen=[e for e in SEITE["ebenen"] if e["id"] in ("text", "knopf")]))
     assert seite_mail.stuecke(nur_text) == []
     db.antworten = [[_versand_kopf()], [_dienst_zeile(None, s=nur_text)], [{"mail": _mail(nur_text)}]]
@@ -1516,7 +1518,7 @@ def test_vorschau_format_seite_billig(db, c, monkeypatch):
 
     def nie(*a, **k):
         raise AssertionError("kein Chromium fuer format=seite")
-    monkeypatch.setattr(seite_bilder, "render_png", nie)
+    monkeypatch.setattr(seite_bilder, "render_und_messen", nie)
     db.antworten = [[_seite_zeile()]]
     r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=2&format=seite&bild_basis={BASIS}", headers=H)
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")

@@ -29,6 +29,15 @@ Zeilen alter, nicht mehr gebrauchter Mail-Fassungen, erst danach werden ihre ms-
 verwaiste ms-Dateien (aelter als VERWAIST_ALTER_S, von keiner Mail-Fassung mehr verwiesen - z. B. nach dem
 Loeschen einer Collage) weg; welche noch verwiesen sind, sagt pult_seite_mail_verwiesen.
 
+Reihenfolge beim Erzeugen (Fix nach der Live-Abnahme): erst die deklarierte Anrede-/Link-Pruefung (billig, ohne
+Chromium), dann rendern UND messen (seite_bilder.render_und_messen), dann mit den gemessenen Ebenen-Huellen planen
+(Anrede/Link erneut, Stuecke), zuschneiden und das MJML mit denselben Massen bauen. Text waechst in seite_html
+ueber seine deklarierte hoehe hinaus; ein Plan aus der deklarierten Hoehe schnitt einen gedrehten zweizeiligen
+Titel ab. In der DB steht nichts Neues - das gespeicherte MJML spiegelt den gemessenen Plan. Gerendert wird jetzt
+auch fuer reine Textseiten (die Abstaende der Textbaender kommen aus der Messung); nur eine leere Seite (ohne
+Ebenen und Hintergrundbild) braucht kein Chromium. Aendert sich seite_mail, muessen ungesendete Mail-Fassungen verworfen werden
+(scripts/seite_mail_neu.py).
+
 Synchron (Chromium im Aufrufer-Thread, hoechstens einer gleichzeitig - seite_bilder sperrt): die Routen sind
 sync def und laufen damit im Threadpool von FastAPI, wie der PDF-Druck."""
 from __future__ import annotations
@@ -122,10 +131,10 @@ def _wegraeumen(ordner: str, namen: list[str]) -> None:
             log.warning("Bildstueck %s liess sich nicht entfernen", n)
 
 
-def _stuecke_rendern(i: str, fassung: int, s: dict, stuecke: list, ordner: str) -> list[bytes]:
+def _bild_fehler(i: str, fassung: int, aufruf):
+    """aufruf() ausfuehren; Render-/Zuschnittfehler als HTTPException (Inhaltsfehler gemerkt, Zeitlimit nicht)."""
     try:
-        png = seite_bilder.render_png(s, _medien_leser(ordner))
-        return seite_bilder.zuschneiden(png, stuecke)
+        return aufruf()
     except seite_bilder.StueckFehler as e:
         if str(e) == seite_bilder.ZEITLIMIT:      # kein Inhaltsfehler: beim naechsten Mal neu versuchen
             raise HTTPException(422, str(e))
@@ -198,27 +207,41 @@ def erzeugen(i: str, fassung: int) -> dict:
     return _holen(i, fassung)[1]
 
 
-def _neu(i: str, fassung: int, zeile: dict) -> dict:
-    s = zeile.get("seite")
+def _plan_pruefen(i: str, fassung: int, s, masse) -> list:
+    """Anrede/Link im Bildbereich blockieren, sonst die Stuecke (alles mit denselben masse)."""
     try:
-        if seite_mail.anrede_in_bild(s):
+        if seite_mail.anrede_in_bild(s, masse):
             raise _fehler_merken(i, fassung, ANREDE_IM_BILD)
-        if seite_mail.links_in_bild(s):
+        if seite_mail.links_in_bild(s, masse):
             raise _fehler_merken(i, fassung, LINK_IM_BILD)
-        stuecke = seite_mail.stuecke(s)
+        return seite_mail.stuecke(s, masse)
     except seite.SeiteFehler as e:
         raise _fehler_merken(i, fassung, str(e))
+
+
+def _neu(i: str, fassung: int, zeile: dict) -> dict:
+    s = zeile.get("seite")
+    # 1. deklariert pruefen (billig, ohne Chromium): gemessene Huellen sind nie kleiner als die deklarierten, was
+    #    hier im Bild liegt, liegt auch gemessen im Bild
+    deklariert = _plan_pruefen(i, fassung, s, None)
     namen: list[str] = []
     ordner = ""
     groesse = 0
-    if stuecke:
-        ordner = _ordner()
-        jpgs = _stuecke_rendern(i, fassung, s, stuecke, ordner)
-        namen = _ablegen_und_zuordnen(
-            ordner, i, [(f"ms-{i[:8]}-{int(fassung)}-{st.nr:02d}", roh) for st, roh in zip(stuecke, jpgs)])
-        groesse = sum(len(roh) for roh in jpgs)
+    masse = None
+    if deklariert or s.get("ebenen"):   # nur eine leere Seite ohne Hintergrundbild braucht kein Chromium
+        # 2. rendern und messen, 3. mit den Massen planen, 4. zuschneiden
+        # die Ablage erst, wenn ein Medium gelesen oder ein Stueck abgelegt wird (reine Textseite: ohne Ablage)
+        png, masse = _bild_fehler(i, fassung, lambda: seite_bilder.render_und_messen(
+            s, lambda n: _medien_leser(_ordner())(n)))
+        stuecke = _plan_pruefen(i, fassung, s, masse)
+        if stuecke:
+            ordner = _ordner()
+            jpgs = _bild_fehler(i, fassung, lambda: seite_bilder.zuschneiden(png, stuecke))
+            namen = _ablegen_und_zuordnen(
+                ordner, i, [(f"ms-{i[:8]}-{int(fassung)}-{st.nr:02d}", roh) for st, roh in zip(stuecke, jpgs)])
+            groesse = sum(len(roh) for roh in jpgs)
     try:
-        gespeichert = _speichern(i, fassung, zeile, s, namen, groesse)
+        gespeichert = _speichern(i, fassung, zeile, s, namen, groesse, masse)
     except BaseException:
         _wegraeumen(ordner, namen)
         raise
@@ -228,17 +251,18 @@ def _neu(i: str, fassung: int, zeile: dict) -> dict:
     return gespeichert
 
 
-def _speichern(i: str, fassung: int, zeile: dict, s: dict, namen: list[str], groesse: int) -> dict:
+def _speichern(i: str, fassung: int, zeile: dict, s: dict, namen: list[str], groesse: int,
+               masse: dict | None = None) -> dict:
     felder = zeile.get("felder") or {}
     betreff, vorschautext = str(felder.get("betreff") or ""), str(felder.get("vorschautext") or "")
     pflicht = zeile.get("pflichtteil") or {}
     try:
         versand_mjml = seite_mail.mjml(s, namen, betreff=betreff, vorschautext=vorschautext, pflichtteil=pflicht,
                                        bild_adresse=lambda n: bloecke_mjml.CID + urllib.parse.quote(n),
-                                       fuer_versand=True, fuss_ersatz=FUSS_MARKE)
+                                       fuer_versand=True, fuss_ersatz=FUSS_MARKE, masse=masse)
         vorschau_mjml = seite_mail.mjml(s, namen, betreff=betreff, vorschautext=vorschautext, pflichtteil=pflicht,
                                         bild_adresse=lambda n: BILD_MARKE + urllib.parse.quote(n),
-                                        fuer_versand=False, fuss_ersatz=FUSS_MARKE)
+                                        fuer_versand=False, fuss_ersatz=FUSS_MARKE, masse=masse)
         _rendern(versand_mjml, s, pflicht, True)       # setzt mrml es nicht, wird nichts gespeichert
         text = seite_mail.text_fassung(s, pflicht)
     except (bloecke_mjml.RenderFehler, seite.SeiteFehler) as e:

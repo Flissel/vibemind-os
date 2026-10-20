@@ -111,6 +111,10 @@ class _Seite:
         seite_.sel = sel
         return L
 
+    def evaluate(self, skript, arg=None):
+        self.log.append(("evaluate", arg, None))
+        return {"b": [0, 0, 600, 400.5], "kaputt": [1, 2], "nan": [0, float("nan"), 1, 1]}
+
     def close(self):
         pass
 
@@ -136,6 +140,17 @@ def test_render_nutzt_faktor_und_container():
     assert b.seiten[0].kw["device_scale_factor"] == 2 and b.seiten[0].kw["java_script_enabled"] is False
     assert b.seiten[0].sel == "body > div > div"
     assert ("fulfill", "https://export.vibemind.invalid/medien/foto.jpg", 200) in b.log
+
+
+def test_render_und_messen_liefert_geprueft_masse():
+    b = _Browser()
+    out, m = sb.render_und_messen(seite([bild("b", "medien:foto.jpg")]), {"foto.jpg": b"x"}.get,
+                                  browser_starten=lambda: b)
+    assert Image.open(io.BytesIO(out)).size == (1200, 1600)
+    assert m == {"b": (0, 0, 600, 400.5)}                      # unbrauchbare Eintraege fallen weg
+    assert ("evaluate", "body > div > div", None) in b.log
+    assert sb.render_png(seite([bild("b", "medien:foto.jpg")]), {"foto.jpg": b"x"}.get,
+                         browser_starten=_Browser) == out
 
 
 def test_fehlendes_medium_blockiert():
@@ -230,3 +245,33 @@ def test_kein_gleichzeitiges_rendern():
     [t.start() for t in ts]
     [t.join() for t in ts]
     assert spitze[0] == 1
+
+
+@pytest.mark.browser
+def test_echter_browser_gedrehter_titel_ganz_im_stueck():
+    """Live-Fall: gedrehter zweizeiliger ANZEIGE-Titel ueber einem Bild waechst ueber seine deklarierte Hoehe
+    hinaus. Gemessen reicht das Bildstueck bis unter die letzte Zeile ("Herbst")."""
+    if not _chromium_da():
+        pytest.skip("Chromium fehlt")
+    from spaces.marketing.claw import seite_mail, seite_streifen
+    s = seite([{"id": "b", "art": "bild", "x": 300, "y": 200, "breite": 600, "hoehe": 400,
+                "quelle": "medien:foto.png"},
+               {"id": "t", "art": "text", "x": 330, "y": 340, "breite": 460, "hoehe": 110,
+                "text": "Neue Kurse im Herbst", "rolle": "ANZEIGE", "groesse": 46, "gewicht": 600,
+                "drehung": -4, "farbe": "#ffffff"}])
+    s["schriften"]["anzeige"] = "montserrat"
+    s["hintergrund"]["farbe"] = "#202020"     # weisse Schrift auch unterhalb des Bildes erkennbar
+    p = io.BytesIO()
+    Image.new("RGB", (600, 400), (40, 90, 160)).save(p, "PNG")
+    out, m = sb.render_und_messen(s, {"foto.png": p.getvalue()}.get)
+    deklariert_unten = seite_streifen.rahmen(seite_streifen.seite_mod.pruefen(s)["ebenen"][1])[3]
+    assert m["t"][3] > deklariert_unten + 1          # der Titel ist gerendert hoeher als deklariert
+    stuecke = seite_mail.stuecke(s, m)
+    assert stuecke[0].oben == 0 and stuecke[0].unten >= m["t"][3]
+    # Unterkante der weissen Schrift im Foto liegt innerhalb des Stuecks
+    bild_ = Image.open(io.BytesIO(out)).convert("RGB")
+    px = bild_.load()
+    tinte = [y for y in range(bild_.size[1]) for x in range(0, bild_.size[0], 2) if min(px[x, y]) >= 240]
+    assert tinte and max(tinte) / sb.FAKTOR <= stuecke[0].unten
+    teile = sb.zuschneiden(out, stuecke)
+    assert masse(teile)[0] == (1200, round(stuecke[0].unten * sb.FAKTOR))

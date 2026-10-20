@@ -2,9 +2,11 @@
 Baender. Ein Band ist "text" (echtes MJML), wenn alle Ebenen darin text-tauglich sind, sonst "bild" (gerendertes
 Stueck, hoechstens BILD_MAX hoch). Rein rechnend, ohne Rendern.
 
-Grenze der Planung: Textebenen rendern in seite_html mit min-height, koennen also ueber ihre "hoehe" hinaus
-wachsen. Der Planer rechnet mit der deklarierten hoehe; die gerenderte Hoehe zu schaetzen bleibt dem Rendern
-(Task 3/4) ueberlassen.
+Gemessene Huellen: Textebenen rendern in seite_html mit min-height, koennen also ueber ihre "hoehe" hinaus
+wachsen (z. B. ein gedrehter zweizeiliger Titel). Ohne Messung rechnet der Planer mit der deklarierten hoehe.
+Mit masse (id -> (links, oben, rechts, unten) der gerenderten Ebene in Seiteneinheiten, aus
+seite_bilder.render_und_messen) gilt je Ebene die Vereinigung aus deklariertem Rahmen und gemessener Huelle -
+fuer Ueberlappung, Baender und Lesereihenfolge.
 
 Text-tauglich ist nur Fliesstext/Knopf, der senkrecht mit keiner anderen sichtbaren Ebene ueberlappt (auch nicht
 nebeneinander - MJML kennt keine freie Spalte); Beruehren an der Kante ist erlaubt. Eine text-taugliche Ebene, die
@@ -22,6 +24,8 @@ from spaces.marketing.claw import seite as seite_mod
 BILD_MAX = 600
 NAH = 1  # Abstand unter 1 Einheit zu einer Bild-Ebene gilt als Beruehren
 _STELLEN = 6  # Rundung gegen Gleitkomma-Rauschen (cos 90° ist nicht genau 0)
+
+Masse = dict[str, tuple[float, float, float, float]]
 
 
 @dataclass
@@ -46,7 +50,16 @@ def rahmen(e: dict) -> tuple[float, float, float, float]:
     return _r(e["x"] - hb), _r(e["y"] - hh), _r(e["x"] + hb), _r(e["y"] + hh)
 
 
-def text_tauglich(e: dict, alle: list[dict], seite: dict) -> bool:
+def huelle(e: dict, masse: Masse | None = None) -> tuple[float, float, float, float]:
+    """Rahmen der Ebene, vereint mit ihrer gemessenen Huelle (falls gemessen): (links, oben, rechts, unten)."""
+    r = rahmen(e)
+    m = (masse or {}).get(e["id"])
+    if m is None:
+        return r
+    return _r(min(r[0], m[0])), _r(min(r[1], m[1])), _r(max(r[2], m[2])), _r(max(r[3], m[3]))
+
+
+def text_tauglich(e: dict, alle: list[dict], seite: dict, masse: Masse | None = None) -> bool:
     """Darf die Ebene als echter Mail-Text (bzw. mj-button) stehen? Erwartet normalisierte Ebenen (pruefen)."""
     if seite["hintergrund"].get("bild") is not None:
         return False
@@ -58,27 +71,27 @@ def text_tauglich(e: dict, alle: list[dict], seite: dict) -> bool:
     elif e["art"] != "knopf" or e["deckkraft"] != 1:  # mj-button kennt keine Deckkraft
         return False
     hoehe = seite["hoehe"]
-    eigen = _sichtbar(e, hoehe)
+    eigen = _sichtbar(e, hoehe, masse)
     if eigen is None:
-        _, o, _, u = rahmen(e)
+        _, o, _, u = huelle(e, masse)
         eigen = (o, u)
     for andere in alle:
         if andere is e or andere["id"] == e["id"]:
             continue
-        bereich = _sichtbar(andere, hoehe)  # Ebenen ganz ausserhalb der Seite zaehlen nicht
+        bereich = _sichtbar(andere, hoehe, masse)  # Ebenen ganz ausserhalb der Seite zaehlen nicht
         if bereich is not None and bereich[0] < eigen[1] and eigen[0] < bereich[1]:
             return False
     return True
 
 
-def lesereihenfolge(ebenen: list[dict]) -> list[dict]:
-    """Sortiert nach (oben, links) des Rahmens."""
-    return sorted(ebenen, key=lambda e: (rahmen(e)[1], rahmen(e)[0]))
+def lesereihenfolge(ebenen: list[dict], masse: Masse | None = None) -> list[dict]:
+    """Sortiert nach (oben, links) des Rahmens (mit Messung: der Huelle)."""
+    return sorted(ebenen, key=lambda e: (huelle(e, masse)[1], huelle(e, masse)[0]))
 
 
-def _sichtbar(e: dict, hoehe: float) -> tuple[float, float] | None:
+def _sichtbar(e: dict, hoehe: float, masse: Masse | None = None) -> tuple[float, float] | None:
     """Senkrechter Bereich der Ebene, auf die Seite beschnitten; None, wenn sie ganz ausserhalb liegt."""
-    l, o, r, u = rahmen(e)
+    l, o, r, u = huelle(e, masse)
     o, u = max(o, 0), min(u, hoehe)
     if u <= o or r <= 0 or l >= seite_mod.BREITE:
         return None
@@ -149,14 +162,30 @@ def _teilen(oben: float, unten: float, belegt: list[tuple[float, float]]) -> lis
     return stuecke
 
 
-def plan(seite: dict) -> list[Band]:
-    """Lueckenlose, nach oben sortierte Baender ueber 0..hoehe."""
+def masse_pruefen(masse) -> Masse:
+    """Nur Eintraege der Form id -> 4 endliche Zahlen mit links <= rechts und oben <= unten; alles andere faellt
+    weg (dann gilt fuer diese Ebene der deklarierte Rahmen)."""
+    aus: Masse = {}
+    for eid, m in (masse or {}).items():
+        if not isinstance(eid, str) or not isinstance(m, (list, tuple)) or len(m) != 4:
+            continue
+        if not all(isinstance(z, (int, float)) and not isinstance(z, bool) and math.isfinite(z) for z in m):
+            continue
+        l, o, r, u = (float(z) for z in m)
+        if l <= r and o <= u:
+            aus[eid] = (l, o, r, u)
+    return aus
+
+
+def plan(seite: dict, masse: Masse | None = None) -> list[Band]:
+    """Lueckenlose, nach oben sortierte Baender ueber 0..hoehe. masse: gemessene Huellen je Ebenen-id."""
+    masse = masse_pruefen(masse) or None
     s = seite_mod.pruefen(seite)
     hoehe = s["hoehe"]
     alle = s["ebenen"]
     lage: dict[str, tuple[float, float]] = {}
     for e in alle:
-        bereich = _sichtbar(e, hoehe)
+        bereich = _sichtbar(e, hoehe, masse)
         if bereich is not None:
             lage[e["id"]] = bereich
     sichtbar = [e for e in alle if e["id"] in lage]
@@ -164,7 +193,7 @@ def plan(seite: dict) -> list[Band]:
     if s["hintergrund"]["bild"] is not None:
         bild = [[0, hoehe]]
     else:
-        tauglich = {e["id"] for e in sichtbar if text_tauglich(e, alle, s)}
+        tauglich = {e["id"] for e in sichtbar if text_tauglich(e, alle, s, masse)}
         quellen = [lage[e["id"]] for e in sichtbar if e["id"] not in tauglich]
         # Text, der eine Bild-Ebene ueberlappt oder naeher als NAH an ihr liegt, wird Teil ihres Bildbands.
         # Gemessen nur an den urspruenglichen Bild-Ebenen, damit eine beruehrende Textspalte nicht kaskadiert.

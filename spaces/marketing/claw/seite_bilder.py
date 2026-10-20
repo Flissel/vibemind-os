@@ -1,6 +1,7 @@
 """Bildstuecke der Collage-Mail: rendert die Seite in headless Chromium (Geraetefaktor 2, Medien und Schriften nur
 von der lokalen Platte) und schneidet aus dem Foto des Seitencontainers je ein JPEG pro Bildband (Stueck aus
-seite_mail.stuecke). Laeuft in der Marketing-API auf der VM (Playwright+Chromium wie pdf_druck) und am PC.
+seite_mail.stuecke) und misst dabei die gerenderten Ebenen (render_und_messen), damit Planer und Zuschnitt die
+echte Ausdehnung kennen. Laeuft in der Marketing-API auf der VM (Playwright+Chromium wie pdf_druck) und am PC.
 Platzhalter-Bilder gibt es hier nicht: in einer Mail waeren sie ein Fehler."""
 from __future__ import annotations
 
@@ -9,7 +10,7 @@ import os
 import threading
 from typing import Callable
 
-from spaces.marketing.claw import bildplaetze, seite_html
+from spaces.marketing.claw import bildplaetze, seite_html, seite_streifen
 from spaces.marketing.claw.export_routen import BASIS, EchterBrowser, Routen
 from spaces.marketing.claw.pdf_druck import TIMEOUT_S
 from spaces.marketing.claw.seite_mail import Stueck
@@ -29,11 +30,36 @@ def _name_ok(name: str) -> bool:
     return bool(name) and name == os.path.basename(name) and not name.startswith(".") and "\\" not in name
 
 
+# Huellen aller Ebenen (data-ebene aus seite_html) relativ zum Seitencontainer. getBoundingClientRect liefert
+# CSS-Pixel (unabhaengig vom Geraetefaktor) = Seiteneinheiten, und bei Drehung die achsenparallele Huelle.
+# Laeuft auch mit java_script_enabled=False (das sperrt nur Skripte der Seite, nicht evaluate).
+_MESSEN = """async (sel) => {
+  if (document.fonts && document.fonts.ready) { await document.fonts.ready; }
+  const c = document.querySelector(sel);
+  if (!c) { return {}; }
+  const b = c.getBoundingClientRect();
+  const aus = {};
+  for (const el of c.querySelectorAll('[data-ebene]')) {
+    const r = el.getBoundingClientRect();
+    aus[el.getAttribute('data-ebene')] = [r.left - b.left, r.top - b.top, r.right - b.left, r.bottom - b.top];
+  }
+  return aus;
+}"""
+
+
 def render_png(seite: dict, medien_lesen: Callable[[str], bytes | None], *, faktor: int = FAKTOR,
                browser_starten=None) -> bytes:
-    """PNG des Seitencontainers (600 x hoehe Einheiten, mal faktor Pixel). Ein fehlendes Medium, ein Platzhalter
-    oder ein unzulaessiger Name wirft StueckFehler("Bild <name> fehlt"); ein Zeitlimit StueckFehler(ZEITLIMIT).
-    Rendert hoechstens einer gleichzeitig."""
+    """Nur das PNG (siehe render_und_messen)."""
+    return render_und_messen(seite, medien_lesen, faktor=faktor, browser_starten=browser_starten)[0]
+
+
+def render_und_messen(seite: dict, medien_lesen: Callable[[str], bytes | None], *, faktor: int = FAKTOR,
+                      browser_starten=None) -> tuple[bytes, dict[str, tuple[float, float, float, float]]]:
+    """(PNG des Seitencontainers, masse). PNG: 600 x hoehe Einheiten, mal faktor Pixel. masse: je Ebenen-id die
+    gerenderte achsenparallele Huelle (links, oben, rechts, unten) in Seiteneinheiten - Text waechst in seite_html
+    ueber seine deklarierte hoehe hinaus (min-height), der Streifen-Planer braucht die echte Ausdehnung.
+    Ein fehlendes Medium, ein Platzhalter oder ein unzulaessiger Name wirft StueckFehler("Bild <name> fehlt");
+    ein Zeitlimit StueckFehler(ZEITLIMIT). Rendert hoechstens einer gleichzeitig."""
     html = seite_html.html(seite, betreff="", pflichtteil={}, bild_basis=BASIS + "medien/",
                            schrift_basis=BASIS + "schrift/")
 
@@ -59,7 +85,8 @@ def render_png(seite: dict, medien_lesen: Callable[[str], bytes | None], *, fakt
                         raise routen.fehler
                     if routen.fehlt:
                         raise StueckFehler(f"Bild {routen.fehlt[0]} fehlt")
-                    return page.locator(seite_html.SEITE_CONTAINER).first.screenshot(type="png", timeout=ms)
+                    png = page.locator(seite_html.SEITE_CONTAINER).first.screenshot(type="png", timeout=ms)
+                    return png, _masse(page.evaluate(_MESSEN, seite_html.SEITE_CONTAINER))
                 finally:
                     _zu(page)
             finally:
@@ -68,6 +95,13 @@ def render_png(seite: dict, medien_lesen: Callable[[str], bytes | None], *, fakt
             if type(e).__name__ == "TimeoutError":   # playwright.sync_api.TimeoutError
                 raise StueckFehler(ZEITLIMIT) from e
             raise
+
+
+def _masse(roh) -> dict[str, tuple[float, float, float, float]]:
+    """Antwort von _MESSEN pruefen: nur id -> 4 endliche Zahlen (auf 1/100 gerundet)."""
+    if not isinstance(roh, dict):
+        return {}
+    return {k: tuple(round(z, 2) for z in v) for k, v in seite_streifen.masse_pruefen(roh).items()}
 
 
 def _zu(objekt) -> None:

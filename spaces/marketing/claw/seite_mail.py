@@ -2,7 +2,12 @@
 Medienliste. Textbaender werden echter Mail-Text (mj-text/mj-button, mail-sicherer Schriftstapel, nie
 Webschrift), Bildbaender werden zu Bildstuecken (mj-image, 600 breit), die seite_bilder rendert. Die Namen der
 Stuecke kommen von aussen, in der Reihenfolge von stuecke(). Pflicht-Fuss, Platzhalter und mrml-Aufruf wie
-bei den Bloecken (bloecke_mjml)."""
+bei den Bloecken (bloecke_mjml).
+
+masse (optional, ueberall gleich): gemessene Huellen der gerenderten Ebenen (seite_bilder.render_und_messen).
+Mit ihnen plant seite_streifen, Stuecke werden danach geschnitten, und Textbaender rechnen Abstaende und
+Mindesthoehen mit der gerenderten statt der deklarierten Hoehe. stuecke() und mjml() muessen dieselben masse
+bekommen."""
 from __future__ import annotations
 
 import html as _html
@@ -54,9 +59,10 @@ def _schlicht(text: str) -> str:
     return bloecke_mjml.schlicht(seite_html.TEXTLINK.sub(lambda m: m.group(1), text))
 
 
-def _vorbereitet(seite: dict) -> tuple[dict, list[seite_streifen.Band], dict[str, dict]]:
+def _vorbereitet(seite: dict, masse: seite_streifen.Masse | None = None
+                 ) -> tuple[dict, list[seite_streifen.Band], dict[str, dict]]:
     s = seite_mod.pruefen(seite)
-    return s, seite_streifen.plan(s), {e["id"]: e for e in s["ebenen"]}
+    return s, seite_streifen.plan(s, masse), {e["id"]: e for e in s["ebenen"]}
 
 
 def _alt(ebenen: list[dict]) -> str:
@@ -67,25 +73,28 @@ def _alt(ebenen: list[dict]) -> str:
     return alt if len(alt) <= ALT_MAX else alt[:ALT_MAX - 1].rstrip() + "…"
 
 
-def _stuecke(baender: list[seite_streifen.Band], nach_id: dict[str, dict]) -> list[Stueck]:
+def _stuecke(baender: list[seite_streifen.Band], nach_id: dict[str, dict],
+             masse: seite_streifen.Masse | None = None) -> list[Stueck]:
     aus: list[Stueck] = []
     for b in baender:
         if b.art != "bild":
             continue
-        ebenen = seite_streifen.lesereihenfolge([nach_id[i] for i in b.ebenen])
+        ebenen = seite_streifen.lesereihenfolge([nach_id[i] for i in b.ebenen], masse)
         link = next((e["link"] for e in ebenen if e["art"] == "knopf"), None)
         aus.append(Stueck(len(aus) + 1, b.oben, b.unten, _alt(ebenen), link))
     return aus
 
 
-def stuecke(seite: dict) -> list[Stueck]:
+def stuecke(seite: dict, masse: seite_streifen.Masse | None = None) -> list[Stueck]:
     """Die Bildstuecke der Seite (ein Stueck je Bildband), von oben nach unten, nr ab 1."""
-    _, baender, nach_id = _vorbereitet(seite)
-    return _stuecke(baender, nach_id)
+    masse = seite_streifen.masse_pruefen(masse) or None
+    _, baender, nach_id = _vorbereitet(seite, masse)
+    return _stuecke(baender, nach_id, masse)
 
 
-def _im_bild(seite: dict, treffer: Callable[[dict], bool]) -> list[str]:
-    _, baender, nach_id = _vorbereitet(seite)
+def _im_bild(seite: dict, treffer: Callable[[dict], bool], masse: seite_streifen.Masse | None = None) -> list[str]:
+    masse = seite_streifen.masse_pruefen(masse) or None
+    _, baender, nach_id = _vorbereitet(seite, masse)
     ids: list[str] = []
     for b in baender:
         if b.art == "bild":
@@ -94,16 +103,16 @@ def _im_bild(seite: dict, treffer: Callable[[dict], bool]) -> list[str]:
     return ids
 
 
-def anrede_in_bild(seite: dict) -> list[str]:
+def anrede_in_bild(seite: dict, masse: seite_streifen.Masse | None = None) -> list[str]:
     """IDs der Text- und Knopf-Ebenen mit {vorname}, die in einem Bildband landen (dort ginge die Anrede
     verloren)."""
-    return _im_bild(seite, lambda e: _ANREDE in e["text"])
+    return _im_bild(seite, lambda e: _ANREDE in e["text"], masse)
 
 
-def links_in_bild(seite: dict) -> list[str]:
+def links_in_bild(seite: dict, masse: seite_streifen.Masse | None = None) -> list[str]:
     """IDs der Textebenen mit einem Textlink [..](https://..), die in einem Bildband landen (im Bild waere der
     Link nicht anklickbar; Spec-Entscheidung 10). Knoepfe zaehlen nicht: ihr Link verlinkt das Stueck."""
-    return _im_bild(seite, lambda e: e["art"] == "text" and bool(seite_html.TEXTLINK.search(e["text"])))
+    return _im_bild(seite, lambda e: e["art"] == "text" and bool(seite_html.TEXTLINK.search(e["text"])), masse)
 
 
 def _knopf_lage(l: float, r: float) -> tuple[str, str, str, str]:
@@ -117,7 +126,8 @@ def _knopf_lage(l: float, r: float) -> tuple[str, str, str, str]:
     return "right", "0px", _pz(seite_mod.BREITE - r), _pz(breite, r)
 
 
-def _ebene(s: dict, e: dict, oben: float, unten_abstand: float) -> str:
+def _ebene(s: dict, e: dict, oben: float, unten_abstand: float, hoehe: float | None = None) -> str:
+    """hoehe: Mindesthoehe des Textkastens (gemessen); ohne Messung die deklarierte hoehe."""
     l, _, r, _ = seite_streifen.rahmen(e)
     senkrecht = f'padding-top="{_px(oben)}" padding-bottom="{_px(unten_abstand)}"'
     schrift = bloecke_mjml.attr_schrift(_stapel(s, e["rolle"]))
@@ -143,13 +153,14 @@ def _ebene(s: dict, e: dict, oben: float, unten_abstand: float) -> str:
     return (f'<mj-text {polster} align="{_AUSRICHTUNG[e["ausrichtung"]]}" '
             f'color="{_a(e["farbe"])}" '
             f'font-family="{schrift}" font-size="{_px(e["groesse"])}" font-weight="{e["gewicht"]}" '
-            f'line-height="{e["zeilenabstand"]:g}"{extra}><div style="min-height:{_px(e["hoehe"])}">{inhalt}</div>'
+            f'line-height="{e["zeilenabstand"]:g}"{extra}><div style="min-height:{_px(e["hoehe"] if hoehe is None else hoehe)}">{inhalt}</div>'
             f'</mj-text>')
 
 
-def _textband(s: dict, b: seite_streifen.Band, nach_id: dict[str, dict]) -> str:
+def _textband(s: dict, b: seite_streifen.Band, nach_id: dict[str, dict],
+              masse: seite_streifen.Masse | None = None) -> str:
     farbe = _a(s["hintergrund"]["farbe"])
-    ebenen = seite_streifen.lesereihenfolge([nach_id[i] for i in b.ebenen])
+    ebenen = seite_streifen.lesereihenfolge([nach_id[i] for i in b.ebenen], masse)
     if not ebenen:
         inhalt = f'<mj-spacer height="{_px(b.unten - b.oben)}" />'
     else:
@@ -157,10 +168,11 @@ def _textband(s: dict, b: seite_streifen.Band, nach_id: dict[str, dict]) -> str:
         # untereinander), also ist o >= cur. Die max()-Klemmen sind nur Absicherung (Abstaende nie negativ).
         teile, cur = [], b.oben
         for n, e in enumerate(ebenen):
-            _, o, _, u = seite_streifen.rahmen(e)
+            _, o, _, u = seite_streifen.huelle(e, masse)
+            gemessen = u - o if masse and e["id"] in masse else None
             o, u = max(o, b.oben), min(u, b.unten)
             rest = b.unten - max(cur, u) if n == len(ebenen) - 1 else 0
-            teile.append(_ebene(s, e, o - cur, rest))
+            teile.append(_ebene(s, e, o - cur, rest, gemessen))
             cur = max(cur, u)
         inhalt = "".join(teile)
     return f'<mj-section background-color="{farbe}" padding="0"><mj-column>{inhalt}</mj-column></mj-section>'
@@ -180,19 +192,21 @@ def fuss(seite: dict, pflichtteil: dict, fuer_versand: bool) -> str:
 
 
 def mjml(seite: dict, stuecke_namen: list[str], *, betreff: str, vorschautext: str, pflichtteil: dict,
-         bild_adresse: Callable[[str], str], fuer_versand: bool, fuss_ersatz: str | None = None) -> str:
+         bild_adresse: Callable[[str], str], fuer_versand: bool, fuss_ersatz: str | None = None,
+         masse: seite_streifen.Masse | None = None) -> str:
     """fuer_versand: {vorname} und {abmeldelink} bleiben stehen (sales-claw setzt sie je Empfaenger ein),
     sonst [Vorname] und [Abmeldelink]. stuecke_namen[i] gehoert zu stuecke(seite)[i]. fuss_ersatz: steht statt
     des Pflicht-Fusses im MJML (eine Marke, die der Aufrufer spaeter durch den aktuellen Fuss ersetzt)."""
-    s, baender, nach_id = _vorbereitet(seite)
-    alle = _stuecke(baender, nach_id)
+    masse = seite_streifen.masse_pruefen(masse) or None
+    s, baender, nach_id = _vorbereitet(seite, masse)
+    alle = _stuecke(baender, nach_id, masse)
     if len(stuecke_namen) != len(alle):
         raise RenderFehler(f"Die Mail-Fassung passt nicht zur Seite ({len(stuecke_namen)} Bildstücke "
                            f"statt {len(alle)}) – bitte neu erzeugen")
     rumpf, k = [], 0
     for b in baender:
         if b.art == "text":
-            rumpf.append(_textband(s, b, nach_id))
+            rumpf.append(_textband(s, b, nach_id, masse))
         else:
             rumpf.append(_bildband(s, alle[k], bild_adresse(stuecke_namen[k])))
             k += 1

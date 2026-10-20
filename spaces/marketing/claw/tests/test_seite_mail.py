@@ -234,3 +234,36 @@ def test_gerendert_mit_mso_ohne_script():
     assert "mso" in h
     assert "<script" not in h.lower()
     assert "Hallo" in h
+
+
+# ---- Gemessene Huellen ------------------------------------------------------------------------------------
+def test_stuecke_und_mjml_nach_masse():
+    titel = {"id": "t", "art": "text", "x": 330, "y": 340, "breite": 460, "hoehe": 110,
+             "text": "Neue Kurse im Herbst", "rolle": "ANZEIGE", "groesse": 46, "gewicht": 600, "drehung": -4,
+             "farbe": "#ffffff"}
+    s = seite([{"id": "b", "art": "bild", "x": 300, "y": 200, "breite": 600, "hoehe": 400,
+                "quelle": "medien:foto.jpg"}, titel, text("u", 600)])
+    masse = {"t": (96.4, 269.1, 563.6, 431.5)}
+    assert [(x.oben, x.unten) for x in sm.stuecke(s, masse)] == [(0, 431.5)]
+    m = sm.mjml(s, ["a.jpg"], betreff="B", vorschautext="V", pflichtteil={}, bild_adresse=adresse,
+                fuer_versand=False, masse=masse)
+    # Abstand des Fliesstexts ab der gemessenen Unterkante des Titels (550 - 431.5)
+    assert 'padding-top="118.5px"' in re.search(r"<mj-text[^>]*>", m).group(0)
+    with pytest.raises(bloecke_mjml.RenderFehler):          # Namen muessen zu den gemessenen Stuecken passen
+        sm.mjml(s, [], betreff="B", vorschautext="V", pflichtteil={}, bild_adresse=adresse,
+                fuer_versand=False, masse=masse)
+
+
+def test_textband_abstand_und_mindesthoehe_gemessen():
+    s = seite([text("a", 100), text("b", 400)])
+    m = sm.mjml(s, [], betreff="B", vorschautext="V", pflichtteil={}, bild_adresse=adresse,
+                fuer_versand=False, masse={"a": (60, 50, 540, 180)})
+    teile = re.findall(r"<mj-text[^>]*>", m)
+    assert 'padding-top="50px"' in teile[0] and 'padding-top="170px"' in teile[1]    # 350 - 180, nicht 200
+    assert '<div style="min-height:130px">' in m and '<div style="min-height:100px">' in m
+
+
+def test_anrede_erst_gemessen_im_bild():
+    s = seite([bild("b", 200), text("a", 420, t="Hallo {vorname}")])
+    assert sm.anrede_in_bild(s) == []
+    assert sm.anrede_in_bild(s, {"a": (60, 340, 540, 470)}) == ["a"]
