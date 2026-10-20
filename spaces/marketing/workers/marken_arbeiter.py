@@ -40,6 +40,7 @@ SPIEGEL_FEHLER = "Spiegel nicht aktualisiert: "
 DIREKT_MAX = 60_000        # E5: groesser gespeichert gilt nicht direkt (Review Focus 3)
 QUELLEN_MAX = 12           # wie api/marke.QUELLEN_MAX (078)
 QUELLEN_NICHT = "Quellen nicht gespeichert"
+NICHT_TEXT = (*marken_prompt.FARBEN, *marken_prompt.SCHRIFTEN, "logo", "logo_dunkel", "logo_bearbeiten", "webseite")
 _ADRESSE = re.compile(r"\bhttps?://[^\s<>\"'`]+", re.IGNORECASE)
 _SATZZEICHEN = ".,;:!?)]}–—»“”'\""
 _PNG = b"\x89PNG\r\n\x1a\n"
@@ -363,10 +364,10 @@ def _gelesen(seite) -> dict | None:
 
 
 def _quellen_liste(gelesen: list[dict], websuche: list[dict]) -> list[dict]:
-    """Gelesen zuerst, dann Websuche; jede Adresse einmal, hoechstens QUELLEN_MAX (E8)."""
-    aus: dict[tuple[str, str], dict] = {}
+    """Gelesen zuerst, dann Websuche; jede Adresse einmal (gelesen gewinnt), hoechstens QUELLEN_MAX (E8)."""
+    aus: dict[str, dict] = {}
     for q in [*gelesen, *websuche]:
-        aus.setdefault((q["art"], q["url"]), q)
+        aus.setdefault(q["url"], q)
     return list(aus.values())[:QUELLEN_MAX]
 
 
@@ -734,9 +735,9 @@ def _uebernehmen_mit_spur(api, auftrag: dict, aid: str, spur, wurzel: str, jetzt
         raise _Aufgeben("Übernehmen nicht möglich: Vorschlag fehlt")
     with cw.halten(api, aid, halten_takt_s) as halter:
         try:
-            # Ein reiner Text-Vorschlag (Rueckgaengig, 078) nennt keine Farben/Schriften: dann bleiben die
-            # bisherigen. Nennt er auch nur einen Wert, gilt die volle Pruefung wie bisher.
-            nur_text = not any(k in v for k in (*marken_prompt.FARBEN, *marken_prompt.SCHRIFTEN))
+            # Ein reiner Text-Vorschlag (Rueckgaengig, 078) nennt keine Farben, Schriften, Logos und keine
+            # Webseite: dann bleiben die bisherigen Werte. Nennt er eines davon, gilt die volle Pruefung.
+            nur_text = not any(k in v for k in NICHT_TEXT)
             neue_werte = {} if nur_text else marken_prompt.werte_pruefen(v)
             abschnitte = marken_prompt.abschnitte_pruefen(v.get("abschnitte"))
         except marken_prompt.AntwortFehler as e:

@@ -1508,3 +1508,54 @@ def test_uebernahme_mit_halben_farben_bleibt_streng(wurzel):
     api = Api(_uebernehmen({"akzent": "#9a3412", "abschnitte": {"Ton": "Leise."}}))
     assert _lauf(api, Fragen()) == "fehler"
     assert "Übernehmen nicht möglich" in api.aufrufe("zurueck")[0][2]
+
+
+# --- Task 4 Fix-Runde: Grenzen von direkt, unbekannte Abschnitte, strenge Uebernahme, Quellen ---
+
+def test_alter_abschnitt_ueber_4000_zeichen_nie_direkt(wurzel):
+    (wurzel / "Radhaus").mkdir()
+    kopf = "---\n" + "".join(f"{k}: {w}\n" for k, w in WERTE.items()) + "---\n"
+    (wurzel / "Radhaus" / "Marke.md").write_text(
+        kopf + "## Ton\n" + "t" * 4001 + "\n\n## Bildstil\nWarme Werkstattfotos, Tageslicht.\n", encoding="utf-8")
+    assert len(mp.lesen(str(wurzel), "radhaus", "Radhaus").abschnitte["Ton"]) == 4001
+    api = Api(dict(CHAT))
+    assert _lauf(api, Fragen(_antwort())) == "fertig"
+    daten = _gesendet(api)
+    assert daten["direkt"] is False and daten["vorschlag"]["direkt"] is False
+    assert [a["feld"] for a in daten["vorschlag"]["aenderungen"]] == ["Ton"]
+
+
+def test_unbekannter_abschnitt_bleibt_bei_direkter_uebernahme(wurzel):
+    (wurzel / "Radhaus").mkdir()
+    kopf = "---\n" + "".join(f"{k}: {w}\n" for k, w in WERTE.items()) + "---\n"
+    (wurzel / "Radhaus" / "Marke.md").write_text(
+        kopf + "## Ton\nLaut und schnell.\n\n## Bildstil\nWarme Werkstattfotos, Tageslicht.\n\n"
+        "## Notizen\nNur für uns.\n", encoding="utf-8")
+    api = Api(dict(CHAT))
+    assert _lauf(api, Fragen(_antwort())) == "fertig"
+    daten = _gesendet(api)
+    assert daten["direkt"] is True
+    assert [a["feld"] for a in daten["vorschlag"]["aenderungen"]] == ["Ton"]
+    api = Api(_uebernehmen(daten["vorschlag"], von="Agent (direkt)"))
+    assert _lauf(api, Fragen()) == "fertig" and api.aufrufe("zurueck") == []
+    profil = mp.lesen(str(wurzel), "radhaus", "Radhaus")
+    assert profil.abschnitte["Ton"] == "Ruhig, per Du." and profil.abschnitte["Notizen"] == "Nur für uns."
+
+
+@pytest.mark.parametrize("extra", [{"logo": "anhang:logo.png"}, {"logo_dunkel": "anhang:logo.png"},
+                                   {"logo_bearbeiten": {"quelle": "bisher"}},
+                                   {"webseite": "https://radhaus.example/"}])
+def test_uebernahme_ohne_farben_aber_mit_logo_oder_webseite_bleibt_streng(wurzel, extra):
+    _profil(wurzel, {"Ton": "Laut."})
+    api = Api(_uebernehmen({"abschnitte": {"Ton": "Leise."}, **extra}), medien={"logo.png": LOGO})
+    assert _lauf(api, Fragen()) == "fehler"
+    assert "Übernehmen nicht möglich" in api.aufrufe("zurueck")[0][2]
+    assert mp.lesen(str(wurzel), "radhaus", "Radhaus").abschnitte["Ton"] == "Laut."
+
+
+def test_quellen_gleiche_adresse_einmal_gelesen_gewinnt():
+    quellen = ma._quellen_liste([{"titel": "Start", "url": "https://radhaus.example/", "art": "gelesen"}],
+                                [{"titel": "Radhaus", "url": "https://radhaus.example/", "art": "websuche"},
+                                 {"titel": "Presse", "url": "https://presse.example/a", "art": "websuche"}])
+    assert quellen == [{"titel": "Start", "url": "https://radhaus.example/", "art": "gelesen"},
+                       {"titel": "Presse", "url": "https://presse.example/a", "art": "websuche"}]

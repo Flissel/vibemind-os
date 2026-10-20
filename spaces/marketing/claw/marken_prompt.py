@@ -560,7 +560,8 @@ def aenderungen(alt, vorschlag: dict) -> list[dict]:
         if not gleich:
             aus.append({"feld": k, "vorher": vorher, "nachher": neu})
     ab = vorschlag.get("abschnitte") if isinstance(vorschlag.get("abschnitte"), dict) else {}
-    namen = [n for n in markenprofil.ABSCHNITT_REIHENFOLGE if n in ab] +         [n for n in ab if n not in markenprofil.ABSCHNITT_REIHENFOLGE]
+    namen = ([n for n in markenprofil.ABSCHNITT_REIHENFOLGE if n in ab]
+             + [n for n in ab if n not in markenprofil.ABSCHNITT_REIHENFOLGE])
     for n in namen:
         nachher, vorher = _abschnitt_text(ab[n]), _abschnitt_text(alt.abschnitte.get(n))
         if nachher != vorher:
