@@ -504,9 +504,37 @@ def _markenlogos(mandant) -> tuple[str | None, str | None]:
     return logo, dunkel
 
 
+KOMPOSITION_MIN_EBENEN = 3     # leere Startseiten und Proben zaehlen nicht als Komposition
+_KOMP_FELDER = ("art", "x", "y", "breite", "hoehe", "drehung")
+_KOMP_ZUSATZ = {"text": ("rolle", "groesse"), "form": ("form",)}
+
+
+def _komposition_kurzform(s) -> dict | None:
+    """Nur was komposition_kurz braucht: hoehe, hintergrund und je Ebene Lage und Mass (art, x, y, breite, hoehe,
+    drehung; Text zusaetzlich rolle, groesse und laenge = Zeichenzahl statt des Textes, Form zusaetzlich form).
+    None, wenn die Seite unlesbar ist oder weniger als KOMPOSITION_MIN_EBENEN Ebenen hat."""
+    if not isinstance(s, dict) or not isinstance(s.get("ebenen"), list):
+        return None
+    ebenen = []
+    for e in s["ebenen"]:
+        if not isinstance(e, dict):
+            continue
+        k = {f: e[f] for f in _KOMP_FELDER if f in e}
+        for f in _KOMP_ZUSATZ.get(e.get("art"), ()):
+            if f in e:
+                k[f] = e[f]
+        if e.get("art") == "text" and isinstance(e.get("text"), str):
+            k["laenge"] = len(e["text"])
+        ebenen.append(k)
+    if len(ebenen) < KOMPOSITION_MIN_EBENEN:
+        return None
+    return {"hoehe": s.get("hoehe"), "hintergrund": s.get("hintergrund"), "ebenen": ebenen}
+
+
 def _kompositionen(mandant, inhalt) -> list:
-    """Seiten der letzten Collagen derselben Firma ohne die aktuelle (Abwechslung, 080). Wirft nie:
-    der Auftrag ist schon vergeben, ohne Kompositionen arbeitet der Assistent trotzdem."""
+    """Seiten der letzten Collagen derselben Firma ohne die aktuelle (Abwechslung, 080), gekuerzt auf die
+    Kurzform (_komposition_kurzform). Wirft nie: der Auftrag ist schon vergeben, ohne Kompositionen arbeitet
+    der Assistent trotzdem."""
     if not isinstance(mandant, str) or not mandant or not inhalt:
         return []
     try:
@@ -516,7 +544,12 @@ def _kompositionen(mandant, inhalt) -> list:
         log.warning("Kompositionen nicht lesbar: %s", e.detail)
         return []
     k = (z or {}).get("k")
-    return k if isinstance(k, list) else []
+    aus = []
+    for x in k if isinstance(k, list) else []:
+        kurz = _komposition_kurzform(x.get("seite")) if isinstance(x, dict) else None
+        if kurz is not None:
+            aus.append({"inhalt": x.get("inhalt"), "seite": kurz})
+    return aus
 
 
 @arbeiter_router.post("/naechster")

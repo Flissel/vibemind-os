@@ -8,7 +8,9 @@ import math
 from typing import Callable
 
 from spaces.marketing.claw import seite_html
-from spaces.marketing.workers.export_worker import BASIS, EchterBrowser, Routen
+from spaces.marketing.workers.export_worker import BASIS, EchterBrowser, Routen, kachel_png
+
+__all__ = ["PruefbildFehler", "kacheln", "bilder_fuer_modell", "browser_render", "fehlt_hinweis", "kachel_png"]
 
 KACHEL_HOEHE = 1200
 MIN_BREITE = 300
@@ -18,6 +20,11 @@ SEITE_CONTAINER = "body > div > div"   # aeusserer 700-px-Rahmen > die 600 x hoe
 
 class PruefbildFehler(RuntimeError):
     pass
+
+
+def fehlt_hinweis(name: str) -> str:
+    """Hinweis an das Modell fuer ein Medium, das im Pruefbild als graue Kachel steht."""
+    return f"Bild {name} fehlt in den Medien – im Prüfbild als graue Kachel"
 
 
 def kacheln(seite: dict, html_render: Callable[[str, int], bytes], max_kacheln: int = 4
@@ -68,25 +75,28 @@ def bilder_fuer_modell(anhaenge: list[dict], kacheln: list[bytes], max_bilder: i
 
 def browser_render(api, aid, browser_starten=None) -> Callable[[str, int], bytes]:
     """Echter Renderer: html + hoehe -> PNG des Seitencontainers. Medien ueber api.medium(aid, name),
-    Schriften lokal (Routen aus export_worker). Der Browser lebt nur je Aufruf."""
+    Schriften lokal (Routen aus export_worker). Der Browser lebt nur je Aufruf. Platzhalter zeichnet die Route
+    lokal als graue Kachel; ein fehlendes Medium ebenfalls - sein Name steht danach in render.fehlt (je Aufruf
+    neu), der Aufrufer gibt ihn als fehlt_hinweis an das Modell. Beides ist nie ein PruefbildFehler."""
     def render(html: str, hoehe: int) -> bytes:
+        render.fehlt = []
         browser = (browser_starten or EchterBrowser)()
         try:
             seite = browser.new_page(viewport={"width": seite_html.BREITE_PX, "height": max(1, hoehe)})
             try:
-                routen = Routen(api, aid)
+                routen = Routen(api, aid, pruefbild=True)
                 seite.route("**/*", routen)
                 seite.set_content(html, wait_until="networkidle")
                 if routen.fehler is not None:
                     raise routen.fehler
-                if routen.fehlt:
-                    raise PruefbildFehler(f"Bild {routen.fehlt[0]} fehlt in den Medien")
+                render.fehlt = list(routen.fehlt)
                 seite.evaluate("document.fonts.ready")
                 return seite.locator(SEITE_CONTAINER).first.screenshot(type="png")
             finally:
                 _zu(seite)
         finally:
             _zu(browser)
+    render.fehlt = []
     return render
 
 

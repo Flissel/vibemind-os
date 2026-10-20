@@ -336,6 +336,9 @@ def nutzer_text_seite(*, nachricht: str, auswahl, titel: str, betreff: str, firm
 
 # ---- Pruefrunde ----------------------------------------------------------------------------------------
 
+PLATZHALTER_SATZ = ("Graue Kacheln (schraffiert, „Bild“) stehen für Bilder, die noch erzeugt werden: beurteile dort "
+                    "Lage und Größe im Layout, nicht Farbe oder Kontrast des Platzhalters.")
+
 def pruef_text(runde: int, hinweise: list[str], seite: dict, faktor: float = 1.0) -> str:
     """Auftrag der Nachbesserungsrunde; die Kacheln des Pruefbilds liegen als Bilder bei. faktor > 1, wenn die
     Kacheln herunterskaliert wurden (1 Bildpunkt = faktor Einheiten)."""
@@ -345,7 +348,7 @@ def pruef_text(runde: int, hinweise: list[str], seite: dict, faktor: float = 1.0
             "Überschrift, Fließtext, Akzent); Kontrast (4,5:1 Fließtext, 3:1 ab 24, auch über Bildern); Ruhezone "
             "24 Einheiten für Text; laute Elemente zählen (höchstens 2); Knopf vorhanden; Luft (nichts gedrängt, "
             "kein Text läuft über oder ist verdeckt); Marke; Blickverlauf Aufmacher -> Inhalt -> Knopf; "
-            "Abwechslung.\n"
+            "Abwechslung.\n" + PLATZHALTER_SATZ + "\n"
             "Nenne in antwort die 2-3 größten Schwächen, jede mit der verletzten Regel, und behebe jede mit "
             "Änderungen (Ebenen per id aus SEITE). Nur wenn keine Regel verletzt ist und du keine Schwäche mehr "
             'nennen kannst, antworte: {"antwort": "…", "aenderungen": [{"schritt": "Fertig", "werkzeug": "fertig", '
@@ -373,6 +376,11 @@ def _gedreht(e: dict) -> str:
     return " gedreht" if abs(e.get("drehung") or 0) >= 3 else ""
 
 
+def _laenge(e: dict) -> int:
+    """Zeichenzahl eines Textes; die Kurzform der API (api/chat.py) traegt laenge statt text."""
+    return len(e["text"]) if isinstance(e.get("text"), str) else int(e.get("laenge") or 0)
+
+
 def komposition_kurz(s: dict) -> str:
     """Eine Zeile aus Lage und Groesse der Hauptelemente, z. B. „Höhe 1400; Aufmacher Bild links oben 73%; Titel
     rechts oben; Text mittig; Knopf mitte unten; 2 Akzente; 20 Ebenen“. Aufmacher = groesstes Bild oder groesster
@@ -391,7 +399,7 @@ def komposition_kurz(s: dict) -> str:
         teile.append(f"Aufmacher {art} {_lage(held, hoehe)} {round(min(held['breite'], 600) / 6)}%{_gedreht(held)}")
     if titel is not None and titel is not held:
         teile.append(f"Titel {_lage(titel, hoehe)}{_gedreht(titel)}")
-    fliess = max((e for e in texte if e["rolle"] == "TEXT"), key=lambda e: len(e["text"]), default=None)
+    fliess = max((e for e in texte if e["rolle"] == "TEXT"), key=_laenge, default=None)
     if fliess is not None:
         teile.append(f"Text {_lage(fliess, hoehe)}")
     knopf = next((e for e in ebenen if e["art"] == "knopf"), None)

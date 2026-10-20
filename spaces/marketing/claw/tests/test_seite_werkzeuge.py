@@ -288,3 +288,47 @@ def test_nachspielen_auf_neueste_seite():
     nummeriert = ohne_abschluss(e.hinweise)
     assert [h.split(" ")[1] for h in nummeriert] == ["1", "3"]
     assert all("übersprungen" in h and "foto" in h for h in nummeriert)
+
+
+# ---- Gesamtpruefung: Platzhalter nur fuer neue Bild-Ebenen, offene Bildauftraege frueherer Runden ------
+
+PLATZHALTER_NUR_NEU = "Platzhalter"
+
+
+def test_platzhalter_als_quelle_einer_neuen_bild_ebene_erlaubt():
+    neu = {"id": "neu", "art": "bild", "x": 300, "y": 600, "breite": 300, "hoehe": 400,
+           "quelle": "medien:platzhalter-3x4.png"}
+    e = lauf([{"werkzeug": "ebene_hinzufuegen", "ebene": neu}])
+    assert not ohne_abschluss(e.hinweise) and ebene(e.seite, "neu")["quelle"] == "medien:platzhalter-3x4.png"
+
+
+@pytest.mark.parametrize("aenderung", [
+    {"werkzeug": "seite_hintergrund", "bild": "medien:platzhalter-4x3.png"},
+    {"werkzeug": "ebene_aendern", "id": "foto", "felder": {"quelle": "medien:platzhalter-4x3.png"}},
+    {"werkzeug": "bild_aus_medien", "ebene": "foto", "quelle": "platzhalter-4x3.png"},
+    {"werkzeug": "logo_einsetzen", "ebene": "foto", "quelle": "medien:platzhalter-1x1.png"},
+])
+def test_platzhalter_sonst_abgelehnt(aenderung):
+    e = lauf([aenderung])
+    (h,) = ohne_abschluss(e.hinweise)
+    assert PLATZHALTER_NUR_NEU in h and "ebene_hinzufuegen" in h and "bild_erzeugen" in h
+    assert e.verworfen == [1] and not e.geaendert
+
+
+def test_platzhalter_auch_dann_abgelehnt_wenn_er_in_den_medien_steht():
+    e = anwenden(grund(), [{"werkzeug": "bild_aus_medien", "ebene": "foto", "quelle": "platzhalter-4x3.png"}],
+                 MEDIEN | {"platzhalter-4x3.png"})
+    assert e.verworfen == [1]
+
+
+def test_ebene_aendern_mit_unveraendertem_platzhalter_bleibt_gueltig():
+    e = lauf([{"werkzeug": "ebene_aendern", "id": "leer", "felder": {"x": 280, "quelle": "medien:platzhalter-2x1.png"}}])
+    assert not ohne_abschluss(e.hinweise) and ebene(e.seite, "leer")["x"] == 280
+
+
+def test_offene_bilder_frueherer_runden_unterdruecken_den_hinweis():
+    assert [h for h in lauf([]).hinweise if "Bild-Ebene leer" in h]
+    e = anwenden(grund(), [], MEDIEN, offene_bilder={"leer"})
+    assert not [h for h in e.hinweise if "Bild-Ebene leer" in h]
+    e = nachspielen(grund(), [], MEDIEN, offene_bilder=frozenset({"leer"}))
+    assert not [h for h in e.hinweise if "Bild-Ebene leer" in h]

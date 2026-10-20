@@ -385,3 +385,11 @@ def test_komposition_kurz_leere_seite():
     s["ebenen"] = []
     k = sp.komposition_kurz(seite_mod.pruefen(s))
     assert k == "Höhe 1200; 0 Ebenen"
+
+
+def test_pruef_text_erklaert_graue_platzhalter():
+    t = sp.pruef_text(1, [], typische_seite())
+    assert sp.PLATZHALTER_SATZ in t
+    assert "Graue Kacheln" in sp.PLATZHALTER_SATZ and "noch erzeugt" in sp.PLATZHALTER_SATZ
+    assert "Kontrast" in sp.PLATZHALTER_SATZ
+    assert len(sp.system_seite(True)) + len(t) <= 14000

@@ -2448,3 +2448,50 @@ def test_stopp_im_ersten_entwurf(art):
         assert s is None
     else:   # wie im Block-Weg: der letzte gueltige Live-Stand
         assert _ebene(s, "titel")["text"] == "Zwei" and basis == 4
+
+
+# ---- Gesamtpruefung Stufe 3 ------------------------------------------------------------------------------
+
+class PruefbildMitLuecke(Pruefbild):
+    """Wie der echte Renderer: ein fehlendes Medium ist eine graue Kachel plus Name, kein Fehler."""
+    def __call__(self, s):
+        teile, faktor = super().__call__(s)
+        return teile, faktor, ["weg.jpg"]
+
+
+def test_fehlendes_medium_im_pruefbild_wird_hinweis():
+    api = SeitenApi()
+    erg, strom, pb = seite_lauf(api, ([titel("Herbst")], "Ok."), ([fertig_tool()], "Gut."),
+                                pruefbild=PruefbildMitLuecke())
+    assert erg == "fertig" and len(strom.gesehen) == 2
+    pruef = _texte(strom.gesehen[1][-1]["content"])
+    assert "Bild weg.jpg fehlt in den Medien – im Prüfbild als graue Kachel" in pruef
+    assert cw.PRUEFBILD_FEHLT not in _fertig_daten(api)[0]["antwort"]
+
+
+def test_bildauftrag_frueherer_runde_kein_hinweis_kein_gueltiges_bild():
+    s = json.loads(json.dumps(SEITE0))
+    s["ebenen"].insert(0, {"id": "held", "art": "bild", "x": 300, "y": 700, "breite": 400, "hoehe": 300,
+                           "quelle": "medien:platzhalter-4x3.png"})
+    auftrag = {**AUFTRAG_S, "seite": seite_mod.pruefen(s)}
+    api = SeitenApi()
+    erzeugen = {"werkzeug": "bild_erzeugen", "ebene": "held", "hinweis": "Kürbisse", "schritt": "Bild"}
+    erg, strom, _ = seite_lauf(api, ([erzeugen, titel("Herbst")], "Bild kommt."), ([titel("Herbst!")], "R1"),
+                               ([fertig_tool()], "Gut."), auftrag=auftrag)
+    assert erg == "fertig" and len(strom.gesehen) == 3
+    assert "Bild-Ebene held hat kein gültiges Bild" not in _texte(strom.gesehen[2][-1]["content"])
+    assert _fertig_daten(api)[0]["bildauftraege"][0]["platz"] == "held"
+
+
+def test_kompositionen_in_kurzform_der_api():
+    """Die API schickt nur noch die Lage-Felder (api/chat.py _komposition_kurzform); die Kurzzeile entsteht
+    daraus genauso wie aus der vollen Seite."""
+    from spaces.marketing.api.chat import _komposition_kurzform
+    from spaces.marketing.claw import seite_prompt
+    voll = json.loads(json.dumps(SEITE0))
+    voll["ebenen"].append({"id": "f", "art": "form", "form": "kreis", "farbe": "#eeddcc", "x": 100, "y": 900,
+                           "breite": 100, "hoehe": 100, "drehung": 12})
+    voll = seite_mod.pruefen(voll)
+    kurz = _komposition_kurzform(voll)
+    auftrag = {**AUFTRAG_S, "kompositionen": [{"inhalt": "i", "seite": kurz}, {"inhalt": "x", "seite": {"kaputt": 1}}]}
+    assert cw._kompositionen_kurz(auftrag) == [seite_prompt.komposition_kurz(voll)]

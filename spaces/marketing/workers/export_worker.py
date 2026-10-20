@@ -4,11 +4,12 @@ und laedt die JPEGs in den Medienordner der VM. Wird von chat_worker.ein_durchla
 gerufen. Playwright wird erst im Standard-Browserstarter importiert."""
 from __future__ import annotations
 
+import functools
 import io
 import os
 import urllib.parse
 
-from spaces.marketing.claw import bloecke_mjml, gestaltung, schriften
+from spaces.marketing.claw import bildplaetze, bloecke_mjml, gestaltung, schriften
 from spaces.marketing.workers.bild_worker import ApiFehler
 from spaces.marketing.workers.chat_worker import FREMD, HALTEN_TAKT_S, _kurz, halten
 
@@ -49,11 +50,39 @@ def jpeg_passend(png: bytes, grenze: int = JPEG_GRENZE) -> bytes:
     raise ValueError(f"Das Bild bleibt auch bei Qualität 52 über {grenze / 2**20:.1f} MB")
 
 
-class Routen:
-    """Beantwortet die Anfragen der Seite an BASIS; alles andere wird abgebrochen."""
+KACHEL_KANTE = 600
 
-    def __init__(self, api, aid):
+
+@functools.lru_cache(maxsize=32)
+def kachel_png(a: int, b: int) -> bytes:
+    """Neutrale Bildkachel im Verhaeltnis a:b (lange Kante KACHEL_KANTE): hellgrau, feine Diagonalen, "Bild".
+    Steht im Pruefbild fuer einen Platzhalter (Bild wird noch erzeugt) oder ein fehlendes Medium."""
+    from PIL import Image, ImageDraw
+    a, b = max(1, int(a)), max(1, int(b))
+    breite, hoehe = ((KACHEL_KANTE, max(1, round(KACHEL_KANTE * b / a))) if a >= b
+                     else (max(1, round(KACHEL_KANTE * a / b)), KACHEL_KANTE))
+    bild = Image.new("RGB", (breite, hoehe), (232, 232, 232))
+    zeichnen = ImageDraw.Draw(bild)
+    for x in range(-hoehe, breite, 28):
+        zeichnen.line([(x, hoehe), (x + hoehe, 0)], fill=(214, 214, 214), width=2)
+    if breite >= 40 and hoehe >= 20:
+        kasten = zeichnen.textbbox((0, 0), "Bild")
+        tb, th = kasten[2] - kasten[0], kasten[3] - kasten[1]
+        zeichnen.text(((breite - tb) / 2, (hoehe - th) / 2), "Bild", fill=(140, 140, 140))
+    puffer = io.BytesIO()
+    bild.save(puffer, "PNG")
+    return puffer.getvalue()
+
+
+class Routen:
+    """Beantwortet die Anfragen der Seite an BASIS; alles andere wird abgebrochen.
+    pruefbild=True (nur das Pruefbild der Collage): Platzhalter (medien:platzhalter-AxB.png) werden lokal als
+    graue Kachel gezeichnet und nie geholt; ein fehlendes Medium wird zur grauen Kachel und steht in fehlt (der
+    Aufrufer macht daraus einen Hinweis). Ohne den Schalter (Export) bleibt ein fehlendes Medium ein 404."""
+
+    def __init__(self, api, aid, pruefbild: bool = False):
         self.api, self.aid, self.medien, self.fehlt, self.fehler = api, aid, {}, [], None
+        self.pruefbild = pruefbild
 
     def __call__(self, route):
         try:
@@ -62,10 +91,17 @@ class Routen:
             pfad = urllib.parse.unquote(urllib.parse.urlsplit(route.request.url).path)
             if pfad.startswith("/medien/"):
                 name = pfad[len("/medien/"):]
+                if self.pruefbild and (m := bildplaetze.PLATZHALTER.match("medien:" + name)):
+                    return route.fulfill(status=200, body=kachel_png(int(m[1]), int(m[2])),
+                                         content_type="image/png")
                 if name not in self.medien:
                     self.medien[name] = self.api.medium(self.aid, name)
                 daten = self.medien[name]
                 if daten is None:
+                    if self.pruefbild:
+                        if name not in self.fehlt:
+                            self.fehlt.append(name)
+                        return route.fulfill(status=200, body=kachel_png(4, 3), content_type="image/png")
                     self.fehlt.append(name)
                     return route.fulfill(status=404, body=b"")
                 return route.fulfill(status=200, body=daten, content_type=bildtyp(name))

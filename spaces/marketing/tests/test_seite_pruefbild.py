@@ -93,3 +93,126 @@ def test_echter_browser_rauchtest():
                     "text": "Hallo Welt", "rolle": "TEXT", "groesse": 16, "farbe": "#111111"}]
     teile, faktor = pb.kacheln(s, pb.browser_render(api=None, aid="1"))
     assert faktor == 1.0 and _masse(teile) == [(600, 700)]
+
+
+# ---- Gesamtpruefung: Platzhalter und fehlende Medien im Pruefbild ----------------------------------------
+import re
+
+from spaces.marketing.workers import export_worker as ew
+
+
+class MedienApi:
+    def __init__(self, medien=None):
+        self.medien, self.gefragt = medien or {}, []
+
+    def medium(self, aid, name):
+        self.gefragt.append(name)
+        return self.medien.get(name)
+
+
+class _Anfrage:
+    def __init__(self, url):
+        self.url = url
+
+
+class _Route:
+    def __init__(self, url):
+        self.request, self.ergebnis = _Anfrage(url), None
+
+    def fulfill(self, **kw):
+        self.ergebnis = ("fulfill", kw)
+
+    def abort(self):
+        self.ergebnis = ("abort", {})
+
+
+class _Locator:
+    def __init__(self, png):
+        self.first, self._png = self, png
+
+    def screenshot(self, type="png"):
+        return self._png
+
+
+class _Seite:
+    """Fake-Chromium: fordert jede BASIS-URL aus dem HTML ueber die Route an."""
+    def __init__(self, browser, viewport):
+        self.browser, self.viewport = browser, viewport
+
+    def route(self, muster, handler):
+        self.handler = handler
+
+    def set_content(self, html, wait_until=None):
+        for url in re.findall(re.escape(ew.BASIS) + r"medien/[^\"')&]+", html):
+            r = _Route(url)
+            self.handler(r)
+            self.browser.antworten.append((url, r.ergebnis))
+
+    def evaluate(self, ausdruck):
+        pass
+
+    def locator(self, sel):
+        return _Locator(_png(self.viewport["width"], self.viewport["height"]))
+
+    def close(self):
+        pass
+
+
+class _Browser:
+    def __init__(self):
+        self.antworten = []
+
+    def new_page(self, viewport):
+        return _Seite(self, viewport)
+
+    def close(self):
+        pass
+
+
+def _seite_mit_bild(quelle, breite=300, hoehe=400):
+    s = _seite(900)
+    s["ebenen"].append({"id": "neu", "art": "bild", "x": 300, "y": 600, "breite": breite, "hoehe": hoehe,
+                        "quelle": quelle})
+    return seite.pruefen(s)
+
+
+def test_platzhalter_ohne_datei_laeuft_als_graue_kachel():
+    """Ebene 300 x 400 -> medien:platzhalter-3x4.png, die Datei gibt es nicht: die Runde laeuft trotzdem."""
+    api, b = MedienApi(), _Browser()
+    render = pb.browser_render(api, "1", browser_starten=lambda: b)
+    teile, faktor = pb.kacheln(_seite_mit_bild("medien:platzhalter-3x4.png"), render)
+    assert len(teile) == 1 and faktor == 1.0 and render.fehlt == []
+    assert api.gefragt == []                                    # nie geholt
+    ((url, (art, kw)),) = b.antworten
+    assert url.endswith("medien/platzhalter-3x4.png") and art == "fulfill" and kw["status"] == 200
+    bild = Image.open(io.BytesIO(kw["body"]))
+    assert bild.format == "PNG" and bild.size[0] * 4 == bild.size[1] * 3
+
+
+def test_fehlendes_medium_wird_hinweis_statt_fehler():
+    api, b = MedienApi(), _Browser()
+    render = pb.browser_render(api, "1", browser_starten=lambda: b)
+    teile, _ = pb.kacheln(_seite_mit_bild("medien:weg.jpg"), render)
+    assert len(teile) == 1 and render.fehlt == ["weg.jpg"]
+    ((_, (art, kw)),) = b.antworten
+    assert art == "fulfill" and kw["status"] == 200 and Image.open(io.BytesIO(kw["body"])).format == "PNG"
+    assert pb.fehlt_hinweis("weg.jpg") == "Bild weg.jpg fehlt in den Medien – im Prüfbild als graue Kachel"
+    # der naechste Aufruf beginnt ohne die alte Liste
+    pb.kacheln(_seite(), render)
+    assert render.fehlt == []
+
+
+def test_platzhalter_mit_beliebigem_verhaeltnis():
+    png = pb.kachel_png(16, 9)
+    assert Image.open(io.BytesIO(png)).size == (600, 338)
+    assert Image.open(io.BytesIO(pb.kachel_png(0, 5))).size[0] >= 1
+
+
+def test_export_routen_bleiben_streng():
+    """Der Export holt auch Platzhalter aus den Medien und meldet ein fehlendes Bild mit 404."""
+    api = MedienApi()
+    routen = ew.Routen(api, "1")
+    r = _Route(ew.BASIS + "medien/platzhalter-3x4.png")
+    routen(r)
+    assert r.ergebnis == ("fulfill", {"status": 404, "body": b""}) and routen.fehlt == ["platzhalter-3x4.png"]
+    assert api.gefragt == ["platzhalter-3x4.png"]

@@ -1092,15 +1092,38 @@ def _marke_zeilen(markenfarben: dict, markenschriften: dict | None, markenlesbar
     return zeilen
 
 
+def _zahl_ok(wert) -> bool:
+    return isinstance(wert, (int, float)) and not isinstance(wert, bool)
+
+
+def _komposition_lesen(s) -> dict:
+    """Kurzform der API (nur Lage-Felder, api/chat.py _komposition_kurzform) oder eine volle Seite -> Form, die
+    komposition_kurz liest. Wirft ValueError, wenn Pflichtfelder fehlen."""
+    if not isinstance(s, dict) or not _zahl_ok(s.get("hoehe")) or not isinstance(s.get("ebenen"), list):
+        raise ValueError("Komposition unlesbar")
+    ebenen = []
+    for e in s["ebenen"]:
+        if (not isinstance(e, dict) or e.get("art") not in ("bild", "text", "form", "knopf")
+                or not all(_zahl_ok(e.get(k)) for k in ("x", "y", "breite", "hoehe"))):
+            raise ValueError("Komposition unlesbar")
+        e = {**e, "drehung": e.get("drehung") if _zahl_ok(e.get("drehung")) else 0}
+        if e["art"] == "text":
+            e["rolle"] = e.get("rolle") if e.get("rolle") in ("ANZEIGE", "TEXT", "HAND") else "TEXT"
+            e["groesse"] = e.get("groesse") if _zahl_ok(e.get("groesse")) else 0
+        ebenen.append(e)
+    return {"hoehe": s["hoehe"], "ebenen": ebenen}
+
+
 def _kompositionen_kurz(auftrag: dict) -> list[str]:
-    """Die letzten Collagen der Firma (API: [{inhalt, seite}]) als Kurzzeilen, hoechstens MAX_KOMPOSITIONEN;
-    eine unlesbare wird uebersprungen."""
+    """Die letzten Collagen der Firma (API: [{inhalt, seite}], seite in Kurzform) als Kurzzeilen, hoechstens
+    MAX_KOMPOSITIONEN; eine unlesbare wird uebersprungen."""
     roh = auftrag.get("kompositionen")
     aus: list[str] = []
     for k in roh if isinstance(roh, list) else []:
         try:
-            aus.append(seite_prompt.komposition_kurz(seite.pruefen(k.get("seite") if isinstance(k, dict) else None)))
-        except (seite.SeiteFehler, KeyError, TypeError, ValueError):
+            aus.append(seite_prompt.komposition_kurz(_komposition_lesen(k.get("seite") if isinstance(k, dict)
+                                                                         else None)))
+        except (KeyError, TypeError, ValueError):
             continue
         if len(aus) >= MAX_KOMPOSITIONEN:
             break
@@ -1242,8 +1265,9 @@ def _bearbeiten_seite(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_tak
     if pruefbild is None:
         render = seite_pruefbild.browser_render(api, aid)
 
-        def pruefbild(s: dict) -> tuple[list[bytes], float]:
-            return seite_pruefbild.kacheln(s, render)
+        def pruefbild(s: dict) -> tuple[list[bytes], float, list[str]]:
+            teile, faktor = seite_pruefbild.kacheln(s, render)
+            return teile, faktor, list(getattr(render, "fehlt", []))
     live.original = start
     live.neu_beginnen()
     kontext = auftrag.get("kontext") if isinstance(auftrag.get("kontext"), dict) else {}
@@ -1331,14 +1355,17 @@ def _bearbeiten_seite(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_tak
         spur.schritt(SEITE_PRUEFEN.format(r=r, n=RUNDEN))
         try:
             with halten(api, aid, halten_takt_s) as halter, _PRUEFBILD_SPERRE:
-                kacheln, faktor = pruefbild(aktuell)
+                ergebnis_pb = pruefbild(aktuell)   # (kacheln, faktor[, fehlende Medien als graue Kacheln])
+            kacheln, faktor = ergebnis_pb[0], ergebnis_pb[1]
+            fehlend = [str(n) for n in (ergebnis_pb[2] if len(ergebnis_pb) > 2 else [])][:5]
         except Exception:  # noqa: BLE001 - ohne Pruefbild wird der Entwurf gespeichert, die Runde kippt nie
             hinweise.insert(0, PRUEFBILD_FEHLT)
             spur.schritt(PRUEFBILD_FEHLT)
             break
         if halter.verloren.is_set():
             raise _Verloren
-        pruef = seite_prompt.pruef_text(r, letzte_hinweise, aktuell, faktor)
+        pruef = seite_prompt.pruef_text(r, [*map(seite_pruefbild.fehlt_hinweis, fehlend), *letzte_hinweise],
+                                        aktuell, faktor)
         teile = seite_pruefbild.bilder_fuer_modell(bildteile, kacheln)   # Anhaenge zuerst, hoechstens 6 Bilder
         frage_r = [{"role": "user", "content": text_nutzer}, {"role": "assistant", "content": letzter_text},
                    {"role": "user", "content": [{"type": "text", "text": pruef}, *teile] if teile else pruef}]
@@ -1360,7 +1387,9 @@ def _bearbeiten_seite(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_tak
                 raise LlmFehler(NICHT_ERREICHBAR)
             antwort_r = seite_prompt.antwort_lesen(text_r)
             aenderungen_r = _ids_vergeben(antwort_r["aenderungen"], {e["id"] for e in aktuell["ebenen"]})
-            erg_r = seite_werkzeuge.anwenden(aktuell, aenderungen_r, erlaubt)
+            # Bildauftraege frueherer Runden sind unterwegs: fuer ihre Ebenen kein "kein gueltiges Bild"
+            erg_r = seite_werkzeuge.anwenden(aktuell, aenderungen_r, erlaubt,
+                                             offene_bilder={a["platz"] for a in _auftraege_liste(auftraege, aktuell)})
         except (LlmFehler, agent_prompt.AntwortFehler, agent_werkzeuge.WerkzeugFehler):
             hinweise.append(NACHBESSERUNG_WEG.format(r=r))   # der letzte vollstaendige Stand bleibt
             break

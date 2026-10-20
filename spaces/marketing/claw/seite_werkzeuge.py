@@ -18,6 +18,8 @@ MAX_AENDERUNGEN = 40
 MAX_HINWEIS = 500
 MAX_NOTIZ = 200
 KEIN_KNOPF = "Kein Knopf auf der Seite"
+PLATZHALTER_NUR_NEU = ("Platzhalter (medien:platzhalter-…) nur als quelle einer neuen Bild-Ebene mit "
+                       "ebene_hinzufuegen – für ein Bild nimm bild_erzeugen oder ein Bild aus den Medien")
 
 WERKZEUGE: tuple[str, ...] = (
     "seite_hoehe", "seite_hintergrund", "schriften_setzen", "ebene_hinzufuegen", "ebene_aendern",
@@ -78,12 +80,16 @@ class _Lauf:
                     return i
         raise _Unbekannt(eid)
 
-    def quelle(self, wert) -> str:
-        """Mediennamen mit oder ohne medien:; nur aus den Medien (oder ein Platzhalter = leerer Bildplatz)."""
+    def quelle(self, wert, platzhalter: bool = False) -> str:
+        """Mediennamen mit oder ohne medien:; nur aus den Medien. Ein Platzhalter (leerer Bildplatz) nur mit
+        platzhalter=True (quelle einer neuen Bild-Ebene) - auch wenn eine Datei dieses Namens in den Medien liegt."""
         if not isinstance(wert, str) or not wert:
             raise WerkzeugFehler("quelle muss ein Medienname sein")
         name = wert[len("medien:"):] if wert.startswith("medien:") else wert
-        if name not in self.medien and not bildplaetze.PLATZHALTER.match("medien:" + name):
+        if bildplaetze.PLATZHALTER.match("medien:" + name):
+            if not platzhalter:
+                raise WerkzeugFehler(PLATZHALTER_NUR_NEU)
+        elif name not in self.medien:
             raise WerkzeugFehler(f"Bild {name} gibt es nicht in den Medien")
         return f"medien:{name}"
 
@@ -139,7 +145,7 @@ class _Lauf:
             e["id"] = self.neue_id(s)
         if e.get("art") == "bild":
             if "quelle" in e:
-                e["quelle"] = self.quelle(e["quelle"])
+                e["quelle"] = self.quelle(e["quelle"], platzhalter=True)
             else:   # leerer Bildplatz, den bild_erzeugen fuellt
                 b, h = e.get("breite"), e.get("hoehe")
                 ok = all(isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 1 for v in (b, h))
@@ -158,7 +164,9 @@ class _Lauf:
         i = self.nr(s, a["id"])
         felder = copy.deepcopy(felder)
         if s["ebenen"][i]["art"] == "bild" and "quelle" in felder:
-            felder["quelle"] = self.quelle(felder["quelle"])
+            # der unveraenderte Platzhalter darf mitkommen (Modell schickt die Ebene ganz zurueck)
+            felder["quelle"] = self.quelle(felder["quelle"],
+                                           platzhalter=felder["quelle"] == s["ebenen"][i].get("quelle"))
         s["ebenen"][i] = {**s["ebenen"][i], **felder}
 
     def ebene_reihenfolge(self, s: dict, a: dict) -> None:
@@ -241,7 +249,7 @@ def _gueltiges_bild(quelle, medien: set[str]) -> bool:
     return quelle[len("medien:"):] in medien
 
 
-def _abschluss(s: dict, auftraege: list[dict], medien: set[str]) -> list[str]:
+def _abschluss(s: dict, auftraege: list[dict], medien: set[str], offene_bilder=frozenset()) -> list[str]:
     hinweise: list[str] = []
     for e in s["ebenen"]:
         if e["art"] != "text" or not (seite._ANREDE in e["text"] or seite._TEXTLINK.search(e["text"])):
@@ -252,14 +260,15 @@ def _abschluss(s: dict, auftraege: list[dict], medien: set[str]) -> list[str]:
                             "diesen Text frei und ungedreht stellen")
     if not any(e["art"] == "knopf" for e in s["ebenen"]):
         hinweise.append(KEIN_KNOPF)
-    mit_auftrag = {a["platz"] for a in auftraege}
+    mit_auftrag = {a["platz"] for a in auftraege} | {p for p in offene_bilder if isinstance(p, str)}
     for e in s["ebenen"]:
         if e["art"] == "bild" and e["id"] not in mit_auftrag and not _gueltiges_bild(e["quelle"], medien):
             hinweise.append(f"Bild-Ebene {e['id']} hat kein gültiges Bild – bild_erzeugen oder bild_aus_medien")
     return hinweise
 
 
-def _ausfuehren(s_ein: dict, aenderungen: list, medien: set[str], nachspiel: bool) -> ErgebnisSeite:
+def _ausfuehren(s_ein: dict, aenderungen: list, medien: set[str], nachspiel: bool,
+                offene_bilder=frozenset()) -> ErgebnisSeite:
     if not isinstance(aenderungen, list):
         raise WerkzeugFehler("Die Änderungen müssen eine Liste sein")
     try:
@@ -333,18 +342,22 @@ def _ausfuehren(s_ein: dict, aenderungen: list, medien: set[str], nachspiel: boo
             melden(fertig[0], "fertig", "gilt nur ohne weitere Änderungen – die Änderungen wurden übernommen")
         else:
             ist_fertig, notiz = True, fertig[1]
-    hinweise += _abschluss(lauf.s, auftraege, lauf.medien)
+    hinweise += _abschluss(lauf.s, auftraege, lauf.medien, offene_bilder)
     return ErgebnisSeite(seite=lauf.s, geaendert=lauf.s != start, bildauftraege=auftraege, hinweise=hinweise,
                          fertig=ist_fertig, notiz=notiz, verworfen=sorted(verworfen))
 
 
-def anwenden(seite_dok: dict, aenderungen: list, medien: set[str]) -> ErgebnisSeite:
+def anwenden(seite_dok: dict, aenderungen: list, medien: set[str],
+             offene_bilder: set[str] | frozenset[str] = frozenset()) -> ErgebnisSeite:
     """Wendet die Aenderungen einzeln an; ungueltige werden mit Nummer und Grund in hinweise verworfen. Wirft
-    WerkzeugFehler nur, wenn aenderungen keine Liste oder die Ausgangsseite selbst ungueltig ist."""
-    return _ausfuehren(seite_dok, aenderungen, medien, nachspiel=False)
+    WerkzeugFehler nur, wenn aenderungen keine Liste oder die Ausgangsseite selbst ungueltig ist.
+    offene_bilder: Ebenen-IDs mit einem Bildauftrag aus einer frueheren Runde - fuer sie kein Hinweis
+    "kein gueltiges Bild"."""
+    return _ausfuehren(seite_dok, aenderungen, medien, nachspiel=False, offene_bilder=offene_bilder)
 
 
-def nachspielen(seite_neu: dict, aenderungen: list, medien: set[str]) -> ErgebnisSeite:
+def nachspielen(seite_neu: dict, aenderungen: list, medien: set[str],
+                offene_bilder: set[str] | frozenset[str] = frozenset()) -> ErgebnisSeite:
     """Dieselbe Logik auf einer neueren Fassung (veraltete Basis): Aenderungen an inzwischen geloeschten Ebenen
     werden mit Hinweis 'uebersprungen' ausgelassen, der Rest gilt."""
-    return _ausfuehren(seite_neu, aenderungen, medien, nachspiel=True)
+    return _ausfuehren(seite_neu, aenderungen, medien, nachspiel=True, offene_bilder=offene_bilder)

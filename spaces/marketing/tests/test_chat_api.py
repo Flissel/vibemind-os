@@ -1281,7 +1281,9 @@ def test_naechster_liefert_seite_und_kompositionen(umg):
     r = c.post("/api/chat/arbeiter/naechster", headers=HB)
     assert r.status_code == 200, r.text
     a = r.json()["auftrag"]
-    assert a["format"] == "seite" and a["seite"] == s and a["kompositionen"] == komp
+    assert a["format"] == "seite" and a["seite"] == s
+    (k,) = a["kompositionen"]
+    assert k["inhalt"] == BID and set(k["seite"]) == {"hoehe", "hintergrund", "ebenen"}
     # Format und Seite aus DERSELBEN Abfrage wie die Vergabe; die Vergabe laeuft genau einmal
     assert f.sql[0].startswith("WITH x AS MATERIALIZED (SELECT marketing.pult_chat_naechster('5 minutes'::interval)")
     assert "n.format = 'seite'" in f.sql[0] and "marketing.inhalt_fassungen n" in f.sql[0]
@@ -1507,3 +1509,30 @@ def test_gestoppt_db_huelle_lehnt_ab_schliesst_mit_null(umg):
     assert r.status_code == 200 and r.json() == {"status": "fehler"}
     assert "marketing.pult_chat_stopp_abschliessen(" in f.sql[-1] and ", NULL, " in f.sql[-1]
     assert COLLAGE_BLOECKE in f.sql[-1]
+
+
+def test_naechster_kompositionen_kurzform(umg):
+    """Nur die Lage-Felder gehen an den PC; Seiten mit weniger als 3 Ebenen (leere Starter, Proben) fallen weg."""
+    from spaces.marketing.claw import seite, seite_prompt
+    voll = _seite("medien:held.jpg")
+    voll = seite.pruefen({**voll, "ebenen": voll["ebenen"] + [
+        {"id": "f", "art": "form", "form": "kreis", "farbe": "#eeddcc", "x": 100, "y": 900, "breite": 100,
+         "hoehe": 100, "drehung": 10}]})
+    zwei = {**voll, "ebenen": voll["ebenen"][:2]}
+    komp = [{"inhalt": BID, "seite": voll}, {"inhalt": IID, "seite": zwei}, {"inhalt": "x", "seite": None}]
+    f, _, c = umg
+    f.antworten += [[{"a": {"id": AID, "inhalt": IID, "art": "chat", "nachricht": "n", "mandant": "vibemind",
+                            "fassung": 3, "bloecke": None, "format": "seite", "seite": voll}}],
+                    _sicht(), [], [{"k": komp}]]
+    a = c.post("/api/chat/arbeiter/naechster", headers=HB).json()["auftrag"]
+    (k,) = a["kompositionen"]
+    assert k["inhalt"] == BID
+    kurz = k["seite"]
+    assert kurz["hoehe"] == voll["hoehe"] and kurz["hintergrund"] == voll["hintergrund"]
+    erlaubt = {"art", "x", "y", "breite", "hoehe", "drehung", "rolle", "groesse", "laenge", "form"}
+    assert all(set(e) <= erlaubt for e in kurz["ebenen"]) and len(kurz["ebenen"]) == len(voll["ebenen"])
+    text = next(e for e in kurz["ebenen"] if e["art"] == "text" and e["rolle"] == "TEXT")
+    assert "text" not in text and text["laenge"] == len("Hier steht Ihr Text.")
+    assert next(e for e in kurz["ebenen"] if e["art"] == "form")["form"] == "kreis"
+    assert not any("quelle" in e or "farbe" in e or "link" in e for e in kurz["ebenen"])
+    assert seite_prompt.komposition_kurz(kurz) == seite_prompt.komposition_kurz(voll)
