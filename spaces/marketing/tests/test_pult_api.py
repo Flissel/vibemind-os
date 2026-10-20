@@ -17,6 +17,7 @@ leeren Antworten, die fail-closed 503-Gestaltpruefung in /layouts/vorschau
 NIE als "keine Beanstandung" durchgehen), die X-Pult-Key/X-API-Key-Trennung
 in server.py, und die hmac/ValueError-Randfaelle."""
 import json
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1241,3 +1242,176 @@ def test_verweise_unbekannter_mandant_422(db, c):
     db.antworten = [[]]
     r = c.get("/api/pult/medien/verweise", params={"name": "a.jpg", "mandant": "foo"}, headers=H)
     assert r.status_code == 422 and len(db.sql) == 1 and "inhalt_fassungen" not in db.sql[0]
+
+# --- Freie Flaeche Stufe 1 (Plan 2026-10-20) Task 4: Collage-Newsletter (format 'seite') ---
+
+from spaces.marketing.claw import seite as _seite  # noqa: E402
+
+SEITE = _seite.leer(None)
+SEITE_KOPF = {"id": IID, "mandant": "vibemind", "art": "newsletter", "titel": "T", "status": "entwurf",
+              "alter_weg": None}
+
+
+def _jsonb_aus(sql: str) -> dict:
+    treffer = re.search(r"E?'(\{.*\})'::jsonb", sql)
+    assert treffer, sql
+    return json.loads(treffer.group(1).replace("''", "'"))
+
+
+def _seite_zeile(**extra):
+    z = {"felder": {"betreff": "Herbst", "vorschautext": ""}, "format": "seite", "bloecke": None, "seite": SEITE,
+         "gestalt": None, "pflichtteil": {"impressum": "I", "abmelde_hinweis": ""}, "gestalt_fehler": None}
+    z.update(extra)
+    return z
+
+
+def test_collage_anlegen_ruft_db_funktion(db, c):
+    gestalt = {"akzent": "#112233", "schriften": {"anzeige": "dm-sans", "text": "dm-sans"}}
+    db.antworten = [[{"laden": "Radhaus", "layout": None, "gestalt": gestalt}], [{"id": IID}]]
+    r = c.post("/api/pult/inhalte/collage", headers=H,
+               json={"mandant": "radhaus", "titel": " Herbst ", "betreff": "Neu im Laden"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"inhalt": IID, "fassung": 1}
+    sql = db.sql[1]
+    assert "marketing.pult_collage_anlegen(" in sql and "'radhaus'" in sql and "'Herbst'" in sql
+    assert "'Neu im Laden'" in sql
+    dok = _jsonb_aus(sql)
+    assert _seite.pruefen(dok) == dok
+    assert dok["ebenen"][2]["farbe"] == "#112233"          # Knopf in der Markenfarbe
+
+
+def test_collage_anlegen_ohne_marke_und_eingaben(db, c):
+    db.antworten = [[], [{"id": IID}]]                     # Laden ohne Layout/Marke -> leer(None)
+    r = c.post("/api/pult/inhalte/collage", headers=H, json={"mandant": "radhaus", "titel": "T"})
+    assert r.status_code == 200 and _jsonb_aus(db.sql[1]) == _seite.pruefen(_seite.leer(None))
+    db.sql.clear()
+    for body in ({"titel": "T"}, {"mandant": "radhaus"}, {"mandant": "radhaus", "titel": "x" * 201},
+                 {"mandant": "radhaus", "titel": "T", "betreff": 5}):
+        assert c.post("/api/pult/inhalte/collage", headers=H, json=body).status_code == 422, body
+    assert db.sql == []
+    assert c.post("/api/pult/inhalte/collage", json={"mandant": "radhaus", "titel": "T"}).status_code == 401
+
+
+def test_seite_speichern_prueft_vorher(db, c):
+    schlecht = dict(SEITE, breite=599)
+    r = c.post(f"/api/pult/inhalte/{IID}/seite", headers=H,
+               json={"basis_fassung": 1, "seite": schlecht, "betreff": "B", "vorschautext": ""})
+    assert r.status_code == 422 and r.json()["detail"] == "Seite breite: muss 600 sein"
+    assert db.sql == []
+    # Anrede nur in Fliesstext: prueft nur seite.py, nicht die DB
+    anrede = json.loads(json.dumps(SEITE))
+    anrede["ebenen"][0]["text"] = "Hallo {vorname}"
+    r = c.post(f"/api/pult/inhalte/{IID}/seite", headers=H,
+               json={"basis_fassung": 1, "seite": anrede, "betreff": "B", "vorschautext": ""})
+    assert r.status_code == 422 and db.sql == []
+    db.antworten = [[{"fassung": 2}]]
+    gut = json.loads(json.dumps(SEITE))
+    gut["ebenen"][1]["x"] = 310.0
+    r = c.post(f"/api/pult/inhalte/{IID}/seite", headers=H,
+               json={"basis_fassung": 1, "seite": gut, "betreff": "B", "vorschautext": "V",
+                     "urheber": "agent", "als_kopie": True})
+    assert r.status_code == 200 and r.json() == {"fassung": 2}
+    sql = db.sql[0]
+    assert "marketing.pult_seite_speichern(" in sql and f"'{IID}'::uuid, 1, 'B', 'V'" in sql
+    assert "'agent', true)" in sql
+    assert _jsonb_aus(sql) == _seite.pruefen(gut)          # das normalisierte Dokument
+
+
+def test_seite_speichern_formen_und_db_ablehnung(db, c, monkeypatch):
+    for body in ({"seite": SEITE}, {"basis_fassung": -1, "seite": SEITE}, {"basis_fassung": 1},
+                 {"basis_fassung": 1, "seite": SEITE, "urheber": "x"},
+                 {"basis_fassung": 1, "seite": SEITE, "als_kopie": "ja"},
+                 {"basis_fassung": 1, "seite": SEITE, "betreff": 3}):
+        assert c.post(f"/api/pult/inhalte/{IID}/seite", headers=H, json=body).status_code == 422, body
+    assert db.sql == []
+
+    def wirft(*a, **k):
+        raise RuntimeError("ERROR:  Inzwischen gibt es Fassung 7 - neu laden oder als Kopie behalten")
+    monkeypatch.setattr(_db, "query_one", wirft)
+    r = c.post(f"/api/pult/inhalte/{IID}/seite", headers=H, json={"basis_fassung": 3, "seite": SEITE})
+    assert r.status_code == 422 and r.json()["detail"].startswith("Inzwischen gibt es Fassung 7")
+
+
+def test_inhalt_liefert_seite_der_neuesten_fassung(db, c):
+    db.antworten = [[SEITE_KOPF],
+                    [{"fassung": 2, "felder": {}, "layout": None, "urheber": "betreiber", "erstellt_am": "x",
+                      "format": "seite", "bloecke": None, "seite": SEITE},
+                     {"fassung": 1, "felder": {}, "layout": None, "urheber": "betreiber", "erstellt_am": "x",
+                      "format": "seite", "bloecke": None, "seite": SEITE}]]
+    f = c.get(f"/api/pult/inhalte/{IID}", headers=H).json()["fassungen"]
+    assert f[0]["seite"] == SEITE and f[1]["seite"] is None
+    assert "THEN seite END AS seite" in db.sql[1]
+
+
+def test_vorschau_waehlt_format_je_fassung(db, c):
+    db.antworten = [[_bloecke_zeile()]]
+    r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=1&format=mail", headers=H)
+    assert r.status_code == 200 and "Hallo Pult" in r.text and "position:relative;width:600px" not in r.text
+    for fmt in ("mail", "handy"):
+        db.antworten = [[_seite_zeile()]]
+        r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=2&format={fmt}", headers=H)
+        assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
+        assert "position:relative;width:600px" in r.text and "Überschrift" in r.text
+        assert "<title>Herbst</title>" in r.text
+    assert "f.seite" in db.sql[-1]
+
+
+def test_pdf_hoehe_folgt_der_seite(db, c, monkeypatch):
+    from spaces.marketing.claw import pdf_druck
+    gesehen = {}
+
+    def druck(html, erlaubt):
+        gesehen["html"], gesehen["erlaubt"] = html, erlaubt
+        return b"%PDF-1.7 seite"
+    monkeypatch.setattr(pdf_druck, "html_zu_pdf", druck)
+    monkeypatch.setenv("MARKETING_PDF_HOSTS", "h.ts.net")
+    db.antworten = [[_seite_zeile(seite=dict(SEITE, hoehe=6000))]]
+    basis = "https://h.ts.net/marketing/bild/1760000000." + "a" * 64 + "/"
+    r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=2&format=pdf&bild_basis={basis}", headers=H)
+    assert r.status_code == 200 and r.headers["content-type"] == "application/pdf"
+    assert r.content == b"%PDF-1.7 seite"
+    assert "position:relative;width:600px;height:6000px" in gesehen["html"]
+    assert gesehen["erlaubt"] == [basis, "https://h.ts.net/marketing/schrift/"]
+
+
+def test_seite_pdf_ohne_chromium_503(db, c, monkeypatch):
+    from spaces.marketing.claw import pdf_druck
+
+    def druck(html, erlaubt):
+        raise pdf_druck.PdfDruckFehler("PDF-Druck ist hier nicht eingerichtet")
+    monkeypatch.setattr(pdf_druck, "html_zu_pdf", druck)
+    db.antworten = [[_seite_zeile()]]
+    r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=2&format=pdf", headers=H)
+    assert r.status_code == 503 and "nicht eingerichtet" in r.json()["detail"]
+
+
+def test_einreichen_sperrt_seite(db, c):
+    db.antworten = [[{"format": "seite"}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/einreichen", headers=H, json={"von": "Anna"})
+    assert r.status_code == 409 and r.json()["detail"] == "Collage-Newsletter lassen sich noch nicht einreichen"
+    assert len(db.sql) == 1 and "pult_einreichen" not in db.sql[0]
+    db.sql.clear()
+    db.antworten = [[{"format": "bloecke"}], [{"fassung": 4}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/einreichen", headers=H, json={"von": "Anna"})
+    assert r.status_code == 200 and "marketing.pult_einreichen(" in db.sql[1]
+
+
+@pytest.mark.parametrize("pfad,kopf", [
+    (f"/api/pult/inhalte/{IID}/chat", {"X-Pult-Key": KEY}),
+    (f"/api/agent/inhalte/{IID}/chat", {"X-Agent-Key": "agent-k"}),
+])
+def test_chat_sperrt_seite(db, c, monkeypatch, pfad, kopf):
+    monkeypatch.setenv("MARKETING_AGENT_KEY", "agent-k")
+    monkeypatch.setattr(server, "API_KEY", "")
+    db.antworten = [[{"s": None, "collage": True}]]
+    r = c.post(pfad, headers=kopf, json={"nachricht": "Mach es wärmer"})
+    assert r.status_code == 409 and r.json()["detail"] == "Der Assistent kann Collage-Newsletter noch nicht bearbeiten"
+    # Pruefung und Anlegen in EINER Abfrage: bei 'seite' laeuft pult_chat_senden gar nicht erst
+    assert re.search(r"CASE WHEN \(SELECT f\.format .*\) = 'seite' THEN NULL ELSE marketing\.pult_chat_senden\(",
+                     db.sql[0])
+
+
+def test_versand_lehnt_seite_ab(db, c):
+    db.antworten = [[{"status": "freigegeben", "fassung": 2, "format": "seite", "bloecke": None, "mandant": "v",
+                      "felder": {}, "pflichtteil": {}}]]
+    assert c.get(f"/api/pult/inhalte/{IID}/versand", headers=H).status_code == 422

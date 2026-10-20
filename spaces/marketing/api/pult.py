@@ -54,7 +54,8 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Body, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response
 
-from spaces.marketing.claw import bildplaetze, bloecke_mjml, pdf_druck, pult_render, schriften, vorlagen_grafik, vorlagen_marke
+from spaces.marketing.claw import (bildplaetze, bloecke_mjml, pdf_druck, pult_render, schriften, seite, seite_html,
+                                   vorlagen_grafik, vorlagen_marke)
 from spaces.marketing.sync import _db
 
 router = APIRouter(prefix="/api/pult")
@@ -67,6 +68,8 @@ _BILD_BASIS = re.compile(r'^https://[^\s"\'<>]+/$')
 _URHEBER = ("betreiber", "agent")
 _NICHT_ERREICHBAR = "Marketing-Datenbank nicht erreichbar"
 _UNGUELTIGE_EINGABE = "Ungueltige Eingabe (unzulaessiges Zeichen)"
+COLLAGE_EINREICHEN = "Collage-Newsletter lassen sich noch nicht einreichen"
+COLLAGE_CHAT = "Der Assistent kann Collage-Newsletter noch nicht bearbeiten"
 
 
 def _schluessel(x_pult_key: str | None) -> None:
@@ -284,11 +287,30 @@ def _bloecke_html(dok, betreff: str, vorschautext: str, pflichtteil: dict, fmt: 
         return HTMLResponse(html)
     # Paket C3: dasselbe Mail-HTML als PDF (Chromium); laden darf es nur die eigenen Bild-/Schriftadressen -
     # und nur auf Hosts aus der Server-Konfiguration (Sicherheitspruefung 19.10.), nie aus der Anfrage allein
+    return _pdf(html, bild_basis, schrift_basis)
+
+
+def _pdf(html: str, bild_basis: str, schrift_basis: str) -> Response:
     try:
         roh = pdf_druck.html_zu_pdf(html, _pdf_erlaubt(bild_basis, schrift_basis))
     except pdf_druck.PdfDruckFehler as e:
         raise HTTPException(503, str(e))
     return Response(roh, media_type="application/pdf")
+
+
+def _seite_antwort(dok, betreff: str, pflichtteil: dict, fmt: str, bild_basis: str) -> Response:
+    """Collage-Fassung (format 'seite', Plan 2026-10-20 Stufe 1): mail und handy zeigen die Seite selbst
+    (die echte Mail baut Stufe 4), pdf setzt dasselbe HTML in voller Hoehe - mit denselben Ladegrenzen
+    wie der Block-Weg."""
+    schrift_basis = schrift_basis_aus(bild_basis)
+    try:
+        html = seite_html.html(dok, betreff=betreff, pflichtteil=pflichtteil or {},
+                               bild_basis=bild_basis, schrift_basis=schrift_basis)
+    except seite.SeiteFehler as e:
+        raise HTTPException(422, str(e))
+    if fmt != "pdf":
+        return HTMLResponse(html)
+    return _pdf(html, bild_basis, schrift_basis)
 
 
 def _erzeugt_ordner() -> str:
@@ -577,6 +599,78 @@ def bloecke_speichern(iid: str, payload: dict = Body(...), x_pult_key: str | Non
         f"{lit(urheber)}, {'true' if als_kopie else 'false'}) AS fassung")
     return {"fassung": int(zeile["fassung"])}
 
+
+def neuestes_format_sql(i: str) -> str:
+    """Format der neuesten Fassung als SQL-Ausdruck (Collage-Sperren in freigabe.einreichen und im Chat)."""
+    return (f"(SELECT f.format FROM marketing.inhalt_fassungen f WHERE f.inhalt = {lit(i)}::uuid "
+            "ORDER BY f.fassung DESC LIMIT 1)")
+
+
+def _seite_pflicht(wert) -> dict:
+    """Jede Seite laeuft VOR dem Schreiben durch seite.pruefen (die DB prueft die Anrede-/Link-Regel nicht);
+    gespeichert wird das normalisierte Dokument. Fehler -> 422 mit dem deutschen Grund, ohne SQL."""
+    try:
+        return seite.pruefen(wert)
+    except seite.SeiteFehler as e:
+        raise HTTPException(422, str(e))
+
+
+def _marke_fuer_seite(laden: dict) -> dict | None:
+    """Marke fuer seite.leer aus derselben Gestalt, die _vorlage_fuellen nutzt (Akzent, Schriftpaar)."""
+    gestalt = laden.get("gestalt")
+    if not isinstance(gestalt, dict):
+        return None
+    paar = _schriftpaar(gestalt) or {}
+    return {"akzent": gestalt.get("akzent"), "schrift_anzeige": paar.get("anzeige"),
+            "schrift_text": paar.get("text")}
+
+
+@router.post("/inhalte/collage")
+def collage_anlegen(payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    """Neuer Collage-Newsletter (format 'seite'): Startseite aus seite.leer mit der Marke der Firma,
+    Inhalt und Fassung 1 legt marketing.pult_collage_anlegen (077) an."""
+    _schluessel(x_pult_key)
+    m = _mandant_pflicht(payload.get("mandant"))
+    titel = payload.get("titel")
+    if not isinstance(titel, str) or not titel.strip() or len(titel.strip()) > 200:
+        raise HTTPException(422, "titel fehlt oder ist laenger als 200 Zeichen")
+    betreff = payload.get("betreff", "")
+    if not isinstance(betreff, str):
+        raise HTTPException(422, "betreff muss Text sein")
+    dok = _seite_pflicht(seite.leer(_marke_fuer_seite(_laden_lesen(m))))
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_collage_anlegen({lit(m)}, {lit(titel.strip())}, {lit(betreff)}, "
+        f"{lit(json.dumps(dok, ensure_ascii=False))}::jsonb, 'betreiber') AS id")
+    return {"inhalt": str(zeile["id"]), "fassung": 1}
+
+
+@router.post("/inhalte/{iid}/seite")
+def seite_speichern(iid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    """Neue Collage-Fassung. Die Sperren (nur Entwurf, Basis = neueste Fassung, kein laufender Assistent)
+    setzt marketing.pult_seite_speichern (077) durch, wie pult_bloecke_speichern fuer Bloecke."""
+    _schluessel(x_pult_key)
+    i = _uuid_oder_404(iid)
+    basis = _basis_pflicht(payload.get("basis_fassung"))
+    if not isinstance(payload.get("seite"), dict):
+        raise HTTPException(422, "seite fehlt")
+    urheber = payload.get("urheber", "betreiber")
+    if urheber not in _URHEBER:
+        raise HTTPException(422, "urheber muss betreiber oder agent sein")
+    als_kopie = payload.get("als_kopie", False)
+    if not isinstance(als_kopie, bool):
+        raise HTTPException(422, "als_kopie muss true oder false sein")
+    betreff = payload.get("betreff", "")
+    vorschautext = payload.get("vorschautext", "")
+    if not isinstance(betreff, str) or not isinstance(vorschautext, str):
+        raise HTTPException(422, "betreff und vorschautext muessen Text sein")
+    dok = _seite_pflicht(payload["seite"])
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_seite_speichern({lit(i)}::uuid, {int(basis)}, {lit(betreff)}, "
+        f"{lit(vorschautext)}, {lit(json.dumps(dok, ensure_ascii=False))}::jsonb, "
+        f"{lit(urheber)}, {'true' if als_kopie else 'false'}) AS fassung")
+    return {"fassung": int(zeile["fassung"])}
+
+
 @router.get("/inhalte/{iid}")
 def inhalt(iid: str, x_pult_key: str | None = Header(None)):
     _schluessel(x_pult_key)
@@ -602,11 +696,14 @@ def inhalt(iid: str, x_pult_key: str | None = Header(None)):
     # nur sie) - aeltere Dokumente wuerden die Antwort nur aufblaehen.
     fassungen = _lesen(lambda:
         "SELECT fassung, felder, layout, urheber, erstellt_am::text AS erstellt_am, format, "
-        "CASE WHEN fassung = max(fassung) OVER () THEN bloecke END AS bloecke "
+        "CASE WHEN fassung = max(fassung) OVER () THEN bloecke END AS bloecke, "
+        "CASE WHEN fassung = max(fassung) OVER () THEN seite END AS seite "
         f"FROM marketing.inhalt_fassungen WHERE inhalt = {lit(i)}::uuid ORDER BY fassung DESC")
     for nr, f in enumerate(fassungen):
-        if nr and isinstance(f, dict):
-            f["bloecke"] = None
+        if isinstance(f, dict):
+            f.setdefault("seite", None)
+            if nr:
+                f["bloecke"] = f["seite"] = None
     rueckmeldungen = _lesen(lambda:
         "SELECT r.id::text AS id, r.fassung, r.text, r.von, r.am::text AS am, "
         "r.erledigt_am::text AS erledigt_am, (r.erledigt_am IS NOT NULL) AS erledigt "
@@ -693,7 +790,7 @@ def vorschau(iid: str, fassung: int = Query(..., ge=1), format: str = "mail", bi
     # ungeprueft im style-Attribut.
     gestalt_sql = "coalesce(lf.gestalt, l.gestalt)"
     zeile = _lesen_einer(lambda:
-        f"SELECT f.felder, f.format, f.bloecke, {gestalt_sql} AS gestalt, m.pflichtteil, "
+        f"SELECT f.felder, f.format, f.bloecke, f.seite, {gestalt_sql} AS gestalt, m.pflichtteil, "
         f"CASE WHEN f.format = 'felder' THEN marketing.pult_gestalt_fehler({gestalt_sql}) END AS gestalt_fehler "
         "FROM marketing.inhalt_fassungen f "
         "JOIN marketing.inhalte i ON i.id = f.inhalt "
@@ -707,6 +804,9 @@ def vorschau(iid: str, fassung: int = Query(..., ge=1), format: str = "mail", bi
         felder = zeile.get("felder") or {}
         return _bloecke_html(zeile["bloecke"], felder.get("betreff", ""), felder.get("vorschautext", ""),
                              zeile.get("pflichtteil"), fmt, basis)
+    if zeile.get("format") == "seite":
+        return _seite_antwort(zeile.get("seite"), (zeile.get("felder") or {}).get("betreff", ""),
+                              zeile.get("pflichtteil"), fmt or "mail", basis)
     if zeile.get("gestalt_fehler"):
         raise HTTPException(422, str(zeile["gestalt_fehler"]))
     return _rendern(zeile["felder"], zeile["gestalt"], zeile["pflichtteil"], fmt)

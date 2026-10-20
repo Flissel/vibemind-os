@@ -36,16 +36,16 @@ def test_ohne_schluessel_401(umg, methode, pfad, body):
 
 def test_einreichen_ok(umg):
     f, _, c = umg
-    f.antworten.append([{"fassung": 3}])
+    f.antworten += [[{"format": "bloecke"}], [{"fassung": 3}]]   # erst die Collage-Sperre (format), dann einreichen
     r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
     assert r.status_code == 200, r.text
     assert r.json() == {"status": "eingereicht", "fassung": 3}
-    assert "marketing.pult_einreichen(" in f.sql[0] and "'Anna'" in f.sql[0] and IID in f.sql[0]
+    assert "marketing.pult_einreichen(" in f.sql[1] and "'Anna'" in f.sql[1] and IID in f.sql[1]
 
 
 def test_einreichen_db_ablehnung_422(umg):
     f, _, c = umg
-    f.fehler.append(_db_fehler("Der Assistent arbeitet gerade"))
+    f.fehler += [None, _db_fehler("Der Assistent arbeitet gerade")]
     r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
     assert r.status_code == 422 and r.json()["detail"] == "Der Assistent arbeitet gerade"
 

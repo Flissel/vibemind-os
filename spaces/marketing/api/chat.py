@@ -27,8 +27,9 @@ from starlette.concurrency import run_in_threadpool
 from spaces.marketing.api.bilder import (_BILDTYP, _PLATZ, VORLAGEN_MAX as BILD_VORLAGEN_MAX, _agent_schluessel,
                                          _anlegen, _auftrag_id, _bild_schluessel, _im_ordner, _ordner)
 from spaces.marketing.api.gestaltung import aufraeumen_falls_faellig, gestaltungen_rechnen, quellen
-from spaces.marketing.api.pult import (_STATUS, _auswahl, _erzeugt_ordner, _laden_lesen, _lesen, _lesen_einer,
-                                       _mandant, _medien_datei, _schluessel, _schreiben, _uuid_oder_404, lit)
+from spaces.marketing.api.pult import (COLLAGE_CHAT, _STATUS, _auswahl, _erzeugt_ordner, _laden_lesen, _lesen,
+                                       _lesen_einer, _mandant, _medien_datei, _schluessel, _schreiben,
+                                       _uuid_oder_404, lit, neuestes_format_sql)
 from spaces.marketing.api.medien_mandant import ist_fremd, sicht, zuordnen_fuer_inhalt
 from spaces.marketing.claw import gestaltung, schoenheit, vorlagen_marke
 
@@ -128,15 +129,27 @@ def _anhaenge_pruefen(anhaenge) -> None:
             raise HTTPException(422, "kontext.anhaenge: Dateiname ungültig")
 
 
+def _chat_senden(i: str, nachricht: str, kontext: dict) -> dict:
+    """Chat-Runde anlegen (Editor und Agent). Der Chat-Arbeiter kennt bis Stufe 3 nur Bloecke: ist die neueste
+    Fassung eine Collage (format 'seite'), 409 - geprueft in DERSELBEN Abfrage, pult_chat_senden laeuft dann
+    nicht (CASE wertet den ELSE-Zweig mit der volatilen Funktion nur bei Bedarf aus)."""
+    fmt = neuestes_format_sql(i)
+    zeile = _schreiben(lambda:
+        f"SELECT CASE WHEN {fmt} = 'seite' THEN NULL ELSE marketing.pult_chat_senden({lit(i)}::uuid, "
+        f"{lit(nachricht)}, {lit(json.dumps(kontext, ensure_ascii=False))}::jsonb) END AS s, "
+        f"coalesce({fmt} = 'seite', false) AS collage")
+    if zeile.get("collage"):
+        raise HTTPException(409, COLLAGE_CHAT)
+    s = zeile.get("s") or {}
+    return {"auftrag": str(s.get("id")), "status": "wartet" if s.get("status") == "wartet" else "offen"}
+
+
 @pult_router.post("/inhalte/{iid}/chat")
 def chat_anlegen(iid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
     _schluessel(x_pult_key)
     i = _uuid_oder_404(iid)
     nachricht, kontext = _nachricht_und_kontext(payload)
-    s = _schreiben(lambda:
-        f"SELECT marketing.pult_chat_senden({lit(i)}::uuid, {lit(nachricht)}, "
-        f"{lit(json.dumps(kontext, ensure_ascii=False))}::jsonb) AS s").get("s") or {}
-    return {"auftrag": str(s.get("id")), "status": "wartet" if s.get("status") == "wartet" else "offen"}
+    return _chat_senden(i, nachricht, kontext)
 
 
 # ─── Agent (20.10.2026) ──────────────────────────────────────────────────
@@ -163,10 +176,7 @@ def agent_chat_anlegen(iid: str, payload: dict = Body(...), x_agent_key: str | N
     _agent_schluessel(x_agent_key)
     i = _uuid_oder_404(iid)
     nachricht, _ = _nachricht_und_kontext({"nachricht": payload.get("nachricht")})
-    s = _schreiben(lambda:
-        f"SELECT marketing.pult_chat_senden({lit(i)}::uuid, {lit(nachricht)}, "
-        f"{lit(json.dumps({'von': 'agent'}))}::jsonb) AS s").get("s") or {}
-    return {"auftrag": str(s.get("id")), "status": "wartet" if s.get("status") == "wartet" else "offen"}
+    return _chat_senden(i, nachricht, {"von": "agent"})
 
 
 @agent_router.get("/{iid}/chat")
