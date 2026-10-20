@@ -68,7 +68,6 @@ _BILD_BASIS = re.compile(r'^https://[^\s"\'<>]+/$')
 _URHEBER = ("betreiber", "agent")
 _NICHT_ERREICHBAR = "Marketing-Datenbank nicht erreichbar"
 _UNGUELTIGE_EINGABE = "Ungueltige Eingabe (unzulaessiges Zeichen)"
-COLLAGE_EINREICHEN = "Collage-Newsletter lassen sich noch nicht einreichen"
 COLLAGE_IST = "Das ist ein Collage-Newsletter"
 COLLAGE_IST_NICHT = "Das ist kein Collage-Newsletter"
 
@@ -324,9 +323,9 @@ def _pdf(html: str, bild_basis: str, schrift_basis: str) -> Response:
 
 
 def _seite_antwort(dok, betreff: str, pflichtteil: dict, fmt: str, bild_basis: str) -> Response:
-    """Collage-Fassung (format 'seite', Plan 2026-10-20 Stufe 1): mail und handy zeigen die Seite selbst
-    (die echte Mail baut Stufe 4), pdf setzt dasselbe HTML in voller Hoehe - mit denselben Ladegrenzen
-    wie der Block-Weg."""
+    """Collage-Fassung (format 'seite', Plan 2026-10-20 Stufe 1) als PDF: die Seite selbst in voller Hoehe - mit
+    denselben Ladegrenzen wie der Block-Weg. mail und handy zeigen seit Stufe 4 die Mail-Fassung
+    (_seite_mail_antwort)."""
     schrift_basis = schrift_basis_aus(bild_basis)
     try:
         html = seite_html.html(dok, betreff=betreff, pflichtteil=pflichtteil or {},
@@ -336,6 +335,14 @@ def _seite_antwort(dok, betreff: str, pflichtteil: dict, fmt: str, bild_basis: s
     if fmt != "pdf":
         return HTMLResponse(html)
     return _pdf(html, bild_basis, schrift_basis)
+
+
+def _seite_mail_antwort(i: str, fassung: int, bild_basis: str) -> Response:
+    """Mail-Vorschau einer Collage-Fassung (mail und handy, Stufe 4): die Mail-Fassung (bei Bedarf erzeugt,
+    Fehler 422 mit Grund) mit der Bildbasis dieser Anfrage. Import erst hier: seite_mail_dienst braucht chat,
+    chat braucht pult."""
+    from spaces.marketing.api import seite_mail_dienst
+    return HTMLResponse(seite_mail_dienst.vorschau_html(seite_mail_dienst.erzeugen(i, fassung), bild_basis))
 
 
 def _erzeugt_ordner() -> str:
@@ -773,7 +780,8 @@ def versand(iid: str, x_pult_key: str | None = Header(None)):
     """Versandfassung eines freigegebenen Editor-Newsletters fuer sales-claw (Plan 2026-10-15-newsletter-
     versand-an-kontakte.md): HTML mit eingebetteten Bildern (cid:), Textfassung und die Medienliste.
     {vorname} und {abmeldelink} bleiben stehen - eingesetzt wird je Empfaenger in sales-claw, Marketing
-    sieht keine Namen. Nur die freigegebene Fassung, nie ein Entwurf."""
+    sieht keine Namen. Nur die freigegebene Fassung, nie ein Entwurf. Collagen (Stufe 4): dieselbe Form aus
+    der Mail-Fassung der freigegebenen Fassung (seite_mail_dienst, bei Bedarf erzeugt)."""
     _schluessel(x_pult_key)
     i = _uuid_oder_404(iid)
     zeile = _lesen_einer(lambda:
@@ -786,17 +794,23 @@ def versand(iid: str, x_pult_key: str | None = Header(None)):
         raise HTTPException(404, "Unbekannter Inhalt")
     if zeile.get("status") != "freigegeben" or zeile.get("fassung") is None:
         raise HTTPException(409, "Nur freigegebene Newsletter lassen sich versenden")
+    felder = zeile.get("felder") or {}
+    kopf = {"inhalt": i, "mandant": zeile.get("mandant"), "fassung": int(zeile["fassung"]),
+            "betreff": felder.get("betreff", ""), "vorschautext": felder.get("vorschautext", "")}
+    if zeile.get("format") == "seite":
+        from spaces.marketing.api import seite_mail_dienst   # erst hier: seite_mail_dienst -> chat -> pult
+        mail = seite_mail_dienst.erzeugen(i, int(zeile["fassung"]))
+        return {**kopf, "html": mail.get("html_versand") or "", "text": mail.get("text") or "",
+                "medien": mail.get("medien") or []}
     if zeile.get("format") != "bloecke":
         raise HTTPException(422, "Versand gibt es nur fuer Editor-Newsletter")
-    felder, pflicht, dok = zeile.get("felder") or {}, zeile.get("pflichtteil") or {}, zeile["bloecke"]
+    pflicht, dok = zeile.get("pflichtteil") or {}, zeile["bloecke"]
     try:
         html = bloecke_mjml.rendern(dok, felder.get("betreff", ""), felder.get("vorschautext", ""), pflicht,
                                     fuer_versand=True)
     except bloecke_mjml.RenderFehler as e:
         raise HTTPException(422, str(e))
-    return {"inhalt": i, "mandant": zeile.get("mandant"), "fassung": int(zeile["fassung"]),
-            "betreff": felder.get("betreff", ""), "vorschautext": felder.get("vorschautext", ""),
-            "html": html, "text": bloecke_mjml.text_fassung(dok, pflicht),
+    return {**kopf, "html": html, "text": bloecke_mjml.text_fassung(dok, pflicht),
             "medien": bloecke_mjml.versand_medien(dok)}
 
 
@@ -829,6 +843,8 @@ def vorschau(iid: str, fassung: int = Query(..., ge=1), format: str = "mail", bi
         felder = zeile.get("felder") or {}
         return _bloecke_html(zeile["bloecke"], felder.get("betreff", ""), felder.get("vorschautext", ""),
                              zeile.get("pflichtteil"), fmt, basis)
+    if zeile.get("format") == "seite" and fmt in (None, "mail", "handy"):
+        return _seite_mail_antwort(i, int(fassung), basis)
     if zeile.get("format") == "seite":
         return _seite_antwort(zeile.get("seite"), (zeile.get("felder") or {}).get("betreff", ""),
                               zeile.get("pflichtteil"), fmt or "mail", basis)

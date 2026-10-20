@@ -16,8 +16,9 @@ from fastapi import APIRouter, Body, Header, HTTPException, Query
 
 from spaces.marketing.api.chat import FLAECHEN_MAX, GERAETE, export_ausfuehren, slug
 from spaces.marketing.api.gestaltung import quellen
-from spaces.marketing.api.pult import (COLLAGE_EINREICHEN, _fassung_pflicht, _lesen, _lesen_einer, _schluessel,
-                                       _schreiben, _uuid_oder_404, lit, mit_formatsperre)
+from spaces.marketing.api import seite_mail_dienst
+from spaces.marketing.api.pult import (COLLAGE_IST, _fassung_pflicht, _lesen, _lesen_einer, _schluessel, _schreiben,
+                                       _uuid_oder_404, lit, mit_formatsperre)
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/pult")
@@ -39,10 +40,31 @@ def einreichen(iid: str, payload: dict = Body(default={}), x_pult_key: str | Non
     _schluessel(x_pult_key)
     i = _uuid_oder_404(iid)
     von = _von(payload)
-    # Collage-Newsletter (format 'seite') kennen Freigabe und Versand erst ab Stufe 4 - gesperrt in derselben
-    # Abfrage, pult_einreichen laeuft dann nicht
-    zeile = mit_formatsperre(i, lambda: f"marketing.pult_einreichen({lit(i)}::uuid, {lit(von)})",
-                             grund=COLLAGE_EINREICHEN)
+    # Block-Newsletter wie bisher: Formatsperre und pult_einreichen in EINER Abfrage. Ist die neueste Fassung eine
+    # Collage (format 'seite'), laeuft pult_einreichen dort nicht (409 aus mit_formatsperre) - dann der Collage-Weg.
+    try:
+        zeile = mit_formatsperre(i, lambda: f"marketing.pult_einreichen({lit(i)}::uuid, {lit(von)})",
+                                 grund=COLLAGE_IST)
+    except HTTPException as e:
+        if e.status_code != 409:
+            raise
+        return _collage_einreichen(i, von)
+    return {"status": "eingereicht", "fassung": int(zeile["fassung"])}
+
+
+def _collage_einreichen(i: str, von: str) -> dict:
+    """Collage (Stufe 4): erst die Mail-Fassung der neuesten Fassung (Anrede-im-Bild-Pruefung, Bildstuecke,
+    Groesse - jede Ablehnung 422 mit Grund, dann wird nichts eingereicht), danach pult_seite_einreichen (081):
+    sperrt den Inhalt, prueft, dass genau diese Fassung noch die neueste ist und ihre Mail-Fassung vorliegt, und
+    ruft pult_einreichen unveraendert. Eine inzwischen gespeicherte neuere Fassung -> 422, nie ohne Mail."""
+    neueste = _lesen_einer(lambda:
+        f"SELECT max(fassung) AS n FROM marketing.inhalt_fassungen WHERE inhalt = {lit(i)}::uuid")
+    n = (neueste or {}).get("n")
+    if n is None:
+        raise HTTPException(422, "Ohne Fassung gibt es nichts einzureichen")
+    seite_mail_dienst.erzeugen(i, int(n))
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_seite_einreichen({lit(i)}::uuid, {int(n)}, {lit(von)}) AS fassung")
     return {"status": "eingereicht", "fassung": int(zeile["fassung"])}
 
 

@@ -1347,13 +1347,9 @@ def test_vorschau_waehlt_format_je_fassung(db, c):
     db.antworten = [[_bloecke_zeile()]]
     r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=1&format=mail", headers=H)
     assert r.status_code == 200 and "Hallo Pult" in r.text and "position:relative;width:600px" not in r.text
-    for fmt in ("mail", "handy"):
-        db.antworten = [[_seite_zeile()]]
-        r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=2&format={fmt}", headers=H)
-        assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
-        assert "position:relative;width:600px" in r.text and "Überschrift" in r.text
-        assert "<title>Herbst</title>" in r.text
     assert "f.seite" in db.sql[-1]
+    # Stufe 4: mail und handy einer Collage zeigen die Mail-Fassung (test_vorschau_mail_collage), pdf weiter die
+    # Seite selbst (test_pdf_hoehe_folgt_der_seite)
 
 
 def test_pdf_hoehe_folgt_der_seite(db, c, monkeypatch):
@@ -1385,18 +1381,14 @@ def test_seite_pdf_ohne_chromium_503(db, c, monkeypatch):
     assert r.status_code == 503 and "nicht eingerichtet" in r.json()["detail"]
 
 
-def test_einreichen_sperrt_seite(db, c):
-    db.antworten = [[{"fassung": None, "gesperrt": True}]]
-    r = c.post(f"/api/pult/inhalte/{IID}/einreichen", headers=H, json={"von": "Anna"})
-    assert r.status_code == 409 and r.json()["detail"] == "Collage-Newsletter lassen sich noch nicht einreichen"
-    # Pruefung und Einreichen in EINER Abfrage: bei 'seite' laeuft pult_einreichen gar nicht erst
-    assert len(db.sql) == 1
-    assert re.search(r"CASE WHEN \(SELECT f\.format .*\) = 'seite' THEN NULL ELSE marketing\.pult_einreichen\(",
-                     db.sql[0])
-    db.sql.clear()
+def test_einreichen_bloecke_unveraendert_eine_abfrage(db, c):
+    """Block-Newsletter: Formatsperre und pult_einreichen weiter in EINER Abfrage (Collagen: test_freigabe_api)."""
     db.antworten = [[{"fassung": 4, "gesperrt": False}]]
     r = c.post(f"/api/pult/inhalte/{IID}/einreichen", headers=H, json={"von": "Anna"})
-    assert r.status_code == 200 and r.json()["fassung"] == 4 and len(db.sql) == 1
+    assert r.status_code == 200 and r.json() == {"status": "eingereicht", "fassung": 4} and len(db.sql) == 1
+    assert re.search(r"CASE WHEN \(SELECT f\.format .*\) = 'seite' THEN NULL ELSE marketing\.pult_einreichen\(",
+                     db.sql[0])
+    assert not hasattr(pult, "COLLAGE_EINREICHEN")
 
 
 @pytest.mark.parametrize("pfad,kopf", [
@@ -1415,20 +1407,85 @@ def test_chat_auf_collage_erlaubt(db, c, monkeypatch, pfad, kopf):
     assert "'seite'" not in db.sql[0] and "gesperrt" not in db.sql[0]
 
 
-def test_einreichen_collage_bleibt_gesperrt(db, c):
-    """Mit dem Chat fuer Collagen bleibt Einreichen gesperrt (Stufe 4) - dieselbe Formatsperre wie bisher."""
-    db.antworten = [[{"fassung": None, "gesperrt": True}]]
-    r = c.post(f"/api/pult/inhalte/{IID}/einreichen", headers=H, json={"von": "Anna"})
-    assert r.status_code == 409 and r.json()["detail"] == pult.COLLAGE_EINREICHEN
-    assert "= 'seite' THEN NULL ELSE marketing.pult_einreichen(" in db.sql[0]
+MAIL = {"inhalt": IID, "fassung": 2, "html_versand": "<html>{vorname} cid:ms-11111111-2-01.jpg</html>",
+        "html_vorschau_mjml": None, "text": "Hallo {vorname}\n--\nI", "bytes": 10,
+        "medien": [{"name": "ms-11111111-2-01.jpg", "cid": "ms-11111111-2-01.jpg", "sw": False}]}
+BASIS = "https://h.ts.net/marketing/bild/1760000000." + "a" * 64 + "/"
 
 
-def test_versand_lehnt_seite_ab(db, c):
-    db.antworten = [[{"status": "freigegeben", "fassung": 2, "format": "seite", "bloecke": None, "mandant": "v",
-                      "felder": {}, "pflichtteil": {}}]]
+def _mail_mjml():
+    from spaces.marketing.api import seite_mail_dienst as dienst
+    from spaces.marketing.claw import seite_mail
+    namen = [f"ms-11111111-2-{k:02d}.jpg" for k in range(1, len(seite_mail.stuecke(SEITE)) + 1)]
+    return seite_mail.mjml(SEITE, namen, betreff="Herbst", vorschautext="", pflichtteil={"impressum": "I"},
+                           bild_adresse=lambda n: dienst.BILD_MARKE + n, fuer_versand=False), namen
+
+
+def _versand_kopf(**extra):
+    z = {"status": "freigegeben", "fassung": 2, "format": "seite", "bloecke": None, "mandant": "radhaus",
+         "felder": {"betreff": "Herbst", "vorschautext": "Neu"}, "pflichtteil": {"impressum": "I"}}
+    z.update(extra)
+    return z
+
+
+def test_versand_collage_form_wie_bloecke(db, c):
+    db.antworten = [[_versand_kopf()], [{"format": "seite", "seite": SEITE, "felder": {}, "pflichtteil": {},
+                                          "mail": MAIL}]]
     r = c.get(f"/api/pult/inhalte/{IID}/versand", headers=H)
-    assert r.status_code == 422 and r.json()["detail"] == "Versand gibt es nur fuer Editor-Newsletter"
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert set(j) == {"inhalt", "mandant", "fassung", "betreff", "vorschautext", "html", "text", "medien"}
+    assert j == {"inhalt": IID, "mandant": "radhaus", "fassung": 2, "betreff": "Herbst", "vorschautext": "Neu",
+                 "html": MAIL["html_versand"], "text": MAIL["text"], "medien": MAIL["medien"]}
+    # die Mail-Fassung der FREIGEGEBENEN Fassung
+    assert "marketing.pult_seite_mail_lesen(" in db.sql[1] and f"'{IID}'::uuid AND f.fassung = 2" in db.sql[1]
 
+
+def test_versand_collage_erzeugt_bei_bedarf(db, c):
+    """Ohne gespeicherte Mail-Fassung wird sie erzeugt (reine Textseite: ohne Chromium, ohne Dateien)."""
+    from spaces.marketing.claw import seite as _s, seite_mail
+    nur_text = _s.pruefen(dict(SEITE, ebenen=[e for e in SEITE["ebenen"] if e["id"] in ("text", "knopf")]))
+    assert seite_mail.stuecke(nur_text) == []
+    gespeichert = dict(MAIL, medien=[], html_versand="<html>neu</html>", text="neu")
+    db.antworten = [[_versand_kopf()],
+                    [{"format": "seite", "seite": nur_text, "felder": {"betreff": "Herbst"},
+                      "pflichtteil": {"impressum": "I"}, "mail": None}],
+                    [{"mail": gespeichert}]]
+    r = c.get(f"/api/pult/inhalte/{IID}/versand", headers=H)
+    assert r.status_code == 200, r.text
+    assert r.json()["html"] == "<html>neu</html>" and r.json()["medien"] == []
+    assert "marketing.pult_seite_mail_speichern(" in db.sql[2]
+
+
+def test_versand_collage_nicht_freigegeben_409(db, c):
+    db.antworten = [[_versand_kopf(status="eingereicht")]]
+    assert c.get(f"/api/pult/inhalte/{IID}/versand", headers=H).status_code == 409 and len(db.sql) == 1
+
+
+def test_vorschau_mail_collage(db, c):
+    quelle, namen = _mail_mjml()
+    for fmt in ("mail", "handy"):
+        db.antworten = [[_seite_zeile()], [{"format": "seite", "seite": SEITE, "felder": {}, "pflichtteil": {},
+                                            "mail": dict(MAIL, html_vorschau_mjml=quelle)}]]
+        r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=2&format={fmt}&bild_basis={BASIS}", headers=H)
+        assert r.status_code == 200 and r.headers["content-type"].startswith("text/html"), r.text
+        assert BASIS + namen[0] in r.text and "bildbasis.vibemind.invalid" not in r.text
+        assert "position:relative;width:600px" not in r.text      # nicht mehr die Seite selbst
+        assert "<title>Herbst</title>" in r.text
+        assert "f.fassung = 2" in db.sql[-1] and "pult_seite_mail_lesen" in db.sql[-1]
+
+
+def test_vorschau_mail_collage_fehler_422(db, c):
+    anrede = dict(SEITE, ebenen=[
+        {"id": "b", "art": "bild", "x": 300, "y": 300, "breite": 400, "hoehe": 300, "quelle": "medien:a.png"},
+        {"id": "t", "art": "text", "x": 300, "y": 300, "breite": 300, "hoehe": 60, "text": "Hallo {vorname}",
+         "rolle": "TEXT", "groesse": 17, "farbe": "#333333"}])
+    db.antworten = [[_seite_zeile(seite=anrede)], [{"format": "seite", "seite": anrede, "felder": {},
+                                                    "pflichtteil": {}, "mail": None}]]
+    r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=2&format=mail", headers=H)
+    assert r.status_code == 422
+    assert r.json()["detail"] == "Die Anrede steht in einem Bildbereich – sie muss in frei stehendem Fließtext stehen"
+    assert len(db.sql) == 2
 
 
 # --- Gesamtpruefung Stufe 1: Befunde ---

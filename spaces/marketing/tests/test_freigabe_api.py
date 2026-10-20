@@ -58,6 +58,101 @@ def test_einreichen_db_weg_503(umg):
     assert r.status_code == 503 and "ssh" not in r.text
 
 
+ANREDE = "Die Anrede steht in einem Bildbereich – sie muss in frei stehendem Fließtext stehen"
+
+
+def _collage(text_y=600):
+    return {"version": 1, "breite": 600, "hoehe": 800, "hintergrund": {"farbe": "#fafafa", "bild": None},
+            "schriften": {"anzeige": "playfair", "text": "dm-sans"},
+            "ebenen": [{"id": "b", "art": "bild", "x": 300, "y": 200, "breite": 400, "hoehe": 300,
+                        "quelle": "medien:probe.png"},
+                       {"id": "t", "art": "text", "x": 300, "y": text_y, "breite": 480, "hoehe": 100,
+                        "text": "Hallo {vorname}", "rolle": "TEXT", "groesse": 17, "farbe": "#333333"}]}
+
+
+@pytest.fixture
+def renderer(monkeypatch):
+    import io
+    from PIL import Image
+    from spaces.marketing.claw import seite_bilder
+    aufrufe = []
+
+    def render(s, medien_lesen, **_):
+        aufrufe.append(s)
+        p = io.BytesIO()
+        Image.new("RGB", (1200, int(s["hoehe"]) * 2), (10, 20, 30)).save(p, "PNG")
+        return p.getvalue()
+    monkeypatch.setattr(seite_bilder, "render_png", render)
+    return aufrufe
+
+
+def test_einreichen_collage_erzeugt_mail_dann_einreichen(umg, renderer):
+    import os
+    f, tmp, c = umg
+    name = "ms-11111111-2-01.jpg"
+    f.antworten += [
+        [{"fassung": None, "gesperrt": True}],                     # Formatsperre: neueste Fassung ist 'seite'
+        [{"n": 2}],                                                 # neueste Fassung
+        [{"format": "seite", "seite": _collage(), "felder": {"betreff": "Herbst"}, "pflichtteil": {"impressum": "I"},
+          "mail": None}],
+        [{"mail": {"medien": [{"name": name, "cid": name, "sw": False}], "bytes": 1}}],
+        [{"fassung": 2}],
+    ]
+    r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"status": "eingereicht", "fassung": 2}
+    assert len(renderer) == 1 and os.listdir(tmp) == [name]
+    assert "marketing.pult_seite_mail_speichern(" in f.sql[3]
+    # zuletzt, nach der Mail-Fassung: Einreichen genau dieser Fassung (die DB prueft neueste = 2 und Mail da)
+    assert f.sql[4] == f"SELECT marketing.pult_seite_einreichen('{IID}'::uuid, 2, 'Anna') AS fassung"
+    assert len(f.sql) == 5
+
+
+def test_einreichen_collage_mail_schon_da_ohne_render(umg, renderer):
+    f, _, c = umg
+    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 3}],
+                    [{"format": "seite", "seite": _collage(), "felder": {}, "pflichtteil": {},
+                      "mail": {"medien": [], "bytes": 0}}],
+                    [{"fassung": 3}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
+    assert r.status_code == 200 and r.json()["fassung"] == 3 and renderer == []
+    assert "pult_seite_einreichen(" in f.sql[-1] and ", 3, " in f.sql[-1]
+
+
+def test_einreichen_collage_anrede_im_bild_blockiert(umg, renderer):
+    f, tmp, c = umg
+    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 2}],
+                    [{"format": "seite", "seite": _collage(text_y=200), "felder": {}, "pflichtteil": {},
+                      "mail": None}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
+    assert r.status_code == 422 and r.json()["detail"] == ANREDE
+    assert renderer == [] and list(tmp.iterdir()) == []
+    assert not any("pult_seite_einreichen" in s or "pult_einreichen(" in s.split("ELSE")[-1] for s in f.sql[1:])
+
+
+def test_einreichen_collage_zu_gross_blockiert(umg, renderer, monkeypatch):
+    from spaces.marketing.claw import seite_bilder
+    f, tmp, c = umg
+    echt = seite_bilder.zuschneiden
+    monkeypatch.setattr(seite_bilder, "zuschneiden", lambda png, st, **k: echt(png, st, max_bytes=1))
+    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 2}],
+                    [{"format": "seite", "seite": _collage(), "felder": {}, "pflichtteil": {}, "mail": None}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
+    assert r.status_code == 422 and r.json()["detail"].startswith("Die Mail wäre zu groß (")
+    assert list(tmp.iterdir()) == [] and len(f.sql) == 3
+
+
+def test_einreichen_collage_veraltet_422(umg, renderer):
+    """Zwischen Erzeugen und Einreichen kam eine neuere Fassung: die DB lehnt ab, nichts wird eingereicht."""
+    f, _, c = umg
+    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 2}],
+                    [{"format": "seite", "seite": _collage(), "felder": {}, "pflichtteil": {},
+                      "mail": {"medien": [], "bytes": 0}}]]
+    f.fehler += [None, None, None, _db_fehler("Inzwischen gibt es Fassung 3 – bitte neu laden")]
+    r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
+    assert r.status_code == 422 and r.json()["detail"] == "Inzwischen gibt es Fassung 3 – bitte neu laden"
+
+
 def test_zurueckziehen_ok_und_ablehnung(umg):
     f, _, c = umg
     f.antworten.append([{"s": "entwurf"}])
