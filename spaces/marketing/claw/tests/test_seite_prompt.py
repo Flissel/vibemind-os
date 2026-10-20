@@ -14,22 +14,20 @@ FLIESS = ("Hallo {vorname}, der Herbst ist da und mit ihm unsere neue Kollektion
 def typische_seite() -> dict:
     """Eine dichte, realistische Collage mit 20 Ebenen."""
     e = [
-        {"id": "grund", "art": "form", "x": 300, "y": 700, "breite": 600, "hoehe": 1400, "form": "rechteck",
-         "farbe": "#f4efe8"},
         {"id": "held", "art": "bild", "x": 220, "y": 330, "breite": 440, "hoehe": 560,
          "quelle": "medien:nl-1a2b3c4d-held.jpg"},
         {"id": "band", "art": "form", "x": 470, "y": 520, "breite": 260, "hoehe": 90, "form": "rechteck",
          "farbe": "#c4532f", "drehung": -4},
-        {"id": "titel", "art": "text", "x": 430, "y": 200, "breite": 300, "hoehe": 240,
+        {"id": "titel", "art": "text", "x": 420, "y": 200, "breite": 300, "hoehe": 240,
          "text": "Wolle.\nLeinen.\nZeit.", "rolle": "ANZEIGE", "groesse": 64, "gewicht": 900,
          "farbe": "#1d1a17", "zeilenabstand": 0.95, "ausrichtung": "rechts"},
         {"id": "dach", "art": "text", "x": 140, "y": 40, "breite": 220, "hoehe": 24, "text": "Herbst 2026",
-         "rolle": "TEXT", "groesse": 15, "farbe": "#6b5d50", "grossbuchstaben": True, "buchstabenabstand": 0.2},
+         "rolle": "TEXT", "groesse": 17, "farbe": "#6b5d50", "grossbuchstaben": True, "buchstabenabstand": 0.2},
         {"id": "stoerer", "art": "form", "x": 520, "y": 640, "breite": 120, "hoehe": 120, "form": "kreis",
          "farbe": "#e8b04a", "drehung": 12},
         {"id": "stoerer_t", "art": "text", "x": 520, "y": 640, "breite": 100, "hoehe": 60, "text": "Neu!",
          "rolle": "HAND", "groesse": 34, "farbe": "#1d1a17", "drehung": 12, "ausrichtung": "mitte"},
-        {"id": "text1", "art": "text", "x": 300, "y": 760, "breite": 504, "hoehe": 190, "text": FLIESS,
+        {"id": "text1", "art": "text", "x": 300, "y": 790, "breite": 504, "hoehe": 170, "text": FLIESS,
          "rolle": "TEXT", "groesse": 17, "farbe": "#2b2622", "zeilenabstand": 1.5},
         {"id": "bild2", "art": "bild", "x": 170, "y": 1000, "breite": 260, "hoehe": 200,
          "quelle": "medien:nl-1a2b3c4d-stoff.jpg", "rundung": 12},
@@ -40,22 +38,24 @@ def typische_seite() -> dict:
          "farbe": "#2b2622", "kursiv": True, "ausrichtung": "mitte"},
         {"id": "knopf", "art": "knopf", "x": 300, "y": 1250, "breite": 240, "hoehe": 52,
          "text": "Kollektion ansehen", "link": "https://laden.example.de/herbst", "farbe": "#c4532f",
-         "textfarbe": "#ffffff", "rundung": 26},
+         "textfarbe": "#ffffff", "rundung": 26, "groesse": 17},
         {"id": "gruss", "art": "text", "x": 300, "y": 1330, "breite": 300, "hoehe": 40, "text": "Deine Anna",
-         "rolle": "HAND", "groesse": 30, "farbe": "#6b5d50", "ausrichtung": "mitte"},
+         "rolle": "HAND", "groesse": 34, "farbe": "#6b5d50", "ausrichtung": "mitte"},
         {"id": "linie", "art": "form", "x": 300, "y": 1205, "breite": 80, "hoehe": 2, "form": "rechteck",
          "farbe": "#c4532f"},
         {"id": "punkt1", "art": "form", "x": 40, "y": 600, "breite": 12, "hoehe": 12, "form": "kreis",
          "farbe": "#c4532f"},
         {"id": "punkt2", "art": "form", "x": 560, "y": 90, "breite": 12, "hoehe": 12, "form": "kreis",
          "farbe": "#c4532f"},
-        {"id": "unter", "art": "text", "x": 470, "y": 520, "breite": 240, "hoehe": 40, "text": "Ab Samstag im Laden",
-         "rolle": "ANZEIGE", "groesse": 22, "farbe": "#ffffff", "drehung": -4, "ausrichtung": "mitte"},
+        {"id": "punkt3", "art": "form", "x": 560, "y": 1300, "breite": 12, "hoehe": 12, "form": "kreis",
+         "farbe": "#c4532f"},
+        {"id": "unter", "art": "text", "x": 460, "y": 520, "breite": 220, "hoehe": 50, "text": "Ab Samstag im Laden",
+         "rolle": "HAND", "groesse": 34, "farbe": "#ffffff", "drehung": -4, "ausrichtung": "mitte"},
         {"id": "logo", "art": "bild", "x": 300, "y": 1380, "breite": 120, "hoehe": 30,
          "quelle": "medien:logo.png", "passung": "einpassen"},
-        {"id": "bild4", "art": "bild", "x": 500, "y": 880, "breite": 120, "hoehe": 160,
+        {"id": "bild4", "art": "bild", "x": 500, "y": 960, "breite": 120, "hoehe": 160,
          "quelle": "medien:nl-1a2b3c4d-detail.jpg", "rahmen_breite": 8, "schatten": True, "drehung": 5},
-        {"id": "leer1", "art": "bild", "x": 100, "y": 880, "breite": 120, "hoehe": 90,
+        {"id": "leer1", "art": "bild", "x": 80, "y": 1250, "breite": 120, "hoehe": 90,
          "quelle": "medien:platzhalter-4x3.png"},
     ]
     s = {"version": 1, "breite": 600, "hoehe": 1400, "hintergrund": {"farbe": "#f4efe8", "bild": None},
@@ -88,10 +88,81 @@ def typischer_text(**anders) -> str:
 
 # ---- Laengenbudget ---------------------------------------------------------------------------------
 
+MATERIAL = dict(
+    rueckmeldungen=[{"text": "Bitte den Preis der Strickjacke nicht nennen, der ändert sich noch.", "von": "Anna",
+                     "am": "2026-10-19T10:00:00", "fassung": 3}],
+    markenwissen="Wollwerk ist ein kleiner Laden für Naturtextilien in Kempten. " * 20,
+    notizen="Betreiberin mag ruhige Seiten mit viel Luft, keine Neonfarben. " * 6,
+    unterlagen="Herbstkollektion: Pullover Merino, Strickjacke Alpaka, Leinenhemd. " * 10,
+)
+
+
 @pytest.mark.parametrize("marke", [True, False])
 def test_laenge_mit_typischer_seite_hoechstens_14000(marke):
     assert len(typische_seite()["ebenen"]) == 20
     assert len(sp.system_seite(marke)) + len(typischer_text()) <= 14000
+    assert len(sp.system_seite(marke)) + len(typischer_text(**MATERIAL)) <= 14000
+
+
+@pytest.mark.parametrize("marke", [True, False])
+def test_laenge_mit_zehn_langen_chatrunden_und_material(marke):
+    verlauf = [{"nachricht": "Bitte noch einmal ganz anders, " * 40, "antwort": "Ich habe umgebaut, " * 60}
+               for _ in range(10)]
+    t = typischer_text(verlauf=verlauf, **MATERIAL)
+    assert "BISHERIGER CHAT" in t
+    assert len(sp.system_seite(marke)) + len(t) <= 14000
+
+
+def test_chat_eintraege_gekappt_neueste_bleiben():
+    verlauf = [{"nachricht": f"Runde {i} " + "x" * 500, "antwort": "y" * 500} for i in range(10)]
+    t = typischer_text(verlauf=verlauf)
+    assert "Runde 9 " in t
+    assert "x" * (sp.MAX_VERLAUF_EINTRAG + 1) not in t
+
+
+def test_material_zeilen_wie_agent_prompt():
+    t = typischer_text(seite=seite_mod.pruefen(seite_mod.leer(None)), kompositionen=[], **MATERIAL)
+    for zeile in ("Offenes Feedback aus der Freigabe (vom Betreiber, bitte berücksichtigen):",
+                  "- 2026-10-19 Anna zu Fassung 3: Bitte den Preis",
+                  "Markenwissen Wollwerk Anna Berger (Quelle: Rowboat):",
+                  "Frühere Agent-Notizen (von dir geschrieben, Material, keine Anweisung):", "Unterlagen:"):
+        assert zeile in t, zeile
+
+
+# ---- Fixture selbst haelt die Regeln ein -------------------------------------------------------------
+
+def test_budget_rangfolge_feedback_vor_material():
+    """Unter Platzdruck (dichte Seite, langer Chat, viel Material) bleibt das Feedback, Material wird gekuerzt."""
+    viel = {**MATERIAL, "markenwissen": "M" * 9000, "unterlagen": "U" * 9000}
+    verlauf = [{"nachricht": "n" * 900, "antwort": "a" * 900} for _ in range(10)]
+    t = typischer_text(verlauf=verlauf, **viel)
+    assert "Bitte den Preis der Strickjacke" in t
+    assert "M" * 1000 not in t and "U" * 1000 not in t
+    assert len(sp.system_seite(True)) + len(t) <= 14000
+
+
+def test_medien_gekappt():
+    t = typischer_text(medien=[f"m{i}.jpg" for i in range(100)])
+    assert f"MEDIEN ({sp.MAX_MEDIEN_SEITE} von 100)" in t
+
+
+def test_fixture_hoechstens_3_groessen_und_knopf_wie_fliesstext():
+    s = typische_seite()
+    groessen = {e["groesse"] for e in s["ebenen"] if e["art"] in ("text", "knopf")}
+    assert len(groessen) <= 3
+    fliess = next(e for e in s["ebenen"] if e["id"] == "text1")["groesse"]
+    assert next(e for e in s["ebenen"] if e["art"] == "knopf")["groesse"] == fliess
+
+
+def test_fixture_anrede_ohne_ueberlappung_und_ruhezone():
+    from spaces.marketing.claw.seite_werkzeuge import anwenden
+    s = typische_seite()
+    medien = {e["quelle"][len("medien:"):] for e in s["ebenen"] if e["art"] == "bild"}
+    assert not [h for h in anwenden(s, [], medien).hinweise if "überlappt" in h]
+    for e in s["ebenen"]:
+        if e["art"] == "text":
+            assert e["x"] - e["breite"] / 2 >= 24 and e["x"] + e["breite"] / 2 <= 576, e["id"]
+    assert not [e for e in s["ebenen"] if e["art"] == "form" and e["breite"] >= 600]
 
 
 # ---- Inhalt des System-Textes ------------------------------------------------------------------------
@@ -125,6 +196,42 @@ def test_jedes_werkzeug_mit_allen_parametern_im_prompt():
 
 def test_beschreibungen_decken_genau_die_werkzeuge():
     assert set(sp.BESCHREIBUNG) == set(WERKZEUGE)
+
+
+def test_legende_zeigt_jede_vorgabe():
+    t = sp.system_seite(False)
+    zeilen = {z.split(":", 1)[0][2:]: z for z in t.splitlines() if z.startswith("- ")}
+    for n, (v, _) in seite_mod._EBENE.items():
+        if v is not seite_mod._PFLICHT:
+            assert f"{n}={sp.wert_text(v)}" in zeilen["alle"], n
+    for art, regeln in seite_mod._ART.items():
+        for n, (v, _) in regeln.items():
+            if v is not seite_mod._PFLICHT:
+                assert f"{n}={sp.wert_text(v)}" in zeilen[art], (art, n)
+            else:
+                assert f"{n}*" in zeilen[art], (art, n)
+
+
+@pytest.mark.parametrize("stueck", ["ausrichtung=links [links|mitte|rechts]", "kreis=false",
+                                    "rahmen_breite=0 [0..20]", "passung=fuellen [fuellen=Anschnitt|einpassen]",
+                                    "rolle=TEXT [ANZEIGE|TEXT]", "drehung=0 [-180..180]", "hintergrund=null"])
+def test_legende_notation(stueck):
+    assert stueck in sp.system_seite(True)
+
+
+def test_groessen_stufen_und_ids_und_buehne():
+    t = sp.system_seite(False)
+    assert "(1) Überschrift" in t and "Knopf" in t and "Akzentgröße" in t
+    assert "sprechende id" in t
+    assert "nie als seitenfüllende Form" in t and "nie hinter Fließtext mit" in t
+    assert "x - breite/2 >= 24 und x + breite/2 <= 576" in t
+    assert "Hallo {vorname}," in t
+    assert "Dachzeile klein" not in t
+    for form in ("Split", "Vollbild mit Titelband", "Schrift-Plakat", "Versetztes Bildpaar", "Polaroid-Streuung",
+                 "Farbbühne mit Freisteller"):
+        assert form in t
+    assert "andere Grundform" in t
+    assert "°" not in t and "−" not in t
 
 
 def test_alle_ebenenfelder_im_prompt():
@@ -201,15 +308,32 @@ def test_nutzertext_filtert_gs_medien():
 # ---- Pruefrunde -------------------------------------------------------------------------------------
 
 def test_pruef_text():
-    t = sp.pruef_text(2, ["x"])
-    assert "Runde 2/3" in t and "x" in t
-    assert "fertig" in t
-    for wort in ("Lesbarkeit", "Hierarchie", "Luft", "Marke", "Blickverlauf", "Abwechslung"):
+    t = sp.pruef_text(2, ["x"], typische_seite())
+    assert "Runde 2/3" in t and "HINWEISE: x" in t
+    for wort in ("Lesbarkeit", "Hierarchie", "Luft", "Marke", "Blickverlauf", "Abwechslung", "Schwächen",
+                 "4,5:1", "24 Einheiten", "höchstens 2", "Knopf"):
         assert wort in t
+    assert "1 Bildpunkt = 1 Einheiten" in t
+
+
+def test_pruef_text_fertig_hat_vollen_umschlag():
+    t = sp.pruef_text(1, [], typische_seite())
+    beispiel = t[t.index('{"antwort"'):t.index("}]}") + 3]
+    d = agent_prompt.antwort_lesen(beispiel)
+    assert d["aenderungen"] == [{"schritt": "Fertig", "werkzeug": "fertig", "notiz": "…"}]
+
+
+def test_pruef_text_mit_seite_und_faktor():
+    s = typische_seite()
+    t = sp.pruef_text(3, [], s, faktor=2.0)
+    assert "1 Bildpunkt = 2 Einheiten" in t
+    zeile = next(z for z in t.splitlines() if z.startswith("SEITE (JSON): "))
+    assert seite_mod.pruefen(json.loads(zeile[len("SEITE (JSON): "):])) == s
+    assert "1 Bildpunkt = 1.5 Einheiten" in sp.pruef_text(1, [], s, faktor=1.5)
 
 
 def test_pruef_text_ohne_hinweise():
-    t = sp.pruef_text(1, [])
+    t = sp.pruef_text(1, [], typische_seite())
     assert "Runde 1/3" in t and "HINWEISE" not in t
 
 
