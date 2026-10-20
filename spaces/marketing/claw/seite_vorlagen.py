@@ -7,7 +7,9 @@ ROLLEN werden NEBEN der Seite gespeichert (Vorlage, Spalte rollen jsonb), nie in
 
 <pfad> adressiert ein Farbfeld der Seite: "hintergrund.farbe" oder "ebenen.<id>.<feld>" mit <feld> aus farbe,
 textfarbe, hintergrund, rahmen_farbe (Ebenen-IDs enthalten keinen Punkt). Farbrollen: akzent, zweitfarbe, grund,
-text, auf_akzent (die lesbarere von text und Weiss auf dem Akzent). Farben ohne Rolle bleiben fest.
+text, auf_akzent (die lesbarere von text und Weiss auf dem Akzent). Farben ohne Rolle bleiben fest. Schriftfarben
+(text farbe, knopf textfarbe) bekommen nur text (gleich der Markentextfarbe) oder auf_akzent (gleich auf_akzent UND
+die Flaeche direkt darunter hat die Rolle akzent) - nie eine Flaechenrolle per Zufallsgleichheit.
 
 MARKE (Eingabe): wie api/pult._marke_fuer_seite (akzent, schrift_anzeige, schrift_text, webseite), erweitert um
 zweitfarbe, grund, text, name, logo und logo_dunkel (Mediennamen mit oder ohne "medien:", oder None). Fehlende
@@ -17,7 +19,8 @@ dunklere Spielart des Akzents, grund <- #ffffff, text <- #1a1a1a.
 FUELLEN: Schriften der Marke (nur Register-IDs), Farben nach Rolle, Logo einsetzen (auf dunkler Unterlage
 logo_dunkel, falls vorhanden) oder die Logo-Ebene entfernen, Firmenname in die name-Ebene, Knopf-Links auf die
 Webseite der Marke, jede Motiv-Ebene bekommt einen Platzhalter im passenden Seitenverhaeltnis und einen
-Bildauftrag {platz, modus: 'neu', hinweis}. Danach kontrast_reparieren.
+Bildauftrag {platz, modus: 'neu', hinweis}. Danach kontrast_reparieren. Ohne gueltige Webseite bleiben die
+Knopf-Links der Vorlage, ohne Firmenname der Text der name-Ebene - beides als Warnung an den Betreiber.
 
 KONTRAST REPARIEREN: Jede Text- und Knopfschrift, die gegen ihre bekannte Unterlage unter der Schwelle von
 seite_schoenheit liegt (4,5:1, ab Groesse 24 3:1), wird auf die lesbarere von text und #ffffff gesetzt. Unterlage:
@@ -46,12 +49,15 @@ _ERZEUGT = re.compile(r"^medien:nl-[0-9a-f]{8}-[A-Za-z0-9_-]{1,64}(\.jpg|-frei\.
 _FARBFELDER = {"form": ("farbe",), "text": ("farbe", "hintergrund"), "knopf": ("farbe", "textfarbe"),
                "bild": ("rahmen_farbe",)}
 _SCHRIFTFELD = {"text": "farbe", "knopf": "textfarbe"}
-# Reihenfolge bei gleicher Farbe in mehreren Rollen: Schrift zuerst als text, Flaechen zuerst als akzent
-_VORRANG_SCHRIFT = ("text", "auf_akzent", "akzent", "zweitfarbe", "grund")
-_VORRANG_FLAECHE = ("akzent", "zweitfarbe", "grund", "text", "auf_akzent")
+# Reihenfolge bei gleicher Farbe in mehreren Rollen. Schrift kennt nur text und auf_akzent (siehe rollen_ableiten),
+# der Seitengrund zuerst grund, Flaechen von Ebenen zuerst akzent.
+_VORRANG_GRUND = ("grund", "akzent", "zweitfarbe", "text")
+_VORRANG_FLAECHE = ("akzent", "zweitfarbe", "grund", "text")
+WARNUNG_WEBSEITE = "Keine Webseite der Firma – Knopf-Link bitte setzen"
+WARNUNG_NAME = "Kein Firmenname – Text '{id}' bitte anpassen"
 
 
-def _farbe_oder(wert, ersatz: str) -> str:
+def _farbe_oder(wert, ersatz):
     return wert.lower() if isinstance(wert, str) and _HEX.match(wert) else ersatz
 
 
@@ -138,6 +144,24 @@ def _schrift_unterlage(s: dict, i: int) -> str | None:
     return _unterlage(s, i)
 
 
+def _unterlage_pfad(s: dict, i: int) -> str | None:
+    """Rollen-Pfad der Flaeche direkt unter der Schrift der Ebene i (wie _schrift_unterlage, aber nur voll deckend);
+    None, wenn die Unterlage ein Bild, halb durchsichtig oder unbekannt ist."""
+    e = s["ebenen"][i]
+    if e["art"] == "knopf":
+        return f"ebenen.{e['id']}.farbe"
+    if e.get("hintergrund") is not None:
+        return f"ebenen.{e['id']}.hintergrund"
+    for j in range(i - 1, -1, -1):
+        unten = s["ebenen"][j]
+        if unten["art"] not in ("form", "bild"):
+            continue
+        l, o, r, u = seite_streifen.rahmen(unten)
+        if l <= e["x"] <= r and o <= e["y"] <= u:
+            return f"ebenen.{unten['id']}.farbe" if unten["art"] == "form" and unten["deckkraft"] >= 1 else None
+    return "hintergrund.farbe" if s["hintergrund"].get("bild") is None else None
+
+
 def _beschreibung(eid: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[-_]+", " ", eid)).strip() or eid
 
@@ -153,28 +177,32 @@ def rollen_ableiten(seite: dict, marke: dict, bildauftraege: list[dict] | None =
     for rolle in FARBROLLEN:
         nach_farbe.setdefault(werte[rolle], []).append(rolle)
 
-    def rolle_fuer(farbe, vorrang, auf_akzent_erlaubt: bool) -> str | None:
+    def rolle_fuer(farbe, vorrang) -> str | None:
         kandidaten = nach_farbe.get(str(farbe).lower(), [])
-        for r in vorrang:
-            if r in kandidaten and (r != "auf_akzent" or auf_akzent_erlaubt):
-                return r
-        return None
+        return next((r for r in vorrang if r in kandidaten), None)
+
+    def schrift_rolle(farbe, unter_pfad) -> str | None:
+        """Schrift nie per Zufallsgleichheit mit einer Flaechenfarbe: auf_akzent nur genau auf der Akzentflaeche,
+        sonst text, sonst keine Rolle (bleibt fest, z. B. Weiss auf einem Foto)."""
+        f = str(farbe).lower()
+        if unter_pfad is not None and farben.get(unter_pfad) == "akzent" and f == werte["auf_akzent"]:
+            return "auf_akzent"
+        return "text" if f == werte["text"] else None
 
     farben: dict[str, str] = {}
-    r = rolle_fuer(s["hintergrund"]["farbe"], _VORRANG_FLAECHE, False)
+    r = rolle_fuer(s["hintergrund"]["farbe"], _VORRANG_GRUND)
     if r:
         farben["hintergrund.farbe"] = r
-    for i, e in enumerate(s["ebenen"]):
-        schriftfeld = _SCHRIFTFELD.get(e["art"])
+    for e in s["ebenen"]:                      # erst die Flaechen ...
         for feld in _FARBFELDER[e["art"]]:
-            wert = e.get(feld)
-            if wert is None:
-                continue
-            if feld == schriftfeld:
-                unter = _schrift_unterlage(s, i)
-                r = rolle_fuer(wert, _VORRANG_SCHRIFT, unter is not None and unter == werte["akzent"])
-            else:
-                r = rolle_fuer(wert, _VORRANG_FLAECHE, False)
+            if feld != _SCHRIFTFELD.get(e["art"]) and e.get(feld) is not None:
+                r = rolle_fuer(e[feld], _VORRANG_FLAECHE)
+                if r:
+                    farben[f"ebenen.{e['id']}.{feld}"] = r
+    for i, e in enumerate(s["ebenen"]):        # ... dann die Schrift, die auf ihnen liegt
+        feld = _SCHRIFTFELD.get(e["art"])
+        if feld is not None:
+            r = schrift_rolle(e[feld], _unterlage_pfad(s, i))
             if r:
                 farben[f"ebenen.{e['id']}.{feld}"] = r
 
@@ -197,8 +225,11 @@ def rollen_ableiten(seite: dict, marke: dict, bildauftraege: list[dict] | None =
     return {"farben": farben, "ebenen": ebenen}
 
 
-def fuellen(seite: dict, rollen: dict, marke: dict, logo_medium: str | None) -> tuple[dict, list[dict]]:
-    """Vorlage mit der Marke fuellen. Gibt die gepruefte Seite und die Bildauftraege der Motiv-Ebenen zurueck."""
+def fuellen(seite: dict, rollen: dict, marke: dict, logo_medium: str | None
+            ) -> tuple[dict, list[dict], list[str]]:
+    """Vorlage mit der Marke fuellen. Gibt die gepruefte Seite, die Bildauftraege der Motiv-Ebenen und Warnungen
+    fuer den Betreiber zurueck (fehlende Webseite: Knopf-Links bleiben die der Vorlage; fehlender Firmenname: der
+    Text der name-Ebene bleibt)."""
     s = copy.deepcopy(seite_mod.pruefen(seite))
     m = marke if isinstance(marke, dict) else {}
     werte = markenfarben(m)
@@ -208,15 +239,18 @@ def fuellen(seite: dict, rollen: dict, marke: dict, logo_medium: str | None) -> 
     for k, schluessel in (("anzeige", "schrift_anzeige"), ("text", "schrift_text")):
         if m.get(schluessel) in schriften.REGISTER:
             s["schriften"][k] = m[schluessel]
+    warnungen: list[str] = []
     for pfad, rolle in r_farben.items():
-        if rolle in werte and isinstance(pfad, str):
+        if isinstance(rolle, str) and rolle in werte and isinstance(pfad, str):
             _pfad_setzen(s, pfad, werte[rolle])
 
     web = m.get("webseite")
+    knoepfe = [e for e in s["ebenen"] if e["art"] == "knopf"]
     if isinstance(web, str) and seite_mod._HTTPS.fullmatch(web):
-        for e in s["ebenen"]:
-            if e["art"] == "knopf":
-                e["link"] = web
+        for e in knoepfe:
+            e["link"] = web
+    elif knoepfe:
+        warnungen.append(WARNUNG_WEBSEITE)
 
     logo = _medium(logo_medium)
     logo_dunkel = _medium(m.get("logo_dunkel"))
@@ -234,15 +268,18 @@ def fuellen(seite: dict, rollen: dict, marke: dict, logo_medium: str | None) -> 
             unter = _unterlage(s, i)
             e["quelle"] = logo_dunkel if logo_dunkel and ist_dunkel(unter) else logo
             e["passung"] = "einpassen"          # ein Logo wird nie beschnitten
-        elif rolle == "name" and e["art"] == "text" and name:
-            e["text"] = name
+        elif rolle == "name" and e["art"] == "text":
+            if name:
+                e["text"] = name
+            else:
+                warnungen.append(WARNUNG_NAME.format(id=e["id"]))
         elif rolle.startswith("motiv:") and e["art"] == "bild":
             e["quelle"] = "medien:" + bildplaetze.platzhalter_name(max(1, round(e["breite"])),
                                                                      max(1, round(e["hoehe"])))
             hinweis = rolle[len("motiv:"):].strip()[:MAX_HINWEIS] or _beschreibung(e["id"])
             auftraege.append({"platz": e["id"], "modus": "neu", "hinweis": hinweis})
     s["ebenen"] = [e for e in s["ebenen"] if e["id"] not in weg]
-    return kontrast_reparieren(s, rollen, text=werte["text"]), auftraege
+    return kontrast_reparieren(s, rollen, text=werte["text"]), auftraege, warnungen
 
 
 def _textfarbe(s: dict, rollen: dict) -> str:
@@ -258,7 +295,9 @@ def kontrast_reparieren(seite: dict, rollen: dict, text: str | None = None) -> d
     """Unlesbare Schrift auf bekannter Unterlage auf die lesbarere von text und Weiss setzen. text: Textfarbe der
     Marke; ohne wird sie ueber die Rolle "text" aus der Seite gelesen (Rueckfall #1a1a1a)."""
     s = copy.deepcopy(seite_mod.pruefen(seite))
-    textfarbe = _farbe_oder(text, "") or _textfarbe(s, rollen)
+    textfarbe = _farbe_oder(text, None)
+    if textfarbe is None:
+        textfarbe = _textfarbe(s, rollen)
     for i, e in enumerate(s["ebenen"]):
         feld = _SCHRIFTFELD.get(e["art"])
         if feld is None:

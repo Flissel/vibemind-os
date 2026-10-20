@@ -55,6 +55,9 @@ def test_rollen_ableiten_farben_und_ebenen():
     assert f["ebenen.knopf.textfarbe"] == "auf_akzent"
     assert f["ebenen.text.farbe"] == "text"
     assert f["ebenen.band.hintergrund"] == "zweitfarbe"
+    assert "ebenen.band.farbe" not in f          # Weiss auf Zweitfarbe: Schrift nie als grund
+    assert f["ebenen.titel.farbe"] == "auf_akzent"
+    assert f["ebenen.marke.farbe"] == "auf_akzent"
     assert "ebenen.grau.farbe" not in f          # keine Markenfarbe -> bleibt fest
     assert r["ebenen"]["logo"] == "logo"
     assert r["ebenen"]["marke"] == "name"
@@ -83,7 +86,7 @@ def test_fremdes_foto_hat_keine_rolle():
 def test_rundlauf_gleiche_marke_gleiche_farben():
     s = vorlage()
     r = sv.rollen_ableiten(s, VIBEMIND)
-    neu, _ = sv.fuellen(s, r, VIBEMIND, VIBEMIND["logo"])
+    neu, _, _ = sv.fuellen(s, r, VIBEMIND, VIBEMIND["logo"])
     alt = seite_mod.pruefen(s)
     assert neu["hintergrund"]["farbe"].lower() == alt["hintergrund"]["farbe"].lower()
     for a, b in zip(alt["ebenen"], neu["ebenen"]):
@@ -98,7 +101,7 @@ def test_rundlauf_gleiche_marke_gleiche_farben():
 def test_andere_marke_tauscht_farben_schriften_name_logo():
     s = vorlage()
     r = sv.rollen_ableiten(s, VIBEMIND)
-    neu, _ = sv.fuellen(s, r, FIRMA, FIRMA["logo"])
+    neu, _, _ = sv.fuellen(s, r, FIRMA, FIRMA["logo"])
     assert neu["hintergrund"]["farbe"] == "#f8fafc"
     assert ebene(neu, "buehne")["farbe"] == "#0f766e"
     assert ebene(neu, "knopf")["farbe"] == "#0f766e"
@@ -116,7 +119,7 @@ def test_andere_marke_tauscht_farben_schriften_name_logo():
 def test_fuellen_ohne_logo():
     s = vorlage()
     r = sv.rollen_ableiten(s, VIBEMIND)
-    neu, _ = sv.fuellen(s, r, {**FIRMA, "logo": None}, None)
+    neu, _, _ = sv.fuellen(s, r, {**FIRMA, "logo": None}, None)
     assert "logo" not in [e["id"] for e in neu["ebenen"]]
     assert all("logo-vibemind" not in e.get("quelle", "") for e in neu["ebenen"])
     seite_mod.pruefen(neu)
@@ -125,7 +128,7 @@ def test_fuellen_ohne_logo():
 def test_motiv_ebenen_ergeben_bildauftraege_und_platzhalter():
     s = vorlage()
     r = sv.rollen_ableiten(s, VIBEMIND, [{"platz": "strand-am-morgen", "hinweis": "Strand am Morgen"}])
-    neu, auftraege = sv.fuellen(s, r, FIRMA, FIRMA["logo"])
+    neu, auftraege, _ = sv.fuellen(s, r, FIRMA, FIRMA["logo"])
     assert auftraege == [{"platz": "strand-am-morgen", "modus": "neu", "hinweis": "Strand am Morgen"}]
     assert ebene(neu, "strand-am-morgen")["quelle"] == "medien:platzhalter-3x2.png"
 
@@ -134,14 +137,14 @@ def test_ergebnis_besteht_pruefen():
     s = vorlage()
     r = sv.rollen_ableiten(s, VIBEMIND)
     for marke in (VIBEMIND, FIRMA, {"akzent": "#ffd400"}, {}):
-        neu, _ = sv.fuellen(s, r, marke, marke.get("logo"))
+        neu, _, _ = sv.fuellen(s, r, marke, marke.get("logo"))
         assert seite_mod.pruefen(neu) == neu
 
 
 def test_fehlende_markenfarben_fallen_zurueck():
     s = vorlage()
     r = sv.rollen_ableiten(s, VIBEMIND)
-    neu, _ = sv.fuellen(s, r, {"akzent": "#0f766e"}, None)
+    neu, _, _ = sv.fuellen(s, r, {"akzent": "#0f766e"}, None)
     assert neu["hintergrund"]["farbe"] == "#ffffff"
     assert ebene(neu, "text")["farbe"] == "#1a1a1a"
     zweit = ebene(neu, "band")["hintergrund"]
@@ -155,7 +158,7 @@ def test_kontrast_reparatur_heller_akzent():
     s = vorlage()
     r = sv.rollen_ableiten(s, VIBEMIND)
     gelb = {**FIRMA, "akzent": "#ffd400"}
-    neu, _ = sv.fuellen(s, r, gelb, gelb["logo"])
+    neu, _, _ = sv.fuellen(s, r, gelb, gelb["logo"])
     k = ebene(neu, "knopf")
     assert k["farbe"] == "#ffd400"
     assert k["textfarbe"] == "#0b1f1d"
@@ -225,7 +228,7 @@ def test_logo_dunkel_auf_dunkler_unterlage():
     s["hintergrund"]["farbe"] = "#101010"
     r = sv.rollen_ableiten(s, VIBEMIND)
     marke = {**FIRMA, "logo_dunkel": "medien:logo-ivan-dunkel.png"}
-    neu, _ = sv.fuellen(s, r, marke, marke["logo"])
+    neu, _, _ = sv.fuellen(s, r, marke, marke["logo"])
     assert ebene(neu, "logo")["quelle"] == "medien:logo-ivan-dunkel.png"
 
 
@@ -237,3 +240,74 @@ def test_kontrast_reparieren_halbe_form_mischt_mit_grund():
     ebene(s, "grau")["farbe"] = "#ffffff"
     neu = sv.kontrast_reparieren(s, {"farben": {}, "ebenen": {}})
     assert ebene(neu, "grau")["farbe"] == "#1a1a1a"
+
+
+def test_weisse_schrift_auf_foto_bleibt_weiss():
+    s = vorlage()
+    ebene(s, "titel").update({"x": 420, "y": 220})        # liegt jetzt auf dem Motiv
+    r = sv.rollen_ableiten(s, VIBEMIND)
+    assert "ebenen.titel.farbe" not in r["farben"]
+    dunkel = {**FIRMA, "grund": "#101820"}
+    neu, _, _ = sv.fuellen(s, r, dunkel, dunkel["logo"])
+    assert ebene(neu, "titel")["farbe"].lower() == "#ffffff"
+
+
+def test_gleichstand_akzent_gleich_text():
+    marke = {**VIBEMIND, "akzent": "#1a1a1a"}
+    s = vorlage()
+    ebene(s, "buehne")["farbe"] = "#1a1a1a"
+    ebene(s, "knopf")["farbe"] = "#1a1a1a"
+    f = sv.rollen_ableiten(s, marke)["farben"]
+    assert f["ebenen.buehne.farbe"] == "akzent"
+    assert f["ebenen.knopf.farbe"] == "akzent"
+    assert f["ebenen.text.farbe"] == "text"              # Schrift #1a1a1a auf Weiss
+    assert f["ebenen.knopf.textfarbe"] == "auf_akzent"   # Weiss auf der Akzentflaeche
+
+
+def test_gleichstand_akzent_gleich_grund():
+    marke = {**VIBEMIND, "akzent": "#ffffff"}            # auf_akzent = Textfarbe #1a1a1a
+    s = vorlage()
+    ebene(s, "buehne")["farbe"] = "#ffffff"
+    f = sv.rollen_ableiten(s, marke)["farben"]
+    assert f["hintergrund.farbe"] == "grund"
+    assert f["ebenen.buehne.farbe"] == "akzent"
+    assert "ebenen.titel.farbe" not in f                 # Weiss auf der Buehne: keine Rolle
+    assert f["ebenen.text.farbe"] == "text"              # liegt auf dem Seitengrund, nicht auf dem Akzent
+
+
+def test_warnung_ohne_webseite_link_bleibt():
+    s = vorlage()
+    r = sv.rollen_ableiten(s, VIBEMIND)
+    for web in (None, "http://ivan.de", "kaputt"):
+        neu, _, warnungen = sv.fuellen(s, r, {**FIRMA, "webseite": web}, FIRMA["logo"])
+        assert ebene(neu, "knopf")["link"] == "https://vibemind.de"
+        assert warnungen == [sv.WARNUNG_WEBSEITE]
+
+
+def test_warnung_ohne_name():
+    s = vorlage()
+    r = sv.rollen_ableiten(s, VIBEMIND)
+    neu, _, warnungen = sv.fuellen(s, r, {**FIRMA, "name": "  "}, FIRMA["logo"])
+    assert ebene(neu, "marke")["text"] == "VibeMind"
+    assert warnungen == ["Kein Firmenname – Text 'marke' bitte anpassen"]
+
+
+def test_keine_warnungen_bei_vollstaendiger_marke():
+    s = vorlage()
+    _, _, warnungen = sv.fuellen(s, sv.rollen_ableiten(s, VIBEMIND), FIRMA, FIRMA["logo"])
+    assert warnungen == []
+
+
+def test_kaputte_rollen_werden_uebergangen():
+    s = vorlage()
+    neu, _, _ = sv.fuellen(s, {"farben": {"hintergrund.farbe": ["akzent"], "ebenen.x.farbe": "akzent"},
+                               "ebenen": {"logo": 3}}, FIRMA, FIRMA["logo"])
+    assert neu["hintergrund"]["farbe"].lower() == "#ffffff"
+
+
+def test_kontrast_reparieren_text_parameter_none_liest_rolle():
+    s = vorlage()
+    ebene(s, "grau")["farbe"] = "#eeeeee"
+    ebene(s, "text")["farbe"] = "#202020"
+    neu = sv.kontrast_reparieren(s, {"farben": {"ebenen.text.farbe": "text"}, "ebenen": {}}, text=None)
+    assert ebene(neu, "grau")["farbe"] == "#202020"
