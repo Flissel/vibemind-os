@@ -49,7 +49,7 @@ def jpeg_passend(png: bytes, grenze: int = JPEG_GRENZE) -> bytes:
     raise ValueError(f"Das Bild bleibt auch bei Qualität 52 über {grenze / 2**20:.1f} MB")
 
 
-class _Routen:
+class Routen:
     """Beantwortet die Anfragen der Seite an BASIS; alles andere wird abgebrochen."""
 
     def __init__(self, api, aid):
@@ -68,7 +68,7 @@ class _Routen:
                 if daten is None:
                     self.fehlt.append(name)
                     return route.fulfill(status=404, body=b"")
-                return route.fulfill(status=200, body=daten, content_type=_bildtyp(name))
+                return route.fulfill(status=200, body=daten, content_type=bildtyp(name))
             if pfad == "/schrift/schriften.css":
                 return route.fulfill(status=200, body=schriften_css(), content_type="text/css")
             if pfad.startswith("/schrift/"):
@@ -84,12 +84,12 @@ class _Routen:
             return route.abort()
 
 
-def _bildtyp(name: str) -> str:
+def bildtyp(name: str) -> str:
     return {"png": "image/png", "gif": "image/gif", "webp": "image/webp", "svg": "image/svg+xml"}.get(
         name.rsplit(".", 1)[-1].lower(), "image/jpeg")
 
 
-class _EchterBrowser:
+class EchterBrowser:
     def __init__(self):
         from playwright.sync_api import sync_playwright   # erst hier: Unit-Tests brauchen keinen Browser
         self._pw = sync_playwright().start()
@@ -109,12 +109,16 @@ class _EchterBrowser:
             self._pw.stop()
 
 
+# Alte Namen bleiben fuer bestehende Aufrufer; Pruefbild-Arbeiter nutzt die oeffentlichen.
+_Routen, _EchterBrowser, _bildtyp = Routen, EchterBrowser, bildtyp
+
+
 def exportieren(api, auftrag, browser_starten=None, halten_takt_s: float = HALTEN_TAKT_S) -> str:
     aid = str(auftrag["id"])
     try:
         slug = auftrag["kontext"]["slug"]
         html = html_bauen(auftrag)
-        namen = _fotografieren(api, auftrag, aid, slug, html, browser_starten or _EchterBrowser, halten_takt_s)
+        namen = _fotografieren(api, auftrag, aid, slug, html, browser_starten or EchterBrowser, halten_takt_s)
     except _Verloren:
         return "fehler"
     except Exception as e:  # noqa: BLE001
@@ -165,7 +169,7 @@ def _fotografieren(api, auftrag, aid, slug, html, browser_starten, halten_takt_s
                     raise _Verloren()
                 seite = browser.new_page(viewport={"width": breite, "height": HOEHE})
                 try:
-                    routen = _Routen(api, aid)
+                    routen = Routen(api, aid)
                     seite.route("**/*", routen)
                     seite.set_content(html, wait_until="networkidle")
                     if routen.fehler is not None:
