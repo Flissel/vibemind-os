@@ -80,9 +80,6 @@ $Dienste = @(
             # Ohne diese Datei sieht die Claude-CLI die Marketing-Werkzeuge
             # nicht, und der Agent kann nur reden.
             SHIM_EXTRA_MCP_CONFIG = (Join-Path $SpaceRoot 'claw\shim\marketing-mcp.json')
-            # openclaws [[...]]-Direktiven loesen sonst ein irrefuehrendes
-            # „out of extra usage" aus (gemessen 03.09.2026).
-            SHIM_NEUTRALIZE_DOUBLE_BRACKETS = '1'
             # Budget-Waechter (Spec 2026-10-06): ohne VIBEMIND_AGENT ist er aus.
             VIBEMIND_AGENT = 'marketing-chat'
             VIBEMIND_BUDGET_MODUL = 'C:\Users\User\Desktop\Vibemind_V1\scripts\claude_budget.py'
