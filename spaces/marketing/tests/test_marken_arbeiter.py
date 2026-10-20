@@ -90,6 +90,9 @@ class Api:
     def denken(self, aid, denken, schritte):
         self.log.append(("denken", aid, denken, [x["text"] for x in schritte])); return {"ok": True}
 
+    def quellen(self, aid, quellen):
+        self.log.append(("quellen", aid, quellen)); return True
+
     def aufrufe(self, name):
         return [e for e in self.log if e[0] == name]
 
@@ -1358,3 +1361,150 @@ def test_bearbeitung_korrektur_fuer_leere_webseite_wird_verworfen(monkeypatch):
                           "korrekturen": [{"feld": "webseite", "grund": "leer"}]}, ensure_ascii=False)
     assert _lauf(Api(dict(BEARB)), Fragen(antwort)) == "fertig"
     assert gesehen == [[]]
+
+
+# --- Marken-Chat neu Task 4: Text sofort, Aenderungsliste, Quellen ---------------------
+
+WERTE = {k: VORSCHLAG[k] for k in ("akzent", "zweitfarbe", "grund", "text", "schrift_anzeige", "schrift_text")}
+
+
+def _profil(wurzel, abschnitte):
+    mp.schreiben(str(wurzel), "radhaus", "Radhaus", dict(WERTE), abschnitte, None, "Test", JETZT)
+
+
+def _gesendet(api):
+    (_, _, daten), = api.aufrufe("vorschlag")
+    return daten
+
+
+def test_text_aenderung_gilt_direkt(wurzel):
+    _profil(wurzel, {"Ton": "Laut und schnell.", "Bildstil": "Warme Werkstattfotos, Tageslicht."})
+    api = Api(dict(CHAT))
+    assert _lauf(api, Fragen(_antwort())) == "fertig"
+    daten = _gesendet(api)
+    assert daten["direkt"] is True and daten["vorschlag"]["direkt"] is True
+    assert daten["vorschlag"]["aenderungen"] == [{"feld": "Ton", "vorher": "Laut und schnell.",
+                                                  "nachher": "Ruhig, per Du."}]
+    json.dumps(daten, ensure_ascii=False)          # die API bekommt reines JSON
+
+
+def test_gemischter_vorschlag_nicht_direkt(wurzel):
+    _profil(wurzel, {"Ton": "Laut und schnell.", "Bildstil": "Warme Werkstattfotos, Tageslicht."})
+    api = Api(dict(CHAT))
+    assert _lauf(api, Fragen(_antwort({**VORSCHLAG, "akzent": "#9a3412"}))) == "fertig"
+    daten = _gesendet(api)
+    assert daten["direkt"] is False and daten["vorschlag"]["direkt"] is False
+    assert [a["feld"] for a in daten["vorschlag"]["aenderungen"]] == ["akzent", "Ton"]
+
+
+def test_logo_oder_neues_profil_nicht_direkt(wurzel):
+    api = Api(dict(CHAT))                          # ohne Marke.md: alle Farben sind neu
+    assert _lauf(api, Fragen(_antwort())) == "fertig"
+    assert _gesendet(api)["direkt"] is False
+    _profil(wurzel, {"Ton": "Laut und schnell."})
+    api = Api({**CHAT, "kontext": {"anhaenge": [{"name": "logo.png", "art": "bild"}]}}, medien={"logo.png": LOGO})
+    assert _lauf(api, Fragen(_antwort({**VORSCHLAG, "logo": "anhang:logo.png"}))) == "fertig"
+    assert _gesendet(api)["direkt"] is False
+
+
+def test_grosse_aenderung_faellt_auf_vorschlag_zurueck(wurzel):
+    namen = mp.ABSCHNITT_REIHENFOLGE
+    assert len(namen) == 14
+    _profil(wurzel, {n: "b" * 4000 for n in namen})
+    api = Api(dict(CHAT))
+    v = {**VORSCHLAG, "abschnitte": {n: "a" * 4000 for n in namen}}
+    assert _lauf(api, Fragen(_antwort(v))) == "fertig"
+    daten = _gesendet(api)
+    assert daten["direkt"] is False and daten["vorschlag"]["direkt"] is False
+    assert "aenderungen" not in daten["vorschlag"]
+    assert len(json.dumps(daten["vorschlag"], ensure_ascii=False).encode()) <= 60_000
+
+
+def test_formular_text_gilt_direkt(wurzel):
+    _profil(wurzel, {"Ton": "Laut und schnell.", "Bildstil": "Warme Werkstattfotos, Tageslicht."})
+    api = Api(dict(BEARB))
+    assert _lauf(api, Fragen(_antwort())) == "fertig"
+    daten = _gesendet(api)
+    assert daten["direkt"] is True and daten["vorschlag"]["direkt"] is True
+    assert daten["vorschlag"]["aenderungen"] == [{"feld": "Ton", "vorher": "Laut und schnell.",
+                                                  "nachher": "Ruhig, per Du."}]
+
+
+def test_quellen_gelesen_und_websuche():
+    start = Fund(seiten=[Seite(url="https://radhaus.example/", text="Start", ueberschriften=["Radhaus Köln"])])
+    team = Fund(seiten=[Seite(url="https://radhaus.example/team", text="Team", ueberschriften=[])])
+    erste = json.dumps({"antwort": "Ich lese nach.", "vorschlag": None, "lesen": ["https://radhaus.example/team"]})
+    zweite = json.dumps({"antwort": "Fertig.", "vorschlag": VORSCHLAG,
+                         "quellen": [{"titel": "Branchenbuch", "url": "https://branche.example/radhaus"},
+                                     {"titel": "Presse", "url": "https://presse.example/artikel"},
+                                     {"titel": "Böse", "url": "javascript:alert(1)"}]}, ensure_ascii=False)
+    api = Api({**CHAT, "nachricht": "Unsere Seite: https://radhaus.example/"})
+    assert _lauf(api, Fragen(erste, zweite), webseite_lesen=lambda u: start, seite_lesen=lambda u: team) == "fertig"
+    (_, aid, quellen), = api.aufrufe("quellen")
+    assert aid == "a1"
+    assert [(q["art"], q["url"]) for q in quellen] == [
+        ("gelesen", "https://radhaus.example/"), ("gelesen", "https://radhaus.example/team"),
+        ("websuche", "https://branche.example/radhaus"), ("websuche", "https://presse.example/artikel")]
+    assert all(set(q) == {"titel", "url", "art"} and q["titel"].strip() and len(q["titel"]) <= 120 for q in quellen)
+    namen = [e[0] for e in api.log if e[0] in ("quellen", "vorschlag", "fertig")]
+    assert namen == ["quellen", "vorschlag"]
+
+
+def test_quellen_vor_fertig_und_ohne_quellen_kein_aufruf():
+    api = Api(dict(CHAT))
+    antwort = json.dumps({"antwort": "Gefunden.", "vorschlag": None,
+                          "quellen": [{"titel": "Presse", "url": "https://presse.example/a"}]})
+    assert _lauf(api, Fragen(antwort)) == "fertig"
+    assert [e[0] for e in api.log if e[0] in ("quellen", "fertig")] == ["quellen", "fertig"]
+    api = Api(dict(CHAT))
+    assert _lauf(api, Fragen(_antwort(None, "ok"))) == "fertig"
+    assert api.aufrufe("quellen") == []
+
+
+def test_quellen_hoechstens_zwoelf_gelesen_zuerst():
+    quellen = ma._quellen_liste([{"titel": f"g{i}", "url": f"https://g.example/{i}", "art": "gelesen"}
+                                 for i in range(10)],
+                                [{"titel": f"w{i}", "url": f"https://w.example/{i}", "art": "websuche"}
+                                 for i in range(5)])
+    assert len(quellen) == 12 and [q["art"] for q in quellen].count("gelesen") == 10
+
+
+@pytest.mark.parametrize("ergebnis", [False, ValueError("weg"), ma.ApiFehler(500, "kaputt")])
+def test_quellen_api_false_bricht_nicht_ab(ergebnis):
+    class Ohne(Api):
+        def quellen(self, aid, quellen):
+            self.log.append(("quellen", aid, quellen))
+            if isinstance(ergebnis, Exception):
+                raise ergebnis
+            return ergebnis
+    antwort = json.dumps({"antwort": "Fertig.", "vorschlag": VORSCHLAG,
+                          "quellen": [{"titel": "Presse", "url": "https://presse.example/a"}]})
+    api = Ohne(dict(CHAT))
+    assert _lauf(api, Fragen(antwort)) == "fertig"
+    assert api.aufrufe("quellen") and api.aufrufe("vorschlag")
+    assert "Quellen nicht gespeichert" in _schritte(api)
+
+
+def test_uebernahme_mit_direkt_und_aenderungen(wurzel):
+    _profil(wurzel, {"Wer wir sind": "Fahrradwerkstatt in Köln.", "Ton": "Laut und schnell."})
+    gespeichert = {"abschnitte": {"Ton": "Ruhig, per Du."}, "direkt": True,
+                   "aenderungen": [{"feld": "Ton", "vorher": "Laut und schnell.", "nachher": "Ruhig, per Du."}],
+                   "rueckgaengig_von": "00000000-0000-0000-0000-000000000001"}
+    api = Api(_uebernehmen(gespeichert, von="Agent (direkt)"))
+    assert _lauf(api, Fragen()) == "fertig"
+    assert api.aufrufe("zurueck") == []
+    profil = mp.lesen(str(wurzel), "radhaus", "Radhaus")
+    assert profil.abschnitte["Ton"] == "Ruhig, per Du."
+    assert profil.abschnitte["Wer wir sind"] == "Fahrradwerkstatt in Köln."       # andere Abschnitte bleiben
+    assert {k: profil.werte[k] for k in WERTE} == WERTE                           # Farben/Schriften bleiben
+    voll = {**VORSCHLAG, "direkt": True, "aenderungen": [], "abschnitte": {"Ton": "Leise."}}
+    api = Api(_uebernehmen(voll))
+    assert _lauf(api, Fragen()) == "fertig" and api.aufrufe("zurueck") == []
+    assert mp.lesen(str(wurzel), "radhaus", "Radhaus").abschnitte["Ton"] == "Leise."
+
+
+def test_uebernahme_mit_halben_farben_bleibt_streng(wurzel):
+    _profil(wurzel, {"Ton": "Laut."})
+    api = Api(_uebernehmen({"akzent": "#9a3412", "abschnitte": {"Ton": "Leise."}}))
+    assert _lauf(api, Fragen()) == "fehler"
+    assert "Übernehmen nicht möglich" in api.aufrufe("zurueck")[0][2]

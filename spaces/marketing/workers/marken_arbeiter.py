@@ -37,6 +37,9 @@ UNBEKANNT = "Unbekannte Auftragsart"
 VON_VORGABE = "Marken-Chat"
 UEBERNOMMEN = "Die Marke ist übernommen."
 SPIEGEL_FEHLER = "Spiegel nicht aktualisiert: "
+DIREKT_MAX = 60_000        # E5: groesser gespeichert gilt nicht direkt (Review Focus 3)
+QUELLEN_MAX = 12           # wie api/marke.QUELLEN_MAX (078)
+QUELLEN_NICHT = "Quellen nicht gespeichert"
 _ADRESSE = re.compile(r"\bhttps?://[^\s<>\"'`]+", re.IGNORECASE)
 _SATZZEICHEN = ".,;:!?)]}–—»“”'\""
 _PNG = b"\x89PNG\r\n\x1a\n"
@@ -66,6 +69,9 @@ class MarkenApi(cw.ChatApi):
 
     def hinweise(self, mandant: str, hinweise: list[str]) -> dict:
         return self._post("/hinweise", {"mandant": mandant, "hinweise": hinweise})
+
+    def quellen(self, aid, quellen: list[dict]) -> bool:
+        return bool(self._post(f"/{aid}/quellen", {"quellen": quellen}).get("ok"))
 
 
 def _spur_ende(spur) -> None:
@@ -348,8 +354,51 @@ def _webseite_holen(url_neu: str | None, gemerkt: str | None, mandant: str, webs
     return fund
 
 
-def _seiten_lesen(urls: list[str], seite_lesen, hinweise: list[str], spur) -> str:
-    """Die `lesen`-Adressen des Agenten mit dem gesicherten Leser (Adresssperre inklusive) -> Material."""
+def _gelesen(seite) -> dict | None:
+    """Quelle `gelesen` fuer eine echt geholte Seite: Titel = erste Ueberschrift, sonst der Host."""
+    host = urllib.parse.urlsplit(seite.url).hostname or seite.url
+    titel = next((u for u in seite.ueberschriften if isinstance(u, str) and u.strip()), host)
+    return marken_prompt.quelle_eintrag(titel, seite.url, "gelesen") or marken_prompt.quelle_eintrag(
+        host, seite.url, "gelesen")
+
+
+def _quellen_liste(gelesen: list[dict], websuche: list[dict]) -> list[dict]:
+    """Gelesen zuerst, dann Websuche; jede Adresse einmal, hoechstens QUELLEN_MAX (E8)."""
+    aus: dict[tuple[str, str], dict] = {}
+    for q in [*gelesen, *websuche]:
+        aus.setdefault((q["art"], q["url"]), q)
+    return list(aus.values())[:QUELLEN_MAX]
+
+
+def _quellen_melden(api, aid, gelesen: list[dict], websuche: list[dict], spur) -> None:
+    """Quellen der Runde an die VM, vor Vorschlag oder fertig. Scheitert es, nur ein Schritt (nie Abbruch)."""
+    quellen = _quellen_liste(gelesen, websuche)
+    if not quellen:
+        return
+    try:
+        ok = api.quellen(aid, quellen)
+    except Exception:  # noqa: BLE001 - Quellen sind Beiwerk, der Auftrag laeuft weiter
+        ok = False
+    if not ok:
+        spur.schritt(QUELLEN_NICHT)
+
+
+def _gespeichert(vorschlag: dict, profil) -> tuple[dict, bool]:
+    """E4/E5: der Vorschlag mit "aenderungen" (gegen das aktuelle Profil) und "direkt". Gilt nur, wenn er nur
+    Text aendert, jeder alte Abschnittstext zurueckgenommen werden koennte (<= MAX_ABSCHNITT) und alles
+    gespeichert hoechstens DIREKT_MAX Byte hat; sonst direkt false und ohne Aenderungsliste, wenn zu gross."""
+    liste = marken_prompt.aenderungen(profil, vorschlag)
+    direkt = (marken_prompt.ist_direkt(marken_prompt.wirksam(vorschlag, liste))
+              and all(len(a["vorher"]) <= marken_prompt.MAX_ABSCHNITT for a in liste))
+    gespeichert = {**vorschlag, "direkt": direkt, "aenderungen": liste}
+    if len(json.dumps(gespeichert, ensure_ascii=False).encode()) > DIREKT_MAX:
+        return {**vorschlag, "direkt": False}, False
+    return gespeichert, direkt
+
+
+def _seiten_lesen(urls: list[str], seite_lesen, hinweise: list[str], spur, gelesen: list[dict] | None = None) -> str:
+    """Die `lesen`-Adressen des Agenten mit dem gesicherten Leser (Adresssperre inklusive) -> Material. Jede
+    gelesene Seite kommt als Quelle `gelesen` in `gelesen`."""
     teile: list[str] = []
     for url in urls:
         z = urllib.parse.urlsplit(url)
@@ -364,6 +413,9 @@ def _seiten_lesen(urls: list[str], seite_lesen, hinweise: list[str], spur) -> st
         if fund is not None and fund.seiten:
             spur.schritt(f"Gelesen: {host}")
             teile += marken_prompt._fund_text(fund)
+            q = _gelesen(fund.seiten[0])
+            if q is not None and gelesen is not None:
+                gelesen.append(q)
         else:
             spur.schritt(f"Nicht lesbar: {host}")
             hinweise += list(fund.hinweise) if fund is not None else [f"Webseite {url} nicht lesbar"]
@@ -411,6 +463,7 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
                                      arbeit_ordner, jetzt().timestamp(), spur))
         if fund is not None:
             hinweise += fund.hinweise
+        gelesen = [q for q in [_gelesen(fund.seiten[0])] if q] if fund is not None and fund.seiten else []
         logos = list(fund.logos) if fund is not None else []
         bisher = marken_prompt.bisheriges_logo(auftrag)      # Logo des offenen Vorschlags (C1/R14)
         # Logo-Ansichten zuerst bestimmen: ihre Plaetze (bisheriges + ein Web-Logo) bleiben frei, auch wenn
@@ -432,6 +485,7 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
     anhaenge = [n for n, h in bilder if h not in marken_prompt.LOGO_ANSICHTEN]
     bisher_vorhanden = bool(bisher or profil.logo_pfad)
     lesen_frei, versuch, korrigiert, logo_hinweis = formular is None, 1, [], False
+    websuche: list[dict] = []
     while True:
         text = _text_holen(api, aid, fragen_strom, nachrichten, zustand, uhr, schlafen, halten_takt_s, spur,
                            websuche=formular is None)
@@ -457,10 +511,11 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
             nachrichten += [{"role": "assistant", "content": text},
                             {"role": "user", "content": marken_prompt.korrektur_text(str(e))}]
             continue
+        websuche += erg["quellen"]
         if erg["lesen"]:                     # hoechstens eine Folgerunde je Auftrag
             lesen_frei = False
             with cw.halten(api, aid, halten_takt_s) as halter:     # bis 3 Abrufe: Vergabe verlaengern
-                material = _seiten_lesen(erg["lesen"], seite_lesen, hinweise, spur)
+                material = _seiten_lesen(erg["lesen"], seite_lesen, hinweise, spur, gelesen)
             if halter.verloren.is_set():
                 return "fehler"
             nachrichten += [{"role": "assistant", "content": text},
@@ -472,6 +527,7 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
         hinweise.append(LOGO_BLEIBT)
     if not api.weiter(aid):
         return "fehler"
+    _quellen_melden(api, aid, gelesen, marken_prompt.quellen_pruefen(websuche), spur)
     vorschlag = erg["vorschlag"]
     if vorschlag is None:
         spur.schritt("Antwort ohne Vorschlag")
@@ -485,9 +541,11 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
         vorschlag["logo"] = bisher
         if bisher:
             vorschlag.update({k: offen[k] for k in marken_prompt.WERKZEUG_FELDER if isinstance(offen.get(k), str)})
+        gespeichert, direkt = _gespeichert(vorschlag, profil)
         spur.schritt("Vorschlag abgelegt")
         spur.ende()
-        api.vorschlag(aid, {"vorschlag": vorschlag, "antwort": erg["antwort"], "hinweise": _hinweise(hinweise)})
+        api.vorschlag(aid, {"vorschlag": gespeichert, "antwort": erg["antwort"], "hinweise": _hinweise(hinweise),
+                            "direkt": direkt})
         return "fertig"
     if vorschlag.get("webseite") is None and markenprofil.webseite_gueltig(offen.get("webseite")):
         vorschlag["webseite"] = offen["webseite"]       # null = bleibt: die Webseite des offenen Vorschlags
@@ -504,9 +562,11 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
             vorschlag["logo"] = bisher        # null = "Logo bleibt" - beim offenen Vorschlag also dessen Logo
         if bisher and vorschlag.get("logo") == bisher:     # dunkle Fassung und Original gehoeren zum Logo
             vorschlag.update({k: offen[k] for k in marken_prompt.WERKZEUG_FELDER if isinstance(offen.get(k), str)})
+    gespeichert, direkt = _gespeichert(vorschlag, profil)
     spur.schritt("Vorschlag abgelegt")
     spur.ende()
-    api.vorschlag(aid, {"vorschlag": vorschlag, "antwort": erg["antwort"], "hinweise": _hinweise(hinweise)})
+    api.vorschlag(aid, {"vorschlag": gespeichert, "antwort": erg["antwort"], "hinweise": _hinweise(hinweise),
+                        "direkt": direkt})
     return "fertig"
 
 # --- Spiegel -------------------------------------------------------------------------
@@ -674,7 +734,10 @@ def _uebernehmen_mit_spur(api, auftrag: dict, aid: str, spur, wurzel: str, jetzt
         raise _Aufgeben("Übernehmen nicht möglich: Vorschlag fehlt")
     with cw.halten(api, aid, halten_takt_s) as halter:
         try:
-            neue_werte = marken_prompt.werte_pruefen(v)
+            # Ein reiner Text-Vorschlag (Rueckgaengig, 078) nennt keine Farben/Schriften: dann bleiben die
+            # bisherigen. Nennt er auch nur einen Wert, gilt die volle Pruefung wie bisher.
+            nur_text = not any(k in v for k in (*marken_prompt.FARBEN, *marken_prompt.SCHRIFTEN))
+            neue_werte = {} if nur_text else marken_prompt.werte_pruefen(v)
             abschnitte = marken_prompt.abschnitte_pruefen(v.get("abschnitte"))
         except marken_prompt.AntwortFehler as e:
             raise _Aufgeben(f"Übernehmen nicht möglich: {e}") from None

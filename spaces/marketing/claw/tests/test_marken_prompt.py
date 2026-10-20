@@ -381,3 +381,59 @@ def test_system_nennt_faehigkeiten_und_neue_abschnitte():
     for name in ("Kurz gesagt", "Menschen", "Wörter", "Abgrenzung", "Kanäle", "Kontakt und Impressum", "Stimme"):
         assert name in kp.SYSTEM
     assert "Sag nie, dass du etwas kannst, das nicht in dieser Liste steht." in kp.SYSTEM
+
+
+# --- Task 4 Marken-Chat neu: Quellen, Aenderungsliste, direkt ---------------------------
+
+def test_quellen_pruefen_verwirft_gefaehrliche():
+    roh = [{"titel": "Böse", "url": "javascript:alert(1)"},
+           {"titel": "Daten", "url": "data:text/html,<b>x</b>"},
+           {"titel": "Zugang", "url": "https://user:pw@radhaus.example/"},
+           {"titel": "Ohne Schema", "url": "radhaus.example/ueber-uns"},
+           {"titel": "   ", "url": "https://radhaus.example/leer"},
+           "kein Objekt",
+           {"titel": "T" * 200, "url": "https://radhaus.example/1"},
+           *({"titel": f"Seite {i}", "url": f"https://radhaus.example/{i}"} for i in range(2, 9))]
+    aus = kp.quellen_pruefen(roh)
+    assert len(aus) == 5
+    assert aus[0] == {"titel": "T" * 120, "url": "https://radhaus.example/1", "art": "websuche"}
+    assert [q["url"] for q in aus] == [f"https://radhaus.example/{i}" for i in range(1, 6)]
+    assert all(q["art"] == "websuche" and set(q) == {"titel", "url", "art"} for q in aus)
+    for kaputt in (None, "x", {"titel": "a"}, 3):
+        assert kp.quellen_pruefen(kaputt) == []
+
+
+def test_quellen_im_antwortformat_und_antwort_lesen():
+    assert '"quellen"' in kp.SYSTEM
+    assert "Hast du WebSearch benutzt, nenne hier die Seiten, aus denen deine Aussagen stammen." in kp.SYSTEM
+    roh = json.dumps({"antwort": "x", "vorschlag": None,
+                      "quellen": [{"titel": "Radhaus", "url": "https://radhaus.example/"},
+                                  {"titel": "Böse", "url": "javascript:x"}]})
+    erg = kp.antwort_lesen(roh)
+    assert erg["quellen"] == [{"titel": "Radhaus", "url": "https://radhaus.example/", "art": "websuche"}]
+    assert kp.antwort_lesen(json.dumps({"antwort": "x", "vorschlag": None, "quellen": "kaputt"}))["quellen"] == []
+    with pytest.raises(kp.AntwortFehler, match="unbekannte Felder: quellen"):     # nur neben dem Vorschlag
+        kp.antwort_lesen(json.dumps({"antwort": "x", "vorschlag": {**VORSCHLAG, "quellen": []}}))
+
+
+def test_aenderungen_nur_geaenderte_felder():
+    alt = mp.Profil(werte={"akzent": "#B45309", "zweitfarbe": "#3b2f2f", "grund": "#faf7f2", "text": "#2b2724",
+                           "schrift_anzeige": "playfair", "schrift_text": "manrope"},
+                    abschnitte={"Ton": "Ruhig, per Du.", "Zielgruppe": "Pendler", "Angebote": "Reparatur"})
+    v = {**VORSCHLAG, "akzent": "#9a3412",
+         "abschnitte": {"Ton": "Ruhig, per Du.", "Bildstil": "Warme Fotos", "Angebote": "", "Menschen": ""}}
+    assert kp.aenderungen(alt, v) == [
+        {"feld": "akzent", "vorher": "#B45309", "nachher": "#9a3412"},
+        {"feld": "Angebote", "vorher": "Reparatur", "nachher": ""},
+        {"feld": "Bildstil", "vorher": "", "nachher": "Warme Fotos"}]
+    gleich = {**VORSCHLAG, "akzent": "#b45309", "abschnitte": {"Ton": "Ruhig, per Du."}}
+    assert kp.aenderungen(alt, gleich) == []                      # Farbe ohne Gross/klein, gleicher Text
+    assert kp.aenderungen(alt, {**gleich, "webseite": None}) == []  # null = bleibt
+
+
+def test_ist_direkt():
+    assert kp.ist_direkt({"abschnitte": {"Ton": "Neu"}}) is True
+    assert kp.ist_direkt({"abschnitte": {"Ton": "Neu"}, "mustertext": {"betreff": "b"}}) is True
+    assert kp.ist_direkt({"abschnitte": {"Ton": "Neu"}, "akzent": "#9a3412"}) is False
+    assert kp.ist_direkt({"abschnitte": {}}) is False
+    assert kp.ist_direkt({"mustertext": {"betreff": "b"}}) is False
