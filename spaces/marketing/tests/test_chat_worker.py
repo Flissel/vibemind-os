@@ -2048,3 +2048,269 @@ def test_halten_meldet_sich_mindestens_zweimal_in_der_pc_aus_frist():
     assert cw.HALTEN_TAKT_S * 3 <= 120
     from spaces.marketing.workers import export_worker
     assert export_worker.halten is cw.halten and export_worker.HALTEN_TAKT_S == cw.HALTEN_TAKT_S
+
+
+# ---- Stufe 3 Task 6: Collage-Runde mit Pruefbild und Nachbessern ------------------------------------------
+from spaces.marketing.claw import seite as seite_mod
+from spaces.marketing.workers.seite_pruefbild import PruefbildFehler
+
+SEITE0 = seite_mod.pruefen(seite_mod.leer(None))
+AUFTRAG_S = {"id": "s1", "art": "chat", "format": "seite", "seite": SEITE0, "bloecke": None, "fassung": 4,
+             "medien": ["held.jpg"], "kontext": {}, "nachricht": "Mach eine Herbst-Collage", "kompositionen": []}
+
+
+def titel(wert, schritt="Titel"):
+    return {"werkzeug": "ebene_aendern", "id": "titel", "felder": {"text": wert}, "schritt": schritt}
+
+
+def fertig_tool(notiz="Passt so"):
+    return {"werkzeug": "fertig", "notiz": notiz, "schritt": "Fertig"}
+
+
+def _ebene(s, eid):
+    return next((e for e in s["ebenen"] if e["id"] == eid), None)
+
+
+class SeitenApi(RennApi):
+    """Collage-Fake: zwischenstand/gestoppt mit seite-Schalter; stopp_bei(seite) -> Stopp-Art oder None."""
+    def __init__(self, fertig_folge=({"fassung": 5},), neueste_folge=None, stopp_bei=None, **kw):
+        super().__init__(list(fertig_folge), list(neueste_folge or [{"fassung": 4, "seite": SEITE0}]), **kw)
+        self.stopp_bei = stopp_bei
+
+    def zwischenstand(self, aid, bloecke, schritt, nr, seite=False):
+        self.log.append(("zwischenstand", aid, bloecke, schritt, nr, seite))
+        art = self.stopp_bei(bloecke) if self.stopp_bei else None
+        return {"weiter": False, "grund": "stopp", "stopp": art} if art else {"weiter": True}
+
+    def gestoppt(self, aid, bloecke, basis=None, hinweise=(), seite=False):
+        self.log.append(("gestoppt", aid, bloecke, basis, list(hinweise), seite))
+        return {"status": "fertig"}
+
+
+class Pruefbild:
+    def __init__(self, fehler=None, kacheln=1):
+        self.fehler, self.kacheln, self.gesehen = fehler, kacheln, []
+
+    def __call__(self, s):
+        self.gesehen.append(s)
+        if self.fehler is not None:
+            raise self.fehler
+        return [_jpg(60, 40)] * self.kacheln, 1.0
+
+
+def seite_lauf(api, *runden, pruefbild=None, auftrag=None, drossel_s=0):
+    uhr = Uhr()
+    strom = Strom(uhr, *[stuecke(r[0], r[1]) if isinstance(r, tuple) else r for r in runden])
+    pb = pruefbild if pruefbild is not None else Pruefbild()
+    erg = cw.chat_bearbeiten(api, auftrag or AUFTRAG_S, strom, uhr, uhr.schlafen, halten_takt_s=60,
+                             drossel_s=drossel_s, pruefbild=pb)
+    return erg, strom, pb
+
+
+def _texte(inhalt):
+    return inhalt if isinstance(inhalt, str) else " ".join(t["text"] for t in inhalt if t.get("type") == "text")
+
+
+def _bildzahl(inhalt):
+    return 0 if isinstance(inhalt, str) else sum(1 for t in inhalt if t.get("type") == "image_url")
+
+
+def test_seiten_runde_speichert_seite():
+    api = SeitenApi()
+    erg, strom, pb = seite_lauf(api, ([titel("Herbst")], "Collage steht."), ([fertig_tool("Passt so")], "Gut."))
+    assert erg == "fertig"
+    (daten,) = _fertig_daten(api)
+    assert "bloecke" not in daten and _ebene(daten["seite"], "titel")["text"] == "Herbst"
+    assert daten["basis"] == 4 and daten["bildauftraege"] == [] and daten["notiz"] == "Passt so"
+    assert daten["antwort"].startswith("Collage steht.") and "Passt so" in daten["antwort"]
+    assert len(pb.gesehen) == 1 and _ebene(pb.gesehen[0], "titel")["text"] == "Herbst"
+    assert len(strom.gesehen) == 2
+    pruef = strom.gesehen[1][-1]["content"]
+    assert "Prüfe Entwurf (Runde 1/3)" in _texte(pruef) and _bildzahl(pruef) == 1
+    assert "NACHRICHT: Mach eine Herbst-Collage" in _texte(strom.gesehen[0][0]["content"])
+    assert zw(api) and all(e[5] is True for e in zw(api))
+    assert _ebene(zw(api)[-1][2], "titel")["text"] == "Herbst"
+    schritte = [s["text"] for s in api.denk[-1][2]]
+    assert "Entwurf wird gestaltet" in schritte and "Prüfe Entwurf (Runde 1/3)" in schritte
+    assert SEITE0["ebenen"][0]["text"] == "Überschrift"               # Eingabe bleibt unveraendert
+
+
+def test_nachbesserung_hoechstens_3_runden():
+    api = SeitenApi()
+    erg, strom, pb = seite_lauf(api, ([titel("Null")], "Entwurf."), ([titel("Eins")], "R1"),
+                                ([titel("Zwei")], "R2"), ([titel("Drei")], "R3"))
+    assert erg == "fertig" and len(strom.gesehen) == 4 and len(pb.gesehen) == 3
+    (daten,) = _fertig_daten(api)
+    assert _ebene(daten["seite"], "titel")["text"] == "Drei"
+    assert [_ebene(s, "titel")["text"] for s in pb.gesehen] == ["Null", "Eins", "Zwei"]
+    assert "Prüfe Entwurf (Runde 3/3)" in _texte(strom.gesehen[3][-1]["content"])
+    schritte = [s["text"] for s in api.denk[-1][2]]
+    assert "Bessere nach (Runde 3/3)" in schritte and "Prüfe Entwurf (Runde 3/3)" in schritte
+    assert all(z in daten["antwort"] for z in ("R1", "R2", "R3"))
+
+
+def test_nachbesserung_endet_bei_fertig():
+    api = SeitenApi()
+    erg, strom, pb = seite_lauf(api, ([titel("Null")], "Entwurf."), ([titel("Eins")], "R1"),
+                                ([fertig_tool("Jetzt stimmt alles")], "Fertig."))
+    assert erg == "fertig" and len(strom.gesehen) == 3 and len(pb.gesehen) == 2
+    (daten,) = _fertig_daten(api)
+    assert _ebene(daten["seite"], "titel")["text"] == "Eins" and daten["notiz"] == "Jetzt stimmt alles"
+    assert "Jetzt stimmt alles" in daten["antwort"]
+
+
+def test_nachbesserung_endet_ohne_aenderungen():
+    api = SeitenApi()
+    erg, strom, pb = seite_lauf(api, ([titel("Null")], "Entwurf."),
+                                [json.dumps({"antwort": "Nichts.", "aenderungen": []})])
+    assert erg == "fertig" and len(strom.gesehen) == 2 and len(pb.gesehen) == 1
+    assert _ebene(_fertig_daten(api)[0]["seite"], "titel")["text"] == "Null"
+
+
+def test_pruefbild_fehler_speichert_ohne_nachbesserung():
+    api = SeitenApi()
+    erg, strom, pb = seite_lauf(api, ([titel("Herbst")], "Collage steht."),
+                                pruefbild=Pruefbild(fehler=PruefbildFehler("Chromium fehlt")))
+    assert erg == "fertig" and len(strom.gesehen) == 1 and len(pb.gesehen) == 1
+    (daten,) = _fertig_daten(api)
+    assert _ebene(daten["seite"], "titel")["text"] == "Herbst"
+    assert daten["antwort"].startswith("Hinweis: Prüfbild nicht möglich – ohne Nachbesserung gespeichert")
+    assert api.aufrufe("zurueck") == []
+
+
+def test_pruefbild_unerwarteter_fehler_kippt_die_runde_nicht():
+    api = SeitenApi()
+    erg, _, _ = seite_lauf(api, ([titel("Herbst")], "Ok."), pruefbild=Pruefbild(fehler=RuntimeError("kaputt")))
+    assert erg == "fertig" and cw.PRUEFBILD_FEHLT in _fertig_daten(api)[0]["antwort"]
+
+
+@pytest.mark.parametrize("art", ["behalten", "verwerfen"])
+def test_stopp_in_nachbesserung(art):
+    api = SeitenApi(stopp_bei=lambda s: art if _ebene(s, "titel")["text"] == "Drei" else None)
+    erg, strom, pb = seite_lauf(api, ([titel("Eins")], "Entwurf."), ([titel("Zwei")], "R1"),
+                                ([titel("Drei"), titel("Vier")], "R2"))
+    assert erg == "gestoppt" and len(strom.gesehen) == 3 and strom.geschlossen == 1
+    assert api.aufrufe("fertig") == [] and api.aufrufe("zurueck") == []
+    ((_, aid, s, basis, hinweise, ist_seite),) = api.aufrufe("gestoppt")
+    assert aid == "s1" and ist_seite is True
+    if art == "verwerfen":
+        assert s is None
+    else:   # der Stand nach der letzten vollstaendig angewendeten Runde (Runde 1), nicht der halbe aus Runde 2
+        assert _ebene(s, "titel")["text"] == "Zwei" and basis == 4 and hinweise == []
+
+
+def test_stopp_behalten_spielt_auf_neuere_fassung_nach():
+    neu = json.loads(json.dumps(SEITE0))
+    neu["ebenen"].append({"id": "fremd", "art": "form", "form": "kreis", "farbe": "#eeddcc", "x": 300, "y": 900, "breite": 100, "hoehe": 100})
+    neu = seite_mod.pruefen(neu)
+    api = SeitenApi(neueste_folge=[{"fassung": 7, "seite": neu}],
+                    stopp_bei=lambda s: "behalten" if _ebene(s, "titel")["text"] == "Zwei" else None)
+    erg, _, _ = seite_lauf(api, ([titel("Eins")], "Entwurf."), ([titel("Zwei")], "R1"))
+    assert erg == "gestoppt"
+    ((_, _, s, basis, hinweise, _),) = api.aufrufe("gestoppt")
+    assert basis == 7 and _ebene(s, "fremd") is not None and _ebene(s, "titel")["text"] == "Eins"
+    assert hinweise[0] == cw.NACHGESPIELT.format(n=7)
+
+
+def test_veraltet_spielt_nach():
+    neu = json.loads(json.dumps(SEITE0))
+    neu["ebenen"] = [e for e in neu["ebenen"] if e["id"] != "text"]
+    neu["ebenen"].append({"id": "fremd", "art": "form", "form": "kreis", "farbe": "#eeddcc", "x": 300, "y": 900, "breite": 100, "hoehe": 100})
+    neu = seite_mod.pruefen(neu)
+    api = SeitenApi(fertig_folge=[VERALTET, {"fassung": 6}], neueste_folge=[{"fassung": 5, "seite": neu}])
+    text_aendern = {"werkzeug": "ebene_aendern", "id": "text", "felder": {"text": "Neu"}, "schritt": "Text"}
+    erg, _, _ = seite_lauf(api, ([titel("Herbst"), text_aendern], "Ok."), ([fertig_tool()], "Gut."))
+    assert erg == "fertig"
+    erst, zweit = _fertig_daten(api)
+    assert erst["basis"] == 4 and _ebene(erst["seite"], "text")["text"] == "Neu"
+    assert zweit["basis"] == 5 and _ebene(zweit["seite"], "titel")["text"] == "Herbst"
+    assert _ebene(zweit["seite"], "fremd") is not None and _ebene(zweit["seite"], "text") is None
+    assert zweit["hinweise"][0] == cw.NACHGESPIELT.format(n=5)
+    assert any("übersprungen" in h for h in zweit["hinweise"][1:])
+
+
+def test_veraltet_dreimal_gibt_mit_zu_vielen_zurueck():
+    api = SeitenApi(fertig_folge=[VERALTET], neueste_folge=[{"fassung": 5, "seite": SEITE0}])
+    erg, _, _ = seite_lauf(api, ([titel("Herbst")], "Ok."), ([fertig_tool()], "Gut."))
+    assert erg == "fehler" and len(_fertig_daten(api)) == cw.NACHSPIELEN_MAX + 1
+    assert api.aufrufe("zurueck")[0][2] == cw.ZU_VIELE
+
+
+def test_bildauftrag_der_collage_geht_mit_ebene_als_platz():
+    s = json.loads(json.dumps(SEITE0))
+    s["ebenen"].insert(0, {"id": "held", "art": "bild", "x": 300, "y": 700, "breite": 400, "hoehe": 300,
+                           "quelle": "medien:platzhalter-4x3.png"})
+    auftrag = {**AUFTRAG_S, "seite": seite_mod.pruefen(s)}
+    api = SeitenApi()
+    erzeugen = {"werkzeug": "bild_erzeugen", "ebene": "held", "hinweis": "Kürbisse im Licht", "schritt": "Bild"}
+    erg, _, _ = seite_lauf(api, ([erzeugen, titel("Herbst")], "Bild kommt."), ([fertig_tool()], "Gut."),
+                           auftrag=auftrag)
+    assert erg == "fertig"
+    (daten,) = _fertig_daten(api)
+    assert daten["bildauftraege"] == [{"platz": "held", "modus": "neu", "hinweis": "Kürbisse im Licht",
+                                       "vorlagen": []}]
+
+
+def test_shim_lehnt_pruefbild_ab_runde_einmal_ohne_bilder():
+    api = SeitenApi()
+    erg, strom, _ = seite_lauf(api, ([titel("Herbst")], "Ok."), cw.ShimAbgelehnt("400"), ([fertig_tool()], "Gut."))
+    assert erg == "fertig" and len(strom.gesehen) == 3
+    assert _bildzahl(strom.gesehen[1][-1]["content"]) == 1 and isinstance(strom.gesehen[2][-1]["content"], str)
+    assert "Prüfe Entwurf (Runde 1/3)" in strom.gesehen[2][-1]["content"]
+    assert "Prüfbild konnte nicht übergeben werden" in _fertig_daten(api)[0]["antwort"]
+
+
+def test_anhaenge_zaehlen_zum_bildbudget_der_pruefrunde():
+    api = SeitenApi()
+    api.medium = lambda aid, name: _png()
+    anhaenge = [{"name": f"f{i}.png", "art": "bild"} for i in range(5)]
+    auftrag = {**AUFTRAG_S, "kontext": {"anhaenge": anhaenge}}
+    erg, strom, _ = seite_lauf(api, ([titel("Herbst")], "Ok."), ([fertig_tool()], "Gut."),
+                               pruefbild=Pruefbild(kacheln=4), auftrag=auftrag)
+    assert erg == "fertig"
+    assert _bildzahl(strom.gesehen[0][0]["content"]) == 5
+    assert _bildzahl(strom.gesehen[1][-1]["content"]) == 6               # 5 Anhaenge + 1 Kachel
+
+
+def test_seiten_prompt_mit_kompositionen_und_gekappten_eingaben():
+    andere = json.loads(json.dumps(SEITE0))
+    kompositionen = ([{"inhalt": f"i{i}", "seite": andere} for i in range(7)]
+                     + [{"inhalt": "x", "seite": {"kaputt": 1}}])
+    auftrag = {**AUFTRAG_S, "nachricht": "N" * 5000, "kompositionen": kompositionen,
+               "medien_hinweis": "H" * 900, "kontext": {"auswahl": [{"art": "ebene", "id": "titel", "kurz": "T"},
+                                                                    {"art": "ebene", "id": "weg", "kurz": "Weg"}]}}
+    api = SeitenApi()
+    erg, strom, _ = seite_lauf(api, ([titel("Herbst")], "Ok."), ([fertig_tool()], "Gut."), auftrag=auftrag)
+    assert erg == "fertig"
+    text_nutzer = _texte(strom.gesehen[0][0]["content"])
+    assert text_nutzer.count("Höhe 1200;") == 5 and "KOMPOSITIONEN" in text_nutzer
+    assert "N" * 2000 in text_nutzer and "N" * 2001 not in text_nutzer
+    assert "H" * 200 in text_nutzer and "H" * 201 not in text_nutzer
+    assert "AUSWAHL: titel" in text_nutzer and "„Weg“ gibt es nicht mehr" in text_nutzer
+    from spaces.marketing.claw import seite_prompt
+    assert len(seite_prompt.system_seite(False)) + len(text_nutzer) <= 14000
+
+
+def test_bloecke_runde_unveraendert():
+    api, pb = Api(), Pruefbild()
+    uhr = Uhr()
+    auftrag = {**AUFTRAG, "format": "bloecke"}
+    assert cw.chat_bearbeiten(api, auftrag, Strom(uhr, stuecke([farbe("#ff0000", "Rot")])), uhr, uhr.schlafen,
+                              halten_takt_s=60, pruefbild=pb) == "fertig"
+    assert pb.gesehen == [] and len(zw(api)[0]) == 5          # Block-Zwischenstand ohne seite-Schalter
+    (daten,) = _fertig_daten(api)
+    assert "seite" not in daten and daten["bloecke"]["root"]["data"]["backdropColor"] == "#ff0000"
+
+
+def test_chatapi_sendet_seite_statt_bloecke(monkeypatch):
+    api, g = _api_mit_antwort(monkeypatch, b'{"weiter": true, "fehler": null, "status": "fertig"}')
+    api.zwischenstand("a1", SEITE0, "Titel", 2, seite=True)
+    assert json.loads(g["data"]) == {"seite": SEITE0, "schritt": "Titel", "nr": 2}
+    api.pruefen("a1", SEITE0, seite=True)
+    assert json.loads(g["data"]) == {"seite": SEITE0}
+    api.gestoppt("a1", SEITE0, 4, ["h"], seite=True)
+    assert json.loads(g["data"]) == {"seite": SEITE0, "basis": 4, "hinweise": ["h"]}
+    api.gestoppt("a1", None, seite=True)
+    assert json.loads(g["data"]) == {"seite": None}
+    api.zwischenstand("a1", DOC, "x", 1)
+    assert json.loads(g["data"]) == {"bloecke": DOC, "schritt": "x", "nr": 1}

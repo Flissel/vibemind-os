@@ -12,6 +12,7 @@ import io
 import json
 import os
 import re
+import secrets
 import threading
 import time
 import urllib.error
@@ -24,7 +25,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from PIL import Image, ImageOps
 
 from spaces.marketing.claw import (agent_prompt, agent_strom, agent_werkzeuge, bildplaetze, denkspur, markenprofil,
-                                   markenwissen, pdf_bilder, schoenheit, schriften, unterlagen, vorlagen_marke)
+                                   markenwissen, pdf_bilder, schoenheit, schriften, seite, seite_prompt,
+                                   seite_werkzeuge, unterlagen, vorlagen_marke)
 from spaces.marketing.workers.bild_worker import ApiFehler, _grund, tls_kontext, umgebung_laden
 
 PORT = 8134
@@ -88,8 +90,13 @@ class ChatApi:
     def weiter(self, aid) -> bool:
         return bool(self._post(f"/{aid}/weiter").get("ok"))
 
-    def pruefen(self, aid, bloecke) -> str | None:
-        return self._post(f"/{aid}/pruefen", {"bloecke": bloecke}).get("fehler") or None
+    @staticmethod
+    def _stand(bloecke, ist_seite: bool) -> dict:
+        """Collage (format 'seite'): der Stand geht unter "seite", sonst unter "bloecke" (nie beide)."""
+        return {"seite" if ist_seite else "bloecke": bloecke}
+
+    def pruefen(self, aid, bloecke, seite: bool = False) -> str | None:
+        return self._post(f"/{aid}/pruefen", self._stand(bloecke, seite)).get("fehler") or None
 
     def fertig(self, aid, daten: dict) -> dict:
         return self._post(f"/{aid}/fertig", daten)
@@ -108,14 +115,15 @@ class ChatApi:
     def datei(self, aid, name, roh: bytes) -> str:
         return self._post(f"/{aid}/datei?name={urllib.parse.quote(name)}", roh=roh, typ="image/jpeg")["name"]
 
-    def zwischenstand(self, aid, bloecke: dict, schritt: str, nr: int) -> dict:
-        return self._post(f"/{aid}/zwischenstand", {"bloecke": bloecke, "schritt": schritt[:SCHRITT_MAX], "nr": nr})
+    def zwischenstand(self, aid, bloecke: dict, schritt: str, nr: int, seite: bool = False) -> dict:
+        return self._post(f"/{aid}/zwischenstand",
+                          {**self._stand(bloecke, seite), "schritt": schritt[:SCHRITT_MAX], "nr": nr})
 
     def neueste(self, aid) -> dict:
         return json.loads(self._anfrage("GET", f"/{aid}/neueste") or b"{}")
 
-    def gestoppt(self, aid, bloecke: dict | None, basis: int | None = None, hinweise=()) -> dict:
-        daten: dict = {"bloecke": bloecke}
+    def gestoppt(self, aid, bloecke: dict | None, basis: int | None = None, hinweise=(), seite: bool = False) -> dict:
+        daten: dict = self._stand(bloecke, seite)
         if basis is not None:
             daten.update(basis=basis, hinweise=list(hinweise))
         return self._post(f"/{aid}/gestoppt", daten)
@@ -360,7 +368,7 @@ class _Live:
             return
         self.gesendet_am, self.offen = jetzt, False
         try:
-            r = self.api.zwischenstand(self.aid, self.kopie, self.schritt, self.nr)
+            r = self._senden()
         except ApiFehler as e:
             if e.code == 404:
                 raise _Verloren from None
@@ -371,6 +379,9 @@ class _Live:
             if r.get("grund") == "stopp":
                 raise _Stopp(r.get("stopp"))
             raise _Verloren
+
+    def _senden(self) -> dict:
+        return self.api.zwischenstand(self.aid, self.kopie, self.schritt, self.nr)
 
     def endstand(self, bloecke: dict, aenderungen: list) -> None:
         """Letzter Zwischenstand vor fertig: der gepruefte Gesamtstand, ungedrosselt."""
@@ -627,7 +638,7 @@ def _abschluss_schritte(spur: denkspur.Spur, daten: dict) -> list[dict]:
     if daten.get("bildauftraege"):
         spur.schritt(f"Bilder beauftragt: {len(daten['bildauftraege'])}")
         eintraege.append(spur.schritte[-1])
-    if daten.get("bloecke") is not None:
+    if daten.get("bloecke") is not None or daten.get("seite") is not None:
         spur.schritt("Fassung gespeichert")
         eintraege.append(spur.schritte[-1])
     return eintraege
@@ -683,7 +694,12 @@ def _speichern(api, aid, daten: dict, aenderungen: list, medien: set, basis, spu
 
 
 def chat_bearbeiten(api, auftrag, fragen_strom=frage_strom, uhr=time.monotonic, schlafen=time.sleep,
-                    halten_takt_s: float = HALTEN_TAKT_S, drossel_s: float = DROSSEL_S) -> str:
+                    halten_takt_s: float = HALTEN_TAKT_S, drossel_s: float = DROSSEL_S,
+                    pruefbild: Callable[[dict], tuple[list[bytes], float]] | None = None) -> str:
+    """Eine Editor-Runde. Collage (format 'seite'): eigener Weg mit Pruefbild und Nachbessern (_seite_bearbeiten);
+    pruefbild(seite) -> (JPEG-Kacheln, faktor), Vorgabe: Chromium ueber seite_pruefbild."""
+    if auftrag.get("format") == "seite":
+        return _seite_bearbeiten(api, auftrag, fragen_strom, uhr, schlafen, halten_takt_s, drossel_s, pruefbild)
     aid = str(auftrag["id"])
     versucht = []            # zurueck wurde schon aufgerufen
 
@@ -739,6 +755,46 @@ def chat_bearbeiten(api, auftrag, fragen_strom=frage_strom, uhr=time.monotonic, 
         return "fehler"
 
 
+def _marke_laden(auftrag: dict, hinweise: list[str]):
+    """(mandant, name, wissen, markenfarben, markenschriften, markenlesbar) der Firma des Auftrags; die Hinweise
+    des Markenwissens kommen an hinweise."""
+    # Markenwissen der Firma des Auftrags (nur deren Ordner); ohne Mandant (alter Auftrag) entfaellt es.
+    mandant = str(auftrag.get("mandant") or "")
+    name = str(auftrag.get("mandant_name") or mandant)
+    wissen = markenwissen.Wissen(text="", hinweise=[], ordner=None)
+    markenfarben: dict = {}
+    markenschriften: dict | None = None
+    markenlesbar: dict | None = None
+    if name:
+        wissen = markenwissen.laden(markenwissen.wurzel(), mandant, name,
+                                    f"{auftrag.get('nachricht', '')} {auftrag.get('titel', '')}")
+        hinweise += wissen.hinweise
+        # Gueltige Farben der Marke.md (Marke per Chat): dann gilt die Farbregel der Marke.
+        werte = markenprofil.lesen(markenwissen.wurzel(), mandant, name).werte
+        markenfarben = {k: werte[k] for k in agent_prompt.MARKENFARBEN if werte.get(k)}
+        if werte.get("schrift_anzeige") in schriften.REGISTER and werte.get("schrift_text") in schriften.REGISTER:
+            markenschriften = {"anzeige": werte["schrift_anzeige"], "text": werte["schrift_text"]}
+        if werte.get("akzent"):   # lesbare Ableitungen (wie die Vorlagen): Text auf hellem Grund, Schrift auf Akzent
+            r = vorlagen_marke.rollen({"akzent": werte["akzent"], "flaeche": werte.get("zweitfarbe")},
+                                      werte.get("grund") or "#ffffff")
+            markenlesbar = {"akzent_text": r["akzent_text"], "auf_akzent": r["auf_akzent"]}
+    return mandant, name, wissen, markenfarben, markenschriften, markenlesbar
+
+
+def _medien_vorne(auftrag: dict, bilder: list[tuple[str, str]], medien: list[str], live: _Live):
+    """(markenlogo, markenlogo_dunkel, medien): angehaengte Bilder und Markenlogo zuerst, auch live erlaubt."""
+    angehaengt = [n for n, h in bilder if not pdf_bilder.ist_seite(h)]
+    # Markenlogo (von der VM als Mediendatei der Firma abgelegt, I5): fuer "… und Logo" setzbar
+    roh_logo, roh_dunkel = auftrag.get("markenlogo"), auftrag.get("markenlogo_dunkel")
+    markenlogo = roh_logo[len("medien:"):] if isinstance(roh_logo, str) and roh_logo.startswith("medien:") else ""
+    markenlogo_dunkel = (roh_dunkel[len("medien:"):] if markenlogo and isinstance(roh_dunkel, str)
+                         and roh_dunkel.startswith("medien:") else "")
+    marke_medien = [n for n in (markenlogo, markenlogo_dunkel) if n and n not in angehaengt]
+    vorne = angehaengt + marke_medien
+    live.medien.update(vorne)
+    return markenlogo, markenlogo_dunkel, vorne + [m for m in medien if m not in vorne]
+
+
 KONTRAST_MAX = 20
 
 
@@ -760,39 +816,11 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
         bildteile, unterlagen_text, auswahl_text, hinweise = anhaenge_vorbereiten(api, aid, auftrag, bilder)
     if halter.verloren.is_set():
         return "fehler"
-    # Markenwissen der Firma des Auftrags (nur deren Ordner); ohne Mandant (alter Auftrag) entfaellt es.
-    mandant = str(auftrag.get("mandant") or "")
-    name = str(auftrag.get("mandant_name") or mandant)
-    wissen = markenwissen.Wissen(text="", hinweise=[], ordner=None)
-    markenfarben: dict = {}
-    markenschriften: dict | None = None
-    markenlesbar: dict | None = None
-    if name:
-        wissen = markenwissen.laden(markenwissen.wurzel(), mandant, name,
-                                    f"{auftrag.get('nachricht', '')} {auftrag.get('titel', '')}")
-        hinweise += wissen.hinweise
-        # Gueltige Farben der Marke.md (Marke per Chat): dann gilt die Farbregel der Marke.
-        werte = markenprofil.lesen(markenwissen.wurzel(), mandant, name).werte
-        markenfarben = {k: werte[k] for k in agent_prompt.MARKENFARBEN if werte.get(k)}
-        if werte.get("schrift_anzeige") in schriften.REGISTER and werte.get("schrift_text") in schriften.REGISTER:
-            markenschriften = {"anzeige": werte["schrift_anzeige"], "text": werte["schrift_text"]}
-        if werte.get("akzent"):   # lesbare Ableitungen (wie die Vorlagen): Text auf hellem Grund, Schrift auf Akzent
-            r = vorlagen_marke.rollen({"akzent": werte["akzent"], "flaeche": werte.get("zweitfarbe")},
-                                      werte.get("grund") or "#ffffff")
-            markenlesbar = {"akzent_text": r["akzent_text"], "auf_akzent": r["auf_akzent"]}
+    mandant, name, wissen, markenfarben, markenschriften, markenlesbar = _marke_laden(auftrag, hinweise)
     system = agent_prompt.system(marke=bool(markenfarben))
     if auftrag.get("medien_hinweis"):
         hinweise.insert(0, str(auftrag["medien_hinweis"]))
-    angehaengt = [n for n, h in bilder if not pdf_bilder.ist_seite(h)]
-    # Markenlogo (von der VM als Mediendatei der Firma abgelegt, I5): fuer "… und Logo" setzbar
-    roh_logo, roh_dunkel = auftrag.get("markenlogo"), auftrag.get("markenlogo_dunkel")
-    markenlogo = roh_logo[len("medien:"):] if isinstance(roh_logo, str) and roh_logo.startswith("medien:") else ""
-    markenlogo_dunkel = (roh_dunkel[len("medien:"):] if markenlogo and isinstance(roh_dunkel, str)
-                         and roh_dunkel.startswith("medien:") else "")
-    marke_medien = [n for n in (markenlogo, markenlogo_dunkel) if n and n not in angehaengt]
-    vorne = angehaengt + marke_medien
-    medien = vorne + [m for m in medien if m not in vorne]   # Anhaenge und Markenlogo zuerst, auch live erlaubt
-    live.medien.update(vorne)
+    markenlogo, markenlogo_dunkel, medien = _medien_vorne(auftrag, bilder, medien, live)
     text_nutzer = agent_prompt.nutzer_text(auftrag, medien, unterlagen=unterlagen_text, auswahl_text=auswahl_text,
                                            hinweise=hinweise, bilder=bilder, markenwissen=wissen.text,
                                            mandant_name=name, notizen_text=wissen.notizen,
@@ -901,6 +929,474 @@ def _bearbeiten(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, z
             return zurueckgeben(ZU_VIELE)
         return "fehler" if antwort_vm.get("status") == "fehler" else "fertig"
     return zurueckgeben(NICHT_UMGESETZT + fehler)
+
+
+# --- Collage-Runde (format 'seite', Plan 2026-10-20-freie-flaeche-stufe3-assistent Task 6) -----------------
+# Entwurf gestalten, als Pruefbild ansehen und hoechstens RUNDEN-mal nachbessern. Der Block-Weg bleibt unberuehrt.
+
+SEITE_ENTWURF = "Entwurf wird gestaltet"
+SEITE_PRUEFEN = "Prüfe Entwurf (Runde {r}/{n})"
+SEITE_BESSERN = "Bessere nach (Runde {r}/{n})"
+PRUEFBILD_FEHLT = "Prüfbild nicht möglich – ohne Nachbesserung gespeichert"
+PRUEFBILD_ABGELEHNT = "Prüfbild konnte nicht übergeben werden – Runde {r} ohne Bild geprüft."
+NACHBESSERUNG_WEG = "Nachbesserung in Runde {r} nicht möglich – der Entwurf davor wurde gespeichert."
+RUNDEN = seite_prompt.MAX_RUNDEN
+NACHRICHT_MAX = 2000           # wie api/chat.py NACHRICHT_MAX (laengere nimmt die VM gar nicht an)
+MAX_KOMPOSITIONEN = 5
+RUNDEN_ZEILE_MAX = 200
+VM_HINWEIS_MAX = 300           # wie api/chat.py HINWEIS_MAX
+
+
+class _LiveSeite(_Live):
+    """Live-Stand einer Collage: jede fertig gelesene Aenderung einzeln mit seite_werkzeuge auf die Arbeitskopie;
+    eine verworfene laesst den Stand unveraendert. Zwischenstaende gehen als seite an die VM."""
+
+    def aenderung(self, a: dict) -> None:
+        try:
+            erg = seite_werkzeuge.anwenden(self.kopie, [a], self.medien)
+        except agent_werkzeuge.WerkzeugFehler as e:
+            self.fehler.append(str(e))
+            return
+        verworfen = [h for h in erg.hinweise if h.startswith("Änderung 1 (")]
+        if verworfen:
+            self.fehler.append(verworfen[0])
+            return
+        self.angewandt.append(a)
+        if not erg.geaendert:            # Bildauftrag oder fertig: kein neuer Stand
+            return
+        self.kopie = self.gueltig = erg.seite
+        self.nr += 1
+        self.schritt = str(a.get("schritt") or a.get("werkzeug"))[:SCHRITT_MAX]
+        self.offen = True
+        if self.spur is not None:
+            self.spur.schritt(self.schritt)
+
+    def _senden(self) -> dict:
+        return self.api.zwischenstand(self.aid, self.kopie, self.schritt, self.nr, seite=True)
+
+    def stand(self, s: dict, schritt: str, immer: bool = False) -> None:
+        """Ganzer Stand nach einer Runde, gedrosselt; immer = der letzte vor fertig (ein Stopp gewinnt dort noch)."""
+        self.kopie = self.gueltig = s
+        self.schritt, self.offen = schritt[:SCHRITT_MAX], True
+        self.melden(immer=immer)
+
+
+class _SeitenStand:
+    """Zuletzt vollstaendig angewendete Runde fuer "Behalten" bei einem Stopp: Seite (None = unveraendert) und je
+    Runde ihre Aenderungsliste (zum Nachspielen auf eine neuere Fassung)."""
+
+    def __init__(self) -> None:
+        self.aktiv = False
+        self.seite: dict | None = None
+        self.runden: list[list] = []
+
+
+def _neueste_seite(api, aid) -> dict:
+    neu = api.neueste(aid)
+    if (not isinstance(neu, dict) or not isinstance(neu.get("seite"), dict)
+            or isinstance(neu.get("fassung"), bool) or not isinstance(neu.get("fassung"), int)):
+        raise ValueError("neueste Collage unlesbar")
+    return neu
+
+
+def _ohne_fertig(aenderungen: list) -> list:
+    return [a for a in aenderungen if not (isinstance(a, dict) and a.get("werkzeug") == "fertig")]
+
+
+def _ids_vergeben(aenderungen: list, belegt: set) -> list:
+    """Neue Ebenen ohne id bekommen hier eine feste: Nachbesserung, Nachspielen und Bildauftraege sprechen so
+    dieselbe Ebene an (sonst wuerfelte jede Anwendung eine neue)."""
+    belegt = set(belegt)
+    aus = []
+    for a in aenderungen:
+        e = a.get("ebene") if isinstance(a, dict) and a.get("werkzeug") == "ebene_hinzufuegen" else None
+        if isinstance(e, dict) and "id" not in e:
+            while (eid := f"a-{secrets.token_hex(3)}") in belegt:
+                pass
+            belegt.add(eid)
+            a = {**a, "ebene": {**e, "id": eid}}
+        elif isinstance(e, dict) and isinstance(e.get("id"), str):
+            belegt.add(e["id"])
+        aus.append(a)
+    return aus
+
+
+def _quelle(s: dict, eid) -> object:
+    e = next((e for e in s.get("ebenen") or [] if e.get("id") == eid), None)
+    return e.get("quelle", False) if e is not None and e.get("art") == "bild" else False
+
+
+def _auftraege_merken(auftraege: dict, erg: seite_werkzeuge.ErgebnisSeite) -> dict:
+    """Bildauftraege je Platz (spaetere Runde gewinnt), mit der quelle der Ebene zu dem Zeitpunkt."""
+    return {**auftraege, **{a["platz"]: (a, _quelle(erg.seite, a["platz"])) for a in erg.bildauftraege}}
+
+
+def _auftraege_liste(auftraege: dict, s: dict) -> list[dict]:
+    """Nur Auftraege, deren Bild-Ebene es noch gibt und deren Bild seitdem niemand ersetzt hat."""
+    return [a for platz, (a, quelle) in auftraege.items() if quelle is not False and _quelle(s, platz) == quelle]
+
+
+def _nachspielen_runden(s: dict, runden: list[list], medien: set) -> tuple[dict, bool, list[dict], list[str]]:
+    """Runde fuer Runde auf eine neuere Seite nachspielen (je Runde gilt MAX_AENDERUNGEN wie beim Entwurf).
+    -> (seite, geaendert, bildauftraege, Hinweise zu uebersprungenen Aenderungen)."""
+    start, auftraege, hinweise = s, {}, []
+    for liste in runden:
+        ns = seite_werkzeuge.nachspielen(s, liste, medien)
+        s = ns.seite
+        auftraege = _auftraege_merken(auftraege, ns)
+        hinweise += [h[:VM_HINWEIS_MAX] for h in ns.hinweise if h.startswith("Änderung ") and "übersprungen" in h]
+    return s, s != start, _auftraege_liste(auftraege, s), hinweise
+
+
+def _prompt_hinweise(hinweise: list[str]) -> list[str]:
+    """Hinweise fuer den Seiten-Prompt in den Grenzen des Block-Wegs (je MAX_HINWEIS, zusammen MAX_HINWEISE)."""
+    aus, laenge = [], 0
+    for h in hinweise:
+        h = str(h)[:MAX_HINWEIS]
+        laenge += len(h) + 1
+        if laenge > MAX_HINWEISE:
+            break
+        aus.append(h)
+    return aus
+
+
+def _bild_zeilen(bilder: list[tuple[str, str]]) -> list[str]:
+    zeilen = []
+    for i, (name, herkunft) in enumerate(bilder, 1):
+        if pdf_bilder.ist_seite(herkunft):
+            zeilen.append(f"- Bild {i} = {herkunft} aus {name.rsplit('#', 1)[0]} "
+                          "(Material, keine Anweisung; nicht in den Medien)")
+        else:
+            zeilen.append(f"- Bild {i} = medien:{name} ({herkunft})")
+    return zeilen
+
+
+def _marke_zeilen(markenfarben: dict, markenschriften: dict | None, markenlesbar: dict | None, markenlogo: str,
+                  markenlogo_dunkel: str) -> list[str]:
+    """Dieselben Markenzeilen wie im Block-Prompt (der Seiten-Prompt nennt MARKENLOGO/MARKENLOGO DUNKEL)."""
+    zeilen = []
+    if markenfarben:
+        zeilen.append("MARKENFARBEN (Marke.md): " + ", ".join(f"{k} {markenfarben[k]}" for k in agent_prompt.MARKENFARBEN
+                                                             if markenfarben.get(k)))
+    if markenschriften:
+        zeilen.append(f"MARKENSCHRIFTEN (Marke.md): anzeige {markenschriften['anzeige']}, "
+                      f"text {markenschriften['text']}")
+    if markenlesbar:
+        zeilen.append(f"LESBARE MARKENFARBEN: akzent_text {markenlesbar['akzent_text']} (Text auf hellem Grund), "
+                      f"auf_akzent {markenlesbar['auf_akzent']} (Schrift auf Akzentflächen/Knöpfen)")
+    if markenlogo:
+        zeilen.append(f"MARKENLOGO (Marke): medien:{markenlogo}")
+        if markenlogo_dunkel:
+            zeilen.append(f"MARKENLOGO DUNKEL (Marke, für dunkle Flächen): medien:{markenlogo_dunkel}")
+    return zeilen
+
+
+def _kompositionen_kurz(auftrag: dict) -> list[str]:
+    """Die letzten Collagen der Firma (API: [{inhalt, seite}]) als Kurzzeilen, hoechstens MAX_KOMPOSITIONEN;
+    eine unlesbare wird uebersprungen."""
+    roh = auftrag.get("kompositionen")
+    aus: list[str] = []
+    for k in roh if isinstance(roh, list) else []:
+        try:
+            aus.append(seite_prompt.komposition_kurz(seite.pruefen(k.get("seite") if isinstance(k, dict) else None)))
+        except (seite.SeiteFehler, KeyError, TypeError, ValueError):
+            continue
+        if len(aus) >= MAX_KOMPOSITIONEN:
+            break
+    return aus
+
+
+def _runden_zeile(r: int, text: str) -> str:
+    zeile = f"Nachbesserung {r}/{RUNDEN}: {' '.join(str(text).split())}"
+    return zeile if len(zeile) <= RUNDEN_ZEILE_MAX else zeile[:RUNDEN_ZEILE_MAX - 1].rstrip() + "…"
+
+
+def _seite_strom(api, aid, fragen_strom, nachrichten, live: _LiveSeite, system: str, spur, uhr, schlafen,
+                 halten_takt_s, ohne_bilder: Callable[[], bool]) -> str | None:
+    """Eine Frage an Claude mit Shim-Wiederholung wie im Block-Weg. None = der Shim blieb SHIM_BIS_S weg.
+    ohne_bilder(): lehnt der Shim die Bildteile ab (400), nimmt sie einmal heraus (True) - dann sofort erneut."""
+    beginn = None        # Shim-Fenster je Frage, ab dem ersten Ausfall
+    with halten(api, aid, halten_takt_s) as halter:
+        while True:
+            try:
+                text, _ = _strom_lesen(fragen_strom, nachrichten, live, halter, system, spur)
+                break
+            except LlmFehler as e:
+                if halter.verloren.is_set():
+                    raise _Verloren from None
+                if isinstance(e, ShimAbgelehnt) and ohne_bilder():
+                    continue
+                if beginn is None:
+                    beginn = uhr()
+                if uhr() - beginn >= SHIM_BIS_S:
+                    return None
+                if not api.weiter(aid):
+                    raise _Verloren from None
+                schlafen(SHIM_PAUSE_S)
+    if halter.verloren.is_set():
+        raise _Verloren
+    return text
+
+
+def _speichern_seite(api, aid, daten: dict, runden: list[list], medien: set, basis, spur: denkspur.Spur,
+                     stopp_pruefen: Callable[[], None]) -> dict:
+    """fertig mit Nachspielen wie _speichern, fuer eine Collage: verliert das Speichern das Rennen (veraltet), die
+    Runden auf die neueste Seite nachspielen und erneut speichern - hoechstens NACHSPIELEN_MAX-mal.
+    {"status": "zu_viele"} nach dem letzten verlorenen Rennen."""
+    hinweise: list[str] = []
+    for versuch in range(NACHSPIELEN_MAX + 1):
+        schritte = _abschluss_schritte(spur, daten)
+        spur.ende()
+        try:
+            antwort = api.fertig(aid, {**daten, "basis": basis, "hinweise": hinweise})
+        except ApiFehler as e:
+            _schritte_zuruecknehmen(spur, schritte)     # nichts gespeichert
+            if e.code == 422 and str(e.grund).startswith(GESTOPPT_VM):
+                stopp_pruefen()                          # wirft _Stopp mit der Art des Stopps
+            raise
+        if antwort.get("status") != "veraltet":
+            return antwort
+        _schritte_zuruecknehmen(spur, schritte)
+        if versuch == NACHSPIELEN_MAX:
+            break
+        if not api.weiter(aid):
+            return {"status": "fehler"}
+        neu = _neueste_seite(api, aid)
+        spur.schritt(f"Nachspielen auf Fassung {neu['fassung']}")
+        s, geaendert, auftraege, uebersprungen = _nachspielen_runden(neu["seite"], runden, medien)
+        basis = neu["fassung"]
+        hinweise = [NACHGESPIELT.format(n=neu["fassung"]), *uebersprungen][:VM_HINWEISE_MAX]
+        if not geaendert and not auftraege:      # nichts passt mehr: fertig ohne Fassung
+            daten = {**daten, "antwort": NICHTS_UMGESETZT, "seite": None, "bildauftraege": []}
+            continue
+        daten = {**daten, "seite": s if geaendert else None, "bildauftraege": auftraege}
+    return {"status": "zu_viele"}
+
+
+def _seite_bearbeiten(api, auftrag, fragen_strom, uhr, schlafen, halten_takt_s, drossel_s, pruefbild) -> str:
+    """Rahmen der Collage-Runde wie chat_bearbeiten: Stopp (Behalten = Stand nach der letzten vollstaendig
+    angewendeten Runde, auf eine neuere Fassung nachgespielt; Verwerfen = nichts), Verlust und Stoerungen."""
+    aid = str(auftrag["id"])
+    versucht = []            # zurueck wurde schon aufgerufen
+
+    def zurueckgeben(text: str) -> str:
+        versucht.append(1)
+        spur.ende()
+        api.zurueck(aid, text)
+        return "fehler"
+    spur = denkspur.Spur(spur_senden(api, aid), uhr=uhr)
+    roh = auftrag.get("seite")
+    live = _LiveSeite(api, aid, roh if isinstance(roh, dict) else {}, set(auftrag.get("medien") or []), uhr,
+                      drossel_s, spur=spur, basis=auftrag.get("fassung"))
+    stand = _SeitenStand()
+    try:
+        return _bearbeiten_seite(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, zurueckgeben, live,
+                                 spur, stand, pruefbild)
+    except _Stopp as stopp:
+        spur.ende()
+        neu_seite, basis, extra = None, None, []
+        if stopp.art == "behalten":
+            if stand.aktiv:
+                neu_seite, runden = stand.seite, stand.runden
+            else:                # Stopp noch im ersten Entwurf: wie im Block-Weg der letzte gueltige Live-Stand
+                neu_seite, runden = live.gueltig, [live.angewandt]
+            if neu_seite is not None and any(runden) and live.basis is not None:
+                try:
+                    neu = _neueste_seite(api, aid)
+                    if neu["fassung"] != live.basis:
+                        s, geaendert, _, uebersprungen = _nachspielen_runden(neu["seite"], runden, live.medien)
+                        if geaendert:
+                            neu_seite, basis = s, neu["fassung"]
+                            extra = [NACHGESPIELT.format(n=neu["fassung"]), *uebersprungen][:VM_HINWEISE_MAX]
+                        else:
+                            neu_seite = None
+                except (ApiFehler, OSError, ValueError, agent_werkzeuge.WerkzeugFehler):
+                    pass               # der letzte gueltige Stand, die VM entscheidet
+            if neu_seite is not None and basis is None:
+                basis = live.basis
+        try:
+            api.gestoppt(aid, neu_seite, basis, extra, seite=True)
+        except (ApiFehler, OSError, ValueError):
+            pass             # die VM schliesst einen gestoppten Auftrag nach 15 s selbst ab
+        return "gestoppt"
+    except _Verloren:
+        return "fehler"
+    except (ApiFehler, OSError, ValueError) as e:
+        if not versucht:
+            try:
+                spur.ende()
+            except Exception:  # noqa: BLE001 - Sichtbarkeit darf nie den Fehlerweg stoeren
+                pass
+            _freigeben(api, aid, NICHT_ERREICHBAR, e)
+        return "fehler"
+
+
+def _bearbeiten_seite(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_takt_s, zurueckgeben,
+                      live: _LiveSeite, spur: denkspur.Spur, stand: _SeitenStand, pruefbild) -> str:
+    from spaces.marketing.workers import seite_pruefbild   # erst hier: seite_pruefbild -> export_worker -> dieses Modul
+    try:
+        start = seite.pruefen(auftrag.get("seite"))
+    except seite.SeiteFehler as e:
+        return zurueckgeben(NICHT_UMGESETZT + f"Die Collage ist ungültig: {e}")
+    if pruefbild is None:
+        render = seite_pruefbild.browser_render(api, aid)
+
+        def pruefbild(s: dict) -> tuple[list[bytes], float]:
+            return seite_pruefbild.kacheln(s, render)
+    live.original = start
+    live.neu_beginnen()
+    kontext = auftrag.get("kontext") if isinstance(auftrag.get("kontext"), dict) else {}
+    bilder: list[tuple[str, str]] = []
+    with halten(api, aid, halten_takt_s) as halter:      # Anhaenge laden kann dauern
+        # Markierte Ebenen loest die Collage selbst auf (die Suche in anhaenge_vorbereiten kennt nur Bloecke)
+        bildteile, unterlagen_text, _, hinweise = anhaenge_vorbereiten(
+            api, aid, {**auftrag, "kontext": {**kontext, "auswahl": []}}, bilder)
+    if halter.verloren.is_set():
+        return "fehler"
+    ids = {e["id"] for e in start["ebenen"]}
+    auswahl = []
+    for a in _auswahl_liste(kontext):
+        if a["id"] in ids:
+            auswahl.append(a["id"])
+        else:
+            hinweise.append(f"Das markierte Element „{str(a.get('kurz') or a['id'])[:80]}“ gibt es nicht mehr.")
+    _, name, wissen, markenfarben, markenschriften, markenlesbar = _marke_laden(auftrag, hinweise)
+    if auftrag.get("medien_hinweis"):
+        hinweise.insert(0, str(auftrag["medien_hinweis"]))
+    markenlogo, markenlogo_dunkel, medien = _medien_vorne(auftrag, bilder, list(auftrag.get("medien") or []), live)
+    erlaubt = set(medien)
+    system = seite_prompt.system_seite(marke=bool(markenfarben))
+    verlauf = auftrag.get("verlauf")
+    text_nutzer = seite_prompt.nutzer_text_seite(
+        nachricht=str(auftrag.get("nachricht") or "")[:NACHRICHT_MAX], auswahl=auswahl,
+        titel=str(auftrag.get("titel") or ""), betreff=str(auftrag.get("betreff") or ""), firma=name,
+        marke_zeilen=_marke_zeilen(markenfarben, markenschriften, markenlesbar, markenlogo, markenlogo_dunkel),
+        medien=medien, seite=start, verlauf=verlauf if isinstance(verlauf, list) else [],
+        kompositionen=_kompositionen_kurz(auftrag), anhaenge_zeilen=_bild_zeilen(bilder),
+        hinweise=_prompt_hinweise(hinweise),
+        rueckmeldungen=[f for f in (auftrag.get("rueckmeldungen_offen") or [])
+                        if isinstance(f, dict) and isinstance(f.get("text"), str)],
+        markenwissen=wissen.text, notizen=wissen.notizen, unterlagen=unterlagen_text)
+    nachrichten = [{"role": "user", "content": [{"type": "text", "text": text_nutzer}, *bildteile]
+                    if bildteile else text_nutzer}]
+
+    def erste_ohne_bilder() -> bool:
+        nonlocal bildteile
+        if not bildteile:
+            return False
+        bildteile = []           # der Shim lehnt sie ab: auch die Pruefrunden gehen ohne sie
+        nachrichten[0] = {"role": "user", "content": text_nutzer}
+        hinweise.insert(0, BILDER_ABGELEHNT)
+        return True
+
+    # 1. Entwurf (eine Korrekturrunde bei unlesbarer Antwort, wie im Block-Weg)
+    spur.schritt(SEITE_ENTWURF)
+    for versuch in (1, 2):
+        text = _seite_strom(api, aid, fragen_strom, nachrichten, live, system, spur, uhr, schlafen, halten_takt_s,
+                            erste_ohne_bilder)
+        if text is None:
+            return zurueckgeben(NICHT_ERREICHBAR)
+        try:
+            antwort = seite_prompt.antwort_lesen(text)
+            break
+        except agent_prompt.AntwortFehler as e:
+            if versuch == 2:
+                live.melden(immer=True)  # steht ein Stopp an, gewinnt er vor dem Zurueckgeben
+                return zurueckgeben(NICHT_UMGESETZT + str(e))
+            spur.korrektur()
+            nachrichten += [{"role": "assistant", "content": text},
+                            {"role": "user", "content": agent_prompt.korrektur_text(str(e))}]
+    try:
+        aenderungen = _ids_vergeben(antwort["aenderungen"], ids)
+        erg = seite_werkzeuge.anwenden(start, aenderungen, erlaubt)
+    except agent_werkzeuge.WerkzeugFehler as e:
+        return zurueckgeben(NICHT_UMGESETZT + str(e))
+    aktuell, schritt = erg.seite, SEITE_ENTWURF
+    auftraege = _auftraege_merken({}, erg)
+    stand.aktiv, stand.runden = True, [_ohne_fertig(aenderungen)]
+    stand.seite = aktuell if aktuell != start else None
+    if erg.geaendert:
+        live.stand(aktuell, schritt)
+
+    # 2. Ansehen und nachbessern: hoechstens RUNDEN Pruefrunden
+    zeilen, notiz = [], ""
+    letzter_text, letzte_hinweise = text, erg.hinweise
+    for r in range(1, RUNDEN + 1):
+        spur.schritt(SEITE_PRUEFEN.format(r=r, n=RUNDEN))
+        try:
+            with halten(api, aid, halten_takt_s) as halter:
+                kacheln, faktor = pruefbild(aktuell)
+        except Exception:  # noqa: BLE001 - ohne Pruefbild wird der Entwurf gespeichert, die Runde kippt nie
+            hinweise.insert(0, PRUEFBILD_FEHLT)
+            spur.schritt(PRUEFBILD_FEHLT)
+            break
+        if halter.verloren.is_set():
+            raise _Verloren
+        pruef = seite_prompt.pruef_text(r, letzte_hinweise, aktuell, faktor)
+        teile = seite_pruefbild.bilder_fuer_modell(bildteile, kacheln)   # Anhaenge zuerst, hoechstens 6 Bilder
+        frage_r = [{"role": "user", "content": text_nutzer}, {"role": "assistant", "content": letzter_text},
+                   {"role": "user", "content": [{"type": "text", "text": pruef}, *teile] if teile else pruef}]
+        abgelehnt: list[bool] = []
+
+        def ohne_bilder() -> bool:
+            if not isinstance(frage_r[-1]["content"], list):
+                return False
+            frage_r[-1] = {"role": "user", "content": pruef}
+            abgelehnt.append(True)
+            return True
+        live.original = aktuell
+        text_r = _seite_strom(api, aid, fragen_strom, frage_r, live, system, spur, uhr, schlafen, halten_takt_s,
+                              ohne_bilder)
+        if abgelehnt:
+            hinweise.append(PRUEFBILD_ABGELEHNT.format(r=r))
+        try:
+            if text_r is None:
+                raise LlmFehler(NICHT_ERREICHBAR)
+            antwort_r = seite_prompt.antwort_lesen(text_r)
+            aenderungen_r = _ids_vergeben(antwort_r["aenderungen"], {e["id"] for e in aktuell["ebenen"]})
+            erg_r = seite_werkzeuge.anwenden(aktuell, aenderungen_r, erlaubt)
+        except (LlmFehler, agent_prompt.AntwortFehler, agent_werkzeuge.WerkzeugFehler):
+            hinweise.append(NACHBESSERUNG_WEG.format(r=r))   # der letzte vollstaendige Stand bleibt
+            break
+        zeilen.append(_runden_zeile(r, erg_r.notiz or antwort_r["antwort"]))
+        auftraege = _auftraege_merken(auftraege, erg_r)
+        if erg_r.geaendert or erg_r.bildauftraege:
+            stand.runden = stand.runden + [_ohne_fertig(aenderungen_r)]
+        if erg_r.fertig:
+            notiz = erg_r.notiz
+        if erg_r.fertig or not erg_r.geaendert:
+            break
+        schritt = SEITE_BESSERN.format(r=r, n=RUNDEN)
+        spur.schritt(schritt)
+        aktuell = erg_r.seite
+        stand.seite = aktuell if aktuell != start else None
+        live.stand(aktuell, schritt)
+        letzter_text, letzte_hinweise = text_r, erg_r.hinweise
+
+    # 3. Speichern (bei veraltet Runde fuer Runde auf die neueste Seite nachspielen)
+    geaendert = aktuell != start
+    if geaendert or live.gesendet_am is not None:
+        live.stand(aktuell, schritt, immer=True)     # ein Stopp hier gewinnt noch vor fertig
+    if not api.weiter(aid):
+        return "fehler"
+    text_antwort = antwort["antwort"] + ("\n\n" + "\n".join(zeilen) if zeilen else "")
+    antwort_hinweise = list(hinweise)
+    # Wie im Block-Weg: Notizen erst jetzt, unmittelbar vor fertig; ohne Firma keine.
+    if antwort["notizen"] and name:
+        titel, notiz_hinweise = markenwissen.notizen_schreiben(
+            wissen.ordner, name, antwort["notizen"],
+            {"newsletter": auftrag.get("titel", ""), "bitte": auftrag.get("nachricht", "")}, datetime.date.today())
+        vor = next((i for i, h in enumerate(antwort_hinweise) if h in wissen.hinweise), len(antwort_hinweise))
+        antwort_hinweise[vor:vor] = notiz_hinweise
+        if titel:
+            text_antwort += "\n\n" + "\n".join(f"Notiz in Rowboat abgelegt: {t}" for t in titel)
+    daten = {"antwort": _mit_hinweisen(antwort_hinweise, text_antwort), "seite": aktuell if geaendert else None,
+             "bildauftraege": _auftraege_liste(auftraege, aktuell), "export_vorschlag": None, "notiz": notiz}
+    antwort_vm = _speichern_seite(api, aid, daten, stand.runden, erlaubt, live.basis, spur,
+                                  stopp_pruefen=lambda: live.melden(immer=True))
+    if antwort_vm.get("status") == "zu_viele":
+        return zurueckgeben(ZU_VIELE)
+    return "fehler" if antwort_vm.get("status") == "fehler" else "fertig"
 
 
 def ein_durchlauf(api, fragen_strom=frage_strom, exportieren=None, uhr=time.monotonic, schlafen=time.sleep,
