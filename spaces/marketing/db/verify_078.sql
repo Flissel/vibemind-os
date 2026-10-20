@@ -110,7 +110,20 @@ BEGIN
         '[{"titel":"","url":"https://e.org","art":"gelesen"}]',
         '[{"titel":"   ","url":"https://e.org","art":"gelesen"}]',
         '[{"titel":" \t\n ","url":"https://e.org","art":"gelesen"}]',
-        '[{"titel":"t","url":5,"art":"gelesen"}]'
+        '[{"titel":"t","url":5,"art":"gelesen"}]',
+        -- Abschluss-Review I2: Zugangsdaten in der Adresse, Leer- und Steuerzeichen irgendwo in der url
+        '[{"titel":"t","url":"https://user:pw@e.org/","art":"gelesen"}]',
+        '[{"titel":"t","url":"https://e.org@boese.example/a","art":"gelesen"}]',
+        '[{"titel":"t","url":"http://@e.org","art":"gelesen"}]',
+        '[{"titel":"t","url":"https://e.org /a","art":"gelesen"}]',
+        '[{"titel":"t","url":"https://e.org/a\tb","art":"gelesen"}]',
+        '[{"titel":"t","url":"https://e.org/a\nb","art":"gelesen"}]',
+        '[{"titel":"t","url":"https://e.org/a\rb","art":"gelesen"}]',
+        '[{"titel":"t","url":"https://e.org/a\u0001b","art":"gelesen"}]',
+        '[{"titel":"t","url":"https://e.org/a\u007fb","art":"gelesen"}]',
+        '[{"titel":"t","url":"https://e.org/a\u0085b","art":"gelesen"}]',
+        '[{"titel":"t","url":"https://e.org/a\u00a0b","art":"gelesen"}]',
+        '[{"titel":"t","url":"https://e.org/a\u2028b","art":"gelesen"}]'
       ]::jsonb[] LOOP
       geworfen := false;
       BEGIN PERFORM marketing.pult_marke_quellen(ok, schlecht);
@@ -118,6 +131,12 @@ BEGIN
       IF NOT geworfen THEN RAISE EXCEPTION 'verify_078: Quellen % muessen werfen', schlecht; END IF;
     END LOOP;
   END;
+
+  -- '@' im Pfad, in der Suche oder im Anker ist keine Zugangsangabe und bleibt gueltig
+  IF NOT marketing.pult_marke_quellen(ok, '[{"titel":"t","url":"https://e.org/a@b","art":"gelesen"},
+       {"titel":"t","url":"https://e.org?mail=a@b","art":"gelesen"},
+       {"titel":"t","url":"https://e.org#a@b","art":"websuche"}]') THEN
+    RAISE EXCEPTION 'verify_078: @ hinter der Adresse muss gehen'; END IF;
 
   -- Sperre abgelaufen -> false
   UPDATE marketing.marken_auftraege SET vergeben_bis = now() - interval '1 second' WHERE id = ok;

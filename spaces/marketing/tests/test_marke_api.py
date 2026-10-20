@@ -151,7 +151,7 @@ def test_stand_liefert_alles(umg):
     assert j["auftraege"][0]["id"] == AID and "sortiert_am" not in j["auftraege"][0]
     assert j["laeuft"] is True and j["uebernahme"] is None
     assert j["uebernahme_seit"] is None and j["aktuell"] is None
-    assert j["vorschlag"] == {"id": VID, "vorschlag": VORSCHLAG, "erstellt_am": "z"}
+    assert j["vorschlag"] == {"id": VID, "vorschlag": VORSCHLAG, "erstellt_am": "z", "ist_rueckgaengig": False}
     assert "_marke_aufraeumen('radhaus')" in f.sql[0]
     assert "LIMIT 10" in f.sql[2] and "art IN ('chat', 'bearbeitung')" in f.sql[2]
 
@@ -1166,7 +1166,7 @@ def test_vorschlag_direkt_scheitert_bleibt_offen(umg):
     f.antworten += [[{"id": VID}], [{"mandant": "radhaus"}]]
     f.fehler += [None, None, _db_fehler("Inzwischen gibt es ein neueres Profil – bitte neu laden")]
     r = c.post(f"/api/marke/arbeiter/{AID}/vorschlag", headers=HB,
-               json={"vorschlag": {"abschnitte": {"Ton": "warm"}}, "antwort": "Hier", "direkt": True})
+               json={"vorschlag": {"abschnitte": {"Ton": "warm"}, "direkt": True}, "antwort": "Hier", "direkt": True})
     assert r.status_code == 200 and r.json() == {"vorschlag": VID, "direkt": False}
     assert "pult_marke_uebernehmen" in f.sql[2]
 
@@ -1295,4 +1295,90 @@ def test_stand_rueckgaengig_gemacht_ohne_vorschlaege_keine_abfrage(umg):
            "v_status": None, "v_direkt": None, "v_aenderungen": None}
     j = _stand(f, c, [roh], [])
     assert j["auftraege"][0]["aenderung"] is None
-    assert not any("rueckgaengig_von" in q for q in f.sql)
+    assert not any("rueckgaengig_von' IN" in q for q in f.sql)
+
+
+# ─── Abschluss-Review (Final-Fix) ───────────────────────────────────────
+
+
+def test_stand_rueckgaengig_gemacht_zaehlt_nur_angenommene_gegenvorschlaege(umg):
+    """I1: ein offener, verworfener oder ersetzter Gegenvorschlag macht nichts rueckgaengig."""
+    f, _, c = umg
+    runden = [_runde(AID, V1)]
+    f.antworten += [[{"ok": True}], KOPF, runden, [], [], [], [], [], [], [{"n": 1}],
+                    [{"id": V1, "erstellt_am": "t"}], []]
+    j = c.get("/api/pult/marke?mandant=radhaus", headers=H).json()
+    assert j["auftraege"][0]["aenderung"]["rueckgaengig_gemacht"] is False
+    sql = f.sql[11]
+    assert "rueckgaengig_von" in sql and "status = 'angenommen'" in sql
+
+
+def test_stand_offener_vorschlag_meldet_ist_rueckgaengig(umg):
+    """I1: die Seite erkennt einen offenen Gegenvorschlag (rueckgaengig_von gesetzt)."""
+    f, _, c = umg
+    gegen = {"abschnitte": {"Ton": ""}, "direkt": True, "aenderungen": AEND, "rueckgaengig_von": V1}
+    f.antworten += [[{"ok": True}], KOPF, [], [], [{"id": V2, "vorschlag": gegen, "erstellt_am": "z"}]]
+    j = c.get("/api/pult/marke?mandant=radhaus", headers=H).json()
+    assert j["vorschlag"] == {"id": V2, "vorschlag": gegen, "erstellt_am": "z", "ist_rueckgaengig": True}
+    for roh in ({**VORSCHLAG}, {**VORSCHLAG, "rueckgaengig_von": ""}, {**VORSCHLAG, "rueckgaengig_von": None}):
+        f.antworten += [[{"ok": True}], KOPF, [], [], [{"id": V2, "vorschlag": roh, "erstellt_am": "z"}]]
+        j = c.get("/api/pult/marke?mandant=radhaus", headers=H).json()
+        assert j["vorschlag"]["ist_rueckgaengig"] is False, roh
+
+
+def test_stand_aktuell_ueberspringt_teilweise_rueckgaengig_vorschlaege(umg):
+    """Minor 2: ein angenommener Gegenvorschlag ist nur ein Teilprofil und taugt nicht als Rueckfall."""
+    f, _, c = umg
+    f.antworten += [[{"ok": True}], KOPF, [], [], [], []]
+    c.get("/api/pult/marke?mandant=radhaus", headers=H)
+    sql = f.sql[5]
+    assert "status = 'angenommen'" in sql and "vorschlag->>'rueckgaengig_von' IS NULL" in sql
+
+
+@pytest.mark.parametrize("url", [
+    "https://user:pw@x.example/",
+    "https://x.example@boese.example/a",
+    "http://@x.example",
+    "https://x.example /a",
+    "https://x.example/a\tb",
+    "https://x.example/a\nb",
+    "https://x.example/a\rb",
+    "https://x.example/a\x01b",
+    "https://x.example/a\x7fb",
+    "https://x.example/a\x85b",
+    "https://x.example/a\u00a0b",
+    "https://x.example/a\u2028b",
+    " https://x.example/",
+])
+def test_quellen_route_lehnt_zugangsdaten_und_steuerzeichen_ab(umg, url):
+    """I2: Zugangsdaten in der Adresse und Leer-/Steuerzeichen irgendwo in der url."""
+    f, _, c = umg
+    r = c.post(f"/api/marke/arbeiter/{AID}/quellen", headers=HB, json={"quellen": [{**QUELLE, "url": url}]})
+    assert r.status_code == 422, url
+    assert f.sql == []
+
+
+def test_quellen_at_im_pfad_oder_suche_bleibt_gueltig():
+    from spaces.marketing.api.marke import quellen_pruefen
+    for url in ("https://x.example/a@b", "https://x.example?mail=a@b", "https://x.example#a@b",
+                "https://x.example/p?q=1@2#f"):
+        assert quellen_pruefen([{**QUELLE, "url": url}])[0]["url"] == url
+
+
+def test_vorschlag_direkt_nur_wenn_auch_der_vorschlag_direkt_ist(umg):
+    """Minor 3: body.direkt allein reicht nicht - der gespeicherte Vorschlag muss direkt: true tragen."""
+    f, _, c = umg
+    for vorschlag in ({"abschnitte": {"Ton": "warm"}}, {"abschnitte": {"Ton": "warm"}, "direkt": False},
+                      {"abschnitte": {"Ton": "warm"}, "direkt": "true"}):
+        f.sql.clear()
+        f.antworten += [[{"id": VID}]]
+        r = c.post(f"/api/marke/arbeiter/{AID}/vorschlag", headers=HB,
+                   json={"vorschlag": vorschlag, "antwort": "Hier", "direkt": True})
+        assert r.status_code == 200 and r.json() == {"vorschlag": VID, "direkt": False}, vorschlag
+        assert len(f.sql) == 1 and not any("pult_marke_uebernehmen" in q for q in f.sql)
+    f.sql.clear()
+    f.antworten += [[{"id": VID}]]
+    r = c.post(f"/api/marke/arbeiter/{AID}/vorschlag", headers=HB,
+               json={"vorschlag": {"abschnitte": {"Ton": "warm"}, "direkt": True}, "antwort": "Hier",
+                     "direkt": False})
+    assert r.json() == {"vorschlag": VID, "direkt": False} and len(f.sql) == 1

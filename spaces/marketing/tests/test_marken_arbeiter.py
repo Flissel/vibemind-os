@@ -1559,3 +1559,23 @@ def test_quellen_gleiche_adresse_einmal_gelesen_gewinnt():
                                  {"titel": "Presse", "url": "https://presse.example/a", "art": "websuche"}])
     assert quellen == [{"titel": "Start", "url": "https://radhaus.example/", "art": "gelesen"},
                        {"titel": "Presse", "url": "https://presse.example/a", "art": "websuche"}]
+
+
+def test_rueckgaengig_mit_leerem_vorher_entfernt_den_neuen_abschnitt(wurzel):
+    """Abschluss-Review Minor 6: B hat einen Abschnitt neu angelegt; sein Rueckgaengig (vorher="") nimmt ihn
+    wieder heraus, die uebrigen Abschnitte und Werte bleiben."""
+    _profil(wurzel, {"Wer wir sind": "Fahrradwerkstatt in Köln.", "Ton": "Laut und schnell.",
+                     "Zielgruppe": "Pendler aus dem Veedel."})
+    assert mp.lesen(str(wurzel), "radhaus", "Radhaus").abschnitte["Zielgruppe"] == "Pendler aus dem Veedel."
+    gegen = {"abschnitte": {"Zielgruppe": ""}, "direkt": True,
+             "aenderungen": [{"feld": "Zielgruppe", "vorher": "Pendler aus dem Veedel.", "nachher": ""}],
+             "rueckgaengig_von": "00000000-0000-0000-0000-000000000002"}
+    api = Api(_uebernehmen(gegen, von="Anna"))
+    assert _lauf(api, Fragen()) == "fertig"
+    assert api.aufrufe("zurueck") == []
+    profil = mp.lesen(str(wurzel), "radhaus", "Radhaus")
+    assert "Zielgruppe" not in profil.abschnitte or profil.abschnitte["Zielgruppe"] == ""
+    assert profil.abschnitte["Wer wir sind"] == "Fahrradwerkstatt in Köln."
+    assert profil.abschnitte["Ton"] == "Laut und schnell."
+    assert {k: profil.werte[k] for k in WERTE} == WERTE
+    assert "Pendler aus dem Veedel." not in (wurzel / "Radhaus" / "Marke.md").read_text(encoding="utf-8")

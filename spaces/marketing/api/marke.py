@@ -60,6 +60,10 @@ QUELLEN_MAX, QUELLE_TITEL_MAX, QUELLE_URL_MAX = 12, 120, 500
 QUELLEN_ARTEN = ("gelesen", "websuche")
 DIREKT_VON = "Agent (direkt)"
 _QUELLE_URL = re.compile(r"https?://")
+# Zugangsdaten ('@' zwischen :// und dem ersten /, ? oder #) und Leer-/Steuerzeichen irgendwo in der url;
+# dieselben Zeichen wie marketing._marke_quellen_pruefen (078).
+_QUELLE_ZUGANG = re.compile(r"https?://[^/?#]*@")
+_QUELLE_ZEICHEN = re.compile(r"[\s\x00-\x1f\x7f-\x9f\u00a0\u1680\u2000-\u200b\u2028\u2029\u202f\u205f\u3000\ufeff]")
 
 
 def _vorschlag_id(wert: str) -> str:
@@ -104,7 +108,8 @@ def _von(payload: dict) -> str:
 def quellen_pruefen(roh: object) -> list[dict]:
     """Quellen einer Chat-Runde; dieselben Grenzen wie marketing._marke_quellen_pruefen (078): Liste mit
     hoechstens 12 Eintraegen, je genau {titel, url, art}; titel Text mit Inhalt <= 120, url <= 500 und
-    http(s)://, art gelesen|websuche. Sonst 422 (nichts erreicht die DB)."""
+    http(s):// ohne Zugangsdaten und ohne Leer-/Steuerzeichen, art gelesen|websuche. Sonst 422 (nichts erreicht
+    die DB)."""
     if not isinstance(roh, list) or len(roh) > QUELLEN_MAX:
         raise HTTPException(422, f"quellen muss eine Liste mit höchstens {QUELLEN_MAX} Einträgen sein")
     for q in roh:
@@ -115,6 +120,8 @@ def quellen_pruefen(roh: object) -> list[dict]:
             raise HTTPException(422, f"titel muss Text mit höchstens {QUELLE_TITEL_MAX} Zeichen sein")
         if not isinstance(url, str) or len(url) > QUELLE_URL_MAX or not _QUELLE_URL.match(url):
             raise HTTPException(422, f"url muss mit http:// oder https:// beginnen ({QUELLE_URL_MAX} Zeichen)")
+        if _QUELLE_ZUGANG.match(url) or _QUELLE_ZEICHEN.search(url):
+            raise HTTPException(422, "url ohne Zugangsdaten und ohne Leer- oder Steuerzeichen")
         if not isinstance(art, str) or art not in QUELLEN_ARTEN:
             raise HTTPException(422, "art ist gelesen oder websuche")
     return roh
@@ -134,14 +141,24 @@ def _aenderung(z: dict, juengster: str | None, rueckgaengig: set[str] = frozense
 
 
 def _rueckgaengig_gemachte(m: str, vids: list[str]) -> set[str]:
-    """Die Vorschlaege unter `vids`, zu denen die Firma einen Gegenvorschlag hat (078: vorschlag.rueckgaengig_von).
+    """Die Vorschlaege unter `vids`, zu denen die Firma einen ANGENOMMENEN Gegenvorschlag hat (078:
+    vorschlag.rueckgaengig_von); ein offener, verworfener oder ersetzter macht nichts rueckgaengig.
     Eine Abfrage fuer alle; ohne vids keine."""
     if not vids:
         return set()
     zeilen = _lesen(lambda:
         "SELECT DISTINCT vorschlag->>'rueckgaengig_von' AS von FROM marketing.marken_vorschlaege "
-        f"WHERE mandant = {lit(m)} AND vorschlag->>'rueckgaengig_von' IN ({', '.join(lit(v) for v in vids)})")
+        f"WHERE mandant = {lit(m)} AND status = 'angenommen' "
+        f"AND vorschlag->>'rueckgaengig_von' IN ({', '.join(lit(v) for v in vids)})")
     return {str(z["von"]) for z in zeilen if isinstance(z, dict) and z.get("von")}
+
+
+def _ist_rueckgaengig(vorschlag: object) -> bool:
+    """Gegenvorschlag eines Rueckgaengig (078): vorschlag->>'rueckgaengig_von' ist gesetzt."""
+    if not isinstance(vorschlag, dict):
+        return False
+    von = vorschlag.get("rueckgaengig_von")
+    return von is not None and str(von) != ""
 
 
 def _juengster_angenommener(m: str) -> str | None:
@@ -247,9 +264,11 @@ def marke_stand(mandant: str | None = None, alle: bool = False, x_pult_key: str 
         f"WHERE mandant = {lit(m)} AND status = 'offen'")
     # Das zuletzt uebernommene Profil (Rowboat-Text selbst liefert die API nicht): Abschnitte + Werte.
     # Nur ein Vorschlag, dessen Uebernahme fertig ist - solange sie laeuft, steht er noch nicht in Rowboat.
+    # Ein Gegenvorschlag (Rueckgaengig, 078) nennt nur einzelne Abschnitte - kein ganzes Profil, also nie.
     ang = _lesen_einer(lambda:
         "SELECT v.vorschlag FROM marketing.marken_vorschlaege v "
-        f"WHERE v.mandant = {lit(m)} AND v.status = 'angenommen' AND EXISTS (SELECT 1 FROM "
+        f"WHERE v.mandant = {lit(m)} AND v.status = 'angenommen' AND v.vorschlag->>'rueckgaengig_von' IS NULL "
+        "AND EXISTS (SELECT 1 FROM "
         "marketing.marken_auftraege a WHERE a.vorschlag = v.id AND a.art = 'uebernehmen' AND a.status = 'fertig') "
         "ORDER BY v.entschieden_am DESC LIMIT 1")
     ang_v = ang.get("vorschlag") if isinstance(ang, dict) and isinstance(ang.get("vorschlag"), dict) else None
@@ -296,8 +315,8 @@ def marke_stand(mandant: str | None = None, alle: bool = False, x_pult_key: str 
                         "fehler": kopf.get("fehler")},
             "profil_hinweise": [str(h) for h in hinweise],
             "auftraege": auftraege, "laeuft": bool(arten & {"chat", "bearbeitung"}),
-            "vorschlag": ({"id": str(v["id"]), "vorschlag": v.get("vorschlag"), "erstellt_am": v.get("erstellt_am")}
-                          if v else None),
+            "vorschlag": ({"id": str(v["id"]), "vorschlag": v.get("vorschlag"), "erstellt_am": v.get("erstellt_am"),
+                           "ist_rueckgaengig": _ist_rueckgaengig(v.get("vorschlag"))} if v else None),
             "uebernahme": "laeuft" if "uebernehmen" in arten else None,
             "uebernahme_seit": seit if "uebernehmen" in arten else None, "aktuell": aktuell, "profil": profil,
             "letzte_uebernahme": letzte or None, "laufend": laufend or None, "wissen": wissen or None,
@@ -620,7 +639,8 @@ def arbeiter_vorschlag(aid: str, payload: dict = Body(...), x_bild_key: str | No
         f"{lit(json.dumps(hinweise, ensure_ascii=False))}::jsonb) AS id")
     vid = str(zeile["id"])
     angenommen = False
-    if direkt:
+    # Nur wenn beide es sagen: der Aufruf UND der gespeicherte Vorschlag (sonst traegt die Karte kein direkt).
+    if direkt and vorschlag.get("direkt") is True:
         # E6: sofort annehmen - Verlauf-Sicherung, Spiegel, Newsletter-Markierung und Wissens-Lauf laufen
         # wie bei der Uebernahme per Hand. Scheitert das, bleibt der Vorschlag offen (Betreiber nimmt an).
         try:

@@ -2,8 +2,8 @@
 -- unberuehrt (pult_marke_rueckgaengig ruft pult_marke_uebernehmen zur Laufzeit beim Namen). Nach einem Replay
 -- von 078 verify_060 .. verify_066 und verify_078 zusammen ueber migration_probe laufen lassen.
 -- 078: Marken-Chat neu (sales-claw Plan 2026-10-20-marken-chat-neu.md, E7/E8). Idempotent, eine Transaktion.
---   1) marken_auftraege.quellen: die Quellen einer Chat-Runde, [{titel nicht leer <= 120, url <= 500 (http/https),
---      art gelesen|websuche}], hoechstens 12 (Check auf der Spalte, Feinpruefung in _marke_quellen_pruefen)
+--   1) marken_auftraege.quellen: die Quellen einer Chat-Runde, [{titel nicht leer <= 120, url <= 500 (http/https,
+--      ohne Zugangsdaten, ohne Leer-/Steuerzeichen), art gelesen|websuche}], hoechstens 12 (Check auf der Spalte, Feinpruefung in _marke_quellen_pruefen)
 --   2) pult_marke_quellen(aid, quellen): Muster pult_marke_denken (065) - false, wenn der Auftrag nicht
 --      (mehr) in Arbeit ist; ungueltige Quellen werfen immer (Pruefung vor der Sperre)
 --   3) pult_marke_rueckgaengig(vid, von, mandant): macht die JUENGSTE direkt angenommene Aenderung rueckgaengig.
@@ -43,6 +43,10 @@ BEGIN
        OR (q->>'titel') !~ '\S'
        OR jsonb_typeof(q->'url') <> 'string' OR char_length(q->>'url') > 500
        OR (q->>'url') !~ '^https?://'
+       -- keine Zugangsdaten ('@' zwischen :// und dem ersten /, ? oder #), keine Leer-/Steuerzeichen
+       -- (dieselben Zeichen wie quellen_pruefen in api/marke.py)
+       OR (q->>'url') ~ '^https?://[^/?#]*@'
+       OR (q->>'url') ~ '[[:space:]\x01-\x1f\x7f-\x9f   -​    　﻿]'
        OR jsonb_typeof(q->'art') <> 'string' OR (q->>'art') NOT IN ('gelesen','websuche') THEN
       RAISE EXCEPTION 'Quelle ungueltig'; END IF;
   END LOOP;
