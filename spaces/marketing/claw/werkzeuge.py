@@ -46,7 +46,7 @@ def _roh_anfrage(url: str, daten, kopfzeilen: dict) -> tuple:
         return e.code, e.read().decode("utf-8", "replace")
 
 
-_AGENT_PFADE = ("/api/ton/", "/api/bilder/agent/", "/api/plan", "/api/video/", "/api/fakten")
+_AGENT_PFADE = ("/api/ton/", "/api/bilder/agent/", "/api/plan", "/api/video/", "/api/fakten", "/api/agent/")
 
 
 def _api(pfad: str, nutzlast: dict | None = None) -> dict:
@@ -401,6 +401,50 @@ def podcast_auftraege(anzahl: int = 10) -> dict:
     """Stand deiner Podcast-Auftraege: offen, in_arbeit, fertig (mit datei und dauer_s) oder fehler
     (mit befund). Eine fertige datei gibst du an versand_beauftragen weiter."""
     antwort = _api(f"/api/ton/auftraege?limit={max(1, min(int(anzahl or 10), 100))}")
+    if not antwort["ok"]:
+        return antwort
+    return {"ok": True, "daten": (antwort.get("daten") or {}).get("auftraege") or []}
+
+
+def _inhalt_id(wert: str) -> str | None:
+    try:
+        return str(uuid.UUID(str(wert or "")))
+    except ValueError:
+        return None
+
+
+def newsletter_entwuerfe(firma: str = "vibemind", status: str = "") -> dict:
+    """Newsletter der Firma im Pult (id, titel, status, fassung) - neueste zuerst, hoechstens 50.
+    status: leer (alle) | entwurf | eingereicht | freigegeben | abgelehnt.
+    Nimm die id fuer newsletter_chat. Eingereichte Newsletter sind gesperrt, bis ein Mensch entscheidet."""
+    abfrage = {"firma": firma or "vibemind", **({"status": status} if status else {})}
+    antwort = _api("/api/agent/inhalte?" + urllib.parse.urlencode(abfrage))
+    if not antwort["ok"]:
+        return antwort
+    return {"ok": True, "daten": (antwort.get("daten") or {}).get("inhalte") or []}
+
+
+def newsletter_chat(inhalt: str, nachricht: str) -> dict:
+    """Bittet den Gestaltungs-Assistenten, einen Newsletter zu aendern - genau wie eine Nachricht im
+    Editor-Chat ("Mach die Ueberschrift kuerzer", "fuege unten einen Absatz zum Termin am 12.11. ein").
+    Ausgefuehrt wird im Chat-Arbeiter; das Ergebnis ist eine NEUE Fassung, die der Betreiber im Editor sieht
+    und rueckgaengig machen kann. Es wird dabei nichts versendet. Laufen schon Runden, wartet der Auftrag.
+    Den Fortschritt liest newsletter_chat_stand."""
+    i = _inhalt_id(inhalt)
+    if not i:
+        return {"ok": False, "fehler": "inhalt ist keine gueltige ID (siehe newsletter_entwuerfe)."}
+    if not (nachricht or "").strip():
+        return {"ok": False, "fehler": "Die Nachricht ist leer."}
+    return _api(f"/api/agent/inhalte/{i}/chat", {"nachricht": nachricht.strip()})
+
+
+def newsletter_chat_stand(inhalt: str) -> dict:
+    """Die letzten 5 Chat-Auftraege eines Newsletters: status (wartet|offen|in_arbeit|fertig|fehler|gestoppt),
+    antwort des Assistenten und die Fassung davor/danach."""
+    i = _inhalt_id(inhalt)
+    if not i:
+        return {"ok": False, "fehler": "inhalt ist keine gueltige ID (siehe newsletter_entwuerfe)."}
+    antwort = _api(f"/api/agent/inhalte/{i}/chat")
     if not antwort["ok"]:
         return antwort
     return {"ok": True, "daten": (antwort.get("daten") or {}).get("auftraege") or []}

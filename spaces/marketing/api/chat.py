@@ -24,17 +24,18 @@ from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
 
-from spaces.marketing.api.bilder import (_BILDTYP, _PLATZ, VORLAGEN_MAX as BILD_VORLAGEN_MAX, _anlegen,
-                                         _auftrag_id, _bild_schluessel, _im_ordner, _ordner)
+from spaces.marketing.api.bilder import (_BILDTYP, _PLATZ, VORLAGEN_MAX as BILD_VORLAGEN_MAX, _agent_schluessel,
+                                         _anlegen, _auftrag_id, _bild_schluessel, _im_ordner, _ordner)
 from spaces.marketing.api.gestaltung import aufraeumen_falls_faellig, gestaltungen_rechnen, quellen
-from spaces.marketing.api.pult import (_erzeugt_ordner, _laden_lesen, _lesen, _lesen_einer, _medien_datei, _schluessel,
-                                       _schreiben, _uuid_oder_404, lit)
+from spaces.marketing.api.pult import (_STATUS, _auswahl, _erzeugt_ordner, _laden_lesen, _lesen, _lesen_einer,
+                                       _mandant, _medien_datei, _schluessel, _schreiben, _uuid_oder_404, lit)
 from spaces.marketing.api.medien_mandant import ist_fremd, sicht, zuordnen_fuer_inhalt
 from spaces.marketing.claw import gestaltung, schoenheit, vorlagen_marke
 
 log = logging.getLogger(__name__)
 pult_router = APIRouter(prefix="/api/pult")
 arbeiter_router = APIRouter(prefix="/api/chat/arbeiter")
+agent_router = APIRouter(prefix="/api/agent/inhalte")
 
 FRIST = "5 minutes"
 NACHRICHT_MAX = 2000
@@ -136,6 +137,45 @@ def chat_anlegen(iid: str, payload: dict = Body(...), x_pult_key: str | None = H
         f"SELECT marketing.pult_chat_senden({lit(i)}::uuid, {lit(nachricht)}, "
         f"{lit(json.dumps(kontext, ensure_ascii=False))}::jsonb) AS s").get("s") or {}
     return {"auftrag": str(s.get("id")), "status": "wartet" if s.get("status") == "wartet" else "offen"}
+
+
+# ─── Agent (20.10.2026) ──────────────────────────────────────────────────
+# Ein Agent (marketing-claw / Sidecar :8130) loest denselben Chat-Auftrag aus wie der Editor - mit dem
+# Agent-Schluessel statt des Betreiber-Schluessels. Ausgefuehrt wird unveraendert im Chat-Arbeiter am PC;
+# Sperre, Runden und Fassungen (jede Aenderung eine neue Fassung mit Rueckgaengig) regeln die DB-Funktionen.
+# Editor-Kontext (Auswahl, Anhaenge, Fenster) gibt es fuer Agenten nicht; der Auftrag traegt {"von": "agent"}.
+
+
+@agent_router.get("")
+def agent_newsletter(firma: str | None = None, status: str | None = None, x_agent_key: str | None = Header(None)):
+    _agent_schluessel(x_agent_key)
+    m = _mandant(firma)
+    s = _auswahl(status, _STATUS, "status")
+    wo = [f"mandant = {lit(m)}", "art = 'newsletter'"] + ([f"status = {lit(s)}"] if s else [])
+    return {"inhalte": _lesen(lambda:
+        "SELECT id, titel, status, erstellt_am::text AS erstellt_am, "
+        "  (SELECT max(f.fassung) FROM marketing.inhalt_fassungen f WHERE f.inhalt = i.id) AS fassung "
+        f"FROM marketing.inhalte i WHERE {' AND '.join(wo)} ORDER BY erstellt_am DESC LIMIT 50")}
+
+
+@agent_router.post("/{iid}/chat")
+def agent_chat_anlegen(iid: str, payload: dict = Body(...), x_agent_key: str | None = Header(None)):
+    _agent_schluessel(x_agent_key)
+    i = _uuid_oder_404(iid)
+    nachricht, _ = _nachricht_und_kontext({"nachricht": payload.get("nachricht")})
+    s = _schreiben(lambda:
+        f"SELECT marketing.pult_chat_senden({lit(i)}::uuid, {lit(nachricht)}, "
+        f"{lit(json.dumps({'von': 'agent'}))}::jsonb) AS s").get("s") or {}
+    return {"auftrag": str(s.get("id")), "status": "wartet" if s.get("status") == "wartet" else "offen"}
+
+
+@agent_router.get("/{iid}/chat")
+def agent_chat_stand(iid: str, x_agent_key: str | None = Header(None)):
+    _agent_schluessel(x_agent_key)
+    i = _uuid_oder_404(iid)
+    return {"auftraege": _lesen(lambda:
+        "SELECT id, status, nachricht, antwort, fassung_vorher, fassung_nachher, erstellt_am::text AS erstellt_am "
+        f"FROM marketing.chat_auftraege WHERE inhalt = {lit(i)}::uuid ORDER BY erstellt_am DESC LIMIT 5")}
 
 
 @pult_router.get("/inhalte/{iid}/chat")

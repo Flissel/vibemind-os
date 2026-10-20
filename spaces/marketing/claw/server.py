@@ -126,6 +126,10 @@ WERKZEUGE = (
     werkzeuge.geschaeftsfakten,
     werkzeuge.plan_lesen,
     werkzeuge.plan_vorschlagen,
+    # Newsletter-Chat (20.10.2026): derselbe Auftrag wie aus dem Editor; ausgefuehrt im Chat-Arbeiter.
+    werkzeuge.newsletter_entwuerfe,
+    werkzeuge.newsletter_chat,
+    werkzeuge.newsletter_chat_stand,
     # Reels (17.10.2026): beauftragen beim Video-Claw; Laura bleibt fuer diesen Agenten lesend.
     werkzeuge.reel_beauftragen,
     werkzeuge.reel_auftraege,

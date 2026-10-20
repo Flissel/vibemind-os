@@ -3486,6 +3486,7 @@ app.include_router(_gestaltung.pult_router)
 from spaces.marketing.api import chat as _chat  # noqa: E402
 app.include_router(_chat.pult_router)
 app.include_router(_chat.arbeiter_router)
+app.include_router(_chat.agent_router)
 from spaces.marketing.api import marke as _marke  # noqa: E402
 app.include_router(_marke.pult_router)
 app.include_router(_marke.arbeiter_router)
