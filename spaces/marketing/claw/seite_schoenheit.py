@@ -15,6 +15,7 @@ from __future__ import annotations
 import copy
 import io
 
+from spaces.marketing.claw import bildplaetze
 from spaces.marketing.claw import seite as seite_mod
 from spaces.marketing.claw import seite_streifen
 from spaces.marketing.claw.schoenheit import KONTRAST_GROSS, KONTRAST_TEXT, befund, kontrast
@@ -190,6 +191,35 @@ def pruefen(seite: dict, masse: dict, png_ohne_text: bytes, faktor: int,
     """Harte Kontrastbefunde, dann weiche Regeln."""
     alle = kontraste(seite, masse, png_ohne_text, faktor, ohne_pixel) + regeln(seite, masse)
     return sorted(alle, key=lambda b: b["schwere"] != "hart")
+
+
+def platzhalter_ids(seite: dict) -> list[str]:
+    """Ids der Bild-Ebenen, deren Quelle noch ein Platzhalter ist."""
+    return [e["id"] for e in seite.get("ebenen") or []
+            if e.get("art") == "bild" and bildplaetze.PLATZHALTER.match(str(e.get("quelle") or ""))]
+
+
+def ohne_pixel(seite: dict, masse: dict | None) -> set[str]:
+    """Textebenen ohne eigene Unterlage, deren Huelle einen Platzhalter ueberlappt (Hintergrund-Platzhalter: alle) -
+    ihre Unterlage entsteht erst noch, ihr Pixel-Kontrast wird danach geprueft (Argument ohne_pixel von pruefen)."""
+    texte = [e for e in seite.get("ebenen") or [] if e.get("art") == "text" and e.get("hintergrund") is None]
+    if bildplaetze.PLATZHALTER.match(str((seite.get("hintergrund") or {}).get("bild") or "")):
+        return {e["id"] for e in texte}
+    m = seite_streifen.masse_pruefen(masse) or None
+    ids = set(platzhalter_ids(seite))
+    plaetze = [seite_streifen.huelle(e, m) for e in seite.get("ebenen") or [] if e["id"] in ids]
+    aus = set()
+    for e in texte:
+        l, o, r, u = seite_streifen.huelle(e, m)
+        if any(l < r2 and l2 < r and o < u2 and o2 < u for l2, o2, r2, u2 in plaetze):
+            aus.add(e["id"])
+    return aus
+
+
+def braucht_pixel(seite: dict, ohne: set[str]) -> bool:
+    """Gibt es eine Textebene, deren Kontrast aus den Pixeln von seite_ohne_text gemessen wird?"""
+    return any(e.get("art") == "text" and e.get("hintergrund") is None and e["id"] not in ohne
+               for e in seite.get("ebenen") or [])
 
 
 def seite_ohne_text(seite: dict) -> dict:

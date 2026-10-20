@@ -216,3 +216,109 @@ def test_export_routen_bleiben_streng():
     routen(r)
     assert r.ergebnis == ("fulfill", {"status": 404, "body": b""}) and routen.fehlt == ["platzhalter-3x4.png"]
     assert api.gefragt == ["platzhalter-3x4.png"]
+
+
+# ---- Stufe 5 Task 5: Schoenheitspruefung im Pruefbild ---------------------------------------------------
+def _dunkel(b, h):
+    p = io.BytesIO()
+    Image.new("RGB", (b, h), (20, 20, 20)).save(p, "PNG")
+    return p.getvalue()
+
+
+def _fake_mit_massen(masse=None, fehler_ab=None):
+    """Fake-Renderer wie browser_render: setzt render.fehlt und render.masse je Aufruf, liefert dunkle Pixel."""
+    gesehen = []
+
+    def render(html, hoehe):
+        gesehen.append(html)
+        if fehler_ab is not None and len(gesehen) >= fehler_ab:
+            raise OSError("Chromium weg")
+        render.fehlt, render.masse = [], ({} if masse is None else masse)
+        return _dunkel(600, hoehe)
+    render.gesehen, render.fehlt, render.masse = gesehen, [], None
+    return render
+
+
+def test_pruefbild_liefert_harte_kontrastbefunde():
+    """Dunkle Schrift (#111/#333) auf dunklem Untergrund: harte Befunde, zuerst, aus dem Rendering ohne Text."""
+    render = _fake_mit_massen()
+    teile, faktor, fehlt, saetze = pb.pruefbild_mit(render)(seite.pruefen(seite.leer(None)))
+    assert len(teile) == 1 and faktor == 1.0 and fehlt == []
+    assert len(render.gesehen) == 2                       # Pruefbild + Rendering ohne Text
+    assert "Überschrift" in render.gesehen[0] and "Überschrift" not in render.gesehen[1]
+    assert "Mehr erfahren" not in render.gesehen[1]
+    assert saetze[0].startswith("titel: Kontrast 1,") and "mindestens 3:1" in saetze[0]
+    assert saetze[1].startswith("text: Kontrast ") and "mindestens 4,5:1" in saetze[1]
+
+
+def test_pruefbild_ohne_pixelbedarf_nur_ein_rendering():
+    s = seite.pruefen(seite.leer(None))
+    for e in s["ebenen"]:
+        if e["art"] == "text":
+            e["hintergrund"] = "#ffffff"
+    render = _fake_mit_massen()
+    *_, saetze = pb.pruefbild_mit(render)(s)
+    assert len(render.gesehen) == 1
+    assert not any("Kontrast" in x for x in saetze)
+
+
+def test_pruefbild_hoechstens_8_befunde_harte_zuerst():
+    s = seite.pruefen(seite.leer(None))
+    s["ebenen"] = [{"id": f"t{i}", "art": "text", "x": 300, "y": 100 + 100 * i, "breite": 400, "hoehe": 60,
+                    "text": "x", "rolle": "TEXT", "groesse": 10 + i, "farbe": "#111111"} for i in range(10)]
+    *_, saetze = pb.pruefbild_mit(_fake_mit_massen())(seite.pruefen(s))
+    assert len(saetze) == pb.MAX_BEFUNDE == 8
+    assert all("Kontrast" in x for x in saetze)
+
+
+def test_zweites_rendering_kaputt_nur_hinweis():
+    render = _fake_mit_massen(fehler_ab=2)
+    teile, faktor, fehlt, saetze = pb.pruefbild_mit(render)(seite.pruefen(seite.leer(None)))
+    assert len(teile) == 1 and saetze == [pb.PRUEFUNG_NICHT_MOEGLICH]
+    assert "Prüfung nicht möglich" in pb.PRUEFUNG_NICHT_MOEGLICH
+
+
+def test_ohne_masse_nur_hinweis():
+    render = _fake_mit_massen()
+
+    def ohne(html, hoehe):
+        png = render(html, hoehe)
+        ohne.fehlt, ohne.masse = [], None             # Messen im Browser gescheitert
+        return png
+    *_, saetze = pb.pruefbild_mit(ohne)(seite.pruefen(seite.leer(None)))
+    assert saetze == [pb.PRUEFUNG_NICHT_MOEGLICH]
+
+
+def test_platzhalter_ueberdeckt_text_kein_pixelkontrast():
+    s = seite.pruefen(seite.leer(None))
+    s["ebenen"].insert(0, {"id": "held", "art": "bild", "x": 300, "y": 200, "breite": 600, "hoehe": 400,
+                           "quelle": "medien:platzhalter-3x2.png"})
+    render = _fake_mit_massen()
+    *_, saetze = pb.pruefbild_mit(render)(seite.pruefen(s))
+    assert len(render.gesehen) == 1                      # beide Texte liegen auf dem Platzhalter
+    assert not any("Kontrast" in x for x in saetze)
+
+
+class _MessSeite(_Seite):
+    def evaluate(self, ausdruck, arg=None):
+        if arg is None:
+            return None
+        assert "data-ebene" in ausdruck and arg == pb.SEITE_CONTAINER
+        return {"titel": [40, 60, 560, 180.123], "kaputt": [1, 2]}
+
+
+class _MessBrowser(_Browser):
+    def new_page(self, viewport):
+        return _MessSeite(self, viewport)
+
+
+def test_browser_render_misst_per_dom():
+    render = pb.browser_render(MedienApi(), "1", browser_starten=_MessBrowser)
+    pb.kacheln(_seite(), render)
+    assert render.masse == {"titel": (40, 60, 560, 180.12)}
+
+
+def test_browser_render_messfehler_ist_kein_pruefbildfehler():
+    render = pb.browser_render(MedienApi(), "1", browser_starten=_Browser)   # evaluate ohne Argument
+    teile, _ = pb.kacheln(_seite(), render)
+    assert len(teile) == 1 and render.masse is None

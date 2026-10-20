@@ -90,7 +90,7 @@ def render_und_messen(seite: dict, medien_lesen: Callable[[str], bytes | None], 
                         raise StueckFehler(f"Bild {routen.fehlt[0]} fehlt")
                     # erst messen (wartet auf document.fonts.ready), dann fotografieren: beide sehen dieselbe,
                     # fertig gesetzte Schrift
-                    masse = _masse(page.evaluate(_MESSEN, seite_html.SEITE_CONTAINER))
+                    masse = messen(page)
                     png = page.locator(seite_html.SEITE_CONTAINER).first.screenshot(type="png", timeout=ms)
                     return png, masse
                 finally:
@@ -101,6 +101,11 @@ def render_und_messen(seite: dict, medien_lesen: Callable[[str], bytes | None], 
             if type(e).__name__ == "TimeoutError":   # playwright.sync_api.TimeoutError
                 raise StueckFehler(ZEITLIMIT) from e
             raise
+
+
+def messen(page) -> dict[str, tuple[float, float, float, float]]:
+    """Gerenderte Huellen aller Ebenen einer geladenen Playwright-Seite (auch fuer das Pruefbild am PC)."""
+    return _masse(page.evaluate(_MESSEN, seite_html.SEITE_CONTAINER))
 
 
 def _masse(roh) -> dict[str, tuple[float, float, float, float]]:

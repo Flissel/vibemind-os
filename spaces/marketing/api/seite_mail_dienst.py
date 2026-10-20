@@ -71,8 +71,7 @@ from fastapi import HTTPException
 from spaces.marketing.api.bilder import _ordner
 from spaces.marketing.api.chat import _ablegen_und_zuordnen
 from spaces.marketing.api.pult import COLLAGE_IST_NICHT, _lesen_einer, _medien_datei, _schreiben, lit
-from spaces.marketing.claw import (bildplaetze, bloecke_mjml, seite, seite_bilder, seite_mail, seite_schoenheit,
-                                   seite_streifen)
+from spaces.marketing.claw import bildplaetze, bloecke_mjml, seite, seite_bilder, seite_mail, seite_schoenheit
 from spaces.marketing.claw.schoenheit import befund
 
 log = logging.getLogger(__name__)
@@ -429,30 +428,9 @@ def _braucht_render(s: dict) -> bool:
     return bool(s.get("ebenen")) or bool((s.get("hintergrund") or {}).get("bild"))
 
 
-def _platzhalter_ids(s: dict) -> list[str]:
-    return [e["id"] for e in s.get("ebenen") or []
-            if e.get("art") == "bild" and bildplaetze.PLATZHALTER.match(str(e.get("quelle") or ""))]
-
-
 def _hat_platzhalter(s: dict) -> bool:
-    return bool(_platzhalter_ids(s)) or bool(
+    return bool(seite_schoenheit.platzhalter_ids(s)) or bool(
         bildplaetze.PLATZHALTER.match(str((s.get("hintergrund") or {}).get("bild") or "")))
-
-
-def _ohne_pixel(s: dict, masse: dict) -> set[str]:
-    """Textebenen ohne eigene Unterlage, deren Huelle einen Platzhalter ueberlappt (Hintergrund-Platzhalter: alle) -
-    ihre Unterlage entsteht erst noch, ihr Pixel-Kontrast wird danach geprueft."""
-    texte = [e for e in s.get("ebenen") or [] if e.get("art") == "text" and e.get("hintergrund") is None]
-    if bildplaetze.PLATZHALTER.match(str((s.get("hintergrund") or {}).get("bild") or "")):
-        return {e["id"] for e in texte}
-    m = seite_streifen.masse_pruefen(masse) or None
-    plaetze = [seite_streifen.huelle(e, m) for e in s.get("ebenen") or [] if e["id"] in set(_platzhalter_ids(s))]
-    aus = set()
-    for e in texte:
-        l, o, r, u = seite_streifen.huelle(e, m)
-        if any(l < r2 and l2 < r and o < u2 and o2 < u for l2, o2, r2, u2 in plaetze):
-            aus.add(e["id"])
-    return aus
 
 
 def _rendern_fuer_pruefung(roh: dict, s: dict, kacheln: bool) -> tuple[bytes | None, dict, bytes, set[str]]:
@@ -463,10 +441,9 @@ def _rendern_fuer_pruefung(roh: dict, s: dict, kacheln: bool) -> tuple[bytes | N
         return None, {}, b"", set()
     extra = {"platzhalter_kacheln": True} if kacheln else {}
     png, masse = _pruef_render(lambda: seite_bilder.render_und_messen(roh, _medium, **extra))
-    ohne_pixel = _ohne_pixel(s, masse)
+    ohne_pixel = seite_schoenheit.ohne_pixel(s, masse)
     png_ohne_text = b""
-    if any(e.get("art") == "text" and e.get("hintergrund") is None and e["id"] not in ohne_pixel
-           for e in s.get("ebenen") or []):
+    if seite_schoenheit.braucht_pixel(s, ohne_pixel):
         ohne = seite_schoenheit.seite_ohne_text(roh)
         png_ohne_text = _pruef_render(lambda: seite_bilder.render_und_messen(
             ohne, _medium, faktor=PRUEFUNG_FAKTOR, **extra)[0])
