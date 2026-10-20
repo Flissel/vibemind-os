@@ -241,12 +241,17 @@ def test_erst_rendern_und_messen_dann_planen(umg, monkeypatch):
     def zuschneiden(png, st, **k):
         geschnitten.extend(st)
         return echt_zuschnitt(png, st, **k)
+    gefasst = []
+    echt_text = seite_mail.text_fassung
+    monkeypatch.setattr(seite_mail, "text_fassung",
+                        lambda s_, p, masse=None: (gefasst.append(masse), echt_text(s_, p, masse))[1])
     monkeypatch.setattr(seite_bilder, "render_und_messen", render)
     monkeypatch.setattr(seite_mail, "stuecke", stuecke)
     monkeypatch.setattr(seite_bilder, "zuschneiden", zuschneiden)
     f.antworten.append([zeile(s)])
     dienst.erzeugen(IID, 2)
     assert reihenfolge == [("planen", False), "rendern", ("planen", True)]
+    assert gefasst == [gemessen]                                            # Textfassung mit denselben Massen
     assert [(g.oben, g.unten) for g in geschnitten] == [(0, 431.5)]       # nicht 410.9 (deklariert)
     assert '<mj-spacer height="368.5px" />' in f.sql[-1]                   # 800 - 431.5 im Versand-MJML
     assert len(os.listdir(erzeugt)) == 1

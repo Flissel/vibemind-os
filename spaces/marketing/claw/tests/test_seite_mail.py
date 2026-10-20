@@ -267,3 +267,11 @@ def test_anrede_erst_gemessen_im_bild():
     s = seite([bild("b", 200), text("a", 420, t="Hallo {vorname}")])
     assert sm.anrede_in_bild(s) == []
     assert sm.anrede_in_bild(s, {"a": (60, 340, 540, 470)}) == ["a"]
+
+
+def test_text_fassung_gemessene_lesereihenfolge():
+    # deklariert steht a (oben 50) vor b (oben 60); gemessen beginnt a erst bei 70 - wie bei den Alt-Texten
+    s = seite([text("a", 100, t="Erst", x=150, breite=200), text("b", 110, t="Zweit", x=450, breite=200)])
+    assert sm.text_fassung(s, {}).index("Erst") < sm.text_fassung(s, {}).index("Zweit")
+    t = sm.text_fassung(s, {}, {"a": (50, 50, 250, 150), "b": (350, 40, 550, 160)})
+    assert t.index("Zweit") < t.index("Erst")

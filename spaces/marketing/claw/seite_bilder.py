@@ -85,8 +85,11 @@ def render_und_messen(seite: dict, medien_lesen: Callable[[str], bytes | None], 
                         raise routen.fehler
                     if routen.fehlt:
                         raise StueckFehler(f"Bild {routen.fehlt[0]} fehlt")
+                    # erst messen (wartet auf document.fonts.ready), dann fotografieren: beide sehen dieselbe,
+                    # fertig gesetzte Schrift
+                    masse = _masse(page.evaluate(_MESSEN, seite_html.SEITE_CONTAINER))
                     png = page.locator(seite_html.SEITE_CONTAINER).first.screenshot(type="png", timeout=ms)
-                    return png, _masse(page.evaluate(_MESSEN, seite_html.SEITE_CONTAINER))
+                    return png, masse
                 finally:
                     _zu(page)
             finally:

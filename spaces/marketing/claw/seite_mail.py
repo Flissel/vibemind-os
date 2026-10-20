@@ -127,7 +127,9 @@ def _knopf_lage(l: float, r: float) -> tuple[str, str, str, str]:
 
 
 def _ebene(s: dict, e: dict, oben: float, unten_abstand: float, hoehe: float | None = None) -> str:
-    """hoehe: Mindesthoehe des Textkastens (gemessen); ohne Messung die deklarierte hoehe."""
+    """hoehe: Mindesthoehe eines TEXTkastens (gemessen); ohne Messung die deklarierte hoehe. Fuer Knoepfe ohne
+    Wirkung: mj-button bekommt immer die deklarierte hoehe (der Knopf waechst in seite_html nicht, er hat eine
+    feste Hoehe)."""
     l, _, r, _ = seite_streifen.rahmen(e)
     senkrecht = f'padding-top="{_px(oben)}" padding-bottom="{_px(unten_abstand)}"'
     schrift = bloecke_mjml.attr_schrift(_stapel(s, e["rolle"]))
@@ -150,10 +152,11 @@ def _ebene(s: dict, e: dict, oben: float, unten_abstand: float, hoehe: float | N
     # (Word) kennt min-height nicht - dort entfaellt nur der Leerraum unter kurzem Text.
     polster = f'{senkrecht} padding-left="{_pz(l)}" padding-right="{_pz(seite_mod.BREITE - r)}"'
     inhalt = seite_html.inline(e["text"], link_farbe=e["farbe"])
+    mindest = _px(e["hoehe"] if hoehe is None else hoehe)
     return (f'<mj-text {polster} align="{_AUSRICHTUNG[e["ausrichtung"]]}" '
             f'color="{_a(e["farbe"])}" '
             f'font-family="{schrift}" font-size="{_px(e["groesse"])}" font-weight="{e["gewicht"]}" '
-            f'line-height="{e["zeilenabstand"]:g}"{extra}><div style="min-height:{_px(e["hoehe"] if hoehe is None else hoehe)}">{inhalt}</div>'
+            f'line-height="{e["zeilenabstand"]:g}"{extra}><div style="min-height:{mindest}">{inhalt}</div>'
             f'</mj-text>')
 
 
@@ -234,14 +237,16 @@ def rendern(seite: dict, stuecke_namen: list[str], *, betreff: str, vorschautext
                                           fuer_versand=fuer_versand))
 
 
-def text_fassung(seite: dict, pflichtteil: dict) -> str:
+def text_fassung(seite: dict, pflichtteil: dict, masse: seite_streifen.Masse | None = None) -> str:
     """text/plain-Teil: alle sichtbaren Text- und Knopf-Ebenen in Lesereihenfolge, Knoepfe als 'Text: url',
-    dann der Pflichtteil. Platzhalter bleiben stehen."""
-    _, baender, nach_id = _vorbereitet(seite)
+    dann der Pflichtteil. Platzhalter bleiben stehen. Mit masse dieselbe gemessene Lesereihenfolge wie die
+    Alt-Texte der Stuecke."""
+    masse = seite_streifen.masse_pruefen(masse) or None
+    _, baender, nach_id = _vorbereitet(seite, masse)
     sichtbar = [nach_id[i] for b in baender for i in b.ebenen]
     gesehen: set[str] = set()
     teile: list[str] = []
-    for e in seite_streifen.lesereihenfolge(sichtbar):
+    for e in seite_streifen.lesereihenfolge(sichtbar, masse):
         if e["id"] in gesehen or e["art"] not in ("text", "knopf"):
             continue
         gesehen.add(e["id"])

@@ -1,8 +1,9 @@
 -- RUNBOOK: nach 077 (Seitenformat) und 080. Idempotent, eine Transaktion. Nach jedem Replay verify_081 laufen
--- lassen. BEI AENDERUNGEN AN seite_mail (MJML/Stuecke) NACH DEM LIVEGANG: nicht versendete Mail-Fassungen loeschen
--- (marketing.pult_seite_mail_verwerfen(inhalt, fassung) je Fassung, deren Newsletter noch nicht verschickt ist) -
--- sonst bleibt das alte MJML gespeichert und wird weiter verwendet; die API erzeugt sie beim naechsten Bedarf neu,
--- die verwaisten ms-Dateien raeumt das stuendliche Aufraeumen nach einem Tag ab. Ein Replay von 063 beruehrt pult_einreichen, nicht die Funktionen hier; 075 bleibt gueltig (die neue
+-- lassen. BEI AENDERUNGEN AN seite_mail (MJML/Stuecke/Planer/Messung) NACH DEM LIVEGANG: alle gespeicherten
+-- Mail-Fassungen verwerfen - sie entstehen bei Bedarf neu (Versand, Vorschau und Einreichen erzeugen fehlende
+-- Zeilen/Dateien). Werkzeug: python -m spaces.marketing.scripts.seite_mail_neu [--ausfuehren] (je Zeile
+-- marketing.pult_seite_mail_verwerfen). Sonst bleibt das alte MJML gespeichert und wird weiter verwendet; die
+-- verwaisten ms-Dateien raeumt das stuendliche Aufraeumen nach einem Tag ab. Ein Replay von 063 beruehrt pult_einreichen, nicht die Funktionen hier; 075 bleibt gueltig (die neue
 -- Tabelle haengt mit ON DELETE CASCADE an inhalt_fassungen, pult_inhalt_loeschen raeumt sie also mit ab).
 -- 081: Mail-Fassung der Collage (sales-claw Plan 2026-10-20-freie-flaeche-stufe4-mail-versand, Task 4).
 --   1) marketing.seite_mailfassungen(inhalt, fassung, mjml_versand, html_vorschau_mjml, text, medien, bytes,

@@ -107,7 +107,8 @@ class _Seite:
         seite_ = self
 
         class L:
-            first = type("E", (), {"screenshot": staticmethod(lambda type="png", timeout=None: png(1200, 1600))})()
+            first = type("E", (), {"screenshot": staticmethod(
+                lambda type="png", timeout=None: (seite_.log.append(("screenshot", None, None)), png(1200, 1600))[1])})()
         seite_.sel = sel
         return L
 
@@ -149,6 +150,8 @@ def test_render_und_messen_liefert_geprueft_masse():
     assert Image.open(io.BytesIO(out)).size == (1200, 1600)
     assert m == {"b": (0, 0, 600, 400.5)}                      # unbrauchbare Eintraege fallen weg
     assert ("evaluate", "body > div > div", None) in b.log
+    # erst messen (wartet auf die Schriften), dann fotografieren
+    assert b.log.index(("evaluate", "body > div > div", None)) < b.log.index(("screenshot", None, None))
     assert sb.render_png(seite([bild("b", "medien:foto.jpg")]), {"foto.jpg": b"x"}.get,
                          browser_starten=_Browser) == out
 

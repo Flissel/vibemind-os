@@ -35,8 +35,8 @@ Chromium), dann rendern UND messen (seite_bilder.render_und_messen), dann mit de
 ueber seine deklarierte hoehe hinaus; ein Plan aus der deklarierten Hoehe schnitt einen gedrehten zweizeiligen
 Titel ab. In der DB steht nichts Neues - das gespeicherte MJML spiegelt den gemessenen Plan. Gerendert wird jetzt
 auch fuer reine Textseiten (die Abstaende der Textbaender kommen aus der Messung); nur eine leere Seite (ohne
-Ebenen und Hintergrundbild) braucht kein Chromium. Aendert sich seite_mail, muessen ungesendete Mail-Fassungen verworfen werden
-(scripts/seite_mail_neu.py).
+Ebenen und Hintergrundbild) braucht kein Chromium. Aendert sich seite_mail, werden alle gespeicherten Mail-Fassungen verworfen
+(scripts/seite_mail_neu.py) - sie entstehen bei Bedarf neu.
 
 Synchron (Chromium im Aufrufer-Thread, hoechstens einer gleichzeitig - seite_bilder sperrt): die Routen sind
 sync def und laufen damit im Threadpool von FastAPI, wie der PDF-Druck."""
@@ -230,9 +230,12 @@ def _neu(i: str, fassung: int, zeile: dict) -> dict:
     masse = None
     if deklariert or s.get("ebenen"):   # nur eine leere Seite ohne Hintergrundbild braucht kein Chromium
         # 2. rendern und messen, 3. mit den Massen planen, 4. zuschneiden
-        # die Ablage erst, wenn ein Medium gelesen oder ein Stueck abgelegt wird (reine Textseite: ohne Ablage)
-        png, masse = _bild_fehler(i, fassung, lambda: seite_bilder.render_und_messen(
-            s, lambda n: _medien_leser(_ordner())(n)))
+        def medium(name: str) -> bytes | None:
+            # Ablage (MARKETING_BILD_ORDNER) erst beim ersten gelesenen Medium aufloesen: eine reine Textseite
+            # wird nur gemessen und braucht keine Ablage. Fehlt sie, wirft _ordner() 503 (HTTPException) und
+            # _bild_fehler reicht das unveraendert durch.
+            return _medien_leser(_ordner())(name)
+        png, masse = _bild_fehler(i, fassung, lambda: seite_bilder.render_und_messen(s, medium))
         stuecke = _plan_pruefen(i, fassung, s, masse)
         if stuecke:
             ordner = _ordner()
@@ -264,7 +267,7 @@ def _speichern(i: str, fassung: int, zeile: dict, s: dict, namen: list[str], gro
                                         bild_adresse=lambda n: BILD_MARKE + urllib.parse.quote(n),
                                         fuer_versand=False, fuss_ersatz=FUSS_MARKE, masse=masse)
         _rendern(versand_mjml, s, pflicht, True)       # setzt mrml es nicht, wird nichts gespeichert
-        text = seite_mail.text_fassung(s, pflicht)
+        text = seite_mail.text_fassung(s, pflicht, masse)
     except (bloecke_mjml.RenderFehler, seite.SeiteFehler) as e:
         raise HTTPException(422, str(e))
     medien = seite_mail.versand_medien(namen)
