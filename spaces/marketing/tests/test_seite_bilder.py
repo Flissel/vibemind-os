@@ -55,11 +55,19 @@ def test_groessengrenze_meldet_verstaendlich():
     assert str(e.value).endswith("– weniger oder kleinere Bildbereiche")
 
 
-def test_qualitaet_sinkt_vor_der_grenze():
+def test_qualitaet_sinkt_vor_der_grenze(monkeypatch):
     st = [Stueck(1, 0, 400, "a", None)]
     p = png(1200, 800, rauschen=True)
+    benutzt = []
+    echt = sb._kodieren
+    monkeypatch.setattr(sb, "_kodieren", lambda b, puf, q: (benutzt.append(q), echt(b, puf, q))[1])
     q82 = len(sb.zuschneiden(p, st)[0])
+    assert benutzt == [82]
+    benutzt.clear()
     teile = sb.zuschneiden(p, st, max_bytes=int(q82 * 0.9))
+    assert len(teile[0]) <= int(q82 * 0.9)
+    assert benutzt[0] == 82 and benutzt[-1] < 82 and benutzt == sorted(benutzt, reverse=True)
+    # erste passende Stufe: die davor war zu gross
     assert len(teile[0]) <= int(q82 * 0.9)
 
 
@@ -87,7 +95,11 @@ class _Seite:
     def route(self, muster, handler):
         self.handler = handler
 
-    def set_content(self, html, wait_until=None):
+    def set_default_timeout(self, ms):
+        self.log.append(("timeout", ms, None))
+
+    def set_content(self, html, wait_until=None, timeout=None):
+        self.log.append(("set_content", timeout, None))
         for url in re.findall(r"https://export\.vibemind\.invalid/[^\"')\s]+", html):
             self.handler(_Route(url, self.log))
 
@@ -95,7 +107,7 @@ class _Seite:
         seite_ = self
 
         class L:
-            first = type("E", (), {"screenshot": staticmethod(lambda type="png": png(1200, 1600))})()
+            first = type("E", (), {"screenshot": staticmethod(lambda type="png", timeout=None: png(1200, 1600))})()
         seite_.sel = sel
         return L
 
@@ -165,3 +177,56 @@ def test_echter_browser_rauchtest():
     assert Image.open(io.BytesIO(out)).size == (1200, 1000)
     teile = sb.zuschneiden(out, [Stueck(1, 250, 450, "Bild", None)])
     assert masse(teile) == [(1200, 400)]
+
+
+def test_unzulaessiger_name_wird_nicht_gelesen(monkeypatch):
+    """Das Seitenmodell lehnt solche Namen schon ab; die Sperre im Abruf gilt zusaetzlich (Tiefenverteidigung)."""
+    gefragt = []
+    for name in ("..%2F..%2Fx", ".versteckt.jpg", "a%5Cb.jpg"):
+        monkeypatch.setattr(sb.seite_html, "html", lambda *a, _n=name, **k:
+                            f'<img src="https://export.vibemind.invalid/medien/{_n}">')
+        with pytest.raises(sb.StueckFehler, match="^Bild .* fehlt$"):
+            sb.render_png(seite([]), lambda n: gefragt.append(n), browser_starten=_Browser)
+    assert gefragt == []
+
+
+def test_zeitlimits_gesetzt():
+    b = _Browser()
+    sb.render_png(seite([bild("b", "medien:foto.jpg")]), {"foto.jpg": b"x"}.get, browser_starten=lambda: b)
+    assert ("timeout", 60000, None) in b.log and ("set_content", 60000, None) in b.log
+
+
+def test_zeitlimit_wird_deutsche_meldung():
+    class TimeoutError(Exception):
+        pass
+
+    class B(_Browser):
+        def new_page(self, **kw):
+            s = super().new_page(**kw)
+            s.set_content = lambda *a, **k: (_ for _ in ()).throw(TimeoutError("x"))
+            return s
+    with pytest.raises(sb.StueckFehler, match=r"^Bildstücke konnten nicht gerendert werden \(Zeitlimit\)$"):
+        sb.render_png(seite([bild("b", "medien:foto.jpg")]), {"foto.jpg": b"x"}.get, browser_starten=B)
+
+
+def test_kein_gleichzeitiges_rendern():
+    import threading
+    import time
+    aktiv, spitze, lock = [0], [0], threading.Lock()
+
+    class B(_Browser):
+        def new_page(self, **kw):
+            with lock:
+                aktiv[0] += 1
+                spitze[0] = max(spitze[0], aktiv[0])
+            time.sleep(0.05)
+            return super().new_page(**kw)
+
+        def close(self):
+            with lock:
+                aktiv[0] -= 1
+    ts = [threading.Thread(target=sb.render_png, args=(seite([bild("b", "medien:foto.jpg")]), {"foto.jpg": b"x"}.get),
+                           kwargs={"browser_starten": B}) for _ in range(4)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert spitze[0] == 1

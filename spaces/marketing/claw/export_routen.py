@@ -102,11 +102,11 @@ def bildtyp(name: str) -> str:
 
 
 class EchterBrowser:
-    def __init__(self):
+    def __init__(self, start_timeout_ms: int = 30000):   # 30 s = Playwright-Vorgabe
         from playwright.sync_api import sync_playwright   # erst hier: Unit-Tests brauchen keinen Browser
         self._pw = sync_playwright().start()
         try:
-            self._browser = self._pw.chromium.launch(headless=True)
+            self._browser = self._pw.chromium.launch(headless=True, timeout=start_timeout_ms)
         except Exception:
             self._pw.stop()
             raise
