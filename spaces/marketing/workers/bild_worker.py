@@ -404,6 +404,20 @@ def _vorlagen_holen(api, aid, namen) -> tuple[list[bytes], str] | str:
     return aus, ""
 
 
+def _plaetze(auftrag: dict) -> list:
+    """Bildplaetze der Fassung des Auftrags: Collage (format 'seite') aus den Bild-Ebenen, sonst aus den Bloecken."""
+    if auftrag.get("format") == "seite":
+        return bildplaetze.finde_seite(auftrag.get("seite") or {})
+    return bildplaetze.finde(auftrag.get("bloecke") or {})
+
+
+def _palette(auftrag: dict) -> dict:
+    """Layoutfarben fuer den Prompt: Collage aus Seite und Ebenen, sonst aus den Bloecken (unveraendert)."""
+    if auftrag.get("format") == "seite":
+        return bild_farben.palette_seite(auftrag.get("seite"))
+    return bild_farben.palette(auftrag.get("bloecke"))
+
+
 def _bildstil(auftrag: dict) -> str:
     """Abschnitt "Bildstil" aus companys/<Firma>/Marke.md der Firma des Auftrags ('' ohne Firma/Abschnitt)."""
     mandant = str(auftrag.get("mandant") or "")
@@ -428,7 +442,7 @@ def _erzeugen(api, aid, auftrag, ziele, comfy, prompt, sehen, messen, ohne_ersat
     befunde, arbeit = [], []
     comfy.freigeben()   # Phase 1 ruft Ollama: Grafikspeicher von FLUX leeren (vorheriger Auftrag)
     ZULETZT["art"] = "flux1"
-    palette = bild_farben.palette(auftrag.get("bloecke"))
+    palette = _palette(auftrag)
     bildstil = _bildstil(auftrag)
     for platz in ziele:
         quelle = None
@@ -497,7 +511,7 @@ def _flux2(api, aid, auftrag, ziele, comfy, prompt, messen):
     vorlagen, befund = geholt
     if befund:
         return {}, [befund], {}
-    palette = bild_farben.palette(auftrag.get("bloecke"))
+    palette = _palette(auftrag)
     bildstil = _bildstil(auftrag)
     for platz in ziele:
         daten = {**platz.als_dict(), "palette": palette, "bildstil": bildstil}
@@ -610,7 +624,7 @@ def ein_durchlauf(api, comfy=bild_comfy, prompt=bild_prompt, starten=dienste_sta
     # Ab hier gehoert der Auftrag dem Arbeiter: jede Stoerung gibt ihn zurueck,
     # statt die Vergabe bis zum Ablauf zu blockieren.
     try:
-        ziele = [p for p in bildplaetze.finde(auftrag.get("bloecke") or {})
+        ziele = [p for p in _plaetze(auftrag)
                  if (auftrag.get("platz") in (None, p.id)) and (not auftrag.get("nur_leere") or p.leer)]
         if not ziele:
             api.zurueck(aid, "Keine passenden Bildplaetze", True)

@@ -1485,3 +1485,65 @@ def test_freistellen_haelt_die_vergabe(monkeypatch):
     comfy = Langsam()
     comfy.frei_png = _rgba(0.5)
     assert _frei_lauf(api, comfy) == "fertig" and schlaege == [True]
+
+
+# ─── Collage (format 'seite', Stufe 3): Bildauftraege fuer Bild-Ebenen ──────────────────────────────
+
+SEITE = {"version": 1, "breite": 600, "hoehe": 1200, "hintergrund": {"farbe": "#fdf6e3", "bild": None},
+         "schriften": {"anzeige": "dm-sans", "text": "dm-sans"},
+         "ebenen": [
+             {"id": "flaeche", "art": "form", "form": "rechteck", "farbe": "#123456",
+              "x": 300, "y": 200, "breite": 600, "hoehe": 400},
+             {"id": "held", "art": "bild", "quelle": "medien:platzhalter-2x1.png",
+              "x": 300, "y": 200, "breite": 600, "hoehe": 300},
+             {"id": "deko", "art": "bild", "quelle": "medien:eigen.jpg", "x": 450, "y": 900, "breite": 200,
+              "hoehe": 200},
+             {"id": "satz", "art": "text", "text": "Herbstfest", "rolle": "TEXT", "groesse": 17,
+              "farbe": "#222222", "x": 300, "y": 420, "breite": 500, "hoehe": 80},
+             {"id": "knopf", "art": "knopf", "text": "Anmelden", "link": "https://example.com", "farbe": "#b45309",
+              "textfarbe": "#ffffff", "x": 300, "y": 1100, "breite": 200, "hoehe": 48},
+         ]}
+SEITEN_AUFTRAG = dict(AUFTRAG, bloecke=None, format="seite", seite=SEITE)
+
+
+class MerkPrompt(Prompt):
+    def __init__(self, urteile=None):
+        super().__init__(urteile)
+        self.plaetze = []
+
+    def prompt_schreiben(self, platz, titel, hinweis):
+        self.plaetze.append(platz)
+        return super().prompt_schreiben(platz, titel, hinweis)
+
+
+def test_seite_nur_leere_bild_ebenen_mit_seitenpalette():
+    api, comfy, prompt = Api(dict(SEITEN_AUFTRAG)), Comfy(), MerkPrompt()
+    assert bw.ein_durchlauf(api, comfy, prompt, starten=lambda: None) == "fertig"
+    assert ("bild", "held") in api.log and ("bild", "deko") not in api.log
+    assert comfy.masse == [(1200, 608)]                           # Mass der Bild-Ebene, doppelte Aufloesung
+    assert api.log[-1] == ("fertig", {"held": "nl-0123abcd-held.jpg"}, "")
+    daten = prompt.plaetze[0]
+    assert daten["id"] == "held" and daten["flaeche"] == "#123456" and daten["kontext"].startswith("Herbstfest")
+    assert daten["palette"] == {"innen": "#fdf6e3", "aussen": "#fdf6e3", "text": "#222222", "akzent": "#b45309"}
+
+
+def test_seite_platz_einer_ebene_aendern_holt_die_quelle():
+    api, comfy = Api(dict(SEITEN_AUFTRAG, platz="deko", nur_leere=False, modus="aendern")), Comfy()
+    api.quellen["deko"] = ALT
+    assert bw.ein_durchlauf(api, comfy, Prompt(), starten=lambda: None) == "fertig"
+    assert ("quelle", "deko") in api.log and ("bild", "deko") in api.log
+    assert comfy.masse == [(400, 400)] and comfy.flux2[0][0].startswith("aendern deko")
+
+
+def test_seite_ohne_passende_ebene_zurueck():
+    api = Api(dict(SEITEN_AUFTRAG, platz="satz"))                  # Text-Ebene ist kein Bildplatz
+    assert bw.ein_durchlauf(api, Comfy(), Prompt(), starten=lambda: None) == "zurueck"
+    assert api.log[-1] == ("zurueck", "Keine passenden Bildplaetze", True)
+
+
+def test_bloecke_auftrag_bleibt_beim_blockweg():
+    # format fehlt oder ist bloecke: Plaetze und Palette aus den Bloecken, eine mitgeschickte Seite zaehlt nicht
+    api, comfy, prompt = Api(dict(AUFTRAG, format="bloecke", seite=SEITE)), Comfy(), MerkPrompt()
+    assert bw.ein_durchlauf(api, comfy, prompt, starten=lambda: None) == "fertig"
+    assert ("bild", "kopf") in api.log and comfy.masse == [(1200, 608)]
+    assert prompt.plaetze[0]["palette"]["innen"] == "#ffffff"

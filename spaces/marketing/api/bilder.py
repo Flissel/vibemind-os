@@ -87,16 +87,23 @@ def _auftrag_id(wert: str) -> str:
         raise HTTPException(404, "Unbekannter Auftrag")
 
 
+def _plaetze(f: dict) -> list:
+    """Bildplaetze einer Fassungszeile (bloecke, format, seite): Collage aus den Bild-Ebenen, sonst aus den Bloecken."""
+    if f.get("format") == "seite":
+        return bildplaetze.finde_seite(f.get("seite") or {})
+    return bildplaetze.finde(f.get("bloecke") or {})
+
+
 def _echtes_bild_pruefen(i: str, platz: str,
                          meldung: str = "Freistellen geht nur bei einem Bildplatz mit echtem Bild") -> None:
     """Freistellen/Aendern nur fuer einen Platz der neuesten Fassung, der ein echtes Bild
     traegt (kein Platzhalter, keine erzeugte Grafik - finde() laesst Grafiken weg)."""
     f = _lesen_einer(lambda:
-        f"SELECT bloecke FROM marketing.inhalt_fassungen WHERE inhalt = {lit(i)}::uuid "
+        f"SELECT bloecke, format, seite FROM marketing.inhalt_fassungen WHERE inhalt = {lit(i)}::uuid "
         "ORDER BY fassung DESC LIMIT 1")
     if not f:
         raise HTTPException(404, "Unbekannter Inhalt")
-    echt = [p for p in bildplaetze.finde(f.get("bloecke") or {}) if p.id == platz and not bildplaetze.ist_leer(p.url)]
+    echt = [p for p in _plaetze(f) if p.id == platz and not bildplaetze.ist_leer(p.url)]
     if not echt:
         raise HTTPException(422, meldung)
 
@@ -183,11 +190,11 @@ def agent_plaetze(iid: str, x_agent_key: str | None = Header(None)):
     _agent_schluessel(x_agent_key)
     i = _uuid_oder_404(iid)
     f = _lesen_einer(lambda:
-        f"SELECT fassung, bloecke FROM marketing.inhalt_fassungen WHERE inhalt = {lit(i)}::uuid "
+        f"SELECT fassung, bloecke, format, seite FROM marketing.inhalt_fassungen WHERE inhalt = {lit(i)}::uuid "
         "ORDER BY fassung DESC LIMIT 1")
     if not f:
         raise HTTPException(404, "Unbekannter Inhalt")
-    plaetze = [p.als_dict() for p in bildplaetze.finde(f.get("bloecke") or {})]
+    plaetze = [p.als_dict() for p in _plaetze(f)]
     return {"fassung": int(f["fassung"]), "plaetze": plaetze, "auftraege": _stand(i)}
 
 
@@ -219,11 +226,16 @@ def arbeiter_naechster(x_bild_key: str | None = Header(None)):
     zeile = _schreiben(lambda: f"SELECT marketing.pult_bild_naechster({lit(FRIST)}::interval) AS a")
     a = zeile.get("a")
     if isinstance(a, dict) and a.get("id"):
+        # format/seite der Grundfassung (= a.fassung): bei einer Collage erzeugt der Arbeiter fuer Bild-Ebenen
         z = _lesen_einer(lambda:
             "SELECT b.staerke, b.modus, b.vorlagen, i.mandant, (SELECT m.name FROM marketing.mandanten m "
-            "WHERE m.id = i.mandant) AS mandant_name FROM marketing.bild_auftraege b "
-            f"JOIN marketing.inhalte i ON i.id = b.inhalt WHERE b.id = {lit(a['id'])}::uuid")
+            "WHERE m.id = i.mandant) AS mandant_name, f.format, "
+            "CASE WHEN f.format = 'seite' THEN f.seite END AS seite FROM marketing.bild_auftraege b "
+            "JOIN marketing.inhalte i ON i.id = b.inhalt LEFT JOIN marketing.inhalt_fassungen f "
+            f"ON f.inhalt = b.inhalt AND f.fassung = b.grund_fassung WHERE b.id = {lit(a['id'])}::uuid")
         a.update(z or {})
+        if a.get("format") != "seite":
+            a.pop("seite", None)
     return {"auftrag": a}
 
 
@@ -269,21 +281,49 @@ def _jpeg_pruefen(roh: bytes) -> None:
         raise HTTPException(422, f"JPEG mit Kanten {KANTE_MIN}-{KANTE_MAX} px noetig")
 
 
+PLATZ_FEHLT = "Bildplatz gibt es nicht"   # Wortlaut von pult_bild_datei_fehler (056) fuer den letzten Schritt
+
+
+def _seite_bild_ebene(seite, platz: str) -> dict | None:
+    for e in (seite.get("ebenen") if isinstance(seite, dict) and isinstance(seite.get("ebenen"), list) else []):
+        if isinstance(e, dict) and e.get("id") == platz:
+            return e if e.get("art") == "bild" else None
+    return None
+
+
+def _datei_fehler(a: str, platz: str) -> dict:
+    """Darf der Arbeiter fuer diesen Platz liefern? -> {"f": Grund|None, "format", "seite"}; Grund -> 422.
+    pult_bild_datei_fehler (056) prueft Auftrag, Vergabe und Platz und zuletzt den Bildplatz in den BLOECKEN der
+    neuesten Fassung. Bei einer Collage ist dieser letzte Schritt hier der Blick auf die Bild-Ebene derselben
+    Abfrage (neueste Fassung); die vorherigen Gruende bleiben, wie die DB sie meldet."""
+    z = _lesen_einer(lambda:
+        f"SELECT marketing.pult_bild_datei_fehler({lit(a)}::uuid, {lit(platz)}) AS f, n.format, "
+        "CASE WHEN n.format = 'seite' THEN n.seite END AS seite FROM (SELECT 1) eins LEFT JOIN LATERAL ("
+        "SELECT x.format, x.seite FROM marketing.bild_auftraege b JOIN marketing.inhalt_fassungen x "
+        f"ON x.inhalt = b.inhalt WHERE b.id = {lit(a)}::uuid ORDER BY x.fassung DESC LIMIT 1) n ON true")
+    if z is None:
+        raise HTTPException(503, "Marketing-Datenbank nicht erreichbar")
+    if z.get("format") == "seite" and z.get("f") == PLATZ_FEHLT and _seite_bild_ebene(z.get("seite"), platz):
+        z = dict(z, f=None)
+    if z.get("f"):
+        raise HTTPException(422, str(z["f"]))
+    return z
+
+
 @router.get("/arbeiter/{aid}/quelle")
 def arbeiter_quelle(aid: str, platz: str = Query(""), x_bild_key: str | None = Header(None)):
     _bild_schluessel(x_bild_key)
     a = _auftrag_id(aid)
     if not _PLATZ.fullmatch(platz or ""):
         raise HTTPException(422, "platz muss eine Block-ID sein")
-    fehler = _lesen_einer(lambda: f"SELECT marketing.pult_bild_datei_fehler({lit(a)}::uuid, {lit(platz)}) AS f")
-    if fehler is None:
-        raise HTTPException(503, "Marketing-Datenbank nicht erreichbar")
-    if fehler.get("f"):
-        raise HTTPException(422, str(fehler["f"]))
-    z = _lesen_einer(lambda:
-        "SELECT f.bloecke #>> ARRAY[" + lit(platz) + ", 'data', 'props', 'url'] AS url "
-        "FROM marketing.bild_auftraege b JOIN marketing.inhalt_fassungen f ON f.inhalt = b.inhalt "
-        f"WHERE b.id = {lit(a)}::uuid ORDER BY f.fassung DESC LIMIT 1")
+    pruefung = _datei_fehler(a, platz)
+    if pruefung.get("format") == "seite":    # Collage: quelle der Bild-Ebene (neueste Fassung, dieselbe Abfrage)
+        z = {"url": (_seite_bild_ebene(pruefung.get("seite"), platz) or {}).get("quelle")}
+    else:
+        z = _lesen_einer(lambda:
+            "SELECT f.bloecke #>> ARRAY[" + lit(platz) + ", 'data', 'props', 'url'] AS url "
+            "FROM marketing.bild_auftraege b JOIN marketing.inhalt_fassungen f ON f.inhalt = b.inhalt "
+            f"WHERE b.id = {lit(a)}::uuid ORDER BY f.fassung DESC LIMIT 1")
     url = str((z or {}).get("url") or "")
     if not url.startswith("medien:") or bildplaetze.ist_leer(url):
         raise HTTPException(404, "Kein Bild im Platz")
@@ -358,12 +398,7 @@ async def arbeiter_bild(aid: str, request: Request, platz: str = Query(""), form
         if len(roh) > grenze:
             raise HTTPException(413, f"Bild groesser als {grenztext}")
     (_png_pruefen if png else _jpeg_pruefen)(bytes(roh))
-    fehler = _lesen_einer(lambda:
-        f"SELECT marketing.pult_bild_datei_fehler({lit(a)}::uuid, {lit(platz)}) AS f")
-    if fehler is None:
-        raise HTTPException(503, "Marketing-Datenbank nicht erreichbar")
-    if fehler.get("f"):
-        raise HTTPException(422, str(fehler["f"]))
+    _datei_fehler(a, platz)
     name = f"nl-{a[:8]}-{platz}-frei.png" if png else f"nl-{a[:8]}-{platz}.jpg"
     # Erst der Firma des Newsletters zuordnen, dann ablegen: scheitert die Zuordnung,
     # entsteht keine Datei - nie ein Zeitfenster, in dem sie als Gemeinsam sichtbar ist.

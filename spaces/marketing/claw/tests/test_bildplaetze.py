@@ -155,3 +155,46 @@ def test_original_unveraendert():
     vorher = repr(d)
     neu, _ = bp.platzhalter_einsetzen(d, "a.jpg")
     assert repr(d) == vorher and neu is not d and neu["k"] is not d["k"]
+
+# ─── Collage (format 'seite', Stufe 3): Bildplaetze aus Bild-Ebenen ──────────────────────────────────
+
+SEITE = {"version": 1, "breite": 600, "hoehe": 1200, "hintergrund": {"farbe": "#fdf6e3", "bild": None},
+         "schriften": {"anzeige": "dm-sans", "text": "dm-sans"},
+         "ebenen": [
+             {"id": "flaeche", "art": "form", "form": "rechteck", "farbe": "#123456",
+              "x": 300, "y": 200, "breite": 600, "hoehe": 400},
+             {"id": "held", "art": "bild", "quelle": "medien:platzhalter-2x1.png",
+              "x": 300, "y": 200, "breite": 600, "hoehe": 300},
+             {"id": "titel", "art": "text", "text": "**Herbstfest**", "rolle": "ANZEIGE", "groesse": 48,
+              "farbe": "#111111", "x": 300, "y": 420, "breite": 500, "hoehe": 80},
+             {"id": "deko", "art": "bild", "quelle": "medien:eigen.jpg", "x": 450, "y": 900, "breite": 200,
+              "hoehe": 200},
+             {"id": "turm", "art": "bild", "quelle": "medien:eigen.jpg", "x": 300, "y": 3000, "breite": 600,
+              "hoehe": 3000},
+             {"id": "kaputt", "art": "bild", "quelle": "medien:x.jpg", "x": 1, "y": 1, "breite": 0, "hoehe": 10},
+             {"id": "knopf", "art": "knopf", "text": "Anmelden", "link": "https://example.com", "farbe": "#b45309",
+              "textfarbe": "#ffffff", "x": 300, "y": 1100, "breite": 200, "hoehe": 48},
+         ]}
+
+
+def test_finde_seite_bild_ebenen_als_plaetze():
+    p = {x.id: x for x in bp.finde_seite(SEITE)}
+    assert list(p) == ["held", "deko", "turm"]                      # Form/Text/Knopf und Mass 0 sind keine Plaetze
+    held = p["held"]
+    assert (held.anzeige_breite, held.anzeige_hoehe, held.erzeug_breite, held.erzeug_hoehe) == (600, 300, 1200, 608)
+    assert held.verhaeltnis == "2:1" and held.leer is True and held.url == "medien:platzhalter-2x1.png"
+    assert held.flaeche == "#123456"                               # Form darunter, nicht die Seitenfarbe
+    assert held.kontext.split(" | ")[0] == "Herbstfest"            # naechster Text zuerst, ohne Markdown
+    assert p["deko"].leer is False and p["deko"].flaeche == "#fdf6e3" and p["deko"].verhaeltnis == "1:1"
+    assert (p["deko"].erzeug_breite, p["deko"].erzeug_hoehe) == (400, 400)
+
+
+def test_finde_seite_kappt_die_lange_kante():
+    turm = next(x for x in bp.finde_seite(SEITE) if x.id == "turm")
+    assert max(turm.erzeug_breite, turm.erzeug_hoehe) <= bp.ERZEUG_SEITE_MAX
+    assert turm.erzeug_breite % 16 == 0 and turm.erzeug_hoehe % 16 == 0
+    assert (turm.anzeige_breite, turm.anzeige_hoehe) == (600, 3000)
+
+
+def test_finde_seite_ohne_seite_leer():
+    assert bp.finde_seite(None) == [] and bp.finde_seite({}) == [] and bp.finde_seite({"ebenen": "x"}) == []

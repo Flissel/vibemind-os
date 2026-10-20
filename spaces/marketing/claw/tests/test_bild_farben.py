@@ -81,3 +81,30 @@ def test_farbwunsch_macht_palette_weich():
 def test_satz_ohne_palette_neutral():
     s = bf.satz(None, "", "")
     assert s == "natural colors, soft light"
+
+
+# ─── Collage (format 'seite', Stufe 3) ───────────────────────────────────────────────────────────────
+
+
+def test_palette_seite_aus_hintergrund_text_und_knopf():
+    seite = {"hintergrund": {"farbe": "#fdf6e3"}, "ebenen": [
+        {"art": "form", "farbe": "#fdf6e3"},
+        {"art": "text", "rolle": "ANZEIGE", "farbe": "#111111"},
+        {"art": "text", "rolle": "TEXT", "farbe": "#333333"},
+        {"art": "form", "farbe": "#0f766e"},
+        {"art": "knopf", "farbe": "#b45309"}]}
+    assert bf.palette_seite(seite) == {"innen": "#fdf6e3", "aussen": "#fdf6e3", "text": "#333333",
+                                       "akzent": "#b45309"}
+
+
+def test_palette_seite_rueckfaelle():
+    # ohne Knopf: erste Form, die sich von der Seitenfarbe abhebt; ohne Fliesstext: erster Text
+    seite = {"hintergrund": {"farbe": "#FFFFFF"}, "ebenen": [
+        {"art": "form", "farbe": "#ffffff"}, {"art": "form", "farbe": "#0f766e"},
+        {"art": "text", "rolle": "HAND", "farbe": "#222222"}]}
+    assert bf.palette_seite(seite) == {"innen": "#FFFFFF", "aussen": "#FFFFFF", "text": "#222222",
+                                       "akzent": "#0f766e"}
+    assert bf.palette_seite(None) == {"innen": "#ffffff", "aussen": "#ffffff", "text": "#242424", "akzent": ""}
+    satz = bf.satz(bf.palette_seite({"hintergrund": {"farbe": "#fdf6e3"}, "ebenen": [
+        {"art": "knopf", "farbe": "#b45309"}]}), "", "")
+    assert "accents" in satz and "background" in satz

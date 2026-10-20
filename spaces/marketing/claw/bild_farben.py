@@ -76,6 +76,24 @@ def palette(dok) -> dict:
             "text": wurzel.get("textColor") or "#242424", "akzent": akzent}
 
 
+def palette_seite(seite) -> dict:
+    """Palette einer Collage (format 'seite') mit denselben Schluesseln wie palette(): innen/aussen = Seitenfarbe,
+    text = Farbe des ersten Fliesstexts (Rolle TEXT, sonst des ersten Texts), akzent = Farbe des ersten Knopfs,
+    sonst der ersten Form, die sich von der Seitenfarbe abhebt."""
+    seite = seite if isinstance(seite, dict) else {}
+    hg = seite.get("hintergrund") if isinstance(seite.get("hintergrund"), dict) else {}
+    grund = hg.get("farbe") if _rgb(hg.get("farbe")) else "#ffffff"
+    ebenen = [e for e in (seite.get("ebenen") if isinstance(seite.get("ebenen"), list) else []) if isinstance(e, dict)]
+
+    def erste(passt) -> str:
+        return next((e["farbe"] for e in ebenen if passt(e) and _rgb(e.get("farbe"))), "")
+    text = (erste(lambda e: e.get("art") == "text" and e.get("rolle") == "TEXT")
+            or erste(lambda e: e.get("art") == "text") or "#242424")
+    akzent = (erste(lambda e: e.get("art") == "knopf")
+              or erste(lambda e: e.get("art") == "form" and str(e.get("farbe")).lower() != grund.lower()))
+    return {"innen": grund, "aussen": grund, "text": text, "akzent": akzent}
+
+
 def farbwunsch(hinweis: str) -> bool:
     return bool(_FARBWUNSCH.search(hinweis or ""))
 

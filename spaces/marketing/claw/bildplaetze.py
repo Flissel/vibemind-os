@@ -152,6 +152,78 @@ def finde(dok: dict) -> list[Platz]:
     return plaetze
 
 
+ERZEUG_SEITE_MAX = 1536   # lange Kante beim Erzeugen fuer Collage-Bilder (Ebenen bis 1200 x 6000 Einheiten)
+
+
+def _seite_zahl(wert) -> float:
+    return float(wert) if isinstance(wert, (int, float)) and not isinstance(wert, bool) else 0.0
+
+
+def _seite_kasten(e: dict) -> tuple[float, float, float, float]:
+    """(links, oben, rechts, unten) einer Ebene; x/y sind die Mitte (wie seite_html)."""
+    x, y, b, h = (_seite_zahl(e.get(k)) for k in ("x", "y", "breite", "hoehe"))
+    return x - b / 2, y - h / 2, x + b / 2, y + h / 2
+
+
+def _seite_flaeche(ebenen: list, nr: int, grund: str) -> str:
+    """Farbe unter der Bildmitte: die oberste Form (oder Text mit Hintergrund) darunter, sonst die Seitenfarbe."""
+    l, o, r, u = _seite_kasten(ebenen[nr])
+    mx, my = (l + r) / 2, (o + u) / 2
+    for e in reversed(ebenen[:nr]):
+        if not isinstance(e, dict):
+            continue
+        farbe = e.get("farbe") if e.get("art") == "form" else e.get("hintergrund") if e.get("art") == "text" else None
+        if not isinstance(farbe, str) or not farbe:
+            continue
+        el, eo, er, eu = _seite_kasten(e)
+        if el <= mx <= er and eo <= my <= eu:
+            return farbe
+    return grund
+
+
+def _seite_kontext(ebenen: list, nr: int) -> str:
+    """Texte (und Knopfbeschriftungen) der Seite, die naechsten zuerst - wie die Nachbartexte bei Bloecken."""
+    l, o, r, u = _seite_kasten(ebenen[nr])
+    mx, my = (l + r) / 2, (o + u) / 2
+    texte = []
+    for e in ebenen:
+        if isinstance(e, dict) and e.get("art") in ("text", "knopf") and isinstance(e.get("text"), str):
+            el, eo, er, eu = _seite_kasten(e)
+            abstand = ((el + er) / 2 - mx) ** 2 + ((eo + eu) / 2 - my) ** 2
+            texte.append((abstand, _MD.sub("", e["text"]).strip()))
+    texte.sort(key=lambda t: t[0])
+    return " | ".join(t for _, t in texte[:4] if t)[:KONTEXT_MAX]
+
+
+def finde_seite(seite: dict) -> list[Platz]:
+    """Bildplaetze einer Collage (format 'seite'): jede Bild-Ebene mit Breite und Hoehe > 0 ist ein Platz, ihre ID
+    ist die Platz-ID (wie die Block-ID bei Bloecken). Anzeigemass = Ebenenmass in Seiteneinheiten (Seite 600 breit
+    wie die Mail); erzeugt wird in doppelter Aufloesung, Kanten auf 16, lange Kante hoechstens ERZEUG_SEITE_MAX."""
+    if not isinstance(seite, dict) or not isinstance(seite.get("ebenen"), list):
+        return []
+    ebenen = seite["ebenen"]
+    hg = seite.get("hintergrund") if isinstance(seite.get("hintergrund"), dict) else {}
+    grund = str(hg.get("farbe") or "#ffffff")
+    plaetze: list[Platz] = []
+    for nr, e in enumerate(ebenen):
+        if not isinstance(e, dict) or e.get("art") != "bild" or not isinstance(e.get("id"), str):
+            continue
+        w, h = _seite_zahl(e.get("breite")), _seite_zahl(e.get("hoehe"))
+        if w <= 0 or h <= 0:
+            continue
+        anzeige_b, anzeige_h = max(1, round(w)), max(1, round(h))
+        erzeug_b = _auf16(anzeige_b * 2)
+        erzeug_h = _auf16(erzeug_b * h / w)
+        if max(erzeug_b, erzeug_h) > ERZEUG_SEITE_MAX:
+            f = ERZEUG_SEITE_MAX / max(erzeug_b, erzeug_h)
+            erzeug_b, erzeug_h = (max(16, int(x * f) // 16 * 16) for x in (erzeug_b, erzeug_h))
+        a, c = _gekuerzt(anzeige_b, anzeige_h)
+        url = str(e.get("quelle") or "")
+        plaetze.append(Platz(e["id"], anzeige_b, anzeige_h, erzeug_b, erzeug_h, f"{a}:{c}", ist_leer(url), url, "",
+                             _seite_kontext(ebenen, nr), _seite_flaeche(ebenen, nr, grund)))
+    return plaetze
+
+
 def platzhalter_einsetzen(dok: dict, name: str) -> tuple[dict, int]:
     """Jeden Bildplatz mit "medien:<name>" (exakt) durch seinen Platzhalter ersetzen (Plan 2026-10-19 E4).
     Image-Block -> medien:platzhalter-AxB.png nach width/height (fehlen sie: 4x3); Container mit diesem
