@@ -120,7 +120,7 @@ def quellen_pruefen(roh: object) -> list[dict]:
     return roh
 
 
-def _aenderung(z: dict, juengster: str | None) -> dict | None:
+def _aenderung(z: dict, juengster: str | None, rueckgaengig: set[str] = frozenset()) -> dict | None:
     """Aenderungskarte einer Runde aus dem Join auf marken_vorschlaege (E9); None ohne Vorschlag."""
     vid = z.pop("vid", None)
     status, direkt, liste = z.pop("v_status", None), z.pop("v_direkt", None), z.pop("v_aenderungen", None)
@@ -129,7 +129,19 @@ def _aenderung(z: dict, juengster: str | None) -> dict | None:
     vid = str(vid)
     return {"vid": vid, "status": status, "direkt": direkt is True,
             "aenderungen": liste if isinstance(liste, list) else [],
-            "rueckgaengig_moeglich": bool(direkt is True and status == "angenommen" and vid == juengster)}
+            "rueckgaengig_moeglich": bool(direkt is True and status == "angenommen" and vid == juengster),
+            "rueckgaengig_gemacht": vid in rueckgaengig}
+
+
+def _rueckgaengig_gemachte(m: str, vids: list[str]) -> set[str]:
+    """Die Vorschlaege unter `vids`, zu denen die Firma einen Gegenvorschlag hat (078: vorschlag.rueckgaengig_von).
+    Eine Abfrage fuer alle; ohne vids keine."""
+    if not vids:
+        return set()
+    zeilen = _lesen(lambda:
+        "SELECT DISTINCT vorschlag->>'rueckgaengig_von' AS von FROM marketing.marken_vorschlaege "
+        f"WHERE mandant = {lit(m)} AND vorschlag->>'rueckgaengig_von' IN ({', '.join(lit(v) for v in vids)})")
+    return {str(z["von"]) for z in zeilen if isinstance(z, dict) and z.get("von")}
 
 
 def _juengster_angenommener(m: str) -> str | None:
@@ -271,11 +283,13 @@ def marke_stand(mandant: str | None = None, alle: bool = False, x_pult_key: str 
         "SELECT count(*) AS n FROM marketing.marken_auftraege "
         f"WHERE mandant = {lit(m)} AND art IN ('chat', 'bearbeitung')")
     juengster = _juengster_angenommener(m)
+    rueckgaengig = _rueckgaengig_gemachte(m, sorted({str(z["vid"]) for z in auftraege
+                                                     if isinstance(z, dict) and z.get("vid")}))
     for z in auftraege:
         z.pop("sortiert_am", None)
         if not isinstance(z.get("quellen"), list):
             z["quellen"] = []
-        z["aenderung"] = _aenderung(z, juengster)
+        z["aenderung"] = _aenderung(z, juengster, rueckgaengig)
     return {"mandant": m, "name": kopf.get("name"),
             "spiegel": {"gestalt": {k: gestalt[k] for k in SPIEGEL_SCHLUESSEL if k in gestalt},
                         "stand": kopf.get("stand") or "", "gespiegelt_am": kopf.get("gespiegelt_am"),

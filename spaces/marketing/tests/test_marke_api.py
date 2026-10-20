@@ -1226,7 +1226,7 @@ def test_stand_rueckgaengig_nur_juengster(umg):
     a1, a2 = j["auftraege"]
     assert a1["aenderung"]["rueckgaengig_moeglich"] is False and a2["aenderung"]["rueckgaengig_moeglich"] is True
     assert a2["aenderung"] == {"vid": V2, "status": "angenommen", "direkt": True, "aenderungen": AEND,
-                               "rueckgaengig_moeglich": True}
+                               "rueckgaengig_moeglich": True, "rueckgaengig_gemacht": False}
     assert "status = 'angenommen'" in f.sql[10] and "ORDER BY erstellt_am DESC" in f.sql[10]
     assert "entschieden_am" not in f.sql[10]
 
@@ -1270,3 +1270,29 @@ def test_stand_alle_hebt_grenze(umg):
     f.antworten += [[{"ok": True}], KOPF, [], [], [], [], [], [], [], [{"n": 37}], []]
     c.get("/api/pult/marke?mandant=radhaus&alle=1", headers=H)
     assert "LIMIT 100)" in f.sql[13]
+
+
+def test_stand_rueckgaengig_gemacht(umg):
+    """Review Task 5: die Seite zeigt "Rückgängig gemacht", wenn ein Gegenvorschlag (rueckgaengig_von) existiert."""
+    f, _, c = umg
+    runden = [_runde(AID, V1), _runde("66666666-6666-6666-6666-666666666666", V2)]
+    f.antworten += [[{"ok": True}], KOPF, runden, [], [], [], [], [], [], [{"n": 2}],
+                    [{"id": "77777777-7777-7777-7777-777777777777", "erstellt_am": "2026-10-20 10:09:00+00"}],
+                    [{"von": V1}]]
+    j = c.get("/api/pult/marke?mandant=radhaus", headers=H).json()
+    a1, a2 = j["auftraege"]
+    assert a1["aenderung"]["rueckgaengig_gemacht"] is True and a1["aenderung"]["rueckgaengig_moeglich"] is False
+    assert a2["aenderung"]["rueckgaengig_gemacht"] is False
+    sql = f.sql[11]
+    assert "rueckgaengig_von" in sql and "mandant = 'radhaus'" in sql
+    assert f"'{V1}'" in sql and f"'{V2}'" in sql and len(f.sql) == 12
+
+
+def test_stand_rueckgaengig_gemacht_ohne_vorschlaege_keine_abfrage(umg):
+    f, _, c = umg
+    roh = {"id": AID, "nachricht": "n", "antwort": "a", "status": "fertig", "hinweise": [], "vorschlag": None,
+           "erstellt_am": "x", "sortiert_am": "y", "quellen": None, "art": "chat", "vid": None,
+           "v_status": None, "v_direkt": None, "v_aenderungen": None}
+    j = _stand(f, c, [roh], [])
+    assert j["auftraege"][0]["aenderung"] is None
+    assert not any("rueckgaengig_von" in q for q in f.sql)
