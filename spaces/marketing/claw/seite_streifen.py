@@ -4,7 +4,13 @@ Stueck, hoechstens BILD_MAX hoch). Rein rechnend, ohne Rendern.
 
 Grenze der Planung: Textebenen rendern in seite_html mit min-height, koennen also ueber ihre "hoehe" hinaus
 wachsen. Der Planer rechnet mit der deklarierten hoehe; die gerenderte Hoehe zu schaetzen bleibt dem Rendern
-(Task 3/4) ueberlassen."""
+(Task 3/4) ueberlassen.
+
+Text-tauglich ist nur Fliesstext/Knopf, der senkrecht mit keiner anderen sichtbaren Ebene ueberlappt (auch nicht
+nebeneinander - MJML kennt keine freie Spalte); Beruehren an der Kante ist erlaubt. Eine text-taugliche Ebene, die
+naeher als 1 Einheit an einer nicht text-tauglichen Ebene liegt (Beruehren eingeschlossen), wird Teil von deren
+Bildband. Diese Aufnahme kaskadiert NICHT ueber aufgenommenen Text weiter: in einer Textspalte, deren letzter
+Kasten ein Bild beruehrt, wird nur dieser Kasten Bild."""
 from __future__ import annotations
 
 import math
@@ -14,6 +20,7 @@ from typing import Literal
 from spaces.marketing.claw import seite as seite_mod
 
 BILD_MAX = 600
+NAH = 1  # Abstand unter 1 Einheit zu einer Bild-Ebene gilt als Beruehren
 _STELLEN = 6  # Rundung gegen Gleitkomma-Rauschen (cos 90° ist nicht genau 0)
 
 
@@ -39,11 +46,6 @@ def rahmen(e: dict) -> tuple[float, float, float, float]:
     return _r(e["x"] - hb), _r(e["y"] - hh), _r(e["x"] + hb), _r(e["y"] + hh)
 
 
-def _schneiden(a: tuple, b: tuple) -> bool:
-    """Echte Flaechen-Ueberlappung; blosses Beruehren an einer Kante zaehlt nicht."""
-    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
-
-
 def text_tauglich(e: dict, alle: list[dict], seite: dict) -> bool:
     """Darf die Ebene als echter Mail-Text (bzw. mj-button) stehen? Erwartet normalisierte Ebenen (pruefen)."""
     if seite["hintergrund"].get("bild") is not None:
@@ -53,10 +55,20 @@ def text_tauglich(e: dict, alle: list[dict], seite: dict) -> bool:
     if e["art"] == "text":
         if e["rolle"] != "TEXT" or e["deckkraft"] != 1 or e["hintergrund"] is not None:
             return False
-    elif e["art"] != "knopf":
+    elif e["art"] != "knopf" or e["deckkraft"] != 1:  # mj-button kennt keine Deckkraft
         return False
-    eigen = rahmen(e)
-    return not any(_schneiden(eigen, rahmen(o)) for o in alle if o is not e and o["id"] != e["id"])
+    hoehe = seite["hoehe"]
+    eigen = _sichtbar(e, hoehe)
+    if eigen is None:
+        _, o, _, u = rahmen(e)
+        eigen = (o, u)
+    for andere in alle:
+        if andere is e or andere["id"] == e["id"]:
+            continue
+        bereich = _sichtbar(andere, hoehe)  # Ebenen ganz ausserhalb der Seite zaehlen nicht
+        if bereich is not None and bereich[0] < eigen[1] and eigen[0] < bereich[1]:
+            return False
+    return True
 
 
 def lesereihenfolge(ebenen: list[dict]) -> list[dict]:
@@ -74,10 +86,10 @@ def _sichtbar(e: dict, hoehe: float) -> tuple[float, float] | None:
 
 
 def _verschmelzen(bereiche: list[list[float]]) -> list[list[float]]:
-    """Vereinigt sich ueberlappende oder beruehrende Bereiche."""
+    """Vereinigt Bereiche, die ueberlappen oder weniger als NAH auseinanderliegen."""
     aus: list[list[float]] = []
     for o, u in sorted(bereiche):
-        if aus and o <= aus[-1][1]:
+        if aus and o - aus[-1][1] < NAH:
             aus[-1][1] = max(aus[-1][1], u)
         else:
             aus.append([o, u])
@@ -153,17 +165,12 @@ def plan(seite: dict) -> list[Band]:
         bild = [[0, hoehe]]
     else:
         tauglich = {e["id"] for e in sichtbar if text_tauglich(e, alle, s)}
-        bild = _verschmelzen([list(lage[e["id"]]) for e in sichtbar if e["id"] not in tauglich])
-        # Text, der ein Bildband beruehrt oder hineinragt, wird Teil davon - bis nichts mehr dazukommt.
-        geaendert = True
-        while geaendert:
-            geaendert = False
-            for eid in list(tauglich):
-                o, u = lage[eid]
-                if any(o <= bu and bo <= u for bo, bu in bild):
-                    tauglich.discard(eid)
-                    bild = _verschmelzen(bild + [[o, u]])
-                    geaendert = True
+        quellen = [lage[e["id"]] for e in sichtbar if e["id"] not in tauglich]
+        # Text, der eine Bild-Ebene ueberlappt oder naeher als NAH an ihr liegt, wird Teil ihres Bildbands.
+        # Gemessen nur an den urspruenglichen Bild-Ebenen, damit eine beruehrende Textspalte nicht kaskadiert.
+        aufgenommen = [lage[eid] for eid in tauglich
+                       if any(max(bo - lage[eid][1], lage[eid][0] - bu) < NAH for bo, bu in quellen)]
+        bild = _verschmelzen([list(b) for b in quellen + aufgenommen])
 
     baender: list[Band] = []
     cur = 0

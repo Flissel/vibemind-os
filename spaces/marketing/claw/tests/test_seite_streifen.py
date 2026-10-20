@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from spaces.marketing.claw import seite as seite_mod
@@ -78,6 +80,8 @@ def test_text_tauglich_regeln():
     assert not st.text_tauglich(e["hg"], s["ebenen"], s)
     halb = dict(e["a"], deckkraft=0.5)
     assert not st.text_tauglich(halb, s["ebenen"], s)
+    halber_knopf = dict(e["k"], deckkraft=0.5)
+    assert not st.text_tauglich(halber_knopf, s["ebenen"], s)
     dreh_knopf = dict(e["k"], drehung=10)
     assert not st.text_tauglich(dreh_knopf, s["ebenen"], s)
 
@@ -85,6 +89,62 @@ def test_text_tauglich_regeln():
 def test_beruehrende_textebenen_bleiben_text():
     s = seite_mod.pruefen(seite([text("a", 150), text("b", 250)]))  # a 100..200, b 200..300
     assert all(st.text_tauglich(e, s["ebenen"], s) for e in s["ebenen"])
+
+
+def test_zwei_texte_nebeneinander_werden_bild():
+    links = dict(text("l", 300, breite=250), x=130)
+    rechts = dict(text("r", 320, breite=250), x=450)
+    s = seite_mod.pruefen(seite([links, rechts]))
+    assert not any(st.text_tauglich(e, s["ebenen"], s) for e in s["ebenen"])
+    baender = st.plan(seite([links, rechts]))
+    assert band_von(baender, "l")[0].art == "bild" and band_von(baender, "l") == band_von(baender, "r")
+
+
+def test_text_und_knopf_nebeneinander_werden_bild():
+    baender = st.plan(seite([dict(text("t", 300, breite=250), x=130), dict(knopf("k", 300), x=470)]))
+    assert band_von(baender, "t")[0].art == "bild" and band_von(baender, "k")[0].art == "bild"
+
+
+def test_gestapelte_beruehrende_texte_bleiben_text():
+    baender = st.plan(seite([text("a", 150), text("b", 250), knopf("k", 324)]))  # 100..200, 200..300, 300..348
+    assert set(arten(baender)) == {"text"}
+    assert baender[0].ebenen == ["a", "b", "k"]
+
+
+def test_ebene_ausserhalb_der_seite_stoert_text_nicht():
+    s = seite_mod.pruefen(seite([dict(text("t", 300), x=300), bild("weg", 300, x=900, breite=100)]))
+    assert st.text_tauglich(s["ebenen"][0], s["ebenen"], s)
+    assert st.plan(s)[0].art == "text"
+
+
+def test_textspalte_beruehrt_bild_nur_der_letzte_kasten_wird_bild():
+    # Spalte 100..200, 200..300, 300..400 beruehrend; Bild 400..700 beruehrt nur den letzten Kasten.
+    s = seite([text("a", 150), text("b", 250), text("c", 350), bild("foto", 550)])
+    baender = st.plan(s)
+    lueckenlos(baender, 1200)
+    assert band_von(baender, "a")[0].art == "text" and band_von(baender, "b")[0].art == "text"
+    c = band_von(baender, "c")
+    assert len(c) == 1 and c[0].art == "bild" and c[0].ebenen == ["c", "foto"] and (c[0].oben, c[0].unten) == (300, 700)
+
+
+def test_text_knapp_unter_einer_einheit_vor_bild_wird_bild():
+    s = seite([text("t", 149.5), bild("foto", 350)])  # t 99.5..199.5, Bild 200..500
+    baender = st.plan(s)
+    lueckenlos(baender, 1200)
+    b = band_von(baender, "t")
+    assert len(b) == 1 and b[0].art == "bild" and (b[0].oben, b[0].unten) == (99.5, 500)
+    s2 = seite([text("t", 148), bild("foto", 350)])  # 2 Einheiten Abstand: bleibt Text
+    assert band_von(st.plan(s2), "t")[0].art == "text"
+
+
+def test_gedrehter_text_15_grad():
+    t15 = text("t", 400, drehung=15)
+    l, o, r, u = st.rahmen(t15)
+    baender = st.plan(seite([t15]))
+    lueckenlos(baender, 1200)
+    b = band_von(baender, "t")
+    assert len(b) == 1 and b[0].art == "bild" and (b[0].oben, b[0].unten) == (o, u)
+    assert u - o == pytest.approx(480 * math.sin(math.radians(15)) + 100 * math.cos(math.radians(15)))
 
 
 def test_gedrehte_ueberschrift_bildband_ueber_ihrem_rahmen():
@@ -234,3 +294,18 @@ def test_zufallsseiten_halten_die_zusagen():
         for b in baender:
             if b.art == "text":
                 assert all(sum(eid in x.ebenen for x in baender) == 1 for eid in b.ebenen)
+        geprueft = seite_mod.pruefen(s)
+        sichtbar = {}
+        for e in geprueft["ebenen"]:
+            l, o, r, u = st.rahmen(e)
+            if min(u, hoehe) > max(o, 0) and r > 0 and l < 600:
+                sichtbar[e["id"]] = (max(o, 0), min(u, hoehe))
+        assert set(sichtbar) == im_text | im_bild
+        bildbaender = [(b.oben, b.unten) for b in baender if b.art == "bild"]
+        quellen = [sichtbar[e["id"]] for e in geprueft["ebenen"] if e["id"] in sichtbar
+                   and not st.text_tauglich(e, geprueft["ebenen"], geprueft)]
+        for eid in im_text:
+            o, u = sichtbar[eid]
+            assert st.text_tauglich(next(e for e in geprueft["ebenen"] if e["id"] == eid), geprueft["ebenen"], geprueft)
+            assert not any(bo < u and o < bu for bo, bu in bildbaender)
+            assert all(max(qo - u, o - qu) >= st.NAH for qo, qu in quellen)
