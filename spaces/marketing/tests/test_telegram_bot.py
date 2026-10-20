@@ -128,7 +128,7 @@ def test_befehle_und_nicht_text(tmp_path, monkeypatch):
     assert v.nachrichten(CHAT) == [] and "neu" in t.gesendet[-1][1].lower()
     tb.verarbeiten(nachricht("/hilfe"), t, v, CHAT, system="S")
     assert "/neu" in t.gesendet[-1][1]
-    tb.verarbeiten(nachricht(None, extra={"photo": [{"file_id": "x"}]}), t, v, CHAT, system="S")
+    tb.verarbeiten(nachricht(None, extra={"sticker": {"file_id": "x"}}), t, v, CHAT, system="S")
     assert "Text" in t.gesendet[-1][1]
 
 
@@ -140,3 +140,71 @@ def test_token_steht_in_keiner_fehlermeldung():
 def test_systemprompt_liegt_bei_und_verbietet_den_versand():
     text = tb.systemprompt()
     assert "versend" in text.lower() and "newsletter_chat" in text
+
+
+# ─── Fotos und Sprachnachrichten (20.10.2026) ───────────────────────────────
+
+class TelegramMitDateien(Telegram):
+    def __init__(self, dateien):
+        super().__init__()
+        self.dateien = dateien
+
+    def datei(self, file_id):
+        return self.dateien[file_id]
+
+
+def test_foto_geht_als_bild_mit_beschriftung_an_claude(tmp_path, monkeypatch):
+    gesehen = {}
+
+    def holen(inhalt, verlauf, system):
+        gesehen["inhalt"] = inhalt
+        return "Schoenes Bild.", True
+
+    monkeypatch.setattr(tb, "antwort_holen", holen)
+    t = TelegramMitDateien({"gross": b"\xff\xd8\xffJPEGDATEN"})
+    v = tb.Verlauf(tmp_path / "v.json")
+    foto = {"photo": [{"file_id": "klein", "file_size": 10}, {"file_id": "gross", "file_size": 999}],
+            "caption": "Passt das zum Newsletter?"}
+    tb.verarbeiten(nachricht(None, extra=foto), t, v, CHAT, system="S")
+    teile = gesehen["inhalt"]
+    assert teile[0] == {"type": "text", "text": "Passt das zum Newsletter?"}
+    assert teile[1]["type"] == "image_url" and teile[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert v.nachrichten(CHAT)[0] == {"role": "user", "content": "[Foto] Passt das zum Newsletter?"}   # kein Bild im Verlauf
+    assert t.gesendet[-1][1] == "Schoenes Bild."
+
+
+def test_zu_grosses_foto_wird_abgelehnt(tmp_path, monkeypatch):
+    monkeypatch.setattr(tb, "antwort_holen", lambda *a: pytest.fail("darf nicht fragen"))
+    t = TelegramMitDateien({})
+    foto = {"photo": [{"file_id": "x", "file_size": tb.DATEI_MAX + 1}]}
+    tb.verarbeiten(nachricht(None, extra=foto), t, tb.Verlauf(tmp_path / "v.json"), CHAT, system="S")
+    assert "zu gross" in t.gesendet[-1][1]
+
+
+def test_sprachnachricht_wird_am_pc_umgeschrieben_und_wie_text_behandelt(tmp_path, monkeypatch):
+    monkeypatch.setattr(tb, "umschreiben", lambda daten: "Welche Entwuerfe gibt es?")
+    monkeypatch.setattr(tb, "antwort_holen", lambda inhalt, verlauf, system: (f"Antwort auf {inhalt}", True))
+    t = TelegramMitDateien({"ton": b"OggS..."})
+    v = tb.Verlauf(tmp_path / "v.json")
+    tb.verarbeiten(nachricht(None, extra={"voice": {"file_id": "ton", "file_size": 2000, "duration": 3}}), t, v, CHAT,
+                   system="S")
+    assert t.gesendet[0][1].startswith("🎤 Verstanden: Welche Entwuerfe gibt es?")
+    assert t.gesendet[-1][1] == "Antwort auf Welche Entwuerfe gibt es?"
+    assert v.nachrichten(CHAT)[0] == {"role": "user", "content": "Welche Entwuerfe gibt es?"}
+
+
+def test_leere_umschrift_fragt_nicht(tmp_path, monkeypatch):
+    monkeypatch.setattr(tb, "umschreiben", lambda daten: "  ")
+    monkeypatch.setattr(tb, "antwort_holen", lambda *a: pytest.fail("darf nicht fragen"))
+    t = TelegramMitDateien({"ton": b"OggS"})
+    tb.verarbeiten(nachricht(None, extra={"voice": {"file_id": "ton", "file_size": 10}}), t,
+                   tb.Verlauf(tmp_path / "v.json"), CHAT, system="S")
+    assert "nicht verstanden" in t.gesendet[-1][1]
+
+
+def test_andere_dateien_bekommen_eine_klare_absage(tmp_path, monkeypatch):
+    monkeypatch.setattr(tb, "antwort_holen", lambda *a: pytest.fail("darf nicht fragen"))
+    t = TelegramMitDateien({})
+    tb.verarbeiten(nachricht(None, extra={"document": {"file_id": "d", "file_name": "a.pdf"}}), t,
+                   tb.Verlauf(tmp_path / "v.json"), CHAT, system="S")
+    assert "Text, Fotos und Sprachnachrichten" in t.gesendet[-1][1]
