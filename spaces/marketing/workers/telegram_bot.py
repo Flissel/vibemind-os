@@ -13,6 +13,7 @@ Umgebung (fehlende Werte aus den .env-Dateien des aeusseren Repos und von vibemi
 Zustand: ~/.vibemind/marketing-telegram/ (Verlauf je Chat, Update-Versatz)."""
 from __future__ import annotations
 
+import base64
 import json
 import os
 import threading
@@ -31,10 +32,13 @@ LLM_ZEITLIMIT_S = 900          # Werkzeug-Laeufe (Newsletter-Chat, Kampagne) bra
 TELEGRAM_MAX = 4000            # Grenze 4096; etwas Luft
 VERLAUF_WECHSEL = 10           # Frage+Antwort-Paare je Chat
 POLL_S = 50
+DATEI_MAX = 10 * 1024 * 1024    # Fotos/Sprachnachrichten; die Bot-API liefert ohnehin hoechstens 20 MB
+WHISPER_MODELL = os.environ.get("MARKETING_TELEGRAM_WHISPER", "small")
+WORTSCHATZ = "VibeMind, fin2gether, Newsletter, Newsletter-Entwurf, Kampagne, Pult, sales-claw, Rowboat, Podcast, Reel."
 ZUSTAND = Path(os.environ.get("MARKETING_TELEGRAM_ZUSTAND", Path.home() / ".vibemind" / "marketing-telegram"))
 PROMPT = Path(__file__).resolve().parents[1] / "claw" / "telegram_prompt.md"
 STAND = {"letzte_abfrage": None, "letzte_nachricht": None, "letztes_ergebnis": None}
-HILFE = ("Ich bin der Marketing-Assistent. Schreib mir einfach, was du brauchst - z. B. "
+HILFE = ("Ich bin der Marketing-Assistent. Schreib mir, schick ein Foto oder eine Sprachnachricht - z. B. "
          "\"Welche Newsletter-Entwuerfe gibt es?\" oder \"Mach die Ueberschrift von <Newsletter> kuerzer\".\n"
          "/neu - Gespraech vergessen und neu anfangen\n/hilfe - diese Hilfe\nVersendet wird nichts.")
 
@@ -131,7 +135,7 @@ def _fehlertext(e: urllib.error.HTTPError) -> str:
         return ""
 
 
-def antwort_holen(text: str, verlauf: list[dict], system: str) -> tuple[str, bool]:
+def antwort_holen(text: str | list, verlauf: list[dict], system: str) -> tuple[str, bool]:
     """Fragt Claude ueber den Shim -> (Text fuer den Chat, ok). Wirft nie; Fehler kommen als verstaendlicher Text."""
     koerper = {"model": MODELL, "messages": [{"role": "system", "content": system}, *verlauf,
                                              {"role": "user", "content": text}]}
@@ -173,6 +177,16 @@ class TelegramApi:
         for teil in zerlegen(text):
             self._rufen("sendMessage", {"chat_id": chat, "text": teil})
 
+    def datei(self, file_id: str) -> bytes:
+        pfad = self._rufen("getFile", {"file_id": file_id}).get("result", {}).get("file_path")
+        if not pfad:
+            raise RuntimeError("Telegram getFile: kein Pfad")
+        try:
+            with urllib.request.urlopen(f"https://api.telegram.org/file/bot{self.token}/{pfad}", timeout=60) as r:
+                return r.read(DATEI_MAX + 1)
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(ohne_token(f"Telegram Datei: {e}", self.token)) from None
+
     def tippt(self, chat: int) -> None:
         try:
             self._rufen("sendChatAction", {"chat_id": chat, "action": "typing"}, 10)
@@ -180,15 +194,65 @@ class TelegramApi:
             pass
 
 
+_whisper = None
+
+
+def umschreiben(daten: bytes) -> str:
+    """Sprachnachricht (Ogg/Opus) -> Text, am PC mit faster-whisper (CPU, int8). Kein Modell auf der VM."""
+    global _whisper
+    import io
+    from faster_whisper import WhisperModel
+    if _whisper is None:
+        _whisper = WhisperModel(WHISPER_MODELL, device="cpu", compute_type="int8")
+    # Wortschatz-Hinweis: ohne ihn wird "VibeMind" zu "Wie bemeint" (gemessen 20.10.2026).
+    teile, _ = _whisper.transcribe(io.BytesIO(daten), language="de", vad_filter=True, initial_prompt=WORTSCHATZ)
+    return " ".join(t.text.strip() for t in teile).strip()
+
+
+def _zu_gross(eintrag: dict) -> bool:
+    return int(eintrag.get("file_size") or 0) > DATEI_MAX
+
+
 def verarbeiten(update: dict, telegram, verlauf: Verlauf, chat_id: int, system: str) -> None:
     if not erlaubt(update, chat_id):
         return                          # Fremden wird nicht geantwortet, nicht einmal abgesagt
-    text = (update["message"].get("text") or "").strip()
+    m = update["message"]
+    text = (m.get("text") or "").strip()
     STAND["letzte_nachricht"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-    if not text:
-        telegram.senden(chat_id, "Ich verstehe bisher nur Text.")
+    inhalt: str | list = text           # was Claude bekommt
+    merken = text                       # was in den Verlauf kommt (nur Text, nie Bild oder Ton)
+    if not text and m.get("photo"):
+        groesstes = max(m["photo"], key=lambda f: int(f.get("file_size") or 0))
+        if _zu_gross(groesstes):
+            telegram.senden(chat_id, "Das Foto ist zu gross (hoechstens 10 MB).")
+            return
+        bild = telegram.datei(groesstes["file_id"])
+        if len(bild) > DATEI_MAX:
+            telegram.senden(chat_id, "Das Foto ist zu gross (hoechstens 10 MB).")
+            return
+        beschriftung = (m.get("caption") or "").strip() or "Hier ist ein Foto. Was faellt dir dazu ein?"
+        inhalt = [{"type": "text", "text": beschriftung},
+                  {"type": "image_url",
+                   "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(bild).decode("ascii")}}]
+        merken = f"[Foto] {beschriftung}"
+    elif not text and m.get("voice"):
+        if _zu_gross(m["voice"]):
+            telegram.senden(chat_id, "Die Sprachnachricht ist zu lang (hoechstens 10 MB).")
+            return
+        telegram.tippt(chat_id)
+        gesagt = umschreiben(telegram.datei(m["voice"]["file_id"])).strip()
+        if not gesagt:
+            telegram.senden(chat_id, "Die Sprachnachricht habe ich nicht verstanden - magst du es nochmal sagen oder schreiben?")
+            return
+        telegram.senden(chat_id, f"🎤 Verstanden: {gesagt}")
+        inhalt = merken = text = gesagt
+    elif not text:
+        if m.get("document") or m.get("audio") or m.get("video"):
+            telegram.senden(chat_id, "Dateien kann ich noch nicht lesen - nur Text, Fotos und Sprachnachrichten.")
+        else:
+            telegram.senden(chat_id, "Ich verstehe Text, Fotos und Sprachnachrichten.")
         return
-    befehl = text.split()[0].split("@")[0].lower()
+    befehl = text.split()[0].split("@")[0].lower() if text else ""
     if befehl in ("/neu", "/new", "/reset"):
         verlauf.leeren(chat_id)
         telegram.senden(chat_id, "Erledigt - wir fangen neu an.")
@@ -206,12 +270,12 @@ def verarbeiten(update: dict, telegram, verlauf: Verlauf, chat_id: int, system: 
     faden = threading.Thread(target=_tippen, daemon=True)
     faden.start()
     try:
-        antwort, ok = antwort_holen(text, verlauf.nachrichten(chat_id), system)
+        antwort, ok = antwort_holen(inhalt, verlauf.nachrichten(chat_id), system)
     finally:
         fertig.set()
         faden.join(timeout=1)
     if ok:                              # Fehlertexte kommen nicht in den Verlauf
-        verlauf.anhaengen(chat_id, text, antwort)
+        verlauf.anhaengen(chat_id, merken, antwort)
     telegram.senden(chat_id, antwort)
 
 
