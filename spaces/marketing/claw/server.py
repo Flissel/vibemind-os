@@ -142,6 +142,25 @@ HOST = os.environ.get("MARKETING_CLAW_MCP_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MARKETING_CLAW_MCP_PORT", "8130"))
 
 
+_LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
+def _transport_security():
+    """Loopback-Bindung: die mcp-Bibliothek schaltet dann den DNS-Rebinding-Schutz ein und laesst nur
+    localhost-Host-Header zu. Der openclaw-Container ruft aber ueber host.docker.internal - am 20.10.2026
+    bekam er "Invalid Host header". Schutz bleibt an, host.docker.internal kommt dazu. Bei offener
+    Bindung (MARKETING_CLAW_MCP_HOST=0.0.0.0) bleibt es bei der Vorgabe der Bibliothek (None)."""
+    if HOST not in _LOOPBACK:
+        return None
+    from mcp.server.transport_security import TransportSecuritySettings
+    hosts = ["127.0.0.1", "localhost", "[::1]", "host.docker.internal"]
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[f"{h}:*" for h in hosts],
+        allowed_origins=[f"http://{h}:*" for h in hosts],
+    )
+
+
 def main() -> None:
     _load_env_fallback()
     try:
@@ -152,7 +171,7 @@ def main() -> None:
         server.run(transport="streamable-http", host=HOST, port=PORT)
     except ImportError:
         from mcp.server.fastmcp import FastMCP
-        server = FastMCP("marketing-claw", host=HOST, port=PORT)
+        server = FastMCP("marketing-claw", host=HOST, port=PORT, transport_security=_transport_security())
         for fn in WERKZEUGE:
             server.tool()(fn)
         server.run(transport="streamable-http")
