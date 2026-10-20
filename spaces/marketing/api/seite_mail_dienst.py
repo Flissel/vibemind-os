@@ -39,7 +39,15 @@ Ebenen und Hintergrundbild) braucht kein Chromium. Aendert sich seite_mail, werd
 (scripts/seite_mail_neu.py) - sie entstehen bei Bedarf neu.
 
 Synchron (Chromium im Aufrufer-Thread, hoechstens einer gleichzeitig - seite_bilder sperrt): die Routen sind
-sync def und laufen damit im Threadpool von FastAPI, wie der PDF-Druck."""
+sync def und laufen damit im Threadpool von FastAPI, wie der PDF-Druck.
+
+Pruefung (Stufe 5, pruefung): Schoenheitspruefung einer Collage-Fassung vor dem Einreichen. Rendert einmal voll
+(mit Massen, seite_bilder.render_und_messen) und - nur wenn eine Textebene ohne eigene Unterlage die Pixel braucht -
+einmal ohne Text- und Knopfebenen (seite_schoenheit.seite_ohne_text), unter derselben Sperre wie die Erzeugung
+(_erzeug_sperre, Warten hoechstens ERZEUG_WARTEN_S) und mit den Zeitlimits von seite_bilder. Befunde:
+Anrede/Link im Bildbereich (wie Stufe 4, gemessen) zuerst, dann seite_schoenheit.pruefen. Das Ergebnis liegt je
+(Inhalt, Fassung) PRUEFUNG_MERKEN_S im Speicher (Fassungen sind unveraenderlich). Technischer Fehler (Chromium weg,
+Zeitlimit, Ablage fehlt, Sperre belegt) -> 503 (nie gemerkt); ein fehlendes Bild oder eine ungueltige Seite -> 422."""
 from __future__ import annotations
 
 import html as _html
@@ -56,7 +64,8 @@ from fastapi import HTTPException
 from spaces.marketing.api.bilder import _ordner
 from spaces.marketing.api.chat import _ablegen_und_zuordnen
 from spaces.marketing.api.pult import COLLAGE_IST_NICHT, _lesen_einer, _medien_datei, _schreiben, lit
-from spaces.marketing.claw import bloecke_mjml, seite, seite_bilder, seite_mail
+from spaces.marketing.claw import bloecke_mjml, seite, seite_bilder, seite_mail, seite_schoenheit
+from spaces.marketing.claw.schoenheit import befund
 
 log = logging.getLogger(__name__)
 
@@ -73,10 +82,14 @@ BILD_MARKE = "https://bildbasis.vibemind.invalid/"
 # Platz des Pflicht-Fusses im gespeicherten MJML (Nutzertext wird escaped und kann die Marke nie bilden)
 FUSS_MARKE = "<!--vibemind:pflichtfuss-->"
 FEHLER_MERKEN_S = 600
+PRUEFUNG_MERKEN_S = 600
+PRUEFUNG_FAKTOR = 1            # Rendering ohne Text: nur fuer den Median der Unterlage, 1 Pixel je Einheit reicht
 _MS_NAME = re.compile(r"ms-[0-9a-f]{8}-[0-9]{1,6}-[0-9]{2,3}(?:-[0-9]{1,3})?\.jpg")
 _fehler: dict[tuple[str, int], tuple[float, str]] = {}
 _fehler_sperre = threading.Lock()
 _erzeug_sperre = threading.Lock()   # hoechstens eine Erzeugung gleichzeitig (mit Neu-Lesen nach dem Warten)
+_pruefungen: dict[tuple[str, int], tuple[float, list[dict]]] = {}
+_pruefungen_sperre = threading.Lock()
 
 
 def _fehler_gemerkt(i: str, fassung: int) -> str | None:
@@ -356,3 +369,104 @@ def _waisen_aufraeumen(ordner: str, jetzt: float) -> list[str]:
         _wegraeumen(ordner, frei)
         weg += frei
     return weg
+
+
+# --- Schoenheitspruefung (Stufe 5) -----------------------------------------------------------------------------
+
+
+def _pruefung_gemerkt(i: str, fassung: int) -> list[dict] | None:
+    with _pruefungen_sperre:
+        eintrag = _pruefungen.get((i, int(fassung)))
+        if eintrag and time.monotonic() - eintrag[0] < PRUEFUNG_MERKEN_S:
+            return [dict(b) for b in eintrag[1]]
+        _pruefungen.pop((i, int(fassung)), None)
+        return None
+
+
+def _pruefung_merken(i: str, fassung: int, befunde: list[dict]) -> None:
+    with _pruefungen_sperre:
+        jetzt = time.monotonic()
+        for k in [k for k, (t, _) in _pruefungen.items() if jetzt - t >= PRUEFUNG_MERKEN_S]:
+            del _pruefungen[k]
+        _pruefungen[(i, int(fassung))] = (jetzt, [dict(b) for b in befunde])
+
+
+def _pruef_render(aufruf):
+    """aufruf() (Chromium) ausfuehren: fehlendes Bild -> 422 mit Grund, Zeitlimit und jeder andere Fehler -> 503."""
+    try:
+        return aufruf()
+    except seite_bilder.StueckFehler as e:
+        if str(e) == seite_bilder.ZEITLIMIT:
+            raise HTTPException(503, str(e))
+        raise HTTPException(422, str(e))
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001 - Chromium/Playwright fehlt oder bricht ab: nie den Rohtext nach aussen
+        log.warning("Pruefbild der Collage nicht gerendert", exc_info=True)
+        raise HTTPException(503, NICHT_GERENDERT)
+
+
+def _braucht_pixel(s: dict) -> bool:
+    """Gibt es eine Textebene ohne eigene Unterlage? Nur dann misst kontraste Pixel (Rendering ohne Text)."""
+    return any(e.get("art") == "text" and e.get("hintergrund") is None for e in s.get("ebenen") or [])
+
+
+def _befunde(s: dict) -> list[dict]:
+    def medium(name: str) -> bytes | None:
+        return _medien_leser(_ordner())(name)   # Ablage erst beim ersten Medium (wie _neu)
+
+    masse: dict = {}
+    png_ohne_text = b""
+    if s.get("ebenen"):
+        _, masse = _pruef_render(lambda: seite_bilder.render_und_messen(s, medium))
+        if _braucht_pixel(s):
+            ohne = seite_schoenheit.seite_ohne_text(s)
+            png_ohne_text = _pruef_render(lambda: seite_bilder.render_und_messen(
+                ohne, medium, faktor=PRUEFUNG_FAKTOR)[0])
+    m = masse or None
+    befunde: list[dict] = []
+    anrede = seite_mail.anrede_in_bild(s, m)
+    if anrede:
+        befunde.append(befund("hart", anrede[0], ANREDE_IM_BILD))
+    links = seite_mail.links_in_bild(s, m)
+    if links:
+        befunde.append(befund("hart", links[0], LINK_IM_BILD))
+    return befunde + seite_schoenheit.pruefen(s, masse, png_ohne_text, PRUEFUNG_FAKTOR)
+
+
+def pruefung(i: str, fassung: int) -> list[dict]:
+    """Befunde {schwere, punkt, satz} der Collage-Fassung (inhalt, fassung), harte zuerst (Anrede/Link im Bild vor
+    den Kontrasten). 404 unbekannte Fassung, 422 keine Collage / Seite ungueltig / Bild fehlt, 503 technisch."""
+    gemerkt = _pruefung_gemerkt(i, fassung)
+    if gemerkt is not None:
+        return gemerkt
+    zeile = _lesen_einer(lambda:
+        f"SELECT format, seite FROM marketing.inhalt_fassungen WHERE inhalt = {lit(i)}::uuid "
+        f"AND fassung = {int(fassung)}")
+    if not zeile:
+        raise HTTPException(404, "Unbekannte Fassung")
+    if zeile.get("format") != "seite":
+        raise HTTPException(422, COLLAGE_IST_NICHT)
+    try:
+        s = seite.pruefen(zeile.get("seite"))
+    except seite.SeiteFehler as e:
+        raise HTTPException(422, str(e))
+    if not _erzeug_sperre.acquire(timeout=ERZEUG_WARTEN_S):
+        raise HTTPException(503, BESCHAEFTIGT)
+    try:
+        befunde = _befunde(s)
+    except seite.SeiteFehler as e:
+        raise HTTPException(422, str(e))
+    finally:
+        _erzeug_sperre.release()
+    _pruefung_merken(i, fassung, befunde)
+    return befunde
+
+
+def harte_ablehnung(befunde: list[dict]) -> str | None:
+    """Text der 422 beim Einreichen: der erste harte Satz, bei mehreren mit "(weitere: n)"; None ohne harte."""
+    harte = [b for b in befunde if b.get("schwere") == "hart"]
+    if not harte:
+        return None
+    rest = len(harte) - 1
+    return harte[0]["satz"] + (f" (weitere: {rest})" if rest else "")

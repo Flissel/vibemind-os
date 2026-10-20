@@ -13,11 +13,13 @@ import pytest  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _collage_fehler_vergessen():
-    """seite_mail_dienst merkt Inhaltsfehler je (Inhalt, Fassung) im Prozess - jeder Test beginnt ohne."""
+    """seite_mail_dienst merkt Inhaltsfehler und Pruefungen je (Inhalt, Fassung) im Prozess - jeder Test beginnt
+    ohne."""
     def leeren():
         dienst = sys.modules.get("spaces.marketing.api.seite_mail_dienst")
         if dienst is not None:
             dienst._fehler.clear()
+            dienst._pruefungen.clear()
     leeren()
     yield
     leeren()

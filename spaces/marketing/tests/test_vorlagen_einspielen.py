@@ -128,3 +128,14 @@ def test_ohne_wirklich_kein_update(ordner, monkeypatch, capsys):
     assert schreiber.sql == []
     aus = capsys.readouterr().out
     assert "newsletter: würde zurückgezogen" in aus
+
+
+def test_name_einer_collage_vorlage_wird_nicht_ueberschrieben(ordner, monkeypatch, capsys):
+    """082: unter dem Namen einer Collage-Vorlage scheiterte pult_vorlage_speichern roh an der Format-Regel -
+    jetzt ein deutscher Grund, nichts wird geschrieben, die alten Startvorlagen bleiben."""
+    db = FalscheDB({"alpha": {"bloecke": None, "status": "freigegeben", "format": "seite"}})
+    monkeypatch.setattr(_db, "query_one", db.one)
+    assert ve.main(wirklich=True) == 1
+    aus = capsys.readouterr().out
+    assert "alpha.json: UNGUELTIG - den Namen trägt schon eine Collage-Vorlage" in aus
+    assert not any("pult_vorlage_speichern" in s and "'alpha'" in s for s in db.sql)

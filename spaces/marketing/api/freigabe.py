@@ -65,10 +65,39 @@ def _collage_einreichen(i: str, von: str) -> dict:
     n = (neueste or {}).get("n")
     if n is None:
         raise HTTPException(422, "Ohne Fassung gibt es nichts einzureichen")
+    # Stufe 5: erst die Schoenheitspruefung (harte Befunde, Anrede/Link im Bild zuerst, blockieren mit einer 422).
+    # Ist sie technisch nicht moeglich (503), geht es weiter wie in Stufe 4 - die Mail-Erzeugung braucht Chromium
+    # ohnehin und meldet dann selbst 503; ein Inhalt wird nie wegen der Technik der Pruefung blockiert.
+    try:
+        befunde = seite_mail_dienst.pruefung(i, int(n))
+    except HTTPException as e:
+        if e.status_code != 503:
+            raise
+        log.warning("Pruefung vor dem Einreichen von %s nicht moeglich - weiter wie Stufe 4", i[:8])
+        befunde = []
+    grund = seite_mail_dienst.harte_ablehnung(befunde)
+    if grund:
+        raise HTTPException(422, grund)
     seite_mail_dienst.erzeugen(i, int(n))
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_seite_einreichen({lit(i)}::uuid, {int(n)}, {lit(von)}) AS fassung")
     return {"status": "eingereicht", "fassung": int(zeile["fassung"])}
+
+
+@router.get("/inhalte/{iid}/pruefung")
+def pruefung(iid: str, fassung: int | None = Query(None, ge=1), x_pult_key: str | None = Header(None)):
+    """Schoenheitspruefung einer Collage-Fassung (ohne fassung: die neueste). {befunde: [{schwere, punkt, satz}]};
+    422 keine Collage, 404 unbekannt, 503 technisch nicht moeglich. Ergebnis 10 Minuten gemerkt."""
+    _schluessel(x_pult_key)
+    i = _uuid_oder_404(iid)
+    n = fassung
+    if n is None:
+        neueste = _lesen_einer(lambda:
+            f"SELECT max(fassung) AS n FROM marketing.inhalt_fassungen WHERE inhalt = {lit(i)}::uuid")
+        n = (neueste or {}).get("n")
+        if n is None:
+            raise HTTPException(404, "Unbekannter Inhalt")
+    return {"befunde": seite_mail_dienst.pruefung(i, int(n))}
 
 
 @router.post("/inhalte/{iid}/zurueckziehen")

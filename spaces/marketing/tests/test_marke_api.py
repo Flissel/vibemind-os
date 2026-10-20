@@ -1382,3 +1382,14 @@ def test_vorschlag_direkt_nur_wenn_auch_der_vorschlag_direkt_ist(umg):
                json={"vorschlag": {"abschnitte": {"Ton": "warm"}, "direkt": True}, "antwort": "Hier",
                      "direkt": False})
     assert r.json() == {"vorschlag": VID, "direkt": False} and len(f.sql) == 1
+
+
+def test_vorschau_nimmt_nur_block_vorlage(umg):
+    """082: eine Collage-Vorlage namens studio hat keine bloecke - die Mustervorschau liest nur Block-Vorlagen und
+    sagt sonst VORLAGE_FEHLT (422), statt an bloecke=None zu scheitern."""
+    f, _, c = umg
+    f.antworten += [[{"vorschlag": VORSCHLAG, "mandant": "radhaus", "name": "R", "pflichtteil": {}}],
+                    [{"bloecke": None}]]
+    r = c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?mandant=radhaus", headers=H)
+    assert r.status_code == 422
+    assert "format = 'bloecke'" in f.sql[1]

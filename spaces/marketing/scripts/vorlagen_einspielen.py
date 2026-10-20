@@ -48,8 +48,13 @@ def main(wirklich: bool) -> int:
             fehler += 1
             continue
         gespeichert = _db.query_one(
-            f"SELECT bloecke, status FROM marketing.newsletter_vorlagen WHERE name = {_db._sql_literal(v['name'])}",
+            f"SELECT bloecke, status, format FROM marketing.newsletter_vorlagen WHERE name = {_db._sql_literal(v['name'])}",
             streng=True)
+        if gespeichert and gespeichert.get("format") == "seite":
+            # 082: unter dem Namen einer Collage-Vorlage scheiterte pult_vorlage_speichern roh an der Format-Regel
+            print(f"{datei.name}: UNGUELTIG - den Namen trägt schon eine Collage-Vorlage")
+            fehler += 1
+            continue
         if gespeichert and gespeichert.get("bloecke") == v["bloecke"]:
             print(f"{datei.name}: unveraendert (Fassung bleibt, Status {gespeichert.get('status')})")
             gueltig.append(v["name"])

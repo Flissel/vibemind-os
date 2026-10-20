@@ -55,7 +55,7 @@ from fastapi import APIRouter, Body, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response
 
 from spaces.marketing.claw import (bildplaetze, bloecke_mjml, markenprofil, pdf_druck, pult_render, schriften, seite,
-                                   seite_html, vorlagen_grafik, vorlagen_marke)
+                                   seite_html, seite_vorlagen, vorlagen_grafik, vorlagen_marke)
 from spaces.marketing.sync import _db
 
 router = APIRouter(prefix="/api/pult")
@@ -70,6 +70,13 @@ _NICHT_ERREICHBAR = "Marketing-Datenbank nicht erreichbar"
 _UNGUELTIGE_EINGABE = "Ungueltige Eingabe (unzulaessiges Zeichen)"
 COLLAGE_IST = "Das ist ein Collage-Newsletter"
 COLLAGE_IST_NICHT = "Das ist kein Collage-Newsletter"
+NUR_COLLAGEN = "Neue Newsletter entstehen als Collage – bitte eine Collage-Vorlage wählen"
+SEITEN_VORLAGE_NICHT_ANWENDBAR = ("Collage-Vorlagen lassen sich nicht auf einen Block-Newsletter anwenden – "
+                                  "bitte „Neu aus Vorlage“ nehmen")
+BLOCK_VORLAGE_OHNE_SEITE = "Block-Vorlagen haben keine Seitenansicht – bitte format=mail oder handy"
+VORLAGEN_NAME_BELEGT = ("Den Namen trägt schon eine Vorlage im anderen Format (Block oder Collage) – "
+                        "bitte einen anderen Namen wählen")
+_VORLAGEN_FORMAT_CHECKS = ("newsletter_vorlagen_format_check", "newsletter_vorlagen_fassungen_format_check")
 
 
 def _schluessel(x_pult_key: str | None) -> None:
@@ -123,7 +130,12 @@ def _db_grund(fehler: Exception) -> str | None:
     treffer = re.search(r"ERROR:\s*(.+)", str(fehler))
     if not treffer:
         return None
-    return treffer.group(1).strip().splitlines()[0][:300]
+    zeile = treffer.group(1).strip().splitlines()[0]
+    # Stufe 5: eine Block-Vorlage unter dem Namen einer Collage-Vorlage (oder umgekehrt) scheitert in der DB an
+    # der Format-Regel (082) - statt des rohen check_violation-Texts ein deutscher Grund
+    if any(c in zeile for c in _VORLAGEN_FORMAT_CHECKS):
+        return VORLAGEN_NAME_BELEGT
+    return zeile[:300]
 
 
 def _lesen(bauen: Callable[[], str]) -> list:
@@ -429,8 +441,9 @@ def _fehlende_bilder_ersetzen(bloecke: dict) -> tuple[dict, list[str]]:
 
 def _laden_lesen(m: str, webseite: bool = False) -> dict:
     """Name und Standard-Newsletter-Layout (Gestalt) des Ladens; {} wenn es keins gibt. webseite=True liest
-    dazu die Webseite aus dem Markenprofil (marken_spiegel.profil, 066) - nur die Collage braucht sie."""
-    spalte, spiegel = ((", s.profil->'werte'->>'webseite' AS webseite",
+    dazu die Webseite und die Kopfwerte (werte: Farben, Schriften) aus dem Markenprofil (marken_spiegel.profil,
+    066) - nur die Collage braucht sie."""
+    spalte, spiegel = ((", s.profil->'werte'->>'webseite' AS webseite, s.profil->'werte' AS werte",
                         "LEFT JOIN marketing.marken_spiegel s ON s.mandant = m.id ") if webseite else ("", ""))
     return _lesen_einer(lambda:
         f"SELECT m.name AS laden, l.name AS layout, l.gestalt{spalte} FROM marketing.mandanten m "
@@ -493,16 +506,72 @@ def inhalt_aus_vorlage(payload: dict = Body(...), x_pult_key: str | None = Heade
     if not isinstance(titel, str) or not titel.strip() or len(titel.strip()) > 200:
         raise HTTPException(422, "titel fehlt oder ist laenger als 200 Zeichen")
     m = _mandant(payload.get("mandant"))
+    # Format der Vorlage und "nur noch Collagen" (gibt es eine freigegebene Collage-Vorlage fuer die Firma?) in
+    # derselben Leseabfrage
     v = _lesen_einer(lambda:
-        "SELECT bloecke FROM marketing.newsletter_vorlagen "
+        "SELECT format, bloecke, seite, rollen, "
+        f"marketing.pult_hat_collage_vorlage({lit(m)}) AS nur_collagen FROM marketing.newsletter_vorlagen "
         f"WHERE name = {lit(vorlage)} AND status = 'freigegeben' AND (mandant = {lit(m)} OR fuer_alle)")
     if not v:
         raise HTTPException(422, f"Vorlage {vorlage} gibt es nicht oder sie ist nicht freigegeben")
+    if v.get("format") == "seite":
+        return _collage_aus_vorlage(vorlage, titel.strip(), m, v)
+    if v.get("nur_collagen") is True:
+        raise HTTPException(409, NUR_COLLAGEN)
     fertig, layout = _vorlage_fuellen(v["bloecke"], m, _laden_lesen(m))
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_inhalt_aus_vorlage({lit(vorlage)}, {lit(titel.strip())}, {lit(m)}, "
         f"{lit(json.dumps(fertig, ensure_ascii=False))}::jsonb, {lit(layout) if layout else 'NULL'}) AS id")
     return {"id": str(zeile["id"])}
+
+
+def _marke_fuer_vorlage(m: str, laden: dict, ordner: str) -> dict:
+    """Marke fuer seite_vorlagen.fuellen: Akzent, Schriftpaar und Webseite wie _marke_fuer_seite (Gestalt des
+    Standard-Layouts), Zweitfarbe/Grund/Text (und fehlende Akzent/Schriften) aus den Kopfwerten des Markenprofils,
+    Name = Name des Ladens. Logo und dunkles Logo aus der Gestalt als Mediendatei abgelegt wie bei den Block-
+    Vorlagen (vorlagen_marke.logo_ablegen) - ohne Ablage oder Logo: None (die Logo-Ebene entfaellt)."""
+    marke = _marke_fuer_seite(laden)
+    werte = laden.get("werte") if isinstance(laden.get("werte"), dict) else {}
+    for k in ("akzent", "zweitfarbe", "grund", "text", "schrift_anzeige", "schrift_text"):
+        if not marke.get(k) and isinstance(werte.get(k), str):
+            marke[k] = werte[k]
+    marke["name"] = str(laden.get("laden") or "").strip() or None
+    gestalt = laden.get("gestalt")
+    logo = vorlagen_marke.logo_ablegen(gestalt, m, ordner)
+    marke["logo"] = logo
+    marke["logo_dunkel"] = vorlagen_marke.logo_ablegen(gestalt, m, ordner, "logo_dunkel") if logo else None
+    return marke
+
+
+def _seiten_vorlage_fuellen(v: dict, m: str) -> tuple[dict, list[dict], list[str]]:
+    """Seiten-Vorlage (Zeile mit seite, rollen) mit der Marke der Firma m fuellen: (Seite, Bildauftraege,
+    Warnungen). Eine Seite, die danach nicht gueltig ist -> 422 mit Grund."""
+    marke = _marke_fuer_vorlage(m, _laden_lesen(m, webseite=True), _erzeugt_ordner())
+    rollen = v.get("rollen") if isinstance(v.get("rollen"), dict) else {}
+    try:
+        s, auftraege, warnungen = seite_vorlagen.fuellen(v.get("seite"), rollen, marke, marke.get("logo"))
+    except seite.SeiteFehler as e:
+        raise HTTPException(422, str(e))
+    return _seite_pflicht(s), auftraege, warnungen
+
+
+def _collage_aus_vorlage(vorlage: str, titel: str, m: str, v: dict) -> dict:
+    """Neuer Collage-Newsletter aus einer Seiten-Vorlage: fuellen (seite_vorlagen.fuellen), anlegen ueber
+    marketing.pult_collage_aus_vorlage (082, prueft Freigabe und Firma noch einmal unter Sperre), danach fuer
+    jede Motiv-Ebene ein Bildauftrag ueber die bestehende Bildkette (bilder._anlegen, modus neu). Ein Auftrag,
+    der nicht angelegt werden kann, macht den Newsletter nicht ungueltig - er steht in den Warnungen."""
+    from spaces.marketing.api import bilder      # im Rumpf: bilder importiert pult
+    s, auftraege, warnungen = _seiten_vorlage_fuellen(v, m)
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_collage_aus_vorlage({lit(vorlage)}, {lit(titel)}, {lit(m)}, "
+        f"{lit(json.dumps(s, ensure_ascii=False))}::jsonb, 'betreiber') AS id")
+    iid = str(zeile["id"])
+    for a in auftraege:
+        try:
+            bilder._anlegen(iid, {"platz": a["platz"], "modus": "neu", "hinweis": a.get("hinweis") or ""}, "system")
+        except HTTPException as e:
+            warnungen.append(f"Bild für '{a['platz']}' konnte nicht beauftragt werden: {e.detail}")
+    return {"id": iid, "warnungen": warnungen}
 
 
 def _basis_pflicht(wert) -> int:
@@ -547,10 +616,12 @@ def vorlage_anwenden(iid: str, payload: dict = Body(...), x_pult_key: str | None
         raise HTTPException(422, "Vorlagen lassen sich nur auf Newsletter-Entwürfe anwenden")
     m = _mandant(kopf.get("mandant"))
     v = _lesen_einer(lambda:
-        "SELECT bloecke FROM marketing.newsletter_vorlagen "
+        "SELECT format, bloecke FROM marketing.newsletter_vorlagen "
         f"WHERE name = {lit(vorlage)} AND status = 'freigegeben' AND (mandant = {lit(m)} OR fuer_alle)")
     if not v:
         raise HTTPException(422, f"Vorlage {vorlage} gibt es nicht oder sie ist nicht freigegeben")
+    if v.get("format") == "seite" or not isinstance(v.get("bloecke"), dict):
+        raise HTTPException(422, SEITEN_VORLAGE_NICHT_ANWENDBAR)
     fertig, _ = _vorlage_fuellen(v["bloecke"], m, _laden_lesen(m))
     return _bloecke_als_fassung(i, basis, kopf.get("felder"), fertig)
 
@@ -587,7 +658,7 @@ def vorlagen(mandant: str | None = None, status: str | None = None,
     wo = [f"(mandant = {lit(m)} OR fuer_alle)"] + (
         [f"status = {lit(s)}"] if s else ["status <> 'zurueckgezogen'"])
     zeilen = _lesen(lambda:
-        "SELECT name, beschreibung, status, fassung FROM marketing.newsletter_vorlagen "
+        "SELECT name, beschreibung, status, fassung, format FROM marketing.newsletter_vorlagen "
         f"WHERE {' AND '.join(wo)} ORDER BY name")
     return {"vorlagen": zeilen}
 
@@ -598,19 +669,44 @@ def vorlage_vorschau(name: str, format: str = "mail", bild_basis: str = "",
     _schluessel(x_pult_key)
     if not _VORLAGE.match(name):
         raise HTTPException(404, "Unbekannte Vorlage")
-    fmt = _auswahl(format, ("mail", "handy"), "format") or "mail"
+    fmt = _auswahl(format, ("mail", "handy", "seite"), "format") or "mail"
     basis = _bild_basis(bild_basis)
     m = _mandant(mandant)
     zeile = _lesen_einer(lambda:
-        "SELECT v.bloecke, v.beschreibung, m.pflichtteil "
+        "SELECT v.format, v.bloecke, v.seite, v.rollen, v.beschreibung, m.pflichtteil "
         "FROM marketing.newsletter_vorlagen v JOIN marketing.mandanten m ON m.id = "
         f"{lit(m)} WHERE v.name = {lit(name)} AND (v.mandant = {lit(m)} OR v.fuer_alle)")
     if not zeile:
         raise HTTPException(404, "Unbekannte Vorlage")
+    if zeile.get("format") == "seite":
+        # Collage-Vorlage: immer die gefuellte Seite als Seiten-HTML (eine Mail-Fassung gibt es erst nach dem
+        # Anlegen); Motive stehen als Platzhalter da, ihre Bilder entstehen erst beim Anlegen
+        s, _, _ = _seiten_vorlage_fuellen(zeile, m)
+        return _seite_antwort(s, zeile.get("beschreibung") or "", zeile.get("pflichtteil"), "seite", basis)
+    if fmt == "seite" or not isinstance(zeile.get("bloecke"), dict):
+        raise HTTPException(422, BLOCK_VORLAGE_OHNE_SEITE)
     # Vorschau fuer den anfragenden Laden: dieselbe Fuellung wie "Neu aus Vorlage" (keine
     # Musterfarben, keine Muster-Grafiknamen, nicht Logo und Wortmarke zugleich)
     fertig, _ = _vorlage_fuellen(zeile["bloecke"], m, _laden_lesen(m))
     return _bloecke_html(fertig, zeile.get("beschreibung") or "", "", zeile.get("pflichtteil"), fmt, basis)
+
+
+@router.post("/vorlagen/{name}/entscheiden")
+def vorlage_entscheiden(name: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    """Vorlage freigeben oder zurueckziehen (Betreiber in sales). Die Uebergaenge setzt
+    marketing.pult_vorlage_entscheiden (082) durch; Ablehnung 422 mit ihrem Grund."""
+    _schluessel(x_pult_key)
+    if not _VORLAGE.match(name):
+        raise HTTPException(404, "Unbekannte Vorlage")
+    urteil = payload.get("urteil")
+    if urteil not in ("freigeben", "zurueckziehen"):
+        raise HTTPException(422, "urteil muss freigeben oder zurueckziehen sein")
+    von = payload.get("von")
+    if not isinstance(von, str) or not von.strip():
+        raise HTTPException(422, "Ohne Namen keine Entscheidung")
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_vorlage_entscheiden({lit(name)}, {lit(urteil)}, {lit(von.strip())}) AS status")
+    return {"name": name, "status": str(zeile["status"])}
 
 
 @router.post("/inhalte/{iid}/bloecke")

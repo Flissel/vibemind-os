@@ -461,9 +461,10 @@ def marke_vorschau(vid: str, mandant: str | None = None, format: str = "mail", b
         raise HTTPException(404, "Unbekannter Vorschlag")
     m, vorschlag = z["mandant"], z.get("vorschlag") if isinstance(z.get("vorschlag"), dict) else {}
     vorlage = _lesen_einer(lambda:
-        "SELECT bloecke FROM marketing.newsletter_vorlagen "
-        f"WHERE name = {lit(MUSTER_VORLAGE)} AND status = 'freigegeben' AND (mandant = {lit(m)} OR fuer_alle)")
-    if not vorlage:
+        "SELECT bloecke FROM marketing.newsletter_vorlagen "   # nur Block-Vorlagen (082: Seiten-Vorlagen ohne bloecke)
+        f"WHERE name = {lit(MUSTER_VORLAGE)} AND status = 'freigegeben' AND format = 'bloecke' "
+        f"AND (mandant = {lit(m)} OR fuer_alle)")
+    if not vorlage or not isinstance(vorlage.get("bloecke"), dict):
         raise HTTPException(422, VORLAGE_FEHLT)
     gestalt: dict = {"akzent": vorschlag.get("akzent"), "flaeche": vorschlag.get("zweitfarbe")}
     anzeige, text = vorschlag.get("schrift_anzeige"), vorschlag.get("schrift_text")

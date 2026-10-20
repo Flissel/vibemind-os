@@ -504,3 +504,80 @@ def test_aufraeumen_waisen_db_fehler_loescht_nichts(umg):
     with pytest.raises(HTTPException):
         dienst.aufraeumen()
     assert os.listdir(erzeugt) == ["ms-11111111-1-01.jpg"]
+
+
+
+# --- Schoenheitspruefung (Stufe 5) ---
+
+
+def _pruef_umg(monkeypatch, farbe=(250, 250, 250)):
+    aufrufe = []
+
+    def render(s, medien_lesen, faktor=2, **_):
+        aufrufe.append((s, faktor))
+        p = io.BytesIO()
+        Image.new("RGB", (600 * faktor, int(s["hoehe"]) * faktor), farbe).save(p, "PNG")
+        return p.getvalue(), {e["id"]: (60.0, 550.0, 540.0, 650.0) for e in s["ebenen"] if e["id"] == "t"}
+    monkeypatch.setattr(seite_bilder, "render_und_messen", render)
+    return aufrufe
+
+
+def test_pruefung_rendert_voll_und_ohne_text_unter_der_sperre(umg, monkeypatch):
+    f = umg[0]
+    aufrufe = _pruef_umg(monkeypatch, farbe=(30, 30, 30))
+    gesperrt = []
+    echt = seite_bilder.render_und_messen
+
+    def beobachten(s, medien_lesen, **k):
+        gesperrt.append(dienst._erzeug_sperre.locked())
+        return echt(s, medien_lesen, **k)
+    monkeypatch.setattr(seite_bilder, "render_und_messen", beobachten)
+    f.antworten.append([{"format": "seite", "seite": SEITE}])
+    befunde = dienst.pruefung(IID, 2)
+    assert gesperrt == [True, True]
+    assert [e["id"] for e in aufrufe[0][0]["ebenen"]] == ["b", "t"]
+    assert [e["id"] for e in aufrufe[1][0]["ebenen"]] == ["b"] and aufrufe[1][1] == dienst.PRUEFUNG_FAKTOR
+    harte = [b for b in befunde if b["schwere"] == "hart"]
+    assert harte and harte[0]["punkt"] == "t" and "Kontrast" in harte[0]["satz"]
+    assert befunde.index(harte[0]) == 0                       # harte zuerst
+    assert "fassung = 2" in f.sql[0] and "pult_seite_mail" not in f.sql[0]
+
+
+def test_pruefung_anrede_im_bild_vor_kontrast(umg, monkeypatch):
+    f = umg[0]
+    _pruef_umg(monkeypatch, farbe=(30, 30, 30))
+    s = seite([bild(), text(y=200)])
+    f.antworten.append([{"format": "seite", "seite": s}])
+    befunde = dienst.pruefung(IID, 2)
+    assert befunde[0] == {"schwere": "hart", "punkt": "t", "satz": ANREDE}
+    assert dienst.harte_ablehnung(befunde) == ANREDE + " (weitere: 1)"
+
+
+def test_pruefung_merkt_10_minuten(umg, monkeypatch):
+    f = umg[0]
+    aufrufe = _pruef_umg(monkeypatch)
+    uhr = [1000.0]
+    monkeypatch.setattr(dienst.time, "monotonic", lambda: uhr[0])
+    f.antworten += [[{"format": "seite", "seite": SEITE}], [{"format": "seite", "seite": SEITE}]]
+    erst = dienst.pruefung(IID, 2)
+    uhr[0] += dienst.PRUEFUNG_MERKEN_S - 1
+    assert dienst.pruefung(IID, 2) == erst and len(aufrufe) == 2 and len(f.sql) == 1
+    uhr[0] += 2                                                  # abgelaufen: neu pruefen
+    assert dienst.pruefung(IID, 2) == erst and len(aufrufe) == 4 and len(f.sql) == 2
+
+
+def test_pruefung_leere_seite_ohne_chromium(umg, monkeypatch):
+    f = umg[0]
+    aufrufe = _pruef_umg(monkeypatch)
+    f.antworten.append([{"format": "seite", "seite": seite([])}])
+    befunde = dienst.pruefung(IID, 2)
+    assert aufrufe == [] and [b["satz"] for b in befunde] == [
+        "seite: kein Knopf – die Leserin weiß nicht, was sie tun soll"]
+
+
+def test_harte_ablehnung():
+    weich = {"schwere": "weich", "punkt": "seite", "satz": "w"}
+    assert dienst.harte_ablehnung([]) is None and dienst.harte_ablehnung([weich]) is None
+    h = [{"schwere": "hart", "punkt": "a", "satz": "a: x"}, weich, {"schwere": "hart", "punkt": "b", "satz": "b"}]
+    assert dienst.harte_ablehnung(h) == "a: x (weitere: 1)"
+    assert dienst.harte_ablehnung(h[:1]) == "a: x"
