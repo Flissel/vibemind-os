@@ -77,6 +77,7 @@ PULT_ROUTEN = [
     ("post", "/api/pult/marke/chat"),
     ("post", f"/api/pult/marke/vorschlaege/{VID}/uebernehmen"),
     ("post", f"/api/pult/marke/vorschlaege/{VID}/verwerfen"),
+    ("post", f"/api/pult/marke/vorschlaege/{VID}/rueckgaengig"),
     ("get", f"/api/pult/marke/vorschlaege/{VID}/vorschau"),
     ("post", f"/api/pult/inhalte/{IID}/marke_hinweis_aus"),
 ]
@@ -85,6 +86,7 @@ ARBEITER_ROUTEN = [
     ("post", f"/api/marke/arbeiter/{AID}/weiter"),
     ("post", f"/api/marke/arbeiter/{AID}/vorschlag"),
     ("post", f"/api/marke/arbeiter/{AID}/denken"),
+    ("post", f"/api/marke/arbeiter/{AID}/quellen"),
     ("post", f"/api/marke/arbeiter/{AID}/fertig"),
     ("post", f"/api/marke/arbeiter/{AID}/zurueck"),
     ("get", f"/api/marke/arbeiter/{AID}/medien/foto.jpg"),
@@ -384,7 +386,8 @@ def test_vorschlag_ablegen(umg):
     f.antworten.append([{"id": VID}])
     r = c.post(f"/api/marke/arbeiter/{AID}/vorschlag", headers=HB,
                json={"vorschlag": VORSCHLAG, "antwort": "Hier", "hinweise": ["Webseite x nicht lesbar: y"]})
-    assert r.status_code == 200 and r.json() == {"vorschlag": VID}
+    assert r.status_code == 200 and r.json() == {"vorschlag": VID, "direkt": False}
+    assert len(f.sql) == 1
     assert f"pult_marke_vorschlag('{AID}'::uuid" in f.sql[0] and "Betreff Muster" in f.sql[0] and "Hier" in f.sql[0]
     n = len(f.sql)
     for body in ({"antwort": "a"}, {"vorschlag": [], "antwort": "a"}, {"vorschlag": {}, "antwort": 1},
@@ -826,7 +829,7 @@ def test_marke_stand_liefert_spur_und_laufend(umg):
     assert j["auftraege"][0]["schritte"][0]["text"] == "Webseite gelesen (3 Seiten)"
     assert j["letzte_uebernahme"]["schritte"][0]["text"] == "Rowboat geschrieben"
     assert j["laufend"] == {"art": "chat", "denken": "Let me", "schritte": [SCHRITT]}
-    assert "coalesce(denken, '')" in f.sql[2] and "coalesce(schritte" in f.sql[2]
+    assert "coalesce(a.denken, '')" in f.sql[2] and "coalesce(a.schritte" in f.sql[2]
     assert "coalesce(schritte" in f.sql[6]
     assert "status = 'in_arbeit'" in f.sql[7] and "ORDER BY geaendert_am DESC LIMIT 1" in f.sql[7]
 
@@ -1097,3 +1100,173 @@ def test_aussehen_ohne_eingerichteten_schmalen_schluessel(umg, monkeypatch):
     f, _, c = umg
     monkeypatch.delenv("MARKETING_AUSSEHEN_KEY", raising=False)
     assert c.get("/api/pult/marke/aussehen?mandant=radhaus", headers={"X-Aussehen-Key": ""}).status_code == 401
+
+
+# ─── Quellen, direkte Uebernahme, Rueckgaengig, erweiterter Stand (Task 3) ──
+
+QUELLE = {"titel": "Radhaus", "url": "https://radhaus.example/ueber-uns", "art": "gelesen"}
+
+
+def test_quellen_route_speichert(umg):
+    f, _, c = umg
+    f.antworten.append([{"ok": True}])
+    liste = [QUELLE, {"titel": "Suche", "url": "http://x.example/a?b=1", "art": "websuche"}]
+    r = c.post(f"/api/marke/arbeiter/{AID}/quellen", headers=HB, json={"quellen": liste})
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert f"pult_marke_quellen('{AID}'::uuid" in f.sql[0] and "radhaus.example" in f.sql[0]
+    f.antworten.append([{"ok": False}])
+    r = c.post(f"/api/marke/arbeiter/{AID}/quellen", headers=HB, json={"quellen": []})
+    assert r.json() == {"ok": False}
+
+
+@pytest.mark.parametrize("quellen", [
+    [{**QUELLE, "url": "javascript:alert(1)"}],
+    [{**QUELLE, "url": "ftp://x.example/a"}],
+    [QUELLE] * 13,
+    [{"url": QUELLE["url"], "art": "gelesen"}],
+    [{**QUELLE, "titel": "   "}],
+    [{**QUELLE, "titel": ""}],
+    [{**QUELLE, "titel": "t" * 121}],
+    [{**QUELLE, "url": "https://x.example/" + "a" * 500}],
+    [{**QUELLE, "art": "geraten"}],
+    [{**QUELLE, "extra": "x"}],
+    [{**QUELLE, "titel": 5}],
+    ["https://x.example"],
+    {"titel": "x"},
+    "keine liste",
+    None,
+])
+def test_quellen_route_lehnt_ab(umg, quellen):
+    f, _, c = umg
+    r = c.post(f"/api/marke/arbeiter/{AID}/quellen", headers=HB, json={"quellen": quellen})
+    assert r.status_code == 422, quellen
+    assert f.sql == []
+
+
+def test_quellen_grenzen_wie_sql():
+    from spaces.marketing.api.marke import quellen_pruefen
+    assert quellen_pruefen([QUELLE] * 12) == [QUELLE] * 12
+    assert quellen_pruefen([{**QUELLE, "titel": "t" * 120}])[0]["titel"] == "t" * 120
+    assert quellen_pruefen([{**QUELLE, "url": "https://" + "a" * 492}])      # genau 500 Zeichen
+    assert quellen_pruefen([]) == []
+
+
+def test_vorschlag_direkt_nimmt_sofort_an(umg):
+    f, _, c = umg
+    f.antworten += [[{"id": VID}], [{"mandant": "radhaus"}], [{"id": AID}]]
+    r = c.post(f"/api/marke/arbeiter/{AID}/vorschlag", headers=HB,
+               json={"vorschlag": {"abschnitte": {"Ton": "warm"}, "direkt": True}, "antwort": "Hier", "direkt": True})
+    assert r.status_code == 200 and r.json() == {"vorschlag": VID, "direkt": True}
+    assert "pult_marke_vorschlag" in f.sql[0]
+    assert f"pult_marke_uebernehmen('{VID}'::uuid, 'Agent (direkt)', 'radhaus')" in f.sql[2]
+
+
+def test_vorschlag_direkt_scheitert_bleibt_offen(umg):
+    f, _, c = umg
+    f.antworten += [[{"id": VID}], [{"mandant": "radhaus"}]]
+    f.fehler += [None, None, _db_fehler("Inzwischen gibt es ein neueres Profil – bitte neu laden")]
+    r = c.post(f"/api/marke/arbeiter/{AID}/vorschlag", headers=HB,
+               json={"vorschlag": {"abschnitte": {"Ton": "warm"}}, "antwort": "Hier", "direkt": True})
+    assert r.status_code == 200 and r.json() == {"vorschlag": VID, "direkt": False}
+    assert "pult_marke_uebernehmen" in f.sql[2]
+
+
+def test_vorschlag_direkt_muss_bool_sein(umg):
+    f, _, c = umg
+    r = c.post(f"/api/marke/arbeiter/{AID}/vorschlag", headers=HB,
+               json={"vorschlag": {}, "antwort": "a", "direkt": "ja"})
+    assert r.status_code == 422 and f.sql == []
+
+
+def test_rueckgaengig_route(umg):
+    f, _, c = umg
+    f.antworten.append([{"id": AID}])
+    r = c.post(f"/api/pult/marke/vorschlaege/{VID}/rueckgaengig", headers=H, json={"von": "Anna", "mandant": "radhaus"})
+    assert r.status_code == 200 and r.json() == {"auftrag": AID}
+    assert f"pult_marke_rueckgaengig('{VID}'::uuid, 'Anna', 'radhaus')" in f.sql[0]
+    for text in ("Inzwischen gibt es eine neuere Änderung – Rückgängig geht nur für die letzte.",
+                 "Der Assistent arbeitet gerade", "Vorschlag zu groß"):
+        f.fehler += [_db_fehler(text)]
+        r = c.post(f"/api/pult/marke/vorschlaege/{VID}/rueckgaengig", headers=H,
+                   json={"von": "Anna", "mandant": "radhaus"})
+        assert r.status_code == 422 and r.json()["detail"] == text
+    f.fehler += [RuntimeError("db weg")]
+    assert c.post(f"/api/pult/marke/vorschlaege/{VID}/rueckgaengig", headers=H,
+                  json={"von": "Anna", "mandant": "radhaus"}).status_code == 503
+    n = len(f.sql)
+    assert c.post("/api/pult/marke/vorschlaege/kaputt/rueckgaengig", headers=H,
+                  json={"von": "A", "mandant": "radhaus"}).status_code == 404
+    assert c.post(f"/api/pult/marke/vorschlaege/{VID}/rueckgaengig", headers=H,
+                  json={"mandant": "radhaus"}).status_code == 422
+    assert len(f.sql) == n
+
+
+V1, V2 = "44444444-4444-4444-4444-444444444444", "55555555-5555-5555-5555-555555555555"
+KOPF = [{"name": "Radhaus", "stand": "s", "gespiegelt_am": None, "fehler": None, "gestalt": {}}]
+AEND = [{"feld": "Ton", "vorher": "", "nachher": "warm"}]
+
+
+def _runde(aid, vid, **mehr):
+    return {"id": aid, "nachricht": "n", "antwort": "a", "status": "fertig", "hinweise": [], "vorschlag": vid,
+            "erstellt_am": "x", "sortiert_am": "y", "quellen": [QUELLE], "art": "chat", "vid": vid,
+            "v_status": "angenommen", "v_direkt": True, "v_aenderungen": AEND, **mehr}
+
+
+def _stand(f, c, runden, jung, gesamt=2):
+    # Reihenfolge: aufraeumen, kopf, runden, offen, v, ang, letzte, laufend, wissen, gesamt, juengste
+    f.antworten += [[{"ok": True}], KOPF, runden, [], [], [], [], [], [], [{"n": gesamt}], jung]
+    return c.get("/api/pult/marke?mandant=radhaus", headers=H).json()
+
+
+def test_stand_rueckgaengig_nur_juengster(umg):
+    f, _, c = umg
+    runden = [_runde(AID, V1), _runde("66666666-6666-6666-6666-666666666666", V2)]
+    j = _stand(f, c, runden, [{"id": V2, "erstellt_am": "2026-10-20 10:05:00+00"},
+                              {"id": V1, "erstellt_am": "2026-10-20 10:00:00+00"}])
+    a1, a2 = j["auftraege"]
+    assert a1["aenderung"]["rueckgaengig_moeglich"] is False and a2["aenderung"]["rueckgaengig_moeglich"] is True
+    assert a2["aenderung"] == {"vid": V2, "status": "angenommen", "direkt": True, "aenderungen": AEND,
+                               "rueckgaengig_moeglich": True}
+    assert "status = 'angenommen'" in f.sql[10] and "ORDER BY erstellt_am DESC" in f.sql[10]
+    assert "entschieden_am" not in f.sql[10]
+
+
+def test_stand_rueckgaengig_gleichstand_keiner(umg):
+    f, _, c = umg
+    runden = [_runde(AID, V1), _runde("66666666-6666-6666-6666-666666666666", V2)]
+    j = _stand(f, c, runden, [{"id": V2, "erstellt_am": "t"}, {"id": V1, "erstellt_am": "t"}])
+    assert [a["aenderung"]["rueckgaengig_moeglich"] for a in j["auftraege"]] == [False, False]
+
+
+def test_stand_rueckgaengig_nur_direkt_und_angenommen(umg):
+    f, _, c = umg
+    j = _stand(f, c, [_runde(AID, V2, v_direkt=False)], [{"id": V2, "erstellt_am": "t"}])
+    assert j["auftraege"][0]["aenderung"]["rueckgaengig_moeglich"] is False
+    f.antworten.clear()
+    j = _stand(f, c, [_runde(AID, V2, v_direkt=None, v_status="offen")], [{"id": V2, "erstellt_am": "t"}])
+    assert j["auftraege"][0]["aenderung"]["direkt"] is False
+    assert j["auftraege"][0]["aenderung"]["rueckgaengig_moeglich"] is False
+
+
+def test_stand_runde_hat_quellen_und_art(umg):
+    f, _, c = umg
+    roh = {"id": AID, "nachricht": "n", "antwort": "a", "status": "fertig", "hinweise": [], "vorschlag": None,
+           "erstellt_am": "x", "sortiert_am": "y", "quellen": None, "art": "bearbeitung", "vid": None,
+           "v_status": None, "v_direkt": None, "v_aenderungen": None}
+    j = _stand(f, c, [_runde(AID, V1), roh], [{"id": V1, "erstellt_am": "t"}])
+    a1, a2 = j["auftraege"]
+    assert a1["quellen"] == [QUELLE] and a1["art"] == "chat"
+    assert a2["quellen"] == [] and a2["art"] == "bearbeitung" and a2["aenderung"] is None
+    for k in ("vid", "v_status", "v_direkt", "v_aenderungen", "sortiert_am"):
+        assert k not in a1 and k not in a2
+    assert "LEFT JOIN marketing.marken_vorschlaege v ON v.id = a.vorschlag" in f.sql[2]
+
+
+def test_stand_alle_hebt_grenze(umg):
+    f, _, c = umg
+    j = _stand(f, c, [], [], gesamt=37)
+    assert "LIMIT 10)" in f.sql[2] and "LIMIT 100" not in f.sql[2] and j["runden_gesamt"] == 37
+    assert "count(*)" in f.sql[9] and "art IN ('chat', 'bearbeitung')" in f.sql[9]
+    f.antworten += [[{"ok": True}], KOPF, [], [], [], [], [], [], [], [{"n": 37}], []]
+    c.get("/api/pult/marke?mandant=radhaus&alle=1", headers=H)
+    assert "LIMIT 100)" in f.sql[13]

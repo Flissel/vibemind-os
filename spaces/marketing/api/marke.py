@@ -55,6 +55,11 @@ MUSTER_VORLAGE = "studio"
 # Textplaetze der Vorlage studio (Ueberschrift und Absatz des Heldenblocks)
 _MUSTER_BLOECKE = {"ueberschrift": "held_titel", "absatz": "held_text"}
 VORLAGE_FEHLT = "Die Vorlage studio ist nicht verfügbar"
+RUNDEN_STANDARD, RUNDEN_ALLE = 10, 100
+QUELLEN_MAX, QUELLE_TITEL_MAX, QUELLE_URL_MAX = 12, 120, 500
+QUELLEN_ARTEN = ("gelesen", "websuche")
+DIREKT_VON = "Agent (direkt)"
+_QUELLE_URL = re.compile(r"https?://")
 
 
 def _vorschlag_id(wert: str) -> str:
@@ -94,6 +99,50 @@ def _von(payload: dict) -> str:
     if not isinstance(von, str) or not von.strip() or len(von) > 200:
         raise HTTPException(422, "von fehlt")
     return von.strip()
+
+
+def quellen_pruefen(roh: object) -> list[dict]:
+    """Quellen einer Chat-Runde; dieselben Grenzen wie marketing._marke_quellen_pruefen (078): Liste mit
+    hoechstens 12 Eintraegen, je genau {titel, url, art}; titel Text mit Inhalt <= 120, url <= 500 und
+    http(s)://, art gelesen|websuche. Sonst 422 (nichts erreicht die DB)."""
+    if not isinstance(roh, list) or len(roh) > QUELLEN_MAX:
+        raise HTTPException(422, f"quellen muss eine Liste mit höchstens {QUELLEN_MAX} Einträgen sein")
+    for q in roh:
+        if not isinstance(q, dict) or set(q) != {"titel", "url", "art"}:
+            raise HTTPException(422, "Jede Quelle hat genau titel, url und art")
+        titel, url, art = q["titel"], q["url"], q["art"]
+        if not isinstance(titel, str) or not titel.strip() or len(titel) > QUELLE_TITEL_MAX:
+            raise HTTPException(422, f"titel muss Text mit höchstens {QUELLE_TITEL_MAX} Zeichen sein")
+        if not isinstance(url, str) or len(url) > QUELLE_URL_MAX or not _QUELLE_URL.match(url):
+            raise HTTPException(422, f"url muss mit http:// oder https:// beginnen ({QUELLE_URL_MAX} Zeichen)")
+        if not isinstance(art, str) or art not in QUELLEN_ARTEN:
+            raise HTTPException(422, "art ist gelesen oder websuche")
+    return roh
+
+
+def _aenderung(z: dict, juengster: str | None) -> dict | None:
+    """Aenderungskarte einer Runde aus dem Join auf marken_vorschlaege (E9); None ohne Vorschlag."""
+    vid = z.pop("vid", None)
+    status, direkt, liste = z.pop("v_status", None), z.pop("v_direkt", None), z.pop("v_aenderungen", None)
+    if not vid:
+        return None
+    vid = str(vid)
+    return {"vid": vid, "status": status, "direkt": direkt is True,
+            "aenderungen": liste if isinstance(liste, list) else [],
+            "rueckgaengig_moeglich": bool(direkt is True and status == "angenommen" and vid == juengster)}
+
+
+def _juengster_angenommener(m: str) -> str | None:
+    """Wie 078 (E7.2): der angenommene Vorschlag der Firma mit dem juengsten erstellt_am; teilen sich zwei
+    das Maximum, ist keiner der juengste (Rueckgaengig waere dort fail-closed abgewiesen)."""
+    zeilen = _lesen(lambda:
+        "SELECT id, erstellt_am::text AS erstellt_am FROM marketing.marken_vorschlaege "
+        f"WHERE mandant = {lit(m)} AND status = 'angenommen' ORDER BY erstellt_am DESC LIMIT 2")
+    if not zeilen or not isinstance(zeilen[0], dict):
+        return None
+    if len(zeilen) > 1 and isinstance(zeilen[1], dict) and zeilen[1].get("erstellt_am") == zeilen[0].get("erstellt_am"):
+        return None
+    return str(zeilen[0]["id"])
 
 
 # ─── Pult ───────────────────────────────────────────────────────────────
@@ -150,7 +199,7 @@ def marke_aussehen(mandant: str | None = None, x_pult_key: str | None = Header(N
 
 
 @pult_router.get("/marke")
-def marke_stand(mandant: str | None = None, x_pult_key: str | None = Header(None)):
+def marke_stand(mandant: str | None = None, alle: bool = False, x_pult_key: str | None = Header(None)):
     _schluessel(x_pult_key)
     m = _mandant_pflicht(mandant)
     _schreiben(lambda: f"SELECT marketing._marke_aufraeumen({lit(m)}) IS NULL AS ok")
@@ -163,13 +212,17 @@ def marke_stand(mandant: str | None = None, x_pult_key: str | None = Header(None
     if not kopf:
         raise HTTPException(404, "Unbekannter Mandant")
     gestalt = kopf.get("gestalt") if isinstance(kopf.get("gestalt"), dict) else {}
+    grenze = RUNDEN_ALLE if alle else RUNDEN_STANDARD
     auftraege = _lesen(lambda:
-        "SELECT * FROM (SELECT id, nachricht, antwort, status, hinweise, vorschlag, "
-        "coalesce(denken, '') AS denken, coalesce(schritte, '[]'::jsonb) AS schritte, "
-        "erstellt_am::text AS erstellt_am, erstellt_am AS sortiert_am FROM marketing.marken_auftraege "
-        f"WHERE mandant = {lit(m)} AND art IN ('chat', 'bearbeitung') ORDER BY erstellt_am DESC LIMIT 10) q ORDER BY sortiert_am")
-    for z in auftraege:
-        z.pop("sortiert_am", None)
+        "SELECT * FROM (SELECT a.id, a.nachricht, a.antwort, a.status, a.hinweise, a.vorschlag, "
+        "coalesce(a.denken, '') AS denken, coalesce(a.schritte, '[]'::jsonb) AS schritte, "
+        "coalesce(a.quellen, '[]'::jsonb) AS quellen, a.art, "
+        "v.id AS vid, v.status AS v_status, v.vorschlag->'direkt' AS v_direkt, "
+        "v.vorschlag->'aenderungen' AS v_aenderungen, "
+        "a.erstellt_am::text AS erstellt_am, a.erstellt_am AS sortiert_am FROM marketing.marken_auftraege a "
+        "LEFT JOIN marketing.marken_vorschlaege v ON v.id = a.vorschlag "
+        f"WHERE a.mandant = {lit(m)} AND a.art IN ('chat', 'bearbeitung') "
+        f"ORDER BY a.erstellt_am DESC LIMIT {grenze}) q ORDER BY sortiert_am")
     offen = _lesen(lambda:
         "SELECT art, erstellt_am::text AS erstellt_am FROM marketing.marken_auftraege "
         f"WHERE mandant = {lit(m)} AND status IN ('offen', 'in_arbeit') ORDER BY erstellt_am")
@@ -214,6 +267,15 @@ def marke_stand(mandant: str | None = None, x_pult_key: str | None = Header(None
     # Formular-Vorbefuellung (Ruling R8): das echte Profil der Marke.md, vom PC gemeldet; ohne Meldung der
     # zuletzt uebernommene Vorschlag wie bisher.
     profil = _profil_lesen(kopf.get("profil")) or aktuell
+    gesamt = _lesen_einer(lambda:
+        "SELECT count(*) AS n FROM marketing.marken_auftraege "
+        f"WHERE mandant = {lit(m)} AND art IN ('chat', 'bearbeitung')")
+    juengster = _juengster_angenommener(m)
+    for z in auftraege:
+        z.pop("sortiert_am", None)
+        if not isinstance(z.get("quellen"), list):
+            z["quellen"] = []
+        z["aenderung"] = _aenderung(z, juengster)
     return {"mandant": m, "name": kopf.get("name"),
             "spiegel": {"gestalt": {k: gestalt[k] for k in SPIEGEL_SCHLUESSEL if k in gestalt},
                         "stand": kopf.get("stand") or "", "gespiegelt_am": kopf.get("gespiegelt_am"),
@@ -226,6 +288,7 @@ def marke_stand(mandant: str | None = None, x_pult_key: str | None = Header(None
             "uebernahme_seit": seit if "uebernehmen" in arten else None, "aktuell": aktuell, "profil": profil,
             "letzte_uebernahme": letzte or None, "laufend": laufend or None, "wissen": wissen or None,
             "abschnitt_namen": list(ABSCHNITTE),
+            "runden_gesamt": int((gesamt or {}).get("n") or len(auftraege)),
             "faehigkeiten": {"kann": list(marken_prompt.FAEHIGKEITEN), "nicht": list(marken_prompt.GRENZEN)}}
 
 
@@ -297,6 +360,19 @@ def marke_verwerfen(vid: str, payload: dict = Body(...), x_pult_key: str | None 
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_marke_verwerfen({lit(v)}::uuid, {lit(von)}, {lit(m)}) AS status")
     return {"status": zeile["status"]}
+
+
+@pult_router.post("/marke/vorschlaege/{vid}/rueckgaengig")
+def marke_rueckgaengig(vid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    """Macht die juengste direkt uebernommene Aenderung rueckgaengig (078). Jede Ablehnung der DB (neuere
+    Aenderung, Assistent arbeitet, zu gross) ist 422 mit ihrer Meldung."""
+    _schluessel(x_pult_key)
+    v = _vorschlag_id(vid)
+    von = _von(payload)
+    m = _mandant_pflicht(payload.get("mandant"))
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_marke_rueckgaengig({lit(v)}::uuid, {lit(von)}, {lit(m)}) AS id")
+    return {"auftrag": str(zeile["id"])}
 
 
 @pult_router.post("/inhalte/{iid}/marke_hinweis_aus")
@@ -501,6 +577,18 @@ async def arbeiter_denken(aid: str, request: Request, x_bild_key: str | None = H
     return {"ok": True}
 
 
+@arbeiter_router.post("/{aid}/quellen")
+def arbeiter_quellen(aid: str, payload: dict = Body(...), x_bild_key: str | None = Header(None)):
+    """Quellen der laufenden Runde; {ok: false}, wenn der Auftrag nicht mehr in Arbeit ist (wie /denken)."""
+    _bild_schluessel(x_bild_key)
+    a = _auftrag_id(aid)
+    quellen_liste = quellen_pruefen(payload.get("quellen"))
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_marke_quellen({lit(a)}::uuid, "
+        f"{lit(json.dumps(quellen_liste, ensure_ascii=False))}::jsonb) AS ok")
+    return {"ok": bool(zeile.get("ok"))}
+
+
 @arbeiter_router.post("/{aid}/vorschlag")
 def arbeiter_vorschlag(aid: str, payload: dict = Body(...), x_bild_key: str | None = Header(None)):
     _bild_schluessel(x_bild_key)
@@ -509,11 +597,30 @@ def arbeiter_vorschlag(aid: str, payload: dict = Body(...), x_bild_key: str | No
     if not isinstance(vorschlag, dict):
         raise HTTPException(422, "vorschlag muss ein Objekt sein")
     antwort, hinweise = _antwort(payload), _hinweise(payload)
+    direkt = payload.get("direkt", False)
+    if not isinstance(direkt, bool):
+        raise HTTPException(422, "direkt muss wahr oder falsch sein")
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_marke_vorschlag({lit(a)}::uuid, "
         f"{lit(json.dumps(vorschlag, ensure_ascii=False))}::jsonb, {lit(antwort)}, "
         f"{lit(json.dumps(hinweise, ensure_ascii=False))}::jsonb) AS id")
-    return {"vorschlag": str(zeile["id"])}
+    vid = str(zeile["id"])
+    angenommen = False
+    if direkt:
+        # E6: sofort annehmen - Verlauf-Sicherung, Spiegel, Newsletter-Markierung und Wissens-Lauf laufen
+        # wie bei der Uebernahme per Hand. Scheitert das, bleibt der Vorschlag offen (Betreiber nimmt an).
+        try:
+            job = _lesen_einer(lambda:
+                f"SELECT mandant FROM marketing.marken_auftraege WHERE id = {lit(a)}::uuid")
+            if not job or not job.get("mandant"):
+                raise HTTPException(404, "Unbekannter Auftrag")
+            _schreiben(lambda:
+                f"SELECT marketing.pult_marke_uebernehmen({lit(vid)}::uuid, {lit(DIREKT_VON)}, "
+                f"{lit(str(job['mandant']))}) AS id")
+            angenommen = True
+        except HTTPException as e:
+            log.warning("Direkte Uebernahme von %s gescheitert: %s", vid, e.detail)
+    return {"vorschlag": vid, "direkt": angenommen}
 
 
 @arbeiter_router.post("/{aid}/fertig")
