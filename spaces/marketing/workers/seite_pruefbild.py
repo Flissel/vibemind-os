@@ -15,7 +15,7 @@ __all__ = ["PruefbildFehler", "kacheln", "bilder_fuer_modell", "browser_render",
 KACHEL_HOEHE = 1200
 MIN_BREITE = 300
 JPEG_QUALITAET = 85
-SEITE_CONTAINER = "body > div > div"   # aeusserer 700-px-Rahmen > die 600 x hoehe Seite (seite_html.html)
+SEITE_CONTAINER = seite_html.SEITE_CONTAINER   # aeusserer 700-px-Rahmen > die 600 x hoehe Seite
 
 
 class PruefbildFehler(RuntimeError):

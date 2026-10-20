@@ -11,6 +11,9 @@ from urllib.parse import quote
 from spaces.marketing.claw import schriften, seite
 from spaces.marketing.claw.pdf_druck import BREITE_PX
 
+# Die 600 x hoehe Seite im aeusseren Rahmen von html(); Screenshots (Pruefbild, Mail-Stuecke) fotografieren nur sie.
+SEITE_CONTAINER = "body > div > div"
+
 _FETT = re.compile(r"\*\*([^*\n]+?)\*\*")
 _KURSIV = re.compile(r"\*([^*\n]+?)\*")
 _TEXTLINK = re.compile(r"\[([^\]]*)\]\(([^)]*)\)")  # gleiche Form wie seite._TEXTLINK, mit Beschriftung

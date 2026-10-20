@@ -4,17 +4,15 @@ und laedt die JPEGs in den Medienordner der VM. Wird von chat_worker.ein_durchla
 gerufen. Playwright wird erst im Standard-Browserstarter importiert."""
 from __future__ import annotations
 
-import functools
 import io
-import os
-import urllib.parse
 
-from spaces.marketing.claw import bildplaetze, bloecke_mjml, gestaltung, schriften
+from spaces.marketing.claw import bloecke_mjml
+from spaces.marketing.claw.export_routen import (BASIS, KACHEL_KANTE, EchterBrowser, Routen, bildtyp,  # noqa: F401 - Re-Export
+                                                 kachel_png, schriften_css)
 from spaces.marketing.workers.bild_worker import ApiFehler
 from spaces.marketing.workers.chat_worker import FREMD, HALTEN_TAKT_S, _kurz, halten
 
 GERAETE = {"handy": 375, "tablet": 768, "pc": 1200}
-BASIS = "https://export.vibemind.invalid/"
 JPEG_GRENZE = 4 * 1024 * 1024
 MAX_HOEHE = 16000
 HOEHE = 1   # full_page nimmt die Dokumenthoehe: kein Leerraum unter kurzem Inhalt
@@ -27,17 +25,6 @@ def html_bauen(auftrag: dict) -> str:
                                 bild_basis=BASIS + "medien/", schrift_basis=BASIS + "schrift/")
 
 
-def schriften_css() -> str:
-    """@font-face je Register-Datei; die URLs sind relativ zu <BASIS>schrift/schriften.css."""
-    regeln = []
-    for sid, eintrag in schriften.EBENEN_SCHRIFTEN.items():   # inkl. Handschrift (Rolle HAND)
-        for gewicht, stil in eintrag["dateien"]:
-            regeln.append("@font-face{font-family:'%s';font-weight:%s;font-style:%s;font-display:block;"
-                          "src:url(%s-%s-%s.woff2) format('woff2');}" % (eintrag["familie"], gewicht, stil,
-                                                                        sid, gewicht, stil))
-    return "\n".join(regeln) + "\n"
-
-
 def jpeg_passend(png: bytes, grenze: int = JPEG_GRENZE) -> bytes:
     from PIL import Image
     with Image.open(io.BytesIO(png)) as bild:
@@ -48,101 +35,6 @@ def jpeg_passend(png: bytes, grenze: int = JPEG_GRENZE) -> bytes:
         if puffer.tell() <= grenze:
             return puffer.getvalue()
     raise ValueError(f"Das Bild bleibt auch bei Qualität 52 über {grenze / 2**20:.1f} MB")
-
-
-KACHEL_KANTE = 600
-
-
-@functools.lru_cache(maxsize=32)
-def kachel_png(a: int, b: int) -> bytes:
-    """Neutrale Bildkachel im Verhaeltnis a:b (lange Kante KACHEL_KANTE): hellgrau, feine Diagonalen, "Bild".
-    Steht im Pruefbild fuer einen Platzhalter (Bild wird noch erzeugt) oder ein fehlendes Medium."""
-    from PIL import Image, ImageDraw
-    a, b = max(1, int(a)), max(1, int(b))
-    breite, hoehe = ((KACHEL_KANTE, max(1, round(KACHEL_KANTE * b / a))) if a >= b
-                     else (max(1, round(KACHEL_KANTE * a / b)), KACHEL_KANTE))
-    bild = Image.new("RGB", (breite, hoehe), (232, 232, 232))
-    zeichnen = ImageDraw.Draw(bild)
-    for x in range(-hoehe, breite, 28):
-        zeichnen.line([(x, hoehe), (x + hoehe, 0)], fill=(214, 214, 214), width=2)
-    if breite >= 40 and hoehe >= 20:
-        kasten = zeichnen.textbbox((0, 0), "Bild")
-        tb, th = kasten[2] - kasten[0], kasten[3] - kasten[1]
-        zeichnen.text(((breite - tb) / 2, (hoehe - th) / 2), "Bild", fill=(140, 140, 140))
-    puffer = io.BytesIO()
-    bild.save(puffer, "PNG")
-    return puffer.getvalue()
-
-
-class Routen:
-    """Beantwortet die Anfragen der Seite an BASIS; alles andere wird abgebrochen.
-    pruefbild=True (nur das Pruefbild der Collage): Platzhalter (medien:platzhalter-AxB.png) werden lokal als
-    graue Kachel gezeichnet und nie geholt; ein fehlendes Medium wird zur grauen Kachel und steht in fehlt (der
-    Aufrufer macht daraus einen Hinweis). Ohne den Schalter (Export) bleibt ein fehlendes Medium ein 404."""
-
-    def __init__(self, api, aid, pruefbild: bool = False):
-        self.api, self.aid, self.medien, self.fehlt, self.fehler = api, aid, {}, [], None
-        self.pruefbild = pruefbild
-
-    def __call__(self, route):
-        try:
-            if not route.request.url.startswith(BASIS):
-                return route.abort()
-            pfad = urllib.parse.unquote(urllib.parse.urlsplit(route.request.url).path)
-            if pfad.startswith("/medien/"):
-                name = pfad[len("/medien/"):]
-                if self.pruefbild and (m := bildplaetze.PLATZHALTER.match("medien:" + name)):
-                    return route.fulfill(status=200, body=kachel_png(int(m[1]), int(m[2])),
-                                         content_type="image/png")
-                if name not in self.medien:
-                    self.medien[name] = self.api.medium(self.aid, name)
-                daten = self.medien[name]
-                if daten is None:
-                    if self.pruefbild:
-                        if name not in self.fehlt:
-                            self.fehlt.append(name)
-                        return route.fulfill(status=200, body=kachel_png(4, 3), content_type="image/png")
-                    self.fehlt.append(name)
-                    return route.fulfill(status=404, body=b"")
-                return route.fulfill(status=200, body=daten, content_type=bildtyp(name))
-            if pfad == "/schrift/schriften.css":
-                return route.fulfill(status=200, body=schriften_css(), content_type="text/css")
-            if pfad.startswith("/schrift/"):
-                datei = os.path.basename(pfad)
-                voll = os.path.join(gestaltung.ORDNER_SCHRIFTEN, datei)
-                if datei.endswith(".woff2") and os.path.isfile(voll):
-                    with open(voll, "rb") as f:
-                        return route.fulfill(status=200, body=f.read(), content_type="font/woff2")
-            return route.abort()
-        except Exception as e:  # noqa: BLE001 - Seite nicht haengen lassen, Fehler nach set_content melden
-            if self.fehler is None:
-                self.fehler = e
-            return route.abort()
-
-
-def bildtyp(name: str) -> str:
-    return {"png": "image/png", "gif": "image/gif", "webp": "image/webp", "svg": "image/svg+xml"}.get(
-        name.rsplit(".", 1)[-1].lower(), "image/jpeg")
-
-
-class EchterBrowser:
-    def __init__(self):
-        from playwright.sync_api import sync_playwright   # erst hier: Unit-Tests brauchen keinen Browser
-        self._pw = sync_playwright().start()
-        try:
-            self._browser = self._pw.chromium.launch(headless=True)
-        except Exception:
-            self._pw.stop()
-            raise
-
-    def new_page(self, **kwargs):
-        return self._browser.new_page(**kwargs)
-
-    def close(self):
-        try:
-            self._browser.close()
-        finally:
-            self._pw.stop()
 
 
 # Alte Namen bleiben fuer bestehende Aufrufer; Pruefbild-Arbeiter nutzt die oeffentlichen.
