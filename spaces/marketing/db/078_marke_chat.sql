@@ -2,7 +2,7 @@
 -- unberuehrt (pult_marke_rueckgaengig ruft pult_marke_uebernehmen zur Laufzeit beim Namen). Nach einem Replay
 -- von 078 verify_060 .. verify_066 und verify_078 zusammen ueber migration_probe laufen lassen.
 -- 078: Marken-Chat neu (sales-claw Plan 2026-10-20-marken-chat-neu.md, E7/E8). Idempotent, eine Transaktion.
---   1) marken_auftraege.quellen: die Quellen einer Chat-Runde, [{titel <= 120, url <= 500 (http/https),
+--   1) marken_auftraege.quellen: die Quellen einer Chat-Runde, [{titel nicht leer <= 120, url <= 500 (http/https),
 --      art gelesen|websuche}], hoechstens 12 (Check auf der Spalte, Feinpruefung in _marke_quellen_pruefen)
 --   2) pult_marke_quellen(aid, quellen): Muster pult_marke_denken (065) - false, wenn der Auftrag nicht
 --      (mehr) in Arbeit ist; ungueltige Quellen werfen immer (Pruefung vor der Sperre)
@@ -40,6 +40,7 @@ BEGIN
     IF jsonb_typeof(q) <> 'object' THEN RAISE EXCEPTION 'Quelle ungueltig'; END IF;
     IF (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(q) k) IS DISTINCT FROM ARRAY['art','titel','url']
        OR jsonb_typeof(q->'titel') <> 'string' OR char_length(q->>'titel') > 120
+       OR (q->>'titel') !~ '\S'
        OR jsonb_typeof(q->'url') <> 'string' OR char_length(q->>'url') > 500
        OR (q->>'url') !~ '^https?://'
        OR jsonb_typeof(q->'art') <> 'string' OR (q->>'art') NOT IN ('gelesen','websuche') THEN
@@ -72,6 +73,9 @@ BEGIN
     RAISE EXCEPTION 'Der Vorschlag gehört zu einer anderen Firma – bitte neu laden'; END IF;
   PERFORM 1 FROM marketing.mandanten WHERE id = v_mandant AND aktiv FOR NO KEY UPDATE;
   IF NOT FOUND THEN RAISE EXCEPTION 'Unbekannte oder inaktive Firma'; END IF;
+  -- Erst aufraeumen, dann den Vorschlag lesen: ein toter Uebernahme-Auftrag setzt seinen Vorschlag hier
+  -- wieder auf 'offen' - E7.1 sieht so den echten Stand (sonst wuerde unten das Original selbst 'ersetzt').
+  PERFORM marketing._marke_aufraeumen(v_mandant);
   SELECT * INTO v FROM marketing.marken_vorschlaege WHERE id = p_vid FOR UPDATE;
   -- E7.1: angenommen und direkt (JSON-true, kein Text "true")
   IF v.status <> 'angenommen' OR (v.vorschlag->'direkt') IS DISTINCT FROM 'true'::jsonb THEN
@@ -81,8 +85,8 @@ BEGIN
               WHERE w.mandant = v.mandant AND w.status = 'angenommen' AND w.id <> v.id
                 AND w.erstellt_am >= v.erstellt_am) THEN
     RAISE EXCEPTION 'Inzwischen gibt es eine neuere Änderung – Rückgängig geht nur für die letzte.'; END IF;
-  -- E7.3: kein laufender Marken-Auftrag ausser Wissens-Laeufen (woertlich wie pult_marke_anlegen)
-  PERFORM marketing._marke_aufraeumen(v.mandant);
+  -- E7.3: kein laufender Marken-Auftrag ausser Wissens-Laeufen (woertlich wie pult_marke_anlegen;
+  -- aufgeraeumt ist schon oben)
   IF EXISTS (SELECT 1 FROM marketing.marken_auftraege
               WHERE mandant = v.mandant AND status IN ('offen','in_arbeit') AND art <> 'wissen') THEN
     RAISE EXCEPTION 'Der Assistent arbeitet gerade'; END IF;

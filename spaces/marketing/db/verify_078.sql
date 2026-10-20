@@ -1,12 +1,13 @@
 -- Nachweise fuer 078 (Marken-Chat: Quellen, Rueckgaengig), nur ueber migration_probe (eine Transaktion +
 -- ROLLBACK). Probe-Firmen probe_078 (Rueckgaengig), probe_078_b (Quellen), probe_078_d (nicht direkt),
--- probe_078_e (Assistent arbeitet). Jeder Fall wirft 'verify_078: ...', wenn er scheitert.
+-- probe_078_e (Assistent arbeitet), probe_078_f (toter Uebernahme-Auftrag). Jeder Fall wirft 'verify_078: ...', wenn er scheitert.
 CREATE TEMP TABLE _p078 ON COMMIT DROP AS SELECT NULL::text AS k, NULL::uuid AS id LIMIT 0;
 
 DO $$ BEGIN
   INSERT INTO marketing.mandanten (id, name, aktiv) VALUES
     ('probe_078', 'Probe 078', true), ('probe_078_b', 'Probe 078 B', true),
-    ('probe_078_d', 'Probe 078 D', true), ('probe_078_e', 'Probe 078 E', true);
+    ('probe_078_d', 'Probe 078 D', true), ('probe_078_e', 'Probe 078 E', true),
+    ('probe_078_f', 'Probe 078 F', true);
 END $$;
 
 -- (a) Spalte quellen existiert, der Check nimmt 12 Quellen und lehnt 13 ab
@@ -97,6 +98,26 @@ BEGIN
           'titel', 't', 'url', 'https://e.org', 'art', 'gelesen')) FROM generate_series(1, 13)));
   EXCEPTION WHEN others THEN geworfen := true; END;
   IF NOT geworfen THEN RAISE EXCEPTION 'verify_078: 13 Quellen muessen werfen'; END IF;
+
+  -- Fix-Runde 1: Nicht-Objekte, fehlender Schluessel, Titel keine Zeichenkette, leerer Titel
+  DECLARE schlecht jsonb; BEGIN
+    FOREACH schlecht IN ARRAY ARRAY[
+        '["x"]', '[null]', '[1]', '[[]]',
+        '[{"titel":"t","url":"https://e.org"}]',
+        '[{"url":"https://e.org","art":"gelesen"}]',
+        '[{"titel":7,"url":"https://e.org","art":"gelesen"}]',
+        '[{"titel":null,"url":"https://e.org","art":"gelesen"}]',
+        '[{"titel":"","url":"https://e.org","art":"gelesen"}]',
+        '[{"titel":"   ","url":"https://e.org","art":"gelesen"}]',
+        '[{"titel":" \t\n ","url":"https://e.org","art":"gelesen"}]',
+        '[{"titel":"t","url":5,"art":"gelesen"}]'
+      ]::jsonb[] LOOP
+      geworfen := false;
+      BEGIN PERFORM marketing.pult_marke_quellen(ok, schlecht);
+      EXCEPTION WHEN others THEN geworfen := true; END;
+      IF NOT geworfen THEN RAISE EXCEPTION 'verify_078: Quellen % muessen werfen', schlecht; END IF;
+    END LOOP;
+  END;
 
   -- Sperre abgelaufen -> false
   UPDATE marketing.marken_auftraege SET vergeben_bis = now() - interval '1 second' WHERE id = ok;
@@ -271,6 +292,31 @@ DO $$ DECLARE auf uuid; v uuid; msg text; BEGIN
   IF msg IS DISTINCT FROM 'Der Assistent arbeitet gerade' THEN
     RAISE EXCEPTION 'verify_078: offener Chat muss "Der Assistent arbeitet gerade" werfen, war: %', msg; END IF;
   IF (SELECT count(*) FROM marketing.marken_vorschlaege WHERE mandant = 'probe_078_e') <> 1 THEN
+    RAISE EXCEPTION 'verify_078: abgewiesenes Rueckgaengig hat etwas angelegt'; END IF;
+END $$;
+
+-- (f) Fix-Runde 1: angenommener direkter Vorschlag, dessen Uebernahme-Auftrag tot ist (Sperre abgelaufen,
+-- versuche >= 2). Das Aufraeumen setzt ihn auf fehler und den Vorschlag wieder offen - Rueckgaengig muss
+-- deshalb werfen, und das Original darf nie 'ersetzt' werden.
+DO $$ DECLARE auf uuid; v uuid; msg text; BEGIN
+  INSERT INTO marketing.marken_auftraege (mandant, art, nachricht, status, erstellt_am)
+  VALUES ('probe_078_f', 'chat', 'f', 'fertig', now() - interval '1 hour') RETURNING id INTO auf;
+  INSERT INTO marketing.marken_vorschlaege (mandant, auftrag, vorschlag, status, erstellt_am,
+                                            entschieden_von, entschieden_am)
+  VALUES ('probe_078_f', auf,
+          '{"abschnitte":{"Ton":"x"},"direkt":true,"aenderungen":[{"feld":"Ton","vorher":"a","nachher":"x"}]}',
+          'angenommen', now() - interval '1 hour', 'Agent (direkt)', now() - interval '1 hour')
+  RETURNING id INTO v;
+  INSERT INTO marketing.marken_auftraege (mandant, art, vorschlag, status, versuche, vergeben_bis, erstellt_am)
+  VALUES ('probe_078_f', 'uebernehmen', v, 'in_arbeit', 2, now() - interval '1 minute', now() - interval '50 minutes');
+  msg := NULL;
+  BEGIN PERFORM marketing.pult_marke_rueckgaengig(v, 'Felix', 'probe_078_f');
+  EXCEPTION WHEN others THEN msg := SQLERRM; END;
+  IF msg IS NULL THEN
+    RAISE EXCEPTION 'verify_078: Rueckgaengig mit totem Uebernahme-Auftrag muss werfen'; END IF;
+  IF (SELECT status FROM marketing.marken_vorschlaege WHERE id = v) = 'ersetzt' THEN
+    RAISE EXCEPTION 'verify_078: Original darf nie ersetzt werden'; END IF;
+  IF (SELECT count(*) FROM marketing.marken_vorschlaege WHERE mandant = 'probe_078_f') <> 1 THEN
     RAISE EXCEPTION 'verify_078: abgewiesenes Rueckgaengig hat etwas angelegt'; END IF;
 END $$;
 
