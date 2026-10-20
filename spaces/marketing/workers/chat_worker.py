@@ -51,6 +51,7 @@ WEBSUCHE_AUS = "WebSearch:aus"   # wie marketing_shim.WEBSUCHE_AUS
 STAND = {"letzter_lauf": None, "letztes_ergebnis": None}
 _STAND_SPERRE = threading.Lock()      # STAND schreiben alle Faeden; Lesen/Ausgeben nur als Kopie unter der Sperre
 _EXPORT_SPERRE = threading.Lock()     # ein Newsletter-Export laeuft allein (auch gegen einen zweiten Export)
+_PRUEFBILD_SPERRE = threading.Lock()  # hoechstens ein Chromium fuer Pruefbilder ueber alle Editor-Plaetze (RAM)
 
 
 class LlmFehler(Exception):
@@ -939,6 +940,7 @@ SEITE_PRUEFEN = "Prüfe Entwurf (Runde {r}/{n})"
 SEITE_BESSERN = "Bessere nach (Runde {r}/{n})"
 PRUEFBILD_FEHLT = "Prüfbild nicht möglich – ohne Nachbesserung gespeichert"
 PRUEFBILD_ABGELEHNT = "Prüfbild konnte nicht übergeben werden – Runde {r} ohne Bild geprüft."
+PRUEFBILD_KEIN_PLATZ = "Prüfbild nicht gesendet – zu viele Anhänge, ohne Nachbesserung gespeichert"
 NACHBESSERUNG_WEG = "Nachbesserung in Runde {r} nicht möglich – der Entwurf davor wurde gespeichert."
 RUNDEN = seite_prompt.MAX_RUNDEN
 NACHRICHT_MAX = 2000           # wie api/chat.py NACHRICHT_MAX (laengere nimmt die VM gar nicht an)
@@ -957,9 +959,8 @@ class _LiveSeite(_Live):
         except agent_werkzeuge.WerkzeugFehler as e:
             self.fehler.append(str(e))
             return
-        verworfen = [h for h in erg.hinweise if h.startswith("Änderung 1 (")]
-        if verworfen:
-            self.fehler.append(verworfen[0])
+        if erg.verworfen:
+            self.fehler.append(next((h for h in erg.hinweise if h.startswith("Änderung ")), "verworfen"))
             return
         self.angewandt.append(a)
         if not erg.geaendert:            # Bildauftrag oder fertig: kein neuer Stand
@@ -1316,15 +1317,20 @@ def _bearbeiten_seite(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_tak
     stand.aktiv, stand.runden = True, [_ohne_fertig(aenderungen)]
     stand.seite = aktuell if aktuell != start else None
     if erg.geaendert:
-        live.stand(aktuell, schritt)
+        live.stand(aktuell, schritt, immer=True)   # ganzer Stand nach der Runde (der naechste Strom beginnt neu)
 
     # 2. Ansehen und nachbessern: hoechstens RUNDEN Pruefrunden
     zeilen, notiz = [], ""
     letzter_text, letzte_hinweise = text, erg.hinweise
-    for r in range(1, RUNDEN + 1):
+    runden = RUNDEN
+    if len(bildteile) >= MAX_BILDER:     # die Anhaenge belegen alle Bildplaetze: keine Kachel passt mehr dazu
+        hinweise.insert(0, PRUEFBILD_KEIN_PLATZ)
+        spur.schritt(PRUEFBILD_KEIN_PLATZ)
+        runden = 0
+    for r in range(1, runden + 1):
         spur.schritt(SEITE_PRUEFEN.format(r=r, n=RUNDEN))
         try:
-            with halten(api, aid, halten_takt_s) as halter:
+            with halten(api, aid, halten_takt_s) as halter, _PRUEFBILD_SPERRE:
                 kacheln, faktor = pruefbild(aktuell)
         except Exception:  # noqa: BLE001 - ohne Pruefbild wird der Entwurf gespeichert, die Runde kippt nie
             hinweise.insert(0, PRUEFBILD_FEHLT)
@@ -1370,7 +1376,7 @@ def _bearbeiten_seite(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_tak
         spur.schritt(schritt)
         aktuell = erg_r.seite
         stand.seite = aktuell if aktuell != start else None
-        live.stand(aktuell, schritt)
+        live.stand(aktuell, schritt, immer=True)
         letzter_text, letzte_hinweise = text_r, erg_r.hinweise
 
     # 3. Speichern (bei veraltet Runde fuer Runde auf die neueste Seite nachspielen)

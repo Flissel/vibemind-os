@@ -53,6 +53,7 @@ class ErgebnisSeite:
     hinweise: list[str] = field(default_factory=list)
     fertig: bool = False
     notiz: str = ""
+    verworfen: list[int] = field(default_factory=list)   # Nummern (ab 1) der Aenderungen ohne Wirkung
 
 
 class _Unbekannt(WerkzeugFehler):
@@ -274,8 +275,11 @@ def _ausfuehren(s_ein: dict, aenderungen: list, medien: set[str], nachspiel: boo
     fertig: tuple[int, str] | None = None
     andere = False
 
+    verworfen: set[int] = set()
+
     def melden(nr: int, name: str, grund: str) -> None:
         hinweise.append(f"Änderung {nr} ({name}): {grund}")
+        verworfen.add(nr)
 
     for nr, a in enumerate(aenderungen, 1):
         name = a.get("werkzeug") if isinstance(a, dict) and isinstance(a.get("werkzeug"), str) else "?"
@@ -331,7 +335,7 @@ def _ausfuehren(s_ein: dict, aenderungen: list, medien: set[str], nachspiel: boo
             ist_fertig, notiz = True, fertig[1]
     hinweise += _abschluss(lauf.s, auftraege, lauf.medien)
     return ErgebnisSeite(seite=lauf.s, geaendert=lauf.s != start, bildauftraege=auftraege, hinweise=hinweise,
-                         fertig=ist_fertig, notiz=notiz)
+                         fertig=ist_fertig, notiz=notiz, verworfen=sorted(verworfen))
 
 
 def anwenden(seite_dok: dict, aenderungen: list, medien: set[str]) -> ErgebnisSeite:

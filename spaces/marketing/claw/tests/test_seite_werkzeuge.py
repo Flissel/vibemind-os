@@ -161,12 +161,13 @@ def test_logo_einsetzen():
 def test_fertig_ohne_aenderungen():
     e = lauf([{"werkzeug": "fertig", "notiz": "Passt so."}])
     assert e.fertig and e.notiz == "Passt so." and not e.geaendert and e.bildauftraege == []
+    assert e.verworfen == []
     assert e.seite == grund()
 
 
 def test_fertig_mit_aenderungen_gilt_nicht():
     e = lauf([{"werkzeug": "seite_hoehe", "hoehe": 1500}, {"werkzeug": "fertig", "notiz": "fertig"}])
-    assert not e.fertig and e.seite["hoehe"] == 1500
+    assert not e.fertig and e.seite["hoehe"] == 1500 and e.verworfen == [2]
     assert any("fertig" in h for h in ohne_abschluss(e.hinweise))
 
 
@@ -192,6 +193,7 @@ def test_anwenden_verwirft_ungueltige_aenderung():
     assert len(e.seite["ebenen"]) == 80
     nummeriert = ohne_abschluss(e.hinweise)
     assert [h.split(" ")[1] for h in nummeriert] == ["2", "3", "4"]
+    assert e.verworfen == [2, 3, 4]
     assert "80" in nummeriert[0] and "{vorname}" in nummeriert[1] and "gibtsnicht" in nummeriert[2]
     assert seite_mod.pruefen(e.seite) == e.seite
 

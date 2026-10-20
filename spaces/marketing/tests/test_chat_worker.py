@@ -2314,3 +2314,137 @@ def test_chatapi_sendet_seite_statt_bloecke(monkeypatch):
     assert json.loads(g["data"]) == {"seite": None}
     api.zwischenstand("a1", DOC, "x", 1)
     assert json.loads(g["data"]) == {"bloecke": DOC, "schritt": "x", "nr": 1}
+
+
+# ---- Task 6 Fix-Runde 1 ---------------------------------------------------------------------------------------
+
+def test_ganzer_stand_nach_jeder_runde_trotz_drossel():
+    """Mit der Produktionsdrossel (1 s, Uhr steht) geht der ganze Stand nach Entwurf und Nachbesserung trotzdem raus."""
+    api = SeitenApi()
+    erg, _, _ = seite_lauf(api, ([titel("Null")], "Entwurf."), ([titel("Eins")], "R1"),
+                           ([fertig_tool()], "Gut."), drossel_s=1.0)
+    assert erg == "fertig"
+    nach_runde = [(e[3], _ebene(e[2], "titel")["text"]) for e in zw(api)]
+    assert ("Entwurf wird gestaltet", "Null") in nach_runde
+    assert ("Bessere nach (Runde 1/3)", "Eins") in nach_runde
+
+
+def test_pruefbilder_laufen_nie_gleichzeitig():
+    import threading as th
+    import time as zeit
+    laeufe, sperre = [], th.Lock()
+
+    class Langsam(Pruefbild):
+        def __call__(self, s):
+            beginn = zeit.monotonic()
+            zeit.sleep(0.15)
+            with sperre:
+                laeufe.append((beginn, zeit.monotonic()))
+            return [_jpg(60, 40)], 1.0
+
+    ergebnisse = []
+
+    def lauf():
+        ergebnisse.append(seite_lauf(SeitenApi(), ([titel("Null")], "E."), ([fertig_tool()], "G."),
+                                     pruefbild=Langsam())[0])
+    faeden = [th.Thread(target=lauf) for _ in range(2)]
+    for f in faeden:
+        f.start()
+    for f in faeden:
+        f.join(10)
+    assert ergebnisse == ["fertig", "fertig"] and len(laeufe) == 2
+    (a0, a1), (b0, b1) = sorted(laeufe)
+    assert b0 >= a1                                    # der zweite Render beginnt erst nach dem ersten
+
+
+def test_anhaenge_belegen_alle_bildplaetze_keine_nachbesserung_mit_hinweis():
+    api = SeitenApi()
+    pdf = _bild_pdf(3)
+    api.medium = lambda aid, name: pdf if name.endswith(".pdf") else _png()
+    anhaenge = [{"name": f"f{i}.png", "art": "bild"} for i in range(4)] + [{"name": "karte.pdf", "art": "dokument"}]
+    auftrag = {**AUFTRAG_S, "kontext": {"anhaenge": anhaenge}}
+    erg, strom, pb = seite_lauf(api, ([titel("Herbst")], "Ok."), auftrag=auftrag)
+    assert _bildzahl(strom.gesehen[0][0]["content"]) == 6                 # 4 Bilder + 2 PDF-Seiten
+    assert erg == "fertig" and len(strom.gesehen) == 1 and pb.gesehen == []
+    (daten,) = _fertig_daten(api)
+    assert _ebene(daten["seite"], "titel")["text"] == "Herbst"
+    assert daten["antwort"].startswith("Hinweis: " + cw.PRUEFBILD_KEIN_PLATZ)
+
+
+def test_unlesbarer_entwurf_bekommt_eine_korrektur():
+    api = SeitenApi()
+    erg, strom, _ = seite_lauf(api, ["kein json"], ([titel("Herbst")], "Ok."), ([fertig_tool()], "Gut."))
+    assert erg == "fertig" and len(strom.gesehen) == 3
+    assert [n["role"] for n in strom.gesehen[1]] == ["user", "assistant", "user"]
+    assert "konnte nicht umgesetzt werden" in strom.gesehen[1][2]["content"]
+    assert _ebene(_fertig_daten(api)[0]["seite"], "titel")["text"] == "Herbst"
+
+
+def test_zweimal_unlesbarer_entwurf_gibt_zurueck():
+    api = SeitenApi()
+    erg, _, pb = seite_lauf(api, ["kein json"], ["immer noch nicht"])
+    assert erg == "fehler" and pb.gesehen == [] and api.aufrufe("fertig") == []
+    assert api.aufrufe("zurueck")[0][2].startswith(cw.NICHT_UMGESETZT)
+
+
+def test_unlesbare_nachbesserung_behaelt_den_letzten_stand():
+    api = SeitenApi()
+    erg, strom, _ = seite_lauf(api, ([titel("Null")], "Entwurf."), ([titel("Eins")], "R1"), ["Quatsch"])
+    assert erg == "fertig" and len(strom.gesehen) == 3
+    (daten,) = _fertig_daten(api)
+    assert _ebene(daten["seite"], "titel")["text"] == "Eins"
+    assert cw.NACHBESSERUNG_WEG.format(r=2) in daten["antwort"] and api.aufrufe("zurueck") == []
+
+
+def test_shim_weg_in_der_nachbesserung_speichert_den_entwurf():
+    api = SeitenApi()
+    erg, strom, _ = seite_lauf(api, ([titel("Null")], "Entwurf."), *([cw.LlmFehler("weg")] * 30))
+    assert erg == "fertig" and api.aufrufe("zurueck") == []
+    (daten,) = _fertig_daten(api)
+    assert _ebene(daten["seite"], "titel")["text"] == "Null"
+    assert cw.NACHBESSERUNG_WEG.format(r=1) in daten["antwort"]
+
+
+def test_shim_lehnt_anhaenge_im_entwurf_ab_einmal_ohne_bilder():
+    api = SeitenApi()
+    api.medium = lambda aid, name: _png()
+    auftrag = {**AUFTRAG_S, "kontext": {"anhaenge": [{"name": "foto.png", "art": "bild"}]}}
+    erg, strom, _ = seite_lauf(api, cw.ShimAbgelehnt("400"), ([titel("Herbst")], "Ok."), ([fertig_tool()], "Gut."),
+                               auftrag=auftrag)
+    assert erg == "fertig" and len(strom.gesehen) == 3
+    assert _bildzahl(strom.gesehen[0][0]["content"]) == 1 and isinstance(strom.gesehen[1][0]["content"], str)
+    assert _bildzahl(strom.gesehen[2][-1]["content"]) == 1        # Pruefrunde nur noch mit der Kachel
+    assert _fertig_daten(api)[0]["antwort"].startswith("Hinweis: " + cw.BILDER_ABGELEHNT)
+
+
+def test_vergabe_verloren_waehrend_des_pruefbilds():
+    import time as zeit
+    api = SeitenApi()
+    im_bild = []
+    api.weiter = lambda aid: (api.log.append(("weiter", aid)), not im_bild)[1]
+
+    class Haengt(Pruefbild):
+        def __call__(self, s):
+            im_bild.append(1)
+            zeit.sleep(0.3)
+            return [_jpg(60, 40)], 1.0
+    uhr = Uhr()
+    strom = Strom(uhr, stuecke([titel("Null")], "Entwurf."))
+    erg = cw.chat_bearbeiten(api, AUFTRAG_S, strom, uhr, uhr.schlafen, halten_takt_s=0.05, drossel_s=0,
+                             pruefbild=Haengt())
+    assert erg == "fehler" and len(strom.gesehen) == 1
+    assert api.aufrufe("fertig") == [] and api.aufrufe("zurueck") == [] and api.aufrufe("gestoppt") == []
+
+
+@pytest.mark.parametrize("art", ["behalten", "verwerfen"])
+def test_stopp_im_ersten_entwurf(art):
+    api = SeitenApi(stopp_bei=lambda s: art if _ebene(s, "titel")["text"] == "Zwei" else None)
+    erg, strom, pb = seite_lauf(api, ([titel("Eins"), titel("Zwei"), titel("Drei")], "Entwurf."))
+    assert erg == "gestoppt" and strom.geschlossen == 1 and pb.gesehen == []
+    assert api.aufrufe("fertig") == [] and api.aufrufe("zurueck") == []
+    ((_, _, s, basis, _, ist_seite),) = api.aufrufe("gestoppt")
+    assert ist_seite is True
+    if art == "verwerfen":
+        assert s is None
+    else:   # wie im Block-Weg: der letzte gueltige Live-Stand
+        assert _ebene(s, "titel")["text"] == "Zwei" and basis == 4
