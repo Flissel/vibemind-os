@@ -1403,15 +1403,24 @@ def test_einreichen_sperrt_seite(db, c):
     (f"/api/pult/inhalte/{IID}/chat", {"X-Pult-Key": KEY}),
     (f"/api/agent/inhalte/{IID}/chat", {"X-Agent-Key": "agent-k"}),
 ])
-def test_chat_sperrt_seite(db, c, monkeypatch, pfad, kopf):
+def test_chat_auf_collage_erlaubt(db, c, monkeypatch, pfad, kopf):
+    """Stufe 3: der Chat sperrt Collagen nicht mehr - keine Formatsperre, pult_chat_senden laeuft direkt."""
     monkeypatch.setenv("MARKETING_AGENT_KEY", "agent-k")
     monkeypatch.setattr(server, "API_KEY", "")
-    db.antworten = [[{"s": None, "gesperrt": True}]]
+    db.antworten = [[{"s": {"id": "22222222-2222-2222-2222-222222222222", "status": "offen"}}]]
     r = c.post(pfad, headers=kopf, json={"nachricht": "Mach es wärmer"})
-    assert r.status_code == 409 and r.json()["detail"] == "Der Assistent kann Collage-Newsletter noch nicht bearbeiten"
-    # Pruefung und Anlegen in EINER Abfrage: bei 'seite' laeuft pult_chat_senden gar nicht erst
-    assert re.search(r"CASE WHEN \(SELECT f\.format .*\) = 'seite' THEN NULL ELSE marketing\.pult_chat_senden\(",
-                     db.sql[0])
+    assert r.status_code == 200, r.text
+    assert r.json() == {"auftrag": "22222222-2222-2222-2222-222222222222", "status": "offen"}
+    assert len(db.sql) == 1 and db.sql[0].startswith("SELECT marketing.pult_chat_senden(")
+    assert "'seite'" not in db.sql[0] and "gesperrt" not in db.sql[0]
+
+
+def test_einreichen_collage_bleibt_gesperrt(db, c):
+    """Mit dem Chat fuer Collagen bleibt Einreichen gesperrt (Stufe 4) - dieselbe Formatsperre wie bisher."""
+    db.antworten = [[{"fassung": None, "gesperrt": True}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/einreichen", headers=H, json={"von": "Anna"})
+    assert r.status_code == 409 and r.json()["detail"] == pult.COLLAGE_EINREICHEN
+    assert "= 'seite' THEN NULL ELSE marketing.pult_einreichen(" in db.sql[0]
 
 
 def test_versand_lehnt_seite_ab(db, c):

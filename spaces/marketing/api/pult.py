@@ -69,7 +69,6 @@ _URHEBER = ("betreiber", "agent")
 _NICHT_ERREICHBAR = "Marketing-Datenbank nicht erreichbar"
 _UNGUELTIGE_EINGABE = "Ungueltige Eingabe (unzulaessiges Zeichen)"
 COLLAGE_EINREICHEN = "Collage-Newsletter lassen sich noch nicht einreichen"
-COLLAGE_CHAT = "Der Assistent kann Collage-Newsletter noch nicht bearbeiten"
 COLLAGE_IST = "Das ist ein Collage-Newsletter"
 COLLAGE_IST_NICHT = "Das ist kein Collage-Newsletter"
 
@@ -211,7 +210,7 @@ def mit_formatsperre(i: str, aufruf: Callable[[], str], *, collage: bool = False
                      spalte: str = "fassung") -> dict:
     """Schreibenden DB-Aufruf nur, wenn das Format der neuesten Fassung passt - Pruefung und Aufruf in
     DERSELBEN Abfrage (CASE wertet den ELSE-Zweig mit der volatilen Funktion nur bei Bedarf aus).
-    collage=False (Bloecke, Felder, Einreichen, Chat): gesperrt, wenn die neueste Fassung 'seite' ist.
+    collage=False (Bloecke, Felder, Einreichen, Vorlage): gesperrt, wenn die neueste Fassung 'seite' ist.
     collage=True (Seite speichern): gesperrt, wenn es eine neueste Fassung gibt und sie nicht 'seite' ist;
     ohne Fassung ist der Vergleich NULL und der ELSE-Zweig laeuft. Gesperrt -> 409 mit grund, sonst die Zeile
     mit dem Ergebnis unter `spalte`. aufruf baut das SQL erst im try von _schreiben (NUL-Byte -> 422)."""

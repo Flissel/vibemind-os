@@ -1245,3 +1245,210 @@ def test_fertig_bildauftrag_vorlagen_kaputt_wird_grund(umg, monkeypatch, vorlage
     assert gesehen == []
     fertig = next(s for s in f.sql if "marketing.pult_chat_fertig(" in s)
     assert "held: Bildauftrag ungültig" in fertig
+
+
+# ─── Stufe 3: Assistent fuer Collagen (Plan 2026-10-20-freie-flaeche-stufe3-assistent, Task 2) ──────────
+
+
+def _seite(*bilder):
+    from spaces.marketing.claw import seite
+    s = seite.leer(None)
+    for i, q in enumerate(bilder):
+        s["ebenen"].append({"id": f"bild{i}", "art": "bild", "x": 300, "y": 700, "breite": 400, "hoehe": 300,
+                            "quelle": q})
+    return seite.pruefen(s)
+
+
+SEITE_KAPUTT = {"version": 2}
+
+
+def test_chat_auf_collage_erlaubt(umg):
+    f, _, c = umg
+    f.antworten.append([{"s": {"id": AID, "status": "offen"}}])
+    r = c.post(f"/api/pult/inhalte/{IID}/chat", json={"nachricht": "Mach eine Collage"}, headers=H)
+    assert r.status_code == 200 and r.json() == {"auftrag": AID, "status": "offen"}
+    assert len(f.sql) == 1 and f.sql[0].startswith("SELECT marketing.pult_chat_senden(")
+    assert "'seite'" not in f.sql[0]
+
+
+def test_naechster_liefert_seite_und_kompositionen(umg):
+    f, _, c = umg
+    s = _seite()
+    komp = [{"inhalt": BID, "seite": s}]
+    f.antworten += [[{"a": {"id": AID, "inhalt": IID, "art": "chat", "nachricht": "n", "mandant": "vibemind",
+                            "fassung": 3, "bloecke": None, "format": "seite", "seite": s}}],
+                    _sicht(), [], [{"k": komp}]]
+    r = c.post("/api/chat/arbeiter/naechster", headers=HB)
+    assert r.status_code == 200, r.text
+    a = r.json()["auftrag"]
+    assert a["format"] == "seite" and a["seite"] == s and a["kompositionen"] == komp
+    # Format und Seite aus DERSELBEN Abfrage wie die Vergabe; die Vergabe laeuft genau einmal
+    assert f.sql[0].startswith("WITH x AS MATERIALIZED (SELECT marketing.pult_chat_naechster('5 minutes'::interval)")
+    assert "n.format = 'seite'" in f.sql[0] and "marketing.inhalt_fassungen n" in f.sql[0]
+    assert f"marketing.pult_seite_kompositionen('vibemind', '{IID}'::uuid)" in f.sql[3]
+
+
+def test_naechster_bloecke_bekommt_format_und_sonst_nichts(umg):
+    f, _, c = umg
+    f.antworten += [[{"a": {"id": AID, "inhalt": IID, "art": "chat", "nachricht": "n", "mandant": "vibemind",
+                            "fassung": 3, "bloecke": _dok()}}], _sicht(), []]
+    a = c.post("/api/chat/arbeiter/naechster", headers=HB).json()["auftrag"]
+    assert a["format"] == "bloecke" and a["bloecke"] == _dok()
+    assert "kompositionen" not in a and "seite" not in a
+    assert not any("pult_seite_kompositionen" in s for s in f.sql)
+
+
+def test_naechster_kompositionen_lesefehler_verliert_auftrag_nicht(umg):
+    f, _, c = umg
+    f.antworten += [[{"a": {"id": AID, "inhalt": IID, "art": "chat", "nachricht": "n", "mandant": "vibemind",
+                            "format": "seite", "seite": _seite()}}], _sicht(), []]
+    f.fehler += [None, None, None, RuntimeError("db weg")]
+    r = c.post("/api/chat/arbeiter/naechster", headers=HB)
+    assert r.status_code == 200, r.text
+    assert r.json()["auftrag"]["kompositionen"] == [] and r.json()["auftrag"]["id"] == AID
+
+
+def test_neueste_liefert_seite(umg):
+    f, _, c = umg
+    s = _seite()
+    f.antworten += [[JOB], [{"fassung": 5, "bloecke": None, "format": "seite", "seite": s}]]
+    r = c.get(f"/api/chat/arbeiter/{AID}/neueste", headers=HB)
+    assert r.status_code == 200 and r.json() == {"fassung": 5, "seite": s}
+    assert "format, seite" in f.sql[1]
+
+
+def test_pruefen_seite(umg):
+    f, _, c = umg
+    r = c.post(f"/api/chat/arbeiter/{AID}/pruefen", json={"seite": SEITE_KAPUTT}, headers=HB)
+    assert r.status_code == 422 and "version" in r.json()["detail"] and f.sql == []
+    assert c.post(f"/api/chat/arbeiter/{AID}/pruefen", json={}, headers=HB).status_code == 422
+    assert c.post(f"/api/chat/arbeiter/{AID}/pruefen", json={"seite": _seite(), "bloecke": _dok()},
+                  headers=HB).status_code == 422
+    assert f.sql == []
+    f.antworten.append([JOB])
+    r = c.post(f"/api/chat/arbeiter/{AID}/pruefen", json={"seite": _seite()}, headers=HB)
+    assert r.status_code == 200 and r.json() == {"fehler": None}
+    assert len(f.sql) == 1                         # kein Block-Validator, keine Gestaltung
+
+
+def test_fertig_seite_prueft_und_speichert(umg):
+    f, _, c = umg
+    r = c.post(f"/api/chat/arbeiter/{AID}/fertig", json={"antwort": "x", "seite": SEITE_KAPUTT}, headers=HB)
+    assert r.status_code == 422 and "version" in r.json()["detail"] and f.sql == []
+    r = c.post(f"/api/chat/arbeiter/{AID}/fertig", json={"antwort": "x", "seite": _seite(), "bloecke": _dok()},
+               headers=HB)
+    assert r.status_code == 422 and f.sql == []
+    f.antworten += [[JOB], [{"e": {"fassung": 7}}]]
+    roh = _seite()
+    roh["ebenen"][0].pop("gewicht", None)          # normalisiert gespeichert: Vorgaben kommen dazu
+    body = {"antwort": "Collage fertig", "seite": roh, "basis": 6, "hinweise": ["Übersprungen: Titel"]}
+    r = c.post(f"/api/chat/arbeiter/{AID}/fertig", json=body, headers=HB)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"fassung": 7, "hinweise": ["Übersprungen: Titel"], "bildauftraege": []}
+    assert len(f.sql) == 2 and "marketing.pult_chat_fertig_seite(" in f.sql[1]
+    assert '"gewicht": 400' in f.sql[1] and f.sql[1].rstrip().endswith(", 6) AS e")
+    assert not any("pult_bloecke_fehler" in s or "pult_chat_fertig(" in s for s in f.sql)
+
+
+def test_fertig_seite_veraltet_und_fremdes_bild(umg):
+    f, _, c = umg
+    f.antworten += [[JOB]]
+    f.fehler += [None, _db_fehler("Inzwischen gibt es Fassung 9 - neu laden oder als Kopie behalten")]
+    r = c.post(f"/api/chat/arbeiter/{AID}/fertig", json={"antwort": "x", "seite": _seite(), "basis": 8}, headers=HB)
+    assert r.status_code == 200 and r.json() == {"status": "veraltet"}
+    f.sql.clear()
+    f.antworten += [[JOB], _sicht(fremde=["fremd.jpg"]), [{"seite": _seite()}], [{"s": "fehler"}]]
+    r = c.post(f"/api/chat/arbeiter/{AID}/fertig", json={"antwort": "x", "seite": _seite("medien:fremd.jpg")},
+               headers=HB)
+    assert r.status_code == 200 and r.json() == {"status": "fehler"}
+    assert "SELECT f.seite FROM marketing.chat_auftraege" in f.sql[2]
+    assert "pult_chat_zurueck(" in f.sql[3] and "fremd.jpg" in f.sql[3]
+
+
+def test_fertig_seite_bildauftrag_auf_ebene(umg, monkeypatch):
+    f, _, c = umg
+    gesehen = _anlegen_spion(monkeypatch)
+    f.antworten += [[JOB], _sicht(), [{"e": {"fassung": 7}}], [{"ok": True}]]
+    body = {"antwort": "Fertig", "seite": _seite("medien:platzhalter-4x3.png"),
+            "bildauftraege": [{"platz": "bild0", "modus": "neu", "hinweis": "Team"}]}
+    r = c.post(f"/api/chat/arbeiter/{AID}/fertig", json=body, headers=HB)
+    assert r.status_code == 200 and r.json()["bildauftraege"] == [BID]
+    assert gesehen == [(IID, {"platz": "bild0", "hinweis": "Team", "modus": "neu", "vorlagen": []}, "agent")]
+
+
+def test_fertig_bloecke_unveraendert(umg):
+    f, _, c = umg
+    f.antworten += [[JOB], [{"f": None}], [{"e": {"fassung": 7}}]]
+    r = c.post(f"/api/chat/arbeiter/{AID}/fertig", json={"antwort": "ok", "bloecke": _dok(), "basis": 6}, headers=HB)
+    assert r.status_code == 200, r.text
+    assert r.json()["fassung"] == 7
+    assert "marketing.pult_bloecke_fehler(" in f.sql[1]
+    assert "marketing.pult_chat_fertig(" in f.sql[2] and "fertig_seite" not in f.sql[2]
+    assert f.sql[2].rstrip().endswith(", 6) AS e")
+
+
+def test_zwischenstand_seite(umg):
+    f, _, c = umg
+    for body in ({"seite": SEITE_KAPUTT, "schritt": "x", "nr": 1}, {"schritt": "x", "nr": 1},
+                 {"seite": _seite(), "bloecke": {}, "schritt": "x", "nr": 1}):
+        assert c.post(ZW, json=body, headers=HB).status_code == 422, body
+    assert f.sql == []
+    f.antworten.append([{"z": {"weiter": True}}])
+    r = c.post(ZW, json={"seite": _seite(), "schritt": "Bild setzen", "nr": 2}, headers=HB)
+    assert r.status_code == 200 and r.json() == {"weiter": True}
+    assert len(f.sql) == 1 and "marketing.pult_chat_zwischenstand(" in f.sql[0]
+    assert '"ebenen"' in f.sql[0] and "'Bild setzen', 2," in f.sql[0]
+
+
+def test_gestoppt_seite(umg):
+    f, _, c = umg
+    r = c.post(GESTOPPT, json={"seite": SEITE_KAPUTT}, headers=HB)
+    assert r.status_code == 422 and f.sql == []
+    job = {"stopp": "behalten", "status": "in_arbeit", "zwischenstand": None, "format": "seite"}
+    f.antworten += [[job], [{"e": {"status": "fertig", "fassung": 9}}]]
+    r = c.post(GESTOPPT, json={"seite": _seite(), "basis": 7}, headers=HB)
+    assert r.status_code == 200 and r.json() == {"status": "fertig", "fassung": 9}
+    assert len(f.sql) == 2 and "AS format" in f.sql[0]
+    assert "marketing.pult_chat_stopp_abschliessen_seite(" in f.sql[1] and '"ebenen"' in f.sql[1]
+    assert f.sql[1].rstrip().endswith(", 7) AS e")
+
+
+def test_gestoppt_seite_aus_zwischenstand_und_kaputt(umg):
+    f, _, c = umg
+    job = {"stopp": "behalten", "status": "in_arbeit", "zwischenstand": _seite(), "format": "seite"}
+    f.antworten += [[job], [{"e": {"status": "fertig", "fassung": 4}}]]
+    assert c.post(GESTOPPT, json={}, headers=HB).json() == {"status": "fertig", "fassung": 4}
+    assert "pult_chat_stopp_abschliessen_seite(" in f.sql[1] and '"ebenen"' in f.sql[1]
+    f.sql.clear()
+    f.antworten += [[dict(job, zwischenstand=SEITE_KAPUTT)], [{"e": {"status": "fehler"}}]]
+    assert c.post(GESTOPPT, json={}, headers=HB).json() == {"status": "fehler"}
+    assert "pult_chat_stopp_abschliessen_seite(" in f.sql[1] and ", NULL, " in f.sql[1]
+    assert "Zwischenstand nicht übernommen: Seite version" in f.sql[1]
+
+
+def test_gestoppt_seite_inzwischen_gespeichert_zweiter_versuch_mit_null(umg):
+    f, _, c = umg
+    job = {"stopp": "behalten", "status": "in_arbeit", "zwischenstand": None, "format": "seite"}
+    f.antworten += [[job], [{"e": {"status": "fehler"}}]]
+    f.fehler += [None, _db_fehler("Inzwischen gibt es Fassung 9 - neu laden oder als Kopie behalten")]
+    assert c.post(GESTOPPT, json={"seite": _seite()}, headers=HB).json() == {"status": "fehler"}
+    assert "pult_chat_stopp_abschliessen_seite(" in f.sql[2] and ", NULL, " in f.sql[2]
+    assert "Inzwischen gespeichert" in f.sql[2]
+
+
+def test_rueckgaengig_seite(umg):
+    f, _, c = umg
+    s = _seite()
+    f.antworten += [[{"fassung_vorher": 3, "fassung_nachher": 5, "bloecke": None, "format": "seite", "seite": s,
+                      "betreff": "B", "vorschautext": "V", "neueste": 5}], [{"fassung": 6, "gesperrt": False}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/chat/rueckgaengig", json={"auftrag": AID}, headers=H)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"fassung": 6}
+    assert "f.format, f.seite" in f.sql[0]
+    assert "marketing.pult_seite_speichern(" in f.sql[1] and ", 5, 'B', 'V'," in f.sql[1]
+    assert '"ebenen"' in f.sql[1] and "'betreiber', false" in f.sql[1]
+    assert "<> 'seite' THEN NULL ELSE" in f.sql[1]          # nur solange die neueste Fassung eine Collage ist
+    f.antworten += [[{"fassung_vorher": 3, "fassung_nachher": 5, "bloecke": None, "format": "seite", "seite": s,
+                      "betreff": "B", "vorschautext": "V", "neueste": 6}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/chat/rueckgaengig", json={"auftrag": AID}, headers=H)
+    assert r.status_code == 422 and "neuere Fassung" in r.json()["detail"]

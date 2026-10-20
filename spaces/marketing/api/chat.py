@@ -27,11 +27,11 @@ from starlette.concurrency import run_in_threadpool
 from spaces.marketing.api.bilder import (_BILDTYP, _PLATZ, VORLAGEN_MAX as BILD_VORLAGEN_MAX, _agent_schluessel,
                                          _anlegen, _auftrag_id, _bild_schluessel, _im_ordner, _ordner)
 from spaces.marketing.api.gestaltung import aufraeumen_falls_faellig, gestaltungen_rechnen, quellen
-from spaces.marketing.api.pult import (COLLAGE_CHAT, _STATUS, _auswahl, _erzeugt_ordner, _laden_lesen, _lesen,
-                                       _lesen_einer, _mandant, _medien_datei, _schluessel, _schreiben,
+from spaces.marketing.api.pult import (COLLAGE_IST_NICHT, _STATUS, _auswahl, _erzeugt_ordner, _laden_lesen,
+                                       _lesen, _lesen_einer, _mandant, _medien_datei, _schluessel, _schreiben,
                                        _uuid_oder_404, lit, mit_formatsperre)
 from spaces.marketing.api.medien_mandant import ist_fremd, sicht, zuordnen_fuer_inhalt
-from spaces.marketing.claw import gestaltung, schoenheit, vorlagen_marke
+from spaces.marketing.claw import gestaltung, schoenheit, seite, vorlagen_marke
 
 log = logging.getLogger(__name__)
 pult_router = APIRouter(prefix="/api/pult")
@@ -130,12 +130,11 @@ def _anhaenge_pruefen(anhaenge) -> None:
 
 
 def _chat_senden(i: str, nachricht: str, kontext: dict) -> dict:
-    """Chat-Runde anlegen (Editor und Agent). Der Chat-Arbeiter kennt bis Stufe 3 nur Bloecke: ist die neueste
-    Fassung eine Collage (format 'seite'), 409 - geprueft in DERSELBEN Abfrage, pult_chat_senden laeuft dann
-    nicht (CASE wertet den ELSE-Zweig mit der volatilen Funktion nur bei Bedarf aus)."""
-    zeile = mit_formatsperre(i, lambda:
-        f"marketing.pult_chat_senden({lit(i)}::uuid, {lit(nachricht)}, "
-        f"{lit(json.dumps(kontext, ensure_ascii=False))}::jsonb)", grund=COLLAGE_CHAT, spalte="s")
+    """Chat-Runde anlegen (Editor und Agent), fuer Bloecke wie fuer Collagen (Stufe 3: der Chat-Arbeiter
+    bearbeitet auch format 'seite'). Einreichen, Versand, /bloecke und /vorlage bleiben formatgesperrt."""
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_chat_senden({lit(i)}::uuid, {lit(nachricht)}, "
+        f"{lit(json.dumps(kontext, ensure_ascii=False))}::jsonb) AS s")
     s = zeile.get("s") or {}
     return {"auftrag": str(s.get("id")), "status": "wartet" if s.get("status") == "wartet" else "offen"}
 
@@ -252,7 +251,8 @@ def chat_rueckgaengig(iid: str, payload: dict = Body(...), x_pult_key: str | Non
         raise HTTPException(422, "auftrag fehlt")
     a = _auftrag_id(a)
     z = _lesen_einer(lambda:
-        "SELECT a.fassung_vorher, a.fassung_nachher, f.bloecke, coalesce(f.felder->>'betreff', '') AS betreff, "
+        "SELECT a.fassung_vorher, a.fassung_nachher, f.bloecke, f.format, f.seite, "
+        "coalesce(f.felder->>'betreff', '') AS betreff, "
         "coalesce(f.felder->>'vorschautext', '') AS vorschautext, "
         "(SELECT max(fassung) FROM marketing.inhalt_fassungen WHERE inhalt = a.inhalt) AS neueste "
         "FROM marketing.chat_auftraege a JOIN marketing.inhalt_fassungen f "
@@ -261,6 +261,8 @@ def chat_rueckgaengig(iid: str, payload: dict = Body(...), x_pult_key: str | Non
         "AND a.status = 'fertig' AND a.fassung_nachher IS NOT NULL")
     if not z:
         raise HTTPException(422, "Dieser Auftrag hat nichts geändert, das sich rückgängig machen ließe")
+    if z.get("format") == "seite":
+        return _rueckgaengig_seite(i, z)
     if not isinstance(z.get("bloecke"), dict):
         raise HTTPException(422, "Die vorige Fassung hat keine Blöcke")
     if z.get("fassung_nachher") != z.get("neueste"):
@@ -269,6 +271,20 @@ def chat_rueckgaengig(iid: str, payload: dict = Body(...), x_pult_key: str | Non
         f"SELECT marketing.pult_bloecke_speichern({lit(i)}::uuid, {int(z['neueste'])}, {lit(z['betreff'])}, "
         f"{lit(z['vorschautext'])}, {lit(json.dumps(z['bloecke'], ensure_ascii=False))}::jsonb, "
         "'betreiber', false) AS fassung")
+    return {"fassung": int(zeile["fassung"])}
+
+
+def _rueckgaengig_seite(i: str, z: dict) -> dict:
+    """Collage: die Seite der Fassung vor der Runde als neue Fassung (wie der Block-Weg, Urheber betreiber).
+    Nur solange die neueste Fassung eine Collage ist (mit_formatsperre, dieselbe Abfrage)."""
+    if not isinstance(z.get("seite"), dict):
+        raise HTTPException(422, "Die vorige Fassung hat keine Seite")
+    if z.get("fassung_nachher") != z.get("neueste"):
+        raise HTTPException(422, "Seitdem gibt es eine neuere Fassung – Rückgängig ist nicht mehr möglich.")
+    zeile = mit_formatsperre(i, lambda:
+        f"marketing.pult_seite_speichern({lit(i)}::uuid, {int(z['neueste'])}, {lit(z['betreff'])}, "
+        f"{lit(z['vorschautext'])}, {lit(json.dumps(z['seite'], ensure_ascii=False))}::jsonb, "
+        "'betreiber', false)", collage=True, grund=COLLAGE_IST_NICHT)
     return {"fassung": int(zeile["fassung"])}
 
 
@@ -484,12 +500,36 @@ def _markenlogos(mandant) -> tuple[str | None, str | None]:
     return logo, dunkel
 
 
+def _kompositionen(mandant, inhalt) -> list:
+    """Seiten der letzten Collagen derselben Firma ohne die aktuelle (Abwechslung, 080). Wirft nie:
+    der Auftrag ist schon vergeben, ohne Kompositionen arbeitet der Assistent trotzdem."""
+    if not isinstance(mandant, str) or not mandant or not inhalt:
+        return []
+    try:
+        z = _lesen_einer(lambda:
+            f"SELECT marketing.pult_seite_kompositionen({lit(mandant)}, {lit(str(inhalt))}::uuid) AS k")
+    except HTTPException as e:
+        log.warning("Kompositionen nicht lesbar: %s", e.detail)
+        return []
+    k = (z or {}).get("k")
+    return k if isinstance(k, list) else []
+
+
 @arbeiter_router.post("/naechster")
 def arbeiter_naechster(x_bild_key: str | None = Header(None)):
+    """Vergibt die naechste Runde. Ist die Basisfassung eine Collage, traegt der Auftrag format 'seite', die Seite
+    und die Kompositionen; Format und Seite kommen aus DERSELBEN Abfrage (pult_chat_naechster laeuft genau einmal:
+    MATERIALIZED). Sonst format 'bloecke', der Auftrag bleibt wie bisher."""
     _bild_schluessel(x_bild_key)
-    zeile = _schreiben(lambda: f"SELECT marketing.pult_chat_naechster({lit(FRIST)}::interval) AS a")
+    zeile = _schreiben(lambda:
+        f"WITH x AS MATERIALIZED (SELECT marketing.pult_chat_naechster({lit(FRIST)}::interval) AS a) "
+        "SELECT CASE WHEN n.format = 'seite' THEN x.a || jsonb_build_object('format', 'seite', 'seite', n.seite) "
+        "ELSE x.a END AS a FROM x LEFT JOIN marketing.inhalt_fassungen n "
+        "ON n.inhalt = (x.a->>'inhalt')::uuid AND n.fassung = (x.a->>'fassung')::int")
     a = zeile.get("a")
     if isinstance(a, dict) and a.get("id"):
+        if a.get("format") != "seite":
+            a["format"] = "bloecke"
         m = a.get("mandant")
         try:
             s = sicht(m)
@@ -500,6 +540,8 @@ def arbeiter_naechster(x_bild_key: str | None = Header(None)):
             a["mandant_name"] = m
             a["medien_hinweis"] = ZUORDNUNG_FEHLT
         a["rueckmeldungen_offen"] = _rueckmeldungen_offen(a.get("inhalt"))
+        if a["format"] == "seite":
+            a["kompositionen"] = _kompositionen(m, a.get("inhalt"))
         a["markenlogo"], a["markenlogo_dunkel"] = _markenlogos(m)
         vorne = [x[len("medien:"):] for x in (a["markenlogo"], a["markenlogo_dunkel"]) if x]
         if vorne:
@@ -527,16 +569,23 @@ def arbeiter_neueste(aid: str, x_bild_key: str | None = Header(None)):
     a = _auftrag_id(aid)
     job = _in_arbeit(a)
     z = _lesen_einer(lambda:
-        "SELECT fassung, bloecke FROM marketing.inhalt_fassungen "
+        "SELECT fassung, bloecke, format, seite FROM marketing.inhalt_fassungen "
         f"WHERE inhalt = {lit(str(job['inhalt']))}::uuid ORDER BY fassung DESC LIMIT 1")
+    if z and z.get("format") == "seite":
+        if not isinstance(z.get("seite"), dict):
+            raise HTTPException(409, "Die Collage hat keine Seite")
+        return {"fassung": int(z["fassung"]), "seite": z["seite"]}
     if not z or not isinstance(z.get("bloecke"), dict):
         raise HTTPException(409, "Der Newsletter hat keine Blöcke")
     return {"fassung": int(z["fassung"]), "bloecke": z["bloecke"]}
 
 
-def _fremde_neu(a: str, job: dict, bloecke: dict, basis: int | None = None) -> str | None:
+def _fremde_neu(a: str, job: dict, bloecke: dict, basis: int | None = None, spalte: str = "bloecke") -> str | None:
     """Verweist die neue Fassung auf ein Bild einer anderen Firma, das die Basisfassung nicht
-    schon hatte? Altbestand bleibt unbeanstandet (sonst waere jede Aenderung blockiert)."""
+    schon hatte? Altbestand bleibt unbeanstandet (sonst waere jede Aenderung blockiert).
+    spalte: woraus die Basisfassung gelesen wird - "bloecke" oder "seite" (Collage)."""
+    if spalte not in ("bloecke", "seite"):
+        raise ValueError(spalte)
     verweise = set(_MEDIEN_VERWEIS.findall(json.dumps(bloecke, ensure_ascii=False)))
     if not verweise:
         return None
@@ -547,9 +596,9 @@ def _fremde_neu(a: str, job: dict, bloecke: dict, basis: int | None = None) -> s
         return None
     bedingung = f"f.fassung = {int(basis)}" if basis is not None else "f.fassung = a.fassung_vorher"
     alt_dok = _lesen_einer(lambda:
-        "SELECT f.bloecke FROM marketing.chat_auftraege a JOIN marketing.inhalt_fassungen f "
+        f"SELECT f.{spalte} FROM marketing.chat_auftraege a JOIN marketing.inhalt_fassungen f "
         f"ON f.inhalt = a.inhalt AND {bedingung} WHERE a.id = {lit(a)}::uuid")
-    alt = set(_MEDIEN_VERWEIS.findall(json.dumps((alt_dok or {}).get("bloecke"), ensure_ascii=False)))
+    alt = set(_MEDIEN_VERWEIS.findall(json.dumps((alt_dok or {}).get(spalte), ensure_ascii=False)))
     rest = fremd - alt
     return BILD_FREMD + ", ".join(sorted(rest)) if rest else None
 
@@ -607,22 +656,55 @@ def _rechnen_und_pruefen(bloecke: dict) -> tuple[dict | None, list[str], str | N
     return bloecke, h + [b["satz"] for b in schoenheit.bloecke_pruefen(bloecke)], None
 
 
-def _abschliessen_sql(a: str, bloecke: dict | None, hinweis: str, basis: int | None = None) -> dict:
+def _seite_pflicht(wert) -> dict:
+    """Seite des Arbeiters durch seite.pruefen (Seitenregeln wie Stufe 1); weiter geht das normalisierte
+    Dokument. Fehler -> 422 mit dem deutschen Grund, vor jeder Abfrage."""
+    try:
+        return seite.pruefen(wert)
+    except seite.SeiteFehler as e:
+        raise HTTPException(422, str(e))
+
+
+def _bloecke_oder_seite(payload: dict, pflicht: bool) -> tuple[dict | None, dict | None]:
+    """(bloecke, seite) aus dem Body: hoechstens einer der beiden Schluessel, bei pflicht genau einer.
+    Eine Seite kommt geprueft und normalisiert zurueck (Collage: kein Rechnen, Validator, keine Schoenheit)."""
+    bloecke, roh = payload.get("bloecke"), payload.get("seite")
+    if bloecke is not None and roh is not None:
+        raise HTTPException(422, "Nur bloecke oder seite, nicht beides")
+    if roh is not None:
+        return None, _seite_pflicht(roh)
+    if pflicht and not isinstance(bloecke, dict):
+        raise HTTPException(422, "bloecke muss ein Objekt sein")
+    if bloecke is not None and not isinstance(bloecke, dict):
+        raise HTTPException(422, "bloecke muss ein Objekt oder null sein")
+    return bloecke, None
+
+
+def _abschliessen_sql(a: str, bloecke: dict | None, hinweis: str, basis: int | None = None,
+                      ist_seite: bool = False) -> dict:
+    fn = "pult_chat_stopp_abschliessen_seite" if ist_seite else "pult_chat_stopp_abschliessen"
     zeile = _schreiben(lambda:
-        f"SELECT marketing.pult_chat_stopp_abschliessen({lit(a)}::uuid, "
+        f"SELECT marketing.{fn}({lit(a)}::uuid, "
         + (f"{lit(json.dumps(bloecke, ensure_ascii=False))}::jsonb" if bloecke is not None else "NULL")
         + f", {lit(hinweis)}, {int(basis) if basis is not None else 'NULL'}) AS e")
     return zeile.get("e") or {}
 
 
-def _stopp_abschliessen(a: str, job: dict, bloecke, basis: int | None = None, extra: list[str] | None = None) -> dict:
+def _stopp_abschliessen(a: str, job: dict, bloecke, basis: int | None = None, extra: list[str] | None = None,
+                        ist_seite: bool = False) -> dict:
     """Schliesst einen gestoppten Auftrag ab. Nur bei 'behalten' (und noch in_arbeit) wird gerechnet und geprueft;
     ungueltig => NULL mit Hinweis. basis/extra: der Arbeiter hat auf eine neuere Fassung nachgespielt. Hat jemand
     inzwischen gespeichert oder lehnt die DB das Speichern ab, zweiter Versuch mit NULL - der Auftrag darf nie
-    in_arbeit haengen bleiben."""
+    in_arbeit haengen bleiben. ist_seite (Collage): bloecke ist eine Seite; geprueft wird nur mit seite.pruefen,
+    gespeichert ueber pult_chat_stopp_abschliessen_seite."""
     hinweis = ""
     if job.get("status") != "in_arbeit" or job.get("stopp") != "behalten" or not isinstance(bloecke, dict):
         bloecke = None
+    elif ist_seite:
+        try:
+            bloecke = seite.pruefen(bloecke)
+        except seite.SeiteFehler as e:
+            bloecke, hinweis = None, STOPP_UNGUELTIG + str(e)
     else:
         try:
             bloecke, hinweise, fehler = _rechnen_und_pruefen(bloecke)
@@ -634,18 +716,21 @@ def _stopp_abschliessen(a: str, job: dict, bloecke, basis: int | None = None, ex
     if extra:
         hinweis = "; ".join([*extra, hinweis] if hinweis else extra)
     try:
-        return _abschliessen_sql(a, bloecke, hinweis, basis if bloecke is not None else None)
+        return _abschliessen_sql(a, bloecke, hinweis, basis if bloecke is not None else None, ist_seite)
     except HTTPException as e:
         if bloecke is None or e.status_code != 422:
             raise                      # 503 bleibt wiederholbar
         if str(e.detail).startswith("Inzwischen gibt es Fassung"):
-            return _abschliessen_sql(a, None, STOPP_GESPEICHERT)
-        return _abschliessen_sql(a, None, STOPP_UNGUELTIG + str(e.detail))
+            return _abschliessen_sql(a, None, STOPP_GESPEICHERT, ist_seite=ist_seite)
+        return _abschliessen_sql(a, None, STOPP_UNGUELTIG + str(e.detail), ist_seite=ist_seite)
 
 
 def _gestoppter_auftrag(a: str) -> dict | None:
+    """Stopp-Stand samt Format der neuesten Fassung (Collage: der Zwischenstand ist eine Seite)."""
     return _lesen_einer(lambda:
-        f"SELECT stopp, status, zwischenstand FROM marketing.chat_auftraege WHERE id = {lit(a)}::uuid")
+        "SELECT stopp, status, zwischenstand, (SELECT f.format FROM marketing.inhalt_fassungen f "
+        "WHERE f.inhalt = chat_auftraege.inhalt ORDER BY f.fassung DESC LIMIT 1) AS format "
+        f"FROM marketing.chat_auftraege WHERE id = {lit(a)}::uuid")
 
 
 def _stopps_abschliessen() -> None:
@@ -661,7 +746,7 @@ def _stopps_abschliessen() -> None:
         try:
             job = _gestoppter_auftrag(a)
             if job:
-                _stopp_abschliessen(a, job, job.get("zwischenstand"))
+                _stopp_abschliessen(a, job, job.get("zwischenstand"), ist_seite=job.get("format") == "seite")
         except Exception as e:   # noqa: BLE001 - naechster Abruf versucht es erneut
             log.warning("Stopp von %s nicht abgeschlossen: %s", a, getattr(e, "detail", e))
 
@@ -670,10 +755,10 @@ def _stopps_abschliessen() -> None:
 def arbeiter_pruefen(aid: str, payload: dict = Body(...), x_bild_key: str | None = Header(None)):
     _bild_schluessel(x_bild_key)
     a = _auftrag_id(aid)
-    bloecke = payload.get("bloecke")
-    if not isinstance(bloecke, dict):
-        raise HTTPException(422, "bloecke muss ein Objekt sein")
+    bloecke, dok = _bloecke_oder_seite(payload, pflicht=True)
     job = _in_arbeit(a)
+    if dok is not None:                # Collage: Seitenregeln schon geprueft, hier nur fremde Bilder
+        return {"fehler": _fremde_neu(a, job, dok, spalte="seite")}
     return {"fehler": _fremde_neu(a, job, bloecke) or _gestaltung_fehler(bloecke) or _bloecke_fehler(bloecke)}
 
 
@@ -714,12 +799,11 @@ def _bildauftraege_formen(roh) -> list[dict]:
 def arbeiter_fertig(aid: str, payload: dict = Body(...), x_bild_key: str | None = Header(None)):
     _bild_schluessel(x_bild_key)
     a = _auftrag_id(aid)
-    antwort, bloecke = payload.get("antwort"), payload.get("bloecke")
+    antwort = payload.get("antwort")
     export_vorschlag, notiz = payload.get("export_vorschlag"), payload.get("notiz", "")
     if not isinstance(antwort, str):
         raise HTTPException(422, "antwort muss Text sein")
-    if bloecke is not None and not isinstance(bloecke, dict):
-        raise HTTPException(422, "bloecke muss ein Objekt oder null sein")
+    bloecke, dok = _bloecke_oder_seite(payload, pflicht=False)
     if export_vorschlag is not None and not isinstance(export_vorschlag, dict):
         raise HTTPException(422, "export_vorschlag muss ein Objekt oder null sein")
     if not isinstance(notiz, str) or len(notiz) > 500:
@@ -728,7 +812,11 @@ def arbeiter_fertig(aid: str, payload: dict = Body(...), x_bild_key: str | None 
     auftraege = _bildauftraege_formen(payload.get("bildauftraege", []))
     job = _in_arbeit(a)
     hinweise: list[str] = list(extra)
-    if bloecke is not None:
+    if dok is not None:                # Collage: kein Rechnen, Validator, Schoenheit - nur fremde Bilder
+        f = _fremde_neu(a, job, dok, basis, spalte="seite")
+        if f:
+            return _zurueck(a, NICHT_UMGESETZT + f)
+    elif bloecke is not None:
         f = _fremde_neu(a, job, bloecke, basis)
         if f:
             return _zurueck(a, NICHT_UMGESETZT + f)
@@ -738,10 +826,11 @@ def arbeiter_fertig(aid: str, payload: dict = Body(...), x_bild_key: str | None 
         hinweise += h
     hinweise += [f"{b.get('platz', 'Bild')}: {b['grund']}" for b in auftraege if "grund" in b]
     ergebnis = {"export_vorschlag": export_vorschlag, "notiz": notiz, "bildauftraege": auftraege}
+    fn, neu = ("pult_chat_fertig_seite", dok) if dok is not None else ("pult_chat_fertig", bloecke)
     try:
         zeile = _schreiben(lambda:
-            f"SELECT marketing.pult_chat_fertig({lit(a)}::uuid, {lit(antwort[:4000])}, "
-            + (f"{lit(json.dumps(bloecke, ensure_ascii=False))}::jsonb" if bloecke is not None else "NULL")
+            f"SELECT marketing.{fn}({lit(a)}::uuid, {lit(antwort[:4000])}, "
+            + (f"{lit(json.dumps(neu, ensure_ascii=False))}::jsonb" if neu is not None else "NULL")
             + f", {lit(json.dumps(hinweise, ensure_ascii=False))}::jsonb, "
             f"{lit(json.dumps(ergebnis, ensure_ascii=False))}::jsonb, "
             f"{int(basis) if basis is not None else 'NULL'}) AS e")
@@ -811,16 +900,16 @@ async def arbeiter_zwischenstand(aid: str, request: Request, x_bild_key: str | N
     _bild_schluessel(x_bild_key)
     a = _auftrag_id(aid)
     payload = await _json_gekappt(request, ZWISCHENSTAND_KOERPER_MAX)
-    bloecke, schritt, nr = payload.get("bloecke"), payload.get("schritt", ""), payload.get("nr", 0)
-    if not isinstance(bloecke, dict):
-        raise HTTPException(422, "bloecke muss ein Objekt sein")
+    schritt, nr = payload.get("schritt", ""), payload.get("nr", 0)
+    bloecke, dok = _bloecke_oder_seite(payload, pflicht=True)
+    stand = dok if dok is not None else bloecke    # Collage: die geprueft-normalisierte Seite
     if not isinstance(schritt, str) or len(schritt) > SCHRITT_MAX:
         raise HTTPException(422, f"schritt muss Text mit hoechstens {SCHRITT_MAX} Zeichen sein")
     if isinstance(nr, bool) or not isinstance(nr, int) or not 0 <= nr < 2 ** 31:
         raise HTTPException(422, "nr muss eine ganze Zahl >= 0 sein")
     zeile = await run_in_threadpool(_schreiben, lambda:
         f"SELECT marketing.pult_chat_zwischenstand({lit(a)}::uuid, "
-        f"{lit(json.dumps(bloecke, ensure_ascii=False))}::jsonb, {lit(schritt)}, {nr}, {lit(FRIST)}::interval) AS z")
+        f"{lit(json.dumps(stand, ensure_ascii=False))}::jsonb, {lit(schritt)}, {nr}, {lit(FRIST)}::interval) AS z")
     return zeile.get("z") or {"weiter": False, "grund": "verloren"}
 
 
@@ -859,16 +948,19 @@ async def arbeiter_gestoppt(aid: str, request: Request, x_bild_key: str | None =
     _bild_schluessel(x_bild_key)
     a = _auftrag_id(aid)
     payload = await _json_gekappt(request, ZWISCHENSTAND_KOERPER_MAX)
-    bloecke = payload.get("bloecke")
-    if bloecke is not None and not isinstance(bloecke, dict):
-        raise HTTPException(422, "bloecke muss ein Objekt oder null sein")
+    bloecke, dok = _bloecke_oder_seite(payload, pflicht=False)
     basis, extra = _basis_und_hinweise(payload)
 
     def abschliessen() -> dict:
         job = _gestoppter_auftrag(a)
         if not job:
             raise HTTPException(404, "Unbekannter Auftrag")
-        return _stopp_abschliessen(a, job, bloecke if bloecke is not None else job.get("zwischenstand"), basis, extra)
+        if dok is not None:
+            return _stopp_abschliessen(a, job, dok, basis, extra, ist_seite=True)
+        if bloecke is not None:
+            return _stopp_abschliessen(a, job, bloecke, basis, extra)
+        return _stopp_abschliessen(a, job, job.get("zwischenstand"), basis, extra,
+                                   ist_seite=job.get("format") == "seite")
     return await run_in_threadpool(abschliessen)
 
 
