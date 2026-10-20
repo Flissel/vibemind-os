@@ -183,6 +183,29 @@ $Dienste = @(
         Cwd  = $OsRoot
         Env  = @{}
         Was  = 'Video-Claw-Arbeiter (Reel-Auftraege von der VM, baut mit Laura, MP4 in die Medien)'
+    },
+    @{
+        # Telegram (20.10.2026): eigene Modell-Tuer mit eigenem Budget-Namen, damit der Telegram-Assistent
+        # die Tagesgrenze des Pult-Chats (marketing-chat) nicht mitbenutzt. Werkzeuge wie :8117.
+        Name = 'marketing_telegram_shim'
+        Port = 8143
+        Args = @((Join-Path $SpaceRoot 'claw\shim\marketing_shim.py'),
+                 '--host', '127.0.0.1', '--port', '8143', '--timeout', '900')
+        Cwd  = $Root
+        Env  = @{
+            SHIM_EXTRA_MCP_CONFIG = (Join-Path $SpaceRoot 'claw\shim\marketing-mcp.json')
+            VIBEMIND_AGENT        = 'marketing-telegram'
+            VIBEMIND_BUDGET_MODUL = 'C:\Users\User\Desktop\Vibemind_V1\scripts\claude_budget.py'
+        }
+        Was  = 'Modell-Tuer :8143 nur fuer den Telegram-Assistenten (Budget marketing-telegram)'
+    },
+    @{
+        Name = 'marketing_telegram_bot'
+        Port = 8144
+        Args = @('-u', '-m', 'spaces.marketing.workers.telegram_bot')
+        Cwd  = $OsRoot
+        Env  = @{}
+        Was  = 'Telegram-Assistent @VibeMindMarketingBot (nur der Betreiber, fragt ueber :8143)'
     }
 )
 

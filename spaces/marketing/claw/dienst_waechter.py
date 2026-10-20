@@ -72,6 +72,8 @@ REGELN: dict[str, Regel] = {
     "marketing_video_werkzeuge": Regel(None, False, True),
     "marketing_video_shim": Regel("/health", True, True),
     "marketing_video_claw": Regel("/", True, True),
+    "marketing_telegram_shim": Regel("/health", True, True),
+    "marketing_telegram_bot": Regel("/health", True, True),
 }
 # Ein neuer Dienst im Startskript wird gestartet, wenn er fehlt, aber nie wegen Stille beendet.
 STANDARD = Regel(None, False, True)
