@@ -63,6 +63,7 @@ def test_textband_mj_text_mit_arial_stapel_ohne_webschrift():
     assert 'text-transform="uppercase"' in t and 'font-style="italic"' in t
     # Rahmen: links 60, rechts 540, oben 50 (Band beginnt bei 0)
     assert 'padding-left="60px"' in t and 'padding-right="60px"' in t and 'padding-top="50px"' in t
+    assert 'height="100px"' in t   # deklarierte Kastenhoehe bleibt reserviert
     assert '<mj-section background-color="#fafafa"' in m
 
 
@@ -84,11 +85,19 @@ def test_vorname_bleibt_im_versand_sonst_platzhalter():
     assert "[Abmeldelink]" in vorschau and "{abmeldelink}" not in vorschau
 
 
-def test_fett_und_nur_https_links():
-    s = seite([text("a", 100, t="**fett** und [hier](https://example.com/x)")])
+def test_fett_kursiv_und_https_link_werden_auszeichnung():
+    # Andere Ziele als https lehnt seite.pruefen schon ab; hier zaehlt, dass der https-Link ein echter Link wird.
+    s = seite([text("a", 100, t="**fett**, *schief* und [hier](https://example.com/x)")])
     m = bau(s)
-    assert "<strong>fett</strong>" in m
-    assert 'href="https://example.com/x"' in m
+    assert "<strong>fett</strong>" in m and "<em>schief</em>" in m
+    assert re.search(r'<a href="https://example.com/x"[^>]*>hier</a>', m)
+    assert "[hier]" not in m and "**" not in m
+
+
+def test_link_ohne_https_wird_abgelehnt():
+    from spaces.marketing.claw.seite import SeiteFehler
+    with pytest.raises(SeiteFehler):
+        bau(seite([text("a", 100, t="[hier](http://example.com/x)")]))
 
 
 def test_knopf_im_textband_wird_mj_button():
@@ -166,6 +175,12 @@ def test_anrede_in_bild():
     s = seite([bild("b", 300), text("t", 300, t="Hi {vorname}", deckkraft=0.5),
                text("frei", 700, t="Hallo {vorname}", hoehe=60)])
     assert sm.anrede_in_bild(s) == ["t"]
+
+
+def test_anrede_im_gedrehten_knopf_im_bild():
+    s = seite([knopf("k", 300, t="Los, {vorname}", drehung=8),
+               knopf("frei", 600, t="Hallo {vorname}")])
+    assert sm.anrede_in_bild(s) == ["k"]
 
 
 def test_gerendert_mit_mso_ohne_script():

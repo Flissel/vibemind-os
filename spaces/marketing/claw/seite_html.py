@@ -48,7 +48,9 @@ def _inline(text: str) -> str:
     return "".join(teile).replace("\r\n", "\n").replace("\n", "<br>")
 
 
-inline = _inline  # oeffentlich fuer die Mail-Fassung (seite_mail)
+# oeffentlich fuer die Mail-Fassung (seite_mail)
+inline = _inline
+TEXTLINK = _TEXTLINK
 
 
 def _familie(s: dict, rolle: str) -> str:

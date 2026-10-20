@@ -44,7 +44,7 @@ def _stapel(s: dict, rolle: str) -> str:
 
 def _schlicht(text: str) -> str:
     """Text ohne Auszeichnung; Links nur mit ihrer Beschriftung."""
-    return bloecke_mjml.schlicht(seite_html._TEXTLINK.sub(lambda m: m.group(1), text))
+    return bloecke_mjml.schlicht(seite_html.TEXTLINK.sub(lambda m: m.group(1), text))
 
 
 def _vorbereitet(seite: dict) -> tuple[dict, list[seite_streifen.Band], dict[str, dict]]:
@@ -78,13 +78,14 @@ def stuecke(seite: dict) -> list[Stueck]:
 
 
 def anrede_in_bild(seite: dict) -> list[str]:
-    """IDs der Textebenen mit {vorname}, die in einem Bildband landen (dort ginge die Anrede verloren)."""
+    """IDs der Text- und Knopf-Ebenen mit {vorname}, die in einem Bildband landen (dort ginge die Anrede
+    verloren)."""
     _, baender, nach_id = _vorbereitet(seite)
     ids: list[str] = []
     for b in baender:
         if b.art == "bild":
-            ids += [i for i in b.ebenen if nach_id[i]["art"] == "text" and _ANREDE in nach_id[i]["text"]
-                    and i not in ids]
+            ids += [i for i in b.ebenen if nach_id[i]["art"] in ("text", "knopf")
+                    and _ANREDE in nach_id[i]["text"] and i not in ids]
     return ids
 
 
@@ -105,7 +106,9 @@ def _ebene(s: dict, e: dict, oben: float, unten_abstand: float) -> str:
         extra += ' text-transform="uppercase"'
     if e["kursiv"]:
         extra += ' font-style="italic"'
-    return (f'<mj-text {polster} align="{_AUSRICHTUNG[e["ausrichtung"]]}" color="{_a(e["farbe"])}" '
+    # height reserviert die deklarierte Kastenhoehe, damit die Abstaende dem Entwurf folgen
+    return (f'<mj-text {polster} height="{_px(e["hoehe"])}" align="{_AUSRICHTUNG[e["ausrichtung"]]}" '
+            f'color="{_a(e["farbe"])}" '
             f'font-family="{schrift}" font-size="{_px(e["groesse"])}" font-weight="{e["gewicht"]}" '
             f'line-height="{e["zeilenabstand"]:g}"{extra}>{seite_html.inline(e["text"])}</mj-text>')
 
@@ -116,11 +119,13 @@ def _textband(s: dict, b: seite_streifen.Band, nach_id: dict[str, dict]) -> str:
     if not ebenen:
         inhalt = f'<mj-spacer height="{_px(b.unten - b.oben)}" />'
     else:
+        # Invariante aus seite_streifen: Ebenen eines Textbands ueberlappen sich senkrecht nicht (sie stehen
+        # untereinander), also ist o >= cur. Die max()-Klemmen sind nur Absicherung (Abstaende nie negativ).
         teile, cur = [], b.oben
         for n, e in enumerate(ebenen):
             _, o, _, u = seite_streifen.rahmen(e)
             o, u = max(o, b.oben), min(u, b.unten)
-            rest = b.unten - u if n == len(ebenen) - 1 else 0
+            rest = b.unten - max(cur, u) if n == len(ebenen) - 1 else 0
             teile.append(_ebene(s, e, o - cur, rest))
             cur = max(cur, u)
         inhalt = "".join(teile)
