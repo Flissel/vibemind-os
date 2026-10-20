@@ -1,7 +1,8 @@
 -- RUNBOOK: nach 077 (und 079), unabhaengig von 078 (Marken-Chat). Idempotent, eine Transaktion. Nach jedem
--- Replay verify_080 laufen lassen. Nach einem Replay von 056, 057, 059, 063 oder 073 IMMER 080 erneut einspielen:
--- die ueberschreiben pult_bild_auftrag/pult_bild_einsetzen per Namen und damit die Huellen von 080 (die
--- umbenannten Originale bleiben, ein erneutes 080 legt nur die Huellen neu an).
+-- Replay verify_080 laufen lassen. Nach einem Replay von 056, 057, 059, 063, 067 oder 073 IMMER 080 erneut
+-- einspielen: die ueberschreiben pult_bild_auftrag/pult_bild_einsetzen/pult_bild_datei_fehler bzw.
+-- pult_chat_fertig/pult_chat_stopp_abschliessen per Namen und damit die Huellen von 080 (die umbenannten
+-- Originale bleiben, ein erneutes 080 legt nur die Huellen neu an).
 -- 080: Assistent fuer Collagen (sales-claw Plan 2026-10-20-freie-flaeche-stufe3-assistent, Task 1).
 --   Hinweis: der Plan nennt diese Migration 079; die Nummer hat inzwischen 079_titel_eindeutig belegt (live).
 --   1) pult_chat_fertig_seite / pult_chat_stopp_abschliessen_seite: woertlich wie pult_chat_fertig und
@@ -19,6 +20,14 @@
 --   3) pult_seite_kompositionen(p_mandant, p_ausser) RETURNS jsonb: [{"inhalt", "seite"}] der neuesten Fassung der
 --      letzten 5 Collagen (neueste Fassung im Format 'seite') dieser Firma, nach inhalte.erstellt_am absteigend,
 --      ohne p_ausser.
+--   4) Fix-Runde 1: Bloecke nie ueber eine Collage. pult_chat_fertig und pult_chat_stopp_abschliessen (067)
+--      bekommen Huellen (Originale _pult_chat_fertig_vor080 / _pult_chat_stopp_abschliessen_vor080): sollen
+--      Bloecke gespeichert werden und ist die neueste Fassung 'seite', Ausnahme "Das ist ein Collage-Newsletter
+--      – Blöcke werden nicht übernommen" (ein alter Block-Arbeiter waehrend des Umstiegs). Ohne Bloecke und bei
+--      Block-Newslettern laeuft unveraendert das Original.
+--   5) Fix-Runde 1: pult_bild_datei_fehler (056) bekommt eine Huelle (Original _pult_bild_datei_fehler_vor080):
+--      bei einer Collage dieselben Pruefungen (Auftrag, Vergabe, Platz), der Bildplatz ist eine Bild-Ebene mit
+--      Breite und Hoehe > 0 in der neuesten Seite. Sonst das Original.
 -- Sperrreihenfolge wie 061: erst marketing.inhalte, dann Auftraege.
 -- Rechte: wie 077 - EXECUTE fuer die drei neuen pult_-Funktionen nicht fuer PUBLIC (Aufrufer ist die API-Rolle).
 -- Die Huellen bekommen wie in 060 keine eigenen GRANTs (die Originale haben keine). Helfer bleiben offen.
@@ -36,6 +45,16 @@ DO $$ BEGIN
   END IF;
   IF to_regprocedure('marketing._pult_bild_einsetzen_vor080(uuid, jsonb, text)') IS NULL THEN
     ALTER FUNCTION marketing.pult_bild_einsetzen(uuid, jsonb, text) RENAME TO _pult_bild_einsetzen_vor080;
+  END IF;
+  IF to_regprocedure('marketing._pult_chat_fertig_vor080(uuid, text, jsonb, jsonb, jsonb, int)') IS NULL THEN
+    ALTER FUNCTION marketing.pult_chat_fertig(uuid, text, jsonb, jsonb, jsonb, int) RENAME TO _pult_chat_fertig_vor080;
+  END IF;
+  IF to_regprocedure('marketing._pult_chat_stopp_abschliessen_vor080(uuid, jsonb, text, int)') IS NULL THEN
+    ALTER FUNCTION marketing.pult_chat_stopp_abschliessen(uuid, jsonb, text, int)
+      RENAME TO _pult_chat_stopp_abschliessen_vor080;
+  END IF;
+  IF to_regprocedure('marketing._pult_bild_datei_fehler_vor080(uuid, text)') IS NULL THEN
+    ALTER FUNCTION marketing.pult_bild_datei_fehler(uuid, text) RENAME TO _pult_bild_datei_fehler_vor080;
   END IF;
 END $$;
 
@@ -284,6 +303,66 @@ LANGUAGE sql STABLE AS $$
            ORDER BY i.erstellt_am DESC, i.id DESC
            LIMIT 5) k
 $$;
+
+-- 8) Bloecke nie ueber eine Collage (Huellen um 067). Erst den Inhalt sperren (Reihenfolge wie 061), dann das
+--    Format der neuesten Fassung pruefen - das Original sperrt denselben Inhalt in derselben Transaktion erneut.
+CREATE OR REPLACE FUNCTION marketing.pult_chat_fertig(
+    p_auftrag uuid, p_antwort text, p_bloecke jsonb, p_hinweise jsonb, p_ergebnis jsonb, p_basis int DEFAULT NULL)
+RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE v_inhalt uuid;
+BEGIN
+  IF p_bloecke IS NOT NULL THEN
+    SELECT inhalt INTO v_inhalt FROM marketing.chat_auftraege WHERE id = p_auftrag;
+    IF FOUND THEN
+      PERFORM 1 FROM marketing.inhalte WHERE id = v_inhalt FOR UPDATE;
+      IF marketing._neuestes_format(v_inhalt) = 'seite' THEN
+        RAISE EXCEPTION 'Das ist ein Collage-Newsletter – Blöcke werden nicht übernommen'; END IF;
+    END IF;
+  END IF;
+  RETURN marketing._pult_chat_fertig_vor080(p_auftrag, p_antwort, p_bloecke, p_hinweise, p_ergebnis, p_basis);
+END $$;
+
+-- Stopp: nur wenn tatsaechlich gespeichert wuerde (in Arbeit, behalten); sonst meldet das Original den Endstand
+CREATE OR REPLACE FUNCTION marketing.pult_chat_stopp_abschliessen(
+    p_auftrag uuid, p_bloecke jsonb, p_hinweis text, p_basis int DEFAULT NULL) RETURNS jsonb
+LANGUAGE plpgsql AS $$
+DECLARE v_inhalt uuid; a record;
+BEGIN
+  IF p_bloecke IS NOT NULL THEN
+    SELECT inhalt INTO v_inhalt FROM marketing.chat_auftraege WHERE id = p_auftrag;
+    IF FOUND THEN
+      PERFORM 1 FROM marketing.inhalte WHERE id = v_inhalt FOR UPDATE;
+      SELECT status, stopp INTO a FROM marketing.chat_auftraege WHERE id = p_auftrag;
+      IF a.status = 'in_arbeit' AND a.stopp = 'behalten' AND marketing._neuestes_format(v_inhalt) = 'seite' THEN
+        RAISE EXCEPTION 'Das ist ein Collage-Newsletter – Blöcke werden nicht übernommen'; END IF;
+    END IF;
+  END IF;
+  RETURN marketing._pult_chat_stopp_abschliessen_vor080(p_auftrag, p_bloecke, p_hinweis, p_basis);
+END $$;
+
+-- 9) Dateipruefung des Bild-Arbeiters: Collage-Zweig (Pruefungen und Wortlaut wie 056), sonst das Original
+CREATE OR REPLACE FUNCTION marketing.pult_bild_datei_fehler(p_auftrag uuid, p_platz text) RETURNS text
+LANGUAGE plpgsql STABLE AS $$
+DECLARE a marketing.bild_auftraege; v_seite jsonb; v_nr int; e jsonb;
+BEGIN
+  SELECT * INTO a FROM marketing.bild_auftraege WHERE id = p_auftrag;
+  IF NOT FOUND OR marketing._neuestes_format(a.inhalt) IS DISTINCT FROM 'seite' THEN
+    RETURN marketing._pult_bild_datei_fehler_vor080(p_auftrag, p_platz);
+  END IF;
+  IF a.status <> 'in_arbeit' OR a.vergeben_bis IS NULL OR a.vergeben_bis < now() THEN
+    RETURN 'Auftrag ist nicht (mehr) in Arbeit'; END IF;
+  IF a.platz IS NOT NULL AND p_platz IS DISTINCT FROM a.platz THEN
+    RETURN 'Platz gehoert nicht zu diesem Auftrag'; END IF;
+  SELECT seite INTO v_seite FROM marketing.inhalt_fassungen
+   WHERE inhalt = a.inhalt ORDER BY fassung DESC LIMIT 1;
+  v_nr := marketing._seite_ebene_nr(v_seite, p_platz);
+  e := CASE WHEN v_nr IS NOT NULL THEN v_seite->'ebenen'->v_nr END;
+  IF NOT coalesce(CASE WHEN e->>'art' = 'bild' AND jsonb_typeof(e->'breite') = 'number'
+                            AND jsonb_typeof(e->'hoehe') = 'number'
+                       THEN (e->>'breite')::numeric > 0 AND (e->>'hoehe')::numeric > 0 END, false) THEN
+    RETURN 'Bildplatz gibt es nicht'; END IF;
+  RETURN NULL;
+END $$;
 
 REVOKE ALL ON FUNCTION marketing.pult_chat_fertig_seite(uuid, text, jsonb, jsonb, jsonb, int) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.pult_chat_stopp_abschliessen_seite(uuid, jsonb, text, int) FROM PUBLIC;

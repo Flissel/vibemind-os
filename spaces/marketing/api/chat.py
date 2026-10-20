@@ -59,6 +59,7 @@ STOPPS_JE_ABRUF = 2                        # Rechnen kostet; der Rest kommt beim
 STOPP_ARTEN = ("behalten", "verwerfen")
 STOPP_UNGUELTIG = "Zwischenstand nicht übernommen: "
 STOPP_GESPEICHERT = "Inzwischen gespeichert – Zwischenstand verworfen"
+COLLAGE_BLOECKE = "Das ist ein Collage-Newsletter – Blöcke werden nicht übernommen"   # Wortlaut wie 080
 _ENTWURF = re.compile(r"gs-[0-9a-f]{12}\.jpg")                                   # nur fullmatch
 _MEDIEN_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(png|jpe?g|gif|webp)")   # DB-URL-Regex ohne medien:
 # nur Arbeiter-Medienroute und Anhaenge: wie _MEDIEN_NAME, dazu Dokumente (Medienliste/DB bleiben bilderrein)
@@ -443,10 +444,13 @@ def export(iid: str, payload: dict = Body(...), x_pult_key: str | None = Header(
 
 
 def _in_arbeit(a: str, status_sonst: int = 409) -> dict:
-    """Auftrag lesen; nur in_arbeit mit gueltiger Vergabe zaehlt (sonst 404/status_sonst)."""
+    """Auftrag lesen; nur in_arbeit mit gueltiger Vergabe zaehlt (sonst 404/status_sonst). format = Format der
+    neuesten Fassung des Inhalts (Collage: keine Bloecke uebernehmen)."""
     z = _lesen_einer(lambda:
         "SELECT inhalt, art, status, kontext, coalesce(vergeben_bis > now(), false) AS gueltig, "
-        "(SELECT mandant FROM marketing.inhalte WHERE id = chat_auftraege.inhalt) AS mandant "
+        "(SELECT mandant FROM marketing.inhalte WHERE id = chat_auftraege.inhalt) AS mandant, "
+        "(SELECT f.format FROM marketing.inhalt_fassungen f WHERE f.inhalt = chat_auftraege.inhalt "
+        "ORDER BY f.fassung DESC LIMIT 1) AS format "
         f"FROM marketing.chat_auftraege WHERE id = {lit(a)}::uuid")
     if not z:
         raise HTTPException(404, "Unbekannter Auftrag")
@@ -811,6 +815,8 @@ def arbeiter_fertig(aid: str, payload: dict = Body(...), x_bild_key: str | None 
     basis, extra = _basis_und_hinweise(payload)
     auftraege = _bildauftraege_formen(payload.get("bildauftraege", []))
     job = _in_arbeit(a)
+    if bloecke is not None and job.get("format") == "seite":
+        raise HTTPException(409, COLLAGE_BLOECKE)     # die DB-Huelle (080) sperrt es noch einmal
     hinweise: list[str] = list(extra)
     if dok is not None:                # Collage: kein Rechnen, Validator, Schoenheit - nur fremde Bilder
         f = _fremde_neu(a, job, dok, basis, spalte="seite")
@@ -958,6 +964,8 @@ async def arbeiter_gestoppt(aid: str, request: Request, x_bild_key: str | None =
         if dok is not None:
             return _stopp_abschliessen(a, job, dok, basis, extra, ist_seite=True)
         if bloecke is not None:
+            if job.get("format") == "seite":
+                raise HTTPException(409, COLLAGE_BLOECKE)
             return _stopp_abschliessen(a, job, bloecke, basis, extra)
         return _stopp_abschliessen(a, job, job.get("zwischenstand"), basis, extra,
                                    ist_seite=job.get("format") == "seite")

@@ -831,27 +831,30 @@ def test_naechster_traegt_format_und_seite(db, c):
 
 
 def test_quelle_einer_bild_ebene(db, c):
+    """Die Ebenen-Pruefung macht pult_bild_datei_fehler (Collage-Zweig 080); die url kommt aus der quelle der
+    Bild-Ebene derselben neuesten Fassung (eine Abfrage fuer beide Formate)."""
     (db.ordner / "nl-1234abcd-held.jpg").write_bytes(jpeg())
-    db.antworten = [[{"f": "Bildplatz gibt es nicht", "format": "seite", "seite": _seite()}]]
+    db.antworten = [[{"f": None}], [{"url": "medien:nl-1234abcd-held.jpg"}]]
     r = c.get(f"/api/bilder/arbeiter/{AID}/quelle?platz=held", headers={"X-Bild-Key": BK})
     assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
-    assert len(db.sql) == 1 and "marketing.pult_bild_datei_fehler(" in db.sql[0]
-    db.antworten = [[{"f": None, "format": "seite", "seite": _seite(quelle="medien:platzhalter-2x1.png")}]]
-    assert c.get(f"/api/bilder/arbeiter/{AID}/quelle?platz=held", headers={"X-Bild-Key": BK}).status_code == 404
+    assert db.sql[0].startswith("SELECT marketing.pult_bild_datei_fehler(") and "'held'" in db.sql[0]
+    assert "f.format = 'seite'" in db.sql[1] and "e->>'quelle'" in db.sql[1] and "e->>'art' = 'bild'" in db.sql[1]
+    assert "e->>'id' = 'held'" in db.sql[1] and "ARRAY['held', 'data', 'props', 'url']" in db.sql[1]
+    db.antworten = [[{"f": "Bildplatz gibt es nicht"}]]
+    r = c.get(f"/api/bilder/arbeiter/{AID}/quelle?platz=titel", headers={"X-Bild-Key": BK})
+    assert r.status_code == 422 and r.json()["detail"] == "Bildplatz gibt es nicht"
 
 
 def test_bild_ablegen_fuer_eine_bild_ebene(db, c):
-    db.antworten = [[{"f": "Bildplatz gibt es nicht", "format": "seite", "seite": _seite()}]]
+    db.antworten = [[{"f": None}]]
     r = c.post(f"/api/bilder/arbeiter/{AID}/bild?platz=held", headers={"X-Bild-Key": BK}, content=jpeg())
     assert r.status_code == 200 and r.json() == {"name": "nl-0123abcd-held.jpg"}
-    # unbekannte Ebene, Text-Ebene, Block-Newsletter: der Grund der DB bleibt
-    collage = {"format": "seite", "seite": _seite()}
-    for zeile, platz in ((collage, "weg"), (collage, "titel"), ({"format": "bloecke", "seite": None}, "held")):
-        db.antworten = [[dict(zeile, f="Bildplatz gibt es nicht")]]
-        r = c.post(f"/api/bilder/arbeiter/{AID}/bild?platz={platz}", headers={"X-Bild-Key": BK}, content=jpeg())
-        assert r.status_code == 422 and r.json()["detail"] == "Bildplatz gibt es nicht"
-    # vorherige Gruende (Vergabe weg) gelten auch fuer Collagen
-    db.antworten = [[{"f": "Auftrag ist nicht (mehr) in Arbeit", "format": "seite", "seite": _seite()}]]
-    r = c.post(f"/api/bilder/arbeiter/{AID}/bild?platz=held", headers={"X-Bild-Key": BK}, content=jpeg())
-    assert r.status_code == 422 and "in Arbeit" in r.json()["detail"]
+    assert len(db.sql) == 1 and "marketing.pult_bild_datei_fehler(" in db.sql[0]
+    # die DB lehnt ab (Text-Ebene, Mass 0, unbekannte Ebene): Grund 1:1, keine Datei; keine Zeile: 503
+    db.antworten = [[{"f": "Bildplatz gibt es nicht"}]]
+    r = c.post(f"/api/bilder/arbeiter/{AID}/bild?platz=titel", headers={"X-Bild-Key": BK}, content=jpeg())
+    assert r.status_code == 422 and r.json()["detail"] == "Bildplatz gibt es nicht"
+    db.antworten = [[]]
+    r = c.post(f"/api/bilder/arbeiter/{AID}/bild?platz=weg", headers={"X-Bild-Key": BK}, content=jpeg())
+    assert r.status_code == 503
     assert sorted(p.name for p in db.ordner.iterdir()) == ["nl-0123abcd-held.jpg"]

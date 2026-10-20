@@ -281,33 +281,14 @@ def _jpeg_pruefen(roh: bytes) -> None:
         raise HTTPException(422, f"JPEG mit Kanten {KANTE_MIN}-{KANTE_MAX} px noetig")
 
 
-PLATZ_FEHLT = "Bildplatz gibt es nicht"   # Wortlaut von pult_bild_datei_fehler (056) fuer den letzten Schritt
-
-
-def _seite_bild_ebene(seite, platz: str) -> dict | None:
-    for e in (seite.get("ebenen") if isinstance(seite, dict) and isinstance(seite.get("ebenen"), list) else []):
-        if isinstance(e, dict) and e.get("id") == platz:
-            return e if e.get("art") == "bild" else None
-    return None
-
-
-def _datei_fehler(a: str, platz: str) -> dict:
-    """Darf der Arbeiter fuer diesen Platz liefern? -> {"f": Grund|None, "format", "seite"}; Grund -> 422.
-    pult_bild_datei_fehler (056) prueft Auftrag, Vergabe und Platz und zuletzt den Bildplatz in den BLOECKEN der
-    neuesten Fassung. Bei einer Collage ist dieser letzte Schritt hier der Blick auf die Bild-Ebene derselben
-    Abfrage (neueste Fassung); die vorherigen Gruende bleiben, wie die DB sie meldet."""
-    z = _lesen_einer(lambda:
-        f"SELECT marketing.pult_bild_datei_fehler({lit(a)}::uuid, {lit(platz)}) AS f, n.format, "
-        "CASE WHEN n.format = 'seite' THEN n.seite END AS seite FROM (SELECT 1) eins LEFT JOIN LATERAL ("
-        "SELECT x.format, x.seite FROM marketing.bild_auftraege b JOIN marketing.inhalt_fassungen x "
-        f"ON x.inhalt = b.inhalt WHERE b.id = {lit(a)}::uuid ORDER BY x.fassung DESC LIMIT 1) n ON true")
-    if z is None:
+def _datei_fehler(a: str, platz: str) -> None:
+    """Darf der Arbeiter fuer diesen Platz liefern? pult_bild_datei_fehler (056, Collage-Zweig seit 080) prueft
+    Auftrag, Vergabe, Platz und Bildplatz (Block bzw. Bild-Ebene mit Mass > 0). Grund -> 422, keine Zeile -> 503."""
+    fehler = _lesen_einer(lambda: f"SELECT marketing.pult_bild_datei_fehler({lit(a)}::uuid, {lit(platz)}) AS f")
+    if fehler is None:
         raise HTTPException(503, "Marketing-Datenbank nicht erreichbar")
-    if z.get("format") == "seite" and z.get("f") == PLATZ_FEHLT and _seite_bild_ebene(z.get("seite"), platz):
-        z = dict(z, f=None)
-    if z.get("f"):
-        raise HTTPException(422, str(z["f"]))
-    return z
+    if fehler.get("f"):
+        raise HTTPException(422, str(fehler["f"]))
 
 
 @router.get("/arbeiter/{aid}/quelle")
@@ -316,14 +297,15 @@ def arbeiter_quelle(aid: str, platz: str = Query(""), x_bild_key: str | None = H
     a = _auftrag_id(aid)
     if not _PLATZ.fullmatch(platz or ""):
         raise HTTPException(422, "platz muss eine Block-ID sein")
-    pruefung = _datei_fehler(a, platz)
-    if pruefung.get("format") == "seite":    # Collage: quelle der Bild-Ebene (neueste Fassung, dieselbe Abfrage)
-        z = {"url": (_seite_bild_ebene(pruefung.get("seite"), platz) or {}).get("quelle")}
-    else:
-        z = _lesen_einer(lambda:
-            "SELECT f.bloecke #>> ARRAY[" + lit(platz) + ", 'data', 'props', 'url'] AS url "
-            "FROM marketing.bild_auftraege b JOIN marketing.inhalt_fassungen f ON f.inhalt = b.inhalt "
-            f"WHERE b.id = {lit(a)}::uuid ORDER BY f.fassung DESC LIMIT 1")
+    _datei_fehler(a, platz)
+    # Collage: quelle der Bild-Ebene, sonst url des Image-Blocks - beides aus der neuesten Fassung
+    z = _lesen_einer(lambda:
+        "SELECT CASE WHEN f.format = 'seite' THEN (SELECT e->>'quelle' FROM jsonb_array_elements("
+        "CASE WHEN jsonb_typeof(f.seite->'ebenen') = 'array' THEN f.seite->'ebenen' ELSE '[]'::jsonb END) e "
+        f"WHERE e->>'id' = {lit(platz)} AND e->>'art' = 'bild' LIMIT 1) "
+        "ELSE f.bloecke #>> ARRAY[" + lit(platz) + ", 'data', 'props', 'url'] END AS url "
+        "FROM marketing.bild_auftraege b JOIN marketing.inhalt_fassungen f ON f.inhalt = b.inhalt "
+        f"WHERE b.id = {lit(a)}::uuid ORDER BY f.fassung DESC LIMIT 1")
     url = str((z or {}).get("url") or "")
     if not url.startswith("medien:") or bildplaetze.ist_leer(url):
         raise HTTPException(404, "Kein Bild im Platz")

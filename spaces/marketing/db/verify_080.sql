@@ -34,6 +34,16 @@ DO $$ BEGIN
   ASSERT (SELECT count(*) FROM pg_proc WHERE pronamespace = 'marketing'::regnamespace
            AND proname IN ('_pult_bild_auftrag_vor080', '_pult_bild_einsetzen_vor080')) = 3,
          '0: genau drei Originale';
+  -- Fix-Runde 1: Huellen um pult_chat_fertig, pult_chat_stopp_abschliessen, pult_bild_datei_fehler
+  ASSERT to_regprocedure('marketing._pult_chat_fertig_vor080(uuid, text, jsonb, jsonb, jsonb, int)') IS NOT NULL
+     AND to_regprocedure('marketing._pult_chat_stopp_abschliessen_vor080(uuid, jsonb, text, int)') IS NOT NULL
+     AND to_regprocedure('marketing._pult_bild_datei_fehler_vor080(uuid, text)') IS NOT NULL
+     AND to_regprocedure('marketing.pult_bild_datei_fehler(uuid, text)') IS NOT NULL,
+         '0: Fix-Runde 1 Originale umbenannt, Huellen da';
+  ASSERT (SELECT count(*) FROM pg_proc WHERE pronamespace = 'marketing'::regnamespace
+           AND proname IN ('pult_chat_fertig', 'pult_chat_stopp_abschliessen', 'pult_bild_datei_fehler',
+                           '_pult_chat_fertig_vor080', '_pult_chat_stopp_abschliessen_vor080',
+                           '_pult_bild_datei_fehler_vor080')) = 6, '0: je genau eine Huelle und ein Original';
   ASSERT NOT has_function_privilege('public',
            'marketing.pult_chat_fertig_seite(uuid,text,jsonb,jsonb,jsonb,int)', 'EXECUTE')
      AND NOT has_function_privilege('public',
@@ -383,6 +393,99 @@ DO $$ DECLARE d jsonb; v_i uuid; a uuid; bi uuid; j jsonb; v_fehler text; r reco
   v_fehler := NULL;
   BEGIN PERFORM marketing.pult_bild_auftrag(v_i, 'held', false, '', 'mensch'); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
   ASSERT v_fehler = 'Dieser Newsletter ist nicht im Editor-Format', format('4d: ohne Fassung: %s', v_fehler);
+END $$;
+
+-- 5) Fix-Runde 1: Bloecke nie ueber eine Collage
+DO $$ DECLARE s jsonb; d jsonb; v_c uuid; v_i uuid; a uuid; j jsonb; v_fehler text; r record; BEGIN
+  s := '{"version":1,"breite":600,"hoehe":1200,"hintergrund":{"farbe":"#ffffff","bild":null},
+         "schriften":{"anzeige":"dm-sans","text":"dm-sans"},"ebenen":[]}'::jsonb;
+  d := '{"root":{"type":"EmailLayout","data":{"childrenIds":["t"]}},
+         "t":{"type":"Text","data":{"style":{},"props":{"text":"eins","markdown":false}}}}'::jsonb;
+  v_c := marketing.pult_collage_anlegen('vibemind', 'Probe 080 Schutz', 'B', s, 'probe');
+  -- fertig mit Bloecken auf einer Collage: Ausnahme, keine Fassung, Auftrag bleibt in Arbeit
+  INSERT INTO marketing.chat_auftraege (inhalt, art, nachricht, status, versuche, vergeben_bis, fassung_vorher)
+  VALUES (v_c, 'chat', 'x', 'in_arbeit', 1, now() + interval '5 min', 1) RETURNING id INTO a;
+  v_fehler := NULL;
+  BEGIN PERFORM marketing.pult_chat_fertig(a, 'x', d, '[]', '{}', 1); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+  ASSERT v_fehler = 'Das ist ein Collage-Newsletter – Blöcke werden nicht übernommen', format('5a: fertig: %s', v_fehler);
+  ASSERT (SELECT max(fassung) FROM marketing.inhalt_fassungen WHERE inhalt = v_c) = 1, '5a: keine Blockfassung';
+  ASSERT (SELECT format FROM marketing.inhalt_fassungen WHERE inhalt = v_c AND fassung = 1) = 'seite', '5a: Collage bleibt';
+  ASSERT (SELECT status FROM marketing.chat_auftraege WHERE id = a) = 'in_arbeit', '5a: Auftrag bleibt in Arbeit';
+  -- ohne Bloecke laeuft das Original (fertig ohne Fassung)
+  j := marketing.pult_chat_fertig(a, 'Nur Antwort', NULL, NULL, NULL, NULL);
+  ASSERT j = '{"fassung":null}'::jsonb, format('5b: ohne Bloecke: %s', j);
+  -- Stopp behalten mit Bloecken: Ausnahme; mit NULL schliesst er ab (der Rueckfall der API)
+  INSERT INTO marketing.chat_auftraege (inhalt, art, nachricht, status, versuche, vergeben_bis, fassung_vorher, stopp)
+  VALUES (v_c, 'chat', 'Stopp', 'in_arbeit', 1, now() + interval '5 min', 1, 'behalten') RETURNING id INTO a;
+  v_fehler := NULL;
+  BEGIN PERFORM marketing.pult_chat_stopp_abschliessen(a, d, '', 1); EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+  ASSERT v_fehler = 'Das ist ein Collage-Newsletter – Blöcke werden nicht übernommen', format('5c: Stopp: %s', v_fehler);
+  ASSERT (SELECT max(fassung) FROM marketing.inhalt_fassungen WHERE inhalt = v_c) = 1, '5c: keine Blockfassung';
+  j := marketing.pult_chat_stopp_abschliessen(a, NULL, 'Zwischenstand nicht übernommen', NULL);
+  ASSERT j = '{"status":"fehler"}'::jsonb, format('5c: mit NULL: %s', j);
+  -- schon abgeschlossen: Endstand wie bisher, auch mit Bloecken (nichts wuerde gespeichert)
+  j := marketing.pult_chat_stopp_abschliessen(a, d, '', 1);
+  ASSERT j = '{"status":"fehler"}'::jsonb, format('5d: Endstand: %s', j);
+  -- Block-Newsletter: Stopp behalten mit Bloecken speichert wie bisher
+  INSERT INTO marketing.inhalte (mandant, art, titel) VALUES ('vibemind', 'newsletter', 'Probe 080 Schutz Block')
+  RETURNING id INTO v_i;
+  PERFORM marketing.pult_bloecke_speichern(v_i, 0, 'B', '', d, 'betreiber', false);
+  INSERT INTO marketing.chat_auftraege (inhalt, art, nachricht, status, versuche, vergeben_bis, fassung_vorher, stopp)
+  VALUES (v_i, 'chat', 'Stopp', 'in_arbeit', 1, now() + interval '5 min', 1, 'behalten') RETURNING id INTO a;
+  j := marketing.pult_chat_stopp_abschliessen(a, jsonb_set(d, '{t,data,props,text}', '"zwei"'), '', 1);
+  ASSERT j = '{"status":"fertig","fassung":2}'::jsonb, format('5e: Block-Stopp: %s', j);
+  SELECT * INTO r FROM marketing.inhalt_fassungen WHERE inhalt = v_i AND fassung = 2;
+  ASSERT r.format = 'bloecke' AND r.bloecke #>> '{t,data,props,text}' = 'zwei', '5e: Blockfassung';
+END $$;
+
+-- 6) Fix-Runde 1: Dateipruefung des Bild-Arbeiters fuer Bild-Ebenen
+DO $$ DECLARE s jsonb; d jsonb; v_c uuid; v_i uuid; b uuid; ba uuid; v_n int; BEGIN
+  s := '{"version":1,"breite":600,"hoehe":1200,"hintergrund":{"farbe":"#ffffff","bild":null},
+         "schriften":{"anzeige":"dm-sans","text":"dm-sans"},
+         "ebenen":[{"id":"held","art":"bild","x":300,"y":200,"breite":400,"hoehe":300,
+                    "quelle":"medien:platzhalter-4x3.png"},
+                   {"id":"t","art":"text","x":300,"y":600,"breite":480,"hoehe":120,"text":"Probe",
+                    "rolle":"TEXT","groesse":17,"farbe":"#333333"}]}'::jsonb;
+  v_c := marketing.pult_collage_anlegen('vibemind', 'Probe 080 Datei', 'B', s, 'probe');
+  b := marketing.pult_bild_auftrag(v_c, 'held', false, '', 'agent');
+  ASSERT marketing.pult_bild_datei_fehler(b, 'held') = 'Auftrag ist nicht (mehr) in Arbeit', '6a: offen';
+  UPDATE marketing.bild_auftraege SET status = 'in_arbeit', versuche = 1, vergeben_bis = now() + interval '5 min'
+   WHERE id = b;
+  ASSERT marketing.pult_bild_datei_fehler(b, 'held') IS NULL, '6a: Bild-Ebene gilt';
+  ASSERT marketing.pult_bild_datei_fehler(b, 't') = 'Platz gehoert nicht zu diesem Auftrag', '6a: fremder Platz';
+  ASSERT marketing.pult_bild_datei_fehler(gen_random_uuid(), 'held') = 'Unbekannter Auftrag', '6a: unbekannt';
+  -- Auftrag fuer alle Plaetze (platz NULL, direkt angelegt): Text-Ebene und unbekannte Ebene sind keine Bildplaetze
+  INSERT INTO marketing.bild_auftraege (inhalt, platz, nur_leere, hinweis, grund_fassung, urheber, status,
+                                        versuche, vergeben_bis)
+  VALUES (v_c, NULL, false, '', 1, 'system', 'in_arbeit', 1, now() + interval '5 min') RETURNING id INTO ba;
+  ASSERT marketing.pult_bild_datei_fehler(ba, 'held') IS NULL, '6b: Bild-Ebene';
+  ASSERT marketing.pult_bild_datei_fehler(ba, 't') = 'Bildplatz gibt es nicht', '6b: Text-Ebene';
+  ASSERT marketing.pult_bild_datei_fehler(ba, 'weg') = 'Bildplatz gibt es nicht', '6b: unbekannte Ebene';
+  ASSERT marketing.pult_bild_datei_fehler(ba, NULL) = 'Bildplatz gibt es nicht', '6b: ohne Platz';
+  -- Mass 0: laesst schon die Seitenpruefung nicht zu; falls doch gespeichert, ist es kein Bildplatz
+  v_n := NULL;
+  BEGIN v_n := marketing.pult_seite_speichern(v_c, 1, 'B', '', jsonb_set(s, '{ebenen,0,breite}', '0'), 'betreiber', false);
+  EXCEPTION WHEN OTHERS THEN v_n := NULL; END;
+  IF v_n IS NOT NULL THEN
+    ASSERT marketing.pult_bild_datei_fehler(ba, 'held') = 'Bildplatz gibt es nicht', '6c: Breite 0';
+  ELSE
+    RAISE NOTICE '6c: Breite 0 lehnt schon pult_seite_speichern ab';
+  END IF;
+  -- abgelaufene Vergabe
+  UPDATE marketing.bild_auftraege SET vergeben_bis = now() - interval '1 min' WHERE id = ba;
+  ASSERT marketing.pult_bild_datei_fehler(ba, 'held') = 'Auftrag ist nicht (mehr) in Arbeit', '6d: abgelaufen';
+  -- Block-Newsletter: das Original (Bildplatz in den Bloecken)
+  d := '{"root":{"type":"EmailLayout","data":{"childrenIds":["held","t"]}},
+         "held":{"type":"Image","data":{"style":{},"props":{"url":"medien:platzhalter-2x1.png","alt":"x","width":600,"height":300}}},
+         "t":{"type":"Text","data":{"style":{},"props":{"text":"eins","markdown":false}}}}'::jsonb;
+  INSERT INTO marketing.inhalte (mandant, art, titel) VALUES ('vibemind', 'newsletter', 'Probe 080 Datei Block')
+  RETURNING id INTO v_i;
+  PERFORM marketing.pult_bloecke_speichern(v_i, 0, 'B', '', d, 'betreiber', false);
+  b := marketing.pult_bild_auftrag(v_i, NULL, false, '', 'system');
+  UPDATE marketing.bild_auftraege SET status = 'in_arbeit', versuche = 1, vergeben_bis = now() + interval '5 min'
+   WHERE id = b;
+  ASSERT marketing.pult_bild_datei_fehler(b, 'held') IS NULL, '6e: Block-Bildplatz';
+  ASSERT marketing.pult_bild_datei_fehler(b, 't') = 'Bildplatz gibt es nicht', '6e: Textblock';
 END $$;
 
 SELECT 'verify_080 ok' AS ergebnis;

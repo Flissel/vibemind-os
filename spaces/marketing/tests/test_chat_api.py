@@ -1452,3 +1452,58 @@ def test_rueckgaengig_seite(umg):
                       "betreff": "B", "vorschautext": "V", "neueste": 6}]]
     r = c.post(f"/api/pult/inhalte/{IID}/chat/rueckgaengig", json={"auftrag": AID}, headers=H)
     assert r.status_code == 422 and "neuere Fassung" in r.json()["detail"]
+
+
+# ─── Fix-Runde 1: Bloecke nie ueber eine Collage ──────────────────────────────────────────────────────
+
+COLLAGE_BLOECKE = "Das ist ein Collage-Newsletter – Blöcke werden nicht übernommen"
+
+
+def test_in_arbeit_liest_das_format_der_neuesten_fassung(umg):
+    f, _, c = umg
+    f.antworten += [[JOB], [{"fassung": 5, "bloecke": _dok()}]]
+    assert c.get(f"/api/chat/arbeiter/{AID}/neueste", headers=HB).status_code == 200
+    assert "AS format" in f.sql[0] and "ORDER BY f.fassung DESC LIMIT 1" in f.sql[0]
+
+
+def test_fertig_bloecke_auf_collage_409(umg):
+    f, _, c = umg
+    f.antworten += [[dict(JOB, format="seite")]]
+    r = c.post(f"/api/chat/arbeiter/{AID}/fertig", json={"antwort": "alt", "bloecke": _dok()}, headers=HB)
+    assert r.status_code == 409 and r.json()["detail"] == COLLAGE_BLOECKE
+    assert len(f.sql) == 1                                   # kein Rechnen, kein Validator, kein fertig
+    # ohne Bloecke (nur Antwort) geht es weiter wie bisher
+    f.antworten += [[dict(JOB, format="seite")], [{"e": {"fassung": None}}]]
+    r = c.post(f"/api/chat/arbeiter/{AID}/fertig", json={"antwort": "Nur Antwort"}, headers=HB)
+    assert r.status_code == 200 and r.json()["fassung"] is None
+    assert "marketing.pult_chat_fertig(" in f.sql[-1] and ", NULL, " in f.sql[-1]
+
+
+def test_fertig_bloecke_db_huelle_lehnt_ab(umg):
+    """Kippt das Format zwischen Lesen und Speichern, sperrt die DB-Huelle (080) - 422 mit ihrem Grund."""
+    f, _, c = umg
+    f.antworten += [[JOB], [{"f": None}]]
+    f.fehler += [None, None, _db_fehler(COLLAGE_BLOECKE)]
+    r = c.post(f"/api/chat/arbeiter/{AID}/fertig", json={"antwort": "x", "bloecke": _dok()}, headers=HB)
+    assert r.status_code == 422 and r.json()["detail"] == COLLAGE_BLOECKE
+
+
+def test_gestoppt_bloecke_auf_collage_409(umg):
+    f, _, c = umg
+    job = {"stopp": "behalten", "status": "in_arbeit", "zwischenstand": None, "format": "seite"}
+    f.antworten += [[job]]
+    r = c.post(GESTOPPT, json={"bloecke": _dok()}, headers=HB)
+    assert r.status_code == 409 and r.json()["detail"] == COLLAGE_BLOECKE
+    assert len(f.sql) == 1
+
+
+def test_gestoppt_db_huelle_lehnt_ab_schliesst_mit_null(umg):
+    """Sperrt die DB-Huelle beim Stopp, schliesst der Rueckfall mit NULL und Hinweis ab (nie haengen bleiben)."""
+    f, _, c = umg
+    f.antworten += [[{"stopp": "behalten", "status": "in_arbeit", "zwischenstand": None, "format": "bloecke"}],
+                    [{"f": None}], [{"e": {"status": "fehler"}}]]
+    f.fehler += [None, None, _db_fehler(COLLAGE_BLOECKE)]
+    r = c.post(GESTOPPT, json={"bloecke": _dok()}, headers=HB)
+    assert r.status_code == 200 and r.json() == {"status": "fehler"}
+    assert "marketing.pult_chat_stopp_abschliessen(" in f.sql[-1] and ", NULL, " in f.sql[-1]
+    assert COLLAGE_BLOECKE in f.sql[-1]

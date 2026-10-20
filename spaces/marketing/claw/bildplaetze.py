@@ -153,6 +153,7 @@ def finde(dok: dict) -> list[Platz]:
 
 
 ERZEUG_SEITE_MAX = 1536   # lange Kante beim Erzeugen fuer Collage-Bilder (Ebenen bis 1200 x 6000 Einheiten)
+ERZEUG_KANTE_MIN = 64     # = api.bilder.KANTE_MIN (kleinste Kante, die der Upload annimmt), Vielfaches von 16
 
 
 def _seite_zahl(wert) -> float:
@@ -217,6 +218,8 @@ def finde_seite(seite: dict) -> list[Platz]:
         if max(erzeug_b, erzeug_h) > ERZEUG_SEITE_MAX:
             f = ERZEUG_SEITE_MAX / max(erzeug_b, erzeug_h)
             erzeug_b, erzeug_h = (max(16, int(x * f) // 16 * 16) for x in (erzeug_b, erzeug_h))
+        # jede Kante mindestens ERZEUG_KANTE_MIN: die Upload-Route nimmt kleinere JPEGs nicht an (KANTE_MIN)
+        erzeug_b, erzeug_h = max(ERZEUG_KANTE_MIN, erzeug_b), max(ERZEUG_KANTE_MIN, erzeug_h)
         a, c = _gekuerzt(anzeige_b, anzeige_h)
         url = str(e.get("quelle") or "")
         plaetze.append(Platz(e["id"], anzeige_b, anzeige_h, erzeug_b, erzeug_h, f"{a}:{c}", ist_leer(url), url, "",

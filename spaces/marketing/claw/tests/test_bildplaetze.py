@@ -198,3 +198,15 @@ def test_finde_seite_kappt_die_lange_kante():
 
 def test_finde_seite_ohne_seite_leer():
     assert bp.finde_seite(None) == [] and bp.finde_seite({}) == [] and bp.finde_seite({"ebenen": "x"}) == []
+
+
+def test_finde_seite_mindestkante_64():
+    """Fix-Runde 1: die Upload-Route nimmt nur Kanten >= 64 (KANTE_MIN) - flache Ebenen werden angehoben."""
+    s = {"hintergrund": {"farbe": "#ffffff"}, "ebenen": [
+        {"id": "streifen", "art": "bild", "quelle": "medien:x.jpg", "x": 300, "y": 100, "breite": 1200, "hoehe": 10},
+        {"id": "punkt", "art": "bild", "quelle": "medien:x.jpg", "x": 300, "y": 300, "breite": 10, "hoehe": 10}]}
+    streifen, punkt = bp.finde_seite(s)
+    assert (streifen.anzeige_breite, streifen.anzeige_hoehe) == (1200, 10)
+    assert streifen.erzeug_breite == bp.ERZEUG_SEITE_MAX and streifen.erzeug_hoehe == 64
+    assert (punkt.erzeug_breite, punkt.erzeug_hoehe) == (64, 64)
+    assert bp.ERZEUG_KANTE_MIN == 64 and bp.ERZEUG_KANTE_MIN % 16 == 0
