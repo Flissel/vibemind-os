@@ -1,10 +1,13 @@
-"""marketing-claw MCP-Server — Host-Sidecar auf 0.0.0.0:8130.
+"""marketing-claw MCP-Server — Host-Sidecar auf 127.0.0.1:8130.
 
 WARUM HOST-SIDECAR UND NICHT CONTAINER: Marketing-API (:5510) und
-Claude-Shim (:8114) binden loopback; aus einem Container ist loopback
-des Hosts nicht erreichbar. Der Sidecar sitzt daneben (wie die drei
-Bubble-Sidecars) und bindet selbst 0.0.0.0, damit der openclaw-Container
-ihn ueber host.docker.internal erreicht.
+Claude-Shim (:8114) binden loopback; aus einem Container war loopback
+des Hosts frueher nicht erreichbar. Der Sidecar sitzt daneben (wie die drei
+Bubble-Sidecars). Bis 20.10.2026 band er 0.0.0.0, damit der openclaw-Container
+ihn ueber host.docker.internal erreicht - damit stand er auch im LAN offen.
+Gemessen 20.10.2026: der Container erreicht ueber host.docker.internal auch einen
+nur auf 127.0.0.1 gebundenen Port (Docker Desktop, WSL mirrored). Darum loopback;
+MARKETING_CLAW_MCP_HOST=0.0.0.0 stellt das alte Verhalten wieder her.
 
 API-Notiz (gemessen 02.09.2026): Host-Python traegt die 1.x-Reihe des
 mcp-Pakets (FastMCP, host/port im Konstruktor); der sales-Container hat
@@ -135,7 +138,7 @@ WERKZEUGE = (
     werkzeuge.reel_auftraege,
 )
 
-HOST = os.environ.get("MARKETING_CLAW_MCP_HOST", "0.0.0.0")
+HOST = os.environ.get("MARKETING_CLAW_MCP_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MARKETING_CLAW_MCP_PORT", "8130"))
 
 
