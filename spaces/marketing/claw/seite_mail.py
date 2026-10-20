@@ -139,10 +139,17 @@ def _bildband(s: dict, st: Stueck, adresse: str) -> str:
             f'</mj-column></mj-section>')
 
 
+def fuss(seite: dict, pflichtteil: dict, fuer_versand: bool) -> str:
+    """Pflicht-Fuss der Collage-Mail (MJML-Section) in der Hintergrundfarbe der Seite."""
+    s = seite_mod.pruefen(seite)
+    return bloecke_mjml.pflicht_fuss(pflichtteil or {}, _FUSS_TEXT, s["hintergrund"]["farbe"], fuer_versand)
+
+
 def mjml(seite: dict, stuecke_namen: list[str], *, betreff: str, vorschautext: str, pflichtteil: dict,
-         bild_adresse: Callable[[str], str], fuer_versand: bool) -> str:
+         bild_adresse: Callable[[str], str], fuer_versand: bool, fuss_ersatz: str | None = None) -> str:
     """fuer_versand: {vorname} und {abmeldelink} bleiben stehen (sales-claw setzt sie je Empfaenger ein),
-    sonst [Vorname] und [Abmeldelink]. stuecke_namen[i] gehoert zu stuecke(seite)[i]."""
+    sonst [Vorname] und [Abmeldelink]. stuecke_namen[i] gehoert zu stuecke(seite)[i]. fuss_ersatz: steht statt
+    des Pflicht-Fusses im MJML (eine Marke, die der Aufrufer spaeter durch den aktuellen Fuss ersetzt)."""
     s, baender, nach_id = _vorbereitet(seite)
     alle = _stuecke(baender, nach_id)
     if len(stuecke_namen) != len(alle):
@@ -156,7 +163,8 @@ def mjml(seite: dict, stuecke_namen: list[str], *, betreff: str, vorschautext: s
             rumpf.append(_bildband(s, alle[k], bild_adresse(stuecke_namen[k])))
             k += 1
     farbe = s["hintergrund"]["farbe"]
-    fuss = bloecke_mjml.pflicht_fuss(pflichtteil or {}, _FUSS_TEXT, farbe, fuer_versand)
+    fuss = (fuss_ersatz if fuss_ersatz is not None
+            else bloecke_mjml.pflicht_fuss(pflichtteil or {}, _FUSS_TEXT, farbe, fuer_versand))
     schrift = bloecke_mjml.attr_schrift(_stapel(s, "TEXT"))
     quelle = (f'<mjml><mj-head><mj-title>{_a(betreff)}</mj-title><mj-preview>{_a(vorschautext)}</mj-preview>'
               f'<mj-attributes><mj-all font-family="{schrift}" /></mj-attributes></mj-head>'

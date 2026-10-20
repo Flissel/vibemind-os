@@ -56,7 +56,10 @@ def _collage_einreichen(i: str, von: str) -> dict:
     """Collage (Stufe 4): erst die Mail-Fassung der neuesten Fassung (Anrede-im-Bild-Pruefung, Bildstuecke,
     Groesse - jede Ablehnung 422 mit Grund, dann wird nichts eingereicht), danach pult_seite_einreichen (081):
     sperrt den Inhalt, prueft, dass genau diese Fassung noch die neueste ist und ihre Mail-Fassung vorliegt, und
-    ruft pult_einreichen unveraendert. Eine inzwischen gespeicherte neuere Fassung -> 422, nie ohne Mail."""
+    ruft pult_einreichen unveraendert. Eine inzwischen gespeicherte neuere Fassung -> 422, nie ohne Mail.
+    Ohne Namen wird vorher abgelehnt (derselbe Text wie pult_einreichen), damit Chromium nicht umsonst laeuft."""
+    if not von:
+        raise HTTPException(422, "Ohne Namen kein Einreichen")
     neueste = _lesen_einer(lambda:
         f"SELECT max(fassung) AS n FROM marketing.inhalt_fassungen WHERE inhalt = {lit(i)}::uuid")
     n = (neueste or {}).get("n")

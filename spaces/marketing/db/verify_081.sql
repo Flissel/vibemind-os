@@ -8,7 +8,7 @@ DO $$ DECLARE v_def text; BEGIN
   ASSERT to_regclass('marketing.seite_mailfassungen') IS NOT NULL, '0: Tabelle seite_mailfassungen';
   ASSERT (SELECT array_agg(column_name::text ORDER BY ordinal_position) FROM information_schema.columns
            WHERE table_schema = 'marketing' AND table_name = 'seite_mailfassungen')
-         = ARRAY['inhalt', 'fassung', 'html_versand', 'html_vorschau_mjml', 'text', 'medien', 'bytes', 'erstellt_am'],
+         = ARRAY['inhalt', 'fassung', 'mjml_versand', 'html_vorschau_mjml', 'text', 'medien', 'bytes', 'erstellt_am'],
          '0: Spalten';
   SELECT pg_get_constraintdef(oid) INTO v_def FROM pg_constraint
    WHERE conrelid = 'marketing.seite_mailfassungen'::regclass AND contype = 'p';
@@ -21,14 +21,18 @@ DO $$ DECLARE v_def text; BEGIN
   ASSERT to_regprocedure('marketing.pult_seite_mail_lesen(uuid, int)') IS NOT NULL, '0: Signatur pult_seite_mail_lesen';
   ASSERT to_regprocedure('marketing.pult_seite_einreichen(uuid, int, text)') IS NOT NULL,
          '0: Signatur pult_seite_einreichen';
+  ASSERT to_regprocedure('marketing.pult_seite_mail_aufraeumen(interval)') IS NOT NULL,
+         '0: Signatur pult_seite_mail_aufraeumen';
   ASSERT (SELECT count(*) FROM pg_proc WHERE pronamespace = 'marketing'::regnamespace
-           AND proname IN ('pult_seite_mail_speichern', 'pult_seite_mail_lesen', 'pult_seite_einreichen')) = 3,
+           AND proname IN ('pult_seite_mail_speichern', 'pult_seite_mail_lesen', 'pult_seite_einreichen',
+                           'pult_seite_mail_aufraeumen')) = 4,
          '0: keine Ueberladungen';
   ASSERT to_regprocedure('marketing.pult_einreichen(uuid, text)') IS NOT NULL, '0: pult_einreichen bleibt';
   ASSERT NOT has_function_privilege('public',
            'marketing.pult_seite_mail_speichern(uuid,int,text,text,text,jsonb,int)', 'EXECUTE')
      AND NOT has_function_privilege('public', 'marketing.pult_seite_mail_lesen(uuid,int)', 'EXECUTE')
-     AND NOT has_function_privilege('public', 'marketing.pult_seite_einreichen(uuid,int,text)', 'EXECUTE'),
+     AND NOT has_function_privilege('public', 'marketing.pult_seite_einreichen(uuid,int,text)', 'EXECUTE')
+     AND NOT has_function_privilege('public', 'marketing.pult_seite_mail_aufraeumen(interval)', 'EXECUTE'),
          '0: PUBLIC darf nichts';
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sales_app') THEN
     ASSERT NOT has_function_privilege('sales_app',
@@ -39,7 +43,8 @@ DO $$ DECLARE v_def text; BEGIN
   ASSERT has_function_privilege(current_user,
            'marketing.pult_seite_mail_speichern(uuid,int,text,text,text,jsonb,int)', 'EXECUTE')
      AND has_function_privilege(current_user, 'marketing.pult_seite_mail_lesen(uuid,int)', 'EXECUTE')
-     AND has_function_privilege(current_user, 'marketing.pult_seite_einreichen(uuid,int,text)', 'EXECUTE'),
+     AND has_function_privilege(current_user, 'marketing.pult_seite_einreichen(uuid,int,text)', 'EXECUTE')
+     AND has_function_privilege(current_user, 'marketing.pult_seite_mail_aufraeumen(interval)', 'EXECUTE'),
          '0: die API-Rolle (Probe-Rolle) darf';
 END $$;
 
@@ -58,12 +63,12 @@ DO $$ DECLARE s jsonb; d jsonb; v_c uuid; v_b uuid; v_l uuid; j jsonb; m jsonb; 
   ASSERT marketing.pult_seite_mail_lesen(v_c, 1) IS NULL, '1a: lesen ohne Zeile ist NULL';
   -- 1b) speichern liefert die Zeile
   j := marketing.pult_seite_mail_speichern(v_c, 1, '<html>cid</html>', '<mjml>v</mjml>', 'Text', m, 1234);
-  ASSERT j->>'html_versand' = '<html>cid</html>' AND j->>'html_vorschau_mjml' = '<mjml>v</mjml>'
+  ASSERT j->>'mjml_versand' = '<html>cid</html>' AND j->>'html_vorschau_mjml' = '<mjml>v</mjml>'
      AND j->>'text' = 'Text' AND j->'medien' = m AND (j->>'bytes')::int = 1234 AND (j->>'fassung')::int = 1
      AND (j->>'inhalt')::uuid = v_c, format('1b: Rueckgabe %s', j);
   -- 1c) ein zweites Speichern aendert nichts und liefert die erste Zeile (ON CONFLICT DO NOTHING)
   j := marketing.pult_seite_mail_speichern(v_c, 1, '<html>zwei</html>', '<mjml>zwei</mjml>', 'Zwei', '[]', 0);
-  ASSERT j->>'html_versand' = '<html>cid</html>' AND j->'medien' = m, format('1c: erste Zeile bleibt: %s', j);
+  ASSERT j->>'mjml_versand' = '<html>cid</html>' AND j->'medien' = m, format('1c: erste Zeile bleibt: %s', j);
   ASSERT (SELECT count(*) FROM marketing.seite_mailfassungen WHERE inhalt = v_c) = 1, '1c: genau eine Zeile';
   ASSERT marketing.pult_seite_mail_lesen(v_c, 1) = j, '1c: lesen = gespeichert';
 
@@ -144,6 +149,52 @@ DO $$ DECLARE s jsonb; d jsonb; v_c uuid; v_b uuid; v_l uuid; j jsonb; m jsonb; 
   PERFORM marketing.pult_inhalt_loeschen(v_l, 'vibemind', 'probe');
   ASSERT NOT EXISTS (SELECT 1 FROM marketing.seite_mailfassungen WHERE inhalt = v_l), '3: Mail-Fassung geloescht';
   ASSERT NOT EXISTS (SELECT 1 FROM marketing.inhalte WHERE id = v_l), '3: Inhalt geloescht';
+END $$;
+
+-- 4) Aufraeumen: nur alte Mail-Fassungen, die weder die neueste noch eingereicht/freigegeben sind
+DO $$ DECLARE s jsonb; v_a uuid; v_e uuid; j jsonb; k int; BEGIN
+  s := '{"version":1,"breite":600,"hoehe":1200,"hintergrund":{"farbe":"#ffffff","bild":null},
+         "schriften":{"anzeige":"dm-sans","text":"dm-sans"},
+         "ebenen":[{"id":"t","art":"text","x":300,"y":600,"breite":480,"hoehe":120,"text":"Probe",
+                    "rolle":"TEXT","groesse":17,"farbe":"#333333"}]}'::jsonb;
+  -- A: Fassungen 1..3, Mail-Fassungen fuer alle drei; 1 und 3 alt, 2 frisch
+  v_a := marketing.pult_collage_anlegen('vibemind', 'Probe 081 Aufraeumen', 'Betreff', s, 'probe');
+  PERFORM marketing.pult_seite_speichern(v_a, 1, 'Betreff', '', s, 'betreiber', false);
+  PERFORM marketing.pult_seite_speichern(v_a, 2, 'Betreff', '', s, 'betreiber', false);
+  FOR k IN 1..3 LOOP
+    PERFORM marketing.pult_seite_mail_speichern(v_a, k, '<mjml/>', '<mjml/>', 't',
+      jsonb_build_array(jsonb_build_object('name', format('ms-%s-%s-01.jpg', left(v_a::text, 8), k))), 1);
+  END LOOP;
+  UPDATE marketing.seite_mailfassungen SET erstellt_am = now() - interval '8 days'
+   WHERE inhalt = v_a AND fassung IN (1, 3);
+  -- E: eingereicht mit Fassung 2; Fassung 1 alt
+  v_e := marketing.pult_collage_anlegen('vibemind', 'Probe 081 Aufraeumen E', 'Betreff', s, 'probe');
+  PERFORM marketing.pult_seite_speichern(v_e, 1, 'Betreff', '', s, 'betreiber', false);
+  FOR k IN 1..2 LOOP
+    PERFORM marketing.pult_seite_mail_speichern(v_e, k, '<mjml/>', '<mjml/>', 't',
+      jsonb_build_array(jsonb_build_object('name', format('ms-%s-%s-01.jpg', left(v_e::text, 8), k))), 1);
+  END LOOP;
+  PERFORM marketing.pult_seite_einreichen(v_e, 2, 'probe');
+  UPDATE marketing.seite_mailfassungen SET erstellt_am = now() - interval '8 days' WHERE inhalt = v_e;
+
+  j := marketing.pult_seite_mail_aufraeumen();
+  ASSERT jsonb_typeof(j) = 'array', format('4: Liste: %s', j);
+  ASSERT j ? format('ms-%s-1-01.jpg', left(v_a::text, 8)), format('4: A/1 alt und alt-Fassung: %s', j);
+  ASSERT j ? format('ms-%s-1-01.jpg', left(v_e::text, 8)), format('4: E/1 alt: %s', j);
+  ASSERT NOT j ? format('ms-%s-2-01.jpg', left(v_a::text, 8)), '4: A/2 frisch bleibt';
+  ASSERT NOT j ? format('ms-%s-3-01.jpg', left(v_a::text, 8)), '4: A/3 neueste bleibt';
+  ASSERT NOT j ? format('ms-%s-2-01.jpg', left(v_e::text, 8)), '4: E/2 eingereicht bleibt';
+  ASSERT (SELECT array_agg(fassung ORDER BY fassung) FROM marketing.seite_mailfassungen WHERE inhalt = v_a)
+         = ARRAY[2, 3], '4: A behaelt 2 und 3';
+  ASSERT (SELECT array_agg(fassung ORDER BY fassung) FROM marketing.seite_mailfassungen WHERE inhalt = v_e)
+         = ARRAY[2], '4: E behaelt die eingereichte';
+  -- freigegeben: nach der Freigabe bleibt die freigegebene Fassung, auch wenn sie alt ist
+  PERFORM marketing.pult_entscheiden(v_e, 2, 'freigeben', 'probe', NULL);
+  j := marketing.pult_seite_mail_aufraeumen(interval '1 day');
+  ASSERT NOT j ? format('ms-%s-2-01.jpg', left(v_e::text, 8)), '4: E/2 freigegeben bleibt';
+  ASSERT EXISTS (SELECT 1 FROM marketing.seite_mailfassungen WHERE inhalt = v_e AND fassung = 2), '4: E/2 da';
+  ASSERT NOT j ? format('ms-%s-2-01.jpg', left(v_a::text, 8)) AND NOT j ? format('ms-%s-3-01.jpg', left(v_a::text, 8)),
+         '4: zweiter Lauf: A/2 und A/3 bleiben';
 END $$;
 
 SELECT 'verify_081 ok' AS ergebnis;

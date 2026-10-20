@@ -127,7 +127,17 @@ def test_einreichen_collage_anrede_im_bild_blockiert(umg, renderer):
     r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
     assert r.status_code == 422 and r.json()["detail"] == ANREDE
     assert renderer == [] and list(tmp.iterdir()) == []
-    assert not any("pult_seite_einreichen" in s or "pult_einreichen(" in s.split("ELSE")[-1] for s in f.sql[1:])
+    # nur Formatsperre, neueste Fassung, Fassung lesen - eingereicht wird nichts
+    assert len(f.sql) == 3 and not any("pult_seite_einreichen" in q for q in f.sql)
+
+
+def test_einreichen_collage_ohne_namen_vor_dem_rendern(umg, renderer):
+    """Leeres von: 422 mit dem Text von pult_einreichen, bevor die Mail-Fassung erzeugt wird (kein Chromium)."""
+    f, tmp, c = umg
+    f.antworten.append([{"fassung": None, "gesperrt": True}])
+    r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "  "}, headers=H)
+    assert r.status_code == 422 and r.json()["detail"] == "Ohne Namen kein Einreichen"
+    assert renderer == [] and list(tmp.iterdir()) == [] and len(f.sql) == 1
 
 
 def test_einreichen_collage_zu_gross_blockiert(umg, renderer, monkeypatch):

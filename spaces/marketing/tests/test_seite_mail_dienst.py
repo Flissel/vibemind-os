@@ -82,7 +82,7 @@ class EchoDB(FalscheDB):
         if "pult_seite_mail_speichern" in sql and not self.antworten and not self.fehler:
             self.sql.append(sql)
             namen = list(dict.fromkeys(_MS.findall(sql.split("::jsonb")[-2])))
-            return [{"mail": {"inhalt": IID, "fassung": 2, "html_versand": "<html>v</html>",
+            return [{"mail": {"inhalt": IID, "fassung": 2, "mjml_versand": "<mjml/>",
                               "html_vorschau_mjml": "<mjml/>", "text": "t", "bytes": 1,
                               "medien": [{"name": n, "cid": n, "sw": False} for n in namen]}}]
         return super()._naechste(sql)
@@ -103,7 +103,10 @@ def test_mailfassung_einmal(umg):
     assert "marketing.pult_seite_mail_speichern(" in sql and f"'{IID}'::uuid, 2," in sql
     assert "cid:ms-11111111-2-01.jpg" in sql                  # Versand-HTML mit eingebetteten Bildern
     assert dienst.BILD_MARKE + "ms-11111111-2-01.jpg" in sql  # Vorschau-MJML ohne Token, nur die Marke
-    assert "{vorname}" in sql and "[Vorname]" in sql and "{abmeldelink}" in sql
+    assert "{vorname}" in sql and "[Vorname]" in sql
+    # MJML ohne Pflicht-Fuss (je Anfrage aktuell eingesetzt): je eine Marke in Versand- und Vorschau-MJML; der
+    # Pflichtteil steht nur in der gespeicherten Textfassung
+    assert sql.count(dienst.FUSS_MARKE) == 2 and sql.count("Muster GmbH") == 1 and "{abmeldelink}" in sql
     assert "/marketing/bild/" not in sql
     assert '"cid": "ms-11111111-2-01.jpg"' in sql
     assert "marketing.medien_mandant" in p.sql[0] and f"i.id = '{IID}'::uuid" in p.sql[0]   # der Firma zugeordnet
@@ -119,7 +122,7 @@ def test_mailfassung_einmal(umg):
 
 def test_wettlauf_verlierer_raeumt_eigene_dateien_ab(umg, monkeypatch):
     f, _, erzeugt, _ = umg
-    gewinner = {"inhalt": IID, "fassung": 2, "html_versand": "<html>g</html>", "html_vorschau_mjml": "<mjml/>",
+    gewinner = {"inhalt": IID, "fassung": 2, "mjml_versand": "<mjml/>", "html_vorschau_mjml": "<mjml/>",
                 "text": "t", "medien": [{"name": "ms-11111111-2-01.jpg", "cid": "ms-11111111-2-01.jpg", "sw": False}],
                 "bytes": 5}
     (erzeugt / "ms-11111111-2-01.jpg").write_bytes(b"gewinner")   # der Gewinner hat seine Datei schon abgelegt
@@ -218,16 +221,123 @@ def test_ohne_ablage_503(umg, monkeypatch):
     assert e.value.status_code == 503 and aufrufe == []
 
 
-def test_vorschau_html_setzt_bild_basis_je_anfrage():
-    s = SEITE
+def _gespeicherte_mail(s=SEITE):
+    """Mail-Fassung wie seite_mail_dienst sie speichert (MJML mit Bild- und Fuss-Marke)."""
     namen = [f"ms-11111111-2-{k:02d}.jpg" for k in range(1, len(seite_mail.stuecke(s)) + 1)]
-    quelle = seite_mail.mjml(s, namen, betreff="Herbst", vorschautext="Neu", pflichtteil=PFLICHT,
-                             bild_adresse=lambda n: dienst.BILD_MARKE + n, fuer_versand=False)
-    html = dienst.vorschau_html({"html_vorschau_mjml": quelle}, BASIS)
+    gemeinsam = dict(betreff="Herbst", vorschautext="Neu", pflichtteil=PFLICHT, fuss_ersatz=dienst.FUSS_MARKE)
+    return {"inhalt": IID, "fassung": 2, "text": "alt", "bytes": 1,
+            "mjml_versand": seite_mail.mjml(s, namen, bild_adresse=lambda n: "cid:" + n, fuer_versand=True,
+                                            **gemeinsam),
+            "html_vorschau_mjml": seite_mail.mjml(s, namen, bild_adresse=lambda n: dienst.BILD_MARKE + n,
+                                                  fuer_versand=False, **gemeinsam),
+            "medien": seite_mail.versand_medien(namen)}
+
+
+def test_vorschau_html_setzt_bild_basis_je_anfrage():
+    mail = _gespeicherte_mail()
+    z = zeile(mail=mail)
+    html = dienst.vorschau_html(z, mail, BASIS)
     assert BASIS + "ms-11111111-2-01.jpg" in html and dienst.BILD_MARKE not in html
-    assert "[Vorname]" in html and "{vorname}" not in html
+    assert "[Vorname]" in html and "{vorname}" not in html and "[Abmeldelink]" in html
+    assert dienst.FUSS_MARKE not in html and "Muster GmbH, Berlin" in html
     anderer = BASIS.replace("1760000000", "1760009999")
-    assert anderer + "ms-11111111-2-01.jpg" in dienst.vorschau_html({"html_vorschau_mjml": quelle}, anderer)
+    assert anderer + "ms-11111111-2-01.jpg" in dienst.vorschau_html(z, mail, anderer)
+    # ohne Bildbasis: nur der Dateiname, nie die Marke
+    leer = dienst.vorschau_html(z, mail, "")
+    assert 'src="ms-11111111-2-01.jpg"' in leer and dienst.BILD_MARKE not in leer
+
+
+def test_fuss_immer_aktuell(umg):
+    """Der Pflichtteil der Firma wird je Anfrage eingesetzt: aendert er sich nach dem Erzeugen, aendern sich
+    Versand-HTML, Textfassung und Vorschau mit."""
+    f, _, _, aufrufe = umg
+    mail = _gespeicherte_mail()
+    alt = {"impressum": "Alte GmbH, Bonn", "abmelde_hinweis": "Abmelden: {abmeldelink}"}
+    neu = {"impressum": "Neue GmbH, Köln", "abmelde_hinweis": "Hier abmelden: {abmeldelink}"}
+    f.antworten += [[dict(zeile(mail=mail), pflichtteil=alt)], [dict(zeile(mail=mail), pflichtteil=neu)]]
+    v1, v2 = dienst.versand(IID, 2), dienst.versand(IID, 2)
+    assert "Alte GmbH, Bonn" in v1["html"] and "Alte GmbH, Bonn" in v1["text"]
+    assert "Neue GmbH, Köln" in v2["html"] and "Alte GmbH" not in v2["html"]
+    assert "Neue GmbH, Köln" in v2["text"] and "Hier abmelden: {abmeldelink}" in v2["html"]
+    assert "cid:ms-11111111-2-01.jpg" in v2["html"] and "{vorname}" in v2["html"]
+    assert v2["medien"] == mail["medien"] and dienst.FUSS_MARKE not in v2["html"]
+    f.antworten.append([dict(zeile(mail=mail), pflichtteil=neu)])
+    html = dienst.vorschau(IID, 2, BASIS)
+    assert "Neue GmbH, Köln" in html and "Hier abmelden: [Abmeldelink]" in html
+    assert aufrufe == []                       # nichts neu gerendert
+
+
+def test_inhaltsfehler_gemerkt_ohne_neues_rendern(umg, monkeypatch):
+    f, _, _, _ = umg
+    renders = []
+
+    def render(s, medien_lesen, **_):
+        renders.append(1)
+        raise seite_bilder.StueckFehler("Bild weg.png fehlt")
+    monkeypatch.setattr(seite_bilder, "render_png", render)
+    for _ in range(2):
+        f.antworten.append([zeile()])
+        with pytest.raises(HTTPException) as e:
+            dienst.erzeugen(IID, 2)
+        assert e.value.status_code == 422 and e.value.detail == "Bild weg.png fehlt"
+    assert renders == [1]                      # der zweite Versuch kommt aus dem Gedaechtnis
+    # eine andere Fassung ist nicht betroffen; nach Ablauf wird neu versucht
+    monkeypatch.setattr(dienst, "FEHLER_MERKEN_S", 0)
+    f.antworten.append([zeile()])
+    with pytest.raises(HTTPException):
+        dienst.erzeugen(IID, 2)
+    assert renders == [1, 1]
+
+
+def test_anrede_gemerkt_und_zeitlimit_nicht(umg, monkeypatch):
+    f, _, _, _ = umg
+    f.antworten += [[zeile(seite([bild(), text(y=200)]))], [zeile(seite([bild(), text(y=200)]))]]
+    for _ in range(2):
+        with pytest.raises(HTTPException) as e:
+            dienst.erzeugen(IID, 2)
+        assert e.value.detail == ANREDE
+    assert dienst._fehler_gemerkt(IID, 2) == ANREDE
+    renders = []
+
+    def render(s, medien_lesen, **_):
+        renders.append(1)
+        raise seite_bilder.StueckFehler(seite_bilder.ZEITLIMIT)
+    monkeypatch.setattr(seite_bilder, "render_png", render)
+    for _ in range(2):
+        f.antworten.append([zeile()])
+        with pytest.raises(HTTPException) as e:
+            dienst.erzeugen(IID, 3)
+        assert e.value.status_code == 422 and e.value.detail == seite_bilder.ZEITLIMIT
+    assert renders == [1, 1]                   # Zeitlimit wird nicht gemerkt
+
+
+def test_aufraeumen_erst_db_dann_dateien(umg):
+    f, _, erzeugt, _ = umg
+    for n in ("ms-11111111-1-01.jpg", "ms-11111111-3-01.jpg", "gs-0123456789ab.jpg"):
+        (erzeugt / n).write_bytes(b"x")
+    (erzeugt.parent / "boese.jpg").write_bytes(b"x")
+    f.fehler.append(RuntimeError("ssh weg"))
+    with pytest.raises(HTTPException):
+        dienst.aufraeumen()
+    assert len(os.listdir(erzeugt)) == 3       # DB nicht erreicht: keine Datei angefasst
+    f.antworten.append([{"namen": ["ms-11111111-1-01.jpg", "../boese.jpg", "gs-0123456789ab.jpg"]}])
+    assert dienst.aufraeumen() == ["ms-11111111-1-01.jpg"]
+    assert "SELECT marketing.pult_seite_mail_aufraeumen() AS namen" in f.sql[-1]
+    assert sorted(os.listdir(erzeugt)) == ["gs-0123456789ab.jpg", "ms-11111111-3-01.jpg"]
+    assert (erzeugt.parent / "boese.jpg").exists()
+
+
+def test_aufraeumen_haengt_am_stuendlichen_gs_aufraeumen(umg, monkeypatch):
+    from spaces.marketing.api import gestaltung as ga
+    f, _, erzeugt, _ = umg
+    monkeypatch.setattr(ga, "_zuletzt", 0.0)
+    (erzeugt / "ms-11111111-1-01.jpg").write_bytes(b"x")
+    f.antworten += [[], [{"namen": ["ms-11111111-1-01.jpg"]}]]   # verwiesene gs, dann Mail-Aufraeumen
+    ga.aufraeumen_falls_faellig(jetzt=1_000_000_000.0)
+    assert "regexp_matches" in f.sql[0] and "pult_seite_mail_aufraeumen" in f.sql[1]
+    assert os.listdir(erzeugt) == []
+    ga.aufraeumen_falls_faellig(jetzt=1_000_000_000.0 + 60)   # zu frueh: nichts
+    assert len(f.sql) == 2
 
 
 def test_ms_wird_nicht_aufgeraeumt(tmp_path):

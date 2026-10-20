@@ -1,8 +1,9 @@
 """Gestaltungs-Flaechen der Newsletter (sales-claw Spec 2026-10-02): rechnet eine
 Gestaltung zu einem Entwurfsbild (gs-<hash12>.jpg im MARKETING_BILD_ORDNER).
   POST /api/pult/inhalte/{iid}/gestaltung  (X-Pult-Key, pult._schluessel)
-Nur lesende DB-Zugriffe; Aufraeumen unverwiesener Entwurfsbilder hoechstens
-einmal je Stunde und nie zulasten der Anfrage."""
+Die Route liest nur; Aufraeumen unverwiesener Entwurfsbilder hoechstens
+einmal je Stunde und nie zulasten der Anfrage; im selben Takt die alten Mail-Fassungen der
+Collagen (seite_mail_dienst.aufraeumen, 081). Die gs-Muellabfuhr selbst trifft nur gs-<hash12>.jpg, nie ms-."""
 from __future__ import annotations
 
 import copy
@@ -78,6 +79,15 @@ def aufraeumen_falls_faellig(jetzt: float | None = None) -> None:
         _zuletzt = t   # erst nach Erfolg: ein Fehler sperrt nicht fuer eine Stunde
     except Exception:   # nie in die Anfrage hinein
         log.warning("Aufraeumen der Entwurfsbilder fehlgeschlagen", exc_info=True)
+        return
+    # Alte Mail-Fassungen der Collagen (081) im selben Takt: erst die DB-Zeilen, dann die ms-Dateien. Eigener
+    # try - ein Fehler hier (z. B. vor dem Einspielen von 081) haelt das gs-Aufraeumen nicht auf. Import erst
+    # hier: seite_mail_dienst -> chat -> gestaltung.
+    try:
+        from spaces.marketing.api import seite_mail_dienst
+        seite_mail_dienst.aufraeumen()
+    except Exception:  # noqa: BLE001
+        log.warning("Aufraeumen der Collage-Mail-Fassungen fehlgeschlagen", exc_info=True)
 
 
 @pult_router.post("/inhalte/{iid}/gestaltung")

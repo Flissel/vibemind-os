@@ -323,9 +323,9 @@ def _pdf(html: str, bild_basis: str, schrift_basis: str) -> Response:
 
 
 def _seite_antwort(dok, betreff: str, pflichtteil: dict, fmt: str, bild_basis: str) -> Response:
-    """Collage-Fassung (format 'seite', Plan 2026-10-20 Stufe 1) als PDF: die Seite selbst in voller Hoehe - mit
-    denselben Ladegrenzen wie der Block-Weg. mail und handy zeigen seit Stufe 4 die Mail-Fassung
-    (_seite_mail_antwort)."""
+    """Collage-Fassung (format 'seite', Plan 2026-10-20 Stufe 1) als Seite: fmt 'seite' liefert das Seiten-HTML,
+    pdf dasselbe HTML in voller Hoehe - mit denselben Ladegrenzen wie der Block-Weg. mail und handy zeigen seit
+    Stufe 4 die Mail-Fassung (_seite_mail_antwort)."""
     schrift_basis = schrift_basis_aus(bild_basis)
     try:
         html = seite_html.html(dok, betreff=betreff, pflichtteil=pflichtteil or {},
@@ -342,7 +342,7 @@ def _seite_mail_antwort(i: str, fassung: int, bild_basis: str) -> Response:
     Fehler 422 mit Grund) mit der Bildbasis dieser Anfrage. Import erst hier: seite_mail_dienst braucht chat,
     chat braucht pult."""
     from spaces.marketing.api import seite_mail_dienst
-    return HTMLResponse(seite_mail_dienst.vorschau_html(seite_mail_dienst.erzeugen(i, fassung), bild_basis))
+    return HTMLResponse(seite_mail_dienst.vorschau(i, fassung, bild_basis))
 
 
 def _erzeugt_ordner() -> str:
@@ -799,9 +799,7 @@ def versand(iid: str, x_pult_key: str | None = Header(None)):
             "betreff": felder.get("betreff", ""), "vorschautext": felder.get("vorschautext", "")}
     if zeile.get("format") == "seite":
         from spaces.marketing.api import seite_mail_dienst   # erst hier: seite_mail_dienst -> chat -> pult
-        mail = seite_mail_dienst.erzeugen(i, int(zeile["fassung"]))
-        return {**kopf, "html": mail.get("html_versand") or "", "text": mail.get("text") or "",
-                "medien": mail.get("medien") or []}
+        return {**kopf, **seite_mail_dienst.versand(i, int(zeile["fassung"]))}
     if zeile.get("format") != "bloecke":
         raise HTTPException(422, "Versand gibt es nur fuer Editor-Newsletter")
     pflicht, dok = zeile.get("pflichtteil") or {}, zeile["bloecke"]
@@ -819,7 +817,9 @@ def vorschau(iid: str, fassung: int = Query(..., ge=1), format: str = "mail", bi
              x_pult_key: str | None = Header(None)):
     _schluessel(x_pult_key)
     i = _uuid_oder_404(iid)
-    fmt = _auswahl(format, _FORMATE, "format")
+    # format=seite (Fix-Runde 1): die Collage-Seite selbst als HTML - billig (kein Chromium, keine Dateien), fuer
+    # Galeriekarten und die sich selbst erneuernde Entwurfsvorschau. mail/handy einer Collage = die echte Mail.
+    fmt = _auswahl(format, (*_FORMATE, "seite"), "format")
     basis = _bild_basis(bild_basis)
     # Die Fassung zeigt das Layout in der Fassung, mit der sie gespeichert
     # wurde (layout_fassungen, unveraenderlich) - nicht das heutige Aussehen.
@@ -839,6 +839,8 @@ def vorschau(iid: str, fassung: int = Query(..., ge=1), format: str = "mail", bi
         f"WHERE f.inhalt = {lit(i)}::uuid AND f.fassung = {int(fassung)}")
     if not zeile:
         raise HTTPException(404, "Unbekannte Fassung")
+    if fmt == "seite" and zeile.get("format") != "seite":
+        raise HTTPException(422, COLLAGE_IST_NICHT)
     if zeile.get("format") == "bloecke":
         felder = zeile.get("felder") or {}
         return _bloecke_html(zeile["bloecke"], felder.get("betreff", ""), felder.get("vorschautext", ""),
@@ -988,7 +990,18 @@ _VERWEISE_SQL = (
     "JOIN marketing.inhalt_fassungen f ON f.inhalt = i.id AND f.fassung = i.freigegebene_fassung "
     "WHERE i.status = 'freigegeben' "
     "AND (strpos(coalesce(f.bloecke::text, ''), {w}) > 0 OR strpos(coalesce(f.felder::text, ''), {w}) > 0 "
-    "OR strpos(coalesce(f.seite::text, ''), {w}) > 0)")
+    "OR strpos(coalesce(f.seite::text, ''), {w}) > 0) "
+    "UNION ALL "
+    "SELECT i.id::text, i.titel, i.status, i.art, "
+    "CASE WHEN m.fassung = i.freigegebene_fassung AND i.status = 'freigegeben' THEN 'freigegeben' ELSE 'aktuell' END, "
+    "i.mandant, 'seite', m.fassung "
+    "FROM marketing.inhalte i "
+    "JOIN marketing.seite_mailfassungen m ON m.inhalt = i.id "
+    "WHERE m.medien @> jsonb_build_array(jsonb_build_object('name', {n}::text)) "
+    "AND ((i.status <> 'abgelehnt' AND m.fassung = (SELECT max(f.fassung) FROM marketing.inhalt_fassungen f "
+    "WHERE f.inhalt = i.id)) "
+    "OR (i.status = 'eingereicht' AND m.fassung = i.eingereichte_fassung) "
+    "OR (i.status = 'freigegeben' AND m.fassung = i.freigegebene_fassung))")
 
 
 def medien_name_pruefen(name) -> str:
@@ -1004,7 +1017,7 @@ def verweise_lesen(name: str, mandant: str | None) -> list[dict]:
     kommen Inhalte anderer Firmen ohne Titel (eigen False); ohne mandant ist eigen immer True
     (Altaufrufer). Der Name muss vorher geprueft sein (medien_name_pruefen)."""
     wert = json.dumps("medien:" + name, ensure_ascii=False)
-    zeilen = _lesen(lambda: _VERWEISE_SQL.format(w=lit(wert)))
+    zeilen = _lesen(lambda: _VERWEISE_SQL.format(w=lit(wert), n=lit(name)))
     gesehen, verweise = set(), []
     for z in zeilen:
         if not isinstance(z, dict) or z.get("id") in gesehen:

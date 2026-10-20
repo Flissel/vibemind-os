@@ -1407,38 +1407,59 @@ def test_chat_auf_collage_erlaubt(db, c, monkeypatch, pfad, kopf):
     assert "'seite'" not in db.sql[0] and "gesperrt" not in db.sql[0]
 
 
-MAIL = {"inhalt": IID, "fassung": 2, "html_versand": "<html>{vorname} cid:ms-11111111-2-01.jpg</html>",
-        "html_vorschau_mjml": None, "text": "Hallo {vorname}\n--\nI", "bytes": 10,
-        "medien": [{"name": "ms-11111111-2-01.jpg", "cid": "ms-11111111-2-01.jpg", "sw": False}]}
 BASIS = "https://h.ts.net/marketing/bild/1760000000." + "a" * 64 + "/"
+PFLICHT_A = {"impressum": "Alte GmbH, Bonn", "abmelde_hinweis": "Abmelden: {abmeldelink}"}
 
 
-def _mail_mjml():
+def _mail(s=None):
+    """Mail-Fassung wie seite_mail_dienst sie speichert (MJML mit Bild- und Fuss-Marke)."""
     from spaces.marketing.api import seite_mail_dienst as dienst
     from spaces.marketing.claw import seite_mail
-    namen = [f"ms-11111111-2-{k:02d}.jpg" for k in range(1, len(seite_mail.stuecke(SEITE)) + 1)]
-    return seite_mail.mjml(SEITE, namen, betreff="Herbst", vorschautext="", pflichtteil={"impressum": "I"},
-                           bild_adresse=lambda n: dienst.BILD_MARKE + n, fuer_versand=False), namen
+    s = s or SEITE
+    namen = [f"ms-11111111-2-{k:02d}.jpg" for k in range(1, len(seite_mail.stuecke(s)) + 1)]
+    gemeinsam = dict(betreff="Herbst", vorschautext="Neu", pflichtteil={}, fuss_ersatz=dienst.FUSS_MARKE)
+    return {"inhalt": IID, "fassung": 2, "text": "alt", "bytes": 10, "medien": seite_mail.versand_medien(namen),
+            "mjml_versand": seite_mail.mjml(s, namen, bild_adresse=lambda n: "cid:" + n, fuer_versand=True,
+                                            **gemeinsam),
+            "html_vorschau_mjml": seite_mail.mjml(s, namen, bild_adresse=lambda n: dienst.BILD_MARKE + n,
+                                                  fuer_versand=False, **gemeinsam)}
 
 
 def _versand_kopf(**extra):
     z = {"status": "freigegeben", "fassung": 2, "format": "seite", "bloecke": None, "mandant": "radhaus",
-         "felder": {"betreff": "Herbst", "vorschautext": "Neu"}, "pflichtteil": {"impressum": "I"}}
+         "felder": {"betreff": "Herbst", "vorschautext": "Neu"}, "pflichtteil": PFLICHT_A}
     z.update(extra)
     return z
 
 
+def _dienst_zeile(mail, pflichtteil=None, s=None):
+    return {"format": "seite", "seite": s or SEITE, "felder": {"betreff": "Herbst"},
+            "pflichtteil": PFLICHT_A if pflichtteil is None else pflichtteil, "mail": mail}
+
+
 def test_versand_collage_form_wie_bloecke(db, c):
-    db.antworten = [[_versand_kopf()], [{"format": "seite", "seite": SEITE, "felder": {}, "pflichtteil": {},
-                                          "mail": MAIL}]]
+    mail = _mail()
+    db.antworten = [[_versand_kopf()], [_dienst_zeile(mail)]]
     r = c.get(f"/api/pult/inhalte/{IID}/versand", headers=H)
     assert r.status_code == 200, r.text
     j = r.json()
     assert set(j) == {"inhalt", "mandant", "fassung", "betreff", "vorschautext", "html", "text", "medien"}
-    assert j == {"inhalt": IID, "mandant": "radhaus", "fassung": 2, "betreff": "Herbst", "vorschautext": "Neu",
-                 "html": MAIL["html_versand"], "text": MAIL["text"], "medien": MAIL["medien"]}
+    assert {k: j[k] for k in ("inhalt", "mandant", "fassung", "betreff", "vorschautext", "medien")} == {
+        "inhalt": IID, "mandant": "radhaus", "fassung": 2, "betreff": "Herbst", "vorschautext": "Neu",
+        "medien": mail["medien"]}
+    assert j["html"].lstrip().lower().startswith("<!doctype html") and "cid:ms-11111111-2-01.jpg" in j["html"]
+    assert "Alte GmbH, Bonn" in j["html"] and "{abmeldelink}" in j["html"] and "Alte GmbH, Bonn" in j["text"]
     # die Mail-Fassung der FREIGEGEBENEN Fassung
     assert "marketing.pult_seite_mail_lesen(" in db.sql[1] and f"'{IID}'::uuid AND f.fassung = 2" in db.sql[1]
+
+
+def test_versand_collage_fuss_folgt_dem_aktuellen_pflichtteil(db, c):
+    """Aendert die Firma ihren Pflichtteil nach dem Erzeugen, traegt der Versand den neuen Fuss."""
+    mail = _mail()
+    neu = {"impressum": "Neue GmbH, Köln", "abmelde_hinweis": "Abmelden: {abmeldelink}"}
+    db.antworten = [[_versand_kopf()], [_dienst_zeile(mail, pflichtteil=neu)]]
+    j = c.get(f"/api/pult/inhalte/{IID}/versand", headers=H).json()
+    assert "Neue GmbH, Köln" in j["html"] and "Alte GmbH" not in j["html"] and "Neue GmbH, Köln" in j["text"]
 
 
 def test_versand_collage_erzeugt_bei_bedarf(db, c):
@@ -1446,14 +1467,10 @@ def test_versand_collage_erzeugt_bei_bedarf(db, c):
     from spaces.marketing.claw import seite as _s, seite_mail
     nur_text = _s.pruefen(dict(SEITE, ebenen=[e for e in SEITE["ebenen"] if e["id"] in ("text", "knopf")]))
     assert seite_mail.stuecke(nur_text) == []
-    gespeichert = dict(MAIL, medien=[], html_versand="<html>neu</html>", text="neu")
-    db.antworten = [[_versand_kopf()],
-                    [{"format": "seite", "seite": nur_text, "felder": {"betreff": "Herbst"},
-                      "pflichtteil": {"impressum": "I"}, "mail": None}],
-                    [{"mail": gespeichert}]]
+    db.antworten = [[_versand_kopf()], [_dienst_zeile(None, s=nur_text)], [{"mail": _mail(nur_text)}]]
     r = c.get(f"/api/pult/inhalte/{IID}/versand", headers=H)
     assert r.status_code == 200, r.text
-    assert r.json()["html"] == "<html>neu</html>" and r.json()["medien"] == []
+    assert "Hier steht Ihr Text." in r.json()["html"] and r.json()["medien"] == []
     assert "marketing.pult_seite_mail_speichern(" in db.sql[2]
 
 
@@ -1463,16 +1480,33 @@ def test_versand_collage_nicht_freigegeben_409(db, c):
 
 
 def test_vorschau_mail_collage(db, c):
-    quelle, namen = _mail_mjml()
-    for fmt in ("mail", "handy"):
-        db.antworten = [[_seite_zeile()], [{"format": "seite", "seite": SEITE, "felder": {}, "pflichtteil": {},
-                                            "mail": dict(MAIL, html_vorschau_mjml=quelle)}]]
+    mail = _mail()
+    for fmt in ("mail", "handy", ""):          # ohne Format: die Mail (wie bisher die Vorgabe)
+        db.antworten = [[_seite_zeile()], [_dienst_zeile(mail)]]
         r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=2&format={fmt}&bild_basis={BASIS}", headers=H)
         assert r.status_code == 200 and r.headers["content-type"].startswith("text/html"), r.text
-        assert BASIS + namen[0] in r.text and "bildbasis.vibemind.invalid" not in r.text
-        assert "position:relative;width:600px" not in r.text      # nicht mehr die Seite selbst
-        assert "<title>Herbst</title>" in r.text
+        assert BASIS + "ms-11111111-2-01.jpg" in r.text and "bildbasis.vibemind.invalid" not in r.text
+        assert "position:relative;width:600px" not in r.text      # nicht die Seite selbst
+        assert "<title>Herbst</title>" in r.text and "Alte GmbH, Bonn" in r.text and "[Abmeldelink]" in r.text
         assert "f.fassung = 2" in db.sql[-1] and "pult_seite_mail_lesen" in db.sql[-1]
+
+
+def test_vorschau_format_seite_billig(db, c, monkeypatch):
+    """format=seite: die Seite selbst als HTML, ohne Mail-Fassung (keine zweite Abfrage, kein Chromium)."""
+    from spaces.marketing.claw import seite_bilder
+
+    def nie(*a, **k):
+        raise AssertionError("kein Chromium fuer format=seite")
+    monkeypatch.setattr(seite_bilder, "render_png", nie)
+    db.antworten = [[_seite_zeile()]]
+    r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=2&format=seite&bild_basis={BASIS}", headers=H)
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
+    assert "position:relative;width:600px" in r.text and "Überschrift" in r.text and "<title>Herbst</title>" in r.text
+    assert len(db.sql) == 1 and "pult_seite_mail_lesen" not in db.sql[0]
+    # fuer Block-Newsletter gibt es format=seite nicht
+    db.antworten = [[_bloecke_zeile()]]
+    r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=1&format=seite", headers=H)
+    assert r.status_code == 422 and r.json()["detail"] == pult.COLLAGE_IST_NICHT
 
 
 def test_vorschau_mail_collage_fehler_422(db, c):
@@ -1480,12 +1514,25 @@ def test_vorschau_mail_collage_fehler_422(db, c):
         {"id": "b", "art": "bild", "x": 300, "y": 300, "breite": 400, "hoehe": 300, "quelle": "medien:a.png"},
         {"id": "t", "art": "text", "x": 300, "y": 300, "breite": 300, "hoehe": 60, "text": "Hallo {vorname}",
          "rolle": "TEXT", "groesse": 17, "farbe": "#333333"}])
-    db.antworten = [[_seite_zeile(seite=anrede)], [{"format": "seite", "seite": anrede, "felder": {},
-                                                    "pflichtteil": {}, "mail": None}]]
+    db.antworten = [[_seite_zeile(seite=anrede)], [_dienst_zeile(None, s=anrede)]]
     r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=2&format=mail", headers=H)
     assert r.status_code == 422
     assert r.json()["detail"] == "Die Anrede steht in einem Bildbereich – sie muss in frei stehendem Fließtext stehen"
     assert len(db.sql) == 2
+
+
+def test_verweise_schuetzen_bildstuecke_der_mail_fassung(db, c):
+    """Ein ms-Stueck der neuesten, eingereichten oder freigegebenen Collage-Fassung sperrt das Loeschen."""
+    db.antworten = [[{"id": IID, "titel": "Herbst", "status": "freigegeben", "art": "newsletter",
+                      "wo": "freigegeben", "mandant": "vibemind", "format": "seite", "fassung": 2}]]
+    r = c.get("/api/pult/medien/verweise?name=ms-11111111-2-01.jpg", headers=H)
+    assert r.status_code == 200 and r.json()["verweise"][0]["wo"] == "freigegeben"
+    sql = db.sql[0]
+    assert "JOIN marketing.seite_mailfassungen m ON m.inhalt = i.id" in sql
+    assert ("m.medien @> jsonb_build_array(jsonb_build_object('name', 'ms-11111111-2-01.jpg'::text))" in sql)
+    for teil in ("m.fassung = i.eingereichte_fassung", "m.fassung = i.freigegebene_fassung",
+                 "SELECT max(f.fassung) FROM marketing.inhalt_fassungen f"):
+        assert teil in sql
 
 
 # --- Gesamtpruefung Stufe 1: Befunde ---

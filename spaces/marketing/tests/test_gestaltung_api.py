@@ -117,7 +117,8 @@ def test_verwiesene_gs_und_aufraeumen_stuendlich(umg):
         assert tabelle in f.sql[0] + " "
     # Collage-Fassungen (077) tragen ihre Bilder in inhalt_fassungen.seite
     assert "SELECT seite FROM marketing.inhalt_fassungen" in f.sql[0]
-    assert len(f.sql) == 1   # eine einzige Abfrage
+    # eine einzige Abfrage fuer die gs-Bilder; danach im selben Takt das Aufraeumen der Collage-Mail-Fassungen
+    assert len(f.sql) == 2 and "pult_seite_mail_aufraeumen" in f.sql[1]
     n = len(f.sql)
     ga.aufraeumen_falls_faellig(jetzt=1_000_000_000.0 + 60)   # zu frueh
     assert len(f.sql) == n
