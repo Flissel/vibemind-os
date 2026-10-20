@@ -115,6 +115,8 @@ def test_verwiesene_gs_und_aufraeumen_stuendlich(umg):
     assert "regexp_matches" in f.sql[0] and f.sql[0].lstrip().upper().startswith("SELECT")
     for tabelle in ("inhalt_fassungen", "newsletter_vorlagen_fassungen", "newsletter_vorlagen "):
         assert tabelle in f.sql[0] + " "
+    # Collage-Fassungen (077) tragen ihre Bilder in inhalt_fassungen.seite
+    assert "SELECT seite FROM marketing.inhalt_fassungen" in f.sql[0]
     assert len(f.sql) == 1   # eine einzige Abfrage
     n = len(f.sql)
     ga.aufraeumen_falls_faellig(jetzt=1_000_000_000.0 + 60)   # zu frueh

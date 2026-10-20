@@ -29,7 +29,7 @@ from spaces.marketing.api.bilder import (_BILDTYP, _PLATZ, VORLAGEN_MAX as BILD_
 from spaces.marketing.api.gestaltung import aufraeumen_falls_faellig, gestaltungen_rechnen, quellen
 from spaces.marketing.api.pult import (COLLAGE_CHAT, _STATUS, _auswahl, _erzeugt_ordner, _laden_lesen, _lesen,
                                        _lesen_einer, _mandant, _medien_datei, _schluessel, _schreiben,
-                                       _uuid_oder_404, lit, neuestes_format_sql)
+                                       _uuid_oder_404, lit, mit_formatsperre)
 from spaces.marketing.api.medien_mandant import ist_fremd, sicht, zuordnen_fuer_inhalt
 from spaces.marketing.claw import gestaltung, schoenheit, vorlagen_marke
 
@@ -133,13 +133,9 @@ def _chat_senden(i: str, nachricht: str, kontext: dict) -> dict:
     """Chat-Runde anlegen (Editor und Agent). Der Chat-Arbeiter kennt bis Stufe 3 nur Bloecke: ist die neueste
     Fassung eine Collage (format 'seite'), 409 - geprueft in DERSELBEN Abfrage, pult_chat_senden laeuft dann
     nicht (CASE wertet den ELSE-Zweig mit der volatilen Funktion nur bei Bedarf aus)."""
-    fmt = neuestes_format_sql(i)
-    zeile = _schreiben(lambda:
-        f"SELECT CASE WHEN {fmt} = 'seite' THEN NULL ELSE marketing.pult_chat_senden({lit(i)}::uuid, "
-        f"{lit(nachricht)}, {lit(json.dumps(kontext, ensure_ascii=False))}::jsonb) END AS s, "
-        f"coalesce({fmt} = 'seite', false) AS collage")
-    if zeile.get("collage"):
-        raise HTTPException(409, COLLAGE_CHAT)
+    zeile = mit_formatsperre(i, lambda:
+        f"marketing.pult_chat_senden({lit(i)}::uuid, {lit(nachricht)}, "
+        f"{lit(json.dumps(kontext, ensure_ascii=False))}::jsonb)", grund=COLLAGE_CHAT, spalte="s")
     s = zeile.get("s") or {}
     return {"auftrag": str(s.get("id")), "status": "wartet" if s.get("status") == "wartet" else "offen"}
 

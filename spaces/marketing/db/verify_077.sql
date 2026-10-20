@@ -172,11 +172,14 @@ DO $$ DECLARE s jsonb; v_i uuid; v_p uuid; v_n int; v_fehler text; f record; v_v
                                                jsonb_set(s, '{breite}', '599'), 'probe');
   EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
   ASSERT v_fehler IS NOT NULL, '2: ungueltige Seite beim Anlegen';
-  v_fehler := NULL;
-  BEGIN PERFORM marketing.pult_collage_anlegen('vibemind', 'Probe 077 X', '  ', s, 'probe');
-  EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
-  ASSERT v_fehler = 'Ohne Betreff gibt es keine Fassung', format('2: ohne Betreff: %s', v_fehler);
   ASSERT NOT EXISTS (SELECT 1 FROM marketing.inhalte WHERE titel = 'Probe 077 X'), '2: nichts angelegt';
+  -- Ohne Betreff (die API reicht '' durch): der Titel wird Betreff, wie bei pult_inhalt_aus_vorlage (058)
+  FOR f IN SELECT b FROM unnest(ARRAY['', '  ', NULL]) b LOOP
+    v_p := marketing.pult_collage_anlegen('vibemind', '  Probe 077 ohne Betreff ', f.b, s, 'probe');
+    ASSERT (SELECT felder FROM marketing.inhalt_fassungen WHERE inhalt = v_p AND fassung = 1)
+           = '{"betreff":"Probe 077 ohne Betreff","vorschautext":""}'::jsonb,
+           format('2: ohne Betreff [%s] -> Titel als Betreff', f.b);
+  END LOOP;
   v_fehler := NULL;
   BEGIN PERFORM marketing.pult_collage_anlegen('vibemind', ' ', 'Betreff', s, 'probe');
   EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
@@ -289,6 +292,54 @@ DO $$ DECLARE d jsonb; v_i uuid; v_fehler text; BEGIN
     VALUES (v_i, 3, '{}', 'dunkel', 'agent', 'bloecke', '{"root":{"type":"Text"}}');
   EXCEPTION WHEN check_violation THEN v_fehler := SQLERRM; END;
   ASSERT v_fehler LIKE '%inhalt_fassungen_bloecke_gueltig%', format('3: bloecke_gueltig greift: %s', v_fehler);
+END $$;
+
+-- 4) Formatsperre der API (api/pult.py mit_formatsperre): dieselbe Abfrageform mit Literalen. CASE darf den
+--    ELSE-Zweig mit der schreibenden Funktion nur bei passendem Format auswerten; "gesperrt" sieht den Stand
+--    vor dem Aufruf (Schnappschuss der Abfrage).
+DO $$ DECLARE s jsonb; d jsonb; v_c uuid; v_b uuid; v_l uuid; v_r int; v_g boolean;
+  c_sperre CONSTANT text := 'SELECT CASE WHEN %1$s THEN NULL ELSE %2$s END, coalesce(%1$s, false)';
+  c_fmt CONSTANT text := '(SELECT f.format FROM marketing.inhalt_fassungen f WHERE f.inhalt = %L::uuid '
+                         'ORDER BY f.fassung DESC LIMIT 1)';
+BEGIN
+  s := '{"version":1,"breite":600,"hoehe":1200,"hintergrund":{"farbe":"#ffffff","bild":null},
+         "schriften":{"anzeige":"dm-sans","text":"dm-sans"},
+         "ebenen":[{"id":"t","art":"text","x":300,"y":200,"breite":480,"hoehe":120,"text":"Probe",
+                    "rolle":"TEXT","groesse":17,"farbe":"#333333"}]}'::jsonb;
+  d := '{"root":{"type":"EmailLayout","data":{"childrenIds":["t"]}},
+         "t":{"type":"Text","data":{"style":{},"props":{"text":"eins","markdown":false}}}}'::jsonb;
+  v_c := marketing.pult_collage_anlegen('vibemind', 'Probe 077 Sperre C', 'Betreff', s, 'probe');
+  -- Bloecke auf einer Collage: gesperrt, keine neue Fassung
+  EXECUTE format(c_sperre, format(c_fmt, v_c) || ' = ''seite''',
+                 format('marketing.pult_bloecke_speichern(%L::uuid, 1, %L, %L, %L::jsonb, %L, false)',
+                        v_c, 'B', '', d, 'betreiber')) INTO v_r, v_g;
+  ASSERT v_r IS NULL AND v_g, format('4: Bloecke auf Collage gesperrt: %s/%s', v_r, v_g);
+  ASSERT (SELECT count(*) FROM marketing.inhalt_fassungen WHERE inhalt = v_c) = 1, '4: keine Blockfassung';
+  -- Einreichen einer Collage: gesperrt, bleibt Entwurf
+  EXECUTE format(c_sperre, format(c_fmt, v_c) || ' = ''seite''',
+                 format('marketing.pult_einreichen(%L::uuid, %L)', v_c, 'probe')) INTO v_r, v_g;
+  ASSERT v_r IS NULL AND v_g AND (SELECT status FROM marketing.inhalte WHERE id = v_c) = 'entwurf',
+         '4: Einreichen einer Collage gesperrt';
+  -- Seite auf einem Block-Newsletter: gesperrt
+  INSERT INTO marketing.inhalte (mandant, art, titel) VALUES ('vibemind', 'newsletter', 'Probe 077 Sperre B')
+  RETURNING id INTO v_b;
+  EXECUTE format(c_sperre, format(c_fmt, v_b) || ' = ''seite''',
+                 format('marketing.pult_bloecke_speichern(%L::uuid, 0, %L, %L, %L::jsonb, %L, false)',
+                        v_b, 'B', '', d, 'betreiber')) INTO v_r, v_g;
+  ASSERT v_r = 1 AND NOT v_g, format('4: Bloecke auf Block-Newsletter laufen: %s/%s', v_r, v_g);
+  EXECUTE format(c_sperre, format(c_fmt, v_b) || ' <> ''seite''',
+                 format('marketing.pult_seite_speichern(%L::uuid, 1, %L, %L, %L::jsonb, %L, false)',
+                        v_b, 'B', '', s, 'betreiber')) INTO v_r, v_g;
+  ASSERT v_r IS NULL AND v_g, format('4: Seite auf Block-Newsletter gesperrt: %s/%s', v_r, v_g);
+  ASSERT (SELECT format FROM marketing.inhalt_fassungen WHERE inhalt = v_b ORDER BY fassung DESC LIMIT 1) = 'bloecke',
+         '4: Block-Newsletter bleibt Bloecke';
+  -- Seite auf einem Inhalt ohne Fassung: laeuft (Vergleich NULL -> ELSE)
+  INSERT INTO marketing.inhalte (mandant, art, titel) VALUES ('vibemind', 'newsletter', 'Probe 077 Sperre L')
+  RETURNING id INTO v_l;
+  EXECUTE format(c_sperre, format(c_fmt, v_l) || ' <> ''seite''',
+                 format('marketing.pult_seite_speichern(%L::uuid, 0, %L, %L, %L::jsonb, %L, false)',
+                        v_l, 'B', '', s, 'betreiber')) INTO v_r, v_g;
+  ASSERT v_r = 1 AND NOT v_g, format('4: Seite ohne Fassung laeuft: %s/%s', v_r, v_g);
 END $$;
 
 SELECT 'verify_077 ok' AS ergebnis;

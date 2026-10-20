@@ -17,7 +17,7 @@ from fastapi import APIRouter, Body, Header, HTTPException, Query
 from spaces.marketing.api.chat import FLAECHEN_MAX, GERAETE, export_ausfuehren, slug
 from spaces.marketing.api.gestaltung import quellen
 from spaces.marketing.api.pult import (COLLAGE_EINREICHEN, _fassung_pflicht, _lesen, _lesen_einer, _schluessel,
-                                       _schreiben, _uuid_oder_404, lit, neuestes_format_sql)
+                                       _schreiben, _uuid_oder_404, lit, mit_formatsperre)
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/pult")
@@ -39,10 +39,10 @@ def einreichen(iid: str, payload: dict = Body(default={}), x_pult_key: str | Non
     _schluessel(x_pult_key)
     i = _uuid_oder_404(iid)
     von = _von(payload)
-    # Collage-Newsletter (format 'seite') kennen Freigabe und Versand erst ab Stufe 4 - vor der DB-Funktion
-    if (_lesen_einer(lambda: f"SELECT {neuestes_format_sql(i)} AS format") or {}).get("format") == "seite":
-        raise HTTPException(409, COLLAGE_EINREICHEN)
-    zeile = _schreiben(lambda: f"SELECT marketing.pult_einreichen({lit(i)}::uuid, {lit(von)}) AS fassung")
+    # Collage-Newsletter (format 'seite') kennen Freigabe und Versand erst ab Stufe 4 - gesperrt in derselben
+    # Abfrage, pult_einreichen laeuft dann nicht
+    zeile = mit_formatsperre(i, lambda: f"marketing.pult_einreichen({lit(i)}::uuid, {lit(von)})",
+                             grund=COLLAGE_EINREICHEN)
     return {"status": "eingereicht", "fassung": int(zeile["fassung"])}
 
 

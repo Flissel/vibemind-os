@@ -1,9 +1,10 @@
 """Seitenmodell der freien Newsletter-Flaeche (claw/seite.py)."""
 import copy
+import json
 
 import pytest
 
-from spaces.marketing.claw.seite import SeiteFehler, leer, pruefen, rolle_schrift
+from spaces.marketing.claw.seite import MAX_BYTES, MAX_TEXT, SeiteFehler, leer, pruefen, rolle_schrift
 
 MARKE = {"schrift_anzeige": "montserrat", "schrift_text": "dm-sans", "akzent": "#f66c1e"}
 
@@ -145,3 +146,33 @@ def test_bild_form_knopf_mit_vorgaben():
     e = pruefen(s)["ebenen"]
     assert e[0]["passung"] == "fuellen" and e[0]["rahmen_farbe"] == "#ffffff"
     assert e[2]["rolle"] == "TEXT" and e[2]["rundung"] == 6
+
+
+def _bytes(d):
+    return len(json.dumps(d, ensure_ascii=False).encode())
+
+
+def _seite_mit_bytes(ziel):
+    """80 Textebenen mit genau `ziel` Bytes: jedes a -> ä kostet ein Byte mehr, jedes fehlende a eins weniger."""
+    s = _seite(*[_text(id=f"t{i}", text="a" * MAX_TEXT) for i in range(80)])
+    d = ziel - _bytes(s)
+    assert abs(d) <= 80 * (MAX_TEXT - 1)
+    for e in s["ebenen"]:
+        n = min(abs(d), MAX_TEXT - 1)
+        e["text"] = "ä" * n + "a" * (MAX_TEXT - n) if d > 0 else "a" * (MAX_TEXT - n)
+        d -= n if d > 0 else -n
+    assert _bytes(s) == ziel
+    return s
+
+
+def test_groesse_zaehlt_das_normalisierte_dokument():
+    # Die Vorgaben (drehung, deckkraft, gewicht, ...) machen jede Textebene laenger. Gespeichert wird das
+    # normalisierte Dokument - also muss es die 256 KB einhalten, nicht nur die Eingabe.
+    probe = _seite(*[_text(id=f"t{i}") for i in range(80)])
+    zuwachs = _bytes(pruefen(probe)) - _bytes(probe)
+    assert zuwachs > 1000
+    roh = _seite_mit_bytes(MAX_BYTES - zuwachs // 2)        # Eingabe unter, normalisiert ueber der Grenze
+    with pytest.raises(SeiteFehler, match="größer als 256 KB"):
+        pruefen(roh)
+    knapp = _seite_mit_bytes(MAX_BYTES - zuwachs)           # normalisiert genau an der Grenze: geht durch
+    assert _bytes(pruefen(knapp)) == MAX_BYTES

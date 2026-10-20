@@ -225,8 +225,13 @@ def pruefen(s: object) -> dict:
             raise SeiteFehler(f"Ebene {nr}: ID {aus['id']} kommt doppelt vor")
         ids.add(aus["id"])
         ebenen.append(aus)
-    return {"version": 1, "breite": BREITE, "hoehe": hoehe, "hintergrund": hintergrund,
-            "schriften": schr, "ebenen": ebenen}
+    fertig = {"version": 1, "breite": BREITE, "hoehe": hoehe, "hintergrund": hintergrund,
+              "schriften": schr, "ebenen": ebenen}
+    # Gespeichert wird das normalisierte Dokument (mit Vorgaben), also zaehlt seine Groesse - die Eingabe
+    # oben ist nur die billige Vorpruefung. Sonst naehme Python an, was der CHECK der DB ablehnt.
+    if len(json.dumps(fertig, ensure_ascii=False).encode()) > MAX_BYTES:
+        raise SeiteFehler(f"Seite: größer als {MAX_BYTES // 1024} KB")
+    return fertig
 
 
 def rolle_schrift(s: dict, rolle: str) -> str:

@@ -15,6 +15,7 @@
 --      Schreibt format='seite', seite, bloecke NULL.
 --   4) marketing.pult_collage_anlegen(p_mandant, p_titel, p_betreff, p_seite, p_von) RETURNS uuid: legt den
 --      Inhalt an wie pult_inhalt_aus_vorlage (058) und speichert Fassung 1 ueber pult_seite_speichern.
+--      Leerer Betreff -> der Titel wird Betreff (wie 058).
 --      p_von wird angenommen, aber nicht gespeichert: auch die Anlage aus Vorlagen haelt keinen Urheber fest
 --      (marketing.inhalte hat keine Spalte dafuer, die Fassung traegt urheber = 'betreiber').
 -- Sperrreihenfolge wie 061: erst marketing.inhalte, dann Auftraege (die Sperre liest chat_auftraege nur).
@@ -235,8 +236,10 @@ BEGIN
     RAISE EXCEPTION 'Unbekannte Firma'; END IF;
   INSERT INTO marketing.inhalte (mandant, art, titel) VALUES (p_mandant, 'newsletter', btrim(p_titel))
   RETURNING id INTO v_id;
-  -- scheitert das Speichern, faellt mit der Ausnahme auch der Inhalt weg
-  PERFORM marketing.pult_seite_speichern(v_id, 0, p_betreff, '', p_seite, 'betreiber', false);
+  -- scheitert das Speichern, faellt mit der Ausnahme auch der Inhalt weg. Ohne Betreff gilt der Titel
+  -- (wie pult_inhalt_aus_vorlage, 058).
+  PERFORM marketing.pult_seite_speichern(v_id, 0, coalesce(nullif(btrim(p_betreff), ''), btrim(p_titel)), '',
+                                         p_seite, 'betreiber', false);
   RETURN v_id;
 END $$;
 

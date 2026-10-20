@@ -124,7 +124,7 @@ def html(s: dict, *, betreff: str, pflichtteil: dict, bild_basis: str, schrift_b
     farbe, bild = s["hintergrund"]["farbe"], s["hintergrund"]["bild"]
     seite_stil = (f"position:relative;width:{seite.BREITE}px;height:{s['hoehe']}px;overflow:hidden;"
                   f"margin:0 auto;background-color:{farbe};")
-    if bild:
+    if bild:   # bild_basis kann Entities (&apos;) tragen: der ganze Stil wird unten wie src/href escaped
         url = quote(_bild_url(bild_basis, bild), safe=":/?&=%~+@,;")
         seite_stil += f"background-image:url('{url}');background-size:cover;background-position:center;"
     ebenen = "".join(_ebene(s, e, i, bild_basis) for i, e in enumerate(s["ebenen"]))
@@ -141,4 +141,4 @@ def html(s: dict, *, betreff: str, pflichtteil: dict, bild_basis: str, schrift_b
     return (f'<!doctype html><html lang="de"><head><meta charset="utf-8"><title>{_a(betreff)}</title>{kopf}'
             f'<style>html,body{{margin:0;padding:0}}</style></head>'
             f'<body style="margin:0;background-color:{farbe}"><div style="width:{BREITE_PX}px;margin:0 auto">'
-            f'<div style="{seite_stil}">{ebenen}</div>{fuss}</div></body></html>')
+            f'<div style="{_a(seite_stil)}">{ebenen}</div>{fuss}</div></body></html>')

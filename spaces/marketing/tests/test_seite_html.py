@@ -1,5 +1,6 @@
 import copy
 import re
+from html.parser import HTMLParser
 
 from spaces.marketing.claw import seite, seite_html
 
@@ -62,10 +63,40 @@ def test_bilder_ueber_bild_basis():
     assert "object-fit:contain" in h and "border-radius:50%" in h
 
 
+class _Stile(HTMLParser):
+    """Alle style-Attribute so, wie der Browser sie liest (Entities aufgeloest)."""
+    def __init__(self):
+        super().__init__()
+        self.stile = []
+
+    def handle_starttag(self, tag, attrs):
+        self.stile += [v for k, v in attrs if k == "style" and v is not None]
+
+
+def _stile(h):
+    p = _Stile()
+    p.feed(h)
+    return p.stile
+
+
 def test_hintergrundbild():
     s = _seite()
     s["hintergrund"]["bild"] = "medien:bg.jpg"
-    assert f"url('{BILD}bg.jpg')" in _html(s)
+    assert any(f"url('{BILD}bg.jpg')" in st for st in _stile(_html(s)))
+
+
+def test_hintergrundbild_bild_basis_bricht_nicht_aus_dem_stil_aus():
+    # bild_basis besteht _BILD_BASIS (kein ' " < >), Entities wie &apos; aber schon: roh im style-Attribut
+    # wuerde der Browser sie zu ' ) ; aufloesen und das url('...') verlassen
+    basis = "https://h.ts.net/marketing/bild/x&apos;&rpar;;background-color:&num;ff0000;x:&lpar;&apos;/"
+    s = _seite()
+    s["hintergrund"]["bild"] = "medien:bg.jpg"
+    h = _html(s, bild_basis=basis)
+    assert "&apos;" not in h.replace("&amp;apos;", "")
+    seite_stil = next(st for st in _stile(h) if "background-image" in st)
+    assert seite_stil.count("'") == 2 and "&apos;" in seite_stil   # wie geschrieben, nicht aufgeloest
+    assert ";background-color:#ff0000" not in seite_stil
+    assert seite_stil.endswith("background-size:cover;background-position:center;")
 
 
 def test_fliesstext_im_mailstapel_anzeige_als_webschrift():

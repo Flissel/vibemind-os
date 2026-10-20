@@ -54,8 +54,8 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Body, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse, Response
 
-from spaces.marketing.claw import (bildplaetze, bloecke_mjml, pdf_druck, pult_render, schriften, seite, seite_html,
-                                   vorlagen_grafik, vorlagen_marke)
+from spaces.marketing.claw import (bildplaetze, bloecke_mjml, markenprofil, pdf_druck, pult_render, schriften, seite,
+                                   seite_html, vorlagen_grafik, vorlagen_marke)
 from spaces.marketing.sync import _db
 
 router = APIRouter(prefix="/api/pult")
@@ -70,6 +70,8 @@ _NICHT_ERREICHBAR = "Marketing-Datenbank nicht erreichbar"
 _UNGUELTIGE_EINGABE = "Ungueltige Eingabe (unzulaessiges Zeichen)"
 COLLAGE_EINREICHEN = "Collage-Newsletter lassen sich noch nicht einreichen"
 COLLAGE_CHAT = "Der Assistent kann Collage-Newsletter noch nicht bearbeiten"
+COLLAGE_IST = "Das ist ein Collage-Newsletter"
+COLLAGE_IST_NICHT = "Das ist kein Collage-Newsletter"
 
 
 def _schluessel(x_pult_key: str | None) -> None:
@@ -197,6 +199,30 @@ def _pruefen_gestalt(gestalt: dict) -> str | None:
 
 
 lit = _db._sql_literal
+
+
+def neuestes_format_sql(i: str) -> str:
+    """Format der neuesten Fassung als SQL-Ausdruck (NULL ohne Fassung) - Grundlage der Formatsperre."""
+    return (f"(SELECT f.format FROM marketing.inhalt_fassungen f WHERE f.inhalt = {lit(i)}::uuid "
+            "ORDER BY f.fassung DESC LIMIT 1)")
+
+
+def mit_formatsperre(i: str, aufruf: Callable[[], str], *, collage: bool = False, grund: str = COLLAGE_IST,
+                     spalte: str = "fassung") -> dict:
+    """Schreibenden DB-Aufruf nur, wenn das Format der neuesten Fassung passt - Pruefung und Aufruf in
+    DERSELBEN Abfrage (CASE wertet den ELSE-Zweig mit der volatilen Funktion nur bei Bedarf aus).
+    collage=False (Bloecke, Felder, Einreichen, Chat): gesperrt, wenn die neueste Fassung 'seite' ist.
+    collage=True (Seite speichern): gesperrt, wenn es eine neueste Fassung gibt und sie nicht 'seite' ist;
+    ohne Fassung ist der Vergleich NULL und der ELSE-Zweig laeuft. Gesperrt -> 409 mit grund, sonst die Zeile
+    mit dem Ergebnis unter `spalte`. aufruf baut das SQL erst im try von _schreiben (NUL-Byte -> 422)."""
+    fmt = neuestes_format_sql(i)
+    vergleich = f"{fmt} <> 'seite'" if collage else f"{fmt} = 'seite'"
+    zeile = _schreiben(lambda:
+        f"SELECT CASE WHEN {vergleich} THEN NULL ELSE {aufruf()} END AS {spalte}, "
+        f"coalesce({vergleich}, false) AS gesperrt")
+    if zeile.get("gesperrt"):
+        raise HTTPException(409, grund)
+    return zeile
 
 
 @router.get("/uebersicht")
@@ -393,12 +419,15 @@ def _fehlende_bilder_ersetzen(bloecke: dict) -> tuple[dict, list[str]]:
     return neu, fehlend
 
 
-def _laden_lesen(m: str) -> dict:
-    """Name und Standard-Newsletter-Layout (Gestalt) des Ladens; {} wenn es keins gibt."""
+def _laden_lesen(m: str, webseite: bool = False) -> dict:
+    """Name und Standard-Newsletter-Layout (Gestalt) des Ladens; {} wenn es keins gibt. webseite=True liest
+    dazu die Webseite aus dem Markenprofil (marken_spiegel.profil, 066) - nur die Collage braucht sie."""
+    spalte, spiegel = ((", s.profil->'werte'->>'webseite' AS webseite",
+                        "LEFT JOIN marketing.marken_spiegel s ON s.mandant = m.id ") if webseite else ("", ""))
     return _lesen_einer(lambda:
-        "SELECT m.name AS laden, l.name AS layout, l.gestalt FROM marketing.mandanten m "
+        f"SELECT m.name AS laden, l.name AS layout, l.gestalt{spalte} FROM marketing.mandanten m "
         "LEFT JOIN marketing.layout_vorlagen l ON l.mandant = m.id AND l.standard AND l.inhaltsart = 'newsletter' "
-        f"WHERE m.id = {lit(m)}") or {}
+        f"{spiegel}WHERE m.id = {lit(m)}") or {}
 
 
 def _vorlage_fuellen(dok: dict, m: str, laden: dict, logo: str | None = None,
@@ -476,12 +505,13 @@ def _basis_pflicht(wert) -> int:
 
 def _bloecke_als_fassung(i: str, basis: int, felder, bloecke: dict) -> dict:
     """Neue Editor-Fassung (Urheber betreiber) mit Betreff/Vorschautext aus felder. Die Regeln (nur
-    Entwurf, Basis = neueste Fassung, kein laufender Assistent) setzt pult_bloecke_speichern durch."""
+    Entwurf, Basis = neueste Fassung, kein laufender Assistent) setzt pult_bloecke_speichern durch; eine
+    Collage (neueste Fassung 'seite') sperrt mit_formatsperre in derselben Abfrage."""
     felder = felder if isinstance(felder, dict) else {}
     betreff, vorschau = str(felder.get("betreff") or ""), str(felder.get("vorschautext") or "")
-    zeile = _schreiben(lambda:
-        f"SELECT marketing.pult_bloecke_speichern({lit(i)}::uuid, {int(basis)}, {lit(betreff)}, "
-        f"{lit(vorschau)}, {lit(json.dumps(bloecke, ensure_ascii=False))}::jsonb, 'betreiber', false) AS fassung")
+    zeile = mit_formatsperre(i, lambda:
+        f"marketing.pult_bloecke_speichern({lit(i)}::uuid, {int(basis)}, {lit(betreff)}, "
+        f"{lit(vorschau)}, {lit(json.dumps(bloecke, ensure_ascii=False))}::jsonb, 'betreiber', false)")
     return {"fassung": int(zeile["fassung"])}
 
 
@@ -498,11 +528,13 @@ def vorlage_anwenden(iid: str, payload: dict = Body(...), x_pult_key: str | None
     basis = _basis_pflicht(payload.get("basis_fassung"))
     _von(payload)
     kopf = _lesen_einer(lambda:
-        "SELECT i.mandant, i.status, i.art, n.fassung, n.felder FROM marketing.inhalte i "
-        "LEFT JOIN LATERAL (SELECT fassung, felder FROM marketing.inhalt_fassungen f WHERE f.inhalt = i.id "
+        "SELECT i.mandant, i.status, i.art, n.fassung, n.felder, n.format FROM marketing.inhalte i "
+        "LEFT JOIN LATERAL (SELECT fassung, felder, format FROM marketing.inhalt_fassungen f WHERE f.inhalt = i.id "
         f"ORDER BY fassung DESC LIMIT 1) n ON true WHERE i.id = {lit(i)}::uuid")
     if not kopf:
         raise HTTPException(404, "Unbekannter Inhalt")
+    if kopf.get("format") == "seite":   # frueh, damit nichts gefuellt wird; die Schreib-Abfrage sperrt ohnehin
+        raise HTTPException(409, COLLAGE_IST)
     if kopf.get("art") != "newsletter" or kopf.get("status") != "entwurf":
         raise HTTPException(422, "Vorlagen lassen sich nur auf Newsletter-Entwürfe anwenden")
     m = _mandant(kopf.get("mandant"))
@@ -593,17 +625,11 @@ def bloecke_speichern(iid: str, payload: dict = Body(...), x_pult_key: str | Non
     vorschautext = payload.get("vorschautext", "")
     if not isinstance(betreff, str) or not isinstance(vorschautext, str):
         raise HTTPException(422, "betreff und vorschautext muessen Text sein")
-    zeile = _schreiben(lambda:
-        f"SELECT marketing.pult_bloecke_speichern({lit(i)}::uuid, {int(basis)}, {lit(betreff)}, "
+    zeile = mit_formatsperre(i, lambda:
+        f"marketing.pult_bloecke_speichern({lit(i)}::uuid, {int(basis)}, {lit(betreff)}, "
         f"{lit(vorschautext)}, {lit(json.dumps(bloecke, ensure_ascii=False))}::jsonb, "
-        f"{lit(urheber)}, {'true' if als_kopie else 'false'}) AS fassung")
+        f"{lit(urheber)}, {'true' if als_kopie else 'false'})")
     return {"fassung": int(zeile["fassung"])}
-
-
-def neuestes_format_sql(i: str) -> str:
-    """Format der neuesten Fassung als SQL-Ausdruck (Collage-Sperren in freigabe.einreichen und im Chat)."""
-    return (f"(SELECT f.format FROM marketing.inhalt_fassungen f WHERE f.inhalt = {lit(i)}::uuid "
-            "ORDER BY f.fassung DESC LIMIT 1)")
 
 
 def _seite_pflicht(wert) -> dict:
@@ -615,14 +641,14 @@ def _seite_pflicht(wert) -> dict:
         raise HTTPException(422, str(e))
 
 
-def _marke_fuer_seite(laden: dict) -> dict | None:
-    """Marke fuer seite.leer aus derselben Gestalt, die _vorlage_fuellen nutzt (Akzent, Schriftpaar)."""
-    gestalt = laden.get("gestalt")
-    if not isinstance(gestalt, dict):
-        return None
+def _marke_fuer_seite(laden: dict) -> dict:
+    """Marke fuer seite.leer aus derselben Gestalt, die _vorlage_fuellen nutzt (Akzent, Schriftpaar), dazu
+    die Webseite aus dem Markenprofil als Ziel des Startknopfs (nur gueltiges https, sonst example.com)."""
+    gestalt = laden.get("gestalt") if isinstance(laden.get("gestalt"), dict) else {}
     paar = _schriftpaar(gestalt) or {}
+    web = laden.get("webseite")
     return {"akzent": gestalt.get("akzent"), "schrift_anzeige": paar.get("anzeige"),
-            "schrift_text": paar.get("text")}
+            "schrift_text": paar.get("text"), "webseite": web if markenprofil.webseite_gueltig(web) else None}
 
 
 @router.post("/inhalte/collage")
@@ -637,7 +663,7 @@ def collage_anlegen(payload: dict = Body(...), x_pult_key: str | None = Header(N
     betreff = payload.get("betreff", "")
     if not isinstance(betreff, str):
         raise HTTPException(422, "betreff muss Text sein")
-    dok = _seite_pflicht(seite.leer(_marke_fuer_seite(_laden_lesen(m))))
+    dok = _seite_pflicht(seite.leer(_marke_fuer_seite(_laden_lesen(m, webseite=True))))
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_collage_anlegen({lit(m)}, {lit(titel.strip())}, {lit(betreff)}, "
         f"{lit(json.dumps(dok, ensure_ascii=False))}::jsonb, 'betreiber') AS id")
@@ -647,7 +673,8 @@ def collage_anlegen(payload: dict = Body(...), x_pult_key: str | None = Header(N
 @router.post("/inhalte/{iid}/seite")
 def seite_speichern(iid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
     """Neue Collage-Fassung. Die Sperren (nur Entwurf, Basis = neueste Fassung, kein laufender Assistent)
-    setzt marketing.pult_seite_speichern (077) durch, wie pult_bloecke_speichern fuer Bloecke."""
+    setzt marketing.pult_seite_speichern (077) durch, wie pult_bloecke_speichern fuer Bloecke. Nur auf einer
+    Collage oder einem Inhalt ohne Fassung - sonst 409 (mit_formatsperre, dieselbe Abfrage)."""
     _schluessel(x_pult_key)
     i = _uuid_oder_404(iid)
     basis = _basis_pflicht(payload.get("basis_fassung"))
@@ -664,10 +691,10 @@ def seite_speichern(iid: str, payload: dict = Body(...), x_pult_key: str | None 
     if not isinstance(betreff, str) or not isinstance(vorschautext, str):
         raise HTTPException(422, "betreff und vorschautext muessen Text sein")
     dok = _seite_pflicht(payload["seite"])
-    zeile = _schreiben(lambda:
-        f"SELECT marketing.pult_seite_speichern({lit(i)}::uuid, {int(basis)}, {lit(betreff)}, "
+    zeile = mit_formatsperre(i, lambda:
+        f"marketing.pult_seite_speichern({lit(i)}::uuid, {int(basis)}, {lit(betreff)}, "
         f"{lit(vorschautext)}, {lit(json.dumps(dok, ensure_ascii=False))}::jsonb, "
-        f"{lit(urheber)}, {'true' if als_kopie else 'false'}) AS fassung")
+        f"{lit(urheber)}, {'true' if als_kopie else 'false'})", collage=True, grund=COLLAGE_IST_NICHT)
     return {"fassung": int(zeile["fassung"])}
 
 
@@ -723,8 +750,7 @@ def in_bloecke(iid: str, payload: dict = Body(default={}), x_pult_key: str | Non
     if not isinstance(von, str):
         raise HTTPException(422, "von muss Text sein")
     von = von.strip() or "betreiber"
-    zeile = _schreiben(lambda:
-        f"SELECT marketing.pult_in_bloecke_uebernehmen({lit(i)}::uuid, {lit(von)}) AS fassung")
+    zeile = mit_formatsperre(i, lambda: f"marketing.pult_in_bloecke_uebernehmen({lit(i)}::uuid, {lit(von)})")
     return {"fassung": int(zeile["fassung"])}
 
 
@@ -736,10 +762,10 @@ def fassung_speichern(iid: str, payload: dict = Body(...), x_pult_key: str | Non
     if not isinstance(felder, dict):
         raise HTTPException(422, "felder fehlt")
     layout = str(payload.get("layout") or "")
-    zeile = _schreiben(lambda:
-        f"SELECT marketing.pult_fassung_speichern({lit(i)}::uuid, "
+    zeile = mit_formatsperre(i, lambda:
+        f"marketing.pult_fassung_speichern({lit(i)}::uuid, "
         f"{lit(json.dumps(felder, ensure_ascii=False))}::jsonb, "
-        f"{lit(layout)}, 'betreiber') AS fassung")
+        f"{lit(layout)}, 'betreiber')")
     return {"fassung": int(zeile["fassung"])}
 
 
@@ -929,23 +955,25 @@ def layout_standard(name: str, x_pult_key: str | None = Header(None)):
 # sales-ui fragt VOR dem Loeschen einer Datei, welche Inhalte sie noch tragen.
 # Gesperrt ist, was die Datei in der NEUESTEN Fassung eines nicht abgelehnten
 # Inhalts oder in der FREIGEGEBENEN (= versendbaren/versendeten) Fassung
-# nutzt; aeltere, ersetzte Fassungen sperren nicht. Gesucht wird der exakt
-# gespeicherte JSON-Wert "medien:<name>" samt Anfuehrungszeichen, damit
+# nutzt (Bloecke, Felder oder Collage-Seite); aeltere, ersetzte Fassungen
+# sperren nicht. Gesucht wird der exakt gespeicherte JSON-Wert "medien:<name>" samt Anfuehrungszeichen, damit
 # "a.jpg" nicht in "aa.jpg" trifft; ensure_ascii=False wie jsonb::text.
 _MEDIEN_NAME = re.compile(r'^[^/\\"\x00-\x1f]{1,200}$')
 _VERWEISE_SQL = (
     "SELECT i.id::text AS id, i.titel, i.status, i.art, 'aktuell' AS wo, i.mandant, n.format, n.fassung "
     "FROM marketing.inhalte i "
-    "JOIN LATERAL (SELECT bloecke, felder, format, fassung FROM marketing.inhalt_fassungen f WHERE f.inhalt = i.id "
-    "ORDER BY fassung DESC LIMIT 1) n ON true "
+    "JOIN LATERAL (SELECT bloecke, felder, seite, format, fassung FROM marketing.inhalt_fassungen f "
+    "WHERE f.inhalt = i.id ORDER BY fassung DESC LIMIT 1) n ON true "
     "WHERE i.status <> 'abgelehnt' "
-    "AND (strpos(coalesce(n.bloecke::text, ''), {w}) > 0 OR strpos(coalesce(n.felder::text, ''), {w}) > 0) "
+    "AND (strpos(coalesce(n.bloecke::text, ''), {w}) > 0 OR strpos(coalesce(n.felder::text, ''), {w}) > 0 "
+    "OR strpos(coalesce(n.seite::text, ''), {w}) > 0) "
     "UNION ALL "
     "SELECT i.id::text, i.titel, i.status, i.art, 'freigegeben', i.mandant, f.format, f.fassung "
     "FROM marketing.inhalte i "
     "JOIN marketing.inhalt_fassungen f ON f.inhalt = i.id AND f.fassung = i.freigegebene_fassung "
     "WHERE i.status = 'freigegeben' "
-    "AND (strpos(coalesce(f.bloecke::text, ''), {w}) > 0 OR strpos(coalesce(f.felder::text, ''), {w}) > 0)")
+    "AND (strpos(coalesce(f.bloecke::text, ''), {w}) > 0 OR strpos(coalesce(f.felder::text, ''), {w}) > 0 "
+    "OR strpos(coalesce(f.seite::text, ''), {w}) > 0)")
 
 
 def medien_name_pruefen(name) -> str:
@@ -957,7 +985,7 @@ def medien_name_pruefen(name) -> str:
 
 def verweise_lesen(name: str, mandant: str | None) -> list[dict]:
     """Inhalte, deren neueste oder freigegebene Fassung "medien:<name>" exakt traegt, einmal je Inhalt.
-    Je Eintrag id, titel, status, art, wo, format (bloecke|felder), fassung und eigen. Mit mandant
+    Je Eintrag id, titel, status, art, wo, format (bloecke|felder|seite), fassung und eigen. Mit mandant
     kommen Inhalte anderer Firmen ohne Titel (eigen False); ohne mandant ist eigen immer True
     (Altaufrufer). Der Name muss vorher geprueft sein (medien_name_pruefen)."""
     wert = json.dumps("medien:" + name, ensure_ascii=False)

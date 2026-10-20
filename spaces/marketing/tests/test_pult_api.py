@@ -1386,14 +1386,17 @@ def test_seite_pdf_ohne_chromium_503(db, c, monkeypatch):
 
 
 def test_einreichen_sperrt_seite(db, c):
-    db.antworten = [[{"format": "seite"}]]
+    db.antworten = [[{"fassung": None, "gesperrt": True}]]
     r = c.post(f"/api/pult/inhalte/{IID}/einreichen", headers=H, json={"von": "Anna"})
     assert r.status_code == 409 and r.json()["detail"] == "Collage-Newsletter lassen sich noch nicht einreichen"
-    assert len(db.sql) == 1 and "pult_einreichen" not in db.sql[0]
+    # Pruefung und Einreichen in EINER Abfrage: bei 'seite' laeuft pult_einreichen gar nicht erst
+    assert len(db.sql) == 1
+    assert re.search(r"CASE WHEN \(SELECT f\.format .*\) = 'seite' THEN NULL ELSE marketing\.pult_einreichen\(",
+                     db.sql[0])
     db.sql.clear()
-    db.antworten = [[{"format": "bloecke"}], [{"fassung": 4}]]
+    db.antworten = [[{"fassung": 4, "gesperrt": False}]]
     r = c.post(f"/api/pult/inhalte/{IID}/einreichen", headers=H, json={"von": "Anna"})
-    assert r.status_code == 200 and "marketing.pult_einreichen(" in db.sql[1]
+    assert r.status_code == 200 and r.json()["fassung"] == 4 and len(db.sql) == 1
 
 
 @pytest.mark.parametrize("pfad,kopf", [
@@ -1403,7 +1406,7 @@ def test_einreichen_sperrt_seite(db, c):
 def test_chat_sperrt_seite(db, c, monkeypatch, pfad, kopf):
     monkeypatch.setenv("MARKETING_AGENT_KEY", "agent-k")
     monkeypatch.setattr(server, "API_KEY", "")
-    db.antworten = [[{"s": None, "collage": True}]]
+    db.antworten = [[{"s": None, "gesperrt": True}]]
     r = c.post(pfad, headers=kopf, json={"nachricht": "Mach es wärmer"})
     assert r.status_code == 409 and r.json()["detail"] == "Der Assistent kann Collage-Newsletter noch nicht bearbeiten"
     # Pruefung und Anlegen in EINER Abfrage: bei 'seite' laeuft pult_chat_senden gar nicht erst
@@ -1414,4 +1417,88 @@ def test_chat_sperrt_seite(db, c, monkeypatch, pfad, kopf):
 def test_versand_lehnt_seite_ab(db, c):
     db.antworten = [[{"status": "freigegeben", "fassung": 2, "format": "seite", "bloecke": None, "mandant": "v",
                       "felder": {}, "pflichtteil": {}}]]
-    assert c.get(f"/api/pult/inhalte/{IID}/versand", headers=H).status_code == 422
+    r = c.get(f"/api/pult/inhalte/{IID}/versand", headers=H)
+    assert r.status_code == 422 and r.json()["detail"] == "Versand gibt es nur fuer Editor-Newsletter"
+
+
+
+# --- Gesamtpruefung Stufe 1: Befunde ---
+
+def test_collage_anlegen_ohne_betreff_schickt_leer_die_db_nimmt_den_titel(db, c):
+    # Die API reicht "" durch; pult_collage_anlegen (077) setzt dann den Titel als Betreff (verify_077 Teil 2)
+    db.antworten = [[], [{"id": IID}]]
+    r = c.post("/api/pult/inhalte/collage", headers=H, json={"mandant": "radhaus", "titel": " Herbst "})
+    assert r.status_code == 200, r.text
+    assert "marketing.pult_collage_anlegen('radhaus', 'Herbst', '', " in db.sql[1]
+
+
+def test_collage_startknopf_fuehrt_auf_die_webseite_der_marke(db, c):
+    db.antworten = [[{"laden": "Radhaus", "layout": None, "gestalt": None, "webseite": "https://radhaus.de/neu"}],
+                    [{"id": IID}]]
+    r = c.post("/api/pult/inhalte/collage", headers=H, json={"mandant": "radhaus", "titel": "T"})
+    assert r.status_code == 200, r.text
+    assert "marken_spiegel" in db.sql[0] and "webseite" in db.sql[0]
+    assert _jsonb_aus(db.sql[1])["ebenen"][2]["link"] == "https://radhaus.de/neu"
+    for schlecht in ("http://radhaus.de", "https://", "https://a.de/\"x", None, 5):
+        db.sql.clear()
+        db.antworten = [[{"laden": "Radhaus", "layout": None, "gestalt": None, "webseite": schlecht}],
+                        [{"id": IID}]]
+        r = c.post("/api/pult/inhalte/collage", headers=H, json={"mandant": "radhaus", "titel": "T"})
+        assert r.status_code == 200
+        assert _jsonb_aus(db.sql[1])["ebenen"][2]["link"] == "https://example.com", schlecht
+
+
+def test_verweise_suchen_auch_in_seiten(db, c):
+    db.antworten = [[]]
+    assert c.get("/api/pult/medien/verweise", params={"name": "a.jpg"}, headers=H).status_code == 200
+    sql = db.sql[0]
+    assert "strpos(coalesce(n.seite::text, ''), " in sql and "strpos(coalesce(f.seite::text, ''), " in sql
+    assert "SELECT bloecke, felder, seite, format, fassung" in sql
+
+
+def test_seite_speichern_nur_auf_collage(db, c):
+    db.antworten = [[{"fassung": None, "gesperrt": True}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/seite", headers=H, json={"basis_fassung": 1, "seite": SEITE, "betreff": "B"})
+    assert r.status_code == 409 and r.json()["detail"] == "Das ist kein Collage-Newsletter"
+    assert len(db.sql) == 1
+    # gesperrt nur, wenn es eine neueste Fassung gibt und sie nicht 'seite' ist - ohne Fassung laeuft der ELSE-Zweig
+    assert re.search(r"CASE WHEN \(SELECT f\.format .*\) <> 'seite' THEN NULL ELSE marketing\.pult_seite_speichern\(",
+                     db.sql[0])
+    assert "coalesce((SELECT f.format" in db.sql[0] and "<> 'seite', false) AS gesperrt" in db.sql[0]
+
+
+_BLOCK_ROUTEN = [
+    (f"/api/pult/inhalte/{IID}/bloecke", {"basis_fassung": 3, "betreff": "B", "bloecke": DOK},
+     "pult_bloecke_speichern"),
+    (f"/api/pult/inhalte/{IID}/in_bloecke", {"von": "felix"}, "pult_in_bloecke_uebernehmen"),
+    (f"/api/pult/inhalte/{IID}/fassungen", {"felder": FELDER, "layout": "dunkel"}, "pult_fassung_speichern"),
+]
+
+
+@pytest.mark.parametrize("pfad,body,funktion", _BLOCK_ROUTEN)
+def test_block_routen_sperren_collage(db, c, pfad, body, funktion):
+    db.antworten = [[{"fassung": None, "gesperrt": True}]]
+    r = c.post(pfad, headers=H, json=body)
+    assert r.status_code == 409 and r.json()["detail"] == "Das ist ein Collage-Newsletter"
+    assert len(db.sql) == 1
+    assert re.search(r"CASE WHEN \(SELECT f\.format .*\) = 'seite' THEN NULL ELSE marketing\." + funktion + r"\(",
+                     db.sql[0])
+    assert "= 'seite', false) AS gesperrt" in db.sql[0]
+
+
+def test_vorlage_sperrt_collage_vor_dem_fuellen(db, c):
+    db.antworten = [[{**_kopf(), "format": "seite"}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/vorlage", headers=H, json={"vorlage": "studio", "basis_fassung": 7})
+    assert r.status_code == 409 and r.json()["detail"] == "Das ist ein Collage-Newsletter"
+    assert len(db.sql) == 1 and "format" in db.sql[0]
+
+
+def test_vorlage_sperrt_collage_auch_beim_schreiben(db, c, monkeypatch, tmp_path):
+    # Wird die neueste Fassung zwischen Lesen und Schreiben eine Collage, sperrt die Schreib-Abfrage selbst
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    db.antworten = [[_kopf()], [{"bloecke": VORLAGE_DOK}], [{"laden": "x", "layout": None, "gestalt": None}],
+                    [{"fassung": None, "gesperrt": True}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/vorlage", headers=H, json={"vorlage": "studio", "basis_fassung": 7})
+    assert r.status_code == 409 and r.json()["detail"] == "Das ist ein Collage-Newsletter"
+    assert re.search(r"CASE WHEN \(SELECT f\.format .*\) = 'seite' THEN NULL ELSE marketing\.pult_bloecke_speichern\(",
+                     db.sql[3])
