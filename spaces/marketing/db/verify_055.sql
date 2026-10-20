@@ -82,7 +82,9 @@ END $$;
 DO $$ BEGIN
   IF EXISTS (SELECT 1 FROM marketing.inhalt_fassungen WHERE format = 'bloecke'
               AND marketing.pult_bloecke_fehler(bloecke) IS NOT NULL)
-     OR EXISTS (SELECT 1 FROM marketing.newsletter_vorlagen WHERE marketing.pult_bloecke_fehler(bloecke) IS NOT NULL) THEN
+     -- Seiten-Vorlagen (082, bloecke NULL) haben keine Bloecke; vor 082 gibt es die Spalte format noch nicht
+     OR EXISTS (SELECT 1 FROM marketing.newsletter_vorlagen v WHERE coalesce(to_jsonb(v)->>'format', 'bloecke') = 'bloecke'
+                 AND marketing.pult_bloecke_fehler(bloecke) IS NOT NULL) THEN
     RAISE EXCEPTION 'PROBE: gespeichertes Dokument verletzt die 055-Regeln'; END IF;
 END $$;
 

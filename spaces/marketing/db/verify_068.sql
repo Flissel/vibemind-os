@@ -23,6 +23,8 @@ BEGIN
   ASSERT marketing.pult_bloecke_fehler(jsonb_set(basis, '{t,data,props,text}', '"\"fontFamily\": \"HAND\""')) IS NULL,
          'Muster im Text ist harmlos';
   -- Bestand bleibt gueltig: jede neueste Bloecke-Fassung besteht weiter
-  ASSERT NOT EXISTS (SELECT 1 FROM marketing.newsletter_vorlagen WHERE marketing.pult_bloecke_fehler(bloecke) IS NOT NULL),
+  -- Seiten-Vorlagen (082, bloecke NULL) haben keine Bloecke; vor 082 gibt es die Spalte format noch nicht
+  ASSERT NOT EXISTS (SELECT 1 FROM marketing.newsletter_vorlagen v WHERE coalesce(to_jsonb(v)->>'format', 'bloecke') = 'bloecke'
+                      AND marketing.pult_bloecke_fehler(bloecke) IS NOT NULL),
          'alle Vorlagen weiter gueltig';
 END $$;
