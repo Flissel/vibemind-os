@@ -437,17 +437,9 @@ def _build_command(
     # agent system prompt runs to tens of thousands of characters and Windows
     # caps a whole command line at 32767, where the CLI aborts before it reads
     # any input (observed: is_error with 0 input tokens after ~800ms).
-    # Entschaerfung fuer openclaw-Prompts (env-gated, Vorgabe: aus). GEMESSEN
-    # 03.09.2026 durch Bisektion eines 1:1 nachgespielten openclaw-Aufrufs: die
-    # Zeilen "first token [[reply_to_current]]; use [[reply_to:<id>]] ..." und
-    # "Supported directives are stripped before rendering ..." ZUSAMMEN lassen
-    # die CLI mit "API Error: 400 You're out of extra usage" abbrechen -- bei
-    # vollem Kontingent, 0 Tokens, duration_api_ms 0; jede Zeile allein und
-    # jeder Marker allein laufen durch. Das Ersetzen von "[[" durch "[ [" heilt
-    # es deterministisch. Ohne SHIM_NEUTRALIZE_DOUBLE_BRACKETS=1 bleibt der
-    # Prompt unveraendert (Hermes, Captain).
-    if system_prompt and os.environ.get("SHIM_NEUTRALIZE_DOUBLE_BRACKETS", "").strip() == "1":
-        system_prompt = system_prompt.replace("[[", "[ [").replace("]]", "] ]")
+    # Kein Umschreiben des Prompts (20.10.2026): die fruehere [[ -> "[ ["-Entschaerfung (03.09.) ist entfernt.
+    # Sie umging, dass Anthropic Anfragen fremder Agenten-Frameworks (openclaw) als "extra usage" abrechnet;
+    # siehe README "Abrechnung fremder Frameworks".
 
     system_prompt_file: str | None = None
     if system_prompt:
