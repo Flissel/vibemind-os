@@ -11,6 +11,7 @@ import sys
 
 import pytest
 
+from spaces.marketing.claw import markenprofil as mp
 from spaces.marketing.claw import markenwissen as mw
 
 HEUTE = datetime.date(2026, 10, 6)
@@ -398,10 +399,10 @@ def test_vorlagen_bestehendes_unangetastet_neues_angelegt(tmp_path):
     assert (wurzel / "Vibemind" / "Marke.md").read_text(encoding="utf-8") == "# Eigene Marke\n" + INHALT
     assert sorted(os.listdir(wurzel)) == ["Vibemind", "fin2gether"]
     vorlage = (wurzel / "fin2gether" / "Marke.md").read_text(encoding="utf-8")
-    for kopf in ["# fin2gether", "## Wer wir sind", "## Zielgruppe", "## Ton", "## Angebote",
-                 "## Do & Don'ts", "## Fakten und Zahlen"]:
-        assert kopf + "\n" in vorlage
-    assert vorlage.count("<!--") == 7
+    assert "# fin2gether\n" in vorlage
+    for name in mp.ABSCHNITT_REIHENFOLGE:
+        assert f"## {name}\n<!--" in vorlage
+    assert vorlage.count("<!--") == 1 + len(mp.ABSCHNITT_REIHENFOLGE)
     assert mw.ist_leer(vorlage)
     assert mw.vorlagen_anlegen(str(wurzel), ["fin2gether"]) == []
 

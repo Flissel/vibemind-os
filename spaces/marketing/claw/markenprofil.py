@@ -38,8 +38,9 @@ _LOGOS = (("logo", "logo_pfad"), ("logo_dunkel", "logo_dunkel_pfad"))
 WEBSEITE_MAX = 300
 _FARBEN = ("akzent", "zweitfarbe", "grund", "text")
 _SCHRIFTEN = ("schrift_anzeige", "schrift_text")
-ABSCHNITT_REIHENFOLGE = ("Wer wir sind", "Zielgruppe", "Ton", "Angebote", "Do & Don'ts",
-                         "Fakten und Zahlen", "Bildstil")
+ABSCHNITT_REIHENFOLGE = ("Kurz gesagt", "Wer wir sind", "Menschen", "Zielgruppe", "Ton", "Wörter", "Angebote",
+                         "Abgrenzung", "Do & Don'ts", "Fakten und Zahlen", "Bildstil", "Kanäle",
+                         "Kontakt und Impressum", "Stimme")
 _VORSPANN = "Einleitung"
 
 _FARBE = re.compile(r"#[0-9A-Fa-f]{6}")

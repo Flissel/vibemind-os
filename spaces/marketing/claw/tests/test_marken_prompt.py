@@ -373,3 +373,11 @@ def test_korrekturen_im_vorschlag_nur_mit_heben_nach_oben():
 
 def test_prompt_leeres_webseitenfeld_heisst_unveraendert():
     assert "Ein leeres Webseitenfeld heißt unverändert – melde dafür keine Korrektur." in kp.SYSTEM
+
+
+def test_system_nennt_faehigkeiten_und_neue_abschnitte():
+    for eintrag in (*kp.FAEHIGKEITEN, *kp.GRENZEN):
+        assert eintrag in kp.SYSTEM
+    for name in ("Kurz gesagt", "Menschen", "Wörter", "Abgrenzung", "Kanäle", "Kontakt und Impressum", "Stimme"):
+        assert name in kp.SYSTEM
+    assert "Sag nie, dass du etwas kannst, das nicht in dieser Liste steht." in kp.SYSTEM

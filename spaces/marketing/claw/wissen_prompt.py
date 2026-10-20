@@ -25,7 +25,7 @@ AUFGABE
 - Du bekommst das NEUE und das ALTE Markenprofil (Änderungen markiert) und Dokumente der Firma aus Rowboat mit Pfad.
 - Ändere in den Dokumenten nur Aussagen, die dem neuen Profil widersprechen (Farben, Schriften, Logo, Ton, Angebote, Fakten). Alles andere bleibt Wort für Wort.
 - Erfinde nichts. Keine Platzhalter ([…], TBD, TODO, Lorem, XX).
-- Schreib außerdem das komplette Markenhandbuch der Firma neu (Markdown, aus dem neuen Profil): Farben mit Hex-Wert und Rolle, Schriftpaar, Logo und wann die dunkle Fassung gilt (Flächen mit Leuchtdichte unter 0,2), Ton, Zielgruppe, Angebote, Do & Don'ts, Bildstil.
+- Schreib außerdem das komplette Markenhandbuch der Firma neu (Markdown, aus dem neuen Profil): Farben mit Hex-Wert und Rolle, Schriftpaar, Logo und wann die dunkle Fassung gilt (Flächen mit Leuchtdichte unter 0,2), Ton, Zielgruppe, Angebote, Do & Don'ts, Bildstil und alle übrigen Abschnitte des Profils.
 
 ANTWORTFORMAT
 Antworte mit genau einem JSON-Objekt und sonst nichts:

@@ -428,3 +428,19 @@ def test_gestalt_mit_logo_dunkel():
     assert len(g["logo_dunkel"]) <= mp.SPIEGEL_MAX_CHARS and max(Image.open(io.BytesIO(roh)).size) <= 600
     assert mp.gestalt(WERTE, PNG, None)["logo_dunkel"] is None          # neues Logo ohne dunkle Fassung
     assert "logo_dunkel" not in mp.gestalt(WERTE, None, None, PNG_ALPHA)  # ohne Logo keine dunkle Fassung
+
+
+def test_reihenfolge_vierzehn_abschnitte():
+    assert mp.ABSCHNITT_REIHENFOLGE == ("Kurz gesagt", "Wer wir sind", "Menschen", "Zielgruppe", "Ton", "Wörter", "Angebote", "Abgrenzung", "Do & Don'ts", "Fakten und Zahlen", "Bildstil", "Kanäle", "Kontakt und Impressum", "Stimme")
+
+
+def test_altes_profil_behaelt_unbekannte_abschnitte():
+    alt = "\n\n".join(["# Firma", "## Bildstil\nWarm.", "## Fakten und Zahlen\n20 Jahre.", "## Do & Don'ts\nNie Spam.",
+                       "## Angebote\nRäder.", "## Ton\nLocker.", "## Zielgruppe\nFamilien.",
+                       "## Wer wir sind\nWerkstatt.", "## Notizen\nMerke dir das."])
+    p = mp.aus_text(alt)
+    neu = mp.text({}, p.abschnitte)
+    kopfe = [z[3:] for z in neu.split("\n") if z.startswith("## ")]
+    assert kopfe == ["Wer wir sind", "Zielgruppe", "Ton", "Angebote", "Do & Don'ts", "Fakten und Zahlen",
+                     "Bildstil", "Notizen"]
+    assert "Merke dir das." in neu

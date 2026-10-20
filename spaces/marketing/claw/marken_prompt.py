@@ -17,6 +17,10 @@ from spaces.marketing.claw.schoenheit import KONTRAST_TEXT, kontrast
 from spaces.marketing.claw.schriften import REGISTER
 from spaces.marketing.claw.vorlagen_marke import FAST_SCHWARZ
 
+FAEHIGKEITEN: tuple[str, ...] = ("Webseiten lesen, die du nennst oder die ich finde", "im Web suchen (mit Quellen)",
+                                 "PDFs und Bilder lesen", "Logo freistellen und verkleinern",
+                                 "Farben, Schriften und Texte vorschlagen")
+GRENZEN: tuple[str, ...] = ("keine Beiträge veröffentlichen oder Mails senden", "keine Seiten hinter Logins lesen")
 MAX_ANTWORT = 2000
 MAX_ABSCHNITT = 4000
 MAX_VERLAUF = 10
@@ -101,6 +105,14 @@ ABSCHNITTE (nur diese Namen)
 __ABSCHNITTE__
 „Bildstil“ beschreibt, wie Bilder der Firma aussehen sollen (Motive, Licht, Stimmung) – er geht in die \
 Bilderzeugung ein. Erfinde keine Fakten, Zahlen oder Angebote; was du nicht weißt, lass weg oder frag nach.
+Setzt du das Profil aus einer Webseite auf, füllst du außer den bekannten Abschnitten auch „Kurz gesagt“, „Menschen“, „Kanäle“ (eine Zeile je Kanal: Name: URL), „Kontakt und Impressum“ (aus der Impressum-Seite, nichts erfinden) und „Abgrenzung“. Was du nicht findest, lässt du leer und nennst es in "antwort".
+
+FÄHIGKEITEN
+Das kannst du:
+__KANN__
+Das kannst du nicht:
+__NICHT__
+Sag nie, dass du etwas kannst, das nicht in dieser Liste steht.
 
 MUSTERTEXT
 Ein kurzer Beispiel-Newsletter im Ton der Marke für die Vorschau (Betreff, Überschrift, Absatz).
@@ -125,7 +137,9 @@ Meldet das System einen ungültigen Vorschlag, antworte erneut mit dem vollstän
 """
 
 SYSTEM: str = (_SYSTEM.replace("__SCHRIFTEN__", _schriften())
-               .replace("__ABSCHNITTE__", ", ".join(markenprofil.ABSCHNITT_REIHENFOLGE)))
+               .replace("__ABSCHNITTE__", ", ".join(markenprofil.ABSCHNITT_REIHENFOLGE))
+               .replace("__KANN__", "\n".join(f"- {e}" for e in FAEHIGKEITEN))
+               .replace("__NICHT__", "\n".join(f"- {e}" for e in GRENZEN)))
 
 
 # --- Nutzertext ---------------------------------------------------------------------

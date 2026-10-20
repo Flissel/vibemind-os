@@ -29,7 +29,7 @@ from spaces.marketing.api.medien_mandant import _mandant_pflicht, ist_fremd, sic
 from spaces.marketing.api.pult import (_auswahl, _bild_basis, _bloecke_html, _lesen,
                                        _lesen_einer, _schluessel, _schreiben, _uuid_oder_404,
                                        _vorlage_fuellen, lit)
-from spaces.marketing.claw import schriften
+from spaces.marketing.claw import marken_prompt, markenprofil, schriften
 
 log = logging.getLogger(__name__)
 pult_router = APIRouter(prefix="/api/pult")
@@ -39,7 +39,7 @@ FRIST = "5 minutes"
 LOGO_MAX = 2 * 1024 * 1024
 LOGO_PIXEL_MAX = 25_000_000
 SPIEGEL_KOERPER_MAX = 400 * 1024          # Logo <= 140 KB als data-URL, Rest klein
-ABSCHNITTE = ("Wer wir sind", "Zielgruppe", "Ton", "Angebote", "Do & Don'ts", "Fakten und Zahlen", "Bildstil")
+ABSCHNITTE = markenprofil.ABSCHNITT_REIHENFOLGE
 FORMULAR_GRENZEN = {"akzent": 20, "zweitfarbe": 20, "grund": 20, "text": 20, "schrift_anzeige": 40,
                     "schrift_text": 40, "webseite": 300}
 ABSCHNITT_FORM_MAX = 8000
@@ -224,7 +224,9 @@ def marke_stand(mandant: str | None = None, x_pult_key: str | None = Header(None
                           if v else None),
             "uebernahme": "laeuft" if "uebernehmen" in arten else None,
             "uebernahme_seit": seit if "uebernehmen" in arten else None, "aktuell": aktuell, "profil": profil,
-            "letzte_uebernahme": letzte or None, "laufend": laufend or None, "wissen": wissen or None}
+            "letzte_uebernahme": letzte or None, "laufend": laufend or None, "wissen": wissen or None,
+            "abschnitt_namen": list(ABSCHNITTE),
+            "faehigkeiten": {"kann": list(marken_prompt.FAEHIGKEITEN), "nicht": list(marken_prompt.GRENZEN)}}
 
 
 @pult_router.post("/marke/chat")

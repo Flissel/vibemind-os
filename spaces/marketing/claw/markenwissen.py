@@ -42,12 +42,20 @@ _KOMMENTAR = re.compile(r"<!--.*?-->", re.DOTALL)
 _NICHT_SLUG = re.compile(r"[^a-z0-9äöüß]+")
 
 _VORLAGE_ABSCHNITTE = (
+    ("Kurz gesagt", "Ein Satz: Wer sind wir und was tun wir?"),
     ("Wer wir sind", "Zwei, drei Sätze: Was macht die Firma?"),
+    ("Menschen", "Wer steckt dahinter? Namen und Rollen der wichtigsten Personen."),
     ("Zielgruppe", "Wen wollen wir erreichen? Branche, Größe, typische Fragen."),
     ("Ton", "Duzen oder Siezen? Locker oder sachlich? Ein Beispielsatz hilft."),
+    ("Wörter", "Wörter, die wir gern nutzen, und Wörter, die wir meiden."),
     ("Angebote", "Was verkaufen wir? Je Angebot eine Zeile mit Nutzen."),
+    ("Abgrenzung", "Was sind wir nicht? Wodurch unterscheiden wir uns von anderen?"),
     ("Do & Don'ts", "Was gehört in jeden Newsletter, was nie?"),
     ("Fakten und Zahlen", "Belegbare Zahlen, Auszeichnungen, Gründungsjahr. Nur Geprüftes."),
+    ("Bildstil", "Wie sollen Bilder aussehen? Motive, Licht, Stimmung."),
+    ("Kanäle", "Eine Zeile je Kanal: Name: Adresse."),
+    ("Kontakt und Impressum", "Anschrift, Mail, Telefon und Angaben aus dem Impressum. Nur Echtes."),
+    ("Stimme", "Wie klingt die Marke gesprochen? Tempo, Wärme, Beispiel."),
 )
 
 

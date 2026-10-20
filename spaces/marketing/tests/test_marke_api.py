@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from spaces.marketing.api import server
-from spaces.marketing.claw import schriften
+from spaces.marketing.claw import marken_prompt, markenprofil, schriften
 from spaces.marketing.tests.test_medien_mandant import FalschePsql
 from spaces.marketing.tests.test_pult_api import FalscheDB
 
@@ -152,6 +152,17 @@ def test_stand_liefert_alles(umg):
     assert j["vorschlag"] == {"id": VID, "vorschlag": VORSCHLAG, "erstellt_am": "z"}
     assert "_marke_aufraeumen('radhaus')" in f.sql[0]
     assert "LIMIT 10" in f.sql[2] and "art IN ('chat', 'bearbeitung')" in f.sql[2]
+
+
+def test_stand_liefert_abschnitt_namen_und_faehigkeiten(umg):
+    f, _, c = umg
+    f.antworten += [[{"ok": True}], [{"name": "Radhaus", "stand": None, "gespiegelt_am": None, "fehler": None}],
+                    [], [], [], []]
+    r = c.get("/api/pult/marke?mandant=radhaus", headers=H)
+    assert r.status_code == 200, r.text
+    assert r.json()["abschnitt_namen"] == list(markenprofil.ABSCHNITT_REIHENFOLGE)
+    assert r.json()["faehigkeiten"] == {"kann": list(marken_prompt.FAEHIGKEITEN),
+                                        "nicht": list(marken_prompt.GRENZEN)}
 
 
 def test_stand_liefert_den_letzten_wissens_lauf(umg):
@@ -927,7 +938,6 @@ def test_kein_direktes_speichern_des_profils():
 
 def test_abschnitte_gleich_markenprofil():
     from spaces.marketing.api import marke
-    from spaces.marketing.claw import markenprofil
     assert marke.ABSCHNITTE == markenprofil.ABSCHNITT_REIHENFOLGE
 
 
@@ -1014,8 +1024,9 @@ def test_arbeiter_profil_meldet_das_echte_profil(umg):
     {"werte": {"akzent": "data:image/png;base64,AAAA"}, "abschnitte": {}},
     {"werte": {"akzent": 5}, "abschnitte": {}}, {"werte": {"akzent": "x" * 301}, "abschnitte": {}},
     {"werte": {}, "abschnitte": {"Geheim": "x"}}, {"werte": {}, "abschnitte": {"Ton": 1}},
-    {"werte": {}, "abschnitte": {n: "x" * 9000 for n in ("Wer wir sind", "Zielgruppe", "Ton", "Angebote",
-                                                           "Do & Don'ts", "Fakten und Zahlen", "Bildstil")}}])
+    {"werte": {}, "abschnitte": {n: "x" * 9000 for n in ("Kurz gesagt", "Wer wir sind", "Menschen", "Zielgruppe", "Ton", "Wörter", "Angebote",
+                                                           "Abgrenzung", "Do & Don'ts", "Fakten und Zahlen", "Bildstil", "Kanäle",
+                                                           "Kontakt und Impressum", "Stimme")}}])
 def test_arbeiter_profil_form_422(umg, profil):
     f, _, c = umg
     r = c.post("/api/marke/arbeiter/profil", headers=HB, json={"mandant": "radhaus", "profil": profil})
