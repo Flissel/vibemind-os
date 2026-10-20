@@ -34,15 +34,17 @@ def _auszeichnung(roh: str) -> str:
     return _KURSIV.sub(r"<em>\1</em>", t)
 
 
-def _inline(text: str) -> str:
+def _inline(text: str, link_farbe: str | None = None) -> str:
     """Escapen, dann **fett**, *kursiv*, [text](https://...) und Zeilenumbrueche. Ziele werden mit der
-    Regel der Pruefung (seite._HTTPS) gelesen; ein Ziel ausser https wird nur als Text ausgegeben."""
+    Regel der Pruefung (seite._HTTPS) gelesen; ein Ziel ausser https wird nur als Text ausgegeben.
+    link_farbe (Mail): ausdrueckliche Linkfarbe hinter inherit, damit Outlook Links nicht blau malt."""
+    farbe = f"color:{_a(link_farbe)};" if link_farbe else ""
     teile, pos = [], 0
     for m in _TEXTLINK.finditer(text):
         teile.append(_auszeichnung(text[pos:m.start()]))
         label, ziel = m.group(1), m.group(2)
         if seite._HTTPS.fullmatch(ziel):
-            teile.append(f'<a href="{_a(ziel)}" style="color:inherit;text-decoration:underline">'
+            teile.append(f'<a href="{_a(ziel)}" style="color:inherit;{farbe}text-decoration:underline">'
                          f'{_auszeichnung(label)}</a>')
         else:
             teile.append(_auszeichnung(label))

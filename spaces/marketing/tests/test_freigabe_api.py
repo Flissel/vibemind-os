@@ -131,6 +131,19 @@ def test_einreichen_collage_anrede_im_bild_blockiert(umg, renderer):
     assert len(f.sql) == 3 and not any("pult_seite_einreichen" in q for q in f.sql)
 
 
+def test_einreichen_collage_link_im_bild_blockiert(umg, renderer):
+    f, tmp, c = umg
+    s = _collage(text_y=200)
+    s["ebenen"][1]["text"] = "Siehe [hier](https://example.com/x)"
+    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 2}],
+                    [{"format": "seite", "seite": s, "felder": {}, "pflichtteil": {}, "mail": None}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
+    assert r.status_code == 422
+    assert r.json()["detail"] == "Ein Link steht in einem Bildbereich – er muss in frei stehendem Fließtext stehen"
+    assert renderer == [] and list(tmp.iterdir()) == []
+    assert not any("pult_seite_einreichen" in q for q in f.sql)
+
+
 def test_einreichen_collage_ohne_namen_vor_dem_rendern(umg, renderer):
     """Leeres von: 422 mit dem Text von pult_einreichen, bevor die Mail-Fassung erzeugt wird (kein Chromium)."""
     f, tmp, c = umg

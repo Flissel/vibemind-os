@@ -250,8 +250,10 @@ def test_vorschau_html_setzt_bild_basis_je_anfrage():
 def test_fuss_immer_aktuell(umg):
     """Der Pflichtteil der Firma wird je Anfrage eingesetzt: aendert er sich nach dem Erzeugen, aendern sich
     Versand-HTML, Textfassung und Vorschau mit."""
-    f, _, _, aufrufe = umg
+    f, _, erzeugt, aufrufe = umg
     mail = _gespeicherte_mail()
+    for m in mail["medien"]:
+        (erzeugt / m["name"]).write_bytes(b"x")
     alt = {"impressum": "Alte GmbH, Bonn", "abmelde_hinweis": "Abmelden: {abmeldelink}"}
     neu = {"impressum": "Neue GmbH, Köln", "abmelde_hinweis": "Hier abmelden: {abmeldelink}"}
     f.antworten += [[dict(zeile(mail=mail), pflichtteil=alt)], [dict(zeile(mail=mail), pflichtteil=neu)]]
@@ -347,3 +349,102 @@ def test_ms_wird_nicht_aufgeraeumt(tmp_path):
         os.utime(tmp_path / n, (alt, alt))
     assert gestaltung.aufraeumen(str(tmp_path), set()) == ["gs-0123456789ab.jpg"]
     assert sorted(os.listdir(tmp_path)) == ["ms-11111111-2-01-2.jpg", "ms-11111111-2-01.jpg"]
+
+
+LINK = "Ein Link steht in einem Bildbereich – er muss in frei stehendem Fließtext stehen"
+
+
+def test_link_im_bild_blockiert(umg):
+    f, p, erzeugt, aufrufe = umg
+    f.antworten.append([zeile(seite([bild(), text(y=200, t="Siehe [hier](https://example.com/x)")]))])
+    with pytest.raises(HTTPException) as e:
+        dienst.erzeugen(IID, 2)
+    assert e.value.status_code == 422 and e.value.detail == LINK
+    assert aufrufe == [] and os.listdir(erzeugt) == [] and p.sql == []
+    # im frei stehenden Fliesstext ist der Link erlaubt
+    f.antworten += [[zeile(seite([bild(), text(y=600, t="Siehe [hier](https://example.com/x)")]))]]
+    assert dienst.erzeugen(IID, 3)["medien"]
+
+
+def test_fehlende_stuecke_werden_neu_erzeugt(umg):
+    """Eine gespeicherte Mail-Fassung, deren ms-Dateien in der Ablage fehlen, wird verworfen und neu erzeugt."""
+    f, _, erzeugt, aufrufe = umg
+    alt = _gespeicherte_mail()
+    (erzeugt / "ms-11111111-2-02.jpg").write_bytes(b"rest")          # ein uebrig gebliebenes Stueck
+    alt["medien"] = alt["medien"] + [{"name": "ms-11111111-2-02.jpg", "cid": "x", "sw": False}]
+    f.antworten += [[zeile(mail=alt)], [{"namen": ["ms-11111111-2-01.jpg", "ms-11111111-2-02.jpg", "../x.jpg"]}]]
+    mail = dienst.erzeugen(IID, 2)
+    assert "marketing.pult_seite_mail_verwerfen('11111111-1111-1111-1111-111111111111'::uuid, 2)" in f.sql[1]
+    assert "pult_seite_mail_speichern(" in f.sql[2] and len(aufrufe) == 1
+    assert [m["name"] for m in mail["medien"]] == ["ms-11111111-2-01.jpg"]
+    assert sorted(os.listdir(erzeugt)) == ["ms-11111111-2-01.jpg"]    # Rest weg, neues Stueck da
+
+
+def test_versand_prueft_stuecke(umg, monkeypatch):
+    f, _, erzeugt, _ = umg
+    mail = _gespeicherte_mail()
+    monkeypatch.setattr(dienst, "_holen", lambda i, n: (zeile(mail=mail), mail))
+    with pytest.raises(HTTPException) as e:
+        dienst.versand(IID, 2)
+    assert e.value.status_code == 422 and e.value.detail == "Bildstücke fehlen – bitte Mail-Vorschau neu erzeugen"
+    for m in mail["medien"]:
+        (erzeugt / m["name"]).write_bytes(b"x")
+    assert dienst.versand(IID, 2)["medien"] == mail["medien"]
+
+
+def test_sperre_wartezeit_503(umg, monkeypatch):
+    f, _, _, aufrufe = umg
+    monkeypatch.setattr(dienst, "ERZEUG_WARTEN_S", 0.01)
+    f.antworten.append([zeile()])
+    assert dienst._erzeug_sperre.acquire(timeout=1)
+    try:
+        with pytest.raises(HTTPException) as e:
+            dienst.erzeugen(IID, 2)
+    finally:
+        dienst._erzeug_sperre.release()
+    assert e.value.status_code == 503 and e.value.detail == dienst.BESCHAEFTIGT and aufrufe == []
+
+
+def test_nach_dem_warten_vorhandene_nehmen(umg):
+    """Wer auf die Sperre wartet, liest danach neu und nimmt die inzwischen erzeugte Mail-Fassung."""
+    import threading
+    f, _, erzeugt, aufrufe = umg
+    mail = _gespeicherte_mail()
+    for m in mail["medien"]:
+        (erzeugt / m["name"]).write_bytes(b"x")
+    f.antworten += [[zeile()], [zeile(mail=mail)]]
+    assert dienst._erzeug_sperre.acquire(timeout=1)
+    threading.Timer(0.2, dienst._erzeug_sperre.release).start()
+    assert dienst.erzeugen(IID, 2) == mail
+    assert aufrufe == [] and len(f.sql) == 2 and all("pult_seite_mail_lesen(" in q for q in f.sql)
+    assert dienst._erzeug_sperre.acquire(blocking=False)
+    dienst._erzeug_sperre.release()
+
+
+def test_aufraeumen_verwaiste_ms_dateien(umg):
+    f, _, erzeugt, _ = umg
+    alt = time.time() - 2 * 86400
+    for n in ("ms-11111111-1-01.jpg", "ms-22222222-1-01.jpg", "ms-33333333-1-01.jpg", "gs-0123456789ab.jpg"):
+        (erzeugt / n).write_bytes(b"x")
+        os.utime(erzeugt / n, (alt, alt))
+    (erzeugt / "ms-44444444-1-01.jpg").write_bytes(b"frisch")        # juenger als ein Tag: bleibt
+    f.antworten += [[{"namen": []}], [{"namen": ["ms-22222222-1-01.jpg"]}]]
+    weg = dienst.aufraeumen()
+    assert "pult_seite_mail_verwiesen(" in f.sql[1]
+    for n in ("ms-11111111-1-01.jpg", "ms-22222222-1-01.jpg", "ms-33333333-1-01.jpg"):
+        assert n in f.sql[1]
+    assert "ms-44444444-1-01.jpg" not in f.sql[1] and "gs-" not in f.sql[1]
+    assert sorted(weg) == ["ms-11111111-1-01.jpg", "ms-33333333-1-01.jpg"]
+    assert sorted(os.listdir(erzeugt)) == ["gs-0123456789ab.jpg", "ms-22222222-1-01.jpg", "ms-44444444-1-01.jpg"]
+
+
+def test_aufraeumen_waisen_db_fehler_loescht_nichts(umg):
+    f, _, erzeugt, _ = umg
+    alt = time.time() - 2 * 86400
+    (erzeugt / "ms-11111111-1-01.jpg").write_bytes(b"x")
+    os.utime(erzeugt / "ms-11111111-1-01.jpg", (alt, alt))
+    f.antworten.append([{"namen": []}])
+    f.fehler += [None, RuntimeError("ssh weg")]
+    with pytest.raises(HTTPException):
+        dienst.aufraeumen()
+    assert os.listdir(erzeugt) == ["ms-11111111-1-01.jpg"]

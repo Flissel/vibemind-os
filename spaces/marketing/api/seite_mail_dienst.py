@@ -19,8 +19,15 @@ Gleichzeitige Anfragen fuer dieselbe Fassung: jede legt eigene Dateien ab (ein v
 die DB nimmt mit ON CONFLICT DO NOTHING nur die erste Zeile; wer verliert, loescht seine Dateien und liefert die
 gespeicherte Zeile. Scheitert etwas nach dem Ablegen, werden die eben abgelegten Dateien geloescht.
 
+Eine gespeicherte Mail-Fassung gilt nur, solange alle ihre ms-Dateien in der Ablage liegen; fehlt eine, wird
+die Zeile verworfen (pult_seite_mail_verwerfen) und die Mail-Fassung neu erzeugt. Erzeugt wird unter einer Sperre
+(hoechstens eine Erzeugung gleichzeitig, Warten hoechstens ERZEUG_WARTEN_S, sonst 503); wer warten musste, liest
+die Fassung danach neu und nimmt eine inzwischen erzeugte Mail-Fassung, statt doppelt zu rendern.
+
 aufraeumen (stuendlich ueber gestaltung.aufraeumen_falls_faellig): pult_seite_mail_aufraeumen (081) loescht die
-Zeilen alter, nicht mehr gebrauchter Mail-Fassungen, erst danach werden ihre ms-Dateien geloescht.
+Zeilen alter, nicht mehr gebrauchter Mail-Fassungen, erst danach werden ihre ms-Dateien geloescht. Danach gehen
+verwaiste ms-Dateien (aelter als VERWAIST_ALTER_S, von keiner Mail-Fassung mehr verwiesen - z. B. nach dem
+Loeschen einer Collage) weg; welche noch verwiesen sind, sagt pult_seite_mail_verwiesen.
 
 Synchron (Chromium im Aufrufer-Thread, hoechstens einer gleichzeitig - seite_bilder sperrt): die Routen sind
 sync def und laufen damit im Threadpool von FastAPI, wie der PDF-Druck."""
@@ -45,6 +52,12 @@ from spaces.marketing.claw import bloecke_mjml, seite, seite_bilder, seite_mail
 log = logging.getLogger(__name__)
 
 ANREDE_IM_BILD = "Die Anrede steht in einem Bildbereich – sie muss in frei stehendem Fließtext stehen"
+LINK_IM_BILD = "Ein Link steht in einem Bildbereich – er muss in frei stehendem Fließtext stehen"
+STUECKE_FEHLEN = "Bildstücke fehlen – bitte Mail-Vorschau neu erzeugen"
+BESCHAEFTIGT = "Gerade wird eine andere Mail-Fassung erzeugt – bitte gleich noch einmal versuchen"
+ERZEUG_WARTEN_S = 90.0         # Warten auf eine laufende Erzeugung (Chromium hat selbst bis zu 60 s Zeitlimit)
+VERWAIST_ALTER_S = 86400       # verwaiste ms-Dateien erst nach einem Tag loeschen (nie eine eben gerenderte)
+_VERWIESEN_JE_ABFRAGE = 500
 NICHT_GERENDERT = "Bildstücke konnten nicht gerendert werden"
 # Platzhalter-Adresse der Bildstuecke im gespeicherten Vorschau-MJML (keine Anfrage erreicht sie je: .invalid)
 BILD_MARKE = "https://bildbasis.vibemind.invalid/"
@@ -54,6 +67,7 @@ FEHLER_MERKEN_S = 600
 _MS_NAME = re.compile(r"ms-[0-9a-f]{8}-[0-9]{1,6}-[0-9]{2,3}(?:-[0-9]{1,3})?\.jpg")
 _fehler: dict[tuple[str, int], tuple[float, str]] = {}
 _fehler_sperre = threading.Lock()
+_erzeug_sperre = threading.Lock()   # hoechstens eine Erzeugung gleichzeitig (mit Neu-Lesen nach dem Warten)
 
 
 def _fehler_gemerkt(i: str, fassung: int) -> str | None:
@@ -123,15 +137,58 @@ def _stuecke_rendern(i: str, fassung: int, s: dict, stuecke: list, ordner: str) 
         raise HTTPException(503, NICHT_GERENDERT)
 
 
+def _stuecke_da(mail: dict) -> bool:
+    """Liegen alle ms-Dateien der Mail-Fassung in der Ablage? (Ohne Stuecke: ja, ohne Ablage zu fragen.)"""
+    namen = [m.get("name") if isinstance(m, dict) else None for m in mail.get("medien") or []]
+    if not namen:
+        return True
+    ordner = _ordner()
+    return all(isinstance(n, str) and _MS_NAME.fullmatch(n) and os.path.isfile(os.path.join(ordner, n))
+               for n in namen)
+
+
+def _brauchbar(zeile: dict) -> dict | None:
+    mail = zeile.get("mail")
+    return mail if isinstance(mail, dict) and _stuecke_da(mail) else None
+
+
+def _verwerfen(i: str, fassung: int) -> None:
+    """Mail-Fassung mit fehlenden Stuecken verwerfen (DB zuerst), dann ihre restlichen ms-Dateien."""
+    log.warning("Bildstuecke der Mail-Fassung %s/%s fehlen - sie wird neu erzeugt", i[:8], int(fassung))
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_seite_mail_verwerfen({lit(i)}::uuid, {int(fassung)}) AS namen")
+    namen = [n for n in (zeile.get("namen") or []) if isinstance(n, str) and _MS_NAME.fullmatch(n)]
+    if namen:
+        _wegraeumen(_ordner(), namen)
+
+
 def _holen(i: str, fassung: int) -> tuple[dict, dict]:
-    """(Fassungszeile, Mail-Fassung) - die vorhandene, sonst neu erzeugt und gespeichert."""
+    """(Fassungszeile, Mail-Fassung) - die vorhandene (mit allen Stuecken in der Ablage), sonst neu erzeugt und
+    gespeichert. Erzeugt wird unter _erzeug_sperre; wer warten musste, liest danach neu."""
     zeile = _fassung_lesen(i, fassung)
-    if isinstance(zeile.get("mail"), dict):
-        return zeile, zeile["mail"]
+    mail = _brauchbar(zeile)
+    if mail is not None:
+        return zeile, mail
     gemerkt = _fehler_gemerkt(i, fassung)
     if gemerkt is not None:
         raise HTTPException(422, gemerkt)
-    return zeile, _neu(i, fassung, zeile)
+    gewartet = not _erzeug_sperre.acquire(blocking=False)
+    if gewartet and not _erzeug_sperre.acquire(timeout=ERZEUG_WARTEN_S):
+        raise HTTPException(503, BESCHAEFTIGT)
+    try:
+        if gewartet:          # inzwischen erzeugt (oder gescheitert)? dann nicht doppelt rendern
+            zeile = _fassung_lesen(i, fassung)
+            mail = _brauchbar(zeile)
+            if mail is not None:
+                return zeile, mail
+            gemerkt = _fehler_gemerkt(i, fassung)
+            if gemerkt is not None:
+                raise HTTPException(422, gemerkt)
+        if isinstance(zeile.get("mail"), dict):    # gespeichert, aber Stuecke fehlen in der Ablage
+            _verwerfen(i, fassung)
+        return zeile, _neu(i, fassung, zeile)
+    finally:
+        _erzeug_sperre.release()
 
 
 def erzeugen(i: str, fassung: int) -> dict:
@@ -146,6 +203,8 @@ def _neu(i: str, fassung: int, zeile: dict) -> dict:
     try:
         if seite_mail.anrede_in_bild(s):
             raise _fehler_merken(i, fassung, ANREDE_IM_BILD)
+        if seite_mail.links_in_bild(s):
+            raise _fehler_merken(i, fassung, LINK_IM_BILD)
         stuecke = seite_mail.stuecke(s)
     except seite.SeiteFehler as e:
         raise _fehler_merken(i, fassung, str(e))
@@ -211,6 +270,8 @@ def versand(i: str, fassung: int) -> dict:
     """html (cid:, Platzhalter bleiben), text und medien fuer den Versand - Fuss und Text mit dem aktuellen
     Pflichtteil der Firma."""
     zeile, mail = _holen(i, fassung)
+    if not _stuecke_da(mail):        # nie eine Mail mit fehlenden eingebetteten Bildern herausgeben
+        raise HTTPException(422, STUECKE_FEHLEN)
     s, pflicht = zeile.get("seite"), zeile.get("pflichtteil") or {}
     html = _setzen(str(mail.get("mjml_versand") or ""), s, pflicht, True)
     try:
@@ -238,6 +299,33 @@ def aufraeumen() -> list[str]:
     Wirft HTTPException (DB/Ablage nicht erreichbar) - der Aufrufer schluckt das."""
     zeile = _schreiben(lambda: "SELECT marketing.pult_seite_mail_aufraeumen() AS namen")
     namen = [n for n in (zeile.get("namen") or []) if isinstance(n, str) and _MS_NAME.fullmatch(n)]
+    ordner = _ordner()
     if namen:
-        _wegraeumen(_ordner(), namen)
-    return namen
+        _wegraeumen(ordner, namen)
+    return namen + _waisen_aufraeumen(ordner, time.time())
+
+
+def _waisen_aufraeumen(ordner: str, jetzt: float) -> list[str]:
+    """ms-Dateien, die aelter als VERWAIST_ALTER_S sind und auf die keine Mail-Fassung mehr verweist (z. B. nach
+    dem Loeschen der Collage, CASCADE). Ein DB-Fehler wirft (HTTPException) - dann wird nichts geloescht."""
+    kandidaten = []
+    for n in sorted(os.listdir(ordner)):
+        if not _MS_NAME.fullmatch(n):
+            continue
+        try:
+            if jetzt - os.path.getmtime(os.path.join(ordner, n)) >= VERWAIST_ALTER_S:
+                kandidaten.append(n)
+        except OSError:
+            continue
+    weg: list[str] = []
+    for k in range(0, len(kandidaten), _VERWIESEN_JE_ABFRAGE):
+        teil = kandidaten[k:k + _VERWIESEN_JE_ABFRAGE]
+        zeile = _lesen_einer(lambda: "SELECT marketing.pult_seite_mail_verwiesen("
+                                     f"{lit(json.dumps(teil))}::jsonb) AS namen")
+        verwiesen = (zeile or {}).get("namen")
+        if not isinstance(verwiesen, list):      # unklare Antwort: lieber nichts loeschen
+            return weg
+        frei = [n for n in teil if n not in set(verwiesen)]
+        _wegraeumen(ordner, frei)
+        weg += frei
+    return weg

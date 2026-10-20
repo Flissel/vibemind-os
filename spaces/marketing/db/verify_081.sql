@@ -23,16 +23,23 @@ DO $$ DECLARE v_def text; BEGIN
          '0: Signatur pult_seite_einreichen';
   ASSERT to_regprocedure('marketing.pult_seite_mail_aufraeumen(interval)') IS NOT NULL,
          '0: Signatur pult_seite_mail_aufraeumen';
+  ASSERT to_regprocedure('marketing.pult_seite_mail_verwerfen(uuid, int)') IS NOT NULL,
+         '0: Signatur pult_seite_mail_verwerfen';
+  ASSERT to_regprocedure('marketing.pult_seite_mail_verwiesen(jsonb)') IS NOT NULL,
+         '0: Signatur pult_seite_mail_verwiesen';
   ASSERT (SELECT count(*) FROM pg_proc WHERE pronamespace = 'marketing'::regnamespace
            AND proname IN ('pult_seite_mail_speichern', 'pult_seite_mail_lesen', 'pult_seite_einreichen',
-                           'pult_seite_mail_aufraeumen')) = 4,
+                           'pult_seite_mail_aufraeumen', 'pult_seite_mail_verwerfen',
+                           'pult_seite_mail_verwiesen')) = 6,
          '0: keine Ueberladungen';
   ASSERT to_regprocedure('marketing.pult_einreichen(uuid, text)') IS NOT NULL, '0: pult_einreichen bleibt';
   ASSERT NOT has_function_privilege('public',
            'marketing.pult_seite_mail_speichern(uuid,int,text,text,text,jsonb,int)', 'EXECUTE')
      AND NOT has_function_privilege('public', 'marketing.pult_seite_mail_lesen(uuid,int)', 'EXECUTE')
      AND NOT has_function_privilege('public', 'marketing.pult_seite_einreichen(uuid,int,text)', 'EXECUTE')
-     AND NOT has_function_privilege('public', 'marketing.pult_seite_mail_aufraeumen(interval)', 'EXECUTE'),
+     AND NOT has_function_privilege('public', 'marketing.pult_seite_mail_aufraeumen(interval)', 'EXECUTE')
+     AND NOT has_function_privilege('public', 'marketing.pult_seite_mail_verwerfen(uuid,int)', 'EXECUTE')
+     AND NOT has_function_privilege('public', 'marketing.pult_seite_mail_verwiesen(jsonb)', 'EXECUTE'),
          '0: PUBLIC darf nichts';
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sales_app') THEN
     ASSERT NOT has_function_privilege('sales_app',
@@ -195,6 +202,34 @@ DO $$ DECLARE s jsonb; v_a uuid; v_e uuid; j jsonb; k int; BEGIN
   ASSERT EXISTS (SELECT 1 FROM marketing.seite_mailfassungen WHERE inhalt = v_e AND fassung = 2), '4: E/2 da';
   ASSERT NOT j ? format('ms-%s-2-01.jpg', left(v_a::text, 8)) AND NOT j ? format('ms-%s-3-01.jpg', left(v_a::text, 8)),
          '4: zweiter Lauf: A/2 und A/3 bleiben';
+END $$;
+
+-- 5) Verwiesen und Verwerfen
+DO $$ DECLARE s jsonb; v_v uuid; a text; b text; j jsonb; BEGIN
+  s := '{"version":1,"breite":600,"hoehe":1200,"hintergrund":{"farbe":"#ffffff","bild":null},
+         "schriften":{"anzeige":"dm-sans","text":"dm-sans"},
+         "ebenen":[{"id":"t","art":"text","x":300,"y":600,"breite":480,"hoehe":120,"text":"Probe",
+                    "rolle":"TEXT","groesse":17,"farbe":"#333333"}]}'::jsonb;
+  v_v := marketing.pult_collage_anlegen('vibemind', 'Probe 081 Verwerfen', 'Betreff', s, 'probe');
+  a := format('ms-%s-1-01.jpg', left(v_v::text, 8));
+  b := format('ms-%s-1-02.jpg', left(v_v::text, 8));
+  PERFORM marketing.pult_seite_mail_speichern(v_v, 1, '<mjml/>', '<mjml/>', 't',
+    jsonb_build_array(jsonb_build_object('name', a, 'cid', a, 'sw', false),
+                      jsonb_build_object('name', b, 'cid', b, 'sw', false)), 2);
+  j := marketing.pult_seite_mail_verwiesen(jsonb_build_array(a, 'ms-00000000-9-01.jpg', b));
+  ASSERT j @> jsonb_build_array(a, b) AND jsonb_array_length(j) = 2, format('5a: verwiesen %s', j);
+  ASSERT marketing.pult_seite_mail_verwiesen('[]') = '[]'::jsonb, '5a: leer';
+  ASSERT marketing.pult_seite_mail_verwiesen('"x"') = '[]'::jsonb, '5a: keine Liste';
+  j := marketing.pult_seite_mail_verwerfen(v_v, 1);
+  ASSERT j = jsonb_build_array(a, b), format('5b: verworfen %s', j);
+  ASSERT marketing.pult_seite_mail_lesen(v_v, 1) IS NULL, '5b: Zeile weg';
+  ASSERT marketing.pult_seite_mail_verwerfen(v_v, 1) = '[]'::jsonb, '5b: zweimal: leer';
+  ASSERT marketing.pult_seite_mail_verwiesen(jsonb_build_array(a)) = '[]'::jsonb, '5b: nicht mehr verwiesen';
+  -- Loeschen der Collage: die Namen sind danach nicht mehr verwiesen (Waisen fuer die API)
+  PERFORM marketing.pult_seite_mail_speichern(v_v, 1, '<mjml/>', '<mjml/>', 't',
+    jsonb_build_array(jsonb_build_object('name', a, 'cid', a, 'sw', false)), 1);
+  PERFORM marketing.pult_inhalt_loeschen(v_v, 'vibemind', 'probe');
+  ASSERT marketing.pult_seite_mail_verwiesen(jsonb_build_array(a)) = '[]'::jsonb, '5c: nach Loeschen verwaist';
 END $$;
 
 SELECT 'verify_081 ok' AS ergebnis;

@@ -61,9 +61,11 @@ def test_textband_mj_text_mit_arial_stapel_ohne_webschrift():
     assert 'font-size="20px"' in t and 'font-weight="700"' in t and 'line-height="1.5"' in t
     assert 'color="#123456"' in t and 'align="center"' in t
     assert 'text-transform="uppercase"' in t and 'font-style="italic"' in t
-    # Rahmen: links 60, rechts 540, oben 50 (Band beginnt bei 0)
-    assert 'padding-left="60px"' in t and 'padding-right="60px"' in t and 'padding-top="50px"' in t
-    assert 'height="100px"' in t   # deklarierte Kastenhoehe bleibt reserviert
+    # Rahmen: links 60, rechts 540 (seitlich in Prozent von 600, damit das Band am Handy schrumpft), oben 50
+    assert 'padding-left="10%"' in t and 'padding-right="10%"' in t and 'padding-top="50px"' in t
+    # keine feste Hoehe (Text liefe sonst ueber das naechste Element), die deklarierte Hoehe ist Mindesthoehe
+    assert " height=" not in t
+    assert '<div style="min-height:100px">' in m
     assert '<mj-section background-color="#fafafa"' in m
 
 
@@ -72,7 +74,7 @@ def test_abstaende_im_textband_folgen_den_y_abstaenden():
     teile = re.findall(r"<mj-text[^>]*>", bau(s))
     assert 'padding-top="50px"' in teile[0]
     assert 'padding-top="100px"' in teile[1]     # 250 - 150
-    assert 'padding-left="150px"' in teile[1] and 'padding-right="250px"' in teile[1]
+    assert 'padding-left="25%"' in teile[1] and 'padding-right="41.6667%"' in teile[1]
     assert 'padding-bottom="450px"' in teile[1]   # 800 - 350
 
 
@@ -106,6 +108,21 @@ def test_knopf_im_textband_wird_mj_button():
     assert 'href="https://example.com/k"' in b.group(0)
     assert 'background-color="#5b3fd6"' in b.group(0) and 'color="#ffffff"' in b.group(0)
     assert b.group(1) == "Jetzt &lt;lesen&gt;"
+    # mittig (x = 300): ausgerichtet statt fester Polster, Breite in Prozent (220 von 600)
+    assert 'align="center"' in b.group(0) and 'width="36.6667%"' in b.group(0)
+    assert 'padding-left="0px"' in b.group(0) and 'padding-right="0px"' in b.group(0)
+
+
+def test_knopf_links_und_rechts_schrumpfen_mit():
+    links = dict(knopf("k", 100), x=170)          # Rahmen 60..280
+    rechts = dict(knopf("k", 100), x=480)         # Rahmen 370..590
+    b = re.search(r"<mj-button[^>]*>", bau(seite([links]))).group(0)
+    assert 'align="left"' in b and 'padding-left="10%"' in b and 'padding-right="0px"' in b
+    assert 'width="40.7407%"' in b                # 220 von 540 (Rest nach dem linken Polster)
+    b = re.search(r"<mj-button[^>]*>", bau(seite([rechts]))).group(0)
+    assert 'align="right"' in b and 'padding-right="1.6667%"' in b and 'padding-left="0px"' in b
+    assert 'width="37.2881%"' in b                # 220 von 590
+    assert not re.search(r'width="\d+(\.\d+)?px"', b)
 
 
 def test_bildband_mj_image_mit_alt_und_href():
@@ -125,11 +142,15 @@ def test_bildband_mj_image_mit_alt_und_href():
     assert 'href="https://example.com/k"' in img
 
 
-def test_bild_ohne_text_alt_bild_und_ohne_link():
+def test_bild_ohne_text_alt_leer_und_ohne_link():
+    # schmueckendes Stueck ohne Text: alt="" (Vorleseprogramme ueberspringen es)
     s = seite([bild("b", 300)])
     st = sm.stuecke(s)
-    assert st[0].alt == "Bild" and st[0].link is None
-    assert "href=" not in re.search(r"<mj-image[^>]*>", bau(s)).group(0)
+    assert st[0].alt == "" and st[0].link is None
+    img = re.search(r"<mj-image[^>]*>", bau(s)).group(0)
+    assert "href=" not in img and 'alt=""' in img
+    assert 'alt=""' in sm.rendern(s, ["ms-abcdef12-1-01.jpg"], betreff="B", vorschautext="V", pflichtteil=PFLICHT,
+                                  bild_adresse=adresse, fuer_versand=False)
 
 
 def test_alt_hoechstens_300_zeichen():
@@ -175,6 +196,28 @@ def test_anrede_in_bild():
     s = seite([bild("b", 300), text("t", 300, t="Hi {vorname}", deckkraft=0.5),
                text("frei", 700, t="Hallo {vorname}", hoehe=60)])
     assert sm.anrede_in_bild(s) == ["t"]
+
+
+def test_links_in_bild():
+    s = seite([bild("b", 300), text("t", 300, t="Siehe [hier](https://example.com/x)", deckkraft=0.5),
+               text("frei", 700, t="Und [dort](https://example.com/y)", hoehe=60),
+               text("ohne", 300, x=300, breite=100, hoehe=40, t="ohne Link", deckkraft=0.5)])
+    assert sm.links_in_bild(s) == ["t"]
+    assert sm.links_in_bild(seite([text("a", 100, t="[a](https://example.com)")])) == []
+
+
+def test_textlink_farbe_ausdruecklich():
+    s = seite([text("a", 100, t="[hier](https://example.com/x)", farbe="#123456")])
+    a = re.search(r'<a href="https://example.com/x"[^>]*>', bau(s)).group(0)
+    assert "color:inherit;color:#123456" in a and "text-decoration:underline" in a
+
+
+def test_farbschema_meta():
+    hell = bau(seite([text("a", 100)], farbe="#fafafa"))
+    assert '<meta name="color-scheme" content="light">' in hell
+    dunkel = bau(seite([text("a", 100, farbe="#ffffff")], farbe="#111111"))
+    assert '<meta name="color-scheme" content="dark">' in dunkel
+    assert '<meta name="supported-color-schemes" content="dark">' in dunkel
 
 
 def test_anrede_im_gedrehten_knopf_im_bild():

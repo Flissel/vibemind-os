@@ -96,6 +96,15 @@ def test_inhalte_liste(db, c):
     assert "mandant = 'vibemind'" in db.sql[0] and "status = 'entwurf'" in db.sql[0]
 
 
+def test_inhalte_liste_mit_format_der_neuesten_fassung(db, c):
+    db.antworten = [[{"id": "a1", "art": "newsletter", "titel": "X", "status": "entwurf",
+                      "erstellt_am": "2026-09-04", "fassungen": 2, "layout": None, "format": "seite"}]]
+    r = c.get("/api/pult/inhalte?mandant=vibemind", headers=H)
+    assert r.status_code == 200 and r.json()["inhalte"][0]["format"] == "seite"
+    assert ("(SELECT f.format FROM marketing.inhalt_fassungen f WHERE f.inhalt = i.id "
+            "ORDER BY f.fassung DESC LIMIT 1) AS format") in db.sql[0]
+
+
 def test_filter_wird_nicht_blind_eingesetzt(db, c):
     r = c.get("/api/pult/inhalte?art=newsletter';drop table x;--", headers=H)
     assert r.status_code == 422 and db.sql == []
@@ -1432,13 +1441,21 @@ def _versand_kopf(**extra):
     return z
 
 
+def _ablage(monkeypatch, tmp_path, mail):
+    """Die ms-Dateien der Mail-Fassung liegen in der Ablage (sonst gilt sie als unvollstaendig)."""
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    for m in mail["medien"]:
+        (tmp_path / m["name"]).write_bytes(b"x")
+
+
 def _dienst_zeile(mail, pflichtteil=None, s=None):
     return {"format": "seite", "seite": s or SEITE, "felder": {"betreff": "Herbst"},
             "pflichtteil": PFLICHT_A if pflichtteil is None else pflichtteil, "mail": mail}
 
 
-def test_versand_collage_form_wie_bloecke(db, c):
+def test_versand_collage_form_wie_bloecke(db, c, monkeypatch, tmp_path):
     mail = _mail()
+    _ablage(monkeypatch, tmp_path, mail)
     db.antworten = [[_versand_kopf()], [_dienst_zeile(mail)]]
     r = c.get(f"/api/pult/inhalte/{IID}/versand", headers=H)
     assert r.status_code == 200, r.text
@@ -1453,9 +1470,10 @@ def test_versand_collage_form_wie_bloecke(db, c):
     assert "marketing.pult_seite_mail_lesen(" in db.sql[1] and f"'{IID}'::uuid AND f.fassung = 2" in db.sql[1]
 
 
-def test_versand_collage_fuss_folgt_dem_aktuellen_pflichtteil(db, c):
+def test_versand_collage_fuss_folgt_dem_aktuellen_pflichtteil(db, c, monkeypatch, tmp_path):
     """Aendert die Firma ihren Pflichtteil nach dem Erzeugen, traegt der Versand den neuen Fuss."""
     mail = _mail()
+    _ablage(monkeypatch, tmp_path, mail)
     neu = {"impressum": "Neue GmbH, Köln", "abmelde_hinweis": "Abmelden: {abmeldelink}"}
     db.antworten = [[_versand_kopf()], [_dienst_zeile(mail, pflichtteil=neu)]]
     j = c.get(f"/api/pult/inhalte/{IID}/versand", headers=H).json()
@@ -1479,8 +1497,9 @@ def test_versand_collage_nicht_freigegeben_409(db, c):
     assert c.get(f"/api/pult/inhalte/{IID}/versand", headers=H).status_code == 409 and len(db.sql) == 1
 
 
-def test_vorschau_mail_collage(db, c):
+def test_vorschau_mail_collage(db, c, monkeypatch, tmp_path):
     mail = _mail()
+    _ablage(monkeypatch, tmp_path, mail)
     for fmt in ("mail", "handy", ""):          # ohne Format: die Mail (wie bisher die Vorgabe)
         db.antworten = [[_seite_zeile()], [_dienst_zeile(mail)]]
         r = c.get(f"/api/pult/inhalte/{IID}/vorschau?fassung=2&format={fmt}&bild_basis={BASIS}", headers=H)

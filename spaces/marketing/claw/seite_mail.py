@@ -10,7 +10,7 @@ import urllib.parse
 from dataclasses import dataclass
 from typing import Callable
 
-from spaces.marketing.claw import bloecke_mjml, schriften, seite_html, seite_streifen
+from spaces.marketing.claw import bloecke_mjml, schriften, seite_html, seite_streifen, vorlagen_marke
 from spaces.marketing.claw import seite as seite_mod
 from spaces.marketing.claw.bloecke_mjml import RenderFehler
 
@@ -18,6 +18,7 @@ ALT_MAX = 300
 _ANREDE = "{vorname}"
 _FUSS_TEXT = "#666666"
 _AUSRICHTUNG = {"links": "left", "mitte": "center", "rechts": "right"}
+MITTE_TOLERANZ = 4   # Einheiten: ein Knopf, dessen Mitte so nah an 300 liegt, gilt als mittig
 
 
 @dataclass
@@ -35,6 +36,12 @@ def _a(wert) -> str:
 
 def _px(zahl: float) -> str:
     return f"{max(0, round(float(zahl), 2)):g}px"
+
+
+def _pz(teil: float, ganz: float = seite_mod.BREITE) -> str:
+    """Seitlicher Abstand/Breite in Prozent (von 600 bzw. vom Rest neben dem Polster): so schrumpfen Text- und
+    Knopfbaender am Handy mit, statt in fester Summe von 600 Pixeln ueberzustehen."""
+    return f"{max(0.0, round(float(teil) / float(ganz) * 100, 4)):g}%"
 
 
 def _stapel(s: dict, rolle: str) -> str:
@@ -56,7 +63,7 @@ def _alt(ebenen: list[dict]) -> str:
     teile = [" ".join(_schlicht(e["text"]).split()) for e in ebenen if e["art"] in ("text", "knopf")]
     alt = " ".join(t for t in teile if t)
     if not alt:
-        return "Bild"
+        return ""            # schmueckendes Stueck: alt="" (Vorleseprogramme ueberspringen es)
     return alt if len(alt) <= ALT_MAX else alt[:ALT_MAX - 1].rstrip() + "…"
 
 
@@ -77,25 +84,47 @@ def stuecke(seite: dict) -> list[Stueck]:
     return _stuecke(baender, nach_id)
 
 
-def anrede_in_bild(seite: dict) -> list[str]:
-    """IDs der Text- und Knopf-Ebenen mit {vorname}, die in einem Bildband landen (dort ginge die Anrede
-    verloren)."""
+def _im_bild(seite: dict, treffer: Callable[[dict], bool]) -> list[str]:
     _, baender, nach_id = _vorbereitet(seite)
     ids: list[str] = []
     for b in baender:
         if b.art == "bild":
             ids += [i for i in b.ebenen if nach_id[i]["art"] in ("text", "knopf")
-                    and _ANREDE in nach_id[i]["text"] and i not in ids]
+                    and treffer(nach_id[i]) and i not in ids]
     return ids
+
+
+def anrede_in_bild(seite: dict) -> list[str]:
+    """IDs der Text- und Knopf-Ebenen mit {vorname}, die in einem Bildband landen (dort ginge die Anrede
+    verloren)."""
+    return _im_bild(seite, lambda e: _ANREDE in e["text"])
+
+
+def links_in_bild(seite: dict) -> list[str]:
+    """IDs der Textebenen mit einem Textlink [..](https://..), die in einem Bildband landen (im Bild waere der
+    Link nicht anklickbar; Spec-Entscheidung 10). Knoepfe zaehlen nicht: ihr Link verlinkt das Stueck."""
+    return _im_bild(seite, lambda e: e["art"] == "text" and bool(seite_html.TEXTLINK.search(e["text"])))
+
+
+def _knopf_lage(l: float, r: float) -> tuple[str, str, str, str]:
+    """(align, padding-left, padding-right, width) eines Knopfs mit dem Rahmen l..r: ausgerichtet nach der Lage
+    seiner Mitte, Polster und Breite in Prozent (Breite relativ zum Platz neben dem Polster)."""
+    breite, mitte = r - l, (l + r) / 2
+    if abs(mitte - seite_mod.BREITE / 2) <= MITTE_TOLERANZ:
+        return "center", "0px", "0px", _pz(breite)
+    if mitte < seite_mod.BREITE / 2:
+        return "left", _pz(l), "0px", _pz(breite, seite_mod.BREITE - l)
+    return "right", "0px", _pz(seite_mod.BREITE - r), _pz(breite, r)
 
 
 def _ebene(s: dict, e: dict, oben: float, unten_abstand: float) -> str:
     l, _, r, _ = seite_streifen.rahmen(e)
-    polster = (f'padding-top="{_px(oben)}" padding-bottom="{_px(unten_abstand)}" '
-               f'padding-left="{_px(l)}" padding-right="{_px(seite_mod.BREITE - r)}"')
+    senkrecht = f'padding-top="{_px(oben)}" padding-bottom="{_px(unten_abstand)}"'
     schrift = bloecke_mjml.attr_schrift(_stapel(s, e["rolle"]))
     if e["art"] == "knopf":
-        return (f'<mj-button {polster} href="{_a(e["link"])}" align="left" width="{_px(e["breite"])}" '
+        align, links, rechts, breite = _knopf_lage(l, r)
+        return (f'<mj-button {senkrecht} padding-left="{links}" padding-right="{rechts}" href="{_a(e["link"])}" '
+                f'align="{align}" width="{breite}" '
                 f'height="{_px(e["hoehe"])}" inner-padding="0px 12px" border-radius="{_px(e["rundung"])}" '
                 f'background-color="{_a(e["farbe"])}" color="{_a(e["textfarbe"])}" font-family="{schrift}" '
                 f'font-size="{_px(e["groesse"])}" font-weight="{e["gewicht"]}">{_a(e["text"])}</mj-button>')
@@ -106,11 +135,16 @@ def _ebene(s: dict, e: dict, oben: float, unten_abstand: float) -> str:
         extra += ' text-transform="uppercase"'
     if e["kursiv"]:
         extra += ' font-style="italic"'
-    # height reserviert die deklarierte Kastenhoehe, damit die Abstaende dem Entwurf folgen
-    return (f'<mj-text {polster} height="{_px(e["hoehe"])}" align="{_AUSRICHTUNG[e["ausrichtung"]]}" '
+    # Die deklarierte Kastenhoehe ist nur MINDESThoehe (min-height aus der geprueften Zahl): laeuft der Text in
+    # der Ersatzschrift laenger, schiebt er die folgenden Elemente nach unten statt ueber sie zu laufen. Outlook
+    # (Word) kennt min-height nicht - dort entfaellt nur der Leerraum unter kurzem Text.
+    polster = f'{senkrecht} padding-left="{_pz(l)}" padding-right="{_pz(seite_mod.BREITE - r)}"'
+    inhalt = seite_html.inline(e["text"], link_farbe=e["farbe"])
+    return (f'<mj-text {polster} align="{_AUSRICHTUNG[e["ausrichtung"]]}" '
             f'color="{_a(e["farbe"])}" '
             f'font-family="{schrift}" font-size="{_px(e["groesse"])}" font-weight="{e["gewicht"]}" '
-            f'line-height="{e["zeilenabstand"]:g}"{extra}>{seite_html.inline(e["text"])}</mj-text>')
+            f'line-height="{e["zeilenabstand"]:g}"{extra}><div style="min-height:{_px(e["hoehe"])}">{inhalt}</div>'
+            f'</mj-text>')
 
 
 def _textband(s: dict, b: seite_streifen.Band, nach_id: dict[str, dict]) -> str:
@@ -166,7 +200,12 @@ def mjml(seite: dict, stuecke_namen: list[str], *, betreff: str, vorschautext: s
     fuss = (fuss_ersatz if fuss_ersatz is not None
             else bloecke_mjml.pflicht_fuss(pflichtteil or {}, _FUSS_TEXT, farbe, fuer_versand))
     schrift = bloecke_mjml.attr_schrift(_stapel(s, "TEXT"))
-    quelle = (f'<mjml><mj-head><mj-title>{_a(betreff)}</mj-title><mj-preview>{_a(vorschautext)}</mj-preview>'
+    # Farbschema wie bei den Block-Mails (dunkle Seite -> dark), helle Seiten ausdruecklich light: Mailprogramme
+    # sollen weder die Textbaender noch die Bildstuecke eigenmaechtig umfaerben.
+    schema = "dark" if vorlagen_marke.ist_dunkel(farbe) else "light"
+    meta = (f'<mj-raw><meta name="color-scheme" content="{schema}"><meta name="supported-color-schemes" '
+            f'content="{schema}"></mj-raw>')
+    quelle = (f'<mjml><mj-head><mj-title>{_a(betreff)}</mj-title><mj-preview>{_a(vorschautext)}</mj-preview>{meta}'
               f'<mj-attributes><mj-all font-family="{schrift}" /></mj-attributes></mj-head>'
               f'<mj-body background-color="{_a(farbe)}" width="{seite_mod.BREITE}px">{"".join(rumpf)}{fuss}'
               f'</mj-body></mjml>')

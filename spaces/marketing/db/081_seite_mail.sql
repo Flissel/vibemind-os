@@ -1,5 +1,8 @@
 -- RUNBOOK: nach 077 (Seitenformat) und 080. Idempotent, eine Transaktion. Nach jedem Replay verify_081 laufen
--- lassen. Ein Replay von 063 beruehrt pult_einreichen, nicht die Funktionen hier; 075 bleibt gueltig (die neue
+-- lassen. BEI AENDERUNGEN AN seite_mail (MJML/Stuecke) NACH DEM LIVEGANG: nicht versendete Mail-Fassungen loeschen
+-- (marketing.pult_seite_mail_verwerfen(inhalt, fassung) je Fassung, deren Newsletter noch nicht verschickt ist) -
+-- sonst bleibt das alte MJML gespeichert und wird weiter verwendet; die API erzeugt sie beim naechsten Bedarf neu,
+-- die verwaisten ms-Dateien raeumt das stuendliche Aufraeumen nach einem Tag ab. Ein Replay von 063 beruehrt pult_einreichen, nicht die Funktionen hier; 075 bleibt gueltig (die neue
 -- Tabelle haengt mit ON DELETE CASCADE an inhalt_fassungen, pult_inhalt_loeschen raeumt sie also mit ab).
 -- 081: Mail-Fassung der Collage (sales-claw Plan 2026-10-20-freie-flaeche-stufe4-mail-versand, Task 4).
 --   1) marketing.seite_mailfassungen(inhalt, fassung, mjml_versand, html_vorschau_mjml, text, medien, bytes,
@@ -26,6 +29,11 @@
 --      Mail-Fassungen, deren Fassung weder die neueste noch die eingereichte noch die freigegebene ihres Inhalts
 --      ist und die aelter als p_alter sind; liefert die Namen ihrer Bildstuecke (jsonb-Array). Die API loescht
 --      die Dateien erst danach (stuendliches Aufraeumen neben den gs-Entwurfsbildern).
+--   6) marketing.pult_seite_mail_verwerfen(inhalt, fassung) RETURNS jsonb: loescht die Mail-Fassung (z. B. weil
+--      ihre ms-Dateien in der Ablage fehlen - die API erzeugt sie dann neu) und liefert die Namen ihrer Stuecke.
+--   7) marketing.pult_seite_mail_verwiesen(p_namen jsonb) RETURNS jsonb: die Namen aus p_namen, auf die noch
+--      eine Mail-Fassung verweist. Die API loescht verwaiste ms-Dateien (aelter als 1 Tag, z. B. nach dem
+--      Loeschen einer Collage per CASCADE) anhand dieser Liste.
 -- Ersetzte Funktionen: keine. Block-Newsletter bleiben unveraendert (pult_einreichen selbst unberuehrt).
 -- Rechte: wie 077 - EXECUTE der neuen Funktionen nicht fuer PUBLIC; Aufrufer ist die API-Rolle (SUPABASE_DB_USER,
 -- Vorgabe supabase_admin = Eigentuemerin). Tabelle ohne eigene GRANTs (Default Privileges aus 003 gelten).
@@ -119,9 +127,33 @@ BEGIN
   RETURN v_namen;
 END $$;
 
+-- 6) Verwerfen einer Mail-Fassung (Dateien fehlen): Zeile weg, Namen zurueck
+CREATE OR REPLACE FUNCTION marketing.pult_seite_mail_verwerfen(p_inhalt uuid, p_fassung int) RETURNS jsonb
+LANGUAGE plpgsql AS $$
+DECLARE v_namen jsonb;
+BEGIN
+  WITH weg AS (
+    DELETE FROM marketing.seite_mailfassungen WHERE inhalt = p_inhalt AND fassung = p_fassung RETURNING medien)
+  SELECT coalesce(jsonb_agg(e->>'name') FILTER (WHERE e->>'name' IS NOT NULL), '[]'::jsonb) INTO v_namen
+    FROM weg LEFT JOIN LATERAL jsonb_array_elements(weg.medien) e ON true;
+  RETURN v_namen;
+END $$;
+
+-- 7) Welche der Namen sind noch verwiesen (verwaiste ms-Dateien erkennen)
+CREATE OR REPLACE FUNCTION marketing.pult_seite_mail_verwiesen(p_namen jsonb) RETURNS jsonb
+LANGUAGE sql STABLE AS $$
+  SELECT coalesce(jsonb_agg(DISTINCT n.name), '[]'::jsonb)
+    FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(p_namen) = 'array' THEN p_namen ELSE '[]'::jsonb END)
+         AS n(name)
+   WHERE EXISTS (SELECT 1 FROM marketing.seite_mailfassungen m
+                  WHERE m.medien @> jsonb_build_array(jsonb_build_object('name', n.name)))
+$$;
+
 REVOKE ALL ON FUNCTION marketing.pult_seite_mail_lesen(uuid, int) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.pult_seite_mail_speichern(uuid, int, text, text, text, jsonb, int) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.pult_seite_einreichen(uuid, int, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.pult_seite_mail_aufraeumen(interval) FROM PUBLIC;
+REVOKE ALL ON FUNCTION marketing.pult_seite_mail_verwerfen(uuid, int) FROM PUBLIC;
+REVOKE ALL ON FUNCTION marketing.pult_seite_mail_verwiesen(jsonb) FROM PUBLIC;
 
 COMMIT;

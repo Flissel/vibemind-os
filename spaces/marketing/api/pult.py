@@ -256,6 +256,8 @@ def inhalte(mandant: str | None = None, art: str | None = None, status: str | No
         "  (SELECT count(*) FROM marketing.inhalt_fassungen f WHERE f.inhalt = i.id)::int AS fassungen, "
         "  (SELECT f.layout FROM marketing.inhalt_fassungen f WHERE f.inhalt = i.id "
         "     ORDER BY f.fassung DESC LIMIT 1) AS layout, "
+        "  (SELECT f.format FROM marketing.inhalt_fassungen f WHERE f.inhalt = i.id "
+        "ORDER BY f.fassung DESC LIMIT 1) AS format, "
         "  (SELECT count(*) FROM marketing.rueckmeldungen r "
         "     WHERE r.inhalt = i.id AND r.erledigt_am IS NULL)::int AS offene_rueckmeldungen "
         f"FROM marketing.inhalte i WHERE {' AND '.join(wo)} ORDER BY i.erstellt_am DESC")
