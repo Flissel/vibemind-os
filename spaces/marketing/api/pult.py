@@ -679,8 +679,10 @@ def vorlage_vorschau(name: str, format: str = "mail", bild_basis: str = "",
     if not zeile:
         raise HTTPException(404, "Unbekannte Vorlage")
     if zeile.get("format") == "seite":
-        # Collage-Vorlage: immer die gefuellte Seite als Seiten-HTML (eine Mail-Fassung gibt es erst nach dem
-        # Anlegen); Motive stehen als Platzhalter da, ihre Bilder entstehen erst beim Anlegen
+        # Collage-Vorlage: immer die gefuellte Seite als Seiten-HTML, auch bei format=mail|handy - eine Mail-Fassung
+        # gibt es erst nach dem Anlegen, und die sales-Oberflaeche (ui_editor.vorlage_bild/editor_vorlage_bild)
+        # fragt heute jede Vorlage mit format=mail an (Fix-Runde 1: bewusst KEIN 422). Motive stehen als
+        # Platzhalter da, ihre Bilder entstehen erst beim Anlegen.
         s, _, _ = _seiten_vorlage_fuellen(zeile, m)
         return _seite_antwort(s, zeile.get("beschreibung") or "", zeile.get("pflichtteil"), "seite", basis)
     if fmt == "seite" or not isinstance(zeile.get("bloecke"), dict):

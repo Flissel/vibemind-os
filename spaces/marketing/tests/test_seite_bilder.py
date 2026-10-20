@@ -172,6 +172,24 @@ def test_platzhalter_blockiert():
     assert gefragt == []
 
 
+def test_platzhalter_kacheln_nur_auf_wunsch():
+    """Schoenheitspruefung (Fix-Runde 1): platzhalter_kacheln=True zeichnet Platzhalter als Kachel (wie das
+    Pruefbild), ohne die Medien zu fragen; ein fehlendes echtes Medium blockiert weiter."""
+    gefragt = []
+
+    def lesen(n):
+        gefragt.append(n)
+        return b"x" if n == "foto.jpg" else None
+    b = _Browser()
+    out, _ = sb.render_und_messen(seite([bild("p", "medien:platzhalter-3x2.png"), bild("f", "medien:foto.jpg", 600)]),
+                                  lesen, browser_starten=lambda: b, platzhalter_kacheln=True)
+    assert out and gefragt == ["foto.jpg"]
+    assert ("fulfill", "https://export.vibemind.invalid/medien/platzhalter-3x2.png", 200) in b.log
+    with pytest.raises(sb.StueckFehler, match="^Bild weg.jpg fehlt$"):
+        sb.render_und_messen(seite([bild("w", "medien:weg.jpg")]), lesen, browser_starten=_Browser,
+                             platzhalter_kacheln=True)
+
+
 # ---- Echter Browser ----------------------------------------------------------------------------------------
 def _chromium_da():
     try:

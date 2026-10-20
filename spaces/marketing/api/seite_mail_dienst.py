@@ -47,7 +47,14 @@ einmal ohne Text- und Knopfebenen (seite_schoenheit.seite_ohne_text), unter ders
 (_erzeug_sperre, Warten hoechstens ERZEUG_WARTEN_S) und mit den Zeitlimits von seite_bilder. Befunde:
 Anrede/Link im Bildbereich (wie Stufe 4, gemessen) zuerst, dann seite_schoenheit.pruefen. Das Ergebnis liegt je
 (Inhalt, Fassung) PRUEFUNG_MERKEN_S im Speicher (Fassungen sind unveraenderlich). Technischer Fehler (Chromium weg,
-Zeitlimit, Ablage fehlt, Sperre belegt) -> 503 (nie gemerkt); ein fehlendes Bild oder eine ungueltige Seite -> 422."""
+Zeitlimit, Ablage fehlt, Sperre belegt) -> 503 (nie gemerkt); ein fehlendes Bild oder eine ungueltige Seite -> 422.
+Die Route (pruefung) zeichnet Platzhalter als neutrale Kacheln (wie das Pruefbild); Text ueber einem Platzhalter
+bekommt keinen Pixel-Kontrast, dafuer den weichen Hinweis BILDER_IN_ARBEIT.
+
+Einreichen (einreichen_vorbereiten, Fix-Runde 1): Pruefung und Mail-Fassung unter EINER Sperre mit EINEM vollen
+Rendering (plus hoechstens einem ohne Text); das volle Rendering geht als (png, masse) in _neu, die Erzeugung rendert
+nicht noch einmal. Zeitlimit/belegte Sperre -> 503 sofort; ein anderer technischer Fehler der Pruefung -> weiter wie
+Stufe 4 (_holen). Seiten mit Platzhaltern werden nicht geprueft, die Erzeugung blockiert sie wie in Stufe 4."""
 from __future__ import annotations
 
 import html as _html
@@ -64,7 +71,8 @@ from fastapi import HTTPException
 from spaces.marketing.api.bilder import _ordner
 from spaces.marketing.api.chat import _ablegen_und_zuordnen
 from spaces.marketing.api.pult import COLLAGE_IST_NICHT, _lesen_einer, _medien_datei, _schreiben, lit
-from spaces.marketing.claw import bloecke_mjml, seite, seite_bilder, seite_mail, seite_schoenheit
+from spaces.marketing.claw import (bildplaetze, bloecke_mjml, seite, seite_bilder, seite_mail, seite_schoenheit,
+                                   seite_streifen)
 from spaces.marketing.claw.schoenheit import befund
 
 log = logging.getLogger(__name__)
@@ -77,6 +85,7 @@ ERZEUG_WARTEN_S = 90.0         # Warten auf eine laufende Erzeugung (Chromium ha
 VERWAIST_ALTER_S = 86400       # verwaiste ms-Dateien erst nach einem Tag loeschen (nie eine eben gerenderte)
 _VERWIESEN_JE_ABFRAGE = 500
 NICHT_GERENDERT = "Bildstücke konnten nicht gerendert werden"
+BILDER_IN_ARBEIT = "Bilder werden noch erzeugt – Kontrast wird danach geprüft"
 # Platzhalter-Adresse der Bildstuecke im gespeicherten Vorschau-MJML (keine Anfrage erreicht sie je: .invalid)
 BILD_MARKE = "https://bildbasis.vibemind.invalid/"
 # Platz des Pflicht-Fusses im gespeicherten MJML (Nutzertext wird escaped und kann die Marke nie bilden)
@@ -232,7 +241,9 @@ def _plan_pruefen(i: str, fassung: int, s, masse) -> list:
         raise _fehler_merken(i, fassung, str(e))
 
 
-def _neu(i: str, fassung: int, zeile: dict) -> dict:
+def _neu(i: str, fassung: int, zeile: dict, gerendert: tuple[bytes, dict] | None = None) -> dict:
+    """gerendert: (png, masse) eines schon gemachten vollen Renderings derselben Seite (Einreichen nach der
+    Pruefung, ohne Platzhalter-Kacheln) - dann rendert die Erzeugung nicht noch einmal."""
     s = zeile.get("seite")
     # 1. deklariert pruefen (billig, ohne Chromium): gemessene Huellen sind nie kleiner als die deklarierten, was
     #    hier im Bild liegt, liegt auch gemessen im Bild
@@ -248,7 +259,10 @@ def _neu(i: str, fassung: int, zeile: dict) -> dict:
             # wird nur gemessen und braucht keine Ablage. Fehlt sie, wirft _ordner() 503 (HTTPException) und
             # _bild_fehler reicht das unveraendert durch.
             return _medien_leser(_ordner())(name)
-        png, masse = _bild_fehler(i, fassung, lambda: seite_bilder.render_und_messen(s, medium))
+        if gerendert is not None:
+            png, masse = gerendert
+        else:
+            png, masse = _bild_fehler(i, fassung, lambda: seite_bilder.render_und_messen(s, medium))
         stuecke = _plan_pruefen(i, fassung, s, masse)
         if stuecke:
             ordner = _ordner()
@@ -406,23 +420,60 @@ def _pruef_render(aufruf):
         raise HTTPException(503, NICHT_GERENDERT)
 
 
-def _braucht_pixel(s: dict) -> bool:
-    """Gibt es eine Textebene ohne eigene Unterlage? Nur dann misst kontraste Pixel (Rendering ohne Text)."""
-    return any(e.get("art") == "text" and e.get("hintergrund") is None for e in s.get("ebenen") or [])
+def _medium(name: str) -> bytes | None:
+    return _medien_leser(_ordner())(name)   # Ablage erst beim ersten Medium (wie _neu)
 
 
-def _befunde(s: dict) -> list[dict]:
-    def medium(name: str) -> bytes | None:
-        return _medien_leser(_ordner())(name)   # Ablage erst beim ersten Medium (wie _neu)
+def _braucht_render(s: dict) -> bool:
+    """Wie _neu: nur eine leere Seite ohne Hintergrundbild braucht kein Chromium."""
+    return bool(s.get("ebenen")) or bool((s.get("hintergrund") or {}).get("bild"))
 
-    masse: dict = {}
+
+def _platzhalter_ids(s: dict) -> list[str]:
+    return [e["id"] for e in s.get("ebenen") or []
+            if e.get("art") == "bild" and bildplaetze.PLATZHALTER.match(str(e.get("quelle") or ""))]
+
+
+def _hat_platzhalter(s: dict) -> bool:
+    return bool(_platzhalter_ids(s)) or bool(
+        bildplaetze.PLATZHALTER.match(str((s.get("hintergrund") or {}).get("bild") or "")))
+
+
+def _ohne_pixel(s: dict, masse: dict) -> set[str]:
+    """Textebenen ohne eigene Unterlage, deren Huelle einen Platzhalter ueberlappt (Hintergrund-Platzhalter: alle) -
+    ihre Unterlage entsteht erst noch, ihr Pixel-Kontrast wird danach geprueft."""
+    texte = [e for e in s.get("ebenen") or [] if e.get("art") == "text" and e.get("hintergrund") is None]
+    if bildplaetze.PLATZHALTER.match(str((s.get("hintergrund") or {}).get("bild") or "")):
+        return {e["id"] for e in texte}
+    m = seite_streifen.masse_pruefen(masse) or None
+    plaetze = [seite_streifen.huelle(e, m) for e in s.get("ebenen") or [] if e["id"] in set(_platzhalter_ids(s))]
+    aus = set()
+    for e in texte:
+        l, o, r, u = seite_streifen.huelle(e, m)
+        if any(l < r2 and l2 < r and o < u2 and o2 < u for l2, o2, r2, u2 in plaetze):
+            aus.add(e["id"])
+    return aus
+
+
+def _rendern_fuer_pruefung(roh: dict, s: dict, kacheln: bool) -> tuple[bytes | None, dict, bytes, set[str]]:
+    """(png, masse, png_ohne_text, ohne_pixel). roh = die Seite, wie _neu sie rendert (das volle Rendering wird
+    beim Einreichen fuer die Mail wiederverwendet), s = dieselbe Seite normalisiert. Hoechstens ein volles
+    Rendering und - nur wenn eine Textebene ohne eigene Unterlage die Pixel braucht - eines ohne Text."""
+    if not _braucht_render(s):
+        return None, {}, b"", set()
+    extra = {"platzhalter_kacheln": True} if kacheln else {}
+    png, masse = _pruef_render(lambda: seite_bilder.render_und_messen(roh, _medium, **extra))
+    ohne_pixel = _ohne_pixel(s, masse)
     png_ohne_text = b""
-    if s.get("ebenen"):
-        _, masse = _pruef_render(lambda: seite_bilder.render_und_messen(s, medium))
-        if _braucht_pixel(s):
-            ohne = seite_schoenheit.seite_ohne_text(s)
-            png_ohne_text = _pruef_render(lambda: seite_bilder.render_und_messen(
-                ohne, medium, faktor=PRUEFUNG_FAKTOR)[0])
+    if any(e.get("art") == "text" and e.get("hintergrund") is None and e["id"] not in ohne_pixel
+           for e in s.get("ebenen") or []):
+        ohne = seite_schoenheit.seite_ohne_text(roh)
+        png_ohne_text = _pruef_render(lambda: seite_bilder.render_und_messen(
+            ohne, _medium, faktor=PRUEFUNG_FAKTOR, **extra)[0])
+    return png, masse, png_ohne_text, ohne_pixel
+
+
+def _befunde(s: dict, masse: dict, png_ohne_text: bytes, ohne_pixel: set[str]) -> list[dict]:
     m = masse or None
     befunde: list[dict] = []
     anrede = seite_mail.anrede_in_bild(s, m)
@@ -431,12 +482,32 @@ def _befunde(s: dict) -> list[dict]:
     links = seite_mail.links_in_bild(s, m)
     if links:
         befunde.append(befund("hart", links[0], LINK_IM_BILD))
-    return befunde + seite_schoenheit.pruefen(s, masse, png_ohne_text, PRUEFUNG_FAKTOR)
+    befunde += seite_schoenheit.pruefen(s, masse, png_ohne_text, PRUEFUNG_FAKTOR, ohne_pixel)
+    if ohne_pixel:
+        befunde.append(befund("weich", "seite", BILDER_IN_ARBEIT))
+    return befunde
+
+
+def _normalisiert(roh) -> dict:
+    try:
+        return seite.pruefen(roh)
+    except seite.SeiteFehler as e:
+        raise HTTPException(422, str(e))
+
+
+def _sperre_nehmen() -> bool:
+    """_erzeug_sperre nehmen (Warten hoechstens ERZEUG_WARTEN_S, sonst 503 BESCHAEFTIGT); True = musste warten."""
+    gewartet = not _erzeug_sperre.acquire(blocking=False)
+    if gewartet and not _erzeug_sperre.acquire(timeout=ERZEUG_WARTEN_S):
+        raise HTTPException(503, BESCHAEFTIGT)
+    return gewartet
 
 
 def pruefung(i: str, fassung: int) -> list[dict]:
     """Befunde {schwere, punkt, satz} der Collage-Fassung (inhalt, fassung), harte zuerst (Anrede/Link im Bild vor
-    den Kontrasten). 404 unbekannte Fassung, 422 keine Collage / Seite ungueltig / Bild fehlt, 503 technisch."""
+    den Kontrasten). Platzhalter werden als neutrale Kacheln gerendert; Text darueber bekommt keinen Pixel-
+    Kontrast, dafuer einen weichen Hinweis. 404 unbekannte Fassung, 422 keine Collage / Seite ungueltig / Bild
+    fehlt, 503 technisch."""
     gemerkt = _pruefung_gemerkt(i, fassung)
     if gemerkt is not None:
         return gemerkt
@@ -447,20 +518,73 @@ def pruefung(i: str, fassung: int) -> list[dict]:
         raise HTTPException(404, "Unbekannte Fassung")
     if zeile.get("format") != "seite":
         raise HTTPException(422, COLLAGE_IST_NICHT)
+    s = _normalisiert(zeile.get("seite"))
+    _sperre_nehmen()
     try:
-        s = seite.pruefen(zeile.get("seite"))
-    except seite.SeiteFehler as e:
-        raise HTTPException(422, str(e))
-    if not _erzeug_sperre.acquire(timeout=ERZEUG_WARTEN_S):
-        raise HTTPException(503, BESCHAEFTIGT)
-    try:
-        befunde = _befunde(s)
+        _, masse, png_ohne_text, ohne_pixel = _rendern_fuer_pruefung(zeile.get("seite"), s, kacheln=True)
+        befunde = _befunde(s, masse, png_ohne_text, ohne_pixel)
     except seite.SeiteFehler as e:
         raise HTTPException(422, str(e))
     finally:
         _erzeug_sperre.release()
     _pruefung_merken(i, fassung, befunde)
     return befunde
+
+
+def _ablehnen_wenn_hart(befunde: list[dict]) -> None:
+    grund = harte_ablehnung(befunde)
+    if grund:
+        raise HTTPException(422, grund)
+
+
+def einreichen_vorbereiten(i: str, fassung: int) -> dict:
+    """Vor dem Einreichen einer Collage-Fassung: Schoenheitspruefung und Mail-Fassung unter EINER Sperre mit
+    EINEM vollen Rendering (plus hoechstens einem ohne Text), das die Erzeugung der Mail wiederverwendet.
+    Harte Befunde -> eine 422 (erster Satz, "(weitere: n)"). Gibt die Mail-Fassung zurueck.
+    - Pruefung schon gemerkt: nur ihr Urteil, dann der Weg aus Stufe 4 (vorhandene Mail oder ein Rendering).
+    - Seite mit Platzhaltern: keine Pruefung - die Erzeugung blockiert wie in Stufe 4 ("Bild ... fehlt").
+    - Zeitlimit oder belegte Sperre: 503 sofort, kein zweiter Versuch (das Zeitbudget der Anfrage ist verbraucht).
+    - Anderer technischer Fehler der Pruefung (Chromium weg): weiter wie in Stufe 4 - die Erzeugung braucht
+      Chromium ohnehin und meldet dann selbst 503; ein Inhalt wird nie wegen der Technik der Pruefung blockiert."""
+    gemerkt = _pruefung_gemerkt(i, fassung)
+    if gemerkt is not None:
+        _ablehnen_wenn_hart(gemerkt)
+        return _holen(i, fassung)[1]
+    zeile = _fassung_lesen(i, fassung)
+    mail = _brauchbar(zeile)
+    if mail is None:
+        fehler = _fehler_gemerkt(i, fassung)
+        if fehler is not None:
+            raise HTTPException(422, fehler)
+    s = _normalisiert(zeile.get("seite"))
+    if _hat_platzhalter(s):
+        return _holen(i, fassung)[1]
+    gewartet = _sperre_nehmen()
+    try:
+        if gewartet:           # inzwischen kann die Mail-Fassung entstanden sein
+            zeile = _fassung_lesen(i, fassung)
+            mail = _brauchbar(zeile)
+        try:
+            png, masse, png_ohne_text, ohne_pixel = _rendern_fuer_pruefung(zeile.get("seite"), s, kacheln=False)
+            befunde = _befunde(s, masse, png_ohne_text, ohne_pixel)
+        except seite.SeiteFehler as e:
+            raise HTTPException(422, str(e))
+        except HTTPException as e:
+            if e.status_code != 503 or e.detail in (seite_bilder.ZEITLIMIT, BESCHAEFTIGT):
+                raise
+            log.warning("Pruefung vor dem Einreichen von %s nicht moeglich - weiter wie Stufe 4", i[:8])
+            befunde = None
+        if befunde is not None:
+            _pruefung_merken(i, fassung, befunde)
+            _ablehnen_wenn_hart(befunde)
+            if mail is not None:
+                return mail
+            if isinstance(zeile.get("mail"), dict):    # gespeichert, aber Stuecke fehlen in der Ablage
+                _verwerfen(i, fassung)
+            return _neu(i, fassung, zeile, gerendert=(png, masse) if png is not None else None)
+    finally:
+        _erzeug_sperre.release()
+    return _holen(i, fassung)[1]
 
 
 def harte_ablehnung(befunde: list[dict]) -> str | None:

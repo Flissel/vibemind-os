@@ -90,10 +90,12 @@ def _kontrast_befund(eid: str, wert: float, schwelle: float, wo: str) -> dict:
     return befund("hart", eid, f"{eid}: Kontrast {gemessen}:1 {wo} – mindestens {_zahl(schwelle)}:1")
 
 
-def kontraste(seite: dict, masse: dict, png_ohne_text: bytes, faktor: int) -> list[dict]:
+def kontraste(seite: dict, masse: dict, png_ohne_text: bytes, faktor: int,
+              ohne_pixel: frozenset[str] | set[str] = frozenset()) -> list[dict]:
     """Harte Kontrastbefunde. png_ohne_text: Rendering von seite_ohne_text(seite) (600 x hoehe Einheiten, mal
     faktor Pixel). masse: gemessene Huellen je Ebenen-id aus dem Rendering MIT Text (seite_bilder.render_und_messen),
-    fehlende Eintraege fallen auf den deklarierten Rahmen zurueck."""
+    fehlende Eintraege fallen auf den deklarierten Rahmen zurueck. ohne_pixel: Ids von Textebenen, deren Unterlage
+    (noch) unbekannt ist (z. B. ueber einem Platzhalter) - ihr Pixel-Kontrast wird nicht gemessen."""
     from PIL import Image
 
     s = seite_mod.pruefen(seite)
@@ -114,6 +116,8 @@ def kontraste(seite: dict, masse: dict, png_ohne_text: bytes, faktor: int) -> li
             wert = kontrast(e["farbe"], e["hintergrund"])
             if wert < schwelle:
                 befunde.append(_kontrast_befund(e["id"], wert, schwelle, "auf der eigenen Hintergrundfarbe"))
+            continue
+        if e["id"] in ohne_pixel:
             continue
         if bild is None:
             with Image.open(io.BytesIO(png_ohne_text)) as roh:
@@ -181,9 +185,10 @@ def regeln(seite: dict, masse: dict | None) -> list[dict]:
     return befunde
 
 
-def pruefen(seite: dict, masse: dict, png_ohne_text: bytes, faktor: int) -> list[dict]:
+def pruefen(seite: dict, masse: dict, png_ohne_text: bytes, faktor: int,
+            ohne_pixel: frozenset[str] | set[str] = frozenset()) -> list[dict]:
     """Harte Kontrastbefunde, dann weiche Regeln."""
-    alle = kontraste(seite, masse, png_ohne_text, faktor) + regeln(seite, masse)
+    alle = kontraste(seite, masse, png_ohne_text, faktor, ohne_pixel) + regeln(seite, masse)
     return sorted(alle, key=lambda b: b["schwere"] != "hart")
 
 

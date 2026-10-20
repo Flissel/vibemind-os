@@ -1833,3 +1833,12 @@ def test_db_grund_format_check_wird_deutsch():
                        '"newsletter_vorlagen_format_check"\nDETAIL:  Failing row contains (...)')
     assert pult._db_grund(roh) == pult.VORLAGEN_NAME_BELEGT
     assert pult._db_grund(RuntimeError("ERROR:  Ohne Titel kein Newsletter")) == "Ohne Titel kein Newsletter"
+
+
+def test_vorschau_seiten_vorlage_auch_bei_format_mail_als_seite(db, c, monkeypatch, tmp_path):
+    """sales (ui_editor.vorlage_bild) fragt heute jede Vorlage mit format=mail an - Seiten-Vorlagen kommen dann
+    trotzdem als Seiten-HTML, nicht als 422 (Fix-Runde 1, Entscheidung im Report)."""
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    db.antworten = [[{**_seiten_vorlage_zeile(), "beschreibung": "Split", "pflichtteil": {}}], [_laden_radhaus()]]
+    r = c.get("/api/pult/vorlagen/herbst-split/vorschau?format=mail&mandant=radhaus", headers=H)
+    assert r.status_code == 200 and "Radhaus Jena" in r.text

@@ -54,17 +54,20 @@ def render_png(seite: dict, medien_lesen: Callable[[str], bytes | None], *, fakt
 
 
 def render_und_messen(seite: dict, medien_lesen: Callable[[str], bytes | None], *, faktor: int = FAKTOR,
-                      browser_starten=None) -> tuple[bytes, dict[str, tuple[float, float, float, float]]]:
+                      browser_starten=None, platzhalter_kacheln: bool = False
+                      ) -> tuple[bytes, dict[str, tuple[float, float, float, float]]]:
     """(PNG des Seitencontainers, masse). PNG: 600 x hoehe Einheiten, mal faktor Pixel. masse: je Ebenen-id die
     gerenderte achsenparallele Huelle (links, oben, rechts, unten) in Seiteneinheiten - Text waechst in seite_html
     ueber seine deklarierte hoehe hinaus (min-height), der Streifen-Planer braucht die echte Ausdehnung.
     Ein fehlendes Medium, ein Platzhalter oder ein unzulaessiger Name wirft StueckFehler("Bild <name> fehlt");
-    ein Zeitlimit StueckFehler(ZEITLIMIT). Rendert hoechstens einer gleichzeitig."""
+    ein Zeitlimit StueckFehler(ZEITLIMIT). Rendert hoechstens einer gleichzeitig.
+    platzhalter_kacheln=True (nur die Schoenheitspruefung, wie das Pruefbild): Platzhalter werden als neutrale
+    graue Kachel gezeichnet statt abgelehnt; ein fehlendes echtes Medium bleibt StueckFehler. Nie fuer die Mail."""
     html = seite_html.html(seite, betreff="", pflichtteil={}, bild_basis=BASIS + "medien/",
                            schrift_basis=BASIS + "schrift/")
 
     def holen(name: str) -> bytes | None:
-        if not _name_ok(name) or bildplaetze.PLATZHALTER.match("medien:" + name):
+        if not _name_ok(name) or (not platzhalter_kacheln and bildplaetze.PLATZHALTER.match("medien:" + name)):
             return None
         return medien_lesen(name)
 
@@ -78,7 +81,7 @@ def render_und_messen(seite: dict, medien_lesen: Callable[[str], bytes | None], 
                                         device_scale_factor=faktor, java_script_enabled=False)
                 try:
                     page.set_default_timeout(ms)
-                    routen = Routen(None, None, medium_holen=holen)
+                    routen = Routen(None, None, pruefbild=platzhalter_kacheln, medium_holen=holen)
                     page.route("**/*", routen)
                     page.set_content(html, wait_until="networkidle", timeout=ms)
                     if routen.fehler is not None:

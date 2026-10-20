@@ -234,3 +234,14 @@ def test_seite_ohne_text_entfernt_nur_text_und_knopf():
     assert s == vorher  # Eingabe unveraendert
     ohne["ebenen"][0]["x"] = 1
     assert s["ebenen"][0]["x"] == 300  # echte Kopie
+
+
+def test_ohne_pixel_laesst_nur_den_pixel_kontrast_aus():
+    """Fix-Runde 1: Text ueber einem Platzhalter (ohne_pixel) wird nicht gegen Pixel gemessen; Knoepfe und Text mit
+    eigener Unterlage weiter."""
+    s = seite([bild(), text("titel", farbe="#ffffff"), text("band", y=500, farbe="#ffffff", hintergrund="#ffffff"),
+               knopf(textfarbe="#5b3fd6")])
+    hell = png(flecken=[((0, 50, 600, 350), (240, 240, 230))])
+    assert [b["punkt"] for b in ss.kontraste(s, {}, hell, FAKTOR)] == ["titel", "band", "knopf"]
+    assert [b["punkt"] for b in ss.kontraste(s, {}, hell, FAKTOR, {"titel", "band"})] == ["band", "knopf"]
+    assert [b["punkt"] for b in harte(ss.pruefen(s, {}, b"", FAKTOR, {"titel"}))] == ["band", "knopf"]

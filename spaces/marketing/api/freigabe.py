@@ -52,33 +52,28 @@ def einreichen(iid: str, payload: dict = Body(default={}), x_pult_key: str | Non
     return {"status": "eingereicht", "fassung": int(zeile["fassung"])}
 
 
+def _neueste_fassung(i: str) -> int | None:
+    """Nummer der neuesten Fassung des Inhalts; None ohne Fassung (oder unbekannter Inhalt)."""
+    zeile = _lesen_einer(lambda:
+        f"SELECT max(fassung) AS n FROM marketing.inhalt_fassungen WHERE inhalt = {lit(i)}::uuid")
+    n = (zeile or {}).get("n")
+    return None if n is None else int(n)
+
+
 def _collage_einreichen(i: str, von: str) -> dict:
-    """Collage (Stufe 4): erst die Mail-Fassung der neuesten Fassung (Anrede-im-Bild-Pruefung, Bildstuecke,
+    """Collage (Stufe 4/5): erst Schoenheitspruefung und Mail-Fassung der neuesten Fassung (Anrede-im-Bild-Pruefung, Bildstuecke,
     Groesse - jede Ablehnung 422 mit Grund, dann wird nichts eingereicht), danach pult_seite_einreichen (081):
     sperrt den Inhalt, prueft, dass genau diese Fassung noch die neueste ist und ihre Mail-Fassung vorliegt, und
     ruft pult_einreichen unveraendert. Eine inzwischen gespeicherte neuere Fassung -> 422, nie ohne Mail.
-    Ohne Namen wird vorher abgelehnt (derselbe Text wie pult_einreichen), damit Chromium nicht umsonst laeuft."""
+    Ohne Namen wird vorher abgelehnt (derselbe Text wie pult_einreichen), damit Chromium nicht umsonst laeuft.
+    Stufe 5: seite_mail_dienst.einreichen_vorbereiten prueft und erzeugt unter EINER Sperre mit EINEM vollen
+    Rendering; harte Befunde blockieren mit einer 422 (Anrede/Link im Bild zuerst, dann Kontraste)."""
     if not von:
         raise HTTPException(422, "Ohne Namen kein Einreichen")
-    neueste = _lesen_einer(lambda:
-        f"SELECT max(fassung) AS n FROM marketing.inhalt_fassungen WHERE inhalt = {lit(i)}::uuid")
-    n = (neueste or {}).get("n")
+    n = _neueste_fassung(i)
     if n is None:
         raise HTTPException(422, "Ohne Fassung gibt es nichts einzureichen")
-    # Stufe 5: erst die Schoenheitspruefung (harte Befunde, Anrede/Link im Bild zuerst, blockieren mit einer 422).
-    # Ist sie technisch nicht moeglich (503), geht es weiter wie in Stufe 4 - die Mail-Erzeugung braucht Chromium
-    # ohnehin und meldet dann selbst 503; ein Inhalt wird nie wegen der Technik der Pruefung blockiert.
-    try:
-        befunde = seite_mail_dienst.pruefung(i, int(n))
-    except HTTPException as e:
-        if e.status_code != 503:
-            raise
-        log.warning("Pruefung vor dem Einreichen von %s nicht moeglich - weiter wie Stufe 4", i[:8])
-        befunde = []
-    grund = seite_mail_dienst.harte_ablehnung(befunde)
-    if grund:
-        raise HTTPException(422, grund)
-    seite_mail_dienst.erzeugen(i, int(n))
+    seite_mail_dienst.einreichen_vorbereiten(i, n)
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_seite_einreichen({lit(i)}::uuid, {int(n)}, {lit(von)}) AS fassung")
     return {"status": "eingereicht", "fassung": int(zeile["fassung"])}
@@ -90,13 +85,9 @@ def pruefung(iid: str, fassung: int | None = Query(None, ge=1), x_pult_key: str 
     422 keine Collage, 404 unbekannt, 503 technisch nicht moeglich. Ergebnis 10 Minuten gemerkt."""
     _schluessel(x_pult_key)
     i = _uuid_oder_404(iid)
-    n = fassung
+    n = fassung if fassung is not None else _neueste_fassung(i)
     if n is None:
-        neueste = _lesen_einer(lambda:
-            f"SELECT max(fassung) AS n FROM marketing.inhalt_fassungen WHERE inhalt = {lit(i)}::uuid")
-        n = (neueste or {}).get("n")
-        if n is None:
-            raise HTTPException(404, "Unbekannter Inhalt")
+        raise HTTPException(404, "Unbekannter Inhalt")
     return {"befunde": seite_mail_dienst.pruefung(i, int(n))}
 
 
