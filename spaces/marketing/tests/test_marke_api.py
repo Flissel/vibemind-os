@@ -1412,3 +1412,42 @@ def test_stimmen_ungueltige_namen_werden_gemeldet(umg, monkeypatch, caplog):
         assert c.get("/api/pult/stimmen", headers=H).json() == {"stimmen": ["ok"]}
     meldung = " ".join(r.getMessage() for r in caplog.records if r.name == "spaces.marketing.claw.stimmen")
     assert "Anna" in meldung and "../x" in meldung
+
+
+
+# --- Markenstimme (Reels Stufe 1, E2) ----------------------------------------------
+
+def test_formular_nimmt_stimme(umg):
+    f, _, c = umg
+    f.antworten.append([{"id": AID}])
+    r = c.post("/api/pult/marke/bearbeiten", headers=H,
+               json={"mandant": "radhaus", "formular": {**FORM, "stimme": "eigene-a"}})
+    assert r.status_code == 200 and '"stimme": "eigene-a"' in f.sql[0]
+    # ohne das Feld bleibt die Stimme unberührt: kein "stimme" im Formular (sonst hieße es "entfernen")
+    f.antworten.append([{"id": AID}])
+    assert c.post("/api/pult/marke/bearbeiten", headers=H, json={"mandant": "radhaus", "formular": FORM}).status_code == 200
+    assert '"stimme"' not in f.sql[1]
+    # leer = entfernen, zu lang oder kein Text = 422
+    f.antworten.append([{"id": AID}])
+    assert c.post("/api/pult/marke/bearbeiten", headers=H,
+                  json={"mandant": "radhaus", "formular": {**FORM, "stimme": ""}}).status_code == 200
+    assert '"stimme": ""' in f.sql[2]
+    for schlecht in ("x" * 41, 5):
+        assert c.post("/api/pult/marke/bearbeiten", headers=H,
+                      json={"mandant": "radhaus", "formular": {**FORM, "stimme": schlecht}}).status_code == 422
+
+
+def test_stand_liefert_stimme_im_profil(umg):
+    f, _, c = umg
+    echt = {"werte": {"akzent": "#123456", "stimme": "eigene-b", "gibt-es-nicht": "x"}, "abschnitte": {"Ton": "T"}}
+    f.antworten += [[{"ok": True}], _stand_kopf(profil=echt), [], [], [], []]
+    j = c.get("/api/pult/marke?mandant=radhaus", headers=H).json()
+    assert j["profil"]["werte"] == {"akzent": "#123456", "stimme": "eigene-b"}
+
+
+def test_arbeiter_profil_nimmt_stimme(umg):
+    f, _, c = umg
+    profil = {"werte": {"akzent": "#123456", "stimme": "eigene-a"}, "abschnitte": {"Ton": "T"}}
+    f.antworten.append([{"ok": True}])
+    r = c.post("/api/marke/arbeiter/profil", headers=HB, json={"mandant": "radhaus", "profil": profil})
+    assert r.status_code == 200 and "eigene-a" in f.sql[-1]

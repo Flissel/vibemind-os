@@ -444,3 +444,37 @@ def test_altes_profil_behaelt_unbekannte_abschnitte():
     assert kopfe == ["Wer wir sind", "Zielgruppe", "Ton", "Angebote", "Do & Don'ts", "Fakten und Zahlen",
                      "Bildstil", "Notizen"]
     assert "Merke dir das." in neu
+
+
+
+# --- Markenstimme (Reels Stufe 1, E2) ----------------------------------------------
+
+def test_stimme_im_kopf_gelesen_und_geschrieben(wurzel):
+    mp.schreiben(wurzel, "m1", "VibeMind", dict(WERTE, stimme="eigene-a"), ABSCHNITTE, None, "Felix", JETZT)
+    datei = os.path.join(wurzel, "VibeMind", "Marke.md")
+    kopf = open(datei, encoding="utf-8").read().split("---")[1].splitlines()
+    assert kopf.index("stimme: eigene-a") == kopf.index("schrift_text: dm-sans") + 1       # nach schrift_text
+    assert mp.lesen(wurzel, "m1", "VibeMind").werte["stimme"] == "eigene-a"
+    # leer = entfernen: die Zeile verschwindet
+    mp.schreiben(wurzel, "m1", "VibeMind", dict(WERTE, stimme=""), ABSCHNITTE, None, "Felix", JETZT)
+    assert "stimme" not in mp.lesen(wurzel, "m1", "VibeMind").werte
+    assert "stimme" not in open(datei, encoding="utf-8").read()
+    # schreiben ist streng
+    with pytest.raises(mp.MarkenFehler, match="stimme"):
+        mp.schreiben(wurzel, "m1", "VibeMind", dict(WERTE, stimme="Böse Stimme!"), ABSCHNITTE, None, "Felix", JETZT)
+
+
+def test_ungueltige_stimme_wird_mit_hinweis_verworfen(wurzel):
+    ordner = os.path.join(wurzel, "VibeMind")
+    os.makedirs(ordner)
+    with open(os.path.join(ordner, "Marke.md"), "w", encoding="utf-8") as f:
+        f.write("---\nakzent: #C8102E\nstimme: ../geheim\n---\n## Ton\nLocker.\n")
+    p = mp.lesen(wurzel, "m1", "VibeMind")
+    assert "stimme" not in p.werte and p.werte["akzent"] == "#C8102E"
+    assert "Marke.md: stimme ungültig" in p.hinweise
+
+
+def test_stimme_steht_im_prompt_nicht_in_der_gestalt():
+    p = mp.aus_text("---\nstimme: eigene-b\n---\n")
+    assert "eigene-b" in mp.fuer_prompt(p)
+    assert "stimme" not in mp.gestalt(dict(WERTE, stimme="eigene-b"), None, None)

@@ -1579,3 +1579,68 @@ def test_rueckgaengig_mit_leerem_vorher_entfernt_den_neuen_abschnitt(wurzel):
     assert profil.abschnitte["Ton"] == "Laut und schnell."
     assert {k: profil.werte[k] for k in WERTE} == WERTE
     assert "Pendler aus dem Veedel." not in (wurzel / "Radhaus" / "Marke.md").read_text(encoding="utf-8")
+
+
+
+# --- Markenstimme (Reels Stufe 1, E2) ----------------------------------------------
+
+@pytest.fixture
+def stimmen(monkeypatch):
+    monkeypatch.setenv("MARKETING_STIMMEN", "eigene-a,eigene-b")
+
+
+def test_stimme_ist_nicht_direkt(wurzel, stimmen):
+    assert "stimme" in ma.NICHT_TEXT and "stimme" in ma.PROFIL_WERTE
+    _profil(wurzel, {"Ton": "Laut und schnell.", "Bildstil": "Warme Werkstattfotos, Tageslicht."})
+    api = Api(dict(CHAT))
+    assert _lauf(api, Fragen(_antwort({**VORSCHLAG, "stimme": "eigene-b"}))) == "fertig"
+    daten = _gesendet(api)
+    assert daten["direkt"] is False and daten["vorschlag"]["direkt"] is False
+    assert [a["feld"] for a in daten["vorschlag"]["aenderungen"]] == ["stimme", "Ton"]
+
+
+def test_uebernehmen_schreibt_und_entfernt_die_stimme(wurzel, stimmen):
+    _profil(wurzel, {"Ton": "Laut."})
+    api = Api(_uebernehmen({**VORSCHLAG, "stimme": "eigene-b"}))
+    assert _lauf(api, Fragen()) == "fertig"
+    assert mp.lesen(str(wurzel), "radhaus", "Radhaus").werte["stimme"] == "eigene-b"
+    (_, _, profil), = api.aufrufe("profil")                    # Spiegel: GET /marke profil.werte.stimme
+    assert profil["werte"]["stimme"] == "eigene-b"
+    api = Api(_uebernehmen({**VORSCHLAG, "stimme": ""}))        # leer = entfernen
+    assert _lauf(api, Fragen()) == "fertig"
+    assert "stimme" not in mp.lesen(str(wurzel), "radhaus", "Radhaus").werte
+    mp.schreiben(str(wurzel), "radhaus", "Radhaus", dict(WERTE, stimme="eigene-a"), {"Ton": "Laut."}, None, "T", JETZT)
+    api = Api(_uebernehmen(VORSCHLAG))                          # ohne Feld bleibt eine vorhandene Stimme
+    assert _lauf(api, Fragen()) == "fertig"
+    assert mp.lesen(str(wurzel), "radhaus", "Radhaus").werte["stimme"] == "eigene-a"
+
+
+def test_uebernehmen_unbekannte_stimme_schreibt_nichts(wurzel, stimmen):
+    _profil(wurzel, {"Ton": "Laut."})
+    api = Api(_uebernehmen({**VORSCHLAG, "stimme": "gibt-es-nicht"}))
+    assert _lauf(api, Fragen()) == "fehler"
+    assert "Übernehmen nicht möglich" in api.aufrufe("zurueck")[0][2]
+    assert "stimme" not in mp.lesen(str(wurzel), "radhaus", "Radhaus").werte
+
+
+def test_uebernahme_nur_stimme_ohne_farben_bleibt_streng(wurzel, stimmen):
+    _profil(wurzel, {"Ton": "Laut."})
+    api = Api(_uebernehmen({"abschnitte": {"Ton": "Leise."}, "stimme": "eigene-a"}))
+    assert _lauf(api, Fragen()) == "fehler"
+    assert mp.lesen(str(wurzel), "radhaus", "Radhaus").abschnitte["Ton"] == "Laut."
+
+
+def test_bearbeitung_stimme_aus_dem_formular_woertlich(wurzel, stimmen):
+    form = {**FORMULAR, "stimme": "eigene-a"}
+    api = Api({**BEARB, "kontext": {"formular": form, "woertlich": True}})
+    assert _lauf(api, Fragen(_antwort({**VORSCHLAG, "stimme": "eigene-a"}))) == "fertig"
+    assert api.aufrufe("vorschlag")[0][2]["vorschlag"]["stimme"] == "eigene-a"
+    # Formular ohne stimme: was der Agent dazu schreibt, wird verworfen (die Stimme bleibt unberührt)
+    api = Api(dict(BEARB))
+    assert _lauf(api, Fragen(_antwort({**VORSCHLAG, "stimme": "eigene-b"}))) == "fertig"
+    assert "stimme" not in api.aufrufe("vorschlag")[0][2]["vorschlag"]
+
+
+def test_profil_daten_enthaelt_stimme():
+    p = mp.aus_text("---\nakzent: #123456\nstimme: eigene-a\n---\n## Ton\nT\n")
+    assert ma.profil_daten(p)["werte"] == {"akzent": "#123456", "stimme": "eigene-a"}

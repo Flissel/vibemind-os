@@ -43,9 +43,10 @@ SPIEGEL_KOERPER_MAX = 400 * 1024          # Logo <= 140 KB als data-URL, Rest kl
 ABSCHNITTE = markenprofil.ABSCHNITT_REIHENFOLGE
 FORMULAR_GRENZEN = {"akzent": 20, "zweitfarbe": 20, "grund": 20, "text": 20, "schrift_anzeige": 40,
                     "schrift_text": 40, "webseite": 300}
+FORMULAR_OPTIONAL = {"stimme": 40}         # nur geprueft/uebernommen, wenn das Formular das Feld sendet ("" = entfernen)
 ABSCHNITT_FORM_MAX = 8000
 SPIEGEL_SCHLUESSEL = ("akzent", "flaeche", "logo", "logo_dunkel", "schriften")
-PROFIL_WERTE = ("akzent", "zweitfarbe", "grund", "text", "schrift_anzeige", "schrift_text", "webseite")
+PROFIL_WERTE = ("akzent", "zweitfarbe", "grund", "text", "schrift_anzeige", "schrift_text", "stimme", "webseite")
 PROFIL_WERT_MAX = 300
 PROFIL_MAX = 60 * 1024                    # die DB nimmt hoechstens 64 KB (jsonb-Text, 066)
 ARBEITER_ARTEN = ("chat", "uebernehmen", "bearbeitung", "wissen")
@@ -90,7 +91,7 @@ def _profil_pruefen(roh) -> dict:
     if not isinstance(werte, dict) or set(werte) - set(PROFIL_WERTE) or not all(
             isinstance(v, str) and len(v) <= PROFIL_WERT_MAX and not v.lstrip().lower().startswith("data:")
             for v in werte.values()):
-        raise HTTPException(422, "profil.werte kennt nur Farben, Schriften und webseite als kurzen Text")
+        raise HTTPException(422, "profil.werte kennt nur Farben, Schriften, stimme und webseite als kurzen Text")
     if not isinstance(ab, dict) or set(ab) - set(ABSCHNITTE) or not all(isinstance(v, str) for v in ab.values()):
         raise HTTPException(422, "profil.abschnitte kennt nur die sieben Abschnitte des Profils als Text")
     profil = {"werte": werte, "abschnitte": ab}
@@ -341,10 +342,10 @@ def _formular(roh) -> dict:
     """Nur die Form: der Agent uebernimmt woertlich und korrigiert Ungueltiges mit Hinweis (Spec §2)."""
     if not isinstance(roh, dict):
         raise HTTPException(422, "formular muss ein Objekt sein")
-    if set(roh) - set(FORMULAR_GRENZEN) - {"abschnitte"}:
-        raise HTTPException(422, "formular kennt nur Farben, Schriften, webseite und abschnitte")
+    if set(roh) - set(FORMULAR_GRENZEN) - set(FORMULAR_OPTIONAL) - {"abschnitte"}:
+        raise HTTPException(422, "formular kennt nur Farben, Schriften, stimme, webseite und abschnitte")
     aus: dict = {}
-    for k, grenze in FORMULAR_GRENZEN.items():
+    for k, grenze in {**FORMULAR_GRENZEN, **{k: g for k, g in FORMULAR_OPTIONAL.items() if k in roh}}.items():
         wert = roh.get(k, "")
         if not isinstance(wert, str) or len(wert) > grenze:
             raise HTTPException(422, f"{k} muss Text mit höchstens {grenze} Zeichen sein")

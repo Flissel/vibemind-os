@@ -27,7 +27,7 @@ from spaces.marketing.workers import chat_worker as cw
 from spaces.marketing.workers.bild_worker import ApiFehler
 
 ABGLEICH_S = 600
-PROFIL_WERTE = ("akzent", "zweitfarbe", "grund", "text", "schrift_anzeige", "schrift_text", "webseite")
+PROFIL_WERTE = ("akzent", "zweitfarbe", "grund", "text", "schrift_anzeige", "schrift_text", "stimme", "webseite")
 PROFIL_MAX = 60 * 1024     # wie api/marke.PROFIL_MAX (die DB nimmt hoechstens 64 KB)
 PROFIL_ZU_GROSS = "Profil zu groß für die Vorbefüllung des Formulars – nicht gemeldet"
 FEHLER_TAKT_S = 60         # nach einem gescheiterten Abgleich (VM weg) nicht 10 Minuten warten
@@ -40,7 +40,7 @@ SPIEGEL_FEHLER = "Spiegel nicht aktualisiert: "
 DIREKT_MAX = 60_000        # E5: groesser gespeichert gilt nicht direkt (Review Focus 3)
 QUELLEN_MAX = 12           # wie api/marke.QUELLEN_MAX (078)
 QUELLEN_NICHT = "Quellen nicht gespeichert"
-NICHT_TEXT = (*marken_prompt.FARBEN, *marken_prompt.SCHRIFTEN, "logo", "logo_dunkel", "logo_bearbeiten", "webseite")
+NICHT_TEXT = (*marken_prompt.FARBEN, *marken_prompt.SCHRIFTEN, "stimme", "logo", "logo_dunkel", "logo_bearbeiten", "webseite")
 _ADRESSE = re.compile(r"\bhttps?://[^\s<>\"'`]+", re.IGNORECASE)
 _SATZZEICHEN = ".,;:!?)]}–—»“”'\""
 _PNG = b"\x89PNG\r\n\x1a\n"
@@ -540,6 +540,8 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
     if formular is not None:           # Logo und Webseite kommen nie vom Agenten (R3/R4)
         vorschlag.pop("logo_bearbeiten", None)
         vorschlag["logo"] = bisher
+        if "stimme" not in formular:        # Formular ohne Stimmenfeld: der Agent aendert die Stimme nicht
+            vorschlag.pop("stimme", None)
         if bisher:
             vorschlag.update({k: offen[k] for k in marken_prompt.WERKZEUG_FELDER if isinstance(offen.get(k), str)})
         gespeichert, direkt = _gespeichert(vorschlag, profil)

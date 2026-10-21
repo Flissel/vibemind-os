@@ -437,3 +437,53 @@ def test_ist_direkt():
     assert kp.ist_direkt({"abschnitte": {"Ton": "Neu"}, "akzent": "#9a3412"}) is False
     assert kp.ist_direkt({"abschnitte": {}}) is False
     assert kp.ist_direkt({"mustertext": {"betreff": "b"}}) is False
+
+
+
+# --- Markenstimme (Reels Stufe 1, E2) ----------------------------------------------
+
+@pytest.fixture
+def stimmen(monkeypatch):
+    monkeypatch.setenv("MARKETING_STIMMEN", "eigene-a,eigene-b")
+
+
+def test_werte_pruefen_stimme(stimmen):
+    assert kp.werte_pruefen(_mit(stimme="eigene-b"))["stimme"] == "eigene-b"
+    assert kp.werte_pruefen(_mit(stimme=""))["stimme"] == ""            # leer = entfernen
+    assert "stimme" not in kp.werte_pruefen(VORSCHLAG)                  # fehlt = bleibt
+    assert "stimme" not in kp.werte_pruefen(_mit(stimme=None))
+    for schlecht in ("eigene-c", "Eigene-A", "../x", 5):
+        with pytest.raises(kp.AntwortFehler, match="stimme"):
+            kp.werte_pruefen(_mit(stimme=schlecht))
+
+
+def test_stimmen_liste_kommt_aus_derselben_env(stimmen, monkeypatch):
+    monkeypatch.setenv("MARKETING_STIMMEN", "nur-eine")
+    assert kp.werte_pruefen(_mit(stimme="nur-eine"))["stimme"] == "nur-eine"
+    with pytest.raises(kp.AntwortFehler):
+        kp.werte_pruefen(_mit(stimme="eigene-a"))
+
+
+def test_vorschlag_mit_stimme_gueltig_und_im_prompt(stimmen):
+    v = kp.antwort_lesen(_antwort(_mit(stimme="eigene-a")))["vorschlag"]
+    assert v["stimme"] == "eigene-a" and "stimme" in kp.SCHLUESSEL
+    assert "stimme" in kp.SYSTEM and "Reels" in kp.SYSTEM
+    text = kp.nutzer_text({"firma": "X", "nachricht": "n"}, None, None, "")
+    assert "eigene-a" in text and "eigene-b" in text        # die erlaubte Liste steht im Kontext
+
+
+def test_stimme_zaehlt_als_aenderung_und_ist_nie_direkt(stimmen):
+    alt = mp.aus_text("---\nstimme: eigene-a\n---\n")
+    liste = kp.aenderungen(alt, _mit(stimme="eigene-b"))
+    assert {"feld": "stimme", "vorher": "eigene-a", "nachher": "eigene-b"} in liste
+    assert kp.ist_direkt(kp.wirksam(_mit(stimme="eigene-b"), liste)) is False
+    assert [a["feld"] for a in kp.aenderungen(alt, {"stimme": ""})] == ["stimme"]       # Entfernen ist eine Änderung
+
+
+def test_formular_stimme_woertlich_und_ungueltige_korrigierbar(stimmen):
+    assert kp.formular_abgleich({**FORM, "stimme": "eigene-a"}, _v(stimme="eigene-a"), []) == []
+    assert kp.formular_abgleich(FORM, _v(), []) == []                   # Formular ohne stimme: nichts zu prüfen
+    with pytest.raises(kp.AntwortFehler, match="wörtlich.*stimme"):
+        kp.formular_abgleich({**FORM, "stimme": "eigene-a"}, _v(stimme="eigene-b"), [{"feld": "stimme", "grund": "x"}])
+    assert "stimme" in kp.ungueltige_felder({**FORM, "stimme": "gibt-es-nicht"})
+    assert "stimme" not in kp.ungueltige_felder({**FORM, "stimme": ""})

@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 from spaces.marketing.claw import markenwissen as mw
+from spaces.marketing.claw import stimmen
 from spaces.marketing.claw.schriften import REGISTER
 
 DATEI = "Marke.md"
@@ -32,8 +33,8 @@ SPIEGEL_MAX_CHARS = 140 * 1024  # ganze data-URL
 _MIN_KANTE = 16
 _LESE_MAX = 200_000
 
-KOPF_REIHENFOLGE = ("akzent", "zweitfarbe", "grund", "text", "schrift_anzeige", "schrift_text", "logo",
-                    "logo_dunkel", "webseite", "stand")
+KOPF_REIHENFOLGE = ("akzent", "zweitfarbe", "grund", "text", "schrift_anzeige", "schrift_text", "stimme",
+                    "logo", "logo_dunkel", "webseite", "stand")
 _LOGOS = (("logo", "logo_pfad"), ("logo_dunkel", "logo_dunkel_pfad"))
 WEBSEITE_MAX = 300
 _FARBEN = ("akzent", "zweitfarbe", "grund", "text")
@@ -94,6 +95,8 @@ def _gueltig(schluessel: str, wert: object) -> bool:
         return _LOGO_NAME.fullmatch(wert) is not None
     if schluessel == "webseite":
         return webseite_gueltig(wert)
+    if schluessel == "stimme":      # nur das Namensmuster; die Liste prueft werte_pruefen (MARKETING_STIMMEN)
+        return stimmen.NAME.fullmatch(wert) is not None
     return bool(wert.strip()) and "\n" not in wert and "\r" not in wert  # stand
 
 
@@ -248,6 +251,8 @@ def fuer_prompt(profil: Profil) -> str:
         sid = profil.werte.get(k)
         if sid in REGISTER:
             zeilen.append(f"- {bezeichnung}: {REGISTER[sid]['familie']} ({sid})")
+    if profil.werte.get("stimme"):
+        zeilen.append(f"- Stimme für Reels und Podcast: {profil.werte['stimme']}")
     if profil.logo_pfad:
         zeilen.append("- Logo: vorhanden")
     if profil.logo_dunkel_pfad:
