@@ -40,7 +40,9 @@ _ENV_KEYS = ("MARKETING_API_KEY", "MARKETING_PROPOSAL_API_KEY", "MARKETING_AGENT
              # Wohin Layout-Vorlagen zur Durchsicht gehen (12.09.2026). Die
              # Adresse gehoert dem Betreiber, nicht dem Code — ohne sie sagt
              # das Werkzeug das klar, statt still an irgendwen zu schicken.
-             "MARKETING_PRUEFADRESSE")
+             "MARKETING_PRUEFADRESSE",
+             # Newsletter-Anmeldung (21.10.2026): die gedruckte Adresse kommt nie vom Agenten.
+             "NEWSLETTER_ANMELDE_ADRESSE", "NEWSLETTER_ANMELDE_EN", "NEWSLETTER_MARKE")
 
 
 def _load_env_fallback() -> None:

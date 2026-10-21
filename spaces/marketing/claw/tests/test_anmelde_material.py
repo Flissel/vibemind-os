@@ -161,6 +161,11 @@ class TestWerkzeug(unittest.TestCase):
         from spaces.marketing.claw import server
         self.assertIn(werkzeuge.newsletter_anmeldung_material, server.WERKZEUGE)
 
+    def test_sidecar_laedt_die_adresse_aus_der_env(self):
+        from spaces.marketing.claw import server
+        self.assertIn("NEWSLETTER_ANMELDE_ADRESSE", server._ENV_KEYS)
+        self.assertIn("NEWSLETTER_ANMELDE_EN", server._ENV_KEYS)
+
 
 if __name__ == "__main__":
     unittest.main()
