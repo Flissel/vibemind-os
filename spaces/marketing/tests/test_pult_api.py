@@ -17,6 +17,7 @@ leeren Antworten, die fail-closed 503-Gestaltpruefung in /layouts/vorschau
 NIE als "keine Beanstandung" durchgehen), die X-Pult-Key/X-API-Key-Trennung
 in server.py, und die hmac/ValueError-Randfaelle."""
 import json
+import os
 import re
 
 import pytest
@@ -1636,3 +1637,259 @@ def test_vorlage_sperrt_collage_auch_beim_schreiben(db, c, monkeypatch, tmp_path
     assert r.status_code == 409 and r.json()["detail"] == "Das ist ein Collage-Newsletter"
     assert re.search(r"CASE WHEN \(SELECT f\.format .*\) = 'seite' THEN NULL ELSE marketing\.pult_bloecke_speichern\(",
                      db.sql[3])
+
+
+# --- Stufe 5: Collage-Vorlagen, Vorlagen-Freigabe, nur noch Collagen ---
+
+NUR_COLLAGEN = "Neue Newsletter entstehen als Collage – bitte eine Collage-Vorlage wählen"
+
+
+def _logo_daten_url() -> str:
+    import base64
+    import io
+    from PIL import Image
+    p = io.BytesIO()
+    Image.new("RGB", (40, 20), (200, 30, 30)).save(p, "PNG")
+    return "data:image/png;base64," + base64.b64encode(p.getvalue()).decode()
+
+
+SEITEN_VORLAGE = {
+    "version": 1, "breite": 600, "hoehe": 900, "hintergrund": {"farbe": "#f4efe6", "bild": None},
+    "schriften": {"anzeige": "playfair", "text": "dm-sans"},
+    "ebenen": [
+        {"id": "motiv", "art": "bild", "x": 300, "y": 250, "breite": 600, "hoehe": 400,
+         "quelle": "medien:platzhalter-3x2.png"},
+        {"id": "logo", "art": "bild", "x": 300, "y": 520, "breite": 160, "hoehe": 60, "quelle": "medien:logo-vm.png"},
+        {"id": "name", "art": "text", "x": 300, "y": 620, "breite": 480, "hoehe": 60, "text": "VibeMind",
+         "rolle": "ANZEIGE", "groesse": 32, "farbe": "#1a1a1a"},
+        {"id": "text", "art": "text", "x": 300, "y": 720, "breite": 480, "hoehe": 80, "text": "Hallo {vorname}",
+         "rolle": "TEXT", "groesse": 17, "farbe": "#1a1a1a"},
+        {"id": "knopf", "art": "knopf", "x": 300, "y": 830, "breite": 220, "hoehe": 48, "text": "Mehr",
+         "link": "https://vibemind.de", "farbe": "#5b3fd6", "textfarbe": "#ffffff"},
+    ]}
+SEITEN_ROLLEN = {"farben": {"hintergrund.farbe": "grund", "ebenen.knopf.farbe": "akzent",
+                            "ebenen.knopf.textfarbe": "auf_akzent", "ebenen.name.farbe": "text",
+                            "ebenen.text.farbe": "text"},
+                 "ebenen": {"motiv": "motiv:Herbstlaub im Gegenlicht", "logo": "logo", "name": "name"}}
+CID = "22222222-2222-2222-2222-222222222222"
+
+
+def _seiten_vorlage_zeile(**extra):
+    return {"format": "seite", "bloecke": None, "seite": SEITEN_VORLAGE, "rollen": SEITEN_ROLLEN,
+            "nur_collagen": True, **extra}
+
+
+def _laden_radhaus(logo=True):
+    gestalt = {"akzent": "#c2410c", "schriften": {"anzeige": "dm-sans", "text": "dm-sans"}}
+    if logo:
+        gestalt["logo"] = _logo_daten_url()
+    return {"laden": "Radhaus Jena", "layout": "radhaus-nl", "gestalt": gestalt,
+            "webseite": "https://radhaus.de", "werte": {"grund": "#ffffff", "text": "#202020", "zweitfarbe": "#fde7d9"}}
+
+
+def _seite_aus_sql(sql: str) -> dict:
+    return json.loads(re.search(r"'(\{.*\})'::jsonb", sql, re.S).group(1).replace("''", "'"))
+
+
+def test_aus_seiten_vorlage_fuellt_legt_an_und_beauftragt_motive(db, c, monkeypatch, tmp_path):
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    db.antworten = [[_seiten_vorlage_zeile()], [_laden_radhaus()], [{"id": CID}],
+                    [{"id": "33333333-3333-3333-3333-333333333333"}]]
+    r = c.post("/api/pult/inhalte/aus_vorlage", headers=H,
+               json={"vorlage": "herbst-split", "titel": "Oktober", "mandant": "radhaus"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"id": CID, "warnungen": []}
+    # 1. Vorlage mit Format und "nur noch Collagen" in einer Abfrage, 2. Laden mit Webseite und Profilwerten
+    assert "format" in db.sql[0] and "marketing.pult_hat_collage_vorlage('radhaus')" in db.sql[0]
+    assert "s.profil->'werte' AS werte" in db.sql[1]
+    # 3. angelegt ueber pult_collage_aus_vorlage mit der gefuellten Seite (nie die Block-Kette)
+    sql = db.sql[2]
+    assert sql.startswith("SELECT marketing.pult_collage_aus_vorlage('herbst-split', 'Oktober', 'radhaus', ")
+    assert sql.endswith("::jsonb, 'betreiber') AS id")
+    assert "pult_inhalt_aus_vorlage" not in " ".join(db.sql)
+    s = _seite_aus_sql(sql)
+    nach_id = {e["id"]: e for e in s["ebenen"]}
+    assert nach_id["name"]["text"] == "Radhaus Jena"
+    assert nach_id["knopf"]["farbe"] == "#c2410c" and nach_id["knopf"]["link"] == "https://radhaus.de"
+    assert s["hintergrund"]["farbe"] == "#ffffff" and nach_id["text"]["farbe"] == "#202020"
+    assert s["schriften"] == {"anzeige": "dm-sans", "text": "dm-sans"}
+    assert nach_id["logo"]["quelle"].startswith("medien:logo-radhaus-")              # Logo als Mediendatei
+    assert (tmp_path / nach_id["logo"]["quelle"][len("medien:"):]).is_file()
+    assert nach_id["motiv"]["quelle"].startswith("medien:platzhalter-")
+    # 4. Bildauftrag fuer die Motiv-Ebene ueber die bestehende Bildkette (bilder._anlegen)
+    assert db.sql[3].startswith(f"SELECT marketing.pult_bild_auftrag('{CID}'::uuid, 'motiv', false, "
+                                "'Herbstlaub im Gegenlicht', 'system', 55, 'neu', ")
+    assert len(db.sql) == 4
+
+
+def test_aus_seiten_vorlage_ohne_logo_und_ohne_webseite_warnt(db, c, monkeypatch, tmp_path):
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    laden = {**_laden_radhaus(logo=False), "webseite": None}
+    db.antworten = [[_seiten_vorlage_zeile()], [laden], [{"id": CID}], [{"id": "a"}]]
+    r = c.post("/api/pult/inhalte/aus_vorlage", headers=H,
+               json={"vorlage": "herbst-split", "titel": "Oktober", "mandant": "radhaus"})
+    assert r.status_code == 200, r.text
+    assert r.json()["warnungen"] == ["Keine Webseite der Firma – Knopf-Link bitte setzen"]
+    s = _seite_aus_sql(db.sql[2])
+    assert "logo" not in [e["id"] for e in s["ebenen"]]            # die Logo-Ebene entfaellt
+    assert [e["link"] for e in s["ebenen"] if e["art"] == "knopf"] == ["https://vibemind.de"]   # Link bleibt
+
+
+def test_aus_seiten_vorlage_bildauftrag_scheitert_nur_warnung(db, c, monkeypatch, tmp_path):
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    db.antworten = [[_seiten_vorlage_zeile()], [_laden_radhaus()], [{"id": CID}]]
+    db.fehler = [None, None, None, RuntimeError("ERROR:  Bilder gibt es nur fuer Newsletter")]
+    r = c.post("/api/pult/inhalte/aus_vorlage", headers=H,
+               json={"vorlage": "herbst-split", "titel": "Oktober", "mandant": "radhaus"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"id": CID, "warnungen": [
+        "Bild für 'motiv' konnte nicht beauftragt werden: Bilder gibt es nur fuer Newsletter"]}
+
+
+def test_aus_seiten_vorlage_db_lehnt_ab_422_ohne_bildauftrag(db, c, monkeypatch, tmp_path):
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    db.antworten = [[_seiten_vorlage_zeile()], [_laden_radhaus()]]
+    db.fehler = [None, None,
+                 RuntimeError("ERROR:  Vorlage herbst-split gibt es nicht oder sie ist nicht freigegeben")]
+    r = c.post("/api/pult/inhalte/aus_vorlage", headers=H,
+               json={"vorlage": "herbst-split", "titel": "Oktober", "mandant": "radhaus"})
+    assert r.status_code == 422 and "nicht freigegeben" in r.json()["detail"]
+    assert len(db.sql) == 3 and not any("pult_bild_auftrag" in q for q in db.sql)
+
+
+def test_aus_block_vorlage_bei_collage_vorlage_409(db, c):
+    """Nur noch Collagen: gibt es eine freigegebene Collage-Vorlage fuer die Firma, keine neuen Block-Newsletter."""
+    db.antworten = [[{"format": "bloecke", "bloecke": DOK, "seite": None, "rollen": None, "nur_collagen": True}]]
+    r = c.post("/api/pult/inhalte/aus_vorlage", headers=H, json={"vorlage": "leer", "titel": "Oktober"})
+    assert r.status_code == 409 and r.json()["detail"] == NUR_COLLAGEN
+    assert len(db.sql) == 1                                     # nichts gefuellt, nichts geschrieben
+
+
+def test_block_anlegen_ohne_collage_vorlage_erlaubt(db, c):
+    """Review Focus 5: Block-Vorlagen, aber keine freigegebene Collage-Vorlage - Anlegen aus Block-Vorlage geht."""
+    db.antworten = [[{"format": "bloecke", "bloecke": DOK, "seite": None, "rollen": None, "nur_collagen": False}],
+                    [{"laden": "L", "layout": None, "gestalt": None}], [{"id": IID}]]
+    r = c.post("/api/pult/inhalte/aus_vorlage", headers=H, json={"vorlage": "leer", "titel": "Oktober"})
+    assert r.status_code == 200 and r.json() == {"id": IID}
+    assert "marketing.pult_inhalt_aus_vorlage(" in db.sql[-1]
+
+
+def test_vorlage_anwenden_mit_seiten_vorlage_422_ohne_schreiben(db, c):
+    db.antworten = [[_kopf()], [{"format": "seite", "bloecke": None}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/vorlage", headers=H, json={"vorlage": "herbst-split", "basis_fassung": 7})
+    assert r.status_code == 422 and "Collage-Vorlagen lassen sich nicht" in r.json()["detail"]
+    assert len(db.sql) == 2 and "format" in db.sql[1]
+
+
+def test_vorlagenliste_liefert_format(db, c):
+    db.antworten = [[{"name": "herbst-split", "beschreibung": "", "status": "vorschlag", "fassung": 1,
+                      "format": "seite"}]]
+    r = c.get("/api/pult/vorlagen?mandant=radhaus&status=vorschlag", headers=H)
+    assert r.status_code == 200 and r.json()["vorlagen"][0]["format"] == "seite"
+    assert "format FROM marketing.newsletter_vorlagen" in db.sql[0] and "status = 'vorschlag'" in db.sql[0]
+
+
+def test_vorschau_seiten_vorlage_liefert_gefuellte_seite(db, c, monkeypatch, tmp_path):
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    db.antworten = [[{**_seiten_vorlage_zeile(), "beschreibung": "Split", "pflichtteil": {}}], [_laden_radhaus()]]
+    r = c.get("/api/pult/vorlagen/herbst-split/vorschau?format=seite&mandant=radhaus", headers=H)
+    assert r.status_code == 200, r.text
+    assert "Radhaus Jena" in r.text and "VibeMind" not in r.text and "#c2410c" in r.text
+    assert "v.seite, v.rollen" in db.sql[0] and not any("pult_bild_auftrag" in q for q in db.sql)
+
+
+def test_vorschau_block_vorlage_als_seite_422(db, c):
+    db.antworten = [[{"format": "bloecke", "bloecke": DOK, "beschreibung": "B", "pflichtteil": {}}]]
+    r = c.get("/api/pult/vorlagen/leer/vorschau?format=seite", headers=H)
+    assert r.status_code == 422 and "Block-Vorlagen haben keine Seitenansicht" in r.json()["detail"]
+
+
+def test_vorlage_entscheiden(db, c):
+    db.antworten = [[{"status": "freigegeben"}]]
+    r = c.post("/api/pult/vorlagen/herbst-split/entscheiden", headers=H, json={"urteil": "freigeben", "von": "Felix"})
+    assert r.status_code == 200 and r.json() == {"name": "herbst-split", "status": "freigegeben"}
+    assert db.sql[0] == ("SELECT marketing.pult_vorlage_entscheiden('herbst-split', 'freigeben', 'Felix') "
+                         "AS status")
+
+
+@pytest.mark.parametrize("body", [{"urteil": "loeschen", "von": "F"}, {"urteil": "freigeben", "von": "  "},
+                                  {"urteil": "freigeben"}, {}])
+def test_vorlage_entscheiden_formfehler_422_ohne_sql(db, c, body):
+    r = c.post("/api/pult/vorlagen/herbst-split/entscheiden", headers=H, json=body)
+    assert r.status_code == 422 and db.sql == []
+
+
+def test_vorlage_entscheiden_db_grund_und_schluessel(db, c):
+    db.fehler = [RuntimeError("ERROR:  Vorlage herbst-split ist schon freigegeben")]
+    r = c.post("/api/pult/vorlagen/herbst-split/entscheiden", headers=H, json={"urteil": "freigeben", "von": "F"})
+    assert r.status_code == 422 and r.json()["detail"] == "Vorlage herbst-split ist schon freigegeben"
+    assert c.post("/api/pult/vorlagen/Herbst/entscheiden", headers=H,
+                  json={"urteil": "freigeben", "von": "F"}).status_code == 404
+    assert c.post("/api/pult/vorlagen/herbst-split/entscheiden",
+                  json={"urteil": "freigeben", "von": "F"}).status_code == 401
+
+
+def test_db_grund_format_check_wird_deutsch():
+    roh = RuntimeError('ERROR:  new row for relation "newsletter_vorlagen" violates check constraint '
+                       '"newsletter_vorlagen_format_check"\nDETAIL:  Failing row contains (...)')
+    assert pult._db_grund(roh) == pult.VORLAGEN_NAME_BELEGT
+    assert pult._db_grund(RuntimeError("ERROR:  Ohne Titel kein Newsletter")) == "Ohne Titel kein Newsletter"
+
+
+def test_vorschau_seiten_vorlage_auch_bei_format_mail_als_seite(db, c, monkeypatch, tmp_path):
+    """sales (ui_editor.vorlage_bild) fragt heute jede Vorlage mit format=mail an - Seiten-Vorlagen kommen dann
+    trotzdem als Seiten-HTML, nicht als 422 (Fix-Runde 1, Entscheidung im Report)."""
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    db.antworten = [[{**_seiten_vorlage_zeile(), "beschreibung": "Split", "pflichtteil": {}}], [_laden_radhaus()]]
+    r = c.get("/api/pult/vorlagen/herbst-split/vorschau?format=mail&mandant=radhaus", headers=H)
+    assert r.status_code == 200 and "Radhaus Jena" in r.text
+
+
+# --- Gesamtpruefung Stufe 5 ---
+
+def test_marke_fuer_vorlage_zweiter_akzent_aus_dem_markenprofil(tmp_path, caplog):
+    """Gestalt-Akzent und Markenprofil-Akzent weichen ab: Fuellen nimmt den der Gestalt, beim Ableiten zaehlen
+    beide (akzent_auch), mit Protokollzeile ohne Werte."""
+    laden = {"laden": "VibeMind", "gestalt": {"akzent": "#7c3aed"}, "webseite": "https://vibemind.de",
+             "werte": {"akzent": "#5B3FD6", "grund": "#ffffff"}}
+    with caplog.at_level("INFO", logger=pult.log.name):
+        m = pult._marke_fuer_vorlage("vibemind", laden, str(tmp_path))
+    assert m["akzent"] == "#7c3aed" and m["akzent_auch"] == ["#5b3fd6"]
+    assert any("Akzent" in r.getMessage() and "#5b3fd6" not in r.getMessage().lower() for r in caplog.records)
+    gleich = pult._marke_fuer_vorlage("vibemind", {**laden, "werte": {"akzent": "#7C3AED"}}, str(tmp_path))
+    assert gleich.get("akzent_auch") is None
+    ohne_gestalt = pult._marke_fuer_vorlage("vibemind", {**laden, "gestalt": None}, str(tmp_path))
+    assert ohne_gestalt["akzent"] == "#5B3FD6" and ohne_gestalt.get("akzent_auch") is None
+
+
+def test_vorlagenliste_zeigt_fuer_alle_und_entscheidung(db, c):
+    db.antworten = [[{"name": "collage-split", "beschreibung": "", "status": "freigegeben", "fassung": 2,
+                      "fuer_alle": True, "entschieden_von": "Felix", "entschieden_am": "2026-10-21 09:00:00+00",
+                      "format": "seite"}]]
+    r = c.get("/api/pult/vorlagen?mandant=radhaus", headers=H)
+    v = r.json()["vorlagen"][0]
+    assert v["fuer_alle"] is True and v["entschieden_von"] == "Felix" and v["entschieden_am"].startswith("2026-10-21")
+    assert "fuer_alle, entschieden_von, entschieden_am::text AS entschieden_am" in db.sql[0]
+
+
+def test_vorschau_seiten_vorlage_legt_logo_nur_einmal_ab(db, c, monkeypatch, tmp_path):
+    """Gesamtpruefung Stufe 5: die Vorschau (GET) legt die Logo-Datei je Firma und Logo-Hash einmal ab und nutzt
+    sie danach wieder - kein Schreiben je Anfrage."""
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    pult._LOGO_ABLAGE.clear()
+    aufrufe = []
+    echt = pult.vorlagen_marke.logo_ablegen
+    monkeypatch.setattr(pult.vorlagen_marke, "logo_ablegen",
+                        lambda *a, **kw: aufrufe.append(a[1:]) or echt(*a, **kw))
+    for _ in range(3):
+        db.antworten = [[{**_seiten_vorlage_zeile(), "beschreibung": "Split", "pflichtteil": {}}], [_laden_radhaus()]]
+        r = c.get("/api/pult/vorlagen/herbst-split/vorschau?format=seite&mandant=radhaus", headers=H)
+        assert r.status_code == 200, r.text
+    assert len(aufrufe) == 1                                   # nur beim ersten Mal (ohne logo_dunkel)
+    assert len([n for n in os.listdir(tmp_path) if n.startswith("logo-radhaus-")]) == 1
+    # anderes Logo -> neue Ablage; geloeschte Datei -> wieder ablegen
+    for f in os.listdir(tmp_path):
+        os.remove(tmp_path / f)
+    db.antworten = [[{**_seiten_vorlage_zeile(), "beschreibung": "Split", "pflichtteil": {}}], [_laden_radhaus()]]
+    assert c.get("/api/pult/vorlagen/herbst-split/vorschau?format=seite&mandant=radhaus", headers=H).status_code == 200
+    assert len(aufrufe) == 2

@@ -149,3 +149,14 @@ def test_bildplaetze_ueberspringen_flaechen():
            "f": {"type": "Image", "data": {"style": {}, "props": {"url": "medien:gs-aaaaaaaaaaaa.jpg", "alt": "x",
                  "width": 600, "height": 400, "gestaltung": G}}}}
     assert bildplaetze.finde(dok) == []
+
+
+def test_verwiesene_gs_auch_aus_collage_vorlagen(umg):
+    """082: Collage-Vorlagen tragen ihre Bilder in newsletter_vorlagen(_fassungen).seite - ein gs-Bild, auf das nur
+    eine Collage-Vorlage verweist, darf nicht als unverwiesen geloescht werden."""
+    from spaces.marketing.api import gestaltung as ga
+    f, _ = umg
+    f.antworten.append([{"m": "gs-" + "c" * 12 + ".jpg"}])
+    assert ga.verwiesene_gs() == {"gs-" + "c" * 12 + ".jpg"}
+    assert "SELECT seite FROM marketing.newsletter_vorlagen UNION ALL" in f.sql[0]
+    assert "SELECT seite FROM marketing.newsletter_vorlagen_fassungen)" in f.sql[0]

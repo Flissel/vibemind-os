@@ -59,6 +59,7 @@ def test_einreichen_db_weg_503(umg):
 
 
 ANREDE = "Die Anrede steht in einem Bildbereich – sie muss in frei stehendem Fließtext stehen"
+HELL = (250, 250, 250)
 
 
 def _collage(text_y=600):
@@ -70,78 +71,228 @@ def _collage(text_y=600):
                         "text": "Hallo {vorname}", "rolle": "TEXT", "groesse": 17, "farbe": "#333333"}]}
 
 
+def _pruef_zeile(s=None):
+    """Antwort auf die Leseabfrage der Pruefung (format, seite der Fassung)."""
+    return [{"format": "seite", "seite": s if s is not None else _collage()}]
+
+
 @pytest.fixture
 def renderer(monkeypatch):
+    """Gefaelschtes Chromium: helle Seite (der dunkle Text ist darauf lesbar), keine Masse. renderer.farbe
+    aendert die Pixel, renderer.fehler laesst jeden Aufruf werfen; renderer.kacheln merkt platzhalter_kacheln."""
     import io
     from PIL import Image
     from spaces.marketing.claw import seite_bilder
-    aufrufe = []
 
-    def render(s, medien_lesen, **_):
+    class Aufrufe(list):
+        farbe = HELL
+        fehler = None
+        kacheln: list = []
+
+    aufrufe = Aufrufe()
+    aufrufe.kacheln = []
+
+    def render(s, medien_lesen, faktor=2, platzhalter_kacheln=False, **_):
         aufrufe.append(s)
+        aufrufe.kacheln.append(platzhalter_kacheln)
+        if aufrufe.fehler is not None:
+            raise aufrufe.fehler
         p = io.BytesIO()
-        Image.new("RGB", (1200, int(s["hoehe"]) * 2), (10, 20, 30)).save(p, "PNG")
+        Image.new("RGB", (600 * faktor, int(s["hoehe"]) * faktor), aufrufe.farbe).save(p, "PNG")
         return p.getvalue(), {}
     monkeypatch.setattr(seite_bilder, "render_und_messen", render)
     return aufrufe
 
 
+def _fassung(s=None, mail=None):
+    """Antwort auf _fassung_lesen (Pruefung und Erzeugung lesen die Fassung EINMAL gemeinsam)."""
+    return [{"format": "seite", "seite": s if s is not None else _collage(), "felder": {"betreff": "Herbst"},
+             "pflichtteil": {"impressum": "I"}, "mail": mail}]
+
+
+def _voll(renderer) -> list:
+    """Volle Renderings (mit Textebenen) - die ohne Text haben nur die Bild-Ebene."""
+    return [s for s in renderer if any(e["art"] == "text" for e in s["ebenen"])]
+
+
 def test_einreichen_collage_erzeugt_mail_dann_einreichen(umg, renderer):
+    """Fix-Runde 1: ohne Mail-Fassung genau EIN volles Rendering (Pruefung und Mail teilen es) und eines ohne Text."""
     import os
     f, tmp, c = umg
     name = "ms-11111111-2-01.jpg"
     f.antworten += [
         [{"fassung": None, "gesperrt": True}],                     # Formatsperre: neueste Fassung ist 'seite'
         [{"n": 2}],                                                 # neueste Fassung
-        [{"format": "seite", "seite": _collage(), "felder": {"betreff": "Herbst"}, "pflichtteil": {"impressum": "I"},
-          "mail": None}],
+        _fassung(),                                                 # Fassung einmal lesen (Pruefung + Mail)
         [{"mail": {"medien": [{"name": name, "cid": name, "sw": False}], "bytes": 1}}],
         [{"fassung": 2}],
     ]
     r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
     assert r.status_code == 200, r.text
     assert r.json() == {"status": "eingereicht", "fassung": 2}
-    assert len(renderer) == 1 and os.listdir(tmp) == [name]
+    assert len(renderer) == 2 and len(_voll(renderer)) == 1
+    assert [e["id"] for e in renderer[1]["ebenen"]] == ["b"] and renderer.kacheln == [False, False]
+    assert os.listdir(tmp) == [name]
+    assert "marketing.pult_seite_mail_lesen(" in f.sql[2]
     assert "marketing.pult_seite_mail_speichern(" in f.sql[3]
     # zuletzt, nach der Mail-Fassung: Einreichen genau dieser Fassung (die DB prueft neueste = 2 und Mail da)
     assert f.sql[4] == f"SELECT marketing.pult_seite_einreichen('{IID}'::uuid, 2, 'Anna') AS fassung"
     assert len(f.sql) == 5
 
 
-def test_einreichen_collage_mail_schon_da_ohne_render(umg, renderer):
+def test_einreichen_collage_ohne_pixelbedarf_genau_ein_rendering(umg, renderer):
+    """Text mit eigener Unterlage: kein Rendering ohne Text - insgesamt genau eines fuer Pruefung und Mail."""
     f, _, c = umg
-    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 3}],
-                    [{"format": "seite", "seite": _collage(), "felder": {}, "pflichtteil": {},
-                      "mail": {"medien": [], "bytes": 0}}],
+    s = _collage()
+    s["ebenen"][1]["hintergrund"] = "#ffffff"
+    s["ebenen"][1]["text"] = "Herbstgrüße"          # Text mit Unterlage wird Bildband - dort keine Anrede
+    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 2}], _fassung(s),
+                    [{"mail": {"medien": [], "bytes": 1}}], [{"fassung": 2}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
+    assert r.status_code == 200, r.text
+    assert len(renderer) == 1
+
+
+def test_einreichen_collage_mail_schon_da_rendert_nur_die_pruefung(umg, renderer):
+    f, _, c = umg
+    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 3}], _fassung(mail={"medien": [], "bytes": 0}),
                     [{"fassung": 3}]]
     r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
-    assert r.status_code == 200 and r.json()["fassung"] == 3 and renderer == []
-    assert "pult_seite_einreichen(" in f.sql[-1] and ", 3, " in f.sql[-1]
+    assert r.status_code == 200 and r.json()["fassung"] == 3
+    assert len(_voll(renderer)) == 1 and len(renderer) == 2
+    assert "pult_seite_einreichen(" in f.sql[-1] and ", 3, " in f.sql[-1] and len(f.sql) == 4
+
+
+def test_einreichen_collage_pruefung_gemerkt_kein_rendering(umg, renderer):
+    """Pruefung schon gemerkt (z. B. eben ueber /pruefung) und Mail da: kein Chromium beim Einreichen."""
+    f, _, c = umg
+    f.antworten += [_fassung()]
+    assert c.get(f"/api/pult/inhalte/{IID}/pruefung?fassung=3", headers=H).status_code == 200
+    n = len(renderer)
+    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 3}], _fassung(mail={"medien": [], "bytes": 0}),
+                    [{"fassung": 3}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
+    assert r.status_code == 200 and len(renderer) == n
 
 
 def test_einreichen_collage_anrede_im_bild_blockiert(umg, renderer):
     f, tmp, c = umg
-    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 2}],
-                    [{"format": "seite", "seite": _collage(text_y=200), "felder": {}, "pflichtteil": {},
-                      "mail": None}]]
+    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 2}], _fassung(_collage(text_y=200))]
     r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
-    assert r.status_code == 422 and r.json()["detail"] == ANREDE
-    assert renderer == [] and list(tmp.iterdir()) == []
-    # nur Formatsperre, neueste Fassung, Fassung lesen - eingereicht wird nichts
-    assert len(f.sql) == 3 and not any("pult_seite_einreichen" in q for q in f.sql)
+    assert r.status_code == 422 and r.json()["detail"] == ANREDE       # Text wie Stufe 4, nur dieser harte Befund
+    assert list(tmp.iterdir()) == []
+    # nur Formatsperre, neueste Fassung, Fassung lesen - keine Mail-Fassung, eingereicht wird nichts
+    assert len(f.sql) == 3 and not any("pult_seite_einreichen" in q or "pult_seite_mail_speichern" in q
+                                       for q in f.sql)
 
 
 def test_einreichen_collage_link_im_bild_blockiert(umg, renderer):
     f, tmp, c = umg
     s = _collage(text_y=200)
     s["ebenen"][1]["text"] = "Siehe [hier](https://example.com/x)"
-    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 2}],
-                    [{"format": "seite", "seite": s, "felder": {}, "pflichtteil": {}, "mail": None}]]
+    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 2}], _fassung(s)]
     r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
     assert r.status_code == 422
     assert r.json()["detail"] == "Ein Link steht in einem Bildbereich – er muss in frei stehendem Fließtext stehen"
-    assert renderer == [] and list(tmp.iterdir()) == []
+    assert list(tmp.iterdir()) == []
     assert not any("pult_seite_einreichen" in q for q in f.sql)
+
+
+def test_einreichen_collage_kontrast_blockiert_mit_weiteren(umg, renderer):
+    """Harte Befunde aus Anrede-im-Bild UND Kontrast: eine 422, Anrede zuerst (Reihenfolge wie Stufe 4), dazu
+    "(weitere: n)"."""
+    f, tmp, c = umg
+    renderer.farbe = (40, 40, 40)                      # dunkler Grund unter dem dunklen Text
+    s = _collage(text_y=200)
+    s["ebenen"].append({"id": "titel", "art": "text", "x": 300, "y": 650, "breite": 480, "hoehe": 60,
+                        "text": "Herbst", "rolle": "ANZEIGE", "groesse": 40, "farbe": "#333333"})
+    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 2}], _fassung(s)]
+    r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
+    assert r.status_code == 422
+    assert r.json()["detail"] == ANREDE + " (weitere: 2)"           # Kontrast von t und titel
+    assert list(tmp.iterdir()) == [] and not any("pult_seite_mail_speichern" in q for q in f.sql)
+
+
+def test_einreichen_collage_nur_kontrast_blockiert(umg, renderer):
+    f, _, c = umg
+    renderer.farbe = (40, 40, 40)
+    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 2}], _fassung()]
+    r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
+    assert r.status_code == 422
+    d = r.json()["detail"]
+    assert d.startswith("t: Kontrast ") and "mindestens 4,5:1" in d and "weitere" not in d
+
+
+def test_einreichen_collage_weiche_befunde_blockieren_nicht(umg, renderer):
+    """Kein Knopf ist nur ein Hinweis - eingereicht wird trotzdem."""
+    f, _, c = umg
+    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 3}], _fassung(mail={"medien": [], "bytes": 0}),
+                    [{"fassung": 3}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
+    assert r.status_code == 200 and r.json() == {"status": "eingereicht", "fassung": 3}
+
+
+def test_pruefung_503_blockiert_nicht_inhaltlich(umg, renderer):
+    """Review Focus 4: Chromium weg - die Pruefung ist technisch nicht moeglich, das Einreichen laeuft wie in
+    Stufe 4 weiter (die vorhandene Mail-Fassung wird eingereicht; muesste sie erzeugt werden, kaeme deren eigenes
+    503)."""
+    f, _, c = umg
+    renderer.fehler = RuntimeError("Executable doesn't exist at /ms-playwright/chromium")
+    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 3}], _fassung(mail={"medien": [], "bytes": 0}),
+                    _fassung(mail={"medien": [], "bytes": 0}), [{"fassung": 3}]]
+    r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"status": "eingereicht", "fassung": 3}
+    assert "pult_seite_einreichen(" in f.sql[-1] and len(renderer) == 1
+
+
+def test_pruefung_503_dann_mail_erzeugung_meldet_selbst_503(umg, renderer):
+    f, tmp, c = umg
+    renderer.fehler = RuntimeError("Executable doesn't exist at /ms-playwright/chromium")
+    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 2}], _fassung(), _fassung()]
+    r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
+    assert r.status_code == 503 and "playwright" not in r.text
+    assert list(tmp.iterdir()) == [] and not any("pult_seite_einreichen" in q for q in f.sql)
+
+
+def test_einreichen_zeitlimit_der_pruefung_503_ohne_zweiten_versuch(umg, renderer):
+    """Fix-Runde 1: das Zeitlimit der Pruefung hat das Zeitbudget verbraucht - 503 sofort, kein zweites Rendering
+    in der Erzeugung."""
+    from spaces.marketing.claw import seite_bilder
+    f, tmp, c = umg
+    renderer.fehler = seite_bilder.StueckFehler(seite_bilder.ZEITLIMIT)
+    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 2}], _fassung()]
+    r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
+    assert r.status_code == 503 and r.json()["detail"] == seite_bilder.ZEITLIMIT
+    assert len(renderer) == 1 and len(f.sql) == 3 and list(tmp.iterdir()) == []
+
+
+def test_einreichen_sperre_belegt_503_ohne_rendering(umg, renderer, monkeypatch):
+    from spaces.marketing.api import seite_mail_dienst as dienst
+    f, _, c = umg
+    monkeypatch.setattr(dienst, "ERZEUG_WARTEN_S", 0.01)
+    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 2}], _fassung()]
+    assert dienst._erzeug_sperre.acquire(blocking=False)
+    try:
+        r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
+    finally:
+        dienst._erzeug_sperre.release()
+    assert r.status_code == 503 and r.json()["detail"] == dienst.BESCHAEFTIGT
+    assert renderer == [] and len(f.sql) == 3
+
+
+def test_einreichen_mit_platzhalter_blockiert_wie_stufe_4(umg, renderer, monkeypatch):
+    """Seite mit Platzhalter (Bild wird noch erzeugt): keine Pruefung mit Kacheln - die Erzeugung blockiert wie in
+    Stufe 4 mit "Bild ... fehlt"."""
+    from spaces.marketing.claw import seite_bilder
+    f, tmp, c = umg
+    s = _collage()
+    s["ebenen"][0]["quelle"] = "medien:platzhalter-4x3.png"
+    renderer.fehler = seite_bilder.StueckFehler("Bild platzhalter-4x3.png fehlt")
+    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 2}], _fassung(s), _fassung(s)]
+    r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
+    assert r.status_code == 422 and r.json()["detail"] == "Bild platzhalter-4x3.png fehlt"
+    assert renderer.kacheln == [False] and list(tmp.iterdir()) == []
 
 
 def test_einreichen_collage_ohne_namen_vor_dem_rendern(umg, renderer):
@@ -158,8 +309,7 @@ def test_einreichen_collage_zu_gross_blockiert(umg, renderer, monkeypatch):
     f, tmp, c = umg
     echt = seite_bilder.zuschneiden
     monkeypatch.setattr(seite_bilder, "zuschneiden", lambda png, st, **k: echt(png, st, max_bytes=1))
-    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 2}],
-                    [{"format": "seite", "seite": _collage(), "felder": {}, "pflichtteil": {}, "mail": None}]]
+    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 2}], _fassung()]
     r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
     assert r.status_code == 422 and r.json()["detail"].startswith("Die Mail wäre zu groß (")
     assert list(tmp.iterdir()) == [] and len(f.sql) == 3
@@ -168,12 +318,95 @@ def test_einreichen_collage_zu_gross_blockiert(umg, renderer, monkeypatch):
 def test_einreichen_collage_veraltet_422(umg, renderer):
     """Zwischen Erzeugen und Einreichen kam eine neuere Fassung: die DB lehnt ab, nichts wird eingereicht."""
     f, _, c = umg
-    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 2}],
-                    [{"format": "seite", "seite": _collage(), "felder": {}, "pflichtteil": {},
-                      "mail": {"medien": [], "bytes": 0}}]]
+    f.antworten += [[{"fassung": None, "gesperrt": True}], [{"n": 2}], _fassung(mail={"medien": [], "bytes": 0})]
     f.fehler += [None, None, None, _db_fehler("Inzwischen gibt es Fassung 3 – bitte neu laden")]
     r = c.post(f"/api/pult/inhalte/{IID}/einreichen", json={"von": "Anna"}, headers=H)
     assert r.status_code == 422 and r.json()["detail"] == "Inzwischen gibt es Fassung 3 – bitte neu laden"
+
+
+# --- Pruefung (Stufe 5) ---
+
+
+def test_pruefung_route_befunde_und_merken(umg, renderer):
+    f, _, c = umg
+    f.antworten += [_pruef_zeile()]
+    r = c.get(f"/api/pult/inhalte/{IID}/pruefung?fassung=2", headers=H)
+    assert r.status_code == 200, r.text
+    befunde = r.json()["befunde"]
+    assert {"schwere": "weich", "punkt": "seite",
+            "satz": "seite: kein Knopf – die Leserin weiß nicht, was sie tun soll"} in befunde
+    assert all(b["schwere"] == "weich" for b in befunde) and len(renderer) == 2
+    # zweite Anfrage innerhalb von 10 Minuten: weder DB noch Chromium
+    n = len(f.sql)
+    assert c.get(f"/api/pult/inhalte/{IID}/pruefung?fassung=2", headers=H).json()["befunde"] == befunde
+    assert len(f.sql) == n and len(renderer) == 2
+
+
+def test_pruefung_route_ohne_fassung_nimmt_die_neueste(umg, renderer):
+    f, _, c = umg
+    f.antworten += [[{"n": 4}], _pruef_zeile()]
+    r = c.get(f"/api/pult/inhalte/{IID}/pruefung", headers=H)
+    assert r.status_code == 200 and "max(fassung)" in f.sql[0] and "fassung = 4" in f.sql[1]
+
+
+def test_pruefung_route_technischer_fehler_503_nicht_gemerkt(umg, renderer):
+    f, _, c = umg
+    renderer.fehler = RuntimeError("Executable doesn't exist at /ms-playwright/chromium")
+    f.antworten += [_pruef_zeile(), _pruef_zeile()]
+    r = c.get(f"/api/pult/inhalte/{IID}/pruefung?fassung=2", headers=H)
+    assert r.status_code == 503 and "playwright" not in r.text
+    renderer.fehler = None
+    assert c.get(f"/api/pult/inhalte/{IID}/pruefung?fassung=2", headers=H).status_code == 200
+
+
+def test_pruefung_route_zeitlimit_503(umg, renderer):
+    from spaces.marketing.claw import seite_bilder
+    f, _, c = umg
+    renderer.fehler = seite_bilder.StueckFehler(seite_bilder.ZEITLIMIT)
+    f.antworten += [_pruef_zeile()]
+    assert c.get(f"/api/pult/inhalte/{IID}/pruefung?fassung=2", headers=H).status_code == 503
+
+
+def test_pruefung_route_bild_fehlt_422(umg, renderer):
+    from spaces.marketing.claw import seite_bilder
+    f, _, c = umg
+    renderer.fehler = seite_bilder.StueckFehler("Bild probe.png fehlt")
+    f.antworten += [_pruef_zeile()]
+    r = c.get(f"/api/pult/inhalte/{IID}/pruefung?fassung=2", headers=H)
+    assert r.status_code == 422 and r.json()["detail"] == "Bild probe.png fehlt"
+
+
+def test_pruefung_route_kein_collage_422_unbekannt_404(umg, renderer):
+    f, _, c = umg
+    f.antworten += [[{"format": "bloecke", "seite": None}], []]
+    assert c.get(f"/api/pult/inhalte/{IID}/pruefung?fassung=1", headers=H).status_code == 422
+    assert c.get(f"/api/pult/inhalte/{IID}/pruefung?fassung=9", headers=H).status_code == 404
+    assert renderer == []
+    assert c.get(f"/api/pult/inhalte/{IID}/pruefung?fassung=0", headers=H).status_code == 422
+    assert c.get(f"/api/pult/inhalte/{IID}/pruefung", headers={"X-Pult-Key": "falsch"}).status_code == 401
+
+
+def test_pruefung_ohne_text_ohne_pixel_ein_rendering(umg, renderer):
+    """Nur Texte mit eigener Unterlage: kein zweites Rendering (kontraste braucht keine Pixel)."""
+    f, _, c = umg
+    s = _collage()
+    s["ebenen"][1]["hintergrund"] = "#ffffff"
+    f.antworten += [_pruef_zeile(s)]
+    assert c.get(f"/api/pult/inhalte/{IID}/pruefung?fassung=2", headers=H).status_code == 200
+    assert len(renderer) == 1
+
+
+def test_pruefung_wartet_auf_die_erzeugsperre(umg, renderer, monkeypatch):
+    from spaces.marketing.api import seite_mail_dienst as dienst
+    f, _, c = umg
+    monkeypatch.setattr(dienst, "ERZEUG_WARTEN_S", 0.01)
+    f.antworten += [_pruef_zeile()]
+    assert dienst._erzeug_sperre.acquire(blocking=False)
+    try:
+        r = c.get(f"/api/pult/inhalte/{IID}/pruefung?fassung=2", headers=H)
+    finally:
+        dienst._erzeug_sperre.release()
+    assert r.status_code == 503 and r.json()["detail"] == dienst.BESCHAEFTIGT and renderer == []
 
 
 def test_zurueckziehen_ok_und_ablehnung(umg):
@@ -491,3 +724,40 @@ def test_freigeben_mehr_als_20_flaechen_in_stuecken(umg, monkeypatch):
     d = r.json()
     assert d["export_fehler"] is None and len(d["flaechen"]) == 15           # 5 Flaechen x 3 Geraete
     assert len(f.psql.sql) == 3                                              # 3 Stuecke (2+2+1)
+
+
+# --- Pruefung mit Platzhaltern (Fix-Runde 1) ---
+
+BILDER_IN_ARBEIT = "Bilder werden noch erzeugt – Kontrast wird danach geprüft"
+
+
+def test_pruefung_route_platzhalter_als_kachel_ohne_pixel_kontrast(umg, renderer):
+    """Text ueber einem Platzhalter: Kacheln statt Ablehnung, kein Pixel-Kontrast (die graue Kachel ist nicht der
+    spaetere Untergrund), dafuer ein weicher Hinweis. Kein Rendering ohne Text, weil kein Text die Pixel braucht."""
+    f, _, c = umg
+    renderer.farbe = (40, 40, 40)                       # waere gemessen ein harter Kontrastbefund
+    s = _collage(text_y=200)                            # Text liegt auf dem Bild
+    s["ebenen"][1]["text"] = "Herbst ohne Anrede"
+    s["ebenen"][0]["quelle"] = "medien:platzhalter-4x3.png"
+    f.antworten += [_pruef_zeile(s)]
+    r = c.get(f"/api/pult/inhalte/{IID}/pruefung?fassung=2", headers=H)
+    assert r.status_code == 200, r.text
+    befunde = r.json()["befunde"]
+    assert not [b for b in befunde if b["schwere"] == "hart"]
+    assert {"schwere": "weich", "punkt": "seite", "satz": BILDER_IN_ARBEIT} in befunde
+    assert renderer.kacheln == [True] and len(renderer) == 1
+
+
+def test_pruefung_route_platzhalter_nur_ueberlappender_text_ausgelassen(umg, renderer):
+    """Text abseits des Platzhalters wird weiter gemessen (hart bei dunklem Grund), der Hinweis kommt dazu."""
+    f, _, c = umg
+    renderer.farbe = (40, 40, 40)
+    s = _collage(text_y=600)                            # Text unterhalb des Bildes
+    s["ebenen"][0]["quelle"] = "medien:platzhalter-4x3.png"
+    s["ebenen"].append({"id": "auf", "art": "text", "x": 300, "y": 200, "breite": 200, "hoehe": 60,
+                        "text": "Auf dem Bild", "rolle": "ANZEIGE", "groesse": 30, "farbe": "#333333"})
+    f.antworten += [_pruef_zeile(s)]
+    befunde = c.get(f"/api/pult/inhalte/{IID}/pruefung?fassung=2", headers=H).json()["befunde"]
+    harte = [b["punkt"] for b in befunde if b["schwere"] == "hart"]
+    assert harte == ["t"] and BILDER_IN_ARBEIT in [b["satz"] for b in befunde]
+    assert renderer.kacheln == [True, True]

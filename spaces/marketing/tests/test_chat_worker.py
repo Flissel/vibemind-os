@@ -2495,3 +2495,59 @@ def test_kompositionen_in_kurzform_der_api():
     kurz = _komposition_kurzform(voll)
     auftrag = {**AUFTRAG_S, "kompositionen": [{"inhalt": "i", "seite": kurz}, {"inhalt": "x", "seite": {"kaputt": 1}}]}
     assert cw._kompositionen_kurz(auftrag) == [seite_prompt.komposition_kurz(voll)]
+
+
+# ---- Stufe 5 Task 5: Assistent sieht die Schoenheitspruefung ----------------------------------------------
+def _dunkles_png(b, h):
+    puffer = io.BytesIO()
+    Image.new("RGB", (b, h), (20, 20, 20)).save(puffer, "PNG")
+    return puffer.getvalue()
+
+
+def _schoen_render(fehler_ab=None, gesperrt=None):
+    gesehen = []
+
+    def render(html, hoehe):
+        gesehen.append(html)
+        if gesperrt is not None:
+            gesperrt.append(cw._PRUEFBILD_SPERRE.locked())
+        if fehler_ab is not None and len(gesehen) >= fehler_ab:
+            raise OSError("Chromium weg")
+        render.fehlt, render.masse = [], {}
+        return _dunkles_png(600, hoehe)
+    render.gesehen, render.fehlt, render.masse = gesehen, [], None
+    return render
+
+
+def test_pruefrunde_bekommt_harte_kontrastbefunde():
+    from spaces.marketing.workers import seite_pruefbild
+    api = SeitenApi()
+    render = _schoen_render()
+    erg, strom, _ = seite_lauf(api, ([titel("Herbst")], "Ok."), ([fertig_tool()], "Gut."),
+                               pruefbild=seite_pruefbild.pruefbild_mit(render))
+    assert erg == "fertig" and len(strom.gesehen) == 2 and len(render.gesehen) == 2
+    pruef = _texte(strom.gesehen[1][-1]["content"])
+    hinweise = pruef.split("HINWEISE: ", 1)[1]
+    assert "titel: Kontrast 1," in hinweise and "mindestens 3:1" in hinweise
+    assert hinweise.index("titel: Kontrast") < hinweise.index("text: Kontrast")
+    assert _bildzahl(strom.gesehen[1][-1]["content"]) == 1
+
+
+def test_pruefung_kaputt_nur_hinweis_kein_abbruch():
+    from spaces.marketing.workers import seite_pruefbild
+    api = SeitenApi()
+    erg, strom, _ = seite_lauf(api, ([titel("Herbst")], "Ok."), ([fertig_tool()], "Gut."),
+                               pruefbild=seite_pruefbild.pruefbild_mit(_schoen_render(fehler_ab=2)))
+    assert erg == "fertig" and len(strom.gesehen) == 2
+    pruef = _texte(strom.gesehen[1][-1]["content"])
+    assert "Prüfung nicht möglich" in pruef and "Kontrast 1," not in pruef
+    assert _bildzahl(strom.gesehen[1][-1]["content"]) == 1          # das Pruefbild selbst kam an
+    assert cw.PRUEFBILD_FEHLT not in _fertig_daten(api)[0]["antwort"]
+
+
+def test_beide_renderings_unter_der_pruefbild_sperre():
+    from spaces.marketing.workers import seite_pruefbild
+    gesperrt: list[bool] = []
+    erg, _, _ = seite_lauf(SeitenApi(), ([titel("Herbst")], "Ok."), ([fertig_tool()], "Gut."),
+                           pruefbild=seite_pruefbild.pruefbild_mit(_schoen_render(gesperrt=gesperrt)))
+    assert erg == "fertig" and gesperrt == [True, True]

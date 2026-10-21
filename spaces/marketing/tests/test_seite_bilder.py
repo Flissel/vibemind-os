@@ -172,6 +172,24 @@ def test_platzhalter_blockiert():
     assert gefragt == []
 
 
+def test_platzhalter_kacheln_nur_auf_wunsch():
+    """Schoenheitspruefung (Fix-Runde 1): platzhalter_kacheln=True zeichnet Platzhalter als Kachel (wie das
+    Pruefbild), ohne die Medien zu fragen; ein fehlendes echtes Medium blockiert weiter."""
+    gefragt = []
+
+    def lesen(n):
+        gefragt.append(n)
+        return b"x" if n == "foto.jpg" else None
+    b = _Browser()
+    out, _ = sb.render_und_messen(seite([bild("p", "medien:platzhalter-3x2.png"), bild("f", "medien:foto.jpg", 600)]),
+                                  lesen, browser_starten=lambda: b, platzhalter_kacheln=True)
+    assert out and gefragt == ["foto.jpg"]
+    assert ("fulfill", "https://export.vibemind.invalid/medien/platzhalter-3x2.png", 200) in b.log
+    with pytest.raises(sb.StueckFehler, match="^Bild weg.jpg fehlt$"):
+        sb.render_und_messen(seite([bild("w", "medien:weg.jpg")]), lesen, browser_starten=_Browser,
+                             platzhalter_kacheln=True)
+
+
 # ---- Echter Browser ----------------------------------------------------------------------------------------
 def _chromium_da():
     try:
@@ -278,3 +296,41 @@ def test_echter_browser_gedrehter_titel_ganz_im_stueck():
     assert tinte and max(tinte) / sb.FAKTOR <= stuecke[0].unten
     teile = sb.zuschneiden(out, stuecke)
     assert masse(teile)[0] == (1200, round(stuecke[0].unten * sb.FAKTOR))
+
+
+def _glyphen_fall(mit_buehne: bool) -> dict:
+    """Pruefer-Fall der Gesamtpruefung Stufe 5: weisses "NEU", mittig, in einem 480x30-Kasten ueber einem dunklen
+    200x50-Rechteck auf weisser Seite. Der Kasten liegt groesstenteils auf Weiss, die Glyphen nur auf dem Rechteck."""
+    ebenen = ([{"id": "buehne", "art": "form", "x": 300, "y": 100, "breite": 200, "hoehe": 50, "form": "rechteck",
+                "farbe": "#1e1b4b"}] if mit_buehne else [])
+    ebenen.append({"id": "neu", "art": "text", "x": 300, "y": 100, "breite": 480, "hoehe": 30, "text": "NEU",
+                   "rolle": "TEXT", "groesse": 20, "farbe": "#ffffff", "ausrichtung": "mitte"})
+    s = seite(ebenen, hoehe=400)
+    s["hintergrund"]["farbe"] = "#ffffff"
+    return s
+
+
+def _kontraste_echt(s: dict) -> tuple[list[dict], dict]:
+    from spaces.marketing.claw import seite_schoenheit as ss
+    _, masse, zeilen = sb.render_und_messen(s, lambda n: None, mit_zeilen=True)
+    ohne_text = sb.render_png(ss.seite_ohne_text(s), lambda n: None)
+    return ss.kontraste(s, masse, ohne_text, sb.FAKTOR, zeilen=zeilen), zeilen
+
+
+@pytest.mark.browser
+def test_echter_browser_kontrast_ueber_den_glyphen():
+    if not _chromium_da():
+        pytest.skip("Chromium fehlt")
+    befunde, zeilen = _kontraste_echt(_glyphen_fall(mit_buehne=True))
+    l, o, r, u = zeilen["neu"][0]
+    assert len(zeilen["neu"]) == 1 and 200 < l and r < 400 and r - l < 100   # nur das Wort, nicht der Kasten
+    assert [b for b in befunde if b["schwere"] == "hart"] == []
+
+
+@pytest.mark.browser
+def test_echter_browser_weiss_auf_weiss_bleibt_hart():
+    if not _chromium_da():
+        pytest.skip("Chromium fehlt")
+    befunde, _ = _kontraste_echt(_glyphen_fall(mit_buehne=False))
+    assert [(b["schwere"], b["punkt"]) for b in befunde] == [("hart", "neu")]
+    assert befunde[0]["satz"].startswith("neu: Kontrast 1,0:1 auf dem Untergrund")

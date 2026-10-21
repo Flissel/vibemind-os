@@ -227,8 +227,8 @@ def test_groessen_stufen_und_ids_und_buehne():
     assert "x - breite/2 >= 24 und x + breite/2 <= 576" in t
     assert "Hallo {vorname}," in t
     assert "Dachzeile klein" not in t
-    for form in ("Split", "Vollbild mit Titelband", "Schrift-Plakat", "Versetztes Bildpaar", "Polaroid-Streuung",
-                 "Farbbühne mit Freisteller"):
+    assert len(sp.GRUNDFORMEN) == 8 and len({g[0] for g in sp.GRUNDFORMEN}) == 8
+    for form in [f"- {name}: {aufbau}" for _, name, aufbau in sp.GRUNDFORMEN]:
         assert form in t
     assert "andere Grundform" in t
     for zeichen in "°−×≈≥→":

@@ -1263,11 +1263,7 @@ def _bearbeiten_seite(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_tak
     except seite.SeiteFehler as e:
         return zurueckgeben(NICHT_UMGESETZT + f"Die Collage ist ungültig: {e}")
     if pruefbild is None:
-        render = seite_pruefbild.browser_render(api, aid)
-
-        def pruefbild(s: dict) -> tuple[list[bytes], float, list[str]]:
-            teile, faktor = seite_pruefbild.kacheln(s, render)
-            return teile, faktor, list(getattr(render, "fehlt", []))
+        pruefbild = seite_pruefbild.pruefbild_mit(seite_pruefbild.browser_render(api, aid))
     live.original = start
     live.neu_beginnen()
     kontext = auftrag.get("kontext") if isinstance(auftrag.get("kontext"), dict) else {}
@@ -1355,17 +1351,19 @@ def _bearbeiten_seite(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_tak
         spur.schritt(SEITE_PRUEFEN.format(r=r, n=RUNDEN))
         try:
             with halten(api, aid, halten_takt_s) as halter, _PRUEFBILD_SPERRE:
-                ergebnis_pb = pruefbild(aktuell)   # (kacheln, faktor[, fehlende Medien als graue Kacheln])
+                # (kacheln, faktor[, fehlende Medien als graue Kacheln[, Saetze der Schoenheitspruefung]])
+                ergebnis_pb = pruefbild(aktuell)
             kacheln, faktor = ergebnis_pb[0], ergebnis_pb[1]
             fehlend = [str(n) for n in (ergebnis_pb[2] if len(ergebnis_pb) > 2 else [])][:5]
+            befunde = [str(b) for b in (ergebnis_pb[3] if len(ergebnis_pb) > 3 else [])][:8]
         except Exception:  # noqa: BLE001 - ohne Pruefbild wird der Entwurf gespeichert, die Runde kippt nie
             hinweise.insert(0, PRUEFBILD_FEHLT)
             spur.schritt(PRUEFBILD_FEHLT)
             break
         if halter.verloren.is_set():
             raise _Verloren
-        pruef = seite_prompt.pruef_text(r, [*map(seite_pruefbild.fehlt_hinweis, fehlend), *letzte_hinweise],
-                                        aktuell, faktor)
+        pruef = seite_prompt.pruef_text(r, [*map(seite_pruefbild.fehlt_hinweis, fehlend), *befunde,
+                                            *letzte_hinweise], aktuell, faktor)
         teile = seite_pruefbild.bilder_fuer_modell(bildteile, kacheln)   # Anhaenge zuerst, hoechstens 6 Bilder
         frage_r = [{"role": "user", "content": text_nutzer}, {"role": "assistant", "content": letzter_text},
                    {"role": "user", "content": [{"type": "text", "text": pruef}, *teile] if teile else pruef}]

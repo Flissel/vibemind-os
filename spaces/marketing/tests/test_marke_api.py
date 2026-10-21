@@ -1451,3 +1451,13 @@ def test_arbeiter_profil_nimmt_stimme(umg):
     f.antworten.append([{"ok": True}])
     r = c.post("/api/marke/arbeiter/profil", headers=HB, json={"mandant": "radhaus", "profil": profil})
     assert r.status_code == 200 and "eigene-a" in f.sql[-1]
+
+def test_vorschau_nimmt_nur_block_vorlage(umg):
+    """082: eine Collage-Vorlage namens studio hat keine bloecke - die Mustervorschau liest nur Block-Vorlagen und
+    sagt sonst VORLAGE_FEHLT (422), statt an bloecke=None zu scheitern."""
+    f, _, c = umg
+    f.antworten += [[{"vorschlag": VORSCHLAG, "mandant": "radhaus", "name": "R", "pflichtteil": {}}],
+                    [{"bloecke": None}]]
+    r = c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?mandant=radhaus", headers=H)
+    assert r.status_code == 422
+    assert "format = 'bloecke'" in f.sql[1]

@@ -58,13 +58,15 @@ def gestaltungen_rechnen(dok: dict) -> tuple[dict, list[str]]:
 
 def verwiesene_gs() -> set[str]:
     """Alle Entwurfsbilder, auf die Fassungen (Bloecke oder Collage-Seite), Vorlagen oder Vorlagen-Fassungen
-    verweisen."""
+    (Bloecke oder - seit 082 - Collage-Seite) verweisen."""
     zeilen = _lesen(lambda:
         "SELECT DISTINCT m[1] AS m FROM ("
         "SELECT bloecke FROM marketing.inhalt_fassungen UNION ALL "
         "SELECT seite FROM marketing.inhalt_fassungen UNION ALL "
         "SELECT bloecke FROM marketing.newsletter_vorlagen UNION ALL "
-        "SELECT bloecke FROM marketing.newsletter_vorlagen_fassungen) q, "
+        "SELECT bloecke FROM marketing.newsletter_vorlagen_fassungen UNION ALL "
+        "SELECT seite FROM marketing.newsletter_vorlagen UNION ALL "
+        "SELECT seite FROM marketing.newsletter_vorlagen_fassungen) q, "
         "LATERAL regexp_matches(q.bloecke::text, 'medien:(gs-[0-9a-f]{12}\\.jpg)', 'g') AS m")
     return {str(z["m"]) for z in zeilen if z.get("m")}
 
