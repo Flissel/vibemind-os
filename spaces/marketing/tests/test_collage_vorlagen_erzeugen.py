@@ -16,8 +16,11 @@ class Fake:
     """Ersetzt Umgebung: eigene Uhr (warten rueckt sie vor), Skript fuer Chat-Status und Bildauftraege."""
 
     def __init__(self, chat=("fertig",), bilder_offen=0, loeschen_ok=True, aendert_fassung=False, vorhanden=(),
-                 bilder_kaputt=0):
+                 bilder_kaputt=0, auftraege=1, warteschlange=(0,), antwort="Nicht umgesetzt: kaputt"):
         self.vorhanden = set(vorhanden)
+        self.auftraege = auftraege            # Bildauftraege der Probe insgesamt
+        self.warteschlange = list(warteschlange)   # offene Bildauftraege aller Inhalte, je Abfrage
+        self.antwort = antwort
         self.bilder_kaputt = bilder_kaputt
         self.t = 0.0
         self.aufrufe, self.sql = [], []
@@ -52,7 +55,11 @@ class Fake:
         if "status = 'fehler'" in sql:
             return [{"n": self.bilder_kaputt}]
         if "FROM marketing.chat_auftraege" in sql:
-            return [{"status": self.chat.pop(0) if len(self.chat) > 1 else self.chat[0]}]
+            return [{"status": self.chat.pop(0) if len(self.chat) > 1 else self.chat[0], "antwort": self.antwort}]
+        if "AS gesamt" in sql:
+            return [{"gesamt": self.auftraege}]
+        if "count(*)" in sql and "inhalt =" not in sql:
+            return [{"n": self.warteschlange.pop(0) if len(self.warteschlange) > 1 else self.warteschlange[0]}]
         if "count(*)" in sql:
             return [{"n": self.bilder_offen}]
         if "max(fassung)" in sql:
@@ -135,7 +142,7 @@ def test_zeitlimit_der_bilder():
     f = Fake(bilder_offen=1)
     code, aus = _lauf(f, nur="split")
     assert code == 1 and any("Zeitlimit für die Bilder" in z for z in aus)
-    assert f.t >= k.BILDER_MAX and f.pfade()[-1].endswith("/loeschen")
+    assert f.t >= k.BILD_JE_AUFTRAG and f.pfade()[-1].endswith("/loeschen")
 
 
 def test_fassung_aendert_sich_dauernd_laeuft_ins_limit():
@@ -148,6 +155,92 @@ def test_chat_fehler_raeumt_auf():
     f = Fake(chat=("in_arbeit", "fehler"))
     code, aus = _lauf(f, nur="split")
     assert code == 1 and any("Status fehler" in z for z in aus) and f.pfade()[-1].endswith("/loeschen")
+    # zweimal gefragt (ein Neuversuch), die Antwort des Arbeiters steht in der Meldung
+    assert f.pfade().count(f"/api/pult/inhalte/{IID}/chat") == 2
+    assert any("Nicht umgesetzt: kaputt" in z for z in aus)
+
+
+def test_chat_fehler_einmal_dann_fertig_speichert():
+    f = Fake(chat=("fehler", "fertig"))
+    code, aus = _lauf(f, nur="split")
+    assert code == 0 and any("collage-split als Vorschlag" in z for z in aus)
+    assert f.pfade().count(f"/api/pult/inhalte/{IID}/chat") == 2
+    assert any("Neuversuch" in z and "Nicht umgesetzt: kaputt" in z for z in aus)
+    assert f.t >= k.NEUVERSUCH_PAUSE             # gewartet, bis eine neu gestartete Modell-Tuer wieder da ist
+
+
+def test_chat_fehler_meldung_gekappt_und_einzeilig():
+    f = Fake(chat=("fehler",), antwort="Zeile1\nZeile2 " + "x" * 500)
+    _, aus = _lauf(f, nur="split")
+    z = [z for z in aus if z.startswith("FEHLER split")][0]
+    assert "\n" not in z and len(z) < 400
+
+
+# --- Bilder: Zeitlimit je Auftrag, Warteschlange vor der naechsten Vorlage ---
+
+def test_bilder_limit_waechst_mit_der_zahl_der_auftraege():
+    f = Fake(bilder_offen=1, auftraege=3)
+    code, aus = _lauf(f, nur="split")
+    assert code == 1 and any("Zeitlimit für die Bilder (36 Minuten, 3 Aufträge)" in z for z in aus)
+    assert 3 * k.BILD_JE_AUFTRAG <= f.t < 3 * k.BILD_JE_AUFTRAG + k.STABIL + 120
+
+
+def test_bilder_limit_hoechstens_eine_stunde():
+    f = Fake(bilder_offen=1, auftraege=9)
+    code, aus = _lauf(f, nur="split")
+    assert code == 1 and any("Zeitlimit für die Bilder (60 Minuten, 9 Aufträge)" in z for z in aus)
+    assert k.BILDER_MAX <= f.t < k.BILDER_MAX + 120
+
+
+def test_acht_minuten_bilder_reichen_jetzt():
+    """Der Live-Fall: 2 Bilder je ~8 min hintereinander - frueher nach 10 min abgebrochen."""
+    f = Fake(auftraege=2)
+    offen = iter([1] * (16 * 6) + [0] * 1000)          # 16 Minuten offen (Takt 10 s), dann fertig
+    echt = f.abfrage
+
+    def abfrage(sql):
+        if "status IN ('offen','in_arbeit')" in sql and "inhalt =" in sql:
+            return [{"n": next(offen)}]
+        return echt(sql)
+    f.abfrage = abfrage
+    code, aus = _lauf(f, nur="split")
+    assert code == 0 and any("collage-split als Vorschlag" in z for z in aus)
+
+
+def test_naechste_vorlage_wartet_auf_freie_bildwarteschlange():
+    f = Fake(warteschlange=(2, 2, 1, 0))
+    code, _ = _lauf(f, nur="split")
+    assert code == 0
+    warte = [s for s in f.sql if "count(*)" in s and "inhalt =" not in s]
+    assert len(warte) == 4                       # bis die Warteschlange leer war
+    i_warte = f.sql.index(warte[-1])
+    assert f.aufrufe[0][1] == "/api/pult/inhalte/collage"   # die Probe entsteht erst danach
+    assert f.t >= 3 * k.TAKT and i_warte < len(f.sql)
+
+
+def test_warteschlange_bleibt_voll_vorlage_faellt_aus():
+    f = Fake(warteschlange=(1,))
+    code, aus = _lauf(f, nur="split")
+    assert code == 1 and any("Bildwarteschlange" in z for z in aus)
+    assert not f.aufrufe                         # keine Probe angelegt
+    assert f.t >= k.WARTESCHLANGE_MAX
+
+
+# --- --behalten ---
+
+def test_behalten_loescht_die_probe_nicht():
+    f = Fake(chat=("fehler",))
+    code, aus = _lauf(f, nur="split", behalten=True)
+    assert code == 1 and not any(p.endswith("/loeschen") for p in f.pfade())
+    assert any(IID in z and "behalten" in z for z in aus)
+
+
+def test_main_reicht_behalten_durch(monkeypatch):
+    monkeypatch.setenv("MARKETING_PULT_KEY", "x")
+    gesehen = {}
+    monkeypatch.setattr(k, "lauf", lambda u, nur, trocken, **kw: gesehen.update(nur=nur, **kw) or 0)
+    assert k.main(["--nur", "split", "--behalten"]) == 0
+    assert gesehen["behalten"] is True and gesehen["nur"] == "split"
 
 
 def test_loeschen_scheitert_wird_am_ende_wiederholt_und_gemeldet():
