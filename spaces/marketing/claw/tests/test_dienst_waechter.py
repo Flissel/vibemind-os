@@ -120,10 +120,16 @@ def test_comfyui_wird_nie_beendet_oder_gestartet():
     assert not r.beenden and not r.starten
 
 
-def test_mcp_sidecars_werden_nicht_wegen_stille_beendet():
-    for name in ("marketing_claw_mcp", "marketing_video_werkzeuge"):
-        assert not w.REGELN[name].beenden
-        assert w.REGELN[name].starten
+def test_agenten_sidecar_wird_nicht_wegen_stille_beendet():
+    r = w.REGELN["marketing_claw_mcp"]
+    assert not r.beenden and r.starten
+
+
+def test_video_werkzeuge_haben_lebenszeichen_und_werden_bei_stille_neu_gestartet():
+    """21.10.2026: :8137 fror eine Stunde ein, niemand merkte es. Die Werkzeuge laufen seitdem in
+    Threads, /health antwortet also auch waehrend reel_bauen - Stille heisst eingefroren."""
+    r = w.REGELN["marketing_video_werkzeuge"]
+    assert r.pfad == "/health" and r.beenden and r.starten
 
 
 def test_ein_scheiternder_start_wird_gemeldet_und_der_neustart_bleibt_gezaehlt():

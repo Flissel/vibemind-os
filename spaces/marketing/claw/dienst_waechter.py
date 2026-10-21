@@ -8,8 +8,10 @@ Ein Lauf (geplante Aufgabe alle 5 Minuten):
 - Die Dienstliste kommt aus `marketing-dienste-starten.ps1 -Liste`. Sie steht nur dort.
 - Port tot -> starten (ueber `-Nur <name>` desselben Skripts).
 - Port offen, aber keine HTTP-Antwort in STUMM_GRENZE Laeufen in Folge -> beenden und neu starten,
-  aber nur Dienste mit eigenem Gesundheits-Thread. Die MCP-Sidecars blockieren waehrend langer
-  Werkzeugaufrufe (reel_bauen bis 20 min) - sie werden wegen Stille nie beendet, nur gemeldet.
+  aber nur Dienste mit eigenem Gesundheits-Thread. Der Agenten-Sidecar :8130 blockiert waehrend
+  langer Werkzeugaufrufe - er wird wegen Stille nie beendet, nur gemeldet. Der Video-Sidecar :8137
+  fuehrt seine Werkzeuge seit 21.10.2026 in Threads aus und hat /health - er wird wie die anderen
+  neu gestartet, wenn er schweigt.
 - Beendet wird nur der Prozess am Port, und nur wenn seine Kommandozeile alle Startargumente
   des Dienstes enthaelt (sonst koennte ein fremder Dienst auf dem Port sterben).
 - ComfyUI wird weder beendet (Zombie im GPU-Treiber) noch gestartet (belegt die GPU) - nur gemeldet.
@@ -69,7 +71,8 @@ REGELN: dict[str, Regel] = {
     "marketing_chat_arbeiter": Regel("/", True, True),
     "marketing_ton_dienst": Regel("/healthz", True, True),
     "marketing_ton_arbeiter": Regel("/health", True, True),
-    "marketing_video_werkzeuge": Regel(None, False, True),
+    # 21.10.2026: Werkzeuge laufen in Threads, /health antwortet auch waehrend reel_bauen.
+    "marketing_video_werkzeuge": Regel("/health", True, True),
     "marketing_video_shim": Regel("/health", True, True),
     "marketing_video_claw": Regel("/", True, True),
     "marketing_telegram_shim": Regel("/health", True, True),
