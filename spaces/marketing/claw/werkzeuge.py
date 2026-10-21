@@ -1295,3 +1295,51 @@ def newsletter_bild_beauftragen(inhalt_id: str, platz: str = "", hinweis: str = 
     if not antwort["ok"]:
         return antwort
     return {"ok": True, "auftrag": (antwort.get("daten") or {}).get("auftrag")}
+
+
+# --- Newsletter-Anmeldung: Aufsteller, Flyer, Website (21.10.2026) -----------
+#
+# Betreiber-Entscheid: Anmeldung ueber die Mail (Double-Opt-in in sales-claw).
+# Dieses Werkzeug baut nur das Material, das Menschen dorthin fuehrt. Adresse,
+# Betreff und QR-Inhalt sind fest (anmelde_material.py) - der Agent schlaegt
+# hoechstens Ueberschrift und einen Satz vor. Versendet wird nichts.
+
+def newsletter_anmeldung_material(art: str = "aufsteller", sprache: str = "de",
+                                  titel: str = "", satz: str = "",
+                                  vorlage: str = "dunkel") -> dict:
+    """Material fuer die Newsletter-Anmeldung per Mail.
+
+    `art`: aufsteller (A6 hoch, PDF), flyer (A6 quer, Flyer-Rueckseite, PDF)
+    oder website (Link, Knopftext und HTML-Schnipsel - keine Datei).
+    `sprache`: de, de_en (zweisprachig) oder en (erst freigeschaltet, wenn
+    sales-claw den Betreff "Subscribe" versteht).
+    `titel` (bis 40 Zeichen) und `satz` (bis 140) sind optional; ohne sie
+    stehen erprobte Standardtexte da. Adresse, Betreff, QR-Code, Rueckfall-
+    zeile und Datenschutzsatz setzt das Werkzeug selbst - erfinde sie nicht.
+
+    Das PDF liegt danach im Medienordner (marketing-newsletter-...). Gedruckt
+    und verteilt wird es vom Betreiber.
+    """
+    from spaces.marketing.claw import anmelde_material as am
+    art = (art or "").strip().lower()
+    sprache = (sprache or "").strip().lower()
+    grund = am.pruefen(art, sprache)
+    if grund:
+        return {"ok": False, "fehler": grund}
+    if art == "website":
+        return {"ok": True, "daten": am.website(sprache)}
+    for name, wert in (("titel", titel), ("satz", satz)):
+        treffer = schoenheit.platzhalter(wert or "")
+        if treffer:
+            return {"ok": False, "fehler": f"{name} enthaelt Platzhalter: {treffer[0][1]}"}
+    gestalt, fehler = _vorlage_holen((vorlage or "dunkel").strip().lower())
+    if fehler:
+        return {"ok": False, "fehler": fehler}
+    try:
+        roh = am.bauen(art, sprache, titel=titel, satz=satz, gestalt=gestalt)
+    except Exception as e:  # noqa: BLE001 — fail-soft ist der Vertrag
+        return {"ok": False, "fehler": f"Satz fehlgeschlagen ({type(e).__name__}: {e})"}
+    ergebnis = ablage.ablegen(f"marketing-newsletter-{art}-{sprache}", roh, art="pdf")
+    if ergebnis.get("ok"):
+        ergebnis.setdefault("daten", {})["link"] = am.anmelde_link(sprache)
+    return ergebnis

@@ -136,6 +136,8 @@ WERKZEUGE = (
     # Reels (17.10.2026): beauftragen beim Video-Claw; Laura bleibt fuer diesen Agenten lesend.
     werkzeuge.reel_beauftragen,
     werkzeuge.reel_auftraege,
+    # Newsletter-Anmeldung (21.10.2026): Aufsteller/Flyer mit QR und Website-Link; Adresse fest aus der Umgebung.
+    werkzeuge.newsletter_anmeldung_material,
 )
 
 HOST = os.environ.get("MARKETING_CLAW_MCP_HOST", "127.0.0.1")
