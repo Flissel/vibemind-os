@@ -17,6 +17,7 @@ leeren Antworten, die fail-closed 503-Gestaltpruefung in /layouts/vorschau
 NIE als "keine Beanstandung" durchgehen), die X-Pult-Key/X-API-Key-Trennung
 in server.py, und die hmac/ValueError-Randfaelle."""
 import json
+import os
 import re
 
 import pytest
@@ -1869,3 +1870,26 @@ def test_vorlagenliste_zeigt_fuer_alle_und_entscheidung(db, c):
     v = r.json()["vorlagen"][0]
     assert v["fuer_alle"] is True and v["entschieden_von"] == "Felix" and v["entschieden_am"].startswith("2026-10-21")
     assert "fuer_alle, entschieden_von, entschieden_am::text AS entschieden_am" in db.sql[0]
+
+
+def test_vorschau_seiten_vorlage_legt_logo_nur_einmal_ab(db, c, monkeypatch, tmp_path):
+    """Gesamtpruefung Stufe 5: die Vorschau (GET) legt die Logo-Datei je Firma und Logo-Hash einmal ab und nutzt
+    sie danach wieder - kein Schreiben je Anfrage."""
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    pult._LOGO_ABLAGE.clear()
+    aufrufe = []
+    echt = pult.vorlagen_marke.logo_ablegen
+    monkeypatch.setattr(pult.vorlagen_marke, "logo_ablegen",
+                        lambda *a, **kw: aufrufe.append(a[1:]) or echt(*a, **kw))
+    for _ in range(3):
+        db.antworten = [[{**_seiten_vorlage_zeile(), "beschreibung": "Split", "pflichtteil": {}}], [_laden_radhaus()]]
+        r = c.get("/api/pult/vorlagen/herbst-split/vorschau?format=seite&mandant=radhaus", headers=H)
+        assert r.status_code == 200, r.text
+    assert len(aufrufe) == 1                                   # nur beim ersten Mal (ohne logo_dunkel)
+    assert len([n for n in os.listdir(tmp_path) if n.startswith("logo-radhaus-")]) == 1
+    # anderes Logo -> neue Ablage; geloeschte Datei -> wieder ablegen
+    for f in os.listdir(tmp_path):
+        os.remove(tmp_path / f)
+    db.antworten = [[{**_seiten_vorlage_zeile(), "beschreibung": "Split", "pflichtteil": {}}], [_laden_radhaus()]]
+    assert c.get("/api/pult/vorlagen/herbst-split/vorschau?format=seite&mandant=radhaus", headers=H).status_code == 200
+    assert len(aufrufe) == 2

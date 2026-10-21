@@ -43,6 +43,7 @@ jeder Fehler ODER jede fehlende Zeile bei der Pruefung selbst -> 503, niemals
 rendern."""
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import logging
@@ -467,9 +468,9 @@ def _vorlage_fuellen(dok: dict, m: str, laden: dict, logo: str | None = None,
     werte["laden"] = str(laden.get("laden") or m)
     gestalt = laden.get("gestalt")
     if logo is None:         # Logo aus der Gestalt: dann gilt auch deren dunkle Fassung
-        logo = vorlagen_marke.logo_ablegen(gestalt, m, ordner)
+        logo = _logo_einmal(gestalt, m, ordner, "logo")
         if logo and logo_dunkel is None:
-            logo_dunkel = vorlagen_marke.logo_ablegen(gestalt, m, ordner, "logo_dunkel")
+            logo_dunkel = _logo_einmal(gestalt, m, ordner, "logo_dunkel")
     if logo:
         werte["logo"] = logo
     rollen_tab = ((dok.get("root") or {}).get("data") or {}).get("rollen") or {}
@@ -547,10 +548,32 @@ def _marke_fuer_vorlage(m: str, laden: dict, ordner: str) -> dict:
         log.info("Marke %s: Akzent der Gestalt und des Markenprofils weichen ab - beide gelten als Akzent", m)
     marke["name"] = str(laden.get("laden") or "").strip() or None
     gestalt = laden.get("gestalt")
-    logo = vorlagen_marke.logo_ablegen(gestalt, m, ordner)
+    logo = _logo_einmal(gestalt, m, ordner, "logo")
     marke["logo"] = logo
-    marke["logo_dunkel"] = vorlagen_marke.logo_ablegen(gestalt, m, ordner, "logo_dunkel") if logo else None
+    marke["logo_dunkel"] = _logo_einmal(gestalt, m, ordner, "logo_dunkel") if logo else None
     return marke
+
+
+# (Firma, Schluessel, Ablage, sha256 der Logo-Daten) -> "medien:<name>". Die Vorschau einer Collage-Vorlage (GET)
+# fuellt bei jedem Aufruf: so legt sie das Logo je Firma und Logo-Hash EINMAL ab und nutzt die Datei danach wieder
+# (nur ein Lesezugriff, ob es sie noch gibt). Ein neues Logo hat einen neuen Hash.
+_LOGO_ABLAGE: dict[tuple[str, str, str, str], str] = {}
+
+
+def _logo_einmal(gestalt, m: str, ordner: str, schluessel: str) -> str | None:
+    roh = gestalt.get(schluessel) if isinstance(gestalt, dict) else None
+    if not isinstance(roh, str) or not roh or not ordner:
+        return None
+    k = (m, schluessel, ordner, hashlib.sha256(roh.encode()).hexdigest())
+    name = _LOGO_ABLAGE.get(k)
+    if name is not None and os.path.isfile(os.path.join(ordner, name[len("medien:"):])):
+        return name
+    name = vorlagen_marke.logo_ablegen(gestalt, m, ordner, schluessel)
+    if name is not None:
+        if len(_LOGO_ABLAGE) > 256:     # klein halten: wenige Firmen, selten neue Logos
+            _LOGO_ABLAGE.clear()
+        _LOGO_ABLAGE[k] = name
+    return name
 
 
 def _seiten_vorlage_fuellen(v: dict, m: str) -> tuple[dict, list[dict], list[str]]:
