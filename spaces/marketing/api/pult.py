@@ -668,7 +668,8 @@ def vorlagen(mandant: str | None = None, status: str | None = None,
     wo = [f"(mandant = {lit(m)} OR fuer_alle)"] + (
         [f"status = {lit(s)}"] if s else ["status <> 'zurueckgezogen'"])
     zeilen = _lesen(lambda:
-        "SELECT name, beschreibung, status, fassung, format FROM marketing.newsletter_vorlagen "
+        "SELECT name, beschreibung, status, fassung, fuer_alle, entschieden_von, entschieden_am::text AS entschieden_am, "
+        "format FROM marketing.newsletter_vorlagen "
         f"WHERE {' AND '.join(wo)} ORDER BY name")
     return {"vorlagen": zeilen}
 

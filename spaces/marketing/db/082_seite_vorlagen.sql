@@ -15,11 +15,14 @@
 --      umgestellt).
 --   2) marketing.pult_vorlage_seite_speichern(name, beschreibung, seite, rollen, von, status, fuer_alle) RETURNS int:
 --      Upsert und neue Fassung wie pult_vorlage_speichern (058). Eine bestehende Block-Vorlage gleichen Namens wird
---      nicht umgewandelt. fuer_alle NULL laesst den gespeicherten Wert stehen (neu: false).
+--      nicht umgewandelt. fuer_alle NULL laesst den gespeicherten Wert stehen (neu: false). Der Status gilt nur fuer
+--      NEUE Vorlagen: eine bestehende behaelt ihren (eine Entscheidung des Betreibers wird von einem erneuten Lauf
+--      des Generators nie zurueckgesetzt; p_status wird trotzdem geprueft).
 --   3) marketing.pult_vorlage_entscheiden(name, urteil 'freigeben'|'zurueckziehen', von) RETURNS text (der neue
 --      Status): nur von 'vorschlag' oder 'freigegeben' aus; 'freigegeben' -> 'freigeben' ist ein Fehler. Gilt fuer
---      Block- und Seiten-Vorlagen. Legt keine Fassung an (der Status steht nur in newsletter_vorlagen). p_von wird
---      angenommen, aber nicht gespeichert (wie pult_collage_anlegen, 077: es gibt keine Spalte dafuer).
+--      Block- und Seiten-Vorlagen. Legt keine Fassung an (der Status steht nur in newsletter_vorlagen). Wer und wann
+--      stehen in den neuen Spalten newsletter_vorlagen.entschieden_von text / entschieden_am timestamptz (letzte
+--      Entscheidung; GET /vorlagen zeigt sie in sales).
 --   4) marketing.pult_collage_aus_vorlage(vorlage, titel, mandant, seite, von) RETURNS uuid: nur freigegebene
 --      Seiten-Vorlagen, eigene oder fuer_alle (Sperre FOR SHARE, damit ein gleichzeitiges Zurueckziehen wartet).
 --      Die API fuellt die Seite mit der Marke (claw/seite_vorlagen.fuellen); angelegt wird ueber
@@ -42,6 +45,8 @@ ALTER TABLE marketing.newsletter_vorlagen ADD COLUMN IF NOT EXISTS format text N
 ALTER TABLE marketing.newsletter_vorlagen ADD COLUMN IF NOT EXISTS seite jsonb;
 ALTER TABLE marketing.newsletter_vorlagen ADD COLUMN IF NOT EXISTS rollen jsonb;
 ALTER TABLE marketing.newsletter_vorlagen ALTER COLUMN bloecke DROP NOT NULL;
+ALTER TABLE marketing.newsletter_vorlagen ADD COLUMN IF NOT EXISTS entschieden_von text;
+ALTER TABLE marketing.newsletter_vorlagen ADD COLUMN IF NOT EXISTS entschieden_am timestamptz;
 ALTER TABLE marketing.newsletter_vorlagen_fassungen ADD COLUMN IF NOT EXISTS format text NOT NULL DEFAULT 'bloecke';
 ALTER TABLE marketing.newsletter_vorlagen_fassungen ADD COLUMN IF NOT EXISTS seite jsonb;
 ALTER TABLE marketing.newsletter_vorlagen_fassungen ADD COLUMN IF NOT EXISTS rollen jsonb;
@@ -99,7 +104,7 @@ BEGIN
   VALUES (p_name, v_n, NULL, 'seite', p_seite, v_rollen, p_von);
   UPDATE marketing.newsletter_vorlagen
      SET seite = p_seite, rollen = v_rollen, beschreibung = coalesce(p_beschreibung, beschreibung),
-         status = p_status, fassung = v_n, fuer_alle = coalesce(p_fuer_alle, fuer_alle)
+         fassung = v_n, fuer_alle = coalesce(p_fuer_alle, fuer_alle)      -- status: nur beim INSERT (neu)
    WHERE name = p_name;
   RETURN v_n;
 END $$;
@@ -120,7 +125,8 @@ BEGIN
   IF v_status = 'freigegeben' AND p_urteil = 'freigeben' THEN
     RAISE EXCEPTION 'Vorlage % ist schon freigegeben', p_name; END IF;
   v_neu := CASE p_urteil WHEN 'freigeben' THEN 'freigegeben' ELSE 'zurueckgezogen' END;
-  UPDATE marketing.newsletter_vorlagen SET status = v_neu WHERE name = p_name;
+  UPDATE marketing.newsletter_vorlagen SET status = v_neu, entschieden_von = btrim(p_von), entschieden_am = now()
+   WHERE name = p_name;
   RETURN v_neu;
 END $$;
 

@@ -41,6 +41,13 @@ DO $$ DECLARE v_def text; t text; f text; BEGIN
      WHERE conrelid = ('marketing.' || t)::regclass AND conname = t || '_format_check';
     ASSERT v_def LIKE '%seite%' AND v_def LIKE '%rollen%', format('0: %s Format-Regel: %s', t, v_def);
   END LOOP;
+  -- Freigabe sichtbar: wer und wann
+  ASSERT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'marketing'
+                  AND table_name = 'newsletter_vorlagen' AND column_name = 'entschieden_von' AND data_type = 'text'),
+         '0: newsletter_vorlagen.entschieden_von text';
+  ASSERT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'marketing'
+                  AND table_name = 'newsletter_vorlagen' AND column_name = 'entschieden_am'
+                  AND data_type = 'timestamp with time zone'), '0: newsletter_vorlagen.entschieden_am timestamptz';
   -- Fassungen bleiben unveraenderlich (075 hat nur inhalt_fassungen umgestellt)
   ASSERT EXISTS (SELECT 1 FROM pg_trigger tg JOIN pg_proc p ON p.oid = tg.tgfoid
                   WHERE tg.tgrelid = 'marketing.newsletter_vorlagen_fassungen'::regclass
@@ -99,16 +106,31 @@ DO $$ DECLARE v_n int; v jsonb; v_fehler text; r record; BEGIN
     ASSERT (SELECT count(*) FROM marketing.newsletter_vorlagen_fassungen
              WHERE vorlage = 'probe-082-a' AND fassung = 1 AND format = 'seite' AND bloecke IS NULL
                AND seite = pg_temp.v082_seite() AND rollen ? 'farben' AND erstellt_von = 'probe') = 1, '2: Fassung 1';
-    -- zweite Fassung: Rollen NULL -> {}, fuer_alle NULL laesst stehen, Beschreibung NULL laesst stehen
+    -- zweite Fassung: Rollen NULL -> {}, fuer_alle NULL laesst stehen, Beschreibung NULL laesst stehen, der
+    -- Status einer bestehenden Vorlage bleibt (nur neue bekommen p_status)
     v_n := marketing.pult_vorlage_seite_speichern('probe-082-a', NULL, pg_temp.v082_seite('Zwei'), NULL, 'probe2',
                                                   'freigegeben', NULL);
     ASSERT v_n = 2, format('2: zweite Fassung = 2, ist %s', v_n);
     SELECT * INTO r FROM marketing.newsletter_vorlagen WHERE name = 'probe-082-a';
     ASSERT r.fassung = 2 AND r.fuer_alle AND r.beschreibung = 'Probe A' AND r.rollen = '{}'::jsonb
-       AND r.status = 'freigegeben' AND r.seite = pg_temp.v082_seite('Zwei') AND r.erstellt_von = 'probe',
+       AND r.status = 'vorschlag' AND r.seite = pg_temp.v082_seite('Zwei') AND r.erstellt_von = 'probe',
            '2: Kopf nach Fassung 2';
-    ASSERT (SELECT count(*) FROM marketing.newsletter_vorlagen_fassungen WHERE vorlage = 'probe-082-a') = 2,
-           '2: zwei Fassungen';
+    -- eine Entscheidung uebersteht den naechsten Generator-Lauf (Status und wer/wann bleiben)
+    PERFORM marketing.pult_vorlage_entscheiden('probe-082-a', 'zurueckziehen', 'Felix');
+    PERFORM marketing.pult_vorlage_seite_speichern('probe-082-a', NULL, pg_temp.v082_seite('Drei'), NULL, 'probe',
+                                                   'vorschlag', NULL);
+    SELECT * INTO r FROM marketing.newsletter_vorlagen WHERE name = 'probe-082-a';
+    ASSERT r.status = 'zurueckgezogen' AND r.entschieden_von = 'Felix' AND r.entschieden_am IS NOT NULL
+       AND r.fassung = 3 AND r.seite = pg_temp.v082_seite('Drei'), '2: Entscheidung bleibt beim erneuten Speichern';
+    -- ungueltiger Status wird auch fuer bestehende Vorlagen abgelehnt
+    v_fehler := NULL;
+    BEGIN PERFORM marketing.pult_vorlage_seite_speichern('probe-082-a', NULL, pg_temp.v082_seite(), NULL, 'probe',
+                                                         'entwurf', NULL);
+    EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
+    ASSERT v_fehler = 'Status muss vorschlag, freigegeben oder zurueckgezogen sein',
+           format('2: Status geprueft: %s', v_fehler);
+    ASSERT (SELECT count(*) FROM marketing.newsletter_vorlagen_fassungen WHERE vorlage = 'probe-082-a') = 3,
+           '2: drei Fassungen';
     ASSERT (SELECT seite FROM marketing.newsletter_vorlagen_fassungen WHERE vorlage = 'probe-082-a' AND fassung = 1)
            = pg_temp.v082_seite(), '2: Fassung 1 unveraendert';
     -- fuer_alle false setzt zurueck
@@ -139,7 +161,7 @@ DO $$ DECLARE v_n int; v jsonb; v_fehler text; r record; BEGIN
     BEGIN PERFORM marketing.pult_vorlage_speichern('probe-082-a', '', v, 'probe', 'vorschlag');
     EXCEPTION WHEN check_violation THEN v_fehler := SQLERRM; END;
     ASSERT v_fehler LIKE '%newsletter_vorlagen_format_check%', format('2: Seite bleibt Seite: %s', v_fehler);
-    ASSERT (SELECT count(*) FROM marketing.newsletter_vorlagen_fassungen WHERE vorlage = 'probe-082-a') = 3,
+    ASSERT (SELECT count(*) FROM marketing.newsletter_vorlagen_fassungen WHERE vorlage = 'probe-082-a') = 4,
            '2: keine Block-Fassung unter der Seiten-Vorlage';
     RAISE EXCEPTION USING ERRCODE = 'P0V82', MESSAGE = 'verify_082 zurueck';
   EXCEPTION WHEN SQLSTATE 'P0V82' THEN NULL;
@@ -266,10 +288,14 @@ DO $$ DECLARE v_s text; v_fehler text; v jsonb; BEGIN
   BEGIN
     PERFORM marketing.pult_vorlage_seite_speichern('probe-082-e', '', pg_temp.v082_seite(), NULL, 'probe',
                                                    'vorschlag', true);
+    ASSERT (SELECT entschieden_von IS NULL AND entschieden_am IS NULL FROM marketing.newsletter_vorlagen
+             WHERE name = 'probe-082-e'), '5: Vorschlag ohne Entscheidung';
     -- vorschlag -> freigeben
-    v_s := marketing.pult_vorlage_entscheiden('probe-082-e', 'freigeben', 'betreiber');
+    v_s := marketing.pult_vorlage_entscheiden('probe-082-e', 'freigeben', '  betreiber ');
     ASSERT v_s = 'freigegeben' AND (SELECT status FROM marketing.newsletter_vorlagen WHERE name = 'probe-082-e')
            = 'freigegeben', '5: vorschlag -> freigegeben';
+    ASSERT (SELECT entschieden_von = 'betreiber' AND entschieden_am = now() FROM marketing.newsletter_vorlagen
+             WHERE name = 'probe-082-e'), '5: wer und wann gespeichert';
     ASSERT (SELECT fassung FROM marketing.newsletter_vorlagen WHERE name = 'probe-082-e') = 1
        AND (SELECT count(*) FROM marketing.newsletter_vorlagen_fassungen WHERE vorlage = 'probe-082-e') = 1,
            '5: Entscheiden legt keine Fassung an';
@@ -279,9 +305,11 @@ DO $$ DECLARE v_s text; v_fehler text; v jsonb; BEGIN
     EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
     ASSERT v_fehler = 'Vorlage probe-082-e ist schon freigegeben', format('5: doppelt freigeben: %s', v_fehler);
     -- freigegeben -> zurueckziehen
-    v_s := marketing.pult_vorlage_entscheiden('probe-082-e', 'zurueckziehen', 'betreiber');
+    v_s := marketing.pult_vorlage_entscheiden('probe-082-e', 'zurueckziehen', 'Felix');
     ASSERT v_s = 'zurueckgezogen' AND (SELECT status FROM marketing.newsletter_vorlagen WHERE name = 'probe-082-e')
            = 'zurueckgezogen', '5: freigegeben -> zurueckgezogen';
+    ASSERT (SELECT entschieden_von FROM marketing.newsletter_vorlagen WHERE name = 'probe-082-e') = 'Felix',
+           '5: letzte Entscheidung zaehlt';
     -- zurueckgezogen -> beides: Fehler
     v_fehler := NULL;
     BEGIN PERFORM marketing.pult_vorlage_entscheiden('probe-082-e', 'freigeben', 'betreiber');
@@ -292,6 +320,8 @@ DO $$ DECLARE v_s text; v_fehler text; v jsonb; BEGIN
     BEGIN PERFORM marketing.pult_vorlage_entscheiden('probe-082-e', 'zurueckziehen', 'betreiber');
     EXCEPTION WHEN OTHERS THEN v_fehler := SQLERRM; END;
     ASSERT v_fehler LIKE 'Vorlage probe-082-e ist zurückgezogen%', format('5: zurueckgezogen -> zurueckziehen: %s', v_fehler);
+    ASSERT (SELECT entschieden_von FROM marketing.newsletter_vorlagen WHERE name = 'probe-082-e') = 'Felix',
+           '5: abgelehnte Entscheidung aendert wer/wann nicht';
     ASSERT (SELECT status FROM marketing.newsletter_vorlagen WHERE name = 'probe-082-e') = 'zurueckgezogen',
            '5: bleibt zurueckgezogen';
     -- vorschlag -> zurueckziehen

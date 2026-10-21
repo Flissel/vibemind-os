@@ -1859,3 +1859,13 @@ def test_marke_fuer_vorlage_zweiter_akzent_aus_dem_markenprofil(tmp_path, caplog
     assert gleich.get("akzent_auch") is None
     ohne_gestalt = pult._marke_fuer_vorlage("vibemind", {**laden, "gestalt": None}, str(tmp_path))
     assert ohne_gestalt["akzent"] == "#5B3FD6" and ohne_gestalt.get("akzent_auch") is None
+
+
+def test_vorlagenliste_zeigt_fuer_alle_und_entscheidung(db, c):
+    db.antworten = [[{"name": "collage-split", "beschreibung": "", "status": "freigegeben", "fassung": 2,
+                      "fuer_alle": True, "entschieden_von": "Felix", "entschieden_am": "2026-10-21 09:00:00+00",
+                      "format": "seite"}]]
+    r = c.get("/api/pult/vorlagen?mandant=radhaus", headers=H)
+    v = r.json()["vorlagen"][0]
+    assert v["fuer_alle"] is True and v["entschieden_von"] == "Felix" and v["entschieden_am"].startswith("2026-10-21")
+    assert "fuer_alle, entschieden_von, entschieden_am::text AS entschieden_am" in db.sql[0]
