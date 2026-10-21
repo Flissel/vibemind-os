@@ -1842,3 +1842,20 @@ def test_vorschau_seiten_vorlage_auch_bei_format_mail_als_seite(db, c, monkeypat
     db.antworten = [[{**_seiten_vorlage_zeile(), "beschreibung": "Split", "pflichtteil": {}}], [_laden_radhaus()]]
     r = c.get("/api/pult/vorlagen/herbst-split/vorschau?format=mail&mandant=radhaus", headers=H)
     assert r.status_code == 200 and "Radhaus Jena" in r.text
+
+
+# --- Gesamtpruefung Stufe 5 ---
+
+def test_marke_fuer_vorlage_zweiter_akzent_aus_dem_markenprofil(tmp_path, caplog):
+    """Gestalt-Akzent und Markenprofil-Akzent weichen ab: Fuellen nimmt den der Gestalt, beim Ableiten zaehlen
+    beide (akzent_auch), mit Protokollzeile ohne Werte."""
+    laden = {"laden": "VibeMind", "gestalt": {"akzent": "#7c3aed"}, "webseite": "https://vibemind.de",
+             "werte": {"akzent": "#5B3FD6", "grund": "#ffffff"}}
+    with caplog.at_level("INFO", logger=pult.log.name):
+        m = pult._marke_fuer_vorlage("vibemind", laden, str(tmp_path))
+    assert m["akzent"] == "#7c3aed" and m["akzent_auch"] == ["#5b3fd6"]
+    assert any("Akzent" in r.getMessage() and "#5b3fd6" not in r.getMessage().lower() for r in caplog.records)
+    gleich = pult._marke_fuer_vorlage("vibemind", {**laden, "werte": {"akzent": "#7C3AED"}}, str(tmp_path))
+    assert gleich.get("akzent_auch") is None
+    ohne_gestalt = pult._marke_fuer_vorlage("vibemind", {**laden, "gestalt": None}, str(tmp_path))
+    assert ohne_gestalt["akzent"] == "#5B3FD6" and ohne_gestalt.get("akzent_auch") is None

@@ -7,9 +7,21 @@ ROLLEN werden NEBEN der Seite gespeichert (Vorlage, Spalte rollen jsonb), nie in
 
 <pfad> adressiert ein Farbfeld der Seite: "hintergrund.farbe" oder "ebenen.<id>.<feld>" mit <feld> aus farbe,
 textfarbe, hintergrund, rahmen_farbe (Ebenen-IDs enthalten keinen Punkt). Farbrollen: akzent, zweitfarbe, grund,
-text, auf_akzent (die lesbarere von text und Weiss auf dem Akzent). Farben ohne Rolle bleiben fest. Schriftfarben
-(text farbe, knopf textfarbe) bekommen nur text (gleich der Markentextfarbe) oder auf_akzent (gleich auf_akzent UND
-die Flaeche direkt darunter hat die Rolle akzent) - nie eine Flaechenrolle per Zufallsgleichheit.
+text, auf_akzent (lesbare Schrift auf dem Akzent) und die ABGELEITETEN Rollen akzent_text (der Akzent als lesbare
+Schrift auf dem Grund) sowie Toenungen "akzent~hell:0.80" / "akzent~dunkel:0.30" (= mischen(akzent, Weiss bzw.
+Schwarz, 0.80), ebenso fuer zweitfarbe). auf_akzent und akzent_text kommen aus vorlagen_marke.rollen - dieselben
+Werte, die der Assistent als LESBARE MARKENFARBEN sieht. Farben ohne Rolle bleiben fest.
+
+Flaechen bekommen eine exakt gleiche Markenfarbe, sonst eine Toenung (je Kanal hoechstens TOENUNG_TOLERANZ
+Abweichung, Anteil in 0,05-Schritten; neutrale Grau-/Weisstoene nie). Schriftfarben (text farbe, knopf textfarbe)
+nie per Zufallsgleichheit eine Flaechenrolle: auf_akzent (gleich auf_akzent UND die Flaeche direkt darunter hat die
+Rolle akzent), sonst text (gleich der Markentextfarbe), sonst akzent_text (gleich akzent_text oder dem rohen Akzent,
+nicht auf der Akzentflaeche), sonst eine Toenung. Gilt die Marke mit mehreren Akzenten (akzent_auch: Gestalt und
+Markenprofil weichen ab), zaehlt beim Ableiten jeder davon als Akzent.
+
+Zu den Rollen gehoert "basis": die Markenwerte beim Ableiten ({akzent: [..], zweitfarbe, grund}). Fuellt man mit
+derselben Marke, bleiben abgeleitete Farben, wie sie sind - der Rundlauf ist exakt, obwohl Toenungen mit Toleranz
+erkannt werden.
 
 MARKE (Eingabe): wie api/pult._marke_fuer_seite (akzent, schrift_anzeige, schrift_text, webseite), erweitert um
 zweitfarbe, grund, text, name, logo und logo_dunkel (Mediennamen mit oder ohne "medien:", oder None). Fehlende
@@ -40,9 +52,14 @@ from spaces.marketing.claw import seite as seite_mod
 from spaces.marketing.claw import seite_streifen
 from spaces.marketing.claw.schoenheit import kontrast, leuchtdichte
 from spaces.marketing.claw.seite_schoenheit import _gemischt, _schwelle
-from spaces.marketing.claw.vorlagen_marke import ERSATZ_AKZENT, FAST_SCHWARZ, ist_dunkel, mischen
+from spaces.marketing.claw import vorlagen_marke
+from spaces.marketing.claw.vorlagen_marke import ERSATZ_AKZENT, FAST_SCHWARZ, _rgb, ist_dunkel, mischen
 
 FARBROLLEN = ("akzent", "zweitfarbe", "grund", "text", "auf_akzent")
+AKZENT_TEXT = "akzent_text"
+TOENUNG_TOLERANZ = 6          # je Kanal, 0..255
+_TOENUNG = re.compile(r"^(akzent|zweitfarbe)~(hell|dunkel):(0\.[0-9]{2})$")
+_ZIEL = {"hell": "#ffffff", "dunkel": "#000000"}
 WEISS = "#ffffff"
 MAX_HINWEIS = 500
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -71,19 +88,71 @@ def _medium(wert) -> str | None:
 
 
 def markenfarben(marke: dict | None) -> dict[str, str]:
-    """Farbwerte aller Rollen (klein geschrieben), fehlende mit Rueckfall."""
+    """Farbwerte aller Rollen (klein geschrieben), fehlende mit Rueckfall, dazu akzent_text."""
     m = marke if isinstance(marke, dict) else {}
     akzent = _farbe_oder(m.get("akzent"), ERSATZ_AKZENT)
     text = _farbe_oder(m.get("text"), FAST_SCHWARZ)
     zweit_ersatz = (mischen(akzent, WEISS, 0.6) if leuchtdichte(akzent) < 0.2
                     else mischen(akzent, "#000000", 0.55))
+    grund = _farbe_oder(m.get("grund"), WEISS)
     return {
         "akzent": akzent,
         "zweitfarbe": _farbe_oder(m.get("zweitfarbe"), zweit_ersatz),
-        "grund": _farbe_oder(m.get("grund"), WEISS),
+        "grund": grund,
         "text": text,
-        "auf_akzent": lesbarer(text, akzent),
+        **_lesbar(akzent, grund),
     }
+
+
+def _lesbar(akzent: str, grund: str) -> dict[str, str]:
+    """auf_akzent und akzent_text aus vorlagen_marke.rollen - eine Definition fuer Assistent (chat_worker,
+    LESBARE MARKENFARBEN), Block-Vorlagen und Collage-Vorlagen."""
+    r = vorlagen_marke.rollen({"akzent": akzent}, grund)
+    return {"auf_akzent": r["auf_akzent"], AKZENT_TEXT: r["akzent_text"]}
+
+
+def _akzente(marke: dict | None, werte: dict[str, str]) -> list[str]:
+    """Akzent der Marke und weitere (akzent_auch), ohne Doppelte."""
+    m = marke if isinstance(marke, dict) else {}
+    auch = m.get("akzent_auch") if isinstance(m.get("akzent_auch"), (list, tuple)) else []
+    return list(dict.fromkeys([werte["akzent"], *(f for f in (_farbe_oder(a, None) for a in auch) if f)]))
+
+
+def _neutral(farbe: str) -> bool:
+    k = _rgb(farbe)
+    return max(k) - min(k) <= TOENUNG_TOLERANZ
+
+
+def _toenung(farbe: str, quellen: list[tuple[str, str]]) -> str | None:
+    """Rolle "<quelle>~hell|dunkel:<anteil>" der naechstliegenden Toenung (je Kanal <= TOENUNG_TOLERANZ), sonst
+    None. Neutrale Farben (Grau, fast Weiss/Schwarz) bekommen nie eine."""
+    if not _HEX.match(farbe) or _neutral(farbe):
+        return None
+    ist = _rgb(farbe.lower())
+    beste: tuple[int, str] | None = None
+    for name, basis in quellen:
+        for richtung, ziel in _ZIEL.items():
+            for k in range(1, 20):
+                d = max(abs(a - b) for a, b in zip(ist, _rgb(mischen(basis, ziel, k / 20))))
+                if d <= TOENUNG_TOLERANZ and (beste is None or d < beste[0]):
+                    beste = (d, f"{name}~{richtung}:{k / 20:.2f}")
+    return beste[1] if beste else None
+
+
+def farbe_fuer_rolle(rolle, werte: dict[str, str]) -> str | None:
+    """Farbwert einer Rolle (einfach, akzent_text oder Toenung) zur Marke; None bei unbekannter Rolle."""
+    if not isinstance(rolle, str):
+        return None
+    if rolle in werte:
+        return werte[rolle]
+    t = _TOENUNG.match(rolle)
+    if t and 0 < float(t.group(3)) < 1:
+        return mischen(werte[t.group(1)], _ZIEL[t.group(2)], float(t.group(3)))
+    return None
+
+
+def _abgeleitet(rolle) -> bool:
+    return rolle == AKZENT_TEXT or (isinstance(rolle, str) and bool(_TOENUNG.match(rolle)))
 
 
 def lesbarer(text: str, unterlage: str) -> str:
@@ -175,21 +244,35 @@ def rollen_ableiten(seite: dict, marke: dict, bildauftraege: list[dict] | None =
     s = seite_mod.pruefen(seite)
     werte = markenfarben(marke)
     m = marke if isinstance(marke, dict) else {}
+    akzente = _akzente(m, werte)
     nach_farbe: dict[str, list[str]] = {}
     for rolle in FARBROLLEN:
         nach_farbe.setdefault(werte[rolle], []).append(rolle)
+    auf_akzent, akzent_text = {werte["auf_akzent"]}, {werte[AKZENT_TEXT], *akzente}
+    for a in akzente[1:]:                      # weitere Akzente der Marke zaehlen beim Ableiten mit
+        nach_farbe.setdefault(a, []).append("akzent")
+        lesbar = _lesbar(a, werte["grund"])
+        auf_akzent.add(lesbar["auf_akzent"])
+        akzent_text.add(lesbar[AKZENT_TEXT])
+    quellen = [("akzent", a) for a in akzente] + [("zweitfarbe", werte["zweitfarbe"])]
 
     def rolle_fuer(farbe, vorrang) -> str | None:
         kandidaten = nach_farbe.get(str(farbe).lower(), [])
-        return next((r for r in vorrang if r in kandidaten), None)
+        return next((r for r in vorrang if r in kandidaten), None) or _toenung(str(farbe), quellen)
 
     def schrift_rolle(farbe, unter_pfad) -> str | None:
         """Schrift nie per Zufallsgleichheit mit einer Flaechenfarbe: auf_akzent nur genau auf der Akzentflaeche,
-        sonst text, sonst keine Rolle (bleibt fest, z. B. Weiss auf einem Foto)."""
+        sonst text, sonst akzent_text (nicht auf der Akzentflaeche), sonst eine Toenung, sonst keine Rolle (bleibt
+        fest, z. B. Weiss auf einem Foto)."""
         f = str(farbe).lower()
-        if unter_pfad is not None and farben.get(unter_pfad) == "akzent" and f == werte["auf_akzent"]:
+        auf_flaeche = unter_pfad is not None and farben.get(unter_pfad) == "akzent"
+        if auf_flaeche and f in auf_akzent:
             return "auf_akzent"
-        return "text" if f == werte["text"] else None
+        if f == werte["text"]:
+            return "text"
+        if f in akzent_text and not auf_flaeche:
+            return AKZENT_TEXT
+        return _toenung(f, quellen)
 
     farben: dict[str, str] = {}
     r = rolle_fuer(s["hintergrund"]["farbe"], _VORRANG_GRUND)
@@ -224,7 +307,18 @@ def rollen_ableiten(seite: dict, marke: dict, bildauftraege: list[dict] | None =
                 ebenen[e["id"]] = "motiv:" + hinweise.get(e["id"], _beschreibung(e["id"]))[:MAX_HINWEIS]
         elif e["art"] == "text" and name is not None and e["text"].strip().casefold() == name:
             ebenen[e["id"]] = "name"
-    return {"farben": farben, "ebenen": ebenen}
+    basis = {"akzent": akzente, "zweitfarbe": werte["zweitfarbe"], "grund": werte["grund"]}
+    return {"farben": farben, "ebenen": ebenen, "basis": basis}
+
+
+def _gleiche_basis(rollen: dict, werte: dict[str, str]) -> bool:
+    """Fuellt man mit der Marke, mit der die Rollen abgeleitet wurden (Akzent einer der Akzente von damals,
+    Zweitfarbe und Grund gleich)?"""
+    b = (rollen or {}).get("basis")
+    if not isinstance(b, dict) or not isinstance(b.get("akzent"), list):
+        return False
+    return (werte["akzent"] in b["akzent"] and b.get("zweitfarbe") == werte["zweitfarbe"]
+            and b.get("grund") == werte["grund"])
 
 
 def fuellen(seite: dict, rollen: dict, marke: dict, logo_medium: str | None
@@ -242,9 +336,12 @@ def fuellen(seite: dict, rollen: dict, marke: dict, logo_medium: str | None
         if m.get(schluessel) in schriften.REGISTER:
             s["schriften"][k] = m[schluessel]
     warnungen: list[str] = []
+    gleich = _gleiche_basis(rollen, werte)
     for pfad, rolle in r_farben.items():
-        if isinstance(rolle, str) and rolle in werte and isinstance(pfad, str):
-            _pfad_setzen(s, pfad, werte[rolle])
+        wert = farbe_fuer_rolle(rolle, werte)
+        if wert is None or not isinstance(pfad, str) or (gleich and _abgeleitet(rolle)):
+            continue        # abgeleitete Farben bleiben bei derselben Marke exakt die der Vorlage
+        _pfad_setzen(s, pfad, wert)
 
     web = m.get("webseite")
     knoepfe = [e for e in s["ebenen"] if e["art"] == "knopf"]

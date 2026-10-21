@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 import os
 import re
 import uuid as _uuid
@@ -57,6 +58,8 @@ from fastapi.responses import HTMLResponse, Response
 from spaces.marketing.claw import (bildplaetze, bloecke_mjml, markenprofil, pdf_druck, pult_render, schriften, seite,
                                    seite_html, seite_vorlagen, vorlagen_grafik, vorlagen_marke)
 from spaces.marketing.sync import _db
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/pult")
 _ARTEN = ("newsletter", "post", "material")
@@ -529,12 +532,19 @@ def _marke_fuer_vorlage(m: str, laden: dict, ordner: str) -> dict:
     """Marke fuer seite_vorlagen.fuellen: Akzent, Schriftpaar und Webseite wie _marke_fuer_seite (Gestalt des
     Standard-Layouts), Zweitfarbe/Grund/Text (und fehlende Akzent/Schriften) aus den Kopfwerten des Markenprofils,
     Name = Name des Ladens. Logo und dunkles Logo aus der Gestalt als Mediendatei abgelegt wie bei den Block-
-    Vorlagen (vorlagen_marke.logo_ablegen) - ohne Ablage oder Logo: None (die Logo-Ebene entfaellt)."""
+    Vorlagen (vorlagen_marke.logo_ablegen) - ohne Ablage oder Logo: None (die Logo-Ebene entfaellt).
+    Generator (scripts/collage_vorlagen_erzeugen) und API nehmen beide diese Marke. Weicht der Akzent des
+    Markenprofils (marken_spiegel, = Marke.md, die der Assistent sieht) von dem der Gestalt ab, steht er in
+    akzent_auch: seite_vorlagen.rollen_ableiten zaehlt dann beide als Akzent (Protokollzeile ohne Werte)."""
     marke = _marke_fuer_seite(laden)
     werte = laden.get("werte") if isinstance(laden.get("werte"), dict) else {}
     for k in ("akzent", "zweitfarbe", "grund", "text", "schrift_anzeige", "schrift_text"):
         if not marke.get(k) and isinstance(werte.get(k), str):
             marke[k] = werte[k]
+    profil = str(werte.get("akzent") or "").lower()
+    if re.fullmatch(r"#[0-9a-f]{6}", profil) and profil != str(marke.get("akzent") or "").lower():
+        marke["akzent_auch"] = [profil]
+        log.info("Marke %s: Akzent der Gestalt und des Markenprofils weichen ab - beide gelten als Akzent", m)
     marke["name"] = str(laden.get("laden") or "").strip() or None
     gestalt = laden.get("gestalt")
     logo = vorlagen_marke.logo_ablegen(gestalt, m, ordner)

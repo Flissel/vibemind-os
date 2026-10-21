@@ -161,10 +161,11 @@ def test_kontrast_reparatur_heller_akzent():
     neu, _, _ = sv.fuellen(s, r, gelb, gelb["logo"])
     k = ebene(neu, "knopf")
     assert k["farbe"] == "#ffd400"
-    assert k["textfarbe"] == "#0b1f1d"
-    # Titel und Name liegen auf der gelben Buehne -> auf die Textfarbe der Marke
-    assert ebene(neu, "titel")["farbe"] == "#0b1f1d"
-    assert ebene(neu, "marke")["farbe"] == "#0b1f1d"
+    # auf_akzent wie ueberall aus vorlagen_marke (lesbarere von Weiss und Fast-Schwarz), Gesamtpruefung Stufe 5
+    assert k["textfarbe"] == sv.vorlagen_marke.rollen({"akzent": "#ffd400"}, "#f8fafc")["auf_akzent"] == "#1a1a1a"
+    # Titel und Name liegen auf der gelben Buehne -> ebenfalls auf_akzent
+    assert ebene(neu, "titel")["farbe"] == "#1a1a1a"
+    assert ebene(neu, "marke")["farbe"] == "#1a1a1a"
 
 
 def test_kontrast_reparieren_text_auf_hellem_seitengrund():
@@ -311,3 +312,101 @@ def test_kontrast_reparieren_text_parameter_none_liest_rolle():
     ebene(s, "text")["farbe"] = "#202020"
     neu = sv.kontrast_reparieren(s, {"farben": {"ebenen.text.farbe": "text"}, "ebenen": {}}, text=None)
     assert ebene(neu, "grau")["farbe"] == "#202020"
+
+
+# --- Gesamtpruefung Stufe 5: abgeleitete Farben (akzent_text, Tönungen) ----------------------------------------
+
+F2G = {"akzent": "#f07800", "zweitfarbe": "#6c3600", "grund": "#fff8f0", "text": "#1a1a1a",
+       "name": "fin2gether", "logo": None, "logo_dunkel": None, "webseite": "https://fin2gether.de"}
+
+
+def abgeleitet() -> dict:
+    """Wie der Pruefer-Fall (fin2gether-Fuellung): Dachzeile und Titel in Akzentschrift auf Weiss, lavendelfarbene
+    Buehne (helle Toenung des Akzents, leicht abweichend), Akzent-Kreis mit Schrift, dunkle Akzent-Schattierung."""
+    return {
+        "version": 1, "breite": 600, "hoehe": 900,
+        "hintergrund": {"farbe": "#ffffff", "bild": None},
+        "schriften": {"anzeige": "playfair", "text": "dm-sans"},
+        "ebenen": [
+            {"id": "buehne", "art": "form", "x": 420, "y": 330, "breite": 360, "hoehe": 460,
+             "form": "rechteck", "farbe": "#e8e3fb"},                 # ~ mix(akzent, weiss, 0.85) +- 3
+            {"id": "schatten", "art": "form", "x": 100, "y": 860, "breite": 120, "hoehe": 20,
+             "form": "rechteck", "farbe": "#402c96"},                 # mix(akzent, schwarz, 0.30)
+            {"id": "dachzeile", "art": "text", "x": 150, "y": 140, "breite": 240, "hoehe": 30,
+             "text": "NEU IM ATELIER", "rolle": "TEXT", "groesse": 15, "farbe": "#5b3fd6"},
+            {"id": "titel", "art": "text", "x": 150, "y": 220, "breite": 260, "hoehe": 120,
+             "text": "Überschrift", "rolle": "ANZEIGE", "groesse": 44, "farbe": "#5B3FD6"},
+            {"id": "kreis", "art": "form", "x": 520, "y": 560, "breite": 110, "hoehe": 110,
+             "form": "kreis", "farbe": "#5b3fd6"},
+            {"id": "neu", "art": "text", "x": 520, "y": 560, "breite": 100, "hoehe": 40,
+             "text": "NEU", "rolle": "ANZEIGE", "groesse": 26, "farbe": "#ffffff"},
+            {"id": "text", "art": "text", "x": 300, "y": 700, "breite": 480, "hoehe": 60,
+             "text": "Kurzer Einleitungstext", "rolle": "TEXT", "groesse": 17, "farbe": "#1a1a1a"},
+        ],
+    }
+
+
+def test_rollen_fuer_abgeleitete_farben():
+    f = sv.rollen_ableiten(abgeleitet(), VIBEMIND)["farben"]
+    assert f["ebenen.dachzeile.farbe"] == "akzent_text"
+    assert f["ebenen.titel.farbe"] == "akzent_text"
+    assert f["ebenen.buehne.farbe"] == "akzent~hell:0.85"
+    assert f["ebenen.schatten.farbe"] == "akzent~dunkel:0.30"
+    assert f["ebenen.kreis.farbe"] == "akzent"
+    assert f["ebenen.neu.farbe"] == "auf_akzent"
+
+
+def test_neutrale_farben_bekommen_keine_toenung():
+    s = abgeleitet()
+    ebene(s, "buehne")["farbe"] = "#fafafa"          # fast weiss, keine Akzent-Toenung
+    ebene(s, "schatten")["farbe"] = "#0a0a0a"
+    f = sv.rollen_ableiten(s, VIBEMIND)["farben"]
+    assert "ebenen.buehne.farbe" not in f and "ebenen.schatten.farbe" not in f
+
+
+def test_fin2gether_fuellung_leitet_aus_dem_orange_ab():
+    s = abgeleitet()
+    r = sv.rollen_ableiten(s, VIBEMIND)
+    neu, _, _ = sv.fuellen(s, r, F2G, None)
+    lesbar = sv.vorlagen_marke.rollen({"akzent": "#f07800"}, "#fff8f0")
+    assert ebene(neu, "titel")["farbe"] == lesbar["akzent_text"] == "#b45a00"
+    assert ebene(neu, "dachzeile")["farbe"] == "#b45a00"
+    assert ebene(neu, "buehne")["farbe"] == sv.mischen("#f07800", "#ffffff", 0.85)
+    assert ebene(neu, "schatten")["farbe"] == sv.mischen("#f07800", "#000000", 0.30)
+    assert ebene(neu, "kreis")["farbe"] == "#f07800"
+    assert ebene(neu, "neu")["farbe"] == lesbar["auf_akzent"]
+    assert "#5b3fd6" not in str(neu).lower() and "#e8e3fb" not in str(neu).lower()
+
+
+def test_vibemind_neu_gefuellt_bleibt_exakt():
+    s = abgeleitet()
+    r = sv.rollen_ableiten(s, VIBEMIND)
+    neu, _, _ = sv.fuellen(s, r, VIBEMIND, None)
+    alt = seite_mod.pruefen(s)
+    for a, b in zip(alt["ebenen"], neu["ebenen"]):
+        assert a["farbe"].lower() == b["farbe"].lower(), a["id"]
+
+
+def test_auf_akzent_eine_definition():
+    for akzent in ("#5b3fd6", "#ffd400", "#0f766e", "#f07800"):
+        assert sv.markenfarben({"akzent": akzent})["auf_akzent"] == sv.vorlagen_marke.rollen(
+            {"akzent": akzent}, "#ffffff")["auf_akzent"]
+
+
+def test_zweiter_akzent_der_marke_zaehlt_beim_ableiten():
+    """Akzent der Gestalt und des Markenprofils weichen ab: beide gelten beim Ableiten als Akzent."""
+    s = abgeleitet()
+    marke = {**VIBEMIND, "akzent": "#7c3aed", "akzent_auch": ["#5b3fd6"]}
+    f = sv.rollen_ableiten(s, marke)["farben"]
+    assert f["ebenen.kreis.farbe"] == "akzent"
+    assert f["ebenen.titel.farbe"] == "akzent_text"
+    assert f["ebenen.buehne.farbe"] == "akzent~hell:0.85"
+
+
+def test_zweitfarbe_toenung():
+    s = abgeleitet()
+    ebene(s, "schatten")["farbe"] = sv.mischen("#1e1b4b", "#ffffff", 0.5)
+    r = sv.rollen_ableiten(s, VIBEMIND)
+    assert r["farben"]["ebenen.schatten.farbe"] == "zweitfarbe~hell:0.50"
+    neu, _, _ = sv.fuellen(s, r, F2G, None)
+    assert ebene(neu, "schatten")["farbe"] == sv.mischen("#6c3600", "#ffffff", 0.5)
