@@ -5,7 +5,12 @@ Firma vibemind anlegen, eine Chat-Runde mit dem Auftrag starten, auf das Rundene
 erzeugten Bilder warten (Fassung 3 Minuten stabil, hoechstens 10), die neueste Seite holen, Rollen mit der
 vibemind-Marke ableiten, als Vorschlag (fuer_alle) speichern und die Probe loeschen. Der Betreiber gibt in sales frei.
 
-    python -m spaces.marketing.scripts.collage_vorlagen_erzeugen [--nur <slug>] [--trocken] [--api http://127.0.0.1:5510]
+Vorlagen, die es schon gibt, werden uebersprungen (die Entscheidung des Betreibers bleibt); --ersetzen erzeugt sie neu
+als neue Fassung - auch dann behaelt eine bestehende Vorlage ihren Status (pult_vorlage_seite_speichern, 082). Endet
+ein Bildauftrag der Probe mit Fehler, wird die Vorlage nicht gespeichert.
+
+    python -m spaces.marketing.scripts.collage_vorlagen_erzeugen [--nur <slug>] [--ersetzen] [--trocken]
+        [--api http://127.0.0.1:5510]
 
 Der Pult-Schluessel kommt aus MARKETING_PULT_KEY (Umgebung, mit strip), nie von der Kommandozeile. Fehlermeldungen
 nennen nur den Typ, nie Kopfzeilen oder Werte.
@@ -22,6 +27,8 @@ import urllib.error
 import urllib.request
 from typing import Callable
 
+from spaces.marketing.claw.seite_prompt import GRUNDFORMEN
+
 MANDANT = "vibemind"
 VON = "collage-vorlagen"
 RUNDE_MAX = 20 * 60        # Sekunden je Chat-Runde
@@ -30,29 +37,7 @@ STABIL = 3 * 60            # Fassung so lange unveraendert
 TAKT = 10                  # Sekunden zwischen zwei Abfragen
 LOESCH_VERSUCHE = 6        # am Ende, solange Bilder noch laufen
 
-# (slug, Name, Aufbau) - Aufbau nach GRUNDFORMEN in claw/seite_prompt.py (dort nicht als Konstante exportiert)
-GRUNDFORMEN: list[tuple[str, str, str]] = [
-    ("split", "Split",
-     "Aufmacher-Bild links angeschnitten, 60 % Breite (x 180, y 320, 360x640); Titel rechts oben (x 470, y 180) "
-     "greift ins Bild; Text darunter."),
-    ("randloser-aufmacher", "Randloser Aufmacher mit Titelband",
-     "Bild x 300, y 280, 600x560 randlos; der Titel steht auf einer Farbfläche über der unteren Bildkante."),
-    ("schrift-plakat", "Schrift-Plakat",
-     "Aufmacher ist der Titel (groesse 90..130), volle Breite innerhalb der Ruhezone (x 300, breite 552); kleines "
-     "Bild darunter rechts versetzt."),
-    ("versetztes-bildpaar", "Versetztes Zwei-Bild-Raster",
-     "Bild A x 220, y 300; Bild B x 420, y 560 überlappt A um 40; Text in der Lücke."),
-    ("polaroid-streuung", "Polaroid-Streuung",
-     "2-3 Fotos leicht überlappend, höchstens 2 davon mit rahmen_breite 10, schatten und drehung 2..6; Titel darüber."),
-    ("farbbuehne-freisteller", "Farbbühne mit freigestelltem Motiv",
-     "Farbkreis hinter freigestelltem Produkt (passung einpassen), Titel daneben."),
-    ("magazin-titel", "Magazin-Titel",
-     "Großer Titel wie ein Zeitschriftenkopf oben, darunter ein randloses Titelbild, das den Titel an einer Kante "
-     "überlappt; Dachzeile und kurzer Text am Rand, Knopf unten."),
-    ("zitat-buehne", "Zitat-Bühne",
-     "Ein großes Zitat als Aufmacher auf einer Farbfläche, ein kleines Bild versetzt daneben, Name des Zitierten "
-     "als Dachzeile, Knopf am Ende."),
-]
+# GRUNDFORMEN (slug, Name, Aufbau) kommen aus claw/seite_prompt - derselbe Text steht im Prompt des Assistenten.
 GRUNDFORMEN_NACH_SLUG = {g[0]: g for g in GRUNDFORMEN}
 
 
@@ -122,7 +107,7 @@ def _runde_abwarten(u: Umgebung, iid: str) -> None:
         status = z[0].get("status") if z else None
         if status == "fertig":
             return
-        if status in ("fehler", "gestoppt"):
+        if status == "fehler":
             raise LaufFehler(f"Chat-Runde endete mit Status {status}")
         if u.zeit() >= ende:
             raise LaufFehler("Zeitlimit der Chat-Runde (20 Minuten)")
@@ -167,6 +152,10 @@ def vorlage_erzeugen(u: Umgebung, slug: str, offene_proben: list[str], ausgabe: 
               {"nachricht": auftrag(name, aufbau), "kontext": {"fenster": "seite", "auswahl": []}})
         _runde_abwarten(u, iid)
         _bilder_abwarten(u, iid)
+        kaputt = u.abfrage("SELECT count(*)::int AS n FROM marketing.bild_auftraege "
+                           f"WHERE inhalt = {_lit(iid)}::uuid AND status = 'fehler'")
+        if kaputt and int(kaputt[0].get("n") or 0) > 0:
+            raise LaufFehler("Ein Bildauftrag endete mit Fehler – Vorlage nicht gespeichert")
         dok = u.api("GET", f"/api/pult/inhalte/{iid}")
         fassungen = dok.get("fassungen") or []
         seite = fassungen[0].get("seite") if fassungen else None
@@ -186,7 +175,16 @@ def vorlage_erzeugen(u: Umgebung, slug: str, offene_proben: list[str], ausgabe: 
             offene_proben.append(iid)
 
 
-def lauf(u: Umgebung, nur: str | None = None, trocken: bool = False, ausgabe: Callable[[str], None] = print) -> int:
+def _vorhanden(u: Umgebung, slugs: list[str]) -> set[str]:
+    """Slugs, deren Vorlage collage-<slug> es schon gibt."""
+    namen = ", ".join(_lit("collage-" + s) for s in slugs)
+    zeilen = u.abfrage(f"SELECT name FROM marketing.newsletter_vorlagen WHERE name IN ({namen})")
+    da = {str(z.get("name")) for z in zeilen}
+    return {s for s in slugs if "collage-" + s in da}
+
+
+def lauf(u: Umgebung, nur: str | None = None, trocken: bool = False, ausgabe: Callable[[str], None] = print,
+         ersetzen: bool = False) -> int:
     if nur is not None and nur not in GRUNDFORMEN_NACH_SLUG:
         ausgabe(f"Unbekannter Slug: {nur} (möglich: {', '.join(GRUNDFORMEN_NACH_SLUG)})")
         return 2
@@ -195,33 +193,50 @@ def lauf(u: Umgebung, nur: str | None = None, trocken: bool = False, ausgabe: Ca
         for s in slugs:
             ausgabe(f"[{s}] {auftrag(GRUNDFORMEN_NACH_SLUG[s][1], GRUNDFORMEN_NACH_SLUG[s][2])}")
         return 0
+    try:
+        da = set() if ersetzen else _vorhanden(u, slugs)
+    except Exception as e:                          # nie die Meldung: sie kann Kopfzeilen oder Werte enthalten
+        ausgabe(f"FEHLER Bestand der Vorlagen: {type(e).__name__}")
+        return 1
     fehler, offene = 0, []
-    for s in slugs:
-        try:
-            vorlage_erzeugen(u, s, offene, ausgabe)
-        except LaufFehler as e:
-            fehler += 1
-            ausgabe(f"FEHLER {s}: {e}")
-        except Exception as e:                      # nie die Meldung: sie kann Kopfzeilen oder Werte enthalten
-            fehler += 1
-            ausgabe(f"FEHLER {s}: {type(e).__name__}")
-    for _ in range(LOESCH_VERSUCHE):
-        if not offene:
-            break
-        u.warten(30)
-        offene[:] = [i for i in offene if not _loeschen(u, i)]
-    for i in offene:
-        ausgabe(f"Probe nicht gelöscht (bitte von Hand): {i}")
+    try:
+        for s in slugs:
+            if s in da:
+                ausgabe(f"übersprungen: collage-{s} gibt es schon (--ersetzen erzeugt sie neu)")
+                continue
+            try:
+                vorlage_erzeugen(u, s, offene, ausgabe)
+            except LaufFehler as e:
+                fehler += 1
+                ausgabe(f"FEHLER {s}: {e}")
+            except Exception as e:                      # nie die Meldung: sie kann Kopfzeilen oder Werte enthalten
+                fehler += 1
+                ausgabe(f"FEHLER {s}: {type(e).__name__}")
+        for _ in range(LOESCH_VERSUCHE):
+            if not offene:
+                break
+            u.warten(30)
+            offene[:] = [i for i in offene if not _loeschen(u, i)]
+    finally:            # auch bei Abbruch (Strg+C, Fehler beim Abfragen): uebrige Proben immer nennen
+        for i in offene:
+            ausgabe(f"Probe nicht gelöscht (bitte von Hand): {i}")
     return 1 if fehler or offene else 0
+
+
+SCHLUESSEL_FEHLT = "MARKETING_PULT_KEY fehlt in der Umgebung – ohne Pult-Schlüssel läuft nichts"
 
 
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--api", default="http://127.0.0.1:5510")
     p.add_argument("--nur", default=None, help="nur diese Vorlage (Slug)")
+    p.add_argument("--ersetzen", action="store_true", help="bestehende Vorlagen neu erzeugen (Status bleibt)")
     p.add_argument("--trocken", action="store_true", help="nur die Aufträge zeigen")
     a = p.parse_args(argv)
-    return lauf(Umgebung(a.api), a.nur, a.trocken)
+    if not a.trocken and not os.environ.get("MARKETING_PULT_KEY", "").strip():
+        print(SCHLUESSEL_FEHLT)
+        return 2
+    return lauf(Umgebung(a.api), a.nur, a.trocken, ersetzen=a.ersetzen)
 
 
 if __name__ == "__main__":

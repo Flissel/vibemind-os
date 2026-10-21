@@ -15,7 +15,10 @@ MARKE = {"akzent": "#c4573a", "zweitfarbe": "#222222", "grund": "#ffffff", "text
 class Fake:
     """Ersetzt Umgebung: eigene Uhr (warten rueckt sie vor), Skript fuer Chat-Status und Bildauftraege."""
 
-    def __init__(self, chat=("fertig",), bilder_offen=0, loeschen_ok=True, aendert_fassung=False):
+    def __init__(self, chat=("fertig",), bilder_offen=0, loeschen_ok=True, aendert_fassung=False, vorhanden=(),
+                 bilder_kaputt=0):
+        self.vorhanden = set(vorhanden)
+        self.bilder_kaputt = bilder_kaputt
         self.t = 0.0
         self.aufrufe, self.sql = [], []
         self.chat = list(chat)
@@ -44,6 +47,10 @@ class Fake:
 
     def abfrage(self, sql):
         self.sql.append(sql)
+        if "FROM marketing.newsletter_vorlagen WHERE name IN" in sql:
+            return [{"name": n} for n in sorted(self.vorhanden) if f"'{n}'" in sql]
+        if "status = 'fehler'" in sql:
+            return [{"n": self.bilder_kaputt}]
         if "FROM marketing.chat_auftraege" in sql:
             return [{"status": self.chat.pop(0) if len(self.chat) > 1 else self.chat[0]}]
         if "count(*)" in sql:
@@ -158,3 +165,65 @@ def test_fehler_zeigt_nur_den_typ():
     f.abfrage = kaputt
     code, aus = _lauf(f, nur="split")
     assert code == 1 and all("geheim" not in z for z in aus) and any("ValueError" in z for z in aus)
+
+
+# --- Gesamtpruefung Stufe 5 ---
+
+def test_grundformen_aus_dem_prompt():
+    from spaces.marketing.claw import seite_prompt
+    assert k.GRUNDFORMEN is seite_prompt.GRUNDFORMEN
+    for _, name, aufbau in k.GRUNDFORMEN:
+        assert f"- {name}: {aufbau}" in seite_prompt.system_seite(True)
+
+
+def test_bestehende_vorlage_wird_uebersprungen():
+    f = Fake(vorhanden={"collage-split"})
+    code, aus = _lauf(f)
+    assert code == 0 and any("übersprungen: collage-split" in z and "--ersetzen" in z for z in aus)
+    assert sum(1 for p in f.pfade() if p == "/api/pult/inhalte/collage") == 7
+    assert not any("'collage-split'" in s and "pult_vorlage_seite_speichern" in s for s in f.sql)
+
+
+def test_ersetzen_erzeugt_bestehende_neu():
+    f = Fake(vorhanden={"collage-split"})
+    code, aus = _lauf(f, nur="split", ersetzen=True)
+    assert code == 0 and any("'collage-split'" in s and "pult_vorlage_seite_speichern" in s for s in f.sql)
+    assert not any("WHERE name IN" in s for s in f.sql)
+
+
+def test_bildauftrag_mit_fehler_vorlage_nicht_gespeichert():
+    f = Fake(bilder_kaputt=1)
+    code, aus = _lauf(f, nur="split")
+    assert code == 1 and any("Bildauftrag endete mit Fehler" in z for z in aus)
+    assert not any("pult_vorlage_seite_speichern" in s for s in f.sql)
+    assert f.pfade()[-1].endswith("/loeschen")
+
+
+def test_abbruch_nennt_offene_proben_trotzdem():
+    f = Fake(loeschen_ok=False)
+    echt = f.warten
+
+    def abbrechen(s):
+        if s == 30:
+            raise KeyboardInterrupt
+        echt(s)
+    f.warten = abbrechen
+    ausgabe = []
+    with pytest.raises(KeyboardInterrupt):
+        k.lauf(f, nur="split", ausgabe=ausgabe.append)
+    assert any(IID in z and "von Hand" in z for z in ausgabe)
+
+
+def test_ohne_pult_schluessel_frueh_abbrechen(monkeypatch, capsys):
+    monkeypatch.delenv("MARKETING_PULT_KEY", raising=False)
+    monkeypatch.setattr(k, "lauf", lambda *a, **kw: pytest.fail("lauf darf nicht starten"))
+    assert k.main(["--nur", "split"]) == 2
+    assert "MARKETING_PULT_KEY fehlt" in capsys.readouterr().out
+    monkeypatch.setenv("MARKETING_PULT_KEY", "   ")
+    assert k.main([]) == 2
+
+
+def test_trocken_braucht_keinen_schluessel(monkeypatch, capsys):
+    monkeypatch.delenv("MARKETING_PULT_KEY", raising=False)
+    assert k.main(["--trocken", "--nur", "split"]) == 0
+    assert "[split]" in capsys.readouterr().out

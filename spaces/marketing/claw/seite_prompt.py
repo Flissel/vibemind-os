@@ -115,6 +115,30 @@ def _schriften() -> str:
                      for sid, s in REGISTER.items())
 
 
+# Die 8 Grundformen (slug, Name, Aufbau; x/y = Mitte, grob): EINE Quelle fuer den Prompt (Abschnitt GRUNDFORMEN) und
+# fuer scripts/collage_vorlagen_erzeugen (je Grundform eine Collage-Vorlage "collage-<slug>").
+GRUNDFORMEN: tuple[tuple[str, str, str], ...] = (
+    ("split", "Split",
+     "Bild links angeschnitten, 60 % Breite (x 180, y 320, 360x640); Titel rechts oben (x 470, y 180) greift ins "
+     "Bild; Text darunter."),
+    ("randloser-aufmacher", "Randloser Aufmacher mit Titelband",
+     "Bild x 300, y 280, 600x560; Titel auf Farbband über der Bildunterkante."),
+    ("schrift-plakat", "Schrift-Plakat",
+     "Titel als Aufmacher (groesse 90..130), volle Breite innerhalb der Ruhezone (x 300, breite 552); kleines Bild "
+     "rechts versetzt darunter."),
+    ("versetztes-bildpaar", "Versetztes Zwei-Bild-Raster",
+     "Bild A x 220, y 300; Bild B x 420, y 560 überlappt A um 40; Text in der Lücke."),
+    ("polaroid-streuung", "Polaroid-Streuung",
+     "2-3 Fotos überlappend, höchstens 2 mit rahmen_breite 10, schatten und drehung 2..6 (zählen als Gesten); "
+     "Titel darüber."),
+    ("farbbuehne-freisteller", "Farbbühne mit freigestelltem Motiv",
+     "Farbkreis hinter dem Freisteller (passung einpassen), Titel daneben."),
+    ("magazin-titel", "Magazin-Titel",
+     "Titel als Zeitschriftenkopf, randloses Bild überlappt ihn; Dachzeile, Knopf."),
+    ("zitat-buehne", "Zitat-Bühne",
+     "großes Zitat auf Farbfläche, kleines Bild versetzt, Name als Dachzeile."),
+)
+
 REGEL_FARBE_SEITE = ("- Farben aus der Seite (Hintergrund, vorhandene Ebenen) und daraus abgeleiteten helleren/"
                      "dunkleren Tönen; keine neuen Farbtöne.")
 
@@ -159,16 +183,8 @@ ANREDE UND LINKS
 {vorname} (nie einen echten Namen) und Textlinks nur in Rolle TEXT, Drehung 0, ohne Überlappung mit anderen Ebenen \
 (keine Fläche dahinter; dafür hintergrund). Fließtext mit persönlicher Ansprache beginnt mit „Hallo {vorname},“.
 
-GRUNDFORMEN (x/y = Mitte, grob)
-- Split: Aufmacher-Bild links angeschnitten, 60 % Breite (x 180, y 320, 360x640); Titel rechts oben (x 470, y 180) \
-greift ins Bild; Text darunter.
-- Vollbild mit Titelband: Bild x 300, y 280, 600x560; Titel auf Farbfläche über der unteren Bildkante.
-- Schrift-Plakat: Aufmacher ist der Titel (groesse 90..130), volle Breite innerhalb der Ruhezone (x 300, breite \
-552); kleines Bild darunter rechts versetzt.
-- Versetztes Bildpaar: Bild A x 220, y 300; Bild B x 420, y 560 überlappt A um 40; Text in der Lücke.
-- Polaroid-Streuung: 2-3 Fotos leicht überlappend, höchstens 2 davon mit rahmen_breite 10, schatten und drehung \
-2..6 (zählen als Gesten); Titel darüber.
-- Farbbühne mit Freisteller: Farbkreis hinter freigestelltem Produkt (passung einpassen), Titel daneben.
+GRUNDFORMEN
+__GRUNDFORMEN__
 
 KOMPOSITION
 - Ein Aufmacher dominiert (Bild 60..100 % Breite oder große Schriftzeile); nie zwei gleich starke Elemente.
@@ -185,8 +201,8 @@ Foto mit rahmen und schatten, drehung 2..6. Nie alles gerahmt oder gedreht.
 - Knopf 200..300 x 48..56 mit Luft, am Ende des Blickverlaufs.
 
 ABWECHSLUNG
-KOMPOSITIONEN im Kontext = letzte Collagen der Firma. Wiederhole keine: wähle eine andere Grundform, andere \
-Aufmacherposition und Anordnung. Soll nur etwas geändert werden, behalte den Aufbau. Es folgen bis zu 3 \
+KOMPOSITIONEN im Kontext = letzte Collagen der Firma. Wiederhole keine: andere Grundform, andere \
+Aufmacherposition. Soll nur etwas geändert werden, behalte den Aufbau. Es folgen bis zu 3 \
 Prüfrunden; gestalte trotzdem gleich fertig.
 
 BILDER
@@ -204,7 +220,8 @@ Betreiber. Erfinde keine Angebote. Du verschickst und veröffentlichst nichts.
 
 _BASIS = (_SYSTEM.replace("__MAX__", str(MAX_AENDERUNGEN)).replace("__WERKZEUGE__", _werkzeuge())
           .replace("__LEGENDE__", _legende()).replace("__HAND__", HAND_ROLLE)
-          .replace("__SCHRIFTEN__", _schriften()).replace("__BEZUG__", REGEL_BEZUG))
+          .replace("__SCHRIFTEN__", _schriften()).replace("__BEZUG__", REGEL_BEZUG)
+          .replace("__GRUNDFORMEN__", "\n".join(f"- {name}: {aufbau}" for _, name, aufbau in GRUNDFORMEN)))
 
 
 def system_seite(marke: bool = False) -> str:
