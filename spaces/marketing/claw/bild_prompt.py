@@ -113,9 +113,17 @@ def prompt_schreiben(platz: dict, titel: str, hinweis: str) -> str:
     anfrage = _AUFGABE.format(verhaeltnis=platz.get("verhaeltnis", ""), titel=titel[:200], bildstil=_bildstil(platz),
                               alt=str(platz.get("alt") or "")[:200], kontext=str(platz.get("kontext") or "")[:600],
                               hinweis=(hinweis or "-")[:500])
-    antwort = _ollama("/api/generate", {"model": TEXT_MODELL, "prompt": anfrage, "stream": False,
-                                        "keep_alive": 0, "options": {"temperature": 0.7, "num_ctx": NUM_CTX}})
-    kern = bereinigen(antwort.get("response", ""))
+    try:
+        antwort = _ollama("/api/generate", {"model": TEXT_MODELL, "prompt": anfrage, "stream": False,
+                                            "keep_alive": 0, "options": {"temperature": 0.7, "num_ctx": NUM_CTX}})
+    except OSError:
+        # TimeoutError/URLError (Befund 21.10.2026): neben FLUX.2 fand Ollama keinen Grafikspeicher, jeder Prompt lief
+        # 120 s ins Zeitlimit und der Auftrag ging dreimal zurueck. Woertlich wie beim Einbau unter FLUX.2.
+        teile = ((hinweis or "").strip(), str(platz.get("alt") or "").strip(), titel.strip())
+        kern = ", ".join(x for x in teile if x)[:PROMPT_MAX] or "abstract network"
+        antwort = None
+    if antwort is not None:
+        kern = bereinigen(antwort.get("response", ""))
     if not kern:
         kern = ", ".join(x for x in (str(platz.get("alt") or "").strip(), titel.strip()) if x) or "abstract network"
     farben = bild_farben.satz(platz.get("palette"), str(platz.get("flaeche") or ""), hinweis)

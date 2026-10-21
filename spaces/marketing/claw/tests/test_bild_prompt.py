@@ -222,3 +222,23 @@ def test_einbau_prompt_geht_woertlich_ohne_ollama(monkeypatch):
     assert bp.einbau_prompt("", platz).startswith("Foto vom Team.")
     gekuerzt = bp.einbau_prompt("x" * 900, PLATZ)
     assert "x" * 500 in gekuerzt and "x" * 501 not in gekuerzt
+
+
+def test_ollama_zeitlimit_schreibt_den_prompt_woertlich(monkeypatch):
+    """Befund 21.10.2026: Ollama bekam neben FLUX.2 keinen Grafikspeicher, jeder Prompt lief 120 s ins Zeitlimit und
+    der Bildauftrag ging dreimal zurueck (fehler). Jetzt: woertlicher Prompt aus Wunsch, Alt-Text und Titel."""
+    def zeitlimit(pfad, daten, zeitlimit=120):
+        raise TimeoutError("timed out")
+    monkeypatch.setattr(bp, "_ollama", zeitlimit)
+    p = bp.prompt_schreiben(PLATZ, "Newsletter Oktober", "helles Atelier mit Pflanzen")
+    assert p.startswith("helles Atelier mit Pflanzen, Team im Buero, Newsletter Oktober")
+    assert bp.VERBOT in p and bp.QUALITAET in p
+
+
+def test_ollama_nicht_erreichbar_ebenfalls_woertlich(monkeypatch):
+    import urllib.error
+
+    def weg(pfad, daten, zeitlimit=120):
+        raise urllib.error.URLError("refused")
+    monkeypatch.setattr(bp, "_ollama", weg)
+    assert bp.prompt_schreiben(PLATZ, "Titel", "").startswith("Team im Buero, Titel")
