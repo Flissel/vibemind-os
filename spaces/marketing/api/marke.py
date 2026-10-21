@@ -30,6 +30,7 @@ from spaces.marketing.api.pult import (_auswahl, _bild_basis, _bloecke_html, _le
                                        _lesen_einer, _schluessel, _schreiben, _uuid_oder_404,
                                        _vorlage_fuellen, lit)
 from spaces.marketing.claw import marken_prompt, markenprofil, schriften
+from spaces.marketing.claw.stimmen import stimmen_liste
 
 log = logging.getLogger(__name__)
 pult_router = APIRouter(prefix="/api/pult")
@@ -416,6 +417,13 @@ def marke_hinweis_aus(iid: str, x_pult_key: str | None = Header(None)):
     if not zeile.get("ok"):
         raise HTTPException(404, "Unbekannter Inhalt")
     return {"ok": True}
+
+
+@pult_router.get("/stimmen")
+def stimmen(x_pult_key: str | None = Header(None)):
+    """Auswahlliste der Stimmen fuer Reels und Podcast (MARKETING_STIMMEN; "standard" gilt immer)."""
+    _schluessel(x_pult_key)
+    return {"stimmen": stimmen_liste()}
 
 
 def _logo_verweis(vorschlag: dict, mandant: str, schluessel: str = "logo") -> str | None:

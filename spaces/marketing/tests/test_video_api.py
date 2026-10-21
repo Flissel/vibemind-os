@@ -14,6 +14,7 @@ AID = "0123abcd-3333-3333-3333-333333333333"
 BK, AK, PK = "bild-k", "api-k", "pult-k"
 A, B, P = {"X-API-Key": AK}, {"X-Bild-Key": BK}, {"X-Pult-Key": PK}
 MP4 = b"\x00\x00\x00\x20ftypisom" + b"\x00" * 3000
+JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 2000
 BILDER = {"thema": "bAV in 30 Sekunden", "sprechertext": "Drei Fehler, die fast jede Firma macht.",
           "bilder": ["team.png", "buero.jpg"], "logo": "logo-vibemind-0123456789.png",
           "farben": {"hintergrund": "#0f2422", "text": "#e9fbf6"}}
@@ -31,6 +32,7 @@ def db(monkeypatch, tmp_path):
     monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
     monkeypatch.delenv("MARKETING_MEDIEN_ORDNER", raising=False)
     monkeypatch.delenv("MARKETING_VIDEO_MEDIEN_BASIS", raising=False)
+    monkeypatch.delenv("MARKETING_STIMMEN", raising=False)
     monkeypatch.setattr(server, "API_KEY", AK)
     monkeypatch.setattr(medien_mandant, "sicht", lambda m: {"name": m, "eigene": set(), "gemeinsam": set(),
                                                             "fremde": {"fremd.png"}})
@@ -79,7 +81,7 @@ def test_kurzfassung_ohne_sprechertext():
 # --- Anlegen -----------------------------------------------------------------
 
 def test_agent_legt_an_ueber_funktion(db, c):
-    db.antworten = [[{"id": AID}]]
+    db.antworten = [[], [{"id": AID}]]          # erst der Markenspiegel (keine Stimme), dann das Anlegen
     r = c.post("/api/video/auftraege", headers=A,
                json={"firma": "vibemind", "art": "bilder", "titel": "Herbst-Reel", "briefing": BILDER})
     assert r.status_code == 200 and r.json() == {"auftrag": AID}
@@ -94,7 +96,7 @@ def test_fremdes_bild_abgelehnt(db, c):
 
 
 def test_pult_legt_als_betreiber_an(db, c):
-    db.antworten = [[{"id": AID}]]
+    db.antworten = [[], [{"id": AID}]]
     r = c.post("/api/pult/video", headers=P, json={"mandant": "vibemind", "art": "material", "titel": "T",
                                                    "briefing": {"thema": "t", "sprechertext": "s"}})
     assert r.status_code == 200 and "'betreiber'" in db.sql[-1]
@@ -111,6 +113,13 @@ def test_schluessel_pflicht(db, c):
     assert c.get("/api/pult/video?mandant=vibemind").status_code == 401
     assert c.get("/api/video/auftraege?firma=vibemind").status_code == 401
     assert c.post("/api/video/arbeiter/naechster").status_code == 401
+    assert c.get("/api/pult/video/bilder?mandant=vibemind").status_code == 401
+    assert c.get("/api/pult/video/material").status_code == 401
+    assert c.post(f"/api/pult/video/{AID}/nochmal", json={}).status_code == 401
+    assert c.post(f"/api/pult/video/{AID}/archivieren", json={}).status_code == 401
+    assert c.post(f"/api/video/arbeiter/{AID}/poster", content=JPEG).status_code == 401
+    assert c.post(f"/api/video/arbeiter/{AID}/poster", headers=P, content=JPEG).status_code == 401
+    assert not db.sql
 
 
 # --- Arbeiter ----------------------------------------------------------------
@@ -328,3 +337,272 @@ def test_marke_ohne_spiegel(db, c, monkeypatch):
 
 def test_marke_braucht_arbeiterschluessel(db, c):
     assert c.post(f"/api/video/arbeiter/{AID}/marke").status_code in (401, 403)
+
+
+# --- Reels Stufe 1 (21.10.2026, Migration 082): Befund, Liste, nochmal, Archiv, Material, Stimme, Poster ----
+
+@pytest.mark.parametrize("befund, satz", [
+    ("Zwei Versuche ohne Ergebnis", "Der Bau ist zweimal hängen geblieben."),
+    ("zwei versuche ohne ergebnis", "Der Bau ist zweimal hängen geblieben."),
+    ("Keine Stimmprobe fuer 'anna' hinterlegt", "Die gewählte Stimme gibt es nicht."),
+    ("Laura: Render fehlgeschlagen", "Laura konnte das Video nicht fertig rendern."),
+    ("Zeitlimit des Claws erreicht", "Der Bau hat zu lange gedauert."),
+    ("shim TIMEOUT", "Der Bau hat zu lange gedauert."),
+    ("Das dauerte zu lange", "Der Bau hat zu lange gedauert."),
+    ("Vom Betreiber abgebrochen", "Der Auftrag wurde abgebrochen."),
+    ("", ""),
+    ("   ", ""),
+    (None, ""),
+    ("Laura 503", "Das Reel konnte nicht gebaut werden."),
+    # Reihenfolge: das erste passende Muster gewinnt
+    ("Stimmprobe fehlt, Render abgebrochen", "Die gewählte Stimme gibt es nicht."),
+])
+def test_befund_satz(befund, satz):
+    assert video.befund_satz(befund) == satz
+
+
+def _zeile(**mehr):
+    z = {"id": AID, "mandant": "vibemind", "art": "bilder", "titel": "T", "briefing": {}, "status": "fehler",
+         "datei": None, "befund": "Zwei Versuche ohne Ergebnis", "vorgaenger": None, "aenderungswunsch": "",
+         "archiviert": False, "poster": None, "vorgaenger_titel": None}
+    z.update(mehr)
+    return z
+
+
+def test_liste_hat_neue_felder_und_archivfilter(db, c):
+    db.antworten = [[_zeile()], [_zeile(archiviert=True, befund="")]]
+    r = c.get("/api/pult/video?mandant=vibemind", headers=P)
+    assert r.status_code == 200
+    zeile = r.json()["auftraege"][0]
+    assert zeile["befund_text"] == "Der Bau ist zweimal hängen geblieben."
+    for feld in ("vorgaenger", "vorgaenger_titel", "aenderungswunsch", "archiviert", "poster"):
+        assert feld in db.sql[-1]
+    assert "archiviert = false" in db.sql[-1]
+    r = c.get("/api/pult/video?mandant=vibemind&archiv=true", headers=P)
+    assert r.json()["auftraege"][0]["befund_text"] == "" and "archiviert = true" in db.sql[-1]
+
+
+def test_agent_liste_ohne_archivfilter(db, c):
+    db.antworten = [[_zeile()]]
+    r = c.get("/api/video/auftraege?firma=vibemind", headers=A)
+    assert r.status_code == 200 and "archiviert =" not in db.sql[-1]
+
+
+NEU = "0123abcd-4444-4444-4444-444444444444"
+
+
+def test_nochmal_regeln(db, c):
+    db.antworten = [[{"mandant": "vibemind"}], [{"id": NEU}]]
+    r = c.post(f"/api/pult/video/{AID}/nochmal", headers=P, json={"wunsch": "kürzer, anderer Einstieg",
+                                                                  "mandant": "vibemind"})
+    assert r.status_code == 200 and r.json() == {"auftrag": NEU}
+    assert "marketing.video_nochmal(" in db.sql[-1] and "'kürzer, anderer Einstieg'" in db.sql[-1]
+    assert "'betreiber'" in db.sql[-1]
+    # DB-Ablehnung (die Regeln stehen in 082) -> 422 mit der Meldung
+    db.antworten = [[{"mandant": "vibemind"}]]
+    db.fehler = [None, RuntimeError("ERROR:  Nur fertige oder fehlgeschlagene Reels lassen sich neu bauen")]
+    r = c.post(f"/api/pult/video/{AID}/nochmal", headers=P, json={"wunsch": "", "mandant": "vibemind"})
+    assert r.status_code == 422
+    assert r.json()["detail"] == "Nur fertige oder fehlgeschlagene Reels lassen sich neu bauen"
+
+
+def test_nochmal_ohne_wunsch_ist_neu_versuchen(db, c):
+    db.antworten = [[{"mandant": "vibemind"}], [{"id": NEU}]]
+    r = c.post(f"/api/pult/video/{AID}/nochmal", headers=P, json={"mandant": "vibemind"})
+    assert r.status_code == 200 and "''" in db.sql[-1]
+
+
+@pytest.mark.parametrize("koerper", [{"wunsch": 5, "mandant": "vibemind"},
+                                     {"wunsch": "x" * 501, "mandant": "vibemind"},
+                                     {"wunsch": "x", "mandant": "../x"}, {"wunsch": "x"}])
+def test_nochmal_formen(db, c, koerper):
+    db.antworten = [[{"mandant": "vibemind"}]]
+    r = c.post(f"/api/pult/video/{AID}/nochmal", headers=P, json=koerper)
+    assert r.status_code == 422 and not any("video_nochmal" in s for s in db.sql)
+
+
+def test_nochmal_fremder_mandant_404(db, c):
+    db.antworten = [[{"mandant": "andere"}]]
+    r = c.post(f"/api/pult/video/{AID}/nochmal", headers=P, json={"wunsch": "kürzer", "mandant": "vibemind"})
+    assert r.status_code == 404 and not any("video_nochmal" in s for s in db.sql)
+    db.antworten = [[]]            # Auftrag gibt es nicht
+    r = c.post(f"/api/pult/video/{AID}/nochmal", headers=P, json={"wunsch": "kürzer", "mandant": "vibemind"})
+    assert r.status_code == 404
+    r = c.post("/api/pult/video/kein-uuid/nochmal", headers=P, json={"wunsch": "kürzer", "mandant": "vibemind"})
+    assert r.status_code == 404
+    assert not any("video_nochmal" in s for s in db.sql)
+
+
+def test_archivieren(db, c):
+    db.antworten = [[{"mandant": "vibemind"}], [{"ok": True}]]
+    r = c.post(f"/api/pult/video/{AID}/archivieren", headers=P, json={"an": True, "mandant": "vibemind"})
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert "marketing.video_archivieren(" in db.sql[-1] and "true" in db.sql[-1]
+    db.antworten = [[{"mandant": "vibemind"}], [{"ok": False}]]
+    r = c.post(f"/api/pult/video/{AID}/archivieren", headers=P, json={"an": False, "mandant": "vibemind"})
+    assert r.json() == {"ok": False} and "false" in db.sql[-1]
+    # fremde Firma -> 404, kein SQL-Aufruf
+    db.antworten = [[{"mandant": "andere"}]]
+    r = c.post(f"/api/pult/video/{AID}/archivieren", headers=P, json={"an": True, "mandant": "vibemind"})
+    assert r.status_code == 404 and "video_archivieren" not in db.sql[-1]
+    # an muss bool sein
+    r = c.post(f"/api/pult/video/{AID}/archivieren", headers=P, json={"an": "ja", "mandant": "vibemind"})
+    assert r.status_code == 422
+
+
+def test_abbrechen_fremder_mandant_404(db, c):
+    db.antworten = [[{"mandant": "andere"}]]
+    r = c.post(f"/api/pult/video/{AID}/abbrechen", headers=P, json={"mandant": "vibemind"})
+    assert r.status_code == 404 and not any("video_abbrechen" in s for s in db.sql)
+    db.antworten = [[{"mandant": "vibemind"}], [{"s": "abgebrochen"}]]
+    r = c.post(f"/api/pult/video/{AID}/abbrechen", headers=P, json={"mandant": "vibemind"})
+    assert r.status_code == 200 and "marketing.video_abbrechen(" in db.sql[-1]
+
+
+# --- Material-Listen -------------------------------------------------------------------------------
+
+def test_bilder_der_firma_liste(db, c, tmp_path, monkeypatch):
+    import os
+    medien = tmp_path / "medien"
+    medien.mkdir()
+    monkeypatch.setenv("MARKETING_MEDIEN_ORDNER", str(medien))
+    for n in ("team.png", "buero.JPG", "fremd.png", "notiz.txt", "film.mp4", "vid-0123abcd-reel.jpg"):
+        (medien / n).write_bytes(b"x")
+    (db.ordner / "nl-0123abcd-held.jpg").write_bytes(b"x")
+    os.utime(medien / "team.png", (1, 1))                      # aelteste Datei steht am Ende
+    r = c.get("/api/pult/video/bilder?mandant=vibemind", headers=P)
+    assert r.status_code == 200
+    namen = [b["name"] for b in r.json()["bilder"]]
+    assert set(namen) == {"team.png", "buero.JPG", "nl-0123abcd-held.jpg"}
+    assert namen[-1] == "team.png"
+
+
+def test_bilder_der_firma_hoechstens_200(db, c):
+    for i in range(205):
+        (db.ordner / f"b{i:03d}.png").write_bytes(b"x")
+    r = c.get("/api/pult/video/bilder?mandant=vibemind", headers=P)
+    assert len(r.json()["bilder"]) == 200
+
+
+def test_material_liste(db, c, monkeypatch):
+    monkeypatch.setattr(video.laura, "alle_videos", lambda: {"ok": True, "daten": [
+        {"kennung": "a1b2c3d4-0000-0000-0000-000000000001", "name": "Messe", "projekt": "P", "projekt_id": "p",
+         "dauer_s": 95, "aufloesung": "1920x1080"},
+        {"kennung": "a1b2c3d4-0000-0000-0000-000000000002", "name": "Logo", "projekt": "P", "projekt_id": "p",
+         "dauer_s": 0, "aufloesung": "512x512"},
+        {"kennung": "a1b2c3d4-0000-0000-0000-000000000003", "name": "Bild", "projekt": "P", "projekt_id": "p",
+         "dauer_s": None, "aufloesung": None}]})
+    r = c.get("/api/pult/video/material", headers=P)
+    assert r.status_code == 200
+    assert r.json() == {"videos": [{"kennung": "a1b2c3d4-0000-0000-0000-000000000001", "name": "Messe",
+                                    "projekt": "P", "dauer_s": 95}]}
+
+
+@pytest.mark.parametrize("ausfall", ["wirft", "fail-soft"])
+def test_material_laura_aus(db, c, monkeypatch, ausfall):
+    def alle():
+        if ausfall == "wirft":
+            raise OSError("weg")
+        return {"ok": False, "fehler": "Laura nicht erreichbar"}
+    monkeypatch.setattr(video.laura, "alle_videos", alle)
+    r = c.get("/api/pult/video/material", headers=P)
+    assert r.status_code == 200
+    assert r.json() == {"videos": [], "hinweis": "Laura ist gerade nicht erreichbar."}
+
+
+# --- Markenstimme beim Anlegen ---------------------------------------------------------------------
+
+MATERIAL = {"thema": "t", "sprechertext": "s"}
+
+
+def _anlegen(c, briefing):
+    return c.post("/api/pult/video", headers=P, json={"mandant": "vibemind", "art": "material", "titel": "T",
+                                                      "briefing": briefing})
+
+
+def _briefing_aus(sql: str) -> dict:
+    import json
+    import re
+    roh = re.search(r"'(\{.*\})'::jsonb", sql).group(1).replace("''", "'")
+    return json.loads(roh)
+
+
+def test_anlegen_stimme_aus_marke_und_rueckfall(db, c):
+    # Marke hat eine bekannte Stimme -> sie gilt, auch gegen das Briefing
+    db.antworten = [[{"s": "eigene-b"}], [{"id": AID}]]
+    assert _anlegen(c, {**MATERIAL, "stimme": "eigene-a"}).status_code == 200
+    assert "marken_spiegel" in db.sql[-2]
+    b = _briefing_aus(db.sql[-1])
+    assert b["stimme"] == "eigene-b" and "stimme_hinweis" not in b
+    # Markenstimme gibt es nicht mehr -> standard + Hinweis, der Auftrag scheitert nicht
+    db.antworten = [[{"s": "weg"}], [{"id": AID}]]
+    assert _anlegen(c, MATERIAL).status_code == 200
+    b = _briefing_aus(db.sql[-1])
+    assert b["stimme"] == "standard"
+    assert b["stimme_hinweis"] == "Die Markenstimme 'weg' gibt es nicht mehr – Standard genommen."
+    # ohne Marke: unbekannte Stimme im Briefing -> 422, nichts angelegt
+    db.antworten = [[]]
+    r = _anlegen(c, {**MATERIAL, "stimme": "anna"})
+    assert r.status_code == 422 and r.json()["detail"] == "Diese Stimme gibt es nicht"
+    assert "video_auftrag_anlegen" not in db.sql[-1]
+    # ohne Marke: standard und Listenstimmen sind erlaubt
+    db.antworten = [[{"s": None}], [{"id": AID}]]
+    assert _anlegen(c, {**MATERIAL, "stimme": "eigene-c"}).status_code == 200
+    assert _briefing_aus(db.sql[-1])["stimme"] == "eigene-c"
+    db.antworten = [[], [{"id": AID}]]
+    assert _anlegen(c, MATERIAL).status_code == 200
+    assert _briefing_aus(db.sql[-1])["stimme"] == "standard"
+
+
+def test_anlegen_stimme_liste_aus_env(db, c, monkeypatch):
+    monkeypatch.setenv("MARKETING_STIMMEN", " anna ,\r\n")
+    db.antworten = [[], [{"id": AID}]]
+    assert _anlegen(c, {**MATERIAL, "stimme": "anna"}).status_code == 200
+    db.antworten = [[]]
+    assert _anlegen(c, {**MATERIAL, "stimme": "eigene-a"}).status_code == 422
+
+
+# --- Vorschaubild (Arbeiter) -----------------------------------------------------------------------
+
+def _poster_auftrag(status="in_arbeit", datei=None):
+    return [{"titel": "Herbst-Reel im Laden", "mandant": "vibemind", "status": status, "datei": datei}]
+
+
+def test_poster_route(db, c):
+    db.antworten = [_poster_auftrag(), [{"ok": True}]]
+    r = c.post(f"/api/video/arbeiter/{AID}/poster", headers=B, content=JPEG)
+    assert r.status_code == 200, r.text
+    name = r.json()["name"]
+    assert name == "vid-0123abcd-herbst-reel-im-laden.jpg" and (db.ordner / name).read_bytes() == JPEG
+    assert "marketing.video_poster(" in db.sql[-1] and f"'{name}'" in db.sql[-1]
+    assert db.psql.sql and name in db.psql.sql[-1]            # der Firma zugeordnet
+
+
+def test_poster_stamm_wie_datei(db, c):
+    db.antworten = [_poster_auftrag("fertig", "vid-0123abcd-erster-titel.mp4"), [{"ok": True}]]
+    r = c.post(f"/api/video/arbeiter/{AID}/poster", headers=B, content=JPEG)
+    assert r.status_code == 200 and r.json()["name"] == "vid-0123abcd-erster-titel.jpg"
+
+
+def test_poster_formen(db, c):
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+    assert c.post(f"/api/video/arbeiter/{AID}/poster", headers=B, content=png).status_code == 422
+    gross = JPEG + b"\x00" * video.POSTER_MAX
+    assert c.post(f"/api/video/arbeiter/{AID}/poster", headers=B, content=gross).status_code == 413
+    assert c.post(f"/api/video/arbeiter/{AID}/poster", content=JPEG).status_code == 401
+    assert not db.sql
+
+
+def test_poster_nicht_in_arbeit(db, c):
+    db.antworten = [_poster_auftrag("offen")]
+    assert c.post(f"/api/video/arbeiter/{AID}/poster", headers=B, content=JPEG).status_code == 409
+    db.antworten = [[]]
+    assert c.post(f"/api/video/arbeiter/{AID}/poster", headers=B, content=JPEG).status_code == 404
+
+
+def test_poster_db_lehnt_ab(db, c):
+    db.antworten = [_poster_auftrag(), [{"ok": False}]]
+    assert c.post(f"/api/video/arbeiter/{AID}/poster", headers=B, content=JPEG).status_code == 409
+    db.antworten = [_poster_auftrag()]
+    db.fehler = [None, RuntimeError('ERROR:  new row for relation "video_auftraege" violates check constraint')]
+    assert c.post(f"/api/video/arbeiter/{AID}/poster", headers=B, content=JPEG).status_code == 422

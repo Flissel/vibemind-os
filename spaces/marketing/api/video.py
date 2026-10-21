@@ -25,13 +25,15 @@ import urllib.request
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 
 from spaces.marketing.api import medien_mandant
 from spaces.marketing.api.bilder import _agent_schluessel, _auftrag_id, _bild_schluessel, _ordner
 from spaces.marketing.api.pult import _lesen, _lesen_einer, _schluessel, _schreiben, _uuid_oder_404, lit
 from spaces.marketing.api.chat import _markenlogos
 from spaces.marketing.api.ton import _slug
-from spaces.marketing.claw import schriften
+from spaces.marketing.claw import laura, schriften
+from spaces.marketing.claw.stimmen import STANDARD, stimmen_liste
 
 router = APIRouter(prefix="/api/video")
 pult_router = APIRouter(prefix="/api/pult/video")
@@ -40,15 +42,41 @@ ARTEN = ("material", "bilder", "kurzfassung")
 FRIST = "15 minutes"
 LINK_GUELTIG_S = 30 * 60
 MP4_MAX = 15 * 1024 * 1024          # sales-claw nimmt hoechstens 15 MB (medien.MAX_BYTES)
+POSTER_MAX = 1024 * 1024            # Vorschaubild (JPEG, 540 px breit) des Video-Claws
+BILDER_MAX = 200                    # Bildauswahl der gefuehrten Bestellung
 TITEL_MAX, THEMA_MAX, TEXT_MAX, HOOK_MAX = 120, 300, 900, 120
+WUNSCH_MAX = 500                    # Aenderungswunsch (082: char_length <= 500)
+LAURA_AUS = "Laura ist gerade nicht erreichbar."
 _MANDANT = re.compile(r"^[a-z][a-z0-9_-]{0,40}$")
 _LAURA_ID = re.compile(r"^[0-9a-f][0-9a-f-]{7,63}$")
 _STIMME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 _FARBE = re.compile(r"^#[0-9a-fA-F]{6}$")
 _BILD = (".png", ".jpg", ".jpeg", ".webp")
 _DATEI = re.compile(r"^vid-[0-9a-f]{8}-[a-z0-9-]{1,40}\.mp4$")
+_POSTER = re.compile(r"^vid-[0-9a-f]{8}-[a-z0-9-]{1,40}\.jpg$")
+_JPEG = b"\xff\xd8\xff"
 _SPALTEN = ("id, mandant, art, titel, briefing, status, datei, dauer_s, bytes, befund, protokoll, "
-            "angelegt_von, versuche, erstellt_am, geaendert_am")
+            "angelegt_von, versuche, erstellt_am, geaendert_am, vorgaenger, aenderungswunsch, archiviert, poster")
+
+# Befund als Satz fuer die Seite (E4): erstes passendes Muster gewinnt, ohne Gross/Klein.
+_BEFUND_SAETZE = (
+    (re.compile(r"Zwei Versuche ohne Ergebnis", re.I), "Der Bau ist zweimal hängen geblieben."),
+    (re.compile(r"Stimmprobe", re.I), "Die gewählte Stimme gibt es nicht."),
+    (re.compile(r"Render", re.I), "Laura konnte das Video nicht fertig rendern."),
+    (re.compile(r"zeitlimit|timeout|zu lange", re.I), "Der Bau hat zu lange gedauert."),
+    (re.compile(r"abgebrochen", re.I), "Der Auftrag wurde abgebrochen."),
+)
+_BEFUND_SONST = "Das Reel konnte nicht gebaut werden."
+
+
+def befund_satz(befund: str) -> str:
+    """Rohbefund (Claw, Laura, DB) -> ein verstaendlicher Satz; leer bleibt leer."""
+    if not isinstance(befund, str) or not befund.strip():
+        return ""
+    for muster, satz in _BEFUND_SAETZE:
+        if muster.search(befund):
+            return satz
+    return _BEFUND_SONST
 
 
 # --- Briefing ---------------------------------------------------------------------------------------
@@ -128,22 +156,67 @@ def _mandant(wert, feld: str) -> str:
     return wert.strip()
 
 
+def _markenstimme(mandant: str) -> str | None:
+    """Stimme aus dem Markenprofil der Firma (marken_spiegel.profil->werte->stimme) oder None."""
+    zeile = _lesen_einer(lambda: "SELECT profil->'werte'->>'stimme' AS s FROM marketing.marken_spiegel "
+                                 f"WHERE mandant = {lit(mandant)}") or {}
+    s = zeile.get("s")
+    return s.strip() if isinstance(s, str) and s.strip() else None
+
+
+def _stimme_einsetzen(mandant: str, briefing: dict) -> None:
+    """E2 + Review Focus 3: Die Markenstimme gilt vor dem Briefing. Gibt es sie nicht mehr (nicht in
+    MARKETING_STIMMEN), wird 'standard' genommen und vermerkt - der Auftrag scheitert daran nicht.
+    Ohne Markenstimme muss eine Briefing-Stimme ausser 'standard' in der Liste stehen."""
+    liste = stimmen_liste()
+    marke = _markenstimme(mandant)
+    if marke is not None:
+        if marke in liste:
+            briefing["stimme"] = marke
+        else:
+            briefing["stimme"] = STANDARD
+            briefing["stimme_hinweis"] = f"Die Markenstimme '{marke[:40]}' gibt es nicht mehr – Standard genommen."
+    elif briefing["stimme"] != STANDARD and briefing["stimme"] not in liste:
+        raise HTTPException(422, "Diese Stimme gibt es nicht")
+
+
 def _anlegen(payload: dict, mandant_feld: str, von: str) -> str:
     mandant = _mandant(payload.get(mandant_feld), mandant_feld)
     art = payload.get("art")
     titel = _text(payload.get("titel"), "titel", TITEL_MAX)
     briefing = briefing_pruefen(art, payload.get("briefing"))
     _bilder_der_firma(mandant, briefing)
+    _stimme_einsetzen(mandant, briefing)
     zeile = _schreiben(lambda:
         f"SELECT marketing.video_auftrag_anlegen({lit(mandant)}, {lit(art)}, {lit(titel)}, "
         f"{lit(json.dumps(briefing, ensure_ascii=False))}::jsonb, {lit(von)}) AS id")
     return str(zeile.get("id"))
 
 
-def _liste(mandant: str, limit: int) -> list:
-    return _lesen(lambda:
-        f"SELECT {_SPALTEN} FROM marketing.video_auftraege WHERE mandant = {lit(mandant)} "
-        f"ORDER BY erstellt_am DESC LIMIT {int(limit)}")
+def _liste(mandant: str, limit: int, archiv: bool | None = None) -> list:
+    """Auftraege der Firma, neueste zuerst. archiv None = alle (Agent), sonst nur (nicht) archivierte.
+    vorgaenger bleibt die uuid; vorgaenger_titel kommt per Join dazu, befund_text aus befund_satz."""
+    spalten = ", ".join(f"a.{s.strip()}" for s in _SPALTEN.split(","))
+    filter_archiv = "" if archiv is None else f" AND a.archiviert = {'true' if archiv else 'false'}"
+    zeilen = _lesen(lambda:
+        f"SELECT {spalten}, v.titel AS vorgaenger_titel FROM marketing.video_auftraege a "
+        f"LEFT JOIN marketing.video_auftraege v ON v.id = a.vorgaenger "
+        f"WHERE a.mandant = {lit(mandant)}{filter_archiv} ORDER BY a.erstellt_am DESC LIMIT {int(limit)}")
+    for z in zeilen:
+        if isinstance(z, dict):
+            z["befund_text"] = befund_satz(z.get("befund") or "")
+    return zeilen
+
+
+def _auftrag_der_firma(aid: str, mandant) -> str:
+    """Review Focus 1: Der Auftrag muss der angegebenen Firma gehoeren, sonst 404 (die SQL-Funktionen
+    nochmal/archivieren/abbrechen pruefen den Mandanten nicht)."""
+    m = _mandant(mandant, "mandant")
+    a = _uuid_oder_404(aid)
+    zeile = _lesen_einer(lambda: f"SELECT mandant FROM marketing.video_auftraege WHERE id = {lit(a)}::uuid")
+    if not zeile or zeile.get("mandant") != m:
+        raise HTTPException(404, "Unbekannter Auftrag")
+    return a
 
 
 # --- Agent ------------------------------------------------------------------------------------------
@@ -164,10 +237,10 @@ def agent_liste(firma: str = Query(...), limit: int = Query(20, ge=1, le=100),
 # --- Pult (Betreiber) -------------------------------------------------------------------------------
 
 @pult_router.get("")
-def pult_liste(mandant: str = Query(...), limit: int = Query(50, ge=1, le=200),
+def pult_liste(mandant: str = Query(...), limit: int = Query(50, ge=1, le=200), archiv: bool = Query(False),
                x_pult_key: str | None = Header(None)):
     _schluessel(x_pult_key)
-    return {"auftraege": _liste(_mandant(mandant, "mandant"), limit)}
+    return {"auftraege": _liste(_mandant(mandant, "mandant"), limit, archiv)}
 
 
 @pult_router.post("")
@@ -177,11 +250,98 @@ def pult_anlegen(payload: dict = Body(...), x_pult_key: str | None = Header(None
 
 
 @pult_router.post("/{aid}/abbrechen")
-def pult_abbrechen(aid: str, x_pult_key: str | None = Header(None)):
+def pult_abbrechen(aid: str, payload: dict | None = Body(None), x_pult_key: str | None = Header(None)):
+    """Mit {mandant} im Koerper nur fuer einen Auftrag dieser Firma (sonst 404); ohne wie bisher."""
     _schluessel(x_pult_key)
-    a = _uuid_oder_404(aid)
+    if isinstance(payload, dict) and payload.get("mandant") is not None:
+        a = _auftrag_der_firma(aid, payload.get("mandant"))
+    else:
+        a = _uuid_oder_404(aid)
     zeile = _schreiben(lambda: f"SELECT marketing.video_abbrechen({lit(a)}::uuid) AS s")
     return {"status": zeile.get("s")}
+
+
+@pult_router.post("/{aid}/nochmal")
+def pult_nochmal(aid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    """Neu bauen: aus fertig mit Aenderungswunsch, aus fehler auch ohne (neu versuchen). Regeln in 082."""
+    _schluessel(x_pult_key)
+    wunsch = payload.get("wunsch")
+    wunsch = "" if wunsch is None else wunsch
+    if not isinstance(wunsch, str) or len(wunsch.strip()) > WUNSCH_MAX:
+        raise HTTPException(422, f"wunsch: höchstens {WUNSCH_MAX} Zeichen")
+    a = _auftrag_der_firma(aid, payload.get("mandant"))
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.video_nochmal({lit(a)}::uuid, {lit(wunsch.strip())}, 'betreiber') AS id")
+    return {"auftrag": str(zeile.get("id"))}
+
+
+@pult_router.post("/{aid}/archivieren")
+def pult_archivieren(aid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    """{an: true} archiviert, {an: false} zeigt wieder an; nur erledigte Auftraege (sonst ok false)."""
+    _schluessel(x_pult_key)
+    an = payload.get("an")
+    if not isinstance(an, bool):
+        raise HTTPException(422, "an muss true oder false sein")
+    a = _auftrag_der_firma(aid, payload.get("mandant"))
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.video_archivieren({lit(a)}::uuid, {'true' if an else 'false'}) AS ok")
+    return {"ok": bool(zeile.get("ok"))}
+
+
+def _medienbilder(mandant: str) -> list[str]:
+    """Bilder in den Medienordnern, die keiner anderen Firma gehoeren (Regel wie _bilder_der_firma),
+    neueste zuerst, hoechstens BILDER_MAX. Vorschaubilder der Reels (vid-*.jpg) sind keine Auswahl."""
+    s = medien_mandant.sicht(mandant)
+    gefunden: dict[str, float] = {}
+    for o in (os.environ.get("MARKETING_MEDIEN_ORDNER", "").strip(),
+              os.environ.get("MARKETING_BILD_ORDNER", "").strip()):
+        if not o or not os.path.isdir(o):
+            continue
+        try:
+            namen = os.listdir(o)
+        except OSError:
+            continue
+        for n in namen:
+            pfad = os.path.join(o, n)
+            if (n in gefunden or ":" in n or not medien_mandant._gueltig(n) or not n.lower().endswith(_BILD)
+                    or _POSTER.fullmatch(n) or not os.path.isfile(pfad) or os.path.islink(pfad)
+                    or medien_mandant.ist_fremd(n, mandant, s)):
+                continue
+            try:
+                gefunden[n] = os.path.getmtime(pfad)
+            except OSError:
+                continue
+    return sorted(gefunden, key=lambda n: (-gefunden[n], n))[:BILDER_MAX]
+
+
+@pult_router.get("/bilder")
+def pult_bilder(mandant: str = Query(...), x_pult_key: str | None = Header(None)):
+    """Medienbilder der Firma fuer die Bestellung 'Aus Bildern' (E3)."""
+    _schluessel(x_pult_key)
+    return {"bilder": [{"name": n} for n in _medienbilder(_mandant(mandant, "mandant"))]}
+
+
+@pult_router.get("/material")
+def pult_material(x_pult_key: str | None = Header(None)):
+    """Laura-Videos (E3). Nur Eintraege mit Dauer > 0 sind Videos. Laura weg = 200 mit Hinweis."""
+    _schluessel(x_pult_key)
+    try:
+        antwort = laura.alle_videos()
+    except Exception:  # noqa: BLE001 - die Bestellung bleibt ohne Auswahl moeglich (Review Focus 5)
+        antwort = None
+    if not isinstance(antwort, dict) or not antwort.get("ok") or not isinstance(antwort.get("daten"), list):
+        return {"videos": [], "hinweis": LAURA_AUS}
+    videos = []
+    for v in antwort["daten"]:
+        if not isinstance(v, dict):
+            continue
+        dauer, kennung = v.get("dauer_s"), v.get("kennung")
+        if (isinstance(dauer, bool) or not isinstance(dauer, (int, float)) or dauer <= 0
+                or not isinstance(kennung, str) or not _LAURA_ID.fullmatch(kennung)):
+            continue
+        videos.append({"kennung": kennung, "name": str(v.get("name") or "?"),
+                       "projekt": str(v.get("projekt") or ""), "dauer_s": dauer})
+    return {"videos": videos}
 
 
 # --- Arbeiter (Video-Claw am PC) --------------------------------------------------------------------
@@ -353,8 +513,19 @@ def _speichern(a: str, roh: bytes) -> dict:
         raise HTTPException(422, "Nur MP4")
     ordner = _ordner()
     auftrag = _in_arbeit(a)
-    name = f"vid-{a[:8]}-{_slug(str(auftrag.get('titel') or ''))[:40].strip('-') or 'reel'}.mp4"
+    name = f"{_stamm(a, auftrag.get('titel'))}.mp4"
     medien_mandant.zuordnen([name], str(auftrag.get("mandant")))
+    _ablegen(ordner, name, roh, "MP4 konnte nicht abgelegt werden")
+    return {"name": name, "bytes": len(roh), "dauer_s": mp4_dauer(roh)}
+
+
+def _stamm(a: str, titel) -> str:
+    """Dateistamm eines Reels: vid-<id[:8]>-<Titel-Slug> (MP4 und Vorschaubild teilen ihn)."""
+    return f"vid-{a[:8]}-{_slug(str(titel or ''))[:40].strip('-') or 'reel'}"
+
+
+def _ablegen(ordner: str, name: str, roh: bytes, fehler: str) -> None:
+    """Atomar ablegen (.teil + os.replace); jeder OSError -> 503."""
     ziel = os.path.join(ordner, name)
     zwischen = ziel + ".teil"
     try:
@@ -367,8 +538,7 @@ def _speichern(a: str, roh: bytes) -> dict:
             os.remove(zwischen)
         except OSError:
             pass
-        raise HTTPException(503, "MP4 konnte nicht abgelegt werden")
-    return {"name": name, "bytes": len(roh), "dauer_s": mp4_dauer(roh)}
+        raise HTTPException(503, fehler)
 
 
 @router.post("/arbeiter/{aid}/datei")
@@ -381,6 +551,43 @@ async def arbeiter_datei(aid: str, request: Request, x_bild_key: str | None = He
         if len(roh) > MP4_MAX:
             raise HTTPException(413, "MP4 groesser als 15 MB")
     return _speichern(a, bytes(roh))
+
+
+@router.post("/arbeiter/{aid}/poster")
+async def arbeiter_poster(aid: str, request: Request, x_bild_key: str | None = Header(None)):
+    """Vorschaubild (rohes JPEG, hoechstens 1 MiB) neben das MP4: vid-<aid8>-<stamm>.jpg mit dem Stamm von
+    datei, sonst dem Titel-Slug. Der Firma zuordnen, ablegen, dann marketing.video_poster (082)."""
+    _bild_schluessel(x_bild_key)
+    a = _auftrag_id(aid)
+    roh = bytearray()
+    async for stueck in request.stream():
+        roh += stueck
+        if len(roh) > POSTER_MAX:
+            raise HTTPException(413, "Vorschaubild groesser als 1 MiB")
+    if not bytes(roh[:3]) == _JPEG:
+        raise HTTPException(422, "Nur JPEG")
+    return await run_in_threadpool(_poster_speichern, a, bytes(roh))
+
+
+def _poster_speichern(a: str, roh: bytes) -> dict:
+    ordner = _ordner()
+    auftrag = _lesen_einer(lambda:
+        f"SELECT titel, mandant, status, datei FROM marketing.video_auftraege WHERE id = {lit(a)}::uuid")
+    if not auftrag:
+        raise HTTPException(404, "Unbekannter Auftrag")
+    if auftrag.get("status") not in ("in_arbeit", "fertig"):
+        raise HTTPException(409, "Auftrag ist weder in Arbeit noch fertig")
+    datei = auftrag.get("datei")
+    if isinstance(datei, str) and _DATEI.fullmatch(datei) and datei.startswith(f"vid-{a[:8]}-"):
+        name = datei[:-len(".mp4")] + ".jpg"
+    else:
+        name = f"{_stamm(a, auftrag.get('titel'))}.jpg"
+    medien_mandant.zuordnen([name], str(auftrag.get("mandant")))
+    _ablegen(ordner, name, roh, "Vorschaubild konnte nicht abgelegt werden")
+    zeile = _schreiben(lambda: f"SELECT marketing.video_poster({lit(a)}::uuid, {lit(name)}) AS ok")
+    if not zeile.get("ok"):
+        raise HTTPException(409, "Vorschaubild passt nicht zum Auftrag")
+    return {"name": name}
 
 
 _LAURA_EXPORT_PFAD = re.compile(r"^/object/sign/laura/exports/[A-Za-z0-9_-]{1,64}\.mp4$")

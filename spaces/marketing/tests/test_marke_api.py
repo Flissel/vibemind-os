@@ -80,6 +80,7 @@ PULT_ROUTEN = [
     ("post", f"/api/pult/marke/vorschlaege/{VID}/rueckgaengig"),
     ("get", f"/api/pult/marke/vorschlaege/{VID}/vorschau"),
     ("post", f"/api/pult/inhalte/{IID}/marke_hinweis_aus"),
+    ("get", "/api/pult/stimmen"),
 ]
 ARBEITER_ROUTEN = [
     ("post", "/api/marke/arbeiter/naechster"),
@@ -1382,3 +1383,22 @@ def test_vorschlag_direkt_nur_wenn_auch_der_vorschlag_direkt_ist(umg):
                json={"vorschlag": {"abschnitte": {"Ton": "warm"}, "direkt": True}, "antwort": "Hier",
                      "direkt": False})
     assert r.json() == {"vorschlag": VID, "direkt": False} and len(f.sql) == 1
+
+
+# ─── Stimmen fuer Reels und Podcast (Reels Stufe 1, E2) ──────────────────
+
+
+def test_stimmen_route(umg, monkeypatch):
+    f, _, c = umg
+    monkeypatch.setenv("MARKETING_STIMMEN", " eigene-a,eigene-b\r\n")
+    r = c.get("/api/pult/stimmen", headers=H)
+    assert r.status_code == 200 and r.json() == {"stimmen": ["eigene-a", "eigene-b"]}
+    assert f.sql == []
+
+
+def test_stimmen_vorgabe_und_ungueltige_namen(umg, monkeypatch):
+    _, _, c = umg
+    monkeypatch.delenv("MARKETING_STIMMEN", raising=False)
+    assert c.get("/api/pult/stimmen", headers=H).json() == {"stimmen": ["eigene-a", "eigene-b", "eigene-c"]}
+    monkeypatch.setenv("MARKETING_STIMMEN", "Anna,../x,ok_1,,ok_1, b ")
+    assert c.get("/api/pult/stimmen", headers=H).json() == {"stimmen": ["ok_1", "b"]}
