@@ -18,10 +18,13 @@ import json
 import os
 import re
 import struct
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeout
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -47,6 +50,11 @@ BILDER_MAX = 200                    # Bildauswahl der gefuehrten Bestellung
 TITEL_MAX, THEMA_MAX, TEXT_MAX, HOOK_MAX = 120, 300, 900, 120
 WUNSCH_MAX = 500                    # Aenderungswunsch (082: char_length <= 500)
 LAURA_AUS = "Laura ist gerade nicht erreichbar."
+LAURA_LANGSAM = "Laura antwortet gerade zu langsam – versuch es gleich nochmal."
+LAURA_TEILWEISE = "Einige Laura-Projekte antworten gerade nicht."
+LAURA_NAME_MAX = 120
+MATERIAL_FRIST_S = 6.0              # so lange wartet /material hoechstens auf Laura
+MATERIAL_SPEICHER_S = 60.0          # so lange gilt das letzte gute Ergebnis
 _MANDANT = re.compile(r"^[a-z][a-z0-9_-]{0,40}$")
 _LAURA_ID = re.compile(r"^[0-9a-f][0-9a-f-]{7,63}$")
 _STIMME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
@@ -171,7 +179,7 @@ def _stimme_einsetzen(mandant: str, briefing: dict) -> None:
     liste = stimmen_liste()
     marke = _markenstimme(mandant)
     if marke is not None:
-        if marke in liste:
+        if marke == STANDARD or marke in liste:
             briefing["stimme"] = marke
         else:
             briefing["stimme"] = STANDARD
@@ -321,16 +329,10 @@ def pult_bilder(mandant: str = Query(...), x_pult_key: str | None = Header(None)
     return {"bilder": [{"name": n} for n in _medienbilder(_mandant(mandant, "mandant"))]}
 
 
-@pult_router.get("/material")
-def pult_material(x_pult_key: str | None = Header(None)):
-    """Laura-Videos (E3). Nur Eintraege mit Dauer > 0 sind Videos. Laura weg = 200 mit Hinweis."""
-    _schluessel(x_pult_key)
-    try:
-        antwort = laura.alle_videos()
-    except Exception:  # noqa: BLE001 - die Bestellung bleibt ohne Auswahl moeglich (Review Focus 5)
-        antwort = None
+def _material_aufbereiten(antwort) -> dict | None:
+    """Antwort von laura.alle_videos -> {"videos": [...], ["hinweis"]}; None, wenn Laura nicht lieferte."""
     if not isinstance(antwort, dict) or not antwort.get("ok") or not isinstance(antwort.get("daten"), list):
-        return {"videos": [], "hinweis": LAURA_AUS}
+        return None
     videos = []
     for v in antwort["daten"]:
         if not isinstance(v, dict):
@@ -339,9 +341,61 @@ def pult_material(x_pult_key: str | None = Header(None)):
         if (isinstance(dauer, bool) or not isinstance(dauer, (int, float)) or dauer <= 0
                 or not isinstance(kennung, str) or not _LAURA_ID.fullmatch(kennung)):
             continue
-        videos.append({"kennung": kennung, "name": str(v.get("name") or "?"),
-                       "projekt": str(v.get("projekt") or ""), "dauer_s": dauer})
-    return {"videos": videos}
+        videos.append({"kennung": kennung, "name": str(v.get("name") or "?")[:LAURA_NAME_MAX],
+                       "projekt": str(v.get("projekt") or "")[:LAURA_NAME_MAX], "dauer_s": dauer})
+    ergebnis: dict = {"videos": videos}
+    if antwort.get("stumme_projekte"):
+        ergebnis["hinweis"] = LAURA_TEILWEISE
+    return ergebnis
+
+
+# Ein Laura-Scan laeuft ueber alle Projekte (je bis zu 20 s). Darum: hoechstens ein Lauf zugleich, im
+# eigenen Faden; die Route wartet hoechstens MATERIAL_FRIST_S; das letzte gute Ergebnis gilt 60 s.
+_MATERIAL_SPERRE = threading.Lock()
+_MATERIAL: dict = {"zeit": 0.0, "ergebnis": None, "lauf": None}
+_jetzt = time.monotonic
+
+
+def _material_zuruecksetzen() -> None:
+    with _MATERIAL_SPERRE:
+        _MATERIAL.update(zeit=0.0, ergebnis=None, lauf=None)
+
+
+def _material_lauf(lauf: Future) -> None:
+    try:
+        ergebnis = _material_aufbereiten(laura.alle_videos())
+    except Exception:  # noqa: BLE001 - die Bestellung bleibt ohne Auswahl moeglich (Review Focus 5)
+        ergebnis = None
+    if ergebnis is not None:
+        with _MATERIAL_SPERRE:
+            _MATERIAL.update(zeit=_jetzt(), ergebnis=ergebnis)
+    lauf.set_result(ergebnis if ergebnis is not None else {"videos": [], "hinweis": LAURA_AUS})
+
+
+def _material_holen() -> dict:
+    with _MATERIAL_SPERRE:
+        alt = _MATERIAL["ergebnis"]
+        if alt is not None and _jetzt() - _MATERIAL["zeit"] < MATERIAL_SPEICHER_S:
+            return alt
+        lauf = _MATERIAL["lauf"]
+        if lauf is None or lauf.done():
+            lauf = Future()
+            _MATERIAL["lauf"] = lauf
+            threading.Thread(target=_material_lauf, args=(lauf,), name="laura-material", daemon=True).start()
+        elif alt is not None:
+            return alt                      # es laeuft schon ein Scan: alter Stand statt eines zweiten
+    try:
+        return lauf.result(timeout=MATERIAL_FRIST_S)
+    except FutureTimeout:
+        return alt if alt is not None else {"videos": [], "hinweis": LAURA_LANGSAM}
+
+
+@pult_router.get("/material")
+def pult_material(x_pult_key: str | None = Header(None)):
+    """Laura-Videos (E3). Nur Eintraege mit Dauer > 0 sind Videos. Laura weg oder zu langsam = 200 mit
+    Hinweis; die Bestellung bleibt ohne Auswahl moeglich (Review Focus 5)."""
+    _schluessel(x_pult_key)
+    return _material_holen()
 
 
 # --- Arbeiter (Video-Claw am PC) --------------------------------------------------------------------
@@ -584,6 +638,10 @@ def _poster_speichern(a: str, roh: bytes) -> dict:
         name = f"{_stamm(a, auftrag.get('titel'))}.jpg"
     medien_mandant.zuordnen([name], str(auftrag.get("mandant")))
     _ablegen(ordner, name, roh, "Vorschaubild konnte nicht abgelegt werden")
+    # Verwaistes Vorschaubild: lehnt video_poster danach ab (false/Ausnahme, z. B. der Auftrag wurde inzwischen
+    # abgebrochen), bleibt die Datei ohne Verweis liegen. Das ist gewollt harmlos: sie ist der Firma des
+    # Auftrags zugeordnet, steht in keiner Bildauswahl (vid-*.jpg faellt aus /bilder) und ein spaeterer
+    # Versuch ueberschreibt sie unter demselben Namen. Erst ablegen, dann verweisen: nie ein Verweis ohne Datei.
     zeile = _schreiben(lambda: f"SELECT marketing.video_poster({lit(a)}::uuid, {lit(name)}) AS ok")
     if not zeile.get("ok"):
         raise HTTPException(409, "Vorschaubild passt nicht zum Auftrag")

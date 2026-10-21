@@ -1402,3 +1402,13 @@ def test_stimmen_vorgabe_und_ungueltige_namen(umg, monkeypatch):
     assert c.get("/api/pult/stimmen", headers=H).json() == {"stimmen": ["eigene-a", "eigene-b", "eigene-c"]}
     monkeypatch.setenv("MARKETING_STIMMEN", "Anna,../x,ok_1,,ok_1, b ")
     assert c.get("/api/pult/stimmen", headers=H).json() == {"stimmen": ["ok_1", "b"]}
+
+
+def test_stimmen_ungueltige_namen_werden_gemeldet(umg, monkeypatch, caplog):
+    import logging
+    _, _, c = umg
+    monkeypatch.setenv("MARKETING_STIMMEN", "Anna,ok,../x")
+    with caplog.at_level(logging.WARNING, logger="spaces.marketing.claw.stimmen"):
+        assert c.get("/api/pult/stimmen", headers=H).json() == {"stimmen": ["ok"]}
+    meldung = " ".join(r.getMessage() for r in caplog.records if r.name == "spaces.marketing.claw.stimmen")
+    assert "Anna" in meldung and "../x" in meldung

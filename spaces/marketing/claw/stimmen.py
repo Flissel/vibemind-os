@@ -6,8 +6,11 @@ Ein eigenes kleines Modul, damit api/, claw/ und workers/ dieselbe Liste lesen, 
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
+
+log = logging.getLogger(__name__)
 
 STANDARD = "standard"
 VORGABE = "eigene-a,eigene-b,eigene-c"
@@ -18,9 +21,12 @@ def stimmen_liste() -> list[str]:
     """Gueltige Namen aus MARKETING_STIMMEN, in Reihenfolge, ohne Doppelte.
 
     strip() je Eintrag: eine Env-Datei mit Windows-Zeilenenden haengt sonst ein '\\r' an den letzten Namen.
-    Ungueltige Namen fallen still weg (der Name wird spaeter Dateiname einer Stimmprobe)."""
+    Ungueltige Namen fallen weg (der Name wird spaeter Dateiname einer Stimmprobe) und werden gemeldet."""
     roh = os.environ.get("MARKETING_STIMMEN")
     if roh is None:
         roh = VORGABE
-    namen = (n.strip() for n in roh.split(","))
-    return list(dict.fromkeys(n for n in namen if n and NAME.fullmatch(n)))
+    namen = [n.strip() for n in roh.split(",") if n.strip()]
+    ungueltig = [n for n in namen if not NAME.fullmatch(n)]
+    if ungueltig:
+        log.warning("MARKETING_STIMMEN: ungueltige Namen ignoriert: %s", ", ".join(repr(n[:60]) for n in ungueltig))
+    return list(dict.fromkeys(n for n in namen if NAME.fullmatch(n)))

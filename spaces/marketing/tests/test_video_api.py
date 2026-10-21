@@ -37,6 +37,7 @@ def db(monkeypatch, tmp_path):
     monkeypatch.setattr(medien_mandant, "sicht", lambda m: {"name": m, "eigene": set(), "gemeinsam": set(),
                                                             "fremde": {"fremd.png"}})
     f.ordner = tmp_path
+    video._material_zuruecksetzen()
     return f
 
 
@@ -606,3 +607,95 @@ def test_poster_db_lehnt_ab(db, c):
     db.antworten = [_poster_auftrag()]
     db.fehler = [None, RuntimeError('ERROR:  new row for relation "video_auftraege" violates check constraint')]
     assert c.post(f"/api/video/arbeiter/{AID}/poster", headers=B, content=JPEG).status_code == 422
+
+
+# --- Review-Fixes Task 2: Laura-Frist, Zwischenspeicher, stumme Projekte, Kappung, Markenstimme standard ----
+
+LANGSAM = "Laura antwortet gerade zu langsam – versuch es gleich nochmal."
+VIDEO = {"kennung": "a1b2c3d4-0000-0000-0000-000000000001", "name": "Messe", "projekt": "P", "projekt_id": "p",
+         "dauer_s": 95, "aufloesung": "1920x1080"}
+
+
+def test_material_laura_langsam_frist_und_nur_ein_lauf(db, c, monkeypatch):
+    import threading
+    frei, aufrufe = threading.Event(), []
+
+    def langsam():
+        aufrufe.append(1)
+        frei.wait(5)
+        return {"ok": True, "daten": [VIDEO]}
+    monkeypatch.setattr(video, "MATERIAL_FRIST_S", 0.2)
+    monkeypatch.setattr(video.laura, "alle_videos", langsam)
+    try:
+        start = time.monotonic()
+        r = c.get("/api/pult/video/material", headers=P)
+        assert time.monotonic() - start < 1.5
+        assert r.status_code == 200 and r.json() == {"videos": [], "hinweis": LANGSAM}
+        # zweite Anfrage waehrend des Laufs: Hinweis, KEIN zweiter Lauf
+        assert c.get("/api/pult/video/material", headers=P).json()["hinweis"] == LANGSAM
+        assert len(aufrufe) == 1
+    finally:
+        frei.set()
+    video._MATERIAL["lauf"].result(timeout=2)
+    # der spaete Lauf fuellt den Zwischenspeicher
+    r = c.get("/api/pult/video/material", headers=P)
+    assert r.json() == {"videos": [{"kennung": VIDEO["kennung"], "name": "Messe", "projekt": "P", "dauer_s": 95}]}
+    assert len(aufrufe) == 1
+
+
+def test_material_zwischenspeicher_60_s(db, c, monkeypatch):
+    uhr, aufrufe = [1000.0], []
+    monkeypatch.setattr(video, "_jetzt", lambda: uhr[0])
+    monkeypatch.setattr(video.laura, "alle_videos", lambda: aufrufe.append(1) or {"ok": True, "daten": [VIDEO]})
+    assert len(c.get("/api/pult/video/material", headers=P).json()["videos"]) == 1
+    uhr[0] += 59
+    assert len(c.get("/api/pult/video/material", headers=P).json()["videos"]) == 1
+    assert len(aufrufe) == 1
+    uhr[0] += 2
+    c.get("/api/pult/video/material", headers=P)
+    assert len(aufrufe) == 2
+
+
+def test_material_alter_stand_wenn_neuer_lauf_zu_langsam(db, c, monkeypatch):
+    import threading
+    uhr, frei = [1000.0], threading.Event()
+    monkeypatch.setattr(video, "_jetzt", lambda: uhr[0])
+    monkeypatch.setattr(video, "MATERIAL_FRIST_S", 0.2)
+    monkeypatch.setattr(video.laura, "alle_videos", lambda: {"ok": True, "daten": [VIDEO]})
+    c.get("/api/pult/video/material", headers=P)
+    uhr[0] += 120
+    monkeypatch.setattr(video.laura, "alle_videos", lambda: frei.wait(5) and {"ok": True, "daten": []})
+    try:
+        assert len(c.get("/api/pult/video/material", headers=P).json()["videos"]) == 1
+    finally:
+        frei.set()
+    video._MATERIAL["lauf"].result(timeout=2)       # kein Faden laeuft in den naechsten Test hinein
+
+
+def test_material_fehler_wird_nicht_gespeichert(db, c, monkeypatch):
+    aufrufe = []
+    monkeypatch.setattr(video.laura, "alle_videos", lambda: aufrufe.append(1) or {"ok": False, "fehler": "x"})
+    c.get("/api/pult/video/material", headers=P)
+    c.get("/api/pult/video/material", headers=P)
+    assert len(aufrufe) == 2
+
+
+def test_material_stumme_projekte_hinweis(db, c, monkeypatch):
+    monkeypatch.setattr(video.laura, "alle_videos", lambda: {
+        "ok": True, "daten": [VIDEO], "stumme_projekte": [{"projekt": "Q", "fehler": "503"}]})
+    r = c.get("/api/pult/video/material", headers=P).json()
+    assert len(r["videos"]) == 1 and r["hinweis"] == "Einige Laura-Projekte antworten gerade nicht."
+
+
+def test_material_namen_gekappt(db, c, monkeypatch):
+    monkeypatch.setattr(video.laura, "alle_videos", lambda: {
+        "ok": True, "daten": [{**VIDEO, "name": "n" * 300, "projekt": "p" * 300}]})
+    v = c.get("/api/pult/video/material", headers=P).json()["videos"][0]
+    assert v["name"] == "n" * 120 and v["projekt"] == "p" * 120
+
+
+def test_anlegen_markenstimme_standard_ohne_hinweis(db, c):
+    db.antworten = [[{"s": "standard"}], [{"id": AID}]]
+    assert _anlegen(c, {**MATERIAL, "stimme": "eigene-a"}).status_code == 200
+    b = _briefing_aus(db.sql[-1])
+    assert b["stimme"] == "standard" and "stimme_hinweis" not in b
