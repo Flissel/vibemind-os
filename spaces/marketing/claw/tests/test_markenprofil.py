@@ -446,7 +446,6 @@ def test_altes_profil_behaelt_unbekannte_abschnitte():
     assert "Merke dir das." in neu
 
 
-
 # --- Markenstimme (Reels Stufe 1, E2) ----------------------------------------------
 
 def test_stimme_im_kopf_gelesen_und_geschrieben(wurzel):

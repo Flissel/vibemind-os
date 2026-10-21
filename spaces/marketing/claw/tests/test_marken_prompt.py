@@ -439,7 +439,6 @@ def test_ist_direkt():
     assert kp.ist_direkt({"mustertext": {"betreff": "b"}}) is False
 
 
-
 # --- Markenstimme (Reels Stufe 1, E2) ----------------------------------------------
 
 @pytest.fixture

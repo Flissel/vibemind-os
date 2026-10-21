@@ -1414,7 +1414,6 @@ def test_stimmen_ungueltige_namen_werden_gemeldet(umg, monkeypatch, caplog):
     assert "Anna" in meldung and "../x" in meldung
 
 
-
 # --- Markenstimme (Reels Stufe 1, E2) ----------------------------------------------
 
 def test_formular_nimmt_stimme(umg):

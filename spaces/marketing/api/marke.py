@@ -345,7 +345,8 @@ def _formular(roh) -> dict:
     if set(roh) - set(FORMULAR_GRENZEN) - set(FORMULAR_OPTIONAL) - {"abschnitte"}:
         raise HTTPException(422, "formular kennt nur Farben, Schriften, stimme, webseite und abschnitte")
     aus: dict = {}
-    for k, grenze in {**FORMULAR_GRENZEN, **{k: g for k, g in FORMULAR_OPTIONAL.items() if k in roh}}.items():
+    grenzen = {**FORMULAR_GRENZEN, **{k: g for k, g in FORMULAR_OPTIONAL.items() if k in roh}}
+    for k, grenze in grenzen.items():
         wert = roh.get(k, "")
         if not isinstance(wert, str) or len(wert) > grenze:
             raise HTTPException(422, f"{k} muss Text mit höchstens {grenze} Zeichen sein")

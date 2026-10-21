@@ -22,7 +22,7 @@ import time
 import urllib.parse
 
 from spaces.marketing.claw import (bild_comfy, denkspur, logo_bearbeiten, markenprofil, marken_prompt,
-                                   markenwissen, pdf_bilder, webseite, webseite_speicher)
+                                   markenwissen, pdf_bilder, stimmen, webseite, webseite_speicher)
 from spaces.marketing.workers import chat_worker as cw
 from spaces.marketing.workers.bild_worker import ApiFehler
 
@@ -502,6 +502,9 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
                     erg["korrekturen"] = [k for k in erg["korrekturen"] if k["feld"] != "webseite"]
                 if erg["vorschlag"] is None:
                     raise marken_prompt.AntwortFehler("Zur Bearbeitung gehört ein vollständiger Vorschlag")
+                stimme = str(formular.get("stimme") or "").strip() if "stimme" in formular else None
+                if stimme is not None and (not stimme or stimme in stimmen.stimmen_liste()):
+                    erg["vorschlag"]["stimme"] = stimme      # gueltig: kommt wie das Logo nie vom Agenten (null schluckt nichts)
                 korrigiert = marken_prompt.formular_abgleich(formular, erg["vorschlag"], erg["korrekturen"])
         except marken_prompt.AntwortFehler as e:
             if versuch == 2:

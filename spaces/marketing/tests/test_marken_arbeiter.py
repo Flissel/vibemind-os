@@ -1581,7 +1581,6 @@ def test_rueckgaengig_mit_leerem_vorher_entfernt_den_neuen_abschnitt(wurzel):
     assert "Pendler aus dem Veedel." not in (wurzel / "Radhaus" / "Marke.md").read_text(encoding="utf-8")
 
 
-
 # --- Markenstimme (Reels Stufe 1, E2) ----------------------------------------------
 
 @pytest.fixture
@@ -1644,3 +1643,19 @@ def test_bearbeitung_stimme_aus_dem_formular_woertlich(wurzel, stimmen):
 def test_profil_daten_enthaelt_stimme():
     p = mp.aus_text("---\nakzent: #123456\nstimme: eigene-a\n---\n## Ton\nT\n")
     assert ma.profil_daten(p)["werte"] == {"akzent": "#123456", "stimme": "eigene-a"}
+
+
+@pytest.mark.parametrize("form_stimme, vorher, erwartet", [("", "eigene-a", None), ("eigene-b", "eigene-a", "eigene-b"),
+                                                          ("eigene-b", None, "eigene-b")])
+def test_bearbeitung_formularstimme_gilt_auch_bei_agent_null(wurzel, stimmen, form_stimme, vorher, erwartet):
+    """Der Agent antwortet mit "stimme": null - Entfernen und Aendern aus dem Formular gehen trotzdem durch."""
+    mp.schreiben(str(wurzel), "radhaus", "Radhaus", dict(WERTE, **({"stimme": vorher} if vorher else {})),
+                 {"Ton": "Laut."}, None, "T", JETZT)
+    form = {**FORMULAR, "stimme": form_stimme}
+    api = Api({**BEARB, "kontext": {"formular": form, "woertlich": True}})
+    assert _lauf(api, Fragen(_antwort({**VORSCHLAG, "stimme": None}))) == "fertig"
+    gespeichert = api.aufrufe("vorschlag")[0][2]["vorschlag"]
+    assert gespeichert["stimme"] == form_stimme
+    api = Api(_uebernehmen(gespeichert))
+    assert _lauf(api, Fragen()) == "fertig"
+    assert mp.lesen(str(wurzel), "radhaus", "Radhaus").werte.get("stimme") == erwartet
