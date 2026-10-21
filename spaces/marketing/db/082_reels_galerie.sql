@@ -14,10 +14,12 @@ ALTER TABLE marketing.video_auftraege
         CHECK (poster IS NULL OR poster ~ '^vid-[0-9a-f]{8}-[a-z0-9-]{1,40}\.jpg$');
 
 -- Nochmal: aus fertig (mit Wunsch) oder fehler (Wunsch darf leer sein = neu versuchen) entsteht ein neuer
--- offener Auftrag mit denselben Eckdaten. Der alte bleibt, wie er ist.
+-- offener Auftrag mit denselben Eckdaten. Der alte bleibt, wie er ist. Neu versuchen einer gescheiterten
+-- Ueberarbeitung (fehler, leerer Wunsch, hat Vorgaenger) wiederholt dieselbe Ueberarbeitung: Vorgaenger und
+-- Wunsch kommen vom gescheiterten Auftrag. Laeuft fuer denselben Vorgaenger schon ein Bau, wird abgelehnt.
 CREATE OR REPLACE FUNCTION marketing.video_nochmal(p_alt uuid, p_wunsch text, p_von text) RETURNS uuid
 LANGUAGE plpgsql AS $$
-DECLARE a marketing.video_auftraege; w text := btrim(coalesce(p_wunsch, '')); v uuid;
+DECLARE a marketing.video_auftraege; w text := btrim(coalesce(p_wunsch, '')); vg uuid; v uuid;
 BEGIN
   SELECT * INTO a FROM marketing.video_auftraege WHERE id = p_alt;
   IF a.id IS NULL OR a.status NOT IN ('fertig', 'fehler') THEN
@@ -26,17 +28,28 @@ BEGIN
     RAISE EXCEPTION 'Bitte beschreiben, was am Reel anders werden soll'; END IF;
   IF char_length(w) > 500 THEN
     RAISE EXCEPTION 'Der Änderungswunsch ist zu lang (höchstens 500 Zeichen)'; END IF;
+  vg := a.id;
+  IF a.status = 'fehler' AND char_length(w) = 0 AND a.vorgaenger IS NOT NULL THEN
+    vg := a.vorgaenger; w := a.aenderungswunsch;
+  END IF;
+  -- Sperre auf die Vorgaenger-Zeile: zwei gleichzeitige Klicks legen nicht zwei Bauten an.
+  PERFORM 1 FROM marketing.video_auftraege WHERE id = vg FOR UPDATE;
+  IF EXISTS (SELECT 1 FROM marketing.video_auftraege
+              WHERE vorgaenger = vg AND status IN ('offen', 'in_arbeit')) THEN
+    RAISE EXCEPTION 'Es läuft schon ein neuer Bau für dieses Reel'; END IF;
   INSERT INTO marketing.video_auftraege (mandant, art, titel, briefing, angelegt_von, vorgaenger, aenderungswunsch)
-  VALUES (a.mandant, a.art, a.titel, a.briefing, p_von, a.id, w)
+  VALUES (a.mandant, a.art, a.titel, a.briefing, p_von, vg, w)
   RETURNING id INTO v;
   RETURN v;
 END $$;
 
 -- Archivieren (p_an = true) oder wieder anzeigen (false); nur erledigte Auftraege, sonst false.
+-- p_an NULL aendert nichts (false).
 CREATE OR REPLACE FUNCTION marketing.video_archivieren(p_id uuid, p_an boolean) RETURNS boolean
 LANGUAGE sql AS $$
-  WITH x AS (UPDATE marketing.video_auftraege SET archiviert = coalesce(p_an, false), geaendert_am = now()
-              WHERE id = p_id AND status IN ('fertig', 'fehler', 'abgebrochen') RETURNING 1)
+  WITH x AS (UPDATE marketing.video_auftraege SET archiviert = p_an, geaendert_am = now()
+              WHERE id = p_id AND p_an IS NOT NULL AND status IN ('fertig', 'fehler', 'abgebrochen')
+             RETURNING 1)
   SELECT EXISTS (SELECT 1 FROM x);
 $$;
 
