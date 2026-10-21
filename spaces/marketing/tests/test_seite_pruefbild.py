@@ -365,3 +365,60 @@ def test_browser_render_misst_zeilenkaesten():
     pb.kacheln(_seite(), render)
     assert render.masse == {"titel": (40, 60, 560, 180)}
     assert render.zeilen == {"titel": [(200, 80, 400, 110)]}
+
+
+# ---- Befund 21.10.2026: Pruefbild live gescheitert (Chromium-Start > 30 s unter Speicherdruck) ----------------
+
+def test_pruefbild_versucht_ein_zweites_mal():
+    """Ein voruebergehender Renderfehler (z. B. Playwright-Zeitlimit beim Start) kippt die Pruefung nicht sofort."""
+    aufrufe = []
+
+    def render(html, hoehe):
+        aufrufe.append(hoehe)
+        if len(aufrufe) == 1:
+            raise TimeoutError("Timeout 30000ms exceeded.")
+        return _png(600, hoehe)
+    teile, faktor, fehlt, _ = pb.pruefbild_mit(render)(_seite(900))
+    assert len(teile) == 1 and faktor == 1.0 and fehlt == [] and aufrufe[:2] == [900, 900]
+
+
+def test_pruefbild_zweimal_kaputt_bleibt_fehler():
+    aufrufe = []
+
+    def render(html, hoehe):
+        aufrufe.append(hoehe)
+        raise TimeoutError("Timeout 30000ms exceeded.")
+    with pytest.raises(pb.PruefbildFehler):
+        pb.pruefbild_mit(render)(_seite(900))
+    assert len(aufrufe) == pb.PRUEF_VERSUCHE == 2
+
+
+def test_browser_render_startet_chromium_mit_langem_zeitlimit(monkeypatch):
+    gestartet = []
+
+    class Starter(_Browser):
+        def __init__(self, start_timeout_ms=30000):
+            super().__init__()
+            gestartet.append(start_timeout_ms)
+    monkeypatch.setattr(pb, "EchterBrowser", Starter)
+    render = pb.browser_render(MedienApi(), "1")
+    pb.kacheln(_seite(900), render)
+    assert gestartet == [pb.PRUEF_START_MS] and pb.PRUEF_START_MS >= 120000
+
+
+class _ZeitSeite(_Seite):
+    def set_default_timeout(self, ms):
+        self.browser.zeitlimit = ms
+
+
+class _ZeitBrowser(_Browser):
+    zeitlimit = None
+
+    def new_page(self, viewport):
+        return _ZeitSeite(self, viewport)
+
+
+def test_browser_render_setzt_langes_seitenzeitlimit():
+    b = _ZeitBrowser()
+    pb.kacheln(_seite(900), pb.browser_render(MedienApi(), "1", browser_starten=lambda: b))
+    assert b.zeitlimit == pb.PRUEF_SCHRITT_MS and pb.PRUEF_SCHRITT_MS >= 90000

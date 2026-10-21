@@ -2551,3 +2551,13 @@ def test_beide_renderings_unter_der_pruefbild_sperre():
     erg, _, _ = seite_lauf(SeitenApi(), ([titel("Herbst")], "Ok."), ([fertig_tool()], "Gut."),
                            pruefbild=seite_pruefbild.pruefbild_mit(_schoen_render(gesperrt=gesperrt)))
     assert erg == "fertig" and gesperrt == [True, True]
+
+
+def test_pruefbild_fehler_steht_mit_typ_im_log(capsys):
+    """Befund 21.10.2026: der Grund verschwand im Hinweis - jetzt steht der Typ im Arbeiter-Log."""
+    api = SeitenApi()
+    erg, _, _ = seite_lauf(api, ([titel("Herbst")], "Ok."),
+                           pruefbild=Pruefbild(fehler=PruefbildFehler("Prüfbild nicht möglich: Timeout 30000ms")))
+    assert erg == "fertig"
+    log = capsys.readouterr().out
+    assert "pruefbild" in log and "PruefbildFehler" in log and "Timeout 30000ms" in log

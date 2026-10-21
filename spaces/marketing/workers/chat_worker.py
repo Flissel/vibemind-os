@@ -1356,7 +1356,9 @@ def _bearbeiten_seite(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_tak
             kacheln, faktor = ergebnis_pb[0], ergebnis_pb[1]
             fehlend = [str(n) for n in (ergebnis_pb[2] if len(ergebnis_pb) > 2 else [])][:5]
             befunde = [str(b) for b in (ergebnis_pb[3] if len(ergebnis_pb) > 3 else [])][:8]
-        except Exception:  # noqa: BLE001 - ohne Pruefbild wird der Entwurf gespeichert, die Runde kippt nie
+        except Exception as e:  # noqa: BLE001 - ohne Pruefbild wird der Entwurf gespeichert, die Runde kippt nie
+            # Grund ins Arbeiter-Log (nur Typ und Renderer-Meldung, keine Kopfzeilen): er stand nirgends (21.10.2026)
+            print({"pruefbild": f"{type(e).__name__}: {str(e)[:160]}"}, flush=True)
             hinweise.insert(0, PRUEFBILD_FEHLT)
             spur.schritt(PRUEFBILD_FEHLT)
             break

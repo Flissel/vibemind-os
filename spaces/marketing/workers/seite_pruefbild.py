@@ -16,7 +16,8 @@ from spaces.marketing.claw import seite_bilder, seite_html, seite_schoenheit
 from spaces.marketing.workers.export_worker import BASIS, EchterBrowser, Routen, kachel_png
 
 __all__ = ["PruefbildFehler", "kacheln", "bilder_fuer_modell", "browser_render", "fehlt_hinweis", "kachel_png",
-           "pruefbild_mit", "befund_saetze", "PRUEFUNG_NICHT_MOEGLICH", "MAX_BEFUNDE"]
+           "pruefbild_mit", "befund_saetze", "PRUEFUNG_NICHT_MOEGLICH", "MAX_BEFUNDE", "PRUEF_START_MS",
+           "PRUEF_SCHRITT_MS", "PRUEF_VERSUCHE"]
 
 KACHEL_HOEHE = 1200
 MIN_BREITE = 300
@@ -24,6 +25,11 @@ JPEG_QUALITAET = 85
 SEITE_CONTAINER = seite_html.SEITE_CONTAINER   # aeusserer 700-px-Rahmen > die 600 x hoehe Seite
 PRUEF_FAKTOR = 1       # browser_render rendert mit Geraetefaktor 1: 1 Pixel = 1 Seiteneinheit
 MAX_BEFUNDE = 8
+# Befund 21.10.2026: unter Speicherdruck (FLUX.2 + Ollama, Auslagerung auf HDD) riss der Chromium-Start live das
+# Playwright-Zeitlimit von 30 s - die ganze Pruefschleife entfiel. Laengere Zeitlimits und ein zweiter Versuch.
+PRUEF_START_MS = 120_000   # Chromium-Start
+PRUEF_SCHRITT_MS = 90_000  # set_content (Medien ueber die VM), Screenshot
+PRUEF_VERSUCHE = 2
 PRUEFUNG_NICHT_MOEGLICH = "Schönheit: Prüfung nicht möglich – prüfe Kontrast und Regeln selbst am Prüfbild"
 
 
@@ -102,7 +108,13 @@ def pruefbild_mit(html_render: Callable[[str, int], bytes]
     html_render wie browser_render (setzt nach jedem Aufruf .fehlt und .masse). Beide Renderings laufen im selben
     Aufruf - der Aufrufer haelt _PRUEFBILD_SPERRE und die Vergabe ueber den ganzen Aufruf."""
     def pruefbild(s: dict) -> tuple[list[bytes], float, list[str], list[str]]:
-        teile, faktor = kacheln(s, html_render)
+        for versuch in range(1, PRUEF_VERSUCHE + 1):
+            try:
+                teile, faktor = kacheln(s, html_render)
+                break
+            except PruefbildFehler:
+                if versuch >= PRUEF_VERSUCHE:
+                    raise
         fehlt = list(getattr(html_render, "fehlt", []))
         masse = getattr(html_render, "masse", None)
         zeilen = getattr(html_render, "zeilen", None)
@@ -128,10 +140,12 @@ def browser_render(api, aid, browser_starten=None) -> Callable[[str, int], bytes
     das ist kein PruefbildFehler, nur die Schoenheitspruefung entfaellt."""
     def render(html: str, hoehe: int) -> bytes:
         render.fehlt, render.masse, render.zeilen = [], None, None
-        browser = (browser_starten or EchterBrowser)()
+        browser = browser_starten() if browser_starten else EchterBrowser(start_timeout_ms=PRUEF_START_MS)
         try:
             seite = browser.new_page(viewport={"width": seite_html.BREITE_PX, "height": max(1, hoehe)})
             try:
+                if hasattr(seite, "set_default_timeout"):
+                    seite.set_default_timeout(PRUEF_SCHRITT_MS)
                 routen = Routen(api, aid, pruefbild=True)
                 seite.route("**/*", routen)
                 seite.set_content(html, wait_until="networkidle")
