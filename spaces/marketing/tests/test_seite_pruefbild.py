@@ -322,3 +322,46 @@ def test_browser_render_messfehler_ist_kein_pruefbildfehler():
     render = pb.browser_render(MedienApi(), "1", browser_starten=_Browser)   # evaluate ohne Argument
     teile, _ = pb.kacheln(_seite(), render)
     assert len(teile) == 1 and render.masse is None
+
+
+def test_fehlendes_medium_kein_pixelkontrast_darueber():
+    """Gesamtpruefung Stufe 5: ein echtes Medium, das beim Rendern fehlte (render.fehlt, graue Kachel), ist wie
+    ein Platzhalter - der Text darueber wird nicht gegen die Kachel gemessen."""
+    s = seite.pruefen(seite.leer(None))
+    s["ebenen"].insert(0, {"id": "held", "art": "bild", "x": 300, "y": 200, "breite": 600, "hoehe": 400,
+                           "quelle": "medien:weg.jpg"})
+    s = seite.pruefen(s)
+    render = _fake_mit_massen()
+    *_, saetze = pb.pruefbild_mit(render)(s)
+    assert any("Kontrast" in x for x in saetze)                 # ohne fehlt: dunkle Kachel misst
+
+    def mit_fehlt(html, hoehe):
+        png = render(html, hoehe)
+        mit_fehlt.fehlt, mit_fehlt.masse = ["weg.jpg"], {}
+        return png
+    mit_fehlt.fehlt, mit_fehlt.masse = [], None
+    render.gesehen.clear()
+    teile, faktor, fehlt, saetze = pb.pruefbild_mit(mit_fehlt)(s)
+    assert fehlt == ["weg.jpg"]
+    assert not any("Kontrast" in x for x in saetze)
+    assert len(render.gesehen) == 1                             # kein Rendering ohne Text noetig
+
+
+class _ZeilenSeite(_Seite):
+    def evaluate(self, ausdruck, arg=None):
+        if arg is None:
+            return None
+        return {"huellen": {"titel": [40, 60, 560, 180]},
+                "zeilen": {"titel": [[200, 80, 400, 110], [0, 0, 0, 0], "kaputt"], "leer": []}}
+
+
+class _ZeilenBrowser(_Browser):
+    def new_page(self, viewport):
+        return _ZeilenSeite(self, viewport)
+
+
+def test_browser_render_misst_zeilenkaesten():
+    render = pb.browser_render(MedienApi(), "1", browser_starten=_ZeilenBrowser)
+    pb.kacheln(_seite(), render)
+    assert render.masse == {"titel": (40, 60, 560, 180)}
+    assert render.zeilen == {"titel": [(200, 80, 400, 110)]}

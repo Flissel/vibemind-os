@@ -433,24 +433,29 @@ def _hat_platzhalter(s: dict) -> bool:
         bildplaetze.PLATZHALTER.match(str((s.get("hintergrund") or {}).get("bild") or "")))
 
 
-def _rendern_fuer_pruefung(roh: dict, s: dict, kacheln: bool) -> tuple[bytes | None, dict, bytes, set[str]]:
-    """(png, masse, png_ohne_text, ohne_pixel). roh = die Seite, wie _neu sie rendert (das volle Rendering wird
+def _rendern_fuer_pruefung(roh: dict, s: dict, kacheln: bool
+                           ) -> tuple[bytes | None, dict, bytes, set[str], dict]:
+    """(png, masse, png_ohne_text, ohne_pixel, zeilen). zeilen: Zeilenkaesten der Schrift aus dem vollen Rendering
+    (seite_bilder.messen_alles), an denen die Pruefung Kontrast und Ruhezone misst. roh = die Seite, wie _neu sie rendert (das volle Rendering wird
     beim Einreichen fuer die Mail wiederverwendet), s = dieselbe Seite normalisiert. Hoechstens ein volles
     Rendering und - nur wenn eine Textebene ohne eigene Unterlage die Pixel braucht - eines ohne Text."""
     if not _braucht_render(s):
-        return None, {}, b"", set()
+        return None, {}, b"", set(), {}
     extra = {"platzhalter_kacheln": True} if kacheln else {}
-    png, masse = _pruef_render(lambda: seite_bilder.render_und_messen(roh, _medium, **extra))
+    erg = _pruef_render(lambda: seite_bilder.render_und_messen(roh, _medium, mit_zeilen=True, **extra))
+    png, masse = erg[0], erg[1]
+    zeilen = erg[2] if len(erg) > 2 else {}
     ohne_pixel = seite_schoenheit.ohne_pixel(s, masse)
     png_ohne_text = b""
     if seite_schoenheit.braucht_pixel(s, ohne_pixel):
         ohne = seite_schoenheit.seite_ohne_text(roh)
         png_ohne_text = _pruef_render(lambda: seite_bilder.render_und_messen(
             ohne, _medium, faktor=PRUEFUNG_FAKTOR, **extra)[0])
-    return png, masse, png_ohne_text, ohne_pixel
+    return png, masse, png_ohne_text, ohne_pixel, zeilen
 
 
-def _befunde(s: dict, masse: dict, png_ohne_text: bytes, ohne_pixel: set[str]) -> list[dict]:
+def _befunde(s: dict, masse: dict, png_ohne_text: bytes, ohne_pixel: set[str], zeilen: dict | None = None
+             ) -> list[dict]:
     m = masse or None
     befunde: list[dict] = []
     anrede = seite_mail.anrede_in_bild(s, m)
@@ -459,7 +464,7 @@ def _befunde(s: dict, masse: dict, png_ohne_text: bytes, ohne_pixel: set[str]) -
     links = seite_mail.links_in_bild(s, m)
     if links:
         befunde.append(befund("hart", links[0], LINK_IM_BILD))
-    befunde += seite_schoenheit.pruefen(s, masse, png_ohne_text, PRUEFUNG_FAKTOR, ohne_pixel)
+    befunde += seite_schoenheit.pruefen(s, masse, png_ohne_text, PRUEFUNG_FAKTOR, ohne_pixel, zeilen)
     if ohne_pixel:
         befunde.append(befund("weich", "seite", BILDER_IN_ARBEIT))
     return befunde
@@ -498,8 +503,8 @@ def pruefung(i: str, fassung: int) -> list[dict]:
     s = _normalisiert(zeile.get("seite"))
     _sperre_nehmen()
     try:
-        _, masse, png_ohne_text, ohne_pixel = _rendern_fuer_pruefung(zeile.get("seite"), s, kacheln=True)
-        befunde = _befunde(s, masse, png_ohne_text, ohne_pixel)
+        _, masse, png_ohne_text, ohne_pixel, zeilen = _rendern_fuer_pruefung(zeile.get("seite"), s, kacheln=True)
+        befunde = _befunde(s, masse, png_ohne_text, ohne_pixel, zeilen)
     except seite.SeiteFehler as e:
         raise HTTPException(422, str(e))
     finally:
@@ -542,8 +547,9 @@ def einreichen_vorbereiten(i: str, fassung: int) -> dict:
             zeile = _fassung_lesen(i, fassung)
             mail = _brauchbar(zeile)
         try:
-            png, masse, png_ohne_text, ohne_pixel = _rendern_fuer_pruefung(zeile.get("seite"), s, kacheln=False)
-            befunde = _befunde(s, masse, png_ohne_text, ohne_pixel)
+            png, masse, png_ohne_text, ohne_pixel, zeilen = _rendern_fuer_pruefung(zeile.get("seite"), s,
+                                                                                    kacheln=False)
+            befunde = _befunde(s, masse, png_ohne_text, ohne_pixel, zeilen)
         except seite.SeiteFehler as e:
             raise HTTPException(422, str(e))
         except HTTPException as e:

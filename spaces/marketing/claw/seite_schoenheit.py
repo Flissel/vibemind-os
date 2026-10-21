@@ -3,17 +3,23 @@ Seite, gemessene Huellen und ein PNG, gibt Befunde {schwere, punkt, satz} zuruec
 Dienst.
 
 HART (blockiert das Einreichen) ist nur Unlesbarkeit: Text- oder Knopfschrift unter 4,5:1 Kontrast, ab Groesse 24
-unter 3:1. Gemessen wird die Textfarbe gegen den MEDIAN der Pixel unter der Ebene - aus einem Rendering der Seite
-OHNE Text- und Knopfebenen (seite_ohne_text), innerhalb der gemessenen Huelle der Ebene, auf die Seite beschnitten.
+unter 3:1. Gemessen wird die Textfarbe gegen den MEDIAN der Pixel unter der Schrift - aus einem Rendering der Seite
+OHNE Text- und Knopfebenen (seite_ohne_text), innerhalb der Vereinigung der gemessenen Zeilenkaesten der Schrift
+(zeilen, seite_bilder.messen_alles: dort stehen die Glyphen; ein kurzes, mittig gesetztes Wort in einem breiten Kasten
+misst nur seine Unterlage), ohne Zeilenkaesten innerhalb der gemessenen Huelle der Ebene, auf die Seite beschnitten.
 Der Median, nicht der Mittelwert: ein dunkles Foto mit ein paar Lichtreflexen bleibt dunkel. Bringt eine Textebene
 ihre eigene Unterlage mit (hintergrund), zaehlt deren Farbe. Knoepfe tragen ihre Unterlage immer selbst (farbe).
 
 WEICH (wird genannt, nicht verhindert) sind Geschmacksregeln: Fliesstext unter 15, mehr als 3 Schriftgroessen, kein
-Knopf, mehr als 2 laute Elemente, Text in der Ruhezone am Seitenrand."""
+Knopf, mehr als 2 laute Elemente, Text in der Ruhezone am Seitenrand (gemessen an der Glyphen-Ausdehnung, ohne
+Zeilenkaesten an der Huelle).
+
+Werte in Saetzen werden ABGERUNDET (4,49 -> 4,4), damit nie 4,5:1 neben "mindestens 4,5:1" steht."""
 from __future__ import annotations
 
 import copy
 import io
+import math
 
 from spaces.marketing.claw import bildplaetze
 from spaces.marketing.claw import seite as seite_mod
@@ -66,16 +72,54 @@ def _median(bild, kasten: tuple[int, int, int, int]) -> tuple[int, int, int] | N
     return tuple(_median_aus_histogramm(hist[k * 256:(k + 1) * 256]) for k in range(3))
 
 
-def _sichtbarer_kasten(e: dict, masse, hoehe: int, faktor: int, bildgroesse: tuple[int, int]
-                       ) -> tuple[int, int, int, int] | None:
-    """Huelle der Ebene in Pixeln, auf Seite und Bild beschnitten; None, wenn nichts davon auf der Seite liegt."""
-    l, o, r, u = seite_streifen.huelle(e, masse)
+def _median_ueber(bild, kaesten: list[tuple[int, int, int, int]]) -> tuple[int, int, int] | None:
+    """Median je Kanal ueber die Vereinigung der Pixel-Kaesten (jedes Pixel zaehlt einmal)."""
+    from PIL import Image, ImageChops, ImageDraw
+    l = min(k[0] for k in kaesten)
+    o = min(k[1] for k in kaesten)
+    r = max(k[2] for k in kaesten)
+    u = max(k[3] for k in kaesten)
+    teil = bild.crop((l, o, r, u))
+    maske = Image.new("L", teil.size, 0)
+    zeichnen = ImageDraw.Draw(maske)
+    for kl, ko, kr, ku in kaesten:
+        zeichnen.rectangle((kl - l, ko - o, kr - l - 1, ku - o - 1), fill=255)
+    maske = ImageChops.multiply(maske, teil.getchannel("A").point(lambda a: 255 if a > 0 else 0))
+    hist = teil.histogram(mask=maske)
+    if not sum(hist[768:1024]):
+        return None
+    return tuple(_median_aus_histogramm(hist[k * 256:(k + 1) * 256]) for k in range(3))
+
+
+def _pixel_kasten(l: float, o: float, r: float, u: float, hoehe: int, faktor: int, bildgroesse: tuple[int, int]
+                  ) -> tuple[int, int, int, int] | None:
+    """Kasten in Seiteneinheiten -> Pixel, auf Seite und Bild beschnitten; None, wenn nichts davon sichtbar ist."""
     l, o, r, u = max(l, 0), max(o, 0), min(r, seite_mod.BREITE), min(u, hoehe)
     kasten = (max(0, int(l * faktor)), max(0, int(o * faktor)),
               min(bildgroesse[0], int(round(r * faktor))), min(bildgroesse[1], int(round(u * faktor))))
     if kasten[2] <= kasten[0] or kasten[3] <= kasten[1]:
         return None
     return kasten
+
+
+def _glyphen(e: dict, zeilen: dict | None) -> list:
+    """Zeilenkaesten der Schrift der Ebene (leer = unbekannt)."""
+    return list((zeilen or {}).get(e["id"]) or [])
+
+
+def glyphen_ausdehnung(e: dict, masse, zeilen: dict | None) -> tuple[float, float, float, float]:
+    """Achsenparallele Ausdehnung der Glyphen (Vereinigung der Zeilenkaesten); ohne Zeilenkaesten die Huelle."""
+    kaesten = _glyphen(e, zeilen)
+    if not kaesten:
+        return seite_streifen.huelle(e, masse)
+    return (min(k[0] for k in kaesten), min(k[1] for k in kaesten), max(k[2] for k in kaesten),
+            max(k[3] for k in kaesten))
+
+
+def _sichtbarer_kasten(e: dict, masse, hoehe: int, faktor: int, bildgroesse: tuple[int, int]
+                       ) -> tuple[int, int, int, int] | None:
+    """Huelle der Ebene in Pixeln, auf Seite und Bild beschnitten; None, wenn nichts davon auf der Seite liegt."""
+    return _pixel_kasten(*seite_streifen.huelle(e, masse), hoehe, faktor, bildgroesse)
 
 
 def _gemischt(vorne: str, hinten: str, deckkraft: float) -> str:
@@ -86,17 +130,24 @@ def _gemischt(vorne: str, hinten: str, deckkraft: float) -> str:
     return _hex(deckkraft * a + (1 - deckkraft) * b for a, b in zip(v, h))
 
 
+def _abgerundet(wert: float) -> str:
+    """Eine Nachkommastelle, ABGERUNDET: 4,49 -> "4,4" (gerundet stuende "4,5" neben "mindestens 4,5")."""
+    return f"{math.floor(wert * 10 + 1e-9) / 10:.1f}".replace(".", ",")
+
+
 def _kontrast_befund(eid: str, wert: float, schwelle: float, wo: str) -> dict:
-    gemessen = f"{wert:.1f}".replace(".", ",")
+    gemessen = _abgerundet(wert)
     return befund("hart", eid, f"{eid}: Kontrast {gemessen}:1 {wo} – mindestens {_zahl(schwelle)}:1")
 
 
 def kontraste(seite: dict, masse: dict, png_ohne_text: bytes, faktor: int,
-              ohne_pixel: frozenset[str] | set[str] = frozenset()) -> list[dict]:
+              ohne_pixel: frozenset[str] | set[str] = frozenset(), zeilen: dict | None = None) -> list[dict]:
     """Harte Kontrastbefunde. png_ohne_text: Rendering von seite_ohne_text(seite) (600 x hoehe Einheiten, mal
     faktor Pixel). masse: gemessene Huellen je Ebenen-id aus dem Rendering MIT Text (seite_bilder.render_und_messen),
     fehlende Eintraege fallen auf den deklarierten Rahmen zurueck. ohne_pixel: Ids von Textebenen, deren Unterlage
-    (noch) unbekannt ist (z. B. ueber einem Platzhalter) - ihr Pixel-Kontrast wird nicht gemessen."""
+    (noch) unbekannt ist (z. B. ueber einem Platzhalter) - ihr Pixel-Kontrast wird nicht gemessen. zeilen
+    (seite_bilder.zeilen_pruefen): Zeilenkaesten der Schrift je Ebene; gemessen wird ueber ihre Vereinigung, ohne
+    sie ueber die Huelle."""
     from PIL import Image
 
     s = seite_mod.pruefen(seite)
@@ -123,10 +174,17 @@ def kontraste(seite: dict, masse: dict, png_ohne_text: bytes, faktor: int,
         if bild is None:
             with Image.open(io.BytesIO(png_ohne_text)) as roh:
                 bild = roh.convert("RGBA")
-        kasten = _sichtbarer_kasten(e, m, s["hoehe"], faktor, bild.size)
-        if kasten is None:
-            continue  # liegt ganz ausserhalb der Seite, niemand sieht ihn
-        median = _median(bild, kasten)
+        glyphen = _glyphen(e, zeilen)
+        if glyphen:
+            kaesten = [k for k in (_pixel_kasten(*g, s["hoehe"], faktor, bild.size) for g in glyphen) if k]
+            if not kaesten:
+                continue  # keine Zeile liegt auf der Seite, niemand sieht sie
+            median = _median_ueber(bild, kaesten)
+        else:
+            kasten = _sichtbarer_kasten(e, m, s["hoehe"], faktor, bild.size)
+            if kasten is None:
+                continue  # liegt ganz ausserhalb der Seite, niemand sieht ihn
+            median = _median(bild, kasten)
         unterlage = _hex(median) if median is not None else s["hintergrund"]["farbe"]
         wert = kontrast(_gemischt(e["farbe"], unterlage, e["deckkraft"]), unterlage)
         if wert < schwelle:
@@ -140,8 +198,9 @@ def _auf(e: dict, f: dict) -> bool:
     return l <= e["x"] <= r and o <= e["y"] <= u
 
 
-def regeln(seite: dict, masse: dict | None) -> list[dict]:
-    """Weiche, rein geometrische und typografische Befunde. masse optional (ohne: deklarierte Rahmen)."""
+def regeln(seite: dict, masse: dict | None, zeilen: dict | None = None) -> list[dict]:
+    """Weiche, rein geometrische und typografische Befunde. masse optional (ohne: deklarierte Rahmen). zeilen
+    optional: die Ruhezone misst dann die Glyphen-Ausdehnung statt der Huelle."""
     s = seite_mod.pruefen(seite)
     m = seite_streifen.masse_pruefen(masse) or None
     ebenen = s["ebenen"]
@@ -154,7 +213,7 @@ def regeln(seite: dict, masse: dict | None) -> list[dict]:
                                                     f"lesbar ab {FLIESS_MIN}"))
 
     for e in texte:
-        l, o, r, u = seite_streifen.huelle(e, m)
+        l, o, r, u = glyphen_ausdehnung(e, m, zeilen)
         if u <= 0 or o >= s["hoehe"] or r <= 0 or l >= seite_mod.BREITE:
             continue
         abstand = min(l, seite_mod.BREITE - r)
@@ -187,9 +246,9 @@ def regeln(seite: dict, masse: dict | None) -> list[dict]:
 
 
 def pruefen(seite: dict, masse: dict, png_ohne_text: bytes, faktor: int,
-            ohne_pixel: frozenset[str] | set[str] = frozenset()) -> list[dict]:
-    """Harte Kontrastbefunde, dann weiche Regeln."""
-    alle = kontraste(seite, masse, png_ohne_text, faktor, ohne_pixel) + regeln(seite, masse)
+            ohne_pixel: frozenset[str] | set[str] = frozenset(), zeilen: dict | None = None) -> list[dict]:
+    """Harte Kontrastbefunde, dann weiche Regeln. zeilen: Zeilenkaesten der Schrift (siehe kontraste)."""
+    alle = kontraste(seite, masse, png_ohne_text, faktor, ohne_pixel, zeilen) + regeln(seite, masse, zeilen)
     return sorted(alle, key=lambda b: b["schwere"] != "hart")
 
 
@@ -199,14 +258,19 @@ def platzhalter_ids(seite: dict) -> list[str]:
             if e.get("art") == "bild" and bildplaetze.PLATZHALTER.match(str(e.get("quelle") or ""))]
 
 
-def ohne_pixel(seite: dict, masse: dict | None) -> set[str]:
+def ohne_pixel(seite: dict, masse: dict | None, fehlend=()) -> set[str]:
     """Textebenen ohne eigene Unterlage, deren Huelle einen Platzhalter ueberlappt (Hintergrund-Platzhalter: alle) -
-    ihre Unterlage entsteht erst noch, ihr Pixel-Kontrast wird danach geprueft (Argument ohne_pixel von pruefen)."""
+    ihre Unterlage entsteht erst noch, ihr Pixel-Kontrast wird danach geprueft (Argument ohne_pixel von pruefen).
+    fehlend: Namen echter Medien (ohne "medien:"), die beim Rendern fehlten und als graue Kachel stehen (Pruefbild am
+    PC, render.fehlt) - auch ihre Unterlage ist unbekannt und zaehlt wie ein Platzhalter."""
     texte = [e for e in seite.get("ebenen") or [] if e.get("art") == "text" and e.get("hintergrund") is None]
-    if bildplaetze.PLATZHALTER.match(str((seite.get("hintergrund") or {}).get("bild") or "")):
+    weg = {"medien:" + str(n) for n in fehlend or ()}
+    hg = str((seite.get("hintergrund") or {}).get("bild") or "")
+    if bildplaetze.PLATZHALTER.match(hg) or hg in weg:
         return {e["id"] for e in texte}
     m = seite_streifen.masse_pruefen(masse) or None
-    ids = set(platzhalter_ids(seite))
+    ids = set(platzhalter_ids(seite)) | {e["id"] for e in seite.get("ebenen") or []
+                                         if e.get("art") == "bild" and str(e.get("quelle") or "") in weg}
     plaetze = [seite_streifen.huelle(e, m) for e in seite.get("ebenen") or [] if e["id"] in ids]
     aus = set()
     for e in texte:

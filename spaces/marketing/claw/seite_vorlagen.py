@@ -27,7 +27,9 @@ seite_schoenheit liegt (4,5:1, ab Groesse 24 3:1), wird auf die lesbarere von te
 beim Knopf seine Farbe, bei Text mit hintergrund dieser, sonst die oberste Ebene UNTER dem Text, deren (gedrehte)
 Huelle den Textmittelpunkt enthaelt - eine Form zaehlt mit ihrer Farbe, ein Bild heisst "Pixel unbekannt" und der
 Text bleibt (die Pixelpruefung in seite_schoenheit.kontraste deckt ihn ab); ohne solche Ebene der Seitengrund,
-ausser die Seite hat ein Hintergrundbild."""
+ausser die Seite hat ein Hintergrundbild. Bewusst die Mittelpunkt-Regel, nicht die Glyphen-Kaesten der
+Schoenheitspruefung (seite_bilder.messen_alles): beim Fuellen wird nichts gerendert, es gibt keine Zeilenkaesten.
+Die Pruefung vor dem Einreichen misst danach ueber den Glyphen und faengt ab, was die Mitte nicht trifft."""
 from __future__ import annotations
 
 import copy

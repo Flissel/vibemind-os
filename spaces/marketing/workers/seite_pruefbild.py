@@ -76,18 +76,21 @@ def _html(seite: dict) -> str:
                            schrift_basis=BASIS + "schrift/")
 
 
-def befund_saetze(seite: dict, html_render: Callable[[str, int], bytes], masse: dict | None) -> list[str]:
+def befund_saetze(seite: dict, html_render: Callable[[str, int], bytes], masse: dict | None,
+                  fehlt=(), zeilen: dict | None = None) -> list[str]:
     """Saetze der Schoenheitspruefung, harte zuerst, hoechstens MAX_BEFUNDE. masse: gemessene Huellen aus dem
-    Pruefbild-Rendering (None = Messen gescheitert). html_render rendert bei Bedarf die Seite ohne Text (mit
+    Pruefbild-Rendering (None = Messen gescheitert), zeilen: Zeilenkaesten der Schrift aus demselben Rendering.
+    fehlt: Namen der Medien, die dort als graue Kachel standen - Text darueber wird wie ueber einem Platzhalter
+    nicht am Pixel gemessen (seine Unterlage ist unbekannt). html_render rendert bei Bedarf die Seite ohne Text (mit
     Platzhaltern als grauen Kacheln). Jeder Fehler ergibt nur [PRUEFUNG_NICHT_MOEGLICH]."""
     try:
         if masse is None:
             raise PruefbildFehler("keine Maße")
-        ohne = seite_schoenheit.ohne_pixel(seite, masse)
+        ohne = seite_schoenheit.ohne_pixel(seite, masse, fehlt)
         png_ohne_text = b""
         if seite_schoenheit.braucht_pixel(seite, ohne):
             png_ohne_text = html_render(_html(seite_schoenheit.seite_ohne_text(seite)), int(seite["hoehe"]))
-        befunde = seite_schoenheit.pruefen(seite, masse, png_ohne_text, PRUEF_FAKTOR, ohne)
+        befunde = seite_schoenheit.pruefen(seite, masse, png_ohne_text, PRUEF_FAKTOR, ohne, zeilen)
     except Exception:  # noqa: BLE001 - die Pruefung ist eine Hilfe, sie kippt die Runde nie
         return [PRUEFUNG_NICHT_MOEGLICH]
     return [str(b["satz"]) for b in befunde][:MAX_BEFUNDE]
@@ -102,7 +105,8 @@ def pruefbild_mit(html_render: Callable[[str, int], bytes]
         teile, faktor = kacheln(s, html_render)
         fehlt = list(getattr(html_render, "fehlt", []))
         masse = getattr(html_render, "masse", None)
-        return teile, faktor, fehlt, befund_saetze(s, html_render, masse)
+        zeilen = getattr(html_render, "zeilen", None)
+        return teile, faktor, fehlt, befund_saetze(s, html_render, masse, fehlt, zeilen)
     return pruefbild
 
 
@@ -120,10 +124,10 @@ def browser_render(api, aid, browser_starten=None) -> Callable[[str, int], bytes
     Schriften lokal (Routen aus export_worker). Der Browser lebt nur je Aufruf. Platzhalter zeichnet die Route
     lokal als graue Kachel; ein fehlendes Medium ebenfalls - sein Name steht danach in render.fehlt (je Aufruf
     neu), der Aufrufer gibt ihn als fehlt_hinweis an das Modell. Beides ist nie ein PruefbildFehler.
-    render.masse: gemessene Huellen je Ebene (seite_bilder.messen) oder None, wenn das Messen scheiterte - auch
+    render.masse: gemessene Huellen je Ebene (seite_bilder.messen_alles, dazu render.zeilen) oder None, wenn das Messen scheiterte - auch
     das ist kein PruefbildFehler, nur die Schoenheitspruefung entfaellt."""
     def render(html: str, hoehe: int) -> bytes:
-        render.fehlt, render.masse = [], None
+        render.fehlt, render.masse, render.zeilen = [], None, None
         browser = (browser_starten or EchterBrowser)()
         try:
             seite = browser.new_page(viewport={"width": seite_html.BREITE_PX, "height": max(1, hoehe)})
@@ -136,15 +140,15 @@ def browser_render(api, aid, browser_starten=None) -> Callable[[str, int], bytes
                 render.fehlt = list(routen.fehlt)
                 seite.evaluate("document.fonts.ready")
                 try:
-                    render.masse = seite_bilder.messen(seite)
+                    render.masse, render.zeilen = seite_bilder.messen_alles(seite)
                 except Exception:  # noqa: BLE001 - ohne Masse nur keine Schoenheitspruefung
-                    render.masse = None
+                    render.masse, render.zeilen = None, None
                 return seite.locator(SEITE_CONTAINER).first.screenshot(type="png")
             finally:
                 _zu(seite)
         finally:
             _zu(browser)
-    render.fehlt, render.masse = [], None
+    render.fehlt, render.masse, render.zeilen = [], None, None
     return render
 
 

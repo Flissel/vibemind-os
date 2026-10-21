@@ -245,3 +245,44 @@ def test_ohne_pixel_laesst_nur_den_pixel_kontrast_aus():
     assert [b["punkt"] for b in ss.kontraste(s, {}, hell, FAKTOR)] == ["titel", "band", "knopf"]
     assert [b["punkt"] for b in ss.kontraste(s, {}, hell, FAKTOR, {"titel", "band"})] == ["band", "knopf"]
     assert [b["punkt"] for b in harte(ss.pruefen(s, {}, b"", FAKTOR, {"titel"}))] == ["band", "knopf"]
+
+
+# --- Gesamtpruefung Stufe 5: Glyphen statt Kasten, abgerundete Werte, fehlende Medien ------------------------
+
+def test_kontrast_ueber_den_zeilenkaesten_nicht_dem_ganzen_kasten():
+    """Weisses Wort mittig in einem breiten Kasten: gemessen wird nur unter seiner Zeile (dunkles Rechteck)."""
+    s = seite([text("neu", y=100, breite=480, hoehe=30, farbe="#ffffff")])
+    unterlage = png(flecken=[((200, 75, 400, 125), (30, 27, 75))])
+    assert [b["punkt"] for b in ss.kontraste(s, {}, unterlage, FAKTOR)] == ["neu"]          # Kasten: meist Weiss
+    zeilen = {"neu": [(276.5, 88.0, 323.5, 112.0)]}
+    assert ss.kontraste(s, {}, unterlage, FAKTOR, zeilen=zeilen) == []
+
+
+def test_kontrast_ueber_der_vereinigung_mehrerer_zeilen():
+    s = seite([text("t", y=200, breite=480, hoehe=200, farbe="#ffffff")])
+    # zwei Zeilen: die obere auf Dunkel, die untere (groessere) auf Weiss -> Median Weiss -> hart
+    unterlage = png(flecken=[((100, 100, 500, 140), (20, 20, 20))])
+    zeilen = {"t": [(200, 110, 400, 130), (100, 200, 500, 260)]}
+    assert [b["punkt"] for b in ss.kontraste(s, {}, unterlage, FAKTOR, zeilen=zeilen)] == ["t"]
+    # nur Zeilen ausserhalb der Seite: niemand sieht sie
+    assert ss.kontraste(s, {}, unterlage, FAKTOR, zeilen={"t": [(700, 10, 800, 30)]}) == []
+
+
+def test_ruhezone_nach_glyphen():
+    s = seite([text("text", breite=580), knopf()])                    # Kasten 10..590
+    assert ss.regeln(s, None, {"text": [(200, 180, 400, 210)]}) == []  # Glyphen weit weg vom Rand
+    assert [b["punkt"] for b in ss.regeln(seite([text("text", breite=520), knopf()]), None,
+                                          {"text": [(30, 180, 400, 210), (10, 210, 300, 240)]})] == ["text"]
+
+
+def test_kontrastwerte_abgerundet():
+    assert ss._abgerundet(4.49) == "4,4" and ss._abgerundet(2.99) == "2,9" and ss._abgerundet(3.0) == "3,0"
+    assert ss._kontrast_befund("t", 4.4999, 4.5, "x")["satz"] == "t: Kontrast 4,4:1 x – mindestens 4,5:1"
+
+
+def test_ohne_pixel_fehlende_medien_wie_platzhalter():
+    s = seite([bild(), text("titel", farbe="#ffffff"), text("fuss", y=700, farbe="#ffffff")])
+    assert ss.ohne_pixel(s, None) == set()
+    assert ss.ohne_pixel(s, None, ["foto.jpg"]) == {"titel"}
+    s["hintergrund"]["bild"] = "medien:grund.jpg"
+    assert ss.ohne_pixel(s, None, ["grund.jpg"]) == {"titel", "fuss"}

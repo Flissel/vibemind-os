@@ -581,3 +581,24 @@ def test_harte_ablehnung():
     h = [{"schwere": "hart", "punkt": "a", "satz": "a: x"}, weich, {"schwere": "hart", "punkt": "b", "satz": "b"}]
     assert dienst.harte_ablehnung(h) == "a: x (weitere: 1)"
     assert dienst.harte_ablehnung(h[:1]) == "a: x"
+
+
+def test_pruefung_misst_ueber_den_zeilenkaesten(umg, monkeypatch):
+    """Gesamtpruefung Stufe 5: der Dienst fordert die Zeilenkaesten an (mit_zeilen) und misst nur unter ihnen -
+    dunkle Schrift, deren Zeile auf hellem Grund steht, im sonst dunklen Kasten: kein harter Befund."""
+    f = umg[0]
+    gesehen = []
+
+    def render(s, medien_lesen, faktor=2, mit_zeilen=False, **_):
+        gesehen.append(mit_zeilen)
+        b = Image.new("RGB", (600 * faktor, int(s["hoehe"]) * faktor), (30, 30, 30))
+        b.paste((250, 250, 250), (200 * faktor, 590 * faktor, 400 * faktor, 615 * faktor))
+        p = io.BytesIO()
+        b.save(p, "PNG")
+        masse = {"t": (60.0, 550.0, 540.0, 650.0)}
+        return (p.getvalue(), masse, {"t": [(210.0, 592.0, 390.0, 612.0)]}) if mit_zeilen else (p.getvalue(), masse)
+    monkeypatch.setattr(seite_bilder, "render_und_messen", render)
+    f.antworten.append([{"format": "seite", "seite": SEITE}])
+    befunde = dienst.pruefung(IID, 2)
+    assert gesehen[0] is True
+    assert not [b for b in befunde if b["schwere"] == "hart"]
