@@ -49,6 +49,9 @@ TICK_INTERVAL_S = float(os.environ.get("DISCOURSE_TICK_INTERVAL_S", "30"))
 AGENTS_PER_TICK = int(os.environ.get("DISCOURSE_AGENTS_PER_TICK", "2"))
 REPLY_PROBABILITY = float(os.environ.get("DISCOURSE_REPLY_PROBABILITY", "0.3"))
 INITIAL_DELAY_S = float(os.environ.get("DISCOURSE_INITIAL_DELAY_S", "60"))
+# Ohne -phi3-Agenten (oder bei OpenFang-Fehler) die Liste erst nach dieser Frist
+# neu holen, statt bei jedem Tick GET /api/agents zu schicken.
+AGENTS_RETRY_S = float(os.environ.get("DISCOURSE_AGENTS_RETRY_S", "300"))
 ENABLED = os.environ.get("DISCOURSE_ENABLED", "1").lower() in ("1", "true", "yes")
 
 # Phase R+ — three-mode discourse
@@ -217,6 +220,7 @@ class DiscourseEngine:
         self._last_tweet: Optional[Dict[str, Any]] = None
         self._sim_id: Optional[str] = None
         self._agents: List[Dict[str, Any]] = []
+        self._agents_versucht_ts: Optional[float] = None
         # Phase R+ — response queue + intent decision history
         from collections import deque
         self._response_queue: "deque[Dict[str, Any]]" = deque(maxlen=RESPONSE_QUEUE_MAX)
@@ -891,6 +895,9 @@ class DiscourseEngine:
         # Wake every 0.5s to recheck pause flag — bounded latency for resume.
         # We don't add a separate wake-event because creating one per tick
         # interval is cheaper than another threading.Event refcount path.
+        # Fast resume gilt nur, wenn beim Eintritt pausiert war. Ohne diese
+        # Bedingung endete jeder lange Schlaf nach 0,5 s (Tick 30 s -> 0,5 s).
+        was_paused = self._paused.is_set()
         deadline = time.time() + seconds
         while time.time() < deadline:
             remaining = deadline - time.time()
@@ -898,7 +905,7 @@ class DiscourseEngine:
                 return
             # Fast resume: if we were paused but now aren't, exit early
             # so the loop body re-enters and runs immediately.
-            if not self._paused.is_set() and seconds > 1.0:
+            if was_paused and not self._paused.is_set() and seconds > 1.0:
                 # Only short-circuit on long sleeps (the regular tick),
                 # not on the 1.0s pause-poll which already covers itself.
                 if seconds >= TICK_INTERVAL_S - 0.1:
@@ -931,6 +938,11 @@ class DiscourseEngine:
         """Refresh OpenFang agent list (filtering to phi3 clones)."""
         if self._agents:
             return True
+        jetzt = time.time()
+        if (self._agents_versucht_ts is not None
+                and jetzt - self._agents_versucht_ts < AGENTS_RETRY_S):
+            return False
+        self._agents_versucht_ts = jetzt
         try:
             r = requests.get(f"{OPENFANG_URL}/api/agents", headers=OPENFANG_HEADERS, timeout=5)
             r.raise_for_status()
