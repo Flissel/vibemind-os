@@ -1,5 +1,5 @@
--- RUNBOOK: nach 072 (video_auftraege). Idempotent, eine Transaktion. Nach jedem Replay verify_082 laufen lassen.
--- 082: Reels-Galerie (21.10.2026, Plan spaces/sales-claw/docs/superpowers/plans/2026-10-21-reels-stufe1.md, E1).
+-- RUNBOOK: nach 072 (video_auftraege). Idempotent, eine Transaktion. Nach jedem Replay verify_085 laufen lassen.
+-- 085: Reels-Galerie (21.10.2026, Plan spaces/sales-claw/docs/superpowers/plans/2026-10-21-reels-stufe1.md, E1).
 -- Ein Reel laesst sich mit Aenderungswunsch neu bauen (neuer Auftrag mit Vorgaenger), fehlgeschlagene neu
 -- versuchen, erledigte archivieren, und der Video-Claw legt ein Vorschaubild (poster) ab. Der Claw bekommt
 -- ueber video_naechster den Wunsch und den Vorgaenger (Titel, Protokoll, Datei). Schreiben nur ueber Funktionen.

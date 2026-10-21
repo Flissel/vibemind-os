@@ -340,7 +340,7 @@ def test_marke_braucht_arbeiterschluessel(db, c):
     assert c.post(f"/api/video/arbeiter/{AID}/marke").status_code in (401, 403)
 
 
-# --- Reels Stufe 1 (21.10.2026, Migration 082): Befund, Liste, nochmal, Archiv, Material, Stimme, Poster ----
+# --- Reels Stufe 1 (21.10.2026, Migration 085): Befund, Liste, nochmal, Archiv, Material, Stimme, Poster ----
 
 @pytest.mark.parametrize("befund, satz", [
     ("Zwei Versuche ohne Ergebnis", "Der Bau ist zweimal hängen geblieben."),
@@ -399,7 +399,7 @@ def test_nochmal_regeln(db, c):
     assert r.status_code == 200 and r.json() == {"auftrag": NEU}
     assert "marketing.video_nochmal(" in db.sql[-1] and "'kürzer, anderer Einstieg'" in db.sql[-1]
     assert "'betreiber'" in db.sql[-1]
-    # DB-Ablehnung (die Regeln stehen in 082) -> 422 mit der Meldung
+    # DB-Ablehnung (die Regeln stehen in 085) -> 422 mit der Meldung
     db.antworten = [[{"mandant": "vibemind"}]]
     db.fehler = [None, RuntimeError("ERROR:  Nur fertige oder fehlgeschlagene Reels lassen sich neu bauen")]
     r = c.post(f"/api/pult/video/{AID}/nochmal", headers=P, json={"wunsch": "", "mandant": "vibemind"})
