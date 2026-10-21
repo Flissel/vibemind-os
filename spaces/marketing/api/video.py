@@ -48,7 +48,7 @@ MP4_MAX = 15 * 1024 * 1024          # sales-claw nimmt hoechstens 15 MB (medien.
 POSTER_MAX = 1024 * 1024            # Vorschaubild (JPEG, 540 px breit) des Video-Claws
 BILDER_MAX = 200                    # Bildauswahl der gefuehrten Bestellung
 TITEL_MAX, THEMA_MAX, TEXT_MAX, HOOK_MAX = 120, 300, 900, 120
-WUNSCH_MAX = 500                    # Aenderungswunsch (082: char_length <= 500)
+WUNSCH_MAX = 500                    # Aenderungswunsch (085: char_length <= 500)
 LAURA_AUS = "Laura ist gerade nicht erreichbar."
 LAURA_LANGSAM = "Laura antwortet gerade zu langsam – versuch es gleich nochmal."
 LAURA_TEILWEISE = "Einige Laura-Projekte antworten gerade nicht."
@@ -172,18 +172,27 @@ def _markenstimme(mandant: str) -> str | None:
     return s.strip() if isinstance(s, str) and s.strip() else None
 
 
+def _markenstimme_aufgeloest(mandant: str, liste: list[str] | None = None) -> tuple[str | None, str | None]:
+    """(stimme, hinweis) aus der Markenstimme: bekannt oder 'standard' -> (marke, None); nicht mehr in
+    MARKETING_STIMMEN -> ('standard', Hinweis); keine Markenstimme -> (None, None)."""
+    marke = _markenstimme(mandant)
+    if marke is None:
+        return None, None
+    if marke == STANDARD or marke in (stimmen_liste() if liste is None else liste):
+        return marke, None
+    return STANDARD, f"Die Markenstimme '{marke[:40]}' gibt es nicht mehr – Standard genommen."
+
+
 def _stimme_einsetzen(mandant: str, briefing: dict) -> None:
     """E2 + Review Focus 3: Die Markenstimme gilt vor dem Briefing. Gibt es sie nicht mehr (nicht in
     MARKETING_STIMMEN), wird 'standard' genommen und vermerkt - der Auftrag scheitert daran nicht.
     Ohne Markenstimme muss eine Briefing-Stimme ausser 'standard' in der Liste stehen."""
     liste = stimmen_liste()
-    marke = _markenstimme(mandant)
-    if marke is not None:
-        if marke == STANDARD or marke in liste:
-            briefing["stimme"] = marke
-        else:
-            briefing["stimme"] = STANDARD
-            briefing["stimme_hinweis"] = f"Die Markenstimme '{marke[:40]}' gibt es nicht mehr – Standard genommen."
+    stimme, hinweis = _markenstimme_aufgeloest(mandant, liste)
+    if stimme is not None:
+        briefing["stimme"] = stimme
+        if hinweis:
+            briefing["stimme_hinweis"] = hinweis
     elif briefing["stimme"] != STANDARD and briefing["stimme"] not in liste:
         raise HTTPException(422, "Diese Stimme gibt es nicht")
 
@@ -271,15 +280,22 @@ def pult_abbrechen(aid: str, payload: dict | None = Body(None), x_pult_key: str 
 
 @pult_router.post("/{aid}/nochmal")
 def pult_nochmal(aid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
-    """Neu bauen: aus fertig mit Aenderungswunsch, aus fehler auch ohne (neu versuchen). Regeln in 082."""
+    """Neu bauen: aus fertig mit Aenderungswunsch, aus fehler auch ohne (neu versuchen). Regeln in 085.
+    Die Stimme wird wie beim Anlegen aus der AKTUELLEN Markenstimme aufgeloest; ohne Markenstimme bleibt die
+    des alten Briefings (NULL an video_nochmal)."""
     _schluessel(x_pult_key)
     wunsch = payload.get("wunsch")
     wunsch = "" if wunsch is None else wunsch
     if not isinstance(wunsch, str) or len(wunsch.strip()) > WUNSCH_MAX:
         raise HTTPException(422, f"wunsch: höchstens {WUNSCH_MAX} Zeichen")
     a = _auftrag_der_firma(aid, payload.get("mandant"))
+    stimme, hinweis = _markenstimme_aufgeloest(_mandant(payload.get("mandant"), "mandant"))
+
+    def oder_null(wert: str | None) -> str:
+        return lit(wert) if wert is not None else "NULL"
     zeile = _schreiben(lambda:
-        f"SELECT marketing.video_nochmal({lit(a)}::uuid, {lit(wunsch.strip())}, 'betreiber') AS id")
+        f"SELECT marketing.video_nochmal({lit(a)}::uuid, {lit(wunsch.strip())}, 'betreiber', "
+        f"{oder_null(stimme)}, {oder_null(hinweis)}) AS id")
     return {"auftrag": str(zeile.get("id"))}
 
 
@@ -607,10 +623,28 @@ async def arbeiter_datei(aid: str, request: Request, x_bild_key: str | None = He
     return _speichern(a, bytes(roh))
 
 
+@router.get("/arbeiter/{aid}/datei")
+def arbeiter_datei_holen(aid: str, x_bild_key: str | None = Header(None)):
+    """Das ueber /aus-laura (oder /datei) abgelegte MP4 dieses Auftrags, fuer das Vorschaubild am PC: der PC
+    erreicht Lauras Export-Link nicht (VM-intern). Nur in Arbeit oder fertig; fehlt die Datei, 404."""
+    _bild_schluessel(x_bild_key)
+    a = _auftrag_id(aid)
+    auftrag = _lesen_einer(lambda: f"SELECT titel, status FROM marketing.video_auftraege WHERE id = {lit(a)}::uuid")
+    if not auftrag:
+        raise HTTPException(404, "Unbekannter Auftrag")
+    if auftrag.get("status") not in ("in_arbeit", "fertig"):
+        raise HTTPException(409, "Auftrag ist weder in Arbeit noch fertig")
+    name = f"{_stamm(a, auftrag.get('titel'))}.mp4"
+    pfad = os.path.join(_ordner(), name)
+    if not os.path.isfile(pfad) or os.path.islink(pfad):
+        raise HTTPException(404, "MP4 fehlt")
+    return FileResponse(pfad, media_type="video/mp4", headers={"Cache-Control": "no-store"})
+
+
 @router.post("/arbeiter/{aid}/poster")
 async def arbeiter_poster(aid: str, request: Request, x_bild_key: str | None = Header(None)):
     """Vorschaubild (rohes JPEG, hoechstens 1 MiB) neben das MP4: vid-<aid8>-<stamm>.jpg mit dem Stamm von
-    datei, sonst dem Titel-Slug. Der Firma zuordnen, ablegen, dann marketing.video_poster (082)."""
+    datei, sonst dem Titel-Slug. Der Firma zuordnen, ablegen, dann marketing.video_poster (085)."""
     _bild_schluessel(x_bild_key)
     a = _auftrag_id(aid)
     roh = bytearray()

@@ -166,6 +166,35 @@ BEGIN
       row_to_json(r); END IF;
 END $$;
 
+-- (b3) Stimme beim Neubau: ohne p_stimme bleibt die alte Stimme, ein alter stimme_hinweis faellt weg;
+-- mit p_stimme gilt die neue; p_stimme_hinweis setzt einen neuen Hinweis. Die 3-stellige Fassung gibt es nicht mehr.
+DO $$ DECLARE alt uuid; neu uuid; b jsonb; n int;
+BEGIN
+  SELECT count(*) INTO n FROM pg_proc p JOIN pg_namespace s ON s.oid = p.pronamespace
+   WHERE s.nspname = 'marketing' AND p.proname = 'video_nochmal';
+  IF n <> 1 THEN RAISE EXCEPTION 'verify_085: video_nochmal gibt es % mal (soll 1)', n; END IF;
+  INSERT INTO marketing.video_auftraege (mandant, art, titel, briefing, status, datei, angelegt_von)
+  VALUES ('probe_085', 'bilder', 'Stimme', '{"thema":"s","stimme":"alt","stimme_hinweis":"weg damit"}',
+          'fertig', 'vid-0123abcd-stimme.mp4', 'agent') RETURNING id INTO alt;
+  neu := marketing.video_nochmal(alt, 'eins', 'betreiber');
+  SELECT briefing INTO b FROM marketing.video_auftraege WHERE id = neu;
+  IF b <> '{"thema":"s","stimme":"alt"}'::jsonb THEN
+    RAISE EXCEPTION 'verify_085: ohne p_stimme falsches Briefing: %', b; END IF;
+  UPDATE marketing.video_auftraege SET status = 'fehler' WHERE id = neu;
+  neu := marketing.video_nochmal(alt, 'zwei', 'betreiber', 'neu-a');
+  SELECT briefing INTO b FROM marketing.video_auftraege WHERE id = neu;
+  IF b <> '{"thema":"s","stimme":"neu-a"}'::jsonb THEN
+    RAISE EXCEPTION 'verify_085: p_stimme nicht uebernommen: %', b; END IF;
+  UPDATE marketing.video_auftraege SET status = 'fehler' WHERE id = neu;
+  neu := marketing.video_nochmal(alt, 'drei', 'betreiber', 'standard', 'Markenstimme weg');
+  SELECT briefing INTO b FROM marketing.video_auftraege WHERE id = neu;
+  IF b <> '{"thema":"s","stimme":"standard","stimme_hinweis":"Markenstimme weg"}'::jsonb THEN
+    RAISE EXCEPTION 'verify_085: p_stimme_hinweis nicht uebernommen: %', b; END IF;
+  IF (SELECT briefing FROM marketing.video_auftraege WHERE id = alt)
+     <> '{"thema":"s","stimme":"alt","stimme_hinweis":"weg damit"}'::jsonb THEN
+    RAISE EXCEPTION 'verify_085: Briefing des alten Auftrags hat sich geaendert'; END IF;
+END $$;
+
 -- (c) video_archivieren: fertig/fehler/abgebrochen -> true und gesetzt (auch wieder zurueck);
 -- offen/in_arbeit -> false und unveraendert
 DO $$ DECLARE fe uuid; o uuid;
@@ -269,7 +298,7 @@ END $$;
 -- (f) Rechte: niemand ausser dem Eigentuemer
 DO $$ BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sales_app') THEN
-    IF has_function_privilege('sales_app', 'marketing.video_nochmal(uuid,text,text)', 'EXECUTE')
+    IF has_function_privilege('sales_app', 'marketing.video_nochmal(uuid,text,text,text,text)', 'EXECUTE')
        OR has_function_privilege('sales_app', 'marketing.video_archivieren(uuid,boolean)', 'EXECUTE')
        OR has_function_privilege('sales_app', 'marketing.video_poster(uuid,text)', 'EXECUTE')
        OR has_function_privilege('sales_app', 'marketing.video_naechster(interval)', 'EXECUTE') THEN

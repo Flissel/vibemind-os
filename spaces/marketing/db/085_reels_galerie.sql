@@ -17,9 +17,15 @@ ALTER TABLE marketing.video_auftraege
 -- offener Auftrag mit denselben Eckdaten. Der alte bleibt, wie er ist. Neu versuchen einer gescheiterten
 -- Ueberarbeitung (fehler, leerer Wunsch, hat Vorgaenger) wiederholt dieselbe Ueberarbeitung: Vorgaenger und
 -- Wunsch kommen vom gescheiterten Auftrag. Laeuft fuer denselben Vorgaenger schon ein Bau, wird abgelehnt.
-CREATE OR REPLACE FUNCTION marketing.video_nochmal(p_alt uuid, p_wunsch text, p_von text) RETURNS uuid
+-- Stimme: der neue Bau nimmt die AKTUELLE Markenstimme, die die API aufloest (p_stimme; NULL = Stimme des
+-- alten Briefings bleibt). Ein alter stimme_hinweis faellt weg; p_stimme_hinweis setzt bei Bedarf einen neuen.
+-- Erst die 3-stellige Fassung entfernen, sonst waeren Aufrufe mit drei Argumenten mehrdeutig.
+DROP FUNCTION IF EXISTS marketing.video_nochmal(uuid, text, text);
+CREATE OR REPLACE FUNCTION marketing.video_nochmal(p_alt uuid, p_wunsch text, p_von text,
+                                                  p_stimme text DEFAULT NULL,
+                                                  p_stimme_hinweis text DEFAULT NULL) RETURNS uuid
 LANGUAGE plpgsql AS $$
-DECLARE a marketing.video_auftraege; w text := btrim(coalesce(p_wunsch, '')); vg uuid; v uuid;
+DECLARE a marketing.video_auftraege; w text := btrim(coalesce(p_wunsch, '')); vg uuid; v uuid; b jsonb;
 BEGIN
   SELECT * INTO a FROM marketing.video_auftraege WHERE id = p_alt;
   IF a.id IS NULL OR a.status NOT IN ('fertig', 'fehler') THEN
@@ -37,8 +43,12 @@ BEGIN
   IF EXISTS (SELECT 1 FROM marketing.video_auftraege
               WHERE vorgaenger = vg AND status IN ('offen', 'in_arbeit')) THEN
     RAISE EXCEPTION 'Es läuft schon ein neuer Bau für dieses Reel'; END IF;
+  b := a.briefing - 'stimme_hinweis';
+  IF p_stimme IS NOT NULL THEN b := b || jsonb_build_object('stimme', p_stimme); END IF;
+  IF p_stimme_hinweis IS NOT NULL THEN
+    b := b || jsonb_build_object('stimme_hinweis', left(p_stimme_hinweis, 200)); END IF;
   INSERT INTO marketing.video_auftraege (mandant, art, titel, briefing, angelegt_von, vorgaenger, aenderungswunsch)
-  VALUES (a.mandant, a.art, a.titel, a.briefing, p_von, vg, w)
+  VALUES (a.mandant, a.art, a.titel, b, p_von, vg, w)
   RETURNING id INTO v;
   RETURN v;
 END $$;
@@ -88,7 +98,7 @@ BEGIN
 END $$;
 
 -- Funktionen sind standardmaessig fuer PUBLIC ausfuehrbar: nur die Marketing-API (Eigentuemer) schreibt.
-REVOKE ALL ON FUNCTION marketing.video_nochmal(uuid, text, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION marketing.video_nochmal(uuid, text, text, text, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.video_archivieren(uuid, boolean) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.video_poster(uuid, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.video_naechster(interval) FROM PUBLIC;

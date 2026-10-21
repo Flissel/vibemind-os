@@ -91,6 +91,12 @@ class VideoApi:
     def datei(self, aid, mp4: bytes) -> dict:
         return self._post(f"/{aid}/datei", roh=mp4, typ="video/mp4")
 
+    def datei_quelle(self, aid) -> dict:
+        """Woher das Vorschaubild sein MP4 holt: die Arbeiter-Route der Marketing-API (GET .../datei).
+        Lauras Export-Link ist VM-intern (z. B. 172.17.0.1) und vom PC aus nicht erreichbar."""
+        return {"url": f"{self.basis}/api/video/arbeiter/{aid}/datei",
+                "kopf": {"X-Bild-Key": self.schluessel}, "tls": self.tls}
+
     def poster(self, aid, jpeg: bytes) -> str | None:
         """Vorschaubild ablegen; ApiFehler bei 409/413/422 geht an den Aufrufer."""
         return self._post(f"/{aid}/poster", roh=jpeg, typ="image/jpeg").get("name")
@@ -191,11 +197,15 @@ def claw_fragen(system: str, nachricht: str, url: str = LLM_URL, modell: str = M
 
 # --- Vorschaubild -----------------------------------------------------------------------------------
 
-def _herunterladen(url: str, ziel: str) -> None:
-    """MP4 in eine Datei streamen: Gesamtfrist 60 s (monoton), hoechstens 16 MiB."""
+def _herunterladen(url: str, ziel: str, kopf: dict | None = None, tls=None) -> None:
+    """MP4 in eine Datei streamen: Gesamtfrist 60 s (monoton), hoechstens 16 MiB. Kopfzeilen (der
+    Arbeiter-Schluessel) gehen nicht an Umleitungsziele weiter."""
     gesamt = 0
     ende = time.monotonic() + POSTER_DOWNLOAD_S
-    with urllib.request.urlopen(url, timeout=POSTER_DOWNLOAD_S) as r, open(ziel, "wb") as f:
+    req = urllib.request.Request(url, method="GET")
+    for k, v in (kopf or {}).items():
+        req.add_unredirected_header(k, v)
+    with urllib.request.urlopen(req, timeout=POSTER_DOWNLOAD_S, context=tls) as r, open(ziel, "wb") as f:
         while True:
             if time.monotonic() > ende:
                 raise ClawFehler(f"Download nach {POSTER_DOWNLOAD_S} s abgebrochen")
@@ -208,7 +218,8 @@ def _herunterladen(url: str, ziel: str) -> None:
             f.write(stueck)
 
 
-def poster_erzeugen(mp4_url: str, ffmpeg: str = FFMPEG, melden=lambda grund: None) -> bytes | None:
+def poster_erzeugen(mp4_url: str, ffmpeg: str = FFMPEG, melden=lambda grund: None,
+                    kopf: dict | None = None, tls=None) -> bytes | None:
     """JPEG-Einzelbild (Sekunde 1, 540 px breit) aus dem MP4; None bei jedem Fehler (Grund an `melden`).
     ffmpeg laeuft ohne Pipes (Kindprozesse erben sonst die Pipe und haengen)."""
     if urllib.parse.urlsplit(mp4_url).scheme not in ("http", "https"):
@@ -220,7 +231,7 @@ def poster_erzeugen(mp4_url: str, ffmpeg: str = FFMPEG, melden=lambda grund: Non
     os.close(fd_b)
     try:
         try:
-            _herunterladen(mp4_url, video)
+            _herunterladen(mp4_url, video, kopf, tls)
         except (ClawFehler, OSError, ValueError) as e:
             melden(f"Download: {e}"[:200] if isinstance(e, ClawFehler) else f"Download: {type(e).__name__}")
             return None
@@ -331,7 +342,8 @@ def ein_durchlauf(api, fragen=claw_fragen, abwarten=render_abwarten, ordner: Pat
             return "abgebrochen"
         gruende: list[str] = []
         try:
-            jpeg = poster(url, melden=gruende.append)
+            quelle = api.datei_quelle(aid)
+            jpeg = poster(quelle["url"], kopf=quelle["kopf"], tls=quelle["tls"], melden=gruende.append)
             if jpeg:
                 api.poster(aid, jpeg)
         except Exception as e:  # noqa: BLE001 - das Vorschaubild ist nie ein Grund, den Auftrag zu verlieren

@@ -11,6 +11,7 @@ from spaces.marketing.workers import video_claw as vc
 from spaces.marketing.workers.bild_worker import ApiFehler
 
 ORDNER = Path(vc.ORDNER)
+JPEG_KOPF = bytes([0xFF, 0xD8, 0xFF])
 
 
 def _auftrag(**extra):
@@ -167,6 +168,10 @@ class _Api:
     def aus_laura(self, aid, url):
         self.ereignisse.append(("aus_laura", url))
         return {"name": "reel.mp4", "dauer_s": 20}
+
+    def datei_quelle(self, aid):
+        return {"url": f"https://vm.example/api/video/arbeiter/{aid}/datei", "kopf": {"X-Bild-Key": "bk"},
+                "tls": None}
 
     def poster(self, aid, jpeg):
         self.ereignisse.append(("poster", jpeg))
@@ -340,3 +345,56 @@ def test_abbruch_vor_poster_kein_poster_kein_fertig():
     r = vc.ein_durchlauf(api, fragen=lambda s, n: "EXPORT: abcdef12", abwarten=abwarten, ordner=ORDNER,
                          poster=lambda *a, **k: pytest.fail("kein Poster"), weiter_takt_s=0.01)
     assert r == "abgebrochen" and "fertig" not in _arten(api) and "poster" not in _arten(api)
+
+
+# --- Final-Review-Fix: Vorschaubild-Quelle ist die Marketing-API, nicht Lauras VM-interner Link -----------
+
+def test_poster_quelle_ist_die_arbeiter_route_nicht_laura():
+    api = _Api(_auftrag())
+    gesehen = {}
+
+    def poster(url, **k):
+        gesehen.update(url=url, **k)
+        return JPEG_KOPF + b"X"
+    assert _lauf(api, poster) == "fertig"
+    assert gesehen["url"] == "https://vm.example/api/video/arbeiter/a1/datei"     # nicht http://dl/x
+    assert gesehen["kopf"] == {"X-Bild-Key": "bk"}
+    assert api.ereignisse[0] == ("aus_laura", "http://dl/x")
+
+
+def test_poster_quelle_fehler_ist_nur_notiz():
+    api = _Api(_auftrag())
+
+    def kaputt(aid):
+        raise ApiFehler(503, "weg")
+    api.datei_quelle = kaputt
+    assert _lauf(api, lambda url, **k: pytest.fail("kein Download")) == "fertig"
+    assert _arten(api) == ["aus_laura", "notiz", "fertig"]
+
+
+def test_video_api_datei_quelle():
+    api = vc.VideoApi("https://vm.example:8446/", "geheim")
+    q = api.datei_quelle("a1")
+    assert q["url"] == "https://vm.example:8446/api/video/arbeiter/a1/datei"
+    assert q["kopf"] == {"X-Bild-Key": "geheim"} and q["tls"] is api.tls
+
+
+def test_poster_download_schickt_schluessel_ohne_umleitung(monkeypatch):
+    gesehen = {}
+
+    def oeffnen(req, timeout=None, context=None, **kw):
+        gesehen.update(req=req, timeout=timeout, context=context)
+        return _Antwort(b"MP4")
+    monkeypatch.setattr(vc.urllib.request, "urlopen", oeffnen)
+
+    def lauf(argv, **kw):
+        Path(argv[-1]).write_bytes(JPEG_KOPF + b"J")
+        return type("R", (), {"returncode": 0})()
+    monkeypatch.setattr(vc.subprocess, "run", lauf)
+    tls = object()
+    assert vc.poster_erzeugen("https://vm.example/api/video/arbeiter/a1/datei", kopf={"X-Bild-Key": "bk"},
+                              tls=tls) == JPEG_KOPF + b"J"
+    req = gesehen["req"]
+    assert req.full_url == "https://vm.example/api/video/arbeiter/a1/datei" and req.get_method() == "GET"
+    assert req.unredirected_hdrs.get("X-bild-key") == "bk" and "X-bild-key" not in req.headers
+    assert gesehen["timeout"] == 60 and gesehen["context"] is tls

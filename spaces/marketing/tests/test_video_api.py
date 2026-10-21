@@ -393,22 +393,22 @@ NEU = "0123abcd-4444-4444-4444-444444444444"
 
 
 def test_nochmal_regeln(db, c):
-    db.antworten = [[{"mandant": "vibemind"}], [{"id": NEU}]]
+    db.antworten = [[{"mandant": "vibemind"}], [], [{"id": NEU}]]
     r = c.post(f"/api/pult/video/{AID}/nochmal", headers=P, json={"wunsch": "kürzer, anderer Einstieg",
                                                                   "mandant": "vibemind"})
     assert r.status_code == 200 and r.json() == {"auftrag": NEU}
     assert "marketing.video_nochmal(" in db.sql[-1] and "'kürzer, anderer Einstieg'" in db.sql[-1]
     assert "'betreiber'" in db.sql[-1]
     # DB-Ablehnung (die Regeln stehen in 085) -> 422 mit der Meldung
-    db.antworten = [[{"mandant": "vibemind"}]]
-    db.fehler = [None, RuntimeError("ERROR:  Nur fertige oder fehlgeschlagene Reels lassen sich neu bauen")]
+    db.antworten = [[{"mandant": "vibemind"}], []]
+    db.fehler = [None, None, RuntimeError("ERROR:  Nur fertige oder fehlgeschlagene Reels lassen sich neu bauen")]
     r = c.post(f"/api/pult/video/{AID}/nochmal", headers=P, json={"wunsch": "", "mandant": "vibemind"})
     assert r.status_code == 422
     assert r.json()["detail"] == "Nur fertige oder fehlgeschlagene Reels lassen sich neu bauen"
 
 
 def test_nochmal_ohne_wunsch_ist_neu_versuchen(db, c):
-    db.antworten = [[{"mandant": "vibemind"}], [{"id": NEU}]]
+    db.antworten = [[{"mandant": "vibemind"}], [], [{"id": NEU}]]
     r = c.post(f"/api/pult/video/{AID}/nochmal", headers=P, json={"mandant": "vibemind"})
     assert r.status_code == 200 and "''" in db.sql[-1]
 
@@ -699,3 +699,67 @@ def test_anlegen_markenstimme_standard_ohne_hinweis(db, c):
     assert _anlegen(c, {**MATERIAL, "stimme": "eigene-a"}).status_code == 200
     b = _briefing_aus(db.sql[-1])
     assert b["stimme"] == "standard" and "stimme_hinweis" not in b
+
+
+# --- Final-Review-Fixes: Datei fuer das Vorschaubild, Stimme beim Neubau --------------------------------
+
+def _datei_auftrag(status="in_arbeit"):
+    return [{"titel": "Herbst-Reel im Laden", "status": status}]
+
+
+def test_datei_abholen_fuer_vorschaubild(db, c):
+    (db.ordner / "vid-0123abcd-herbst-reel-im-laden.mp4").write_bytes(MP4)
+    for status in ("in_arbeit", "fertig"):
+        db.antworten = [_datei_auftrag(status)]
+        r = c.get(f"/api/video/arbeiter/{AID}/datei", headers=B)
+        assert r.status_code == 200, r.text
+        assert r.content == MP4 and r.headers["content-type"] == "video/mp4"
+
+
+def test_datei_abholen_regeln(db, c):
+    # ohne/mit falschem Schluessel 401, ohne X-API-Key kein globaler Riegel (Arbeiter kennt ihn nicht)
+    assert c.get(f"/api/video/arbeiter/{AID}/datei").status_code == 401
+    assert c.get(f"/api/video/arbeiter/{AID}/datei", headers=P).status_code == 401
+    # Datei fehlt -> 404
+    db.antworten = [_datei_auftrag()]
+    assert c.get(f"/api/video/arbeiter/{AID}/datei", headers=B).status_code == 404
+    # falscher Status -> 409, unbekannter Auftrag -> 404, kaputte id -> 404
+    (db.ordner / "vid-0123abcd-herbst-reel-im-laden.mp4").write_bytes(MP4)
+    for status in ("offen", "abgebrochen", "fehler"):
+        db.antworten = [_datei_auftrag(status)]
+        assert c.get(f"/api/video/arbeiter/{AID}/datei", headers=B).status_code == 409
+    db.antworten = [[]]
+    assert c.get(f"/api/video/arbeiter/{AID}/datei", headers=B).status_code == 404
+    assert c.get("/api/video/arbeiter/kein-uuid/datei", headers=B).status_code in (404, 422)
+
+
+def test_datei_abholen_ohne_globalen_api_schluessel(db, c):
+    (db.ordner / "vid-0123abcd-herbst-reel-im-laden.mp4").write_bytes(MP4)
+    db.antworten = [_datei_auftrag()]
+    r = c.get(f"/api/video/arbeiter/{AID}/datei", headers=B)          # kein X-API-Key
+    assert r.status_code == 200
+
+
+def _nochmal_stimme(db, c, marke):
+    db.antworten = [[{"mandant": "vibemind"}], [{"s": marke}] if marke is not ... else [], [{"id": NEU}]]
+    r = c.post(f"/api/pult/video/{AID}/nochmal", headers=P, json={"wunsch": "kürzer", "mandant": "vibemind"})
+    assert r.status_code == 200, r.text
+    assert "marken_spiegel" in db.sql[-2]
+    return db.sql[-1]
+
+
+def test_nochmal_nimmt_aktuelle_markenstimme(db, c, monkeypatch):
+    monkeypatch.setenv("MARKETING_STIMMEN", "anna")
+    sql = _nochmal_stimme(db, c, "anna")
+    assert sql.endswith("'betreiber', 'anna', NULL) AS id")
+    sql = _nochmal_stimme(db, c, "standard")
+    assert sql.endswith("'betreiber', 'standard', NULL) AS id")
+    # Markenstimme gibt es nicht mehr -> standard + Hinweis
+    sql = _nochmal_stimme(db, c, "weg")
+    assert ("'betreiber', 'standard', 'Die Markenstimme ''weg'' gibt es nicht mehr – Standard genommen.') AS id"
+            in sql)
+    # keine Markenstimme -> NULL: die Stimme des alten Briefings bleibt
+    sql = _nochmal_stimme(db, c, None)
+    assert sql.endswith("'betreiber', NULL, NULL) AS id")
+    sql = _nochmal_stimme(db, c, ...)
+    assert sql.endswith("'betreiber', NULL, NULL) AS id")
