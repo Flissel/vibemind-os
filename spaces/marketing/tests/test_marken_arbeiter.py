@@ -93,6 +93,14 @@ class Api:
     def quellen(self, aid, quellen):
         self.log.append(("quellen", aid, quellen)); return True
 
+    pflicht_fehler = None
+
+    def pflichtteil(self, aid, daten):
+        self.log.append(("pflichtteil", aid, daten))
+        if self.pflicht_fehler is not None:
+            raise self.pflicht_fehler
+        return {"pflichtteil": daten.get("pflichtteil") or {}, "stand": daten.get("stand") or {}}
+
     def aufrufe(self, name):
         return [e for e in self.log if e[0] == name]
 
@@ -1659,3 +1667,120 @@ def test_bearbeitung_formularstimme_gilt_auch_bei_agent_null(wurzel, stimmen, fo
     api = Api(_uebernehmen(gespeichert))
     assert _lauf(api, Fragen()) == "fertig"
     assert mp.lesen(str(wurzel), "radhaus", "Radhaus").werte.get("stimme") == erwartet
+
+
+# --- Einrichtung (/marke_neu, Task 5) --------------------------------------------------
+
+IMPRESSUM = "Radhaus GmbH, Domstraße 1, 50667 Köln, Geschäftsführer: Anna Rad"
+EINR = {**CHAT, "einrichtung": "laeuft", "pflichtteil": {}, "einrichtung_stand": {}}
+
+
+def _einr_antwort(vorschlag=None, antwort="Weiter mit Schritt 2.", **extra):
+    return json.dumps({"antwort": antwort, "vorschlag": vorschlag, **extra}, ensure_ascii=False)
+
+
+def test_einrichtung_skill_im_system_prompt():
+    from spaces.marketing.claw import skills
+    skill = next(s for s in skills.laden() if s.name == ma.EINRICHTUNG_SKILL)
+    api, fragen = Api(dict(EINR)), Fragen(_einr_antwort())
+    assert _lauf(api, fragen) == "fertig"
+    system = fragen.gesehen[0][0]
+    assert skill.anweisung in system and system.startswith(ma.marken_prompt.SYSTEM)
+    assert "STAND DER EINRICHTUNG" in _text(fragen)
+
+
+def test_einrichtung_ohne_skill_gibt_auf(monkeypatch):
+    def kaputt(*a, **k):
+        raise ma.skills.SkillFehler("SKILL.md kaputt")
+    monkeypatch.setattr(ma.skills, "laden", kaputt)
+    api, fragen = Api(dict(EINR)), Fragen()
+    assert _lauf(api, fragen) == "fehler"
+    assert api.aufrufe("zurueck")[0][2] == "Skill marke-neu fehlt – Einrichtung nicht möglich"
+    assert fragen.gesehen == []
+    monkeypatch.setattr(ma.skills, "laden", lambda *a, **k: [])
+    api = Api(dict(EINR))
+    assert _lauf(api, Fragen()) == "fehler"
+    assert api.aufrufe("zurueck")[0][2] == "Skill marke-neu fehlt – Einrichtung nicht möglich"
+
+
+def test_einrichtung_farben_gelten_direkt(wurzel):
+    _profil(wurzel, {"Ton": "Laut und schnell.", "Bildstil": "Warme Werkstattfotos, Tageslicht."})
+    api = Api(dict(EINR))
+    assert _lauf(api, Fragen(_einr_antwort({**VORSCHLAG, "akzent": "#9a3412"}))) == "fertig"
+    daten = _gesendet(api)
+    assert daten["direkt"] is True and daten["vorschlag"]["direkt"] is True
+    api = Api(dict(CHAT))                           # Gegenprobe: ohne Einrichtung nicht direkt
+    assert _lauf(api, Fragen(_einr_antwort({**VORSCHLAG, "akzent": "#9a3412"}))) == "fertig"
+    assert _gesendet(api)["direkt"] is False
+
+
+def test_einrichtung_impressum_aus_nachricht_gespeichert():
+    api = Api({**EINR, "nachricht": f"Unser Impressum: {IMPRESSUM}"})
+    fragen = Fragen(_einr_antwort(VORSCHLAG, pflichtteil={"impressum": IMPRESSUM}, vermittler=False))
+    assert _lauf(api, fragen) == "fertig"
+    (_, aid, daten), = api.aufrufe("pflichtteil")
+    assert aid == "a1" and daten == {"pflichtteil": {"impressum": IMPRESSUM}, "stand": {"vermittler": False}}
+    namen = [e[0] for e in api.log]
+    assert namen.index("pflichtteil") < namen.index("vorschlag")
+
+
+def test_einrichtung_erfundenes_impressum_nicht_gespeichert():
+    api = Api({**EINR, "nachricht": "Mach du mal ein Impressum."})
+    assert _lauf(api, Fragen(_einr_antwort(pflichtteil={"impressum": IMPRESSUM}))) == "fertig"
+    assert not any("impressum" in (e[2].get("pflichtteil") or {}) for e in api.aufrufe("pflichtteil"))
+    (_, _, daten), = api.aufrufe("fertig")
+    assert any(h.startswith("Impressum nicht übernommen") for h in daten["hinweise"])
+
+
+def test_einrichtung_impressum_von_gelesener_seite():
+    team = Fund(seiten=[Seite(url="https://radhaus.example/impressum", text=f"Impressum\n{IMPRESSUM}",
+                              ueberschriften=[])])
+    api = Api(dict(EINR))
+    fragen = Fragen(_mit_lesen(["https://radhaus.example/impressum"]),
+                    _einr_antwort(pflichtteil={"impressum": IMPRESSUM}))
+    assert _lauf(api, fragen, seite_lesen=lambda u: team) == "fertig"
+    (_, _, daten), = api.aufrufe("pflichtteil")
+    assert daten == {"pflichtteil": {"impressum": IMPRESSUM}}
+
+
+def test_einrichtung_impressum_von_startseite_und_stand_zusammengefuehrt():
+    start = Fund(seiten=[Seite(url="https://radhaus.example/", text=IMPRESSUM, ueberschriften=[])])
+    api = Api({**EINR, "nachricht": "https://radhaus.example/", "einrichtung_stand": {"uebersprungen": [5]}})
+    fragen = Fragen(_einr_antwort(pflichtteil={"impressum": IMPRESSUM}, uebersprungen=[3]))
+    assert _lauf(api, fragen, webseite_lesen=lambda u: start) == "fertig"
+    (_, _, daten), = api.aufrufe("pflichtteil")
+    assert daten == {"pflichtteil": {"impressum": IMPRESSUM}, "stand": {"uebersprungen": [3, 5]}}
+
+
+def test_einrichtung_ohne_neue_pflichtangaben_kein_aufruf():
+    api = Api(dict(EINR))
+    assert _lauf(api, Fragen(_einr_antwort())) == "fertig"
+    assert api.aufrufe("pflichtteil") == []
+
+
+def test_einrichtung_pflichtteil_422_nur_hinweis():
+    api = Api({**EINR, "nachricht": f"Impressum: {IMPRESSUM}"})
+    api.pflicht_fehler = ma.ApiFehler(422, "Abmeldehinweis ohne Platzhalter")
+    assert _lauf(api, Fragen(_einr_antwort(pflichtteil={"impressum": IMPRESSUM}))) == "fertig"
+    (_, _, daten), = api.aufrufe("fertig")
+    assert "Pflichtangaben nicht gespeichert: Abmeldehinweis ohne Platzhalter" in daten["hinweise"]
+
+
+def test_bearbeitung_in_einrichtung_unveraendert():
+    api, fragen = Api({**BEARB, "einrichtung": "laeuft", "pflichtteil": {}, "einrichtung_stand": {}}), Fragen(_antwort())
+    assert _lauf(api, fragen) == "fertig"
+    assert fragen.gesehen[0][0] == ma.marken_prompt.SYSTEM
+    assert "STAND DER EINRICHTUNG" not in _text(fragen) and api.aufrufe("pflichtteil") == []
+
+
+def test_markenapi_pflichtteil_route(monkeypatch):
+    gesehen = []
+
+    def fake(req, timeout=None, context=None):
+        gesehen.append((req.full_url, req.get_method(), req.data))
+        return _Antwort(b'{"pflichtteil": {}, "stand": {}}')
+    monkeypatch.setattr(cw.urllib.request, "urlopen", fake)
+    daten = {"pflichtteil": {"impressum": "x"}, "stand": {"vermittler": True}}
+    assert ma.MarkenApi("https://vm/", "K").pflichtteil("a1", daten) == {"pflichtteil": {}, "stand": {}}
+    assert gesehen[-1][:2] == ("https://vm/api/marke/arbeiter/a1/pflichtteil", "POST")
+    assert json.loads(gesehen[-1][2]) == daten
