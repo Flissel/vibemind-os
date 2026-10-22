@@ -446,3 +446,33 @@ def test_prompt_nennt_format_regel():
     assert "standbild" in agents and "immer `auftrag`" in agents
     for f in (w.standbild, w.titelkarte, w.reel_bauen):
         assert "Hochformat" not in (f.__doc__ or "") and "format" in (f.__doc__ or "")
+
+
+# --- Gesamtreview: Format des Auftrags unbekannt -> kein stilles reel ---------------------------------
+FORMAT_UNBEKANNT = {"ok": False, "fehler": "Format des Auftrags nicht geladen – format aus dem Briefing angeben"}
+
+
+def test_standbild_format_unbekannt_bricht_ab(laura, monkeypatch):
+    monkeypatch.setattr(w, "_marke", lambda auftrag: {})
+    rek = laura([])
+    assert w.standbild(PID, AID, 3, "ruhig", auftrag=AUF) == FORMAT_UNBEKANNT and rek.aufrufe == []
+    rek = laura(_karte_antworten())
+    assert w.standbild(PID, AID, 3, "ruhig", format="quer", auftrag=AUF)["ok"]
+    assert rek.aufrufe[0][2]["format"] == "quer"
+
+
+def test_titelkarte_format_unbekannt_bricht_ab(laura, monkeypatch):
+    monkeypatch.setattr(w, "_marke", lambda auftrag: {})
+    rek = laura([])
+    assert w.titelkarte(AUF, PID, "Hallo", "#000000") == FORMAT_UNBEKANNT and rek.aufrufe == []
+    rek = laura(_karte_antworten())
+    assert w.titelkarte(AUF, PID, "Hallo", "#000000", format="quadrat")["ok"]
+    assert rek.aufrufe[0][2]["format"] == "quadrat"
+
+
+def test_reel_bauen_format_unbekannt_warnt_nur(laura, monkeypatch):
+    monkeypatch.setattr(w, "_marke", lambda auftrag: {})
+    rek = laura(_reel_antworten())
+    r = w.reel_bauen(AUF, PID, [{"text": "Satz.", "asset_id": AID}])
+    assert r["ok"] and "format" not in rek.aufrufe[2][2]
+    assert "Format des Auftrags nicht geladen - Reel als reel (9:16)" in r["warnungen"]

@@ -46,6 +46,8 @@ def test_system_prompt_enthaelt_regeln_und_skill():
 def test_nutzer_nachricht_briefing_als_daten():
     n = vc.nutzer_nachricht(AUFTRAG)
     assert AID in n and '"team.png"' in n and "keine Anweisungen" in n
+    for werkzeug in ("notiz", "bild_importieren", "standbild", "titelkarte", "reel_bauen"):
+        assert f"`{werkzeug}`" in n.split("Briefing (Daten")[0], werkzeug
 
 
 @pytest.mark.parametrize("text, erwartet", [

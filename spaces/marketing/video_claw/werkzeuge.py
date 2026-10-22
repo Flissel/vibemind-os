@@ -42,14 +42,18 @@ def _format_gueltig(wert) -> bool:
     return wert is None or wert == "" or (isinstance(wert, str) and wert in FORMATE)
 
 
-def _format_waehlen(wert, marke: dict | None) -> str | dict:
+def _format_waehlen(wert, marke: dict, streng: bool = True) -> str | dict:
     """Format eines Bausteins (Review Focus 3). marke {} = Marke nicht geladen.
     Ohne Angabe gilt das Format des Auftrags (/marke liefert es, fehlt es: reel). Widerspricht die Angabe
-    dem Auftrag, Fehler - gemischte Groessen blaehen das Reel auf (Laura _mixed_size_normalize)."""
+    dem Auftrag, Fehler - gemischte Groessen blaehen das Reel auf (Laura _mixed_size_normalize).
+    Ist das Format des Auftrags unbekannt (Marke nicht geladen) und keines angegeben: streng = Fehler
+    (Karten, Standbilder); sonst reel (reel_bauen warnt dann)."""
     auftrag_format = None
     if marke:
         f = marke.get("format") or "reel"
         auftrag_format = f if isinstance(f, str) and f in FORMATE else "reel"
+    elif streng and not wert:
+        return _fehler("Format des Auftrags nicht geladen – format aus dem Briefing angeben")
     if wert and auftrag_format and wert != auftrag_format:
         return _fehler(f"format '{wert}' passt nicht zum Auftrag: das Briefing verlangt '{auftrag_format}' - "
                        "jeder Baustein im Format aus dem Briefing")
@@ -340,7 +344,7 @@ def reel_bauen(auftrag: str, projekt_id: str, beats: list, stimme: str = "standa
     if not _format_gueltig(format):
         return _fehler(FORMAT_FEHLER)
     marke = _marke(auftrag)            # vor dem Bau: das Format des Auftrags muss vorher feststehen
-    fmt = _format_waehlen(format, marke)
+    fmt = _format_waehlen(format, marke, streng=False)
     if isinstance(fmt, dict):
         return fmt
     r = laura_api.anfrage("POST", f"/projects/{projekt_id}/narrated-reel", {
