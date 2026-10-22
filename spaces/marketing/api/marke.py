@@ -65,6 +65,8 @@ BEFEHLE_CHAT = "marke"                    # Skills mit metadata.vibemind.chats [
 PFLICHT_SCHLUESSEL = ("impressum", "abmelde_hinweis", "vermittlerangaben")
 STAND_SCHLUESSEL = ("uebersprungen", "vermittler")
 UEBERSPRINGBAR = (1, 3, 4, 5, 6)          # Schritt 2 (Pflichtangaben) und 7 (Bestaetigung) nie
+# Logo-Felder eines Vorschlags: eine Logo-Aenderung steht nie in der Aenderungsliste (marken_prompt.wirksam)
+LOGO_SCHLUESSEL = ("logo", "logo_bearbeiten", *marken_prompt.WERKZEUG_FELDER)
 _QUELLE_URL = re.compile(r"https?://")
 # Zugangsdaten ('@' zwischen :// und dem ersten /, ? oder #) und Leer-/Steuerzeichen irgendwo in der url;
 # dieselben Zeichen wie marketing._marke_quellen_pruefen (078).
@@ -137,13 +139,22 @@ def _aenderung(z: dict, juengster: str | None, rueckgaengig: set[str] = frozense
     """Aenderungskarte einer Runde aus dem Join auf marken_vorschlaege (E9); None ohne Vorschlag."""
     vid = z.pop("vid", None)
     status, direkt, liste = z.pop("v_status", None), z.pop("v_direkt", None), z.pop("v_aenderungen", None)
+    logo = z.pop("v_logo", None)
     if not vid:
         return None
     vid = str(vid)
-    return {"vid": vid, "status": status, "direkt": direkt is True,
-            "aenderungen": liste if isinstance(liste, list) else [],
-            "rueckgaengig_moeglich": bool(direkt is True and status == "angenommen" and vid == juengster),
+    liste = liste if isinstance(liste, list) else []
+    return {"vid": vid, "status": status, "direkt": direkt is True, "aenderungen": liste,
+            "rueckgaengig_moeglich": bool(direkt is True and status == "angenommen" and vid == juengster
+                                          and _nur_abschnitte(liste) and logo is not True),
             "rueckgaengig_gemacht": vid in rueckgaengig}
+
+
+def _nur_abschnitte(liste: list) -> bool:
+    """Rueckgaengig (078/086) setzt nur Abschnittstexte zurueck: die Liste ist nicht leer und kein Eintrag ist
+    ein Wert (Farbe, Schrift, Stimme, Webseite - seit 086 waehrend der Einrichtung direkt uebernommen)."""
+    return bool(liste) and all(isinstance(a, dict) and isinstance(a.get("feld"), str)
+                               and a["feld"] not in marken_prompt.AENDERUNG_WERTE for a in liste)
 
 
 def _rueckgaengig_gemachte(m: str, vids: list[str]) -> set[str]:
@@ -255,6 +266,7 @@ def marke_stand(mandant: str | None = None, alle: bool = False, x_pult_key: str 
         "coalesce(a.quellen, '[]'::jsonb) AS quellen, a.art, "
         "v.id AS vid, v.status AS v_status, v.vorschlag->'direkt' AS v_direkt, "
         "v.vorschlag->'aenderungen' AS v_aenderungen, "
+        f"jsonb_strip_nulls(v.vorschlag) ?| ARRAY[{', '.join(lit(k) for k in LOGO_SCHLUESSEL)}] AS v_logo, "
         "a.erstellt_am::text AS erstellt_am, a.erstellt_am AS sortiert_am FROM marketing.marken_auftraege a "
         "LEFT JOIN marketing.marken_vorschlaege v ON v.id = a.vorschlag "
         f"WHERE a.mandant = {lit(m)} AND a.art IN ('chat', 'bearbeitung') "

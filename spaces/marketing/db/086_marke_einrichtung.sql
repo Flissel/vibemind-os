@@ -22,7 +22,8 @@
 --      dass der Assistent nicht arbeitet; setzt aktiv = true, einrichtung = NULL.
 --   6) pult_mandant_einrichtung_abbrechen(mandant, von): laeuft -> abgebrochen, nichts wird geloescht.
 --   7) Marken-Chat waehrend der Einrichtung: anlegen, bearbeitung_anlegen, uebernehmen und rueckgaengig
---      woertlich aus 066/078, einzige Aenderung "AND aktiv" -> "AND (aktiv OR einrichtung = 'laeuft')".
+--      woertlich aus 066/078, einzige Aenderung "AND aktiv" -> "AND (aktiv OR einrichtung = 'laeuft')";
+--      rueckgaengig lehnt zusaetzlich Aenderungen an Werten und Logos ab ("nur für Abschnittstexte").
 --      pult_marke_naechster woertlich aus 066, die Rueckgabe zusaetzlich mit einrichtung und - nur bei
 --      'laeuft' - pflichtteil und einrichtung_stand (der Arbeiter fuehrt damit durch die Schritte).
 -- Sperrreihenfolge wie 064: mandanten -> marken_auftraege -> marken_vorschlaege.
@@ -317,7 +318,7 @@ BEGIN
   RETURN v_id;
 END $$;
 
--- woertlich aus 078, nur "AND aktiv" erweitert
+-- aus 078, "AND aktiv" erweitert; dazu abgelehnt, wenn die Aenderung einen Wert oder ein Logo betrifft
 CREATE OR REPLACE FUNCTION marketing.pult_marke_rueckgaengig(p_vid uuid, p_von text, p_mandant text) RETURNS uuid
 LANGUAGE plpgsql AS $$
 DECLARE v_mandant text; v marketing.marken_vorschlaege; v_liste jsonb; v_neu jsonb; v_id uuid;
@@ -358,6 +359,14 @@ BEGIN
            OR jsonb_typeof(e->'vorher') IS DISTINCT FROM 'string'
            OR jsonb_typeof(e->'nachher') IS DISTINCT FROM 'string') THEN
     RAISE EXCEPTION 'Der Vorschlag hat keine gültige Änderungsliste'; END IF;
+  -- Seit 086 gelten Werte und Logos waehrend der Einrichtung direkt. Der Gegen-Vorschlag kennt nur Abschnitte:
+  -- aus feld 'akzent' wuerde ein Abschnitt "## akzent", ein Logo stuende gar nicht in der Liste. Werte wie
+  -- marken_prompt.AENDERUNG_WERTE, Logo-Felder wie api/marke.LOGO_SCHLUESSEL (gesetzt = nicht null).
+  IF EXISTS (SELECT 1 FROM jsonb_array_elements(v_liste) e
+              WHERE e->>'feld' IN ('akzent', 'zweitfarbe', 'grund', 'text', 'schrift_anzeige', 'schrift_text',
+                                   'stimme', 'webseite'))
+     OR jsonb_strip_nulls(v.vorschlag) ?| ARRAY['logo', 'logo_bearbeiten', 'logo_dunkel', 'logo_original'] THEN
+    RAISE EXCEPTION 'Rückgängig gibt es nur für Abschnittstexte'; END IF;
   -- Gegen-Vorschlag: abschnitte {feld: vorher} (leerer Text loescht den Abschnitt), Liste vertauscht.
   -- Steht ein Feld mehrfach in der Liste, gewinnt sein ERSTES vorher (der Stand vor der Aenderung).
   SELECT jsonb_build_object(

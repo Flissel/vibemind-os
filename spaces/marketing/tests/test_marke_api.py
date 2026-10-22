@@ -1252,6 +1252,24 @@ def test_stand_rueckgaengig_nur_direkt_und_angenommen(umg):
     assert j["auftraege"][0]["aenderung"]["rueckgaengig_moeglich"] is False
 
 
+@pytest.mark.parametrize("aend, logo", [
+    ([{"feld": "akzent", "vorher": "#000000", "nachher": "#9a3412"}], None),
+    ([{"feld": "Ton", "vorher": "", "nachher": "warm"}, {"feld": "webseite", "vorher": "", "nachher": "https://x.de"}],
+     None),
+    ([{"feld": "schrift_text", "vorher": "", "nachher": "Inter"}], None),
+    ([{"feld": "Ton", "vorher": "", "nachher": "warm"}], True),      # Logo geaendert (steht nie in der Liste)
+    ([], None)])
+def test_stand_rueckgaengig_nur_fuer_abschnitte(umg, aend, logo):
+    """Rueckgaengig (078/086) setzt nur Abschnittstexte zurueck: eine direkte Wert-Aenderung waehrend der
+    Einrichtung (Farbe, Schrift, Webseite, Logo) bekommt keinen Knopf."""
+    f, _, c = umg
+    j = _stand(f, c, [_runde(AID, V2, v_aenderungen=aend, v_logo=logo)], [{"id": V2, "erstellt_am": "t"}])
+    assert j["auftraege"][0]["aenderung"]["rueckgaengig_moeglich"] is False
+    assert "v_logo" not in j["auftraege"][0]
+    assert "jsonb_strip_nulls(v.vorschlag) ?| ARRAY['logo', 'logo_bearbeiten', 'logo_dunkel', 'logo_original']" \
+        in f.sql[2]
+
+
 def test_stand_runde_hat_quellen_und_art(umg):
     f, _, c = umg
     roh = {"id": AID, "nachricht": "n", "antwort": "a", "status": "fertig", "hinweise": [], "vorschlag": None,

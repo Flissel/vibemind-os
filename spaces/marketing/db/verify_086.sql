@@ -399,5 +399,40 @@ DO $$ DECLARE r jsonb; aid uuid; BEGIN
     RAISE EXCEPTION 'verify_086: (j) alte Schluessel fehlen: %', r; END IF;
 END $$;
 
+-- (k) Rueckgaengig nur fuer Abschnittstexte: Werte (Farben, Schriften, Stimme, Webseite) und Logos gelten
+-- waehrend der Einrichtung direkt, der Gegenvorschlag kennt aber nur Abschnitte.
+DO $$ DECLARE aid uuid; v uuid; msg text; fall jsonb; BEGIN
+  PERFORM marketing.pult_mandant_einrichten('Probe 086 R', 'Felix');
+  INSERT INTO marketing.marken_auftraege (mandant, art, nachricht, status)
+  VALUES ('probe_086_r', 'chat', 'r', 'fertig') RETURNING id INTO aid;
+  FOREACH fall IN ARRAY ARRAY[
+    '{"akzent":"#9a3412","direkt":true,"aenderungen":[{"feld":"akzent","vorher":"#000000","nachher":"#9a3412"}]}',
+    '{"abschnitte":{"Ton":"x"},"webseite":"https://r.de","direkt":true,"aenderungen":[{"feld":"Ton","vorher":"","nachher":"x"},{"feld":"webseite","vorher":"","nachher":"https://r.de"}]}',
+    '{"abschnitte":{"Ton":"x"},"logo":"anhang:r.png","direkt":true,"aenderungen":[{"feld":"Ton","vorher":"","nachher":"x"}]}',
+    '{"abschnitte":{"Ton":"x"},"logo_dunkel":"marke-r.png","direkt":true,"aenderungen":[{"feld":"Ton","vorher":"","nachher":"x"}]}'
+  ]::jsonb[] LOOP
+    UPDATE marketing.marken_vorschlaege SET status = 'ersetzt' WHERE mandant = 'probe_086_r';
+    INSERT INTO marketing.marken_vorschlaege (mandant, auftrag, vorschlag, status, entschieden_von, entschieden_am)
+    VALUES ('probe_086_r', aid, fall, 'angenommen', 'Agent (direkt)', now()) RETURNING id INTO v;
+    msg := NULL;
+    BEGIN PERFORM marketing.pult_marke_rueckgaengig(v, 'Felix', 'probe_086_r');
+    EXCEPTION WHEN others THEN msg := SQLERRM; END;
+    IF msg IS DISTINCT FROM 'Rückgängig gibt es nur für Abschnittstexte' THEN
+      RAISE EXCEPTION 'verify_086: (k) rueckgaengig bei % muss abgelehnt werden, war: %', fall, msg; END IF;
+    IF (SELECT count(*) FROM marketing.marken_vorschlaege WHERE mandant = 'probe_086_r' AND status <> 'ersetzt') <> 1
+       OR EXISTS (SELECT 1 FROM marketing.marken_auftraege WHERE mandant = 'probe_086_r' AND art = 'uebernehmen') THEN
+      RAISE EXCEPTION 'verify_086: (k) abgelehntes Rueckgaengig hat etwas angelegt'; END IF;
+  END LOOP;
+  -- Gegenprobe: nur Abschnitte (logo null zaehlt nicht) geht
+  UPDATE marketing.marken_vorschlaege SET status = 'ersetzt' WHERE mandant = 'probe_086_r';
+  INSERT INTO marketing.marken_vorschlaege (mandant, auftrag, vorschlag, status, entschieden_von, entschieden_am)
+  VALUES ('probe_086_r', aid,
+          '{"abschnitte":{"Ton":"x"},"logo":null,"direkt":true,"aenderungen":[{"feld":"Ton","vorher":"a","nachher":"x"}]}',
+          'angenommen', 'Agent (direkt)', now()) RETURNING id INTO v;
+  aid := marketing.pult_marke_rueckgaengig(v, 'Felix', 'probe_086_r');
+  IF (SELECT art FROM marketing.marken_auftraege WHERE id = aid) IS DISTINCT FROM 'uebernehmen' THEN
+    RAISE EXCEPTION 'verify_086: (k) rueckgaengig fuer Abschnitte muss einen Uebernahme-Auftrag anlegen'; END IF;
+END $$;
+
 DO $$ BEGIN RAISE NOTICE 'verify_086: ok'; END $$;
 SELECT 'verify_086: ok' AS ergebnis;
