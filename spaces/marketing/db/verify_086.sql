@@ -40,14 +40,16 @@ DO $$ DECLARE geworfen boolean; BEGIN
     RAISE EXCEPTION 'verify_086: kein SECURITY DEFINER'; END IF;
 END $$;
 
--- (k) bestehende Mandanten unveraendert: keine Einrichtung, leerer Stand, die Grund-Firma bleibt aktiv
+-- (k) bestehende Mandanten unveraendert: wer nicht aus einer Einrichtung stammt (eingerichtet_von NULL), hat
+-- weder Einrichtung noch Stand; die Grund-Firma bleibt aktiv. Echte Einrichtungen (/marke_neu) zaehlen nicht -
+-- sonst waere verify_086 nach der ersten Nutzung auf der Live-DB dauerhaft rot.
 -- (laeuft vor allen Probe-Firmen dieser Datei; probe_086_s aus (a) ist schon wieder weg)
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                   WHERE table_schema = 'marketing' AND table_name = 'mandanten' AND column_name = 'einrichtung') THEN
     RAISE EXCEPTION 'verify_086: Spalte mandanten.einrichtung fehlt'; END IF;
   IF EXISTS (SELECT 1 FROM marketing.mandanten
-              WHERE einrichtung IS NOT NULL OR einrichtung_stand <> '{}'::jsonb OR eingerichtet_von IS NOT NULL) THEN
+              WHERE eingerichtet_von IS NULL AND (einrichtung IS NOT NULL OR einrichtung_stand <> '{}'::jsonb)) THEN
     RAISE EXCEPTION 'verify_086: bestehende Mandanten duerfen keine Einrichtung haben'; END IF;
   IF NOT (SELECT aktiv FROM marketing.mandanten WHERE id = 'vibemind') THEN
     RAISE EXCEPTION 'verify_086: vibemind muss aktiv bleiben'; END IF;
@@ -262,6 +264,7 @@ DO $$ DECLARE r jsonb; msg text; schlecht jsonb; BEGIN
 
   FOREACH schlecht IN ARRAY ARRAY['{"uebersprungen":[2]}', '{"uebersprungen":[7]}', '{"uebersprungen":[0]}',
                                   '{"uebersprungen":["3"]}', '{"uebersprungen":3}', '{"uebersprungen":[3.5]}',
+                                  '{"uebersprungen":[3.0]}', '{"uebersprungen":[3,3]}', '{"uebersprungen":[1,4,1]}',
                                   '{"vermittler":"ja"}', '{"schritt":2}', '[]']::jsonb[] LOOP
     msg := NULL;
     BEGIN PERFORM marketing.pult_mandant_pflichtteil_setzen('probe_086_a', NULL, schlecht);

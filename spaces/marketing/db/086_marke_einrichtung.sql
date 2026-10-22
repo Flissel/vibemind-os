@@ -1,8 +1,9 @@
 -- RUNBOOK: 086 ersetzt pult_marke_anlegen, pult_marke_bearbeitung_anlegen, pult_marke_uebernehmen,
 -- pult_marke_naechster(interval, text[]) (aus 066) und pult_marke_rueckgaengig (aus 078). Ein Replay von
 -- 064, 066 oder 078 ueberschreibt diese Funktionen wieder mit der alten Fassung (nur aktive Firmen, ohne
--- einrichtung in naechster) - danach IMMER 086 erneut einspielen und verify_060 .. verify_066, verify_078
--- und verify_086 zusammen ueber migration_probe laufen lassen.
+-- einrichtung in naechster) - danach IMMER 086 erneut einspielen und verify_060, verify_062 .. verify_066,
+-- verify_078 und verify_086 zusammen ueber migration_probe laufen lassen. verify_061 ist unabhaengig von 086
+-- schon rot ("0: Index laufend bleibt" - der Index wurde in 066 umgebaut) und gehoert nicht in diese Probe.
 -- 086: Einrichtung neuer Marken (/marke_neu, sales-claw Spec 2026-10-21-marke-neu-skill-design.md).
 -- Idempotent, eine Transaktion.
 --   1) mandanten.einrichtung ('laeuft' | 'abgebrochen' | NULL), einrichtung_stand (jsonb, {} vorgegeben:
@@ -133,9 +134,12 @@ BEGIN
     IF p_stand ? 'uebersprungen' THEN
       IF jsonb_typeof(p_stand->'uebersprungen') <> 'array' THEN
         RAISE EXCEPTION 'uebersprungen muss eine Liste aus den Schritten 1, 3, 4, 5, 6 sein'; END IF;
+      -- nur ganze Zahlen in Textform (3.0 oder 3e0 sind kein Schritt), jeder Schritt hoechstens einmal
       IF EXISTS (SELECT 1 FROM jsonb_array_elements(p_stand->'uebersprungen') s
-                  WHERE jsonb_typeof(s) <> 'number' OR s NOT IN ('1','3','4','5','6')) THEN
+                  WHERE jsonb_typeof(s) <> 'number' OR s::text NOT IN ('1','3','4','5','6')) THEN
         RAISE EXCEPTION 'uebersprungen muss eine Liste aus den Schritten 1, 3, 4, 5, 6 sein'; END IF;
+      IF (SELECT count(*) <> count(DISTINCT s::text) FROM jsonb_array_elements(p_stand->'uebersprungen') s) THEN
+        RAISE EXCEPTION 'Jeder Schritt darf in uebersprungen nur einmal stehen'; END IF;
     END IF;
     IF p_stand ? 'vermittler' AND jsonb_typeof(p_stand->'vermittler') NOT IN ('boolean','null') THEN
       RAISE EXCEPTION 'vermittler muss ja, nein oder offen sein'; END IF;
