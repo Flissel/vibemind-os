@@ -3,7 +3,7 @@ und gibt kompakt zurueck. Es gibt bewusst KEIN Generalwerkzeug auf die Laura-API
 
 Ablauf eines Reels (die Skills beschreiben ihn genauer):
   projekt_anlegen -> Material holen (material_uebernehmen / bild_importieren -> standbild, titelkarte)
-  -> reel_bauen (Stimme, Schnitt, 9:16, Untertitel, KI-Hinweis nach Inhalt, <= 15 MB) -> Export-ID
+  -> reel_bauen (Stimme, Schnitt, Format aus dem Briefing, Untertitel, KI-Hinweis nach Inhalt, <= 15 MB) -> Export-ID
   Die Export-ID nennt der Claw am Ende als 'EXPORT: <id>'; abgeholt wird sie vom Arbeiter.
 Versendet wird nie etwas.
 """
@@ -25,6 +25,8 @@ _STIMME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 _FARBE = re.compile(r"^#[0-9a-fA-F]{6}$")
 BEWEGUNGEN = ("ruhig", "zoom_rein", "zoom_raus", "schwenk")
 LOGO_POSITIONEN = ("oben_rechts", "oben_links", "oben_mitte")
+FORMATE = ("reel", "quadrat", "quer")      # reel = 9:16 (Vorgabe), quadrat = 1:1, quer = 16:9; Groessen in Laura
+FORMAT_FEHLER = "format: reel, quadrat oder quer (leer = Format des Auftrags)"
 
 
 def _fehler(text: str) -> dict:
@@ -33,6 +35,25 @@ def _fehler(text: str) -> dict:
 
 def _id(wert, feld: str) -> str | None:
     return wert if isinstance(wert, str) and _ID.fullmatch(wert) else None
+
+
+def _format_gueltig(wert) -> bool:
+    """Leer/None = nicht angegeben (dann gilt das Format des Auftrags), sonst einer der drei Namen."""
+    return wert is None or wert == "" or (isinstance(wert, str) and wert in FORMATE)
+
+
+def _format_waehlen(wert, marke: dict | None) -> str | dict:
+    """Format eines Bausteins (Review Focus 3). marke None = ohne Auftrag; {} = Marke nicht geladen.
+    Ohne Angabe gilt das Format des Auftrags (/marke liefert es, fehlt es: reel). Widerspricht die Angabe
+    dem Auftrag, Fehler - gemischte Groessen blaehen das Reel auf (Laura _mixed_size_normalize)."""
+    auftrag_format = None
+    if marke:
+        f = marke.get("format") or "reel"
+        auftrag_format = f if isinstance(f, str) and f in FORMATE else "reel"
+    if wert and auftrag_format and wert != auftrag_format:
+        return _fehler(f"format '{wert}' passt nicht zum Auftrag: das Briefing verlangt '{auftrag_format}' - "
+                       "jeder Baustein im Format aus dem Briefing")
+    return wert or auftrag_format or "reel"
 
 
 # --- Marketing-API (Arbeiter-Schluessel) ------------------------------------------------------------
@@ -170,11 +191,18 @@ def bild_importieren(auftrag: str, projekt_id: str, medien_name: str) -> dict:
     return {"ok": True, "asset_id": neu}
 
 
-def standbild(projekt_id: str, bild_asset_id: str, dauer_s: float = 3.0, bewegung: str = "zoom_rein") -> dict:
-    """Aus einem Bild einen Hochformat-Clip machen (Bild unbeschnitten auf weichem Hintergrund).
-    bewegung: ruhig | zoom_rein | zoom_raus | schwenk. dauer_s 1-10 - mindestens so lang wie der Satz dazu."""
+def standbild(projekt_id: str, bild_asset_id: str, dauer_s: float = 3.0, bewegung: str = "zoom_rein",
+              format: str = "", auftrag: str = "") -> dict:
+    """Aus einem Bild einen Clip im Format aus dem Briefing machen (Bild unbeschnitten auf weichem Hintergrund).
+    bewegung: ruhig | zoom_rein | zoom_raus | schwenk. dauer_s 1-10 - mindestens so lang wie der Satz dazu.
+    auftrag: die Auftragsnummer - dann gilt das Format des Auftrags. format: reel (9:16) | quadrat (1:1) |
+    quer (16:9); leer = Format des Auftrags (ohne auftrag: reel). Muss zum Briefing passen."""
     if not _id(projekt_id, "projekt_id") or not _id(bild_asset_id, "bild_asset_id"):
         return _fehler("projekt_id/bild_asset_id ungueltig")
+    if auftrag and not _id(auftrag, "auftrag"):
+        return _fehler("auftrag: ID aus dem Briefing")
+    if not _format_gueltig(format):
+        return _fehler(FORMAT_FEHLER)
     if bewegung not in BEWEGUNGEN:
         return _fehler(f"bewegung: {', '.join(BEWEGUNGEN)}")
     try:
@@ -183,8 +211,13 @@ def standbild(projekt_id: str, bild_asset_id: str, dauer_s: float = 3.0, bewegun
         return _fehler("dauer_s: Zahl 1 bis 10")
     if not 1 <= dauer <= 10:
         return _fehler("dauer_s: 1 bis 10")
-    r = laura_api.anfrage("POST", f"/projects/{projekt_id}/stills",
-                          {"asset_id": bild_asset_id, "dauer_s": dauer, "bewegung": bewegung})
+    fmt = _format_waehlen(format, _marke(auftrag) if auftrag else None)
+    if isinstance(fmt, dict):
+        return fmt
+    koerper = {"asset_id": bild_asset_id, "dauer_s": dauer, "bewegung": bewegung}
+    if fmt != "reel":                  # reel ohne Feld: der Laura-Aufruf bleibt wie vor Stufe 2
+        koerper["format"] = fmt
+    r = laura_api.anfrage("POST", f"/projects/{projekt_id}/stills", koerper)
     if not r["ok"]:
         return r
     j = laura_api.job_warten(r["daten"]["job_id"], max_s=240)
@@ -193,19 +226,26 @@ def standbild(projekt_id: str, bild_asset_id: str, dauer_s: float = 3.0, bewegun
 
 def _marke(auftrag: str) -> dict:
     """Marke der Auftragsfirma (Paket C1): akzent, schrift_anzeige, schrift_text, logo - einzelne Werte koennen
-    None sein. Scheitert der Abruf, {} - das Reel entsteht dann im bisherigen Aussehen."""
+    None sein - und das Format des Auftrags (Stufe 2). Scheitert der Abruf, {} - das Reel entsteht dann im
+    bisherigen Aussehen."""
     r = _marketing(f"/{auftrag}/marke", {})
     return r["daten"] if r.get("ok") and isinstance(r.get("daten"), dict) else {}
 
 
 def titelkarte(auftrag: str, projekt_id: str, text: str, hintergrund: str = "", textfarbe: str = "#ffffff",
-               unterzeile: str = "", logo_asset_id: str = "", dauer_s: float = 2.5) -> dict:
+               unterzeile: str = "", logo_asset_id: str = "", dauer_s: float = 2.5, format: str = "") -> dict:
     """Titel- oder Schlusskarte (Farbflaeche, Text bis 90 Zeichen, optional Unterzeile und Logo) in der
-    Anzeigeschrift der Marke. auftrag: die Auftragsnummer. hintergrund leer = Akzentfarbe der Marke, sonst
-    #rrggbb aus dem Briefing. Liefert asset_id."""
+    Anzeigeschrift der Marke, im Format aus dem Briefing. auftrag: die Auftragsnummer. hintergrund leer =
+    Akzentfarbe der Marke, sonst #rrggbb aus dem Briefing. format: reel | quadrat | quer; leer = Format des
+    Auftrags (muss dazu passen). Liefert asset_id."""
     if not _id(auftrag, "auftrag") or not _id(projekt_id, "projekt_id"):
         return _fehler("auftrag/projekt_id ungueltig")
+    if not _format_gueltig(format):
+        return _fehler(FORMAT_FEHLER)
     marke = _marke(auftrag)
+    fmt = _format_waehlen(format, marke)
+    if isinstance(fmt, dict):
+        return fmt
     hintergrund = hintergrund or marke.get("akzent") or ""
     if not isinstance(hintergrund, str) or not _FARBE.fullmatch(hintergrund) \
             or not isinstance(textfarbe, str) or not _FARBE.fullmatch(textfarbe):
@@ -219,6 +259,8 @@ def titelkarte(auftrag: str, projekt_id: str, text: str, hintergrund: str = "", 
         koerper["unterzeile"] = unterzeile
     if logo_asset_id:
         koerper["logo_asset_id"] = logo_asset_id
+    if fmt != "reel":
+        koerper["format"] = fmt
     r = laura_api.anfrage("POST", f"/projects/{projekt_id}/titelkarte", koerper)
     if not r["ok"]:
         return r
@@ -256,10 +298,10 @@ def _beats_pruefen(beats) -> list[dict] | str:
 
 def reel_bauen(auftrag: str, projekt_id: str, beats: list, stimme: str = "standard", hook: str = "",
                logo_asset_id: str = "", logo_position: str = "oben_rechts", rahmung: str = "zuschnitt",
-               untertitel_ersetzen: dict | None = None) -> dict:
+               untertitel_ersetzen: dict | None = None, format: str = "") -> dict:
     """Das Reel bauen: je Beat ein gesprochener Satz ueber einem Clip, deutsche Stimme, Untertitel,
-    Hochformat, KI-Hinweis nach Inhalt, hoechstens 15 MB. Startet den Render und liefert export_id -
-    nenne sie am Ende als 'EXPORT: <export_id>'. Der Render selbst laeuft danach weiter.
+    im Format aus dem Briefing, KI-Hinweis nach Inhalt, hoechstens 15 MB. Startet den Render und liefert
+    export_id - nenne sie am Ende als 'EXPORT: <export_id>'. Der Render selbst laeuft danach weiter.
     auftrag: die Auftragsnummer - damit traegt das Reel die Marke (Untertitel in ihrer Schrift, das gesprochene Wort
     in ihrer Akzentfarbe, Hook in der Anzeigeschrift, ihr Logo, wenn du kein eigenes logo_asset_id angibst).
     beats: [{"text": "Satz, der gesprochen wird", "asset_id": "<Clip>", "src_in_frame": 0}, ...]
@@ -271,6 +313,8 @@ def reel_bauen(auftrag: str, projekt_id: str, beats: list, stimme: str = "standa
     weichem Hintergrund - fuer Bildschirmaufnahmen, Folien, breite Videos, sonst ist nichts lesbar).
     untertitel_ersetzen: Erkennungsfehler aus dem Transkript korrigieren, {"Kastermann": "Kunden"} -
     je Eintrag EIN Wort, hoechstens 30; nur offensichtliche Hoerfehler, nichts umformulieren.
+    format: reel (9:16) | quadrat (1:1) | quer (16:9); leer = Format des Auftrags (muss dazu passen). Alle
+    Karten und Standbilder muessen im selben Format entstanden sein.
     Die Lautstaerke wird immer angeglichen. Dauert einige Minuten (die Stimme wird je Satz erzeugt) - nicht abbrechen
     und NICHT ein zweites Mal aufrufen."""
     if not _id(auftrag, "auftrag") or not _id(projekt_id, "projekt_id"):
@@ -293,6 +337,12 @@ def reel_bauen(auftrag: str, projekt_id: str, beats: list, stimme: str = "standa
             not isinstance(k, str) or not isinstance(v, str) or not k or not v or len(k) > 40 or len(v) > 40
             or any(z.isspace() for z in k) for k, v in ersatz.items()):
         return _fehler("untertitel_ersetzen: hoechstens 30 Eintraege, je ein Wort -> Ersatz (1-40 Zeichen)")
+    if not _format_gueltig(format):
+        return _fehler(FORMAT_FEHLER)
+    marke = _marke(auftrag)            # vor dem Bau: das Format des Auftrags muss vorher feststehen
+    fmt = _format_waehlen(format, marke)
+    if isinstance(fmt, dict):
+        return fmt
     r = laura_api.anfrage("POST", f"/projects/{projekt_id}/narrated-reel", {
         "beats": geprueft, "backend": "sidecar", "language": "de", "render": False,
         "voice_id": None if stimme == "standard" else stimme, "crossfade_frames": 6, "final_fade_frames": 12})
@@ -303,9 +353,10 @@ def reel_bauen(auftrag: str, projekt_id: str, beats: list, stimme: str = "standa
     if not j["ok"]:
         return j
     warnungen = list((j["ergebnis"] or {}).get("warnings") or [])
-    marke = _marke(auftrag)
     if not marke:
         warnungen.append("Marke nicht geladen - Reel im bisherigen Aussehen")
+        if not format:
+            warnungen.append("Format des Auftrags nicht geladen - Reel als reel (9:16)")
     if not logo_asset_id and marke.get("logo"):
         logo = bild_importieren(auftrag, projekt_id, marke["logo"])
         if logo.get("ok"):
@@ -315,6 +366,8 @@ def reel_bauen(auftrag: str, projekt_id: str, beats: list, stimme: str = "standa
     reel = {"vertical": True, "captions": True, "caption_preset": "reels", "kennzeichnung": "auto",
             "caption_source": "gemischt", "max_bytes": REEL_MAX_BYTES, "loudnorm": True,
             "rahmung": rahmung}
+    if fmt != "reel":                  # reel ohne Feld: Rezept-Hash und Render wie vor Stufe 2
+        reel["format"] = fmt
     if ersatz:
         reel["untertitel_ersetzen"] = ersatz
     for feld, wert in (("caption_schrift", marke.get("schrift_text")), ("caption_akzent", marke.get("akzent")),

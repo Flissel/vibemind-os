@@ -42,6 +42,7 @@ router = APIRouter(prefix="/api/video")
 pult_router = APIRouter(prefix="/api/pult/video")
 
 ARTEN = ("material", "bilder", "kurzfassung")
+FORMATE = ("reel", "quadrat", "quer")   # Groessen stehen nur in Laura (render/formate.py); reel = Vorgabe 9:16
 FRIST = "15 minutes"
 LINK_GUELTIG_S = 30 * 60
 MP4_MAX = 15 * 1024 * 1024          # sales-claw nimmt hoechstens 15 MB (medien.MAX_BYTES)
@@ -121,6 +122,11 @@ def briefing_pruefen(art: str, b) -> dict:
     if not isinstance(stimme, str) or not _STIMME.fullmatch(stimme):
         raise HTTPException(422, "stimme: Name der Stimmprobe oder 'standard'")
     aus["stimme"] = stimme
+    fmt = b.get("format") or "reel"
+    if not isinstance(fmt, str) or fmt not in FORMATE:
+        raise HTTPException(422, "format: reel, quadrat oder quer")
+    if fmt != "reel":                   # reel bleibt ohne Feld: heutige Briefings unveraendert
+        aus["format"] = fmt
     if art == "material":
         videos = b.get("videos") or []
         if not isinstance(videos, list) or len(videos) > 8 or any(
@@ -506,10 +512,13 @@ _FARBE_HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 @router.post("/arbeiter/{aid}/marke")
 def arbeiter_marke(aid: str, x_bild_key: str | None = Header(None)):
     """Marke der Auftragsfirma fuer den Video-Claw (Paket C1): Akzentfarbe, Anzeige-/Textschrift, Logo-Medienname.
-    Nur gueltige Werte; fehlt etwas, ist es None und das Reel bleibt dort beim bisherigen Aussehen."""
+    Nur gueltige Werte; fehlt etwas, ist es None und das Reel bleibt dort beim bisherigen Aussehen.
+    Dazu das Format des Auftrags (Reels Stufe 2): briefing.format oder 'reel' - daraus nehmen die Werkzeuge
+    das Format, wenn der Claw keines angibt."""
     _bild_schluessel(x_bild_key)
     a = _auftrag_id(aid)
-    mandant = str(_in_arbeit(a)["mandant"])
+    auftrag = _in_arbeit(a)
+    mandant = str(auftrag["mandant"])
     zeile = _lesen_einer(lambda: "SELECT profil->'werte' AS w FROM marketing.marken_spiegel "
                                  f"WHERE mandant = {lit(mandant)}") or {}
     werte = zeile.get("w") if isinstance(zeile.get("w"), dict) else {}
@@ -522,7 +531,19 @@ def arbeiter_marke(aid: str, x_bild_key: str | None = Header(None)):
     return {"mandant": mandant,
             "akzent": akzent if isinstance(akzent, str) and _FARBE_HEX.match(akzent) else None,
             "schrift_anzeige": schrift("schrift_anzeige"), "schrift_text": schrift("schrift_text"),
-            "logo": logo[len("medien:"):] if logo else None}
+            "logo": logo[len("medien:"):] if logo else None,
+            "format": _format_des_auftrags(auftrag.get("briefing"))}
+
+
+def _format_des_auftrags(briefing) -> str:
+    """briefing.format, wenn gueltig, sonst 'reel' (fehlt bei allen Auftraegen vor Stufe 2)."""
+    if isinstance(briefing, str):
+        try:
+            briefing = json.loads(briefing)
+        except ValueError:
+            briefing = None
+    fmt = briefing.get("format") if isinstance(briefing, dict) else None
+    return fmt if isinstance(fmt, str) and fmt in FORMATE else "reel"
 
 
 @router.get("/medien/{ablauf}/{sig}/{name}")

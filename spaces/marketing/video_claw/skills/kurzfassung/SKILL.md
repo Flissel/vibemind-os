@@ -13,7 +13,8 @@ description: "Langes Video kürzen: die stärksten 15–60 Sekunden, in denen di
    Thema trägt und **mit einem ganzen Satz beginnt und endet**. Zusammen 15–60 s (`dauer_s` aus dem
    Briefing). Nicht mitten im Wort schneiden: Start = `start_frame` eines Segments, Ende = Start des
    nächsten Segments.
-4. **Optional rahmen.** Eine `titelkarte` mit dem Thema (≤ 6 Wörter, 2–3 s) davor und/oder eine
+4. **Optional rahmen.** Eine `titelkarte` (mit `auftrag` und dem `format` aus dem Briefing) mit dem Thema
+   (≤ 6 Wörter, 2–3 s) davor und/oder eine
    Schlusskarte mit Handlung danach. Jeder Karten-Beat ist ein Beat mit `text` und wird **eingesprochen**
    (ein kurzer Satz, bei einer Karte von 2,5 s höchstens 6 Wörter). Ohne `sprechertext` im Briefing
    lieber ganz ohne Karten – dann besteht das Reel nur aus Originalton.
@@ -22,7 +23,7 @@ description: "Langes Video kürzen: die stärksten 15–60 Sekunden, in denen di
    `{"Kastermann": "Kunden"}`). Nichts umformulieren, keine Füllwörter streichen.
 6. **Rahmung.** Bildschirmaufnahme, Folien oder sehr breites Video (`aufloesung` aus `material_suchen`,
    z. B. 1898x1024 mit Oberfläche) → `rahmung: "einpassen"`; Person groß vor der Kamera → `"zuschnitt"`.
-7. **Bauen.** `reel_bauen` mit `auftrag` und Beats `{"originalton": true, "asset_id": <Video>, "src_in_frame": <Start>,
+7. **Bauen.** `reel_bauen` mit `auftrag`, dem `format` aus dem Briefing und Beats `{"originalton": true, "asset_id": <Video>, "src_in_frame": <Start>,
    "src_out_frame": <Ende>}` (und ggf. den Karten-Beats davor/danach), `hook` = Thema in einer Zeile.
 8. Notiz: welche Stelle (Sekunden von–bis), Rahmung und welche Wörter korrigiert, ein Satz. Dann
    `EXPORT: <id>`.

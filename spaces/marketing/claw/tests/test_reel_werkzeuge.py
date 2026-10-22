@@ -52,3 +52,28 @@ class Reel(unittest.TestCase):
         self.assertIn("mcp__marketing__reel_beauftragen", mcp["allowedTools"])
         # Der Marketing-Agent bekommt KEINE schreibenden Laura-Werkzeuge.
         self.assertFalse(any(t.startswith("mcp__video__") for t in mcp["allowedTools"]))
+
+
+class ReelFormat(unittest.TestCase):
+    """Reels Stufe 2 (22.10.2026): das Format geht im Briefing mit; reel bleibt ohne Feld."""
+
+    def _briefing(self, **kw):
+        rekorder = Rekorder([(200, json.dumps({"auftrag": "v-3"}))])
+        with mock.patch.object(werkzeuge, "_roh_anfrage", rekorder), \
+                mock.patch.dict("os.environ", {"MARKETING_API_URL": "http://x:5510"}):
+            werkzeuge.reel_beauftragen(art="material", titel="T", thema="t", sprechertext="s", **kw)
+        return json.loads(rekorder.aufrufe[0]["daten"])["briefing"]
+
+    def test_reel_beauftragen_format(self):
+        self.assertEqual(self._briefing(format="quadrat")["format"], "quadrat")
+        self.assertEqual(self._briefing(format="quer")["format"], "quer")
+        self.assertNotIn("format", self._briefing(format="reel"))
+        self.assertNotIn("format", self._briefing())
+        # Unsinn geht unveraendert an die API, die ihn mit 422 ablehnt (eine Pruefstelle)
+        self.assertEqual(self._briefing(format="9:16")["format"], "9:16")
+
+    def test_beschreibung_nennt_formate(self):
+        doc = werkzeuge.reel_beauftragen.__doc__
+        self.assertNotIn("Hochformat-Video", doc)
+        for wort in ("reel", "quadrat", "quer"):
+            self.assertIn(wort, doc)

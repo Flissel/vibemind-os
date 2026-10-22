@@ -326,3 +326,115 @@ def test_reel_bauen_marke_nicht_geladen_warnt(laura, monkeypatch):
     rek = laura(_reel_antworten())
     r = w.reel_bauen(AUF, PID, [{"text": "Ein Satz.", "asset_id": AID}])
     assert r["ok"] and any("Marke nicht geladen" in x for x in r["warnungen"])
+
+
+# --- Reels Stufe 2: Formate (22.10.2026) ---------------------------------------------------------
+
+def _karte_antworten():
+    return [(202, {"job_id": "j1"}), (200, {"status": "succeeded", "result_json": json.dumps({"asset_id": AID})})]
+
+
+def _mit_format(monkeypatch, fmt):
+    monkeypatch.setattr(w, "_marke", lambda auftrag: {**OHNE_MARKE, "format": fmt})
+
+
+def test_reel_bauen_schickt_format_nur_wenn_nicht_reel(laura, monkeypatch):
+    rek = laura(_reel_antworten())
+    w.reel_bauen(AUF, PID, [{"text": "Satz.", "asset_id": AID}])          # Marke ohne Format-Feld
+    assert "format" not in rek.aufrufe[2][2] and "format" not in rek.aufrufe[0][2]
+    _mit_format(monkeypatch, "reel")
+    rek = laura(_reel_antworten())
+    w.reel_bauen(AUF, PID, [{"text": "Satz.", "asset_id": AID}], format="reel")
+    assert "format" not in rek.aufrufe[2][2]
+    for fmt in ("quadrat", "quer"):
+        _mit_format(monkeypatch, fmt)
+        rek = laura(_reel_antworten())
+        assert w.reel_bauen(AUF, PID, [{"text": "Satz.", "asset_id": AID}], format=fmt)["ok"]
+        assert rek.aufrufe[2][2]["format"] == fmt
+        assert "format" not in rek.aufrufe[0][2]           # narrated-reel kennt kein format (rendert nicht)
+
+
+def test_standbild_titelkarte_schicken_format(laura, monkeypatch):
+    rek = laura(_karte_antworten())
+    assert w.standbild(PID, AID, 3, "ruhig", format="quer")["ok"]
+    assert rek.aufrufe[0][2] == {"asset_id": AID, "dauer_s": 3.0, "bewegung": "ruhig", "format": "quer"}
+    rek = laura(_karte_antworten())
+    w.standbild(PID, AID, 3, "ruhig", format="reel")
+    assert "format" not in rek.aufrufe[0][2]
+    _mit_format(monkeypatch, "quadrat")
+    rek = laura(_karte_antworten())
+    assert w.titelkarte(AUF, PID, "Hallo", "#000000", format="quadrat")["ok"]
+    assert rek.aufrufe[0][2]["format"] == "quadrat"
+    _mit_format(monkeypatch, "reel")
+    rek = laura(_karte_antworten())
+    w.titelkarte(AUF, PID, "Hallo", "#000000")
+    assert "format" not in rek.aufrufe[0][2]
+
+
+def test_werkzeuge_nehmen_format_des_auftrags(laura, monkeypatch):
+    """Review Focus 3: Fehlt der Parameter, gilt das Format des Auftrags (nicht stillschweigend reel);
+    widerspricht er dem Auftrag, bricht das Werkzeug ab, bevor Laura etwas baut."""
+    gefragt = []
+    monkeypatch.setattr(w, "_marke", lambda auftrag: gefragt.append(auftrag) or {**OHNE_MARKE, "format": "quer"})
+    rek = laura(_karte_antworten())
+    assert w.titelkarte(AUF, PID, "Hallo", "#000000")["ok"] and rek.aufrufe[0][2]["format"] == "quer"
+    rek = laura(_karte_antworten())
+    assert w.standbild(PID, AID, 3, "ruhig", auftrag=AUF)["ok"] and rek.aufrufe[0][2]["format"] == "quer"
+    rek = laura(_reel_antworten())
+    assert w.reel_bauen(AUF, PID, [{"text": "Satz.", "asset_id": AID}])["ok"]
+    assert rek.aufrufe[2][2]["format"] == "quer"
+    assert gefragt == [AUF, AUF, AUF]                       # reel_bauen fragt die Marke nur einmal
+    for aufruf in (lambda: w.titelkarte(AUF, PID, "Hallo", "#000000", format="reel"),
+                   lambda: w.standbild(PID, AID, 3, "ruhig", format="quadrat", auftrag=AUF),
+                   lambda: w.reel_bauen(AUF, PID, [{"text": "Satz.", "asset_id": AID}], format="reel")):
+        rek = laura([])
+        r = aufruf()
+        assert not r["ok"] and "quer" in r["fehler"] and rek.aufrufe == []
+
+
+def test_standbild_ohne_auftrag_fragt_keine_marke(laura, monkeypatch):
+    monkeypatch.setattr(w, "_marke", lambda auftrag: pytest.fail("ohne auftrag keine Marke"))
+    rek = laura(_karte_antworten())
+    assert w.standbild(PID, AID, 3, "ruhig")["ok"] and "format" not in rek.aufrufe[0][2]
+
+
+def test_reel_bauen_marke_nicht_geladen_format_warnt(laura, monkeypatch):
+    monkeypatch.setattr(w, "_marke", lambda auftrag: {})
+    rek = laura(_reel_antworten())
+    r = w.reel_bauen(AUF, PID, [{"text": "Satz.", "asset_id": AID}])
+    assert r["ok"] and "format" not in rek.aufrufe[2][2]
+    assert any("Format" in x for x in r["warnungen"])
+    rek = laura(_reel_antworten())
+    assert w.reel_bauen(AUF, PID, [{"text": "Satz.", "asset_id": AID}], format="quer")["ok"]
+    assert rek.aufrufe[2][2]["format"] == "quer"
+
+
+@pytest.mark.parametrize("fmt", ["9:16", "<x>", "Quer", 1, True])
+def test_format_ungueltig(laura, fmt):
+    rek = laura([])
+    assert not w.reel_bauen(AUF, PID, [{"text": "Satz.", "asset_id": AID}], format=fmt)["ok"]
+    assert not w.titelkarte(AUF, PID, "Hallo", "#000000", format=fmt)["ok"]
+    assert not w.standbild(PID, AID, 3, "ruhig", format=fmt)["ok"]
+    assert rek.aufrufe == []
+
+
+def test_standbild_auftrag_geprueft(laura):
+    rek = laura([])
+    assert not w.standbild(PID, AID, 3, "ruhig", auftrag="kaputt")["ok"] and rek.aufrufe == []
+
+
+def test_prompt_nennt_format_regel():
+    from pathlib import Path
+    ordner = Path(w.__file__).parent
+    agents = (ordner / "AGENTS.md").read_text(encoding="utf-8")
+    assert "im Format aus dem Briefing" in agents
+    assert "Gib JEDEM titelkarte-, standbild- und reel_bauen-Aufruf dasselbe format aus dem Briefing" in agents
+    assert "Hochformat" not in agents
+    for name in ("reel-aus-bildern", "reel-aus-material", "kurzfassung"):
+        text = (ordner / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
+        assert "Hochformat" not in text, name
+        assert "format" in text, name
+    bilder = (ordner / "skills" / "reel-aus-bildern" / "SKILL.md").read_text(encoding="utf-8")
+    assert "`standbild`" in bilder and "auftrag" in bilder
+    for f in (w.standbild, w.titelkarte, w.reel_bauen):
+        assert "Hochformat" not in (f.__doc__ or "") and "format" in (f.__doc__ or "")

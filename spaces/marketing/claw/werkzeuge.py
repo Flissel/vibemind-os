@@ -453,9 +453,12 @@ def newsletter_chat_stand(inhalt: str) -> dict:
 def reel_beauftragen(art: str, titel: str, thema: str, sprechertext: str = "", firma: str = "vibemind",
                      bilder: list | None = None, logo: str = "", videos: list | None = None, video: str = "",
                      dauer_s: int = 30, stimme: str = "standard", hook: str = "",
-                     farbe_hintergrund: str = "", farbe_text: str = "") -> dict:
-    """Beauftragt ein Reel (kurzes Hochformat-Video, 15-60 s) beim Video-Claw (17.10.2026). Gebaut wird
+                     farbe_hintergrund: str = "", farbe_text: str = "", format: str = "reel") -> dict:
+    """Beauftragt ein Reel (kurzes Video, 15-60 s) beim Video-Claw (17.10.2026). Gebaut wird
     am PC mit Laura - das dauert einige Minuten; der Stand steht in reel_auftraege.
+
+    format: "reel" (Hochformat 9:16 - Instagram, TikTok, Shorts; Vorgabe), "quadrat" (1:1 - LinkedIn) oder
+         "quer" (16:9 - Website, Praesentation).
 
     art: "bilder" (Titelkarte + Markenbilder + Schlusskarte; bilder = 1-8 Bilddateien aus den Medien, logo
          optional), "material" (vorhandene Laura-Videos; videos = Laura-IDs aus `videos`, leer = der Claw
@@ -474,6 +477,8 @@ def reel_beauftragen(art: str, titel: str, thema: str, sprechertext: str = "", f
     hook_sauber, _ = stil.hausstil(hook or "")
     briefing: dict = {"thema": thema_sauber.strip(), "sprechertext": text_sauber.strip(), "dauer_s": dauer_s,
                       "stimme": stimme or "standard", "hook": hook_sauber.strip()}
+    if format and format != "reel":    # reel bleibt ohne Feld; pruefen tut die API (422)
+        briefing["format"] = format
     if art == "bilder":
         briefing["bilder"] = list(bilder or [])
         if logo:

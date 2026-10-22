@@ -320,14 +320,16 @@ def test_marke_des_auftrags(db, c, monkeypatch):
     r = c.post(f"/api/video/arbeiter/{AID}/marke", headers=B)
     assert r.status_code == 200
     assert r.json() == {"mandant": "vibemind", "akzent": "#5b3fd6", "schrift_anzeige": "oxanium",
-                        "schrift_text": "dm-sans", "logo": "logo-vibemind-5ca856231b.png"}
+                        "schrift_text": "dm-sans", "logo": "logo-vibemind-5ca856231b.png",
+                        "format": "reel"}
 
 
 def test_marke_nur_gueltige_werte(db, c, monkeypatch):
     monkeypatch.setattr(video, "_markenlogos", lambda m: (None, None))
     db.antworten = [_in_arbeit(db), [{"w": {"akzent": "rot", "schrift_anzeige": "comic", "schrift_text": "dm-sans"}}]]
     assert c.post(f"/api/video/arbeiter/{AID}/marke", headers=B).json() == {
-        "mandant": "vibemind", "akzent": None, "schrift_anzeige": None, "schrift_text": "dm-sans", "logo": None}
+        "mandant": "vibemind", "akzent": None, "schrift_anzeige": None, "schrift_text": "dm-sans", "logo": None,
+        "format": "reel"}
 
 
 def test_marke_ohne_spiegel(db, c, monkeypatch):
@@ -763,3 +765,69 @@ def test_nochmal_nimmt_aktuelle_markenstimme(db, c, monkeypatch):
     assert sql.endswith("'betreiber', NULL, NULL) AS id")
     sql = _nochmal_stimme(db, c, ...)
     assert sql.endswith("'betreiber', NULL, NULL) AS id")
+
+
+# --- Reels Stufe 2: Formate (22.10.2026) ---------------------------------------------------------
+
+@pytest.mark.parametrize("art, basis", [("bilder", BILDER), ("material", MATERIAL),
+                                        ("kurzfassung", {"thema": "t", "video": "a1b2c3d4e5f6"})])
+def test_briefing_format_wird_geprueft(art, basis):
+    assert video.briefing_pruefen(art, {**basis, "format": "quadrat"})["format"] == "quadrat"
+    assert video.briefing_pruefen(art, {**basis, "format": "quer"})["format"] == "quer"
+    assert "format" not in video.briefing_pruefen(art, {**basis, "format": "reel"})
+    assert "format" not in video.briefing_pruefen(art, {**basis, "format": None})
+    assert "format" not in video.briefing_pruefen(art, {**basis, "format": ""})
+    for unsinn in ("9:16", "<x>", "Quadrat", 1, True, ["quer"], {"quer": 1}):
+        with pytest.raises(Exception) as e:
+            video.briefing_pruefen(art, {**basis, "format": unsinn})
+        assert e.value.status_code == 422 and e.value.detail == "format: reel, quadrat oder quer"
+
+
+def test_briefing_ohne_format_bleibt_ohne_format():
+    """Review Focus 1: Ein heutiges Briefing (ohne format) wird genau so gespeichert wie vorher."""
+    assert video.briefing_pruefen("bilder", BILDER) == {
+        "thema": "bAV in 30 Sekunden", "sprechertext": "Drei Fehler, die fast jede Firma macht.", "hook": "",
+        "dauer_s": 30, "stimme": "standard", "bilder": ["team.png", "buero.jpg"],
+        "logo": "logo-vibemind-0123456789.png", "farben": {"hintergrund": "#0f2422", "text": "#e9fbf6"}}
+
+
+def test_format_ungueltig_422(db, c):
+    r = _anlegen(c, {**MATERIAL, "format": "9:16"})
+    assert r.status_code == 422 and r.json()["detail"] == "format: reel, quadrat oder quer"
+    assert not any("video_auftrag_anlegen" in s for s in db.sql)
+
+
+def test_anlegen_speichert_format(db, c):
+    db.antworten = [[], [{"id": AID}]]
+    assert _anlegen(c, {**MATERIAL, "format": "quer"}).status_code == 200
+    assert _briefing_aus(db.sql[-1])["format"] == "quer"
+    db.antworten = [[], [{"id": AID}]]
+    assert _anlegen(c, {**MATERIAL, "format": "reel"}).status_code == 200
+    assert "format" not in _briefing_aus(db.sql[-1])
+
+
+def test_nochmal_behaelt_format(db, c):
+    """Review Focus 4: video_nochmal kopiert das Briefing in der DB (085: nur stimme_hinweis faellt weg);
+    die API reicht kein eigenes Briefing hinein, und die Liste zeigt das Format unveraendert."""
+    from pathlib import Path
+    sql_085 = (Path(video.__file__).parents[1] / "db" / "085_reels_galerie.sql").read_text(encoding="utf-8")
+    assert "b := a.briefing - 'stimme_hinweis';" in sql_085
+    db.antworten = [[{"mandant": "vibemind"}], [], [{"id": NEU}]]
+    r = c.post(f"/api/pult/video/{AID}/nochmal", headers=P, json={"wunsch": "kürzer", "mandant": "vibemind"})
+    assert r.status_code == 200
+    assert "marketing.video_nochmal(" in db.sql[-1] and "briefing" not in db.sql[-1] and "format" not in db.sql[-1]
+    db.antworten = [[_zeile(id=NEU, vorgaenger=AID, briefing={"thema": "t", "format": "quadrat"})]]
+    zeile = c.get("/api/pult/video?mandant=vibemind", headers=P).json()["auftraege"][0]
+    assert zeile["briefing"]["format"] == "quadrat" and zeile["vorgaenger"] == AID
+
+
+@pytest.mark.parametrize("briefing, erwartet", [({}, "reel"), ({"format": "quadrat"}, "quadrat"),
+                                                ({"format": "quer"}, "quer"), ({"format": "9:16"}, "reel"),
+                                                ('{"format": "quer"}', "quer"), (None, "reel")])
+def test_marke_nennt_format_des_auftrags(db, c, monkeypatch, briefing, erwartet):
+    monkeypatch.setattr(video, "_markenlogos", lambda m: (None, None))
+    auftrag = _in_arbeit(db)
+    auftrag[0]["briefing"] = briefing
+    db.antworten = [auftrag, []]
+    r = c.post(f"/api/video/arbeiter/{AID}/marke", headers=B)
+    assert r.status_code == 200 and r.json()["format"] == erwartet

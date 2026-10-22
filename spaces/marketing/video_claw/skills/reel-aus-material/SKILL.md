@@ -13,19 +13,19 @@ description: "Reel aus vorhandenen Laura-Videos: passende Stellen im Transkript 
    (ihr Transkript bleibt im alten Projekt, sie bekämen keine Untertitel).
 3. **Stellen finden.** `transkript` je Video. Suche 3–6 Stellen, die den einen Gedanken tragen
    (`start_frame` ÷ 30 = Sekunde). Bevorzuge Stellen, an denen die Person **mittig** im Bild ist – der
-   Hochformat-Zuschnitt nimmt die Mitte.
+   Zuschnitt auf das Format aus dem Briefing nimmt die Mitte.
 4. **Je Stelle entscheiden:**
    - **Die Person sagt dort selbst das Richtige** → Originalton-Beat
      `{"originalton": true, "asset_id", "src_in_frame", "src_out_frame"}`, ganze Sätze (Segmentgrenzen).
    - **Das Bild passt, der Ton nicht** (Musik, Bildschirm, Nebensatz) → Beat mit `text`: ein Satz aus dem
      `sprechertext` des Briefings (nichts dazuerfinden).
 5. **Einstieg.** Der erste Beat ist der Hook: entweder ein starker Originalton-Satz oder eine `titelkarte`
-   mit dem Thema (≤ 6 Wörter). Gesamtlänge ≈ `dauer_s`.
+   mit dem Thema (≤ 6 Wörter; mit `auftrag` und dem `format` aus dem Briefing). Gesamtlänge ≈ `dauer_s`.
 6. **Untertitel prüfen.** Für Originalton-Stellen offensichtliche Hörfehler der Spracherkennung als
    `untertitel_ersetzen` sammeln (je ein Wort, z. B. `{"Kastermann": "Kunden"}`), nichts umformulieren.
 7. **Rahmung.** Bildschirmaufnahmen, Folien, breite Videos → `rahmung: "einpassen"`; Person groß vor der
-   Kamera → `"zuschnitt"` (Vorgabe).
-8. **Bauen.** `reel_bauen` mit `auftrag` und den Beats, `stimme` aus dem Briefing, `hook` nur wenn keine
+   Kamera → `"zuschnitt"` (Vorgabe). Ist das Format `quer` und das Material selbst breit, bleibt es ohne Zuschnitt.
+8. **Bauen.** `reel_bauen` mit `auftrag`, dem `format` aus dem Briefing und den Beats, `stimme` aus dem Briefing, `hook` nur wenn keine
    Titelkarte. Schrift, Akzentfarbe und Logo der Marke setzt `reel_bauen` selbst.
 9. Notiz: welche Videos und Stellen, welche mit Originalton, Rahmung, korrigierte Wörter, ein Satz.
    Dann `EXPORT: <id>`.
