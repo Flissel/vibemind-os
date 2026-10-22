@@ -718,6 +718,13 @@ def vorlage_vorschau(name: str, format: str = "mail", bild_basis: str = "",
         # fragt heute jede Vorlage mit format=mail an (Fix-Runde 1: bewusst KEIN 422). Motive stehen als
         # Platzhalter da, ihre Bilder entstehen erst beim Anlegen.
         s, _, _ = _seiten_vorlage_fuellen(zeile, m)
+        # Nur hier (nicht bei "Neu aus Vorlage"): Motive behalten die Beispielquelle der Vorlage statt eines
+        # Platzhalters ohne Datei (leere Rahmen mit Kaputt-Bild-Symbol).
+        rollen = (zeile.get("rollen") or {}).get("ebenen") or {}
+        beispiele = {e.get("id"): e.get("quelle") for e in (zeile.get("seite") or {}).get("ebenen") or []}
+        for e in s.get("ebenen", []):
+            if str(rollen.get(e.get("id")) or "").startswith("motiv:") and beispiele.get(e.get("id")):
+                e["quelle"] = beispiele[e["id"]]
         return _seite_antwort(s, zeile.get("beschreibung") or "", zeile.get("pflichtteil"), "seite", basis)
     if fmt == "seite" or not isinstance(zeile.get("bloecke"), dict):
         raise HTTPException(422, BLOCK_VORLAGE_OHNE_SEITE)
