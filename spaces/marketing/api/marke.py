@@ -29,7 +29,7 @@ from spaces.marketing.api.medien_mandant import _mandant_pflicht, ist_fremd, sic
 from spaces.marketing.api.pult import (_auswahl, _bild_basis, _bloecke_html, _lesen,
                                        _lesen_einer, _schluessel, _schreiben, _uuid_oder_404,
                                        _vorlage_fuellen, lit)
-from spaces.marketing.claw import marken_prompt, markenprofil, schriften
+from spaces.marketing.claw import einrichtung, marken_prompt, markenprofil, schriften, skills
 from spaces.marketing.claw.stimmen import stimmen_liste
 
 log = logging.getLogger(__name__)
@@ -61,6 +61,10 @@ RUNDEN_STANDARD, RUNDEN_ALLE = 10, 100
 QUELLEN_MAX, QUELLE_TITEL_MAX, QUELLE_URL_MAX = 12, 120, 500
 QUELLEN_ARTEN = ("gelesen", "websuche")
 DIREKT_VON = "Agent (direkt)"
+BEFEHLE_CHAT = "marke"                    # Skills mit metadata.vibemind.chats ["marke"] sind hier Befehle
+PFLICHT_SCHLUESSEL = ("impressum", "abmelde_hinweis", "vermittlerangaben")
+STAND_SCHLUESSEL = ("uebersprungen", "vermittler")
+UEBERSPRINGBAR = (1, 3, 4, 5, 6)          # Schritt 2 (Pflichtangaben) und 7 (Bestaetigung) nie
 _QUELLE_URL = re.compile(r"https?://")
 # Zugangsdaten ('@' zwischen :// und dem ersten /, ? oder #) und Leer-/Steuerzeichen irgendwo in der url;
 # dieselben Zeichen wie marketing._marke_quellen_pruefen (078).
@@ -235,7 +239,8 @@ def marke_stand(mandant: str | None = None, alle: bool = False, x_pult_key: str 
     m = _mandant_pflicht(mandant)
     _schreiben(lambda: f"SELECT marketing._marke_aufraeumen({lit(m)}) IS NULL AS ok")
     kopf = _lesen_einer(lambda:
-        "SELECT m.name, s.stand, s.gespiegelt_am::text AS gespiegelt_am, s.fehler, s.hinweise, s.profil, "
+        "SELECT m.name, m.einrichtung, m.einrichtung_stand, m.pflichtteil, "
+        "s.stand, s.gespiegelt_am::text AS gespiegelt_am, s.fehler, s.hinweise, s.profil, "
         "(SELECT l.gestalt FROM marketing.layout_vorlagen l WHERE l.mandant = m.id AND l.standard "
         "AND l.inhaltsart = 'newsletter' AND l.art = 'layout') AS gestalt "
         "FROM marketing.mandanten m LEFT JOIN marketing.marken_spiegel s ON s.mandant = m.id "
@@ -311,6 +316,12 @@ def marke_stand(mandant: str | None = None, alle: bool = False, x_pult_key: str 
         if not isinstance(z.get("quellen"), list):
             z["quellen"] = []
         z["aenderung"] = _aenderung(z, juengster, rueckgaengig)
+    # Einrichtung neuer Marken (086): Stand je Schritt nur, solange sie laeuft
+    e_status = kopf.get("einrichtung") if kopf.get("einrichtung") in ("laeuft", "abgebrochen") else None
+    pflichtteil = kopf.get("pflichtteil") if isinstance(kopf.get("pflichtteil"), dict) else {}
+    e_stand = (einrichtung.stand(str(kopf.get("name") or ""), _profil_lesen(kopf.get("profil")),
+                                 bool(gestalt.get("logo")), pflichtteil, kopf.get("einrichtung_stand") or {})
+               if e_status == "laeuft" else None)
     return {"mandant": m, "name": kopf.get("name"),
             "spiegel": {"gestalt": {k: gestalt[k] for k in SPIEGEL_SCHLUESSEL if k in gestalt},
                         "stand": kopf.get("stand") or "", "gespiegelt_am": kopf.get("gespiegelt_am"),
@@ -324,12 +335,68 @@ def marke_stand(mandant: str | None = None, alle: bool = False, x_pult_key: str 
             "letzte_uebernahme": letzte or None, "laufend": laufend or None, "wissen": wissen or None,
             "abschnitt_namen": list(ABSCHNITTE),
             "runden_gesamt": int((gesamt or {}).get("n") or len(auftraege)),
-            "faehigkeiten": {"kann": list(marken_prompt.FAEHIGKEITEN), "nicht": list(marken_prompt.GRENZEN)}}
+            "faehigkeiten": {"kann": list(marken_prompt.FAEHIGKEITEN), "nicht": list(marken_prompt.GRENZEN)},
+            "befehle": _befehle_liste(), "einrichtung": e_status, "einrichtung_stand": e_stand,
+            "pflichtteil": pflichtteil if e_status == "laeuft" else None}
+
+
+def _befehle_liste() -> list[dict]:
+    """Befehle des Marken-Chats; eine kaputte Skill-Datei leert nur die Liste, die Seite laedt trotzdem."""
+    try:
+        return [{"befehl": f"/{s.befehl}", "beschreibung": s.beschreibung} for s in skills.befehle(BEFEHLE_CHAT)]
+    except skills.SkillFehler as e:
+        log.warning("Befehle des Marken-Chats nicht lesbar: %s", e)
+        return []
+
+
+def _befehl_fehler() -> HTTPException:
+    verfuegbar = ", ".join(f"{b['befehl']} – {b['beschreibung']}" for b in _befehle_liste()) or "keine"
+    return HTTPException(400, f"Unbekannter Befehl. Verfügbar: {verfuegbar}")
+
+
+def _marke_neu(rest: str, kontext: dict, payload: dict) -> dict:
+    """/marke_neu Firmenname [Webseite]: Einrichtung anlegen oder fortsetzen (086), dann die erste Runde mit dem
+    Skill. Arbeitet der Assistent gerade (fortgesetzte Einrichtung), gibt es keine neue Runde (auftrag None)."""
+    if kontext.get("anhaenge"):
+        raise HTTPException(400, "Dateien bitte erst in der Einrichtung schicken")
+    worte = rest.split()
+    webseite = worte.pop() if worte and _QUELLE_URL.match(worte[-1]) else None
+    name = " ".join(worte)
+    if not name:
+        raise HTTPException(400, "Bitte so: /marke_neu Firmenname [Webseite]")
+    von = payload.get("von")
+    von = von.strip() if isinstance(von, str) and von.strip() and len(von) <= 200 else "Marken-Chat"
+    zeile = _schreiben(lambda: f"SELECT marketing.pult_mandant_einrichten({lit(name)}, {lit(von)}) AS e")
+    e = zeile.get("e")
+    if not (isinstance(e, dict) and isinstance(e.get("id"), str)):
+        raise HTTPException(503, "Marketing-Datenbank nicht erreichbar")
+    ergebnis = {"id": e["id"], "name": e.get("name") or name, "fortgesetzt": e.get("fortgesetzt") is True}
+    nachricht = f"Neue Marke einrichten: {ergebnis['name']}" + (f" Webseite: {webseite}" if webseite else "")
+    try:
+        runde = _schreiben(lambda:
+            f"SELECT marketing.pult_marke_anlegen({lit(ergebnis['id'])}, {lit(nachricht)}, "
+            f"{lit(json.dumps({'skill': 'marke-neu'}, ensure_ascii=False))}::jsonb) AS id")
+        auftrag = str(runde["id"])
+    except HTTPException as fehler:
+        if fehler.status_code != 422 or fehler.detail != "Der Assistent arbeitet gerade":
+            raise
+        auftrag = None
+    return {"auftrag": auftrag, "einrichtung": ergebnis}
 
 
 @pult_router.post("/marke/chat")
 def marke_chat(payload: dict = Body(...), x_pult_key: str | None = Header(None)):
     _schluessel(x_pult_key)
+    if isinstance(payload.get("nachricht"), str) and payload["nachricht"].lstrip().startswith("/"):
+        nachricht, kontext = _nachricht_und_kontext(payload)
+        try:
+            treffer = skills.aufloesen(nachricht, BEFEHLE_CHAT)
+        except skills.SkillFehler as e:
+            log.warning("Skill-Datei fehlerhaft: %s", e)
+            raise HTTPException(503, "Befehle gerade nicht verfügbar – Skill-Datei fehlerhaft")
+        if treffer is None or treffer[0].name != "marke-neu":
+            raise _befehl_fehler()
+        return _marke_neu(treffer[1], kontext, payload)
     m = _mandant_pflicht(payload.get("mandant"))
     nachricht, kontext = _nachricht_und_kontext(payload)
     zeile = _schreiben(lambda:
@@ -409,6 +476,27 @@ def marke_rueckgaengig(vid: str, payload: dict = Body(...), x_pult_key: str | No
     zeile = _schreiben(lambda:
         f"SELECT marketing.pult_marke_rueckgaengig({lit(v)}::uuid, {lit(von)}, {lit(m)}) AS id")
     return {"auftrag": str(zeile["id"])}
+
+
+@pult_router.post("/marke/einrichtung/abschliessen")
+def marke_einrichtung_abschliessen(payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    """Einrichtung abschliessen (086): die DB prueft Name, Impressum, Abmeldehinweis und Vermittler-Regel und
+    setzt die Firma aktiv; jede Ablehnung ist 422 mit ihrem Grund. Gespiegelt wird hier nicht."""
+    _schluessel(x_pult_key)
+    m = _mandant_pflicht(payload.get("mandant"))
+    von = _von(payload)
+    _schreiben(lambda: f"SELECT marketing.pult_mandant_aktivieren({lit(m)}, {lit(von)}) AS ok")
+    return {"ok": True}
+
+
+@pult_router.post("/marke/einrichtung/abbrechen")
+def marke_einrichtung_abbrechen(payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    """Einrichtung abbrechen (086): laeuft -> abgebrochen, nichts wird geloescht; /marke_neu setzt sie fort."""
+    _schluessel(x_pult_key)
+    m = _mandant_pflicht(payload.get("mandant"))
+    von = _von(payload)
+    _schreiben(lambda: f"SELECT marketing.pult_mandant_einrichtung_abbrechen({lit(m)}, {lit(von)}) AS ok")
+    return {"ok": True}
 
 
 @pult_router.post("/inhalte/{iid}/marke_hinweis_aus")
@@ -656,9 +744,13 @@ def arbeiter_vorschlag(aid: str, payload: dict = Body(...), x_bild_key: str | No
         # wie bei der Uebernahme per Hand. Scheitert das, bleibt der Vorschlag offen (Betreiber nimmt an).
         try:
             job = _lesen_einer(lambda:
-                f"SELECT mandant FROM marketing.marken_auftraege WHERE id = {lit(a)}::uuid")
+                "SELECT a.mandant, m.einrichtung FROM marketing.marken_auftraege a "
+                f"JOIN marketing.mandanten m ON m.id = a.mandant WHERE a.id = {lit(a)}::uuid")
             if not job or not job.get("mandant"):
                 raise HTTPException(404, "Unbekannter Auftrag")
+            # Mehr als Text (Farben, Schriften, Logo, Webseite) gilt nur waehrend der Einrichtung direkt (086)
+            if not _nur_text(vorschlag) and job.get("einrichtung") != "laeuft":
+                return {"vorschlag": vid, "direkt": False}
             _schreiben(lambda:
                 f"SELECT marketing.pult_marke_uebernehmen({lit(vid)}::uuid, {lit(DIREKT_VON)}, "
                 f"{lit(str(job['mandant']))}) AS id")
@@ -666,6 +758,60 @@ def arbeiter_vorschlag(aid: str, payload: dict = Body(...), x_bild_key: str | No
         except HTTPException as e:
             log.warning("Direkte Uebernahme von %s gescheitert: %s", vid, e.detail)
     return {"vorschlag": vid, "direkt": angenommen}
+
+
+def _nur_text(vorschlag: dict) -> bool:
+    """Aendert der Vorschlag nur Text (marken_prompt.ist_direkt)? Mit gueltiger Aenderungsliste zaehlt wie beim
+    Arbeiter nur, was sie wirklich aendert (unveraenderte Werte im Vorschlag stoeren nicht); ohne Liste der
+    Vorschlag selbst (fail-closed: jeder Wert ist dann eine Aenderung)."""
+    liste = vorschlag.get("aenderungen")
+    if isinstance(liste, list) and all(isinstance(x, dict) and isinstance(x.get("feld"), str) and "nachher" in x
+                                       for x in liste):
+        return marken_prompt.ist_direkt(marken_prompt.wirksam(vorschlag, liste))
+    return marken_prompt.ist_direkt({k: v for k, v in vorschlag.items() if k not in ("direkt", "aenderungen")})
+
+
+def _pflichtteil_form(payload: dict) -> tuple[dict | None, dict | None]:
+    """Form wie pult_mandant_pflichtteil_setzen (086), vor jedem SQL; Laengen und {abmeldelink} prueft die DB."""
+    if not isinstance(payload, dict) or set(payload) - {"pflichtteil", "stand"} or not set(payload):
+        raise HTTPException(422, "Erwartet pflichtteil und/oder stand")
+    pflicht, stand = payload.get("pflichtteil"), payload.get("stand")
+    if pflicht is not None and (not isinstance(pflicht, dict) or set(pflicht) - set(PFLICHT_SCHLUESSEL)
+                                or not all(isinstance(v, str) for v in pflicht.values())):
+        raise HTTPException(422, "pflichtteil kennt nur impressum, abmelde_hinweis und vermittlerangaben als Text")
+    if stand is not None:
+        if not isinstance(stand, dict) or set(stand) - set(STAND_SCHLUESSEL):
+            raise HTTPException(422, "stand kennt nur uebersprungen und vermittler")
+        ueber = stand.get("uebersprungen", [])
+        if (not isinstance(ueber, list) or any(type(n) is not int or n not in UEBERSPRINGBAR for n in ueber)
+                or len(set(ueber)) != len(ueber)):
+            raise HTTPException(422, "uebersprungen muss eine Liste ohne Doppelte aus 1, 3, 4, 5, 6 sein")
+        if stand.get("vermittler") is not None and not isinstance(stand["vermittler"], bool):
+            raise HTTPException(422, "vermittler muss ja, nein oder offen sein")
+    if pflicht is None and stand is None:
+        raise HTTPException(422, "Erwartet pflichtteil und/oder stand")
+    return pflicht, stand
+
+
+def _jsonb_oder_null(wert: dict | None) -> str:
+    return "NULL::jsonb" if wert is None else f"{lit(json.dumps(wert, ensure_ascii=False))}::jsonb"
+
+
+@arbeiter_router.post("/{aid}/pflichtteil")
+def arbeiter_pflichtteil(aid: str, payload: dict = Body(...), x_bild_key: str | None = Header(None)):
+    """Einrichtung (086): Pflichtangaben und Stand (uebersprungen, vermittler) der Firma des laufenden
+    Chat-Auftrags mischen. Nur in Arbeit (sonst 409) und nur Chat (sonst 422); DB-Ablehnung 422 mit Grund."""
+    _bild_schluessel(x_bild_key)
+    a = _auftrag_id(aid)
+    pflicht, stand = _pflichtteil_form(payload)
+    job = _in_arbeit(a)
+    if job.get("art") != "chat":
+        raise HTTPException(422, "Pflichtangaben gibt es nur im Chat-Auftrag")
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.pult_mandant_pflichtteil_setzen({lit(str(job['mandant']))}, "
+        f"{_jsonb_oder_null(pflicht)}, {_jsonb_oder_null(stand)}) AS e")
+    e = zeile.get("e") if isinstance(zeile.get("e"), dict) else {}
+    return {"pflichtteil": e.get("pflichtteil"), "stand": e.get("stand")}
 
 
 @arbeiter_router.post("/{aid}/fertig")

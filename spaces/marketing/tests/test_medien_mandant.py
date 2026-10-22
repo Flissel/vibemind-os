@@ -311,6 +311,19 @@ def test_mandanten_liste(umg):
     assert "ORDER BY aktiv DESC, name" in f.sql[0]
 
 
+def test_mandanten_liefert_einrichtung_und_filter(umg):
+    f, _, c = umg
+    zeile = {"id": "probe_gmbh", "name": "Probe GmbH", "aktiv": False, "einrichtung": "laeuft"}
+    f.antworten.append([zeile])
+    r = c.get("/api/pult/mandanten", headers=H)
+    assert r.status_code == 200 and r.json() == {"mandanten": [zeile]}
+    assert "einrichtung" in f.sql[0].split("FROM")[0] and "einrichtung = 'laeuft'" not in f.sql[0]
+    f.antworten.append([zeile])
+    r = c.get("/api/pult/mandanten?einrichtung=1", headers=H)
+    assert r.status_code == 200 and r.json() == {"mandanten": [zeile]}
+    assert "WHERE einrichtung = 'laeuft'" in f.sql[1]
+
+
 @pytest.mark.parametrize("methode,pfad,body", [
     ("get", "/api/pult/mandanten", None),
     ("post", "/api/pult/medien/sichtbar", {"mandant": "vibemind", "namen": []}),
