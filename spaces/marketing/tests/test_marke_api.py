@@ -81,6 +81,8 @@ PULT_ROUTEN = [
     ("get", f"/api/pult/marke/vorschlaege/{VID}/vorschau"),
     ("post", f"/api/pult/inhalte/{IID}/marke_hinweis_aus"),
     ("get", "/api/pult/stimmen"),
+    ("post", "/api/pult/marke/einrichtung/abschliessen"),
+    ("post", "/api/pult/marke/einrichtung/abbrechen"),
 ]
 ARBEITER_ROUTEN = [
     ("post", "/api/marke/arbeiter/naechster"),
@@ -97,6 +99,7 @@ ARBEITER_ROUTEN = [
     ("get", "/api/marke/arbeiter/firmen"),
     ("post", "/api/marke/arbeiter/hinweise"),
     ("post", "/api/marke/arbeiter/profil"),
+    ("post", f"/api/marke/arbeiter/{AID}/pflichtteil"),
 ]
 
 
@@ -1249,6 +1252,24 @@ def test_stand_rueckgaengig_nur_direkt_und_angenommen(umg):
     assert j["auftraege"][0]["aenderung"]["rueckgaengig_moeglich"] is False
 
 
+@pytest.mark.parametrize("aend, logo", [
+    ([{"feld": "akzent", "vorher": "#000000", "nachher": "#9a3412"}], None),
+    ([{"feld": "Ton", "vorher": "", "nachher": "warm"}, {"feld": "webseite", "vorher": "", "nachher": "https://x.de"}],
+     None),
+    ([{"feld": "schrift_text", "vorher": "", "nachher": "Inter"}], None),
+    ([{"feld": "Ton", "vorher": "", "nachher": "warm"}], True),      # Logo geaendert (steht nie in der Liste)
+    ([], None)])
+def test_stand_rueckgaengig_nur_fuer_abschnitte(umg, aend, logo):
+    """Rueckgaengig (078/086) setzt nur Abschnittstexte zurueck: eine direkte Wert-Aenderung waehrend der
+    Einrichtung (Farbe, Schrift, Webseite, Logo) bekommt keinen Knopf."""
+    f, _, c = umg
+    j = _stand(f, c, [_runde(AID, V2, v_aenderungen=aend, v_logo=logo)], [{"id": V2, "erstellt_am": "t"}])
+    assert j["auftraege"][0]["aenderung"]["rueckgaengig_moeglich"] is False
+    assert "v_logo" not in j["auftraege"][0]
+    assert "jsonb_strip_nulls(v.vorschlag) ?| ARRAY['logo', 'logo_bearbeiten', 'logo_dunkel', 'logo_original']" \
+        in f.sql[2]
+
+
 def test_stand_runde_hat_quellen_und_art(umg):
     f, _, c = umg
     roh = {"id": AID, "nachricht": "n", "antwort": "a", "status": "fertig", "hinweise": [], "vorschlag": None,
@@ -1460,3 +1481,261 @@ def test_vorschau_nimmt_nur_block_vorlage(umg):
     r = c.get(f"/api/pult/marke/vorschlaege/{VID}/vorschau?mandant=radhaus", headers=H)
     assert r.status_code == 422
     assert "format = 'bloecke'" in f.sql[1]
+
+
+# ─── /marke_neu: Befehle, Einrichtung, Pflichtteil, Abschluss (Task 6) ────
+
+EINGERICHTET = {"id": "probe_gmbh", "name": "Probe GmbH", "fortgesetzt": False}
+
+
+def _chat(c, nachricht, **mehr):
+    return c.post("/api/pult/marke/chat", headers=H, json={"mandant": "radhaus", "nachricht": nachricht, **mehr})
+
+
+def test_befehl_unbekannt_400_ohne_sql(umg):
+    f, _, c = umg
+    for text in ("/foo", "/new", "/neu", "  /skill gibt-es-nicht x"):
+        r = _chat(c, text)
+        assert r.status_code == 400, text
+        assert r.json()["detail"].startswith("Unbekannter Befehl. Verfügbar: /marke_neu – ")
+    assert f.sql == []
+
+
+def test_befehl_skill_datei_kaputt_503(umg, monkeypatch):
+    from spaces.marketing.claw import skills
+    f, _, c = umg
+
+    def kaputt(*a, **k):
+        raise skills.SkillFehler("x/SKILL.md: kaputt")
+    monkeypatch.setattr(skills, "aufloesen", kaputt)
+    r = _chat(c, "/marke_neu Probe")
+    assert r.status_code == 503 and r.json()["detail"] == "Befehle gerade nicht verfügbar – Skill-Datei fehlerhaft"
+    assert f.sql == []
+
+
+def test_marke_neu_ohne_namen_400(umg):
+    f, _, c = umg
+    for text in ("/marke_neu", "/marke_neu   ", "/marke_neu https://probe.de", "/skill marke-neu"):
+        r = _chat(c, text)
+        assert r.status_code == 400, text
+        assert r.json()["detail"] == "Bitte so: /marke_neu Firmenname [Webseite]"
+    assert f.sql == []
+
+
+def test_marke_neu_mit_anhaengen_400(umg):
+    f, _, c = umg
+    r = _chat(c, "/marke_neu Probe GmbH", kontext={"anhaenge": [{"art": "bild", "name": "a.png"}]})
+    assert r.status_code == 400 and r.json()["detail"] == "Dateien bitte erst in der Einrichtung schicken"
+    assert f.sql == []
+
+
+def test_marke_neu_legt_einrichtung_und_runde_an(umg):
+    f, _, c = umg
+    f.antworten += [[{"e": EINGERICHTET}], [{"id": AID}]]
+    r = _chat(c, "/marke_neu Probe GmbH https://probe.de", von="Anna")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"auftrag": AID, "einrichtung": EINGERICHTET}
+    assert "marketing.pult_mandant_einrichten('Probe GmbH', 'Anna')" in f.sql[0]
+    assert ("marketing.pult_marke_anlegen('probe_gmbh', 'Neue Marke einrichten: Probe GmbH Webseite: "
+            "https://probe.de'") in f.sql[1]
+    assert '"skill": "marke-neu"' in f.sql[1]
+    assert len(f.sql) == 2
+
+
+def test_marke_neu_ohne_webseite_und_von(umg):
+    f, _, c = umg
+    f.antworten += [[{"e": EINGERICHTET}], [{"id": AID}]]
+    r = _chat(c, "/marke_neu Probe GmbH")
+    assert r.status_code == 200, r.text
+    assert "pult_mandant_einrichten('Probe GmbH', 'Marken-Chat')" in f.sql[0]
+    assert "pult_marke_anlegen('probe_gmbh', 'Neue Marke einrichten: Probe GmbH'," in f.sql[1]
+
+
+def test_skill_form_gleich(umg):
+    f, _, c = umg
+    for text in ("/skill marke-neu Probe GmbH", "/skill marke_neu Probe GmbH", "/skill marke neu Probe GmbH"):
+        f.sql.clear()
+        f.antworten += [[{"e": EINGERICHTET}], [{"id": AID}]]
+        r = _chat(c, text)
+        assert r.status_code == 200, (text, r.text)
+        assert "pult_mandant_einrichten('Probe GmbH', 'Marken-Chat')" in f.sql[0], text
+        assert "pult_marke_anlegen('probe_gmbh', 'Neue Marke einrichten: Probe GmbH'," in f.sql[1]
+
+
+def test_marke_neu_aktive_marke_422(umg):
+    f, _, c = umg
+    grund = "Diese Marke gibt es schon – bitte im normalen Marken-Chat weiterarbeiten"
+    f.fehler += [_db_fehler(grund)]
+    r = _chat(c, "/marke_neu Radhaus")
+    assert r.status_code == 422 and r.json()["detail"] == grund
+    assert len(f.sql) == 1
+
+
+def test_marke_neu_name_ungueltig_422(umg):
+    f, _, c = umg
+    f.fehler += [_db_fehler("Ungültiger Firmenname")]
+    r = _chat(c, "/marke_neu a<b")
+    assert r.status_code == 422 and r.json()["detail"] == "Ungültiger Firmenname"
+
+
+def test_marke_neu_fortsetzen_waehrend_runde(umg):
+    f, _, c = umg
+    fortgesetzt = {**EINGERICHTET, "fortgesetzt": True}
+    f.antworten += [[{"e": fortgesetzt}]]
+    f.fehler += [None, _db_fehler("Der Assistent arbeitet gerade")]
+    r = _chat(c, "/marke_neu Probe GmbH")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"auftrag": None, "einrichtung": fortgesetzt}
+    # andere Ablehnung beim Anlegen bleibt 422
+    f.antworten += [[{"e": fortgesetzt}]]
+    f.fehler += [None, _db_fehler("Die Nachricht ist zu lang (hoechstens 2000 Zeichen)")]
+    assert _chat(c, "/marke_neu Probe GmbH").status_code == 422
+
+
+def test_chat_ohne_schraegstrich_unveraendert(umg):
+    f, _, c = umg
+    f.antworten.append([{"id": AID}])
+    r = _chat(c, "Bitte /marke_neu erklären")
+    assert r.status_code == 200 and r.json() == {"auftrag": AID}
+    assert "pult_marke_anlegen('radhaus', 'Bitte /marke_neu erklären'" in f.sql[0]
+
+
+def test_stand_liefert_befehle_und_einrichtung(umg):
+    f, _, c = umg
+    f.antworten += [[{"ok": True}], _stand_kopf(), [], [], [], []]
+    j = c.get("/api/pult/marke?mandant=radhaus", headers=H).json()
+    assert j["befehle"][0]["befehl"] == "/marke_neu" and j["befehle"][0]["beschreibung"]
+    assert j["einrichtung"] is None and j["einrichtung_stand"] is None and j["pflichtteil"] is None
+    assert "einrichtung" in f.sql[1] and "pflichtteil" in f.sql[1]
+    pflicht = {"impressum": "Probe GmbH, Weg 1", "abmelde_hinweis": "Abmelden: {abmeldelink}",
+               "vermittlerangaben": ""}
+    profil = {"werte": {"webseite": "https://probe.de"}, "abschnitte": {}}
+    f.antworten += [[{"ok": True}],
+                    _stand_kopf(name="Probe GmbH", einrichtung="laeuft", pflichtteil=pflicht, profil=profil,
+                                einrichtung_stand={"vermittler": False},
+                                gestalt={"logo": "data:image/png;base64,AAAA"}),
+                    [], [], [], []]
+    j = c.get("/api/pult/marke?mandant=probe_gmbh", headers=H).json()
+    assert j["einrichtung"] == "laeuft" and j["pflichtteil"] == pflicht
+    s = j["einrichtung_stand"]
+    assert len(s["schritte"]) == 7
+    assert s["schritte"][0]["erledigt"] is True and s["schritte"][1]["erledigt"] is True
+    assert "logo" not in s["schritte"][3]["offen"]
+    assert s["abschliessbar"] is True
+    assert j["einrichtung_vermittler"] is False
+
+
+@pytest.mark.parametrize("stand, erwartet", [({"vermittler": True}, True), ({"vermittler": False}, False),
+                                             ({"vermittler": None}, None), ({}, None), ({"vermittler": "ja"}, None)])
+def test_stand_einrichtung_vermittler(umg, stand, erwartet):
+    f, _, c = umg
+    f.antworten += [[{"ok": True}], _stand_kopf(name="Probe GmbH", einrichtung="laeuft", pflichtteil={},
+                                                 einrichtung_stand=stand), [], [], [], []]
+    j = c.get("/api/pult/marke?mandant=probe_gmbh", headers=H).json()
+    assert j["einrichtung_vermittler"] is erwartet
+    f.antworten += [[{"ok": True}], _stand_kopf(einrichtung_stand={"vermittler": True}), [], [], [], []]
+    assert c.get("/api/pult/marke?mandant=radhaus", headers=H).json()["einrichtung_vermittler"] is None
+
+
+def test_stand_befehle_leer_wenn_skill_kaputt(umg, monkeypatch):
+    from spaces.marketing.claw import skills
+    f, _, c = umg
+
+    def kaputt(*a, **k):
+        raise skills.SkillFehler("kaputt")
+    monkeypatch.setattr(skills, "befehle", kaputt)
+    f.antworten += [[{"ok": True}], _stand_kopf(), [], [], [], []]
+    r = c.get("/api/pult/marke?mandant=radhaus", headers=H)
+    assert r.status_code == 200 and r.json()["befehle"] == []
+
+
+def test_abschliessen_und_abbrechen(umg):
+    f, _, c = umg
+    f.antworten.append([{"ok": True}])
+    r = c.post("/api/pult/marke/einrichtung/abschliessen", headers=H, json={"mandant": "probe_gmbh", "von": "Anna"})
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert "marketing.pult_mandant_aktivieren('probe_gmbh', 'Anna')" in f.sql[-1]
+    f.antworten.append([{"ok": True}])
+    r = c.post("/api/pult/marke/einrichtung/abbrechen", headers=H, json={"mandant": "probe_gmbh", "von": "Anna"})
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert "marketing.pult_mandant_einrichtung_abbrechen('probe_gmbh', 'Anna')" in f.sql[-1]
+    f.fehler += [_db_fehler("Das Impressum fehlt noch")]
+    r = c.post("/api/pult/marke/einrichtung/abschliessen", headers=H, json={"mandant": "probe_gmbh", "von": "Anna"})
+    assert r.status_code == 422 and r.json()["detail"] == "Das Impressum fehlt noch"
+    n = len(f.sql)
+    for pfad in ("abschliessen", "abbrechen"):
+        for body in ({"mandant": "probe_gmbh"}, {"von": "Anna"}, {"mandant": "x y", "von": "Anna"}):
+            assert c.post(f"/api/pult/marke/einrichtung/{pfad}", headers=H, json=body).status_code == 422
+    assert len(f.sql) == n
+
+
+def test_arbeiter_pflichtteil(umg):
+    f, _, c = umg
+    erg = {"pflichtteil": {"impressum": "Probe GmbH", "abmelde_hinweis": "", "vermittlerangaben": ""},
+           "stand": {"vermittler": True}}
+    f.antworten += [[{**JOB, "mandant": "probe_gmbh"}], [{"e": erg}]]
+    r = c.post(f"/api/marke/arbeiter/{AID}/pflichtteil", headers=HB,
+               json={"pflichtteil": {"impressum": "Probe GmbH"}, "stand": {"vermittler": True, "uebersprungen": [3]}})
+    assert r.status_code == 200, r.text
+    assert r.json() == erg
+    assert f"id = '{AID}'::uuid" in f.sql[0]
+    assert "marketing.pult_mandant_pflichtteil_setzen('probe_gmbh', '{\"impressum\": \"Probe GmbH\"}'::jsonb" in f.sql[1]
+    assert '"uebersprungen": [3]' in f.sql[1]
+    # nur Stand: Pflichtteil NULL
+    f.antworten += [[{**JOB, "mandant": "probe_gmbh"}], [{"e": erg}]]
+    c.post(f"/api/marke/arbeiter/{AID}/pflichtteil", headers=HB, json={"stand": {"vermittler": None}})
+    assert "pult_mandant_pflichtteil_setzen('probe_gmbh', NULL::jsonb, " in f.sql[-1]
+    # nicht in Arbeit -> 409
+    f.antworten.append([{**JOB, "status": "fertig"}])
+    n = len(f.sql)
+    r = c.post(f"/api/marke/arbeiter/{AID}/pflichtteil", headers=HB, json={"pflichtteil": {"impressum": "x"}})
+    assert r.status_code == 409 and len(f.sql) == n + 1
+    # keine Chat-Runde -> 422
+    f.antworten.append([{**JOB, "art": "bearbeitung"}])
+    r = c.post(f"/api/marke/arbeiter/{AID}/pflichtteil", headers=HB, json={"pflichtteil": {"impressum": "x"}})
+    assert r.status_code == 422
+    # DB-Ablehnung -> 422 mit Grund
+    f.antworten.append([JOB])
+    f.fehler += [None, _db_fehler("Der Abmeldehinweis braucht {abmeldelink}")]
+    r = c.post(f"/api/marke/arbeiter/{AID}/pflichtteil", headers=HB, json={"pflichtteil": {"abmelde_hinweis": "x"}})
+    assert r.status_code == 422 and r.json()["detail"] == "Der Abmeldehinweis braucht {abmeldelink}"
+    # Form falsch -> 422 ohne SQL
+    n = len(f.sql)
+    for body in ({}, {"pflichtteil": "x"}, {"pflichtteil": {"foo": "x"}}, {"pflichtteil": {"impressum": 1}},
+                 {"stand": "x"}, {"stand": {"foo": 1}}, {"stand": {"uebersprungen": [2]}},
+                 {"stand": {"uebersprungen": [3, 3]}}, {"stand": {"uebersprungen": "3"}},
+                 {"stand": {"uebersprungen": [True]}}, {"stand": {"vermittler": "ja"}},
+                 {"pflichtteil": {}, "anderes": 1}):
+        r = c.post(f"/api/marke/arbeiter/{AID}/pflichtteil", headers=HB, json=body)
+        assert r.status_code == 422, body
+    assert len(f.sql) == n
+
+
+def test_vorschlag_direkt_farben_nur_in_einrichtung(umg):
+    f, _, c = umg
+    v = {"akzent": "#123456", "abschnitte": {}, "direkt": True}
+    f.antworten += [[{"id": VID}], [{"mandant": "radhaus", "einrichtung": None}]]
+    r = c.post(f"/api/marke/arbeiter/{AID}/vorschlag", headers=HB, json={"vorschlag": v, "antwort": "a", "direkt": True})
+    assert r.status_code == 200 and r.json() == {"vorschlag": VID, "direkt": False}
+    assert not any("pult_marke_uebernehmen" in q for q in f.sql)
+    assert "einrichtung" in f.sql[1]
+    f.sql.clear()
+    f.antworten += [[{"id": VID}], [{"mandant": "probe_gmbh", "einrichtung": "laeuft"}], [{"id": AID}]]
+    r = c.post(f"/api/marke/arbeiter/{AID}/vorschlag", headers=HB, json={"vorschlag": v, "antwort": "a", "direkt": True})
+    assert r.status_code == 200 and r.json() == {"vorschlag": VID, "direkt": True}
+    assert f"pult_marke_uebernehmen('{VID}'::uuid, 'Agent (direkt)', 'probe_gmbh')" in f.sql[2]
+
+
+def test_vorschlag_direkt_text_mit_unveraenderten_werten(umg):
+    """Nur Text laut Aenderungsliste (unveraenderte Werte im Vorschlag) gilt weiter auch ausserhalb der Einrichtung."""
+    f, _, c = umg
+    v = {**VORSCHLAG, "abschnitte": {"Ton": "warm"}, "mustertext": None, "direkt": True,
+         "aenderungen": [{"feld": "Ton", "vorher": "", "nachher": "warm"}]}
+    f.antworten += [[{"id": VID}], [{"mandant": "radhaus", "einrichtung": None}], [{"id": AID}]]
+    r = c.post(f"/api/marke/arbeiter/{AID}/vorschlag", headers=HB, json={"vorschlag": v, "antwort": "a", "direkt": True})
+    assert r.json() == {"vorschlag": VID, "direkt": True}
+    # Farbe laut Liste geaendert -> ausserhalb der Einrichtung nicht direkt
+    v2 = {**v, "aenderungen": [{"feld": "akzent", "vorher": "#000000", "nachher": "#b45309"}]}
+    f.antworten += [[{"id": VID}], [{"mandant": "radhaus", "einrichtung": None}]]
+    r = c.post(f"/api/marke/arbeiter/{AID}/vorschlag", headers=HB, json={"vorschlag": v2, "antwort": "a", "direkt": True})
+    assert r.json() == {"vorschlag": VID, "direkt": False}

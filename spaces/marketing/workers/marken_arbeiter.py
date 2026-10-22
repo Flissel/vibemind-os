@@ -21,8 +21,8 @@ import re
 import time
 import urllib.parse
 
-from spaces.marketing.claw import (bild_comfy, denkspur, logo_bearbeiten, markenprofil, marken_prompt,
-                                   markenwissen, pdf_bilder, stimmen, webseite, webseite_speicher)
+from spaces.marketing.claw import (bild_comfy, denkspur, einrichtung, logo_bearbeiten, markenprofil, marken_prompt,
+                                   markenwissen, pdf_bilder, skills, stimmen, webseite, webseite_speicher)
 from spaces.marketing.workers import chat_worker as cw
 from spaces.marketing.workers.bild_worker import ApiFehler
 
@@ -40,6 +40,9 @@ SPIEGEL_FEHLER = "Spiegel nicht aktualisiert: "
 DIREKT_MAX = 60_000        # E5: groesser gespeichert gilt nicht direkt (Review Focus 3)
 QUELLEN_MAX = 12           # wie api/marke.QUELLEN_MAX (078)
 QUELLEN_NICHT = "Quellen nicht gespeichert"
+EINRICHTUNG_SKILL = "marke-neu"   # /marke_neu: fuehrt durch die Einrichtung einer neuen Marke (086)
+SKILL_FEHLT = f"Skill {EINRICHTUNG_SKILL} fehlt – Einrichtung nicht möglich"
+PFLICHT_NICHT = "Pflichtangaben nicht gespeichert: "
 NICHT_TEXT = (*marken_prompt.FARBEN, *marken_prompt.SCHRIFTEN, "stimme", "logo", "logo_dunkel", "logo_bearbeiten", "webseite")
 _ADRESSE = re.compile(r"\bhttps?://[^\s<>\"'`]+", re.IGNORECASE)
 _SATZZEICHEN = ".,;:!?)]}–—»“”'\""
@@ -73,6 +76,10 @@ class MarkenApi(cw.ChatApi):
 
     def quellen(self, aid, quellen: list[dict]) -> bool:
         return bool(self._post(f"/{aid}/quellen", {"quellen": quellen}).get("ok"))
+
+    def pflichtteil(self, aid, daten: dict) -> dict:
+        """Einrichtung: {"pflichtteil"?: {...}, "stand"?: {"uebersprungen", "vermittler"}} an die Marke."""
+        return self._post(f"/{aid}/pflichtteil", daten)
 
 
 def _spur_ende(spur) -> None:
@@ -384,22 +391,24 @@ def _quellen_melden(api, aid, gelesen: list[dict], websuche: list[dict], spur) -
         spur.schritt(QUELLEN_NICHT)
 
 
-def _gespeichert(vorschlag: dict, profil) -> tuple[dict, bool]:
+def _gespeichert(vorschlag: dict, profil, immer_direkt: bool = False) -> tuple[dict, bool]:
     """E4/E5: der Vorschlag mit "aenderungen" (gegen das aktuelle Profil) und "direkt". Gilt nur, wenn er nur
     Text aendert, jeder alte Abschnittstext zurueckgenommen werden koennte (<= MAX_ABSCHNITT) und alles
-    gespeichert hoechstens DIREKT_MAX Byte hat; sonst direkt false und ohne Aenderungsliste, wenn zu gross."""
+    gespeichert hoechstens DIREKT_MAX Byte hat; sonst direkt false und ohne Aenderungsliste, wenn zu gross.
+    immer_direkt (Einrichtung): jede Aenderung gilt direkt, nur die DIREKT_MAX-Grenze bleibt."""
     liste = marken_prompt.aenderungen(profil, vorschlag)
-    direkt = (marken_prompt.ist_direkt(marken_prompt.wirksam(vorschlag, liste))
-              and all(len(a["vorher"]) <= marken_prompt.MAX_ABSCHNITT for a in liste))
+    direkt = immer_direkt or (marken_prompt.ist_direkt(marken_prompt.wirksam(vorschlag, liste))
+                              and all(len(a["vorher"]) <= marken_prompt.MAX_ABSCHNITT for a in liste))
     gespeichert = {**vorschlag, "direkt": direkt, "aenderungen": liste}
     if len(json.dumps(gespeichert, ensure_ascii=False).encode()) > DIREKT_MAX:
         return {**vorschlag, "direkt": False}, False
     return gespeichert, direkt
 
 
-def _seiten_lesen(urls: list[str], seite_lesen, hinweise: list[str], spur, gelesen: list[dict] | None = None) -> str:
+def _seiten_lesen(urls: list[str], seite_lesen, hinweise: list[str], spur, gelesen: list[dict] | None = None,
+                  belege: list[str] | None = None) -> str:
     """Die `lesen`-Adressen des Agenten mit dem gesicherten Leser (Adresssperre inklusive) -> Material. Jede
-    gelesene Seite kommt als Quelle `gelesen` in `gelesen`."""
+    gelesene Seite kommt als Quelle `gelesen` in `gelesen`, ihr Text als Beleg in `belege` (Einrichtung)."""
     teile: list[str] = []
     for url in urls:
         z = urllib.parse.urlsplit(url)
@@ -414,6 +423,8 @@ def _seiten_lesen(urls: list[str], seite_lesen, hinweise: list[str], spur, geles
         if fund is not None and fund.seiten:
             spur.schritt(f"Gelesen: {host}")
             teile += marken_prompt._fund_text(fund)
+            if belege is not None:
+                belege += [s.text for s in fund.seiten if s.text]
             q = _gelesen(fund.seiten[0])
             if q is not None and gelesen is not None:
                 gelesen.append(q)
@@ -421,6 +432,52 @@ def _seiten_lesen(urls: list[str], seite_lesen, hinweise: list[str], spur, geles
             spur.schritt(f"Nicht lesbar: {host}")
             hinweise += list(fund.hinweise) if fund is not None else [f"Webseite {url} nicht lesbar"]
     return "\n".join(teile)
+
+
+def _einrichtung_skill():
+    """Der Skill marke-neu, je Runde frisch gelesen. Fehlt er oder ist eine Skill-Datei kaputt, _Aufgeben."""
+    try:
+        gefunden = [s for s in skills.laden() if s.name == EINRICHTUNG_SKILL]
+    except (skills.SkillFehler, OSError):
+        gefunden = []
+    if not gefunden:
+        raise _Aufgeben(SKILL_FEHLT)
+    return gefunden[0]
+
+
+def _einrichtung_stand(auftrag: dict) -> dict:
+    stand = auftrag.get("einrichtung_stand")
+    return stand if isinstance(stand, dict) else {}
+
+
+def _pflichtteil_melden(api, aid, auftrag: dict, erg: dict, belege: list[str], hinweise: list[str]) -> None:
+    """Einrichtung: Pflichtangaben gegen die Belege pruefen und mit dem Stand (uebersprungen, vermittler) an die
+    VM. Lehnt sie mit 422 ab, nur ein Hinweis - der Auftrag laeuft weiter."""
+    pflicht, pflicht_hinweise = ({}, []) if erg["pflichtteil"] is None else einrichtung.pflichtteil_pruefen(
+        erg["pflichtteil"], belege)
+    hinweise += pflicht_hinweise
+    daten: dict = {}
+    if pflicht:
+        daten["pflichtteil"] = pflicht
+    stand: dict = {}
+    if erg["uebersprungen"]:         # die DB fuegt den Stand per || an: die bisherige Liste nicht verlieren
+        bisher = _einrichtung_stand(auftrag).get("uebersprungen")
+        bisher = [n for n in bisher if n in marken_prompt.UEBERSPRINGBAR] if isinstance(bisher, list) else []
+        stand["uebersprungen"] = sorted({*bisher, *erg["uebersprungen"]})
+    # Die Vermittlerfrage beantwortet nur der Betreiber: in der Runde der Startnachricht der API hat er noch
+    # nichts gesagt, eine Antwort des Modells dort waere still entschieden.
+    if erg["vermittler"] is not None and not str(auftrag.get("nachricht") or "").startswith(einrichtung.START_NACHRICHT):
+        stand["vermittler"] = erg["vermittler"]
+    if stand:
+        daten["stand"] = stand
+    if not daten:
+        return
+    try:
+        api.pflichtteil(aid, daten)
+    except ApiFehler as e:
+        if e.code != 422:
+            raise
+        hinweise.append(PFLICHT_NICHT + e.grund[:200])
 
 
 def chat_bearbeiten(api, auftrag: dict, fragen_strom, webseite_lesen, logo_laden, wurzel: str,
@@ -445,6 +502,9 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
                 and isinstance(kontext.get("formular"), dict) else None)
     if auftrag.get("art") == "bearbeitung" and formular is None:     # nie als freier Chat mit Websuche (R4b)
         raise _Aufgeben("Bearbeitung ohne Formular – nichts geändert")
+    # Einrichtung (/marke_neu): nur der freie Chat folgt dem Skill, die Formular-Bearbeitung bleibt wie sie ist
+    in_einrichtung = auftrag.get("einrichtung") == "laeuft" and auftrag.get("art") == "chat"
+    skill = _einrichtung_skill() if in_einrichtung else None
     laden = _einmal(logo_laden)
     offen = marken_prompt.offener_vorschlag(auftrag) or {}
     bilder: list[tuple[str, str]] = []
@@ -478,8 +538,16 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
         hinweise += [h for h in wissen.hinweise if not h.startswith("Kein Markenwissen")]
     if halter.verloren.is_set():
         return "fehler"
+    stand_text, belege = "", []
+    if in_einrichtung:
+        pflichtteil = auftrag.get("pflichtteil") if isinstance(auftrag.get("pflichtteil"), dict) else {}
+        stand_text = einrichtung.stand_text(einrichtung.stand(
+            name, {"werte": profil.werte, "abschnitte": profil.abschnitte}, bool(profil.logo_pfad),
+            pflichtteil, _einrichtung_stand(auftrag)), pflichtteil, _einrichtung_stand(auftrag))
+        belege = [str(auftrag.get("nachricht") or "")] + ([s.text for s in fund.seiten if s.text] if fund else [])
     text_nutzer = marken_prompt.nutzer_text(auftrag, profil, fund, unterlagen_text, bilder, hinweise,
-                                            firmenwissen=wissen.text, notizen=wissen.notizen, formular=formular)
+                                            firmenwissen=wissen.text, notizen=wissen.notizen, formular=formular,
+                                            einrichtung_stand=stand_text)
     nachrichten = [{"role": "user", "content": [{"type": "text", "text": text_nutzer}, *bildteile]
                     if bildteile else text_nutzer}]
     zustand = {"mit_bildern": bool(bildteile), "text_nutzer": text_nutzer, "hinweise": hinweise}
@@ -489,14 +557,15 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
     websuche: list[dict] = []
     while True:
         text = _text_holen(api, aid, fragen_strom, nachrichten, zustand, uhr, schlafen, halten_takt_s, spur,
-                           websuche=formular is None)
+                           websuche=formular is None,
+                           system=marken_prompt.system_einrichtung(skill) if skill else marken_prompt.SYSTEM)
         try:
             if formular is not None:       # Logo bleibt bei der Formular-Bearbeitung unveraendert (R4)
                 text, logo_verworfen = marken_prompt.logo_verwerfen(text)
                 logo_hinweis = logo_hinweis or logo_verworfen
             erg = marken_prompt.antwort_lesen(text, anhaenge, len(logos), bisher,
                                               bisher_vorhanden=bisher_vorhanden, lesen_erlaubt=lesen_frei,
-                                              korrekturen_heben=formular is not None)
+                                              korrekturen_heben=formular is not None, einrichtung=in_einrichtung)
             if formular is not None:
                 if not webseite_im_formular:     # leeres Webseitenfeld = unveraendert: keine Korrektur dafuer
                     erg["korrekturen"] = [k for k in erg["korrekturen"] if k["feld"] != "webseite"]
@@ -519,7 +588,7 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
         if erg["lesen"]:                     # hoechstens eine Folgerunde je Auftrag
             lesen_frei = False
             with cw.halten(api, aid, halten_takt_s) as halter:     # bis 3 Abrufe: Vergabe verlaengern
-                material = _seiten_lesen(erg["lesen"], seite_lesen, hinweise, spur, gelesen)
+                material = _seiten_lesen(erg["lesen"], seite_lesen, hinweise, spur, gelesen, belege)
             if halter.verloren.is_set():
                 return "fehler"
             nachrichten += [{"role": "assistant", "content": text},
@@ -532,6 +601,8 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
     if not api.weiter(aid):
         return "fehler"
     _quellen_melden(api, aid, gelesen, marken_prompt.quellen_pruefen(websuche), spur)
+    if in_einrichtung:
+        _pflichtteil_melden(api, aid, auftrag, erg, belege, hinweise)
     vorschlag = erg["vorschlag"]
     if vorschlag is None:
         spur.schritt("Antwort ohne Vorschlag")
@@ -568,7 +639,7 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
             vorschlag["logo"] = bisher        # null = "Logo bleibt" - beim offenen Vorschlag also dessen Logo
         if bisher and vorschlag.get("logo") == bisher:     # dunkle Fassung und Original gehoeren zum Logo
             vorschlag.update({k: offen[k] for k in marken_prompt.WERKZEUG_FELDER if isinstance(offen.get(k), str)})
-    gespeichert, direkt = _gespeichert(vorschlag, profil)
+    gespeichert, direkt = _gespeichert(vorschlag, profil, immer_direkt=in_einrichtung)
     spur.schritt("Vorschlag abgelegt")
     spur.ende()
     api.vorschlag(aid, {"vorschlag": gespeichert, "antwort": erg["antwort"], "hinweise": _hinweise(hinweise),

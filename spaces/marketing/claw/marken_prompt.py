@@ -151,6 +151,21 @@ SYSTEM: str = (_SYSTEM.replace("__SCHRIFTEN__", _schriften())
                .replace("__KANN__", "\n".join(f"- {e}" for e in FAEHIGKEITEN))
                .replace("__NICHT__", "\n".join(f"- {e}" for e in GRENZEN)))
 
+# Einrichtung neuer Marken (/marke_neu): Ergaenzung des Antwortformats, nur im Einrichtungs-Prompt.
+UEBERSPRINGBAR: tuple[int, ...] = (1, 3, 4, 5, 6)   # wie die DB (Migration 086)
+EINRICHTUNG_FORMAT: str = """## Antwortformat in der Einrichtung
+Zusätzlich zu „antwort“ und „vorschlag“ darfst du im selben JSON-Objekt setzen:
+- "pflichtteil": null oder {"impressum"?: Text, "abmelde_hinweis"?: Text, "vermittlerangaben"?: Text} – nur die Felder, die du neu festlegst
+- "uebersprungen": Liste der Schrittnummern, die der Betreiber bewusst überspringt (erlaubt: 1, 3, 4, 5, 6)
+- "vermittler": true, false oder null (null = noch nicht geklärt)
+In der Einrichtung gilt jede Profiländerung sofort; ein Vorschlag wird also nicht erst bestätigt, sondern ist gleich übernommen."""
+
+
+def system_einrichtung(skill) -> str:
+    """System-Prompt der Einrichtung: normaler Marken-Prompt, Anweisung des Skills, erweitertes Format."""
+    return (SYSTEM + "\n\n---\n\n# Einrichtung einer neuen Marke (Skill " + skill.name + ")\n\n"
+            + skill.anweisung + "\n\n" + EINRICHTUNG_FORMAT)
+
 
 # --- Nutzertext ---------------------------------------------------------------------
 
@@ -206,7 +221,8 @@ def ist_logo_bild(name: str) -> bool:
 
 def nutzer_text(auftrag: dict, profil, fund, unterlagen: str,
                 bilder: list[tuple[str, str]] | tuple = (), hinweise: list[str] | tuple = (), *,
-                firmenwissen: str = "", notizen: str = "", formular: dict | None = None) -> str:
+                firmenwissen: str = "", notizen: str = "", formular: dict | None = None,
+                einrichtung_stand: str = "") -> str:
     """Kontext der ersten Nutzernachricht: Firma, Nachricht, aktuelles Profil, offener Vorschlag, Verlauf,
     Webseite, Bilder (Bild i = anhang:<name>), Unterlagen und Hinweise."""
     firma = auftrag.get("firma") or auftrag.get("mandant_name") or auftrag.get("mandant") or ""
@@ -214,6 +230,8 @@ def nutzer_text(auftrag: dict, profil, fund, unterlagen: str,
     if formular is not None:
         teile += ["FORMULAR (vom Betreiber selbst bearbeitet – jeden Wert wörtlich übernehmen):",
                   json.dumps(formular, ensure_ascii=False, indent=1)]
+    if einrichtung_stand:
+        teile.append(einrichtung_stand)
     aktuell = markenprofil.fuer_prompt(profil) if profil is not None else ""
     teile += ["AKTUELLES PROFIL (Material):", aktuell or "Noch kein Branding – noch nichts hinterlegt."]
     teile.append("STIMMEN (erlaubte Namen für \"stimme\"): " + (", ".join(stimmen.stimmen_liste()) or "keine eingerichtet"))
@@ -612,10 +630,27 @@ def folge_text(material: str) -> str:
     return kopf + "\nAntworte jetzt mit genau einem JSON-Objekt; „lesen“ ist nicht mehr möglich."
 
 
+def _einrichtung_pruefen(d: dict) -> tuple[dict | None, list[int], bool | None]:
+    pflicht = d.get("pflichtteil")
+    if pflicht is not None and not isinstance(pflicht, dict):
+        raise AntwortFehler("Feld pflichtteil muss ein Objekt oder null sein")
+    uebers = d.get("uebersprungen", [])
+    if uebers is None:
+        uebers = []
+    if (not isinstance(uebers, list) or any(type(n) is not int or n not in UEBERSPRINGBAR for n in uebers)
+            or len(set(uebers)) != len(uebers)):
+        raise AntwortFehler("Feld uebersprungen muss eine Liste ohne Doppelte aus 1, 3, 4, 5, 6 sein")
+    verm = d.get("vermittler")
+    if verm is not None and not isinstance(verm, bool):
+        raise AntwortFehler("Feld vermittler muss true, false oder null sein")
+    return pflicht, list(uebers), verm
+
+
 def antwort_lesen(text: str, anhaenge=(), web_logos: int = 0, bisher_logo: str | None = None, *,
                   bisher_vorhanden: bool = False, lesen_erlaubt: bool = False,
-                  korrekturen_heben: bool = False) -> dict:
-    """{"antwort", "vorschlag"|None, "lesen", "korrekturen", "quellen"}. anhaenge = Mediennamen der angehaengten Bilder,
+                  korrekturen_heben: bool = False, einrichtung: bool = False) -> dict:
+    """{"antwort", "vorschlag"|None, "lesen", "korrekturen", "quellen", "pflichtteil", "uebersprungen", "vermittler"}
+    (die letzten drei nur mit einrichtung=True, sonst None, [], None). anhaenge = Mediennamen der angehaengten Bilder,
     web_logos = Zahl der Logo-Kandidaten der Webseite, bisher_logo = Logo-Wert des offenen
     Vorschlags (gilt woertlich). Wirft AntwortFehler."""
     gefunden = _objekte(_ZAUN.sub("", text if isinstance(text, str) else ""))
@@ -639,7 +674,9 @@ def antwort_lesen(text: str, anhaenge=(), web_logos: int = 0, bisher_logo: str |
         innen = roh.pop("korrekturen")
         if d.get("korrekturen") is None:
             d["korrekturen"] = innen
+    pflichtteil, uebersprungen, vermittler = _einrichtung_pruefen(d) if einrichtung else (None, [], None)
     return {"antwort": antwort.strip(),
+            "pflichtteil": pflichtteil, "uebersprungen": uebersprungen, "vermittler": vermittler,
             "vorschlag": (vorschlag_pruefen(roh, anhaenge, web_logos, bisher_logo, bisher_vorhanden)
                           if roh is not None else None),
             "lesen": lesen_pruefen(d.get("lesen"), lesen_erlaubt),

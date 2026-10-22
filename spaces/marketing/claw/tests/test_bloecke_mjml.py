@@ -495,3 +495,20 @@ def test_textfassung():
     assert "Vorbeischauen: https://laden.de" in t
     assert "Laden GmbH" in t and t.rstrip().endswith("Keine Newsletter mehr? {abmeldelink}")
     assert "**" not in t and "[Bild" not in t
+
+
+def test_vermittlerangaben_unter_impressum():
+    pf = dict(PFLICHT, vermittlerangaben="Vermittler <34f> Reg. D-1234")
+    for fuss in (b.pflicht_fuss(pf, "#cfe3df", "#1d3b39", True), b.rendern(DOK, "B", "", pf)):
+        assert "Vermittler &lt;34f&gt; Reg. D-1234" in fuss
+        assert "<34f>" not in fuss
+        assert fuss.index("Musterstr. 1") < fuss.index("Vermittler") < fuss.index("Abmelden:")
+    text = b.text_mit_fuss(["Hallo"], pf)
+    assert text.index("Musterstr. 1") < text.index("Vermittler <34f>") < text.index("Abmelden:")
+
+
+def test_ohne_vermittlerangaben_unveraendert():
+    leer = dict(PFLICHT, vermittlerangaben="  ")
+    assert b.pflicht_fuss(leer, "#cfe3df", "#1d3b39", True) == b.pflicht_fuss(PFLICHT, "#cfe3df", "#1d3b39", True)
+    assert b.rendern(DOK, "B", "", leer) == b.rendern(DOK, "B", "", PFLICHT)
+    assert b.text_mit_fuss(["Hallo"], leer) == b.text_mit_fuss(["Hallo"], PFLICHT)

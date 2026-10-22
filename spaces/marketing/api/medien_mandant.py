@@ -148,10 +148,13 @@ def zuordnen_fuer_bildauftrag(aid: str, namen: list[str]) -> int:
 
 
 @router.get("/mandanten")
-def mandanten_liste(x_pult_key: str | None = Header(None)):
+def mandanten_liste(einrichtung: bool = False, x_pult_key: str | None = Header(None)):
+    """Alle Firmen; ?einrichtung=1 nur die mit laufender Einrichtung (086) - dagegen prueft /marketing/layouts
+    ?einrichtung=<id>."""
     _schluessel(x_pult_key)
+    filter_ = "WHERE einrichtung = 'laeuft' " if einrichtung else ""
     return {"mandanten": _lesen(lambda:
-        "SELECT id, name, aktiv FROM marketing.mandanten ORDER BY aktiv DESC, name")}
+        f"SELECT id, name, aktiv, einrichtung FROM marketing.mandanten {filter_}ORDER BY aktiv DESC, name")}
 
 
 @router.post("/medien/sichtbar")

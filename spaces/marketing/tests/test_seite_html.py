@@ -173,3 +173,13 @@ def test_jede_ebene_traegt_ihre_id():
     h = _html(s)
     for eid in ("t", "f-1", "k", "b"):
         assert h.count(f'data-ebene="{eid}"') == 1
+
+
+def test_vermittlerangaben_unter_impressum():
+    h = _html(_seite(), pflichtteil=dict(PF, vermittlerangaben="Vermittler <34f> Reg. D-1234"))
+    assert "Vermittler &lt;34f&gt; Reg. D-1234" in h and "<34f>" not in h
+    assert h.index("Firma X") < h.index("Vermittler") < h.index("Abmelden:")
+
+
+def test_ohne_vermittlerangaben_unveraendert():
+    assert _html(_seite(), pflichtteil=dict(PF, vermittlerangaben="")) == _html(_seite())

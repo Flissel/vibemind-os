@@ -1798,6 +1798,30 @@ def test_vorschau_seiten_vorlage_liefert_gefuellte_seite(db, c, monkeypatch, tmp
     assert "v.seite, v.rollen" in db.sql[0] and not any("pult_bild_auftrag" in q for q in db.sql)
 
 
+def test_vorlagen_vorschau_collage_zeigt_beispielbild(db, c, monkeypatch, tmp_path):
+    """Nur die Vorschau behaelt die Beispielquelle der Motiv-Ebene; der Platzhalter-Name taucht nicht auf."""
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    vorlage = {**SEITEN_VORLAGE, "ebenen": [
+        {**e, "quelle": "medien:beispiel-herbst.jpg"} if e["id"] == "motiv" else e for e in SEITEN_VORLAGE["ebenen"]]}
+    db.antworten = [[{**_seiten_vorlage_zeile(seite=vorlage), "beschreibung": "Split", "pflichtteil": {}}],
+                    [_laden_radhaus()]]
+    r = c.get("/api/pult/vorlagen/herbst-split/vorschau?format=seite&mandant=radhaus", headers=H)
+    assert r.status_code == 200, r.text
+    assert "beispiel-herbst.jpg" in r.text and "platzhalter-" not in r.text
+
+
+def test_aus_vorlage_nutzt_weiter_platzhalter(db, c, monkeypatch, tmp_path):
+    """Gegenprobe: 'Neu aus Vorlage' behaelt Platzhalter und legt den Bildauftrag an."""
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    db.antworten = [[_seiten_vorlage_zeile()], [_laden_radhaus()], [{"id": CID}], [{"id": "a"}]]
+    r = c.post("/api/pult/inhalte/aus_vorlage", headers=H,
+               json={"vorlage": "herbst-split", "titel": "Oktober", "mandant": "radhaus"})
+    assert r.status_code == 200, r.text
+    motiv = next(e for e in _seite_aus_sql(db.sql[2])["ebenen"] if e["id"] == "motiv")
+    assert motiv["quelle"].startswith("medien:platzhalter-")
+    assert db.sql[3].startswith("SELECT marketing.pult_bild_auftrag(")
+
+
 def test_vorschau_block_vorlage_als_seite_422(db, c):
     db.antworten = [[{"format": "bloecke", "bloecke": DOK, "beschreibung": "B", "pflichtteil": {}}]]
     r = c.get("/api/pult/vorlagen/leer/vorschau?format=seite", headers=H)
