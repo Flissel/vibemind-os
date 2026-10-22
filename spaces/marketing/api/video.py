@@ -122,7 +122,8 @@ def briefing_pruefen(art: str, b) -> dict:
     if not isinstance(stimme, str) or not _STIMME.fullmatch(stimme):
         raise HTTPException(422, "stimme: Name der Stimmprobe oder 'standard'")
     aus["stimme"] = stimme
-    fmt = b.get("format") or "reel"
+    fmt = b.get("format")
+    fmt = "reel" if fmt is None or fmt == "" else fmt      # nur None und "" gelten als fehlend
     if not isinstance(fmt, str) or fmt not in FORMATE:
         raise HTTPException(422, "format: reel, quadrat oder quer")
     if fmt != "reel":                   # reel bleibt ohne Feld: heutige Briefings unveraendert

@@ -777,7 +777,7 @@ def test_briefing_format_wird_geprueft(art, basis):
     assert "format" not in video.briefing_pruefen(art, {**basis, "format": "reel"})
     assert "format" not in video.briefing_pruefen(art, {**basis, "format": None})
     assert "format" not in video.briefing_pruefen(art, {**basis, "format": ""})
-    for unsinn in ("9:16", "<x>", "Quadrat", 1, True, ["quer"], {"quer": 1}):
+    for unsinn in ("9:16", "<x>", "Quadrat", 1, True, False, 0, [], {}, ["quer"], {"quer": 1}):
         with pytest.raises(Exception) as e:
             video.briefing_pruefen(art, {**basis, "format": unsinn})
         assert e.value.status_code == 422 and e.value.detail == "format: reel, quadrat oder quer"

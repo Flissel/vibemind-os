@@ -43,7 +43,7 @@ def _format_gueltig(wert) -> bool:
 
 
 def _format_waehlen(wert, marke: dict | None) -> str | dict:
-    """Format eines Bausteins (Review Focus 3). marke None = ohne Auftrag; {} = Marke nicht geladen.
+    """Format eines Bausteins (Review Focus 3). marke {} = Marke nicht geladen.
     Ohne Angabe gilt das Format des Auftrags (/marke liefert es, fehlt es: reel). Widerspricht die Angabe
     dem Auftrag, Fehler - gemischte Groessen blaehen das Reel auf (Laura _mixed_size_normalize)."""
     auftrag_format = None
@@ -195,12 +195,12 @@ def standbild(projekt_id: str, bild_asset_id: str, dauer_s: float = 3.0, bewegun
               format: str = "", auftrag: str = "") -> dict:
     """Aus einem Bild einen Clip im Format aus dem Briefing machen (Bild unbeschnitten auf weichem Hintergrund).
     bewegung: ruhig | zoom_rein | zoom_raus | schwenk. dauer_s 1-10 - mindestens so lang wie der Satz dazu.
-    auftrag: die Auftragsnummer - dann gilt das Format des Auftrags. format: reel (9:16) | quadrat (1:1) |
-    quer (16:9); leer = Format des Auftrags (ohne auftrag: reel). Muss zum Briefing passen."""
+    auftrag: die Auftragsnummer (Pflicht) - es gilt das Format des Auftrags. format: reel (9:16) |
+    quadrat (1:1) | quer (16:9); leer = Format des Auftrags. Muss zum Briefing passen."""
     if not _id(projekt_id, "projekt_id") or not _id(bild_asset_id, "bild_asset_id"):
         return _fehler("projekt_id/bild_asset_id ungueltig")
-    if auftrag and not _id(auftrag, "auftrag"):
-        return _fehler("auftrag: ID aus dem Briefing")
+    if not _id(auftrag, "auftrag"):
+        return _fehler("auftrag: ID aus dem Briefing - das Format des Auftrags gilt")
     if not _format_gueltig(format):
         return _fehler(FORMAT_FEHLER)
     if bewegung not in BEWEGUNGEN:
@@ -211,7 +211,7 @@ def standbild(projekt_id: str, bild_asset_id: str, dauer_s: float = 3.0, bewegun
         return _fehler("dauer_s: Zahl 1 bis 10")
     if not 1 <= dauer <= 10:
         return _fehler("dauer_s: 1 bis 10")
-    fmt = _format_waehlen(format, _marke(auftrag) if auftrag else None)
+    fmt = _format_waehlen(format, _marke(auftrag))
     if isinstance(fmt, dict):
         return fmt
     koerper = {"asset_id": bild_asset_id, "dauer_s": dauer, "bewegung": bewegung}

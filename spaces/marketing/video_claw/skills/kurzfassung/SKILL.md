@@ -14,8 +14,7 @@ description: "Langes Video kürzen: die stärksten 15–60 Sekunden, in denen di
    Briefing). Nicht mitten im Wort schneiden: Start = `start_frame` eines Segments, Ende = Start des
    nächsten Segments.
 4. **Optional rahmen.** Eine `titelkarte` (mit `auftrag` und dem `format` aus dem Briefing) mit dem Thema
-   (≤ 6 Wörter, 2–3 s) davor und/oder eine
-   Schlusskarte mit Handlung danach. Jeder Karten-Beat ist ein Beat mit `text` und wird **eingesprochen**
+   (≤ 6 Wörter, 2–3 s) davor und/oder eine Schlusskarte mit Handlung danach. Jeder Karten-Beat ist ein Beat mit `text` und wird **eingesprochen**
    (ein kurzer Satz, bei einer Karte von 2,5 s höchstens 6 Wörter). Ohne `sprechertext` im Briefing
    lieber ganz ohne Karten – dann besteht das Reel nur aus Originalton.
 5. **Untertitel prüfen.** Die Untertitel kommen aus dem Transkript der Spracherkennung. Lies die gewählte
