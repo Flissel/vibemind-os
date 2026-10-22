@@ -315,10 +315,12 @@ def pflicht_fuss(pflichtteil: dict, text: str, grund: str, fuer_versand: bool) -
     impressum = (pflichtteil.get("impressum") or "").strip()
     impressum_html = (_a(impressum) if impressum else
                       '<strong style="color:#ef4444">Impressum fehlt &ndash; im Mandanten hinterlegen</strong>')
+    vermittler = (pflichtteil.get("vermittlerangaben") or "").strip()
+    vermittler_html = f"{_a(vermittler)}<br>" if vermittler else ""
     hinweis = pflichtteil.get("abmelde_hinweis") or ""
     abmelden = _a(hinweis if fuer_versand else hinweis.replace("{abmeldelink}", "[Abmeldelink]"))
     return (f'<mj-section padding="16px 0"><mj-column><mj-text align="center" font-size="11px" '
-            f'color="{_a(fuss_farbe)}" line-height="1.5">{impressum_html}<br>{abmelden}</mj-text></mj-column></mj-section>')
+            f'color="{_a(fuss_farbe)}" line-height="1.5">{impressum_html}<br>{vermittler_html}{abmelden}</mj-text></mj-column></mj-section>')
 
 
 def nach_mjml(dokument: dict, betreff: str, vorschautext: str, pflichtteil: dict,
@@ -434,8 +436,10 @@ def text_fassung(dok: dict, pflichtteil: dict) -> str:
 
 
 def text_mit_fuss(teile: list[str], pflichtteil: dict) -> str:
-    """Absaetze, dann '--', Impressum und Abmelde-Hinweis (Platzhalter bleiben stehen)."""
-    fuss = [x for x in ((pflichtteil or {}).get("impressum"), (pflichtteil or {}).get("abmelde_hinweis")) if x]
+    """Absaetze, dann '--', Impressum, Vermittlerangaben und Abmelde-Hinweis (Platzhalter bleiben stehen)."""
+    pf = pflichtteil or {}
+    vermittler = (pf.get("vermittlerangaben") or "").strip()
+    fuss = [x for x in (pf.get("impressum"), vermittler, pf.get("abmelde_hinweis")) if x]
     return "\n\n".join(teile + ["--", *fuss]) + "\n"
 
 

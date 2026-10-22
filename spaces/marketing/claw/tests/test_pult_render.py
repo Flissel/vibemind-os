@@ -162,3 +162,14 @@ def test_ohne_kopf_und_logo_kein_kopfband():
     # erstes Band auf flaeche ist das Fussband mit dem Pflichtteil
     erste = html.index("background:" + g["flaeche"])
     assert html.index(">Early Access</h1>") < erste < html.index("Musterstr. 1")
+
+
+def test_vermittlerangaben_unter_impressum():
+    html = r.mail_html(FELDER, GESTALT, dict(PFLICHT, vermittlerangaben="Vermittler <34f> Reg. D-1234"))
+    assert "Vermittler &lt;34f&gt; Reg. D-1234" in html and "<34f>" not in html
+    assert html.index("Musterstr. 1") < html.index("Vermittler") < html.index("Abmelden:")
+
+
+def test_ohne_vermittlerangaben_unveraendert():
+    assert (r.mail_html(FELDER, GESTALT, dict(PFLICHT, vermittlerangaben=""))
+            == r.mail_html(FELDER, GESTALT, PFLICHT))

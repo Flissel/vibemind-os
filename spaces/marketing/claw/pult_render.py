@@ -103,6 +103,8 @@ def mail_html(felder: dict, gestalt: dict, pflichtteil: dict, breite: int = 600)
     impressum_html = (_e(impressum) if impressum else
                       '<strong style="background:#b91c1c;color:#ffffff;padding:1px 6px;border-radius:3px">'
                       'Impressum fehlt &ndash; im Mandanten hinterlegen</strong>')
+    vermittler = (pflichtteil.get("vermittlerangaben") or "").strip()
+    vermittler_html = f"{_e(vermittler)}<br>" if vermittler else ""
     abmelden = _e((pflichtteil.get("abmelde_hinweis") or "").replace("{abmeldelink}", "[Abmeldelink]"))
     kopfband = ""
     if kopf or logo_html:
@@ -117,7 +119,7 @@ def mail_html(felder: dict, gestalt: dict, pflichtteil: dict, breite: int = 600)
         f'<tr><td style="background:{g["flaeche"]};color:{band_leise};font-size:11px;line-height:1.5;'
         f'padding:{abstand}px;border-radius:0 0 {rundung}px {rundung}px">'
         + (f'<p style="color:{band};font-size:13px;margin:0 0 {abstand // 2}px 0">{_e(fuss)}</p>' if fuss else "")
-        + f'<div style="color:{band_leise}">{impressum_html}<br>{abmelden}</div>'
+        + f'<div style="color:{band_leise}">{impressum_html}<br>{vermittler_html}{abmelden}</div>'
         '</td></tr>')
     return (
         '<!doctype html><html lang="de"><head><meta charset="utf-8">'
