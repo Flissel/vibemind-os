@@ -486,3 +486,56 @@ def test_formular_stimme_woertlich_und_ungueltige_korrigierbar(stimmen):
         kp.formular_abgleich({**FORM, "stimme": "eigene-a"}, _v(stimme="eigene-b"), [{"feld": "stimme", "grund": "x"}])
     assert "stimme" in kp.ungueltige_felder({**FORM, "stimme": "gibt-es-nicht"})
     assert "stimme" not in kp.ungueltige_felder({**FORM, "stimme": ""})
+
+
+# --- Einrichtung neuer Marken (/marke_neu) -------------------------------------------------------
+
+def _skill():
+    from pathlib import Path
+    from spaces.marketing.claw.skills import Skill
+    return Skill(name="marke-neu", befehl="marke_neu", beschreibung="x", chats=("marke",), schritte=6,
+                 anweisung="ANWEISUNG-MARKE-NEU", pfad=Path("SKILL.md"))
+
+
+def _einr_json(**extra):
+    d = {"antwort": "ok", "vorschlag": None,
+         "pflichtteil": {"impressum": "Radhaus, Musterweg 1"}, "uebersprungen": [3], "vermittler": False}
+    d.update(extra)
+    return json.dumps(d)
+
+
+def test_system_einrichtung_enthaelt_skill_und_format():
+    s = kp.system_einrichtung(_skill())
+    assert s.startswith(kp.SYSTEM)
+    assert "ANWEISUNG-MARKE-NEU" in s and "pflichtteil" in s
+    assert "uebersprungen" not in kp.SYSTEM
+
+
+def test_antwort_lesen_einrichtung_felder():
+    r = kp.antwort_lesen(_einr_json(), einrichtung=True)
+    assert r["pflichtteil"] == {"impressum": "Radhaus, Musterweg 1"}
+    assert r["uebersprungen"] == [3] and r["vermittler"] is False
+
+
+@pytest.mark.parametrize("wert", [[2], [True], [3, 3], [1.5], "3", [7]])
+def test_antwort_lesen_uebersprungen_ungueltig_fehler(wert):
+    with pytest.raises(kp.AntwortFehler):
+        kp.antwort_lesen(_einr_json(uebersprungen=wert), einrichtung=True)
+
+
+def test_antwort_lesen_einrichtung_form_fehler():
+    with pytest.raises(kp.AntwortFehler):
+        kp.antwort_lesen(_einr_json(pflichtteil="x"), einrichtung=True)
+    with pytest.raises(kp.AntwortFehler):
+        kp.antwort_lesen(_einr_json(vermittler="ja"), einrichtung=True)
+
+
+def test_antwort_lesen_ohne_einrichtung_ignoriert_pflichtteil():
+    r = kp.antwort_lesen(_einr_json(uebersprungen=[2]))
+    assert r["pflichtteil"] is None and r["uebersprungen"] == [] and r["vermittler"] is None
+
+
+def test_nutzer_text_mit_stand():
+    t = kp.nutzer_text(AUFTRAG, mp.Profil(), None, "", [], [], einrichtung_stand="STAND-XYZ")
+    assert t.index("NACHRICHT:") < t.index("STAND-XYZ") < t.index("AKTUELLES PROFIL")
+    assert "STAND-XYZ" not in kp.nutzer_text(AUFTRAG, mp.Profil(), None, "", [], [])
