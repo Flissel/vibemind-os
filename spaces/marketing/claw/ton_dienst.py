@@ -32,6 +32,7 @@ import re
 import subprocess
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -345,14 +346,38 @@ def vorladen_starten() -> threading.Thread | None:
     return t
 
 
+def nachbinden(adresse: str, erzeugen, *, warten=time.sleep, takt_s: float = 10,
+               frist_s: float | None = 3600) -> None:
+    """Lauscht auf `adresse`, sobald es sie gibt (blockiert danach in serve_forever).
+
+    22.10.2026: Nach dem PC-Neustart startete der Dienst vor Tailscale; bind auf die Tailnet-Adresse
+    warf WinError 10049 und riss den ganzen Dienst mit (auch 127.0.0.1). Jetzt wird nachgebunden."""
+    gewartet = 0.0
+    while True:
+        try:
+            server = erzeugen(adresse)
+        except OSError as e:
+            if frist_s is not None and gewartet >= frist_s:
+                LOG.warning("Gebe auf: %s ist nach %.0f s noch nicht da (%s)", adresse, gewartet, e)
+                return
+            warten(takt_s)
+            gewartet += takt_s
+            continue
+        LOG.info("Sprech-Dienst lauscht jetzt auch auf %s", adresse)
+        server.serve_forever()
+        return
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     vorladen_starten()
-    server = [ThreadingHTTPServer((adresse, PORT), Handler) for adresse in lausch_adressen()]
-    for s in server[1:]:
-        threading.Thread(target=s.serve_forever, daemon=True).start()
-    LOG.info("Sprech-Dienst auf %s (Port %s)", ", ".join(s.server_address[0] for s in server), PORT)
-    server[0].serve_forever()
+    lokal, *weitere = lausch_adressen()
+    for adresse in weitere:
+        threading.Thread(target=nachbinden, args=(adresse, lambda a: ThreadingHTTPServer((a, PORT), Handler)),
+                         name=f"lauschen-{adresse}", daemon=True).start()
+    server = ThreadingHTTPServer((lokal, PORT), Handler)
+    LOG.info("Sprech-Dienst auf %s (Port %s), weitere Adressen: %s", lokal, PORT, ", ".join(weitere) or "keine")
+    server.serve_forever()
 
 
 if __name__ == "__main__":

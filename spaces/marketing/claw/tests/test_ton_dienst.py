@@ -215,3 +215,34 @@ def test_standard_ohne_datei_faellt_auf_eingebaut(tmp_path, monkeypatch):
     monkeypatch.setenv("TON_STIMMEN_ORDNER", str(tmp_path))
     monkeypatch.setenv("TON_STANDARD_STIMME", "fehlt")
     assert td.anfrage_pruefen({"text": "Hallo"})[2] is None
+
+
+def test_tailnet_adresse_wird_nachgebunden_wenn_tailscale_spaeter_kommt():
+    """22.10.2026: Nach dem PC-Neustart war Tailscale noch nicht da - bind auf 100.84.x warf
+    WinError 10049 und der ganze Dienst startete nicht. Die Adresse wird jetzt nachgebunden."""
+    versuche, pausen, gestartet = [], [], []
+
+    class Server:
+        def serve_forever(self):
+            gestartet.append(True)
+
+    def erzeugen(adresse):
+        versuche.append(adresse)
+        if len(versuche) < 3:
+            raise OSError(10049, "Die angeforderte Adresse ist in diesem Kontext ungueltig")
+        return Server()
+
+    td.nachbinden("100.84.127.84", erzeugen, warten=pausen.append, takt_s=7)
+    assert versuche == ["100.84.127.84"] * 3
+    assert pausen == [7, 7]
+    assert gestartet == [True]
+
+
+def test_nachbinden_gibt_nach_der_frist_auf(caplog):
+    def erzeugen(adresse):
+        raise OSError(10049, "weg")
+
+    pausen = []
+    td.nachbinden("100.84.127.84", erzeugen, warten=pausen.append, takt_s=10, frist_s=30)
+    assert pausen == [10, 10, 10]
+    assert "100.84.127.84" in caplog.text
