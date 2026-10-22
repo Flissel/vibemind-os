@@ -8,10 +8,9 @@ Ein Lauf (geplante Aufgabe alle 5 Minuten):
 - Die Dienstliste kommt aus `marketing-dienste-starten.ps1 -Liste`. Sie steht nur dort.
 - Port tot -> starten (ueber `-Nur <name>` desselben Skripts).
 - Port offen, aber keine HTTP-Antwort in STUMM_GRENZE Laeufen in Folge -> beenden und neu starten,
-  aber nur Dienste mit eigenem Gesundheits-Thread. Der Agenten-Sidecar :8130 blockiert waehrend
-  langer Werkzeugaufrufe - er wird wegen Stille nie beendet, nur gemeldet. Der Video-Sidecar :8137
-  fuehrt seine Werkzeuge seit 21.10.2026 in Threads aus und hat /health - er wird wie die anderen
-  neu gestartet, wenn er schweigt.
+  aber nur Dienste mit eigenem Gesundheits-Thread. Die MCP-Sidecars :8130 und :8137 fuehren ihre
+  Werkzeuge seit 21./22.10.2026 in Threads aus (claw/mcp_huelle.py) und haben /health - sie werden
+  wie die anderen neu gestartet, wenn sie schweigen.
 - Beendet wird nur der Prozess am Port, und nur wenn seine Kommandozeile alle Startargumente
   des Dienstes enthaelt (sonst koennte ein fremder Dienst auf dem Port sterben).
 - ComfyUI wird weder beendet (Zombie im GPU-Treiber) noch gestartet (belegt die GPU) - nur gemeldet.
@@ -63,7 +62,8 @@ class Regel:
 
 REGELN: dict[str, Regel] = {
     "marketing_api": Regel("/api/health", True, True),
-    "marketing_claw_mcp": Regel(None, False, True),
+    # 22.10.2026: auch :8130 fuehrt Werkzeuge in Threads aus und hat /health (claw/mcp_huelle.py).
+    "marketing_claw_mcp": Regel("/health", True, True),
     "marketing_claw_shim": Regel("/health", True, True),
     "marketing_vorlagen_arbeiter": Regel("/", True, True),
     "comfyui": Regel(None, False, False),

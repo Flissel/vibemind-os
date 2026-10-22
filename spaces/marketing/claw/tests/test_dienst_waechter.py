@@ -120,9 +120,10 @@ def test_comfyui_wird_nie_beendet_oder_gestartet():
     assert not r.beenden and not r.starten
 
 
-def test_agenten_sidecar_wird_nicht_wegen_stille_beendet():
+def test_agenten_sidecar_hat_lebenszeichen_und_wird_bei_stille_neu_gestartet():
+    """22.10.2026: auch :8130 fuehrt seine Werkzeuge in Threads aus und hat /health."""
     r = w.REGELN["marketing_claw_mcp"]
-    assert not r.beenden and r.starten
+    assert r.pfad == "/health" and r.beenden and r.starten
 
 
 def test_video_werkzeuge_haben_lebenszeichen_und_werden_bei_stille_neu_gestartet():

@@ -165,20 +165,33 @@ def _transport_security():
     )
 
 
+def bauen():
+    """FastMCP-Server (Host-Python, mcp 1.x): Werkzeuge in Threads, /health, Protokoll nur Warnungen."""
+    from mcp.server.fastmcp import FastMCP
+
+    from spaces.marketing.claw.mcp_huelle import gesundheit_anmelden, im_thread
+
+    server = FastMCP("marketing-claw", host=HOST, port=PORT, transport_security=_transport_security(),
+                     log_level="WARNING")
+    for fn in WERKZEUGE:
+        server.tool()(im_thread(fn))
+    gesundheit_anmelden(server)
+    return server
+
+
 def main() -> None:
     _load_env_fallback()
+    from spaces.marketing.claw.mcp_huelle import gesundheit_anmelden, im_thread
     try:
         from mcp.server.mcpserver import MCPServer
-        server = MCPServer("marketing-claw")
-        for fn in WERKZEUGE:
-            server.tool()(fn)
-        server.run(transport="streamable-http", host=HOST, port=PORT)
     except ImportError:
-        from mcp.server.fastmcp import FastMCP
-        server = FastMCP("marketing-claw", host=HOST, port=PORT, transport_security=_transport_security())
-        for fn in WERKZEUGE:
-            server.tool()(fn)
-        server.run(transport="streamable-http")
+        bauen().run(transport="streamable-http")
+        return
+    server = MCPServer("marketing-claw")
+    for fn in WERKZEUGE:
+        server.tool()(im_thread(fn))
+    gesundheit_anmelden(server)
+    server.run(transport="streamable-http", host=HOST, port=PORT)
 
 
 if __name__ == "__main__":
