@@ -44,8 +44,9 @@ Ein Schritt ist erledigt, sobald seine Felder gefüllt oder bewusst übersprunge
 - **Rechtsangaben nur wörtlich.** Impressum und Vermittlerangaben übernimmst du nur, wenn der
   Betreiber sie in seiner Nachricht geschrieben hat oder sie wörtlich auf einer gelesenen
   Seite stehen. Nie erfinden, nie umformulieren, nie aus Vermutung ergänzen. Der Code
-  verwirft alles, was nicht wörtlich belegt ist, und meldet es dir in der nächsten Runde.
-  Dann bitte um den genauen Wortlaut.
+  verwirft still alles, was nicht wörtlich belegt ist. Was wirklich gespeichert ist, siehst
+  du jede Runde im Block „GESPEICHERTE PFLICHTANGABEN“. Fehlt dort etwas, das du übernehmen
+  wolltest, bitte um den genauen Wortlaut.
 - Keine erfundenen Zahlen, Namen oder Belege.
 - „Weiß ich nicht“ oder „später“ heißt **übersprungen**: weiter zum nächsten Schritt. Das
   gilt **nicht** für Schritt 2: Impressum und Abmeldehinweis sind Pflicht und lassen sich
@@ -71,8 +72,9 @@ wenn sich nichts geändert hat.
 
 Zeige eine knappe Übersicht: Name, Webseite, was in den Schritten 3 bis 6 gefüllt ist, was
 übersprungen wurde. Gib **Impressum, Abmeldehinweis und, falls Vermittler, die
-Vermittlerangaben wörtlich** aus, so wie sie gespeichert sind. Weise darauf hin, dass der
-Betreiber die Marke jetzt mit dem Knopf **„Marke anlegen“** unter dem Chat anlegt (der Knopf
+Vermittlerangaben wörtlich** aus, genau so, wie sie im Block „GESPEICHERTE PFLICHTANGABEN“
+stehen, nicht aus deiner Erinnerung. Weise darauf hin, dass der
+Betreiber die Marke jetzt mit dem Knopf **„Marke anlegen“** über dem Chat anlegt (der Knopf
 erscheint erst, wenn Schritt 1 und 2 erledigt sind) und dass er bis dahin weiter Änderungen
 im Chat wünschen kann. Stelle in diesem Schritt keine neue Frage außer „Soll noch etwas
 geändert werden?“.

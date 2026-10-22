@@ -1752,6 +1752,31 @@ def test_einrichtung_impressum_von_startseite_und_stand_zusammengefuehrt():
     assert daten == {"pflichtteil": {"impressum": IMPRESSUM}, "stand": {"uebersprungen": [3, 5]}}
 
 
+def test_einrichtung_vermittler_nie_aus_der_startnachricht():
+    """Die Startnachricht der API ("Neue Marke einrichten: ...") ist keine Antwort des Betreibers: die
+    Vermittlerfrage entscheidet das Modell dort nie still."""
+    api = Api({**EINR, "nachricht": "Neue Marke einrichten: Radhaus Webseite: https://radhaus.example/"})
+    assert _lauf(api, Fragen(_einr_antwort(vermittler=False))) == "fertig"
+    assert api.aufrufe("pflichtteil") == []
+    api = Api({**EINR, "nachricht": "Neue Marke einrichten: Radhaus", "einrichtung_stand": {"uebersprungen": [5]}})
+    assert _lauf(api, Fragen(_einr_antwort(vermittler=True, uebersprungen=[3]))) == "fertig"
+    (_, _, daten), = api.aufrufe("pflichtteil")
+    assert daten == {"stand": {"uebersprungen": [3, 5]}}
+    api = Api({**EINR, "nachricht": "Nein, wir vermitteln nichts."})      # Gegenprobe: Antwort des Betreibers
+    assert _lauf(api, Fragen(_einr_antwort(vermittler=False))) == "fertig"
+    (_, _, daten), = api.aufrufe("pflichtteil")
+    assert daten == {"stand": {"vermittler": False}}
+
+
+def test_einrichtung_stand_zeigt_gespeicherte_pflichtangaben():
+    api = Api({**EINR, "pflichtteil": {"impressum": IMPRESSUM, "abmelde_hinweis": "", "vermittlerangaben": ""},
+               "einrichtung_stand": {"vermittler": False}})
+    fragen = Fragen(_einr_antwort())
+    assert _lauf(api, fragen) == "fertig"
+    t = _text(fragen)
+    assert f"Impressum:\n{IMPRESSUM}" in t and "Abmeldehinweis: fehlt" in t and "Vermittler: nein" in t
+
+
 def test_einrichtung_ohne_neue_pflichtangaben_kein_aufruf():
     api = Api(dict(EINR))
     assert _lauf(api, Fragen(_einr_antwort())) == "fertig"

@@ -27,7 +27,8 @@ FELDER: dict[int, tuple[str, ...]] = {
     6: ("Fakten und Zahlen", "Kanäle", "Menschen", "Bildstil"),
 }
 
-ABMELDE_VORGABE = "Du bekommst diese Mail, weil du dich eingetragen hast. Abmelden: {abmeldelink}"
+START_NACHRICHT = "Neue Marke einrichten:"   # Anfang der ersten Runde, von der API (/marke_neu) geschrieben
+ABMELDE_VORGABE ="Du bekommst diese Mail, weil du dich eingetragen hast. Abmelden: {abmeldelink}"
 _PLATZHALTER = "{abmeldelink}"
 _UEBERSPRINGBAR = (1, 3, 4, 5, 6)
 _PFLICHT_SCHLUESSEL = ("impressum", "abmelde_hinweis", "vermittlerangaben")
@@ -103,13 +104,29 @@ def stand(name: str, profil: dict | None, hat_logo: bool, pflichtteil: dict, ein
     return {"schritte": schritte, "naechster": naechster, "abschliessbar": erledigt[1] and erledigt[2]}
 
 
-def stand_text(s: dict) -> str:
-    """Block 'STAND DER EINRICHTUNG' fuer den Prompt."""
+def _wert_zeile(titel: str, wert: object) -> str:
+    """Gespeicherter Text woertlich (Zeilenumbrueche bleiben) unter seinem Titel, leer = 'fehlt'."""
+    return f"{titel}: fehlt" if _leer(wert) else f"{titel}:\n{str(wert).strip()}"
+
+
+def stand_text(s: dict, pflichtteil: dict | None = None, einrichtung_stand: dict | None = None) -> str:
+    """Block 'STAND DER EINRICHTUNG' fuer den Prompt. Mit `pflichtteil` zusaetzlich die gespeicherten
+    Pflichtangaben woertlich und die Vermittler-Antwort: Schritt 7 fasst genau das zusammen, nichts Erinnertes."""
     zeilen = ["STAND DER EINRICHTUNG"]
     for x in s["schritte"]:
         status = "erledigt" if x["erledigt"] else f"offen ({', '.join(x['offen'])})"
         zeilen.append(f"Schritt {x['nr']} von {len(SCHRITTE)} – {x['titel']}: {status}")
     zeilen.append(f"Nächster Schritt: {s['naechster']}")
+    if pflichtteil is None:
+        return "\n".join(zeilen)
+    pflichtteil = pflichtteil if isinstance(pflichtteil, dict) else {}
+    vermittler = (einrichtung_stand if isinstance(einrichtung_stand, dict) else {}).get("vermittler")
+    zeilen += ["", "GESPEICHERTE PFLICHTANGABEN (wörtlich, so stehen sie in der Datenbank):",
+               _wert_zeile("Impressum", pflichtteil.get("impressum")),
+               _wert_zeile("Abmeldehinweis", pflichtteil.get("abmelde_hinweis")),
+               "Vermittler: " + ("ja" if vermittler is True else "nein" if vermittler is False else "noch offen")]
+    if vermittler is True:
+        zeilen.append(_wert_zeile("Vermittlerangaben", pflichtteil.get("vermittlerangaben")))
     return "\n".join(zeilen)
 
 

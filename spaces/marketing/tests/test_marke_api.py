@@ -1604,6 +1604,19 @@ def test_stand_liefert_befehle_und_einrichtung(umg):
     assert s["schritte"][0]["erledigt"] is True and s["schritte"][1]["erledigt"] is True
     assert "logo" not in s["schritte"][3]["offen"]
     assert s["abschliessbar"] is True
+    assert j["einrichtung_vermittler"] is False
+
+
+@pytest.mark.parametrize("stand, erwartet", [({"vermittler": True}, True), ({"vermittler": False}, False),
+                                             ({"vermittler": None}, None), ({}, None), ({"vermittler": "ja"}, None)])
+def test_stand_einrichtung_vermittler(umg, stand, erwartet):
+    f, _, c = umg
+    f.antworten += [[{"ok": True}], _stand_kopf(name="Probe GmbH", einrichtung="laeuft", pflichtteil={},
+                                                 einrichtung_stand=stand), [], [], [], []]
+    j = c.get("/api/pult/marke?mandant=probe_gmbh", headers=H).json()
+    assert j["einrichtung_vermittler"] is erwartet
+    f.antworten += [[{"ok": True}], _stand_kopf(einrichtung_stand={"vermittler": True}), [], [], [], []]
+    assert c.get("/api/pult/marke?mandant=radhaus", headers=H).json()["einrichtung_vermittler"] is None
 
 
 def test_stand_befehle_leer_wenn_skill_kaputt(umg, monkeypatch):

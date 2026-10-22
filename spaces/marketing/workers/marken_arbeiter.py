@@ -464,7 +464,9 @@ def _pflichtteil_melden(api, aid, auftrag: dict, erg: dict, belege: list[str], h
         bisher = _einrichtung_stand(auftrag).get("uebersprungen")
         bisher = [n for n in bisher if n in marken_prompt.UEBERSPRINGBAR] if isinstance(bisher, list) else []
         stand["uebersprungen"] = sorted({*bisher, *erg["uebersprungen"]})
-    if erg["vermittler"] is not None:
+    # Die Vermittlerfrage beantwortet nur der Betreiber: in der Runde der Startnachricht der API hat er noch
+    # nichts gesagt, eine Antwort des Modells dort waere still entschieden.
+    if erg["vermittler"] is not None and not str(auftrag.get("nachricht") or "").startswith(einrichtung.START_NACHRICHT):
         stand["vermittler"] = erg["vermittler"]
     if stand:
         daten["stand"] = stand
@@ -541,7 +543,7 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
         pflichtteil = auftrag.get("pflichtteil") if isinstance(auftrag.get("pflichtteil"), dict) else {}
         stand_text = einrichtung.stand_text(einrichtung.stand(
             name, {"werte": profil.werte, "abschnitte": profil.abschnitte}, bool(profil.logo_pfad),
-            pflichtteil, _einrichtung_stand(auftrag)))
+            pflichtteil, _einrichtung_stand(auftrag)), pflichtteil, _einrichtung_stand(auftrag))
         belege = [str(auftrag.get("nachricht") or "")] + ([s.text for s in fund.seiten if s.text] if fund else [])
     text_nutzer = marken_prompt.nutzer_text(auftrag, profil, fund, unterlagen_text, bilder, hinweise,
                                             firmenwissen=wissen.text, notizen=wissen.notizen, formular=formular,

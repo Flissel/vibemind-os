@@ -322,6 +322,7 @@ def marke_stand(mandant: str | None = None, alle: bool = False, x_pult_key: str 
     e_stand = (einrichtung.stand(str(kopf.get("name") or ""), _profil_lesen(kopf.get("profil")),
                                  bool(gestalt.get("logo")), pflichtteil, kopf.get("einrichtung_stand") or {})
                if e_status == "laeuft" else None)
+    vermittler = _dict_oder_leer(kopf.get("einrichtung_stand")).get("vermittler") if e_status == "laeuft" else None
     return {"mandant": m, "name": kopf.get("name"),
             "spiegel": {"gestalt": {k: gestalt[k] for k in SPIEGEL_SCHLUESSEL if k in gestalt},
                         "stand": kopf.get("stand") or "", "gespiegelt_am": kopf.get("gespiegelt_am"),
@@ -337,7 +338,12 @@ def marke_stand(mandant: str | None = None, alle: bool = False, x_pult_key: str 
             "runden_gesamt": int((gesamt or {}).get("n") or len(auftraege)),
             "faehigkeiten": {"kann": list(marken_prompt.FAEHIGKEITEN), "nicht": list(marken_prompt.GRENZEN)},
             "befehle": _befehle_liste(), "einrichtung": e_status, "einrichtung_stand": e_stand,
-            "pflichtteil": pflichtteil if e_status == "laeuft" else None}
+            "pflichtteil": pflichtteil if e_status == "laeuft" else None,
+            "einrichtung_vermittler": vermittler if isinstance(vermittler, bool) else None}
+
+
+def _dict_oder_leer(wert) -> dict:
+    return wert if isinstance(wert, dict) else {}
 
 
 def _befehle_liste() -> list[dict]:
@@ -371,7 +377,7 @@ def _marke_neu(rest: str, kontext: dict, payload: dict) -> dict:
     if not (isinstance(e, dict) and isinstance(e.get("id"), str)):
         raise HTTPException(503, "Marketing-Datenbank nicht erreichbar")
     ergebnis = {"id": e["id"], "name": e.get("name") or name, "fortgesetzt": e.get("fortgesetzt") is True}
-    nachricht = f"Neue Marke einrichten: {ergebnis['name']}" + (f" Webseite: {webseite}" if webseite else "")
+    nachricht = f"{einrichtung.START_NACHRICHT} {ergebnis['name']}" + (f" Webseite: {webseite}" if webseite else "")
     try:
         runde = _schreiben(lambda:
             f"SELECT marketing.pult_marke_anlegen({lit(ergebnis['id'])}, {lit(nachricht)}, "

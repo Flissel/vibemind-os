@@ -76,6 +76,33 @@ def test_stand_text_format():
     assert "Schritt 1 von 7 – Name und Webseite: offen (webseite)" in t
 
 
+def test_stand_text_zeigt_gespeicherte_werte_woertlich():
+    pf = dict(PFLICHT, impressum="Muster GmbH\nBeispielweg 1", vermittlerangaben="Reg.-Nr. D-1234")
+    t = stand_text(_stand(pflichtteil=pf), pf, {"vermittler": True})
+    assert "GESPEICHERTE PFLICHTANGABEN" in t
+    assert "Impressum:\nMuster GmbH\nBeispielweg 1" in t
+    assert f"Abmeldehinweis:\n{ABMELDE_VORGABE}" in t
+    assert "Vermittler: ja" in t and "Vermittlerangaben:\nReg.-Nr. D-1234" in t
+
+
+def test_stand_text_leere_werte_fehlen_und_vermittler_offen():
+    t = stand_text(_stand(), {"impressum": " ", "abmelde_hinweis": "", "vermittlerangaben": ""}, {})
+    assert "Impressum: fehlt" in t and "Abmeldehinweis: fehlt" in t and "Vermittler: noch offen" in t
+    assert "Vermittlerangaben" not in t
+    t = stand_text(_stand(), {}, {"vermittler": False})
+    assert "Vermittler: nein" in t and "Vermittlerangaben" not in t
+    assert "GESPEICHERTE" not in stand_text(_stand())      # ohne Werte wie bisher
+
+
+def test_skill_verweist_auf_den_stand_block():
+    """Der Code meldet verworfene Rechtsangaben nicht ans Modell (nur als Hinweis an den Betreiber); was gilt,
+    steht im Block GESPEICHERTE PFLICHTANGABEN. Der Knopf "Marke anlegen" steht im Kopf ueber dem Chat."""
+    from spaces.marketing.claw import skills
+    text = next(s for s in skills.laden() if s.name == "marke-neu").anweisung
+    assert "in der nächsten Runde" not in text and "unter dem Chat" not in text
+    assert text.count("GESPEICHERTE PFLICHTANGABEN") >= 2 and "über dem Chat" in text
+
+
 def test_pflichtteil_aus_nachricht_uebernommen():
     ok, hinweise = pflichtteil_pruefen({"impressum": "Muster GmbH, Weg 1"}, ["Unser Impressum: Muster GmbH, Weg 1 ok"])
     assert ok == {"impressum": "Muster GmbH, Weg 1"} and hinweise == []
