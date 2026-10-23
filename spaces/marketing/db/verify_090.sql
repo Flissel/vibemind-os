@@ -240,8 +240,23 @@ BEGIN
                                         'probe_090');
   EXCEPTION WHEN raise_exception THEN geworfen := true; END;
   IF NOT geworfen THEN RAISE EXCEPTION 'verify_090: neu bei bilder_laufen muss werfen'; END IF;
+  j := marketing.reel_bild_naechster('10 minutes');
+  IF (j->>'id')::uuid IS DISTINCT FROM neu OR (j->>'nr')::int <> 2 OR (j->>'versuch')::int <> 2
+     OR j->>'idee' <> 'Andere Idee' THEN
+    RAISE EXCEPTION 'verify_090: naechster nach neu: %', j; END IF;
+  -- der alte Dateiname gilt fuer den neuen Versuch nicht
+  geworfen := false;
+  BEGIN PERFORM marketing.reel_bild_fertig(neu, 'ki-' || left(a::text, 8) || '-2-1.jpg');
+  EXCEPTION WHEN raise_exception THEN geworfen := true; END;
+  IF NOT geworfen THEN RAISE EXCEPTION 'verify_090: alter Dateiname beim neuen Versuch muss werfen'; END IF;
+  IF (SELECT status FROM marketing.video_auftraege WHERE id = a) <> 'bilder_laufen' THEN
+    RAISE EXCEPTION 'verify_090: Auftrag darf vor dem neuen Bild nicht wechseln'; END IF;
+  PERFORM marketing.reel_bild_fertig(neu, 'ki-' || left(a::text, 8) || '-2-2.jpg');
+  -- die verworfene Zeile zaehlt nicht: nach dem einen neuen Bild wieder bilder_pruefen
+  IF (SELECT status FROM marketing.video_auftraege WHERE id = a) <> 'bilder_pruefen' THEN
+    RAISE EXCEPTION 'verify_090: nach neu und fertig muss der Auftrag bilder_pruefen sein'; END IF;
+
   -- Fehlerbild neu ohne andere Idee: Idee bleibt
-  UPDATE marketing.video_auftraege SET status = 'bilder_pruefen' WHERE id = a;  -- nur fuer den Fall
   alt := (SELECT id FROM marketing.reel_bilder WHERE video_auftrag = a AND nr = 4 AND status = 'fehler');
   neu := marketing.reel_bild_neu(alt, 'probe_090');
   IF (SELECT row(nr, versuch, idee)::text FROM marketing.reel_bilder WHERE id = neu)
@@ -249,25 +264,14 @@ BEGIN
     RAISE EXCEPTION 'verify_090: Fehlerbild neu ohne Idee falsch'; END IF;
   SELECT count(*) INTO n FROM marketing.reel_bilder WHERE video_auftrag = a AND status <> 'verworfen';
   IF n <> 4 THEN RAISE EXCEPTION 'verify_090: aktive Bilder % statt 4', n; END IF;
-
-  j := marketing.reel_bild_naechster('10 minutes');
-  IF (j->>'id')::uuid IS DISTINCT FROM (SELECT id FROM marketing.reel_bilder WHERE video_auftrag = a AND nr = 2
-                                          AND status <> 'verworfen')
-     OR (j->>'versuch')::int <> 2 OR j->>'idee' <> 'Andere Idee' THEN
-    RAISE EXCEPTION 'verify_090: naechster nach neu: %', j; END IF;
-  -- der alte Dateiname gilt fuer den neuen Versuch nicht
-  geworfen := false;
-  BEGIN PERFORM marketing.reel_bild_fertig((j->>'id')::uuid, 'ki-' || left(a::text, 8) || '-2-1.jpg');
-  EXCEPTION WHEN raise_exception THEN geworfen := true; END;
-  IF NOT geworfen THEN RAISE EXCEPTION 'verify_090: alter Dateiname beim neuen Versuch muss werfen'; END IF;
-  PERFORM marketing.reel_bild_fertig((j->>'id')::uuid, 'ki-' || left(a::text, 8) || '-2-2.jpg');
   IF (SELECT status FROM marketing.video_auftraege WHERE id = a) <> 'bilder_laufen' THEN
-    RAISE EXCEPTION 'verify_090: Auftrag darf erst nach allen aktiven Bildern wechseln'; END IF;
+    RAISE EXCEPTION 'verify_090: nach Fehlerbild neu muss der Auftrag bilder_laufen sein'; END IF;
   j := marketing.reel_bild_naechster('10 minutes');
-  IF (j->>'nr')::int <> 4 THEN RAISE EXCEPTION 'verify_090: naechster nach neu (Nr 4): %', j; END IF;
-  PERFORM marketing.reel_bild_fertig((j->>'id')::uuid, 'ki-' || left(a::text, 8) || '-4-2.jpg');
+  IF (j->>'id')::uuid IS DISTINCT FROM neu THEN
+    RAISE EXCEPTION 'verify_090: naechster nach neu (Nr 4): %', j; END IF;
+  PERFORM marketing.reel_bild_fertig(neu, 'ki-' || left(a::text, 8) || '-4-2.jpg');
   IF (SELECT status FROM marketing.video_auftraege WHERE id = a) <> 'bilder_pruefen' THEN
-    RAISE EXCEPTION 'verify_090: nach neu und fertig muss der Auftrag bilder_pruefen sein'; END IF;
+    RAISE EXCEPTION 'verify_090: nach Nr 4 neu und fertig muss der Auftrag bilder_pruefen sein'; END IF;
 END $$;
 
 -- (d) video_ki_freigeben: briefing.bilder = fertige Bilder in nr-Reihenfolge, Status offen.
@@ -348,10 +352,16 @@ BEGIN
   IF NOT geworfen THEN RAISE EXCEPTION 'verify_090: andere Idee mit 601 Zeichen muss werfen'; END IF;
   -- verworfenes Bild kann nicht neu
   PERFORM marketing.reel_bild_neu(bid, 'probe_090');
-  UPDATE marketing.video_auftraege SET status = 'bilder_pruefen' WHERE id = a;  -- nur fuer den Fall
+  j := marketing.reel_bild_naechster('10 minutes');
+  PERFORM marketing.reel_bild_fehler((j->>'id')::uuid, 'wieder kaputt');
+  IF (SELECT status FROM marketing.video_auftraege WHERE id = a) <> 'bilder_pruefen' THEN
+    RAISE EXCEPTION 'verify_090: nach dem neuen Fehlerbild muss bilder_pruefen sein'; END IF;
   geworfen := false;
   BEGIN PERFORM marketing.reel_bild_neu(bid, 'probe_090');
-  EXCEPTION WHEN raise_exception OR unique_violation THEN geworfen := true; END;
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM NOT LIKE 'Dieses Bild lässt sich nicht neu erzeugen%' THEN RAISE; END IF;
+    geworfen := true;
+  END;
   IF NOT geworfen THEN RAISE EXCEPTION 'verify_090: verworfenes Bild neu muss werfen'; END IF;
 END $$;
 
@@ -382,6 +392,83 @@ BEGIN
     RAISE EXCEPTION 'verify_090: Bild-Funktionen haben den Abbruch ueberschrieben'; END IF;
 END $$;
 
+-- (h) ideen_setzen mit kaputtem ki.anzahl wirft die eigene Meldung, keinen Cast-Fehler
+DO $$ DECLARE a uuid; geworfen boolean := false;
+BEGIN
+  INSERT INTO marketing.video_auftraege (mandant, art, titel, briefing, status, angelegt_von)
+  VALUES ('probe_090', 'bilder', 'Kaputt', '{"ki":{"anzahl":"vier"}}', 'ideen', 'agent') RETURNING id INTO a;
+  BEGIN PERFORM marketing.video_ideen_setzen(a, '["a","b","c","d"]');
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM NOT LIKE 'Kein Auftrag mit KI-Bildern%' THEN RAISE; END IF;
+    geworfen := true;
+  END;
+  IF NOT geworfen THEN RAISE EXCEPTION 'verify_090: ki.anzahl vier (Text) muss die eigene Meldung werfen'; END IF;
+  geworfen := false;
+  UPDATE marketing.video_auftraege SET briefing = '{"ki":{"anzahl":3.5}}' WHERE id = a;
+  BEGIN PERFORM marketing.video_ideen_setzen(a, '["a","b","c"]');
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM NOT LIKE 'Kein Auftrag mit KI-Bildern%' THEN RAISE; END IF;
+    geworfen := true;
+  END;
+  IF NOT geworfen THEN RAISE EXCEPTION 'verify_090: ki.anzahl 3.5 muss die eigene Meldung werfen'; END IF;
+  DELETE FROM marketing.video_auftraege WHERE id = a;
+END $$;
+
+-- (i) video_nochmal: KI-Auftrag ohne Bilder (an Ideen oder Bildern gescheitert) startet neu bei ideen,
+-- ohne briefing.bilder; mit Bildern wie bisher offen mit denselben Bildern. Ein laufender KI-Neubau sperrt.
+DO $$ DECLARE f uuid; neu uuid; r marketing.video_auftraege; geworfen boolean := false; n int;
+BEGIN
+  SELECT count(*) INTO n FROM pg_proc p JOIN pg_namespace ns ON ns.oid = p.pronamespace
+   WHERE ns.nspname = 'marketing' AND p.proname = 'video_nochmal';
+  IF n <> 1 THEN RAISE EXCEPTION 'verify_090: video_nochmal gibt es % mal (soll 1)', n; END IF;
+  INSERT INTO marketing.video_auftraege (mandant, art, titel, briefing, status, befund, angelegt_von)
+  VALUES ('probe_090', 'bilder', 'Ideen weg', '{"thema":"t","ki":{"anzahl":3},"format":"quer","stimme":"s"}',
+          'fehler', 'Bildideen konnten nicht erzeugt werden', 'betreiber') RETURNING id INTO f;
+  neu := marketing.video_nochmal(f, '', 'betreiber');
+  SELECT * INTO r FROM marketing.video_auftraege WHERE id = neu;
+  IF r.status <> 'ideen' OR r.vorgaenger IS DISTINCT FROM f OR r.briefing ? 'bilder'
+     OR r.briefing <> '{"thema":"t","ki":{"anzahl":3},"format":"quer","stimme":"s"}'::jsonb THEN
+    RAISE EXCEPTION 'verify_090: nochmal ohne Bilder muss bei ideen starten: %', row_to_json(r); END IF;
+  -- der KI-Neubau laeuft (ideen): ein zweites nochmal wird abgelehnt
+  BEGIN PERFORM marketing.video_nochmal(f, '', 'betreiber');
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM NOT LIKE 'Es läuft schon ein neuer Bau für dieses Reel%' THEN RAISE; END IF;
+    geworfen := true;
+  END;
+  IF NOT geworfen THEN RAISE EXCEPTION 'verify_090: nochmal bei laufendem KI-Neubau muss werfen'; END IF;
+  -- auch bilder_pruefen sperrt
+  UPDATE marketing.video_auftraege SET status = 'bilder_pruefen' WHERE id = neu;
+  geworfen := false;
+  BEGIN PERFORM marketing.video_nochmal(f, '', 'betreiber');
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM NOT LIKE 'Es läuft schon ein neuer Bau für dieses Reel%' THEN RAISE; END IF;
+    geworfen := true;
+  END;
+  IF NOT geworfen THEN RAISE EXCEPTION 'verify_090: nochmal bei KI-Neubau in bilder_pruefen muss werfen'; END IF;
+  -- leere Bilderliste gilt wie keine
+  INSERT INTO marketing.video_auftraege (mandant, art, titel, briefing, status, angelegt_von)
+  VALUES ('probe_090', 'bilder', 'Leer', '{"ki":{"anzahl":4},"bilder":[]}', 'fehler', 'agent') RETURNING id INTO f;
+  neu := marketing.video_nochmal(f, NULL, 'agent');
+  SELECT * INTO r FROM marketing.video_auftraege WHERE id = neu;
+  IF r.status <> 'ideen' OR r.briefing <> '{"ki":{"anzahl":4}}'::jsonb THEN
+    RAISE EXCEPTION 'verify_090: nochmal mit leerer Bilderliste: %', row_to_json(r); END IF;
+  -- mit Bildern: offen, dieselben Bilder
+  INSERT INTO marketing.video_auftraege (mandant, art, titel, briefing, status, datei, angelegt_von)
+  VALUES ('probe_090', 'bilder', 'Mit Bildern', '{"ki":{"anzahl":3},"bilder":["ki-0123abcd-1-1.jpg"]}',
+          'fertig', 'vid-0123abcd-mit.mp4', 'betreiber') RETURNING id INTO f;
+  neu := marketing.video_nochmal(f, 'kuerzer', 'betreiber');
+  SELECT * INTO r FROM marketing.video_auftraege WHERE id = neu;
+  IF r.status <> 'offen' OR r.briefing->'bilder' <> '["ki-0123abcd-1-1.jpg"]'::jsonb
+     OR r.aenderungswunsch <> 'kuerzer' THEN
+    RAISE EXCEPTION 'verify_090: nochmal mit Bildern muss offen mit denselben Bildern sein: %', row_to_json(r); END IF;
+  -- ohne ki bleibt alles wie in 085: offen
+  INSERT INTO marketing.video_auftraege (mandant, art, titel, briefing, status, angelegt_von)
+  VALUES ('probe_090', 'material', 'Normal', '{"thema":"n"}', 'fehler', 'agent') RETURNING id INTO f;
+  neu := marketing.video_nochmal(f, '', 'agent');
+  IF (SELECT status FROM marketing.video_auftraege WHERE id = neu) <> 'offen' THEN
+    RAISE EXCEPTION 'verify_090: nochmal ohne ki muss offen sein'; END IF;
+END $$;
+
 -- (g) Rechte: niemand ausser dem Eigentuemer
 DO $$ DECLARE f text;
 BEGIN
@@ -391,7 +478,8 @@ BEGIN
       'marketing.video_ideen_fehler(uuid,text)', 'marketing.reel_bild_naechster(interval)',
       'marketing.reel_bild_verlaengern(uuid,interval)', 'marketing.reel_bild_fertig(uuid,text)',
       'marketing.reel_bild_fehler(uuid,text)', 'marketing.reel_bild_neu(uuid,text,text)',
-      'marketing.video_ki_freigeben(uuid,text)', 'marketing.video_abbrechen(uuid)'] LOOP
+      'marketing.video_ki_freigeben(uuid,text)', 'marketing.video_abbrechen(uuid)',
+      'marketing.video_nochmal(uuid,text,text,text,text)'] LOOP
     IF has_function_privilege('public', f, 'EXECUTE') THEN
       RAISE EXCEPTION 'verify_090: % ist fuer PUBLIC ausfuehrbar', f; END IF;
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sales_app')

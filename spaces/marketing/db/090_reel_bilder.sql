@@ -105,8 +105,11 @@ BEGIN
   SELECT * INTO a FROM marketing.video_auftraege WHERE id = p_id FOR UPDATE;
   IF a.id IS NULL OR a.status <> 'ideen' THEN
     RAISE EXCEPTION 'Auftrag wartet nicht auf Bildideen'; END IF;
+  -- erst die Form pruefen, dann casten: "vier" oder 3.5 geben die eigene Meldung, keinen Cast-Fehler
+  IF jsonb_typeof(a.briefing->'ki'->'anzahl') IS DISTINCT FROM 'number'
+     OR (a.briefing->'ki'->>'anzahl') NOT IN ('3', '4', '5') THEN
+    RAISE EXCEPTION 'Kein Auftrag mit KI-Bildern'; END IF;
   n := (a.briefing->'ki'->>'anzahl')::int;
-  IF n IS NULL OR n NOT BETWEEN 3 AND 5 THEN RAISE EXCEPTION 'Kein Auftrag mit KI-Bildern'; END IF;
   IF jsonb_typeof(p_ideen) IS DISTINCT FROM 'array' OR jsonb_array_length(p_ideen) <> n THEN
     RAISE EXCEPTION 'Es braucht genau % Bildideen', n; END IF;
   FOR i IN 0 .. n - 1 LOOP
@@ -290,7 +293,51 @@ BEGIN
   RETURN v;
 END $$;
 
+-- Nochmal wie in 085 (alle Regeln unveraendert), dazu KI-Bilder: hat das alte Briefing ki, aber keine
+-- (oder eine leere) Bilderliste - gescheitert bei den Ideen oder Bildern -, startet der neue Auftrag bei
+-- ideen ohne briefing.bilder. Mit Bildern wie bisher offen mit denselben Bildern. Ein laufender Neubau
+-- sperrt auch in den KI-Status.
+CREATE OR REPLACE FUNCTION marketing.video_nochmal(p_alt uuid, p_wunsch text, p_von text,
+                                                  p_stimme text DEFAULT NULL,
+                                                  p_stimme_hinweis text DEFAULT NULL) RETURNS uuid
+LANGUAGE plpgsql AS $$
+DECLARE a marketing.video_auftraege; w text := btrim(coalesce(p_wunsch, '')); vg uuid; v uuid; b jsonb;
+        s text := 'offen';
+BEGIN
+  SELECT * INTO a FROM marketing.video_auftraege WHERE id = p_alt;
+  IF a.id IS NULL OR a.status NOT IN ('fertig', 'fehler') THEN
+    RAISE EXCEPTION 'Nur fertige oder fehlgeschlagene Reels lassen sich neu bauen'; END IF;
+  IF a.status = 'fertig' AND char_length(w) = 0 THEN
+    RAISE EXCEPTION 'Bitte beschreiben, was am Reel anders werden soll'; END IF;
+  IF char_length(w) > 500 THEN
+    RAISE EXCEPTION 'Der Änderungswunsch ist zu lang (höchstens 500 Zeichen)'; END IF;
+  vg := a.id;
+  IF a.status = 'fehler' AND char_length(w) = 0 AND a.vorgaenger IS NOT NULL THEN
+    vg := a.vorgaenger; w := a.aenderungswunsch;
+  END IF;
+  -- Sperre auf die Vorgaenger-Zeile: zwei gleichzeitige Klicks legen nicht zwei Bauten an.
+  PERFORM 1 FROM marketing.video_auftraege WHERE id = vg FOR UPDATE;
+  IF EXISTS (SELECT 1 FROM marketing.video_auftraege
+              WHERE vorgaenger = vg
+                AND status IN ('offen', 'in_arbeit', 'ideen', 'bilder_laufen', 'bilder_pruefen')) THEN
+    RAISE EXCEPTION 'Es läuft schon ein neuer Bau für dieses Reel'; END IF;
+  b := a.briefing - 'stimme_hinweis';
+  IF p_stimme IS NOT NULL THEN b := b || jsonb_build_object('stimme', p_stimme); END IF;
+  IF p_stimme_hinweis IS NOT NULL THEN
+    b := b || jsonb_build_object('stimme_hinweis', left(p_stimme_hinweis, 200)); END IF;
+  IF a.art = 'bilder' AND b ? 'ki'
+     AND (jsonb_typeof(b->'bilder') IS DISTINCT FROM 'array' OR jsonb_array_length(b->'bilder') = 0) THEN
+    s := 'ideen'; b := b - 'bilder';
+  END IF;
+  INSERT INTO marketing.video_auftraege (mandant, art, titel, briefing, angelegt_von, vorgaenger,
+                                         aenderungswunsch, status)
+  VALUES (a.mandant, a.art, a.titel, b, p_von, vg, w, s)
+  RETURNING id INTO v;
+  RETURN v;
+END $$;
+
 -- Funktionen sind standardmaessig fuer PUBLIC ausfuehrbar: nur die Marketing-API (Eigentuemer) schreibt.
+REVOKE ALL ON FUNCTION marketing.video_nochmal(uuid, text, text, text, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.video_auftrag_anlegen(text, text, text, jsonb, text, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing._reel_bilder_abschliessen(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.video_ideen_naechster(interval) FROM PUBLIC;
