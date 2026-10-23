@@ -66,11 +66,11 @@ def _polster(style: dict) -> str:
 
 
 def _fuss_farbe(text: str, grund: str) -> str:
-    """Pflichtteil liegt auf der Aussenflaeche: textColor, wenn lesbar, sonst die bessere von weiss/fast-schwarz."""
+    """Pflichtteil liegt auf der Aussenflaeche: textColor, wenn lesbar, sonst die bessere von weiss/schwarz (eine der beiden erreicht auf jedem #rrggbb-Grund 4,5:1)."""
     try:
         if kontrast(text, grund) >= 4.5:
             return text
-        return max(("#ffffff", "#111111"), key=lambda c: kontrast(c, grund))
+        return max(("#ffffff", "#000000"), key=lambda c: kontrast(c, grund))
     except (ValueError, AttributeError, TypeError):
         return "#111111"
 
@@ -318,12 +318,12 @@ def pflicht_fuss(pflichtteil: dict, text: str, grund: str, fuer_versand: bool) -
     """Pflichtteil (Impressum, Abmelde-Hinweis) als MJML-Section; auch fuer die Collage (seite_mail)."""
     fuss_farbe = _fuss_farbe(text, grund)
     impressum = (pflichtteil.get("impressum") or "").strip()
-    impressum_html = (_br(_a(impressum)) if impressum else
+    impressum_html = (_br(_a(impressum.strip())) if impressum else
                       '<strong style="color:#ef4444">Impressum fehlt &ndash; im Mandanten hinterlegen</strong>')
     vermittler = (pflichtteil.get("vermittlerangaben") or "").strip()
-    vermittler_html = f"{_br(_a(vermittler))}<br>" if vermittler else ""
+    vermittler_html = f"{_br(_a(vermittler.strip()))}<br>" if vermittler else ""
     hinweis = pflichtteil.get("abmelde_hinweis") or ""
-    abmelden = _br(_a(hinweis if fuer_versand else hinweis.replace("{abmeldelink}", "[Abmeldelink]")))
+    abmelden = _br(_a((hinweis if fuer_versand else hinweis.replace("{abmeldelink}", "[Abmeldelink]")).strip()))
     return (f'<mj-section padding="16px 0"><mj-column><mj-text align="center" font-size="11px" '
             f'color="{_a(fuss_farbe)}" line-height="1.5">{impressum_html}<br>{vermittler_html}{abmelden}</mj-text></mj-column></mj-section>')
 

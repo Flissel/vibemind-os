@@ -715,14 +715,21 @@ def vorlage_vorschau(name: str, format: str = "mail", bild_basis: str = "",
     if zeile.get("format") == "seite":
         # Collage-Vorlage: immer die gefuellte Seite als Seiten-HTML, auch bei format=mail|handy - eine Mail-Fassung
         # gibt es erst nach dem Anlegen, und die sales-Oberflaeche (ui_editor.vorlage_bild/editor_vorlage_bild)
-        # fragt heute jede Vorlage mit format=mail an (Fix-Runde 1: bewusst KEIN 422). Motive stehen als
-        # Platzhalter da, ihre Bilder entstehen erst beim Anlegen.
+        # fragt heute jede Vorlage mit format=mail an (Fix-Runde 1: bewusst KEIN 422). Die Bilder der Motive
+        # entstehen erst beim Anlegen; die Vorschau selbst zeigt die Beispielquelle der Vorlage (siehe unten).
         s, _, _ = _seiten_vorlage_fuellen(zeile, m)
         # Nur hier (nicht bei "Neu aus Vorlage"): Motive behalten die Beispielquelle der Vorlage statt eines
-        # Platzhalters ohne Datei (leere Rahmen mit Kaputt-Bild-Symbol).
-        rollen = (zeile.get("rollen") or {}).get("ebenen") or {}
-        beispiele = {e.get("id"): e.get("quelle") for e in (zeile.get("seite") or {}).get("ebenen") or []}
+        # Platzhalters ohne Datei (leere Rahmen mit Kaputt-Bild-Symbol). Fremde Form (kein dict) -> nichts ersetzen.
+        roh_rollen = zeile.get("rollen")
+        rollen = roh_rollen.get("ebenen") if isinstance(roh_rollen, dict) else None
+        rollen = rollen if isinstance(rollen, dict) else {}
+        roh_seite = zeile.get("seite")
+        roh_ebenen = roh_seite.get("ebenen") if isinstance(roh_seite, dict) else None
+        beispiele = {e.get("id"): e.get("quelle") for e in (roh_ebenen if isinstance(roh_ebenen, list) else [])
+                     if isinstance(e, dict)}
         for e in s.get("ebenen", []):
+            if not isinstance(e, dict) or e.get("art") != "bild":
+                continue
             if str(rollen.get(e.get("id")) or "").startswith("motiv:") and beispiele.get(e.get("id")):
                 e["quelle"] = beispiele[e["id"]]
         return _seite_antwort(s, zeile.get("beschreibung") or "", zeile.get("pflichtteil"), "seite", basis)
