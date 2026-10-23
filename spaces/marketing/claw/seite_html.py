@@ -120,6 +120,11 @@ def _ebene(s: dict, e: dict, z: int, bild_basis: str) -> str:
     return f'<div style="{stil}"{kennung}>{_inline(e["text"])}</div>'
 
 
+def _br(text: str) -> str:
+    """Zeilenumbrueche eines (bereits escapten) Fusstexts als <br>."""
+    return re.sub(r"\r\n|\r|\n", "<br>", text)
+
+
 def html(s: dict, *, betreff: str, pflichtteil: dict, bild_basis: str, schrift_basis: str) -> str:
     s = copy.deepcopy(s)
     schr = s.get("schriften")
@@ -143,14 +148,14 @@ def html(s: dict, *, betreff: str, pflichtteil: dict, bild_basis: str, schrift_b
     if schrift_basis.startswith("https://") and schrift_basis.endswith("/"):
         kopf = f'<link rel="stylesheet" href="{_a(schrift_basis)}schriften.css">'
     impressum = (pflichtteil.get("impressum") or "").strip()
-    impressum_html = (_a(impressum) if impressum else
+    impressum_html = (_br(_a(impressum)) if impressum else
                       '<strong style="color:#ef4444">Impressum fehlt &ndash; im Mandanten hinterlegen</strong>')
     vermittler = (pflichtteil.get("vermittlerangaben") or "").strip()
-    vermittler_html = f"{_a(vermittler)}<br>" if vermittler else ""
+    vermittler_html = f"{_br(_a(vermittler))}<br>" if vermittler else ""
     hinweis = (pflichtteil.get("abmelde_hinweis") or "").replace("{abmeldelink}", "[Abmeldelink]")
     stapel = schriften.REGISTER[s["schriften"]["text"]]["stapel"]
     fuss = (f'<div style="margin:0 auto;width:{seite.BREITE}px;padding:16px 0;text-align:center;font-size:11px;'
-            f'line-height:1.5;color:#666666;font-family:{stapel}">{impressum_html}<br>{vermittler_html}{_a(hinweis)}</div>')
+            f'line-height:1.5;color:#666666;font-family:{stapel}">{impressum_html}<br>{vermittler_html}{_br(_a(hinweis))}</div>')
     return (f'<!doctype html><html lang="de"><head><meta charset="utf-8"><title>{_a(betreff)}</title>{kopf}'
             f'<style>html,body{{margin:0;padding:0}}</style></head>'
             f'<body style="margin:0;background-color:{farbe}"><div style="width:{BREITE_PX}px;margin:0 auto">'

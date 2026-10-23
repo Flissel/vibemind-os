@@ -512,3 +512,13 @@ def test_ohne_vermittlerangaben_unveraendert():
     assert b.pflicht_fuss(leer, "#cfe3df", "#1d3b39", True) == b.pflicht_fuss(PFLICHT, "#cfe3df", "#1d3b39", True)
     assert b.rendern(DOK, "B", "", leer) == b.rendern(DOK, "B", "", PFLICHT)
     assert b.text_mit_fuss(["Hallo"], leer) == b.text_mit_fuss(["Hallo"], PFLICHT)
+
+
+def test_impressum_mehrzeilig_mit_br():
+    pf = dict(PFLICHT, impressum="Firma <X>\r\nStrasse 1", vermittlerangaben="Reg. 1\nD-2",
+              abmelde_hinweis="Zeile a\nZeile b {abmeldelink}")
+    fuss = b.pflicht_fuss(pf, "#cfe3df", "#1d3b39", True)
+    assert "Firma &lt;X&gt;<br>Strasse 1" in fuss
+    assert "Reg. 1<br>D-2" in fuss and "Zeile a<br>Zeile b" in fuss
+    assert "\n" not in fuss and "\r" not in fuss
+    assert "Strasse 1<br><br>" not in fuss

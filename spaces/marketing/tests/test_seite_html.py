@@ -183,3 +183,11 @@ def test_vermittlerangaben_unter_impressum():
 
 def test_ohne_vermittlerangaben_unveraendert():
     assert _html(_seite(), pflichtteil=dict(PF, vermittlerangaben="")) == _html(_seite())
+
+
+def test_impressum_mehrzeilig_mit_br():
+    h = _html(_seite(), pflichtteil=dict(PF, impressum="Firma <X>\r\nStrasse 1", vermittlerangaben="Reg. 1\nD-2",
+                                         abmelde_hinweis="Zeile a\nZeile b"))
+    assert "Firma &lt;X&gt;<br>Strasse 1" in h
+    assert "Reg. 1<br>D-2" in h and "Zeile a<br>Zeile b" in h
+    assert "Firma <X>" not in h

@@ -309,16 +309,21 @@ def _nutzt_hand(dok: dict) -> bool:
                for b in dok.values())
 
 
+def _br(text: str) -> str:
+    """Zeilenumbrueche eines (bereits escapten) Fusstexts als <br>."""
+    return re.sub(r"\r\n|\r|\n", "<br>", text)
+
+
 def pflicht_fuss(pflichtteil: dict, text: str, grund: str, fuer_versand: bool) -> str:
     """Pflichtteil (Impressum, Abmelde-Hinweis) als MJML-Section; auch fuer die Collage (seite_mail)."""
     fuss_farbe = _fuss_farbe(text, grund)
     impressum = (pflichtteil.get("impressum") or "").strip()
-    impressum_html = (_a(impressum) if impressum else
+    impressum_html = (_br(_a(impressum)) if impressum else
                       '<strong style="color:#ef4444">Impressum fehlt &ndash; im Mandanten hinterlegen</strong>')
     vermittler = (pflichtteil.get("vermittlerangaben") or "").strip()
-    vermittler_html = f"{_a(vermittler)}<br>" if vermittler else ""
+    vermittler_html = f"{_br(_a(vermittler))}<br>" if vermittler else ""
     hinweis = pflichtteil.get("abmelde_hinweis") or ""
-    abmelden = _a(hinweis if fuer_versand else hinweis.replace("{abmeldelink}", "[Abmeldelink]"))
+    abmelden = _br(_a(hinweis if fuer_versand else hinweis.replace("{abmeldelink}", "[Abmeldelink]")))
     return (f'<mj-section padding="16px 0"><mj-column><mj-text align="center" font-size="11px" '
             f'color="{_a(fuss_farbe)}" line-height="1.5">{impressum_html}<br>{vermittler_html}{abmelden}</mj-text></mj-column></mj-section>')
 

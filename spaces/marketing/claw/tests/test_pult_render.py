@@ -173,3 +173,12 @@ def test_vermittlerangaben_unter_impressum():
 def test_ohne_vermittlerangaben_unveraendert():
     assert (r.mail_html(FELDER, GESTALT, dict(PFLICHT, vermittlerangaben=""))
             == r.mail_html(FELDER, GESTALT, PFLICHT))
+
+
+def test_impressum_mehrzeilig_mit_br():
+    pf = dict(PFLICHT, impressum="Firma <X>\r\nStrasse 1", vermittlerangaben="Reg. 1\nD-2",
+              abmelde_hinweis="Zeile a\nZeile b {abmeldelink}")
+    html = r.mail_html(FELDER, GESTALT, pf)
+    assert "Firma &lt;X&gt;<br>Strasse 1" in html
+    assert "Reg. 1<br>D-2" in html and "Zeile a<br>Zeile b" in html
+    assert "Firma <X>" not in html

@@ -73,6 +73,11 @@ def _band_schrift(g: dict) -> tuple[str, str]:
     return schrift, (leise if leise_ok else schrift)
 
 
+def _br(text: str) -> str:
+    """Zeilenumbrueche eines (bereits escapten) Fusstexts als <br>."""
+    return re.sub(r"\r\n|\r|\n", "<br>", text)
+
+
 def mail_html(felder: dict, gestalt: dict, pflichtteil: dict, breite: int = 600) -> str:
     """Farbbedeutung wie in pdf._stile/_kopf_und_grund: grund = Inhaltsflaeche
     (text, Ueberschriften text_hell), flaeche = Kopf- und Fussband,
@@ -100,12 +105,12 @@ def mail_html(felder: dict, gestalt: dict, pflichtteil: dict, breite: int = 600)
                  f'text-decoration:none;font-weight:600">{_e(felder["knopf_text"])}</a>')
     impressum = (pflichtteil.get("impressum") or "").strip()
     # Warnung als eigene Pille: Weiss auf Dunkelrot ist auf jedem Band lesbar.
-    impressum_html = (_e(impressum) if impressum else
+    impressum_html = (_br(_e(impressum)) if impressum else
                       '<strong style="background:#b91c1c;color:#ffffff;padding:1px 6px;border-radius:3px">'
                       'Impressum fehlt &ndash; im Mandanten hinterlegen</strong>')
     vermittler = (pflichtteil.get("vermittlerangaben") or "").strip()
-    vermittler_html = f"{_e(vermittler)}<br>" if vermittler else ""
-    abmelden = _e((pflichtteil.get("abmelde_hinweis") or "").replace("{abmeldelink}", "[Abmeldelink]"))
+    vermittler_html = f"{_br(_e(vermittler))}<br>" if vermittler else ""
+    abmelden = _br(_e((pflichtteil.get("abmelde_hinweis") or "").replace("{abmeldelink}", "[Abmeldelink]")))
     kopfband = ""
     if kopf or logo_html:
         kopfband = (
