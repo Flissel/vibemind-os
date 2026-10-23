@@ -1,4 +1,5 @@
 import io
+import json
 
 import pytest
 from PIL import Image
@@ -1547,3 +1548,287 @@ def test_bloecke_auftrag_bleibt_beim_blockweg():
     assert bw.ein_durchlauf(api, comfy, prompt, starten=lambda: None) == "fertig"
     assert ("bild", "kopf") in api.log and comfy.masse == [(1200, 608)]
     assert prompt.plaetze[0]["palette"]["innen"] == "#ffffff"
+
+
+# --- Reels aus KI-Bildern (Plan 2026-10-23-reels-stufe3-ki-bilder, E3/E4/E9) ------------------------------
+
+class ReelPrompt(Prompt):
+    def __init__(self, urteile=None):
+        super().__init__(urteile)
+        self.reel = []
+
+    def reel_prompt(self, idee, platz):
+        self.reel.append((idee, platz))
+        return f"reel | {idee}"
+
+
+class ReelApi:
+    """Fake der Arbeiter-Routen aus api/reel_bilder.py (aid = Bild-ID bei weiter/bild/fehler)."""
+    def __init__(self, ideen_auftrag=None, bild=None):
+        self.ideen_auftrag, self.bild_auftrag, self.log = ideen_auftrag, bild, []
+        self.weiter_ok, self.hochladen_fehler, self.setzen_fehler = True, None, None
+
+    def ideen_naechster(self):
+        a, self.ideen_auftrag = self.ideen_auftrag, None
+        self.log.append(("ideen_naechster",))
+        return a
+
+    def ideen_setzen(self, aid, ideen):
+        if self.setzen_fehler:
+            raise self.setzen_fehler
+        self.log.append(("ideen", aid, list(ideen)))
+        return len(ideen)
+
+    def ideen_fehler(self, aid, befund):
+        self.log.append(("ideen_fehler", aid, befund))
+        return "ideen"
+
+    def naechster(self):
+        b, self.bild_auftrag = self.bild_auftrag, None
+        self.log.append(("naechster",))
+        return b
+
+    def weiter(self, bid):
+        self.log.append(("weiter", bid))
+        return self.weiter_ok
+
+    def bild(self, bid, platz, daten, format="jpg"):
+        if self.hochladen_fehler:
+            raise self.hochladen_fehler
+        with Image.open(io.BytesIO(daten)) as b:
+            self.log.append(("bild", bid, b.format, b.size, len(daten)))
+        return f"ki-{bid[:8]}-1-1.jpg"
+
+    def fehler(self, bid, befund):
+        self.log.append(("fehler", bid, befund))
+        return True
+
+
+IDEEN_AUFTRAG = {"id": "feedc0de-0000-0000-0000-000000000000", "mandant": "ivan", "titel": "Herbst",
+                 "briefing": {"thema": "Vorsorge", "sprechertext": "Jetzt starten.", "format": "reel",
+                              "ki": {"anzahl": 3}}}
+REEL_BILD = {"id": "b11dbeef-0000-0000-0000-000000000000", "video_auftrag": "feedc0de-0000-0000-0000-000000000000",
+             "nr": 2, "idee": "Eine Frau am Fenster im Morgenlicht", "versuch": 3, "mandant": "ivan",
+             "format": "reel", "titel": "Herbst"}
+
+
+def _nie(*_a):
+    raise AssertionError("nicht erwartet")
+
+
+@pytest.fixture
+def ideen_ohne_netz(monkeypatch):
+    """Shim und Ollama nie echt fragen; Bildstil ohne Dateisystem."""
+    gefragt = []
+
+    def shim(system, nachricht):
+        gefragt.append("shim")
+        return json.dumps(["eins", "zwei", "drei"])
+    monkeypatch.setattr(bw.reel_ideen, "shim_fragen", shim)
+    monkeypatch.setattr(bw.reel_ideen, "ollama_fragen", _nie)
+    monkeypatch.setattr(bw, "_bildstil", lambda auftrag: "warm und echt")
+    return gefragt
+
+
+def test_ideen_werden_erzeugt_und_gesetzt(ideen_ohne_netz):
+    reel, comfy = ReelApi(ideen_auftrag=dict(IDEEN_AUFTRAG)), Comfy()
+    assert bw.ein_durchlauf(Api(None), comfy, ReelPrompt(), starten=lambda: None, reel=reel) == "ideen"
+    assert reel.log == [("ideen_naechster",), ("ideen", IDEEN_AUFTRAG["id"], ["eins", "zwei", "drei"])]
+    assert ideen_ohne_netz == ["shim"] and comfy.frei == 0      # Shim braucht keinen Grafikspeicher
+
+
+def test_ideen_ollama_ausweichweg_gibt_comfy_frei(monkeypatch):
+    monkeypatch.setattr(bw, "_bildstil", lambda auftrag: "")
+
+    def shim(system, nachricht):
+        raise bw.reel_ideen.IdeenFehler("Shim 429")
+    gefragt = []
+    monkeypatch.setattr(bw.reel_ideen, "shim_fragen", shim)
+    monkeypatch.setattr(bw.reel_ideen, "ollama_fragen",
+                        lambda s, n: gefragt.append(1) or json.dumps(["a", "b", "c"]))
+    bw.ZULETZT["art"] = "flux2"
+    reel, comfy, uhr, start = ReelApi(ideen_auftrag=dict(IDEEN_AUFTRAG)), Comfy(), Uhr(), []
+    r = bw.ein_durchlauf(Api(None), comfy, OllamaAus(hoch_nach=1), starten=lambda: None, reel=reel,
+                         uhr=uhr, schlafen=Schlaf(uhr), ollama_starten=lambda: start.append(1))
+    assert r == "ideen" and gefragt == [1] and start == [1]
+    assert comfy.frei == 1 and bw.ZULETZT["art"] is None           # vor Ollama: FLUX.2 aus dem Grafikspeicher
+    assert reel.log[-1] == ("ideen", IDEEN_AUFTRAG["id"], ["a", "b", "c"])
+
+
+def test_ideen_scheitern_meldet_ideen_fehler(monkeypatch):
+    monkeypatch.setattr(bw, "_bildstil", lambda auftrag: "")
+    monkeypatch.setattr(bw.reel_ideen, "shim_fragen", lambda s, n: "[]")
+    monkeypatch.setattr(bw.reel_ideen, "ollama_fragen", lambda s, n: "auch nichts")
+    reel = ReelApi(ideen_auftrag=dict(IDEEN_AUFTRAG))
+    r = bw.ein_durchlauf(Api(None), Comfy(), ReelPrompt(), starten=lambda: None, reel=reel)
+    assert r == "ideen_fehler"
+    assert reel.log[-1][:2] == ("ideen_fehler", IDEEN_AUFTRAG["id"]) and "Ollama" in reel.log[-1][2]
+    assert not any(e[0] == "ideen" for e in reel.log)                # nie halbe Zeilen
+
+
+def test_ideen_kaputtes_briefing_meldet_ideen_fehler(ideen_ohne_netz):
+    reel = ReelApi(ideen_auftrag={**IDEEN_AUFTRAG, "briefing": {"thema": "x", "ki": {"anzahl": 9}}})
+    assert bw.ein_durchlauf(Api(None), Comfy(), ReelPrompt(), starten=lambda: None, reel=reel) == "ideen_fehler"
+    assert ideen_ohne_netz == [] and reel.log[-1][0] == "ideen_fehler"
+
+
+def test_ideen_setzen_abgelehnt_meldet_ideen_fehler(ideen_ohne_netz):
+    reel = ReelApi(ideen_auftrag=dict(IDEEN_AUFTRAG))
+    reel.setzen_fehler = bw.ApiFehler(422, "Es braucht genau 3 Bildideen")
+    assert bw.ein_durchlauf(Api(None), Comfy(), ReelPrompt(), starten=lambda: None, reel=reel) == "ideen_fehler"
+    assert reel.log[-1] == ("ideen_fehler", IDEEN_AUFTRAG["id"], "Es braucht genau 3 Bildideen")
+
+
+@pytest.mark.parametrize("fmt,masse", [("reel", (864, 1536)), ("quadrat", (1024, 1024)), ("quer", (1536, 864)),
+                                       ("unbekannt", (864, 1536))])
+def test_reel_bild_groesse_je_format(monkeypatch, fmt, masse):
+    monkeypatch.setattr(bw, "_bildstil", lambda auftrag: "warm und echt")
+    reel, comfy, prompt = ReelApi(bild={**REEL_BILD, "format": fmt}), Comfy(), ReelPrompt()
+    assert bw.ein_durchlauf(Api(None), comfy, prompt, starten=lambda: None, reel=reel) == "reel_bild"
+    assert comfy.masse == [masse] and len(comfy.flux2) == 1          # FLUX.2-Weg, keine Referenzen
+    assert comfy.flux2[0] == (f"reel | {REEL_BILD['idee']}", [])
+    hoch = [e for e in reel.log if e[0] == "bild"]
+    assert hoch == [("bild", REEL_BILD["id"], "JPEG", masse, hoch[0][4])] and hoch[0][4] <= 1024 * 1024
+    idee, platz = prompt.reel[0]
+    assert idee == REEL_BILD["idee"] and platz["bildstil"] == "warm und echt"
+
+
+def test_reel_bild_name_mit_versuch(monkeypatch):
+    """Der Name kommt von der API (ki-<auftrag8>-<nr>-<versuch>.jpg, je Versuch neu); der Arbeiter laedt je Bild
+    genau einmal unter der Bild-ID hoch und schreibt selbst keinen Namen."""
+    monkeypatch.setattr(bw, "_bildstil", lambda auftrag: "")
+    gesehen = []
+
+    class Hoch(ReelApi):
+        def bild(self, bid, platz, daten, format="jpg"):
+            gesehen.append((bid, platz, format))
+            return super().bild(bid, platz, daten, format)
+    reel = Hoch(bild=dict(REEL_BILD))
+    assert bw.ein_durchlauf(Api(None), Comfy(), ReelPrompt(), starten=lambda: None, reel=reel) == "reel_bild"
+    assert gesehen == [(REEL_BILD["id"], "ki2", "jpg")]
+    # die echte ReelApi baut die Upload-Route aus der Bild-ID
+    echt = bw.ReelApi("https://vm.example", "k")
+    pfade = []
+    monkeypatch.setattr(echt, "_post", lambda pfad, daten=None, roh=None, typ="": pfade.append((pfad, typ))
+                        or {"name": "ki-feedc0de-2-3.jpg"})
+    assert echt.bild(REEL_BILD["id"], "ki2", b"\xff\xd8\xff") == "ki-feedc0de-2-3.jpg"
+    assert pfade == [(f"/reel-bild/{REEL_BILD['id']}", "image/jpeg")]
+
+
+def test_reel_api_routen(monkeypatch):
+    echt = bw.ReelApi("https://vm.example/", "k")
+    assert echt.basis + echt.PRAEFIX == "https://vm.example/api/video/arbeiter"
+    rufe = []
+    antworten = {"/ideen/naechster": {"auftrag": {"id": "a"}}, "/a/ideen": {"anzahl": 3},
+                 "/a/ideen-fehler": {"status": "fehler"}, "/reel-bild/naechster": {"bild": {"id": "b"}},
+                 "/reel-bild/b/weiter": {"ok": True}, "/reel-bild/b/fehler": {"ok": True}}
+    monkeypatch.setattr(echt, "_post", lambda pfad, daten=None, roh=None, typ="": rufe.append((pfad, daten))
+                        or antworten[pfad])
+    assert echt.ideen_naechster() == {"id": "a"}
+    assert echt.ideen_setzen("a", ["x", "y", "z"]) == 3
+    assert echt.ideen_fehler("a", "kaputt") == "fehler"
+    assert echt.naechster() == {"id": "b"}
+    assert echt.weiter("b") is True
+    assert echt.fehler("b", "x" * 900) is True
+    assert rufe[1] == ("/a/ideen", {"ideen": ["x", "y", "z"]})
+    assert rufe[2] == ("/a/ideen-fehler", {"befund": "kaputt"})
+    assert rufe[5] == ("/reel-bild/b/fehler", {"befund": "x" * 500})
+    assert bw.ArbeiterApi.PRAEFIX == "/api/bilder/arbeiter"          # Newsletter-Routen unveraendert
+
+
+def test_newsletter_vor_reel_bildern(ideen_ohne_netz):
+    api, reel, comfy = Api(dict(AUFTRAG)), ReelApi(ideen_auftrag=dict(IDEEN_AUFTRAG), bild=dict(REEL_BILD)), Comfy()
+    prompt = ReelPrompt()
+    assert bw.ein_durchlauf(api, comfy, prompt, starten=lambda: None, reel=reel) == "fertig"
+    assert reel.log == []                                             # Newsletter zuerst, Reel unberuehrt
+    assert bw.ein_durchlauf(api, comfy, prompt, starten=lambda: None, reel=reel) == "ideen"
+    assert [e[0] for e in reel.log] == ["ideen_naechster", "ideen"]  # dann Ideen, Bilder warten
+    assert bw.ein_durchlauf(api, comfy, prompt, starten=lambda: None, reel=reel) == "reel_bild"
+    assert bw.ein_durchlauf(api, comfy, prompt, starten=lambda: None, reel=reel) == "leer"
+
+
+def test_ohne_reel_api_bleibt_leer():
+    assert bw.ein_durchlauf(Api(None), Comfy(), Prompt(), starten=lambda: None) == "leer"
+
+
+def test_reel_bild_verlaengert_die_frist_waehrend_der_erzeugung(monkeypatch):
+    import time as _zeit
+    monkeypatch.setattr(bw, "_bildstil", lambda auftrag: "")
+    monkeypatch.setattr(bw, "HALTEN_TAKT_S", 0.01)
+
+    class Langsam(Comfy):
+        def erzeugen(self, prompt, b, h, seed, zeitlimit_s=300):
+            _zeit.sleep(0.1)
+            return super().erzeugen(prompt, b, h, seed, zeitlimit_s=zeitlimit_s)
+    reel = ReelApi(bild=dict(REEL_BILD))
+    assert bw.ein_durchlauf(Api(None), Langsam(), ReelPrompt(), starten=lambda: None, reel=reel) == "reel_bild"
+    weiter = [e for e in reel.log if e == ("weiter", REEL_BILD["id"])]
+    assert len(weiter) >= 3                       # vor dem Versuch, Herzschlag waehrend, vor dem Hochladen
+
+
+def test_reel_bild_weiter_false_ist_verworfen(monkeypatch):
+    monkeypatch.setattr(bw, "_bildstil", lambda auftrag: "")
+    reel, comfy = ReelApi(bild=dict(REEL_BILD)), Comfy()
+    reel.weiter_ok = False
+    assert bw.ein_durchlauf(Api(None), comfy, ReelPrompt(), starten=lambda: None, reel=reel) == "verworfen"
+    assert comfy.masse == [] and not any(e[0] in ("bild", "fehler") for e in reel.log)
+
+
+def test_reel_bild_hochladen_409_ist_verworfen(monkeypatch):
+    monkeypatch.setattr(bw, "_bildstil", lambda auftrag: "")
+    reel = ReelApi(bild=dict(REEL_BILD))
+    reel.hochladen_fehler = bw.ApiFehler(409, "Bild ist nicht in Arbeit")
+    assert bw.ein_durchlauf(Api(None), Comfy(), ReelPrompt(), starten=lambda: None, reel=reel) == "verworfen"
+    assert not any(e[0] == "fehler" for e in reel.log)
+
+
+def test_reel_bild_fehler_meldet_befund(monkeypatch):
+    monkeypatch.setattr(bw, "_bildstil", lambda auftrag: "")
+    # Selbstpruefung lehnt alle Versuche ab: kein Bild -> fehler mit Befund
+    reel = ReelApi(bild=dict(REEL_BILD))
+    urteile = [(False, "Schrift im Bild")] * bw.VERSUCHE_JE_PLATZ
+    assert bw.ein_durchlauf(Api(None), Comfy(), ReelPrompt(urteile), starten=lambda: None, reel=reel) == "reel_fehler"
+    assert reel.log[-1] == ("fehler", REEL_BILD["id"], "ki2: Schrift im Bild")
+    # endgueltiger ComfyUI-Fehler (Modell fehlt): fehler im Wortlaut
+    reel = ReelApi(bild=dict(REEL_BILD))
+    comfy = Comfy(fehler=bild_comfy.ComfyFehler(bild_comfy.MODELL_FEHLT))
+    assert bw.ein_durchlauf(Api(None), comfy, ReelPrompt(), starten=lambda: None, reel=reel) == "reel_fehler"
+    assert reel.log[-1] == ("fehler", REEL_BILD["id"], bild_comfy.MODELL_FEHLT)
+    # Upload abgelehnt (422, kein JPEG o. ae.): fehler mit dem Grund der API
+    reel = ReelApi(bild=dict(REEL_BILD))
+    reel.hochladen_fehler = bw.ApiFehler(422, "Kein gueltiges JPEG")
+    assert bw.ein_durchlauf(Api(None), Comfy(), ReelPrompt(), starten=lambda: None, reel=reel) == "reel_fehler"
+    assert reel.log[-1] == ("fehler", REEL_BILD["id"], "ki2: Kein gueltiges JPEG")
+
+
+def test_reel_bild_voruebergehend_wartet_auf_die_frist(monkeypatch):
+    """Zeitlimit/Verbindung: kein fehler und kein Abbruch in ComfyUI - die Frist laeuft ab, reel_bild_naechster
+    vergibt das Bild neu (nach zwei Vergaben fehler, 090)."""
+    monkeypatch.setattr(bw, "_bildstil", lambda auftrag: "")
+    reel = ReelApi(bild=dict(REEL_BILD))
+    comfy = Comfy(fehler=bild_comfy.ComfyVoruebergehend("Zeitlimit"))
+    assert bw.ein_durchlauf(Api(None), comfy, ReelPrompt(), starten=lambda: None, reel=reel) == "frist"
+    assert not any(e[0] == "fehler" for e in reel.log)
+
+
+def test_kein_interrupt_oder_kill(monkeypatch):
+    """Der Reel-Weg ruft ComfyUI nur ueber laeuft/erzeugen_flux2/freigeben, nie /interrupt, nie Prozesse beenden."""
+    from pathlib import Path
+    monkeypatch.setattr(bw, "_bildstil", lambda auftrag: "")
+    erlaubt = {"laeuft", "erzeugen_flux2", "erzeugen", "freigeben", "ComfyFehler",
+               "masse", "flux2", "flux1", "frei", "fehler"}
+
+    class Streng(Comfy):
+        def __getattribute__(self, name):
+            if not name.startswith("_") and name not in erlaubt:
+                raise AssertionError(f"ComfyUI-Aufruf {name} verboten")
+            return super().__getattribute__(name)
+    for comfy_fehler in (None, bild_comfy.ComfyVoruebergehend("Zeitlimit")):
+        reel = ReelApi(bild=dict(REEL_BILD))
+        assert bw.ein_durchlauf(Api(None), Streng(fehler=comfy_fehler), ReelPrompt(), starten=lambda: None,
+                                reel=reel) in ("reel_bild", "frist")
+    wurzel = Path(bw.__file__).resolve().parents[1]
+    for datei in (wurzel / "workers" / "bild_worker.py", wurzel / "claw" / "reel_ideen.py"):
+        text = datei.read_text(encoding="utf-8").lower()
+        for verboten in ("/interrupt", "taskkill", "stop-process", ".kill(", ".terminate(", "os.kill"):
+            assert verboten not in text, f"{datei.name}: {verboten}"

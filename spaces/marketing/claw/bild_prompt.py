@@ -197,6 +197,19 @@ def einbau_prompt(hinweis: str, platz: dict) -> str:
     return f"{wunsch}. {EINBAU_RAHMEN}" if wunsch else EINBAU_RAHMEN
 
 
+REEL_IDEE_MAX = 600
+
+
+def reel_prompt(idee: str, platz: dict) -> str:
+    """Prompt fuer ein Reel-Bild (FLUX.2, Plan 2026-10-23-reels-stufe3-ki-bilder E4): die Bildidee woertlich, ohne
+    Schrift-Stellen, plus Bildstil der Marke, Qualitaet und Verbot - OHNE Ollama. Die Idee ist schon aus dem
+    Bildstil geschrieben (claw/reel_ideen), und neben dem geladenen FLUX.2 findet Ollama keinen Grafikspeicher
+    (Befund 21.10.2026, prompt_schreiben). Qwen3 als Text-Encoder versteht auch Deutsch."""
+    roh = " ".join(str(idee or "").split())[:REEL_IDEE_MAX]
+    kern = (ohne_schrift(roh) or roh).rstrip(" .")
+    return f"{kern}. Bildstil: {_bildstil(platz)}, {QUALITAET}, {VERBOT}"
+
+
 def aenderungs_prompt(anweisung: str, platz: dict) -> str:
     """Anweisung fuer FLUX.2-Aendern (Referenz 1 = das Bild selbst): der Wunsch woertlich plus fester Rahmen,
     OHNE Ollama und ohne Markenstil. Echter Lauf 18.10.: die Umschreibung machte aus "warmes Licht wie ein

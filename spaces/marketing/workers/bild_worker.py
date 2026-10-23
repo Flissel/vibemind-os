@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 from spaces.marketing.claw import (bild_comfy, bild_farben, bild_messen, bild_prompt, bild_sehen, bildplaetze,
-                                   markenprofil, markenwissen)
+                                   markenprofil, markenwissen, reel_ideen)
 
 PORT = 8133
 TAKT_S = 20
@@ -139,13 +139,15 @@ def _grund(e: urllib.error.HTTPError) -> str:
 
 
 class ArbeiterApi:
+    PRAEFIX = "/api/bilder/arbeiter"
+
     def __init__(self, basis: str, schluessel: str):
         self.basis, self.schluessel = basis.rstrip("/"), schluessel
         self.tls = tls_kontext()
 
     def _post(self, pfad: str, daten=None, roh: bytes | None = None, typ="application/json"):
         koerper = roh if roh is not None else (json.dumps(daten).encode("utf-8") if daten is not None else b"")
-        req = urllib.request.Request(self.basis + "/api/bilder/arbeiter" + pfad, data=koerper, method="POST",
+        req = urllib.request.Request(self.basis + self.PRAEFIX + pfad, data=koerper, method="POST",
                                      headers={"Content-Type": typ})
         req.add_unredirected_header("X-Bild-Key", self.schluessel)
         try:
@@ -198,6 +200,37 @@ class ArbeiterApi:
 
     def zurueck(self, aid, befund: str, endgueltig: bool) -> str:
         return self._post(f"/{aid}/zurueck", {"befund": befund[:500], "endgueltig": endgueltig}).get("status", "")
+
+
+class ReelApi(ArbeiterApi):
+    """Arbeiter-Routen der Reels aus KI-Bildern (api/reel_bilder.py, X-Bild-Key). weiter und bild sind wie bei
+    ArbeiterApi geschnitten - mit der Bild-ID statt der Auftrags-ID -, damit _bilder und _halten unveraendert
+    laufen (Adapter, E4). Die Newsletter-Methoden (quelle, vorlage, fertig, zurueck) gibt es hier nicht."""
+    PRAEFIX = "/api/video/arbeiter"
+
+    def ideen_naechster(self):
+        return self._post("/ideen/naechster").get("auftrag")
+
+    def ideen_setzen(self, aid, ideen: list[str]) -> int:
+        return self._post(f"/{aid}/ideen", {"ideen": list(ideen)}).get("anzahl")
+
+    def ideen_fehler(self, aid, befund: str):
+        return self._post(f"/{aid}/ideen-fehler", {"befund": befund[:500]}).get("status")
+
+    def naechster(self):
+        return self._post("/reel-bild/naechster").get("bild")
+
+    def weiter(self, bid):
+        return bool(self._post(f"/reel-bild/{bid}/weiter").get("ok"))
+
+    def bild(self, bid, platz, daten: bytes, format: str = "jpg") -> str:
+        """Rohes JPEG; den Namen (ki-<auftrag8>-<nr>-<versuch>.jpg) vergibt die API, die Zeile wird fertig."""
+        return self._post(f"/reel-bild/{bid}", roh=daten, typ="image/jpeg")["name"]
+
+    def fehler(self, bid, befund: str) -> bool:
+        return bool(self._post(f"/reel-bild/{bid}/fehler", {"befund": befund[:500]}).get("ok"))
+
+    quelle = vorlage = fertig = zurueck = None
 
 
 EINBAU_MIN_LANG = 768   # Vorlagentreue: echter Lauf 19.10. bei 336x256 verlor Farben/Form der Vorlage
@@ -612,14 +645,130 @@ def _bilder(api, aid, arbeit, staerke, hinweis, comfy, prompt, messen, je_bild_f
     return ergebnis, messwerte
 
 
+# --- Reels aus KI-Bildern (Plan 2026-10-23-reels-stufe3-ki-bilder, E3/E4/E9) -------------------------------
+
+# Rechenmass je Reel-Format: Vielfache von 16, lange Kante 1536 (~1,3 MP, ~2 min warm); Laura skaliert hoch.
+REEL_MASSE = {"reel": (864, 1536), "quadrat": (1024, 1024), "quer": (1536, 864)}
+REEL_VERHAELTNIS = {"reel": "9:16", "quadrat": "1:1", "quer": "16:9"}
+
+
+class _OhneVergabe:
+    """Die Ideen-Vergabe hat keine weiter-Route (Frist 10 min fuer einen Aufruf): _ollama_bereit fragt nur."""
+    @staticmethod
+    def weiter(_aid) -> bool:
+        return True
+
+
+def _briefing(auftrag: dict) -> dict:
+    b = auftrag.get("briefing")
+    if isinstance(b, str):
+        b = json.loads(b)
+    if not isinstance(b, dict):
+        raise ValueError("briefing fehlt")
+    return b
+
+
+def _ideen(reel, auftrag, comfy, prompt, ollama_starten, uhr, schlafen) -> str:
+    """Ein Auftrag bei den Bildideen (E3): Shim :8118, sonst Ollama; genau N Ideen setzen oder ideen-fehler."""
+    aid = str(auftrag["id"])
+
+    def vor_ollama() -> bool:
+        comfy.freigeben()            # Ollama findet neben FLUX.2 keinen Grafikspeicher (Befund 21.10.)
+        ZULETZT["art"] = None
+        return _ollama_bereit(_OhneVergabe, aid, prompt, ollama_starten, uhr, schlafen) is True
+
+    try:
+        briefing = _briefing(auftrag)
+        anzahl = (briefing.get("ki") or {}).get("anzahl")
+        if isinstance(anzahl, bool) or not isinstance(anzahl, int) or not 3 <= anzahl <= 5:
+            raise ValueError("ki.anzahl muss 3 bis 5 sein")
+        ideen, befund = reel_ideen.ideen_erzeugen({**auftrag, "briefing": briefing}, _bildstil(auftrag), anzahl,
+                                                  shim=reel_ideen.shim_fragen, ollama=reel_ideen.ollama_fragen,
+                                                  vor_ollama=vor_ollama)
+    except (ValueError, KeyError, TypeError, AttributeError) as e:
+        ideen, befund = None, f"Briefing unlesbar: {e}"
+    if ideen is None:
+        reel.ideen_fehler(aid, befund)
+        return "ideen_fehler"
+    try:
+        reel.ideen_setzen(aid, ideen)
+    except ApiFehler as e:
+        if e.code != 422:
+            raise
+        reel.ideen_fehler(aid, e.grund or "Bildideen abgelehnt")
+        return "ideen_fehler"
+    return "ideen"
+
+
+def _reel_bild(reel, bild, comfy, prompt, messen) -> str:
+    """Ein Reel-Bild (E4) ueber den FLUX.2-Weg von _bilder: Idee + Bildstil -> bild_prompt.reel_prompt, Mass je
+    Format, Hochladen unter der Bild-ID (die API vergibt ki-<auftrag8>-<nr>-<versuch>.jpg und setzt fertig).
+    Kein Bild -> fehler mit Befund. Zeitlimit/Verbindung -> nichts melden, die Frist laeuft ab und
+    reel_bild_naechster vergibt neu (nach zwei Vergaben fehler, 090). ComfyUI wird nie unterbrochen."""
+    bid = str(bild["id"])
+    fmt = bild.get("format") if bild.get("format") in REEL_MASSE else "reel"
+    breite, hoehe = REEL_MASSE[fmt]
+    idee = str(bild.get("idee") or "")
+    platz = bildplaetze.Platz(id=f"ki{bild.get('nr')}", anzeige_breite=breite, anzeige_hoehe=hoehe,
+                              erzeug_breite=breite, erzeug_hoehe=hoehe, verhaeltnis=REEL_VERHAELTNIS[fmt],
+                              leer=True, url="", alt=idee[:200], kontext="")
+    befunde: list[str] = []
+    try:
+        text = prompt.reel_prompt(idee, {**platz.als_dict(), "bildstil": _bildstil(bild)})
+        art = modell()
+        _modelle_fuer(comfy, art)
+        erzeuger = None if art == "flux1" else (
+            lambda t, w, h, s: comfy.erzeugen_flux2(t, w, h, s, [], zeitlimit_s=zeitlimit_s()))
+        je_bild_freigeben = os.environ.get("BILD_SELBSTPRUEFUNG", "") == "1"
+        erg = _bilder(reel, bid, [(platz, text, None, erzeuger)], 100, "", comfy, prompt, messen,
+                      je_bild_freigeben, befunde)
+    except ApiFehler as e:           # 422 beim Hochladen behandelt _bilder selbst (Befund bzw. verworfen)
+        if e.code in (404, 409):
+            return "verworfen"       # Bild nicht mehr in Arbeit (neu erzeugt, abgebrochen, Frist vergeben)
+        if e.code >= 500:
+            return "frist"
+        befunde.append(e.grund or f"API {e.code}")
+        erg = ({}, {})
+    except bild_comfy.ComfyVoruebergehend:
+        return "frist"
+    except bild_comfy.ComfyFehler as e:
+        befunde.append(str(e) if str(e) in COMFY_ENDGUELTIG else f"Erzeugung unterbrochen: {e}")
+        erg = ({}, {})
+    except (OSError, TimeoutError):
+        return "frist"               # URLError, Netz: wiederholbar ueber die Frist
+    except (ValueError, KeyError, TypeError) as e:
+        befunde.append(f"Erzeugung unterbrochen: {type(e).__name__}: {e}")
+        erg = ({}, {})
+    if erg == "verworfen":
+        return "verworfen"
+    if not erg[0]:
+        reel.fehler(bid, "; ".join(befunde) or "Kein Bild bestanden")
+        return "reel_fehler"
+    return "reel_bild"
+
+
+def reel_durchlauf(reel, comfy, prompt, messen, ollama_starten, uhr, schlafen) -> str:
+    """Nur wenn kein Newsletter-Bild wartet: erst Bildideen, dann ein Reel-Bild - streng nacheinander (E9)."""
+    auftrag = reel.ideen_naechster()
+    if auftrag:
+        return _ideen(reel, auftrag, comfy, prompt, ollama_starten, uhr, schlafen)
+    bild = reel.naechster()
+    if bild:
+        return _reel_bild(reel, bild, comfy, prompt, messen)
+    return "leer"
+
+
 def ein_durchlauf(api, comfy=bild_comfy, prompt=bild_prompt, starten=dienste_starten,
                   uhr=time.monotonic, sehen=bild_sehen, messen=bild_messen,
-                  ollama_starten=ollama_starten, schlafen=time.sleep) -> str:
+                  ollama_starten=ollama_starten, schlafen=time.sleep, reel=None) -> str:
+    """Ein Takt: Newsletter-Bildauftrag zuerst; ist keiner da und reel (ReelApi) gesetzt, Reels aus KI-Bildern."""
     if not _dienste_bereit(comfy, starten, uhr):
         return "wartet"
     auftrag = api.naechster()
     if not auftrag:
-        return "leer"
+        if reel is None:
+            return "leer"
+        return reel_durchlauf(reel, comfy, prompt, messen, ollama_starten, uhr, schlafen)
     aid = str(auftrag["id"])
     # Ab hier gehoert der Auftrag dem Arbeiter: jede Stoerung gibt ihn zurueck,
     # statt die Vergabe bis zum Ablauf zu blockieren.
@@ -692,12 +841,12 @@ def main() -> None:
     basis, schluessel = os.environ.get("MARKETING_BILD_URL", ""), os.environ.get("MARKETING_BILD_KEY", "")
     if not basis or not schluessel:
         raise SystemExit("MARKETING_BILD_URL/MARKETING_BILD_KEY fehlen in Vibemind_V1/.env")
-    api = ArbeiterApi(basis, schluessel)
+    api, reel = ArbeiterApi(basis, schluessel), ReelApi(basis, schluessel)
     START["arbeiter"] = time.monotonic()
     threading.Thread(target=HTTPServer(("127.0.0.1", PORT), _Gesundheit).serve_forever, daemon=True).start()
     while True:
         try:
-            STAND["letztes_ergebnis"] = ein_durchlauf(api)
+            STAND["letztes_ergebnis"] = ein_durchlauf(api, reel=reel)
         except Exception as e:  # noqa: BLE001 - ein Fehler darf die Schleife nicht toeten
             STAND["letztes_ergebnis"] = f"fehler: {type(e).__name__}: {e}"[:300]
         STAND["letzter_lauf"] = time.strftime("%Y-%m-%d %H:%M:%S")
