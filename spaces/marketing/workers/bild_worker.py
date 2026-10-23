@@ -671,11 +671,17 @@ def _briefing(auftrag: dict) -> dict:
 def _ideen(reel, auftrag, comfy, prompt, ollama_starten, uhr, schlafen) -> str:
     """Ein Auftrag bei den Bildideen (E3): Shim :8118, sonst Ollama; genau N Ideen setzen oder ideen-fehler."""
     aid = str(auftrag["id"])
+    ursache: list[str] = []
 
     def vor_ollama() -> bool:
-        comfy.freigeben()            # Ollama findet neben FLUX.2 keinen Grafikspeicher (Befund 21.10.)
-        ZULETZT["art"] = None
-        return _ollama_bereit(_OhneVergabe, aid, prompt, ollama_starten, uhr, schlafen) is True
+        # Netz/ComfyUI-Fehler hier duerfen nicht aus _ideen fliegen: False -> normaler ideen_fehler-Weg
+        try:
+            comfy.freigeben()        # Ollama findet neben FLUX.2 keinen Grafikspeicher (Befund 21.10.)
+            ZULETZT["art"] = None
+            return _ollama_bereit(_OhneVergabe, aid, prompt, ollama_starten, uhr, schlafen) is True
+        except (OSError, TimeoutError, bild_comfy.ComfyVoruebergehend) as e:   # URLError ist ein OSError
+            ursache.append(f"{type(e).__name__}: {e}")
+            return False
 
     try:
         briefing = _briefing(auftrag)
@@ -688,6 +694,8 @@ def _ideen(reel, auftrag, comfy, prompt, ollama_starten, uhr, schlafen) -> str:
     except (ValueError, KeyError, TypeError, AttributeError) as e:
         ideen, befund = None, f"Briefing unlesbar: {e}"
     if ideen is None:
+        if ursache:
+            befund = f"{befund} ({ursache[0]})"
         reel.ideen_fehler(aid, befund)
         return "ideen_fehler"
     try:

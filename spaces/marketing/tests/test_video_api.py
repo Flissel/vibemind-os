@@ -359,6 +359,11 @@ def test_marke_braucht_arbeiterschluessel(db, c):
     ("Laura 503", "Das Reel konnte nicht gebaut werden."),
     # Reihenfolge: das erste passende Muster gewinnt
     ("Stimmprobe fehlt, Render abgebrochen", "Die gewählte Stimme gibt es nicht."),
+    # 090: Ideen-Fehler stehen vor "zwei Versuche"/"Timeout" (sonst falscher Satz)
+    ("Bildideen konnten nicht erzeugt werden (zwei Versuche ohne Ergebnis)",
+     "Die Bildideen konnten nicht geschrieben werden."),
+    ("Bildideen konnten nicht erzeugt werden (Shim timeout; Ollama nicht erreichbar)",
+     "Die Bildideen konnten nicht geschrieben werden."),
 ])
 def test_befund_satz(befund, satz):
     assert video.befund_satz(befund) == satz

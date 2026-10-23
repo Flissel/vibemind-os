@@ -1666,6 +1666,38 @@ def test_ideen_scheitern_meldet_ideen_fehler(monkeypatch):
     assert not any(e[0] == "ideen" for e in reel.log)                # nie halbe Zeilen
 
 
+@pytest.mark.parametrize("fehler", [OSError("Verbindung verweigert"), bw.urllib.error.URLError("weg"),
+                                    bw.bild_comfy.ComfyVoruebergehend("ComfyUI belegt")])
+def test_ideen_ausweichweg_fehler_meldet_ideen_fehler_mit_grund(monkeypatch, fehler):
+    """comfy.freigeben()/prompt.laeuft() werfen -> kein Absturz, ideen_fehler mit benannter Ursache."""
+    monkeypatch.setattr(bw, "_bildstil", lambda auftrag: "")
+    monkeypatch.setattr(bw.reel_ideen, "shim_fragen", lambda s, n: "[]")
+    monkeypatch.setattr(bw.reel_ideen, "ollama_fragen", _nie)
+
+    class ComfyWirft(Comfy):
+        def freigeben(self):
+            raise fehler
+    reel = ReelApi(ideen_auftrag=dict(IDEEN_AUFTRAG))
+    r = bw.ein_durchlauf(Api(None), ComfyWirft(), ReelPrompt(), starten=lambda: None, reel=reel)
+    assert r == "ideen_fehler"
+    art, aid, befund = reel.log[-1]
+    assert (art, aid) == ("ideen_fehler", IDEEN_AUFTRAG["id"])
+    assert "Ollama nicht erreichbar" in befund and type(fehler).__name__ in befund
+
+
+def test_ideen_ausweichweg_laeuft_wirft_meldet_ideen_fehler(monkeypatch):
+    monkeypatch.setattr(bw, "_bildstil", lambda auftrag: "")
+    monkeypatch.setattr(bw.reel_ideen, "shim_fragen", lambda s, n: "[]")
+    monkeypatch.setattr(bw.reel_ideen, "ollama_fragen", _nie)
+
+    class PromptWirft(ReelPrompt):
+        def laeuft(self):
+            raise OSError("Ollama-Port zu")
+    reel = ReelApi(ideen_auftrag=dict(IDEEN_AUFTRAG))
+    r = bw.ein_durchlauf(Api(None), Comfy(), PromptWirft(), starten=lambda: None, reel=reel)
+    assert r == "ideen_fehler" and "Ollama-Port zu" in reel.log[-1][2]
+
+
 def test_ideen_kaputtes_briefing_meldet_ideen_fehler(ideen_ohne_netz):
     reel = ReelApi(ideen_auftrag={**IDEEN_AUFTRAG, "briefing": {"thema": "x", "ki": {"anzahl": 9}}})
     assert bw.ein_durchlauf(Api(None), Comfy(), ReelPrompt(), starten=lambda: None, reel=reel) == "ideen_fehler"

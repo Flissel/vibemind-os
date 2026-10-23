@@ -70,6 +70,8 @@ _SPALTEN = ("id, mandant, art, titel, briefing, status, datei, dauer_s, bytes, b
 
 # Befund als Satz fuer die Seite (E4): erstes passendes Muster gewinnt, ohne Gross/Klein.
 _BEFUND_SAETZE = (
+    # 090: Ideen-Befunde enthalten oft "zwei Versuche"/"timeout" - darum zuerst
+    (re.compile(r"Bildideen", re.I), "Die Bildideen konnten nicht geschrieben werden."),
     (re.compile(r"Zwei Versuche ohne Ergebnis", re.I), "Der Bau ist zweimal hängen geblieben."),
     (re.compile(r"Stimmprobe", re.I), "Die gewählte Stimme gibt es nicht."),
     (re.compile(r"Render", re.I), "Laura konnte das Video nicht fertig rendern."),
