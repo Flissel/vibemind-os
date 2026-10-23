@@ -831,3 +831,89 @@ def test_marke_nennt_format_des_auftrags(db, c, monkeypatch, briefing, erwartet)
     db.antworten = [auftrag, []]
     r = c.post(f"/api/video/arbeiter/{AID}/marke", headers=B)
     assert r.status_code == 200 and r.json()["format"] == erwartet
+
+
+# --- Reels Stufe 3: KI-Bilder (090, Plan 2026-10-23, E2/E6) -------------------------------------------------
+
+KI = {"thema": "bAV in 30 Sekunden", "sprechertext": "Drei Fehler, die fast jede Firma macht.",
+      "ki": {"anzahl": 4}}
+
+
+def test_ki_bestellung_status_ideen(db, c):
+    b = video.briefing_pruefen("bilder", {**KI, "bilder": [], "unbekannt": 1, "format": "quer"})
+    assert b["ki"] == {"anzahl": 4} and "bilder" not in b and b["format"] == "quer" and "unbekannt" not in b
+    db.antworten = [[], [{"id": AID}]]
+    r = c.post("/api/pult/video", headers=P, json={"mandant": "vibemind", "art": "bilder", "titel": "KI-Reel",
+                                                   "briefing": KI})
+    assert r.status_code == 200 and r.json() == {"auftrag": AID}
+    assert "marketing.video_auftrag_anlegen(" in db.sql[-1] and db.sql[-1].rstrip().endswith("'ideen') AS id")
+    assert '"ki": {"anzahl": 4}' in db.sql[-1] and '"bilder"' not in db.sql[-1]
+    # ohne ki bleibt es beim bisherigen Aufruf (Status offen ueber die Vorgabe)
+    db.antworten = [[], [{"id": AID}]]
+    c.post("/api/pult/video", headers=P, json={"mandant": "vibemind", "art": "bilder", "titel": "T",
+                                               "briefing": BILDER})
+    assert "'ideen'" not in db.sql[-1] and db.sql[-1].rstrip().endswith("'betreiber') AS id")
+    # Agent ebenso
+    db.antworten = [[], [{"id": AID}]]
+    r = c.post("/api/video/auftraege", headers=A, json={"firma": "vibemind", "art": "bilder", "titel": "T",
+                                                        "briefing": KI})
+    assert r.status_code == 200 and "'agent', 'ideen')" in db.sql[-1]
+
+
+@pytest.mark.parametrize("art, ki, extra", [
+    ("bilder", {"anzahl": 2}, {}), ("bilder", {"anzahl": 6}, {}), ("bilder", {"anzahl": "4"}, {}),
+    ("bilder", {"anzahl": True}, {}), ("bilder", {"anzahl": 4.0}, {}), ("bilder", {}, {}),
+    ("bilder", 4, {}), ("bilder", {"anzahl": 4}, {"bilder": ["team.png"]}),
+    ("material", {"anzahl": 4}, {}), ("kurzfassung", {"anzahl": 4}, {"video": "a1b2c3d4e5f6"}),
+])
+def test_ki_anzahl_grenzen(art, ki, extra):
+    with pytest.raises(Exception) as e:
+        video.briefing_pruefen(art, {**KI, "ki": ki, **extra})
+    assert getattr(e.value, "status_code", None) == 422 and "ki" in e.value.detail
+    for n in (3, 4, 5):
+        assert video.briefing_pruefen("bilder", {**KI, "ki": {"anzahl": n}})["ki"] == {"anzahl": n}
+    # ki: null zaehlt als nicht gesetzt (normale Bestellung mit Bildern)
+    assert "ki" not in video.briefing_pruefen("bilder", {**BILDER, "ki": None})
+
+
+def test_liste_hat_ki_bilder(db, c):
+    K1, K2 = "0123abcd-7777-7777-7777-777777777777", "0123abcd-8888-8888-8888-888888888888"
+    zeilen = [_zeile(id=K1, status="bilder_pruefen", briefing={"ki": {"anzahl": 3}}),
+              _zeile(id=AID, status="fertig", briefing={"bilder": ["a.png"]}),
+              _zeile(id=K2, status="ideen", briefing='{"ki": {"anzahl": 4}}')]
+    bilder = [{"id": "b1", "video_auftrag": K1, "nr": 1, "idee": "i1", "status": "fertig",
+               "datei": "ki-0123abcd-1-1.jpg", "befund": ""},
+              {"id": "b2", "video_auftrag": K1, "nr": 2, "idee": "i2", "status": "fehler", "datei": None,
+               "befund": "kaputt"}]
+    db.antworten = [zeilen, bilder]
+    r = c.get("/api/pult/video?mandant=vibemind", headers=P)
+    assert r.status_code == 200
+    a = {z["id"]: z for z in r.json()["auftraege"]}
+    assert a[K1]["ki_bilder"] == [{"id": "b1", "nr": 1, "idee": "i1", "status": "fertig",
+                                   "datei": "ki-0123abcd-1-1.jpg", "befund": ""},
+                                  {"id": "b2", "nr": 2, "idee": "i2", "status": "fehler", "datei": None,
+                                   "befund": "kaputt"}]
+    assert a[K2]["ki_bilder"] == [] and "ki_bilder" not in a[AID]
+    sql = db.sql[-1]
+    assert "marketing.reel_bilder" in sql and "status <> 'verworfen'" in sql and "ORDER BY" in sql and "nr" in sql
+    assert K1 in sql and K2 in sql and AID not in sql
+    # ohne KI-Auftrag keine zweite Abfrage
+    db.antworten = [[_zeile()]]
+    n = len(db.sql)
+    c.get("/api/pult/video?mandant=vibemind", headers=P)
+    assert len(db.sql) == n + 1
+
+
+def test_video_naechster_ignoriert_ki_status():
+    """Review Focus 1: Der Video-Claw greift nie zu frueh zu. Die geltende Fassung von video_naechster (die
+    hoechste Migration, die sie definiert) nimmt nur offen und abgelaufene in_arbeit - keine KI-Status."""
+    from pathlib import Path
+    ordner = Path(video.__file__).resolve().parent.parent / "db"
+    fassungen = sorted(p for p in ordner.glob("[0-9][0-9][0-9]_*.sql")
+                       if "FUNCTION marketing.video_naechster(" in p.read_text(encoding="utf-8"))
+    assert fassungen and fassungen[-1].name.startswith("085_")       # 090 laesst sie unveraendert
+    text = fassungen[-1].read_text(encoding="utf-8")
+    rumpf = text.split("FUNCTION marketing.video_naechster(", 1)[1].split("END $$;", 1)[0]
+    assert "WHERE status = 'offen' OR (status = 'in_arbeit' AND vergeben_bis < now())" in rumpf
+    for s in ("ideen", "bilder_laufen", "bilder_pruefen"):
+        assert s not in rumpf

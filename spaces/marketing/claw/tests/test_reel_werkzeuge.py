@@ -77,3 +77,32 @@ class ReelFormat(unittest.TestCase):
         self.assertNotIn("Hochformat-Video", doc)
         for wort in ("reel", "quadrat", "quer"):
             self.assertIn(wort, doc)
+
+
+class ReelKi(unittest.TestCase):
+    """Reels Stufe 3 (23.10.2026, E8): ki_anzahl bestellt KI-Bilder; 0 = aus. Geprueft wird in der API."""
+
+    def _koerper(self, **kw):
+        rekorder = Rekorder([(200, json.dumps({"auftrag": "v-4"}))])
+        with mock.patch.object(werkzeuge, "_roh_anfrage", rekorder), \
+                mock.patch.dict("os.environ", {"MARKETING_API_URL": "http://x:5510"}):
+            r = werkzeuge.reel_beauftragen(titel="T", thema="t", sprechertext="s", **kw)
+        return r, json.loads(rekorder.aufrufe[0]["daten"])
+
+    def test_reel_beauftragen_ki_anzahl(self):
+        r, k = self._koerper(art="bilder", ki_anzahl=4, format="quadrat")
+        self.assertEqual(k["art"], "bilder")
+        self.assertEqual(k["briefing"]["ki"], {"anzahl": 4})
+        self.assertNotIn("bilder", k["briefing"])
+        self.assertEqual(k["briefing"]["format"], "quadrat")
+        self.assertIn("prueft", r["daten"]["hinweis"])
+        # 0 = aus: wie bisher mit Bildern, ohne ki
+        _, k = self._koerper(art="bilder", bilder=["team.png"])
+        self.assertNotIn("ki", k["briefing"])
+        self.assertEqual(k["briefing"]["bilder"], ["team.png"])
+        # Unsinn geht an die API (eine Pruefstelle)
+        _, k = self._koerper(art="material", ki_anzahl=9)
+        self.assertEqual(k["briefing"]["ki"], {"anzahl": 9})
+
+    def test_beschreibung_nennt_ki_anzahl(self):
+        self.assertIn("ki_anzahl", werkzeuge.reel_beauftragen.__doc__)

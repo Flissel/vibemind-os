@@ -453,7 +453,8 @@ def newsletter_chat_stand(inhalt: str) -> dict:
 def reel_beauftragen(art: str, titel: str, thema: str, sprechertext: str = "", firma: str = "vibemind",
                      bilder: list | None = None, logo: str = "", videos: list | None = None, video: str = "",
                      dauer_s: int = 30, stimme: str = "standard", hook: str = "",
-                     farbe_hintergrund: str = "", farbe_text: str = "", format: str = "reel") -> dict:
+                     farbe_hintergrund: str = "", farbe_text: str = "", format: str = "reel",
+                     ki_anzahl: int = 0) -> dict:
     """Beauftragt ein Reel (kurzes Video, 15-60 s) beim Video-Claw (17.10.2026). Gebaut wird
     am PC mit Laura - das dauert einige Minuten; der Stand steht in reel_auftraege.
 
@@ -463,6 +464,9 @@ def reel_beauftragen(art: str, titel: str, thema: str, sprechertext: str = "", f
     art: "bilder" (Titelkarte + Markenbilder + Schlusskarte; bilder = 1-8 Bilddateien aus den Medien, logo
          optional), "material" (vorhandene Laura-Videos; videos = Laura-IDs aus `videos`, leer = der Claw
          sucht passend) oder "kurzfassung" (video = EINE Laura-ID eines langen Videos).
+    ki_anzahl: 3 bis 5 = statt Medienbildern eigens erzeugte KI-Bilder (nur art "bilder", dann ohne bilder).
+         Die Bildideen entstehen aus Thema und Bildstil der Marke; der Betreiber prueft die Bilder im Pult,
+         laesst einzelne neu erzeugen und gibt den Bau frei. 0 = aus (Vorgabe).
     sprechertext: was gesprochen wird (fuers Ohr, kurze Saetze, hoechstens 900 Zeichen; bei kurzfassung
          optional). Der Claw erfindet nichts dazu - Produktaussagen nur, was du belegen kannst.
     hook: eine Zeile, die in den ersten 2 Sekunden klar macht, worum es geht.
@@ -479,8 +483,11 @@ def reel_beauftragen(art: str, titel: str, thema: str, sprechertext: str = "", f
                       "stimme": stimme or "standard", "hook": hook_sauber.strip()}
     if format and format != "reel":    # reel bleibt ohne Feld; pruefen tut die API (422)
         briefing["format"] = format
+    if ki_anzahl:                      # pruefen tut die API (3..5, nur art bilder)
+        briefing["ki"] = {"anzahl": ki_anzahl}
     if art == "bilder":
-        briefing["bilder"] = list(bilder or [])
+        if bilder or not ki_anzahl:
+            briefing["bilder"] = list(bilder or [])
         if logo:
             briefing["logo"] = logo
         farben = {k: v for k, v in (("hintergrund", farbe_hintergrund), ("text", farbe_text)) if v}
@@ -494,14 +501,17 @@ def reel_beauftragen(art: str, titel: str, thema: str, sprechertext: str = "", f
                                             "briefing": briefing})
     if not antwort["ok"]:
         return antwort
-    return {"ok": True, "daten": {"auftrag_id": (antwort.get("daten") or {}).get("auftrag"),
-                                  "hinweis": "Wird am PC mit Laura gebaut; Stand und Dateiname in reel_auftraege."}}
+    hinweis = "Wird am PC mit Laura gebaut; Stand und Dateiname in reel_auftraege."
+    if ki_anzahl:
+        hinweis = ("Erst entstehen die KI-Bilder (etwa 2 Minuten je Bild); der Betreiber prueft sie im Pult und "
+                   "gibt den Bau frei. Stand in reel_auftraege.")
+    return {"ok": True, "daten": {"auftrag_id": (antwort.get("daten") or {}).get("auftrag"), "hinweis": hinweis}}
 
 
 def reel_auftraege(firma: str = "vibemind", anzahl: int = 10) -> dict:
     """Stand deiner Reel-Auftraege: offen, in_arbeit, fertig (mit datei, dauer_s, bytes), fehler (mit befund)
-    oder abgebrochen. protokoll zeigt, was der Video-Claw gewaehlt hat. Eine fertige datei gibst du an
-    versand_beauftragen weiter."""
+    oder abgebrochen; mit KI-Bildern vorher ideen, bilder_laufen und bilder_pruefen (wartet auf den Betreiber).
+    protokoll zeigt, was der Video-Claw gewaehlt hat. Eine fertige datei gibst du an versand_beauftragen weiter."""
     antwort = _api(f"/api/video/auftraege?firma={urllib.parse.quote(firma or '')}"
                    f"&limit={max(1, min(int(anzahl or 10), 100))}")
     if not antwort["ok"]:

@@ -3503,6 +3503,9 @@ app.include_router(_plan.agent_router)
 from spaces.marketing.api import video as _video  # noqa: E402
 app.include_router(_video.router)
 app.include_router(_video.pult_router)
+from spaces.marketing.api import reel_bilder as _reel_bilder  # noqa: E402
+app.include_router(_reel_bilder.router)       # Bild-Arbeiter (X-Bild-Key, /api/video/arbeiter/ ohne X-API-Key)
+app.include_router(_reel_bilder.pult_router)
 from spaces.marketing.api import fakten as _fakten  # noqa: E402
 app.include_router(_fakten.router)
 

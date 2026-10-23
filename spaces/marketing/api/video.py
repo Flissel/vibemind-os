@@ -50,6 +50,7 @@ POSTER_MAX = 1024 * 1024            # Vorschaubild (JPEG, 540 px breit) des Vide
 BILDER_MAX = 200                    # Bildauswahl der gefuehrten Bestellung
 TITEL_MAX, THEMA_MAX, TEXT_MAX, HOOK_MAX = 120, 300, 900, 120
 WUNSCH_MAX = 500                    # Aenderungswunsch (085: char_length <= 500)
+KI_MIN, KI_MAX = 3, 5                # KI-Bilder je Reel (090: briefing.ki.anzahl)
 LAURA_AUS = "Laura ist gerade nicht erreichbar."
 LAURA_LANGSAM = "Laura antwortet gerade zu langsam – versuch es gleich nochmal."
 LAURA_TEILWEISE = "Einige Laura-Projekte antworten gerade nicht."
@@ -110,6 +111,8 @@ def briefing_pruefen(art: str, b) -> dict:
         raise HTTPException(422, f"art muss eine von {', '.join(ARTEN)} sein")
     if not isinstance(b, dict):
         raise HTTPException(422, "briefing muss ein Objekt sein")
+    if art != "bilder" and b.get("ki") is not None:
+        raise HTTPException(422, "ki: KI-Bilder nur bei art bilder")
     aus: dict = {"thema": _text(b.get("thema"), "thema", THEMA_MAX),
                  "sprechertext": _text(b.get("sprechertext"), "sprechertext", TEXT_MAX,
                                        pflicht=art != "kurzfassung"),
@@ -140,10 +143,21 @@ def briefing_pruefen(art: str, b) -> dict:
             raise HTTPException(422, "video: Laura-Asset-ID des langen Videos")
         aus["video"] = video
     else:
-        bilder = b.get("bilder")
-        if not isinstance(bilder, list) or not 1 <= len(bilder) <= 8:
-            raise HTTPException(422, "bilder: 1 bis 8 Bilddateien aus den Medien")
-        aus["bilder"] = [_bildname(n, "bilder") for n in bilder]
+        ki = b.get("ki")
+        if ki is not None:
+            # KI-Bilder (090, E2): der Bild-Arbeiter entwirft und erzeugt 3..5 Bilder; die Liste kommt erst
+            # mit der Freigabe (video_ki_freigeben) ins Briefing.
+            anzahl = ki.get("anzahl") if isinstance(ki, dict) else None
+            if isinstance(anzahl, bool) or not isinstance(anzahl, int) or not KI_MIN <= anzahl <= KI_MAX:
+                raise HTTPException(422, f"ki: {{anzahl}} mit {KI_MIN} bis {KI_MAX} Bildern")
+            if b.get("bilder"):
+                raise HTTPException(422, "ki: mit KI-Bildern keine eigene Bilderliste")
+            aus["ki"] = {"anzahl": anzahl}
+        else:
+            bilder = b.get("bilder")
+            if not isinstance(bilder, list) or not 1 <= len(bilder) <= 8:
+                raise HTTPException(422, "bilder: 1 bis 8 Bilddateien aus den Medien")
+            aus["bilder"] = [_bildname(n, "bilder") for n in bilder]
         if b.get("logo"):
             aus["logo"] = _bildname(b["logo"], "logo")
         farben = b.get("farben") or {}
@@ -211,9 +225,11 @@ def _anlegen(payload: dict, mandant_feld: str, von: str) -> str:
     briefing = briefing_pruefen(art, payload.get("briefing"))
     _bilder_der_firma(mandant, briefing)
     _stimme_einsetzen(mandant, briefing)
+    # KI-Bilder beginnen bei den Bildideen (090), alle anderen wie bisher offen (Vorgabe der Funktion)
+    status = ", 'ideen'" if "ki" in briefing else ""
     zeile = _schreiben(lambda:
         f"SELECT marketing.video_auftrag_anlegen({lit(mandant)}, {lit(art)}, {lit(titel)}, "
-        f"{lit(json.dumps(briefing, ensure_ascii=False))}::jsonb, {lit(von)}) AS id")
+        f"{lit(json.dumps(briefing, ensure_ascii=False))}::jsonb, {lit(von)}{status}) AS id")
     return str(zeile.get("id"))
 
 
@@ -229,7 +245,36 @@ def _liste(mandant: str, limit: int, archiv: bool | None = None) -> list:
     for z in zeilen:
         if isinstance(z, dict):
             z["befund_text"] = befund_satz(z.get("befund") or "")
+    _ki_bilder_anhaengen(zeilen)
     return zeilen
+
+
+def _briefing_dict(briefing) -> dict:
+    if isinstance(briefing, str):
+        try:
+            briefing = json.loads(briefing)
+        except ValueError:
+            return {}
+    return briefing if isinstance(briefing, dict) else {}
+
+
+def _ki_bilder_anhaengen(zeilen: list) -> None:
+    """E6: KI-Auftraege (briefing.ki) bekommen ki_bilder [{id, nr, idee, status, datei, befund}] ohne die
+    verworfenen, nach nr. Eine Abfrage fuer alle; ohne KI-Auftrag keine."""
+    ki = {}
+    for z in zeilen:
+        if isinstance(z, dict) and "ki" in _briefing_dict(z.get("briefing")) and z.get("id"):
+            ki[str(z["id"])] = z
+            z["ki_bilder"] = []
+    if not ki:
+        return
+    ids = ", ".join(f"{lit(i)}::uuid" for i in ki)
+    for b in _lesen(lambda:
+            "SELECT id, video_auftrag, nr, idee, status, datei, befund FROM marketing.reel_bilder "
+            f"WHERE video_auftrag IN ({ids}) AND status <> 'verworfen' ORDER BY video_auftrag, nr"):
+        z = ki.get(str(b.get("video_auftrag"))) if isinstance(b, dict) else None
+        if z is not None:
+            z["ki_bilder"].append({k: b.get(k) for k in ("id", "nr", "idee", "status", "datei", "befund")})
 
 
 def _auftrag_der_firma(aid: str, mandant) -> str:
