@@ -139,6 +139,52 @@ GRUNDFORMEN: tuple[tuple[str, str, str], ...] = (
      "großes Zitat auf Farbfläche, kleines Bild versetzt, Name als Dachzeile."),
 )
 
+# Ausfuehrliche, mutigere Fassung je Grundform (gleiche slugs) fuer den Vorlagen-Auftrag in
+# scripts/collage_vorlagen_erzeugen: je eine praegende Geste (Geste:), eine Farbidee (Farbe:), Ueberlappung mit Mass,
+# ein zweites kleines Element. Steht NICHT im System-Prompt: dessen Budget (GRENZE neben dichter Seite, Chat und
+# Feedback, Tests in claw/tests/test_seite_prompt) laesst dort nur rund 20 Zeichen Zuwachs zu.
+GESTALTUNG: dict[str, str] = {
+    "split":
+        "Bild links angeschnitten, 60 % Breite (x 180, y 320, 360x640); Dachzeile und Titel rechts oben (x 450, "
+        "y 180, breite 252) greifen 36 ins Bild, Text und Knopf darunter. Geste: Handschrift-Notiz (Rolle HAND, "
+        "drehung -4) an der Bildkante. Farbe: heller seite_hintergrund aus der Markenfarbe, Akzentfarbe für Knopf "
+        "und Notiz.",
+    "randloser-aufmacher":
+        "Bild randlos x 300, y 280, 600x560; Titel in Großschrift auf einem Farbband (Bühne, x 300, breite 552), "
+        "das 40 über die Bildunterkante ragt; Dachzeile darüber, Text und Knopf linksbündig darunter. Geste: das "
+        "Farbband. Farbe: seite_hintergrund dunkel oder hell aus der Markenfarbe, Band und Knopf in Akzentfarbe.",
+    "schrift-plakat":
+        "Titel als Aufmacher (groesse 90..130), volle Breite innerhalb der Ruhezone (x 300, breite 552), läuft 30 "
+        "über die Oberkante eines kleinen Bildes rechts versetzt darunter (x 400, breite 300, Kontrast auch dort); "
+        "Dachzeile darüber. Geste: gedrehter Sticker (form kreis 110, drehung 10, „Neu“) auf der Bildecke. Farbe: "
+        "kräftiger seite_hintergrund aus der Markenfarbe, Akzentfarbe für Sticker und Knopf.",
+    "versetztes-bildpaar":
+        "Bild A x 220, y 300, 300x420; Bild B x 450, y 560, 260x320 überlappt A um 50; Dachzeile und Titel rechts "
+        "neben A über B (x 480, breite 192), Text in der Lücke unter A (x 162, breite 276). Geste: B mit "
+        "rahmen_breite 8, schatten und drehung 3. Farbe: zarter seite_hintergrund aus der Markenfarbe, Rahmen in "
+        "Seitenfarbe, Akzentfarbe für Knopf und Dachzeile.",
+    "polaroid-streuung":
+        "2-3 Fotos überlappend um 30..60, eins läuft rechts über den Seitenrand, höchstens 2 mit rahmen_breite 10, "
+        "schatten und drehung 2..6 (zählen als Gesten), gegenläufig gedreht; Titel darüber, Datum als Dachzeile, "
+        "Text und Knopf darunter. Geste: die Rahmenfotos, sonst keine. Farbe: warmer Papierton als "
+        "seite_hintergrund, Akzentfarbe für Knopf und Dachzeile.",
+    "farbbuehne-freisteller":
+        "Freisteller (passung einpassen, x 400, y 300, 340x420) ragt 50 oben aus der Bühne; Dachzeile, Titel, Text "
+        "und Knopf links (Kante 24, breite 260), der Titel überlappt die Bühne um 64. Geste: Farbbühne als Kreis "
+        "(form kreis, x 400, y 320, 360x360) hinter dem Motiv. Farbe: ruhiger seite_hintergrund, Kreis in "
+        "Markenfarbe, Knopf in Akzentfarbe.",
+    "magazin-titel":
+        "Titel als Zeitschriftenkopf (groesse 100..130, grossbuchstaben, x 300, breite 552) oben, Dachzeile "
+        "darüber; randloses Bild (600 breit) liegt im Stapel darunter und beginnt 50 über der Titelunterkante "
+        "(Kontrast 3:1); Text und Knopf unter dem Bild. Geste: Großschrift, die über die Bildkante läuft. Farbe: "
+        "seite_hintergrund in Markenfarbe, Titel und Knopf in Akzentfarbe.",
+    "zitat-buehne":
+        "großes Zitat in Überschriftgröße (kursiv, x 320, breite 460) auf einer Farbfläche (x 350, y 300, "
+        "560x380), die 30 rechts über den Seitenrand läuft; kleines Bild (x 130, y 570, 200x240) schiebt sich 40 "
+        "über die untere Flächenkante; Name als Dachzeile, Text und Knopf rechts neben dem Bild. Geste: die Fläche "
+        "als Bühne. Farbe: heller seite_hintergrund, Fläche in Markenfarbe, Knopf in Akzentfarbe.",
+}
+
 REGEL_FARBE_SEITE = ("- Farben aus der Seite (Hintergrund, vorhandene Ebenen) und daraus abgeleiteten helleren/"
                      "dunkleren Tönen; keine neuen Farbtöne.")
 

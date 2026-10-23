@@ -94,6 +94,42 @@ def test_acht_grundformen_mit_eindeutigen_slugs():
         assert "nicht gestapelt" in a and len(a) <= 2000
 
 
+GESTEN = ("bühne", "fläche", "farbband", "handschrift", "hand", "sticker", "rahmen", "schatten", "drehung",
+          "anschnitt", "angeschnitten", "großschrift")
+FARBEN = ("seite_hintergrund", "markenfarbe", "akzentfarbe")
+
+
+def test_grundformen_haben_akzentgeste_und_farbe():
+    assert set(k.GESTALTUNG) == {g[0] for g in k.GRUNDFORMEN}
+    for slug, _, _ in k.GRUNDFORMEN:
+        text = k.GESTALTUNG[slug]
+        assert text.count("Geste:") == 1 and text.count("Farbe:") == 1, slug
+        geste = text.split("Geste:", 1)[1].split("Farbe:", 1)[0].lower()
+        farbe = text.split("Farbe:", 1)[1].lower()
+        assert any(g in geste for g in GESTEN), slug
+        assert any(f in farbe for f in FARBEN), slug
+        assert "Dachzeile" in text, slug
+        for zeichen in "°−×≈≥→":
+            assert zeichen not in text, (slug, zeichen)
+
+
+def test_auftrag_unter_2000_zeichen_fuer_alle():
+    for slug, name, aufbau in k.GRUNDFORMEN:
+        for a in (k.auftrag(name, aufbau), k.auftrag(name, k.GESTALTUNG[slug])):
+            assert len(a) < 2000, name
+            assert "„Dachzeile“" in a and "eine prägende Geste" in a and "Magazin-Niveau" in a
+            assert "Farbe mit Absicht" in a and "logo_einsetzen" in a and "neutralen" in a
+            assert "nicht gestapelt" in a and "Mehr erfahren" in a
+
+
+def test_generator_schickt_die_ausfuehrliche_gestaltung(monkeypatch):
+    gesendet = []
+    monkeypatch.setattr(k, "_runde", lambda u, iid, text, ausgabe: gesendet.append(text))
+    f = Fake()
+    code, _ = _lauf(f, nur="split")
+    assert code == 0 and gesendet and k.GESTALTUNG["split"] in gesendet[0]
+
+
 def test_happy_path_eine_vorlage(monkeypatch):
     f = Fake()
     gesehen = {}

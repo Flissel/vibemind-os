@@ -32,7 +32,7 @@ import urllib.error
 import urllib.request
 from typing import Callable
 
-from spaces.marketing.claw.seite_prompt import GRUNDFORMEN
+from spaces.marketing.claw.seite_prompt import GESTALTUNG, GRUNDFORMEN
 
 MANDANT = "vibemind"
 VON = "collage-vorlagen"
@@ -48,6 +48,7 @@ TAKT = 10                  # Sekunden zwischen zwei Abfragen
 LOESCH_VERSUCHE = 6        # am Ende, solange Bilder noch laufen
 
 # GRUNDFORMEN (slug, Name, Aufbau) kommen aus claw/seite_prompt - derselbe Text steht im Prompt des Assistenten.
+# Der Auftrag nimmt die ausfuehrlichere GESTALTUNG je slug (Geste, Farbe, Masse; gleiche Quelle, nicht im Prompt).
 GRUNDFORMEN_NACH_SLUG = {g[0]: g for g in GRUNDFORMEN}
 
 
@@ -55,12 +56,15 @@ def auftrag(name: str, aufbau: str) -> str:
     """Der Chat-Auftrag (höchstens 2000 Zeichen) für eine Grundform."""
     return (f"Gestalte eine Collage-Vorlage in der Grundform „{name}“. Thema: „Vorlage: {name}“. "
             f"Aufbau: {aufbau} "
-            "Verwende Platzhalter-Inhalte: Überschrift „Überschrift“, ein Fließtext „Kurzer Einleitungstext, der "
-            "das Thema in zwei Sätzen anreißt.“ und einen Knopf „Mehr erfahren“. "
+            "Verwende Platzhalter-Inhalte: Dachzeile „Dachzeile“, Überschrift „Überschrift“, ein Fließtext „Kurzer "
+            "Einleitungstext, der das Thema in zwei Sätzen anreißt.“ und einen Knopf „Mehr erfahren“; sieht die "
+            "Grundform ein zweites kurzes Element vor (Datum, Name, Zitat, Notiz oder „Neu“-Sticker), setze es mit "
+            "einem kurzen Platzhalter. "
             "Lege die Motive per bild_erzeugen an, mit einer neutralen, branchenoffenen Beschreibung (zum Beispiel "
             "„helles Atelier mit Pflanzen“ statt eines Produkts). Setze das Logo per logo_einsetzen. "
-            "Hochwertig, frei, nicht gestapelt: Ebenen dürfen sich mit Absicht überlappen, nichts steht mittig "
-            "untereinander.")
+            "Haltung: Magazin-Niveau, eine prägende Geste, Farbe mit Absicht, mutig statt Baukasten. "
+            "Hochwertig, frei, nicht gestapelt: Ebenen überlappen sich mit Absicht um das genannte Maß, ein klarer "
+            "Aufmacher, asymmetrisch, nichts steht mittig untereinander; Text bleibt in der Ruhezone.")
 
 
 class LaufFehler(Exception):
@@ -213,7 +217,7 @@ def vorlage_erzeugen(u: Umgebung, slug: str, offene_proben: list[str], ausgabe: 
     neu = u.api("POST", "/api/pult/inhalte/collage", {"mandant": MANDANT, "titel": f"Vorlage: {name}"})
     iid = _uuid(neu.get("inhalt"))
     try:
-        _runde(u, iid, auftrag(name, aufbau), ausgabe)
+        _runde(u, iid, auftrag(name, GESTALTUNG.get(slug, aufbau)), ausgabe)
         _bilder_abwarten(u, iid)
         kaputt = u.abfrage("SELECT count(*)::int AS n FROM marketing.bild_auftraege "
                            f"WHERE inhalt = {_lit(iid)}::uuid AND status = 'fehler'")
@@ -256,7 +260,7 @@ def lauf(u: Umgebung, nur: str | None = None, trocken: bool = False, ausgabe: Ca
     slugs = [nur] if nur else [g[0] for g in GRUNDFORMEN]
     if trocken:
         for s in slugs:
-            ausgabe(f"[{s}] {auftrag(GRUNDFORMEN_NACH_SLUG[s][1], GRUNDFORMEN_NACH_SLUG[s][2])}")
+            ausgabe(f"[{s}] {auftrag(GRUNDFORMEN_NACH_SLUG[s][1], GESTALTUNG.get(s, GRUNDFORMEN_NACH_SLUG[s][2]))}")
         return 0
     try:
         da = set() if ersetzen else _vorhanden(u, slugs)
