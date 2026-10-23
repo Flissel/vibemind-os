@@ -190,7 +190,7 @@ def test_reel_bild_upload_unbekannt(db, c):
 
 
 def test_reel_bild_upload_db_lehnt_ab_loescht_datei(db, c):
-    db.antworten = [_bildzeile(), [{"ok": False}]]
+    db.antworten = [_bildzeile(), [{"ok": False}], [{"status": "verworfen", "datei": None}]]
     assert c.post(f"/api/video/arbeiter/reel-bild/{BID}", headers=B, content=_jpeg()).status_code == 409
     assert not (db.ordner / "ki-0123abcd-2-3.jpg").exists()
     db.antworten = [_bildzeile()]
@@ -203,7 +203,7 @@ def test_reel_bild_upload_zuordnung_scheitert_keine_datei(db, c):
     db.antworten = [_bildzeile()]
     db.psql.fehler = [RuntimeError("ERROR:  kaputt")]
     r = c.post(f"/api/video/arbeiter/reel-bild/{BID}", headers=B, content=_jpeg())
-    assert r.status_code >= 400 and not list(db.ordner.iterdir())
+    assert r.status_code == 422 and not list(db.ordner.iterdir())
     assert not any("reel_bild_fertig" in s for s in db.sql)
 
 
@@ -273,3 +273,26 @@ def test_ki_neu_formen(db, c, koerper):
     db.antworten = [[{"mandant": "vibemind"}], [{"video_auftrag": AID}]]
     r = c.post(f"/api/pult/video/{AID}/ki/neu", headers=P, json=koerper)
     assert r.status_code == 422 and not any("reel_bild_neu" in s for s in db.sql)
+
+
+def test_reel_bild_upload_fertig_false_aber_schon_fertig_behaelt_datei(db, c):
+    """Race: ein paralleler Upload desselben Versuchs hat das Bild schon fertig gemeldet - reel_bild_fertig
+    liefert false, die Zeile zeigt aber fertig mit genau diesem Namen. Die Datei bleibt, Antwort 409."""
+    name = "ki-0123abcd-2-3.jpg"
+    db.antworten = [_bildzeile(), [{"ok": False}], [{"status": "fertig", "datei": name}]]
+    r = c.post(f"/api/video/arbeiter/reel-bild/{BID}", headers=B, content=_jpeg())
+    assert r.status_code == 409 and (db.ordner / name).exists()
+    assert f"'{BID}'::uuid" in db.sql[-1] and "datei" in db.sql[-1]
+    # fertig mit anderem Namen -> diese Datei gehoert zu nichts und geht weg
+    db.antworten = [_bildzeile(), [{"ok": False}], [{"status": "fertig", "datei": "ki-0123abcd-2-2.jpg"}]]
+    (db.ordner / name).unlink()
+    assert c.post(f"/api/video/arbeiter/reel-bild/{BID}", headers=B, content=_jpeg()).status_code == 409
+    assert not (db.ordner / name).exists()
+
+
+def test_ki_neu_fremde_firma_vor_formpruefung_404(db, c):
+    for idee in ("x" * 601, 5):
+        db.antworten = [[{"mandant": "andere"}]]
+        r = c.post(f"/api/pult/video/{AID}/ki/neu", headers=P, json={"bild": BID, "mandant": "vibemind", "idee": idee})
+        assert r.status_code == 404
+    assert not any("reel_bild_neu" in s for s in db.sql)

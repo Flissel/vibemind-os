@@ -155,7 +155,11 @@ def _bild_speichern(b: str, roh: bytes) -> dict:
             _entfernen(ordner, name)
         raise
     if not fertig.get("ok"):
-        _entfernen(ordner, name)
+        # Race: hat ein paralleler Upload desselben Versuchs das Bild schon mit genau diesem Namen fertig
+        # gemeldet, gehoert die Datei zur Zeile und bleibt. Sonst verweist nichts auf sie -> weg.
+        jetzt = _lesen_einer(lambda: f"SELECT status, datei FROM marketing.reel_bilder WHERE id = {lit(b)}::uuid")
+        if not (jetzt and jetzt.get("status") == "fertig" and jetzt.get("datei") == name):
+            _entfernen(ordner, name)
         raise HTTPException(409, "Bild ist nicht mehr in Arbeit")
     return {"name": name}
 
@@ -184,12 +188,12 @@ def pult_ki_neu(aid: str, payload: dict = Body(...), x_pult_key: str | None = He
     """{bild, mandant, idee?}: ein fertiges oder fehlgeschlagenes Bild neu erzeugen (leere Idee = dieselbe).
     Auftrag und Bild muessen der Firma gehoeren, sonst 404."""
     _schluessel(x_pult_key)
+    mandant = _mandant(payload.get("mandant"), "mandant")
+    a = _auftrag_der_firma(aid, mandant)        # zuerst: eine fremde Firma bekommt immer 404
     idee = payload.get("idee")
     idee = "" if idee is None else idee
     if not isinstance(idee, str) or len(idee.strip()) > IDEE_MAX:
         raise HTTPException(422, f"idee: höchstens {IDEE_MAX} Zeichen")
-    mandant = _mandant(payload.get("mandant"), "mandant")
-    a = _auftrag_der_firma(aid, mandant)
     bild = payload.get("bild")
     b = _uuid_oder_404(bild if isinstance(bild, str) else "")
     zeile = _lesen_einer(lambda: f"SELECT video_auftrag FROM marketing.reel_bilder WHERE id = {lit(b)}::uuid")
