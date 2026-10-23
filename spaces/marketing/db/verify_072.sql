@@ -39,8 +39,10 @@ DO $$ DECLARE a uuid; b uuid; j jsonb; n int; BEGIN
   END;
   -- Rechte: niemand ausser dem Eigentuemer.
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'sales_app') THEN
-    ASSERT NOT has_function_privilege('sales_app',
-      'marketing.video_auftrag_anlegen(text,text,text,jsonb,text)', 'EXECUTE'), 'sales_app legt nichts an';
+    -- jede Fassung von video_auftrag_anlegen (090 hat einen sechsten Parameter p_status angefuegt)
+    ASSERT NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace s ON s.oid = p.pronamespace
+                        WHERE s.nspname = 'marketing' AND p.proname = 'video_auftrag_anlegen'
+                          AND has_function_privilege('sales_app', p.oid, 'EXECUTE')), 'sales_app legt nichts an';
     ASSERT NOT has_function_privilege('sales_app', 'marketing.video_naechster(interval)', 'EXECUTE'),
       'sales_app holt nichts ab';
   END IF;
