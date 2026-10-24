@@ -428,6 +428,41 @@ def _sha_von(stand: Bestand, pfad: str) -> str | None:
     return None if e is None else e.sha256
 
 
+def hochladen(
+    quellen: list[tuple[Path, str, str | None]],
+    ssh_ziel: str,
+    vm_wurzel: str,
+    laeufer: Laeufer = subprocess.run,
+    *,
+    eingang_ordner: str = EINGANG,
+    tar_filter: Callable[[tarfile.TarInfo], tarfile.TarInfo | None] | None = None,
+) -> list[str]:
+    """Laedt `(lokale Datei, Name unter vm_wurzel, erwarteter sha dort oder None)` hoch.
+
+    Erst per tar ueber ssh nach `<vm_wurzel>/<eingang_ordner>/<lauf-id>/`, dann setzt ein Fernskript jede
+    Datei per `os.replace` ein, aber nur, wenn das Ziel noch den erwarteten sha hat (None = fehlt noch).
+    Zurueck kommen die Namen, deren Ziel abwich (unberuehrt gelassen). Der Eingang wird immer geraeumt.
+    """
+    eingang = f"{eingang_ordner}/{_lauf_id()}"
+    puffer = io.BytesIO()
+    with tarfile.open(fileobj=puffer, mode="w", format=tarfile.PAX_FORMAT, encoding="utf-8") as tf:
+        for quelle, ziel, _ in quellen:
+            tf.add(str(quelle), arcname=ziel, recursive=False, filter=tar_filter)
+    stufe = shlex.quote(f"{vm_wurzel.rstrip('/')}/{eingang}")
+    params = {"wurzel": vm_wurzel, "eingang": eingang}
+    try:
+        _ssh(ssh_ziel, [f"mkdir -p {stufe} && tar -C {stufe} -xf -"], laeufer,
+             eingabe=puffer.getvalue(), timeout=TIMEOUT_UEBERTRAGUNG)
+        return list(_vm_python(ssh_ziel, _VM_EINSETZEN, params | {"dateien": [[z, s] for _, z, s in quellen]},
+                               laeufer, TIMEOUT_UEBERTRAGUNG))
+    except VmFehler:
+        try:  # Reste raeumen; scheitert das auch, ignoriert der Bestand den Eingang trotzdem
+            _vm_python(ssh_ziel, _EINGANG_RAEUMEN + "print('{}')\n", params, laeufer, TIMEOUT_BESTAND)
+        except VmFehler as exc:
+            log.warning("Eingang %s nicht geraeumt: %s", eingang, exc)
+        raise
+
+
 def ausfuehren(
     aktionen: list[Aktion],
     pc_wurzel: Path,
@@ -491,24 +526,7 @@ def ausfuehren(
         _vm_python(ssh_ziel, _VM_SICHERN, {"wurzel": vm_wurzel, "ziele": ziele, "kopien": sichern_vm},
                    laeufer, TIMEOUT_UEBERTRAGUNG)
     if hoch:
-        eingang = f"{EINGANG}/{_lauf_id()}"
-        puffer = io.BytesIO()
-        with tarfile.open(fileobj=puffer, mode="w", format=tarfile.PAX_FORMAT, encoding="utf-8") as tf:
-            for quelle, ziel, _ in hoch:
-                tf.add(str(pc_wurzel / quelle), arcname=ziel, recursive=False)
-        stufe = shlex.quote(f"{vm_wurzel.rstrip('/')}/{eingang}")
-        params = {"wurzel": vm_wurzel, "eingang": eingang}
-        try:
-            _ssh(ssh_ziel, [f"mkdir -p {stufe} && tar -C {stufe} -xf -"], laeufer,
-                 eingabe=puffer.getvalue(), timeout=TIMEOUT_UEBERTRAGUNG)
-            abweichend += _vm_python(ssh_ziel, _VM_EINSETZEN, params | {"dateien": [[z, s] for _, z, s in hoch]},
-                                     laeufer, TIMEOUT_UEBERTRAGUNG)
-        except VmFehler:
-            try:  # Reste raeumen; scheitert das auch, ignoriert der Bestand den Eingang trotzdem
-                _vm_python(ssh_ziel, _EINGANG_RAEUMEN + "print('{}')\n", params, laeufer, TIMEOUT_BESTAND)
-            except VmFehler as exc:
-                log.warning("Eingang %s nicht geraeumt: %s", eingang, exc)
-            raise
+        abweichend += hochladen([(pc_wurzel / q, z, s) for q, z, s in hoch], ssh_ziel, vm_wurzel, laeufer)
     if runter:
         daten = _ssh(
             ssh_ziel,
@@ -750,6 +768,12 @@ def _log_einrichten(root: Path) -> None:
     log.setLevel(logging.INFO)
 
 
+def zustand_standard() -> Path:
+    """`%LOCALAPPDATA%\\VibeMind\\wissens_spiegel\\zuletzt.json` (auch vom Umzug geschrieben)."""
+    lokal = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    return lokal / "VibeMind" / "wissens_spiegel" / "zuletzt.json"
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Wissens-Spiegel: PC-Kopie und VM von knowledge/ nach Besitzer abgleichen.")
     ap.add_argument("--trocken", action="store_true", help="nur planen, Aktionen ins Log, nichts schreiben")
@@ -759,8 +783,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--zustand", type=Path, default=None)
     args = ap.parse_args(argv)
     root = Path(os.environ.get("VIBEMIND_ROOT") or "C:/Users/User/Desktop/Vibemind_V1")
-    lokal = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
-    zustand = args.zustand or lokal / "VibeMind" / "wissens_spiegel" / "zuletzt.json"
+    zustand = args.zustand or zustand_standard()
     _log_einrichten(root)
     try:
         return lauf(args.pc_wurzel, args.ssh_ziel, args.vm_wurzel, zustand, trocken=args.trocken)
