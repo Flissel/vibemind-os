@@ -121,8 +121,10 @@ Kurzformen: **PC** = Windows-Rechner mit `~/.rowboat`, **VM** = `offload-vm` (Mi
 
 - **PC-eigene Notizen** sind `Projects/`, `Topics/`, `Agents/`, `companys/*` (ausser `Kontakte/`,
   `Newsletter/`, `Wochenbild/`) und die weiteren PC-Ordner der Besitzer-Tabelle. Wer sie in der App,
-  per rowboat-ui oder per Telegram aendert, verliert die Aenderung: Der Spiegel ueberschreibt sie, die
-  geaenderte Fassung landet in `knowledge/_konflikte/<datum>/` auf der VM.
+  per rowboat-ui oder per Telegram aendert, findet die Aenderung nach dem naechsten Spiegellauf (alle
+  5 min) auch auf dem PC. Ausnahme: Hat der PC dieselbe Datei im selben 5-Minuten-Fenster ebenfalls
+  geaendert, gewinnt die PC-Fassung, und die VM-Fassung landet in `knowledge/_konflikte/<datum>/` auf
+  der VM. Loeschen wirkt nur vom Besitzer aus; eine auf der VM geloeschte PC-Notiz kommt zurueck.
 - Der **OpenAI-Key** reist in `config/models.json` mit auf die VM (0600).
 - **Chats** aus `storage/` enthalten Windows-Pfade. Auf der VM fuehren diese Pfade ins Leere.
 - **Nicht umgezogen:** `knowledge_graph_state.json`, `note_tagging_state.json`,

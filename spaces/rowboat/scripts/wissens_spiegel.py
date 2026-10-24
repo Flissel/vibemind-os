@@ -12,11 +12,15 @@ nach vollem Erfolg geschrieben. Uploads landen erst in `<vm>/.spiegel-eingang/<l
 `os.replace` eingesetzt; vor jedem Ueberschreiben/Loeschen wird der aktuelle sha gegen den Bestand geprueft.
 
 Regeln (Besitzer-Tabelle im Plan 2026-10-24-rowboat-zentrale-teil-a-mini-pc):
-- Jeder Pfad hat genau einen Besitzer (`pc` oder `vm`); der Besitzer gewinnt bei Abweichung.
-- Loeschen wirkt nur vom Besitzer aus; fehlt die Datei beim Nicht-Besitzer, wird sie zurueckgespielt.
-- Eine neue Datei beim Nicht-Besitzer wandert zum Besitzer.
-- Hat der Nicht-Besitzer eine bestehende Datei seit dem letzten Lauf geaendert, wird seine Fassung
-  vor dem Ueberschreiben/Loeschen gesichert (`konflikt_sichern` steht vor der Aktion).
+- Jeder Pfad hat genau einen Besitzer (`pc` oder `vm`). Verglichen wird gegen `zuletzt`.
+- Hat seit dem letzten Lauf nur EINE Seite geaendert, wandert ihre Fassung auf die andere, egal wer
+  Besitzer ist (auch Nicht-Besitzer -> Besitzer), ohne Konfliktkopie.
+- Haben BEIDE Seiten verschieden geaendert (oder ist die Datei auf beiden neu und verschieden), gewinnt
+  der Besitzer; die Fassung des Nicht-Besitzers wird vorher gesichert (`konflikt_sichern` steht vor der
+  Aktion). Beide gleich geaendert: nichts zu tun.
+- Eine neue Datei auf nur einer Seite wird auf die andere kopiert.
+- Loeschen wirkt nur vom Besitzer aus; hat der Nicht-Besitzer die Datei inzwischen geaendert, wird seine
+  Fassung vor dem Loeschen gesichert. Fehlt die Datei beim Nicht-Besitzer, wird sie zurueckgespielt.
 - Verglichen wird nur ueber sha256; mtime dient der Anzeige. Pfade werden NFC-normalisiert.
 - Pfade, die sich nur in Gross-/Kleinschreibung unterscheiden (gleiche Datei auf dem PC), oder die im
   selben Bestand als NFC- und NFD-Fassung vorkommen, werden nicht geplant; `doppelte_pfade` meldet sie.
@@ -137,6 +141,36 @@ def doppelte_pfade(pc: Bestand, vm: Bestand, zuletzt: Bestand) -> list[list[str]
     return [rohe for _, rohe in _doppel_gruppen(pc, vm, zuletzt)]
 
 
+def _entscheiden(
+    pfad: str, pc: Eintrag | None, vm: Eintrag | None, alt: Eintrag | None
+) -> tuple[list[ArtT], Eintrag | None]:
+    """Aktionen fuer einen Pfad und der gemeinsame Eintrag danach (None = auf beiden Seiten weg)."""
+    eigner = besitzer(pfad)
+    hat, gegen = (pc, vm) if eigner == "pc" else (vm, pc)
+    zum_nicht: ArtT = "nach_vm" if eigner == "pc" else "nach_pc"
+    zum_eigner: ArtT = "nach_pc" if eigner == "pc" else "nach_vm"
+    loeschen_nicht: ArtT = "loeschen_vm" if eigner == "pc" else "loeschen_pc"
+
+    def sha(x: Eintrag | None) -> str | None:
+        return None if x is None else x.sha256
+
+    if sha(hat) == sha(gegen):  # gleich (auch: beide gleich geaendert)
+        return [], hat
+    if hat is None:
+        if alt is None:  # neu nur beim Nicht-Besitzer: zum Besitzer holen
+            return [zum_eigner], gegen
+        # Besitzer hat geloescht; eine Aenderung des Nicht-Besitzers vorher sichern
+        return (["konflikt_sichern"] if sha(gegen) != sha(alt) else []) + [loeschen_nicht], None
+    if gegen is None:  # neu beim Besitzer, oder Nicht-Besitzer hat geloescht: zurueckspielen
+        return [zum_nicht], hat
+    if alt is not None and sha(hat) == sha(alt):  # nur der Nicht-Besitzer hat geaendert
+        return [zum_eigner], gegen
+    if alt is not None and sha(gegen) == sha(alt):  # nur der Besitzer hat geaendert
+        return [zum_nicht], hat
+    # beide geaendert (oder beide neu) und verschieden: Besitzer gewinnt, Nicht-Besitzer gesichert
+    return ["konflikt_sichern", zum_nicht], hat
+
+
 def abgleich_planen(pc: Bestand, vm: Bestand, zuletzt: Bestand) -> list[Aktion]:
     """Plant den Abgleich; `zuletzt` ist der gemeinsame Stand nach dem letzten erfolgreichen Lauf."""
     uebersprungen: set[str] = set()
@@ -145,27 +179,8 @@ def abgleich_planen(pc: Bestand, vm: Bestand, zuletzt: Bestand) -> list[Aktion]:
     pc, vm, zuletzt = _normalisiert(pc), _normalisiert(vm), _normalisiert(zuletzt)
     aktionen: list[Aktion] = []
     for pfad in sorted((set(pc) | set(vm)) - uebersprungen):
-        eigner = besitzer(pfad)
-        seiten = {"pc": pc.get(pfad), "vm": vm.get(pfad)}
-        nicht = "vm" if eigner == "pc" else "pc"
-        hat, gegen = seiten[eigner], seiten[nicht]
-        alt = zuletzt.get(pfad)
-        ziel_kopie: ArtT = "nach_vm" if eigner == "pc" else "nach_pc"
-        ziel_loeschen: ArtT = "loeschen_vm" if eigner == "pc" else "loeschen_pc"
-        if hat is not None:
-            if gegen is None:
-                aktionen.append(Aktion(ziel_kopie, pfad))
-            elif gegen.sha256 != hat.sha256:
-                if alt is None or gegen.sha256 != alt.sha256:
-                    aktionen.append(Aktion("konflikt_sichern", pfad))
-                aktionen.append(Aktion(ziel_kopie, pfad))
-        elif gegen is not None:
-            if alt is None:  # neu beim Nicht-Besitzer: zum Besitzer holen
-                aktionen.append(Aktion("nach_pc" if eigner == "pc" else "nach_vm", pfad))
-            else:  # Besitzer hat geloescht
-                if gegen.sha256 != alt.sha256:
-                    aktionen.append(Aktion("konflikt_sichern", pfad))
-                aktionen.append(Aktion(ziel_loeschen, pfad))
+        arten, _ = _entscheiden(pfad, pc.get(pfad), vm.get(pfad), zuletzt.get(pfad))
+        aktionen += [Aktion(art, pfad) for art in arten]
     return aktionen
 
 
@@ -594,16 +609,14 @@ def _windows_tauglich(pfad: str) -> bool:
 
 
 def _stand_nach_abgleich(pc: Bestand, vm: Bestand, zuletzt: Bestand, uebersprungen: set[str]) -> Bestand:
-    """Stand nach vollem Erfolg: Besitzer-Eintrag je Pfad (spiegelt `abgleich_planen`); uebersprungene
-    Doppel-Pfade behalten ihren alten Eintrag."""
+    """Stand nach vollem Erfolg: der gemeinsame Eintrag je Pfad aus derselben Entscheidung wie
+    `abgleich_planen`; uebersprungene Doppel-Pfade behalten ihren alten Eintrag."""
     pc, vm, zuletzt = _normalisiert(pc), _normalisiert(vm), _normalisiert(zuletzt)
     neu: Bestand = {}
     for pfad in (set(pc) | set(vm)) - uebersprungen:
-        hat, gegen = (pc.get(pfad), vm.get(pfad)) if besitzer(pfad) == "pc" else (vm.get(pfad), pc.get(pfad))
-        if hat is not None:
-            neu[pfad] = hat
-        elif gegen is not None and pfad not in zuletzt:  # neu beim Nicht-Besitzer, zum Besitzer kopiert
-            neu[pfad] = gegen
+        _, ergebnis = _entscheiden(pfad, pc.get(pfad), vm.get(pfad), zuletzt.get(pfad))
+        if ergebnis is not None:
+            neu[pfad] = ergebnis
     for pfad in uebersprungen & set(zuletzt):
         neu[pfad] = zuletzt[pfad]
     return neu

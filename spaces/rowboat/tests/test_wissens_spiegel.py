@@ -157,6 +157,83 @@ def test_unveraendert_keine_aktion():
     assert ws.abgleich_planen({}, {}, {}) == []
 
 
+def test_einseitige_aenderung_beim_nichtbesitzer_wandert_zum_pc_besitzer():
+    # VM aendert eine PC-eigene Datei, der PC nicht: die VM-Fassung kommt an, kein Konflikt
+    plan = ws.abgleich_planen({"Projects/p.md": e("A")}, {"Projects/p.md": e("B")}, {"Projects/p.md": e("A")})
+    assert plan == [Aktion("nach_pc", "Projects/p.md")]
+
+
+def test_einseitige_aenderung_beim_nichtbesitzer_wandert_zum_vm_besitzer():
+    plan = ws.abgleich_planen({"Notes/n.md": e("B")}, {"Notes/n.md": e("A")}, {"Notes/n.md": e("A")})
+    assert plan == [Aktion("nach_vm", "Notes/n.md")]
+
+
+def test_beide_geaendert_besitzer_gewinnt_mit_sicherung():
+    p = "Projects/p.md"
+    assert ws.abgleich_planen({p: e("B")}, {p: e("C")}, {p: e("A")}) == [
+        Aktion("konflikt_sichern", p), Aktion("nach_vm", p)]
+    n = "Notes/n.md"
+    assert ws.abgleich_planen({n: e("B")}, {n: e("C")}, {n: e("A")}) == [
+        Aktion("konflikt_sichern", n), Aktion("nach_pc", n)]
+
+
+def test_beide_gleich_geaendert_keine_aktion():
+    for pfad in ("Projects/p.md", "Notes/n.md"):
+        assert ws.abgleich_planen({pfad: e("B", 1.0)}, {pfad: e("B", 2.0)}, {pfad: e("A")}) == []
+
+
+def _anwenden(pfad: str, pc, vm, plan: list[Aktion]):
+    """Spielt den Plan fuer einen Pfad durch: (pc danach, vm danach, gesicherte Fassungen)."""
+    gesichert: list[str] = []
+    eigner = ws.besitzer(pfad)
+    for a in plan:
+        assert a.pfad == pfad
+        if a.art == "konflikt_sichern":
+            fassung = vm if eigner == "pc" else pc
+            assert fassung is not None
+            gesichert.append(fassung)
+        elif a.art == "nach_vm":
+            assert pc is not None
+            vm = pc
+        elif a.art == "nach_pc":
+            assert vm is not None
+            pc = vm
+        elif a.art == "loeschen_vm":
+            vm = None
+        elif a.art == "loeschen_pc":
+            pc = None
+    return pc, vm, gesichert
+
+
+@pytest.mark.parametrize("pfad", ["Projects/p.md", "Notes/n.md"])
+def test_fallstabelle_verliert_keine_aenderung(pfad):
+    """Alle Kombinationen (fehlt/A/B/C) x pc/vm/zuletzt: jede geaenderte Fassung, die ueberschrieben oder
+    geloescht wird, ist danach auf beiden Seiten oder in `_konflikte/` gesichert; die Seiten sind gleich,
+    und der Folgestand entspricht dem Ergebnis."""
+    werte = [None, "A", "B", "C"]
+    faelle = 0
+    for p in werte:
+        for v in werte:
+            for alt in werte:
+                stand = lambda x: {} if x is None else {pfad: e(x)}  # noqa: E731
+                plan = ws.abgleich_planen(stand(p), stand(v), stand(alt))
+                assert len([a for a in plan if a.art != "konflikt_sichern"]) <= 1, (p, v, alt, plan)
+                if any(a.art == "konflikt_sichern" for a in plan):
+                    assert plan[0].art == "konflikt_sichern", (p, v, alt, plan)
+                pc_n, vm_n, gesichert = _anwenden(pfad, p, v, plan)
+                assert pc_n == vm_n, (p, v, alt, plan)
+                for fassung in (p, v):
+                    if fassung is not None and fassung != alt:  # geaendert oder neu
+                        assert fassung == pc_n or fassung in gesichert, (p, v, alt, plan)
+                if None not in (p, v, alt) and (p == alt) != (v == alt):  # nur eine Seite geaendert
+                    assert gesichert == [] and pc_n == (v if p == alt else p), (p, v, alt, plan)
+                neu = ws._stand_nach_abgleich(stand(p), stand(v), stand(alt), set())
+                erwartet = {} if pc_n is None else {pfad: pc_n}
+                assert {k: x.sha256 for k, x in neu.items()} == erwartet, (p, v, alt)
+                faelle += 1
+    assert faelle == 64
+
+
 def test_loeschgrenze():
     loesch = [Aktion("loeschen_vm", f"p{i}.md") for i in range(21)]
     with pytest.raises(ws.ZuVieleLoeschungen):
@@ -620,6 +697,40 @@ def test_pc_ueberschreiben_prueft_aktuellen_stand(seiten):
     assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE) == 0
     assert (vm / "_konflikte" / HEUTE / "Notes/n.md").read_text() == "pc-spaet"
     assert (pc / "Notes/n.md").read_text() == "vm-neu"
+
+
+def test_vm_aenderung_an_pc_datei_kommt_am_pc_an(seiten):
+    pc, vm, zustand = seiten
+    schreibe(pc, "Projects/p.md", "alt")
+    schreibe(vm, "Projects/p.md", "vm-neu")  # Nicht-Besitzer VM aendert allein -> nach_pc
+    ws.zustand_schreiben(zustand, {"Projects/p.md": Eintrag(sha("alt"), 1.0)})
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE) == 0
+    assert (pc / "Projects/p.md").read_text() == "vm-neu"
+    assert not (vm / "_konflikte").exists()
+    assert {p: x.sha256 for p, x in ws.zustand_lesen(zustand).items()} == {"Projects/p.md": sha("vm-neu")}
+    fake = FakeVm()  # zweiter Lauf: nichts zu tun
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=fake, heute=HEUTE) == 0
+    assert len(fake.aufrufe) == 1
+
+
+def test_vm_aenderung_an_pc_datei_prueft_pc_stand(seiten):
+    pc, vm, zustand = seiten
+    schreibe(pc, "Projects/p.md", "alt")
+    schreibe(vm, "Projects/p.md", "vm-neu")
+    ws.zustand_schreiben(zustand, {"Projects/p.md": Eintrag(sha("alt"), 1.0)})
+    vorher = zustand.read_bytes()
+
+    def spaet(n):  # PC-Besitzer schreibt nach dem PC-Bestand
+        if n == 1:
+            schreibe(pc, "Projects/p.md", "pc-spaet")
+
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(vor_aufruf=spaet), heute=HEUTE) == 4
+    assert (pc / "Projects/p.md").read_text() == "pc-spaet"
+    assert zustand.read_bytes() == vorher
+    # naechster Lauf: beide geaendert -> Besitzer PC gewinnt, VM-Fassung gesichert
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE) == 0
+    assert (vm / "Projects/p.md").read_text() == "pc-spaet"
+    assert (vm / "_konflikte" / HEUTE / "Projects/p.md").read_text() == "vm-neu"
 
 
 def test_vm_ueberschreiben_prueft_aktuellen_stand(seiten):

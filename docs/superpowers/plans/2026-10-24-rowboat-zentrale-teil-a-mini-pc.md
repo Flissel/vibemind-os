@@ -31,7 +31,7 @@
 
 Nie gespiegelt (oberste Ebene, beide Seiten, auch nicht in Bestand/Plan/Doppel-Erkennung): `_konflikte/`, `.spiegel-eingang/`, `.git/`. `.git/` reist nur beim Umzug einmal mit (Rowboat braucht seine Historie auf der VM); der Spiegel-Zustand nach dem Umzug enthält es nicht. Alle Segmente werden exakt verglichen (`People/Veraltet.md` und `People/Max.md` bleiben VM).
 
-Regeln: Der Besitzer gewinnt bei Abweichung; Löschen wirkt nur vom Besitzer aus. Eine **neue** Datei auf der Nicht-Besitzer-Seite wird zum Besitzer kopiert (nicht verworfen). Eine Nicht-Besitzer-Änderung an einer bestehenden Datei wird überschrieben, vorher aber nach `knowledge/_konflikte/<JJJJ-MM-TT>/<pfad>` auf der VM gesichert. `todo.md`, `todo/`, `storage/` liegen außerhalb von `knowledge/` und gehören nur der VM (kein Spiegel).
+Regeln: Verglichen wird gegen den Stand nach dem letzten erfolgreichen Lauf. Hat seit dem letzten Lauf nur **eine** Seite eine Datei geändert, wandert diese Fassung auf die andere Seite, egal wer Besitzer ist (auch Nicht-Besitzer → Besitzer), ohne Konfliktkopie. Haben **beide** Seiten dieselbe Datei verschieden geändert (oder ist sie auf beiden neu und verschieden), gewinnt der Besitzer; die Fassung des Nicht-Besitzers wird vorher nach `knowledge/_konflikte/<JJJJ-MM-TT>/<pfad>` auf der VM gesichert. Eine **neue** Datei auf nur einer Seite wird auf die andere kopiert. Löschen wirkt nur vom Besitzer aus (eine inzwischen geänderte Nicht-Besitzer-Fassung wird vorher gesichert); löscht der Nicht-Besitzer, wird die Datei zurückgespielt. `todo.md`, `todo/`, `storage/` liegen außerhalb von `knowledge/` und gehören nur der VM (kein Spiegel).
 
 ## Review Focus
 
