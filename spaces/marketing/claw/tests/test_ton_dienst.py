@@ -119,23 +119,24 @@ def test_anpassen_echt(tmp_path):
         assert abs(w.getnframes() / 16000 - 2.5) < 0.01
 
 
+def test_vorladen_nur_auf_wunsch(monkeypatch):
+    """24.10.2026: Standard ist Laden bei Bedarf (spart ~6 GB); TON_VORLADEN=1 laedt beim Start."""
+    monkeypatch.delenv("TON_VORLADEN", raising=False)
+    monkeypatch.setattr(td, "_modell_laden", lambda: pytest.fail("darf nicht laden"))
+    assert td.vorladen_starten() is None
+
+
 def test_vorladen_laedt_im_hintergrund(monkeypatch):
     geladen = []
-    monkeypatch.delenv("TON_VORLADEN", raising=False)
+    monkeypatch.setenv("TON_VORLADEN", "1")
     monkeypatch.setattr(td, "_modell_laden", lambda: geladen.append(1))
     t = td.vorladen_starten()
     t.join(2)
     assert geladen == [1] and t.daemon
 
 
-def test_vorladen_abschaltbar(monkeypatch):
-    monkeypatch.setenv("TON_VORLADEN", "0")
-    monkeypatch.setattr(td, "_modell_laden", lambda: pytest.fail("darf nicht laden"))
-    assert td.vorladen_starten() is None
-
-
 def test_vorladen_fehler_kippt_nichts(monkeypatch):
-    monkeypatch.delenv("TON_VORLADEN", raising=False)
+    monkeypatch.setenv("TON_VORLADEN", "1")
 
     def kaputt():
         raise RuntimeError("CUDA weg")
@@ -246,3 +247,81 @@ def test_nachbinden_gibt_nach_der_frist_auf(caplog):
     td.nachbinden("100.84.127.84", erzeugen, warten=pausen.append, takt_s=10, frist_s=30)
     assert pausen == [10, 10, 10]
     assert "100.84.127.84" in caplog.text
+
+
+# --- Laden bei Bedarf, Freigeben nach Leerlauf (24.10.2026) -----------------
+
+class _FalschesModell:
+    geladen = []
+
+    @classmethod
+    def from_local(cls, ordner, device):
+        cls.geladen.append(("lokal", str(ordner), device))
+        return cls()
+
+    @classmethod
+    def from_pretrained(cls, device):
+        cls.geladen.append(("hub", device))
+        return cls()
+
+
+@pytest.fixture
+def falsches_modell(monkeypatch):
+    import sys
+    import types
+    _FalschesModell.geladen = []
+    mod = types.ModuleType("chatterbox.mtl_tts")
+    mod.ChatterboxMultilingualTTS = _FalschesModell
+    monkeypatch.setitem(sys.modules, "chatterbox.mtl_tts", mod)
+    monkeypatch.setattr(td, "_modell", None)
+    monkeypatch.setattr(td, "_freigeben_geraet", lambda: None)
+    return _FalschesModell
+
+
+def test_modell_aus_lokalem_ordner(falsches_modell, monkeypatch, tmp_path):
+    monkeypatch.setenv("TON_MODELL_ORDNER", str(tmp_path))
+    monkeypatch.setenv("TON_GERAET", "cuda")
+    td._modell_laden()
+    assert falsches_modell.geladen == [("lokal", str(tmp_path), "cuda")]
+
+
+def test_ohne_ordner_vom_hub(falsches_modell, monkeypatch):
+    monkeypatch.delenv("TON_MODELL_ORDNER", raising=False)
+    monkeypatch.setenv("TON_GERAET", "cpu")
+    td._modell_laden()
+    assert falsches_modell.geladen == [("hub", "cpu")]
+
+
+def test_leerlauf_gibt_modell_frei(falsches_modell, monkeypatch):
+    monkeypatch.delenv("TON_MODELL_ORDNER", raising=False)
+    monkeypatch.setenv("TON_LEERLAUF_S", "600")
+    td._modell_laden()
+    td._genutzt(jetzt=1000.0)
+    assert td.entladen_wenn_ruhig(jetzt=1000.0 + 599) is False and td._modell is not None
+    assert td.entladen_wenn_ruhig(jetzt=1000.0 + 601) is True and td._modell is None
+    assert td.entladen_wenn_ruhig(jetzt=1000.0 + 9999) is False      # nichts mehr zu tun
+
+
+def test_nicht_freigeben_waehrend_gesprochen_wird(falsches_modell, monkeypatch):
+    monkeypatch.setenv("TON_LEERLAUF_S", "1")
+    td._modell_laden()
+    td._genutzt(jetzt=0.0)
+    with td._sprech_lock:
+        assert td.entladen_wenn_ruhig(jetzt=1e9) is False
+    assert td._modell is not None
+
+
+def test_leerlauf_null_heisst_nie_freigeben(falsches_modell, monkeypatch):
+    monkeypatch.setenv("TON_LEERLAUF_S", "0")
+    td._modell_laden()
+    td._genutzt(jetzt=0.0)
+    assert td.entladen_wenn_ruhig(jetzt=1e9) is False and td._modell is not None
+
+
+def test_nach_freigabe_laedt_naechste_anfrage_neu(falsches_modell, monkeypatch):
+    monkeypatch.setenv("TON_LEERLAUF_S", "10")
+    td._modell_laden()
+    td._genutzt(jetzt=0.0)
+    td.entladen_wenn_ruhig(jetzt=100.0)
+    td._modell_laden()
+    assert len(falsches_modell.geladen) == 2

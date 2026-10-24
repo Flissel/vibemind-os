@@ -137,6 +137,9 @@ $Dienste = @(
             TON_DIENST_ERLAUBT  = '100.67.177.45'
             # Standardstimme (User-Wahl 19.10.2026): Probe C aus den Poetry-Aufnahmen; 'eingebaut' = Modellstimme.
             TON_STANDARD_STIMME = 'eigene-c'
+            # 24.10.2026: Modell erst bei Bedarf, frei nach 10 min Ruhe; Gewichte-Kopie auf der SSD (E: kalt ~6 min).
+            TON_MODELL_ORDNER   = 'C:\Users\User\.cache\chatterbox-mtl'
+            TON_LEERLAUF_S      = '600'
         }
         Was    = 'Sprech-Dienst (Chatterbox Multilingual, kein API-Budget; Laura auf der VM via Tailscale)'
     },

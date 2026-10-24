@@ -171,17 +171,79 @@ def anfrage_pruefen(nutzlast) -> tuple[str, str, Path | None]:
 _modell = None
 _modell_lock = threading.Lock()
 _sprech_lock = threading.Lock()
+_zuletzt = 0.0          # letzte Nutzung (time.monotonic) - fuer das Freigeben nach Leerlauf
+
+
+def _genutzt(jetzt: float | None = None) -> None:
+    global _zuletzt
+    _zuletzt = time.monotonic() if jetzt is None else jetzt
 
 
 def _modell_laden():
+    """Laedt bei Bedarf (24.10.2026). TON_MODELL_ORDNER = Ordner mit den Gewichten auf der SSD
+    (from_local); ohne ihn wie bisher ueber den Hugging-Face-Cache (am PC auf der HDD E:, kalt ~6 min)."""
     global _modell
     with _modell_lock:
         if _modell is None:
             from chatterbox.mtl_tts import ChatterboxMultilingualTTS
             geraet = os.environ.get("TON_GERAET", "cuda")
-            LOG.info("lade Chatterbox Multilingual auf %s", geraet)
-            _modell = ChatterboxMultilingualTTS.from_pretrained(device=geraet)
+            ordner = os.environ.get("TON_MODELL_ORDNER", "").strip()
+            beginn = time.monotonic()
+            if ordner:
+                LOG.info("lade Chatterbox Multilingual aus %s auf %s", ordner, geraet)
+                _modell = ChatterboxMultilingualTTS.from_local(Path(ordner), geraet)
+            else:
+                LOG.info("lade Chatterbox Multilingual auf %s", geraet)
+                _modell = ChatterboxMultilingualTTS.from_pretrained(device=geraet)
+            LOG.info("Modell geladen in %.1f s", time.monotonic() - beginn)
+        _genutzt()
         return _modell
+
+
+def _freigeben_geraet() -> None:
+    import gc
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
+
+
+def entladen_wenn_ruhig(jetzt: float | None = None) -> bool:
+    """Gibt das Modell frei, wenn es TON_LEERLAUF_S Sekunden (Standard 600, 0 = nie) nicht genutzt
+    wurde und gerade nichts gesprochen wird. True = freigegeben."""
+    global _modell
+    grenze = float(os.environ.get("TON_LEERLAUF_S", "600") or 0)
+    jetzt = time.monotonic() if jetzt is None else jetzt
+    if grenze <= 0 or _modell is None or jetzt - _zuletzt < grenze:
+        return False
+    if not _sprech_lock.acquire(blocking=False):
+        return False
+    try:
+        with _modell_lock:
+            if _modell is None:
+                return False
+            _modell = None
+        _freigeben_geraet()
+        LOG.info("Modell nach %.0f s Leerlauf freigegeben", jetzt - _zuletzt)
+        return True
+    finally:
+        _sprech_lock.release()
+
+
+def leerlauf_waechter_starten(takt_s: float = 30) -> threading.Thread:
+    def schleife():
+        while True:
+            time.sleep(takt_s)
+            try:
+                entladen_wenn_ruhig()
+            except Exception:  # noqa: BLE001 - der Waechter darf den Dienst nie mitreissen
+                LOG.exception("Freigeben fehlgeschlagen")
+    t = threading.Thread(target=schleife, name="leerlauf", daemon=True)
+    t.start()
+    return t
 
 
 def aussprache_datei() -> Path | None:
@@ -264,6 +326,7 @@ def sprechen(text: str, sprache: str, probe: Path | None, regler: dict[str, floa
         if probe is not None:
             kw["audio_prompt_path"] = str(probe)
         wav = modell.generate(text, **kw)
+        _genutzt()
     puffer = io.BytesIO()
     # 16-Bit-PCM statt torchaudios Vorgabe 32-Bit-Float: kleiner, und jedes Werkzeug liest es.
     torchaudio.save(puffer, wav.cpu(), modell.sr, format="wav", encoding="PCM_S", bits_per_sample=16)
@@ -331,8 +394,9 @@ class Handler(BaseHTTPRequestHandler):
 def vorladen_starten() -> threading.Thread | None:
     """Modell schon beim Start laden (18.10.2026). Gemessen nach einem Neustart: der erste Satz brauchte
     6 Minuten (Gewichte auf der HDD E:), warm 7 s - Lauras Zeitlimit (300 s) lief vorher ab und das
-    erste Reel scheiterte. TON_VORLADEN=0 schaltet es ab (Tests, Fehlersuche)."""
-    if os.environ.get("TON_VORLADEN", "1").strip() == "0":
+    erste Reel scheiterte. Seit 24.10.2026 nur noch mit TON_VORLADEN=1: Standard ist Laden bei Bedarf
+    aus TON_MODELL_ORDNER auf der SSD, das spart ~6 GB im Leerlauf."""
+    if os.environ.get("TON_VORLADEN", "0").strip() != "1":
         return None
 
     def laden():
@@ -371,6 +435,7 @@ def nachbinden(adresse: str, erzeugen, *, warten=time.sleep, takt_s: float = 10,
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     vorladen_starten()
+    leerlauf_waechter_starten()
     lokal, *weitere = lausch_adressen()
     for adresse in weitere:
         threading.Thread(target=nachbinden, args=(adresse, lambda a: ThreadingHTTPServer((a, PORT), Handler)),
