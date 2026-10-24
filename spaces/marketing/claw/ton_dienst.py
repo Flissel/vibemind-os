@@ -189,12 +189,18 @@ def _modell_laden():
             geraet = os.environ.get("TON_GERAET", "cuda")
             ordner = os.environ.get("TON_MODELL_ORDNER", "").strip()
             beginn = time.monotonic()
-            if ordner:
-                LOG.info("lade Chatterbox Multilingual aus %s auf %s", ordner, geraet)
-                _modell = ChatterboxMultilingualTTS.from_local(Path(ordner), geraet)
-            else:
-                LOG.info("lade Chatterbox Multilingual auf %s", geraet)
-                _modell = ChatterboxMultilingualTTS.from_pretrained(device=geraet)
+            try:
+                if ordner:
+                    LOG.info("lade Chatterbox Multilingual aus %s auf %s", ordner, geraet)
+                    _modell = ChatterboxMultilingualTTS.from_local(Path(ordner), geraet)
+                else:
+                    LOG.info("lade Chatterbox Multilingual auf %s", geraet)
+                    _modell = ChatterboxMultilingualTTS.from_pretrained(device=geraet)
+            except BaseException:
+                # 24.10.2026: ein Abbruch (os error 1455) hielt sonst 5,5 GB halb geladener Gewichte fest
+                _modell = None
+                _freigeben_geraet()
+                raise
             LOG.info("Modell geladen in %.1f s", time.monotonic() - beginn)
         _genutzt()
         return _modell

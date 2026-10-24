@@ -325,3 +325,17 @@ def test_nach_freigabe_laedt_naechste_anfrage_neu(falsches_modell, monkeypatch):
     td.entladen_wenn_ruhig(jetzt=100.0)
     td._modell_laden()
     assert len(falsches_modell.geladen) == 2
+
+
+def test_fehlgeschlagenes_laden_raeumt_auf(falsches_modell, monkeypatch, tmp_path):
+    """24.10.2026: ein Ladeabbruch (os error 1455) hielt 5,5 GB fest - danach muss aufgeraeumt werden."""
+    aufgeraeumt = []
+    monkeypatch.setattr(td, "_freigeben_geraet", lambda: aufgeraeumt.append(1))
+    monkeypatch.setenv("TON_MODELL_ORDNER", str(tmp_path))
+
+    def kaputt(ordner, device):
+        raise OSError("Die Auslagerungsdatei ist zu klein (os error 1455)")
+    monkeypatch.setattr(falsches_modell, "from_local", kaputt)
+    with pytest.raises(OSError):
+        td._modell_laden()
+    assert aufgeraeumt == [1] and td._modell is None
