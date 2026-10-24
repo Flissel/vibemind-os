@@ -199,3 +199,14 @@ def test_budget_eintrag_rowboat_server():
     eintrag = yaml.safe_load(pfad.read_text(encoding="utf-8"))["agenten"]["rowboat-server"]
     assert eintrag == {"bereich": "wissen", "klasse": "auftrag", "modell": "sonnet",
                        "tagesgrenze": 150, "wrapper": "shim"}
+
+
+def test_dockerignore_haelt_token_und_budget_aus_dem_build():
+    zeilen = (HEADLESS / ".dockerignore").read_text(encoding="utf-8").split()
+    assert "claude-token" in zeilen and "budget/" in zeilen
+
+
+def test_server_wartet_auf_gesunde_shim():
+    import yaml
+    dienste = yaml.safe_load((HEADLESS / "compose.yml").read_text(encoding="utf-8"))["services"]
+    assert dienste["rowboat-server"]["depends_on"] == {"rowboat-shim": {"condition": "service_healthy"}}
