@@ -13,6 +13,7 @@ docs/superpowers/specs/2026-10-13-vibemind-desktop-update-design.md
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import shutil
@@ -35,6 +36,8 @@ CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
 DEFAULT_ENV_FILE = SPACE.parents[2] / ".env"   # Vibemind_V1/.env (Space liegt unter vibemind-os/spaces/rowboat)
 OPENFANG_KEY = "OPENFANG_API_KEY"
+REMOTE_SERVER, REMOTE_TOKEN = "ROWBOAT_REMOTE_SERVER", "ROWBOAT_REMOTE_TOKEN"
+FERN_ENV = "ROWBOAT_FERN_DATEI"   # Test-/Sonderpfad fuer die Fern-Datei
 GIT_BASH_FALLBACK = Path(r"C:\Program Files\Git\bin\bash.exe")
 
 
@@ -53,6 +56,43 @@ def read_env_value(path: Path, name: str) -> str | None:
             value = value.strip().strip('"').strip("'")
             return value or None
     return None
+
+
+class FernDateiFehler(ValueError):
+    """Fern-Datei unbrauchbar. Die Meldung enthaelt nie den Token."""
+
+
+def fern_datei_pfad() -> Path:
+    override = os.environ.get(FERN_ENV)
+    if override:
+        return Path(override)
+    base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    return Path(base) / "VibeMind" / "rowboat-fern.json"
+
+
+def fern_ziel_laden(datei: Path) -> tuple[str, str] | None:
+    """(url, token) des Mini-PC-Kerns aus der Fern-Datei; None, wenn sie fehlt (dann laeuft der lokale Kern).
+
+    Unbrauchbarer Inhalt -> FernDateiFehler mit Hinweis ohne Token-Wert.
+    """
+    try:
+        text = datei.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise FernDateiFehler(f"Fern-Datei {datei} nicht lesbar ({type(exc).__name__})") from None
+    try:
+        data = json.loads(text)
+    except ValueError:
+        raise FernDateiFehler(f"Fern-Datei {datei} ist kein gueltiges JSON") from None
+    url = data.get("url") if isinstance(data, dict) else None
+    token = data.get("token") if isinstance(data, dict) else None
+    if not isinstance(url, str) or not isinstance(token, str) or not url.strip() or not token.strip():
+        raise FernDateiFehler(f'Fern-Datei {datei} braucht die Schluessel "url" und "token" (Text)')
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        raise FernDateiFehler(f"Fern-Datei {datei}: url muss mit http:// oder https:// beginnen")
+    return url, token.strip()
 
 
 @dataclass(frozen=True)
@@ -248,11 +288,21 @@ def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS, env_file: Path
         log.error("not installed yet - run start_desktop.py %s first. Missing:\n- %s",
                   "--install and --build-embed" if embed else "--install", "\n- ".join(gaps))
         return 2
+    try:
+        fern = fern_ziel_laden(fern_datei_pfad())
+    except FernDateiFehler as exc:
+        log.error("%s - Start abgebrochen", exc)
+        return 2
     # Der Schluessel gehoert nur dem Rowboat-Job (Spec 3.3): alle anderen Prozesse bekommen ihn nie, auch nicht geerbt.
-    base_env = {k: v for k, v in os.environ.items() if k != OPENFANG_KEY}
+    # Im Fern-Modus gilt dasselbe fuer Ziel und Token.
+    hidden = {OPENFANG_KEY, REMOTE_SERVER, REMOTE_TOKEN} if fern else {OPENFANG_KEY}
+    base_env = {k: v for k, v in os.environ.items() if k not in hidden}
     key = read_env_value(env_file, OPENFANG_KEY) or os.environ.get(OPENFANG_KEY)
-    if subprocess.run(map_command(venv_python(lay.venv, windows), workdir), cwd=lay.schema,
-                      env=base_env).returncode != 0:
+    if fern:
+        # Das Wissen liegt auf dem Mini-PC: kein lokaler Vault-Map-Lauf.
+        log.info("Fern-Modus: %s", fern[0])
+    elif subprocess.run(map_command(venv_python(lay.venv, windows), workdir), cwd=lay.schema,
+                        env=base_env).returncode != 0:
         log.warning("vault map failed once; Rowboat starts anyway, the refresh retries every %d s", MAP_SECONDS)
     # Single-Instance auch ungebaut (Fork, Spec 2026-10-17): ein zweiter Start holt die laufende Instanz nach vorn.
     # Telemetrie aus: Upstream (ab 10/2026) sendet sonst standardmaessig an PostHog.
@@ -261,7 +311,9 @@ def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS, env_file: Path
     if embed:
         env.pop("ELECTRON_RUN_AS_NODE", None)
         env["ROWBOAT_EMBED"] = "1"
-    rowboat_env = {**env, OPENFANG_KEY: key} if key else env
+    rowboat_env = {**env, OPENFANG_KEY: key} if key else dict(env)
+    if fern:
+        rowboat_env[REMOTE_SERVER], rowboat_env[REMOTE_TOKEN] = fern
     if not key:
         log.warning("%s nicht gefunden – Integrationen-Seite zeigt Hinweis", OPENFANG_KEY)
     if not windows:
@@ -277,7 +329,7 @@ def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS, env_file: Path
     # Nur im Einbettungsmodus versteckt: im Dev-Modus soll die Ausgabe von npm run dev sichtbar bleiben.
     extra = {"creationflags": CREATE_NO_WINDOW} if windows and embed else {}
     try:
-        for name, cmd, cwd in jobs(lay, workdir, windows, embed=embed):
+        for name, cmd, cwd in jobs(lay, workdir, windows, embed=embed)[:1 if fern else None]:
             log.info("starting %s: %s", name, " ".join(cmd))
             io: dict = {}
             if embed:

@@ -17,6 +17,7 @@ from start_desktop import install_steps, jobs, layout, map_command, missing, ven
 def _no_real_env_file(tmp_path, monkeypatch):
     """start() must never read the real Vibemind_V1/.env in tests."""
     monkeypatch.setattr(start_desktop, "DEFAULT_ENV_FILE", tmp_path / "nie-vorhanden.env")
+    monkeypatch.setenv("ROWBOAT_FERN_DATEI", str(tmp_path / "nie-vorhanden-fern.json"))   # nie die echte Fern-Datei lesen
 
 
 class FakeProc:
@@ -595,3 +596,97 @@ def test_log_open_failure_falls_back_to_devnull_and_starts(tmp_path, monkeypatch
     for s in seen:
         assert s["kw"]["stdout"] == subprocess.DEVNULL
         assert s["kw"]["stderr"] == subprocess.STDOUT and s["kw"]["stdin"] == subprocess.DEVNULL
+
+
+# --- Fern-Modus (Rowboat-Zentrale Teil A, Task 6) ---
+FERN_TOKEN = "tok-geheim-123"
+
+
+def _fern_datei(tmp_path, monkeypatch, text):
+    datei = tmp_path / "fern.json"
+    datei.write_text(text, encoding="utf-8")
+    monkeypatch.setenv("ROWBOAT_FERN_DATEI", str(datei))
+    return datei
+
+
+def test_fern_ziel_laden_liest_url_und_token(tmp_path):
+    datei = tmp_path / "f.json"
+    datei.write_text(f'{{"url": "http://mini-pc:3000", "token": "{FERN_TOKEN}"}}', encoding="utf-8")
+    assert start_desktop.fern_ziel_laden(datei) == ("http://mini-pc:3000", FERN_TOKEN)
+    assert start_desktop.fern_ziel_laden(tmp_path / "gibtsnicht.json") is None
+
+
+def test_fern_ziel_setzt_nur_rowboat_umgebung(tmp_path, monkeypatch, caplog, capsys):
+    lay = _prereqs(tmp_path, windows=True)
+    _fern_datei(tmp_path, monkeypatch, f'{{"url": "http://mini-pc:3000", "token": "{FERN_TOKEN}"}}')
+    for name in ("ROWBOAT_REMOTE_SERVER", "ROWBOAT_REMOTE_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    runs, popens = [], []
+    monkeypatch.setattr(start_desktop.subprocess, "run", lambda *a, **k: runs.append((a, k)) or SimpleNamespace(returncode=0))
+
+    def fake_popen(cmd, cwd=None, env=None, **k):
+        popens.append((cmd, cwd, env))
+        return FakeProc(exit_code=0)
+
+    monkeypatch.setattr(start_desktop.subprocess, "Popen", fake_popen)
+    caplog.set_level("INFO")
+    assert start_desktop.start(lay, tmp_path, windows=True) == 0
+    rowboat = [p for p in popens if p[1] == lay.app]
+    others = [p for p in popens if p[1] != lay.app]
+    assert len(rowboat) == 1
+    assert rowboat[0][2]["ROWBOAT_REMOTE_SERVER"] == "http://mini-pc:3000"
+    assert rowboat[0][2]["ROWBOAT_REMOTE_TOKEN"] == FERN_TOKEN
+    assert rowboat[0][2]["ROWBOAT_TELEMETRY_DISABLED"] == "1" and rowboat[0][2]["ROWBOAT_SINGLE_INSTANCE"] == "1"
+    # Vault-Map entfaellt: kein Einmal-Lauf, kein Dauer-Job
+    assert [r for r in runs if r[0][0][0] != "taskkill"] == [] and others == []
+    assert all(FERN_TOKEN not in " ".join(map(str, c)) for c, _, _ in popens)
+    out = capsys.readouterr()
+    assert FERN_TOKEN not in caplog.text + out.out + out.err
+    assert "Fern-Modus: http://mini-pc:3000" in caplog.text
+
+
+def test_fern_modus_embed_behaelt_embed_umgebung(tmp_path, monkeypatch):
+    lay = _embed_prereqs(tmp_path, windows=True)
+    _fern_datei(tmp_path, monkeypatch, f'{{"url": "https://zentrale.example", "token": "{FERN_TOKEN}"}}')
+    popens = []
+    monkeypatch.setattr(start_desktop.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0))
+    monkeypatch.setattr(start_desktop.subprocess, "Popen", lambda cmd, cwd=None, env=None, **k: popens.append((cmd, env)) or FakeProc(exit_code=0))
+    assert start_desktop.start(lay, tmp_path, windows=True, embed=True) == 0
+    assert len(popens) == 1
+    cmd, env = popens[0]
+    assert cmd[-2:] == ["--hidden", "--embed"] and env["ROWBOAT_EMBED"] == "1"
+    assert env["ROWBOAT_REMOTE_SERVER"] == "https://zentrale.example" and FERN_TOKEN not in " ".join(cmd)
+
+
+def test_ohne_fern_datei_wie_bisher(tmp_path, monkeypatch):
+    lay = _prereqs(tmp_path, windows=True)   # Fixture zeigt auf eine nicht vorhandene Fern-Datei
+    monkeypatch.delenv("ROWBOAT_REMOTE_SERVER", raising=False)
+    monkeypatch.delenv("ROWBOAT_REMOTE_TOKEN", raising=False)
+    runs, popens = [], []
+    monkeypatch.setattr(start_desktop.subprocess, "run", lambda cmd, *a, **k: runs.append(cmd[0]) or SimpleNamespace(returncode=0))
+    monkeypatch.setattr(start_desktop.subprocess, "Popen", lambda cmd, cwd=None, env=None, **k: popens.append((cwd, env)) or FakeProc(exit_code=0))
+    assert start_desktop.start(lay, tmp_path, windows=True) == 0
+    assert len([r for r in runs if r != "taskkill"]) == 1 and len(popens) == 2   # Vault-Map-Einmallauf + beide Jobs
+    assert all("ROWBOAT_REMOTE_SERVER" not in e and "ROWBOAT_REMOTE_TOKEN" not in e for _, e in popens)
+
+
+@pytest.mark.parametrize("inhalt", [
+    "{kaputt",
+    '{"url": "http://x"}',
+    '{"token": "tok-geheim-123"}',
+    '{"url": "ftp://x", "token": "tok-geheim-123"}',
+    '{"url": "mini-pc:3000", "token": "tok-geheim-123"}',
+    '["http://x", "tok-geheim-123"]',
+])
+def test_kaputte_fern_datei_bricht_mit_hinweis_ab(tmp_path, monkeypatch, caplog, capsys, inhalt):
+    lay = _prereqs(tmp_path, windows=True)
+    _fern_datei(tmp_path, monkeypatch, inhalt)
+    started = []
+    monkeypatch.setattr(start_desktop.subprocess, "Popen", lambda *a, **k: started.append(a))
+    monkeypatch.setattr(start_desktop.subprocess, "run", lambda *a, **k: started.append(a))
+    with caplog.at_level("ERROR", logger="start_desktop"):
+        assert start_desktop.start(lay, tmp_path, windows=True) == 2
+    assert started == []
+    assert "Fern-Datei" in caplog.text
+    out = capsys.readouterr()
+    assert FERN_TOKEN not in caplog.text + out.out + out.err
