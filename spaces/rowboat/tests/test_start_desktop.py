@@ -690,3 +690,43 @@ def test_kaputte_fern_datei_bricht_mit_hinweis_ab(tmp_path, monkeypatch, caplog,
     assert "Fern-Datei" in caplog.text
     out = capsys.readouterr()
     assert FERN_TOKEN not in caplog.text + out.out + out.err
+
+
+# --- Fix round 1: UTF-16 und Zugangsdaten in der URL ---
+def test_utf16_fern_datei_bricht_mit_hinweis_ab(tmp_path, monkeypatch, caplog, capsys):
+    lay = _prereqs(tmp_path, windows=True)   # PowerShell 5 Out-File schreibt UTF-16 LE mit BOM
+    datei = tmp_path / "fern.json"
+    datei.write_bytes(f'{{"url": "http://x:1", "token": "{FERN_TOKEN}"}}'.encode("utf-16"))
+    monkeypatch.setenv("ROWBOAT_FERN_DATEI", str(datei))
+    started = []
+    monkeypatch.setattr(start_desktop.subprocess, "Popen", lambda *a, **k: started.append(a))
+    monkeypatch.setattr(start_desktop.subprocess, "run", lambda *a, **k: started.append(a))
+    with caplog.at_level("ERROR", logger="start_desktop"):
+        assert start_desktop.start(lay, tmp_path, windows=True) == 2
+    assert started == []
+    assert "nicht als UTF-8 lesbar" in caplog.text
+    out = capsys.readouterr()
+    assert FERN_TOKEN not in caplog.text + out.out + out.err
+
+
+@pytest.mark.parametrize("url", ["http://user:pw@host:1", "http://u@host", "http://", "http:///pfad",
+                                 "http://ho st", "http://host\t:1", "http://host:abc"])
+def test_fern_url_mit_zugangsdaten_leerraum_oder_ohne_host_wird_abgelehnt(tmp_path, monkeypatch, caplog, url):
+    lay = _prereqs(tmp_path, windows=True)
+    _fern_datei(tmp_path, monkeypatch, '{"url": "%s", "token": "%s"}' % (url.replace("\t", "\t"), FERN_TOKEN))
+    monkeypatch.setattr(start_desktop.subprocess, "Popen", lambda *a, **k: pytest.fail("darf nicht starten"))
+    monkeypatch.setattr(start_desktop.subprocess, "run", lambda *a, **k: pytest.fail("darf nicht laufen"))
+    with caplog.at_level("ERROR", logger="start_desktop"):
+        assert start_desktop.start(lay, tmp_path, windows=True) == 2
+    assert "pw" not in caplog.text and FERN_TOKEN not in caplog.text
+
+
+def test_fern_info_zeile_zeigt_nur_schema_host_port(tmp_path, monkeypatch, caplog):
+    lay = _prereqs(tmp_path, windows=True)
+    _fern_datei(tmp_path, monkeypatch, f'{{"url": "http://mini-pc:3000/api?x=1#f", "token": "{FERN_TOKEN}"}}')
+    monkeypatch.setattr(start_desktop.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0))
+    monkeypatch.setattr(start_desktop.subprocess, "Popen", lambda *a, **k: FakeProc(exit_code=0))
+    caplog.set_level("INFO")
+    start_desktop.start(lay, tmp_path, windows=True)
+    assert "Fern-Modus: http://mini-pc:3000" in caplog.text
+    assert "/api" not in caplog.text and "x=1" not in caplog.text

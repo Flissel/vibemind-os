@@ -23,6 +23,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 log = logging.getLogger("start_desktop")
 
@@ -79,6 +80,9 @@ def fern_ziel_laden(datei: Path) -> tuple[str, str] | None:
         text = datei.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return None
+    except UnicodeDecodeError:
+        raise FernDateiFehler(f"Die Fern-Datei {datei} ist nicht als UTF-8 lesbar "
+                              "(z.B. UTF-16 von PowerShell 5 Out-File; als UTF-8 speichern)") from None
     except OSError as exc:
         raise FernDateiFehler(f"Fern-Datei {datei} nicht lesbar ({type(exc).__name__})") from None
     try:
@@ -92,7 +96,24 @@ def fern_ziel_laden(datei: Path) -> tuple[str, str] | None:
     url = url.strip()
     if not url.startswith(("http://", "https://")):
         raise FernDateiFehler(f"Fern-Datei {datei}: url muss mit http:// oder https:// beginnen")
+    if any(c.isspace() for c in url):
+        raise FernDateiFehler(f"Fern-Datei {datei}: url darf keine Leerzeichen enthalten")
+    try:
+        parts = urlsplit(url)
+        host, _ = parts.hostname, parts.port   # .port wirft bei ungueltigem Port
+    except ValueError:
+        raise FernDateiFehler(f"Fern-Datei {datei}: url ist ungueltig") from None
+    if not host:
+        raise FernDateiFehler(f"Fern-Datei {datei}: url braucht einen Host")
+    if parts.username is not None or parts.password is not None:
+        raise FernDateiFehler(f"Fern-Datei {datei}: url darf keine Zugangsdaten enthalten (Token gehoert in token)")
     return url, token.strip()
+
+
+def fern_anzeige(url: str) -> str:
+    """Nur scheme://host[:port] fuer Logs."""
+    p = urlsplit(url)
+    return f"{p.scheme}://{p.netloc}"
 
 
 @dataclass(frozen=True)
@@ -300,7 +321,7 @@ def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS, env_file: Path
     key = read_env_value(env_file, OPENFANG_KEY) or os.environ.get(OPENFANG_KEY)
     if fern:
         # Das Wissen liegt auf dem Mini-PC: kein lokaler Vault-Map-Lauf.
-        log.info("Fern-Modus: %s", fern[0])
+        log.info("Fern-Modus: %s", fern_anzeige(fern[0]))
     elif subprocess.run(map_command(venv_python(lay.venv, windows), workdir), cwd=lay.schema,
                         env=base_env).returncode != 0:
         log.warning("vault map failed once; Rowboat starts anyway, the refresh retries every %d s", MAP_SECONDS)
