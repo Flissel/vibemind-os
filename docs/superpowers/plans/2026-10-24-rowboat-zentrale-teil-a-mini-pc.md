@@ -191,7 +191,7 @@ def test_pfade_mit_umlauten_und_leerzeichen():
 - Create: `spaces/rowboat/deploy/headless/UMSTELLUNG.md` (Ablauf + Rückweg)
 - Modify (äußeres Repo): `WORKBOARD.md` (eigene Zeile), Memory `project_rowboat_ui_cdp.md`
 
-- [ ] **Step 1: Vorher-Sicherung** – `rowboat_knowledge_sichern.ps1` einmal laufen lassen; Aufgabe „VibeMind Rowboat-Wissen sichern“ danach deaktivieren (Spiegel ersetzt sie).
+- [ ] **Step 1: Vorher-Sicherung** – `rowboat_knowledge_sichern.ps1` einmal laufen lassen; Aufgabe „VibeMind Rowboat-Wissen sichern“ **weiterlaufen lassen** (nicht deaktivieren, siehe UMSTELLUNG.md Schritt 1).
 - [ ] **Step 2: Lokale Einbettung stoppen** – `Stop-RowboatEmbed` (Wächter wertet „läuft nicht“ als bewusst).
 - [ ] **Step 3: Umzug** – `python -m spaces.rowboat.scripts.rowboat_umzug --trocken`, dann echt; erwartet „Abweichungen 0“.
 - [ ] **Step 4: Server + Shim starten** – `docker compose up -d`; `/health` 200; Test-Chat per `POST /rpc` mit Token beantwortet (Modell über VM-Shim).
