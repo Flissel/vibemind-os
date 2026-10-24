@@ -4,6 +4,7 @@
 -- einrichtung in naechster) - danach IMMER 086 erneut einspielen und verify_060, verify_062 .. verify_066,
 -- verify_078 und verify_086 zusammen ueber migration_probe laufen lassen. verify_061 ist unabhaengig von 086
 -- schon rot ("0: Index laufend bleibt" - der Index wurde in 066 umgebaut) und gehoert nicht in diese Probe.
+-- Replay von 086 dreht 091 zurueck (naechster/uebernehmen) - danach 091 erneut einspielen.
 -- 086: Einrichtung neuer Marken (/marke_neu, sales-claw Spec 2026-10-21-marke-neu-skill-design.md).
 -- Idempotent, eine Transaktion.
 --   1) mandanten.einrichtung ('laeuft' | 'abgebrochen' | NULL), einrichtung_stand (jsonb, {} vorgegeben:

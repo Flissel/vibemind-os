@@ -1,8 +1,7 @@
 -- RUNBOOK: 091 ersetzt pult_marke_naechster(interval, text[]) und pult_marke_uebernehmen(uuid, text, text), beide
 -- zuletzt aus 086. Ein Replay von 064, 066, 078 oder 086 ueberschreibt sie wieder mit der alten Fassung (naechster
 -- ohne pflichtteil bei aktiven Firmen, uebernehmen ohne Pflichtangaben) - danach IMMER 091 erneut einspielen und
--- 086 + verify_086 + 091 + verify_091 zusammen ueber migration_probe laufen lassen (in dieser Reihenfolge:
--- verify_086 (j) prueft noch die 086-Fassung "aktive Firma ohne pflichtteil" und gehoert VOR 091).
+-- verify_086 und verify_091 zusammen ueber migration_probe laufen lassen.
 -- 091: Pflichtangaben fuer bestehende Marken im Marken-Chat (sales-claw, Brief 2026-10-24 pflichtangaben-chat).
 -- Idempotent, eine Transaktion.
 --   1) pult_marke_naechster woertlich aus 086; einzige Aenderung: die Rueckgabe traegt pflichtteil fuer JEDE Firma

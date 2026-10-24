@@ -1749,6 +1749,14 @@ def test_stand_aktuell_ueberspringt_reine_pflichtteil_vorschlaege(umg):
     assert "v.vorschlag ? 'abschnitte'" in ang
 
 
+def test_stand_aktuell_ohne_pflichtteil_in_den_werten(umg):
+    f, _, c = umg
+    angenommen = {**VORSCHLAG, "abschnitte": {"Ton": "warm"}, "pflichtteil": {"impressum": "Radhaus GmbH"}}
+    f.antworten += [[{"ok": True}], _stand_kopf(), [], [], [], [{"vorschlag": angenommen}]]
+    j = c.get("/api/pult/marke?mandant=radhaus", headers=H).json()
+    assert "pflichtteil" not in j["aktuell"]["werte"] and j["aktuell"]["werte"]["akzent"] == VORSCHLAG["akzent"]
+
+
 def test_vorschlag_mit_pflichtteil_ausserhalb_einrichtung_nie_direkt(umg):
     f, _, c = umg
     v = {**VORSCHLAG, "abschnitte": {"Ton": "warm"}, "mustertext": None, "direkt": True,

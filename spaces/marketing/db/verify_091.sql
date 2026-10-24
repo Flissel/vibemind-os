@@ -120,7 +120,7 @@ DO $$ DECLARE r jsonb; aid uuid; BEGIN
   r := marketing.pult_marke_naechster(interval '5 minutes', NULL::text[]);
   IF r->>'id' IS DISTINCT FROM aid::text
      OR r->'pflichtteil' IS DISTINCT FROM (SELECT pflichtteil FROM marketing.mandanten WHERE id = 'probe_091_a')
-     OR r ? 'einrichtung_stand' OR r->'einrichtung' <> 'null'::jsonb THEN
+     OR r ? 'einrichtung_stand' OR NOT (r ? 'einrichtung') OR r->'einrichtung' <> 'null'::jsonb THEN
     RAISE EXCEPTION 'verify_091: (f) Rueckgabe bei aktiver Firma falsch: %', r; END IF;
   IF NOT (r ?& ARRAY['id','art','mandant','firma','nachricht','kontext','verlauf','vorschlag']) THEN
     RAISE EXCEPTION 'verify_091: (f) alte Schluessel fehlen: %', r; END IF;

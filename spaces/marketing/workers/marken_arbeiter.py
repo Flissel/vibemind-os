@@ -481,12 +481,30 @@ def _pflichtteil_melden(api, aid, auftrag: dict, erg: dict, belege: list[str], h
         hinweise.append(PFLICHT_NICHT + e.grund[:200])
 
 
-def _offene_pflicht(offen: dict) -> dict:
-    """Pflichtangaben eines offenen Vorschlags (beim Ablegen schon gegen die Belege geprueft), nur Text."""
+PFLICHT_GRENZEN = {"impressum": 2000, "abmelde_hinweis": 500, "vermittlerangaben": 2000}   # wie 086/091
+_PFLICHT_ANZEIGE = {"impressum": "Impressum", "abmelde_hinweis": "Abmeldehinweis",
+                    "vermittlerangaben": "Vermittlerangaben"}
+
+
+def _pflicht_grenzen(pflicht: dict, hinweise: list[str]) -> dict:
+    """Zu lange Pflichtangaben verwerfen (die DB lehnte sonst das ganze Übernehmen ab), je mit Hinweis."""
+    aus = {}
+    for k, w in pflicht.items():
+        if len(w) > PFLICHT_GRENZEN[k]:
+            hinweise.append(f"{_PFLICHT_ANZEIGE[k]} nicht übernommen: zu lang (höchstens {PFLICHT_GRENZEN[k]} Zeichen)")
+        else:
+            aus[k] = w
+    return aus
+
+
+def _offene_pflicht(offen: dict, hinweise: list[str]) -> dict:
+    """Pflichtangaben eines offenen Vorschlags (beim Ablegen schon gegen die Belege geprueft), nur Text in den
+    Grenzen der DB."""
     roh = offen.get("pflichtteil") if isinstance(offen, dict) else None
     if not isinstance(roh, dict):
         return {}
-    return {k: w for k, w in roh.items() if k in einrichtung._PFLICHT_SCHLUESSEL and isinstance(w, str) and w.strip()}
+    return _pflicht_grenzen({k: w for k, w in roh.items()
+                             if k in PFLICHT_GRENZEN and isinstance(w, str) and w.strip()}, hinweise)
 
 
 def chat_bearbeiten(api, auftrag: dict, fragen_strom, webseite_lesen, logo_laden, wurzel: str,
@@ -618,13 +636,14 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
         # Normaler Chat (091): belegte Pflichtangaben nur als Vorschlag, gespeichert erst mit "Übernehmen"
         pflicht, pflicht_hinweise = einrichtung.pflichtteil_pruefen(erg["pflichtteil"], belege)
         hinweise += pflicht_hinweise
+        pflicht = _pflicht_grenzen(pflicht, hinweise)
     vorschlag = erg["vorschlag"]
     if vorschlag is None and pflicht:
         # Ein offener Profil-Vorschlag wuerde sonst ersetzt: er bleibt und bekommt die Pflichtangaben dazu
         basis = {**offen, "direkt": False} if offen else {"direkt": False, "aenderungen": []}
         spur.schritt("Vorschlag abgelegt (Pflichtangaben)")
         spur.ende()
-        api.vorschlag(aid, {"vorschlag": {**basis, "pflichtteil": {**_offene_pflicht(offen), **pflicht}},
+        api.vorschlag(aid, {"vorschlag": {**basis, "pflichtteil": {**_offene_pflicht(offen, hinweise), **pflicht}},
                             "antwort": erg["antwort"], "hinweise": _hinweise(hinweise), "direkt": False})
         return "fertig"
     if vorschlag is None:
@@ -642,6 +661,9 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
         if bisher:
             vorschlag.update({k: offen[k] for k in marken_prompt.WERKZEUG_FELDER if isinstance(offen.get(k), str)})
         gespeichert, direkt = _gespeichert(vorschlag, profil)
+        offene = _offene_pflicht(offen, hinweise)      # ein offener Pflichtteil geht nicht still verloren (091)
+        if offene:
+            gespeichert, direkt = {**gespeichert, "pflichtteil": offene, "direkt": False}, False
         spur.schritt("Vorschlag abgelegt")
         spur.ende()
         api.vorschlag(aid, {"vorschlag": gespeichert, "antwort": erg["antwort"], "hinweise": _hinweise(hinweise),
@@ -665,7 +687,7 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
     gespeichert, direkt = _gespeichert(vorschlag, profil, immer_direkt=in_einrichtung)
     if not in_einrichtung:
         # Pflichtangaben des offenen Vorschlags (schon belegt) bleiben, neue gewinnen; nie direkt (091)
-        pflicht = {**_offene_pflicht(offen), **pflicht}
+        pflicht = {**_offene_pflicht(offen, hinweise), **pflicht}
     if pflicht:
         gespeichert, direkt = {**gespeichert, "pflichtteil": pflicht, "direkt": False}, False
     spur.schritt("Vorschlag abgelegt")

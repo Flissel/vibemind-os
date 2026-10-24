@@ -293,7 +293,7 @@ def marke_stand(mandant: str | None = None, alle: bool = False, x_pult_key: str 
         "ORDER BY v.entschieden_am DESC LIMIT 1")
     ang_v = ang.get("vorschlag") if isinstance(ang, dict) and isinstance(ang.get("vorschlag"), dict) else None
     aktuell = ({"abschnitte": ang_v.get("abschnitte") if isinstance(ang_v.get("abschnitte"), dict) else {},
-                "werte": {k: x for k, x in ang_v.items() if k not in ("abschnitte", "mustertext")}}
+                "werte": {k: x for k, x in ang_v.items() if k not in ("abschnitte", "mustertext", "pflichtteil")}}
                if ang_v is not None else None)
     # Ergebnis der letzten abgeschlossenen Uebernahme: ein Fehlschlag hat sonst keinen Ort auf der Seite (I6)
     letzte = _lesen_einer(lambda:

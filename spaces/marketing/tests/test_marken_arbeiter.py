@@ -1882,6 +1882,39 @@ def test_chat_nur_pflichtangaben_behaelt_den_offenen_profilvorschlag():
     assert daten["direkt"] is False
 
 
+def test_chat_zu_lange_pflichtangaben_verworfen():
+    lang_impressum = "Radhaus GmbH " + "x" * 2000
+    lang_abmelden = "a" * 500 + " {abmeldelink}"
+    api = Api({**AKTIV, "nachricht": f"Impressum: {lang_impressum} und {IMPRESSUM}"})
+    fragen = Fragen(_einr_antwort(VORSCHLAG, pflichtteil={"impressum": lang_impressum,
+                                                          "abmelde_hinweis": lang_abmelden,
+                                                          "vermittlerangaben": IMPRESSUM}))
+    assert _lauf(api, fragen) == "fertig"
+    daten = _gesendet(api)
+    assert daten["vorschlag"]["pflichtteil"] == {"vermittlerangaben": IMPRESSUM}
+    assert "Impressum nicht übernommen: zu lang (höchstens 2000 Zeichen)" in daten["hinweise"]
+    assert "Abmeldehinweis nicht übernommen: zu lang (höchstens 500 Zeichen)" in daten["hinweise"]
+
+
+def test_chat_zu_lange_offene_pflichtangaben_verworfen(wurzel):
+    _profil(wurzel, {"Ton": "Laut und schnell."})
+    offen = {**VORSCHLAG, "pflichtteil": {"impressum": IMPRESSUM, "vermittlerangaben": "v" * 2001}}
+    api = Api({**AKTIV, "nachricht": "Ton ruhiger", "vorschlag": {"id": "v0", "vorschlag": offen}})
+    assert _lauf(api, Fragen(_antwort())) == "fertig"
+    daten = _gesendet(api)
+    assert daten["vorschlag"]["pflichtteil"] == {"impressum": IMPRESSUM}
+    assert "Vermittlerangaben nicht übernommen: zu lang (höchstens 2000 Zeichen)" in daten["hinweise"]
+
+
+def test_bearbeitung_behaelt_offenen_pflichtteil():
+    offen = {**VORSCHLAG, "pflichtteil": {"impressum": IMPRESSUM}}
+    api = Api({**BEARB, "pflichtteil": dict(PFLICHT_LEER), "vorschlag": {"id": "v0", "vorschlag": offen}})
+    assert _lauf(api, Fragen(_antwort())) == "fertig"
+    daten = _gesendet(api)
+    assert daten["vorschlag"]["pflichtteil"] == {"impressum": IMPRESSUM}
+    assert daten["direkt"] is False and daten["vorschlag"]["direkt"] is False
+
+
 def test_einrichtung_legt_pflichtteil_nicht_in_den_vorschlag():
     api = Api({**EINR, "nachricht": f"Unser Impressum: {IMPRESSUM}"})
     assert _lauf(api, Fragen(_einr_antwort(VORSCHLAG, pflichtteil={"impressum": IMPRESSUM}))) == "fertig"

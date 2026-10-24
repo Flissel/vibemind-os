@@ -389,11 +389,11 @@ DO $$ DECLARE r jsonb; aid uuid; BEGIN
      OR r->>'firma' IS DISTINCT FROM 'Probe 086 A' OR r->>'mandant' IS DISTINCT FROM 'probe_086_a' THEN
     RAISE EXCEPTION 'verify_086: (j) Rueckgabe bei laeuft falsch: %', r; END IF;
   UPDATE marketing.marken_auftraege SET status = 'fertig', vergeben_bis = NULL WHERE id = aid;
-  -- aktive Firma: einrichtung null, kein pflichtteil
+  -- aktive Firma: einrichtung null, kein einrichtung_stand (pflichtteil seit 091 auch fuer aktive Firmen)
   aid := marketing.pult_marke_anlegen('probe_086_i', 'Hallo aktiv', '{}');
   r := marketing.pult_marke_naechster(interval '5 minutes');
   IF r->>'id' IS DISTINCT FROM aid::text OR NOT (r ? 'einrichtung') OR r->'einrichtung' <> 'null'::jsonb
-     OR r ? 'pflichtteil' OR r ? 'einrichtung_stand' THEN
+     OR r ? 'einrichtung_stand' THEN
     RAISE EXCEPTION 'verify_086: (j) Rueckgabe bei aktiver Firma falsch: %', r; END IF;
   IF NOT (r ?& ARRAY['id','art','mandant','firma','nachricht','kontext','verlauf','vorschlag']) THEN
     RAISE EXCEPTION 'verify_086: (j) alte Schluessel fehlen: %', r; END IF;
