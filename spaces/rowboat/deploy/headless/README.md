@@ -3,6 +3,9 @@
 Rowboats Kern (`rowboat-server.cjs`, upstream `apps/server`, `npm run build:headless`) laeuft auf dem
 Mini-PC in einem Container. Erreichbar im Tailnet unter `http://100.67.177.45:3220`.
 
+Die Umstellung vom PC auf den Mini-PC (Reihenfolge, Abnahme, Rueckweg) steht in
+[`UMSTELLUNG.md`](UMSTELLUNG.md); diese Datei ist dafuer die verbindliche Schrittliste.
+
 ## Bauen und uebertragen (am PC)
 
 ```powershell
@@ -28,8 +31,12 @@ sudo nft -f ~/rowboat-headless/rowboat-firewall.nft    # sofort aktiv
 sudo nft list table inet rowboat                       # pruefen
 ```
 
-Dauerhaft ueber Neustarts: die Datei nach `/etc/nftables.d/` kopieren, in `/etc/nftables.conf` die
-Zeile `include "/etc/nftables.d/rowboat-firewall.nft"` ergaenzen und `sudo systemctl enable nftables`.
+**Pflicht: dauerhaft ueber Neustarts.** Ohne diesen Schritt ist der Server nach einem VM-Neustart im
+LAN offen (`restart: unless-stopped` startet ihn wieder, die Tabelle fehlt dann). Die Datei nach
+`/etc/nftables.d/` kopieren, in `/etc/nftables.conf` die Zeile
+`include "/etc/nftables.d/rowboat-firewall.nft"` ergaenzen und `sudo systemctl enable nftables`. Danach
+die VM einmal neu starten und `sudo nft list table inet rowboat` sowie die LAN-Probe unten wiederholen;
+erst dann gilt die Firewall als eingerichtet (Vorbedingung in `UMSTELLUNG.md`, Schritt 0).
 Debians Vorgabe-`/etc/nftables.conf` beginnt mit `flush ruleset`: beim Booten laeuft das vor Docker
 und schadet nicht, ein spaeteres `systemctl restart nftables` raeumt aber Dockers Regeln ab (danach
 `sudo systemctl restart docker`). Zum Nachladen nur die Rowboat-Tabelle neu einlesen; ein zweites

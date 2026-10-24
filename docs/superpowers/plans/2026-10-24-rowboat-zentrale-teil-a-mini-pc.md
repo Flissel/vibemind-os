@@ -26,8 +26,10 @@
 
 | Besitzer | Ordner/Dateien | Grund |
 |---|---|---|
-| **PC** | `Projects/`, `Agents/`, `Areas/`, `Topics/`, `Bubbles/`, `Domains/`, `Hubs/`, `Coding-Projects/`, `Workflows/`, `System/`, `Videos/`, `vibemind-discourse/`, `companys/*/` außer den drei VM-Ordnern | Brain-Kurator, Discourse, Marketing, PC-Skripte schreiben dort |
+| **PC** | `Projects/`, `Agents/`, `Areas/`, `Topics/`, `Bubbles/`, `Domains/`, `Hubs/`, `Coding-Projects/`, `Workflows/`, `System/`, `Videos/`, `vibemind-discourse/`, `Simulations/`, `companys/*/` außer den drei VM-Ordnern; Ausnahmen in VM-Ordnern: `People/Veraltet/` (Ordner), die exakten Dateien `People/User (user).md` und `Diary/Blue Rose Diary.md`; oben `.bubble_sync_hashes.json` | Brain-Kurator, Discourse, Marketing, PC-Skripte (Bubble-Abgleich) schreiben dort |
 | **VM** | alles andere, u. a. `Notes/`, `People/`, `Organizations/`, `Meetings/`, `Diary/`, `Agent Notes/`, `Voice Memos/`, `Templates/`, `Bewerbung/`, `Investor Programs/`, `Company.md`, `Welcome.md`, `companys/*/Kontakte/`, `companys/*/Newsletter/`, `companys/*/Wochenbild/` | Rowboat (Telegram, App) und Teil B schreiben dort |
+
+Nie gespiegelt (oberste Ebene, beide Seiten, auch nicht in Bestand/Plan/Doppel-Erkennung): `_konflikte/`, `.spiegel-eingang/`, `.git/`. `.git/` reist nur beim Umzug einmal mit (Rowboat braucht seine Historie auf der VM); der Spiegel-Zustand nach dem Umzug enthält es nicht. Alle Segmente werden exakt verglichen (`People/Veraltet.md` und `People/Max.md` bleiben VM).
 
 Regeln: Der Besitzer gewinnt bei Abweichung; Löschen wirkt nur vom Besitzer aus. Eine **neue** Datei auf der Nicht-Besitzer-Seite wird zum Besitzer kopiert (nicht verworfen). Eine Nicht-Besitzer-Änderung an einer bestehenden Datei wird überschrieben, vorher aber nach `knowledge/_konflikte/<JJJJ-MM-TT>/<pfad>` auf der VM gesichert. `todo.md`, `todo/`, `storage/` liegen außerhalb von `knowledge/` und gehören nur der VM (kein Spiegel).
 
@@ -182,6 +184,8 @@ def test_pfade_mit_umlauten_und_leerzeichen():
 - [ ] **Step 5: Commit** `feat(rowboat): Desktop-Start im Fern-Modus zum Mini-PC`
 
 ### Task 7: Umstellung, Telegram, Abnahme (Betreiber-OK, live)
+
+> **Maßgeblich ist `spaces/rowboat/deploy/headless/UMSTELLUNG.md`** (Schrittfolge 0–9, Abnahmekriterien, Rückweg). Die Steps unten sind der ursprüngliche Entwurf; wo sie abweichen (z. B. Sicherungsaufgabe läuft weiter statt deaktiviert), gilt UMSTELLUNG.md.
 
 **Files:**
 - Create: `spaces/rowboat/deploy/headless/UMSTELLUNG.md` (Ablauf + Rückweg)
