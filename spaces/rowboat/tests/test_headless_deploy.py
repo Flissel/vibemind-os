@@ -31,8 +31,11 @@ def test_compose_vertrag():
     assert svc["restart"] == "unless-stopped"
     assert env["ROWBOAT_WORKDIR"] == "/data"
     assert env["ROWBOAT_SERVER_PORT"] == "3220"
-    assert "/home/debian/rowboat-data:/data" in svc["volumes"]
+    # Lange Form ohne create_host_path: fehlt der Ordner, legt Docker ihn NICHT als root an.
+    assert svc["volumes"] == [{"type": "bind", "source": "/home/debian/rowboat-data", "target": "/data",
+                               "bind": {"create_host_path": False}}]
     assert svc["mem_limit"] == "3g"
+    assert env["NODE_OPTIONS"] == "--max-old-space-size=2048"
     probe = " ".join(svc["healthcheck"]["test"]) if isinstance(svc["healthcheck"]["test"], list) \
         else svc["healthcheck"]["test"]
     assert "http://127.0.0.1:3220/health" in probe
@@ -74,3 +77,36 @@ def test_bauen_loescht_nichts_auf_der_vm():
     code = re.sub(r"<#.*?#>", "", skript, flags=re.DOTALL)
     code = "\n".join(z for z in code.splitlines() if not z.lstrip().startswith("#"))
     assert not re.search(r"\brm\s|Remove-Item|rmdir|--delete|\bdel\s", code), "bauen.ps1 darf nichts loeschen"
+
+
+def test_bauen_verweigert_den_arbeitsordner_als_ziel():
+    skript = (HEADLESS / "bauen.ps1").read_text(encoding="utf-8")
+    assert re.search(r"if \(\$Ziel -match 'rowboat-data'\) \{ throw", skript)
+
+
+def test_bauen_kopiert_relative_namen_aus_dist_headless():
+    skript = (HEADLESS / "bauen.ps1").read_text(encoding="utf-8")
+    zeile = next(z for z in skript.splitlines() if "scp" in z and "$namen" in z)
+    assert zeile.lstrip().startswith("Invoke-Schritt $dist ")   # Push-Location in dist-headless und zurueck
+    assert "FullName" not in skript
+    assert re.search(r"\$namen = @\(Get-ChildItem -LiteralPath \$dist -Name\)", skript)
+
+
+def test_dockerignore_ohne_node_modules():
+    zeilen = (HEADLESS / ".dockerignore").read_text(encoding="utf-8").split()
+    assert "app/node_modules" in zeilen
+
+
+def test_firewall_nur_loopback_und_tailnet():
+    regel = (HEADLESS / "rowboat-firewall.nft").read_text(encoding="utf-8")
+    flach = " ".join(regel.split())
+    assert "table inet rowboat {" in flach
+    assert "type filter hook input priority -10; policy accept;" in flach
+    accept = flach.index('iifname { "lo", "tailscale0" } tcp dport 3220-3229 accept')
+    drop = flach.index("tcp dport 3220-3229 drop")
+    assert accept < drop
+    assert "flush ruleset" not in flach   # Dockers Tabellen bleiben unberuehrt
+    readme = (HEADLESS / "README.md").read_text(encoding="utf-8")
+    assert "## Firewall (vor dem ersten Start)" in readme
+    assert "sudo nft -f" in readme and "/etc/nftables.conf" in readme and "systemctl enable nftables" in readme
+    assert "port 3220 is taken" in readme

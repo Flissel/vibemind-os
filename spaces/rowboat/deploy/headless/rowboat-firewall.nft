@@ -1,0 +1,9 @@
+# Rowboat-Server (3220, Ausweichports bis 3229) nur ueber Loopback und Tailscale erreichbar.
+# Eigene Tabelle: Dockers Tabellen bleiben unberuehrt, nichts wird geleert.
+table inet rowboat {
+  chain input {
+    type filter hook input priority -10; policy accept;
+    iifname { "lo", "tailscale0" } tcp dport 3220-3229 accept
+    tcp dport 3220-3229 drop
+  }
+}

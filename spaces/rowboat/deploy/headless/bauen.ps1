@@ -5,7 +5,8 @@
 .DESCRIPTION
   1. In -Quelle (apps/x des Betriebs-Checkouts): npm run deps, dann in apps/server npm run build:headless.
   2. Ohne -NurBauen: legt auf der VM ~/rowboat-headless/app und ~/rowboat-data (0700) an, falls sie fehlen,
-     kopiert dist-headless nach -Ziel und Dockerfile, compose.yml, start.sh eine Ebene darueber.
+     kopiert dist-headless nach -Ziel und Dockerfile, .dockerignore, compose.yml, start.sh,
+     rowboat-firewall.nft eine Ebene darueber. Ein -Ziel im Arbeitsordner rowboat-data wird verweigert.
   Loescht nichts auf der VM; vorhandene Dateien gleichen Namens werden ueberschrieben.
   Der Container wird hier NICHT gestartet (siehe README.md).
 
@@ -36,6 +37,7 @@ function Invoke-Schritt([string]$Ort, [string[]]$Befehl) {
     }
 }
 
+if ($Ziel -match 'rowboat-data') { throw "Ziel darf nicht im Arbeitsordner rowboat-data liegen: $Ziel" }
 if (-not (Test-Path (Join-Path $Quelle 'package.json'))) { throw "Keine Rowboat-Quelle: $Quelle" }
 $server = Join-Path $Quelle 'apps/server'
 
@@ -62,7 +64,9 @@ $appPfad = $Matches.pfad
 $basis = $appPfad -replace '/[^/]+$', ''
 
 Invoke-Schritt $PSScriptRoot @('ssh', $vmHost, "mkdir -p $appPfad && mkdir -p -m 0700 ~/rowboat-data")
-$dateien = @(Get-ChildItem $dist | ForEach-Object FullName)
-Invoke-Schritt $PSScriptRoot (@('scp', '-q', '-r') + $dateien + @("${vmHost}:$appPfad/"))
-Invoke-Schritt $PSScriptRoot @('scp', '-q', 'Dockerfile', 'compose.yml', 'start.sh', "${vmHost}:$basis/")
+# Relative Namen aus dist-headless heraus (Invoke-Schritt wechselt hinein und zurueck): kein Laufwerks-
+# Doppelpunkt, den scp als host: deuten koennte; jedes Element ein eigenes Argument.
+$namen = @(Get-ChildItem -LiteralPath $dist -Name)
+Invoke-Schritt $dist (@('scp', '-q', '-r') + $namen + @("${vmHost}:$appPfad/"))
+Invoke-Schritt $PSScriptRoot @('scp', '-q', 'Dockerfile', '.dockerignore', 'compose.yml', 'start.sh', 'rowboat-firewall.nft', "${vmHost}:$basis/")
 Write-Host "Uebertragen nach ${vmHost}:$basis - Start: ssh $vmHost 'cd $basis && docker compose up -d --build'"

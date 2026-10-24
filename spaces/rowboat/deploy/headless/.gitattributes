@@ -2,3 +2,5 @@
 Dockerfile   text eol=lf
 compose.yml  text eol=lf
 start.sh     text eol=lf
+.dockerignore        text eol=lf
+rowboat-firewall.nft text eol=lf

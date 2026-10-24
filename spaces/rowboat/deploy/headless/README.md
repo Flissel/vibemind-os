@@ -13,10 +13,39 @@ pwsh -File spaces/rowboat/deploy/headless/bauen.ps1             # bauen + nach o
 Quelle ist die gepinnte Kopie im Betriebs-Checkout (`-Quelle`, Vorgabe
 `C:/Users/User/ClaudeWork/vibemind-betrieb/spaces/rowboat/rowboat/apps/x`). Diese Kopie nie von Hand
 aendern, Aenderungen nur ueber den Fork und `spaces/rowboat/scripts/sync_desktop.py`.
-Das Skript kopiert `dist-headless/` nach `~/rowboat-headless/app/` und `Dockerfile`, `compose.yml`,
-`start.sh` nach `~/rowboat-headless/`. Es loescht nichts auf der VM.
+Das Skript kopiert `dist-headless/` nach `~/rowboat-headless/app/` und `Dockerfile`, `.dockerignore`,
+`compose.yml`, `start.sh`, `rowboat-firewall.nft` nach `~/rowboat-headless/`. Es legt
+`~/rowboat-data` (0700) an, falls er fehlt, und loescht nichts auf der VM.
+
+## Firewall (vor dem ersten Start)
+
+Der Server lauscht wegen `lanEnabled` auf allen Schnittstellen. `rowboat-firewall.nft` laesst die
+Ports 3220-3229 (3220 plus die Ausweichports des Servers) nur ueber `lo` und `tailscale0` zu. Es ist
+eine eigene Tabelle `inet rowboat`, Dockers Regeln bleiben unberuehrt.
+
+```sh
+sudo nft -f ~/rowboat-headless/rowboat-firewall.nft    # sofort aktiv
+sudo nft list table inet rowboat                       # pruefen
+```
+
+Dauerhaft ueber Neustarts: die Datei nach `/etc/nftables.d/` kopieren, in `/etc/nftables.conf` die
+Zeile `include "/etc/nftables.d/rowboat-firewall.nft"` ergaenzen und `sudo systemctl enable nftables`.
+Debians Vorgabe-`/etc/nftables.conf` beginnt mit `flush ruleset`: beim Booten laeuft das vor Docker
+und schadet nicht, ein spaeteres `systemctl restart nftables` raeumt aber Dockers Regeln ab (danach
+`sudo systemctl restart docker`). Zum Nachladen nur die Rowboat-Tabelle neu einlesen; ein zweites
+`nft -f` haengt die Regeln doppelt an (harmlos), sauber geht es mit vorherigem
+`sudo nft delete table inet rowboat`.
+
+Probe:
+
+- von einem anderen Rechner im LAN: `curl --max-time 5 http://<LAN-IP>:3220/health` muss in den
+  Timeout laufen;
+- aus dem Tailnet: `curl -s http://100.67.177.45:3220/health` liefert 200.
 
 ## Starten, stoppen, Logs (auf der VM, nur mit Betreiber-OK)
+
+`~/rowboat-data` muss vorher existieren (Besitzer debian, 0700); compose legt ihn bewusst nicht an
+(`create_host_path: false`), sonst gehoerte er root und der Server (uid 1000) koennte nicht schreiben.
 
 ```sh
 cd ~/rowboat-headless
@@ -25,6 +54,9 @@ docker compose stop              # stoppen
 docker compose logs -f --tail 200
 curl -s http://100.67.177.45:3220/health
 ```
+
+Steht der Container auf `unhealthy`: `docker compose logs` nach "port 3220 is taken" durchsuchen. Dann
+ist 3220 belegt und der Server auf 3221 ff. ausgewichen; der Healthcheck prueft nur 3220.
 
 ## Wo die Daten liegen
 
