@@ -110,3 +110,37 @@ def test_pfade_mit_umlauten_und_leerzeichen():
     assert ws.abgleich_planen({nfd: e("A")}, {nfc: e("A")}, {nfc: e("A")}) == []
     plan = ws.abgleich_planen({nfd: e("A")}, {}, {})
     assert plan == [Aktion("nach_vm", nfc)]
+
+
+def test_gross_kleinschreibung_doppel_wird_uebersprungen():
+    pc = {"Projects/x.md": e("A")}
+    vm = {"Projects/x.md": e("A"), "projects/x.md": e("B")}
+    assert ws.abgleich_planen(pc, vm, {}) == []
+    assert ws.doppelte_pfade(pc, vm, {}) == [["Projects/x.md", "projects/x.md"]]
+    # der Rest wird weiter abgeglichen
+    pc["Notes/n.md"] = e("A")
+    assert ws.abgleich_planen(pc, vm, {}) == [Aktion("nach_vm", "Notes/n.md")]
+
+
+def test_doppel_aus_zuletzt_zaehlt_mit():
+    pc = {"Projects/x.md": e("A")}
+    assert ws.abgleich_planen(pc, {}, {"projects/x.md": e("A")}) == []
+    assert len(ws.doppelte_pfade(pc, {}, {"projects/x.md": e("A")})) == 1
+
+
+def test_nfc_nfd_im_selben_bestand_wird_gemeldet():
+    nfc = "Notes/Über.md"
+    nfd = unicodedata.normalize("NFD", nfc)
+    pc = {nfc: e("A"), nfd: e("B")}
+    assert ws.abgleich_planen(pc, {}, {}) == []
+    assert ws.doppelte_pfade(pc, {}, {}) == [sorted([nfc, nfd])]
+    # NFD am PC gegen NFC auf der VM ist KEIN Doppel
+    assert ws.doppelte_pfade({nfd: e("A")}, {nfc: e("A")}, {}) == []
+
+
+def test_konflikte_ordner_wird_nie_gesynct():
+    pc = {"_konflikte/2026-10-24/a.md": e("A")}
+    vm = {"_konflikte/2026-10-24/b.md": e("B")}
+    assert ws.abgleich_planen(pc, vm, {}) == []
+    assert ws.abgleich_planen({}, vm, vm) == []
+    assert ws.doppelte_pfade(pc, vm, {}) == []

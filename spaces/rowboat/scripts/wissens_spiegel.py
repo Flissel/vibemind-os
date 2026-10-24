@@ -10,6 +10,9 @@ Regeln (Besitzer-Tabelle im Plan 2026-10-24-rowboat-zentrale-teil-a-mini-pc):
 - Hat der Nicht-Besitzer eine bestehende Datei seit dem letzten Lauf geaendert, wird seine Fassung
   vor dem Ueberschreiben/Loeschen gesichert (`konflikt_sichern` steht vor der Aktion).
 - Verglichen wird nur ueber sha256; mtime dient der Anzeige. Pfade werden NFC-normalisiert.
+- Pfade, die sich nur in Gross-/Kleinschreibung unterscheiden (gleiche Datei auf dem PC), oder die im
+  selben Bestand als NFC- und NFD-Fassung vorkommen, werden nicht geplant; `doppelte_pfade` meldet sie.
+- `_konflikte/` (oberste Ebene) wird nie gespiegelt.
 - `loeschgrenze_pruefen` bricht bei Massenloeschung ab (leerer/umbenannter Ordner).
 """
 from __future__ import annotations
@@ -37,6 +40,7 @@ PC_ORDNER = frozenset({
     "Projects", "Agents", "Areas", "Topics", "Bubbles", "Domains", "Hubs",
     "Coding-Projects", "Workflows", "System", "Videos", "vibemind-discourse",
 })
+KONFLIKTE = "_konflikte"
 VM_FIRMENORDNER = frozenset({"Kontakte", "Newsletter", "Wochenbild"})
 
 
@@ -60,15 +64,51 @@ def besitzer(pfad: str) -> Seite:
     return "vm"
 
 
+def _ausgenommen(pfad: str) -> bool:
+    return _nfc(pfad).split("/")[0] == KONFLIKTE
+
+
 def _normalisiert(bestand: Bestand) -> Bestand:
-    return {_nfc(p): eintrag for p, eintrag in bestand.items()}
+    return {_nfc(p): eintrag for p, eintrag in bestand.items() if not _ausgenommen(p)}
+
+
+def _doppel_gruppen(pc: Bestand, vm: Bestand, zuletzt: Bestand) -> list[tuple[set[str], list[str]]]:
+    """Gruppen (normalisierte Schluessel, rohe Schreibweisen) mit Gross-/Kleinschreibungs- oder NFC-Doppeln."""
+    gruppen: dict[str, tuple[set[str], set[str]]] = {}
+    kollision: set[str] = set()
+    for bestand in (pc, vm, zuletzt):
+        je_nfc: dict[str, str] = {}
+        for roh in bestand:
+            if _ausgenommen(roh):
+                continue
+            norm = _nfc(roh)
+            schluessel = norm.casefold()
+            normen, rohe = gruppen.setdefault(schluessel, (set(), set()))
+            normen.add(norm)
+            rohe.add(roh)
+            if norm in je_nfc and je_nfc[norm] != roh:
+                kollision.add(schluessel)
+            je_nfc[norm] = roh
+    return [
+        (normen, sorted(rohe))
+        for schluessel, (normen, rohe) in sorted(gruppen.items())
+        if len(normen) > 1 or schluessel in kollision
+    ]
+
+
+def doppelte_pfade(pc: Bestand, vm: Bestand, zuletzt: Bestand) -> list[list[str]]:
+    """Gruppen von Pfaden, die auf dem PC dieselbe Datei waeren; `abgleich_planen` ueberspringt sie."""
+    return [rohe for _, rohe in _doppel_gruppen(pc, vm, zuletzt)]
 
 
 def abgleich_planen(pc: Bestand, vm: Bestand, zuletzt: Bestand) -> list[Aktion]:
     """Plant den Abgleich; `zuletzt` ist der gemeinsame Stand nach dem letzten erfolgreichen Lauf."""
+    uebersprungen: set[str] = set()
+    for normen, _ in _doppel_gruppen(pc, vm, zuletzt):
+        uebersprungen |= normen
     pc, vm, zuletzt = _normalisiert(pc), _normalisiert(vm), _normalisiert(zuletzt)
     aktionen: list[Aktion] = []
-    for pfad in sorted(set(pc) | set(vm)):
+    for pfad in sorted((set(pc) | set(vm)) - uebersprungen):
         eigner = besitzer(pfad)
         seiten = {"pc": pc.get(pfad), "vm": vm.get(pfad)}
         nicht = "vm" if eigner == "pc" else "pc"
@@ -85,7 +125,7 @@ def abgleich_planen(pc: Bestand, vm: Bestand, zuletzt: Bestand) -> list[Aktion]:
                 aktionen.append(Aktion(ziel_kopie, pfad))
         elif gegen is not None:
             if alt is None:  # neu beim Nicht-Besitzer: zum Besitzer holen
-                aktionen.append(Aktion("nach_pc" if nicht == "vm" else "nach_vm", pfad))
+                aktionen.append(Aktion("nach_pc" if eigner == "pc" else "nach_vm", pfad))
             else:  # Besitzer hat geloescht
                 if gegen.sha256 != alt.sha256:
                     aktionen.append(Aktion("konflikt_sichern", pfad))
