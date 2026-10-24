@@ -30,6 +30,73 @@ def test_besitzer():
     assert ws.besitzer("vibemind-discourse/t.md") == "pc"
 
 
+def test_besitzer_pc_ausnahmen_brain():
+    # exakte Dateien
+    assert ws.besitzer("People/User (user).md") == "pc"
+    assert ws.besitzer("Diary/Blue Rose Diary.md") == "pc"
+    assert ws.besitzer(".bubble_sync_hashes.json") == "pc"  # schreibt ein PC-Werkzeug
+    # Ordner
+    assert ws.besitzer("People/Veraltet/alt.md") == "pc"
+    assert ws.besitzer("People/Veraltet/tief/x.md") == "pc"
+    assert ws.besitzer("Simulations/run1/s.md") == "pc"
+    # exakte Segmente: Nachbarn bleiben VM
+    assert ws.besitzer("People/Max.md") == "vm"
+    assert ws.besitzer("People/User (user).md.bak") == "vm"
+    assert ws.besitzer("People/Veraltet.md") == "vm"
+    assert ws.besitzer("People/VeraltetX/a.md") == "vm"
+    assert ws.besitzer("Diary/2026-10-24.md") == "vm"
+    assert ws.besitzer("x/Diary/Blue Rose Diary.md") == "vm"
+    assert ws.besitzer("Simulations.md") == "vm"
+    assert ws.besitzer("SimulationsX/a.md") == "vm"
+    assert ws.besitzer("Notes/.bubble_sync_hashes.json") == "vm"
+
+
+def test_git_ordner_wird_nie_gespiegelt():
+    pc = {".git/HEAD": e("A"), ".git/objects/ab/cd": e("B"), "Notes/n.md": e("N")}
+    vm = {".git/HEAD": e("C"), ".git/index": e("D"), "Notes/n.md": e("N")}
+    assert ws.abgleich_planen(pc, vm, {}) == []
+    nur_git_vm = {p: x for p, x in vm.items() if p.startswith(".git/")}
+    assert ws.abgleich_planen({}, nur_git_vm, nur_git_vm) == []
+    assert ws.abgleich_planen(pc, {}, pc) == [Aktion("loeschen_pc", "Notes/n.md")]
+    assert ws.doppelte_pfade(pc, {".git/head": e("A")}, {}) == []
+    # nur die oberste Ebene: ein .git tiefer ist normaler Inhalt
+    assert ws.abgleich_planen({"Notes/.git/x": e("A")}, {}, {}) == [Aktion("nach_vm", "Notes/.git/x")]
+
+
+def test_git_ordner_fehlt_im_inventar(tmp_path):
+    schreibe(tmp_path, ".git/HEAD", "ref")
+    schreibe(tmp_path, ".git/objects/ab/cd", "obj")
+    schreibe(tmp_path, "Notes/n.md", "n")
+    bestand, _ = ws.bestand_lokal(tmp_path)
+    assert set(bestand) == {"Notes/n.md"}
+    vm_bestand, _ = ws.bestand_vm(ZIEL, str(tmp_path), laeufer=FakeVm())
+    assert set(vm_bestand) == {"Notes/n.md"}
+
+
+class _FakeKernel32:
+    def __init__(self, handle: int, exit_code: int = 259):
+        self.handle, self.exit_code, self.geschlossen = handle, exit_code, False
+
+    def OpenProcess(self, _zugriff, _erben, _pid):  # noqa: N802 - Windows-API-Name
+        return self.handle
+
+    def GetExitCodeProcess(self, _h, ref):  # noqa: N802
+        ref._obj.value = self.exit_code
+        return 1
+
+    def CloseHandle(self, _h):  # noqa: N802
+        self.geschlossen = True
+        return 1
+
+
+def test_pid_lebt_windows_zugriff_verweigert_gilt_als_lebend():
+    assert ws._pid_lebt_windows(4711, _FakeKernel32(0), lambda: 5) is True  # ERROR_ACCESS_DENIED
+    assert ws._pid_lebt_windows(4711, _FakeKernel32(0), lambda: 87) is False  # ERROR_INVALID_PARAMETER: weg
+    k = _FakeKernel32(99, 259)
+    assert ws._pid_lebt_windows(4711, k, lambda: 0) is True and k.geschlossen
+    assert ws._pid_lebt_windows(4711, _FakeKernel32(99, 0), lambda: 0) is False
+
+
 def test_besitzer_aenderung_gewinnt():
     plan = ws.abgleich_planen(
         {"Projects/p.md": e("B")}, {"Projects/p.md": e("C")}, {"Projects/p.md": e("A")}

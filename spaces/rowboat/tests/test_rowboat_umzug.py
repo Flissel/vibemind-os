@@ -38,6 +38,16 @@ def pc_baum(wurzel: Path) -> None:
     schreibe(wurzel, "knowledge/_konflikte/2026-10-24/Notes/x.md", "alt")
     schreibe(wurzel, "knowledge/.spiegel-eingang/1/Notes/halb.md", "ha")
     schreibe(wurzel, "knowledge/Notes/Thumbs.db", "x")
+    schreibe(wurzel, "knowledge/.git/HEAD", "ref: refs/heads/master")
+    schreibe(wurzel, "knowledge/.git/objects/ab/cdef", "obj")
+    schreibe(wurzel, "knowledge/.bubble_sync_hashes.json", "{}")
+    schreibe(wurzel, "config/mcp.json", json.dumps({"mcpServers": {
+        "exa": {"url": "https://mcp.exa.ai/mcp"},
+        "desktop-commander": {"command": "npx", "args": ["-y", "@wonderwhy-er/desktop-commander"], "env": {"A": "1"}},
+        "playwright": {"command": "npx", "args": ["@playwright/mcp"]},
+        "filesystem": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\"],
+                       "env": {}},
+    }}))
     schreibe(wurzel, "todo.md", "- [ ] Steuer")
     schreibe(wurzel, "todo/liste.json", "[]")
     schreibe(wurzel, "storage/sessions/2026/s1.json", "{}")
@@ -103,6 +113,7 @@ def test_nie_wird_nicht_mitgenommen(tmp_path):
         "todo.md", "todo/liste.json", "storage/sessions/2026/s1.json", "bg-tasks/t.json", "agents/a.md",
         "skills/s/SKILL.md", "projects/pr.json", "config/notes.json", "config/models.json",
         "config/channels.json", "config/server.json", "config/knowledge_sources.json",
+        "knowledge/.git/HEAD", "knowledge/.bubble_sync_hashes.json",  # Historie reist einmal mit
     } <= gewaehlt
     assert all(g.split("/")[0] in ru.MITNEHMEN for g in gewaehlt)
 
@@ -152,6 +163,64 @@ def test_config_anpassen(tmp_path):
     assert (cfg / "models.json").read_text(encoding="utf-8") == modelle  # unveraendert
 
 
+def test_config_anpassen_entfernt_shell_und_datei_mcp(tmp_path):
+    # Rowboats Schema (shared/src/mcp.ts) kennt kein disabled-Feld: die Server fliegen aus der Kopie.
+    cfg = tmp_path / "config"
+    schreibe(cfg, "mcp.json", json.dumps({"mcpServers": {
+        "exa": {"url": "https://mcp.exa.ai/mcp"},
+        "desktop-commander": {"command": "npx", "args": ["x"]},
+        "playwright": {"command": "npx", "args": ["y"]},
+        "filesystem": {"command": "npx", "args": ["z"]},
+    }, "extra": 1}))
+    ru.config_anpassen(cfg)
+    mcp = json.loads((cfg / "mcp.json").read_text(encoding="utf-8"))
+    assert mcp == {"mcpServers": {"exa": {"url": "https://mcp.exa.ai/mcp"}}, "extra": 1}
+
+
+def test_config_anpassen_ohne_mcp_json_legt_keins_an(tmp_path):
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    ru.config_anpassen(cfg)
+    assert not (cfg / "mcp.json").exists()
+
+
+def test_config_anpassen_mcp_json_kaputt(tmp_path):
+    cfg = tmp_path / "config"
+    schreibe(cfg, "mcp.json", json.dumps({"mcpServers": []}))
+    with pytest.raises(ru.ConfigFehler):
+        ru.config_anpassen(cfg)
+
+
+def test_umzug_mcp_kopie_ohne_shell_pc_original_unberuehrt(umgebung):
+    pc, vm, zustand = umgebung
+    vorher = (pc / "config/mcp.json").read_bytes()
+    assert ru.umzug(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), pid_lebt=kein_pid) == 0
+    assert sorted(json.loads((vm / "config/mcp.json").read_text(encoding="utf-8"))["mcpServers"]) == ["exa"]
+    assert (pc / "config/mcp.json").read_bytes() == vorher
+
+
+def test_umzug_nimmt_git_einmal_mit_spiegel_ignoriert_es(umgebung):
+    pc, vm, zustand = umgebung
+    assert ru.umzug(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), pid_lebt=kein_pid) == 0
+    # Rowboat braucht die Historie auf der VM
+    assert (vm / "knowledge/.git/HEAD").read_bytes() == (pc / "knowledge/.git/HEAD").read_bytes()
+    assert (vm / "knowledge/.bubble_sync_hashes.json").exists()
+    stand = ws.zustand_lesen(zustand)
+    assert not any(p.split("/")[0] == ".git" for p in stand)
+    assert ".bubble_sync_hashes.json" in stand
+    pc_bestand, _ = ws.bestand_lokal(pc / "knowledge")
+    vm_bestand, _ = ws.bestand_vm(ZIEL, str(vm / "knowledge"), laeufer=FakeVm())
+    assert ws.abgleich_planen(pc_bestand, vm_bestand, stand) == []
+    # auch wenn sich danach .git auf einer Seite aendert (Rowboat committet auf der VM)
+    (vm / "knowledge/.git/HEAD").write_text("ref: refs/heads/anders", encoding="utf-8")
+    vm_bestand, _ = ws.bestand_vm(ZIEL, str(vm / "knowledge"), laeufer=FakeVm())
+    assert ws.abgleich_planen(pc_bestand, vm_bestand, stand) == []
+
+
+def test_umzug_nutzt_sha_des_spiegels():
+    assert not hasattr(ru, "_sha")
+
+
 def test_config_anpassen_legt_fehlenden_gmail_eintrag_an(tmp_path):
     cfg = tmp_path / "config"
     schreibe(cfg, "knowledge_sources.json", json.dumps({"sources": [
@@ -196,7 +265,8 @@ def test_umzug_uebertraegt_passt_config_an_und_schreibt_zustand(umgebung):
     auf_vm = dateien(vm)
     erwartet = rel(pc, ru.auswahl(pc))
     assert set(auf_vm) == erwartet
-    for name in erwartet - {"config/channels.json", "config/knowledge_sources.json", "config/server.json"}:
+    for name in erwartet - {"config/channels.json", "config/knowledge_sources.json", "config/server.json",
+                            "config/mcp.json"}:
         assert auf_vm[name] == (pc / name).read_bytes(), name
     assert json.loads(auf_vm["config/server.json"]) == {"lanEnabled": True, "port": 3220}
     tg = json.loads(auf_vm["config/channels.json"])["telegram"]

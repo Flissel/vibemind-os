@@ -20,7 +20,7 @@ Regeln (Besitzer-Tabelle im Plan 2026-10-24-rowboat-zentrale-teil-a-mini-pc):
 - Verglichen wird nur ueber sha256; mtime dient der Anzeige. Pfade werden NFC-normalisiert.
 - Pfade, die sich nur in Gross-/Kleinschreibung unterscheiden (gleiche Datei auf dem PC), oder die im
   selben Bestand als NFC- und NFD-Fassung vorkommen, werden nicht geplant; `doppelte_pfade` meldet sie.
-- `_konflikte/` (oberste Ebene) wird nie gespiegelt.
+- `_konflikte/`, `.spiegel-eingang/` und `.git/` (oberste Ebene) werden nie gespiegelt.
 - `loeschgrenze_pruefen` bricht bei Massenloeschung ab (leerer/umbenannter Ordner).
 """
 from __future__ import annotations
@@ -60,11 +60,19 @@ Bestand = dict[str, Eintrag]
 
 PC_ORDNER = frozenset({
     "Projects", "Agents", "Areas", "Topics", "Bubbles", "Domains", "Hubs",
-    "Coding-Projects", "Workflows", "System", "Videos", "vibemind-discourse",
+    "Coding-Projects", "Workflows", "System", "Videos", "vibemind-discourse", "Simulations",
+})
+# Brain-Ausnahmen innerhalb sonst VM-eigener Ordner (exakte Segmente, wie PC_ORDNER)
+PC_UNTERORDNER = frozenset({("People", "Veraltet")})
+PC_DATEIEN = frozenset({
+    ("People", "User (user).md"),
+    ("Diary", "Blue Rose Diary.md"),
+    (".bubble_sync_hashes.json",),  # schreibt ein PC-Werkzeug (Bubble-Abgleich)
 })
 KONFLIKTE = "_konflikte"
 EINGANG = ".spiegel-eingang"  # Upload-Zwischenablage auf der VM, nie gespiegelt
-NIE_SPIEGELN = (KONFLIKTE, EINGANG)  # oberste Ebene
+GIT = ".git"  # Rowboats eigene Historie je Seite; reist nur beim Umzug einmal mit
+NIE_SPIEGELN = (KONFLIKTE, EINGANG, GIT)  # oberste Ebene
 VM_FIRMENORDNER = frozenset({"Kontakte", "Newsletter", "Wochenbild"})
 
 
@@ -84,6 +92,10 @@ def besitzer(pfad: str) -> Seite:
             return "vm"
         return "pc"
     if len(teile) > 1 and teile[0] in PC_ORDNER:
+        return "pc"
+    if tuple(teile) in PC_DATEIEN:
+        return "pc"
+    if len(teile) > 2 and tuple(teile[:2]) in PC_UNTERORDNER:
         return "pc"
     return "vm"
 
@@ -625,6 +637,27 @@ SPERRDATEI = "lauf.lock"
 SPERRE_MAX_ALTER = 3600  # s; die Aufgabe bricht nach 30 min ab, aeltere Sperren sind verwaist
 
 
+ERROR_ACCESS_DENIED = 5
+STILL_ACTIVE = 259
+
+
+def _pid_lebt_windows(pid: int, k: Any, letzter_fehler: Callable[[], int]) -> bool:
+    """`k` = kernel32 (oder Fake). Zugriff verweigert heisst: den Prozess gibt es (fremder Benutzer/erhoeht)."""
+    import ctypes
+    from ctypes import wintypes
+
+    h = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return letzter_fehler() == ERROR_ACCESS_DENIED
+    try:
+        code = wintypes.DWORD()
+        if not k.GetExitCodeProcess(h, ctypes.byref(code)):
+            return True
+        return code.value == STILL_ACTIVE
+    finally:
+        k.CloseHandle(h)
+
+
 def _pid_lebt(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -637,16 +670,7 @@ def _pid_lebt(pid: int) -> bool:
         k.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
         k.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
         k.CloseHandle.argtypes = (wintypes.HANDLE,)
-        h = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-        if not h:
-            return False
-        try:
-            code = wintypes.DWORD()
-            if not k.GetExitCodeProcess(h, ctypes.byref(code)):
-                return True
-            return code.value == 259  # STILL_ACTIVE
-        finally:
-            k.CloseHandle(h)
+        return _pid_lebt_windows(pid, k, ctypes.get_last_error)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

@@ -6,7 +6,8 @@ Aufruf als Datei (nicht per `-m`, `spaces/rowboat/__init__.py` ist kaputt):
 Ablauf (einmalig, Task 7 der Rowboat-Zentrale Teil A):
 1. Sperre des Wissens-Spiegels nehmen (`lauf.lock`), damit kein Spiegellauf dazwischenfunkt.
 2. `auswahl`: nur `MITNEHMEN`, nie `NIE`, keine `*.bak` in `config/`, in `knowledge/` nie `_konflikte/` und
-   `.spiegel-eingang/`, keine System-/Temp-Dateien (wie der Spiegel).
+   `.spiegel-eingang/`, keine System-/Temp-Dateien (wie der Spiegel). `knowledge/.git/` reist EINMAL mit
+   (Rowboat braucht seine Historie auf der VM), der Spiegel ignoriert es danach auf beiden Seiten.
 3. `config/` wird in einen temporaeren Ordner kopiert und dort angepasst (`config_anpassen`); die Live-Config
    am PC bleibt unberuehrt. Zeigt ein lokaler Anbieter in `models.json` nicht auf :8121, bricht der Umzug ab.
 4. Vorbedingungen: kein laufendes PC-Rowboat (`server.lock`/`embed.json` mit lebender PID), VM-Ordner
@@ -15,7 +16,8 @@ Ablauf (einmalig, Task 7 der Rowboat-Zentrale Teil A):
 5. Upload ueber den gestuften Mechanismus des Spiegels (`wissens_spiegel.hochladen`, Eingang
    `.umzug-eingang/`, Einsetzen per `os.replace` nur auf freie Ziele); `config/` mit Modus 0600.
 6. Voller sha256-Vergleich PC <-> VM fuer jede uebertragene Datei (VM-Seite in einem `ssh ... python3 -`).
-7. Nur wenn alles gleich ist: Zustand des Spiegels (`zuletzt.json`) = uebertragener `knowledge`-Bestand.
+7. Nur wenn alles gleich ist: Zustand des Spiegels (`zuletzt.json`) = uebertragener `knowledge`-Bestand,
+   mit denselben Ausnahmen wie der Spiegel (ohne `.git/`).
 
 `--trocken` liest nur (ein ssh-Aufruf, der nichts anlegt), zeigt Anzahl/Groessen und die Vorbedingungen.
 Am PC wird nie etwas geloescht. Geheimnisse stehen nie in argv oder im Log (nur Pfade und Zahlen).
@@ -27,7 +29,6 @@ Uploads belegt (Zustand nicht geschrieben).
 from __future__ import annotations
 
 import argparse
-import hashlib
 import inspect
 import json
 import logging
@@ -59,6 +60,9 @@ EINGANG = ".umzug-eingang"
 SHIM_PORT = 8121
 SERVER = {"lanEnabled": True, "port": 3220}
 TIMEOUT_PRUEFSUMMEN = 120
+# MCP-Server, die auf der VM einem Telegram-Lauf Shell/Dateizugriff auf /data (server-key, models.json) gaeben.
+# Rowboats Schema (packages/shared/src/mcp.ts) hat kein disabled-Feld: sie fliegen aus der Kopie.
+MCP_NICHT_AUF_DER_VM = ("desktop-commander", "playwright", "filesystem")
 
 _BAK = re.compile(r"\.bak($|[-._])")
 
@@ -78,7 +82,7 @@ def _nie(rel: str) -> bool:
         return True
     if teile[0] == "config" and _BAK.search(teile[-1]):
         return True
-    if teile[0] == "knowledge" and len(teile) >= 2 and teile[1] in ws.NIE_SPIEGELN:
+    if teile[0] == "knowledge" and len(teile) >= 2 and teile[1] in ws.NIE_SPIEGELN and teile[1] != ws.GIT:
         return True
     name = teile[-1]
     return name in ws.IGNORIERTE_NAMEN or name.endswith(ws.IGNORIERTE_ENDUNGEN)
@@ -155,7 +159,8 @@ def config_anpassen(config_ordner: Path) -> None:
     `channels.json`: Telegram aus und ohne Bot-Schluessel (der neue Bot kommt in Task 7), WhatsApp aus.
     `knowledge_sources.json`: Quelle `gmail` aus (Eintrag notfalls anlegen), andere bleiben; Windows-Pfade in
     `artifactDir` werden zu `/`. `server.json`: LAN an, Port 3220. `models.json`: bleibt, aber jeder lokale
-    Anbieter muss auf :8121 zeigen, sonst `ConfigFehler`.
+    Anbieter muss auf :8121 zeigen, sonst `ConfigFehler`. `mcp.json` (nur wenn vorhanden): ohne
+    `MCP_NICHT_AUF_DER_VM`.
     """
     config_ordner = Path(config_ordner)
     _modelle_pruefen(config_ordner)
@@ -185,6 +190,16 @@ def config_anpassen(config_ordner: Path) -> None:
     _json_schreiben(config_ordner / "knowledge_sources.json", quellen)
 
     _json_schreiben(config_ordner / "server.json", dict(SERVER))
+
+    if (config_ordner / "mcp.json").exists():
+        mcp = _json_lesen(config_ordner / "mcp.json", None)
+        if not isinstance(mcp, dict) or not isinstance(mcp.get("mcpServers", {}), dict):
+            raise ConfigFehler("mcp.json: unerwarteter Aufbau")
+        server = mcp.get("mcpServers", {})
+        for name in MCP_NICHT_AUF_DER_VM:
+            if server.pop(name, None) is not None:
+                log.info("config/mcp.json (Kopie): Server '%s' entfernt (kein Shell-/Dateizugriff auf der VM)", name)
+        _json_schreiben(config_ordner / "mcp.json", mcp)
 
 
 # --- Vorbedingungen ------------------------------------------------------------------------------------
@@ -229,14 +244,6 @@ _VM_PRUEFSUMMEN = inspect.getsource(ws._datei_sha) + """
 import os
 json.dump({n: _datei_sha(os.path.join(P['wurzel'], n)) for n in P['namen']}, sys.stdout)
 """
-
-
-def _sha(pfad: Path) -> str:
-    h = hashlib.sha256()
-    with open(pfad, "rb") as fh:
-        for block in iter(lambda: fh.read(1 << 20), b""):
-            h.update(block)
-    return h.hexdigest()
 
 
 def _groesse(n: float) -> str:
@@ -363,7 +370,7 @@ def _umzug_gesperrt(
         log.error("Umzug verweigert, nichts uebertragen")
         return 3
 
-    soll = {name: _sha(quelle) for quelle, name in quellen}
+    soll = {name: ws._datei_sha(quelle) for quelle, name in quellen}
     try:
         belegt = ws.hochladen([(q, n, None) for q, n in quellen], ssh_ziel, vm_wurzel, laeufer,
                               eingang_ordner=EINGANG, tar_filter=_config_modus)
@@ -392,7 +399,8 @@ def _umzug_gesperrt(
         return 4
 
     wissen = [[name[len("knowledge/"):], soll[name], quelle.stat().st_mtime]
-              for quelle, name in quellen if name.startswith("knowledge/")]
+              for quelle, name in quellen
+              if name.startswith("knowledge/") and not ws._ausgenommen(name[len("knowledge/"):])]
     bestand, _ = ws._bestand_aus(wissen, "pc", [])
     ws.zustand_schreiben(zustand, bestand)
     log.info("Umzug fertig: %d Dateien, %d im Spiegel-Zustand %s", len(quellen), len(bestand), zustand)

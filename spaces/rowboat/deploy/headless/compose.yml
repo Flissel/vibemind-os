@@ -16,6 +16,9 @@ services:
       ROWBOAT_WORKDIR: /data
       ROWBOAT_SERVER_PORT: "3220"
       NODE_OPTIONS: --max-old-space-size=2048
+      # Keine Telemetrie vom Mini-PC (core/src/analytics/posthog.ts)
+      ROWBOAT_TELEMETRY_DISABLED: "1"
+      DO_NOT_TRACK: "1"
     volumes:
       # Fehlt der Ordner, bricht der Start ab, statt ihn als root anzulegen (Container laeuft als uid 1000).
       - type: bind

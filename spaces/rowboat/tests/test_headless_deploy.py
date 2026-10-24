@@ -44,6 +44,12 @@ def test_compose_vertrag():
     assert "node" in probe
 
 
+def test_compose_telemetrie_aus():
+    env = umgebung(dienst())
+    assert env["ROWBOAT_TELEMETRY_DISABLED"] == "1"  # core/src/analytics/posthog.ts
+    assert env["DO_NOT_TRACK"] == "1"
+
+
 def test_compose_ohne_geheimnis():
     for dienstname in ("rowboat-server", "rowboat-shim"):
         svc = dienst(dienstname)
