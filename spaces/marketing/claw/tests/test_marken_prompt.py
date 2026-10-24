@@ -530,9 +530,33 @@ def test_antwort_lesen_einrichtung_form_fehler():
         kp.antwort_lesen(_einr_json(vermittler="ja"), einrichtung=True)
 
 
-def test_antwort_lesen_ohne_einrichtung_ignoriert_pflichtteil():
-    r = kp.antwort_lesen(_einr_json(uebersprungen=[2]))
-    assert r["pflichtteil"] is None and r["uebersprungen"] == [] and r["vermittler"] is None
+def test_antwort_lesen_ohne_einrichtung_liefert_pflichtteil_ohne_stand():
+    """Normaler Chat (091): pflichtteil kommt als Vorschlag mit, uebersprungen/vermittler bleiben Einrichtung."""
+    r = kp.antwort_lesen(_einr_json(uebersprungen=[2], vermittler="ja"))
+    assert r["pflichtteil"] == {"impressum": "Radhaus, Musterweg 1"}
+    assert r["uebersprungen"] == [] and r["vermittler"] is None
+    assert kp.antwort_lesen(_einr_json(pflichtteil=None))["pflichtteil"] is None
+    with pytest.raises(kp.AntwortFehler):
+        kp.antwort_lesen(_einr_json(pflichtteil="x"))
+
+
+def test_system_beschreibt_pflichtangaben_im_chat():
+    assert '"pflichtteil"' in kp.SYSTEM and "{abmeldelink}" in kp.SYSTEM and "PFLICHTANGABEN" in kp.SYSTEM
+
+
+def test_nutzer_text_pflichtangaben_block():
+    pflicht = {"impressum": "Radhaus GmbH, Weg 1", "abmelde_hinweis": "", "vermittlerangaben": ""}
+    t = kp.nutzer_text({**AUFTRAG, "pflichtteil": pflicht}, mp.Profil(), None, "", [], [])
+    assert "PFLICHTANGABEN" in t
+    assert "Impressum: gesetzt" in t and "Vermittlerangaben: fehlen" in t and "Abmeldehinweis: fehlt" in t
+    assert t.index("NACHRICHT:") < t.index("PFLICHTANGABEN") < t.index("AKTUELLES PROFIL")
+    voll = {"impressum": "x", "abmelde_hinweis": "Abmelden: {abmeldelink}", "vermittlerangaben": "y"}
+    t = kp.nutzer_text({**AUFTRAG, "pflichtteil": voll}, mp.Profil(), None, "", [], [])
+    assert "Abmeldehinweis: gesetzt" in t and "Vermittlerangaben: gesetzt" in t
+    # ohne Stand im Auftrag und in der Einrichtung (eigener Block) kein PFLICHTANGABEN-Block
+    assert "PFLICHTANGABEN" not in kp.nutzer_text(AUFTRAG, mp.Profil(), None, "", [], [])
+    assert "PFLICHTANGABEN" not in kp.nutzer_text({**AUFTRAG, "pflichtteil": pflicht}, mp.Profil(), None, "", [], [],
+                                                  einrichtung_stand="STAND")
 
 
 def test_nutzer_text_mit_stand():

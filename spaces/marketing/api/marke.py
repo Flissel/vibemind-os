@@ -287,6 +287,7 @@ def marke_stand(mandant: str | None = None, alle: bool = False, x_pult_key: str 
     ang = _lesen_einer(lambda:
         "SELECT v.vorschlag FROM marketing.marken_vorschlaege v "
         f"WHERE v.mandant = {lit(m)} AND v.status = 'angenommen' AND v.vorschlag->>'rueckgaengig_von' IS NULL "
+        "AND v.vorschlag ? 'abschnitte' "      # 091: ein Vorschlag nur mit Pflichtangaben ist kein Profil
         "AND EXISTS (SELECT 1 FROM "
         "marketing.marken_auftraege a WHERE a.vorschlag = v.id AND a.art = 'uebernehmen' AND a.status = 'fertig') "
         "ORDER BY v.entschieden_am DESC LIMIT 1")
@@ -328,7 +329,7 @@ def marke_stand(mandant: str | None = None, alle: bool = False, x_pult_key: str 
         if not isinstance(z.get("quellen"), list):
             z["quellen"] = []
         z["aenderung"] = _aenderung(z, juengster, rueckgaengig)
-    # Einrichtung neuer Marken (086): Stand je Schritt nur, solange sie laeuft
+    # Einrichtung neuer Marken (086): Stand je Schritt nur, solange sie laeuft; Pflichtangaben seit 091 immer
     e_status = kopf.get("einrichtung") if kopf.get("einrichtung") in ("laeuft", "abgebrochen") else None
     pflichtteil = kopf.get("pflichtteil") if isinstance(kopf.get("pflichtteil"), dict) else {}
     e_stand = (einrichtung.stand(str(kopf.get("name") or ""), _profil_lesen(kopf.get("profil")),
@@ -350,7 +351,7 @@ def marke_stand(mandant: str | None = None, alle: bool = False, x_pult_key: str 
             "runden_gesamt": int((gesamt or {}).get("n") or len(auftraege)),
             "faehigkeiten": {"kann": list(marken_prompt.FAEHIGKEITEN), "nicht": list(marken_prompt.GRENZEN)},
             "befehle": _befehle_liste(), "einrichtung": e_status, "einrichtung_stand": e_stand,
-            "pflichtteil": pflichtteil if e_status == "laeuft" else None,
+            "pflichtteil": pflichtteil,
             "einrichtung_vermittler": vermittler if isinstance(vermittler, bool) else None}
 
 
@@ -766,8 +767,9 @@ def arbeiter_vorschlag(aid: str, payload: dict = Body(...), x_bild_key: str | No
                 f"JOIN marketing.mandanten m ON m.id = a.mandant WHERE a.id = {lit(a)}::uuid")
             if not job or not job.get("mandant"):
                 raise HTTPException(404, "Unbekannter Auftrag")
-            # Mehr als Text (Farben, Schriften, Logo, Webseite) gilt nur waehrend der Einrichtung direkt (086)
-            if not _nur_text(vorschlag) and job.get("einrichtung") != "laeuft":
+            # Mehr als Text (Farben, Schriften, Logo, Webseite) und Pflichtangaben (091) gelten nur waehrend der
+            # Einrichtung direkt (086)
+            if (not _nur_text(vorschlag) or "pflichtteil" in vorschlag) and job.get("einrichtung") != "laeuft":
                 return {"vorschlag": vid, "direkt": False}
             _schreiben(lambda:
                 f"SELECT marketing.pult_marke_uebernehmen({lit(vid)}::uuid, {lit(DIREKT_VON)}, "

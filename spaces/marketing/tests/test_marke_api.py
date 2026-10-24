@@ -1605,7 +1605,7 @@ def test_stand_liefert_befehle_und_einrichtung(umg):
     f.antworten += [[{"ok": True}], _stand_kopf(), [], [], [], []]
     j = c.get("/api/pult/marke?mandant=radhaus", headers=H).json()
     assert j["befehle"][0]["befehl"] == "/marke_neu" and j["befehle"][0]["beschreibung"]
-    assert j["einrichtung"] is None and j["einrichtung_stand"] is None and j["pflichtteil"] is None
+    assert j["einrichtung"] is None and j["einrichtung_stand"] is None and j["pflichtteil"] == {}
     assert "einrichtung" in f.sql[1] and "pflichtteil" in f.sql[1]
     pflicht = {"impressum": "Probe GmbH, Weg 1", "abmelde_hinweis": "Abmelden: {abmeldelink}",
                "vermittlerangaben": ""}
@@ -1724,6 +1724,46 @@ def test_vorschlag_direkt_farben_nur_in_einrichtung(umg):
     r = c.post(f"/api/marke/arbeiter/{AID}/vorschlag", headers=HB, json={"vorschlag": v, "antwort": "a", "direkt": True})
     assert r.status_code == 200 and r.json() == {"vorschlag": VID, "direkt": True}
     assert f"pult_marke_uebernehmen('{VID}'::uuid, 'Agent (direkt)', 'probe_gmbh')" in f.sql[2]
+
+
+def test_stand_liefert_pflichtteil_fuer_aktive_marke(umg):
+    """091: Pflichtangaben auch ausserhalb der Einrichtung; die Vorschlagskarte traegt pflichtteil unveraendert."""
+    f, _, c = umg
+    pflicht = {"impressum": "Radhaus GmbH, Weg 1", "abmelde_hinweis": "", "vermittlerangaben": ""}
+    karte = {"abschnitte": {}, "pflichtteil": {"impressum": "Radhaus GmbH, Weg 2"}, "direkt": False,
+             "aenderungen": []}
+    f.antworten += [[{"ok": True}], _stand_kopf(pflichtteil=pflicht, einrichtung=None), [], [],
+                    [{"id": VID, "vorschlag": karte, "erstellt_am": "2026-10-24 10:00:00+00"}], []]
+    j = c.get("/api/pult/marke?mandant=radhaus", headers=H).json()
+    assert j["einrichtung"] is None and j["einrichtung_stand"] is None
+    assert j["pflichtteil"] == pflicht
+    assert j["vorschlag"]["vorschlag"]["pflichtteil"] == {"impressum": "Radhaus GmbH, Weg 2"}
+
+
+def test_stand_aktuell_ueberspringt_reine_pflichtteil_vorschlaege(umg):
+    """Ein angenommener Vorschlag nur mit Pflichtangaben ist kein Profil: 'aktuell' bleibt beim letzten Profil."""
+    f, _, c = umg
+    f.antworten += [[{"ok": True}], _stand_kopf(), [], [], [], []]
+    c.get("/api/pult/marke?mandant=radhaus", headers=H)
+    ang = next(q for q in f.sql if "v.status = 'angenommen'" in q and "rueckgaengig_von" in q)
+    assert "v.vorschlag ? 'abschnitte'" in ang
+
+
+def test_vorschlag_mit_pflichtteil_ausserhalb_einrichtung_nie_direkt(umg):
+    f, _, c = umg
+    v = {**VORSCHLAG, "abschnitte": {"Ton": "warm"}, "mustertext": None, "direkt": True,
+         "aenderungen": [{"feld": "Ton", "vorher": "", "nachher": "warm"}],
+         "pflichtteil": {"impressum": "Radhaus GmbH, Weg 1"}}
+    f.antworten += [[{"id": VID}], [{"mandant": "radhaus", "einrichtung": None}]]
+    r = c.post(f"/api/marke/arbeiter/{AID}/vorschlag", headers=HB, json={"vorschlag": v, "antwort": "a", "direkt": True})
+    assert r.status_code == 200 and r.json() == {"vorschlag": VID, "direkt": False}
+    assert not any("pult_marke_uebernehmen" in q for q in f.sql)
+    # nur pflichtteil (leere Aenderungsliste) ebenso nie direkt
+    v2 = {"pflichtteil": {"impressum": "x"}, "direkt": True, "aenderungen": []}
+    f.antworten += [[{"id": VID}], [{"mandant": "radhaus", "einrichtung": None}]]
+    r = c.post(f"/api/marke/arbeiter/{AID}/vorschlag", headers=HB, json={"vorschlag": v2, "antwort": "a", "direkt": True})
+    assert r.json() == {"vorschlag": VID, "direkt": False}
+    assert not any("pult_marke_uebernehmen" in q for q in f.sql)
 
 
 def test_vorschlag_direkt_text_mit_unveraenderten_werten(umg):

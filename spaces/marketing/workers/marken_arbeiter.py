@@ -36,6 +36,7 @@ MAX_HINWEIS = 300
 UNBEKANNT = "Unbekannte Auftragsart"
 VON_VORGABE = "Marken-Chat"
 UEBERNOMMEN = "Die Marke ist übernommen."
+PFLICHT_UEBERNOMMEN = "Die Pflichtangaben sind übernommen."
 SPIEGEL_FEHLER = "Spiegel nicht aktualisiert: "
 DIREKT_MAX = 60_000        # E5: groesser gespeichert gilt nicht direkt (Review Focus 3)
 QUELLEN_MAX = 12           # wie api/marke.QUELLEN_MAX (078)
@@ -480,6 +481,14 @@ def _pflichtteil_melden(api, aid, auftrag: dict, erg: dict, belege: list[str], h
         hinweise.append(PFLICHT_NICHT + e.grund[:200])
 
 
+def _offene_pflicht(offen: dict) -> dict:
+    """Pflichtangaben eines offenen Vorschlags (beim Ablegen schon gegen die Belege geprueft), nur Text."""
+    roh = offen.get("pflichtteil") if isinstance(offen, dict) else None
+    if not isinstance(roh, dict):
+        return {}
+    return {k: w for k, w in roh.items() if k in einrichtung._PFLICHT_SCHLUESSEL and isinstance(w, str) and w.strip()}
+
+
 def chat_bearbeiten(api, auftrag: dict, fragen_strom, webseite_lesen, logo_laden, wurzel: str,
                     uhr, schlafen, halten_takt_s, *, comfy=bild_comfy, jetzt=datetime.datetime.now,
                     seite_lesen=webseite.einzelseite, arbeit_ordner: str | None = None) -> str:
@@ -544,6 +553,7 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
         stand_text = einrichtung.stand_text(einrichtung.stand(
             name, {"werte": profil.werte, "abschnitte": profil.abschnitte}, bool(profil.logo_pfad),
             pflichtteil, _einrichtung_stand(auftrag)), pflichtteil, _einrichtung_stand(auftrag))
+    if formular is None:            # Belege fuer Rechtsangaben: Nachricht + gelesene Seiten (Einrichtung und 091)
         belege = [str(auftrag.get("nachricht") or "")] + ([s.text for s in fund.seiten if s.text] if fund else [])
     text_nutzer = marken_prompt.nutzer_text(auftrag, profil, fund, unterlagen_text, bilder, hinweise,
                                             firmenwissen=wissen.text, notizen=wissen.notizen, formular=formular,
@@ -601,9 +611,22 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
     if not api.weiter(aid):
         return "fehler"
     _quellen_melden(api, aid, gelesen, marken_prompt.quellen_pruefen(websuche), spur)
+    pflicht: dict = {}
     if in_einrichtung:
         _pflichtteil_melden(api, aid, auftrag, erg, belege, hinweise)
+    elif formular is None and erg["pflichtteil"] is not None:
+        # Normaler Chat (091): belegte Pflichtangaben nur als Vorschlag, gespeichert erst mit "Übernehmen"
+        pflicht, pflicht_hinweise = einrichtung.pflichtteil_pruefen(erg["pflichtteil"], belege)
+        hinweise += pflicht_hinweise
     vorschlag = erg["vorschlag"]
+    if vorschlag is None and pflicht:
+        # Ein offener Profil-Vorschlag wuerde sonst ersetzt: er bleibt und bekommt die Pflichtangaben dazu
+        basis = {**offen, "direkt": False} if offen else {"direkt": False, "aenderungen": []}
+        spur.schritt("Vorschlag abgelegt (Pflichtangaben)")
+        spur.ende()
+        api.vorschlag(aid, {"vorschlag": {**basis, "pflichtteil": {**_offene_pflicht(offen), **pflicht}},
+                            "antwort": erg["antwort"], "hinweise": _hinweise(hinweise), "direkt": False})
+        return "fertig"
     if vorschlag is None:
         spur.schritt("Antwort ohne Vorschlag")
         spur.ende()
@@ -640,6 +663,11 @@ def _chat_mit_spur(api, auftrag: dict, aid: str, spur, fragen_strom, webseite_le
         if bisher and vorschlag.get("logo") == bisher:     # dunkle Fassung und Original gehoeren zum Logo
             vorschlag.update({k: offen[k] for k in marken_prompt.WERKZEUG_FELDER if isinstance(offen.get(k), str)})
     gespeichert, direkt = _gespeichert(vorschlag, profil, immer_direkt=in_einrichtung)
+    if not in_einrichtung:
+        # Pflichtangaben des offenen Vorschlags (schon belegt) bleiben, neue gewinnen; nie direkt (091)
+        pflicht = {**_offene_pflicht(offen), **pflicht}
+    if pflicht:
+        gespeichert, direkt = {**gespeichert, "pflichtteil": pflicht, "direkt": False}, False
     spur.schritt("Vorschlag abgelegt")
     spur.ende()
     api.vorschlag(aid, {"vorschlag": gespeichert, "antwort": erg["antwort"], "hinweise": _hinweise(hinweise),
@@ -809,6 +837,12 @@ def _uebernehmen_mit_spur(api, auftrag: dict, aid: str, spur, wurzel: str, jetzt
     v = (auftrag.get("vorschlag") or {}).get("vorschlag") if isinstance(auftrag.get("vorschlag"), dict) else None
     if not isinstance(v, dict):
         raise _Aufgeben("Übernehmen nicht möglich: Vorschlag fehlt")
+    if isinstance(v.get("pflichtteil"), dict) and not any(k in v for k in (*NICHT_TEXT, "abschnitte", "mustertext")):
+        # Nur Pflichtangaben (091): die DB hat sie beim Übernehmen schon gemischt, Rowboat bleibt unberuehrt
+        spur.schritt("Pflichtangaben übernommen")
+        spur.ende()
+        api.fertig(aid, {"antwort": PFLICHT_UEBERNOMMEN, "hinweise": []})
+        return "fertig"
     with cw.halten(api, aid, halten_takt_s) as halter:
         try:
             # Ein reiner Text-Vorschlag (Rueckgaengig, 078) nennt keine Farben, Schriften, Logos und keine

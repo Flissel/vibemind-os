@@ -1798,6 +1798,122 @@ def test_bearbeitung_in_einrichtung_unveraendert():
     assert "STAND DER EINRICHTUNG" not in _text(fragen) and api.aufrufe("pflichtteil") == []
 
 
+# --- Pflichtangaben fuer bestehende Marken im normalen Chat (Migration 091) ------------------
+
+PFLICHT_LEER = {"impressum": "", "abmelde_hinweis": "", "vermittlerangaben": ""}
+AKTIV = {**CHAT, "einrichtung": None, "pflichtteil": dict(PFLICHT_LEER)}
+
+
+def test_chat_impressum_aus_nachricht_wird_vorschlag_nie_direkt(wurzel):
+    _profil(wurzel, {"Ton": "Laut und schnell.", "Bildstil": "Warme Werkstattfotos, Tageslicht."})
+    api = Api({**AKTIV, "nachricht": f"Unser Impressum: {IMPRESSUM}"})
+    # nur Text geaendert: ohne Pflichtangaben waere das direkt (test_text_aenderung_gilt_direkt)
+    assert _lauf(api, Fragen(_einr_antwort(VORSCHLAG, pflichtteil={"impressum": IMPRESSUM}))) == "fertig"
+    daten = _gesendet(api)
+    assert daten["vorschlag"]["pflichtteil"] == {"impressum": IMPRESSUM}
+    assert daten["direkt"] is False and daten["vorschlag"]["direkt"] is False
+    assert api.aufrufe("pflichtteil") == []         # nie sofort gespeichert, nur ueber "Übernehmen"
+
+
+def test_chat_erfundenes_impressum_nicht_im_vorschlag():
+    api = Api({**AKTIV, "nachricht": "Schreib uns ein Impressum."})
+    assert _lauf(api, Fragen(_einr_antwort(VORSCHLAG, pflichtteil={"impressum": IMPRESSUM}))) == "fertig"
+    daten = _gesendet(api)
+    assert "pflichtteil" not in daten["vorschlag"]
+    assert any(h.startswith("Impressum nicht übernommen") for h in daten["hinweise"])
+
+
+def test_chat_nur_pflichtangaben_ohne_profilvorschlag():
+    """Antwort ohne Profil-Vorschlag, aber mit belegten Pflichtangaben: ein Vorschlag nur mit pflichtteil."""
+    hinweis = "Du bekommst diese Mail als Kunde. Abmelden: {abmeldelink}"
+    api = Api({**AKTIV, "nachricht": f"Impressum: {IMPRESSUM}"})
+    fragen = Fragen(_einr_antwort(pflichtteil={"impressum": IMPRESSUM, "abmelde_hinweis": hinweis}))
+    assert _lauf(api, fragen) == "fertig"
+    daten = _gesendet(api)
+    assert daten["vorschlag"] == {"pflichtteil": {"impressum": IMPRESSUM, "abmelde_hinweis": hinweis},
+                                  "direkt": False, "aenderungen": []}
+    assert daten["direkt"] is False and api.aufrufe("fertig") == []
+
+
+def test_chat_abmeldehinweis_ohne_platzhalter_und_nichts_belegt_ist_fertig():
+    api = Api(dict(AKTIV))
+    assert _lauf(api, Fragen(_einr_antwort(pflichtteil={"abmelde_hinweis": "Abmelden per Mail"}))) == "fertig"
+    assert api.aufrufe("vorschlag") == []
+    (_, _, daten), = api.aufrufe("fertig")
+    assert any("{abmeldelink}" in h for h in daten["hinweise"])
+
+
+def test_chat_impressum_von_gelesener_seite_als_vorschlag():
+    team = Fund(seiten=[Seite(url="https://radhaus.example/impressum", text=f"Impressum\n{IMPRESSUM}",
+                              ueberschriften=[])])
+    api = Api(dict(AKTIV))
+    fragen = Fragen(_mit_lesen(["https://radhaus.example/impressum"]),
+                    _einr_antwort(pflichtteil={"impressum": IMPRESSUM}))
+    assert _lauf(api, fragen, seite_lesen=lambda u: team) == "fertig"
+    assert _gesendet(api)["vorschlag"]["pflichtteil"] == {"impressum": IMPRESSUM}
+
+
+def test_chat_zeigt_pflichtangaben_stand():
+    api = Api({**AKTIV, "pflichtteil": {**PFLICHT_LEER, "impressum": IMPRESSUM}})
+    fragen = Fragen(_einr_antwort())
+    assert _lauf(api, fragen) == "fertig"
+    t = _text(fragen)
+    assert "PFLICHTANGABEN" in t and "Impressum: gesetzt" in t and "Abmeldehinweis: fehlt" in t
+    assert fragen.gesehen[0][0] == ma.marken_prompt.SYSTEM
+
+
+def test_chat_pflichtangaben_des_offenen_vorschlags_bleiben(wurzel):
+    _profil(wurzel, {"Ton": "Laut und schnell.", "Bildstil": "Warme Werkstattfotos, Tageslicht."})
+    offen = {**VORSCHLAG, "pflichtteil": {"impressum": IMPRESSUM}}
+    api = Api({**AKTIV, "nachricht": "Ton bitte ruhiger", "vorschlag": {"id": "v0", "vorschlag": offen}})
+    fragen = Fragen(_antwort())
+    assert _lauf(api, fragen) == "fertig"
+    daten = _gesendet(api)
+    assert daten["vorschlag"]["pflichtteil"] == {"impressum": IMPRESSUM} and daten["direkt"] is False
+    assert "pflichtteil vorgeschlagen (impressum)" in _text(fragen)
+
+
+def test_chat_nur_pflichtangaben_behaelt_den_offenen_profilvorschlag():
+    offen = {**VORSCHLAG, "direkt": True, "aenderungen": [{"feld": "Ton", "vorher": "", "nachher": "Ruhig, per Du."}]}
+    api = Api({**AKTIV, "nachricht": f"Impressum: {IMPRESSUM}", "vorschlag": {"id": "v0", "vorschlag": offen}})
+    assert _lauf(api, Fragen(_einr_antwort(pflichtteil={"impressum": IMPRESSUM}))) == "fertig"
+    daten = _gesendet(api)
+    assert daten["vorschlag"] == {**offen, "direkt": False, "pflichtteil": {"impressum": IMPRESSUM}}
+    assert daten["direkt"] is False
+
+
+def test_einrichtung_legt_pflichtteil_nicht_in_den_vorschlag():
+    api = Api({**EINR, "nachricht": f"Unser Impressum: {IMPRESSUM}"})
+    assert _lauf(api, Fragen(_einr_antwort(VORSCHLAG, pflichtteil={"impressum": IMPRESSUM}))) == "fertig"
+    assert "pflichtteil" not in _gesendet(api)["vorschlag"]
+    assert api.aufrufe("pflichtteil")[0][2] == {"pflichtteil": {"impressum": IMPRESSUM}}
+
+
+def test_bearbeitung_ignoriert_pflichtteil():
+    api = Api({**BEARB, "pflichtteil": dict(PFLICHT_LEER), "nachricht": IMPRESSUM})
+    antwort = json.dumps({"antwort": "ok", "vorschlag": VORSCHLAG, "pflichtteil": {"impressum": IMPRESSUM}},
+                         ensure_ascii=False)
+    assert _lauf(api, Fragen(antwort)) == "fertig"
+    assert "pflichtteil" not in _gesendet(api)["vorschlag"]
+
+
+def test_uebernehmen_nur_pflichtteil_schreibt_rowboat_nicht(wurzel):
+    _profil(wurzel, {"Ton": "Laut."})
+    vorher = (wurzel / "Radhaus" / "Marke.md").read_text(encoding="utf-8")
+    api = Api(_uebernehmen({"pflichtteil": {"impressum": IMPRESSUM}, "direkt": False, "aenderungen": []}))
+    assert _lauf(api, Fragen()) == "fertig"
+    assert (wurzel / "Radhaus" / "Marke.md").read_text(encoding="utf-8") == vorher
+    assert api.aufrufe("spiegeln") == []
+    (_, _, daten), = api.aufrufe("fertig")
+    assert daten["antwort"] == ma.PFLICHT_UEBERNOMMEN
+
+
+def test_uebernehmen_mit_pflichtteil_schreibt_das_profil(wurzel):
+    api = Api(_uebernehmen({**VORSCHLAG, "pflichtteil": {"impressum": IMPRESSUM}}))
+    assert _lauf(api, Fragen()) == "fertig"
+    assert mp.lesen(str(wurzel), "radhaus", "Radhaus").abschnitte["Ton"] == "Ruhig, per Du."
+
+
 def test_markenapi_pflichtteil_route(monkeypatch):
     gesehen = []
 
