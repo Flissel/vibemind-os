@@ -1,11 +1,11 @@
 // Modified for EHL (Flissel/rowboat ehl-schema-graph): hierarchical brain graph.
 // Modified for VibeMind (Flissel/rowboat vibemind): tolerant graph file read (graphFileData).
-import { loadSpaceDirectory, getDirectorySpace } from '@/hooks/use-space-directory'
 import { OpenBrowserContext } from '@/contexts/browser-context';
 import { WorkspaceSessionTabs } from './components/code/workspace-session-tabs'
 import { DocumentFileViewer } from '@/components/document-file-viewer'
-import { parseSpacesLink, readLastSpace, resolveSpacesLocation, serverLandingSpaceId, type SpacesLinkTarget } from '@/lib/spaces-navigation'
+import { isOrgView, parseSpacesLink, readLastSpace, resolveSpacesLocation, serverLandingSpaceId, type OrgView, type SpacesLinkTarget } from '@/lib/spaces-navigation'
 import { openServerDialog } from '@/lib/server-dialog'
+import { resolveSpacesLink } from '@/lib/spaces-link-open'
 import { ServerDialogs } from '@/components/spaces/server-dialogs'
 import { noteSpaceVisit } from '@/lib/spaces-visits'
 import { railForOpening, rememberRail } from '@/lib/spaces-rail-memory'
@@ -16,9 +16,12 @@ import { RunEvent } from '@x/shared/src/runs.js';
 import type { ToolUIPart } from 'ai';
 import './App.css'
 import z from 'zod';
-import { CheckIcon, LoaderIcon, PanelLeftIcon, ChevronLeftIcon, ChevronRightIcon, Plus, HistoryIcon, SquarePen, MessageSquare } from 'lucide-react';
+import { CheckIcon, LoaderIcon, PanelLeftIcon, ChevronLeftIcon, ChevronRightIcon, Plus, HistoryIcon, MessageSquare } from 'lucide-react';
 import { cn, compactPath, parentPath } from '@/lib/utils';
 import { SPACES_ENABLED } from '@/lib/feature-flags';
+import { SHORTCUTS, isRichTextTarget } from '@/lib/shortcuts';
+import { Keys } from '@/components/keys';
+import { useFullScreen } from '@/hooks/use-full-screen';
 import { MarkdownEditor, type MarkdownEditorHandle } from './components/markdown-editor';
 import { AssistantWorkspace } from './components/assistant/assistant-workspace';
 import { ASSISTANT_LAYOUT_KEY, chatLocation, defaultWindowSize, restoreAssistantLayout, useAssistantLayout, type ChatLocation } from './lib/assistant-layout';
@@ -667,7 +670,7 @@ type ViewState =
       spaceId?: string
       rail?: RailSelection
       /** An org-level surface instead of a space: Activity (layer 3, 2026-09-10). */
-      view?: 'activity' | 'browse'
+      view?: OrgView
       /** Scroll to this message once the pane paints (a notification or Activity click). */
       messageId?: string
       /** Its offset, when the producer fetched the message — the pane can load around it without asking. */
@@ -773,7 +776,8 @@ function parseDeepLink(input: string): ViewState | null {
       // through openSpacesLink, which looks things up first.
       const orgId = params.get('orgId')
       const spaceId = params.get('spaceId')
-      if (orgId && (params.get('view') === 'activity' || params.get('view') === 'browse')) return { type: 'spaces', orgId, view: params.get('view') as 'activity' | 'browse' }
+      const view = params.get('view')
+      if (orgId && isOrgView(view)) return { type: 'spaces', orgId, view }
       if (!orgId || !spaceId) return { type: 'spaces' }
       const threadRootId = params.get('threadRootId')
       const messageId = params.get('messageId')
@@ -793,14 +797,13 @@ function parseDeepLink(input: string): ViewState | null {
 /** Sidebar toggle (fixed position, top-left) — one persistent control that
     swaps between the expanded panel and the icon rail, in both directions.
     Reports its rendered width so collapsed-mode headers can pad past the
-    whole cluster (its contents vary: new chat, caffeinate). */
+    whole cluster (toggle and caffeinate; New chat moved into the panel and
+    the rail, 2026-10-22). */
 function FixedSidebarToggle({
   leftInsetPx,
-  onNewChat,
   onWidthChange,
 }: {
   leftInsetPx: number
-  onNewChat?: () => void
   onWidthChange?: (px: number) => void
 }) {
   const { toggleSidebar, state } = useSidebar()
@@ -814,29 +817,28 @@ function FixedSidebarToggle({
     return () => observer.disconnect()
   }, [onWidthChange])
   return (
-    <div ref={rootRef} className="fixed left-0 top-0 z-50 flex h-10 items-center gap-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-      <div aria-hidden="true" className="h-10 shrink-0" style={{ width: leftInsetPx }} />
-      <button
-        type="button"
-        onClick={toggleSidebar}
-        className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-        style={{ marginLeft: TITLEBAR_TOGGLE_MARGIN_LEFT_PX }}
-        aria-label="Toggle sidebar"
-        title={state === 'collapsed' ? 'Expand sidebar' : 'Collapse sidebar'}
-      >
-        <PanelLeftIcon className="size-[17px]" strokeWidth={1.5} />
-      </button>
-      {onNewChat && (
-        <button
-          type="button"
-          onClick={onNewChat}
-          className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-          aria-label="New chat"
-          title="New chat"
-        >
-          <SquarePen className="size-[17px]" strokeWidth={1.5} />
-        </button>
-      )}
+    // 38px tall, not 40: centred at 19px, the height of the traffic lights'
+    // centre (trafficLightPosition y 12 + half of their 14px), so the toggle
+    // sits level with them (2026-10-21).
+    <div ref={rootRef} className="fixed left-0 top-0 z-50 flex h-[38px] items-center gap-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+      <div aria-hidden="true" className="h-full shrink-0" style={{ width: leftInsetPx, transition: 'width 200ms ease' }} />
+      <Tooltip delayDuration={400}>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={toggleSidebar}
+            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+            style={{ marginLeft: TITLEBAR_TOGGLE_MARGIN_LEFT_PX }}
+            aria-label={state === 'collapsed' ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            <PanelLeftIcon className="size-[17px]" strokeWidth={1.5} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" sideOffset={6} className="flex items-center gap-2">
+          {state === 'collapsed' ? 'Expand sidebar' : 'Collapse sidebar'}
+          <Keys keys={SHORTCUTS.toggleSidebar} tone="dark" />
+        </TooltipContent>
+      </Tooltip>
       {/* Caffeinate lives here rather than in a pane header: it is app-wide
           state, and this cluster is the one control group present on every
           view, sidebar expanded or docked. */}
@@ -853,6 +855,21 @@ function MenuSidebarToggleBridge() {
   const toggleRef = useRef(toggleSidebar)
   useEffect(() => { toggleRef.current = toggleSidebar }, [toggleSidebar])
   useEffect(() => window.ipc.on('menu:toggleSidebar', () => toggleRef.current()), [])
+  // ⌘B toggles the sidebar (2026-10-21), except in a rich-text editor, where
+  // it is bold; ⌘\ (the old chord) toggles anywhere. Capture phase, so an
+  // inner handler that stops the event can't swallow it.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return
+      const key = e.key.toLowerCase()
+      if (key === '\\' || (key === 'b' && !isRichTextTarget(e.target))) {
+        e.preventDefault()
+        toggleRef.current()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown, true)
+    return () => document.removeEventListener('keydown', onKeyDown, true)
+  }, [])
   return null
 }
 
@@ -883,7 +900,7 @@ function ContentHeader({
       style={{
         paddingLeft: state === 'collapsed' ? (collapsedLeftPaddingPx ?? 12) : 12,
         paddingRight: 12,
-        transition: 'padding-left 200ms linear',
+        transition: 'padding-left var(--sb-dur) var(--sb-ease)',
       }}
     >
       {onNavigateBack && onNavigateForward ? (
@@ -1044,6 +1061,7 @@ function App() {
       return true
     }
   })
+  const fullScreen = useFullScreen()
   const handleSidebarOpenChange = useCallback((open: boolean) => {
     setSidebarOpen(open)
     try {
@@ -2705,6 +2723,7 @@ function App() {
   })
   const { layout: assistantLayout, dispatch: dispatchAssistantLayout, place: placeAssistantChat } = useAssistantLayout(chatTabs.map((tab) => tab.id))
   const [assistantPageHost, setAssistantPageHost] = useState<HTMLDivElement | null>(null)
+  const [assistantHeaderHost, setAssistantHeaderHost] = useState<HTMLDivElement | null>(null)
   const chatTabsRef = useRef(chatTabs)
   chatTabsRef.current = chatTabs
   // A tab's current chat identity (see ChatTab.chatId). Session-scoped maps
@@ -4876,7 +4895,7 @@ function App() {
       case 'integrations': return 'Integrationen'
       case 'spaces': {
         const org = spacesOrgs.find((o) => o.id === currentViewState.orgId)
-        if (org && currentViewState.view) return currentViewState.view === 'browse' ? 'Browse spaces' : 'Activity'
+        if (org && currentViewState.view) return currentViewState.view === 'browse' ? 'Browse spaces' : currentViewState.view === 'agents' ? 'Agents' : 'Activity'
         const space = org ? findSpace(org, currentViewState.spaceId) : undefined
         return org && space ? spaceDisplayName(org, space) : 'Spaces'
       }
@@ -5536,6 +5555,11 @@ function App() {
     void navigateToView({ type: 'spaces', orgId, view: 'activity' })
   }, [navigateToView])
 
+  /** Every agent in the org (2026-10-21). */
+  const openAgents = useCallback((orgId: string) => {
+    void navigateToView({ type: 'spaces', orgId, view: 'agents' })
+  }, [navigateToView])
+
   /**
    * Re-entering the section (the nav item, the ⌥Tab switcher, the assistant)
    * lands exactly where Spaces was left: the same space AND what was open
@@ -5672,60 +5696,23 @@ function App() {
   }, [])
 
   const openSpacesLink = useCallback(async (target: SpacesLinkTarget) => {
-    if (getSpacesOrgs().length === 0) await refreshSpacesOrgs()
-    const org = getSpacesOrgs().find((o) => o.address === target.orgAddress)
-    if (target.inviteToken) {
-      // An invite is joined, not navigated to: rebuild the https link (a
-      // signed-in org's own base URL, else https on the address) and hand it
-      // to the join dialog, which resolves it pre-auth and shows the card.
-      const base = org?.baseUrl ?? `https://${target.orgAddress}`
-      openServerDialog({ kind: 'join', inviteUrl: `${base}/join/${target.inviteToken}` })
-      void navigateToViewRef.current({ type: 'spaces' })
-      return
-    }
-    if (!org) {
-      toast.error(`Sign in to ${target.orgAddress} to open this link`)
-      void navigateToViewRef.current({ type: 'spaces' })
-      return
-    }
-    try {
-      if (target.memberId) {
-        // A person: their DM, created on first use, then opened.
-        const { space } = await window.ipc.invoke('spaces:openDirect', { orgId: org.id, memberId: target.memberId })
-        await refreshSpacesOrgs()
-        void navigateToViewRef.current({ type: 'spaces', orgId: org.id, spaceId: space.id, rail: { kind: 'general' } })
+    const outcome = await resolveSpacesLink(target)
+    const navigate = navigateToViewRef.current
+    switch (outcome.kind) {
+      case 'invite':
+        openServerDialog({ kind: 'join', inviteUrl: outcome.inviteUrl })
+        void navigate({ type: 'spaces' })
         return
-      }
-      if (!target.spaceId) {
-        void navigateToViewRef.current({ type: 'spaces', orgId: org.id, view: 'activity' })
+      case 'unknown-org':
+        toast.error(`Sign in to ${outcome.orgAddress} to open this link`)
+        void navigate({ type: 'spaces' })
         return
-      }
-      if (!findSpace(org, target.spaceId)) await loadSpaceDirectory(org.id)
-      if (!findSpace(org, target.spaceId) && !getDirectorySpace(org.id, target.spaceId)) {
-        toast.error('This space is unavailable or you do not have access')
-        void navigateToViewRef.current({ type: 'spaces', orgId: org.id, view: 'activity' })
+      case 'refused':
+        toast.error(outcome.message)
+        if (outcome.place) void navigate({ type: 'spaces', ...outcome.place })
         return
-      }
-      if (target.assetId) {
-        void navigateToViewRef.current({ type: 'spaces', orgId: org.id, spaceId: target.spaceId, rail: { kind: 'file', assetId: target.assetId } })
-        return
-      }
-      if (target.messageId) {
-        // A reply lands in its thread; the org says which one.
-        const { message } = await window.ipc.invoke('spaces:getMessage', { orgId: org.id, spaceId: target.spaceId, messageId: target.messageId })
-        void navigateToViewRef.current({
-          type: 'spaces',
-          orgId: org.id,
-          spaceId: target.spaceId,
-          rail: message.threadRoot ? { kind: 'thread', rootMessageId: message.threadRoot } : { kind: 'general' },
-          messageId: target.messageId,
-          messageOffset: message.offset,
-        })
-        return
-      }
-      void navigateToViewRef.current({ type: 'spaces', orgId: org.id, spaceId: target.spaceId, rail: { kind: 'general' } })
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Could not open that link')
+      case 'place':
+        void navigate({ type: 'spaces', ...outcome.place })
     }
   }, [])
 
@@ -6362,6 +6349,7 @@ function App() {
       return acc
     }, [])
   ), [knowledgeFiles])
+  const knowledgeFilePathsKey = knowledgeFilePaths.join('\n')
 
   // Compute visible files (files whose parent directories are expanded)
   const visibleKnowledgeFiles = React.useMemo(() => {
@@ -7172,7 +7160,11 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [isGraphOpen, isBrainGraphOpen, knowledgeFilePaths])
+    // Keyed on the list of notes, not the array (2026-10-22): the tree hands
+    // back a new array on every file change, and each rebuild re-read all
+    // notes and restarted the layout, freezing the Brain graph.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isGraphOpen, isBrainGraphOpen, knowledgeFilePathsKey])
 
   // The active chat's view state, backed by the sessions hook (legacy
   // standalone states remain only as the pre-load fallback until stage 7).
@@ -7329,6 +7321,7 @@ function App() {
     recentRuns: chatRuns,
     onOpenRun: openAssistantRun,
     onOpenAssistant: openAssistant,
+    onOpenSearch: () => setIsSearchOpen(true),
     onRenameRun: (rid: string, title: string) => {
       void window.ipc.invoke('sessions:setTitle', { sessionId: rid, title })
         .then(() => setRuns((prev) => prev.map((r) => (r.id === rid ? { ...r, title } : r))))
@@ -7366,7 +7359,7 @@ function App() {
             onOpenChange={handleSidebarOpenChange}
             style={{
               paddingLeft: sidebarOpen ? 0 : DOCK_GUTTER_PX,
-              transition: 'padding-left 200ms linear',
+              transition: 'padding-left var(--sb-dur) var(--sb-ease)',
             }}
           >
             <SidebarContentPanel
@@ -7405,7 +7398,9 @@ function App() {
                 collapsedLeftPaddingPx={collapsedLeftPaddingPx}
               >
                 {isFullScreenChat ? (
-                  <span className="self-center px-3 text-sm font-medium">Assistant</span>
+                  // The chat's own title, ▾ history and actions land here
+                  // (assistant/chat.tsx), one bar instead of two (2026-10-22).
+                  <div ref={setAssistantHeaderHost} className="flex min-w-0 flex-1 items-stretch" />
                 ) : currentViewState.type === 'file' && selectedPath ? (
                   <TabBar
                     tabs={openFilePaths.includes(selectedPath) ? openFilePaths : [...openFilePaths, selectedPath]}
@@ -7486,7 +7481,7 @@ function App() {
                       <button
                         type="button"
                         onClick={toggleChatSidebar}
-                        className="titlebar-no-drag ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                        className="titlebar-no-drag ml-auto flex h-8 w-8 shrink-0 items-center justify-center self-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
                         aria-label="Open chat sidebar"
                       >
                         <MessageSquare className="size-4" />
@@ -7720,6 +7715,7 @@ function App() {
                     // space (or thread) and lands on the row.
                     onOpenMessage={(target) => void navigateToView({ type: 'spaces', ...target })}
                     onOpenBrowse={openBrowse}
+                    onOpenAgents={openAgents}
                     onOpenActivity={openActivity}
                     onOpenSession={openAssistantRun}
                   />
@@ -8010,7 +8006,7 @@ function App() {
             </SidebarInset>
 
               <AssistantWorkspace
-                layout={assistantLayout} dispatch={dispatchAssistantLayout} pageHost={assistantPageHost} pageVisible={activeMiddle === 'chat'}
+                layout={assistantLayout} dispatch={dispatchAssistantLayout} pageHost={assistantPageHost} pageHeaderHost={isFullScreenChat ? assistantHeaderHost : null} pageVisible={activeMiddle === 'chat'}
                 legacyPane={isCodePaneActive} workspaceSessionId={activeCodeSession?.session.id ?? null}
                 onMoveChat={moveAssistantChat} onNewChatAt={newChatAt} onSelectChatAt={selectChatAt} onFocusChat={switchChatTab}
                 onHideSidebar={() => dispatchAssistantLayout({ type: 'hide-sidebar' })} onCloseChat={closeAssistantChat}
@@ -8191,18 +8187,19 @@ function App() {
                 icon rail (the traffic lights are wider than the rail, so the
                 band must be one uninterrupted surface — the rail itself starts
                 below it) and keeps that corner draggable. */}
-            {!sidebarOpen && (
-              <div
-                aria-hidden="true"
-                className="titlebar-drag-region fixed left-0 top-0 z-20 h-10 border-b border-border bg-background"
-                style={{ width: DOCK_GUTTER_PX }}
-              />
-            )}
+            {/* The panel and the rail both float below the titlebar band
+                (2026-10-21/22); this keeps the band over them draggable. */}
+            <div
+              aria-hidden="true"
+              className="titlebar-drag-region fixed left-0 top-0 z-20 h-10"
+              style={{ width: sidebarOpen ? 'var(--sidebar-width)' : DOCK_GUTTER_PX }}
+            />
             {/* Sidebar toggle — always present (both directions), rendered
                 last so its no-drag region paints over the drag regions. */}
             <FixedSidebarToggle
-              leftInsetPx={isMac ? MACOS_TRAFFIC_LIGHTS_RESERVED_PX : 0}
-              onNewChat={handleNewChatTab}
+              // Full screen hides the traffic lights, so the toggle takes
+              // their place, in line with the sidebar's icons (2026-10-21).
+              leftInsetPx={isMac && !fullScreen ? MACOS_TRAFFIC_LIGHTS_RESERVED_PX : 8}
               onWidthChange={setTitlebarControlsWidthPx}
             />
             <MenuSidebarToggleBridge />

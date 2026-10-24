@@ -1,4 +1,5 @@
 import { invokeSpace } from '@/lib/spaces-invoke'
+import { LOCAL_RUNTIME } from '@/lib/feature-flags'
 import { useSpaceAccess, JoinSpacePrompt } from '@/lib/spaces-access'
 import { MESSAGE_PROSE } from '@/components/spaces/message-prose'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -96,7 +97,7 @@ export function ThreadPane({
     /** False while kept mounted but off screen (read mode, hidden Spaces view) — no presence, no read marks. */
     visible?: boolean
 }) {
-    const { member } = useSpaceAccess()
+    const { member, writable } = useSpaceAccess()
     // The cached copy from the last open — plus any replies that streamed in
     // live while the pane was closed. Seeding paints the whole thread in the
     // first frame; the fetch below reconciles right behind it. A PARTIAL
@@ -982,7 +983,8 @@ export function ThreadPane({
     const replyCountLabel = Math.max(visibleReplies.length, root?.replyCount ?? 0)
 
     return (
-        <div className="flex h-full min-h-0 flex-col bg-background">
+        // Spaces redesign (2026-10-21): spaces-thread-pane slides the pane in from the right on mount.
+        <div className="spaces-thread-pane flex h-full min-h-0 flex-col bg-background">
             <div className="spaces-pane-header flex shrink-0 items-center gap-1.5 border-b border-border">
                 {showBack && (
                     <>
@@ -1063,28 +1065,28 @@ export function ThreadPane({
                         <DropdownMenuSeparator />
                         {topic ? (
                             <>
-                                <DropdownMenuItem disabled={!member} onClick={() => setEditingTitle(topic.title)}>
+                                <DropdownMenuItem disabled={!writable} onClick={() => setEditingTitle(topic.title)}>
                                     <Pencil className="size-3.5 mr-2" /> Rename
                                 </DropdownMenuItem>
-                                <DropdownMenuItem disabled={!member} onClick={() => setAttaching(true)}>
+                                <DropdownMenuItem disabled={!writable} onClick={() => setAttaching(true)}>
                                     <Paperclip className="size-3.5 mr-2" /> {topic.documentAssetId ? 'Change linked file…' : 'Link a file…'}
                                 </DropdownMenuItem>
                                 {topic.documentAssetId && (
-                                    <DropdownMenuItem disabled={!member} onClick={() => void manage({ action: 'detach_document' })}>
+                                    <DropdownMenuItem disabled={!writable} onClick={() => void manage({ action: 'detach_document' })}>
                                         <Unlink className="size-3.5 mr-2" /> Unlink file
                                     </DropdownMenuItem>
                                 )}
                                 {topic.archived ? (
-                                    <DropdownMenuItem disabled={!member} onClick={() => void manage({ action: 'unarchive' })}><ArchiveRestore className="size-3.5 mr-2" /> Unarchive</DropdownMenuItem>
+                                    <DropdownMenuItem disabled={!writable} onClick={() => void manage({ action: 'unarchive' })}><ArchiveRestore className="size-3.5 mr-2" /> Unarchive</DropdownMenuItem>
                                 ) : (
-                                    <DropdownMenuItem disabled={!member} onClick={() => void manage({ action: 'archive' })}><Archive className="size-3.5 mr-2" /> Archive</DropdownMenuItem>
+                                    <DropdownMenuItem disabled={!writable} onClick={() => void manage({ action: 'archive' })}><Archive className="size-3.5 mr-2" /> Archive</DropdownMenuItem>
                                 )}
-                                <DropdownMenuItem disabled={!member} onClick={() => void manage({ action: 'remove' })}>
+                                <DropdownMenuItem disabled={!writable} onClick={() => void manage({ action: 'remove' })}>
                                     <MessageSquareOff className="size-3.5 mr-2" /> Convert back to thread
                                 </DropdownMenuItem>
                             </>
                         ) : (
-                            <DropdownMenuItem disabled={!member} onClick={() => setEditingTitle('')}>
+                            <DropdownMenuItem disabled={!writable} onClick={() => setEditingTitle('')}>
                                 <Tag className="size-3.5 mr-2" /> Make this a discussion…
                             </DropdownMenuItem>
                         )}
@@ -1263,7 +1265,7 @@ export function ThreadPane({
                                     <button
                                         className="flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:opacity-60"
                                         title="Stop your Rowboat"
-                                        disabled={!member || stopping}
+                                        disabled={!writable || stopping}
                                         onClick={() => void stopRowboat()}
                                     >
                                         {stopping ? <Loader2 className="size-2.5 animate-spin" /> : <Square className="size-2.5 fill-current" />} Stop
@@ -1303,7 +1305,7 @@ export function ThreadPane({
             )}
             </div>
 
-            {member && attaching && topic && (
+            {writable && attaching && topic && (
                 <AttachDocumentDialog
                     entries={entries}
                     current={topic.documentAssetId}
@@ -1314,10 +1316,10 @@ export function ThreadPane({
                     }}
                 />
             )}
-            {member && forwarding && (
+            {writable && forwarding && (
                 <ForwardDialog org={org} space={space} message={forwarding} memberNames={memberNames} onClose={() => setForwarding(null)} />
             )}
-            {member && <PollDialogHost openRef={openPollRef} onSubmit={createPoll} />}
+            {writable && <PollDialogHost openRef={openPollRef} onSubmit={createPoll} />}
             <FindBanner
                 orgId={org.id}
                 spaceId={space.id}
@@ -1336,11 +1338,11 @@ export function ThreadPane({
                     dismissTitle="Looks right: keep it here as a draft"
                 />
             )}
-            {member ? <Composer
+            {writable ? <Composer
                 placeholder="Reply…"
                 busy={false}
                 onSend={post}
-                onSchedule={async (body, at) => {
+                onSchedule={!LOCAL_RUNTIME ? undefined : async (body, at) => {
                     clearStagedThreadDraft(draftKey)
                     await invokeSpace('spaces:schedule', {
                         orgId: org.id, spaceId: space.id, threadRootId: rootMessageId, body, at: at.toISOString(), kind: 'message',
@@ -1392,11 +1394,12 @@ export function ThreadPane({
                                   : { name: 'archive', hint: 'Archive this discussion — it leaves the rail until a new reply revives it', run: () => void manage({ action: 'archive' }) },
                           ]
                         : []),
-                    {
+                    // Scheduled sends live on the desktop (core's scheduler), so the browser has no /remind.
+                    ...(LOCAL_RUNTIME ? [{
                         name: 'remind',
                         args: '<when> <text>',
                         hint: 'Set a reminder — 20m, 2h, 9:30, tomorrow',
-                        run: async (args) => {
+                        run: async (args: string) => {
                             const parsed = parseRemindArgs(args)
                             if (typeof parsed === 'string') {
                                 toast(parsed, 'info')
@@ -1411,13 +1414,13 @@ export function ThreadPane({
                                 toast(err instanceof Error ? err.message : 'Could not set the reminder', 'error')
                             }
                         },
-                    },
+                    }] : []),
                     {
                         name: 'invite',
                         hint: 'Copy an invite link to this space',
                         run: async () => {
                             try {
-                                const result = await invokeSpace('spaces:createInvite', { orgId: org.id, spaceId: space.id })
+                                const result = await invokeSpace('spaces:createInvite', { orgId: org.id, spaceIds: [space.id] })
                                 await navigator.clipboard.writeText(result.link)
                                 analytics.spacesInviteLinkCopied()
                                 toast('Invite link copied to clipboard', 'success')

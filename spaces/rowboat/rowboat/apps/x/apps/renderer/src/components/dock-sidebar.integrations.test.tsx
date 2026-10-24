@@ -7,10 +7,12 @@ vi.hoisted(() => {
 })
 vi.mock('react-tweet', () => ({ Tweet: () => null }))
 import { DockSidebar } from './dock-sidebar'
+import { SidebarProvider } from '@/components/ui/sidebar'
 
 const knowledgeActions = { createNote: vi.fn(), openKnowledgeView: vi.fn(), openWorkspaceAt: vi.fn() }
 
 beforeEach(() => {
+  vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }))
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
 })
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
@@ -18,7 +20,12 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 describe('DockSidebar Integrationen', () => {
   it('zeigt die Kachel Integrationen und ruft onOpenIntegrations', () => {
     const onOpenIntegrations = vi.fn()
-    render(<DockSidebar tree={[]} knowledgeActions={knowledgeActions} onOpenIntegrations={onOpenIntegrations} activeNav="integrations" />)
+    // Upstream #1214-#1221: DockSidebar renders SidebarCreditRewards, which needs a SidebarProvider.
+    render(
+      <SidebarProvider>
+        <DockSidebar tree={[]} knowledgeActions={knowledgeActions} onOpenIntegrations={onOpenIntegrations} activeNav="integrations" />
+      </SidebarProvider>,
+    )
     fireEvent.click(screen.getByLabelText('Integrationen'))
     expect(onOpenIntegrations).toHaveBeenCalledTimes(1)
   })

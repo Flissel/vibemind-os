@@ -23,6 +23,8 @@ import type { OrderedExcalidrawElement } from '@excalidraw/excalidraw/element/ty
 import type { RemoteExcalidrawElement } from '@excalidraw/excalidraw/data/reconcile'
 import { spaces } from '@x/shared'
 import { cn } from '@/lib/utils'
+import { LOCAL_RUNTIME } from '@/lib/feature-flags'
+import { blobAppUrl, fetchBlob } from '@/lib/spaces-presentation'
 import { copySpacesLink } from '@/lib/spaces-copy-link'
 import { createBoardSaver, type BoardSaver } from '@/lib/whiteboard-saver'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -66,7 +68,9 @@ declare global {
 }
 // Self-hosted fonts (vite.config.ts copies/serves them) — without this the
 // editor falls back to a CDN, which a desktop app can't rely on offline.
-window.EXCALIDRAW_ASSET_PATH = './excalidraw-assets/'
+// The web app is served from a domain and its paths are deep (/<org>/s/…),
+// so its fonts sit at the root, not next to the page (2026-10-12).
+window.EXCALIDRAW_ASSET_PATH = LOCAL_RUNTIME ? './excalidraw-assets/' : '/excalidraw-assets/'
 
 const CURSOR_SYNC_MS = 33 // ~30fps, Excalidraw's own cadence
 const FULL_SYNC_MS = 20_000 // periodic full-scene self-heal
@@ -84,7 +88,7 @@ interface SnapshotJson {
 }
 
 function blobUrl(orgId: string, spaceId: string, hash: string): string {
-    return `app://space-blob/${encodeURIComponent(orgId)}/${encodeURIComponent(spaceId)}/${hash}`
+    return blobAppUrl({ orgId, spaceId }, hash)
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -140,7 +144,7 @@ export default function WhiteboardPane({ org, space, boardId, memberNames, activ
     /** Closes the board's column; the chat takes the width. */
     onClose: () => void
 }) {
-    const { member } = useSpaceAccess()
+    const { member, writable } = useSpaceAccess()
     const { resolvedTheme } = useTheme()
     const [load, setLoad] = useState<LoadState>({ phase: 'loading' })
     const [retryTick, setRetryTick] = useState(0)
@@ -163,7 +167,7 @@ export default function WhiteboardPane({ org, space, boardId, memberNames, activ
         // A taken name just opens that board; a new one is created by path.
         const taken = allBoards.find((b) => b.path === path)
         if (taken) { if (taken.id !== boardId) onSelectBoard(taken.id) }
-        else if (member) onCreateBoard(path)
+        else if (writable) onCreateBoard(path)
     }
 
     const apiRef = useRef<ExcalidrawImperativeAPI | null>(null)
@@ -207,7 +211,7 @@ export default function WhiteboardPane({ org, space, boardId, memberNames, activ
         /** The snapshot is in hand — only now does a saver (and any write path) exist. */
         const adopt = (version: number, elements: OrderedExcalidrawElement[]) => {
             for (const el of elements) broadcastVersionsRef.current.set(el.id, el.version)
-            if (!member) return
+            if (!writable) return
             saverRef.current = createBoardSaver({
                 baseVersion: version,
                 elements,
@@ -223,7 +227,7 @@ export default function WhiteboardPane({ org, space, boardId, memberNames, activ
                 setReadPath(res.path)
                 let snapshot: SnapshotJson | null = null
                 if (res.blob) {
-                    const resp = await fetch(blobUrl(org.id, space.id, res.blob.hash))
+                    const resp = await fetchBlob(blobUrl(org.id, space.id, res.blob.hash))
                     if (!resp.ok) throw new Error('could not fetch the board snapshot')
                     snapshot = parseSnapshot(await resp.text())
                 } else if (res.content.trim()) {
@@ -259,7 +263,7 @@ export default function WhiteboardPane({ org, space, boardId, memberNames, activ
             send({ t: 'idle', clientId, state: 'away' })
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [org.id, space.id, boardId, retryTick, member])
+    }, [org.id, space.id, boardId, retryTick, writable])
 
     // ------------------------------------------------------------------
     // Outbound: diff broadcasts from onChange, the periodic full sync,
@@ -317,7 +321,7 @@ export default function WhiteboardPane({ org, space, boardId, memberNames, activ
             saver?.noteRemoteVersion(res.version)
             let snapshot: SnapshotJson | null = null
             if (res.blob) {
-                const resp = await fetch(blobUrl(org.id, space.id, res.blob.hash))
+                const resp = await fetchBlob(blobUrl(org.id, space.id, res.blob.hash))
                 if (resp.ok) snapshot = parseSnapshot(await resp.text())
             } else if (res.content.trim()) {
                 snapshot = parseSnapshot(res.content)
@@ -548,9 +552,9 @@ export default function WhiteboardPane({ org, space, boardId, memberNames, activ
                         currentItemRoughness: 0,
                     },
                 }}
-                viewModeEnabled={!member}
-                onChange={member ? onChange : undefined}
-                onPointerUpdate={member ? onPointerUpdate : undefined}
+                viewModeEnabled={!writable}
+                onChange={writable ? onChange : undefined}
+                onPointerUpdate={writable ? onPointerUpdate : undefined}
                 theme={resolvedTheme}
                 isCollaborating
                 autoFocus
@@ -621,7 +625,7 @@ export default function WhiteboardPane({ org, space, boardId, memberNames, activ
                                 </div>
                                 <div className="mt-1 border-t border-border pt-1">
                                     <input
-                                        disabled={!member}
+                                        disabled={!writable}
                                         placeholder="New board…"
                                         className="h-8 w-full rounded-md bg-transparent px-2 text-[13px] text-foreground outline-none placeholder:text-muted-foreground focus:bg-accent/30"
                                         onKeyDown={(e) => {
@@ -658,8 +662,8 @@ export default function WhiteboardPane({ org, space, boardId, memberNames, activ
                     canvas actions stay. Theme follows the app; save is automatic. */}
                 <MainMenu>
                     <MainMenu.DefaultItems.SaveAsImage />
-                    {member && <MainMenu.DefaultItems.ClearCanvas />}
-                    {member && <MainMenu.DefaultItems.ChangeCanvasBackground />}
+                    {writable && <MainMenu.DefaultItems.ClearCanvas />}
+                    {writable && <MainMenu.DefaultItems.ChangeCanvasBackground />}
                 </MainMenu>
                 {/* Our empty state, not the stock one (Excalidraw wordmark + data
                     pitch): what this surface is, in the app's voice. */}

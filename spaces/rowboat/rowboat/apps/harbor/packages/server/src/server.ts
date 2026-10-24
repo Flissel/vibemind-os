@@ -46,6 +46,10 @@ export interface HarborOptions {
   blobs?: BlobStore;
   /** Upload cap for the raw-bytes blob route (default 100MB). */
   maxBlobBytes?: number;
+  /** Browser origins allowed to call the org cross-origin (cors.ts). */
+  webOrigins?: readonly string[];
+  /** The Spaces web app, offered by the org's link landings (http.ts). */
+  webAppUrl?: string;
   /** Live-face heartbeat cadence (default 25s). A test knob; production keeps the default. */
   liveHeartbeatMs?: number;
   /** Test knob: unsent-bytes ceiling before a stalled socket is terminated (ws.ts). */
@@ -100,6 +104,8 @@ export async function startHarbor(options: HarborOptions): Promise<RunningHarbor
     ...(options.pushSender ? { pushSender: options.pushSender } : {}),
     ...(options.consent ? { consentPublishableKey: options.consent.publishableKey } : {}),
     ...(options.maxBlobBytes !== undefined ? { maxBlobBytes: options.maxBlobBytes } : {}),
+    ...(options.webOrigins ? { webOrigins: options.webOrigins } : {}),
+    ...(options.webAppUrl ? { webAppUrl: options.webAppUrl } : {}),
   });
   await seedOrg(runtime.service, store, options);
 
@@ -159,7 +165,7 @@ async function seedOrg(
     const space = await service.createSpace({ memberId: seed.creator }, seed.name);
     for (const m of options.seedMembers ?? []) {
       if (m.id === seed.creator) continue;
-      const invite = await service.createInvite({ memberId: seed.creator }, space.id);
+      const invite = await service.createInvite({ memberId: seed.creator }, { spaceIds: [space.id] });
       await service.acceptInvite({ memberId: m.id }, invite.token);
     }
     for (const asset of seed.assets ?? []) {
