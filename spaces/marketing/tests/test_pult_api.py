@@ -1917,3 +1917,13 @@ def test_vorschau_seiten_vorlage_legt_logo_nur_einmal_ab(db, c, monkeypatch, tmp
     db.antworten = [[{**_seiten_vorlage_zeile(), "beschreibung": "Split", "pflichtteil": {}}], [_laden_radhaus()]]
     assert c.get("/api/pult/vorlagen/herbst-split/vorschau?format=seite&mandant=radhaus", headers=H).status_code == 200
     assert len(aufrufe) == 2
+
+
+@pytest.mark.parametrize("rollen", [[], {"ebenen": []}, {"ebenen": {"motiv": 5}}, "kaputt"])
+def test_vorschau_seiten_vorlage_kaputte_rollen_ist_200(db, c, monkeypatch, tmp_path, rollen):
+    monkeypatch.setenv("MARKETING_BILD_ORDNER", str(tmp_path))
+    db.antworten = [[{**_seiten_vorlage_zeile(rollen=rollen), "beschreibung": "Split", "pflichtteil": {}}],
+                    [_laden_radhaus()]]
+    r = c.get("/api/pult/vorlagen/herbst-split/vorschau?format=seite&mandant=radhaus", headers=H)
+    assert r.status_code == 200, r.text
+

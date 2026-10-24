@@ -522,3 +522,38 @@ def test_impressum_mehrzeilig_mit_br():
     assert "Reg. 1<br>D-2" in fuss and "Zeile a<br>Zeile b" in fuss
     assert "\n" not in fuss and "\r" not in fuss
     assert "Strasse 1<br><br>" not in fuss
+
+
+def _fuss_farbe_grau(grund):
+    d = {"root": {"type": "EmailLayout", "data": {"backdropColor": grund, "canvasColor": "#ffffff",
+         "textColor": grund, "childrenIds": []}}}
+    fuss = b.nach_mjml(d, "B", "", PFLICHT).split('<mj-section padding="16px 0">')[1]
+    return re.search(r'color="(#[0-9a-fA-F]{6})"', fuss).group(1)
+
+
+def test_fuss_farbe_mittelgrau_mindestens_4_5():
+    from spaces.marketing.claw.schoenheit import kontrast
+    for grund in ("#777777", "#808080", "#767676"):
+        farbe = b._fuss_farbe(grund, grund)
+        assert kontrast(farbe, grund) >= 4.5, (grund, farbe)
+
+
+def test_fuss_farbe_raster_immer_mindestens_4_5():
+    from spaces.marketing.claw.schoenheit import kontrast
+    stufen = range(0x00, 0x100, 0x11)
+    gruende = [f"#{v:02x}{v:02x}{v:02x}" for v in stufen]
+    gruende += [f"#{r:02x}{g:02x}{bl:02x}" for r in stufen for g in stufen for bl in stufen]
+    for grund in gruende:
+        farbe = b._fuss_farbe(grund, grund)
+        assert kontrast(farbe, grund) >= 4.5, (grund, farbe)
+
+
+def test_fuss_farbe_heller_grund_bleibt_666666():
+    assert b._fuss_farbe("#666666", "#ffffff") == "#666666"
+
+
+def test_fuss_br_ohne_haengenden_umbruch():
+    pf = {"impressum": "Zeile eins\n", "vermittlerangaben": "Vermittler\n\n", "abmelde_hinweis": "Abmelden\n"}
+    m = b.nach_mjml({"root": {"type": "EmailLayout", "data": {"childrenIds": []}}}, "B", "", pf)
+    fuss = m.split('<mj-section padding="16px 0">')[1]
+    assert "Zeile eins<br>Vermittler<br>Abmelden</mj-text>" in fuss

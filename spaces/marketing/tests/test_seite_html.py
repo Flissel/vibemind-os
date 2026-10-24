@@ -191,3 +191,20 @@ def test_impressum_mehrzeilig_mit_br():
     assert "Firma &lt;X&gt;<br>Strasse 1" in h
     assert "Reg. 1<br>D-2" in h and "Zeile a<br>Zeile b" in h
     assert "Firma <X>" not in h
+
+
+def _fuss_farbe_von(h):
+    return re.search(r'line-height:1\.5;color:(#[0-9a-f]{6})', h).group(1)
+
+
+def test_fuss_auf_dunklem_grund_hell():
+    from spaces.marketing.claw.schoenheit import kontrast
+    s = _seite()
+    s["hintergrund"]["farbe"] = "#5b3fd6"
+    assert kontrast(_fuss_farbe_von(_html(s)), "#5b3fd6") >= 4.5
+
+
+def test_fuss_auf_hellem_grund_unveraendert():
+    s = _seite()
+    s["hintergrund"]["farbe"] = "#ffffff"
+    assert _fuss_farbe_von(_html(s)) == "#666666"
