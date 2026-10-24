@@ -1,0 +1,4 @@
+# Laufen auf der Linux-VM: immer LF, auch bei core.autocrlf=true am PC.
+Dockerfile   text eol=lf
+compose.yml  text eol=lf
+start.sh     text eol=lf
