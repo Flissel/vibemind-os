@@ -255,7 +255,9 @@ def start(lay: Layout, workdir: Path, windows: bool = IS_WINDOWS, env_file: Path
                       env=base_env).returncode != 0:
         log.warning("vault map failed once; Rowboat starts anyway, the refresh retries every %d s", MAP_SECONDS)
     # Single-Instance auch ungebaut (Fork, Spec 2026-10-17): ein zweiter Start holt die laufende Instanz nach vorn.
-    env = {**base_env, "ROWBOAT_WORKDIR": str(workdir), "ROWBOAT_SINGLE_INSTANCE": "1"}
+    # Telemetrie aus: Upstream (ab 10/2026) sendet sonst standardmaessig an PostHog.
+    env = {**base_env, "ROWBOAT_WORKDIR": str(workdir), "ROWBOAT_SINGLE_INSTANCE": "1",
+           "ROWBOAT_TELEMETRY_DISABLED": "1"}
     if embed:
         env.pop("ELECTRON_RUN_AS_NODE", None)
         env["ROWBOAT_EMBED"] = "1"

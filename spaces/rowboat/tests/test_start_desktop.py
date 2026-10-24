@@ -369,6 +369,7 @@ def test_embed_start_sets_embed_and_single_instance_and_drops_run_as_node(tmp_pa
     assert cmd[-2:] == ["--hidden", "--embed"]
     assert shell is True   # electron.cmd braucht unter Windows die Shell
     assert env["ROWBOAT_EMBED"] == "1" and env["ROWBOAT_SINGLE_INSTANCE"] == "1"
+    assert env["ROWBOAT_TELEMETRY_DISABLED"] == "1"   # keine PostHog-Telemetrie aus unserer Einbettung
     assert "ELECTRON_RUN_AS_NODE" not in env
 
 
@@ -393,6 +394,7 @@ def test_dev_start_also_asks_for_single_instance(tmp_path, monkeypatch):
     monkeypatch.setattr(start_desktop.subprocess, "Popen", fake_popen)
     start_desktop.start(lay, tmp_path, windows=True)
     assert seen[str(lay.app)]["ROWBOAT_SINGLE_INSTANCE"] == "1"
+    assert seen[str(lay.app)]["ROWBOAT_TELEMETRY_DISABLED"] == "1"
     assert "ROWBOAT_EMBED" not in seen[str(lay.app)]
 
 
