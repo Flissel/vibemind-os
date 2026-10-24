@@ -151,6 +151,7 @@ def test_konflikte_ordner_wird_nie_gesynct():
 import hashlib  # noqa: E402
 import io  # noqa: E402
 import logging  # noqa: E402
+import os  # noqa: E402
 import shlex  # noqa: E402
 import subprocess  # noqa: E402
 import tarfile  # noqa: E402
@@ -167,13 +168,18 @@ class FakeVm:
     (GNU-Optionen `-C`, `-xf -`, `-cf - --null --verbatim-files-from --no-recursion -T -`).
     """
 
-    def __init__(self, fehler_bei: int | None = None, ausnahme: BaseException | None = None):
+    def __init__(self, fehler_bei: int | None = None, ausnahme: BaseException | None = None,
+                 vor_aufruf=None, upload_abbrechen: bool = False):
         self.aufrufe: list[tuple[list[str], dict]] = []
         self.fehler_bei = fehler_bei  # 1-basierter Aufruf, der scheitert
         self.ausnahme = ausnahme
+        self.vor_aufruf = vor_aufruf  # f(n) vor dem n-ten Aufruf: simuliert Schreiber zwischen Bestand und Aktion
+        self.upload_abbrechen = upload_abbrechen  # tar -xf schreibt die erste Datei halb und bricht ab
 
     def __call__(self, cmd, **kw):
         self.aufrufe.append((list(cmd), kw))
+        if self.vor_aufruf is not None:
+            self.vor_aufruf(len(self.aufrufe))
         if self.ausnahme is not None:
             raise self.ausnahme
         if self.fehler_bei is not None and len(self.aufrufe) == self.fehler_bei:
@@ -199,9 +205,13 @@ class FakeVm:
                     for m in tf:
                         ziel = wurzel / m.name
                         ziel.parent.mkdir(parents=True, exist_ok=True)
-                        ziel.write_bytes(tf.extractfile(m).read())
+                        inhalt = tf.extractfile(m).read()
+                        if self.upload_abbrechen:  # wie GNU tar bei abgerissenem Strom: halbe Datei, Exit 2
+                            ziel.write_bytes(inhalt[: len(inhalt) // 2])
+                            raise subprocess.CalledProcessError(2, cmd, b"", b"tar: Unexpected EOF in archive")
+                        ziel.write_bytes(inhalt)
             elif befehl[0] == "tar" and "-cf" in befehl:
-                assert {"--null", "--verbatim-files-from", "--no-recursion", "-T"} <= set(befehl)
+                assert {"--null", "--verbatim-files-from", "--no-recursion", "--hard-dereference", "-T"} <= set(befehl)
                 wurzel = Path(befehl[befehl.index("-C") + 1])
                 puffer = io.BytesIO()
                 with tarfile.open(fileobj=puffer, mode="w", format=tarfile.GNU_FORMAT, encoding="utf-8") as tf:
@@ -241,7 +251,7 @@ def test_bestand_lokal_nfc_schluessel_rohnamen_und_ausnahmen(tmp_path):
     nfd = unicodedata.normalize("NFD", "Agent Notes/Über (neu).md")
     schreibe(tmp_path, nfd, "a")
     schreibe(tmp_path, "Projects/p.md", "p")
-    for weg in ("_konflikte/2026-10-01/x.md", "Notes/.DS_Store", "Thumbs.db", "Notes/desktop.ini",
+    for weg in ("_konflikte/2026-10-01/x.md", ".spiegel-eingang/1-2/Notes/halb.md", "Notes/.DS_Store", "Thumbs.db", "Notes/desktop.ini",
                 "Notes/n.md~", "Notes/n.tmp"):
         schreibe(tmp_path, weg, "weg")
     schreibe(tmp_path, "Notes/_konflikte/bleibt.md", "b")  # nur die oberste Ebene ist ausgenommen
@@ -303,10 +313,10 @@ def test_zustand_nur_nach_vollem_erfolg(seiten):
     _drei_aktionen(pc, vm)
     ws.zustand_schreiben(zustand, {"Projects/k.md": Eintrag(sha("alt"), 1.0)})
     vorher = zustand.read_bytes()
-    # Aufruf 1 = Bestand, 2 = Konfliktsicherung, 3 = Upload (scheitert), 4 = Download
+    # Aufruf 1 = Bestand, 2 = Konfliktsicherung, 3 = Upload (scheitert), dann nur noch Eingang aufraeumen
     fake = FakeVm(fehler_bei=3)
     assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=fake, heute=HEUTE) == 2
-    assert len(fake.aufrufe) == 3
+    assert not any("-cf" in " ".join(cmd) for cmd, _ in fake.aufrufe)  # kein Download mehr
     assert zustand.read_bytes() == vorher
     assert not (pc / "Notes/b.md").exists()
 
@@ -478,3 +488,162 @@ def test_main_vorgaben(monkeypatch, tmp_path):
     for h in list(log.handlers):
         h.close()
         log.removeHandler(h)
+
+
+# --- Fix-Runde 1: Eingangsordner, Pruefung vor dem Ueberschreiben, Sperrdatei, PC-Wurzel -----------
+
+def _unveraendert(pc: Path, vm: Path, n: int = 20) -> dict[str, Eintrag]:
+    """n gleiche PC-Besitz-Dateien auf beiden Seiten (haelt Einzel-Loeschungen unter der Loeschgrenze)."""
+    stand = {}
+    for i in range(n):
+        schreibe(pc, f"Projects/u{i}.md", "u")
+        schreibe(vm, f"Projects/u{i}.md", "u")
+        stand[f"Projects/u{i}.md"] = Eintrag(sha("u"), 1.0)
+    return stand
+
+
+def test_eingangsordner_wird_nie_geplant():
+    pc = {".spiegel-eingang/1/Notes/a.md": e("A")}
+    assert ws.abgleich_planen(pc, {}, {}) == []
+    assert ws.doppelte_pfade(pc, {}, {}) == []
+
+
+def test_abgerissener_upload_hinterlaesst_keine_halbe_datei(seiten):
+    pc, vm, zustand = seiten
+    schreibe(pc, "Projects/p.md", "neue lange Fassung " * 50)  # PC-Besitz geaendert -> nach_vm
+    schreibe(vm, "Projects/p.md", "alt")
+    schreibe(pc, "Notes/neu.md", "ganz neu " * 50)              # neu -> nach_vm
+    ws.zustand_schreiben(zustand, {"Projects/p.md": Eintrag(sha("alt"), 1.0)})
+    vorher = zustand.read_bytes()
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(upload_abbrechen=True), heute=HEUTE) == 2
+    assert (vm / "Projects/p.md").read_text() == "alt"
+    assert not (vm / "Notes/neu.md").exists()
+    assert not (vm / ".spiegel-eingang").exists()  # Eingang aufgeraeumt
+    assert zustand.read_bytes() == vorher
+    # naechster Lauf holt alles nach
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE) == 0
+    assert (vm / "Projects/p.md").read_bytes() == (pc / "Projects/p.md").read_bytes()
+    assert (vm / "Notes/neu.md").read_bytes() == (pc / "Notes/neu.md").read_bytes()
+    assert not (vm / ".spiegel-eingang").exists()
+
+
+def test_eingang_reste_werden_nicht_gespiegelt(seiten):
+    pc, vm, zustand = seiten
+    schreibe(vm, ".spiegel-eingang/alt-1/Notes/halb.md", "ha")
+    fake = FakeVm()
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=fake, heute=HEUTE) == 0
+    assert len(fake.aufrufe) == 1 and not (pc / ".spiegel-eingang").exists()
+
+
+def test_pc_ueberschreiben_prueft_aktuellen_stand(seiten):
+    pc, vm, zustand = seiten
+    schreibe(vm, "Notes/n.md", "vm-neu")   # VM-Besitz geaendert -> nach_pc
+    schreibe(pc, "Notes/n.md", "alt")
+    ws.zustand_schreiben(zustand, {"Notes/n.md": Eintrag(sha("alt"), 1.0)})
+    vorher = zustand.read_bytes()
+
+    def spaet(n):  # PC-Schreiber nach dem PC-Bestand (Aufruf 1 = VM-Bestand)
+        if n == 1:
+            schreibe(pc, "Notes/n.md", "pc-spaet")
+
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(vor_aufruf=spaet), heute=HEUTE) == 4
+    assert (pc / "Notes/n.md").read_text() == "pc-spaet"
+    assert zustand.read_bytes() == vorher
+    # naechster Lauf: jetzt ein Konflikt -> PC-Fassung gesichert, Besitzer gewinnt
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE) == 0
+    assert (vm / "_konflikte" / HEUTE / "Notes/n.md").read_text() == "pc-spaet"
+    assert (pc / "Notes/n.md").read_text() == "vm-neu"
+
+
+def test_vm_ueberschreiben_prueft_aktuellen_stand(seiten):
+    pc, vm, zustand = seiten
+    schreibe(pc, "Projects/p.md", "pc-neu")  # PC-Besitz geaendert -> nach_vm
+    schreibe(vm, "Projects/p.md", "alt")
+    schreibe(pc, "Projects/q.md", "q")       # unabhaengige Aktion laeuft trotzdem
+    ws.zustand_schreiben(zustand, {"Projects/p.md": Eintrag(sha("alt"), 1.0)})
+    vorher = zustand.read_bytes()
+
+    def spaet(n):  # Aufruf 2 = Upload in den Eingang: VM-Schreiber kommt dazwischen
+        if n == 2:
+            schreibe(vm, "Projects/p.md", "vm-spaet")
+
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(vor_aufruf=spaet), heute=HEUTE) == 4
+    assert (vm / "Projects/p.md").read_text() == "vm-spaet"
+    assert (vm / "Projects/q.md").read_text() == "q"
+    assert not (vm / ".spiegel-eingang").exists()
+    assert zustand.read_bytes() == vorher
+
+
+def test_pc_loeschen_prueft_aktuellen_stand(seiten):
+    pc, vm, zustand = seiten
+    stand = _unveraendert(pc, vm)
+    schreibe(pc, "Notes/x.md", "alt")  # VM hat geloescht -> loeschen_pc
+    stand["Notes/x.md"] = Eintrag(sha("alt"), 1.0)
+    ws.zustand_schreiben(zustand, stand)
+    vorher = zustand.read_bytes()
+
+    def spaet(n):
+        if n == 1:
+            schreibe(pc, "Notes/x.md", "pc-spaet")
+
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(vor_aufruf=spaet), heute=HEUTE) == 4
+    assert (pc / "Notes/x.md").read_text() == "pc-spaet"
+    assert zustand.read_bytes() == vorher
+
+
+def test_vm_loeschen_prueft_aktuellen_stand(seiten):
+    pc, vm, zustand = seiten
+    stand = _unveraendert(pc, vm)
+    schreibe(vm, "Projects/y.md", "alt")  # PC hat geloescht -> loeschen_vm
+    stand["Projects/y.md"] = Eintrag(sha("alt"), 1.0)
+    ws.zustand_schreiben(zustand, stand)
+    vorher = zustand.read_bytes()
+
+    def spaet(n):  # Aufruf 2 = Loeschskript
+        if n == 2:
+            schreibe(vm, "Projects/y.md", "vm-spaet")
+
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(vor_aufruf=spaet), heute=HEUTE) == 4
+    assert (vm / "Projects/y.md").read_text() == "vm-spaet"
+    assert zustand.read_bytes() == vorher
+
+
+def test_sperrdatei_haelt_zweiten_lauf_ab(seiten, caplog):
+    pc, vm, zustand = seiten
+    schreibe(pc, "Projects/a.md", "a")
+    sperre = zustand.parent / "lauf.lock"
+    sperre.parent.mkdir(parents=True, exist_ok=True)
+    sperre.write_text(str(os.getpid()))  # lebender Prozess haelt die Sperre
+    fake = FakeVm()
+    with caplog.at_level(logging.INFO, logger="wissens_spiegel"):
+        assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=fake) == 0
+    assert fake.aufrufe == [] and not zustand.exists()
+    assert "laeuft bereits" in caplog.text
+    assert sperre.exists()
+
+
+def test_verwaiste_sperrdatei_wird_uebernommen(seiten):
+    pc, vm, zustand = seiten
+    schreibe(pc, "Projects/a.md", "a")
+    tot = subprocess.Popen([sys.executable, "-c", "pass"])
+    tot.wait()
+    sperre = zustand.parent / "lauf.lock"
+    sperre.parent.mkdir(parents=True, exist_ok=True)
+    sperre.write_text(str(tot.pid))
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE) == 0
+    assert (vm / "Projects/a.md").read_text() == "a"
+    assert not sperre.exists()  # nach dem Lauf wieder frei
+
+
+def test_sperrdatei_wird_auch_nach_fehler_freigegeben(seiten):
+    pc, vm, zustand = seiten
+    fake = FakeVm(ausnahme=subprocess.TimeoutExpired(["ssh"], 30))
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=fake) == 2
+    assert not (zustand.parent / "lauf.lock").exists()
+
+
+def test_fehlende_pc_wurzel_ist_fehler(seiten, caplog):
+    _, vm, zustand = seiten
+    fake = FakeVm()
+    assert ws.lauf(vm.parent / "gibt-es-nicht", ZIEL, str(vm), zustand, laeufer=fake) == 1
+    assert fake.aufrufe == [] and not zustand.exists()

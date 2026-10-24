@@ -5,8 +5,11 @@ Teil 2 (Ein-/Ausgabe): `bestand_lokal`/`bestand_vm` (Bestand + Rohnamen), `ausfu
 `zustand_lesen`/`zustand_schreiben`, `lauf` und die CLI
 `python spaces/rowboat/scripts/wissens_spiegel.py [--trocken]` (Aufgabe alle 5 min, siehe
 `wissens_spiegel_aufgabe.ps1`). Als Datei aufrufen, nicht per `-m spaces.rowboat.scripts...`:
-`spaces/rowboat/__init__.py` importiert ein fehlendes `.config`; dieses Modul braucht nur stdlib. Exit: 0 ok, 1 lokaler Fehler, 2 VM nicht erreichbar/Uebertragung
-gescheitert, 3 Loeschgrenze. Der Zustand (`zuletzt`) wird nur nach vollem Erfolg geschrieben.
+`spaces/rowboat/__init__.py` importiert ein fehlendes `.config`; dieses Modul braucht nur stdlib. Exit: 0 ok (auch: anderer Lauf haelt `lauf.lock`), 1 lokaler Fehler oder
+PC-Ordner fehlt, 2 VM nicht erreichbar/Uebertragung gescheitert, 3 Loeschgrenze, 4 ein Ziel hat sich zwischen
+Bestand und Aktion geaendert (unberuehrt gelassen, naechster Lauf plant neu). Der Zustand (`zuletzt`) wird nur
+nach vollem Erfolg geschrieben. Uploads landen erst in `<vm>/.spiegel-eingang/<lauf-id>/` und werden per
+`os.replace` eingesetzt; vor jedem Ueberschreiben/Loeschen wird der aktuelle sha gegen den Bestand geprueft.
 
 Regeln (Besitzer-Tabelle im Plan 2026-10-24-rowboat-zentrale-teil-a-mini-pc):
 - Jeder Pfad hat genau einen Besitzer (`pc` oder `vm`); der Besitzer gewinnt bei Abweichung.
@@ -33,8 +36,9 @@ import shlex
 import subprocess
 import sys
 import tarfile
+import time
 import unicodedata
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Literal, NamedTuple
 
@@ -59,6 +63,8 @@ PC_ORDNER = frozenset({
     "Coding-Projects", "Workflows", "System", "Videos", "vibemind-discourse",
 })
 KONFLIKTE = "_konflikte"
+EINGANG = ".spiegel-eingang"  # Upload-Zwischenablage auf der VM, nie gespiegelt
+NIE_SPIEGELN = (KONFLIKTE, EINGANG)  # oberste Ebene
 VM_FIRMENORDNER = frozenset({"Kontakte", "Newsletter", "Wochenbild"})
 
 
@@ -83,7 +89,7 @@ def besitzer(pfad: str) -> Seite:
 
 
 def _ausgenommen(pfad: str) -> bool:
-    return _nfc(pfad).split("/")[0] == KONFLIKTE
+    return _nfc(pfad).split("/")[0] in NIE_SPIEGELN
 
 
 def _normalisiert(bestand: Bestand) -> Bestand:
@@ -185,10 +191,33 @@ class VmFehler(Exception):
     """ssh/VM-Schritt gescheitert (nicht erreichbar, Zeitueberschreitung, Fernbefehl mit Fehler)."""
 
 
-def _inventar(wurzel, konflikte, namen, endungen):
+class Abweichung(Exception):
+    """Ziele haben sich zwischen Bestand und Aktion geaendert; diese Pfade wurden nicht angefasst."""
+
+    def __init__(self, pfade: list[str]):
+        super().__init__(f"{len(pfade)} Ziel(e) seit dem Bestand geaendert, uebersprungen: {', '.join(pfade)}")
+        self.pfade = pfade
+
+
+def _datei_sha(pfad):
+    """sha256 der Datei oder None, wenn es sie nicht gibt; laeuft lokal UND auf der VM (eigenstaendig)."""
+    import hashlib
+    import os
+
+    if not os.path.lexists(pfad):
+        return None
+    h = hashlib.sha256()
+    with open(pfad, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def _inventar(wurzel, oben_aus, namen, endungen):
     """[[roher POSIX-Pfad, sha256, mtime], ...] und [nicht-UTF-8-Namen]; laeuft lokal UND auf der VM.
 
     Eigenstaendig (Importe innen), weil der Quelltext per `inspect.getsource` an `ssh ... python3 -` geht.
+    `oben_aus`: Ordner der obersten Ebene, die nie gespiegelt werden (`_konflikte`, `.spiegel-eingang`).
     """
     import hashlib
     import os
@@ -199,7 +228,7 @@ def _inventar(wurzel, konflikte, namen, endungen):
     for ordner, unter, namen_hier in os.walk(wurzel):
         rel_ordner = os.path.relpath(ordner, wurzel)
         if rel_ordner == ".":
-            unter[:] = [u for u in unter if u != konflikte]
+            unter[:] = [u for u in unter if u not in oben_aus]
         unter.sort()
         for name in sorted(namen_hier):
             if name in namen or name.endswith(tuple(endungen)):
@@ -242,8 +271,8 @@ def _bestand_aus(dateien: list[list[Any]], seite: str, unlesbar: list[str]) -> t
 
 
 def bestand_lokal(wurzel: Path) -> tuple[Bestand, Rohnamen]:
-    """Bestand der PC-Kopie (ohne `_konflikte/` oben und ohne System-/Temp-Dateien) und Rohnamen."""
-    dateien, unlesbar = _inventar(str(wurzel), KONFLIKTE, IGNORIERTE_NAMEN, IGNORIERTE_ENDUNGEN)
+    """Bestand der PC-Kopie (ohne `_konflikte/`, `.spiegel-eingang/` oben, ohne System-/Temp-Dateien)."""
+    dateien, unlesbar = _inventar(str(wurzel), NIE_SPIEGELN, IGNORIERTE_NAMEN, IGNORIERTE_ENDUNGEN)
     return _bestand_aus(dateien, "pc", unlesbar)
 
 
@@ -282,7 +311,7 @@ def _vm_python(ssh_ziel: str, code: str, params: dict[str, Any], laeufer: Laeufe
 
 
 _VM_BESTAND = inspect.getsource(_inventar) + (
-    "\nd, u = _inventar(P['wurzel'], P['konflikte'], P['namen'], P['endungen'])\n"
+    "\nd, u = _inventar(P['wurzel'], P['oben_aus'], P['namen'], P['endungen'])\n"
     "json.dump({'dateien': d, 'unlesbar': u}, sys.stdout)\n"
 )
 
@@ -303,20 +332,53 @@ for quelle, ziel in P['kopien']:
 print('{}')
 """
 
-_VM_LOESCHEN = """
+_EINGANG_RAEUMEN = """
+import os, shutil
+e = os.path.join(P['wurzel'], P['eingang'])
+shutil.rmtree(e, ignore_errors=True)
+try:
+    os.rmdir(os.path.dirname(e))  # .spiegel-eingang selbst, wenn leer
+except OSError:
+    pass
+"""
+
+# Setzt die hochgeladenen Dateien aus dem Eingang an ihren Platz (os.replace = atomar), aber nur, wenn das
+# Ziel noch den sha aus dem Bestand hat (bzw. noch fehlt). Der Eingang wird in jedem Fall geraeumt.
+_VM_EINSETZEN = inspect.getsource(_datei_sha) + """
 import os
-for rel in P['pfade']:
-    try:
-        os.remove(os.path.join(P['wurzel'], rel))
-    except FileNotFoundError:
-        pass
-print('{}')
+abw = []
+try:
+    for name, soll in P['dateien']:
+        z = os.path.join(P['wurzel'], name)
+        if _datei_sha(z) != soll:
+            abw.append(name)
+            continue
+        os.makedirs(os.path.dirname(z), exist_ok=True)
+        os.replace(os.path.join(P['wurzel'], P['eingang'], name), z)
+finally:
+""" + "\n".join("    " + zeile for zeile in _EINGANG_RAEUMEN.strip().splitlines()) + """
+json.dump(abw, sys.stdout)
+"""
+
+_VM_LOESCHEN = inspect.getsource(_datei_sha) + """
+import os
+abw = []
+for rel, soll in P['pfade']:
+    p = os.path.join(P['wurzel'], rel)
+    ist = _datei_sha(p)
+    if ist is None:
+        continue
+    if ist != soll:
+        abw.append(rel)
+        continue
+    os.remove(p)
+json.dump(abw, sys.stdout)
 """
 
 
 def bestand_vm(ssh_ziel: str, vm_wurzel: str, laeufer: Laeufer = subprocess.run) -> tuple[Bestand, Rohnamen]:
     """Bestand der VM mit einem `ssh ziel python3 -` (Skript ueber stdin); fehlender Ordner = leer."""
-    params = {"wurzel": vm_wurzel, "konflikte": KONFLIKTE, "namen": list(IGNORIERTE_NAMEN),
+    params = {"wurzel": vm_wurzel, "oben_aus": list(NIE_SPIEGELN), "namen": list(IGNORIERTE_NAMEN),
               "endungen": list(IGNORIERTE_ENDUNGEN)}
     antwort = _vm_python(ssh_ziel, _VM_BESTAND, params, laeufer, TIMEOUT_BESTAND)
     try:
@@ -332,19 +394,38 @@ def _atomar_schreiben(ziel: Path, daten: bytes) -> None:
     os.replace(tmp, ziel)
 
 
-def _tar_entpacken(daten: bytes, wurzel: Path, erwartet: set[str]) -> None:
-    """Entpackt nur die angeforderten regulaeren Dateien; alles andere bricht ab, bevor geschrieben wird."""
+def _tar_entpacken(daten: bytes, wurzel: Path, erwartet: dict[str, str | None]) -> list[str]:
+    """Entpackt nur die angeforderten regulaeren Dateien (sonst Abbruch, bevor geschrieben wird).
+
+    `erwartet`: Name -> sha, den das Ziel am PC laut Bestand hat (None = fehlt). Weicht das Ziel jetzt
+    ab, bleibt es unberuehrt; die Namen kommen zurueck.
+    """
+    abweichend: list[str] = []
     with tarfile.open(fileobj=io.BytesIO(daten), mode="r:", encoding="utf-8") as tf:
         mitglieder = tf.getmembers()
         namen = {m.name for m in mitglieder}
         fremd = [m.name for m in mitglieder if not m.isfile() or m.name not in erwartet]
-        if fremd or namen != erwartet:
-            raise VmFehler(f"tar-Antwort passt nicht: {len(fremd)} fremd, {len(erwartet - namen)} fehlen")
+        if fremd or namen != set(erwartet):
+            raise VmFehler(f"tar-Antwort passt nicht: {len(fremd)} fremd, {len(set(erwartet) - namen)} fehlen")
         for m in mitglieder:
+            ziel = wurzel / m.name
+            if _datei_sha(ziel) != erwartet[m.name]:
+                abweichend.append(m.name)
+                continue
             quelle = tf.extractfile(m)
             if quelle is None:
                 raise VmFehler(f"tar-Antwort ohne Inhalt: {m.name}")
-            _atomar_schreiben(wurzel / m.name, quelle.read())
+            _atomar_schreiben(ziel, quelle.read())
+    return abweichend
+
+
+def _lauf_id() -> str:
+    return f"{datetime.now():%Y%m%d-%H%M%S}-{os.getpid()}"
+
+
+def _sha_von(stand: Bestand, pfad: str) -> str | None:
+    e = stand.get(pfad)
+    return None if e is None else e.sha256
 
 
 def ausfuehren(
@@ -356,61 +437,102 @@ def ausfuehren(
     *,
     roh_pc: Rohnamen | None = None,
     roh_vm: Rohnamen | None = None,
+    stand_pc: Bestand | None = None,
+    stand_vm: Bestand | None = None,
     heute: str | None = None,
 ) -> None:
-    """Fuehrt den Plan aus: Sichern (VM) -> Upload (tar) -> Download (tar) -> Loeschen VM -> Loeschen PC.
+    """Fuehrt den Plan aus: Sichern (VM) -> Upload in den Eingang + Einsetzen -> Download -> Loeschen VM/PC.
 
     Jeder Pfad hat hoechstens eine Kopier-/Loeschaktion, also wirkt `konflikt_sichern` immer vorher.
     Gelesen/geloescht wird unter dem Rohnamen der jeweiligen Seite, geschrieben unter dem Rohnamen der
     Quelle; hatte die Zielseite den Pfad unter einem anderen Rohnamen (NFC/NFD), wird jener danach entfernt.
+    Vor jedem Ueberschreiben und Loeschen wird geprueft, dass das Ziel noch den sha aus `stand_pc`/`stand_vm`
+    hat (bzw. noch fehlt); sonst bleibt es unberuehrt, und am Ende kommt `Abweichung` (kein Zustand).
+    Upload geht erst in `<vm_wurzel>/.spiegel-eingang/<lauf-id>/`, ein abgerissener Strom erreicht nie
+    einen echten Namen.
     """
     roh_pc, roh_vm = roh_pc or {}, roh_vm or {}
+    stand_pc, stand_vm = stand_pc or {}, stand_vm or {}
     datum = heute or date.today().isoformat()
-    sichern_vm: list[list[str]] = []   # [VM-Rohname, Ziel]: Kopie auf der VM
-    hoch: list[tuple[str, str]] = []   # (PC-Rohname, Name auf der VM)
-    runter: list[str] = []             # VM-Rohnamen
-    weg_vm: list[str] = []
-    weg_pc: list[str] = []
+
+    def soll(stand: Bestand, roh: Rohnamen, pfad: str, name: str) -> str | None:
+        """Erwarteter sha unter `name`: der Bestand, wenn der Pfad dort unter genau diesem Namen lag."""
+        return _sha_von(stand, pfad) if roh.get(pfad, pfad) == name else None
+
+    sichern_vm: list[list[str]] = []                 # [VM-Rohname, Ziel]: Kopie auf der VM
+    hoch: list[tuple[str, str, str | None]] = []     # (PC-Rohname, Name auf der VM, erwarteter sha dort)
+    runter: dict[str, str | None] = {}               # VM-Rohname -> erwarteter sha am PC unter dem Namen
+    weg_vm: list[tuple[str, str | None, str]] = []   # (VM-Rohname, erwarteter sha, haengt an Schreibziel)
+    weg_pc: list[tuple[str, str | None, str]] = []
     for a in aktionen:
         pc_name, vm_name = roh_pc.get(a.pfad, a.pfad), roh_vm.get(a.pfad, a.pfad)
         if a.art == "konflikt_sichern":
             if besitzer(a.pfad) == "pc":  # Nicht-Besitzer VM: VM-Fassung auf der VM sichern
                 sichern_vm.append([vm_name, f"{KONFLIKTE}/{datum}/{vm_name}"])
-            else:  # Nicht-Besitzer PC: PC-Fassung auf die VM hochladen
-                hoch.append((pc_name, f"{KONFLIKTE}/{datum}/{pc_name}"))
+            else:  # Nicht-Besitzer PC: PC-Fassung auf die VM hochladen (Ziel ist nach dem Sichern frei)
+                hoch.append((pc_name, f"{KONFLIKTE}/{datum}/{pc_name}", None))
         elif a.art == "nach_vm":
-            hoch.append((pc_name, pc_name))
+            hoch.append((pc_name, pc_name, soll(stand_vm, roh_vm, a.pfad, pc_name)))
             if a.pfad in roh_vm and vm_name != pc_name:
-                weg_vm.append(vm_name)
+                weg_vm.append((vm_name, _sha_von(stand_vm, a.pfad), pc_name))
         elif a.art == "nach_pc":
-            runter.append(vm_name)
+            runter[vm_name] = soll(stand_pc, roh_pc, a.pfad, vm_name)
             if a.pfad in roh_pc and pc_name != vm_name:
-                weg_pc.append(pc_name)
+                weg_pc.append((pc_name, _sha_von(stand_pc, a.pfad), vm_name))
         elif a.art == "loeschen_vm":
-            weg_vm.append(vm_name)
+            weg_vm.append((vm_name, _sha_von(stand_vm, a.pfad), ""))
         elif a.art == "loeschen_pc":
-            weg_pc.append(pc_name)
+            weg_pc.append((pc_name, _sha_von(stand_pc, a.pfad), ""))
 
+    abweichend: list[str] = []
     q = shlex.quote(vm_wurzel)
-    ziele = [z for _, z in sichern_vm] + [z for _, z in hoch if z.startswith(KONFLIKTE + "/")]
+    ziele = [z for _, z in sichern_vm] + [z for _, z, _ in hoch if z.startswith(KONFLIKTE + "/")]
     if ziele:
         _vm_python(ssh_ziel, _VM_SICHERN, {"wurzel": vm_wurzel, "ziele": ziele, "kopien": sichern_vm},
                    laeufer, TIMEOUT_UEBERTRAGUNG)
     if hoch:
+        eingang = f"{EINGANG}/{_lauf_id()}"
         puffer = io.BytesIO()
         with tarfile.open(fileobj=puffer, mode="w", format=tarfile.PAX_FORMAT, encoding="utf-8") as tf:
-            for quelle, ziel in hoch:
+            for quelle, ziel, _ in hoch:
                 tf.add(str(pc_wurzel / quelle), arcname=ziel, recursive=False)
-        _ssh(ssh_ziel, [f"mkdir -p {q} && tar -C {q} -xf -"], laeufer,
-             eingabe=puffer.getvalue(), timeout=TIMEOUT_UEBERTRAGUNG)
+        stufe = shlex.quote(f"{vm_wurzel.rstrip('/')}/{eingang}")
+        params = {"wurzel": vm_wurzel, "eingang": eingang}
+        try:
+            _ssh(ssh_ziel, [f"mkdir -p {stufe} && tar -C {stufe} -xf -"], laeufer,
+                 eingabe=puffer.getvalue(), timeout=TIMEOUT_UEBERTRAGUNG)
+            abweichend += _vm_python(ssh_ziel, _VM_EINSETZEN, params | {"dateien": [[z, s] for _, z, s in hoch]},
+                                     laeufer, TIMEOUT_UEBERTRAGUNG)
+        except VmFehler:
+            try:  # Reste raeumen; scheitert das auch, ignoriert der Bestand den Eingang trotzdem
+                _vm_python(ssh_ziel, _EINGANG_RAEUMEN + "print('{}')\n", params, laeufer, TIMEOUT_BESTAND)
+            except VmFehler as exc:
+                log.warning("Eingang %s nicht geraeumt: %s", eingang, exc)
+            raise
     if runter:
-        daten = _ssh(ssh_ziel, [f"tar -C {q} -cf - --null --verbatim-files-from --no-recursion -T -"],
-                     laeufer, eingabe="\0".join(runter).encode("utf-8"), timeout=TIMEOUT_UEBERTRAGUNG)
-        _tar_entpacken(daten, pc_wurzel, set(runter))
+        daten = _ssh(
+            ssh_ziel,
+            [f"tar -C {q} -cf - --null --verbatim-files-from --no-recursion --hard-dereference -T -"],
+            laeufer, eingabe="\0".join(runter).encode("utf-8"), timeout=TIMEOUT_UEBERTRAGUNG,
+        )
+        abweichend += _tar_entpacken(daten, pc_wurzel, runter)
+    # Alte Rohnamen nur entfernen, wenn der neue Name auch geschrieben wurde
+    weg_vm = [w for w in weg_vm if w[2] not in abweichend]
+    weg_pc = [w for w in weg_pc if w[2] not in abweichend]
     if weg_vm:
-        _vm_python(ssh_ziel, _VM_LOESCHEN, {"wurzel": vm_wurzel, "pfade": weg_vm}, laeufer, TIMEOUT_UEBERTRAGUNG)
-    for name in weg_pc:
-        (pc_wurzel / name).unlink(missing_ok=True)
+        abweichend += _vm_python(ssh_ziel, _VM_LOESCHEN, {"wurzel": vm_wurzel, "pfade": [[n, s] for n, s, _ in weg_vm]},
+                                 laeufer, TIMEOUT_UEBERTRAGUNG)
+    for name, erwartet, _ in weg_pc:
+        pfad = pc_wurzel / name
+        ist = _datei_sha(pfad)
+        if ist is None:
+            continue
+        if ist != erwartet:
+            abweichend.append(name)
+            continue
+        pfad.unlink()
+    if abweichend:
+        raise Abweichung(abweichend)
 
 
 def zustand_lesen(pfad: Path) -> Bestand:
@@ -466,7 +588,101 @@ def lauf(
     laeufer: Laeufer = subprocess.run,
     heute: str | None = None,
 ) -> int:
-    """Ein Spiegellauf. Exit 0 ok, 1 lokaler Fehler, 2 VM nicht erreichbar/abgebrochen, 3 Loeschgrenze."""
+    """Ein Spiegellauf. Exit 0 ok (auch: anderer Lauf haelt die Sperre), 1 lokaler Fehler/PC-Ordner fehlt,
+    2 VM nicht erreichbar/abgebrochen, 3 Loeschgrenze, 4 Ziel(e) waehrend des Laufs geaendert."""
+    if not Path(pc_wurzel).is_dir():
+        log.error("PC-Ordner fehlt: %s - nichts geaendert", pc_wurzel)
+        return 1
+    sperre = Path(zustand).parent / SPERRDATEI
+    if not _sperre_nehmen(sperre):
+        log.info("Wissens-Spiegel laeuft bereits (Sperre %s), dieser Lauf entfaellt", sperre)
+        return 0
+    try:
+        return _lauf_gesperrt(pc_wurzel, ssh_ziel, vm_wurzel, zustand, trocken, laeufer, heute)
+    finally:
+        _sperre_freigeben(sperre)
+
+
+SPERRDATEI = "lauf.lock"
+SPERRE_MAX_ALTER = 3600  # s; die Aufgabe bricht nach 30 min ab, aeltere Sperren sind verwaist
+
+
+def _pid_lebt(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":  # os.kill(pid, 0) wuerde unter Windows den Prozess beenden
+        import ctypes
+        from ctypes import wintypes
+
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.OpenProcess.restype = wintypes.HANDLE
+        k.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        k.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        k.CloseHandle.argtypes = (wintypes.HANDLE,)
+        h = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        try:
+            code = wintypes.DWORD()
+            if not k.GetExitCodeProcess(h, ctypes.byref(code)):
+                return True
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            k.CloseHandle(h)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _sperre_lebt(pfad: Path) -> bool:
+    try:
+        alter = time.time() - pfad.stat().st_mtime
+        text = pfad.read_text(encoding="ascii").strip()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True  # gerade in Arbeit/gesperrt: lieber diesen Lauf auslassen
+    if alter > SPERRE_MAX_ALTER:
+        return False
+    if not text.isdigit():
+        return alter < 60  # frisch angelegt, PID noch nicht geschrieben
+    return _pid_lebt(int(text))
+
+
+def _sperre_nehmen(pfad: Path) -> bool:
+    """Sperrdatei per O_CREAT|O_EXCL mit eigener PID; verwaiste (toter Prozess, zu alt) wird uebernommen."""
+    pfad.parent.mkdir(parents=True, exist_ok=True)
+    for _ in range(2):
+        try:
+            fd = os.open(pfad, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            if _sperre_lebt(pfad):
+                return False
+            log.warning("verwaiste Sperre %s entfernt", pfad)
+            pfad.unlink(missing_ok=True)
+            continue
+        with os.fdopen(fd, "w", encoding="ascii") as fh:
+            fh.write(str(os.getpid()))
+        return True
+    return False
+
+
+def _sperre_freigeben(pfad: Path) -> None:
+    try:
+        if pfad.read_text(encoding="ascii").strip() == str(os.getpid()):
+            pfad.unlink()
+    except OSError:
+        pass
+
+
+def _lauf_gesperrt(
+    pc_wurzel: Path, ssh_ziel: str, vm_wurzel: str, zustand: Path, trocken: bool, laeufer: Laeufer,
+    heute: str | None,
+) -> int:
     try:
         zuletzt = zustand_lesen(zustand)
     except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
@@ -504,7 +720,11 @@ def lauf(
         return 0
     if aktionen:
         try:
-            ausfuehren(aktionen, pc_wurzel, ssh_ziel, vm_wurzel, laeufer, roh_pc=roh_pc, roh_vm=roh_vm, heute=heute)
+            ausfuehren(aktionen, pc_wurzel, ssh_ziel, vm_wurzel, laeufer, roh_pc=roh_pc, roh_vm=roh_vm,
+                       stand_pc=pc, stand_vm=vm, heute=heute)
+        except Abweichung as exc:
+            log.warning("Abgleich unvollstaendig, Zustand bleibt (naechster Lauf plant neu): %s", exc)
+            return 4
         except VmFehler as exc:
             log.error("Abgleich abgebrochen, Zustand bleibt: %s", exc)
             return 2

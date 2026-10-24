@@ -43,8 +43,9 @@ if ($Remove) {
     $logon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
     $now = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5)
     $logon.Repetition = $now.Repetition
-    # Ein Lauf darf die Uebertragung (300 s je ssh-Schritt) ausschoepfen; nie zwei Laeufe gleichzeitig.
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Hidden -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 20)
+    # Ein Lauf darf die Uebertragung (300 s je ssh-Schritt) ausschoepfen; nie zwei Laeufe gleichzeitig
+    # (zusaetzlich Sperrdatei %LOCALAPPDATA%\VibeMind\wissens_spiegel\lauf.lock im Spiegel selbst).
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -Hidden -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
     Register-ScheduledTask -TaskName $taskName -Action $action -Trigger @($logon, $now) -Settings $settings -Force | Out-Null
     Write-Output "Aufgabe angelegt: $taskName -> $pyw $argument (in $root)"
 } else {
