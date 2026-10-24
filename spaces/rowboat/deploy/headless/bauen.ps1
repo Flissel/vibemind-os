@@ -7,6 +7,11 @@
   2. Ohne -NurBauen: legt auf der VM ~/rowboat-headless/app und ~/rowboat-data (0700) an, falls sie fehlen,
      kopiert dist-headless nach -Ziel und Dockerfile, .dockerignore, compose.yml, start.sh,
      rowboat-firewall.nft eine Ebene darueber. Ein -Ziel im Arbeitsordner rowboat-data wird verweigert.
+  3. Ohne -NurBauen ausserdem den Bau-Kontext des Claude-Shims nach ~/rowboat-headless/shim/:
+     Dockerfile, start.sh, rowboat_shim_huelle.py aus shim/ hier, dazu als KOPIEN (nicht im Repo)
+     claude_code_openai_shim.py und claude_code_openai_tools.py aus -ShimQuelle sowie
+     scripts/claude_budget.py und config/agent_budget.yaml aus -BudgetRepo. Legt ~/rowboat-headless/budget
+     (0700) an. Bricht vor dem Bauen ab, wenn eine Datei fehlt oder agent_budget.yaml rowboat-server nicht kennt.
   Loescht nichts auf der VM; vorhandene Dateien gleichen Namens werden ueberschrieben.
   Der Container wird hier NICHT gestartet (siehe README.md).
 
@@ -16,7 +21,9 @@
 param(
     [switch]$NurBauen,
     [string]$Quelle = 'C:/Users/User/ClaudeWork/vibemind-betrieb/spaces/rowboat/rowboat/apps/x',
-    [string]$Ziel = 'offload-vm:~/rowboat-headless/app/'
+    [string]$Ziel = 'offload-vm:~/rowboat-headless/app/',
+    [string]$ShimQuelle = (Join-Path $HOME '.local/bin'),
+    [string]$BudgetRepo = 'C:/Users/User/Desktop/Vibemind_V1'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,6 +48,23 @@ if ($Ziel -match 'rowboat-data') { throw "Ziel darf nicht im Arbeitsordner rowbo
 if (-not (Test-Path (Join-Path $Quelle 'package.json'))) { throw "Keine Rowboat-Quelle: $Quelle" }
 $server = Join-Path $Quelle 'apps/server'
 
+# Shim-Kontext vor dem langen Bau pruefen: (Ordner, Datei) - scp laeuft je Ordner mit relativen Namen.
+$shimTeile = @(
+    @((Join-Path $PSScriptRoot 'shim'), @('Dockerfile', 'start.sh', 'rowboat_shim_huelle.py')),
+    @($ShimQuelle, @('claude_code_openai_shim.py', 'claude_code_openai_tools.py')),
+    @((Join-Path $BudgetRepo 'scripts'), @('claude_budget.py')),
+    @((Join-Path $BudgetRepo 'config'), @('agent_budget.yaml'))
+)
+if (-not $NurBauen) {
+    foreach ($teil in $shimTeile) {
+        foreach ($datei in $teil[1]) {
+            if (-not (Test-Path (Join-Path $teil[0] $datei))) { throw "Shim-Kontext unvollstaendig: $(Join-Path $teil[0] $datei)" }
+        }
+    }
+    $budgetYaml = Get-Content -Raw (Join-Path $BudgetRepo 'config/agent_budget.yaml')
+    if ($budgetYaml -notmatch '(?m)^\s+rowboat-server:') { throw 'agent_budget.yaml kennt rowboat-server nicht (ohne Eintrag lehnt der Waechter jeden Aufruf ab)' }
+}
+
 # Rowboats npm-Skripte nutzen rm -rf; unter Windows laeuft npm sonst ueber cmd.exe ohne rm.
 if ($IsWindows) {
     $bash = Join-Path (Split-Path (Split-Path (Get-Command git).Source)) 'bin/bash.exe'
@@ -63,10 +87,13 @@ $vmHost = $Matches.host
 $appPfad = $Matches.pfad
 $basis = $appPfad -replace '/[^/]+$', ''
 
-Invoke-Schritt $PSScriptRoot @('ssh', $vmHost, "mkdir -p $appPfad && mkdir -p -m 0700 ~/rowboat-data")
+Invoke-Schritt $PSScriptRoot @('ssh', $vmHost, "mkdir -p $appPfad $basis/shim && mkdir -p -m 0700 ~/rowboat-data && mkdir -p -m 0700 $basis/budget")
 # Relative Namen aus dist-headless heraus (Invoke-Schritt wechselt hinein und zurueck): kein Laufwerks-
 # Doppelpunkt, den scp als host: deuten koennte; jedes Element ein eigenes Argument.
 $namen = @(Get-ChildItem -LiteralPath $dist -Name)
 Invoke-Schritt $dist (@('scp', '-q', '-r') + $namen + @("${vmHost}:$appPfad/"))
 Invoke-Schritt $PSScriptRoot @('scp', '-q', 'Dockerfile', '.dockerignore', 'compose.yml', 'start.sh', 'rowboat-firewall.nft', "${vmHost}:$basis/")
+foreach ($teil in $shimTeile) {
+    Invoke-Schritt $teil[0] (@('scp', '-q') + $teil[1] + @("${vmHost}:$basis/shim/"))
+}
 Write-Host "Uebertragen nach ${vmHost}:$basis - Start: ssh $vmHost 'cd $basis && docker compose up -d --build'"

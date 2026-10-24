@@ -25,3 +25,32 @@ services:
       timeout: 5s
       start_period: 60s
       retries: 3
+
+  # Claude-Shim (OpenAI-kompatibel) fuer Rowboat, mit Budget-Huelle (Agent rowboat-server, 150/Tag).
+  # Host-Netz, damit der Rowboat-Server ihn unter 127.0.0.1:8121 erreicht; er bindet NUR Loopback.
+  rowboat-shim:
+    build: ./shim
+    image: rowboat-shim:local
+    network_mode: host
+    restart: unless-stopped
+    mem_limit: 1g
+    # Datei mit genau einer Zeile CLAUDE_CODE_OAUTH_TOKEN=... (Modus 0600, nie im Repo).
+    env_file: ./claude-token
+    environment:
+      VIBEMIND_AGENT: rowboat-server
+      VIBEMIND_BUDGET_DIR: /budget
+      SHIM_TOOL_CALLS: "1"
+    command: ["python3", "/opt/shim/rowboat_shim_huelle.py", "--host", "127.0.0.1", "--port", "8121"]
+    volumes:
+      # Zaehldateien des Budgets; fehlt ./budget, startet der Dienst nicht (statt root-Ordner).
+      - type: bind
+        source: ./budget
+        target: /budget
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8121/v1/models', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3

@@ -2,16 +2,17 @@
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 HEADLESS = Path(__file__).resolve().parents[1] / "deploy" / "headless"
 GEHEIM = re.compile(r"(key|token|secret|passw|geheim)", re.IGNORECASE)
 
 
-def dienst() -> dict:
+def dienst(name: str = "rowboat-server") -> dict:
     compose = yaml.safe_load((HEADLESS / "compose.yml").read_text(encoding="utf-8"))
-    assert list(compose["services"]) == ["rowboat-server"]
-    return compose["services"]["rowboat-server"]
+    assert sorted(compose["services"]) == ["rowboat-server", "rowboat-shim"]
+    return compose["services"][name]
 
 
 def umgebung(svc: dict) -> dict[str, str]:
@@ -44,11 +45,12 @@ def test_compose_vertrag():
 
 
 def test_compose_ohne_geheimnis():
-    svc = dienst()
-    for name, wert in umgebung(svc).items():
-        assert not GEHEIM.search(name), f"Geheimnis-artiger Name in environment: {name}"
-        assert len(wert) < 40, f"verdaechtig langer Wert in environment: {name}"
-    assert "env_file" not in svc
+    for dienstname in ("rowboat-server", "rowboat-shim"):
+        svc = dienst(dienstname)
+        for name, wert in umgebung(svc).items():
+            assert not GEHEIM.search(name), f"Geheimnis-artiger Name in environment: {name}"
+            assert len(wert) < 40, f"verdaechtig langer Wert in environment: {name}"
+    assert "env_file" not in dienst("rowboat-server")
 
 
 def test_dockerfile_node22():
@@ -110,3 +112,90 @@ def test_firewall_nur_loopback_und_tailnet():
     assert "## Firewall (vor dem ersten Start)" in readme
     assert "sudo nft -f" in readme and "/etc/nftables.conf" in readme and "systemctl enable nftables" in readme
     assert "port 3220 is taken" in readme
+
+
+# --- Task 4: Claude-Shim mit Budget-Huelle -------------------------------------------------------
+
+SHIM = HEADLESS / "shim"
+SHIM_DATEIEN = ("claude_code_openai_shim.py", "claude_code_openai_tools.py", "claude_budget.py",
+                "agent_budget.yaml", "rowboat_shim_huelle.py")
+
+
+def _befehl(svc: dict) -> str:
+    cmd = svc.get("command", "")
+    return " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+
+
+def test_shim_nur_loopback():
+    svc = dienst("rowboat-shim")
+    assert svc["network_mode"] == "host"          # Rowboat (Host-Netz) erreicht 127.0.0.1:8121
+    assert "ports" not in svc
+    befehl = _befehl(svc)
+    assert "--host 127.0.0.1" in befehl and "--port 8121" in befehl
+    assert "0.0.0.0" not in befehl
+    assert "rowboat_shim_huelle.py" in befehl     # nie den Shim ohne Budget-Huelle starten
+    env = umgebung(svc)
+    assert env["SHIM_TOOL_CALLS"] == "1"
+    assert env["VIBEMIND_AGENT"] == "rowboat-server"
+    assert env["VIBEMIND_BUDGET_DIR"] == "/budget"
+    probe = " ".join(svc["healthcheck"]["test"])
+    assert "127.0.0.1:8121/v1/models" in probe
+
+
+def test_shim_token_nur_aus_datei():
+    svc = dienst("rowboat-shim")
+    assert svc["env_file"] in ("./claude-token", ["./claude-token"])
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in umgebung(svc)
+    for datei in ("Dockerfile", "start.sh", "rowboat_shim_huelle.py"):
+        text = (SHIM / datei).read_text(encoding="utf-8")
+        assert not re.search(r"sk-ant-|CLAUDE_CODE_OAUTH_TOKEN\s*=\s*\S", text), datei
+    assert "sk-ant-" not in (HEADLESS / "compose.yml").read_text(encoding="utf-8")
+    # start.sh prueft nur, dass der Token da ist, und gibt ihn nie aus.
+    start = (SHIM / "start.sh").read_text(encoding="utf-8")
+    assert '[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]' in start
+    assert not re.search(r"(echo|printf)[^\n]*\$\{?CLAUDE_CODE_OAUTH_TOKEN", start)
+    assert b"\r\n" not in (SHIM / "start.sh").read_bytes()
+
+
+def test_shim_budget_volume():
+    svc = dienst("rowboat-shim")
+    # Lange Form ohne create_host_path: fehlt ./budget, legt Docker ihn NICHT als root an.
+    assert svc["volumes"] == [{"type": "bind", "source": "./budget", "target": "/budget",
+                               "bind": {"create_host_path": False}}]
+
+
+def test_shim_dockerfile():
+    zeilen = (SHIM / "Dockerfile").read_text(encoding="utf-8").splitlines()
+    assert zeilen[0] == "FROM node:22-bookworm-slim"
+    text = "\n".join(zeilen)
+    assert re.search(r"npm install -g @anthropic-ai/claude-code@\d+\.\d+\.\d+", text)   # gepinnt
+    assert "python3-yaml" in text                  # claude_budget braucht pyyaml
+    for datei in SHIM_DATEIEN:
+        assert datei in text
+    assert "USER node" in text
+    assert "VIBEMIND_BUDGET_CONFIG=/opt/shim/agent_budget.yaml" in text
+
+
+def test_bauen_kopiert_shim_kontext():
+    skript = (HEADLESS / "bauen.ps1").read_text(encoding="utf-8")
+    for datei in SHIM_DATEIEN:
+        assert datei in skript
+    assert "rowboat-server:" in skript              # bricht ab, wenn der Budget-Eintrag fehlt
+    assert "mkdir -p -m 0700 $basis/budget" in skript
+
+
+def _budget_yaml() -> Path | None:
+    for ort in HEADLESS.parents:
+        kandidat = ort / "config" / "agent_budget.yaml"
+        if kandidat.is_file():
+            return kandidat
+    return None
+
+
+def test_budget_eintrag_rowboat_server():
+    pfad = _budget_yaml()
+    if pfad is None:
+        pytest.skip("aeusseres Repo mit config/agent_budget.yaml nicht vorhanden (CI ohne Vibemind_V1)")
+    eintrag = yaml.safe_load(pfad.read_text(encoding="utf-8"))["agenten"]["rowboat-server"]
+    assert eintrag == {"bereich": "wissen", "klasse": "auftrag", "modell": "sonnet",
+                       "tagesgrenze": 150, "wrapper": "shim"}

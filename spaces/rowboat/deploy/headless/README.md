@@ -58,6 +58,36 @@ curl -s http://100.67.177.45:3220/health
 Steht der Container auf `unhealthy`: `docker compose logs` nach "port 3220 is taken" durchsuchen. Dann
 ist 3220 belegt und der Server auf 3221 ff. ausgewichen; der Healthcheck prueft nur 3220.
 
+## Claude-Shim `rowboat-shim` (127.0.0.1:8121)
+
+Rowboats Modell-Anbieter "openai-compatible" zeigt auf `http://127.0.0.1:8121/v1`. Der Dienst ist der
+Shim vom PC (`claude_code_openai_shim.py`, `SHIM_TOOL_CALLS=1`) in einem Container mit der Claude-CLI
+(gleiche Version wie am PC, im `shim/Dockerfile` gepinnt). Ein Modell laeuft dort nicht, die CLI ruft
+das Abo auf. Er bindet nur Loopback, ist also weder im LAN noch im Tailnet erreichbar.
+
+- Budget-Huelle `shim/rowboat_shim_huelle.py` (Muster `Vibemind_V1/scripts/brain_devops_shim.py`):
+  vor jedem CLI-Aufruf `claude_budget.pruefen("rowboat-server")`, danach `buchen`. Lehnt der Waechter
+  ab oder geht er kaputt, kommt eine Fehlermeldung und kein Aufruf (fail-closed). Grenze: 150 Aufrufe
+  am Tag (Klasse `auftrag`, also keine Pause, waehrend der Betreiber am PC arbeitet),
+  `Vibemind_V1/config/agent_budget.yaml`.
+- Das Konto der VM liegt in `~/rowboat-headless/budget/` (0700, legt `bauen.ps1` an) und ist
+  **getrennt** vom Konto am PC. Not-Aus: `touch ~/rowboat-headless/budget/STOP`.
+- Shim, Werkzeugmodul, `claude_budget.py` und `agent_budget.yaml` liegen nicht im Repo. `bauen.ps1`
+  kopiert sie bei jedem Uebertragen frisch nach `~/rowboat-headless/shim/`. Wer die Grenze aendert,
+  uebertraegt neu und baut neu (`docker compose up -d --build rowboat-shim`).
+- Anmeldung: `~/rowboat-headless/claude-token` mit genau einer Zeile `CLAUDE_CODE_OAUTH_TOKEN=...`,
+  Modus 0600, per `env_file`. Erzeugt am PC mit `claude setup-token`, uebergeben ohne Anzeige:
+  `ssh offload-vm 'umask 077; cat > ~/rowboat-headless/claude-token' < <datei>`. Fehlt die Datei,
+  verweigert compose den Start.
+
+Probe (auf der VM, nach Betreiber-OK):
+
+```sh
+cd ~/rowboat-headless && docker compose up -d --build rowboat-shim
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8121/v1/models   # 200, bucht nichts
+tail -n 2 ~/rowboat-headless/budget/$(date +%F).jsonl                       # nach einem Testaufruf: pruefung + buchung
+```
+
 ## Wo die Daten liegen
 
 - Arbeitsordner: `/home/debian/rowboat-data` (Besitzer debian, Modus 0700), im Container `/data`.
