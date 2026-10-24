@@ -523,8 +523,9 @@ def versandauftrag_anlegen_route(payload: dict = Body(...)):
     optional betreff, medien_datei, kampagne, quelle.
 
     kanal: whatsapp | email | linkedin (Nachricht an einen Kontakt) oder
-    linkedin_post (Beitrag aufs eigene Profil, ohne Empfaenger, Thema im
-    Feld betreff). Telegram fehlt: sales-claw hat dafuer keinen Dispatcher.
+    linkedin_post, bluesky_post, mastodon_post, telegram_kanal_post,
+    discord_post, devto_post (Beitrag auf den eigenen Kanal, ohne Empfaenger,
+    Thema im Feld betreff, bei devto_post der Titel). Telegram fehlt: sales-claw hat dafuer keinen Dispatcher.
 
     Antwort: {ok, id, wiederholung, grund} — eine Absage ist kein HTTP-Fehler,
     sondern ok=false mit einem Grund, den ein Agent lesen kann.

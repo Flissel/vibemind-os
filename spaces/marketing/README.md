@@ -86,7 +86,8 @@ Betreiber-Entscheid 2026-09-12: **sales-claw ist der einzige Versandweg**
 3. sales-claw legt hoechstens einen offenen Entwurf an, den ein Mensch freigibt.
 
 Kanaele, die das Werkzeug annimmt: `whatsapp`, `email`, `linkedin`,
-`linkedin_post` (`VERSANDKANAELE`; Telegram nicht, obwohl das CHECK in 043 es
+`linkedin_post`, `bluesky_post`, `mastodon_post`, `telegram_kanal_post`,
+`discord_post`, `devto_post` (Migration 092; `VERSANDKANAELE`; Telegram nicht, obwohl das CHECK in 043 es
 noch erlaubt). Die alten Versender `tools/_send_paranoid.py`,
 `tools/_send_telegram.py` und `tools/_send_openfang.py` sind durch
 `tools/versandsperre.py` gesperrt (Gate 0, nur im LIVE-Modus). Die Umgehung

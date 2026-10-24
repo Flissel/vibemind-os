@@ -305,7 +305,9 @@ def _kanal_kann_senden(kanal: str) -> tuple:
 # damit der Hinweistext unten sie nennen kann, ohne einen Netzgriff dafuer
 # zu brauchen. Weicht sie eines Tages ab, sagt die Absage aus der Datenbank
 # die Wahrheit, nicht diese Zeile.
-VERSANDKANAELE = ("whatsapp", "email", "linkedin", "linkedin_post")
+VERSANDKANAELE = ("whatsapp", "email", "linkedin", "linkedin_post",
+                  "bluesky_post", "mastodon_post", "telegram_kanal_post",
+                  "discord_post", "devto_post")
 
 
 def versand_beauftragen(kanal: str, nachricht: str, empfaenger: str = "",
@@ -325,6 +327,11 @@ def versand_beauftragen(kanal: str, nachricht: str, empfaenger: str = "",
                                      ist die E-Mail oder die Telefonnummer.
       linkedin_post                — Beitrag aufs eigene Profil: KEIN
                                      `empfaenger`, dafuer `betreff` als Thema.
+      bluesky_post | mastodon_post | telegram_kanal_post | discord_post |
+      devto_post                   — Beitrag auf den eigenen Kanal: KEIN
+                                     `empfaenger`, `betreff` als Thema, bei
+                                     devto_post als Titel. Ist der Kanal nicht
+                                     verbunden, sagt sales-claw ab (mit Grund).
     Telegram gibt es hier nicht — sales-claw hat dafuer keinen Versandweg.
 
     medien_datei: der BLOSSE Dateiname aus dem Schaufenster (post_ablegen,

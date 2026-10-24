@@ -119,6 +119,23 @@ class VersandBeauftragen(unittest.TestCase):
         self.assertEqual(len(rekorder.aufrufe), 1,
                          "die Entscheidung faellt drueben, also wird gefragt")
 
+    def test_versandkanaele_kennen_die_postkanaele(self):
+        postkanaele = {"bluesky_post", "mastodon_post", "telegram_kanal_post",
+                       "discord_post", "devto_post"}
+        self.assertTrue(postkanaele <= set(werkzeuge.VERSANDKANAELE))
+        for kanal in postkanaele:
+            self.assertIn(kanal, werkzeuge.versand_beauftragen.__doc__)
+
+    def test_postkanal_geht_ohne_empfaenger_durch(self):
+        rekorder = Rekorder([_antwort({"ok": True, "id": "p-1",
+                                       "wiederholung": False, "grund": "liegt bereit"})])
+        r = self._lauf(rekorder, kanal="bluesky_post", nachricht="Hallo",
+                       betreff="Herbst")
+        self.assertTrue(r["ok"], r)
+        gesendet = json.loads(rekorder.aufrufe[0]["daten"].decode("utf-8"))
+        self.assertEqual(gesendet["kanal"], "bluesky_post")
+        self.assertEqual(gesendet["empfaenger"], "")
+
 
 class VersandauftraegeLesen(unittest.TestCase):
 
