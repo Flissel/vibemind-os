@@ -24,7 +24,10 @@ $outer = Split-Path $root -Parent                                     # Vibemind
 
 function Find-SpiegelPython {
     param([Parameter(Mandatory)][string]$Exe)   # 'pythonw.exe' oder 'python.exe'
-    foreach ($venv in @((Join-Path $root '.venv'), (Join-Path $outer '.venv'))) {
+    # Dritte Stelle: aeusseres Repo (VIBEMIND_ROOT, Vorgabe Desktop\Vibemind_V1) - der Betriebs-Checkout
+    # unter ClaudeWork\vibemind-betrieb hat keine eigene .venv (Umstellung 25.10.2026).
+    $vibemind = if ($env:VIBEMIND_ROOT) { $env:VIBEMIND_ROOT } else { 'C:\Users\User\Desktop\Vibemind_V1' }
+    foreach ($venv in @((Join-Path $root '.venv'), (Join-Path $outer '.venv'), (Join-Path $vibemind '.venv'))) {
         $p = Join-Path $venv "Scripts\$Exe"
         if (Test-Path -LiteralPath $p) { return $p }
     }
