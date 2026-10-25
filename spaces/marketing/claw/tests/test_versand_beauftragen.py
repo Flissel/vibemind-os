@@ -121,10 +121,28 @@ class VersandBeauftragen(unittest.TestCase):
 
     def test_versandkanaele_kennen_die_postkanaele(self):
         postkanaele = {"bluesky_post", "mastodon_post", "telegram_kanal_post",
-                       "discord_post", "devto_post"}
+                       "discord_post", "devto_post", "youtube_post"}
         self.assertTrue(postkanaele <= set(werkzeuge.VERSANDKANAELE))
         for kanal in postkanaele:
             self.assertIn(kanal, werkzeuge.versand_beauftragen.__doc__)
+
+    def test_youtube_post_reicht_reel_und_titel_durch(self):
+        """youtube_post (Migration 093): ein Short aus einem Reel - medien_datei
+        ist das Video, betreff der Titel. Ob beides da ist, entscheidet die
+        Datenbankfunktion; das Werkzeug reicht es nur unveraendert weiter."""
+        doku = werkzeuge.versand_beauftragen.__doc__
+        self.assertIn("youtube_post", doku)
+        self.assertIn("Reel", doku)
+        rekorder = Rekorder([_antwort({"ok": True, "id": "y-1",
+                                       "wiederholung": False, "grund": "liegt bereit"})])
+        r = self._lauf(rekorder, kanal="youtube_post", nachricht="Beschreibung #KI",
+                       betreff="Unser Short", medien_datei="vid-0123abcd-herbst.mp4")
+        self.assertTrue(r["ok"], r)
+        gesendet = json.loads(rekorder.aufrufe[0]["daten"].decode("utf-8"))
+        self.assertEqual(gesendet["kanal"], "youtube_post")
+        self.assertEqual(gesendet["empfaenger"], "")
+        self.assertEqual(gesendet["betreff"], "Unser Short")
+        self.assertEqual(gesendet["medien_datei"], "vid-0123abcd-herbst.mp4")
 
     def test_postkanal_geht_ohne_empfaenger_durch(self):
         rekorder = Rekorder([_antwort({"ok": True, "id": "p-1",
