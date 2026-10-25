@@ -92,7 +92,7 @@ Invoke-Schritt $PSScriptRoot @('ssh', $vmHost, "mkdir -p $appPfad $basis/shim &&
 # Doppelpunkt, den scp als host: deuten koennte; jedes Element ein eigenes Argument.
 $namen = @(Get-ChildItem -LiteralPath $dist -Name)
 Invoke-Schritt $dist (@('scp', '-q', '-r') + $namen + @("${vmHost}:$appPfad/"))
-Invoke-Schritt $PSScriptRoot @('scp', '-q', 'Dockerfile', '.dockerignore', 'compose.yml', 'start.sh', 'rowboat-firewall.nft', "${vmHost}:$basis/")
+Invoke-Schritt $PSScriptRoot @('scp', '-q', 'Dockerfile', '.dockerignore', 'compose.yml', 'start.sh', 'rowboat-firewall.nft', 'rowboat-firewall.service', "${vmHost}:$basis/")
 foreach ($teil in $shimTeile) {
     Invoke-Schritt $teil[0] (@('scp', '-q') + $teil[1] + @("${vmHost}:$basis/shim/"))
 }

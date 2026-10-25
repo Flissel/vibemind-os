@@ -116,7 +116,7 @@ def test_firewall_nur_loopback_und_tailnet():
     assert "flush ruleset" not in flach   # Dockers Tabellen bleiben unberuehrt
     readme = (HEADLESS / "README.md").read_text(encoding="utf-8")
     assert "## Firewall (vor dem ersten Start)" in readme
-    assert "sudo nft -f" in readme and "/etc/nftables.conf" in readme and "systemctl enable nftables" in readme
+    assert "sudo nft -f" in readme and "enable --now rowboat-firewall" in readme and "NICHT `nftables.service`" in readme
     assert "port 3220 is taken" in readme
 
 
@@ -216,3 +216,12 @@ def test_server_wartet_auf_gesunde_shim():
     import yaml
     dienste = yaml.safe_load((HEADLESS / "compose.yml").read_text(encoding="utf-8"))["services"]
     assert dienste["rowboat-server"]["depends_on"] == {"rowboat-shim": {"condition": "service_healthy"}}
+
+
+def test_firewall_einheit_ohne_nftables_conf():
+    einheit = (HEADLESS / "rowboat-firewall.service").read_text(encoding="utf-8")
+    assert "Before=network-pre.target docker.service" in einheit
+    assert "ExecStart=/usr/sbin/nft -f /etc/nftables.d/rowboat-firewall.nft" in einheit
+    assert "flush ruleset" not in einheit.replace('"flush ruleset"', "")
+    bauen = (HEADLESS / "bauen.ps1").read_text(encoding="utf-8")
+    assert "'rowboat-firewall.service'" in bauen

@@ -31,17 +31,19 @@ sudo nft -f ~/rowboat-headless/rowboat-firewall.nft    # sofort aktiv
 sudo nft list table inet rowboat                       # pruefen
 ```
 
-**Pflicht: dauerhaft ueber Neustarts.** Ohne diesen Schritt ist der Server nach einem VM-Neustart im
-LAN offen (`restart: unless-stopped` startet ihn wieder, die Tabelle fehlt dann). Die Datei nach
-`/etc/nftables.d/` kopieren, in `/etc/nftables.conf` die Zeile
-`include "/etc/nftables.d/rowboat-firewall.nft"` ergaenzen und `sudo systemctl enable nftables`. Danach
-die VM einmal neu starten und `sudo nft list table inet rowboat` sowie die LAN-Probe unten wiederholen;
-erst dann gilt die Firewall als eingerichtet (Vorbedingung in `UMSTELLUNG.md`, Schritt 0).
-Debians Vorgabe-`/etc/nftables.conf` beginnt mit `flush ruleset`: beim Booten laeuft das vor Docker
-und schadet nicht, ein spaeteres `systemctl restart nftables` raeumt aber Dockers Regeln ab (danach
-`sudo systemctl restart docker`). Zum Nachladen nur die Rowboat-Tabelle neu einlesen; ein zweites
-`nft -f` haengt die Regeln doppelt an (harmlos), sauber geht es mit vorherigem
-`sudo nft delete table inet rowboat`.
+**Pflicht: dauerhaft ueber Neustarts** ueber die eigene Einheit `rowboat-firewall.service`
+(laedt nur die Tabelle `inet rowboat`, vor Docker). NICHT `nftables.service` einschalten: Debians
+`/etc/nftables.conf` beginnt mit `flush ruleset` und raeumt Dockers Regeln ab.
+
+```sh
+sudo install -d -m 755 /etc/nftables.d
+sudo install -m 644 ~/rowboat-headless/rowboat-firewall.nft /etc/nftables.d/rowboat-firewall.nft
+sudo install -m 644 ~/rowboat-headless/rowboat-firewall.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now rowboat-firewall
+sudo nft list table inet rowboat          # Tabelle da, Regeln einfach (Neuladen ersetzt sie)
+```
+
+Eingerichtet auf offload-vm am 25.10.2026 (Neuladen geprueft, Docker-Tabellen unberuehrt).
 
 Probe:
 

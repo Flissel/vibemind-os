@@ -1,0 +1,17 @@
+# Laedt nur die Tabelle inet rowboat (Port 3220-3229 nur lo + tailscale0), vor Docker.
+# Bewusst NICHT ueber nftables.service: dessen /etc/nftables.conf beginnt mit "flush ruleset"
+# und wuerde Dockers Regeln abraeumen.
+[Unit]
+Description=Rowboat-Firewall (nur Tailnet und lokal auf 3220-3229)
+Wants=network-pre.target
+Before=network-pre.target docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=-/usr/sbin/nft delete table inet rowboat
+ExecStart=/usr/sbin/nft -f /etc/nftables.d/rowboat-firewall.nft
+ExecStop=/usr/sbin/nft delete table inet rowboat
+
+[Install]
+WantedBy=multi-user.target

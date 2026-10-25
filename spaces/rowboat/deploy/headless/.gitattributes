@@ -6,3 +6,4 @@ start.sh     text eol=lf
 rowboat-firewall.nft text eol=lf
 *.sh                 text eol=lf
 *.py                 text eol=lf
+rowboat-firewall.service text eol=lf
