@@ -122,9 +122,15 @@ Kurzformen: **PC** = Windows-Rechner mit `~/.rowboat`, **VM** = `offload-vm` (Mi
 - **PC-eigene Notizen** sind `Projects/`, `Topics/`, `Agents/`, `companys/*` (ausser `Kontakte/`,
   `Newsletter/`, `Wochenbild/`) und die weiteren PC-Ordner der Besitzer-Tabelle. Wer sie in der App,
   per rowboat-ui oder per Telegram aendert, findet die Aenderung nach dem naechsten Spiegellauf (alle
-  5 min) auch auf dem PC. Ausnahme: Hat der PC dieselbe Datei im selben 5-Minuten-Fenster ebenfalls
-  geaendert, gewinnt die PC-Fassung, und die VM-Fassung landet in `knowledge/_konflikte/<datum>/` auf
-  der VM. Loeschen wirkt nur vom Besitzer aus; eine auf der VM geloeschte PC-Notiz kommt zurueck.
+  5 min) auch auf dem PC. Haben PC und VM dieselbe Datei im selben 5-Minuten-Fenster geaendert, fuehrt
+  der Spiegel Textdateien zeilenweise zusammen: Stehen die Aenderungen an verschiedenen Stellen, haben
+  danach beide Seiten beide Aenderungen. Ueberlappen sie, bleibt die Fassung des Besitzers die Datei, und
+  die andere liegt auf beiden Seiten daneben als `<name> (Konflikt JJJJ-MM-TT HH-MM).md` (zusaetzlich
+  wie bisher in `knowledge/_konflikte/<datum>/` auf der VM). Dann kommt eine Telegram-Meldung
+  „Wissens-Spiegel: Konflikt in <pfad> ...“; die Konfliktdatei von Hand einarbeiten und loeschen.
+  Binaerdateien und Dateien ohne Basis (erster Lauf nach dem Umzug, Basis unter
+  `%LOCALAPPDATA%\VibeMind\wissens_spiegel\basis\`) bleiben bei: Besitzer gewinnt, Sicherung in
+  `_konflikte/`. Loeschen wirkt nur vom Besitzer aus; eine auf der VM geloeschte PC-Notiz kommt zurueck.
 - Der **OpenAI-Schluessel zieht NICHT mit** (`apiKey` in der `config/models.json`-Kopie leer), Quelle
   spaeter der Tresor. Bis dahin sind Anbieter, die ihn brauchen (z. B. `imageModel` auf openai), auf der
   VM nicht nutzbar.

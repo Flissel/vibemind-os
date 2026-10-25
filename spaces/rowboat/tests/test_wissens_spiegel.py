@@ -298,6 +298,7 @@ import logging  # noqa: E402
 import os  # noqa: E402
 import shlex  # noqa: E402
 import subprocess  # noqa: E402
+import shutil  # noqa: E402
 import tarfile  # noqa: E402
 
 ZIEL = "offload-vm"
@@ -825,3 +826,199 @@ def test_fehlende_pc_wurzel_ist_fehler(seiten, caplog):
     fake = FakeVm()
     assert ws.lauf(vm.parent / "gibt-es-nicht", ZIEL, str(vm), zustand, laeufer=fake) == 1
     assert fake.aufrufe == [] and not zustand.exists()
+
+
+# --- Zusammenfuehren gleichzeitiger Aenderungen (Basis-Ablage, 3-Wege, Konflikt daneben, Meldung) ---------
+
+from datetime import datetime  # noqa: E402
+
+JETZT = datetime(2026, 10, 25, 14, 3)
+TEXT = "".join(f"Zeile {i}\n" for i in range(1, 9))
+
+
+@pytest.fixture(autouse=True)
+def meldungen(monkeypatch):
+    """Kein Test schickt echte Telegram-Nachrichten; gesendete Texte landen hier."""
+    gesendet: list[str] = []
+    monkeypatch.setattr(ws, "_telegram_melden", gesendet.append)
+    return gesendet
+
+
+def _basis(zustand: Path) -> Path:
+    return zustand.parent / "basis"
+
+
+def _gemeinsamer_start(pc: Path, vm: Path, zustand: Path, pfad: str, inhalt: str | bytes = TEXT) -> None:
+    """Beide Seiten gleich, ein erfolgreicher Lauf legt Zustand und Basis an."""
+    schreibe(pc, pfad, inhalt)
+    schreibe(vm, pfad, inhalt)
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE, jetzt=JETZT) == 0
+
+
+def test_drei_wege_getrennte_zeilen_und_ueberlappung():
+    basis = "a\nb\nc\nd\ne\n"
+    assert ws._drei_wege(basis, "A\nb\nc\nd\ne\n", "a\nb\nc\nd\nE\n") == "A\nb\nc\nd\nE\n"
+    assert ws._drei_wege(basis, "A\nb\nc\nd\ne\n", "X\nb\nc\nd\ne\n") is None
+    assert ws._drei_wege(basis, "A\nb\nc\nd\ne\n", "A\nb\nc\nd\ne\n") == "A\nb\nc\nd\ne\n"
+    assert ws._drei_wege(basis, basis + "f\n", "a\nc\nd\ne\n") == "a\nc\nd\ne\nf\n"
+
+
+def test_konfliktname():
+    assert ws.konfliktname("Notes/a b.md", JETZT, set()) == "Notes/a b (Konflikt 2026-10-25 14-03).md"
+    assert ws.konfliktname("README", JETZT, set()) == "README (Konflikt 2026-10-25 14-03)"
+    belegt = {"Notes/A (Konflikt 2026-10-25 14-03).md"}
+    assert ws.konfliktname("Notes/a.md", JETZT, belegt) == "Notes/a (Konflikt 2026-10-25 14-03) 2.md"
+
+
+def test_basis_wird_nach_erfolg_angelegt_und_aufgeraeumt(seiten):
+    pc, vm, zustand = seiten
+    schreibe(pc, "Projects/bin.dat", b"\x00\x01binaer")
+    schreibe(pc, ".git/HEAD", "ref")
+    _unveraendert(pc, vm)  # genug Dateien, damit eine Loeschung unter der Loeschgrenze bleibt
+    _gemeinsamer_start(pc, vm, zustand, "Projects/p.md")
+    b = _basis(zustand)
+    assert (b / "Projects/p.md").read_text(encoding="utf-8") == TEXT
+    assert not (b / "Projects/bin.dat").exists()  # binaer: keine Basis
+    assert not (b / ".git").exists()
+    (pc / "Projects/p.md").unlink()  # Besitzer loescht -> Pfad weg, Basis weg
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE) == 0
+    assert not (b / "Projects/p.md").exists()
+
+
+def test_basis_bleibt_nach_gescheitertem_lauf(seiten):
+    pc, vm, zustand = seiten
+    _gemeinsamer_start(pc, vm, zustand, "Projects/p.md")
+    schreibe(pc, "Projects/p.md", "neu\n")
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(fehler_bei=2), heute=HEUTE) == 2
+    assert (_basis(zustand) / "Projects/p.md").read_text(encoding="utf-8") == TEXT
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE) == 0
+    assert (_basis(zustand) / "Projects/p.md").read_text(encoding="utf-8") == "neu\n"
+
+
+@pytest.mark.parametrize("pfad", ["Projects/p.md", "Notes/n.md"])
+def test_getrennte_aenderungen_werden_zusammengefuehrt(seiten, meldungen, pfad):
+    pc, vm, zustand = seiten
+    _gemeinsamer_start(pc, vm, zustand, pfad)
+    schreibe(pc, pfad, TEXT.replace("Zeile 1\n", "Zeile 1 vom PC\n"))
+    schreibe(vm, pfad, TEXT.replace("Zeile 7\n", "Zeile 7 von der VM\n"))
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE, jetzt=JETZT) == 0
+    erwartet = TEXT.replace("Zeile 1\n", "Zeile 1 vom PC\n").replace("Zeile 7\n", "Zeile 7 von der VM\n")
+    assert (pc / pfad).read_text(encoding="utf-8") == erwartet
+    assert (vm / pfad).read_text(encoding="utf-8") == erwartet
+    assert sorted(dateien(pc)) == [pfad] and sorted(dateien(vm)) == [pfad]  # keine Konfliktdatei, kein _konflikte
+    assert meldungen == []
+    assert ws.zustand_lesen(zustand)[pfad].sha256 == sha(erwartet)
+    assert (_basis(zustand) / pfad).read_text(encoding="utf-8") == erwartet
+    fake = FakeVm()
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=fake, heute=HEUTE, jetzt=JETZT) == 0
+    assert len(fake.aufrufe) == 1
+
+
+@pytest.mark.parametrize("pfad,eigner", [("Projects/p.md", "pc"), ("Notes/n.md", "vm")])
+def test_ueberlappende_aenderung_legt_konfliktdatei_daneben(seiten, meldungen, pfad, eigner):
+    pc, vm, zustand = seiten
+    _gemeinsamer_start(pc, vm, zustand, pfad)
+    pc_text = TEXT.replace("Zeile 3\n", "Zeile 3 PC\n")
+    vm_text = TEXT.replace("Zeile 3\n", "Zeile 3 VM\n")
+    schreibe(pc, pfad, pc_text)
+    schreibe(vm, pfad, vm_text)
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE, jetzt=JETZT) == 0
+    sieger, verlierer = (pc_text, vm_text) if eigner == "pc" else (vm_text, pc_text)
+    k = pfad[:-3] + " (Konflikt 2026-10-25 14-03).md"
+    for seite in (pc, vm):
+        assert (seite / pfad).read_text(encoding="utf-8") == sieger
+        assert (seite / k).read_text(encoding="utf-8") == verlierer
+    assert (vm / "_konflikte" / HEUTE / pfad).read_text(encoding="utf-8") == verlierer
+    assert meldungen == [f"Wissens-Spiegel: Konflikt in {pfad} – beide Fassungen liegen nebeneinander."]
+    stand = ws.zustand_lesen(zustand)
+    assert stand[k].sha256 == sha(verlierer) and stand[pfad].sha256 == sha(sieger)
+    fake = FakeVm()  # Folgelauf: alles gleich, keine weitere Meldung
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=fake, heute=HEUTE, jetzt=JETZT) == 0
+    assert len(fake.aufrufe) == 1 and len(meldungen) == 1
+
+
+def test_ohne_basis_gewinnt_der_besitzer_wie_bisher(seiten, meldungen):
+    pc, vm, zustand = seiten
+    _gemeinsamer_start(pc, vm, zustand, "Projects/p.md")
+    shutil.rmtree(_basis(zustand))
+    schreibe(pc, "Projects/p.md", TEXT.replace("Zeile 1\n", "PC\n"))
+    schreibe(vm, "Projects/p.md", TEXT.replace("Zeile 7\n", "VM\n"))
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE, jetzt=JETZT) == 0
+    assert (vm / "Projects/p.md").read_text(encoding="utf-8") == TEXT.replace("Zeile 1\n", "PC\n")
+    assert (vm / "_konflikte" / HEUTE / "Projects/p.md").read_text(encoding="utf-8") == TEXT.replace("Zeile 7\n", "VM\n")
+    assert not any("Konflikt" in n for n in dateien(pc)) and meldungen == []
+
+
+def test_basis_mit_falschem_sha_wird_nicht_benutzt(seiten, meldungen):
+    pc, vm, zustand = seiten
+    _gemeinsamer_start(pc, vm, zustand, "Projects/p.md")
+    (_basis(zustand) / "Projects/p.md").write_text("fremd\n", encoding="utf-8")
+    schreibe(pc, "Projects/p.md", TEXT.replace("Zeile 1\n", "PC\n"))
+    schreibe(vm, "Projects/p.md", TEXT.replace("Zeile 7\n", "VM\n"))
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE, jetzt=JETZT) == 0
+    assert (vm / "Projects/p.md").read_text(encoding="utf-8") == TEXT.replace("Zeile 1\n", "PC\n")
+    assert (vm / "_konflikte" / HEUTE / "Projects/p.md").exists()
+
+
+def test_binaer_gewinnt_der_besitzer(seiten, meldungen):
+    pc, vm, zustand = seiten
+    _gemeinsamer_start(pc, vm, zustand, "Projects/b.dat", b"\x00alt")
+    schreibe(pc, "Projects/b.dat", b"\x00pc")
+    schreibe(vm, "Projects/b.dat", b"\x00vm")
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE, jetzt=JETZT) == 0
+    assert (vm / "Projects/b.dat").read_bytes() == b"\x00pc"
+    assert (vm / "_konflikte" / HEUTE / "Projects/b.dat").read_bytes() == b"\x00vm"
+    assert not any("Konflikt" in n for n in dateien(vm)) and meldungen == []
+
+
+def test_meldung_scheitert_aendert_exit_nicht(seiten, monkeypatch, caplog):
+    pc, vm, zustand = seiten
+
+    def kaputt(_text):
+        raise subprocess.CalledProcessError(2, ["python"], b"", b"token=GEHEIM")
+
+    monkeypatch.setattr(ws, "_telegram_melden", kaputt)
+    _gemeinsamer_start(pc, vm, zustand, "Projects/p.md")
+    schreibe(pc, "Projects/p.md", TEXT.replace("Zeile 3\n", "PC\n"))
+    schreibe(vm, "Projects/p.md", TEXT.replace("Zeile 3\n", "VM\n"))
+    with caplog.at_level(logging.WARNING, logger="wissens_spiegel"):
+        assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE, jetzt=JETZT) == 0
+    assert "Meldung" in caplog.text and "GEHEIM" not in caplog.text
+
+
+def test_meldung_hoechstens_fuenf_pfade():
+    gesendet: list[str] = []
+    ws._konflikte_melden([f"Projects/{i}.md" for i in range(7)], gesendet.append)
+    assert len(gesendet) == 2
+    assert gesendet[0].count("Projects/") == 5 and gesendet[1].count("Projects/") == 2
+
+
+def test_telegram_melden_ruft_den_melder_mit_der_nachricht(monkeypatch, tmp_path):
+    aufrufe = []
+
+    def fake_run(cmd, **kw):
+        aufrufe.append((cmd, kw))
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(ws.subprocess, "run", fake_run)
+    monkeypatch.setenv("VIBEMIND_ROOT", str(tmp_path))
+    ws.telegram_melden("Hallo")  # die echte Funktion; `_telegram_melden` ist in Tests ersetzt
+    cmd, kw = aufrufe[0]
+    assert cmd[1:] == [str(tmp_path / "scripts" / "notify_telegram.py"), "Hallo"]
+    assert kw["timeout"] and kw["check"] is True
+
+
+def test_zusammenfuehren_prueft_stand_vor_dem_schreiben(seiten):
+    pc, vm, zustand = seiten
+    _gemeinsamer_start(pc, vm, zustand, "Projects/p.md")
+    schreibe(pc, "Projects/p.md", TEXT.replace("Zeile 1\n", "PC\n"))
+    schreibe(vm, "Projects/p.md", TEXT.replace("Zeile 7\n", "VM\n"))
+    vorher = zustand.read_bytes()
+
+    def spaet(n):  # Aufruf 1 = VM-Bestand, 2 = VM-Inhalte holen; danach schreibt der PC noch einmal
+        if n == 2:
+            schreibe(pc, "Projects/p.md", "pc-spaet\n")
+
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(vor_aufruf=spaet), heute=HEUTE, jetzt=JETZT) == 4
+    assert (pc / "Projects/p.md").read_text(encoding="utf-8") == "pc-spaet\n"
+    assert zustand.read_bytes() == vorher

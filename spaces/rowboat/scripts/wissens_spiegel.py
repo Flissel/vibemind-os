@@ -17,7 +17,15 @@ Regeln (Besitzer-Tabelle im Plan 2026-10-24-rowboat-zentrale-teil-a-mini-pc):
   Besitzer ist (auch Nicht-Besitzer -> Besitzer), ohne Konfliktkopie.
 - Haben BEIDE Seiten verschieden geaendert (oder ist die Datei auf beiden neu und verschieden), gewinnt
   der Besitzer; die Fassung des Nicht-Besitzers wird vorher gesichert (`konflikt_sichern` steht vor der
-  Aktion). Beide gleich geaendert: nichts zu tun.
+  Aktion). Beide gleich geaendert: nichts zu tun. Diesen Plan verfeinert `lauf` fuer Textdateien mit
+  Basis: Nach jedem vollen Erfolg liegt der gemeinsame Inhalt jeder Textdatei (UTF-8, ohne NUL, bis
+  `BASIS_MAX`) unter `<zustand-ordner>/basis/<pfad>` (gueltig nur, wenn ihr sha zu `zuletzt` passt).
+  Beide Seiten geaendert + Basis da: 3-Wege-Zusammenfuehren je Zeile (`_drei_wege`, nur difflib). Sauber
+  -> `zusammenfuehren` schreibt das Ergebnis auf beide Seiten, keine Sicherung. Ueberlappend -> Besitzer
+  gewinnt wie oben, dazu legt `konflikt_daneben` die Nicht-Besitzer-Fassung als
+  `<stem> (Konflikt JJJJ-MM-TT HH-MM).<ext>` (Ortszeit) auf beiden Seiten neben die Datei, und nach dem
+  Lauf geht eine Telegram-Meldung ueber `scripts/notify_telegram.py` des aeusseren Repos raus (Fehler nur
+  ins Log). Ohne Basis oder bei Binaerdateien bleibt es bei Besitzer gewinnt.
 - Eine neue Datei auf nur einer Seite wird auf die andere kopiert.
 - Loeschen wirkt nur vom Besitzer aus; hat der Nicht-Besitzer die Datei inzwischen geaendert, wird seine
   Fassung vor dem Loeschen gesichert. Fehlt die Datei beim Nicht-Besitzer, wird sie zurueckgespielt.
@@ -40,6 +48,7 @@ import shlex
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import unicodedata
 from datetime import date, datetime
@@ -47,7 +56,9 @@ from pathlib import Path
 from typing import Any, Callable, Literal, NamedTuple
 
 Seite = Literal["pc", "vm"]
-ArtT = Literal["nach_vm", "nach_pc", "loeschen_vm", "loeschen_pc", "konflikt_sichern"]
+ArtT = Literal[
+    "nach_vm", "nach_pc", "loeschen_vm", "loeschen_pc", "konflikt_sichern", "zusammenfuehren", "konflikt_daneben"
+]
 
 
 class Eintrag(NamedTuple):
@@ -182,6 +193,112 @@ def abgleich_planen(pc: Bestand, vm: Bestand, zuletzt: Bestand) -> list[Aktion]:
         arten, _ = _entscheiden(pfad, pc.get(pfad), vm.get(pfad), zuletzt.get(pfad))
         aktionen += [Aktion(art, pfad) for art in arten]
     return aktionen
+
+
+def _ist_text(daten: bytes) -> bool:
+    """UTF-8 ohne NUL-Bytes; nur solche Dateien bekommen eine Basis und werden zusammengefuehrt."""
+    if b"\0" in daten:
+        return False
+    try:
+        daten.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+def _drei_wege(basis: str, a: str, b: str) -> str | None:
+    """Zeilenweises 3-Wege-Zusammenfuehren (Verfahren wie bzr merge3, nur difflib).
+
+    Gibt den zusammengefuehrten Text zurueck oder None, wenn beide Seiten dieselbe Stelle verschieden
+    geaendert haben. Aenderungen, die direkt aneinanderstossen, gelten vorsichtshalber als Ueberlappung.
+    """
+    from difflib import SequenceMatcher
+
+    z, x, y = basis.splitlines(keepends=True), a.splitlines(keepends=True), b.splitlines(keepends=True)
+    am = SequenceMatcher(None, z, x, autojunk=False).get_matching_blocks()
+    bm = SequenceMatcher(None, z, y, autojunk=False).get_matching_blocks()
+    sync: list[tuple[int, int, int, int, int, int]] = []
+    ia = ib = 0
+    while ia < len(am) and ib < len(bm):
+        abase, amatch, alen = am[ia]
+        bbase, bmatch, blen = bm[ib]
+        anfang, ende = max(abase, bbase), min(abase + alen, bbase + blen)
+        if anfang < ende:
+            asub, bsub = amatch + (anfang - abase), bmatch + (anfang - bbase)
+            sync.append((anfang, ende, asub, asub + ende - anfang, bsub, bsub + ende - anfang))
+        if abase + alen < bbase + blen:
+            ia += 1
+        else:
+            ib += 1
+    sync.append((len(z), len(z), len(x), len(x), len(y), len(y)))
+    aus: list[str] = []
+    iz = ia = ib = 0
+    for zanf, zend, aanf, aend, banf, bend in sync:
+        zt, xt, yt = z[iz:zanf], x[ia:aanf], y[ib:banf]
+        if xt == yt or yt == zt:
+            aus += xt
+        elif xt == zt:
+            aus += yt
+        else:
+            return None
+        aus += z[zanf:zend]
+        iz, ia, ib = zend, aend, bend
+    return "".join(aus)
+
+
+def konfliktname(pfad: str, jetzt: datetime, belegt: set[str]) -> str:
+    """`<stem> (Konflikt JJJJ-MM-TT HH-MM).<ext>` neben `pfad`; belegte Namen (ohne Gross-/Klein) zaehlen hoch."""
+    ordner, _, name = pfad.rpartition("/")
+    punkt = name.rfind(".")
+    stamm, endung = (name[:punkt], name[punkt:]) if punkt > 0 else (name, "")
+    belegt_cf = {b.casefold() for b in belegt}
+    n = 1
+    while True:
+        neu = f"{stamm} (Konflikt {jetzt:%Y-%m-%d %H-%M}){'' if n == 1 else f' {n}'}{endung}"
+        voll = f"{ordner}/{neu}" if ordner else neu
+        if voll.casefold() not in belegt_cf:
+            return voll
+        n += 1
+
+
+def zusammenfuehren_planen(
+    aktionen: list[Aktion], fassungen: dict[str, tuple[bytes, bytes, bytes]], belegt: set[str], jetzt: datetime
+) -> tuple[list[Aktion], dict[str, bytes], list[tuple[str, str]]]:
+    """Ersetzt fuer Pfade mit `fassungen` (Basis, PC, VM; alle Text) den Besitzer-gewinnt-Plan.
+
+    Sauber zusammengefuehrt: eine Aktion `zusammenfuehren` (Ergebnis auf beide Seiten), keine Sicherung.
+    Ueberlappung: der Besitzer-Plan bleibt, dazu `konflikt_daneben` mit der Nicht-Besitzer-Fassung unter
+    `konfliktname` auf beiden Seiten. Zurueck: Aktionen, zu schreibende Inhalte je Pfad, (Pfad, Konfliktname).
+    """
+    neu: list[Aktion] = []
+    inhalte: dict[str, bytes] = {}
+    konflikte: list[tuple[str, str]] = []
+    belegt = set(belegt)
+    erledigt: set[str] = set()
+    for a in aktionen:
+        if a.pfad not in fassungen:
+            neu.append(a)
+            continue
+        if a.pfad in erledigt:
+            continue
+        erledigt.add(a.pfad)
+        eigene = [x for x in aktionen if x.pfad == a.pfad]
+        basis, x_pc, x_vm = fassungen[a.pfad]
+        if not all(_ist_text(d) for d in (basis, x_pc, x_vm)):
+            neu += eigene
+            continue
+        ergebnis = _drei_wege(basis.decode("utf-8"), x_pc.decode("utf-8"), x_vm.decode("utf-8"))
+        if ergebnis is not None:
+            neu.append(Aktion("zusammenfuehren", a.pfad))
+            inhalte[a.pfad] = ergebnis.encode("utf-8")
+            continue
+        neu += eigene
+        k = konfliktname(a.pfad, jetzt, belegt)
+        belegt.add(k)
+        inhalte[k] = x_vm if besitzer(a.pfad) == "pc" else x_pc
+        neu.append(Aktion("konflikt_daneben", k))
+        konflikte.append((a.pfad, k))
+    return neu, inhalte, konflikte
 
 
 def loeschgrenze_pruefen(
@@ -502,8 +619,13 @@ def ausfuehren(
     stand_pc: Bestand | None = None,
     stand_vm: Bestand | None = None,
     heute: str | None = None,
+    inhalte: dict[str, bytes] | None = None,
 ) -> None:
-    """Fuehrt den Plan aus: Sichern (VM) -> Upload in den Eingang + Einsetzen -> Download -> Loeschen VM/PC.
+    """Fuehrt den Plan aus: Sichern (VM) -> Upload in den Eingang + Einsetzen -> Download -> PC-Schreiben
+    -> Loeschen VM/PC.
+
+    `zusammenfuehren`/`konflikt_daneben` schreiben `inhalte[pfad]` auf beide Seiten (gleiche sha-Pruefung:
+    zusammengefuehrt gegen den Bestand, Konfliktdateien nur, wenn der Name noch frei ist).
 
     Jeder Pfad hat hoechstens eine Kopier-/Loeschaktion, also wirkt `konflikt_sichern` immer vorher.
     Gelesen/geloescht wird unter dem Rohnamen der jeweiligen Seite, geschrieben unter dem Rohnamen der
@@ -515,6 +637,7 @@ def ausfuehren(
     """
     roh_pc, roh_vm = roh_pc or {}, roh_vm or {}
     stand_pc, stand_vm = stand_pc or {}, stand_vm or {}
+    inhalte = inhalte or {}
     datum = heute or date.today().isoformat()
 
     def soll(stand: Bestand, roh: Rohnamen, pfad: str, name: str) -> str | None:
@@ -526,6 +649,8 @@ def ausfuehren(
     runter: dict[str, str | None] = {}               # VM-Rohname -> erwarteter sha am PC unter dem Namen
     weg_vm: list[tuple[str, str | None, str]] = []   # (VM-Rohname, erwarteter sha, haengt an Schreibziel)
     weg_pc: list[tuple[str, str | None, str]] = []
+    hoch_inhalt: list[tuple[bytes, str, str | None]] = []  # (Inhalt, Name auf der VM, erwarteter sha dort)
+    pc_inhalt: list[tuple[str, bytes, str | None]] = []    # (PC-Name, Inhalt, erwarteter sha am PC)
     for a in aktionen:
         pc_name, vm_name = roh_pc.get(a.pfad, a.pfad), roh_vm.get(a.pfad, a.pfad)
         if a.art == "konflikt_sichern":
@@ -545,6 +670,12 @@ def ausfuehren(
             weg_vm.append((vm_name, _sha_von(stand_vm, a.pfad), ""))
         elif a.art == "loeschen_pc":
             weg_pc.append((pc_name, _sha_von(stand_pc, a.pfad), ""))
+        elif a.art == "zusammenfuehren":
+            hoch_inhalt.append((inhalte[a.pfad], vm_name, _sha_von(stand_vm, a.pfad)))
+            pc_inhalt.append((pc_name, inhalte[a.pfad], _sha_von(stand_pc, a.pfad)))
+        elif a.art == "konflikt_daneben":
+            hoch_inhalt.append((inhalte[a.pfad], a.pfad, None))
+            pc_inhalt.append((a.pfad, inhalte[a.pfad], None))
 
     abweichend: list[str] = []
     q = shlex.quote(vm_wurzel)
@@ -552,8 +683,14 @@ def ausfuehren(
     if ziele:
         _vm_python(ssh_ziel, _VM_SICHERN, {"wurzel": vm_wurzel, "ziele": ziele, "kopien": sichern_vm},
                    laeufer, TIMEOUT_UEBERTRAGUNG)
-    if hoch:
-        abweichend += hochladen([(pc_wurzel / q, z, s) for q, z, s in hoch], ssh_ziel, vm_wurzel, laeufer)
+    if hoch or hoch_inhalt:
+        with tempfile.TemporaryDirectory(prefix="wissens-spiegel-") as tmp:
+            quellen = [(pc_wurzel / q, z, s) for q, z, s in hoch]
+            for i, (daten, z, s) in enumerate(hoch_inhalt):
+                datei = Path(tmp) / f"{i}.dat"
+                datei.write_bytes(daten)
+                quellen.append((datei, z, s))
+            abweichend += hochladen(quellen, ssh_ziel, vm_wurzel, laeufer)
     if runter:
         daten = _ssh(
             ssh_ziel,
@@ -561,6 +698,11 @@ def ausfuehren(
             laeufer, eingabe="\0".join(runter).encode("utf-8"), timeout=TIMEOUT_UEBERTRAGUNG,
         )
         abweichend += _tar_entpacken(daten, pc_wurzel, runter)
+    for name, daten, erwartet in pc_inhalt:
+        if _datei_sha(pc_wurzel / name) != erwartet:
+            abweichend.append(name)
+            continue
+        _atomar_schreiben(pc_wurzel / name, daten)
     # Alte Rohnamen nur entfernen, wenn der neue Name auch geschrieben wurde
     weg_vm = [w for w in weg_vm if w[2] not in abweichend]
     weg_pc = [w for w in weg_pc if w[2] not in abweichend]
@@ -578,6 +720,143 @@ def ausfuehren(
         pfad.unlink()
     if abweichend:
         raise Abweichung(abweichend)
+
+
+BASIS = "basis"  # neben zuletzt.json: letzter gemeinsamer Inhalt jeder Textdatei (3-Wege-Basis)
+BASIS_MAX = 2_000_000  # Bytes; groessere Dateien bekommen keine Basis (Besitzer gewinnt)
+
+
+def _sha_bytes(daten: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(daten).hexdigest()
+
+
+def _basis_lesen(ordner: Path, pfad: str, soll: str) -> bytes | None:
+    """Basis eines Pfads, aber nur, wenn ihr sha zum Stand `zuletzt` passt (sonst veraltet: keine Basis)."""
+    try:
+        daten = (ordner / pfad).read_bytes()
+    except OSError:
+        return None
+    return daten if _sha_bytes(daten) == soll else None
+
+
+def basis_aktualisieren(
+    ordner: Path, stand: Bestand, pc_wurzel: Path, kandidaten: Callable[[str], list[str]], uebersprungen: set[str]
+) -> None:
+    """Haelt `<ordner>/<pfad>` = gemeinsamer Inhalt jeder Textdatei in `stand` (nach einem vollen Erfolg).
+
+    Gelesen wird die PC-Datei (nach dem Lauf gleich der VM) unter dem ersten Namen aus `kandidaten(pfad)`,
+    dessen sha zum Stand passt. Binaer/zu gross/uebersprungen: keine Basis. Basen fuer Pfade, die es nicht
+    mehr gibt, werden entfernt. Gueltig ist eine Basis nur mit passendem sha (`_basis_lesen`), daher ist ein
+    Abbruch mitten im Schreiben unschaedlich.
+    """
+    behalten: set[str] = set()
+    for pfad, eintrag in stand.items():
+        if pfad in uebersprungen:
+            continue
+        if _basis_lesen(ordner, pfad, eintrag.sha256) is not None:
+            behalten.add(pfad)
+            continue
+        daten = None
+        for name in kandidaten(pfad):
+            datei = pc_wurzel / name
+            try:
+                if datei.is_file() and datei.stat().st_size <= BASIS_MAX:
+                    roh = datei.read_bytes()
+                    if _sha_bytes(roh) == eintrag.sha256:
+                        daten = roh
+                        break
+            except OSError:
+                continue
+        if daten is not None and _ist_text(daten):
+            _atomar_schreiben(ordner / pfad, daten)
+            behalten.add(pfad)
+    if not ordner.is_dir():
+        return
+    for datei in sorted(ordner.rglob("*"), reverse=True):
+        rel = _nfc(datei.relative_to(ordner).as_posix())
+        if datei.is_dir():
+            try:
+                datei.rmdir()  # nur leere Ordner
+            except OSError:
+                pass
+        elif rel not in behalten:
+            datei.unlink(missing_ok=True)
+
+
+def _vm_inhalte(ssh_ziel: str, vm_wurzel: str, namen: list[str], laeufer: Laeufer) -> dict[str, bytes]:
+    """Inhalte der VM-Dateien `namen` (Rohnamen) per tar ueber ssh, Namen nur ueber stdin."""
+    daten = _ssh(
+        ssh_ziel,
+        [f"tar -C {shlex.quote(vm_wurzel)} -cf - --null --verbatim-files-from --no-recursion --hard-dereference -T -"],
+        laeufer, eingabe="\0".join(namen).encode("utf-8"), timeout=TIMEOUT_UEBERTRAGUNG,
+    )
+    aus: dict[str, bytes] = {}
+    with tarfile.open(fileobj=io.BytesIO(daten), mode="r:", encoding="utf-8") as tf:
+        for m in tf.getmembers():
+            quelle = tf.extractfile(m) if m.isfile() and m.name in namen else None
+            if quelle is not None:
+                aus[m.name] = quelle.read()
+    return aus
+
+
+def _zusammenfuehren(
+    aktionen: list[Aktion], pc: Bestand, vm: Bestand, zuletzt: Bestand, roh_pc: Rohnamen, roh_vm: Rohnamen,
+    pc_wurzel: Path, ssh_ziel: str, vm_wurzel: str, laeufer: Laeufer, basis_ordner: Path, jetzt: datetime,
+) -> tuple[list[Aktion], dict[str, bytes], list[tuple[str, str]], Bestand]:
+    """Sucht Pfade, die beide Seiten geaendert haben und fuer die es eine gueltige Text-Basis gibt, holt die
+    Fassungen (PC lokal, VM per tar) und plant mit `zusammenfuehren_planen`. Fassungen, deren sha nicht mehr
+    zum Bestand passt, bleiben beim Besitzer-Plan. Zurueck zusaetzlich die Stand-Eintraege nach Erfolg."""
+    zuletzt = _normalisiert(zuletzt)
+    kandidaten: dict[str, tuple[bytes, bytes]] = {}
+    for pfad in sorted({a.pfad for a in aktionen if a.art == "konflikt_sichern"}):
+        alt, x_pc, x_vm = zuletzt.get(pfad), pc.get(pfad), vm.get(pfad)
+        if alt is None or x_pc is None or x_vm is None:
+            continue
+        basis = _basis_lesen(basis_ordner, pfad, alt.sha256)
+        if basis is None:
+            continue
+        try:
+            daten = (pc_wurzel / roh_pc.get(pfad, pfad)).read_bytes()
+        except OSError:
+            continue
+        if _sha_bytes(daten) == x_pc.sha256 and _ist_text(daten):
+            kandidaten[pfad] = (basis, daten)
+    if not kandidaten:
+        return aktionen, {}, [], {}
+    vm_daten = _vm_inhalte(ssh_ziel, vm_wurzel, [roh_vm.get(p, p) for p in kandidaten], laeufer)
+    fassungen: dict[str, tuple[bytes, bytes, bytes]] = {}
+    for pfad, (basis, daten) in kandidaten.items():
+        gegen = vm_daten.get(roh_vm.get(pfad, pfad))
+        if gegen is not None and _sha_bytes(gegen) == vm[pfad].sha256:
+            fassungen[pfad] = (basis, daten, gegen)
+    neu, inhalte, konflikte = zusammenfuehren_planen(aktionen, fassungen, set(pc) | set(vm), jetzt)
+    zeit = time.time()
+    zusaetze = {p: Eintrag(_sha_bytes(d), zeit) for p, d in inhalte.items()}
+    return neu, inhalte, konflikte, zusaetze
+
+
+def telegram_melden(text: str) -> None:
+    """Schickt `text` ueber den Melder des aeusseren Repos (`scripts/notify_telegram.py`); wirft bei Fehler."""
+    root = Path(os.environ.get("VIBEMIND_ROOT") or "C:/Users/User/Desktop/Vibemind_V1")
+    kw: dict[str, Any] = {"capture_output": True, "timeout": 30, "check": True}
+    if os.name == "nt":
+        kw["creationflags"] = subprocess.CREATE_NO_WINDOW
+    subprocess.run([sys.executable, str(root / "scripts" / "notify_telegram.py"), text], **kw)
+
+
+_telegram_melden = telegram_melden  # Tests ersetzen diesen Namen
+
+
+def _konflikte_melden(pfade: list[str], melden: Callable[[str], None]) -> None:
+    """Hoechstens fuenf Pfade je Nachricht; Fehler nur ins Log (nur der Typ, nie die Ausgabe des Melders)."""
+    for i in range(0, len(pfade), 5):
+        text = f"Wissens-Spiegel: Konflikt in {', '.join(pfade[i:i + 5])} \u2013 beide Fassungen liegen nebeneinander."
+        try:
+            melden(text)
+        except Exception as exc:  # noqa: BLE001 - eine Meldung darf den Lauf nie scheitern lassen
+            log.warning("Meldung an Telegram gescheitert (%s)", type(exc).__name__)
 
 
 def zustand_lesen(pfad: Path) -> Bestand:
@@ -630,6 +909,7 @@ def lauf(
     trocken: bool = False,
     laeufer: Laeufer = subprocess.run,
     heute: str | None = None,
+    jetzt: datetime | None = None,
 ) -> int:
     """Ein Spiegellauf. Exit 0 ok (auch: anderer Lauf haelt die Sperre), 1 lokaler Fehler/PC-Ordner fehlt,
     2 VM nicht erreichbar/abgebrochen, 3 Loeschgrenze, 4 Ziel(e) waehrend des Laufs geaendert."""
@@ -641,7 +921,8 @@ def lauf(
         log.info("Wissens-Spiegel laeuft bereits (Sperre %s), dieser Lauf entfaellt", sperre)
         return 0
     try:
-        return _lauf_gesperrt(pc_wurzel, ssh_ziel, vm_wurzel, zustand, trocken, laeufer, heute)
+        return _lauf_gesperrt(pc_wurzel, ssh_ziel, vm_wurzel, zustand, trocken, laeufer, heute,
+                              jetzt or datetime.now())
     finally:
         _sperre_freigeben(sperre)
 
@@ -736,7 +1017,7 @@ def _sperre_freigeben(pfad: Path) -> None:
 
 def _lauf_gesperrt(
     pc_wurzel: Path, ssh_ziel: str, vm_wurzel: str, zustand: Path, trocken: bool, laeufer: Laeufer,
-    heute: str | None,
+    heute: str | None, jetzt: datetime,
 ) -> int:
     try:
         zuletzt = zustand_lesen(zustand)
@@ -768,6 +1049,13 @@ def _lauf_gesperrt(
     except ZuVieleLoeschungen as exc:
         log.error("Abbruch vor jeder Aenderung: %s", exc)
         return 3
+    basis_ordner = Path(zustand).parent / BASIS
+    try:
+        aktionen, inhalte, konflikte, zusaetze = _zusammenfuehren(
+            aktionen, pc, vm, zuletzt, roh_pc, roh_vm, pc_wurzel, ssh_ziel, vm_wurzel, laeufer, basis_ordner, jetzt)
+    except (VmFehler, tarfile.TarError) as exc:
+        log.error("VM-Fassungen nicht lesbar, nichts geaendert: %s", exc)
+        return 2
     for a in aktionen:
         log.info("%s%s %s", "[trocken] " if trocken else "", a.art, a.pfad)
     if trocken:
@@ -776,7 +1064,7 @@ def _lauf_gesperrt(
     if aktionen:
         try:
             ausfuehren(aktionen, pc_wurzel, ssh_ziel, vm_wurzel, laeufer, roh_pc=roh_pc, roh_vm=roh_vm,
-                       stand_pc=pc, stand_vm=vm, heute=heute)
+                       stand_pc=pc, stand_vm=vm, heute=heute, inhalte=inhalte)
         except Abweichung as exc:
             log.warning("Abgleich unvollstaendig, Zustand bleibt (naechster Lauf plant neu): %s", exc)
             return 4
@@ -786,9 +1074,19 @@ def _lauf_gesperrt(
         except OSError as exc:
             log.error("Abgleich abgebrochen (lokal), Zustand bleibt: %s: %s", type(exc).__name__, exc)
             return 1
-    neu = _stand_nach_abgleich(pc, vm, zuletzt, uebersprungen)
+    neu = _stand_nach_abgleich(pc, vm, zuletzt, uebersprungen) | zusaetze
+
+    def namen(pfad: str) -> list[str]:  # wo die Datei nach dem Lauf am PC liegt
+        return list(dict.fromkeys([roh_pc.get(pfad, pfad), roh_vm.get(pfad, pfad), pfad]))
+
+    try:
+        basis_aktualisieren(basis_ordner, neu, pc_wurzel, namen, uebersprungen)
+    except OSError as exc:  # Basis ist Hilfsmittel: ohne sie gilt Besitzer gewinnt
+        log.warning("Basis nicht aktualisiert (%s)", type(exc).__name__)
     zustand_schreiben(zustand, neu)
     log.info("Abgleich fertig: %d Aktionen, %d Dateien im Stand", len(aktionen), len(neu))
+    if konflikte:
+        _konflikte_melden([p for p, _ in konflikte], _telegram_melden)
     return 0
 
 
