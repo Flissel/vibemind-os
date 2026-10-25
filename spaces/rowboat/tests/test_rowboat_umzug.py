@@ -160,7 +160,13 @@ def test_config_anpassen(tmp_path):
     assert quellen["sources"][1]["enabled"] is True
     assert quellen["sources"][1]["artifactDir"] == "knowledge/Meetings/fireflies"  # Linux-Pfad auf der VM
     assert json.loads((cfg / "server.json").read_text(encoding="utf-8")) == {"lanEnabled": True, "port": 3220}
-    assert (cfg / "models.json").read_text(encoding="utf-8") == modelle  # unveraendert
+    m = json.loads((cfg / "models.json").read_text(encoding="utf-8"))
+    assert API not in (cfg / "models.json").read_text(encoding="utf-8")
+    assert m == {"version": 2, "providers": {  # nur die Schluessel leer, sonst unveraendert
+        "openai": {"flavor": "openai", "apiKey": ""},
+        "openai-compatible": {"flavor": "openai-compatible", "baseURL": "http://127.0.0.1:8121/v1"},
+        "fern": {"flavor": "openai-compatible", "baseURL": "https://api.example.com/v1"},
+    }, "deferBackgroundTasks": True}
 
 
 def test_config_anpassen_entfernt_shell_und_datei_mcp(tmp_path):
@@ -257,6 +263,19 @@ def test_trocken_uebertraegt_nichts(umgebung, caplog):
     assert "Trockenlauf" in caplog.text and "knowledge" in caplog.text
 
 
+def test_umzug_nimmt_keine_api_schluessel_mit(umgebung):
+    pc, vm, zustand = umgebung
+    vorher = (pc / "config/models.json").read_bytes()
+    assert ru.umzug(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), pid_lebt=kein_pid) == 0
+    kopie = (vm / "config/models.json").read_text(encoding="utf-8")
+    assert API not in kopie
+    anbieter = json.loads(kopie)["providers"]
+    assert {n: x["apiKey"] for n, x in anbieter.items()} == {"openai": "", "openai-compatible": ""}
+    assert anbieter["openai-compatible"]["baseURL"] == "http://127.0.0.1:8121/v1"
+    assert json.loads(kopie)["assistantModel"] == {"provider": "openai-compatible", "model": "claude-code-sonnet"}
+    assert (pc / "config/models.json").read_bytes() == vorher  # PC-Original byte-gleich
+
+
 def test_umzug_uebertraegt_passt_config_an_und_schreibt_zustand(umgebung):
     pc, vm, zustand = umgebung
     vorher_pc = dateien(pc)
@@ -266,7 +285,7 @@ def test_umzug_uebertraegt_passt_config_an_und_schreibt_zustand(umgebung):
     erwartet = rel(pc, ru.auswahl(pc))
     assert set(auf_vm) == erwartet
     for name in erwartet - {"config/channels.json", "config/knowledge_sources.json", "config/server.json",
-                            "config/mcp.json"}:
+                            "config/mcp.json", "config/models.json"}:
         assert auf_vm[name] == (pc / name).read_bytes(), name
     assert json.loads(auf_vm["config/server.json"]) == {"lanEnabled": True, "port": 3220}
     tg = json.loads(auf_vm["config/channels.json"])["telegram"]

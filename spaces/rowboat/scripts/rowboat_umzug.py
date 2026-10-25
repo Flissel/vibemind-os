@@ -158,8 +158,9 @@ def config_anpassen(config_ordner: Path) -> None:
 
     `channels.json`: Telegram aus und ohne Bot-Schluessel (der neue Bot kommt in Task 7), WhatsApp aus.
     `knowledge_sources.json`: Quelle `gmail` aus (Eintrag notfalls anlegen), andere bleiben; Windows-Pfade in
-    `artifactDir` werden zu `/`. `server.json`: LAN an, Port 3220. `models.json`: bleibt, aber jeder lokale
-    Anbieter muss auf :8121 zeigen, sonst `ConfigFehler`. `mcp.json` (nur wenn vorhanden): ohne
+    `artifactDir` werden zu `/`. `server.json`: LAN an, Port 3220. `models.json`: jeder lokale Anbieter
+    muss auf :8121 zeigen, sonst `ConfigFehler`; jedes `apiKey` wird leer (Schluessel ziehen nicht mit).
+    `mcp.json` (nur wenn vorhanden): ohne
     `MCP_NICHT_AUF_DER_VM`.
     """
     config_ordner = Path(config_ordner)
@@ -190,6 +191,14 @@ def config_anpassen(config_ordner: Path) -> None:
     _json_schreiben(config_ordner / "knowledge_sources.json", quellen)
 
     _json_schreiben(config_ordner / "server.json", dict(SERVER))
+
+    modelle = _json_lesen(config_ordner / "models.json", None)
+    if isinstance(modelle, dict) and isinstance(modelle.get("providers"), dict):
+        # Schluessel ziehen nicht mit (Quelle spaeter der Tresor); ein Anbieter ohne Schluessel ist dann tot
+        for eintrag in modelle["providers"].values():
+            if isinstance(eintrag, dict) and "apiKey" in eintrag:
+                eintrag["apiKey"] = ""
+        _json_schreiben(config_ordner / "models.json", modelle)
 
     if (config_ordner / "mcp.json").exists():
         mcp = _json_lesen(config_ordner / "mcp.json", None)

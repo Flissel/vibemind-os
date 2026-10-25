@@ -125,7 +125,9 @@ Kurzformen: **PC** = Windows-Rechner mit `~/.rowboat`, **VM** = `offload-vm` (Mi
   5 min) auch auf dem PC. Ausnahme: Hat der PC dieselbe Datei im selben 5-Minuten-Fenster ebenfalls
   geaendert, gewinnt die PC-Fassung, und die VM-Fassung landet in `knowledge/_konflikte/<datum>/` auf
   der VM. Loeschen wirkt nur vom Besitzer aus; eine auf der VM geloeschte PC-Notiz kommt zurueck.
-- Der **OpenAI-Key** reist in `config/models.json` mit auf die VM (0600).
+- Der **OpenAI-Schluessel zieht NICHT mit** (`apiKey` in der `config/models.json`-Kopie leer), Quelle
+  spaeter der Tresor. Bis dahin sind Anbieter, die ihn brauchen (z. B. `imageModel` auf openai), auf der
+  VM nicht nutzbar.
 - **Chats** aus `storage/` enthalten Windows-Pfade. Auf der VM fuehren diese Pfade ins Leere.
 - **Nicht umgezogen:** `knowledge_graph_state.json`, `note_tagging_state.json`,
   `agent_notes_state.json`, `vibemind/`, `vibemind_sync/`, `mcp-servers/`, `scripts/`, `pre-built/`,
