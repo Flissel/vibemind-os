@@ -205,7 +205,8 @@ def _anwenden(pfad: str, pc, vm, plan: list[Aktion]):
     return pc, vm, gesichert
 
 
-@pytest.mark.parametrize("pfad", ["Projects/p.md", "Notes/n.md"])
+@pytest.mark.parametrize("pfad", ["Projects/p.md", "Notes/n.md", "Projects/a (Konflikt 2026-10-25 14-03).md",
+                                  "Notes/n (Konflikt 2026-10-25 14-03 2).md"])
 def test_fallstabelle_verliert_keine_aenderung(pfad):
     """Alle Kombinationen (fehlt/A/B/C) x pc/vm/zuletzt: jede geaenderte Fassung, die ueberschrieben oder
     geloescht wird, ist danach auf beiden Seiten oder in `_konflikte/` gesichert; die Seiten sind gleich,
@@ -929,7 +930,8 @@ def test_ueberlappende_aenderung_legt_konfliktdatei_daneben(seiten, meldungen, p
         assert (seite / pfad).read_text(encoding="utf-8") == sieger
         assert (seite / k).read_text(encoding="utf-8") == verlierer
     assert (vm / "_konflikte" / HEUTE / pfad).read_text(encoding="utf-8") == verlierer
-    assert meldungen == [f"Wissens-Spiegel: Konflikt in {pfad} – beide Fassungen liegen nebeneinander."]
+    assert meldungen == [f"Wissens-Spiegel: Konflikt in {pfad} (Konfliktdatei: {k}) – beide Fassungen liegen "
+                         "nebeneinander."]
     stand = ws.zustand_lesen(zustand)
     assert stand[k].sha256 == sha(verlierer) and stand[pfad].sha256 == sha(sieger)
     fake = FakeVm()  # Folgelauf: alles gleich, keine weitere Meldung
@@ -987,10 +989,9 @@ def test_meldung_scheitert_aendert_exit_nicht(seiten, monkeypatch, caplog):
 
 
 def test_meldung_hoechstens_fuenf_pfade():
-    gesendet: list[str] = []
-    ws._konflikte_melden([f"Projects/{i}.md" for i in range(7)], gesendet.append)
-    assert len(gesendet) == 2
-    assert gesendet[0].count("Projects/") == 5 and gesendet[1].count("Projects/") == 2
+    texte = ws._meldungstexte([(f"Projects/{i}.md", f"Projects/{i} (Konflikt x).md") for i in range(7)])
+    assert len(texte) == 2
+    assert texte[0].count("Konfliktdatei:") == 5 and texte[1].count("Konfliktdatei:") == 2
 
 
 def test_telegram_melden_ruft_den_melder_mit_der_nachricht(monkeypatch, tmp_path):
@@ -1022,3 +1023,144 @@ def test_zusammenfuehren_prueft_stand_vor_dem_schreiben(seiten):
     assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(vor_aufruf=spaet), heute=HEUTE, jetzt=JETZT) == 4
     assert (pc / "Projects/p.md").read_text(encoding="utf-8") == "pc-spaet\n"
     assert zustand.read_bytes() == vorher
+
+
+# --- Folgerunde: Konfliktdateien loeschbar, Tagesgrenze, offene Meldungen, Grenzen, Basis robust ----------
+
+
+def test_konfliktdatei_erbt_den_besitzer_des_originals():
+    assert ws.besitzer("People/User (user) (Konflikt 2026-10-25 14-03).md") == "pc"
+    assert ws.besitzer("People/Max (Konflikt 2026-10-25 14-03).md") == "vm"
+    assert ws.besitzer("Projects/a (Konflikt 2026-10-25 14-03 2).md") == "pc"
+    assert ws.besitzer("Notes/n (Konflikt 2026-10-25 14-03)") == "vm"
+    assert ws.besitzer(".bubble_sync_hashes (Konflikt 2026-10-25 14-03).json") == "pc"
+    assert ws.ist_konfliktdatei("Notes/n (Konflikt 2026-10-25 14-03).md")
+    assert not ws.ist_konfliktdatei("Notes/n (Konflikt).md")
+
+
+def test_konfliktdatei_darf_auf_beiden_seiten_geloescht_werden():
+    k = {"Projects/a (Konflikt 2026-10-25 14-03).md": e("A")}  # PC-Besitz
+    assert ws.abgleich_planen(k, {}, k) == [Aktion("loeschen_pc", "Projects/a (Konflikt 2026-10-25 14-03).md")]  # VM loescht
+    assert ws.abgleich_planen({}, k, k) == [Aktion("loeschen_vm", "Projects/a (Konflikt 2026-10-25 14-03).md")]  # PC loescht
+    # inzwischen geaendert: nichts geht verloren, die Aenderung wird zurueckgespielt bzw. gesichert
+    assert ws.abgleich_planen({"Projects/a (Konflikt 2026-10-25 14-03).md": e("B")}, {}, k) == [Aktion("nach_vm", "Projects/a (Konflikt 2026-10-25 14-03).md")]
+    n = {"Notes/n (Konflikt 2026-10-25 14-03).md": e("A")}  # VM-Besitz, PC loescht
+    assert ws.abgleich_planen({}, n, n) == [Aktion("loeschen_vm", "Notes/n (Konflikt 2026-10-25 14-03).md")]
+
+
+def test_konfliktdatei_loeschen_am_lauf(seiten, meldungen):
+    pc, vm, zustand = seiten
+    _unveraendert(pc, vm)
+    _gemeinsamer_start(pc, vm, zustand, "Projects/p.md")
+    schreibe(pc, "Projects/p.md", TEXT.replace("Zeile 3\n", "PC\n"))
+    schreibe(vm, "Projects/p.md", TEXT.replace("Zeile 3\n", "VM\n"))
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE, jetzt=JETZT) == 0
+    k = "Projects/p (Konflikt 2026-10-25 14-03).md"
+    (vm / k).unlink()  # Nicht-Besitzer raeumt die Konfliktdatei weg
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE, jetzt=JETZT) == 0
+    assert not (pc / k).exists() and not (vm / k).exists()
+
+
+def test_hoechstens_eine_konfliktdatei_je_pfad_und_tag(seiten, meldungen):
+    pc, vm, zustand = seiten
+    _gemeinsamer_start(pc, vm, zustand, "Projects/p.md")
+    schreibe(pc, "Projects/p.md", TEXT.replace("Zeile 3\n", "PC\n"))
+    schreibe(vm, "Projects/p.md", TEXT.replace("Zeile 3\n", "VM\n"))
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE, jetzt=JETZT) == 0
+    schreibe(pc, "Projects/p.md", TEXT.replace("Zeile 3\n", "PC 2\n"))
+    schreibe(vm, "Projects/p.md", TEXT.replace("Zeile 3\n", "VM 2\n"))
+    spaeter = datetime(2026, 10, 25, 18, 30)
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE, jetzt=spaeter) == 0
+    assert [n for n in dateien(pc) if "Konflikt" in n] == ["Projects/p (Konflikt 2026-10-25 14-03).md"]
+    assert len(meldungen) == 1
+    assert (vm / "Projects/p.md").read_text(encoding="utf-8") == TEXT.replace("Zeile 3\n", "PC 2\n")
+    k = vm / "_konflikte" / HEUTE
+    assert (k / "Projects/p.md").read_text(encoding="utf-8") == TEXT.replace("Zeile 3\n", "VM 2\n")
+    assert (k / "Projects/p.md.1").read_text(encoding="utf-8") == TEXT.replace("Zeile 3\n", "VM\n")
+
+
+def test_offene_meldung_wird_nach_dem_naechsten_erfolg_gesendet(seiten, monkeypatch):
+    pc, vm, zustand = seiten
+    gesendet: list[str] = []
+    kaputt = {"an": True}
+
+    def melden(text):
+        if kaputt["an"]:
+            raise OSError("netz weg")
+        gesendet.append(text)
+
+    monkeypatch.setattr(ws, "_telegram_melden", melden)
+    _gemeinsamer_start(pc, vm, zustand, "Projects/p.md")
+    schreibe(pc, "Projects/p.md", TEXT.replace("Zeile 3\n", "PC\n"))
+    schreibe(vm, "Projects/p.md", TEXT.replace("Zeile 3\n", "VM\n"))
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE, jetzt=JETZT) == 0
+    offen = zustand.parent / ws.MELDUNGEN_OFFEN
+    assert offen.exists() and gesendet == []
+    kaputt["an"] = False
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE, jetzt=JETZT) == 0
+    assert len(gesendet) == 1 and "Projects/p.md" in gesendet[0]
+    assert not offen.exists()
+
+
+def test_grosse_datei_wird_nicht_zusammengefuehrt(seiten, meldungen):
+    pc, vm, zustand = seiten
+    viele = "".join(f"Zeile {i}\n" for i in range(6000))  # > 5000 Zeilen
+    _gemeinsamer_start(pc, vm, zustand, "Projects/gross.md", viele)
+    schreibe(pc, "Projects/gross.md", viele.replace("Zeile 1\n", "PC\n"))
+    schreibe(vm, "Projects/gross.md", viele.replace("Zeile 5000\n", "VM\n"))
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE, jetzt=JETZT) == 0
+    assert (vm / "Projects/gross.md").read_text(encoding="utf-8") == viele.replace("Zeile 1\n", "PC\n")
+    assert (vm / "_konflikte" / HEUTE / "Projects/gross.md").exists()
+    assert not any("Konflikt" in n for n in dateien(pc)) and meldungen == []
+
+
+def test_zu_viele_bytes_werden_nicht_zusammengefuehrt():
+    gross = ("x" * 1000 + "\n").encode() * 300  # ~300 KB, nur 300 Zeilen
+    plan = [Aktion("konflikt_sichern", "Projects/g.md"), Aktion("nach_vm", "Projects/g.md")]
+    neu, inhalte, konflikte = ws.zusammenfuehren_planen(
+        plan, {"Projects/g.md": (gross, b"a\n" + gross, gross + b"b\n")}, set(), JETZT)
+    assert neu == plan and inhalte == {} and konflikte == []
+
+
+def test_json_wird_nicht_zusammengefuehrt(seiten, meldungen):
+    pc, vm, zustand = seiten
+    alt = '{\n"a": 1,\n"b": 2,\n"c": 3,\n"d": 4\n}\n'
+    _gemeinsamer_start(pc, vm, zustand, "Projects/x.json", alt)
+    schreibe(pc, "Projects/x.json", alt.replace('"a": 1', '"a": 9'))
+    schreibe(vm, "Projects/x.json", alt.replace('"d": 4', '"d": 9'))
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE, jetzt=JETZT) == 0
+    assert (vm / "Projects/x.json").read_text(encoding="utf-8") == alt.replace('"a": 1', '"a": 9')
+    assert (vm / "_konflikte" / HEUTE / "Projects/x.json").exists()
+    assert meldungen == []
+
+
+def test_basis_aktualisieren_raeumt_zuerst_auf_und_ist_robust(tmp_path, monkeypatch):
+    pc, basis = tmp_path / "pc", tmp_path / "basis"
+    for name, inhalt in (("Projects/a.md", "a\n"), ("Projects/b.md", "b\n")):
+        schreibe(pc, name, inhalt)
+    schreibe(basis, "Projects/weg.md", "alt\n")   # Pfad gibt es nicht mehr
+    schreibe(basis, "projects/B.md", "b\n")        # gleiche Datei unter anderer Schreibweise
+    stand = {"Projects/a.md": e(sha("a\n")), "Projects/b.md": e(sha("b\n"))}
+    echt = ws._atomar_schreiben
+
+    def zickig(ziel, daten):
+        if ziel.name == "a.md":
+            raise PermissionError("gesperrt")
+        echt(ziel, daten)
+
+    monkeypatch.setattr(ws, "_atomar_schreiben", zickig)
+    ws.basis_aktualisieren(basis, stand, pc, lambda p: [p], set())  # wirft nicht
+    assert not (basis / "Projects/weg.md").exists()
+    assert (basis / "projects/B.md").exists()  # Gross-/Kleinschreibung: nicht als veraltet geloescht
+    assert (basis / "Projects/b.md").read_text() == "b\n"
+    assert not (basis / "Projects/a.md").exists()
+
+
+def test_lange_pfade():
+    assert not ws._windows_tauglich("Notes/" + "x" * 240 + ".md")
+    assert ws._windows_tauglich("Notes/" + "x" * 200 + ".md")
+    lang = "Projects/" + "y" * 228 + ".md"  # 240 Zeichen
+    assert ws._windows_tauglich(lang)
+    k = ws.konfliktname(lang, JETZT, set())
+    assert len(k) <= 240 and ws._windows_tauglich(k) and k.endswith(" (Konflikt 2026-10-25 14-03).md")
+    assert ws.ist_konfliktdatei(k) and ws.besitzer(k) == "pc"

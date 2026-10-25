@@ -129,12 +129,40 @@ def _json_schreiben(pfad: Path, daten: Any) -> None:
     os.replace(tmp, pfad)
 
 
+GEHEIMER_SCHLUESSEL = re.compile(r"api[_-]?key|token|secret|authorization", re.IGNORECASE)
+
+
+def _alle_texte_leeren(wert: Any) -> Any:
+    if isinstance(wert, str):
+        return ""
+    if isinstance(wert, dict):
+        return {k: _alle_texte_leeren(v) for k, v in wert.items()}
+    if isinstance(wert, list):
+        return [_alle_texte_leeren(v) for v in wert]
+    return wert  # Zahlen/Wahrheitswerte sind keine Schluessel (z. B. maxTokens)
+
+
+def _geheimnisse_leeren(wert: Any) -> Any:
+    """Leert rekursiv jeden Text unter einem Schluessel wie apiKey/api-key/token/secret/authorization."""
+    if isinstance(wert, dict):
+        return {k: _alle_texte_leeren(v) if GEHEIMER_SCHLUESSEL.search(str(k)) else _geheimnisse_leeren(v)
+                for k, v in wert.items()}
+    if isinstance(wert, list):
+        return [_geheimnisse_leeren(v) for v in wert]
+    return wert
+
+
 def _modelle_pruefen(config_ordner: Path) -> None:
     modelle = _json_lesen(config_ordner / "models.json", None)
     if modelle is None:
         log.warning("config/models.json fehlt - Rowboat auf der VM hat dann kein Modell")
         return
-    anbieter = modelle.get("providers") if isinstance(modelle, dict) else None
+    if not isinstance(modelle, dict) or not isinstance(modelle.get("providers", {}), dict):
+        raise ConfigFehler(
+            "models.json: unbekannter Aufbau ('providers' muss ein Objekt sein). Umzug abgebrochen, damit keine "
+            "Schluessel unerkannt mitreisen - bitte models.json am PC pruefen."
+        )
+    anbieter = modelle.get("providers")
     for name, eintrag in (anbieter or {}).items():
         url = eintrag.get("baseURL") if isinstance(eintrag, dict) else None
         if not isinstance(url, str) or not url:
@@ -159,7 +187,8 @@ def config_anpassen(config_ordner: Path) -> None:
     `channels.json`: Telegram aus und ohne Bot-Schluessel (der neue Bot kommt in Task 7), WhatsApp aus.
     `knowledge_sources.json`: Quelle `gmail` aus (Eintrag notfalls anlegen), andere bleiben; Windows-Pfade in
     `artifactDir` werden zu `/`. `server.json`: LAN an, Port 3220. `models.json`: jeder lokale Anbieter
-    muss auf :8121 zeigen, sonst `ConfigFehler`; jedes `apiKey` wird leer (Schluessel ziehen nicht mit).
+    muss auf :8121 zeigen, sonst `ConfigFehler`; jeder Text unter apiKey/token/secret/authorization
+    wird rekursiv leer (Schluessel ziehen nicht mit), unbekannter `providers`-Aufbau -> `ConfigFehler`.
     `mcp.json` (nur wenn vorhanden): ohne
     `MCP_NICHT_AUF_DER_VM`.
     """
@@ -193,12 +222,9 @@ def config_anpassen(config_ordner: Path) -> None:
     _json_schreiben(config_ordner / "server.json", dict(SERVER))
 
     modelle = _json_lesen(config_ordner / "models.json", None)
-    if isinstance(modelle, dict) and isinstance(modelle.get("providers"), dict):
+    if modelle is not None:
         # Schluessel ziehen nicht mit (Quelle spaeter der Tresor); ein Anbieter ohne Schluessel ist dann tot
-        for eintrag in modelle["providers"].values():
-            if isinstance(eintrag, dict) and "apiKey" in eintrag:
-                eintrag["apiKey"] = ""
-        _json_schreiben(config_ordner / "models.json", modelle)
+        _json_schreiben(config_ordner / "models.json", _geheimnisse_leeren(modelle))
 
     if (config_ordner / "mcp.json").exists():
         mcp = _json_lesen(config_ordner / "mcp.json", None)
@@ -410,7 +436,10 @@ def _umzug_gesperrt(
     wissen = [[name[len("knowledge/"):], soll[name], quelle.stat().st_mtime]
               for quelle, name in quellen
               if name.startswith("knowledge/") and not ws._ausgenommen(name[len("knowledge/"):])]
-    bestand, _ = ws._bestand_aus(wissen, "pc", [])
+    bestand, roh = ws._bestand_aus(wissen, "pc", [])
+    # Basis fuer das 3-Wege-Zusammenfuehren des Spiegels: der uebertragene Stand, direkt vor zuletzt.json
+    ws.basis_aktualisieren(Path(zustand).parent / ws.BASIS, bestand, pc_wurzel / "knowledge",
+                           lambda p: [roh.get(p, p)], set())
     ws.zustand_schreiben(zustand, bestand)
     log.info("Umzug fertig: %d Dateien, %d im Spiegel-Zustand %s", len(quellen), len(bestand), zustand)
     return 0

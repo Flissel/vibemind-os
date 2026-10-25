@@ -419,3 +419,40 @@ def test_main_vorgaben(monkeypatch, tmp_path):
     assert gesehen == {"pc": Path.home() / ".rowboat", "ssh": "offload-vm", "vm": "/home/debian/rowboat-data",
                        "zustand": tmp_path / "VibeMind" / "wissens_spiegel" / "zuletzt.json", "trocken": True}
     assert ws.zustand_standard() == gesehen["zustand"]
+
+
+def test_umzug_legt_die_basis_des_spiegels_an(umgebung):
+    pc, vm, zustand = umgebung
+    assert ru.umzug(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), pid_lebt=kein_pid) == 0
+    basis = zustand.parent / ws.BASIS
+    assert (basis / "Notes/Einkauf.md").read_bytes() == (pc / "knowledge/Notes/Einkauf.md").read_bytes()
+    stand = ws.zustand_lesen(zustand)
+    assert ws._basis_lesen(basis, "Notes/Einkauf.md", stand["Notes/Einkauf.md"].sha256) is not None
+    assert not (basis / ".git").exists()
+
+
+def test_models_geheimnisse_werden_rekursiv_geleert(tmp_path):
+    cfg = tmp_path / "config"
+    schreibe(cfg, "models.json", json.dumps({
+        "providers": {"p": {"apiKey": API, "maxTokens": 4096, "flavor": "openai",
+                            "headers": {"Authorization": "Bearer " + API, "X-Api-Key": API},
+                            "optionen": [{"client_secret": API, "name": "bleibt"}]}},
+        "access_token": API, "api-key": {"wert": API, "zahl": 3},
+    }))
+    ru.config_anpassen(cfg)
+    text = (cfg / "models.json").read_text(encoding="utf-8")
+    assert API not in text
+    m = json.loads(text)
+    p = m["providers"]["p"]
+    assert p["maxTokens"] == 4096 and p["flavor"] == "openai" and p["optionen"][0]["name"] == "bleibt"
+    assert p["headers"] == {"Authorization": "", "X-Api-Key": ""} and m["access_token"] == ""
+    assert m["api-key"] == {"wert": "", "zahl": 3}
+
+
+@pytest.mark.parametrize("modelle", [{"providers": [{"apiKey": "x"}]}, {"providers": "x"}, ["x"]])
+def test_models_unbekannter_aufbau_bricht_ab(tmp_path, modelle):
+    cfg = tmp_path / "config"
+    schreibe(cfg, "models.json", json.dumps(modelle))
+    with pytest.raises(ru.ConfigFehler) as info:
+        ru.config_anpassen(cfg)
+    assert "models.json" in str(info.value)

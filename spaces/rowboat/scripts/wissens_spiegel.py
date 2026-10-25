@@ -24,8 +24,13 @@ Regeln (Besitzer-Tabelle im Plan 2026-10-24-rowboat-zentrale-teil-a-mini-pc):
   -> `zusammenfuehren` schreibt das Ergebnis auf beide Seiten, keine Sicherung. Ueberlappend -> Besitzer
   gewinnt wie oben, dazu legt `konflikt_daneben` die Nicht-Besitzer-Fassung als
   `<stem> (Konflikt JJJJ-MM-TT HH-MM).<ext>` (Ortszeit) auf beiden Seiten neben die Datei, und nach dem
-  Lauf geht eine Telegram-Meldung ueber `scripts/notify_telegram.py` des aeusseren Repos raus (Fehler nur
-  ins Log). Ohne Basis oder bei Binaerdateien bleibt es bei Besitzer gewinnt.
+  Lauf geht eine Telegram-Meldung ueber `scripts/notify_telegram.py` des aeusseren Repos raus (scheitert
+  sie, bleibt sie in `meldungen_offen.json` und geht nach dem naechsten Erfolg raus). Hoechstens eine
+  Konfliktdatei (und Meldung) je Pfad und Tag. Ohne Basis, bei Binaer-/`.json`-Dateien und ueber
+  `MERGE_MAX_BYTES`/`MERGE_MAX_ZEILEN` bleibt es bei Besitzer gewinnt. Die Basis legt auch der Umzug an.
+- Konfliktdateien gehoeren dem Besitzer ihres Originals, duerfen aber auf JEDER Seite geloescht werden
+  (das Loeschen wandert mit, solange die andere Seite sie nicht geaendert hat).
+- Pfade ueber `MAX_PFAD` (240) Zeichen werden nicht abgeglichen; Konfliktnamen kuerzen den Stamm.
 - Eine neue Datei auf nur einer Seite wird auf die andere kopiert.
 - Loeschen wirkt nur vom Besitzer aus; hat der Nicht-Besitzer die Datei inzwischen geaendert, wird seine
   Fassung vor dem Loeschen gesichert. Fehlt die Datei beim Nicht-Besitzer, wird sie zurueckgespielt.
@@ -44,6 +49,7 @@ import json
 import logging
 import logging.handlers
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -99,8 +105,30 @@ def _nfc(pfad: str) -> str:
     return unicodedata.normalize("NFC", pfad)
 
 
+MAX_PFAD = 240  # Zeichen relativ zu knowledge/; darueber wird am PC nichts angelegt (MAX_PATH-Reserve)
+_KONFLIKT = re.compile(
+    r"^(?P<stamm>.+) \(Konflikt (?P<datum>\d{4}-\d{2}-\d{2}) \d{2}-\d{2}(?: \d+)?\)(?P<endung>(?:\.[^.]*)?)$"
+)
+
+
+def _konflikt_teile(pfad: str) -> tuple[str, str, str, str] | None:
+    """(Ordner, Stamm, Datum, Endung) einer Konfliktdatei `<stem> (Konflikt JJJJ-MM-TT HH-MM[ N]).<ext>`."""
+    ordner, _, name = pfad.rpartition("/")
+    m = _KONFLIKT.match(name)
+    return None if m is None else (ordner, m["stamm"], m["datum"], m["endung"])
+
+
+def ist_konfliktdatei(pfad: str) -> bool:
+    return _konflikt_teile(_nfc(pfad)) is not None
+
+
 def besitzer(pfad: str) -> Seite:
-    """Besitzer eines Pfads (relativ zu `knowledge/`, POSIX)."""
+    """Besitzer eines Pfads (relativ zu `knowledge/`, POSIX). Eine Konfliktdatei gehoert dem Besitzer ihres
+    Originals (`People/User (user) (Konflikt ...).md` -> wie `People/User (user).md`)."""
+    k = _konflikt_teile(_nfc(pfad))
+    if k is not None:
+        ordner, stamm, _, endung = k
+        return besitzer(f"{ordner}/{stamm}{endung}" if ordner else f"{stamm}{endung}")
     teile = _nfc(pfad).split("/")
     if teile[0] == "companys":
         if len(teile) >= 4 and teile[2] in VM_FIRMENORDNER:
@@ -161,6 +189,7 @@ def _entscheiden(
     zum_nicht: ArtT = "nach_vm" if eigner == "pc" else "nach_pc"
     zum_eigner: ArtT = "nach_pc" if eigner == "pc" else "nach_vm"
     loeschen_nicht: ArtT = "loeschen_vm" if eigner == "pc" else "loeschen_pc"
+    loeschen_eigner: ArtT = "loeschen_pc" if eigner == "pc" else "loeschen_vm"
 
     def sha(x: Eintrag | None) -> str | None:
         return None if x is None else x.sha256
@@ -172,6 +201,8 @@ def _entscheiden(
             return [zum_eigner], gegen
         # Besitzer hat geloescht; eine Aenderung des Nicht-Besitzers vorher sichern
         return (["konflikt_sichern"] if sha(gegen) != sha(alt) else []) + [loeschen_nicht], None
+    if gegen is None and alt is not None and sha(hat) == sha(alt) and ist_konfliktdatei(pfad):
+        return [loeschen_eigner], None  # Konfliktdateien darf jede Seite wegraeumen
     if gegen is None:  # neu beim Besitzer, oder Nicht-Besitzer hat geloescht: zurueckspielen
         return [zum_nicht], hat
     if alt is not None and sha(hat) == sha(alt):  # nur der Nicht-Besitzer hat geaendert
@@ -246,19 +277,56 @@ def _drei_wege(basis: str, a: str, b: str) -> str | None:
     return "".join(aus)
 
 
-def konfliktname(pfad: str, jetzt: datetime, belegt: set[str]) -> str:
-    """`<stem> (Konflikt JJJJ-MM-TT HH-MM).<ext>` neben `pfad`; belegte Namen (ohne Gross-/Klein) zaehlen hoch."""
+def _konflikt_stamm(pfad: str, zusatz: str) -> tuple[str, str, str]:
+    """(Ordner, Stamm, Endung) fuer den Konfliktnamen; der Stamm wird gekuerzt, damit der ganze Pfad mit
+    `zusatz` (` (Konflikt ...)`) hoechstens `MAX_PFAD` Zeichen hat."""
     ordner, _, name = pfad.rpartition("/")
     punkt = name.rfind(".")
     stamm, endung = (name[:punkt], name[punkt:]) if punkt > 0 else (name, "")
+    platz = MAX_PFAD - (len(ordner) + 1 if ordner else 0) - len(zusatz) - len(endung)
+    if len(stamm) > platz:
+        stamm = stamm[:max(platz, 1)].rstrip(" .") or "_"
+    return ordner, stamm, endung
+
+
+def konfliktname(pfad: str, jetzt: datetime, belegt: set[str]) -> str:
+    """`<stem> (Konflikt JJJJ-MM-TT HH-MM).<ext>` neben `pfad`; belegte Namen (ohne Gross-/Klein) zaehlen hoch.
+    Lange Staemme werden gekuerzt, der Pfad bleibt <= `MAX_PFAD`."""
     belegt_cf = {b.casefold() for b in belegt}
     n = 1
     while True:
-        neu = f"{stamm} (Konflikt {jetzt:%Y-%m-%d %H-%M}){'' if n == 1 else f' {n}'}{endung}"
+        zusatz = f" (Konflikt {jetzt:%Y-%m-%d %H-%M}){'' if n == 1 else f' {n}'}"
+        ordner, stamm, endung = _konflikt_stamm(pfad, zusatz)
+        neu = f"{stamm}{zusatz}{endung}"
         voll = f"{ordner}/{neu}" if ordner else neu
         if voll.casefold() not in belegt_cf:
             return voll
         n += 1
+
+
+def _konflikt_von_heute(pfad: str, jetzt: datetime, belegt: set[str]) -> bool:
+    """Liegt fuer `pfad` schon eine Konfliktdatei von heute (Datum aus `jetzt`)?"""
+    ordner, stamm, endung = _konflikt_stamm(pfad, f" (Konflikt {jetzt:%Y-%m-%d %H-%M} 99)")
+    _, voll_stamm, _ = _konflikt_stamm(pfad, "")
+    heute = f"{jetzt:%Y-%m-%d}"
+    for b in belegt:
+        k = _konflikt_teile(_nfc(b))
+        if k is None or k[2] != heute or k[0].casefold() != ordner.casefold() or k[3].casefold() != endung.casefold():
+            continue
+        if k[1].casefold() in (stamm.casefold(), voll_stamm.casefold()):
+            return True
+    return False
+
+
+MERGE_MAX_BYTES = 256 * 1024  # groesser: kein Zusammenfuehren, Besitzer gewinnt
+MERGE_MAX_ZEILEN = 5000
+
+
+def _zusammenfuehrbar(pfad: str, *daten: bytes) -> bool:
+    """Text, nicht `.json` (eine Zeilen-Mischung kann ungueltiges JSON ergeben), unter den Grenzen."""
+    if pfad.casefold().endswith(".json"):
+        return False
+    return all(_ist_text(d) and len(d) <= MERGE_MAX_BYTES and d.count(b"\n") <= MERGE_MAX_ZEILEN for d in daten)
 
 
 def zusammenfuehren_planen(
@@ -268,7 +336,9 @@ def zusammenfuehren_planen(
 
     Sauber zusammengefuehrt: eine Aktion `zusammenfuehren` (Ergebnis auf beide Seiten), keine Sicherung.
     Ueberlappung: der Besitzer-Plan bleibt, dazu `konflikt_daneben` mit der Nicht-Besitzer-Fassung unter
-    `konfliktname` auf beiden Seiten. Zurueck: Aktionen, zu schreibende Inhalte je Pfad, (Pfad, Konfliktname).
+    `konfliktname` auf beiden Seiten, hoechstens eine je Pfad und Tag (gibt es von heute schon eine, bleibt
+    es beim Besitzer-Plan). `.json`, Binaer und Dateien ueber `MERGE_MAX_BYTES`/`MERGE_MAX_ZEILEN`: Besitzer-Plan.
+    Zurueck: Aktionen, zu schreibende Inhalte je Pfad, (Pfad, Konfliktname).
     """
     neu: list[Aktion] = []
     inhalte: dict[str, bytes] = {}
@@ -284,7 +354,7 @@ def zusammenfuehren_planen(
         erledigt.add(a.pfad)
         eigene = [x for x in aktionen if x.pfad == a.pfad]
         basis, x_pc, x_vm = fassungen[a.pfad]
-        if not all(_ist_text(d) for d in (basis, x_pc, x_vm)):
+        if not _zusammenfuehrbar(a.pfad, basis, x_pc, x_vm):
             neu += eigene
             continue
         ergebnis = _drei_wege(basis.decode("utf-8"), x_pc.decode("utf-8"), x_vm.decode("utf-8"))
@@ -293,6 +363,8 @@ def zusammenfuehren_planen(
             inhalte[a.pfad] = ergebnis.encode("utf-8")
             continue
         neu += eigene
+        if _konflikt_von_heute(a.pfad, jetzt, belegt):
+            continue
         k = konfliktname(a.pfad, jetzt, belegt)
         belegt.add(k)
         inhalte[k] = x_vm if besitzer(a.pfad) == "pc" else x_pc
@@ -746,43 +818,47 @@ def basis_aktualisieren(
 ) -> None:
     """Haelt `<ordner>/<pfad>` = gemeinsamer Inhalt jeder Textdatei in `stand` (nach einem vollen Erfolg).
 
-    Gelesen wird die PC-Datei (nach dem Lauf gleich der VM) unter dem ersten Namen aus `kandidaten(pfad)`,
-    dessen sha zum Stand passt. Binaer/zu gross/uebersprungen: keine Basis. Basen fuer Pfade, die es nicht
-    mehr gibt, werden entfernt. Gueltig ist eine Basis nur mit passendem sha (`_basis_lesen`), daher ist ein
-    Abbruch mitten im Schreiben unschaedlich.
+    Erst aufraeumen (Basen fuer Pfade, die es nicht mehr gibt; Vergleich ohne Gross-/Kleinschreibung), dann
+    schreiben. Gelesen wird die PC-Datei (nach dem Lauf gleich der VM) unter dem ersten Namen aus
+    `kandidaten(pfad)`, dessen sha zum Stand passt. Binaer/zu gross/uebersprungen: keine Basis. Fehler je
+    Datei landen im Log und halten den Rest nicht auf. Gueltig ist eine Basis nur mit passendem sha
+    (`_basis_lesen`), daher ist ein Abbruch mitten im Schreiben unschaedlich.
     """
-    behalten: set[str] = set()
-    for pfad, eintrag in stand.items():
-        if pfad in uebersprungen:
-            continue
-        if _basis_lesen(ordner, pfad, eintrag.sha256) is not None:
-            behalten.add(pfad)
-            continue
-        daten = None
-        for name in kandidaten(pfad):
-            datei = pc_wurzel / name
+    gewollt = {p: e for p, e in stand.items() if p not in uebersprungen}
+    gewollt_cf = {p.casefold() for p in gewollt}
+    fehler = 0
+    if ordner.is_dir():
+        for datei in sorted(ordner.rglob("*"), reverse=True):
             try:
+                if datei.is_dir():
+                    try:
+                        datei.rmdir()  # nur leere Ordner
+                    except OSError:
+                        pass
+                elif _nfc(datei.relative_to(ordner).as_posix()).casefold() not in gewollt_cf:
+                    datei.unlink(missing_ok=True)
+            except OSError:
+                fehler += 1
+    for pfad, eintrag in gewollt.items():
+        try:
+            if _basis_lesen(ordner, pfad, eintrag.sha256) is not None:
+                continue
+            daten = None
+            for name in kandidaten(pfad):
+                datei = pc_wurzel / name
                 if datei.is_file() and datei.stat().st_size <= BASIS_MAX:
                     roh = datei.read_bytes()
                     if _sha_bytes(roh) == eintrag.sha256:
                         daten = roh
                         break
-            except OSError:
-                continue
-        if daten is not None and _ist_text(daten):
-            _atomar_schreiben(ordner / pfad, daten)
-            behalten.add(pfad)
-    if not ordner.is_dir():
-        return
-    for datei in sorted(ordner.rglob("*"), reverse=True):
-        rel = _nfc(datei.relative_to(ordner).as_posix())
-        if datei.is_dir():
-            try:
-                datei.rmdir()  # nur leere Ordner
-            except OSError:
-                pass
-        elif rel not in behalten:
-            datei.unlink(missing_ok=True)
+            if daten is not None and _ist_text(daten):
+                _atomar_schreiben(ordner / pfad, daten)
+            else:
+                (ordner / pfad).unlink(missing_ok=True)  # veraltete Basis einer jetzt binaeren Datei
+        except OSError:
+            fehler += 1
+    if fehler:
+        log.warning("Basis: %d Datei(en) nicht aktualisiert (ohne gueltige Basis gilt Besitzer gewinnt)", fehler)
 
 
 def _vm_inhalte(ssh_ziel: str, vm_wurzel: str, namen: list[str], laeufer: Laeufer) -> dict[str, bytes]:
@@ -821,7 +897,7 @@ def _zusammenfuehren(
             daten = (pc_wurzel / roh_pc.get(pfad, pfad)).read_bytes()
         except OSError:
             continue
-        if _sha_bytes(daten) == x_pc.sha256 and _ist_text(daten):
+        if _sha_bytes(daten) == x_pc.sha256 and _zusammenfuehrbar(pfad, basis, daten):
             kandidaten[pfad] = (basis, daten)
     if not kandidaten:
         return aktionen, {}, [], {}
@@ -849,14 +925,44 @@ def telegram_melden(text: str) -> None:
 _telegram_melden = telegram_melden  # Tests ersetzen diesen Namen
 
 
-def _konflikte_melden(pfade: list[str], melden: Callable[[str], None]) -> None:
-    """Hoechstens fuenf Pfade je Nachricht; Fehler nur ins Log (nur der Typ, nie die Ausgabe des Melders)."""
-    for i in range(0, len(pfade), 5):
-        text = f"Wissens-Spiegel: Konflikt in {', '.join(pfade[i:i + 5])} \u2013 beide Fassungen liegen nebeneinander."
+MELDUNGEN_OFFEN = "meldungen_offen.json"  # neben zuletzt.json: noch nicht zugestellte Meldungen
+MELDUNGEN_MAX = 50
+
+
+def _meldungstexte(konflikte: list[tuple[str, str]]) -> list[str]:
+    """Hoechstens fuenf Konflikte je Nachricht; jeder nennt Original und Konfliktdatei."""
+    texte = []
+    for i in range(0, len(konflikte), 5):
+        teile = ", ".join(f"{p} (Konfliktdatei: {k})" for p, k in konflikte[i:i + 5])
+        texte.append(f"Wissens-Spiegel: Konflikt in {teile} \u2013 beide Fassungen liegen nebeneinander.")
+    return texte
+
+
+def _meldungen_senden(datei: Path, neue: list[str], melden: Callable[[str], None]) -> None:
+    """Sendet offene + neue Meldungen; was scheitert, bleibt in `datei` fuer den naechsten erfolgreichen Lauf.
+    Fehler nur ins Log (nur der Typ, nie die Ausgabe des Melders)."""
+    try:
+        offen = json.loads(datei.read_text(encoding="utf-8"))
+        offen = [x for x in offen if isinstance(x, str)] if isinstance(offen, list) else []
+    except (OSError, ValueError):
+        offen = []
+    alle = offen + neue
+    if not alle:
+        return
+    rest: list[str] = []
+    for text in alle:
         try:
             melden(text)
         except Exception as exc:  # noqa: BLE001 - eine Meldung darf den Lauf nie scheitern lassen
-            log.warning("Meldung an Telegram gescheitert (%s)", type(exc).__name__)
+            log.warning("Meldung an Telegram gescheitert (%s), bleibt offen", type(exc).__name__)
+            rest.append(text)
+    try:
+        if rest:
+            _atomar_schreiben(datei, json.dumps(rest[-MELDUNGEN_MAX:], ensure_ascii=False).encode("utf-8"))
+        else:
+            datei.unlink(missing_ok=True)
+    except OSError as exc:
+        log.warning("Offene Meldungen nicht gespeichert (%s)", type(exc).__name__)
 
 
 def zustand_lesen(pfad: Path) -> Bestand:
@@ -879,6 +985,8 @@ def zustand_schreiben(pfad: Path, bestand: Bestand) -> None:
 
 def _windows_tauglich(pfad: str) -> bool:
     """Laesst sich der Pfad am PC (NTFS) anlegen? Schliesst auch `..` und leere Teile aus."""
+    if len(pfad) > MAX_PFAD:
+        return False
     for teil in pfad.split("/"):
         if not teil or teil in (".", "..") or teil[-1] in ". ":
             return False
@@ -1085,8 +1193,7 @@ def _lauf_gesperrt(
         log.warning("Basis nicht aktualisiert (%s)", type(exc).__name__)
     zustand_schreiben(zustand, neu)
     log.info("Abgleich fertig: %d Aktionen, %d Dateien im Stand", len(aktionen), len(neu))
-    if konflikte:
-        _konflikte_melden([p for p, _ in konflikte], _telegram_melden)
+    _meldungen_senden(Path(zustand).parent / MELDUNGEN_OFFEN, _meldungstexte(konflikte), _telegram_melden)
     return 0
 
 

@@ -127,11 +127,15 @@ Kurzformen: **PC** = Windows-Rechner mit `~/.rowboat`, **VM** = `offload-vm` (Mi
   danach beide Seiten beide Aenderungen. Ueberlappen sie, bleibt die Fassung des Besitzers die Datei, und
   die andere liegt auf beiden Seiten daneben als `<name> (Konflikt JJJJ-MM-TT HH-MM).md` (zusaetzlich
   wie bisher in `knowledge/_konflikte/<datum>/` auf der VM). Dann kommt eine Telegram-Meldung
-  „Wissens-Spiegel: Konflikt in <pfad> ...“; die Konfliktdatei von Hand einarbeiten und loeschen.
-  Binaerdateien und Dateien ohne Basis (erster Lauf nach dem Umzug, Basis unter
-  `%LOCALAPPDATA%\VibeMind\wissens_spiegel\basis\`) bleiben bei: Besitzer gewinnt, Sicherung in
-  `_konflikte/`. Loeschen wirkt nur vom Besitzer aus; eine auf der VM geloeschte PC-Notiz kommt zurueck.
-- Der **OpenAI-Schluessel zieht NICHT mit** (`apiKey` in der `config/models.json`-Kopie leer), Quelle
+  „Wissens-Spiegel: Konflikt in <pfad> (Konfliktdatei: <name>) ...“ (scheitert sie, kommt sie nach dem
+  naechsten erfolgreichen Lauf). Die Konfliktdatei von Hand einarbeiten und dann loeschen, **auf PC oder
+  VM, egal wo**: das Loeschen wandert auf die andere Seite mit. Je Datei und Tag gibt es hoechstens eine
+  Konfliktdatei; weitere Konflikte am selben Tag landen nur in `_konflikte/`. Binaerdateien, `.json`,
+  sehr grosse Dateien (ueber 256 KB oder 5000 Zeilen) und Dateien ohne Basis (Basis unter
+  `%LOCALAPPDATA%\VibeMind\wissens_spiegel\basis\`, legt der Umzug an) bleiben bei: Besitzer gewinnt,
+  Sicherung in `_konflikte/`. Pfade ueber 240 Zeichen gleicht der Spiegel nicht ab. Loeschen wirkt nur vom Besitzer aus; eine auf der VM geloeschte PC-Notiz kommt zurueck.
+- Der **OpenAI-Schluessel zieht NICHT mit** (in der `config/models.json`-Kopie ist jeder Text unter
+  apiKey/token/secret/authorization leer; unbekannter Aufbau bricht den Umzug ab), Quelle
   spaeter der Tresor. Bis dahin sind Anbieter, die ihn brauchen (z. B. `imageModel` auf openai), auf der
   VM nicht nutzbar.
 - **Chats** aus `storage/` enthalten Windows-Pfade. Auf der VM fuehren diese Pfade ins Leere.
