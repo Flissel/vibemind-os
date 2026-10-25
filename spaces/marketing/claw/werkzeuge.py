@@ -307,7 +307,7 @@ def _kanal_kann_senden(kanal: str) -> tuple:
 # die Wahrheit, nicht diese Zeile.
 VERSANDKANAELE = ("whatsapp", "email", "linkedin", "linkedin_post",
                   "bluesky_post", "mastodon_post", "telegram_kanal_post",
-                  "discord_post", "devto_post")
+                  "discord_post", "devto_post", "youtube_post")
 
 
 def versand_beauftragen(kanal: str, nachricht: str, empfaenger: str = "",
@@ -332,6 +332,13 @@ def versand_beauftragen(kanal: str, nachricht: str, empfaenger: str = "",
                                      `empfaenger`, `betreff` als Thema, bei
                                      devto_post als Titel. Ist der Kanal nicht
                                      verbunden, sagt sales-claw ab (mit Grund).
+      youtube_post                 — ein fertiges Reel als YouTube-Short: KEIN
+                                     `empfaenger`, `betreff` ist der Titel
+                                     (hoechstens 100 Zeichen), `nachricht` die
+                                     Beschreibung, `medien_datei` PFLICHT: das
+                                     Reel-Video (vid-....mp4, hochkant oder
+                                     quadratisch, hoechstens 3 Minuten).
+                                     Hochgeladen wird zunaechst privat.
     Telegram gibt es hier nicht — sales-claw hat dafuer keinen Versandweg.
 
     medien_datei: der BLOSSE Dateiname aus dem Schaufenster (post_ablegen,

@@ -90,7 +90,12 @@ dorthin, wo sales-claw es anhaengen kann (mp4 ist erlaubt).
   kampagne?, quelle?)` — bittet sales-claw, das zuzustellen. Kanäle:
   `email`, `whatsapp`, `telegram`, `linkedin` (Nachricht AN EINEN KONTAKT)
   und `linkedin_post` (Beitrag aufs eigene Profil: **kein** `empfaenger`,
-  dafür `betreff` als Thema).
+  dafür `betreff` als Thema). Ebenso ohne `empfaenger`: `bluesky_post`,
+  `mastodon_post`, `telegram_kanal_post`, `discord_post`, `devto_post`
+  (`betreff` = Titel) und `youtube_post` — ein fertiges Reel als Short:
+  `betreff` = Titel (höchstens 100 Zeichen), `nachricht` = Beschreibung,
+  `medien_datei` = das Reel (`vid-….mp4`, hochkant oder quadratisch,
+  höchstens 3 Minuten) ist **Pflicht**; hochgeladen wird zunächst privat.
   `empfaenger` ist die E-Mail, die Telefonnummer oder — bei `telegram` — die
   **chat_id**, eine positive Zahl wie `1092040975`. Sie sieht einer
   Telefonnummer zum Verwechseln ähnlich und ist keine: als Nummer gelesen
