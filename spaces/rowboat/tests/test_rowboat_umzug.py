@@ -456,3 +456,8 @@ def test_models_unbekannter_aufbau_bricht_ab(tmp_path, modelle):
     with pytest.raises(ru.ConfigFehler) as info:
         ru.config_anpassen(cfg)
     assert "models.json" in str(info.value)
+
+
+@pytest.mark.parametrize("schluessel", ["password", "credential", "bearer", "privateKey", "private_key", "accessKey"])
+def test_weitere_geheimnis_schluessel_werden_geleert(schluessel):
+    assert ru.GEHEIMER_SCHLUESSEL.search(schluessel)

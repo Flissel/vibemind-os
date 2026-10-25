@@ -129,7 +129,9 @@ def _json_schreiben(pfad: Path, daten: Any) -> None:
     os.replace(tmp, pfad)
 
 
-GEHEIMER_SCHLUESSEL = re.compile(r"api[_-]?key|token|secret|authorization", re.IGNORECASE)
+GEHEIMER_SCHLUESSEL = re.compile(
+    r"api[_-]?key|token|secret|authorization|password|credential|bearer|private[_-]?key|access[_-]?key",
+    re.IGNORECASE)
 
 
 def _alle_texte_leeren(wert: Any) -> Any:
