@@ -165,7 +165,7 @@ kann ihn also benutzen, aber weder schreiben noch die Tokens sehen.
   Repo-`issues`/`labels`); gemessen an Gitea 1.23 am 26.10.: Lese-Token 403 ueberall, Schreib-Token 422.
   Log: `Zugang Gitea: <zustand>`.
 - Beim Start prueft der Dienst jeden GitHub-Token an einem privaten Repo mit sechs Schreibproben
-  (leerer Koerper); nur wenn alle 403 liefern, ist der Besitzer freigegeben. `unklar` wird nach 30 min
+  (leerer Koerper, bei `git/refs` gueltig geformt mit Null-SHA, weil GitHub dort zuerst das Schema prueft); nur wenn alle 403 liefern, ist der Besitzer freigegeben. `unklar` wird nach 30 min
   erneut geprueft, `darf_schreiben`/`abgelehnt` bleiben bis zum Neustart gesperrt.
   Log: `Zugang <Besitzer>: <zustand> (Token läuft ab JJJJ-MM-TT)`.
 - `pc_suchen` leitet an den PC weiter (`100.84.127.84:8149`): keine Verbindung = "PC ist aus",

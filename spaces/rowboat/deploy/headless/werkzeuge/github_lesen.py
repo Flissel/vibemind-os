@@ -2,7 +2,7 @@
 
 Je Besitzer ein fein granulierter Nur-Lese-Token. Der Leser stellt ausschliesslich GET-Anfragen;
 die einzige Ausnahme ist die Schreibprobe ``nur_lesend_pruefen`` beim Start: sechs schreibende
-Anfragen mit ungueltigem (leerem) Koerper an ein privates Repo. Ein Nur-Lese-Token bekommt ueberall
+Anfragen, die nie etwas anlegen (leerer Koerper, bei git/refs ein SHA, den es nicht gibt), an ein privates Repo. Ein Nur-Lese-Token bekommt ueberall
 403; jede andere Antwort sperrt den Besitzer (fail-closed).
 Tokens erscheinen nie in Ergebnissen, Meldungen oder Logs; Fehler nennen nur den Ausnahme-Typ.
 """
@@ -36,8 +36,11 @@ _DATUM = re.compile(r"^\d{4}-\d{2}-\d{2}")
 # Je eine schreibende Anfrage pro Rechte-Bereich (Issues, Contents, Git-Daten, Pull Requests,
 # Webhooks/Administration, Actions). Leerer Koerper: wer schreiben darf, bekommt 422 (ungueltig),
 # ein Nur-Lese-Token 403. Es wird also nie etwas angelegt.
-SCHREIBPROBEN = (("POST", "labels"), ("PUT", "contents/.vibemind-probe"), ("POST", "git/refs"),
-                 ("POST", "pulls"), ("POST", "hooks"), ("PUT", "actions/permissions"))
+# Ausnahme git/refs: GitHub prueft dort erst das Schema, ein leerer Koerper gibt auch Nur-Lese-Tokens 422
+# (gemessen 26.10.). Darum gueltig geformt mit einem SHA, den es nie gibt: Nur-Lese 403, kein Ref entsteht.
+_REF_PROBE = {"ref": "refs/heads/vibemind-probe", "sha": "0" * 40}
+SCHREIBPROBEN = (("POST", "labels", {}), ("PUT", "contents/.vibemind-probe", {}), ("POST", "git/refs", _REF_PROBE),
+                 ("POST", "pulls", {}), ("POST", "hooks", {}), ("PUT", "actions/permissions", {}))
 
 _SPERRGRUND = {
     "darf_schreiben": "gesperrt: Token darf schreiben",
@@ -103,9 +106,9 @@ def nur_lesend_pruefen(token: str, repo: str, senden: HttpSenden) -> tuple[Zusta
     if not _repo_gueltig(repo):
         return "unklar", None
     ablauf: str | None = None
-    for methode, pfad in SCHREIBPROBEN:
+    for methode, pfad, koerper in SCHREIBPROBEN:
         try:
-            status, kopf = senden(methode, f"{API}/repos/{repo}/{pfad}", _kopf(token), {})
+            status, kopf = senden(methode, f"{API}/repos/{repo}/{pfad}", _kopf(token), dict(koerper))
         except Exception:  # noqa: BLE001 - jede Ausnahme heisst: nicht sicher, also gesperrt
             return "unklar", ablauf
         ablauf = ablauf or _ablauf(kopf)

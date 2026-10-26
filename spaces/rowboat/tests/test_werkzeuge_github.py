@@ -230,11 +230,15 @@ PROBEN = ["POST labels", "PUT contents/.vibemind-probe", "POST git/refs", "POST 
           "PUT actions/permissions"]
 
 
-def test_schreibproben_alle_mit_leerem_koerper():
+def test_schreibproben_legen_nie_etwas_an():
     senden = FalschesSenden()
     assert nur_lesend_pruefen(TOKEN, "Flissel/vibemind", senden) == ("bereit", None)
     assert [f"{m} {u.split('/repos/Flissel/vibemind/', 1)[1]}" for m, u, _, _ in senden.aufrufe] == PROBEN
-    assert all(k == {} for _, _, _, k in senden.aufrufe)
+    koerper = {f"{m} {u.split('/repos/Flissel/vibemind/', 1)[1]}": k for m, u, _, k in senden.aufrufe}
+    # git/refs prueft bei leerem Koerper erst das Schema (422 auch fuer Nur-Lese-Tokens, gemessen 26.10.):
+    # gueltig geformt, aber mit einem SHA, den es nie gibt -> Nur-Lese 403, Schreib-Token nie ein Ref.
+    assert koerper.pop("POST git/refs") == {"ref": "refs/heads/vibemind-probe", "sha": "0" * 40}
+    assert all(k == {} for k in koerper.values())
     assert all(kopf["Authorization"] == f"Bearer {TOKEN}" for _, _, kopf, _ in senden.aufrufe)
 
 
