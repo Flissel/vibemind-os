@@ -132,6 +132,11 @@ class WissensIndex:
                 " aktualisiert=excluded.aktualisiert",
                 (pfad, sha256, groesse, mtime, _jetzt()))
 
+    def stat_merken(self, pfad: str, groesse: int, mtime: float) -> None:
+        """Nur Groesse/mtime nachtragen (Inhalt gleich, z. B. nach ``touch``); Status bleibt."""
+        with self._sperre:
+            self._db.execute("UPDATE dateien SET groesse=?, mtime=? WHERE pfad=?", (groesse, mtime, pfad))
+
     def entfernen(self, pfad: str) -> None:
         with self._sperre:
             with self._db:
