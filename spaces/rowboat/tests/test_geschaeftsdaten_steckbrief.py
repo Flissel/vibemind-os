@@ -187,3 +187,10 @@ def test_keine_fremde_mail_in_freitexten():
     text = _sb(k, empfohlen_von="Bert bert@b.de")
     assert not re.search(r"[^\s@]+@[^\s@]+\.[a-z]{2,}", text, re.IGNORECASE)
     assert "Max" in text and "Bert" in text
+
+
+def test_themen_ausgeschrieben_fuer_bedeutungssuche():
+    # 26.10.: "Interesse an Altersvorsorge" fand die bAV-Steckbriefe nicht – nur die Abkuerzung stand drin.
+    text = _sb(kontakt(bereiche=("bav", "vorsorge")))
+    assert "Themen:** betriebliche Altersvorsorge (bAV), private Altersvorsorge und Versicherungen" in text
+    assert "Themen:" not in _sb(kontakt(bereiche=()))

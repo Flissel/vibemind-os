@@ -42,6 +42,15 @@ BEREICHE: dict[str, str] = {
     "it": "IT-Lösung",
     "homelab": "Homelab",
 }
+# Ausgeschrieben fuer die Bedeutungssuche (Teil C): die Abkuerzung allein findet "Altersvorsorge" nicht.
+THEMEN: dict[str, str] = {
+    "bav": "betriebliche Altersvorsorge (bAV)",
+    "mitarbeiter": "Mitarbeiter und Personal",
+    "vorsorge": "private Altersvorsorge und Versicherungen",
+    "immobilien": "Immobilien und Immobilienkauf",
+    "it": "IT-Lösungen und IT-Dienstleistungen",
+    "homelab": "Homelab und eigene Server",
+}
 STUFEN = {"new": "Neu", "researched": "Recherchiert", "qualified": "Qualifiziert", "contacted": "Kontaktiert",
           "replied": "Geantwortet", "meeting": "Termin", "won": "Gewonnen", "lost": "Verloren"}
 ARTEN = {"person": "Person", "firma": "Firma"}
@@ -260,6 +269,7 @@ def steckbrief(k: Kontakt, ereignisse: list[Ereignis], *, laden: str, heute: dat
         ("Firma", _einzeilig(k.company, mail)),
         ("Rolle", _einzeilig(k.title, mail)),
         ("Bereiche", ", ".join(BEREICHE[b] for b in bereiche) or None),
+        ("Themen", ", ".join(THEMEN[b] for b in bereiche if b in THEMEN) or None),
         ("Pipeline-Stufe", STUFEN.get(k.status or "", _einzeilig(k.status, mail))),
         ("Herkunft", _einzeilig(k.source, mail)),
         ("Letzter Kontakt", _letzter_kontakt(k, ereignisse)),
