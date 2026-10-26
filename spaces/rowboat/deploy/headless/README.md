@@ -172,7 +172,9 @@ kann ihn also benutzen, aber weder schreiben noch die Tokens sehen.
   `DEFAULT_CHANNEL_READ_ONLY_MCP_TOOLS` in `packages/shared/src/channels.ts`). Seit 26.10. setzt die VM
   sie selbst: `~/rowboat-data/config/channels.json` -> `readOnlyMcpTools` (16 Eintraege, inkl.
   `github_ci` und `gitea_*`; wird je Nachricht gelesen, kein Neustart). Dieser Schluessel ERSETZT die
-  Vorgabe des Forks - ein neues Werkzeug muss dort mit eingetragen werden.
+  Vorgabe des Forks - ein neues Werkzeug muss dort mit eingetragen werden. Die Fork-Vorgabe ist seit
+  Fork `99943af5` gleich; `tests/test_zentrale_skill.py` meldet rot, wenn ein Werkzeug aus `server.py` darin
+  fehlt.
 - `pc_suchen` leitet an den PC weiter (`100.84.127.84:8149`): keine Verbindung = "PC ist aus",
   Verbindung ohne Antwort binnen 20 s = "PC antwortet nicht".
 

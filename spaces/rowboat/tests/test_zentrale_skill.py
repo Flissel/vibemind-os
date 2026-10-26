@@ -27,6 +27,19 @@ def _frontmatter() -> dict:
     return yaml.safe_load(_text().split("---")[1])
 
 
+KANAL_VORGABE = (Path(__file__).resolve().parents[1] / "rowboat" / "apps" / "x" / "packages" / "shared" / "src"
+                 / "channels.ts")
+
+
+def test_kanal_vorgabe_kennt_alle_werkzeuge():
+    """Telegram/WhatsApp rufen nur freigegebene MCP-Werkzeuge auf (Fork-Vorgabe); ein neues Werkzeug ohne
+    Eintrag ist am Handy unbenutzbar ("mobiler Kanal laesst dieses Werkzeug nicht zu", 26.10.)."""
+    text = KANAL_VORGABE.read_text(encoding="utf-8")
+    vorgabe = text.split("DEFAULT_CHANNEL_READ_ONLY_MCP_TOOLS", 1)[1].split("];", 1)[0]
+    for fn in server.WERKZEUGE:
+        assert f'"vibemind-werkzeuge:{fn.__name__}"' in vorgabe, fn.__name__
+
+
 def test_frontmatter_und_tools():
     fm = _frontmatter()
     assert fm["name"] == "zentrale-werkzeuge"
