@@ -1,0 +1,18 @@
+[Unit]
+Description=Rowboat-Geschaeftsdaten: Steckbriefe, Newsletter-Archiv und Wochenbild nach Rowboats Wissen
+Documentation=file:///home/debian/marketing-os/docs/superpowers/plans/2026-10-26-rowboat-zentrale-teil-b-geschaeftsdaten.md
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+User=debian
+Group=debian
+WorkingDirectory=/home/debian
+ExecStart=/usr/bin/python3 /home/debian/marketing-os/spaces/rowboat/geschaeftsdaten/lauf.py
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=3h
+NoNewPrivileges=yes
+PrivateTmp=yes
+UMask=0022

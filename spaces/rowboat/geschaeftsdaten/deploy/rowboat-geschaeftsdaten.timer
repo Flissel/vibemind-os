@@ -1,0 +1,10 @@
+[Unit]
+Description=Rowboat-Geschaeftsdaten naechtlich um 02:30 Berlin (vor den Sicherungen)
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 Europe/Berlin
+Persistent=true
+Unit=rowboat-geschaeftsdaten.service
+
+[Install]
+WantedBy=timers.target

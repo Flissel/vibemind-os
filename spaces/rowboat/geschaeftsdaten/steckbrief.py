@@ -50,6 +50,7 @@ AUSGEHEND = frozenset({"nachricht_ausgehend", "versand"})
 MAX_TERMINE = 5
 _UHRZEIT = re.compile(r"^\d{1,2}:\d{2}$")
 _LEERRAUM = re.compile(r"\s+")
+_AUSLOESER = re.compile(r"@(rowboat)", re.IGNORECASE)
 _KOPF_MAX = 4096
 
 
@@ -172,6 +173,7 @@ def _einzeilig(wert: str | None, email: str | None) -> str | None:
     text = _LEERRAUM.sub(" ", wert).strip()
     if email:
         text = re.sub(re.escape(email), "[E-Mail entfernt]", text, flags=re.IGNORECASE)
+    text = _AUSLOESER.sub(r"@ \1", text)  # Rowboat-InlineTasks reagieren auf @rowboat
     return text or None
 
 
