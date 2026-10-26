@@ -5,3 +5,6 @@ budget/
 # Bau-Kontext und Index der Bedeutungssuche gehoeren nicht in den Server-Build
 wissen/
 wissen-index/
+# Werkzeug-Container: eigener Bau-Kontext, Zugangsdatei nie in einen Build
+werkzeuge/
+werkzeuge.env
