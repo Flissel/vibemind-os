@@ -15,8 +15,9 @@
   4. Ohne -NurBauen ausserdem den Bau-Kontext der Bedeutungssuche nach ~/rowboat-headless/wissen/:
      Dockerfile und requirements.txt aus wissen/ hier, das Paket spaces/rowboat/wissen_suche (*.py) nach
      wissen/wissen_suche/. Legt ~/rowboat-headless/wissen-index (0700) fuer den Index an.
-  5. Ohne -NurBauen ausserdem die Disk-Skill skills/wissen-suchen/SKILL.md nach
-     ~/rowboat-data/skills/wissen-suchen/ (nur dieser Ordner; andere Skills bleiben unberuehrt).
+  5. Ohne -NurBauen ausserdem die Disk-Skills skills/wissen-suchen/SKILL.md und
+     skills/zentrale-werkzeuge/SKILL.md nach ~/rowboat-data/skills/<name>/ (nur diese Ordner; andere
+     Skills bleiben unberuehrt).
   6. Ohne -NurBauen ausserdem den Bau-Kontext des Werkzeug-Containers (rowboat-werkzeuge) nach
      ~/rowboat-headless/werkzeuge/ (Dockerfile, server.py, github_lesen.py, pc_suche_relay.py) sowie
      werkzeuge-zugang-eintragen.sh und mcp-eintrag.json nach ~/rowboat-headless/. Die Zugangsdatei
@@ -104,6 +105,9 @@ $wissenTeile = @(
 # Disk-Skill fuer Rowboat: nur dieser eine Ordner unter ~/rowboat-data/skills/ wird ueberschrieben.
 $skillOrdner = Join-Path $PSScriptRoot 'skills/wissen-suchen'
 $skillZiel = '~/rowboat-data/skills/wissen-suchen'
+# Teil D: Skill zentrale-werkzeuge (GitHub lesen, Docs, Dashboard, PC-Suche), ebenfalls nur sein eigener Ordner.
+$werkzeugSkillOrdner = Join-Path $PSScriptRoot 'skills/zentrale-werkzeuge'
+$werkzeugSkillZiel = '~/rowboat-data/skills/zentrale-werkzeuge'
 if (-not $NurBauen) {
     foreach ($teil in $shimTeile) {
         foreach ($datei in $teil[1]) {
@@ -117,6 +121,7 @@ if (-not $NurBauen) {
     }
     if (-not (Test-Path (Join-Path $skillOrdner 'SKILL.md'))) { throw "Skill fehlt: $skillOrdner/SKILL.md" }
     Test-WerkzeugeKontext
+    if (-not (Test-Path (Join-Path $werkzeugSkillOrdner 'SKILL.md'))) { throw "Skill fehlt: $werkzeugSkillOrdner/SKILL.md" }
     if ($wissenTeile[1][1] -notcontains 'server.py') { throw "Paket wissen_suche ohne server.py: $wissenPaket" }
     $budgetYaml = Get-Content -Raw (Join-Path $BudgetRepo 'config/agent_budget.yaml')
     if ($budgetYaml -notmatch '(?m)^\s+rowboat-server:') { throw 'agent_budget.yaml kennt rowboat-server nicht (ohne Eintrag lehnt der Waechter jeden Aufruf ab)' }
@@ -141,7 +146,7 @@ if ($NurBauen) { return }
 
 $vmHost, $appPfad, $basis = Get-ZielTeile $Ziel
 
-Invoke-Schritt $PSScriptRoot @('ssh', $vmHost, "mkdir -p $appPfad $basis/shim $basis/wissen/wissen_suche $basis/werkzeuge &&mkdir -p -m 0700 ~/rowboat-data && mkdir -p -m 0700 $basis/budget && mkdir -p -m 0700 $basis/wissen-index && mkdir -p $skillZiel")
+Invoke-Schritt $PSScriptRoot @('ssh', $vmHost, "mkdir -p $appPfad $basis/shim $basis/wissen/wissen_suche $basis/werkzeuge &&mkdir -p -m 0700 ~/rowboat-data && mkdir -p -m 0700 $basis/budget && mkdir -p -m 0700 $basis/wissen-index && mkdir -p $skillZiel $werkzeugSkillZiel")
 # Relative Namen aus dist-headless heraus (Invoke-Schritt wechselt hinein und zurueck): kein Laufwerks-
 # Doppelpunkt, den scp als host: deuten koennte; jedes Element ein eigenes Argument.
 $namen = @(Get-ChildItem -LiteralPath $dist -Name)
@@ -155,4 +160,5 @@ foreach ($teil in $wissenTeile) {
     Invoke-Schritt $teil[0] (@('scp', '-q') + $teil[1] + @("${vmHost}:$basis/$($teil[2])/"))
 }
 Invoke-Schritt $skillOrdner @('scp', '-q', 'SKILL.md', "${vmHost}:$skillZiel/")
+Invoke-Schritt $werkzeugSkillOrdner @('scp', '-q', 'SKILL.md', "${vmHost}:$werkzeugSkillZiel/")
 Write-Host "Uebertragen nach ${vmHost}:$basis - Start: ssh $vmHost 'cd $basis && docker compose up -d --build'"
