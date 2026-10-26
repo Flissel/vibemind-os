@@ -272,3 +272,48 @@ def test_ueberblick_nur_bereite_besitzer_und_tage():
     assert [x["name"] for x in r["besitzer"]["Flissel"]["repos"]] == ["neu"]
     assert r["gesperrt"] == {"Vibemind-LAB": "darf_schreiben"}
     assert all("Vibemind-LAB" not in u for _, u, _ in http.aufrufe)
+
+
+def _lauf(nummer: int, name: str, status: str, ergebnis: str | None, branch: str = "master") -> dict:
+    return {"id": 9000 + nummer, "run_number": nummer, "name": name, "event": "push", "status": status,
+            "conclusion": ergebnis, "head_branch": branch, "head_sha": "abcdef1234567890",
+            "display_title": f"feat: lauf {nummer}", "created_at": "c", "updated_at": "u",
+            "html_url": f"https://github.com/Flissel/vibemind/actions/runs/{9000 + nummer}"}
+
+
+def test_ci_laeufe_mit_ergebnis_und_zusammenfassung():
+    http = FalschesHttp({f"{API}/repos/Flissel/vibemind/actions/runs": (200, {"total_count": 3, "workflow_runs": [
+        _lauf(3, "Tests", "in_progress", None), _lauf(2, "Tests", "completed", "failure"),
+        _lauf(1, "Lint", "completed", "success")]})})
+    r = _leser(http).ci("Flissel/vibemind")
+    assert r["ok"] is True and r["repo"] == "Flissel/vibemind"
+    assert r["laeufe"][1] == {"nummer": 2, "workflow": "Tests", "titel": "feat: lauf 2", "anlass": "push",
+                              "status": "completed", "ergebnis": "failure", "branch": "master",
+                              "sha": "abcdef123456", "gestartet": "c", "geaendert": "u",
+                              "url": "https://github.com/Flissel/vibemind/actions/runs/9002"}
+    # je Workflow der juengste Lauf: Tests laeuft noch, Lint gruen
+    assert r["letzter_je_workflow"] == {"Tests": "in_progress", "Lint": "success"}
+    assert http.aufrufe[0][1] == f"{API}/repos/Flissel/vibemind/actions/runs?per_page=10"
+    assert {m for m, _, _ in http.aufrufe} == {"GET"}
+
+
+def test_ci_mit_branch_und_begrenzt():
+    http = FalschesHttp({f"{API}/repos/Flissel/vibemind/actions/runs": (200, {"workflow_runs": []})})
+    r = _leser(http).ci("Flissel/vibemind", branch="feat/x", max_anzahl=500)
+    assert r["ok"] and r["laeufe"] == [] and r["letzter_je_workflow"] == {}
+    assert http.aufrufe[0][1] == f"{API}/repos/Flissel/vibemind/actions/runs?per_page=50&branch=feat/x"
+
+
+@pytest.mark.parametrize("branch", ["../x", "a b", "x&per_page=100", "a..b"])
+def test_ci_branch_unzulaessig_ohne_anfrage(branch):
+    http = FalschesHttp()
+    assert _leser(http).ci("Flissel/vibemind", branch=branch)["ok"] is False
+    assert http.aufrufe == []
+
+
+def test_ci_fremder_besitzer_und_403():
+    http = FalschesHttp({f"{API}/repos/Flissel/vibemind/actions/runs": (403, {"message": "x"})})
+    leser = _leser(http)
+    assert "nicht freigegeben" in leser.ci("evil/repo")["meldung"]
+    assert http.aufrufe == []
+    assert leser.ci("Flissel/vibemind") == {"ok": False, "meldung": "GitHub: kein Zugriff oder Abruf-Limit (403)"}

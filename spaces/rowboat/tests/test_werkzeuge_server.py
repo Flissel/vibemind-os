@@ -24,17 +24,17 @@ from pc_suche_relay import NICHT_EINGERICHTET  # noqa: E402
 
 UMG = {"GITHUB_BESITZER": "Flissel=GITHUB_LESEN_FLISSEL,Vibemind-LAB=GITHUB_LESEN_VIBEMIND_LAB"}
 TOKEN = "github_pat_SCHREIBT123"
-SIEBEN = {"github_repos", "github_issues", "github_prs", "github_commits", "github_datei", "github_ueberblick",
-          "pc_suchen"}
+ACHT = {"github_repos", "github_issues", "github_prs", "github_commits", "github_ci", "github_datei",
+        "github_ueberblick", "pc_suchen"}
 
 
 def _werkzeuge(umg: dict) -> list:
     return anyio.run(server.bauen(umg).list_tools)
 
 
-def test_genau_die_sieben_werkzeuge():
-    assert {t.name for t in _werkzeuge(UMG)} == SIEBEN
-    assert {fn.__name__ for fn in server.WERKZEUGE} == SIEBEN and len(server.WERKZEUGE) == 7
+def test_genau_die_acht_werkzeuge():
+    assert {t.name for t in _werkzeuge(UMG)} == ACHT
+    assert {fn.__name__ for fn in server.WERKZEUGE} == ACHT and len(server.WERKZEUGE) == 8
 
 
 def test_keine_schreibwerkzeuge():
@@ -47,6 +47,7 @@ def test_werkzeuge_haben_beschreibung_und_parameter():
     tools = {t.name: t for t in _werkzeuge(UMG)}
     assert set(tools["pc_suchen"].inputSchema["properties"]) == {"anfrage", "art", "ordner", "max_treffer"}
     assert set(tools["github_datei"].inputSchema["properties"]) == {"repo", "pfad", "ref"}
+    assert set(tools["github_ci"].inputSchema["properties"]) == {"repo", "branch", "max_anzahl"}
     assert all(t.description for t in tools.values())
 
 

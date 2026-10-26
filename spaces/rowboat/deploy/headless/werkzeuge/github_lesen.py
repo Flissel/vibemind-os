@@ -257,6 +257,28 @@ class GithubLeser:
             return {"ok": True, "repo": repo, "commits": eintraege}
         return self._sicher(tun)
 
+    def ci(self, repo: str, branch: str = "", max_anzahl: int = 10) -> dict:
+        def tun() -> dict:
+            zugang = self._zugang_fuer_repo(repo)
+            pfad = f"/repos/{repo}/actions/runs?per_page={_klemmen(max_anzahl)}"
+            if branch:
+                if not _REF.match(branch) or ".." in branch:
+                    raise GithubFehler("branch enthaelt unzulaessige Zeichen")
+                pfad += f"&branch={urllib.parse.quote(branch, safe='/')}"
+            daten = self._holen(zugang, pfad) or {}
+            laeufe = [{"nummer": w.get("run_number"), "workflow": w.get("name"), "titel": w.get("display_title"),
+                       "anlass": w.get("event"), "status": w.get("status"), "ergebnis": w.get("conclusion"),
+                       "branch": w.get("head_branch"), "sha": str(w.get("head_sha", ""))[:12],
+                       "gestartet": w.get("created_at"), "geaendert": w.get("updated_at"), "url": w.get("html_url")}
+                      for w in daten.get("workflow_runs") or []]
+            # GitHub liefert juengste zuerst: der erste Lauf je Workflow ist sein aktueller Stand
+            letzter: dict[str, Any] = {}
+            for lauf in laeufe:
+                if lauf["workflow"] not in letzter:
+                    letzter[lauf["workflow"]] = lauf["ergebnis"] if lauf["status"] == "completed" else lauf["status"]
+            return {"ok": True, "repo": repo, "laeufe": laeufe, "letzter_je_workflow": letzter}
+        return self._sicher(tun)
+
     def datei(self, repo: str, pfad: str = "README.md", ref: str = "") -> dict:
         def tun() -> dict:
             zugang = self._zugang_fuer_repo(repo)

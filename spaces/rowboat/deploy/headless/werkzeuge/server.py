@@ -1,6 +1,6 @@
 """MCP-Dienst ``vibemind-werkzeuge`` (Container ``rowboat-werkzeuge`` auf dem Mini-PC).
 
-Stellt Rowboat genau sieben Werkzeuge bereit, alle nur lesend: sechs fuer GitHub (je Besitzer ein
+Stellt Rowboat genau acht Werkzeuge bereit, alle nur lesend: sieben fuer GitHub (je Besitzer ein
 fein granulierter Nur-Lese-Token, beim Start per Schreibprobe geprueft, fail-closed) und
 ``pc_suchen`` (Weiterleitung an den Suchdienst am PC). Bindet nur ``127.0.0.1`` (Host-Netz),
 Pfad ``/mcp``, dazu ``GET /health``. Die Geheimnisse kommen aus ``werkzeuge.env`` (env_file) und
@@ -127,6 +127,14 @@ def github_commits(repo: str, branch: str = "", max_anzahl: int = 20) -> dict:
     return _K.leser.commits(repo, branch, max_anzahl)
 
 
+def github_ci(repo: str, branch: str = "", max_anzahl: int = 10) -> dict:
+    """CI-Stand eines Repos (``besitzer/name``): letzte GitHub-Actions-Laeufe, optional eines
+    Branches (Workflow, Status, Ergebnis wie success/failure, Commit, Link) und je Workflow der
+    aktuelle Stand. max_anzahl hoechstens 50. Nur lesend, startet nie einen Lauf."""
+    _unklare_nachpruefen()
+    return _K.leser.ci(repo, branch, max_anzahl)
+
+
 def github_datei(repo: str, pfad: str = "README.md", ref: str = "") -> dict:
     """Liest eine Datei (Text, hoechstens 100 000 Zeichen) oder listet einen Ordner aus einem Repo
     (``besitzer/name``). pfad relativ ohne ``..``; ref = Branch, Tag oder SHA. Nur lesend."""
@@ -149,8 +157,8 @@ def pc_suchen(anfrage: str, art: str = "name", ordner: str = "", max_treffer: in
                            post=_K.post_json)
 
 
-WERKZEUGE: list[Callable[..., dict]] = [github_repos, github_issues, github_prs, github_commits, github_datei,
-                                        github_ueberblick, pc_suchen]
+WERKZEUGE: list[Callable[..., dict]] = [github_repos, github_issues, github_prs, github_commits, github_ci,
+                                        github_datei, github_ueberblick, pc_suchen]
 
 
 def im_thread(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -167,7 +175,7 @@ def im_thread(fn: Callable[..., Any]) -> Callable[..., Any]:
 
 def bauen(umgebung: Mapping[str, str] = os.environ, *, get: HttpGet = http_get, senden: HttpSenden = http_senden,
           post_json: relay.HttpPostJson = relay.http_post_json, uhr: Callable[[], float] = time.monotonic):
-    """Server mit den sieben Werkzeugen; prueft vorher die GitHub-Zugaenge (Startprobe)."""
+    """Server mit den acht Werkzeugen; prueft vorher die GitHub-Zugaenge (Startprobe)."""
     from mcp.server.fastmcp import FastMCP
     from starlette.responses import JSONResponse
 
