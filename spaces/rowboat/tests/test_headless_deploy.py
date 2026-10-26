@@ -11,7 +11,7 @@ GEHEIM = re.compile(r"(key|token|secret|passw|geheim)", re.IGNORECASE)
 
 def dienst(name: str = "rowboat-server") -> dict:
     compose = yaml.safe_load((HEADLESS / "compose.yml").read_text(encoding="utf-8"))
-    assert sorted(compose["services"]) == ["rowboat-server", "rowboat-shim"]
+    assert sorted(compose["services"]) == ["rowboat-server", "rowboat-shim", "rowboat-wissen"]
     return compose["services"][name]
 
 
@@ -51,7 +51,7 @@ def test_compose_telemetrie_aus():
 
 
 def test_compose_ohne_geheimnis():
-    for dienstname in ("rowboat-server", "rowboat-shim"):
+    for dienstname in ("rowboat-server", "rowboat-shim", "rowboat-wissen"):
         svc = dienst(dienstname)
         for name, wert in umgebung(svc).items():
             assert not GEHEIM.search(name), f"Geheimnis-artiger Name in environment: {name}"
@@ -225,3 +225,71 @@ def test_firewall_einheit_ohne_nftables_conf():
     assert "flush ruleset" not in einheit.replace('"flush ruleset"', "")
     bauen = (HEADLESS / "bauen.ps1").read_text(encoding="utf-8")
     assert "'rowboat-firewall.service'" in bauen
+
+
+WISSEN = HEADLESS / "wissen"
+
+
+def test_wissen_dienst_vertrag():
+    svc = dienst("rowboat-wissen")
+    env = umgebung(svc)
+    assert svc["build"] == "./wissen"
+    assert svc["network_mode"] == "host"
+    assert "ports" not in svc
+    assert "depends_on" not in svc                   # unabhaengig vom Rowboat-Server
+    assert svc["restart"] == "unless-stopped"
+    assert svc["mem_limit"] == "512m"
+    assert svc["user"] == "1000:1000"
+    assert svc["volumes"] == [
+        {"type": "bind", "source": "/home/debian/rowboat-data/knowledge", "target": "/wissen",
+         "read_only": True, "bind": {"create_host_path": False}},
+        {"type": "bind", "source": "./wissen-index", "target": "/index",
+         "bind": {"create_host_path": False}},
+    ]
+    assert all(v["bind"]["create_host_path"] is False for v in svc["volumes"])
+    assert env["WISSEN_PORT"] == "3240"
+    assert env["WISSEN_ORDNER"] == "/wissen"
+    assert env["WISSEN_INDEX"] == "/index/wissen.sqlite"
+    assert env["OLLAMA_URL"] == "http://100.84.127.84:11435"
+    assert env["EMBED_MODELL"] == "qwen3-embedding:0.6b"
+    assert env["EMBED_DIM"] == "1024" and env["EMBED_NUM_CTX"] == "2048"
+    assert env["INDEX_INTERVALL_S"] == "600"
+    probe = " ".join(svc["healthcheck"]["test"])
+    assert "http://127.0.0.1:3240/gesund" in probe
+
+
+def test_wissen_dockerfile():
+    text = (WISSEN / "Dockerfile").read_text(encoding="utf-8")
+    assert text.splitlines()[0] == "FROM python:3.11-slim"
+    assert "pip install --no-cache-dir -r requirements.txt" in text
+    assert "COPY wissen_suche/ /opt/wissen_suche/" in text
+    assert 'CMD ["python", "-m", "wissen_suche.server"]' in text
+    zeilen = (WISSEN / "requirements.txt").read_text(encoding="utf-8").splitlines()
+    anforderungen = [z for z in zeilen if z.strip() and not z.startswith("#")]
+    # pydantic gepinnt: mcp 1.9.4 importiert nicht mehr mit pydantic >= 2.12
+    assert anforderungen == ["mcp==1.9.4", "numpy==2.1.3", "pydantic==2.11.7"]
+
+
+def test_kein_modell_im_image():
+    verboten = re.compile(r"torch|onnx|sentence-transformers|transformers|llama|ollama/ollama|vllm", re.IGNORECASE)
+    for datei in ("requirements.txt", "Dockerfile"):
+        assert not verboten.search((WISSEN / datei).read_text(encoding="utf-8")), datei
+
+
+def test_bauen_kopiert_wissen_kontext():
+    skript = (HEADLESS / "bauen.ps1").read_text(encoding="utf-8")
+    assert "wissen_suche" in skript
+    assert "requirements.txt" in skript
+    assert "mkdir -p -m 0700 $basis/wissen-index" in skript
+    assert "$basis/wissen/wissen_suche" in skript
+
+
+def test_dockerignore_haelt_wissen_aus_dem_server_build():
+    zeilen = (HEADLESS / ".dockerignore").read_text(encoding="utf-8").split()
+    assert "wissen/" in zeilen and "wissen-index/" in zeilen
+
+
+def test_readme_bedeutungssuche():
+    readme = (HEADLESS / "README.md").read_text(encoding="utf-8")
+    assert "## Bedeutungssuche" in readme
+    assert "3240" in readme and "/gesund" in readme

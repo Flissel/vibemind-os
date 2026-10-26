@@ -12,6 +12,9 @@
      claude_code_openai_shim.py und claude_code_openai_tools.py aus -ShimQuelle sowie
      scripts/claude_budget.py und config/agent_budget.yaml aus -BudgetRepo. Legt ~/rowboat-headless/budget
      (0700) an. Bricht vor dem Bauen ab, wenn eine Datei fehlt oder agent_budget.yaml rowboat-server nicht kennt.
+  4. Ohne -NurBauen ausserdem den Bau-Kontext der Bedeutungssuche nach ~/rowboat-headless/wissen/:
+     Dockerfile und requirements.txt aus wissen/ hier, das Paket spaces/rowboat/wissen_suche (*.py) nach
+     wissen/wissen_suche/. Legt ~/rowboat-headless/wissen-index (0700) fuer den Index an.
   Loescht nichts auf der VM; vorhandene Dateien gleichen Namens werden ueberschrieben.
   Der Container wird hier NICHT gestartet (siehe README.md).
 
@@ -55,12 +58,25 @@ $shimTeile = @(
     @((Join-Path $BudgetRepo 'scripts'), @('claude_budget.py')),
     @((Join-Path $BudgetRepo 'config'), @('agent_budget.yaml'))
 )
+# Bau-Kontext der Bedeutungssuche (rowboat-wissen): (Ordner, Dateien, Unterordner unter ~/rowboat-headless).
+# Vom Paket nur die *.py-Dateien (kein __pycache__ aus lokalen Testlaeufen).
+$wissenPaket = Join-Path $PSScriptRoot '../../wissen_suche'
+$wissenTeile = @(
+    @((Join-Path $PSScriptRoot 'wissen'), @('Dockerfile', 'requirements.txt'), 'wissen'),
+    @($wissenPaket, @(Get-ChildItem -LiteralPath $wissenPaket -Filter '*.py' -Name), 'wissen/wissen_suche')
+)
 if (-not $NurBauen) {
     foreach ($teil in $shimTeile) {
         foreach ($datei in $teil[1]) {
             if (-not (Test-Path (Join-Path $teil[0] $datei))) { throw "Shim-Kontext unvollstaendig: $(Join-Path $teil[0] $datei)" }
         }
     }
+    foreach ($teil in $wissenTeile) {
+        foreach ($datei in $teil[1]) {
+            if (-not (Test-Path (Join-Path $teil[0] $datei))) { throw "Wissen-Kontext unvollstaendig: $(Join-Path $teil[0] $datei)" }
+        }
+    }
+    if ($wissenTeile[1][1] -notcontains 'server.py') { throw "Paket wissen_suche ohne server.py: $wissenPaket" }
     $budgetYaml = Get-Content -Raw (Join-Path $BudgetRepo 'config/agent_budget.yaml')
     if ($budgetYaml -notmatch '(?m)^\s+rowboat-server:') { throw 'agent_budget.yaml kennt rowboat-server nicht (ohne Eintrag lehnt der Waechter jeden Aufruf ab)' }
 }
@@ -87,7 +103,7 @@ $vmHost = $Matches.host
 $appPfad = $Matches.pfad
 $basis = $appPfad -replace '/[^/]+$', ''
 
-Invoke-Schritt $PSScriptRoot @('ssh', $vmHost, "mkdir -p $appPfad $basis/shim && mkdir -p -m 0700 ~/rowboat-data && mkdir -p -m 0700 $basis/budget")
+Invoke-Schritt $PSScriptRoot @('ssh', $vmHost, "mkdir -p $appPfad $basis/shim $basis/wissen/wissen_suche && mkdir -p -m 0700 ~/rowboat-data && mkdir -p -m 0700 $basis/budget && mkdir -p -m 0700 $basis/wissen-index")
 # Relative Namen aus dist-headless heraus (Invoke-Schritt wechselt hinein und zurueck): kein Laufwerks-
 # Doppelpunkt, den scp als host: deuten koennte; jedes Element ein eigenes Argument.
 $namen = @(Get-ChildItem -LiteralPath $dist -Name)
@@ -95,5 +111,8 @@ Invoke-Schritt $dist (@('scp', '-q', '-r') + $namen + @("${vmHost}:$appPfad/"))
 Invoke-Schritt $PSScriptRoot @('scp', '-q', 'Dockerfile', '.dockerignore', 'compose.yml', 'start.sh', 'rowboat-firewall.nft', 'rowboat-firewall.service', "${vmHost}:$basis/")
 foreach ($teil in $shimTeile) {
     Invoke-Schritt $teil[0] (@('scp', '-q') + $teil[1] + @("${vmHost}:$basis/shim/"))
+}
+foreach ($teil in $wissenTeile) {
+    Invoke-Schritt $teil[0] (@('scp', '-q') + $teil[1] + @("${vmHost}:$basis/$($teil[2])/"))
 }
 Write-Host "Uebertragen nach ${vmHost}:$basis - Start: ssh $vmHost 'cd $basis && docker compose up -d --build'"

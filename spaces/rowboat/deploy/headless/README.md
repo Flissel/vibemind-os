@@ -113,3 +113,29 @@ Docker-Bridge-Netz kennt der Container die Tailscale-IP nicht, deshalb Host-Netz
 Aus demselben Grund geht `tailscale serve` mit `*.ts.net`-Namen nicht; die App verbindet sich direkt
 per `http://100.67.177.45:3220`. Mit `lanEnabled` lauscht der Server auf allen Schnittstellen der VM;
 ohne gueltigen `server-key` antwortet er nur auf `/health`.
+
+## Bedeutungssuche `rowboat-wissen` (127.0.0.1:3240)
+
+Dienst im selben Compose: MCP-Server (Streamable HTTP, `http://127.0.0.1:3240/mcp`) mit den Werkzeugen
+`wissen_suchen(frage, anzahl=8)` und `wissen_stand()`, dazu `GET /gesund`. Bindet nur Loopback, Host-Netz,
+kein `ports:`, also keine Firewall-Regel noetig. Quelle: `spaces/rowboat/wissen_suche/`.
+
+- Ein Indexer-Faden gleicht alle 10 min `knowledge/` (nur lesend als `/wissen` eingehaengt) mit dem Index
+  `~/rowboat-headless/wissen-index/wissen.sqlite` ab und schickt geaenderte Notizen an Ollama am PC
+  (`OLLAMA_URL`, Vorgabe `http://100.84.127.84:11435` = `tailscale serve` am PC, Modell
+  `qwen3-embedding:0.6b`, `num_ctx` 2048). Auf der VM laeuft kein Modell.
+- Ist der PC aus (Aufbau > 3 s, Gesamtzeit > 15 s, 5xx/404, Verbindung zurueckgesetzt), bleiben Notizen
+  `offen` und die Suche antwortet per Stichwort mit festem Hinweis. Noch nicht eingebettete Notizen werden
+  auch bei Bedeutungssuche per Stichwort ergaenzt.
+- Fehlt mehr als die Haelfte der indexierten Notizen (leerer oder fehlender Mount), loescht der Indexer
+  nichts und schreibt eine Warnung ins Log.
+- Wechseln `EMBED_MODELL` oder `EMBED_DIM`, baut sich der Index von selbst neu auf.
+
+`bauen.ps1` kopiert `wissen/` (Dockerfile, requirements.txt) und das Paket nach `~/rowboat-headless/wissen/`
+und legt `wissen-index/` (0700) an. Start und Probe (auf der VM, nur mit Betreiber-OK):
+
+```sh
+cd ~/rowboat-headless && docker compose up -d --build rowboat-wissen   # Rowboat-Server bleibt unberuehrt
+curl -s http://127.0.0.1:3240/gesund                                   # {"ok":true}
+docker compose logs -f rowboat-wissen                                  # Runden: eingebettet / offen / PC erreichbar
+```

@@ -61,3 +61,42 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 3
+
+  # Bedeutungssuche (Teil C): MCP-Dienst nur auf 127.0.0.1:3240/mcp, Rowboat traegt ihn in
+  # config/mcp.json ein. Liest knowledge/ nur, schreibt nur ./wissen-index. Kein Modell hier:
+  # Vektoren rechnet Ollama am PC (tailscale serve 11435); ist der PC aus, sucht er per Stichwort.
+  rowboat-wissen:
+    build: ./wissen
+    image: rowboat-wissen:local
+    network_mode: host
+    restart: unless-stopped
+    mem_limit: 512m
+    user: "1000:1000"
+    environment:
+      WISSEN_ORDNER: /wissen
+      WISSEN_INDEX: /index/wissen.sqlite
+      OLLAMA_URL: http://100.84.127.84:11435
+      EMBED_MODELL: qwen3-embedding:0.6b
+      EMBED_DIM: "1024"
+      EMBED_NUM_CTX: "2048"
+      INDEX_INTERVALL_S: "600"
+      WISSEN_PORT: "3240"
+    volumes:
+      # Fehlt einer der Ordner, startet der Dienst nicht (statt ihn als root anzulegen).
+      - type: bind
+        source: /home/debian/rowboat-data/knowledge
+        target: /wissen
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./wissen-index
+        target: /index
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:3240/gesund', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3

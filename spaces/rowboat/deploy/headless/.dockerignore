@@ -2,3 +2,6 @@ app/node_modules
 # Anmelde-Token und Budget-Zaehler nie in einen Build-Kontext schicken
 claude-token
 budget/
+# Bau-Kontext und Index der Bedeutungssuche gehoeren nicht in den Server-Build
+wissen/
+wissen-index/
