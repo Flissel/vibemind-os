@@ -73,7 +73,7 @@ def bestand_scannen(wurzel: Path) -> dict[str, tuple[int, float]]:
     return bestand
 
 
-def _datei(wurzel: Path, rel: str) -> Path:
+def datei_pfad(wurzel: Path, rel: str) -> Path:
     return Path(wurzel) / Path(*rel.split("/"))
 
 
@@ -91,7 +91,7 @@ def abgleichen(index: WissensIndex, wurzel: Path) -> Abgleich:
         if alt is not None and alt.groesse == groesse and alt.mtime == mtime:
             continue
         try:
-            _, sha = _lesen(_datei(wurzel, rel))
+            _, sha = _lesen(datei_pfad(wurzel, rel))
         except OSError as exc:
             log.warning("%s nicht lesbar (%s), naechste Runde", rel, type(exc).__name__)
             continue
@@ -116,7 +116,7 @@ def einbetten_runde(index: WissensIndex, wurzel: Path, einbetter: Einbetter,
     bekannt = index.dateien()
     eingebettet = 0
     for rel in index.offene(limit=len(bekannt) or 1):
-        datei = _datei(wurzel, rel)
+        datei = datei_pfad(wurzel, rel)
         try:
             daten, sha = _lesen(datei)
         except OSError as exc:
