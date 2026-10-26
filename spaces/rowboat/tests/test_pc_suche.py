@@ -391,3 +391,74 @@ def test_handler_zeitlimit_und_hoechstens_drei_suchen(baum):
     finally:
         server.shutdown()
         server.server_close()
+
+
+# --- Namensindex (26.10.): Desktop + Dokumente haben ~700k Dateien, der Lauf dauert ~45 s > Zeitlimit ---
+
+def test_namensindex_findet_ohne_lauf(baum, monkeypatch):
+    idx = pc_suche.NamensIndex((baum,))
+    idx.aufbauen()
+    assert idx.bereit
+    # Der Index wird benutzt: ein Dateisystem-Lauf ist nicht noetig.
+    monkeypatch.setattr(pc_suche.os, "scandir", lambda *_: (_ for _ in ()).throw(AssertionError("Lauf")))
+    r = suchen("bericht", "name", "", 20, E(baum), index=idx)
+    assert r["ok"] and not r["abgeschnitten"]
+    assert [Path(t["pfad"]).name for t in r["treffer"]] == ["Bericht.md"]
+    assert r["treffer"][0]["groesse"] > 0
+
+
+def test_namensindex_regeln_wie_lauf(tmp_path):
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "suchwort.md").write_text("x", encoding="utf-8")
+    (tmp_path / "suchwort-token.md").write_text("x", encoding="utf-8")
+    (tmp_path / "ok").mkdir()
+    (tmp_path / "ok" / "Suchwort-Liste.md").write_text("x", encoding="utf-8")
+    idx = pc_suche.NamensIndex((tmp_path,))
+    idx.aufbauen()
+    r = suchen("suchwort", "name", "", 20, E(tmp_path), index=idx)
+    assert [Path(t["pfad"]).name for t in r["treffer"]] == ["Suchwort-Liste.md"]
+
+
+def test_namensindex_ordner_filter_und_grenze(tmp_path):
+    for ordner in ("x", "y"):
+        (tmp_path / ordner).mkdir()
+        for i in range(3):
+            (tmp_path / ordner / f"plan-{i}.md").write_text("x", encoding="utf-8")
+    idx = pc_suche.NamensIndex((tmp_path,))
+    idx.aufbauen()
+    r = suchen("plan", "name", "x", 20, E(tmp_path), index=idx)
+    assert {Path(t["pfad"]).parent.name for t in r["treffer"]} == {"x"} and len(r["treffer"]) == 3
+    r = suchen("plan", "name", "", 2, E(tmp_path), index=idx)
+    assert len(r["treffer"]) == 2 and r["abgeschnitten"]
+
+
+def test_namensindex_geloeschte_datei_kein_treffer(baum):
+    idx = pc_suche.NamensIndex((baum,))
+    idx.aufbauen()
+    (baum / "a" / "Bericht.md").unlink()
+    r = suchen("bericht", "name", "", 20, E(baum), index=idx)
+    assert r["treffer"] == []
+
+
+def test_namensindex_nicht_bereit_faellt_auf_lauf_zurueck(baum):
+    idx = pc_suche.NamensIndex((baum,))
+    r = suchen("bericht", "name", "", 20, E(baum), index=idx)
+    assert [Path(t["pfad"]).name for t in r["treffer"]] == ["Bericht.md"]
+
+
+def test_namensindex_inhaltssuche_ohne_index(baum):
+    idx = pc_suche.NamensIndex((baum,))
+    idx.aufbauen()
+    r = suchen("umsatz", "inhalt", "", 20, E(baum), index=idx)
+    assert len(r["treffer"]) == 2
+
+
+def test_namensindex_grossschreibung_unicode(tmp_path):
+    (tmp_path / "İstanbul Ölpreis.md").write_text("x", encoding="utf-8")
+    (tmp_path / "zweite.md").write_text("x", encoding="utf-8")
+    idx = pc_suche.NamensIndex((tmp_path,))
+    idx.aufbauen()
+    r = suchen("zweite", "name", "", 20, E(tmp_path), index=idx)
+    assert [Path(t["pfad"]).name for t in r["treffer"]] == ["zweite.md"]
+    r = suchen("ölpreis", "name", "", 20, E(tmp_path), index=idx)
+    assert [Path(t["pfad"]).name for t in r["treffer"]] == ["İstanbul Ölpreis.md"]

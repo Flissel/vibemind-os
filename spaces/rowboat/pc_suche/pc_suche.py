@@ -16,6 +16,7 @@ import argparse
 import fnmatch
 import hmac
 import importlib.util
+import io
 import json
 import logging
 import os
@@ -24,11 +25,13 @@ import stat
 import sys
 import threading
 import time
+from array import array
+from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 WURZELN_VORGABE = (Path("C:/Users/User/Desktop"), Path("C:/Users/User/Documents"))
 
@@ -46,6 +49,7 @@ MAX_KOERPER = 10_000
 MAX_PARALLEL = 3           # gleichzeitige Suchen; die vierte bekommt sofort 503
 HANDLER_TIMEOUT_S = 15     # Lese-Zeitlimit je Verbindung (langsame/haengende Absender)
 ARTEN = ("name", "inhalt")
+INDEX_ABSTAND_S = 30 * 60  # Namensindex alle 30 min neu (Desktop + Dokumente ~700k Dateien, ~45 s Lauf)
 
 _ORDNER_AUS_KLEIN = {o.lower() for o in ORDNER_AUS}
 # Zeilen mit diesen Mustern werden ganz durch "[ausgeblendet]" ersetzt (lieber zu viel als zu wenig):
@@ -171,8 +175,131 @@ def _inhalt_treffer(pfad: str, nadel: str) -> tuple[int, str] | None:
     return None
 
 
+class NamensIndex:
+    """Dateinamen unter den Wurzeln, nach denselben Regeln wie der Suchlauf (ausgeschlossene Ordner und
+    Geheimnis-Namen fehlen, Symlinks/Junctions werden nicht betreten). Kompakt gespeichert: alle Namen
+    klein geschrieben in einer Zeichenkette (durch Zeilenumbrueche getrennt) plus Versatz- und Ordner-Tabellen, damit
+    ~700k Dateien nur einige zehn MB belegen. Der Index liefert nur Kandidaten; ``suchen`` prueft jeden
+    Treffer beim Abruf noch einmal auf dem Dateisystem (geloescht, ausgeschlossen)."""
+
+    def __init__(self, wurzeln: tuple[Path, ...] | list[Path]) -> None:
+        self.wurzeln = tuple(wurzeln)
+        self._stand: tuple[bytes, array, array, list[str], bytes, array] | None = None
+        self.erstellt: float | None = None
+
+    @property
+    def bereit(self) -> bool:
+        return self._stand is not None
+
+    def aufbauen(self) -> None:
+        # UTF-8-Bytes statt Listen von str: 700k einzelne Objekte, oder ein einziges Emoji im Namen (dann
+        # 4 Byte je Zeichen fuer den ganzen Text), kosteten ~100 MB.
+        klein_text = io.BytesIO()
+        namen_text = io.BytesIO()
+        versatz = array("L")
+        namen_versatz = array("L")
+        ordner_nr = array("L")
+        ordner: list[str] = []
+        pos = 0
+        npos = 0
+        stapel = [str(w) for w in reversed(self.wurzeln)]
+        while stapel:
+            aktuell = stapel.pop()
+            try:
+                with os.scandir(aktuell) as it:
+                    eintraege = list(it)
+            except OSError:
+                continue
+            nr = len(ordner)
+            ordner.append(aktuell)
+            unterordner: list[str] = []
+            for eintrag in eintraege:
+                if _ist_umleitung(eintrag):
+                    continue
+                try:
+                    ist_ordner = eintrag.is_dir(follow_symlinks=False)
+                except OSError:
+                    continue
+                if ist_ordner:
+                    if eintrag.name.lower() not in _ORDNER_AUS_KLEIN and not _name_ausgeschlossen(eintrag.name):
+                        unterordner.append(eintrag.path)
+                    continue
+                if _name_ausgeschlossen(eintrag.name):
+                    continue
+                name = eintrag.name.replace("\n", " ").encode("utf-8", "surrogatepass")
+                klein = eintrag.name.replace("\n", " ").lower().encode("utf-8", "surrogatepass")
+                versatz.append(pos)
+                namen_versatz.append(npos)
+                ordner_nr.append(nr)
+                klein_text.write(klein + b"\n")
+                namen_text.write(name + b"\n")
+                pos += len(klein) + 1
+                npos += len(name) + 1
+            stapel.extend(reversed(unterordner))
+        self._stand = (klein_text.getvalue(), versatz, ordner_nr, ordner, namen_text.getvalue(), namen_versatz)
+        self.erstellt = time.time()
+
+    def kandidaten(self, nadel: str, startordner: list[Path]) -> "Iterator[str]":
+        """Pfade, deren Name ``nadel`` enthaelt und die unter einem der ``startordner`` liegen."""
+        stand = self._stand
+        if stand is None:
+            return
+        text, versatz, ordner_nr, ordner, namen, namen_versatz = stand
+        praefixe = [os.path.normcase(os.path.abspath(str(o))).rstrip("\\/") for o in startordner]
+        zuletzt = -1
+        nadel_b = nadel.encode("utf-8", "surrogatepass")
+        pos = text.find(nadel_b)
+        while pos != -1:
+            i = bisect_right(versatz, pos) - 1
+            if i != zuletzt:
+                zuletzt = i
+                verz = ordner[ordner_nr[i]]
+                v = os.path.normcase(verz)
+                if any(v == pr or v.startswith(pr + os.sep) for pr in praefixe):
+                    ende = namen_versatz[i + 1] - 1 if i + 1 < len(namen_versatz) else len(namen) - 1
+                    yield os.path.join(verz, namen[namen_versatz[i]:ende].decode("utf-8", "surrogatepass"))
+            naechster = versatz[i + 1] if i + 1 < len(versatz) else len(text)
+            pos = text.find(nadel_b, max(pos + 1, naechster))
+
+
+def index_pflegen(index: NamensIndex, abstand_s: float = INDEX_ABSTAND_S,
+                  schlafen: Callable[[float], None] = time.sleep) -> None:
+    """Endlosschleife fuer einen Hintergrund-Thread: Index bauen, warten, neu bauen."""
+    while True:
+        try:
+            start = time.monotonic()
+            index.aufbauen()
+            log.info("Namensindex gebaut (%.0f s)", time.monotonic() - start)
+        except Exception as e:  # noqa: BLE001 - nur der Typ
+            log.warning("Namensindex fehlgeschlagen: %s", type(e).__name__)
+        schlafen(abstand_s)
+
+
+def _aus_index(index: NamensIndex, nadel: str, startordner: list[Path], grenze: int, start: float,
+               uhr: Callable[[], float]) -> dict:
+    treffer: list[dict[str, Any]] = []
+    abgeschnitten = False
+    for pfad in index.kandidaten(nadel, startordner):
+        if _name_ausgeschlossen(os.path.basename(pfad)):  # Ordner filtert schon der Index
+            continue
+        try:
+            info = os.stat(pfad, follow_symlinks=False)
+        except OSError:
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            continue
+        if len(treffer) >= grenze:
+            abgeschnitten = True
+            break
+        treffer.append({"pfad": pfad, "groesse": info.st_size,
+                        "geaendert": datetime.fromtimestamp(info.st_mtime).isoformat(timespec="seconds")})
+    stand = datetime.fromtimestamp(index.erstellt).isoformat(timespec="minutes") if index.erstellt else None
+    return {"ok": True, "treffer": treffer, "abgeschnitten": abgeschnitten,
+            "dauer_ms": int((uhr() - start) * 1000), "index_stand": stand}
+
+
 def suchen(anfrage: str, art: str, ordner: str, max_treffer: int, einst: Einstellungen,
-           uhr: Callable[[], float] = time.monotonic) -> dict:
+           uhr: Callable[[], float] = time.monotonic, index: NamensIndex | None = None) -> dict:
     start = uhr()
     nadel = (anfrage or "").strip().lower()
     if not nadel or len(nadel) > MAX_ANFRAGE:
@@ -186,6 +313,8 @@ def suchen(anfrage: str, art: str, ordner: str, max_treffer: int, einst: Einstel
         grenze = max(1, min(einst.max_treffer, int(max_treffer)))
     except (TypeError, ValueError):
         grenze = min(20, einst.max_treffer)
+    if art == "name" and index is not None and index.bereit:
+        return _aus_index(index, nadel, startordner, grenze, start, uhr)
 
     treffer: list[dict[str, Any]] = []
     abgeschnitten = False
@@ -239,7 +368,8 @@ def suchen(anfrage: str, art: str, ordner: str, max_treffer: int, einst: Einstel
             "dauer_ms": int((uhr() - start) * 1000)}
 
 
-def handler_bauen(einst: Einstellungen, schluessel: str) -> type[BaseHTTPRequestHandler]:
+def handler_bauen(einst: Einstellungen, schluessel: str,
+                  index: NamensIndex | None = None) -> type[BaseHTTPRequestHandler]:
     erwartet = schluessel.encode("utf-8")
 
     class PcSucheHandler(BaseHTTPRequestHandler):
@@ -318,7 +448,8 @@ def handler_bauen(einst: Einstellungen, schluessel: str) -> type[BaseHTTPRequest
                 return
             try:
                 ergebnis = suchen(str(koerper.get("anfrage", "")), str(koerper.get("art", "name")),
-                                  str(koerper.get("ordner", "")), koerper.get("max_treffer", 20), einst)
+                                  str(koerper.get("ordner", "")), koerper.get("max_treffer", 20), einst,
+                                  index=index)
             except Exception as e:  # noqa: BLE001 - nur der Typ, nie Inhalte
                 log.warning("Suche fehlgeschlagen: %s", type(e).__name__)
                 ergebnis = {"ok": False, "meldung": f"Suche fehlgeschlagen: {type(e).__name__}"}
@@ -388,7 +519,9 @@ def main(argv: list[str] | None = None, *, tresor: Callable[[str], str | None] |
     if not schluessel:
         log.error("Schlüssel fehlt im Tresor (ROWBOAT_PC_SUCHE_KEY; rowboat-zugang pc-schluessel) – beendet.")
         return 2
-    handler = handler_bauen(einst, schluessel)
+    index = NamensIndex(einst.wurzeln)
+    threading.Thread(target=index_pflegen, args=(index,), name="namensindex", daemon=True).start()
+    handler = handler_bauen(einst, schluessel, index)
     del schluessel
     # Tailscale kann bei der Anmeldung spaeter kommen als dieser Dienst: Bindung bis zu 1 h wiederholen.
     server = None
