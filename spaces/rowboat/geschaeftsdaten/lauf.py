@@ -226,11 +226,16 @@ def gitignore_pflegen(wissen: Path) -> str:
         return "angelegt"
     text = pfad.read_text(encoding="utf-8")
     kopf = GI_ANFANG.split(" (")[0]
-    a = text.find(kopf)
+    a = text.rfind(kopf)  # der letzte eigene Block zaehlt
     if a < 0:
         return "fremd"
     e = text.find(GI_ENDE, a)
-    e = len(text) if e < 0 else e + len(GI_ENDE) + (1 if text[e + len(GI_ENDE):e + len(GI_ENDE) + 1] == "\n" else 0)
+    if e < 0:
+        # Endmarke fehlt: nichts abschneiden (dahinter koennen fremde Zeilen stehen), frischen Block anhaengen.
+        log.warning(".gitignore: Endmarke des eigenen Blocks fehlt, neuer Block angehaengt")
+        _atomar(pfad, text + ("" if text.endswith("\n") or not text else "\n") + block)
+        return "ergaenzt"
+    e += len(GI_ENDE) + (1 if text[e + len(GI_ENDE):e + len(GI_ENDE) + 1] == "\n" else 0)
     neu = text[:a] + block + text[e:]
     if neu == text:
         return "aktuell"
@@ -253,9 +258,12 @@ def _massenschutz(plan: Plan, ist: list[Ist], gesperrt: set[str]) -> bool:
 
 
 def lauf(quelle: Quelle, laeden: list[Laden], wissen: Path, *, heute: date, trocken: bool,
-         wochenbild_neu: bool, ablage_optionen: dict, gestoert: frozenset[str] = frozenset()) -> Ergebnis:
+         wochenbild_neu: bool, ablage_optionen: dict, gestoert: frozenset[str] = frozenset(),
+         massen_ok: frozenset[str] = frozenset()) -> Ergebnis:
     """`gestoert`: Marken, deren Laden-Konfiguration unvollstaendig ist (`ALLE` = jede); diese Firmen
-    werden nicht abgeglichen."""
+    werden nicht abgeglichen. `massen_ok`: Firmen (Ordnername, ohne Gross-/Kleinschreibung), fuer die der
+    Massenarchiv-Schutz in diesem einen Lauf nicht greift (`--massen-ok`)."""
+    freigegeben = {f.casefold() for f in massen_ok}
     ergebnis = Ergebnis()
     try:
         marken, gelesen, uebersprungen, inhalte, medien = _lesen(quelle, laeden, heute)
@@ -310,6 +318,9 @@ def lauf(quelle: Quelle, laeden: list[Laden], wissen: Path, *, heute: date, troc
             ergebnis.uebersprungen.append(f"Firma {firma.name}")
             continue
         massen = _massenschutz(plan, ist, gesperrt)
+        if massen and firma.name.casefold() in freigegeben:
+            log.info("%s: Massen-Waechter fuer diesen Lauf freigegeben", firma.name)
+            massen = False
         if massen:
             log.warning("%s: %d Archivierungen waeren zu viele auf einmal, nur gesperrte Kopien werden entfernt",
                         firma.name, len(plan.archivieren))
@@ -378,6 +389,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trocken", action="store_true", help="nur planen und zaehlen, nichts schreiben")
     parser.add_argument("--wochenbild-neu", action="store_true", help="Wochenbild auch neu schreiben, wenn es da ist")
     parser.add_argument("--heute", type=date.fromisoformat, default=None, help="JJJJ-MM-TT (fuer Tests)")
+    parser.add_argument("--massen-ok", action="append", default=[], metavar="FIRMA",
+                        help="Massenarchiv-Schutz fuer diese Firma (Ordnername) nur in diesem Lauf freigeben; "
+                             "mehrfach moeglich")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
@@ -398,7 +412,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         ergebnis = lauf(PsqlQuelle(container), pruefung.laeden, wissen, heute=heute, trocken=args.trocken,
                         wochenbild_neu=args.wochenbild_neu, ablage_optionen=ABLAGE_OPTIONEN,
-                        gestoert=frozenset(gestoert))
+                        gestoert=frozenset(gestoert), massen_ok=frozenset(args.massen_ok))
     except Exception as e:  # noqa: BLE001 - stand.json muss trotzdem entstehen; nur der Typ wird gemeldet
         fehler = type(e).__name__
         log.error("Lauf abgebrochen (%s)", fehler)

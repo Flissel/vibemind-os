@@ -456,3 +456,66 @@ def test_rowboat_im_namen_link_passt_zum_dateinamen(tmp_path):
     clara = (wissen / "companys/VibeMind/Kontakte/bAV/Clara.md").read_text(encoding="utf-8")
     assert "[[companys/VibeMind/Kontakte/bAV/@ rowboat Fan]]" in clara
     assert "@rowboat" not in clara.lower()
+
+
+def _massen_lage(tmp_path):
+    wissen = _wissen(tmp_path)
+    q = _quelle()
+    viele = [kontakt(id=_id(i), name=f"Person {i:02d}", bereiche=("bav",)) for i in range(10)]
+    q.kontakte_["sales"] = list(viele)
+    _lauf(q, wissen)
+    q.kontakte_["sales"] = viele[:4]
+    return wissen, q
+
+
+def test_massen_ok_gibt_einmalig_frei(tmp_path, caplog):
+    wissen, q = _massen_lage(tmp_path)
+    caplog.set_level(logging.INFO)
+    erg = _lauf(q, wissen, massen_ok=frozenset({"vibemind"}))  # ohne Gross-/Kleinschreibung
+    assert erg.je_firma["VibeMind"]["archiviert"] == 6 and "Massenarchivierung VibeMind" not in erg.uebersprungen
+    freigabe = [r.getMessage() for r in caplog.records if "freigegeben" in r.getMessage()]
+    assert freigabe == ["VibeMind: Massen-Waechter fuer diesen Lauf freigegeben"]
+    assert all(r.levelno == logging.INFO for r in caplog.records if "freigegeben" in r.getMessage())
+
+
+def test_massen_ok_gilt_nur_fuer_die_genannte_firma(tmp_path):
+    wissen, q = _massen_lage(tmp_path)
+    erg = _lauf(q, wissen, massen_ok=frozenset({"fin2gether"}))
+    assert erg.je_firma["VibeMind"]["archiviert"] == 0 and "Massenarchivierung VibeMind" in erg.uebersprungen
+
+
+def test_massen_ok_ueber_die_kommandozeile(tmp_path, monkeypatch):
+    wissen, q = _massen_lage(tmp_path)
+    sales_claw = tmp_path / "sales-claw"
+    sales_claw.mkdir()
+    (sales_claw / ".env").write_text("MARKETING_MANDANT=vibemind\n", encoding="utf-8")
+    monkeypatch.setenv("GESCHAEFTSDATEN_WISSEN", str(wissen))
+    monkeypatch.setenv("GESCHAEFTSDATEN_SALES_CLAW", str(sales_claw))
+    monkeypatch.setenv("GESCHAEFTSDATEN_STAND", str(tmp_path / "stand" / "stand.json"))
+    monkeypatch.setattr(lauf_mod, "PsqlQuelle", lambda c: q)
+    gesehen = {}
+    echt = lauf_mod.lauf
+
+    def lauf(*a, **kw):
+        gesehen.update(kw)
+        return echt(*a, **kw)
+
+    monkeypatch.setattr(lauf_mod, "lauf", lauf)
+    lauf_mod.main(["--heute", "2026-10-26", "--massen-ok", "VibeMind", "--massen-ok", "fin2gether"])
+    assert gesehen["massen_ok"] == frozenset({"VibeMind", "fin2gether"})
+    assert len(list((wissen / "companys/VibeMind/Kontakte/_archiv").glob("*.md"))) == 6
+
+
+def test_gitignore_ohne_endmarke_behaelt_fremde_zeilen(tmp_path, caplog):
+    wissen = _wissen(tmp_path)
+    gi = wissen / ".gitignore"
+    gi.write_text("# rowboat-geschaeftsdaten: Anfang (alt)\ncompanys/*/Kontakte/\nmeins/\nauch-meins/\n",
+                  encoding="utf-8")
+    caplog.set_level(logging.WARNING)
+    erg = _lauf(_quelle(), wissen)
+    text = gi.read_text(encoding="utf-8")
+    assert erg.gitignore == "ergaenzt"
+    assert "meins/\nauch-meins/\n" in text and text.endswith("# rowboat-geschaeftsdaten: Ende\n")
+    assert any("Endmarke" in r.getMessage() for r in caplog.records)
+    erg = _lauf(_quelle(), wissen)
+    assert erg.gitignore == "aktuell" and gi.read_text(encoding="utf-8") == text
