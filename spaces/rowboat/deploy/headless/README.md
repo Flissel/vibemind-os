@@ -116,7 +116,7 @@ ohne gueltigen `server-key` antwortet er nur auf `/health`.
 
 ## Bedeutungssuche `rowboat-wissen` (127.0.0.1:3240)
 
-Dienst im selben Compose: MCP-Server (Streamable HTTP, `http://127.0.0.1:3240/mcp`) mit den Werkzeugen
+Dienst im selben Compose: MCP-Server (Streamable HTTP, `http://127.0.0.1:3240/mcp/`) mit den Werkzeugen
 `wissen_suchen(frage, anzahl=8)` und `wissen_stand()`, dazu `GET /gesund`. Bindet nur Loopback, Host-Netz,
 kein `ports:`, also keine Firewall-Regel noetig. Quelle: `spaces/rowboat/wissen_suche/`.
 

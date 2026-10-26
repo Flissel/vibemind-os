@@ -62,7 +62,7 @@ services:
       start_period: 20s
       retries: 3
 
-  # Bedeutungssuche (Teil C): MCP-Dienst nur auf 127.0.0.1:3240/mcp, Rowboat traegt ihn in
+  # Bedeutungssuche (Teil C): MCP-Dienst nur auf 127.0.0.1:3240/mcp/, Rowboat traegt ihn in
   # config/mcp.json ein. Liest knowledge/ nur, schreibt nur ./wissen-index. Kein Modell hier:
   # Vektoren rechnet Ollama am PC (tailscale serve 11435); ist der PC aus, sucht er per Stichwort.
   rowboat-wissen:
