@@ -1,7 +1,9 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): skips the channel quarantine knowledge/Kanal/ (Teil E, fix round 4).
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { WorkDir } from '../config/config.js';
+import { isQuarantinedPath } from './quarantine.js';
 
 /**
  * State tracking for knowledge graph processing
@@ -120,6 +122,9 @@ export function getFilesToProcess(
 
         for (const entry of entries) {
             const fullPath = path.join(dir, entry);
+            if (isQuarantinedPath(fullPath)) {
+                continue;
+            }
             const stat = fs.statSync(fullPath);
 
             if (stat.isDirectory()) {

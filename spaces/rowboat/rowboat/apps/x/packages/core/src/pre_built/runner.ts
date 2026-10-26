@@ -1,3 +1,4 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): pre-built agent sandbox scope (Teil E).
 import fs from 'fs';
 import path from 'path';
 import { WorkDir } from '../config/config.js';
@@ -57,6 +58,8 @@ Process new items and use the user context above to identify yourself when draft
             message,
             useCase: 'knowledge_sync',
             subUseCase: 'pre_built',
+            // Headless sandbox (Teil E): its own state folder.
+            sandbox: { ownDirs: [`pre-built/${agentName}/`] },
             ...asRunModelOptions(await getKgModel()),
         });
 

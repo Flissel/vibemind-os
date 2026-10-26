@@ -1,3 +1,4 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): children of desktop chats are exempt from the headless sandbox (Teil E).
 import { z } from "zod";
 import type { TurnAnalytics } from "@x/shared/dist/analytics.js";
 import {
@@ -120,6 +121,9 @@ export async function runSpawnedAgent(
 
     let parentModel: z.infer<typeof ModelDescriptor> | undefined;
     let parentAnalytics: TurnAnalytics = { useCase: "copilot_chat" };
+    // VibeMind Teil E: a child of a desktop user chat is not sandboxed;
+    // children of anything else (headless runs, unreadable parents) are.
+    let parentIsDesktopUser = false;
     try {
         const parent = reduceTurn(
             (await turnRuntime.getTurn(opts.parentTurnId)).events,
@@ -133,6 +137,12 @@ export async function runSpawnedAgent(
         }
         parentModel = parentAgent.resolved.model;
         parentAnalytics = parent.definition.analytics ?? parentAnalytics;
+        const pd = parent.definition;
+        parentIsDesktopUser =
+            !pd.config.channel &&
+            ((pd.sessionId !== null &&
+                (pd.analytics?.useCase ?? "copilot_chat") === "copilot_chat") ||
+                (pd.sessionId === null && pd.config.sandbox?.exempt === true));
     } catch {
         // Parent unreadable (legacy runs path): fall back to app defaults.
         parentModel = undefined;
@@ -201,6 +211,7 @@ export async function runSpawnedAgent(
             maxModelCalls,
             ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
             signal: opts.signal,
+            ...(parentIsDesktopUser ? { sandbox: { exempt: true } } : {}),
         });
     } catch (error) {
         // Resolution failures (unknown agent id, unknown tool name) reject

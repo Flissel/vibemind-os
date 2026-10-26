@@ -1,3 +1,5 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): legacy tool calls forbid autorun content and run in the headless sandbox (Teil E).
+import { EMPTY_SANDBOX } from "../tools/headless-sandbox.js";
 import { jsonSchema } from "ai";
 import { Agent, ToolAttachment } from "@x/shared/dist/agent.js";
 import { AssistantContentPart, AssistantMessage, MessageList, ProviderOptions, ToolCallPart, ToolMessage, UserMessageContext } from "@x/shared/dist/message.js";
@@ -789,6 +791,11 @@ export async function* streamAgent({
                     codeMode,
                     codeCwd,
                     codePolicy,
+                    // Modified for VibeMind (Flissel/rowboat vibemind): legacy
+                    // runs (apps, server API) are not desktop user chats — no
+                    // autorun content (Teil E).
+                    autorunContentForbidden: true,
+                    headlessSandbox: EMPTY_SANDBOX,
                 });
             }
             } catch (error) {

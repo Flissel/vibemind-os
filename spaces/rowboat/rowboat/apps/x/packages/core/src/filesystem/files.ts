@@ -1,3 +1,4 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): optional pathFilter for grep/glob (channel runs, Teil E).
 import fs from 'node:fs/promises';
 import { createReadStream, type Stats } from 'node:fs';
 import os from 'node:os';
@@ -608,13 +609,23 @@ export async function remove(inputPath: string, opts?: RemoveOptions): Promise<{
   return { ok: true, path: resolved.originalPath, resolvedPath: resolved.resolvedPath };
 }
 
-export async function glob(pattern: string, cwd?: string): Promise<{ files: string[]; resolvedFiles: string[]; count: number; pattern: string; cwd: string; resolvedCwd: string }> {
+// pathFilter (VibeMind Teil E): when given, every match is kept only if the
+// filter accepts its absolute path — channel runs pass their read filter.
+export async function glob(
+  pattern: string,
+  cwd?: string,
+  pathFilter?: (resolvedPath: string) => Promise<boolean>,
+): Promise<{ files: string[]; resolvedFiles: string[]; count: number; pattern: string; cwd: string; resolvedCwd: string }> {
   const root = resolveFilePath(cwd || '.');
-  const files = await globFiles(pattern, {
+  let files = await globFiles(pattern, {
     cwd: root.resolvedPath,
     nodir: true,
     ignore: ['node_modules/**', '.git/**'],
   });
+  if (pathFilter) {
+    const keep = await Promise.all(files.map(file => pathFilter(path.resolve(root.resolvedPath, file))));
+    files = files.filter((_, i) => keep[i]);
+  }
   const resolvedFiles = files.map(file => path.resolve(root.resolvedPath, file));
   return {
     files,
@@ -632,12 +643,15 @@ export async function grep({
   fileGlob,
   contextLines = 0,
   maxResults = 100,
+  pathFilter,
 }: {
   pattern: string;
   searchPath?: string;
   fileGlob?: string;
   contextLines?: number;
   maxResults?: number;
+  // VibeMind Teil E: checked for every candidate BEFORE it is read.
+  pathFilter?: (resolvedPath: string) => Promise<boolean>;
 }) {
   const root = resolveFilePath(searchPath || '.');
   const stats = await fs.lstat(root.resolvedPath);
@@ -667,6 +681,7 @@ export async function grep({
     if (matches.length >= maxResults) break;
     const resolvedPath = stats.isDirectory() ? path.resolve(baseDir, candidate) : root.resolvedPath;
     try {
+      if (pathFilter && !(await pathFilter(resolvedPath))) continue;
       await assertTextFile(resolvedPath);
       const text = await fs.readFile(resolvedPath, 'utf8');
       const lines = text.split(/\r?\n/);

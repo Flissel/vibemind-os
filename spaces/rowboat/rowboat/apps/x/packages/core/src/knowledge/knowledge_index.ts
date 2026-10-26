@@ -1,6 +1,8 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): skips the channel quarantine knowledge/Kanal/ (Teil E, fix round 4).
 import fs from 'fs';
 import path from 'path';
 import { WorkDir } from '../config/config.js';
+import { isQuarantinedPath } from './quarantine.js';
 
 const KNOWLEDGE_DIR = path.join(WorkDir, 'knowledge');
 
@@ -199,6 +201,10 @@ function scanDirectoryRecursive(dir: string): string[] {
 
     for (const entry of entries) {
         const fullPath = path.join(dir, entry);
+        // The index text goes into graph-building and meeting-prep prompts.
+        if (isQuarantinedPath(fullPath)) {
+            continue;
+        }
         const stat = fs.statSync(fullPath);
 
         if (stat.isDirectory()) {

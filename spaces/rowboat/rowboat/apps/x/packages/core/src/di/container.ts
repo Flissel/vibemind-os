@@ -1,3 +1,4 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): channelRunGuard registration (Teil E).
 import { projectSessionComposition } from '../code-mode/sessions/composition.js';
 import { markWorkspaceStarted } from '../code-mode/sessions/workspace-started.js';
 import path from "node:path";
@@ -56,6 +57,7 @@ import { RealModelRegistry } from "../runtime/turns/bridges/real-model-registry.
 import { RealToolRegistry } from "../runtime/turns/bridges/real-tool-registry.js";
 import { RealPermissionChecker } from "../runtime/turns/bridges/real-permission-checker.js";
 import { RealPermissionClassifier } from "../runtime/turns/bridges/real-permission-classifier.js";
+import { ChannelRunGuard, type IChannelRunGuard } from "../runtime/turns/channel-run-guard.js";
 import { FSSessionRepo } from "../runtime/sessions/fs-repo.js";
 import type { ISessionRepo } from "../runtime/sessions/repo.js";
 import { EmitterSessionBus, type ISessionBus } from "../runtime/sessions/bus.js";
@@ -154,6 +156,8 @@ container.register({
     toolRegistry: asFunction<IToolRegistry>(() => new RealToolRegistry()).singleton(),
     permissionChecker: asFunction<IPermissionChecker>(() => new RealPermissionChecker()).singleton(),
     permissionClassifier: asFunction<IPermissionClassifier>(() => new RealPermissionClassifier()).singleton(),
+    // VibeMind Teil E: restrictions for channel-origin turns (see runtime.ts).
+    channelRunGuard: asFunction<IChannelRunGuard>(() => new ChannelRunGuard()).singleton(),
     turnRuntime: asClass<ITurnRuntime>(TurnRuntime).singleton(),
     sessionRepo: asClass<ISessionRepo>(FSSessionRepo).singleton(),
     sessionBus: asClass<ISessionBus>(EmitterSessionBus).singleton(),

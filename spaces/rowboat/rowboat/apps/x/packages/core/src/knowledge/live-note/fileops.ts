@@ -1,9 +1,12 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): skips the channel quarantine knowledge/Kanal/ (Teil E, fix round 4).
 import fs from 'fs/promises';
 import path from 'path';
 import { LiveNoteSchema, type LiveNote } from '@x/shared/dist/live-note.js';
 import { WorkDir } from '../../config/config.js';
 import { withFileLock } from '../file-lock.js';
 import { splitFrontmatter, joinFrontmatter } from '../../application/lib/parse-frontmatter.js';
+import * as workspace from '../../workspace/workspace.js';
+import { isQuarantinedPath } from '../quarantine.js';
 
 const KNOWLEDGE_DIR = path.join(WorkDir, 'knowledge');
 
@@ -30,6 +33,10 @@ function setLiveBlock(fm: Record<string, unknown>, live: unknown): Record<string
 // ---------------------------------------------------------------------------
 
 export async function fetchLiveNote(filePath: string): Promise<LiveNote | null> {
+    // VibeMind Teil E: a note in the channel quarantine is never live — the
+    // scheduler, the event consumer, the runner and the list all load notes
+    // through here.
+    if (isQuarantinedPath(absPath(filePath))) return null;
     let content: string;
     try {
         content = await fs.readFile(absPath(filePath), 'utf-8');
@@ -155,6 +162,23 @@ async function buildSummary(filePath: string, live: LiveNote): Promise<LiveNoteS
     return buildSummaryFromStat(filePath, live, createdMs);
 }
 
+/**
+ * Every markdown note under knowledge/ (paths relative to knowledge/), for
+ * the live-note scheduler and event consumer. Skips the channel quarantine
+ * knowledge/Kanal/ (VibeMind Teil E).
+ */
+export async function listKnowledgeMarkdownFiles(): Promise<string[]> {
+    try {
+        const entries = await workspace.readdir('knowledge', { recursive: true });
+        return entries
+            .filter(e => e.kind === 'file' && e.name.endsWith('.md'))
+            .map(e => e.path.replace(/^knowledge\//, ''))
+            .filter(rel => !isQuarantinedPath(absPath(rel)));
+    } catch {
+        return [];
+    }
+}
+
 export async function listLiveNotes(): Promise<LiveNoteSummary[]> {
     async function walk(relativeDir = ''): Promise<string[]> {
         const dirPath = absPath(relativeDir);
@@ -166,6 +190,7 @@ export async function listLiveNotes(): Promise<LiveNoteSummary[]> {
                 const childRelPath = relativeDir
                     ? path.posix.join(relativeDir, entry.name)
                     : entry.name;
+                if (isQuarantinedPath(absPath(childRelPath))) continue;
                 if (entry.isDirectory()) {
                     files.push(...await walk(childRelPath));
                     continue;

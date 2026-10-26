@@ -1,3 +1,6 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): channel-origin turns are
+// restricted by the channel-run guard (tool snapshot filter, call-time guard,
+// no classifier) — Teil E.
 import { z } from "zod";
 import type { TurnAnalytics } from "@x/shared/dist/analytics.js";
 import {
@@ -60,6 +63,7 @@ import type { IPermissionChecker, IPermissionClassifier } from "./permission.js"
 import type { ITurnRepo } from "./repo.js";
 import { HotStream } from "./stream.js";
 import type { IToolRegistry, RuntimeTool, SyncRuntimeTool } from "./tool-registry.js";
+import { CHANNEL_RUN_INSTRUCTIONS, ChannelRunGuard, type IChannelRunGuard } from "./channel-run-guard.js";
 
 type TEvent = z.infer<typeof TurnEvent>;
 
@@ -79,6 +83,9 @@ export interface TurnRuntimeDependencies {
     lifecycleBus: ITurnLifecycleBus;
     turnEventBus: ITurnEventBus;
     usageReporter: IUsageReporter;
+    // Optional: defaults to the real guard. Registered in the DI container
+    // (PROXY injection resolves every destructured name).
+    channelRunGuard?: IChannelRunGuard;
 }
 
 // Immutable dependency container: holds no mutable per-turn state. All active
@@ -96,6 +103,7 @@ export class TurnRuntime implements ITurnRuntime {
     private readonly lifecycleBus: ITurnLifecycleBus;
     private readonly turnEventBus: ITurnEventBus;
     private readonly usageReporter: IUsageReporter;
+    private readonly channelRunGuard: IChannelRunGuard;
 
     constructor({
         turnRepo,
@@ -110,7 +118,9 @@ export class TurnRuntime implements ITurnRuntime {
         lifecycleBus,
         turnEventBus,
         usageReporter,
+        channelRunGuard,
     }: TurnRuntimeDependencies) {
+        this.channelRunGuard = channelRunGuard ?? new ChannelRunGuard();
         this.turnRepo = turnRepo;
         this.idGenerator = idGenerator;
         this.clock = clock;
@@ -126,7 +136,21 @@ export class TurnRuntime implements ITurnRuntime {
     }
 
     async createTurn(input: CreateTurnInput): Promise<string> {
-        const resolved = await this.agentResolver.resolve(input.agent);
+        let resolved = await this.agentResolver.resolve(input.agent);
+        const channel = input.config.channel;
+        if (channel) {
+            // Channel runs: tools with external effect are never offered.
+            // Filtered before persistence, so the snapshot (and every
+            // provider payload rebuilt from it) is the restricted set.
+            resolved = {
+                ...resolved,
+                // Round 4: tell the agent where its notes go (quarantine).
+                systemPrompt: `${resolved.systemPrompt}\n\n${CHANNEL_RUN_INSTRUCTIONS}`,
+                tools: resolved.tools.filter((tool) =>
+                    this.channelRunGuard.offers(tool, channel),
+                ),
+            };
+        }
         const turnId = await this.idGenerator.next();
         // Inherit the heavy snapshot fields (system prompt + tools) when they
         // are byte-identical to the context predecessor's materialized
@@ -177,6 +201,16 @@ export class TurnRuntime implements ITurnRuntime {
                 ...(input.config.reasoningEffort === undefined
                     ? {}
                     : { reasoningEffort: input.config.reasoningEffort }),
+                ...(channel === undefined
+                    ? {}
+                    : {
+                          channel: {
+                              readOnlyMcpTools: [...channel.readOnlyMcpTools],
+                          },
+                      }),
+                ...(input.config.sandbox === undefined
+                    ? {}
+                    : { sandbox: input.config.sandbox }),
             },
         });
         await this.turnRepo.create(event);
@@ -323,6 +357,7 @@ export class TurnRuntime implements ITurnRuntime {
             permissionChecker: this.permissionChecker,
             permissionClassifier: this.permissionClassifier,
             turnEventBus: this.turnEventBus,
+            channelRunGuard: this.channelRunGuard,
         });
         try {
             return await withUseCase(
@@ -381,6 +416,7 @@ class TurnAdvance {
     private readonly permissionChecker: IPermissionChecker;
     private readonly permissionClassifier: IPermissionClassifier;
     private readonly turnEventBus: ITurnEventBus;
+    private readonly channelRunGuard: IChannelRunGuard;
 
     // Checker "allowed" outcomes are deliberately not durable: after a crash
     // the checker is simply re-consulted.
@@ -406,6 +442,7 @@ class TurnAdvance {
         permissionChecker: IPermissionChecker;
         permissionClassifier: IPermissionClassifier;
         turnEventBus: ITurnEventBus;
+        channelRunGuard: IChannelRunGuard;
     }) {
         this.turnId = init.turnId;
         this.events = init.events;
@@ -422,6 +459,7 @@ class TurnAdvance {
         this.permissionChecker = init.permissionChecker;
         this.permissionClassifier = init.permissionClassifier;
         this.turnEventBus = init.turnEventBus;
+        this.channelRunGuard = init.channelRunGuard;
     }
 
     private get definition(): TurnState["definition"] {
@@ -762,6 +800,41 @@ class TurnAdvance {
                 );
                 continue;
             }
+            const channel = this.definition.config.channel;
+            if (channel) {
+                // Channel runs: the guard decides first. A deny never reaches
+                // the checker, the classifier or a human; an allow (read-only
+                // MCP) skips them; a guard error fails closed.
+                let decision;
+                try {
+                    decision = await this.channelRunGuard.check(
+                        {
+                            toolId: tool.descriptor.toolId,
+                            toolName: tc.toolName,
+                            input: tc.input,
+                        },
+                        channel,
+                    );
+                } catch (error) {
+                    decision = {
+                        kind: "deny" as const,
+                        reason: `channel guard failed: ${errorMessage(error)}`,
+                    };
+                }
+                if (decision.kind === "deny") {
+                    await this.append(
+                        runtimeResultEvent(this.turnId, this.now(), tc, {
+                            output: `Not allowed in a channel run: ${decision.reason}`,
+                            isError: true,
+                        }),
+                    );
+                    continue;
+                }
+                if (decision.kind === "allow") {
+                    this.checkerAllowed.add(tc.toolCallId);
+                    continue;
+                }
+            }
             try {
                 const check = await this.permissionChecker.check({
                     turnId: this.turnId,
@@ -818,6 +891,11 @@ class TurnAdvance {
     // classifier and go straight to the human/deny fallback.
     private async classifyBatch(): Promise<void> {
         if (!this.definition.config.autoPermission) {
+            return;
+        }
+        // Channel runs never spend the classifier: whatever still needs
+        // permission there waits for the human on the desktop.
+        if (this.definition.config.channel) {
             return;
         }
         const candidates = this.state.toolCalls.filter(
@@ -1021,11 +1099,39 @@ class TurnAdvance {
         // invite the model to retry it (§21.4).
         let settled: z.infer<typeof ToolResultData>;
         try {
+            const channel = this.definition.config.channel;
+            const scope = this.definition.config.sandbox;
+            // A child spawned from a desktop user chat is treated like it.
+            const desktopChild =
+                !channel && this.definition.sessionId === null && scope?.exempt === true;
+            // Only a desktop user chat (a session, copilot_chat, not from a
+            // channel) may create notes that start background agents. The
+            // same flag closes the channel quarantine knowledge/Kanal/ for
+            // every other non-channel run (channel-quarantine.ts).
+            const desktopUserTurn =
+                desktopChild ||
+                (!channel &&
+                    this.definition.sessionId !== null &&
+                    (this.definition.analytics?.useCase ?? "copilot_chat") === "copilot_chat");
+            // Runs no user watches are confined to the file sandbox.
+            const sandboxed =
+                !!channel || (this.definition.sessionId === null && !desktopChild);
             const result = await syncTool.execute(tc.input, {
                 turnId: this.turnId,
                 sessionId: this.definition.sessionId,
                 toolCallId: tc.toolCallId,
                 signal: this.signal,
+                ...(channel ? { channel } : {}),
+                ...(desktopUserTurn ? {} : { autorunContentForbidden: true }),
+                ...(sandboxed
+                    ? {
+                          headlessSandbox: {
+                              ownFiles: scope?.ownFiles ?? [],
+                              ownDirs: scope?.ownDirs ?? [],
+                              readDirs: scope?.readDirs ?? [],
+                          },
+                      }
+                    : {}),
                 reportProgress: async (progress) => {
                     await this.append({
                         type: "tool_progress",
@@ -1094,9 +1200,13 @@ class TurnAdvance {
         }
         const live = new Map<string, RuntimeTool>();
         const candidates: Array<z.infer<typeof ToolDescriptor>> = [];
+        const channel = this.definition.config.channel;
         for (const descriptor of additions.tools) {
             if (live.has(descriptor.name)) {
                 continue; // duplicate within the payload
+            }
+            if (channel && !this.channelRunGuard.offers(descriptor, channel)) {
+                continue; // skill tools a channel run may not use
             }
             try {
                 const tool = await this.resolveTool(descriptor);

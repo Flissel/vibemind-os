@@ -1,3 +1,4 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): ToolExecutionContext.channel (Teil E).
 import type { z } from "zod";
 import type {
     JsonValue,
@@ -15,6 +16,15 @@ export interface ToolExecutionContext {
     signal: AbortSignal;
     // The loop appends a durable tool_progress event before resolving.
     reportProgress(progress: JsonValue): Promise<void>;
+    // Modified for VibeMind (Flissel/rowboat vibemind): the turn's
+    // config.channel for channel-origin turns (Teil E); absent otherwise.
+    channel?: { readOnlyMcpTools: string[] };
+    // True unless the turn is a desktop user chat: write tools then refuse
+    // to introduce autorun content (knowledge/autorun-write-check.ts).
+    autorunContentForbidden?: boolean;
+    // Set for headless and channel runs: file builtins are confined to this
+    // sandbox (runtime/tools/headless-sandbox.ts).
+    headlessSandbox?: { ownFiles: string[]; ownDirs: string[]; readDirs: string[] };
 }
 
 export interface SyncRuntimeTool {

@@ -1,3 +1,4 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): live-note agent sandbox scope = its own note (Teil E).
 import type { LiveNote, LiveNoteTriggerType } from '@x/shared/dist/live-note.js';
 import { fetchLiveNote, patchLiveNote, readNoteBody } from './fileops.js';
 import { getLiveNoteAgentModel } from '../../models/defaults.js';
@@ -128,6 +129,8 @@ export async function runLiveNoteAgent(
             message: buildMessage(filePath, live, trigger, context),
             useCase: 'live_note_agent',
             subUseCase: trigger,
+            // Headless sandbox (Teil E): this run may change its own live note.
+            sandbox: { ownFiles: [`knowledge/${filePath}`] },
             model,
             ...(provider ? { provider } : {}),
             ...(effort ? { reasoningEffort: effort } : {}),

@@ -1,3 +1,4 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): bridge gets the read-only MCP tool list from channels.json (fail closed) (Teil E).
 import path from "node:path";
 import fs from "node:fs/promises";
 import type { z } from "zod";
@@ -8,7 +9,7 @@ import type { ISessions } from "../runtime/sessions/api.js";
 import type { ITurnEventBus } from "../runtime/turns/event-hub.js";
 import { getModelCatalog, providerDisplayName } from "../models/catalog.js";
 import { ChannelBridge, type ModelChoice } from "./bridge.js";
-import type { IChannelsConfigRepo } from "./repo.js";
+import { readChannelReadOnlyMcpTools, type IChannelsConfigRepo } from "./repo.js";
 import { TelegramTransport } from "./transports/telegram.js";
 // Type-only: the real module (which pulls the ~9MB baileys dependency) is
 // loaded dynamically in startWhatsApp, so boot pays nothing while disabled.
@@ -98,6 +99,8 @@ function ensureBridge(): ChannelBridge {
             sessions: container.resolve<ISessions>("sessions"),
             turnEventBus: container.resolve<ITurnEventBus>("turnEventBus"),
             listModels: listBridgeModels,
+            // Read per message so a settings change applies to the next turn.
+            readOnlyMcpTools: () => readChannelReadOnlyMcpTools(),
         });
     }
     return bridge;

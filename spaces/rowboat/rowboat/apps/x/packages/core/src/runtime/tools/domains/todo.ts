@@ -1,7 +1,21 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): todo-add / todo-propose from a channel run never delegate (Teil E, fix round 4).
 // Builtin tools: todo domain (the home to-do list).
 
 import { z } from "zod";
 import { BuiltinToolsSchema } from "../types.js";
+import type { ToolContext } from "../exec-tool.js";
+
+// VibeMind Teil E: a run started from a mobile channel may add plain to-dos
+// for the user, but nothing that starts (or offers) a background run — an
+// @rowboat item, or a sub-item that would become a step of an @rowboat
+// parent's run. Second layer behind the channel-run guard.
+function channelDelegationError(ctx: ToolContext | undefined, text: string, parent: string | undefined, isDelegated: (t: string) => boolean): string | null {
+    if (!ctx?.channel) return null;
+    if (isDelegated(text) || (parent !== undefined && isDelegated(parent))) {
+        return `${text} (@rowboat items cannot be added from a mobile channel — add it without @rowboat)`;
+    }
+    return null;
+}
 
 export const todoTools: z.infer<typeof BuiltinToolsSchema> = {
     'todo-add': {
@@ -15,7 +29,7 @@ export const todoTools: z.infer<typeof BuiltinToolsSchema> = {
         }),
         execute: async ({ items }: {
             items: { text: string; parent?: string }[];
-        }) => {
+        }, ctx?: ToolContext) => {
             try {
                 // Lazy imports to break a module-init cycle, mirroring todo-report.
                 const { addItem, addSubItem, isDelegated } = await import("../../../todo/fileops.js");
@@ -23,6 +37,11 @@ export const todoTools: z.infer<typeof BuiltinToolsSchema> = {
                 const added: string[] = [];
                 const failed: string[] = [];
                 for (const entry of items) {
+                    const refused = channelDelegationError(ctx, entry.text, entry.parent, isDelegated);
+                    if (refused) {
+                        failed.push(refused);
+                        continue;
+                    }
                     const item = entry.parent
                         ? await addSubItem(entry.parent, entry.text)
                         : await addItem(entry.text);
@@ -31,7 +50,7 @@ export const todoTools: z.infer<typeof BuiltinToolsSchema> = {
                         continue;
                     }
                     added.push(item.text);
-                    if (isDelegated(item.text)) {
+                    if (isDelegated(item.text) && !ctx?.channel) {
                         const { runTodoItem } = await import("../../../todo/runner.js");
                         void runTodoItem(item.key).catch(() => {});
                     }
@@ -52,9 +71,15 @@ export const todoTools: z.infer<typeof BuiltinToolsSchema> = {
                 text: z.string().describe("The item's line text, phrased as the user would write it. Include @rowboat only when offering to do the work yourself (internal prep only — research, outlines, summaries; never anything outward-facing)."),
                 }).strict()).min(1).max(5).describe("The proposals, best first."),
         }),
-        execute: async ({ items }: { items: { text: string }[] }) => {
+        execute: async ({ items }: { items: { text: string }[] }, ctx?: ToolContext) => {
             try {
-                const { getItem, normalizeKey } = await import("../../../todo/fileops.js");
+                const { getItem, normalizeKey, isDelegated } = await import("../../../todo/fileops.js");
+                if (ctx?.channel) {
+                    const refused = items
+                        .map((entry) => channelDelegationError(ctx, entry.text, undefined, isDelegated))
+                        .filter((reason): reason is string => reason !== null);
+                    if (refused.length > 0) return { success: false, error: refused.join("; ") };
+                }
                 const { stickyDismissedKeys, recordPlannerSignal, addSuggestions } = await import("../../../todo/planner-memory.js");
                 const { todoBus } = await import("../../../todo/bus.js");
                 const sticky = await stickyDismissedKeys();

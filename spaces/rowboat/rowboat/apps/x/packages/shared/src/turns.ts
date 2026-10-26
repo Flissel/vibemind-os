@@ -1,3 +1,4 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): turn_created.config.channel (channel-run restrictions) and config.sandbox (headless runs).
 import { z } from "zod";
 import {
     AssistantContentPart,
@@ -193,6 +194,29 @@ export const TurnCreated = z.object({
         // default). Stamped into every model call's parameters and mapped
         // to provider-specific options at invoke time.
         reasoningEffort: ReasoningEffort.optional(),
+        // Modified for VibeMind (Flissel/rowboat vibemind): present only on
+        // turns started from a mobile channel (Telegram/WhatsApp bridge).
+        // The runtime then offers and executes only tools without external
+        // effect (core runtime/turns/channel-run-guard.ts); MCP tools named
+        // here ("server:tool") are auto-approved without the permission
+        // classifier. Absent = desktop turn, behaviour unchanged.
+        channel: z
+            .object({ readOnlyMcpTools: z.array(z.string()) })
+            .optional(),
+        // Modified for VibeMind (Flissel/rowboat vibemind): scope of the
+        // file sandbox that confines headless runs (core
+        // runtime/tools/headless-sandbox.ts). `exempt` marks a child spawned
+        // from a desktop user chat (treated like the chat). ownFiles /
+        // ownDirs / readDirs are workspace-relative exceptions for the run's
+        // own target (live note, inline-task note, bg-task folder, ...).
+        sandbox: z
+            .object({
+                exempt: z.boolean().optional(),
+                ownFiles: z.array(z.string()).optional(),
+                ownDirs: z.array(z.string()).optional(),
+                readDirs: z.array(z.string()).optional(),
+            })
+            .optional(),
     }),
 });
 

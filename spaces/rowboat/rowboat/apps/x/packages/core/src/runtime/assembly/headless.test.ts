@@ -255,6 +255,17 @@ describe("HeadlessAgentRunner", () => {
         expect(result.summary).toBe("the summary");
     });
 
+    // Modified for VibeMind (Flissel/rowboat vibemind): sandbox scope pass-through (Teil E, round 3).
+    it("passes the sandbox scope onto the turn config", async () => {
+        const runtime = new FakeRuntime(turnLog({ responseText: "ok" }), completedOutcome);
+        const { runner } = createRunner(runtime);
+        const sandbox = { ownFiles: ["knowledge/Live.md"], ownDirs: [], readDirs: [] };
+        await runner.start({ agentId: "worker", message: "go", sandbox });
+        await runner.start({ agentId: "worker", message: "go" });
+        expect(runtime.createInputs[0].config.sandbox).toEqual(sandbox);
+        expect(runtime.createInputs[1].config).not.toHaveProperty("sandbox");
+    });
+
     it("omits the model override when neither model nor provider is set", async () => {
         const runtime = new FakeRuntime(turnLog({ responseText: "ok" }), completedOutcome);
         const { runner, resolve } = createRunner(runtime);

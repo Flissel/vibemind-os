@@ -164,6 +164,35 @@ describe("RealToolRegistry", () => {
         ]);
     });
 
+    // Modified for VibeMind (Flissel/rowboat vibemind): channel flag reaches the builtin (Teil E).
+    it("passes the channel-run restriction into the ToolContext (and omits it for desktop turns)", async () => {
+        const { registry, calls } = makeRegistry(async () => ({ ok: 1 }));
+        const tool = (await registry.resolve(descriptor())) as SyncRuntimeTool;
+        await tool.execute({}, makeCtx({ channel: { readOnlyMcpTools: ["wissen:wissen_suchen"] } }));
+        await tool.execute({}, makeCtx());
+        expect(calls[0].ctx.channel).toEqual({ readOnlyMcpTools: ["wissen:wissen_suchen"] });
+        expect(calls[1].ctx).not.toHaveProperty("channel");
+    });
+
+    it("passes autorunContentForbidden into the ToolContext only when set", async () => {
+        const { registry, calls } = makeRegistry(async () => ({ ok: 1 }));
+        const tool = (await registry.resolve(descriptor())) as SyncRuntimeTool;
+        await tool.execute({}, makeCtx({ autorunContentForbidden: true }));
+        await tool.execute({}, makeCtx());
+        expect(calls[0].ctx.autorunContentForbidden).toBe(true);
+        expect(calls[1].ctx).not.toHaveProperty("autorunContentForbidden");
+    });
+
+    it("passes headlessSandbox into the ToolContext only when set", async () => {
+        const { registry, calls } = makeRegistry(async () => ({ ok: 1 }));
+        const tool = (await registry.resolve(descriptor())) as SyncRuntimeTool;
+        const sandbox = { ownFiles: ["knowledge/a.md"], ownDirs: [], readDirs: [] };
+        await tool.execute({}, makeCtx({ headlessSandbox: sandbox }));
+        await tool.execute({}, makeCtx());
+        expect(calls[0].ctx.headlessSandbox).toEqual(sandbox);
+        expect(calls[1].ctx).not.toHaveProperty("headlessSandbox");
+    });
+
     it("re-keys registry calls a tool makes with ctx.runId to the call scope", async () => {
         // Builtins address the abort registry with ctx.runId (the turn id).
         // The scoped wrapper must pin those to the per-call key, or a

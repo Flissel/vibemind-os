@@ -112,6 +112,27 @@ describe("runSpawnedAgent", () => {
         subagentOverride.value = null;
     });
 
+    // Modified for VibeMind (Flissel/rowboat vibemind): sandbox inheritance (Teil E, round 3).
+    it("children of a desktop chat are not sandboxed; children of headless runs are", async () => {
+        const desktopParent = parentCreated();
+        const created = desktopParent[0] as Extract<z.infer<typeof TurnEvent>, { type: "turn_created" }>;
+        desktopParent[0] = { ...created, sessionId: "s1" };
+        const desktop = fakeServices({ parentEvents: desktopParent });
+        await runSpawnedAgent({ task: "t", instructions: "x" }, { parentTurnId: "parent-1", signal, services: desktop.services });
+        expect(desktop.started[0].sandbox).toEqual({ exempt: true });
+
+        const headless = fakeServices({});
+        await runSpawnedAgent({ task: "t", instructions: "x" }, { parentTurnId: "parent-1", signal, services: headless.services });
+        expect(headless.started[0].sandbox).toBeUndefined();
+
+        const channelParent = parentCreated();
+        const c = channelParent[0] as Extract<z.infer<typeof TurnEvent>, { type: "turn_created" }>;
+        channelParent[0] = { ...c, sessionId: "s1", config: { ...c.config, channel: { readOnlyMcpTools: [] } } };
+        const fromChannel = fakeServices({ parentEvents: channelParent });
+        await runSpawnedAgent({ task: "t", instructions: "x" }, { parentTurnId: "parent-1", signal, services: fromChannel.services });
+        expect(fromChannel.started[0].sandbox).toBeUndefined();
+    });
+
     it("uses the configured subagent override when no explicit model is passed", async () => {
         subagentOverride.value = { provider: "ollama", model: "qwen3" };
         const { services, started } = fakeServices({});

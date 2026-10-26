@@ -1,3 +1,4 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): skips the channel quarantine knowledge/Kanal/ (Teil E, fix round 4).
 import fs from 'fs';
 import path from 'path';
 import { WorkDir } from '../config/config.js';
@@ -13,6 +14,7 @@ import {
     type NoteTaggingState,
 } from './note_tagging_state.js';
 import { getNoteTypeDefinitions } from './note_system.js';
+import { isQuarantinedPath } from './quarantine.js';
 
 const SYNC_INTERVAL_MS = 15 * 1000; // 15 seconds
 const BATCH_SIZE = 15;
@@ -23,7 +25,7 @@ const MAX_CONTENT_LENGTH = 8000;
 /**
  * Find knowledge notes that haven't been tagged yet
  */
-function getUntaggedNotes(state: NoteTaggingState): string[] {
+export function getUntaggedNotes(state: NoteTaggingState): string[] {
     if (!fs.existsSync(KNOWLEDGE_DIR)) {
         return [];
     }
@@ -35,6 +37,10 @@ function getUntaggedNotes(state: NoteTaggingState): string[] {
         const entries = fs.readdirSync(dir);
         for (const entry of entries) {
             const fullPath = path.join(dir, entry);
+            // Channel output is quarantined from background agents.
+            if (isQuarantinedPath(fullPath)) {
+                continue;
+            }
             const stat = fs.statSync(fullPath);
 
             if (stat.isDirectory()) {
@@ -67,7 +73,7 @@ function getUntaggedNotes(state: NoteTaggingState): string[] {
 
     for (const folder of noteFolders) {
         const folderPath = path.join(KNOWLEDGE_DIR, folder);
-        if (!fs.existsSync(folderPath)) {
+        if (isQuarantinedPath(folderPath) || !fs.existsSync(folderPath)) {
             continue;
         }
         scanDir(folderPath);

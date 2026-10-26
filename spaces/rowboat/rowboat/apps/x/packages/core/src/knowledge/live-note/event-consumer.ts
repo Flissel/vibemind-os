@@ -1,5 +1,5 @@
-import * as workspace from '../../workspace/workspace.js';
-import { fetchLiveNote } from './fileops.js';
+// Modified for VibeMind (Flissel/rowboat vibemind): knowledge listing moved to fileops.ts, skips knowledge/Kanal/ (Teil E, fix round 4).
+import { fetchLiveNote, listKnowledgeMarkdownFiles } from './fileops.js';
 import { runLiveNoteAgent } from './runner.js';
 import type { EventConsumer, EventConsumerTarget } from '../../events/consumer.js';
 import { routeBatch } from '../../events/routing.js';
@@ -16,17 +16,6 @@ async function resolveRoutingModel() {
         modelId,
         providerName: provider,
     };
-}
-
-async function listKnowledgeMarkdownFiles(): Promise<string[]> {
-    try {
-        const entries = await workspace.readdir('knowledge', { recursive: true });
-        return entries
-            .filter(e => e.kind === 'file' && e.name.endsWith('.md'))
-            .map(e => e.path.replace(/^knowledge\//, ''));
-    } catch {
-        return [];
-    }
 }
 
 async function listEligibleTargets(): Promise<EventConsumerTarget[]> {

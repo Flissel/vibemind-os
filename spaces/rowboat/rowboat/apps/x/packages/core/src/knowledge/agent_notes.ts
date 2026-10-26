@@ -1,3 +1,4 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): agent_notes sandbox scope (Teil E).
 import fs from 'fs';
 import path from 'path';
 import { WorkDir } from '../config/config.js';
@@ -298,6 +299,8 @@ async function processAgentNotes(): Promise<void> {
             message,
             useCase: 'knowledge_sync',
             subUseCase: 'agent_notes',
+            // Headless sandbox (Teil E): the only run that may write Agent Notes.
+            sandbox: { ownDirs: ['knowledge/Agent Notes/'] },
             ...asRunModelOptions(await getKgModel()),
             throwOnError: true,
         });

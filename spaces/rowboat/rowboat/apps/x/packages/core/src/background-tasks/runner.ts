@@ -1,3 +1,4 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): background-task agent sandbox scope = its own folder (Teil E).
 import type { BackgroundTask, BackgroundTaskTriggerType } from '@x/shared/dist/background-task.js';
 import { PrefixLogger } from '@x/shared/dist/prefix-logger.js';
 import { fetchTask, patchTask, prependRunId } from './fileops.js';
@@ -164,6 +165,12 @@ export async function runBackgroundTask(
             message: buildMessage(slug, task, trigger, context, codeProject),
             useCase: 'background_task_agent',
             subUseCase: trigger,
+            // Headless sandbox (Teil E): its own artifacts, read access to its
+            // folder; task.yaml stays runtime-owned.
+            sandbox: {
+                ownFiles: [`bg-tasks/${slug}/index.md`, `bg-tasks/${slug}/index.html`],
+                readDirs: [`bg-tasks/${slug}/`],
+            },
             model,
             ...(provider ? { provider } : {}),
             ...(effort ? { reasoningEffort: effort } : {}),

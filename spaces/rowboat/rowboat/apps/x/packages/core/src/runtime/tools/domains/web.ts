@@ -1,8 +1,11 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): fetch-url in channel runs goes through channel-fetch (Teil E).
 // Builtin tools: web domain. Entries moved VERBATIM from the historical
 // monolith — the merge order in ../builtin-tools.ts preserves the original
 // catalog key order (provider-payload bytes; see the key-order test there).
 
 import { z } from "zod";
+import type { ToolContext } from "../exec-tool.js";
+import { channelFetch } from "../channel-fetch.js";
 import * as path from "path";
 import * as fs from "fs/promises";
 import { WorkDir } from "../../../config/config.js";
@@ -149,7 +152,15 @@ export const fetchUrlTools: z.infer<typeof BuiltinToolsSchema> = {
             headers: z.record(z.string(), z.string()).optional().describe('Optional request headers.'),
             body: z.string().optional().describe('Request body (for POST).'),
         }),
-        execute: async ({ url, method, headers, body }: { url: string; method?: string; headers?: Record<string, string>; body?: string }) => {
+        execute: async ({ url, method, headers, body }: { url: string; method?: string; headers?: Record<string, string>; body?: string }, ctx?: ToolContext) => {
+            if (ctx?.channel) {
+                // Channel runs (VibeMind Teil E): GET/HEAD only, no custom
+                // headers, no internal hosts, redirects re-checked per hop.
+                if (headers && Object.keys(headers).length > 0) {
+                    return { ok: false, status: 0, error: 'fetch-url with custom headers is not allowed in channel runs.' };
+                }
+                return channelFetch(url, method);
+            }
             try {
                 const parsed = new URL(url);
                 if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {

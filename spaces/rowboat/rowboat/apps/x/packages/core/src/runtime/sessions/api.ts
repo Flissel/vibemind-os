@@ -1,3 +1,4 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): SendMessageConfig.channel pass-through (Teil E).
 import type { z } from "zod";
 import type { UseCase } from "@x/shared/dist/analytics.js";
 import type { UserMessage } from "@x/shared/dist/message.js";
@@ -40,6 +41,12 @@ export interface SendMessageConfig {
     // when it is steered into a live one; a queued entry carries it until
     // then. Recorded, never read, by the runtime — see @x/shared origins.
     origin?: InputOrigin;
+    // Modified for VibeMind (Flissel/rowboat vibemind): set only by the
+    // mobile-channel bridge — the turn runs without tools that have external
+    // effect (runtime/turns/channel-run-guard.ts). Lands on the turn only
+    // when the message starts one: sendOrQueueMessage steering into a live
+    // turn keeps that turn's own restriction.
+    channel?: { readOnlyMcpTools: string[] };
 }
 
 export interface ISessions {

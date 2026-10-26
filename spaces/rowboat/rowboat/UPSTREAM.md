@@ -8,13 +8,27 @@ To re-pin the kernel plugin catalog, change `DESKTOP_PLUGIN_CATALOG_PIN` on bran
 Flissel/rowboat (in `apps/x/apps/renderer/src/lib/rowboat-plugin-api.ts`), then run the sync.
 
 - Fork: https://github.com/Flissel/rowboat (branch `vibemind`)
-- Fork commit: `13e010047bd93a6d2ad491aca5211403d9262709`
+- Fork commit: `244f0c844a86e27bf083260aa6b89c19ca58acce`
 - Upstream base: rowboatlabs/rowboat `72e9d8c`
 - EHL repo: https://github.com/Flissel/ehl-munich-2026 (`schema/`)
 - EHL commit: `44c1024c7804c696bc283bd14a9d08bd87a38230`
 
 ## Patches on top of upstream (EHL hierarchy graph, VibeMind)
 
+- 244f0c84 fix(channels): todo-propose nicht fuer Kanal-Laeufe (Teil E, Runde 5)
+- d8761438 fix(channels): Quarantaene ohne uebersprungene Zeichenketten (Teil E, Runde 4)
+- 47540379 fix(channels): Quarantaene prueft jedes Zeichenketten-Argument (Teil E, Runde 4)
+- 7bf3414c fix(channels): Hintergrund-Scanner ueberspringen knowledge/Kanal/ (Teil E, Runde 4)
+- dfa5c512 fix(channels): Kanal-Quarantaene fuer Kanal-Laeufe (Teil E, Runde 4)
+- e8d08f73 fix(channels): Sandbox fuer Hintergrundlaeufe (Teil E, Runde 3)
+- 4220ba7d fix(channels): Task-Fences auch mit ~~~, 4+ Backticks und language-task erkennen (Teil E, Runde 3)
+- 43317da6 fix(channels): keine Autorun-Notizen aus Kanal- und Hintergrundlaeufen (Teil E, Runde 2)
+- 277b2613 fix(channels): fetch-url im Kanal mit Zeitlimit und begrenztem Lesen (Teil E, Runde 2)
+- 56b3bc1f fix(channels): Waechter gegen Klammer-Globs, Live-Notizen, Agent Notes (Teil E, Runde 1)
+- d698dc9f fix(channels): fetch-url in Kanal-Laeufen ohne interne Ziele (Teil E, Runde 1)
+- 3b48f3e9 fix(channels): Kanal-Laeufe ohne Aussenwirkung (Teil E)
+- 71e9256e fix(channels): Laufzeit setzt Kanal-Lauf-Waechter durch (Teil E)
+- ddc59079 fix(channels): Kanal-Lauf-Waechter und Turn-Flag (Teil E)
 - 13e01004 merge: origin/vibemind (3D-Graph-Fixes, open-url) nach Upstream-Merge
 - 4482ca5a merge: upstream/main (48 Commits bis 31931b32) in vibemind
 - 31931b32 x: Brain graph no longer freezes the app or collapses into one pile (#1225)

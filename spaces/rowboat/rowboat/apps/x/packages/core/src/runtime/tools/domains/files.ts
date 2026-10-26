@@ -1,3 +1,4 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): channel read filter for file-grep / file-glob / file-list, autorun-content check for write tools, channel quarantine (Teil E).
 // Builtin tools: files domain. Entries moved VERBATIM from the historical
 // monolith — the merge order in ../builtin-tools.ts preserves the original
 // catalog key order (provider-payload bytes; see the key-order test there).
@@ -6,6 +7,28 @@ import { z } from "zod";
 import * as files from "../../../filesystem/files.js";
 import { WorkDir } from "../../../config/config.js";
 import { BuiltinToolsSchema } from "../types.js";
+import type { ToolContext } from "../exec-tool.js";
+import { ChannelRunGuard } from "../../turns/channel-run-guard.js";
+import { autorunIntroductionError } from "../../../knowledge/autorun-write-check.js";
+import { sandboxChecker } from "../headless-sandbox.js";
+import { quarantineChecker, quarantineMode } from "../channel-quarantine.js";
+
+// Per-match read filter for grep / glob: channel runs and sandboxed (headless)
+// runs each add their rule; desktop turns get none.
+function matchFilter(ctx?: ToolContext): ((absPath: string) => Promise<boolean>) | undefined {
+    const filters: Array<(absPath: string) => Promise<boolean>> = [];
+    if (ctx?.channel) filters.push(new ChannelRunGuard().readFilter());
+    if (ctx?.headlessSandbox) filters.push(sandboxChecker().readFilter(ctx.headlessSandbox));
+    // Non-desktop runs never see the channel quarantine knowledge/Kanal/.
+    if (quarantineMode(ctx) === "blocked") filters.push(quarantineChecker().readFilter());
+    if (filters.length === 0) return undefined;
+    return async (absPath) => {
+        for (const filter of filters) {
+            if (!(await filter(absPath))) return false;
+        }
+        return true;
+    };
+}
 
 
 export const fileTools: z.infer<typeof BuiltinToolsSchema> = {
@@ -80,14 +103,22 @@ export const fileTools: z.infer<typeof BuiltinToolsSchema> = {
             includeStats?: boolean;
             includeHidden?: boolean;
             allowedExtensions?: string[];
-        }) => {
+        }, ctx?: ToolContext) => {
             try {
-                return await files.list(filePath || '.', {
+                const entries = await files.list(filePath || '.', {
                     recursive,
                     includeStats,
                     includeHidden,
                     allowedExtensions,
                 });
+                // VibeMind Teil E: same per-entry filter as grep / glob.
+                const filter = matchFilter(ctx);
+                if (!filter) return entries;
+                const visible: typeof entries = [];
+                for (const entry of entries) {
+                    if (await filter(entry.resolvedPath)) visible.push(entry);
+                }
+                return visible;
             } catch (error) {
                 return {
                     error: error instanceof Error ? error.message : 'Unknown error',
@@ -145,7 +176,11 @@ export const fileTools: z.infer<typeof BuiltinToolsSchema> = {
             atomic?: boolean;
             mkdirp?: boolean;
             expectedEtag?: string;
-        }) => {
+        }, ctx?: ToolContext) => {
+            const autorunError = ctx?.autorunContentForbidden
+                ? await autorunIntroductionError('file-writeText', { path: filePath, data })
+                : null;
+            if (autorunError) return { error: autorunError };
             try {
                 return await files.writeText(filePath, data, {
                     atomic,
@@ -179,7 +214,11 @@ export const fileTools: z.infer<typeof BuiltinToolsSchema> = {
             oldString: string;
             newString: string;
             replaceAll?: boolean;
-        }) => {
+        }, ctx?: ToolContext) => {
+            const autorunError = ctx?.autorunContentForbidden
+                ? await autorunIntroductionError('file-editText', { path: filePath, oldString, newString, replaceAll })
+                : null;
+            if (autorunError) return { error: autorunError };
             try {
                 return await files.editText(filePath, oldString, newString, replaceAll);
             } catch (error) {
@@ -214,7 +253,11 @@ export const fileTools: z.infer<typeof BuiltinToolsSchema> = {
             to: z.string().min(1).describe('Destination path'),
             overwrite: z.boolean().optional().describe('Overwrite destination if it exists (default: false)'),
         }),
-        execute: async ({ from, to, overwrite = false }: { from: string; to: string; overwrite?: boolean }) => {
+        execute: async ({ from, to, overwrite = false }: { from: string; to: string; overwrite?: boolean }, ctx?: ToolContext) => {
+            const autorunError = ctx?.autorunContentForbidden
+                ? await autorunIntroductionError('file-rename', { from, to })
+                : null;
+            if (autorunError) return { error: autorunError };
             try {
                 return await files.rename(from, to, overwrite);
             } catch (error) {
@@ -233,7 +276,11 @@ export const fileTools: z.infer<typeof BuiltinToolsSchema> = {
             to: z.string().min(1).describe('Destination file path'),
             overwrite: z.boolean().optional().describe('Overwrite destination if it exists (default: false)'),
         }),
-        execute: async ({ from, to, overwrite = false }: { from: string; to: string; overwrite?: boolean }) => {
+        execute: async ({ from, to, overwrite = false }: { from: string; to: string; overwrite?: boolean }, ctx?: ToolContext) => {
+            const autorunError = ctx?.autorunContentForbidden
+                ? await autorunIntroductionError('file-copy', { from, to })
+                : null;
+            if (autorunError) return { error: autorunError };
             try {
                 return await files.copy(from, to, overwrite);
             } catch (error) {
@@ -273,9 +320,9 @@ export const fileTools: z.infer<typeof BuiltinToolsSchema> = {
             pattern: z.string().describe('Glob pattern to match files'),
             cwd: z.string().optional().describe('Directory to search in (default: default root)'),
         }),
-        execute: async ({ pattern, cwd }: { pattern: string; cwd?: string }) => {
+        execute: async ({ pattern, cwd }: { pattern: string; cwd?: string }, ctx?: ToolContext) => {
             try {
-                return await files.glob(pattern, cwd);
+                return await files.glob(pattern, cwd, matchFilter(ctx));
             } catch (error) {
                 return { error: error instanceof Error ? error.message : 'Unknown error' };
             }
@@ -304,9 +351,13 @@ export const fileTools: z.infer<typeof BuiltinToolsSchema> = {
             fileGlob?: string;
             contextLines?: number;
             maxResults?: number;
-        }) => {
+        }, ctx?: ToolContext) => {
             try {
-                return await files.grep({ pattern, searchPath, fileGlob, contextLines, maxResults });
+                return await files.grep({
+                    pattern, searchPath, fileGlob, contextLines, maxResults,
+                    // Channel runs: every match must pass the read filter.
+                    ...(matchFilter(ctx) ? { pathFilter: matchFilter(ctx) } : {}),
+                });
             } catch (error) {
                 return { error: error instanceof Error ? error.message : 'Unknown error' };
             }

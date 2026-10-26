@@ -1,3 +1,4 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): curation skips the channel quarantine knowledge/Kanal/ (Teil E, fix round 4).
 import fs from 'fs';
 import path from 'path';
 import { WorkDir } from '../config/config.js';
@@ -21,6 +22,7 @@ import { knowledgeSourcesRepo } from './sources/repo.js';
 import { syncSlackKnowledgeSources } from './sources/sync_slack.js';
 import type { KnowledgeSourceConfig } from './sources/types.js';
 import { loadUserConfig } from '../config/user_config.js';
+import { isQuarantinedPath } from './quarantine.js';
 
 /**
  * Build obsidian-style knowledge graph by running topic extraction
@@ -903,11 +905,11 @@ function parseCuratedAt(content: string): Date | null {
     return isNaN(d.getTime()) ? null : d;
 }
 
-function findCurationCandidates(): { path: string; activityCount: number }[] {
+export function findCurationCandidates(): { path: string; activityCount: number }[] {
     const candidates: { path: string; activityCount: number; mtime: number }[] = [];
     for (const folder of CURATION_ENTITY_FOLDERS) {
         const dir = path.join(NOTES_OUTPUT_DIR, folder);
-        if (!fs.existsSync(dir)) continue;
+        if (isQuarantinedPath(dir) || !fs.existsSync(dir)) continue;
         for (const entry of fs.readdirSync(dir)) {
             if (!entry.endsWith('.md')) continue;
             const filePath = path.join(dir, entry);

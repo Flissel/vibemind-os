@@ -1,3 +1,4 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): forwards ToolExecutionContext.channel to builtins (Teil E).
 import type { ChildProcess } from "child_process";
 import type { z } from "zod";
 import type { ToolAttachment } from "@x/shared/dist/agent.js";
@@ -177,6 +178,14 @@ export class RealToolRegistry implements IToolRegistry {
                             toolCallId: ctx.toolCallId,
                             signal: ctx.signal,
                             abortRegistry,
+                            // VibeMind Teil E: execution-time channel layers.
+                            ...(ctx.channel ? { channel: ctx.channel } : {}),
+                            ...(ctx.autorunContentForbidden
+                                ? { autorunContentForbidden: true }
+                                : {}),
+                            ...(ctx.headlessSandbox
+                                ? { headlessSandbox: ctx.headlessSandbox }
+                                : {}),
                             publish: async (event) => {
                                 if (event.type === "tool-output-stream") {
                                     await ctx.reportProgress({

@@ -1,3 +1,4 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): channel-run tests (Teil E).
 import { describe, expect, it, vi } from "vitest";
 import type { z } from "zod";
 import {
@@ -34,6 +35,8 @@ import type {
 } from "./permission.js";
 import { composeModelRequest } from "./compose-model-request.js";
 import { TurnRuntime } from "./runtime.js";
+import type { IChannelRunGuard } from "./channel-run-guard.js";
+import { quarantineMode } from "../tools/channel-quarantine.js";
 import { getCurrentUseCase } from "../../analytics/use_case.js";
 import type {
     IToolRegistry,
@@ -333,6 +336,7 @@ function makeRuntime(opts: {
     idStart?: number;
     modelRegistry?: IModelRegistry;
     toolRegistry?: IToolRegistry;
+    channelRunGuard?: IChannelRunGuard;
 } = {}) {
     const repo = opts.repo ?? new InMemoryTurnRepo();
     const models = new FakeModelRegistry(opts.models ?? []);
@@ -354,6 +358,7 @@ function makeRuntime(opts: {
         lifecycleBus: bus,
         turnEventBus,
         usageReporter: usage,
+        ...(opts.channelRunGuard ? { channelRunGuard: opts.channelRunGuard } : {}),
     });
     return { runtime, repo, models, checker, classifier, bus, turnEventBus, usage };
 }
@@ -3506,5 +3511,324 @@ describe("added inputs (steering)", () => {
             "model_call_completed",
             "turn_completed",
         ]);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Modified for VibeMind (Flissel/rowboat vibemind): channel-origin turns
+// (Teil E) — no tools with external effect, allowlisted MCP without the
+// classifier, desktop turns unchanged.
+// ---------------------------------------------------------------------------
+
+describe("channel runs (VibeMind Teil E)", () => {
+    const d = (toolId: string, name: string): z.infer<typeof ToolDescriptor> => ({
+        toolId,
+        name,
+        description: name,
+        inputSchema: {},
+        execution: "sync",
+        requiresHuman: false,
+    });
+    const fetchUrl = d("builtin:fetch-url", "fetch-url");
+    const shell = d("builtin:executeCommand", "executeCommand");
+    const addMcp = d("builtin:addMcpServer", "addMcpServer");
+    const execMcp = d("builtin:executeMcpTool", "executeMcpTool");
+    const wissen = d("mcp:wissen:search", "wissen_search");
+    const github = d("mcp:github:create_issue", "github_create_issue");
+    const channelAgent: z.infer<typeof ResolvedAgent> = {
+        agentId: "copilot",
+        systemPrompt: "SYS",
+        model: { provider: "fake", model: "m" },
+        tools: [fetchUrl, shell, addMcp, execMcp, wissen, github],
+    };
+    const channel = { readOnlyMcpTools: ["wissen:search", "exa:search"] };
+
+    function recordingTools(
+        executed: string[],
+        contexts: ToolExecutionContext[] = [],
+    ): RuntimeTool[] {
+        return channelAgent.tools.map((descriptor) =>
+            syncTool(descriptor, async (_input, ctx) => {
+                executed.push(descriptor.name);
+                contexts.push(ctx);
+                return { output: { ok: true }, isError: false };
+            }),
+        );
+    }
+
+    it("hands the channel restriction to executing tools (desktop: none)", async () => {
+        const contexts: ToolExecutionContext[] = [];
+        const run = async (config: Parameters<TurnRuntime["createTurn"]>[0]["config"]) => {
+            const { runtime } = makeRuntime({
+                agent: channelAgent,
+                tools: recordingTools([], contexts),
+                models: [
+                    respond(completedResp(assistantCalls(toolCallPart("G", "fetch-url", { url: "https://x" })))),
+                    respond(completedResp(assistantText("done"))),
+                ],
+            });
+            const turnId = await newTurn(runtime, { config });
+            await advanceAndSettle(runtime, turnId);
+        };
+        await run({ humanAvailable: true, autoPermission: true, channel });
+        await run({ humanAvailable: true, autoPermission: true });
+        expect(contexts[0].channel).toEqual(channel);
+        expect(contexts[1]).not.toHaveProperty("channel");
+    });
+
+    it("forbids autorun content for every turn except a desktop user chat", async () => {
+        const contexts: ToolExecutionContext[] = [];
+        const run = async (overrides: Partial<Parameters<TurnRuntime["createTurn"]>[0]>) => {
+            const { runtime } = makeRuntime({
+                agent: channelAgent,
+                tools: recordingTools([], contexts),
+                models: [
+                    respond(completedResp(assistantCalls(toolCallPart("G", "fetch-url", { url: "https://x" })))),
+                    respond(completedResp(assistantText("done"))),
+                ],
+            });
+            const turnId = await newTurn(runtime, overrides);
+            await advanceAndSettle(runtime, turnId);
+        };
+        // Desktop user chat: a session, copilot_chat, no channel.
+        await run({ sessionId: "s1", config: { humanAvailable: true } });
+        // Channel run, headless turn, background agent in a session.
+        await run({ sessionId: "s1", config: { humanAvailable: true, autoPermission: true, channel } });
+        await run({ sessionId: null, config: { humanAvailable: false, autoPermission: true } });
+        await run({
+            sessionId: "s1",
+            analytics: { useCase: "knowledge_sync", subUseCase: "tag_notes" },
+            config: { humanAvailable: false, autoPermission: true },
+        });
+        expect(contexts.map((c) => c.autorunContentForbidden === true)).toEqual([false, true, true, true]);
+    });
+
+    it("round 3: sandboxes headless and channel runs, not desktop turns or children of desktop chats", async () => {
+        const contexts: ToolExecutionContext[] = [];
+        const run = async (overrides: Partial<Parameters<TurnRuntime["createTurn"]>[0]>) => {
+            const { runtime, repo } = makeRuntime({
+                agent: channelAgent,
+                tools: recordingTools([], contexts),
+                models: [
+                    respond(completedResp(assistantCalls(toolCallPart("G", "fetch-url", { url: "https://x" })))),
+                    respond(completedResp(assistantText("done"))),
+                ],
+            });
+            const turnId = await newTurn(runtime, overrides);
+            await advanceAndSettle(runtime, turnId);
+            return (await persisted(repo, turnId))[0] as Extract<TEvent, { type: "turn_created" }>;
+        };
+        const own = { ownFiles: ["knowledge/Live.md"], ownDirs: [], readDirs: [] };
+        await run({ sessionId: "s1", config: { humanAvailable: true } });
+        await run({ sessionId: "s1", config: { humanAvailable: true, autoPermission: true, channel } });
+        const headless = await run({ sessionId: null, config: { humanAvailable: false, autoPermission: true, sandbox: own } });
+        await run({ sessionId: null, config: { humanAvailable: false, autoPermission: true, sandbox: { exempt: true } } });
+        expect(headless.config.sandbox).toEqual(own);
+        expect(contexts[0]).not.toHaveProperty("headlessSandbox");
+        expect(contexts[1].headlessSandbox).toEqual({ ownFiles: [], ownDirs: [], readDirs: [] });
+        expect(contexts[2].headlessSandbox).toEqual(own);
+        expect(contexts[3]).not.toHaveProperty("headlessSandbox");
+        // A child spawned from a desktop chat is treated like the chat.
+        expect(contexts[3]).not.toHaveProperty("autorunContentForbidden");
+    });
+
+    it("round 4: todo and code sessions count as autonomous (quarantine closed), the desktop chat does not", async () => {
+        const contexts: ToolExecutionContext[] = [];
+        const run = async (overrides: Partial<Parameters<TurnRuntime["createTurn"]>[0]>) => {
+            const { runtime } = makeRuntime({
+                agent: channelAgent,
+                tools: recordingTools([], contexts),
+                models: [
+                    respond(completedResp(assistantCalls(toolCallPart("G", "fetch-url", { url: "https://x" })))),
+                    respond(completedResp(assistantText("done"))),
+                ],
+            });
+            const turnId = await newTurn(runtime, overrides);
+            await advanceAndSettle(runtime, turnId);
+        };
+        await run({ sessionId: "s1", analytics: { useCase: "copilot_chat" }, config: { humanAvailable: true } });
+        await run({ sessionId: "s1", analytics: { useCase: "todo_item_agent" }, config: { humanAvailable: false, autoPermission: true } });
+        await run({ sessionId: "s1", analytics: { useCase: "code_session" }, config: { humanAvailable: false, autoPermission: true } });
+        expect(contexts.map((c) => c.autorunContentForbidden === true)).toEqual([false, true, true]);
+        expect(contexts.map((c) => quarantineMode(c))).toEqual([null, "blocked", "blocked"]);
+    });
+
+    it("round 4: a channel turn's system prompt points at knowledge/Kanal/, a desktop turn's does not", async () => {
+        const prompts: string[] = [];
+        for (const config of [
+            { humanAvailable: true, autoPermission: true, channel },
+            { humanAvailable: true },
+        ]) {
+            const { runtime, models } = makeRuntime({
+                agent: channelAgent,
+                tools: recordingTools([]),
+                models: [respond(completedResp(assistantText("done")))],
+            });
+            const turnId = await newTurn(runtime, { config });
+            await advanceAndSettle(runtime, turnId);
+            prompts.push(models.requests[0].systemPrompt);
+        }
+        expect(prompts[0]).toContain("knowledge/Kanal/");
+        expect(prompts[0].startsWith(channelAgent.systemPrompt)).toBe(true);
+        expect(prompts[1]).toBe(channelAgent.systemPrompt);
+    });
+
+    function resultFor(log: TEvent[], toolCallId: string) {
+        return log.find(
+            (e): e is Extract<TEvent, { type: "tool_result" }> =>
+                e.type === "tool_result" && e.toolCallId === toolCallId,
+        );
+    }
+
+    it("does not offer shell / MCP-config / non-allowlisted MCP tools", async () => {
+        const executed: string[] = [];
+        const { runtime, repo, models } = makeRuntime({
+            agent: channelAgent,
+            tools: recordingTools(executed),
+            models: [respond(completedResp(assistantText("hi")))],
+        });
+        const turnId = await newTurn(runtime, {
+            config: { humanAvailable: true, autoPermission: true, channel },
+        });
+        await advanceAndSettle(runtime, turnId);
+        const log = await persisted(repo, turnId);
+        const created = log[0] as Extract<TEvent, { type: "turn_created" }>;
+        expect(created.config.channel).toEqual(channel);
+        const offered = (created.agent.resolved as { tools: Array<{ name: string }> }).tools.map((t) => t.name);
+        expect(offered).toEqual(["fetch-url", "executeMcpTool", "wissen_search"]);
+        const sentTools = (models.requests[0] as unknown as { tools: Array<{ name: string }> }).tools.map((t) => t.name);
+        expect(sentTools).toEqual(offered);
+    });
+
+    it("refuses fetch-url POST and a called-anyway executeCommand without executing", async () => {
+        const executed: string[] = [];
+        const checker = new FakePermissionChecker();
+        const { runtime, repo } = makeRuntime({
+            agent: channelAgent,
+            tools: recordingTools(executed),
+            checker,
+            models: [
+                respond(completedResp(assistantCalls(
+                    toolCallPart("P", "fetch-url", { url: "https://x", method: "POST", body: "secret" }),
+                    toolCallPart("G", "fetch-url", { url: "https://x" }),
+                    toolCallPart("S", "executeCommand", { command: "cat config/channels.json" }),
+                    toolCallPart("A", "addMcpServer", { serverName: "x", config: {} }),
+                ))),
+                respond(completedResp(assistantText("done"))),
+            ],
+        });
+        const turnId = await newTurn(runtime, {
+            config: { humanAvailable: true, autoPermission: true, channel },
+        });
+        const { outcome } = await advanceAndSettle(runtime, turnId);
+        expect(outcome?.status).toBe("completed");
+        const log = await persisted(repo, turnId);
+        expect(resultFor(log, "P")).toMatchObject({ source: "runtime", result: { isError: true } });
+        expect(JSON.stringify(resultFor(log, "P")?.result.output)).toContain("GET");
+        expect(resultFor(log, "S")).toMatchObject({ source: "runtime", result: { isError: true } });
+        expect(resultFor(log, "A")).toMatchObject({ source: "runtime", result: { isError: true } });
+        expect(resultFor(log, "G")).toMatchObject({ source: "sync", result: { isError: false } });
+        expect(executed).toEqual(["fetch-url"]);
+        expect(checker.calls.map((c) => c.toolCallId)).toEqual(["G"]);
+    });
+
+    it("auto-approves allowlisted MCP without checker or classifier; refuses other servers", async () => {
+        const executed: string[] = [];
+        // Desktop policy would require permission for both MCP paths.
+        const checker = new FakePermissionChecker({
+            wissen_search: { request: { kind: "mcp" } },
+            executeMcpTool: { request: { kind: "mcp" } },
+        });
+        // Throws if called: the classifier must stay out of channel runs.
+        const classifier = new FakePermissionClassifier();
+        const { runtime, repo } = makeRuntime({
+            agent: channelAgent,
+            tools: recordingTools(executed),
+            checker,
+            classifier,
+            models: [
+                respond(completedResp(assistantCalls(
+                    toolCallPart("W", "wissen_search", { q: "x" }),
+                    toolCallPart("E", "executeMcpTool", { serverName: "exa", toolName: "search" }),
+                    toolCallPart("X", "executeMcpTool", { serverName: "github", toolName: "create_issue" }),
+                    toolCallPart("Y", "executeMcpTool", { serverName: "exa", toolName: "crawl_everything" }),
+                ))),
+                respond(completedResp(assistantText("done"))),
+            ],
+        });
+        const turnId = await newTurn(runtime, {
+            config: { humanAvailable: true, autoPermission: true, channel },
+        });
+        const { outcome } = await advanceAndSettle(runtime, turnId);
+        expect(outcome?.status).toBe("completed");
+        const log = await persisted(repo, turnId);
+        expect(resultFor(log, "W")).toMatchObject({ source: "sync", result: { isError: false } });
+        expect(resultFor(log, "E")).toMatchObject({ source: "sync", result: { isError: false } });
+        expect(resultFor(log, "X")).toMatchObject({ source: "runtime", result: { isError: true } });
+        // Allowlist is per server:tool — another tool on an allowlisted server is refused.
+        expect(resultFor(log, "Y")).toMatchObject({ source: "runtime", result: { isError: true } });
+        expect(executed.sort()).toEqual(["executeMcpTool", "wissen_search"]);
+        expect(classifier.batches).toEqual([]);
+        expect(checker.calls).toEqual([]);
+        expect(log.some((e) => e.type === "tool_permission_required")).toBe(false);
+    });
+
+    it("desktop turns are unchanged: full tool set, POST runs, MCP goes through checker + classifier", async () => {
+        const executed: string[] = [];
+        const checker = new FakePermissionChecker({ executeMcpTool: { request: { kind: "mcp" } } });
+        const classifier = new FakePermissionClassifier((requests) =>
+            requests.map((r) => ({ toolCallId: r.toolCallId, decision: "allow" as const, reason: "ok" })),
+        );
+        const { runtime, repo } = makeRuntime({
+            agent: channelAgent,
+            tools: recordingTools(executed),
+            checker,
+            classifier,
+            models: [
+                respond(completedResp(assistantCalls(
+                    toolCallPart("P", "fetch-url", { url: "https://x", method: "POST" }),
+                    toolCallPart("S", "executeCommand", { command: "ls" }),
+                    toolCallPart("X", "executeMcpTool", { serverName: "github", toolName: "create_issue" }),
+                ))),
+                respond(completedResp(assistantText("done"))),
+            ],
+        });
+        const turnId = await newTurn(runtime, {
+            config: { humanAvailable: true, autoPermission: true },
+        });
+        const { outcome } = await advanceAndSettle(runtime, turnId);
+        expect(outcome?.status).toBe("completed");
+        const log = await persisted(repo, turnId);
+        const created = log[0] as Extract<TEvent, { type: "turn_created" }>;
+        expect(created.config.channel).toBeUndefined();
+        expect((created.agent.resolved as { tools: unknown[] }).tools).toHaveLength(6);
+        expect(executed.sort()).toEqual(["executeCommand", "executeMcpTool", "fetch-url"]);
+        expect(classifier.batches).toHaveLength(1);
+        expect(checker.calls.map((c) => c.toolName)).toEqual(["fetch-url", "executeCommand", "executeMcpTool"]);
+    });
+
+    it("a failing guard fails closed: the call is refused, nothing executes", async () => {
+        const executed: string[] = [];
+        const { runtime, repo } = makeRuntime({
+            agent: channelAgent,
+            tools: recordingTools(executed),
+            channelRunGuard: {
+                offers: () => true,
+                check: async () => {
+                    throw new Error("boom");
+                },
+            },
+            models: [
+                respond(completedResp(assistantCalls(toolCallPart("G", "fetch-url", { url: "https://x" })))),
+                respond(completedResp(assistantText("done"))),
+            ],
+        });
+        const turnId = await newTurn(runtime, {
+            config: { humanAvailable: true, autoPermission: true, channel },
+        });
+        await advanceAndSettle(runtime, turnId);
+        const log = await persisted(repo, turnId);
+        expect(resultFor(log, "G")).toMatchObject({ source: "runtime", result: { isError: true } });
+        expect(executed).toEqual([]);
     });
 });

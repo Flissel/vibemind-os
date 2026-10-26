@@ -1,3 +1,4 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): detection helpers moved to autorun-triggers.ts; scanner skips knowledge/Kanal/ (Teil E).
 import fs from 'fs';
 import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
@@ -10,6 +11,14 @@ import { createLanguageModel } from '../models/models.js';
 import { inlineTask } from '@x/shared';
 import { captureLlmUsage } from '../analytics/usage.js';
 import { withUseCase } from '../analytics/use_case.js';
+import { isQuarantinedPath } from './quarantine.js';
+// Modified for VibeMind (Flissel/rowboat vibemind): frontmatter + fence detection
+// shared with the channel/background write guards (Teil E) — one parser.
+import {
+    extractAllFrontmatterValues,
+    isInlineTaskFenceStart,
+    splitInlineTaskFrontmatter,
+} from './autorun-triggers.js';
 
 const SYNC_INTERVAL_MS = 15 * 1000; // 15 seconds
 const INLINE_TASK_AGENT = 'inline_task_agent';
@@ -21,64 +30,9 @@ const KNOWLEDGE_DIR = path.join(WorkDir, 'knowledge');
 // dependency — can be moved to shared later).
 // ---------------------------------------------------------------------------
 
-function splitFrontmatter(content: string): { raw: string | null; body: string } {
-    if (!content.startsWith('---')) {
-        return { raw: null, body: content };
-    }
-    const endIndex = content.indexOf('\n---', 3);
-    if (endIndex === -1) {
-        return { raw: null, body: content };
-    }
-    const closingEnd = endIndex + 4;
-    const raw = content.slice(0, closingEnd);
-    let body = content.slice(closingEnd);
-    if (body.startsWith('\n')) {
-        body = body.slice(1);
-    }
-    return { raw, body };
-}
-
 function joinFrontmatter(raw: string | null, body: string): string {
     if (!raw) return body;
     return raw + '\n' + body;
-}
-
-function extractAllFrontmatterValues(raw: string | null): Record<string, string | string[]> {
-    const result: Record<string, string | string[]> = {};
-    if (!raw) return result;
-
-    const lines = raw.split('\n');
-    let currentKey: string | null = null;
-
-    for (const line of lines) {
-        if (line === '---' || line.trim() === '') {
-            currentKey = null;
-            continue;
-        }
-        const topMatch = line.match(/^(\w[\w\s]*\w|\w+):\s*(.*)$/);
-        if (topMatch) {
-            const key = topMatch[1];
-            const value = topMatch[2].trim();
-            if (value) {
-                result[key] = value;
-                currentKey = null;
-            } else {
-                currentKey = key;
-                result[key] = [];
-            }
-            continue;
-        }
-        if (currentKey) {
-            const itemMatch = line.match(/^\s+-\s+(.+)$/);
-            if (itemMatch) {
-                const arr = result[currentKey];
-                if (Array.isArray(arr)) {
-                    arr.push(itemMatch[1].trim());
-                }
-            }
-        }
-    }
-    return result;
 }
 
 function buildFrontmatter(fields: Record<string, string | string[]>): string | null {
@@ -113,13 +67,15 @@ type InlineTaskSchedule =
 // Helpers
 // ---------------------------------------------------------------------------
 
-function scanDirectoryRecursive(dir: string): string[] {
+export function scanDirectoryRecursive(dir: string): string[] {
     if (!fs.existsSync(dir)) return [];
     const files: string[] = [];
     const entries = fs.readdirSync(dir);
     for (const entry of entries) {
         if (entry.startsWith('.')) continue;
         const fullPath = path.join(dir, entry);
+        // VibeMind Teil E: channel output never feeds the inline-task agent.
+        if (isQuarantinedPath(fullPath)) continue;
         const stat = fs.statSync(fullPath);
         if (stat.isDirectory()) {
             files.push(...scanDirectoryRecursive(fullPath));
@@ -261,7 +217,7 @@ function findPendingTasks(body: string): InlineTask[] {
     let i = 0;
     while (i < lines.length) {
         const trimmed = lines[i].trim();
-        if (trimmed.startsWith('```task') || trimmed.startsWith('```tell-rowboat')) {
+        if (isInlineTaskFenceStart(trimmed)) {
             const startLine = i;
             i++;
             const contentLines: string[] = [];
@@ -343,7 +299,7 @@ function hasLiveTasks(body: string): boolean {
     let i = 0;
     while (i < lines.length) {
         const trimmed = lines[i].trim();
-        if (trimmed.startsWith('```task') || trimmed.startsWith('```tell-rowboat')) {
+        if (isInlineTaskFenceStart(trimmed)) {
             i++;
             const contentLines: string[] = [];
             while (i < lines.length && lines[i].trim() !== '```') {
@@ -429,7 +385,7 @@ async function processInlineTasks(): Promise<void> {
             continue;
         }
 
-        const { raw, body } = splitFrontmatter(content);
+        const { raw, body } = splitInlineTaskFrontmatter(content);
         const fields = extractAllFrontmatterValues(raw);
 
         // Only process files marked as live
@@ -484,6 +440,8 @@ async function processInlineTasks(): Promise<void> {
                     message,
                     useCase: 'knowledge_sync',
                     subUseCase: 'inline_task_run',
+                    // Headless sandbox (Teil E): its own target note only.
+                    sandbox: { ownFiles: [path.relative(WorkDir, filePath).split(path.sep).join('/')] },
                     ...asRunModelOptions(await getKgModel()),
                 });
                 if (result) {

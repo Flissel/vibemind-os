@@ -1,3 +1,4 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): CreateTurnInput.config.channel (Teil E).
 import type { z } from "zod";
 import type { TurnAnalytics } from "@x/shared/dist/analytics.js";
 import type { AssistantMessage, UserMessage } from "@x/shared/dist/message.js";
@@ -28,7 +29,21 @@ export interface CreateTurnInput {
         // Canonical per-turn reasoning effort; omitted = auto (provider
         // default, byte-identical requests to today).
         reasoningEffort?: "low" | "medium" | "high";
+        // Modified for VibeMind (Flissel/rowboat vibemind): set by the
+        // mobile-channel bridge only. Restricts the turn to tools without
+        // external effect (see channel-run-guard.ts); omitted = desktop turn.
+        channel?: { readOnlyMcpTools: string[] };
+        // VibeMind Teil E round 3: scope of the headless-run sandbox (see
+        // shared turns.ts config.sandbox).
+        sandbox?: TurnSandboxScope;
     };
+}
+
+export interface TurnSandboxScope {
+    exempt?: boolean;
+    ownFiles?: string[];
+    ownDirs?: string[];
+    readDirs?: string[];
 }
 
 // Steering: a caller-supplied drain the advance polls at each model-call

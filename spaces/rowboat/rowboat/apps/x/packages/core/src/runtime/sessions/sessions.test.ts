@@ -1,3 +1,4 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): SendMessageConfig.channel pass-through (Teil E).
 import { projectSessionComposition } from '../../code-mode/sessions/composition.js';
 import { describe, expect, it } from "vitest";
 import type { z } from "zod";
@@ -66,6 +67,7 @@ function createdEvent(turnId: string, input: CreateTurnInput): TEvent {
             autoPermission: input.config.autoPermission ?? false,
             humanAvailable: input.config.humanAvailable,
             maxModelCalls: input.config.maxModelCalls ?? 20,
+            ...(input.config.channel ? { channel: input.config.channel } : {}),
         },
     };
 }
@@ -390,7 +392,74 @@ describe("createSession and listing", () => {
     });
 });
 
+// VibeMind Teil E: a completed log whose turn ran as a channel run.
+function channelLog(turnId: string, sessionId: string): TEvent[] {
+    const log = turnLog(turnId, sessionId, "completed");
+    const created = log[0] as Extract<TEvent, { type: "turn_created" }>;
+    log[0] = { ...created, config: { ...created.config, channel: { readOnlyMcpTools: [] } } };
+    return log;
+}
+
 describe("sendMessage (13.3)", () => {
+    // Modified for VibeMind (Flissel/rowboat vibemind): channel flag pass-through (Teil E).
+    it("passes the channel-run restriction to the turn; omits it otherwise", async () => {
+        const { sessions, fake } = makeSessions();
+        const sessionId = await sessions.createSession();
+        await sessions.sendMessage(sessionId, user("hi"), {
+            agent: { agentId: "copilot" },
+            autoPermission: true,
+            channel: { readOnlyMcpTools: ["wissen"] },
+        });
+        expect(fake.createTurnInputs[0].config).toEqual({
+            humanAvailable: true,
+            autoPermission: true,
+            channel: { readOnlyMcpTools: ["wissen"] },
+        });
+    });
+
+    it("a desktop turn right after a channel turn runs without automatic permission", async () => {
+        const { sessions, fake } = makeSessions();
+        const sessionId = await sessions.createSession();
+        const first = await sessions.sendMessage(sessionId, user("from telegram"), {
+            agent: { agentId: "copilot" },
+            autoPermission: true,
+            channel: { readOnlyMcpTools: [] },
+        });
+        fake.setLog(first.turnId, channelLog(first.turnId, sessionId));
+        const second = await sessions.sendMessage(sessionId, user("from desktop"), {
+            agent: { agentId: "copilot" },
+            autoPermission: true,
+        });
+        expect(fake.createTurnInputs[1].config).toEqual({
+            humanAvailable: true,
+            autoPermission: false,
+        });
+        fake.setLog(second.turnId, turnLog(second.turnId, sessionId, "completed"));
+        // Only the turn directly after the channel turn is downgraded.
+        await sessions.sendMessage(sessionId, user("again"), {
+            agent: { agentId: "copilot" },
+            autoPermission: true,
+        });
+        expect(fake.createTurnInputs[2].config).toEqual({
+            humanAvailable: true,
+            autoPermission: true,
+        });
+    });
+
+    it("a channel turn after a channel turn keeps its own settings", async () => {
+        const { sessions, fake } = makeSessions();
+        const sessionId = await sessions.createSession();
+        const channelConfig = {
+            agent: { agentId: "copilot" },
+            autoPermission: true,
+            channel: { readOnlyMcpTools: [] },
+        };
+        const one = await sessions.sendMessage(sessionId, user("one"), channelConfig);
+        fake.setLog(one.turnId, channelLog(one.turnId, sessionId));
+        await sessions.sendMessage(sessionId, user("two"), channelConfig);
+        expect(fake.createTurnInputs[1].config).toMatchObject({ autoPermission: true });
+    });
+
     it("first message: inline empty context, config on the turn, denormalized ref, default title", async () => {
         const { sessions, repo, fake } = makeSessions();
         const sessionId = await sessions.createSession();

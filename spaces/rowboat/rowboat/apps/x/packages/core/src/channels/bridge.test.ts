@@ -1,3 +1,4 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): channel-run restriction tests (Teil E).
 import { describe, expect, it, vi } from "vitest";
 import type { SessionIndexEntry } from "@x/shared/dist/sessions.js";
 import type { TurnStreamEvent } from "@x/shared/dist/turns.js";
@@ -5,6 +6,7 @@ import { TurnEventHub } from "../runtime/turns/event-hub.js";
 import { TurnInputError } from "../runtime/turns/api.js";
 import type { ISessions } from "../runtime/sessions/api.js";
 import { ChannelBridge, type ModelChoice } from "./bridge.js";
+import { DEFAULT_CHANNEL_READ_ONLY_MCP_TOOLS } from "@x/shared/dist/channels.js";
 
 const SENDER = "test:1";
 
@@ -142,8 +144,59 @@ describe("ChannelBridge commands", () => {
     });
 });
 
-describe("ChannelBridge model selection", () => {
-    it("lists models and applies a by-index selection to later turns", async () => {
+// Modified for VibeMind (Flissel/rowboat vibemind): channel runs are marked (Teil E).
+describe("ChannelBridge channel-run restriction", () => {
+    it("marks every turn as a channel run with the default read-only MCP servers", async () => {
+        const h = harness();
+        settleOnSend(h, completedEvent("t1", "ok"));
+        await h.bridge.handleInbound(SENDER, "hello", h.reply);
+        expect(h.sessions.sendMessage).toHaveBeenCalledWith(
+            "s1",
+            expect.anything(),
+            expect.objectContaining({
+                channel: { readOnlyMcpTools: [...DEFAULT_CHANNEL_READ_ONLY_MCP_TOOLS] },
+            }),
+        );
+    });
+
+    it("uses the configured read-only MCP servers", async () => {
+        const h = harness();
+        const bridge = new ChannelBridge({
+            sessions: h.sessions as unknown as ISessions,
+            turnEventBus: h.bus,
+            listModels: async () => MODELS,
+            readOnlyMcpTools: async () => ["wissen:wissen_suchen"],
+        });
+        settleOnSend(h, completedEvent("t1", "ok"));
+        await bridge.handleInbound(SENDER, "hello", h.reply);
+        expect(h.sessions.sendMessage).toHaveBeenCalledWith(
+            "s1",
+            expect.anything(),
+            expect.objectContaining({ channel: { readOnlyMcpTools: ["wissen:wissen_suchen"] } }),
+        );
+    });
+
+    it("fails closed: an unreadable allowlist means no MCP tools", async () => {
+        const h = harness();
+        const bridge = new ChannelBridge({
+            sessions: h.sessions as unknown as ISessions,
+            turnEventBus: h.bus,
+            listModels: async () => MODELS,
+            readOnlyMcpTools: async () => {
+                throw new Error("channels.json unreadable");
+            },
+        });
+        settleOnSend(h, completedEvent("t1", "ok"));
+        await bridge.handleInbound(SENDER, "hello", h.reply);
+        expect(h.sessions.sendMessage).toHaveBeenCalledWith(
+            "s1",
+            expect.anything(),
+            expect.objectContaining({ channel: { readOnlyMcpTools: [] } }),
+        );
+    });
+});
+
+describe("ChannelBridge model selection", () => {    it("lists models and applies a by-index selection to later turns", async () => {
         const h = harness();
         await h.bridge.handleInbound(SENDER, "model", h.reply);
         expect(h.replies[0]).toContain("1. Fable 5 — Anthropic");

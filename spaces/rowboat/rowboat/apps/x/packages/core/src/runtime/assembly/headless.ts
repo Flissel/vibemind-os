@@ -1,3 +1,4 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): HeadlessAgentOptions.sandbox (Teil E).
 import type { z } from "zod";
 import type { UseCase } from "@x/shared/dist/analytics.js";
 import type { AssistantMessage } from "@x/shared/dist/message.js";
@@ -6,7 +7,7 @@ import {
     reduceTurn,
     type TurnState,
 } from "@x/shared/dist/turns.js";
-import type { ITurnRuntime, TurnOutcome } from "../turns/api.js";
+import type { ITurnRuntime, TurnOutcome, TurnSandboxScope } from "../turns/api.js";
 import type { IDefaultModelResolver } from "../../models/default-model-resolver.js";
 
 // Drop-in replacement for the old headless runs pattern
@@ -46,6 +47,11 @@ export interface HeadlessAgentOptions {
     // Old waitForRunCompletion({ throwOnError: true }) semantics: `done`
     // rejects with HeadlessRunError unless the turn completes.
     throwOnError?: boolean;
+    // Modified for VibeMind (Flissel/rowboat vibemind): scope of the file
+    // sandbox every headless run is confined to (Teil E). Runners name the
+    // run's own target here (live note, bg-task folder, ...); spawn-agent sets
+    // exempt for children of a desktop user chat.
+    sandbox?: TurnSandboxScope;
 }
 
 export interface HeadlessAgentResult {
@@ -172,6 +178,9 @@ export class HeadlessAgentRunner implements IHeadlessAgentRunner {
                 ...(options.reasoningEffort === undefined
                     ? {}
                     : { reasoningEffort: options.reasoningEffort }),
+                ...(options.sandbox === undefined
+                    ? {}
+                    : { sandbox: options.sandbox }),
             },
         });
 
