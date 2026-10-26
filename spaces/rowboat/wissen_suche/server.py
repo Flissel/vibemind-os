@@ -72,7 +72,8 @@ def baue_server(e: Einstellungen, einbetter: Einbetter | None = None,
                 index: WissensIndex | None = None) -> FastMCP:
     if index is None:
         index, einbetter = _bauteile(e, einbetter)
-    assert einbetter is not None
+    if einbetter is None:
+        raise TypeError("baue_server: mit index= muss auch einbetter uebergeben werden")
     wurzel = Path(e.wissen_ordner)
     mcp = FastMCP("wissen", host=HOST, port=e.port, stateless_http=True, json_response=True,
                   streamable_http_path="/mcp")

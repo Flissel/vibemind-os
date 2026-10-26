@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import urllib.request
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
@@ -21,6 +22,14 @@ log = logging.getLogger(__name__)
 HINWEIS_STICHWORT = ("Bedeutungssuche gerade nicht möglich (PC bzw. Ollama nicht erreichbar)"
                      " – das sind Treffer der Stichwortsuche.")
 HINWEIS_OFFEN = "{n} Notizen sind noch nicht eingebettet und nur per Stichwort gefunden."
+HINWEIS_ABGELEHNT = ("Bedeutungssuche für diese Frage nicht möglich (Ollama lehnt den Text ab)"
+                     " – das sind Treffer der Stichwortsuche.")
+HINWEIS_UNVOLLSTAENDIG = "Stichwortsuche aus Zeitgründen abgebrochen – Treffer unvollständig."
+
+# Das ganze Werkzeug antwortet in weniger als 20 s: Frage einbetten (hoechstens 15 s, siehe
+# OllamaEinbetter.gesamt_s) plus Stichwortsuche bis zu dieser Frist ab Beginn der Anfrage.
+GESAMT_FRIST_S = 18.0
+MIN_STICHWORT_S = 0.5
 
 MAX_AUSZUG = 300
 MAX_ANZAHL = 20
@@ -75,17 +84,27 @@ def _kuerzen(text: str) -> str:
     return text if len(text) <= MAX_AUSZUG else text[: MAX_AUSZUG - 1].rstrip() + "…"
 
 
-def stichwort_suchen(wurzel: Path, frage: str, anzahl: int, nur: set[str] | None = None) -> list[dict]:
-    """Punkte = 3 x Begriffe im Dateinamen + Summe aus min(Vorkommen, 5) je Begriff im Text."""
+def _text_lesen(pfad: Path) -> str:
+    return pfad.read_text(encoding="utf-8", errors="replace").lstrip("\ufeff")
+
+
+def _stichwort(wurzel: Path, frage: str, anzahl: int, nur: set[str] | None,
+               frist: float | None) -> tuple[list[dict], bool]:
+    """Wie ``stichwort_suchen``; ``frist`` (time.monotonic) bricht den Lauf ab -> (Treffer, vollstaendig)."""
     terme = begriffe(frage)
     if not terme:
-        return []
+        return [], True
     treffer: list[dict] = []
+    vollstaendig = True
     for rel in bestand_scannen(wurzel):
         if nur is not None and rel not in nur:
             continue
+        if frist is not None and time.monotonic() > frist:
+            vollstaendig = False
+            log.warning("Stichwortsuche nach Frist abgebrochen (%d Treffer bis dahin)", len(treffer))
+            break
         try:
-            text = datei_pfad(wurzel, rel).read_text(encoding="utf-8", errors="replace").lstrip("\ufeff")
+            text = _text_lesen(datei_pfad(wurzel, rel))
         except OSError:
             continue
         titel = PurePosixPath(rel).stem
@@ -98,21 +117,38 @@ def stichwort_suchen(wurzel: Path, frage: str, anzahl: int, nur: set[str] | None
         treffer.append({"pfad": f"knowledge/{rel}", "titel": titel, "abschnitt": abschnitt or titel,
                         "auszug": auszug, "punkte": punkte, "quelle": "stichwort"})
     treffer.sort(key=lambda t: (-t["punkte"], t["pfad"]))
-    return treffer[:anzahl]
+    return treffer[:anzahl], vollstaendig
 
 
-def _bedeutungs_treffer(index: WissensIndex, vektor: list[float], anzahl: int) -> list[dict]:
+def stichwort_suchen(wurzel: Path, frage: str, anzahl: int, nur: set[str] | None = None) -> list[dict]:
+    """Punkte = 3 x Begriffe im Dateinamen + Summe aus min(Vorkommen, 5) je Begriff im Text."""
+    return _stichwort(wurzel, frage, anzahl, nur, None)[0]
+
+
+def _bedeutungs_treffer(index: WissensIndex, vektor: list[float], anzahl: int,
+                        aktuell: set[str], reserve: int) -> list[dict]:
+    """Index-Treffer nur fuer Dateien, deren eingebettete Fassung der Datei auf der Platte entspricht."""
     treffer = []
-    for t in index.suchen(vektor, anzahl):
+    for t in index.suchen(vektor, anzahl + reserve):
+        if t.pfad not in aktuell:
+            continue
         # Der Text beginnt mit "Titel / Ordner / Ueberschrift"; der Auszug zeigt den Inhalt dahinter.
         inhalt = t.text.split("\n\n", 1)[1] if "\n\n" in t.text else t.text
         treffer.append({"pfad": f"knowledge/{t.pfad}", "titel": PurePosixPath(t.pfad).stem,
                         "abschnitt": t.ueberschrift, "auszug": _kuerzen(inhalt),
                         "punkte": round(t.punkte, 4), "quelle": "bedeutung"})
+        if len(treffer) >= anzahl:
+            break
     return treffer
 
 
+def _hinweise(*teile: str | None) -> str | None:
+    gesetzt = [t for t in teile if t]
+    return " ".join(gesetzt) if gesetzt else None
+
+
 def wissen_suchen(frage: str, anzahl: int, index: WissensIndex, wurzel: Path, einbetter: Einbetter) -> dict:
+    start = time.monotonic()
     frage = (frage or "").strip()
     if not frage:
         return {"fehler": "frage fehlt"}
@@ -124,25 +160,42 @@ def wissen_suchen(frage: str, anzahl: int, index: WissensIndex, wurzel: Path, ei
     st = index.stand()
     stand = {"fertig": st.fertig, "offen": st.offen, "fehler": st.fehler}
 
+    def frist() -> float:
+        # Was vom Gesamtbudget nach dem Einbetten bleibt, mindestens MIN_STICHWORT_S.
+        return max(start + GESAMT_FRIST_S, time.monotonic() + MIN_STICHWORT_S)
+
     vektor: list[float] | None = None
+    rueckfall = HINWEIS_STICHWORT
     if st.abschnitte > 0:
         try:
             vektor = einbetter.frage(frage)
-        except (PcNichtErreichbar, EingabeAbgelehnt) as exc:
+        except PcNichtErreichbar as exc:
             log.info("Bedeutungssuche nicht moeglich (%s), Stichwortsuche", exc)
+        except EingabeAbgelehnt as exc:
+            log.info("Frage abgelehnt (%s), Stichwortsuche", exc)
+            rueckfall = HINWEIS_ABGELEHNT
     if vektor is None:
-        return {"modus": "stichwort", "hinweis": HINWEIS_STICHWORT,
-                "treffer": stichwort_suchen(wurzel, frage, anzahl), "stand": stand}
+        treffer, vollstaendig = _stichwort(wurzel, frage, anzahl, None, frist())
+        return {"modus": "stichwort",
+                "hinweis": _hinweise(rueckfall, None if vollstaendig else HINWEIS_UNVOLLSTAENDIG),
+                "treffer": treffer, "stand": stand}
 
-    treffer = _bedeutungs_treffer(index, vektor, anzahl)
-    # Was (noch) nicht eingebettet ist - auch Notizen, die der Indexer noch nicht gesehen hat -,
-    # wird per Stichwort ergaenzt, damit eine frische Notiz nicht unsichtbar bleibt.
-    fertig = {p for p, d in index.dateien().items() if d.status == "fertig"}
-    nicht_eingebettet = set(bestand_scannen(wurzel)) - fertig
+    # Aktuell ist eine Datei nur, wenn sie 'fertig' ist UND Groesse/mtime noch zur Platte passen.
+    # Alles andere - offen, fehler, seit dem letzten Abgleich geaendert oder dem Indexer noch
+    # unbekannt - wird per Stichwort ergaenzt, damit kein veralteter Auszug erscheint.
+    bestand = bestand_scannen(wurzel)
+    dateien = index.dateien()
+    fertig = {p for p, d in dateien.items() if d.status == "fertig"}
+    aktuell = {p for p in fertig if bestand.get(p) == (dateien[p].groesse, dateien[p].mtime)}
+    treffer = _bedeutungs_treffer(index, vektor, anzahl, aktuell, reserve=len(fertig - aktuell))
+    nicht_eingebettet = set(bestand) - aktuell
     hinweis = None
     if nicht_eingebettet:
-        hinweis = HINWEIS_OFFEN.format(n=len(nicht_eingebettet))
-        treffer += stichwort_suchen(wurzel, frage, STICHWORT_ERGAENZUNG, nur=nicht_eingebettet)
+        ergaenzung, vollstaendig = _stichwort(wurzel, frage, STICHWORT_ERGAENZUNG, nicht_eingebettet, frist())
+        gesehen = {t["pfad"] for t in treffer}
+        treffer += [t for t in ergaenzung if t["pfad"] not in gesehen]
+        hinweis = _hinweise(HINWEIS_OFFEN.format(n=len(nicht_eingebettet)),
+                            None if vollstaendig else HINWEIS_UNVOLLSTAENDIG)
     return {"modus": "bedeutung", "hinweis": hinweis, "treffer": treffer, "stand": stand}
 
 

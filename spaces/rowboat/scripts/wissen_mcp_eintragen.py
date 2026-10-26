@@ -17,7 +17,8 @@ import shutil
 import sys
 from pathlib import Path
 
-EINTRAG = {"type": "http", "url": "http://127.0.0.1:3240/mcp"}
+# Mit Schraegstrich: mcp 1.9.4 leitet POST /mcp per 307 auf /mcp/ um.
+EINTRAG = {"type": "http", "url": "http://127.0.0.1:3240/mcp/"}
 SICHERUNG = ".bak-vor-wissen"
 
 

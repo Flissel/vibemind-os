@@ -138,7 +138,10 @@ class OllamaEinbetter:
         """Fuehrt die Anfrage in einem Hilfsfaden aus und gibt nach ``gesamt_s`` auf.
 
         So haengt keine Frage laenger als ``gesamt_s``, auch wenn der Server Byte fuer Byte
-        tropfen laesst. Der Faden laeuft dann im Hintergrund aus (Socket-Grenze ``gesamt_s``).
+        tropfen laesst. Der Faden laeuft dann im Hintergrund aus. Das "Leck" ist begrenzt: der
+        Standard-Oeffner setzt dieselbe Grenze als Socket-Zeitgrenze (Aufbau ``verbinden_s``, jede
+        Lese-Operation ``gesamt_s``), der Faden ist ``daemon`` und haelt keine Sperren; bei
+        dauerhaft totem PC laeuft also hoechstens etwa ein Faden je Anfrage fuer kurze Zeit nach.
         """
         ergebnis: dict[str, Any] = {}
 

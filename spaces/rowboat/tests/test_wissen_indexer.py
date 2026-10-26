@@ -249,3 +249,40 @@ def test_indexer_faden_ueberlebt_ausnahmen(idx, wurzel, caplog):
             ix.stoppen()
             ix.join(5)
     assert "unerwartet" in caplog.text
+
+
+# --- Fix-Runde 1 -------------------------------------------------------------------------------
+
+def test_nfd_dateiname_wird_gelesen_und_als_nfc_gefuehrt(idx, wurzel):
+    import unicodedata
+    from wissen_suche.suche import stichwort_suchen
+
+    nfd = unicodedata.normalize("NFD", "Über Müller.md")
+    (wurzel / nfd).write_text("Rentenplanung mit Herrn Müller", encoding="utf-8")
+    nfc = unicodedata.normalize("NFC", "Über Müller.md")
+    assert set(bestand_scannen(wurzel)) == {nfc}
+    r = runde(idx, wurzel)
+    assert r.eingebettet == 1
+    assert idx.dateien()[nfc].status == "fertig"
+    treffer = stichwort_suchen(wurzel, "Rentenplanung", 5)
+    assert [t["pfad"] for t in treffer] == ["knowledge/" + nfc]
+
+
+def test_wenige_dateien_werden_auch_alle_geloescht(idx, wurzel):
+    for i in range(3):
+        schreiben(wurzel, f"n{i}.md", f"Notiz {i}")
+    runde(idx, wurzel)
+    for i in range(3):
+        (wurzel / f"n{i}.md").unlink()
+    ab = abgleichen(idx, wurzel)
+    assert ab.loeschen_ausgesetzt is False and ab.entfernt == 3
+    assert idx.dateien() == {}
+
+
+def test_neun_bekannte_mehrheit_fehlt_wird_geloescht(idx, wurzel):
+    for i in range(9):
+        schreiben(wurzel, f"n{i}.md", f"Notiz {i}")
+    runde(idx, wurzel)
+    for i in range(6):
+        (wurzel / f"n{i}.md").unlink()
+    assert abgleichen(idx, wurzel).entfernt == 6

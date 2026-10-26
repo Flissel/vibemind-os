@@ -126,3 +126,13 @@ def test_merken_und_lesen(idx):
 def test_wal_modus(idx):
     assert idx.lesen("modell") == "m"
     assert idx._db.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+
+
+def test_suchen_nur_fertige_dateien(idx):
+    idx.als_offen("a.md", "h1", 1, 1.0)
+    idx.ersetzen("a.md", "h1", ab(1), [vek(1, 0, 0)])
+    assert [t.pfad for t in idx.suchen(vek(1, 0, 0), 3)] == ["a.md"]
+    idx.als_offen("a.md", "h2", 2, 2.0)                  # geaendert -> alte Abschnitte nicht mehr suchbar
+    assert idx.suchen(vek(1, 0, 0), 3) == []
+    idx.fehlschlag("a.md", "x", max_versuche=1)          # fehler -> ebenfalls nicht
+    assert idx.suchen(vek(1, 0, 0), 3) == []
