@@ -8,13 +8,14 @@ To re-pin the kernel plugin catalog, change `DESKTOP_PLUGIN_CATALOG_PIN` on bran
 Flissel/rowboat (in `apps/x/apps/renderer/src/lib/rowboat-plugin-api.ts`), then run the sync.
 
 - Fork: https://github.com/Flissel/rowboat (branch `vibemind`)
-- Fork commit: `244f0c844a86e27bf083260aa6b89c19ca58acce`
+- Fork commit: `143f0dc22e7cbbae1393f74002ddb630648f47e2`
 - Upstream base: rowboatlabs/rowboat `72e9d8c`
 - EHL repo: https://github.com/Flissel/ehl-munich-2026 (`schema/`)
 - EHL commit: `44c1024c7804c696bc283bd14a9d08bd87a38230`
 
 ## Patches on top of upstream (EHL hierarchy graph, VibeMind)
 
+- 143f0dc2 feat(copilot): Wissensfragen zuerst wissen-suchen, Zentrale-Werkzeuge per Skill (VibeMind)
 - 244f0c84 fix(channels): todo-propose nicht fuer Kanal-Laeufe (Teil E, Runde 5)
 - d8761438 fix(channels): Quarantaene ohne uebersprungene Zeichenketten (Teil E, Runde 4)
 - 47540379 fix(channels): Quarantaene prueft jedes Zeichenketten-Argument (Teil E, Runde 4)
