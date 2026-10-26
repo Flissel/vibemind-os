@@ -302,3 +302,92 @@ def test_aufgabe_skript_vertrag():
     # Nie per Prozessmuster beenden (traf schon die eigene Shell)
     assert "Stop-Process" not in skript and "taskkill" not in skript.lower()
     assert "New-NetFirewallRule" not in skript      # Firewall ist ein Betreiber-Schritt (Task 8)
+
+
+# --- Fix-Runde 1 ---------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("zeile", [
+    '"password": "x"', "'api_key': 'x'", '"apiKey": "abc"', 'ANTHROPIC_KEY="x"', "OPENAI_API_KEY=sk-x",
+    "client_secret: abc", "Authorization: Bearer abcdefgh123", "curl -H 'Authorization: Bearer abc'",
+    "Bearer eyJhbGciOiJIUzI1NiJ9", "git clone https://user:pass@github.com/x.git",
+    "postgres://admin:geheim@db:5432/x", "tool --token abc123", "tool --password=hunter2", "tool --api-key x",
+    "sk-proj-abcdefghijklmnop", "AIzaSyA1234567890abcdefghijk", "x = sk-abcdefghij1234",
+])
+def test_auszug_geschwaerzt_fix1(zeile):
+    assert auszug_schwaerzen(zeile) == "[ausgeblendet]"
+
+
+@pytest.mark.parametrize("zeile", ["Umsatz steigt", "https://example.com/seite", "Termin am 3.11.", "--verbose"])
+def test_auszug_harmlos_bleibt(zeile):
+    assert auszug_schwaerzen(zeile) == zeile
+
+
+@pytest.mark.parametrize("name", ["id_ecdsa", "id_dsa.pub", "putty.ppk", ".netrc", ".npmrc", ".pypirc", ".pgpass",
+                                  "vpn.ovpn"])
+def test_weitere_geheimnisdateien(tmp_path, name):
+    (tmp_path / name).write_text("geheimwort\n", encoding="utf-8")
+    assert ist_ausgeschlossen(tmp_path / name)
+    assert suchen(name, "name", "", 50, E(tmp_path))["treffer"] == []
+
+
+def _fs_zugriffe_zaehlen(monkeypatch) -> list[str]:
+    """Zaehlt Dateisystem-Zugriffe (Path.resolve/is_dir/exists/stat, os.scandir), ohne sie zu verhindern."""
+    zugriffe: list[str] = []
+    for name in ("resolve", "is_dir", "exists", "stat"):
+        original = getattr(Path, name)
+
+        def zaehlen(self, *a, _o=original, _n=name, **k):
+            zugriffe.append(f"{_n}({self})")
+            return _o(self, *a, **k)
+
+        monkeypatch.setattr(Path, name, zaehlen)
+    original_scandir = os.scandir
+
+    def scandir(pfad, *a, **k):
+        zugriffe.append(f"scandir({pfad})")
+        return original_scandir(pfad, *a, **k)
+
+    monkeypatch.setattr(os, "scandir", scandir)
+    return zugriffe
+
+
+@pytest.mark.parametrize("ordner", ["//evil/share", r"\\evil\share", r"\\?\C:\Windows", "//evil/share/x",
+                                    r"\\100.67.177.45\c$"])
+def test_unc_ohne_dateisystemzugriff(baum, monkeypatch, ordner):
+    zugriffe = _fs_zugriffe_zaehlen(monkeypatch)
+    ergebnis_aufloesen = ordner_aufloesen(ordner, (baum,))
+    ergebnis_suche = suchen("x", "name", ordner, 20, E(baum))
+    monkeypatch.undo()
+    assert ergebnis_aufloesen is None and ergebnis_suche["ok"] is False
+    assert zugriffe == []
+
+
+def test_ausserhalb_lexikalisch_ohne_dateisystemzugriff(baum, monkeypatch):
+    zugriffe = _fs_zugriffe_zaehlen(monkeypatch)
+    a = ordner_aufloesen("C:/Windows", (baum,))
+    b = ordner_aufloesen(str(baum.parent / "anderes"), (baum,))
+    monkeypatch.undo()
+    assert a is None and b is None and zugriffe == []
+
+
+def test_handler_zeitlimit_und_hoechstens_drei_suchen(baum):
+    from http.server import ThreadingHTTPServer
+
+    handler = handler_bauen(Einstellungen(wurzeln=(baum,), vm_ip="127.0.0.1"), SCHLUESSEL)
+    assert handler.timeout == 15
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        # Drei laufende Suchen simulieren: die vierte wird sofort abgewiesen, nicht gestaut.
+        for _ in range(3):
+            assert handler.suche_sperre.acquire(blocking=False)
+        assert not handler.suche_sperre.acquire(blocking=False)
+        status, roh = _anfrage(url + "/suchen")
+        assert status == 503 and json.loads(roh)["ok"] is False
+        for _ in range(3):
+            handler.suche_sperre.release()
+        assert _anfrage(url + "/suchen")[0] == 200
+    finally:
+        server.shutdown()
+        server.server_close()

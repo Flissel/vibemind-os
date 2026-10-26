@@ -178,3 +178,32 @@ def test_standard_post_verbindung_abgelehnt_ist_pc_aus():
     s.close()
     r = pc_suchen("abc", url=f"http://127.0.0.1:{port}", schluessel="k", post=relay.http_post_json)
     assert r == {"ok": False, "pc_aus": True, "meldung": PC_AUS_MELDUNG}
+
+
+# --- Fix-Runde 1: Lese-Zeitlimit heisst "PC antwortet nicht", nicht "PC ist aus" ------------------
+
+def test_keine_antwort_ist_nicht_pc_aus():
+    r = pc_suchen("x", url=U, schluessel="k", post=Post(fehler=relay.KeineAntwort()))
+    assert r == {"ok": False, "pc_aus": False, "meldung": relay.PC_ANTWORTET_NICHT}
+    assert "PC antwortet nicht" in relay.PC_ANTWORTET_NICHT
+
+
+def test_standard_post_lese_zeitlimit_ist_keine_antwort():
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Langsam(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            time.sleep(1.5)
+
+        def log_message(self, *a):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Langsam)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        with pytest.raises(relay.KeineAntwort):
+            relay.http_post_json(f"http://127.0.0.1:{server.server_port}/suchen", {}, {}, 3.0, 0.3)
+    finally:
+        server.shutdown()

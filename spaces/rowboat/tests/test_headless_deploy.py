@@ -343,12 +343,25 @@ def test_werkzeuge_dienst_vertrag():
 
 def test_mcp_eintrag_ohne_geheimnis():
     e = json.loads((HEADLESS / "mcp-eintrag.json").read_text(encoding="utf-8"))
+    # OHNE Schraegstrich: mcp 1.27 bedient /mcp und leitet /mcp/ per 307 um (rowboat-wissen mit
+    # mcp 1.9.4 ist umgekehrt und braucht /mcp/, Teil C 231107b6) - am 26.10. mit TestClient geprueft.
     assert e == {"vibemind-werkzeuge": {"type": "http", "url": "http://127.0.0.1:8150/mcp"}}
 
 
 def test_dockerignore_haelt_werkzeuge_env_fern():
     zeilen = (HEADLESS / ".dockerignore").read_text(encoding="utf-8").split()
-    assert "werkzeuge.env" in zeilen and "werkzeuge/" in zeilen
+    assert "werkzeuge.env*" in zeilen and ".werkzeuge.env.neu.*" in zeilen and "werkzeuge/" in zeilen
+
+
+def test_readme_werkzeuge_ohne_anmeldung_nur_lokal():
+    readme = (HEADLESS / "README.md").read_text(encoding="utf-8")
+    assert "## Werkzeuge `rowboat-werkzeuge`" in readme
+    assert "127.0.0.1:8150/mcp" in readme and "ohne Anmeldung" in readme
+
+
+def test_bauen_mkdir_mit_leerzeichen():
+    skript = (HEADLESS / "bauen.ps1").read_text(encoding="utf-8")
+    assert not re.search(r"\S&&|&&\S", skript)
 
 
 def test_werkzeuge_dockerfile_pinnt_mcp():

@@ -146,7 +146,7 @@ if ($NurBauen) { return }
 
 $vmHost, $appPfad, $basis = Get-ZielTeile $Ziel
 
-Invoke-Schritt $PSScriptRoot @('ssh', $vmHost, "mkdir -p $appPfad $basis/shim $basis/wissen/wissen_suche $basis/werkzeuge &&mkdir -p -m 0700 ~/rowboat-data && mkdir -p -m 0700 $basis/budget && mkdir -p -m 0700 $basis/wissen-index && mkdir -p $skillZiel $werkzeugSkillZiel")
+Invoke-Schritt $PSScriptRoot @('ssh', $vmHost, "mkdir -p $appPfad $basis/shim $basis/wissen/wissen_suche $basis/werkzeuge && mkdir -p -m 0700 ~/rowboat-data && mkdir -p -m 0700 $basis/budget && mkdir -p -m 0700 $basis/wissen-index && mkdir -p $skillZiel $werkzeugSkillZiel")
 # Relative Namen aus dist-headless heraus (Invoke-Schritt wechselt hinein und zurueck): kein Laufwerks-
 # Doppelpunkt, den scp als host: deuten koennte; jedes Element ein eigenes Argument.
 $namen = @(Get-ChildItem -LiteralPath $dist -Name)

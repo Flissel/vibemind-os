@@ -8,3 +8,5 @@ wissen-index/
 # Werkzeug-Container: eigener Bau-Kontext, Zugangsdatei nie in einen Build
 werkzeuge/
 werkzeuge.env
+werkzeuge.env*
+.werkzeuge.env.neu.*

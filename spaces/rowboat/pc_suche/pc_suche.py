@@ -22,6 +22,7 @@ import os
 import re
 import stat
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -34,20 +35,31 @@ WURZELN_VORGABE = (Path("C:/Users/User/Desktop"), Path("C:/Users/User/Documents"
 ORDNER_AUS = {".git", "node_modules", ".venv", "venv", "__pycache__", "AppData", ".rowboat", ".ssh", ".aws",
               ".openfang", ".claude", ".gnupg", ".docker", ".kube", "target", "dist", "build", ".next", ".cache",
               ".worktrees"}
-DATEI_AUS = (".env*", "*.pem", "*.key", "*.p12", "*.pfx", "*.kdbx", "id_rsa*", "id_ed25519*", "*secret*",
-             "*credential*", "*token*", "*passw*", "client_secret*", "server-key", "cipher-key", "claude-token",
+DATEI_AUS = (".env*", "*.pem", "*.key", "*.p12", "*.pfx", "*.kdbx", "id_rsa*", "id_ed25519*", "id_ecdsa*",
+             "id_dsa*", "*.ppk", ".netrc", ".npmrc", ".pypirc", ".pgpass", "*.ovpn", "*secret*", "*credential*",
+             "*token*", "*passw*", "client_secret*", "server-key", "cipher-key", "claude-token",
              "rowboat-fern.json", "werkzeuge.env")
 INHALT_ENDUNGEN = {".md", ".txt", ".py", ".ts", ".tsx", ".js", ".ps1", ".sh", ".html", ".css", ".csv"}
 MAX_INHALT_BYTES = 2 * 1024 * 1024
 MAX_ANFRAGE = 200
 MAX_KOERPER = 10_000
+MAX_PARALLEL = 3           # gleichzeitige Suchen; die vierte bekommt sofort 503
+HANDLER_TIMEOUT_S = 15     # Lese-Zeitlimit je Verbindung (langsame/haengende Absender)
 ARTEN = ("name", "inhalt")
 
 _ORDNER_AUS_KLEIN = {o.lower() for o in ORDNER_AUS}
-# Wie im Plan, aber mit Wortrest nach dem Stichwort: sonst rutschten "password=" und "Passwort:" durch.
-_SCHWAERZEN = re.compile(r"(?i)(api[_-]?key|token|secret|passw|bearer|authorization|private[_ -]?key)[A-Za-z0-9_-]*\s*[:=]")
-# Bekannte Schluessel-Formen auch ohne "name=" davor (zusaetzlich zur Vorgabe des Plans)
-_SCHLUESSEL_FORM = re.compile(r"sk-ant-|ghp_[A-Za-z0-9]|github_pat_|xox[abp]-|AKIA[0-9A-Z]{8}|-----BEGIN [A-Z ]*PRIVATE KEY")
+# Zeilen mit diesen Mustern werden ganz durch "[ausgeblendet]" ersetzt (lieber zu viel als zu wenig):
+_SCHWAERZEN = (
+    # Schluessel-Namen mit Zuweisung, auch in Anfuehrungszeichen und mit Wortrest:
+    # API_KEY=, "password": , 'api_key': , ANTHROPIC_KEY=, client_secret:, Passwort=
+    re.compile(r"(?i)(api[_-]?key|token|secret|passw|bearer|authorization|private[_ -]?key|credential|"
+               r"[a-z0-9]+_key)[A-Za-z0-9_-]*[\"']?\s*[:=]"),
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{6,}"),                       # Bearer <token>
+    re.compile(r"(?i)[a-z][a-z0-9+.-]*://[^\s/:@]+:[^\s/@]+@"),                  # ://user:pass@
+    re.compile(r"(?i)(^|\s)--?(token|password|passwd|pass|api[-_]?key|secret|key|auth)(=|\s+)\S"),  # --token x
+    re.compile(r"sk-[A-Za-z0-9_-]{10,}|AIza[0-9A-Za-z_-]{20,}|ghp_[A-Za-z0-9]|github_pat_|xox[abp]-|"
+               r"AKIA[0-9A-Z]{8}|-----BEGIN [A-Z ]*PRIVATE KEY"),                # bekannte Schluessel-Formen
+)
 _REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 log = logging.getLogger("pc_suche")
@@ -90,32 +102,49 @@ def _innerhalb(pfad: Path, wurzel: Path) -> Path | None:
         return None
 
 
+def _lexikalisch_unter(kandidat: str, wurzel: Path) -> bool:
+    """Reiner Text-Vergleich (normcase(abspath)), ohne das Dateisystem anzufassen."""
+    k = os.path.normcase(os.path.abspath(kandidat))
+    w = os.path.normcase(os.path.abspath(str(wurzel))).rstrip("\\/")
+    if k.startswith(("\\\\", "//")):
+        return False
+    return k == w or k.startswith(w + os.sep) or k.startswith(w + "/")
+
+
 def ordner_aufloesen(ordner: str, wurzeln: tuple[Path, ...] | list[Path]) -> list[Path] | None:
     """Leer = alle Wurzeln. Sonst muss der Ordner in einer Wurzel liegen (absolut oder relativ zu einer
-    Wurzel), existieren und darf keinen ausgeschlossenen Teil haben. ``None`` = verboten."""
+    Wurzel), existieren und darf keinen ausgeschlossenen Teil haben. ``None`` = verboten.
+
+    UNC-Pfade (``\\\\host\\share``, ``//host/share``, ``\\\\?\\``) und alles, was nicht schon als Text unter
+    einer Wurzel liegt, werden abgelehnt, BEVOR das Dateisystem angefasst wird (sonst loeste schon
+    ``resolve()`` eine SMB-Verbindung aus)."""
     ordner = (ordner or "").strip()
     if not ordner:
         return list(wurzeln)
+    if ordner.startswith(("\\\\", "//")):
+        return None
     roh = Path(ordner)
     if ".." in roh.parts or ".." in ordner.replace("\\", "/").split("/"):
         return None
-    kandidaten = [roh] if roh.is_absolute() else [w / roh for w in wurzeln]
+    if roh.is_absolute():
+        kandidaten = [(roh, w) for w in wurzeln if _lexikalisch_unter(ordner, w)]
+    else:
+        kandidaten = [(w / roh, w) for w in wurzeln if _lexikalisch_unter(os.path.join(str(w), ordner), w)]
     erlaubt: list[Path] = []
-    for kandidat in kandidaten:
-        for wurzel in wurzeln:
-            relativ = _innerhalb(kandidat, wurzel)
-            if relativ is None:
-                continue
-            if any(t.lower() in _ORDNER_AUS_KLEIN or _name_ausgeschlossen(t) for t in relativ.parts):
-                return None
-            if kandidat.is_dir():
-                erlaubt.append(kandidat)
-            break
+    for kandidat, wurzel in kandidaten:
+        # Erst jetzt das Dateisystem: Symlink/Junction darf nicht aus der Wurzel herausfuehren.
+        relativ = _innerhalb(kandidat, wurzel)
+        if relativ is None:
+            continue
+        if any(t.lower() in _ORDNER_AUS_KLEIN or _name_ausgeschlossen(t) for t in relativ.parts):
+            return None
+        if kandidat.is_dir():
+            erlaubt.append(kandidat)
     return erlaubt or None
 
 
 def auszug_schwaerzen(zeile: str) -> str:
-    if _SCHWAERZEN.search(zeile) or _SCHLUESSEL_FORM.search(zeile):
+    if any(muster.search(zeile) for muster in _SCHWAERZEN):
         return "[ausgeblendet]"
     return zeile.strip()[:200]
 
@@ -216,6 +245,8 @@ def handler_bauen(einst: Einstellungen, schluessel: str) -> type[BaseHTTPRequest
     class PcSucheHandler(BaseHTTPRequestHandler):
         server_version = "pc-suche"
         sys_version = ""
+        timeout = HANDLER_TIMEOUT_S
+        suche_sperre = threading.BoundedSemaphore(MAX_PARALLEL)
 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - kein Zugriffslog
             pass
@@ -236,8 +267,23 @@ def handler_bauen(einst: Einstellungen, schluessel: str) -> type[BaseHTTPRequest
             gegeben = (self.headers.get("X-PC-Suche-Key") or "").encode("utf-8")
             return bool(gegeben) and hmac.compare_digest(gegeben, erwartet)
 
+        def _koerper_verwerfen(self) -> None:
+            # Ungelesener Koerper im Empfangspuffer laesst Windows die Verbindung beim Schliessen per RST
+            # abbrechen (WinError 10053): der Absender saehe dann "PC ist aus" statt 403.
+            try:
+                laenge = min(int(self.headers.get("Content-Length") or "0"), MAX_KOERPER)
+            except ValueError:
+                laenge = 0
+            if laenge > 0:
+                try:
+                    self.rfile.read(laenge)
+                except OSError:
+                    pass
+
         def _abweisen(self) -> bool:
             if not self._zugelassen():
+                self._koerper_verwerfen()
+                self.close_connection = True
                 self._antworten(403)
                 return True
             return False
@@ -254,6 +300,7 @@ def handler_bauen(einst: Einstellungen, schluessel: str) -> type[BaseHTTPRequest
             if self._abweisen():
                 return
             if self.path != "/suchen":
+                self._koerper_verwerfen()
                 self._antworten(405)
                 return
             try:
@@ -266,17 +313,23 @@ def handler_bauen(einst: Einstellungen, schluessel: str) -> type[BaseHTTPRequest
             except (ValueError, UnicodeDecodeError):
                 self._antworten(400, {"ok": False, "meldung": "Anfrage nicht lesbar"})
                 return
+            if not self.suche_sperre.acquire(blocking=False):
+                self._antworten(503, {"ok": False, "meldung": "PC-Suche ist ausgelastet – gleich noch einmal versuchen."})
+                return
             try:
                 ergebnis = suchen(str(koerper.get("anfrage", "")), str(koerper.get("art", "name")),
                                   str(koerper.get("ordner", "")), koerper.get("max_treffer", 20), einst)
             except Exception as e:  # noqa: BLE001 - nur der Typ, nie Inhalte
                 log.warning("Suche fehlgeschlagen: %s", type(e).__name__)
                 ergebnis = {"ok": False, "meldung": f"Suche fehlgeschlagen: {type(e).__name__}"}
+            finally:
+                self.suche_sperre.release()
             self._antworten(200, ergebnis)
 
         def _nicht_erlaubt(self) -> None:
             if self._abweisen():
                 return
+            self._koerper_verwerfen()
             self._antworten(405)
 
         do_PUT = do_DELETE = do_PATCH = do_HEAD = do_OPTIONS = _nicht_erlaubt  # noqa: N815

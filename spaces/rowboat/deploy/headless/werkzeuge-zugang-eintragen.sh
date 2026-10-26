@@ -110,6 +110,14 @@ unset WERTE
 chmod 600 "$NEU"
 mv -f "$NEU" "$ENV_DATEI"
 trap - EXIT
+# Nur die juengste Sicherung behalten (jede alte Sicherung ist eine weitere Kopie der Tokens).
+if [ -n "$SICHERUNG" ]; then
+  for alt in "$ENV_DATEI".vor-*; do
+    if [ -f "$alt" ] && [ "$alt" != "$SICHERUNG" ]; then
+      rm -f -- "$alt"
+    fi
+  done
+fi
 hinweis="${#NAMEN[@]} Wert(e) für $gruppe eingetragen${SICHERUNG:+, Sicherung: $(basename "$SICHERUNG")}"
 
 # 3) Nur rowboat-werkzeuge neu erzeugen, und nur wenn er schon laeuft (erst `up` liest die Datei neu).

@@ -62,20 +62,24 @@ def test_health():
 
 
 class Netz:
-    def __init__(self, post_status: int = 403, repos: list | None = None) -> None:
+    def __init__(self, post_status: int = 403, repos: list | None = None, kaputt: bool = False) -> None:
         self.post_status = post_status
-        self.repos = [{"name": "vibemind", "pushed_at": "2026-10-25T00:00:00Z"}] if repos is None else repos
+        self.repos = [{"name": "oeffentlich", "private": False, "pushed_at": "2026-10-25T00:00:00Z"},
+                      {"name": "vibemind", "private": True, "pushed_at": "2026-10-25T00:00:00Z"}] if repos is None else repos
+        self.kaputt = kaputt
         self.aufrufe: list[tuple[str, str]] = []
 
     def get(self, url: str, kopf: dict[str, str]) -> tuple[int, Any]:
         self.aufrufe.append(("GET", url))
+        if self.kaputt:
+            raise OSError(TOKEN)
         if url.endswith("/user"):
             return 200, {"login": "Flissel"}
         return 200, self.repos
 
-    def post(self, url: str, kopf: dict[str, str], koerper: dict) -> tuple[int, Any]:
-        self.aufrufe.append(("POST", url))
-        return self.post_status, {}
+    def senden(self, methode: str, url: str, kopf: dict[str, str], koerper: dict) -> tuple[int, dict]:
+        self.aufrufe.append((methode, url))
+        return self.post_status, {"github-authentication-token-expiration": "2027-01-24 13:05:00 +0100"}
 
 
 UMG_TOKEN = {**UMG, "GITHUB_LESEN_FLISSEL": TOKEN + "\r\n"}
@@ -84,12 +88,13 @@ UMG_TOKEN = {**UMG, "GITHUB_LESEN_FLISSEL": TOKEN + "\r\n"}
 def test_start_sperrt_schreibenden_token(caplog):
     caplog.set_level(logging.INFO, logger="werkzeuge")
     netz = Netz(post_status=422)
-    z = server.zugaenge_beim_start(UMG_TOKEN, netz.get, netz.post)
+    z = server.zugaenge_beim_start(UMG_TOKEN, netz.get, netz.senden)
     assert z["Flissel"].zustand == "darf_schreiben"
     assert z["Vibemind-LAB"].zustand == "fehlt"
     assert ("POST", "https://api.github.com/repos/Flissel/vibemind/labels") in netz.aufrufe
     zeilen = [r.getMessage() for r in caplog.records]
-    assert "Zugang Flissel: darf_schreiben" in zeilen and "Zugang Vibemind-LAB: fehlt" in zeilen
+    assert "Zugang Flissel: darf_schreiben (Token läuft ab 2027-01-24)" in zeilen
+    assert "Zugang Vibemind-LAB: fehlt" in zeilen
     assert TOKEN not in caplog.text
     # Danach laeuft keine Anfrage mit diesem Token mehr
     leser = server.GithubLeser(z, netz.get)
@@ -98,32 +103,61 @@ def test_start_sperrt_schreibenden_token(caplog):
     assert len(netz.aufrufe) == vorher
 
 
-def test_start_nur_lesend_ist_bereit():
+def test_start_nur_lesend_ist_bereit_und_prueft_privates_repo():
     netz = Netz(post_status=403)
-    assert server.zugaenge_beim_start(UMG_TOKEN, netz.get, netz.post)["Flissel"].zustand == "bereit"
+    assert server.zugaenge_beim_start(UMG_TOKEN, netz.get, netz.senden)["Flissel"].zustand == "bereit"
+    proben = [u for m, u in netz.aufrufe if m != "GET"]
+    assert len(proben) == 6 and all("/repos/Flissel/vibemind/" in u for u in proben)
+
+
+def test_start_ohne_privates_repo_ist_unklar():
+    netz = Netz(repos=[{"name": "oeffentlich", "private": False}])
+    assert server.zugaenge_beim_start(UMG_TOKEN, netz.get, netz.senden)["Flissel"].zustand == "unklar"
+    assert all(m == "GET" for m, _ in netz.aufrufe)
 
 
 def test_start_ohne_repo_ist_unklar_und_gesperrt():
     netz = Netz(repos=[])
-    z = server.zugaenge_beim_start(UMG_TOKEN, netz.get, netz.post)
+    z = server.zugaenge_beim_start(UMG_TOKEN, netz.get, netz.senden)
     assert z["Flissel"].zustand == "unklar"
-    assert not any(m == "POST" for m, _ in netz.aufrufe)
+    assert all(m == "GET" for m, _ in netz.aufrufe)
 
 
 def test_start_get_fehler_ist_unklar():
-    def get(url, kopf):
-        raise OSError(TOKEN)
-
-    z = server.zugaenge_beim_start(UMG_TOKEN, get, Netz().post)
+    z = server.zugaenge_beim_start(UMG_TOKEN, Netz(kaputt=True).get, Netz().senden)
     assert z["Flissel"].zustand == "unklar"
 
 
 def test_bauen_nutzt_startprobe():
     netz = Netz(post_status=403)
-    server.bauen(UMG_TOKEN, get=netz.get, post=netz.post)
+    server.bauen(UMG_TOKEN, get=netz.get, senden=netz.senden)
     r = server.github_repos("Flissel")
-    assert r["ok"] is True and r["repos"][0]["name"] == "vibemind"
+    assert r["ok"] is True and r["repos"][1]["name"] == "vibemind"
     assert server.github_ueberblick()["gesperrt"] == {"Vibemind-LAB": "fehlt"}
+
+
+def test_unklar_wird_nach_30_min_neu_geprueft():
+    netz = Netz(post_status=403, kaputt=True)
+    jetzt = [1000.0]
+    server.bauen(UMG_TOKEN, get=netz.get, senden=netz.senden, uhr=lambda: jetzt[0])
+    assert "unklar" in server.github_repos("Flissel")["meldung"]
+    netz.kaputt = False
+    jetzt[0] += 1700                       # noch keine 30 min: weiter gesperrt, keine neue Probe
+    vorher = len(netz.aufrufe)
+    assert server.github_repos("Flissel")["ok"] is False
+    assert len(netz.aufrufe) == vorher
+    jetzt[0] += 101                        # jetzt > 30 min seit der letzten Probe
+    assert server.github_repos("Flissel")["ok"] is True
+
+
+def test_darf_schreiben_wird_nicht_neu_geprueft():
+    netz = Netz(post_status=422)
+    jetzt = [0.0]
+    server.bauen(UMG_TOKEN, get=netz.get, senden=netz.senden, uhr=lambda: jetzt[0])
+    jetzt[0] += 10_000
+    vorher = len(netz.aufrufe)
+    assert "darf schreiben" in server.github_repos("Flissel")["meldung"]
+    assert len(netz.aufrufe) == vorher
 
 
 def test_pc_suchen_ohne_key_in_umgebung_meldet_nicht_eingerichtet():
@@ -146,7 +180,7 @@ def test_pc_suchen_nutzt_url_und_key_aus_umgebung():
 
 def test_werkzeug_aufruf_ueber_mcp():
     netz = Netz(post_status=403)
-    mcp = server.bauen(UMG_TOKEN, get=netz.get, post=netz.post)
+    mcp = server.bauen(UMG_TOKEN, get=netz.get, senden=netz.senden)
     ergebnis = anyio.run(lambda: mcp.call_tool("github_repos", {"besitzer": "Flissel"}))
     text = json.dumps(ergebnis, default=str)
     assert "vibemind" in text and TOKEN not in text

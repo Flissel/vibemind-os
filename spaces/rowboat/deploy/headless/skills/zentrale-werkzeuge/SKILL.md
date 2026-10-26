@@ -47,6 +47,8 @@ angelegt: Am Desktop: …“). `fetch-url` nie mit POST oder anderen Methoden al
 
 - Antwortet `pc_suchen` mit `pc_aus: true`, gib die Meldung **wörtlich** weiter:
   „PC ist aus – auf dem PC kann ich gerade nicht suchen.“
+  Kommt stattdessen „PC antwortet nicht …“, ist der PC an, aber die Suche hing: das ebenfalls
+  wörtlich weitergeben und eine engere Suche anbieten.
 - Steht im Ergebnis `abgeschnitten: true`, sag „Suche unvollständig“ (Zeitlimit oder Treffergrenze)
   und nie „nicht gefunden“. Biete an, enger zu suchen (`ordner` oder genauere `anfrage`).
 - Meldet ein GitHub-Werkzeug „gesperrt“ oder „nicht freigegeben“, sag das so und rate nicht.

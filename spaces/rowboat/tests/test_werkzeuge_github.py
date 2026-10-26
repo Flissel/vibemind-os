@@ -209,36 +209,58 @@ def test_besitzer_aus_umgebung_leer():
     assert z["Flissel"].zustand == "fehlt"
 
 
-class FalschesPost:
-    def __init__(self, status: int = 403, fehler: Exception | None = None) -> None:
-        self.status, self.fehler = status, fehler
-        self.aufrufe: list[tuple[str, dict, dict]] = []
+class FalschesSenden:
+    """Schreibprobe-Attrappe: Status je (Methode, Pfad-Ende), Vorgabe 403."""
 
-    def __call__(self, url: str, kopf: dict[str, str], koerper: dict) -> tuple[int, Any]:
-        self.aufrufe.append((url, kopf, koerper))
+    def __init__(self, status: dict[str, int] | None = None, vorgabe: int = 403, fehler: Exception | None = None,
+                 kopf: dict[str, str] | None = None) -> None:
+        self.status, self.vorgabe, self.fehler = status or {}, vorgabe, fehler
+        self.kopf = kopf or {}
+        self.aufrufe: list[tuple[str, str, dict, dict]] = []
+
+    def __call__(self, methode: str, url: str, kopf: dict[str, str], koerper: dict) -> tuple[int, dict]:
+        self.aufrufe.append((methode, url, kopf, koerper))
         if self.fehler is not None:
             raise self.fehler
-        return self.status, {}
+        pfad = url.split("/repos/Flissel/vibemind/", 1)[-1]
+        return self.status.get(f"{methode} {pfad}", self.vorgabe), self.kopf
 
 
-@pytest.mark.parametrize("status,erwartet", [(403, "bereit"), (422, "darf_schreiben"), (201, "darf_schreiben"),
-                                             (200, "darf_schreiben"), (401, "abgelehnt"), (500, "unklar"),
-                                             (404, "unklar")])
-def test_nur_lesend_pruefen(status, erwartet):
-    post = FalschesPost(status)
-    assert nur_lesend_pruefen(TOKEN, "Flissel/vibemind", post) == erwartet
-    url, kopf, koerper = post.aufrufe[0]
-    assert url == f"{API}/repos/Flissel/vibemind/labels" and koerper == {}
-    assert kopf["Authorization"] == f"Bearer {TOKEN}"
+PROBEN = ["POST labels", "PUT contents/.vibemind-probe", "POST git/refs", "POST pulls", "POST hooks",
+          "PUT actions/permissions"]
+
+
+def test_schreibproben_alle_mit_leerem_koerper():
+    senden = FalschesSenden()
+    assert nur_lesend_pruefen(TOKEN, "Flissel/vibemind", senden) == ("bereit", None)
+    assert [f"{m} {u.split('/repos/Flissel/vibemind/', 1)[1]}" for m, u, _, _ in senden.aufrufe] == PROBEN
+    assert all(k == {} for _, _, _, k in senden.aufrufe)
+    assert all(kopf["Authorization"] == f"Bearer {TOKEN}" for _, _, kopf, _ in senden.aufrufe)
+
+
+@pytest.mark.parametrize("probe", PROBEN)
+@pytest.mark.parametrize("status,erwartet", [(422, "darf_schreiben"), (201, "darf_schreiben"),
+                                             (200, "darf_schreiben"), (401, "abgelehnt"), (404, "unklar"),
+                                             (500, "unklar")])
+def test_jede_probe_sperrt(probe, status, erwartet):
+    senden = FalschesSenden({probe: status})
+    assert nur_lesend_pruefen(TOKEN, "Flissel/vibemind", senden)[0] == erwartet
 
 
 def test_nur_lesend_pruefen_ausnahme_ist_unklar():
-    assert nur_lesend_pruefen(TOKEN, "Flissel/vibemind", FalschesPost(fehler=OSError("x"))) == "unklar"
+    assert nur_lesend_pruefen(TOKEN, "Flissel/vibemind", FalschesSenden(fehler=OSError("x")))[0] == "unklar"
 
 
 def test_nur_lesend_pruefen_falsches_repo_ohne_anfrage():
-    post = FalschesPost()
-    assert nur_lesend_pruefen(TOKEN, "../x", post) == "unklar" and post.aufrufe == []
+    senden = FalschesSenden()
+    assert nur_lesend_pruefen(TOKEN, "../x", senden)[0] == "unklar" and senden.aufrufe == []
+
+
+def test_ablaufdatum_nur_datum():
+    senden = FalschesSenden(kopf={"github-authentication-token-expiration": "2027-01-24 13:05:00 +0100"})
+    assert nur_lesend_pruefen(TOKEN, "Flissel/vibemind", senden) == ("bereit", "2027-01-24")
+    senden = FalschesSenden(kopf={"github-authentication-token-expiration": "kaputt"})
+    assert nur_lesend_pruefen(TOKEN, "Flissel/vibemind", senden) == ("bereit", None)
 
 
 def test_ueberblick_nur_bereite_besitzer_und_tage():

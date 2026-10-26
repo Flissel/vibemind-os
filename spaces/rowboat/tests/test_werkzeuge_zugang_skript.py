@@ -133,3 +133,17 @@ def test_kein_set_x_und_read_s():
     assert b"\r\n" not in SKRIPT.read_bytes()
     # Werte nie in echo-Ausgaben
     assert not re.search(r"echo[^\n]*\$\{?(wert|WERTE)", t)
+
+
+@braucht_bash
+def test_nur_juengste_sicherung_bleibt(tmp_path):
+    datei = _env(tmp_path)
+    (tmp_path / "werkzeuge.env.vor-pc_suche-20260101-000000").write_text("alt", encoding="utf-8")
+    (tmp_path / "anderes.vor-x").write_text("bleibt", encoding="utf-8")
+    umg = {"WERKZEUGE_ENV": datei.as_posix(), "DOCKER": "false"}
+    assert _lauf("github_flissel", eingabe="eins\n", umgebung=umg).returncode == 0
+    assert _lauf("pc_suche", eingabe="zwei\n", umgebung=umg).returncode == 0
+    sicherungen = sorted(p.name for p in tmp_path.glob("werkzeuge.env.vor-*"))
+    assert len(sicherungen) == 1 and sicherungen[0].startswith("werkzeuge.env.vor-pc_suche-2026")
+    assert "GITHUB_LESEN_FLISSEL=eins" in (tmp_path / sicherungen[0]).read_text(encoding="utf-8")
+    assert (tmp_path / "anderes.vor-x").exists()

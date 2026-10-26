@@ -1,8 +1,9 @@
 """GitHub nur lesend fuer den Werkzeug-Container ``rowboat-werkzeuge`` (Mini-PC).
 
 Je Besitzer ein fein granulierter Nur-Lese-Token. Der Leser stellt ausschliesslich GET-Anfragen;
-die einzige Ausnahme ist die Schreibprobe ``nur_lesend_pruefen`` beim Start (POST mit leerem
-Koerper, die ein Nur-Lese-Token mit 403 ablehnt). Ein Token, der schreiben darf, wird gesperrt.
+die einzige Ausnahme ist die Schreibprobe ``nur_lesend_pruefen`` beim Start: sechs schreibende
+Anfragen mit ungueltigem (leerem) Koerper an ein privates Repo. Ein Nur-Lese-Token bekommt ueberall
+403; jede andere Antwort sperrt den Besitzer (fail-closed).
 Tokens erscheinen nie in Ergebnissen, Meldungen oder Logs; Fehler nennen nur den Ausnahme-Typ.
 """
 from __future__ import annotations
@@ -18,7 +19,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Literal, Mapping
 
 HttpGet = Callable[[str, dict[str, str]], tuple[int, Any]]
-HttpPost = Callable[[str, dict[str, str], dict], tuple[int, Any]]
+# Schreibprobe: (Methode, URL, Kopf, Koerper) -> (Status, Antwort-Kopfzeilen)
+HttpSenden = Callable[[str, str, dict[str, str], dict], tuple[int, Mapping[str, str]]]
 Zustand = Literal["bereit", "fehlt", "darf_schreiben", "abgelehnt", "unklar"]
 
 API = "https://api.github.com"
@@ -29,6 +31,13 @@ ZEITLIMIT_S = 15.0
 _REPO = re.compile(r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$")
 _REF = re.compile(r"^[A-Za-z0-9._/-]{1,200}$")
 _ZUSTAENDE = ("open", "closed", "all")
+_DATUM = re.compile(r"^\d{4}-\d{2}-\d{2}")
+
+# Je eine schreibende Anfrage pro Rechte-Bereich (Issues, Contents, Git-Daten, Pull Requests,
+# Webhooks/Administration, Actions). Leerer Koerper: wer schreiben darf, bekommt 422 (ungueltig),
+# ein Nur-Lese-Token 403. Es wird also nie etwas angelegt.
+SCHREIBPROBEN = (("POST", "labels"), ("PUT", "contents/.vibemind-probe"), ("POST", "git/refs"),
+                 ("POST", "pulls"), ("POST", "hooks"), ("PUT", "actions/permissions"))
 
 _SPERRGRUND = {
     "darf_schreiben": "gesperrt: Token darf schreiben",
@@ -77,24 +86,37 @@ def _repo_gueltig(repo: str) -> bool:
     return all(teil not in (".", "..") for teil in repo.split("/"))
 
 
-def nur_lesend_pruefen(token: str, repo: str, post: HttpPost) -> Zustand:
-    """Schreibprobe: POST /repos/{repo}/labels mit leerem Koerper.
+def _ablauf(kopf: Mapping[str, str] | None) -> str | None:
+    """Datum aus ``github-authentication-token-expiration`` (nur JJJJ-MM-TT, nie mehr)."""
+    for name, wert in (kopf or {}).items():
+        if name.lower() == "github-authentication-token-expiration":
+            treffer = _DATUM.match(str(wert).strip())
+            return treffer.group(0) if treffer else None
+    return None
 
-    403 -> ``bereit`` (darf nicht schreiben); 422 oder 2xx -> ``darf_schreiben`` (Schreibrecht da,
-    nur der Koerper ist ungueltig); 401 -> ``abgelehnt``; sonst oder Ausnahme -> ``unklar``."""
+
+def nur_lesend_pruefen(token: str, repo: str, senden: HttpSenden) -> tuple[Zustand, str | None]:
+    """Schreibprobe gegen ``repo``: alle ``SCHREIBPROBEN`` muessen 403 liefern, sonst gesperrt.
+
+    422 oder 2xx -> ``darf_schreiben``; 401 -> ``abgelehnt``; 404, anderes oder Ausnahme -> ``unklar``.
+    Zweiter Wert: Ablaufdatum des Tokens (falls GitHub es meldet)."""
     if not _repo_gueltig(repo):
-        return "unklar"
-    try:
-        status, _ = post(f"{API}/repos/{repo}/labels", _kopf(token), {})
-    except Exception:  # noqa: BLE001 - jede Ausnahme heisst: nicht sicher, also gesperrt
-        return "unklar"
-    if status == 403:
-        return "bereit"
-    if status == 422 or 200 <= status < 300:
-        return "darf_schreiben"
-    if status == 401:
-        return "abgelehnt"
-    return "unklar"
+        return "unklar", None
+    ablauf: str | None = None
+    for methode, pfad in SCHREIBPROBEN:
+        try:
+            status, kopf = senden(methode, f"{API}/repos/{repo}/{pfad}", _kopf(token), {})
+        except Exception:  # noqa: BLE001 - jede Ausnahme heisst: nicht sicher, also gesperrt
+            return "unklar", ablauf
+        ablauf = ablauf or _ablauf(kopf)
+        if status == 403:
+            continue
+        if status == 422 or 200 <= status < 300:
+            return "darf_schreiben", ablauf
+        if status == 401:
+            return "abgelehnt", ablauf
+        return "unklar", ablauf
+    return "bereit", ablauf
 
 
 def _fehler(meldung: str) -> dict:
@@ -295,12 +317,13 @@ def http_get(url: str, kopf: dict[str, str]) -> tuple[int, Any]:
         return e.code, _antwort(e.read())
 
 
-def http_post(url: str, kopf: dict[str, str], koerper: dict) -> tuple[int, Any]:
+def http_senden(methode: str, url: str, kopf: dict[str, str], koerper: dict) -> tuple[int, Mapping[str, str]]:
+    """Nur fuer die Schreibprobe: liefert Status und Antwort-Kopfzeilen, nie den Koerper."""
     daten = json.dumps(koerper).encode("utf-8")
     anfrage = urllib.request.Request(url, data=daten, headers={**kopf, "Content-Type": "application/json"},
-                                     method="POST")
+                                     method=methode)
     try:
         with urllib.request.urlopen(anfrage, timeout=ZEITLIMIT_S) as antwort:  # noqa: S310
-            return antwort.status, _antwort(antwort.read())
+            return antwort.status, dict(antwort.headers.items())
     except urllib.error.HTTPError as e:
-        return e.code, _antwort(e.read())
+        return e.code, dict(e.headers.items()) if e.headers else {}
