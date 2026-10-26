@@ -31,7 +31,7 @@ def test_frontmatter_und_tools():
     fm = _frontmatter()
     assert fm["name"] == "zentrale-werkzeuge"
     assert set(fm["tools"]) == {"listMcpTools", "executeMcpTool", "fetch-url", "todo-add", "file-readText",
-                                "file-grep", "file-list", "file-writeText", "file-mkdir", "app-set-data"}
+                                "file-grep", "file-list", "file-writeText", "file-mkdir"}
     assert not ({"executeCommand", "addMcpServer"} & set(fm["tools"]))
 
 

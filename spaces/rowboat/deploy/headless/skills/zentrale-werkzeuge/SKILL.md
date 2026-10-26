@@ -1,7 +1,7 @@
 ---
 name: zentrale-werkzeuge
 description: "Werkzeuge der Zentrale – nutzen bei GitHub-Fragen (Projekte updaten, Repos, Issues, PRs, Commits, README), wenn neueste Docs/Doku zu einer Bibliothek oder einem Dienst geholt werden sollen, wenn ein Dashboard aus meinen Daten gebaut werden soll und wenn ich sage 'auf meinem PC suchen' oder 'such auf dem Rechner nach …'."
-tools: [listMcpTools, executeMcpTool, fetch-url, todo-add, file-readText, file-grep, file-list, file-writeText, file-mkdir, app-set-data]
+tools: [listMcpTools, executeMcpTool, fetch-url, todo-add, file-readText, file-grep, file-list, file-writeText, file-mkdir]
 ---
 
 # Werkzeuge der Zentrale (GitHub lesen, Docs, Dashboard, PC-Suche)
