@@ -25,6 +25,9 @@ AUSGESCHLOSSEN = ("_konflikte/", ".spiegel-eingang/", ".git/")
 # Der Schutz gegen Massenverschwinden greift erst ab so vielen bekannten Dateien; darunter ist
 # "mehr als die Haelfte fehlt" normales Aufraeumen (z. B. 1 von 2 Notizen geloescht).
 MIN_BEKANNT_FUER_SCHUTZ = 10
+# Quarantaene der Kanal-Laeufe (Fork Teil E): Hintergrund-Agenten duerfen sie nicht lesen, also auch
+# nicht ueber wissen_suchen finden. Kanal-Laeufe lesen ihre eigenen Notizen direkt.
+QUARANTAENE = "kanal/"
 
 
 class Abgleich(NamedTuple):
@@ -45,6 +48,8 @@ def ausgeschlossen(rel: str) -> bool:
         return True
     if any(rel.startswith(a) or f"/{a}" in rel for a in AUSGESCHLOSSEN):
         return True
+    if rel.lower().startswith(QUARANTAENE):
+        return True
     return any(teil.startswith(".") for teil in rel.split("/"))
 
 
@@ -60,7 +65,8 @@ def bestand_scannen(wurzel: Path) -> dict[str, tuple[int, float]]:
     echt = wurzel.resolve()
     bestand: dict[str, tuple[int, float]] = {}
     for ordner, unterordner, dateien in os.walk(wurzel, followlinks=False):
-        unterordner[:] = [u for u in unterordner if not u.startswith(".") and u != "_konflikte"]
+        unterordner[:] = [u for u in unterordner if not u.startswith(".") and u != "_konflikte"
+                          and not (Path(ordner) == wurzel and u.lower() == QUARANTAENE.rstrip("/"))]
         for name in dateien:
             pfad = Path(ordner) / name
             rel = unicodedata.normalize("NFC", pfad.relative_to(wurzel).as_posix())

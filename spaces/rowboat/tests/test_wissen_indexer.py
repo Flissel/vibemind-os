@@ -286,3 +286,13 @@ def test_neun_bekannte_mehrheit_fehlt_wird_geloescht(idx, wurzel):
     for i in range(6):
         (wurzel / f"n{i}.md").unlink()
     assert abgleichen(idx, wurzel).entfernt == 6
+
+
+def test_kanal_quarantaene_nicht_im_index(tmp_path):
+    from wissen_suche.indexer import ausgeschlossen, bestand_scannen
+    assert ausgeschlossen("Kanal/Notiz.md") and ausgeschlossen("kanal/x/y.md")
+    assert not ausgeschlossen("Notes/Kanal/x.md")
+    (tmp_path / "Kanal").mkdir()
+    (tmp_path / "Kanal" / "a.md").write_text("x", encoding="utf-8")
+    (tmp_path / "b.md").write_text("y", encoding="utf-8")
+    assert list(bestand_scannen(tmp_path)) == ["b.md"]
