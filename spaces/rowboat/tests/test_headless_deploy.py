@@ -335,6 +335,7 @@ def test_werkzeuge_dienst_vertrag():
     assert env["WERKZEUGE_PORT"] == "8150"
     assert env["PC_SUCHE_URL"] == "http://100.84.127.84:8149"
     assert env["GITHUB_BESITZER"] == "Flissel=GITHUB_LESEN_FLISSEL,Vibemind-LAB=GITHUB_LESEN_VIBEMIND_LAB"
+    assert env["GITEA_URL"] == "http://127.0.0.1:3002"   # Loopback: Host-Netz, Gitea-Port der VM
     probe = " ".join(svc["healthcheck"]["test"])
     assert "http://127.0.0.1:8150/health" in probe and "python3" in probe
     # Der Rowboat-Server haengt nicht vom Werkzeug-Container ab
@@ -368,7 +369,7 @@ def test_werkzeuge_dockerfile_pinnt_mcp():
     text = (WERKZEUGE / "Dockerfile").read_text(encoding="utf-8")
     assert text.splitlines()[0] == "FROM python:3.12-slim"
     assert "pip install --no-cache-dir mcp==1.27.0" in text
-    for datei in ("server.py", "github_lesen.py", "pc_suche_relay.py"):
+    for datei in ("server.py", "github_lesen.py", "gitea_lesen.py", "pc_suche_relay.py"):
         assert datei in text
     assert "USER 1000:1000" in text
     assert 'CMD ["python3", "/opt/werkzeuge/server.py"]' in text
@@ -378,7 +379,7 @@ def test_werkzeuge_dockerfile_pinnt_mcp():
 def test_bauen_kopiert_werkzeuge_kontext():
     skript = (HEADLESS / "bauen.ps1").read_text(encoding="utf-8")
     assert "[switch]$NurWerkzeuge" in skript
-    for datei in ("github_lesen.py", "pc_suche_relay.py", "server.py", "werkzeuge-zugang-eintragen.sh",
+    for datei in ("github_lesen.py", "gitea_lesen.py", "pc_suche_relay.py", "server.py", "werkzeuge-zugang-eintragen.sh",
                   "mcp-eintrag.json"):
         assert datei in skript
     assert "$basis/werkzeuge" in skript

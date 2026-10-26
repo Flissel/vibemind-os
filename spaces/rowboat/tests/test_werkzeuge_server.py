@@ -24,17 +24,17 @@ from pc_suche_relay import NICHT_EINGERICHTET  # noqa: E402
 
 UMG = {"GITHUB_BESITZER": "Flissel=GITHUB_LESEN_FLISSEL,Vibemind-LAB=GITHUB_LESEN_VIBEMIND_LAB"}
 TOKEN = "github_pat_SCHREIBT123"
-ACHT = {"github_repos", "github_issues", "github_prs", "github_commits", "github_ci", "github_datei",
-        "github_ueberblick", "pc_suchen"}
+ZWOELF = {"github_repos", "github_issues", "github_prs", "github_commits", "github_ci", "github_datei",
+          "github_ueberblick", "gitea_repos", "gitea_issues", "gitea_commits", "gitea_datei", "pc_suchen"}
 
 
 def _werkzeuge(umg: dict) -> list:
     return anyio.run(server.bauen(umg).list_tools)
 
 
-def test_genau_die_acht_werkzeuge():
-    assert {t.name for t in _werkzeuge(UMG)} == ACHT
-    assert {fn.__name__ for fn in server.WERKZEUGE} == ACHT and len(server.WERKZEUGE) == 8
+def test_genau_die_zwoelf_werkzeuge():
+    assert {t.name for t in _werkzeuge(UMG)} == ZWOELF
+    assert {fn.__name__ for fn in server.WERKZEUGE} == ZWOELF and len(server.WERKZEUGE) == 12
 
 
 def test_keine_schreibwerkzeuge():
@@ -48,6 +48,7 @@ def test_werkzeuge_haben_beschreibung_und_parameter():
     assert set(tools["pc_suchen"].inputSchema["properties"]) == {"anfrage", "art", "ordner", "max_treffer"}
     assert set(tools["github_datei"].inputSchema["properties"]) == {"repo", "pfad", "ref"}
     assert set(tools["github_ci"].inputSchema["properties"]) == {"repo", "branch", "max_anzahl"}
+    assert set(tools["gitea_repos"].inputSchema["properties"]) == set()
     assert all(t.description for t in tools.values())
 
 
@@ -185,6 +186,74 @@ def test_werkzeug_aufruf_ueber_mcp():
     ergebnis = anyio.run(lambda: mcp.call_tool("github_repos", {"besitzer": "Flissel"}))
     text = json.dumps(ergebnis, default=str)
     assert "vibemind" in text and TOKEN not in text
+
+
+# --- Gitea -------------------------------------------------------------------------------------------
+
+GITEA_TOKEN = "0123456789abcdef0123456789abcdef01234567"
+
+
+class GiteaNetz:
+    def __init__(self, post_status: int = 403, kaputt: bool = False) -> None:
+        self.post_status = post_status
+        self.kaputt = kaputt
+        self.aufrufe: list[tuple[str, str]] = []
+
+    def get(self, url: str, kopf: dict[str, str]) -> tuple[int, Any]:
+        self.aufrufe.append(("GET", url))
+        if self.kaputt:
+            raise OSError(GITEA_TOKEN)
+        if "/repos/search" in url:
+            return 200, {"ok": True, "data": [{"full_name": "vibemind/secondbrain", "private": True,
+                                               "mirror": False, "mirror_updated": "0001-01-01T00:00:00Z"}]}
+        return 200, []
+
+    def senden(self, methode: str, url: str, kopf: dict[str, str], koerper: dict) -> tuple[int, dict]:
+        self.aufrufe.append((methode, url))
+        return self.post_status, {}
+
+
+UMG_GITEA = {**UMG, "GITEA_LESEN": GITEA_TOKEN + "\r\n"}
+
+
+def test_gitea_ohne_token_meldet_fehlt_ohne_anfrage():
+    netz = GiteaNetz()
+    server.bauen(UMG, get=netz.get, senden=netz.senden)
+    assert "kein Token" in server.gitea_repos()["meldung"]
+    assert not any("3002" in u for _, u in netz.aufrufe)
+
+
+def test_gitea_start_lesend_bereit(caplog):
+    caplog.set_level(logging.INFO, logger="werkzeuge")
+    netz = GiteaNetz(post_status=403)
+    server.bauen(UMG_GITEA, get=netz.get, senden=netz.senden)
+    proben = [u for m, u in netz.aufrufe if m == "POST"]
+    assert "http://127.0.0.1:3002/api/v1/repos/vibemind/secondbrain/issues" in proben and len(proben) == 6
+    r = server.gitea_repos()
+    assert r["ok"] is True and r["repos"][0]["name"] == "vibemind/secondbrain"
+    assert "Zugang Gitea: bereit" in [x.getMessage() for x in caplog.records]
+    assert GITEA_TOKEN not in caplog.text
+
+
+def test_gitea_schreibender_token_gesperrt_ohne_weitere_anfrage():
+    netz = GiteaNetz(post_status=422)
+    server.bauen({**UMG_GITEA, "GITEA_URL": "http://gitea:3000/"}, get=netz.get, senden=netz.senden)
+    assert all(u.startswith("http://gitea:3000/api/v1/") for _, u in netz.aufrufe)
+    vorher = len(netz.aufrufe)
+    assert "darf schreiben" in server.gitea_issues("vibemind/secondbrain")["meldung"]
+    assert len(netz.aufrufe) == vorher
+
+
+def test_gitea_unklar_wird_nach_30_min_neu_geprueft():
+    netz = GiteaNetz(kaputt=True)
+    jetzt = [0.0]
+    server.bauen(UMG_GITEA, get=netz.get, senden=netz.senden, uhr=lambda: jetzt[0])
+    assert "unklar" in server.gitea_repos()["meldung"]
+    netz.kaputt = False
+    jetzt[0] += 1700
+    assert server.gitea_repos()["ok"] is False
+    jetzt[0] += 101
+    assert server.gitea_repos()["ok"] is True
 
 
 @pytest.fixture(autouse=True)

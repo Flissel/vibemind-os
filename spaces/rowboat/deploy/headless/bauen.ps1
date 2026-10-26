@@ -19,7 +19,7 @@
      skills/zentrale-werkzeuge/SKILL.md nach ~/rowboat-data/skills/<name>/ (nur diese Ordner; andere
      Skills bleiben unberuehrt).
   6. Ohne -NurBauen ausserdem den Bau-Kontext des Werkzeug-Containers (rowboat-werkzeuge) nach
-     ~/rowboat-headless/werkzeuge/ (Dockerfile, server.py, github_lesen.py, pc_suche_relay.py) sowie
+     ~/rowboat-headless/werkzeuge/ (Dockerfile, server.py, github_lesen.py, gitea_lesen.py, pc_suche_relay.py) sowie
      werkzeuge-zugang-eintragen.sh und mcp-eintrag.json nach ~/rowboat-headless/. Die Zugangsdatei
      dort legt dieses Skript NIE an (sie kommt nur per rowboat-zugang ueber ssh-stdin).
   Mit -NurWerkzeuge: kein npm-Bau; kopiert nur Schritt 6 plus compose.yml und .dockerignore.
@@ -63,7 +63,7 @@ function Get-ZielTeile([string]$Ziel) {
 
 # Werkzeug-Container (Teil D): Bau-Kontext unter ~/rowboat-headless/werkzeuge/, Begleitdateien eine Ebene darueber.
 $werkzeugeOrdner = Join-Path $PSScriptRoot 'werkzeuge'
-$werkzeugeDateien = @('Dockerfile', 'server.py', 'github_lesen.py', 'pc_suche_relay.py')
+$werkzeugeDateien = @('Dockerfile', 'server.py', 'github_lesen.py', 'gitea_lesen.py', 'pc_suche_relay.py')
 $werkzeugeOben = @('werkzeuge-zugang-eintragen.sh', 'mcp-eintrag.json')
 function Test-WerkzeugeKontext {
     foreach ($datei in $werkzeugeDateien) {

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Traegt einen Werkzeug-Zugang (GitHub-Nur-Lese-Token je Besitzer, Schluessel der PC-Suche) in
+# Traegt einen Werkzeug-Zugang (GitHub-Nur-Lese-Token je Besitzer, Gitea-Lese-Token, Schluessel der PC-Suche) in
 # ~/rowboat-headless/werkzeuge.env ein (env_file des Dienstes rowboat-werkzeuge) und erzeugt NUR
 # diesen Dienst neu, wenn er schon laeuft.
 #
 #   bash ~/rowboat-headless/werkzeuge-zugang-eintragen.sh <gruppe>
-#   gruppe: github_flissel | github_vibemind_lab | pc_suche
+#   gruppe: github_flissel | github_vibemind_lab | gitea | pc_suche
 #
 # Regelweg ist der PC-Befehl `rowboat-zugang speichern <gruppe>` (Vibemind_V1,
 # scripts/rowboat_zugang.py): der OpenFang-Tresor am PC ist die Wahrheit, der Befehl reicht die
@@ -31,7 +31,7 @@ ENV_DATEI="${WERKZEUGE_ENV:-$HOME/rowboat-headless/werkzeuge.env}"
 PROJEKT="$(dirname "$ENV_DATEI")"
 DOCKER="${DOCKER:-docker}"
 ERLAUBT='^[A-Za-z0-9._:/@+=~%?&-]+$'
-GRUPPEN_LISTE="github_flissel github_vibemind_lab pc_suche"
+GRUPPEN_LISTE="github_flissel github_vibemind_lab gitea pc_suche"
 
 if [ "${1:-}" = "--gruppen" ]; then
   echo "$GRUPPEN_LISTE"
@@ -47,6 +47,7 @@ gruppe="${1:-}"
 case "$gruppe" in
   github_flissel)      NAMEN=(GITHUB_LESEN_FLISSEL) ;;
   github_vibemind_lab) NAMEN=(GITHUB_LESEN_VIBEMIND_LAB) ;;
+  gitea)               NAMEN=(GITEA_LESEN) ;;
   pc_suche)            NAMEN=(PC_SUCHE_KEY) ;;
   *)
     echo "Aufruf: $0 <gruppe> — bekannte Gruppen: $GRUPPEN_LISTE" >&2

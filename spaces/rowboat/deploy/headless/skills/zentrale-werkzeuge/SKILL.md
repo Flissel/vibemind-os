@@ -1,6 +1,6 @@
 ---
 name: zentrale-werkzeuge
-description: "Werkzeuge der Zentrale – nutzen bei GitHub-Fragen (Projekte updaten, Repos, Issues, PRs, Commits, CI/Actions-Status, README), wenn neueste Docs/Doku zu einer Bibliothek oder einem Dienst geholt werden sollen, wenn ein Dashboard aus meinen Daten gebaut werden soll und wenn ich sage 'auf meinem PC suchen' oder 'such auf dem Rechner nach …'."
+description: "Werkzeuge der Zentrale – nutzen bei GitHub-Fragen (Projekte updaten, Repos, Issues, PRs, Commits, CI/Actions-Status, README), bei Fragen zum eigenen Gitea (Sicherung/Spiegel, Repos, Issues, Commits), wenn neueste Docs/Doku zu einer Bibliothek oder einem Dienst geholt werden sollen, wenn ein Dashboard aus meinen Daten gebaut werden soll und wenn ich sage 'auf meinem PC suchen' oder 'such auf dem Rechner nach …'."
 tools: [listMcpTools, executeMcpTool, fetch-url, todo-add, file-readText, file-grep, file-list, file-writeText, file-mkdir]
 ---
 
@@ -8,7 +8,7 @@ tools: [listMcpTools, executeMcpTool, fetch-url, todo-add, file-readText, file-g
 
 Alle Werkzeuge hier **lesen nur**. Der MCP-Server `vibemind-werkzeuge` hat genau diese Werkzeuge:
 `github_repos`, `github_issues`, `github_prs`, `github_commits`, `github_ci`, `github_datei`,
-`github_ueberblick`, `pc_suchen`. Aufruf immer so:
+`github_ueberblick`, `gitea_repos`, `gitea_issues`, `gitea_commits`, `gitea_datei`, `pc_suchen`. Aufruf immer so:
 
 ```
 executeMcpTool({serverName: "vibemind-werkzeuge", toolName: "<werkzeug>", arguments: {...}})
@@ -22,6 +22,7 @@ executeMcpTool({serverName: "vibemind-werkzeuge", toolName: "<werkzeug>", argume
 | Repos eines Kontos (Flissel, Vibemind-LAB) | `github_repos` mit `{besitzer: "Flissel"}` |
 | Ein einzelnes Repo (`besitzer/name`) | `github_issues`, `github_prs`, `github_commits` (optional `branch`), `github_datei` (z. B. `pfad: "README.md"`) |
 | „Ist die CI grün?“, „Laufen die Tests?“, Actions-Status | `github_ci` mit `{repo: "besitzer/name"}` (optional `branch`); `letzter_je_workflow` zeigt je Workflow den aktuellen Stand |
+| Eigenes Gitea (Sicherungsziel): „Was liegt im Gitea?“, „Ist die Sicherung aktuell?“ | `gitea_repos` (zeigt `spiegel` und `spiegel_aktualisiert`); einzelnes Repo: `gitea_issues`, `gitea_commits`, `gitea_datei` |
 | Docs, URL bekannt | `fetch-url` – **nur GET** |
 | Docs, URL unbekannt | `executeMcpTool({serverName: "exa", toolName: "web_search_exa", ...})`, dann `web_fetch_exa` oder `fetch-url` (GET) |
 | Dashboard aus meinen Daten | Markdown-Notiz unter `knowledge/Kanal/Dashboards/`, siehe unten |

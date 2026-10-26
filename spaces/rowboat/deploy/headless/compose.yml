@@ -119,6 +119,8 @@ services:
       WERKZEUGE_PORT: "8150"
       PC_SUCHE_URL: http://100.84.127.84:8149
       GITHUB_BESITZER: Flissel=GITHUB_LESEN_FLISSEL,Vibemind-LAB=GITHUB_LESEN_VIBEMIND_LAB
+      # Gitea auf derselben VM (debian-coding-gitea-1, :3002); Token GITEA_LESEN in werkzeuge.env
+      GITEA_URL: http://127.0.0.1:3002
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8150/health', timeout=4).status == 200 else 1)"]
       interval: 30s
