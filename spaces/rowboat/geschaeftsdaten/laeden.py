@@ -52,45 +52,68 @@ def env_werte(pfad: Path, schluessel: frozenset[str]) -> dict[str, str]:
     return werte
 
 
-def _laden_aus(pfad: Path, basis: bool) -> tuple[Laden | None, str | None]:
+@dataclass(frozen=True)
+class Pruefung:
+    """Ergebnis von `pruefen`: gueltige Laeden, Warnungen, Marken mit abgelehnter Laden-Datei
+    (`gestoert`) und ob eine abgelehnte Datei keine erkennbare Marke hat (`unklar`). Eine Firma mit
+    gestoerter Marke darf in diesem Lauf nicht abgeglichen werden: ihr fehlender Laden saehe sonst aus
+    wie verschwundene Kontakte."""
+    laeden: list[Laden]
+    warnungen: list[str]
+    gestoert: frozenset[str]
+    unklar: bool
+
+
+def _marke(werte: dict[str, str], basis: bool) -> str:
+    if basis:
+        return werte.get("LADEN_MARKE") or werte.get("MARKETING_MANDANT") or ""
+    return werte.get("LADEN_MARKE") or ""
+
+
+def _laden_aus(pfad: Path, basis: bool) -> tuple[Laden | None, str | None, str | None, bool]:
+    """(Laden, Warnung, Marken-Hinweis bei Ablehnung, Ablehnung gewollt)."""
     werte = env_werte(pfad, SCHLUESSEL)
+    marke = _marke(werte, basis)
+    hinweis = marke if MARKE_MUSTER.match(marke) else None
     schema = werte.get("SALES_DB_SCHEMA") or "sales"
     if not SCHEMA_MUSTER.match(schema):
-        return None, f"{pfad.name}: ungueltiges Schema"
+        return None, f"{pfad.name}: ungueltiges Schema", hinweis, False
     if schema == TEST_SCHEMA:
-        return None, f"{pfad.name}: {TEST_SCHEMA} wird nie gelesen"
-    if basis:
-        marke = werte.get("LADEN_MARKE") or werte.get("MARKETING_MANDANT") or ""
-    else:
-        marke = werte.get("LADEN_MARKE") or ""
-        if not marke:
-            return None, f"{pfad.name}: keine LADEN_MARKE"
+        return None, f"{pfad.name}: {TEST_SCHEMA} wird nie gelesen", hinweis, True
     if not marke:
-        return None, f"{pfad.name}: keine Marke"
-    if not MARKE_MUSTER.match(marke):
-        return None, f"{pfad.name}: ungueltige Marke"
+        return None, f"{pfad.name}: keine Marke" if basis else f"{pfad.name}: keine LADEN_MARKE", None, False
+    if not hinweis:
+        return None, f"{pfad.name}: ungueltige Marke", None, False
     ids = frozenset(w for k in SAMMEL_SCHLUESSEL if (w := werte.get(k, "")))
-    return Laden(schema, marke, ids), None
+    return Laden(schema, marke, ids), None, None, False
 
 
-def laeden_finden(sales_claw: Path) -> tuple[list[Laden], list[str]]:
-    """Alle Laeden mit Marke (sortiert nach Schema) und die Warnungen."""
+def pruefen(sales_claw: Path) -> Pruefung:
+    """Alle Laeden mit Marke (sortiert nach Schema), Warnungen und gestoerte Marken."""
     warnungen: list[str] = []
+    gestoert: set[str] = set()
+    unklar = False
     dateien: list[Path] = []
     basis = sales_claw / ".env"
     if basis.is_file():
         dateien.append(basis)
     else:
         warnungen.append(".env: fehlt")
+        unklar = True
     laden_ordner = sales_claw / "deploy" / "laeden"
     if laden_ordner.is_dir():
         dateien += sorted(p for p in laden_ordner.glob("*.env") if p.is_file() and p.name != VORLAGE)
 
     gefunden: dict[str, list[tuple[Path, Laden]]] = {}
     for pfad in dateien:
-        laden, warnung = _laden_aus(pfad, basis=pfad == basis)
+        laden, warnung, hinweis, gewollt = _laden_aus(pfad, basis=pfad == basis)
         if warnung:
             warnungen.append(warnung)
+            if not gewollt:
+                if hinweis:
+                    gestoert.add(hinweis)
+                else:
+                    unklar = True
         if laden:
             gefunden.setdefault(laden.schema, []).append((pfad, laden))
 
@@ -99,9 +122,16 @@ def laeden_finden(sales_claw: Path) -> tuple[list[Laden], list[str]]:
         eintraege = gefunden[schema]
         if len(eintraege) > 1:
             warnungen += [f"{p.name}: Schema mehrfach vergeben" for p, _ in eintraege]
+            gestoert |= {l.marke for _, l in eintraege}
             continue
         laeden.append(eintraege[0][1])
-    return laeden, warnungen
+    return Pruefung(laeden, warnungen, frozenset(gestoert), unklar)
+
+
+def laeden_finden(sales_claw: Path) -> tuple[list[Laden], list[str]]:
+    """Alle Laeden mit Marke (sortiert nach Schema) und die Warnungen."""
+    p = pruefen(sales_claw)
+    return p.laeden, p.warnungen
 
 
 def firmenordner(wissen: Path, marke_name: str) -> Path:

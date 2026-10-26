@@ -90,7 +90,7 @@ def test_systemd_einheiten():
     assert dienst["User"] == ["debian"]
     assert dienst["ExecStart"] == ["/usr/bin/python3 /home/debian/marketing-os/spaces/rowboat/geschaeftsdaten/lauf.py"]
     assert dienst["Nice"] == ["10"]
-    assert dienst["TimeoutStartSec"] == ["3h"]
+    assert dienst["TimeoutStartSec"] == ["30min"]
     assert dienst["NoNewPrivileges"] == ["yes"]
     for einheit in (timer, dienst):
         assert "EnvironmentFile" not in einheit

@@ -11,7 +11,7 @@ _ROWBOAT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROWBOAT / "scripts"))
 sys.path.insert(0, str(_ROWBOAT / "geschaeftsdaten"))
 
-from laeden import Laden, env_werte, firmenordner, laeden_finden  # noqa: E402
+from laeden import Laden, env_werte, firmenordner, laeden_finden, pruefen  # noqa: E402
 
 ID1 = "11111111-1111-1111-1111-111111111111"
 ID2 = "22222222-2222-2222-2222-222222222222"
@@ -136,3 +136,21 @@ def test_laden_datei_braucht_laden_marke(sc: Path):
     laeden, warnungen = laeden_finden(sc)
     assert [l.schema for l in laeden] == ["sales"]
     assert warnungen == ["neu.env: keine LADEN_MARKE"]
+
+
+def test_pruefen_meldet_gestoerte_marken(sc: Path):
+    _schreiben(sc / ".env", "MARKETING_MANDANT=vibemind\n")
+    _schreiben(sc / "deploy/laeden/a.env", "SALES_DB_SCHEMA=sales_ivan\nLADEN_MARKE=fin2gether\n")
+    _schreiben(sc / "deploy/laeden/b.env", "SALES_DB_SCHEMA=sales_ivan\nLADEN_MARKE=dritte\n")
+    _schreiben(sc / "deploy/laeden/t.env", "SALES_DB_SCHEMA=sales_test\nLADEN_MARKE=vibemind\n")
+    _schreiben(sc / "deploy/laeden/x.env", "SALES_DB_SCHEMA=sales; drop\nLADEN_MARKE=vierte\n")
+    p = pruefen(sc)
+    assert [l.schema for l in p.laeden] == ["sales"]
+    assert p.gestoert == frozenset({"fin2gether", "dritte", "vierte"}) and p.unklar is False  # sales_test gewollt
+
+
+def test_pruefen_unklare_marke(sc: Path):
+    _schreiben(sc / ".env", "MARKETING_MANDANT=vibemind\n")
+    _schreiben(sc / "deploy/laeden/neu.env", "SALES_DB_SCHEMA=sales_neu\nMARKETING_MANDANT=vibemind\n")
+    assert pruefen(sc).unklar is True
+    assert pruefen(sc / "fehlt").unklar is True  # ohne Basis-.env ist die Marke des Basis-Ladens unbekannt

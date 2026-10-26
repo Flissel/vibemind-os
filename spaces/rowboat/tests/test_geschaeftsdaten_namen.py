@@ -99,3 +99,8 @@ def test_mailadressen_fallen_aus_dem_namen():
     assert dateistamm("<info@firma.de>", "Kontakt 1234abcd", 100) == "Kontakt 1234abcd"
     assert dateistamm("mailto:a@b.de Bert", "x", 100) == "Bert"
     assert dateistamm("Firma @ Home", "x", 100) == "Firma @ Home"  # kein Adressmuster
+
+
+def test_rowboat_ausloeser_im_namen_entschaerft():
+    assert dateistamm("@rowboat Fan", "x", 100) == "@ rowboat Fan"
+    assert dateistamm("Hi @RowBoat", "x", 100) == "Hi @ RowBoat"

@@ -1,4 +1,4 @@
-"""Ablage der erzeugten Notizen: Bestand eigener Dateien, Plan und atomares Ausfuehren in Paketen.
+"""Ablage der erzeugten Notizen: Bestand eigener Dateien, Plan und atomares Ausfuehren mit Obergrenze.
 
 - Eigene Dateien sind nur `.md` unter `Kontakte/**`, `Newsletter/*`, `Wochenbild/*` mit
   `erzeugt_von: rowboat-geschaeftsdaten` im Frontmatter (hoechstens 4 KB gelesen). Alles andere wird nie
@@ -7,15 +7,15 @@
 - Aenderungserkennung per sha256 gegen die Platte: ein zweiter Lauf ohne Datenaenderung schreibt nichts.
 - Hart geloescht werden nur eigene Kopien gesperrter Kontakte (Betreiber-Entscheid 1) und eigene Doppel.
   Verschwundene Kontakte gehen nach `Kontakte/_archiv/`.
-- Jede Verschiebung, Archivierung und Entfernung ist fuer den Wissens-Spiegel eine Loeschung. Sie laufen
-  in Paketen (`paket`, Vorgabe 15) mit `pause_s` (360 s, laenger als der Spiegeltakt) dazwischen, damit
-  die Loeschgrenze des Spiegels (20 je Lauf) nie greift. Ein gemeinsamer `Takt` zaehlt ueber Firmen hinweg.
+- Jede Verschiebung, Archivierung und Entfernung ist fuer den Wissens-Spiegel eine Loeschung. Ein Lauf
+  macht davon hoechstens `paket` (Vorgabe 15, ueber alle Firmen per gemeinsamem `Takt`); der Rest bleibt
+  in stabiler Reihenfolge fuer die naechste Nacht liegen. So greift die Loeschgrenze des Spiegels (20 je
+  Abgleich) auch dann nicht, wenn der Spiegel zwischen zwei Laeufen nicht laeuft.
 """
 from __future__ import annotations
 
 import hashlib
 import os
-import time
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Callable
@@ -26,7 +26,8 @@ ERZEUGT_VON = "rowboat-geschaeftsdaten"
 ARCHIV_ORDNER = "Kontakte/_archiv"
 KOPF_MAX = 4096
 TMP_ENDUNG = ".gd.tmp"
-_ZAEHLER = ("geschrieben", "verschoben", "archiviert", "entfernt", "unveraendert", "abweichung")
+_ZAEHLER = ("geschrieben", "verschoben", "archiviert", "entfernt", "unveraendert", "abweichung",
+            "zurueckgestellt")
 
 
 @dataclass(frozen=True)
@@ -54,19 +55,24 @@ class Plan:
 
 
 class Takt:
-    """Zaehlt Loeschungen; vor der (paket+1)-ten Loeschung eines Fensters wird `pause_s` geschlafen."""
+    """Obergrenze fuer Loeschungen (Entfernen, Archivieren, Verschieben) je Lauf, ueber alle Firmen.
+    Der Wissens-Spiegel bricht bei mehr als 20 Loeschungen je Abgleich ab; laeuft er zwischen zwei
+    Laeufen nicht, addiert sich trotzdem nichts ueber `paket` hinaus."""
 
-    def __init__(self, paket: int = 15, pause_s: float = 360.0, schlafen: Callable[[float], None] = time.sleep):
+    def __init__(self, paket: int = 15):
         if paket < 1:
             raise ValueError("paket muss >= 1 sein")
-        self.paket, self.pause_s, self.schlafen = paket, pause_s, schlafen
-        self._im_fenster = 0
+        self.paket = paket
+        self.genutzt = 0
 
-    def vor_loeschung(self) -> None:
-        if self._im_fenster >= self.paket:
-            self.schlafen(self.pause_s)
-            self._im_fenster = 0
-        self._im_fenster += 1
+    def rest(self) -> int:
+        return self.paket - self.genutzt
+
+    def nimm(self) -> bool:
+        if self.genutzt >= self.paket:
+            return False
+        self.genutzt += 1
+        return True
 
 
 # --- Bestand ----------------------------------------------------------------------------------------
@@ -200,6 +206,11 @@ def planen(soll: list[Soll], ist: list[Ist], gesperrt: set[str], archiv_inhalt: 
         plan.archivieren.append((haupt, ziel))
         plan.archiv_inhalte[ziel] = archiv_inhalt(haupt)
         plan.entfernen += kandidaten[1:]
+    # Stabile Reihenfolge: was wegen der Obergrenze je Lauf liegen bleibt, kommt in der naechsten Nacht dran.
+    plan.schreiben.sort(key=lambda s: s.rel)
+    plan.verschieben.sort(key=lambda v: v[0].rel)
+    plan.archivieren.sort(key=lambda a: a[0].rel)
+    plan.entfernen.sort(key=lambda i: i.rel)
     return plan
 
 
@@ -231,9 +242,13 @@ def _loeschen(pfad: Path) -> None:
     pfad.unlink()
 
 
+def _tmp_name(ziel: Path, art: str = "") -> Path:
+    return ziel.with_name(f".{ziel.name}{art}{TMP_ENDUNG}")
+
+
 def _schreiben_atomar(ziel: Path, inhalt: str) -> None:
     ziel.parent.mkdir(parents=True, exist_ok=True)
-    tmp = ziel.with_name(f".{ziel.name}{TMP_ENDUNG}")
+    tmp = _tmp_name(ziel)
     try:
         with open(tmp, "wb") as f:
             f.write(inhalt.encode("utf-8"))
@@ -244,14 +259,36 @@ def _schreiben_atomar(ziel: Path, inhalt: str) -> None:
             tmp.unlink()
 
 
-def _ziel_frei(ziel: Path | None) -> bool:
-    """Ziel darf geschrieben werden: kein Symlink, fehlt oder ist eine eigene Datei."""
+def aufraeumen(firma: Path) -> int:
+    """Entfernt liegengebliebene eigene Zwischendateien (`.<name>*.gd.tmp`) unter den Job-Ordnern."""
+    n = 0
+    for teil in ("Kontakte", "Newsletter", "Wochenbild"):
+        ordner = firma / teil
+        if ordner.is_symlink() or not ordner.is_dir():
+            continue
+        for wurzel, ordner_namen, namen in os.walk(ordner, followlinks=False):
+            basis = Path(wurzel)
+            ordner_namen[:] = [o for o in ordner_namen if not (basis / o).is_symlink()]
+            for name in namen:
+                pfad = basis / name
+                if name.startswith(".") and name.endswith(TMP_ENDUNG) and not pfad.is_symlink() and pfad.is_file():
+                    pfad.unlink()
+                    n += 1
+    return n
+
+
+def _ziel_stand(ziel: Path | None, schluessel: str) -> str:
+    """'frei' (fehlt oder eigene Datei desselben Schluessels), 'fremd' (fremde Datei, Symlink, ungueltig)
+    oder 'belegt' (eigene Datei eines anderen Schluessels, deren Umzug noch aussteht)."""
     if ziel is None or ziel.is_symlink():
-        return False
+        return "fremd"
     if not ziel.exists():
-        return True  # Symlinks auf dem Weg hat `_pfad` schon ausgeschlossen
+        return "frei"  # Symlinks auf dem Weg hat `_pfad` schon ausgeschlossen
     daten = _lesen(ziel)
-    return daten is not None and _eigen(daten) is not None
+    anderer = _eigen(daten) if daten is not None else None
+    if anderer is None:
+        return "fremd"
+    return "frei" if anderer == schluessel else "belegt"
 
 
 def _quelle_entfernen(quelle: Path | None, ist: Ist, *, sha_pruefen: bool) -> bool:
@@ -267,54 +304,115 @@ def _quelle_entfernen(quelle: Path | None, ist: Ist, *, sha_pruefen: bool) -> bo
     return True
 
 
-def ausfuehren(plan: Plan, firma: Path, *, paket: int = 15, pause_s: float = 360.0,
-               schlafen: Callable[[float], None] = time.sleep, trocken: bool = False,
+def _laufende_umzuege(umzuege: list[tuple[Ist, Soll]], rest: int, wartend: set[str]) -> list[tuple[Ist, Soll]]:
+    """Die ersten `rest` Umzuege (stabile Reihenfolge) ohne solche, deren Ziel die Quelle eines Umzugs oder
+    einer Archivierung ist, die in diesem Lauf liegen bleibt (bis zum Fixpunkt)."""
+    laufend = list(umzuege[:max(rest, 0)])
+    while True:
+        drin = {id(i) for i, _ in laufend}
+        bleibt = wartend | {i.rel.casefold() for i, _ in umzuege if id(i) not in drin}
+        neu = [(i, s) for i, s in laufend if s.rel.casefold() not in bleibt]
+        if len(neu) == len(laufend):
+            return laufend
+        laufend = neu
+
+
+def ausfuehren(plan: Plan, firma: Path, *, paket: int = 15, trocken: bool = False,
                takt: Takt | None = None) -> dict[str, int]:
     """Fuehrt den Plan aus. Reihenfolge: entfernen (Datenschutz zuerst), archivieren, verschieben,
-    schreiben. `takt` (geteilt ueber Firmen) ersetzt `paket`/`pause_s`/`schlafen`."""
+    schreiben. Entfernen, Archivieren und Verschieben verbrauchen je eine Loeschung aus `takt` (geteilt
+    ueber Firmen, Vorgabe `paket` je Lauf); was nicht mehr passt, wird `zurueckgestellt` und kommt in
+    einer spaeteren Nacht. Tauschen Kontakte ihre Pfade, wird die belegte Quelle unter einem Zwischennamen
+    geparkt statt ueberschrieben. `trocken` zaehlt nur."""
     z = dict.fromkeys(_ZAEHLER, 0)
     z["unveraendert"] = plan.unveraendert
-    if trocken:
-        z.update(geschrieben=len(plan.schreiben), verschoben=len(plan.verschieben),
-                 archiviert=len(plan.archivieren), entfernt=len(plan.entfernen))
-        return z
-    takt = takt or Takt(paket, pause_s, schlafen)
+    takt = takt or Takt(paket)
 
     for ist in plan.entfernen:
-        takt.vor_loeschung()
+        if not takt.nimm():
+            z["zurueckgestellt"] += 1
+            continue
+        if trocken:
+            z["entfernt"] += 1
         # Gesperrte Kopien: entfernen, solange es eine eigene Datei ist (Kopf), auch wenn sie sich geaendert hat.
-        if _quelle_entfernen(_pfad(firma, ist.rel), ist, sha_pruefen=False):
+        elif _quelle_entfernen(_pfad(firma, ist.rel), ist, sha_pruefen=False):
             z["entfernt"] += 1
         else:
             z["abweichung"] += 1
 
+    wartend: set[str] = set()  # Quellen (casefold), die nach diesem Lauf noch liegen bleiben
     for ist, ziel_rel in plan.archivieren:
-        ziel = _pfad(firma, ziel_rel)
-        if not _ziel_frei(ziel) or (ziel.exists() and ziel_rel != ist.rel):
-            z["abweichung"] += 1
+        if not takt.nimm():
+            z["zurueckgestellt"] += 1
+            wartend.add(ist.rel.casefold())
             continue
-        takt.vor_loeschung()
+        if trocken:
+            z["archiviert"] += 1
+            continue
+        ziel = _pfad(firma, ziel_rel)
+        if ziel is None or ziel.is_symlink() or ziel.exists():
+            z["abweichung"] += 1
+            wartend.add(ist.rel.casefold())
+            continue
         _schreiben_atomar(ziel, plan.archiv_inhalte[ziel_rel])
         if _quelle_entfernen(_pfad(firma, ist.rel), ist, sha_pruefen=True):
             z["archiviert"] += 1
         else:
             z["abweichung"] += 1
+            wartend.add(ist.rel.casefold())
 
-    for ist, soll in plan.verschieben:
-        ziel = _pfad(firma, soll.rel)
-        if not _ziel_frei(ziel):
-            z["abweichung"] += 1
+    laufend = _laufende_umzuege(plan.verschieben, takt.rest(), wartend)
+    drin = {id(i) for i, _ in laufend}
+    for ist, _ in plan.verschieben:
+        if id(ist) not in drin:
+            z["zurueckgestellt"] += 1
+            wartend.add(ist.rel.casefold())
+    offen = {i.rel.casefold(): i for i, _ in laufend}  # Quelle -> Ist, solange der Umzug offen ist
+    geparkt: dict[int, Path] = {}  # id(Ist) -> Zwischenname
+    for ist, soll in laufend:
+        takt.nimm()
+        if trocken:
+            z["verschoben"] += 1
             continue
-        takt.vor_loeschung()
+        ziel = _pfad(firma, soll.rel)
+        stand = _ziel_stand(ziel, soll.schluessel)
+        besetzer = offen.get(soll.rel.casefold())
+        if stand == "belegt" and besetzer is not None and besetzer is not ist:
+            # Tausch: den Besetzer (offener Umzug, noch unveraendert) unter einem Zwischennamen parken.
+            daten = _lesen(ziel)
+            if daten is not None and _sha(daten) == besetzer.sha:
+                park = _tmp_name(ziel, ".tausch")
+                os.replace(ziel, park)
+                geparkt[id(besetzer)] = park
+                stand = "frei"
+        if stand != "frei":
+            z["abweichung"] += 1
+            wartend.add(ist.rel.casefold())
+            continue
         _schreiben_atomar(ziel, soll.inhalt)
-        if _quelle_entfernen(_pfad(firma, ist.rel), ist, sha_pruefen=True):
+        quelle = geparkt.pop(id(ist), None) or _pfad(firma, ist.rel)
+        if _quelle_entfernen(quelle, ist, sha_pruefen=True):
             z["verschoben"] += 1
         else:
             z["abweichung"] += 1
+        offen.pop(ist.rel.casefold(), None)
+    for park in geparkt.values():  # nur nach einer Abweichung uebrig: eigene Zwischendatei, Inhalt kommt neu
+        if park.exists():
+            park.unlink()
 
     for soll in plan.schreiben:
+        if soll.rel.casefold() in wartend:
+            z["zurueckgestellt"] += 1
+            continue
+        if trocken:
+            z["geschrieben"] += 1
+            continue
         ziel = _pfad(firma, soll.rel)
-        if not _ziel_frei(ziel):
+        stand = _ziel_stand(ziel, soll.schluessel)
+        if stand == "belegt":
+            z["zurueckgestellt"] += 1
+            continue
+        if stand == "fremd":
             z["abweichung"] += 1
             continue
         _schreiben_atomar(ziel, soll.inhalt)

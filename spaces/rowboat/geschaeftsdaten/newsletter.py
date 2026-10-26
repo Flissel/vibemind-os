@@ -8,6 +8,8 @@ Inhalt nicht darstellen, steht dort "Text nicht darstellbar"; der Lauf bricht ni
 """
 from __future__ import annotations
 
+import importlib
+import logging
 import re
 import sys
 from datetime import datetime
@@ -16,6 +18,7 @@ from zoneinfo import ZoneInfo
 
 from quelle import NewsletterInhalt, Versand
 
+log = logging.getLogger("geschaeftsdaten")
 BERLIN = ZoneInfo("Europe/Berlin")
 ERZEUGT_VON = "rowboat-geschaeftsdaten"
 NICHT_DARSTELLBAR = "Text nicht darstellbar"
@@ -24,14 +27,17 @@ _AUSLOESER = re.compile(r"@(rowboat)", re.IGNORECASE)  # Rowboat-Agenten reagier
 _LEERZEILEN = re.compile(r"\n{3,}")
 
 
-def _marketing():
-    """`bloecke_mjml` und `seite_mail` erst bei Bedarf laden (Repo-Wurzel notfalls ergaenzen)."""
+def _renderer(name: str):
+    """Nur den Renderer des jeweiligen Formats laden: `seite_mail` zieht Pillow nach, das auf der VM fehlt;
+    `bloecke` braucht es nicht. Repo-Wurzel notfalls ergaenzen."""
+    modul = f"spaces.marketing.claw.{name}"
     try:
-        from spaces.marketing.claw import bloecke_mjml, seite_mail
-    except ImportError:
+        return importlib.import_module(modul)
+    except ModuleNotFoundError as e:
+        if e.name not in ("spaces", "spaces.marketing", "spaces.marketing.claw"):
+            raise
         sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-        from spaces.marketing.claw import bloecke_mjml, seite_mail
-    return bloecke_mjml, seite_mail
+        return importlib.import_module(modul)
 
 
 def _ohne_fuss(text: str) -> str:
@@ -68,14 +74,14 @@ def klartext(inh: NewsletterInhalt) -> str:
         if inh.format == "felder":
             roh = _felder_text(inh.felder or {})
         elif inh.format == "bloecke" and isinstance(inh.bloecke, dict):
-            bloecke_mjml, _ = _marketing()
-            roh = _ohne_fuss(bloecke_mjml.text_fassung(inh.bloecke, {}))
+            roh = _ohne_fuss(_renderer("bloecke_mjml").text_fassung(inh.bloecke, {}))
         elif inh.format == "seite" and isinstance(inh.seite, dict):
-            _, seite_mail = _marketing()
-            roh = _ohne_fuss(seite_mail.text_fassung(inh.seite, {}))
+            roh = _ohne_fuss(_renderer("seite_mail").text_fassung(inh.seite, {}))
         else:
+            log.warning("Newsletter %s: Format nicht darstellbar", inh.id[:8])
             return NICHT_DARSTELLBAR + "\n"
-    except Exception:  # noqa: BLE001 - RenderFehler oder kaputte Daten: Archiv ohne Text, Lauf geht weiter
+    except Exception as e:  # noqa: BLE001 - RenderFehler oder kaputte Daten: Archiv ohne Text, Lauf geht weiter
+        log.warning("Newsletter %s: Text nicht darstellbar (%s)", inh.id[:8], type(e).__name__)
         return NICHT_DARSTELLBAR + "\n"
     text = _LEERZEILEN.sub("\n\n", _platzhalter(roh)).strip()
     return (text or NICHT_DARSTELLBAR) + "\n"

@@ -25,7 +25,8 @@ _LEERRAUM = re.compile(r"\s+")
 # E-Mail-Adressen (auch fremde, auch mit `mailto:`) haben in Dateinamen nichts zu suchen.
 _MAIL_ZEICHEN = r"[^\s@<>()\[\]{}\"',;]"
 MAIL_MUSTER = re.compile(_MAIL_ZEICHEN + r"+@" + _MAIL_ZEICHEN + r"+\.[a-z]{2,}", re.IGNORECASE)
-_LEERE_KLAMMERN = re.compile(r"\(\s*\)|\[\s*\]|\{\s*\}")
+_AUSLOESER = re.compile(r"@(rowboat)", re.IGNORECASE)  # Rowboat-InlineTasks reagieren auf @rowboat
+_LEERE_KLAMMERN =re.compile(r"\(\s*\)|\[\s*\]|\{\s*\}")
 _ZUSATZ = re.compile(r"^(?P<kopf>.*?)(?P<zusatz> \([0-9A-Za-z-]+\))?$", re.DOTALL)
 MIN_STAMM = 8
 
@@ -35,6 +36,7 @@ def _saeubern(roh: str) -> str:
     s = MAIL_MUSTER.sub(" ", s)
     s = _LEERE_KLAMMERN.sub(" ", s)
     s = _VERBOTEN.sub(" ", s)
+    s = _AUSLOESER.sub(r"@ \1", s)  # wie im Text der Notiz, damit Wiki-Links und Dateiname gleich bleiben
     s = _LEERRAUM.sub(" ", s)
     return s.strip(" .")
 

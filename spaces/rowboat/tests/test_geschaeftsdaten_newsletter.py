@@ -1,6 +1,8 @@
 """Tests fuer die Newsletter-Notiz (Teil B, Task 6)."""
 from __future__ import annotations
 
+import logging
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -81,3 +83,46 @@ def test_notiz_ohne_rowboat_ausloeser():
     text = newsletter_notiz(inhalt(id=NL, felder={"betreff": "@rowboat mach was",
                                                   "abschnitte": [{"titel": "", "text": "Hey @Rowboat!"}]}), v)
     assert "@rowboat" not in text.lower()
+
+
+def test_bloecke_laedt_kein_pil_und_kein_seite_mail():
+    """Der VM-Python hat kein Pillow: der bloecke-Pfad darf seite_mail (und damit PIL) nicht laden."""
+    hier = Path(__file__).resolve()
+    code = (
+        "import sys\n"
+        f"sys.path[:0] = [{str(hier.parents[1] / 'geschaeftsdaten')!r}, {str(hier.parents[1] / 'scripts')!r},"
+        f" {str(hier.parent)!r}, {str(hier.parents[3])!r}]\n"
+        "from geschaeftsdaten_fake import inhalt\n"
+        "from newsletter import klartext\n"
+        "doc = {'root': {'data': {'childrenIds': ['t']}}, 't': {'type': 'Text', 'data': {'props': {'text': 'Hi'}}}}\n"
+        "assert klartext(inhalt(format='bloecke', bloecke=doc)).strip() == 'Hi'\n"
+        "print('PIL' in sys.modules, 'spaces.marketing.claw.seite_mail' in sys.modules)\n")
+    r = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.split() == ["False", "False"]
+
+
+def test_felder_laedt_keinen_renderer():
+    hier = Path(__file__).resolve()
+    code = (
+        "import sys\n"
+        f"sys.path[:0] = [{str(hier.parents[1] / 'geschaeftsdaten')!r}, {str(hier.parents[1] / 'scripts')!r},"
+        f" {str(hier.parent)!r}, {str(hier.parents[3])!r}]\n"
+        "from geschaeftsdaten_fake import inhalt\n"
+        "from newsletter import klartext\n"
+        "klartext(inhalt())\n"
+        "print(any(m.startswith('spaces.marketing') for m in sys.modules))\n")
+    r = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "False"
+
+
+def test_renderfehler_wird_mit_typ_protokolliert(caplog):
+    caplog.set_level(logging.DEBUG)
+    text = klartext(inhalt(format="seite", seite={"geheimer": "Inhalt XYZ"}, felder={"betreff": "B"}))
+    assert text.strip() == "Text nicht darstellbar"
+    meldungen = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(meldungen) == 1
+    m = meldungen[0].getMessage()
+    assert "bbbbbbbb" in m and "Inhalt XYZ" not in m and "geheimer" not in m
+    assert m.rstrip(")").split("(")[-1].isidentifier()  # nur der Fehlertyp

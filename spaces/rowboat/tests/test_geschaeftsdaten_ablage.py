@@ -9,7 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "geschaeftsdaten"))
 
-from ablage import Ist, Plan, Soll, Takt, ausfuehren, bestand, planen  # noqa: E402
+from ablage import Ist, Plan, Soll, Takt, aufraeumen, ausfuehren, bestand, planen  # noqa: E402
 
 
 def _id(n: int) -> str:
@@ -26,7 +26,7 @@ def _archiv(ist: Ist) -> str:
 
 def _lauf(firma: Path, soll: list[Soll], gesperrt: set[str] = frozenset(), **kw) -> dict[str, int]:
     plan = planen(soll, bestand(firma), set(gesperrt), _archiv)
-    return ausfuehren(plan, firma, schlafen=kw.pop("schlafen", lambda s: None), **kw)
+    return ausfuehren(plan, firma, **kw)
 
 
 def _leer(plan: Plan) -> bool:
@@ -48,7 +48,7 @@ def test_zweiter_lauf_schreibt_nichts(tmp_path):
     assert z["geschrieben"] == 7
     plan = planen(soll, bestand(tmp_path), set(), _archiv)
     assert _leer(plan) and plan.unveraendert == 7
-    z2 = ausfuehren(plan, tmp_path, schlafen=lambda s: None)
+    z2 = ausfuehren(plan, tmp_path)
     assert z2["geschrieben"] == 0 and z2["unveraendert"] == 7
 
 
@@ -95,7 +95,7 @@ def test_archivname_kollidiert_bekommt_id8(tmp_path):
     plan = planen([], bestand(tmp_path), set(), _archiv)
     assert [(i.rel, ziel) for i, ziel in plan.archivieren] == [
         ("Kontakte/bAV/Anna.md", f"Kontakte/_archiv/Anna ({_id(1)[:8]}).md")]
-    ausfuehren(plan, tmp_path, schlafen=lambda s: None)
+    ausfuehren(plan, tmp_path)
     assert (tmp_path / f"Kontakte/_archiv/Anna ({_id(1)[:8]}).md").is_file()
     assert (tmp_path / "Kontakte/_archiv/Anna.md").read_text(encoding="utf-8") == _inhalt(_id(2))
 
@@ -137,7 +137,7 @@ def test_fremde_dateien_unberuehrt(tmp_path):
     beruehrt = {s.rel for s in plan.schreiben} | {i.rel for i, _ in plan.verschieben} \
         | {i.rel for i, _ in plan.archivieren} | {i.rel for i in plan.entfernen}
     assert not beruehrt & set(fremde)
-    ausfuehren(plan, tmp_path, schlafen=lambda s: None)
+    ausfuehren(plan, tmp_path)
     for rel, daten in fremde.items():
         assert (tmp_path / rel).read_bytes() == daten
 
@@ -149,51 +149,77 @@ def test_fremde_datei_am_ziel_wird_nicht_ueberschrieben(tmp_path):
     assert fremd.read_text(encoding="utf-8") == "# meins\n"
 
 
-def test_verschiebungen_in_paketen_mit_pause(tmp_path):
-    alt = [Soll(f"Kontakte/bAV/K{i}.md", _id(i), _inhalt(_id(i))) for i in range(40)]
+def test_hoechstens_15_loeschungen_je_lauf_rest_spaeter(tmp_path):
+    alt = [Soll(f"Kontakte/bAV/K{i:02d}.md", _id(i), _inhalt(_id(i))) for i in range(40)]
     _lauf(tmp_path, alt)
-    neu = [Soll(f"Kontakte/IT-Lösung/K{i}.md", _id(i), _inhalt(_id(i))) for i in range(40)]
-    ereignisse: list[object] = []
-    quelle_ordner = tmp_path / "Kontakte/bAV"
-
-    def schlafen(s: float) -> None:
-        ereignisse.append(("pause", s))
-
+    neu = [Soll(f"Kontakte/IT-Lösung/K{i:02d}.md", _id(i), _inhalt(_id(i))) for i in range(40)]
     import ablage
-    original = ablage._loeschen
+    original, loeschungen = ablage._loeschen, []
 
     def zaehlend(pfad: Path) -> None:
-        ereignisse.append("loeschung")
+        loeschungen.append(pfad.name)
         original(pfad)
 
     ablage._loeschen = zaehlend
     try:
-        z = _lauf(tmp_path, neu, schlafen=schlafen)
+        laeufe = [_lauf(tmp_path, neu) for _ in range(3)]
     finally:
         ablage._loeschen = original
-    assert z["verschoben"] == 40
-    assert [e for e in ereignisse if e != "loeschung"] == [("pause", 360.0), ("pause", 360.0)]
-    luecken, n = [], 0
-    for e in ereignisse:
-        if e == "loeschung":
-            n += 1
-        else:
-            luecken.append(n)
-            n = 0
-    luecken.append(n)
-    assert luecken == [15, 15, 10]
-    assert not list(quelle_ordner.glob("*.md"))
+    assert [z["verschoben"] for z in laeufe] == [15, 15, 10]
+    assert [z["zurueckgestellt"] for z in laeufe] == [25, 10, 0]
+    assert len(loeschungen) == 40
+    # stabile Reihenfolge: zuerst K00..K14, dann K15..K29
+    assert loeschungen[:15] == [f"K{i:02d}.md" for i in range(15)]
+    assert not list((tmp_path / "Kontakte/bAV").glob("*.md"))
+    assert len(list((tmp_path / "Kontakte/IT-Lösung").glob("*.md"))) == 40
 
 
-def test_takt_gilt_ueber_mehrere_firmen(tmp_path):
-    pausen: list[float] = []
-    takt = Takt(paket=15, pause_s=360.0, schlafen=pausen.append)
+def test_obergrenze_gilt_ueber_mehrere_firmen(tmp_path):
+    takt = Takt(paket=15)
+    zaehler = []
     for firma in ("A", "B"):
         ordner = tmp_path / firma
         _lauf(ordner, [Soll(f"Kontakte/bAV/K{i}.md", _id(i), _inhalt(_id(i))) for i in range(10)])
         plan = planen([], bestand(ordner), set(), _archiv)
-        ausfuehren(plan, ordner, takt=takt)
-    assert pausen == [360.0]  # 20 Archivierungen ueber zwei Firmen: eine Pause nach 15
+        zaehler.append(ausfuehren(plan, ordner, takt=takt))
+    assert [z["archiviert"] for z in zaehler] == [10, 5]
+    assert zaehler[1]["zurueckgestellt"] == 5
+
+
+def test_neuer_kontakt_auf_pfad_eines_zurueckgestellten_wartet(tmp_path):
+    # Anna (id1) verschwindet (Archiv zurueckgestellt), ein neuer Kontakt (id2) heisst ebenfalls Anna.
+    _lauf(tmp_path, [Soll("Kontakte/bAV/Anna.md", _id(1), _inhalt(_id(1)))])
+    plan = planen([Soll("Kontakte/bAV/Anna.md", _id(2), _inhalt(_id(2)))], bestand(tmp_path), set(), _archiv)
+    voll = Takt(paket=1)
+    assert voll.nimm()
+    z = ausfuehren(plan, tmp_path, takt=voll)
+    assert z["zurueckgestellt"] == 2 and z["geschrieben"] == 0
+    assert (tmp_path / "Kontakte/bAV/Anna.md").read_text(encoding="utf-8") == _inhalt(_id(1))
+
+
+def test_namenstausch_ohne_falsche_abweichung(tmp_path):
+    _lauf(tmp_path, [Soll("Kontakte/bAV/A.md", _id(1), _inhalt(_id(1), "eins")),
+                     Soll("Kontakte/bAV/B.md", _id(2), _inhalt(_id(2), "zwei"))])
+    z = _lauf(tmp_path, [Soll("Kontakte/bAV/B.md", _id(1), _inhalt(_id(1), "eins neu")),
+                         Soll("Kontakte/bAV/A.md", _id(2), _inhalt(_id(2), "zwei neu"))])
+    assert z["verschoben"] == 2 and z["abweichung"] == 0
+    assert (tmp_path / "Kontakte/bAV/B.md").read_text(encoding="utf-8").endswith("eins neu\n")
+    assert (tmp_path / "Kontakte/bAV/A.md").read_text(encoding="utf-8").endswith("zwei neu\n")
+    assert not list(tmp_path.rglob("*.gd.tmp"))
+    plan = planen([Soll("Kontakte/bAV/B.md", _id(1), _inhalt(_id(1), "eins neu")),
+                   Soll("Kontakte/bAV/A.md", _id(2), _inhalt(_id(2), "zwei neu"))], bestand(tmp_path), set(), _archiv)
+    assert _leer(plan)
+
+
+def test_aufraeumen_entfernt_nur_eigene_zwischendateien(tmp_path):
+    _schreiben(tmp_path, "Kontakte/bAV/.A.md.gd.tmp", "x")
+    _schreiben(tmp_path, "Kontakte/bAV/.B.md.tausch.gd.tmp", "x")
+    _schreiben(tmp_path, "Newsletter/.N.md.gd.tmp", "x")
+    _schreiben(tmp_path, "Kontakte/bAV/fremd.gd.tmp", "x")  # ohne Punkt vorne: nicht unseres
+    _schreiben(tmp_path, "People/.P.md.gd.tmp", "x")  # anderer Ordner
+    assert aufraeumen(tmp_path) == 3
+    assert sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*.tmp")) == [
+        "Kontakte/bAV/fremd.gd.tmp", "People/.P.md.gd.tmp"]
 
 
 def test_abweichung_quelle_geaendert_bleibt_liegen(tmp_path):
@@ -201,7 +227,7 @@ def test_abweichung_quelle_geaendert_bleibt_liegen(tmp_path):
     plan = planen([Soll("Kontakte/IT-Lösung/A.md", _id(1), _inhalt(_id(1), "neu"))], bestand(tmp_path), set(),
                   _archiv)
     _schreiben(tmp_path, "Kontakte/bAV/A.md", _inhalt(_id(1), "zwischendurch geaendert"))
-    z = ausfuehren(plan, tmp_path, schlafen=lambda s: None)
+    z = ausfuehren(plan, tmp_path)
     assert z["abweichung"] == 1 and z["verschoben"] == 0
     assert (tmp_path / "Kontakte/IT-Lösung/A.md").read_text(encoding="utf-8").endswith("neu\n")
     assert (tmp_path / "Kontakte/bAV/A.md").is_file()
@@ -210,12 +236,10 @@ def test_abweichung_quelle_geaendert_bleibt_liegen(tmp_path):
 def test_trocken_schreibt_nichts(tmp_path):
     _schreiben(tmp_path, "Kontakte/bAV/Alt.md", _inhalt(_id(9)))
     vorher = sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*"))
-    pausen: list[float] = []
     z = _lauf(tmp_path, [Soll(f"Kontakte/bAV/K{i}.md", _id(i), _inhalt(_id(i))) for i in range(3)],
-              trocken=True, schlafen=pausen.append)
+              trocken=True)
     assert z["geschrieben"] == 3 and z["archiviert"] == 1
     assert sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*")) == vorher
-    assert pausen == []
 
 
 def test_newsletter_ohne_soll_bleibt(tmp_path):
