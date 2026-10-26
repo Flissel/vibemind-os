@@ -63,8 +63,9 @@ def test_skill_docs_dashboard_telegram():
     t = _text()
     assert "knowledge/Notes/Docs/" in t
     assert "höchstens 5 Seiten" in t
-    assert "loadSkill('apps')" in t and "apps/<slug>/" in t
-    assert "Am PC unter Apps →" in t
+    # D4 (26.10.): Dashboards als Markdown-Notiz, telegramtauglich, Spiegel bringt sie an den PC
+    assert "knowledge/Dashboards/" in t and "Markdown-Tabellen" in t
+    assert "loadSkill('apps')" not in t
     assert "3500 Zeichen" in t and "10 Einträge" in t
     assert "config/" in t
 

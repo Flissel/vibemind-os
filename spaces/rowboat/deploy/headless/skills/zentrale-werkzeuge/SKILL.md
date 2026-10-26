@@ -23,17 +23,18 @@ executeMcpTool({serverName: "vibemind-werkzeuge", toolName: "<werkzeug>", argume
 | Ein einzelnes Repo (`besitzer/name`) | `github_issues`, `github_prs`, `github_commits` (optional `branch`), `github_datei` (z. B. `pfad: "README.md"`) |
 | Docs, URL bekannt | `fetch-url` – **nur GET** |
 | Docs, URL unbekannt | `executeMcpTool({serverName: "exa", toolName: "web_search_exa", ...})`, dann `web_fetch_exa` oder `fetch-url` (GET) |
-| Dashboard aus meinen Daten | `loadSkill('apps')`, siehe unten |
+| Dashboard aus meinen Daten | Markdown-Notiz unter `knowledge/Dashboards/`, siehe unten |
 | „Auf meinem PC suchen“ | `pc_suchen` mit `{anfrage, art: "name" oder "inhalt", ordner, max_treffer}` |
 
 **Docs:** höchstens 5 Seiten je Anfrage, nicht crawlen. Bei 403 oder 429 nicht auf andere Wege
 ausweichen, sondern das melden. Nur auf Wunsch ablegen unter
 `knowledge/Notes/Docs/<Thema> <JJJJ-MM-TT>.md` (Quelle und Abrufdatum oben in die Notiz).
 
-**Dashboard:** `loadSkill('apps')` und den Anweisungen folgen; die App liegt unter `apps/<slug>/`.
-Die Daten kommen aus den Wissensnotizen (`knowledge/companys/*/Wochenbild`, `knowledge/Kontakte`).
-Danach kurz zusammenfassen, was das Dashboard zeigt, und den Satz anhängen:
-„Am PC unter Apps → <Name> öffnen“.
+**Dashboard:** als Markdown-Notiz `knowledge/Dashboards/<Name> <JJJJ-MM-TT>.md` mit Markdown-Tabellen
+(Kennzahlen, Zählungen je Kategorie, Verlauf der Wochenbilder). Die Daten kommen aus den
+Wissensnotizen (`knowledge/companys/*/Wochenbild`, `knowledge/companys/*/Kontakte`), keine
+Kontaktnamen in Dashboards, nur Zahlen. Danach die wichtigsten Zahlen direkt im Chat nennen und den
+Pfad der Notiz angeben; am PC erscheint sie nach wenigen Minuten im Wissen.
 
 ## Regel Außenwirkung
 
