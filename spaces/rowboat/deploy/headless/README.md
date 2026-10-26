@@ -139,3 +139,30 @@ cd ~/rowboat-headless && docker compose up -d --build rowboat-wissen   # Rowboat
 curl -s http://127.0.0.1:3240/gesund                                   # {"ok":true}
 docker compose logs -f rowboat-wissen                                  # Runden: eingebettet / offen / PC erreichbar
 ```
+
+## Werkzeuge `rowboat-werkzeuge` (127.0.0.1:8150)
+
+MCP-Server `vibemind-werkzeuge` (Streamable HTTP, `http://127.0.0.1:8150/mcp`, ohne Schraegstrich:
+mcp 1.27 leitet `/mcp/` per 307 um) mit sieben nur lesenden Werkzeugen: `github_repos`, `github_issues`,
+`github_prs`, `github_commits`, `github_datei`, `github_ueberblick`, `pc_suchen`; dazu `GET /health`.
+Quelle: `werkzeuge/`, Skill: `skills/zentrale-werkzeuge/`, Eintrag fuer `config/mcp.json`: `mcp-eintrag.json`.
+
+**Der Endpunkt ist ohne Anmeldung.** Das ist vertretbar, weil er nur Loopback bindet (Host-Netz, kein
+`ports:`, nur Prozesse auf der VM erreichen ihn) und nur liest. Wer auf der VM Code ausfuehren kann,
+kann ihn also benutzen, aber weder schreiben noch die Tokens sehen.
+
+- Geheimnisse nur in `werkzeuge.env` (0600, `env_file` mit `required: false`), Kopie aus dem Tresor am PC
+  per `rowboat-zugang speichern|abgleichen <gruppe>` / `rowboat-zugang pc-schluessel` (ssh-stdin in
+  `werkzeuge-zugang-eintragen.sh`; behaelt nur die juengste Sicherung `werkzeuge.env.vor-*`).
+- Beim Start prueft der Dienst jeden GitHub-Token an einem privaten Repo mit sechs Schreibproben
+  (leerer Koerper); nur wenn alle 403 liefern, ist der Besitzer freigegeben. `unklar` wird nach 30 min
+  erneut geprueft, `darf_schreiben`/`abgelehnt` bleiben bis zum Neustart gesperrt.
+  Log: `Zugang <Besitzer>: <zustand> (Token läuft ab JJJJ-MM-TT)`.
+- `pc_suchen` leitet an den PC weiter (`100.84.127.84:8149`): keine Verbindung = "PC ist aus",
+  Verbindung ohne Antwort binnen 20 s = "PC antwortet nicht".
+
+```sh
+cd ~/rowboat-headless && docker compose up -d --build rowboat-werkzeuge   # nur mit Betreiber-OK
+curl -s http://127.0.0.1:8150/health                                       # {"status":"ok"}
+docker compose logs rowboat-werkzeuge | grep Zugang                        # Ergebnis der Schreibprobe
+```

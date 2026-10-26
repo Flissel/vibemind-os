@@ -15,8 +15,14 @@
   4. Ohne -NurBauen ausserdem den Bau-Kontext der Bedeutungssuche nach ~/rowboat-headless/wissen/:
      Dockerfile und requirements.txt aus wissen/ hier, das Paket spaces/rowboat/wissen_suche (*.py) nach
      wissen/wissen_suche/. Legt ~/rowboat-headless/wissen-index (0700) fuer den Index an.
-  5. Ohne -NurBauen ausserdem die Disk-Skill skills/wissen-suchen/SKILL.md nach
-     ~/rowboat-data/skills/wissen-suchen/ (nur dieser Ordner; andere Skills bleiben unberuehrt).
+  5. Ohne -NurBauen ausserdem die Disk-Skills skills/wissen-suchen/SKILL.md und
+     skills/zentrale-werkzeuge/SKILL.md nach ~/rowboat-data/skills/<name>/ (nur diese Ordner; andere
+     Skills bleiben unberuehrt).
+  6. Ohne -NurBauen ausserdem den Bau-Kontext des Werkzeug-Containers (rowboat-werkzeuge) nach
+     ~/rowboat-headless/werkzeuge/ (Dockerfile, server.py, github_lesen.py, pc_suche_relay.py) sowie
+     werkzeuge-zugang-eintragen.sh und mcp-eintrag.json nach ~/rowboat-headless/. Die Zugangsdatei
+     dort legt dieses Skript NIE an (sie kommt nur per rowboat-zugang ueber ssh-stdin).
+  Mit -NurWerkzeuge: kein npm-Bau; kopiert nur Schritt 6 plus compose.yml und .dockerignore.
   Loescht nichts auf der VM; vorhandene Dateien gleichen Namens werden ueberschrieben.
   Der Container wird hier NICHT gestartet (siehe README.md).
 
@@ -25,6 +31,7 @@
 #>
 param(
     [switch]$NurBauen,
+    [switch]$NurWerkzeuge,
     [string]$Quelle = 'C:/Users/User/ClaudeWork/vibemind-betrieb/spaces/rowboat/rowboat/apps/x',
     [string]$Ziel = 'offload-vm:~/rowboat-headless/app/',
     [string]$ShimQuelle = (Join-Path $HOME '.local/bin'),
@@ -49,7 +56,35 @@ function Invoke-Schritt([string]$Ort, [string[]]$Befehl) {
     }
 }
 
+function Get-ZielTeile([string]$Ziel) {
+    if ($Ziel -notmatch '^(?<host>[^:]+):(?<pfad>.+?)/?$') { throw "Ziel muss host:pfad sein: $Ziel" }
+    return @($Matches.host, $Matches.pfad, ($Matches.pfad -replace '/[^/]+$', ''))
+}
+
+# Werkzeug-Container (Teil D): Bau-Kontext unter ~/rowboat-headless/werkzeuge/, Begleitdateien eine Ebene darueber.
+$werkzeugeOrdner = Join-Path $PSScriptRoot 'werkzeuge'
+$werkzeugeDateien = @('Dockerfile', 'server.py', 'github_lesen.py', 'pc_suche_relay.py')
+$werkzeugeOben = @('werkzeuge-zugang-eintragen.sh', 'mcp-eintrag.json')
+function Test-WerkzeugeKontext {
+    foreach ($datei in $werkzeugeDateien) {
+        if (-not (Test-Path (Join-Path $werkzeugeOrdner $datei))) { throw "Werkzeug-Kontext unvollstaendig: $werkzeugeOrdner/$datei" }
+    }
+    foreach ($datei in $werkzeugeOben) {
+        if (-not (Test-Path (Join-Path $PSScriptRoot $datei))) { throw "Werkzeug-Kontext unvollstaendig: $datei" }
+    }
+}
+
 if ($Ziel -match 'rowboat-data') { throw "Ziel darf nicht im Arbeitsordner rowboat-data liegen: $Ziel" }
+if ($NurWerkzeuge) {
+    # Kein npm-Bau: nur Werkzeug-Kontext, compose.yml und .dockerignore uebertragen.
+    Test-WerkzeugeKontext
+    $vmHost, $appPfad, $basis = Get-ZielTeile $Ziel
+    Invoke-Schritt $PSScriptRoot @('ssh', $vmHost, "mkdir -p $basis/werkzeuge")
+    Invoke-Schritt $werkzeugeOrdner (@('scp', '-q') + $werkzeugeDateien + @("${vmHost}:$basis/werkzeuge/"))
+    Invoke-Schritt $PSScriptRoot (@('scp', '-q', 'compose.yml', '.dockerignore') + $werkzeugeOben + @("${vmHost}:$basis/"))
+    Write-Host "Werkzeuge uebertragen nach ${vmHost}:$basis - Start: ssh $vmHost 'cd $basis && docker compose up -d --build rowboat-werkzeuge'"
+    return
+}
 if (-not (Test-Path (Join-Path $Quelle 'package.json'))) { throw "Keine Rowboat-Quelle: $Quelle" }
 $server = Join-Path $Quelle 'apps/server'
 
@@ -70,6 +105,9 @@ $wissenTeile = @(
 # Disk-Skill fuer Rowboat: nur dieser eine Ordner unter ~/rowboat-data/skills/ wird ueberschrieben.
 $skillOrdner = Join-Path $PSScriptRoot 'skills/wissen-suchen'
 $skillZiel = '~/rowboat-data/skills/wissen-suchen'
+# Teil D: Skill zentrale-werkzeuge (GitHub lesen, Docs, Dashboard, PC-Suche), ebenfalls nur sein eigener Ordner.
+$werkzeugSkillOrdner = Join-Path $PSScriptRoot 'skills/zentrale-werkzeuge'
+$werkzeugSkillZiel = '~/rowboat-data/skills/zentrale-werkzeuge'
 if (-not $NurBauen) {
     foreach ($teil in $shimTeile) {
         foreach ($datei in $teil[1]) {
@@ -82,6 +120,8 @@ if (-not $NurBauen) {
         }
     }
     if (-not (Test-Path (Join-Path $skillOrdner 'SKILL.md'))) { throw "Skill fehlt: $skillOrdner/SKILL.md" }
+    Test-WerkzeugeKontext
+    if (-not (Test-Path (Join-Path $werkzeugSkillOrdner 'SKILL.md'))) { throw "Skill fehlt: $werkzeugSkillOrdner/SKILL.md" }
     if ($wissenTeile[1][1] -notcontains 'server.py') { throw "Paket wissen_suche ohne server.py: $wissenPaket" }
     $budgetYaml = Get-Content -Raw (Join-Path $BudgetRepo 'config/agent_budget.yaml')
     if ($budgetYaml -notmatch '(?m)^\s+rowboat-server:') { throw 'agent_budget.yaml kennt rowboat-server nicht (ohne Eintrag lehnt der Waechter jeden Aufruf ab)' }
@@ -104,17 +144,15 @@ if (-not (Test-Path $bundle)) { throw "Bau ohne Ergebnis: $bundle fehlt" }
 Write-Host "OK: $bundle ($([math]::Round((Get-Item $bundle).Length / 1MB, 1)) MB)"
 if ($NurBauen) { return }
 
-if ($Ziel -notmatch '^(?<host>[^:]+):(?<pfad>.+?)/?$') { throw "Ziel muss host:pfad sein: $Ziel" }
-$vmHost = $Matches.host
-$appPfad = $Matches.pfad
-$basis = $appPfad -replace '/[^/]+$', ''
+$vmHost, $appPfad, $basis = Get-ZielTeile $Ziel
 
-Invoke-Schritt $PSScriptRoot @('ssh', $vmHost, "mkdir -p $appPfad $basis/shim $basis/wissen/wissen_suche && mkdir -p -m 0700 ~/rowboat-data && mkdir -p -m 0700 $basis/budget && mkdir -p -m 0700 $basis/wissen-index && mkdir -p $skillZiel")
+Invoke-Schritt $PSScriptRoot @('ssh', $vmHost, "mkdir -p $appPfad $basis/shim $basis/wissen/wissen_suche $basis/werkzeuge && mkdir -p -m 0700 ~/rowboat-data && mkdir -p -m 0700 $basis/budget && mkdir -p -m 0700 $basis/wissen-index && mkdir -p $skillZiel $werkzeugSkillZiel")
 # Relative Namen aus dist-headless heraus (Invoke-Schritt wechselt hinein und zurueck): kein Laufwerks-
 # Doppelpunkt, den scp als host: deuten koennte; jedes Element ein eigenes Argument.
 $namen = @(Get-ChildItem -LiteralPath $dist -Name)
 Invoke-Schritt $dist (@('scp', '-q', '-r') + $namen + @("${vmHost}:$appPfad/"))
-Invoke-Schritt $PSScriptRoot @('scp', '-q', 'Dockerfile', '.dockerignore', 'compose.yml', 'start.sh', 'rowboat-firewall.nft', 'rowboat-firewall.service', "${vmHost}:$basis/")
+Invoke-Schritt $PSScriptRoot (@('scp', '-q', 'Dockerfile', '.dockerignore', 'compose.yml', 'start.sh', 'rowboat-firewall.nft', 'rowboat-firewall.service') + $werkzeugeOben + @("${vmHost}:$basis/"))
+Invoke-Schritt $werkzeugeOrdner (@('scp', '-q') + $werkzeugeDateien + @("${vmHost}:$basis/werkzeuge/"))
 foreach ($teil in $shimTeile) {
     Invoke-Schritt $teil[0] (@('scp', '-q') + $teil[1] + @("${vmHost}:$basis/shim/"))
 }
@@ -122,4 +160,5 @@ foreach ($teil in $wissenTeile) {
     Invoke-Schritt $teil[0] (@('scp', '-q') + $teil[1] + @("${vmHost}:$basis/$($teil[2])/"))
 }
 Invoke-Schritt $skillOrdner @('scp', '-q', 'SKILL.md', "${vmHost}:$skillZiel/")
+Invoke-Schritt $werkzeugSkillOrdner @('scp', '-q', 'SKILL.md', "${vmHost}:$werkzeugSkillZiel/")
 Write-Host "Uebertragen nach ${vmHost}:$basis - Start: ssh $vmHost 'cd $basis && docker compose up -d --build'"

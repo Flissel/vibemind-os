@@ -1,4 +1,5 @@
 """Vertrag fuer spaces/rowboat/deploy/headless (Rowboat-Server ohne Oberflaeche auf dem Mini-PC)."""
+import json
 import re
 from pathlib import Path
 
@@ -11,7 +12,7 @@ GEHEIM = re.compile(r"(key|token|secret|passw|geheim)", re.IGNORECASE)
 
 def dienst(name: str = "rowboat-server") -> dict:
     compose = yaml.safe_load((HEADLESS / "compose.yml").read_text(encoding="utf-8"))
-    assert sorted(compose["services"]) == ["rowboat-server", "rowboat-shim", "rowboat-wissen"]
+    assert sorted(compose["services"]) == ["rowboat-server", "rowboat-shim", "rowboat-werkzeuge", "rowboat-wissen"]
     return compose["services"][name]
 
 
@@ -50,13 +51,31 @@ def test_compose_telemetrie_aus():
     assert env["DO_NOT_TRACK"] == "1"
 
 
+# GITHUB_BESITZER nennt nur Besitzer und Variablennamen (die Werte stehen in werkzeuge.env)
+NUR_NAMEN = re.compile(r"^[A-Za-z0-9-]+=[A-Z0-9_]+(,[A-Za-z0-9-]+=[A-Z0-9_]+)*$")
+
+
+def _env_dateien(svc: dict) -> list[str]:
+    roh = svc.get("env_file")
+    if roh is None:
+        return []
+    eintraege = roh if isinstance(roh, list) else [roh]
+    return [e["path"] if isinstance(e, dict) else e for e in eintraege]
+
+
 def test_compose_ohne_geheimnis():
-    for dienstname in ("rowboat-server", "rowboat-shim", "rowboat-wissen"):
+    for dienstname in ("rowboat-server", "rowboat-shim", "rowboat-wissen", "rowboat-werkzeuge"):
         svc = dienst(dienstname)
         for name, wert in umgebung(svc).items():
             assert not GEHEIM.search(name), f"Geheimnis-artiger Name in environment: {name}"
+            if name == "GITHUB_BESITZER":
+                assert NUR_NAMEN.match(wert), wert
+                continue
             assert len(wert) < 40, f"verdaechtig langer Wert in environment: {name}"
-    assert "env_file" not in dienst("rowboat-server")
+    assert _env_dateien(dienst("rowboat-server")) == []
+    assert _env_dateien(dienst("rowboat-wissen")) == []
+    assert _env_dateien(dienst("rowboat-shim")) == ["./claude-token"]
+    assert _env_dateien(dienst("rowboat-werkzeuge")) == ["./werkzeuge.env"]
 
 
 def test_dockerfile_node22():
@@ -204,7 +223,7 @@ def test_budget_eintrag_rowboat_server():
         pytest.skip("aeusseres Repo mit config/agent_budget.yaml nicht vorhanden (CI ohne Vibemind_V1)")
     eintrag = yaml.safe_load(pfad.read_text(encoding="utf-8"))["agenten"]["rowboat-server"]
     assert eintrag == {"bereich": "wissen", "klasse": "auftrag", "modell": "sonnet",
-                       "tagesgrenze": 150, "wrapper": "shim"}
+                       "tagesgrenze": 300, "wrapper": "shim"}   # D6 (26.10.): Berechtigungspruefung je Werkzeugaufruf
 
 
 def test_dockerignore_haelt_token_und_budget_aus_dem_build():
@@ -293,3 +312,83 @@ def test_readme_bedeutungssuche():
     readme = (HEADLESS / "README.md").read_text(encoding="utf-8")
     assert "## Bedeutungssuche" in readme
     assert "3240" in readme and "/gesund" in readme
+
+
+# --- Teil D: Werkzeug-Container vibemind-werkzeuge ----------------------------------------------
+
+WERKZEUGE = HEADLESS / "werkzeuge"
+
+
+def test_werkzeuge_dienst_vertrag():
+    svc = dienst("rowboat-werkzeuge")
+    env = umgebung(svc)
+    assert svc["build"] == "./werkzeuge"
+    assert svc["image"] == "rowboat-werkzeuge:local"
+    assert svc["network_mode"] == "host"
+    assert "ports" not in svc
+    assert svc["restart"] == "unless-stopped"
+    assert svc["mem_limit"] == "256m"
+    assert "depends_on" not in svc
+    assert "volumes" not in svc                       # sieht nichts von /data (rowboat-data)
+    # Fehlt werkzeuge.env, startet der Stack trotzdem (die Werkzeuge melden "nicht eingerichtet")
+    assert svc["env_file"] == [{"path": "./werkzeuge.env", "required": False}]
+    assert env["WERKZEUGE_PORT"] == "8150"
+    assert env["PC_SUCHE_URL"] == "http://100.84.127.84:8149"
+    assert env["GITHUB_BESITZER"] == "Flissel=GITHUB_LESEN_FLISSEL,Vibemind-LAB=GITHUB_LESEN_VIBEMIND_LAB"
+    probe = " ".join(svc["healthcheck"]["test"])
+    assert "http://127.0.0.1:8150/health" in probe and "python3" in probe
+    # Der Rowboat-Server haengt nicht vom Werkzeug-Container ab
+    assert "rowboat-werkzeuge" not in dienst("rowboat-server")["depends_on"]
+
+
+def test_mcp_eintrag_ohne_geheimnis():
+    e = json.loads((HEADLESS / "mcp-eintrag.json").read_text(encoding="utf-8"))
+    # OHNE Schraegstrich: mcp 1.27 bedient /mcp und leitet /mcp/ per 307 um (rowboat-wissen mit
+    # mcp 1.9.4 ist umgekehrt und braucht /mcp/, Teil C 231107b6) - am 26.10. mit TestClient geprueft.
+    assert e == {"vibemind-werkzeuge": {"type": "http", "url": "http://127.0.0.1:8150/mcp"}}
+
+
+def test_dockerignore_haelt_werkzeuge_env_fern():
+    zeilen = (HEADLESS / ".dockerignore").read_text(encoding="utf-8").split()
+    assert "werkzeuge.env*" in zeilen and ".werkzeuge.env.neu.*" in zeilen and "werkzeuge/" in zeilen
+
+
+def test_readme_werkzeuge_ohne_anmeldung_nur_lokal():
+    readme = (HEADLESS / "README.md").read_text(encoding="utf-8")
+    assert "## Werkzeuge `rowboat-werkzeuge`" in readme
+    assert "127.0.0.1:8150/mcp" in readme and "ohne Anmeldung" in readme
+
+
+def test_bauen_mkdir_mit_leerzeichen():
+    skript = (HEADLESS / "bauen.ps1").read_text(encoding="utf-8")
+    assert not re.search(r"\S&&|&&\S", skript)
+
+
+def test_werkzeuge_dockerfile_pinnt_mcp():
+    text = (WERKZEUGE / "Dockerfile").read_text(encoding="utf-8")
+    assert text.splitlines()[0] == "FROM python:3.12-slim"
+    assert "pip install --no-cache-dir mcp==1.27.0" in text
+    for datei in ("server.py", "github_lesen.py", "pc_suche_relay.py"):
+        assert datei in text
+    assert "USER 1000:1000" in text
+    assert 'CMD ["python3", "/opt/werkzeuge/server.py"]' in text
+    assert not re.search(r"(?i)werkzeuge\.env|token\s*=", text)
+
+
+def test_bauen_kopiert_werkzeuge_kontext():
+    skript = (HEADLESS / "bauen.ps1").read_text(encoding="utf-8")
+    assert "[switch]$NurWerkzeuge" in skript
+    for datei in ("github_lesen.py", "pc_suche_relay.py", "server.py", "werkzeuge-zugang-eintragen.sh",
+                  "mcp-eintrag.json"):
+        assert datei in skript
+    assert "$basis/werkzeuge" in skript
+    # werkzeuge.env wird hier nie angelegt oder kopiert (kommt nur per rowboat-zugang ueber ssh-stdin)
+    code = re.sub(r"<#.*?#>", "", skript, flags=re.DOTALL)
+    code = "\n".join(z for z in code.splitlines() if not z.lstrip().startswith("#"))
+    assert "werkzeuge.env" not in code
+
+
+def test_bauen_nur_werkzeuge_ueberspringt_den_server_bau():
+    skript = (HEADLESS / "bauen.ps1").read_text(encoding="utf-8")
+    zweig = skript.index("if ($NurWerkzeuge)")
+    assert zweig < skript.index("Invoke-Schritt $Quelle @('npm', 'run', 'deps')")

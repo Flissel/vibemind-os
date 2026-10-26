@@ -33,7 +33,7 @@ services:
       start_period: 60s
       retries: 3
 
-  # Claude-Shim (OpenAI-kompatibel) fuer Rowboat, mit Budget-Huelle (Agent rowboat-server, 150/Tag).
+  # Claude-Shim (OpenAI-kompatibel) fuer Rowboat, mit Budget-Huelle (Agent rowboat-server, 300/Tag).
   # Host-Netz, damit der Rowboat-Server ihn unter 127.0.0.1:8121 erreicht; er bindet NUR Loopback.
   rowboat-shim:
     build: ./shim
@@ -99,4 +99,29 @@ services:
       interval: 30s
       timeout: 5s
       start_period: 20s
+      retries: 3
+
+  # Werkzeuge (Teil D): MCP vibemind-werkzeuge nur auf 127.0.0.1:8150/mcp, alle Werkzeuge nur lesend
+  # (GitHub per Nur-Lese-Token, Startprobe sperrt schreibende Tokens; pc_suchen leitet an den PC weiter).
+  # Geheimnisse nur in ./werkzeuge.env (0600, rowboat-zugang ueber ssh-stdin) - unsichtbar fuer den
+  # Rowboat-Container, in dessen config/mcp.json nur die URL steht. Fehlt die Datei, startet der Dienst
+  # trotzdem und meldet "nicht eingerichtet". Kein Volume: sieht nichts von rowboat-data.
+  rowboat-werkzeuge:
+    build: ./werkzeuge
+    image: rowboat-werkzeuge:local
+    network_mode: host
+    restart: unless-stopped
+    mem_limit: 256m
+    env_file:
+      - path: ./werkzeuge.env
+        required: false
+    environment:
+      WERKZEUGE_PORT: "8150"
+      PC_SUCHE_URL: http://100.84.127.84:8149
+      GITHUB_BESITZER: Flissel=GITHUB_LESEN_FLISSEL,Vibemind-LAB=GITHUB_LESEN_VIBEMIND_LAB
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8150/health', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
       retries: 3
