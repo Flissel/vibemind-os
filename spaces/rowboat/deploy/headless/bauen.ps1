@@ -15,6 +15,8 @@
   4. Ohne -NurBauen ausserdem den Bau-Kontext der Bedeutungssuche nach ~/rowboat-headless/wissen/:
      Dockerfile und requirements.txt aus wissen/ hier, das Paket spaces/rowboat/wissen_suche (*.py) nach
      wissen/wissen_suche/. Legt ~/rowboat-headless/wissen-index (0700) fuer den Index an.
+  5. Ohne -NurBauen ausserdem die Disk-Skill skills/wissen-suchen/SKILL.md nach
+     ~/rowboat-data/skills/wissen-suchen/ (nur dieser Ordner; andere Skills bleiben unberuehrt).
   Loescht nichts auf der VM; vorhandene Dateien gleichen Namens werden ueberschrieben.
   Der Container wird hier NICHT gestartet (siehe README.md).
 
@@ -65,6 +67,9 @@ $wissenTeile = @(
     @((Join-Path $PSScriptRoot 'wissen'), @('Dockerfile', 'requirements.txt'), 'wissen'),
     @($wissenPaket, @(Get-ChildItem -LiteralPath $wissenPaket -Filter '*.py' -Name), 'wissen/wissen_suche')
 )
+# Disk-Skill fuer Rowboat: nur dieser eine Ordner unter ~/rowboat-data/skills/ wird ueberschrieben.
+$skillOrdner = Join-Path $PSScriptRoot 'skills/wissen-suchen'
+$skillZiel = '~/rowboat-data/skills/wissen-suchen'
 if (-not $NurBauen) {
     foreach ($teil in $shimTeile) {
         foreach ($datei in $teil[1]) {
@@ -76,6 +81,7 @@ if (-not $NurBauen) {
             if (-not (Test-Path (Join-Path $teil[0] $datei))) { throw "Wissen-Kontext unvollstaendig: $(Join-Path $teil[0] $datei)" }
         }
     }
+    if (-not (Test-Path (Join-Path $skillOrdner 'SKILL.md'))) { throw "Skill fehlt: $skillOrdner/SKILL.md" }
     if ($wissenTeile[1][1] -notcontains 'server.py') { throw "Paket wissen_suche ohne server.py: $wissenPaket" }
     $budgetYaml = Get-Content -Raw (Join-Path $BudgetRepo 'config/agent_budget.yaml')
     if ($budgetYaml -notmatch '(?m)^\s+rowboat-server:') { throw 'agent_budget.yaml kennt rowboat-server nicht (ohne Eintrag lehnt der Waechter jeden Aufruf ab)' }
@@ -103,7 +109,7 @@ $vmHost = $Matches.host
 $appPfad = $Matches.pfad
 $basis = $appPfad -replace '/[^/]+$', ''
 
-Invoke-Schritt $PSScriptRoot @('ssh', $vmHost, "mkdir -p $appPfad $basis/shim $basis/wissen/wissen_suche && mkdir -p -m 0700 ~/rowboat-data && mkdir -p -m 0700 $basis/budget && mkdir -p -m 0700 $basis/wissen-index")
+Invoke-Schritt $PSScriptRoot @('ssh', $vmHost, "mkdir -p $appPfad $basis/shim $basis/wissen/wissen_suche && mkdir -p -m 0700 ~/rowboat-data && mkdir -p -m 0700 $basis/budget && mkdir -p -m 0700 $basis/wissen-index && mkdir -p $skillZiel")
 # Relative Namen aus dist-headless heraus (Invoke-Schritt wechselt hinein und zurueck): kein Laufwerks-
 # Doppelpunkt, den scp als host: deuten koennte; jedes Element ein eigenes Argument.
 $namen = @(Get-ChildItem -LiteralPath $dist -Name)
@@ -115,4 +121,5 @@ foreach ($teil in $shimTeile) {
 foreach ($teil in $wissenTeile) {
     Invoke-Schritt $teil[0] (@('scp', '-q') + $teil[1] + @("${vmHost}:$basis/$($teil[2])/"))
 }
+Invoke-Schritt $skillOrdner @('scp', '-q', 'SKILL.md', "${vmHost}:$skillZiel/")
 Write-Host "Uebertragen nach ${vmHost}:$basis - Start: ssh $vmHost 'cd $basis && docker compose up -d --build'"
