@@ -25,6 +25,7 @@ Zustand = Literal["bereit", "fehlt", "darf_schreiben", "abgelehnt", "unklar"]
 
 API = "https://api.github.com"
 MAX_SEITE = 50
+REPO_SEITEN = 10          # github_repos: hoechstens 10 x 100 Repos, danach abgeschnitten=True
 MAX_ZEICHEN = 100_000
 ZEITLIMIT_S = 15.0
 
@@ -193,24 +194,43 @@ class GithubLeser:
         except Exception as e:  # noqa: BLE001
             return _fehler(f"Fehler beim Auswerten: {type(e).__name__}")
 
-    def _repos_liste(self, besitzer: str) -> list[dict]:
+    def _repos_seiten(self, besitzer: str) -> tuple[list[dict], bool]:
+        """Alle Repos ueber bis zu REPO_SEITEN Seiten zu je 100; zweiter Wert: abgeschnitten."""
         zugang = self._zugang(besitzer)
         if zugang.besitzer not in self._login:
             ich = self._holen(zugang, "/user")
             self._login[zugang.besitzer] = str((ich or {}).get("login", ""))
         if self._login[zugang.besitzer].lower() == zugang.besitzer.lower():
-            daten = self._holen(zugang, f"/user/repos?affiliation=owner&sort=pushed&per_page={MAX_SEITE}")
+            basis = "/user/repos?affiliation=owner&sort=pushed&per_page=100"
         else:
             org = urllib.parse.quote(zugang.besitzer, safe="")
-            daten = self._holen(zugang, f"/orgs/{org}/repos?sort=pushed&per_page={MAX_SEITE}")
+            basis = f"/orgs/{org}/repos?sort=pushed&per_page=100"
+        daten: list = []
+        for seite in range(1, REPO_SEITEN + 1):
+            stueck = self._holen(zugang, f"{basis}&page={seite}") or []
+            daten += stueck
+            if len(stueck) < 100:
+                break
+        else:
+            return self._repos_form(daten), True
+        return self._repos_form(daten), False
+
+    @staticmethod
+    def _repos_form(daten: list) -> list[dict]:
         return [{"name": r.get("name"), "privat": r.get("private"), "pushed_at": r.get("pushed_at"),
                  "offene_issues": r.get("open_issues_count"), "standard_branch": r.get("default_branch"),
-                 "beschreibung": r.get("description")} for r in (daten or [])]
+                 "beschreibung": r.get("description")} for r in daten]
+
+    def _repos_liste(self, besitzer: str) -> list[dict]:
+        return self._repos_seiten(besitzer)[0]
 
     # --- Werkzeuge ------------------------------------------------------------------------------
 
     def repos(self, besitzer: str) -> dict:
-        return self._sicher(lambda: {"ok": True, "besitzer": besitzer, "repos": self._repos_liste(besitzer)})
+        def tun() -> dict:
+            repos, abgeschnitten = self._repos_seiten(besitzer)
+            return {"ok": True, "besitzer": besitzer, "repos": repos, "abgeschnitten": abgeschnitten}
+        return self._sicher(tun)
 
     def issues(self, repo: str, zustand: str = "open", max_anzahl: int = 20) -> dict:
         def tun() -> dict:

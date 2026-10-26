@@ -191,10 +191,29 @@ def test_repos_eigener_login_und_org():
     assert leser.repos("flissel")["ok"]          # Gross/klein egal, Login zwischengespeichert
     urls = [u for _, u, _ in http.aufrufe]
     assert urls.count(f"{API}/user") == 1
-    assert f"{API}/user/repos?affiliation=owner&sort=pushed&per_page=50" in urls
+    assert f"{API}/user/repos?affiliation=owner&sort=pushed&per_page=100&page=1" in urls
     http.antworten[f"{API}/user"] = (200, {"login": "Flissel"})
     assert leser.repos("vibemind-space")["repos"][0]["name"] == "b"
-    assert f"{API}/orgs/vibemind-space/repos?sort=pushed&per_page=50" in [u for _, u, _ in http.aufrufe]
+    assert f"{API}/orgs/vibemind-space/repos?sort=pushed&per_page=100&page=1" in [u for _, u, _ in http.aufrufe]
+
+
+def test_repos_blaettert_alle_seiten():
+    basis = f"{API}/user/repos?affiliation=owner&sort=pushed&per_page=100"
+    http = FalschesHttp({f"{API}/user": (200, {"login": "Flissel"}),
+                         f"{basis}&page=1": (200, [_repo(f"a{i}", 1) for i in range(100)]),
+                         f"{basis}&page=2": (200, [_repo(f"b{i}", 1) for i in range(38)])})
+    r = _leser(http).repos("Flissel")
+    assert len(r["repos"]) == 138 and r["abgeschnitten"] is False
+    urls = [u for _, u, _ in http.aufrufe]
+    assert f"{basis}&page=1" in urls and f"{basis}&page=2" in urls and f"{basis}&page=3" not in urls
+
+
+def test_repos_hoechstens_zehn_seiten():
+    http = FalschesHttp({f"{API}/user": (200, {"login": "Flissel"}),
+                         f"{API}/user/repos": (200, [_repo("x", 1) for _ in range(100)])})
+    r = _leser(http).repos("Flissel")
+    assert len(r["repos"]) == 1000 and r["abgeschnitten"] is True
+    assert sum(1 for _, u, _ in http.aufrufe if "/user/repos" in u) == 10
 
 
 def test_besitzer_aus_umgebung_crlf_und_fehlend():
