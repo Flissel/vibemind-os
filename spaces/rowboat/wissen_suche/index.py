@@ -131,6 +131,7 @@ class WissensIndex:
                 " mtime=excluded.mtime, status='offen', versuche=0, fehler=NULL,"
                 " aktualisiert=excluded.aktualisiert",
                 (pfad, sha256, groesse, mtime, _jetzt()))
+            self._generation += 1      # nicht mehr fertig -> alte Abschnitte fallen aus der Suche
 
     def stat_merken(self, pfad: str, groesse: int, mtime: float) -> None:
         """Nur Groesse/mtime nachtragen (Inhalt gleich, z. B. nach ``touch``); Status bleibt."""
@@ -190,13 +191,19 @@ class WissensIndex:
                 "UPDATE dateien SET versuche=versuche+1, fehler=?, aktualisiert=?,"
                 " status=CASE WHEN versuche+1 >= ? THEN 'fehler' ELSE 'offen' END WHERE pfad=?",
                 (fehler[:500], _jetzt(), max_versuche, pfad))
+            self._generation += 1
 
     # -- Suche --------------------------------------------------------------------------------
     def _matrix_laden(self) -> None:
         if self._geladen == self._generation:
             return
+        # Nur Abschnitte von Dateien im Status 'fertig': ist eine Notiz geaendert (offen) oder kaputt
+        # (fehler), stammen ihre Abschnitte von einer alten Fassung. Bis zum Neu-Einbetten findet die
+        # Stichwortsuche die aktuelle Fassung.
         zeilen = self._db.execute(
-            "SELECT pfad, ueberschrift, text, vektor FROM abschnitte ORDER BY pfad, nr").fetchall()
+            "SELECT a.pfad, a.ueberschrift, a.text, a.vektor FROM abschnitte a"
+            " JOIN dateien d ON d.pfad = a.pfad WHERE d.status = 'fertig'"
+            " ORDER BY a.pfad, a.nr").fetchall()
         self._zeilen = [(p, u, t) for p, u, t, _ in zeilen]
         if zeilen:
             self._matrix = np.frombuffer(b"".join(z[3] for z in zeilen), dtype=np.float32).reshape(

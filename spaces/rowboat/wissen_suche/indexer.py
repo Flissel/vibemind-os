@@ -22,6 +22,9 @@ from .zerlegen import zerlegen
 log = logging.getLogger(__name__)
 
 AUSGESCHLOSSEN = ("_konflikte/", ".spiegel-eingang/", ".git/")
+# Der Schutz gegen Massenverschwinden greift erst ab so vielen bekannten Dateien; darunter ist
+# "mehr als die Haelfte fehlt" normales Aufraeumen (z. B. 1 von 2 Notizen geloescht).
+MIN_BEKANNT_FUER_SCHUTZ = 10
 
 
 class Abgleich(NamedTuple):
@@ -74,7 +77,24 @@ def bestand_scannen(wurzel: Path) -> dict[str, tuple[int, float]]:
 
 
 def datei_pfad(wurzel: Path, rel: str) -> Path:
-    return Path(wurzel) / Path(*rel.split("/"))
+    """Pfad auf der Platte zum Schluessel ``rel`` (NFC).
+
+    Der Schluessel ist NFC, der Name auf der Platte kann NFD sein (z. B. von macOS kopiert). Gibt es
+    einen Teil nicht unter seinem NFC-Namen, wird im Ordner nach dem Namen mit gleicher NFC-Form gesucht.
+    """
+    pfad = Path(wurzel)
+    for teil in rel.split("/"):
+        kandidat = pfad / teil
+        if not kandidat.exists():
+            try:
+                namen = os.listdir(pfad)
+            except OSError:
+                namen = []
+            gleich = [n for n in namen if unicodedata.normalize("NFC", n) == teil]
+            if gleich:
+                kandidat = pfad / gleich[0]
+        pfad = kandidat
+    return pfad
 
 
 def _lesen(pfad: Path) -> tuple[bytes, str]:
@@ -102,7 +122,7 @@ def abgleichen(index: WissensIndex, wurzel: Path) -> Abgleich:
         neu += 1
 
     fehlend = [rel for rel in bekannt if rel not in bestand]
-    if fehlend and (not bestand or len(fehlend) > len(bekannt) / 2):
+    if fehlend and len(bekannt) >= MIN_BEKANNT_FUER_SCHUTZ and (not bestand or len(fehlend) > len(bekannt) / 2):
         log.warning("Loeschen ausgesetzt: %d von %d indexierten Notizen fehlen unter %s "
                     "(Mount leer oder fehlt?)", len(fehlend), len(bekannt), wurzel)
         return Abgleich(neu, 0, True)

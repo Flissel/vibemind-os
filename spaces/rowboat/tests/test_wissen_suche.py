@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import os
 import sys
 import threading
 import time
@@ -184,3 +185,71 @@ def test_wissen_stand(idx):
         raise OSError("weg")
 
     assert wissen_stand(idx, "http://pc:11435", oeffner=aus)["pc_erreichbar"] is False
+
+
+# --- Fix-Runde 1 -------------------------------------------------------------------------------
+
+def _pfade(erg):
+    return [t["pfad"] for t in erg["treffer"]]
+
+
+def test_geaenderte_notiz_ohne_veraltete_abschnitte(idx, wurzel):
+    """Notiz geaendert, Runde bei PC aus: Suche bei PC an liefert jeden Pfad einmal, ohne alten Auszug."""
+    p = wurzel / ANNA
+    p.write_text("# Anna\n\nHund und Katze versorgt.\n", encoding="utf-8")
+    os.utime(p, (5_000_000, 5_000_000))
+    # Noch vor dem Abgleich: der Index haelt Anna fuer fertig, die Datei ist aber neuer.
+    for frage in ("Altersvorsorge Rentenplanung", "Hund Katze"):
+        erg = wissen_suchen(frage, 5, idx, wurzel, FakeEinbetter())
+        assert len(_pfade(erg)) == len(set(_pfade(erg)))
+        assert all("Rentenplanung" not in t["auszug"] for t in erg["treffer"])
+    abgleichen(idx, wurzel)
+    einbetten_runde(idx, wurzel, FakeEinbetter(erreichbar=False))
+    assert idx.dateien()[ANNA].status == "offen"
+    erg = wissen_suchen("Altersvorsorge Rentenplanung Hund", 5, idx, wurzel, FakeEinbetter())
+    assert erg["modus"] == "bedeutung"
+    assert len(_pfade(erg)) == len(set(_pfade(erg)))
+    assert all("Rentenplanung" not in t["auszug"] for t in erg["treffer"])
+    anna = [t for t in erg["treffer"] if t["pfad"] == "knowledge/" + ANNA]
+    assert len(anna) == 1 and anna[0]["quelle"] == "stichwort" and "Hund" in anna[0]["auszug"]
+
+
+def test_kein_pfad_doppelt_bei_offenen(idx, wurzel):
+    schreiben(wurzel, "Notes/Hund2.md", "Hund Hund Hund")
+    erg = wissen_suchen("Hund", 10, idx, wurzel, FakeEinbetter())
+    assert len(_pfade(erg)) == len(set(_pfade(erg)))
+
+
+def test_abgelehnte_frage_eigener_hinweis(idx, wurzel):
+    from wissen_suche.einbetten import EingabeAbgelehnt
+    from wissen_suche.suche import HINWEIS_ABGELEHNT
+
+    class Lehnt(FakeEinbetter):
+        def frage(self, text):
+            raise EingabeAbgelehnt("400")
+
+    erg = wissen_suchen("Rentenplanung", 5, idx, wurzel, Lehnt())
+    assert erg["modus"] == "stichwort"
+    assert erg["hinweis"] == HINWEIS_ABGELEHNT != HINWEIS_STICHWORT
+    assert "PC" not in HINWEIS_ABGELEHNT
+
+
+def test_stichwortsuche_bricht_nach_frist_ab(idx, wurzel, monkeypatch):
+    import wissen_suche.suche as suche_mod
+
+    for i in range(20):
+        schreiben(wurzel, f"Viele/n{i:02}.md", f"Hund {i}")
+    echt = suche_mod._text_lesen
+
+    def langsam(pfad):
+        time.sleep(0.1)
+        return echt(pfad)
+
+    monkeypatch.setattr(suche_mod, "_text_lesen", langsam)
+    monkeypatch.setattr(suche_mod, "GESAMT_FRIST_S", 0.5)
+    start = time.monotonic()
+    erg = wissen_suchen("Hund", 20, idx, wurzel, FakeEinbetter(erreichbar=False))
+    assert time.monotonic() - start < 1.5
+    assert erg["modus"] == "stichwort"
+    assert 0 < len(erg["treffer"]) < 21
+    assert HINWEIS_STICHWORT in erg["hinweis"] and suche_mod.HINWEIS_UNVOLLSTAENDIG in erg["hinweis"]

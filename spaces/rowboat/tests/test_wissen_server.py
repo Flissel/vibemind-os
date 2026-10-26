@@ -85,3 +85,13 @@ def test_server_bindet_nur_loopback():
     text = (PAKET / "server.py").read_text(encoding="utf-8")
     assert "0.0.0.0" not in text
     assert "127.0.0.1" in text
+
+
+def test_baue_server_mit_index_ohne_einbetter_ist_typfehler(tmp_path):
+    from wissen_suche.index import WissensIndex
+
+    e = einstellungen_laden({"WISSEN_ORDNER": str(tmp_path)})
+    idx = WissensIndex(tmp_path / "w.sqlite", "fake", 64)
+    with pytest.raises(TypeError):
+        baue_server(e, None, index=idx)
+    idx.close()

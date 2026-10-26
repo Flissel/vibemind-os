@@ -21,8 +21,8 @@ HEUTE = {"mcpServers": {"exa": {"type": "http", "url": "https://mcp.exa.ai/mcp"}
 def test_eintragen_behaelt_andere_server():
     neu = wme.eintragen(json.loads(json.dumps(HEUTE)))
     assert neu["mcpServers"]["exa"] == HEUTE["mcpServers"]["exa"]
-    assert neu["mcpServers"]["wissen"] == {"type": "http", "url": "http://127.0.0.1:3240/mcp"}
-    assert wme.EINTRAG == {"type": "http", "url": "http://127.0.0.1:3240/mcp"}
+    assert neu["mcpServers"]["wissen"] == {"type": "http", "url": "http://127.0.0.1:3240/mcp/"}
+    assert wme.EINTRAG == {"type": "http", "url": "http://127.0.0.1:3240/mcp/"}
 
 
 def test_eintragen_ist_idempotent():
