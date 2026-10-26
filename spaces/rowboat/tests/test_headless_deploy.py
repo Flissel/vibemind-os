@@ -223,7 +223,7 @@ def test_budget_eintrag_rowboat_server():
         pytest.skip("aeusseres Repo mit config/agent_budget.yaml nicht vorhanden (CI ohne Vibemind_V1)")
     eintrag = yaml.safe_load(pfad.read_text(encoding="utf-8"))["agenten"]["rowboat-server"]
     assert eintrag == {"bereich": "wissen", "klasse": "auftrag", "modell": "sonnet",
-                       "tagesgrenze": 150, "wrapper": "shim"}
+                       "tagesgrenze": 300, "wrapper": "shim"}   # D6 (26.10.): Berechtigungspruefung je Werkzeugaufruf
 
 
 def test_dockerignore_haelt_token_und_budget_aus_dem_build():

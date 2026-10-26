@@ -33,7 +33,7 @@ services:
       start_period: 60s
       retries: 3
 
-  # Claude-Shim (OpenAI-kompatibel) fuer Rowboat, mit Budget-Huelle (Agent rowboat-server, 150/Tag).
+  # Claude-Shim (OpenAI-kompatibel) fuer Rowboat, mit Budget-Huelle (Agent rowboat-server, 300/Tag).
   # Host-Netz, damit der Rowboat-Server ihn unter 127.0.0.1:8121 erreicht; er bindet NUR Loopback.
   rowboat-shim:
     build: ./shim
