@@ -168,6 +168,11 @@ kann ihn also benutzen, aber weder schreiben noch die Tokens sehen.
   (leerer Koerper, bei `git/refs` gueltig geformt mit Null-SHA, weil GitHub dort zuerst das Schema prueft); nur wenn alle 403 liefern, ist der Besitzer freigegeben. `unklar` wird nach 30 min
   erneut geprueft, `darf_schreiben`/`abgelehnt` bleiben bis zum Neustart gesperrt.
   Log: `Zugang <Besitzer>: <zustand> (Token läuft ab JJJJ-MM-TT)`.
+- Telegram/WhatsApp duerfen nur MCP-Werkzeuge aus einer Freigabeliste aufrufen (Fork:
+  `DEFAULT_CHANNEL_READ_ONLY_MCP_TOOLS` in `packages/shared/src/channels.ts`). Seit 26.10. setzt die VM
+  sie selbst: `~/rowboat-data/config/channels.json` -> `readOnlyMcpTools` (16 Eintraege, inkl.
+  `github_ci` und `gitea_*`; wird je Nachricht gelesen, kein Neustart). Dieser Schluessel ERSETZT die
+  Vorgabe des Forks - ein neues Werkzeug muss dort mit eingetragen werden.
 - `pc_suchen` leitet an den PC weiter (`100.84.127.84:8149`): keine Verbindung = "PC ist aus",
   Verbindung ohne Antwort binnen 20 s = "PC antwortet nicht".
 
