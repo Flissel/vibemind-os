@@ -179,3 +179,11 @@ def test_people_name_mehrdeutig_keiner(tmp_path: Path):
 
 def test_people_index_ohne_ordner(tmp_path: Path):
     assert people_index(tmp_path).link("x", "y@z.de") is None
+
+
+def test_keine_fremde_mail_in_freitexten():
+    k = kontakt(name="Max info@max.de", company="Firma (kontakt@firma.de)", title="CEO ceo@x.io",
+                email_klein=None)
+    text = _sb(k, empfohlen_von="Bert bert@b.de")
+    assert not re.search(r"[^\s@]+@[^\s@]+\.[a-z]{2,}", text, re.IGNORECASE)
+    assert "Max" in text and "Bert" in text

@@ -91,3 +91,11 @@ def test_kuerzen_ohne_punkt_am_ende():
 def test_zu_tiefer_ordner_wirft():
     with pytest.raises(ValueError):
         relpfad("companys/" + "o" * 225, "Anna Beispiel")
+
+
+def test_mailadressen_fallen_aus_dem_namen():
+    assert dateistamm("Max Muster max.muster@firma.de", "x", 100) == "Max Muster"
+    assert dateistamm("Anna (anna_b+nl@Beispiel.CO)", "x", 100) == "Anna"
+    assert dateistamm("<info@firma.de>", "Kontakt 1234abcd", 100) == "Kontakt 1234abcd"
+    assert dateistamm("mailto:a@b.de Bert", "x", 100) == "Bert"
+    assert dateistamm("Firma @ Home", "x", 100) == "Firma @ Home"  # kein Adressmuster

@@ -18,7 +18,12 @@
 -- Kontakt mit dem Schluessel _privat, solange der Vermerk nicht ausdruecklich ein Objekt mit
 -- privat=false ist, und jeder Kontakt mit dem Schluessel _loeschantrag. Unklar zaehlt als gesperrt.
 -- Fuer gesperrte Kontakte liefert die Sicht nur id, Sperrflag, Archivflag und created_at.
+--
+-- Alles laeuft in EINER Transaktion (begin ... commit): bricht ein Schritt ab, bleibt nichts halb
+-- angelegt. Achtung bei Proben: Diese Datei nicht in ein eigenes begin/rollback einbetten, ihr
+-- commit wuerde die aeussere Transaktion festschreiben.
 \set ON_ERROR_STOP on
+begin;
 
 do $$
 begin
@@ -86,7 +91,7 @@ begin
     $sicht$, s);
 
     -- Ereignisse nur fuer nicht gesperrte Kontakte, nur Typ, Zeit und einzelne Payload-Schluessel.
-    -- Ein gesperrter Empfehlungsgeber wird weder mit Name noch mit id genannt.
+    -- Ein gesperrter oder unklarer Empfehlungsgeber wird weder mit Name noch mit id genannt.
     execute format($sicht$
       create or replace view %1$I.rowboat_ereignisse with (security_barrier) as
       select a.lead_id,
@@ -95,9 +100,12 @@ begin
              case when a.type in ('termin', 'termin_abgesagt') then a.payload->>'uid' end as termin_uid,
              case when a.type = 'termin' then a.payload->>'datum' end as termin_datum,
              case when a.type = 'termin' then a.payload->>'uhrzeit' end as termin_uhrzeit,
-             case when a.type = 'empfehlung' and not coalesce(ek.gesperrt, false)
+             -- fail-closed: nur mit gefundener Empfehlungsliste; ist ein Geber-Kontakt eingetragen,
+             -- muss er in der Sicht vorhanden und nicht gesperrt sein (ek.gesperrt = false, NULL zaehlt nicht).
+             case when a.type = 'empfehlung'
+                       and e.id is not null and (e.empfohlen_von_lead is null or ek.gesperrt = false)
                   then a.payload->>'empfohlen_von_name' end as empfohlen_von_name,
-             case when a.type = 'empfehlung' and not coalesce(ek.gesperrt, false)
+             case when a.type = 'empfehlung' and e.id is not null and ek.gesperrt = false
                   then e.empfohlen_von_lead end as empfohlen_von_lead
         from %1$I.activities a
         join %1$I.rowboat_kontakte k on k.id = a.lead_id and not k.gesperrt
@@ -132,3 +140,5 @@ grant select (inhalt, fassung, format, felder, bloecke, seite) on marketing.inha
 grant select (id, mandant, art, titel, status, dauer_s, geaendert_am, archiviert)
   on marketing.video_auftraege to rowboat_leser;
 grant select (id, mandant, titel, status, dauer_s, geaendert_am) on marketing.ton_auftraege to rowboat_leser;
+
+commit;

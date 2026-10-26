@@ -37,3 +37,26 @@ def test_schleife_ohne_sales_test_und_rolle_read_only():
 
 def test_verify_endet_mit_rollback():
     assert lesen("verify_rowboat_leser.sql").strip().lower().endswith("rollback;")
+
+
+def test_rolle_in_einer_transaktion():
+    zeilen = [z.strip().lower() for z in lesen("rowboat_leser.sql").splitlines()
+              if z.strip() and not z.strip().startswith("--")]
+    assert zeilen[0] == "\set on_error_stop on" and zeilen[1] == "begin;" and zeilen[-1] == "commit;"
+    assert sum(z == "begin;" for z in zeilen) == 1 and sum(z == "commit;" for z in zeilen) == 1
+
+
+def test_empfehler_name_nur_mit_liste_und_ohne_sperre():
+    sql = " ".join(lesen("rowboat_leser.sql").lower().split())
+    # Name und id des Empfehlungsgebers nur, wenn die Liste gefunden wurde und der Geber nicht gesperrt ist.
+    assert sql.count("e.id is not null and (e.empfohlen_von_lead is null or ek.gesperrt = false)") == 1
+    assert "e.id is not null and ek.gesperrt = false then e.empfohlen_von_lead" in sql
+    assert "not coalesce(ek.gesperrt, false)" not in sql
+
+
+def test_verify_allgemeine_negativpruefung():
+    sql = lesen("verify_rowboat_leser.sql").lower()
+    assert "has_table_privilege('rowboat_leser'" in sql and "has_column_privilege('rowboat_leser'" in sql
+    for erlaubt in ("rowboat_kontakte", "rowboat_ereignisse", "rowboat_newsletter",
+                    "array['id', 'name']", "array['inhalt', 'fassung', 'format', 'felder', 'bloecke', 'seite']"):
+        assert erlaubt in sql, erlaubt

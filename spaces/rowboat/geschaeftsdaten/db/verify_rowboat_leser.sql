@@ -49,6 +49,53 @@ begin
   raise notice 'verify (admin): % Laden-Schemata geprueft', laeden;
 end $$;
 
+-- Als Admin: allgemeine Negativpruefung ueber ALLE Relationen in Laden-Schemata (auch sales_test) und
+-- marketing. Erlaubt sind nur SELECT auf die drei Sichten je Laden (nicht sales_test) und SELECT auf die
+-- freigegebenen Spalten der fuenf Marketing-Tabellen. Rechte ueber PUBLIC zaehlen mit.
+do $$
+declare r record;
+declare erlaubt text[];
+declare spalte text;
+declare anzahl int := 0;
+begin
+  for r in select c.oid, n.nspname, c.relname
+             from pg_class c join pg_namespace n on n.oid = c.relnamespace
+            where c.relkind in ('r', 'p', 'v', 'm', 'f')
+              and (n.nspname = 'marketing' or n.nspname ~ '^sales(_[a-z][a-z0-9_]{0,30})?$')
+            order by n.nspname, c.relname loop
+    anzahl := anzahl + 1;
+    if has_table_privilege('rowboat_leser', r.oid, 'INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER') then
+      raise exception '%.%: rowboat_leser hat ein Schreib- oder Sonderrecht', r.nspname, r.relname;
+    end if;
+    if r.nspname <> 'marketing' and r.nspname <> 'sales_test'
+       and r.relname in ('rowboat_kontakte', 'rowboat_ereignisse', 'rowboat_newsletter') then
+      continue;
+    end if;
+    erlaubt := case
+      when r.nspname <> 'marketing' then array[]::text[]
+      when r.relname = 'mandanten' then array['id', 'name']
+      when r.relname = 'inhalte' then array['id', 'mandant', 'art', 'titel', 'status', 'freigegebene_fassung']
+      when r.relname = 'inhalt_fassungen' then array['inhalt', 'fassung', 'format', 'felder', 'bloecke', 'seite']
+      when r.relname = 'video_auftraege'
+        then array['id', 'mandant', 'art', 'titel', 'status', 'dauer_s', 'geaendert_am', 'archiviert']
+      when r.relname = 'ton_auftraege' then array['id', 'mandant', 'titel', 'status', 'dauer_s', 'geaendert_am']
+      else array[]::text[] end;
+    if has_table_privilege('rowboat_leser', r.oid, 'SELECT') then
+      raise exception '%.%: ganze Relation fuer rowboat_leser lesbar', r.nspname, r.relname;
+    end if;
+    select a.attname into spalte
+      from pg_attribute a
+     where a.attrelid = r.oid and a.attnum > 0 and not a.attisdropped
+       and not (a.attname = any (erlaubt))
+       and has_column_privilege('rowboat_leser', r.oid, a.attnum, 'SELECT')
+     limit 1;
+    if spalte is not null then
+      raise exception '%.%: Spalte % fuer rowboat_leser lesbar', r.nspname, r.relname, spalte;
+    end if;
+  end loop;
+  raise notice 'verify (admin): % Relationen ohne ueberzaehlige Rechte', anzahl;
+end $$;
+
 -- Ab hier als rowboat_leser in einer read-only Transaktion (wie die Login-Sitzung des Jobs).
 set local role rowboat_leser;
 set local transaction_read_only = on;

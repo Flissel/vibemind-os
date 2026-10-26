@@ -1,8 +1,8 @@
 """Dateinamen fuer Geschaeftsnotizen: Stamm aus Freitext, Eindeutigkeit, Pfadpruefung.
 
-Regeln (Plan Teil B, "Namen"): NFC; Windows-verbotene Zeichen und Steuerzeichen werden zu
-Leerzeichen, Leerraum wird zusammengefasst, Punkte und Leerzeichen am Rand fallen weg, reservierte
-Geraetenamen bekommen `_`. Leer wird zum Ersatz. Gleiche Namen (casefold) behaelt der aelteste
+Regeln (Plan Teil B, "Namen"): NFC; E-Mail-Adressen fallen weg; Windows-verbotene Zeichen und
+Steuerzeichen werden zu Leerzeichen, Leerraum wird zusammengefasst, Punkte und Leerzeichen am Rand fallen
+weg, reservierte Geraetenamen bekommen `_`. Leer wird zum Ersatz. Gleiche Namen (casefold) behaelt der aelteste
 Eintrag, alle weiteren heissen `<Name> (<id8>)`. Der ganze Pfad ab `knowledge/` muss
 `wissens_spiegel._windows_tauglich` bestehen.
 """
@@ -22,12 +22,18 @@ except ImportError:  # Aufruf ohne vorbereiteten sys.path
 
 _VERBOTEN = re.compile("[" + re.escape("".join(sorted(_WIN_VERBOTEN | {"/", "\x7f"}))) + "]")
 _LEERRAUM = re.compile(r"\s+")
+# E-Mail-Adressen (auch fremde, auch mit `mailto:`) haben in Dateinamen nichts zu suchen.
+_MAIL_ZEICHEN = r"[^\s@<>()\[\]{}\"',;]"
+MAIL_MUSTER = re.compile(_MAIL_ZEICHEN + r"+@" + _MAIL_ZEICHEN + r"+\.[a-z]{2,}", re.IGNORECASE)
+_LEERE_KLAMMERN = re.compile(r"\(\s*\)|\[\s*\]|\{\s*\}")
 _ZUSATZ = re.compile(r"^(?P<kopf>.*?)(?P<zusatz> \([0-9A-Za-z-]+\))?$", re.DOTALL)
 MIN_STAMM = 8
 
 
 def _saeubern(roh: str) -> str:
     s = unicodedata.normalize("NFC", roh)
+    s = MAIL_MUSTER.sub(" ", s)
+    s = _LEERE_KLAMMERN.sub(" ", s)
     s = _VERBOTEN.sub(" ", s)
     s = _LEERRAUM.sub(" ", s)
     return s.strip(" .")

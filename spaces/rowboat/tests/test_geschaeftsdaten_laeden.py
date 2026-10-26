@@ -128,3 +128,11 @@ def test_firmenordner_symlink(tmp_path: Path):
         pytest.skip("kein Symlink-Recht")
     with pytest.raises(ValueError):
         firmenordner(tmp_path, "vibemind")
+
+
+def test_laden_datei_braucht_laden_marke(sc: Path):
+    _schreiben(sc / ".env", "MARKETING_MANDANT=vibemind\n")
+    _schreiben(sc / "deploy/laeden/neu.env", "SALES_DB_SCHEMA=sales_neu\nMARKETING_MANDANT=vibemind\n")
+    laeden, warnungen = laeden_finden(sc)
+    assert [l.schema for l in laeden] == ["sales"]
+    assert warnungen == ["neu.env: keine LADEN_MARKE"]

@@ -16,7 +16,7 @@ from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from namen import dateistamm
+from namen import MAIL_MUSTER, dateistamm
 from quelle import Ereignis, Kontakt
 
 BERLIN = ZoneInfo("Europe/Berlin")
@@ -167,12 +167,13 @@ def people_index(wissen: Path) -> PeopleIndex:
 # --- Steckbrief -------------------------------------------------------------------------------------
 
 def _einzeilig(wert: str | None, email: str | None) -> str | None:
-    """Freitext einzeilig; eine darin vorkommende E-Mail-Adresse des Kontakts wird entfernt."""
+    """Freitext einzeilig; die E-Mail-Adresse des Kontakts und jede andere Adresse werden entfernt."""
     if wert is None:
         return None
     text = _LEERRAUM.sub(" ", wert).strip()
     if email:
         text = re.sub(re.escape(email), "[E-Mail entfernt]", text, flags=re.IGNORECASE)
+    text = MAIL_MUSTER.sub("[E-Mail entfernt]", text)
     text = _AUSLOESER.sub(r"@ \1", text)  # Rowboat-InlineTasks reagieren auf @rowboat
     return text or None
 

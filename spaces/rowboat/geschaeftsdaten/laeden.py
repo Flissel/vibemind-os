@@ -1,10 +1,13 @@
 """Laeden (sales-claw-Instanzen) und ihre Firmenordner in Rowboats Wissen.
 
 Laden -> Marke steht in den Env-Dateien von sales-claw, nicht in der DB: `~/sales-claw/.env`
-(Basis-Laden) und `~/sales-claw/deploy/laeden/*.env` (ohne `beispiel.env`). Gelesen werden nur die
-Schluessel in `SCHLUESSEL`; andere Werte (Geheimnisse) werden nie in den Speicher geholt. Ohne Marke,
-mit ungueltigem Schema oder doppeltem Schema wird ein Laden uebersprungen (fail-closed). Warnungen
-nennen nur Dateiname und Grund, nie Werte.
+(Basis-Laden) und `~/sales-claw/deploy/laeden/*.env` (ohne `beispiel.env`). Die Datei wird zeilenweise
+gelesen, uebernommen werden aber nur die Schluessel in `SCHLUESSEL`; andere Werte (auch Geheimnisse)
+werden verworfen, nie zurueckgegeben und nie protokolliert. Der Basis-Laden nimmt `LADEN_MARKE`, sonst
+`MARKETING_MANDANT`; eine Datei unter `deploy/laeden/` braucht `LADEN_MARKE` (kein stiller Rueckfall
+auf `MARKETING_MANDANT`, der dort meist die Marketing-Instanz und nicht die Laden-Marke meint). Ohne
+Marke, mit ungueltigem Schema oder doppeltem Schema wird ein Laden uebersprungen (fail-closed).
+Warnungen nennen nur Dateiname und Grund, nie Werte.
 """
 from __future__ import annotations
 
@@ -49,14 +52,19 @@ def env_werte(pfad: Path, schluessel: frozenset[str]) -> dict[str, str]:
     return werte
 
 
-def _laden_aus(pfad: Path) -> tuple[Laden | None, str | None]:
+def _laden_aus(pfad: Path, basis: bool) -> tuple[Laden | None, str | None]:
     werte = env_werte(pfad, SCHLUESSEL)
     schema = werte.get("SALES_DB_SCHEMA") or "sales"
     if not SCHEMA_MUSTER.match(schema):
         return None, f"{pfad.name}: ungueltiges Schema"
     if schema == TEST_SCHEMA:
         return None, f"{pfad.name}: {TEST_SCHEMA} wird nie gelesen"
-    marke = werte.get("LADEN_MARKE") or werte.get("MARKETING_MANDANT") or ""
+    if basis:
+        marke = werte.get("LADEN_MARKE") or werte.get("MARKETING_MANDANT") or ""
+    else:
+        marke = werte.get("LADEN_MARKE") or ""
+        if not marke:
+            return None, f"{pfad.name}: keine LADEN_MARKE"
     if not marke:
         return None, f"{pfad.name}: keine Marke"
     if not MARKE_MUSTER.match(marke):
@@ -80,7 +88,7 @@ def laeden_finden(sales_claw: Path) -> tuple[list[Laden], list[str]]:
 
     gefunden: dict[str, list[tuple[Path, Laden]]] = {}
     for pfad in dateien:
-        laden, warnung = _laden_aus(pfad)
+        laden, warnung = _laden_aus(pfad, basis=pfad == basis)
         if warnung:
             warnungen.append(warnung)
         if laden:

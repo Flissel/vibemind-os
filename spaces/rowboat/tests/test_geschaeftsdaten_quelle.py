@@ -77,7 +77,16 @@ def test_hat_sichten():
     assert PsqlQuelle(C, laeufer=Laeufer('[{"da": true}]')).hat_sichten("sales") is True
     l = Laeufer('[{"da": false}]')
     assert PsqlQuelle(C, laeufer=l).hat_sichten("sales_ivan") is False
-    assert "to_regclass('sales_ivan.rowboat_kontakte')" in l.aufrufe[0][1]["input"]
+    sql = l.aufrufe[0][1]["input"]
+    assert "to_regclass('sales_ivan.rowboat_kontakte')" in sql
+    # Neuer Laden ohne USAGE-Recht: kein "permission denied for schema", sondern false.
+    assert "nspname = 'sales_ivan'" in sql and "has_schema_privilege('sales_ivan', 'usage')" in sql
+    assert sql.index("has_schema_privilege") < sql.index("to_regclass")
+
+
+def test_fake_quelle_vertrag_hat_sichten():
+    q = FakeQuelle(ohne_sichten=("sales_neu",))
+    assert q.hat_sichten("sales") is True and q.hat_sichten("sales_neu") is False
 
 
 def test_ungueltiges_schema_wirft_vor_aufruf():

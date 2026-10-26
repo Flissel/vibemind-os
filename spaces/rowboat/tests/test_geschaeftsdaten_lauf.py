@@ -229,3 +229,24 @@ def test_newsletter_nur_eigene_marke(tmp_path):
     assert "[[companys/VibeMind/Newsletter/2026-10-22 Neues im Oktober]] – 2 Empfänger" in wb
     assert "Reel eins" in wb
     assert "Reel eins" not in (wissen / "companys/fin2gether/Wochenbild/2026-KW43.md").read_text(encoding="utf-8")
+
+
+def test_lange_gleiche_namen_bekommen_eigene_pfade(tmp_path):
+    wissen = _wissen(tmp_path)
+    q = _quelle()
+    lang = "Sehr langer Name " * 10
+    q.kontakte_["sales"] = [kontakt(id=A, name=lang + "eins", bereiche=("bav",)),
+                            kontakt(id=C.replace("3", "7"), name=lang + "zwei", bereiche=("bav",))]
+    _lauf(q, wissen)
+    namen = sorted(p.name for p in (wissen / "companys/VibeMind/Kontakte/bAV").glob("*.md"))
+    assert len(namen) == 2 and len({n.casefold() for n in namen}) == 2
+
+
+def test_belegter_endpfad_ueberspringt_den_zweiten(tmp_path, monkeypatch):
+    wissen = _wissen(tmp_path)
+    q = _quelle()
+    q.kontakte_["sales"].append(kontakt(id=C.replace("3", "7"), name="Zweite Anna", bereiche=("bav",)))
+    monkeypatch.setattr(lauf_mod, "relpfad", lambda ordner, stamm, endung=".md": f"{ordner}/Gleich{endung}")
+    erg = _lauf(q, wissen)
+    assert erg.je_firma["VibeMind"]["uebersprungen"] == 1 and erg.exit_code == 1
+    assert [p.name for p in (wissen / "companys/VibeMind/Kontakte/bAV").glob("*.md")] == ["Gleich.md"]

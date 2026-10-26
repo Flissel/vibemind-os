@@ -184,7 +184,14 @@ class PsqlQuelle:
 
     def hat_sichten(self, schema: str) -> bool:
         s = _schema(schema)
-        zeilen = self._zeilen(f"select to_regclass('{s}.rowboat_kontakte') is not null as da")
+        # Ohne USAGE auf dem Schema (neuer Laden, Rollen-Skript noch nicht eingespielt) wuerde to_regclass
+        # mit "permission denied for schema" scheitern; dann gilt der Laden als "ohne Sichten". Getrennte
+        # WHEN-Zweige, weil SQL bei AND keine Auswertungsreihenfolge zusichert (has_schema_privilege wirft
+        # bei fehlendem Schema).
+        zeilen = self._zeilen(
+            f"select case when not exists (select 1 from pg_namespace where nspname = '{s}') then false "
+            f"when not has_schema_privilege('{s}', 'usage') then false "
+            f"else to_regclass('{s}.rowboat_kontakte') is not null end as da")
         return bool(zeilen and zeilen[0].get("da"))
 
     def kontakte(self, schema: str) -> list[Kontakt]:
