@@ -83,6 +83,7 @@ PULT_ROUTEN = [
     ("get", "/api/pult/stimmen"),
     ("post", "/api/pult/marke/einrichtung/abschliessen"),
     ("post", "/api/pult/marke/einrichtung/abbrechen"),
+    ("post", "/api/pult/marke/loeschen"),
 ]
 ARBEITER_ROUTEN = [
     ("post", "/api/marke/arbeiter/naechster"),
@@ -1666,6 +1667,25 @@ def test_abschliessen_und_abbrechen(umg):
     for pfad in ("abschliessen", "abbrechen"):
         for body in ({"mandant": "probe_gmbh"}, {"von": "Anna"}, {"mandant": "x y", "von": "Anna"}):
             assert c.post(f"/api/pult/marke/einrichtung/{pfad}", headers=H, json=body).status_code == 422
+    assert len(f.sql) == n
+
+
+def test_marke_loeschen(umg):
+    """094 (Betreiber 28.10.2026): endgueltig loeschen mit woertlicher Bestaetigung; die Regeln
+    (Verteiler, laufende Auftraege) setzt die DB durch, ihre Ablehnung ist 422 mit Grund."""
+    f, _, c = umg
+    f.antworten.append([{"ergebnis": {"inhalte": 2, "mandant": "probe_gmbh"}}])
+    r = c.post("/api/pult/marke/loeschen", headers=H,
+               json={"mandant": "probe_gmbh", "von": "Anna", "bestaetigung": "probe_gmbh"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert "marketing.pult_mandant_loeschen('probe_gmbh', 'probe_gmbh', 'Anna')" in f.sql[-1]
+    f.fehler += [_db_fehler("Marke versendet ueber einen Laden (Verteiler {sales}) - erst den Verteiler leeren")]
+    r = c.post("/api/pult/marke/loeschen", headers=H,
+               json={"mandant": "vibemind", "von": "Anna", "bestaetigung": "vibemind"})
+    assert r.status_code == 422 and r.json()["detail"].startswith("Marke versendet")
+    n = len(f.sql)
+    for body in ({"von": "Anna"}, {"mandant": "probe_gmbh"}, {"mandant": "x y", "von": "Anna"}):
+        assert c.post("/api/pult/marke/loeschen", headers=H, json=body).status_code == 422
     assert len(f.sql) == n
 
 

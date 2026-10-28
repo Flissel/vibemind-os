@@ -518,6 +518,20 @@ def marke_einrichtung_abbrechen(payload: dict = Body(...), x_pult_key: str | Non
     return {"ok": True}
 
 
+@pult_router.post("/marke/loeschen")
+def marke_loeschen(payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    """Marke endgueltig loeschen (094, Betreiber 28.10.2026): `bestaetigung` muss die Kennung woertlich
+    wiederholen. Die DB lehnt Marken mit Verteiler und mit laufenden Auftraegen ab (422 mit Grund) und
+    liefert die Zahl geloeschter Zeilen je Tabelle."""
+    _schluessel(x_pult_key)
+    m = _mandant_pflicht(payload.get("mandant"))
+    von = _von(payload)
+    bestaetigung = str(payload.get("bestaetigung") or "").strip()
+    zeile = _schreiben(lambda: f"SELECT marketing.pult_mandant_loeschen({lit(m)}, {lit(bestaetigung)}, "
+                               f"{lit(von)}) AS ergebnis")
+    return {"ok": True, "geloescht": zeile["ergebnis"]}
+
+
 @pult_router.post("/inhalte/{iid}/marke_hinweis_aus")
 def marke_hinweis_aus(iid: str, x_pult_key: str | None = Header(None)):
     _schluessel(x_pult_key)
