@@ -31,6 +31,10 @@ _ENDUNGEN = (".md", ".txt")
 _MARKE = "marke.md"
 _MARKE_VERLAUF = "marke-verlauf"   # = markenprofil.VERLAUF (dort importiert markenprofil dieses Modul)
 _WISSEN_VERLAUF = "wissen-verlauf"   # Sicherungen des Rowboat-Laufs (claw/wissen_lauf.VERLAUF)
+# Je Kontakt eine Datei aus dem Geschaeftsdaten-Lauf (spaces/rowboat/geschaeftsdaten/ablage.py). Personendaten,
+# kein Markenwissen: Agenten bekommen daraus nur Zahlen (Entscheidung D1). Newsletter-Runde 28.10.2026: 557
+# solcher Dateien verdraengten bei VibeMind das echte Markenwissen ("gekürzt, 200 von 569 Dateien").
+_KONTAKTE = "kontakte"
 _VERMERK = " … (gekürzt)"
 _TRENNER = "\n\n"
 _BITTE_MAX = 300
@@ -157,8 +161,8 @@ def _dateien(ordner: str, hinweise: list[str]) -> list[tuple[str, str]]:
         unterordner.sort()
         echte = []
         for u in unterordner:
-            if ort == ordner and u.casefold() in (_MARKE_VERLAUF, _WISSEN_VERLAUF):
-                continue  # fruehere Fassungen und Sicherungen: ueberholt, nie Markenwissen
+            if ort == ordner and u.casefold() in (_MARKE_VERLAUF, _WISSEN_VERLAUF, _KONTAKTE):
+                continue  # fruehere Fassungen, Sicherungen und Kontakte: nie Markenwissen
             pfad = os.path.join(ort, u)
             if _echt(pfad, ort, firma_real):
                 echte.append(u)

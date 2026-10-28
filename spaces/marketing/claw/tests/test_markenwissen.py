@@ -274,6 +274,22 @@ def test_mehr_als_200_dateien_gekuerzt(wurzel):
     assert "### d204.md" not in w.text
 
 
+def test_kontakte_sind_nie_markenwissen(wurzel):
+    """Newsletter-Runde 28.10.2026: der Geschaeftsdaten-Lauf (spaces/rowboat/geschaeftsdaten) legt je Kontakt
+    eine Datei unter Kontakte/ ab - 557 bei VibeMind. Sie verdraengten das echte Markenwissen ("200 von 569
+    Dateien") und trugen Personendaten in den Prompt; Agenten bekommen aus den Geschaeftsdaten nur Zahlen (D1)."""
+    firma = wurzel / "VibeMind"
+    _schreiben(str(firma / "Marke.md"), "# VibeMind\n" + INHALT)
+    _schreiben(str(firma / "Markenhandbuch.md"), "# Handbuch\nWir sprechen Solo-Gruender direkt und freundlich an.")
+    for i in range(250):
+        _schreiben(str(firma / "Kontakte" / f"Person {i:03d}.md"), f"# Person {i:03d}\nTelefon 0170 {i:07d}, privat.")
+    _schreiben(str(firma / "kontakte" / "_archiv" / "Alt.md"), "# Alt\nArchivierter Kontakt mit Adresse.")
+    w = mw.laden(str(wurzel), "vibemind", "VibeMind", "Person Telefon")
+    assert w.hinweise == []
+    assert "Person" not in w.text and "Telefon" not in w.text and "Archivierter" not in w.text
+    assert "### Markenhandbuch.md" in w.text
+
+
 def test_laden_wirft_nie(wurzel, monkeypatch):
     _schreiben(str(wurzel / "VibeMind" / "Marke.md"), "# VibeMind\n" + INHALT)
 
