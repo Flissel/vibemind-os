@@ -45,7 +45,9 @@ HILFE = ("Ich bin der Marketing-Assistent. Schreib mir, schick ein Foto oder ein
 
 def umgebung_laden() -> None:
     """Fehlende Werte aus Vibemind_V1/.env und vibemind-os/.env (der Bot-Token liegt in der zweiten)."""
-    keys = ("TELEGRAM_BOT_TOKEN_MARKETING", "TELEGRAM_CHAT_ID")
+    keys = ("TELEGRAM_BOT_TOKEN_MARKETING", "TELEGRAM_CHAT_ID",
+            # Kampagnen-Runde (28.10.2026): der Bot fragt selbst nach offenen Kampagnen.
+            "MARKETING_API_URL", "MARKETING_API_KEY", "MARKETING_AGENT_KEY")
     for datei in (REPO_ROOT / ".env", REPO_ROOT / "vibemind-os" / ".env"):
         fehlend = [k for k in keys if not os.environ.get(k)]
         if not fehlend or not datei.exists():
@@ -291,6 +293,37 @@ class _Gesundheit(BaseHTTPRequestHandler):
         pass
 
 
+# Kampagnen komplett planen lassen (Betreiber 28.10.2026: „Agent komplett"). Hoechstens alle
+# KAMPAGNEN_TAKT_S fragt der Bot die API nach Kampagnen in Planung; nur wenn es welche gibt, bekommt
+# Claude den Auftrag (sonst kostet die Runde nichts). Claude plant mit den Marketing-Werkzeugen und
+# meldet das Ergebnis in den Chat des Betreibers. Versendet wird dadurch nichts.
+KAMPAGNEN_TAKT_S = int(os.environ.get("MARKETING_KAMPAGNEN_TAKT_S", "600"))
+KAMPAGNEN_AUFTRAG = (
+    "Es gibt Kampagnen in Planung. Rufe kampagnen_offen() auf und plane JEDE davon komplett: lies vorher "
+    "plan_lesen und geschaeftsfakten, schlage mit kampagne_beitrag_vorschlagen passende Beitraege im "
+    "Zeitraum vor (Zielgruppe sales = Newsletter/Mails an Kontakte, oeffentlich = Posts/Reels/Podcast "
+    "auf den Kanaelen, verteiler = Newsletter), nicht zu dicht, mit klarer Notiz, was jeder Beitrag sagt, "
+    "und schliesse mit kampagne_geplant ab. Antworte danach kurz: welche Kampagne, wie viele Beitraege, "
+    "wann. Du versendest nichts.")
+
+
+def kampagnen_runde(telegram, chat_id: int, system: str, jetzt: float, letzte: float,
+                    offen=None, holen=None) -> float:
+    """-> Zeitpunkt der letzten Pruefung. Fragt Claude nur, wenn eine Kampagne in Planung ist."""
+    if jetzt - letzte < KAMPAGNEN_TAKT_S:
+        return letzte
+    if offen is None:
+        from spaces.marketing.claw import werkzeuge
+        offen = werkzeuge.kampagnen_offen
+    stand = offen()
+    if not stand.get("ok") or not stand.get("daten"):
+        return jetzt
+    text, ok = (holen or antwort_holen)(KAMPAGNEN_AUFTRAG, [], system)
+    if text:
+        telegram.senden(chat_id, ("Kampagnen geplant:\n" if ok else "") + text)
+    return jetzt
+
+
 def main() -> None:
     umgebung_laden()
     token = os.environ.get("TELEGRAM_BOT_TOKEN_MARKETING", "").strip()
@@ -308,7 +341,13 @@ def main() -> None:
     except (OSError, ValueError):
         versatz = 0
     print(f"[telegram] laeuft, Gesundheit :{PORT}, Shim {LLM_URL}", flush=True)
+    letzte_kampagnen = 0.0
     while True:
+        try:
+            letzte_kampagnen = kampagnen_runde(telegram, chat_id, system, time.time(), letzte_kampagnen)
+        except Exception as e:  # noqa: BLE001 - die Runde darf den Bot nie beenden
+            print(f"[telegram] Kampagnen-Runde: {ohne_token(str(e), token)}", flush=True)
+            letzte_kampagnen = time.time()
         try:
             neue = telegram.updates(versatz)
             STAND["letzte_abfrage"] = time.strftime("%Y-%m-%dT%H:%M:%S")

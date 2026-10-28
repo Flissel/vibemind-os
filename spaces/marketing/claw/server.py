@@ -131,6 +131,9 @@ WERKZEUGE = (
     werkzeuge.geschaeftsfakten,
     werkzeuge.plan_lesen,
     werkzeuge.plan_vorschlagen,
+    werkzeuge.kampagnen_offen,
+    werkzeuge.kampagne_beitrag_vorschlagen,
+    werkzeuge.kampagne_geplant,
     # Newsletter-Chat (20.10.2026): derselbe Auftrag wie aus dem Editor; ausgefuehrt im Chat-Arbeiter.
     werkzeuge.newsletter_entwuerfe,
     werkzeuge.newsletter_chat,

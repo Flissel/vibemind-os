@@ -3503,6 +3503,9 @@ app.include_router(_ton.pult_router)
 from spaces.marketing.api import plan as _plan  # noqa: E402
 app.include_router(_plan.pult_router)
 app.include_router(_plan.agent_router)
+from spaces.marketing.api import kampagnen as _kampagnen  # noqa: E402
+app.include_router(_kampagnen.pult_router)
+app.include_router(_kampagnen.agent_router)
 from spaces.marketing.api import video as _video  # noqa: E402
 app.include_router(_video.router)
 app.include_router(_video.pult_router)

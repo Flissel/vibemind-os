@@ -571,6 +571,40 @@ def plan_vorschlagen(datum: str, art: str, titel: str, notiz: str = "", firma: s
     return {"ok": True, "daten": antwort.get("daten") or {}}
 
 
+def kampagnen_offen() -> dict:
+    """Kampagnen, die auf deine Planung warten (28.10.2026, Status in_planung): Name, Ziel, Zielgruppe
+    (sales = Kontakte aus Sales, oeffentlich = Kanaele, verteiler = Newsletter-Verteiler), Zeitraum und was
+    schon vorgeschlagen ist. Du planst eine Kampagne KOMPLETT: Beitraege mit Datum vorschlagen, dann
+    kampagne_geplant."""
+    antwort = _api("/api/plan/kampagnen?status=in_planung")
+    if not antwort["ok"]:
+        return antwort
+    return {"ok": True, "daten": (antwort.get("daten") or {}).get("kampagnen") or []}
+
+
+def kampagne_beitrag_vorschlagen(kampagne: str, datum: str, art: str, titel: str, notiz: str = "") -> dict:
+    """Einen Beitrag zu einer Kampagne vorschlagen. datum JJJJ-MM-TT im Zeitraum der Kampagne,
+    art: newsletter | post | podcast | video | aktion | sonstiges. In `notiz` steht, was der Beitrag
+    sagen soll und fuer wen (Kanal bei oeffentlich). Steht als VORSCHLAG im Plan; versendet nichts."""
+    titel_sauber, _ = stil.hausstil(titel or "")
+    if not titel_sauber.strip():
+        return {"ok": False, "fehler": "Der Titel ist leer."}
+    notiz_sauber, _ = stil.hausstil(notiz or "")
+    antwort = _api(f"/api/plan/kampagnen/{urllib.parse.quote(kampagne or '', safe='')}/beitrag",
+                   {"datum": datum, "art": art, "titel": titel_sauber.strip(), "notiz": notiz_sauber})
+    if not antwort["ok"]:
+        return antwort
+    return {"ok": True, "daten": antwort.get("daten") or {}}
+
+
+def kampagne_geplant(kampagne: str) -> dict:
+    """Planung einer Kampagne abschliessen, nachdem alle Beitraege vorgeschlagen sind."""
+    antwort = _api(f"/api/plan/kampagnen/{urllib.parse.quote(kampagne or '', safe='')}/geplant", {})
+    if not antwort["ok"]:
+        return antwort
+    return {"ok": True, "daten": antwort.get("daten") or {}}
+
+
 def versandauftraege_lesen(status: str = "", anzahl: int = 20) -> dict:
     """Was aus deinen Auftraegen geworden ist: offen, angenommen (mit der
     Entwurfskennung) oder abgelehnt — dann steht im Grund WOERTLICH, was

@@ -208,3 +208,32 @@ def test_andere_dateien_bekommen_eine_klare_absage(tmp_path, monkeypatch):
     tb.verarbeiten(nachricht(None, extra={"document": {"file_id": "d", "file_name": "a.pdf"}}), t,
                    tb.Verlauf(tmp_path / "v.json"), CHAT, system="S")
     assert "Text, Fotos und Sprachnachrichten" in t.gesendet[-1][1]
+
+
+class _TelegramSammler:
+    def __init__(self):
+        self.gesendet = []
+
+    def senden(self, chat, text):
+        self.gesendet.append((chat, text))
+
+
+def test_kampagnen_runde_fragt_claude_nur_bei_offenen_kampagnen():
+    """28.10.2026: der Agent plant Kampagnen komplett - aber nur, wenn eine in Planung ist."""
+    t, gefragt = _TelegramSammler(), []
+
+    def holen(text, verlauf, system):
+        gefragt.append(text)
+        return "Herbst: 4 Beitraege", True
+
+    # zu frueh: nichts
+    assert tb.kampagnen_runde(t, 1, "s", 100.0, 50.0, offen=lambda: 1 / 0, holen=holen) == 50.0
+    # keine offene Kampagne: kein Claude-Aufruf
+    assert tb.kampagnen_runde(t, 1, "s", 10_000.0, 0.0, offen=lambda: {"ok": True, "daten": []},
+                              holen=holen) == 10_000.0
+    assert gefragt == [] and t.gesendet == []
+    # offene Kampagne: Claude plant, der Betreiber bekommt die Meldung
+    tb.kampagnen_runde(t, 7, "s", 20_000.0, 0.0, offen=lambda: {"ok": True, "daten": [{"id": "k"}]},
+                       holen=holen)
+    assert "kampagnen_offen()" in gefragt[0] and "kampagne_geplant" in gefragt[0]
+    assert t.gesendet == [(7, "Kampagnen geplant:\nHerbst: 4 Beitraege")]
