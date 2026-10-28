@@ -866,13 +866,20 @@ def inhalt(iid: str, x_pult_key: str | None = Header(None)):
         "i.eingereichte_fassung, i.eingereicht_am::text AS eingereicht_am, i.eingereicht_von, "
         "i.marke_geaendert_am::text AS marke_geaendert_am, "
         "CASE WHEN i.herkunft_proposal IS NULL THEN NULL "
-        "ELSE jsonb_build_object('status', p.status, 'kanal', p.channel) END AS alter_weg "
+        "ELSE jsonb_build_object('status', p.status, 'kanal', p.channel) END AS alter_weg, "
+        "m.pflichtteil "
         "FROM marketing.inhalte i "
         "LEFT JOIN marketing.broadcast_proposals p ON p.id = i.herkunft_proposal "
+        "LEFT JOIN marketing.mandanten m ON m.id = i.mandant "
         f"WHERE i.id = {lit(i)}::uuid")
     if not kopf:
         raise HTTPException(404, "Unbekannter Inhalt")
     alter_weg = kopf.pop("alter_weg", None)
+    # Newsletter-Runde 28.10.2026: der Editor zeigt den Fuss (Impressum & Co.) wie Uebersicht und PDF.
+    roh = kopf.pop("pflichtteil", None)
+    roh = roh if isinstance(roh, dict) else {}
+    pflichtteil = {k: roh[k] if isinstance(roh.get(k), str) else "" for k in ("impressum", "abmelde_hinweis",
+                                                                           "vermittlerangaben")}
     # bloecke nur fuer die neueste Fassung (Entwurfsseite und Editor brauchen
     # nur sie) - aeltere Dokumente wuerden die Antwort nur aufblaehen.
     fassungen = _lesen(lambda:
@@ -890,7 +897,7 @@ def inhalt(iid: str, x_pult_key: str | None = Header(None)):
         "r.erledigt_am::text AS erledigt_am, (r.erledigt_am IS NOT NULL) AS erledigt "
         f"FROM marketing.rueckmeldungen r WHERE r.inhalt = {lit(i)}::uuid ORDER BY r.am DESC")
     return {"inhalt": kopf, "fassungen": fassungen, "alter_weg": alter_weg or None,
-            "rueckmeldungen": rueckmeldungen}
+            "rueckmeldungen": rueckmeldungen, "pflichtteil": pflichtteil}
 
 
 @router.post("/inhalte/{iid}/in_bloecke")

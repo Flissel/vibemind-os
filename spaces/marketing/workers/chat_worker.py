@@ -942,6 +942,11 @@ PRUEFBILD_FEHLT = "Prüfbild nicht möglich – ohne Nachbesserung gespeichert"
 PRUEFBILD_ABGELEHNT = "Prüfbild konnte nicht übergeben werden – Runde {r} ohne Bild geprüft."
 PRUEFBILD_KEIN_PLATZ = "Prüfbild nicht gesendet – zu viele Anhänge, ohne Nachbesserung gespeichert"
 NACHBESSERUNG_WEG = "Nachbesserung in Runde {r} nicht möglich – der Entwurf davor wurde gespeichert."
+# Newsletter-Runde 28.10.2026: stand das Ergebnis bisher nur als letzte "Nachbesserung 3/3"-Zeile unten im
+# Verlauf, uebersah man es. Jetzt die erste Zeile der Antwort.
+NICHT_FERTIG = ("Nicht fertig geworden: auch nach der letzten Nachbesserung war die Prüfung noch nicht zufrieden "
+                "(Punkte unten). Sag mir, was ich anders machen soll, oder pass es im Editor an – „Prüfen“ zeigt "
+                "die offenen Punkte.")
 RUNDEN = seite_prompt.MAX_RUNDEN
 NACHRICHT_MAX = 2000           # wie api/chat.py NACHRICHT_MAX (laengere nimmt die VM gar nicht an)
 MAX_KOMPOSITIONEN = 5
@@ -1341,6 +1346,7 @@ def _bearbeiten_seite(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_tak
 
     # 2. Ansehen und nachbessern: hoechstens RUNDEN Pruefrunden
     zeilen, notiz = [], ""
+    erschoepft = False       # die letzte Runde hat noch geaendert, statt fertig zu melden
     letzter_text, letzte_hinweise = text, erg.hinweise
     runden = RUNDEN
     if len(bildteile) >= MAX_BILDER:     # die Anhaenge belegen alle Bildplaetze: keine Kachel passt mehr dazu
@@ -1401,6 +1407,7 @@ def _bearbeiten_seite(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_tak
             notiz = erg_r.notiz
         if erg_r.fertig or not erg_r.geaendert:
             break
+        erschoepft = r == runden
         schritt = SEITE_BESSERN.format(r=r, n=RUNDEN)
         spur.schritt(schritt)
         aktuell = erg_r.seite
@@ -1414,7 +1421,8 @@ def _bearbeiten_seite(api, auftrag, aid, fragen_strom, uhr, schlafen, halten_tak
         live.stand(aktuell, schritt, immer=True)     # ein Stopp hier gewinnt noch vor fertig
     if not api.weiter(aid):
         return "fehler"
-    text_antwort = antwort["antwort"] + ("\n\n" + "\n".join(zeilen) if zeilen else "")
+    text_antwort = ((NICHT_FERTIG + "\n\n" if erschoepft else "") + antwort["antwort"]
+                    + ("\n\n" + "\n".join(zeilen) if zeilen else ""))
     antwort_hinweise = list(hinweise)
     # Wie im Block-Weg: Notizen erst jetzt, unmittelbar vor fertig; ohne Firma keine.
     if antwort["notizen"] and name:

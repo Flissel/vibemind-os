@@ -275,3 +275,32 @@ def test_text_fassung_gemessene_lesereihenfolge():
     assert sm.text_fassung(s, {}).index("Erst") < sm.text_fassung(s, {}).index("Zweit")
     t = sm.text_fassung(s, {}, {"a": (50, 50, 250, 150), "b": (350, 40, 550, 160)})
     assert t.index("Zweit") < t.index("Erst")
+
+
+# --- Vorschautext (Newsletter-Runde 28.10.2026) -------------------------------------------------------------
+
+def _vorschau(m: str) -> str:
+    return re.search(r"<mj-preview>(.*?)</mj-preview>", m, re.S).group(1)
+
+
+def test_leerer_vorschautext_kommt_aus_dem_ersten_fliesstext():
+    s = seite([text("t", 400, "Hallo {vorname},\nunser Herbst ist da. Alles Neue im Laden.", hoehe=120),
+               text("titel", 100, "HERBST", rolle="ANZEIGE", groesse=60)])
+    namen = [f"ms-abcdef12-1-{i + 1:02d}.jpg" for i in range(len(sm.stuecke(s)))]
+    m = sm.mjml(s, namen, betreff="B", vorschautext="  ", pflichtteil={}, bild_adresse=adresse, fuer_versand=True)
+    assert _vorschau(m) == "unser Herbst ist da."
+
+
+def test_vorschautext_ohne_anrede_links_und_gekuerzt():
+    lang = "Schau dir [unser Angebot](https://example.com/a) an " + "und noch viel mehr " * 20
+    s = seite([text("t", 100, lang, hoehe=200)])
+    v = sm.vorschau_aus_seite(s)
+    assert "{vorname}" not in v and "https://" not in v and v.startswith("Schau dir unser Angebot an")
+    assert len(v) <= sm.VORSCHAU_MAX and v.endswith("…")
+
+
+def test_gesetzter_vorschautext_bleibt():
+    s = seite([text("t", 100, "Erster Satz.")])
+    m = sm.mjml(s, [], betreff="B", vorschautext="Eigener Text", pflichtteil={}, bild_adresse=adresse,
+                fuer_versand=True)
+    assert _vorschau(m) == "Eigener Text"

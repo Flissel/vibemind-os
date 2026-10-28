@@ -912,6 +912,25 @@ def test_inhalt_liefert_marke_geaendert_am(db, c):
     assert "i.marke_geaendert_am::text AS marke_geaendert_am" in db.sql[0]
 
 
+def test_inhalt_liefert_pflichtteil_der_marke(db, c):
+    """Newsletter-Runde 28.10.2026: der Editor zeigt das Impressum unter der Seite wie Uebersicht und PDF -
+    nur die drei Texte des Pflichtteils, nie andere Schluessel."""
+    db.antworten = [[{"id": IID, "mandant": "vibemind", "status": "entwurf", "alter_weg": None,
+                      "pflichtteil": {"impressum": "Felix Baumann\nMünchen", "abmelde_hinweis": "Abmelden: {abmeldelink}",
+                                      "vermittlerangaben": "", "geheim": "nie"}}], [], []]
+    j = c.get(f"/api/pult/inhalte/{IID}", headers=H).json()
+    assert j["pflichtteil"] == {"impressum": "Felix Baumann\nMünchen", "abmelde_hinweis": "Abmelden: {abmeldelink}",
+                                "vermittlerangaben": ""}
+    assert "pflichtteil" not in j["inhalt"]
+    assert "LEFT JOIN marketing.mandanten m ON m.id = i.mandant" in db.sql[0]
+
+
+def test_inhalt_ohne_marke_leerer_pflichtteil(db, c):
+    db.antworten = [[{"id": IID, "mandant": None, "status": "entwurf", "alter_weg": None, "pflichtteil": None}], [], []]
+    assert c.get(f"/api/pult/inhalte/{IID}", headers=H).json()["pflichtteil"] == {
+        "impressum": "", "abmelde_hinweis": "", "vermittlerangaben": ""}
+
+
 def _png_bytes(b, h):
     import io
     from PIL import Image

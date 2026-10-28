@@ -24,6 +24,27 @@ _ANREDE = "{vorname}"
 _FUSS_TEXT = "#666666"
 _AUSRICHTUNG = {"links": "left", "mitte": "center", "rechts": "right"}
 MITTE_TOLERANZ = 4   # Einheiten: ein Knopf, dessen Mitte so nah an 300 liegt, gilt als mittig
+VORSCHAU_MAX = 110   # Zeichen; so viel zeigen Mailprogramme neben dem Betreff
+
+
+def vorschau_aus_seite(seite: dict) -> str:
+    """Vorschautext, wenn keiner gesetzt ist (Newsletter-Runde 28.10.2026: er fehlte meist, und das Postfach
+    zeigte dann den Anfang des Impressums). Der erste Satz des obersten Fliesstexts, ohne Anrede-Zeile und Links."""
+    texte = sorted((e for e in seite.get("ebenen") or []
+                    if isinstance(e, dict) and e.get("art") == "text" and e.get("rolle", "TEXT") == "TEXT"
+                    and isinstance(e.get("text"), str) and e["text"].strip()),
+                   key=lambda e: float(e.get("y", 0)) - float(e.get("hoehe", 0)) / 2)
+    for e in texte:
+        zeilen = [z.strip() for z in e["text"].splitlines() if z.strip()]
+        if zeilen and _ANREDE in zeilen[0] and len(zeilen[0]) <= 40:
+            zeilen = zeilen[1:]                        # „Hallo {vorname},“ gehoert nicht in die Vorschau
+        text = " ".join(seite_html.TEXTLINK.sub(r"\1", " ".join(zeilen)).replace(_ANREDE, "").split())
+        if not text:
+            continue
+        satz = next((text[:i + 1] for i, z in enumerate(text) if z in ".!?" and (i + 1 == len(text) or
+                                                                                text[i + 1] == " ")), text)
+        return satz if len(satz) <= VORSCHAU_MAX else satz[:VORSCHAU_MAX - 1].rsplit(" ", 1)[0] + "…"
+    return ""
 
 
 @dataclass
@@ -222,7 +243,8 @@ def mjml(seite: dict, stuecke_namen: list[str], *, betreff: str, vorschautext: s
     schema = "dark" if vorlagen_marke.ist_dunkel(farbe) else "light"
     meta = (f'<mj-raw><meta name="color-scheme" content="{schema}"><meta name="supported-color-schemes" '
             f'content="{schema}"></mj-raw>')
-    quelle = (f'<mjml><mj-head><mj-title>{_a(betreff)}</mj-title><mj-preview>{_a(vorschautext)}</mj-preview>{meta}'
+    vorschau = (vorschautext or "").strip() or vorschau_aus_seite(s)
+    quelle = (f'<mjml><mj-head><mj-title>{_a(betreff)}</mj-title><mj-preview>{_a(vorschau)}</mj-preview>{meta}'
               f'<mj-attributes><mj-all font-family="{schrift}" /></mj-attributes></mj-head>'
               f'<mj-body background-color="{_a(farbe)}" width="{seite_mod.BREITE}px">{"".join(rumpf)}{fuss}'
               f'</mj-body></mjml>')

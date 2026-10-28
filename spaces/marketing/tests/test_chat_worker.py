@@ -2147,6 +2147,8 @@ def test_nachbesserung_hoechstens_3_runden():
     schritte = [s["text"] for s in api.denk[-1][2]]
     assert "Bessere nach (Runde 3/3)" in schritte and "Prüfe Entwurf (Runde 3/3)" in schritte
     assert all(z in daten["antwort"] for z in ("R1", "R2", "R3"))
+    # Newsletter-Runde 28.10.2026: nach der letzten Runde nicht fertig -> oben, nicht klein im Verlauf.
+    assert daten["antwort"].startswith(cw.NICHT_FERTIG)
 
 
 def test_nachbesserung_endet_bei_fertig():
@@ -2157,6 +2159,7 @@ def test_nachbesserung_endet_bei_fertig():
     (daten,) = _fertig_daten(api)
     assert _ebene(daten["seite"], "titel")["text"] == "Eins" and daten["notiz"] == "Jetzt stimmt alles"
     assert "Jetzt stimmt alles" in daten["antwort"]
+    assert cw.NICHT_FERTIG not in daten["antwort"]
 
 
 def test_nachbesserung_endet_ohne_aenderungen():

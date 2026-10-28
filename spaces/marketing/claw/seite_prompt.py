@@ -120,14 +120,14 @@ def _schriften() -> str:
 GRUNDFORMEN: tuple[tuple[str, str, str], ...] = (
     ("split", "Split",
      "Bild links angeschnitten, 60 % Breite (x 180, y 320, 360x640); Titel rechts oben (x 470, y 180) greift ins "
-     "Bild; Text darunter."),
+     "Bild; Fließtext unter dem Bild."),
     ("randloser-aufmacher", "Randloser Aufmacher mit Titelband",
      "Bild x 300, y 280, 600x560; Titel auf Farbband über der Bildunterkante."),
     ("schrift-plakat", "Schrift-Plakat",
      "Titel als Aufmacher (groesse 90..130), volle Breite innerhalb der Ruhezone (x 300, breite 552); kleines Bild "
      "rechts versetzt darunter."),
     ("versetztes-bildpaar", "Versetztes Zwei-Bild-Raster",
-     "Bild A x 220, y 300; Bild B x 420, y 560 überlappt A um 40; Text in der Lücke."),
+     "Bild A x 220, y 300; Bild B x 420, y 560 überlappt A um 40; Titel in der Lücke, Fließtext darunter."),
     ("polaroid-streuung", "Polaroid-Streuung",
      "2-3 Fotos überlappend, höchstens 2 mit rahmen_breite 10, schatten und drehung 2..6 (zählen als Gesten); "
      "Titel darüber."),
@@ -213,21 +213,19 @@ Rollen: ANZEIGE = Überschrift (Webschrift), TEXT = Fließtext (mailsichere Ersa
 Schriften (Gewichte): __SCHRIFTEN__.
 
 QUALITÄTSREGELN (verbindlich)
-- Schriftgrößen-Stufung: höchstens 3 Größen pro Seite, Fließtext 15-19, Überschrift mindestens 2x Fließtext.
+- Schriftgrößen-Stufung: höchstens 3 Größen pro Seite, Fließtext 15-19 (lesbar bei 375 px), Überschrift mindestens 2x Fließtext.
 - Markenfarben und -schriften aus der Marke.
 - Mindestkontrast 4,5:1 für Fließtext und 3:1 für Text ab 24, auch gegen Bilder darunter.
-- Ruhezone 24 Einheiten an den Seitenrändern für Text.
 - Höchstens 2 „laute“ Elemente (Sticker, gedrehte Großschrift) pro Ausgabe.
 - Klarer Blickverlauf: Aufmacher -> Inhalt -> Knopf.
 - Mindestens ein Knopf.
-- Fließtext mindestens 15, damit er bei 375 px Handybreite lesbar bleibt.
 __FARBE__
 Die 3 Größen: (1) Überschrift; (2) Fließtext, dieselbe groesse auch für Dachzeile, Zitat und Knopf (immer setzen); \
-(3) eine Akzentgröße für HAND und Sticker. Ruhezone: x - breite/2 >= 24 und x + breite/2 <= 576.
+(3) eine Akzentgröße für HAND und Sticker. Ruhezone 24 Einheiten: x - breite/2 >= 24 und x + breite/2 <= 576.
 
 ANREDE UND LINKS
-{vorname} (nie einen echten Namen) und Textlinks nur in Rolle TEXT, Drehung 0, ohne Überlappung mit anderen Ebenen \
-(keine Fläche dahinter; dafür hintergrund). Fließtext mit persönlicher Ansprache beginnt mit „Hallo {vorname},“.
+{vorname} (nie einen echten Namen) und Textlinks nur in Rolle TEXT, Drehung 0, unter allen Bildern und Formen, \
+nie daneben: die Mail macht Streifen mit Bild zu Bildern. Fließtext mit Ansprache beginnt mit „Hallo {vorname},“.
 
 GRUNDFORMEN
 __GRUNDFORMEN__
@@ -255,7 +253,7 @@ BILDER
 Laufen im Hintergrund, kommen als neue Fassung: sag es, warte nicht. Medien nur aus MEDIEN. Logo und Schrift nie \
 über das Bildmodell: Logo per logo_einsetzen (MARKENLOGO, auf dunklem Grund MARKENLOGO DUNKEL). „Hier ist noch \
 kein Bild – nimm bild_erzeugen“ -> bild_erzeugen. Meldungen zu fehlendem Bildmodell oder Quellbild: dem Betreiber \
-sagen, nicht wiederholen.
+sagen, nicht wiederholen. Kündige nur an, was du hier beauftragst; was du nicht schaffst, sag offen.
 
 MATERIAL
 „Markiert“ = die mit „das/hier/diese“ gemeinten Ebenen; fasse nur sie an. __BEZUG__ Offenes Feedback aus der \
