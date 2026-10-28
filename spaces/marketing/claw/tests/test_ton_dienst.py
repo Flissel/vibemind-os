@@ -4,6 +4,55 @@ import pytest
 from spaces.marketing.claw import ton_dienst as td
 
 
+def test_elevenlabs_aus_ohne_schluessel(monkeypatch):
+    """28.10.2026: vorbereitet, aber ohne Schluessel immer Chatterbox."""
+    monkeypatch.setenv("TON_ENGINE", "elevenlabs")
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    assert td.engine() == "chatterbox"
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "geheim")
+    assert td.engine() == "elevenlabs"
+
+
+def test_elevenlabs_spricht_wav_und_verraet_den_schluessel_nicht(monkeypatch):
+    import io
+    import wave
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "geheim-123")
+    monkeypatch.setenv("TON_ELEVENLABS_STIMMEN", '{"standard": "Abcdefgh12345678"}')
+    monkeypatch.setattr(td, "aussprache_laden", lambda *a: {})
+    gesehen = {}
+
+    class Antwort(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def oeffnen(anfrage, timeout):
+        gesehen["url"] = anfrage.full_url
+        gesehen["kopf"] = dict(anfrage.header_items())
+        return Antwort(b"\x00\x01" * 100)
+
+    wav = td.sprechen_elevenlabs("Hallo", "de", "standard", oeffnen=oeffnen)
+    with wave.open(io.BytesIO(wav)) as w:
+        assert w.getnchannels() == 1 and w.getframerate() == 44100 and w.getnframes() == 100
+    assert "Abcdefgh12345678" in gesehen["url"] and "pcm_44100" in gesehen["url"]
+    assert gesehen["kopf"]["Xi-api-key"] == "geheim-123"
+
+
+def test_elevenlabs_ohne_stimme_und_rueckfall(monkeypatch):
+    monkeypatch.setenv("TON_ENGINE", "elevenlabs")
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "geheim")
+    monkeypatch.delenv("TON_ELEVENLABS_STIMMEN", raising=False)
+    with pytest.raises(td.ElevenLabsFehler, match="Stimme"):
+        td.elevenlabs_stimme("standard")
+    monkeypatch.setattr(td, "_sprechen_chatterbox", lambda *a, **k: b"CHATTERBOX")
+    assert td.sprechen("Hallo", "de", None) == b"CHATTERBOX"
+    monkeypatch.setenv("TON_ELEVENLABS_RUECKFALL", "0")
+    with pytest.raises(td.ElevenLabsFehler):
+        td.sprechen("Hallo", "de", None)
+
+
 def test_standardstimme_ohne_probe():
     assert td.anfrage_pruefen({"text": " Hallo ", "sprache": "de"}) == ("Hallo", "de", None)
     assert td.anfrage_pruefen({"text": "Hi", "stimme": "standard"})[2] is None

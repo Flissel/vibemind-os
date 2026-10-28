@@ -322,7 +322,87 @@ def einstellungen_laden(stimme: str) -> dict[str, float]:
         return {}
 
 
+# ElevenLabs (Betreiber 28.10.2026: „Podcast sollte ElevenLabs bekommen"). Vorbereitet, aber AUS, bis
+# der Betreiber Schluessel und Budget hat: TON_ENGINE=elevenlabs UND ELEVENLABS_API_KEY gesetzt. Stimmen
+# je Name aus TON_ELEVENLABS_STIMMEN (JSON {"standard": "<voice_id>", "anna": "<voice_id>"}). Faellt
+# ElevenLabs aus (Netz, Kontingent), spricht Chatterbox - ausser TON_ELEVENLABS_RUECKFALL=0.
+ELEVENLABS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice}?output_format=pcm_{rate}"
+ELEVENLABS_RATE = 44100
+ELEVENLABS_MODELL = os.environ.get("ELEVENLABS_MODELL", "eleven_multilingual_v2")
+ELEVENLABS_ZEIT_S = 120
+
+
+class ElevenLabsFehler(Exception):
+    pass
+
+
+def engine() -> str:
+    """'elevenlabs' nur mit Schluessel; sonst immer 'chatterbox'."""
+    if os.environ.get("TON_ENGINE", "").strip().lower() == "elevenlabs" \
+            and os.environ.get("ELEVENLABS_API_KEY", "").strip():
+        return "elevenlabs"
+    return "chatterbox"
+
+
+def elevenlabs_stimme(stimme: str) -> str:
+    try:
+        stimmen = json.loads(os.environ.get("TON_ELEVENLABS_STIMMEN", "") or "{}")
+    except ValueError:
+        stimmen = {}
+    voice = stimmen.get(stimme) or stimmen.get("standard") if isinstance(stimmen, dict) else None
+    if not voice or not re.fullmatch(r"[A-Za-z0-9]{8,64}", str(voice)):
+        raise ElevenLabsFehler(f"keine ElevenLabs-Stimme fuer '{stimme}' (TON_ELEVENLABS_STIMMEN)")
+    return str(voice)
+
+
+def _pcm_zu_wav(pcm: bytes, rate: int) -> bytes:
+    import wave
+    puffer = io.BytesIO()
+    with wave.open(puffer, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(pcm)
+    return puffer.getvalue()
+
+
+def sprechen_elevenlabs(text: str, sprache: str, stimme: str, oeffnen=None) -> bytes:
+    """Text -> WAV (mono, 16 Bit, 44,1 kHz) ueber die ElevenLabs-API. Der Schluessel geht nur in den
+    Kopf `xi-api-key`, nie in Log oder Fehlertext."""
+    import urllib.error
+    import urllib.request
+    voice = elevenlabs_stimme(stimme)
+    rumpf = json.dumps({"text": aussprache_anwenden(text, aussprache_laden()),
+                        "model_id": ELEVENLABS_MODELL, "language_code": sprache}).encode("utf-8")
+    anfrage = urllib.request.Request(
+        ELEVENLABS_URL.format(voice=voice, rate=ELEVENLABS_RATE), data=rumpf, method="POST",
+        headers={"xi-api-key": os.environ.get("ELEVENLABS_API_KEY", "").strip(),
+                 "Content-Type": "application/json", "Accept": "audio/pcm"})
+    try:
+        with (oeffnen or urllib.request.urlopen)(anfrage, timeout=ELEVENLABS_ZEIT_S) as antwort:
+            pcm = antwort.read()
+    except urllib.error.HTTPError as e:
+        raise ElevenLabsFehler(f"ElevenLabs HTTP {e.code}") from None
+    except OSError as e:
+        raise ElevenLabsFehler(f"ElevenLabs nicht erreichbar ({type(e).__name__})") from None
+    if not pcm:
+        raise ElevenLabsFehler("ElevenLabs lieferte kein Audio")
+    return _pcm_zu_wav(pcm, ELEVENLABS_RATE)
+
+
 def sprechen(text: str, sprache: str, probe: Path | None, regler: dict[str, float] | None = None) -> bytes:
+    if engine() == "elevenlabs":
+        try:
+            return sprechen_elevenlabs(text, sprache, probe.stem if probe is not None else "standard")
+        except ElevenLabsFehler as e:
+            if os.environ.get("TON_ELEVENLABS_RUECKFALL", "1") == "0":
+                raise
+            LOG.warning("ElevenLabs gescheitert (%s) - Chatterbox spricht", e)
+    return _sprechen_chatterbox(text, sprache, probe, regler)
+
+
+def _sprechen_chatterbox(text: str, sprache: str, probe: Path | None,
+                         regler: dict[str, float] | None = None) -> bytes:
     import torchaudio
     modell = _modell_laden()
     text = aussprache_anwenden(text, aussprache_laden())
