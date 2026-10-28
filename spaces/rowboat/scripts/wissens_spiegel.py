@@ -82,6 +82,7 @@ Bestand = dict[str, Eintrag]
 PC_ORDNER = frozenset({
     "Projects", "Agents", "Areas", "Topics", "Bubbles", "Domains", "Hubs",
     "Coding-Projects", "Workflows", "System", "Videos", "vibemind-discourse", "Simulations",
+    "Doku",  # Doku-Loop schreibt am PC (Doku-Urteile bleibt VM-eigen: anderes Segment)
 })
 # Brain-Ausnahmen innerhalb sonst VM-eigener Ordner (exakte Segmente, wie PC_ORDNER)
 PC_UNTERORDNER = frozenset({("People", "Veraltet")})

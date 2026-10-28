@@ -97,6 +97,14 @@ def test_pid_lebt_windows_zugriff_verweigert_gilt_als_lebend():
     assert ws._pid_lebt_windows(4711, _FakeKernel32(99, 0), lambda: 0) is False
 
 
+def test_besitzer_doku_ordner_pc_und_urteile_vm():
+    # Doku-Loop schreibt am PC: Ordner Doku gehoert dem PC (Spiegel PC -> VM)
+    assert ws.besitzer("Doku/K1.md") == "pc"
+    assert ws.besitzer("Doku/Ketten/K1.md") == "pc"
+    # anderer Top-Level-Ordner: bleibt VM-eigen
+    assert ws.besitzer("Doku-Urteile/Urteile.md") == "vm"
+
+
 def test_besitzer_aenderung_gewinnt():
     plan = ws.abgleich_planen(
         {"Projects/p.md": e("B")}, {"Projects/p.md": e("C")}, {"Projects/p.md": e("A")}
