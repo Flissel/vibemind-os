@@ -249,9 +249,26 @@ if (-not (Test-Path $Venv)) {
 }
 if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
 
+# Nur eine echte Verbindung zaehlt. Get-NetTCPConnection -State Listen lieferte auf diesem PC fuer
+# lauschende Ports nichts (30.10.2026), psutil meldete sie als NONE (03.11.2026).
 function Test-Port([int]$Port) {
-    $null -ne (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
-               Select-Object -First 1)
+    $c = [System.Net.Sockets.TcpClient]::new()
+    try { $c.ConnectAsync('127.0.0.1', $Port).Wait(2000) -and $c.Connected } catch { $false } finally { $c.Dispose() }
+}
+
+# Lebt schon eine Kopie (laedt noch, Port noch zu), wird keine zweite gestartet: Windows laesst mehrere
+# Prozesse denselben Port binden; am 03.11.2026 lief ton_dienst dreimal (je ~6 GB). Gleiche Regel wie
+# prozess_passt im Waechter: jedes Startargument ausser -u steht als eigenes Wort in der Kommandozeile.
+$Kommandozeilen = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine } | ForEach-Object {
+        , @([regex]::Matches($_.CommandLine, '"[^"]*"|\S+') | ForEach-Object { $_.Value.Trim('"') })
+    })
+function Test-Kopie($d) {
+    $noetig = @($d.Args | Where-Object { $_ -ne '-u' })
+    foreach ($woerter in $Kommandozeilen) {
+        if (@($noetig | Where-Object { $woerter -notcontains $_ }).Count -eq 0) { return $true }
+    }
+    $false
 }
 
 $gestartet = 0
@@ -259,6 +276,11 @@ $liefen = 0
 foreach ($d in $Dienste) {
     if (Test-Port $d.Port) {
         Write-Output ("  laeuft   :{0,-5} {1}" -f $d.Port, $d.Was)
+        $liefen++
+        continue
+    }
+    if (Test-Kopie $d) {
+        Write-Output ("  laeuft   :{0,-5} {1} (Prozess lebt, Port noch zu - kein zweiter Start)" -f $d.Port, $d.Was)
         $liefen++
         continue
     }
