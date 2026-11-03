@@ -6,13 +6,17 @@ und Reels, Podcast und Bilder standen acht Stunden still.
 
 Ein Lauf (geplante Aufgabe alle 5 Minuten):
 - Die Dienstliste kommt aus `marketing-dienste-starten.ps1 -Liste`. Sie steht nur dort.
-- Port tot -> starten (ueber `-Nur <name>` desselben Skripts).
+- Port tot -> starten (ueber `-Nur <name>` desselben Skripts). Ob der Port lebt, zeigt nur eine echte
+  Verbindung - psutil meldete die Listener hier mit Status NONE statt LISTEN (03.11.2026).
+- Lebt schon eine Kopie des Dienstes (Kommandozeile), wird nie eine zweite gestartet: Windows laesst
+  mehrere Prozesse denselben Port binden, und am 03.11.2026 lief ton_dienst dreimal (je ~6 GB).
+  Mehrere Kopien werden gemeldet, nicht beendet.
 - Port offen, aber keine HTTP-Antwort in STUMM_GRENZE Laeufen in Folge -> beenden und neu starten,
   aber nur Dienste mit eigenem Gesundheits-Thread. Die MCP-Sidecars :8130 und :8137 fuehren ihre
   Werkzeuge seit 21./22.10.2026 in Threads aus (claw/mcp_huelle.py) und haben /health - sie werden
   wie die anderen neu gestartet, wenn sie schweigen.
-- Beendet wird nur der Prozess am Port, und nur wenn seine Kommandozeile alle Startargumente
-  des Dienstes enthaelt (sonst koennte ein fremder Dienst auf dem Port sterben).
+- Beendet wird nur eine eindeutige Kopie: der eine Prozess(baum), dessen Kommandozeile alle
+  Startargumente des Dienstes enthaelt. Bei mehreren Kopien ist nicht sicher, welche haengt.
 - ComfyUI wird weder beendet (Zombie im GPU-Treiber) noch gestartet (belegt die GPU) - nur gemeldet.
 - Hoechstens KAPPE Neustarts je Dienst in FENSTER_S, danach eine Meldung "gebe auf".
 - `logs/marketing/waechter.aus` schaltet ihn ab (z. B. wenn Dienste bewusst gestoppt sind).
@@ -26,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -48,6 +53,7 @@ KAPPE = 3
 FENSTER_S = 6 * 3600
 MELDE_ABSTAND_S = 6 * 3600
 HTTP_TIMEOUT_S = 10
+VERBINDEN_TIMEOUT_S = 2
 OHNE_FENSTER = 0x08000000  # CREATE_NO_WINDOW: die Aufgabe laeuft unsichtbar
 
 LOG = logging.getLogger("marketing.waechter")
@@ -83,7 +89,9 @@ STANDARD = Regel(None, False, True)
 
 
 def entscheiden(befund: str, regel: Regel, eintrag: dict, jetzt: float) -> tuple[str, dict]:
-    """Befund ok|tot|stumm -> Aktion nichts|starten|neustart|melden|aufgeben und der neue Zustandseintrag."""
+    """Befund ok|tot|stumm|verwaist -> Aktion nichts|starten|neustart|melden|aufgeben und der neue Eintrag.
+
+    verwaist = Port zu, aber eine Kopie lebt (laedt noch oder haengt): nie starten, nach STUMM_GRENZE melden."""
     e = dict(eintrag)
     if befund == "ok":
         e["stumm"] = 0
@@ -95,6 +103,12 @@ def entscheiden(befund: str, regel: Regel, eintrag: dict, jetzt: float) -> tuple
             e["gemeldet"] = jetzt
             return "melden", e
         return "nichts", e
+
+    if befund == "verwaist":
+        e["stumm"] = e.get("stumm", 0) + 1
+        if e["stumm"] < STUMM_GRENZE:
+            return "nichts", e
+        return gedrosselt_melden()
 
     if befund == "stumm":
         e["stumm"] = e.get("stumm", 0) + 1
@@ -128,10 +142,20 @@ def prozess_passt(kommandozeile: list[str], args: list[str]) -> bool:
     return all(a.lower() in vorhanden for a in args if a != "-u")
 
 
+def wurzeln(prozesse: list[tuple[int, int, list[str]]], args: list[str]) -> list[int]:
+    """PIDs der laufenden Kopien eines Dienstes aus (pid, ppid, kommandozeile).
+
+    Ein venv-python.exe startet den echten Interpreter als Kind mit derselben Kommandozeile - Eltern und
+    Kind sind EINE Kopie; gezaehlt wird der oberste passende Prozess."""
+    passend = {pid: ppid for pid, ppid, kommandozeile in prozesse if prozess_passt(kommandozeile, args)}
+    return sorted(pid for pid, ppid in passend.items() if ppid not in passend)
+
+
 def lauf(dienste: list[dict], zustand: dict, jetzt: float, *,
          pruefe: Callable[[int, str | None], str],
          lauscht: Callable[[int], bool],
          beende: Callable[[dict], bool],
+         kopien: Callable[[dict], list[int]],
          starte: Callable[[list[str]], None],
          melde: Callable[[str], None]) -> dict:
     """Ein Waechter-Lauf. Gibt den neuen Zustand zurueck; jede Meldung geht einzeln an `melde`."""
@@ -142,10 +166,19 @@ def lauf(dienste: list[dict], zustand: dict, jetzt: float, *,
         regel = REGELN.get(name, STANDARD)
         try:
             befund = pruefe(port, regel.pfad)
+            pids = kopien(d)
         except Exception as fehler:  # noqa: BLE001 - keine Pruefung darf den Lauf toeten
             melde(f"{name} :{port}: Pruefung gescheitert ({type(fehler).__name__}: {fehler})")
             continue
+        if befund == "tot" and pids:
+            befund = "verwaist"
         aktion, neu[name] = entscheiden(befund, regel, zustand.get(name, {}), jetzt)
+        if befund == "ok" and len(pids) > 1:
+            zuletzt = neu[name].get("doppelt_gemeldet")
+            if not zuletzt or jetzt - zuletzt >= MELDE_ABSTAND_S:
+                neu[name]["doppelt_gemeldet"] = jetzt
+                melde(f"{d['was']} :{port} laeuft {len(pids)}-mal (PIDs {', '.join(map(str, pids))}) - "
+                      "der Waechter beendet keine Kopie, bitte ansehen")
         if aktion == "starten":
             zu_starten.append(d)
         elif aktion == "neustart":
@@ -153,9 +186,10 @@ def lauf(dienste: list[dict], zustand: dict, jetzt: float, *,
                 zu_starten.append(d)
             else:
                 melde(f"{d['was']} :{port} antwortet nicht, wurde aber nicht beendet "
-                      "(Prozess am Port passt nicht zum Dienst)")
+                      "(keine eindeutige Kopie des Dienstes, siehe waechter.log)")
         elif aktion == "melden":
-            zustand_text = "ist tot" if befund == "tot" else "antwortet nicht"
+            zustand_text = {"tot": "ist tot", "verwaist": "Prozess laeuft, Port bleibt zu"}.get(
+                befund, "antwortet nicht")
             melde(f"{d['was']} :{port} {zustand_text} - startet/beendet der Waechter bewusst nicht")
         elif aktion == "aufgeben":
             melde(f"{d['was']} :{port} kommt nicht zurueck ({KAPPE} Neustarts in "
@@ -174,9 +208,15 @@ def lauf(dienste: list[dict], zustand: dict, jetzt: float, *,
 # --- Anbindung an das echte System ----------------------------------------------------------
 
 def port_lauscht(port: int) -> bool:
-    import psutil
-    return any(c.laddr and c.laddr.port == port and c.status == psutil.CONN_LISTEN
-               for c in psutil.net_connections(kind="tcp"))
+    """Nimmt 127.0.0.1:<port> eine Verbindung an?
+
+    Nicht ueber psutil (03.11.2026 gemessen): Die Listener standen dort meist mit Status NONE statt
+    LISTEN, :8135 in 30 von 30 Abfragen. Laufende Dienste galten als tot und wurden erneut gestartet."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=VERBINDEN_TIMEOUT_S):
+            return True
+    except OSError:
+        return False
 
 
 def http_pruefen(port: int, pfad: str | None) -> str:
@@ -193,30 +233,29 @@ def http_pruefen(port: int, pfad: str | None) -> str:
         return "stumm"
 
 
-def port_besitzer(port: int) -> int | None:
+def prozesse_lesen() -> list[tuple[int, int, list[str]]]:
     import psutil
-    for c in psutil.net_connections(kind="tcp"):
-        if c.laddr and c.laddr.port == port and c.status == psutil.CONN_LISTEN and c.pid:
-            return c.pid
-    return None
+    return [(p.info["pid"], p.info["ppid"], p.info["cmdline"] or [])
+            for p in psutil.process_iter(["pid", "ppid", "cmdline"])]
+
+
+def laufende_kopien(d: dict) -> list[int]:
+    return wurzeln(prozesse_lesen(), d["args"])
 
 
 def beende_dienst(d: dict) -> bool:
-    import psutil
-    pid = port_besitzer(d["port"])
-    if pid is None:
-        return True  # inzwischen tot - dann einfach starten
-    try:
-        kommandozeile = psutil.Process(pid).cmdline()
-    except psutil.Error:
+    """Nicht ueber den Port-PID: netstat nannte fuer :8138 PID 0, und mehrere Kopien teilten sich den Port."""
+    pids = laufende_kopien(d)
+    if not pids:
+        return True  # keine Kopie mehr - dann einfach starten
+    if len(pids) > 1:
+        LOG.warning("Beende-Sperre: %s laeuft %d-mal (PIDs %s) - welche haengt, ist nicht sicher",
+                    d["name"], len(pids), pids)
         return False
-    if not prozess_passt(kommandozeile, d["args"]):
-        LOG.warning("Beende-Sperre: PID %s auf :%s passt nicht zu %s: %s", pid, d["port"], d["name"], kommandozeile)
-        return False
-    LOG.info("beende %s (PID %s, :%s)", d["name"], pid, d["port"])
-    subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, creationflags=OHNE_FENSTER)
+    LOG.info("beende %s (PID %s, :%s)", d["name"], pids[0], d["port"])
+    subprocess.run(["taskkill", "/PID", str(pids[0]), "/T", "/F"], capture_output=True, creationflags=OHNE_FENSTER)
     for _ in range(20):
-        if not port_lauscht(d["port"]):
+        if not laufende_kopien(d):
             return True
         time.sleep(0.5)
     return False
@@ -290,11 +329,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         dienste = dienste_lesen()
         if zeigen:
+            prozesse = prozesse_lesen()
             for d in dienste:
-                print(f"{d['name']:<30} :{d['port']:<5} {http_pruefen(d['port'], REGELN.get(d['name'], STANDARD).pfad)}")
+                befund = http_pruefen(d["port"], REGELN.get(d["name"], STANDARD).pfad)
+                print(f"{d['name']:<30} :{d['port']:<5} {befund:<6} Kopien {wurzeln(prozesse, d['args'])}")
             return 0
+        prozesse = prozesse_lesen()  # ein Schnappschuss je Lauf, nur fuer die Entscheidung
         zustand = lauf(dienste, zustand_laden(), time.time(), pruefe=http_pruefen, lauscht=port_lauscht,
-                       beende=beende_dienst, starte=starte_dienste, melde=meldungen.append)
+                       beende=beende_dienst, kopien=lambda d: wurzeln(prozesse, d["args"]),
+                       starte=starte_dienste, melde=meldungen.append)
         ZUSTANDSDATEI.write_text(json.dumps(zustand, indent=1), encoding="utf-8")
     except Exception as fehler:  # noqa: BLE001 - ein Waechter, der abstuerzt, meldet nichts
         meldungen.append(f"Waechter-Lauf gescheitert: {type(fehler).__name__}: {fehler}")
