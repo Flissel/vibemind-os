@@ -344,6 +344,8 @@ spaces:
         - learning_course_publish
         - learning_chapter_open
         - learning_session_start
+        - learning_session_resume
+        - learning_course_overview
         - learning_task_next
         - learning_task_answer
         - learning_hint_request
@@ -409,6 +411,16 @@ spaces:
         execution: { kind: mcp, server: spaces-learning }
       learning.session.start:
         tool: learning_session_start
+        required_params: [course_id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-learning }
+      learning.session.resume:
+        tool: learning_session_resume
+        required_params: [course_id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-learning }
+      learning.course.overview:
+        tool: learning_course_overview
         required_params: [course_id]
         required_provenance: [approval_ref, cost_ref]
         execution: { kind: mcp, server: spaces-learning }
