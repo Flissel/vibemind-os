@@ -1,0 +1,9 @@
+[Unit]
+Description=Rowboat: Ordnungs-Karte alle 10 Minuten erneuern
+
+[Timer]
+OnCalendar=*:0/10
+Unit=rowboat-vault-map.service
+
+[Install]
+WantedBy=timers.target
