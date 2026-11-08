@@ -56,7 +56,7 @@ def _sortierung(t: Termin) -> tuple[date, str]:
 
 def _dauer(wert: str | None) -> int | None:
     text = (wert or "").strip()
-    if not _ZAHL.match(text):
+    if not _ZAHL.fullmatch(text):
         return None
     n = int(text)
     return n if n > 0 else None
@@ -64,7 +64,7 @@ def _dauer(wert: str | None) -> int | None:
 
 def _id_ok(wert: str) -> bool:
     """Lead-ID bzw. uid landen im Front matter und im Dateinamen: nur unverdaechtige Zeichen, nie `@rowboat`."""
-    return bool(_ID.match(wert)) and "@rowboat" not in wert.casefold()
+    return bool(_ID.fullmatch(wert)) and "@rowboat" not in wert.casefold()
 
 
 def termine_aus(ereignisse: list[Ereignis]) -> tuple[list[Termin], set[str]]:
@@ -97,7 +97,7 @@ def termine_aus(ereignisse: list[Ereignis]) -> tuple[list[Termin], set[str]]:
         except ValueError:
             continue
         uhr = (e.termin_uhrzeit or "").strip()
-        termine.append(Termin(e.lead_id, e.termin_uid or "", tag, uhr if _UHRZEIT.match(uhr) else None,
+        termine.append(Termin(e.lead_id, e.termin_uid or "", tag, uhr if _UHRZEIT.fullmatch(uhr) else None,
                               _dauer(e.termin_dauer), e.termin_thema, e.termin_ort))
     termine.sort(key=_sortierung)
     return termine, abgesagt
@@ -125,7 +125,7 @@ def _ort_zeile(ort: str | None) -> str | None:
     if ort is None:
         return None
     roh = ort.strip()
-    if _URL.match(roh) and not _AUSLOESER.search(roh):
+    if _URL.fullmatch(roh) and not _AUSLOESER.search(roh):
         return f"[Jitsi-Raum]({roh})"
     return _einzeilig(ort, MAX_THEMA)
 
@@ -190,7 +190,7 @@ def termine_soll(firma: str, termine: list[Termin], pfade: dict[str, str], namen
         ersatz = f"Kontakt {t.lead_id[:8]}"
         stamm = f"{t.datum.isoformat()}{_hhmm(t.uhrzeit)} {dateistamm(namen.get(t.lead_id), ersatz, MAX_NAME)}"
         # Schluessel beginnt mit der uid (Dateizusatz `(<uid[:8]>)`), die Lead-ID trennt gleiche uids je Kontakt.
-        eintraege.append((f"{t.uid}:{t.lead_id}", stamm, _FEST))
+        eintraege.append((f"{t.uid}-{t.lead_id}", stamm, _FEST))
     staemme = eindeutig(eintraege)
     eltern = f"{praefix}/{ORDNER}/{UEBERSICHT_STAMM}"
     notizen: list[Soll] = []
@@ -198,8 +198,9 @@ def termine_soll(firma: str, termine: list[Termin], pfade: dict[str, str], namen
     belegt: set[str] = set()
     for t in platziert:
         try:
-            voll = relpfad(f"{praefix}/{ORDNER}", staemme[f"{t.uid}:{t.lead_id}"])
+            voll = relpfad(f"{praefix}/{ORDNER}", staemme[f"{t.uid}-{t.lead_id}"])
         except ValueError:
+            log.warning("%s: Termin-Notiz hat keinen gueltigen Pfad, uebersprungen", firma)
             continue
         if voll.casefold() in belegt:
             continue

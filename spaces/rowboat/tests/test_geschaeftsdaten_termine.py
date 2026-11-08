@@ -156,3 +156,22 @@ def test_gleiche_uid_bei_zwei_kontakten_zwei_notizen():
     soll = termine_soll("Vibemind", ts, pfade, {"l1": "Anna", "l2": "Bernd"}, heute=HEUTE, archiv_vorhanden=False)
     assert sorted(s.schluessel for s in soll if s.schluessel.startswith("termin:")) == [
         "termin:l1:gleich123", "termin:l2:gleich123"]
+
+
+def test_abschliessender_zeilenumbruch_in_ids_wird_verworfen():
+    ev = [ereignis(lead_id="l1", typ="termin", termin_uid="u1\n", termin_datum="2026-11-12"),
+          ereignis(lead_id="l1\n", typ="termin", termin_uid="u2", termin_datum="2026-11-12"),
+          ereignis(lead_id="l1", typ="termin", termin_uid="ok", termin_datum="2026-11-12")]
+    aktiv, _ = termine_aus(ev)
+    assert [t.uid for t in aktiv] == ["ok"]
+
+
+def test_kurze_uid_gleicher_stamm_beide_notizen_ohne_doppelpunkt():
+    pfade = {"l1": PFADE["l1"], "l2": "companys/Vibemind/Kontakte/Kunden/Anna2.md"}
+    ts = [Termin("l1", "u1", date(2026, 11, 12), "14:30", None, None, None),
+          Termin("l2", "u1", date(2026, 11, 12), "14:30", None, None, None)]
+    soll = termine_soll("Vibemind", ts, pfade, {"l1": "Anna Muster", "l2": "Anna Muster"}, heute=HEUTE,
+                        archiv_vorhanden=False)
+    notizen = [s for s in soll if s.schluessel.startswith("termin:")]
+    assert len(notizen) == 2 and len({s.rel for s in notizen}) == 2
+    assert all(":" not in s.rel for s in notizen)
