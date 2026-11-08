@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "geschaeftsdaten"))
 
-from quelle import DbFehler, Ereignis, Kontakt, Medium, NewsletterInhalt, Versand  # noqa: E402
+from quelle import DbFehler, Ereignis, Kontakt, Medium, NewsletterInhalt, PostMail, Versand  # noqa: E402
 
 ID = "aaaaaaaa-0000-4000-8000-000000000001"
 
@@ -32,6 +32,15 @@ def ereignis(**ueberschreiben) -> Ereignis:
     return Ereignis(**werte)
 
 
+def post_mail(**ueberschreiben) -> PostMail:
+    werte = dict(
+        id="m1", datum="2026-11-09T08:00:00+00:00", fach=None, bereich=None, sensibel=False, postfach="gmx",
+        absender_klein="absender@example.de", von_anzeige="Absender", betreff="Anfrage",
+        absender_gesperrt=False)
+    werte.update(ueberschreiben)
+    return PostMail(**werte)
+
+
 def inhalt(**ueberschreiben) -> NewsletterInhalt:
     werte = dict(
         id="bbbbbbbb-0000-4000-8000-000000000001", mandant="vibemind", titel="Oktober-Newsletter",
@@ -51,6 +60,7 @@ class FakeQuelle:
                  versand: dict[str, list[Versand]] | None = None,
                  inhalte: list[NewsletterInhalt] | None = None,
                  medien: list[Medium] | None = None,
+                 post: list[PostMail] = (),
                  ohne_sichten: tuple[str, ...] = (), fehler: bool = False) -> None:
         self.marken_ = dict(marken or {"vibemind": "VibeMind"})
         self.kontakte_ = {s: list(v) for s, v in (kontakte or {}).items()}
@@ -58,6 +68,7 @@ class FakeQuelle:
         self.versand_ = {s: list(v) for s, v in (versand or {}).items()}
         self.inhalte_ = list(inhalte or [])
         self.medien_ = list(medien or [])
+        self.post_ = list(post)
         self.ohne_sichten = set(ohne_sichten)
         self.fehler = fehler
         self.aufrufe: list[str] = []
@@ -96,3 +107,8 @@ class FakeQuelle:
         self._ruf("medien")
         return [m for m in self.medien_ if von <= m.fertig_am < bis]
 
+
+    def post_offen(self, stichtag: date) -> list[PostMail]:
+        self._ruf("post_offen")
+        return sorted((m for m in self.post_ if m.datum[:10] >= stichtag.isoformat()),
+                      key=lambda m: (m.datum, m.id))
