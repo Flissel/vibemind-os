@@ -8,6 +8,8 @@ import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "geschaeftsdaten"))
 
@@ -23,6 +25,12 @@ A, B, C, SAMMEL, GESPERRT = (f"aaaaaaaa-0000-4000-8000-{n:012d}" for n in range(
 NL_V, NL_F = "bbbbbbbb-0000-4000-8000-000000000001", "bbbbbbbb-0000-4000-8000-000000000002"
 LAEDEN = [Laden("sales", "vibemind", frozenset({SAMMEL})), Laden("sales_ivan", "fin2gether", frozenset())]
 OPTIONEN: dict = {}
+
+
+@pytest.fixture(autouse=True)
+def _sperre_im_tmp(tmp_path, monkeypatch):
+    # lauf.main nimmt die gemeinsame Sperre: nie die Standard-Datei unter /home/debian anfassen.
+    monkeypatch.setenv("GESCHAEFTSDATEN_SPERRE", str(tmp_path / "sperre" / "lauf.lock"))
 
 
 def _quelle(**kw) -> FakeQuelle:

@@ -47,3 +47,47 @@ sudo -u debian -H sh -c 'cd /home/debian && /usr/bin/python3 /home/debian/market
   `stand.json` für die Firma `zurueckgestellt: 0` zeigt.
 - Vorher klären, warum so viele Kontakte fehlen (Laden ohne Sichten? leere Quelle?). Der Wächter
   stoppt genau solche Fehler.
+
+## Stündlich: Post und Termine
+
+`stuendlich.py` läuft jede Stunde zur Minute 5 (`rowboat-post-termine.timer`) und hält zwei Dinge frisch,
+damit sie nicht bis zur Nacht warten müssen:
+
+- die Termin-Notizen unter `companys/<Firma>/Termine/` samt `_overview` (wie der Nachtlauf, aus denselben
+  Ereignissen und Steckbrief-Pfaden),
+- die Post-Notizen `Post/_overview.md` und `Post/Zu beantworten.md` (offene Mails der sales-ui; ohne
+  Stichtag `POST_AUFRAEUMEN_AB` in `~/sales-claw/.env` gilt nichts als offen und es wird keine Post gelesen).
+
+**Was der Lauf nicht tut:** Er löscht, archiviert und verschiebt nie. Eine abgesagte oder verschwundene
+Termin-Notiz, die Notiz eines gesperrten Kontakts und die alte Datei eines Termins mit neuem Pfad bleiben
+bis zur nächsten Nacht liegen; das erledigt allein der Nachtlauf (mit Obergrenze und Massen-Wächter). Er
+schreibt nur bei inhaltlicher Änderung, legt keine `stand.json` an (die gehört dem Nachtlauf) und
+protokolliert nur Zählungen. Steckbrief-Links in der Post-Notiz gibt es nur für Absender, die im Laden
+`sales` ein Steckbrief-Kontakt sind.
+
+**Gemeinsame Sperre:** Beide Läufe nehmen `flock` auf `/home/debian/rowboat-geschaeftsdaten/lauf.lock`
+(überschreibbar mit `GESCHAEFTSDATEN_SPERRE`). Ist sie belegt, setzt die Stunde aus
+(„Geschaeftsdaten-Lauf aktiv, Stunde ausgesetzt“, Exit 0); der Nachtlauf wartet bis zu 10 Minuten, danach
+Exit 1 und `stand.json` mit `fehler: "Sperre"`. Die Sperre fällt mit dem Prozess weg.
+
+**Befehle:**
+
+```sh
+# Trocken: zeigt die Zählungen, schreibt nichts
+sudo -u debian -H sh -c 'cd /home/debian && /usr/bin/python3 /home/debian/marketing-os/spaces/rowboat/geschaeftsdaten/stuendlich.py --trocken'
+# Sofort eine Stunde laufen lassen
+sudo systemctl start rowboat-post-termine
+# Protokoll
+journalctl -u rowboat-post-termine -n 50 --no-pager
+systemctl list-timers rowboat-post-termine.timer
+```
+
+Exit-Codes: 0 ok oder ausgesetzt; 1 Teilerfolg oder Konfig-Fehler; 2 DB-Fehler vor jedem Schreiben.
+
+**Einrichten:** Die Einheiten aus `deploy/` nach `/etc/systemd/system/` kopieren, dann
+`sudo systemctl daemon-reload && sudo systemctl enable --now rowboat-post-termine.timer`. Der Timer hat
+`Persistent=false`: verpasste Stunden werden nicht nachgeholt.
+
+**Rückweg:** `sudo systemctl disable --now rowboat-post-termine.timer`. Die Notizen bleiben stehen; den
+Termin-Teil pflegt weiter der Nachtlauf. `Post/_overview.md` und `Post/Zu beantworten.md` kann man dann von
+Hand löschen (eigene Notizen erkennt man an `erzeugt_von: rowboat-geschaeftsdaten`).

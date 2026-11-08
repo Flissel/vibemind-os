@@ -45,6 +45,7 @@ from namen import dateistamm, eindeutig, relpfad  # noqa: E402
 from newsletter import newsletter_notiz  # noqa: E402
 from newsletter import stamm as nl_stamm  # noqa: E402
 from quelle import DbFehler, Ereignis, Kontakt, Medium, NewsletterInhalt, PsqlQuelle, Quelle, Versand  # noqa: E402
+from sperre import SPERRE_STANDARD, sperre  # noqa: E402
 from steckbrief import (ARCHIV, KATEGORIEN, OHNE, UEBERSICHT_GESAMT, UEBERSICHTEN,  # noqa: E402
                         bereich_uebersicht, bereiche_uebersicht, kategorie, people_index, steckbrief,
                         uebersicht_stamm, weitere_kategorien)
@@ -109,9 +110,8 @@ def _archiv_text(firma: Path):
     return archiv_inhalt
 
 
-def _lesen(quelle: Quelle, laeden: list[Laden], heute: date) -> tuple[dict, list[_Gelesen], list[str],
-                                                                       dict[str, NewsletterInhalt], list[Medium]]:
-    """Alle Lesungen. Wirft DbFehler, bevor irgendetwas geschrieben ist."""
+def _laden_lesen(quelle: Quelle, laeden: list[Laden], *, mit_versand: bool) -> tuple[list[_Gelesen], list[str]]:
+    """Kontakte, Ereignisse (und Versand) je Laden mit Sichten; Laeden ohne Sichten kommen in die zweite Liste."""
     uebersprungen: list[str] = []
     gelesen: list[_Gelesen] = []
     for laden in laeden:
@@ -120,7 +120,14 @@ def _lesen(quelle: Quelle, laeden: list[Laden], heute: date) -> tuple[dict, list
             uebersprungen.append(laden.schema)
             continue
         gelesen.append(_Gelesen(laden, quelle.kontakte(laden.schema), quelle.ereignisse(laden.schema),
-                                quelle.versand(laden.schema)))
+                                quelle.versand(laden.schema) if mit_versand else []))
+    return gelesen, uebersprungen
+
+
+def _lesen(quelle: Quelle, laeden: list[Laden], heute: date) -> tuple[dict, list[_Gelesen], list[str],
+                                                                       dict[str, NewsletterInhalt], list[Medium]]:
+    """Alle Lesungen. Wirft DbFehler, bevor irgendetwas geschrieben ist."""
+    gelesen, uebersprungen = _laden_lesen(quelle, laeden, mit_versand=True)
     marken = quelle.marken()
     ids = sorted({v.newsletter for g in gelesen for v in g.versand})
     inhalte = {i.id: i for i in quelle.newsletter_inhalte(ids)} if ids else {}
@@ -512,10 +519,26 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
+    stand = Path(os.environ.get("GESCHAEFTSDATEN_STAND", "/home/debian/rowboat-geschaeftsdaten/stand.json"))
+    sperrdatei = Path(os.environ.get("GESCHAEFTSDATEN_SPERRE", SPERRE_STANDARD))
+    # Der stuendliche Lauf (stuendlich.py) schreibt ebenfalls ins Wissen: nie gleichzeitig.
+    with sperre(sperrdatei, warten_s=600) as frei:
+        if not frei:
+            log.error("Sperre nach 10 Minuten nicht frei (stuendlicher Lauf haengt?), Lauf nicht gestartet")
+            ergebnis = Ergebnis(exit_code=1)
+            if not args.trocken:
+                try:
+                    _stand_schreiben(stand, ergebnis, args.trocken, "Sperre")
+                except OSError as e:
+                    log.error("stand.json nicht geschrieben (%s)", type(e).__name__)
+            return 1
+        return _main_unter_sperre(args, stand)
+
+
+def _main_unter_sperre(args: argparse.Namespace, stand: Path) -> int:
     wissen = Path(os.environ.get("GESCHAEFTSDATEN_WISSEN", "/home/debian/rowboat-data/knowledge"))
     sales_claw = Path(os.environ.get("GESCHAEFTSDATEN_SALES_CLAW", "/home/debian/sales-claw"))
     container = os.environ.get("GESCHAEFTSDATEN_DB_CONTAINER", "debian-supabase-db-1")
-    stand = Path(os.environ.get("GESCHAEFTSDATEN_STAND", "/home/debian/rowboat-geschaeftsdaten/stand.json"))
     heute = args.heute or datetime.now(timezone.utc).astimezone(ZoneInfo("Europe/Berlin")).date()
 
     if not wissen.is_dir():

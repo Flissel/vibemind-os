@@ -1,0 +1,10 @@
+[Unit]
+Description=Rowboat-Post-Termine stuendlich zur Minute 5
+
+[Timer]
+OnCalendar=*-*-* *:05:00
+Persistent=false
+Unit=rowboat-post-termine.service
+
+[Install]
+WantedBy=timers.target
