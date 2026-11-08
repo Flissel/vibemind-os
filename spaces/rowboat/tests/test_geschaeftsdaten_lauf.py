@@ -586,3 +586,141 @@ def test_archivierter_steckbrief_haengt_an_der_archiv_uebersicht(tmp_path):
     assert "Hauptbereich:** 1" in archiv
     erg = _lauf(q, wissen)
     assert erg.je_firma["fin2gether"]["geschrieben"] == 0
+
+
+# --- Termin-Notizen: anlegen, verschieben, archivieren, loeschen (nur der naechtliche Lauf) ----------------
+
+ANNA = "companys/VibeMind/Kontakte/bAV/Anna Alpha"
+
+
+def _termin(uid: str, datum: str, uhrzeit: str | None = "10:00", *, lead: str = A, typ: str = "termin",
+            stunde: int = 9, thema: str | None = "Erstgespraech"):
+    return ereignis(lead_id=lead, typ=typ, termin_uid=uid, termin_datum=datum, termin_uhrzeit=uhrzeit,
+                    termin_thema=thema, zeit=datetime(2026, 10, 20, stunde, 0, tzinfo=UTC))
+
+
+def _termine(wissen: Path, firma: str = "VibeMind") -> list[str]:
+    ordner = wissen / "companys" / firma / "Termine"
+    return sorted(p.relative_to(ordner).as_posix() for p in ordner.rglob("*.md")) if ordner.is_dir() else []
+
+
+def test_termin_notiz_entsteht_am_steckbrief(tmp_path):
+    wissen = _wissen(tmp_path)
+    q = _quelle()
+    q.ereignisse_["sales"].append(_termin("u1", "2026-10-28"))
+    erg = _lauf(q, wissen)
+    assert erg.exit_code == 0
+    notiz = next((wissen / "companys/VibeMind/Termine").glob("2026-10-28 1000 *.md"))
+    text = notiz.read_text(encoding="utf-8")
+    assert f'kontakt: "[[{ANNA}]]"' in text
+    assert 'parent: "[[companys/VibeMind/Termine/_overview]]"' in text
+    assert _termine(wissen) == ["2026-10-28 1000 Anna Alpha.md", "_overview.md"]
+    erg = _lauf(q, wissen)  # zweite Nacht ohne Aenderung: nichts geschrieben
+    assert erg.je_firma["VibeMind"]["geschrieben"] == 0
+
+
+def test_termin_abgesagt_wird_nachts_entfernt(tmp_path):
+    wissen = _wissen(tmp_path)
+    q = _quelle()
+    q.ereignisse_["sales"].append(_termin("u1", "2026-10-28"))
+    _lauf(q, wissen)
+    assert (wissen / "companys/VibeMind/Termine/2026-10-28 1000 Anna Alpha.md").is_file()
+    q.ereignisse_["sales"].append(_termin("u1", "2026-10-28", typ="termin_abgesagt", stunde=12))
+    erg = _lauf(q, wissen)
+    assert erg.exit_code == 0 and erg.je_firma["VibeMind"]["entfernt"] == 1
+    assert erg.je_firma["VibeMind"]["archiviert"] == 0
+    assert _termine(wissen) == ["_overview.md"]  # Uebersicht ohne Soll bleibt stehen
+    assert not (wissen / "companys/VibeMind/Termine/_archiv").exists()
+
+
+def test_termin_verschwunden_wird_archiviert(tmp_path):
+    wissen = _wissen(tmp_path)
+    q = _quelle()
+    q.ereignisse_["sales"].append(_termin("u1", "2026-10-28"))
+    _lauf(q, wissen)
+    q.ereignisse_["sales"] = q.ereignisse_["sales"][:-1]  # Aktivitaet geloescht, Kontakt bleibt
+    erg = _lauf(q, wissen)
+    assert erg.exit_code == 0 and erg.je_firma["VibeMind"]["archiviert"] == 1
+    assert erg.je_firma["VibeMind"]["entfernt"] == 0
+    assert _termine(wissen) == ["_archiv/2026-10-28 1000 Anna Alpha.md", "_overview.md"]
+    text = (wissen / "companys/VibeMind/Termine/_archiv/2026-10-28 1000 Anna Alpha.md").read_text(encoding="utf-8")
+    kopf, rest = text.split("\n---\n", 1)
+    assert 'parent: "[[companys/VibeMind/Termine/_overview]]"' in kopf  # parent bleibt
+    assert f'kontakt: "[[{ANNA}]]"' in kopf
+    assert lauf_mod.ARCHIV_VERMERK in rest
+    assert (wissen / "companys/VibeMind/Kontakte/bAV/Anna Alpha.md").is_file()  # Steckbrief unberuehrt
+    erg = _lauf(q, wissen)  # naechste Nacht: Archiv bleibt, Uebersicht bleibt (archiv_vorhanden)
+    assert erg.je_firma["VibeMind"]["archiviert"] == 0 and erg.je_firma["VibeMind"]["entfernt"] == 0
+    assert _termine(wissen) == ["_archiv/2026-10-28 1000 Anna Alpha.md", "_overview.md"]
+
+
+def test_termin_gesperrter_kontakt_wird_entfernt(tmp_path):
+    wissen = _wissen(tmp_path)
+    q = _quelle()
+    q.ereignisse_["sales"].append(_termin("u1", "2026-10-28"))
+    _lauf(q, wissen)
+    q.kontakte_["sales"][0] = kontakt(id=A, gesperrt=True, name=None, bereiche=())
+    q.ereignisse_["sales"] = []
+    erg = _lauf(q, wissen)
+    z = erg.je_firma["VibeMind"]
+    assert z["archiviert"] == 0  # Datenschutz: geloescht, nicht archiviert
+    assert z["entfernt"] == 4  # Steckbrief, Termin-Notiz und die zwei leer gewordenen Bereichs-Uebersichten
+    assert _termine(wissen) == ["_overview.md"]
+    assert not (wissen / "companys/VibeMind/Termine/_archiv").exists()
+
+
+def test_termin_gesperrter_kontakt_auch_aus_dem_termin_archiv(tmp_path):
+    wissen = _wissen(tmp_path)
+    q = _quelle()
+    q.ereignisse_["sales"].append(_termin("u1", "2026-10-28"))
+    _lauf(q, wissen)
+    q.ereignisse_["sales"] = []
+    _lauf(q, wissen)
+    assert _termine(wissen) == ["_archiv/2026-10-28 1000 Anna Alpha.md", "_overview.md"]
+    q.kontakte_["sales"][0] = kontakt(id=A, gesperrt=True, name=None, bereiche=())
+    _lauf(q, wissen)
+    assert _termine(wissen) == ["_overview.md"]
+
+
+def test_termin_massenschutz_greift_getrennt(tmp_path):
+    wissen = _wissen(tmp_path)
+    q = _quelle()
+    # 50 weitere Steckbriefe: zusammengezaehlt waeren 10 von 61 unter 20 %, getrennt sind es 10 von 10 Terminen.
+    q.kontakte_["sales"] += [kontakt(id=_id(i), name=f"Person {i:02d}", bereiche=("bav",)) for i in range(50)]
+    q.ereignisse_["sales"] += [_termin(f"u{i}", f"2026-10-{10 + i:02d}") for i in range(10)]
+    _lauf(q, wissen, ablage_optionen={"paket": 50})
+    vorher = _termine(wissen)
+    assert len(vorher) == 11  # 10 Notizen + Uebersicht
+    q.ereignisse_["sales"] = q.ereignisse_["sales"][:1]  # alle Termine verschwinden, die Kontakte bleiben
+    erg = _lauf(q, wissen, ablage_optionen={"paket": 50})
+    assert erg.exit_code == 1 and "Massenarchivierung VibeMind" in erg.uebersprungen
+    assert erg.je_firma["VibeMind"]["archiviert"] == 0
+    assert _termine(wissen) == vorher
+    erg = _lauf(q, wissen, ablage_optionen={"paket": 50}, massen_ok=frozenset({"VibeMind"}))
+    assert erg.je_firma["VibeMind"]["archiviert"] == 10
+
+
+def test_termin_absagen_zaehlen_nicht_als_massenarchivierung(tmp_path):
+    wissen = _wissen(tmp_path)
+    q = _quelle()
+    q.ereignisse_["sales"] += [_termin(f"u{i}", f"2026-10-{10 + i:02d}") for i in range(10)]
+    _lauf(q, wissen)
+    q.ereignisse_["sales"] += [_termin(f"u{i}", f"2026-10-{10 + i:02d}", typ="termin_abgesagt", stunde=12)
+                               for i in range(10)]
+    erg = _lauf(q, wissen)
+    assert erg.exit_code == 0 and "Massenarchivierung VibeMind" not in erg.uebersprungen
+    assert erg.je_firma["VibeMind"]["entfernt"] == 10
+    assert _termine(wissen) == ["_overview.md"]
+
+
+def test_termin_verschieben_bei_neuem_pfad(tmp_path):
+    wissen = _wissen(tmp_path)
+    q = _quelle()
+    q.ereignisse_["sales"].append(_termin("u1", "2026-10-28", "10:00"))
+    _lauf(q, wissen)
+    q.ereignisse_["sales"].append(_termin("u1", "2026-10-28", "14:30", stunde=12))  # spaeterer Eintrag gewinnt
+    erg = _lauf(q, wissen)
+    assert erg.je_firma["VibeMind"]["verschoben"] == 1 and erg.je_firma["VibeMind"]["archiviert"] == 0
+    assert _termine(wissen) == ["2026-10-28 1430 Anna Alpha.md", "_overview.md"]
+    text = (wissen / "companys/VibeMind/Termine/2026-10-28 1430 Anna Alpha.md").read_text(encoding="utf-8")
+    assert "**Uhrzeit:** 14:30" in text
