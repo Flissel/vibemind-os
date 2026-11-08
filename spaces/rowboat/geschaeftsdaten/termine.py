@@ -7,6 +7,7 @@ Eintrag). `termine_soll` baut daraus je Termin eine Notiz unter `Termine/` und e
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -29,6 +30,8 @@ _ZAHL = re.compile(r"^[0-9]+$")
 _LEERRAUM = re.compile(r"\s+")
 _STEUER = re.compile(r"[\x00-\x1f\x7f]")
 _URL = re.compile(r"^https://[^\s<>()\[\]\x00-\x1f\x7f]+$")
+_ID = re.compile(r"^[A-Za-z0-9_.@-]{1,200}$")
+log = logging.getLogger("geschaeftsdaten")
 _FEST = datetime(2000, 1, 1, tzinfo=timezone.utc)  # gleiches created_at: Gleichstand entscheidet die uid
 
 
@@ -59,11 +62,22 @@ def _dauer(wert: str | None) -> int | None:
     return n if n > 0 else None
 
 
+def _id_ok(wert: str) -> bool:
+    """Lead-ID bzw. uid landen im Front matter und im Dateinamen: nur unverdaechtige Zeichen, nie `@rowboat`."""
+    return bool(_ID.match(wert)) and "@rowboat" not in wert.casefold()
+
+
 def termine_aus(ereignisse: list[Ereignis]) -> tuple[list[Termin], set[str]]:
     """(aktive Termine nach Datum und Uhrzeit, abgesagte uids). Je uid gewinnt der spaetere Eintrag; ohne
     gueltiges `termin_datum` wird ein Termin uebersprungen. Eintraege ohne uid bleiben erhalten (uid `""`),
     bekommen aber keine Notiz, weil sie keinen Schluessel haetten."""
     geordnet = sorted(ereignisse, key=lambda e: e.zeit)
+    verworfen = sum(1 for e in geordnet if e.typ in ("termin", "termin_abgesagt")
+                    and not (_id_ok(e.lead_id) and (not e.termin_uid or _id_ok(e.termin_uid))))
+    if verworfen:
+        log.warning("%d Termin-Ereignisse mit ungueltiger Lead-ID oder uid verworfen", verworfen)
+    geordnet = [e for e in geordnet if e.typ not in ("termin", "termin_abgesagt")
+                or (_id_ok(e.lead_id) and (not e.termin_uid or _id_ok(e.termin_uid)))]
     abgesagt = {e.termin_uid for e in geordnet if e.typ == "termin_abgesagt" and e.termin_uid}
     je_uid: dict[str, Ereignis] = {}
     ohne_uid: list[Ereignis] = []
@@ -94,7 +108,8 @@ def _einzeilig(wert: str | None, max_len: int | None = None) -> str | None:
     if wert is None:
         return None
     text = _LEERRAUM.sub(" ", _STEUER.sub(" ", wert)).strip()
-    text = text.replace("[[", "[").replace("]]", "]")
+    text = re.sub(r"\[+", "[", text)  # jede Folge von Klammern wird eine: nie `[[` oder `]]`
+    text = re.sub(r"\]+", "]", text)
     text = _AUSLOESER.sub(r"@ \1", text)
     if max_len is not None:
         text = text[:max_len].rstrip()
@@ -174,7 +189,8 @@ def termine_soll(firma: str, termine: list[Termin], pfade: dict[str, str], namen
     for t in platziert:
         ersatz = f"Kontakt {t.lead_id[:8]}"
         stamm = f"{t.datum.isoformat()}{_hhmm(t.uhrzeit)} {dateistamm(namen.get(t.lead_id), ersatz, MAX_NAME)}"
-        eintraege.append((t.uid, stamm, _FEST))
+        # Schluessel beginnt mit der uid (Dateizusatz `(<uid[:8]>)`), die Lead-ID trennt gleiche uids je Kontakt.
+        eintraege.append((f"{t.uid}:{t.lead_id}", stamm, _FEST))
     staemme = eindeutig(eintraege)
     eltern = f"{praefix}/{ORDNER}/{UEBERSICHT_STAMM}"
     notizen: list[Soll] = []
@@ -182,7 +198,7 @@ def termine_soll(firma: str, termine: list[Termin], pfade: dict[str, str], namen
     belegt: set[str] = set()
     for t in platziert:
         try:
-            voll = relpfad(f"{praefix}/{ORDNER}", staemme[t.uid])
+            voll = relpfad(f"{praefix}/{ORDNER}", staemme[f"{t.uid}:{t.lead_id}"])
         except ValueError:
             continue
         if voll.casefold() in belegt:

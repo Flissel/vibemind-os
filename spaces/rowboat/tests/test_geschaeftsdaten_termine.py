@@ -120,3 +120,39 @@ def test_thema_gekuerzt_und_ort_mit_leerzeichen_kein_link():
 def test_gesperrte_termin_schluessel():
     ist = ["termin:l1:u1", "termin:l2:u2", "termin:l3:u3", "l1", "termine:uebersicht"]
     assert gesperrte_termin_schluessel(ist, {"l2"}, {"u3"}) == {"termin:l2:u2", "termin:l3:u3"}
+
+
+def test_feindliche_uid_und_lead_id_werden_verworfen():
+    ev = [ereignis(lead_id="l1", typ="termin", termin_uid="u1\nlive: x\n---\n@rowboat", termin_datum="2026-11-12"),
+          ereignis(lead_id="l1", typ="termin", termin_uid="x@RoWbOat", termin_datum="2026-11-12"),
+          ereignis(lead_id="l1\nlive: x", typ="termin", termin_uid="u2", termin_datum="2026-11-12"),
+          ereignis(lead_id="l1", typ="termin", termin_uid="ok", termin_datum="2026-11-12")]
+    aktiv, abgesagt = termine_aus(ev)
+    assert [t.uid for t in aktiv] == ["ok"]
+    texte = "".join(s.inhalt for s in _soll(aktiv))
+    assert "live:" not in texte and "@rowboat" not in texte.lower()
+
+
+def test_echte_uid_wird_akzeptiert():
+    uid = "fa132f4c-777e-40ab-a302-dbd145b967d3@sales-claw"
+    lead = "0b8f2c1e-1234-4abc-9def-0123456789ab"
+    aktiv, _ = termine_aus([ereignis(lead_id=lead, typ="termin", termin_uid=uid, termin_datum="2026-11-12")])
+    assert [(t.lead_id, t.uid) for t in aktiv] == [(lead, uid)]
+
+
+def test_klammern_nicht_umgehbar():
+    for roh in ("[[[x]]]", "[[[[x]]]]"):
+        t = Termin("l1", "u1", date(2026, 11, 12), None, None, roh, roh)
+        inhalt = termine_soll("Vibemind", [t], PFADE, {"l1": roh}, heute=HEUTE, archiv_vorhanden=False)[0].inhalt
+        kopf = inhalt.split("# Termin mit", 1)[1]
+        assert "[[" not in kopf.split("- **Kontakt:**")[0] and "]]" not in kopf.split("- **Kontakt:**")[0]
+        assert "[[" not in inhalt.split("# Termin mit", 1)[1].split("\n")[0]
+
+
+def test_gleiche_uid_bei_zwei_kontakten_zwei_notizen():
+    pfade = {"l1": PFADE["l1"], "l2": "companys/Vibemind/Kontakte/Kunden/Bernd.md"}
+    ts = [Termin("l1", "gleich123", date(2026, 11, 12), None, None, None, None),
+          Termin("l2", "gleich123", date(2026, 11, 12), None, None, None, None)]
+    soll = termine_soll("Vibemind", ts, pfade, {"l1": "Anna", "l2": "Bernd"}, heute=HEUTE, archiv_vorhanden=False)
+    assert sorted(s.schluessel for s in soll if s.schluessel.startswith("termin:")) == [
+        "termin:l1:gleich123", "termin:l2:gleich123"]
