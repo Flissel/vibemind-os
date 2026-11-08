@@ -12,7 +12,9 @@
 -- Die Rolle hat kein Passwort und ist nur ueber die trust-Regel fuer 127.0.0.1 IM Container
 -- erreichbar. Sie liest ausschliesslich die drei Sichten je Laden und einzelne Spalten von fuenf
 -- Marketing-Tabellen. Keine Rechte auf Laden-Tabellen selbst, keine Nachrichtentexte, keine
--- Freitext-Felder, keine Termin-Details ausser Datum und Uhrzeit.
+-- Freitext-Felder. Termin-Details: Datum, Uhrzeit, Dauer, Thema und Ort (Betreiber-Entscheid 2
+-- aufgehoben fuer Thema und Ort, Felix, 08.11.2026; sonst gilt die Regel weiter).
+-- Dazu eine Sicht fuer offene Post (nur Sales-Laden, ohne Nachrichtentext).
 --
 -- Sperr-Regel (fail-closed in SCHUTZrichtung, strenger als server._privat): gesperrt ist jeder
 -- Kontakt mit dem Schluessel _privat, solange der Vermerk nicht ausdruecklich ein Objekt mit
@@ -106,7 +108,11 @@ begin
                        and e.id is not null and (e.empfohlen_von_lead is null or ek.gesperrt = false)
                   then a.payload->>'empfohlen_von_name' end as empfohlen_von_name,
              case when a.type = 'empfehlung' and e.id is not null and ek.gesperrt = false
-                  then e.empfohlen_von_lead end as empfohlen_von_lead
+                  then e.empfohlen_von_lead end as empfohlen_von_lead,
+             -- neue Spalten nur hinten anfuegen (create or replace view)
+             case when a.type = 'termin' then a.payload->>'dauer_minuten' end as termin_dauer,
+             case when a.type = 'termin' then a.payload->>'thema' end as termin_thema,
+             case when a.type = 'termin' then a.payload->>'ort' end as termin_ort
         from %1$I.activities a
         join %1$I.rowboat_kontakte k on k.id = a.lead_id and not k.gesperrt
         left join %1$I.empfehlungslisten e
@@ -130,6 +136,42 @@ begin
     execute format('grant select on %1$I.rowboat_kontakte, %1$I.rowboat_ereignisse, %1$I.rowboat_newsletter '
                    'to rowboat_leser', s);
   end loop;
+end $$;
+
+-- Offene Post (nur Schema sales): spiegelt die Regel "offen" der sales-ui-Inbox (ohne Stichtag,
+-- den setzt die Abfrage). Kein Nachrichtentext, kein Auszug, keine Anhaenge, kein Empfaenger.
+-- Das Sperr-Praedikat ist eine getreue Kopie von p.gesperrt in rowboat_kontakte (siehe Sperr-Regel
+-- oben): unklar zaehlt als gesperrt. Betreff nur bei nicht gesperrtem Absender und nicht sensibler Mail.
+do $$
+begin
+  if to_regclass('sales.post_mails') is not null and to_regclass('sales.post_konten') is not null then
+    create or replace view sales.rowboat_post_offen with (security_barrier) as
+    select m.id,
+           m.datum,
+           m.fach,
+           m.bereich,
+           m.sensibel is not false as sensibel,
+           coalesce(k.kennung, k.anbieter) as postfach,
+           case when g.gesperrt then null else
+             lower(coalesce(substring(m.von from '<([^>]+)>'), trim(m.von))) end as absender_klein,
+           case when g.gesperrt then null else
+             nullif(btrim(substring(m.von from '^([^<]*)<'), ' "'), '') end as von_anzeige,
+           case when g.gesperrt or m.sensibel is not false then null else m.betreff end as betreff,
+           g.gesperrt as absender_gesperrt
+      from sales.post_mails m
+      join sales.post_konten k on k.id = m.konto_id
+      cross join lateral (select exists (
+        select 1 from sales.leads l
+         where lower(btrim(l.email)) = lower(coalesce(substring(m.von from '<([^>]+)>'), trim(m.von)))
+           and coalesce(
+                 ((l.enrichment ? '_privat') and not (jsonb_typeof(l.enrichment->'_privat') = 'object'
+                      and coalesce(l.enrichment->'_privat'->>'privat', '') = 'false'))
+                 or (l.enrichment ? '_loeschantrag'),
+                 true)) as gesperrt) g
+     where m.ziel = 'posteingang' and m.status = 'eingeordnet' and m.erledigt_am is null
+       and m.abgeglichen_am is not null and m.geloescht_am is null and m.besitzer = 'felix';
+    grant select on sales.rowboat_post_offen to rowboat_leser;
+  end if;
 end $$;
 
 -- Marketing: nur einzelne Spalten, keine ganzen Tabellen.

@@ -68,7 +68,7 @@ begin
       raise exception '%.%: rowboat_leser hat ein Schreib- oder Sonderrecht', r.nspname, r.relname;
     end if;
     if r.nspname <> 'marketing' and r.nspname <> 'sales_test'
-       and r.relname in ('rowboat_kontakte', 'rowboat_ereignisse', 'rowboat_newsletter') then
+       and r.relname in ('rowboat_kontakte', 'rowboat_ereignisse', 'rowboat_newsletter', 'rowboat_post_offen') then
       continue;
     end if;
     erlaubt := case
@@ -146,6 +146,22 @@ begin
   end loop;
   if laeden = 0 then
     raise exception 'kein Laden-Schema gefunden';
+  end if;
+
+  -- Offene Post (nur Schema sales): Sicht lesbar, Rohtabelle nicht, keine Inhaltsspalten in der Sicht.
+  if to_regclass('sales.rowboat_post_offen') is not null then
+    perform count(*) from (select id, datum, fach, bereich, sensibel, postfach, absender_klein,
+                                  von_anzeige, betreff, absender_gesperrt from sales.rowboat_post_offen) x;
+    if exists (select 1 from information_schema.columns
+                where table_schema = 'sales' and table_name = 'rowboat_post_offen'
+                  and column_name in ('text', 'auszug', 'anhaenge', 'an')) then
+      raise exception 'sales.rowboat_post_offen hat eine Inhaltsspalte (text, auszug, anhaenge oder an)';
+    end if;
+    begin
+      perform 1 from sales.post_mails limit 1;
+      raise exception 'sales.post_mails ist fuer rowboat_leser lesbar';
+    exception when insufficient_privilege then null;
+    end;
   end if;
 
   -- Schreiben scheitert an der read-only Transaktion.

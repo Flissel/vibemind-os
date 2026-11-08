@@ -4,7 +4,8 @@ Inhalt nach Plan Teil B ("Inhalt des Steckbriefs", Betreiber-Entscheid 2): Name,
 Bereiche, Pipeline-Stufe, Herkunft, letzter Kontakt (nur Datum und Richtung), offene Termine (nur Datum
 und Uhrzeit, hoechstens 5), Newsletter-Einwilligung (ja/nein), Empfohlen von, Archiv-Hinweis,
 "Siehe auch" auf eine People-Notiz. NIE E-Mail, Telefon, Kontaktprofil, Vertraege/Bedarf,
-Nachrichtentexte, Termin-Thema oder -Ort. Die E-Mail dient nur dem People-Abgleich und wird aus jedem
+Nachrichtentexte. Termin-Thema und -Ort sind seit 08.11.2026 erlaubt (Felix hebt Betreiber-Entscheid 2
+dafuer auf), sonst gilt die Regel weiter. Die E-Mail dient nur dem People-Abgleich und wird aus jedem
 geschriebenen Feld entfernt, falls sie dort vorkommt.
 """
 from __future__ import annotations
