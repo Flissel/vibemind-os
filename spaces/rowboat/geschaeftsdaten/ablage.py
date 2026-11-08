@@ -24,6 +24,7 @@ from namen import relpfad
 
 ERZEUGT_VON = "rowboat-geschaeftsdaten"
 ARCHIV_ORDNER = "Kontakte/_archiv"
+UEBERSICHT_PRAEFIX = "uebersicht:"  # Schluessel der Bereichs-Uebersichten unter `Bereiche/`
 KOPF_MAX = 4096
 TMP_ENDUNG = ".gd.tmp"
 _ZAEHLER = ("geschrieben", "verschoben", "archiviert", "entfernt", "unveraendert", "abweichung",
@@ -127,11 +128,12 @@ def _dateien(ordner: Path, rekursiv: bool) -> list[Path]:
 
 
 def bestand(firma: Path) -> list[Ist]:
-    """Eigene Dateien unter `Kontakte/**`, `Newsletter/*`, `Wochenbild/*`; `rel` relativ zu `firma`."""
+    """Eigene Dateien unter `Kontakte/**`, `Newsletter/*`, `Wochenbild/*`, `Bereiche/*`; `rel` relativ zu
+    `firma`."""
     if firma.is_symlink() or not firma.is_dir():
         return []
     ist: list[Ist] = []
-    for teil, rekursiv in (("Kontakte", True), ("Newsletter", False), ("Wochenbild", False)):
+    for teil, rekursiv in (("Kontakte", True), ("Newsletter", False), ("Wochenbild", False), ("Bereiche", False)):
         for pfad in _dateien(firma / teil, rekursiv):
             daten = _lesen(pfad)
             schluessel = _eigen(daten) if daten is not None else None
@@ -153,7 +155,8 @@ def _im_archiv(rel: str) -> bool:
 def planen(soll: list[Soll], ist: list[Ist], gesperrt: set[str], archiv_inhalt: Callable[[Ist], str]) -> Plan:
     """Vergleicht Soll und Ist je Schluessel. Gesperrte Schluessel: alle eigenen Kopien entfernen.
     Kontakt ohne Soll -> `Kontakte/_archiv/<stamm>.md` (eindeutig, sonst ` (<id8>)`); liegt er schon im
-    Archiv, bleibt er. Newsletter/Wochenbild ohne Soll bleiben. Eigene Doppel werden entfernt."""
+    Archiv, bleibt er. Newsletter/Wochenbild ohne Soll bleiben, Bereichs-Uebersichten ohne Soll werden
+    entfernt. Eigene Doppel werden entfernt."""
     belegt: set[str] = set()
     for s in soll:
         if s.rel.casefold() in belegt:
@@ -189,8 +192,8 @@ def planen(soll: list[Soll], ist: list[Ist], gesperrt: set[str], archiv_inhalt: 
     for schluessel, kandidaten in je_schluessel.items():
         if schluessel in soll_schluessel:
             continue
-        if schluessel in gesperrt:
-            plan.entfernen += kandidaten
+        if schluessel in gesperrt or schluessel.startswith(UEBERSICHT_PRAEFIX):
+            plan.entfernen += kandidaten  # leerer Bereich: seine Uebersicht verschwindet
             continue
         if not _ist_kontakt(kandidaten[0].rel):
             plan.unveraendert += len(kandidaten)  # Newsletter/Wochenbild bleiben stehen
