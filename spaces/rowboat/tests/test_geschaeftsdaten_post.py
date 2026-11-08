@@ -180,3 +180,56 @@ def test_symlink_ziel_ist_fremd(tmp_path):
         pytest.skip("Symlinks nicht moeglich")
     z = post_schreiben(tmp_path, post_notizen([], {}, jetzt=JETZT, stichtag=ST, company_da=False), trocken=False)
     assert z["fremd"] == 1 and echt.read_text(encoding="utf-8") == "x\n"
+
+
+_BOESE = "[Klick](https://evil.example) ![x](https://tracker.example/p.png) <https://x> `c` [[x]]\n@rowboat"
+
+
+def _sauber(text: str) -> bool:
+    return not any(z in text for z in "[]<>`") and "](" not in text and "@rowboat" not in text
+
+
+def _punkt_zeile(**kw) -> str:
+    return [z for z in _zu([post_mail(**kw)]).splitlines() if z.startswith("- ")][0]
+
+
+def test_markdown_in_betreff_absender_postfach_neutralisiert():
+    for feld in ("betreff", "von_anzeige", "postfach"):
+        zeile = _punkt_zeile(**{feld: _BOESE})
+        vorn = zeile.rsplit(" · [in sales-ui]", 1)[0]
+        assert _sauber(vorn), (feld, vorn)
+
+
+def test_adresse_wenn_kein_anzeigename():
+    assert "x@y.de" in _punkt_zeile(von_anzeige=None, absender_klein="x@y.de")
+
+
+def test_steckbrief_pfad_mit_sonderzeichen_gibt_keinen_link():
+    for pfad in ("a/b]c.md", "a/b|c.md", "a/b#c.md"):
+        text = _zu([post_mail(absender_klein="a@b.de")], steckbriefe={"a@b.de": pfad})
+        assert "[[a/" not in text
+
+
+def test_reihenfolge_aelteste_zuerst_gleichstand_nach_id_unparsebar_zuletzt():
+    mails = [post_mail(id="z", datum="2026-11-10T08:00:00+00:00", betreff="neu"),
+             post_mail(id="b", datum="2026-11-09T08:00:00+00:00", betreff="mitte-b"),
+             post_mail(id="x", datum="Quatsch", betreff="kaputt"),
+             post_mail(id="a", datum="2026-11-09T08:00:00+00:00", betreff="mitte-a"),
+             post_mail(id="y", datum="2026-11-08T08:00:00+00:00", betreff="alt")]
+    for reihe in (mails, mails[::-1]):
+        text = _zu(reihe)
+        pos = [text.index(w) for w in ("alt", "mitte-a", "mitte-b", "neu", "kaputt")]
+        assert pos == sorted(pos)
+
+
+def test_abschnitt_schneidet_die_neuesten_ab():
+    mails = [post_mail(id=f"m{i:02}", datum=f"2026-11-{9 + i // 10:02}T{i % 10:02}:00:00+00:00", betreff=f"B{i:02}")
+             for i in range(52)]
+    text = _zu(mails[::-1])
+    assert "B00" in text and "B49" in text and "B50" not in text and "B51" not in text
+
+
+def test_stichtag_nur_iso_ascii(tmp_path):
+    for wert in ("2026-W45-1", "20261108", "٢٠٢٦-١١-٠٨"):
+        (tmp_path / ".env").write_text(f"POST_AUFRAEUMEN_AB={wert}\n", encoding="utf-8")
+        assert stichtag_lesen(tmp_path / ".env") is None

@@ -104,12 +104,12 @@ def termine_aus(ereignisse: list[Ereignis]) -> tuple[list[Termin], set[str]]:
 
 
 def _einzeilig(wert: str | None, max_len: int | None = None) -> str | None:
-    """Fremdtext einzeilig: Steuerzeichen weg, `[[`/`]]` -> `[`/`]`, `@rowboat` entschaerft."""
+    """Fremdtext einzeilig und ohne Markdown-Struktur: Steuerzeichen weg, `[`/`]` -> `(`/`)`, `<`/`>` weg,
+    Backtick -> `'`, `@rowboat` entschaerft. So entstehen weder Wiki-Links noch Links, Bilder oder Autolinks."""
     if wert is None:
         return None
     text = _LEERRAUM.sub(" ", _STEUER.sub(" ", wert)).strip()
-    text = re.sub(r"\[+", "[", text)  # jede Folge von Klammern wird eine: nie `[[` oder `]]`
-    text = re.sub(r"\]+", "]", text)
+    text = text.replace("[", "(").replace("]", ")").replace("<", "").replace(">", "").replace("`", "'")
     text = _AUSLOESER.sub(r"@ \1", text)
     if max_len is not None:
         text = text[:max_len].rstrip()

@@ -29,6 +29,7 @@ SCHLUESSEL_ZU_BEANTWORTEN = "post:zu-beantworten"
 MAX_BETREFF = 120
 MAX_ABSENDER = 100
 BERLIN = ZoneInfo("Europe/Berlin")
+_STICHTAG = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _MAIL_ID = re.compile(r"[A-Za-z0-9-]{1,64}")
 _LINK_ZIEL = re.compile(r"[^\[\]|#^\x00-\x1f\x7f]+")
 _HINWEIS = ("> Automatisch erzeugt aus sales-ui. Nicht hier bearbeiten – der nächtliche Lauf überschreibt; "
@@ -40,7 +41,7 @@ def stichtag_lesen(env_datei: Path) -> date | None:
     """`POST_AUFRAEUMEN_AB` (JJJJ-MM-TT) aus der Env-Datei; fehlt Datei, Schluessel oder ist das Datum kaputt: None."""
     try:
         wert = env_werte(env_datei, frozenset({STICHTAG_SCHLUESSEL})).get(STICHTAG_SCHLUESSEL, "")
-        return date.fromisoformat(wert) if len(wert) == 10 else None
+        return date.fromisoformat(wert) if _STICHTAG.fullmatch(wert) else None
     except (OSError, ValueError):
         return None
 
@@ -72,6 +73,7 @@ def _kopf(schluessel: str, eltern: str | None) -> list[str]:
 
 
 def _mail_link(m: PostMail) -> str:
+    # Der Link steht auch bei vertraulichen und gesperrten Mails: er traegt nur die validierte Mail-ID.
     ziel = f"/post/mail/{m.id}" if _MAIL_ID.fullmatch(m.id) else "/posteingang"
     return f"[in sales-ui]({SALES_UI}{ziel})"
 
@@ -109,9 +111,9 @@ def _punkt(m: PostMail, steckbriefe: dict[str, str], jetzt: datetime) -> str:
     return "- " + " · ".join(teile)
 
 
-def _sortierung(m: PostMail) -> tuple[int, str, str]:
+def _sortierung(m: PostMail) -> tuple[int, datetime, str]:
     z = _zeit(m.datum)
-    return (0, z.astimezone(BERLIN).isoformat(), m.id) if z else (1, "", m.id)
+    return (0, z, m.id) if z else (1, datetime.min.replace(tzinfo=BERLIN), m.id)
 
 
 def post_notizen(mails: list[PostMail], steckbriefe: dict[str, str], *, jetzt: datetime,

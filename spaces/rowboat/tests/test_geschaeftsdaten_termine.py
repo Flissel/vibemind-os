@@ -175,3 +175,19 @@ def test_kurze_uid_gleicher_stamm_beide_notizen_ohne_doppelpunkt():
     notizen = [s for s in soll if s.schluessel.startswith("termin:")]
     assert len(notizen) == 2 and len({s.rel for s in notizen}) == 2
     assert all(":" not in s.rel for s in notizen)
+
+
+_BOESE = "[Klick](https://evil.example) ![x](https://tracker.example/p.png) <https://x> `code`"
+
+
+def _ohne_markdown(text: str) -> bool:
+    return not any(z in text for z in "[]<>`") and "](" not in text
+
+
+def test_markdown_link_und_bild_in_thema_name_ort_neutralisiert():
+    t = Termin("l1", "u1", date(2026, 11, 12), None, None, _BOESE, _BOESE)
+    inhalt = termine_soll("Vibemind", [t], PFADE, {"l1": _BOESE}, heute=HEUTE, archiv_vorhanden=False)[0].inhalt
+    kopf, _, rumpf = inhalt.partition("\n---\n")[2].partition("# Termin mit")
+    zeilen = [z for z in rumpf.splitlines() if z.startswith(("# ", "- **Thema", "- **Ort")) or "Klick" in z]
+    assert zeilen and all(_ohne_markdown(z.replace("[[", "").replace("]]", "")) for z in zeilen if "Kontakt:" not in z)
+    assert "](https://evil" not in inhalt and "![x]" not in inhalt and "<https" not in inhalt
