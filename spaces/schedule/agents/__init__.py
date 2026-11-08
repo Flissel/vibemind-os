@@ -1,4 +1,7 @@
-"""Schedule Backend Agent."""
-from .schedule_agent import ScheduleBackendAgent, get_schedule_agent
+"""Leer: der Schedule-Space hat keinen eigenen Backend-Agenten mehr.
 
-__all__ = ["ScheduleBackendAgent", "get_schedule_agent"]
+Siehe ``schedule_agent.py`` -- dort steht, wo die Bindung der
+``schedule.*``-Ereignisse stattdessen steht.
+"""
+
+__all__: list[str] = []

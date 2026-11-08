@@ -1,24 +1,19 @@
 """
-Schedule Space — APScheduler-based task scheduling for VibeMind.
+Schedule Space — geplante Aufgaben, Erinnerungen und Timer.
 
-Enables voice-triggered reminders, alarms, and recurring tasks via German NLP.
-
-Two execution modes:
-    Simple  (Option B) → APScheduler fires → IntentOrchestrator → Voice Notification
-    Complex (Option A) → APScheduler fires → Minibook start_collaboration() → Multi-Space
+Die ``schedule.*``-Ereignisse binden an genau einer Stelle:
+``config/space_agent_registry.yml`` (Registry = SoT) nennt je Ereignis die
+Brain-Faehigkeit, ``brain/the_brain/data/capabilities.yaml`` deren
+Ausfuehrungsziel in ``spaces/schedule/execution.py``. Ein zweites
+Ereignis-Verzeichnis gibt es nicht mehr; was hier frueher danebenlag (Redis-
+Backend-Agent, SQLite-Werkzeuge, SQLite-Worker) steht nur noch als Hinweis in
+den jeweiligen Dateien.
 
 Usage:
-    from spaces.schedule import get_schedule_agent, ScheduleWorker
+    from spaces.schedule import ScheduleWorker
 
-    # Backend agent (Redis / sync integration)
-    agent = get_schedule_agent()
-    await agent.start()
-
-    # APScheduler worker (loads active tasks from DB)
-    worker = ScheduleWorker(
-        realtime_session_getter=get_session,
-        orchestrator_getter=get_orchestrator,
-    )
+    # APScheduler-Worker: laedt die aktiven Aufgaben aus der Supabase
+    worker = ScheduleWorker(execution_target=run_task)
     await worker.start()
 """
 
@@ -29,7 +24,7 @@ from .config import ScheduleConfig, get_config
 from .nlp import ParsedTime, parse_time_expression
 
 # Heavy runtime integrations are intentionally lazy. Brain direct targets can
-# import ``spaces.schedule.execution`` without requiring the voice/swarm stack.
+# import ``spaces.schedule.execution`` without requiring APScheduler.
 
 __all__ = [
     # Config
@@ -38,14 +33,7 @@ __all__ = [
     # NLP
     "ParsedTime",
     "parse_time_expression",
-    "ScheduleBackendAgent",
-    "get_schedule_agent",
-    "create_scheduled_task",
-    "list_scheduled_tasks",
-    "cancel_scheduled_task",
-    "modify_scheduled_task",
-    "get_schedule_status",
-    "snooze_scheduled_task",
+    # Worker
     "ScheduleWorker",
 ]
 
@@ -54,14 +42,4 @@ def __getattr__(name):
     if name == "ScheduleWorker":
         from .workers import ScheduleWorker
         return ScheduleWorker
-    if name in {"ScheduleBackendAgent", "get_schedule_agent"}:
-        from .agents import ScheduleBackendAgent, get_schedule_agent
-        return {"ScheduleBackendAgent": ScheduleBackendAgent, "get_schedule_agent": get_schedule_agent}[name]
-    tool_names = {
-        "create_scheduled_task", "list_scheduled_tasks", "cancel_scheduled_task",
-        "modify_scheduled_task", "get_schedule_status", "snooze_scheduled_task",
-    }
-    if name in tool_names:
-        from . import tools
-        return getattr(tools, name)
     raise AttributeError(name)
