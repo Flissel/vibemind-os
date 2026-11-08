@@ -1,0 +1,10 @@
+[Unit]
+Description=Rowboat-Wissens-Pruefung naechtlich um 03:15 Berlin (nach den Geschaeftsdaten)
+
+[Timer]
+OnCalendar=*-*-* 03:15:00 Europe/Berlin
+Persistent=true
+Unit=rowboat-wissens-pruefung.service
+
+[Install]
+WantedBy=timers.target
