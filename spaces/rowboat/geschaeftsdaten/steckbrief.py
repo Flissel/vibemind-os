@@ -58,7 +58,6 @@ ARTEN = {"person": "Person", "firma": "Firma"}
 EINGEHEND = frozenset({"kundenantwort", "nachricht"})
 AUSGEHEND = frozenset({"nachricht_ausgehend", "versand"})
 MAX_TERMINE = 5
-_UHRZEIT = re.compile(r"^\d{1,2}:\d{2}$")
 _LEERRAUM = re.compile(r"\s+")
 _AUSLOESER = re.compile(r"@(rowboat)", re.IGNORECASE)
 _KOPF_MAX = 4096
@@ -219,31 +218,12 @@ def _letzter_kontakt(k: Kontakt, ereignisse: list[Ereignis]) -> str:
 
 
 def _offene_termine(k: Kontakt, ereignisse: list[Ereignis], heute: date) -> list[str]:
-    eigene = sorted((e for e in ereignisse if e.lead_id == k.id), key=lambda e: e.zeit)
-    abgesagt = {e.termin_uid for e in eigene if e.typ == "termin_abgesagt" and e.termin_uid}
-    je_uid: dict[str, Ereignis] = {}
-    ohne_uid: list[Ereignis] = []
-    for e in eigene:
-        if e.typ != "termin":
-            continue
-        if e.termin_uid:
-            je_uid[e.termin_uid] = e  # spaeterer Eintrag derselben uid gewinnt
-        else:
-            ohne_uid.append(e)
-    termine: list[tuple[date, str]] = []
-    for uid_e in [*je_uid.values(), *ohne_uid]:
-        if uid_e.termin_uid in abgesagt:
-            continue
-        try:
-            tag = date.fromisoformat(uid_e.termin_datum or "")
-        except ValueError:
-            continue
-        if tag < heute:
-            continue
-        uhr = (uid_e.termin_uhrzeit or "").strip()
-        termine.append((tag, uhr if _UHRZEIT.match(uhr) else ""))
-    termine.sort(key=lambda t: (t[0], t[1].zfill(5)))
-    return [f"{tag:%d.%m.%Y}, {uhr}" if uhr else f"{tag:%d.%m.%Y}" for tag, uhr in termine[:MAX_TERMINE]]
+    from termine import termine_aus  # spaet: termine.py importiert seinerseits aus diesem Modul
+
+    aktiv, _ = termine_aus([e for e in ereignisse if e.lead_id == k.id])
+    kommend = [t for t in aktiv if t.datum >= heute]  # `termine_aus` sortiert nach Datum und Uhrzeit
+    return [f"{t.datum:%d.%m.%Y}, {t.uhrzeit}" if t.uhrzeit else f"{t.datum:%d.%m.%Y}"
+            for t in kommend[:MAX_TERMINE]]
 
 
 def _empfohlen(wert: str | None, email: str | None) -> str | None:

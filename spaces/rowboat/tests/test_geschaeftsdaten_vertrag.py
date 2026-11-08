@@ -21,6 +21,7 @@ from geschaeftsdaten_fake import ereignis, inhalt, kontakt  # noqa: E402
 from newsletter import newsletter_notiz  # noqa: E402
 from quelle import Medium, Versand  # noqa: E402
 from steckbrief import steckbrief  # noqa: E402
+from termine import Termin, termine_soll  # noqa: E402
 from wochenbild import wochenbild  # noqa: E402
 
 KNOWLEDGE = _ROWBOAT / "rowboat" / "apps" / "x" / "packages" / "core" / "src" / "knowledge"
@@ -57,7 +58,11 @@ def _notizen() -> list[str]:
                           Versand(inhalt().id, datetime(2026, 10, 22, 8, 0, tzinfo=UTC), 2))
     wb = wochenbild("VibeMind", 2026, 43, [kontakt()], [ereignis()], [("companys/VibeMind/Newsletter/x", 1)],
                     [Medium("reel", "vibemind", "@rowboat Reel", 3.0, datetime(2026, 10, 21, tzinfo=UTC))])
-    return [sb, nl, wb]
+    t = Termin("l1", "u1", date(2026, 11, 12), "14:30", 45, "@rowboat Thema", "@rowboat Ort")
+    termine = [s.inhalt for s in termine_soll("VibeMind", [t], {"l1": "companys/VibeMind/Kontakte/A.md"},
+                                              {"l1": "@rowboat Anna"}, heute=date(2026, 11, 8),
+                                              archiv_vorhanden=False)]
+    return [sb, nl, wb, *termine]
 
 
 def test_erzeugte_notizen_triggern_keinen_agenten():
