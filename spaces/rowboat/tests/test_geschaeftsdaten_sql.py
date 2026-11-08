@@ -92,7 +92,20 @@ def test_post_offen_gesperrt_und_sensibel_leeren():
     sql = lesen("rowboat_leser.sql")
     teil = sql[sql.index("rowboat_post_offen"):]
     assert "case when g.gesperrt or m.sensibel is not false then null else m.betreff end" in teil
-    assert "case when g.gesperrt then null else" in teil
+    # sensible Mail: auch Absender (Adresse und Name) leer, nicht nur der Betreff
+    assert "case when g.gesperrt or m.sensibel is not false then null else ad.adr end as absender_klein" in teil
+    assert "case when g.gesperrt or m.sensibel is not false then null else" in teil
+    assert "end as von_anzeige" in teil
+
+
+def test_post_offen_adresse_einheitlich_normalisiert_und_fail_closed():
+    sql = lesen("rowboat_leser.sql")
+    teil = " ".join(sql[sql.index("rowboat_post_offen"):].split())
+    norm = "lower(btrim(coalesce(substring(m.von from '<([^>]+)>'), m.von), E' \\t\\r\\n')) as adr"
+    assert teil.count(norm) == 1
+    assert "lower(btrim(l.email, E' \\t\\r\\n')) = ad.adr" in teil
+    assert "trim(m.von)" not in teil
+    assert "ad.adr is null or ad.adr = ''" in teil
 
 
 def test_verify_post_offen():

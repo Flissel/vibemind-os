@@ -141,7 +141,7 @@ end $$;
 -- Offene Post (nur Schema sales): spiegelt die Regel "offen" der sales-ui-Inbox (ohne Stichtag,
 -- den setzt die Abfrage). Kein Nachrichtentext, kein Auszug, keine Anhaenge, kein Empfaenger.
 -- Das Sperr-Praedikat ist eine getreue Kopie von p.gesperrt in rowboat_kontakte (siehe Sperr-Regel
--- oben): unklar zaehlt als gesperrt. Betreff nur bei nicht gesperrtem Absender und nicht sensibler Mail.
+-- oben): unklar zaehlt als gesperrt. Absender und Betreff nur bei nicht gesperrtem Absender und nicht sensibler Mail.
 do $$
 begin
   if to_regclass('sales.post_mails') is not null and to_regclass('sales.post_konten') is not null then
@@ -152,22 +152,25 @@ begin
            m.bereich,
            m.sensibel is not false as sensibel,
            coalesce(k.kennung, k.anbieter) as postfach,
-           case when g.gesperrt then null else
-             lower(coalesce(substring(m.von from '<([^>]+)>'), trim(m.von))) end as absender_klein,
-           case when g.gesperrt then null else
-             nullif(btrim(substring(m.von from '^([^<]*)<'), ' "'), '') end as von_anzeige,
+           case when g.gesperrt or m.sensibel is not false then null else ad.adr end as absender_klein,
+           case when g.gesperrt or m.sensibel is not false then null else
+             nullif(btrim(substring(m.von from '^([^<]*)<'), E' \t\r\n"'), '') end as von_anzeige,
            case when g.gesperrt or m.sensibel is not false then null else m.betreff end as betreff,
            g.gesperrt as absender_gesperrt
       from sales.post_mails m
       join sales.post_konten k on k.id = m.konto_id
-      cross join lateral (select exists (
+      -- Absenderadresse einmal normalisiert (Leerraum innen und aussen); links und rechts gleich.
+      cross join lateral (select lower(btrim(coalesce(substring(m.von from '<([^>]+)>'), m.von),
+                                             E' \t\r\n')) as adr) ad
+      -- fail-closed: leere oder fehlende Adresse zaehlt als gesperrt
+      cross join lateral (select (ad.adr is null or ad.adr = '' or exists (
         select 1 from sales.leads l
-         where lower(btrim(l.email)) = lower(coalesce(substring(m.von from '<([^>]+)>'), trim(m.von)))
+         where lower(btrim(l.email, E' \t\r\n')) = ad.adr
            and coalesce(
                  ((l.enrichment ? '_privat') and not (jsonb_typeof(l.enrichment->'_privat') = 'object'
                       and coalesce(l.enrichment->'_privat'->>'privat', '') = 'false'))
                  or (l.enrichment ? '_loeschantrag'),
-                 true)) as gesperrt) g
+                 true))) as gesperrt) g
      where m.ziel = 'posteingang' and m.status = 'eingeordnet' and m.erledigt_am is null
        and m.abgeglichen_am is not null and m.geloescht_am is null and m.besitzer = 'felix';
     grant select on sales.rowboat_post_offen to rowboat_leser;
