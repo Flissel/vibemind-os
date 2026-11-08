@@ -118,6 +118,12 @@ def _lesen(pfad: Path) -> bytes | None:
         return None
 
 
+def eigener_schluessel(pfad: Path) -> str | None:
+    """Schluessel einer eigenen Datei (kein Symlink, Kopf vom Lauf), sonst None."""
+    daten = _lesen(pfad)
+    return _eigen(daten) if daten is not None else None
+
+
 def _dateien(ordner: Path, rekursiv: bool) -> list[Path]:
     if ordner.is_symlink() or not ordner.is_dir():
         return []

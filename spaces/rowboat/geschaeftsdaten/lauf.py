@@ -39,7 +39,7 @@ for _pfad in (_HIER.parents[2], _HIER.parent / "scripts", _HIER):  # Repo-Wurzel
         sys.path.insert(0, str(_pfad))
 
 from ablage import (ARCHIV_ORDNER, TERMIN_ARCHIV, TERMIN_UEBERSICHT, UEBERSICHT_PRAEFIX, Ist, Plan,  # noqa: E402
-                    Soll, Takt, aufraeumen, ausfuehren, bestand, planen)
+                    Soll, Takt, aufraeumen, ausfuehren, bestand, eigener_schluessel, planen)
 from laeden import FIRMEN, Laden, firmenordner, pruefen  # noqa: E402
 from namen import dateistamm, eindeutig, relpfad  # noqa: E402
 from newsletter import newsletter_notiz  # noqa: E402
@@ -66,7 +66,8 @@ MASSEN_MIN = 5        # ... aber erst ab mehr als so vielen (kleine Firmen solle
 ALLE = "*"            # in `gestoert`: keine Firma abgleichen
 GI_ANFANG = "# rowboat-geschaeftsdaten: Anfang (automatisch gepflegt, bitte nicht bearbeiten)"
 GI_ENDE = "# rowboat-geschaeftsdaten: Ende"
-GI_ZEILEN = ("companys/*/Kontakte/",)
+# Personendaten (Steckbriefe, Termine, Post) gehoeren nicht in Rowboats Versionsgeschichte.
+GI_ZEILEN = ("companys/*/Kontakte/", "companys/*/Termine/", "Post/")
 
 
 @dataclass
@@ -193,12 +194,18 @@ def _steckbrief_pfade(firma: Path, gruppe: list[_Gelesen]) -> tuple[dict[str, st
 def _termine_fuer_firma(firma: Path, gruppe: list[_Gelesen], pfade: dict[str, str], namen: dict[str, str], *,
                         heute: date) -> tuple[list[Soll], set[str]]:
     """(Soll der Termin-Notizen samt Uebersicht, abgesagte uids). Termine haengen nur an platzierten
-    Steckbriefen (`pfade`); gesperrte Kontakte haben keinen Pfad und damit keine Termin-Notiz."""
+    Steckbriefen (`pfade`); gesperrte Kontakte haben keinen Pfad und damit keine Termin-Notiz.
+    Die Uebersicht entsteht, sobald ein Termin platziert ist, das Termin-Archiv etwas enthaelt oder es schon
+    eine eigene Uebersicht gibt - letzteres, damit sie gesperrte oder abgesagte Termine nicht weiter nennt."""
     termine, abgesagt = termine_aus([e for g in gruppe for e in g.ereignisse])
+    ordner = firma / TERMIN_UEBERSICHT.split("/")[0]
     archiv = firma / TERMIN_ARCHIV
-    archiv_vorhanden = (archiv.is_dir() and not archiv.is_symlink()
+    archiv_vorhanden = (not ordner.is_symlink() and archiv.is_dir() and not archiv.is_symlink()
                         and any(p.is_file() and not p.is_symlink() for p in archiv.glob("*.md")))
-    return termine_soll(firma.name, termine, pfade, namen, heute=heute, archiv_vorhanden=archiv_vorhanden), abgesagt
+    uebersicht_vorhanden = (not ordner.is_symlink()
+                            and eigener_schluessel(firma / TERMIN_UEBERSICHT) == UEBERSICHT_TERMINE)
+    return termine_soll(firma.name, termine, pfade, namen, heute=heute,
+                        archiv_vorhanden=archiv_vorhanden or uebersicht_vorhanden), abgesagt
 
 
 def _firma_soll(firma: Path, marke: str, gruppe: list[_Gelesen], inhalte: dict[str, NewsletterInhalt],
@@ -424,7 +431,10 @@ def lauf(quelle: Quelle, laeden: list[Laden], wissen: Path, *, heute: date, troc
             log.warning("%s: %d Archivierungen waeren zu viele auf einmal, nur gesperrte Kopien werden entfernt",
                         firma.name, len(plan.archivieren))
             ergebnis.uebersprungen.append(f"Massenarchivierung {firma.name}")
-            plan = Plan([], [], [], [i for i in plan.entfernen if i.schluessel in gesperrt], plan.unveraendert)
+            # Die Termin-Uebersicht wird trotzdem neu geschrieben, damit sie gerade entfernte gesperrte oder
+            # abgesagte Termine nicht weiter nennt.
+            plan = Plan([s for s in plan.schreiben if s.schluessel == UEBERSICHT_TERMINE], [], [],
+                        [i for i in plan.entfernen if i.schluessel in gesperrt], plan.unveraendert)
         plaene.append((firma, plan, n_ueber, massen))
 
     # Erst alle gesperrten Kopien (ueber alle Firmen), dann der Rest - beides unter derselben Obergrenze.

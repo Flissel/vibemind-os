@@ -724,3 +724,80 @@ def test_termin_verschieben_bei_neuem_pfad(tmp_path):
     assert _termine(wissen) == ["2026-10-28 1430 Anna Alpha.md", "_overview.md"]
     text = (wissen / "companys/VibeMind/Termine/2026-10-28 1430 Anna Alpha.md").read_text(encoding="utf-8")
     assert "**Uhrzeit:** 14:30" in text
+
+
+def _uebersicht(wissen: Path) -> str:
+    return (wissen / "companys/VibeMind/Termine/_overview.md").read_text(encoding="utf-8")
+
+
+def test_termin_uebersicht_vergisst_gesperrten_kontakt(tmp_path):
+    wissen = _wissen(tmp_path)
+    q = _quelle()
+    q.ereignisse_["sales"].append(_termin("u1", "2026-10-28"))
+    _lauf(q, wissen)
+    assert "2026-10-28 1000 Anna Alpha" in _uebersicht(wissen)
+    q.kontakte_["sales"][0] = kontakt(id=A, gesperrt=True, name=None, bereiche=())
+    q.ereignisse_["sales"] = []
+    _lauf(q, wissen)
+    text = _uebersicht(wissen)
+    assert "Anna" not in text and "2026-10-28 1000" not in text
+    assert "Keine." in text
+    erg = _lauf(q, wissen)  # danach stabil
+    assert erg.je_firma["VibeMind"]["geschrieben"] == 0 and "Anna" not in _uebersicht(wissen)
+
+
+def test_termin_uebersicht_vergisst_abgesagten_termin(tmp_path):
+    wissen = _wissen(tmp_path)
+    q = _quelle()
+    q.ereignisse_["sales"].append(_termin("u1", "2026-10-28"))
+    _lauf(q, wissen)
+    q.ereignisse_["sales"].append(_termin("u1", "2026-10-28", typ="termin_abgesagt", stunde=12))
+    _lauf(q, wissen)
+    text = _uebersicht(wissen)
+    assert "Anna" not in text and "2026-10-28 1000" not in text
+
+
+def test_fremde_termin_uebersicht_bleibt_unberuehrt(tmp_path):
+    wissen = _wissen(tmp_path)
+    fremd = wissen / "companys/VibeMind/Termine/_overview.md"
+    fremd.parent.mkdir(parents=True)
+    fremd.write_text("# meine Termine\n", encoding="utf-8")
+    erg = _lauf(_quelle(), wissen)
+    assert erg.exit_code == 0 and erg.je_firma["VibeMind"]["abweichung"] == 0
+    assert fremd.read_text(encoding="utf-8") == "# meine Termine\n"
+
+
+def test_massenschutz_loescht_trotzdem_gesperrte_und_abgesagte_termine(tmp_path):
+    wissen = _wissen(tmp_path)
+    q = _quelle()
+    viele = [kontakt(id=_id(i), name=f"Person {i:02d}", bereiche=("bav",)) for i in range(10)]
+    q.kontakte_["sales"] = [*viele, kontakt(id=A, name="Anna Alpha", bereiche=("bav",))]
+    q.ereignisse_["sales"] = [_termin("u1", "2026-10-28"), _termin("u2", "2026-10-29", lead=_id(0))]
+    _lauf(q, wissen)
+    assert _termine(wissen) == ["2026-10-28 1000 Anna Alpha.md", "2026-10-29 1000 Person 00.md", "_overview.md"]
+    # 6 Steckbriefe verschwinden (Waechter greift), Anna wird gesperrt, der Termin von Person 00 abgesagt.
+    q.kontakte_["sales"] = [*viele[:4], kontakt(id=A, gesperrt=True, name=None, bereiche=())]
+    q.ereignisse_["sales"] = [_termin("u2", "2026-10-29", lead=_id(0), typ="termin_abgesagt", stunde=12)]
+    erg = _lauf(q, wissen)
+    assert "Massenarchivierung VibeMind" in erg.uebersprungen
+    z = erg.je_firma["VibeMind"]
+    assert z["archiviert"] == 0 and z["entfernt"] == 3  # Annas Steckbrief + beide Termin-Notizen
+    assert z["geschrieben"] == 1  # nur die Termin-Uebersicht, alles andere wartet
+    assert _termine(wissen) == ["_overview.md"]
+    text = _uebersicht(wissen)
+    assert "Anna" not in text and "Person 00" not in text
+    assert len(_kontakte(wissen, "VibeMind")) == 10  # Steckbriefe bleiben stehen
+
+
+def test_gitignore_alter_block_wird_ersetzt_nicht_verdoppelt(tmp_path):
+    wissen = _wissen(tmp_path)
+    gi = wissen / ".gitignore"
+    alt = "meins/\n" + "\n".join((lauf_mod.GI_ANFANG, "companys/*/Kontakte/", lauf_mod.GI_ENDE)) + "\nauch-meins/\n"
+    gi.write_text(alt, encoding="utf-8", newline="")
+    erg = _lauf(_quelle(), wissen)
+    text = gi.read_text(encoding="utf-8")
+    assert erg.gitignore == "ergaenzt"
+    assert text.count(GI_BLOCK) == 1 and text.count("companys/*/Kontakte/") == 1
+    assert "companys/*/Termine/\n" in text and "Post/\n" in text
+    assert text.startswith("meins/\n") and text.endswith("auch-meins/\n")
+    assert _lauf(_quelle(), wissen).gitignore == "aktuell"
