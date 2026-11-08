@@ -8,6 +8,22 @@ Auf `offload-vm` läuft er über `rowboat-geschaeftsdaten.timer` (02:30 Berlin) 
 `rowboat-geschaeftsdaten.service` (`deploy/`). Status steht in `~/rowboat-geschaeftsdaten/stand.json`
 und im Journal (`journalctl -u rowboat-geschaeftsdaten -n 50`).
 
+## Verbindungen im Rowboat-Graph
+
+Rowboat zieht Kanten nur aus `[[Wiki-Links]]` (Text oder Frontmatter), nicht aus Ordnern. Damit kein
+Steckbrief lose im Graph hängt, legt der Lauf je Firma unter `Bereiche/` eine Übersicht pro Ordner von
+`Kontakte/` an (`bAV.md`, …, `Ohne Bereich.md`, `Archiv.md`) plus `Bereiche/_overview.md`:
+
+- Steckbrief: `parent: "[[companys/<Firma>/Bereiche/<Hauptbereich>]]"`, weitere Bereiche als
+  `weitere_bereiche: "[[…]], [[…]]"`.
+- Bereichs-Übersicht → `parent` auf `Bereiche/_overview`; diese → `parent` auf `companys/<Firma>/Marke`,
+  falls die Notiz existiert.
+- Übersichten enthalten nur Bereichsnamen und Zahlen (keine Personendaten, kein Datum), Schlüssel
+  `uebersicht:<Ordner>`. Wird ein Bereich leer, entfernt der Lauf seine Übersicht – zuletzt, nach
+  Datenschutz-Löschungen und Umzügen, und ohne den Massen-Wächter zu zählen.
+- Vom Lauf archivierte Steckbriefe verweisen auf `Bereiche/Archiv`; die Übersicht dazu entsteht aus dem
+  Bestand, nach einer frischen Archivierung also spätestens in der nächsten Nacht.
+
 ## Runbook: Lauf von Hand, auch mit Freigabe des Massen-Wächters
 
 `systemctl start rowboat-geschaeftsdaten` reicht keine Optionen durch. Für einen Handlauf startest du

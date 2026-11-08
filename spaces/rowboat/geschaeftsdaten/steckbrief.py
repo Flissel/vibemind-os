@@ -63,8 +63,29 @@ _AUSLOESER = re.compile(r"@(rowboat)", re.IGNORECASE)
 _KOPF_MAX = 4096
 
 
+# Bereichs-Uebersichten unter `companys/<Firma>/Bereiche/`: jeder Steckbrief verweist per `parent:` auf
+# die Uebersicht seines Ordners, damit er im Rowboat-Graph haengt (Rowboat zieht Kanten nur aus [[...]]).
+UEBERSICHTEN = "Bereiche"
+UEBERSICHT_GESAMT = "_overview"
+_UEBERSICHT_TITEL = {OHNE: "Ohne Bereich", ARCHIV: "Archiv"}
+
+
 def _bereiche(k: Kontakt) -> list[str]:
     return [b for b in KATEGORIEN if b in k.bereiche]
+
+
+def uebersicht_stamm(ordner: str) -> str:
+    """Dateistamm der Uebersicht zu einem Ordner unter `Kontakte/` (`_ohne`/`_archiv` lesbar benannt)."""
+    return _UEBERSICHT_TITEL.get(ordner, ordner)
+
+
+def weitere_kategorien(k: Kontakt) -> list[str]:
+    """Ordnernamen der Bereiche nach dem Hauptbereich; archivierte Kontakte haben keine."""
+    return [] if k.archiviert else [KATEGORIEN[b] for b in _bereiche(k)[1:]]
+
+
+def _links(ziele: list[str]) -> str:
+    return '"' + ", ".join(f"[[{z}]]" for z in ziele) + '"'
 
 
 def kategorie(k: Kontakt) -> str:
@@ -232,9 +253,10 @@ def _empfohlen(wert: str | None, email: str | None) -> str | None:
 
 
 def steckbrief(k: Kontakt, ereignisse: list[Ereignis], *, laden: str, heute: date, people: str | None,
-               empfohlen_von: str | None) -> str:
+               empfohlen_von: str | None, uebersicht: str | None = None, weitere: list[str] | None = None) -> str:
     """Markdown des Steckbriefs. `people` ist ein Link-Ziel `People/<stamm>`; `empfohlen_von` ist ein
-    fertiger Wiki-Link `[[...]]` oder ein Name. Wirft `ValueError` fuer gesperrte Kontakte."""
+    fertiger Wiki-Link `[[...]]` oder ein Name; `uebersicht`/`weitere` sind Link-Ziele der
+    Bereichs-Uebersichten (`parent:` bzw. `weitere_bereiche:`). Wirft `ValueError` fuer gesperrte Kontakte."""
     if k.gesperrt:
         raise ValueError("gesperrter Kontakt bekommt keinen Steckbrief")
     mail = k.email_klein
@@ -253,6 +275,12 @@ def steckbrief(k: Kontakt, ereignisse: list[Ereignis], *, laden: str, heute: dat
         f"art: {art}",
         f"schlagwoerter: [{', '.join(schlagwoerter)}]",
         f"stand: {st.isoformat()}",
+    ]
+    if uebersicht:
+        zeilen.append(f"parent: {_links([uebersicht])}")
+    if weitere:
+        zeilen.append(f"weitere_bereiche: {_links(weitere)}")
+    zeilen += [
         "---",
         "",
         f"> Automatisch erzeugt, Quelle sales-claw, Stand {st:%d.%m.%Y}. Nicht hier bearbeiten – der "
@@ -283,4 +311,41 @@ def steckbrief(k: Kontakt, ereignisse: list[Ereignis], *, laden: str, heute: dat
     zeilen += [f"- {t}" for t in termine] if termine else ["Keine."]
     if people:
         zeilen += ["", f"Siehe auch: [[{people}]]"]
+    return "\n".join(zeilen) + "\n"
+
+
+# --- Bereichs-Uebersichten --------------------------------------------------------------------------
+
+def _uebersicht_kopf(schluessel: str, eltern: str | None) -> list[str]:
+    zeilen = ["---", f"erzeugt_von: {ERZEUGT_VON}", "quelle: sales-claw", f"schluessel: {schluessel}",
+              "art: uebersicht"]
+    if eltern:
+        zeilen.append(f"parent: {_links([eltern])}")
+    return zeilen + ["---", "",
+                     "> Automatisch erzeugt aus sales-claw. Nicht hier bearbeiten – der nächtliche Lauf überschreibt; "
+                     "eigene Anmerkungen in eine eigene Notiz.", ""]
+
+
+def bereich_uebersicht(*, schluessel: str, firma: str, ordner: str, anzahl: int, neben: int, eltern: str) -> str:
+    """Uebersicht eines Ordners unter `Kontakte/`. Bewusst ohne Datum und ohne Namen: sie aendert sich nur,
+    wenn sich die Zahlen aendern, und enthaelt keine Personendaten."""
+    firma_text = _einzeilig(firma, None) or firma
+    zeilen = _uebersicht_kopf(schluessel, eltern) + [
+        f"# Kontakte – {uebersicht_stamm(ordner)} ({firma_text})",
+        "",
+        f"- **Kontakte mit diesem Bereich als Hauptbereich:** {anzahl}",
+        f"- **Kontakte mit diesem Bereich als Nebenbereich:** {neben}",
+        "",
+        f"Die Steckbriefe liegen im Ordner `Kontakte/{ordner}/` und verweisen hierher (`parent`); Kontakte mit "
+        "diesem Bereich als Nebenbereich verweisen über `weitere_bereiche`.",
+    ]
+    return "\n".join(zeilen) + "\n"
+
+
+def bereiche_uebersicht(*, schluessel: str, firma: str, bereiche: list[tuple[str, str, int]],
+                        eltern: str | None) -> str:
+    """Uebersicht aller Bereichs-Uebersichten einer Firma; `bereiche` = (Link-Ziel, Titel, Hauptbereich-Zahl)."""
+    firma_text = _einzeilig(firma, None) or firma
+    zeilen = _uebersicht_kopf(schluessel, eltern) + [f"# Kontakte nach Bereich ({firma_text})", ""]
+    zeilen += [f"- [[{ziel}]] ({anzahl})" for ziel, _titel, anzahl in bereiche] or ["Keine Kontakte."]
     return "\n".join(zeilen) + "\n"

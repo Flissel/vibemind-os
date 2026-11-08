@@ -35,13 +35,16 @@ for _pfad in (_HIER.parents[2], _HIER.parent / "scripts", _HIER):  # Repo-Wurzel
     if str(_pfad) not in sys.path:
         sys.path.insert(0, str(_pfad))
 
-from ablage import ARCHIV_ORDNER, Ist, Plan, Soll, Takt, aufraeumen, ausfuehren, bestand, planen  # noqa: E402
+from ablage import (ARCHIV_ORDNER, UEBERSICHT_PRAEFIX, Ist, Plan, Soll, Takt, aufraeumen,  # noqa: E402
+                    ausfuehren, bestand, planen)
 from laeden import FIRMEN, Laden, firmenordner, pruefen  # noqa: E402
 from namen import dateistamm, eindeutig, relpfad  # noqa: E402
 from newsletter import newsletter_notiz  # noqa: E402
 from newsletter import stamm as nl_stamm  # noqa: E402
 from quelle import DbFehler, Ereignis, Kontakt, Medium, NewsletterInhalt, PsqlQuelle, Quelle, Versand  # noqa: E402
-from steckbrief import kategorie, people_index, steckbrief  # noqa: E402
+from steckbrief import (ARCHIV, KATEGORIEN, OHNE, UEBERSICHT_GESAMT, UEBERSICHTEN,  # noqa: E402
+                        bereich_uebersicht, bereiche_uebersicht, kategorie, people_index, steckbrief,
+                        uebersicht_stamm, weitere_kategorien)
 from wochenbild import letzte_kw, wochenbild, zeitraum  # noqa: E402
 from wochenbild import stamm as wb_stamm  # noqa: E402
 
@@ -82,13 +85,17 @@ def _id8(wert: str) -> str:
 
 
 def _archiv_text(firma: Path):
+    archiv_link = f'parent: "[[{FIRMEN}/{firma.name}/{UEBERSICHTEN}/{uebersicht_stamm(ARCHIV)}]]"'
+
     def archiv_inhalt(ist: Ist) -> str:
         text = (firma / ist.rel).read_text(encoding="utf-8")
         ende = text.find("\n---\n", 4)
         if ende < 0 or ARCHIV_VERMERK in text:
             return text
+        # Im Archiv haengt der Steckbrief an der Archiv-Uebersicht statt an seinem alten Bereich.
+        kopf = [z for z in text[:ende].split("\n") if not z.startswith(("parent:", "weitere_bereiche:"))]
         ende += len("\n---\n")
-        return text[:ende] + "\n" + ARCHIV_VERMERK + "\n" + text[ende:]
+        return "\n".join([*kopf, archiv_link]) + "\n---\n\n" + ARCHIV_VERMERK + "\n" + text[ende:]
     return archiv_inhalt
 
 
@@ -165,6 +172,27 @@ def _firma_soll(firma: Path, marke: str, gruppe: list[_Gelesen], inhalte: dict[s
         belegt.add(rel.casefold())
         pfade[k.id] = rel
 
+    # Bereichs-Uebersichten: eine je Ordner, der als Haupt- oder Nebenbereich vorkommt, plus eine Gesamtuebersicht.
+    haupt: dict[str, int] = {}
+    neben: dict[str, int] = {}
+    for k, _, _ in eintraege:
+        if k.id in pfade:
+            haupt[kategorie(k)] = haupt.get(kategorie(k), 0) + 1
+            for w in weitere_kategorien(k):
+                neben[w] = neben.get(w, 0) + 1
+    # Vom Lauf archivierte Steckbriefe haben kein Soll mehr, haengen aber an der Archiv-Uebersicht
+    # (`_archiv_text`). Gezaehlt wird der Bestand vor dem Lauf: ein frisch archivierter Steckbrief
+    # bekommt seine Uebersicht spaetestens in der naechsten Nacht.
+    archiv_ordner = firma / "Kontakte" / ARCHIV
+    if archiv_ordner.is_dir() and not archiv_ordner.is_symlink():
+        auf_platte = sum(1 for p in archiv_ordner.glob("*.md") if p.is_file() and not p.is_symlink())
+        if auf_platte > haupt.get(ARCHIV, 0):
+            haupt[ARCHIV] = auf_platte
+    reihenfolge = [*KATEGORIEN.values(), OHNE, ARCHIV]
+    ordner_liste = [o for o in reihenfolge if o in haupt or o in neben]
+    ziel = {o: f"{praefix}/{UEBERSICHTEN}/{uebersicht_stamm(o)}" for o in ordner_liste}
+    gesamt = f"{praefix}/{UEBERSICHTEN}/{UEBERSICHT_GESAMT}"
+
     people = people_index(wissen)
     soll: list[Soll] = []
     for k, schema, ereignisse in eintraege:
@@ -173,8 +201,19 @@ def _firma_soll(firma: Path, marke: str, gruppe: list[_Gelesen], inhalte: dict[s
         lead, name = _empfehler(ereignisse)
         empfohlen = f"[[{pfade[lead][:-3]}]]" if lead in pfade else name
         text = steckbrief(k, ereignisse, laden=schema, heute=heute,
-                          people=people.link(k.name, k.email_klein), empfohlen_von=empfohlen)
+                          people=people.link(k.name, k.email_klein), empfohlen_von=empfohlen,
+                          uebersicht=ziel[kategorie(k)], weitere=[ziel[w] for w in weitere_kategorien(k)])
         soll.append(Soll(pfade[k.id][len(praefix) + 1:], k.id, text))
+    for o in ordner_liste:
+        soll.append(Soll(f"{UEBERSICHTEN}/{uebersicht_stamm(o)}.md", f"{UEBERSICHT_PRAEFIX}{o}",
+                         bereich_uebersicht(schluessel=f"{UEBERSICHT_PRAEFIX}{o}", firma=firma.name, ordner=o,
+                                            anzahl=haupt.get(o, 0), neben=neben.get(o, 0), eltern=gesamt)))
+    if ordner_liste:
+        marken_notiz = f"{praefix}/Marke" if (firma / "Marke.md").is_file() else None
+        soll.append(Soll(f"{UEBERSICHTEN}/{UEBERSICHT_GESAMT}.md", f"{UEBERSICHT_PRAEFIX}{UEBERSICHT_GESAMT}",
+                         bereiche_uebersicht(schluessel=f"{UEBERSICHT_PRAEFIX}{UEBERSICHT_GESAMT}",
+                                             firma=firma.name, eltern=marken_notiz,
+                                             bereiche=[(ziel[o], o, haupt.get(o, 0)) for o in ordner_liste])))
 
     # Newsletter der eigenen Marke, Empfaenger summiert ueber die Laeden.
     versand: dict[str, Versand] = {}
@@ -253,7 +292,8 @@ def _atomar(pfad: Path, text: str) -> None:
 def _massenschutz(plan: Plan, ist: list[Ist], gesperrt: set[str]) -> bool:
     """True, wenn zu viele Steckbriefe auf einmal ins Archiv bzw. weg (ohne gesperrte Kopien) gingen."""
     aktiv = sum(1 for i in ist if i.rel.startswith("Kontakte/") and not i.rel.startswith(ARCHIV_ORDNER + "/"))
-    weg = len(plan.archivieren) + sum(1 for i in plan.entfernen if i.schluessel not in gesperrt)
+    weg = len(plan.archivieren) + sum(1 for i in plan.entfernen if i.schluessel not in gesperrt
+                                      and not i.schluessel.startswith(UEBERSICHT_PRAEFIX))
     return weg > MASSEN_MIN and weg > MASSEN_ANTEIL * aktiv
 
 
@@ -329,13 +369,21 @@ def lauf(quelle: Quelle, laeden: list[Laden], wissen: Path, *, heute: date, troc
         plaene.append((firma, plan, n_ueber, massen))
 
     # Erst alle gesperrten Kopien (ueber alle Firmen), dann der Rest - beides unter derselben Obergrenze.
+    # Leere Bereichs-Uebersichten sind Aufraeumen, kein Datenschutz und keine Kontaktdaten: sie kommen
+    # zuletzt dran und bekommen nur, was von der Obergrenze uebrig ist.
     zaehler: dict[str, dict[str, int]] = {}
-    for phase in ("entfernen", "rest"):
+    for phase in ("entfernen", "rest", "uebersichten"):
         for firma, plan, n_ueber, _ in plaene:
-            if firma.name not in zaehler and phase == "rest":
-                continue  # Dateifehler in Phase 1
-            teil = (replace(plan, schreiben=[], verschieben=[], archivieren=[], unveraendert=0)
-                    if phase == "entfernen" else replace(plan, entfernen=[]))
+            if firma.name not in zaehler and phase != "entfernen":
+                continue  # Dateifehler in einer frueheren Phase
+            uebersichten = [i for i in plan.entfernen if i.schluessel.startswith(UEBERSICHT_PRAEFIX)]
+            if phase == "entfernen":
+                teil = replace(plan, schreiben=[], verschieben=[], archivieren=[], unveraendert=0,
+                               entfernen=[i for i in plan.entfernen if i not in uebersichten])
+            elif phase == "rest":
+                teil = replace(plan, entfernen=[])
+            else:
+                teil = Plan([], [], [], uebersichten, 0)
             try:
                 z = ausfuehren(teil, firma, trocken=trocken, takt=takt)
             except OSError as e:

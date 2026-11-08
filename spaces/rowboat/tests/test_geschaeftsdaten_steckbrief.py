@@ -194,3 +194,64 @@ def test_themen_ausgeschrieben_fuer_bedeutungssuche():
     text = _sb(kontakt(bereiche=("bav", "vorsorge")))
     assert "Themen:** betriebliche Altersvorsorge (bAV), private Altersvorsorge und Versicherungen" in text
     assert "Themen:" not in _sb(kontakt(bereiche=()))
+
+
+# --- Verweise auf die Bereichs-Uebersichten (Rowboat-Graph) ---------------------------------------------
+
+from steckbrief import UEBERSICHTEN, bereich_uebersicht, bereiche_uebersicht, uebersicht_stamm, weitere_kategorien  # noqa: E402,I001
+
+BAV = "companys/VibeMind/Bereiche/bAV"
+IT = "companys/VibeMind/Bereiche/IT-Lösung"
+
+
+def test_parent_und_weitere_bereiche_als_wiki_links():
+    fm = _frontmatter(_sb(kontakt(bereiche=("bav", "it")), uebersicht=BAV, weitere=[IT]))
+    assert f'parent: "[[{BAV}]]"' in fm
+    assert f'weitere_bereiche: "[[{IT}]]"' in fm
+
+
+def test_ohne_uebersicht_kein_parent():
+    fm = _frontmatter(_sb())
+    assert "parent:" not in fm and "weitere_bereiche:" not in fm
+
+
+def test_weitere_kategorien_ohne_hauptbereich_und_ohne_archiv():
+    assert weitere_kategorien(kontakt(bereiche=("unbekannt", "it", "bav"))) == ["IT-Lösung"]
+    assert weitere_kategorien(kontakt(bereiche=("bav",))) == []
+    assert weitere_kategorien(kontakt(archiviert=True, bereiche=("bav", "it"))) == []
+
+
+def test_uebersicht_stamm():
+    assert UEBERSICHTEN == "Bereiche"
+    assert uebersicht_stamm("bAV") == "bAV"
+    assert uebersicht_stamm(OHNE) == "Ohne Bereich" and uebersicht_stamm(ARCHIV) == "Archiv"
+
+
+def test_bereich_uebersicht():
+    text = bereich_uebersicht(schluessel="uebersicht:bAV", firma="VibeMind", ordner="bAV", anzahl=3, neben=2,
+                              eltern="companys/VibeMind/Bereiche/_overview")
+    fm = _frontmatter(text)
+    assert "erzeugt_von: rowboat-geschaeftsdaten" in fm and "schluessel: uebersicht:bAV" in fm
+    assert 'parent: "[[companys/VibeMind/Bereiche/_overview]]"' in fm
+    assert "# Kontakte – bAV (VibeMind)" in text
+    assert "Hauptbereich:** 3" in text and "Nebenbereich:** 2" in text
+    assert "Kontakte/bAV/" in text and "Nicht hier bearbeiten" in text
+
+
+def test_bereiche_uebersicht_listet_links_und_haengt_an_der_marke():
+    text = bereiche_uebersicht(schluessel="uebersicht:_overview", firma="VibeMind",
+                               bereiche=[(BAV, "bAV", 3), (IT, "IT-Lösung", 1)], eltern="companys/VibeMind/Marke")
+    fm = _frontmatter(text)
+    assert 'parent: "[[companys/VibeMind/Marke]]"' in fm
+    assert f"- [[{BAV}]] (3)" in text and f"- [[{IT}]] (1)" in text
+    ohne = _frontmatter(bereiche_uebersicht(schluessel="uebersicht:_overview", firma="VibeMind",
+                                            bereiche=[(BAV, "bAV", 3)], eltern=None))
+    assert "parent:" not in ohne
+
+
+def test_uebersichten_ohne_rowboat_ausloeser():
+    for text in (bereich_uebersicht(schluessel="uebersicht:x", firma="@rowboat", ordner="x", anzahl=1, neben=0,
+                                    eltern="a"),
+                 bereiche_uebersicht(schluessel="uebersicht:_overview", firma="@rowboat", bereiche=[], eltern=None)):
+        assert "@rowboat" not in text.lower()
+        assert "live" not in _frontmatter(text)

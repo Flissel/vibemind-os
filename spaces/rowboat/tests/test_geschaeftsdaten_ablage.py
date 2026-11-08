@@ -266,3 +266,18 @@ def test_symlink_wird_nicht_verfolgt(tmp_path):
 def test_doppelte_soll_pfade_werfen():
     with pytest.raises(ValueError):
         planen([Soll("Kontakte/bAV/A.md", _id(1), "x"), Soll("Kontakte/bAV/a.md", _id(2), "y")], [], set(), _archiv)
+
+
+def test_uebersicht_ohne_soll_wird_entfernt_nicht_archiviert(tmp_path):
+    _schreiben(tmp_path, "Bereiche/bAV.md", _inhalt("uebersicht:bAV"))
+    plan = planen([], bestand(tmp_path), set(), _archiv)
+    assert [i.rel for i in plan.entfernen] == ["Bereiche/bAV.md"] and not plan.archivieren
+    assert ausfuehren(plan, tmp_path)["entfernt"] == 1
+    assert not (tmp_path / "Bereiche/bAV.md").exists()
+
+
+def test_uebersicht_mit_soll_bleibt_gleich(tmp_path):
+    soll = [Soll("Bereiche/bAV.md", "uebersicht:bAV", _inhalt("uebersicht:bAV"))]
+    _lauf(tmp_path, soll)
+    plan = planen(soll, bestand(tmp_path), set(), _archiv)
+    assert _leer(plan) and plan.unveraendert == 1

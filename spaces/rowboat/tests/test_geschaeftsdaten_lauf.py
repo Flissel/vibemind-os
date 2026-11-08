@@ -76,8 +76,8 @@ def test_ende_zu_ende_zwei_firmen(tmp_path):
     assert "laden: sales" in text and "anna@alpha.de" not in text
     assert (wissen / "companys/VibeMind/Newsletter/2026-10-22 Neues im Oktober.md").is_file()
     assert (wissen / "companys/VibeMind/Wochenbild/2026-KW43.md").is_file()
-    assert erg.je_firma["VibeMind"]["geschrieben"] == 3
-    assert erg.je_firma["fin2gether"]["geschrieben"] == 2  # Steckbrief + Wochenbild
+    assert erg.je_firma["VibeMind"]["geschrieben"] == 5  # + Bereiche/bAV + Bereiche/_overview
+    assert erg.je_firma["fin2gether"]["geschrieben"] == 4  # Steckbrief + Wochenbild + 2 Uebersichten
 
 
 def test_zweimal_hintereinander_null_schreibungen(tmp_path):
@@ -136,7 +136,8 @@ def test_kontakt_verschwindet_ins_archiv_und_gesperrt_wird_entfernt(tmp_path):
     erg = _lauf(q, wissen)
     assert not list((wissen / "companys/VibeMind/Kontakte").rglob("*.md"))
     assert [p.name for p in (wissen / "companys/fin2gether/Kontakte/_archiv").glob("*.md")] == ["Bert Beta.md"]
-    assert erg.je_firma["VibeMind"]["entfernt"] == 1 and erg.je_firma["fin2gether"]["archiviert"] == 1
+    # VibeMind: Anna (gesperrt) + ihre zwei leer gewordenen Uebersichten
+    assert erg.je_firma["VibeMind"]["entfernt"] == 3 and erg.je_firma["fin2gether"]["archiviert"] == 1
 
 
 def test_empfohlen_von_link_in_derselben_firma(tmp_path):
@@ -200,7 +201,7 @@ def test_stand_json(tmp_path, monkeypatch):
     assert container == ["debian-supabase-db-1"]
     daten = json.loads(stand.read_text(encoding="utf-8"))
     assert daten["ergebnis"] == "ok" and daten["exit_code"] == 0
-    assert daten["je_firma"]["VibeMind"]["geschrieben"] == 3
+    assert daten["je_firma"]["VibeMind"]["geschrieben"] == 5
     assert daten["uebersprungen"] == []
     assert [p.name for p in stand.parent.iterdir()] == ["stand.json"]  # kein Rest einer tmp-Datei
     assert daten["gitignore"] == "angelegt"
@@ -291,7 +292,7 @@ def test_gesperrt_vor_sammel_und_system(tmp_path):
     q = _quelle()
     q.kontakte_["sales"][0] = kontakt(id=A, gesperrt=True, name=None, source="system", bereiche=())
     erg = _lauf(q, wissen)
-    assert erg.je_firma["VibeMind"]["entfernt"] == 1 and erg.je_firma["VibeMind"]["archiviert"] == 0
+    assert erg.je_firma["VibeMind"]["entfernt"] == 3 and erg.je_firma["VibeMind"]["archiviert"] == 0  # + 2 Uebersichten
     assert _kontakte(wissen, "VibeMind") == []
 
 
@@ -306,7 +307,8 @@ def test_obergrenze_je_lauf_gesperrte_zuerst(tmp_path):
     q.kontakte_["sales"][0] = kontakt(id=A, gesperrt=True, name=None, bereiche=())
     erg = _lauf(q, wissen, ablage_optionen={"paket": 1})
     assert erg.je_firma["VibeMind"]["entfernt"] == 1  # fin2gether kommt alphabetisch zuerst, trotzdem
-    assert erg.je_firma["fin2gether"]["verschoben"] == 0 and erg.je_firma["fin2gether"]["zurueckgestellt"] == 2
+    # 2 Umzuege + die leer gewordene Uebersicht "Ohne Bereich" warten; der Datenschutz ging vor
+    assert erg.je_firma["fin2gether"]["verschoben"] == 0 and erg.je_firma["fin2gether"]["zurueckgestellt"] == 3
     erg = _lauf(q, wissen, ablage_optionen={"paket": 1})
     assert erg.je_firma["fin2gether"]["verschoben"] == 1
     assert _kontakte(wissen, "fin2gether") == ["Kontakte/_ohne/Berta Zwei.md", "Kontakte/bAV/Bert Beta.md"]
@@ -339,7 +341,7 @@ def test_fremde_gitignore_bleibt_unberuehrt(tmp_path, caplog):
     erg = _lauf(_quelle(), wissen)
     assert erg.gitignore == "fremd" and gi.read_text(encoding="utf-8") == "node_modules/\n"
     assert any(".gitignore" in r.getMessage() for r in caplog.records)
-    assert erg.je_firma["VibeMind"]["geschrieben"] == 3  # nur Warnung, Lauf geht weiter
+    assert erg.je_firma["VibeMind"]["geschrieben"] == 5  # nur Warnung, Lauf geht weiter
 
 
 def test_trocken_legt_keine_gitignore_an(tmp_path):
@@ -361,7 +363,7 @@ def test_oserror_in_einer_firma_trifft_nur_diese(tmp_path, monkeypatch, caplog):
     caplog.set_level(logging.DEBUG)
     erg = _lauf(_quelle(), wissen)
     assert erg.exit_code == 1 and "VibeMind" not in erg.je_firma
-    assert erg.je_firma["fin2gether"]["geschrieben"] == 2
+    assert erg.je_firma["fin2gether"]["geschrieben"] == 4
     text = "\n".join(r.getMessage() for r in caplog.records)
     assert "PermissionError" in text and "Anna" not in text and "Kontakte/" not in text
 
@@ -519,3 +521,68 @@ def test_gitignore_ohne_endmarke_behaelt_fremde_zeilen(tmp_path, caplog):
     assert any("Endmarke" in r.getMessage() for r in caplog.records)
     erg = _lauf(_quelle(), wissen)
     assert erg.gitignore == "aktuell" and gi.read_text(encoding="utf-8") == text
+
+
+# --- Bereichs-Uebersichten: jeder Kontakt haengt im Rowboat-Graph -------------------------------------
+
+def test_kontakte_verweisen_auf_bereichs_uebersicht(tmp_path):
+    wissen = _wissen(tmp_path)
+    (wissen / "companys/VibeMind/Marke.md").write_text("# Marke\n", encoding="utf-8")
+    q = _quelle()
+    q.kontakte_["sales"].append(kontakt(id=B.replace("a", "c"), name="Carl Zwei", bereiche=("it", "bav")))
+    erg = _lauf(q, wissen)
+    assert erg.exit_code == 0
+    anna = (wissen / "companys/VibeMind/Kontakte/bAV/Anna Alpha.md").read_text(encoding="utf-8")
+    assert 'parent: "[[companys/VibeMind/Bereiche/bAV]]"' in anna
+    carl = (wissen / "companys/VibeMind/Kontakte/bAV/Carl Zwei.md").read_text(encoding="utf-8")
+    assert 'weitere_bereiche: "[[companys/VibeMind/Bereiche/IT-Lösung]]"' in carl
+    bav = (wissen / "companys/VibeMind/Bereiche/bAV.md").read_text(encoding="utf-8")
+    assert 'parent: "[[companys/VibeMind/Bereiche/_overview]]"' in bav and "Hauptbereich:** 2" in bav
+    it = (wissen / "companys/VibeMind/Bereiche/IT-Lösung.md").read_text(encoding="utf-8")
+    assert "Hauptbereich:** 0" in it and "Nebenbereich:** 1" in it
+    gesamt = (wissen / "companys/VibeMind/Bereiche/_overview.md").read_text(encoding="utf-8")
+    assert 'parent: "[[companys/VibeMind/Marke]]"' in gesamt
+    assert "- [[companys/VibeMind/Bereiche/bAV]] (2)" in gesamt
+    fin = (wissen / "companys/fin2gether/Bereiche/_overview.md").read_text(encoding="utf-8")
+    assert "parent:" not in fin.split("\n---\n", 1)[0]  # fin2gether hat hier keine Marke.md
+    assert (wissen / "companys/fin2gether/Bereiche/Ohne Bereich.md").is_file()
+
+
+def test_leerer_bereich_verliert_seine_uebersicht(tmp_path):
+    wissen = _wissen(tmp_path)
+    _lauf(_quelle(), wissen)
+    assert (wissen / "companys/VibeMind/Bereiche/bAV.md").is_file()
+    q = _quelle()
+    q.kontakte_["sales"] = [kontakt(id=A, name="Anna Alpha", bereiche=("immobilien",))]
+    erg = _lauf(q, wissen)
+    assert erg.exit_code == 0
+    assert not (wissen / "companys/VibeMind/Bereiche/bAV.md").exists()
+    assert (wissen / "companys/VibeMind/Bereiche/Immobilien.md").is_file()
+
+
+def test_uebersichten_zaehlen_nicht_als_massenarchivierung(tmp_path):
+    wissen = _wissen(tmp_path)
+    q = _quelle()
+    bereiche = [("bav",), ("it",), ("immobilien",), ("homelab",), ("vorsorge",), ("mitarbeiter",), ()] * 2
+    q.kontakte_["sales"] = [kontakt(id=_id(i), name=f"Person {i:02d}", bereiche=b) for i, b in enumerate(bereiche)]
+    _lauf(q, wissen)
+    q.kontakte_["sales"] = [kontakt(id=_id(i), name=f"Person {i:02d}", bereiche=("bav",)) for i in range(14)]
+    erg = _lauf(q, wissen, ablage_optionen={"paket": 50})
+    assert erg.exit_code == 0 and erg.je_firma["VibeMind"]["entfernt"] == 6  # 6 leere Bereichs-Uebersichten
+
+
+def test_archivierter_steckbrief_haengt_an_der_archiv_uebersicht(tmp_path):
+    wissen = _wissen(tmp_path)
+    _lauf(_quelle(), wissen)
+    q = _quelle()
+    q.kontakte_["sales_ivan"] = []
+    _lauf(q, wissen)
+    bert = (wissen / "companys/fin2gether/Kontakte/_archiv/Bert Beta.md").read_text(encoding="utf-8")
+    kopf = bert.split("\n---\n", 1)[0]
+    assert 'parent: "[[companys/fin2gether/Bereiche/Archiv]]"' in kopf and "Bereiche/Ohne Bereich" not in kopf
+    assert "Nicht mehr in sales-claw gefunden" in bert
+    _lauf(q, wissen)  # naechste Nacht: die Archiv-Uebersicht entsteht aus dem Bestand
+    archiv = (wissen / "companys/fin2gether/Bereiche/Archiv.md").read_text(encoding="utf-8")
+    assert "Hauptbereich:** 1" in archiv
+    erg = _lauf(q, wissen)
+    assert erg.je_firma["fin2gether"]["geschrieben"] == 0
