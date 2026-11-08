@@ -116,6 +116,87 @@ def test_fehlendes_wissen_exit_2(tmp_path):
     assert pruefung.main(["--wissen", str(tmp_path / "nichts"), "--stand", str(tmp_path / "s")], jetzt=JETZT) == 2
 
 
+def _karte(datei: Path, notes: dict, version: int = 1) -> Path:
+    datei.parent.mkdir(parents=True, exist_ok=True)
+    datei.write_text(json.dumps({"version": version, "notes": notes}), encoding="utf-8")
+    return datei
+
+
+def test_karte_lesen_wie_rowboat(tmp_path):
+    gut = _karte(tmp_path / "a.json", {
+        "Topics/Allein": {"level": 3, "parent": "Topics/A"},
+        "Topics/OhneEbene": {"parent": "Topics/A"},           # ohne ganzzahlige Ebene: Rowboat ignoriert den Eintrag
+        "Topics/Wahr": {"level": True, "parent": "Topics/A"},  # bool ist keine Ebene
+        "Topics/OhneParent": {"level": 2},
+    })
+    assert pruefung.karte_lesen(gut) == {"Topics/Allein.md": "Topics/A.md"}
+    assert pruefung.karte_lesen(_karte(tmp_path / "b.json", {"X": {"level": 1, "parent": "Y"}}, version=2)) == {}
+    kaputt = tmp_path / "c.json"
+    kaputt.write_text("{nicht json", encoding="utf-8")
+    assert pruefung.karte_lesen(kaputt) == {}
+    assert pruefung.karte_lesen(tmp_path / "fehlt.json") == {}
+
+
+def test_karte_gibt_eltern_nur_ohne_parent_im_kopf(tmp_path):
+    w = _wissen(tmp_path)
+    _notiz(w, "Areas/Topics.md", "# Bereich\n")
+    _notiz(w, "Topics/MitTotemParent.md", "---\nparent: \"[[Topics/Gibtsnicht]]\"\n---\n# x\n")
+    karte = {
+        "Topics/Allein.md": "Areas/Topics.md",          # ohne parent im Kopf: Linie ueber die Karte
+        "Topics/MitTotemParent.md": "Areas/Topics.md",  # parent im Kopf gewinnt, auch wenn das Ziel fehlt
+        "Topics/B.md": "Areas/Topics.md",               # hat parent im Kopf: Karte zaehlt nicht
+        "Agents/k.md": "Areas/Fehlt.md",                # Eltern-Notiz fehlt: keine Linie
+    }
+    k = pruefung.kennzahlen(w, karte)
+    assert k.karte_kanten == 1
+    assert k.lose == 2  # X und MitTotemParent; Allein und Areas/Topics haengen jetzt aneinander
+    assert k.karte_fehlt == 3  # ohne parent im Kopf und ohne Eintrag in der Karte: A, X, Areas/Topics
+
+
+def test_lauf_liest_karte_neben_dem_wissen(tmp_path):
+    wissen = _wissen(tmp_path)
+    _notiz(wissen, "Areas/Topics.md", "# Bereich\n")
+    _karte(tmp_path / "config" / "vault-map.json", {"Topics/Allein": {"level": 3, "parent": "Areas/Topics"}})
+    assert pruefung.main(["--wissen", str(wissen), "--stand", str(tmp_path / "s")], jetzt=JETZT) == 0
+    verlauf = json.loads((tmp_path / "s" / "verlauf.json").read_text(encoding="utf-8"))
+    assert verlauf[-1]["lose"] == 1 and verlauf[-1]["karte_kanten"] == 1
+    text = (wissen / pruefung.ZIEL).read_text(encoding="utf-8")
+    assert "| Linien über die Ordnungs-Karte | 1 |" in text
+
+
+def test_karte_erneuern_schreibt_karte_und_eine_zeile(tmp_path, capsys):
+    import karte
+
+    wd = tmp_path / "rowboat-data"
+    _notiz(wd / "knowledge", "Agents/neu (abc123).md", "# neu\n")
+    _notiz(wd / "knowledge", "Irgendwo/ohne Regel.md", "# x\n")
+    assert karte.main(["--workdir", str(wd)]) == 0
+    gelesen = pruefung.karte_lesen(wd / "config" / "vault-map.json")
+    assert "Agents/neu (abc123).md" in gelesen
+    ausgabe = capsys.readouterr()
+    zeilen = [z for z in (ausgabe.out + ausgabe.err).splitlines() if z.strip()]
+    assert len(zeilen) == 1 and zeilen[0].startswith("Karte: ") and "erneuert" in zeilen[0]
+    assert karte.main(["--workdir", str(wd)]) == 0
+    assert "unveraendert" in capsys.readouterr().out
+
+
+def test_karte_ohne_wissen_exit_2(tmp_path):
+    import karte
+
+    assert karte.main(["--workdir", str(tmp_path / "leer")]) == 2
+    (tmp_path / "x" / "knowledge").mkdir(parents=True)
+    assert karte.main(["--workdir", str(tmp_path / "x"), "--profil", "gibtsnicht"]) == 2
+
+
+def test_systemd_einheiten_karte():
+    timer = _einheit("rowboat-vault-map.timer")
+    assert timer["OnCalendar"] == ["*:0/10"] and timer["Unit"] == ["rowboat-vault-map.service"]
+    dienst = _einheit("rowboat-vault-map.service")
+    assert dienst["ExecStart"] == ["/usr/bin/python3 /home/debian/marketing-os/spaces/rowboat/wissens_pruefung/karte.py"]
+    assert dienst["User"] == ["debian"] and dienst["Type"] == ["oneshot"] and dienst["NoNewPrivileges"] == ["yes"]
+    assert "EnvironmentFile" not in dienst
+
+
 def _einheit(name: str) -> dict[str, list[str]]:
     werte: dict[str, list[str]] = {}
     for zeile in (Path(pruefung.__file__).parent / "deploy" / name).read_text(encoding="utf-8").splitlines():

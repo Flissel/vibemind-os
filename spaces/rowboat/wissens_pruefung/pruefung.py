@@ -5,12 +5,17 @@ eine Kante entsteht nur aus `[[Ziel]]` (Text oder Frontmatter), dessen Pfad ab `
 EXAKT (Gross-/Kleinschreibung) einer Notiz entspricht; Anker `#...` und Alias `|...` fallen weg. Kurzformen
 wie `[[Notiz]]` sind im Editor klickbar, ergeben im Graph aber keine Kante – sie zaehlen hier als tot.
 `Meetings/` und versteckte Ordner zeigt Rowboat nicht im Graph, sie zaehlen deshalb nicht mit.
+Dazu kommt die Ordnungs-Karte `config/vault-map.json` neben `knowledge/` (geschrieben von `ehl_schema map`):
+eine Notiz OHNE `parent: "[[…]]"` im Kopf bekommt von dort eine Linie zu ihrem Eltern-Platz, sofern es
+diese Notiz gibt (Rowboat `buildHierarchyGraph`, `parseVaultMap`: nur `version` 1, nur Eintraege mit
+ganzzahliger `level`, Pfade exakt).
 
 Ergebnis: `knowledge/Kanal/Dashboards/Wissens-Gesundheit.md` (Konvention der Zentrale: Dashboards als
 Notiz, nur Zahlen, keine Kontaktnamen) und ein Verlauf in `<stand>/verlauf.json`. Tote Ziele unter
 `People/` und `companys/*/Kontakte/` werden nur gezaehlt, nie mit Namen genannt.
 
-Lauf: `python3 pruefung.py [--wissen DIR] [--stand DIR] [--trocken]`. Exit 0 ok, 2 Wissensordner fehlt.
+Lauf: `python3 pruefung.py [--wissen DIR] [--karte DATEI] [--stand DIR] [--trocken]`. Exit 0 ok,
+2 Wissensordner fehlt. Fehlt die Karte oder ist sie unlesbar, wird ohne sie gezaehlt.
 """
 from __future__ import annotations
 
@@ -34,7 +39,10 @@ TOP = 15
 OHNE_QUELLE = "(ohne Angabe)"
 OBERSTE_EBENE = "(oberste Ebene)"
 
+KARTE_VERSION = 1
+
 _LINK = re.compile(r"\[\[([^\[\]]+)\]\]")
+_KOPF_ZEILE = re.compile(r"^([A-Za-z_]\w*):\s*(.*)$")
 _PRIVAT = re.compile(r"^(people/|companys/[^/]+/kontakte/)", re.IGNORECASE)
 _AUSLOESER = re.compile(r"@(rowboat)", re.IGNORECASE)
 
@@ -54,6 +62,39 @@ def link_ziel(roh: str) -> str | None:
     if "." in name and re.fullmatch(r"[A-Za-z0-9]{1,5}", name.rsplit(".", 1)[-1]):
         return None  # Bild, Tabelle, PDF ...: keine Notiz
     return f"{ziel}.md"
+
+
+def karte_lesen(datei: Path) -> dict[str, str]:
+    """Notiz -> Eltern-Notiz (Pfade ab `knowledge/` mit `.md`) aus `vault-map.json`; jedes Problem gibt {}."""
+    try:
+        doc = json.loads(datei.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(doc, dict) or doc.get("version") != KARTE_VERSION or not isinstance(doc.get("notes"), dict):
+        return {}
+    karte: dict[str, str] = {}
+    for pfad, eintrag in doc["notes"].items():
+        if not isinstance(eintrag, dict):
+            continue
+        ebene, eltern = eintrag.get("level"), eintrag.get("parent")
+        if isinstance(ebene, int) and not isinstance(ebene, bool) and isinstance(eltern, str) and eltern:
+            karte[f"{pfad}.md"] = f"{eltern}.md"
+    return karte
+
+
+def _hat_kopf_parent(text: str) -> bool:
+    """Wie Rowboats `parseHierarchy`: Kopfzeile `parent:` mit mindestens einem `[[Ziel]]`."""
+    text = text.lstrip("﻿").replace("\r\n", "\n")
+    if not text.startswith("---\n"):
+        return False
+    ende = text.find("\n---", 3)
+    if ende < 0:
+        return False
+    for zeile in text[4:ende].split("\n"):
+        treffer = _KOPF_ZEILE.match(zeile)
+        if treffer and treffer.group(1) == "parent":
+            return any(t.group(1).split("|")[0].split("#")[0].strip() for t in _LINK.finditer(treffer.group(2)))
+    return False
 
 
 def _notizen(wissen: Path) -> dict[str, str]:
@@ -102,13 +143,16 @@ class Kennzahlen:
     tote: int = 0
     inseln: int = 0
     groesste_insel: int = 0
+    karte_kanten: int = 0  # Linien, die erst die Ordnungs-Karte zieht
+    karte_fehlt: int = 0  # Notizen ohne `parent:` im Kopf und ohne Platz in der Karte
     tote_ziele: Counter = field(default_factory=Counter)
     je_gruppe: dict[str, tuple[int, int]] = field(default_factory=dict)  # Gruppe -> (lose, gesamt)
     je_quelle: dict[str, tuple[int, int]] = field(default_factory=dict)
 
 
-def kennzahlen(wissen: Path) -> Kennzahlen:
+def kennzahlen(wissen: Path, karte: dict[str, str] | None = None) -> Kennzahlen:
     texte = _notizen(wissen)
+    karte = karte or {}
     k = Kennzahlen(notizen=len(texte))
     nachbarn: dict[str, set[str]] = {rel: set() for rel in texte}
     for rel, text in texte.items():
@@ -124,6 +168,18 @@ def kennzahlen(wissen: Path) -> Kennzahlen:
                 k.tote += 1
                 k.tote_ziele[ziel] += 1
     k.kanten = sum(len(n) for n in nachbarn.values()) // 2
+    for rel, text in texte.items():
+        if _hat_kopf_parent(text):
+            continue
+        if rel not in karte:
+            k.karte_fehlt += 1
+            continue
+        eltern = karte[rel]
+        if eltern in nachbarn and eltern != rel and eltern not in nachbarn[rel]:
+            nachbarn[rel].add(eltern)
+            nachbarn[eltern].add(rel)
+            k.karte_kanten += 1
+    k.kanten += k.karte_kanten
     lose = {rel for rel, n in nachbarn.items() if not n}
     k.lose = len(lose)
 
@@ -187,8 +243,9 @@ def notiz(k: Kennzahlen, verlauf: list[dict], jetzt: datetime) -> str:
         "---",
         "",
         "> Automatisch erzeugt (nächtliche Wissens-Prüfung). Nicht hier bearbeiten – der nächste Lauf "
-        "überschreibt. Gezählt wird nach Rowboats Graph-Regeln: nur `[[voller/Pfad]]` mit exakter "
-        "Schreibweise ergibt eine Linie.",
+        "überschreibt. Gezählt wird nach Rowboats Graph-Regeln: eine Linie ergibt `[[voller/Pfad]]` mit "
+        "exakter Schreibweise und, für Notizen ohne `parent:` im Kopf, der Platz aus der Ordnungs-Karte "
+        "`config/vault-map.json`.",
         "",
         "# Wissens-Gesundheit",
         "",
@@ -200,6 +257,8 @@ def notiz(k: Kennzahlen, verlauf: list[dict], jetzt: datetime) -> str:
             ("Notizen", k.notizen, vor("notizen")),
             ("Lose Notizen", f"{k.lose} ({_prozent(k.lose, k.notizen)})", vor("lose")),
             ("Verbindungen", k.kanten, vor("kanten")),
+            ("Linien über die Ordnungs-Karte", k.karte_kanten, vor("karte_kanten")),
+            ("Ohne Platz in der Karte", k.karte_fehlt, vor("karte_fehlt")),
             ("Tote Verbindungen", f"{k.tote} ({len(k.tote_ziele)} Ziele)", vor("tote")),
             ("Inseln", k.inseln, vor("inseln")),
             ("Größte Insel", k.groesste_insel, vor("groesste_insel")),
@@ -253,6 +312,8 @@ def _verlauf_lesen(datei: Path) -> list[dict]:
 def main(argv: list[str] | None = None, *, jetzt: datetime | None = None) -> int:
     parser = argparse.ArgumentParser(description="Lose Notizen und tote Verbindungen in Rowboats Wissen zaehlen")
     parser.add_argument("--wissen", type=Path, default=Path.home() / "rowboat-data" / "knowledge")
+    parser.add_argument("--karte", type=Path, default=None,
+                        help="Ordnungs-Karte (Vorgabe: config/vault-map.json neben dem Wissensordner)")
     parser.add_argument("--stand", type=Path, default=Path.home() / "rowboat-wissens-pruefung")
     parser.add_argument("--trocken", action="store_true", help="nur ausgeben, nichts schreiben")
     args = parser.parse_args(argv)
@@ -260,7 +321,8 @@ def main(argv: list[str] | None = None, *, jetzt: datetime | None = None) -> int
     if not args.wissen.is_dir():
         print(f"Wissensordner fehlt: {args.wissen}", file=sys.stderr)
         return 2
-    k = kennzahlen(args.wissen)
+    karte = karte_lesen(args.karte or args.wissen.parent / "config" / "vault-map.json")
+    k = kennzahlen(args.wissen, karte)
     verlauf_datei = args.stand / "verlauf.json"
     verlauf = _verlauf_lesen(verlauf_datei)
     text = notiz(k, verlauf, jetzt)
@@ -269,7 +331,8 @@ def main(argv: list[str] | None = None, *, jetzt: datetime | None = None) -> int
         return 0
     _atomar(args.wissen / ZIEL, text)
     eintrag = {"zeit": jetzt.isoformat(), "notizen": k.notizen, "lose": k.lose, "kanten": k.kanten,
-               "tote": k.tote, "inseln": k.inseln, "groesste_insel": k.groesste_insel}
+               "tote": k.tote, "inseln": k.inseln, "groesste_insel": k.groesste_insel,
+               "karte_kanten": k.karte_kanten, "karte_fehlt": k.karte_fehlt}
     _atomar(verlauf_datei, json.dumps([*verlauf, eintrag][-VERLAUF_MAX:], ensure_ascii=False, indent=1))
     print(f"Wissens-Pruefung: {k.notizen} Notizen, {k.lose} lose, {k.tote} tote Verbindungen, {k.inseln} Inseln")
     return 0

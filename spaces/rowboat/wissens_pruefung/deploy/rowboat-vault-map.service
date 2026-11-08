@@ -1,0 +1,16 @@
+[Unit]
+Description=Rowboat: Ordnungs-Karte config/vault-map.json fuer den Wissens-Graph erneuern
+Documentation=file:///home/debian/marketing-os/spaces/rowboat/wissens_pruefung/README.md
+
+[Service]
+Type=oneshot
+User=debian
+Group=debian
+WorkingDirectory=/home/debian
+ExecStart=/usr/bin/python3 /home/debian/marketing-os/spaces/rowboat/wissens_pruefung/karte.py
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=5min
+NoNewPrivileges=yes
+PrivateTmp=yes
+UMask=0022
