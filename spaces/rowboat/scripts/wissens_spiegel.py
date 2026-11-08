@@ -95,7 +95,7 @@ KONFLIKTE = "_konflikte"
 EINGANG = ".spiegel-eingang"  # Upload-Zwischenablage auf der VM, nie gespiegelt
 GIT = ".git"  # Rowboats eigene Historie je Seite; reist nur beim Umzug einmal mit
 NIE_SPIEGELN = (KONFLIKTE, EINGANG, GIT)  # oberste Ebene
-VM_FIRMENORDNER = frozenset({"Kontakte", "Newsletter", "Wochenbild"})
+VM_FIRMENORDNER = frozenset({"Kontakte", "Newsletter", "Wochenbild", "Bereiche", "Termine"})
 
 
 class ZuVieleLoeschungen(Exception):
