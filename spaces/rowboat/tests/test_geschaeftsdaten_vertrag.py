@@ -17,7 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(_ROWBOAT / "geschaeftsdaten"))
 sys.path.insert(0, str(_ROWBOAT.parents[1]))
 
-from geschaeftsdaten_fake import ereignis, inhalt, kontakt  # noqa: E402
+from geschaeftsdaten_fake import ereignis, inhalt, kontakt, post_mail  # noqa: E402
+from post import post_notizen  # noqa: E402
 from newsletter import newsletter_notiz  # noqa: E402
 from quelle import Medium, Versand  # noqa: E402
 from steckbrief import steckbrief  # noqa: E402
@@ -62,7 +63,9 @@ def _notizen() -> list[str]:
     termine = [s.inhalt for s in termine_soll("VibeMind", [t], {"l1": "companys/VibeMind/Kontakte/A.md"},
                                               {"l1": "@rowboat Anna"}, heute=date(2026, 11, 8),
                                               archiv_vorhanden=False)]
-    return [sb, nl, wb, *termine]
+    pn = post_notizen([post_mail(betreff="@rowboat Hallo", von_anzeige="@rowboat Anna")], {}, jetzt=datetime(2026, 11, 9, 9, 0, tzinfo=UTC),
+                      stichtag=date(2026, 11, 1), company_da=True)
+    return [sb, nl, wb, *termine, *(t for _s, t in pn.values())]
 
 
 def test_erzeugte_notizen_triggern_keinen_agenten():
