@@ -13,7 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "geschaeftsdaten"))
 
 from geschaeftsdaten_fake import kontakt, post_mail  # noqa: E402
-from test_geschaeftsdaten_lauf import A, B, LAEDEN, _alle, _lauf, _quelle, _termin, _termine, _wissen  # noqa: E402
+from test_geschaeftsdaten_lauf import (A, B, LAEDEN, _alle, _id, _lauf, _quelle, _termin, _termine,  # noqa: E402
+                                      _wissen)
 
 import lauf as lauf_mod  # noqa: E402
 import stuendlich  # noqa: E402
@@ -72,6 +73,7 @@ def test_stuendlich_neuer_pfad_wird_neu_geschrieben_alte_bleibt(tmp_path):
 def test_stuendlich_zweimal_hintereinander_null_schreibungen(tmp_path):
     wissen = _wissen(tmp_path)
     q = _quelle()
+    _steckbrief_da(wissen)
     q.ereignisse_["sales"].append(_termin("u1", "2026-10-28"))
     q.post_ = [post_mail()]
     _stunde(q, wissen, stichtag=STICHTAG)
@@ -88,6 +90,7 @@ def test_stuendlich_schreibt_post_notiz_nur_fuer_laden_sales(tmp_path):
     q.kontakte_["sales"][0] = kontakt(id=A, name="Anna Alpha", email_klein="anna@alpha.de", bereiche=("bav",))
     q.post_ = [post_mail(id="m1", absender_klein="anna@alpha.de", datum="2026-10-20T08:00:00+00:00"),
                post_mail(id="m2", absender_klein="bert@beta.de", datum="2026-10-21T08:00:00+00:00")]
+    _steckbrief_da(wissen)  # verlinkt wird nur, was als Datei existiert
     erg = _stunde(q, wissen, stichtag=STICHTAG)
     assert erg.exit_code == 0
     text = (wissen / "Post" / "Zu beantworten.md").read_text(encoding="utf-8")
@@ -178,6 +181,7 @@ def test_stuendlich_main_schreibt_post_und_termine_ohne_stand_json(tmp_path, mon
     wissen = _umgebung(tmp_path, monkeypatch)
     q = _quelle()
     q.ereignisse_["sales"].append(_termin("u1", "2026-10-28"))
+    _steckbrief_da(wissen)
     q.post_ = [post_mail()]
     monkeypatch.setattr(stuendlich, "PsqlQuelle", lambda c: q)
     assert stuendlich.main(["--jetzt", "2026-10-26T12:00:00+00:00"]) == 0
@@ -261,3 +265,130 @@ def test_sperre_zweiter_versuch_scheitert(tmp_path):
     (tmp_path / "datei").write_text("x", encoding="utf-8")
     with sperre(tmp_path / "datei" / "l", warten_s=0) as b:  # Elternteil ist eine Datei
         assert b is False
+
+
+def _steckbrief_da(wissen: Path) -> Path:
+    pfad = wissen / "companys/VibeMind/Kontakte/bAV/Anna Alpha.md"
+    pfad.parent.mkdir(parents=True, exist_ok=True)
+    pfad.write_text("# Anna Alpha\n", encoding="utf-8")
+    return pfad
+
+
+def test_umzuege_in_der_stunde_loesen_den_nachtwaechter_nicht_aus(tmp_path):
+    wissen = _wissen(tmp_path)
+    q = _quelle()
+    tage = [f"2026-10-{10 + i:02d}" for i in range(6)]
+    q.ereignisse_["sales"] += [_termin(f"u{i}", t, "10:00") for i, t in enumerate(tage)]
+    _lauf(q, wissen)
+    q.ereignisse_["sales"] += [_termin(f"u{i}", t, "15:00", stunde=12) for i, t in enumerate(tage)]
+    _stunde(q, wissen)
+    assert len(_termine(wissen)) == 13  # alte und neue Kopien, dazu die Uebersicht
+    neu = sorted([f"{t} 1500 Anna Alpha.md" for t in tage] + ["_overview.md"])
+    for _ in range(2):
+        erg = _lauf(q, wissen)
+        assert erg.exit_code == 0
+        assert not any("Massenarchivierung" in u for u in erg.uebersprungen)
+        assert _termine(wissen) == neu  # schon nach der ersten Nacht sind die alten Kopien weg
+    assert not (wissen / TERMINE / "_archiv").exists()
+
+
+def test_echte_massenarchivierung_greift_trotz_duplikat_ausnahme(tmp_path):
+    wissen = _wissen(tmp_path)
+    q = _quelle()
+    tage = [f"2026-10-{10 + i:02d}" for i in range(10)]
+    q.ereignisse_["sales"] += [_termin(f"u{i}", t, "10:00") for i, t in enumerate(tage)]
+    _lauf(q, wissen)
+    q.ereignisse_["sales"] += [_termin("u0", tage[0], "15:00", stunde=12)]
+    _stunde(q, wissen)
+    q.ereignisse_["sales"] = q.ereignisse_["sales"][:1]  # alle Termine verschwinden aus der Quelle
+    erg = _lauf(q, wissen)
+    assert "Massenarchivierung VibeMind" in erg.uebersprungen
+    assert erg.je_firma["VibeMind"]["archiviert"] == 0
+
+
+def test_gleiche_uid_bei_zwei_kontakten_stuendlich_und_nachts(tmp_path):
+    wissen = _wissen(tmp_path)
+    q = _quelle()
+    q.kontakte_["sales"].append(kontakt(id=_id(7), name="Doris Delta", bereiche=()))
+    q.ereignisse_["sales"] += [_termin("gemeinsam", "2026-10-28", lead=A), _termin("gemeinsam", "2026-10-28", lead=_id(7))]
+    _lauf(q, wissen)
+    beide = ["2026-10-28 1000 Anna Alpha.md", "2026-10-28 1000 Doris Delta.md", "_overview.md"]
+    assert _termine(wissen) == beide
+    q.ereignisse_["sales"].append(_termin("gemeinsam", "2026-10-28", lead=A, typ="termin_abgesagt", stunde=12))
+    _stunde(q, wissen)
+    assert _termine(wissen) == beide  # stuendlich wird nie geloescht
+    _lauf(q, wissen)
+    assert _termine(wissen) == ["2026-10-28 1000 Doris Delta.md", "_overview.md"]
+
+
+def test_gleiche_uid_bei_zwei_kontakten_stuendlich_neu(tmp_path):
+    wissen = _wissen(tmp_path)
+    q = _quelle()
+    q.kontakte_["sales"].append(kontakt(id=_id(7), name="Doris Delta", bereiche=()))
+    _lauf(q, wissen)  # legt die Steckbriefe an
+    q.ereignisse_["sales"] += [_termin("gemeinsam", "2026-10-28", lead=A), _termin("gemeinsam", "2026-10-28", lead=_id(7))]
+    _stunde(q, wissen)
+    assert _termine(wissen) == ["2026-10-28 1000 Anna Alpha.md", "2026-10-28 1000 Doris Delta.md", "_overview.md"]
+
+
+def test_stuendlich_pflegt_gitignore_vor_dem_schreiben(tmp_path):
+    wissen = tmp_path / "knowledge"
+    wissen.mkdir()
+    erg = _stunde(_quelle(), wissen, stichtag=STICHTAG)
+    text = (wissen / ".gitignore").read_text(encoding="utf-8")
+    assert "companys/*/Termine/" in text and "Post/" in text
+    assert erg.gitignore == "angelegt"
+
+
+def test_stuendlich_trocken_legt_kein_gitignore_an(tmp_path):
+    wissen = _wissen(tmp_path)
+    _stunde(_quelle(), wissen, stichtag=STICHTAG, trocken=True)
+    assert not (wissen / ".gitignore").exists()
+
+
+def test_stuendlich_fremde_gitignore_bleibt_unberuehrt(tmp_path, caplog):
+    wissen = _wissen(tmp_path)
+    (wissen / ".gitignore").write_text("node_modules/\n", encoding="utf-8")
+    with caplog.at_level("WARNING", logger="geschaeftsdaten"):
+        erg = _stunde(_quelle(), wissen, stichtag=STICHTAG)
+    assert erg.gitignore == "fremd"
+    assert (wissen / ".gitignore").read_text(encoding="utf-8") == "node_modules/\n"
+    assert "fremd" in caplog.text
+
+
+def test_stuendlich_verlinkt_nur_vorhandene_steckbriefe(tmp_path):
+    wissen = _wissen(tmp_path)
+    q = _quelle()
+    q.ereignisse_["sales"].append(_termin("u1", "2026-10-28"))
+    q.post_ = [post_mail(id="m1", absender_klein="anna@alpha.de", datum="2026-10-20T08:00:00+00:00")]
+    erg = _stunde(q, wissen, stichtag=STICHTAG)
+    assert erg.exit_code == 0
+    post = wissen / "Post" / "Zu beantworten.md"
+    assert "[[companys/VibeMind/Kontakte" not in post.read_text(encoding="utf-8")
+    assert _termine(wissen) == []  # ohne Steckbrief entsteht (noch) keine Termin-Notiz; sie folgt nach der Nacht
+    _steckbrief_da(wissen)
+    _stunde(q, wissen, stichtag=STICHTAG)
+    assert "[[companys/VibeMind/Kontakte/bAV/Anna Alpha]]" in post.read_text(encoding="utf-8")
+    notiz = (wissen / TERMINE / "2026-10-28 1000 Anna Alpha.md").read_text(encoding="utf-8")
+    assert 'kontakt: "[[companys/VibeMind/Kontakte/bAV/Anna Alpha]]"' in notiz
+
+
+def test_stuendlich_ein_firmenfehler_haelt_den_rest_nicht_auf(tmp_path, monkeypatch, caplog):
+    wissen = _wissen(tmp_path)
+    q = _quelle()
+    q.post_ = [post_mail()]
+    echt = stuendlich.planen
+    aufrufe = []
+
+    def planen(*a, **k):
+        aufrufe.append(1)
+        if len(aufrufe) == 1:
+            raise ValueError("Anna Alpha kaputt")
+        return echt(*a, **k)
+
+    monkeypatch.setattr(stuendlich, "planen", planen)
+    with caplog.at_level("WARNING", logger="geschaeftsdaten"):
+        erg = _stunde(q, wissen, stichtag=STICHTAG)
+    assert erg.exit_code == 1 and len(erg.uebersprungen) == 1
+    assert (wissen / "Post" / "Zu beantworten.md").is_file()
+    assert "ValueError" in caplog.text and "Anna Alpha" not in caplog.text

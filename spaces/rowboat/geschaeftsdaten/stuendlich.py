@@ -27,7 +27,8 @@ for _pfad in (_HIER.parents[2], _HIER.parent / "scripts", _HIER):  # Repo-Wurzel
 
 from ablage import Plan, ausfuehren, bestand, planen  # noqa: E402
 from laeden import Laden, firmenordner, pruefen  # noqa: E402
-from lauf import ALLE, Ergebnis, _laden_lesen, _steckbrief_pfade, _termine_fuer_firma  # noqa: E402
+from lauf import (ALLE, Ergebnis, _laden_lesen, _steckbrief_pfade, _termine_fuer_firma,  # noqa: E402
+                  gitignore_pflegen)
 from post import post_notizen, post_schreiben, stichtag_lesen  # noqa: E402
 from quelle import DbFehler, PostMail, PsqlQuelle, Quelle  # noqa: E402
 from sperre import SPERRE_STANDARD, sperre  # noqa: E402
@@ -77,12 +78,15 @@ def stunde(quelle: Quelle, laeden: list[Laden], wissen: Path, *, jetzt: datetime
             continue
         try:
             pfade, namen, gesperrt, n_ueber = _steckbrief_pfade(firma, gruppen[marke])
+            # Der Lauf legt keine Steckbriefe an: verlinkt wird nur, was schon als Datei da ist (der Nachtlauf
+            # schreibt sie). Ein Link ins Leere liesse Rowboat beim Klick eine fremde Notiz am Pfad anlegen.
+            pfade = {lead: rel for lead, rel in pfade.items() if (wissen / rel).is_file()}
             soll, abgesagt = _termine_fuer_firma(firma, gruppen[marke], pfade, namen, heute=heute)
             ist = [i for i in bestand(firma) if i.rel.startswith("Termine/")]
             gesperrt |= gesperrte_termin_schluessel((i.schluessel for i in ist), gesperrt, abgesagt)
             plan = planen(soll, ist, gesperrt, lambda _ist: "")
-        except OSError as e:
-            log.error("%s: Dateifehler beim Planen (%s), Firma uebersprungen", firma.name, type(e).__name__)
+        except (OSError, ValueError) as e:
+            log.error("%s: Fehler beim Planen (%s), Firma uebersprungen", firma.name, type(e).__name__)
             ergebnis.uebersprungen.append(f"Firma {firma.name}")
             continue
         # Nur anlegen und aktualisieren: Umzuege werden zu neuen Notizen, die alten bleiben bis zur Nacht.
@@ -94,6 +98,16 @@ def stunde(quelle: Quelle, laeden: list[Laden], wissen: Path, *, jetzt: datetime
             for k in g.kontakte:
                 if k.email_klein and not k.gesperrt and k.id in pfade:
                     steckbriefe.setdefault(k.email_klein, pfade[k.id])
+
+    if not trocken:  # wie der Nachtlauf, vor dem ersten Schreiben: Namen und Betreffe gehoeren nicht in Rowboats Git
+        try:
+            ergebnis.gitignore = gitignore_pflegen(wissen)
+        except OSError as e:
+            ergebnis.gitignore = "fehler"
+            log.warning(".gitignore nicht gepflegt (%s)", type(e).__name__)
+        if ergebnis.gitignore == "fremd":
+            log.warning(".gitignore im Wissensordner ist fremd: Termine und Post koennen in Rowboats "
+                        "Versionsgeschichte landen. Zeilen companys/*/Termine/ und Post/ von Hand ergaenzen.")
 
     for firma, plan, n_ueber in plaene:
         try:

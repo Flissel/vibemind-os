@@ -29,7 +29,7 @@ def test_termine_aus_absage_und_spaeterer_eintrag():
           ereignis(lead_id="l1", typ="termin_abgesagt", termin_uid="u2")]
     aktiv, abgesagt = termine_aus(ev)
     assert [(t.uid, t.datum, t.uhrzeit) for t in aktiv] == [("u1", date(2026, 11, 12), "14:30")]
-    assert abgesagt == {"u2"}
+    assert abgesagt == {("l1", "u2")}
 
 
 def test_termine_aus_dauer_und_ungueltiges():
@@ -119,7 +119,7 @@ def test_thema_gekuerzt_und_ort_mit_leerzeichen_kein_link():
 
 def test_gesperrte_termin_schluessel():
     ist = ["termin:l1:u1", "termin:l2:u2", "termin:l3:u3", "l1", "termine:uebersicht"]
-    assert gesperrte_termin_schluessel(ist, {"l2"}, {"u3"}) == {"termin:l2:u2", "termin:l3:u3"}
+    assert gesperrte_termin_schluessel(ist, {"l2"}, {("l3", "u3")}) == {"termin:l2:u2", "termin:l3:u3"}
 
 
 def test_feindliche_uid_und_lead_id_werden_verworfen():
@@ -191,3 +191,45 @@ def test_markdown_link_und_bild_in_thema_name_ort_neutralisiert():
     zeilen = [z for z in rumpf.splitlines() if z.startswith(("# ", "- **Thema", "- **Ort")) or "Klick" in z]
     assert zeilen and all(_ohne_markdown(z.replace("[[", "").replace("]]", "")) for z in zeilen if "Kontakt:" not in z)
     assert "](https://evil" not in inhalt and "![x]" not in inhalt and "<https" not in inhalt
+
+
+def test_gleiche_uid_bei_zwei_leads_bleibt_beides_und_absage_trifft_nur_einen():
+    ev = [ereignis(lead_id="l1", typ="termin", termin_uid="gemeinsam", termin_datum="2026-11-12"),
+          ereignis(lead_id="l2", typ="termin", termin_uid="gemeinsam", termin_datum="2026-11-12")]
+    aktiv, abgesagt = termine_aus(ev)
+    assert sorted((t.lead_id, t.uid) for t in aktiv) == [("l1", "gemeinsam"), ("l2", "gemeinsam")]
+    assert abgesagt == set()
+    aktiv, abgesagt = termine_aus(ev + [ereignis(lead_id="l1", typ="termin_abgesagt", termin_uid="gemeinsam")])
+    assert [(t.lead_id, t.uid) for t in aktiv] == [("l2", "gemeinsam")]
+    assert abgesagt == {("l1", "gemeinsam")}
+
+
+def test_gesperrte_termin_schluessel_absage_gilt_nur_fuer_den_lead():
+    ist = ["termin:l1:gemeinsam", "termin:l2:gemeinsam"]
+    assert gesperrte_termin_schluessel(ist, set(), {("l1", "gemeinsam")}) == {"termin:l1:gemeinsam"}
+
+
+def test_id_mit_fuehrendem_sonderzeichen_wird_verworfen():
+    ev = [ereignis(lead_id="l1", typ="termin", termin_uid="@abc", termin_datum="2026-11-12"),
+          ereignis(lead_id="l1", typ="termin", termin_uid="-abc", termin_datum="2026-11-12"),
+          ereignis(lead_id="@l1", typ="termin", termin_uid="ok", termin_datum="2026-11-12"),
+          ereignis(lead_id="l1", typ="termin", termin_uid="a@b", termin_datum="2026-11-12")]
+    aktiv, _ = termine_aus(ev)
+    assert [t.uid for t in aktiv] == ["a@b"]
+
+
+def test_front_matter_hat_uhrzeit_und_dauer_nur_wenn_vorhanden():
+    t = Termin("l1", "u1", date(2026, 11, 12), "14:30", 45, None, None)
+    kopf = _soll([t])[0].inhalt.split("\n---\n", 1)[0]
+    assert 'uhrzeit: "14:30"' in kopf and "dauer_minuten: 45" in kopf
+    kopf = _soll([Termin("l1", "u1", date(2026, 11, 12), None, None, None, None)])[0].inhalt.split("\n---\n", 1)[0]
+    assert "uhrzeit" not in kopf and "dauer_minuten" not in kopf
+
+
+def test_kalender_ist_ein_markdown_link_und_hinweis_ist_neutral():
+    t = Termin("l1", "u1", date(2026, 11, 12), None, None, None, None)
+    soll = {s.schluessel: s for s in _soll([t])}
+    assert "](https://vibemind-offload-1.tail6c7d61.ts.net/kalender)" in soll["termine:uebersicht"].inhalt
+    assert "`/kalender`" not in soll["termine:uebersicht"].inhalt
+    assert "nächtliche" not in soll["termin:l1:u1"].inhalt
+    assert "Änderungen hier gehen verloren" in soll["termin:l1:u1"].inhalt

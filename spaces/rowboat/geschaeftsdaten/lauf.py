@@ -342,21 +342,24 @@ def _atomar(pfad: Path, text: str) -> None:
     os.replace(tmp, pfad)
 
 
-def _massenschutz(plan: Plan, ist: list[Ist], gesperrt: set[str]) -> bool:
+def _massenschutz(plan: Plan, ist: list[Ist], gesperrt: set[str], soll_schluessel: frozenset[str] = frozenset()
+                  ) -> bool:
     """True, wenn zu viele Steckbriefe oder zu viele Termin-Notizen auf einmal ins Archiv bzw. weg (ohne
     gesperrte Kopien) gingen. Beide Bereiche werden getrennt gegen dieselben Schwellen gezaehlt; greift einer,
-    steht die ganze Firma (auch die Steckbrief-Archivierung dieser Nacht, wenn nur die Termine zu viele sind)."""
+    steht die ganze Firma (auch die Steckbrief-Archivierung dieser Nacht, wenn nur die Termine zu viele sind).
+    Zusaetzliche Kopien eines Schluessels, der ein Soll hat (etwa die alte Notiz nach einer stuendlichen
+    Verschiebung), sind Aufraeumen und kein Verlust: sie zaehlen weder als Entfernung noch in der Basis."""
     def ist_termin(rel: str) -> bool:
         return rel.startswith("Termine/")
 
     def zu_viele(weg: int, aktiv: int) -> bool:
         return weg > MASSEN_MIN and weg > MASSEN_ANTEIL * aktiv
 
-    aktiv_kontakte = sum(1 for i in ist if i.rel.startswith("Kontakte/")
-                         and not i.rel.startswith(ARCHIV_ORDNER + "/"))
-    aktiv_termine = sum(1 for i in ist if ist_termin(i.rel) and not i.rel.startswith(TERMIN_ARCHIV + "/")
-                        and i.rel != TERMIN_UEBERSICHT)
-    frei = [i for i in plan.entfernen if i.schluessel not in gesperrt]
+    aktiv_kontakte = len({i.schluessel for i in ist if i.rel.startswith("Kontakte/")
+                          and not i.rel.startswith(ARCHIV_ORDNER + "/")})
+    aktiv_termine = len({i.schluessel for i in ist if ist_termin(i.rel) and not i.rel.startswith(TERMIN_ARCHIV + "/")
+                         and i.rel != TERMIN_UEBERSICHT})
+    frei = [i for i in plan.entfernen if i.schluessel not in gesperrt and i.schluessel not in soll_schluessel]
     weg_termine = (sum(1 for i, _ in plan.archivieren if ist_termin(i.rel))
                    + sum(1 for i in frei if i.schluessel.startswith(TERMIN_PRAEFIX)))
     weg_kontakte = (sum(1 for i, _ in plan.archivieren if not ist_termin(i.rel))
@@ -428,7 +431,7 @@ def lauf(quelle: Quelle, laeden: list[Laden], wissen: Path, *, heute: date, troc
             log.error("%s: Dateifehler beim Planen (%s), Firma uebersprungen", firma.name, type(e).__name__)
             ergebnis.uebersprungen.append(f"Firma {firma.name}")
             continue
-        massen = _massenschutz(plan, ist, gesperrt)
+        massen = _massenschutz(plan, ist, gesperrt, frozenset(s.schluessel for s in soll))
         if massen and firma.name.casefold() in freigegeben:
             log.info("%s: Massen-Waechter fuer diesen Lauf freigegeben", firma.name)
             massen = False

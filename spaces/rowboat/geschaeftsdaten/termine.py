@@ -25,12 +25,13 @@ UEBERSICHT_STAMM = "_overview"
 VORSCHAU_TAGE = 14  # Uebersicht: heute bis heute + 14 (einschliesslich)
 MAX_THEMA = 200
 MAX_NAME = 100
+SALES_UI = "https://vibemind-offload-1.tail6c7d61.ts.net"  # post.py importiert von hier
 _UHRZEIT = re.compile(r"^\d{1,2}:\d{2}$")
 _ZAHL = re.compile(r"^[0-9]+$")
 _LEERRAUM = re.compile(r"\s+")
 _STEUER = re.compile(r"[\x00-\x1f\x7f]")
 _URL = re.compile(r"^https://[^\s<>()\[\]\x00-\x1f\x7f]+$")
-_ID = re.compile(r"^[A-Za-z0-9_.@-]{1,200}$")
+_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.@-]{0,199}")  # alphanumerisch am Anfang: ein fuehrendes `@` bricht YAML
 log = logging.getLogger("geschaeftsdaten")
 _FEST = datetime(2000, 1, 1, tzinfo=timezone.utc)  # gleiches created_at: Gleichstand entscheidet die uid
 
@@ -67,8 +68,9 @@ def _id_ok(wert: str) -> bool:
     return bool(_ID.fullmatch(wert)) and "@rowboat" not in wert.casefold()
 
 
-def termine_aus(ereignisse: list[Ereignis]) -> tuple[list[Termin], set[str]]:
-    """(aktive Termine nach Datum und Uhrzeit, abgesagte uids). Je uid gewinnt der spaetere Eintrag; ohne
+def termine_aus(ereignisse: list[Ereignis]) -> tuple[list[Termin], set[tuple[str, str]]]:
+    """(aktive Termine nach Datum und Uhrzeit, abgesagte `(lead_id, uid)`). Je Lead und uid (dieselbe uid kann
+    bei zwei Leads vorkommen) gewinnt der spaetere Eintrag; ohne
     gueltiges `termin_datum` wird ein Termin uebersprungen. Eintraege ohne uid bleiben erhalten (uid `""`),
     bekommen aber keine Notiz, weil sie keinen Schluessel haetten."""
     geordnet = sorted(ereignisse, key=lambda e: e.zeit)
@@ -78,19 +80,19 @@ def termine_aus(ereignisse: list[Ereignis]) -> tuple[list[Termin], set[str]]:
         log.warning("%d Termin-Ereignisse mit ungueltiger Lead-ID oder uid verworfen", verworfen)
     geordnet = [e for e in geordnet if e.typ not in ("termin", "termin_abgesagt")
                 or (_id_ok(e.lead_id) and (not e.termin_uid or _id_ok(e.termin_uid)))]
-    abgesagt = {e.termin_uid for e in geordnet if e.typ == "termin_abgesagt" and e.termin_uid}
-    je_uid: dict[str, Ereignis] = {}
+    abgesagt = {(e.lead_id, e.termin_uid) for e in geordnet if e.typ == "termin_abgesagt" and e.termin_uid}
+    je_uid: dict[tuple[str, str], Ereignis] = {}
     ohne_uid: list[Ereignis] = []
     for e in geordnet:
         if e.typ != "termin":
             continue
         if e.termin_uid:
-            je_uid[e.termin_uid] = e
+            je_uid[(e.lead_id, e.termin_uid)] = e
         else:
             ohne_uid.append(e)
     termine: list[Termin] = []
     for e in [*je_uid.values(), *ohne_uid]:
-        if e.termin_uid in abgesagt:
+        if (e.lead_id, e.termin_uid) in abgesagt:
             continue
         try:
             tag = date.fromisoformat(e.termin_datum or "")
@@ -142,9 +144,11 @@ def _notiz(t: Termin, name: str, kontakt_link: str, eltern: str) -> str:
         "---", f"erzeugt_von: {ERZEUGT_VON}", "quelle: sales-claw",
         f"schluessel: {termin_schluessel(t.lead_id, t.uid)}", "art: termin",
         f"parent: {_links([eltern])}", f"kontakt: {_links([kontakt_link])}",
-        f"kontakt_id: {t.lead_id}", f"termin_uid: {t.uid}", f"datum: {t.datum.isoformat()}", "---", "",
-        "> Automatisch erzeugt aus sales-claw. Bitte nicht bearbeiten – der nächtliche Lauf überschreibt; "
-        "eigene Anmerkungen in eine eigene Notiz.",
+        f"kontakt_id: {t.lead_id}", f"termin_uid: {t.uid}", f"datum: {t.datum.isoformat()}",
+        *([f'uhrzeit: "{t.uhrzeit}"'] if t.uhrzeit else []),  # in Anfuehrungszeichen: `10:00` ist sonst YAML-Zahl
+        *([f"dauer_minuten: {t.dauer_minuten}"] if t.dauer_minuten else []), "---", "",
+        "> Automatisch erzeugt aus sales-claw. Bitte nicht bearbeiten – wird automatisch überschrieben; "
+        "Änderungen hier gehen verloren. Eigene Anmerkungen in eine eigene Notiz.",
         "",
         f"# Termin mit {name}",
         "",
@@ -174,7 +178,7 @@ def _uebersicht(firma: str, eintraege: list[tuple[Termin, str]], heute: date, el
     ]
     zeilen += [f"- [[{rel[:-3]}]]" for rel in kommend] or ["Keine."]
     zeilen += ["", f"Vergangene Termine: {vergangen}", "",
-               "Die Kalenderansicht liegt in sales-claw unter `/kalender`."]
+               f"Die [Kalenderansicht]({SALES_UI}/kalender) liegt in sales-claw."]
     return "\n".join(zeilen) + "\n"
 
 
@@ -220,13 +224,13 @@ def termine_soll(firma: str, termine: list[Termin], pfade: dict[str, str], namen
 
 
 def gesperrte_termin_schluessel(ist_schluessel: Iterable[str], gesperrte_ids: set[str],
-                                abgesagt: set[str]) -> set[str]:
-    """Termin-Schluessel aus dem Bestand, deren Kontakt gesperrt oder deren Termin abgesagt ist."""
+                                abgesagt: set[tuple[str, str]]) -> set[str]:
+    """Termin-Schluessel aus dem Bestand, deren Kontakt gesperrt oder deren Termin (`(lead_id, uid)`) abgesagt ist."""
     treffer: set[str] = set()
     for s in ist_schluessel:
         if not s.startswith(TERMIN_PRAEFIX):
             continue
         teile = s[len(TERMIN_PRAEFIX):].split(":", 1)
-        if len(teile) == 2 and (teile[0] in gesperrte_ids or teile[1] in abgesagt):
+        if len(teile) == 2 and (teile[0] in gesperrte_ids or (teile[0], teile[1]) in abgesagt):
             treffer.add(s)
     return treffer

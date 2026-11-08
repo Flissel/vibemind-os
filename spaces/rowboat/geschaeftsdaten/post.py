@@ -16,9 +16,8 @@ from zoneinfo import ZoneInfo
 from ablage import ERZEUGT_VON, _eigen, _schreiben_atomar, eigener_schluessel
 from laeden import env_werte
 from quelle import PostMail
-from termine import _einzeilig
+from termine import SALES_UI, _einzeilig  # noqa: F401 - SALES_UI bleibt hier erreichbar
 
-SALES_UI = "https://vibemind-offload-1.tail6c7d61.ts.net"
 MAX_PUNKTE = 50
 STAND_PRAEFIX = "Stand: "
 STICHTAG_SCHLUESSEL = "POST_AUFRAEUMEN_AB"
@@ -32,8 +31,8 @@ BERLIN = ZoneInfo("Europe/Berlin")
 _STICHTAG = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _MAIL_ID = re.compile(r"[A-Za-z0-9-]{1,64}")
 _LINK_ZIEL = re.compile(r"[^\[\]|#^\x00-\x1f\x7f]+")
-_HINWEIS = ("> Automatisch erzeugt aus sales-ui. Nicht hier bearbeiten – der nächtliche Lauf überschreibt; "
-            "eigene Anmerkungen in eine eigene Notiz.")
+_HINWEIS = ("> Automatisch erzeugt aus sales-ui. Nicht hier bearbeiten – wird automatisch überschrieben; "
+            "Änderungen hier gehen verloren. Eigene Anmerkungen in eine eigene Notiz.")
 log = logging.getLogger("geschaeftsdaten")
 
 
