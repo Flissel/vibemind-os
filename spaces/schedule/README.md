@@ -4,6 +4,14 @@ Scheduled tasks, reminders and timers. Persistence is the shared Supabase table
 `public.scheduled_tasks`; triggers are fired by an APScheduler worker that
 reloads its jobs from that table on boot.
 
+Three files here are tombstones — `agents/schedule_agent.py`,
+`tools/schedule_tools.py` and `workers/schedule_worker.py` hold a pointer to
+this README and nothing else. Deleting them outright would have been the
+cleaner form; the sandbox the change was made in refused `rm` and `git rm`, so
+they were emptied in place instead, and a follow-up can remove the files. What
+they used to claim, and why that had to stop, is at the bottom under
+[Directory Structure](#directory-structure).
+
 ## One binding, one target
 
 ```
