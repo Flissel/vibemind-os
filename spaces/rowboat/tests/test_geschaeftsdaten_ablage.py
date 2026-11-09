@@ -281,3 +281,47 @@ def test_uebersicht_mit_soll_bleibt_gleich(tmp_path):
     _lauf(tmp_path, soll)
     plan = planen(soll, bestand(tmp_path), set(), _archiv)
     assert _leer(plan) and plan.unveraendert == 1
+
+
+# --- Termin-Notizen -----------------------------------------------------------------------------------
+
+def test_bestand_liest_termine_mit_archiv(tmp_path):
+    _schreiben(tmp_path, "Termine/2026-10-28 1000 Anna.md", _inhalt("termin:l1:u1"))
+    _schreiben(tmp_path, "Termine/_archiv/2026-10-01 0900 Anna.md", _inhalt("termin:l1:u0"))
+    _schreiben(tmp_path, "Termine/_overview.md", _inhalt("termine:uebersicht"))
+    _schreiben(tmp_path, "Termine/Mitschrift.md", "# eigene Notiz\n")
+    ist = {i.rel: i.schluessel for i in bestand(tmp_path)}
+    assert ist == {"Termine/2026-10-28 1000 Anna.md": "termin:l1:u1",
+                   "Termine/_archiv/2026-10-01 0900 Anna.md": "termin:l1:u0",
+                   "Termine/_overview.md": "termine:uebersicht"}
+
+
+def test_verschwundener_termin_ins_termin_archiv(tmp_path):
+    _lauf(tmp_path, [Soll("Termine/2026-10-28 1000 Anna.md", "termin:l1:u1", _inhalt("termin:l1:u1"))])
+    plan = planen([], bestand(tmp_path), set(), _archiv)
+    assert [(i.rel, ziel) for i, ziel in plan.archivieren] == [
+        ("Termine/2026-10-28 1000 Anna.md", "Termine/_archiv/2026-10-28 1000 Anna.md")]
+    assert ausfuehren(plan, tmp_path)["archiviert"] == 1
+    plan = planen([], bestand(tmp_path), set(), _archiv)
+    assert _leer(plan) and plan.unveraendert == 1  # liegt schon im Archiv
+
+
+def test_termin_uebersicht_ohne_soll_bleibt_unveraendert(tmp_path):
+    _schreiben(tmp_path, "Termine/_overview.md", _inhalt("termine:uebersicht"))
+    plan = planen([], bestand(tmp_path), set(), _archiv)
+    assert _leer(plan) and plan.unveraendert == 1
+
+
+def test_termin_archivname_kollidiert_ohne_doppelpunkt(tmp_path):
+    _schreiben(tmp_path, "Termine/_archiv/2026-10-28 1000 Anna.md", _inhalt("termin:l2:u9"))
+    _schreiben(tmp_path, "Termine/2026-10-28 1000 Anna.md", _inhalt("termin:l1:abcdefghij"))
+    plan = planen([], bestand(tmp_path), set(), _archiv)
+    assert [ziel for _, ziel in plan.archivieren] == ["Termine/_archiv/2026-10-28 1000 Anna (abcdefgh).md"]
+
+
+def test_gesperrter_termin_entfernt_auch_aus_termin_archiv(tmp_path):
+    _schreiben(tmp_path, "Termine/2026-10-28 1000 Anna.md", _inhalt("termin:l1:u1"))
+    _schreiben(tmp_path, "Termine/_archiv/2026-10-28 1000 Anna.md", _inhalt("termin:l1:u1"))
+    z = _lauf(tmp_path, [], gesperrt={"termin:l1:u1"})
+    assert z["entfernt"] == 2 and z["archiviert"] == 0
+    assert not list((tmp_path / "Termine").rglob("*.md"))

@@ -18,7 +18,8 @@ import './App.css'
 import z from 'zod';
 import { CheckIcon, LoaderIcon, PanelLeftIcon, ChevronLeftIcon, ChevronRightIcon, Plus, HistoryIcon, MessageSquare } from 'lucide-react';
 import { cn, compactPath, parentPath } from '@/lib/utils';
-import { SPACES_ENABLED } from '@/lib/feature-flags';
+import { EMAIL_ENABLED, SPACES_ENABLED } from '@/lib/feature-flags';
+import { gateEmailView } from '@/lib/email-gate';
 import { SHORTCUTS, isRichTextTarget } from '@/lib/shortcuts';
 import { Keys } from '@/components/keys';
 import { useFullScreen } from '@/hooks/use-full-screen';
@@ -5286,7 +5287,8 @@ function App() {
   // view names. Because closeAllSections resets everything (including Code,
   // which used to live outside this system as a sentinel tab), applying a
   // view can never strand a stale section on screen.
-  const applyViewState = useCallback(async (view: ViewState) => {
+  const applyViewState = useCallback(async (requestedView: ViewState) => {
+    const view = gateEmailView(requestedView)
     // Whether this navigation ENTERS Spaces (vs a click within it) — read
     // before closeAllSections resets the flag.
     closeAllSections()
@@ -5399,7 +5401,8 @@ function App() {
   }, [closeAllSections, dismissBrowserOverlay, bindChatToRun, placeAssistantChat, assistantLayout.assistant, activateAssistantTab, newChatAt, dispatchAssistantLayout])
   applyViewStateRef.current = applyViewState
 
-  const navigateToView = useCallback(async (nextView: ViewState) => {
+  const navigateToView = useCallback(async (requestedView: ViewState) => {
+    let nextView = gateEmailView(requestedView)
     const current = currentViewStateRef.current
     if (current.type === 'workspace' && nextView.type === 'file') {
       nextView = { ...current, filePath: nextView.path }
@@ -7722,7 +7725,7 @@ function App() {
                 </div>
                 </KeepAliveSection>
               )}
-              {sectionMounted('email') && (
+              {EMAIL_ENABLED && sectionMounted('email') && (
                 <KeepAliveSection visible={activeMiddle === 'email'}>
                 <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
                   <EmailView initialThreadId={emailInitialThreadId} threadIdVersion={emailThreadIdVersion} initialSearchQuery={emailInitialSearchQuery} searchQueryVersion={emailSearchQueryVersion} onOpenNote={openNoteFromEmail} />

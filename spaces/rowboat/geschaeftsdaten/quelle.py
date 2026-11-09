@@ -12,7 +12,7 @@ import json
 import re
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Callable, Literal, Protocol
 
 SCHEMA_MUSTER = re.compile(r"^sales(_[a-z][a-z0-9_]{0,30})?$")
@@ -49,6 +49,23 @@ class Ereignis:
     termin_uhrzeit: str | None
     empfohlen_von_name: str | None
     empfohlen_von_lead: str | None
+    termin_dauer: str | None = None
+    termin_thema: str | None = None
+    termin_ort: str | None = None
+
+
+@dataclass(frozen=True)
+class PostMail:
+    id: str
+    datum: str
+    fach: str | None
+    bereich: str | None
+    sensibel: bool
+    postfach: str | None
+    absender_klein: str | None
+    von_anzeige: str | None
+    betreff: str | None
+    absender_gesperrt: bool
 
 
 @dataclass(frozen=True)
@@ -88,6 +105,7 @@ class Quelle(Protocol):
     def kontakte(self, schema: str) -> list[Kontakt]: ...
     def ereignisse(self, schema: str) -> list[Ereignis]: ...
     def versand(self, schema: str) -> list[Versand]: ...
+    def post_offen(self, stichtag: date) -> list[PostMail]: ...
     def newsletter_inhalte(self, ids: list[str]) -> list[NewsletterInhalt]: ...
     def medien(self, von: datetime, bis: datetime) -> list[Medium]: ...
 
@@ -133,7 +151,20 @@ def _ereignis(z: dict) -> Ereignis:
         lead_id=str(z["lead_id"]), typ=str(z["typ"]), zeit=_zeit(z["zeit"]),
         termin_uid=_text(z.get("termin_uid")), termin_datum=_text(z.get("termin_datum")),
         termin_uhrzeit=_text(z.get("termin_uhrzeit")), empfohlen_von_name=_text(z.get("empfohlen_von_name")),
-        empfohlen_von_lead=_text(z.get("empfohlen_von_lead")))
+        empfohlen_von_lead=_text(z.get("empfohlen_von_lead")),
+        termin_dauer=_text(z.get("termin_dauer")), termin_thema=_text(z.get("termin_thema")),
+        termin_ort=_text(z.get("termin_ort")))
+
+
+def _post_mail(z: dict) -> PostMail:
+    # NULL aus der DB gilt fail-closed als True (sensibel bzw. gesperrt), nie als harmlos.
+    def _wahr(roh: Any) -> bool:
+        return True if roh is None else bool(roh)
+    return PostMail(
+        id=str(z["id"]), datum=str(z["datum"]), fach=_text(z.get("fach")), bereich=_text(z.get("bereich")),
+        sensibel=_wahr(z.get("sensibel")), postfach=_text(z.get("postfach")),
+        absender_klein=_text(z.get("absender_klein")), von_anzeige=_text(z.get("von_anzeige")),
+        betreff=_text(z.get("betreff")), absender_gesperrt=_wahr(z.get("absender_gesperrt")))
 
 
 def _objekt_oder_none(roh: Any) -> dict | None:
@@ -205,13 +236,22 @@ class PsqlQuelle:
         s = _schema(schema)
         return self._umwandeln(
             "select lead_id, typ, zeit, termin_uid, termin_datum, termin_uhrzeit, empfohlen_von_name, "
-            f"empfohlen_von_lead from {s}.rowboat_ereignisse order by zeit, lead_id", _ereignis)
+            f"empfohlen_von_lead, termin_dauer, termin_thema, termin_ort from {s}.rowboat_ereignisse order by zeit, lead_id", _ereignis)
 
     def versand(self, schema: str) -> list[Versand]:
         s = _schema(schema)
         return self._umwandeln(
             f"select newsletter, erster_versand, empfaenger from {s}.rowboat_newsletter order by newsletter",
             lambda z: Versand(str(z["newsletter"]), _zeit(z["erster_versand"]), int(z["empfaenger"])))
+
+    def post_offen(self, stichtag: date) -> list[PostMail]:
+        # Nur ein echtes `date` (kein datetime) wird zum Literal; die Sicht gibt es nur im Schema sales.
+        if type(stichtag) is not date:
+            raise ValueError("Stichtag muss ein date sein")
+        return self._umwandeln(
+            "select id, datum, fach, bereich, sensibel, postfach, absender_klein, von_anzeige, betreff, "
+            f"absender_gesperrt from sales.rowboat_post_offen where datum >= '{stichtag.isoformat()}' "
+            "order by datum asc, id", _post_mail)
 
     def newsletter_inhalte(self, ids: list[str]) -> list[NewsletterInhalt]:
         ids = sorted(set(ids))

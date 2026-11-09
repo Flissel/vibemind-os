@@ -1,12 +1,14 @@
 """Ablage der erzeugten Notizen: Bestand eigener Dateien, Plan und atomares Ausfuehren mit Obergrenze.
 
-- Eigene Dateien sind nur `.md` unter `Kontakte/**`, `Newsletter/*`, `Wochenbild/*` mit
-  `erzeugt_von: rowboat-geschaeftsdaten` im Frontmatter (hoechstens 4 KB gelesen). Alles andere wird nie
+- Eigene Dateien sind nur `.md` unter `Kontakte/**`, `Termine/**`, `Newsletter/*`, `Wochenbild/*`,
+  `Bereiche/*` mit `erzeugt_von: rowboat-geschaeftsdaten` im Frontmatter (hoechstens 4 KB gelesen). Alles andere wird nie
   ueberschrieben, verschoben oder entfernt; vor jedem Ueberschreiben/Entfernen wird der Kopf erneut
   geprueft. Symlinks werden nie verfolgt.
 - Aenderungserkennung per sha256 gegen die Platte: ein zweiter Lauf ohne Datenaenderung schreibt nichts.
-- Hart geloescht werden nur eigene Kopien gesperrter Kontakte (Betreiber-Entscheid 1) und eigene Doppel.
-  Verschwundene Kontakte gehen nach `Kontakte/_archiv/`.
+- Hart geloescht werden nur eigene Kopien gesperrter Kontakte (Betreiber-Entscheid 1), Termin-Notizen
+  abgesagter Termine bzw. gesperrter Kontakte (beides ueber `gesperrt`) und eigene Doppel.
+  Verschwundene Kontakte gehen nach `Kontakte/_archiv/`, verschwundene Termine nach `Termine/_archiv/`;
+  `Termine/_overview.md` wird nie archiviert.
 - Jede Verschiebung, Archivierung und Entfernung ist fuer den Wissens-Spiegel eine Loeschung. Ein Lauf
   macht davon hoechstens `paket` (Vorgabe 15, ueber alle Firmen per gemeinsamem `Takt`); der Rest bleibt
   in stabiler Reihenfolge fuer die naechste Nacht liegen. So greift die Loeschgrenze des Spiegels (20 je
@@ -24,6 +26,8 @@ from namen import relpfad
 
 ERZEUGT_VON = "rowboat-geschaeftsdaten"
 ARCHIV_ORDNER = "Kontakte/_archiv"
+TERMIN_ARCHIV = "Termine/_archiv"
+TERMIN_UEBERSICHT = "Termine/_overview.md"  # haengt am Lauf, wird aber nie archiviert
 UEBERSICHT_PRAEFIX = "uebersicht:"  # Schluessel der Bereichs-Uebersichten unter `Bereiche/`
 KOPF_MAX = 4096
 TMP_ENDUNG = ".gd.tmp"
@@ -114,6 +118,12 @@ def _lesen(pfad: Path) -> bytes | None:
         return None
 
 
+def eigener_schluessel(pfad: Path) -> str | None:
+    """Schluessel einer eigenen Datei (kein Symlink, Kopf vom Lauf), sonst None."""
+    daten = _lesen(pfad)
+    return _eigen(daten) if daten is not None else None
+
+
 def _dateien(ordner: Path, rekursiv: bool) -> list[Path]:
     if ordner.is_symlink() or not ordner.is_dir():
         return []
@@ -128,12 +138,13 @@ def _dateien(ordner: Path, rekursiv: bool) -> list[Path]:
 
 
 def bestand(firma: Path) -> list[Ist]:
-    """Eigene Dateien unter `Kontakte/**`, `Newsletter/*`, `Wochenbild/*`, `Bereiche/*`; `rel` relativ zu
-    `firma`."""
+    """Eigene Dateien unter `Kontakte/**`, `Termine/**`, `Newsletter/*`, `Wochenbild/*`, `Bereiche/*`;
+    `rel` relativ zu `firma`."""
     if firma.is_symlink() or not firma.is_dir():
         return []
     ist: list[Ist] = []
-    for teil, rekursiv in (("Kontakte", True), ("Newsletter", False), ("Wochenbild", False), ("Bereiche", False)):
+    for teil, rekursiv in (("Kontakte", True), ("Termine", True), ("Newsletter", False), ("Wochenbild", False),
+                           ("Bereiche", False)):
         for pfad in _dateien(firma / teil, rekursiv):
             daten = _lesen(pfad)
             schluessel = _eigen(daten) if daten is not None else None
@@ -144,19 +155,30 @@ def bestand(firma: Path) -> list[Ist]:
 
 # --- Plan -------------------------------------------------------------------------------------------
 
+def _archiv_von(rel: str) -> str | None:
+    """Archiv-Ordner des eigenen Bereichs, wenn eine Datei ohne Soll archiviert wird, sonst None."""
+    if rel.startswith("Kontakte/"):
+        return ARCHIV_ORDNER
+    if rel.startswith("Termine/") and rel != TERMIN_UEBERSICHT:
+        return TERMIN_ARCHIV
+    return None
+
+
 def _ist_kontakt(rel: str) -> bool:
-    return rel.startswith("Kontakte/")
+    """Wird archiviert statt stehen gelassen: Steckbriefe und Termin-Notizen (ohne Termin-Uebersicht)."""
+    return _archiv_von(rel) is not None
 
 
 def _im_archiv(rel: str) -> bool:
-    return rel.startswith(ARCHIV_ORDNER + "/")
+    return rel.startswith((ARCHIV_ORDNER + "/", TERMIN_ARCHIV + "/"))
 
 
 def planen(soll: list[Soll], ist: list[Ist], gesperrt: set[str], archiv_inhalt: Callable[[Ist], str]) -> Plan:
     """Vergleicht Soll und Ist je Schluessel. Gesperrte Schluessel: alle eigenen Kopien entfernen.
-    Kontakt ohne Soll -> `Kontakte/_archiv/<stamm>.md` (eindeutig, sonst ` (<id8>)`); liegt er schon im
-    Archiv, bleibt er. Newsletter/Wochenbild ohne Soll bleiben, Bereichs-Uebersichten ohne Soll werden
-    entfernt. Eigene Doppel werden entfernt."""
+    Kontakt ohne Soll -> `Kontakte/_archiv/<stamm>.md`, Termin-Notiz ohne Soll -> `Termine/_archiv/<stamm>.md`
+    (eindeutig, sonst ` (<id8>)`); liegt sie schon im Archiv, bleibt sie. Newsletter/Wochenbild und
+    `Termine/_overview.md` ohne Soll bleiben, Bereichs-Uebersichten ohne Soll werden entfernt. Eigene Doppel
+    werden entfernt."""
     belegt: set[str] = set()
     for s in soll:
         if s.rel.casefold() in belegt:
@@ -218,9 +240,13 @@ def planen(soll: list[Soll], ist: list[Ist], gesperrt: set[str], archiv_inhalt: 
 
 
 def _archivziel(ist: Ist, belegt: set[str]) -> str:
+    ordner = _archiv_von(ist.rel) or ARCHIV_ORDNER
     stamm = PurePosixPath(ist.rel).stem
-    for kandidat in (stamm, f"{stamm} ({ist.schluessel[:8]})", f"{stamm} ({ist.schluessel})"):
-        ziel = relpfad(ARCHIV_ORDNER, kandidat)
+    # Termin-Schluessel `termin:<lead>:<uid>` enthalten `:` (im Dateinamen verboten): Zusatz aus der uid.
+    kennung = ist.schluessel.rpartition(":")[2]
+    voll = ist.schluessel.replace(":", "-")
+    for kandidat in (stamm, f"{stamm} ({kennung[:8]})", f"{stamm} ({kennung})", f"{stamm} ({voll})"):
+        ziel = relpfad(ordner, kandidat)
         if ziel.casefold() not in belegt:
             return ziel
     raise ValueError("kein freier Archivname")
@@ -265,7 +291,7 @@ def _schreiben_atomar(ziel: Path, inhalt: str) -> None:
 def aufraeumen(firma: Path) -> int:
     """Entfernt liegengebliebene eigene Zwischendateien (`.<name>*.gd.tmp`) unter den Job-Ordnern."""
     n = 0
-    for teil in ("Kontakte", "Newsletter", "Wochenbild"):
+    for teil in ("Kontakte", "Termine", "Newsletter", "Wochenbild"):
         ordner = firma / teil
         if ordner.is_symlink() or not ordner.is_dir():
             continue

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,7 +13,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "geschaeftsdaten"))
 
-from geschaeftsdaten_fake import FakeQuelle, kontakt  # noqa: E402
+from geschaeftsdaten_fake import FakeQuelle, kontakt, post_mail  # noqa: E402
 from quelle import DbFehler, Kontakt, PsqlQuelle  # noqa: E402
 
 C = "debian-supabase-db-1"
@@ -170,3 +170,45 @@ def test_fake_quelle_und_fabrik():
     assert [k.name for k in q.kontakte("sales")] == ["A"] and q.hat_sichten("sales_ivan") is False
     with pytest.raises(DbFehler):
         FakeQuelle(fehler=True).kontakte("sales")
+
+
+def test_post_offen_sql_mit_stichtag_literal():
+    l = Laeufer(json.dumps([{"id": "m1", "datum": "2026-11-09T08:00:00+00:00", "fach": None, "bereich": None,
+                             "sensibel": None, "postfach": "gmx", "absender_klein": "a@x.de",
+                             "von_anzeige": "A", "betreff": "Hallo", "absender_gesperrt": None}]))
+    mails = PsqlQuelle(C, laeufer=l).post_offen(date(2026, 11, 8))
+    sql = l.aufrufe[0][1]["input"]
+    assert "from sales.rowboat_post_offen" in sql
+    assert "datum >= '2026-11-08'" in sql
+    assert "order by datum asc, id" in sql
+    # NULL aus der DB gilt fail-closed als True
+    assert mails[0].sensibel is True and mails[0].absender_gesperrt is True
+
+
+def test_post_offen_wirft_bei_nicht_date_vor_aufruf():
+    l = Laeufer()
+    q = PsqlQuelle(C, laeufer=l)
+    for falsch in ("2026-11-08'; drop", datetime(2026, 11, 8, tzinfo=timezone.utc), None):
+        with pytest.raises(ValueError):
+            q.post_offen(falsch)
+    assert l.aufrufe == []
+
+
+def test_ereignis_termin_details_gelesen():
+    l = Laeufer(json.dumps([{"lead_id": "l1", "typ": "termin", "zeit": "2026-11-09T10:00:00+00:00",
+                             "termin_uid": "u1", "termin_datum": "2026-11-12", "termin_uhrzeit": "14:30",
+                             "termin_dauer": "45", "termin_thema": "Erstgespraech",
+                             "termin_ort": "https://meet.jit.si/abc", "empfohlen_von_name": None,
+                             "empfohlen_von_lead": None}]))
+    e = PsqlQuelle(C, laeufer=l).ereignisse("sales")[0]
+    assert (e.termin_dauer, e.termin_thema, e.termin_ort) == ("45", "Erstgespraech", "https://meet.jit.si/abc")
+    assert "termin_dauer" in l.aufrufe[0][1]["input"]
+
+
+def test_fake_post_filter_und_sortierung():
+    spaet = post_mail(id="b", datum="2026-11-10T08:00:00+00:00")
+    frueh = post_mail(id="a", datum="2026-11-09T08:00:00+00:00")
+    alt = post_mail(id="c", datum="2026-11-01T08:00:00+00:00")
+    q = FakeQuelle(post=[spaet, alt, frueh])
+    assert [m.id for m in q.post_offen(date(2026, 11, 8))] == ["a", "b"]
+    assert post_mail().sensibel is False and post_mail().absender_gesperrt is False

@@ -1,0 +1,18 @@
+[Unit]
+Description=Rowboat-Post-Termine: Post-Notizen und Termin-Notizen stuendlich nach Rowboats Wissen (legt an, loescht nie)
+Documentation=file:///home/debian/marketing-os/docs/superpowers/plans/2026-10-26-rowboat-zentrale-teil-b-geschaeftsdaten.md
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+User=debian
+Group=debian
+WorkingDirectory=/home/debian
+ExecStart=/usr/bin/python3 /home/debian/marketing-os/spaces/rowboat/geschaeftsdaten/stuendlich.py
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=10min
+NoNewPrivileges=yes
+PrivateTmp=yes
+UMask=0022

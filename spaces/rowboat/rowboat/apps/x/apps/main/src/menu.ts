@@ -136,6 +136,9 @@ function updateMenuItem(): MenuItemConstructorOptions {
   }
 }
 
+/** VibeMind fork: Email is off (mirrors EMAIL_ENABLED in the renderer feature-flags.ts), so no Go menu entry or shortcut. */
+const EMAIL_MENU_ENABLED = false;
+
 /** Ordered as the sidebar is, top to bottom; ⌘1–⌘9 count down it
  *  (renumbered 2026-10-21 to follow the redesigned sidebar). */
 const GO_ITEMS: ReadonlyArray<{ label: string; type: string; accelerator?: string }> = [
@@ -317,7 +320,7 @@ function rebuildMenu(): void {
         click: () => sendCommand({ command: "go-forward" }),
       },
       { type: "separator" },
-      ...GO_ITEMS.map((item): MenuItemConstructorOptions => ({
+      ...GO_ITEMS.filter((item) => EMAIL_MENU_ENABLED || item.type !== "email").map((item): MenuItemConstructorOptions => ({
         label: item.label,
         ...(item.accelerator ? { accelerator: item.accelerator } : {}),
         click: () => navigate(item.type),

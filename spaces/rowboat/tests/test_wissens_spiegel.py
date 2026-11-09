@@ -30,6 +30,14 @@ def test_besitzer():
     assert ws.besitzer("vibemind-discourse/t.md") == "pc"
 
 
+def test_besitzer_post_termine_bereiche_vm():
+    assert ws.besitzer("companys/Vibemind/Termine/2026-11-12 1430 Anna Muster.md") == "vm"
+    assert ws.besitzer("companys/Vibemind/Termine/_archiv/x.md") == "vm"
+    assert ws.besitzer("companys/Vibemind/Bereiche/_overview.md") == "vm"
+    assert ws.besitzer("Post/Zu beantworten.md") == "vm"
+    assert ws.besitzer("companys/Vibemind/Notizen/frei.md") == "pc"
+
+
 def test_besitzer_pc_ausnahmen_brain():
     # exakte Dateien
     assert ws.besitzer("People/User (user).md") == "pc"

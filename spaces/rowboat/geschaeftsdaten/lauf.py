@@ -11,7 +11,10 @@ Kontakten, E-Mails oder Pfade unterhalb der Firma.
 Schutzregeln: Eine Firma, bei der ein Laden fehlt (keine Sichten, abgelehnte Env-Datei), wird in diesem
 Lauf gar nicht abgeglichen - ihre Kontakte saehen sonst verschwunden aus. Wuerden mehr als 20 % (und mehr
 als 5) ihrer Steckbriefe auf einmal archiviert, bleibt die Firma ebenfalls stehen; nur Kopien gesperrter
-Kontakte werden trotzdem entfernt (Datenschutz vor Vollstaendigkeit). Je Lauf hoechstens 15 Loeschungen
+Kontakte werden trotzdem entfernt (Datenschutz vor Vollstaendigkeit). Termin-Notizen (`Termine/`) zaehlt der
+Waechter getrennt mit denselben Schwellen; greift einer der beiden Bereiche, steht die Firma. Notizen
+abgesagter Termine und gesperrter Kontakte sind Datenschutz-Loeschungen wie gesperrte Steckbriefe;
+verschwundene Termine gehen nach `Termine/_archiv/`. Je Lauf hoechstens 15 Loeschungen
 ueber alle Firmen, gesperrte Kopien zuerst. `knowledge/.gitignore` haelt `companys/*/Kontakte/` aus
 Rowboats Versionsgeschichte heraus (nur eine eigene oder fehlende Datei wird angefasst).
 
@@ -35,16 +38,19 @@ for _pfad in (_HIER.parents[2], _HIER.parent / "scripts", _HIER):  # Repo-Wurzel
     if str(_pfad) not in sys.path:
         sys.path.insert(0, str(_pfad))
 
-from ablage import (ARCHIV_ORDNER, UEBERSICHT_PRAEFIX, Ist, Plan, Soll, Takt, aufraeumen,  # noqa: E402
-                    ausfuehren, bestand, planen)
+from ablage import (ARCHIV_ORDNER, TERMIN_ARCHIV, TERMIN_UEBERSICHT, UEBERSICHT_PRAEFIX, Ist, Plan,  # noqa: E402
+                    Soll, Takt, aufraeumen, ausfuehren, bestand, eigener_schluessel, planen)
 from laeden import FIRMEN, Laden, firmenordner, pruefen  # noqa: E402
 from namen import dateistamm, eindeutig, relpfad  # noqa: E402
 from newsletter import newsletter_notiz  # noqa: E402
 from newsletter import stamm as nl_stamm  # noqa: E402
 from quelle import DbFehler, Ereignis, Kontakt, Medium, NewsletterInhalt, PsqlQuelle, Quelle, Versand  # noqa: E402
+from sperre import SPERRE_STANDARD, sperre  # noqa: E402
 from steckbrief import (ARCHIV, KATEGORIEN, OHNE, UEBERSICHT_GESAMT, UEBERSICHTEN,  # noqa: E402
                         bereich_uebersicht, bereiche_uebersicht, kategorie, people_index, steckbrief,
                         uebersicht_stamm, weitere_kategorien)
+from termine import (TERMIN_PRAEFIX, UEBERSICHT_TERMINE, gesperrte_termin_schluessel,  # noqa: E402
+                     termine_aus, termine_soll)
 from wochenbild import letzte_kw, wochenbild, zeitraum  # noqa: E402
 from wochenbild import stamm as wb_stamm  # noqa: E402
 
@@ -61,7 +67,8 @@ MASSEN_MIN = 5        # ... aber erst ab mehr als so vielen (kleine Firmen solle
 ALLE = "*"            # in `gestoert`: keine Firma abgleichen
 GI_ANFANG = "# rowboat-geschaeftsdaten: Anfang (automatisch gepflegt, bitte nicht bearbeiten)"
 GI_ENDE = "# rowboat-geschaeftsdaten: Ende"
-GI_ZEILEN = ("companys/*/Kontakte/",)
+# Personendaten (Steckbriefe, Termine, Post) gehoeren nicht in Rowboats Versionsgeschichte.
+GI_ZEILEN = ("companys/*/Kontakte/", "companys/*/Termine/", "Post/")
 
 
 @dataclass
@@ -92,6 +99,10 @@ def _archiv_text(firma: Path):
         ende = text.find("\n---\n", 4)
         if ende < 0 or ARCHIV_VERMERK in text:
             return text
+        if ist.rel.startswith("Termine/"):
+            # Termin-Notiz: Kopf samt parent auf `Termine/_overview` bleibt, nur der Vermerk kommt dazu.
+            ende += len("\n---\n")
+            return text[:ende] + "\n" + ARCHIV_VERMERK + "\n" + text[ende:]
         # Im Archiv haengt der Steckbrief an der Archiv-Uebersicht statt an seinem alten Bereich.
         kopf = [z for z in text[:ende].split("\n") if not z.startswith(("parent:", "weitere_bereiche:"))]
         ende += len("\n---\n")
@@ -99,9 +110,8 @@ def _archiv_text(firma: Path):
     return archiv_inhalt
 
 
-def _lesen(quelle: Quelle, laeden: list[Laden], heute: date) -> tuple[dict, list[_Gelesen], list[str],
-                                                                       dict[str, NewsletterInhalt], list[Medium]]:
-    """Alle Lesungen. Wirft DbFehler, bevor irgendetwas geschrieben ist."""
+def _laden_lesen(quelle: Quelle, laeden: list[Laden], *, mit_versand: bool) -> tuple[list[_Gelesen], list[str]]:
+    """Kontakte, Ereignisse (und Versand) je Laden mit Sichten; Laeden ohne Sichten kommen in die zweite Liste."""
     uebersprungen: list[str] = []
     gelesen: list[_Gelesen] = []
     for laden in laeden:
@@ -110,7 +120,14 @@ def _lesen(quelle: Quelle, laeden: list[Laden], heute: date) -> tuple[dict, list
             uebersprungen.append(laden.schema)
             continue
         gelesen.append(_Gelesen(laden, quelle.kontakte(laden.schema), quelle.ereignisse(laden.schema),
-                                quelle.versand(laden.schema)))
+                                quelle.versand(laden.schema) if mit_versand else []))
+    return gelesen, uebersprungen
+
+
+def _lesen(quelle: Quelle, laeden: list[Laden], heute: date) -> tuple[dict, list[_Gelesen], list[str],
+                                                                       dict[str, NewsletterInhalt], list[Medium]]:
+    """Alle Lesungen. Wirft DbFehler, bevor irgendetwas geschrieben ist."""
+    gelesen, uebersprungen = _laden_lesen(quelle, laeden, mit_versand=True)
     marken = quelle.marken()
     ids = sorted({v.newsletter for g in gelesen for v in g.versand})
     inhalte = {i.id: i for i in quelle.newsletter_inhalte(ids)} if ids else {}
@@ -127,14 +144,13 @@ def _empfehler(ereignisse: list[Ereignis]) -> tuple[str | None, str | None]:
     return e.empfohlen_von_lead, e.empfohlen_von_name
 
 
-def _firma_soll(firma: Path, marke: str, gruppe: list[_Gelesen], inhalte: dict[str, NewsletterInhalt],
-                medien: list[Medium], wissen: Path, *, heute: date, wochenbild_neu: bool
-                ) -> tuple[list[Soll], set[str], int]:
-    """Soll-Liste, gesperrte Schluessel und Zahl uebersprungener Eintraege einer Firma."""
-    praefix = f"{FIRMEN}/{firma.name}"
-    uebersprungen = 0
+_Eintrag = tuple[Kontakt, str, list[Ereignis]]  # (Kontakt, Laden-Schema, Ereignisse)
+
+
+def _sammeln(gruppe: list[_Gelesen]) -> tuple[list[_Eintrag], set[str], list[Kontakt], list[Ereignis]]:
+    """(Eintraege mit Steckbrief, gesperrte Lead-IDs, Kontakte und Ereignisse fuers Wochenbild)."""
     gesperrt: set[str] = set()
-    eintraege: list[tuple[Kontakt, str, list[Ereignis]]] = []  # (Kontakt, Laden-Schema, Ereignisse)
+    eintraege: list[_Eintrag] = []
     alle_kontakte: list[Kontakt] = []
     alle_ereignisse: list[Ereignis] = []
     for g in gruppe:
@@ -152,8 +168,15 @@ def _firma_soll(firma: Path, marke: str, gruppe: list[_Gelesen], inhalte: dict[s
                 continue
             alle_kontakte.append(k)
             eintraege.append((k, g.laden.schema, je_kontakt.get(k.id, [])))
+    return eintraege, gesperrt, alle_kontakte, alle_ereignisse
 
-    # Namen eindeutig ueber den ganzen Kontakte-Baum der Firma, dann Pfade.
+
+def _steckbrief_pfade(firma: Path, gruppe: list[_Gelesen]) -> tuple[dict[str, str], dict[str, str], set[str], int]:
+    """(Steckbrief-Pfade je Lead-ID ab `knowledge/` mit `.md`, Namen der platzierten Kontakte, gesperrte
+    Lead-IDs, Zahl uebersprungener Kontakte). Namen sind eindeutig ueber den ganzen Kontakte-Baum der Firma."""
+    praefix = f"{FIRMEN}/{firma.name}"
+    eintraege, gesperrt, _, _ = _sammeln(gruppe)
+    uebersprungen = 0
     staemme = eindeutig([(k.id, dateistamm(k.name, f"Kontakt {_id8(k.id)}", MAX_NAME), k.created_at)
                          for k, _, _ in eintraege])
     pfade: dict[str, str] = {}  # id -> rel ab knowledge/
@@ -171,6 +194,34 @@ def _firma_soll(firma: Path, marke: str, gruppe: list[_Gelesen], inhalte: dict[s
             continue
         belegt.add(rel.casefold())
         pfade[k.id] = rel
+    namen = {k.id: k.name or "" for k, _, _ in eintraege if k.id in pfade}
+    return pfade, namen, gesperrt, uebersprungen
+
+
+def _termine_fuer_firma(firma: Path, gruppe: list[_Gelesen], pfade: dict[str, str], namen: dict[str, str], *,
+                        heute: date) -> tuple[list[Soll], set[str]]:
+    """(Soll der Termin-Notizen samt Uebersicht, abgesagte uids). Termine haengen nur an platzierten
+    Steckbriefen (`pfade`); gesperrte Kontakte haben keinen Pfad und damit keine Termin-Notiz.
+    Die Uebersicht entsteht, sobald ein Termin platziert ist, das Termin-Archiv etwas enthaelt oder es schon
+    eine eigene Uebersicht gibt - letzteres, damit sie gesperrte oder abgesagte Termine nicht weiter nennt."""
+    termine, abgesagt = termine_aus([e for g in gruppe for e in g.ereignisse])
+    ordner = firma / TERMIN_UEBERSICHT.split("/")[0]
+    archiv = firma / TERMIN_ARCHIV
+    archiv_vorhanden = (not ordner.is_symlink() and archiv.is_dir() and not archiv.is_symlink()
+                        and any(p.is_file() and not p.is_symlink() for p in archiv.glob("*.md")))
+    uebersicht_vorhanden = (not ordner.is_symlink()
+                            and eigener_schluessel(firma / TERMIN_UEBERSICHT) == UEBERSICHT_TERMINE)
+    return termine_soll(firma.name, termine, pfade, namen, heute=heute,
+                        archiv_vorhanden=archiv_vorhanden or uebersicht_vorhanden), abgesagt
+
+
+def _firma_soll(firma: Path, marke: str, gruppe: list[_Gelesen], inhalte: dict[str, NewsletterInhalt],
+                medien: list[Medium], wissen: Path, *, heute: date, wochenbild_neu: bool
+                ) -> tuple[list[Soll], set[str], int, set[str]]:
+    """Soll-Liste, gesperrte Lead-IDs, Zahl uebersprungener Eintraege und abgesagte Termin-uids einer Firma."""
+    praefix = f"{FIRMEN}/{firma.name}"
+    eintraege, _, alle_kontakte, alle_ereignisse = _sammeln(gruppe)
+    pfade, namen, gesperrt, uebersprungen = _steckbrief_pfade(firma, gruppe)
 
     # Bereichs-Uebersichten: eine je Ordner, der als Haupt- oder Nebenbereich vorkommt, plus eine Gesamtuebersicht.
     haupt: dict[str, int] = {}
@@ -204,6 +255,8 @@ def _firma_soll(firma: Path, marke: str, gruppe: list[_Gelesen], inhalte: dict[s
                           people=people.link(k.name, k.email_klein), empfohlen_von=empfohlen,
                           uebersicht=ziel[kategorie(k)], weitere=[ziel[w] for w in weitere_kategorien(k)])
         soll.append(Soll(pfade[k.id][len(praefix) + 1:], k.id, text))
+    termin_soll, abgesagt = _termine_fuer_firma(firma, gruppe, pfade, namen, heute=heute)
+    soll += termin_soll
     for o in ordner_liste:
         soll.append(Soll(f"{UEBERSICHTEN}/{uebersicht_stamm(o)}.md", f"{UEBERSICHT_PRAEFIX}{o}",
                          bereich_uebersicht(schluessel=f"{UEBERSICHT_PRAEFIX}{o}", firma=firma.name, ordner=o,
@@ -248,7 +301,7 @@ def _firma_soll(firma: Path, marke: str, gruppe: list[_Gelesen], inhalte: dict[s
         eigene_medien = [m for m in medien if m.mandant == marke]
         soll.append(Soll(wb_rel, f"kw:{jahr}-W{kw:02d}",
                          wochenbild(firma.name, jahr, kw, alle_kontakte, alle_ereignisse, woche, eigene_medien)))
-    return soll, gesperrt, uebersprungen
+    return soll, gesperrt, uebersprungen, abgesagt
 
 
 def gitignore_pflegen(wissen: Path) -> str:
@@ -289,12 +342,30 @@ def _atomar(pfad: Path, text: str) -> None:
     os.replace(tmp, pfad)
 
 
-def _massenschutz(plan: Plan, ist: list[Ist], gesperrt: set[str]) -> bool:
-    """True, wenn zu viele Steckbriefe auf einmal ins Archiv bzw. weg (ohne gesperrte Kopien) gingen."""
-    aktiv = sum(1 for i in ist if i.rel.startswith("Kontakte/") and not i.rel.startswith(ARCHIV_ORDNER + "/"))
-    weg = len(plan.archivieren) + sum(1 for i in plan.entfernen if i.schluessel not in gesperrt
-                                      and not i.schluessel.startswith(UEBERSICHT_PRAEFIX))
-    return weg > MASSEN_MIN and weg > MASSEN_ANTEIL * aktiv
+def _massenschutz(plan: Plan, ist: list[Ist], gesperrt: set[str], soll_schluessel: frozenset[str] = frozenset()
+                  ) -> bool:
+    """True, wenn zu viele Steckbriefe oder zu viele Termin-Notizen auf einmal ins Archiv bzw. weg (ohne
+    gesperrte Kopien) gingen. Beide Bereiche werden getrennt gegen dieselben Schwellen gezaehlt; greift einer,
+    steht die ganze Firma (auch die Steckbrief-Archivierung dieser Nacht, wenn nur die Termine zu viele sind).
+    Zusaetzliche Kopien eines Schluessels, der ein Soll hat (etwa die alte Notiz nach einer stuendlichen
+    Verschiebung), sind Aufraeumen und kein Verlust: sie zaehlen weder als Entfernung noch in der Basis."""
+    def ist_termin(rel: str) -> bool:
+        return rel.startswith("Termine/")
+
+    def zu_viele(weg: int, aktiv: int) -> bool:
+        return weg > MASSEN_MIN and weg > MASSEN_ANTEIL * aktiv
+
+    aktiv_kontakte = len({i.schluessel for i in ist if i.rel.startswith("Kontakte/")
+                          and not i.rel.startswith(ARCHIV_ORDNER + "/")})
+    aktiv_termine = len({i.schluessel for i in ist if ist_termin(i.rel) and not i.rel.startswith(TERMIN_ARCHIV + "/")
+                         and i.rel != TERMIN_UEBERSICHT})
+    frei = [i for i in plan.entfernen if i.schluessel not in gesperrt and i.schluessel not in soll_schluessel]
+    weg_termine = (sum(1 for i, _ in plan.archivieren if ist_termin(i.rel))
+                   + sum(1 for i in frei if i.schluessel.startswith(TERMIN_PRAEFIX)))
+    weg_kontakte = (sum(1 for i, _ in plan.archivieren if not ist_termin(i.rel))
+                    + sum(1 for i in frei if not i.schluessel.startswith((UEBERSICHT_PRAEFIX, TERMIN_PRAEFIX))
+                          and i.schluessel != UEBERSICHT_TERMINE))
+    return zu_viele(weg_kontakte, aktiv_kontakte) or zu_viele(weg_termine, aktiv_termine)
 
 
 def lauf(quelle: Quelle, laeden: list[Laden], wissen: Path, *, heute: date, trocken: bool,
@@ -349,23 +420,31 @@ def lauf(quelle: Quelle, laeden: list[Laden], wissen: Path, *, heute: date, troc
             if not trocken and firma.is_dir():
                 if (n := aufraeumen(firma)):
                     log.info("%s: %d alte Zwischendateien entfernt", firma.name, n)
-            soll, gesperrt, n_ueber = _firma_soll(firma, marke, gruppen[marke], inhalte, medien, wissen,
-                                                  heute=heute, wochenbild_neu=wochenbild_neu)
+            soll, gesperrt, n_ueber, abgesagt = _firma_soll(firma, marke, gruppen[marke], inhalte, medien,
+                                                            wissen, heute=heute, wochenbild_neu=wochenbild_neu)
             ist = bestand(firma)
+            # Termin-Notizen abgesagter Termine und gesperrter Kontakte: Datenschutz-Loeschung (Phase
+            # "entfernen", zaehlt nicht beim Massen-Waechter). Nur die Lead-IDs gehen als gesperrte IDs hinein.
+            gesperrt |= gesperrte_termin_schluessel((i.schluessel for i in ist), gesperrt, abgesagt)
             plan = planen(soll, ist, gesperrt, _archiv_text(firma))
         except OSError as e:
             log.error("%s: Dateifehler beim Planen (%s), Firma uebersprungen", firma.name, type(e).__name__)
             ergebnis.uebersprungen.append(f"Firma {firma.name}")
             continue
-        massen = _massenschutz(plan, ist, gesperrt)
+        massen = _massenschutz(plan, ist, gesperrt, frozenset(s.schluessel for s in soll))
         if massen and firma.name.casefold() in freigegeben:
             log.info("%s: Massen-Waechter fuer diesen Lauf freigegeben", firma.name)
             massen = False
         if massen:
+            # Auch wenn nur die Termine zu viele sind, steht die ganze Firma in dieser Nacht (bewusst so):
+            # nur gesperrte Kopien werden entfernt, auch Steckbriefe werden dann nicht archiviert.
             log.warning("%s: %d Archivierungen waeren zu viele auf einmal, nur gesperrte Kopien werden entfernt",
                         firma.name, len(plan.archivieren))
             ergebnis.uebersprungen.append(f"Massenarchivierung {firma.name}")
-            plan = Plan([], [], [], [i for i in plan.entfernen if i.schluessel in gesperrt], plan.unveraendert)
+            # Die Termin-Uebersicht wird trotzdem neu geschrieben, damit sie gerade entfernte gesperrte oder
+            # abgesagte Termine nicht weiter nennt.
+            plan = Plan([s for s in plan.schreiben if s.schluessel == UEBERSICHT_TERMINE], [], [],
+                        [i for i in plan.entfernen if i.schluessel in gesperrt], plan.unveraendert)
         plaene.append((firma, plan, n_ueber, massen))
 
     # Erst alle gesperrten Kopien (ueber alle Firmen), dann der Rest - beides unter derselben Obergrenze.
@@ -443,10 +522,26 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
+    stand = Path(os.environ.get("GESCHAEFTSDATEN_STAND", "/home/debian/rowboat-geschaeftsdaten/stand.json"))
+    sperrdatei = Path(os.environ.get("GESCHAEFTSDATEN_SPERRE", SPERRE_STANDARD))
+    # Der stuendliche Lauf (stuendlich.py) schreibt ebenfalls ins Wissen: nie gleichzeitig.
+    with sperre(sperrdatei, warten_s=600) as frei:
+        if not frei:
+            log.error("Sperre nach 10 Minuten nicht frei (stuendlicher Lauf haengt?), Lauf nicht gestartet")
+            ergebnis = Ergebnis(exit_code=1)
+            if not args.trocken:
+                try:
+                    _stand_schreiben(stand, ergebnis, args.trocken, "Sperre")
+                except OSError as e:
+                    log.error("stand.json nicht geschrieben (%s)", type(e).__name__)
+            return 1
+        return _main_unter_sperre(args, stand)
+
+
+def _main_unter_sperre(args: argparse.Namespace, stand: Path) -> int:
     wissen = Path(os.environ.get("GESCHAEFTSDATEN_WISSEN", "/home/debian/rowboat-data/knowledge"))
     sales_claw = Path(os.environ.get("GESCHAEFTSDATEN_SALES_CLAW", "/home/debian/sales-claw"))
     container = os.environ.get("GESCHAEFTSDATEN_DB_CONTAINER", "debian-supabase-db-1")
-    stand = Path(os.environ.get("GESCHAEFTSDATEN_STAND", "/home/debian/rowboat-geschaeftsdaten/stand.json"))
     heute = args.heute or datetime.now(timezone.utc).astimezone(ZoneInfo("Europe/Berlin")).date()
 
     if not wissen.is_dir():
