@@ -60,6 +60,26 @@ def test_deuten_fehler_bricht_nichts(tmp_path):
     assert k.stats["geschrieben"] == 1
 
 
+def test_nach_deuten_fehler_kein_weiterer_versuch_im_selben_lauf(tmp_path):
+    """09.11.2026: Bei erschoepftem Tagesbudget von brain-planner fragte der
+    Kurator fuer JEDES Dokument erneut (je 3 Wiederholungen im Router) -
+    ~40 Anfragen pro Minute alle 15 min. Nach dem ersten Fehler bleibt die
+    Deutung fuer den Rest des Laufs aus; der naechste Lauf versucht es neu.
+    Fakten werden weiter geschrieben."""
+    aufrufe = []
+
+    def kaputt(d):
+        aufrufe.append(d.id)
+        raise RuntimeError("budget: abgelehnt (tagesgrenze)")
+    k = Kurator(Tresor(tmp_path), deuten=kaputt, leser=leser(bubbles=_viele(5)))
+    k.voll_durchlauf()
+    assert len(aufrufe) == 1
+    assert k.stats["geschrieben"] == 5
+    k.tresor = Tresor(tmp_path / "zwei")   # neuer Lauf, nichts gespeichert
+    k.voll_durchlauf()
+    assert len(aufrufe) == 2, "jeder neue Lauf darf genau einen Versuch machen"
+
+
 def test_index_wird_nachgezogen(tmp_path):
     kg = MagicMock()
     kg._upsert_point.return_value = "pid"

@@ -135,6 +135,7 @@ class Kurator:
         self.kg = kg
         self.deuten = deuten
         self.leser = leser
+        self._deutung_aus = False   # pro Lauf: nach dem ersten Deutungsfehler aus
         self.stats = {"geschrieben": 0, "abgelehnt": 0, "quellenfehler": 0,
                       "deutung_verworfen": 0, "unveraendert": 0, "unlesbar": 0,
                       "veraltet": 0, "index_fehler": 0, "neu_indexiert": 0,
@@ -156,7 +157,8 @@ class Kurator:
         # Controller-Ruling: LLM nur rufen, wenn die gespeicherte Deutung
         # ohnehin nicht mehr fuehrend bliebe (spart Aufrufe, schuetzt
         # von Hand gepflegte Deutungen).
-        if self.deuten is not None and not self.tresor.deutung_noch_gueltig(dok, geladen=geladen):
+        if (self.deuten is not None and not self._deutung_aus
+                and not self.tresor.deutung_noch_gueltig(dok, geladen=geladen)):
             try:
                 text = self.deuten(dok)
                 kandidat = dok.model_copy(update={"deutung": text})
@@ -165,8 +167,12 @@ class Kurator:
                 else:
                     self.stats["deutung_verworfen"] += 1
             except Exception as e:
+                # 09.11.2026: Ein Fehler (Budget erschoepft, OpenFang weg) gilt fuer
+                # den ganzen Lauf - sonst fragt jedes weitere Dokument erneut an
+                # (je 3 Router-Wiederholungen, ~40 Anfragen/min). Naechster Lauf: neu.
+                self._deutung_aus = True
                 self.stats["deutung_verworfen"] += 1
-                logger.info("[kurator] Deutung fehlgeschlagen: %s", e)
+                logger.info("[kurator] Deutung fehlgeschlagen, fuer diesen Lauf aus: %s", e)
         ok, probleme = self.tresor.schreiben(dok, bekannte=bekannte, geladen=geladen)
         status = getattr(self.tresor, "letzter_status", "")
         if not ok:
@@ -199,6 +205,7 @@ class Kurator:
     def _lauf(self, namen) -> Dict[str, int]:
         jetzt = datetime.now(timezone.utc)
         vorher = dict(self.stats)
+        self._deutung_aus = False
         # Schlusspruefung I1: bekannte Namen EINMAL pro Lauf, nicht pro Dokument.
         bekannte = self.tresor.bekannte_namen() if namen else set()
         for name in namen:
