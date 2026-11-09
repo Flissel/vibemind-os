@@ -22,11 +22,14 @@ Bilder verteilt.
    Nur Namen aus dem Briefing – keine anderen.
 3. **Farben.** Stehen `farben.hintergrund` / `farben.text` im Briefing, nimm sie. Sonst lass `hintergrund` leer:
    dann nimmt `titelkarte` die Akzentfarbe der Marke (Text weiß).
-4. **Karten.** Titelkarte und Schlusskarte (immer mit `auftrag` – Schrift der Marke – und dem `format` aus dem
+4. **Karten.** Eine Karte, auf der ein Satz gesprochen wird, bekommt `dauer_s` = Wörter ÷ 2 + 2 s (wie unten
+   bei den Standbildern; die Vorgabe 2,5 s ist dafür zu knapp). Titelkarte und Schlusskarte (immer mit `auftrag` – Schrift der Marke – und dem `format` aus dem
    Briefing), Logo auf die Schlusskarte (nicht auf die erste). Text kurz: die Karte ist kein Absatz.
 5. **Standbilder.** Jedes `standbild` mit `auftrag` und dem `format` aus dem Briefing. Bewegung abwechseln: `zoom_rein`, `schwenk`, `zoom_raus` – nie zweimal dieselbe
-   hintereinander. `ruhig` nur für Bilder mit viel Text oder Logo, die sonst unlesbar würden. Dauer je Bild
-   ≥ Länge seines Satzes (2,5 Wörter/s) plus 0,5 s.
+   hintereinander. `ruhig` nur für Bilder mit viel Text oder Logo, die sonst unlesbar würden. `dauer_s` ist nur
+   die **Obergrenze**: Laura zeigt das Bild genau so lange, wie sein Satz dauert. Setze darum großzügig
+   Wörter ÷ 2 + 2 s (höchstens 8). Ist es knapp, schneidet Laura den Satz ab („clipped to asset end“).
+   Kurze Bilder entstehen durch kurze Sätze, nicht durch ein kleines `dauer_s`.
 6. **Sprechertext.** Aus `sprechertext` im Briefing, Satz für Satz auf die Teile verteilt. Nichts dazuerfinden;
    ist er zu lang für `dauer_s`, kürze ohne den Sinn zu ändern und notiere das.
 7. **Bauen.** `reel_bauen` mit `auftrag`, dem `format` aus dem Briefing und den Beats (alle `src_in_frame: 0`), `stimme` aus dem Briefing, ohne

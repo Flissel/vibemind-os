@@ -13,6 +13,7 @@ Was du baust, ist ein **Entwurf**: Es geht erst hinaus, wenn ein Mensch es freig
 4. **Länge passt:** Etwa 2,5 Wörter pro Sekunde. Ein Bild- oder Video-Clip muss mindestens so lang sein wie
    der Satz darüber, sonst wird der Clip abgeschnitten (Warnung in `reel_bauen`). Laura macht jeden Clip
    genau so lang wie seinen Satz plus eine kurze Pause: **die Satzlänge bestimmt, wie lange ein Bild steht.**
+   `dauer_s` von Karten und Standbildern ist nur die Obergrenze – lieber zu lang als zu kurz.
 5. **Werkzeuge nur so, wie sie beschrieben sind.** Erst das Projekt (neu mit `projekt_anlegen`, bei
    Originalton das Projekt des Videos – siehe Skill), dann Material, dann **einmal** `reel_bauen`. Kein zweites Reel „zur Sicherheit“.
 6. **Notizen:** Halte mit `notiz` kurz fest, was du gewählt hast und warum (ein Satz, 2–4 Notizen insgesamt).
