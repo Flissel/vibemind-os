@@ -272,6 +272,13 @@ def titelkarte(auftrag: str, projekt_id: str, text: str, hintergrund: str = "", 
     return {"ok": True, "asset_id": j["ergebnis"].get("asset_id")} if j["ok"] else j
 
 
+# Stille nach jedem Satz (Laura-Vorgabe 12 Frames = 0,4 s). Viral-Video-Guideline: Pausen >= 0,4 s unter
+# 1/min - mit 12 waren es 20-22/min (Messung 09.11.2026). Die Ueberblendung haengt Laura als Reserve
+# an, sie verschiebt den naechsten Satz nicht. Der letzte Satz behaelt 12: die Schlussblende ist 12 Frames.
+PAUSE_FRAMES = 4
+PAUSE_ENDE_FRAMES = 12
+
+
 def _beats_pruefen(beats) -> list[dict] | str:
     if not isinstance(beats, list) or not 1 <= len(beats) <= 12:
         return "beats: 1 bis 12 Eintraege {text, asset_id, src_in_frame} oder {originalton, asset_id, src_in_frame, src_out_frame}"
@@ -296,7 +303,9 @@ def _beats_pruefen(beats) -> list[dict] | str:
         text = b.get("text")
         if not isinstance(text, str) or not 1 <= len(text.strip()) <= 300:
             return f"beat {i}: text 1 bis 300 Zeichen (oder originalton: true mit src_out_frame)"
-        aus.append({"text": text.strip(), "asset_id": asset, "src_in_frame": start, "pad_frames": 12})
+        aus.append({"text": text.strip(), "asset_id": asset, "src_in_frame": start, "pad_frames": PAUSE_FRAMES})
+    if "pad_frames" in aus[-1]:
+        aus[-1]["pad_frames"] = PAUSE_ENDE_FRAMES
     return aus
 
 

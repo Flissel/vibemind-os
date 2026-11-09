@@ -10,8 +10,12 @@ Aufbau (Gesamtlänge ≈ `dauer_s` aus dem Briefing):
 | Teil | Clip | Satz |
 |---|---|---|
 | 1 | `titelkarte` mit dem Hook (≤ 6 Wörter), 2–3 s | der Hook, gesprochen |
-| 2–5 | je ein `standbild`, 3–6 s | je ein Satz zum Bild |
-| letzter | `titelkarte` mit der Handlung („Jetzt Termin sichern“), 2–3 s | die Handlung, gesprochen |
+| 2–5 | je ein `standbild`, 2–4 s | je ein Satz zum Bild (5–9 Wörter) |
+| letzter | `titelkarte` mit der Handlung („Jetzt Termin sichern“), 2–3 s | Hook aufgreifen + Handlung, gesprochen |
+
+**Reihenfolge nach der Guideline:** Das stärkste Bild (das Ergebnis, das fertige Produkt) kommt direkt nach der
+Titelkarte, erst danach die Bilder, die den Weg zeigen. Ein Satz, der für 4 s zu lang ist, wird auf zwei
+Bilder verteilt.
 
 1. **Projekt.** `projekt_anlegen` mit dem Titel des Auftrags.
 2. **Bilder holen.** `bild_importieren` für jedes Bild aus `bilder` und für das `logo` (falls im Briefing).
@@ -20,13 +24,14 @@ Aufbau (Gesamtlänge ≈ `dauer_s` aus dem Briefing):
    dann nimmt `titelkarte` die Akzentfarbe der Marke (Text weiß).
 4. **Karten.** Titelkarte und Schlusskarte (immer mit `auftrag` – Schrift der Marke – und dem `format` aus dem
    Briefing), Logo auf die Schlusskarte (nicht auf die erste). Text kurz: die Karte ist kein Absatz.
-5. **Standbilder.** Jedes `standbild` mit `auftrag` und dem `format` aus dem Briefing. Bewegung abwechseln: `zoom_rein`, `schwenk`, `zoom_raus`, `ruhig` – nie zweimal dieselbe
-   hintereinander. Dauer je Bild ≥ Länge seines Satzes (2,5 Wörter/s) plus 0,5 s.
+5. **Standbilder.** Jedes `standbild` mit `auftrag` und dem `format` aus dem Briefing. Bewegung abwechseln: `zoom_rein`, `schwenk`, `zoom_raus` – nie zweimal dieselbe
+   hintereinander. `ruhig` nur für Bilder mit viel Text oder Logo, die sonst unlesbar würden. Dauer je Bild
+   ≥ Länge seines Satzes (2,5 Wörter/s) plus 0,5 s.
 6. **Sprechertext.** Aus `sprechertext` im Briefing, Satz für Satz auf die Teile verteilt. Nichts dazuerfinden;
    ist er zu lang für `dauer_s`, kürze ohne den Sinn zu ändern und notiere das.
 7. **Bauen.** `reel_bauen` mit `auftrag`, dem `format` aus dem Briefing und den Beats (alle `src_in_frame: 0`), `stimme` aus dem Briefing, ohne
    `hook` (der steht schon auf der Titelkarte). Das Logo der Marke setzt `reel_bauen` selbst; gib `logo_asset_id`
    nur an, wenn ein anderes Logo aus dem Briefing gewünscht ist.
-8. Notiz: Bildfolge und Bewegungen, ein Satz. Dann `EXPORT: <id>`.
+8. Notiz: Hook-Formel, Bildfolge und Bewegungen, ein Satz. Dann `EXPORT: <id>`.
 
 Der KI-Hinweis („Stimme: KI“) kommt automatisch; Bilder und Karten sind keine KI.

@@ -21,6 +21,9 @@ description: "Reel aus vorhandenen Laura-Videos: passende Stellen im Transkript 
      `sprechertext` des Briefings (nichts dazuerfinden).
 5. **Einstieg.** Der erste Beat ist der Hook: entweder ein starker Originalton-Satz oder eine `titelkarte`
    mit dem Thema (≤ 6 Wörter; mit `auftrag` und dem `format` aus dem Briefing). Gesamtlänge ≈ `dauer_s`.
+   **Ergebnis vor Erklärung:** Sagt die Person irgendwo das Ergebnis („danach hatten wir …“), darf diese Stelle
+   nach vorn – aber nur, wenn der Sinn gleich bleibt. Lieber mehrere kurze Stellen (je 3–8 s) als eine lange:
+   jeder Wechsel bringt Bewegung ins Bild.
 6. **Untertitel prüfen.** Für Originalton-Stellen offensichtliche Hörfehler der Spracherkennung als
    `untertitel_ersetzen` sammeln (je ein Wort, z. B. `{"Kastermann": "Kunden"}`), nichts umformulieren.
 7. **Rahmung.** Bildschirmaufnahmen, Folien, breite Videos → `rahmung: "einpassen"`; Person groß vor der

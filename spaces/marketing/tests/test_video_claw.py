@@ -186,9 +186,9 @@ class _Api:
         self.ereignisse.append(("fehler", befund))
 
 
-def _lauf(api, poster):
+def _lauf(api, poster, messen=lambda url, **k: None):
     return vc.ein_durchlauf(api, fragen=lambda s, n: "EXPORT: abcdef12", abwarten=lambda e, **k: "http://dl/x",
-                            ordner=ORDNER, poster=poster)
+                            ordner=ORDNER, poster=poster, messen=messen)
 
 
 def _arten(api):
@@ -398,3 +398,150 @@ def test_poster_download_schickt_schluessel_ohne_umleitung(monkeypatch):
     assert req.full_url == "https://vm.example/api/video/arbeiter/a1/datei" and req.get_method() == "GET"
     assert req.unredirected_hdrs.get("X-bild-key") == "bk" and "X-bild-key" not in req.headers
     assert gesehen["timeout"] == 60 and gesehen["context"] is tls
+
+
+# --- Messung gegen die Viral-Video-Guideline --------------------------------------------------------
+
+MESS_LOG = """  Duration: 00:00:24.00, start: 0.000000, bitrate: 78 kb/s
+[Parsed_silencedetect_1 @ 0001] silence_start: 0.1
+[Parsed_silencedetect_1 @ 0001] silence_end: 0.3 | silence_duration: 0.2
+[Parsed_silencedetect_1 @ 0001] silence_start: 9.0
+[Parsed_silencedetect_1 @ 0001] silence_end: 9.6 | silence_duration: 0.6
+[Parsed_freezedetect_1 @ 0004] lavfi.freezedetect.freeze_start: 0.4
+[Parsed_freezedetect_1 @ 0004] lavfi.freezedetect.freeze_duration: 1.4
+[Parsed_freezedetect_1 @ 0004] lavfi.freezedetect.freeze_end: 1.8
+[Parsed_freezedetect_1 @ 0004] lavfi.freezedetect.freeze_start: 19.5
+[Parsed_metadata_2 @ 0002] frame:0    pts:30720   pts_time:1.5
+[Parsed_metadata_2 @ 0002] lavfi.scene_score=0.450000
+[Parsed_metadata_2 @ 0002] frame:1    pts:40000   pts_time:3
+[Parsed_metadata_2 @ 0002] lavfi.scene_score=0.150000
+[Parsed_metadata_2 @ 0002] frame:2    pts:50000   pts_time:4
+[Parsed_metadata_2 @ 0002] lavfi.scene_score=0.900000
+[Parsed_metadata_2 @ 0002] frame:3    pts:90000   pts_time:12
+[Parsed_metadata_2 @ 0002] lavfi.scene_score=0.350000
+[Parsed_ebur128_0 @ 0003] t: 0.1  TARGET:-23 LUFS    M: -30.0 S:-120.7     I: -30.0 LUFS
+[Parsed_ebur128_0 @ 0003] Summary:
+
+  Integrated loudness:
+    I:         -14.6 LUFS
+    Threshold: -24.8 LUFS
+"""
+
+
+def test_messwerte_aus_ffmpeg_log():
+    w = vc.messwerte(MESS_LOG)
+    assert w["format"] == "kurz" and w["dauer_s"] == 24.0
+    assert w["harte_schnitte"] == 3                      # 1.5, 4, 12 (>= 0,30); 3 ist nur weich
+    assert w["einstellung_s"] == 6.0                     # 24 / (3 + 1)
+    assert w["stillstand_s"] == 4.5 and w["stillstand_ab_s"] == 19.5    # Pause bis zum Ende ohne Dauerzeile
+    assert w["hook_pro_min"] == 24.0                     # 2 harte Schnitte in 0-5 s
+    assert w["lufs"] == -14.6                            # Summary, nicht die Zeile je Frame
+    assert w["pausen_pro_min"] == 2.5 and w["laengste_pause_s"] == 0.6   # 0,2 s am Anfang zaehlt nicht
+
+
+def test_messwerte_ohne_dauer_ist_none():
+    assert vc.messwerte("kaputt") is None
+
+
+def test_messwerte_lang_ab_75_s():
+    assert vc.messwerte("  Duration: 00:02:00.00, start: 0\n")["format"] == "lang"
+
+
+def test_messung_text_markiert_ziele():
+    t = vc.messung_text(vc.messwerte(MESS_LOG))
+    assert t.startswith("Messung (Guideline, kurz):")
+    assert "⚠️ Stillstand 4,5 s ab 0:19 (Ziel ≤ 3)" in t
+    assert "ℹ️ Schnitte erkannt 3, Hook 24/min (Ziel ≥ 30;" in t   # nur Hinweis, Ueberblendungen fehlen
+    assert "✅ Lautheit -14,6 LUFS (Ziel -16 bis -12)" in t
+    assert "⚠️ Pausen 2,5/min (Ziel ≤ 0,5)" in t
+    assert len(t) <= 500
+
+
+def test_messung_text_ohne_ton():
+    w = vc.messwerte("  Duration: 00:00:10.00, start: 0\n")
+    t = vc.messung_text(w)
+    assert "Lautheit" not in t and "✅ Stillstand < 1 s (Ziel ≤ 3)" in t
+
+
+def test_reel_messen_ffmpeg_ohne_pipes_log_in_datei(monkeypatch):
+    _url_mock(monkeypatch, b"MP4DATA")
+    aufrufe = []
+
+    def lauf(argv, **kw):
+        aufrufe.append((argv, kw))
+        assert Path(argv[argv.index("-i") + 1]).read_bytes() == b"MP4DATA"
+        kw["stderr"].write(MESS_LOG.encode("utf-8"))
+        return type("R", (), {"returncode": 0})()
+    monkeypatch.setattr(vc.subprocess, "run", lauf)
+    t = vc.reel_messen("https://vm/x.mp4", ffmpeg="ff")
+    assert t.startswith("Messung (Guideline, kurz):")
+    argv, kw = aufrufe[0]
+    s = " ".join(argv)
+    assert argv[0] == "ff" and "select='gt(scene,0.12)'" in s and "ebur128" in s and "silencedetect" in s
+    assert "freezedetect" in s
+    assert kw["stdin"] is vc.subprocess.DEVNULL and kw["stdout"] is vc.subprocess.DEVNULL
+    assert kw["stderr"] not in (vc.subprocess.PIPE, None) and "capture_output" not in kw
+    assert kw["timeout"] == vc.MESS_FFMPEG_S
+    assert not Path(argv[argv.index("-i") + 1]).exists()
+
+
+def test_reel_messen_fehler_gibt_none_mit_grund(monkeypatch):
+    _url_mock(monkeypatch, b"MP4")
+
+    def lauf(argv, **kw):
+        return type("R", (), {"returncode": 1})()
+    monkeypatch.setattr(vc.subprocess, "run", lauf)
+    gruende = []
+    assert vc.reel_messen("https://vm/x.mp4", melden=gruende.append) is None
+    assert gruende == ["ffmpeg Exit 1"]
+    assert vc.reel_messen("file:///x.mp4", melden=gruende.append) is None
+
+
+def test_durchlauf_messung_wird_notiz_vor_fertig():
+    api = _Api(_auftrag())
+    gesehen = {}
+
+    def messen(url, **k):
+        gesehen.update(url=url, **k)
+        return "Messung (Guideline, kurz): ✅ alles"
+    assert _lauf(api, lambda url, **k: b"\xff\xd8\xffX", messen) == "fertig"
+    assert _arten(api) == ["aus_laura", "poster", "notiz", "fertig"]
+    assert api.ereignisse[2][1] == "Messung (Guideline, kurz): ✅ alles"
+    assert gesehen["url"].endswith("/arbeiter/a1/datei") and gesehen["kopf"] == {"X-Bild-Key": "bk"}
+
+
+def test_durchlauf_messung_scheitert_nur_notiz():
+    def kaputt(url, melden=None, **k):
+        melden("ffmpeg Exit 1")
+        return None
+    api = _Api(_auftrag())
+    assert _lauf(api, lambda url, **k: b"\xff\xd8\xffX", kaputt) == "fertig"
+    assert api.ereignisse[2] == ("notiz", "Messung nicht möglich: ffmpeg Exit 1")
+
+    def wirft(url, **k):
+        raise RuntimeError("weg")
+    api = _Api(_auftrag())
+    assert _lauf(api, lambda url, **k: b"\xff\xd8\xffX", wirft) == "fertig"
+    assert _arten(api) == ["aus_laura", "poster", "notiz", "fertig"]
+    assert api.ereignisse[2][1].startswith("Messung nicht möglich: RuntimeError")
+
+
+@pytest.mark.skipif(not __import__("shutil").which(vc.FFMPEG), reason="ffmpeg fehlt")
+def test_messung_echtes_ffmpeg(tmp_path):
+    """Rot 2 s, blau 5 s, gruen 1 s; Ton: 1 s Sinus, 1 s Stille, 6 s Sinus."""
+    import subprocess
+    mp4 = tmp_path / "probe.mp4"
+    subprocess.run([vc.FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "color=red:s=360x640:d=2:r=30",
+                    "-f", "lavfi", "-i", "color=blue:s=360x640:d=5:r=30",
+                    "-f", "lavfi", "-i", "color=green:s=360x640:d=1:r=30",
+                    "-f", "lavfi", "-i", "sine=f=440:d=1:sample_rate=44100",
+                    "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono:d=1",
+                    "-f", "lavfi", "-i", "sine=f=440:d=6:sample_rate=44100",
+                    "-filter_complex", "[0:v][1:v][2:v]concat=n=3:v=1:a=0[v];[3:a][4:a][5:a]concat=n=3:v=0:a=1[a]",
+                    "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(mp4)],
+                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=60)
+    w = vc.messwerte(vc.video_messen(str(mp4)))
+    assert w["dauer_s"] == pytest.approx(8.0, abs=0.1) and w["harte_schnitte"] == 2
+    assert w["stillstand_s"] == pytest.approx(5.0, abs=0.1) and w["stillstand_ab_s"] == pytest.approx(2.0, abs=0.1)
+    assert w["laengste_pause_s"] == pytest.approx(1.0, abs=0.1) and w["lufs"] is not None

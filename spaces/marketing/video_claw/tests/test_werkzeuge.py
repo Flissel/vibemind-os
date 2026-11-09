@@ -93,6 +93,19 @@ def test_reel_bauen_zwei_schritte(laura):
     assert reel["hook_text"] == "Drei Fehler" and reel["logo_asset_id"] == AID
 
 
+def test_reel_bauen_kurze_pausen_zwischen_saetzen(laura):
+    """Guideline: Pausen >= 0,4 s unter 1/min. Lauras Vorgabe (12 Frames Stille je Satz) ergab 20-22 Pausen
+    pro Minute (Messung 09.11.2026). Zwischen Saetzen 4 Frames; der letzte Satz behaelt 12, damit die
+    Schlussblende (12 Frames) nicht ins letzte Wort faellt. Originalton bleibt ohne pad_frames."""
+    rek = laura([(202, {"timeline_id": "tl1", "job_id": "j1"}), (200, {"status": "succeeded", "result_json": "{}"}),
+                 (202, {"export_id": "e1e1e1e1e1", "job_id": "j2"})])
+    w.reel_bauen(AUF, PID, [{"text": "Eins.", "asset_id": AID},
+                            {"originalton": True, "asset_id": AID, "src_in_frame": 0, "src_out_frame": 90},
+                            {"text": "Zwei.", "asset_id": AID}, {"text": "Drei.", "asset_id": AID}])
+    beats = rek.aufrufe[0][2]["beats"]
+    assert [b.get("pad_frames") for b in beats] == [4, None, 4, 12]
+
+
 def test_reel_bauen_standardstimme_ohne_voice_id(laura):
     rek = laura([(202, {"timeline_id": "tl1", "job_id": "j1"}), (200, {"status": "succeeded", "result_json": "{}"}),
                  (202, {"export_id": "e1e1e1e1e1"})])
@@ -476,3 +489,19 @@ def test_reel_bauen_format_unbekannt_warnt_nur(laura, monkeypatch):
     r = w.reel_bauen(AUF, PID, [{"text": "Satz.", "asset_id": AID}])
     assert r["ok"] and "format" not in rek.aufrufe[2][2]
     assert "Format des Auftrags nicht geladen - Reel als reel (9:16)" in r["warnungen"]
+
+
+def test_prompt_nennt_viral_video_regeln():
+    """Viral-Video-Guideline (Mails 09.11.2026): Hook mit Ergebnis zuerst, nie still, Bogen, kurzes Ende -
+    immer unter 'Nichts erfinden'."""
+    from pathlib import Path
+    ordner = Path(w.__file__).parent
+    agents = (ordner / "AGENTS.md").read_text(encoding="utf-8").replace("**", "")
+    for satz in ("Ergebnis vor Erklärung", "Hook-Formel", "Verneinung", "Ergebnis-Versprechen", "Meta-Beweis",
+                 "Aufhorchen → Verstehen → Payoff", "höchstens 4 s", "Nichts erfinden", "Messung"):
+        assert satz in agents, satz
+    bilder = (ordner / "skills" / "reel-aus-bildern" / "SKILL.md").read_text(encoding="utf-8")
+    assert "stärkste Bild" in bilder and "`ruhig` nur" in bilder
+    for name in ("reel-aus-material", "kurzfassung"):
+        text = (ordner / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
+        assert "Ergebnis" in text and "Sinn" in text, name

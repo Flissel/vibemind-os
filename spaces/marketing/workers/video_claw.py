@@ -44,6 +44,15 @@ POSTER_DOWNLOAD_S = 60
 POSTER_MAX_BYTES = 16 * 1024 * 1024
 POSTER_FFMPEG_S = 30
 NOTIZEN_MAX = 20
+MESS_FFMPEG_S = 120
+SCHNITT_HART = 0.30                  # Szenenwert ab dem ein Wechsel als harter Schnitt zaehlt
+SCHNITT_WEICH = 0.12                 # ab hier zaehlt er als Bewegung (Zoom, Einblendung, Untertitel)
+# Zielwerte der Viral-Video-Guideline (Mails felix.baumann@bluebatch.io, 09.11.2026,
+# viral-video-skill/scripts/analyze_video.py): je Kennzahl (min, max), None = offen.
+ZIELE = {
+    "kurz": {"stillstand": (None, 3.0), "hook": (30.0, None), "lufs": (-16.0, -12.0), "pausen": (None, 0.5)},
+    "lang": {"stillstand": (None, 6.0), "hook": (20.0, None), "lufs": (-16.0, -12.0), "pausen": (None, 1.5)},
+}
 STAND: dict = {"letzter_lauf": None, "letztes_ergebnis": None}
 
 
@@ -265,6 +274,154 @@ def poster_erzeugen(mp4_url: str, ffmpeg: str = FFMPEG, melden=lambda grund: Non
                 pass
 
 
+# --- Messung gegen die Viral-Video-Guideline --------------------------------------------------------
+
+def _zahl(x: float) -> str:
+    return f"{x:.1f}".replace(".", ",")
+
+
+def _grenze(x: float) -> str:
+    return _zahl(x).removesuffix(",0")
+
+
+def messwerte(log: str) -> dict | None:
+    """Kennzahlen aus EINEM ffmpeg-Lauf (Szenenwerte, ebur128, silencedetect - siehe video_messen).
+    None, wenn die Dauer fehlt (keine Videodatei)."""
+    m = re.search(r"Duration: (\d+):(\d+):([\d.]+)", log)
+    if not m:
+        return None
+    dauer = int(m[1]) * 3600 + int(m[2]) * 60 + float(m[3])
+    if dauer <= 0:
+        return None
+    format_ = "kurz" if dauer <= 75 else "lang"
+    szenen = [(float(t), float(s)) for t, s in
+              re.findall(r"pts_time:([\d.]+)[^\n]*\n[^\n]*lavfi\.scene_score=([\d.]+)", log)]
+    harte = sorted(t for t, s in szenen if s >= SCHNITT_HART)
+    # Stillstand = Bild ohne jede Aenderung (freezedetect). Ein Standbild mit Zoom/Schwenk oder
+    # laufenden Untertiteln bewegt sich. Eine Pause, die bis zum Ende reicht, hat keine Dauerzeile.
+    stillstand, ab, start = 0.0, 0.0, None
+    for art, wert in re.findall(r"freeze_(start|duration): ([\d.]+)", log):
+        if art == "start":
+            start = float(wert)
+        elif start is not None:
+            if float(wert) > stillstand:
+                stillstand, ab = float(wert), start
+            start = None
+    if start is not None and dauer - start > stillstand:
+        stillstand, ab = dauer - start, start
+    phasen = [0, 5, 15, 30, 60] if format_ == "kurz" else [0, 15, 30, 60, 120]
+    hook = 0.0
+    for a, b in zip(phasen, phasen[1:]):
+        if a >= dauer or a >= 30:
+            break
+        b = min(b, dauer)
+        hook = max(hook, sum(a <= t < b for t in harte) * 60 / (b - a))
+    lufs = re.findall(r"I:\s+(-?[\d.]+) LUFS", log)   # die letzte Zeile ist die Zusammenfassung
+    pausen = [d for e, d in ((float(e), float(d)) for e, d in
+                             re.findall(r"silence_end: ([\d.]+) \| silence_duration: ([\d.]+)", log))
+              if e - d > 0.2 and e < dauer - 0.2]      # Stille am Anfang/Ende (Ausblende) zaehlt nicht
+    return {"format": format_, "dauer_s": round(dauer, 2), "harte_schnitte": len(harte),
+            "einstellung_s": round(dauer / (len(harte) + 1), 1),
+            "stillstand_s": round(stillstand, 1), "stillstand_ab_s": round(ab, 1),
+            "hook_pro_min": round(hook, 1), "lufs": float(lufs[-1]) if lufs else None,
+            "pausen_pro_min": round(len(pausen) * 60 / dauer, 1),
+            "laengste_pause_s": round(max(pausen), 1) if pausen else 0.0}
+
+
+def messung_text(w: dict) -> str:
+    """Eine Notiz (<= 500 Zeichen): je Kennzahl ✅/⚠️ mit Zielwert. Sie landet bei 'Nochmal mit
+    Aenderung' im Prompt des Claws - darum mit Zeitmarke, wo das Bild steht."""
+    z = ZIELE[w["format"]]
+
+    def mark(wert, ziel):
+        lo, hi = ziel
+        return "✅" if (lo is None or wert >= lo) and (hi is None or wert <= hi) else "⚠️"
+
+    sek = int(w["stillstand_ab_s"])
+    ziel_still = f"(Ziel ≤ {_grenze(z['stillstand'][1])})"
+    if w["stillstand_s"] > 0:
+        still = (f"{mark(w['stillstand_s'], z['stillstand'])} Stillstand {_zahl(w['stillstand_s'])} s ab "
+                 f"{sek // 60}:{sek % 60:02d} {ziel_still}")
+    else:
+        still = f"✅ Stillstand < 1 s {ziel_still}"
+    # Schnitte nur als Hinweis: Lauras kurze Ueberblendungen zwischen aehnlichen Bildern erkennt die
+    # Szenenerkennung kaum (gemessen 09.11.2026: Werte 0,04-0,15) - ein ⚠️ waere hier oft falsch.
+    teile = [
+        still,
+        f"ℹ️ Schnitte erkannt {w['harte_schnitte']}, Hook {w['hook_pro_min']:.0f}/min "
+        f"(Ziel ≥ {_grenze(z['hook'][0])}; Überblendungen zählt die Messung oft nicht)",
+    ]
+    if w["lufs"] is not None:
+        teile.append(f"{mark(w['lufs'], z['lufs'])} Lautheit {_zahl(w['lufs'])} LUFS "
+                     f"(Ziel {_grenze(z['lufs'][0])} bis {_grenze(z['lufs'][1])})")
+        teile.append(f"{mark(w['pausen_pro_min'], z['pausen'])} Pausen {_zahl(w['pausen_pro_min'])}/min "
+                     f"(Ziel ≤ {_grenze(z['pausen'][1])})")
+    return (f"Messung (Guideline, {w['format']}): " + " · ".join(teile))[:500]
+
+
+def video_messen(pfad: str, ffmpeg: str = FFMPEG, melden=lambda grund: None) -> str | None:
+    """Ein ffmpeg-Lauf: Szenenwerte (>= SCHNITT_WEICH), Lautheit, Pausen >= 0,4 s. Das Protokoll geht in
+    eine Datei, nie in eine Pipe (Kindprozesse erben sonst die Pipe und haengen)."""
+    argv = [ffmpeg, "-hide_banner", "-nostats", "-i", pfad,
+            "-vf", f"scale=320:-2,freezedetect=n=-60dB:d=1,select='gt(scene,{SCHNITT_WEICH})',"
+                   "metadata=print:key=lavfi.scene_score",
+            "-af", "ebur128,silencedetect=noise=-35dB:d=0.4", "-f", "null", "-"]
+    fd, logdatei = tempfile.mkstemp(suffix=".log", prefix="vcmessung-")
+    os.close(fd)
+    try:
+        with open(logdatei, "wb") as f:
+            try:
+                r = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=f, timeout=MESS_FFMPEG_S)
+            except FileNotFoundError:
+                melden("ffmpeg nicht gefunden")
+                return None
+            except subprocess.TimeoutExpired:
+                melden(f"ffmpeg nach {MESS_FFMPEG_S} s abgebrochen")
+                return None
+            except OSError as e:
+                melden(f"ffmpeg: {type(e).__name__}")
+                return None
+        if r.returncode != 0:
+            melden(f"ffmpeg Exit {r.returncode}")
+            return None
+        return Path(logdatei).read_text(encoding="utf-8", errors="replace")
+    finally:
+        try:
+            os.unlink(logdatei)
+        except OSError:
+            pass
+
+
+def reel_messen(mp4_url: str, ffmpeg: str = FFMPEG, melden=lambda grund: None,
+                kopf: dict | None = None, tls=None) -> str | None:
+    """Fertiges Reel holen und gegen die Guideline messen; Notiztext oder None (Grund an `melden`)."""
+    if urllib.parse.urlsplit(mp4_url).scheme not in ("http", "https"):
+        melden("URL-Schema nicht erlaubt")
+        return None
+    fd, video = tempfile.mkstemp(suffix=".mp4", prefix="vcmessung-")
+    os.close(fd)
+    try:
+        try:
+            _herunterladen(mp4_url, video, kopf, tls)
+        except (ClawFehler, OSError, ValueError) as e:
+            melden(f"Download: {e}"[:200] if isinstance(e, ClawFehler) else f"Download: {type(e).__name__}")
+            return None
+        log = video_messen(video, ffmpeg, melden)
+        if log is None:
+            return None
+        werte = messwerte(log)
+        if werte is None:
+            melden("Dauer nicht lesbar")
+            return None
+        return messung_text(werte)
+    finally:
+        try:
+            os.unlink(video)
+        except OSError:
+            pass
+
+
 # --- Render abholen ---------------------------------------------------------------------------------
 
 def render_abwarten(export_id: str, max_s: float = RENDER_WARTEN_S, takt_s: float = 10.0,
@@ -290,7 +447,7 @@ def render_abwarten(export_id: str, max_s: float = RENDER_WARTEN_S, takt_s: floa
 
 
 def ein_durchlauf(api, fragen=claw_fragen, abwarten=render_abwarten, ordner: Path = ORDNER,
-                  weiter_takt_s: float = WEITER_TAKT_S, poster=poster_erzeugen) -> str:
+                  weiter_takt_s: float = WEITER_TAKT_S, poster=poster_erzeugen, messen=reel_messen) -> str:
     auftrag = api.naechster()
     if not auftrag:
         return "leer"
@@ -341,6 +498,7 @@ def ein_durchlauf(api, fragen=claw_fragen, abwarten=render_abwarten, ordner: Pat
         if abgebrochen.is_set():
             return "abgebrochen"
         gruende: list[str] = []
+        quelle = None
         try:
             quelle = api.datei_quelle(aid)
             jpeg = poster(quelle["url"], kopf=quelle["kopf"], tls=quelle["tls"], melden=gruende.append)
@@ -350,6 +508,18 @@ def ein_durchlauf(api, fragen=claw_fragen, abwarten=render_abwarten, ordner: Pat
             gruende.append(f"{type(e).__name__}: {getattr(e, 'grund', '') or e}"[:200])
         if gruende:
             notieren(f"Vorschaubild nicht erstellt: {gruende[0]}")
+        if quelle:
+            # Messung gegen die Viral-Video-Guideline: nur eine Notiz, nie ein Grund abzubrechen.
+            mess_gruende: list[str] = []
+            try:
+                befund = messen(quelle["url"], kopf=quelle["kopf"], tls=quelle["tls"], melden=mess_gruende.append)
+            except Exception as e:  # noqa: BLE001
+                befund = None
+                mess_gruende.append(f"{type(e).__name__}: {e}"[:200])
+            if befund:
+                notieren(befund)
+            elif mess_gruende:
+                notieren(f"Messung nicht möglich: {mess_gruende[0]}")
         dauer = abgelegt.get("dauer_s") or float((auftrag.get("briefing") or {}).get("dauer_s") or 30)
         api.fertig(aid, abgelegt["name"], float(dauer), wert)
         return "fertig"

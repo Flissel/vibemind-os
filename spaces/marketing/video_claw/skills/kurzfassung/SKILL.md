@@ -12,7 +12,8 @@ description: "Langes Video kürzen: die stärksten 15–60 Sekunden, in denen di
 3. **Stelle wählen.** Ein zusammenhängender Abschnitt (oder 2–3 kurze), der den einen Gedanken aus dem
    Thema trägt und **mit einem ganzen Satz beginnt und endet**. Zusammen 15–60 s (`dauer_s` aus dem
    Briefing). Nicht mitten im Wort schneiden: Start = `start_frame` eines Segments, Ende = Start des
-   nächsten Segments.
+   nächsten Segments. Nach der Guideline: lieber 2–3 kurze Abschnitte als einen langen, und der Abschnitt mit
+   dem Ergebnis (was am Ende herauskam) zuerst – nur, wenn der Sinn dabei gleich bleibt.
 4. **Optional rahmen.** Eine `titelkarte` (mit `auftrag` und dem `format` aus dem Briefing) mit dem Thema
    (≤ 6 Wörter, 2–3 s) davor und/oder eine Schlusskarte mit Handlung danach. Jeder Karten-Beat ist ein Beat mit `text` und wird **eingesprochen**
    (ein kurzer Satz, bei einer Karte von 2,5 s höchstens 6 Wörter). Ohne `sprechertext` im Briefing
