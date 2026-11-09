@@ -85,7 +85,7 @@ import { SHORTCUTS } from "@/lib/shortcuts"
 import { useCodeSessions } from "@/components/code/use-code-sessions"
 import { useUnreadCodeSessions } from "@/components/code/session-read-state"
 import { UnreadBadge } from "@/components/spaces/unread-badge"
-import { SPACES_ENABLED } from "@/lib/feature-flags"
+import { EMAIL_ENABLED, SPACES_ENABLED } from "@/lib/feature-flags"
 import type { SpaceSelection } from "@/components/spaces-view"
 import { MascotFaceIcon } from "@/components/talking-head"
 import { extractConferenceLink } from "@/lib/calendar-event"
@@ -523,6 +523,7 @@ export function SidebarContentPanel({
     return () => clearInterval(tick)
   }, [])
   useEffect(() => {
+    if (!EMAIL_ENABLED) return
     let cancelled = false
     const loadEmail = async () => {
       try {
@@ -944,7 +945,7 @@ export function SidebarContentPanel({
 
         <SidebarGroup className="pb-0 pt-0.5">
           <SidebarMenu>
-            <SidebarMenuItem>
+            {EMAIL_ENABLED && <SidebarMenuItem>
               <RowTip tip={emailTip}>
                 <SidebarMenuButton data-tour-id="nav-email" isActive={activeNav === 'email'} onClick={() => onOpenEmail?.()}>
                   <Mail />
@@ -953,7 +954,7 @@ export function SidebarContentPanel({
                   <Keys keys={SHORTCUTS.email} className="sb-row-keys" />
                 </SidebarMenuButton>
               </RowTip>
-            </SidebarMenuItem>
+            </SidebarMenuItem>}
             <SidebarMenuItem>
               <RowTip tip={meetingTip}>
                 <SidebarMenuButton data-tour-id="nav-meetings" isActive={activeNav === 'meetings'} onClick={onOpenMeetings}>

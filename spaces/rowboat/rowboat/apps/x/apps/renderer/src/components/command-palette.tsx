@@ -45,7 +45,7 @@ import {
   type CrossSpaceResults,
   type SpaceRef,
 } from '@/lib/command-palette/spaces-search'
-import { SPACES_ENABLED } from '@/lib/feature-flags'
+import { EMAIL_ENABLED, SPACES_ENABLED } from '@/lib/feature-flags'
 import { chord } from '@/lib/shortcut'
 import { formatFeedTime, resolveMentions } from '@/lib/spaces-presentation'
 import { spaceVisitedAt, useSpaceVisitsVersion } from '@/lib/spaces-visits'
@@ -336,6 +336,7 @@ export function CommandPalette({ open, onOpenChange, chats, notes, defaultScope,
     const items: NavItem[] = []
     for (const s of PALETTE_SECTIONS) {
       if (s.key === 'spaces' && !SPACES_ENABLED) continue
+      if (s.key === 'email' && !EMAIL_ENABLED) continue
       if (s.key === 'code' && !codeMode) continue
       items.push({
         texts: [s.label, ...s.keywords],

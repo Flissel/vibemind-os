@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
+import { EMAIL_ENABLED } from '@/lib/feature-flags'
 import { Button } from '@/components/ui/button'
 import { TalkingHead, type MascotHat } from '@/components/talking-head'
 import { AgentsFleet, MascotVignette, type TourVignetteKind } from '@/components/tour-vignettes'
@@ -51,7 +52,7 @@ type TourStep = {
 // Stops follow the sidebar top to bottom (Spaces, then the destinations,
 // then Chats) and end back at the Assistant, where the app lands. A stop
 // whose anchor is missing (Spaces behind its flag, Code mode off) is skipped.
-const TOUR_STEPS: TourStep[] = [
+const ALL_TOUR_STEPS: TourStep[] = [
   {
     id: 'welcome',
     title: 'All aboard! ⚓',
@@ -133,6 +134,9 @@ const TOUR_STEPS: TourStep[] = [
     text: "That's the whole bay, and there's my wake to prove it. Take this voyage again anytime from Take a tour at the bottom of the sidebar, or under Settings in the dock. Happy rowing!",
   },
 ]
+
+// VibeMind fork: the email stop is dropped while the Email tab is off.
+export const TOUR_STEPS: TourStep[] = ALL_TOUR_STEPS.filter((s) => EMAIL_ENABLED || s.id !== 'email')
 
 // Pre-recorded narration bundled with the app (no TTS API call, works
 // offline/signed-out). Regenerate with scripts/generate-tour-audio.mjs after

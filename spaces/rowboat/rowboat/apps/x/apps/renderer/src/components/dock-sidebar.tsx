@@ -76,7 +76,7 @@ import { getPinnedApps, onPinnedAppsChanged, unpinApp } from "@/lib/pinned-apps"
 import { isOutOfCredits, CREDIT_EXHAUSTED_EVENT, CREDIT_REPLENISHED_EVENT } from "@/lib/credit-status"
 import { SettingsDialog } from "@/components/settings-dialog"
 import { SidebarCreditRewards } from "@/components/sidebar-credit-rewards"
-import { SPACES_ENABLED } from "@/lib/feature-flags"
+import { EMAIL_ENABLED, SPACES_ENABLED } from "@/lib/feature-flags"
 import { OrgMonogram, type SpaceSelection } from "@/components/spaces-view"
 import { openServerDialog } from "@/lib/server-dialog"
 import { openSelfDirect, useSpacesOrgs, type OrgWithSpaces } from "@/hooks/use-spaces"
@@ -737,6 +737,7 @@ export function DockSidebar({
   const [unreadEmailCount, setUnreadEmailCount] = useState(0)
   const [emailThreads, setEmailThreads] = useState<{ threadId: string; subject: string; from: string; date: string }[]>([])
   useEffect(() => {
+    if (!EMAIL_ENABLED) return
     let cancelled = false
     const loadEmail = async () => {
       try {
@@ -998,7 +999,7 @@ export function DockSidebar({
           },
         },
       ] : []),
-      {
+      ...(EMAIL_ENABLED ? [{
         item: {
           key: 'email', label: 'Email', icon: Mail, tourId: 'nav-email',
           badge: unreadEmailCount > 0 ? (unreadEmailCount > 99 ? '99+' : String(unreadEmailCount)) : undefined,
@@ -1006,7 +1007,7 @@ export function DockSidebar({
           running: activeNav === 'email',
           onClick: () => { closeFlyouts(); onOpenEmail?.() },
         },
-      },
+      }] : []),
       {
         item: {
           key: 'meetings', label: 'Meetings', icon: Mic, tourId: 'nav-meetings',

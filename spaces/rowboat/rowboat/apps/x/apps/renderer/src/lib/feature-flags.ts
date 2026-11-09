@@ -10,3 +10,8 @@ export const SPACES_ENABLED: boolean = window.featureFlags?.spaces === true;
 // dictation, the local model picker — is off there. The desktop's preload
 // never sets it, so everywhere else it is on.
 export const LOCAL_RUNTIME: boolean = window.featureFlags?.localRuntime !== false;
+
+// VibeMind fork: mail is handled by sales-claw, so Rowboat's own Gmail tab is
+// off: no nav entry, no inbox/preview loading (gmail:getImportant), no email
+// view reachable. The footer account-name lookup (gmail:getAccountName) remains.
+export const EMAIL_ENABLED: boolean = false;
