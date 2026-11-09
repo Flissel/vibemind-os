@@ -145,10 +145,40 @@ def test_voiceover_fehler(aenderung, grund, tmp_path, monkeypatch):
 def test_anpassen_ffmpeg_argumente():
     a = td.anpassen_argumente("roh.wav", "aus.wav", sample_rate=48000, fit=True, sekunden=3.0)
     assert a[a.index("-ac") + 1] == "1" and a[a.index("-ar") + 1] == "48000"
-    assert a[a.index("-af") + 1] == "apad" and a[a.index("-t") + 1] == "3.000000"
+    assert a[a.index("-af") + 1] == td.STILLE_FILTER + ",apad" and a[a.index("-t") + 1] == "3.000000"
     assert a[a.index("-c:a") + 1] == "pcm_s16le" and a[-1] == "aus.wav"
     b = td.anpassen_argumente("roh.wav", "aus.wav", sample_rate=16000, fit=False, sekunden=3.0)
-    assert "-t" not in b and "apad" not in b
+    assert "-t" not in b and "apad" not in " ".join(b) and b[b.index("-af") + 1] == td.STILLE_FILTER
+
+
+def test_voiceover_stille_filter_abschaltbar(monkeypatch):
+    """09.11.2026 Viral-Video-Guideline: Chatterbox setzt 0,4-0,7 s Stille an Kommas/Satzenden -> Reels
+    mit 20-30 Pausen/min. Nur der Laura-Weg kuerzt; TON_VOICEOVER_STILLE=0 schaltet es ab (Rueckweg)."""
+    assert "silenceremove" in td.STILLE_FILTER and "stop_periods=-1" in td.STILLE_FILTER
+    monkeypatch.setenv("TON_VOICEOVER_STILLE", "0")
+    a = td.anpassen_argumente("roh.wav", "aus.wav", sample_rate=48000, fit=True, sekunden=3.0)
+    assert a[a.index("-af") + 1] == "apad"
+    b = td.anpassen_argumente("roh.wav", "aus.wav", sample_rate=48000, fit=False, sekunden=3.0)
+    assert "-af" not in b
+
+
+def test_voiceover_stille_echt_gekuerzt(tmp_path):
+    """Echtes ffmpeg: 0,3 s Stille + 1 s Ton + 1 s Stille + 1 s Ton + 0,8 s Stille -> Ton bleibt ganz,
+    jede Stille hoechstens ~0,25 s."""
+    import io
+    import shutil
+    import subprocess
+    import wave
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg fehlt")
+    roh = tmp_path / "roh.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                    "aevalsrc='if(between(t,0.3,1.3)+between(t,2.3,3.3),0.5*sin(2*PI*440*t),0)':s=24000:d=4.1",
+                    str(roh)], check=True)
+    daten = td.anpassen(roh.read_bytes(), sample_rate=24000, fit=False, sekunden=10)
+    with wave.open(io.BytesIO(daten)) as w:
+        dauer = w.getnframes() / 24000
+    assert 2.0 <= dauer <= 2.0 + 0.05 + 0.27 + 0.27, dauer   # Ton ganz, vorher 4,1 s
 
 
 def test_anpassen_echt(tmp_path):

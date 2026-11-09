@@ -132,13 +132,32 @@ def voiceover_pruefen(nutzlast) -> dict:
             "sekunden": frames * fps_den / fps_num}
 
 
+# Viral-Video-Guideline (09.11.2026): Pausen >= 0,4 s unter 1/min. Chatterbox setzt an Kommas und
+# Satzenden 0,4-0,7 s Stille; Laura misst sie als Sprechlaenge mit -> Reels mit 20-30 Pausen/min.
+# Nur der Laura-Weg (/voiceover) kuerzt: Stille am Anfang bis auf 0,05 s, jede weitere auf ~0,24 s
+# (ffmpeg 8 behaelt stop_duration + stop_silence; gemessen). Mit Lauras 4 Frames Satzpause bleibt jede
+# Pause unter 0,4 s. /sprechen (Podcast) bleibt unveraendert. TON_VOICEOVER_STILLE=0 schaltet es ab.
+STILLE_FILTER = ("silenceremove=start_periods=1:start_threshold=-40dB:start_silence=0.05:"
+                 "stop_periods=-1:stop_threshold=-40dB:stop_duration=0.1:stop_silence=0.12")
+
+
+def _stille_kuerzen() -> bool:
+    return os.environ.get("TON_VOICEOVER_STILLE", "1").strip() != "0"
+
+
 def anpassen_argumente(quelle: str, ziel: str, *, sample_rate: int, fit: bool,
                        sekunden: float) -> list[str]:
-    """ffmpeg-Argumente wie Lauras tts-sidecar: mono, sample_rate, pcm_s16le; fit -> apad + -t."""
+    """ffmpeg-Argumente wie Lauras tts-sidecar: mono, sample_rate, pcm_s16le; fit -> apad + -t.
+    Davor die Stille kuerzen (STILLE_FILTER), solange nicht abgeschaltet."""
     args = [os.environ.get("TON_FFMPEG") or "ffmpeg", "-hide_banner", "-nostdin", "-loglevel",
             "error", "-y", "-i", quelle, "-ac", "1", "-ar", str(sample_rate)]
+    filter_ = [STILLE_FILTER] if _stille_kuerzen() else []
     if fit:
-        args += ["-af", "apad", "-t", f"{sekunden:.6f}"]
+        filter_.append("apad")
+    if filter_:
+        args += ["-af", ",".join(filter_)]
+    if fit:
+        args += ["-t", f"{sekunden:.6f}"]
     return args + ["-c:a", "pcm_s16le", ziel]
 
 
