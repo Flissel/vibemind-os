@@ -2,13 +2,20 @@
 # bootstrap.sh -- legt den plugin-setup-Space an. Wiederholbar (idempotent).
 #
 # Tut GENAU drei Dinge, in dieser Reihenfolge:
-#   1. Wendet die fuenf Supabase-Migrationen an (0001/0002 aus Aufgabe 4,
+#   1. Wendet die sechs Supabase-Migrationen an (0001/0002 aus Aufgabe 4,
 #      0003 -- die geringstberechtigte Rolle -- und 0004 -- deren
 #      Haertung -- aus Aufgabe 6, 0005 -- die zwei Funktionen des
-#      Eingabefensters -- aus dem Entwurf 2026-09-12-eingabefenster;
+#      Eingabefensters -- aus dem Entwurf 2026-09-12-eingabefenster,
+#      0006 -- neu_aufnehmen auch ab 'verifiziert' -- aus dem
+#      Sackgassen-Fix vom 16.09.2026 (s. eingabefenster-nachzieher.md N7-
+#      Nachtrag).
 #      N9-FIX 2026-09-15: dieser Kommentar sagte bisher faelschlich
 #      "drei"/"0001-0003", die Schleife unten wandte schon immer alle
 #      fuenf an -- reiner Textfehler, keine Funktionsluecke).
+#      LUECKEN-FIX 2026-09-23: 0006 fehlte in der Schleife komplett (nicht
+#      nur im Kommentar) -- auf der echten Datenbank NACHTRAEGLICH von
+#      Hand angewendet und hier ergaenzt, damit ein Rebootstrap sie nicht
+#      wieder ausliesse.
 #   2. Faehrt das eigenstaendige Gateway hoch (docker compose up -d in
 #      diesem Verzeichnis -- NICHT der vibemind-Swarm-Stack, s.
 #      docker-compose.yml-Kommentar).
@@ -28,7 +35,8 @@ if [ -z "$CONTAINER" ]; then
   exit 1
 fi
 for migration in db/0001_plugin_setup.sql db/0002_state_machine.sql db/0003_least_privilege_role.sql \
-                 db/0004_least_privilege_role_hardening.sql db/0005_fenster_oberflaeche.sql; do
+                 db/0004_least_privilege_role_hardening.sql db/0005_fenster_oberflaeche.sql \
+                 db/0006_neu_aufnehmen_ab_verifiziert.sql; do
   echo "   -> $migration"
   docker exec -i "$CONTAINER" psql -U postgres -d postgres -v ON_ERROR_STOP=1 -f - < "$migration"
 done

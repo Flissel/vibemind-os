@@ -1,0 +1,5 @@
+
+# This is a test file to verify bash can write files in this worktree
+REGEL_BEZUG = ("Ohne Markierung beziehen sich Verweise wie „das", „hier" oder „so nicht" auf deine eigene letzte Runde "
+               "(die letzte Antwort unter BISHERIGER CHAT). Ist der Bezug nicht eindeutig, frag kurz nach und ändere "
+               'nichts ("aenderungen": []).')
