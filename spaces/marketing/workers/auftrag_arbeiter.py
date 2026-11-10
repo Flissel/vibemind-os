@@ -20,9 +20,7 @@ PORT = 8141
 TAKT_S = 30
 NOCH_EINMAL_PAUSE_S = 5
 LLM_URL = os.environ.get("MARKETING_AUFTRAG_LLM_URL", "http://127.0.0.1:8117/v1")
-DREHBUCH_BEHALTEN_S = 6 * 3600     # so lange gilt der gemerkte Sprechertext fuer die Beitragstexte
 STAND: dict = {"letzter_lauf": None, "letztes_ergebnis": None}
-_DREHBUCH: dict[str, tuple[float, str]] = {}   # Auftrags-id -> (Zeitpunkt, Sprechertext); lebt nur im Prozess
 
 
 class AuftragApi:
@@ -90,7 +88,7 @@ def _antwort(fragen, warte, system: str, nachricht: str, lesen):
     return None
 
 
-def _neu(api, auftrag: dict, fragen, warte, jetzt, marke) -> str:
+def _neu(api, auftrag: dict, fragen, warte, marke) -> str:
     """Schritt 1: Drehbuch erfragen, Reel anlegen."""
     aid, mandant = auftrag["id"], str(auftrag.get("mandant") or "")
     thema = str((auftrag.get("eingabe") or {}).get("thema") or "").strip()
@@ -110,11 +108,10 @@ def _neu(api, auftrag: dict, fragen, warte, jetzt, marke) -> str:
         if e.code == 409:                  # hat schon ein Video oder ist nicht mehr in Arbeit
             return "leer"
         raise
-    _DREHBUCH[aid] = (jetzt(), drehbuch["sprechertext"])
     return "reel_beauftragt"
 
 
-def _laufend(api, auftrag: dict, fragen, warte, jetzt, marke) -> str:
+def _laufend(api, auftrag: dict, fragen, warte, marke) -> str:
     """Schritt 2: Stand des Reels lesen; fertig -> Beitragstexte, gescheitert -> Fehler, sonst warten."""
     aid, mandant = auftrag["id"], str(auftrag.get("mandant") or "")
     reel = api.reel_lesen(aid)
@@ -125,34 +122,32 @@ def _laufend(api, auftrag: dict, fragen, warte, jetzt, marke) -> str:
     if status != "fertig":
         return "wartet"
     thema = str((auftrag.get("eingabe") or {}).get("thema") or "").strip()
-    _, sprechertext = _DREHBUCH.get(aid, (0, ""))
+    drehbuch = (auftrag.get("ergebnis") or {}).get("drehbuch")    # steht seit POST reel im Ergebnis
+    if isinstance(drehbuch, dict):
+        thema = str(drehbuch.get("thema") or thema).strip()
+        sprechertext = str(drehbuch.get("sprechertext") or "")
+    else:
+        sprechertext = ""
     system, nachricht = auftrag_texte.beitrag_prompt(thema, sprechertext, marke(mandant, thema))
     texte = _antwort(fragen, warte, system, nachricht, auftrag_texte.beitrag_lesen)
     if texte is None:
         api.fehler(aid, "Beitragstext unbrauchbar")
         return "fehler"
     api.erzeugt(aid, texte)
-    _DREHBUCH.pop(aid, None)
     return "erzeugt"
 
 
-def _vergessen(jetzt: float) -> None:
-    for aid in [a for a, (t, _) in _DREHBUCH.items() if jetzt - t > DREHBUCH_BEHALTEN_S]:
-        del _DREHBUCH[aid]
-
-
-def ein_durchlauf(api, fragen=shim_fragen, warte=time.sleep, jetzt=time.monotonic, marke=marke_laden) -> str:
+def ein_durchlauf(api, fragen=shim_fragen, warte=time.sleep, jetzt=time.monotonic, marke=marke_laden) -> str:  # noqa: ARG001 - jetzt: Signatur laut Plan
     """Erst alle laufenden Reels pruefen, dann hoechstens einen neuen Auftrag uebernehmen.
     Rueckgabe: Ergebnis des letzten Schritts - leer, reel_beauftragt, wartet, erzeugt oder fehler."""
-    _vergessen(jetzt())
     ergebnis = "leer"
     for auftrag in api.laufend():
-        ergebnis = _laufend(api, auftrag, fragen, warte, jetzt, marke)
+        ergebnis = _laufend(api, auftrag, fragen, warte, marke)
     auftrag = api.naechster()
     if auftrag:
         if (auftrag.get("ergebnis") or {}).get("video"):
-            return _laufend(api, auftrag, fragen, warte, jetzt, marke)
-        return _neu(api, auftrag, fragen, warte, jetzt, marke)
+            return _laufend(api, auftrag, fragen, warte, marke)
+        return _neu(api, auftrag, fragen, warte, marke)
     return ergebnis
 
 

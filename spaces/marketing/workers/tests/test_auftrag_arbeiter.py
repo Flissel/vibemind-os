@@ -9,7 +9,9 @@ from spaces.marketing.workers.bild_worker import ApiFehler
 AID = "0123abcd-4444-4444-4444-444444444444"
 NEU = {"id": AID, "art": "reel", "mandant": "fin2gether", "eingabe": {"thema": "bAV in 30 Sekunden"},
        "ergebnis": {}, "versuch": 1}
-LAUFEND = {**NEU, "ergebnis": {"video": "vid-1"}}
+LAUFEND = {**NEU, "ergebnis": {"video": "vid-1", "drehbuch": {
+    "titel": "bAV", "thema": "bAV im Detail", "sprechertext": "Drei Fehler.", "hook": "Stopp!", "dauer_s": 30}}}
+OHNE_DREHBUCH = {**NEU, "ergebnis": {"video": "vid-1"}}
 DREHBUCH = json.dumps({"titel": "bAV", "sprechertext": "Drei Fehler.", "hook": "Stopp!", "dauer_s": 30})
 BEITRAG = json.dumps({"titel": "bAV: drei Fehler", "text_lang": "Lang.", "text_kurz": "Kurz."})
 
@@ -60,11 +62,6 @@ class Claude:
         return self.antworten.pop(0)
 
 
-@pytest.fixture(autouse=True)
-def _frisch():
-    aa._DREHBUCH.clear()
-
-
 def lauf(api, claude, pausen=None):
     return aa.ein_durchlauf(api, claude, (pausen if pausen is not None else []).append, lambda: 1000.0,
                             marke=lambda m, t: "Marke: Fin2gether")
@@ -93,18 +90,17 @@ def test_wartet_solange_video_laeuft():
 
 def test_fertiges_video_ergibt_erzeugt():
     api = Api(laufend=[LAUFEND], reel={"status": "fertig", "datei": "vid.mp4", "befund": None})
-    aa._DREHBUCH[AID] = (1000.0, "Drei Fehler.")
     claude = Claude(BEITRAG)
     assert lauf(api, claude) == "erzeugt"
     assert api.aufrufe == [("erzeugt", AID, {"titel": "bAV: drei Fehler", "text_lang": "Lang.", "text_kurz": "Kurz."})]
-    assert "Drei Fehler." in claude.fragen[0][1] and AID not in aa._DREHBUCH
+    assert "Drei Fehler." in claude.fragen[0][1] and "bAV im Detail" in claude.fragen[0][1]
 
 
-def test_fertiges_video_nach_neustart_nur_mit_thema():
-    api = Api(laufend=[LAUFEND], reel={"status": "fertig", "datei": "vid.mp4", "befund": None})
+def test_fertiges_video_ohne_drehbuch_nur_mit_thema():
+    api = Api(laufend=[OHNE_DREHBUCH], reel={"status": "fertig", "datei": "vid.mp4", "befund": None})
     claude = Claude(BEITRAG)
     assert lauf(api, claude) == "erzeugt"
-    assert "Sprechertext" not in claude.fragen[0][1]
+    assert "Sprechertext" not in claude.fragen[0][1] and "bAV in 30 Sekunden" in claude.fragen[0][1]
 
 
 @pytest.mark.parametrize("status,befund,grund", [("abgebrochen", None, "Reel: abgebrochen"),
