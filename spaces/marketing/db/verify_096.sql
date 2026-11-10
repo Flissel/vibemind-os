@@ -128,11 +128,13 @@ BEGIN
   BEGIN
     PERFORM auftrag.anlegen('brain', 'marketing', 'p096f', 'probe', 'reel', '{}', a);
     RAISE EXCEPTION '096.8: fremder Eltern-Auftrag (von) angenommen';
-  EXCEPTION WHEN raise_exception THEN IF SQLERRM LIKE '096.8:%' THEN RAISE; END IF; END;
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM NOT LIKE '%Eltern-Auftrag gehoert einem anderen%' THEN RAISE; END IF; END;
   BEGIN
     PERFORM auftrag.anlegen('sales', 'marketing', 'p096g', 'probe', 'reel', '{}', a);
     RAISE EXCEPTION '096.8: fremder Eltern-Auftrag (laden) angenommen';
-  EXCEPTION WHEN raise_exception THEN IF SQLERRM LIKE '096.8:%' THEN RAISE; END IF; END;
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM NOT LIKE '%Eltern-Auftrag gehoert einem anderen%' THEN RAISE; END IF; END;
 
   -- Gesamtgrenze 20 je von und Tag ueber alle Laeden
   FOR i IN 1..40 LOOP

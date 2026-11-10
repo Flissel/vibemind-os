@@ -238,29 +238,34 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = auftrag, pg_temp AS $$
 $$;
 
 CREATE OR REPLACE FUNCTION auftrag.sales_ergebnis_mischen(p_id uuid, p_teil jsonb) RETURNS boolean
-LANGUAGE sql SECURITY DEFINER SET search_path = auftrag, pg_temp AS $$
-    SELECT EXISTS (SELECT 1 FROM auftrag.auftraege WHERE id = p_id AND von = 'sales')
-       AND auftrag.ergebnis_mischen(p_id, p_teil);
-$$;
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = auftrag, pg_temp AS $$
+BEGIN
+    -- Eigentuemer zuerst pruefen (von aendert sich nie, darum ist keine Sperre noetig)
+    IF NOT EXISTS (SELECT 1 FROM auftrag.auftraege WHERE id = p_id AND von = 'sales') THEN RETURN false; END IF;
+    RETURN auftrag.ergebnis_mischen(p_id, p_teil);
+END $$;
 
 CREATE OR REPLACE FUNCTION auftrag.sales_stand_setzen(p_id uuid, p_von_stand text, p_nach_stand text,
     p_fehler text DEFAULT NULL) RETURNS boolean
-LANGUAGE sql SECURITY DEFINER SET search_path = auftrag, pg_temp AS $$
-    SELECT EXISTS (SELECT 1 FROM auftrag.auftraege WHERE id = p_id AND von = 'sales')
-       AND auftrag.stand_setzen(p_id, p_von_stand, p_nach_stand, p_fehler);
-$$;
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = auftrag, pg_temp AS $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM auftrag.auftraege WHERE id = p_id AND von = 'sales') THEN RETURN false; END IF;
+    RETURN auftrag.stand_setzen(p_id, p_von_stand, p_nach_stand, p_fehler);
+END $$;
 
 CREATE OR REPLACE FUNCTION auftrag.sales_gemeldet(p_id uuid, p_stand text) RETURNS boolean
-LANGUAGE sql SECURITY DEFINER SET search_path = auftrag, pg_temp AS $$
-    SELECT EXISTS (SELECT 1 FROM auftrag.auftraege WHERE id = p_id AND von = 'sales')
-       AND auftrag.gemeldet(p_id, p_stand);
-$$;
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = auftrag, pg_temp AS $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM auftrag.auftraege WHERE id = p_id AND von = 'sales') THEN RETURN false; END IF;
+    RETURN auftrag.gemeldet(p_id, p_stand);
+END $$;
 
 CREATE OR REPLACE FUNCTION auftrag.sales_erinnert(p_id uuid) RETURNS boolean
-LANGUAGE sql SECURITY DEFINER SET search_path = auftrag, pg_temp AS $$
-    SELECT EXISTS (SELECT 1 FROM auftrag.auftraege WHERE id = p_id AND von = 'sales')
-       AND auftrag.erinnert(p_id);
-$$;
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = auftrag, pg_temp AS $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM auftrag.auftraege WHERE id = p_id AND von = 'sales') THEN RETURN false; END IF;
+    RETURN auftrag.erinnert(p_id);
+END $$;
 
 -- Rechte: neue Funktionen sind fuer PUBLIC ausfuehrbar - zuerst alles entziehen.
 REVOKE ALL ON FUNCTION auftrag.anlegen(text, text, text, text, text, jsonb, uuid) FROM PUBLIC;
