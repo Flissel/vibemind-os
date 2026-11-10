@@ -131,6 +131,7 @@ async def _api_key_check(request: Request, call_next):
             and not path.startswith("/api/marke/arbeiter/")
             and not path.startswith("/api/ton/arbeiter/")
             and not path.startswith("/api/video/arbeiter/")
+            and not path.startswith("/api/auftrag/arbeiter/")
             # Signierter Kurzzeit-Link fuer Lauras Bild-Import (HMAC ist die Berechtigung).
             and not path.startswith("/api/video/medien/")):
         if request.headers.get("X-API-Key") != API_KEY:
@@ -3512,6 +3513,8 @@ app.include_router(_video.pult_router)
 from spaces.marketing.api import reel_bilder as _reel_bilder  # noqa: E402
 app.include_router(_reel_bilder.router)       # Bild-Arbeiter (X-Bild-Key, /api/video/arbeiter/ ohne X-API-Key)
 app.include_router(_reel_bilder.pult_router)
+from spaces.marketing.api import auftrag as _auftrag  # noqa: E402
+app.include_router(_auftrag.router)           # Auftrags-Arbeiter (X-Bild-Key, /api/auftrag/arbeiter/ ohne X-API-Key)
 from spaces.marketing.api import fakten as _fakten  # noqa: E402
 app.include_router(_fakten.router)
 
