@@ -6,7 +6,7 @@ import type { TurnBusEvent } from '@x/shared/dist/turns.js';
 import type { SessionBusEvent } from '@x/shared/dist/sessions.js';
 import { WorkspaceChangeEvent } from '@x/shared/dist/workspace.js';
 import { z } from 'zod';
-import { extractBearer, loadOrCreateServerKey, tokenMatches } from './auth.js';
+import { extractBearer, findScopedKey, loadOrCreateServerKey, loadScopedKeys, tokenMatches } from './auth.js';
 import type { RpcHandlers } from './channels.js';
 import { loadServerConfig } from './config.js';
 import { acquireWorkdirLock } from './lock.js';
@@ -96,6 +96,22 @@ export function hostAllowed(hostHeader: string | undefined, allowed: Set<string>
   return allowed.has(host);
 }
 
+// A scoped key may only POST /rpc/<channel> for its own channels. The raw
+// path is judged (one segment, no slashes); the channel is compared decoded,
+// the same way the router decodes it.
+export function scopedRouteAllowed(method: string, rawPath: string, channels: string[]): boolean {
+  if (method !== 'POST') return false;
+  const m = /^\/rpc\/([^/]+)$/.exec(rawPath);
+  if (!m) return false;
+  let channel: string;
+  try {
+    channel = decodeURIComponent(m[1]);
+  } catch {
+    return false;
+  }
+  return channels.includes(channel);
+}
+
 /** Is the process answering on this port another rowboat-server? */
 async function isRowboatServer(port: number): Promise<boolean> {
   try {
@@ -138,8 +154,16 @@ export async function createRowboatServer(opts: RowboatServerOptions): Promise<R
 
   app.use('*', async (c, next) => {
     const token = extractBearer(c.req.header('authorization'), c.req.query('token'));
-    if (!token || !tokenMatches(token, key)) {
+    if (token && tokenMatches(token, key)) {
+      await next();
+      return;
+    }
+    const scoped = token ? findScopedKey(token, await loadScopedKeys(opts.workDir)) : null;
+    if (!scoped) {
       return c.json({ error: { code: 'unauthorized', message: 'missing or invalid bearer token' } }, 401);
+    }
+    if (!scopedRouteAllowed(c.req.method, new URL(c.req.url).pathname, scoped.channels)) {
+      return c.json({ error: { code: 'forbidden', message: 'key not allowed for this route' } }, 403);
     }
     await next();
   });

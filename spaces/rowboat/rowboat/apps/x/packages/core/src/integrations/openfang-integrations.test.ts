@@ -51,12 +51,30 @@ describe('status', () => {
     expect(calls.every((c) => c.init.redirect === 'manual')).toBe(true)
     expect(s.verbindung).toBe('ok')
     expect(s.installiert).toEqual([
-      { id: 'github', name: 'GitHub', icon: '🐙', zustand: 'verbunden', detail: null, werkzeuge: 46, statischerSchluessel: true, offeneFreigaben: 1 },
-      { id: 'vercel', name: 'Vercel', icon: '▲', zustand: 'anmeldung_noetig', detail: 'abgemeldet', werkzeuge: 0, statischerSchluessel: false, offeneFreigaben: 1 },
+      { id: 'github', name: 'GitHub', icon: '🐙', zustand: 'verbunden', detail: null, werkzeuge: 46, statischerSchluessel: true, offeneFreigaben: 1, verifiziert: true },
+      { id: 'vercel', name: 'Vercel', icon: '▲', zustand: 'anmeldung_noetig', detail: 'abgemeldet', werkzeuge: 0, statischerSchluessel: false, offeneFreigaben: 1, verifiziert: true },
     ])
-    expect(s.verfuegbar).toEqual([{ id: 'notion-remote', name: 'Notion', icon: 'N', beschreibung: 'Notizen', kategorie: 'productivity' }])
+    expect(s.verfuegbar).toEqual([{ id: 'notion-remote', name: 'Notion', icon: 'N', beschreibung: 'Notizen', kategorie: 'productivity', verifiziert: true, stichworte: [] }])
     const flat = JSON.stringify(s)
     for (const verboten of ['INTEGRATION_GITHUB_PAT', 'auth_headers', 'credential', 'installed_at', 'K-SECRET']) expect(flat).not.toContain(verboten)
+  })
+  it('verified/tags werden durchgereicht; fehlend => true / []', async () => {
+    const adm = { transport: 'http', installed: false, admission: 'admitted', description: 'd', category: 'Sales', icon: 'i' }
+    const { client } = deps({ ...OK3, 'GET /api/integrations/available': { status: 200, body: { integrations: [
+      { id: 'hubspot', name: 'HubSpot', ...adm, verified: false, tags: ['crm', 7, 'sales'] },
+      { id: 'alt', name: 'Alt', ...adm },
+    ] } } })
+    const s = await client.status()
+    expect(s.verfuegbar[0]).toMatchObject({ verifiziert: false, stichworte: ['crm', 'sales'], kategorie: 'Sales' })
+    expect(s.verfuegbar[1]).toMatchObject({ verifiziert: true, stichworte: [] })
+  })
+  it('installiert: verified false => verifiziert false, fehlend => true', async () => {
+    const { client } = deps({ ...OK3, 'GET /api/integrations': { status: 200, body: { installed: [
+      { id: 'hubspot', name: 'H', icon: 'h', zustand: 'verbunden', detail: null, tool_count: 1, auth_headers: [], verified: false },
+      { id: 'github', name: 'G', icon: 'g', zustand: 'verbunden', detail: null, tool_count: 1, auth_headers: [] },
+    ] } } })
+    const s = await client.status()
+    expect(s.installiert.map((i) => i.verifiziert)).toEqual([false, true])
   })
   it('zaehlt Freigaben fuer IDs mit Bindestrich ueber mcp_<id mit _>_', async () => {
     const { client } = deps({ ...OK3,

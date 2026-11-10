@@ -2,7 +2,7 @@ export { createRowboatServer, type EventSources, type RowboatServer, type Rowboa
 export { RPC_CHANNELS, isRpcChannel, type RpcChannel, type RpcHandlers } from './channels.js';
 export { createWsHub, type WsHub, type PushChannel, WS_CLOSE_NO_HELLO, WS_CLOSE_UNAUTHORIZED } from './ws-hub.js';
 export { acquireWorkdirLock } from './lock.js';
-export { loadOrCreateServerKey, rotateServerKey, tokenMatches, extractBearer, SERVER_KEY_FILE } from './auth.js';
+export { loadOrCreateServerKey, rotateServerKey, tokenMatches, extractBearer, SERVER_KEY_FILE, SCOPED_KEYS_FILE, loadScopedKeys, findScopedKey, addScopedKey, removeScopedKey, type ScopedKey } from './auth.js';
 export { loadServerConfig, saveServerConfig, ServerConfig, DEFAULT_PORT } from './config.js';
 export { buildPairingPayload, collectPairingUrls, type PairingPayload } from './pairing.js';
 export { createCoreRpcHandlers, createCoreEventSources, resolveWorkspacePath } from './core-deps.js';

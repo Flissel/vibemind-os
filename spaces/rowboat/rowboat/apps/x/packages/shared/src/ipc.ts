@@ -3400,6 +3400,49 @@ export const ipcSchemas = {
       error: z.string().optional(),
     }),
   },
+  // External messenger (Freigabe-Bote): put suggestions into the tray without
+  // a 'proposed' planner signal. Duplicates / dismissed / already-listed texts
+  // are skipped; the response names the texts actually added.
+  'todo:addSuggestions': {
+    req: z.object({
+      texts: z.array(z.string()),
+    }),
+    res: z.object({
+      added: z.array(z.string()),
+    }),
+  },
+  // Withdraw a tray suggestion without recording any planner signal.
+  'todo:withdrawSuggestion': {
+    req: z.object({
+      text: z.string(),
+    }),
+    res: z.object({
+      success: z.boolean(),
+      removed: z.boolean(),
+    }),
+  },
+  // Set an item's checkbox by key.
+  'todo:setChecked': {
+    req: z.object({
+      key: z.string(),
+      checked: z.boolean(),
+    }),
+    res: z.object({
+      success: z.boolean(),
+      error: z.string().optional(),
+    }),
+  },
+  // Read-only view of the recorded planner signals.
+  'todo:plannerSignals': {
+    req: z.null(),
+    res: z.object({
+      signals: z.array(z.object({
+        kind: z.string(),
+        key: z.string(),
+        at: z.string(),
+      })),
+    }),
+  },
   // Decline a pending suggestion: leaves the tray, recorded as 'dismissed'.
   'todo:declineSuggestion': {
     req: z.object({
