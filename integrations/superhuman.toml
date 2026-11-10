@@ -1,0 +1,22 @@
+# Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://help.superhuman.com/hc/en-us/articles/49810745762067-Superhuman-Mail-MCP-Server-Beta - geprueft: 2026-11-10
+id = "superhuman"
+name = "Superhuman Mail"
+description = "Superhuman Mail ueber den offiziellen Remote-MCP-Server"
+category = "communication"
+icon = "💬"
+tags = ["kommunikation", "mail", "postfach"]
+read_only_tools = []
+
+[transport]
+type = "http"
+url = "https://mcp.mail.superhuman.com/mcp"
+
+[auth]
+type = "oauth"
+scopes = ["offline_access"]
+
+[catalog]
+replaces_openai_plugin = "superhuman"
+license = "proprietary-service"
+admission = "admitted"
+verified = false

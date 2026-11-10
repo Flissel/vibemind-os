@@ -4,7 +4,7 @@ import path from 'path';
 import { WorkDir } from '../config/config.js';
 import { withFileLock } from '../knowledge/file-lock.js';
 import { PrefixLogger } from '@x/shared/dist/prefix-logger.js';
-import { normalizeKey } from './fileops.js';
+import { getItem, normalizeKey } from './fileops.js';
 
 const log = new PrefixLogger('Todo:PlannerMemory');
 
@@ -154,6 +154,49 @@ export async function takeSuggestion(text: string): Promise<string | null> {
         await writeSuggestions(current);
         return taken;
     });
+}
+
+/** Shared proposal gate: splits texts into those worth putting in the tray and
+ * those skipped (sticky-dismissed, or already on the user's list). Tray
+ * duplicates are handled by addSuggestions itself. */
+export async function partitionProposals(texts: string[]): Promise<{
+    candidates: string[];
+    skipped: { text: string; reason: string }[];
+}> {
+    const sticky = await stickyDismissedKeys();
+    const candidates: string[] = [];
+    const skipped: { text: string; reason: string }[] = [];
+    for (const text of texts) {
+        const key = normalizeKey(text);
+        if (sticky.has(key)) {
+            skipped.push({ text, reason: 'previously dismissed — do not re-propose' });
+        } else if (await getItem(key)) {
+            skipped.push({ text, reason: 'already on the list' });
+        } else {
+            candidates.push(text);
+        }
+    }
+    return { candidates, skipped };
+}
+
+/** Add suggestions from outside the planner (e.g. an approval bridge). Same
+ * gate as the planner, but records NO 'proposed' signal, so the planner's
+ * learning ledger is not skewed. Returns what was added. */
+export async function addExternalSuggestions(texts: string[]): Promise<string[]> {
+    const { candidates } = await partitionProposals(texts);
+    return addSuggestions(candidates);
+}
+
+/** Remove a suggestion from the tray without any signal (unlike a user
+ * decline, which records 'dismissed'). True when a line was removed. */
+export async function withdrawSuggestion(text: string): Promise<boolean> {
+    return (await takeSuggestion(text)) !== null;
+}
+
+/** Read-only view of the signal ledger; empty when missing or corrupt. */
+export async function listPlannerSignals(): Promise<Array<{ kind: string; key: string; at: string }>> {
+    const { signals } = await readFeedback();
+    return signals.map(({ kind, key, at }) => ({ kind, key, at }));
 }
 
 export async function ensurePreferencesFile(): Promise<void> {

@@ -1,0 +1,22 @@
+# Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://www.ranked.ai/developers/mcp/setup.md - geprueft: 2026-11-10
+id = "ranked-ai"
+name = "Ranked AI"
+description = "Ranked AI ueber den offiziellen Remote-MCP-Server"
+category = "marketing"
+icon = "📣"
+tags = ["marketing", "seo", "werbung"]
+read_only_tools = []
+
+[transport]
+type = "http"
+url = "https://app.ranked.ai/api/mcp"
+
+[auth]
+type = "oauth"
+scopes = []
+
+[catalog]
+replaces_openai_plugin = "ranked-ai"
+license = "proprietary-service"
+admission = "admitted"
+verified = false

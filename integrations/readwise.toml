@@ -1,0 +1,22 @@
+# Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://docs.readwise.io/tools/mcp - geprueft: 2026-11-10
+id = "readwise"
+name = "Readwise"
+description = "Readwise ueber den offiziellen Remote-MCP-Server"
+category = "productivity"
+icon = "📋"
+tags = ["produktivität", "notizen", "lesen"]
+read_only_tools = []
+
+[transport]
+type = "http"
+url = "https://mcp2.readwise.io/mcp"
+
+[auth]
+type = "oauth"
+scopes = []
+
+[catalog]
+replaces_openai_plugin = "readwise"
+license = "proprietary-service"
+admission = "admitted"
+verified = false

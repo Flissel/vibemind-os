@@ -8,16 +8,27 @@ To re-pin the kernel plugin catalog, change `DESKTOP_PLUGIN_CATALOG_PIN` on bran
 Flissel/rowboat (in `apps/x/apps/renderer/src/lib/rowboat-plugin-api.ts`), then run the sync.
 
 - Fork: https://github.com/Flissel/rowboat (branch `vibemind`)
-- Fork commit: `76abdc684aee277a3f4edda69615223d8ebd1d48`
+- Fork commit: `1cff4c8620a8b5fcb1fc5ff18891b5fa128f3c76`
 - Upstream base: rowboatlabs/rowboat `72e9d8c`
 - EHL repo: https://github.com/Flissel/ehl-munich-2026 (`schema/`)
 - EHL commit: `44c1024c7804c696bc283bd14a9d08bd87a38230`
 
 ## Patches on top of upstream (EHL hierarchy graph, VibeMind)
 
+- 1cff4c86 fix(integrations): VerfuegbareVorlageDto aus shared importieren
+- 76e040b3 merge: vibemind in claude/katalog-teil4 (Plugin-System Teil 4)
+- 7057726e feat(integrations): Verfuegbar-Liste mit Suche, Kategorien und Kennzeichen ungeprueft
+- 2f56d401 feat(integrations): verified und Stichworte von OpenFang durchreichen
+- e4203594 feat(server): scoped keys with per-channel rights
+- 21ec24ae merge: origin/vibemind (E-Mail-aus-Schalter, Kanal-Freigabe github_ci/gitea) vor dem Push
 - 76abdc68 Merge pull request #2 from Flissel/feat/email-aus
+- f1906c63 merge: fix/kanal-laeufe-haerten (Teil E, live seit 26.10.) vor dem Ausrollen
+- 8510a7cb merge: origin/vibemind in den Freigabe-Eingang (vor dem Ausrollen)
 - 27b42117 fix(renderer): cover flag-off palette and tour, hide Email Go menu entry
 - 7273d500 feat(renderer): EMAIL_ENABLED-Schalter, Mail-Tab in VibeMind aus
+- e625f484 test(server): Signal-Ledger bleibt leer, mit Positivkontrolle
+- 082b3a32 feat(server): todo-Kanäle für den Freigabe-Boten
+- bae54f86 feat(todo): Vorschläge von außen ohne Planer-Signal
 - 99943af5 feat(channels): Kanal-Freigabe um github_ci und gitea_* (VibeMind)
 - 7067fd35 feat(copilot): Dashboard-Anfragen zuerst zentrale-werkzeuge (VibeMind)
 - 143f0dc2 feat(copilot): Wissensfragen zuerst wissen-suchen, Zentrale-Werkzeuge per Skill (VibeMind)

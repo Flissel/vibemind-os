@@ -1,0 +1,22 @@
+# Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://clickup.com/blog/how-to-use-clickup-mcp-server/ - geprueft: 2026-11-10
+id = "clickup"
+name = "ClickUp"
+description = "ClickUp ueber den offiziellen Remote-MCP-Server"
+category = "productivity"
+icon = "📋"
+tags = ["produktivität", "projekte", "aufgaben"]
+read_only_tools = []
+
+[transport]
+type = "http"
+url = "https://mcp.clickup.com/mcp"
+
+[auth]
+type = "oauth"
+scopes = []
+
+[catalog]
+replaces_openai_plugin = "clickup"
+license = "proprietary-service"
+admission = "admitted"
+verified = false

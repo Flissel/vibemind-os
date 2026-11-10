@@ -1,0 +1,22 @@
+# Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://docs.replit.com/platforms/mcp-server - geprueft: 2026-11-10
+id = "replit"
+name = "Replit"
+description = "Replit ueber den offiziellen Remote-MCP-Server"
+category = "devtools"
+icon = "🛠️"
+tags = ["entwicklung", "hosting"]
+read_only_tools = []
+
+[transport]
+type = "http"
+url = "https://mcp.replit.com/server/mcp"
+
+[auth]
+type = "oauth"
+scopes = ["offline_access"]
+
+[catalog]
+replaces_openai_plugin = "replit"
+license = "proprietary-service"
+admission = "admitted"
+verified = false

@@ -54,7 +54,7 @@ import { saveNotificationSettings } from '@x/core/dist/config/notification_confi
 import { saveTurnLimitsSettings } from '@x/core/dist/config/turn_limits.js';
 import { saveRetentionSettings } from '@x/core/dist/config/retention.js';
 import { setPlannerConfig } from '@x/core/dist/todo/planner-task.js';
-import { recordPlannerSignal, addYourRule as addPlannerRule, takeSuggestion as takeTodoSuggestion } from '@x/core/dist/todo/planner-memory.js';
+import { recordPlannerSignal, addYourRule as addPlannerRule, takeSuggestion as takeTodoSuggestion, addExternalSuggestions as addExternalTodoSuggestions, withdrawSuggestion as withdrawTodoSuggestion, listPlannerSignals } from '@x/core/dist/todo/planner-memory.js';
 import {
   saveTodo,
   addItem as addTodoItem,
@@ -66,6 +66,7 @@ import {
   importTodoAttachments,
   linksToText as todoLinksToText,
   findItem as findTodoItem,
+  setChecked as setTodoChecked,
 } from '@x/core/dist/todo/fileops.js';
 import { todoBus } from '@x/core/dist/todo/bus.js';
 import { runTodoItem, stopTodoRun, commentOnTodoItem, startHomeChat, replyHomeChat } from '@x/core/dist/todo/runner.js';
@@ -416,6 +417,27 @@ export function createCoreRpcHandlers(opts?: { sessionsIndexReady?: Promise<void
         return { success: false, error: err instanceof Error ? err.message : String(err) };
       }
     },
+    'todo:addSuggestions': async (args) => {
+      const added = await addExternalTodoSuggestions(args.texts);
+      if (added.length > 0) todoBus.publish({ type: 'list_changed' });
+      return { added };
+    },
+    'todo:withdrawSuggestion': async (args) => {
+      const removed = await withdrawTodoSuggestion(args.text);
+      if (removed) todoBus.publish({ type: 'list_changed' });
+      return { success: true, removed };
+    },
+    'todo:setChecked': async (args) => {
+      try {
+        const ok = await setTodoChecked(args.key, args.checked);
+        if (!ok) return { success: false, error: 'Item not found' };
+        todoBus.publish({ type: 'list_changed' });
+        return { success: true };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    'todo:plannerSignals': async () => ({ signals: await listPlannerSignals() }),
     'todo:setPlanner': async (args) => setPlannerConfig(args),
     'todo:save': async (args) => {
       try {

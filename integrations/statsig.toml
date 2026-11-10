@@ -1,0 +1,22 @@
+# Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://docs.statsig.com/integrations/mcp/manual-setup - geprueft: 2026-11-10
+id = "statsig"
+name = "Statsig"
+description = "Statsig ueber den offiziellen Remote-MCP-Server"
+category = "data"
+icon = "📊"
+tags = ["daten", "experimente", "analytics"]
+read_only_tools = []
+
+[transport]
+type = "http"
+url = "https://api.statsig.com/v3/mcp"
+
+[auth]
+type = "oauth"
+scopes = []
+
+[catalog]
+replaces_openai_plugin = "statsig"
+license = "proprietary-service"
+admission = "admitted"
+verified = false

@@ -8,10 +8,10 @@ const invoke = vi.fn()
 const STATUS = {
   verbindung: 'ok',
   installiert: [
-    { id: 'github', name: 'GitHub', icon: '🐙', zustand: 'verbunden', detail: null, werkzeuge: 46, statischerSchluessel: true, offeneFreigaben: 2 },
-    { id: 'vercel', name: 'Vercel', icon: '▲', zustand: 'verbunden', detail: null, werkzeuge: 236, statischerSchluessel: false, offeneFreigaben: 0 },
+    { id: 'github', name: 'GitHub', icon: '🐙', zustand: 'verbunden', detail: null, werkzeuge: 46, statischerSchluessel: true, offeneFreigaben: 2, verifiziert: true },
+    { id: 'vercel', name: 'Vercel', icon: '▲', zustand: 'verbunden', detail: null, werkzeuge: 236, statischerSchluessel: false, offeneFreigaben: 0, verifiziert: false },
   ],
-  verfuegbar: [{ id: 'notion-remote', name: 'Notion', icon: 'N', beschreibung: 'Notizen', kategorie: 'productivity' }],
+  verfuegbar: [{ id: 'notion-remote', name: 'Notion', icon: 'N', beschreibung: 'Notizen', kategorie: 'Productivity', verifiziert: true, stichworte: [] }],
 }
 beforeEach(() => {
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
@@ -29,6 +29,11 @@ describe('IntegrationsPage', () => {
     expect(screen.getByText('Notion')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '2 Freigaben offen' }))
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('integrations:freigabenOeffnen', null))
+  })
+  it('installierte ungeprueft zeigt Kennzeichen', async () => {
+    render(<IntegrationsPage visible />)
+    await screen.findByText('Vercel')
+    expect(screen.getAllByText('ungeprüft')).toHaveLength(1)
   })
   it('Hinweis bei openfang_aus, schluessel_fehlt, schluessel_falsch', async () => {
     for (const [v, t] of [['openfang_aus', 'OpenFang läuft nicht (127.0.0.1:4200)'],

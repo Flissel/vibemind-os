@@ -73,30 +73,16 @@ export const todoTools: z.infer<typeof BuiltinToolsSchema> = {
         }),
         execute: async ({ items }: { items: { text: string }[] }, ctx?: ToolContext) => {
             try {
-                const { getItem, normalizeKey, isDelegated } = await import("../../../todo/fileops.js");
+                const { isDelegated } = await import("../../../todo/fileops.js");
                 if (ctx?.channel) {
                     const refused = items
                         .map((entry) => channelDelegationError(ctx, entry.text, undefined, isDelegated))
                         .filter((reason): reason is string => reason !== null);
                     if (refused.length > 0) return { success: false, error: refused.join("; ") };
                 }
-                const { stickyDismissedKeys, recordPlannerSignal, addSuggestions } = await import("../../../todo/planner-memory.js");
+                const { partitionProposals, recordPlannerSignal, addSuggestions } = await import("../../../todo/planner-memory.js");
                 const { todoBus } = await import("../../../todo/bus.js");
-                const sticky = await stickyDismissedKeys();
-                const candidates: string[] = [];
-                const skipped: { text: string; reason: string }[] = [];
-                for (const entry of items) {
-                    const key = normalizeKey(entry.text);
-                    if (sticky.has(key)) {
-                        skipped.push({ text: entry.text, reason: 'previously dismissed — do not re-propose' });
-                        continue;
-                    }
-                    if (await getItem(key)) {
-                        skipped.push({ text: entry.text, reason: 'already on the list' });
-                        continue;
-                    }
-                    candidates.push(entry.text);
-                }
+                const { candidates, skipped } = await partitionProposals(items.map((entry) => entry.text));
                 const added = await addSuggestions(candidates);
                 for (const text of added) await recordPlannerSignal('proposed', text);
                 todoBus.publish({ type: 'list_changed' });

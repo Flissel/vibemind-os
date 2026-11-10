@@ -1,3 +1,4 @@
+import { UngeprueftPille } from './verfuegbar-liste'
 import type { Knopf, KartenModell } from './zustand'
 
 const KNOPF_TEXT: Record<Knopf, string> = {
@@ -12,7 +13,7 @@ const FARBE: Record<KartenModell['farbe'], string> = {
 }
 
 export function IntegrationCard(props: {
-  name: string; icon: string; modell: KartenModell; offeneFreigaben: number; gesperrt: boolean; ausgegraut: boolean
+  name: string; icon: string; modell: KartenModell; offeneFreigaben: number; verifiziert: boolean; gesperrt: boolean; ausgegraut: boolean
   onKnopf: (k: Knopf) => void; onFreigaben: () => void
 }) {
   const { name, icon, modell, offeneFreigaben, gesperrt, ausgegraut } = props
@@ -21,6 +22,7 @@ export function IntegrationCard(props: {
       <div className="flex items-center gap-3">
         <span className="text-xl" aria-hidden>{icon}</span>
         <span className="font-medium">{name}</span>
+        {!props.verifiziert && <UngeprueftPille />}
         {offeneFreigaben > 0 && (
           <button type="button" className="ml-auto rounded-full bg-amber-500/15 px-2 py-0.5 text-xs text-amber-600 dark:text-amber-400"
             onClick={props.onFreigaben}>{offeneFreigaben} Freigaben offen</button>

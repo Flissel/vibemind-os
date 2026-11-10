@@ -9,8 +9,8 @@ const DEFAULT_TIMEOUT_MS = 10_000
 const DEFAULT_AKTIONS_TIMEOUT_MS = 60_000
 
 export type Verbindung = 'ok' | 'openfang_aus' | 'schluessel_fehlt' | 'schluessel_falsch'
-export interface InstallierteIntegration { id: string; name: string; icon: string; zustand: string; detail: string | null; werkzeuge: number; statischerSchluessel: boolean; offeneFreigaben: number }
-export interface VerfuegbareVorlage { id: string; name: string; icon: string; beschreibung: string; kategorie: string }
+export interface InstallierteIntegration { id: string; name: string; icon: string; zustand: string; detail: string | null; werkzeuge: number; statischerSchluessel: boolean; offeneFreigaben: number; verifiziert: boolean }
+export interface VerfuegbareVorlage { id: string; name: string; icon: string; beschreibung: string; kategorie: string; verifiziert: boolean; stichworte: string[] }
 export interface IntegrationsStatus { verbindung: Verbindung; installiert: InstallierteIntegration[]; verfuegbar: VerfuegbareVorlage[] }
 export interface AktionsErgebnis { ok: boolean; zustand?: string; meldung?: string }
 export interface OpenFangDeps { fetch: typeof fetch; apiKey: () => string | undefined; openExternal: (url: string) => Promise<void>; timeoutMs?: number; aktionsTimeoutMs?: number; log?: (line: string) => void }
@@ -211,12 +211,13 @@ export function createOpenFangIntegrations(deps: OpenFangDeps): OpenFangIntegrat
               werkzeuge: zustand === 'verbunden' && Number.isInteger(x.tool_count) && (x.tool_count as number) >= 0 ? (x.tool_count as number) : 0,
               statischerSchluessel: arr(x.auth_headers).length > 0,
               offeneFreigaben: offen.filter((t) => t.startsWith(werkzeugPraefix(id))).length,
+              verifiziert: x.verified !== false,
             }
           })
         const verfuegbar = arr(obj(verf.body).integrations).map(obj)
           .filter((x) => typeof x.id === 'string' && INTEGRATION_ID_RE.test(x.id as string)
             && (x.transport === 'http' || x.transport === 'sse') && x.installed === false && x.admission === 'admitted')
-          .map((x): VerfuegbareVorlage => ({ id: x.id as string, name: str(x.name, x.id as string), icon: str(x.icon), beschreibung: str(x.description), kategorie: str(x.category) }))
+          .map((x): VerfuegbareVorlage => ({ id: x.id as string, name: str(x.name, x.id as string), icon: str(x.icon), beschreibung: str(x.description), kategorie: str(x.category), verifiziert: x.verified !== false, stichworte: arr(x.tags).filter((t): t is string => typeof t === 'string') }))
         return { verbindung: 'ok', installiert, verfuegbar }
       } catch (e) {
         if (e instanceof VerbindungsFehler) return { verbindung: e.art, installiert: [], verfuegbar: [] }

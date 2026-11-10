@@ -14,10 +14,12 @@ export const InstallierteIntegrationSchema = z.object({
   werkzeuge: z.number().int().nonnegative(),
   statischerSchluessel: z.boolean(),
   offeneFreigaben: z.number().int().nonnegative(),
+  verifiziert: z.boolean(),
 }).strict()
 
 export const VerfuegbareVorlageSchema = z.object({
   id: INTEGRATION_ID, name: z.string(), icon: z.string(), beschreibung: z.string(), kategorie: z.string(),
+  verifiziert: z.boolean(), stichworte: z.array(z.string()),
 }).strict()
 
 export const IntegrationsStatusSchema = z.object({

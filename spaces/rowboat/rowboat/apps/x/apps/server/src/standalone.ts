@@ -14,6 +14,7 @@ import { createCoreEventSources, createCoreRpcHandlers, resolveWorkspacePath } f
 import { startWorkspaceWatcher, subscribeWorkspaceEvents, subscribeKnowledgeEvents } from './workspace-watcher.js';
 import { prepareCoreData, initCoreServices } from '@x/core/dist/boot/services.js';
 import { createRowboatServer } from './server.js';
+import { runScopedKeyCli } from './scoped-key-cli.js';
 import { capabilityBroker } from './capabilities.js';
 import { registerUrlOpener } from '@x/core/dist/auth/url-opener.js';
 import { installLoopbackRelay } from './loopback-relay.js';
@@ -139,7 +140,23 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  console.error('[server] fatal:', err);
-  process.exit(1);
-});
+// `node rowboat-server.cjs scoped-key …` manages narrow-rights keys and exits
+// without booting core (safe next to a running server: it only edits
+// scoped-keys.json, which the server re-reads per request).
+if (process.argv[2] === 'scoped-key') {
+  runScopedKeyCli(process.argv.slice(3), WorkDir, {
+    out: (line) => process.stdout.write(line + '\n'),
+    err: (line) => process.stderr.write(line + '\n'),
+  }).then(
+    (code) => process.exit(code),
+    (err) => {
+      console.error('[scoped-key] fatal:', err);
+      process.exit(1);
+    },
+  );
+} else {
+  main().catch((err) => {
+    console.error('[server] fatal:', err);
+    process.exit(1);
+  });
+}

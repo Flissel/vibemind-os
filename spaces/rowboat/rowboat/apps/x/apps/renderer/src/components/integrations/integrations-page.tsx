@@ -7,6 +7,7 @@ import {
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { IntegrationCard } from './integration-card'
+import { VerfuegbarListe } from './verfuegbar-liste'
 import { kartenModell, type Knopf } from './zustand'
 
 type Status = Awaited<ReturnType<typeof window.ipc.invoke<'integrations:status'>>>
@@ -93,7 +94,7 @@ export function IntegrationsPage({ visible }: { visible: boolean }) {
           {status?.installiert.length === 0 && <p className="text-sm text-muted-foreground">Noch keine Integration installiert.</p>}
           <div className="grid gap-3 sm:grid-cols-2">
             {status?.installiert.map((i) => (
-              <IntegrationCard key={i.id} name={i.name} icon={i.icon} modell={kartenModell(i)} offeneFreigaben={i.offeneFreigaben}
+              <IntegrationCard key={i.id} name={i.name} icon={i.icon} modell={kartenModell(i)} verifiziert={i.verifiziert} offeneFreigaben={i.offeneFreigaben}
                 gesperrt={laufend.has(i.id)} ausgegraut={ausgegraut}
                 onKnopf={(k) => knopf(i.id, i.name, k)}
                 onFreigaben={() => void ausfuehren('freigaben', () => window.ipc.invoke('integrations:freigabenOeffnen', null), false)} />
@@ -103,16 +104,8 @@ export function IntegrationsPage({ visible }: { visible: boolean }) {
 
         <section className="flex flex-col gap-3">
           <h2 className="text-sm font-medium text-muted-foreground">Verfügbar</h2>
-          {status?.verfuegbar.length === 0 && <p className="text-sm text-muted-foreground">Keine weiteren Vorlagen verfügbar.</p>}
-          {status?.verfuegbar.map((v) => (
-            <div key={v.id} className={`flex items-center gap-3 rounded-lg border border-border p-3 ${ausgegraut ? 'opacity-50' : ''}`}>
-              <span aria-hidden>{v.icon}</span>
-              <div className="flex-1"><div className="font-medium">{v.name}</div><div className="text-xs text-muted-foreground">{v.beschreibung}</div></div>
-              <button type="button" aria-label={`${v.name} hinzufügen`} disabled={laufend.has(v.id) || ausgegraut}
-                className="rounded-md border border-border px-3 py-1 text-sm hover:bg-accent disabled:opacity-50"
-                onClick={() => void ausfuehren(v.id, () => window.ipc.invoke('integrations:add', { id: v.id }), true)}>Hinzufügen</button>
-            </div>
-          ))}
+          <VerfuegbarListe vorlagen={status?.verfuegbar ?? []} laufend={laufend} ausgegraut={ausgegraut}
+            onHinzufuegen={(id) => void ausfuehren(id, () => window.ipc.invoke('integrations:add', { id }), true)} />
         </section>
         </>}
       </div>
