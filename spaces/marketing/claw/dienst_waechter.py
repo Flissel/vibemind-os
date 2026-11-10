@@ -81,6 +81,7 @@ REGELN: dict[str, Regel] = {
     "marketing_video_werkzeuge": Regel("/health", True, True),
     "marketing_video_shim": Regel("/health", True, True),
     "marketing_video_claw": Regel("/", True, True),
+    "marketing_auftrag_arbeiter": Regel("/", True, True),
     "marketing_telegram_shim": Regel("/health", True, True),
     "marketing_telegram_bot": Regel("/health", True, True),
 }

@@ -187,6 +187,14 @@ $Dienste = @(
         Was  = 'Video-Claw-Arbeiter (Reel-Auftraege von der VM, baut mit Laura, MP4 in die Medien)'
     },
     @{
+        Name = 'marketing_auftrag_arbeiter'
+        Port = 8141
+        Args = @('-u', '-m', 'spaces.marketing.workers.auftrag_arbeiter')
+        Cwd  = $OsRoot
+        Env  = @{}
+        Was  = 'Auftrags-Arbeiter (Auftragsbuch: Drehbuch + Reel + Beitragstexte, fragt Claude ueber den Shim :8117)'
+    },
+    @{
         # Telegram (20.10.2026): eigene Modell-Tuer mit eigenem Budget-Namen, damit der Telegram-Assistent
         # die Tagesgrenze des Pult-Chats (marketing-chat) nicht mitbenutzt. Werkzeuge wie :8117.
         Name = 'marketing_telegram_shim'
