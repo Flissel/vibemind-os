@@ -1,0 +1,22 @@
+# Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://motherduck.com/docs/sql-reference/mcp/ - geprueft: 2026-11-10
+id = "motherduck"
+name = "MotherDuck"
+description = "MotherDuck ueber den offiziellen Remote-MCP-Server"
+category = "data"
+icon = "📊"
+tags = ["daten", "motherduck"]
+read_only_tools = []
+
+[transport]
+type = "http"
+url = "https://api.motherduck.com/mcp"
+
+[auth]
+type = "oauth"
+scopes = []
+
+[catalog]
+replaces_openai_plugin = "motherduck"
+license = "proprietary-service"
+admission = "admitted"
+verified = false

@@ -1,0 +1,22 @@
+# Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://docs.granola.ai/help-center/sharing/integrations/mcp - geprueft: 2026-11-10
+id = "granola"
+name = "Granola"
+description = "Granola ueber den offiziellen Remote-MCP-Server"
+category = "productivity"
+icon = "📋"
+tags = ["produktivitaet", "granola"]
+read_only_tools = []
+
+[transport]
+type = "http"
+url = "https://mcp.granola.ai/mcp"
+
+[auth]
+type = "oauth"
+scopes = ["offline_access"]
+
+[catalog]
+replaces_openai_plugin = "granola"
+license = "proprietary-service"
+admission = "admitted"
+verified = false

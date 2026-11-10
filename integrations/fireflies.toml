@@ -1,0 +1,22 @@
+# Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://docs.fireflies.ai/getting-started/mcp-configuration - geprueft: 2026-11-10
+id = "fireflies"
+name = "Fireflies.ai"
+description = "Fireflies.ai ueber den offiziellen Remote-MCP-Server"
+category = "productivity"
+icon = "📋"
+tags = ["produktivitaet", "fireflies"]
+read_only_tools = []
+
+[transport]
+type = "http"
+url = "https://api.fireflies.ai/mcp"
+
+[auth]
+type = "oauth"
+scopes = []
+
+[catalog]
+replaces_openai_plugin = "fireflies"
+license = "proprietary-service"
+admission = "admitted"
+verified = false

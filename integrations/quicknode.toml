@@ -1,0 +1,22 @@
+# Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://www.quicknode.com/docs/build-with-ai/quicknode-mcp - geprueft: 2026-11-10
+id = "quicknode"
+name = "Quicknode"
+description = "Quicknode ueber den offiziellen Remote-MCP-Server"
+category = "cloud"
+icon = "☁️"
+tags = ["cloud", "quicknode"]
+read_only_tools = []
+
+[transport]
+type = "http"
+url = "https://mcp.quicknode.com/mcp"
+
+[auth]
+type = "oauth"
+scopes = []
+
+[catalog]
+replaces_openai_plugin = "quicknode"
+license = "proprietary-service"
+admission = "admitted"
+verified = false

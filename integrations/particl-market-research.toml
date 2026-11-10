@@ -1,0 +1,30 @@
+# Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://particl.com/docs/mcp/quickstart - geprueft: 2026-11-10
+id = "particl-market-research"
+name = "Particl"
+description = "Particl ueber den offiziellen Remote-MCP-Server"
+category = "data"
+icon = "📊"
+tags = ["daten", "particl-market-research"]
+read_only_tools = []
+
+[transport]
+type = "http"
+url = "https://mcp.particl.com/mcp"
+
+[[auth_headers]]
+name = "Authorization"
+format = "Bearer {credential}"
+credential = "INTEGRATION_PARTICL_MARKET_RESEARCH_KEY"
+
+[[required_env]]
+name = "INTEGRATION_PARTICL_MARKET_RESEARCH_KEY"
+label = "Particl API-Schluessel"
+help = "Schluessel auf der Seite des Anbieters anlegen; er wird im Tresor abgelegt"
+is_secret = true
+get_url = "https://app.particl.com/dashboard/ai-connect"
+
+[catalog]
+replaces_openai_plugin = "particl-market-research"
+license = "proprietary-service"
+admission = "admitted"
+verified = false

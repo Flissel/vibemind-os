@@ -1,0 +1,22 @@
+# Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://docs.netlify.com/build/build-with-ai/netlify-mcp-server/ - geprueft: 2026-11-10
+id = "netlify"
+name = "Netlify"
+description = "Netlify ueber den offiziellen Remote-MCP-Server"
+category = "cloud"
+icon = "☁️"
+tags = ["cloud", "netlify"]
+read_only_tools = []
+
+[transport]
+type = "http"
+url = "https://mcp.netlify.com/mcp"
+
+[auth]
+type = "oauth"
+scopes = ["offline_access"]
+
+[catalog]
+replaces_openai_plugin = "netlify"
+license = "proprietary-service"
+admission = "admitted"
+verified = false

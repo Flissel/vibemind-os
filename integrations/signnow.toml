@@ -1,0 +1,22 @@
+# Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://docs.signnow.com/docs/mcp-server - geprueft: 2026-11-10
+id = "signnow"
+name = "signNow"
+description = "signNow ueber den offiziellen Remote-MCP-Server"
+category = "productivity"
+icon = "📋"
+tags = ["produktivitaet", "signnow"]
+read_only_tools = []
+
+[transport]
+type = "http"
+url = "https://mcp-server.signnow.com/mcp"
+
+[auth]
+type = "oauth"
+scopes = ["offline_access"]
+
+[catalog]
+replaces_openai_plugin = "signnow"
+license = "proprietary-service"
+admission = "admitted"
+verified = false
