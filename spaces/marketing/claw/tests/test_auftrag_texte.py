@@ -47,3 +47,19 @@ def test_prompts_nennen_marke_und_sprechzeit():
     assert "Fin2gether" in system and "2.5" in system and "75" in system and "bAV" in nachricht
     system, nachricht = t.beitrag_prompt("bAV", "Drei Fehler.", "")
     assert "Wissen über die Marke" not in system and "Drei Fehler." in nachricht
+
+
+def test_drehbuch_lesen_nicht_endliche_dauer_ist_vorgabe():
+    for roh in ("NaN", "Infinity", "-Infinity"):
+        text = '{"titel": "t", "sprechertext": "s", "hook": "h", "dauer_s": %s}' % roh
+        assert t.drehbuch_lesen(text)["dauer_s"] == 30
+
+
+def test_drehbuch_lesen_ueber_den_grenzen_none():
+    assert t.drehbuch_lesen(json.dumps({**DREHBUCH, "hook": "x" * 121})) is None
+    assert t.drehbuch_lesen(json.dumps({**DREHBUCH, "titel": "x" * 121})) is None
+
+
+def test_drehbuch_prompt_nennt_die_obergrenze():
+    system, _ = t.drehbuch_prompt("bAV", "")
+    assert "900 Zeichen" in system

@@ -4,6 +4,7 @@ Die Grenzen entsprechen api/auftrag.py (Beitrag) und api/video.py (Drehbuch)."""
 from __future__ import annotations
 
 import json
+import math
 import re
 
 TITEL_MAX, THEMA_MAX, SPRECHERTEXT_MAX, HOOK_MAX = 120, 300, 900, 120
@@ -60,24 +61,28 @@ def drehbuch_prompt(thema: str, marke: str) -> tuple[str, str]:
         f'"dauer_s" (ganze Sekunden zwischen {DAUER_MIN} und {DAUER_MAX}). '
         f"Rechne mit etwa {WOERTER_JE_SEKUNDE} gesprochenen Wörtern je Sekunde: {DAUER_VORGABE} Sekunden "
         f"sind rund {woerter} Wörter, der Sprechertext muss zur gewählten Dauer passen. "
+        f"Hart gilt aber die Obergrenze von {SPRECHERTEXT_MAX} Zeichen (rund {SPRECHERTEXT_MAX // 7} Wörter, "
+        f"etwa {int(SPRECHERTEXT_MAX / 7 / WOERTER_JE_SEKUNDE)} Sekunden): wähle dauer_s nie länger, "
+        "als der Text trägt. "
         "Beginne den Sprechertext mit dem Hook, nenne nur Belegbares aus dem Markenwissen und erfinde keine Zahlen."
         + _marke_abschnitt(marke))
     return system, f"Thema des Reels: {thema.strip()}"
 
 
 def drehbuch_lesen(text: str) -> dict | None:
-    """{titel, thema, sprechertext, hook, dauer_s} aus der Antwort; None, wenn kein brauchbares JSON.
+    """{titel, thema, sprechertext, hook, dauer_s} aus der Antwort; None, wenn kein brauchbares JSON oder ein Feld
+    ueber den Grenzen von api/video.py liegt (titel/hook 120, sprechertext 900).
     dauer_s wird auf 15..60 begrenzt (Vorgabe 30). Das Thema setzt der Aufrufer ein (hier leer)."""
     daten = _json(text)
     if daten is None:
         return None
-    titel = _feld(daten, "titel", TITEL_MAX, kuerzen=True)
+    titel = _feld(daten, "titel", TITEL_MAX)
     sprechertext = _feld(daten, "sprechertext", SPRECHERTEXT_MAX)
-    hook = _feld(daten, "hook", HOOK_MAX, kuerzen=True)
+    hook = _feld(daten, "hook", HOOK_MAX)
     if not titel or not sprechertext or not hook:
         return None
     dauer = daten.get("dauer_s", DAUER_VORGABE)
-    if isinstance(dauer, bool) or not isinstance(dauer, (int, float)):
+    if isinstance(dauer, bool) or not isinstance(dauer, (int, float)) or not math.isfinite(dauer):
         dauer = DAUER_VORGABE
     dauer = max(DAUER_MIN, min(DAUER_MAX, int(dauer)))
     return {"titel": titel, "thema": "", "sprechertext": sprechertext, "hook": hook, "dauer_s": dauer}

@@ -145,3 +145,85 @@ def test_reel_409_ist_kein_fehler():
     api = Api(neu=NEU, anlegen_fehler=ApiFehler(409, "Der Auftrag hat schon ein Video"))
     assert lauf(api, Claude(DREHBUCH)) == "leer"
     assert "fehler" not in api.namen()
+
+
+class LaufendFehler(Api):
+    """Das Lesen des Reels scheitert fuer den ersten Auftrag."""
+    def __init__(self, fehler, **kw):
+        super().__init__(**kw)
+        self.lese_fehler = fehler
+
+    def reel_lesen(self, aid):
+        if aid == AID:
+            raise self.lese_fehler
+        return self.reel
+
+
+ZWEITER = {**LAUFEND, "id": "0123abcd-4444-4444-4444-555555555555"}
+
+
+def test_ein_kaputter_auftrag_haelt_die_anderen_nicht_auf():
+    api = LaufendFehler(ApiFehler(404, "Kein Reel verknuepft"), neu=NEU, laufend=[LAUFEND, ZWEITER],
+                        reel={"status": "fertig", "datei": "v.mp4", "befund": None})
+    assert lauf(api, Claude(BEITRAG, DREHBUCH)) == "reel_beauftragt"      # naechster lief trotzdem
+    namen = [(a[0], a[1]) for a in api.aufrufe]
+    assert ("fehler", AID) in namen and ("erzeugt", ZWEITER["id"]) in namen
+    assert api.aufrufe[0][2] == "Auftrag nicht verarbeitbar (API 404)"
+
+
+def test_netzfehler_laesst_auftrag_liegen_und_geht_weiter():
+    api = LaufendFehler(OSError("weg"), laufend=[LAUFEND, ZWEITER],
+                        reel={"status": "fertig", "datei": "v.mp4", "befund": None})
+    assert lauf(api, Claude(BEITRAG)) == "erzeugt"
+    assert "fehler" not in api.namen()
+
+
+def test_422_bei_reel_macht_auftrag_fehler():
+    api = Api(neu=NEU, anlegen_fehler=ApiFehler(422, "thema"))
+    assert lauf(api, Claude(DREHBUCH)) == "fehler"
+    assert api.aufrufe[-1] == ("fehler", AID, "Auftrag nicht verarbeitbar (API 422)")
+
+
+def test_shim_fehler_bei_neuem_auftrag_wirft_nicht():
+    def kaputt(system, nachricht):
+        raise RuntimeError("Shim weg")
+    api = Api(neu=NEU)
+    assert aa.ein_durchlauf(api, kaputt, lambda s: None, lambda: 0.0, marke=lambda m, t: "") == "fehler"
+    assert "fehler" not in api.namen()
+
+
+def test_ohne_thema_kein_claude_aufruf():
+    api, claude = Api(neu={**NEU, "eingabe": {}}), Claude()
+    assert lauf(api, claude) == "fehler" and claude.fragen == []
+    assert api.aufrufe[-1] == ("fehler", AID, "Kein Thema im Auftrag")
+
+
+def test_lease_zwischen_den_versuchen_erneuern():
+    api = Api(neu=NEU)
+    assert lauf(api, Claude("Muell", DREHBUCH)) == "reel_beauftragt"
+    assert api.namen() == ["weiter", "weiter", "weiter", "reel"]
+
+
+def test_lease_zwischen_den_versuchen_verloren():
+    class Verliert(Api):
+        def weiter(self, aid):
+            super().weiter(aid)
+            return len(self.aufrufe) < 2        # erster Aufruf ok, danach weg
+    api = Verliert(neu=NEU)
+    assert lauf(api, Claude("Muell")) == "leer" and "reel" not in api.namen()
+
+
+def test_erzeugt_abgelehnt_ist_kein_erfolg():
+    class Lehnt(Api):
+        def erzeugt(self, aid, texte):
+            return False
+    api = Lehnt(laufend=[LAUFEND], reel={"status": "fertig", "datei": "v.mp4", "befund": None})
+    assert lauf(api, Claude(BEITRAG)) == "leer"
+
+
+def test_fehler_abgelehnt_ist_kein_fehler_ergebnis():
+    class Lehnt(Api):
+        def fehler(self, aid, grund):
+            return False
+    api = Lehnt(laufend=[LAUFEND], reel={"status": "abgebrochen"})
+    assert lauf(api, Claude()) == "leer"
