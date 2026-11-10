@@ -99,6 +99,8 @@ def _antwort(fragen, warte, system: str, nachricht: str, lesen, weiter=None):
 def _neu(api, auftrag: dict, fragen, warte, marke) -> str:
     """Schritt 1: Drehbuch erfragen, Reel anlegen."""
     aid, mandant = auftrag["id"], str(auftrag.get("mandant") or "")
+    if auftrag.get("art") != "reel":
+        return _fehler_melden(api, aid, "Unbekannte Art")
     thema = str((auftrag.get("eingabe") or {}).get("thema") or "").strip()
     if not api.weiter(aid):
         return "leer"                      # Lease verloren: der Auftrag gehoert uns nicht mehr

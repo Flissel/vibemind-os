@@ -104,11 +104,17 @@ def test_fertiges_video_ohne_drehbuch_nur_mit_thema():
 
 
 @pytest.mark.parametrize("status,befund,grund", [("abgebrochen", None, "Reel: abgebrochen"),
-                                                   ("fehler", "Laura nicht erreichbar", "Reel: Laura nicht erreichbar")])
+                                                   ("fehler", "Laura konnte das Video nicht fertig rendern.", "Reel: Laura konnte das Video nicht fertig rendern.")])
 def test_abgebrochenes_video_macht_auftrag_fehler(status, befund, grund):
     api = Api(laufend=[LAUFEND], reel={"status": status, "datei": None, "befund": befund})
     assert lauf(api, Claude()) == "fehler"
     assert api.aufrufe == [("fehler", AID, grund)]
+
+
+def test_unbekannte_art_wird_abgelehnt_ohne_claude():
+    api, claude = Api(neu={**NEU, "art": "newsletter"}), Claude()
+    assert lauf(api, claude) == "fehler"
+    assert api.aufrufe == [("fehler", AID, "Unbekannte Art")] and claude.fragen == []
 
 
 def test_zweimal_unbrauchbar_fehler():

@@ -67,9 +67,12 @@ def test_weiter(db, c):
 
 
 def test_reel_legt_ki_video_mit_auftrag_im_briefing_an(db, c):
-    db.antworten = [[{"mandant": "fin2gether", "stand": "in_arbeit", "ergebnis": {}}], [], [{"id": VID}], [{"ok": True}]]
+    db.antworten = [[{"mandant": "fin2gether", "stand": "in_arbeit", "ergebnis": {}}], [], [{"id": VID}], [{"ok": True}], [{"n": 1}]]
     r = c.post(f"/api/auftrag/arbeiter/{AID}/reel", json=REEL, headers=B)
     assert r.status_code == 200 and r.json() == {"video": VID}
+    frist = db.sql[4]                                   # I6: eigenes Renderbudget
+    assert "UPDATE auftrag.auftraege SET frist_bis = greatest(frist_bis, now() + '120 minutes'::interval)" in frist
+    assert AID in frist and "an = 'marketing'" in frist and "stand = 'in_arbeit'" in frist
     assert "an = 'marketing'" in db.sql[0]
     anlegen = db.sql[2]
     assert "video_auftrag_anlegen('fin2gether', 'bilder'" in anlegen and "'ideen'" in anlegen
@@ -84,7 +87,7 @@ def test_reel_legt_ki_video_mit_auftrag_im_briefing_an(db, c):
 def test_reel_setzt_die_markenstimme_ins_briefing(db, c, monkeypatch):
     monkeypatch.setattr(video, "stimmen_liste", lambda: ["anna"])
     db.antworten = [[{"mandant": "fin2gether", "stand": "in_arbeit", "ergebnis": {}}], [{"s": "anna"}],
-                    [{"id": VID}], [{"ok": True}]]
+                    [{"id": VID}], [{"ok": True}], [{"n": 1}]]
     r = c.post(f"/api/auftrag/arbeiter/{AID}/reel", json={**REEL, "stimme": "standard"}, headers=B)
     assert r.status_code == 200
     assert "marken_spiegel" in db.sql[1] and "'fin2gether'" in db.sql[1]
@@ -122,6 +125,10 @@ def test_reel_lesen(db, c):
     db.antworten = [[{"status": "fertig", "datei": DATEI, "befund": ""}], []]
     r = c.get(f"/api/auftrag/arbeiter/{AID}/reel", headers=B)
     assert r.json() == {"status": "fertig", "datei": DATEI, "befund": ""}
+    db.antworten = [[{"status": "fehler", "datei": None, "befund": "Render: Traceback secret-host:5432"}]]
+    r = c.get(f"/api/auftrag/arbeiter/{AID}/reel", headers=B)
+    assert r.json()["befund"] == "Laura konnte das Video nicht fertig rendern."     # I3: nie roh
+    db.antworten = []
     assert c.get(f"/api/auftrag/arbeiter/{AID}/reel", headers=B).status_code == 404
 
 

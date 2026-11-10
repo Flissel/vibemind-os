@@ -12,7 +12,7 @@ from fastapi import APIRouter, Body, Header, HTTPException
 
 from spaces.marketing.api.bilder import _bild_schluessel
 from spaces.marketing.api.pult import _lesen, _lesen_einer, _schreiben, _uuid_oder_404, lit
-from spaces.marketing.api.video import TITEL_MAX, _stimme_einsetzen, _text, briefing_pruefen
+from spaces.marketing.api.video import TITEL_MAX, _stimme_einsetzen, _text, befund_satz, briefing_pruefen
 
 router = APIRouter(prefix="/api/auftrag/arbeiter")
 
@@ -20,6 +20,7 @@ AN = "marketing"
 LEASE = "10 minutes"
 TITEL_LAENGE, TEXT_LANG_MAX, TEXT_KURZ_MAX, GRUND_MAX = 90, 1300, 280, 300
 KI_ANZAHL = 4
+RENDER_FRIST = "120 minutes"                    # die Renderphase bekommt ab Reel-Anlage ein eigenes Budget
 
 
 def _ok(zeile: dict | None) -> bool:
@@ -101,12 +102,16 @@ def reel_anlegen(aid: str, payload: dict = Body(...), x_bild_key: str | None = H
     drehbuch["titel"] = titel
     if not _mischen(a, {"video": video, "drehbuch": drehbuch}):
         raise HTTPException(409, "Der Auftrag ist nicht mehr in Arbeit")
+    _schreiben(lambda:                          # Renderzeit zaehlt nicht gegen die Frist des Auftrags (I6)
+        f"WITH u AS (UPDATE auftrag.auftraege SET frist_bis = greatest(frist_bis, now() + {lit(RENDER_FRIST)}::interval) "
+        f"WHERE id = {lit(a)}::uuid AND an = {lit(AN)} AND stand = 'in_arbeit' RETURNING 1) "
+        f"SELECT count(*) AS n FROM u")
     return {"video": video}
 
 
 @router.get("/{aid}/reel")
 def reel_lesen(aid: str, x_bild_key: str | None = Header(None)):
-    """Stand des verknuepften Video-Auftrags; 404 ohne Verknuepfung."""
+    """Stand des verknuepften Video-Auftrags (befund als Satz, nie roh); 404 ohne Verknuepfung."""
     _bild_schluessel(x_bild_key)
     a = _uuid_oder_404(aid)
     zeile = _lesen_einer(lambda:
@@ -115,7 +120,7 @@ def reel_lesen(aid: str, x_bild_key: str | None = Header(None)):
         f"WHERE a.id = {lit(a)}::uuid AND a.an = {lit(AN)}")
     if not zeile:
         raise HTTPException(404, "Kein Reel verknuepft")
-    return {"status": zeile.get("status"), "datei": zeile.get("datei"), "befund": zeile.get("befund")}
+    return {"status": zeile.get("status"), "datei": zeile.get("datei"), "befund": befund_satz(zeile.get("befund"))}
 
 
 @router.post("/{aid}/erzeugt")
