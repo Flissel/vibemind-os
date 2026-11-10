@@ -12,7 +12,7 @@ from fastapi import APIRouter, Body, Header, HTTPException
 
 from spaces.marketing.api.bilder import _bild_schluessel
 from spaces.marketing.api.pult import _lesen, _lesen_einer, _schreiben, _uuid_oder_404, lit
-from spaces.marketing.api.video import TITEL_MAX, _text, briefing_pruefen
+from spaces.marketing.api.video import TITEL_MAX, _stimme_einsetzen, _text, briefing_pruefen
 
 router = APIRouter(prefix="/api/auftrag/arbeiter")
 
@@ -31,6 +31,13 @@ def _text_pflicht(payload: dict, feld: str, maximal: int) -> str:
     if not isinstance(wert, str) or not 1 <= len(wert.strip()) <= maximal:
         raise HTTPException(422, f"{feld}: 1 bis {maximal} Zeichen")
     return wert.strip()
+
+
+def _eigener(aid: str) -> None:
+    """404, wenn der Auftrag nicht existiert oder nicht an Marketing geht (vor jedem Schreiben)."""
+    if not _lesen_einer(lambda:
+            f"SELECT id FROM auftrag.auftraege WHERE id = {lit(aid)}::uuid AND an = {lit(AN)}"):
+        raise HTTPException(404, "Unbekannter Auftrag")
 
 
 def _mischen(aid: str, teil: dict) -> bool:
@@ -59,6 +66,7 @@ def weiter(aid: str, x_bild_key: str | None = Header(None)):
     """Lease verlaengern; ok false = aufhoeren (Auftrag nicht mehr in Arbeit)."""
     _bild_schluessel(x_bild_key)
     a = _uuid_oder_404(aid)
+    _eigener(a)
     zeile = _schreiben(lambda: f"SELECT auftrag.verlaengern({lit(a)}::uuid, {lit(LEASE)}::interval) AS ok")
     return {"ok": _ok(zeile)}
 
@@ -73,7 +81,8 @@ def reel_anlegen(aid: str, payload: dict = Body(...), x_bild_key: str | None = H
     briefing = briefing_pruefen("bilder", {**payload, "ki": {"anzahl": KI_ANZAHL}, "format": "reel"})
     briefing["auftrag"] = a                     # nach der Pruefung: briefing_pruefen kuerzt Unbekanntes
     zeile = _lesen_einer(lambda:
-        f"SELECT mandant, stand, ergebnis FROM auftrag.auftraege WHERE id = {lit(a)}::uuid")
+        f"SELECT mandant, stand, ergebnis FROM auftrag.auftraege "
+        f"WHERE id = {lit(a)}::uuid AND an = {lit(AN)}")
     if not zeile:
         raise HTTPException(404, "Unbekannter Auftrag")
     ergebnis = zeile.get("ergebnis")
@@ -82,12 +91,15 @@ def reel_anlegen(aid: str, payload: dict = Body(...), x_bild_key: str | None = H
     if zeile.get("stand") != "in_arbeit":
         raise HTTPException(409, "Der Auftrag ist nicht in Arbeit")
     mandant = zeile.get("mandant")              # immer aus der Auftragszeile, nie aus dem Body
+    _stimme_einsetzen(mandant, briefing)        # wie beim Anlegen im Pult: Markenstimme gilt vor dem Briefing
     roh = json.dumps(briefing, ensure_ascii=False)
     angelegt = _schreiben(lambda:
         f"SELECT marketing.video_auftrag_anlegen({lit(mandant)}, 'bilder', {lit(titel)}, "
         f"{lit(roh)}::jsonb, 'agent', 'ideen') AS id")
     video = str(angelegt.get("id"))
-    if not _mischen(a, {"video": video}):
+    drehbuch = {k: briefing[k] for k in ("thema", "sprechertext", "hook", "dauer_s")}
+    drehbuch["titel"] = titel
+    if not _mischen(a, {"video": video, "drehbuch": drehbuch}):
         raise HTTPException(409, "Der Auftrag ist nicht mehr in Arbeit")
     return {"video": video}
 
@@ -100,7 +112,7 @@ def reel_lesen(aid: str, x_bild_key: str | None = Header(None)):
     zeile = _lesen_einer(lambda:
         "SELECT v.status, v.datei, v.befund FROM auftrag.auftraege a "
         "JOIN marketing.video_auftraege v ON v.id = (a.ergebnis->>'video')::uuid "
-        f"WHERE a.id = {lit(a)}::uuid")
+        f"WHERE a.id = {lit(a)}::uuid AND a.an = {lit(AN)}")
     if not zeile:
         raise HTTPException(404, "Kein Reel verknuepft")
     return {"status": zeile.get("status"), "datei": zeile.get("datei"), "befund": zeile.get("befund")}
@@ -117,7 +129,7 @@ def erzeugt(aid: str, payload: dict = Body(...), x_bild_key: str | None = Header
     zeile = _lesen_einer(lambda:
         "SELECT a.stand, v.status, v.datei FROM auftrag.auftraege a "
         "LEFT JOIN marketing.video_auftraege v ON v.id = (a.ergebnis->>'video')::uuid "
-        f"WHERE a.id = {lit(a)}::uuid")
+        f"WHERE a.id = {lit(a)}::uuid AND a.an = {lit(AN)}")
     if not zeile:
         raise HTTPException(404, "Unbekannter Auftrag")
     if zeile.get("stand") != "in_arbeit":
@@ -142,6 +154,7 @@ def fehler(aid: str, payload: dict = Body(...), x_bild_key: str | None = Header(
     if not isinstance(grund, str):
         raise HTTPException(422, "grund muss Text sein")
     grund = (grund.strip() or "Kein Grund angegeben")[:GRUND_MAX]
+    _eigener(a)
     zeile = _schreiben(lambda:
         f"SELECT auftrag.stand_setzen({lit(a)}::uuid, 'in_arbeit', 'fehler', {lit(grund)}) AS ok")
     return {"ok": _ok(zeile)}
