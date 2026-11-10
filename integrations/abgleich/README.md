@@ -8,7 +8,10 @@ Eintraege gesamt: 180
 |---|---|
 | adresse_je_kunde | 5 |
 | braucht_registrierung | 5 |
+| domain_pruefen | 0 |
+| id_ungueltig | 0 |
 | kein_offizieller_server | 40 |
+| nicht_erreichbar | 0 |
 | skills_teil_5 | 24 |
 | unklar | 38 |
 | vorlage | 62 |
@@ -98,7 +101,7 @@ Eintraege gesamt: 180
 | hex | app | vorlage | einrichtbar_oauth | https://learn.hex.tech/docs/api-integrations/mcp-server | 2026-11-10 |
 | heygen | app | vorlage | einrichtbar_oauth | https://developers.heygen.com/mcp/overview | 2026-11-10 |
 | hg-insights | app | kein_offizieller_server | HG MCP Server exists (API key issued by admin) but endpoint URL not public; demo-gated. | https://hginsights.com/product/hg-mcp-server |  |
-| highlevel | app | vorlage | einrichtbar_oauth | https://marketplace.gohighlevel.com/docs/other/mcp | 2026-11-10 |
+| highlevel | app | vorlage | einrichtbar_oauth; Endpunkt fuer Anthropic-Clients laut Doku; bei Fehler beim Einrichten pruefen | https://marketplace.gohighlevel.com/docs/other/mcp | 2026-11-10 |
 | hostinger | app | vorlage | einrichtbar_oauth | https://www.hostinger.com/support/11079316-hostinger-api-mcp-server/ | 2026-11-10 |
 | hubspot | app | braucht_registrierung | oauth_ohne_dcr | https://developers.hubspot.com/docs/apps/developer-platform/build-apps/integrate-with-the-remote-hubspot-mcp-server | 2026-11-10 |
 | hugging-face | app | vorlage | einrichtbar_oauth | https://huggingface.co/docs/hub/agents-mcp | 2026-11-10 |

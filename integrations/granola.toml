@@ -4,7 +4,7 @@ name = "Granola"
 description = "Granola ueber den offiziellen Remote-MCP-Server"
 category = "productivity"
 icon = "📋"
-tags = ["produktivitaet", "meeting", "notizen"]
+tags = ["produktivität", "meeting", "notizen"]
 read_only_tools = []
 
 [transport]

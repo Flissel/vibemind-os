@@ -4,7 +4,7 @@ name = "ClickUp"
 description = "ClickUp ueber den offiziellen Remote-MCP-Server"
 category = "productivity"
 icon = "📋"
-tags = ["produktivitaet", "projekte", "aufgaben"]
+tags = ["produktivität", "projekte", "aufgaben"]
 read_only_tools = []
 
 [transport]

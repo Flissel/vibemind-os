@@ -268,3 +268,137 @@ def test_stichworte_vollstaendig_und_ohne_id() -> None:
             assert 1 <= len(tags) <= 3 and r["name"] not in tags
     for n in ("attio", "apollo", "outreach", "carta-crm", "highlevel", "common-room"):
         assert "crm" in kv.STICHWORTE[n]
+
+
+# --- Final fix wave -------------------------------------------------------
+
+def test_nicht_offiziell_liefert_keine_vorlage(tmp_path: Path) -> None:
+    for wert in (False, None, "true", 1):
+        z = zeile("acme", offiziell=wert)
+        zeilen, _f, ziel = lauf(tmp_path, [z], katalog(eintrag("acme", "app")))
+        assert zeilen[0]["ergebnis"] == "domain_pruefen"
+        assert zeilen[0]["grund"] == "nicht_offiziell"
+        assert not (ziel / "acme.toml").exists()
+
+
+def test_hosting_plattformen_sind_eigene_domains() -> None:
+    assert not kv.domain_ok(
+        zeile("x", server_url="https://x.github.io/mcp", quelle="https://y.github.io/doc")
+    )
+    assert kv.domain_ok(
+        zeile("x", server_url="https://a.x.github.io/mcp", quelle="https://x.github.io/doc")
+    )
+    assert kv.registrierbare_domain("foo.vercel.app") == "foo.vercel.app"
+    assert kv.registrierbare_domain("a.b.workers.dev") == "b.workers.dev"
+    for endung in (
+        "github.io", "vercel.app", "netlify.app", "pages.dev", "herokuapp.com",
+        "azurewebsites.net", "cloudfront.net", "onrender.com", "fly.dev",
+        "workers.dev", "web.app", "firebaseapp.com", "appspot.com",
+    ):
+        assert endung in kv.HOSTING_ENDUNGEN
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"header_name": "", "header_format": "Bearer {credential}"},
+        {"header_name": "X-Key", "header_format": ""},
+        {"header_name": "X-Key", "header_format": "Bearer"},
+        {"header_name": "X-Key", "header_format": "{credential}{credential}"},
+        {"header_name": "X Key", "header_format": "{credential}"},
+        {"header_name": "X-Key:", "header_format": "{credential}"},
+    ],
+)
+def test_schluessel_ohne_gueltigen_header(tmp_path: Path, extra: dict[str, str]) -> None:
+    z = zeile("acme", "einrichtbar_schluessel", **extra)
+    zeilen, _f, ziel = lauf(tmp_path, [z], katalog(eintrag("acme", "app")))
+    assert zeilen[0]["ergebnis"] == "unklar"
+    assert zeilen[0]["grund"] == "header_unbekannt"
+    assert not (ziel / "acme.toml").exists()
+
+
+def test_produktivitaet_mit_umlaut() -> None:
+    t = tomllib.loads(kv.vorlage_toml(zeile("acme")))
+    assert t["tags"][0] == "produktivität"
+    assert "produktivitaet" not in kv.TAG_JE_KATEGORIE.values()
+
+
+def test_readme_nennt_alle_ergebnisse(tmp_path: Path) -> None:
+    zeilen, _f, ziel = lauf(tmp_path, [zeile("acme")], katalog(eintrag("acme", "app")))
+    md = (ziel / "abgleich" / "README.md").read_text(encoding="utf-8")
+    for e in ("nicht_erreichbar", "domain_pruefen", "id_ungueltig", "unklar"):
+        assert f"| {e} | 0 |" in md
+    assert "| vorlage | 1 |" in md
+
+
+def test_highlevel_hinweis_in_abgleich() -> None:
+    z = zeile("highlevel", server_url="https://services.leadconnectorhq.com/mcp/anthropic/v2",
+              quelle="https://marketplace.gohighlevel.com/docs/other/mcp")
+    r = kv.abgleich([z], katalog(eintrag("highlevel", "app")), [])
+    assert r[0]["ergebnis"] == "vorlage"
+    assert "Anthropic-Clients" in r[0]["grund"]
+
+
+def test_veraltete_vorlagen_werden_geloescht(tmp_path: Path) -> None:
+    z = tmp_path / "ziel"
+    z.mkdir()
+    alt = z / "alt.toml"
+    alt.write_text(
+        kv.vorlage_toml(zeile("alt")), encoding="utf-8", newline="\n"
+    )
+    handarbeit = z / "hand.toml"
+    handarbeit.write_text('id = "hand"\n[catalog]\nverified = false\n', encoding="utf-8")
+    verifiziert = z / "ver.toml"
+    verifiziert.write_text(
+        kv.vorlage_toml(zeile("ver")).replace("verified = false", "verified = true"),
+        encoding="utf-8", newline="\n",
+    )
+    geschuetzt = z / "github.toml"
+    geschuetzt.write_text(kv.vorlage_toml(zeile("github")), encoding="utf-8", newline="\n")
+    rech = [zeile("alt", ergebnis="unklar"), zeile("neu")]
+    kat = katalog(eintrag("alt", "app"), eintrag("neu", "app"))
+    r = tmp_path / "recherche.json"
+    k = tmp_path / "katalog.json"
+    m = tmp_path / "mit"
+    m.mkdir()
+    r.write_text(json.dumps(rech), encoding="utf-8")
+    k.write_text(json.dumps(kat), encoding="utf-8")
+    weg: list[str] = []
+    kv.lauf(r, k, m, z, weg)
+    assert weg == ["alt.toml"]
+    assert not alt.exists()
+    assert (z / "neu.toml").exists()
+    assert handarbeit.exists() and verifiziert.exists() and geschuetzt.exists()
+
+
+def test_doppelter_name_bricht_ab(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    r = tmp_path / "recherche.json"
+    k = tmp_path / "katalog.json"
+    m = tmp_path / "mit"
+    m.mkdir()
+    r.write_text(json.dumps([zeile("acme"), zeile("acme")]), encoding="utf-8")
+    k.write_text(json.dumps(katalog(eintrag("acme", "app"))), encoding="utf-8")
+    code = kv.main(
+        ["--recherche", str(r), "--katalog", str(k), "--mitgeliefert", str(m),
+         "--ziel", str(tmp_path / "ziel")]
+    )
+    assert code == 1
+    assert "doppelter Name" in capsys.readouterr().err
+    assert not list((tmp_path / "ziel").glob("*.toml"))
+
+
+def test_echte_vorlagen_schema() -> None:
+    ordner = ROOT / "integrations"
+    dateien = sorted(ordner.glob("*.toml"))
+    assert dateien
+    for f in dateien:
+        text = f.read_text(encoding="utf-8")
+        t = tomllib.loads(text)
+        assert t["category"] in kv.KATEGORIEN, f.name
+        assert t["transport"]["type"] in {"http", "sse"}, f.name
+        if "catalog" in t:
+            for feld in ("replaces_openai_plugin", "license", "admission"):
+                assert t["catalog"].get(feld), (f.name, feld)
+        if text.startswith(kv.KOPFZEILE):
+            assert t["catalog"]["verified"] is False, f.name
+            assert t["read_only_tools"] == [], f.name
