@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import type { VerfuegbareVorlage } from '@x/shared/dist/integrations.js'
+import type { VerfuegbareVorlageDto as VerfuegbareVorlage } from '@x/shared/dist/integrations.js'
 
 export const KATEGORIE_ANZEIGE: Record<string, string> = {
   'Dev Tools': 'Entwicklung',
