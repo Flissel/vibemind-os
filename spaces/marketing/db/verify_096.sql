@@ -155,6 +155,11 @@ BEGIN
   -- sales_*: nur eigene Zeilen (von = sales)
   b := auftrag.sales_anlegen('marketing', 'p096i', 'probe', 'reel', '{}');
   IF (SELECT von FROM auftrag.auftraege WHERE id = b) <> 'sales' THEN RAISE EXCEPTION '096.8: sales_anlegen von'; END IF;
+  BEGIN
+    PERFORM auftrag.sales_anlegen('rowboat', 'p096i', 'probe', 'reel', '{}');
+    RAISE EXCEPTION '096.8: sales_anlegen an rowboat angenommen';
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM NOT LIKE '%nur an Marketing%' THEN RAISE; END IF; END;
   IF (SELECT count(*) FROM auftrag.sales_eigene('p096i', NULL)) <> 1 THEN RAISE EXCEPTION '096.8: sales_eigene'; END IF;
   x := auftrag.anlegen('marketing', 'sales', 'p096i', 'probe', 'reel', '{}');
   UPDATE auftrag.auftraege SET stand = 'in_arbeit' WHERE id = x;

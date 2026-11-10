@@ -228,9 +228,13 @@ END $$;
 -- Funktion fasst nur Auftraege mit von = 'sales' an - kein Absender-Faelschen, kein Fremdlesen.
 CREATE OR REPLACE FUNCTION auftrag.sales_anlegen(p_an text, p_laden text, p_mandant text, p_art text,
     p_eingabe jsonb, p_eltern uuid DEFAULT NULL) RETURNS uuid
-LANGUAGE sql SECURITY DEFINER SET search_path = auftrag, pg_temp AS $$
-    SELECT auftrag.anlegen('sales', p_an, p_laden, p_mandant, p_art, p_eingabe, p_eltern);
-$$;
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = auftrag, pg_temp AS $$
+BEGIN
+    -- Sales darf Auftraege nur an Marketing geben (Design 5.2); das allgemeine anlegen kennt alle vier.
+    IF p_an IS DISTINCT FROM 'marketing' THEN
+        RAISE EXCEPTION 'Sales darf Auftraege nur an Marketing geben'; END IF;
+    RETURN auftrag.anlegen('sales', p_an, p_laden, p_mandant, p_art, p_eingabe, p_eltern);
+END $$;
 
 CREATE OR REPLACE FUNCTION auftrag.sales_eigene(p_laden text, p_staende text[]) RETURNS SETOF jsonb
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = auftrag, pg_temp AS $$
