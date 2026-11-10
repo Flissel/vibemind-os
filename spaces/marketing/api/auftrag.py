@@ -20,7 +20,7 @@ AN = "marketing"
 LEASE = "10 minutes"
 TITEL_LAENGE, TEXT_LANG_MAX, TEXT_KURZ_MAX, GRUND_MAX = 90, 1300, 280, 300
 KI_ANZAHL = 4
-RENDER_FRIST = "120 minutes"                    # die Renderphase bekommt ab Reel-Anlage ein eigenes Budget
+RENDER_FRIST_MIN = 120                    # die Renderphase bekommt ab Reel-Anlage ein eigenes Budget
 
 
 def _ok(zeile: dict | None) -> bool:
@@ -103,9 +103,7 @@ def reel_anlegen(aid: str, payload: dict = Body(...), x_bild_key: str | None = H
     if not _mischen(a, {"video": video, "drehbuch": drehbuch}):
         raise HTTPException(409, "Der Auftrag ist nicht mehr in Arbeit")
     _schreiben(lambda:                          # Renderzeit zaehlt nicht gegen die Frist des Auftrags (I6)
-        f"WITH u AS (UPDATE auftrag.auftraege SET frist_bis = greatest(frist_bis, now() + {lit(RENDER_FRIST)}::interval) "
-        f"WHERE id = {lit(a)}::uuid AND an = {lit(AN)} AND stand = 'in_arbeit' RETURNING 1) "
-        f"SELECT count(*) AS n FROM u")
+        f"SELECT auftrag.renderfrist({lit(a)}::uuid, {RENDER_FRIST_MIN}) AS ok")
     return {"video": video}
 
 

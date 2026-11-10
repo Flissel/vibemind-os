@@ -67,16 +67,12 @@ def test_weiter(db, c):
 
 
 def test_reel_legt_ki_video_mit_auftrag_im_briefing_an(db, c):
-    db.antworten = [[{"mandant": "fin2gether", "stand": "in_arbeit", "ergebnis": {}}], [], [{"id": VID}], [{"ok": True}], [{"n": 1}]]
+    db.antworten = [[{"mandant": "fin2gether", "stand": "in_arbeit", "ergebnis": {}}], [], [{"id": VID}], [{"ok": True}], [{"ok": True}]]
     r = c.post(f"/api/auftrag/arbeiter/{AID}/reel", json=REEL, headers=B)
     assert r.status_code == 200 and r.json() == {"video": VID}
-    frist = db.sql[4]                                   # I6: eigenes Renderbudget
-    assert "UPDATE auftrag.auftraege SET frist_bis = greatest(frist_bis, now() + '120 minutes'::interval)" in frist
-    assert AID in frist and "an = 'marketing'" in frist and "stand = 'in_arbeit'" in frist
-    assert "an = 'marketing'" in db.sql[0]
-    anlegen = db.sql[2]
-    assert "video_auftrag_anlegen('fin2gether', 'bilder'" in anlegen and "'ideen'" in anlegen
-    assert f'"auftrag": "{AID}"' in anlegen and '"anzahl": 4' in anlegen
+    frist = db.sql[4]                                   # I6: eigenes Renderbudget ueber die SQL-Funktion
+    assert frist == f"SELECT auftrag.renderfrist('{AID}'::uuid, 120) AS ok"
+    assert "WITH" not in frist and "UPDATE" not in frist
     mischen = db.sql[3]
     assert "auftrag.ergebnis_mischen" in mischen and VID in mischen
     drehbuch = ('"drehbuch": {"thema": "bAV in 30 Sekunden", "sprechertext": "Drei Fehler, die fast jede Firma '
@@ -87,7 +83,7 @@ def test_reel_legt_ki_video_mit_auftrag_im_briefing_an(db, c):
 def test_reel_setzt_die_markenstimme_ins_briefing(db, c, monkeypatch):
     monkeypatch.setattr(video, "stimmen_liste", lambda: ["anna"])
     db.antworten = [[{"mandant": "fin2gether", "stand": "in_arbeit", "ergebnis": {}}], [{"s": "anna"}],
-                    [{"id": VID}], [{"ok": True}], [{"n": 1}]]
+                    [{"id": VID}], [{"ok": True}], [{"ok": True}]]
     r = c.post(f"/api/auftrag/arbeiter/{AID}/reel", json={**REEL, "stimme": "standard"}, headers=B)
     assert r.status_code == 200
     assert "marken_spiegel" in db.sql[1] and "'fin2gether'" in db.sql[1]

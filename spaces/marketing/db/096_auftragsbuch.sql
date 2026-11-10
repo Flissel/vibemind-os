@@ -154,6 +154,21 @@ BEGIN
     RETURN FOUND;
 END $$;
 
+-- Eigenes Renderbudget: Marketing legt das Reel an, die Frist laeuft ab jetzt mindestens p_minuten weiter
+-- (die Renderzeit soll nicht gegen die Anfangsfrist zaehlen). Nur Marketing-Auftraege in Arbeit; nie verkuerzen.
+CREATE OR REPLACE FUNCTION auftrag.renderfrist(p_id uuid, p_minuten int) RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = auftrag, pg_temp AS $$
+BEGIN
+    IF p_minuten IS NULL OR p_minuten NOT BETWEEN 1 AND 1440 THEN RETURN false; END IF;
+    UPDATE auftrag.auftraege
+       SET frist_bis = greatest(frist_bis, now() + make_interval(mins => p_minuten)),
+           geaendert = now(),
+           verlauf = array_append(verlauf, jsonb_build_object(
+               'stand', 'in_arbeit', 'zeit', now(), 'renderfrist_min', p_minuten))
+     WHERE id = p_id AND an = 'marketing' AND stand = 'in_arbeit';
+    RETURN FOUND;
+END $$;
+
 CREATE OR REPLACE FUNCTION auftrag.ergebnis_mischen(p_id uuid, p_teil jsonb) RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = auftrag, pg_temp AS $$
 BEGIN
@@ -279,6 +294,7 @@ REVOKE ALL ON FUNCTION auftrag._uebergabe(auftrag.auftraege) FROM PUBLIC;
 REVOKE ALL ON FUNCTION auftrag.naechster(text, interval) FROM PUBLIC;
 REVOKE ALL ON FUNCTION auftrag.laufende(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION auftrag.verlaengern(uuid, interval) FROM PUBLIC;
+REVOKE ALL ON FUNCTION auftrag.renderfrist(uuid, int) FROM PUBLIC;
 REVOKE ALL ON FUNCTION auftrag.ergebnis_mischen(uuid, jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION auftrag.stand_setzen(uuid, text, text, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION auftrag.ablaufen() FROM PUBLIC;

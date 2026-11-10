@@ -208,6 +208,29 @@ BEGIN
     RAISE EXCEPTION '096.9: Auftrag nach Fristende vergeben'; END IF;
 END $$;
 
+-- 6b: Renderfrist
+DO $$
+DECLARE a uuid; f0 timestamptz; f1 timestamptz; n int;
+BEGIN
+  UPDATE auftrag.auftraege SET stand = 'abgebrochen' WHERE stand IN ('offen', 'in_arbeit');
+  a := auftrag.anlegen('sales', 'marketing', 'p096r', 'probe', 'reel', '{"thema":"r"}');
+  IF auftrag.renderfrist(a, 120) THEN RAISE EXCEPTION '096.6b: renderfrist auf offenem Auftrag'; END IF;
+  PERFORM auftrag.naechster('marketing', interval '10 min');
+  UPDATE auftrag.auftraege SET frist_bis = now() + interval '10 min' WHERE id = a;
+  SELECT cardinality(verlauf) INTO n FROM auftrag.auftraege WHERE id = a;
+  IF NOT auftrag.renderfrist(a, 120) THEN RAISE EXCEPTION '096.6b: renderfrist'; END IF;
+  SELECT frist_bis INTO f1 FROM auftrag.auftraege WHERE id = a;
+  IF f1 < now() + interval '119 min' THEN RAISE EXCEPTION '096.6b: Frist nicht verlaengert'; END IF;
+  IF (SELECT cardinality(verlauf) FROM auftrag.auftraege WHERE id = a) <> n + 1 THEN
+    RAISE EXCEPTION '096.6b: verlauf'; END IF;
+  f0 := f1;
+  PERFORM auftrag.renderfrist(a, 5);                    -- nie verkuerzen
+  IF (SELECT frist_bis FROM auftrag.auftraege WHERE id = a) < f0 THEN RAISE EXCEPTION '096.6b: Frist verkuerzt'; END IF;
+  IF auftrag.renderfrist(a, 0) OR auftrag.renderfrist(a, NULL) THEN RAISE EXCEPTION '096.6b: ungueltige Minuten'; END IF;
+  UPDATE auftrag.auftraege SET an = 'sales' WHERE id = a;
+  IF auftrag.renderfrist(a, 120) THEN RAISE EXCEPTION '096.6b: fremder Auftrag'; END IF;
+END $$;
+
 -- 7: Rechte
 DO $$
 DECLARE f record;
