@@ -113,6 +113,9 @@ BEGIN
   IF (SELECT count(*) FROM auftrag.eigene('rowboat', 'p096e', ARRAY['abgelaufen'])) <> 0 THEN RAISE EXCEPTION '096: eigene fremd'; END IF;
   IF NOT auftrag.gemeldet(a, 'abgelaufen') OR NOT auftrag.erinnert(a) THEN RAISE EXCEPTION '096: melden'; END IF;
   IF (SELECT gemeldet_stand FROM auftrag.auftraege WHERE id = a) <> 'abgelaufen' THEN RAISE EXCEPTION '096: gemeldet_stand'; END IF;
+  IF auftrag.gemeldet(a, 'abgelaufen') THEN RAISE EXCEPTION '096: zweites gemeldet mit gleichem Stand war true'; END IF;
+  IF NOT auftrag.gemeldet(a, 'fehler') THEN RAISE EXCEPTION '096: gemeldet mit neuem Stand war false'; END IF;
+  IF auftrag.erinnert(a) THEN RAISE EXCEPTION '096: zweites erinnert war true'; END IF;
 END $$;
 
 -- 8: an, Eltern, Gesamtgrenze, sales_*-Huelle, Randfaelle

@@ -213,14 +213,16 @@ $$;
 CREATE OR REPLACE FUNCTION auftrag.gemeldet(p_id uuid, p_stand text) RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = auftrag, pg_temp AS $$
 BEGIN
-    UPDATE auftrag.auftraege SET gemeldet_stand = p_stand, geaendert = now() WHERE id = p_id;
+    -- Vergleichen-und-Setzen: true nur, wenn DIESER Aufruf den Stand geaendert hat (genau einmal melden).
+    UPDATE auftrag.auftraege SET gemeldet_stand = p_stand, geaendert = now()
+     WHERE id = p_id AND gemeldet_stand IS DISTINCT FROM p_stand;
     RETURN FOUND;
 END $$;
 
 CREATE OR REPLACE FUNCTION auftrag.erinnert(p_id uuid) RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = auftrag, pg_temp AS $$
 BEGIN
-    UPDATE auftrag.auftraege SET erinnert_am = now() WHERE id = p_id;
+    UPDATE auftrag.auftraege SET erinnert_am = now() WHERE id = p_id AND erinnert_am IS NULL;
     RETURN FOUND;
 END $$;
 
