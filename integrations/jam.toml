@@ -4,7 +4,7 @@ name = "Jam"
 description = "Jam ueber den offiziellen Remote-MCP-Server"
 category = "devtools"
 icon = "🛠️"
-tags = ["entwicklung", "jam"]
+tags = ["entwicklung", "fehlerberichte", "debugging"]
 read_only_tools = []
 
 [transport]

@@ -4,7 +4,7 @@ name = "Daloopa"
 description = "Daloopa ueber den offiziellen Remote-MCP-Server"
 category = "finance"
 icon = "💶"
-tags = ["finanzen", "daloopa"]
+tags = ["finanzen", "finanzdaten", "analysten"]
 read_only_tools = []
 
 [transport]

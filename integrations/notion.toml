@@ -4,7 +4,7 @@ name = "Notion"
 description = "Notion ueber den offiziellen Remote-MCP-Server"
 category = "productivity"
 icon = "📋"
-tags = ["produktivitaet", "notion"]
+tags = ["produktivitaet", "notizen", "dokumente"]
 read_only_tools = []
 
 [transport]

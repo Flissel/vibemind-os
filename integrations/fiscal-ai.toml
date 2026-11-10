@@ -4,7 +4,7 @@ name = "Fiscal.ai"
 description = "Fiscal.ai ueber den offiziellen Remote-MCP-Server"
 category = "finance"
 icon = "💶"
-tags = ["finanzen", "fiscal-ai"]
+tags = ["finanzen", "finanzdaten", "aktien"]
 read_only_tools = []
 
 [transport]

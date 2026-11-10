@@ -4,7 +4,7 @@ name = "Replit"
 description = "Replit ueber den offiziellen Remote-MCP-Server"
 category = "devtools"
 icon = "🛠️"
-tags = ["entwicklung", "replit"]
+tags = ["entwicklung", "hosting"]
 read_only_tools = []
 
 [transport]

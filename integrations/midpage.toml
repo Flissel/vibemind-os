@@ -4,7 +4,7 @@ name = "Midpage Legal Research"
 description = "Midpage Legal Research ueber den offiziellen Remote-MCP-Server"
 category = "productivity"
 icon = "📋"
-tags = ["produktivitaet", "midpage"]
+tags = ["produktivitaet", "recht", "recherche"]
 read_only_tools = []
 
 [transport]

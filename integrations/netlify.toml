@@ -4,7 +4,7 @@ name = "Netlify"
 description = "Netlify ueber den offiziellen Remote-MCP-Server"
 category = "cloud"
 icon = "☁️"
-tags = ["cloud", "netlify"]
+tags = ["cloud", "hosting", "webseiten"]
 read_only_tools = []
 
 [transport]

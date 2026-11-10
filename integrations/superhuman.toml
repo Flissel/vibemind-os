@@ -4,7 +4,7 @@ name = "Superhuman Mail"
 description = "Superhuman Mail ueber den offiziellen Remote-MCP-Server"
 category = "communication"
 icon = "💬"
-tags = ["kommunikation", "superhuman"]
+tags = ["kommunikation", "mail", "postfach"]
 read_only_tools = []
 
 [transport]

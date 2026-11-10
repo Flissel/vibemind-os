@@ -4,7 +4,7 @@ name = "Particl"
 description = "Particl ueber den offiziellen Remote-MCP-Server"
 category = "data"
 icon = "📊"
-tags = ["daten", "particl-market-research"]
+tags = ["daten", "marktforschung", "analytics"]
 read_only_tools = []
 
 [transport]

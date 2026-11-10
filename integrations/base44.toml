@@ -4,7 +4,7 @@ name = "Base44"
 description = "Base44 ueber den offiziellen Remote-MCP-Server"
 category = "devtools"
 icon = "🛠️"
-tags = ["entwicklung", "base44"]
+tags = ["entwicklung", "app-bau", "ki"]
 read_only_tools = []
 
 [transport]

@@ -32,9 +32,30 @@ ZWEISTUFIGE_ENDUNGEN = frozenset(
 
 # Bekannte Anbieter-Domainwechsel: Recherche-Name -> Domains, die zum selben
 # Anbieter gehoeren (Server- und Quell-Domain muessen beide enthalten sein).
-# Bewusst leer: Faelle werden nach dem Lauf einzeln entschieden und hier mit
-# Begruendung als Kommentar eingetragen.
-ANBIETER_DOMAINS: dict[str, frozenset[str]] = {}
+# Quellen auf GitHub binden an den Anbieter-Org-Pfad ("github.com/<org>",
+# kleingeschrieben), nie an github.com insgesamt.
+ANBIETER_DOMAINS: dict[str, frozenset[str]] = {
+    # Hersteller-GitHub-Org cbinsights
+    "cb-insights": frozenset({"cbinsights.com", "github.com/cbinsights"}),
+    # Cube Cloud laeuft auf cubecloud.dev, Doku auf cube.dev
+    "cube": frozenset({"cubecloud.dev", "cube.dev"}),
+    # Docket: Server docketai.com, Hilfe docket.io
+    "docket": frozenset({"docketai.com", "docket.io"}),
+    # Help Scout: API-Host helpscout.net, Doku helpscout.com
+    "help-scout": frozenset({"helpscout.net", "helpscout.com"}),
+    # HighLevel: API-Host leadconnectorhq.com, Doku gohighlevel.com
+    "highlevel": frozenset({"leadconnectorhq.com", "gohighlevel.com"}),
+    # Neon: Umbenennung neon.tech -> neon.com
+    "neon-postgres": frozenset({"neon.tech", "neon.com"}),
+    # Omni: Server omniapp.co, Doku omni.co
+    "omni-analytics": frozenset({"omniapp.co", "omni.co"}),
+    # Responsive: frueherer Name RFPIO (rfpio.com)
+    "responsive": frozenset({"rfpio.com", "responsive.io"}),
+    # SkyWatch: skywatch.co und skywatch.com
+    "skywatch": frozenset({"skywatch.co", "skywatch.com"}),
+    # Hersteller-GitHub-Org Teamwork
+    "teamwork-com": frozenset({"teamwork.com", "github.com/teamwork"}),
+}
 
 # Dateien, die nie angefasst werden.
 GESCHUETZT = frozenset({"github", "vercel"})
@@ -219,6 +240,71 @@ KATEGORIE: dict[str, str] = {
     "zoominfo": "sales",
 }
 
+STICHWORTE: dict[str, list[str]] = {
+    "aiera": ["finanzdaten", "analysten"],
+    "amplitude": ["analytics", "produktdaten"],
+    "apollo": ["crm", "kontakte"],
+    "atlassian-rovo": ["projekte", "dokumente"],
+    "attio": ["crm", "kontakte"],
+    "base44": ["app-bau", "ki"],
+    "calendly": ["kalender", "termine"],
+    "carta-crm": ["crm", "investoren"],
+    "cb-insights": ["marktdaten", "analysen"],
+    "circleback": ["meeting", "notizen"],
+    "clickup": ["projekte", "aufgaben"],
+    "cloudflare": ["hosting", "netzwerk"],
+    "common-room": ["crm", "community"],
+    "cube": ["analytics", "datenmodell"],
+    "daloopa": ["finanzdaten", "analysten"],
+    "deepnote": ["notebooks", "analytics"],
+    "docket": ["vertrieb-wissen", "dokumente"],
+    "egnyte": ["dokumente", "dateien"],
+    "factset": ["finanzdaten", "marktdaten"],
+    "fal": ["ki", "bilder"],
+    "fireflies": ["meeting", "notizen"],
+    "fiscal-ai": ["finanzdaten", "aktien"],
+    "granola": ["meeting", "notizen"],
+    "help-scout": ["support", "tickets"],
+    "hex": ["analytics", "notebooks"],
+    "heygen": ["video", "design"],
+    "highlevel": ["crm", "automatisierung"],
+    "hostinger": ["hosting", "domains"],
+    "hugging-face": ["ki", "modelle"],
+    "intercom": ["support", "chat"],
+    "jam": ["fehlerberichte", "debugging"],
+    "linear": ["tickets", "projekte"],
+    "lovable": ["app-bau", "ki"],
+    "marcopolo": ["datenbank", "suche"],
+    "midpage": ["recht", "recherche"],
+    "motherduck": ["datenbank", "analytics"],
+    "neon-postgres": ["datenbank", "postgres"],
+    "netlify": ["hosting", "webseiten"],
+    "notion": ["notizen", "dokumente"],
+    "omni-analytics": ["analytics", "berichte"],
+    "openai-developers": ["dokumentation", "ki"],
+    "outreach": ["crm", "vertriebsmails"],
+    "particl-market-research": ["marktforschung", "analytics"],
+    "picsart": ["design", "bilder"],
+    "posthog": ["analytics", "produktdaten"],
+    "pylon": ["support", "tickets"],
+    "quartr": ["finanzdaten", "quartalszahlen"],
+    "quicknode": ["blockchain", "knoten"],
+    "ranked-ai": ["seo", "werbung"],
+    "readwise": ["notizen", "lesen"],
+    "replit": ["entwicklung", "hosting"],
+    "responsive": ["ausschreibungen", "antworten"],
+    "scite": ["recherche", "studien"],
+    "signnow": ["unterschriften", "dokumente"],
+    "skywatch": ["satellitenbilder", "geodaten"],
+    "statsig": ["experimente", "analytics"],
+    "supabase": ["datenbank", "backend"],
+    "superhuman": ["mail", "postfach"],
+    "teamwork-com": ["projekte", "aufgaben"],
+    "windsor-ai": ["marketing-daten", "analytics"],
+    "wix": ["webseiten", "shop"],
+    "yepcode": ["automatisierung", "skripte"],
+}
+
 TAG_JE_KATEGORIE: dict[str, str] = {
     "devtools": "entwicklung",
     "productivity": "produktivitaet",
@@ -260,7 +346,11 @@ def _host(url: str) -> str:
 def domain_ok(zeile: dict[str, Any]) -> bool:
     """Server-Domain gleich Quell-Domain oder beide in ANBIETER_DOMAINS[name]."""
     server = registrierbare_domain(_host(str(zeile.get("server_url", ""))))
-    quelle = registrierbare_domain(_host(str(zeile.get("quelle", ""))))
+    quelle_url = str(zeile.get("quelle", ""))
+    quelle = registrierbare_domain(_host(quelle_url))
+    if quelle == "github.com":
+        org = urlparse(quelle_url).path.strip("/").split("/")[0].lower()
+        quelle = f"github.com/{org}" if org else quelle
     if not server or not quelle:
         return False
     if server == quelle:
@@ -304,9 +394,10 @@ def _kategorie(name: str) -> str:
 
 
 def _tags(name: str, kategorie: str) -> list[str]:
+    """Kategorie-Wort zuerst, dann bis zu zwei Stichworte; nie die id."""
     tags: list[str] = []
-    for t in (TAG_JE_KATEGORIE.get(kategorie, kategorie), name):
-        if t and t not in tags:
+    for t in [TAG_JE_KATEGORIE.get(kategorie, kategorie), *STICHWORTE.get(name, [])]:
+        if t and t != name and t not in tags:
             tags.append(t)
     return tags[:3]
 

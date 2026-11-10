@@ -231,3 +231,40 @@ def test_kategorie_vollstaendig() -> None:
             assert r["name"] in kv.KATEGORIE, r["name"]
     assert set(kv.KATEGORIE.values()) <= kv.KATEGORIEN
     assert set(kv.ICON) == set(kv.KATEGORIEN)
+
+
+def test_github_quelle_bindet_an_org(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(
+        kv.ANBIETER_DOMAINS, "acme", frozenset({"acme.com", "github.com/acme"})
+    )
+    ok = zeile("acme", server_url="https://mcp.acme.com/", quelle="https://github.com/Acme/mcp")
+    assert kv.domain_ok(ok)
+    fremd = zeile("acme", server_url="https://mcp.acme.com/", quelle="https://github.com/other/mcp")
+    assert not kv.domain_ok(fremd)
+
+
+def test_ausnahme_gilt_nur_fuer_den_eigenen_anbieter() -> None:
+    assert "neon-postgres" in kv.ANBIETER_DOMAINS
+    z = zeile("andere", server_url="https://mcp.neon.tech/", quelle="https://neon.com/docs")
+    assert not kv.domain_ok(z)
+    z = zeile("neon-postgres", server_url="https://mcp.neon.tech/", quelle="https://neon.com/docs")
+    assert kv.domain_ok(z)
+
+
+def test_teamwork_ausnahme_nur_eigene_org() -> None:
+    z = zeile("teamwork-com", server_url="https://mcp.ai.teamwork.com/", quelle="https://github.com/Teamwork/mcp")
+    assert kv.domain_ok(z)
+    z = zeile("teamwork-com", server_url="https://mcp.ai.teamwork.com/", quelle="https://github.com/other/mcp")
+    assert not kv.domain_ok(z)
+
+
+def test_stichworte_vollstaendig_und_ohne_id() -> None:
+    pfad = ROOT / "integrations" / "abgleich" / "recherche.json"
+    rech = json.loads(pfad.read_text(encoding="utf-8"))
+    for r in rech:
+        if (r.get("pruefung") or {}).get("ergebnis", "").startswith("einrichtbar_"):
+            assert kv.STICHWORTE.get(r["name"]), r["name"]
+            tags = tomllib.loads(kv.vorlage_toml(r))["tags"]
+            assert 1 <= len(tags) <= 3 and r["name"] not in tags
+    for n in ("attio", "apollo", "outreach", "carta-crm", "highlevel", "common-room"):
+        assert "crm" in kv.STICHWORTE[n]

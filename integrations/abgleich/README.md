@@ -8,11 +8,10 @@ Eintraege gesamt: 180
 |---|---|
 | adresse_je_kunde | 5 |
 | braucht_registrierung | 5 |
-| domain_pruefen | 10 |
 | kein_offizieller_server | 40 |
 | skills_teil_5 | 24 |
 | unklar | 38 |
-| vorlage | 52 |
+| vorlage | 62 |
 | vorlage_bestand | 2 |
 | vorlage_mitgeliefert | 4 |
 
@@ -44,7 +43,7 @@ Eintraege gesamt: 180
 | canva | app | unklar | ermittlung fehlgeschlagen: fremder host | https://www.canva.dev/docs/apps/quickstart/?app-surface=Canva%20for%20AI%20assistants | 2026-11-10 |
 | carta-crm | app | vorlage | einrichtbar_oauth | https://docs.carta.com/api-platform/guides/guides/claude-mcp-setup/ | 2026-11-10 |
 | catalyst-by-zoho | app | unklar | ermittlung fehlgeschlagen: fremder host | https://docs.catalyst.zoho.com/en/ai-toolkit/catalyst-mcp-server/connect-catalyst-mcp/global-mcp/connect-global-mcp-custom/ | 2026-11-10 |
-| cb-insights | app | domain_pruefen | Server cbinsights.com gegen Quelle github.com | https://github.com/cbinsights/cbi-mcp-server | 2026-11-10 |
+| cb-insights | app | vorlage | einrichtbar_oauth | https://github.com/cbinsights/cbi-mcp-server | 2026-11-10 |
 | channel99 | app | kein_offizieller_server | Channel99 kuendigt einen MCP-Server an (Testphase, Demo auf Anfrage), aber keine URL dokumentiert. | https://www.channel99.com/articles/mcp-server-for-performance-marketing |  |
 | chronograph-gp | app | kein_offizieller_server | Chronograph betreibt einen MCP-Connector (Claude/ChatGPT/Perplexity, nur fuer Kunden), die Server-URL ist auf der eigenen Domain nicht dokumentiert. | https://www.chronograph.pe/chronograph-mcp-announcement/ |  |
 | chronograph-lp | app | kein_offizieller_server | Gleicher Chronograph-MCP-Connector wie GP, nur fuer Kunden; Server-URL nicht offiziell dokumentiert. | https://www.chronograph.pe/chronograph-mcp-announcement/ |  |
@@ -63,7 +62,7 @@ Eintraege gesamt: 180
 | convex | app | kein_offizieller_server | Offizieller Server nur lokal (npx -y convex@latest mcp start); die Remote-Komponente @convex-dev/mcp ist nur ein Baustein fuer eigene Apps. | https://docs.convex.dev/ai/convex-mcp-server |  |
 | coupler-io | app | kein_offizieller_server | Coupler.io erzeugt Endpunkt und Zugriffstoken pro Datenfluss (Custom MCP); feste URL in eigener Doku nicht gefunden (mcp.coupler.io nur in Verzeichnissen), Header-Syntax nicht bestaetigt. | https://docs.coupler.io/destinations/categories/ai/custom_mcp |  |
 | coveo | app | braucht_registrierung | oauth_ohne_dcr | https://docs.coveo.com/en/q1mb0212/ | 2026-11-10 |
-| cube | app | domain_pruefen | Server cubecloud.dev gegen Quelle cube.dev | https://docs.cube.dev/docs/integrations/mcp-server | 2026-11-10 |
+| cube | app | vorlage | einrichtbar_oauth | https://docs.cube.dev/docs/integrations/mcp-server | 2026-11-10 |
 | daloopa | app | vorlage | einrichtbar_oauth | https://docs.daloopa.com/docs/daloopa-mcp | 2026-11-10 |
 | datadog | app | unklar | ermittlung fehlgeschlagen: anmeldeserver-metadaten nicht lesbar | https://docs.datadoghq.com/bits_ai/mcp_server/setup/ | 2026-11-10 |
 | datasite | app | kein_offizieller_server | Datasite betreibt einen MCP-Server (nur fuer freigeschaltete Konten), die URL steht aber nur bei Dritten (mcp.global.datasite.com/mcp), nicht auf Datasite-Seiten. | https://datasite.com/en/resources/ai-at-datasite/datasite-mcp |  |
@@ -71,7 +70,7 @@ Eintraege gesamt: 180
 | demandbase | app | kein_offizieller_server | Offizieller MCP-Server existiert (per CSM freizuschalten, ueber Claude-Connector-Verzeichnis), aber keine URL in den Docs. | https://developer.demandbase.com/docs/mcp |  |
 | digitalocean | app | unklar | ermittlung fehlgeschlagen: resource passt nicht | https://docs.digitalocean.com/reference/mcp/configure-mcp/ | 2026-11-10 |
 | dnb-finance-analytics | app | kein_offizieller_server | D&B bietet MCP-Server nach Zugangsanfrage; URL nur bei Dritten (agents.riskanalytics.dnb.com/mcp), nicht auf D&B-Seiten belegt. | https://www.dnb.co.uk/solutions/artificial-intelligence/connectors/dnb-mcp.html |  |
-| docket | app | domain_pruefen | Server docketai.com gegen Quelle docket.io | https://help.docket.io/articles/8225942528-connect-docket-demand-mcp | 2026-11-10 |
+| docket | app | vorlage | einrichtbar_oauth | https://help.docket.io/articles/8225942528-connect-docket-demand-mcp | 2026-11-10 |
 | docusign | app | unklar | ermittlung fehlgeschlagen: fremder host | https://www.docusign.com/blog/developers/docusign-mcp-server-general-availability | 2026-11-10 |
 | domotz-preview | app | unklar | ermittlung fehlgeschlagen: resource passt nicht | https://help.domotz.com/integrations/domotz-mcp-server-setup/ | 2026-11-10 |
 | dovetail | app | braucht_registrierung | oauth_ohne_dcr | https://developers.dovetail.com/docs/mcp | 2026-11-10 |
@@ -95,11 +94,11 @@ Eintraege gesamt: 180
 | granola | app | vorlage | einrichtbar_oauth | https://docs.granola.ai/help-center/sharing/integrations/mcp | 2026-11-10 |
 | happenstance | app | unklar | ermittlung fehlgeschlagen: issuer passt nicht | https://developer.happenstance.ai/mcp/connect | 2026-11-10 |
 | hebbia | app | kein_offizieller_server | Hebbia blog says a Hebbia MCP exists (Matrix, Projects) but no public endpoint URL found; likely customer-gated. |  |  |
-| help-scout | app | domain_pruefen | Server helpscout.net gegen Quelle helpscout.com | https://docs.helpscout.com/article/1779-connect-your-ai-agent-with-help-scout-to-search-conversations-and-pull-reports | 2026-11-10 |
+| help-scout | app | vorlage | einrichtbar_oauth | https://docs.helpscout.com/article/1779-connect-your-ai-agent-with-help-scout-to-search-conversations-and-pull-reports | 2026-11-10 |
 | hex | app | vorlage | einrichtbar_oauth | https://learn.hex.tech/docs/api-integrations/mcp-server | 2026-11-10 |
 | heygen | app | vorlage | einrichtbar_oauth | https://developers.heygen.com/mcp/overview | 2026-11-10 |
 | hg-insights | app | kein_offizieller_server | HG MCP Server exists (API key issued by admin) but endpoint URL not public; demo-gated. | https://hginsights.com/product/hg-mcp-server |  |
-| highlevel | app | domain_pruefen | Server leadconnectorhq.com gegen Quelle gohighlevel.com | https://marketplace.gohighlevel.com/docs/other/mcp | 2026-11-10 |
+| highlevel | app | vorlage | einrichtbar_oauth | https://marketplace.gohighlevel.com/docs/other/mcp | 2026-11-10 |
 | hostinger | app | vorlage | einrichtbar_oauth | https://www.hostinger.com/support/11079316-hostinger-api-mcp-server/ | 2026-11-10 |
 | hubspot | app | braucht_registrierung | oauth_ohne_dcr | https://developers.hubspot.com/docs/apps/developer-platform/build-apps/integrate-with-the-remote-hubspot-mcp-server | 2026-11-10 |
 | hugging-face | app | vorlage | einrichtbar_oauth | https://huggingface.co/docs/hub/agents-mcp | 2026-11-10 |
@@ -124,13 +123,13 @@ Eintraege gesamt: 180
 | motherduck | app | vorlage | einrichtbar_oauth | https://motherduck.com/docs/sql-reference/mcp/ | 2026-11-10 |
 | mt-newswires | app | kein_offizieller_server | Official hosted remote MCP server exists (login with MT Newswires credentials via connector directories) but the URL is not published on its site; aggregators list https://mcp.mtnewswires.com/mcp (unverified). | https://www.mtnewswires.com/mcp-server |  |
 | myregistry-com | app | kein_offizieller_server | ChatGPT plugin exists (member login) but no public MCP server documentation found. |  |  |
-| neon-postgres | app | domain_pruefen | Server neon.tech gegen Quelle neon.com | https://neon.com/docs/ai/neon-mcp-server | 2026-11-10 |
+| neon-postgres | app | vorlage | einrichtbar_oauth | https://neon.com/docs/ai/neon-mcp-server | 2026-11-10 |
 | netlify | app | vorlage | einrichtbar_oauth | https://docs.netlify.com/build/build-with-ai/netlify-mcp-server/ | 2026-11-10 |
 | network-solutions | app | kein_offizieller_server | Has a ChatGPT app listing but no public MCP server documentation found. |  |  |
 | ngs-analysis | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
 | notion | mcp | vorlage | einrichtbar_oauth | https://developers.notion.com/docs/get-started-with-mcp | 2026-11-10 |
 | nvidia | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
-| omni-analytics | app | domain_pruefen | Server omniapp.co gegen Quelle omni.co | https://docs.omni.co/ai/mcp/cursor | 2026-11-10 |
+| omni-analytics | app | vorlage | einrichtbar_oauth | https://docs.omni.co/ai/mcp/cursor | 2026-11-10 |
 | openai-ads-conversions | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
 | openai-developers | mcp | vorlage | einrichtbar_ohne_anmeldung | https://developers.openai.com/learn/docs-mcp | 2026-11-10 |
 | otter-ai | app | unklar | ermittlung fehlgeschlagen: resource passt nicht | https://help.otter.ai/hc/en-us/articles/35287607569687-Otter-MCP-Server | 2026-11-10 |
@@ -156,7 +155,7 @@ Eintraege gesamt: 180
 | render | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
 | replayio | app | unklar | antwortet_ohne_anmeldung | https://docs.replay.io/basics/replay-mcp/quickstart | 2026-11-10 |
 | replit | app | vorlage | einrichtbar_oauth | https://docs.replit.com/platforms/mcp-server | 2026-11-10 |
-| responsive | app | domain_pruefen | Server rfpio.com gegen Quelle responsive.io | https://help.responsive.io/en-US/responsive/article/duV3ckq5-using-responsive-mcp-server-with-generative-ai-tools | 2026-11-10 |
+| responsive | app | vorlage | einrichtbar_oauth | https://help.responsive.io/en-US/responsive/article/duV3ckq5-using-responsive-mcp-server-with-generative-ai-tools | 2026-11-10 |
 | rox | app | kein_offizieller_server | No official Rox MCP server documentation found. |  |  |
 | s-p | app | unklar | ermittlung fehlgeschlagen: issuer passt nicht | https://docs.kensho.com/adaptive-retrieval/mcp | 2026-11-10 |
 | scite | app | vorlage | einrichtbar_oauth | https://docs.scite.ai/mcp/overview | 2026-11-10 |
@@ -169,7 +168,7 @@ Eintraege gesamt: 180
 | shutterstock | app | kein_offizieller_server | Only third-party/community servers found. |  |  |
 | signnow | app | vorlage | einrichtbar_oauth | https://docs.signnow.com/docs/mcp-server | 2026-11-10 |
 | similarweb | app | unklar | anmeldeart_unbekannt | https://developers.similarweb.com/docs/similarweb-mcp | 2026-11-10 |
-| skywatch | app | domain_pruefen | Server skywatch.co gegen Quelle skywatch.com | https://docs.skywatch.com/docs/mcp/client-integration | 2026-11-10 |
+| skywatch | app | vorlage | einrichtbar_ohne_anmeldung | https://docs.skywatch.com/docs/mcp/client-integration | 2026-11-10 |
 | slack | app | vorlage_mitgeliefert | mitgelieferte Vorlage bleibt | https://docs.slack.dev/ai/mcp-server | 2026-11-10 |
 | statsig | app | vorlage | einrichtbar_oauth | https://docs.statsig.com/integrations/mcp/manual-setup | 2026-11-10 |
 | streak | app | kein_offizieller_server | Only community and aggregator servers found. |  |  |
@@ -179,7 +178,7 @@ Eintraege gesamt: 180
 | superpowers | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
 | taxdown | app | kein_offizieller_server | No official MCP documentation found (only a ChatGPT app listing by TAXDOWN S.L. in a third-party tracker). |  |  |
 | teams | app | unklar | ermittlung fehlgeschlagen: issuer passt nicht | https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/work-iq/mcp/quickstart/github-copilot-cli | 2026-11-10 |
-| teamwork-com | app | domain_pruefen | Server teamwork.com gegen Quelle github.com | https://github.com/Teamwork/mcp | 2026-11-10 |
+| teamwork-com | app | vorlage | einrichtbar_oauth | https://github.com/Teamwork/mcp | 2026-11-10 |
 | temporal | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
 | test-android-apps | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
 | third-bridge | app | kein_offizieller_server | Vendor announced an MCP (client/trial access only) but publishes no URL; only third-party listings show ai.thirdbridge.com/mcp/sse, so left empty. | https://www.thirdbridge.com/en-us/about-us/media/news/third-bridge-launches-model-context-protocol-mcp |  |

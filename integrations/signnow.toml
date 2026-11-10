@@ -4,7 +4,7 @@ name = "signNow"
 description = "signNow ueber den offiziellen Remote-MCP-Server"
 category = "productivity"
 icon = "📋"
-tags = ["produktivitaet", "signnow"]
+tags = ["produktivitaet", "unterschriften", "dokumente"]
 read_only_tools = []
 
 [transport]

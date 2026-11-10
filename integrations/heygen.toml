@@ -4,7 +4,7 @@ name = "HeyGen"
 description = "HeyGen ueber den offiziellen Remote-MCP-Server"
 category = "design"
 icon = "🎨"
-tags = ["design", "heygen"]
+tags = ["design", "video"]
 read_only_tools = []
 
 [transport]

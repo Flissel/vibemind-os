@@ -4,7 +4,7 @@ name = "Calendly"
 description = "Calendly ueber den offiziellen Remote-MCP-Server"
 category = "productivity"
 icon = "📋"
-tags = ["produktivitaet", "calendly"]
+tags = ["produktivitaet", "kalender", "termine"]
 read_only_tools = []
 
 [transport]

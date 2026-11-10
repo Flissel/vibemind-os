@@ -4,7 +4,7 @@ name = "Carta CRM"
 description = "Carta CRM ueber den offiziellen Remote-MCP-Server"
 category = "finance"
 icon = "💶"
-tags = ["finanzen", "carta-crm"]
+tags = ["finanzen", "crm", "investoren"]
 read_only_tools = []
 
 [transport]

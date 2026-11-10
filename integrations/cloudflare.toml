@@ -4,7 +4,7 @@ name = "Cloudflare"
 description = "Cloudflare ueber den offiziellen Remote-MCP-Server"
 category = "cloud"
 icon = "☁️"
-tags = ["cloud", "cloudflare"]
+tags = ["cloud", "hosting", "netzwerk"]
 read_only_tools = []
 
 [transport]

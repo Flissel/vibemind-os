@@ -4,7 +4,7 @@ name = "Picsart"
 description = "Picsart ueber den offiziellen Remote-MCP-Server"
 category = "design"
 icon = "🎨"
-tags = ["design", "picsart"]
+tags = ["design", "bilder"]
 read_only_tools = []
 
 [transport]

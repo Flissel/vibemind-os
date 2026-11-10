@@ -4,7 +4,7 @@ name = "Intercom"
 description = "Intercom ueber den offiziellen Remote-MCP-Server"
 category = "communication"
 icon = "💬"
-tags = ["kommunikation", "intercom"]
+tags = ["kommunikation", "support", "chat"]
 read_only_tools = []
 
 [transport]

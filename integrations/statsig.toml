@@ -4,7 +4,7 @@ name = "Statsig"
 description = "Statsig ueber den offiziellen Remote-MCP-Server"
 category = "data"
 icon = "📊"
-tags = ["daten", "statsig"]
+tags = ["daten", "experimente", "analytics"]
 read_only_tools = []
 
 [transport]

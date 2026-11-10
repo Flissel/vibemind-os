@@ -4,7 +4,7 @@ name = "Ranked AI"
 description = "Ranked AI ueber den offiziellen Remote-MCP-Server"
 category = "marketing"
 icon = "📣"
-tags = ["marketing", "ranked-ai"]
+tags = ["marketing", "seo", "werbung"]
 read_only_tools = []
 
 [transport]

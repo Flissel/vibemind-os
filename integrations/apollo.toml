@@ -4,7 +4,7 @@ name = "Apollo.io"
 description = "Apollo.io ueber den offiziellen Remote-MCP-Server"
 category = "sales"
 icon = "🤝"
-tags = ["vertrieb", "apollo"]
+tags = ["vertrieb", "crm", "kontakte"]
 read_only_tools = []
 
 [transport]

@@ -4,7 +4,7 @@ name = "Hex"
 description = "Hex ueber den offiziellen Remote-MCP-Server"
 category = "data"
 icon = "📊"
-tags = ["daten", "hex"]
+tags = ["daten", "analytics", "notebooks"]
 read_only_tools = []
 
 [transport]

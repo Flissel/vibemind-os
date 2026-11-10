@@ -4,7 +4,7 @@ name = "MarcoPolo"
 description = "MarcoPolo ueber den offiziellen Remote-MCP-Server"
 category = "data"
 icon = "📊"
-tags = ["daten", "marcopolo"]
+tags = ["daten", "datenbank", "suche"]
 read_only_tools = []
 
 [transport]

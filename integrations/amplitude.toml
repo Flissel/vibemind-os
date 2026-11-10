@@ -4,7 +4,7 @@ name = "Amplitude"
 description = "Amplitude ueber den offiziellen Remote-MCP-Server"
 category = "data"
 icon = "📊"
-tags = ["daten", "amplitude"]
+tags = ["daten", "analytics", "produktdaten"]
 read_only_tools = []
 
 [transport]

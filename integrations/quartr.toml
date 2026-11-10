@@ -4,7 +4,7 @@ name = "Quartr"
 description = "Quartr ueber den offiziellen Remote-MCP-Server"
 category = "finance"
 icon = "💶"
-tags = ["finanzen", "quartr"]
+tags = ["finanzen", "finanzdaten", "quartalszahlen"]
 read_only_tools = []
 
 [transport]

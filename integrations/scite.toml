@@ -4,7 +4,7 @@ name = "scite"
 description = "scite ueber den offiziellen Remote-MCP-Server"
 category = "ai"
 icon = "🤖"
-tags = ["ki", "scite"]
+tags = ["ki", "recherche", "studien"]
 read_only_tools = []
 
 [transport]

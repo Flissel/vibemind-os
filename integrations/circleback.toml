@@ -4,7 +4,7 @@ name = "Circleback"
 description = "Circleback ueber den offiziellen Remote-MCP-Server"
 category = "productivity"
 icon = "📋"
-tags = ["produktivitaet", "circleback"]
+tags = ["produktivitaet", "meeting", "notizen"]
 read_only_tools = []
 
 [transport]

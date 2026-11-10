@@ -4,7 +4,7 @@ name = "Lovable"
 description = "Lovable ueber den offiziellen Remote-MCP-Server"
 category = "devtools"
 icon = "🛠️"
-tags = ["entwicklung", "lovable"]
+tags = ["entwicklung", "app-bau", "ki"]
 read_only_tools = []
 
 [transport]

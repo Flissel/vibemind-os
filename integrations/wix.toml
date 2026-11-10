@@ -4,7 +4,7 @@ name = "Wix"
 description = "Wix ueber den offiziellen Remote-MCP-Server"
 category = "marketing"
 icon = "📣"
-tags = ["marketing", "wix"]
+tags = ["marketing", "webseiten", "shop"]
 read_only_tools = []
 
 [transport]

@@ -4,7 +4,7 @@ name = "OpenAI Developers (Docs MCP)"
 description = "OpenAI Developers (Docs MCP) ueber den offiziellen Remote-MCP-Server"
 category = "ai"
 icon = "🤖"
-tags = ["ki", "openai-developers"]
+tags = ["ki", "dokumentation"]
 read_only_tools = []
 
 [transport]

@@ -4,7 +4,7 @@ name = "Aiera"
 description = "Aiera ueber den offiziellen Remote-MCP-Server"
 category = "finance"
 icon = "💶"
-tags = ["finanzen", "aiera"]
+tags = ["finanzen", "finanzdaten", "analysten"]
 read_only_tools = []
 
 [transport]

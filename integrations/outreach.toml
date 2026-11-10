@@ -4,7 +4,7 @@ name = "Outreach"
 description = "Outreach ueber den offiziellen Remote-MCP-Server"
 category = "sales"
 icon = "🤝"
-tags = ["vertrieb", "outreach"]
+tags = ["vertrieb", "crm", "vertriebsmails"]
 read_only_tools = []
 
 [transport]

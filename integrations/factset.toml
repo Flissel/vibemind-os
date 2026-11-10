@@ -4,7 +4,7 @@ name = "FactSet"
 description = "FactSet ueber den offiziellen Remote-MCP-Server"
 category = "finance"
 icon = "💶"
-tags = ["finanzen", "factset"]
+tags = ["finanzen", "finanzdaten", "marktdaten"]
 read_only_tools = []
 
 [transport]

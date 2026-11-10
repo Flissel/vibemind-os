@@ -4,7 +4,7 @@ name = "Atlassian Rovo"
 description = "Atlassian Rovo ueber den offiziellen Remote-MCP-Server"
 category = "productivity"
 icon = "📋"
-tags = ["produktivitaet", "atlassian-rovo"]
+tags = ["produktivitaet", "projekte", "dokumente"]
 read_only_tools = []
 
 [transport]

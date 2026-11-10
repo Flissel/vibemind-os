@@ -4,7 +4,7 @@ name = "PostHog"
 description = "PostHog ueber den offiziellen Remote-MCP-Server"
 category = "data"
 icon = "📊"
-tags = ["daten", "posthog"]
+tags = ["daten", "analytics", "produktdaten"]
 read_only_tools = []
 
 [transport]

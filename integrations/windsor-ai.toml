@@ -4,7 +4,7 @@ name = "Windsor.ai"
 description = "Windsor.ai ueber den offiziellen Remote-MCP-Server"
 category = "marketing"
 icon = "📣"
-tags = ["marketing", "windsor-ai"]
+tags = ["marketing", "marketing-daten", "analytics"]
 read_only_tools = []
 
 [transport]

@@ -4,7 +4,7 @@ name = "Deepnote"
 description = "Deepnote ueber den offiziellen Remote-MCP-Server"
 category = "data"
 icon = "📊"
-tags = ["daten", "deepnote"]
+tags = ["daten", "notebooks", "analytics"]
 read_only_tools = []
 
 [transport]

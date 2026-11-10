@@ -4,7 +4,7 @@ name = "Readwise"
 description = "Readwise ueber den offiziellen Remote-MCP-Server"
 category = "productivity"
 icon = "📋"
-tags = ["produktivitaet", "readwise"]
+tags = ["produktivitaet", "notizen", "lesen"]
 read_only_tools = []
 
 [transport]

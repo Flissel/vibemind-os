@@ -4,7 +4,7 @@ name = "Quicknode"
 description = "Quicknode ueber den offiziellen Remote-MCP-Server"
 category = "cloud"
 icon = "☁️"
-tags = ["cloud", "quicknode"]
+tags = ["cloud", "blockchain", "knoten"]
 read_only_tools = []
 
 [transport]

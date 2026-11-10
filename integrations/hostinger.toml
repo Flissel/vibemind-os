@@ -4,7 +4,7 @@ name = "Hostinger"
 description = "Hostinger ueber den offiziellen Remote-MCP-Server"
 category = "cloud"
 icon = "☁️"
-tags = ["cloud", "hostinger"]
+tags = ["cloud", "hosting", "domains"]
 read_only_tools = []
 
 [transport]
