@@ -16,12 +16,19 @@ CREATE TABLE IF NOT EXISTS marketing.video_werke (
     gliederung_fassung  int NOT NULL DEFAULT 0,
     gliederung_wunsch   text,
     gliederung_wuensche jsonb[] NOT NULL DEFAULT '{}',
+    -- Der Arbeiter hat die Gliederung aufgegeben (zweimal unbrauchbar): Grund fuer den Betreiber, bis ein neuer
+    -- Wunsch kommt oder eine Gliederung eingestellt wird.
+    gliederung_aufgegeben text,
     quellen             jsonb NOT NULL DEFAULT '[]'::jsonb,
     aufrufe             int NOT NULL DEFAULT 0,
     stimme              text,
     video_datei         text,
     video_fassung       int NOT NULL DEFAULT 0,
     video_veraltet      boolean NOT NULL DEFAULT false,
+    -- Zusammenfuegen: video_versuch zaehlt "Video neu zusammenfuegen" des Betreibers, video_fehler ist der Grund
+    -- des letzten gescheiterten Versuchs (geloescht beim Erfolg, beim Neu-Versuch und beim Oeffnen einer Szene).
+    video_versuch       int NOT NULL DEFAULT 0,
+    video_fehler        text,
     runde               int NOT NULL DEFAULT 0,
     hinweise            jsonb NOT NULL DEFAULT '[]'::jsonb,
     angelegt            timestamptz NOT NULL DEFAULT now(),
@@ -39,6 +46,8 @@ CREATE TABLE IF NOT EXISTS marketing.video_szenen (
     bild            jsonb NOT NULL DEFAULT '{}'::jsonb,
     uebergang       text CONSTRAINT video_szenen_uebergang_chk CHECK (uebergang IN ('schnitt', 'blende')),
     quellen         jsonb NOT NULL DEFAULT '[]'::jsonb,
+    -- geprueften Belege des Textes: [{aussage, quelle}] (Spec 5.2: Felix sieht sie beim Absegnen)
+    belege          jsonb NOT NULL DEFAULT '[]'::jsonb,
     stand           text NOT NULL DEFAULT 'geplant'
                     CONSTRAINT video_szenen_stand_chk CHECK (stand IN
                         ('geplant', 'text_wartet', 'text_ok', 'wird_erzeugt', 'clip_wartet', 'fertig')),
@@ -54,6 +63,9 @@ CREATE TABLE IF NOT EXISTS marketing.video_szenen (
     engine          text,
     fehler          text,
     fehler_nr       int NOT NULL DEFAULT 0,
+    -- Der Arbeiter hat den Text aufgegeben (zweimal durch die Pruefung gefallen): Grund fuer den Betreiber, bis
+    -- ein neuer Wunsch kommt oder ein Text eingestellt wird. Solange er steht, fragt der Arbeiter nicht neu.
+    aufgegeben      text,
     angelegt        timestamptz NOT NULL DEFAULT now(),
     geaendert       timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT video_szenen_nr_uni UNIQUE (auftrag, nr)
@@ -85,6 +97,17 @@ CREATE OR REPLACE FUNCTION marketing._video_kennung() RETURNS text
 LANGUAGE sql VOLATILE AS $$
     SELECT 'wb-' || string_agg(substr('abcdefghijklmnopqrstuvwxyz234567', 1 + floor(random() * 32)::int, 1), '')
       FROM generate_series(1, 10);
+$$;
+
+-- Wunsch an die Historie haengen ({text, zeit, tor}); leer oder gleich dem letzten Eintrag: unveraendert (ein
+-- Wunsch, der schon beim Setzen in die Historie kam, steht dort nicht doppelt, wenn der Text ihn verbraucht).
+CREATE OR REPLACE FUNCTION marketing._video_wunsch_anhaengen(p_wuensche jsonb[], p_text text, p_tor text)
+RETURNS jsonb[]
+LANGUAGE sql STABLE AS $$
+    SELECT CASE WHEN p_text IS NULL
+                  OR (cardinality(p_wuensche) > 0 AND p_wuensche[cardinality(p_wuensche)]->>'text' = p_text)
+                THEN p_wuensche
+                ELSE array_append(p_wuensche, jsonb_build_object('text', p_text, 'zeit', now(), 'tor', p_tor)) END;
 $$;
 
 -- Zaehlstand ins Auftragsergebnis schreiben (der Verkaeufer liest ihn von dort).
@@ -126,13 +149,15 @@ LANGUAGE sql STABLE AS $$
         'auftrag', w.auftrag, 'mandant', w.mandant, 'eingabe', a.eingabe,
         'gliederung_stand', w.gliederung_stand, 'gliederung_fassung', w.gliederung_fassung,
         'gliederung', w.gliederung, 'gliederung_wunsch', w.gliederung_wunsch,
+        'gliederung_wuensche', to_jsonb(w.gliederung_wuensche), 'gliederung_aufgegeben', w.gliederung_aufgegeben,
         'quellen', w.quellen, 'stimme', w.stimme,
         'szenen', coalesce((SELECT jsonb_agg(to_jsonb(s) ORDER BY s.nr)
                               FROM marketing.video_szenen s WHERE s.auftrag = w.auftrag), '[]'::jsonb),
         'alle_fertig', EXISTS (SELECT 1 FROM marketing.video_szenen s WHERE s.auftrag = w.auftrag)
                        AND NOT EXISTS (SELECT 1 FROM marketing.video_szenen s
                                         WHERE s.auftrag = w.auftrag AND s.stand <> 'fertig'),
-        'video_fassung', w.video_fassung, 'video_veraltet', w.video_veraltet, 'aufrufe', w.aufrufe)
+        'video_fassung', w.video_fassung, 'video_veraltet', w.video_veraltet, 'aufrufe', w.aufrufe,
+        'video_versuch', w.video_versuch, 'video_fehler', w.video_fehler)
       FROM marketing.video_werke w JOIN auftrag.auftraege a ON a.id = w.auftrag
      WHERE w.auftrag = p_auftrag;
 $$;
@@ -196,10 +221,9 @@ BEGIN
            quellen = CASE WHEN jsonb_typeof(p_quellen) = 'array' THEN p_quellen ELSE '[]'::jsonb END,
            gliederung_stand = 'text_wartet',
            gliederung_fassung = v_f,
-           gliederung_wuensche = CASE WHEN gliederung_wunsch IS NULL THEN gliederung_wuensche
-               ELSE array_append(gliederung_wuensche, jsonb_build_object(
-                        'text', gliederung_wunsch, 'zeit', now(), 'tor', 'gliederung')) END,
+           gliederung_wuensche = marketing._video_wunsch_anhaengen(gliederung_wuensche, gliederung_wunsch, 'gliederung'),
            gliederung_wunsch = NULL,
+           gliederung_aufgegeben = NULL,
            geaendert = now()
      WHERE auftrag = p_auftrag;
     v_k := marketing._video_kennung();
@@ -229,8 +253,89 @@ BEGIN
     RETURN true;
 END $$;
 
+-- Neuer Wunsch des Betreibers zu einer Szene, die ohne lebenden Vorschlag in geplant steht (meist: der Arbeiter
+-- hat sie aufgegeben). Nur bei Auftrag in werkbank. Der Wunsch (auf 2000 Zeichen) wird gespeichert und kommt in
+-- die Historie (tor text; ein noch unverbrauchter alter Wunsch davor), `aufgegeben` wird geloescht: der Arbeiter
+-- versucht die Szene noch einmal. Leerer Wunsch oder anderer Stand: false, nichts aendert sich.
+CREATE OR REPLACE FUNCTION marketing.video_szene_wunsch(p_szene uuid, p_wunsch text) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_s marketing.video_szenen;
+    v_w text := nullif(btrim(left(p_wunsch, 2000)), '');
+BEGIN
+    IF v_w IS NULL THEN RETURN false; END IF;
+    SELECT * INTO v_s FROM marketing.video_szenen WHERE id = p_szene FOR UPDATE;
+    IF v_s.id IS NULL OR v_s.stand <> 'geplant' THEN RETURN false; END IF;
+    IF NOT EXISTS (SELECT 1 FROM auftrag.auftraege WHERE id = v_s.auftrag AND art = 'video' AND stand = 'werkbank') THEN
+        RETURN false; END IF;
+    UPDATE marketing.video_szenen
+       SET wuensche = marketing._video_wunsch_anhaengen(
+               marketing._video_wunsch_anhaengen(wuensche, wunsch, coalesce(rueckgabe_von, 'text')), v_w, 'text'),
+           wunsch = v_w, aufgegeben = NULL, geaendert = now()
+     WHERE id = p_szene;
+    PERFORM marketing._video_zaehlen(v_s.auftrag);
+    RETURN true;
+END $$;
+
+-- Dasselbe fuer die Gliederung (nur gliederung_stand geplant, Auftrag in in_arbeit oder werkbank), tor gliederung.
+CREATE OR REPLACE FUNCTION marketing.video_gliederung_wunsch(p_auftrag uuid, p_wunsch text) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_g marketing.video_werke;
+    v_w text := nullif(btrim(left(p_wunsch, 2000)), '');
+BEGIN
+    IF v_w IS NULL THEN RETURN false; END IF;
+    SELECT * INTO v_g FROM marketing.video_werke WHERE auftrag = p_auftrag FOR UPDATE;
+    IF v_g.auftrag IS NULL OR v_g.gliederung_stand <> 'geplant' THEN RETURN false; END IF;
+    IF NOT EXISTS (SELECT 1 FROM auftrag.auftraege
+                    WHERE id = p_auftrag AND art = 'video' AND stand IN ('in_arbeit', 'werkbank')) THEN
+        RETURN false; END IF;
+    UPDATE marketing.video_werke
+       SET gliederung_wuensche = marketing._video_wunsch_anhaengen(
+               marketing._video_wunsch_anhaengen(gliederung_wuensche, gliederung_wunsch, 'gliederung'), v_w, 'gliederung'),
+           gliederung_wunsch = v_w, gliederung_aufgegeben = NULL, geaendert = now()
+     WHERE auftrag = p_auftrag;
+    PERFORM marketing._video_zaehlen(p_auftrag);
+    RETURN true;
+END $$;
+
+-- Der Arbeiter gibt den Text einer Szene auf (zweimal durch die Pruefung): Grund (auf 300 Zeichen) fuer den
+-- Betreiber. Nur in geplant und nur, wenn der Wunsch noch der ist, mit dem der Arbeiter es versucht hat (kam
+-- inzwischen ein neuer, gilt die Aufgabe nicht).
+CREATE OR REPLACE FUNCTION marketing.video_szene_aufgeben(p_szene uuid, p_grund text, p_wunsch text) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE v_auftrag uuid;
+BEGIN
+    UPDATE marketing.video_szenen
+       SET aufgegeben = left(coalesce(nullif(btrim(p_grund), ''), 'Die Szene ließ sich nicht schreiben.'), 300),
+           geaendert = now()
+     WHERE id = p_szene AND stand = 'geplant'
+       AND coalesce(wunsch, '') = coalesce(nullif(btrim(p_wunsch), ''), '')
+    RETURNING auftrag INTO v_auftrag;
+    IF v_auftrag IS NULL THEN RETURN false; END IF;
+    PERFORM marketing._video_zaehlen(v_auftrag);
+    RETURN true;
+END $$;
+
+-- Dasselbe fuer die Gliederung.
+CREATE OR REPLACE FUNCTION marketing.video_gliederung_aufgeben(p_auftrag uuid, p_grund text, p_wunsch text)
+RETURNS boolean
+LANGUAGE plpgsql AS $$
+BEGIN
+    UPDATE marketing.video_werke
+       SET gliederung_aufgegeben = left(coalesce(nullif(btrim(p_grund), ''),
+                                                 'Die Gliederung ließ sich nicht schreiben.'), 300),
+           geaendert = now()
+     WHERE auftrag = p_auftrag AND gliederung_stand = 'geplant'
+       AND coalesce(gliederung_wunsch, '') = coalesce(nullif(btrim(p_wunsch), ''), '');
+    IF NOT FOUND THEN RETURN false; END IF;
+    PERFORM marketing._video_zaehlen(p_auftrag);
+    RETURN true;
+END $$;
+
 -- Urteil des Betreibers (passt | nochmal) ueber den Weg rowboat | seite. {"ok": false}, wenn der Vorschlag
--- nicht mehr lebt oder der Stand dahinter nicht mehr passt (veraltete Kennung); sonst {"ok": true, "stand": ...}.
+-- nicht mehr lebt, der Auftrag beendet ist (fertig, abgebrochen, fehler, abgelaufen) oder der Stand dahinter
+-- nicht mehr passt (veraltete Kennung); sonst {"ok": true, "stand": ...}.
 CREATE OR REPLACE FUNCTION marketing.video_entscheiden(p_kennung text, p_urteil text, p_weg text) RETURNS jsonb
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -248,6 +353,10 @@ BEGIN
     SELECT * INTO v_v FROM marketing.video_vorschlaege WHERE kennung = p_kennung FOR UPDATE;
     IF v_v.kennung IS NULL OR v_v.stand NOT IN ('wartend', 'offen') THEN
         RETURN jsonb_build_object('ok', false);
+    END IF;
+    IF EXISTS (SELECT 1 FROM auftrag.auftraege WHERE id = v_v.auftrag
+                  AND stand IN ('fertig', 'abgebrochen', 'fehler', 'abgelaufen')) THEN
+        RETURN jsonb_build_object('ok', false);       -- beendeter Auftrag: der Bote zieht den Vorschlag zurueck
     END IF;
 
     IF v_v.szene IS NULL THEN
@@ -324,8 +433,9 @@ BEGIN
 END $$;
 
 -- Szenentext einstellen (nur aus geplant, auch nach Rueckgabe vom Clip-Tor, wenn sich der Text aendert).
--- Felder: sprechtext (Pflicht), bildart, bild, uebergang, quellen; fehlende Felder behalten den alten Wert.
--- Ungueltige Werte: NULL, nichts aendert sich. Gibt die Kennung des neuen Textvorschlags zurueck.
+-- Felder: sprechtext (Pflicht), bildart, bild, uebergang, quellen, belege; fehlende Felder behalten den alten
+-- Wert, ausser belege (sie gehoeren zum Text: ohne Liste leer). Ungueltige Werte: NULL, nichts aendert sich.
+-- Gibt die Kennung des neuen Textvorschlags zurueck.
 CREATE OR REPLACE FUNCTION marketing.video_szene_text_setzen(p_szene uuid, p_text jsonb) RETURNS text
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -350,14 +460,13 @@ BEGIN
            bild = CASE WHEN jsonb_typeof(p_text->'bild') = 'object' THEN p_text->'bild' ELSE bild END,
            uebergang = v_uebergang,
            quellen = CASE WHEN jsonb_typeof(p_text->'quellen') = 'array' THEN p_text->'quellen' ELSE quellen END,
-           stand = 'text_wartet', fassung = v_f, rueckgabe_von = NULL, fehler = NULL,
+           belege = CASE WHEN jsonb_typeof(p_text->'belege') = 'array' THEN p_text->'belege' ELSE '[]'::jsonb END,
+           stand = 'text_wartet', fassung = v_f, rueckgabe_von = NULL, fehler = NULL, aufgegeben = NULL,
            -- Rueckgabe vom Clip-Tor: der alte Clip gehoert zum alten Text, die Szene wird neu erzeugt
            variante = CASE WHEN v_s.rueckgabe_von = 'clip' THEN variante + 1 ELSE variante END,
            clip_datei = CASE WHEN v_s.rueckgabe_von = 'clip' THEN NULL ELSE clip_datei END,
            dauer_s = CASE WHEN v_s.rueckgabe_von = 'clip' THEN NULL ELSE dauer_s END,
-           wuensche = CASE WHEN wunsch IS NULL THEN wuensche
-               ELSE array_append(wuensche, jsonb_build_object(
-                        'text', wunsch, 'zeit', now(), 'tor', coalesce(v_s.rueckgabe_von, 'text'))) END,
+           wuensche = marketing._video_wunsch_anhaengen(wuensche, wunsch, coalesce(v_s.rueckgabe_von, 'text')),
            wunsch = NULL,
            geaendert = now()
      WHERE id = p_szene;
@@ -369,7 +478,9 @@ BEGIN
 END $$;
 
 -- Neues Bild nach Rueckgabe vom Clip-Tor: der Sprechtext bleibt, die Szene wird neu erzeugt (Variante +1).
-CREATE OR REPLACE FUNCTION marketing.video_szene_bild_setzen(p_szene uuid, p_bildart text, p_bild jsonb) RETURNS boolean
+-- quellen und belege (Listen) der neuen Antwort werden uebernommen; fehlt eine Liste, bleibt der alte Wert.
+CREATE OR REPLACE FUNCTION marketing.video_szene_bild_setzen(p_szene uuid, p_bildart text, p_bild jsonb,
+    p_quellen jsonb DEFAULT NULL, p_belege jsonb DEFAULT NULL) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE v_s marketing.video_szenen;
 BEGIN
@@ -379,10 +490,11 @@ BEGIN
     UPDATE marketing.video_szenen
        SET bildart = p_bildart,
            bild = CASE WHEN jsonb_typeof(p_bild) = 'object' THEN p_bild ELSE '{}'::jsonb END,
-           stand = 'text_ok', variante = variante + 1, rueckgabe_von = NULL, fehler = NULL,
+           quellen = CASE WHEN jsonb_typeof(p_quellen) = 'array' THEN p_quellen ELSE quellen END,
+           belege = CASE WHEN jsonb_typeof(p_belege) = 'array' THEN p_belege ELSE belege END,
+           stand = 'text_ok', variante = variante + 1, rueckgabe_von = NULL, fehler = NULL, aufgegeben = NULL,
            clip_datei = NULL, dauer_s = NULL,
-           wuensche = CASE WHEN wunsch IS NULL THEN wuensche
-               ELSE array_append(wuensche, jsonb_build_object('text', wunsch, 'zeit', now(), 'tor', 'clip')) END,
+           wuensche = marketing._video_wunsch_anhaengen(wuensche, wunsch, 'clip'),
            wunsch = NULL,
            geaendert = now()
      WHERE id = p_szene;
@@ -485,14 +597,16 @@ BEGIN
     IF v_w IS NULL THEN
         UPDATE marketing.video_szenen
            SET stand = 'text_ok', variante = variante + 1, fehler = NULL, clip_datei = NULL, dauer_s = NULL,
-               geaendert = now()
+               aufgegeben = NULL, geaendert = now()
          WHERE id = p_szene;
     ELSE
         UPDATE marketing.video_szenen
-           SET stand = 'geplant', rueckgabe_von = 'clip', wunsch = v_w, fehler = NULL, geaendert = now()
+           SET stand = 'geplant', rueckgabe_von = 'clip', wunsch = v_w, fehler = NULL, aufgegeben = NULL,
+               geaendert = now()
          WHERE id = p_szene;
     END IF;
-    UPDATE marketing.video_werke SET video_veraltet = true, geaendert = now() WHERE auftrag = v_s.auftrag;
+    UPDATE marketing.video_werke SET video_veraltet = true, video_fehler = NULL, geaendert = now()
+     WHERE auftrag = v_s.auftrag;
     IF v_stand <> 'werkbank' AND NOT auftrag.stand_setzen(v_s.auftrag, v_stand, 'werkbank') THEN
         RAISE EXCEPTION 'Der Auftrag liess sich nicht auf werkbank setzen'; END IF;
     PERFORM marketing._video_zaehlen(v_s.auftrag);
@@ -555,7 +669,7 @@ BEGIN
         RETURN false; END IF;
     v_f := v_w.video_fassung + 1;
     UPDATE marketing.video_werke
-       SET video_fassung = v_f, video_veraltet = false,
+       SET video_fassung = v_f, video_veraltet = false, video_fehler = NULL,
            video_datei = v_teil->>'datei', geaendert = now()
      WHERE auftrag = p_auftrag;
     PERFORM auftrag.ergebnis_mischen(p_auftrag, v_teil || jsonb_build_object('ki_hinweis', true, 'fassung', v_f));
@@ -565,10 +679,54 @@ BEGIN
     RETURN true;
 END $$;
 
+-- Gescheitertes Zusammenfuegen melden (der Arbeiter): Grund (auf 300 Zeichen) fuer den Betreiber. Nur bei Auftrag
+-- in werkbank und nur fuer den Versuch, den der Arbeiter gerade gemacht hat (p_versuch = video_versuch).
+CREATE OR REPLACE FUNCTION marketing.video_bau_gescheitert(p_auftrag uuid, p_versuch int, p_grund text)
+RETURNS boolean
+LANGUAGE plpgsql AS $$
+BEGIN
+    UPDATE marketing.video_werke
+       SET video_fehler = left(coalesce(nullif(btrim(p_grund), ''), 'Das Video ließ sich nicht zusammenfügen.'), 300),
+           geaendert = now()
+     WHERE auftrag = p_auftrag AND video_versuch = p_versuch
+       AND EXISTS (SELECT 1 FROM auftrag.auftraege WHERE id = p_auftrag AND art = 'video' AND stand = 'werkbank');
+    IF NOT FOUND THEN RETURN false; END IF;
+    PERFORM marketing._video_zaehlen(p_auftrag);
+    RETURN true;
+END $$;
+
+-- "Video neu zusammenfuegen" des Betreibers: nur wenn alle Szenen fertig sind und der Auftrag in werkbank steht.
+-- video_versuch +1, video_fehler geloescht: der Arbeiter versucht es (einmal) neu.
+CREATE OR REPLACE FUNCTION marketing.video_neu_bauen(p_auftrag uuid) RETURNS boolean
+LANGUAGE plpgsql AS $$
+DECLARE v_w marketing.video_werke;
+BEGIN
+    SELECT * INTO v_w FROM marketing.video_werke WHERE auftrag = p_auftrag FOR UPDATE;
+    IF v_w.auftrag IS NULL THEN RETURN false; END IF;
+    IF NOT EXISTS (SELECT 1 FROM marketing.video_szenen WHERE auftrag = p_auftrag)
+       OR EXISTS (SELECT 1 FROM marketing.video_szenen WHERE auftrag = p_auftrag AND stand <> 'fertig') THEN
+        RETURN false; END IF;
+    IF NOT EXISTS (SELECT 1 FROM auftrag.auftraege WHERE id = p_auftrag AND stand = 'werkbank' AND art = 'video') THEN
+        RETURN false; END IF;
+    UPDATE marketing.video_werke SET video_versuch = video_versuch + 1, video_fehler = NULL, geaendert = now()
+     WHERE auftrag = p_auftrag;
+    PERFORM marketing._video_zaehlen(p_auftrag);
+    RETURN true;
+END $$;
+
 -- Fuer den Boten: alle Vorschlaege, die er noch bearbeiten muss (wartend: einstellen; offen: auf Antwort
 -- warten; zurueckziehen: loeschen; angenommen ohne Haken: abhaken). Sortiert nach Auftrag, nr (Gliederung zuerst).
+-- Vorher werden Vorschlaege beendeter Auftraege (fertig, abgebrochen, fehler, abgelaufen) geschlossen: wartend ->
+-- erledigt (nie eingestellt), offen -> zurueckziehen (der Bote nimmt sie aus Rowboat und gibt den Platz frei).
 CREATE OR REPLACE FUNCTION marketing.video_vorschlaege_lebend() RETURNS SETOF jsonb
-LANGUAGE sql STABLE AS $$
+LANGUAGE plpgsql AS $$
+BEGIN
+    UPDATE marketing.video_vorschlaege v
+       SET stand = CASE WHEN v.stand = 'offen' THEN 'zurueckziehen' ELSE 'erledigt' END
+      FROM auftrag.auftraege a
+     WHERE a.id = v.auftrag AND v.stand IN ('wartend', 'offen')
+       AND a.stand IN ('fertig', 'abgebrochen', 'fehler', 'abgelaufen');
+    RETURN QUERY
     SELECT jsonb_build_object(
                'kennung', v.kennung, 'auftrag', v.auftrag, 'szene', v.szene, 'tor', v.tor, 'nr', s.nr,
                'fassung', v.fassung, 'stand', v.stand, 'text', v.text,
@@ -580,7 +738,7 @@ LANGUAGE sql STABLE AS $$
       LEFT JOIN marketing.video_szenen s ON s.id = v.szene
      WHERE v.stand IN ('wartend', 'offen', 'zurueckziehen') OR (v.stand = 'angenommen' AND NOT v.abgehakt)
      ORDER BY a.angelegt, v.auftrag, s.nr NULLS FIRST, v.angelegt;
-$$;
+END $$;
 
 -- Der Bote hat den Vorschlag eingestellt: wartend -> offen. War vorher keiner des Auftrags offen, beginnt
 -- eine neue Runde.
@@ -635,9 +793,13 @@ REVOKE ALL ON FUNCTION marketing._video_werk_json(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.video_werk_beginnen(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.video_gliederung_setzen(uuid, jsonb, jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.video_wunsch_setzen(text, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION marketing.video_szene_wunsch(uuid, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION marketing.video_gliederung_wunsch(uuid, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION marketing.video_szene_aufgeben(uuid, text, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION marketing.video_gliederung_aufgeben(uuid, text, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.video_entscheiden(text, text, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.video_szene_text_setzen(uuid, jsonb) FROM PUBLIC;
-REVOKE ALL ON FUNCTION marketing.video_szene_bild_setzen(uuid, text, jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION marketing.video_szene_bild_setzen(uuid, text, jsonb, jsonb, jsonb) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.video_szene_nehmen(uuid, interval) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.video_szene_clip_setzen(uuid, int, text, numeric, text, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.video_szene_fehler(uuid, text) FROM PUBLIC;
@@ -647,6 +809,9 @@ REVOKE ALL ON FUNCTION marketing.video_hinweis(uuid, text, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.video_aufruf_zaehlen(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.video_arbeit() FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.video_fertig_setzen(uuid, jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION marketing.video_bau_gescheitert(uuid, int, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION marketing.video_neu_bauen(uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION marketing._video_wunsch_anhaengen(jsonb[], text, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.video_vorschlaege_lebend() FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.video_vorschlag_gepostet(text, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.video_vorschlag_erledigt(text) FROM PUBLIC;

@@ -467,6 +467,163 @@ BEGIN
   IF marketing.video_hinweis(gen_random_uuid(), 'k', 's') THEN RAISE EXCEPTION '099.13: Hinweis ohne Werk'; END IF;
 END $$;
 
+-- 15 (C1, I3): aufgegebene Szene -> Grund sichtbar -> neuer Wunsch -> neuer Versuch; Belege am Text (o2)
+DO $$
+DECLARE a uuid := (SELECT v FROM t099 WHERE k = 'o2'); tc text; sc uuid; sa uuid; k text; n int;
+BEGIN
+  SELECT id INTO sc FROM marketing.video_szenen WHERE auftrag = a AND nr = 3;
+  SELECT id INTO sa FROM marketing.video_szenen WHERE auftrag = a AND nr = 1;
+  tc := (SELECT kennung FROM marketing.video_vorschlaege WHERE szene = sc AND stand = 'offen');
+  IF NOT marketing.video_wunsch_setzen(tc, 'erster Wunsch') THEN RAISE EXCEPTION '099.15: Wunsch'; END IF;
+  IF (marketing.video_entscheiden(tc, 'nochmal', 'rowboat'))->>'stand' <> 'geplant' THEN RAISE EXCEPTION '099.15: nochmal'; END IF;
+  -- Aufgabe gilt nur fuer den Wunsch, mit dem der Arbeiter es versucht hat, und nur in geplant
+  IF marketing.video_szene_aufgeben(sc, 'Grund', 'anderer Wunsch') OR marketing.video_szene_aufgeben(sa, 'Grund', NULL) THEN
+    RAISE EXCEPTION '099.15: aufgeben trotz anderem Wunsch oder Stand'; END IF;
+  IF NOT marketing.video_szene_aufgeben(sc, 'Szene 3: Quelle fehlt – bitte Material ergänzen.', 'erster Wunsch') THEN
+    RAISE EXCEPTION '099.15: aufgeben'; END IF;
+  IF (SELECT x->>'aufgegeben' FROM marketing.video_arbeit() w, jsonb_array_elements(w->'szenen') x
+       WHERE (w->>'auftrag')::uuid = a AND (x->>'nr')::int = 3) <> 'Szene 3: Quelle fehlt – bitte Material ergänzen.' THEN
+    RAISE EXCEPTION '099.15: Grund nicht sichtbar'; END IF;
+  -- neuer Wunsch: nur geplant, nicht leer
+  IF marketing.video_szene_wunsch(sa, 'x') OR marketing.video_szene_wunsch(sc, '   ') OR marketing.video_szene_wunsch(sc, NULL) THEN
+    RAISE EXCEPTION '099.15: Wunsch an falscher Szene oder leer'; END IF;
+  IF NOT marketing.video_szene_wunsch(sc, ' neuer Wunsch ') THEN RAISE EXCEPTION '099.15: szene_wunsch'; END IF;
+  IF (SELECT coalesce(aufgegeben, '-') || '/' || wunsch FROM marketing.video_szenen WHERE id = sc) <> '-/neuer Wunsch' THEN
+    RAISE EXCEPTION '099.15: Zustand nach szene_wunsch'; END IF;
+  IF (SELECT string_agg((w->>'text') || ':' || (w->>'tor'), ',') FROM marketing.video_szenen s, unnest(s.wuensche) w
+       WHERE s.id = sc) <> 'erster Wunsch:text,neuer Wunsch:text' THEN
+    RAISE EXCEPTION '099.15: Historie nach szene_wunsch'; END IF;
+  IF NOT marketing.video_szene_wunsch(sc, repeat('y', 2500)) THEN RAISE EXCEPTION '099.15: langer Wunsch'; END IF;
+  SELECT cardinality(wuensche) INTO n FROM marketing.video_szenen WHERE id = sc;
+  IF (SELECT length(wunsch) FROM marketing.video_szenen WHERE id = sc) <> 2000 OR n <> 3 THEN
+    RAISE EXCEPTION '099.15: Wunsch gekuerzt / Historie %', n; END IF;
+  -- beendeter Auftrag: kein Wunsch
+  UPDATE auftrag.auftraege SET stand = 'abgebrochen' WHERE id = a;
+  IF marketing.video_szene_wunsch(sc, 'zu spaet') THEN RAISE EXCEPTION '099.15: Wunsch bei beendetem Auftrag'; END IF;
+  UPDATE auftrag.auftraege SET stand = 'werkbank' WHERE id = a;
+  -- der neue Text verbraucht den Wunsch (nicht doppelt in der Historie), traegt seine Belege
+  k := marketing.video_szene_text_setzen(sc,
+         '{"sprechtext":"C neu","bildart":"slide","belege":[{"aussage":"12 Teilnehmer","quelle":"auftrag"}]}');
+  IF k IS NULL THEN RAISE EXCEPTION '099.15: Text nach neuem Wunsch'; END IF;
+  IF (SELECT stand || '/' || cardinality(wuensche) || '/' || coalesce(wunsch, '-') || '/' || coalesce(aufgegeben, '-')
+        FROM marketing.video_szenen WHERE id = sc) <> 'text_wartet/3/-/-' THEN
+    RAISE EXCEPTION '099.15: Zustand nach Text'; END IF;
+  IF (SELECT belege->0->>'aussage' || '|' || (belege->0->>'quelle') FROM marketing.video_szenen WHERE id = sc)
+     <> '12 Teilnehmer|auftrag' THEN RAISE EXCEPTION '099.15: Belege nicht gespeichert'; END IF;
+  IF (SELECT x->'belege'->0->>'quelle' FROM marketing.video_arbeit() w, jsonb_array_elements(w->'szenen') x
+       WHERE (w->>'auftrag')::uuid = a AND (x->>'nr')::int = 3) <> 'auftrag' THEN
+    RAISE EXCEPTION '099.15: Belege nicht in der Werk-Form'; END IF;
+  -- ein Text ohne Belege hat leere Belege (die alten gehoeren zum alten Text)
+  PERFORM marketing.video_wunsch_setzen(k, 'nochmal');
+  PERFORM marketing.video_entscheiden(k, 'nochmal', 'seite');
+  k := marketing.video_szene_text_setzen(sc, '{"sprechtext":"C ohne"}');
+  IF (SELECT belege::text FROM marketing.video_szenen WHERE id = sc) <> '[]' THEN RAISE EXCEPTION '099.15: alte Belege'; END IF;
+  INSERT INTO t099k VALUES ('tc2', k);
+END $$;
+
+-- 16 (C1): aufgegebene Gliederung -> Grund sichtbar -> neuer Wunsch; Gliederung setzen loescht den Grund (o1)
+DO $$
+DECLARE a uuid := (SELECT v FROM t099 WHERE k = 'o1'); k text; n int;
+BEGIN
+  IF marketing.video_gliederung_wunsch(a, 'x') THEN RAISE EXCEPTION '099.16: Wunsch an freigegebener Gliederung'; END IF;
+  UPDATE marketing.video_werke SET gliederung_stand = 'geplant' WHERE auftrag = a;   -- nur in der Probe: geparkte Ueberarbeitung
+  SELECT cardinality(gliederung_wuensche) INTO n FROM marketing.video_werke WHERE auftrag = a;
+  IF marketing.video_gliederung_aufgeben(a, 'G', 'anderer') THEN RAISE EXCEPTION '099.16: aufgeben trotz anderem Wunsch'; END IF;
+  IF NOT marketing.video_gliederung_aufgeben(a, 'Die Gliederung ließ sich nicht schreiben – bitte Wunsch ergänzen.', NULL) THEN
+    RAISE EXCEPTION '099.16: aufgeben'; END IF;
+  IF (marketing._video_werk_json(a))->>'gliederung_aufgegeben' <> 'Die Gliederung ließ sich nicht schreiben – bitte Wunsch ergänzen.' THEN
+    RAISE EXCEPTION '099.16: Grund nicht sichtbar'; END IF;
+  IF marketing.video_gliederung_wunsch(a, '') THEN RAISE EXCEPTION '099.16: leerer Wunsch'; END IF;
+  IF NOT marketing.video_gliederung_wunsch(a, 'kuerzer') THEN RAISE EXCEPTION '099.16: gliederung_wunsch'; END IF;
+  IF (SELECT coalesce(gliederung_aufgegeben, '-') || '/' || gliederung_wunsch || '/' || cardinality(gliederung_wuensche)
+        || '/' || (gliederung_wuensche[cardinality(gliederung_wuensche)]->>'tor') FROM marketing.video_werke WHERE auftrag = a)
+     <> '-/kuerzer/' || (n + 1) || '/gliederung' THEN RAISE EXCEPTION '099.16: Zustand nach Wunsch'; END IF;
+  IF jsonb_array_length((marketing._video_werk_json(a))->'gliederung_wuensche') <> n + 1 THEN
+    RAISE EXCEPTION '099.16: Historie nicht in der Werk-Form'; END IF;
+  UPDATE auftrag.auftraege SET stand = 'fehler' WHERE id = a;
+  IF marketing.video_gliederung_wunsch(a, 'zu spaet') THEN RAISE EXCEPTION '099.16: Wunsch bei beendetem Auftrag'; END IF;
+  UPDATE auftrag.auftraege SET stand = 'werkbank' WHERE id = a;
+  PERFORM marketing.video_gliederung_aufgeben(a, 'G2', 'kuerzer');
+  k := marketing.video_gliederung_setzen(a, '{"titel":"Probe","stufen":[{"name":"A","szenen":[{"kurz":"s1"}]}]}', '[]');
+  IF k IS NULL THEN RAISE EXCEPTION '099.16: Gliederung nach Wunsch'; END IF;
+  IF (SELECT coalesce(gliederung_aufgegeben, '-') || '/' || coalesce(gliederung_wunsch, '-') || '/' || cardinality(gliederung_wuensche)
+        FROM marketing.video_werke WHERE auftrag = a) <> '-/-/' || (n + 1) THEN
+    RAISE EXCEPTION '099.16: Gliederung setzen loescht den Grund nicht / Historie doppelt'; END IF;
+  IF (marketing.video_entscheiden(k, 'passt', 'seite'))->>'stand' <> 'text_ok' THEN RAISE EXCEPTION '099.16: zurueck auf text_ok'; END IF;
+  IF (SELECT count(*) FROM marketing.video_szenen WHERE auftrag = a) <> 3 THEN RAISE EXCEPTION '099.16: Szenen veraendert'; END IF;
+END $$;
+
+-- 17 (I1, M10): Video neu zusammenfuegen, gescheitertes Zusammenfuegen, Bild mit Quellen und Belegen (o1)
+DO $$
+DECLARE a uuid := (SELECT v FROM t099 WHERE k = 'o1'); s1 uuid := (SELECT v FROM t099 WHERE k = 's1');
+BEGIN
+  IF marketing.video_neu_bauen(a) THEN RAISE EXCEPTION '099.17: neu bauen mit offener Szene'; END IF;
+  UPDATE marketing.video_szenen SET stand = 'fertig' WHERE auftrag = a;          -- nur in der Probe
+  IF marketing.video_bau_gescheitert(a, 1, 'x') THEN RAISE EXCEPTION '099.17: Fehler fuer fremden Versuch'; END IF;
+  IF NOT marketing.video_bau_gescheitert(a, 0, 'Auf dem PC ist nicht genug Platz.') THEN RAISE EXCEPTION '099.17: gescheitert'; END IF;
+  IF (marketing._video_werk_json(a))->>'video_fehler' <> 'Auf dem PC ist nicht genug Platz.' THEN
+    RAISE EXCEPTION '099.17: video_fehler nicht sichtbar'; END IF;
+  IF NOT marketing.video_neu_bauen(a) THEN RAISE EXCEPTION '099.17: neu bauen'; END IF;
+  IF (SELECT video_versuch || coalesce(video_fehler, '-') FROM marketing.video_werke WHERE auftrag = a) <> '1-' THEN
+    RAISE EXCEPTION '099.17: Versuch/Fehler nach neu bauen'; END IF;
+  IF ((marketing._video_werk_json(a))->>'video_versuch')::int <> 1 THEN RAISE EXCEPTION '099.17: video_versuch in der Werk-Form'; END IF;
+  IF marketing.video_bau_gescheitert(a, 0, 'alt') THEN RAISE EXCEPTION '099.17: alter Versuch setzt Fehler'; END IF;
+  IF NOT marketing.video_bau_gescheitert(a, 1, 'wieder') THEN RAISE EXCEPTION '099.17: zweites gescheitert'; END IF;
+  IF NOT marketing.video_fertig_setzen(a, '{"datei":"v2.mp4"}') THEN RAISE EXCEPTION '099.17: fertig_setzen'; END IF;
+  IF (SELECT video_fehler FROM marketing.video_werke WHERE auftrag = a) IS NOT NULL THEN
+    RAISE EXCEPTION '099.17: Erfolg loescht video_fehler nicht'; END IF;
+  IF marketing.video_neu_bauen(a) OR marketing.video_bau_gescheitert(a, 1, 'x') THEN
+    RAISE EXCEPTION '099.17: neu bauen / Fehler ausserhalb von werkbank'; END IF;
+  UPDATE marketing.video_werke SET video_fehler = 'x' WHERE auftrag = a;
+  IF NOT marketing.video_szene_oeffnen(s1, 'Bild anders') THEN RAISE EXCEPTION '099.17: oeffnen'; END IF;
+  IF (SELECT video_fehler FROM marketing.video_werke WHERE auftrag = a) IS NOT NULL THEN
+    RAISE EXCEPTION '099.17: oeffnen loescht video_fehler nicht'; END IF;
+  -- M10: Bild mit Quellen und Belegen; ohne Listen bleibt der alte Wert
+  IF NOT marketing.video_szene_bild_setzen(s1, 'slide', '{}', '["q.md"]', '[{"aussage":"b 3","quelle":"q.md"}]') THEN
+    RAISE EXCEPTION '099.17: bild_setzen mit Listen'; END IF;
+  IF (SELECT quellen::text || (belege->0->>'aussage') FROM marketing.video_szenen WHERE id = s1) <> '["q.md"]b 3' THEN
+    RAISE EXCEPTION '099.17: Quellen/Belege nicht gespeichert'; END IF;
+  UPDATE marketing.video_szenen SET stand = 'geplant', rueckgabe_von = 'clip' WHERE id = s1;
+  IF NOT marketing.video_szene_bild_setzen(s1, 'slide', '{}') THEN RAISE EXCEPTION '099.17: bild_setzen ohne Listen'; END IF;
+  IF (SELECT quellen::text || (belege->0->>'aussage') FROM marketing.video_szenen WHERE id = s1) <> '["q.md"]b 3' THEN
+    RAISE EXCEPTION '099.17: Quellen/Belege ohne Listen geaendert'; END IF;
+END $$;
+
+-- 18 (I5, M4): Vorschlaege beendeter Auftraege: entscheiden lehnt ab, lebend schliesst sie (o2)
+DO $$
+DECLARE a uuid := (SELECT v FROM t099 WHERE k = 'o2'); tc text := (SELECT kennung FROM t099k WHERE k = 'tc2'); g text;
+        o1 uuid := (SELECT v FROM t099 WHERE k = 'o1'); t1 text; s2 uuid := (SELECT v FROM t099 WHERE k = 's2');
+BEGIN
+  IF NOT marketing.video_vorschlag_gepostet(tc, 'Szene C') THEN RAISE EXCEPTION '099.18: gepostet'; END IF;
+  UPDATE marketing.video_werke SET gliederung_stand = 'geplant' WHERE auftrag = a;   -- nur in der Probe
+  g := marketing.video_gliederung_setzen(a, '{"stufen":[{"szenen":[{"kurz":"a"},{"kurz":"b"},{"kurz":"c"}]}]}', '[]');
+  -- lebender Vorschlag eines laufenden Auftrags (o1) bleibt unberuehrt
+  t1 := (SELECT kennung FROM marketing.video_vorschlaege WHERE auftrag = o1 AND stand IN ('wartend', 'offen') LIMIT 1);
+  IF t1 IS NULL THEN
+    UPDATE marketing.video_szenen SET stand = 'geplant', rueckgabe_von = NULL WHERE id = s2;
+    t1 := marketing.video_szene_text_setzen(s2, '{"sprechtext":"lebt"}');
+  END IF;
+  UPDATE auftrag.auftraege SET stand = 'abgebrochen' WHERE id = a;
+  IF (marketing.video_entscheiden(g, 'passt', 'seite'))->>'ok' <> 'false'
+     OR (marketing.video_entscheiden(tc, 'nochmal', 'rowboat'))->>'ok' <> 'false' THEN
+    RAISE EXCEPTION '099.18: Entscheidung bei beendetem Auftrag'; END IF;
+  IF (SELECT stand FROM marketing.video_vorschlaege WHERE kennung = g) <> 'wartend'
+     OR (SELECT stand FROM marketing.video_vorschlaege WHERE kennung = tc) <> 'offen'
+     OR (SELECT stand FROM marketing.video_szenen WHERE auftrag = a AND nr = 3) <> 'text_wartet' THEN
+    RAISE EXCEPTION '099.18: abgelehnte Entscheidung hat etwas veraendert'; END IF;
+  IF (SELECT count(*) FROM marketing.video_vorschlaege_lebend() x WHERE x->>'kennung' = tc AND x->>'stand' = 'zurueckziehen') <> 1
+     OR (SELECT count(*) FROM marketing.video_vorschlaege_lebend() x WHERE x->>'kennung' = g) <> 0 THEN
+    RAISE EXCEPTION '099.18: lebend schliesst nicht'; END IF;
+  IF (SELECT stand FROM marketing.video_vorschlaege WHERE kennung = g) <> 'erledigt'
+     OR (SELECT stand FROM marketing.video_vorschlaege WHERE kennung = tc) <> 'zurueckziehen' THEN
+    RAISE EXCEPTION '099.18: Staende nach lebend'; END IF;
+  IF (SELECT count(*) FROM marketing.video_vorschlaege WHERE auftrag = a AND stand IN ('wartend', 'offen')) <> 0 THEN
+    RAISE EXCEPTION '099.18: beendeter Auftrag haelt Plaetze'; END IF;
+  IF (SELECT stand FROM marketing.video_vorschlaege WHERE kennung = t1) NOT IN ('wartend', 'offen') THEN
+    RAISE EXCEPTION '099.18: Vorschlag eines laufenden Auftrags geschlossen'; END IF;
+  IF NOT marketing.video_vorschlag_erledigt(tc) THEN RAISE EXCEPTION '099.18: erledigt nach Rueckzug'; END IF;
+END $$;
+
 -- 14: Rechte und Schreibweise: nichts fuer PUBLIC, sales_app, anon, authenticated
 DO $$
 DECLARE p record; n int := 0;
@@ -478,7 +635,9 @@ BEGIN
               'video_szene_fehler', 'video_szene_nochmal', 'video_szene_oeffnen', 'video_hinweis',
               'video_aufruf_zaehlen', 'video_arbeit', 'video_fertig_setzen', 'video_vorschlaege_lebend',
               'video_vorschlag_gepostet', 'video_vorschlag_erledigt', 'video_vorschlag_abgehakt',
-              '_video_zaehlen', '_video_kennung', '_video_werk_json', '_video_gliederung_szenen')
+              '_video_zaehlen', '_video_kennung', '_video_werk_json', '_video_gliederung_szenen',
+              'video_szene_wunsch', 'video_gliederung_wunsch', 'video_szene_aufgeben', 'video_gliederung_aufgeben',
+              'video_bau_gescheitert', 'video_neu_bauen', '_video_wunsch_anhaengen')
   LOOP
     n := n + 1;
     IF has_function_privilege('public', p.f, 'execute') OR has_function_privilege('sales_app', p.f, 'execute')
@@ -486,7 +645,7 @@ BEGIN
       RAISE EXCEPTION '099.14: % ist fuer Fremde ausfuehrbar', p.f;
     END IF;
   END LOOP;
-  IF n <> 23 THEN RAISE EXCEPTION '099.14: % statt 23 Funktionen', n; END IF;
+  IF n <> 30 THEN RAISE EXCEPTION '099.14: % statt 30 Funktionen', n; END IF;
   FOR p IN SELECT r.rolle, t.tabelle, pr.recht
              FROM (VALUES ('public'), ('sales_app'), ('anon'), ('authenticated')) r(rolle),
                   (VALUES ('marketing.video_werke'), ('marketing.video_szenen'), ('marketing.video_vorschlaege')) t(tabelle),
