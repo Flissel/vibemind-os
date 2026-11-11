@@ -304,7 +304,7 @@ def test_werkbank_dienste_stehen_im_startskript_und_in_den_regeln():
     assert "VIBEMIND_AGENT        = 'marketing-werkbank'" in shim and "claude_budget.py" in shim
     arbeiter = re.search(r"Name = 'marketing_werkbank_arbeiter'.*?Was\s+=", skript, re.S).group(0)
     assert "Port = 8151" in arbeiter and "workers.werkbank_arbeiter" in arbeiter
-    assert "TON_STIMMEN_ORDNER = 'E:\marketing-stimmen'" in arbeiter
+    assert r"TON_STIMMEN_ORDNER = 'E:\marketing-stimmen'" in arbeiter
     assert len(re.findall(r"Port = (\d+)", skript)) == len(set(re.findall(r"Port = (\d+)", skript)))
     assert w.REGELN["marketing_werkbank_shim"] == w.Regel("/health", True, True)
     assert w.REGELN["marketing_werkbank_arbeiter"] == w.Regel("/", True, True)

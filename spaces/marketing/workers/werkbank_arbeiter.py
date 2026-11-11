@@ -14,7 +14,6 @@ Regeln, die hier gelten:
   nur a-z, 0-9 und _ enthalten."""
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -28,10 +27,11 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 from spaces.marketing.claw import video_kontext, video_slides, video_texte
-from spaces.marketing.workers.bild_worker import ApiFehler, tls_kontext, umgebung_laden
+from spaces.marketing.workers.bild_worker import ApiFehler, umgebung_laden
 from spaces.marketing.workers.chat_worker import MODELL, LlmFehler
 from spaces.marketing.workers.video_rendern import szene_rendern
 from spaces.marketing.workers.video_stimme import szene_sprechen
+from spaces.marketing.workers.werkbank_api import WerkbankApi
 
 LOG = logging.getLogger("werkbank_arbeiter")
 PORT = 8151
@@ -39,9 +39,6 @@ TAKT_S = 30
 LLM_URL = os.environ.get("MARKETING_WERKBANK_LLM_URL", "http://127.0.0.1:8150/v1")
 LLM_ZEITLIMIT_S = 900            # wie --timeout der Shim
 BLOCK = video_texte.BLOCK
-TEIL_BYTES = 8 * 1024 * 1024     # Teilgroesse des Uploads (die API nimmt hoechstens 8 MB je Teil)
-WIEDERHOLUNGEN = 3               # je Teil
-UPLOAD_PAUSE_S = 2
 FEHLER_PAUSE_S = 1800            # so lange wird dieselbe unbrauchbare Gliederung nicht erneut erfragt
 BUDGET_PAUSE_S = 900             # so lange wird nach einer Budget-Absage nicht erneut gefragt
 ANTWORT_MAX = 12000              # Zeichen der letzten Antwort, die bei der Nachfrage mitgehen
@@ -53,120 +50,6 @@ SATZ_GLIEDERUNG = "Die Gliederung ließ sich nicht schreiben."
 
 class BudgetErschoepft(Exception):
     """Die Shim hat den Aufruf wegen der Tagesgrenze des Agenten abgelehnt (HTTP 429, type budget)."""
-
-
-class WerkbankApi:
-    """Die Routen der Werkbank-API (Task 4); jede Methode entspricht einer Route."""
-    PRAEFIX = "/api/werkbank/arbeiter"
-
-    def __init__(self, basis: str, schluessel: str):
-        self.basis, self.schluessel = basis.rstrip("/"), schluessel
-        self.tls = tls_kontext()
-        self.schlafen = time.sleep
-
-    def _senden(self, methode: str, pfad: str, koerper: bytes | None = None,
-                typ: str = "application/json", zeit: int = 60) -> tuple[int, dict]:
-        """(Status, JSON-Objekt). HTTP-Fehlerstatus kommen als Rueckgabe; Netzfehler (OSError) als Ausnahme."""
-        req = urllib.request.Request(self.basis + self.PRAEFIX + pfad, data=koerper, method=methode,
-                                     headers={"Content-Type": typ})
-        req.add_unredirected_header("X-Bild-Key", self.schluessel)
-        try:
-            with urllib.request.urlopen(req, timeout=zeit, context=self.tls) as r:
-                daten = json.loads(r.read() or b"{}")
-                return r.status, daten if isinstance(daten, dict) else {}
-        except urllib.error.HTTPError as e:
-            try:
-                daten = json.loads(e.read() or b"{}")
-            except (ValueError, OSError):
-                daten = {}
-            return e.code, daten if isinstance(daten, dict) else {}
-
-    def _anfrage(self, methode: str, pfad: str, daten: dict | None = None) -> dict:
-        koerper = json.dumps(daten, ensure_ascii=False).encode("utf-8") if daten is not None else None
-        status, antwort = self._senden(methode, pfad, koerper)
-        if status >= 400:
-            fehler = ApiFehler(status, str(antwort.get("detail", ""))[:300])
-            fehler.laenge = antwort.get("laenge")
-            raise fehler
-        return antwort
-
-    def naechster(self) -> dict | None:
-        return self._anfrage("POST", "/naechster").get("auftrag")
-
-    def arbeit(self) -> list[dict]:
-        return self._anfrage("GET", "/arbeit").get("werke") or []
-
-    def weiter(self, aid: str) -> bool:
-        return bool(self._anfrage("POST", f"/{aid}/weiter").get("ok"))
-
-    def frist(self, aid: str) -> bool:
-        return bool(self._anfrage("POST", f"/{aid}/frist").get("ok"))
-
-    def gliederung(self, aid: str, gliederung: dict, quellen: list) -> str:
-        return self._anfrage("POST", f"/{aid}/gliederung", {"gliederung": gliederung, "quellen": quellen}).get("kennung", "")
-
-    def szene_text(self, sid: str, koerper: dict) -> str:
-        return self._anfrage("POST", f"/szene/{sid}/text", koerper).get("kennung", "")
-
-    def szene_bild(self, sid: str, bildart: str, bild: dict) -> bool:
-        return bool(self._anfrage("POST", f"/szene/{sid}/bild", {"bildart": bildart, "bild": bild}).get("ok"))
-
-    def szene_nehmen(self, aid: str) -> dict | None:
-        return self._anfrage("POST", f"/{aid}/szene-nehmen").get("szene")
-
-    def szene_clip(self, sid: str, variante: int, datei: str, dauer_s: float, stimme: str, engine: str) -> str:
-        return self._anfrage("POST", f"/szene/{sid}/clip", {"variante": variante, "datei": datei, "dauer_s": dauer_s,
-                                                              "stimme": stimme, "engine": engine}).get("kennung", "")
-
-    def szene_fehler(self, sid: str, grund: str) -> bool:
-        return bool(self._anfrage("POST", f"/szene/{sid}/fehler", {"grund": grund}).get("ok"))
-
-    def hinweis(self, aid: str, key: str, satz: str) -> bool:
-        return bool(self._anfrage("POST", f"/{aid}/hinweis", {"key": key, "satz": satz}).get("ok"))
-
-    def aufruf(self, aid: str) -> int:
-        return int(self._anfrage("POST", f"/{aid}/aufruf").get("aufrufe") or 0)
-
-    def fertig(self, aid: str, teil: dict) -> bool:
-        return bool(self._anfrage("POST", f"/{aid}/fertig", teil).get("ok"))
-
-    def hochladen(self, aid: str, name: str, pfad: Path) -> None:
-        """beginnen, Teile zu 8 MB, abschliessen mit sha256. Bei 409 auf einem Teil geht es ab der gemeldeten
-        Laenge weiter; je Teil hoechstens WIEDERHOLUNGEN Wiederholungen (Netzfehler zaehlen ebenso)."""
-        pfad = Path(pfad)
-        groesse = pfad.stat().st_size
-        pruefsumme = hashlib.sha256()
-        with pfad.open("rb") as f:
-            for stueck in iter(lambda: f.read(1024 * 1024), b""):
-                pruefsumme.update(stueck)
-        basis = f"/{aid}/datei/{name}"
-        offset = int(self._anfrage("POST", basis + "/beginnen", {"bytes": groesse}).get("laenge") or 0)
-        versuche = 0
-        with pfad.open("rb") as f:
-            while offset < groesse:
-                f.seek(offset)
-                teil = f.read(TEIL_BYTES)
-                alt = offset
-                try:
-                    status, antwort = self._senden("PUT", f"{basis}/teil?offset={offset}", teil,
-                                                   "application/octet-stream", 300)
-                    if status == 409 and isinstance(antwort.get("laenge"), int) and 0 <= antwort["laenge"] <= groesse:
-                        offset = antwort["laenge"]          # der Server weiss besser, wo wir stehen
-                    elif status >= 500:
-                        self.schlafen(UPLOAD_PAUSE_S)
-                    elif status >= 400:
-                        raise ApiFehler(status, str(antwort.get("detail", ""))[:300])
-                    else:
-                        offset = int(antwort["laenge"])
-                except (OSError, KeyError, ValueError, TypeError):
-                    self.schlafen(UPLOAD_PAUSE_S)
-                if offset > alt:
-                    versuche = 0
-                else:
-                    versuche += 1
-                    if versuche > WIEDERHOLUNGEN:
-                        raise ApiFehler(0, "Der Upload kam nicht voran.")
-        self._anfrage("POST", basis + "/abschliessen", {"sha256": pruefsumme.hexdigest()})
 
 
 def _budget_typ(e: urllib.error.HTTPError) -> bool:
