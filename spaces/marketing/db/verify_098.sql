@@ -111,13 +111,56 @@ BEGIN
   IF NOT auftrag.stand_setzen(v, 'werkbank', 'erzeugt') THEN RAISE EXCEPTION '098.6: zweites werkbank->erzeugt'; END IF;
   IF NOT auftrag.stand_setzen(v, 'erzeugt', 'werkbank') THEN RAISE EXCEPTION '098.6: erzeugt->werkbank'; END IF;
   IF NOT auftrag.stand_setzen(v, 'werkbank', 'fehler', 'x') THEN RAISE EXCEPTION '098.6: werkbank->fehler'; END IF;
-  -- die sales_*-Huelle erreicht die neuen Uebergaenge nur fuer eigene Zeilen
+  -- wartet_freigabe -> erzeugt nur fuer Video (der Freigabe-Eintrag fehlt)
+  v := auftrag.anlegen('brain', 'marketing', 'p098e', 'probe', 'video', '{}');
+  UPDATE auftrag.auftraege SET stand = 'wartet_freigabe' WHERE id = v;
+  IF NOT auftrag.stand_setzen(v, 'wartet_freigabe', 'erzeugt') THEN RAISE EXCEPTION '098.6: wartet_freigabe->erzeugt'; END IF;
+  v := auftrag.anlegen('brain', 'marketing', 'p098e', 'probe', 'reel', '{}');
+  UPDATE auftrag.auftraege SET stand = 'wartet_freigabe' WHERE id = v;
+  IF auftrag.stand_setzen(v, 'wartet_freigabe', 'erzeugt') THEN RAISE EXCEPTION '098.6: Reel wartet_freigabe->erzeugt'; END IF;
+  IF (SELECT stand FROM auftrag.auftraege WHERE id = v) <> 'wartet_freigabe' THEN RAISE EXCEPTION '098.6: Reel veraendert'; END IF;
+END $$;
+
+-- 6b (R7, eng): sales_stand_setzen erlaubt fuer Video nur die vier Uebergaenge der Freigabe, nur auf eigenen Zeilen
+DO $$
+DECLARE v uuid; f uuid; r uuid; p record;
+BEGIN
+  UPDATE auftrag.auftraege SET stand = 'abgebrochen' WHERE stand IN ('offen', 'in_arbeit');
   v := auftrag.sales_anlegen('marketing', 'p098f', 'probe', 'video', '{}');
-  UPDATE auftrag.auftraege SET stand = 'in_arbeit' WHERE id = v;
-  IF NOT auftrag.sales_stand_setzen(v, 'in_arbeit', 'werkbank') THEN RAISE EXCEPTION '098.6: sales_stand_setzen werkbank'; END IF;
-  v := auftrag.anlegen('brain', 'sales', 'p098f', 'probe', 'video', '{}');
-  UPDATE auftrag.auftraege SET stand = 'in_arbeit' WHERE id = v;
-  IF auftrag.sales_stand_setzen(v, 'in_arbeit', 'werkbank') THEN RAISE EXCEPTION '098.6: sales_stand_setzen fremd'; END IF;
+  -- verboten: alles, was der Werkbank (Marketing) gehoert, und jeder Weg nach fehler
+  FOR p IN SELECT * FROM (VALUES ('in_arbeit', 'werkbank'), ('werkbank', 'erzeugt'), ('werkbank', 'abgebrochen'),
+                                 ('werkbank', 'fehler'), ('erzeugt', 'fehler'), ('erzeugt', 'werkbank'),
+                                 ('wartet_freigabe', 'werkbank'), ('wartet_freigabe', 'fehler'),
+                                 ('in_arbeit', 'erzeugt'), ('in_arbeit', 'fehler'), ('offen', 'fehler')) x(von_s, nach_s)
+  LOOP
+    UPDATE auftrag.auftraege SET stand = p.von_s WHERE id = v;
+    IF auftrag.sales_stand_setzen(v, p.von_s, p.nach_s) THEN
+      RAISE EXCEPTION '098.6b: sales_stand_setzen Video % -> % erlaubt', p.von_s, p.nach_s; END IF;
+    IF (SELECT stand FROM auftrag.auftraege WHERE id = v) <> p.von_s THEN
+      RAISE EXCEPTION '098.6b: Video % -> % veraendert', p.von_s, p.nach_s; END IF;
+  END LOOP;
+  IF auftrag.sales_stand_setzen(v, NULL, 'fertig') OR auftrag.sales_stand_setzen(v, 'werkbank', NULL) THEN
+    RAISE EXCEPTION '098.6b: NULL-Stand'; END IF;
+  -- erlaubt: erzeugt -> wartet_freigabe -> erzeugt -> wartet_freigabe -> fertig, und -> abgebrochen
+  UPDATE auftrag.auftraege SET stand = 'erzeugt' WHERE id = v;
+  IF NOT auftrag.sales_stand_setzen(v, 'erzeugt', 'wartet_freigabe') THEN RAISE EXCEPTION '098.6b: erzeugt->wartet_freigabe'; END IF;
+  IF NOT auftrag.sales_stand_setzen(v, 'wartet_freigabe', 'erzeugt') THEN RAISE EXCEPTION '098.6b: wartet_freigabe->erzeugt'; END IF;
+  IF NOT auftrag.sales_stand_setzen(v, 'erzeugt', 'wartet_freigabe') THEN RAISE EXCEPTION '098.6b: zweites erzeugt->wartet_freigabe'; END IF;
+  IF NOT auftrag.sales_stand_setzen(v, 'wartet_freigabe', 'fertig') THEN RAISE EXCEPTION '098.6b: wartet_freigabe->fertig'; END IF;
+  UPDATE auftrag.auftraege SET stand = 'wartet_freigabe' WHERE id = v;
+  IF NOT auftrag.sales_stand_setzen(v, 'wartet_freigabe', 'abgebrochen') THEN RAISE EXCEPTION '098.6b: wartet_freigabe->abgebrochen'; END IF;
+  -- fremde Zeile (von brain): nie
+  f := auftrag.anlegen('brain', 'sales', 'p098f', 'probe', 'video', '{}');
+  UPDATE auftrag.auftraege SET stand = 'erzeugt' WHERE id = f;
+  IF auftrag.sales_stand_setzen(f, 'erzeugt', 'wartet_freigabe') THEN RAISE EXCEPTION '098.6b: sales_stand_setzen fremd'; END IF;
+  -- Reel: wie 096 (auch erzeugt -> fehler und in_arbeit -> erzeugt), aber nie nach werkbank oder zurueck nach erzeugt
+  r := auftrag.sales_anlegen('marketing', 'p098g', 'probe', 'reel', '{}');
+  UPDATE auftrag.auftraege SET stand = 'in_arbeit' WHERE id = r;
+  IF auftrag.sales_stand_setzen(r, 'in_arbeit', 'werkbank') THEN RAISE EXCEPTION '098.6b: Reel nach werkbank'; END IF;
+  IF NOT auftrag.sales_stand_setzen(r, 'in_arbeit', 'erzeugt') THEN RAISE EXCEPTION '098.6b: Reel in_arbeit->erzeugt'; END IF;
+  IF NOT auftrag.sales_stand_setzen(r, 'erzeugt', 'wartet_freigabe') THEN RAISE EXCEPTION '098.6b: Reel erzeugt->wartet_freigabe'; END IF;
+  IF auftrag.sales_stand_setzen(r, 'wartet_freigabe', 'erzeugt') THEN RAISE EXCEPTION '098.6b: Reel wartet_freigabe->erzeugt'; END IF;
+  IF NOT auftrag.sales_stand_setzen(r, 'wartet_freigabe', 'fehler', 'x') THEN RAISE EXCEPTION '098.6b: Reel wartet_freigabe->fehler'; END IF;
 END $$;
 
 -- 5b: laufende zeigt nie ein Video, ein Reel in derselben Lage weiterhin

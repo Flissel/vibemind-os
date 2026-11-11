@@ -3,8 +3,9 @@
 -- 'werkbank' (der Auftrag liegt zwischen den Gates beim Betreiber). Fuer 'reel' aendert sich nichts.
 -- Neu: art/stand-CHECKs, anlegen (Video + Tagesgrenze 2 je von+laden), naechster (ohne Video, ueber _vergeben),
 -- video_naechster (Video, ueber _vergeben), laufende (nie Video), ergebnis_mischen (auch in werkbank), stand_setzen
--- (Uebergaenge von/nach werkbank nur fuer Video). Alles andere (ablaufen, verlaengern,
--- renderfrist, sales_*-Huellen, Rechte) bleibt wie in 096.
+-- (Uebergaenge von/nach werkbank nur fuer Video), sales_stand_setzen (fuer Video nur die vier Uebergaenge
+-- der Freigabe). Alles andere (ablaufen, verlaengern, renderfrist, die uebrigen sales_*-Huellen, Rechte) bleibt
+-- wie in 096.
 BEGIN;
 
 ALTER TABLE auftrag.auftraege DROP CONSTRAINT IF EXISTS auftraege_art_chk;
@@ -147,7 +148,8 @@ BEGIN
 END $$;
 
 -- Wie 096, dazu: in_arbeit->werkbank, werkbank->erzeugt|fehler|abgebrochen, erzeugt->werkbank,
--- wartet_freigabe->werkbank. Jeder Uebergang von oder nach werkbank gilt nur fuer art video.
+-- wartet_freigabe->werkbank, wartet_freigabe->erzeugt (der Freigabe-Eintrag fehlt: Sales legt ihn neu an).
+-- Jeder Uebergang von oder nach werkbank und wartet_freigabe->erzeugt gilt nur fuer art video.
 CREATE OR REPLACE FUNCTION auftrag.stand_setzen(p_id uuid, p_von_stand text, p_nach_stand text,
     p_fehler text DEFAULT NULL) RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = auftrag, pg_temp AS $$
@@ -160,7 +162,8 @@ BEGIN
             ('wartet_freigabe', 'fertig'), ('wartet_freigabe', 'abgebrochen'),
             ('wartet_freigabe', 'fehler'),
             ('in_arbeit', 'werkbank'), ('werkbank', 'erzeugt'), ('werkbank', 'fehler'),
-            ('werkbank', 'abgebrochen'), ('erzeugt', 'werkbank'), ('wartet_freigabe', 'werkbank'))) THEN
+            ('werkbank', 'abgebrochen'), ('erzeugt', 'werkbank'), ('wartet_freigabe', 'werkbank'),
+            ('wartet_freigabe', 'erzeugt'))) THEN
         RETURN false;
     END IF;
     UPDATE auftrag.auftraege
@@ -171,8 +174,28 @@ BEGIN
            verlauf = array_append(verlauf, jsonb_strip_nulls(jsonb_build_object(
                'stand', p_nach_stand, 'zeit', now(), 'fehler', v_fehler)))
      WHERE id = p_id AND stand = p_von_stand
-       AND (art = 'video' OR 'werkbank' NOT IN (p_von_stand, p_nach_stand));
+       AND (art = 'video' OR ('werkbank' NOT IN (p_von_stand, p_nach_stand)
+                              AND (p_von_stand, p_nach_stand) <> ('wartet_freigabe', 'erzeugt')));
     RETURN FOUND;
+END $$;
+
+-- Wie 096 (nur eigene Zeilen, von = sales), dazu (R7, enger): fuer art video nur die Uebergaenge, die Sales
+-- braucht - erzeugt->wartet_freigabe (Eintrag im Freigabe-Eingang), wartet_freigabe->fertig|abgebrochen
+-- (Entscheidung im Eingang), wartet_freigabe->erzeugt (Eintrag fehlt, neu anlegen). Alles andere false;
+-- die Werkbank-Uebergaenge gehoeren Marketing. Fuer reel unveraendert.
+CREATE OR REPLACE FUNCTION auftrag.sales_stand_setzen(p_id uuid, p_von_stand text, p_nach_stand text,
+    p_fehler text DEFAULT NULL) RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = auftrag, pg_temp AS $$
+DECLARE v_art text;
+BEGIN
+    SELECT art INTO v_art FROM auftrag.auftraege WHERE id = p_id AND von = 'sales';
+    IF v_art IS NULL THEN RETURN false; END IF;
+    IF v_art = 'video' AND (p_von_stand IS NULL OR p_nach_stand IS NULL OR NOT ((p_von_stand, p_nach_stand) IN (
+            ('erzeugt', 'wartet_freigabe'), ('wartet_freigabe', 'fertig'), ('wartet_freigabe', 'abgebrochen'),
+            ('wartet_freigabe', 'erzeugt')))) THEN
+        RETURN false;
+    END IF;
+    RETURN auftrag.stand_setzen(p_id, p_von_stand, p_nach_stand, p_fehler);
 END $$;
 
 REVOKE ALL ON FUNCTION auftrag._vergeben(text, boolean, interval) FROM PUBLIC;
