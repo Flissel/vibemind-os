@@ -258,6 +258,8 @@ def test_wissen_dienst_vertrag():
     assert "depends_on" not in svc                   # unabhaengig vom Rowboat-Server
     assert svc["restart"] == "unless-stopped"
     assert svc["mem_limit"] == "512m"
+    # Ein verwaister `docker exec`-Prozess (2026-10-26: Endlos-Glob durch /sys) darf nur einen Kern belegen.
+    assert svc["cpus"] == "1.0"
     assert svc["user"] == "1000:1000"
     assert svc["volumes"] == [
         {"type": "bind", "source": "/home/debian/rowboat-data/knowledge", "target": "/wissen",
