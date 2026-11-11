@@ -1,0 +1,565 @@
+"""Werkbank-Arbeiter am PC (Video-Werkbank Stufe 1, 11.11.2026). Holt Video-Auftraege ueber die Marketing-API der VM
+(/api/werkbank/arbeiter, X-Bild-Key), sammelt Kontext, laesst Claude ueber die eigene Shim :8150 Gliederung und
+Szenentexte schreiben, prueft jede Szene mechanisch gegen ihre Quellen, spricht und rendert freigegebene Szenen und
+laedt die Clips in Teilen hoch. Versendet wird nichts. Gestartet von marketing-dienste-starten.ps1; Gesundheits-Port 8151.
+
+Regeln, die hier gelten:
+- Hoechstens eine Szene je Werk und Durchlauf, und nie zwei Renders gleichzeitig (der PC hat wenig RAM, die GPU
+  gehoert auch anderen Diensten).
+- Jeder Modellaufruf wird je Werk gezaehlt (`aufruf`), auch ein unbrauchbarer.
+- Jede Ausnahme einer Szene (Sprechen, Rendern, Hochladen) ist der Fehler genau dieser Szene: ein kurzer deutscher
+  Satz nach Fehlerklasse, nie der Ausnahmetext. Die anderen Werke laufen weiter.
+- Hinweise an den Betreiber (`api.hinweis`) tragen einen stabilen Schluessel, damit dasselbe Problem nur einmal
+  gemeldet wird. Sie nennen nie Prompt-, Dokument- oder Sprechtext und keine Pfade. Die Schluessel der API duerfen
+  nur a-z, 0-9 und _ enthalten."""
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import os
+import shutil
+import threading
+import time
+import urllib.error
+import urllib.request
+from datetime import date
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+from spaces.marketing.claw import video_kontext, video_slides, video_texte
+from spaces.marketing.workers.bild_worker import ApiFehler, tls_kontext, umgebung_laden
+from spaces.marketing.workers.chat_worker import MODELL, LlmFehler
+from spaces.marketing.workers.video_rendern import szene_rendern
+from spaces.marketing.workers.video_stimme import szene_sprechen
+
+LOG = logging.getLogger("werkbank_arbeiter")
+PORT = 8151
+TAKT_S = 30
+LLM_URL = os.environ.get("MARKETING_WERKBANK_LLM_URL", "http://127.0.0.1:8150/v1")
+LLM_ZEITLIMIT_S = 900            # wie --timeout der Shim
+BLOCK = video_texte.BLOCK
+TEIL_BYTES = 8 * 1024 * 1024     # Teilgroesse des Uploads (die API nimmt hoechstens 8 MB je Teil)
+WIEDERHOLUNGEN = 3               # je Teil
+UPLOAD_PAUSE_S = 2
+FEHLER_PAUSE_S = 1800            # so lange wird dieselbe unbrauchbare Gliederung nicht erneut erfragt
+BUDGET_PAUSE_S = 900             # so lange wird nach einer Budget-Absage nicht erneut gefragt
+ANTWORT_MAX = 12000              # Zeichen der letzten Antwort, die bei der Nachfrage mitgehen
+STAND: dict = {"letzter_lauf": None, "letztes_ergebnis": None}
+
+SATZ_BUDGET = "Das Tagesbudget für Modell-Aufrufe ist aufgebraucht – morgen geht es weiter."
+SATZ_GLIEDERUNG = "Die Gliederung ließ sich nicht schreiben."
+
+
+class BudgetErschoepft(Exception):
+    """Die Shim hat den Aufruf wegen der Tagesgrenze des Agenten abgelehnt (HTTP 429, type budget)."""
+
+
+class WerkbankApi:
+    """Die Routen der Werkbank-API (Task 4); jede Methode entspricht einer Route."""
+    PRAEFIX = "/api/werkbank/arbeiter"
+
+    def __init__(self, basis: str, schluessel: str):
+        self.basis, self.schluessel = basis.rstrip("/"), schluessel
+        self.tls = tls_kontext()
+        self.schlafen = time.sleep
+
+    def _senden(self, methode: str, pfad: str, koerper: bytes | None = None,
+                typ: str = "application/json", zeit: int = 60) -> tuple[int, dict]:
+        """(Status, JSON-Objekt). HTTP-Fehlerstatus kommen als Rueckgabe; Netzfehler (OSError) als Ausnahme."""
+        req = urllib.request.Request(self.basis + self.PRAEFIX + pfad, data=koerper, method=methode,
+                                     headers={"Content-Type": typ})
+        req.add_unredirected_header("X-Bild-Key", self.schluessel)
+        try:
+            with urllib.request.urlopen(req, timeout=zeit, context=self.tls) as r:
+                daten = json.loads(r.read() or b"{}")
+                return r.status, daten if isinstance(daten, dict) else {}
+        except urllib.error.HTTPError as e:
+            try:
+                daten = json.loads(e.read() or b"{}")
+            except (ValueError, OSError):
+                daten = {}
+            return e.code, daten if isinstance(daten, dict) else {}
+
+    def _anfrage(self, methode: str, pfad: str, daten: dict | None = None) -> dict:
+        koerper = json.dumps(daten, ensure_ascii=False).encode("utf-8") if daten is not None else None
+        status, antwort = self._senden(methode, pfad, koerper)
+        if status >= 400:
+            fehler = ApiFehler(status, str(antwort.get("detail", ""))[:300])
+            fehler.laenge = antwort.get("laenge")
+            raise fehler
+        return antwort
+
+    def naechster(self) -> dict | None:
+        return self._anfrage("POST", "/naechster").get("auftrag")
+
+    def arbeit(self) -> list[dict]:
+        return self._anfrage("GET", "/arbeit").get("werke") or []
+
+    def weiter(self, aid: str) -> bool:
+        return bool(self._anfrage("POST", f"/{aid}/weiter").get("ok"))
+
+    def frist(self, aid: str) -> bool:
+        return bool(self._anfrage("POST", f"/{aid}/frist").get("ok"))
+
+    def gliederung(self, aid: str, gliederung: dict, quellen: list) -> str:
+        return self._anfrage("POST", f"/{aid}/gliederung", {"gliederung": gliederung, "quellen": quellen}).get("kennung", "")
+
+    def szene_text(self, sid: str, koerper: dict) -> str:
+        return self._anfrage("POST", f"/szene/{sid}/text", koerper).get("kennung", "")
+
+    def szene_bild(self, sid: str, bildart: str, bild: dict) -> bool:
+        return bool(self._anfrage("POST", f"/szene/{sid}/bild", {"bildart": bildart, "bild": bild}).get("ok"))
+
+    def szene_nehmen(self, aid: str) -> dict | None:
+        return self._anfrage("POST", f"/{aid}/szene-nehmen").get("szene")
+
+    def szene_clip(self, sid: str, variante: int, datei: str, dauer_s: float, stimme: str, engine: str) -> str:
+        return self._anfrage("POST", f"/szene/{sid}/clip", {"variante": variante, "datei": datei, "dauer_s": dauer_s,
+                                                              "stimme": stimme, "engine": engine}).get("kennung", "")
+
+    def szene_fehler(self, sid: str, grund: str) -> bool:
+        return bool(self._anfrage("POST", f"/szene/{sid}/fehler", {"grund": grund}).get("ok"))
+
+    def hinweis(self, aid: str, key: str, satz: str) -> bool:
+        return bool(self._anfrage("POST", f"/{aid}/hinweis", {"key": key, "satz": satz}).get("ok"))
+
+    def aufruf(self, aid: str) -> int:
+        return int(self._anfrage("POST", f"/{aid}/aufruf").get("aufrufe") or 0)
+
+    def fertig(self, aid: str, teil: dict) -> bool:
+        return bool(self._anfrage("POST", f"/{aid}/fertig", teil).get("ok"))
+
+    def hochladen(self, aid: str, name: str, pfad: Path) -> None:
+        """beginnen, Teile zu 8 MB, abschliessen mit sha256. Bei 409 auf einem Teil geht es ab der gemeldeten
+        Laenge weiter; je Teil hoechstens WIEDERHOLUNGEN Wiederholungen (Netzfehler zaehlen ebenso)."""
+        pfad = Path(pfad)
+        groesse = pfad.stat().st_size
+        pruefsumme = hashlib.sha256()
+        with pfad.open("rb") as f:
+            for stueck in iter(lambda: f.read(1024 * 1024), b""):
+                pruefsumme.update(stueck)
+        basis = f"/{aid}/datei/{name}"
+        offset = int(self._anfrage("POST", basis + "/beginnen", {"bytes": groesse}).get("laenge") or 0)
+        versuche = 0
+        with pfad.open("rb") as f:
+            while offset < groesse:
+                f.seek(offset)
+                teil = f.read(TEIL_BYTES)
+                alt = offset
+                try:
+                    status, antwort = self._senden("PUT", f"{basis}/teil?offset={offset}", teil,
+                                                   "application/octet-stream", 300)
+                    if status == 409 and isinstance(antwort.get("laenge"), int) and 0 <= antwort["laenge"] <= groesse:
+                        offset = antwort["laenge"]          # der Server weiss besser, wo wir stehen
+                    elif status >= 500:
+                        self.schlafen(UPLOAD_PAUSE_S)
+                    elif status >= 400:
+                        raise ApiFehler(status, str(antwort.get("detail", ""))[:300])
+                    else:
+                        offset = int(antwort["laenge"])
+                except (OSError, KeyError, ValueError, TypeError):
+                    self.schlafen(UPLOAD_PAUSE_S)
+                if offset > alt:
+                    versuche = 0
+                else:
+                    versuche += 1
+                    if versuche > WIEDERHOLUNGEN:
+                        raise ApiFehler(0, "Der Upload kam nicht voran.")
+        self._anfrage("POST", basis + "/abschliessen", {"sha256": pruefsumme.hexdigest()})
+
+
+def _budget_typ(e: urllib.error.HTTPError) -> bool:
+    try:
+        fehler = json.loads(e.read() or b"{}").get("error")
+        return isinstance(fehler, dict) and fehler.get("type") == "budget"
+    except (ValueError, OSError, AttributeError):
+        return False
+
+
+def shim_fragen(system: str, nachricht: str) -> str:
+    """Eine Frage an Claude ueber die Werkbank-Shim (ohne Werkzeuge, nicht streamend). HTTP 429 mit type budget
+    wird BudgetErschoepft, alles andere LlmFehler (nur mit Typname)."""
+    koerper = {"model": MODELL, "marketing_ohne_werkzeuge": True,
+               "messages": [{"role": "system", "content": system}, {"role": "user", "content": nachricht}]}
+    req = urllib.request.Request(LLM_URL.rstrip("/") + "/chat/completions",
+                                 data=json.dumps(koerper).encode("utf-8"), method="POST",
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=LLM_ZEITLIMIT_S) as r:
+            text = json.loads(r.read())["choices"][0]["message"]["content"]
+    except urllib.error.HTTPError as e:
+        if e.code == 429 and _budget_typ(e):
+            raise BudgetErschoepft from None
+        raise LlmFehler(f"HTTP {e.code}") from None
+    except (OSError, TimeoutError, ValueError, KeyError, IndexError, TypeError) as e:
+        raise LlmFehler(type(e).__name__) from None
+    if not isinstance(text, str) or not text.strip():
+        raise LlmFehler("Leere Antwort")
+    return text
+
+
+def arbeitsordner(aid8: str, nr: int) -> Path:
+    """%LOCALAPPDATA%\\VibeMind\\werkbank\\<aid8>\\s<nr>"""
+    wurzel = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    return Path(wurzel) / "VibeMind" / "werkbank" / aid8 / f"s{nr}"
+
+
+def _brief() -> str:
+    return (Path(video_texte.__file__).parent / "video_brief.md").read_text(encoding="utf-8")
+
+
+class _Lauf:
+    """Alles, was ein Durchlauf braucht (die einspritzbaren Teile und das Gedaechtnis des Arbeiters)."""
+
+    def __init__(self, api, fragen, kontext, sprechen, rendern, fertigstellen, warte, marke, ordner, brief, jetzt, heute):
+        self.api, self.fragen, self.kontext, self.sprechen, self.rendern = api, fragen, kontext, sprechen, rendern
+        self.fertigstellen, self.warte, self.marke, self.ordner = fertigstellen, warte, marke, ordner
+        self.brief, self.jetzt, self.heute = brief, jetzt, heute
+        self.gedaechtnis = _gedaechtnis(api)
+        self.budget = jetzt() < self.gedaechtnis.get("budget_bis", 0.0)
+
+    def gezaehlt(self, aid: str) -> None:
+        try:
+            self.api.aufruf(aid)
+        except Exception as e:  # noqa: BLE001 - die Antwort ist da, das Zaehlen darf sie nicht kosten
+            LOG.warning("Aufruf zaehlen scheiterte: %s", type(e).__name__)
+
+    def lease(self, aid: str) -> bool:
+        """Lease erneuern; False = der Auftrag ist nicht (mehr) in Arbeit (oder die Antwort ging verloren)."""
+        try:
+            return bool(self.api.weiter(aid))
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("Lease erneuern scheiterte: %s", type(e).__name__)
+            return False
+
+    def hinweis(self, aid: str, key: str, satz: str) -> None:
+        try:
+            self.api.hinweis(aid, key, satz)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("Hinweis scheiterte: %s", type(e).__name__)
+
+
+def _gedaechtnis(api) -> dict:
+    """Merkzettel je Api-Objekt: aufgegebene Gliederungen/Szenen (bis neuer Wunsch) und die Budget-Pause."""
+    g = getattr(api, "_werkbank_gedaechtnis", None)
+    if g is None:
+        g = {"aufgegeben": {}, "budget_bis": 0.0, "budget_gemeldet": set()}
+        try:
+            api._werkbank_gedaechtnis = g
+        except AttributeError:
+            pass
+    return g
+
+
+def _budget_melden(c: _Lauf, werk: dict) -> None:
+    """Budget leer: einmal je Werk und Tag den Hinweis, im Auftrag die Frist verlaengern; die Pause merken."""
+    aid, tag = str(werk["auftrag"]), c.heute().isoformat()
+    c.budget = True
+    c.gedaechtnis["budget_bis"] = c.jetzt() + BUDGET_PAUSE_S
+    in_arbeit = c.lease(aid)
+    if (aid, tag) in c.gedaechtnis["budget_gemeldet"]:
+        return
+    c.hinweis(aid, "budget_" + tag.replace("-", "_"), SATZ_BUDGET)
+    if in_arbeit:
+        try:
+            c.api.frist(aid)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("Frist verlaengern scheiterte: %s", type(e).__name__)
+    c.gedaechtnis["budget_gemeldet"].add((aid, tag))
+
+
+def _fragen_lesen(c: _Lauf, aid: str, system: str, nachricht: str, lesen):
+    """Claude fragen und lesen. `lesen(antwort) -> (ergebnis | None, [Fehlersaetze])`. Unbrauchbar: einmal neu fragen
+    mit den Fehlersaetzen (vorher Lease erneuern). Jeder Aufruf wird gezaehlt. Rueckgabe (ergebnis, letzte Fehler)."""
+    fehler: list[str] = []
+    for versuch in range(2):
+        if versuch:
+            c.lease(aid)
+            nachricht += ("\n\n# Deine letzte Antwort war nicht brauchbar\n" + antwort[:ANTWORT_MAX]
+                          + "\n\n# Fehler\n" + "\n".join(f"- {f}" for f in fehler)
+                          + "\nSchreibe die vollständige Antwort neu und behebe diese Fehler.")
+        antwort = c.fragen(system, nachricht)
+        c.gezaehlt(aid)
+        ergebnis, fehler = lesen(antwort)
+        if ergebnis is not None:
+            return ergebnis, []
+    return None, fehler
+
+
+# --- Schritt 1: Gliederung -----------------------------------------------------------------------
+
+def _quellen_der_gliederung(gliederung: dict) -> list[str]:
+    gesehen: list[str] = []
+    for s in video_texte.szenen_liste(gliederung):
+        for q in s.get("quellen") or []:
+            if q != video_texte.AUFTRAG and q not in gesehen:
+                gesehen.append(q)
+    return gesehen
+
+
+def _gliederung(c: _Lauf, werk: dict) -> str | None:
+    aid, eingabe = str(werk["auftrag"]), werk.get("eingabe") or {}
+    fassung = int(werk.get("gliederung_fassung") or 0)
+    wunsch = str(werk.get("gliederung_wunsch") or "").strip()
+    schluessel = ("gliederung", aid, fassung, wunsch)
+    if werk.get("gliederung_stand") != "geplant":
+        return None
+    if c.budget:
+        _budget_melden(c, werk)
+        return "budget"
+    if c.gedaechtnis["aufgegeben"].get(schluessel, 0.0) > c.jetzt():
+        return None
+    c.lease(aid)
+    try:
+        ktx = c.kontext(str(werk.get("mandant") or ""), video_texte.auftragstext(eingabe))
+        vorige = werk.get("gliederung") if wunsch and isinstance(werk.get("gliederung"), dict) and werk["gliederung"] else None
+        system, nachricht = video_texte.gliederung_prompt(eingabe, ktx, c.brief(), wunsch, vorige)
+        geholt = {d.name for d in ktx.dokumente}
+        gliederung, _ = _fragen_lesen(c, aid, system, nachricht, lambda a: video_texte.gliederung_lesen(a, geholt))
+    except BudgetErschoepft:
+        _budget_melden(c, werk)
+        return "budget"
+    if gliederung is None:
+        c.hinweis(aid, f"gliederung_f{fassung}", SATZ_GLIEDERUNG)
+        c.gedaechtnis["aufgegeben"][schluessel] = c.jetzt() + FEHLER_PAUSE_S
+        return "fehler"
+    c.lease(aid)                          # die Anfrage kann lange gedauert haben
+    try:
+        c.api.gliederung(aid, gliederung, _quellen_der_gliederung(gliederung))
+    except ApiFehler as e:
+        if e.code == 409:                 # die Gliederung ist gerade nicht dran (anderer Stand)
+            return None
+        raise
+    return "gliederung"
+
+
+# --- Schritt 2: Szenentexte ----------------------------------------------------------------------
+
+def _belegquellen(szene: dict) -> list[str]:
+    gesehen: list[str] = []
+    for b in szene.get("belege") or []:
+        q = b.get("quelle")
+        if isinstance(q, str) and q and q not in gesehen:
+            gesehen.append(q)
+    return gesehen
+
+
+def _szenen_fragen(c: _Lauf, werk: dict, ktx, zeilen: list[dict], fehler_je_nr: dict[int, list[str]] | None):
+    """Eine Frage fuer bis zu BLOCK Szenen. Rueckgabe {nr: Szene} der lesbaren Antwort ({} bei Muell).
+    Mit `fehler_je_nr` ist es die Nachfrage: Fehlersaetze und die bisherigen Szenen gehen mit."""
+    system, nachricht = video_texte.szenen_prompt(werk.get("eingabe") or {}, werk.get("gliederung") or {},
+                                                  zeilen, ktx, c.brief())
+    if fehler_je_nr:
+        zeilen_text = "\n".join(f"Szene {nr}: " + " ".join(f) for nr, f in sorted(fehler_je_nr.items()))
+        nachricht += ("\n\n# Deine letzte Antwort war bei diesen Szenen nicht brauchbar\n" + zeilen_text
+                      + "\nSchreibe genau diese Szenen vollständig neu und behebe die Fehler.")
+    aid = str(werk["auftrag"])
+    antwort = c.fragen(system, nachricht)
+    c.gezaehlt(aid)
+    gelesen = video_texte.szenen_lesen(antwort) or []
+    return {s["nr"]: s for s in gelesen}
+
+
+def _bewerten(zeile: dict, szene: dict | None, auftrag: str, ktx) -> list[str]:
+    if szene is None:
+        return ["Die Szene fehlt in der Antwort oder ist nicht lesbar."]
+    if zeile.get("rueckgabe_von") == "clip" and szene.get("aendert_text") is False:
+        szene["sprechtext"] = str(zeile.get("sprechtext") or "")     # nur das Bild ist neu: der Text bleibt, wie er war
+    return video_texte.szene_pruefen(szene, auftrag, ktx)
+
+
+def _abgeben(c: _Lauf, zeile: dict, szene: dict) -> bool:
+    """Eine bestandene Szene an ihr Tor geben. False = die API nahm sie nicht (Stand hat sich geaendert)."""
+    sid = str(zeile["id"])
+    try:
+        if zeile.get("rueckgabe_von") == "clip" and szene.get("aendert_text") is False:
+            c.api.szene_bild(sid, szene["bildart"], szene["bild"])
+        else:
+            c.api.szene_text(sid, {"sprechtext": szene["sprechtext"], "bildart": szene["bildart"], "bild": szene["bild"],
+                                   "uebergang": szene["uebergang"], "quellen": _belegquellen(szene)})
+    except ApiFehler as e:
+        LOG.warning("Szene abgelehnt: API %s", e.code)
+        return False
+    return True
+
+
+def _texte(c: _Lauf, werk: dict) -> str | None:
+    if werk.get("gliederung_stand") != "text_ok":
+        return None
+    aid = str(werk["auftrag"])
+    zeilen = [s for s in werk.get("szenen") or [] if s.get("stand") == "geplant"
+              and c.gedaechtnis["aufgegeben"].get(("szene", str(s.get("id")), str(s.get("wunsch") or ""))) is None]
+    if not zeilen:
+        return None
+    if c.budget:
+        _budget_melden(c, werk)
+        return "budget"
+    c.lease(aid)
+    auftrag = video_texte.auftragstext(werk.get("eingabe") or {})
+    abgegeben = 0
+    try:
+        ktx = c.kontext(str(werk.get("mandant") or ""), auftrag)
+        neu = [s for s in zeilen if not s.get("rueckgabe_von")]
+        gruppen = [neu[i:i + BLOCK] for i in range(0, len(neu), BLOCK)] + [[s] for s in zeilen if s.get("rueckgabe_von")]
+        durchgefallen: list[tuple[dict, list[str]]] = []
+        for gruppe in gruppen:
+            antworten = _szenen_fragen(c, werk, ktx, gruppe, None)
+            for zeile in gruppe:
+                szene = antworten.get(zeile["nr"])
+                fehler = _bewerten(zeile, szene, auftrag, ktx)
+                if not fehler:
+                    abgegeben += _abgeben(c, zeile, szene)
+                else:
+                    durchgefallen.append((zeile, fehler))
+        endgueltig: list[dict] = []
+        for i in range(0, len(durchgefallen), BLOCK):       # alle Durchfaller gesammelt, einmal zurueck
+            c.lease(aid)
+            stapel = durchgefallen[i:i + BLOCK]
+            antworten = _szenen_fragen(c, werk, ktx, [z for z, _ in stapel], {z["nr"]: f for z, f in stapel})
+            for zeile, _alt in stapel:
+                szene = antworten.get(zeile["nr"])
+                if not _bewerten(zeile, szene, auftrag, ktx):
+                    abgegeben += _abgeben(c, zeile, szene)
+                else:
+                    endgueltig.append(zeile)
+    except BudgetErschoepft:
+        _budget_melden(c, werk)
+        return "budget"
+    for zeile in endgueltig:
+        c.hinweis(aid, f"quelle_s{zeile['nr']}_f{int(zeile.get('fassung') or 0)}",
+                  f"Szene {zeile['nr']}: Quelle fehlt – bitte Material ergänzen.")
+        c.gedaechtnis["aufgegeben"][("szene", str(zeile["id"]), str(zeile.get("wunsch") or ""))] = c.jetzt()
+    return "texte" if abgegeben else ("fehler" if endgueltig else None)
+
+
+# --- Schritt 3: eine Szene sprechen, rendern, hochladen --------------------------------------------
+
+def _satz_fuer(phase: str, e: Exception) -> str:
+    """Kurzer deutscher Satz nach Phase und Fehlerklasse; nie der Ausnahmetext (kann Text oder Pfade enthalten)."""
+    art = type(e).__name__
+    if isinstance(e, TimeoutError) or art == "TimeoutExpired":
+        return {"sprechen": "Das Sprechen der Szene hat zu lange gedauert.",
+                "rendern": "Das Rendern der Szene hat zu lange gedauert."}.get(phase, f"Der Schritt {phase} hat zu lange gedauert.")
+    return {"sprechen": f"Die Szene ließ sich nicht sprechen ({art}).",
+            "rendern": f"Die Szene ließ sich nicht rendern ({art}).",
+            "hochladen": f"Der Clip ließ sich nicht hochladen ({art}).",
+            "melden": f"Der Clip ließ sich nicht melden ({art})."}.get(phase, f"Die Szene scheiterte ({art}).")
+
+
+def _erzeugen(c: _Lauf, werk: dict) -> str | None:
+    aid = str(werk["auftrag"])
+    zeile = c.api.szene_nehmen(aid)
+    if not zeile:
+        return None
+    sid, nr = str(zeile["id"]), int(zeile["nr"])
+    variante = int(zeile.get("variante") or 0)
+    aid8 = aid.replace("-", "")[:8]
+    name = f"wb-{aid8}-s{nr:02d}-f{variante}.mp4"
+    ordner = Path(c.ordner(aid8, nr))
+    shutil.rmtree(ordner, ignore_errors=True)       # hoechstens der letzte Versuch je Szene bleibt liegen
+    stimme = str(werk.get("stimme") or "standard")
+    phase = "sprechen"
+    try:
+        ordner.mkdir(parents=True, exist_ok=True)
+        gesprochen = c.sprechen(str(zeile.get("sprechtext") or ""), stimme, ordner)
+        phase = "rendern"
+        ziel = ordner / name
+        dauer = c.rendern(zeile, gesprochen, c.marke(str(werk.get("mandant") or "")), ordner, ziel)
+        if not isinstance(dauer, (int, float)) or isinstance(dauer, bool):
+            dauer = gesprochen.dauer_s
+        phase = "hochladen"
+        c.api.hochladen(aid, name, ziel)
+        phase = "melden"
+        engine = "chatterbox" if gesprochen.rueckfall else str(gesprochen.engine)
+        c.api.szene_clip(sid, variante, name, round(float(dauer), 2), stimme, engine)
+    except ApiFehler as e:
+        if phase == "melden" and e.code == 409:     # die Szene ist inzwischen woanders: der Clip wird nicht mehr gebraucht
+            LOG.warning("Clip nicht mehr gebraucht (409)")
+            shutil.rmtree(ordner, ignore_errors=True)
+            return None
+        return _szene_scheitert(c, sid, phase, e)
+    except Exception as e:  # noqa: BLE001 - jede Ausnahme gehoert dieser einen Szene (auch HTTPException)
+        return _szene_scheitert(c, sid, phase, e)
+    shutil.rmtree(ordner, ignore_errors=True)
+    return "clip"
+
+
+def _szene_scheitert(c: _Lauf, sid: str, phase: str, e: Exception) -> str:
+    LOG.warning("Szene scheitert beim %s: %s", phase, type(e).__name__)
+    c.api.szene_fehler(sid, _satz_fuer(phase, e))
+    return "fehler"
+
+
+# --- ein Werk, ein Durchlauf -------------------------------------------------------------------------
+
+def _schritt(werk: dict, schritt, c: _Lauf) -> str | None:
+    """Einen Teilschritt fuer sich absichern: ein Fehler hier laesst die naechsten Teilschritte laufen."""
+    try:
+        return schritt(c, werk)
+    except Exception as e:  # noqa: BLE001 - Typname genuegt; Texte koennen Prompts enthalten
+        LOG.warning("%s scheiterte: %s", schritt.__name__.strip("_"), type(e).__name__)
+        return "fehler"
+
+
+def _fertig(c: _Lauf, werk: dict) -> str | None:
+    if c.fertigstellen is None or not werk.get("alle_fertig"):
+        return None
+    if int(werk.get("video_fassung") or 0) != 0 and not werk.get("video_veraltet"):
+        return None
+    c.fertigstellen(c.api, werk)
+    return "video"
+
+
+def ein_durchlauf(api, fragen=shim_fragen, kontext=video_kontext.holen, sprechen=szene_sprechen, rendern=szene_rendern,
+                  fertigstellen=None, warte=time.sleep, *, marke=video_slides.marke_fuer, ordner=arbeitsordner,
+                  brief=_brief, jetzt=time.monotonic, heute=date.today) -> str:
+    """Neuen Auftrag uebernehmen, dann jedes Werk der Reihe nach: Gliederung, Szenentexte, hoechstens eine Szene
+    erzeugen, fertigstellen. Rueckgabe: das letzte Ergebnis - leer, gliederung, texte, clip, video, wartet, budget
+    oder fehler (budget gewinnt, wenn die Tagesgrenze im Durchlauf getroffen wurde)."""
+    c = _Lauf(api, fragen, kontext, sprechen, rendern, fertigstellen, warte, marke, ordner, brief, jetzt, heute)
+    try:
+        api.naechster()      # ein neuer Auftrag erscheint ab jetzt unter arbeit()
+    except Exception as e:  # noqa: BLE001 - die laufenden Werke warten nicht auf einen neuen Auftrag
+        LOG.warning("naechster scheiterte: %s", type(e).__name__)
+    werke = api.arbeit()
+    ergebnis = "wartet" if werke else "leer"
+    for werk in werke:
+        for schritt in (_gliederung, _texte, _erzeugen, _fertig):
+            r = _schritt(werk, schritt, c)
+            if r:
+                ergebnis = r
+    return "budget" if c.budget else ergebnis
+
+
+class _Gesundheit(BaseHTTPRequestHandler):
+    def do_GET(self):  # noqa: N802
+        rumpf = json.dumps(STAND, default=str).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(rumpf)
+
+    def log_message(self, *_):
+        pass
+
+
+def main() -> None:
+    umgebung_laden()
+    basis, schluessel = os.environ.get("MARKETING_BILD_URL", ""), os.environ.get("MARKETING_BILD_KEY", "")
+    if not basis or not schluessel:
+        raise SystemExit("MARKETING_BILD_URL/MARKETING_BILD_KEY fehlen in Vibemind_V1/.env")
+    api = WerkbankApi(basis, schluessel)
+    threading.Thread(target=HTTPServer(("127.0.0.1", PORT), _Gesundheit).serve_forever, daemon=True).start()
+    while True:
+        try:
+            STAND["letztes_ergebnis"] = ein_durchlauf(api)
+        except Exception as e:  # noqa: BLE001 - nichts darf die Schleife toeten (auch http.client.HTTPException)
+            STAND["letztes_ergebnis"] = f"fehler: {type(e).__name__}"
+        STAND["letzter_lauf"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        print(STAND, flush=True)
+        time.sleep(TAKT_S)
+
+
+if __name__ == "__main__":
+    main()
