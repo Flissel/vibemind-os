@@ -54,8 +54,10 @@ def normal_argumente(quelle: Path, ziel: Path, ton: Path | None = None) -> list[
     return a
 
 
-def _lauf(args: list[str], zeitlimit_s: float, cwd: Path | None, env: dict[str, str]) -> int:
-    """Startet den Kindprozess mit Ausgabe in einer Temp-Datei; liefert den Exit-Code oder wirft RenderFehler."""
+def _lauf(args: list[str], zeitlimit_s: float, cwd: Path | None, env: dict[str, str],
+          protokoll: Path | None = None) -> int:
+    """Startet den Kindprozess mit Ausgabe in einer Temp-Datei; liefert den Exit-Code oder wirft RenderFehler.
+    Mit `protokoll` wird die Ausgabe nach dem Lauf dorthin kopiert (der Aufrufer wertet sie aus)."""
     exe = shutil.which(args[0])  # unter Windows ist npx ein .cmd
     if exe is None:
         raise RenderFehler(f"Programm {args[0]} nicht gefunden.")
@@ -79,6 +81,9 @@ def _lauf(args: list[str], zeitlimit_s: float, cwd: Path | None, env: dict[str, 
             raise
         if code != 0:
             LOG.warning("%s endete mit Exit %s", args[0], code)
+        if protokoll is not None:
+            log.seek(0)
+            Path(protokoll).write_bytes(log.read())
         return code
 
 
