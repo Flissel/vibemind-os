@@ -78,6 +78,27 @@ Test: Rust-Einheitstests je Fall, dann `katalog_pruefen` und `anmeldeweg_pruefen
 Neue Vorlagen werden erzeugt, danach folgt die Felix-Anmeldung wie in Stufe 1.
 Rollout mit OpenFang-Neubau. Davor freien RAM messen, `-j 2` und `RUST_MIN_STACK`.
 
+**Ergebnis Stufe 2 (11.11., OpenFang e8621c4):** Zwei Korrekturen in `discover`:
+
+- Pfad-Einschub für die Anmeldeserver-Beschreibung.
+- Eine im 401-Header angekündigte Wurzel-Beschreibung gilt als Wurzel-Variante. Dort
+  darf `resource` den Ursprung nennen. Eine Pfad-Beschreibung, die nur den Ursprung
+  nennt, bleibt abgelehnt.
+
+Ergebnisse:
+
+- 12 Anbieter sind einrichtbar: airtable, brand24, brighthire, cloudinary, digitalocean,
+  fyxer, govtribe, monday-com, otter-ai, razorpay, s-p, stripe.
+- Bei allen 12 klappen Registrierung und Anmelde-Link mit dem echten Rückruf.
+  Der Testbrowser kam bei 11 bis zur Anmeldeseite des Anbieters. Razorpays
+  Dashboard sperrt den Testbrowser (403).
+- replayio bleibt draußen. Der Fall bräuchte eine echte Lockerung, und replayio
+  antwortet ohnehin ohne Anmeldung.
+- vantage lieferte beim Lauf keine lesbare Beschreibung, beim Prüfskript am Vormittag
+  schon. Das wird beim nächsten Lauf neu geprüft.
+- Airtable meldet Scopes, verlangt sie aber vielleicht beim Login. Das zeigt erst der
+  Echttest in Stufe 1. Bei `invalid_scope` bekommt airtable feste `SCOPES` wie lovable.
+
 ### Stufe 3: Nachbar-Hosts derselben Domain (Gruppe B, 10 Anbieter) – Felix entscheidet
 
 - Endpunkte und `issuer` dürfen auf einem anderen Host derselben registrierbaren Domain

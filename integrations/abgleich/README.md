@@ -13,8 +13,8 @@ Eintraege gesamt: 180
 | kein_offizieller_server | 40 |
 | nicht_erreichbar | 0 |
 | skills_teil_5 | 24 |
-| unklar | 38 |
-| vorlage | 62 |
+| unklar | 26 |
+| vorlage | 74 |
 | vorlage_bestand | 2 |
 | vorlage_mitgeliefert | 4 |
 
@@ -22,7 +22,7 @@ Eintraege gesamt: 180
 |---|---|---|---|---|---|
 | actively | app | kein_offizieller_server | Marketing page mentions an Actively MCP/API but gives no server URL or docs; unresolved. | https://www.actively.ai/products/mcp-server |  |
 | aiera | app | vorlage | einrichtbar_oauth | https://rest.aiera.com/docs/mcp-sdks | 2026-11-10 |
-| airtable | app | unklar | ermittlung fehlgeschlagen: resource passt nicht | https://airtable.com/developers/agents/mcp/getting-started | 2026-11-10 |
+| airtable | app | vorlage | einrichtbar_oauth | https://airtable.com/developers/agents/mcp/getting-started | 2026-11-11 |
 | alation | app | adresse_je_kunde | adresse_je_kunde | https://alation.github.io/agent-studio-docs/integrations/mcp/quick-start/ | 2026-11-10 |
 | alpaca | app | braucht_registrierung | oauth_ohne_dcr | https://docs.alpaca.markets/us/docs/broker-mcp-server | 2026-11-10 |
 | amplitude | app | vorlage | einrichtbar_oauth | https://amplitude.com/docs/amplitude-ai/amplitude-mcp | 2026-11-10 |
@@ -35,9 +35,9 @@ Eintraege gesamt: 180
 | biorender | app | kein_offizieller_server | Official BioRender connector exists (Claude/ChatGPT directories); URL mcp.services.biorender.com seen only in secondary sources and help center returned 403, so not recorded. | https://help.biorender.com/hc/en-gb/articles/37237276158109-How-to-use-the-BioRender-MCP-connector |  |
 | boltz-api-cli | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
 | box | app | unklar | ermittlung fehlgeschlagen: fremder host | https://developer.box.com/guides/box-mcp/remote/ | 2026-11-10 |
-| brand24 | app | unklar | ermittlung fehlgeschlagen: resource passt nicht | https://help.brand24.com/en/articles/13011375-brand24-mcp | 2026-11-10 |
+| brand24 | app | vorlage | einrichtbar_oauth | https://help.brand24.com/en/articles/13011375-brand24-mcp | 2026-11-11 |
 | brex | app | unklar | ermittlung fehlgeschlagen: resource passt nicht | https://developer.brex.com/docs/mcp | 2026-11-10 |
-| brighthire | app | unklar | ermittlung fehlgeschlagen: anmeldeserver-metadaten nicht lesbar | https://help.brighthire.ai/en/articles/14808753-brighthire-mcp | 2026-11-10 |
+| brighthire | app | vorlage | einrichtbar_oauth | https://help.brighthire.ai/en/articles/14808753-brighthire-mcp | 2026-11-11 |
 | build-ios-apps | mcp | kein_offizieller_server | Not a vendor product with a remote MCP server; no official remote server found. |  |  |
 | build-macos-apps | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
 | build-web-apps | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
@@ -56,7 +56,7 @@ Eintraege gesamt: 180
 | clickup | app | vorlage | einrichtbar_oauth | https://clickup.com/blog/how-to-use-clickup-mcp-server/ | 2026-11-10 |
 | close | app | unklar | ermittlung fehlgeschlagen: fremder host | https://developer.close.com/mcp | 2026-11-10 |
 | cloudflare | mcp | vorlage | einrichtbar_oauth | https://developers.cloudflare.com/agents/model-context-protocol/mcp-servers-for-cloudflare/ | 2026-11-10 |
-| cloudinary | app | unklar | ermittlung fehlgeschlagen: resource passt nicht | https://github.com/cloudinary/mcp-servers | 2026-11-10 |
+| cloudinary | app | vorlage | einrichtbar_oauth | https://github.com/cloudinary/mcp-servers | 2026-11-11 |
 | coderabbit | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
 | codex-security | mcp | kein_offizieller_server | OpenAI-eigenes Produkt; kein eigener Remote-MCP-Server gefunden. |  |  |
 | cogedim | app | kein_offizieller_server | Keine Hinweise auf einen MCP-Server von Cogedim gefunden. |  |  |
@@ -67,15 +67,15 @@ Eintraege gesamt: 180
 | coveo | app | braucht_registrierung | oauth_ohne_dcr | https://docs.coveo.com/en/q1mb0212/ | 2026-11-10 |
 | cube | app | vorlage | einrichtbar_oauth | https://docs.cube.dev/docs/integrations/mcp-server | 2026-11-10 |
 | daloopa | app | vorlage | einrichtbar_oauth | https://docs.daloopa.com/docs/daloopa-mcp | 2026-11-10 |
-| datadog | app | unklar | ermittlung fehlgeschlagen: anmeldeserver-metadaten nicht lesbar | https://docs.datadoghq.com/bits_ai/mcp_server/setup/ | 2026-11-10 |
+| datadog | app | unklar | ermittlung fehlgeschlagen: fremder host | https://docs.datadoghq.com/bits_ai/mcp_server/setup/ | 2026-11-11 |
 | datasite | app | kein_offizieller_server | Datasite betreibt einen MCP-Server (nur fuer freigeschaltete Konten), die URL steht aber nur bei Dritten (mcp.global.datasite.com/mcp), nicht auf Datasite-Seiten. | https://datasite.com/en/resources/ai-at-datasite/datasite-mcp |  |
 | deepnote | app | vorlage | einrichtbar_oauth | https://deepnote.com/docs/deepnote-mcp | 2026-11-10 |
 | demandbase | app | kein_offizieller_server | Offizieller MCP-Server existiert (per CSM freizuschalten, ueber Claude-Connector-Verzeichnis), aber keine URL in den Docs. | https://developer.demandbase.com/docs/mcp |  |
-| digitalocean | app | unklar | ermittlung fehlgeschlagen: resource passt nicht | https://docs.digitalocean.com/reference/mcp/configure-mcp/ | 2026-11-10 |
+| digitalocean | app | vorlage | einrichtbar_oauth | https://docs.digitalocean.com/reference/mcp/configure-mcp/ | 2026-11-11 |
 | dnb-finance-analytics | app | kein_offizieller_server | D&B bietet MCP-Server nach Zugangsanfrage; URL nur bei Dritten (agents.riskanalytics.dnb.com/mcp), nicht auf D&B-Seiten belegt. | https://www.dnb.co.uk/solutions/artificial-intelligence/connectors/dnb-mcp.html |  |
 | docket | app | vorlage | einrichtbar_oauth | https://help.docket.io/articles/8225942528-connect-docket-demand-mcp | 2026-11-10 |
 | docusign | app | unklar | ermittlung fehlgeschlagen: fremder host | https://www.docusign.com/blog/developers/docusign-mcp-server-general-availability | 2026-11-10 |
-| domotz-preview | app | unklar | ermittlung fehlgeschlagen: resource passt nicht | https://help.domotz.com/integrations/domotz-mcp-server-setup/ | 2026-11-10 |
+| domotz-preview | app | unklar | ermittlung fehlgeschlagen: issuer passt nicht | https://help.domotz.com/integrations/domotz-mcp-server-setup/ | 2026-11-11 |
 | dovetail | app | braucht_registrierung | oauth_ohne_dcr | https://developers.dovetail.com/docs/mcp | 2026-11-10 |
 | dow-jones-factiva | app | kein_offizieller_server | Kein offizieller Remote-MCP-Server dokumentiert gefunden (Factiva nur als ChatGPT-App gelistet). |  |  |
 | egnyte | app | vorlage | einrichtbar_oauth | https://developers.egnyte.com/docs/read/Remote_MCP_Server | 2026-11-10 |
@@ -86,14 +86,14 @@ Eintraege gesamt: 180
 | finn | app | kein_offizieller_server | Anbieter nicht eindeutig aufloesbar; kein offizieller Remote-MCP-Server gefunden (nur Community-Server fuer FINN.no). |  |  |
 | fireflies | app | vorlage | einrichtbar_oauth | https://docs.fireflies.ai/getting-started/mcp-configuration | 2026-11-10 |
 | fiscal-ai | app | vorlage | einrichtbar_oauth | https://docs.fiscal.ai/docs/guides/mcp-integration | 2026-11-10 |
-| fyxer | app | unklar | ermittlung fehlgeschlagen: resource passt nicht | https://fyxer.support.site/article/fyxer-mcp | 2026-11-10 |
+| fyxer | app | vorlage | einrichtbar_oauth | https://fyxer.support.site/article/fyxer-mcp | 2026-11-11 |
 | game-studio | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
 | github | mcp | vorlage_bestand | Vorlage liegt schon vor |  |  |
 | glean | app | adresse_je_kunde | adresse_je_kunde | https://docs.glean.com/administration/platform/mcp/create-mcp-servers | 2026-11-10 |
 | gmail | app | vorlage_mitgeliefert | mitgelieferte Vorlage bleibt | https://developers.google.com/workspace/guides/configure-mcp-servers | 2026-11-10 |
 | google-calendar | app | vorlage_mitgeliefert | mitgelieferte Vorlage bleibt | https://developers.google.com/workspace/guides/configure-mcp-servers | 2026-11-10 |
 | google-drive | app | vorlage_mitgeliefert | mitgelieferte Vorlage bleibt | https://developers.google.com/workspace/guides/configure-mcp-servers | 2026-11-10 |
-| govtribe | app | unklar | ermittlung fehlgeschlagen: anmeldeserver-metadaten nicht lesbar | https://govtribe.com/docs/govtribe-user-guide/govtribe-mcp | 2026-11-10 |
+| govtribe | app | vorlage | einrichtbar_oauth | https://govtribe.com/docs/govtribe-user-guide/govtribe-mcp | 2026-11-11 |
 | granola | app | vorlage | einrichtbar_oauth | https://docs.granola.ai/help-center/sharing/integrations/mcp | 2026-11-10 |
 | happenstance | app | unklar | ermittlung fehlgeschlagen: issuer passt nicht | https://developer.happenstance.ai/mcp/connect | 2026-11-10 |
 | hebbia | app | kein_offizieller_server | Hebbia blog says a Hebbia MCP exists (Matrix, Projects) but no public endpoint URL found; likely customer-gated. |  |  |
@@ -120,7 +120,7 @@ Eintraege gesamt: 180
 | midpage | app | vorlage | einrichtbar_oauth | https://docs.midpage.ai/documentation/integration/mcp-tools | 2026-11-10 |
 | mixpanel | app | unklar | ermittlung fehlgeschlagen: fremder host | https://docs.mixpanel.com/docs/mcp | 2026-11-10 |
 | mixpanel-headless | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
-| monday-com | app | unklar | ermittlung fehlgeschlagen: anmeldeserver-metadaten nicht lesbar | https://developer.monday.com/api-reference/docs/integrate-with-monday-mcp | 2026-11-10 |
+| monday-com | app | vorlage | einrichtbar_oauth | https://developer.monday.com/api-reference/docs/integrate-with-monday-mcp | 2026-11-11 |
 | moody-s | app | unklar | ermittlung fehlgeschlagen: resource passt nicht | https://www.moodys.com/web/en/us/genai/model-context-protocol.html | 2026-11-10 |
 | morningstar | app | kein_offizieller_server | Morningstar runs an MCP server (OAuth, license required); aggregators cite https://mcp.morningstar.com/mcp but I could not confirm the URL on a Morningstar-owned page. | https://learn.microsoft.com/en-us/connectors/morningstar/ |  |
 | motherduck | app | vorlage | einrichtbar_oauth | https://motherduck.com/docs/sql-reference/mcp/ | 2026-11-10 |
@@ -135,7 +135,7 @@ Eintraege gesamt: 180
 | omni-analytics | app | vorlage | einrichtbar_oauth; Anmeldung scheitert: Anmeldeseite lehnt den Rueckruf ab (HTTP 401, Rueckruf nicht auf der Freigabeliste) | https://docs.omni.co/ai/mcp/cursor | 2026-11-10 |
 | openai-ads-conversions | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
 | openai-developers | mcp | vorlage | einrichtbar_ohne_anmeldung | https://developers.openai.com/learn/docs-mcp | 2026-11-10 |
-| otter-ai | app | unklar | ermittlung fehlgeschlagen: resource passt nicht | https://help.otter.ai/hc/en-us/articles/35287607569687-Otter-MCP-Server | 2026-11-10 |
+| otter-ai | app | vorlage | einrichtbar_oauth | https://help.otter.ai/hc/en-us/articles/35287607569687-Otter-MCP-Server | 2026-11-11 |
 | outlook-calendar | app | adresse_je_kunde | adresse_je_kunde | https://learn.microsoft.com/en-us/microsoft-copilot-studio/mcp-calendar-tools | 2026-11-10 |
 | outlook-email | app | adresse_je_kunde | adresse_je_kunde | https://learn.microsoft.com/en-us/microsoft-copilot-studio/mcp-mail-tools | 2026-11-10 |
 | outreach | app | vorlage | einrichtbar_oauth | https://support.outreach.io/support/solutions/articles/159000435681-use-outreach-mcp-with-claude | 2026-11-10 |
@@ -151,7 +151,7 @@ Eintraege gesamt: 180
 | quickbooks | app | unklar | ermittlung fehlgeschlagen: resource passt nicht | https://github.com/IntuitDeveloper/intuit-3p-ai-pilot | 2026-11-10 |
 | quicknode | app | vorlage | einrichtbar_oauth | https://www.quicknode.com/docs/build-with-ai/quicknode-mcp | 2026-11-10 |
 | ranked-ai | app | vorlage | einrichtbar_oauth | https://www.ranked.ai/developers/mcp/setup.md | 2026-11-10 |
-| razorpay | app | unklar | ermittlung fehlgeschlagen: resource passt nicht | https://razorpay.com/docs/mcp-server/remote/ | 2026-11-10 |
+| razorpay | app | vorlage | einrichtbar_oauth | https://razorpay.com/docs/mcp-server/remote/ | 2026-11-11 |
 | read-ai | app | unklar | ermittlung fehlgeschlagen: fremder host | https://support.read.ai/hc/en-us/articles/49381158409491-MCP-Server | 2026-11-10 |
 | readwise | app | vorlage | einrichtbar_oauth | https://docs.readwise.io/tools/mcp | 2026-11-10 |
 | remotion | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
@@ -160,7 +160,7 @@ Eintraege gesamt: 180
 | replit | app | vorlage | einrichtbar_oauth | https://docs.replit.com/platforms/mcp-server | 2026-11-10 |
 | responsive | app | vorlage | einrichtbar_oauth | https://help.responsive.io/en-US/responsive/article/duV3ckq5-using-responsive-mcp-server-with-generative-ai-tools | 2026-11-10 |
 | rox | app | kein_offizieller_server | No official Rox MCP server documentation found. |  |  |
-| s-p | app | unklar | ermittlung fehlgeschlagen: issuer passt nicht | https://docs.kensho.com/adaptive-retrieval/mcp | 2026-11-10 |
+| s-p | app | vorlage | einrichtbar_oauth | https://docs.kensho.com/adaptive-retrieval/mcp | 2026-11-11 |
 | scite | app | vorlage | einrichtbar_oauth | https://docs.scite.ai/mcp/overview | 2026-11-10 |
 | semrush | app | unklar | ermittlung fehlgeschlagen: fremder host | https://developer.semrush.com/api/basics/semrush-mcp/ | 2026-11-10 |
 | sendgrid | app | kein_offizieller_server | Only community/local servers found; no official SendGrid remote MCP server. |  |  |
@@ -172,10 +172,10 @@ Eintraege gesamt: 180
 | signnow | app | vorlage | einrichtbar_oauth; Anmeldung scheitert: Anmeldeseite lehnt den Rueckruf ab (invalid_request, redirect_uri not allowed) | https://docs.signnow.com/docs/mcp-server | 2026-11-10 |
 | similarweb | app | unklar | anmeldeart_unbekannt | https://developers.similarweb.com/docs/similarweb-mcp | 2026-11-10 |
 | skywatch | app | vorlage | einrichtbar_ohne_anmeldung | https://docs.skywatch.com/docs/mcp/client-integration | 2026-11-10 |
-| slack | app | vorlage_mitgeliefert | mitgelieferte Vorlage bleibt | https://docs.slack.dev/ai/mcp-server | 2026-11-10 |
+| slack | app | vorlage_mitgeliefert | mitgelieferte Vorlage bleibt | https://docs.slack.dev/ai/mcp-server | 2026-11-11 |
 | statsig | app | vorlage | einrichtbar_oauth | https://docs.statsig.com/integrations/mcp/manual-setup | 2026-11-10 |
 | streak | app | kein_offizieller_server | Only community and aggregator servers found. |  |  |
-| stripe | app | unklar | ermittlung fehlgeschlagen: anmeldeserver-metadaten nicht lesbar | https://docs.stripe.com/mcp | 2026-11-10 |
+| stripe | app | vorlage | einrichtbar_oauth | https://docs.stripe.com/mcp | 2026-11-11 |
 | supabase | app | vorlage | einrichtbar_oauth | https://supabase.com/docs/guides/getting-started/mcp | 2026-11-10 |
 | superhuman | app | vorlage | einrichtbar_oauth | https://help.superhuman.com/hc/en-us/articles/49810745762067-Superhuman-Mail-MCP-Server-Beta | 2026-11-10 |
 | superpowers | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |

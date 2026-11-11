@@ -44,10 +44,18 @@
     "notiz": "OAuth recommended (DCR); personal access tokens also supported for CLI/server use.",
     "offiziell": true,
     "pruefung": {
-      "datum": "2026-11-10",
-      "ergebnis": "unklar",
-      "klasse": "ermittlung fehlgeschlagen: resource passt nicht",
-      "scopes_supported": []
+      "datum": "2026-11-11",
+      "ergebnis": "einrichtbar_oauth",
+      "klasse": "oauth_dcr",
+      "scopes_supported": [
+        "data.records:read",
+        "data.records:write",
+        "schema.bases:read",
+        "schema.bases:write",
+        "data.recordComments:read",
+        "data.recordComments:write",
+        "workspacesAndBases:read"
+      ]
     },
     "quelle": "https://airtable.com/developers/agents/mcp/getting-started",
     "schluessel_link": "https://airtable.com/create/tokens",
@@ -349,10 +357,13 @@
     "notiz": "Available to Brand24 subscribers; transport not named in help article.",
     "offiziell": true,
     "pruefung": {
-      "datum": "2026-11-10",
-      "ergebnis": "unklar",
-      "klasse": "ermittlung fehlgeschlagen: resource passt nicht",
-      "scopes_supported": []
+      "datum": "2026-11-11",
+      "ergebnis": "einrichtbar_oauth",
+      "klasse": "oauth_dcr",
+      "scopes_supported": [
+        "projects:read",
+        "offline_access"
+      ]
     },
     "quelle": "https://help.brand24.com/en/articles/13011375-brand24-mcp",
     "schluessel_link": "",
@@ -387,10 +398,12 @@
     "notiz": "Enable at app.brighthire.ai/settings/mcp; no Screen product data; API keys also exist.",
     "offiziell": true,
     "pruefung": {
-      "datum": "2026-11-10",
-      "ergebnis": "unklar",
-      "klasse": "ermittlung fehlgeschlagen: anmeldeserver-metadaten nicht lesbar",
-      "scopes_supported": []
+      "datum": "2026-11-11",
+      "ergebnis": "einrichtbar_oauth",
+      "klasse": "oauth_dcr",
+      "scopes_supported": [
+        "mcp:read.all"
+      ]
     },
     "quelle": "https://help.brighthire.ai/en/articles/14808753-brighthire-mcp",
     "schluessel_link": "",
@@ -1071,10 +1084,18 @@
     "notiz": "Mehrere Remote-Server (environment-config, structured-metadata, analysis, mediaflows unter *.mcp.cloudinary.com); OAuth2 Standard, Header-Alternative; /sse veraltet; Format des Headers und Schluessel-Link nicht woertlich in Doku bestaetigt.",
     "offiziell": true,
     "pruefung": {
-      "datum": "2026-11-10",
-      "ergebnis": "unklar",
-      "klasse": "ermittlung fehlgeschlagen: resource passt nicht",
-      "scopes_supported": []
+      "datum": "2026-11-11",
+      "ergebnis": "einrichtbar_oauth",
+      "klasse": "oauth_dcr",
+      "scopes_supported": [
+        "openid",
+        "profile",
+        "email",
+        "offline_access",
+        "asset_management",
+        "upload",
+        "media_generation"
+      ]
     },
     "quelle": "https://github.com/cloudinary/mcp-servers",
     "schluessel_link": "https://console.cloudinary.com/settings/api-keys",
@@ -1258,9 +1279,9 @@
     "notiz": "US1-URL; andere Sites haben eigene Hosts (z.B. mcp.datadoghq.eu); alternativ Bearer-Token oder DD_API_KEY/DD_APPLICATION_KEY-Header.",
     "offiziell": true,
     "pruefung": {
-      "datum": "2026-11-10",
+      "datum": "2026-11-11",
       "ergebnis": "unklar",
-      "klasse": "ermittlung fehlgeschlagen: anmeldeserver-metadaten nicht lesbar",
+      "klasse": "ermittlung fehlgeschlagen: fremder host",
       "scopes_supported": []
     },
     "quelle": "https://docs.datadoghq.com/bits_ai/mcp_server/setup/",
@@ -1326,9 +1347,9 @@
     "notiz": "MCP-Router; daneben viele Einzeldienst-Server (z.B. apps.mcp.digitalocean.com/mcp); OAuth empfohlen, alternativ Bearer-API-Token.",
     "offiziell": true,
     "pruefung": {
-      "datum": "2026-11-10",
-      "ergebnis": "unklar",
-      "klasse": "ermittlung fehlgeschlagen: resource passt nicht",
+      "datum": "2026-11-11",
+      "ergebnis": "einrichtbar_oauth",
+      "klasse": "oauth_dcr",
       "scopes_supported": []
     },
     "quelle": "https://docs.digitalocean.com/reference/mcp/configure-mcp/",
@@ -1401,9 +1422,9 @@
     "notiz": "Anmeldung mit Domotz-Konto; Verfuegbarkeit teils als Beta/Preview bezeichnet.",
     "offiziell": true,
     "pruefung": {
-      "datum": "2026-11-10",
+      "datum": "2026-11-11",
       "ergebnis": "unklar",
-      "klasse": "ermittlung fehlgeschlagen: resource passt nicht",
+      "klasse": "ermittlung fehlgeschlagen: issuer passt nicht",
       "scopes_supported": []
     },
     "quelle": "https://help.domotz.com/integrations/domotz-mcp-server-setup/",
@@ -1619,10 +1640,17 @@
     "notiz": "OAuth mit Dynamic Client Registration, laut Hilfe nur fuer ChatGPT und Claude nutzbar; Hilfeseite liegt auf fyxer.support.site.",
     "offiziell": true,
     "pruefung": {
-      "datum": "2026-11-10",
-      "ergebnis": "unklar",
-      "klasse": "ermittlung fehlgeschlagen: resource passt nicht",
-      "scopes_supported": []
+      "datum": "2026-11-11",
+      "ergebnis": "einrichtbar_oauth",
+      "klasse": "oauth_dcr",
+      "scopes_supported": [
+        "call_recording.read",
+        "drafts.write",
+        "context.read",
+        "meetings.read",
+        "contacts.read",
+        "emails.read"
+      ]
     },
     "quelle": "https://fyxer.support.site/article/fyxer-mcp",
     "schluessel_link": "",
@@ -1714,10 +1742,12 @@
     "notiz": "Beta, credit-based; OAuth for Claude, alternatively MCP API key (sent as bearer token, exact header not documented); transport not named in docs.",
     "offiziell": true,
     "pruefung": {
-      "datum": "2026-11-10",
-      "ergebnis": "unklar",
-      "klasse": "ermittlung fehlgeschlagen: anmeldeserver-metadaten nicht lesbar",
-      "scopes_supported": []
+      "datum": "2026-11-11",
+      "ergebnis": "einrichtbar_oauth",
+      "klasse": "oauth_dcr",
+      "scopes_supported": [
+        "mcp:use"
+      ]
     },
     "quelle": "https://govtribe.com/docs/govtribe-user-guide/govtribe-mcp",
     "schluessel_link": "https://govtribe.com/settings/mcp",
@@ -2353,9 +2383,9 @@
     "notiz": "Streamable HTTP only (SSE dropped); OAuth 2.0 or Bearer personal API token; account admin must enable hosted MCP.",
     "offiziell": true,
     "pruefung": {
-      "datum": "2026-11-10",
-      "ergebnis": "unklar",
-      "klasse": "ermittlung fehlgeschlagen: anmeldeserver-metadaten nicht lesbar",
+      "datum": "2026-11-11",
+      "ergebnis": "einrichtbar_oauth",
+      "klasse": "oauth_dcr",
       "scopes_supported": []
     },
     "quelle": "https://developer.monday.com/api-reference/docs/integrate-with-monday-mcp",
@@ -2572,10 +2602,13 @@
     "notiz": "OAuth required; no public API key; plan availability inconsistent between Otter help article and blog.",
     "offiziell": true,
     "pruefung": {
-      "datum": "2026-11-10",
-      "ergebnis": "unklar",
-      "klasse": "ermittlung fehlgeschlagen: resource passt nicht",
-      "scopes_supported": []
+      "datum": "2026-11-11",
+      "ergebnis": "einrichtbar_oauth",
+      "klasse": "oauth_dcr",
+      "scopes_supported": [
+        "profile:read",
+        "conversations:read"
+      ]
     },
     "quelle": "https://help.otter.ai/hc/en-us/articles/35287607569687-Otter-MCP-Server",
     "schluessel_link": "",
@@ -3102,9 +3135,9 @@
     "notiz": "OAuth is documented as alternative to API keys (base64 KEY_ID:KEY_SECRET merchant token, header format not on this page); old /sse endpoint deprecated Aug 2025.",
     "offiziell": true,
     "pruefung": {
-      "datum": "2026-11-10",
-      "ergebnis": "unklar",
-      "klasse": "ermittlung fehlgeschlagen: resource passt nicht",
+      "datum": "2026-11-11",
+      "ergebnis": "einrichtbar_oauth",
+      "klasse": "oauth_dcr",
       "scopes_supported": []
     },
     "quelle": "https://razorpay.com/docs/mcp-server/remote/",
@@ -3240,10 +3273,16 @@
     "notiz": "Kensho (S&P Global) Adaptive Retrieval server; access is restricted to licensed customers via S&P Global Marketplace / commercial@kensho.com; a separate kfinance endpoint exists in third-party listings but is not confirmed in official docs.",
     "offiziell": true,
     "pruefung": {
-      "datum": "2026-11-10",
-      "ergebnis": "unklar",
-      "klasse": "ermittlung fehlgeschlagen: issuer passt nicht",
-      "scopes_supported": []
+      "datum": "2026-11-11",
+      "ergebnis": "einrichtbar_oauth",
+      "klasse": "oauth_dcr",
+      "scopes_supported": [
+        "mcp:kensho_grounding",
+        "offline_access",
+        "profile",
+        "openid",
+        "email"
+      ]
     },
     "quelle": "https://docs.kensho.com/adaptive-retrieval/mcp",
     "schluessel_link": "",
@@ -3437,9 +3476,9 @@
     "notiz": "Confidential OAuth with a registered Slack app (Marketplace or internal only, no Dynamic Client Registration, no SSE).",
     "offiziell": true,
     "pruefung": {
-      "datum": "2026-11-10",
+      "datum": "2026-11-11",
       "ergebnis": "unklar",
-      "klasse": "ermittlung fehlgeschlagen: resource passt nicht",
+      "klasse": "ermittlung fehlgeschlagen: fremder host",
       "scopes_supported": []
     },
     "quelle": "https://docs.slack.dev/ai/mcp-server",
@@ -3491,10 +3530,12 @@
     "notiz": "OAuth preferred; Agent API key as Bearer token for non-OAuth clients (non-agent keys rejected from Dec 2026).",
     "offiziell": true,
     "pruefung": {
-      "datum": "2026-11-10",
-      "ergebnis": "unklar",
-      "klasse": "ermittlung fehlgeschlagen: anmeldeserver-metadaten nicht lesbar",
-      "scopes_supported": []
+      "datum": "2026-11-11",
+      "ergebnis": "einrichtbar_oauth",
+      "klasse": "oauth_dcr",
+      "scopes_supported": [
+        "mcp"
+      ]
     },
     "quelle": "https://docs.stripe.com/mcp",
     "schluessel_link": "https://docs.stripe.com/keys.md#agent-keys",
