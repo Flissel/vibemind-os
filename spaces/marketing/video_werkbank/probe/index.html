@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; background: #101820; }
+  #root { position: relative; width: 1920px; height: 1080px; overflow: hidden; background: #101820; font-family: Inter, sans-serif; color: #fff; }
+  .text { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; display: flex; align-items: center; justify-content: center; font-size: 120px; font-weight: 700; }
+  .rein { animation: rein 0.6s ease-out both; }
+  @keyframes rein { from { opacity: 0; transform: translateY(40px); } to { opacity: 1; transform: translateY(0); } }
+</style>
+</head>
+<body>
+<div id="root" data-composition-id="probe" data-start="0" data-duration="10" data-width="1920" data-height="1080" data-fps="30">
+  <div id="t1" class="clip text rein" data-start="0" data-duration="3.5" data-track-index="1">Erster Text</div>
+  <div id="t2" class="clip text rein" data-start="3.5" data-duration="3.5" data-track-index="1">Zweiter Text</div>
+  <div id="t3" class="clip text rein" data-start="7" data-duration="3" data-track-index="1">Dritter Text</div>
+  <audio id="ton" src="ton.wav" data-start="0" data-duration="10" data-track-index="2" data-volume="1"></audio>
+</div>
+</body>
+</html>
