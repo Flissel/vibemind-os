@@ -28,11 +28,9 @@ html, body { margin: 0; background: var(--grund); }
 .zahlzeile { display: flex; flex-direction: column; align-items: flex-start; gap: 20px; }
 .zahl { font-family: var(--schrift-anzeige); font-weight: var(--gewicht-anzeige); font-size: calc(300px * var(--s, 1)); line-height: .95;
   letter-spacing: -.03em; color: var(--akzent-text); white-space: nowrap; }
-.einheit { font-family: var(--schrift-anzeige); font-weight: var(--gewicht-anzeige); font-size: calc(72px * var(--s, 1)); line-height: 1.1;
+.einheit { font-family: var(--schrift-anzeige); font-weight: var(--gewicht-anzeige); font-size: calc(64px * var(--s, 1)); line-height: 1.12;
   overflow-wrap: anywhere; min-width: 0; }
 
-.anfuehrung { font-family: var(--schrift-anzeige); font-weight: var(--gewicht-anzeige); font-size: 240px; line-height: 1;
-  height: 120px; margin-bottom: 8px; color: var(--akzent); overflow: visible; }
 .zitat { margin: 0; font-size: calc(76px * var(--s, 1)); line-height: 1.24; font-weight: var(--gewicht-text); letter-spacing: -.01em; overflow-wrap: anywhere; }
 .von { margin: 52px 0 0; font-size: 46px; color: var(--akzent-text); }
 .von::before { content: "\2014\00a0"; }
@@ -78,10 +76,10 @@ html, body { margin: 0; background: var(--grund); }
 .v1 .deko { position: absolute; inset: 56px; border: 2px solid var(--linie); }
 .v1 .inhalt { margin: 0 auto; width: 1440px; align-items: center; text-align: center; }
 .v1 .inhalt::before { content: ""; display: block; width: 128px; height: 8px; background: var(--akzent); margin-bottom: 64px; }
+.v1.t-vergleich .inhalt::before { display: none; }
 .v1 .punkte { align-self: center; text-align: left; }
 .v1 .zahlzeile { align-items: center; }
-.v1 .anfuehrung { margin-bottom: 16px; }
-.v1 .agenda { width: 1240px; text-align: left; }
+.v1 .v1 .agenda { width: 1240px; text-align: left; }
 .v1 .spalten { text-align: left; width: 100%; }
 .v1 .logo { right: 120px; bottom: 96px; }
 

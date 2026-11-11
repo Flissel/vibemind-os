@@ -189,5 +189,6 @@ def szene_rendern(szene: dict, gesprochen, marke: dict, ordner: Path, ziel: Path
             shutil.rmtree(spiegel, ignore_errors=True)
     dauer = pruefen(ziel)["dauer_s"]
     if abs(dauer - gesprochen.dauer_s) > DAUER_TOLERANZ_S:
+        ziel.unlink(missing_ok=True)   # kein falscher Clip bleibt liegen
         raise RenderFehler("Der Clip ist nicht so lang wie die gesprochene Szene.")
     return dauer

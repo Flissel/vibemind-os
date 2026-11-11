@@ -118,7 +118,7 @@ def test_probe_render_zehn_sekunden_mit_ton(tmp_path):
 # --- szene_rendern (Task 6) -----------------------------------------------------------------
 
 def _bild(*vorlagen):
-    from spaces.marketing.claw.tests.test_video_slides import S
+    from spaces.marketing.claw.tests.slide_hilfen import S
     return {"schritte": [S(v, i) for i, v in enumerate(vorlagen)]}
 
 
@@ -178,3 +178,13 @@ def test_zwei_szenen_haben_identische_streamparameter(tmp_path):
     assert a["v:0"] == b["v:0"] and a["a:0"] == b["a:0"]
     assert (a["v:0"]["codec_name"], a["v:0"]["pix_fmt"], a["v:0"]["r_frame_rate"]) == ("h264", "yuv420p", "30/1")
     assert (a["a:0"]["codec_name"], a["a:0"]["sample_rate"], a["a:0"]["channels"]) == ("aac", "48000", 2)
+
+
+def test_szene_dauerfehler_loescht_den_falschen_clip(monkeypatch, tmp_path):
+    monkeypatch.setattr(video_rendern, "rendern", lambda k, z, ton=None, zeitlimit_s=900: Path(z).write_bytes(b"x"))
+    monkeypatch.setattr(video_rendern, "_lauf", lambda args, *a, **k: (Path(args[-1]).write_bytes(b"x"), 0)[1])
+    monkeypatch.setattr(video_rendern, "pruefen", lambda p: {"dauer_s": 9.0})
+    ziel = tmp_path / "z.mp4"
+    with pytest.raises(video_rendern.RenderFehler):
+        video_rendern.szene_rendern({"bild": _bild("titel", "zahl")}, _sprache(tmp_path), {}, tmp_path / "o", ziel)
+    assert not ziel.exists()

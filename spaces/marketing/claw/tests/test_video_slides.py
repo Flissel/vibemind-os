@@ -6,31 +6,8 @@ import pytest
 from spaces.marketing.claw import video_slides
 from spaces.marketing.claw.video_slides import (FELDER, STILL_MAX_S, VORLAGEN, bild_pruefen, komposition,
                                                 marke_fuer, zeitplan)
+from spaces.marketing.claw.tests.slide_hilfen import SAETZE_1_2_3, S, html_fuer, szene
 from spaces.marketing.workers.video_stimme import Satz
-
-SAETZE_1_2_3 = [Satz("Eins.", 0.0, 2.0), Satz("Zwei.", 2.15, 2.0), Satz("Drei.", 4.3, 1.7)]
-
-
-def S(vorlage, ab, **felder):
-    standard = {
-        "titel": {"zeile": "Die Zeile", "unterzeile": "Darunter"},
-        "stichpunkte": {"ueberschrift": "Kopf", "punkte": ["Eins", "Zwei"]},
-        "zahl": {"zahl": "40 %", "einheit": "weniger", "erklaerung": "weil"},
-        "zitat": {"zitat": "Ein Satz", "von": "Jemand"},
-        "vergleich": {"links": {"titel": "A", "punkte": ["a"]}, "rechts": {"titel": "B", "punkte": ["b"]}},
-        "agenda": {"punkte": ["x", "y", "z"], "aktiv": 1},
-    }[vorlage]
-    return {"vorlage": vorlage, "ab_satz": ab, **{**standard, **felder}}
-
-
-def szene(**extra):
-    return {"bildart": "slide", "uebergang": "schnitt", "variante": 0, **extra}
-
-
-def html_fuer(schritte, saetze=SAETZE_1_2_3, dauer=6.0, marke=None, **extra):
-    bild = {"schritte": schritte}
-    return komposition(szene(**extra), zeitplan(bild, saetze, dauer), marke or {}, "ton.wav", dauer)
-
 
 def test_schritt_startet_an_der_satzgrenze():
     plan = zeitplan({"schritte": [S("titel", 0), S("zahl", 2)]}, SAETZE_1_2_3, 6.0)
@@ -188,3 +165,38 @@ def test_import_zieht_nichts_schweres():
             "'spaces.marketing.workers.video_rendern') if m in sys.modules]; print(bad)")
     aus = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60).stdout.strip()
     assert aus == "[]", aus
+
+
+def test_umlaute_und_eszett_bleiben_zeichen_nur_markup_wird_maskiert():
+    text = "Größe: ÄÖÜ äöü ß \u201eheiß\u201c & <b> \"q\""
+    html = html_fuer([S("titel", 0, zeile=text), S("zahl", 2)])
+    assert "Größe: ÄÖÜ äöü ß \u201eheiß\u201c" in html
+    assert "&amp; &lt;b&gt; &quot;q&quot;" in html
+
+
+def test_zahl_einheit_bleibt_groesser_als_erklaerung_auch_bei_langem_text():
+    kurz = html_fuer([S("titel", 0), S("zahl", 1, einheit="Monate")], saetze=SAETZE_1_2_3[:2], dauer=4.5)
+    lang = html_fuer([S("titel", 0), S("zahl", 1, einheit="weniger Aufwand im Angebotswesen und im Vertrieb")],
+                     saetze=SAETZE_1_2_3[:2], dauer=4.5)
+    css = kurz.split("<style>")[1].split("</style>")[0]
+    einheit_px = int(re.search(r"\.einheit \{[^}]*?font-size: calc\((\d+)px", css).group(1))
+    erklaerung_px = int(re.search(r"\.unter \{[^}]*?font-size: (\d+)px", css).group(1))
+    for html in (kurz, lang):
+        skala = float(re.search(r'class="einheit" style="--s:([0-9.]+)"', html).group(1))
+        assert einheit_px * skala > erklaerung_px, (einheit_px, skala)
+    assert "overflow-wrap: anywhere" in css
+
+
+def test_erster_schritt_startet_bei_null_auch_wenn_der_satz_spaeter_beginnt():
+    plan = zeitplan({"schritte": [S("titel", 0), S("zahl", 1)]}, [Satz("a", 0.4, 2.0), Satz("b", 2.6, 2.0)], 4.6)
+    assert plan[0].start_s == 0.0 and sum(p.dauer_s for p in plan) == 4.6
+
+
+def test_v2_agenda_ohne_schrittnummer_andere_vorlagen_mit():
+    assert 'class="nummer"' not in html_fuer([S("agenda", 0), S("zahl", 2)], variante=2).split('t-zahl')[0]
+    assert 'class="nummer"' in html_fuer([S("agenda", 0), S("zahl", 2)], variante=2).split('t-zahl')[1]
+
+
+def test_v1_vergleich_ohne_zierstrich():
+    css = html_fuer([S("vergleich", 0), S("zahl", 2)], variante=1)
+    assert ".v1.t-vergleich .inhalt::before { display: none; }" in css and "v1 t-vergleich" in css

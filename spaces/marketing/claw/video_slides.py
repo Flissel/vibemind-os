@@ -152,7 +152,7 @@ def zeitplan(bild: dict, saetze: list[Satz], dauer_s: float) -> list[Schritt]:
     ab = [int(s["ab_satz"]) for s in roh]
     plan: list[Schritt] = []
     for i, s in enumerate(roh):
-        start = round(saetze[ab[i]].start_s, 3)
+        start = 0.0 if i == 0 else round(saetze[ab[i]].start_s, 3)   # kein leeres Bild vor dem ersten Schritt
         ende_satz = ab[i + 1] if i + 1 < len(roh) else len(saetze)
         ende = round(saetze[ab[i + 1]].start_s, 3) if i + 1 < len(roh) else round(dauer_s, 3)
         weitere = [round(saetze[k].start_s, 3) for k in range(ab[i] + 1, ende_satz)]
@@ -314,7 +314,7 @@ def _inhalt(p: Schritt) -> str:
     if v == "zahl":
         return _fuellen(_baustein("zahl.html"), {
             "zahl": _e(f.get("zahl")), "einheit": _e(f.get("einheit")), "erklaerung": _e(f.get("erklaerung")),
-            "s_zahl": _skala(f.get("zahl"), 5, 0.4, 7), "s_einheit": _skala(f.get("einheit"), 14, 0.5, 14)})
+            "s_zahl": _skala(f.get("zahl"), 5, 0.4, 7), "s_einheit": _skala(f.get("einheit"), 10_000, 0.85, 14)})
     if v == "zitat":
         return _fuellen(_baustein("zitat.html"), {
             "zitat": _e(f.get("zitat")), "von": _e(f.get("von")), "s_zitat": _skala(f.get("zitat"), 70, 0.6, 22)})
@@ -367,7 +367,8 @@ def komposition(szene: dict, plan: list[Schritt], marke: dict, ton_datei: str, d
         if variante == 1:
             deko = '<div class="deko"></div>'
         elif variante == 2:
-            deko = f'<div class="deko"><div class="nummer">{i + 1:02d}</div></div>'
+            nummer = "" if p.vorlage == "agenda" else f'<div class="nummer">{i + 1:02d}</div>'   # Agenda hat eigene Nummern
+            deko = f'<div class="deko">{nummer}</div>'
         zoom = f' class="bewegung zoom" style="--zoom-dauer:{p.dauer_s:.2f}s"' if _steht_still(p) else ' class="bewegung"'
         teile.append(
             f'<div id="schritt{i + 1}" class="clip schritt v{variante} t-{p.vorlage}" data-start="{p.start_s:.3f}" '

@@ -22,35 +22,35 @@ from spaces.marketing.workers.video_stimme import Gesprochen, Satz
 
 SATZ_DAUER = (2.4, 2.2, 2.6)       # erfundene Satzlaengen; dazwischen 0,15 s Pause
 
-AGENDA = ["Wo wir stehen", "Was sich lohnt", "Wie wir starten"]
+AGENDA = ["Übersicht und Lage", "Was sich lohnt", "Ökosystem und nächste Schritte"]
 MUSTER = [
     ("titel", 0, {"bildart": "slide", "uebergang": "blende"}, [
         {"vorlage": "titel", "ab_satz": 0, "zeile": "KI im Mittelstand: vom Pilot zum Ergebnis",
-         "unterzeile": "Was Entscheider jetzt wissen muessen"},
+         "unterzeile": "Was Entscheider jetzt wissen müssen"},
         {"vorlage": "zahl", "ab_satz": 2, "zahl": "3", "einheit": "Monate bis zum ersten Nutzen",
          "erklaerung": "wenn der Anwendungsfall klar umrissen ist"}]),
     ("stichpunkte", 1, {"bildart": "slide", "uebergang": "schnitt"}, [
         {"vorlage": "titel", "ab_satz": 0, "zeile": "Drei Fragen vor jedem KI-Projekt",
          "unterzeile": "Die Antworten bestimmen den Erfolg"},
         {"vorlage": "stichpunkte", "ab_satz": 1, "ueberschrift": "Worauf es ankommt",
-         "punkte": ["Welches Geschaeftsproblem loesen wir?", "Welche Daten haben wir wirklich?",
-                    "Wer im Team uebernimmt die Verantwortung?"]}]),
+         "punkte": ["Welches Geschäftsproblem lösen wir?", "Welche Daten haben wir wirklich?",
+                    "Wer im Team übernimmt die Verantwortung?"]}]),
     ("zahl", 2, {"bildart": "slide", "uebergang": "blende"}, [
         {"vorlage": "titel", "ab_satz": 0, "zeile": "Wo KI heute schon Zeit spart",
          "unterzeile": "Beispiele aus der Beratungspraxis"},
-        {"vorlage": "zahl", "ab_satz": 1, "zahl": "40 %", "einheit": "weniger Aufwand im Angebotswesen",
-         "erklaerung": "gemessen ueber drei Monate im Vertrieb"}]),
+        {"vorlage": "zahl", "ab_satz": 1, "zahl": "40 %", "einheit": "weniger Aufwand im Angebotswesen und in der Büroorganisation",
+         "erklaerung": "gemessen über drei Monate im Vertrieb"}]),
     ("zitat", 0, {"bildart": "slide", "uebergang": "schnitt"}, [
-        {"vorlage": "zitat", "ab_satz": 0, "zitat": "Nicht die Technik scheitert, sondern die fehlende Entscheidung.",
-         "von": "Erfahrung aus 40 Beratungsprojekten"},
+        {"vorlage": "zitat", "ab_satz": 0, "zitat": "„Nicht die Technik scheitert, sondern die fehlende Entscheidung.“",
+         "von": "Erfahrung aus über 40 Beratungsprojekten"},
         {"vorlage": "stichpunkte", "ab_satz": 2, "ueberschrift": "Was daraus folgt",
-         "punkte": ["Ziel zuerst festlegen", "Dann erst Werkzeuge waehlen"]}]),
+         "punkte": ["Maßnahmen zuerst priorisieren", "Dann erst Werkzeuge wählen"]}]),
     ("vergleich", 1, {"bildart": "slide", "uebergang": "blende"}, [
         {"vorlage": "vergleich", "ab_satz": 0,
-         "links": {"titel": "Ohne klaren Plan", "punkte": ["Viele Einzeltests", "Kein messbares Ziel", "Frust im Team"]},
-         "rechts": {"titel": "Mit klarem Plan", "punkte": ["Ein Anwendungsfall", "Messbarer Nutzen", "Schnelle Akzeptanz"]}},
+         "links": {"titel": "Ohne klaren Plan", "punkte": ["Viele Einzelversuche", "Kein messbares Ziel", "Frust und Ärger im Team"]},
+         "rechts": {"titel": "Mit klarem Plan", "punkte": ["Ein klarer Anwendungsfall", "Messbarer Nutzen", "Schnelle Akzeptanz"]}},
         {"vorlage": "titel", "ab_satz": 2, "zeile": "Der Unterschied ist die Vorbereitung",
-         "unterzeile": "Nicht das Budget"}]),
+         "unterzeile": "Nicht die Größe des Budgets"}]),
     ("agenda", 2, {"bildart": "slide", "uebergang": "schnitt"}, [
         {"vorlage": "agenda", "ab_satz": 0, "punkte": AGENDA, "aktiv": 1},
         {"vorlage": "agenda", "ab_satz": 2, "punkte": AGENDA, "aktiv": 2}]),
