@@ -544,7 +544,8 @@ class Handler(BaseHTTPRequestHandler):
             self._antwort(502, b"ElevenLabs nicht verfuegbar", "text/plain; charset=utf-8",
                           {"X-Ton-Engine-Fehler": "elevenlabs"})
         except Exception as e:  # noqa: BLE001 - Modell/GPU-Fehler als 500 mit Typ
-            LOG.exception("Satz sprechen fehlgeschlagen")
+            # nur der Typname: Ausnahmetext und Stacktrace koennen den gesprochenen Text tragen
+            LOG.warning("Satz sprechen fehlgeschlagen: %s", type(e).__name__)
             self._antwort(500, type(e).__name__.encode("utf-8"), "text/plain; charset=utf-8")
 
     def do_POST(self):  # noqa: N802

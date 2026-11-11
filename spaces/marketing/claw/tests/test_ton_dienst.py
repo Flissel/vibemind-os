@@ -574,6 +574,25 @@ def test_post_satz_liefert_wav_mit_kopfzeilen_und_502_bei_elevenlabs_ausfall(mon
         server.server_close()
 
 
+def test_post_satz_fehler_protokolliert_nur_den_typ(monkeypatch, caplog):
+    """M14: ein Modellfehler bei /satz kommt als 500 mit Typname; ins Protokoll geht nur der Typname, kein
+    Ausnahmetext und kein Stacktrace (dort koennte der gesprochene Text stehen)."""
+    import logging
+    server = _server()
+    try:
+        def kaputt(p):
+            raise RuntimeError("Sprechtext geheim")
+        monkeypatch.setattr(td, "satz_sprechen", kaputt)
+        with caplog.at_level(logging.INFO, logger=td.LOG.name):
+            status, _, rumpf = _post(server, "/satz", {"text": "Hallo."})
+        assert status == 500 and rumpf == b"RuntimeError"
+        assert "RuntimeError" in caplog.text and "geheim" not in caplog.text and "Traceback" not in caplog.text
+        assert all(r.exc_info is None for r in caplog.records)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_sprechen_und_voiceover_unveraendert(monkeypatch):
     """/sprechen faellt weiter still auf Chatterbox zurueck, /voiceover kuerzt weiter per anpassen()."""
     server = _server()
