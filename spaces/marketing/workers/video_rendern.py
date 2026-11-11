@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
 from pathlib import Path
@@ -57,15 +58,37 @@ def _lauf(args: list[str], zeitlimit_s: float, cwd: Path | None, env: dict[str, 
         raise RenderFehler(f"Programm {args[0]} nicht gefunden.")
     with tempfile.TemporaryFile() as log:
         try:
-            r = subprocess.run([exe, *args[1:]], stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                               cwd=cwd, env=env, timeout=zeitlimit_s)
-        except subprocess.TimeoutExpired:
-            raise RenderFehler("Zeitlimit beim Rendern ueberschritten.") from None
+            if os.name == "nt":
+                flags = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+            else:
+                flags = {"start_new_session": True}
+            proc = subprocess.Popen([exe, *args[1:]], stdout=log, stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL, cwd=cwd, env=env, **flags)
         except OSError as e:
             raise RenderFehler(f"Prozess liess sich nicht starten ({type(e).__name__}).") from None
-        if r.returncode != 0:
-            LOG.warning("%s endete mit Exit %s", args[0], r.returncode)
-        return r.returncode
+        try:
+            code = proc.wait(timeout=zeitlimit_s)
+        except subprocess.TimeoutExpired:
+            _baum_beenden(proc.pid)
+            raise RenderFehler("Zeitlimit beim Rendern ueberschritten.") from None
+        except BaseException:
+            _baum_beenden(proc.pid)  # jeder andere Abbruch (z. B. Strg+C) raeumt ebenfalls auf
+            raise
+        if code != 0:
+            LOG.warning("%s endete mit Exit %s", args[0], code)
+        return code
+
+
+def _baum_beenden(pid: int) -> None:
+    """Beendet den Kindprozess samt Unterprozessen, nur ueber die PID (nie per Namens-/Kommandozeilenmuster)."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, timeout=30)
+        else:
+            os.killpg(pid, signal.SIGKILL)  # eigene Sitzung (start_new_session): Gruppe = Kindbaum
+    except (OSError, subprocess.SubprocessError) as e:
+        LOG.warning("Prozessbaum liess sich nicht beenden (%s)", type(e).__name__)
 
 
 def rendern(komposition: Path, ziel: Path, ton: Path | None = None, zeitlimit_s: float = 900) -> None:

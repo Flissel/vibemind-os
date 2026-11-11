@@ -24,29 +24,79 @@ def test_normal_argumente_mit_ton_nimmt_tonspur_aus_wav():
     assert a.count("-i") == 2 and "-map" in a and "1:a:0" in a
 
 
-def test_render_fehler_ohne_pfad_im_text(monkeypatch, tmp_path):
-    def fake_run(args, **kw):
-        kw["stdout"].write(rb"Fehler in C:\Users\geheim\x.html")
-        return subprocess.CompletedProcess(args, 1)
+class FakeProzess:
+    """Ersetzt subprocess.Popen: schreibt optional in die Ausgabedatei, endet mit `code` oder laeuft in den Timeout."""
+    letzter = None
 
-    monkeypatch.setattr(video_rendern.subprocess, "run", fake_run)
+    def __init__(self, args, **kw):
+        self.args, self.kw, self.pid = args, kw, 4711
+        FakeProzess.letzter = self
+        self.code, self.haengt, self.text = 0, False, b""
+
+    def wait(self, timeout=None):
+        if self.haengt:
+            raise subprocess.TimeoutExpired(self.args, timeout)
+        if self.text:
+            self.kw["stdout"].write(self.text)
+        return self.code
+
+
+def _fake(monkeypatch, code=0, haengt=False, text=b"", ziel=None):
+    def bauen(args, **kw):
+        p = FakeProzess(args, **kw)
+        p.code, p.haengt, p.text = code, haengt, text
+        if ziel is not None and code == 0 and not haengt:
+            ziel.write_bytes(b"x")
+        return p
+
+    monkeypatch.setattr(video_rendern.subprocess, "Popen", bauen)
+    monkeypatch.setattr(video_rendern.shutil, "which", lambda n: n)
+    aufrufe = []
+    monkeypatch.setattr(video_rendern, "_baum_beenden", lambda pid: aufrufe.append(pid))
+    return aufrufe
+
+
+def test_render_fehler_ohne_pfad_im_text(monkeypatch, tmp_path):
+    _fake(monkeypatch, code=1, text=rb"Fehler in C:\Users\geheim\x.html")
     with pytest.raises(video_rendern.RenderFehler) as e:
         video_rendern.rendern(tmp_path / "index.html", tmp_path / "aus.mp4")
-    assert "C:\\" not in e.value.grund and "\\" not in e.value.grund and e.value.grund
+    assert "C:" not in e.value.grund and chr(92) not in e.value.grund and e.value.grund
 
 
 def test_render_setzt_do_not_track_und_nutzt_datei_statt_pipe(monkeypatch, tmp_path):
-    gesehen = {}
-
-    def fake_run(args, **kw):
-        gesehen.update(kw)
-        (tmp_path / "aus.mp4").write_bytes(b"x")
-        return subprocess.CompletedProcess(args, 0)
-
-    monkeypatch.setattr(video_rendern.subprocess, "run", fake_run)
+    _fake(monkeypatch, ziel=tmp_path / "aus.mp4")
     video_rendern.rendern(tmp_path / "index.html", tmp_path / "aus.mp4")
-    assert gesehen["env"]["DO_NOT_TRACK"] == "1"
-    assert gesehen["stdout"] is not subprocess.PIPE and not re.search("PIPE", repr(gesehen.get("stderr")))
+    kw = FakeProzess.letzter.kw
+    assert kw["env"]["DO_NOT_TRACK"] == "1"
+    assert kw["stdout"] is not subprocess.PIPE and kw["stderr"] == subprocess.STDOUT
+
+
+def test_timeout_beendet_den_prozessbaum_ueber_die_pid(monkeypatch, tmp_path):
+    beendet = _fake(monkeypatch, haengt=True)
+    with pytest.raises(video_rendern.RenderFehler) as e:
+        video_rendern.rendern(tmp_path / "index.html", tmp_path / "aus.mp4", zeitlimit_s=1)
+    assert beendet == [4711]
+    assert "C:" not in e.value.grund and chr(92) not in e.value.grund and "Zeitlimit" in e.value.grund
+
+
+def test_baum_kill_nutzt_taskkill_mit_pid_ohne_namensmuster(monkeypatch):
+    gesehen = []
+    monkeypatch.setattr(video_rendern.os, "name", "nt")
+    monkeypatch.setattr(video_rendern.subprocess, "run", lambda a, **kw: gesehen.append(a))
+    video_rendern._baum_beenden(4711)
+    assert gesehen == [["taskkill", "/T", "/F", "/PID", "4711"]]
+
+
+def test_abbruch_waehrend_des_wartens_beendet_ebenfalls_den_baum(monkeypatch, tmp_path):
+    beendet = _fake(monkeypatch)
+
+    def abbruch(self, timeout=None):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(FakeProzess, "wait", abbruch)
+    with pytest.raises(KeyboardInterrupt):
+        video_rendern.rendern(tmp_path / "index.html", tmp_path / "aus.mp4")
+    assert beendet == [4711]
 
 
 @pytest.mark.skipif(not video_rendern.eingerichtet(), reason="HyperFrames nicht installiert")

@@ -1,3 +1,4 @@
 node_modules/
 renders/
 probe/ton.wav
+.hyperframes/
