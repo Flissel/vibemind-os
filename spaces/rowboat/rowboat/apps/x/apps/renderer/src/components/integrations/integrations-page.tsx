@@ -14,6 +14,8 @@ type Status = Awaited<ReturnType<typeof window.ipc.invoke<'integrations:status'>
 const SCHNELL_MS = 3_000
 const LANGSAM_MS = 10_000
 const SCHNELL_DAUER_MS = 120_000
+// Fehler sollen lesbar bleiben (Standard von sonner: 4 s).
+const FEHLER_MS = 10_000
 const SCHLUESSEL_HINWEIS = 'Rowboat hat keinen gültigen OpenFang-Schlüssel – Rowboat über start_desktop.py neu starten'
 
 type Rueckfrage = { art: 'abmelden' | 'entfernen'; id: string; name: string } | null
@@ -56,7 +58,7 @@ export function IntegrationsPage({ visible }: { visible: boolean }) {
     setLaufend(new Set(laufendRef.current))
     try {
       const r = await f()
-      if (!r.ok) toast.error(r.meldung ?? 'Aktion fehlgeschlagen')
+      if (!r.ok) toast.error(r.meldung ?? 'Aktion fehlgeschlagen', { duration: FEHLER_MS })
       if (r.ok && browser) {
         schnellBis.current = Date.now() + SCHNELL_DAUER_MS
         setNeustart((n) => n + 1) // Effekt laedt sofort neu und plant die naechste Runde in 3 s

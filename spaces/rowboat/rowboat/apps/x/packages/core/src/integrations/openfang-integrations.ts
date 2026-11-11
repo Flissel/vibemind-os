@@ -46,8 +46,10 @@ const SICHERE_KLASSE = new RegExp(
 
 export function sichereMeldung(raw: unknown, status: number): string {
   const text = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>).error : undefined
-  if (typeof text === 'string' && SICHERE_KLASSE.test(text)) return text
-  return `Aktion fehlgeschlagen (HTTP ${status})`
+  if (typeof text !== 'string' || !SICHERE_KLASSE.test(text)) return `Aktion fehlgeschlagen (HTTP ${status})`
+  const registrierung = /^registrierung abgelehnt \(http (\d{3})\)$/.exec(text)
+  if (registrierung) return `Der Anbieter lässt OpenFang nicht als Anmelde-App zu (Registrierung abgelehnt, HTTP ${registrierung[1]}). Mit dieser Vorlage geht es derzeit nicht.`
+  return text
 }
 
 function istIpLiteral(host: string): boolean {

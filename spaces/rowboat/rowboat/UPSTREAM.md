@@ -8,13 +8,14 @@ To re-pin the kernel plugin catalog, change `DESKTOP_PLUGIN_CATALOG_PIN` on bran
 Flissel/rowboat (in `apps/x/apps/renderer/src/lib/rowboat-plugin-api.ts`), then run the sync.
 
 - Fork: https://github.com/Flissel/rowboat (branch `vibemind`)
-- Fork commit: `1cff4c8620a8b5fcb1fc5ff18891b5fa128f3c76`
+- Fork commit: `2981a0a76cc92821feda32832544a1715830b607`
 - Upstream base: rowboatlabs/rowboat `72e9d8c`
 - EHL repo: https://github.com/Flissel/ehl-munich-2026 (`schema/`)
 - EHL commit: `44c1024c7804c696bc283bd14a9d08bd87a38230`
 
 ## Patches on top of upstream (EHL hierarchy graph, VibeMind)
 
+- 2981a0a7 fix(integrations): verstaendliche Meldung bei abgelehnter Anmeldung, Fehler 10 s sichtbar
 - 1cff4c86 fix(integrations): VerfuegbareVorlageDto aus shared importieren
 - 76e040b3 merge: vibemind in claude/katalog-teil4 (Plugin-System Teil 4)
 - 7057726e feat(integrations): Verfuegbar-Liste mit Suche, Kategorien und Kennzeichen ungeprueft

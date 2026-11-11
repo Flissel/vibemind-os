@@ -196,8 +196,11 @@ describe('URL-Pruefung', () => {
       'http://127.0.0.1:4200/api/integrations/github/schluessel/link']) expect(pruefeSchluesselLink(bad, 'github')).toBe(false)
   })
   it('sichereMeldung', () => {
-    for (const ok of ['tresor nicht verfuegbar', 'ermittlung fehlgeschlagen: fremder host', 'registrierung abgelehnt (http 400)', 'erneuerung fehlgeschlagen', 'nicht erreichbar: unzulaessiges ziel'])
+    for (const ok of ['tresor nicht verfuegbar', 'ermittlung fehlgeschlagen: fremder host', 'erneuerung fehlgeschlagen', 'nicht erreichbar: unzulaessiges ziel'])
       expect(sichereMeldung({ error: ok }, 409)).toBe(ok)
+    expect(sichereMeldung({ error: 'registrierung abgelehnt (http 400)' }, 409)).toBe(
+      'Der Anbieter lässt OpenFang nicht als Anmelde-App zu (Registrierung abgelehnt, HTTP 400). Mit dieser Vorlage geht es derzeit nicht.')
+    expect(sichereMeldung({ error: 'registrierung abgelehnt (http 500)' }, 409)).toContain('HTTP 500')
     for (const bad of [{ error: 'Ghp_ABC' }, { error: 'https://x' }, { error: 'a_b' }, { message: 'tresor nicht verfuegbar' }, 'tresor nicht verfuegbar', null])
       expect(sichereMeldung(bad, 500)).toBe('Aktion fehlgeschlagen (HTTP 500)')
   })
