@@ -1,0 +1,22 @@
+# Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://fyxer.support.site/article/fyxer-mcp - geprueft: 2026-11-11
+id = "fyxer"
+name = "Fyxer"
+description = "Fyxer über den offiziellen Remote-MCP-Server"
+category = "productivity"
+icon = "📋"
+tags = ["produktivität", "e-mail", "assistent"]
+read_only_tools = []
+
+[transport]
+type = "http"
+url = "https://app.fyxer.com/mcp"
+
+[auth]
+type = "oauth"
+scopes = []
+
+[catalog]
+replaces_openai_plugin = "fyxer"
+license = "proprietary-service"
+admission = "admitted"
+verified = false

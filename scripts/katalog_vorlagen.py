@@ -38,6 +38,7 @@ HOSTING_ENDUNGEN = frozenset(
         "github.io", "vercel.app", "netlify.app", "pages.dev", "herokuapp.com",
         "azurewebsites.net", "cloudfront.net", "onrender.com", "fly.dev",
         "workers.dev", "web.app", "firebaseapp.com", "appspot.com",
+        "support.site",
     }
 )
 
@@ -48,6 +49,10 @@ HOSTING_ENDUNGEN = frozenset(
 ANBIETER_DOMAINS: dict[str, frozenset[str]] = {
     # Hersteller-GitHub-Org cbinsights
     "cb-insights": frozenset({"cbinsights.com", "github.com/cbinsights"}),
+    # Hersteller-GitHub-Org cloudinary
+    "cloudinary": frozenset({"cloudinary.com", "github.com/cloudinary"}),
+    # Fyxer: Hilfe-Center auf der Plattform support.site
+    "fyxer": frozenset({"fyxer.com", "fyxer.support.site"}),
     # Cube Cloud laeuft auf cubecloud.dev, Doku auf cube.dev
     "cube": frozenset({"cubecloud.dev", "cube.dev"}),
     # Docket: Server docketai.com, Hilfe docket.io
@@ -312,6 +317,19 @@ KATEGORIE: dict[str, str] = {
 }
 
 STICHWORTE: dict[str, list[str]] = {
+    # Stufe 2 (11.11.2026): mit der normgerechten Ermittlung einrichtbar
+    "airtable": ["tabellen", "datenbank"],
+    "brand24": ["social-listening", "erwaehnungen"],
+    "brighthire": ["recruiting", "interviews"],
+    "cloudinary": ["bilder", "medien"],
+    "digitalocean": ["server", "hosting"],
+    "fyxer": ["e-mail", "assistent"],
+    "govtribe": ["ausschreibungen", "behoerden"],
+    "monday-com": ["projekte", "aufgaben"],
+    "otter-ai": ["meeting", "transkripte"],
+    "razorpay": ["zahlungen", "indien"],
+    "s-p": ["finanzdaten", "ratings"],
+    "stripe": ["zahlungen", "abos"],
     "aiera": ["finanzdaten", "analysten"],
     "amplitude": ["analytics", "produktdaten"],
     "apollo": ["crm", "kontakte"],

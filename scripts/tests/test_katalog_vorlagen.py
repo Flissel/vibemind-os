@@ -258,6 +258,20 @@ def test_teamwork_ausnahme_nur_eigene_org() -> None:
     assert not kv.domain_ok(z)
 
 
+def test_cloudinary_und_fyxer_ausnahmen_eng() -> None:
+    ok = zeile("cloudinary", server_url="https://asset-management.mcp.cloudinary.com/mcp",
+               quelle="https://github.com/cloudinary/mcp-servers")
+    assert kv.domain_ok(ok)
+    assert not kv.domain_ok(zeile("cloudinary", server_url="https://asset-management.mcp.cloudinary.com/mcp",
+                                  quelle="https://github.com/fremd/mcp-servers"))
+    assert kv.domain_ok(zeile("fyxer", server_url="https://app.fyxer.com/mcp",
+                              quelle="https://fyxer.support.site/article/fyxer-mcp"))
+    # andere Mieter von support.site gelten nicht als Fyxer
+    assert not kv.domain_ok(zeile("fyxer", server_url="https://app.fyxer.com/mcp",
+                                  quelle="https://boese.support.site/article"))
+    assert kv.registrierbare_domain("fyxer.support.site") == "fyxer.support.site"
+
+
 def test_stichworte_vollstaendig_und_ohne_id() -> None:
     pfad = ROOT / "integrations" / "abgleich" / "recherche.json"
     rech = json.loads(pfad.read_text(encoding="utf-8"))

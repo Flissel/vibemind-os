@@ -1,0 +1,22 @@
+# Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://help.brand24.com/en/articles/13011375-brand24-mcp - geprueft: 2026-11-11
+id = "brand24"
+name = "Brand24"
+description = "Brand24 über den offiziellen Remote-MCP-Server"
+category = "marketing"
+icon = "📣"
+tags = ["marketing", "social-listening", "erwaehnungen"]
+read_only_tools = []
+
+[transport]
+type = "http"
+url = "https://mcp.brand24.com/v1/mcp"
+
+[auth]
+type = "oauth"
+scopes = ["offline_access"]
+
+[catalog]
+replaces_openai_plugin = "brand24"
+license = "proprietary-service"
+admission = "admitted"
+verified = false
