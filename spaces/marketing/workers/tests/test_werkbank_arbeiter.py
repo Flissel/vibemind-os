@@ -96,8 +96,39 @@ class FakeApi:
         self._("szene_text", sid=sid, nr=int(sid.rsplit("-", 1)[1]), **koerper)
         return "wb-bbbbbbbbbb"
 
-    def szene_bild(self, sid, bildart, bild):
-        self._("szene_bild", sid=sid, bildart=bildart, bild=bild)
+    def szene_bild(self, sid, bildart, bild, quellen=None, belege=None):
+        self._("szene_bild", sid=sid, bildart=bildart, bild=bild, quellen=quellen, belege=belege)
+        return True
+
+    def _szene_zeile(self, sid):
+        for w in self.werke:
+            for s in w.get("szenen") or []:
+                if str(s.get("id")) == sid:
+                    return s
+        return None
+
+    def szene_aufgegeben(self, sid, grund, wunsch):
+        """Wie der Server: Grund an der Szene, wenn der Wunsch noch derselbe ist."""
+        self._("szene_aufgegeben", sid=sid, grund=grund, wunsch=wunsch)
+        s = self._szene_zeile(sid)
+        if s is None or str(s.get("wunsch") or "") != str(wunsch or ""):
+            return False
+        s["aufgegeben"] = grund
+        return True
+
+    def gliederung_aufgegeben(self, aid, grund, wunsch):
+        self._("gliederung_aufgegeben", aid=aid, grund=grund, wunsch=wunsch)
+        for w in self.werke:
+            if w["auftrag"] == aid:
+                w["gliederung_aufgegeben"] = grund
+                return True
+        return False
+
+    def video_gescheitert(self, aid, versuch, grund):
+        self._("video_gescheitert", aid=aid, versuch=versuch, grund=grund)
+        for w in self.werke:
+            if w["auftrag"] == aid:
+                w["video_fehler"] = grund
         return True
 
     def szene_nehmen(self, aid):
@@ -509,6 +540,110 @@ def test_endgueltiger_hinweis_bild_und_neutral(F):
     api = FakeApi([werk(stand="text_ok", gliederung=GLIEDERUNG, szenen=[zeile(3)])])
     ein_durchlauf(api, fragen=Fragen(szene=lambda nr, n: szene_dict(nr + 1)), **F)    # Szene fehlt in der Antwort
     assert api.rufe("hinweis")[0]["satz"] == "Szene 3 ließ sich nicht schreiben – bitte Wunsch ergänzen."
+
+
+QUELLE_FEHLT = "Szene 3: Quelle fehlt – bitte Material ergänzen."
+
+
+def _durchfall(nr, nachricht):
+    return szene_dict(nr, sprechtext=SATZ + " Es spart 40 % Kosten.")
+
+
+def test_aufgegebene_szene_wird_gemeldet_und_nach_neuem_wunsch_genau_einmal_neu_versucht(F):
+    """C1: zweimal durchgefallen -> Grund am Server -> kein Neufragen (auch nicht nach einem Neustart) -> neuer
+    Wunsch loescht den Grund -> genau ein neuer Versuch (Frage + Nachfrage) -> wieder aufgegeben, neu gemeldet."""
+    api = FakeApi([werk(stand="text_ok", gliederung=GLIEDERUNG, szenen=[zeile(3)])])
+    f = Fragen(szene=_durchfall)
+    ein_durchlauf(api, fragen=f, **F)
+    assert len(f.nachrichten) == 2
+    a = api.rufe("szene_aufgegeben")
+    assert a == [{"sid": "sid-0123-3", "grund": QUELLE_FEHLT, "wunsch": ""}]
+    assert api.werke[0]["szenen"][0]["aufgegeben"] == QUELLE_FEHLT
+    ein_durchlauf(api, fragen=f, **F)
+    neustart = FakeApi(api.werke)                          # neues Gedaechtnis: der Grund am Server reicht
+    ein_durchlauf(neustart, fragen=f, **F)
+    assert len(f.nachrichten) == 2 and neustart.zaehlt("aufruf") == 0
+    # Betreiber: neuer Wunsch (der Server loescht den Grund und haengt den Wunsch an die Historie)
+    api.werke[0]["szenen"][0].update(aufgegeben=None, wunsch="Nimm die 30 %", wuensche=[{"text": "Nimm die 30 %"}])
+    ein_durchlauf(api, fragen=f, **F)
+    assert len(f.nachrichten) == 4 and "Nimm die 30 %" in f.nachrichten[2]
+    assert api.rufe("szene_aufgegeben")[-1]["wunsch"] == "Nimm die 30 %"
+    keys = [h["key"] for h in api.rufe("hinweis")]
+    assert len(keys) == 2 and len(set(keys)) == 2 and all(re.fullmatch(r"[a-z0-9_]{1,60}", k) for k in keys)
+    ein_durchlauf(api, fragen=f, **F)
+    assert len(f.nachrichten) == 4
+
+
+def test_aufgabe_ohne_server_haelt_das_gedaechtnis(F):
+    """Scheitert die Meldung, merkt sich der Arbeiter die Aufgabe selbst (wie bisher), bis der Wunsch sich aendert."""
+    api = FakeApi([werk(stand="text_ok", gliederung=GLIEDERUNG, szenen=[zeile(3)])])
+    api.szene_aufgegeben = lambda *a: (_ for _ in ()).throw(OSError("Netz"))
+    f = Fragen(szene=_durchfall)
+    ein_durchlauf(api, fragen=f, **F)
+    ein_durchlauf(api, fragen=f, **F)
+    assert len(f.nachrichten) == 2
+
+
+def test_aufgegebene_gliederung_wird_gemeldet_und_nach_neuem_wunsch_einmal_neu_versucht(F):
+    api, f = FakeApi([werk(gliederung=GLIEDERUNG, gliederung_fassung=1)]), Fragen(gliederung="kein json")
+    ein_durchlauf(api, fragen=f, **F)
+    assert len(f.nachrichten) == 2
+    g = api.rufe("gliederung_aufgegeben")
+    assert len(g) == 1 and g[0]["aid"] == AID_A and g[0]["wunsch"] == "" and "Gliederung" in g[0]["grund"]
+    ein_durchlauf(FakeApi(api.werke), fragen=f, **F)       # Neustart: der Grund am Server reicht
+    assert len(f.nachrichten) == 2
+    api.werke[0].update(gliederung_aufgegeben=None, gliederung_wunsch="Kürzer", gliederung_wuensche=[{"text": "Kürzer"}])
+    ein_durchlauf(api, fragen=f, **F)
+    assert len(f.nachrichten) == 4 and "Kürzer" in f.nachrichten[2]
+    assert [h["key"] for h in api.rufe("hinweis")] == ["gliederung_f1", "gliederung_f1_w1"]
+    ein_durchlauf(api, fragen=f, **F)
+    assert len(f.nachrichten) == 4
+
+
+def test_aufgegebene_gliederung_vor_erster_fassung_haelt_den_lease_nicht(F):
+    api = FakeApi([werk(gliederung_aufgegeben="Die Gliederung ließ sich nicht schreiben.")])
+    ein_durchlauf(api, fragen=Fragen(), **F)
+    assert api.zaehlt("weiter") == 0 and api.zaehlt("aufruf") == 0
+
+
+def test_szenentext_traegt_die_geprueften_belege(F):
+    belege = [{"aussage": "Bei uns kostet es 30 % weniger.", "quelle": "Marke.md"}]
+
+    def szene(nr, nachricht):
+        return szene_dict(nr, sprechtext=SATZ + " Es kostet 30 % weniger.", belege=belege, ohne_sachaussage=False)
+    api = FakeApi([werk(stand="text_ok", gliederung=GLIEDERUNG, szenen=[zeile(1)])])
+    ein_durchlauf(api, fragen=Fragen(szene=szene), **F)
+    t = api.rufe("szene_text")[0]
+    assert t["belege"] == belege and t["quellen"] == ["Marke.md"]
+
+
+def test_nur_bild_traegt_quellen_und_belege(F):
+    belege = [{"aussage": "Bei uns kostet es 30 % weniger.", "quelle": "Marke.md"}]
+    z = zeile(2, wunsch="anderes Bild", rueckgabe_von="clip", sprechtext=SATZ, bild=BILD)
+    api = FakeApi([werk(stand="text_ok", gliederung=GLIEDERUNG, szenen=[z])])
+    f = Fragen(szene=lambda nr, n: szene_dict(nr, aendert_text=False, belege=belege, ohne_sachaussage=False))
+    ein_durchlauf(api, fragen=f, **F)
+    b = api.rufe("szene_bild")[0]
+    assert b["quellen"] == ["Marke.md"] and b["belege"] == belege
+
+
+def test_gescheitertes_video_wird_gemeldet_und_nach_neu_zusammenfuegen_einmal_neu_versucht(F):
+    """I1: der Arbeiter parkt (Fassung, Versuch); der Grund liegt am Server (video_fehler); "Video neu
+    zusammenfügen" erhoeht den Versuch und loescht den Grund -> genau ein neuer Versuch."""
+    gerufen = []
+
+    def hook(api, w):
+        gerufen.append(w.get("video_versuch"))
+        api.video_gescheitert(w["auftrag"], int(w.get("video_versuch") or 0), "Das Video ließ sich nicht zusammenfügen.")
+        return "fehler"
+    api = FakeApi([werk(AID_A, "text_ok", alle_fertig=True, szenen=[_fertige_szene(1)], video_versuch=0)])
+    assert ein_durchlauf(api, fertigstellen=hook, **F) == "fehler"
+    ein_durchlauf(FakeApi(api.werke), fertigstellen=hook, **F)          # Neustart: video_fehler haelt
+    assert gerufen == [0]
+    api.werke[0].update(video_versuch=1, video_fehler=None)
+    ein_durchlauf(api, fertigstellen=hook, **F)
+    ein_durchlauf(api, fertigstellen=hook, **F)
+    assert gerufen == [0, 1]
 
 
 def test_problemarten_nach_den_echten_pruefsaetzen():

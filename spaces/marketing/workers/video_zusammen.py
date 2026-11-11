@@ -240,14 +240,25 @@ def _hinweis(api, aid: str, key: str, satz: str) -> None:
         LOG.warning("Hinweis scheiterte: %s", type(e).__name__)
 
 
+def _scheitern(api, aid: str, key: str, versuch: int, satz: str) -> None:
+    """Hinweis und Grund am Server (I1: video_fehler, bis der Betreiber "Video neu zusammenfügen" drueckt)."""
+    _hinweis(api, aid, key, satz)
+    try:
+        api.video_gescheitert(aid, versuch, satz)
+    except Exception as e:  # noqa: BLE001 - der Arbeiter parkt den Versuch dann im Gedaechtnis
+        LOG.warning("Meldung des gescheiterten Videos scheiterte: %s", type(e).__name__)
+
+
 def fertigstellen(api, werk: dict, ordner: Path | None = None) -> str:
     """Alle Szenen sind fertig: Clips holen, verbinden, Lautheit, messen, hochladen, melden. Rueckgabe `video`
-    oder `fehler` (dann ein Hinweis; die Szenen bleiben fertig, auf dem Server wird nichts geloescht)."""
+    oder `fehler` (dann ein Hinweis und der Grund am Server; die Szenen bleiben fertig, auf dem Server wird nichts
+    geloescht)."""
     aid = str(werk["auftrag"])
     aid8 = aid.replace("-", "")[:8]
     fassung = int(werk.get("video_fassung") or 0) + 1
+    versuch = int(werk.get("video_versuch") or 0)
     name = f"wb-{aid8}-video-f{fassung}.mp4"
-    key = f"video_f{fassung}"
+    key = f"video_f{fassung}_v{versuch}"
     szenen = sorted((s for s in werk.get("szenen") or [] if isinstance(s, dict)), key=lambda s: int(s["nr"]))
     eigener = ordner is None      # der Standardordner gehoert uns und geht mit; ein uebergebener bleibt
     ordner = arbeitsordner(aid8) if eigener else Path(ordner)
@@ -285,11 +296,11 @@ def fertigstellen(api, werk: dict, ordner: Path | None = None) -> str:
                          "zeitmarken": kopf["zeitmarken"], "messnotiz": notiz, "warnungen": warnungen})
     except ZusammenFehler as e:
         LOG.warning("Video %s: %s", aid8, e.grund)
-        _hinweis(api, aid, key, f"{SATZ_VIDEO} {e.grund}")
+        _scheitern(api, aid, key, versuch, f"{SATZ_VIDEO} {e.grund}")
         return "fehler"
     except Exception as e:  # noqa: BLE001 - Holen, Messen, Hochladen, Melden: nur der Typname geht ins Protokoll
         LOG.warning("Video %s scheitert: %s", aid8, type(e).__name__)
-        _hinweis(api, aid, key, SATZ_VIDEO)
+        _scheitern(api, aid, key, versuch, SATZ_VIDEO)
         return "fehler"
     finally:
         _aufraeumen(ordner, angelegt, eigener)

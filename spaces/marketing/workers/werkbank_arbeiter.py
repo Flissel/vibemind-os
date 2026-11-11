@@ -49,6 +49,7 @@ STAND: dict = {"letzter_lauf": None, "letztes_ergebnis": None}
 SATZ_BUDGET = "Das Tagesbudget für Modell-Aufrufe ist aufgebraucht – morgen geht es weiter."
 STALE_CLIP = "keinen Clip an"          # Teil der 409-Meldung der API, wenn die Variante/der Stand nicht mehr passt
 SATZ_GLIEDERUNG = "Die Gliederung ließ sich nicht schreiben."
+GRUND_GLIEDERUNG = "Die Gliederung ließ sich nicht schreiben – bitte Wunsch ergänzen."
 
 
 class BudgetErschoepft(Exception):
@@ -125,9 +126,25 @@ class _Lauf:
         except Exception as e:  # noqa: BLE001
             LOG.warning("Hinweis scheiterte: %s", type(e).__name__)
 
+    def aufgeben(self, melden, schluessel: tuple) -> None:
+        """Die Aufgabe am Server festhalten (dort sieht der Betreiber den Grund, und nach einem Neustart wird nicht
+        neu gefragt). Scheitert das, merkt sich der Arbeiter sie selbst, bis sich der Wunsch aendert."""
+        try:
+            if melden():
+                return
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("Aufgabe melden scheiterte: %s", type(e).__name__)
+        self.gedaechtnis["aufgegeben"][schluessel] = True
+
+
+def _wunsch_zusatz(wuensche) -> str:
+    """Hinweis-Schluessel je Wunschrunde: nach einem neuen Wunsch wird eine neue Aufgabe wieder gemeldet."""
+    n = len(wuensche) if isinstance(wuensche, list) else 0
+    return f"_w{n}" if n else ""
+
 
 def _gedaechtnis(api) -> dict:
-    """Merkzettel je Api-Objekt: aufgegebene Gliederungen/Szenen (bis neuer Wunsch) und die Budget-Pause."""
+    """Merkzettel je Api-Objekt: Aufgaben, deren Meldung scheiterte (bis neuer Wunsch), und die Budget-Pause."""
     g = getattr(api, "_werkbank_gedaechtnis", None)
     if g is None:
         g = {"aufgegeben": {}, "budget_bis": 0.0, "budget_gemeldet": set(), "fehler_offen": {}}
@@ -196,6 +213,12 @@ def _gliederung_schluessel(werk: dict) -> tuple:
             str(werk.get("gliederung_wunsch") or "").strip())
 
 
+def _gliederung_geparkt(c: _Lauf, werk: dict) -> bool:
+    """Zweimal unbrauchbar: aufgegeben (am Server oder, wenn die Meldung scheiterte, im Gedaechtnis) - erst ein
+    neuer Wunsch (der den Grund am Server loescht) oder eine neue Fassung bringt einen neuen Versuch."""
+    return bool(werk.get("gliederung_aufgegeben")) or _gliederung_schluessel(werk) in c.gedaechtnis["aufgegeben"]
+
+
 def _gliederung(c: _Lauf, werk: dict) -> str | None:
     aid, eingabe = str(werk["auftrag"]), werk.get("eingabe") or {}
     fassung = int(werk.get("gliederung_fassung") or 0)
@@ -203,24 +226,27 @@ def _gliederung(c: _Lauf, werk: dict) -> str | None:
     schluessel = _gliederung_schluessel(werk)
     if werk.get("gliederung_stand") != "geplant":
         return None
-    if schluessel in c.gedaechtnis["aufgegeben"]:     # zweimal unbrauchbar: erst bei neuer Fassung oder neuem Wunsch wieder
+    if _gliederung_geparkt(c, werk):
         return None
     if c.budget:
         _budget_melden(c, werk)
         return "budget"
     c.lease(aid)
     try:
-        ktx = c.kontext(str(werk.get("mandant") or ""), video_texte.auftragstext(eingabe))
+        auftrag = video_texte.auftragstext(eingabe)
+        ktx = c.kontext(str(werk.get("mandant") or ""), auftrag)
         vorige = werk.get("gliederung") if wunsch and isinstance(werk.get("gliederung"), dict) and werk["gliederung"] else None
         system, nachricht = video_texte.gliederung_prompt(eingabe, ktx, c.brief(), wunsch, vorige)
         geholt = {d.name for d in ktx.dokumente}
-        gliederung, _ = _fragen_lesen(c, aid, system, nachricht, lambda a: video_texte.gliederung_lesen(a, geholt))
+        belegtexte = [auftrag, *(d.text for d in ktx.dokumente)]       # M11: Zahlen in Titel, Hook, Stufennamen
+        gliederung, _ = _fragen_lesen(c, aid, system, nachricht,
+                                      lambda a: video_texte.gliederung_lesen(a, geholt, belegtexte))
     except BudgetErschoepft:
         _budget_getroffen(c, werk)
         return "budget"
     if gliederung is None:
-        c.hinweis(aid, f"gliederung_f{fassung}", SATZ_GLIEDERUNG)
-        c.gedaechtnis["aufgegeben"][schluessel] = True
+        c.hinweis(aid, f"gliederung_f{fassung}{_wunsch_zusatz(werk.get('gliederung_wuensche'))}", SATZ_GLIEDERUNG)
+        c.aufgeben(lambda: c.api.gliederung_aufgegeben(aid, GRUND_GLIEDERUNG, wunsch), schluessel)
         return "fehler"
     c.lease(aid)                          # die Anfrage kann lange gedauert haben
     try:
@@ -234,12 +260,18 @@ def _gliederung(c: _Lauf, werk: dict) -> str | None:
 
 # --- Schritt 2: Szenentexte ----------------------------------------------------------------------
 
+def _belege(szene: dict) -> list[dict]:
+    """Die gepruefte Zuordnung Aussage -> Quelle der Szene (I3), so wie die API sie nimmt."""
+    return [{"aussage": b["aussage"].strip(), "quelle": b["quelle"].strip()} for b in szene.get("belege") or []
+            if isinstance(b, dict) and isinstance(b.get("aussage"), str) and b["aussage"].strip()
+            and isinstance(b.get("quelle"), str) and b["quelle"].strip()]
+
+
 def _belegquellen(szene: dict) -> list[str]:
     gesehen: list[str] = []
-    for b in szene.get("belege") or []:
-        q = b.get("quelle")
-        if isinstance(q, str) and q and q not in gesehen:
-            gesehen.append(q)
+    for b in _belege(szene):
+        if b["quelle"] not in gesehen:
+            gesehen.append(b["quelle"])
     return gesehen
 
 
@@ -272,10 +304,11 @@ def _abgeben(c: _Lauf, zeile: dict, szene: dict) -> bool:
     sid = str(zeile["id"])
     try:
         if zeile.get("rueckgabe_von") == "clip" and szene.get("aendert_text") is False:
-            c.api.szene_bild(sid, szene["bildart"], szene["bild"])
+            c.api.szene_bild(sid, szene["bildart"], szene["bild"], _belegquellen(szene), _belege(szene))
         else:
             c.api.szene_text(sid, {"sprechtext": szene["sprechtext"], "bildart": szene["bildart"], "bild": szene["bild"],
-                                   "uebergang": szene["uebergang"], "quellen": _belegquellen(szene)})
+                                   "uebergang": szene["uebergang"], "quellen": _belegquellen(szene),
+                                   "belege": _belege(szene)})
     except ApiFehler as e:
         LOG.warning("Szene abgelehnt: API %s", e.code)
         return False
@@ -307,7 +340,7 @@ def _texte(c: _Lauf, werk: dict) -> str | None:
     if werk.get("gliederung_stand") != "text_ok":
         return None
     aid = str(werk["auftrag"])
-    zeilen = [s for s in werk.get("szenen") or [] if s.get("stand") == "geplant"
+    zeilen = [s for s in werk.get("szenen") or [] if s.get("stand") == "geplant" and not s.get("aufgegeben")
               and ("szene", str(s.get("id")), str(s.get("wunsch") or "")) not in c.gedaechtnis["aufgegeben"]]
     if not zeilen:
         return None
@@ -349,8 +382,12 @@ def _texte(c: _Lauf, werk: dict) -> str | None:
         return "budget"
     for zeile, fehler in endgueltig:
         art, satz = _problem(fehler)
-        c.hinweis(aid, f"{art}_s{zeile['nr']}_f{int(zeile.get('fassung') or 0)}", satz.format(nr=zeile["nr"]))
-        c.gedaechtnis["aufgegeben"][("szene", str(zeile["id"]), str(zeile.get("wunsch") or ""))] = True
+        satz = satz.format(nr=zeile["nr"])
+        wunsch = str(zeile.get("wunsch") or "")
+        c.hinweis(aid, f"{art}_s{zeile['nr']}_f{int(zeile.get('fassung') or 0)}{_wunsch_zusatz(zeile.get('wuensche'))}",
+                  satz)
+        c.aufgeben(lambda z=zeile, s=satz, w=wunsch: c.api.szene_aufgegeben(str(z["id"]), s, w),
+                   ("szene", str(zeile["id"]), wunsch))
     return "texte" if abgegeben else ("fehler" if endgueltig else None)
 
 
@@ -450,10 +487,15 @@ def _fertig(c: _Lauf, werk: dict) -> str | None:
         return None
     if int(werk.get("video_fassung") or 0) != 0 and not werk.get("video_veraltet"):
         return None
-    # Ein Video, das nicht zusammenging, wird nicht alle 30 s neu versucht: erst wieder, wenn sich an den Clips
-    # etwas aendert (Szene neu freigegeben) oder der Arbeiter neu startet (das Gedaechtnis ist weg).
-    schluessel = ("video", str(werk["auftrag"]), int(werk.get("video_fassung") or 0), tuple(
-        (str(s.get("id")), s.get("variante"), s.get("clip_datei"), s.get("fassung")) for s in werk.get("szenen") or []))
+    # Ein Video, das nicht zusammenging, wird nicht alle 30 s neu versucht. Der Grund steht am Server (video_fehler,
+    # gemeldet von fertigstellen) und haelt auch ueber einen Neustart; "Video neu zusammenfügen" (video_versuch +1)
+    # oder eine geoeffnete Szene loescht ihn. Das Gedaechtnis parkt je (Fassung, Versuch, Clips), falls die Meldung
+    # scheiterte.
+    if werk.get("video_fehler"):
+        return None
+    schluessel = ("video", str(werk["auftrag"]), int(werk.get("video_fassung") or 0), int(werk.get("video_versuch") or 0),
+                  tuple((str(s.get("id")), s.get("variante"), s.get("clip_datei"), s.get("fassung"))
+                        for s in werk.get("szenen") or []))
     if schluessel in c.gedaechtnis["aufgegeben"]:
         return None
     try:
@@ -477,7 +519,7 @@ def ein_durchlauf(api, fragen=shim_fragen, kontext=video_kontext.holen, sprechen
     werke = api.arbeit()
     for werk in werke:       # erst alle Leases, dann naechster: ein abgelaufener Auftrag wuerde sonst neu vergeben
         if (werk.get("gliederung_stand") == "geplant" and not werk.get("gliederung")
-                and _gliederung_schluessel(werk) not in c.gedaechtnis["aufgegeben"]):   # in_arbeit = vor der ersten Gliederung
+                and not _gliederung_geparkt(c, werk)):                                  # in_arbeit = vor der ersten Gliederung
             c.lease(str(werk["auftrag"]))
     try:
         neu = api.naechster()      # ein neuer Auftrag erscheint ab jetzt unter arbeit()

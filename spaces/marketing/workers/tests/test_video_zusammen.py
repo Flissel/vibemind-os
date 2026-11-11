@@ -146,6 +146,10 @@ class FakeApi:
         self.log.append(("hinweis", {"key": key, "satz": satz}))
         return True
 
+    def video_gescheitert(self, aid, versuch, grund):
+        self.log.append(("video_gescheitert", {"versuch": versuch, "grund": grund}))
+        return True
+
     def szene_fehler(self, sid, grund):
         self.log.append(("szene_fehler", sid))
         return True
@@ -213,14 +217,33 @@ def test_fuegefehler_laesst_szenen_fertig(tmp_path, ff, monkeypatch):
     assert fertigstellen(api, werk_alle_fertig(), tmp_path) == "fehler"
     assert api.rufe("szene_fehler") == [] and api.rufe("fertig") == [] and api.rufe("hochladen") == []
     h = api.rufe("hinweis")
-    assert len(h) == 1 and h[0]["key"] == "video_f1" and h[0]["satz"].startswith("Das Video ließ sich nicht zusammenfügen.")
+    assert len(h) == 1 and h[0]["key"] == "video_f1_v0" and h[0]["satz"].startswith("Das Video ließ sich nicht zusammenfügen.")
     assert "Szene 3" in h[0]["satz"] and list(tmp_path.iterdir()) == []
+    g = api.rufe("video_gescheitert")                  # I1: der Grund liegt am Server, bis "neu zusammenfügen"
+    assert g == [{"versuch": 0, "grund": h[0]["satz"]}]
 
 
 def test_upload_fehler_ist_ein_hinweis(tmp_path, ff):
     api = FakeApi(hochladen_fehler=ApiFehler(503, "weg"))
     assert fertigstellen(api, werk_alle_fertig(), tmp_path) == "fehler"
-    assert api.rufe("hinweis")[0]["key"] == "video_f1" and api.rufe("fertig") == [] and list(tmp_path.iterdir()) == []
+    assert api.rufe("hinweis")[0]["key"] == "video_f1_v0" and api.rufe("fertig") == [] and list(tmp_path.iterdir()) == []
+    assert api.rufe("video_gescheitert")[0]["versuch"] == 0
+
+
+def test_neuer_versuch_hat_einen_eigenen_hinweis(tmp_path, ff, monkeypatch):
+    """I1: nach "Video neu zusammenfügen" (video_versuch 1) scheitert es erneut -> neuer Hinweis-Schluessel,
+    gemeldet mit dem neuen Versuch. Faellt die Meldung aus, bleibt es beim Ergebnis "fehler"."""
+    def kaputt(clips, ziel, musik=None, zeitlimit_s=1800):
+        raise ZusammenFehler("Szene 3 hat ein anderes Format.")
+    monkeypatch.setattr(vz, "zusammenfuegen", kaputt)
+    api = FakeApi()
+    assert fertigstellen(api, werk_alle_fertig(video_fassung=1, video_versuch=1), tmp_path) == "fehler"
+    assert api.rufe("hinweis")[0]["key"] == "video_f2_v1" and api.rufe("video_gescheitert")[0]["versuch"] == 1
+
+    def weg(*a):
+        raise ApiFehler(503, "weg")
+    api.video_gescheitert = weg
+    assert fertigstellen(api, werk_alle_fertig(), tmp_path) == "fehler"
 
 
 def test_meldefehler_ist_ein_hinweis(tmp_path, ff):

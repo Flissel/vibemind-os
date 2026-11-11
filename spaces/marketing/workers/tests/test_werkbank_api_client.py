@@ -73,6 +73,24 @@ def test_hochladen_netzfehler_wird_wiederholt(tmp_path, monkeypatch):
     assert len([x for x in api.log if x[0] == "PUT"]) == 3 and api.log[-1][1].endswith("/abschliessen")
 
 
+def test_neue_routen_senden_pfad_und_koerper():
+    """C1/I1/I3/M10: Aufgeben, gescheitertes Video und Bild mit Quellen/Belegen gehen an die richtigen Routen."""
+    api = UploadApi([])
+    sid = "9999abcd-1111-4222-8333-444455556666"
+    assert api.szene_aufgegeben(sid, "Grund", "W") is True
+    assert api.gliederung_aufgegeben(AID_A, "Grund", "") is True
+    assert api.video_gescheitert(AID_A, 2, "Grund") is True
+    assert api.szene_bild(sid, "slide", {"schritte": []}, ["auftrag"], [{"aussage": "a", "quelle": "auftrag"}])
+    assert api.szene_bild(sid, "slide", {"schritte": []})
+    pfade = [(m, p, json.loads(k)) for m, p, k in api.log]
+    assert pfade[0] == ("POST", f"/szene/{sid}/aufgegeben", {"grund": "Grund", "wunsch": "W"})
+    assert pfade[1] == ("POST", f"/{AID_A}/gliederung-aufgegeben", {"grund": "Grund", "wunsch": ""})
+    assert pfade[2] == ("POST", f"/{AID_A}/video-gescheitert", {"grund": "Grund", "versuch": 2})
+    assert pfade[3][2] == {"bildart": "slide", "bild": {"schritte": []}, "quellen": ["auftrag"],
+                           "belege": [{"aussage": "a", "quelle": "auftrag"}]}
+    assert pfade[4][2] == {"bildart": "slide", "bild": {"schritte": []}}   # ohne Listen: alte Werte bleiben
+
+
 def test_api_fehler_traegt_laenge_bei_409():
     class A(wa.WerkbankApi):
         def __init__(self):

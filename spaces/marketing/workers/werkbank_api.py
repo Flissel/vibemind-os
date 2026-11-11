@@ -71,8 +71,27 @@ class WerkbankApi:
     def szene_text(self, sid: str, koerper: dict) -> str:
         return self._anfrage("POST", f"/szene/{sid}/text", koerper).get("kennung", "")
 
-    def szene_bild(self, sid: str, bildart: str, bild: dict) -> bool:
-        return bool(self._anfrage("POST", f"/szene/{sid}/bild", {"bildart": bildart, "bild": bild}).get("ok"))
+    def szene_bild(self, sid: str, bildart: str, bild: dict, quellen: list | None = None,
+                   belege: list | None = None) -> bool:
+        """Nur das Bild neu; ohne `quellen`/`belege` bleiben die bisherigen Listen der Szene stehen."""
+        koerper: dict = {"bildart": bildart, "bild": bild}
+        if quellen is not None:
+            koerper["quellen"] = quellen
+        if belege is not None:
+            koerper["belege"] = belege
+        return bool(self._anfrage("POST", f"/szene/{sid}/bild", koerper).get("ok"))
+
+    def szene_aufgegeben(self, sid: str, grund: str, wunsch: str) -> bool:
+        """C1: die Szene liess sich nicht schreiben; `wunsch` = der Wunsch, mit dem es versucht wurde."""
+        return bool(self._anfrage("POST", f"/szene/{sid}/aufgegeben", {"grund": grund, "wunsch": wunsch}).get("ok"))
+
+    def gliederung_aufgegeben(self, aid: str, grund: str, wunsch: str) -> bool:
+        return bool(self._anfrage("POST", f"/{aid}/gliederung-aufgegeben",
+                                  {"grund": grund, "wunsch": wunsch}).get("ok"))
+
+    def video_gescheitert(self, aid: str, versuch: int, grund: str) -> bool:
+        """I1: das Zusammenfuegen des Versuchs `versuch` ist gescheitert."""
+        return bool(self._anfrage("POST", f"/{aid}/video-gescheitert", {"grund": grund, "versuch": versuch}).get("ok"))
 
     def szene_nehmen(self, aid: str) -> dict | None:
         return self._anfrage("POST", f"/{aid}/szene-nehmen").get("szene")
