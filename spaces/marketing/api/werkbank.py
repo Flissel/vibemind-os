@@ -37,6 +37,7 @@ UEBERGAENGE = ("schnitt", "blende")
 SCHRITTE_MIN, SCHRITTE_MAX = 2, 5
 SPRECHTEXT_MAX, GRUND_MAX, SATZ_MAX, WUNSCH_MAX = 4000, 300, 300, 2000
 TITEL_MAX, BESCHREIBUNG_MAX, MESSNOTIZ_MAX = 100, 5000, 1500
+BELEGE_MAX, BELEG_AUSSAGE_MAX, BELEG_QUELLE_MAX = 40, 500, 200
 JSON_MAX = 200_000                           # Gliederung/Bild als Text, gegen Missbrauch
 TEIL_MAX = 8 * 1024 * 1024                   # ein Teil des Uploads
 MAX_BYTES_VORGABE = 2 * 1024 ** 3
@@ -114,6 +115,17 @@ def _liste(wert, feld: str, maximal: int = 200, element=None) -> list:
 
 def _quellen(wert) -> list:
     return _liste(wert, "quellen", 200, lambda x: isinstance(x, (str, dict)) and len(json.dumps(x)) <= 2000)
+
+
+def _ist_beleg(x) -> bool:
+    return (isinstance(x, dict) and set(x) == {"aussage", "quelle"}
+            and isinstance(x["aussage"], str) and 0 < len(x["aussage"]) <= BELEG_AUSSAGE_MAX
+            and isinstance(x["quelle"], str) and 0 < len(x["quelle"]) <= BELEG_QUELLE_MAX)
+
+
+def _belege(wert) -> list:
+    """Gepruefte Belege einer Szene: [{aussage, quelle}], hoechstens BELEGE_MAX Eintraege."""
+    return _liste(wert, "belege", BELEGE_MAX, _ist_beleg)
 
 
 def _zeitmarken(wert) -> list:
@@ -264,6 +276,7 @@ def szene_text(sid: str, payload: dict = Body(...), x_bild_key: str | None = Hea
     teil["bild"] = _bild_pruefen(payload.get("bild"))          # R11: Schritte sind immer Pflicht
     if payload.get("quellen") is not None:
         teil["quellen"] = _quellen(payload["quellen"])
+    teil["belege"] = _belege(payload.get("belege"))            # gehoeren zum Text: ohne Liste leer
     zeile = _schreiben(lambda: f"SELECT marketing.video_szene_text_setzen({lit(s)}::uuid, {_json(teil)}) AS k")
     if not zeile.get("k"):
         raise HTTPException(409, "Die Szene ist gerade nicht für einen Text dran")
@@ -272,16 +285,69 @@ def szene_text(sid: str, payload: dict = Body(...), x_bild_key: str | None = Hea
 
 @arbeiter_router.post("/szene/{sid}/bild")
 def szene_bild(sid: str, payload: dict = Body(...), x_bild_key: str | None = Header(None)):
+    """Nur das Bild ist neu (Rueckgabe vom Clip-Tor); quellen und belege der neuen Antwort gehen mit (fehlt eine
+    Liste, bleibt der alte Wert)."""
     _bild_schluessel(x_bild_key)
     s = _uuid_oder_404(sid)
     _szene_werk(s)
     bildart = _auswahl(payload.get("bildart"), BILDARTEN, "bildart")
     bild = _bild_pruefen(payload.get("bild"))
+    quellen = _json(_quellen(payload["quellen"])) if payload.get("quellen") is not None else "NULL::jsonb"
+    belege = _json(_belege(payload["belege"])) if payload.get("belege") is not None else "NULL::jsonb"
     zeile = _schreiben(lambda:
-        f"SELECT marketing.video_szene_bild_setzen({lit(s)}::uuid, {lit(bildart)}, {_json(bild)}) AS ok")
+        f"SELECT marketing.video_szene_bild_setzen({lit(s)}::uuid, {lit(bildart)}, {_json(bild)}, "
+        f"{quellen}, {belege}) AS ok")
     if not _bool(zeile):
         raise HTTPException(409, "Das Bild kann gerade nicht geändert werden")
     return {"ok": True}
+
+
+def _grund(payload: dict) -> str:
+    grund = payload.get("grund")
+    if not isinstance(grund, str):
+        raise HTTPException(422, "grund muss Text sein")
+    return (grund.strip() or "Kein Grund angegeben")[:GRUND_MAX]
+
+
+@arbeiter_router.post("/szene/{sid}/aufgegeben")
+def szene_aufgegeben(sid: str, payload: dict = Body(...), x_bild_key: str | None = Header(None)):
+    """Der Arbeiter gibt den Text der Szene auf ({grund, wunsch}: der Wunsch, mit dem er es versucht hat). Bis ein
+    neuer Wunsch kommt, fragt er nicht neu; der Grund steht fuer den Betreiber auf der Szenenseite."""
+    _bild_schluessel(x_bild_key)
+    s = _uuid_oder_404(sid)
+    grund = _grund(payload)
+    wunsch = _text(payload.get("wunsch"), "wunsch", WUNSCH_MAX, pflicht=False)
+    _szene_werk(s)
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.video_szene_aufgeben({lit(s)}::uuid, {lit(grund)}, {lit(wunsch or '')}) AS ok")
+    return {"ok": _bool(zeile)}
+
+
+@arbeiter_router.post("/{aid}/gliederung-aufgegeben")
+def gliederung_aufgegeben(aid: str, payload: dict = Body(...), x_bild_key: str | None = Header(None)):
+    """Wie szene_aufgegeben, fuer die Gliederung."""
+    _bild_schluessel(x_bild_key)
+    a = _uuid_oder_404(aid)
+    grund = _grund(payload)
+    wunsch = _text(payload.get("wunsch"), "wunsch", WUNSCH_MAX, pflicht=False)
+    _werk(a)
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.video_gliederung_aufgeben({lit(a)}::uuid, {lit(grund)}, {lit(wunsch or '')}) AS ok")
+    return {"ok": _bool(zeile)}
+
+
+@arbeiter_router.post("/{aid}/video-gescheitert")
+def video_gescheitert(aid: str, payload: dict = Body(...), x_bild_key: str | None = Header(None)):
+    """Das Zusammenfuegen ist gescheitert ({grund, versuch}); bis der Betreiber "Video neu zusammenfügen" drueckt
+    (oder sich eine Szene aendert), versucht der Arbeiter es nicht neu."""
+    _bild_schluessel(x_bild_key)
+    a = _uuid_oder_404(aid)
+    grund = _grund(payload)
+    versuch = _ganz(payload.get("versuch"), "versuch", 0, 10 ** 6)
+    _werk(a)
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.video_bau_gescheitert({lit(a)}::uuid, {versuch}, {lit(grund)}) AS ok")
+    return {"ok": _bool(zeile)}
 
 
 @arbeiter_router.post("/{aid}/szene-nehmen")
@@ -664,6 +730,47 @@ def pult_nochmal(aid: str, nr: int, payload: dict = Body(...), x_pult_key: str |
     zeile = _schreiben(lambda: f"SELECT marketing.video_szene_nochmal({lit(sid)}::uuid) AS ok")
     if not _bool(zeile):
         raise HTTPException(409, "Die Szene kann gerade nicht neu versucht werden")
+    return {"ok": True}
+
+
+@pult_router.post("/{aid}/szene/{nr}/wunsch")
+def pult_szene_wunsch(aid: str, nr: int, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    """Neuer Wunsch zu einer Szene ohne lebenden Vorschlag (geplant, meist aufgegeben): "Nochmal schreiben"."""
+    _schluessel(x_pult_key)
+    a = _uuid_oder_404(aid)
+    mandant = _kopf(payload)
+    wunsch = _text(payload.get("wunsch"), "wunsch", WUNSCH_MAX)
+    _pult_werk(a, mandant)
+    sid = _szene_id(a, nr)
+    zeile = _schreiben(lambda: f"SELECT marketing.video_szene_wunsch({lit(sid)}::uuid, {lit(wunsch)}) AS ok")
+    if not _bool(zeile):
+        raise HTTPException(409, "Die Szene nimmt gerade keinen Wunsch an")
+    return {"ok": True}
+
+
+@pult_router.post("/{aid}/gliederung/wunsch")
+def pult_gliederung_wunsch(aid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    """Neuer Wunsch zur Gliederung, solange sie ohne lebenden Vorschlag in geplant steht."""
+    _schluessel(x_pult_key)
+    a = _uuid_oder_404(aid)
+    mandant = _kopf(payload)
+    wunsch = _text(payload.get("wunsch"), "wunsch", WUNSCH_MAX)
+    _pult_werk(a, mandant)
+    zeile = _schreiben(lambda: f"SELECT marketing.video_gliederung_wunsch({lit(a)}::uuid, {lit(wunsch)}) AS ok")
+    if not _bool(zeile):
+        raise HTTPException(409, "Die Gliederung nimmt gerade keinen Wunsch an")
+    return {"ok": True}
+
+
+@pult_router.post("/{aid}/video/neu-bauen")
+def pult_neu_bauen(aid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    """"Video neu zusammenfügen": nur wenn alle Szenen fertig sind und der Auftrag in werkbank steht."""
+    _schluessel(x_pult_key)
+    a = _uuid_oder_404(aid)
+    _pult_werk(a, _kopf(payload))
+    zeile = _schreiben(lambda: f"SELECT marketing.video_neu_bauen({lit(a)}::uuid) AS ok")
+    if not _bool(zeile):
+        raise HTTPException(409, "Das Video kann gerade nicht neu zusammengefügt werden")
     return {"ok": True}
 
 

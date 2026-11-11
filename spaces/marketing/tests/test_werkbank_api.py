@@ -227,6 +227,39 @@ def test_bild(db, c):
     assert c.post(f"{A}/szene/{SID}/bild", json={"bildart": "x", "bild": TEXT["bild"]}, headers=B).status_code == 422
 
 
+BELEGE = [{"aussage": "12 Teilnehmer pro Gruppe", "quelle": "auftrag"}, {"aussage": "30 % Zeit", "quelle": "Marke.md"}]
+
+
+def test_text_traegt_belege(db, c):
+    db.antworten = [[SZENE_OK], [{"k": KENNUNG}]]
+    r = c.post(f"{A}/szene/{SID}/text", json={**TEXT, "belege": BELEGE}, headers=B)
+    assert r.status_code == 200
+    assert '"belege": [{"aussage": "12 Teilnehmer pro Gruppe", "quelle": "auftrag"}' in db.sql[1]
+    db.antworten = [[SZENE_OK], [{"k": KENNUNG}]]
+    c.post(f"{A}/szene/{SID}/text", json=TEXT, headers=B)              # ohne belege: leere Liste
+    assert '"belege": []' in db.sql[3]
+
+
+@pytest.mark.parametrize("belege", [
+    "x", [1], [{"aussage": "a"}], [{"aussage": "", "quelle": "q"}], [{"aussage": "a", "quelle": "q", "x": 1}],
+    [{"aussage": "a" * 501, "quelle": "q"}], [{"aussage": "a", "quelle": "q" * 201}], [{"aussage": "a", "quelle": "q"}] * 41])
+def test_belege_grenzen_422(db, c, belege):
+    db.antworten = [[SZENE_OK]]
+    assert c.post(f"{A}/szene/{SID}/text", json={**TEXT, "belege": belege}, headers=B).status_code == 422
+    assert len(db.sql) == 1
+
+
+def test_bild_mit_quellen_und_belegen(db, c):
+    db.antworten = [[SZENE_OK], [{"ok": True}]]
+    r = c.post(f"{A}/szene/{SID}/bild", json={"bildart": "slide", "bild": TEXT["bild"], "quellen": ["Marke.md"],
+                                              "belege": BELEGE[1:]}, headers=B)
+    assert r.status_code == 200
+    assert '\'["Marke.md"]\'::jsonb, \'[{"aussage": "30 % Zeit", "quelle": "Marke.md"}]\'::jsonb) AS ok' in db.sql[1]
+    db.antworten = [[SZENE_OK], [{"ok": True}]]
+    c.post(f"{A}/szene/{SID}/bild", json={"bildart": "slide", "bild": TEXT["bild"]}, headers=B)
+    assert "NULL::jsonb, NULL::jsonb) AS ok" in db.sql[3]
+
+
 def test_szene_nehmen(db, c):
     db.antworten = [[KOPF_OK], [{"s": {"id": SID, "nr": 1}}]]
     r = c.post(f"{A}/{AID}/szene-nehmen", headers=B)
@@ -294,6 +327,36 @@ def test_fehler_hinweis_aufruf(db, c):
     assert c.post(f"{A}/{AID}/hinweis", json={"key": "Gross Klein", "satz": "s"}, headers=B).status_code == 422
     db.antworten = [[KOPF_OK], [{"n": 3}]]
     assert c.post(f"{A}/{AID}/aufruf", headers=B).json() == {"aufrufe": 3}
+
+
+def test_aufgegeben_melden_szene_und_gliederung(db, c):
+    db.antworten = [[SZENE_OK], [{"ok": True}]]
+    r = c.post(f"{A}/szene/{SID}/aufgegeben", json={"grund": "Szene 1: Quelle fehlt.", "wunsch": "mehr"}, headers=B)
+    assert r.json() == {"ok": True}
+    assert f"marketing.video_szene_aufgeben('{SID}'::uuid, 'Szene 1: Quelle fehlt.', 'mehr')" in db.sql[1]
+    db.antworten = [[SZENE_OK], [{"ok": False}]]
+    assert c.post(f"{A}/szene/{SID}/aufgegeben", json={"grund": "g" * 400}, headers=B).json() == {"ok": False}
+    assert "'" + "g" * 300 + "', '')" in db.sql[3]
+    db.antworten = [[KOPF_OK], [{"ok": True}]]
+    r = c.post(f"{A}/{AID}/gliederung-aufgegeben", json={"grund": "G"}, headers=B)
+    assert r.json() == {"ok": True} and f"marketing.video_gliederung_aufgeben('{AID}'::uuid, 'G', '')" in db.sql[5]
+    assert c.post(f"{A}/szene/{SID}/aufgegeben", json={"grund": 3}, headers=B).status_code == 422
+
+
+def test_aufgegeben_fremder_auftrag_404(db, c):
+    db.antworten = [[]]
+    assert c.post(f"{A}/szene/{SID}/aufgegeben", json={"grund": "g"}, headers=B).status_code == 404
+    db.antworten = [[]]
+    assert c.post(f"{A}/{AID}/gliederung-aufgegeben", json={"grund": "g"}, headers=B).status_code == 404
+    assert not any("aufgeben" in s for s in db.sql)
+
+
+def test_video_gescheitert_mit_versuch(db, c):
+    db.antworten = [[KOPF_OK], [{"ok": True}]]
+    r = c.post(f"{A}/{AID}/video-gescheitert", json={"grund": "Platz fehlt.", "versuch": 2}, headers=B)
+    assert r.json() == {"ok": True} and f"marketing.video_bau_gescheitert('{AID}'::uuid, 2, 'Platz fehlt.')" in db.sql[1]
+    for koerper in ({"grund": "g"}, {"grund": "g", "versuch": -1}, {"grund": "g", "versuch": "1"}):
+        assert c.post(f"{A}/{AID}/video-gescheitert", json=koerper, headers=B).status_code == 422
 
 
 FERTIG = {"datei": "wb-0123abcd-video-f1.mp4", "bytes": 5000, "dauer_s": 240.0, "titel": "T", "beschreibung": "B",
@@ -597,6 +660,50 @@ def test_nochmal_versuchen_und_oeffnen(db, c):
     assert c.post(f"{PW}/{AID}/szene/2/oeffnen", json={**body, "wunsch": "a"}, headers=P).status_code == 409
 
 
+def test_aufgegebene_szene_grund_sichtbar_dann_neuer_wunsch(db, c):
+    """C1 an der API: der Arbeiter meldet die Aufgabe, die Szenenseite sieht den Grund, der Wunsch geht an die
+    SQL-Funktion (die den Grund loescht; danach fragt der Arbeiter einmal neu)."""
+    body = {"mandant": "fin2gether", "von": "felix"}
+    db.antworten = [[SZENE_OK], [{"ok": True}]]
+    c.post(f"{A}/szene/{SID}/aufgegeben", json={"grund": "Szene 2: Quelle fehlt – bitte Material ergänzen."}, headers=B)
+    db.antworten = [[KOPF_OK], [{"szene": {"id": SID, "nr": 2, "stand": "geplant",
+                                           "aufgegeben": "Szene 2: Quelle fehlt – bitte Material ergänzen."},
+                                 "kennung": None}]]
+    r = c.get(f"{PW}/{AID}/szene/2?mandant=fin2gether", headers=P)
+    assert r.json()["szene"]["aufgegeben"] == "Szene 2: Quelle fehlt – bitte Material ergänzen."
+    db.antworten = [[KOPF_OK], [{"id": SID}], [{"ok": True}]]
+    r = c.post(f"{PW}/{AID}/szene/2/wunsch", json={**body, "wunsch": "Nimm die Zahl aus dem Angebot"}, headers=P)
+    assert r.json() == {"ok": True}
+    assert f"marketing.video_szene_wunsch('{SID}'::uuid, 'Nimm die Zahl aus dem Angebot')" in db.sql[-1]
+    db.antworten = [[KOPF_OK], [{"id": SID}], [{"ok": False}]]
+    assert c.post(f"{PW}/{AID}/szene/2/wunsch", json={**body, "wunsch": "x"}, headers=P).status_code == 409
+    db.antworten = [[KOPF_OK]]
+    assert c.post(f"{PW}/{AID}/szene/2/wunsch", json={**body, "wunsch": ""}, headers=P).status_code == 422
+
+
+def test_gliederung_wunsch_und_neu_bauen(db, c):
+    body = {"mandant": "fin2gether", "von": "felix"}
+    db.antworten = [[KOPF_OK], [{"ok": True}]]
+    assert c.post(f"{PW}/{AID}/gliederung/wunsch", json={**body, "wunsch": "kürzer"}, headers=P).json() == {"ok": True}
+    assert f"marketing.video_gliederung_wunsch('{AID}'::uuid, 'kürzer')" in db.sql[1]
+    db.antworten = [[KOPF_OK], [{"ok": False}]]
+    assert c.post(f"{PW}/{AID}/gliederung/wunsch", json={**body, "wunsch": "x"}, headers=P).status_code == 409
+    db.antworten = [[KOPF_OK], [{"ok": True}]]
+    assert c.post(f"{PW}/{AID}/video/neu-bauen", json=body, headers=P).json() == {"ok": True}
+    assert f"marketing.video_neu_bauen('{AID}'::uuid)" in db.sql[-1]
+    db.antworten = [[KOPF_OK], [{"ok": False}]]
+    assert c.post(f"{PW}/{AID}/video/neu-bauen", json=body, headers=P).status_code == 409
+
+
+@pytest.mark.parametrize("pfad, extra", [("szene/2/wunsch", {"wunsch": "w"}), ("gliederung/wunsch", {"wunsch": "w"}),
+                                         ("video/neu-bauen", {})])
+def test_neue_pult_routen_fremder_mandant_404(db, c, pfad, extra):
+    db.antworten = [[KOPF_OK]]
+    r = c.post(f"{PW}/{AID}/{pfad}", json={"mandant": "vibemind", "von": "f", **extra}, headers=P)
+    assert r.status_code == 404 and len(db.sql) == 1
+    assert c.post(f"{PW}/{AID}/{pfad}", json={"mandant": "fin2gether", "von": "f", **extra}).status_code == 401
+
+
 def test_nochmal_fremder_mandant_404(db, c):
     db.antworten = [[KOPF_OK]]
     r = c.post(f"{PW}/{AID}/szene/2/nochmal-versuchen", json={"mandant": "vibemind", "von": "f"}, headers=P)
@@ -642,6 +749,14 @@ def test_nur_funktionsaufrufe_kein_insert_update_delete(db, c, monkeypatch):
     lauf([[KOPF_OK], [{"w": {}}]], lambda: c.get(f"{PW}/{AID}?mandant=fin2gether", headers=P))
     lauf([[KOPF_OK], [{"szene": {}}]], lambda: c.get(f"{PW}/{AID}/szene/1?mandant=fin2gether", headers=P))
     lauf([[VZ]], lambda: c.get(f"{PW}/v/{KENNUNG}", headers=P))
+    lauf([[SZENE_OK], ok], lambda: c.post(f"{A}/szene/{SID}/aufgegeben", json={"grund": "g"}, headers=B))
+    lauf([[KOPF_OK], ok], lambda: c.post(f"{A}/{AID}/gliederung-aufgegeben", json={"grund": "g"}, headers=B))
+    lauf([[KOPF_OK], ok], lambda: c.post(f"{A}/{AID}/video-gescheitert", json={"grund": "g", "versuch": 0}, headers=B))
+    lauf([[KOPF_OK], [{"id": SID}], ok], lambda: c.post(
+        f"{PW}/{AID}/szene/1/wunsch", json={"mandant": "fin2gether", "von": "f", "wunsch": "w"}, headers=P))
+    lauf([[KOPF_OK], ok], lambda: c.post(
+        f"{PW}/{AID}/gliederung/wunsch", json={"mandant": "fin2gether", "von": "f", "wunsch": "w"}, headers=P))
+    lauf([[KOPF_OK], ok], lambda: c.post(f"{PW}/{AID}/video/neu-bauen", json={"mandant": "fin2gether", "von": "f"}, headers=P))
     assert len(db.sql) > 40
     schreibend = [s for s in db.sql if re.search(r"\b(INSERT|UPDATE|DELETE)\b", s, re.IGNORECASE)]
     assert schreibend == []
