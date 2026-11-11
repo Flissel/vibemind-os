@@ -137,6 +137,24 @@ LANGUAGE sql STABLE AS $$
      WHERE w.auftrag = p_auftrag;
 $$;
 
+-- Szenen einer Gliederung in Reihenfolge: stufen[].szenen[] (Eintrag = Objekt oder nur ein Text). Aus einem
+-- Eintrag werden kurz (Schluessel kurz, sonst titel), bildart (nur gueltige Werte) und quellen (nur Liste)
+-- uebernommen; der Name der Stufe ist stufen[].name (sonst titel). Alles andere bleibt in der Gliederung.
+CREATE OR REPLACE FUNCTION marketing._video_gliederung_szenen(p_gliederung jsonb)
+RETURNS TABLE (nr int, stufe text, kurz text, bildart text, quellen jsonb)
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT (row_number() OVER (ORDER BY st.o, sz.o))::int,
+           coalesce(st.v->>'name', st.v->>'titel'),
+           CASE WHEN jsonb_typeof(sz.v) = 'string' THEN sz.v #>> '{}'
+                ELSE coalesce(sz.v->>'kurz', sz.v->>'titel') END,
+           CASE WHEN sz.v->>'bildart' IN ('slide', 'avatar_gross', 'avatar_slide', 'clip') THEN sz.v->>'bildart' END,
+           CASE WHEN jsonb_typeof(sz.v->'quellen') = 'array' THEN sz.v->'quellen' ELSE '[]'::jsonb END
+      FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p_gliederung->'stufen') = 'array'
+                                     THEN p_gliederung->'stufen' ELSE '[]'::jsonb END) WITH ORDINALITY AS st(v, o)
+     CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(st.v->'szenen') = 'array'
+                                                  THEN st.v->'szenen' ELSE '[]'::jsonb END) WITH ORDINALITY AS sz(v, o);
+$$;
+
 -- Werk zu einem uebernommenen Video-Auftrag anlegen; idempotent. NULL, wenn der Auftrag nicht passt.
 CREATE OR REPLACE FUNCTION marketing.video_werk_beginnen(p_auftrag uuid) RETURNS jsonb
 LANGUAGE plpgsql AS $$
@@ -155,7 +173,8 @@ BEGIN
     RETURN marketing._video_werk_json(p_auftrag);
 END $$;
 
--- Gliederung einstellen (nur aus geplant). Gibt die Kennung des neuen Vorschlags zurueck, sonst NULL.
+-- Gliederung einstellen (nur aus geplant, Auftrag in in_arbeit oder werkbank, mindestens eine Szene in
+-- stufen[].szenen[]). Gibt die Kennung des neuen Vorschlags zurueck, sonst NULL und nichts aendert sich.
 CREATE OR REPLACE FUNCTION marketing.video_gliederung_setzen(p_auftrag uuid, p_gliederung jsonb, p_quellen jsonb)
 RETURNS text
 LANGUAGE plpgsql AS $$
@@ -163,10 +182,14 @@ DECLARE
     v_w marketing.video_werke;
     v_f int;
     v_k text;
+    v_stand text;
 BEGIN
     IF jsonb_typeof(p_gliederung) IS DISTINCT FROM 'object' THEN RETURN NULL; END IF;
+    IF NOT EXISTS (SELECT 1 FROM marketing._video_gliederung_szenen(p_gliederung)) THEN RETURN NULL; END IF;
     SELECT * INTO v_w FROM marketing.video_werke WHERE auftrag = p_auftrag FOR UPDATE;
     IF v_w.auftrag IS NULL OR v_w.gliederung_stand <> 'geplant' THEN RETURN NULL; END IF;
+    SELECT stand INTO v_stand FROM auftrag.auftraege WHERE id = p_auftrag AND art = 'video';
+    IF v_stand IS NULL OR v_stand NOT IN ('in_arbeit', 'werkbank') THEN RETURN NULL; END IF;
     v_f := v_w.gliederung_fassung + 1;
     UPDATE marketing.video_werke
        SET gliederung = p_gliederung,
@@ -182,7 +205,8 @@ BEGIN
     v_k := marketing._video_kennung();
     INSERT INTO marketing.video_vorschlaege (kennung, auftrag, szene, tor, fassung, stand)
     VALUES (v_k, p_auftrag, NULL, 'gliederung', v_f, 'wartend');
-    PERFORM auftrag.stand_setzen(p_auftrag, 'in_arbeit', 'werkbank');
+    IF v_stand = 'in_arbeit' AND NOT auftrag.stand_setzen(p_auftrag, 'in_arbeit', 'werkbank') THEN
+        RAISE EXCEPTION 'Der Auftrag liess sich nicht auf werkbank setzen'; END IF;
     PERFORM marketing._video_zaehlen(p_auftrag);
     RETURN v_k;
 END $$;
@@ -201,6 +225,7 @@ BEGIN
     ELSE
         UPDATE marketing.video_szenen SET wunsch = v_w, geaendert = now() WHERE id = v_v.szene;
     END IF;
+    PERFORM marketing._video_zaehlen(v_v.auftrag);
     RETURN true;
 END $$;
 
@@ -242,18 +267,9 @@ BEGIN
          WHERE auftrag = v_v.auftrag;
         -- Szenen aus der Gliederung in Reihenfolge anlegen, nur wenn noch keine da sind
         IF v_passt AND NOT EXISTS (SELECT 1 FROM marketing.video_szenen WHERE auftrag = v_v.auftrag) THEN
-            INSERT INTO marketing.video_szenen (auftrag, nr, stufe, kurz, stand)
-            SELECT v_v.auftrag, (row_number() OVER (ORDER BY st.o, sz.o))::int,
-                   coalesce(st.v->>'name', st.v->>'titel'),
-                   CASE WHEN jsonb_typeof(sz.v) = 'string' THEN sz.v #>> '{}'
-                        ELSE coalesce(sz.v->>'kurz', sz.v->>'titel') END,
-                   'geplant'
-              FROM jsonb_array_elements(CASE WHEN jsonb_typeof(v_w.gliederung->'stufen') = 'array'
-                                             THEN v_w.gliederung->'stufen' ELSE '[]'::jsonb END)
-                       WITH ORDINALITY AS st(v, o)
-             CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(st.v->'szenen') = 'array'
-                                                          THEN st.v->'szenen' ELSE '[]'::jsonb END)
-                       WITH ORDINALITY AS sz(v, o);
+            INSERT INTO marketing.video_szenen (auftrag, nr, stufe, kurz, bildart, quellen, stand)
+            SELECT v_v.auftrag, g.nr, g.stufe, g.kurz, g.bildart, g.quellen, 'geplant'
+              FROM marketing._video_gliederung_szenen(v_w.gliederung) g;
         END IF;
     ELSE
         SELECT * INTO v_s FROM marketing.video_szenen WHERE id = v_v.szene FOR UPDATE;
@@ -307,29 +323,41 @@ BEGIN
     RETURN jsonb_build_object('ok', true, 'stand', v_nach);
 END $$;
 
--- Szenentext einstellen (nur aus geplant, nicht bei einer Rueckgabe vom Clip-Tor). Gibt die Kennung zurueck.
+-- Szenentext einstellen (nur aus geplant, auch nach Rueckgabe vom Clip-Tor, wenn sich der Text aendert).
+-- Felder: sprechtext (Pflicht), bildart, bild, uebergang, quellen; fehlende Felder behalten den alten Wert.
+-- Ungueltige Werte: NULL, nichts aendert sich. Gibt die Kennung des neuen Textvorschlags zurueck.
 CREATE OR REPLACE FUNCTION marketing.video_szene_text_setzen(p_szene uuid, p_text jsonb) RETURNS text
 LANGUAGE plpgsql AS $$
 DECLARE
     v_s marketing.video_szenen;
     v_k text;
     v_f int;
+    v_bildart text;
+    v_uebergang text;
 BEGIN
     IF jsonb_typeof(p_text) IS DISTINCT FROM 'object' OR coalesce(btrim(p_text->>'sprechtext'), '') = '' THEN
         RETURN NULL; END IF;
     SELECT * INTO v_s FROM marketing.video_szenen WHERE id = p_szene FOR UPDATE;
-    IF v_s.id IS NULL OR v_s.stand <> 'geplant' OR v_s.rueckgabe_von IS NOT DISTINCT FROM 'clip' THEN
-        RETURN NULL; END IF;
+    IF v_s.id IS NULL OR v_s.stand <> 'geplant' THEN RETURN NULL; END IF;
+    v_bildart := coalesce(p_text->>'bildart', v_s.bildart, 'slide');
+    v_uebergang := coalesce(p_text->>'uebergang', v_s.uebergang, 'schnitt');
+    IF v_bildart NOT IN ('slide', 'avatar_gross', 'avatar_slide', 'clip')
+       OR v_uebergang NOT IN ('schnitt', 'blende') THEN RETURN NULL; END IF;
     v_f := v_s.fassung + 1;
     UPDATE marketing.video_szenen
        SET sprechtext = p_text->>'sprechtext',
-           bildart = coalesce(p_text->>'bildart', 'slide'),
-           bild = CASE WHEN jsonb_typeof(p_text->'bild') = 'object' THEN p_text->'bild' ELSE '{}'::jsonb END,
-           uebergang = coalesce(p_text->>'uebergang', 'schnitt'),
-           quellen = CASE WHEN jsonb_typeof(p_text->'quellen') = 'array' THEN p_text->'quellen' ELSE '[]'::jsonb END,
+           bildart = v_bildart,
+           bild = CASE WHEN jsonb_typeof(p_text->'bild') = 'object' THEN p_text->'bild' ELSE bild END,
+           uebergang = v_uebergang,
+           quellen = CASE WHEN jsonb_typeof(p_text->'quellen') = 'array' THEN p_text->'quellen' ELSE quellen END,
            stand = 'text_wartet', fassung = v_f, rueckgabe_von = NULL, fehler = NULL,
+           -- Rueckgabe vom Clip-Tor: der alte Clip gehoert zum alten Text, die Szene wird neu erzeugt
+           variante = CASE WHEN v_s.rueckgabe_von = 'clip' THEN variante + 1 ELSE variante END,
+           clip_datei = CASE WHEN v_s.rueckgabe_von = 'clip' THEN NULL ELSE clip_datei END,
+           dauer_s = CASE WHEN v_s.rueckgabe_von = 'clip' THEN NULL ELSE dauer_s END,
            wuensche = CASE WHEN wunsch IS NULL THEN wuensche
-               ELSE array_append(wuensche, jsonb_build_object('text', wunsch, 'zeit', now(), 'tor', 'text')) END,
+               ELSE array_append(wuensche, jsonb_build_object(
+                        'text', wunsch, 'zeit', now(), 'tor', coalesce(v_s.rueckgabe_von, 'text'))) END,
            wunsch = NULL,
            geaendert = now()
      WHERE id = p_szene;
@@ -431,21 +459,29 @@ END $$;
 -- Fehler einer Szene loeschen, damit nehmen sie wieder vergibt.
 CREATE OR REPLACE FUNCTION marketing.video_szene_nochmal(p_szene uuid) RETURNS boolean
 LANGUAGE plpgsql AS $$
+DECLARE v_auftrag uuid;
 BEGIN
-    UPDATE marketing.video_szenen SET fehler = NULL, geaendert = now() WHERE id = p_szene AND fehler IS NOT NULL;
-    RETURN FOUND;
+    UPDATE marketing.video_szenen SET fehler = NULL, geaendert = now()
+     WHERE id = p_szene AND fehler IS NOT NULL RETURNING auftrag INTO v_auftrag;
+    IF v_auftrag IS NULL THEN RETURN false; END IF;
+    PERFORM marketing._video_zaehlen(v_auftrag);
+    RETURN true;
 END $$;
 
 -- Fertige Szene nachtraeglich wieder oeffnen (wie Clip nochmal); das Video ist dann veraltet und der
--- Auftrag geht zurueck auf werkbank.
+-- Auftrag geht zurueck auf werkbank. Nur solange der Auftrag in werkbank, erzeugt oder wartet_freigabe steht,
+-- sonst false und nichts aendert sich.
 CREATE OR REPLACE FUNCTION marketing.video_szene_oeffnen(p_szene uuid, p_wunsch text) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
     v_s marketing.video_szenen;
     v_w text := nullif(btrim(left(p_wunsch, 2000)), '');
+    v_stand text;
 BEGIN
     SELECT * INTO v_s FROM marketing.video_szenen WHERE id = p_szene FOR UPDATE;
     IF v_s.id IS NULL OR v_s.stand <> 'fertig' THEN RETURN false; END IF;
+    SELECT stand INTO v_stand FROM auftrag.auftraege WHERE id = v_s.auftrag AND art = 'video';
+    IF v_stand IS NULL OR v_stand NOT IN ('werkbank', 'erzeugt', 'wartet_freigabe') THEN RETURN false; END IF;
     IF v_w IS NULL THEN
         UPDATE marketing.video_szenen
            SET stand = 'text_ok', variante = variante + 1, fehler = NULL, clip_datei = NULL, dauer_s = NULL,
@@ -457,8 +493,8 @@ BEGIN
          WHERE id = p_szene;
     END IF;
     UPDATE marketing.video_werke SET video_veraltet = true, geaendert = now() WHERE auftrag = v_s.auftrag;
-    PERFORM auftrag.stand_setzen(v_s.auftrag, 'erzeugt', 'werkbank');
-    PERFORM auftrag.stand_setzen(v_s.auftrag, 'wartet_freigabe', 'werkbank');
+    IF v_stand <> 'werkbank' AND NOT auftrag.stand_setzen(v_s.auftrag, v_stand, 'werkbank') THEN
+        RAISE EXCEPTION 'Der Auftrag liess sich nicht auf werkbank setzen'; END IF;
     PERFORM marketing._video_zaehlen(v_s.auftrag);
     RETURN true;
 END $$;
@@ -500,8 +536,8 @@ LANGUAGE sql STABLE AS $$
 $$;
 
 -- Fertiges Video melden: nur wenn alle Szenen fertig sind und der Auftrag auf werkbank steht.
--- p_teil (Schluessel video = Dateiname, dazu beliebige weitere) wird ins Ergebnis gemischt, dazu
--- ki_hinweis und die Fassung. Auftrag werkbank -> erzeugt.
+-- p_teil (Schluessel datei = Dateiname, Pflicht; dazu beliebige weitere) wird ins Ergebnis gemischt, dazu
+-- ki_hinweis und die Fassung. Ohne Dateinamen false. Auftrag werkbank -> erzeugt.
 CREATE OR REPLACE FUNCTION marketing.video_fertig_setzen(p_auftrag uuid, p_teil jsonb) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -509,6 +545,7 @@ DECLARE
     v_f int;
     v_teil jsonb := CASE WHEN jsonb_typeof(p_teil) = 'object' THEN p_teil ELSE '{}'::jsonb END;
 BEGIN
+    IF coalesce(btrim(v_teil->>'datei'), '') = '' THEN RETURN false; END IF;
     SELECT * INTO v_w FROM marketing.video_werke WHERE auftrag = p_auftrag FOR UPDATE;
     IF v_w.auftrag IS NULL THEN RETURN false; END IF;
     IF NOT EXISTS (SELECT 1 FROM marketing.video_szenen WHERE auftrag = p_auftrag)
@@ -519,7 +556,7 @@ BEGIN
     v_f := v_w.video_fassung + 1;
     UPDATE marketing.video_werke
        SET video_fassung = v_f, video_veraltet = false,
-           video_datei = coalesce(v_teil->>'video', v_teil->>'video_datei', video_datei), geaendert = now()
+           video_datei = v_teil->>'datei', geaendert = now()
      WHERE auftrag = p_auftrag;
     PERFORM auftrag.ergebnis_mischen(p_auftrag, v_teil || jsonb_build_object('ki_hinweis', true, 'fassung', v_f));
     IF NOT auftrag.stand_setzen(p_auftrag, 'werkbank', 'erzeugt') THEN
@@ -614,7 +651,9 @@ REVOKE ALL ON FUNCTION marketing.video_vorschlaege_lebend() FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.video_vorschlag_gepostet(text, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.video_vorschlag_erledigt(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION marketing.video_vorschlag_abgehakt(text) FROM PUBLIC;
-REVOKE ALL ON TABLE marketing.video_werke, marketing.video_szenen, marketing.video_vorschlaege FROM PUBLIC;
+REVOKE ALL ON FUNCTION marketing._video_gliederung_szenen(jsonb) FROM PUBLIC;
+REVOKE ALL ON TABLE marketing.video_werke, marketing.video_szenen, marketing.video_vorschlaege
+    FROM PUBLIC, anon, authenticated, sales_app;
 -- Kein Grant an sales_app, anon, authenticated: nur die Marketing-API (supabase_admin) fasst diese Tabellen an.
 
 COMMIT;
