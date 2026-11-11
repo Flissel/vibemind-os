@@ -71,6 +71,9 @@ services:
     network_mode: host
     restart: unless-stopped
     mem_limit: 512m
+    # Ein Kern reicht (Vektoren rechnet der PC). Begrenzt auch verwaiste `docker exec`-Prozesse,
+    # siehe README "Diagnose im Container" (2026-10-26: 16 Tage Endlos-Glob durch /sys).
+    cpus: "1.0"
     user: "1000:1000"
     environment:
       WISSEN_ORDNER: /wissen

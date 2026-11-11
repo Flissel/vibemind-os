@@ -140,6 +140,34 @@ curl -s http://127.0.0.1:3240/gesund                                   # {"ok":t
 docker compose logs -f rowboat-wissen                                  # Runden: eingebettet / offen / PC erreichbar
 ```
 
+### Diagnose im Container
+
+Am 2026-10-26 lief eine Ad-hoc-Probe (`docker exec -i rowboat-headless-rowboat-wissen-1 python -`, Skript
+ueber stdin) 16 Tage lang mit 100 % CPU weiter. Sie suchte die Index-Datei rekursiv ab `/` und lief dabei
+endlos durch die Symlink-Zyklen in `/sys` (`node0 -> memoryN -> node0`). Ihr Aufrufer war laengst
+abgebrochen. Seitdem gilt fuer jede Probe in diesem und jedem anderen Container:
+
+- **Nie rekursiv ab `/` suchen.** `glob("**", recursive=True)`, `os.walk(..., followlinks=True)` und
+  `find -L` folgen den Zyklen in `/sys` endlos. Pfade stehen in der Konfiguration. Die Index-DB liegt
+  unter `WISSEN_INDEX` (`/index/wissen.sqlite`), die Notizen unter `WISSEN_ORDNER` (`/wissen`).
+- **`timeout` gehoert in den Container.** Ein `timeout` um den `docker`-Client oder ein abgebrochener
+  Tool-Aufruf beendet nur den Client. Der per `docker exec` gestartete Prozess laeuft verwaist weiter.
+- **Nach jeder abgebrochenen Probe mit `docker top` nach Resten schauen.** Das Image hat kein `procps`,
+  deshalb geht `kill` nur ueber die Shell.
+
+```sh
+C=rowboat-headless-rowboat-wissen-1
+docker exec -i $C timeout 30 python - <<'PY'
+import os, sqlite3
+db = sqlite3.connect(f"file:{os.environ['WISSEN_INDEX']}?mode=ro", uri=True)
+print(db.execute("select count(*) from sqlite_master").fetchone())
+PY
+docker top $C                                     # nur der Dienst, kein `python -`
+docker exec $C sh -c 'kill <pid>'                 # Rest beenden (PID aus Sicht des Containers)
+```
+
+`cpus: "1.0"` in `compose.yml` begrenzt einen solchen Ausreisser zusaetzlich auf einen Kern.
+
 ## Werkzeuge `rowboat-werkzeuge` (127.0.0.1:8150)
 
 MCP-Server `vibemind-werkzeuge` (Streamable HTTP, `http://127.0.0.1:8150/mcp`, ohne Schraegstrich:
