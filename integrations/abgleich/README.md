@@ -42,7 +42,7 @@ Eintraege gesamt: 180
 | build-macos-apps | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
 | build-web-apps | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
 | build-web-data-visualization | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
-| calendly | app | vorlage | einrichtbar_oauth | https://developer.calendly.com/calendly-mcp-server | 2026-11-10 |
+| calendly | app | vorlage | einrichtbar_oauth; Anmeldung scheitert: Calendly verlangt einen https-Rueckruf, OpenFang bietet nur http://127.0.0.1 | https://developer.calendly.com/calendly-mcp-server | 2026-11-10 |
 | canva | app | unklar | ermittlung fehlgeschlagen: fremder host | https://www.canva.dev/docs/apps/quickstart/?app-surface=Canva%20for%20AI%20assistants | 2026-11-10 |
 | carta-crm | app | vorlage | einrichtbar_oauth | https://docs.carta.com/api-platform/guides/guides/claude-mcp-setup/ | 2026-11-10 |
 | catalyst-by-zoho | app | unklar | ermittlung fehlgeschlagen: fremder host | https://docs.catalyst.zoho.com/en/ai-toolkit/catalyst-mcp-server/connect-catalyst-mcp/global-mcp/connect-global-mcp-custom/ | 2026-11-10 |

@@ -350,6 +350,14 @@ def test_highlevel_hinweis_in_abgleich() -> None:
     assert "Anthropic-Clients" in r[0]["grund"]
 
 
+def test_calendly_hinweis_in_abgleich() -> None:
+    z = zeile("calendly", server_url="https://mcp.calendly.com",
+              quelle="https://developer.calendly.com/calendly-mcp-server")
+    r = kv.abgleich([z], katalog(eintrag("calendly", "app")), [])
+    assert r[0]["ergebnis"] == "vorlage"
+    assert "https-Rueckruf" in r[0]["grund"]
+
+
 def test_veraltete_vorlagen_werden_geloescht(tmp_path: Path) -> None:
     z = tmp_path / "ziel"
     z.mkdir()

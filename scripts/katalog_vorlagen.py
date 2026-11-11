@@ -77,6 +77,11 @@ HINWEISE: dict[str, str] = {
         "Endpunkt fuer Anthropic-Clients laut Doku; "
         "bei Fehler beim Einrichten pruefen"
     ),
+    # Live geprueft 11.11.2026: Registrierung 400, redirect_uri "must start with https".
+    "calendly": (
+        "Anmeldung scheitert: Calendly verlangt einen https-Rueckruf, "
+        "OpenFang bietet nur http://127.0.0.1"
+    ),
 }
 
 # Alle moeglichen Ergebnisse (die Zusammenfassung nennt jedes, auch mit 0).
