@@ -182,6 +182,54 @@ def test_andere_zahlen_brauchen_beleg():
         assert any(f"\"{zahl}\"" in x for x in f), satz
 
 
+def test_werbeaussagen_mit_platz_nummer_level_brauchen_beleg():
+    """I4: Platz, Nummer und Level sind keine Gliederungswoerter, sondern Behauptungen."""
+    for satz, zahl in ((" Wir sind Platz 1 in Deutschland.", "1"), (" Wir sind die Nummer 1 für Schulungen.", "1"),
+                       (" Unser Team ist Level 3 zertifiziert.", "3")):
+        f = szene_pruefen(SZENE(sprechtext=LANG + satz), AUFTRAG, KONTEXT)
+        assert any(f"\"{zahl}\"" in x and "keinen Beleg" in x for x in f), satz
+
+
+def test_spanne_ist_nur_hinter_der_mehrzahl_frei():
+    """I4: "Phase 2 und 18 Mitarbeiter" - die 2 ist eine Nummer, die 18 eine Sachaussage."""
+    f = szene_pruefen(SZENE(sprechtext=LANG + " In Phase 2 und 18 Mitarbeiter geht es los."), AUFTRAG, KONTEXT)
+    assert any("\"18\"" in x for x in f) and not any("\"2\"" in x for x in f)
+    for satz in (" Stufe 1 bis 3 klappt.", " Schritt 2 und 3 folgen.", " Teil 1 oder 4 passt."):
+        f = szene_pruefen(SZENE(sprechtext=LANG + satz), AUFTRAG, KONTEXT)
+        assert len([x for x in f if "keinen Beleg" in x]) == 1, satz       # nur die zweite Zahl
+    for satz in (" Die Stufen 1 bis 3 bauen aufeinander auf.", " Die Schritte 2 und 3 folgen.",
+                 " Die Phasen 1, 2 und 3 laufen.", " Die Kapitel 4 bis 6 fehlen.", " Die Tipps 1–3 helfen.",
+                 " In den Teilen 2 oder 3 steht es."):
+        assert szene_pruefen(SZENE(sprechtext=LANG + satz), AUFTRAG, KONTEXT) == [], satz
+
+
+def test_nummernregel_im_prompt_ist_eng():
+    regel = video_texte.NUMMERN_REGEL
+    for wort in ("Stufe", "Schritt", "Punkt", "Teil", "Phase", "Regel", "Tipp", "Szene", "Kapitel", "Mehrzahl",
+                 "Stufen 1 bis 3", "Schritte 2 und 3"):
+        assert wort in regel, wort
+    assert "Platz," not in regel and "Nummer," not in regel and "Level" not in regel
+
+
+def test_gliederung_zahlen_in_titel_hook_und_stufen_brauchen_quelle():
+    """M11: Titel, Hook und Stufennamen gehen in den YouTube-Kopf; ihre Zahlen muessen im Auftrag oder im Material
+    stehen. Ein Fehler geht wie jeder Gliederungsfehler an das Modell zurueck."""
+    roh = json.loads(GLIEDERUNG_MIT("auftrag"))
+    roh.update(titel="In 5 Schritten 40 % sparen", hook="Schon 300 Kunden sparen 30 % Zeit.")
+    roh["stufen"][0]["name"] = "Stufe 1: 12 Teilnehmer und 9 Wochen"
+    texte = [AUFTRAG] + [d.text for d in KONTEXT.dokumente]
+    g, fehler = gliederung_lesen(json.dumps(roh), {"Marke.md"}, texte)
+    assert g is None
+    alle = " ".join(fehler)
+    for zahl in ("\"5\"", "\"40 %\"", "\"300\"", "\"9\""):
+        assert zahl in alle, zahl
+    assert "\"30 %\"" not in alle and "\"12\"" not in alle and "\"1\"" not in alle
+    roh.update(titel="Mit 30 % weniger Zeit", hook="12 Teilnehmer pro Gruppe.")
+    roh["stufen"][0]["name"] = "Stufe 1"
+    assert gliederung_lesen(json.dumps(roh), {"Marke.md"}, texte)[1] == []
+    assert gliederung_lesen(json.dumps(roh), {"Marke.md"})[1] != []          # ohne Material: die Zahl fehlt
+
+
 def test_zahlen_in_allen_folienfeldern_brauchen_beleg():
     faelle = {
         "stichpunkte": ({"vorlage": "stichpunkte", "ab_satz": 1, "ueberschrift": "Ablauf",
@@ -197,7 +245,7 @@ def test_zahlen_in_allen_folienfeldern_brauchen_beleg():
 
 
 def test_folienzahl_mit_beleg_und_stufennummer_bestehen():
-    schritt = {"vorlage": "stichpunkte", "ab_satz": 1, "ueberschrift": "Stufe 1 bis 3",
+    schritt = {"vorlage": "stichpunkte", "ab_satz": 1, "ueberschrift": "Stufen 1 bis 3",
                "punkte": ["30 % weniger Zeit", "Zwei"]}
     s = SZENE(bild=_mit_bild(schritt), ohne_sachaussage=False,
               belege=_belege(("Die Schulung spart 30 % Zeit.", "Marke.md")))

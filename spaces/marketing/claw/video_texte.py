@@ -30,14 +30,21 @@ FEHLT_PRAEFIX = "dazu fehlt mir Material:"
 _ZAHL = re.compile(r"(?<![\w.,])\d+(?:[.,]\d+)*(?:\s?(?:%|€|Prozent|Euro|EUR)(?!\w))?", re.IGNORECASE)
 _TEIL = re.compile(r"(\d+(?:[.,]\d+)*)\s?(%|€|prozent|euro|eur)?", re.IGNORECASE)
 _TAUSEND = re.compile(r"\d{1,3}(?:\.\d{3})+(?:,\d+)?")
-# Gliederungsnummern (Regel R15): ganze Zahl 1..20 direkt hinter einem dieser Woerter, auch "Stufen 1 bis 3"
-_NUMMERNWORT = (r"(?<!\w)(?:Stufe|Schritt|Punkt|Teil|Phase|Level|Regel|Tipp|Nummer|Platz|Szene|Kapitel)"
-                r"(?:n|e|s)?\s*(?:\d{1,2}\s*(?:bis|und|oder|-|–)\s*)?$")
-_NUMMER_DAVOR = re.compile(_NUMMERNWORT, re.IGNORECASE)
+# Gliederungsnummern (Regel R15, enger nach I4): ganze Zahl 1..20 direkt hinter einem Gliederungswort ("Stufe 2",
+# "Stufen 2"). Eine Spanne oder Aufzaehlung ist nur frei, wenn das Wort in der Mehrzahl direkt davor steht
+# ("Stufen 1 bis 3", "Schritte 2 und 3"); in "Phase 2 und 18 Mitarbeiter" braucht die 18 einen Beleg. Platz, Nummer
+# und Level sind Werbeaussagen ("Platz 1 in Deutschland"), keine Gliederung.
+_EINZAHL = r"(?:Stufe|Schritt|Punkt|Teil|Phase|Regel|Tipp|Szene|Kapitel)"
+_MEHRZAHL = r"(?:Stufen|Schritte|Schritten|Punkte|Punkten|Teile|Teilen|Phasen|Regeln|Tipps|Szenen|Kapitel|Kapiteln)"
+_TRENNER = r"(?:,|bis|und|oder|-|–)"
+_NUMMER_DAVOR = re.compile(
+    rf"(?<!\w)(?:{_EINZAHL}|{_MEHRZAHL})\s*$"
+    rf"|(?<!\w){_MEHRZAHL}\s*\d{{1,2}}(?:\s*{_TRENNER}\s*\d{{1,2}})*\s*{_TRENNER}\s*$", re.IGNORECASE)
 NUMMERN_REGEL = ("Gliederungsnummern brauchen keinen Beleg: eine ganze Zahl von 1 bis 20 direkt hinter einem der "
-                 "Wörter Stufe, Schritt, Punkt, Teil, Phase, Level, Regel, Tipp, Nummer, Platz, Szene, Kapitel "
-                 "(z. B. \"Stufe 2\", \"Stufen 1 bis 3\"). Jede andere Zahl braucht einen Beleg, auch \"in 3 Monaten\" "
-                 "und \"Punkt 25\".")
+                 "Wörter Stufe, Schritt, Punkt, Teil, Phase, Regel, Tipp, Szene, Kapitel (z. B. \"Stufe 2\"). Eine "
+                 "Spanne oder Aufzählung ist nur frei, wenn das Wort in der Mehrzahl direkt davor steht "
+                 "(\"Stufen 1 bis 3\", \"Schritte 2 und 3\"). Jede andere Zahl braucht einen Beleg, auch \"in 3 Monaten\", "
+                 "\"Punkt 25\", \"Platz 1\", \"die Nummer 1\" und die 18 in \"Phase 2 und 18 Mitarbeiter\".")
 
 
 # --- Zahlen -----------------------------------------------------------------------------------
@@ -155,6 +162,8 @@ def gliederung_prompt(eingabe: dict, kontext: Kontext, brief: str, wunsch: str =
         f"# Aufgabe\n- Gesamt {SZENEN_MIN} bis {SZENEN_MAX} Szenen über alle Stufen{woerter}.\n"
         "- Die erste Stufe heißt \"Einstieg\" (Ergebnis, Einwand, Agenda), die letzte enthält die ehrlichen Grenzen "
         "und die Wiederholung des Hooks. Dazwischen Stufen mit eigenem Ergebnis.\n"
+        "- Titel, Hook und Stufennamen enthalten nur Zahlen, die wörtlich im Auftrag oder im Material stehen "
+        "(\"Stufe 2\" als Gliederungsnummer ist frei).\n"
         "- Jede Szene hat ein kurzes `kurz` (ein Satz, was gesagt und gezeigt wird), eine `bildart` und die "
         "`quellen`, aus denen ihre Sachaussagen kommen (leer, wenn sie keine hat). Erlaubte Quellen: "
         f"\"{AUFTRAG}\" und die Dokumentnamen oben, exakt geschrieben.\n"
@@ -169,9 +178,27 @@ def gliederung_prompt(eingabe: dict, kontext: Kontext, brief: str, wunsch: str =
     return _system(brief), "\n\n".join(teile)
 
 
-def gliederung_lesen(text: str, geholt: set[str]) -> tuple[dict | None, list[str]]:
+def _kopfzahlen_pruefen(felder: list[tuple[str, str]], belegtexte: list[str] | None) -> list[str]:
+    """M11: Zahlen in Titel, Hook und Stufennamen (sie gehen in den YouTube-Kopf) muessen woertlich, mit gleicher
+    Einheit, im Auftrag oder im geholten Material stehen. Gliederungsnummern ("Stufe 1") sind frei."""
+    vorhanden: set[tuple[str, str]] = set()
+    for t in belegtexte or []:
+        vorhanden |= set(_zahlen(t, nummern_frei=False))
+    ohne_einheit = {n for n, _ in vorhanden}
+    fehler: list[str] = []
+    for ort, text in felder:
+        for zahl, einheit in dict.fromkeys(_zahlen(text)):
+            if (zahl, einheit) not in vorhanden and not (not einheit and zahl in ohne_einheit):
+                fehler.append(f"Die Zahl \"{_zahl_text((zahl, einheit))}\" {ort} steht weder im Auftrag noch im "
+                              "Material. Nimm sie heraus oder nur eine Zahl, die dort wörtlich steht.")
+    return fehler
+
+
+def gliederung_lesen(text: str, geholt: set[str],
+                     belegtexte: list[str] | None = None) -> tuple[dict | None, list[str]]:
     """Gliederung aus der Modellantwort. (Gliederung, []) oder (None, Fehlersaetze). `geholt` = Namen der
-    Dokumente im Kontext; als Quelle ist ausserdem "auftrag" erlaubt."""
+    Dokumente im Kontext; als Quelle ist ausserdem "auftrag" erlaubt. `belegtexte` = Auftragstext und Texte der
+    geholten Dokumente; Zahlen in Titel, Hook und Stufennamen muessen dort stehen (ohne Texte: jede Zahl fehlt)."""
     roh = _json(text)
     if not isinstance(roh, dict):
         return None, ["Die Antwort war kein JSON-Objekt."]
@@ -222,6 +249,9 @@ def gliederung_lesen(text: str, geholt: set[str]) -> tuple[dict | None, list[str
         fehler.append("`fehlt` ist eine Liste von Sätzen.")
         fehlt_roh = []
     fehlt = [_text(f) for f in fehlt_roh if _text(f)]
+    fehler += _kopfzahlen_pruefen([("im Titel", titel), ("im Hook", hook)]
+                                  + [(f"im Namen der Stufe {i}", st["name"]) for i, st in enumerate(stufen, 1)],
+                                  belegtexte)
     if fehler:
         return None, fehler
     return {"titel": titel, "hook": hook, "stufen": stufen, "fehlt": fehlt}, []
