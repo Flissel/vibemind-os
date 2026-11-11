@@ -308,7 +308,7 @@ def test_fehlertext_ohne_prompt_und_pfad(F, wo, fehler):
         api.hochladen = lambda *a, **k: (_ for _ in ()).throw(fehler)
     assert ein_durchlauf(api, **F) == "fehler"
     grund = api.rufe("szene_fehler")[0]["grund"]
-    assert "C:\\" not in grund and "Sprechtext" not in grund and SATZ[:20] not in grund and grund.endswith(").") or "." in grund
+    assert "C:\\" not in grund and "Sprechtext" not in grund and SATZ[:20] not in grund and "geheim" not in grund
     assert len(grund) < 120 and type(fehler).__name__ in grund
 
 
