@@ -359,7 +359,8 @@ def messung_text(w: dict) -> str:
     return (f"Messung (Guideline, {w['format']}): " + " · ".join(teile))[:500]
 
 
-def video_messen(pfad: str, ffmpeg: str = FFMPEG, melden=lambda grund: None) -> str | None:
+def video_messen(pfad: str, ffmpeg: str = FFMPEG, melden=lambda grund: None,
+                zeitlimit_s: float = MESS_FFMPEG_S) -> str | None:
     """Ein ffmpeg-Lauf: Szenenwerte (>= SCHNITT_WEICH), Lautheit, Pausen >= 0,4 s. Das Protokoll geht in
     eine Datei, nie in eine Pipe (Kindprozesse erben sonst die Pipe und haengen)."""
     argv = [ffmpeg, "-hide_banner", "-nostats", "-i", pfad,
@@ -372,12 +373,12 @@ def video_messen(pfad: str, ffmpeg: str = FFMPEG, melden=lambda grund: None) -> 
         with open(logdatei, "wb") as f:
             try:
                 r = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                   stderr=f, timeout=MESS_FFMPEG_S)
+                                   stderr=f, timeout=zeitlimit_s)
             except FileNotFoundError:
                 melden("ffmpeg nicht gefunden")
                 return None
             except subprocess.TimeoutExpired:
-                melden(f"ffmpeg nach {MESS_FFMPEG_S} s abgebrochen")
+                melden(f"ffmpeg nach {zeitlimit_s} s abgebrochen")
                 return None
             except OSError as e:
                 melden(f"ffmpeg: {type(e).__name__}")

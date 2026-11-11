@@ -545,3 +545,25 @@ def test_messung_echtes_ffmpeg(tmp_path):
     assert w["dauer_s"] == pytest.approx(8.0, abs=0.1) and w["harte_schnitte"] == 2
     assert w["stillstand_s"] == pytest.approx(5.0, abs=0.1) and w["stillstand_ab_s"] == pytest.approx(2.0, abs=0.1)
     assert w["laengste_pause_s"] == pytest.approx(1.0, abs=0.1) and w["lufs"] is not None
+
+
+def test_video_messen_zeitlimit_wird_durchgereicht(monkeypatch):
+    aufrufe = []
+
+    def lauf(argv, **kw):
+        aufrufe.append(kw)
+        return type("R", (), {"returncode": 0})()
+    monkeypatch.setattr(vc.subprocess, "run", lauf)
+    vc.video_messen("x.mp4", zeitlimit_s=600)
+    assert aufrufe[0]["timeout"] == 600
+
+
+def test_video_messen_vorgabe_bleibt_120(monkeypatch):
+    aufrufe = []
+
+    def lauf(argv, **kw):
+        aufrufe.append(kw)
+        return type("R", (), {"returncode": 0})()
+    monkeypatch.setattr(vc.subprocess, "run", lauf)
+    vc.video_messen("x.mp4")
+    assert aufrufe[0]["timeout"] == 120 == vc.MESS_FFMPEG_S
