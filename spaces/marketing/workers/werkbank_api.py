@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import http.client
 import json
+import shutil
 import time
 import urllib.error
 import urllib.request
@@ -91,6 +92,33 @@ class WerkbankApi:
 
     def fertig(self, aid: str, teil: dict) -> bool:
         return bool(self._anfrage("POST", f"/{aid}/fertig", teil).get("ok"))
+
+    def _oeffnen(self, pfad: str, zeit: int = 300):
+        """GET als Datenstrom (Antwortobjekt); HTTP-Fehler und Netzfehler kommen als Ausnahme."""
+        req = urllib.request.Request(self.basis + self.PRAEFIX + pfad, method="GET")
+        req.add_unredirected_header("X-Bild-Key", self.schluessel)
+        return urllib.request.urlopen(req, timeout=zeit, context=self.tls)
+
+    def holen(self, aid: str, name: str, ziel: Path) -> int:
+        """Eine Datei des Auftrags in `ziel` laden: als Strom in eine .teil-Datei (nie ganz im Speicher), erst am
+        Ende umbenannt. Rueckgabe: Bytes. Ein abgebrochener Abruf hinterlaesst nichts."""
+        ziel = Path(ziel)
+        teil = ziel.with_name(ziel.name + ".teil")
+        try:
+            with self._oeffnen(f"/{aid}/datei/{name}") as r, teil.open("wb") as f:
+                erwartet = r.headers.get("Content-Length")
+                shutil.copyfileobj(r, f, 1024 * 1024)
+            geladen = teil.stat().st_size
+            if erwartet and erwartet.isdigit() and int(erwartet) != geladen:
+                raise ApiFehler(0, "Der Abruf brach ab.")
+            teil.replace(ziel)
+        except urllib.error.HTTPError as e:
+            teil.unlink(missing_ok=True)
+            raise ApiFehler(e.code, "Die Datei ließ sich nicht abrufen.") from None
+        except BaseException:
+            teil.unlink(missing_ok=True)
+            raise
+        return geladen
 
     def hochladen(self, aid: str, name: str, pfad: Path) -> None:
         """beginnen, Teile zu 8 MB, abschliessen mit sha256. Bei 409 auf einem Teil geht es ab der gemeldeten

@@ -95,3 +95,61 @@ def test_hochladen_faengt_abgebrochene_antworten_wie_netzfehler(tmp_path):
     api = UploadApi([None, abgebrochen])
     api.hochladen(AID_A, "x.mp4", f)
     assert len([x for x in api.log if x[0] == "PUT"]) == 2
+
+
+# --- Holen -----------------------------------------------------------------------------------
+
+class _Antwort:
+    def __init__(self, daten, laenge=None, bruch=False):
+        self.daten, self.bruch = daten, bruch
+        self.headers = {"Content-Length": str(len(daten) if laenge is None else laenge)}
+        self._pos = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self, n=-1):
+        if self.bruch and self._pos:
+            raise ConnectionResetError
+        stueck = self.daten[self._pos:self._pos + (n if n and n > 0 else len(self.daten))]
+        self._pos += len(stueck)
+        return stueck
+
+
+def _holer(antwort):
+    api = wa.WerkbankApi("https://vm", "k")
+    api.gerufen = []
+    api._oeffnen = lambda pfad, zeit=300: (api.gerufen.append(pfad), antwort)[1]
+    return api
+
+
+def test_holen_streamt_in_datei_und_nennt_bytes(tmp_path):
+    api = _holer(_Antwort(b"x" * 3_000_000))
+    ziel = tmp_path / "wb-0123abcd-s01-f0.mp4"
+    assert api.holen(AID_A, ziel.name, ziel) == 3_000_000
+    assert ziel.read_bytes() == b"x" * 3_000_000 and api.gerufen == [f"/{AID_A}/datei/{ziel.name}"]
+    assert not list(tmp_path.glob("*.teil"))
+
+
+def test_holen_unvollstaendig_hinterlaesst_nichts(tmp_path):
+    api = _holer(_Antwort(b"abc", laenge=10))
+    ziel = tmp_path / "a.mp4"
+    with pytest.raises(ApiFehler):
+        api.holen(AID_A, "a.mp4", ziel)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_holen_http_fehler_wird_api_fehler(tmp_path):
+    import io
+    import urllib.error
+
+    def wirft(pfad, zeit=300):
+        raise urllib.error.HTTPError("u", 404, "n", {}, io.BytesIO(b"{}"))
+    api = wa.WerkbankApi("https://vm", "k")
+    api._oeffnen = wirft
+    with pytest.raises(ApiFehler) as e:
+        api.holen(AID_A, "a.mp4", tmp_path / "a.mp4")
+    assert e.value.code == 404 and list(tmp_path.iterdir()) == []
