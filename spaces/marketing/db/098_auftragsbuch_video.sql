@@ -1,9 +1,9 @@
 -- RUNBOOK: nach 097. Idempotent, eine Transaktion. Danach verify_098 (in ROLLBACK).
 -- 098: Auftragsbuch nimmt art 'video' (Video-Werkbank, Stufe 1) mit dem neuen, nie ablaufenden Stand
 -- 'werkbank' (der Auftrag liegt zwischen den Gates beim Betreiber). Fuer 'reel' aendert sich nichts.
--- Neu: art/stand-CHECKs, anlegen (Video + Tagesgrenze 2 je von+laden), naechster (ohne Video),
--- video_naechster (eigene Vergabe fuer Video), ergebnis_mischen (auch in werkbank), stand_setzen
--- (Uebergaenge von/nach werkbank nur fuer Video). Alles andere (ablaufen, laufende, verlaengern,
+-- Neu: art/stand-CHECKs, anlegen (Video + Tagesgrenze 2 je von+laden), naechster (ohne Video, ueber _vergeben),
+-- video_naechster (Video, ueber _vergeben), laufende (nie Video), ergebnis_mischen (auch in werkbank), stand_setzen
+-- (Uebergaenge von/nach werkbank nur fuer Video). Alles andere (ablaufen, verlaengern,
 -- renderfrist, sales_*-Huellen, Rechte) bleibt wie in 096.
 BEGIN;
 
@@ -72,81 +72,69 @@ BEGIN
     RETURN v_id;
 END $$;
 
+-- Gemeinsamer Vergabekern fuer naechster (p_video = false: alles ausser Video) und video_naechster
+-- (p_video = true: nur Video). Aeltesten uebernehmbaren Auftrag atomar vergeben. Uebernehmbar: offen,
+-- oder in_arbeit mit abgelaufenem Lease (bei Nicht-Video zusaetzlich ohne ergebnis.video, der wartet auf den
+-- Render). Nur vor frist_bis. Ein dritter Versuch wird nicht vergeben, sondern auf fehler gesetzt.
+CREATE OR REPLACE FUNCTION auftrag._vergeben(p_an text, p_video boolean, p_lease interval) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = auftrag, pg_temp AS $$
+DECLARE a auftrag.auftraege;
+BEGIN
+    IF p_lease IS NULL THEN RAISE EXCEPTION 'Die Leihdauer fehlt'; END IF;
+    LOOP
+        SELECT * INTO a FROM auftrag.auftraege
+         WHERE an = p_an AND frist_bis > now() AND (art = 'video') = p_video
+           AND (stand = 'offen'
+                OR (stand = 'in_arbeit' AND vergeben_bis < now() AND (p_video OR NOT (ergebnis ? 'video'))))
+         ORDER BY angelegt
+         LIMIT 1
+         FOR UPDATE SKIP LOCKED;
+        IF a.id IS NULL THEN RETURN NULL; END IF;
+
+        IF a.versuche >= 2 THEN
+            UPDATE auftrag.auftraege
+               SET stand = 'fehler', fehler = 'Zwei Versuche ohne Ergebnis', vergeben_bis = NULL,
+                   geaendert = now(),
+                   verlauf = array_append(verlauf, jsonb_build_object(
+                       'stand', 'fehler', 'zeit', now(), 'fehler', 'Zwei Versuche ohne Ergebnis'))
+             WHERE id = a.id;
+            a := NULL;
+            CONTINUE;
+        END IF;
+
+        UPDATE auftrag.auftraege
+           SET stand = 'in_arbeit', versuche = versuche + 1, vergeben_bis = now() + p_lease,
+               geaendert = now(),
+               verlauf = CASE WHEN stand = 'in_arbeit' THEN verlauf
+                              ELSE array_append(verlauf, jsonb_build_object('stand', 'in_arbeit', 'zeit', now())) END
+         WHERE id = a.id
+        RETURNING * INTO a;
+        RETURN auftrag._uebergabe(a);
+    END LOOP;
+END $$;
+
 -- Wie 096, dazu: Video-Auftraege vergibt nur video_naechster.
 CREATE OR REPLACE FUNCTION auftrag.naechster(p_an text, p_lease interval) RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = auftrag, pg_temp AS $$
-DECLARE a auftrag.auftraege;
 BEGIN
-    IF p_lease IS NULL THEN RAISE EXCEPTION 'Die Leihdauer fehlt'; END IF;
-    LOOP
-        SELECT * INTO a FROM auftrag.auftraege
-         WHERE an = p_an AND frist_bis > now() AND art <> 'video'
-           AND (stand = 'offen'
-                OR (stand = 'in_arbeit' AND vergeben_bis < now() AND NOT (ergebnis ? 'video')))
-         ORDER BY angelegt
-         LIMIT 1
-         FOR UPDATE SKIP LOCKED;
-        IF a.id IS NULL THEN RETURN NULL; END IF;
-
-        IF a.versuche >= 2 THEN
-            UPDATE auftrag.auftraege
-               SET stand = 'fehler', fehler = 'Zwei Versuche ohne Ergebnis', vergeben_bis = NULL,
-                   geaendert = now(),
-                   verlauf = array_append(verlauf, jsonb_build_object(
-                       'stand', 'fehler', 'zeit', now(), 'fehler', 'Zwei Versuche ohne Ergebnis'))
-             WHERE id = a.id;
-            a := NULL;
-            CONTINUE;
-        END IF;
-
-        UPDATE auftrag.auftraege
-           SET stand = 'in_arbeit', versuche = versuche + 1, vergeben_bis = now() + p_lease,
-               geaendert = now(),
-               verlauf = CASE WHEN stand = 'in_arbeit' THEN verlauf
-                              ELSE array_append(verlauf, jsonb_build_object('stand', 'in_arbeit', 'zeit', now())) END
-         WHERE id = a.id
-        RETURNING * INTO a;
-        RETURN auftrag._uebergabe(a);
-    END LOOP;
+    RETURN auftrag._vergeben(p_an, false, p_lease);
 END $$;
 
--- Aeltesten uebernehmbaren Video-Auftrag fuer Marketing atomar vergeben; Lease und Versuche wie naechster.
--- Uebernehmbar: offen, oder in_arbeit mit abgelaufenem Lease. werkbank wird nie vergeben. Nur vor frist_bis.
+-- Aeltesten uebernehmbaren Video-Auftrag fuer Marketing vergeben; Lease und Versuche wie naechster.
+-- werkbank wird nie vergeben.
 CREATE OR REPLACE FUNCTION auftrag.video_naechster(p_lease interval) RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = auftrag, pg_temp AS $$
-DECLARE a auftrag.auftraege;
 BEGIN
-    IF p_lease IS NULL THEN RAISE EXCEPTION 'Die Leihdauer fehlt'; END IF;
-    LOOP
-        SELECT * INTO a FROM auftrag.auftraege
-         WHERE an = 'marketing' AND art = 'video' AND frist_bis > now()
-           AND (stand = 'offen' OR (stand = 'in_arbeit' AND vergeben_bis < now()))
-         ORDER BY angelegt
-         LIMIT 1
-         FOR UPDATE SKIP LOCKED;
-        IF a.id IS NULL THEN RETURN NULL; END IF;
-
-        IF a.versuche >= 2 THEN
-            UPDATE auftrag.auftraege
-               SET stand = 'fehler', fehler = 'Zwei Versuche ohne Ergebnis', vergeben_bis = NULL,
-                   geaendert = now(),
-                   verlauf = array_append(verlauf, jsonb_build_object(
-                       'stand', 'fehler', 'zeit', now(), 'fehler', 'Zwei Versuche ohne Ergebnis'))
-             WHERE id = a.id;
-            a := NULL;
-            CONTINUE;
-        END IF;
-
-        UPDATE auftrag.auftraege
-           SET stand = 'in_arbeit', versuche = versuche + 1, vergeben_bis = now() + p_lease,
-               geaendert = now(),
-               verlauf = CASE WHEN stand = 'in_arbeit' THEN verlauf
-                              ELSE array_append(verlauf, jsonb_build_object('stand', 'in_arbeit', 'zeit', now())) END
-         WHERE id = a.id
-        RETURNING * INTO a;
-        RETURN auftrag._uebergabe(a);
-    END LOOP;
+    RETURN auftrag._vergeben('marketing', true, p_lease);
 END $$;
+
+-- Wie 096, dazu: nie ein Video-Auftrag (der Reel-Render-Poller soll ihn nicht sehen).
+CREATE OR REPLACE FUNCTION auftrag.laufende(p_an text) RETURNS SETOF jsonb
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = auftrag, pg_temp AS $$
+    SELECT auftrag._uebergabe(a) FROM auftrag.auftraege a
+     WHERE a.an = p_an AND a.stand = 'in_arbeit' AND a.ergebnis ? 'video' AND a.art <> 'video'
+     ORDER BY a.angelegt;
+$$;
 
 -- Wie 096, dazu: auch im Stand werkbank.
 CREATE OR REPLACE FUNCTION auftrag.ergebnis_mischen(p_id uuid, p_teil jsonb) RETURNS boolean
@@ -187,8 +175,9 @@ BEGIN
     RETURN FOUND;
 END $$;
 
+REVOKE ALL ON FUNCTION auftrag._vergeben(text, boolean, interval) FROM PUBLIC;
 REVOKE ALL ON FUNCTION auftrag.video_naechster(interval) FROM PUBLIC;
--- Kein Grant an sales_app: Video-Auftraege vergibt nur die Marketing-API (supabase_admin).
+-- Kein Grant an sales_app (auch nicht fuer _vergeben): Video-Auftraege vergibt nur die Marketing-API (supabase_admin).
 -- Die Rechte der ersetzten Funktionen bleiben beim CREATE OR REPLACE erhalten.
 
 COMMIT;

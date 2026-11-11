@@ -24,7 +24,7 @@ BEGIN
     PERFORM auftrag.anlegen('sales', 'marketing', 'p098', 'probe', 'podcast', '{}');
     RAISE EXCEPTION '098.1: unbekannte art angenommen';
   EXCEPTION WHEN raise_exception THEN
-    IF SQLERRM LIKE '098.1:%' THEN RAISE; END IF;
+    IF SQLERRM NOT LIKE '%Unbekannte Art des Auftrags%' THEN RAISE; END IF;
   END;
 END $$;
 
@@ -56,7 +56,7 @@ BEGIN
   BEGIN
     PERFORM auftrag.video_naechster(NULL);
     RAISE EXCEPTION '098.3: NULL-Lease angenommen';
-  EXCEPTION WHEN raise_exception THEN IF SQLERRM LIKE '098.3:%' THEN RAISE; END IF; END;
+  EXCEPTION WHEN raise_exception THEN IF SQLERRM NOT LIKE '%Leihdauer fehlt%' THEN RAISE; END IF; END;
   -- ein Reel vergibt video_naechster nie
   PERFORM auftrag.anlegen('brain', 'marketing', 'p098c', 'probe', 'reel', '{}');
   IF auftrag.video_naechster(interval '10 min') IS NOT NULL THEN RAISE EXCEPTION '098.3: Reel von video_naechster vergeben'; END IF;
@@ -95,7 +95,8 @@ BEGIN
   UPDATE auftrag.auftraege SET stand = 'abgebrochen' WHERE stand IN ('offen', 'in_arbeit');
   v := auftrag.anlegen('brain', 'marketing', 'p098e', 'probe', 'video', '{}');
   UPDATE auftrag.auftraege SET stand = 'werkbank', frist_bis = now() - interval '1 day' WHERE id = v;
-  PERFORM auftrag.ablaufen();
+  n := auftrag.ablaufen();
+  IF n <> 0 THEN RAISE EXCEPTION '098.5: ablaufen zaehlt % Zeilen, erwartet 0', n; END IF;
   IF (SELECT stand FROM auftrag.auftraege WHERE id = v) <> 'werkbank' THEN RAISE EXCEPTION '098.5: werkbank ist abgelaufen'; END IF;
   IF (SELECT count(*) FROM auftrag.laufende('marketing') x WHERE (x->>'id')::uuid = v) <> 0 THEN
     RAISE EXCEPTION '098.5: laufende zeigt werkbank'; END IF;
@@ -119,6 +120,20 @@ BEGIN
   IF auftrag.sales_stand_setzen(v, 'in_arbeit', 'werkbank') THEN RAISE EXCEPTION '098.6: sales_stand_setzen fremd'; END IF;
 END $$;
 
+-- 5b: laufende zeigt nie ein Video, ein Reel in derselben Lage weiterhin
+DO $$
+DECLARE v uuid; r uuid;
+BEGIN
+  UPDATE auftrag.auftraege SET stand = 'abgebrochen' WHERE stand IN ('offen', 'in_arbeit');
+  v := auftrag.anlegen('brain', 'marketing', 'p098g', 'probe', 'video', '{}');
+  r := auftrag.anlegen('brain', 'marketing', 'p098g', 'probe', 'reel', '{}');
+  UPDATE auftrag.auftraege SET stand = 'in_arbeit', ergebnis = '{"video":"abc"}' WHERE id IN (v, r);
+  IF (SELECT count(*) FROM auftrag.laufende('marketing') x WHERE (x->>'id')::uuid = v) <> 0 THEN
+    RAISE EXCEPTION '098.5b: laufende zeigt einen Video-Auftrag'; END IF;
+  IF (SELECT count(*) FROM auftrag.laufende('marketing') x WHERE (x->>'id')::uuid = r) <> 1 THEN
+    RAISE EXCEPTION '098.5b: laufende zeigt das Reel nicht mehr'; END IF;
+END $$;
+
 -- 7: Rechte
 DO $$
 BEGIN
@@ -129,6 +144,14 @@ BEGIN
     RAISE EXCEPTION '098.7: sales_app darf video_naechster'; END IF;
   IF has_function_privilege('public', 'auftrag.video_naechster(interval)', 'execute') THEN
     RAISE EXCEPTION '098.7: PUBLIC darf video_naechster'; END IF;
+  IF has_function_privilege('anon', 'auftrag.video_naechster(interval)', 'execute')
+     OR has_function_privilege('authenticated', 'auftrag.video_naechster(interval)', 'execute') THEN
+    RAISE EXCEPTION '098.7: anon/authenticated duerfen video_naechster'; END IF;
+  IF has_function_privilege('public', 'auftrag._vergeben(text,boolean,interval)', 'execute')
+     OR has_function_privilege('sales_app', 'auftrag._vergeben(text,boolean,interval)', 'execute')
+     OR has_function_privilege('anon', 'auftrag._vergeben(text,boolean,interval)', 'execute')
+     OR has_function_privilege('authenticated', 'auftrag._vergeben(text,boolean,interval)', 'execute') THEN
+    RAISE EXCEPTION '098.7: _vergeben ist ausfuehrbar'; END IF;
   IF has_function_privilege('sales_app', 'auftrag.anlegen(text,text,text,text,text,jsonb,uuid)', 'execute')
      OR has_function_privilege('sales_app', 'auftrag.naechster(text,interval)', 'execute') THEN
     RAISE EXCEPTION '098.7: sales_app darf allgemeine Funktionen'; END IF;
@@ -137,8 +160,9 @@ BEGIN
   -- SECURITY DEFINER und search_path der neu geschriebenen Funktionen
   IF (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
        WHERE n.nspname = 'auftrag'
-         AND p.proname IN ('anlegen', 'naechster', 'video_naechster', 'ergebnis_mischen', 'stand_setzen')
-         AND p.prosecdef AND p.proconfig @> ARRAY['search_path=auftrag, pg_temp']) <> 5 THEN
+         AND p.proname IN ('anlegen', 'naechster', 'video_naechster', 'ergebnis_mischen', 'stand_setzen',
+                           '_vergeben', 'laufende')
+         AND p.prosecdef AND p.proconfig @> ARRAY['search_path=auftrag, pg_temp']) <> 7 THEN
     RAISE EXCEPTION '098.7: SECURITY DEFINER / search_path'; END IF;
 END $$;
 
