@@ -387,6 +387,55 @@ def test_fertigstellen_nur_wenn_alle_fertig_und_video_fehlt_oder_veraltet(F):
     assert gerufen == []
 
 
+def _fertige_szene(nr, **kw):
+    return zeile(nr, **{"stand": "fertig", "variante": 0, "clip_datei": f"wb-0123abcd-s{nr:02d}-f0.mp4", **kw})
+
+
+def test_fehlgeschlagenes_video_wird_nicht_alle_30_s_neu_versucht(F):
+    gerufen = []
+
+    def hook(api, w):
+        gerufen.append(1)
+        return "fehler"
+    api = FakeApi([werk(AID_A, "text_ok", alle_fertig=True, szenen=[_fertige_szene(1), _fertige_szene(2)])])
+    assert ein_durchlauf(api, fertigstellen=hook, **F) == "fehler"
+    assert ein_durchlauf(api, fertigstellen=hook, **F) == "wartet"
+    assert gerufen == [1]
+
+
+def test_fehlgeschlagenes_video_geht_wieder_nach_neu_freigegebener_szene(F):
+    gerufen = []
+
+    def hook(api, w):
+        gerufen.append(1)
+        return "fehler"
+    api = FakeApi([werk(AID_A, "text_ok", alle_fertig=True, szenen=[_fertige_szene(1), _fertige_szene(2)])])
+    ein_durchlauf(api, fertigstellen=hook, **F)
+    api.werke = [werk(AID_A, "text_ok", alle_fertig=True,
+                      szenen=[_fertige_szene(1), _fertige_szene(2, variante=1, clip_datei="wb-0123abcd-s02-f1.mp4")])]
+    assert ein_durchlauf(api, fertigstellen=hook, **F) == "fehler"
+    assert gerufen == [1, 1]
+
+
+def test_ausnahme_beim_fertigstellen_wird_ebenfalls_geparkt(F):
+    gerufen = []
+
+    def hook(api, w):
+        gerufen.append(1)
+        raise RuntimeError("weg")
+    api = FakeApi([werk(AID_A, "text_ok", alle_fertig=True, szenen=[_fertige_szene(1)])])
+    assert ein_durchlauf(api, fertigstellen=hook, **F) == "fehler"
+    ein_durchlauf(api, fertigstellen=hook, **F)
+    assert gerufen == [1]
+
+
+def test_vorgabe_ist_video_zusammen_fertigstellen():
+    import inspect
+
+    from spaces.marketing.workers import video_zusammen
+    assert inspect.signature(ein_durchlauf).parameters["fertigstellen"].default is video_zusammen.fertigstellen
+
+
 class Uhr:
     def __init__(self):
         self.t = 1000.0

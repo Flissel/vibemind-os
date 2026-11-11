@@ -32,6 +32,7 @@ from spaces.marketing.workers.bild_worker import ApiFehler, umgebung_laden
 from spaces.marketing.workers.chat_worker import MODELL, LlmFehler
 from spaces.marketing.workers.video_rendern import szene_rendern
 from spaces.marketing.workers.video_stimme import szene_sprechen
+from spaces.marketing.workers.video_zusammen import fertigstellen as video_fertigstellen
 from spaces.marketing.workers.werkbank_api import WerkbankApi
 
 LOG = logging.getLogger("werkbank_arbeiter")
@@ -449,12 +450,25 @@ def _fertig(c: _Lauf, werk: dict) -> str | None:
         return None
     if int(werk.get("video_fassung") or 0) != 0 and not werk.get("video_veraltet"):
         return None
-    c.fertigstellen(c.api, werk)
+    # Ein Video, das nicht zusammenging, wird nicht alle 30 s neu versucht: erst wieder, wenn sich an den Clips
+    # etwas aendert (Szene neu freigegeben) oder der Arbeiter neu startet (das Gedaechtnis ist weg).
+    schluessel = ("video", str(werk["auftrag"]), int(werk.get("video_fassung") or 0), tuple(
+        (str(s.get("id")), s.get("variante"), s.get("clip_datei"), s.get("fassung")) for s in werk.get("szenen") or []))
+    if schluessel in c.gedaechtnis["aufgegeben"]:
+        return None
+    try:
+        ergebnis = c.fertigstellen(c.api, werk)
+    except Exception:
+        c.gedaechtnis["aufgegeben"][schluessel] = True
+        raise
+    if ergebnis == "fehler":
+        c.gedaechtnis["aufgegeben"][schluessel] = True
+        return "fehler"
     return "video"
 
 
 def ein_durchlauf(api, fragen=shim_fragen, kontext=video_kontext.holen, sprechen=szene_sprechen, rendern=szene_rendern,
-                  fertigstellen=None, warte=time.sleep, *, marke=video_slides.marke_fuer, ordner=arbeitsordner,
+                  fertigstellen=video_fertigstellen, warte=time.sleep, *, marke=video_slides.marke_fuer, ordner=arbeitsordner,
                   brief=_brief, jetzt=time.monotonic, heute=date.today) -> str:
     """Neuen Auftrag uebernehmen, dann jedes Werk der Reihe nach: Gliederung, Szenentexte, hoechstens eine Szene
     erzeugen, fertigstellen. Rueckgabe: das letzte Ergebnis - leer, gliederung, texte, clip, video, wartet, budget
