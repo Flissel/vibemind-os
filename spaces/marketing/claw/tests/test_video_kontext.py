@@ -71,9 +71,23 @@ def test_ohne_firmenordner_und_ohne_rowboat_wirft_nie(tmp_path, monkeypatch):
     assert k.dokumente == [] and len(k.hinweise) == 2
 
 
-def test_budget_gilt_und_marke_bleibt(tmp_path, monkeypatch):
+def test_budget_gilt_hart_und_marke_bleibt(tmp_path, monkeypatch):
     firma(tmp_path, monkeypatch)
     q, d = rowboat_ok()
-    k = holen("Acme", "Schulung Angebot Preise", budget=1, quellen=q, dokumente=d)
+    frei = holen("Acme", "Schulung Angebot Preise", budget=100_000, quellen=q, dokumente=d)
+    assert len(frei.dokumente) >= 3
+    marke = next(x for x in frei.dokumente if x.name == "Marke.md")
+    rest = [x for x in frei.dokumente if x is not marke]
+    budget = len(marke.text) + len(rest[0].text) + 5          # Platz fuer hoechstens ein weiteres Dokument
+    k = holen("Acme", "Schulung Angebot Preise", budget=budget, quellen=q, dokumente=d)
     assert "Marke.md" in {x.name for x in k.dokumente}
-    assert video_kontext.DOKUMENT_MAX >= 1
+    assert sum(len(x.text) for x in k.dokumente) <= budget and len(k.dokumente) < len(frei.dokumente)
+    k = holen("Acme", "Schulung Angebot Preise", budget=1, quellen=q, dokumente=d)
+    assert [x.name for x in k.dokumente] == ["Marke.md"] and any("Budget" in h for h in k.hinweise)
+
+
+def test_uebersprungene_rowboat_eintraege_stehen_in_den_hinweisen(tmp_path, monkeypatch):
+    firma(tmp_path, monkeypatch)
+    q, d = rowboat_ok()
+    k = holen("Acme", "Schulung", quellen=q, dokumente=d)
+    assert any("2 Dokumente ohne Text übersprungen" in h for h in k.hinweise)

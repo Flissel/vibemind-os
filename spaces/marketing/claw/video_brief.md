@@ -23,8 +23,8 @@ Tricks, sondern durch Reihenfolge, Tempo und Ehrlichkeit.
 
 ## 2. Der Hauptteil
 
-- **Stufen statt Kapitel.** „Stufe 1, Stufe 2, Stufe 3“, jede mit einem eigenen Ergebnis, das am Anfang der
-  Stufe steht. Fortschritt hält Zuschauer. Keine Kapitelüberschriften wie „Hintergrund“ oder „Grundlagen“.
+- **Stufen statt Kapitel.** „Stufe 1, Stufe 2, Stufe 3“ (Stufennummern darfst du als Ziffer schreiben), jede mit einem eigenen
+  Ergebnis, das am Anfang der Stufe steht. Fortschritt hält Zuschauer. Keine Kapitelüberschriften wie „Hintergrund“ oder „Grundlagen“.
 - **Ergebnis zuerst, dann der Weg.** In jeder Stufe zeigst du erst, was am Ende herauskommt.
 - **Emotion und Erklärung wechseln sich ab.** Staunen (ein überraschendes, belegtes Ergebnis), Lachen über
   eine ehrliche Panne, Zweifel („Stimmt das wirklich?“), dann wieder Erklärung. Nie mehr als zwei
@@ -45,8 +45,9 @@ Tricks, sondern durch Reihenfolge, Tempo und Ehrlichkeit.
 - Keine Werbesprache („revolutionär“, „einzigartig“, „perfekt“), keine Superlative ohne Beleg.
 - Abkürzungen und Fremdwörter nur, wenn der Zuschauer sie kennt. Zahlen und Einheiten so schreiben, wie
   sie gesprochen werden.
-- Das Bild steht nie länger als etwa 4 Sekunden still. Darum hat jede Szene 2 bis 5 Bildschritte, die an
-  Satzgrenzen wechseln: ein neuer Punkt, eine neue Zahl, ein neues Bild.
+- Das Bild steht nie länger als etwa 4 Sekunden unverändert. Darum hat jede Szene 2 bis 5 Bildschritte, die an
+  Satzgrenzen wechseln; in langen Szenen lässt du die Folien Punkt für Punkt erscheinen, und die Folien
+  bewegen sich zusätzlich von selbst.
 
 ## 4. Bildarten
 
@@ -70,6 +71,6 @@ Tricks, sondern durch Reihenfolge, Tempo und Ehrlichkeit.
 - [ ] Emotion und Erklärung wechseln sich ab
 - [ ] ehrliche Grenzen als eigener Abschnitt
 - [ ] Hook-Satz am Ende wiederholt
-- [ ] Jede Szene 35 bis 110 Wörter, Bild wechselt mindestens alle vier Sekunden
+- [ ] Jede Szene 35 bis 110 Wörter, auf dem Bild passiert mindestens alle vier Sekunden etwas
 - [ ] Jede Sachaussage hat einen Beleg, nichts ist erfunden
 - [ ] Am Ende steht der Hinweis, dass das Video mit KI erstellt wurde (steht in der Beschreibung, nicht im Text)

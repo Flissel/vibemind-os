@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from spaces.marketing.claw import markenwissen, werkzeuge, wissen
 
 BUDGET_VORGABE = 60_000
-DOKUMENT_MAX = 20_000            # ein einzelnes Dokument sprengt nie allein das Budget
+DOKUMENT_MAX = 20_000            # Obergrenze je Dokument (Zeichen)
 _VERMERK = " … (gekürzt)"
 # Ordner-/Dateiteile, die nie in den Kontext kommen (Kontakte, Agent-Notizen, Sicherungen/Verlauf)
 _GESPERRT = ("kontakt", "notiz", "verlauf")
@@ -102,7 +102,7 @@ def _rowboat(quellen, dokumente, hinweise: list[str]) -> list[Dokument]:
         hinweise.append("Rowboat nicht erreichbar, es gilt nur das Markenwissen")
         return []
     ergebnis: list[Dokument] = []
-    unlesbar = 0
+    unlesbar = leer = 0
     for quelle in _liste(r.get("daten")):
         qid, qname = _erstes(quelle, _ID), _erstes(quelle, _NAME)
         if not qid or not qname or _gesperrt(qname):
@@ -113,11 +113,16 @@ def _rowboat(quellen, dokumente, hinweise: list[str]) -> list[Dokument]:
             continue
         for eintrag in _liste(d.get("daten")):
             dname, text = _erstes(eintrag, _NAME), _erstes(eintrag, _TEXT)
-            if not dname or _gesperrt(dname) or not text or markenwissen.ist_leer(text):
-                continue   # ohne Namen oder Inhalt nicht einzuordnen: bleibt draussen
+            if dname and _gesperrt(dname):
+                continue
+            if not dname or not text or markenwissen.ist_leer(text):
+                leer += 1      # ohne Namen oder Inhalt nicht einzuordnen: bleibt draussen
+                continue
             ergebnis.append(Dokument(f"{qname}/{dname}", _kappen(text, DOKUMENT_MAX), "rowboat"))
     if unlesbar:
         hinweise.append(f"{unlesbar} Rowboat-Quelle(n) nicht lesbar")
+    if leer:
+        hinweise.append(f"{leer} Dokumente ohne Text übersprungen")
     return ergebnis
 
 
@@ -154,6 +159,14 @@ def holen(mandant: str, frage: str, budget: int = BUDGET_VORGABE,
     except Exception:  # noqa: BLE001
         gewaehlt = []
         hinweise.append("Auswahl des Materials fehlgeschlagen")
-    if stuecke and not gewaehlt:
+    genommen, verbraucht = [], 0           # das Budget gilt hart; auswaehlen laesst das beste Stueck immer durch
+    for d in gewaehlt:
+        if verbraucht + len(d.text) <= platz:
+            genommen.append(d)
+            verbraucht += len(d.text)
+    if len(genommen) < len(gewaehlt):
+        hinweise.append(f"{len(gewaehlt) - len(genommen)} Dokument(e) passen nicht ins Budget und fehlen")
+    gewaehlt = genommen
+    if stuecke and not gewaehlt and not any("Budget" in h for h in hinweise):
         hinweise.append("Kein Material mit Bezug zum Thema gefunden")
     return Kontext(marke + gewaehlt, hinweise)

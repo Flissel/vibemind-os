@@ -30,6 +30,14 @@ FEHLT_PRAEFIX = "dazu fehlt mir Material:"
 _ZAHL = re.compile(r"(?<![\w.,])\d+(?:[.,]\d+)*(?:\s?(?:%|€|Prozent|Euro|EUR)(?!\w))?", re.IGNORECASE)
 _TEIL = re.compile(r"(\d+(?:[.,]\d+)*)\s?(%|€|prozent|euro|eur)?", re.IGNORECASE)
 _TAUSEND = re.compile(r"\d{1,3}(?:\.\d{3})+(?:,\d+)?")
+# Gliederungsnummern (Regel R15): ganze Zahl 1..20 direkt hinter einem dieser Woerter, auch "Stufen 1 bis 3"
+_NUMMERNWORT = (r"(?<!\w)(?:Stufe|Schritt|Punkt|Teil|Phase|Level|Regel|Tipp|Nummer|Platz|Szene|Kapitel)"
+                r"(?:n|e|s)?\s*(?:\d{1,2}\s*(?:bis|und|oder|-|–)\s*)?$")
+_NUMMER_DAVOR = re.compile(_NUMMERNWORT, re.IGNORECASE)
+NUMMERN_REGEL = ("Gliederungsnummern brauchen keinen Beleg: eine ganze Zahl von 1 bis 20 direkt hinter einem der "
+                 "Wörter Stufe, Schritt, Punkt, Teil, Phase, Level, Regel, Tipp, Nummer, Platz, Szene, Kapitel "
+                 "(z. B. \"Stufe 2\", \"Stufen 1 bis 3\"). Jede andere Zahl braucht einen Beleg, auch \"in 3 Monaten\" "
+                 "und \"Punkt 25\".")
 
 
 # --- Zahlen -----------------------------------------------------------------------------------
@@ -45,18 +53,25 @@ def _einheit(roh: str | None) -> str:
     return "%" if e in ("%", "prozent") else "€" if e in ("€", "euro", "eur") else ""
 
 
-def _zahlen(text: str) -> list[tuple[str, str]]:
-    """(normalisierte Zahl, Einheit '%'|'€'|'') aller Zahlen im Text."""
+def _zahlen(text: object, nummern_frei: bool = True) -> list[tuple[str, str]]:
+    """(normalisierte Zahl, Einheit '%'|'€'|'') aller Zahlen im Text. Mit `nummern_frei` fallen Gliederungsnummern
+    ("Stufe 2") heraus; Quelltexte werden ohne diese Ausnahme gelesen."""
+    text = text if isinstance(text, str) else ""
     ergebnis = []
-    for t in _ZAHL.finditer(text or ""):
+    for t in _ZAHL.finditer(text):
         m = _TEIL.fullmatch(t.group(0))
-        if m:
-            ergebnis.append((_normal(m.group(1)), _einheit(m.group(2))))
+        if not m:
+            continue
+        roh = m.group(1)
+        if (nummern_frei and roh.isdigit() and 1 <= int(roh) <= 20 and not m.group(2)
+                and _NUMMER_DAVOR.search(text[:t.start()])):
+            continue
+        ergebnis.append((_normal(roh), _einheit(m.group(2))))
     return ergebnis
 
 
-def _nur_zahlen(text: str) -> set[str]:
-    return {z for z, _ in _zahlen(text)}
+def _nur_zahlen(text: object, nummern_frei: bool = True) -> set[str]:
+    return {z for z, _ in _zahlen(text, nummern_frei)}
 
 
 def _zahl_text(paar: tuple[str, str]) -> str:
@@ -66,18 +81,23 @@ def _zahl_text(paar: tuple[str, str]) -> str:
 # --- JSON lesen -------------------------------------------------------------------------------
 
 def _json(text: str) -> object:
-    """Erstes JSON-Objekt (oder Liste) der Antwort, auch in ```-Zaeunen; sonst None."""
-    t = (text or "").strip()
-    if t.startswith("```"):
-        t = t.split("\n", 1)[1] if "\n" in t else ""
-        t = t.rsplit("```", 1)[0]
-    for auf, zu in (("{", "}"), ("[", "]")):
-        a, b = t.find(auf), t.rfind(zu)
-        if a != -1 and b > a:
-            try:
-                return json.loads(t[a:b + 1])
-            except ValueError:
-                continue
+    """Erstes JSON-Objekt (oder nicht leere Liste von Objekten) der Antwort; Vortext, ```-Zaeune und Nachtext
+    stoeren nicht. Sonst None."""
+    t = text if isinstance(text, str) else ""
+    zerleger = json.JSONDecoder()
+    versuche = 0
+    for i, c in enumerate(t):
+        if c not in "{[":
+            continue
+        versuche += 1
+        if versuche > 50:
+            break
+        try:
+            wert, _ = zerleger.raw_decode(t, i)
+        except ValueError:
+            continue
+        if isinstance(wert, dict) or (isinstance(wert, list) and wert and all(isinstance(e, dict) for e in wert)):
+            return wert
     return None
 
 
@@ -104,6 +124,7 @@ def _system(brief: str) -> str:
 
 def _auftrag_text(eingabe: dict) -> str:
     return (f"Thema: {eingabe.get('thema', '')}\nBeschreibung des Auftraggebers: {eingabe.get('beschreibung', '')}\n"
+            "Rahmenangaben (keine Quelle für Belege; \"auftrag\" meint nur Thema und Beschreibung):\n"
             f"Länge: {eingabe.get('minuten', '')} Minuten\nZielgruppe: {eingabe.get('zielgruppe', '')}")
 
 
@@ -179,17 +200,28 @@ def gliederung_lesen(text: str, geholt: set[str]) -> tuple[dict | None, list[str
             if s.get("bildart") not in BILDARTEN:
                 fehler.append(f"Szene {anzahl}: Unbekannte Bildart {s.get('bildart')!r} "
                               f"(erlaubt: {', '.join(BILDARTEN)}).")
-            quellen = s.get("quellen") if isinstance(s.get("quellen"), list) else []
-            for q in quellen:
-                if q != AUFTRAG and q not in geholt:
+            roh_quellen = s.get("quellen", [])
+            if not isinstance(roh_quellen, list):
+                fehler.append(f"Szene {anzahl}: `quellen` ist eine Liste von Quellennamen.")
+                roh_quellen = []
+            quellen = []
+            for q in roh_quellen:
+                if not isinstance(q, str):
+                    fehler.append(f"Szene {anzahl}: Eine Quelle ist ein Name (Text), kein Objekt oder keine Liste.")
+                elif q != AUFTRAG and q not in geholt:
                     fehler.append(f"Szene {anzahl}: Die Quelle \"{q}\" wurde nicht geholt. Erlaubt sind "
                                   f"\"{AUFTRAG}\" und die gelieferten Dokumentnamen.")
-            szenen.append({"kurz": _text(s["kurz"]), "bildart": s.get("bildart"),
-                           "quellen": [q for q in quellen if isinstance(q, str)]})
+                else:
+                    quellen.append(q)
+            szenen.append({"kurz": _text(s["kurz"]), "bildart": s.get("bildart"), "quellen": quellen})
         stufen.append({"name": name, "szenen": szenen})
     if not SZENEN_MIN <= anzahl <= SZENEN_MAX:
         fehler.append(f"Die Gliederung hat {anzahl} Szenen, erlaubt sind {SZENEN_MIN} bis {SZENEN_MAX}.")
-    fehlt = [_text(f) for f in roh.get("fehlt", []) if _text(f)] if isinstance(roh.get("fehlt"), list) else []
+    fehlt_roh = roh.get("fehlt", [])
+    if not isinstance(fehlt_roh, list):
+        fehler.append("`fehlt` ist eine Liste von Sätzen.")
+        fehlt_roh = []
+    fehlt = [_text(f) for f in fehlt_roh if _text(f)]
     if fehler:
         return None, fehler
     return {"titel": titel, "hook": hook, "stufen": stufen, "fehlt": fehlt}, []
@@ -210,7 +242,7 @@ def _bildregeln() -> str:
         f"Das Bild ist `{{\"schritte\": [...]}}` mit {video_slides.SCHRITTE_MIN} bis {video_slides.SCHRITTE_MAX} "
         "Schritten, auch bei Avatar-Szenen. Jeder Schritt: `vorlage`, `ab_satz` und die Felder der Vorlage flach "
         "daneben. `ab_satz` zählt die Sätze des Sprechtexts ab 0: Schritt 1 beginnt bei 0, jeder weitere liegt "
-        "höher als der vorige und vor dem letzten Satz. Der Schritt steht, bis der nächste beginnt. Vorlagen:\n"
+        "höher als der vorige und höchstens beim letzten Satz. Der Schritt steht, bis der nächste beginnt. Vorlagen:\n"
         f"- titel: zeile (höchstens {z} Zeichen), unterzeile (höchstens {z})\n"
         f"- stichpunkte: ueberschrift (höchstens {z}), punkte (2 bis 5 Texte, je höchstens {p})\n"
         f"- zahl: zahl (höchstens 12 Zeichen, z. B. \"40\"), einheit (höchstens {z}, z. B. \"% weniger Aufwand\"), "
@@ -223,7 +255,7 @@ def _bildregeln() -> str:
 
 
 SZENEN_FORM = """{"szenen": [{"nr": 1, "sprechtext": "2 bis 8 Sätze, 35 bis 110 Wörter",
- "bildart": "slide|avatar_gross|avatar_slide|clip", "bild": {"schritte": [{"vorlage": "titel", "ab_satz": 0, "zeile": "…", "unterzeile": "…"}]},
+ "bildart": "slide|avatar_gross|avatar_slide|clip", "bild": {"schritte": [{"vorlage": "titel", "ab_satz": 0, "zeile": "…", "unterzeile": "…"}, {"vorlage": "stichpunkte", "ab_satz": 1, "ueberschrift": "…", "punkte": ["…", "…"]}]},
  "uebergang": "schnitt|blende", "belege": [{"aussage": "Satz aus der Quelle, mit ihrer Zahl", "quelle": "Dokumentname oder auftrag"}],
  "ohne_sachaussage": false, "aendert_text": true}]}"""
 
@@ -253,9 +285,11 @@ def szenen_prompt(eingabe: dict, gliederung: dict, szenen: list[dict], kontext: 
         "# Regeln für jede Szene\n"
         f"- `sprechtext`: {SAETZE_MIN} bis {SAETZE_MAX} Sätze, {WOERTER_MIN} bis {WOERTER_MAX} Wörter, gesprochene "
         "Sprache.\n"
-        "- Jede Zahl im Sprechtext (Preise, Prozent, Mengen, Jahre) steht als Ziffer da und hat einen Beleg, dessen "
-        "`aussage` dieselbe Zahl enthält und dessen Quelle sie wörtlich enthält. Zahlen ohne Quelle schreibst du gar "
-        "nicht; Kleinzahlen ohne Sachaussage (\"drei Punkte\") schreibst du als Wort.\n"
+        "- Jede Zahl, die im Sprechtext gesprochen oder auf einer Folie gezeigt wird (Preise, Prozent, Mengen, "
+        "Jahre, in Titeln, Stichpunkten, Vergleichen, Zitaten, der Agenda), steht als Ziffer da und hat einen Beleg "
+        "derselben Szene, dessen `aussage` dieselbe Zahl (mit gleicher Einheit, % oder €) enthält und dessen Quelle "
+        "sie wörtlich (mit gleicher Einheit) enthält. Zahlen ohne Quelle schreibst du gar nicht; Kleinzahlen ohne "
+        "Sachaussage (\"drei Punkte\") schreibst du als Wort. " + NUMMERN_REGEL + "\n"
         "- `belege`: je Sachaussage eine Zeile `{aussage, quelle}`. `quelle` ist exakt \"auftrag\" oder ein "
         "Dokumentname aus dem Material. Hat die Szene keine Sachaussage (Gruß, Überleitung, Frage), steht "
         "`belege` leer und `ohne_sachaussage` ist true; sonst ist `ohne_sachaussage` false.\n"
@@ -295,82 +329,146 @@ def szenen_lesen(text: str) -> list[dict] | None:
 
 # --- Pruefung ---------------------------------------------------------------------------------
 
-def _bild_zahlen(bild: dict) -> list[str]:
-    """Die Zahl-Felder (`zahl`) der Vorlage `zahl` im Bildplan."""
+def _texte(wert: object, tiefe: int = 0) -> list[str]:
+    """Alle Textwerte eines verschachtelten Bildschritts (Listen, Unterobjekte)."""
+    if isinstance(wert, str):
+        return [wert]
+    if tiefe > 4:
+        return []
+    if isinstance(wert, dict):
+        return [t for v in wert.values() for t in _texte(v, tiefe + 1)]
+    if isinstance(wert, list):
+        return [t for v in wert for t in _texte(v, tiefe + 1)]
+    return []
+
+
+def _bild_texte(bild: object) -> list[str]:
+    """Alle Texte, die ein Bildplan auf den Bildschirm bringt (ohne `vorlage`)."""
     schritte = bild.get("schritte") if isinstance(bild, dict) else None
-    return [str(s.get("zahl", "")) for s in schritte or []
-            if isinstance(s, dict) and s.get("vorlage") == "zahl" and not isinstance(s.get("zahl"), (dict, list))]
+    if not isinstance(schritte, list):
+        return []
+    return [t for st in schritte if isinstance(st, dict)
+            for k, v in st.items() if k != "vorlage" for t in _texte(v)]
+
+
+def _kurz(wert: object) -> str:
+    t = wert if isinstance(wert, str) else json.dumps(wert, ensure_ascii=False, default=str)
+    return t if len(t) <= 60 else t[:60] + "…"
+
+
+def _belege_lesen(szene: dict, fehler: list[str]) -> list[dict]:
+    roh = szene.get("belege")
+    if roh is None:
+        return []
+    if not isinstance(roh, list):
+        fehler.append("`belege` ist eine Liste aus Objekten mit `aussage` und `quelle`.")
+        return []
+    belege = []
+    for b in roh:
+        if isinstance(b, dict):
+            belege.append(b)
+        else:
+            fehler.append("Ein Beleg ist ein Objekt mit `aussage` und `quelle`.")
+    return belege
 
 
 def szene_pruefen(szene: dict, auftragstext: str, kontext: Kontext) -> list[str]:
-    """Mechanische Pruefung einer Szene; leer = darf ans Text-Tor."""
+    """Mechanische Pruefung einer Szene; leer = darf ans Text-Tor. Wirft bei keiner Form der Modellantwort."""
+    if not isinstance(szene, dict):
+        return ["Die Szene ist kein Objekt."]
     fehler: list[str] = []
     quellen = {d.name: d.text for d in kontext.dokumente}
-    quellen[AUFTRAG] = auftragstext or ""
-    belege = [b for b in szene.get("belege") or [] if isinstance(b, dict)]
+    quellen[AUFTRAG] = auftragstext if isinstance(auftragstext, str) else ""
+    belege = _belege_lesen(szene, fehler)
     sprech = szene.get("sprechtext") if isinstance(szene.get("sprechtext"), str) else ""
+    if not sprech.strip():
+        fehler.append("Der Sprechtext fehlt.")
+
+    def bekannt(q: object) -> bool:
+        return isinstance(q, str) and q in quellen
 
     # Regel 1: Quelle ist "auftrag" oder ein geholtes Dokument
     for b in belege:
-        q = b.get("quelle")
-        if q not in quellen:
-            fehler.append(f"Die Quelle \"{q}\" wurde nicht geholt. Erlaubt sind \"{AUFTRAG}\" und die gelieferten "
-                          "Dokumentnamen.")
+        if not bekannt(b.get("quelle")):
+            fehler.append(f"Die Quelle \"{_kurz(b.get('quelle'))}\" wurde nicht geholt. Erlaubt sind \"{AUFTRAG}\" "
+                          "und die gelieferten Dokumentnamen.")
     # Regel 2: ohne Belege nur bei ohne_sachaussage
     if not belege and szene.get("ohne_sachaussage") is not True:
         fehler.append("Die Szene hat keinen Beleg. Nenne für jede Sachaussage eine Quelle oder lass die Aussage "
                       "weg und setze ohne_sachaussage auf true.")
-    # Regel 3: jede Zahl im Sprechtext steht in der Aussage eines Belegs (Einheit % / € muss mitpassen)
-    belegt = [z for b in belege for z in _zahlen(_text(b.get("aussage")))]
-    for zahl, einheit in dict.fromkeys(_zahlen(sprech)):
-        if not any(z == zahl and (not einheit or e == einheit) for z, e in belegt):
-            fehler.append(f"Die Zahl \"{_zahl_text((zahl, einheit))}\" im Sprechtext hat keinen Beleg. Belege sie "
-                          "mit Quelle oder nimm sie heraus.")
-    for z in _bild_zahlen(szene.get("bild") or {}):
-        for zahl in _nur_zahlen(z):
-            if zahl not in {n for n, _ in belegt}:
-                fehler.append(f"Die Zahl \"{z}\" auf der Folie hat keinen Beleg.")
-    # Regel 4: jede Zahl einer Aussage steht woertlich im Text ihrer Quelle
+    # Regel 3: jede Zahl im Sprechtext und auf der Folie steht in der Aussage eines Belegs
+    belegt = [z for b in belege for z in _zahlen(b.get("aussage"))]
+    for ort, texte in (("im Sprechtext", [sprech]), ("auf der Folie", _bild_texte(szene.get("bild")))):
+        for zahl, einheit in dict.fromkeys(z for t in texte for z in _zahlen(t)):
+            if not any(z == zahl and (not einheit or e == einheit) for z, e in belegt):
+                fehler.append(f"Die Zahl \"{_zahl_text((zahl, einheit))}\" {ort} hat keinen Beleg. Belege sie mit "
+                              "Quelle oder nimm sie heraus.")
+    # Regel 4: jede Zahl einer Aussage steht woertlich (mit gleicher Einheit) im Text ihrer Quelle
     for b in belege:
         q = b.get("quelle")
-        if q not in quellen:
+        if not bekannt(q):
             continue
-        vorhanden = _nur_zahlen(quellen[q])
-        for zahl in dict.fromkeys(n for n, _ in _zahlen(_text(b.get("aussage")))):
-            if zahl not in vorhanden:
-                fehler.append(f"Die Zahl \"{zahl.replace('.', ',')}\" aus dem Beleg steht nicht in der Quelle "
-                              f"\"{q}\". Nimm nur Zahlen, die dort wörtlich stehen.")
+        vorhanden = set(_zahlen(quellen[q], nummern_frei=False))
+        ohne_einheit = {n for n, _ in vorhanden}
+        for zahl, einheit in dict.fromkeys(_zahlen(b.get("aussage"))):
+            if (zahl, einheit) not in vorhanden and not (not einheit and zahl in ohne_einheit):
+                fehler.append(f"Die Zahl \"{_zahl_text((zahl, einheit))}\" aus dem Beleg steht nicht in der Quelle "
+                              f"\"{q}\". Nimm nur Zahlen mit Einheit, die dort wörtlich stehen.")
     # Regel 5: Wortzahl und Satzzahl
     woerter, anzahl = len(sprech.split()), len(saetze(sprech))
     if not WOERTER_MIN <= woerter <= WOERTER_MAX:
         fehler.append(f"Der Sprechtext hat {woerter} Wörter, erlaubt sind {WOERTER_MIN} bis {WOERTER_MAX}.")
     if not SAETZE_MIN <= anzahl <= SAETZE_MAX:
         fehler.append(f"Der Sprechtext hat {anzahl} Sätze, erlaubt sind {SAETZE_MIN} bis {SAETZE_MAX}.")
-    # Regel 6: Bildart und Bildplan
+    # Regel 6: Bildart, Uebergang und Bildplan
     if szene.get("bildart") not in BILDARTEN:
-        fehler.append(f"Unbekannte Bildart {szene.get('bildart')!r} (erlaubt: {', '.join(BILDARTEN)}).")
+        fehler.append(f"Unbekannte Bildart \"{_kurz(szene.get('bildart'))}\" (erlaubt: {', '.join(BILDARTEN)}).")
     if szene.get("uebergang") not in UEBERGAENGE:
         fehler.append(f"Unbekannter Übergang (erlaubt: {', '.join(UEBERGAENGE)}).")
-    fehler += video_slides.bild_pruefen(szene.get("bild") or {}, anzahl)
+    try:
+        fehler += video_slides.bild_pruefen(szene.get("bild"), anzahl)
+    except Exception:  # noqa: BLE001 - Muell im Bildplan ist ein Fehlersatz, kein Absturz
+        fehler.append("Der Bildplan ist nicht lesbar: `bild` ist {\"schritte\": [...]} mit Objekten je Schritt.")
     return fehler
 
 
 # --- Kopf -------------------------------------------------------------------------------------
+
+TITEL_MAX, BESCHREIBUNG_MAX_BYTES = 100, 5000
+
 
 def _zeit(sekunden: float) -> str:
     s = int(sekunden + 0.5)
     return f"{s // 60}:{s % 60:02d}"
 
 
+def _wortgrenze(text: str, grenze: int, in_bytes: bool = False) -> str:
+    """Text auf `grenze` Zeichen (oder UTF-8-Bytes) kuerzen, am letzten Leerzeichen."""
+    def groesse(t: str) -> int:
+        return len(t.encode("utf-8")) if in_bytes else len(t)
+    if groesse(text) <= grenze:
+        return text
+    while text and groesse(text) > grenze:
+        text = text[:-1]
+    return (text.rsplit(" ", 1)[0] if " " in text else text).rstrip(" ,;:-")
+
+
 def kopf(gliederung: dict, szenen: list[dict]) -> dict:
     """{titel, beschreibung, zeitmarken: [{zeit: "m:ss", name}]}: eine Marke je Stufe, Zeit = Summe der
-    Szenendauern (`dauer_s`, Reihenfolge wie in der Gliederung) vor der ersten Szene der Stufe. Ohne Modell."""
-    t, marken, rest = 0.0, [], list(szenen)
-    for st in gliederung.get("stufen", []):
-        marken.append({"zeit": _zeit(t), "name": st.get("name", "")})
-        for _ in st.get("szenen", []):
+    Szenendauern (`dauer_s`, Reihenfolge wie in der Gliederung) vor der ersten Szene der Stufe. Ohne Modell.
+    Titel hoechstens 100 Zeichen, Beschreibung hoechstens 5000 Bytes (der Hook wird gekuerzt, der KI-Hinweis bleibt)."""
+    gliederung = gliederung if isinstance(gliederung, dict) else {}
+    rest = [x for x in szenen if isinstance(x, dict)] if isinstance(szenen, list) else []
+    t, marken = 0.0, []
+    for st in gliederung.get("stufen") or []:
+        if not isinstance(st, dict):
+            continue
+        marken.append({"zeit": _zeit(t), "name": _text(st.get("name"))})
+        for _ in st.get("szenen") or []:
             if rest:
                 dauer = rest.pop(0).get("dauer_s")
                 t += float(dauer) if isinstance(dauer, (int, float)) and not isinstance(dauer, bool) else 0.0
-    zeilen = [_text(gliederung.get("hook")), "", *[f"{m['zeit']} {m['name']}" for m in marken], "", KI_HINWEIS]
-    return {"titel": gliederung.get("titel", ""), "beschreibung": "\n".join(zeilen).strip(), "zeitmarken": marken}
+    ende = "\n".join(["", *[f"{m['zeit']} {m['name']}" for m in marken], "", KI_HINWEIS])
+    hook = _wortgrenze(_text(gliederung.get("hook")), BESCHREIBUNG_MAX_BYTES - len(ende.encode("utf-8")), True)
+    return {"titel": _wortgrenze(_text(gliederung.get("titel")), TITEL_MAX),
+            "beschreibung": (hook + ende).strip(), "zeitmarken": marken}

@@ -151,3 +151,157 @@ def test_prompts_tragen_regeln_brief_und_form():
     assert "ALTER TEXT" in nutzer and "Bild-Tor" in nutzer and "Bild anders" in nutzer
     assert "Szene 10:" in nutzer and "Szene 11:" not in nutzer and BLOCK == 10
     assert "höchstens 60" in nutzer and "höchstens 80" in nutzer and "agenda" in nutzer and "aktiv" in nutzer
+
+
+# --- Runde 2: Robustheit, Gliederungsnummern (R15), Folienzahlen, Einheiten, JSON, Kopf ----------
+
+def _belege(*paare):
+    return [{"aussage": a, "quelle": q} for a, q in paare]
+
+
+def _mit_bild(*felder):
+    """Bild mit festem ersten Schritt und weiteren Schritten."""
+    return {"schritte": [dict(BILD["schritte"][0]), *felder]}
+
+
+def test_gliederungsnummer_braucht_keinen_beleg():
+    for satz in (" In Stufe 2 geht es los.", " Stufe 2: Das Ergebnis.", " Die Stufen 1 bis 3 bauen aufeinander auf.",
+                 " Schritt 7 und Tipp 20 helfen."):
+        assert szene_pruefen(SZENE(sprechtext=LANG + satz), AUFTRAG, KONTEXT) == [], satz
+
+
+def test_stufe_mit_zahl_braucht_beleg_fuer_die_zahl():
+    f = szene_pruefen(SZENE(sprechtext=LANG + " Stufe 2 spart 40 % Zeit."), AUFTRAG, KONTEXT)
+    assert any("40 %" in x and "keinen Beleg" in x for x in f) and not any("\"2\"" in x for x in f)
+
+
+def test_andere_zahlen_brauchen_beleg():
+    for satz, zahl in ((" Das dauert in 3 Monaten.", "3"), (" Punkt 25 ist wichtig.", "25"),
+                       (" Stufe 2,5 ist neu.", "2,5"), (" Wir haben 2 Stufen.", "2")):
+        f = szene_pruefen(SZENE(sprechtext=LANG + satz), AUFTRAG, KONTEXT)
+        assert any(f"\"{zahl}\"" in x for x in f), satz
+
+
+def test_zahlen_in_allen_folienfeldern_brauchen_beleg():
+    faelle = {
+        "stichpunkte": ({"vorlage": "stichpunkte", "ab_satz": 1, "ueberschrift": "Ablauf",
+                         "punkte": ["70 Prozent mehr", "Zwei"]}, "70"),
+        "vergleich": ({"vorlage": "vergleich", "ab_satz": 1, "links": {"titel": "Alt", "punkte": ["dauert 9 Tage"]},
+                       "rechts": {"titel": "Neu", "punkte": ["a"]}}, "9"),
+        "zitat": ({"vorlage": "zitat", "ab_satz": 1, "zitat": "Wir sparen 2.400 Euro", "von": "Chef"}, "2400"),
+        "titel": ({"vorlage": "titel", "ab_satz": 1, "zeile": "Jetzt 88 neue Wege", "unterzeile": "x"}, "88"),
+        "agenda": ({"vorlage": "agenda", "ab_satz": 1, "punkte": ["a", "b", "5 Minuten"], "aktiv": 1}, "5")}
+    for name, (schritt, zahl) in faelle.items():
+        f = szene_pruefen(SZENE(bild=_mit_bild(schritt)), AUFTRAG, KONTEXT)
+        assert any("auf der Folie" in x and zahl in x.replace(".", "") for x in f), name
+
+
+def test_folienzahl_mit_beleg_und_stufennummer_bestehen():
+    schritt = {"vorlage": "stichpunkte", "ab_satz": 1, "ueberschrift": "Stufe 1 bis 3",
+               "punkte": ["30 % weniger Zeit", "Zwei"]}
+    s = SZENE(bild=_mit_bild(schritt), ohne_sachaussage=False,
+              belege=_belege(("Die Schulung spart 30 % Zeit.", "Marke.md")))
+    assert szene_pruefen(s, AUFTRAG, KONTEXT) == []
+
+
+def test_einheit_der_quelle_muss_passen():
+    s = SZENE(sprechtext=LANG + " Das spart 30 % Zeit.", ohne_sachaussage=False,
+              belege=_belege(("Spart 30 % Zeit.", "Schulungen/Angebot 2026")))
+    kontext = Kontext([Dokument("Schulungen/Angebot 2026", "Es kostet 30 Euro im Monat.", "rowboat")], [])
+    assert any("nicht in der Quelle" in x and "30 %" in x for x in szene_pruefen(s, AUFTRAG, kontext))
+    ok = Kontext([Dokument("Schulungen/Angebot 2026", "Es spart 30 Prozent Zeit.", "rowboat")], [])
+    assert szene_pruefen(s, AUFTRAG, ok) == []
+
+
+def test_gliederung_falsche_typen_werfen_nie():
+    mutationen = [
+        lambda g: g["stufen"][0]["szenen"][0].update(quellen=[{"name": "Marke.md"}]),
+        lambda g: g["stufen"][0]["szenen"][0].update(quellen=[["Marke.md"]]),
+        lambda g: g["stufen"][0]["szenen"][0].update(quellen="Marke.md"),
+        lambda g: g["stufen"][0]["szenen"][0].update(quellen=[None, 5]),
+        lambda g: g["stufen"][0]["szenen"][0].update(bildart=["slide"]),
+        lambda g: g["stufen"][0]["szenen"][0].update(bildart={"a": 1}),
+        lambda g: g["stufen"][0]["szenen"][0].update(kurz=["x"]),
+        lambda g: g["stufen"][0]["szenen"].__setitem__(1, [1, 2]),
+        lambda g: g["stufen"][0]["szenen"].__setitem__(1, None),
+        lambda g: g["stufen"].append("kaputt"),
+        lambda g: g["stufen"].append({"name": ["x"], "szenen": 3}),
+        lambda g: g.update(stufen={"a": 1}),
+        lambda g: g.update(stufen=None),
+        lambda g: g.update(fehlt="alles"),
+        lambda g: g.update(titel=["T"], hook=5),
+    ]
+    for mut in mutationen:
+        g = json.loads(GLIEDERUNG_MIT("auftrag"))
+        mut(g)
+        ergebnis, fehler = gliederung_lesen(json.dumps(g), {"Marke.md"})
+        assert ergebnis is None and fehler and all(isinstance(f, str) for f in fehler)
+    g = json.loads(GLIEDERUNG_MIT("auftrag"))
+    g["fehlt"] = [1, {"a": 1}, None, "dazu fehlt mir Material: X"]
+    assert gliederung_lesen(json.dumps(g), set())[0]["fehlt"] == ["dazu fehlt mir Material: X"]
+    for text in ("[1, 2]", '"nur Text"', "null", "42", "", "{", "[]"):
+        assert gliederung_lesen(text, set())[0] is None
+    g, fehler = gliederung_lesen(GLIEDERUNG_MIT("auftrag").replace('"auftrag"', '{"x": ["y"]}'), set())
+    assert g is None and any("Quelle" in f for f in fehler)
+
+
+def test_szene_pruefen_falsche_typen_werfen_nie():
+    junk = [None, 5, "x", [], {}, [1, [2]], {"a": {"b": [None]}}, True]
+    felder = ("sprechtext", "bildart", "bild", "uebergang", "belege", "ohne_sachaussage", "aendert_text", "nr")
+    for feld in felder:
+        for wert in junk:
+            assert isinstance(szene_pruefen(SZENE(**{feld: wert}), AUFTRAG, KONTEXT), list)
+    for beleg in (["x"], [None], [{"aussage": ["1"], "quelle": ["Marke.md"]}], [{"aussage": 40, "quelle": {}}],
+                  [{}], "x", {"aussage": "a"}):
+        f = szene_pruefen(SZENE(belege=beleg, ohne_sachaussage=False), AUFTRAG, KONTEXT)
+        assert f and all(isinstance(x, str) for x in f)
+    schritte = [None, "x", [], {"vorlage": ["zahl"]}, {"vorlage": "zahl", "ab_satz": "0", "zahl": 40},
+                {"vorlage": "stichpunkte", "ab_satz": 1, "ueberschrift": 5, "punkte": [None, {"a": 1}, 7]},
+                {"vorlage": "vergleich", "ab_satz": 1, "links": "x", "rechts": [1]},
+                {"vorlage": "agenda", "ab_satz": 1, "punkte": 3, "aktiv": "1"}]
+    for st in schritte:
+        for bild in (_mit_bild(st), {"schritte": st}, {"schritte": [st, st]}):
+            assert isinstance(szene_pruefen(SZENE(bild=bild), AUFTRAG, KONTEXT), list)
+    assert szene_pruefen("keine Szene", AUFTRAG, KONTEXT) == ["Die Szene ist kein Objekt."]
+    assert szene_pruefen(SZENE(), None, KONTEXT) == []
+    s = SZENE(sprechtext=LANG + " Das sind 40 Euro.", ohne_sachaussage=False,
+              belege=[{"aussage": "40 Euro", "quelle": ["x"]}])
+    assert any("nicht geholt" in x for x in szene_pruefen(s, AUFTRAG, KONTEXT))
+
+
+def test_szenen_lesen_falsche_typen_werfen_nie():
+    for roh in ('{"szenen": "x"}', '{"szenen": [1]}', '{"szenen": [{"nr": "1", "sprechtext": "a"}]}',
+                '{"szenen": [{"nr": 1, "sprechtext": ["a"]}]}', "[1, 2]", '{"szenen": [null]}', "[[]]", "{}"):
+        assert szenen_lesen(roh) is None
+    s = szenen_lesen(json.dumps({"szenen": [{"nr": 1, "sprechtext": LANG, "bild": [1], "belege": {"a": 1},
+                                             "uebergang": ["x"], "ohne_sachaussage": "ja"}]}))[0]
+    assert s["bild"] == {} and s["belege"] == [] and s["uebergang"] == "schnitt" and s["ohne_sachaussage"] is False
+
+
+def test_json_bare_liste_und_nachtext():
+    szene = {"nr": 1, "sprechtext": LANG, "bildart": "slide", "bild": BILD}
+    assert szenen_lesen(json.dumps([szene]))[0]["nr"] == 1
+    assert szenen_lesen("Hier ist es: " + json.dumps({"szenen": [szene]}) + "\nViel Erfolg! {gern}")[0]["nr"] == 1
+    assert szenen_lesen("```json\n" + json.dumps([szene]) + "\n```\nNoch ein } Satz")[0]["nr"] == 1
+    assert szenen_lesen("Szene [1] ist fertig: " + json.dumps({"szenen": [szene]}))[0]["nr"] == 1
+    g, fehler = gliederung_lesen(GLIEDERUNG_MIT("auftrag") + "\nDas war es {fertig}", set())
+    assert fehler == [] and g["titel"] == "T"
+
+
+def test_prompt_nennt_nummernregel_und_rahmenangaben():
+    ein = {"thema": "S", "beschreibung": "B", "minuten": 3, "zielgruppe": "Z"}
+    gl, _ = gliederung_lesen(GLIEDERUNG_MIT("auftrag", 8), set())
+    _, nutzer = szenen_prompt(ein, gl, szenen_liste(gl), KONTEXT, "B")
+    assert video_texte.NUMMERN_REGEL in nutzer and "Stufe, Schritt, Punkt, Teil" in nutzer
+    assert "Rahmenangaben (keine Quelle" in nutzer and nutzer.count('"vorlage"') >= 3
+    assert "höchstens beim letzten Satz" in nutzer
+
+
+def test_kopf_kappt_titel_und_beschreibung():
+    gl = {"titel": "Wort " * 40, "hook": "Satz mit Ümläut. " * 600,
+          "stufen": [{"name": "Einstieg", "szenen": [{"kurz": "a"}]}]}
+    k = kopf(gl, [{"dauer_s": 5}])
+    assert len(k["titel"]) <= 100 and not k["titel"].endswith(" ")
+    assert len(k["beschreibung"].encode("utf-8")) <= 5000 and k["beschreibung"].endswith(video_texte.KI_HINWEIS)
+    assert "0:00 Einstieg" in k["beschreibung"]
+    assert kopf({"stufen": "x"}, "y")["zeitmarken"] == []
