@@ -16,6 +16,7 @@ import re
 from spaces.marketing.claw import video_slides
 from spaces.marketing.claw.video_kontext import Kontext
 from spaces.marketing.claw.video_saetze import saetze
+from spaces.marketing.claw.werkbank_grenzen import BELEG_AUSSAGE_MAX, BELEG_QUELLE_MAX, BELEGE_MAX
 
 BLOCK = 10
 SZENEN_MIN, SZENEN_MAX = 8, 15
@@ -26,6 +27,9 @@ UEBERGAENGE = ("schnitt", "blende")
 AUFTRAG = "auftrag"
 KI_HINWEIS = "Dieses Video wurde mit KI erstellt."
 FEHLT_PRAEFIX = "dazu fehlt mir Material:"
+GRENZE_VIELE = "Die Szene hat zu viele Belege:"
+GRENZE_AUSSAGE = "Eine Aussage in den Belegen ist zu lang:"
+GRENZE_QUELLE = "Ein Quellenname in den Belegen ist zu lang:"
 
 _ZAHL = re.compile(r"(?<![\w.,])\d+(?:[.,]\d+)*(?:\s?(?:%|€|Prozent|Euro|EUR)(?!\w))?", re.IGNORECASE)
 _TEIL = re.compile(r"(\d+(?:[.,]\d+)*)\s?(%|€|prozent|euro|eur)?", re.IGNORECASE)
@@ -459,6 +463,23 @@ def szene_pruefen(szene: dict, auftragstext: str, kontext: Kontext) -> list[str]
         fehler += video_slides.bild_pruefen(szene.get("bild"), anzahl)
     except Exception:  # noqa: BLE001 - Muell im Bildplan ist ein Fehlersatz, kein Absturz
         fehler.append("Der Bildplan ist nicht lesbar: `bild` ist {\"schritte\": [...]} mit Objekten je Schritt.")
+    # Regel 7 (N4): die Grenzen der API fuer Belege - sonst 422 beim Abgeben und kein sichtbarer Grund
+    fehler += belege_grenzen(belege)
+    return fehler
+
+
+def belege_grenzen(belege: list) -> list[str]:
+    """Fehlersaetze, wenn Belege die Grenzen der API (werkbank_grenzen) sprengen. Die Saetze beginnen fest mit
+    GRENZE_VIELE / GRENZE_AUSSAGE / GRENZE_QUELLE; daran erkennt der Arbeiter die Art des Problems."""
+    fehler: list[str] = []
+    if len(belege) > BELEGE_MAX:
+        fehler.append(f"{GRENZE_VIELE} {len(belege)} Belege, erlaubt sind höchstens {BELEGE_MAX}. "
+                      "Fasse Aussagen zusammen.")
+    for feld, maximal, anfang in (("aussage", BELEG_AUSSAGE_MAX, GRENZE_AUSSAGE),
+                                  ("quelle", BELEG_QUELLE_MAX, GRENZE_QUELLE)):
+        laengen = [len(b[feld].strip()) for b in belege if isinstance(b, dict) and isinstance(b.get(feld), str)]
+        if any(n > maximal for n in laengen):
+            fehler.append(f"{anfang} {max(laengen)} Zeichen, erlaubt sind höchstens {maximal}. Kürze sie.")
     return fehler
 
 

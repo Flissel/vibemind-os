@@ -249,6 +249,15 @@ def test_belege_grenzen_422(db, c, belege):
     assert len(db.sql) == 1
 
 
+def test_belege_grenzen_kommen_aus_einer_quelle():
+    """N4: API und Pruefung des Arbeiters lesen dieselben Grenzen."""
+    from spaces.marketing.api import werkbank
+    from spaces.marketing.claw import video_texte, werkbank_grenzen as g
+    for name in ("BELEGE_MAX", "BELEG_AUSSAGE_MAX", "BELEG_QUELLE_MAX"):
+        assert getattr(werkbank, name) == getattr(video_texte, name) == getattr(g, name)
+    assert (g.BELEGE_MAX, g.BELEG_AUSSAGE_MAX, g.BELEG_QUELLE_MAX) == (40, 500, 200)
+
+
 def test_bild_mit_quellen_und_belegen(db, c):
     db.antworten = [[SZENE_OK], [{"ok": True}]]
     r = c.post(f"{A}/szene/{SID}/bild", json={"bildart": "slide", "bild": TEXT["bild"], "quellen": ["Marke.md"],

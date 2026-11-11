@@ -23,6 +23,7 @@ from spaces.marketing.api.bilder import _bild_schluessel, _ordner
 from spaces.marketing.api.pult import (_lesen, _lesen_einer, _schluessel, _schreiben, _uuid_oder_404, lit)
 from spaces.marketing.api.video import _ist_mp4, _markenstimme_aufgeloest
 from spaces.marketing.claw.video_slides import VORLAGEN   # Slide-Vorlagen (Spec 5.4), eine Quelle
+from spaces.marketing.claw.werkbank_grenzen import BELEG_AUSSAGE_MAX, BELEG_QUELLE_MAX, BELEGE_MAX  # eine Quelle (N4)
 
 arbeiter_router = APIRouter(prefix="/api/werkbank/arbeiter")
 pult_router = APIRouter(prefix="/api/pult/werkbank")
@@ -37,7 +38,6 @@ UEBERGAENGE = ("schnitt", "blende")
 SCHRITTE_MIN, SCHRITTE_MAX = 2, 5
 SPRECHTEXT_MAX, GRUND_MAX, SATZ_MAX, WUNSCH_MAX = 4000, 300, 300, 2000
 TITEL_MAX, BESCHREIBUNG_MAX, MESSNOTIZ_MAX = 100, 5000, 1500
-BELEGE_MAX, BELEG_AUSSAGE_MAX, BELEG_QUELLE_MAX = 40, 500, 200
 JSON_MAX = 200_000                           # Gliederung/Bild als Text, gegen Missbrauch
 TEIL_MAX = 8 * 1024 * 1024                   # ein Teil des Uploads
 MAX_BYTES_VORGABE = 2 * 1024 ** 3

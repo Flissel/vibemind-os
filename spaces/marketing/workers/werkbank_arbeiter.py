@@ -127,14 +127,60 @@ class _Lauf:
             LOG.warning("Hinweis scheiterte: %s", type(e).__name__)
 
     def aufgeben(self, melden, schluessel: tuple) -> None:
-        """Die Aufgabe am Server festhalten (dort sieht der Betreiber den Grund, und nach einem Neustart wird nicht
-        neu gefragt). Scheitert das, merkt sich der Arbeiter sie selbst, bis sich der Wunsch aendert."""
+        """Die Aufgabe am Server festhalten (dort sieht der Betreiber den Grund und das Wunschfeld, und nach einem
+        Neustart wird nicht neu gefragt). Scheitert das, parkt der Arbeiter sie selbst, bis sich der Wunsch aendert,
+        und meldet sie in jedem weiteren Durchlauf nach, bis der Server antwortet (N1)."""
         try:
             if melden():
                 return
         except Exception as e:  # noqa: BLE001
             LOG.warning("Aufgabe melden scheiterte: %s", type(e).__name__)
+            if not _endgueltig(e):
+                self.gedaechtnis["meldungen_offen"][schluessel] = melden
         self.gedaechtnis["aufgegeben"][schluessel] = True
+
+
+def _endgueltig(e: Exception) -> bool:
+    """Eine Antwort des Servers, die sich durch Wiederholen nicht aendert (4xx). Netz, Zeitlimit und 5xx nicht."""
+    return isinstance(e, ApiFehler) and 400 <= e.code < 500
+
+
+def _meldungen_nachholen(c: _Lauf) -> None:
+    """N1: Aufgaben und gescheiterte Videos, deren Meldung scheiterte, erneut melden, bis der Server antwortet. Das
+    Gedaechtnis parkt das Werkstueck derweil (kein Modellaufruf, kein Zusammenfuegen). Antwortet der Server, endet
+    das Nachmelden - auch bei False/4xx (der Stand hat sich geaendert, etwa ein neuer Wunsch: dann gilt der Server).
+    Nach einem Neustart ist die Liste leer; das Werkstueck wird dann neu versucht und, scheitert es wieder, dann
+    gemeldet."""
+    offen = c.gedaechtnis["meldungen_offen"]
+    for schluessel, melden in list(offen.items()):
+        try:
+            melden()
+        except Exception as e:  # noqa: BLE001
+            if not _endgueltig(e):
+                LOG.warning("Nachmelden scheiterte: %s", type(e).__name__)
+                continue
+            LOG.warning("Nachmelden abgelehnt: API %s", e.code)
+        del offen[schluessel]
+
+
+class _MeldeApi:
+    """Die Api fuer `fertigstellen`: video_zusammen faengt eine gescheiterte Meldung `video_gescheitert` selbst ab
+    (nur ein Logeintrag). Hier wird sie zusaetzlich fuers Nachmelden vorgemerkt (N1); alles andere geht durch."""
+
+    def __init__(self, api, offen: dict):
+        self._api, self._offen = api, offen
+
+    def __getattr__(self, name):
+        return getattr(self._api, name)
+
+    def video_gescheitert(self, aid: str, versuch: int, grund: str):
+        melden = lambda: self._api.video_gescheitert(aid, versuch, grund)   # noqa: E731
+        try:
+            return melden()
+        except Exception as e:  # noqa: BLE001 - wird weitergereicht; video_zusammen protokolliert den Typ
+            if not _endgueltig(e):
+                self._offen[("video_gescheitert", aid, versuch)] = melden
+            raise
 
 
 def _wunsch_zusatz(wuensche) -> str:
@@ -144,10 +190,12 @@ def _wunsch_zusatz(wuensche) -> str:
 
 
 def _gedaechtnis(api) -> dict:
-    """Merkzettel je Api-Objekt: Aufgaben, deren Meldung scheiterte (bis neuer Wunsch), und die Budget-Pause."""
+    """Merkzettel je Api-Objekt: geparkte Aufgaben (bis neuer Wunsch), noch nicht gemeldete Aufgaben und Videos
+    (meldungen_offen, N1), Szenenfehler zum Nachmelden und die Budget-Pause."""
     g = getattr(api, "_werkbank_gedaechtnis", None)
     if g is None:
-        g = {"aufgegeben": {}, "budget_bis": 0.0, "budget_gemeldet": set(), "fehler_offen": {}}
+        g = {"aufgegeben": {}, "budget_bis": 0.0, "budget_gemeldet": set(), "fehler_offen": {},
+             "meldungen_offen": {}}
         try:
             api._werkbank_gedaechtnis = g
         except AttributeError:
@@ -254,6 +302,11 @@ def _gliederung(c: _Lauf, werk: dict) -> str | None:
     except ApiFehler as e:
         if e.code == 409:                 # die Gliederung ist gerade nicht dran (anderer Stand)
             return None
+        if e.code == 422:                 # die API nimmt diese Form nie: aufgeben statt jeden Lauf neu fragen (N4)
+            LOG.warning("Gliederung abgelehnt: API 422")
+            c.hinweis(aid, f"gliederung_f{fassung}{_wunsch_zusatz(werk.get('gliederung_wuensche'))}", SATZ_GLIEDERUNG)
+            c.aufgeben(lambda: c.api.gliederung_aufgegeben(aid, GRUND_GLIEDERUNG, wunsch), schluessel)
+            return "fehler"
         raise
     return "gliederung"
 
@@ -299,8 +352,10 @@ def _bewerten(zeile: dict, szene: dict | None, auftrag: str, ktx) -> list[str]:
     return video_texte.szene_pruefen(szene, auftrag, ktx)
 
 
-def _abgeben(c: _Lauf, zeile: dict, szene: dict) -> bool:
-    """Eine bestandene Szene an ihr Tor geben. False = die API nahm sie nicht (Stand hat sich geaendert)."""
+def _abgeben(c: _Lauf, zeile: dict, szene: dict) -> bool | list[str]:
+    """Eine bestandene Szene an ihr Tor geben. True = angenommen; False = die API nahm sie nicht (Stand hat sich
+    geaendert). Eine Liste = 422: die API nimmt diese Form nie an. Das zaehlt wie eine durchgefallene Pruefung
+    (Nachfrage, dann Aufgabe mit sichtbarem Grund) - sonst wuerde die Szene jeden Lauf neu erfragt (N4)."""
     sid = str(zeile["id"])
     try:
         if zeile.get("rueckgabe_von") == "clip" and szene.get("aendert_text") is False:
@@ -311,25 +366,48 @@ def _abgeben(c: _Lauf, zeile: dict, szene: dict) -> bool:
                                    "belege": _belege(szene)})
     except ApiFehler as e:
         LOG.warning("Szene abgelehnt: API %s", e.code)
+        if e.code == 422:
+            return [f"{ABGELEHNT} {str(e.grund or '')[:200]}".rstrip()]
         return False
     return True
 
 
+def _abgeben_oder_durchfallen(c: _Lauf, zeile: dict, szene: dict, durchgefallen: list) -> int:
+    """1, wenn die Szene am Tor ist; ein 422 kommt mit seinem Satz zu den Durchfallern."""
+    r = _abgeben(c, zeile, szene)
+    if isinstance(r, list):
+        durchgefallen.append((zeile, r))
+        return 0
+    return int(r)
+
+
 # Art des Problems aus den Fehlersaetzen von `szene_pruefen` (Regel 1-4 Quellen, 5 Laenge, 6 Bild). Die Saetze
 # tragen kein Regelkennzeichen; sie werden an ihren festen Wendungen erkannt, alles Unbekannte bleibt neutral.
+ABGELEHNT = "Die Werkbank nahm die Szene nicht an:"   # 422 der API (N4), geht an die Nachfrage
 _QUELLE = re.compile(r"Quelle|Beleg|belege")
 _LAENGE = re.compile(r"^Der Sprechtext (hat|fehlt)")
 _BILD = re.compile(r"Bildart|Übergang|Bildplan|Ein Bild braucht|^Schritt \d|ab_satz|Bild")
 SAETZE_PROBLEM = {
+    "viele": "Szene {nr}: Zu viele Aussagen – bitte Wunsch ergänzen.",
+    "aussage": "Szene {nr}: Eine Aussage ist zu lang – bitte Wunsch ergänzen.",
+    "quellname": "Szene {nr}: Ein Quellenname ist zu lang – bitte Material prüfen.",
     "quelle": "Szene {nr}: Quelle fehlt – bitte Material ergänzen.",
     "laenge": "Szene {nr}: Der Text passt nicht in die Länge – bitte Wunsch ergänzen.",
     "bild": "Szene {nr}: Die Bildschritte ließen sich nicht bauen – bitte Wunsch ergänzen.",
     "text": "Szene {nr} ließ sich nicht schreiben – bitte Wunsch ergänzen.",
 }
+# Vorne die Saetze mit festem Anfang (Grenzen der API, 422): sie nennen "Beleg"/"Quelle" und gingen sonst als
+# "Quelle fehlt" durch. Ein 422 ist neutral ("text"), sein API-Text geht nur an die Nachfrage.
+_ANFAENGE = (("viele", video_texte.GRENZE_VIELE), ("aussage", video_texte.GRENZE_AUSSAGE),
+             ("quellname", video_texte.GRENZE_QUELLE), ("text", ABGELEHNT))
 
 
 def _problem(fehler: list[str]) -> tuple[str, str]:
-    """(Art, Satz mit {nr}) nach der ersten Regel, die gescheitert ist: Quelle vor Laenge vor Bild."""
+    """(Art, Satz mit {nr}) nach der ersten Regel, die gescheitert ist: Grenzen und 422 vor Quelle vor Laenge vor
+    Bild."""
+    for art, anfang in _ANFAENGE:
+        if any(f.startswith(anfang) for f in fehler):
+            return art, SAETZE_PROBLEM[art]
     for art, muster in (("quelle", _QUELLE), ("laenge", _LAENGE), ("bild", _BILD)):
         if any(muster.search(f) for f in fehler):
             return art, SAETZE_PROBLEM[art]
@@ -361,7 +439,7 @@ def _texte(c: _Lauf, werk: dict) -> str | None:
                 szene = antworten.get(zeile["nr"])
                 fehler = _bewerten(zeile, szene, auftrag, ktx)
                 if not fehler:
-                    abgegeben += _abgeben(c, zeile, szene)
+                    abgegeben += _abgeben_oder_durchfallen(c, zeile, szene, durchgefallen)
                 else:
                     durchgefallen.append((zeile, fehler))
         endgueltig: list[tuple[dict, list[str]]] = []
@@ -374,7 +452,7 @@ def _texte(c: _Lauf, werk: dict) -> str | None:
                 szene = antworten.get(zeile["nr"])
                 fehler = _bewerten(zeile, szene, auftrag, ktx)
                 if not fehler:
-                    abgegeben += _abgeben(c, zeile, szene)
+                    abgegeben += _abgeben_oder_durchfallen(c, zeile, szene, endgueltig)
                 else:
                     endgueltig.append((zeile, fehler))
     except BudgetErschoepft:
@@ -499,7 +577,7 @@ def _fertig(c: _Lauf, werk: dict) -> str | None:
     if schluessel in c.gedaechtnis["aufgegeben"]:
         return None
     try:
-        ergebnis = c.fertigstellen(c.api, werk)
+        ergebnis = c.fertigstellen(_MeldeApi(c.api, c.gedaechtnis["meldungen_offen"]), werk)
     except Exception:
         c.gedaechtnis["aufgegeben"][schluessel] = True
         raise
@@ -516,6 +594,7 @@ def ein_durchlauf(api, fragen=shim_fragen, kontext=video_kontext.holen, sprechen
     erzeugen, fertigstellen. Rueckgabe: das letzte Ergebnis - leer, gliederung, texte, clip, video, wartet, budget
     oder fehler (budget gewinnt, wenn die Tagesgrenze im Durchlauf getroffen wurde)."""
     c = _Lauf(api, fragen, kontext, sprechen, rendern, fertigstellen, warte, marke, ordner, brief, jetzt, heute)
+    _meldungen_nachholen(c)          # N1: vor dem Lesen, damit arbeit() den gemeldeten Grund schon zeigt
     werke = api.arbeit()
     for werk in werke:       # erst alle Leases, dann naechster: ein abgelaufener Auftrag wuerde sonst neu vergeben
         if (werk.get("gliederung_stand") == "geplant" and not werk.get("gliederung")

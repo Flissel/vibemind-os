@@ -98,6 +98,25 @@ def test_szene_ohne_sachaussage_besteht_ohne_beleg():
     assert any("keinen Beleg" in f for f in szene_pruefen(SZENE(ohne_sachaussage=False), AUFTRAG, KONTEXT))
 
 
+def test_belege_ueber_den_api_grenzen_fallen_durch():
+    """N4: die Grenzen der API (werkbank_grenzen) gelten schon in der Pruefung; genau an der Grenze besteht sie."""
+    from spaces.marketing.claw import werkbank_grenzen as g
+    gut = {"aussage": "Spart 30 % Zeit.", "quelle": "Marke.md"}
+
+    def pruefen(belege):
+        return szene_pruefen(SZENE(ohne_sachaussage=False, belege=belege), AUFTRAG, KONTEXT)
+    rand = "Spart 30 % Zeit. " + "x" * (g.BELEG_AUSSAGE_MAX - len("Spart 30 % Zeit. "))
+    assert pruefen([gut] * g.BELEGE_MAX) == [] and pruefen([{**gut, "aussage": rand}]) == []
+    viele = pruefen([gut] * (g.BELEGE_MAX + 1))
+    assert len(viele) == 1 and viele[0].startswith(video_texte.GRENZE_VIELE) and "höchstens 40" in viele[0]
+    lang = pruefen([gut, {**gut, "aussage": rand + "x"}])
+    assert len(lang) == 1 and lang[0].startswith(video_texte.GRENZE_AUSSAGE) and "höchstens 500" in lang[0]
+    name = "Q" * (g.BELEG_QUELLE_MAX + 1)
+    k = Kontext([*KONTEXT.dokumente, Dokument(name, "Spart 30 % Zeit.", "rowboat")], [])
+    quelle = szene_pruefen(SZENE(ohne_sachaussage=False, belege=[{**gut, "quelle": name}]), AUFTRAG, k)
+    assert len(quelle) == 1 and quelle[0].startswith(video_texte.GRENZE_QUELLE)
+
+
 def test_zu_kurzer_text_faellt_durch():
     f = szene_pruefen(SZENE(sprechtext="Kurz. Zu kurz.", bild=BILD), AUFTRAG, KONTEXT)
     assert any("Wörter" in x for x in f)

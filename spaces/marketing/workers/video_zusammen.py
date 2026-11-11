@@ -245,7 +245,7 @@ def _scheitern(api, aid: str, key: str, versuch: int, satz: str) -> None:
     _hinweis(api, aid, key, satz)
     try:
         api.video_gescheitert(aid, versuch, satz)
-    except Exception as e:  # noqa: BLE001 - der Arbeiter parkt den Versuch dann im Gedaechtnis
+    except Exception as e:  # noqa: BLE001 - der Arbeiter parkt den Versuch und meldet nach (N1, _MeldeApi)
         LOG.warning("Meldung des gescheiterten Videos scheiterte: %s", type(e).__name__)
 
 

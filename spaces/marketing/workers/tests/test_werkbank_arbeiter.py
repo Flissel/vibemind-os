@@ -717,3 +717,189 @@ def test_nachfrage_wartet_kurz(F):
 def test_ports_und_url():
     assert wa.PORT == 8151 and wa.TAKT_S == 30 and wa.LLM_URL.endswith(":8150/v1")
     assert wa.arbeitsordner("0123abcd", 3).parts[-4:] == ("VibeMind", "werkbank", "0123abcd", "s3")
+
+
+# --- N1: gescheiterte Meldungen werden nachgeholt -------------------------------------------------
+
+def _wackelt(echt, fehler):
+    """Eine Meldung, die nacheinander die Ausnahmen aus `fehler` wirft und danach `echt` ruft."""
+    fehler = list(fehler)
+
+    def melden(*a):
+        melden.gerufen.append(a)
+        if fehler:
+            raise fehler.pop(0)
+        return echt(*a)
+    melden.gerufen = []
+    return melden
+
+
+def test_gescheiterte_szenen_aufgabe_wird_nachgemeldet_ohne_neue_frage(F):
+    api = FakeApi([werk(stand="text_ok", gliederung=GLIEDERUNG, szenen=[zeile(3)])])
+    api.szene_aufgegeben = melden = _wackelt(api.szene_aufgegeben, [OSError("Netz"), ApiFehler(503, "weg")])
+    f = Fragen(szene=_durchfall)
+    ein_durchlauf(api, fragen=f, **F)                      # zweimal gefragt, Meldung scheitert
+    assert len(f.nachrichten) == 2 and not api.werke[0]["szenen"][0].get("aufgegeben")
+    ein_durchlauf(api, fragen=f, **F)                      # Nachmelden scheitert noch (503): nichts gefragt
+    assert len(melden.gerufen) == 2 and len(f.nachrichten) == 2
+    ein_durchlauf(api, fragen=f, **F)                      # Nachmelden klappt: Grund (und Wunschfeld) am Server
+    assert melden.gerufen[-1] == ("sid-0123-3", QUELLE_FEHLT, "")
+    assert api.werke[0]["szenen"][0]["aufgegeben"] == QUELLE_FEHLT
+    ein_durchlauf(api, fragen=f, **F)                      # gemeldet ist gemeldet
+    assert len(melden.gerufen) == 3 and len(f.nachrichten) == 2 and api.zaehlt("aufruf") == 2
+
+
+def test_gescheiterte_gliederungs_aufgabe_wird_nachgemeldet_ohne_neue_frage(F):
+    api, f = FakeApi([werk(gliederung=GLIEDERUNG, gliederung_fassung=1)]), Fragen(gliederung="kein json")
+    api.gliederung_aufgegeben = melden = _wackelt(api.gliederung_aufgegeben, [OSError("Netz")])
+    ein_durchlauf(api, fragen=f, **F)
+    assert len(f.nachrichten) == 2 and not api.werke[0].get("gliederung_aufgegeben")
+    ein_durchlauf(api, fragen=f, **F)
+    assert len(melden.gerufen) == 2 and api.werke[0]["gliederung_aufgegeben"] == wa.GRUND_GLIEDERUNG
+    ein_durchlauf(api, fragen=f, **F)
+    assert len(melden.gerufen) == 2 and len(f.nachrichten) == 2
+
+
+def test_gescheitertes_video_wird_nachgemeldet_und_nicht_neu_zusammengefuegt(F):
+    """Der echte Meldeweg von video_zusammen (_scheitern faengt die Ausnahme selbst ab)."""
+    from spaces.marketing.workers import video_zusammen
+    gerufen = []
+
+    def hook(api, w):
+        gerufen.append(1)
+        video_zusammen._scheitern(api, w["auftrag"], "video_f1_v0", 0, "Das Video ließ sich nicht zusammenfügen.")
+        return "fehler"
+    api = FakeApi([werk(AID_A, "text_ok", alle_fertig=True, szenen=[_fertige_szene(1)], video_versuch=0)])
+    api.video_gescheitert = melden = _wackelt(api.video_gescheitert, [OSError("Netz"), TimeoutError()])
+    assert ein_durchlauf(api, fertigstellen=hook, **F) == "fehler"
+    assert not api.werke[0].get("video_fehler")
+    ein_durchlauf(api, fertigstellen=hook, **F)            # Nachmelden scheitert noch: nicht neu zusammengefuegt
+    assert gerufen == [1] and len(melden.gerufen) == 2
+    ein_durchlauf(api, fertigstellen=hook, **F)            # Nachmelden klappt: Knopf "Video neu zusammenfügen"
+    assert melden.gerufen[-1] == (AID_A, 0, "Das Video ließ sich nicht zusammenfügen.")
+    assert api.werke[0]["video_fehler"]
+    ein_durchlauf(api, fertigstellen=hook, **F)
+    assert gerufen == [1] and len(melden.gerufen) == 3
+
+
+def test_nachmelden_endet_mit_einer_antwort_des_servers(F):
+    """4xx (oder False) ist eine Antwort: nicht endlos wiederholen; die Szene bleibt geparkt."""
+    api = FakeApi([werk(stand="text_ok", gliederung=GLIEDERUNG, szenen=[zeile(3)])])
+    api.szene_aufgegeben = melden = _wackelt(api.szene_aufgegeben,
+                                             [OSError("Netz"), ApiFehler(404, "Unbekannte Szene")])
+    f = Fragen(szene=_durchfall)
+    for _ in range(4):
+        ein_durchlauf(api, fragen=f, **F)
+    assert len(melden.gerufen) == 2 and len(f.nachrichten) == 2
+    assert _gedaechtnis(api)["meldungen_offen"] == {}
+
+
+def test_nach_neustart_ohne_meldung_wird_neu_versucht_und_dann_gemeldet(F):
+    """Ein Neustart verliert die offene Meldung. Der Zustand folgt aus dem Server: ohne Grund dort wird die Szene
+    neu versucht (zwei Aufrufe) und, scheitert sie wieder, dann gemeldet."""
+    api = FakeApi([werk(stand="text_ok", gliederung=GLIEDERUNG, szenen=[zeile(3)])])
+    api.szene_aufgegeben = lambda *a: (_ for _ in ()).throw(OSError("Netz"))
+    f = Fragen(szene=_durchfall)
+    ein_durchlauf(api, fragen=f, **F)
+    neu = FakeApi(api.werke)                               # neues Gedaechtnis
+    ein_durchlauf(neu, fragen=f, **F)
+    assert len(f.nachrichten) == 4 and neu.rufe("szene_aufgegeben")[0]["grund"] == QUELLE_FEHLT
+    assert api.werke[0]["szenen"][0]["aufgegeben"] == QUELLE_FEHLT
+    ein_durchlauf(neu, fragen=f, **F)
+    assert len(f.nachrichten) == 4
+
+
+# --- N4: Grenzen der API und 422 -------------------------------------------------------------------
+
+BELEG_OK = {"aussage": "Bei uns kostet es 30 % weniger.", "quelle": "Marke.md"}
+
+
+@pytest.mark.parametrize("belege, satz, grenze", [
+    ([{**BELEG_OK, "aussage": BELEG_OK["aussage"] + " " + "x" * 500}],
+     "Szene 3: Eine Aussage ist zu lang – bitte Wunsch ergänzen.", "höchstens 500"),
+    ([BELEG_OK] * 41, "Szene 3: Zu viele Aussagen – bitte Wunsch ergänzen.", "höchstens 40"),
+])
+def test_belege_ueber_den_api_grenzen_gehen_den_normalen_aufgabeweg(F, belege, satz, grenze):
+    api = FakeApi([werk(stand="text_ok", gliederung=GLIEDERUNG, szenen=[zeile(3)])])
+    f = Fragen(szene=lambda nr, n: szene_dict(nr, sprechtext=SATZ + " Es kostet 30 % weniger.", belege=belege,
+                                              ohne_sachaussage=False))
+    assert ein_durchlauf(api, fragen=f, **F) == "fehler"
+    assert api.zaehlt("szene_text") == 0 and len(f.nachrichten) == 2 and grenze in f.nachrichten[1]
+    assert api.rufe("hinweis")[0]["satz"] == satz and api.rufe("szene_aufgegeben")[0]["grund"] == satz
+    ein_durchlauf(api, fragen=f, **F)
+    assert len(f.nachrichten) == 2
+
+
+NEUTRAL = "Szene {nr} ließ sich nicht schreiben – bitte Wunsch ergänzen."
+
+
+def test_422_beim_szenentext_wird_nachgefragt_und_dann_aufgegeben(F):
+    api = FakeApi([werk(stand="text_ok", gliederung=GLIEDERUNG, szenen=[zeile(3)])])
+
+    def text(sid, koerper):
+        api._("szene_text", sid=sid)
+        raise ApiFehler(422, "belege: ungültiger Eintrag")
+    api.szene_text = text
+    f = Fragen()
+    assert ein_durchlauf(api, fragen=f, **F) == "fehler"
+    assert api.zaehlt("szene_text") == 2 and len(f.nachrichten) == 2
+    assert "Die Werkbank nahm die Szene nicht an: belege: ungültiger Eintrag" in f.nachrichten[1]
+    satz = NEUTRAL.format(nr=3)
+    assert api.rufe("hinweis")[0]["satz"] == satz and api.rufe("szene_aufgegeben")[0]["grund"] == satz
+    assert api.rufe("hinweis")[0]["key"].startswith("text_s3")
+    ein_durchlauf(api, fragen=f, **F)                      # kein Neufragen in jedem Lauf
+    assert len(f.nachrichten) == 2 and api.zaehlt("szene_text") == 2
+
+
+def test_422_einmal_dann_nimmt_die_nachfrage_die_szene(F):
+    api = FakeApi([werk(stand="text_ok", gliederung=GLIEDERUNG, szenen=[zeile(3)])])
+    echt, abgelehnt = api.szene_text, []
+
+    def text(sid, koerper):
+        if not abgelehnt:
+            abgelehnt.append(sid)
+            raise ApiFehler(422, "sprechtext: 1 bis 4000 Zeichen")
+        return echt(sid, koerper)
+    api.szene_text = text
+    f = Fragen()
+    assert ein_durchlauf(api, fragen=f, **F) == "texte"
+    assert len(f.nachrichten) == 2 and api.zaehlt("szene_text") == 1 and api.zaehlt("szene_aufgegeben") == 0
+
+
+def test_422_beim_nur_bild_geht_denselben_weg(F):
+    z = zeile(2, wunsch="anderes Bild", rueckgabe_von="clip", sprechtext=SATZ, bild=BILD)
+    api = FakeApi([werk(stand="text_ok", gliederung=GLIEDERUNG, szenen=[z])])
+
+    def bild(*a, **k):
+        api._("szene_bild")
+        raise ApiFehler(422, "bild.schritte: 2 bis 5 Schritte")
+    api.szene_bild = bild
+    f = Fragen(szene=lambda nr, n: szene_dict(nr, aendert_text=False))
+    ein_durchlauf(api, fragen=f, **F)
+    assert api.zaehlt("szene_bild") == 2 and len(f.nachrichten) == 2
+    assert api.rufe("szene_aufgegeben")[0] == {"sid": z["id"], "grund": NEUTRAL.format(nr=2), "wunsch": "anderes Bild"}
+    ein_durchlauf(api, fragen=f, **F)
+    assert len(f.nachrichten) == 2
+
+
+def test_422_bei_der_gliederung_wird_aufgegeben_statt_jeden_lauf_neu_gefragt(F):
+    api = FakeApi([werk()])
+
+    def gliederung(aid, g, q):
+        api._("gliederung", aid=aid)
+        raise ApiFehler(422, "Jede Szene braucht einen Kurztitel")
+    api.gliederung = gliederung
+    f = Fragen()
+    assert ein_durchlauf(api, fragen=f, **F) == "fehler"
+    assert api.rufe("gliederung_aufgegeben")[0]["grund"] == wa.GRUND_GLIEDERUNG
+    ein_durchlauf(api, fragen=f, **F)
+    assert len(f.nachrichten) == 1 and api.zaehlt("gliederung") == 1
+
+
+def test_problemarten_der_grenzen_und_des_422():
+    from spaces.marketing.claw import video_texte
+    assert wa._problem([video_texte.GRENZE_VIELE + " 41 Belege"])[0] == "viele"
+    assert wa._problem(['Die Quelle "x" wurde nicht geholt.', video_texte.GRENZE_AUSSAGE + " 612"])[0] == "aussage"
+    assert wa._problem([video_texte.GRENZE_QUELLE + " 201"])[0] == "quellname"
+    assert wa._problem([wa.ABGELEHNT + " belege: ungültiger Eintrag"]) == ("text", wa.SAETZE_PROBLEM["text"])
+    assert all(re.fullmatch(r"[a-z0-9_]+", art) for art in wa.SAETZE_PROBLEM)
