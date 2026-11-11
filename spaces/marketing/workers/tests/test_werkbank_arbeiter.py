@@ -324,7 +324,7 @@ def test_stale_variante_409_beim_clip_ist_kein_fehler(F):
     api = FakeApi([werk(szenen=[z], stand="text_ok")], nehmen={AID_A: z})
 
     def clip(*a, **k):
-        raise ApiFehler(409, "nicht mehr")
+        raise ApiFehler(409, "Die Szene nimmt gerade keinen Clip an")
     api.szene_clip = clip
     assert ein_durchlauf(api, **F) != "fehler" and not api.rufe("szene_fehler")
 
@@ -385,6 +385,149 @@ def test_fertigstellen_nur_wenn_alle_fertig_und_video_fehlt_oder_veraltet(F):
     gerufen.clear()
     ein_durchlauf(api, fertigstellen=None, **F)
     assert gerufen == []
+
+
+class Uhr:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+def _gedaechtnis(api):
+    return api.__dict__["_werkbank_gedaechtnis"]
+
+
+def test_budget_pause_endet_und_wird_im_lauf_nicht_verschoben(F):
+    uhr, api, f = Uhr(), FakeApi([werk()]), Fragen()
+    ein_durchlauf(api, fragen=wirft(BudgetErschoepft()), jetzt=uhr, **F)
+    ende = _gedaechtnis(api)["budget_bis"]
+    assert ende == uhr.t + wa.BUDGET_PAUSE_S
+    for _ in range(10):                                    # mitten in der Pause: nichts gefragt, Ende bleibt
+        uhr.t += 30
+        assert ein_durchlauf(api, fragen=f, jetzt=uhr, **F) == "budget"
+    assert not f.nachrichten and _gedaechtnis(api)["budget_bis"] == ende
+    uhr.t = ende + 1                                       # Pause vorbei: es wird wieder gefragt
+    assert ein_durchlauf(api, fragen=f, jetzt=uhr, **F) == "gliederung" and f.nachrichten
+
+
+def test_budget_pause_wird_bei_neuer_absage_neu_gesetzt(F):
+    uhr, api = Uhr(), FakeApi([werk()])
+    ein_durchlauf(api, fragen=wirft(BudgetErschoepft()), jetzt=uhr, **F)
+    uhr.t += wa.BUDGET_PAUSE_S + 1
+    ein_durchlauf(api, fragen=wirft(BudgetErschoepft()), jetzt=uhr, **F)
+    assert _gedaechtnis(api)["budget_bis"] == uhr.t + wa.BUDGET_PAUSE_S
+    assert api.zaehlt("hinweis") == 1 and api.zaehlt("frist") == 1      # Hinweis und Frist nur einmal je Tag
+
+
+def test_unbrauchbare_gliederung_bleibt_geparkt_bis_fassung_oder_wunsch_sich_aendern(F):
+    uhr, api, f = Uhr(), FakeApi([werk()]), Fragen(gliederung="kein json")
+    ein_durchlauf(api, fragen=f, jetzt=uhr, **F)
+    assert len(f.nachrichten) == 2
+    uhr.t += 3 * 86400                                     # kein zeitgesteuertes Neufragen
+    ein_durchlauf(api, fragen=f, jetzt=uhr, **F)
+    assert len(f.nachrichten) == 2 and api.zaehlt("hinweis") == 1 and api.zaehlt("aufruf") == 2
+    api.werke = [werk(gliederung_wunsch="Anders bitte", gliederung=GLIEDERUNG, gliederung_fassung=1)]
+    ein_durchlauf(api, fragen=f, jetzt=uhr, **F)           # neuer Wunsch: ein neuer Versuch
+    assert len(f.nachrichten) == 4
+    assert [h["key"] for h in api.rufe("hinweis")] == ["gliederung_f0", "gliederung_f1"]
+
+
+def test_geparkte_gliederung_haelt_den_auftrag_nicht_am_leben(F):
+    api, f = FakeApi([werk()]), Fragen(gliederung="kein json")
+    ein_durchlauf(api, fragen=f, **F)
+    n = api.zaehlt("weiter")
+    ein_durchlauf(api, fragen=f, **F)
+    assert api.zaehlt("weiter") == n                       # Lease und Frist regeln den Rest
+
+
+@pytest.mark.parametrize("text, erwartet", [
+    (SATZ + " Es spart 40 % Kosten.", "Szene 3: Quelle fehlt – bitte Material ergänzen."),
+    ("Zu kurz.", "Szene 3: Der Text passt nicht in die Länge – bitte Wunsch ergänzen."),
+])
+def test_endgueltige_hinweise_nennen_die_art_des_problems(F, text, erwartet):
+    api = FakeApi([werk(stand="text_ok", gliederung=GLIEDERUNG, szenen=[zeile(3)])])
+    ein_durchlauf(api, fragen=Fragen(szene=lambda nr, n: szene_dict(nr, sprechtext=text)), **F)
+    h = api.rufe("hinweis")
+    assert len(h) == 1 and h[0]["satz"] == erwartet and re.fullmatch(r"[a-z0-9_]{1,60}", h[0]["key"])
+
+
+def test_endgueltiger_hinweis_bild_und_neutral(F):
+    api = FakeApi([werk(stand="text_ok", gliederung=GLIEDERUNG, szenen=[zeile(3)])])
+    ein_durchlauf(api, fragen=Fragen(szene=lambda nr, n: szene_dict(nr, bild={"schritte": [{"vorlage": "titel"}]})), **F)
+    assert api.rufe("hinweis")[0]["satz"] == "Szene 3: Die Bildschritte ließen sich nicht bauen – bitte Wunsch ergänzen."
+    api = FakeApi([werk(stand="text_ok", gliederung=GLIEDERUNG, szenen=[zeile(3)])])
+    ein_durchlauf(api, fragen=Fragen(szene=lambda nr, n: szene_dict(nr + 1)), **F)    # Szene fehlt in der Antwort
+    assert api.rufe("hinweis")[0]["satz"] == "Szene 3 ließ sich nicht schreiben – bitte Wunsch ergänzen."
+
+
+def test_problemarten_nach_den_echten_pruefsaetzen():
+    assert wa._problem(['Die Zahl "40" im Sprechtext hat keinen Beleg.'])[0] == "quelle"
+    assert wa._problem(["Der Sprechtext hat 12 Wörter, erlaubt sind 35 bis 110.", "Unbekannte Bildart"])[0] == "laenge"
+    assert wa._problem(["Schritt 2: ab_satz steigt nicht"])[0] == "bild"
+    assert wa._problem(["Ein Bild braucht 2 bis 5 Schritte."])[0] == "bild"
+    assert wa._problem(["Die Szene ist kein Objekt."])[0] == "text"
+
+
+def test_anderer_409_beim_clip_ist_der_fehler_der_szene(F):
+    z = zeile(3, stand="wird_erzeugt", sprechtext=SATZ, bild=BILD)
+    api = FakeApi([werk(szenen=[z], stand="text_ok")], nehmen={AID_A: z})
+
+    def clip(*a, **k):
+        raise ApiFehler(409, "Die Datei liegt nicht im Ordner")
+    api.szene_clip = clip
+    assert ein_durchlauf(api, **F) == "fehler" and api.rufe("szene_fehler")[0]["sid"] == z["id"]
+
+
+def test_gescheiterte_fehlermeldung_wird_nachgeholt_und_die_szene_nicht_neu_gerendert(F):
+    z = zeile(3, stand="wird_erzeugt", sprechtext=SATZ, bild=BILD)
+    api = FakeApi([werk(szenen=[z], stand="text_ok")], nehmen={AID_A: z})
+    gerendert, gemeldet = [], []
+
+    def rendern(*a, **k):
+        gerendert.append(1)
+        raise RuntimeError("x")
+    F["rendern"] = rendern
+
+    def fehler(sid, grund):
+        gemeldet.append(sid)
+        if len(gemeldet) < 3:
+            raise OSError("Netz")
+        api.nehmen.clear()                                 # der Server kennt den Fehler: die Szene wird nicht mehr vergeben
+        return True
+    api.szene_fehler = fehler
+    ein_durchlauf(api, **F)                                # Rendern scheitert, Melden scheitert
+    ein_durchlauf(api, **F)                                # Nachmelden scheitert noch, Szene wird nicht gerendert
+    ein_durchlauf(api, **F)                                # Nachmelden klappt
+    ein_durchlauf(api, **F)
+    assert len(gerendert) == 1 and len(gemeldet) == 3
+
+
+def test_lease_wird_vor_gliederung_und_nachfrage_erneuert(F):
+    api, f = FakeApi([werk()]), Fragen(gliederung="kein json")
+    ein_durchlauf(api, fragen=f, **F)
+    namen = [n for n, _ in api.log]
+    assert namen.count("weiter") >= 3 and namen.index("weiter") < namen.index("aufruf")   # am Anfang, vor der Nachfrage
+    assert namen.index("weiter") < namen.index("naechster")
+
+
+def test_lease_aller_auftraege_wird_vor_naechster_erneuert_auch_hinter_langen_renders(F):
+    alt = werk(AID_A)                                      # alter Auftrag, noch vor der ersten Gliederung
+    z = zeile(1, AID_B, "wird_erzeugt", sprechtext=SATZ, bild=BILD)
+    neu = werk(AID_B, "text_ok", [z], gliederung=GLIEDERUNG, gliederung_fassung=1)
+    api = FakeApi([neu, alt], nehmen={AID_B: z})
+    ein_durchlauf(api, fragen=Fragen(), **F)
+    namen = [(n, a.get("aid")) for n, a in api.log]
+    vor = namen[:namen.index(("naechster", None))]
+    assert ("weiter", AID_A) in vor and ("weiter", AID_B) not in vor     # nur Werke vor der ersten Gliederung
+
+
+def test_nachfrage_wartet_kurz(F):
+    pausen = []
+    F["warte"] = pausen.append
+    ein_durchlauf(FakeApi([werk()]), fragen=Fragen(gliederung="kein json"), **F)
+    assert pausen == [wa.NOCH_EINMAL_PAUSE_S]
 
 
 def test_ports_und_url():

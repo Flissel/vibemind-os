@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import threading
 import time
@@ -39,12 +40,13 @@ TAKT_S = 30
 LLM_URL = os.environ.get("MARKETING_WERKBANK_LLM_URL", "http://127.0.0.1:8150/v1")
 LLM_ZEITLIMIT_S = 900            # wie --timeout der Shim
 BLOCK = video_texte.BLOCK
-FEHLER_PAUSE_S = 1800            # so lange wird dieselbe unbrauchbare Gliederung nicht erneut erfragt
+NOCH_EINMAL_PAUSE_S = 5          # zwischen einer unbrauchbaren Antwort und der Nachfrage
 BUDGET_PAUSE_S = 900             # so lange wird nach einer Budget-Absage nicht erneut gefragt
 ANTWORT_MAX = 12000              # Zeichen der letzten Antwort, die bei der Nachfrage mitgehen
 STAND: dict = {"letzter_lauf": None, "letztes_ergebnis": None}
 
 SATZ_BUDGET = "Das Tagesbudget für Modell-Aufrufe ist aufgebraucht – morgen geht es weiter."
+STALE_CLIP = "keinen Clip an"          # Teil der 409-Meldung der API, wenn die Variante/der Stand nicht mehr passt
 SATZ_GLIEDERUNG = "Die Gliederung ließ sich nicht schreiben."
 
 
@@ -127,7 +129,7 @@ def _gedaechtnis(api) -> dict:
     """Merkzettel je Api-Objekt: aufgegebene Gliederungen/Szenen (bis neuer Wunsch) und die Budget-Pause."""
     g = getattr(api, "_werkbank_gedaechtnis", None)
     if g is None:
-        g = {"aufgegeben": {}, "budget_bis": 0.0, "budget_gemeldet": set()}
+        g = {"aufgegeben": {}, "budget_bis": 0.0, "budget_gemeldet": set(), "fehler_offen": {}}
         try:
             api._werkbank_gedaechtnis = g
         except AttributeError:
@@ -135,11 +137,17 @@ def _gedaechtnis(api) -> dict:
     return g
 
 
+def _budget_getroffen(c: _Lauf, werk: dict) -> None:
+    """Die Shim hat gerade abgelehnt: die Pause beginnt JETZT (nur hier, sonst schiebt jeder Lauf sie weiter)."""
+    c.gedaechtnis["budget_bis"] = c.jetzt() + BUDGET_PAUSE_S
+    _budget_melden(c, werk)
+
+
 def _budget_melden(c: _Lauf, werk: dict) -> None:
-    """Budget leer: einmal je Werk und Tag den Hinweis, im Auftrag die Frist verlaengern; die Pause merken."""
+    """Budget leer (frisch getroffen oder noch in der Pause): Lease halten, einmal je Werk und Tag den Hinweis
+    und, solange der Auftrag in Arbeit ist, die Frist verlaengern. Beruehrt die Pause nicht."""
     aid, tag = str(werk["auftrag"]), c.heute().isoformat()
     c.budget = True
-    c.gedaechtnis["budget_bis"] = c.jetzt() + BUDGET_PAUSE_S
     in_arbeit = c.lease(aid)
     if (aid, tag) in c.gedaechtnis["budget_gemeldet"]:
         return
@@ -158,6 +166,7 @@ def _fragen_lesen(c: _Lauf, aid: str, system: str, nachricht: str, lesen):
     fehler: list[str] = []
     for versuch in range(2):
         if versuch:
+            c.warte(NOCH_EINMAL_PAUSE_S)
             c.lease(aid)
             nachricht += ("\n\n# Deine letzte Antwort war nicht brauchbar\n" + antwort[:ANTWORT_MAX]
                           + "\n\n# Fehler\n" + "\n".join(f"- {f}" for f in fehler)
@@ -181,18 +190,23 @@ def _quellen_der_gliederung(gliederung: dict) -> list[str]:
     return gesehen
 
 
+def _gliederung_schluessel(werk: dict) -> tuple:
+    return ("gliederung", str(werk["auftrag"]), int(werk.get("gliederung_fassung") or 0),
+            str(werk.get("gliederung_wunsch") or "").strip())
+
+
 def _gliederung(c: _Lauf, werk: dict) -> str | None:
     aid, eingabe = str(werk["auftrag"]), werk.get("eingabe") or {}
     fassung = int(werk.get("gliederung_fassung") or 0)
     wunsch = str(werk.get("gliederung_wunsch") or "").strip()
-    schluessel = ("gliederung", aid, fassung, wunsch)
+    schluessel = _gliederung_schluessel(werk)
     if werk.get("gliederung_stand") != "geplant":
+        return None
+    if schluessel in c.gedaechtnis["aufgegeben"]:     # zweimal unbrauchbar: erst bei neuer Fassung oder neuem Wunsch wieder
         return None
     if c.budget:
         _budget_melden(c, werk)
         return "budget"
-    if c.gedaechtnis["aufgegeben"].get(schluessel, 0.0) > c.jetzt():
-        return None
     c.lease(aid)
     try:
         ktx = c.kontext(str(werk.get("mandant") or ""), video_texte.auftragstext(eingabe))
@@ -201,11 +215,11 @@ def _gliederung(c: _Lauf, werk: dict) -> str | None:
         geholt = {d.name for d in ktx.dokumente}
         gliederung, _ = _fragen_lesen(c, aid, system, nachricht, lambda a: video_texte.gliederung_lesen(a, geholt))
     except BudgetErschoepft:
-        _budget_melden(c, werk)
+        _budget_getroffen(c, werk)
         return "budget"
     if gliederung is None:
         c.hinweis(aid, f"gliederung_f{fassung}", SATZ_GLIEDERUNG)
-        c.gedaechtnis["aufgegeben"][schluessel] = c.jetzt() + FEHLER_PAUSE_S
+        c.gedaechtnis["aufgegeben"][schluessel] = True
         return "fehler"
     c.lease(aid)                          # die Anfrage kann lange gedauert haben
     try:
@@ -267,12 +281,33 @@ def _abgeben(c: _Lauf, zeile: dict, szene: dict) -> bool:
     return True
 
 
+# Art des Problems aus den Fehlersaetzen von `szene_pruefen` (Regel 1-4 Quellen, 5 Laenge, 6 Bild). Die Saetze
+# tragen kein Regelkennzeichen; sie werden an ihren festen Wendungen erkannt, alles Unbekannte bleibt neutral.
+_QUELLE = re.compile(r"Quelle|Beleg|belege")
+_LAENGE = re.compile(r"^Der Sprechtext (hat|fehlt)")
+_BILD = re.compile(r"Bildart|Übergang|Bildplan|Ein Bild braucht|^Schritt \d|ab_satz|Bild")
+SAETZE_PROBLEM = {
+    "quelle": "Szene {nr}: Quelle fehlt – bitte Material ergänzen.",
+    "laenge": "Szene {nr}: Der Text passt nicht in die Länge – bitte Wunsch ergänzen.",
+    "bild": "Szene {nr}: Die Bildschritte ließen sich nicht bauen – bitte Wunsch ergänzen.",
+    "text": "Szene {nr} ließ sich nicht schreiben – bitte Wunsch ergänzen.",
+}
+
+
+def _problem(fehler: list[str]) -> tuple[str, str]:
+    """(Art, Satz mit {nr}) nach der ersten Regel, die gescheitert ist: Quelle vor Laenge vor Bild."""
+    for art, muster in (("quelle", _QUELLE), ("laenge", _LAENGE), ("bild", _BILD)):
+        if any(muster.search(f) for f in fehler):
+            return art, SAETZE_PROBLEM[art]
+    return "text", SAETZE_PROBLEM["text"]
+
+
 def _texte(c: _Lauf, werk: dict) -> str | None:
     if werk.get("gliederung_stand") != "text_ok":
         return None
     aid = str(werk["auftrag"])
     zeilen = [s for s in werk.get("szenen") or [] if s.get("stand") == "geplant"
-              and c.gedaechtnis["aufgegeben"].get(("szene", str(s.get("id")), str(s.get("wunsch") or ""))) is None]
+              and ("szene", str(s.get("id")), str(s.get("wunsch") or "")) not in c.gedaechtnis["aufgegeben"]]
     if not zeilen:
         return None
     if c.budget:
@@ -295,24 +330,26 @@ def _texte(c: _Lauf, werk: dict) -> str | None:
                     abgegeben += _abgeben(c, zeile, szene)
                 else:
                     durchgefallen.append((zeile, fehler))
-        endgueltig: list[dict] = []
+        endgueltig: list[tuple[dict, list[str]]] = []
         for i in range(0, len(durchgefallen), BLOCK):       # alle Durchfaller gesammelt, einmal zurueck
+            c.warte(NOCH_EINMAL_PAUSE_S)
             c.lease(aid)
             stapel = durchgefallen[i:i + BLOCK]
             antworten = _szenen_fragen(c, werk, ktx, [z for z, _ in stapel], {z["nr"]: f for z, f in stapel})
             for zeile, _alt in stapel:
                 szene = antworten.get(zeile["nr"])
-                if not _bewerten(zeile, szene, auftrag, ktx):
+                fehler = _bewerten(zeile, szene, auftrag, ktx)
+                if not fehler:
                     abgegeben += _abgeben(c, zeile, szene)
                 else:
-                    endgueltig.append(zeile)
+                    endgueltig.append((zeile, fehler))
     except BudgetErschoepft:
-        _budget_melden(c, werk)
+        _budget_getroffen(c, werk)
         return "budget"
-    for zeile in endgueltig:
-        c.hinweis(aid, f"quelle_s{zeile['nr']}_f{int(zeile.get('fassung') or 0)}",
-                  f"Szene {zeile['nr']}: Quelle fehlt – bitte Material ergänzen.")
-        c.gedaechtnis["aufgegeben"][("szene", str(zeile["id"]), str(zeile.get("wunsch") or ""))] = c.jetzt()
+    for zeile, fehler in endgueltig:
+        art, satz = _problem(fehler)
+        c.hinweis(aid, f"{art}_s{zeile['nr']}_f{int(zeile.get('fassung') or 0)}", satz.format(nr=zeile["nr"]))
+        c.gedaechtnis["aufgegeben"][("szene", str(zeile["id"]), str(zeile.get("wunsch") or ""))] = True
     return "texte" if abgegeben else ("fehler" if endgueltig else None)
 
 
@@ -330,12 +367,28 @@ def _satz_fuer(phase: str, e: Exception) -> str:
             "melden": f"Der Clip ließ sich nicht melden ({art})."}.get(phase, f"Die Szene scheiterte ({art}).")
 
 
+def _fehler_nachmelden(c: _Lauf, werk: dict) -> None:
+    """Fehler, die der Server noch nicht kennt (die Meldung scheiterte), erneut melden."""
+    offen = c.gedaechtnis["fehler_offen"]
+    for s in werk.get("szenen") or []:
+        sid = str(s.get("id"))
+        if sid in offen:
+            try:
+                c.api.szene_fehler(sid, offen[sid])
+                del offen[sid]
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("Fehler nachmelden scheiterte: %s", type(e).__name__)
+
+
 def _erzeugen(c: _Lauf, werk: dict) -> str | None:
     aid = str(werk["auftrag"])
+    _fehler_nachmelden(c, werk)
     zeile = c.api.szene_nehmen(aid)
     if not zeile:
         return None
     sid, nr = str(zeile["id"]), int(zeile["nr"])
+    if sid in c.gedaechtnis["fehler_offen"]:        # der Server kennt ihren Fehler noch nicht: nicht noch einmal rendern
+        return "fehler"
     variante = int(zeile.get("variante") or 0)
     aid8 = aid.replace("-", "")[:8]
     name = f"wb-{aid8}-s{nr:02d}-f{variante}.mp4"
@@ -357,7 +410,8 @@ def _erzeugen(c: _Lauf, werk: dict) -> str | None:
         engine = "chatterbox" if gesprochen.rueckfall else str(gesprochen.engine)
         c.api.szene_clip(sid, variante, name, round(float(dauer), 2), stimme, engine)
     except ApiFehler as e:
-        if phase == "melden" and e.code == 409:     # die Szene ist inzwischen woanders: der Clip wird nicht mehr gebraucht
+        if phase == "melden" and e.code == 409 and STALE_CLIP in e.grund:
+            # die Szene nimmt keinen Clip mehr an (neue Variante, anderer Stand): der Clip wird nicht mehr gebraucht
             LOG.warning("Clip nicht mehr gebraucht (409)")
             shutil.rmtree(ordner, ignore_errors=True)
             return None
@@ -370,7 +424,12 @@ def _erzeugen(c: _Lauf, werk: dict) -> str | None:
 
 def _szene_scheitert(c: _Lauf, sid: str, phase: str, e: Exception) -> str:
     LOG.warning("Szene scheitert beim %s: %s", phase, type(e).__name__)
-    c.api.szene_fehler(sid, _satz_fuer(phase, e))
+    satz = _satz_fuer(phase, e)
+    try:
+        c.api.szene_fehler(sid, satz)
+    except Exception as e2:  # noqa: BLE001 - nicht melden zu koennen darf die Szene nicht wieder freigeben
+        LOG.warning("Szenenfehler melden scheiterte: %s", type(e2).__name__)
+        c.gedaechtnis["fehler_offen"][sid] = satz
     return "fehler"
 
 
@@ -401,11 +460,18 @@ def ein_durchlauf(api, fragen=shim_fragen, kontext=video_kontext.holen, sprechen
     erzeugen, fertigstellen. Rueckgabe: das letzte Ergebnis - leer, gliederung, texte, clip, video, wartet, budget
     oder fehler (budget gewinnt, wenn die Tagesgrenze im Durchlauf getroffen wurde)."""
     c = _Lauf(api, fragen, kontext, sprechen, rendern, fertigstellen, warte, marke, ordner, brief, jetzt, heute)
-    try:
-        api.naechster()      # ein neuer Auftrag erscheint ab jetzt unter arbeit()
-    except Exception as e:  # noqa: BLE001 - die laufenden Werke warten nicht auf einen neuen Auftrag
-        LOG.warning("naechster scheiterte: %s", type(e).__name__)
     werke = api.arbeit()
+    for werk in werke:       # erst alle Leases, dann naechster: ein abgelaufener Auftrag wuerde sonst neu vergeben
+        if (werk.get("gliederung_stand") == "geplant" and not werk.get("gliederung")
+                and _gliederung_schluessel(werk) not in c.gedaechtnis["aufgegeben"]):   # in_arbeit = vor der ersten Gliederung
+            c.lease(str(werk["auftrag"]))
+    try:
+        neu = api.naechster()      # ein neuer Auftrag erscheint ab jetzt unter arbeit()
+    except Exception as e:  # noqa: BLE001 - die laufenden Werke warten nicht auf einen neuen Auftrag
+        neu = None
+        LOG.warning("naechster scheiterte: %s", type(e).__name__)
+    if neu:
+        werke = api.arbeit()
     ergebnis = "wartet" if werke else "leer"
     for werk in werke:
         for schritt in (_gliederung, _texte, _erzeugen, _fertig):

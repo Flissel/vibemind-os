@@ -83,3 +83,15 @@ def test_api_fehler_traegt_laenge_bei_409():
     with pytest.raises(ApiFehler) as e:
         A()._anfrage("PUT", "/x")
     assert e.value.code == 409 and e.value.laenge == 7
+
+
+def test_hochladen_faengt_abgebrochene_antworten_wie_netzfehler(tmp_path):
+    import http.client
+    f = tmp_path / "x.mp4"
+    f.write_bytes(b"abc")
+
+    def abgebrochen(m, p, k):
+        raise http.client.IncompleteRead(b"")
+    api = UploadApi([None, abgebrochen])
+    api.hochladen(AID_A, "x.mp4", f)
+    assert len([x for x in api.log if x[0] == "PUT"]) == 2
