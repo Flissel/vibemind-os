@@ -603,10 +603,15 @@ def pult_werk(aid: str, mandant: str = Query(...), x_pult_key: str | None = Head
     _schluessel(x_pult_key)
     a = _uuid_oder_404(aid)
     kopf = _pult_werk(a, mandant)
-    zeile = _lesen_einer(lambda: f"SELECT marketing._video_werk_json({lit(a)}::uuid) AS w")
+    zeile = _lesen_einer(lambda:                  # gliederung_kennung: lebender Vorschlag der Gliederung (R13)
+        f"SELECT marketing._video_werk_json({lit(a)}::uuid) AS w, "
+        f"(SELECT v.kennung FROM marketing.video_vorschlaege v WHERE v.auftrag = {lit(a)}::uuid "
+        f"AND v.szene IS NULL AND v.tor = 'gliederung' AND v.stand IN ('wartend', 'offen') "
+        f"ORDER BY v.angelegt DESC LIMIT 1) AS gliederung_kennung")
     if not zeile or not zeile.get("w"):
         raise HTTPException(404, "Der Auftrag hat noch kein Werk")
-    return {"werk": zeile["w"], "stand": kopf.get("stand"), "werkbank": kopf.get("werkbank")}
+    return {"werk": zeile["w"], "stand": kopf.get("stand"), "werkbank": kopf.get("werkbank"),
+            "gliederung_kennung": zeile.get("gliederung_kennung")}
 
 
 @pult_router.get("/{aid}/szene/{nr}")

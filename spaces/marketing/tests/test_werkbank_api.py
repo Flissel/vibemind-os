@@ -520,6 +520,29 @@ def test_pult_werk_und_fremder_mandant(db, c):
     assert c.get(f"{PW}/{AID}?mandant=vibemind", headers=P).status_code == 404 and len(db.sql) == 3
 
 
+def test_pult_werk_mit_lebender_gliederung_nennt_kennung(db, c):
+    db.antworten = [[{**KOPF_OK, "werkbank": {"szenen": 8}}],
+                    [{"w": {"auftrag": AID, "szenen": []}, "gliederung_kennung": KENNUNG}]]
+    r = c.get(f"{PW}/{AID}?mandant=fin2gether", headers=P)
+    assert r.status_code == 200 and r.json()["gliederung_kennung"] == KENNUNG
+    assert set(r.json()) == {"werk", "stand", "werkbank", "gliederung_kennung"}   # bisherige Schluessel bleiben
+    sql = db.sql[1]
+    assert "szene IS NULL" in sql and "tor = 'gliederung'" in sql and "'wartend', 'offen'" in sql
+    assert f"v.auftrag = '{AID}'::uuid" in sql
+
+
+def test_pult_werk_ohne_lebende_gliederung_kennung_null(db, c):
+    db.antworten = [[KOPF_OK], [{"w": {"auftrag": AID}, "gliederung_kennung": None}]]
+    r = c.get(f"{PW}/{AID}?mandant=fin2gether", headers=P)
+    assert r.status_code == 200 and r.json()["gliederung_kennung"] is None and r.json()["werk"] == {"auftrag": AID}
+
+
+def test_pult_werk_fremder_mandant_404_ohne_kennung(db, c):
+    db.antworten = [[KOPF_OK]]
+    r = c.get(f"{PW}/{AID}?mandant=vibemind", headers=P)
+    assert r.status_code == 404 and "kennung" not in r.text and len(db.sql) == 1
+
+
 def test_szene_fremder_mandant_404(db, c):
     db.antworten = [[KOPF_OK]]
     assert c.get(f"{PW}/{AID}/szene/1?mandant=vibemind", headers=P).status_code == 404
