@@ -14,7 +14,10 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import uuid
 from pathlib import Path
+
+from spaces.marketing.claw import video_slides
 
 LOG = logging.getLogger("video_rendern")
 
@@ -133,3 +136,58 @@ def pruefen(pfad: Path) -> dict:
     return {"breite": int(video["width"]), "hoehe": int(video["height"]), "fps": fps,
             "dauer_s": float(daten.get("format", {}).get("duration", 0)),
             "ton": any(s.get("codec_type") == "audio" for s in daten["streams"])}
+
+
+DAUER_TOLERANZ_S = 0.5
+
+
+def szene_rendern(szene: dict, gesprochen, marke: dict, ordner: Path, ziel: Path) -> float:
+    """Eine gesprochene Szene -> ein Clip im Einheitsformat von `normal_argumente` (H.264 yuv420p, 30 fps,
+    1920x1080, AAC 48 kHz Stereo, faststart), damit sich Clips spaeter ohne Neukodierung verbinden lassen.
+
+    Schreibt Komposition, Ton, Schriften und Logo nach `ordner`, rendert mit HyperFrames und normalisiert den
+    Roh-Clip mit dem Ton aus `gesprochen.wav` (der eigene Ton des Renderers wird nicht verwendet: so haengt die
+    Tonspur nie vom Mischer des Renderers ab). Gibt die Dauer des Clips zurueck; `RenderFehler`, wenn sie mehr als
+    0,5 s von `gesprochen.dauer_s` abweicht.
+    """
+    ordner, ziel = Path(ordner), Path(ziel)
+    bild = szene.get("bild") if isinstance(szene, dict) else None
+    fehler = video_slides.bild_pruefen(bild, len(gesprochen.saetze))
+    if fehler:
+        raise RenderFehler("Der Bildplan der Szene ist ungueltig: " + fehler[0])
+    ordner.mkdir(parents=True, exist_ok=True)
+    plan = video_slides.zeitplan(bild, gesprochen.saetze, gesprochen.dauer_s)
+    shutil.copyfile(gesprochen.wav, ordner / "ton.wav")
+    (ordner / "schriften").mkdir(exist_ok=True)
+    for name in video_slides.schrift_dateien(marke):
+        shutil.copyfile(video_slides.SCHRIFTEN / name, ordner / "schriften" / name)
+    logo = video_slides.logo_name(marke)
+    if logo:
+        shutil.copyfile(marke["logo"], ordner / logo)
+    komposition, roh = ordner / "index.html", ordner / "roh.mp4"
+    komposition.write_text(video_slides.komposition(szene, plan, marke, "ton.wav", gesprochen.dauer_s),
+                           encoding="utf-8")
+    env = {**os.environ, "DO_NOT_TRACK": "1"}
+    spiegel = None
+    try:
+        # HyperFrames nimmt nur Kompositionen innerhalb des Projektordners an: liegt `ordner` anderswo,
+        # wird er fuer den Render dorthin gespiegelt (renders/ ist git-ignoriert) und danach entfernt.
+        try:
+            ordner.resolve().relative_to(WERKBANK.resolve())
+        except ValueError:
+            spiegel = WERKBANK / "renders" / f"szene-{uuid.uuid4().hex[:8]}"
+            shutil.copytree(ordner, spiegel)
+            komposition, roh = spiegel / "index.html", spiegel / "roh.mp4"
+        rendern(komposition, roh)
+        ziel.parent.mkdir(parents=True, exist_ok=True)
+        args = normal_argumente(roh.resolve(), ziel.resolve(), (komposition.parent / "ton.wav").resolve())
+        if _lauf(args, 600, None, env) != 0 or not ziel.exists():
+            raise RenderFehler("Der Clip liess sich nicht normalisieren.")
+    finally:
+        roh.unlink(missing_ok=True)
+        if spiegel is not None:
+            shutil.rmtree(spiegel, ignore_errors=True)
+    dauer = pruefen(ziel)["dauer_s"]
+    if abs(dauer - gesprochen.dauer_s) > DAUER_TOLERANZ_S:
+        raise RenderFehler("Der Clip ist nicht so lang wie die gesprochene Szene.")
+    return dauer

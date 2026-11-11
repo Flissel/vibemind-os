@@ -113,3 +113,68 @@ def test_probe_render_zehn_sekunden_mit_ton(tmp_path):
                         "-f", "null", "-"], capture_output=True, text=True)
     pegel = float(re.search(r"mean_volume: (-?[\d.]+) dB", r.stderr).group(1))
     assert pegel > -50
+
+
+# --- szene_rendern (Task 6) -----------------------------------------------------------------
+
+def _bild(*vorlagen):
+    from spaces.marketing.claw.tests.test_video_slides import S
+    return {"schritte": [S(v, i) for i, v in enumerate(vorlagen)]}
+
+
+def _sprache(tmp_path, dauern=(2.0, 2.0, 2.0)):
+    from spaces.marketing.scripts.slide_muster import stille_sprache
+    return stille_sprache(tmp_path / "sprache", dauern)
+
+
+def _strom(pfad, art):
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", art, "-show_entries",
+                        "stream=codec_name,pix_fmt,r_frame_rate,sample_rate,channels,width,height",
+                        "-of", "json", str(pfad)], capture_output=True, text=True, check=True)
+    import json
+    return json.loads(r.stdout)["streams"][0]
+
+
+def test_szene_mit_ungueltigem_bildplan_wirft_renderfehler(tmp_path):
+    with pytest.raises(video_rendern.RenderFehler, match="Bildplan"):
+        video_rendern.szene_rendern({"bild": _bild("titel")}, _sprache(tmp_path), {}, tmp_path / "o", tmp_path / "z.mp4")
+
+
+def test_szene_dauer_weicht_zu_stark_ab_wirft_renderfehler(monkeypatch, tmp_path):
+    def falsch_rendern(komposition, ziel, ton=None, zeitlimit_s=900):
+        Path(ziel).write_bytes(b"x")
+
+    monkeypatch.setattr(video_rendern, "rendern", falsch_rendern)
+    monkeypatch.setattr(video_rendern, "_lauf", lambda args, *a, **k: (Path(args[-1]).write_bytes(b"x"), 0)[1])
+    monkeypatch.setattr(video_rendern, "pruefen", lambda p: {"dauer_s": 9.0})
+    sprache = _sprache(tmp_path)
+    with pytest.raises(video_rendern.RenderFehler, match="nicht so lang"):
+        video_rendern.szene_rendern({"bild": _bild("titel", "zahl")}, sprache, {}, tmp_path / "o", tmp_path / "z.mp4")
+    assert (tmp_path / "o" / "index.html").is_file() and (tmp_path / "o" / "ton.wav").is_file()
+    assert not (tmp_path / "o" / "roh.mp4").exists()
+
+
+@pytest.mark.skipif(not video_rendern.eingerichtet(), reason="HyperFrames nicht installiert")
+def test_szene_rendert_mit_ton_und_richtiger_dauer(tmp_path):
+    sprache = _sprache(tmp_path, (2.0, 2.0, 2.0))     # 6,3 s
+    dauer = video_rendern.szene_rendern({"bild": _bild("titel", "zahl", "zitat")}, sprache, {},
+                                        tmp_path / "szene", tmp_path / "clip.mp4")
+    w = video_rendern.pruefen(tmp_path / "clip.mp4")
+    assert (w["breite"], w["hoehe"], w["fps"]) == (1920, 1080, 30) and w["ton"] is True
+    assert abs(dauer - sprache.dauer_s) <= 0.5 and abs(w["dauer_s"] - dauer) < 0.01
+
+
+@pytest.mark.skipif(not video_rendern.eingerichtet(), reason="HyperFrames nicht installiert")
+def test_zwei_szenen_haben_identische_streamparameter(tmp_path):
+    """Grundlage fuers Zusammenfuegen per Stream-Kopie: jeder Clip hat dieselben Stream-Parameter."""
+    clips = []
+    for i, (vorlagen, dauern) in enumerate([(("titel", "zahl"), (2.0, 2.5)), (("stichpunkte", "agenda", "zitat"), (3.0, 1.5, 2.0))]):
+        sprache = _sprache(tmp_path / f"s{i}", dauern)
+        clip = tmp_path / f"clip{i}.mp4"
+        video_rendern.szene_rendern({"bild": _bild(*vorlagen), "variante": i, "uebergang": "blende" if i else "schnitt"},
+                                    sprache, {"akzent": "#E8A33D"}, tmp_path / f"o{i}", clip)
+        clips.append(clip)
+    a, b = ({art: _strom(c, art) for art in ("v:0", "a:0")} for c in clips)
+    assert a["v:0"] == b["v:0"] and a["a:0"] == b["a:0"]
+    assert (a["v:0"]["codec_name"], a["v:0"]["pix_fmt"], a["v:0"]["r_frame_rate"]) == ("h264", "yuv420p", "30/1")
+    assert (a["a:0"]["codec_name"], a["a:0"]["sample_rate"], a["a:0"]["channels"]) == ("aac", "48000", 2)

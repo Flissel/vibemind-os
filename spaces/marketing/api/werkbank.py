@@ -22,6 +22,7 @@ from spaces.marketing.api import medien_mandant
 from spaces.marketing.api.bilder import _bild_schluessel, _ordner
 from spaces.marketing.api.pult import (_lesen, _lesen_einer, _schluessel, _schreiben, _uuid_oder_404, lit)
 from spaces.marketing.api.video import _ist_mp4, _markenstimme_aufgeloest
+from spaces.marketing.claw.video_slides import VORLAGEN   # Slide-Vorlagen (Spec 5.4), eine Quelle
 
 arbeiter_router = APIRouter(prefix="/api/werkbank/arbeiter")
 pult_router = APIRouter(prefix="/api/pult/werkbank")
@@ -33,7 +34,6 @@ RENDERFRIST_MIN = 1440                      # Entscheidung 21: der Werkbank-Auft
 SZENEN_MIN, SZENEN_MAX = 8, 15
 BILDARTEN = ("slide", "avatar_gross", "avatar_slide", "clip")
 UEBERGAENGE = ("schnitt", "blende")
-VORLAGEN = ("titel", "stichpunkte", "zahl", "zitat", "vergleich", "agenda")   # Slide-Vorlagen (Spec 5.4)
 SCHRITTE_MIN, SCHRITTE_MAX = 2, 5
 SPRECHTEXT_MAX, GRUND_MAX, SATZ_MAX, WUNSCH_MAX = 4000, 300, 300, 2000
 TITEL_MAX, BESCHREIBUNG_MAX, MESSNOTIZ_MAX = 100, 5000, 1500
