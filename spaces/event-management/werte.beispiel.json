@@ -1,0 +1,9 @@
+{
+  "EVENT_NAME": "das Sommerfest",
+  "EVENT_DATUM": "Samstag, 1. August 2026",
+  "EVENT_ORT": "Musterdorf",
+  "EVENT_APP_URL": "https://event-app.example.com",
+  "TELEGRAM_GRUPPE": "-1001234567890",
+  "WHATSAPP_ERLAUBT": "+491701234567",
+  "SHIM_URL": "http://host.docker.internal:8117/v1"
+}

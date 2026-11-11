@@ -1,0 +1,36 @@
+# Schlanker Vertrag fuer den Space `event-management` (Orga-Assistent eines
+# Events, uebernommen vom Festival-Bot, 12.11.2026).
+#
+# Die Tools gehoeren NICHT diesem Repo: sie liegen im MCP-Server der Event-App
+# (config/openclaw.json, mcp.servers.event-app). Eine Capability je Werkzeug,
+# Name = "event_" + Werkzeugname; `writes` belegt an der Werkzeugtabelle in
+# spaces/event-management/config/workspace/SOUL.md ("Schreiben -- jedes dieser
+# Werkzeuge verlangt `actor`"). Der Foto-Upload laeuft nicht ueber MCP, sondern
+# per Skill (event-task-image-uploads) gegen /api/mcp/task-image.
+#
+# Noch NICHT im Brain verdrahtet (keine Eintraege in capabilities.yaml, nicht
+# in config/space_agent_registry.yml) -- space_reachability meldet die Zeilen
+# darum als "fehlt". Das ist Teil 2.
+
+id: event-management
+description: "Event-Orga: Aufgaben, Teams, Budget und Gaestezahlen eines Events ueber den Orga-Chat pflegen."
+prefixes: ["event."]
+
+capabilities:
+  - {name: event_list_tasks,             writes: false}
+  - {name: event_list_categories,        writes: false}
+  - {name: event_get_my_tasks,           writes: false}
+  - {name: event_list_members,           writes: false}
+  - {name: event_get_budget,             writes: false}
+  - {name: event_get_guest_stats,        writes: false}  # nur Zahlen, nie Namen
+  - {name: event_list_recent_changes,    writes: false}
+  - {name: event_get_festival_info,      writes: false}  # Werkzeugname der App
+  - {name: event_create_task,            writes: true}
+  - {name: event_update_task,            writes: true}
+  - {name: event_delete_task,            writes: true}
+  - {name: event_import_orga_plan,       writes: true}
+  - {name: event_create_team,            writes: true}
+  - {name: event_create_member,          writes: true}
+  - {name: event_update_member,          writes: true}
+  - {name: event_send_message_to_member, writes: true}   # WhatsApp an Name
+  - {name: event_task_image_upload,      writes: true}   # Skill, kein MCP
