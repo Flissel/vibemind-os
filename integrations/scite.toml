@@ -1,9 +1,9 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://docs.scite.ai/mcp/overview - geprueft: 2026-11-10
 id = "scite"
 name = "scite"
-description = "scite über den offiziellen Remote-MCP-Server"
+description = "Nicht nutzbar: scite liefert keine lesbaren Anmeldedaten."
 category = "ai"
-icon = "🤖"
+icon = "⛔"
 tags = ["ki", "recherche", "studien"]
 read_only_tools = []
 

@@ -101,6 +101,20 @@ HINWEISE: dict[str, str] = {
     ),
 }
 
+# Vorlagen, deren Anmeldung im Anmeldetest 11.11.2026 scheiterte. Sie bleiben
+# im Katalog (Felix 11.11.: "als nicht funktionell markieren"), mit ⛔ und
+# dem Grund als Beschreibung - die zeigt Rowboat auf der Karte.
+NICHT_NUTZBAR_SYMBOL = "⛔"
+NICHT_NUTZBAR: dict[str, str] = {
+    "calendly": "Calendly verlangt eine https-Rückrufadresse, OpenFang hat nur eine lokale.",
+    "teamwork-com": "Teamwork lehnt die lokale Rückrufadresse von OpenFang ab.",
+    "highlevel": "HighLevel lässt OpenFang nicht als Anmelde-App zu.",
+    "yepcode": "YepCode erlaubt keine freie Registrierung als Anmelde-App.",
+    "signnow": "SignNow lehnt die lokale Rückrufadresse von OpenFang ab.",
+    "omni-analytics": "Omni lehnt die lokale Rückrufadresse von OpenFang ab.",
+    "scite": "scite liefert keine lesbaren Anmeldedaten.",
+}
+
 # Feste Scopes je Anbieter, wenn der Anbieter ohne scope ablehnt.
 # Lovable: ohne scope Weiterleitung mit invalid_scope (Anmeldetest 11.11.2026).
 SCOPES: dict[str, tuple[str, ...]] = {
@@ -495,12 +509,16 @@ def vorlage_toml(zeile: dict[str, Any]) -> str:
     )
     z.append(f"id = {toml_str(name)}")
     z.append(f"name = {toml_str(anzeige)}")
-    z.append(
-        "description = "
-        + toml_str(f"{anzeige} über den offiziellen Remote-MCP-Server")
+    sperre = NICHT_NUTZBAR.get(name)
+    beschreibung = (
+        f"Nicht nutzbar: {sperre}"
+        if sperre
+        else f"{anzeige} über den offiziellen Remote-MCP-Server"
     )
+    symbol = NICHT_NUTZBAR_SYMBOL if sperre else ICON.get(kategorie, ICON["productivity"])
+    z.append("description = " + toml_str(beschreibung))
     z.append(f"category = {toml_str(kategorie)}")
-    z.append(f"icon = {toml_str(ICON.get(kategorie, ICON['productivity']))}")
+    z.append(f"icon = {toml_str(symbol)}")
     z.append(
         "tags = [" + ", ".join(toml_str(t) for t in _tags(name, kategorie)) + "]"
     )

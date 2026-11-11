@@ -367,6 +367,24 @@ def test_lovable_bekommt_feste_scopes() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "name",
+    ["calendly", "teamwork-com", "highlevel", "yepcode", "signnow", "omni-analytics", "scite"],
+)
+def test_nicht_nutzbare_vorlagen_sind_markiert(name: str) -> None:
+    t = tomllib.loads(kv.vorlage_toml(zeile(name)))
+    assert t["icon"] == "⛔"
+    assert t["description"].startswith("Nicht nutzbar: ")
+    assert len(t["description"]) > len("Nicht nutzbar: ") + 10
+    assert t["catalog"]["verified"] is False
+
+
+def test_nutzbare_vorlage_ohne_markierung() -> None:
+    t = tomllib.loads(kv.vorlage_toml(zeile("lovable")))
+    assert t["icon"] != "⛔"
+    assert not t["description"].startswith("Nicht nutzbar")
+
+
 def test_feste_scopes_nur_fuer_den_eigenen_anbieter() -> None:
     t = tomllib.loads(kv.vorlage_toml(zeile("acme", scopes_supported=["read"])))
     assert t["auth"]["scopes"] == []

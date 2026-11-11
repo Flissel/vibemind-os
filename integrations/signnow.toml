@@ -1,9 +1,9 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://docs.signnow.com/docs/mcp-server - geprueft: 2026-11-10
 id = "signnow"
 name = "signNow"
-description = "signNow über den offiziellen Remote-MCP-Server"
+description = "Nicht nutzbar: SignNow lehnt die lokale Rückrufadresse von OpenFang ab."
 category = "productivity"
-icon = "📋"
+icon = "⛔"
 tags = ["produktivität", "unterschriften", "dokumente"]
 read_only_tools = []
 

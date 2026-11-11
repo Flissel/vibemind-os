@@ -1,9 +1,9 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://marketplace.gohighlevel.com/docs/other/mcp - geprueft: 2026-11-10
 id = "highlevel"
 name = "HighLevel"
-description = "HighLevel über den offiziellen Remote-MCP-Server"
+description = "Nicht nutzbar: HighLevel lässt OpenFang nicht als Anmelde-App zu."
 category = "marketing"
-icon = "📣"
+icon = "⛔"
 tags = ["marketing", "crm", "automatisierung"]
 read_only_tools = []
 

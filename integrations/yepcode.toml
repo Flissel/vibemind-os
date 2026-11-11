@@ -1,9 +1,9 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: http://yepcode.io/docs/mcp-server/quickstart/ - geprueft: 2026-11-10
 id = "yepcode"
 name = "YepCode"
-description = "YepCode über den offiziellen Remote-MCP-Server"
+description = "Nicht nutzbar: YepCode erlaubt keine freie Registrierung als Anmelde-App."
 category = "devtools"
-icon = "🛠️"
+icon = "⛔"
 tags = ["entwicklung", "automatisierung", "skripte"]
 read_only_tools = []
 

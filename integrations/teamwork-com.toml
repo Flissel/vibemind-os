@@ -1,9 +1,9 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://github.com/Teamwork/mcp - geprueft: 2026-11-10
 id = "teamwork-com"
 name = "Teamwork.com"
-description = "Teamwork.com über den offiziellen Remote-MCP-Server"
+description = "Nicht nutzbar: Teamwork lehnt die lokale Rückrufadresse von OpenFang ab."
 category = "productivity"
-icon = "📋"
+icon = "⛔"
 tags = ["produktivität", "projekte", "aufgaben"]
 read_only_tools = []
 

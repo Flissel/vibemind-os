@@ -1,9 +1,9 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://developer.calendly.com/calendly-mcp-server - geprueft: 2026-11-10
 id = "calendly"
 name = "Calendly"
-description = "Calendly über den offiziellen Remote-MCP-Server"
+description = "Nicht nutzbar: Calendly verlangt eine https-Rückrufadresse, OpenFang hat nur eine lokale."
 category = "productivity"
-icon = "📋"
+icon = "⛔"
 tags = ["produktivität", "kalender", "termine"]
 read_only_tools = []
 
