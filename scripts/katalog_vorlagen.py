@@ -100,7 +100,7 @@ ICON: dict[str, str] = {
     "productivity": "📋",
     "communication": "💬",
     "data": "📊",
-    "cloud": "☁️",
+    "cloud": "🌐",
     "ai": "🤖",
     "sales": "🤝",
     "marketing": "📣",
@@ -466,7 +466,7 @@ def vorlage_toml(zeile: dict[str, Any]) -> str:
     z.append(f"name = {toml_str(anzeige)}")
     z.append(
         "description = "
-        + toml_str(f"{anzeige} ueber den offiziellen Remote-MCP-Server")
+        + toml_str(f"{anzeige} über den offiziellen Remote-MCP-Server")
     )
     z.append(f"category = {toml_str(kategorie)}")
     z.append(f"icon = {toml_str(ICON.get(kategorie, ICON['productivity']))}")

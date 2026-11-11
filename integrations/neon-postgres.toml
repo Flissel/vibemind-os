@@ -1,9 +1,9 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://neon.com/docs/ai/neon-mcp-server - geprueft: 2026-11-10
 id = "neon-postgres"
 name = "Neon"
-description = "Neon ueber den offiziellen Remote-MCP-Server"
+description = "Neon über den offiziellen Remote-MCP-Server"
 category = "cloud"
-icon = "☁️"
+icon = "🌐"
 tags = ["cloud", "datenbank", "postgres"]
 read_only_tools = []
 

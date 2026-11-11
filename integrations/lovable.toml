@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://docs.lovable.dev/integrations/lovable-mcp-server - geprueft: 2026-11-10
 id = "lovable"
 name = "Lovable"
-description = "Lovable ueber den offiziellen Remote-MCP-Server"
+description = "Lovable über den offiziellen Remote-MCP-Server"
 category = "devtools"
 icon = "🛠️"
 tags = ["entwicklung", "app-bau", "ki"]

@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://www.commonroom.io/docs/using-common-room/mcp-server/ - geprueft: 2026-11-10
 id = "common-room"
 name = "Common Room"
-description = "Common Room ueber den offiziellen Remote-MCP-Server"
+description = "Common Room über den offiziellen Remote-MCP-Server"
 category = "sales"
 icon = "🤝"
 tags = ["vertrieb", "crm", "community"]

@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://clickup.com/blog/how-to-use-clickup-mcp-server/ - geprueft: 2026-11-10
 id = "clickup"
 name = "ClickUp"
-description = "ClickUp ueber den offiziellen Remote-MCP-Server"
+description = "ClickUp über den offiziellen Remote-MCP-Server"
 category = "productivity"
 icon = "📋"
 tags = ["produktivität", "projekte", "aufgaben"]

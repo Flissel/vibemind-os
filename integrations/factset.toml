@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://developer.factset.com/mcp/factset-ai-ready-data-mcp - geprueft: 2026-11-10
 id = "factset"
 name = "FactSet"
-description = "FactSet ueber den offiziellen Remote-MCP-Server"
+description = "FactSet über den offiziellen Remote-MCP-Server"
 category = "finance"
 icon = "💶"
 tags = ["finanzen", "finanzdaten", "marktdaten"]

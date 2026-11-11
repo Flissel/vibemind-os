@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://docs.base44.com/developers/backend/overview/mcp-server.md - geprueft: 2026-11-10
 id = "base44"
 name = "Base44"
-description = "Base44 ueber den offiziellen Remote-MCP-Server"
+description = "Base44 über den offiziellen Remote-MCP-Server"
 category = "devtools"
 icon = "🛠️"
 tags = ["entwicklung", "app-bau", "ki"]

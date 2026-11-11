@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://circleback.ai/docs/support/platform/circleback-mcp - geprueft: 2026-11-10
 id = "circleback"
 name = "Circleback"
-description = "Circleback ueber den offiziellen Remote-MCP-Server"
+description = "Circleback über den offiziellen Remote-MCP-Server"
 category = "productivity"
 icon = "📋"
 tags = ["produktivität", "meeting", "notizen"]

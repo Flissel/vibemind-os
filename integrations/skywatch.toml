@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://docs.skywatch.com/docs/mcp/client-integration - geprueft: 2026-11-10
 id = "skywatch"
 name = "SkyWatch"
-description = "SkyWatch ueber den offiziellen Remote-MCP-Server"
+description = "SkyWatch über den offiziellen Remote-MCP-Server"
 category = "data"
 icon = "📊"
 tags = ["daten", "satellitenbilder", "geodaten"]

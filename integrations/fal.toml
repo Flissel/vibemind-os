@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://fal.ai/docs/documentation/setting-up/mcp/other-clients - geprueft: 2026-11-10
 id = "fal"
 name = "fal"
-description = "fal ueber den offiziellen Remote-MCP-Server"
+description = "fal über den offiziellen Remote-MCP-Server"
 category = "ai"
 icon = "🤖"
 tags = ["ki", "bilder"]

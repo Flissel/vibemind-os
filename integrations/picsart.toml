@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://picsart.com/gen-ai-mcp - geprueft: 2026-11-10
 id = "picsart"
 name = "Picsart"
-description = "Picsart ueber den offiziellen Remote-MCP-Server"
+description = "Picsart über den offiziellen Remote-MCP-Server"
 category = "design"
 icon = "🎨"
 tags = ["design", "bilder"]

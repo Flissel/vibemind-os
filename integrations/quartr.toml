@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://mcp.quartr.com/docs - geprueft: 2026-11-10
 id = "quartr"
 name = "Quartr"
-description = "Quartr ueber den offiziellen Remote-MCP-Server"
+description = "Quartr über den offiziellen Remote-MCP-Server"
 category = "finance"
 icon = "💶"
 tags = ["finanzen", "finanzdaten", "quartalszahlen"]

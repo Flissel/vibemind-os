@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://posthog.com/docs/model-context-protocol - geprueft: 2026-11-10
 id = "posthog"
 name = "PostHog"
-description = "PostHog ueber den offiziellen Remote-MCP-Server"
+description = "PostHog über den offiziellen Remote-MCP-Server"
 category = "data"
 icon = "📊"
 tags = ["daten", "analytics", "produktdaten"]

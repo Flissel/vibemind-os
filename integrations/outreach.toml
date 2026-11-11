@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://support.outreach.io/support/solutions/articles/159000435681-use-outreach-mcp-with-claude - geprueft: 2026-11-10
 id = "outreach"
 name = "Outreach"
-description = "Outreach ueber den offiziellen Remote-MCP-Server"
+description = "Outreach über den offiziellen Remote-MCP-Server"
 category = "sales"
 icon = "🤝"
 tags = ["vertrieb", "crm", "vertriebsmails"]

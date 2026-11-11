@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://deepnote.com/docs/deepnote-mcp - geprueft: 2026-11-10
 id = "deepnote"
 name = "Deepnote"
-description = "Deepnote ueber den offiziellen Remote-MCP-Server"
+description = "Deepnote über den offiziellen Remote-MCP-Server"
 category = "data"
 icon = "📊"
 tags = ["daten", "notebooks", "analytics"]

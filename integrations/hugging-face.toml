@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://huggingface.co/docs/hub/agents-mcp - geprueft: 2026-11-10
 id = "hugging-face"
 name = "Hugging Face"
-description = "Hugging Face ueber den offiziellen Remote-MCP-Server"
+description = "Hugging Face über den offiziellen Remote-MCP-Server"
 category = "ai"
 icon = "🤖"
 tags = ["ki", "modelle"]

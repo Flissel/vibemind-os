@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://developers.notion.com/docs/get-started-with-mcp - geprueft: 2026-11-10
 id = "notion"
 name = "Notion"
-description = "Notion ueber den offiziellen Remote-MCP-Server"
+description = "Notion über den offiziellen Remote-MCP-Server"
 category = "productivity"
 icon = "📋"
 tags = ["produktivität", "notizen", "dokumente"]

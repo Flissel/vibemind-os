@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://linear.app/docs/mcp - geprueft: 2026-11-10
 id = "linear"
 name = "Linear"
-description = "Linear ueber den offiziellen Remote-MCP-Server"
+description = "Linear über den offiziellen Remote-MCP-Server"
 category = "devtools"
 icon = "🛠️"
 tags = ["entwicklung", "tickets", "projekte"]

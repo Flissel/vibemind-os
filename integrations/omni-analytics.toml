@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://docs.omni.co/ai/mcp/cursor - geprueft: 2026-11-10
 id = "omni-analytics"
 name = "Omni Analytics"
-description = "Omni Analytics ueber den offiziellen Remote-MCP-Server"
+description = "Omni Analytics über den offiziellen Remote-MCP-Server"
 category = "data"
 icon = "📊"
 tags = ["daten", "analytics", "berichte"]

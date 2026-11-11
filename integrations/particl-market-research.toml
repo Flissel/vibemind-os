@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://particl.com/docs/mcp/quickstart - geprueft: 2026-11-10
 id = "particl-market-research"
 name = "Particl"
-description = "Particl ueber den offiziellen Remote-MCP-Server"
+description = "Particl über den offiziellen Remote-MCP-Server"
 category = "data"
 icon = "📊"
 tags = ["daten", "marktforschung", "analytics"]

@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://support.atlassian.com/atlassian-rovo-mcp-server/docs/getting-started-with-the-atlassian-remote-mcp-server/ - geprueft: 2026-11-10
 id = "atlassian-rovo"
 name = "Atlassian Rovo"
-description = "Atlassian Rovo ueber den offiziellen Remote-MCP-Server"
+description = "Atlassian Rovo über den offiziellen Remote-MCP-Server"
 category = "productivity"
 icon = "📋"
 tags = ["produktivität", "projekte", "dokumente"]

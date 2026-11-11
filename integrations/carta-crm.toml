@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://docs.carta.com/api-platform/guides/guides/claude-mcp-setup/ - geprueft: 2026-11-10
 id = "carta-crm"
 name = "Carta CRM"
-description = "Carta CRM ueber den offiziellen Remote-MCP-Server"
+description = "Carta CRM über den offiziellen Remote-MCP-Server"
 category = "finance"
 icon = "💶"
 tags = ["finanzen", "crm", "investoren"]

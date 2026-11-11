@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://help.responsive.io/en-US/responsive/article/duV3ckq5-using-responsive-mcp-server-with-generative-ai-tools - geprueft: 2026-11-10
 id = "responsive"
 name = "Responsive"
-description = "Responsive ueber den offiziellen Remote-MCP-Server"
+description = "Responsive über den offiziellen Remote-MCP-Server"
 category = "sales"
 icon = "🤝"
 tags = ["vertrieb", "ausschreibungen", "antworten"]

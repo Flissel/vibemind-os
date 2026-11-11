@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://docs.fiscal.ai/docs/guides/mcp-integration - geprueft: 2026-11-10
 id = "fiscal-ai"
 name = "Fiscal.ai"
-description = "Fiscal.ai ueber den offiziellen Remote-MCP-Server"
+description = "Fiscal.ai über den offiziellen Remote-MCP-Server"
 category = "finance"
 icon = "💶"
 tags = ["finanzen", "finanzdaten", "aktien"]

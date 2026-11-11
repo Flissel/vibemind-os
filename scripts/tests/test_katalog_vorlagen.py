@@ -323,6 +323,17 @@ def test_produktivitaet_mit_umlaut() -> None:
     assert "produktivitaet" not in kv.TAG_JE_KATEGORIE.values()
 
 
+def test_beschreibung_mit_umlaut() -> None:
+    t = tomllib.loads(kv.vorlage_toml(zeile("acme")))
+    assert t["description"].endswith(" über den offiziellen Remote-MCP-Server")
+    assert "ueber" not in t["description"]
+
+
+def test_cloud_symbol_ist_farbig() -> None:
+    # Das Windows-Emoji ☁️ ist hellgrau und auf weissen Karten kaum sichtbar.
+    assert kv.ICON["cloud"] == "🌐"
+
+
 def test_readme_nennt_alle_ergebnisse(tmp_path: Path) -> None:
     zeilen, _f, ziel = lauf(tmp_path, [zeile("acme")], katalog(eintrag("acme", "app")))
     md = (ziel / "abgleich" / "README.md").read_text(encoding="utf-8")

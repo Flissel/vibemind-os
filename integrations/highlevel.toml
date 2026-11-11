@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://marketplace.gohighlevel.com/docs/other/mcp - geprueft: 2026-11-10
 id = "highlevel"
 name = "HighLevel"
-description = "HighLevel ueber den offiziellen Remote-MCP-Server"
+description = "HighLevel über den offiziellen Remote-MCP-Server"
 category = "marketing"
 icon = "📣"
 tags = ["marketing", "crm", "automatisierung"]

@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://amplitude.com/docs/amplitude-ai/amplitude-mcp - geprueft: 2026-11-10
 id = "amplitude"
 name = "Amplitude"
-description = "Amplitude ueber den offiziellen Remote-MCP-Server"
+description = "Amplitude über den offiziellen Remote-MCP-Server"
 category = "data"
 icon = "📊"
 tags = ["daten", "analytics", "produktdaten"]

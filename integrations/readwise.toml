@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://docs.readwise.io/tools/mcp - geprueft: 2026-11-10
 id = "readwise"
 name = "Readwise"
-description = "Readwise ueber den offiziellen Remote-MCP-Server"
+description = "Readwise über den offiziellen Remote-MCP-Server"
 category = "productivity"
 icon = "📋"
 tags = ["produktivität", "notizen", "lesen"]

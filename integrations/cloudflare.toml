@@ -1,9 +1,9 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://developers.cloudflare.com/agents/model-context-protocol/mcp-servers-for-cloudflare/ - geprueft: 2026-11-10
 id = "cloudflare"
 name = "Cloudflare"
-description = "Cloudflare ueber den offiziellen Remote-MCP-Server"
+description = "Cloudflare über den offiziellen Remote-MCP-Server"
 category = "cloud"
-icon = "☁️"
+icon = "🌐"
 tags = ["cloud", "hosting", "netzwerk"]
 read_only_tools = []
 

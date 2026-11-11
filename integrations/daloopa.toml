@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://docs.daloopa.com/docs/daloopa-mcp - geprueft: 2026-11-10
 id = "daloopa"
 name = "Daloopa"
-description = "Daloopa ueber den offiziellen Remote-MCP-Server"
+description = "Daloopa über den offiziellen Remote-MCP-Server"
 category = "finance"
 icon = "💶"
 tags = ["finanzen", "finanzdaten", "analysten"]

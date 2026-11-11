@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://rest.aiera.com/docs/mcp-sdks - geprueft: 2026-11-10
 id = "aiera"
 name = "Aiera"
-description = "Aiera ueber den offiziellen Remote-MCP-Server"
+description = "Aiera über den offiziellen Remote-MCP-Server"
 category = "finance"
 icon = "💶"
 tags = ["finanzen", "finanzdaten", "analysten"]

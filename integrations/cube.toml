@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://docs.cube.dev/docs/integrations/mcp-server - geprueft: 2026-11-10
 id = "cube"
 name = "Cube"
-description = "Cube ueber den offiziellen Remote-MCP-Server"
+description = "Cube über den offiziellen Remote-MCP-Server"
 category = "data"
 icon = "📊"
 tags = ["daten", "analytics", "datenmodell"]

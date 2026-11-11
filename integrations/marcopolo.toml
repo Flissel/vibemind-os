@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://docs.marcopolo.dev/getting-started - geprueft: 2026-11-10
 id = "marcopolo"
 name = "MarcoPolo"
-description = "MarcoPolo ueber den offiziellen Remote-MCP-Server"
+description = "MarcoPolo über den offiziellen Remote-MCP-Server"
 category = "data"
 icon = "📊"
 tags = ["daten", "datenbank", "suche"]

@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://help.docket.io/articles/8225942528-connect-docket-demand-mcp - geprueft: 2026-11-10
 id = "docket"
 name = "Docket"
-description = "Docket ueber den offiziellen Remote-MCP-Server"
+description = "Docket über den offiziellen Remote-MCP-Server"
 category = "sales"
 icon = "🤝"
 tags = ["vertrieb", "vertrieb-wissen", "dokumente"]

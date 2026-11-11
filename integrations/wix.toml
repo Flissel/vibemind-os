@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://dev.wix.com/docs/sdk/articles/use-the-wix-mcp/about-the-wix-mcp - geprueft: 2026-11-10
 id = "wix"
 name = "Wix"
-description = "Wix ueber den offiziellen Remote-MCP-Server"
+description = "Wix über den offiziellen Remote-MCP-Server"
 category = "marketing"
 icon = "📣"
 tags = ["marketing", "webseiten", "shop"]

@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://windsor.ai/documentation/windsor-mcp/how-to-connect-windsor-mcp-to-any-ai-client/ - geprueft: 2026-11-10
 id = "windsor-ai"
 name = "Windsor.ai"
-description = "Windsor.ai ueber den offiziellen Remote-MCP-Server"
+description = "Windsor.ai über den offiziellen Remote-MCP-Server"
 category = "marketing"
 icon = "📣"
 tags = ["marketing", "marketing-daten", "analytics"]

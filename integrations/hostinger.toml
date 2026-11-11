@@ -1,9 +1,9 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://www.hostinger.com/support/11079316-hostinger-api-mcp-server/ - geprueft: 2026-11-10
 id = "hostinger"
 name = "Hostinger"
-description = "Hostinger ueber den offiziellen Remote-MCP-Server"
+description = "Hostinger über den offiziellen Remote-MCP-Server"
 category = "cloud"
-icon = "☁️"
+icon = "🌐"
 tags = ["cloud", "hosting", "domains"]
 read_only_tools = []
 

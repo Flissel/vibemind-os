@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://learn.hex.tech/docs/api-integrations/mcp-server - geprueft: 2026-11-10
 id = "hex"
 name = "Hex"
-description = "Hex ueber den offiziellen Remote-MCP-Server"
+description = "Hex über den offiziellen Remote-MCP-Server"
 category = "data"
 icon = "📊"
 tags = ["daten", "analytics", "notebooks"]

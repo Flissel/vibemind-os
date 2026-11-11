@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://developers.intercom.com/docs/guides/mcp - geprueft: 2026-11-10
 id = "intercom"
 name = "Intercom"
-description = "Intercom ueber den offiziellen Remote-MCP-Server"
+description = "Intercom über den offiziellen Remote-MCP-Server"
 category = "communication"
 icon = "💬"
 tags = ["kommunikation", "support", "chat"]

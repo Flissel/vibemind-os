@@ -1,7 +1,7 @@
 # Erzeugt von scripts/katalog_vorlagen.py - Quelle: https://docs.midpage.ai/documentation/integration/mcp-tools - geprueft: 2026-11-10
 id = "midpage"
 name = "Midpage Legal Research"
-description = "Midpage Legal Research ueber den offiziellen Remote-MCP-Server"
+description = "Midpage Legal Research über den offiziellen Remote-MCP-Server"
 category = "productivity"
 icon = "📋"
 tags = ["produktivität", "recht", "recherche"]
