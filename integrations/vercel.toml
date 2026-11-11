@@ -1,6 +1,6 @@
 id = "vercel"
 name = "Vercel"
-description = "Vercel ueber den offiziellen Remote-MCP-Server"
+description = "Vercel über den offiziellen Remote-MCP-Server"
 category = "devtools"
 icon = "▲"
 tags = ["deploy", "hosting", "projects"]

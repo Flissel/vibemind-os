@@ -1,6 +1,6 @@
 id = "github"
 name = "GitHub"
-description = "GitHub ueber den offiziellen Remote-MCP-Server (GitHub Copilot MCP)"
+description = "GitHub über den offiziellen Remote-MCP-Server (GitHub Copilot MCP)"
 category = "devtools"
 icon = "🐙"
 tags = ["git", "code", "issues", "pull-requests"]
