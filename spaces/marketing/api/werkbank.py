@@ -100,12 +100,28 @@ def _bool(zeile: dict | None, feld: str = "ok") -> bool:
     return bool(zeile and zeile.get(feld) is True)
 
 
-def _quellen(wert) -> list:
+def _liste(wert, feld: str, maximal: int = 200, element=None) -> list:
+    """Optionale Liste (None -> []) mit hoechstens `maximal` Eintraegen; `element` prueft jeden Eintrag."""
     if wert is None:
         return []
-    if not isinstance(wert, list) or len(wert) > 200:
-        raise HTTPException(422, "quellen muss eine Liste sein")
+    if not isinstance(wert, list) or len(wert) > maximal:
+        raise HTTPException(422, f"{feld} muss eine Liste mit höchstens {maximal} Einträgen sein")
+    if element and not all(element(x) for x in wert):
+        raise HTTPException(422, f"{feld}: ungültiger Eintrag")
+    _zu_gross(wert)
     return wert
+
+
+def _quellen(wert) -> list:
+    return _liste(wert, "quellen", 200, lambda x: isinstance(x, (str, dict)) and len(json.dumps(x)) <= 2000)
+
+
+def _zeitmarken(wert) -> list:
+    return _liste(wert, "zeitmarken", 100, lambda x: isinstance(x, dict) and len(json.dumps(x)) <= 500)
+
+
+def _warnungen(wert) -> list:
+    return _liste(wert, "warnungen", 50, lambda x: isinstance(x, str) and len(x) <= 500)
 
 
 def _zu_gross(wert) -> None:
@@ -114,12 +130,18 @@ def _zu_gross(wert) -> None:
 
 
 def _szenen_zaehlen(gliederung: dict) -> int:
+    """Zaehlt ALLE Eintraege in stufen[].szenen[]; jeder muss ein nichtleerer Text oder ein Objekt mit
+    nichtleerem `kurz` sein (SQL macht aus jedem Eintrag eine Szene, auch aus Muell)."""
     n = 0
-    for stufe in gliederung.get("stufen") or []:
+    for stufe in gliederung["stufen"]:
         szenen = stufe.get("szenen") if isinstance(stufe, dict) else None
-        for sz in szenen if isinstance(szenen, list) else []:
-            if isinstance(sz, dict) or (isinstance(sz, str) and sz.strip()):
-                n += 1
+        if not isinstance(szenen, list):
+            raise HTTPException(422, "Jede Stufe braucht eine Liste szenen")
+        for sz in szenen:
+            kurz = sz.get("kurz") if isinstance(sz, dict) else sz
+            if not isinstance(kurz, str) or not kurz.strip():
+                raise HTTPException(422, "Jede Szene braucht einen Kurztitel")
+            n += 1
     return n
 
 
@@ -134,19 +156,16 @@ def _gliederung_pruefen(g) -> dict:
 
 
 def _bild_pruefen(bild) -> dict:
+    """Jede Bildart braucht bild.schritte: Liste aus 2..5 Objekten, jedes mit bekannter vorlage (R11)."""
     if not isinstance(bild, dict):
         raise HTTPException(422, "bild muss ein Objekt sein")
     _zu_gross(bild)
-    if "schritte" in bild:
-        s = bild["schritte"]
-        if not isinstance(s, list) or not SCHRITTE_MIN <= len(s) <= SCHRITTE_MAX:
-            raise HTTPException(422, f"bild.schritte: {SCHRITTE_MIN} bis {SCHRITTE_MAX} Schritte")
-        vorlagen = [x.get("vorlage") for x in s if isinstance(x, dict)]
-    else:
-        vorlagen = []
-    vorlagen += [bild["vorlage"]] if "vorlage" in bild else []
-    if any(v not in VORLAGEN for v in vorlagen):
-        raise HTTPException(422, "Unbekannte Vorlage")
+    schritte = bild.get("schritte")
+    if not isinstance(schritte, list) or not SCHRITTE_MIN <= len(schritte) <= SCHRITTE_MAX:
+        raise HTTPException(422, f"bild.schritte: {SCHRITTE_MIN} bis {SCHRITTE_MAX} Schritte")
+    for x in schritte:
+        if not isinstance(x, dict) or x.get("vorlage") not in VORLAGEN:
+            raise HTTPException(422, "Jeder Schritt braucht eine bekannte Vorlage")
     return bild
 
 
@@ -242,8 +261,7 @@ def szene_text(sid: str, payload: dict = Body(...), x_bild_key: str | None = Hea
         teil["bildart"] = _auswahl(payload["bildart"], BILDARTEN, "bildart")
     if payload.get("uebergang") is not None:
         teil["uebergang"] = _auswahl(payload["uebergang"], UEBERGAENGE, "uebergang")
-    if payload.get("bild") is not None:
-        teil["bild"] = _bild_pruefen(payload["bild"])
+    teil["bild"] = _bild_pruefen(payload.get("bild"))          # R11: Schritte sind immer Pflicht
     if payload.get("quellen") is not None:
         teil["quellen"] = _quellen(payload["quellen"])
     zeile = _schreiben(lambda: f"SELECT marketing.video_szene_text_setzen({lit(s)}::uuid, {_json(teil)}) AS k")
@@ -280,15 +298,15 @@ def szene_clip(sid: str, payload: dict = Body(...), x_bild_key: str | None = Hea
     _bild_schluessel(x_bild_key)
     s = _uuid_oder_404(sid)
     z = _szene_werk(s)
-    variante = _ganz(payload.get("variante"), "variante", 1, 1000)
+    variante = _ganz(payload.get("variante"), "variante", 0, 1000)   # Szenen beginnen bei Variante 0 (099)
     datei = _text(payload.get("datei"), "datei", 100)
     dauer = _zahl(payload.get("dauer_s"), "dauer_s", 0, 3600)
     stimme = _text(payload.get("stimme"), "stimme", 80)
     engine = _text(payload.get("engine"), "engine", 80)
     m = NAME_MUSTER.fullmatch(datei)
     if not m or m.group(3) is None or m.group(1) != str(z["auftrag"]).replace("-", "")[:8] \
-            or int(m.group(3)) != z["nr"]:
-        raise HTTPException(409, "Der Dateiname passt nicht zu Auftrag und Szene")
+            or int(m.group(3)) != z["nr"] or int(m.group(4)) != variante:
+        raise HTTPException(409, "Der Dateiname passt nicht zu Auftrag, Szene und Variante")
     if not os.path.isfile(os.path.join(_ordner(), datei)):
         raise HTTPException(409, "Die Datei liegt nicht im Ordner")
     zeile = _schreiben(lambda:
@@ -352,8 +370,8 @@ def fertig(aid: str, payload: dict = Body(...), x_bild_key: str | None = Header(
             "titel": _text(payload.get("titel"), "titel", TITEL_MAX),
             "beschreibung": _text(payload.get("beschreibung"), "beschreibung", BESCHREIBUNG_MAX),
             "messnotiz": _text(payload.get("messnotiz"), "messnotiz", MESSNOTIZ_MAX, pflicht=False) or "",
-            "zeitmarken": _quellen(payload.get("zeitmarken")),
-            "warnungen": _quellen(payload.get("warnungen"))}
+            "zeitmarken": _zeitmarken(payload.get("zeitmarken")),
+            "warnungen": _warnungen(payload.get("warnungen"))}
     if not os.path.isfile(os.path.join(_ordner(), datei)):
         raise HTTPException(409, "Die Datei liegt nicht im Ordner")
     zeile = _schreiben(lambda: f"SELECT marketing.video_fertig_setzen({lit(a)}::uuid, {_json(teil)}) AS ok")
@@ -508,8 +526,8 @@ def upload_abschliessen(aid: str, name: str, payload: dict = Body(...), x_bild_k
     if not isinstance(sha, str) or not SHA_MUSTER.fullmatch(sha.lower()):
         raise HTTPException(422, "sha256: 64 Hexzeichen")
     ordner, teil, meta = _teil_pfade(name)
-    angemeldet = _angemeldet(meta)
     try:
+        angemeldet = _angemeldet(meta)
         if not os.path.isfile(teil) or os.path.getsize(teil) != angemeldet:
             raise HTTPException(422, "Die Länge stimmt nicht mit der Anmeldung überein")
         try:

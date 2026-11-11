@@ -13,6 +13,7 @@ from spaces.marketing.tests.test_pult_api import FalscheDB
 
 AID = "0123abcd-4444-4444-4444-444444444444"
 SID = "0123abcd-6666-6666-6666-666666666666"
+VID2 = "0123abcd-5555-5555-5555-555555555555"
 BK, PK, AK = "bild-k", "pult-k", "api-k"
 B, P = {"X-Bild-Key": BK}, {"X-Pult-Key": PK}
 A = "/api/werkbank/arbeiter"
@@ -128,8 +129,6 @@ def test_arbeit_mit_markenstimme(db, c, monkeypatch):
     assert "marketing.video_arbeit()" in db.sql[0]
 
 
-VID2 = "0123abcd-5555-5555-5555-555555555555"
-
 
 # ─── Gliederung, Text, Bild ──────────────────────────────────────────────
 
@@ -142,16 +141,35 @@ def test_gliederung_ok_und_stufen_ueber_alle_szenen(db, c):
     assert "marketing.video_gliederung_setzen" in db.sql[1]
 
 
-@pytest.mark.parametrize("n", [7, 16])
+@pytest.mark.parametrize("n", [7, 16, 30])
 def test_gliederung_falsche_szenenzahl_422(db, c, n):
     db.antworten = [[KOPF_OK]]
     r = c.post(f"{A}/{AID}/gliederung", json={"gliederung": gliederung(n), "quellen": []}, headers=B)
     assert r.status_code == 422 and len(db.sql) == 1
 
 
-def test_gliederung_sieben_szenen_422(db, c):
+@pytest.mark.parametrize("muell", ["", "  ", None, 5, [], {}, {"kurz": ""}, {"kurz": 3}, {"bildart": "slide"}])
+def test_gliederung_mit_muelleintrag_422(db, c, muell):
+    g = gliederung(8)
+    g["stufen"][0]["szenen"].append(muell)                   # 8 gueltige + Muell: SQL machte daraus 9 Szenen
     db.antworten = [[KOPF_OK]]
-    assert c.post(f"{A}/{AID}/gliederung", json={"gliederung": gliederung(7)}, headers=B).status_code == 422
+    assert c.post(f"{A}/{AID}/gliederung", json={"gliederung": g}, headers=B).status_code == 422
+    assert len(db.sql) == 1
+
+
+def test_gliederung_15_gueltige_plus_muell_422_und_16_gueltige_422(db, c):
+    g = gliederung(15)
+    g["stufen"].append({"name": "Z", "szenen": [None]})
+    db.antworten = [[KOPF_OK]]
+    assert c.post(f"{A}/{AID}/gliederung", json={"gliederung": g}, headers=B).status_code == 422
+    db.antworten = [[KOPF_OK]]
+    assert c.post(f"{A}/{AID}/gliederung", json={"gliederung": gliederung(16)}, headers=B).status_code == 422
+
+
+def test_gliederung_stufe_ohne_szenenliste_422(db, c):
+    db.antworten = [[KOPF_OK]]
+    g = {"stufen": [{"name": "A", "szenen": "x"}]}
+    assert c.post(f"{A}/{AID}/gliederung", json={"gliederung": g}, headers=B).status_code == 422
 
 
 def test_gliederung_ohne_stufen_422(db, c):
@@ -183,10 +201,21 @@ def test_text_unbekannte_vorlage_422(db, c):
 
 @pytest.mark.parametrize("aenderung", [
     {"bildart": "foto"}, {"uebergang": "wisch"}, {"bild": {"schritte": [{"vorlage": "titel"}]}},
+    {"bild": {}}, {"bild": {"vorlage": "titel"}}, {"bild": {"schritte": "x"}}, {"bild": None},
+    {"bild": {"schritte": [{"vorlage": "titel"}, "text"]}}, {"bild": {"schritte": [{"vorlage": "titel"}, {}]}},
     {"bild": {"schritte": [{"vorlage": "titel"}] * 6}}, {"sprechtext": ""}])
 def test_text_ungueltig_422(db, c, aenderung):
     db.antworten = [[SZENE_OK]]
     assert c.post(f"{A}/szene/{SID}/text", json={**TEXT, **aenderung}, headers=B).status_code == 422
+    assert len(db.sql) == 1
+
+
+@pytest.mark.parametrize("bildart", ["slide", "avatar_gross", "avatar_slide", "clip"])
+@pytest.mark.parametrize("bild", [{}, {"schritte": []}, {"schritte": [{"vorlage": "titel"}]},
+                                  {"schritte": [{"vorlage": "titel"}, {"vorlage": "nix"}]}])
+def test_bild_ohne_gueltige_schritte_422_fuer_jede_bildart(db, c, bildart, bild):
+    db.antworten = [[SZENE_OK]]
+    assert c.post(f"{A}/szene/{SID}/bild", json={"bildart": bildart, "bild": bild}, headers=B).status_code == 422
     assert len(db.sql) == 1
 
 
@@ -195,7 +224,7 @@ def test_bild(db, c):
     r = c.post(f"{A}/szene/{SID}/bild", json={"bildart": "avatar_slide", "bild": TEXT["bild"]}, headers=B)
     assert r.status_code == 200 and r.json() == {"ok": True} and "video_szene_bild_setzen" in db.sql[1]
     db.antworten = [[SZENE_OK]]
-    assert c.post(f"{A}/szene/{SID}/bild", json={"bildart": "x", "bild": {}}, headers=B).status_code == 422
+    assert c.post(f"{A}/szene/{SID}/bild", json={"bildart": "x", "bild": TEXT["bild"]}, headers=B).status_code == 422
 
 
 def test_szene_nehmen(db, c):
@@ -215,6 +244,27 @@ def test_clip_ok(db, c):
     r = c.post(f"{A}/szene/{SID}/clip", json=CLIP, headers=B)
     assert r.status_code == 200 and r.json() == {"kennung": KENNUNG}
     assert "video_szene_clip_setzen" in db.sql[1] and NAME in db.sql[1]
+
+
+def test_clip_variante_null_wird_angenommen(db, c):
+    """Szenen beginnen bei Variante 0 (099); die erste Datei heisst f0."""
+    (db.ordner / "wb-0123abcd-s01-f0.mp4").write_bytes(MP4)
+    db.antworten = [[SZENE_OK], [{"k": KENNUNG}]]
+    r = c.post(f"{A}/szene/{SID}/clip", json={**CLIP, "variante": 0, "datei": "wb-0123abcd-s01-f0.mp4"}, headers=B)
+    assert r.status_code == 200 and "video_szene_clip_setzen" in db.sql[1] and ", 0, " in db.sql[1]
+
+
+@pytest.mark.parametrize("variante", [-1, 1001, 1.5, "0", True])
+def test_clip_variante_ausserhalb_422(db, c, variante):
+    db.antworten = [[SZENE_OK]]
+    assert c.post(f"{A}/szene/{SID}/clip", json={**CLIP, "variante": variante}, headers=B).status_code == 422
+
+
+def test_clip_dateiversion_muss_zur_variante_passen_409(db, c):
+    (db.ordner / NAME).write_bytes(MP4)                      # f1, Body sagt variante 2
+    db.antworten = [[SZENE_OK]]
+    assert c.post(f"{A}/szene/{SID}/clip", json={**CLIP, "variante": 2}, headers=B).status_code == 409
+    assert len(db.sql) == 1
 
 
 def test_clip_fremder_dateiname_409(db, c):
@@ -265,6 +315,23 @@ def test_fertig_grenzen_422(db, c, aenderung):
     assert c.post(f"{A}/{AID}/fertig", json={**FERTIG, **aenderung}, headers=B).status_code == 422
 
 
+@pytest.mark.parametrize("aenderung", [
+    {"zeitmarken": "x"}, {"zeitmarken": ["x"]}, {"zeitmarken": [{"t": 0}] * 101}, {"zeitmarken": [{"t": "x" * 600}]},
+    {"warnungen": "x"}, {"warnungen": [1]}, {"warnungen": ["x"] * 51}, {"warnungen": ["x" * 501]}])
+def test_fertig_zeitmarken_und_warnungen_422(db, c, aenderung):
+    (db.ordner / FERTIG["datei"]).write_bytes(MP4)
+    db.antworten = [[KOPF_OK]]
+    r = c.post(f"{A}/{AID}/fertig", json={**FERTIG, **aenderung}, headers=B)
+    assert r.status_code == 422 and len(db.sql) == 1
+
+
+def test_quellen_grenzen_422(db, c):
+    for quellen in ("x", [1], ["x"] * 201, ["x" * 2001]):
+        db.antworten = [[KOPF_OK]]
+        r = c.post(f"{A}/{AID}/gliederung", json={"gliederung": gliederung(8), "quellen": quellen}, headers=B)
+        assert r.status_code == 422, quellen
+
+
 def test_fertig_datei_fehlt_oder_fremd_409(db, c):
     db.antworten = [[KOPF_OK]]
     assert c.post(f"{A}/{AID}/fertig", json=FERTIG, headers=B).status_code == 409
@@ -297,8 +364,10 @@ def test_max_bytes_aus_der_umgebung(db, c, monkeypatch):
 @pytest.mark.parametrize("name", ["../x.mp4", "wb-0123abcd-s1-f1.mp4", "wb-0123abcd-s01-f1.mp4.teil", "wb-0123ABCD-s01-f1.mp4",
                                   "x.mp4", "wb-0123abcd-s01-f1000.mp4"])
 def test_ungueltiger_name_422(db, c, name):
+    # "../x.mp4" enthaelt "/": der Router findet die Route nicht (404); alle anderen scheitern am Muster (422).
+    erwartet = 404 if "/" in name else 422
     r = c.post(f"{A}/{AID}/datei/{name}/beginnen", json={"bytes": 5}, headers=B)
-    assert r.status_code in (404, 422) and db.sql == []
+    assert r.status_code == erwartet and db.sql == []
     assert not list(db.ordner.iterdir())
 
 
@@ -375,6 +444,15 @@ def test_abgebrochener_upload_laesst_keine_zieldatei(db, c):
     assert not list(db.ordner.iterdir())
 
 
+def test_abschliessen_ohne_anmeldedatei_laesst_kein_teil_zurueck(db, c):
+    beginnen(db, c, 5)
+    (db.ordner / (NAME + ".teil.groesse")).unlink()
+    (db.ordner / (NAME + ".teil")).write_bytes(b"abc")
+    db.antworten = [[KOPF_OK]]
+    r = c.post(f"{A}/{AID}/datei/{NAME}/abschliessen", json={"sha256": "0" * 64}, headers=B)
+    assert r.status_code == 409 and not list(db.ordner.iterdir())
+
+
 def test_zu_kurzer_upload_422_und_aufgeraeumt(db, c):
     beginnen(db, c, len(MP4) + 5)
     teil(db, c, MP4, 0)
@@ -413,7 +491,7 @@ def test_datei_holen_nur_eigener_auftrag(db, c):
     assert r.status_code == 200 and r.content == MP4 and r.headers["content-type"] == "video/mp4"
     db.antworten = [[KOPF_OK]]
     assert c.get(f"{A}/{AID}/datei/wb-ffffffff-s01-f1.mp4", headers=B).status_code == 404
-    assert c.get(f"{A}/{AID}/datei/..%2Fsecret.mp4", headers=B).status_code in (404, 422)
+    assert c.get(f"{A}/{AID}/datei/..%2Fsecret.mp4", headers=B).status_code == 404   # Pfadtrenner: keine Route
     db.antworten = [[KOPF_OK]]
     assert c.get(f"{A}/{AID}/datei/wb-0123abcd-s09-f1.mp4", headers=B).status_code == 404
 
@@ -524,7 +602,7 @@ def test_nur_funktionsaufrufe_kein_insert_update_delete(db, c, monkeypatch):
     lauf([[KOPF_OK], ok], lambda: c.post(f"{A}/{AID}/frist", headers=B))
     lauf([[KOPF_OK], [{"k": KENNUNG}]], lambda: c.post(f"{A}/{AID}/gliederung", json={"gliederung": gliederung(8)}, headers=B))
     lauf([[SZENE_OK], [{"k": KENNUNG}]], lambda: c.post(f"{A}/szene/{SID}/text", json=TEXT, headers=B))
-    lauf([[SZENE_OK], ok], lambda: c.post(f"{A}/szene/{SID}/bild", json={"bildart": "slide", "bild": {}}, headers=B))
+    lauf([[SZENE_OK], ok], lambda: c.post(f"{A}/szene/{SID}/bild", json={"bildart": "slide", "bild": TEXT["bild"]}, headers=B))
     lauf([[KOPF_OK], [{"s": None}]], lambda: c.post(f"{A}/{AID}/szene-nehmen", headers=B))
     lauf([[SZENE_OK], [{"k": KENNUNG}]], lambda: c.post(f"{A}/szene/{SID}/clip", json=CLIP, headers=B))
     lauf([[SZENE_OK], ok], lambda: c.post(f"{A}/szene/{SID}/fehler", json={"grund": "g"}, headers=B))
