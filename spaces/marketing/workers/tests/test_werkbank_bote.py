@@ -401,6 +401,38 @@ def test_gepostet_false_und_rueckzug_scheitert_naechster_durchgang_raeumt_auf(ca
     assert ("todo:withdrawSuggestion", {"text": T(0)}) in rpc2.aufrufe and z2["zurueckgezogen"] == 1
 
 
+def test_beendeter_auftrag_gibt_seine_plaetze_frei():
+    """I5: video_vorschlaege_lebend schliesst zu Beginn die Vorschlaege beendeter Auftraege (offen ->
+    zurueckziehen, wartend -> erledigt) und liefert sie so. Der Bote zieht die zehn offenen zurueck, hakt sie in der
+    DB als erledigt ab und stellt im selben Durchgang den ersten Vorschlag eines anderen Auftrags ein."""
+    alt = [V(i, "zurueckziehen", auftrag="a-abgebrochen") for i in range(10)]
+    neu = V(20, "wartend", auftrag="b-neu")
+    db, rpc = FakeDb(alt + [neu]), FakeRpc(vorschlaege=[T(i) for i in range(10)])
+    z = wb.durchgang(db, rpc)
+    zurueck = [b["text"] for k, b in rpc.aufrufe if k == "todo:withdrawSuggestion"]
+    assert zurueck == [T(i) for i in range(10)] and z["zurueckgezogen"] == 10
+    assert [p["k"] for n, p in db.aufrufe if n == "video_vorschlag_erledigt"] == [kennung(i) for i in range(10)]
+    assert ("todo:addSuggestions", {"texts": [T(20)]}) in rpc.aufrufe and z["eingestellt"] == 1
+    assert "video_entscheiden" not in namen(db)            # ein Rueckzug ist nie eine Entscheidung
+
+
+def test_fremde_freigabe_zeile_wird_nie_zurueckgezogen():
+    """Zeilen des Freigabe-Boten (Sales-Link /freigaben#fg-…) gehoeren nicht der Werkbank: weder als Waise noch
+    als Item noch per Signal anfassen - auch wenn ihr Text "Video" oder eine wb-artige Kennung enthaelt."""
+    fremd = ("[Marketing-Video] Mein Video · [Ansehen](https://x/marketing/werkbank/v/wb-aaaaaaaaaa?x=1) · "
+             f"[Sales]({BASIS}/freigaben#fg-abcdefghij)")
+    fremd2 = f"[Reel] Ostern · [Sales]({BASIS}/freigaben#fg-bbbbbbbbbb)"
+    for lebend in ([], [V(0, "zurueckziehen"), V(1, "offen")]):
+        rpc = FakeRpc(vorschlaege=[fremd, fremd2, T(1)], items=[("kf", fremd2, False)],
+                      signale=[DISMISSED(fremd), KEPT(fremd2)])
+        db = FakeDb(lebend)
+        wb.durchgang(db, rpc)
+        zurueck = [b["text"] for k, b in rpc.aufrufe if k == "todo:withdrawSuggestion"]
+        assert fremd not in zurueck and fremd2 not in zurueck
+        assert ("todo:setChecked", {"key": "kf", "checked": True}) not in rpc.aufrufe
+        assert "video_entscheiden" not in namen(db)
+
+
 def test_verwaister_vorschlag_wird_zurueckgezogen_lebende_nicht():
     p = planen([V(0, "offen")], RowboatStand(vorschlaege=[T(0), T(5)]), BASIS)
     assert p.verwaist == [(kennung(5), T(5))] and p.zurueckziehen == []
