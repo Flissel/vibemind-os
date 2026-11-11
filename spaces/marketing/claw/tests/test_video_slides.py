@@ -200,3 +200,10 @@ def test_v2_agenda_ohne_schrittnummer_andere_vorlagen_mit():
 def test_v1_vergleich_ohne_zierstrich():
     css = html_fuer([S("vergleich", 0), S("zahl", 2)], variante=1)
     assert ".v1.t-vergleich .inhalt::before { display: none; }" in css and "v1 t-vergleich" in css
+
+
+def test_v1_agenda_hat_feste_breite_und_linksbuendigen_text():
+    html = html_fuer([S("agenda", 0), S("zahl", 2)], variante=1)
+    css = html.split("<style>")[1].split("</style>")[0]
+    assert re.search(r"^\.v1 \.agenda \{[^}]*width: 1240px[^}]*text-align: left", css, re.M)
+    assert "v1 t-agenda" in html and '<ol class="agenda">' in html

@@ -79,7 +79,7 @@ html, body { margin: 0; background: var(--grund); }
 .v1.t-vergleich .inhalt::before { display: none; }
 .v1 .punkte { align-self: center; text-align: left; }
 .v1 .zahlzeile { align-items: center; }
-.v1 .v1 .agenda { width: 1240px; text-align: left; }
+.v1 .agenda { width: 1240px; text-align: left; }
 .v1 .spalten { text-align: left; width: 100%; }
 .v1 .logo { right: 120px; bottom: 96px; }
 
