@@ -3,7 +3,7 @@ id = "supabase"
 name = "Supabase"
 description = "Supabase über den offiziellen Remote-MCP-Server"
 category = "cloud"
-icon = "🌐"
+icon = "⛅"
 tags = ["cloud", "datenbank", "backend"]
 read_only_tools = []
 

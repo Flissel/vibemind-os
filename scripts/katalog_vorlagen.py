@@ -100,7 +100,7 @@ ICON: dict[str, str] = {
     "productivity": "📋",
     "communication": "💬",
     "data": "📊",
-    "cloud": "🌐",
+    "cloud": "⛅",
     "ai": "🤖",
     "sales": "🤝",
     "marketing": "📣",

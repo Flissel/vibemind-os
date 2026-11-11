@@ -3,7 +3,7 @@ id = "hostinger"
 name = "Hostinger"
 description = "Hostinger über den offiziellen Remote-MCP-Server"
 category = "cloud"
-icon = "🌐"
+icon = "⛅"
 tags = ["cloud", "hosting", "domains"]
 read_only_tools = []
 

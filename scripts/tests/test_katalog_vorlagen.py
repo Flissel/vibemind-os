@@ -331,7 +331,7 @@ def test_beschreibung_mit_umlaut() -> None:
 
 def test_cloud_symbol_ist_farbig() -> None:
     # Das Windows-Emoji ☁️ ist hellgrau und auf weissen Karten kaum sichtbar.
-    assert kv.ICON["cloud"] == "🌐"
+    assert kv.ICON["cloud"] == "⛅"
 
 
 def test_readme_nennt_alle_ergebnisse(tmp_path: Path) -> None:

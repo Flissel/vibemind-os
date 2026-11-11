@@ -3,7 +3,7 @@ id = "neon-postgres"
 name = "Neon"
 description = "Neon über den offiziellen Remote-MCP-Server"
 category = "cloud"
-icon = "🌐"
+icon = "⛅"
 tags = ["cloud", "datenbank", "postgres"]
 read_only_tools = []
 

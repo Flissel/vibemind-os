@@ -3,7 +3,7 @@ id = "cloudflare"
 name = "Cloudflare"
 description = "Cloudflare über den offiziellen Remote-MCP-Server"
 category = "cloud"
-icon = "🌐"
+icon = "⛅"
 tags = ["cloud", "hosting", "netzwerk"]
 read_only_tools = []
 
