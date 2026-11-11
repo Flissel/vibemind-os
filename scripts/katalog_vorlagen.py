@@ -73,14 +73,40 @@ GESCHUETZT = frozenset({"github", "vercel"})
 
 # Hinweise je Anbieter, die in der Abgleichsliste neben dem Ergebnis stehen.
 HINWEISE: dict[str, str] = {
+    # Anmeldetest 11.11.2026 (Registrierung + Anmeldeseite mit dem echten
+    # Rueckruf des Daemons, siehe abgleich/anmeldetest-2026-11-11.md).
     "highlevel": (
-        "Endpunkt fuer Anthropic-Clients laut Doku; "
-        "bei Fehler beim Einrichten pruefen"
+        "Anmeldung scheitert: Registrierung abgelehnt (invalid_client_metadata), "
+        "auch mit scope; Endpunkt laut Doku nur fuer Anthropic-Clients"
     ),
-    # Live geprueft 11.11.2026: Registrierung 400, redirect_uri "must start with https".
     "calendly": (
         "Anmeldung scheitert: Calendly verlangt einen https-Rueckruf, "
         "OpenFang bietet nur http://127.0.0.1"
+    ),
+    "teamwork-com": (
+        "Anmeldung scheitert: Registrierung lehnt den Rueckruf "
+        "http://127.0.0.1 ab (invalid_redirect_uri)"
+    ),
+    "yepcode": (
+        "Anmeldung scheitert: Registrierung nur mit Zugangsschluessel "
+        "(HTTP 403 insufficient_scope), keine offene Selbstregistrierung"
+    ),
+    "signnow": (
+        "Anmeldung scheitert: Anmeldeseite lehnt den Rueckruf ab "
+        "(invalid_request, redirect_uri not allowed)"
+    ),
+    "omni-analytics": (
+        "Anmeldung scheitert: Anmeldeseite lehnt den Rueckruf ab "
+        "(HTTP 401, Rueckruf nicht auf der Freigabeliste)"
+    ),
+}
+
+# Feste Scopes je Anbieter, wenn der Anbieter ohne scope ablehnt.
+# Lovable: ohne scope Weiterleitung mit invalid_scope (Anmeldetest 11.11.2026).
+SCOPES: dict[str, tuple[str, ...]] = {
+    "lovable": (
+        "offline", "projects:read", "projects:write",
+        "workspaces:read", "workspaces:write",
     ),
 }
 
@@ -486,11 +512,12 @@ def vorlage_toml(zeile: dict[str, Any]) -> str:
     z.append("")
 
     if ergebnis == "einrichtbar_oauth":
-        scopes = (
-            ["offline_access"]
-            if "offline_access" in (pruefung.get("scopes_supported") or [])
-            else []
-        )
+        if name in SCOPES:
+            scopes = list(SCOPES[name])
+        elif "offline_access" in (pruefung.get("scopes_supported") or []):
+            scopes = ["offline_access"]
+        else:
+            scopes = []
         z.append("[auth]")
         z.append('type = "oauth"')
         z.append("scopes = [" + ", ".join(toml_str(s) for s in scopes) + "]")

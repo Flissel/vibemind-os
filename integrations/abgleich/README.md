@@ -101,7 +101,7 @@ Eintraege gesamt: 180
 | hex | app | vorlage | einrichtbar_oauth | https://learn.hex.tech/docs/api-integrations/mcp-server | 2026-11-10 |
 | heygen | app | vorlage | einrichtbar_oauth | https://developers.heygen.com/mcp/overview | 2026-11-10 |
 | hg-insights | app | kein_offizieller_server | HG MCP Server exists (API key issued by admin) but endpoint URL not public; demo-gated. | https://hginsights.com/product/hg-mcp-server |  |
-| highlevel | app | vorlage | einrichtbar_oauth; Endpunkt fuer Anthropic-Clients laut Doku; bei Fehler beim Einrichten pruefen | https://marketplace.gohighlevel.com/docs/other/mcp | 2026-11-10 |
+| highlevel | app | vorlage | einrichtbar_oauth; Anmeldung scheitert: Registrierung abgelehnt (invalid_client_metadata), auch mit scope; Endpunkt laut Doku nur fuer Anthropic-Clients | https://marketplace.gohighlevel.com/docs/other/mcp | 2026-11-10 |
 | hostinger | app | vorlage | einrichtbar_oauth | https://www.hostinger.com/support/11079316-hostinger-api-mcp-server/ | 2026-11-10 |
 | hubspot | app | braucht_registrierung | oauth_ohne_dcr | https://developers.hubspot.com/docs/apps/developer-platform/build-apps/integrate-with-the-remote-hubspot-mcp-server | 2026-11-10 |
 | hugging-face | app | vorlage | einrichtbar_oauth | https://huggingface.co/docs/hub/agents-mcp | 2026-11-10 |
@@ -132,7 +132,7 @@ Eintraege gesamt: 180
 | ngs-analysis | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
 | notion | mcp | vorlage | einrichtbar_oauth | https://developers.notion.com/docs/get-started-with-mcp | 2026-11-10 |
 | nvidia | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
-| omni-analytics | app | vorlage | einrichtbar_oauth | https://docs.omni.co/ai/mcp/cursor | 2026-11-10 |
+| omni-analytics | app | vorlage | einrichtbar_oauth; Anmeldung scheitert: Anmeldeseite lehnt den Rueckruf ab (HTTP 401, Rueckruf nicht auf der Freigabeliste) | https://docs.omni.co/ai/mcp/cursor | 2026-11-10 |
 | openai-ads-conversions | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
 | openai-developers | mcp | vorlage | einrichtbar_ohne_anmeldung | https://developers.openai.com/learn/docs-mcp | 2026-11-10 |
 | otter-ai | app | unklar | ermittlung fehlgeschlagen: resource passt nicht | https://help.otter.ai/hc/en-us/articles/35287607569687-Otter-MCP-Server | 2026-11-10 |
@@ -169,7 +169,7 @@ Eintraege gesamt: 180
 | sharepoint | app | unklar | ermittlung fehlgeschlagen: issuer passt nicht | https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/work-iq/mcp/quickstart/github-copilot-cli | 2026-11-10 |
 | shopify | app | adresse_je_kunde | adresse_je_kunde | https://shopify.dev/docs/apps/build/storefront-mcp | 2026-11-10 |
 | shutterstock | app | kein_offizieller_server | Only third-party/community servers found. |  |  |
-| signnow | app | vorlage | einrichtbar_oauth | https://docs.signnow.com/docs/mcp-server | 2026-11-10 |
+| signnow | app | vorlage | einrichtbar_oauth; Anmeldung scheitert: Anmeldeseite lehnt den Rueckruf ab (invalid_request, redirect_uri not allowed) | https://docs.signnow.com/docs/mcp-server | 2026-11-10 |
 | similarweb | app | unklar | anmeldeart_unbekannt | https://developers.similarweb.com/docs/similarweb-mcp | 2026-11-10 |
 | skywatch | app | vorlage | einrichtbar_ohne_anmeldung | https://docs.skywatch.com/docs/mcp/client-integration | 2026-11-10 |
 | slack | app | vorlage_mitgeliefert | mitgelieferte Vorlage bleibt | https://docs.slack.dev/ai/mcp-server | 2026-11-10 |
@@ -181,7 +181,7 @@ Eintraege gesamt: 180
 | superpowers | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
 | taxdown | app | kein_offizieller_server | No official MCP documentation found (only a ChatGPT app listing by TAXDOWN S.L. in a third-party tracker). |  |  |
 | teams | app | unklar | ermittlung fehlgeschlagen: issuer passt nicht | https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/work-iq/mcp/quickstart/github-copilot-cli | 2026-11-10 |
-| teamwork-com | app | vorlage | einrichtbar_oauth | https://github.com/Teamwork/mcp | 2026-11-10 |
+| teamwork-com | app | vorlage | einrichtbar_oauth; Anmeldung scheitert: Registrierung lehnt den Rueckruf http://127.0.0.1 ab (invalid_redirect_uri) | https://github.com/Teamwork/mcp | 2026-11-10 |
 | temporal | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
 | test-android-apps | skills | skills_teil_5 | nur Skills/Befehle/Agenten |  |  |
 | third-bridge | app | kein_offizieller_server | Vendor announced an MCP (client/trial access only) but publishes no URL; only third-party listings show ai.thirdbridge.com/mcp/sse, so left empty. | https://www.thirdbridge.com/en-us/about-us/media/news/third-bridge-launches-model-context-protocol-mcp |  |
@@ -195,7 +195,7 @@ Eintraege gesamt: 180
 | weatherpromise | app | kein_offizieller_server | No MCP server found for this weather-insurance vendor. |  |  |
 | windsor-ai | app | vorlage | einrichtbar_oauth | https://windsor.ai/documentation/windsor-mcp/how-to-connect-windsor-mcp-to-any-ai-client/ | 2026-11-10 |
 | wix | app | vorlage | einrichtbar_oauth | https://dev.wix.com/docs/sdk/articles/use-the-wix-mcp/about-the-wix-mcp | 2026-11-10 |
-| yepcode | app | vorlage | einrichtbar_oauth | http://yepcode.io/docs/mcp-server/quickstart/ | 2026-11-10 |
+| yepcode | app | vorlage | einrichtbar_oauth; Anmeldung scheitert: Registrierung nur mit Zugangsschluessel (HTTP 403 insufficient_scope), keine offene Selbstregistrierung | http://yepcode.io/docs/mcp-server/quickstart/ | 2026-11-10 |
 | zoho | app | kein_offizieller_server | Official hosted Zoho MCP (mcp.zoho.com, regional domains) but each server gets a unique per-user URL from the console Connect tab, so no fixed URL. | https://www.zoho.com/analytics/api/v2/zoho-analytics-mcp-server/remote-mcp/zoho-mcp.html |  |
 | zoom | app | unklar | ermittlung fehlgeschlagen: resource passt nicht | https://developers.zoom.us/docs/mcp/servers/ | 2026-11-10 |
 | zoominfo | app | unklar | ermittlung fehlgeschlagen: fremder host | https://docs.gtm.ai/docs/connect-to-zoominfo-mcp | 2026-11-10 |

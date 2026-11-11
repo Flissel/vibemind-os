@@ -13,7 +13,7 @@ url = "https://mcp.lovable.dev"
 
 [auth]
 type = "oauth"
-scopes = []
+scopes = ["offline", "projects:read", "projects:write", "workspaces:read", "workspaces:write"]
 
 [catalog]
 replaces_openai_plugin = "lovable"

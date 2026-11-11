@@ -348,6 +348,7 @@ def test_highlevel_hinweis_in_abgleich() -> None:
     r = kv.abgleich([z], katalog(eintrag("highlevel", "app")), [])
     assert r[0]["ergebnis"] == "vorlage"
     assert "Anthropic-Clients" in r[0]["grund"]
+    assert "Anmeldung scheitert" in r[0]["grund"]
 
 
 def test_calendly_hinweis_in_abgleich() -> None:
@@ -356,6 +357,36 @@ def test_calendly_hinweis_in_abgleich() -> None:
     r = kv.abgleich([z], katalog(eintrag("calendly", "app")), [])
     assert r[0]["ergebnis"] == "vorlage"
     assert "https-Rueckruf" in r[0]["grund"]
+
+
+def test_lovable_bekommt_feste_scopes() -> None:
+    # Live geprueft 11.11.2026: ohne scope leitet Lovable mit invalid_scope zurueck.
+    t = tomllib.loads(kv.vorlage_toml(zeile("lovable", scopes_supported=["offline", "projects:read"])))
+    assert t["auth"]["scopes"] == [
+        "offline", "projects:read", "projects:write", "workspaces:read", "workspaces:write",
+    ]
+
+
+def test_feste_scopes_nur_fuer_den_eigenen_anbieter() -> None:
+    t = tomllib.loads(kv.vorlage_toml(zeile("acme", scopes_supported=["read"])))
+    assert t["auth"]["scopes"] == []
+
+
+@pytest.mark.parametrize(
+    ("name", "wort"),
+    [
+        ("highlevel", "invalid_client_metadata"),
+        ("teamwork-com", "127.0.0.1"),
+        ("yepcode", "Registrierung"),
+        ("signnow", "Rueckruf"),
+        ("omni-analytics", "Rueckruf"),
+    ],
+)
+def test_anmeldetest_hinweise_in_abgleich(name: str, wort: str) -> None:
+    r = kv.abgleich([zeile(name)], katalog(eintrag(name, "app")), [])
+    assert r[0]["ergebnis"] == "vorlage"
+    assert "Anmeldung scheitert" in r[0]["grund"]
+    assert wort in r[0]["grund"]
 
 
 def test_veraltete_vorlagen_werden_geloescht(tmp_path: Path) -> None:
