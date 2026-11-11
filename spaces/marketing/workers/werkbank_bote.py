@@ -10,6 +10,10 @@ Muster ist freigabe_bote.py aus sales-claw. Regeln:
   zurueckzieht, nie eine Entscheidung des Betreibers.
 - Hoechstens MAX_OFFEN Vorschlaege gleichzeitig offen. Der naechste Block kommt erst, wenn keiner mehr offen ist;
   der Ersatz fuer eine zurueckgegebene Szene kommt sofort, solange weniger als MAX_OFFEN offen sind.
+- Betriebshinweise: (1) Rowboat entfernt einen angenommenen Vorschlag aus dem Fach, bevor das Signal "kept" geschrieben
+  wird; ein Durchgang in diesem kurzen Fenster hielte die Zeile fuer verloren und stellte sie erneut ein. (2) Das
+  Signal-Buch von Rowboat behaelt nur die letzten 200 Eintraege; nach langem Ausfall des Boten kann ein "dismissed"
+  herausgefallen sein, die Zeile wird dann erneut eingestellt statt als "nochmal" gelesen.
 - Fehlt WERKBANK_UI_BASIS_URL, fasst der Bote weder Rowboat noch die Datenbank an."""
 from __future__ import annotations
 
@@ -99,6 +103,8 @@ class Plan:
     abhaken: list[tuple[str, str]] = field(default_factory=list)        # (Kennung, Item-Key; "" = nur in der DB)
     entscheiden: list[tuple[str, str]] = field(default_factory=list)    # (Kennung, passt | nochmal)
     erledigt: list[str] = field(default_factory=list)
+    gepostet: list[tuple[str, str]] = field(default_factory=list)       # wartend, aber schon im Vorschlagsfach
+    verwaist: list[tuple[str, str]] = field(default_factory=list)       # Vorschlag in Rowboat ohne lebende Zeile
 
 
 def _signal_zu(signale: list[dict], art: str, kennung: str) -> bool:
@@ -120,6 +126,8 @@ def planen(lebend: list[dict], stand: RowboatStand, basis: str) -> Plan:
 
     offen_zahl = 0
     wartend: list[dict] = []
+    bekannt = {v["kennung"].lower() for v in lebend}
+    plan.verwaist = [(k, t) for k, t in vorschlag_text.items() if k not in bekannt]
     for v in lebend:
         k = v["kennung"].lower()
         s = v.get("stand")
@@ -131,23 +139,26 @@ def planen(lebend: list[dict], stand: RowboatStand, basis: str) -> Plan:
                 continue
             plan.abhaken.extend((v["kennung"], i[0]) for i in ungehakt)
             plan.erledigt.append(v["kennung"])
-        elif s == "offen":                                                 # Regel 2
+        elif s in ("offen", "wartend"):                                    # Regel 2; wartend mit Spur ebenso
             if items or _signal_zu(stand.signale, "kept", k):
+                # video_entscheiden nimmt auch eine wartende Zeile direkt an
                 plan.entscheiden.append((v["kennung"], "passt"))
                 plan.abhaken.extend((v["kennung"], i[0]) for i in ungehakt)
             elif k in vorschlag_text:
+                if s == "wartend":                                         # gepostet-Meldung ging verloren
+                    plan.gepostet.append((v["kennung"], vorschlag_text[k]))
                 offen_zahl += 1
             elif _signal_zu(stand.signale, "dismissed", k):
                 plan.entscheiden.append((v["kennung"], "nochmal"))
-            else:                                                          # in Rowboat verloren gegangen
+            elif s == "offen":                                             # in Rowboat verloren gegangen
                 plan.hinzufuegen.append((v["kennung"], vorschlagstext(v, basis)))
                 offen_zahl += 1
+            else:
+                wartend.append(v)
         elif s == "angenommen":                                            # Regel 3
             plan.abhaken.extend((v["kennung"], i[0]) for i in ungehakt)
             if not ungehakt:
                 plan.abhaken.append((v["kennung"], ""))
-        elif s == "wartend":
-            wartend.append(v)
 
     plazt = MAX_OFFEN - offen_zahl                                         # Regel 4
     for v in wartend:
@@ -220,11 +231,22 @@ def durchgang(db=_db, rpc=_rpc) -> dict:
         stand = _stand_lesen(rpc)
         plan = planen(lebend, stand, basis)
 
-        for kennung, text in plan.zurueckziehen:
+        wartend_k = {v["kennung"].lower() for v in lebend if v.get("stand") == "wartend"}
+        db_haken = {v["kennung"].lower() for v in lebend if v.get("stand") == "angenommen"}
+        db_haken |= {k.lower() for k, u in plan.entscheiden if u == "passt"}
+
+        def zurueckziehen(text: str) -> bool:
             antwort = rpc("todo:withdrawSuggestion", {"text": text})
             if isinstance(antwort, dict) and antwort.get("removed") is True:
                 zaehler["zurueckgezogen"] += 1
+                return True
+            return False
+
+        for kennung, text in plan.zurueckziehen:
+            if zurueckziehen(text):
                 _ja(db, "SELECT marketing.video_vorschlag_erledigt(%(k)s) AS ok", {"k": kennung})
+        for _kennung, text in plan.verwaist:   # Rest einer verpassten Entscheidung auf der Seite
+            zurueckziehen(text)
 
         for kennung, urteil in plan.entscheiden:
             zeile = _ja(db, "SELECT marketing.video_entscheiden(%(k)s, %(u)s, 'rowboat') AS r",
@@ -234,33 +256,55 @@ def durchgang(db=_db, rpc=_rpc) -> dict:
 
         nicht_getickt: set[str] = set()
         for kennung, key in plan.abhaken:
+            getickt = False
             if key:
                 antwort = rpc("todo:setChecked", {"key": key, "checked": True})
-                if isinstance(antwort, dict) and antwort.get("success") is False:
-                    LOG.warning("setChecked abgelehnt - der naechste Durchgang versucht es erneut.")
+                if not (isinstance(antwort, dict) and antwort.get("success") is True):
+                    LOG.warning("setChecked nicht bestaetigt - der naechste Durchgang versucht es erneut.")
                     nicht_getickt.add(kennung)
                     continue
-            _ja(db, "SELECT marketing.video_vorschlag_abgehakt(%(k)s) AS ok", {"k": kennung})
-            zaehler["abgehakt"] += 1
+                getickt = True
+            gesetzt = False
+            if kennung.lower() in db_haken:
+                zeile = _ja(db, "SELECT marketing.video_vorschlag_abgehakt(%(k)s) AS ok", {"k": kennung})
+                gesetzt = bool(zeile and zeile.get("ok") is True)
+            if getickt or gesetzt:
+                zaehler["abgehakt"] += 1
 
         for kennung in plan.erledigt:
             if kennung not in nicht_getickt:
                 _ja(db, "SELECT marketing.video_vorschlag_erledigt(%(k)s) AS ok", {"k": kennung})
 
+        def melden(kennung: str, text: str) -> None:
+            """wartend -> offen. Antwortet die DB mit false (auf der Seite entschieden), liegt der Text als
+            Waise im Fach: sofort zurueckziehen; scheitert das, raeumt der naechste Durchgang (verwaist) auf."""
+            zeile = _ja(db, "SELECT marketing.video_vorschlag_gepostet(%(k)s, %(t)s) AS ok",
+                        {"k": kennung, "t": text})
+            if zeile and zeile.get("ok") is True:
+                zaehler["eingestellt"] += 1
+            elif not zurueckziehen(text):
+                LOG.warning("Waise nicht zurueckgezogen - der naechste Durchgang raeumt auf.")
+
+        for kennung, text in plan.gepostet:
+            melden(kennung, text)
+
         schon_da = {kennung_in(t) for t in stand.vorschlaege}
         neu = [(k, t) for k, t in plan.hinzufuegen if k.lower() not in schon_da]
-        bestaetigt = {k: t for k, t in plan.hinzufuegen if k.lower() in schon_da}  # DB hinkt hinterher
         if neu:
             antwort = rpc("todo:addSuggestions", {"texts": [t for _, t in neu]})
+            bestaetigt = {}
             for text in (antwort.get("added") if isinstance(antwort, dict) else None) or []:
                 k = kennung_in(text)
                 if k:
                     bestaetigt[k] = str(text)
-        for kennung, text in plan.hinzufuegen:
-            if kennung.lower() in bestaetigt:
-                _ja(db, "SELECT marketing.video_vorschlag_gepostet(%(k)s, %(t)s) AS ok",
-                    {"k": kennung, "t": bestaetigt[kennung.lower()]})
-                zaehler["eingestellt"] += 1
+            for kennung, _text in neu:
+                text = bestaetigt.get(kennung.lower())
+                if text is None:
+                    continue
+                if kennung.lower() in wartend_k:
+                    melden(kennung, text)
+                else:                          # in Rowboat verlorener offener Vorschlag, erneut eingestellt
+                    zaehler["eingestellt"] += 1
     except Exception as e:  # noqa: BLE001 - nur der Typ ins Log, nie der Text (Schluessel)
         LOG.error("Durchgang abgebrochen: %s", type(e).__name__)
         return zaehler

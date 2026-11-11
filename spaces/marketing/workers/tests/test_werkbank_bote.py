@@ -152,8 +152,8 @@ def test_schluessel_in_rowboat_sind_kleingeschrieben_und_passen_trotzdem():
 # ---------- durchgang ----------
 
 class FakeDb:
-    def __init__(self, lebend, ok=True):
-        self.lebend, self.ok, self.aufrufe = lebend, ok, []
+    def __init__(self, lebend, ok=True, falsch=()):
+        self.lebend, self.ok, self.falsch, self.aufrufe = lebend, ok, set(falsch), []
 
     def query_via_docker(self, sql, params=None, container=None, streng=False):
         assert streng
@@ -166,7 +166,7 @@ class FakeDb:
         self.aufrufe.append((name, params))
         if name == "video_entscheiden":
             return {"r": {"ok": self.ok}}
-        return {"ok": True}
+        return {"ok": name not in self.falsch}
 
 
 class FakeRpc:
@@ -266,7 +266,7 @@ def test_veraltet_angenommen_wird_nicht_entschieden():
     rpc = FakeRpc(items=[("key0", T(0), False)], signale=[KEPT(T(0))])
     wb.durchgang(db, rpc)
     assert "video_entscheiden" not in namen(db)
-    assert namen(db) == ["lebend", "video_vorschlag_abgehakt", "video_vorschlag_erledigt"]
+    assert namen(db) == ["lebend", "video_vorschlag_erledigt"]   # kein pointless abgehakt fuer zurueckziehen
 
 
 def test_entscheiden_ohne_ok_wird_nicht_gezaehlt():
@@ -343,3 +343,80 @@ def test_rpc_traegt_schluessel_aus_datei_und_host(monkeypatch, tmp_path):
     assert wb._rpc("todo:get", None) == {"removed": True}
     assert gesehen == {"url": "http://127.0.0.1:3220/rpc/todo:get", "auth": "Bearer geheim-schluessel",
                        "host": "127.0.0.1:3220", "timeout": 10, "body": b"null"}
+
+
+# ---------- wartend mit Spur in Rowboat ----------
+
+def test_wartend_im_fach_wird_als_gepostet_gemeldet_und_zaehlt_als_offen():
+    lebend = [V(0, "offen"), V(1, "wartend"), V(2, "wartend", ersatz=True)] + [V(i, "wartend") for i in range(3, 14)]
+    p = planen(lebend, RowboatStand(vorschlaege=[T(0), T(1)]), BASIS)
+    assert p.gepostet == [(kennung(1), T(1))]
+    # 2 offen gezaehlt -> Ersatz kommt, Rest des Blocks nicht (offen_zahl != 0)
+    assert [k for k, _ in p.hinzufuegen] == [kennung(2)]
+
+
+def test_wartend_im_fach_zaehlt_gegen_das_limit():
+    lebend = [V(i, "wartend") for i in range(10)] + [V(10, "wartend", ersatz=True)]
+    p = planen(lebend, RowboatStand(vorschlaege=[T(i) for i in range(10)]), BASIS)
+    assert len(p.gepostet) == 10 and p.hinzufuegen == []
+
+
+def test_wartend_als_item_oder_kept_wird_direkt_entschieden_und_abgehakt():
+    lebend = [V(0, "wartend"), V(1, "wartend")]
+    p = planen(lebend, RowboatStand(items=[("key0", T(0), False)], signale=[KEPT(T(1))]), BASIS)
+    assert p.entscheiden == [(kennung(0), "passt"), (kennung(1), "passt")]
+    assert p.abhaken == [(kennung(0), "key0")] and p.gepostet == [] and p.hinzufuegen == []
+
+
+def test_wartend_mit_dismissed_signal_wird_nochmal():
+    p = planen([V(0, "wartend"), V(1, "wartend")], RowboatStand(signale=[DISMISSED(T(0))]), BASIS)
+    assert p.entscheiden == [(kennung(0), "nochmal")]
+    assert [k for k, _ in p.hinzufuegen] == [kennung(1)]
+
+
+def test_durchgang_meldet_wartend_aus_dem_fach_ohne_neu_einzustellen():
+    db, rpc = FakeDb([V(0, "offen"), V(1, "wartend")]), FakeRpc(vorschlaege=[T(0), T(1)])
+    z = wb.durchgang(db, rpc)
+    assert ("video_vorschlag_gepostet", {"k": kennung(1), "t": T(1)}) in db.aufrufe
+    assert "todo:addSuggestions" not in rpc.kanaele() and z["eingestellt"] == 1
+
+
+# ---------- gepostet false ----------
+
+def test_gepostet_false_zieht_den_text_sofort_zurueck():
+    db, rpc = FakeDb([V(0, "wartend")], falsch={"video_vorschlag_gepostet"}), FakeRpc()
+    z = wb.durchgang(db, rpc)
+    assert ("todo:withdrawSuggestion", {"text": T(0)}) in rpc.aufrufe
+    assert z["eingestellt"] == 0 and z["zurueckgezogen"] == 1
+
+
+def test_gepostet_false_und_rueckzug_scheitert_naechster_durchgang_raeumt_auf(caplog):
+    db, rpc = FakeDb([V(0, "wartend")], falsch={"video_vorschlag_gepostet"}), FakeRpc(entfernt=False)
+    with caplog.at_level(logging.WARNING, logger="werkbank-bote"):
+        z = wb.durchgang(db, rpc)
+    assert z["zurueckgezogen"] == 0 and "naechste Durchgang" in caplog.text
+    # naechster Durchgang: Zeile ist nicht mehr lebend, der Text steht noch im Fach -> verwaist
+    db2, rpc2 = FakeDb([]), FakeRpc(vorschlaege=[T(0)])
+    z2 = wb.durchgang(db2, rpc2)
+    assert ("todo:withdrawSuggestion", {"text": T(0)}) in rpc2.aufrufe and z2["zurueckgezogen"] == 1
+
+
+def test_verwaister_vorschlag_wird_zurueckgezogen_lebende_nicht():
+    p = planen([V(0, "offen")], RowboatStand(vorschlaege=[T(0), T(5)]), BASIS)
+    assert p.verwaist == [(kennung(5), T(5))] and p.zurueckziehen == []
+
+
+def test_verlorener_offener_vorschlag_wird_nicht_als_waise_zurueckgezogen():
+    db, rpc = FakeDb([V(0, "offen")], falsch={"video_vorschlag_gepostet"}), FakeRpc()
+    z = wb.durchgang(db, rpc)
+    assert "todo:withdrawSuggestion" not in rpc.kanaele() and "video_vorschlag_gepostet" not in namen(db)
+    assert z["eingestellt"] == 1
+
+
+# ---------- Zaehler ----------
+
+def test_zaehler_zaehlen_nur_echte_aenderungen():
+    db = FakeDb([V(0, "zurueckziehen"), V(1, "angenommen")], falsch={"video_vorschlag_abgehakt"})
+    rpc = FakeRpc(vorschlaege=[T(0)])
+    z = wb.durchgang(db, rpc)
+    assert z == {"eingestellt": 0, "zurueckgezogen": 1, "abgehakt": 0, "entschieden": 0}
