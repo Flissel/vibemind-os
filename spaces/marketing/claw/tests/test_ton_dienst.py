@@ -418,3 +418,180 @@ def test_fehlgeschlagenes_laden_raeumt_auf(falsches_modell, monkeypatch, tmp_pat
     with pytest.raises(OSError):
         td._modell_laden()
     assert aufgeraeumt == [1] and td._modell is None
+
+
+# --- /satz (Video-Werkbank, 11.11.2026) ---------------------------------------------------------
+
+def _wav(rate=24000, frames=2400):
+    return td._pcm_zu_wav(b"\x01\x02" * frames, rate)
+
+
+def test_satz_pruefen_felder_und_grenzen(tmp_path, monkeypatch):
+    monkeypatch.setenv("TON_STIMMEN_ORDNER", str(tmp_path))
+    (tmp_path / "eigene-c.wav").write_bytes(b"x")
+    p = td.satz_pruefen({"text": " Hallo. ", "vorher": "Davor.", "nachher": "", "stimme": "eigene-c"})
+    assert p == {"text": "Hallo.", "vorher": "Davor.", "nachher": "", "sprache": "de",
+                 "probe": tmp_path / "eigene-c.wav", "engine": "auto"}
+    assert td.satz_pruefen({"text": "Hi"})["vorher"] == ""      # vorher/nachher duerfen fehlen
+    for schlecht in ({"text": ""}, {"text": "x" * 1001}, {"text": "Hi", "vorher": "x" * 1001},
+                     {"text": "Hi", "nachher": "x" * 1001}, {"text": "Hi", "vorher": 5},
+                     {"text": "Hi", "sprache": "xx"}, {"text": "Hi", "stimme": "../x"}):
+        with pytest.raises(td.Anfragefehler):
+            td.satz_pruefen(schlecht)
+    with pytest.raises(td.Anfragefehler):
+        td.satz_pruefen([])
+
+
+def test_satz_pruefen_engine_nur_auto_oder_chatterbox():
+    assert td.satz_pruefen({"text": "Hi", "engine": "chatterbox"})["engine"] == "chatterbox"
+    assert td.satz_pruefen({"text": "Hi", "engine": "auto"})["engine"] == "auto"
+    for schlecht in ("elevenlabs", "", None, 3):
+        with pytest.raises(td.Anfragefehler):
+            td.satz_pruefen({"text": "Hi", "engine": schlecht})
+
+
+def test_satz_elevenlabs_bekommt_nachbarsaetze(monkeypatch):
+    import io
+    import json
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "geheim")
+    monkeypatch.setenv("TON_ELEVENLABS_STIMMEN", '{"standard": "Abcdefgh12345678"}')
+    monkeypatch.setattr(td, "aussprache_laden", lambda *a: {})
+    rumpf = {}
+
+    class Antwort(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def oeffnen(anfrage, timeout):
+        rumpf.update(json.loads(anfrage.data))
+        return Antwort(b"\x00\x01" * 100)
+
+    wav = td.sprechen_elevenlabs("Zwei.", "de", "standard", oeffnen=oeffnen, vorher="Eins.", nachher="Drei.")
+    assert wav[:4] == b"RIFF"
+    assert rumpf["previous_text"] == "Eins." and rumpf["next_text"] == "Drei." and rumpf["text"] == "Zwei."
+    rumpf.clear()
+    td.sprechen_elevenlabs("Zwei.", "de", "standard", oeffnen=oeffnen)
+    assert "previous_text" not in rumpf and "next_text" not in rumpf   # leer -> gar nicht gesendet
+
+
+def test_satz_sprechen_reicht_kontext_an_elevenlabs_und_kuerzt_stille(monkeypatch):
+    monkeypatch.setenv("TON_ENGINE", "elevenlabs")
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "geheim")
+    gesehen = {}
+
+    def eleven(text, sprache, stimme, oeffnen=None, vorher="", nachher=""):
+        gesehen.update(text=text, stimme=stimme, vorher=vorher, nachher=nachher)
+        return _wav()
+
+    monkeypatch.setattr(td, "sprechen_elevenlabs", eleven)
+    monkeypatch.setattr(td, "_stille_gekuerzt", lambda wav: b"GEKUERZT")
+    p = td.satz_pruefen({"text": "Zwei.", "vorher": "Eins.", "nachher": "Drei."})
+    assert td.satz_sprechen(p) == (b"GEKUERZT", "elevenlabs")
+    assert gesehen == {"text": "Zwei.", "stimme": "standard", "vorher": "Eins.", "nachher": "Drei."}
+
+
+def test_satz_chatterbox_ohne_elevenlabs_aufruf(monkeypatch):
+    monkeypatch.setenv("TON_ENGINE", "elevenlabs")
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "geheim")
+    monkeypatch.setattr(td, "sprechen_elevenlabs", lambda *a, **k: pytest.fail("darf nicht gerufen werden"))
+    monkeypatch.setattr(td, "_sprechen_chatterbox", lambda *a, **k: _wav())
+    monkeypatch.setattr(td, "_stille_gekuerzt", lambda wav: wav)
+    wav, eng = td.satz_sprechen(td.satz_pruefen({"text": "Hi", "engine": "chatterbox"}))
+    assert eng == "chatterbox" and wav[:4] == b"RIFF"
+    monkeypatch.delenv("TON_ENGINE")
+    assert td.satz_sprechen(td.satz_pruefen({"text": "Hi"}))[1] == "chatterbox"   # auto ohne ElevenLabs
+
+
+def test_satz_ohne_stillen_rueckfall(monkeypatch):
+    """Faellt ElevenLabs aus, spricht /satz NICHT leise Chatterbox - der Client holt die Szene neu."""
+    monkeypatch.setenv("TON_ENGINE", "elevenlabs")
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "geheim")
+    monkeypatch.delenv("TON_ELEVENLABS_RUECKFALL", raising=False)
+
+    def kaputt(*a, **k):
+        raise td.ElevenLabsFehler("ElevenLabs HTTP 429")
+
+    monkeypatch.setattr(td, "sprechen_elevenlabs", kaputt)
+    monkeypatch.setattr(td, "_sprechen_chatterbox", lambda *a, **k: pytest.fail("kein stiller Rueckfall"))
+    with pytest.raises(td.ElevenLabsFehler):
+        td.satz_sprechen(td.satz_pruefen({"text": "Hi"}))
+
+
+def test_stille_kuerzen_folgt_dem_schalter(monkeypatch):
+    gesehen = []
+    monkeypatch.setattr(td, "anpassen", lambda wav, **kw: gesehen.append(kw) or b"AUS")
+    wav = _wav(rate=44100)
+    monkeypatch.setenv("TON_VOICEOVER_STILLE", "0")
+    assert td._stille_gekuerzt(wav) == wav and gesehen == []
+    monkeypatch.setenv("TON_VOICEOVER_STILLE", "1")
+    assert td._stille_gekuerzt(wav) == b"AUS"
+    assert gesehen == [{"sample_rate": 44100, "fit": False, "sekunden": 0.0}]
+
+
+def _server():
+    import threading
+    from http.server import ThreadingHTTPServer
+    server = ThreadingHTTPServer(("127.0.0.1", 0), td.Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def _post(server, pfad, nutzlast):
+    import json
+    import urllib.error
+    import urllib.request
+    anfrage = urllib.request.Request(f"http://127.0.0.1:{server.server_port}{pfad}",
+                                     data=json.dumps(nutzlast).encode("utf-8"), method="POST",
+                                     headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(anfrage, timeout=10) as r:
+            return r.status, dict(r.headers), r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, dict(e.headers), e.read()
+
+
+def test_post_satz_liefert_wav_mit_kopfzeilen_und_502_bei_elevenlabs_ausfall(monkeypatch):
+    server = _server()
+    try:
+        monkeypatch.setattr(td, "satz_sprechen", lambda p: (_wav(rate=24000, frames=12000), "chatterbox"))
+        status, kopf, rumpf = _post(server, "/satz", {"text": "Hallo."})
+        assert status == 200 and kopf["Content-Type"] == "audio/wav" and rumpf[:4] == b"RIFF"
+        assert kopf["X-Ton-Engine"] == "chatterbox" and kopf["X-Ton-Dauer-S"] == "0.500"
+
+        def kaputt(p):
+            raise td.ElevenLabsFehler("ElevenLabs HTTP 429 geheim")
+        monkeypatch.setattr(td, "satz_sprechen", kaputt)
+        status, kopf, rumpf = _post(server, "/satz", {"text": "Hallo."})
+        assert status == 502 and kopf["X-Ton-Engine-Fehler"] == "elevenlabs" and b"geheim" not in rumpf
+
+        status, _, _ = _post(server, "/satz", {"text": ""})
+        assert status == 422
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_sprechen_und_voiceover_unveraendert(monkeypatch):
+    """/sprechen faellt weiter still auf Chatterbox zurueck, /voiceover kuerzt weiter per anpassen()."""
+    server = _server()
+    try:
+        monkeypatch.setenv("TON_ENGINE", "elevenlabs")
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "geheim")
+        monkeypatch.delenv("TON_ELEVENLABS_RUECKFALL", raising=False)
+
+        def kaputt(*a, **k):
+            raise td.ElevenLabsFehler("aus")
+        monkeypatch.setattr(td, "sprechen_elevenlabs", kaputt)
+        monkeypatch.setattr(td, "_sprechen_chatterbox", lambda *a, **k: b"CHATTERBOX")
+        status, kopf, rumpf = _post(server, "/sprechen", {"text": "Hallo."})
+        assert status == 200 and rumpf == b"CHATTERBOX" and "X-Ton-Engine" not in kopf
+        monkeypatch.setattr(td, "anpassen", lambda wav, **kw: b"ANGEPASST")
+        status, _, rumpf = _post(server, "/voiceover", {"text": "Hallo.", "duration_frames": 30, "fps_num": 30,
+                                                       "fps_den": 1, "sample_rate": 24000})
+        assert status == 200 and rumpf == b"ANGEPASST"
+    finally:
+        server.shutdown()
+        server.server_close()

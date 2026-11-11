@@ -5,6 +5,9 @@ Laeuft in der eigenen Chatterbox-Umgebung (Torch + CUDA), NICHT im gemeinsamen .
 
     GET  /healthz   -> 200 ok (laedt das Modell nicht)
     POST /sprechen  {"text": "...", "sprache": "de", "stimme": "anna"}  -> audio/wav
+    POST /satz      {"text", "vorher"?, "nachher"?, "sprache"?, "stimme"?, "engine"?: auto|chatterbox}
+                    -> audio/wav, Kopf X-Ton-Engine, X-Ton-Dauer-S; ElevenLabs-Ausfall = 502 + X-Ton-Engine-Fehler
+                    (Video-Werkbank: Satz fuer Satz, kein stiller Rueckfall)
     POST /voiceover Lauras Sidecar-Vertrag (Video-Claw, 17.10.2026): {text, duration_frames,
                     fps_num, fps_den, sample_rate, language?, voice_id?, fit_to_slot?} -> WAV mono
                     16 Bit in sample_rate; fit_to_slot fuellt mit Stille auf bzw. kuerzt auf den Slot
@@ -385,14 +388,21 @@ def _pcm_zu_wav(pcm: bytes, rate: int) -> bytes:
     return puffer.getvalue()
 
 
-def sprechen_elevenlabs(text: str, sprache: str, stimme: str, oeffnen=None) -> bytes:
+def sprechen_elevenlabs(text: str, sprache: str, stimme: str, oeffnen=None,
+                        vorher: str = "", nachher: str = "") -> bytes:
     """Text -> WAV (mono, 16 Bit, 44,1 kHz) ueber die ElevenLabs-API. Der Schluessel geht nur in den
-    Kopf `xi-api-key`, nie in Log oder Fehlertext."""
+    Kopf `xi-api-key`, nie in Log oder Fehlertext. vorher/nachher (Nachbarsaetze, Video-Werkbank) gehen als
+    previous_text/next_text mit, damit die Satzmelodie traegt - nur wenn nicht leer."""
     import urllib.error
     import urllib.request
     voice = elevenlabs_stimme(stimme)
-    rumpf = json.dumps({"text": aussprache_anwenden(text, aussprache_laden()),
-                        "model_id": ELEVENLABS_MODELL, "language_code": sprache}).encode("utf-8")
+    felder = {"text": aussprache_anwenden(text, aussprache_laden()),
+              "model_id": ELEVENLABS_MODELL, "language_code": sprache}
+    if vorher:
+        felder["previous_text"] = vorher
+    if nachher:
+        felder["next_text"] = nachher
+    rumpf = json.dumps(felder).encode("utf-8")
     anfrage = urllib.request.Request(
         ELEVENLABS_URL.format(voice=voice, rate=ELEVENLABS_RATE), data=rumpf, method="POST",
         headers={"xi-api-key": os.environ.get("ELEVENLABS_API_KEY", "").strip(),
@@ -407,6 +417,55 @@ def sprechen_elevenlabs(text: str, sprache: str, stimme: str, oeffnen=None) -> b
     if not pcm:
         raise ElevenLabsFehler("ElevenLabs lieferte kein Audio")
     return _pcm_zu_wav(pcm, ELEVENLABS_RATE)
+
+
+def _wav_dauer_s(wav: bytes) -> float:
+    import wave
+    with wave.open(io.BytesIO(wav)) as w:
+        return w.getnframes() / w.getframerate()
+
+
+def _stille_gekuerzt(wav: bytes) -> bytes:
+    """STILLE_FILTER wie bei /voiceover (abschaltbar ueber TON_VOICEOVER_STILLE=0), Rate bleibt."""
+    if not _stille_kuerzen():
+        return wav
+    import wave
+    with wave.open(io.BytesIO(wav)) as w:
+        rate = w.getframerate()
+    return anpassen(wav, sample_rate=rate, fit=False, sekunden=0.0)
+
+
+def satz_pruefen(nutzlast) -> dict:
+    """/satz-Vertrag (Video-Werkbank): {text, vorher?, nachher?, sprache?, stimme?, engine?}. Antwort:
+    text, vorher, nachher, sprache, probe, engine ('auto' | 'chatterbox'). Ohne Torch pruefbar."""
+    text, sprache, probe = anfrage_pruefen(nutzlast)
+    nachbarn = {}
+    for feld in ("vorher", "nachher"):
+        wert = nutzlast.get(feld, "")
+        if wert is None:
+            wert = ""
+        if not isinstance(wert, str) or len(wert) > TEXT_MAX:
+            raise Anfragefehler(f"{feld}: hoechstens {TEXT_MAX} Zeichen")
+        nachbarn[feld] = wert.strip()
+    engine_wahl = nutzlast.get("engine", "auto")
+    if engine_wahl not in ("auto", "chatterbox"):
+        raise Anfragefehler("engine: auto oder chatterbox")
+    return {"text": text, "vorher": nachbarn["vorher"], "nachher": nachbarn["nachher"], "sprache": sprache,
+            "probe": probe, "engine": engine_wahl}
+
+
+def satz_sprechen(p: dict) -> tuple[bytes, str]:
+    """Ein Satz -> (wav, engine). 'auto' nimmt engine(). ElevenLabsFehler wird NICHT aufgefangen: ein
+    stiller Rueckfall liesse eine Szene mit zwei Stimmen entstehen - der Client holt dann die ganze Szene
+    lokal. Danach kuerzt STILLE_FILTER die Stille."""
+    wahl = engine() if p["engine"] == "auto" else p["engine"]
+    if wahl == "elevenlabs":
+        wav = sprechen_elevenlabs(p["text"], p["sprache"], p["probe"].stem if p["probe"] is not None else "standard",
+                                  vorher=p["vorher"], nachher=p["nachher"])
+    else:
+        wahl = "chatterbox"
+        wav = _sprechen_chatterbox(p["text"], p["sprache"], p["probe"])
+    return _stille_gekuerzt(wav), wahl
 
 
 def sprechen(text: str, sprache: str, probe: Path | None, regler: dict[str, float] | None = None) -> bytes:
@@ -444,9 +503,11 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         LOG.info("%s - %s", self.address_string(), fmt % args)
 
-    def _antwort(self, status: int, rumpf: bytes, typ: str) -> None:
+    def _antwort(self, status: int, rumpf: bytes, typ: str, kopf: dict | None = None) -> None:
         self.send_response(status)
         self.send_header("Content-Type", typ)
+        for name, wert in (kopf or {}).items():
+            self.send_header(name, wert)
         self.send_header("Content-Length", str(len(rumpf)))
         self.end_headers()
         self.wfile.write(rumpf)
@@ -465,10 +526,34 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._antwort(404, b"nicht gefunden", "text/plain")
 
+    def _satz(self) -> None:
+        """POST /satz: ein Satz mit Nachbarsaetzen -> audio/wav + X-Ton-Engine, X-Ton-Dauer-S. Faellt
+        ElevenLabs aus: 502 + X-Ton-Engine-Fehler (kein stiller Rueckfall, s. satz_sprechen)."""
+        try:
+            laenge = min(int(self.headers.get("Content-Length") or 0), 64 * 1024)
+            p = satz_pruefen(json.loads(self.rfile.read(laenge) or b"{}"))
+        except (Anfragefehler, ValueError) as e:
+            self._antwort(422, str(e).encode("utf-8"), "text/plain; charset=utf-8")
+            return
+        try:
+            wav, wahl = satz_sprechen(p)
+            self._antwort(200, wav, "audio/wav",
+                          {"X-Ton-Engine": wahl, "X-Ton-Dauer-S": f"{_wav_dauer_s(wav):.3f}"})
+        except ElevenLabsFehler as e:
+            LOG.warning("ElevenLabs gescheitert (%s)", e)
+            self._antwort(502, b"ElevenLabs nicht verfuegbar", "text/plain; charset=utf-8",
+                          {"X-Ton-Engine-Fehler": "elevenlabs"})
+        except Exception as e:  # noqa: BLE001 - Modell/GPU-Fehler als 500 mit Typ
+            LOG.exception("Satz sprechen fehlgeschlagen")
+            self._antwort(500, type(e).__name__.encode("utf-8"), "text/plain; charset=utf-8")
+
     def do_POST(self):  # noqa: N802
         if self._abgewiesen():
             return
         pfad = self.path.split("?", 1)[0]
+        if pfad == "/satz":
+            self._satz()
+            return
         if pfad not in ("/sprechen", "/voiceover"):
             self._antwort(404, b"nicht gefunden", "text/plain")
             return
