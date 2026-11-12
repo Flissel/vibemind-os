@@ -14,7 +14,8 @@ import pytest
 TOKEN = "beispiel-token-nur-fuer-tests"
 TOKEN_HASH = hashlib.sha256(TOKEN.encode("utf-8")).hexdigest()
 
-# Alle Tabellen mit RLS (alle ausser migration und person).
+# Mandanten-Tabellen mit RLS: ohne Kontext 0 Zeilen. person hat RLS, ist aber
+# ohne Kontext lesbar (Login), migration hat keine RLS.
 RLS_TABELLEN = (
     "firma", "mitgliedschaft", "event", "kontakt", "orga_team", "teilnehmende",
     "aufgabe_kategorie", "aufgabe", "ablauf", "budget_posten", "verlauf", "einladung",
@@ -246,19 +247,108 @@ def test_firma_anlegen_nur_als_betreiber(welt, db_app):
     )
 
 
-def test_person_ohne_rls_aber_ohne_betreiber_recht(welt, db_app):
+def test_person_lesbar_ohne_kontext_aber_nicht_loeschbar(welt, db_app):
     conn = db_app()
-    # Brief: person hat keine RLS (Login sucht per Mail vor jedem Kontext).
-    assert _anzahl(conn, "person") == 1
-    # Erlaubte Spalten lassen sich aendern ...
-    conn.execute("update event.person set sitzungs_version = sitzungs_version + 1")
-    # ... das Betreiber-Flag nicht, und loeschen geht nicht.
-    with pytest.raises(psycopg.errors.InsufficientPrivilege):
-        conn.execute("update event.person set betreiber = true")
+    # Login sucht per Mail und prueft das Cookie, bevor es einen Kontext gibt.
+    assert conn.execute(
+        "select id from event.person where lower(mail) = %s", ("anna@example.org",)
+    ).fetchone()["id"] == welt["person"]
     with pytest.raises(psycopg.errors.InsufficientPrivilege):
         conn.execute("delete from event.person")
     with pytest.raises(psycopg.errors.InsufficientPrivilege):
         conn.execute("select * from event.migration")
+
+
+def test_person_anlegen_nur_mail_und_name(welt, db_app, db_admin):
+    conn = db_app()
+    # Positivkontrolle: (mail, name) geht ohne Kontext.
+    neu = conn.execute(
+        "insert into event.person (mail, name) values ('neu@example.org', 'Nora Beispiel')"
+        " returning id"
+    ).fetchone()["id"]
+    assert db_admin.execute(
+        "select betreiber, passwort_hash from event.person where id = %s", (neu,)
+    ).fetchone() == {"betreiber": False, "passwort_hash": None}
+    for betreiber_conn in (conn, db_app(betreiber=True)):
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            betreiber_conn.execute(
+                "insert into event.person (mail, name, betreiber)"
+                " values ('chef@example.org', 'Chef Beispiel', true)"
+            )
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        conn.execute(
+            "insert into event.person (mail, name, passwort_hash)"
+            " values ('hash@example.org', 'Hanna Beispiel', 'x')"
+        )
+    # Zweites Netz hinter dem Spaltenrecht: die Policy verbietet betreiber = true.
+    assert db_admin.execute(
+        "select with_check from pg_policies where schemaname = 'event'"
+        " and tablename = 'person' and policyname = 'person_anlegen'"
+    ).fetchone()["with_check"] == "(NOT betreiber)"
+
+
+def test_person_aendern_nur_selbst_oder_betreiber(welt, db_app, db_admin):
+    anna = welt["person"]
+    chef = db_admin.execute(
+        "insert into event.person (mail, name, passwort_hash, betreiber)"
+        " values ('chef@example.org', 'Chef Beispiel', 'alt', true) returning id"
+    ).fetchone()["id"]
+
+    def hash_setzen(conn, ziel, wert):
+        return conn.execute(
+            "update event.person set passwort_hash = %s where id = %s", (wert, ziel)
+        ).rowcount
+
+    selbst = db_app(person=anna)
+    assert hash_setzen(selbst, chef, "gekapert") == 0
+    assert hash_setzen(selbst, anna, "anna-neu") == 1
+    assert hash_setzen(db_app(), anna, "ohne-kontext") == 0
+    assert hash_setzen(db_app(), chef, "ohne-kontext") == 0
+    assert hash_setzen(db_app(firmen=[welt["a"], welt["b"]]), chef, "mandant") == 0
+    assert hash_setzen(db_app(betreiber=True), chef, "chef-neu") == 1
+    hashes = {
+        z["id"]: z["passwort_hash"]
+        for z in db_admin.execute("select id, passwort_hash from event.person").fetchall()
+    }
+    assert hashes == {anna: "anna-neu", chef: "chef-neu"}
+    # Betreiber-Flag bleibt fuer event_app unaenderbar, auch fuer die eigene Zeile.
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        selbst.execute("update event.person set betreiber = true where id = %s", (anna,))
+
+
+def test_firma_aendern_und_loeschen_nur_betreiber(welt, db_app, db_admin):
+    mandant = db_app(firmen=[welt["a"]])
+    # Positivkontrolle: die eigene Firma ist sichtbar.
+    assert [z["id"] for z in mandant.execute("select id from event.firma").fetchall()] == [
+        welt["a"]
+    ]
+    assert mandant.execute(
+        "update event.firma set name = 'Umbenannt GmbH' where id = %s", (welt["a"],)
+    ).rowcount == 0
+    assert mandant.execute("delete from event.firma where id = %s", (welt["a"],)).rowcount == 0
+
+    leer = db_admin.execute(
+        "insert into event.firma (name, kurz) values ('Leer GmbH', 'leer') returning id"
+    ).fetchone()["id"]
+    betreiber = db_app(betreiber=True)
+    assert betreiber.execute(
+        "update event.firma set name = 'Beispiel Neu GmbH' where id = %s", (welt["a"],)
+    ).rowcount == 1
+    assert betreiber.execute("delete from event.firma where id = %s", (leer,)).rowcount == 1
+    assert db_admin.execute(
+        "select name from event.firma where id = %s", (welt["a"],)
+    ).fetchone()["name"] == "Beispiel Neu GmbH"
+
+
+def test_verlauf_nicht_in_fremde_firma(welt, db_app):
+    conn = db_app(firmen=[welt["a"]])
+    eintrag = (
+        "insert into event.verlauf (event_id, firma_id, actor, quelle, baustein, aktion)"
+        " values (%s, %s, 'test', 'test', 'aufgabe', 'angelegt')"
+    )
+    conn.execute(eintrag, (welt["e1"], welt["a"]))
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        conn.execute(eintrag, (welt["eb"], welt["b"]))
 
 
 def test_mitgliedschaft_eigene_sichtbar_aber_nicht_selbst_anlegbar(welt, db_app):
@@ -306,4 +396,4 @@ def test_public_hat_keine_rechte(db_admin):
         " where n.nspname = 'event' and c.relkind = 'r' and not c.relrowsecurity"
         " order by c.relname"
     ).fetchall()
-    assert [z["relname"] for z in ohne_rls] == ["migration", "person"]
+    assert [z["relname"] for z in ohne_rls] == ["migration"]

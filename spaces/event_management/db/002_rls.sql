@@ -65,8 +65,9 @@ as $$
     where e.token_hash = p_hash
 $$;
 
--- RLS einschalten (alle Tabellen ausser migration und person) ------------------
+-- RLS einschalten (alle Tabellen ausser migration) -----------------------------
 
+alter table event.person enable row level security;
 alter table event.firma enable row level security;
 alter table event.mitgliedschaft enable row level security;
 alter table event.event enable row level security;
@@ -84,15 +85,25 @@ alter table event.verlauf enable row level security;
 -- Jede schreibende Policy hat ein "with check": eine Zeile laesst sich weder in
 -- eine fremde Firma anlegen noch per update dorthin verschieben.
 
--- firma: lesen/aendern/loeschen nur eigene, anlegen nur Betreiber.
+-- person: lesen ohne Kontext (Login per Mail, Cookie-Pruefung); anlegen nie als
+-- Betreiber; aendern nur die eigene Zeile oder als Betreiber. Kein Loeschen.
+create policy person_lesen on event.person for select
+    using (true);
+create policy person_anlegen on event.person for insert
+    with check (not betreiber);
+create policy person_aendern on event.person for update
+    using (id = event.person_id() or event.ist_betreiber())
+    with check (id = event.person_id() or event.ist_betreiber());
+
+-- firma: lesen nur eigene; anlegen, aendern und loeschen nur Betreiber.
 create policy firma_lesen on event.firma for select
     using (event.mandant_ok(id));
 create policy firma_anlegen on event.firma for insert
     with check (event.ist_betreiber());
 create policy firma_aendern on event.firma for update
-    using (event.mandant_ok(id)) with check (event.mandant_ok(id));
+    using (event.ist_betreiber()) with check (event.ist_betreiber());
 create policy firma_loeschen on event.firma for delete
-    using (event.mandant_ok(id));
+    using (event.ist_betreiber());
 
 -- mitgliedschaft: die eigene Person sieht ihre Mitgliedschaften, schreiben nur mandant_ok.
 create policy mitgliedschaft_lesen on event.mitgliedschaft for select
@@ -158,8 +169,10 @@ grant select, insert, update, delete on
 -- verlauf ist append-only.
 grant select, insert on event.verlauf to event_app;
 
--- person: ohne RLS; das Betreiber-Flag ist nicht aenderbar, loeschen nicht erlaubt.
-grant select, insert on event.person to event_app;
+-- person: anlegen nur mit (mail, name), passwort_hash kommt per update; das
+-- Betreiber-Flag ist fuer event_app weder setzbar noch aenderbar; kein Loeschen.
+grant select on event.person to event_app;
+grant insert (mail, name) on event.person to event_app;
 grant update (name, passwort_hash, sitzungs_version, aktiv) on event.person to event_app;
 
 grant usage on all sequences in schema event to event_app;
