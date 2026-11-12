@@ -103,7 +103,9 @@ POSITIV = {
         "Zeig mir das Budget vom Event",
     ],
     "event_do": [
-        "Trag beim Event ein, dass die Becher erledigt sind",
+        # Ein Auftrag braucht Schreibverb UND Orga-Objekt; "die Becher" allein
+        # ist keins, darum steht hier "die Aufgabe Becher".
+        "Trag beim Festival ein, dass die Aufgabe Becher erledigt ist",
         "Lege für das Festival eine neue Aufgabe an",
         "Weise beim Festival den Helfern die Aufgabe Becher zu",
     ],
@@ -119,7 +121,27 @@ NEGATIV = [
     "Trag das Event in meinen Kalender ein",
     "Ändere die Veranstaltung im Kalender",
     "Welche Events stehen in meinem Kalender?",
+    # Gesamtpruefung C1: Saetze anderer Spaces, die event_do frueher frass.
+    "Erstelle eine neue Bubble zum Festival",
+    "Erstelle ein Bubble-Projekt fürs Festival",
+    "Erstelle einen Instagram-Post zum Festival",
+    "Erstelle einen Collage-Newsletter zum Festival",
+    "Erstelle einen Podcast über das Festival",
+    "erstelle ein video über das festival",
+    "Erstelle eine Idee zum Festival",
+    "Lege einen Lead für das Festival an",
+    "Erstelle ein Orga-Chart für mein Team",
+    "Ändere die Orga meines Projekts",
+    "Ist beim Festival schon alles erledigt?",  # Frage, kein Auftrag
+    "Plane einen Post zum Event mit dem Team",
 ]
+
+# Gemessen am Basisstand (capabilities.yaml ohne event_*-Eintraege), nicht geraten.
+BESTEHENDE_ZIELE = {
+    "Erstelle eine neue Bubble zum Festival": "bubble_create",
+    "Erstelle ein Bubble-Projekt fürs Festival": "bubble_create",
+    "Plane einen Post zum Event mit dem Team": "som_plan",
+}
 
 
 @pytest.mark.parametrize("name", ["event_ask", "event_do"])
@@ -146,3 +168,16 @@ def test_router_leitet_positive_saetze_an_event_capability():
         treffer = router.route(satz)
         name = treffer.capability if treffer else None
         assert not (name or "").startswith("event_"), f"{satz!r} landet auf {name}"
+
+
+def test_bestehende_capabilities_behalten_ihre_saetze():
+    router = CapabilityRouter(CAPABILITIES)
+    for satz, ziel in BESTEHENDE_ZIELE.items():
+        treffer = router.route(satz)
+        assert treffer is not None and treffer.capability == ziel, (satz, treffer)
+
+
+def test_event_eintraege_stehen_am_ende():
+    """Erster Regex-Treffer gewinnt: am Ende verdraengen sie keine bestehende Capability."""
+    namen = [c["capability"] for c in yaml.safe_load(CAPABILITIES.read_text(encoding="utf-8"))]
+    assert namen[-2:] == ["event_do", "event_ask"]
