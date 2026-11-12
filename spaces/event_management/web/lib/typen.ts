@@ -127,8 +127,8 @@ export interface EventDetail extends EventBasis {
 
 /** `GET /api/bausteine`: Spaltentypen sind `text|ganzzahl|datumzeit|auswahl:a,b|url|kontakt|ref:<eintrag>`. */
 export interface BausteinInfo {
-  /** `null`, wenn der Eintrag selbst der Baustein ist (z. B. `aufgaben`); sonst der Eltern-Baustein. */
-  baustein: string | null
+  /** Zugehöriger Baustein (der Eintragsname selbst, z. B. `aufgaben`, oder der Eltern-Baustein). */
+  baustein: string
   felder: Record<string, string>
   pflicht: string[]
   reihenfolge: string[]

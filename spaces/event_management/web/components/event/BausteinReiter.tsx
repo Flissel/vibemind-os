@@ -27,11 +27,10 @@ interface Props {
 /** Abschnittsnamen für Einträge, die nicht selbst der Baustein sind. */
 const EINTRAG_NAMEN: Record<string, string> = { aufgaben_kategorien: 'Kategorien' }
 
-/** Einträge eines Bausteins: `info.baustein` nennt den Eltern-Baustein, `null` heißt „der Eintrag
- *  ist selbst der Baustein". Der gleichnamige Eintrag steht zuerst. */
+/** Einträge eines Bausteins (`info.baustein`); der gleichnamige Eintrag steht zuerst. */
 function eintraegeVon(verzeichnis: BausteineKatalog, baustein: string): string[] {
   const namen = Object.entries(verzeichnis)
-    .filter(([name, info]) => (info.baustein ?? name) === baustein)
+    .filter(([, info]) => info.baustein === baustein)
     .map(([name]) => name)
   return namen.sort((a, b) => Number(b === baustein) - Number(a === baustein))
 }
@@ -205,6 +204,7 @@ export function BausteinReiter({ eventId, firmaId, baustein, begriffe, verzeichn
                     <td className="whitespace-nowrap px-4 py-2 text-right">
                       <button
                         type="button"
+                        aria-label={`Bearbeiten ${refName(z)}`}
                         onClick={() => setFormular({ eintrag, zeile: z })}
                         className="mr-3 text-sm font-medium text-gray-700 hover:text-gray-900"
                       >
@@ -212,6 +212,7 @@ export function BausteinReiter({ eventId, firmaId, baustein, begriffe, verzeichn
                       </button>
                       <button
                         type="button"
+                        aria-label={`Löschen ${refName(z)}`}
                         onClick={() => setLoeschen({ eintrag, zeile: z })}
                         className="text-sm font-medium text-red-600 hover:text-red-800"
                       >

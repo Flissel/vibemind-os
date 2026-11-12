@@ -61,8 +61,8 @@ function umwandeln(typ: string, spalte: string, text: string): unknown {
     return cent
   }
   if (typ === 'ganzzahl') {
-    const zahl = Number(text)
-    if (!Number.isInteger(zahl) || zahl < 0) throw new Error(`${name}: bitte eine ganze Zahl ab 0 eingeben`)
+    const zahl = /^\d+$/.test(text) ? Number(text) : NaN
+    if (!Number.isSafeInteger(zahl)) throw new Error(`${name}: bitte eine ganze Zahl ab 0 eingeben`)
     return zahl
   }
   if (typ === 'datumzeit') {

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BausteinReiter } from '@/components/event/BausteinReiter'
@@ -7,10 +7,10 @@ import { formatEuro, parseEuro } from '@/lib/euro'
 import type { BausteineKatalog, Kontakt, Zeile } from '@/lib/typen'
 
 // Antwortform von GET /api/bausteine, erzeugt aus system/bausteine.py REGISTRY
-// (`baustein` ist dort null, solange der Eintrag selbst der Baustein ist).
+// (`baustein` = `t.baustein or t.name`, also nie null).
 const VERZEICHNIS: BausteineKatalog = {
   aufgaben: {
-    baustein: null,
+    baustein: 'aufgaben',
     felder: {
       titel: 'text',
       beschreibung: 'text',
@@ -29,13 +29,13 @@ const VERZEICHNIS: BausteineKatalog = {
     reihenfolge: ['name'],
   },
   orga_team: {
-    baustein: null,
+    baustein: 'orga_team',
     felder: { kontakt_id: 'kontakt', rolle: 'text' },
     pflicht: ['kontakt_id'],
     reihenfolge: ['kontakt_id', 'rolle'],
   },
   budget: {
-    baustein: null,
+    baustein: 'budget',
     felder: {
       titel: 'text',
       art: 'auswahl:kosten,einnahme',
@@ -155,6 +155,33 @@ describe('BausteinReiter', () => {
     })
   })
 
+  it('datetime-local geht als Berliner Wandzeit ohne Offset an die API (anlegen und ändern)', async () => {
+    const u = userEvent.setup()
+    zeige('aufgaben')
+    const zeile = (await screen.findByText('Halle buchen')).closest('tr') as HTMLElement
+    await u.click(screen.getAllByRole('button', { name: '+ Hinzufügen' })[0] as HTMLElement)
+    await u.type(screen.getByLabelText(/^Titel/), 'Catering')
+    fireEvent.change(screen.getByLabelText(/^Faellig/), { target: { value: '2026-12-01T09:30' } })
+    await u.click(screen.getByRole('button', { name: 'Speichern' }))
+    await waitFor(() =>
+      expect(senden).toHaveBeenCalledWith('POST', '/api/events/e1/b/aufgaben', {
+        titel: 'Catering',
+        faellig: '2026-12-01T09:30',
+      }),
+    )
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Speichern' })).toBeNull())
+    senden.mockClear()
+    await u.click(within(zeile).getByRole('button', { name: 'Bearbeiten Halle buchen' }))
+    expect((screen.getByLabelText(/^Faellig/) as HTMLInputElement).value).toBe('2026-12-01T09:30')
+    fireEvent.change(screen.getByLabelText(/^Faellig/), { target: { value: '2026-12-02T18:45' } })
+    await u.click(screen.getByRole('button', { name: 'Speichern' }))
+    await waitFor(() =>
+      expect(senden).toHaveBeenCalledWith('PATCH', '/api/events/e1/b/aufgaben/a1', {
+        faellig: '2026-12-02T18:45',
+      }),
+    )
+  })
+
   it('Budget: 12,50 wird 1250, 0,1 wird 10', async () => {
     const u = userEvent.setup()
     zeige('budget')
@@ -224,7 +251,7 @@ describe('BausteinReiter', () => {
     const u = userEvent.setup()
     zeige('budget')
     const zeile = (await screen.findByText('Saalmiete')).closest('tr') as HTMLElement
-    await u.click(within(zeile).getByRole('button', { name: 'Bearbeiten' }))
+    await u.click(within(zeile).getByRole('button', { name: /^Bearbeiten/ }))
     const betrag = screen.getByLabelText(/^Betrag/) as HTMLInputElement
     expect(betrag.value).toBe('1234,50')
     await u.clear(betrag)
@@ -239,7 +266,7 @@ describe('BausteinReiter', () => {
     const u = userEvent.setup()
     zeige('budget')
     const zeile = (await screen.findByText('Saalmiete')).closest('tr') as HTMLElement
-    await u.click(within(zeile).getByRole('button', { name: 'Löschen' }))
+    await u.click(within(zeile).getByRole('button', { name: /^Löschen/ }))
     expect(senden).not.toHaveBeenCalled()
     const dialog = screen.getByRole('dialog')
     await u.click(within(dialog).getByRole('button', { name: 'Löschen' }))
