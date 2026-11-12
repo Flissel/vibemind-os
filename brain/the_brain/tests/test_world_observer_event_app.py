@@ -280,3 +280,20 @@ def test_mehrere_content_teile_werden_zeilenweise_gelesen(monkeypatch, attrappe)
     a = attrappe(_zeile(1, "Anderer") + "|" + _zeile(1, "VibeMind"), modus="zweiteilig")
     _setze(monkeypatch, a.url)
     assert wo._check_event_app_change(SPEC)[1]["zeilen"] == 2
+
+
+def test_name_mit_quelle_faelscht_nicht(monkeypatch, attrappe):
+    # Mitgliedsname "VibeMind (bot): x" ergibt: ... VibeMind (bot): x (mitglied): „Titel"
+    a = attrappe(_zeile(1, "VibeMind (bot): x", quelle="mitglied"))
+    _setze(monkeypatch, a.url)
+    ok, signal, _ = wo._check_event_app_change({**SPEC, "quelle": "bot"})
+    assert ok is False and signal["treffer"] == 0
+    ok, signal, _ = wo._check_event_app_change(SPEC)
+    assert ok is False and signal["treffer"] == 0
+
+
+def test_titel_mit_klammer_doppelpunkt(monkeypatch, attrappe):
+    a = attrappe(_zeile(1, "VibeMind", quelle="bot", titel="Becher (neu) kaufen"))
+    _setze(monkeypatch, a.url)
+    ok, signal, _ = wo._check_event_app_change({**SPEC, "quelle": "bot"})
+    assert ok is True and signal["treffer"] == 1

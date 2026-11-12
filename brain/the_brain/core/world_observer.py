@@ -584,7 +584,7 @@ def _check_sqlite_row(spec: Dict[str, Any]):
 # --- event_app_change: Wahrheitspruefung gegen die Event-App (MCP) -----------
 # list_recent_changes liefert TEXT, je Zeile:
 #   - YYYY-MM-DD HH:MM · <actor> (<quelle>): „<titel>" ...
-_EVENT_ZEILE = re.compile(r"^- (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) · (.+?) \(([^)]*)\):")
+_EVENT_ZEILE = re.compile(r"^- (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) · (.+) \(([^()]*)\): „")
 # Stempel sind nur minutengenau; so viel Spielraum an beiden Fensterraendern.
 _EVENT_TOLERANZ_S = 120
 
@@ -614,7 +614,9 @@ def _event_antwort_lesen(r):
 #   Namen; Titel mit Zeilenumbruch und nachgebauter Zeile). Es gibt keinen Schutz
 #   gegen gefaelschte Titel oder Mitgliedsnamen.
 # - Milderung: optionaler spec-Schluessel `quelle`; ist er gesetzt, muss die
-#   Quelle in Klammern exakt passen. Das Ergebnis ist ein Beleg, keine
+#   Quelle in Klammern exakt passen. Die Zeile wird an der LETZTEN Stelle
+#   " (<quelle>): „" verankert (rechte Seite, von der App gesetzt); ein Titel mit
+#   Zeilenumbruch und nachgebauter Zeile bleibt die bekannte Grenze. Das Ergebnis ist ein Beleg, keine
 #   Autorisierung - darum bleibt on_fail "report".
 # - Sommerzeit: Stempel werden mit fold=0 gelesen; in der doppelten Herbststunde
 #   gilt die erste Lesart, die zweite wird hingenommen.
