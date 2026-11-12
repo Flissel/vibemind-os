@@ -86,3 +86,17 @@ describe('SchemaFeld', () => {
     expect(screen.getByLabelText('Thema *')).toBeTruthy()
   })
 })
+
+describe('SchemaFeld zahl: Rohtext', () => {
+  it('hält den Rohtext lokal; leer = undefined, sonst Zahl', () => {
+    const aendern = vi.fn()
+    render(<SchemaFeld feld={feld({ typ: 'zahl', beschriftung: 'Z' })} wert={undefined} aendern={aendern} />)
+    const el = screen.getByLabelText('Z') as HTMLInputElement
+    fireEvent.change(el, { target: { value: '-3' } })
+    expect(aendern).toHaveBeenLastCalledWith(-3)
+    expect(el.value).toBe('-3')
+    fireEvent.change(el, { target: { value: '' } })
+    expect(aendern).toHaveBeenLastCalledWith(undefined)
+    expect(el.value).toBe('')
+  })
+})

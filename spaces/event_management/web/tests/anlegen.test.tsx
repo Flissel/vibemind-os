@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import EventNeu from '@/app/events/neu/page'
 import { ApiFehler, api } from '@/lib/api'
+import { KERN } from '@/lib/begriffe'
 import type { Ich, Kategorie, WirksamesSchema } from '@/lib/typen'
 
 const push = vi.fn<(pfad: string) => void>()
@@ -17,7 +18,6 @@ const LEITUNG: Ich = {
 }
 const MITGLIED: Ich = { ...LEITUNG, rechte: { event_anlegen: [], verwalten: [] } }
 
-const KERN = ['aufgaben', 'orga_team', 'teilnehmende', 'ablauf', 'budget', 'nachrichten', 'verlauf']
 const KATEGORIEN: Kategorie[] = [
   ['festival', 'Festival'],
   ['hackathon', 'Hackathon'],
@@ -35,7 +35,7 @@ function schema(id: string, o: Partial<WirksamesSchema> = {}): WirksamesSchema {
     kategorie: id,
     name: KATEGORIEN.find((k) => k.id === id)?.name ?? id,
     kette: [id, 'basis'],
-    bausteine: KERN,
+    bausteine: [...KERN],
     felder: [],
     begriffe: {},
     eckdaten_pflicht: [],
@@ -186,7 +186,9 @@ describe('Event anlegen', () => {
     fireEvent.click(weiter())
     await userEvent.click(screen.getByRole('button', { name: 'Event anlegen' }))
     expect((await screen.findByRole('alert')).textContent).toContain("Eckdatum 'ort_link' ist Pflicht")
-    expect(screen.getByLabelText(/^Name/)).toBeTruthy()
+    expect((screen.getByLabelText(/^Name/) as HTMLInputElement).value).toBe('Sommerfest')
+    expect((screen.getByLabelText(/^Beginn/) as HTMLInputElement).value).toBe('2026-12-01T18:00')
+    expect((screen.getByLabelText(/^Ende/) as HTMLInputElement).value).toBe('2026-12-01T20:00')
     expect(push).not.toHaveBeenCalled()
   })
 

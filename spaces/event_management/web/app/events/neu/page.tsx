@@ -7,13 +7,10 @@ import { useIch } from '@/components/IchKontext'
 import { Meldung } from '@/components/Meldung'
 import { SchemaFeld } from '@/components/formular/SchemaFeld'
 import { api } from '@/lib/api'
-import { bausteinName } from '@/lib/begriffe'
+import { KERN, bausteinName } from '@/lib/begriffe'
 import { darfAnlegen } from '@/lib/rechte'
 import type { EventBasis, Feld, Firma, Kategorie, WirksamesSchema } from '@/lib/typen'
 import { ausEingabe } from '@/lib/zeit'
-
-// Kern aus system/bausteine.py; jeder andere Baustein eines Schemas ist ein Zusatz.
-const KERN = ['aufgaben', 'orga_team', 'teilnehmende', 'ablauf', 'budget', 'nachrichten', 'verlauf']
 
 const EINGABE =
   'w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-gray-900 focus:outline-none'
@@ -81,14 +78,17 @@ function Anlegen() {
     let aktiv = true
     async function laden() {
       const liste = await api.holen<Kategorie[]>('/api/kategorien')
-      const paare = await Promise.all(
-        liste.map(
-          async (k) =>
-            [k.id, await api.holen<WirksamesSchema>(`/api/kategorien/${k.id}/schema`)] as const,
-        ),
+      // Ein fehlgeschlagenes Schema lässt nur die Zusätze der Karte weg.
+      const ergebnisse = await Promise.allSettled(
+        liste.map((k) => api.holen<WirksamesSchema>(`/api/kategorien/${k.id}/schema`)),
       )
       if (!aktiv) return
-      setSchemata(Object.fromEntries(paare))
+      const geladen: Record<string, WirksamesSchema> = {}
+      ergebnisse.forEach((r, i) => {
+        const k = liste[i]
+        if (k && r.status === 'fulfilled') geladen[k.id] = r.value
+      })
+      setSchemata(geladen)
       setKategorien(liste)
     }
     laden().catch((e: unknown) => {

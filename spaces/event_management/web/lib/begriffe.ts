@@ -1,6 +1,17 @@
 // Deutsche Standardnamen der Bausteine (KERN + ZUSAETZE aus system/bausteine.py).
 // Anzeige = schema.begriffe[b] ?? begriffe[b] ?? b. tests/begriffe.test.ts hält die
 // Schlüssel gegen bausteine.py im Gleichschritt.
+/** Kern-Bausteine jeder Kategorie (system/bausteine.py KERN); der Rest sind Zusätze. */
+export const KERN: readonly string[] = [
+  'aufgaben',
+  'orga_team',
+  'teilnehmende',
+  'ablauf',
+  'budget',
+  'nachrichten',
+  'verlauf',
+]
+
 export const begriffe: Readonly<Record<string, string>> = {
   aufgaben: 'Aufgaben',
   orga_team: 'Orga-Team',

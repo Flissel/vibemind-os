@@ -1,5 +1,6 @@
 'use client'
 
+import { useState } from 'react'
 import type { Feld } from '@/lib/typen'
 
 interface Props {
@@ -19,6 +20,27 @@ function alsText(wert: unknown): string {
 
 function leerAlsNichtGesetzt(text: string): string | undefined {
   return text === '' ? undefined : text
+}
+
+/** Zahlenfeld mit eigenem Rohtext, damit Zwischenstände wie „-" beim Tippen bleiben. */
+function ZahlEingabe({ id, wert, aendern }: { id: string; wert: unknown; aendern: Props['aendern'] }) {
+  const [roh, setRoh] = useState(alsText(wert))
+  // Wert von außen geändert (z. B. Vorgabe): Rohtext nachziehen, sonst den Tippstand lassen.
+  const anzeige = typeof wert === 'number' && Number(roh) !== wert ? String(wert) : roh
+  return (
+    <input
+      id={id}
+      type="number"
+      value={anzeige}
+      onChange={(e) => {
+        const text = e.target.value
+        setRoh(text)
+        const zahl = e.target.valueAsNumber
+        aendern(text === '' || Number.isNaN(zahl) ? undefined : zahl)
+      }}
+      className={EINGABE}
+    />
+  )
 }
 
 /** Eine Eingabe für ein Schema-Feld (`Feld.typ`). Leere Eingaben melden `undefined`;
@@ -72,18 +94,7 @@ export function SchemaFeld({ feld, wert, aendern }: Props) {
       </select>
     )
   } else if (feld.typ === 'zahl') {
-    eingabe = (
-      <input
-        id={id}
-        type="number"
-        value={alsText(wert)}
-        onChange={(e) => {
-          const zahl = e.target.valueAsNumber
-          aendern(e.target.value === '' || Number.isNaN(zahl) ? undefined : zahl)
-        }}
-        className={EINGABE}
-      />
-    )
+    eingabe = <ZahlEingabe id={id} wert={wert} aendern={aendern} />
   } else {
     const typ =
       feld.typ === 'datum'

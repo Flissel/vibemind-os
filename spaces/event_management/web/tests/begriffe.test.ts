@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { bausteinName, begriffe } from '@/lib/begriffe'
+import { KERN, bausteinName, begriffe } from '@/lib/begriffe'
 
 function pythonNamen(konstante: string): string[] {
   // npm test läuft im Ordner web/; die Fachschicht liegt eine Ebene darüber.
@@ -16,6 +16,10 @@ describe('begriffe', () => {
     const erwartet = [...pythonNamen('KERN'), ...pythonNamen('ZUSAETZE')]
     expect(erwartet).toHaveLength(21)
     expect(Object.keys(begriffe).sort()).toEqual([...erwartet].sort())
+  })
+
+  it('KERN entspricht system/bausteine.py KERN (Drift-Waechter)', () => {
+    expect([...KERN]).toEqual(pythonNamen('KERN'))
   })
 
   it('kennt die Standardnamen', () => {
