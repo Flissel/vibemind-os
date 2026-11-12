@@ -5,6 +5,13 @@
     "bind": "loopback",
     "auth": {
       "mode": "token"
+    },
+    "http": {
+      "endpoints": {
+        "chatCompletions": {
+          "enabled": true
+        }
+      }
     }
   },
   "models": {
@@ -28,7 +35,55 @@
         "primary": "shim/claude-code-sonnet"
       },
       "workspace": "/home/node/.openclaw/workspace"
-    }
+    },
+    "list": [
+      {
+        "id": "main"
+      },
+      {
+        "id": "brain-lesen",
+        "tools": {
+          "allow": [
+            "event-app__list_tasks",
+            "event-app__list_categories",
+            "event-app__get_my_tasks",
+            "event-app__list_members",
+            "event-app__get_budget",
+            "event-app__get_guest_stats",
+            "event-app__list_recent_changes",
+            "event-app__get_festival_info",
+            "event-app__list_timetable"
+          ]
+        }
+      },
+      {
+        "id": "brain-auftrag",
+        "tools": {
+          "allow": [
+            "event-app__list_tasks",
+            "event-app__list_categories",
+            "event-app__get_my_tasks",
+            "event-app__list_members",
+            "event-app__get_budget",
+            "event-app__get_guest_stats",
+            "event-app__list_recent_changes",
+            "event-app__get_festival_info",
+            "event-app__list_timetable",
+            "event-app__create_task",
+            "event-app__update_task",
+            "event-app__delete_task",
+            "event-app__import_orga_plan",
+            "event-app__create_team",
+            "event-app__create_member",
+            "event-app__update_member",
+            "event-app__send_message_to_member",
+            "event-app__create_timetable_slot",
+            "event-app__update_timetable_slot",
+            "event-app__delete_timetable_slot"
+          ]
+        }
+      }
+    ]
   },
   "plugins": {
     "entries": {

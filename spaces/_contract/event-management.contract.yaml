@@ -25,6 +25,7 @@ capabilities:
   - {name: event_get_guest_stats,        writes: false}  # nur Zahlen, nie Namen
   - {name: event_list_recent_changes,    writes: false}
   - {name: event_get_festival_info,      writes: false}  # Werkzeugname der App
+  - {name: event_list_timetable,         writes: false}
   - {name: event_create_task,            writes: true}
   - {name: event_update_task,            writes: true}
   - {name: event_delete_task,            writes: true}
@@ -33,4 +34,7 @@ capabilities:
   - {name: event_create_member,          writes: true}
   - {name: event_update_member,          writes: true}
   - {name: event_send_message_to_member, writes: true}   # WhatsApp an Name
+  - {name: event_create_timetable_slot,  writes: true}
+  - {name: event_update_timetable_slot,  writes: true}
+  - {name: event_delete_timetable_slot,  writes: true}
   - {name: event_task_image_upload,      writes: true}   # Skill, kein MCP

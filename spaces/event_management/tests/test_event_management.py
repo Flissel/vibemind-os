@@ -155,6 +155,72 @@ def test_skill_liest_den_mcp_server_der_saat() -> None:
     assert server["event-app"]["url"].endswith("/api/mcp")
 
 
+# --- Gateway-Agenten fuer den Brain -------------------------------------------
+
+# Gemessene tools/list der Event-App vom 12.11.2026 (20 Werkzeuge). Die Brain-
+# Agenten bekommen ausgeschriebene Erlaubnislisten: eine Sperrliste (tools.deny)
+# haelt file_write, message, web_fetch u. a. nicht zurueck.
+APP_PRAEFIX = "event-app__"
+APP_LESEND = {
+    "list_tasks", "list_categories", "get_my_tasks", "list_members", "get_budget",
+    "get_guest_stats", "list_recent_changes", "get_festival_info", "list_timetable",
+}
+APP_TIMETABLE_SCHREIBEND = {"create_timetable_slot", "update_timetable_slot", "delete_timetable_slot"}
+APP_ALLE = APP_LESEND | {
+    "create_task", "update_task", "delete_task", "import_orga_plan", "create_team",
+    "create_member", "update_member", "send_message_to_member",
+} | APP_TIMETABLE_SCHREIBEND
+
+
+def _agenten() -> dict[str, dict]:
+    liste = json.loads(OPENCLAW.read_text(encoding="utf-8"))["agents"]["list"]
+    return {a["id"]: a for a in liste}
+
+
+def _erlaubt(agent: str) -> list[str]:
+    return _agenten()[agent]["tools"]["allow"]
+
+
+def test_brain_agenten_eingetragen() -> None:
+    konfig = json.loads(OPENCLAW.read_text(encoding="utf-8"))
+    liste = konfig["agents"]["list"]
+    assert [a["id"] for a in liste] == ["main", "brain-lesen", "brain-auftrag"]
+    assert "tools" not in liste[0]  # Telegram-Agent bleibt unveraendert
+    assert konfig["gateway"]["http"]["endpoints"]["chatCompletions"]["enabled"] is True
+
+
+@pytest.mark.parametrize("agent", ["brain-lesen", "brain-auftrag"])
+def test_brain_agenten_nur_app_werkzeuge(agent: str) -> None:
+    eintrag = _agenten()[agent]
+    assert "deny" not in eintrag["tools"]
+    assert set(eintrag["tools"]) == {"allow"}
+    for name in eintrag["tools"]["allow"]:
+        assert name.startswith(APP_PRAEFIX), name
+        assert "*" not in name, name
+
+
+def test_brain_lesen_darf_nicht_schreiben() -> None:
+    namen = [n.removeprefix(APP_PRAEFIX) for n in _erlaubt("brain-lesen")]
+    assert len(namen) == len(set(namen))
+    assert set(namen) == APP_LESEND
+    _, schreiben = _werkzeuge_aus_soul()
+    assert not set(namen) & (schreiben | APP_TIMETABLE_SCHREIBEND)
+
+
+def test_brain_auftrag_hat_alle_app_werkzeuge() -> None:
+    namen = [n.removeprefix(APP_PRAEFIX) for n in _erlaubt("brain-auftrag")]
+    assert len(namen) == len(set(namen))
+    assert set(namen) == APP_ALLE and len(APP_ALLE) == 20
+
+
+def test_soul_regelt_actor_fuer_vibemind() -> None:
+    text = SOUL.read_text(encoding="utf-8")
+    assert "## Aufträge aus VibeMind" in text
+    abschnitt = text.split("## Aufträge aus VibeMind")[1].split("\n## ")[0]
+    assert "Setze `actor` auf „VibeMind“" in abschnitt
+    assert "[VibeMind]" in abschnitt
+
+
 # --- Vertrag -----------------------------------------------------------------
 
 def _werkzeuge_aus_soul() -> tuple[set[str], set[str]]:
@@ -171,7 +237,7 @@ def test_vertrag_bildet_jedes_werkzeug_mit_richtigem_writes_ab() -> None:
     assert vertrag["prefixes"] == ["event."]
     caps = {c["name"]: c["writes"] for c in vertrag["capabilities"]}
     lesen, schreiben = _werkzeuge_aus_soul()
-    assert len(lesen) == 8 and len(schreiben) == 8
+    assert len(lesen) == 9 and len(schreiben) == 11
     erwartet = {f"event_{w}": False for w in lesen}
     erwartet.update({f"event_{w}": True for w in schreiben})
     erwartet["event_task_image_upload"] = True

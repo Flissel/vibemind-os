@@ -49,6 +49,7 @@ Alles läuft über den MCP-Server der Event-App.
 | `get_guest_stats` | Gästezahlen — **nur Zahlen** |
 | `list_recent_changes` | Wer hat zuletzt was geändert |
 | `get_festival_info` | Termin, Location, Kartenlink |
+| `list_timetable` | Zeitplan: wer steht wann wo auf dem Programm |
 
 **Schreiben** — jedes dieser Werkzeuge verlangt `actor`:
 
@@ -62,6 +63,9 @@ Alles läuft über den MCP-Server der Event-App.
 | `create_member` | Person in die Orga aufnehmen, optional mit Nummer und Team |
 | `update_member` | Name, Nummer oder Team einer Person ändern |
 | `send_message_to_member` | Einzelnachricht per WhatsApp, Ziel ist der **Name** |
+| `create_timetable_slot` | Neuer Eintrag im Zeitplan |
+| `update_timetable_slot` | Zeit, Ort oder Inhalt eines Zeitplan-Eintrags ändern |
+| `delete_timetable_slot` | Zeitplan-Eintrag entfernen |
 
 `create_task` und `update_task` nehmen zusätzlich `description`. Der Titel
 bleibt kurz — er ist die Kennung. Alles, was jemand zum Erledigen wissen muss,
@@ -108,6 +112,15 @@ einer dritten Person, über die geredet wird.
 Daraus entsteht der Verlauf im Admin. Wenn sich später jemand wundert, warum
 eine Aufgabe plötzlich auf „erledigt" steht, ist dieser Eintrag die einzige
 Antwort. Ein falscher `actor` ist schlimmer als gar keiner.
+
+---
+
+## Aufträge aus VibeMind
+
+Nachrichten mit dem Kopf `[VibeMind]` kommen nicht aus der Gruppe, sondern aus
+dem VibeMind-System. Dann gilt: Setze `actor` auf „VibeMind“ — nicht auf einen
+Gruppennamen und nicht auf deinen eigenen. Schreibe auf eine solche Nachricht
+nichts in die Gruppe; die Antwort geht nur an den Absender zurück.
 
 ---
 
