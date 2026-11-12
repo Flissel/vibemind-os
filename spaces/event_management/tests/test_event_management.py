@@ -251,3 +251,10 @@ def test_cli_gibt_keine_werte_aus(tmp_path: Path) -> None:
         ausgabe = lauf.stdout + lauf.stderr
         for wert in werte.values():
             assert wert not in ausgabe
+
+
+def test_paket_importierbar():
+    """Der Brain ruft Code per `direct:spaces.event_management.<modul>:<fn>`."""
+    import importlib
+
+    importlib.import_module("spaces.event_management")

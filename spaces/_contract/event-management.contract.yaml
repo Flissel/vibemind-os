@@ -4,7 +4,7 @@
 # Die Tools gehoeren NICHT diesem Repo: sie liegen im MCP-Server der Event-App
 # (config/openclaw.json, mcp.servers.event-app). Eine Capability je Werkzeug,
 # Name = "event_" + Werkzeugname; `writes` belegt an der Werkzeugtabelle in
-# spaces/event-management/config/workspace/SOUL.md ("Schreiben -- jedes dieser
+# spaces/event_management/config/workspace/SOUL.md ("Schreiben -- jedes dieser
 # Werkzeuge verlangt `actor`"). Der Foto-Upload laeuft nicht ueber MCP, sondern
 # per Skill (event-task-image-uploads) gegen /api/mcp/task-image.
 #
