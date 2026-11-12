@@ -114,6 +114,11 @@ NEGATIV = [
     "Zeige meine Termine",
     "Eventuell lege ich morgen eine Notiz an",
     "Wie viele Gäste hat das Hotel",
+    "Erstelle ein Event im Kalender",
+    "Erstelle ein Event für morgen",
+    "Trag das Event in meinen Kalender ein",
+    "Ändere die Veranstaltung im Kalender",
+    "Welche Events stehen in meinem Kalender?",
 ]
 
 
@@ -139,4 +144,5 @@ def test_router_leitet_positive_saetze_an_event_capability():
             assert treffer is not None and treffer.capability == name, (satz, treffer)
     for satz in NEGATIV:
         treffer = router.route(satz)
-        assert treffer is None or not treffer.capability.startswith("event_"), satz
+        name = treffer.capability if treffer else None
+        assert not (name or "").startswith("event_"), f"{satz!r} landet auf {name}"

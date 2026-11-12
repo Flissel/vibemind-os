@@ -263,13 +263,17 @@
 # Coarse events outside, fine tools inside: der Event-Bot (OpenClaw-Gateway)
 # hat die 20 App-Werkzeuge, der Brain gibt nur Frage (event_ask) oder Auftrag
 # (event_do) ab. Patterns greifen nur bei Event-/Festival-Bezug; event_do steht
-# vor event_ask, damit ein Auftrag nicht als reine Frage endet.
+# vor event_ask, damit ein Auftrag nicht als reine Frage endet. Jedes Pattern
+# beginnt mit einem Lookahead, der Kalender-/Termin-/Meeting-Saetze ausschliesst
+# (die gehoeren dem persoenlichen Kalender); event_do verlangt Festival/Orga
+# oder Event/Veranstaltung plus ein Orga-Objekt.
 - capability: event_do
   space: event-management
   description: "hand a write order (create, change or assign tasks, members, timetable) for a festival or event to the Event-Bot"
   match_patterns:
-    - "\\b(trag|trage|leg|lege|erstelle|weise|ändere|aendere|markiere|setze)\\b.{0,40}(\\bfestival|\\bveranstaltung|\\bevent\\b)"
-    - "(\\bfestival|\\bveranstaltung|\\bevent\\b).{0,60}(anlegen|eintragen|erledigt|zuweisen|ändern|aendern)"
+    - "^(?!.*\\b(?:kalender\\w*|calendar|termin\\w*|meeting\\w*)\\b).*\\b(trag|trage|leg|lege|erstelle|weise|ändere|aendere|markiere|setze)\\b.{0,40}\\b(festival\\w*|orga)\\b"
+    - "^(?!.*\\b(?:kalender\\w*|calendar|termin\\w*|meeting\\w*)\\b).*\\b(festival\\w*|orga)\\b.{0,60}(anlegen|eintragen|erledigt|zuweisen|ändern|aendern)"
+    - "^(?!.*\\b(?:kalender\\w*|calendar|termin\\w*|meeting\\w*)\\b).*\\b(trag|trage|leg|lege|erstelle|weise|ändere|aendere|markiere|setze)\\b.{0,60}\\b(event|veranstaltung\\w*)\\b.{0,60}(aufgabe|task|team|mitglied|helfer|budget|timetable|slot|schicht|erledigt)"
   execution_target: "direct:spaces.event_management.uebergabe:auftrag"
   arg_kwarg: text
   validator:
@@ -288,8 +292,8 @@
   space: event-management
   description: "ask the Event-Bot a read-only question about a festival or event (tasks, budget, guests, team, helpers)"
   match_patterns:
-    - "(\\bfestival|\\bveranstaltung|\\bevent\\b).{0,40}(aufgabe|budget|gäste|gaeste|team|helfer)"
-    - "(aufgabe|budget|gäste|gaeste|team|helfer).{0,40}(\\bfestival|\\bveranstaltung|\\bevent\\b)"
+    - "^(?!.*\\b(?:kalender\\w*|calendar|termin\\w*|meeting\\w*)\\b).*(\\bfestival|\\bveranstaltung|\\bevent\\b).{0,40}(aufgabe|budget|gäste|gaeste|team|helfer)"
+    - "^(?!.*\\b(?:kalender\\w*|calendar|termin\\w*|meeting\\w*)\\b).*(aufgabe|budget|gäste|gaeste|team|helfer).{0,40}(\\bfestival|\\bveranstaltung|\\bevent\\b)"
   execution_target: "direct:spaces.event_management.uebergabe:frage"
   arg_kwarg: text
 
