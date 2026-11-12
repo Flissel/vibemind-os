@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { IchProvider } from '@/components/AnmeldeSchutz'
+import { IchProvider } from '@/components/IchKontext'
 import { Kopfleiste } from '@/components/Kopfleiste'
 import { api } from '@/lib/api'
 import type { Ich } from '@/lib/typen'

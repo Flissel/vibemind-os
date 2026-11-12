@@ -4,22 +4,16 @@ import { useRouter } from 'next/navigation'
 import { useEffect, useState, type FormEvent } from 'react'
 import { Meldung } from '@/components/Meldung'
 import { ApiFehler, api } from '@/lib/api'
+import { sichererWeiter } from '@/lib/weiter'
 
 const FEHLER_401 = 'Mail oder Passwort falsch, oder zu viele Versuche. Bitte später erneut versuchen.'
-
-/** Nur relative Pfade (`/…`, nicht `//…`, kein Backslash) – schützt vor offener Weiterleitung. */
-function sichereWeiterleitung(weiter: string | null): string {
-  if (weiter && weiter.startsWith('/') && !weiter.startsWith('//') && !weiter.includes('\\')) {
-    return weiter
-  }
-  return '/'
-}
 
 export default function Anmelden() {
   const router = useRouter()
   const [mail, setMail] = useState('')
   const [passwort, setPasswort] = useState('')
   const [fehler, setFehler] = useState<unknown>(null)
+  const [fehlerText, setFehlerText] = useState('')
   const [hinweis, setHinweis] = useState('')
   const [laeuft, setLaeuft] = useState(false)
 
@@ -32,13 +26,15 @@ export default function Anmelden() {
   async function absenden(e: FormEvent) {
     e.preventDefault()
     setFehler(null)
+    setFehlerText('')
     setLaeuft(true)
     try {
       await api.anmelden(mail, passwort)
       const weiter = new URLSearchParams(window.location.search).get('weiter')
-      router.push(sichereWeiterleitung(weiter))
+      router.push(sichererWeiter(weiter, window.location.origin))
     } catch (err: unknown) {
-      setFehler(err instanceof ApiFehler && err.status === 401 ? new ApiFehler(422, FEHLER_401) : err)
+      if (err instanceof ApiFehler && err.status === 401) setFehlerText(FEHLER_401)
+      else setFehler(err)
       setLaeuft(false)
     }
   }
@@ -48,7 +44,7 @@ export default function Anmelden() {
       <form onSubmit={absenden} className="w-full max-w-sm space-y-4 rounded-xl bg-white p-6 nice-shadow">
         <h1 className="text-xl font-bold text-gray-900">Anmelden</h1>
         <Meldung erfolg={hinweis} />
-        <Meldung fehler={fehler} />
+        <Meldung fehler={fehler} text={fehlerText} />
         <div>
           <label htmlFor="mail" className="mb-1 block text-sm font-medium text-gray-700">
             Mail

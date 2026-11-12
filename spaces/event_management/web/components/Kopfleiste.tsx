@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { useState } from 'react'
 import { LogOut } from 'lucide-react'
-import { useIch } from '@/components/AnmeldeSchutz'
+import { useIch } from '@/components/IchKontext'
 import { Meldung } from '@/components/Meldung'
 import { api } from '@/lib/api'
 

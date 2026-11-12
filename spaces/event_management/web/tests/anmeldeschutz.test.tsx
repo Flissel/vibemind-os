@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AnmeldeSchutz, useIch } from '@/components/AnmeldeSchutz'
+import { AnmeldeSchutz } from '@/components/AnmeldeSchutz'
+import { useIch } from '@/components/IchKontext'
 import { api, setzeBeiAbmeldung } from '@/lib/api'
 import type { Ich } from '@/lib/typen'
 
