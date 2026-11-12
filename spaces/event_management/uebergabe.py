@@ -4,7 +4,12 @@ Einziger Code, der mit dem Gateway spricht. Vor jedem POST prueft ``GET /v1/mode
 dass der Agent ``openclaw/<id>`` eingetragen ist (fail-closed): OpenClaw legt einen
 unbekannten Agentennamen im Sitzungsschluessel still mit ALLEN Werkzeugen an.
 
-Ausnahmen gehen nie nach aussen; der Token steht in keiner Rueckgabe und keinem Log.
+Die interne Funktion ``_uebergeben`` wirft nie und liefert immer ein Ergebnis-Dict.
+Die oeffentlichen ``frage``/``auftrag`` geben bei Erfolg dieses Dict zurueck und werfen
+bei einem Fehlschlag ``RuntimeError`` mit dem geschwaerzten Fehlertext (Vorbild
+spaces/schedule/execution.py): der DirectExecutor des Brain macht nur aus einer
+Ausnahme ``ok: False``. Der Token steht in keiner Rueckgabe, keiner Ausnahme und
+keinem Log.
 """
 from __future__ import annotations
 
@@ -181,11 +186,22 @@ def _uebergeben(agent: str, value: object) -> dict:
                  agent, status, int((time.monotonic() - start) * 1000))
 
 
-def frage(value: dict) -> dict:
-    """Lesende Frage an den Event-Bot (Agent brain-lesen)."""
-    return _uebergeben(AGENT_LESEN, value)
+def _oder_werfen(ergebnis: dict) -> dict:
+    """Erfolg -> Dict; Fehlschlag -> RuntimeError mit dem (bereits geschwaerzten) Fehlertext.
+
+    Der DirectExecutor des Brain verpackt jeden Rueckgabewert als Erfolg; nur eine
+    Ausnahme wird dort zu ``ok: False``.
+    """
+    if not ergebnis["ok"]:
+        raise RuntimeError(ergebnis["fehler"] or "unbekannter Fehler")
+    return ergebnis
 
 
-def auftrag(value: dict) -> dict:
-    """Schreibender Auftrag an den Event-Bot (Agent brain-auftrag)."""
-    return _uebergeben(AGENT_AUFTRAG, value)
+def frage(value: object) -> dict:
+    """Lesende Frage an den Event-Bot (Agent brain-lesen). Wirft RuntimeError bei Fehlschlag."""
+    return _oder_werfen(_uebergeben(AGENT_LESEN, value))
+
+
+def auftrag(value: object) -> dict:
+    """Schreibender Auftrag an den Event-Bot (Agent brain-auftrag). Wirft RuntimeError bei Fehlschlag."""
+    return _oder_werfen(_uebergeben(AGENT_AUFTRAG, value))

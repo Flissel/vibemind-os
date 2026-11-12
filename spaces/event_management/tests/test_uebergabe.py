@@ -1,16 +1,26 @@
-"""Tests fuer die Uebergabe Brain -> Event-Bot (Attrappen-Gateway, kein Netz)."""
+"""Tests fuer die Uebergabe Brain -> Event-Bot (Attrappen-Gateway, kein Netz).
+
+Oeffentliche Grenze: frage()/auftrag() geben bei Erfolg das Ergebnis-Dict zurueck
+und werfen bei einem Fehlschlag RuntimeError mit geschwaerztem Text -- sonst
+verpackt der DirectExecutor des Brain den Fehlschlag als Erfolg. Die interne
+Funktion _uebergeben wirft nie; ihre Ergebnis-Dicts pruefen die Tests direkt.
+"""
 from __future__ import annotations
 
 import json
 import socket
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
 from spaces.event_management import uebergabe
 
 TOKEN = "geheim-123"
+
+BRAIN = Path(__file__).resolve().parents[3] / "brain" / "the_brain"
 
 
 class _Attrappe:
@@ -72,6 +82,11 @@ def gateway(monkeypatch, tmp_path):
         thread.join(timeout=5)
 
 
+def _intern(value: object, agent: str = uebergabe.AGENT_LESEN) -> dict:
+    """Die interne Funktion: wirft nie, liefert immer ein Ergebnis-Dict."""
+    return uebergabe._uebergeben(agent, value)
+
+
 def test_frage_geht_an_brain_lesen(gateway):
     r = uebergabe.frage({"text": "Was steht an?", "_intent": "x"})
     assert r["ok"] is True
@@ -100,7 +115,9 @@ def test_auftrag_geht_an_brain_auftrag(gateway):
 
 def test_ohne_agent_in_models_geht_nichts_raus(gateway):
     gateway.modelle = ["openclaw/brain-lesen"]
-    r = uebergabe.auftrag({"text": "hallo"})
+    with pytest.raises(RuntimeError, match="brain-auftrag"):
+        uebergabe.auftrag({"text": "hallo"})
+    r = _intern({"text": "hallo"}, uebergabe.AGENT_AUFTRAG)
     assert r["ok"] is False
     assert "brain-auftrag" in r["fehler"]
     assert r["antwort"] == ""
@@ -112,7 +129,9 @@ def test_gateway_aus(monkeypatch, gateway):
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
     monkeypatch.setenv("EVENT_GATEWAY_URL", f"http://127.0.0.1:{port}")
-    r = uebergabe.frage({"text": "hallo"})
+    with pytest.raises(RuntimeError, match="Gateway"):
+        uebergabe.frage({"text": "hallo"})
+    r = _intern({"text": "hallo"})
     assert r["ok"] is False
     assert r["fehler"]
     assert r["antwort"] == ""
@@ -121,22 +140,47 @@ def test_gateway_aus(monkeypatch, gateway):
 def test_502_ist_endgueltig(gateway):
     gateway.status = 502
     gateway.body = {"error": {"message": "bad gateway"}}
-    r = uebergabe.frage({"text": "hallo"})
-    assert r["ok"] is False
+    with pytest.raises(RuntimeError, match="502"):
+        uebergabe.frage({"text": "hallo"})
     assert gateway.posts == 1
 
 
 def test_token_nie_in_rueckgabe(gateway):
     gateway.status = 401
     gateway.body = {"error": {"message": f"ungueltig: {TOKEN}"}}
-    r = uebergabe.frage({"text": "hallo"})
+    r = _intern({"text": "hallo"})
     assert r["ok"] is False
     assert TOKEN not in str(r)
 
 
+def test_fehler_wirft_ohne_token(gateway):
+    gateway.status = 502
+    gateway.body = {"error": {"message": f"upstream lehnt {TOKEN} ab"}}
+    with pytest.raises(RuntimeError, match="502") as fehler:
+        uebergabe.auftrag({"text": "hallo"})
+    assert TOKEN not in str(fehler.value)
+    assert TOKEN not in repr(fehler.value)
+    assert "<token>" in str(fehler.value)
+
+
+def test_direct_executor_meldet_fehlschlag(gateway):
+    """Der Brain ruft per DirectExecutor; ein Fehlschlag darf dort nicht ok sein."""
+    if str(BRAIN) not in sys.path:
+        sys.path.insert(0, str(BRAIN))
+    from core.capability_executor import DirectExecutor
+
+    gateway.modelle = ["openclaw/brain-lesen"]  # brain-auftrag fehlt
+    executor = DirectExecutor("direct:spaces.event_management.uebergabe:auftrag")
+    ergebnis = executor.call_with_arg("Lege eine Aufgabe an", "text")
+    assert ergebnis["ok"] is False
+    assert "brain-auftrag" in ergebnis["error"]
+    assert TOKEN not in json.dumps(ergebnis, default=str)
+    assert gateway.posts == 0
+
+
 def test_leerer_text_wird_abgelehnt(gateway):
-    r = uebergabe.frage({"text": "  "})
-    assert r["ok"] is False
+    with pytest.raises(RuntimeError, match="kein Text"):
+        uebergabe.frage({"text": "  "})
     assert gateway.posts == 0 and gateway.gets == 0
 
 
@@ -147,14 +191,16 @@ def test_string_statt_dict_gilt_als_text(gateway):
 
 
 def test_falscher_typ_ist_fehler(gateway):
-    r = uebergabe.frage(42)  # type: ignore[arg-type]
-    assert r["ok"] is False
+    with pytest.raises(RuntimeError, match="kein Text"):
+        uebergabe.frage(42)
     assert gateway.posts == 0
 
 
 def test_leere_antwort(gateway):
     gateway.body = {"choices": [{"message": {"content": ""}}]}
-    r = uebergabe.frage({"text": "hallo"})
+    with pytest.raises(RuntimeError, match="leere Antwort"):
+        uebergabe.frage({"text": "hallo"})
+    r = _intern({"text": "hallo"})
     assert r["ok"] is False
     assert "leere Antwort" in r["fehler"]
 
@@ -170,7 +216,9 @@ def test_token_aus_datei_hat_vorrang(gateway, monkeypatch, tmp_path):
 
 def test_fehlende_url_nennt_variable(gateway, monkeypatch):
     monkeypatch.delenv("EVENT_GATEWAY_URL")
-    r = uebergabe.frage({"text": "hallo"})
+    with pytest.raises(RuntimeError, match="EVENT_GATEWAY_URL"):
+        uebergabe.frage({"text": "hallo"})
+    r = _intern({"text": "hallo"})
     assert r["ok"] is False
     assert "EVENT_GATEWAY_URL" in r["fehler"]
     assert r["result_id"] == ""
@@ -179,9 +227,8 @@ def test_fehlende_url_nennt_variable(gateway, monkeypatch):
 
 def test_fehlender_token_nennt_variable(gateway, monkeypatch):
     monkeypatch.delenv("EVENT_GATEWAY_TOKEN")
-    r = uebergabe.frage({"text": "hallo"})
-    assert r["ok"] is False
-    assert "EVENT_GATEWAY_TOKEN" in r["fehler"]
+    with pytest.raises(RuntimeError, match="EVENT_GATEWAY_TOKEN"):
+        uebergabe.frage({"text": "hallo"})
     assert gateway.posts == 0
 
 
@@ -189,9 +236,12 @@ def test_token_mit_zeilenumbruch_wird_abgelehnt(gateway, monkeypatch, tmp_path):
     datei = tmp_path / "token"
     datei.write_bytes(b"geheim-123\nzweite-zeile-abc\r\n")
     monkeypatch.setenv("EVENT_GATEWAY_TOKEN_FILE", str(datei))
-    r = uebergabe.frage({"text": "hallo"})
+    with pytest.raises(RuntimeError, match="EVENT_GATEWAY_TOKEN") as fehler:
+        uebergabe.frage({"text": "hallo"})
+    assert "geheim-123" not in str(fehler.value)
+    assert "zweite-zeile-abc" not in str(fehler.value)
+    r = _intern({"text": "hallo"})
     assert r["ok"] is False
-    assert "EVENT_GATEWAY_TOKEN" in r["fehler"]
     assert "geheim-123" not in str(r)
     assert "zweite-zeile-abc" not in str(r)
     assert gateway.posts == 0 and gateway.gets == 0
@@ -201,7 +251,8 @@ def test_log_enthaelt_status_aber_weder_text_noch_token(gateway, caplog):
     gateway.status = 401
     gateway.body = {"error": {"message": "nein"}}
     with caplog.at_level("INFO", logger=uebergabe.__name__):
-        uebergabe.frage({"text": "streng-vertraulicher-text"})
+        with pytest.raises(RuntimeError):
+            uebergabe.frage({"text": "streng-vertraulicher-text"})
     log = " ".join(rec.getMessage() for rec in caplog.records)
     assert "401" in log
     assert "streng-vertraulicher-text" not in log
