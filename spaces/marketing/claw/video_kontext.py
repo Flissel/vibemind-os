@@ -2,9 +2,23 @@
 Frage ausgewaehlt, als Liste benannter Dokumente. Die Namen sind die Quellenangaben, auf die sich Gliederung und
 Belege spaeter beziehen (`video_texte.szene_pruefen` vergleicht Zahlen woertlich gegen genau diese Texte).
 
-DATENSCHUTZ. Keine personenbezogenen Kundendaten im Kontext: Ordner und Dateien, die nach Kontakten, Agent-Notizen
-oder Verlauf heissen, bleiben draussen (Markenwissen wie Rowboat); ein Dokument ohne Namen oder Text kann nicht
-eingeordnet werden und faellt ebenfalls weg. Kundennamen darf ein Video nur nennen, wenn sie im Auftrag stehen.
+DATENSCHUTZ. Keine personenbezogenen Kundendaten im Kontext. Ein Dokument, das der Sammler nicht einordnen kann,
+bleibt draussen, statt aufgenommen zu werden.
+
+ERLAUBT-LISTE (Markenwissen, `_ERLAUBT_DATEIEN` und `_ERLAUBT_ORDNER`, nur hier erweitern): Aus dem Firmenordner
+(~/.rowboat/knowledge/companys/<Firma>/) kommen nur
+  - die Dateien Marke.md und Markenhandbuch.md direkt im Firmenordner,
+  - alles unter Newsletter/ (bereits veroeffentlichte Texte),
+  - alles unter Video-Material/ (hier legt der Betreiber bewusst Material fuer Videos ab).
+Verglichen wird das erste Pfadsegment, ohne Gross-/Kleinschreibung, mit genauem Namen (kein Teilstring). Alles
+andere (Termine/, Bereiche/, Wochenbild/, Agent-Notizen/, Kontakte, unbekannte Ordner) wird nicht gelesen.
+Innerhalb der erlaubten Menge sperrt die Wortliste `_GESPERRT` weiter (Video-Material/Kontakte.md bleibt draussen).
+Eine Datei muss real im Firmenordner liegen; eine Verknuepfung nach aussen wird ignoriert. Ausgelassene Dateien
+stehen nur als Anzahl in `hinweise`, ohne Dateinamen (Namen koennen Personennamen sein).
+
+Rowboat-Dokumente (zweite Quelle) wählt die Erlaubt-Liste nicht aus: sie kommen aus den im Rowboat vom Betreiber
+eingerichteten Wissensquellen; ihre Namen laufen nur durch dieselbe Wortliste `_GESPERRT`.
+Kundennamen darf ein Video nur nennen, wenn sie im Auftrag stehen.
 
 `holen` wirft nie. Rowboat ist fail-soft: ist es nicht erreichbar, steht das in `hinweise`.
 
@@ -15,6 +29,7 @@ sourceId/_id, title, inhalt/text/body und ein Umschlag {quellen|sources|items|do
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 from spaces.marketing.claw import markenwissen, werkzeuge, wissen
@@ -22,6 +37,10 @@ from spaces.marketing.claw import markenwissen, werkzeuge, wissen
 BUDGET_VORGABE = 60_000
 DOKUMENT_MAX = 20_000            # Obergrenze je Dokument (Zeichen)
 _VERMERK = " … (gekürzt)"
+# Erlaubt-Liste fuer Markenwissen (Firmenordner): Dateien direkt im Ordner / Ordner der obersten Ebene
+_ERLAUBT_DATEIEN = ("marke.md", "markenhandbuch.md")
+_ERLAUBT_ORDNER = ("newsletter", "video-material")
+_ERLAUBT_TEXT = "Marke.md, Markenhandbuch.md, Newsletter/, Video-Material/"
 # Ordner-/Dateiteile, die nie in den Kontext kommen (Kontakte, Agent-Notizen, Sicherungen/Verlauf)
 _GESPERRT = ("kontakt", "notiz", "verlauf")
 _ID = ("id", "_id", "sourceId")
@@ -46,6 +65,24 @@ class Kontext:
 def _gesperrt(pfad: str) -> bool:
     """Enthaelt ein Teil des Pfads (Ordner oder Datei) Kontakte, Notizen oder Verlauf?"""
     return any(w in teil.casefold() for teil in pfad.replace("\\", "/").split("/") for w in _GESPERRT)
+
+
+def _erlaubt(rel: str) -> bool:
+    """Liegt der relative Pfad in der Erlaubt-Liste (erstes Segment, exakter Name, ohne Gross/Klein)?"""
+    teile = rel.replace("\\", "/").split("/")
+    if len(teile) == 1:
+        return teile[0].casefold() in _ERLAUBT_DATEIEN
+    return teile[0].casefold() in _ERLAUBT_ORDNER
+
+
+def _im_ordner(pfad: str, ordner: str) -> bool:
+    """Liegt die aufgeloeste Datei wirklich unter dem aufgeloesten Firmenordner?"""
+    try:
+        basis = os.path.normcase(os.path.realpath(ordner))
+        real = os.path.normcase(os.path.realpath(pfad))
+        return os.path.commonpath([real, basis]) == basis
+    except (OSError, ValueError):
+        return False
 
 
 def _erstes(eintrag: dict, schluessel: tuple[str, ...]) -> str:
@@ -78,19 +115,30 @@ def _marke(mandant: str, hinweise: list[str]) -> list[Dokument]:
         return []
     intern: list[str] = []      # Hinweise von markenwissen: Verknuepfungen, Dateien zu gross, nicht lesbar
     dokumente: list[Dokument] = []
-    weg = 0
+    ausserhalb = gesperrt = 0
     for rel, pfad in markenwissen._dateien(ordner, intern):
+        if not _erlaubt(rel) or not _im_ordner(pfad, ordner):
+            ausserhalb += 1
+            continue
         if _gesperrt(rel):
-            weg += 1
+            gesperrt += 1
             continue
         text = markenwissen._lesen(rel, pfad, intern)
         if text is None or markenwissen.ist_leer(text):
             continue
         grenze = markenwissen.MARKE_MAX if rel.casefold() == "marke.md" else DOKUMENT_MAX
         dokumente.append(Dokument(rel, _kappen(text, grenze), "marke"))
-    hinweise += intern
-    if weg:
-        hinweise.append(f"{weg} Datei(en) mit Kontakten, Notizen oder Verlauf nicht gelesen")
+    # interne Hinweise nennen Dateinamen: nur die zu erlaubten Dateien bleiben, der Rest zaehlt nur als Anzahl
+    for h in intern:
+        if _erlaubt(h.split(" übersprungen")[0]):
+            hinweise.append(h)
+        else:
+            ausserhalb += 1
+    if ausserhalb:
+        hinweise.append(f"{ausserhalb} Datei(en) außerhalb der erlaubten Ordner nicht gelesen "
+                        f"(erlaubt: {_ERLAUBT_TEXT})")
+    if gesperrt:
+        hinweise.append(f"{gesperrt} Datei(en) mit Kontakten, Notizen oder Verlauf nicht gelesen")
     return dokumente
 
 
