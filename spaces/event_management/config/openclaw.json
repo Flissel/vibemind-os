@@ -93,7 +93,7 @@
         "enabled": true
       },
       "whatsapp": {
-        "enabled": true
+        "enabled": false
       },
       "browser": {
         "enabled": false
@@ -115,7 +115,7 @@
       }
     },
     "whatsapp": {
-      "enabled": true,
+      "enabled": false,
       "dmPolicy": "allowlist",
       "allowFrom": ["{{WHATSAPP_ERLAUBT}}"],
       "groupPolicy": "disabled"

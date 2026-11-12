@@ -268,3 +268,13 @@ def test_shim_url_zeigt_auf_den_eigenen_shim() -> None:
 def test_laufzeit_ist_gitignored() -> None:
     zeilen = {z.strip() for z in GITIGNORE.read_text(encoding="utf-8").splitlines()}
     assert "laufzeit/" in zeilen
+
+
+def test_whatsapp_bleibt_aus() -> None:
+    # OpenClaw 2026.7.1-slim bringt das WhatsApp-Plugin nicht mit; die aktuelle
+    # Fassung von clawhub verlangt Plugin-API >= 2026.11.3, der Start bricht
+    # dann ab (gemessen 12.11.2026 auf offload-vm). Die WhatsApp-Kopplung ist
+    # ohnehin nicht mit umgezogen.
+    cfg = json.loads((SPACE / "config" / "openclaw.json").read_text(encoding="utf-8"))
+    assert cfg["plugins"]["entries"]["whatsapp"]["enabled"] is False
+    assert cfg["channels"]["whatsapp"]["enabled"] is False

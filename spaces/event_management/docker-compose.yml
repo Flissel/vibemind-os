@@ -109,14 +109,26 @@ services:
       start_period: 90s
       retries: 3
 
+# Feste Subnetze: Auf offload-vm sind die vordefinierten Docker-Adresspools
+# erschoepft ("all predefined address pools have been fully subnetted",
+# gemessen 12.11.2026). 10.250.10.0/26 ist dort frei (keine 10er-Route).
 networks:
   # Nur Claw <-> Shim, ohne Zugang nach aussen.
   event-agent:
     internal: true
+    ipam:
+      config:
+        - subnet: 10.250.10.0/28
   # Ausgang des Claw: Telegram und die Event-App.
   event-claw-aus:
+    ipam:
+      config:
+        - subnet: 10.250.10.16/28
   # Ausgang des Shim: Claude-Code-API.
   event-shim-aus:
+    ipam:
+      config:
+        - subnet: 10.250.10.32/28
 
 volumes:
   event-management-claw-state:
