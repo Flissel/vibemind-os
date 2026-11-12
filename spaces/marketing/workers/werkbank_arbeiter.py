@@ -31,6 +31,7 @@ from spaces.marketing.claw import video_kontext, video_slides, video_texte
 from spaces.marketing.workers.bild_worker import ApiFehler, umgebung_laden
 from spaces.marketing.workers.chat_worker import MODELL, LlmFehler
 from spaces.marketing.workers.video_rendern import szene_rendern
+from spaces.marketing.workers.video_stimme import stimme_bereit as dienst_stimme_bereit
 from spaces.marketing.workers.video_stimme import szene_sprechen
 from spaces.marketing.workers.video_zusammen import fertigstellen as video_fertigstellen
 from spaces.marketing.workers.werkbank_api import WerkbankApi
@@ -99,7 +100,9 @@ def _brief() -> str:
 class _Lauf:
     """Alles, was ein Durchlauf braucht (die einspritzbaren Teile und das Gedaechtnis des Arbeiters)."""
 
-    def __init__(self, api, fragen, kontext, sprechen, rendern, fertigstellen, warte, marke, ordner, brief, jetzt, heute):
+    def __init__(self, api, fragen, kontext, sprechen, rendern, fertigstellen, warte, marke, ordner, brief, jetzt, heute,
+                 stimme_bereit=None):
+        self.stimme_bereit = stimme_bereit
         self.api, self.fragen, self.kontext, self.sprechen, self.rendern = api, fragen, kontext, sprechen, rendern
         self.fertigstellen, self.warte, self.marke, self.ordner = fertigstellen, warte, marke, ordner
         self.brief, self.jetzt, self.heute = brief, jetzt, heute
@@ -496,9 +499,34 @@ def _fehler_nachmelden(c: _Lauf, werk: dict) -> None:
                 LOG.warning("Fehler nachmelden scheiterte: %s", type(e).__name__)
 
 
+_STIMME_STAND: dict = {"bereit": None}
+
+
+def _stimme_bereit(c: _Lauf) -> bool:
+    """Vor dem Nehmen einer Szene: ist die Stimme (Sprech-Dienst, Modell geladen) bereit? Nur eine Zeile
+    ins Protokoll je Zustandswechsel. Ohne eingespritzte Pruefung und mit eingespritztem `sprechen` (Tests)
+    wird nicht gefragt - dann gilt: bereit."""
+    pruefen = c.stimme_bereit
+    if pruefen is None and c.sprechen is szene_sprechen:
+        pruefen = dienst_stimme_bereit
+    if pruefen is None:
+        return True
+    try:
+        bereit = bool(pruefen())
+    except Exception as e:  # noqa: BLE001 - eine Pruefung darf den Durchlauf nicht kippen
+        LOG.warning("Stimme-bereit-Pruefung scheiterte: %s", type(e).__name__)
+        bereit = False
+    if bereit != _STIMME_STAND["bereit"]:
+        _STIMME_STAND["bereit"] = bereit
+        LOG.info("Stimme bereit" if bereit else "Stimme nicht bereit (Modell laedt oder Dienst fehlt) - Szenen warten")
+    return bereit
+
+
 def _erzeugen(c: _Lauf, werk: dict) -> str | None:
     aid = str(werk["auftrag"])
     _fehler_nachmelden(c, werk)
+    if not _stimme_bereit(c):       # Szene bleibt liegen, kein Fehler, kein Hinweis: der Durchlauf in 30 s fragt erneut
+        return None
     zeile = c.api.szene_nehmen(aid)
     if not zeile:
         return None
@@ -589,11 +617,12 @@ def _fertig(c: _Lauf, werk: dict) -> str | None:
 
 def ein_durchlauf(api, fragen=shim_fragen, kontext=video_kontext.holen, sprechen=szene_sprechen, rendern=szene_rendern,
                   fertigstellen=video_fertigstellen, warte=time.sleep, *, marke=video_slides.marke_fuer, ordner=arbeitsordner,
-                  brief=_brief, jetzt=time.monotonic, heute=date.today) -> str:
+                  brief=_brief, jetzt=time.monotonic, heute=date.today, stimme_bereit=None) -> str:
     """Neuen Auftrag uebernehmen, dann jedes Werk der Reihe nach: Gliederung, Szenentexte, hoechstens eine Szene
     erzeugen, fertigstellen. Rueckgabe: das letzte Ergebnis - leer, gliederung, texte, clip, video, wartet, budget
     oder fehler (budget gewinnt, wenn die Tagesgrenze im Durchlauf getroffen wurde)."""
-    c = _Lauf(api, fragen, kontext, sprechen, rendern, fertigstellen, warte, marke, ordner, brief, jetzt, heute)
+    c = _Lauf(api, fragen, kontext, sprechen, rendern, fertigstellen, warte, marke, ordner, brief, jetzt, heute,
+              stimme_bereit)
     _meldungen_nachholen(c)          # N1: vor dem Lesen, damit arbeit() den gemeldeten Grund schon zeigt
     werke = api.arbeit()
     for werk in werke:       # erst alle Leases, dann naechster: ein abgelaufener Auftrag wuerde sonst neu vergeben

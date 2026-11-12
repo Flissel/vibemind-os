@@ -201,40 +201,89 @@ def _genutzt(jetzt: float | None = None) -> None:
     _zuletzt = time.monotonic() if jetzt is None else jetzt
 
 
-# 12.11.2026: Anfragen waehrend des Ladens warten hoechstens so lange (unter dem Zeitlimit der Aufrufer von
-# 300 s: ton_worker, video_stimme, Lauras Client), danach 503 + Retry-After statt Zeitueberschreitung.
-LADEN_WARTEN_S = float(os.environ.get("TON_LADEN_WARTEN_S", "240"))
+# 12.11.2026: Anfragen waehrend des Ladens warten hoechstens so lange - ALS GESAMTBUDGET je Anfrage (Frist beim
+# Start der Anfrage), unter dem Zeitlimit der Aufrufer von 300 s (ton_worker, video_stimme, Lauras Client).
+# Danach 503 + Retry-After statt Zeitueberschreitung.
+LADEN_WARTEN_S = min(float(os.environ.get("TON_LADEN_WARTEN_S", "240")), 3600.0)
 RETRY_NACH_S = 30
+RETRY_DEFEKT_S = 60
+ABKUEHLEN_S = 30        # nach einem gescheiterten Laden versucht es 30 s lang niemand erneut (503)
+DEFEKT_VERZUG_S = 5.0   # so lange bleibt der Prozess nach "defekt" noch da, damit Antworten rausgehen
+EXIT_CODE_DEFEKT = 70
 _laedt = False          # gerade im Laden (nur unter _modell_lock gesetzt, fuer /healthz gelesen)
+_defekt = False         # torch ist nach einem gescheiterten Import unbrauchbar: nur ein Neustart hilft
+_letzter_fehler: float | None = None
+_torchaudio = None
 
 
 class ModellLaedt(Exception):
-    """Das Modell ist noch nicht bereit (Laden laeuft laenger als die Wartezeit der Anfrage)."""
+    """Das Modell ist noch nicht bereit (Laden laeuft laenger als die Wartezeit, oder Abkuehlzeit nach Fehler)."""
+
+
+class ModellDefekt(Exception):
+    """torch ist im Prozess unbrauchbar; der Dienst beendet sich, der Waechter startet ihn neu."""
+
+
+def _beenden() -> None:
+    os._exit(EXIT_CODE_DEFEKT)
 
 
 def _chatterbox_module_verwerfen() -> None:
-    """Nach einem gescheiterten Laden nur chatterbox* aus sys.modules entfernen: Python laesst halb
-    importierte Pakete dort zurueck, ein neuer Versuch sieht sonst den Rest. torch* bleibt UNBERUEHRT:
-    ein zweiter Import von torch in demselben Prozess ist unsicher (C-Erweiterungen werden doppelt
-    registriert); ein von Python selbst entferntes torch-Modul holt der naechste Versuch neu."""
+    """Nach einem gescheiterten Laden nur chatterbox* aus sys.modules entfernen (reines Python, ohne
+    Nebenwirkung neu importierbar). torch*/torchaudio* werden NIE angefasst und NIE ein zweites Mal importiert:
+    nach einem halb gelungenen Import (torch/__init__.py ruft _C._initExtension VOR dem Import von torch.hub
+    auf) wuerde ein neuer Versuch Erweiterungen doppelt registrieren. Darum gilt ein halb importiertes torch
+    als defekt (_torch_halb_importiert) und der Prozess wird neu gestartet, statt es noch einmal zu versuchen."""
     import sys
     for name in [n for n in sys.modules if n == "chatterbox" or n.startswith("chatterbox.")]:
         sys.modules.pop(name, None)
+
+
+def _torch_halb_importiert() -> bool:
+    """True, wenn von torch oder torchaudio Untermodule in sys.modules stehen, das Paket selbst aber nicht:
+    Python hat das Paket nach einem Fehler beim Import entfernt, der Rest blieb."""
+    import sys
+    for basis in ("torch", "torchaudio"):
+        if basis not in sys.modules and any(n.startswith(basis + ".") for n in list(sys.modules)):
+            return True
+    return False
+
+
+def _defekt_setzen(e: BaseException) -> None:
+    """Einmal: Typname ins Protokoll, Zustand 'defekt', Prozess nach kurzem Verzug beenden (Exit-Code != 0).
+    Der Waechter (claw/dienst_waechter.py) findet den Port tot und startet per Startskript neu (Lauf alle 5 min)."""
+    global _defekt
+    if _defekt:
+        return
+    _defekt = True
+    LOG.error("Modell laden fehlgeschlagen: %s - torch unbrauchbar, Dienst beendet sich fuer den Neustart",
+              type(e).__name__)
+    t = threading.Timer(DEFEKT_VERZUG_S, lambda: _beenden())
+    t.daemon = True
+    t.start()
 
 
 def _modell_laden(warten_s: float | None = None):
     """Laedt bei Bedarf (24.10.2026). TON_MODELL_ORDNER = Ordner mit den Gewichten auf der SSD
     (from_local); ohne ihn wie bisher ueber den Hugging-Face-Cache (am PC auf der HDD E:, kalt ~6 min).
 
-    12.11.2026: Import UND Aufbau laufen unter _modell_lock, auch torchaudio (_torchaudio_holen) - zwei
+    12.11.2026: Import UND Aufbau laufen unter _modell_lock, torchaudio ebenso (_torchaudio_holen) - zwei
     Threads, die gleichzeitig torch importierten, zerlegten sich (ImportError ... partially initialized
     module 'torch.hub', in der Gegenseite KeyError aus der Importmaschinerie). warten_s=None wartet
-    unbegrenzt (Vorladen); sonst ModellLaedt, wenn das Laden in der Zeit nicht fertig wurde."""
-    global _modell, _laedt
+    unbegrenzt (Vorladen); sonst ModellLaedt, wenn das Laden in der Zeit nicht fertig wurde.
+    Scheitert das Laden und ist torch danach halb importiert: ModellDefekt, kein weiterer Versuch.
+    Sonstige Ladefehler: Abkuehlzeit, dann sauberer neuer Versuch."""
+    global _modell, _laedt, _letzter_fehler
+    if _defekt:
+        raise ModellDefekt("torch unbrauchbar")
     if not _modell_lock.acquire(timeout=-1 if warten_s is None else max(0.0, warten_s)):
         raise ModellLaedt("Modell wird noch geladen")
     try:
+        if _defekt:
+            raise ModellDefekt("torch unbrauchbar")
         if _modell is None:
+            if _letzter_fehler is not None and time.monotonic() - _letzter_fehler < ABKUEHLEN_S:
+                raise ModellLaedt("Laden ist gerade gescheitert")
             _laedt = True
             geraet = os.environ.get("TON_GERAET", "cuda")
             ordner = os.environ.get("TON_MODELL_ORDNER", "").strip()
@@ -251,6 +300,10 @@ def _modell_laden(warten_s: float | None = None):
                 # 24.10.2026: ein Abbruch (os error 1455) hielt sonst 5,5 GB halb geladener Gewichte fest
                 _modell = None
                 _chatterbox_module_verwerfen()
+                _letzter_fehler = time.monotonic()
+                if _torch_halb_importiert():
+                    _defekt_setzen(e)
+                    raise ModellDefekt("torch unbrauchbar") from None
                 try:
                     _freigeben_geraet()
                 except Exception:  # noqa: BLE001 - Aufraeumen darf die eigentliche Ausnahme nicht ersetzen
@@ -266,15 +319,36 @@ def _modell_laden(warten_s: float | None = None):
         _modell_lock.release()
 
 
-def _torchaudio_holen():
-    """torchaudio unter demselben Lock importieren wie das Modell (nie parallel zu einem Laden)."""
-    with _modell_lock:
-        import torchaudio
+def _torchaudio_holen(warten_s: float | None = None):
+    """torchaudio einmal importieren, unter demselben Lock wie das Modell und mit Zeitgrenze (nie unbegrenzt
+    hinter einem laufenden Laden). Danach aus dem Zwischenspeicher, ohne Lock."""
+    global _torchaudio
+    if _torchaudio is not None:
+        return _torchaudio
+    if _defekt:
+        raise ModellDefekt("torch unbrauchbar")
+    if not _modell_lock.acquire(timeout=-1 if warten_s is None else max(0.0, warten_s)):
+        raise ModellLaedt("Modell wird noch geladen")
+    try:
+        if _defekt:
+            raise ModellDefekt("torch unbrauchbar")
+        try:
+            import torchaudio
+        except BaseException as e:
+            if _torch_halb_importiert():
+                _defekt_setzen(e)
+                raise ModellDefekt("torch unbrauchbar") from None
+            raise
+        _torchaudio = torchaudio
         return torchaudio
+    finally:
+        _modell_lock.release()
 
 
 def modell_zustand() -> str:
-    """'geladen' | 'laedt' | 'nicht-geladen' - fuer /healthz, ohne den Lock zu nehmen."""
+    """'defekt' | 'geladen' | 'laedt' | 'nicht-geladen' - fuer /healthz, ohne den Lock zu nehmen."""
+    if _defekt:
+        return "defekt"
     if _modell is not None:
         return "geladen"
     return "laedt" if _laedt else "nicht-geladen"
@@ -533,8 +607,9 @@ def sprechen(text: str, sprache: str, probe: Path | None, regler: dict[str, floa
 
 def _sprechen_chatterbox(text: str, sprache: str, probe: Path | None,
                          regler: dict[str, float] | None = None) -> bytes:
-    modell = _modell_laden(LADEN_WARTEN_S)
-    torchaudio = _torchaudio_holen()
+    frist = time.monotonic() + LADEN_WARTEN_S      # Gesamtbudget dieser Anfrage fuer alles Warten aufs Laden
+    modell = _modell_laden(max(0.0, frist - time.monotonic()))
+    torchaudio = _torchaudio_holen(max(0.0, frist - time.monotonic()))
     text = aussprache_anwenden(text, aussprache_laden())
     parameter = {**einstellungen_laden(probe.stem if probe is not None else "standard"), **(regler or {})}
     with _sprech_lock:   # ein Modell, eine GPU: nacheinander
@@ -564,7 +639,11 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(rumpf)
 
-    def _nicht_bereit(self) -> None:
+    def _nicht_bereit(self, defekt: bool = False) -> None:
+        if defekt:
+            self._antwort(503, "Der Sprech-Dienst muss neu starten und ist gleich wieder da, bitte spaeter erneut versuchen."
+                          .encode("utf-8"), "text/plain; charset=utf-8", {"Retry-After": str(RETRY_DEFEKT_S)})
+            return
         self._antwort(503, "Das Sprachmodell wird noch geladen, bitte in einer Minute erneut versuchen.".encode("utf-8"),
                       "text/plain; charset=utf-8", {"Retry-After": str(RETRY_NACH_S)})
 
@@ -601,6 +680,8 @@ class Handler(BaseHTTPRequestHandler):
             LOG.warning("ElevenLabs gescheitert (%s)", e)
             self._antwort(502, b"ElevenLabs nicht verfuegbar", "text/plain; charset=utf-8",
                           {"X-Ton-Engine-Fehler": "elevenlabs"})
+        except ModellDefekt:
+            self._nicht_bereit(defekt=True)
         except ModellLaedt:
             self._nicht_bereit()
         except Exception as e:  # noqa: BLE001 - Modell/GPU-Fehler als 500 mit Typ
@@ -637,6 +718,8 @@ class Handler(BaseHTTPRequestHandler):
                 rumpf = anpassen(rumpf, sample_rate=vo["sample_rate"], fit=vo["fit"],
                                  sekunden=vo["sekunden"])
             self._antwort(200, rumpf, "audio/wav")
+        except ModellDefekt:
+            self._nicht_bereit(defekt=True)
         except ModellLaedt:
             self._nicht_bereit()
         except Exception as e:  # noqa: BLE001 - Modell/GPU-Fehler als 500 mit Grund
@@ -656,6 +739,8 @@ def vorladen_starten() -> threading.Thread | None:
         try:
             _modell_laden()
             LOG.info("Modell vorgeladen")
+        except ModellDefekt:
+            pass    # schon protokolliert (_defekt_setzen); der Prozess beendet sich
         except Exception as e:  # noqa: BLE001 - der Dienst bleibt erreichbar, die naechste Anfrage laedt erneut
             LOG.warning("Vorladen fehlgeschlagen: %s", type(e).__name__)   # nur der Typname
     t = threading.Thread(target=laden, name="vorladen", daemon=True)

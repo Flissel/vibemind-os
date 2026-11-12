@@ -904,3 +904,22 @@ def test_problemarten_der_grenzen_und_des_422():
     assert wa._problem([video_texte.GRENZE_QUELLE + " 201"])[0] == "quellname"
     assert wa._problem([wa.ABGELEHNT + " belege: ungültiger Eintrag"]) == ("text", wa.SAETZE_PROBLEM["text"])
     assert all(re.fullmatch(r"[a-z0-9_]+", art) for art in wa.SAETZE_PROBLEM)
+
+
+# --- Stimme nicht bereit: keine Szene nehmen (12.11.2026) ---------------------------------------
+
+def test_keine_szene_solange_die_stimme_nicht_bereit_ist(F, caplog):
+    import logging
+    z = zeile(5, stand="wird_erzeugt", sprechtext=SATZ, bild=BILD)
+    api = FakeApi([werk(szenen=[z], stand="text_ok")], nehmen={AID_A: z})
+    bereit = [False]
+    with caplog.at_level(logging.INFO, logger="werkbank_arbeiter"):
+        for _ in range(3):
+            ein_durchlauf(api, stimme_bereit=lambda: bereit[0], **F)
+        assert api.rufe("szene_nehmen") == [] and api.rufe("szene_fehler") == [] and api.rufe("hinweis") == []
+        assert sprechen_fake.gerufen == []
+        assert sum("nicht bereit" in r.getMessage() for r in caplog.records) == 1      # eine Zeile je Zustandswechsel
+        bereit[0] = True
+        assert ein_durchlauf(api, stimme_bereit=lambda: bereit[0], **F) == "clip"
+    assert len(api.rufe("szene_nehmen")) == 1 and api.rufe("szene_clip")
+    assert sum(r.getMessage() == "Stimme bereit" for r in caplog.records) == 1

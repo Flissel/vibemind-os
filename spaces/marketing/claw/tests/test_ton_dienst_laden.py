@@ -60,10 +60,14 @@ def fake(monkeypatch):
     _fake_module_eintragen(monkeypatch)
     monkeypatch.setattr(td, "_modell", None)
     monkeypatch.setattr(td, "_laedt", False)
+    monkeypatch.setattr(td, "_defekt", False)
+    monkeypatch.setattr(td, "_letzter_fehler", None)
+    monkeypatch.setattr(td, "_torchaudio", None)
     monkeypatch.setattr(td, "_freigeben_geraet", lambda: None)
     monkeypatch.delenv("TON_MODELL_ORDNER", raising=False)
+    _Fake.torchaudio_echt = td._torchaudio_holen
     ta = types.SimpleNamespace(save=lambda puffer, wav, sr, **kw: puffer.write(b"RIFFfake"))
-    monkeypatch.setattr(td, "_torchaudio_holen", lambda: ta)
+    monkeypatch.setattr(td, "_torchaudio_holen", lambda *a: ta)
     return _Fake
 
 
@@ -124,7 +128,8 @@ def test_scheitern_vergiftet_nicht_und_logt_nur_den_typ(fake, caplog, monkeypatc
     assert td._modell is None and td.modell_zustand() == "nicht-geladen"
     assert "OSError" in caplog.text and "geheim" not in caplog.text
     assert "chatterbox.teil" not in sys.modules and sys.modules["torch_fremd"] is fremd   # nur chatterbox*
-    # zweiter Versuch: chatterbox wird frisch importiert (hier wieder eingetragen) und gelingt
+    # zweiter Versuch nach der Abkuehlzeit: chatterbox wird frisch importiert (hier wieder eingetragen) und gelingt
+    monkeypatch.setattr(td, "_letzter_fehler", time.monotonic() - td.ABKUEHLEN_S - 1)
     _fake_module_eintragen(monkeypatch)
     assert isinstance(td._modell_laden(), _Modell) and fake.aufbauten == 2
 
@@ -223,3 +228,164 @@ def test_sprechen_beim_laden_503(fake, monkeypatch):
         vorladen.join(10)
         server.shutdown()
         server.server_close()
+
+
+# --- Review-Nacharbeit 12.11.2026: Importe unter Lock, defekt, Abkuehlzeit ---------------------------
+
+def test_alle_torch_chatterbox_importe_laufen_unter_dem_lock(fake, monkeypatch):
+    """Faengt den eigentlichen Fehler: ein Import von torch*/torchaudio*/chatterbox* ausserhalb von
+    _modell_lock (Vorladen und jeder Anfrageweg). Echte Pakete werden nie importiert."""
+    import builtins
+    echt = builtins.__import__
+    gesehen: list[tuple[str, bool]] = []
+    mtl = types.ModuleType("chatterbox.mtl_tts")
+    mtl.ChatterboxMultilingualTTS = _Fake
+    ta = types.ModuleType("torchaudio")
+    ta.save = lambda puffer, wav, sr, **kw: puffer.write(b"RIFFfake")
+
+    def hook(name, globals=None, locals=None, fromlist=(), level=0):
+        if level == 0 and name.split(".")[0] in ("torch", "torchaudio", "chatterbox"):
+            gesehen.append((name, td._modell_lock.locked()))
+            return {"chatterbox.mtl_tts": mtl, "torchaudio": ta}.get(name, types.ModuleType(name))
+        return echt(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(td, "_torchaudio_holen", fake.torchaudio_echt)   # echte Funktion
+    monkeypatch.setattr(td, "_stille_gekuerzt", lambda wav: wav)
+    monkeypatch.setattr(td, "_wav_dauer_s", lambda wav: 1.0)
+    monkeypatch.setattr(td, "anpassen", lambda wav, **kw: b"ANGEPASST")
+    monkeypatch.setenv("TON_VORLADEN", "1")
+    monkeypatch.setattr(builtins, "__import__", hook)
+
+    def zuruecksetzen():
+        td._modell = None
+        td._torchaudio = None
+    server = _server()
+    try:
+        # Vorladen
+        zuruecksetzen()
+        td.vorladen_starten().join(10)
+        assert td.modell_zustand() == "geladen"
+        vorladen = list(gesehen)
+        assert vorladen and all(lock for _, lock in vorladen), vorladen
+        # jeder Anfrageweg, jeweils mit leerem Zustand
+        for pfad, nutzlast in (("/satz", {"text": "Hallo."}), ("/sprechen", {"text": "Hallo."}),
+                               ("/voiceover", {"text": "Hallo.", "duration_frames": 30, "fps_num": 30,
+                                               "fps_den": 1, "sample_rate": 24000})):
+            zuruecksetzen()
+            gesehen.clear()
+            status, _, _ = _anfrage(server, pfad, nutzlast)
+            assert status == 200, (pfad, status)
+            namen = {n for n, _ in gesehen}
+            assert "chatterbox.mtl_tts" in namen and "torchaudio" in namen, (pfad, namen)
+            assert all(lock for _, lock in gesehen), (pfad, gesehen)
+    finally:
+        monkeypatch.setattr(builtins, "__import__", echt)
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize("pfad, nutzlast", [
+    ("/sprechen", {"text": "Hallo."}),
+    ("/voiceover", {"text": "Hallo.", "duration_frames": 30, "fps_num": 30, "fps_den": 1, "sample_rate": 24000}),
+])
+def test_sprechen_und_voiceover_503_waehrend_des_ladens(fake, monkeypatch, pfad, nutzlast):
+    fake.schranke = threading.Event()
+    server = _server()
+    vorladen = threading.Thread(target=td._modell_laden)
+    vorladen.start()
+    try:
+        _warte_bis_laedt()
+        monkeypatch.setattr(td, "LADEN_WARTEN_S", 0.1)
+        status, kopf, rumpf = _anfrage(server, pfad, nutzlast)
+        assert status == 503 and kopf["Retry-After"] == "30" and b"KeyError" not in rumpf
+    finally:
+        fake.schranke.set()
+        vorladen.join(10)
+        server.shutdown()
+        server.server_close()
+
+
+def test_halb_importiertes_torch_ist_defekt_503_und_prozessende(fake, monkeypatch, caplog):
+    monkeypatch.delitem(sys.modules, "torch", raising=False)          # Python hat torch entfernt ...
+    monkeypatch.setitem(sys.modules, "torch._C", types.ModuleType("torch._C"))   # ... der Rest blieb
+    ende = threading.Event()
+    monkeypatch.setattr(td, "_beenden", lambda: ende.set())
+    monkeypatch.setattr(td, "DEFEKT_VERZUG_S", 0.05)
+    monkeypatch.setattr(td, "LADEN_WARTEN_S", 10.0)
+    fake.schranke = threading.Event()
+    fake.fehler = [ImportError("cannot import name tqdm geheim")]
+    ergebnis = []
+
+    def lader():
+        try:
+            td._modell_laden()
+        except Exception as e:  # noqa: BLE001
+            ergebnis.append(type(e).__name__)
+    t = threading.Thread(target=lader)
+    server = _server()
+    try:
+        with caplog.at_level(logging.INFO, logger=td.LOG.name):
+            t.start()
+            _warte_bis_laedt()
+            antwort = []
+            w = threading.Thread(target=lambda: antwort.append(_anfrage(server, "/satz", {"text": "Hallo."})))
+            w.start()
+            time.sleep(0.2)              # die Anfrage steht jetzt hinter dem Lock
+            fake.schranke.set()
+            t.join(10)
+            w.join(15)
+        assert ergebnis == ["ModellDefekt"]
+        status, kopf, rumpf = antwort[0]
+        assert status == 503 and kopf["Retry-After"] == "60" and b"neu starten" in rumpf
+        assert ende.wait(2), "Prozessende wurde nicht angefordert"
+        assert td.modell_zustand() == "defekt" and fake.aufbauten == 1       # die Wartende hat NICHT erneut geladen
+        _, _, hz = _anfrage(server, "/healthz")
+        assert json.loads(hz) == {"ok": True, "modell": "defekt"}
+        with pytest.raises(td.ModellDefekt):
+            td._modell_laden()
+        assert fake.aufbauten == 1
+        zeilen = [r for r in caplog.records if "fehlgeschlagen" in r.getMessage()]
+        assert len(zeilen) == 1 and "ImportError" in zeilen[0].getMessage() and "geheim" not in caplog.text
+    finally:
+        fake.schranke.set()
+        server.shutdown()
+        server.server_close()
+
+
+def test_vollstaendiges_torch_bei_ladefehler_ist_nicht_defekt(fake, monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
+    monkeypatch.setattr(td, "_beenden", lambda: pytest.fail("darf nicht beenden"))
+    fake.fehler = [MemoryError("os error 1455")]
+    with pytest.raises(MemoryError):
+        td._modell_laden()
+    assert td.modell_zustand() == "nicht-geladen"
+
+
+def test_abkuehlzeit_nach_gescheitertem_laden(fake, monkeypatch):
+    fake.fehler = [RuntimeError("weg")]
+    with pytest.raises(RuntimeError):
+        td._modell_laden()
+    with pytest.raises(td.ModellLaedt):          # sofort danach: kein weiterer Ladeversuch
+        td._modell_laden()
+    assert fake.aufbauten == 1
+    monkeypatch.setattr(td, "_letzter_fehler", time.monotonic() - td.ABKUEHLEN_S - 1)
+    _fake_module_eintragen(monkeypatch)          # der Fehlschlag hat chatterbox* verworfen
+    assert isinstance(td._modell_laden(), _Modell) and fake.aufbauten == 2
+
+
+def test_gesamtbudget_je_anfrage(fake, monkeypatch):
+    """Eine Anfrage wartet insgesamt nicht laenger als LADEN_WARTEN_S, auch wenn mehrere Schritte warten."""
+    fake.schranke = threading.Event()
+    vorladen = threading.Thread(target=td._modell_laden)
+    vorladen.start()
+    _warte_bis_laedt()
+    monkeypatch.setattr(td, "_torchaudio_holen", fake.torchaudio_echt)
+    monkeypatch.setattr(td, "LADEN_WARTEN_S", 0.3)
+    beginn = time.monotonic()
+    try:
+        with pytest.raises(td.ModellLaedt):
+            td._sprechen_chatterbox("Hallo", "de", None)
+        assert time.monotonic() - beginn < 1.5
+    finally:
+        fake.schranke.set()
+        vorladen.join(10)

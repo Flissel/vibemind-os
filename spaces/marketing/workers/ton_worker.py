@@ -76,10 +76,21 @@ class TonApi:
         self._post(f"/{aid}/fertig", {"befund": befund[:500]})
 
 
+def modell_bereit(rumpf: bytes) -> bool:
+    """/healthz-Rumpf des Sprech-Dienstes: JSON {"modell": ...}. Nicht bereit: "laedt" (jede Anfrage liefe in
+    das 503 nach der Wartezeit) und "defekt" (der Dienst startet gleich neu). "geladen" und "nicht-geladen"
+    (Laden bei Bedarf, der erste Auftrag laedt) sind bereit, ebenso ein alter Dienst mit dem Rumpf "ok"."""
+    try:
+        daten = json.loads(rumpf)
+    except ValueError:
+        return True
+    return not (isinstance(daten, dict) and daten.get("modell") in ("laedt", "defekt"))
+
+
 def dienst_bereit(url: str = DIENST) -> bool:
     try:
         with urllib.request.urlopen(url + "/healthz", timeout=3) as r:
-            return r.status == 200
+            return r.status == 200 and modell_bereit(r.read())
     except (urllib.error.URLError, OSError):
         return False
 

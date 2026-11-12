@@ -65,6 +65,23 @@ def _post(nutzlast: dict, url: str | None = None) -> tuple[int, dict, bytes]:
         return e.code, dict(e.headers), b""
 
 
+def stimme_bereit(url: str | None = None) -> bool:
+    """Ist der Sprech-Dienst bereit, eine Szene anzunehmen? /healthz mit "modell": "laedt" oder "defekt" = nein
+    (die Szene liefe in das 503 nach der Wartezeit); "geladen", "nicht-geladen" (Laden bei Bedarf) und ein alter
+    Dienst mit dem Rumpf "ok" = ja. Dienst nicht erreichbar = nein."""
+    try:
+        with urllib.request.urlopen((url or DIENST) + "/healthz", timeout=3) as r:
+            if r.status != 200:
+                return False
+            try:
+                daten = json.loads(r.read())
+            except ValueError:
+                return True
+    except (urllib.error.URLError, OSError):
+        return False
+    return not (isinstance(daten, dict) and daten.get("modell") in ("laedt", "defekt"))
+
+
 def _kopf(kopf: dict, name: str) -> str:
     return next((str(w) for k, w in kopf.items() if k.lower() == name.lower()), "")
 
