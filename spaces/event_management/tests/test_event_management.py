@@ -231,17 +231,18 @@ def _werkzeuge_aus_soul() -> tuple[set[str], set[str]]:
     return set(zeile.findall(lesen)), set(zeile.findall(schreiben))
 
 
-def test_vertrag_bildet_jedes_werkzeug_mit_richtigem_writes_ab() -> None:
+def test_vertrag_hat_zwei_grobe_capabilities() -> None:
+    """Grobe Events aussen: der Brain sieht ask/do, nicht die 20 Werkzeuge
+    (die stehen in SOUL.md; die Einzelheiten prueft test_brain_anmeldung)."""
     vertrag = yaml.safe_load(VERTRAG.read_text(encoding="utf-8"))
     assert vertrag["id"] == "event-management"
     assert vertrag["prefixes"] == ["event."]
-    caps = {c["name"]: c["writes"] for c in vertrag["capabilities"]}
+    assert {c["name"]: c["writes"] for c in vertrag["capabilities"]} == {
+        "event_ask": False,
+        "event_do": True,
+    }
     lesen, schreiben = _werkzeuge_aus_soul()
     assert len(lesen) == 9 and len(schreiben) == 11
-    erwartet = {f"event_{w}": False for w in lesen}
-    erwartet.update({f"event_{w}": True for w in schreiben})
-    erwartet["event_task_image_upload"] = True
-    assert caps == erwartet
 
 
 def test_praefix_gehoert_keinem_anderen_vertrag() -> None:
