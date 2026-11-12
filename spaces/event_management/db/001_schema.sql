@@ -161,13 +161,17 @@ create table if not exists event.budget_posten (
     foreign key (event_id, firma_id) references event.event (id, firma_id) on delete cascade
 );
 
+-- actor ist nur ein Anzeigename (frei waehlbar, nicht beweiskraeftig); wer es war,
+-- sagt actor_person_id (NULL = System ohne Person). quelle ist ein Format, keine
+-- Aufzaehlung: neue Quellen brauchen keine Migration.
 create table if not exists event.verlauf (
     id bigserial primary key,
     event_id uuid not null,
     firma_id uuid not null,
     zeitpunkt timestamptz not null default now(),
     actor text not null,
-    quelle text not null,
+    actor_person_id uuid references event.person (id),
+    quelle text not null check (quelle ~ '^[a-z_]{1,32}$'),
     baustein text not null,
     aktion text not null,
     ziel_id uuid,

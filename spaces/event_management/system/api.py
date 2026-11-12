@@ -483,11 +483,12 @@ def erstelle_app(
     @app.get("/api/events/{event_id}/verlauf")
     def verlauf_lesen(
         event_id: UUID, s: Lesen, seit: datetime | None = None, actor: str | None = None,
-        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+        limit: Annotated[int, Query(ge=1, le=500)] = 100, actor_person_id: UUID | None = None,
     ) -> list[dict[str, Any]]:
         return verlauf.lesen(s.conn, s.k, event_id,
                              seit=events.zeit(seit, "seit") if seit is not None else None,
-                             actor=_text_param(actor), limit=limit)
+                             actor=_text_param(actor), limit=limit,
+                             actor_person_id=actor_person_id)
 
     # --- Kontakte -------------------------------------------------------------------
 

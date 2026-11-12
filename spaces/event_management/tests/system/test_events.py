@@ -386,6 +386,33 @@ def test_event_bindung_katalog_und_anlegen(db_admin: Any, welt: dict[str, Any]) 
         events.event_anlegen(stolper, k, welt["fa"], "fest", "Neu", b, e)
 
 
+# --- Verlauf: actor ist Anzeige, actor_person_id ist beweiskraeftig ----------------
+
+
+def test_verlauf_actor_person_id_trennt_gleichnamige(db_admin: Any, db_app: Any) -> None:
+    f = _firma(db_admin, "bsp-a")
+    echt = _person(db_admin, "echt@example.org", "Erika Beispiel")
+    falsch = _person(db_admin, "falsch@example.org", "VibeMind")  # nennt sich wie das System
+    b, e = _zeiten()
+    conn = db_app()
+    row = events.event_anlegen(conn, _k(echt, {f: "leitung"}), f, "fest", "F", b, e)
+    eid = row["id"]
+    events.event_aendern(conn, _k(falsch, {f: "leitung"}), eid, name="Von der Person")
+    system = Kontext(person_id=None, betreiber=True, actor="VibeMind", quelle="werkzeug_server")
+    events.event_aendern(conn, system, eid, name="Vom System")
+    k = _k(echt, {f: "leitung"})
+    alle = verlauf.lesen(conn, k, eid)
+    assert [(x["actor"], x["actor_person_id"]) for x in alle] == [
+        ("VibeMind", None), ("VibeMind", falsch), ("Erika Beispiel", echt)]
+    # Der Name ist nicht beweiskraeftig: beide "VibeMind"-Eintraege passen.
+    assert len(verlauf.lesen(conn, k, eid, actor="VibeMind")) == 2
+    nur_person = verlauf.lesen(conn, k, eid, actor_person_id=falsch)
+    assert [(x["aktion"], x["actor_person_id"]) for x in nur_person] == [("geaendert", falsch)]
+    assert [x["aktion"] for x in verlauf.lesen(conn, k, eid, actor_person_id=echt)] == [
+        "angelegt"]
+    assert verlauf.lesen(conn, k, eid, actor_person_id=_person(db_admin, "c@example.org")) == []
+
+
 # --- Status: Absage/Archiv zuruecknehmen nur mit event_absagen --------------------
 
 

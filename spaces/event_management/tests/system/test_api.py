@@ -535,6 +535,11 @@ def test_event_routen_und_fehlerabbildung(welt: dict[str, Any]) -> None:
     assert [v["aktion"] for v in verlauf] == ["status_laeuft", "geaendert", "angelegt"]
     assert verlauf[0]["quelle"] == "oberflaeche"
     assert len(c.get(f"/api/events/{eid}/verlauf", params={"limit": 1}).json()) == 1
+    assert {v["actor_person_id"] for v in verlauf} == {str(welt["la"])}
+    assert len(c.get(f"/api/events/{eid}/verlauf",
+                     params={"actor_person_id": str(welt["la"])}).json()) == 3
+    assert c.get(f"/api/events/{eid}/verlauf",
+                 params={"actor_person_id": str(welt["ma"])}).json() == []
     assert c.get(f"/api/events/{eid}/verlauf", params={"limit": 0}).status_code == 422
     assert c.get(f"/api/events/{uuid4()}").status_code == 404
     assert c.get(f"/api/events/{welt['eb']}").status_code == 404

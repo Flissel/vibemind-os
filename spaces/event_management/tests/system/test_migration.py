@@ -172,3 +172,43 @@ def test_aufgabe_nur_mit_kategorie_desselben_events(db_admin):
     assert db_admin.execute(
         "select count(*) as n from event.aufgabe where event_id = %s", (e1,)
     ).fetchone()["n"] == 0
+
+
+def _verlauf_event(db_admin):
+    firma_id = _firma(db_admin)
+    ev = db_admin.execute(
+        "insert into event.event (firma_id, kategorie, name, beginn, ende)"
+        " values (%s, 'fest', 'Sommerfest', now(), now()) returning id", (firma_id,),
+    ).fetchone()["id"]
+    return firma_id, ev
+
+
+@pytest.mark.parametrize("quelle", ["oberflaeche", "system", "werkzeug_server", "a" * 32])
+def test_verlauf_quelle_format_ok(db_admin, quelle):
+    firma_id, ev = _verlauf_event(db_admin)
+    db_admin.execute(
+        "insert into event.verlauf (event_id, firma_id, actor, quelle, baustein, aktion)"
+        " values (%s, %s, 'Erika', %s, 'event', 'angelegt')", (ev, firma_id, quelle))
+
+
+@pytest.mark.parametrize("quelle", ["", "API", "ober-flaeche", "a" * 33, "x y", "quelle\n"])
+def test_verlauf_quelle_format_abgelehnt(db_admin, quelle):
+    firma_id, ev = _verlauf_event(db_admin)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        db_admin.execute(
+            "insert into event.verlauf (event_id, firma_id, actor, quelle, baustein, aktion)"
+            " values (%s, %s, 'Erika', %s, 'event', 'angelegt')", (ev, firma_id, quelle))
+
+
+def test_verlauf_actor_person_id_verweist_auf_person(db_admin):
+    firma_id, ev = _verlauf_event(db_admin)
+    with pytest.raises(psycopg.errors.ForeignKeyViolation):
+        db_admin.execute(
+            "insert into event.verlauf (event_id, firma_id, actor, quelle, baustein, aktion,"
+            " actor_person_id) values (%s, %s, 'Erika', 'system', 'event', 'angelegt',"
+            " gen_random_uuid())", (ev, firma_id))
+    db_admin.execute(
+        "insert into event.verlauf (event_id, firma_id, actor, quelle, baustein, aktion)"
+        " values (%s, %s, 'System', 'system', 'event', 'angelegt')", (ev, firma_id))
+    assert db_admin.execute("select actor_person_id from event.verlauf").fetchone()[
+        "actor_person_id"] is None
