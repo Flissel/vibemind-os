@@ -183,3 +183,26 @@ def test_fehlender_token_nennt_variable(gateway, monkeypatch):
     assert r["ok"] is False
     assert "EVENT_GATEWAY_TOKEN" in r["fehler"]
     assert gateway.posts == 0
+
+
+def test_token_mit_zeilenumbruch_wird_abgelehnt(gateway, monkeypatch, tmp_path):
+    datei = tmp_path / "token"
+    datei.write_bytes(b"geheim-123\nzweite-zeile-abc\r\n")
+    monkeypatch.setenv("EVENT_GATEWAY_TOKEN_FILE", str(datei))
+    r = uebergabe.frage({"text": "hallo"})
+    assert r["ok"] is False
+    assert "EVENT_GATEWAY_TOKEN" in r["fehler"]
+    assert "geheim-123" not in str(r)
+    assert "zweite-zeile-abc" not in str(r)
+    assert gateway.posts == 0 and gateway.gets == 0
+
+
+def test_log_enthaelt_status_aber_weder_text_noch_token(gateway, caplog):
+    gateway.status = 401
+    gateway.body = {"error": {"message": "nein"}}
+    with caplog.at_level("INFO", logger=uebergabe.__name__):
+        uebergabe.frage({"text": "streng-vertraulicher-text"})
+    log = " ".join(rec.getMessage() for rec in caplog.records)
+    assert "401" in log
+    assert "streng-vertraulicher-text" not in log
+    assert TOKEN not in log
