@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { Meldung } from '@/components/Meldung'
-import { api } from '@/lib/api'
+import { api, zurAnmeldung } from '@/lib/api'
 import type { Ich } from '@/lib/typen'
 
 const IchContext = createContext<Ich | null>(null)
@@ -30,8 +30,7 @@ export function AnmeldeSchutz({ children }: { children: ReactNode }) {
       .then((daten) => {
         if (!aktiv) return
         if (daten === null) {
-          const pfad = window.location.pathname + window.location.search
-          window.location.assign('/anmelden?weiter=' + encodeURIComponent(pfad))
+          zurAnmeldung()
           return
         }
         setIch(daten)

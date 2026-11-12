@@ -7,11 +7,11 @@ import { useIch } from '@/components/AnmeldeSchutz'
 import { Meldung } from '@/components/Meldung'
 import { api } from '@/lib/api'
 
-function zurAnmeldung(): void {
+function zurAnmeldeseite(): void {
   window.location.assign('/anmelden')
 }
 
-export function Kopfleiste({ nachAbmeldung = zurAnmeldung }: { nachAbmeldung?: () => void }) {
+export function Kopfleiste({ nachAbmeldung = zurAnmeldeseite }: { nachAbmeldung?: () => void }) {
   const ich = useIch()
   const [fehler, setFehler] = useState<unknown>(null)
   const zeigeFirmen = ich.betreiber || ich.rechte.verwalten.length > 0
@@ -27,8 +27,8 @@ export function Kopfleiste({ nachAbmeldung = zurAnmeldung }: { nachAbmeldung?: (
   }
 
   return (
-    <header className="border-b border-gray-200 bg-white">
-      <div className="mx-auto flex h-14 max-w-6xl items-center justify-between gap-4 px-4">
+    <header className="fixed inset-x-0 top-0 z-40 h-[60px] bg-white/90 backdrop-blur-lg nice-shadow">
+      <div className="mx-auto flex h-full max-w-screen-2xl items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
         <nav className="flex items-center gap-6" aria-label="Hauptnavigation">
           <Link href="/" className="text-lg font-bold tracking-tight text-gray-900">
             VibeMind Events
@@ -55,7 +55,7 @@ export function Kopfleiste({ nachAbmeldung = zurAnmeldung }: { nachAbmeldung?: (
         </div>
       </div>
       {fehler !== null && (
-        <div className="mx-auto max-w-6xl px-4 pb-3">
+        <div className="mx-auto max-w-screen-2xl px-4 sm:px-6 lg:px-8">
           <Meldung fehler={fehler} />
         </div>
       )}

@@ -30,7 +30,8 @@ function aktuellerPfad(): string {
   return window.location.pathname + window.location.search
 }
 
-function abmelden401(): void {
+/** Leitet zur Anmeldung (`/anmelden?weiter=<aktueller Pfad>`), außer man ist schon dort. */
+export function zurAnmeldung(): void {
   // Auf der Anmeldeseite selbst nicht erneut dorthin leiten (kein verschachteltes `weiter`).
   if (window.location.pathname.startsWith('/anmelden')) return
   beiAbmeldung(aktuellerPfad())
@@ -103,7 +104,7 @@ function mitParametern(pfad: string, params?: Parameter): string {
 async function holen<T>(pfad: string, params?: Parameter): Promise<T> {
   const { status, body } = await roh('GET', mitParametern(pfad, params))
   if (status >= 400) {
-    if (status === 401) abmelden401()
+    if (status === 401) zurAnmeldung()
     throw new ApiFehler(status, detailText(body, status))
   }
   return body as T
@@ -126,7 +127,7 @@ async function tokenHolen(): Promise<string> {
   if (csrf) return csrf
   const daten = await ich()
   if (!daten) {
-    abmelden401()
+    zurAnmeldung()
     throw new ApiFehler(401, 'Nicht angemeldet')
   }
   return daten.csrf
@@ -149,7 +150,7 @@ async function senden<T>(
     antwort = await roh(methode, pfad, daten, token)
   }
   if (antwort.status >= 400) {
-    if (antwort.status === 401) abmelden401()
+    if (antwort.status === 401) zurAnmeldung()
     throw new ApiFehler(antwort.status, detailText(antwort.body, antwort.status))
   }
   return antwort.body as T

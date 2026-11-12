@@ -2,16 +2,15 @@ import clsx from 'clsx'
 import { CircleAlert, CircleCheck } from 'lucide-react'
 import { ApiFehler } from '@/lib/api'
 
-/** Text für den Benutzer: 422 zeigt die datenfreie Meldung der Fachschicht, 403/404/5xx
- *  bekommen feste Sätze (die API-Texte nennen interne Aktionsnamen). */
+/** Meldungstexte nach R4: 403, 404 und 422 (datenfreie Meldung der Fachschicht) haben
+ *  feste Texte bzw. `detail`, alles andere ist „Interner Fehler". */
 export function fehlerText(fehler: unknown): string {
   if (fehler instanceof ApiFehler) {
-    if (fehler.status === 403) return 'Dafür fehlt die Berechtigung.'
-    if (fehler.status === 404) return 'Nicht gefunden.'
-    if (fehler.status >= 500) return 'Interner Fehler. Bitte später erneut versuchen.'
-    return fehler.detail
+    if (fehler.status === 403) return 'Keine Berechtigung'
+    if (fehler.status === 404) return 'Nicht gefunden'
+    if (fehler.status === 422) return fehler.detail
   }
-  return 'Unerwarteter Fehler.'
+  return 'Interner Fehler'
 }
 
 interface Props {
