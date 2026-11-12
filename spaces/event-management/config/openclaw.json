@@ -1,0 +1,88 @@
+{
+  "gateway": {
+    "mode": "local",
+    "port": 19100,
+    "bind": "loopback",
+    "auth": {
+      "mode": "token"
+    }
+  },
+  "models": {
+    "providers": {
+      "shim": {
+        "baseUrl": "{{SHIM_URL}}",
+        "api": "openai-completions",
+        "apiKey": "shim-prueft-keinen-schluessel",
+        "models": [
+          {
+            "id": "claude-code-sonnet",
+            "name": "claude-code-sonnet"
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "shim/claude-code-sonnet"
+      },
+      "workspace": "/home/node/.openclaw/workspace"
+    }
+  },
+  "plugins": {
+    "entries": {
+      "telegram": {
+        "enabled": true
+      },
+      "whatsapp": {
+        "enabled": true
+      },
+      "browser": {
+        "enabled": false
+      }
+    }
+  },
+  "browser": {
+    "enabled": false,
+    "defaultProfile": "openclaw"
+  },
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "groupPolicy": "allowlist",
+      "groups": {
+        "{{TELEGRAM_GRUPPE}}": {
+          "requireMention": false
+        }
+      }
+    },
+    "whatsapp": {
+      "enabled": true,
+      "dmPolicy": "allowlist",
+      "allowFrom": ["{{WHATSAPP_ERLAUBT}}"],
+      "groupPolicy": "disabled"
+    }
+  },
+  "mcp": {
+    "servers": {
+      "event-app": {
+        "url": "{{EVENT_APP_URL}}/api/mcp",
+        "transport": "streamable-http",
+        "connectionTimeoutMs": 30000,
+        "requestTimeoutMs": 60000
+      }
+    }
+  },
+  "tools": {
+    "deny": ["group:web", "group:ui", "group:automation"],
+    "web": {
+      "search": {
+        "enabled": false
+      },
+      "fetch": {
+        "enabled": false
+      }
+    }
+  }
+}
