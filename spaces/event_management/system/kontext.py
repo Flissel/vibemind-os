@@ -10,6 +10,7 @@ from typing import Any
 from uuid import UUID
 
 import psycopg
+import psycopg.pq
 from psycopg.rows import dict_row
 
 log = logging.getLogger(__name__)
@@ -47,7 +48,13 @@ class Kontext:
 
 @contextmanager
 def transaktion(conn: psycopg.Connection[Any], kontext: Kontext) -> Iterator[psycopg.Cursor[Any]]:
-    """Transaktion mit lokal gesetztem RLS-Kontext (verfaellt mit Commit/Rollback)."""
+    """Transaktion mit lokal gesetztem RLS-Kontext (verfaellt mit Commit/Rollback).
+
+    Nur auf einer freien Verbindung: in einer offenen Transaktion wuerde daraus ein
+    Savepoint, und der innere Kontext bliebe fuer den Rest der aeusseren bestehen.
+    """
+    if conn.info.transaction_status != psycopg.pq.TransactionStatus.IDLE:
+        raise RuntimeError("transaktion braucht eine freie Verbindung (keine offene Transaktion)")
     werte = (
         ",".join(sorted(str(f) for f in kontext.firmen)),
         "an" if kontext.betreiber else "",

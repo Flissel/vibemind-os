@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID, uuid4
 
+import psycopg
 import pytest
 
 from spaces.event_management.system import firmen, rechte
@@ -133,7 +134,7 @@ def test_doppelte_wache_rls_haelt_bei_zu_weitem_kontext(db_admin: Any, db_app: A
     """Auch ohne Fachschicht sperrt die RLS: Leitung darf keine Firma anlegen."""
     f = _firma(db_admin, "firma-a")
     p = _person(db_admin, "a@example.org")
-    with pytest.raises(Exception):
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
         with transaktion(db_app(), _ctx(p, {f: "leitung"})) as cur:
             cur.execute("insert into event.firma (name, kurz) values ('x', 'xx')")
     assert db_admin.execute("select count(*) n from event.firma").fetchone()["n"] == 1
@@ -210,3 +211,56 @@ def test_transaktion_setzt_nur_lokal(db_app: Any) -> None:
     for name in ("firmen", "betreiber", "person", "event"):
         wert = conn.execute("select current_setting(%s, true) v", ("event." + name,)).fetchone()["v"]
         assert wert in ("", None)
+
+
+def test_transaktion_verschachtelt_wirft(db_app: Any) -> None:
+    conn = db_app()
+    with transaktion(conn, Kontext.system()):
+        with pytest.raises(RuntimeError):
+            with transaktion(conn, Kontext(person_id=None, betreiber=True)):
+                pass
+
+
+def test_transaktion_auf_freier_nicht_autocommit_verbindung(db_app: Any) -> None:
+    conn = db_app()
+    conn.autocommit = False
+    with transaktion(conn, Kontext(person_id=uuid4(), betreiber=True)) as cur:
+        cur.execute("select current_setting('event.betreiber') b")
+        assert cur.fetchone()["b"] == "an"
+    for name in ("firmen", "betreiber", "person", "event"):
+        wert = conn.execute("select current_setting(%s, true) v", ("event." + name,)).fetchone()["v"]
+        assert wert in ("", None)
+    conn.rollback()
+
+
+def test_transaktion_in_offener_transaktion_wirft(db_app: Any) -> None:
+    conn = db_app()
+    conn.autocommit = False
+    conn.execute("select 1")
+    with pytest.raises(RuntimeError):
+        with transaktion(conn, Kontext.system()):
+            pass
+    conn.rollback()
+
+
+def test_mitgliedschaft_setzen_prueft_passende_aktion(
+    db_admin: Any, db_app: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    f = _firma(db_admin, "firma-a")
+    p, q, r = (_person(db_admin, m) for m in ("a@example.org", "b@example.org", "c@example.org"))
+    _mitglied(db_admin, p, f, "leitung")
+    _mitglied(db_admin, q, f, "mitglied")
+    k = _ctx(p, {f: "leitung"})
+    alle = rechte.AKTIONEN - {"firma_anlegen"}
+    # Leitung ohne rolle_aendern: Rollenwechsel scheitert, Neuanlage geht.
+    monkeypatch.setitem(rechte._ROLLEN, "leitung", alle - {"rolle_aendern"})
+    with pytest.raises(KeinRecht):
+        firmen.mitgliedschaft_setzen(db_app(), k, q, f, "leitung")
+    firmen.mitgliedschaft_setzen(db_app(), k, r, f, "mitglied")
+    # Leitung ohne einladen: Neuanlage scheitert, Rollenwechsel geht.
+    monkeypatch.setitem(rechte._ROLLEN, "leitung", alle - {"einladen"})
+    with pytest.raises(KeinRecht):
+        firmen.mitgliedschaft_setzen(db_app(), k, uuid4(), f, "mitglied")
+    firmen.mitgliedschaft_setzen(db_app(), k, q, f, "leitung")
+    rollen = {m["mail"]: m["rolle"] for m in firmen.mitglieder(db_app(), k, f)}
+    assert rollen["b@example.org"] == "leitung"

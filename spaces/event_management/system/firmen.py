@@ -9,7 +9,7 @@ from uuid import UUID
 import psycopg
 
 from spaces.event_management.system import rechte
-from spaces.event_management.system.kontext import Kontext, NichtGefunden, transaktion
+from spaces.event_management.system.kontext import KeinRecht, Kontext, NichtGefunden, transaktion
 
 log = logging.getLogger(__name__)
 
@@ -70,7 +70,11 @@ def mitgliedschaft_setzen(
 ) -> None:
     if rolle not in _ROLLEN:
         raise ValueError("Rolle ungueltig")
-    rechte.pruefe(k, "einladen", firma_id)  # Wache vor SQL; gleiche Rollen wie rolle_aendern
+    # Wache vor SQL: mindestens eines der beiden Rechte, sonst KeinRecht/NichtGefunden.
+    try:
+        rechte.pruefe(k, "einladen", firma_id)
+    except KeinRecht:
+        rechte.pruefe(k, "rolle_aendern", firma_id)
     with transaktion(conn, k) as cur:
         cur.execute(
             "select rolle from event.mitgliedschaft where person_id = %s and firma_id = %s"
@@ -78,8 +82,9 @@ def mitgliedschaft_setzen(
             (person_id, firma_id),
         )
         alt = cur.fetchone()
+        # Genaues Recht erst nach der Existenzpruefung, aber vor jedem Schreiben.
+        rechte.pruefe(k, "einladen" if alt is None else "rolle_aendern", firma_id)
         if alt is not None:
-            rechte.pruefe(k, "rolle_aendern", firma_id)
             if alt["rolle"] == "leitung" and rolle != "leitung":
                 _letzte_leitung_pruefen(cur, firma_id)
         cur.execute(
