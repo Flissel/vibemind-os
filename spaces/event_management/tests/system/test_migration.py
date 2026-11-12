@@ -115,3 +115,60 @@ def test_cli_wendet_an_und_zeigt_keinen_dsn(leere_db_dsn, tmp_path, monkeypatch,
     zweite = capsys.readouterr()
     assert zweite.out == ""
     assert "127.0.0.1" not in ausgabe.out + ausgabe.err + zweite.err
+
+
+def _event(conn, firma_id, name="Sommerfest"):
+    return conn.execute(
+        "insert into event.event (firma_id, kategorie, name, beginn, ende)"
+        " values (%s, 'fest', %s, now(), now()) returning id",
+        (firma_id, name),
+    ).fetchone()["id"]
+
+
+def _kategorie(conn, event_id, firma_id, name="Technik"):
+    return conn.execute(
+        "insert into event.aufgabe_kategorie (event_id, firma_id, name)"
+        " values (%s, %s, %s) returning id",
+        (event_id, firma_id, name),
+    ).fetchone()["id"]
+
+
+def _aufgabe(conn, event_id, firma_id, kategorie_id):
+    return conn.execute(
+        "insert into event.aufgabe (event_id, firma_id, titel, kategorie_id)"
+        " values (%s, %s, 'Buehne aufbauen', %s) returning id",
+        (event_id, firma_id, kategorie_id),
+    ).fetchone()["id"]
+
+
+def test_aufgabe_nur_mit_kategorie_desselben_events(db_admin):
+    firma_a = _firma(db_admin, "firma-a")
+    firma_b = _firma(db_admin, "firma-b")
+    e1 = _event(db_admin, firma_a, "Sommerfest")
+    e2 = _event(db_admin, firma_a, "Winterfest")
+    e3 = _event(db_admin, firma_b, "Hoffest")
+    kat_e2 = _kategorie(db_admin, e2, firma_a)
+    kat_e3 = _kategorie(db_admin, e3, firma_b)
+
+    # Kategorie eines anderen Events derselben Firma und einer fremden Firma.
+    for fremde in (kat_e2, kat_e3):
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            _aufgabe(db_admin, e1, firma_a, fremde)
+
+    # Positivkontrolle: Kategorie desselben Events.
+    kat_e1 = _kategorie(db_admin, e1, firma_a)
+    aufgabe = _aufgabe(db_admin, e1, firma_a, kat_e1)
+
+    # Loeschen der Kategorie leert nur kategorie_id, event_id bleibt.
+    db_admin.execute("delete from event.aufgabe_kategorie where id = %s", (kat_e1,))
+    zeile = db_admin.execute(
+        "select event_id, kategorie_id from event.aufgabe where id = %s", (aufgabe,)
+    ).fetchone()
+    assert zeile == {"event_id": e1, "kategorie_id": None}
+
+    # Event loeschen raeumt Kategorien und Aufgaben gemeinsam ab.
+    _kategorie(db_admin, e1, firma_a, "Catering")
+    db_admin.execute("delete from event.event where id = %s", (e1,))
+    assert db_admin.execute(
+        "select count(*) as n from event.aufgabe where event_id = %s", (e1,)
+    ).fetchone()["n"] == 0

@@ -112,7 +112,8 @@ create table if not exists event.aufgabe_kategorie (
     name text not null,
     angelegt timestamptz not null default now(),
     foreign key (event_id, firma_id) references event.event (id, firma_id) on delete cascade,
-    unique (event_id, name)
+    unique (event_id, name),
+    unique (id, event_id)
 );
 
 create table if not exists event.aufgabe (
@@ -122,12 +123,15 @@ create table if not exists event.aufgabe (
     titel text not null,
     beschreibung text,
     status text not null default 'offen' check (status in ('offen', 'in_arbeit', 'erledigt')),
-    kategorie_id uuid references event.aufgabe_kategorie (id) on delete set null,
+    kategorie_id uuid,
     verantwortlich_id uuid,
     faellig timestamptz,
     angelegt timestamptz not null default now(),
     foreign key (event_id, firma_id) references event.event (id, firma_id) on delete cascade,
-    foreign key (verantwortlich_id, firma_id) references event.kontakt (id, firma_id)
+    foreign key (verantwortlich_id, firma_id) references event.kontakt (id, firma_id),
+    -- Kategorie nur aus demselben Event; beim Loeschen wird nur kategorie_id geleert.
+    foreign key (kategorie_id, event_id) references event.aufgabe_kategorie (id, event_id)
+        on delete set null (kategorie_id)
 );
 
 create table if not exists event.ablauf (
