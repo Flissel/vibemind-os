@@ -3,7 +3,7 @@
 Laeuft in der eigenen Chatterbox-Umgebung (Torch + CUDA), NICHT im gemeinsamen .venv:
     C:\\Users\\User\\ClaudeWork\\chatterbox-venv\\Scripts\\python.exe -m spaces.marketing.claw.ton_dienst
 
-    GET  /healthz   -> 200 ok (laedt das Modell nicht)
+    GET  /healthz   -> 200 {"ok": true, "modell": "geladen|laedt|nicht-geladen"} (laedt das Modell nicht)
     POST /sprechen  {"text": "...", "sprache": "de", "stimme": "anna"}  -> audio/wav
     POST /satz      {"text", "vorher"?, "nachher"?, "sprache"?, "stimme"?, "engine"?: auto|chatterbox}
                     -> audio/wav, Kopf X-Ton-Engine, X-Ton-Dauer-S; ElevenLabs-Ausfall = 502 + X-Ton-Engine-Fehler
@@ -201,31 +201,83 @@ def _genutzt(jetzt: float | None = None) -> None:
     _zuletzt = time.monotonic() if jetzt is None else jetzt
 
 
-def _modell_laden():
+# 12.11.2026: Anfragen waehrend des Ladens warten hoechstens so lange (unter dem Zeitlimit der Aufrufer von
+# 300 s: ton_worker, video_stimme, Lauras Client), danach 503 + Retry-After statt Zeitueberschreitung.
+LADEN_WARTEN_S = float(os.environ.get("TON_LADEN_WARTEN_S", "240"))
+RETRY_NACH_S = 30
+_laedt = False          # gerade im Laden (nur unter _modell_lock gesetzt, fuer /healthz gelesen)
+
+
+class ModellLaedt(Exception):
+    """Das Modell ist noch nicht bereit (Laden laeuft laenger als die Wartezeit der Anfrage)."""
+
+
+def _chatterbox_module_verwerfen() -> None:
+    """Nach einem gescheiterten Laden nur chatterbox* aus sys.modules entfernen: Python laesst halb
+    importierte Pakete dort zurueck, ein neuer Versuch sieht sonst den Rest. torch* bleibt UNBERUEHRT:
+    ein zweiter Import von torch in demselben Prozess ist unsicher (C-Erweiterungen werden doppelt
+    registriert); ein von Python selbst entferntes torch-Modul holt der naechste Versuch neu."""
+    import sys
+    for name in [n for n in sys.modules if n == "chatterbox" or n.startswith("chatterbox.")]:
+        sys.modules.pop(name, None)
+
+
+def _modell_laden(warten_s: float | None = None):
     """Laedt bei Bedarf (24.10.2026). TON_MODELL_ORDNER = Ordner mit den Gewichten auf der SSD
-    (from_local); ohne ihn wie bisher ueber den Hugging-Face-Cache (am PC auf der HDD E:, kalt ~6 min)."""
-    global _modell
-    with _modell_lock:
+    (from_local); ohne ihn wie bisher ueber den Hugging-Face-Cache (am PC auf der HDD E:, kalt ~6 min).
+
+    12.11.2026: Import UND Aufbau laufen unter _modell_lock, auch torchaudio (_torchaudio_holen) - zwei
+    Threads, die gleichzeitig torch importierten, zerlegten sich (ImportError ... partially initialized
+    module 'torch.hub', in der Gegenseite KeyError aus der Importmaschinerie). warten_s=None wartet
+    unbegrenzt (Vorladen); sonst ModellLaedt, wenn das Laden in der Zeit nicht fertig wurde."""
+    global _modell, _laedt
+    if not _modell_lock.acquire(timeout=-1 if warten_s is None else max(0.0, warten_s)):
+        raise ModellLaedt("Modell wird noch geladen")
+    try:
         if _modell is None:
-            from chatterbox.mtl_tts import ChatterboxMultilingualTTS
+            _laedt = True
             geraet = os.environ.get("TON_GERAET", "cuda")
             ordner = os.environ.get("TON_MODELL_ORDNER", "").strip()
             beginn = time.monotonic()
             try:
+                from chatterbox.mtl_tts import ChatterboxMultilingualTTS
                 if ordner:
                     LOG.info("lade Chatterbox Multilingual aus %s auf %s", ordner, geraet)
                     _modell = ChatterboxMultilingualTTS.from_local(Path(ordner), geraet)
                 else:
                     LOG.info("lade Chatterbox Multilingual auf %s", geraet)
                     _modell = ChatterboxMultilingualTTS.from_pretrained(device=geraet)
-            except BaseException:
+            except BaseException as e:
                 # 24.10.2026: ein Abbruch (os error 1455) hielt sonst 5,5 GB halb geladener Gewichte fest
                 _modell = None
-                _freigeben_geraet()
+                _chatterbox_module_verwerfen()
+                try:
+                    _freigeben_geraet()
+                except Exception:  # noqa: BLE001 - Aufraeumen darf die eigentliche Ausnahme nicht ersetzen
+                    pass
+                LOG.warning("Modell laden fehlgeschlagen: %s", type(e).__name__)   # nur der Typname
                 raise
+            finally:
+                _laedt = False
             LOG.info("Modell geladen in %.1f s", time.monotonic() - beginn)
         _genutzt()
         return _modell
+    finally:
+        _modell_lock.release()
+
+
+def _torchaudio_holen():
+    """torchaudio unter demselben Lock importieren wie das Modell (nie parallel zu einem Laden)."""
+    with _modell_lock:
+        import torchaudio
+        return torchaudio
+
+
+def modell_zustand() -> str:
+    """'geladen' | 'laedt' | 'nicht-geladen' - fuer /healthz, ohne den Lock zu nehmen."""
+    if _modell is not None:
+        return "geladen"
+    return "laedt" if _laedt else "nicht-geladen"
 
 
 def _freigeben_geraet() -> None:
@@ -235,7 +287,7 @@ def _freigeben_geraet() -> None:
         import torch
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-    except ImportError:
+    except Exception:  # noqa: BLE001 - ein halb importiertes torch kann auch KeyError/AttributeError werfen
         pass
 
 
@@ -481,8 +533,8 @@ def sprechen(text: str, sprache: str, probe: Path | None, regler: dict[str, floa
 
 def _sprechen_chatterbox(text: str, sprache: str, probe: Path | None,
                          regler: dict[str, float] | None = None) -> bytes:
-    import torchaudio
-    modell = _modell_laden()
+    modell = _modell_laden(LADEN_WARTEN_S)
+    torchaudio = _torchaudio_holen()
     text = aussprache_anwenden(text, aussprache_laden())
     parameter = {**einstellungen_laden(probe.stem if probe is not None else "standard"), **(regler or {})}
     with _sprech_lock:   # ein Modell, eine GPU: nacheinander
@@ -512,6 +564,10 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(rumpf)
 
+    def _nicht_bereit(self) -> None:
+        self._antwort(503, "Das Sprachmodell wird noch geladen, bitte in einer Minute erneut versuchen.".encode("utf-8"),
+                      "text/plain; charset=utf-8", {"Retry-After": str(RETRY_NACH_S)})
+
     def _abgewiesen(self) -> bool:
         if absender_erlaubt(self.client_address[0]):
             return False
@@ -522,7 +578,9 @@ class Handler(BaseHTTPRequestHandler):
         if self._abgewiesen():
             return
         if self.path == "/healthz":
-            self._antwort(200, b"ok", "text/plain")
+            # Status bleibt 200 (Waechter/Arbeiter lesen nur ihn); neu: ob das Modell bereit ist
+            self._antwort(200, json.dumps({"ok": True, "modell": modell_zustand()}).encode("utf-8"),
+                          "application/json")
         else:
             self._antwort(404, b"nicht gefunden", "text/plain")
 
@@ -543,6 +601,8 @@ class Handler(BaseHTTPRequestHandler):
             LOG.warning("ElevenLabs gescheitert (%s)", e)
             self._antwort(502, b"ElevenLabs nicht verfuegbar", "text/plain; charset=utf-8",
                           {"X-Ton-Engine-Fehler": "elevenlabs"})
+        except ModellLaedt:
+            self._nicht_bereit()
         except Exception as e:  # noqa: BLE001 - Modell/GPU-Fehler als 500 mit Typ
             # nur der Typname: Ausnahmetext und Stacktrace koennen den gesprochenen Text tragen
             LOG.warning("Satz sprechen fehlgeschlagen: %s", type(e).__name__)
@@ -577,6 +637,8 @@ class Handler(BaseHTTPRequestHandler):
                 rumpf = anpassen(rumpf, sample_rate=vo["sample_rate"], fit=vo["fit"],
                                  sekunden=vo["sekunden"])
             self._antwort(200, rumpf, "audio/wav")
+        except ModellLaedt:
+            self._nicht_bereit()
         except Exception as e:  # noqa: BLE001 - Modell/GPU-Fehler als 500 mit Grund
             LOG.exception("Sprechen fehlgeschlagen")
             self._antwort(500, f"{type(e).__name__}: {e}"[:300].encode("utf-8"), "text/plain; charset=utf-8")
@@ -594,8 +656,8 @@ def vorladen_starten() -> threading.Thread | None:
         try:
             _modell_laden()
             LOG.info("Modell vorgeladen")
-        except Exception:  # noqa: BLE001 - der Dienst bleibt erreichbar, die erste Anfrage laedt erneut
-            LOG.exception("Vorladen fehlgeschlagen")
+        except Exception as e:  # noqa: BLE001 - der Dienst bleibt erreichbar, die naechste Anfrage laedt erneut
+            LOG.warning("Vorladen fehlgeschlagen: %s", type(e).__name__)   # nur der Typname
     t = threading.Thread(target=laden, name="vorladen", daemon=True)
     t.start()
     return t
