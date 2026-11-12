@@ -5,9 +5,9 @@ import { kategorieVerlauf } from '@/lib/farbe'
 import { zeigeSpanne } from '@/lib/zeit'
 import type { KatalogEvent, Phase } from '@/lib/typen'
 
-const BADGE = 'px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide rounded-full'
+export const BADGE = 'px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide rounded-full'
 
-const PHASE: Record<Phase, { text: string; klasse: string }> = {
+export const PHASE: Record<Phase, { text: string; klasse: string }> = {
   laeuft: { text: 'läuft', klasse: 'bg-green-100 text-green-700' },
   kommend: { text: 'kommend', klasse: 'bg-blue-100 text-blue-700' },
   vergangen: { text: 'vorbei', klasse: 'bg-gray-100 text-gray-500' },
@@ -19,7 +19,7 @@ function ortText(e: KatalogEvent): string {
   return 'Ort offen'
 }
 
-function sichereUrl(url: string | null): string | null {
+export function sichereUrl(url: string | null): string | null {
   if (!url) return null
   return /^https?:\/\//i.test(url) ? url : null
 }
