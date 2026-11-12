@@ -217,6 +217,100 @@ def test_kontakte_anlegen_und_suche(db_admin: Any, db_app: Any, welt: dict[str, 
     kern.kontakt_anlegen(conn, lese, fa, "Mitglied darf")
 
 
+def _kontakt_zeile(admin: Any, kontakt: UUID) -> dict[str, Any] | None:
+    return admin.execute("select * from event.kontakt where id = %s", (kontakt,)).fetchone()
+
+
+@pytest.mark.parametrize("schicht", ["rls", "fachschicht"])
+def test_kontakt_aendern_und_entfernen(db_admin: Any, db_app: Any, welt: dict[str, Any],
+                                       schicht: str) -> None:
+    """`rls`: Verbindung sieht nur Firma A. `fachschicht`: Superuser ohne RLS, nur die
+    Rechtepruefung und die Firmenbindung im SQL halten."""
+    fa, fb, k = welt["fa"], welt["fb"], welt["k"]
+    conn = db_app(firmen=[fa]) if schicht == "rls" else db_admin
+    kt = _kontakt(db_admin, fa, "Max Muster")
+    neu = kern.kontakt_aendern(conn, k, fa, kt, {"name": "  Max Beispiel ",
+                                                 "mail": "max@example.org"})
+    assert (neu["name"], neu["mail"], neu["telegram"]) == ("Max Beispiel", "max@example.org",
+                                                          None)
+    neu = kern.kontakt_aendern(conn, k, fa, kt, {"telegram": "@max_bsp", "mail": None})
+    assert (neu["name"], neu["mail"], neu["telegram"]) == ("Max Beispiel", None, "@max_bsp")
+    zeile = _kontakt_zeile(db_admin, kt)
+    assert zeile is not None and zeile["telegram"] == "@max_bsp"
+
+    mitglied = _k(k.person_id, {fa: "mitglied"})
+    assert kern.kontakt_aendern(conn, mitglied, fa, kt, {"name": "Max M."})["name"] == "Max M."
+    with pytest.raises(KeinRecht):
+        kern.kontakt_entfernen(conn, mitglied, fa, kt)
+    assert _kontakt_zeile(db_admin, kt) is not None
+
+    for werte, meldung in (
+        ({}, "Keine Werte"), ({"firma_id": str(fb)}, "Unbekanntes"),
+        ({"person_id": str(uuid4())}, "Unbekanntes"), ({"name": "   "}, "name"),
+        ({"name": None}, "name"), ({"mail": "a\x00b"}, "mail"), ({"telegram": 5}, "telegram"),
+    ):
+        with pytest.raises(ValueError, match=meldung):
+            kern.kontakt_aendern(conn, k, fa, kt, werte)
+    zeile = _kontakt_zeile(db_admin, kt)
+    assert zeile is not None and zeile["name"] == "Max M."
+
+    benutzt = _kontakt(db_admin, fa, "Im Orga-Team")
+    kern.anlegen(conn, k, welt["ea"], "orga_team", {"kontakt_id": benutzt})
+    with pytest.raises(ValueError, match="^Kontakt wird noch verwendet$"):
+        kern.kontakt_entfernen(conn, k, fa, benutzt)
+    assert _kontakt_zeile(db_admin, benutzt) is not None
+
+    kern.kontakt_entfernen(conn, k, fa, kt)
+    assert _kontakt_zeile(db_admin, kt) is None
+    with pytest.raises(NichtGefunden):
+        kern.kontakt_entfernen(conn, k, fa, kt)
+    with pytest.raises(NichtGefunden):
+        kern.kontakt_aendern(conn, k, fa, kt, {"name": "Weg"})
+
+
+@pytest.mark.parametrize("schicht", ["rls", "fachschicht"])
+def test_kontakt_aendern_entfernen_mandantenmatrix(db_admin: Any, db_app: Any,
+                                                    welt: dict[str, Any], schicht: str) -> None:
+    fa, fb, k = welt["fa"], welt["fb"], welt["k"]
+    conn = db_app(firmen=[fa]) if schicht == "rls" else db_admin
+    fremd = _kontakt(db_admin, fb, "Fremd Beispiel")
+    vorher = _kontakt_zeile(db_admin, fremd)
+    # Fremde Firma direkt adressiert, und der fremde Kontakt ueber die eigene Firma.
+    for firma in (fb, fa):
+        with pytest.raises(NichtGefunden):
+            kern.kontakt_aendern(conn, k, firma, fremd, {"name": "Gekapert"})
+        with pytest.raises(NichtGefunden):
+            kern.kontakt_entfernen(conn, k, firma, fremd)
+    assert _kontakt_zeile(db_admin, fremd) == vorher
+
+
+def test_registry_typen_vokabular() -> None:
+    erlaubt = {"text", "datumzeit", "ganzzahl", "kontakt", "url"}
+    for t in REGISTRY.values():
+        for typ in t.felder.values():
+            if typ.startswith("ref:"):
+                assert typ[len("ref:"):] in REGISTRY, typ
+            else:
+                assert typ in erlaubt or typ.startswith("auswahl:"), typ
+    assert REGISTRY["aufgaben"].felder["kategorie_id"] == "ref:aufgaben_kategorien"
+    for baustein, feld in (("aufgaben", "verantwortlich_id"), ("orga_team", "kontakt_id"),
+                           ("teilnehmende", "kontakt_id"), ("ablauf", "verantwortlich_id")):
+        assert REGISTRY[baustein].felder[feld] == "kontakt"
+
+
+def test_feldtypen_kontakt_ref_url() -> None:
+    u = uuid4()
+    assert kern._wert("kontakt_id", "kontakt", str(u)) == u
+    assert kern._wert("kategorie_id", "ref:aufgaben_kategorien", u) == u
+    for typ in ("kontakt", "ref:aufgaben_kategorien"):
+        with pytest.raises(ValueError, match="UUID"):
+            kern._wert("x_id", typ, "keine-uuid")
+    assert kern._wert("link", "url", "https://example.org/a") == "https://example.org/a"
+    for schlecht in ("ftp://example.org", "example.org", 5, "https://a\x00"):
+        with pytest.raises(ValueError, match="link"):
+            kern._wert("link", "url", schlecht)
+
+
 def test_registry_inhalt() -> None:
     assert set(REGISTRY) == {"aufgaben", "aufgaben_kategorien", "orga_team", "teilnehmende",
                              "ablauf", "budget"}

@@ -27,7 +27,7 @@ from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from spaces.event_management.system import events, firmen, kern, verlauf, zugang
+from spaces.event_management.system import events, firmen, kern, rechte, verlauf, zugang
 from spaces.event_management.system.bausteine import REGISTRY
 from spaces.event_management.system.kategorien import Kategorie, lade_kategorien, waehlbare
 from spaces.event_management.system.kontext import KeinRecht, Kontext, NichtGefunden, transaktion
@@ -148,10 +148,25 @@ class KontaktDaten(_Eingabe):
     telegram: str | None = Field(default=None, max_length=200)
 
 
+class KontaktAenderung(_Eingabe):
+    name: str | None = Field(default=None, max_length=200)
+    mail: str | None = Field(default=None, max_length=320)
+    telegram: str | None = Field(default=None, max_length=200)
+
+
 def _text_param(wert: str | None) -> str | None:
     if wert is not None:
         _sauber(wert)
     return wert
+
+
+def _darf(k: Kontext, aktion: str, firma_id: UUID) -> bool:
+    """Antwort von `rechte.pruefe` als bool (die Rollentabelle steht nur dort)."""
+    try:
+        rechte.pruefe(k, aktion, firma_id)
+    except (KeinRecht, NichtGefunden):
+        return False
+    return True
 
 
 # --- Fehlerabbildung -------------------------------------------------------------------
@@ -309,8 +324,13 @@ def erstelle_app(
             person = cur.fetchone()
         if person is None:
             raise NichtGefunden("Person nicht gefunden")
-        return {"person": person, "betreiber": k.betreiber,
-                "firmen": firmen_mit_rolle(conn, k), "csrf": zugang.csrf_token(cookie, geheimnis)}
+        sichtbar = firmen_mit_rolle(conn, k)
+        ids = [f["id"] for f in sichtbar]
+        # Nur fuers Ein-/Ausblenden in der Oberflaeche; jede Route prueft selbst.
+        return {"person": person, "betreiber": k.betreiber, "firmen": sichtbar,
+                "rechte": {"event_anlegen": [f for f in ids if _darf(k, "event_anlegen", f)],
+                           "verwalten": [f for f in ids if _darf(k, "mitglied_entfernen", f)]},
+                "csrf": zugang.csrf_token(cookie, geheimnis)}
 
     def baustein_name(baustein: str) -> str:
         if baustein not in REGISTRY:
@@ -394,6 +414,14 @@ def erstelle_app(
     def mitglied_entfernen(firma_id: UUID, person_id: UUID, s: Schreiben) -> dict[str, Any]:
         firmen.mitglied_entfernen(s.conn, s.k, person_id, firma_id)
         return {"ok": True}
+
+    # --- Bausteine (Registry) ---------------------------------------------------------
+
+    @app.get("/api/bausteine")
+    def bausteine(s: Lesen) -> dict[str, Any]:
+        return {name: {"baustein": t.baustein or t.name, "felder": dict(t.felder),
+                       "pflicht": sorted(t.pflicht), "reihenfolge": list(t.felder)}
+                for name, t in REGISTRY.items()}
 
     # --- Kategorien -----------------------------------------------------------------
 
@@ -500,6 +528,18 @@ def erstelle_app(
     def kontakt_anlegen(firma_id: UUID, daten: KontaktDaten, s: Schreiben) -> dict[str, Any]:
         return kern.kontakt_anlegen(s.conn, s.k, firma_id, daten.name, daten.mail,
                                     daten.telegram)
+
+    @app.patch("/api/firmen/{firma_id}/kontakte/{kontakt_id}")
+    def kontakt_aendern(
+        firma_id: UUID, kontakt_id: UUID, daten: KontaktAenderung, s: Schreiben,
+    ) -> dict[str, Any]:
+        return kern.kontakt_aendern(s.conn, s.k, firma_id, kontakt_id,
+                                    daten.model_dump(exclude_unset=True))
+
+    @app.delete("/api/firmen/{firma_id}/kontakte/{kontakt_id}", status_code=204)
+    def kontakt_entfernen(firma_id: UUID, kontakt_id: UUID, s: Schreiben) -> Response:
+        kern.kontakt_entfernen(s.conn, s.k, firma_id, kontakt_id)
+        return Response(status_code=204)
 
     return app
 

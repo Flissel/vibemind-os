@@ -302,7 +302,7 @@ def test_ohne_cookie_401(app: FastAPI, fabrik: Fabrik, db_admin: Any) -> None:
             assert r.status_code == 401, (methode, route.path, r.text)
             geprueft.add((methode, route.path))
     assert ("GET", "/api/ich") in geprueft and ("POST", "/api/abmelden") in geprueft
-    assert len(geprueft) == 23  # neue Route? dann hier bewusst nachziehen
+    assert len(geprueft) == 26  # neue Route? dann hier bewusst nachziehen
     # Gefaelschter oder kaputter Cookie
     p = _person(db_admin, "eva@example.org")
     echt = zugang.cookie_ausstellen(p, 1, GEHEIM)
@@ -334,7 +334,7 @@ def test_ohne_csrf_403(app: FastAPI, welt: dict[str, Any], db_admin: Any,
             r = la.request(methode, _pfad(route.path), json={})
             assert r.status_code == 403, (methode, route.path, r.text)
             geprueft.add((methode, route.path))
-    assert len(geprueft) == 13 and ("POST", "/api/abmelden") in geprueft
+    assert len(geprueft) == 15 and ("POST", "/api/abmelden") in geprueft
 
     vorher = _stand(db_admin)
     url = f"/api/firmen/{welt['fa']}/kontakte"
@@ -371,11 +371,13 @@ def test_abmelden_entwertet_cookie_ueberall(db_admin: Any, fabrik: Fabrik) -> No
 FAMILIEN = [
     "firma_anlegen", "einladen", "rolle_aendern", "mitglied_entfernen",
     "event_anlegen", "event_aendern", "event_status", "event_loeschen", "kontakt_anlegen",
+    "kontakt_aendern", "kontakt_entfernen",
     *[f"{op}:{b}" for b in sorted(REGISTRY) for op in ("b_anlegen", "b_aendern", "b_loeschen")],
 ]
 # Nur Fremdversuch: fremde Person/Zeile ueber die eigene Firma/das eigene Event adressiert.
 NUR_FREMD = [
     "rolle_aendern_fremde_person", "mitglied_entfernen_fremde_person",
+    "kontakt_aendern_fremder_kontakt", "kontakt_entfernen_fremder_kontakt",
     *[f"{op}:{b}" for b in sorted(REGISTRY)
       for op in ("b_aendern_fremde_zeile", "b_loeschen_fremde_zeile")],
 ]
@@ -417,6 +419,16 @@ def _anfrage(w: dict[str, Any], fall: str, eigen: bool) -> tuple[str, str, Any, 
         return "DELETE", f"/api/events/{e}", None, "la"
     if op == "kontakt_anlegen":
         return "POST", f"/api/firmen/{f}/kontakte", {"name": "Neuer Kontakt"}, "la"
+    if op == "kontakt_aendern":
+        return ("PATCH", f"/api/firmen/{f}/kontakte/{w['k' + s + '_frei']}",
+                {"name": "Umbenannt"}, "la")
+    if op == "kontakt_entfernen":
+        return "DELETE", f"/api/firmen/{f}/kontakte/{w['k' + s + '_frei']}", None, "la"
+    if op == "kontakt_aendern_fremder_kontakt":
+        return ("PATCH", f"/api/firmen/{w['fa']}/kontakte/{w['kb_frei']}",
+                {"name": "Umbenannt"}, "la")
+    if op == "kontakt_entfernen_fremder_kontakt":
+        return "DELETE", f"/api/firmen/{w['fa']}/kontakte/{w['kb_frei']}", None, "la"
     if op == "b_anlegen":
         return "POST", f"/api/events/{e}/b/{b}", _neue_werte(b, w["k" + s + "_frei"]), "la"
     if op == "b_aendern":

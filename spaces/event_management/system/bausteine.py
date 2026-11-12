@@ -25,9 +25,14 @@ FELDTYPEN = frozenset({
 class BausteinTabelle:
     """Tabelle eines Kern-Bausteins fuer die generische Fachschicht (`kern`).
 
-    `felder` bildet jede schreibbare Spalte auf einen Feldtyp ab: ``text``, ``uuid``,
-    ``datumzeit``, ``ganzzahl`` oder ``auswahl:<wert>,<wert>``. `sortierung` ist eine
-    Spaltenliste (kommagetrennt). Alle Namen stammen aus der Registry, nie aus Eingaben.
+    `felder` bildet jede schreibbare Spalte auf einen Feldtyp ab (Einfuegereihenfolge =
+    Anzeige-Reihenfolge): ``text``, ``datumzeit``, ``ganzzahl``, ``url`` (http/https),
+    ``auswahl:<wert>,<wert>``, ``kontakt`` (Verweis auf `kontakt.id` derselben Firma),
+    ``ref:<registry_eintrag>`` (Verweis auf eine Zeile eines anderen Eintrags desselben
+    Events) oder ``uuid`` (nur ohne Verweis-Bedeutung). Die Fachschicht prueft ``kontakt``
+    und ``ref:*`` wie ``uuid``; ob der Verweis passt, sichern die Fremdschluessel.
+    `sortierung` ist eine Spaltenliste (kommagetrennt). Alle Namen stammen aus der
+    Registry, nie aus Eingaben.
     `baustein` ist der Schema-Baustein, zu dem die Tabelle gehoert (None = `name`).
     """
 
@@ -45,8 +50,9 @@ REGISTRY: dict[str, BausteinTabelle] = {
         BausteinTabelle(
             "aufgaben", "aufgabe",
             {"titel": "text", "beschreibung": "text",
-             "status": "auswahl:offen,in_arbeit,erledigt", "kategorie_id": "uuid",
-             "verantwortlich_id": "uuid", "faellig": "datumzeit"},
+             "status": "auswahl:offen,in_arbeit,erledigt",
+             "kategorie_id": "ref:aufgaben_kategorien", "verantwortlich_id": "kontakt",
+             "faellig": "datumzeit"},
             frozenset({"titel"}), "angelegt, id",
         ),
         BausteinTabelle(
@@ -54,18 +60,18 @@ REGISTRY: dict[str, BausteinTabelle] = {
             frozenset({"name"}), "name, id", baustein="aufgaben",
         ),
         BausteinTabelle(
-            "orga_team", "orga_team", {"kontakt_id": "uuid", "rolle": "text"},
+            "orga_team", "orga_team", {"kontakt_id": "kontakt", "rolle": "text"},
             frozenset({"kontakt_id"}), "angelegt, id",
         ),
         BausteinTabelle(
             "teilnehmende", "teilnehmende",
-            {"kontakt_id": "uuid", "zusage": "auswahl:offen,zugesagt,vielleicht,abgesagt"},
+            {"kontakt_id": "kontakt", "zusage": "auswahl:offen,zugesagt,vielleicht,abgesagt"},
             frozenset({"kontakt_id"}), "angelegt, id",
         ),
         BausteinTabelle(
             "ablauf", "ablauf",
             {"beginn": "datumzeit", "ende": "datumzeit", "titel": "text", "ort": "text",
-             "verantwortlich_id": "uuid"},
+             "verantwortlich_id": "kontakt"},
             frozenset({"beginn", "titel"}), "beginn, id",
         ),
         BausteinTabelle(
