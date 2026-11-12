@@ -91,7 +91,12 @@ def test_kein_docker_cp_und_keine_werte_in_docker_argumenten() -> None:
             rechts = z.split("|", 1)[1] if "|" in z else z
             for v in SCHLUESSEL_VARIABLEN:
                 assert f"${v}" not in rechts and f"${{{v}}}" not in rechts, z
-    assert 'docker exec -i "$CLAW" node -e' in code
+    # Beide node-Skripte laufen ohne laufenden Container (frisches Volume).
+    lauf = "docker compose run --rm --no-deps -T --entrypoint node"
+    assert code.count(lauf) == 2
+    assert f'| {lauf} "$CLAW" -e "$SCHLUESSEL_JS"' in code  # Werte nur ueber stdin
+    assert f'{lauf} "$CLAW" -e "$SAAT_JS" </dev/null' in code
+    assert "docker exec -i" not in code
 
 
 def test_keine_schluessel_in_echo_oder_ausgabe() -> None:
@@ -136,16 +141,61 @@ def test_saat_ueberschreibt_nur_soul_agents_und_skills() -> None:
     assert "SEED + '/openclaw.json'" in code
 
 
+def test_reihenfolge_schluesseldateien_saat_compose_up_healthz() -> None:
+    code = _code()
+    dateien = code.index("> ./laufzeit/gateway-token")
+    saat = code.index('-e "$SAAT_JS"')
+    schluessel = code.index('-e "$SCHLUESSEL_JS"')
+    hoch = code.index("docker compose up -d\n")
+    gesund = code.index("/healthz")
+    shim = code.index("shim /v1/models")
+    assert dateien < saat < schluessel < hoch < gesund < shim
+    assert code.index("> ./laufzeit/claude-token") < saat
+    assert "mkdir -p ./laufzeit ./laufzeit/shim-budget" in code
+    assert code.index("mkdir -p ./laufzeit") < saat
+
+
+def test_abbruch_ohne_claude_token_und_ohne_zeile_4() -> None:
+    code = _code()
+    pruefung = code.index('[ ! -f ./laufzeit/claude-token ] && [ -z "$CC" ]')
+    assert "exit 1" in code[pruefung:pruefung + 400]
+    # Vor jedem Schreiben und vor jedem docker-Aufruf mit Wirkung.
+    assert pruefung < code.index("> ./laufzeit/gateway-token")
+    assert pruefung < code.index("docker compose run")
+    # Keine Vorbedingung "Container laeuft" mehr.
+    assert 'if [ "$(docker inspect' not in code
+    assert "ABBRUCH: Container" not in code
+
+
 def test_neustart_nur_bei_aenderung_und_healthz_probe() -> None:
     code = _code()
-    assert code.count("docker restart") == 1
-    pos = code.index("docker restart")
-    assert re.search(r'if \[ "\$GEAENDERT" = 1 \]', code[:pos][-200:])
+    assert "docker restart" not in code
+    assert code.count("docker compose restart") == 1
+    pos = code.index("docker compose restart")
+    assert re.search(r'if \[ "\$GEAENDERT" = 1 \] && \[ "\$CLAW_LAUFEND" = "true" \]', code[:pos][-300:])
+    # Neuer Claude-Token: Shim und Claw neu anlegen (env_file nur beim Anlegen gelesen).
+    assert 'docker compose up -d --force-recreate "$SHIM"' in code
+    assert 'docker compose up -d --force-recreate "$CLAW"' in code
     port = json.loads(OPENCLAW.read_text(encoding="utf-8"))["gateway"]["port"]
     assert f"127.0.0.1:{port}/healthz" in code
-    # Kein Compose- oder Swarm-Aufruf; Hinweise stehen nur in echo-Meldungen.
-    ausgefuehrt = "\n".join(z for z in _shell_zeilen() if "echo" not in z)
-    assert "compose" not in ausgefuehrt and "service update" not in ausgefuehrt
+    # Erlaubt: compose run/up/restart. Verboten: Swarm-Wege.
+    assert "stack deploy" not in code and "service update" not in code
+    ausgefuehrt = [z for z in _shell_zeilen() if "echo" not in z and "docker compose" in z]
+    for z in ausgefuehrt:
+        assert re.search(r"docker compose (run --rm --no-deps -T --entrypoint node|up -d|restart)", z), z
+
+
+def test_shim_probe_ohne_logausgabe() -> None:
+    code = _code()
+    assert 'docker exec "$SHIM" python3 -c' in code
+    assert "127.0.0.1:8125/v1/models" in code
+    assert "docker logs" not in "\n".join(z for z in _shell_zeilen() if "echo" not in z)
+    assert "docker logs $SHIM" in code  # nur als Hinweis in der Meldung
+
+
+def test_vergleich_ignoriert_meta_und_wizard() -> None:
+    code = SKRIPT.read_text(encoding="utf-8")
+    assert "delete c.meta" in code and "delete c.wizard" in code
 
 
 def test_zeichenpruefung_ohne_wert_in_der_meldung() -> None:

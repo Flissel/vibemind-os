@@ -12,10 +12,8 @@
 #   4  Claude-Code-OAuth-Token fuer den Shim; leer = laufzeit/claude-token
 #      bleibt, wie es ist. Zeilen 1-3 duerfen nicht leer sein.
 #
-# Voraussetzung: `python deploy/fuellen.py werte.local.json build/` lief, und
-# `docker compose up -d` hat den Claw-Container angelegt (laeuft er, ist es
-# gut; es genuegt, dass er existiert und laeuft -- das Skript fasst Volumes
-# nur ueber `docker exec` an).
+# Voraussetzung: `python deploy/fuellen.py werte.local.json build/` lief. Der
+# Claw-Container muss NICHT laufen.
 #
 # Schluesselwege (Begruendung): `openclaw config set <pfad> <wert>` nimmt den
 # Wert als Argument; er stuende dann in der Prozessliste und in `docker
@@ -27,6 +25,17 @@
 #   channels.telegram.botToken                  Telegram-Bot-Token
 #   mcp.servers.event-app.headers.Authorization Event-App
 #
+# Ablauf: stdin pruefen -> Schluesseldateien auf dem Host -> Saat und Schluessel
+# per `docker compose run --rm --no-deps -T --entrypoint node` (braucht weder
+# einen laufenden Claw noch einen gesunden Shim; auf einem frischen Volume gibt
+# es noch keine openclaw.json) -> `docker compose up -d` -> Proben (Gateway,
+# Shim). Neustart nur bei Aenderung und nur, wenn der Claw schon lief.
+#
+# Der Vergleich der openclaw.json ignoriert die Schluesselfelder sowie die
+# Top-Level-Felder `meta` und `wizard`. Wird die Datei trotzdem bei jedem Lauf
+# ersetzt, hat OpenClaw weitere eigene Felder ergaenzt; das ist akzeptabel
+# (Sicherung + Neuanlage + Schluessel neu, Ergebnis bleibt gleich).
+#
 # Ausgaben nennen nur Namen und Zustaende, nie Werte.
 set -eu
 umask 077
@@ -34,6 +43,7 @@ umask 077
 cd "$(dirname "$0")/.."
 
 CLAW=event-management-claw
+SHIM=event-management-shim
 
 # --- 1. Vier Zeilen von stdin ------------------------------------------------
 IFS= read -r GW || true
@@ -63,22 +73,37 @@ zeichen_pruefen 3 "$APP"
 zeichen_pruefen 4 "$CC"
 
 [ -f build/openclaw.json ] || { echo "ABBRUCH: build/openclaw.json fehlt (deploy/fuellen.py ausfuehren)." >&2; exit 1; }
-if [ "$(docker inspect -f '{{.State.Running}}' "$CLAW" 2>/dev/null)" != "true" ]; then
-  echo "ABBRUCH: Container $CLAW laeuft nicht (docker compose up -d)." >&2
+# Der Shim braucht laufzeit/claude-token, um ueberhaupt zu starten.
+if [ ! -f ./laufzeit/claude-token ] && [ -z "$CC" ]; then
+  echo "ABBRUCH: laufzeit/claude-token fehlt und Zeile 4 (Claude-Code-OAuth-Token) ist leer." >&2
   exit 1
 fi
 
 GEAENDERT=0
+CC_NEU=0
+# Zustand VOR dem Skript: nur ein schon laufender Container braucht Neustart.
+CLAW_LAUFEND=$(docker inspect -f '{{.State.Running}}' "$CLAW" 2>/dev/null || true)
+SHIM_LAUFEND=$(docker inspect -f '{{.State.Running}}' "$SHIM" 2>/dev/null || true)
 
 # --- 2. Schluesseldateien auf dem Host (0600) -------------------------------
 mkdir -p ./laufzeit ./laufzeit/shim-budget
-printf '%s\n' "$GW" > ./laufzeit/gateway-token
+printf '%s
+' "$GW" > ./laufzeit/gateway-token
 chmod 600 ./laufzeit/gateway-token
 echo "laufzeit/gateway-token: geschrieben"
 if [ -n "$CC" ]; then
-  printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$CC" > ./laufzeit/claude-token
+  NEU="CLAUDE_CODE_OAUTH_TOKEN=$CC"
+  if [ ! -f ./laufzeit/claude-token ] || [ "$(cat ./laufzeit/claude-token)" != "$NEU" ]; then
+    CC_NEU=1
+  fi
+  printf 'CLAUDE_CODE_OAUTH_TOKEN=%s
+' "$CC" > ./laufzeit/claude-token
   chmod 600 ./laufzeit/claude-token
-  echo "laufzeit/claude-token: gesetzt (Shim muss neu angelegt werden, env_file wird nur beim Anlegen gelesen)"
+  if [ "$CC_NEU" = 1 ]; then
+    echo "laufzeit/claude-token: gesetzt"
+  else
+    echo "laufzeit/claude-token: unveraendert"
+  fi
 else
   echo "laufzeit/claude-token: unveraendert"
 fi
@@ -99,6 +124,8 @@ const GEHEIM = [
 ];
 function ohneGeheim(o) {
   const c = JSON.parse(JSON.stringify(o));
+  delete c.meta;    // OpenClaw schreibt eigene Felder (meta, wizard, lastTouched*)
+  delete c.wizard;
   for (const p of GEHEIM) {
     const eltern = [c];
     for (let i = 0; i < p.length - 1 && eltern[eltern.length - 1] && typeof eltern[eltern.length - 1] === 'object'; i++) {
@@ -160,7 +187,7 @@ try {
 }
 JS
 )
-AUS=$(docker exec -i "$CLAW" node -e "$SAAT_JS" </dev/null) || { printf '%s\n' "$AUS"; echo "ABBRUCH: Saat fehlgeschlagen." >&2; exit 1; }
+AUS=$(docker compose run --rm --no-deps -T --entrypoint node "$CLAW" -e "$SAAT_JS" </dev/null) || { printf '%s\n' "$AUS"; echo "ABBRUCH: Saat fehlgeschlagen." >&2; exit 1; }
 printf '%s\n' "$AUS"
 case "$AUS" in
   *"openclaw.json: angelegt"*|*"openclaw.json: gesichert"*) GEAENDERT=1 ;;
@@ -206,21 +233,32 @@ try {
 }
 JS
 )
-AUS=$(printf '%s\n%s\n%s\n' "$GW" "$TG" "$APP" | docker exec -i "$CLAW" node -e "$SCHLUESSEL_JS") \
+AUS=$(printf '%s\n%s\n%s\n' "$GW" "$TG" "$APP" | docker compose run --rm --no-deps -T --entrypoint node "$CLAW" -e "$SCHLUESSEL_JS") \
   || { printf '%s\n' "$AUS"; echo "ABBRUCH: Schluessel konnten nicht gesetzt werden." >&2; exit 1; }
 printf '%s\n' "$AUS"
 case "$AUS" in
   *": gesetzt"*) GEAENDERT=1 ;;
 esac
 
-# --- 5. Neustart nur bei Aenderung, dann /healthz ---------------------------
-if [ "$GEAENDERT" = 1 ]; then
-  docker restart "$CLAW" >/dev/null
-  echo "$CLAW: neu gestartet"
+# --- 5. Starten: compose kuemmert sich um depends_on -------------------------
+docker compose up -d
+if [ "$CC_NEU" = 1 ] && [ "$SHIM_LAUFEND" = "true" ]; then
+  docker compose up -d --force-recreate "$SHIM"   # env_file wird nur beim Anlegen gelesen
+  echo "$SHIM: neu angelegt (neuer Claude-Token)"
+fi
+if [ "$GEAENDERT" = 1 ] && [ "$CLAW_LAUFEND" = "true" ]; then
+  if [ "$CC_NEU" = 1 ]; then
+    docker compose up -d --force-recreate "$CLAW"
+    echo "$CLAW: neu angelegt"
+  else
+    docker compose restart "$CLAW"
+    echo "$CLAW: neu gestartet"
+  fi
 else
   echo "$CLAW: kein Neustart noetig"
 fi
 
+# --- 6. Proben: Gateway, dann Shim --------------------------------------------
 # Port = gateway.port in config/openclaw.json (ein Test haelt beide gleich).
 PROBE_JS="fetch('http://127.0.0.1:19100/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 OK=0
@@ -231,6 +269,13 @@ done
 if [ "$OK" = 1 ]; then
   echo "healthz: 200"
 else
-  echo "ABBRUCH: /healthz antwortet nach 60 s nicht." >&2
+  echo "ABBRUCH: /healthz antwortet nach 60 s nicht (docker logs $CLAW ansehen)." >&2
+  exit 1
+fi
+
+if docker exec "$SHIM" python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8125/v1/models', timeout=3)" >/dev/null 2>&1; then
+  echo "shim /v1/models: ok"
+else
+  echo "ABBRUCH: Shim antwortet nicht (docker logs $SHIM ansehen)." >&2
   exit 1
 fi
