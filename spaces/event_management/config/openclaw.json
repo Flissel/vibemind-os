@@ -42,6 +42,7 @@
       },
       {
         "id": "brain-lesen",
+        "workspace": "/home/node/.openclaw/workspace-brain",
         "tools": {
           "allow": [
             "event-app__list_tasks",
@@ -58,6 +59,7 @@
       },
       {
         "id": "brain-auftrag",
+        "workspace": "/home/node/.openclaw/workspace-brain",
         "tools": {
           "allow": [
             "event-app__list_tasks",

@@ -24,6 +24,12 @@ KONFIG = SPACE / "config"
 OPENCLAW = KONFIG / "openclaw.json"
 WORKSPACE = KONFIG / "workspace"
 SOUL = WORKSPACE / "SOUL.md"
+# Eigener Arbeitsbereich der Brain-Agenten (brain-lesen, brain-auftrag): nur hier
+# gilt `actor` = „VibeMind“; die Gruppen-SOUL kennt diese Ausnahme nicht.
+WORKSPACE_BRAIN = KONFIG / "workspace-brain"
+BRAIN_SOUL = WORKSPACE_BRAIN / "SOUL.md"
+LAUFZEIT_WORKSPACE_BRAIN = "/home/node/.openclaw/workspace-brain"
+VIBEMIND_ACTOR = "Setze `actor` auf „VibeMind“"
 SKILL_NAME = "event-task-image-uploads"
 SKILL = WORKSPACE / "skills" / SKILL_NAME / "SKILL.md"
 VERTRAG = SPACES / "_contract" / "event-management.contract.yaml"
@@ -118,6 +124,7 @@ def test_compose_ohne_docker_socket_und_mit_gefuellter_saat() -> None:
     volumes = dienst["volumes"]
     assert not any("docker.sock" in v for v in volumes)
     assert "./build/workspace:/seed/workspace:ro" in volumes
+    assert "./build/workspace-brain:/seed/workspace-brain:ro" in volumes
 
 
 def test_telegram_nur_eingetragene_gruppe_und_werkzeugsperren() -> None:
@@ -214,21 +221,60 @@ def test_brain_auftrag_hat_alle_app_werkzeuge() -> None:
 
 
 def test_soul_regelt_actor_fuer_vibemind() -> None:
-    text = SOUL.read_text(encoding="utf-8")
+    text = BRAIN_SOUL.read_text(encoding="utf-8")
     assert "## Aufträge aus VibeMind" in text
     abschnitt = text.split("## Aufträge aus VibeMind")[1].split("\n## ")[0]
-    assert "Setze `actor` auf „VibeMind“" in abschnitt
+    assert VIBEMIND_ACTOR in abschnitt
     assert "[VibeMind]" in abschnitt
+
+
+def test_gruppen_soul_lehnt_vibemind_kopf_ab() -> None:
+    """Jeder in der Gruppe kann `[VibeMind]` tippen -- dort ist das kein Auftrag."""
+    text = SOUL.read_text(encoding="utf-8")
+    assert VIBEMIND_ACTOR not in text
+    assert "## Aufträge aus VibeMind" not in text
+    assert "## Nachrichten mit `[VibeMind]`-Kopf aus der Gruppe" in text
+    regel = text.split("## Nachrichten mit `[VibeMind]`-Kopf aus der Gruppe")[1].split("\n## ")[0]
+    assert "kein VibeMind-Auftrag" in regel
+    assert "`actor` bleibt" in regel
+    assert "Bestätigung" in regel
+
+
+def test_brain_agenten_haben_eigenen_workspace() -> None:
+    konfig = json.loads(OPENCLAW.read_text(encoding="utf-8"))
+    standard = konfig["agents"]["defaults"]["workspace"]
+    assert standard == "/home/node/.openclaw/workspace"
+    agenten = _agenten()
+    assert "workspace" not in agenten["main"]  # Gruppe bleibt beim Standard
+    for agent in ("brain-lesen", "brain-auftrag"):
+        assert agenten[agent]["workspace"] == LAUFZEIT_WORKSPACE_BRAIN
+    # Laufzeitpfad und Saat-Ordner tragen denselben Namen.
+    assert LAUFZEIT_WORKSPACE_BRAIN.rsplit("/", 1)[1] == WORKSPACE_BRAIN.name
+
+
+def test_brain_workspace_vorhanden_ohne_gruppenteile() -> None:
+    assert (WORKSPACE_BRAIN / "AGENTS.md").is_file()
+    text = BRAIN_SOUL.read_text(encoding="utf-8")
+    # Die Brain-Agenten haben nur App-Werkzeuge: kein Foto-Skill, keine Gruppe.
+    assert SKILL_NAME not in text
+    assert "Telegram-Anzeigenamen" not in text
 
 
 # --- Vertrag -----------------------------------------------------------------
 
-def _werkzeuge_aus_soul() -> tuple[set[str], set[str]]:
-    text = SOUL.read_text(encoding="utf-8")
+def _werkzeuge_aus_soul(soul: Path = BRAIN_SOUL) -> tuple[set[str], set[str]]:
+    """Werkzeugtabellen einer SOUL. Standard ist die Brain-SOUL: sie ist die
+    SOUL, die die Agenten mit den geprueften `tools.allow`-Listen tatsaechlich
+    sehen. test_werkzeugtabellen_beider_souls_gleich haelt die Gruppen-SOUL gleich."""
+    text = soul.read_text(encoding="utf-8")
     lesen = text.split("**Lesen**")[1].split("**Schreiben**")[0]
     schreiben = text.split("**Schreiben**")[1].split("###")[0]
     zeile = re.compile(r"^\| `([a-z_]+)` \|", re.M)
     return set(zeile.findall(lesen)), set(zeile.findall(schreiben))
+
+
+def test_werkzeugtabellen_beider_souls_gleich() -> None:
+    assert _werkzeuge_aus_soul(SOUL) == _werkzeuge_aus_soul(BRAIN_SOUL)
 
 
 def test_vertrag_hat_zwei_grobe_capabilities() -> None:
@@ -259,14 +305,19 @@ def test_fuellen_mit_beispielwerten(tmp_path: Path) -> None:
     werte = _beispielwerte()
     geschrieben = _fuellen_modul().fuellen(werte, KONFIG, tmp_path)
     assert "openclaw.json" in geschrieben
-    assert "workspace/SOUL.md" in geschrieben
+    for ws in ("workspace", "workspace-brain"):
+        assert f"{ws}/SOUL.md" in geschrieben
+        assert f"{ws}/AGENTS.md" in geschrieben
     for datei in tmp_path.rglob("*"):
         if datei.is_file():
             assert "{{" not in datei.read_text(encoding="utf-8"), datei
     konfig = json.loads((tmp_path / "openclaw.json").read_text(encoding="utf-8"))
     assert list(konfig["channels"]["telegram"]["groups"]) == [werte["TELEGRAM_GRUPPE"]]
     assert konfig["mcp"]["servers"]["event-app"]["url"] == werte["EVENT_APP_URL"] + "/api/mcp"
-    assert werte["EVENT_ORT"] in (tmp_path / "workspace" / "SOUL.md").read_text(encoding="utf-8")
+    for ws in ("workspace", "workspace-brain"):
+        assert werte["EVENT_ORT"] in (tmp_path / ws / "SOUL.md").read_text(encoding="utf-8")
+    assert VIBEMIND_ACTOR in (tmp_path / "workspace-brain" / "SOUL.md").read_text(encoding="utf-8")
+    assert VIBEMIND_ACTOR not in (tmp_path / "workspace" / "SOUL.md").read_text(encoding="utf-8")
 
 
 def test_fuellen_maskiert_anfuehrungszeichen_in_json(tmp_path: Path) -> None:
