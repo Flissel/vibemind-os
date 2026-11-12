@@ -320,6 +320,30 @@ spaces:
       agentfarm.deliver: { tool: captain_deliver,      required_params: [project_id, prompt_ref] }
       agentfarm.status:  { tool: captain_codex_status, required_params: [project_id, batch_id, subtask_id, workspace_ref] }
 
+  # ─── Event-Orga (Festival-/Event-Bot, Teil 2) ───────────────────────
+  event-management:
+    # Weg B (Entscheidung 2026-11-12): der Event-Bot (OpenClaw-Gateway) IST der
+    # Agent. Es gibt keinen OpenFang-Agenten und keinen agent.toml.
+    agent: null
+    generate_agent: false
+    aliases: [festival, orga, veranstaltung]
+    prefixes: [event.]
+    keywords: ["festival|veranstaltung|orga.?gruppe|event.?orga"]
+    enabled: true
+    description: "Event organisation assistant: tasks, teams, budget and guest counts of an event via the Event-Bot."
+    mcp_servers: []
+    runtime:
+      status: active
+      source_path: spaces/event_management
+      transport: openclaw-http     # direct:spaces.event_management.uebergabe -> Gateway /v1/chat/completions
+      token_env: EVENT_GATEWAY_TOKEN
+    default_context: [current_space]
+    # Coarse events outside, fine tools inside: the Bot owns the 20 app tools
+    # (SOUL.md / tools.allow), the Brain only asks (ask) or orders (do).
+    events:
+      event.ask: { tool: event_ask, required_params: [text] }
+      event.do:  { tool: event_do,  required_params: [text] }
+
   # ─── Learning (courses, adaptive practice, canvas) ─────────────────
   learning:
     agent: brain-learning

@@ -4,7 +4,9 @@ Das Repo ist oeffentlich: Event-Name, Datum, Ort, App-Adresse, Telegram-Gruppe
 und erlaubte WhatsApp-Nummer stehen in config/ nur als Platzhalter. Die echten
 Werte liegen in einer nie eingecheckten JSON-Datei (Vorlage:
 werte.beispiel.json); dieses Skript schreibt config/ gefuellt in ein Zielverzeichnis
-(ueblich: build/, gitignored), das docker-compose.yml als Saat einhaengt.
+(ueblich: build/, gitignored), das docker-compose.yml als Saat einhaengt. Gefuellt
+wird ALLES unter config/: openclaw.json und beide Arbeitsbereiche, workspace/
+(Gruppe) und workspace-brain/ (Brain-Agenten).
 
 Schluessel gehoeren NICHT in die Wertedatei -- sie gehen nur per stdin ins
 Laufzeit-Volume (Muster *-anbinden.sh).

@@ -101,10 +101,12 @@ effects:
   rose.status: read
   video_status: read
   video_team_status: read
+  event_ask: read
   # --- external ---
   desktop_skill: external
   browser_automation: external
   som_resume: external
+  event_do: external
   # --- answer ---
   chitchat: answer
   bubble_exit: answer

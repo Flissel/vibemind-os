@@ -1,0 +1,16 @@
+# Budget-Datei des eigenen Shims (event-management-shim). Das Image bringt
+# eine eigene mit, die nur bewerbung-claw kennt und alle anderen Agenten
+# ablehnt; diese hier wird per VIBEMIND_BUDGET_CONFIG darueber gelegt.
+# Oeffentlich, ohne Geheimnisse.
+uebergang_unbekannte_zulassen: false
+pause_bei_user_aktiv: false
+pause_fenster_min: 10
+pause_ausnahmen: []
+behalten_ohne_llm: []
+agenten:
+  event-management-claw:
+    bereich: event-management
+    klasse: auftrag
+    modell: sonnet
+    tagesgrenze: 100
+    wrapper: shim

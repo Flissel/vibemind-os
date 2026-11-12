@@ -45,6 +45,16 @@ SPACES: Dict[str, SpaceMeta] = {
         "capabilities": ["agentfarm.create_team", "agentfarm.run", "agentfarm.list_teams"],
         "renderer_id": "agentfarm",
     },
+    "event-management": {
+        "label": "Event-Orga",
+        "event_prefix": "event.",
+        "stream": None,
+        "aliases": ["festival", "orga", "veranstaltung"],
+        "description": "Event organisation: tasks, teams, budget and guest counts of an event, handled by the Event-Bot.",
+        "use_when": "User asks about or wants to change the organisation of a festival or event (tasks, helpers, budget, guests)",
+        "capabilities": ["event.ask", "event.do"],
+        "renderer_id": None,
+    },
     "brain": {
         "label": "Brain",
         "event_prefix": "brain.",

@@ -1,3 +1,5 @@
 # Private Werte und die daraus gefuellte Saat -- nie einchecken (Repo oeffentlich).
 werte.local.json
 build/
+# Schluesseldateien und Shim-Budget, von deploy/anbinden.sh angelegt.
+laufzeit/

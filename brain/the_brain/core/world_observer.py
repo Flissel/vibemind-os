@@ -581,6 +581,138 @@ def _check_sqlite_row(spec: Dict[str, Any]):
                         f"for {described} (expected {expect})")
 
 
+# --- event_app_change: Wahrheitspruefung gegen die Event-App (MCP) -----------
+# list_recent_changes liefert TEXT, je Zeile:
+#   - YYYY-MM-DD HH:MM · <actor> (<quelle>): „<titel>" ...
+_EVENT_ZEILE = re.compile(r"^- (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) · (.+) \(([^()]*)\): „")
+# Stempel sind nur minutengenau; so viel Spielraum an beiden Fensterraendern.
+_EVENT_TOLERANZ_S = 120
+
+
+def _event_jetzt():
+    """Aktuelle Zeit (aware). Eigene Funktion, damit Tests sie festsetzen."""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc)
+
+
+def _event_antwort_lesen(r):
+    """JSON-RPC-Objekt aus einer SSE- oder JSON-Antwort."""
+    import json
+    ctype = (r.headers.get("Content-Type") or "").lower()
+    if "text/event-stream" in ctype:
+        daten = [z[5:].strip() for z in r.text.splitlines() if z.startswith("data:")]
+        daten = [d for d in daten if d]
+        if not daten:
+            raise ValueError("keine data-Zeile")
+        return json.loads(daten[-1])
+    return json.loads(r.text)
+
+
+# Grenzen dieser Pruefung (bewusst, die App ist nicht aenderbar):
+# - Die Antwort ist Freitext, verglichen wird der Anzeigename. Wer Aufgaben oder
+#   Mitglieder anlegen kann, kann einen Treffer faelschen (Mitglied mit gleichem
+#   Namen; Titel mit Zeilenumbruch und nachgebauter Zeile). Es gibt keinen Schutz
+#   gegen gefaelschte Titel oder Mitgliedsnamen.
+# - Milderung: optionaler spec-Schluessel `quelle`; ist er gesetzt, muss die
+#   Quelle in Klammern exakt passen. Die Zeile wird an der LETZTEN Stelle
+#   " (<quelle>): „" verankert (rechte Seite, von der App gesetzt); ein Titel mit
+#   Zeilenumbruch und nachgebauter Zeile bleibt die bekannte Grenze. Das Ergebnis ist ein Beleg, keine
+#   Autorisierung - darum bleibt on_fail "report".
+# - Jede VibeMind-Zeile im Fenster zaehlt; die Pruefung ist nicht an den
+#   einzelnen Auftrag gebunden (zwei Auftraege im Fenster belegen sich gegenseitig).
+# - Sommerzeit: Stempel werden mit fold=0 gelesen; in der doppelten Herbststunde
+#   gilt die erste Lesart, die zweite wird hingenommen.
+def _check_event_app_change(spec: Dict[str, Any]):
+    """Hat `actor` in den letzten `since_s` Sekunden etwas in der Event-App geaendert?
+
+    Unabhaengige Nachfrage ueber das MCP-Werkzeug list_recent_changes; die Antwort
+    des Bots zaehlt nicht. spec: {check: event_app_change, actor: "VibeMind",
+    since_s: 600, tz: "Europe/Berlin"}. Alles ausser einem klaren Ja/Nein -> None.
+    detail/signal nennen nur Zaehlwerte, nie Token, Namen oder Titel.
+
+    EVENT_APP_URL darf die Basis-URL der App sein (wie im Space, dort haengt
+    openclaw.json /api/mcp an) oder schon die MCP-Adresse; beides geht."""
+    url = (os.environ.get("EVENT_APP_URL") or "").strip().rstrip("/")
+    if not url:
+        return None, {}, "EVENT_APP_URL fehlt - keine Nachfrage moeglich"
+    if not url.endswith("/api/mcp"):
+        url += "/api/mcp"
+    try:
+        from core.config import get_secret
+        token = get_secret("EVENT_APP_TOKEN")
+    except Exception:
+        token = os.environ.get("EVENT_APP_TOKEN")
+    token = (token or "").strip()
+    if not token:
+        return None, {}, "kein Token (EVENT_APP_TOKEN[_FILE])"
+    try:
+        import requests  # lazy
+    except Exception:
+        return None, {}, "requests not available"
+    signal: Dict[str, Any] = {}
+    try:
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+        actor = str(spec.get("actor") or "VibeMind").strip()
+        since_s = float(spec.get("since_s", 600))
+        tz = ZoneInfo(str(spec.get("tz") or "Europe/Berlin"))
+        headers = {"Accept": "application/json, text/event-stream",
+                   "Content-Type": "application/json", "Authorization": token}
+
+        def rpc(payload):
+            r = requests.post(url, json=payload, headers=headers, timeout=OBSERVE_TIMEOUT)
+            signal["status_code"] = r.status_code
+            if r.status_code >= 400:
+                return None, f"http {r.status_code}"
+            sid = r.headers.get("Mcp-Session-Id")
+            if sid:
+                headers["Mcp-Session-Id"] = sid
+            return _event_antwort_lesen(r), ""
+
+        init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                           "clientInfo": {"name": "world_observer", "version": "1"}}}
+        antwort, grund = rpc(init)
+        if antwort is None or "error" in antwort:
+            return None, signal, grund or "initialize abgelehnt"
+        call = {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "list_recent_changes", "arguments": {"limit": 50}}}
+        antwort, grund = rpc(call)
+        if antwort is None:
+            return None, signal, grund
+        result = antwort.get("result")
+        if "error" in antwort or not isinstance(result, dict) or result.get("isError"):
+            return None, signal, "list_recent_changes lieferte einen Fehler"
+        text = "\n".join(str(c.get("text", "")) for c in result.get("content") or []
+                       if isinstance(c, dict))
+        jetzt = _event_jetzt()
+        von = jetzt - timedelta(seconds=since_s + _EVENT_TOLERANZ_S)
+        bis = jetzt + timedelta(seconds=_EVENT_TOLERANZ_S)
+        quelle = spec.get("quelle")
+        quelle = str(quelle).strip() if quelle is not None else None
+        zeilen = treffer = 0
+        for zeile in text.splitlines():
+            m = _EVENT_ZEILE.match(zeile)
+            if not m:
+                continue
+            zeilen += 1
+            if m.group(2).strip() != actor:
+                continue
+            if quelle is not None and m.group(3).strip() != quelle:
+                continue
+            try:
+                stempel = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+            except ValueError:
+                continue  # unmoegliches Datum: Zeile zaehlt nicht, Pruefung laeuft weiter
+            if von <= stempel <= bis:
+                treffer += 1
+        signal.update({"zeilen": zeilen, "treffer": treffer})
+        return treffer > 0, signal, f"{zeilen} Zeilen gelesen, {treffer} von {actor} im Fenster"
+    except Exception as e:
+        # Nur der Typ: Meldungen koennten URL oder Inhalte enthalten.
+        return None, signal, f"event_app_change nicht pruefbar ({type(e).__name__})"
+
+
 # Map of check-name → fn. To add a check, add one function above + an entry here.
 _CHECKS = {
     "process_running": _check_process_running,
@@ -593,6 +725,7 @@ _CHECKS = {
     "supabase_edge_ids": _check_supabase_edge_ids,
     "supabase_node_in_bubble": _check_supabase_node_in_bubble,
     "supabase_bubble_node_count": _check_supabase_bubble_node_count,
+    "event_app_change": _check_event_app_change,
 }
 
 

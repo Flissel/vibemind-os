@@ -1,0 +1,135 @@
+# event-management Gateway -- OpenClaw-Orga-Assistent fuer ein Event,
+# uebernommen vom Festival-Bot (Container openclaw-festival auf offload-vm,
+# am 12.11.2026 gestoppt, nichts geloescht). Muster:
+# spaces/plugin-setup/docker-compose.yml.
+#
+# Was NICHT hier und nicht in der Saat steht (Repo ist oeffentlich):
+#   - Schluessel: Gateway-Token, Telegram-Bot-Token, Authorization-Header der
+#     Event-App. Sie kommen nur ins Laufzeit-Volume (Muster sales-claw /
+#     plugin-setup: *-anbinden.sh per stdin).
+#   - Private Angaben (Event-Name, Datum, Ort, App-Adresse, Telegram-Gruppe,
+#     erlaubte WhatsApp-Nummer): Platzhalter {{...}} in config/. Gefuellt wird
+#     mit `python deploy/fuellen.py werte.local.json build/` aus einer lokalen,
+#     nie eingecheckten Wertedatei (Vorlage: werte.beispiel.json).
+#   - Chat-Gedaechtnis, Fotos, WhatsApp-Kopplung.
+#
+# Unterschiede zum alten Festival-Container (bewusst):
+#   - Offizielles Slim-Image statt `openclaw-festival:with-docker-cli`, kein
+#     Docker-Socket: die Sandbox war ohnehin aus (`sandbox.mode: off`).
+#   - Gateway auf Loopback statt `--bind lan`.
+#   - Telegram nur in der eingetragenen Gruppe (`groupPolicy: allowlist`
+#     statt `open`).
+#   - Modell ueber einen EIGENEN Claude-Code-Shim (Dienst event-management-shim,
+#     Budget-Agent event-management-claw) statt openai/gpt-5.5 (Schluessel war
+#     seit Wochen 401, kein API-Budget). Der Shim hat nur ein internes Netz
+#     zum Claw plus ein eigenes Ausgangsnetz; der Claw erreicht ihn per Name.
+#
+# EIGENSTAENDIGER Compose-Deploy, nicht Teil des vibemind-Swarm-Stacks; nie
+# ueber `service update`/`stack deploy`. Noch nicht ausgerollt.
+services:
+  event-management-shim:
+    # Der Controller hat dieses Image lokal aus bewerbung-bot/shim:2.1.268
+    # umgetaggt, und zwar mit eigenem Namen, damit ein Aufraeumen bei
+    # bewerbung es nicht entfernt. Die Shim-Dateien selbst gehoeren nicht in
+    # dieses Repo.
+    image: event-management/shim:2.1.268
+    container_name: event-management-shim
+    restart: unless-stopped
+    init: true
+    # CLAUDE_CODE_OAUTH_TOKEN steht nur in laufzeit/claude-token (gitignored,
+    # von deploy/anbinden.sh per stdin geschrieben). Ohne ihn bricht der
+    # Entrypoint mit Exit 78 ab.
+    env_file:
+      - path: ./laufzeit/claude-token
+        required: false
+    environment:
+      SHIM_TOOL_CALLS: "1"
+      VIBEMIND_AGENT: event-management-claw
+      VIBEMIND_BUDGET_DIR: /budget
+      VIBEMIND_BUDGET_CONFIG: /opt/event/agent_budget.yaml
+    volumes:
+      - type: bind
+        source: ./laufzeit/shim-budget
+        target: /budget
+        bind:
+          create_host_path: false
+      - ./deploy/agent_budget.yaml:/opt/event/agent_budget.yaml:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+      - /home/node:size=256m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:8125/v1/models', timeout=5); sys.exit(0)"]
+      interval: 1m
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    networks:
+      - event-agent
+      - event-shim-aus
+
+  event-management-claw:
+    image: ghcr.io/openclaw/openclaw:2026.7.1-slim
+    container_name: event-management-claw
+    restart: unless-stopped
+    depends_on:
+      event-management-shim:
+        condition: service_healthy
+    networks:
+      - event-agent
+      - event-claw-aus
+    environment:
+      - TZ=Europe/Berlin
+      - OPENCLAW_STATE_DIR=/home/node/.openclaw
+    volumes:
+      - event-management-claw-state:/home/node/.openclaw
+      - event-management-claw-keys:/home/node/.config/openclaw
+      # Gefuellte Saat (deploy/fuellen.py), nicht config/workspace mit
+      # offenen Platzhaltern. Zwei Arbeitsbereiche: workspace (Gruppe, Agent
+      # main) und workspace-brain (brain-lesen/brain-auftrag, eigene SOUL --
+      # nur dort gilt actor "VibeMind"). Laufzeitpfade in config/openclaw.json.
+      # Saat der Konfiguration (ohne Schluessel); deploy/anbinden.sh legt sie
+      # ins Volume und setzt die Schluessel per stdin.
+      - ./build/openclaw.json:/seed/openclaw.json:ro
+      - ./build/workspace:/seed/workspace:ro
+      - ./build/workspace-brain:/seed/workspace-brain:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Der Image-Healthcheck probt fest 127.0.0.1:18789 -- daran ist der alte
+    # Festival-Container dauerhaft "unhealthy" gewesen. Port = gateway.port
+    # aus config/openclaw.json (Test haelt beide gleich).
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:19100/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 3m
+      timeout: 10s
+      start_period: 90s
+      retries: 3
+
+# Feste Subnetze: Auf offload-vm sind die vordefinierten Docker-Adresspools
+# erschoepft ("all predefined address pools have been fully subnetted",
+# gemessen 12.11.2026). 10.250.10.0/26 ist dort frei (keine 10er-Route).
+networks:
+  # Nur Claw <-> Shim, ohne Zugang nach aussen.
+  event-agent:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.250.10.0/28
+  # Ausgang des Claw: Telegram und die Event-App.
+  event-claw-aus:
+    ipam:
+      config:
+        - subnet: 10.250.10.16/28
+  # Ausgang des Shim: Claude-Code-API.
+  event-shim-aus:
+    ipam:
+      config:
+        - subnet: 10.250.10.32/28
+
+volumes:
+  event-management-claw-state:
+  event-management-claw-keys:

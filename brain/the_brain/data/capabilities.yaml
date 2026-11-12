@@ -2187,3 +2187,50 @@
   execution_target: "direct:spaces.video.execution_target:execute_video"
   # F2 (2026-09-24): siehe video_team_run oben - execute_video liefert keinen
   # Pfad, truth:file_exists konnte nie feuern.
+
+# ─── Event-Orga (space event-management) ───────────────────────────────────
+# Coarse events outside, fine tools inside: der Event-Bot (OpenClaw-Gateway)
+# hat die 20 App-Werkzeuge, der Brain gibt nur Frage (event_ask) oder Auftrag
+# (event_do) ab.
+# STEHT BEWUSST AM ENDE DER DATEI: CapabilityRouter.route nimmt den ersten
+# Regex-Treffer in Dateireihenfolge. "Festival"/"Event" kommt in Saetzen
+# vieler Spaces vor (Bubble, Post, Newsletter, Podcast, Idee, Lead ...); hier
+# hinten gewinnt jede bestehende Capability, und der Event-Bot bekommt nur,
+# was sonst niemand nimmt. event_do steht vor event_ask, damit ein Auftrag
+# nicht als reine Frage endet.
+# Jedes Pattern beginnt mit zwei Lookaheads: Kalender-/Termin-/Meeting-Saetze
+# (persoenlicher Kalender) und Saetze ueber Inhalte anderer Spaces (Post,
+# Newsletter, Kampagne, Podcast, Video, Bild, Bubble, Idee, Lead, CRM, Kurs,
+# Chart, Praesentation, Instagram, Reel) sind ausgeschlossen. event_do verlangt
+# zusaetzlich Schreibverb UND Orga-Objekt (Aufgabe, Task, Team, Mitglied,
+# Helfer, Schicht, Slot, Zeitplan, Timetable, Budget) mit Festival-, Orga-,
+# Event- oder Veranstaltungsbezug; "erledigt" allein ist kein Auftrag.
+- capability: event_do
+  space: event-management
+  description: "hand a write order (create, change or assign tasks, members, timetable) for a festival or event to the Event-Bot"
+  match_patterns:
+    - "^(?!.*\\b(?:kalender\\w*|calendar|termin\\w*|meeting\\w*)\\b)(?!.*\\b(?:posts?|newsletter\\w*|kampagne\\w*|podcasts?|videos?|bild(?:er|ern|es)?|bubbles?|idee(?:n)?|leads?|crm|kurs(?:e|en|es)?|charts?|präsentation(?:en)?|praesentation(?:en)?|instagram\\w*|reels?)\\b).*\\b(?:trag|trage|leg|lege|erstelle|weise|ändere|aendere|markiere|setze)\\b.{0,40}\\b(?:festival\\w*|orga|event|veranstaltung\\w*)\\b.{0,60}\\b(?:aufgabe|task|team|mitglied|helfer|schicht|slot|zeitplan|timetable|budget)\\w*"
+    - "^(?!.*\\b(?:kalender\\w*|calendar|termin\\w*|meeting\\w*)\\b)(?!.*\\b(?:posts?|newsletter\\w*|kampagne\\w*|podcasts?|videos?|bild(?:er|ern|es)?|bubbles?|idee(?:n)?|leads?|crm|kurs(?:e|en|es)?|charts?|präsentation(?:en)?|praesentation(?:en)?|instagram\\w*|reels?)\\b).*\\b(?:trag|trage|leg|lege|erstelle|weise|ändere|aendere|markiere|setze)\\b.{0,60}\\b(?:aufgabe|task|team|mitglied|helfer|schicht|slot|zeitplan|timetable|budget)\\w*.{0,40}\\b(?:festival\\w*|orga|event|veranstaltung\\w*)\\b"
+    - "^(?!.*\\b(?:kalender\\w*|calendar|termin\\w*|meeting\\w*)\\b)(?!.*\\b(?:posts?|newsletter\\w*|kampagne\\w*|podcasts?|videos?|bild(?:er|ern|es)?|bubbles?|idee(?:n)?|leads?|crm|kurs(?:e|en|es)?|charts?|präsentation(?:en)?|praesentation(?:en)?|instagram\\w*|reels?)\\b).*\\b(?:festival\\w*|orga|event|veranstaltung\\w*)\\b.{0,60}\\b(?:aufgabe|task|team|mitglied|helfer|schicht|slot|zeitplan|timetable|budget)\\w*.{0,60}\\b(?:anlegen|eintragen|zuweisen|ändern|aendern|markieren|setzen)\\b"
+  execution_target: "direct:spaces.event_management.uebergabe:auftrag"
+  arg_kwarg: text
+  validator:
+    kind: "truth:event_app_change"
+    # report, nicht block: erst nach Nachweis im ausgerollten Brain anheben
+    # (wie schedule_openclaw_cron). Die echte Quelle (`quelle`) wird beim
+    # Ausrollen (Task 6) gemessen und hier nachgetragen; bis dahin sucht die
+    # Pruefung ohne Quellenfilter nach einer Aenderung von "VibeMind".
+    on_fail: "report"
+    postcondition:
+      check: event_app_change
+      actor: "VibeMind"
+      since_s: 600
+
+- capability: event_ask
+  space: event-management
+  description: "ask the Event-Bot a read-only question about a festival or event (tasks, budget, guests, team, helpers)"
+  match_patterns:
+    - "^(?!.*\\b(?:kalender\\w*|calendar|termin\\w*|meeting\\w*)\\b)(?!.*\\b(?:posts?|newsletter\\w*|kampagne\\w*|podcasts?|videos?|bild(?:er|ern|es)?|bubbles?|idee(?:n)?|leads?|crm|kurs(?:e|en|es)?|charts?|präsentation(?:en)?|praesentation(?:en)?|instagram\\w*|reels?)\\b).*(\\bfestival|\\bveranstaltung|\\bevent\\b).{0,40}(aufgabe|budget|gäste|gaeste|team|helfer)"
+    - "^(?!.*\\b(?:kalender\\w*|calendar|termin\\w*|meeting\\w*)\\b)(?!.*\\b(?:posts?|newsletter\\w*|kampagne\\w*|podcasts?|videos?|bild(?:er|ern|es)?|bubbles?|idee(?:n)?|leads?|crm|kurs(?:e|en|es)?|charts?|präsentation(?:en)?|praesentation(?:en)?|instagram\\w*|reels?)\\b).*(aufgabe|budget|gäste|gaeste|team|helfer).{0,40}(\\bfestival|\\bveranstaltung|\\bevent\\b)"
+  execution_target: "direct:spaces.event_management.uebergabe:frage"
+  arg_kwarg: text
