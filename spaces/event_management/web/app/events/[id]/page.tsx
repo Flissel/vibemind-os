@@ -13,7 +13,7 @@ import { UebersichtReiter } from '@/components/event/UebersichtReiter'
 import { VerlaufReiter } from '@/components/event/VerlaufReiter'
 import { api } from '@/lib/api'
 import { bausteinName } from '@/lib/begriffe'
-import type { EventDetail, Firma } from '@/lib/typen'
+import type { BausteineKatalog, EventDetail, Firma } from '@/lib/typen'
 
 interface ReiterInfo {
   /** Wert von `?reiter=`; `null` für die Übersicht (kein Parameter). */
@@ -37,6 +37,8 @@ function EventSeite({ id }: { id: string }) {
   const [event, setEvent] = useState<EventDetail | null>(null)
   const [fehler, setFehler] = useState<unknown>(null)
   const [firmaNachgeladen, setFirmaNachgeladen] = useState<Firma[]>([])
+  const [verzeichnis, setVerzeichnis] = useState<BausteineKatalog | null>(null)
+  const [verzeichnisFehler, setVerzeichnisFehler] = useState<unknown>(null)
 
   useEffect(() => {
     let aktiv = true
@@ -52,6 +54,22 @@ function EventSeite({ id }: { id: string }) {
       aktiv = false
     }
   }, [id])
+
+  // Das Verzeichnis der Baustein-Spalten gilt für alle Reiter und wird einmal pro Seite geladen.
+  useEffect(() => {
+    let aktiv = true
+    api
+      .holen<BausteineKatalog>('/api/bausteine')
+      .then((v) => {
+        if (aktiv) setVerzeichnis(v)
+      })
+      .catch((e: unknown) => {
+        if (aktiv) setVerzeichnisFehler(e)
+      })
+    return () => {
+      aktiv = false
+    }
+  }, [])
 
   const firmaId = event?.firma_id
   const bekannt = firmaId ? ich.firmen.find((f) => f.id === firmaId) : undefined
@@ -106,7 +124,13 @@ function EventSeite({ id }: { id: string }) {
               <VerlaufReiter eventId={event.id} begriffe={event.schema.begriffe} />
             )}
             {aktiv.schluessel !== null && aktiv.schluessel !== 'verlauf' && (
-              <BausteinSlot event={event} baustein={aktiv.schluessel} name={aktiv.name} />
+              <BausteinSlot
+                event={event}
+                baustein={aktiv.schluessel}
+                name={aktiv.name}
+                verzeichnis={verzeichnis}
+                fehler={verzeichnisFehler}
+              />
             )}
           </section>
         </>

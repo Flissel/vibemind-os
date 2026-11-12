@@ -150,7 +150,7 @@ describe('Event-Seite', () => {
     expect(teams.getAttribute('aria-current')).toBe('page')
     expect(within(nav).getByText('Übersicht').getAttribute('href')).toBe('/events/e1')
     expect(within(nav).getByText('Verlauf').getAttribute('href')).toBe('/events/e1?reiter=verlauf')
-    expect(screen.getByText(/Bereich „Teams“/)).toBeTruthy()
+    expect(await screen.findByText('Dieser Bereich kommt mit dem Bot-Ausbau')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Speichern' })).toBeNull()
   })
 
