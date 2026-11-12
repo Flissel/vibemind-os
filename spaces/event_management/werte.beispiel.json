@@ -5,5 +5,5 @@
   "EVENT_APP_URL": "https://event-app.example.com",
   "TELEGRAM_GRUPPE": "-1001234567890",
   "WHATSAPP_ERLAUBT": "+491701234567",
-  "SHIM_URL": "http://host.docker.internal:8117/v1"
+  "SHIM_URL": "http://event-management-shim:8125/v1"
 }
