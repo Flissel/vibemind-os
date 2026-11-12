@@ -9,6 +9,11 @@ from spaces.marketing.claw.video_kontext import holen
 LANG = " Das ist ein ausreichend langer Satz, damit die Datei nicht als leer gilt und Inhalt hat."
 
 
+@pytest.fixture(autouse=True)
+def _ohne_rowboat_freigabe(monkeypatch):
+    monkeypatch.delenv("WERKBANK_ROWBOAT_QUELLEN", raising=False)
+
+
 def firma(tmp_path, monkeypatch):
     wurzel = tmp_path / "companys"
     ordner = wurzel / "Acme"
@@ -20,6 +25,7 @@ def firma(tmp_path, monkeypatch):
     (ordner / "kontakte" / "Max Mustermann.md").write_text("Max Mustermann, Schulung, Telefon." + LANG, encoding="utf-8")
     (ordner / "Agent-Notizen" / "Notiz.md").write_text("Schulung Notiz vom Agenten." + LANG, encoding="utf-8")
     monkeypatch.setenv("ROWBOAT_WISSEN_ORDNER", str(wurzel))
+    monkeypatch.setenv("WERKBANK_ROWBOAT_QUELLEN", "Schulungen, Kontakte")
 
 
 def rowboat_ok():
@@ -184,3 +190,49 @@ def test_verknuepfung_nach_aussen_wird_ignoriert(tmp_path, monkeypatch):
         pytest.skip("Symlinks brauchen auf diesem System erhoehte Rechte (Windows ohne Entwicklermodus)")
     k = holen("Acme", FRAGE + " geheim", **_leer())
     assert not any("geheim" in x.text or "link" in x.name or x.name.startswith("Newsletter") for x in k.dokumente)
+
+
+# --- Rowboat nur aus freigegebenen Quellen ----------------------------------------------------
+
+def _quellen_zwei():
+    def quellen():
+        return {"ok": True, "daten": [{"id": "s1", "name": "Schulungen"}, {"id": "s3", "name": "Geheimprojekt"}]}
+
+    def dokumente(qid, mit_inhalt):
+        if qid == "s3":
+            return {"ok": True, "daten": [{"id": "g1", "name": "Plan", "content": "Schulung Geheimplan Person." + LANG}]}
+        return {"ok": True, "daten": [
+            {"id": "d1", "name": "Angebot", "content": "Schulung Angebot Zahlen." + LANG},
+            {"id": "d2", "name": "Kontakte Liste", "content": "Schulung Kontakte Erika." + LANG}]}
+    return quellen, dokumente
+
+
+def _rowboat_namen(k):
+    return {x.name for x in k.dokumente if x.herkunft == "rowboat"}
+
+
+def test_ohne_freigabe_nichts_aus_rowboat(tmp_path, monkeypatch):
+    firma(tmp_path, monkeypatch)
+    monkeypatch.delenv("WERKBANK_ROWBOAT_QUELLEN")
+    q, d = _quellen_zwei()
+    k = holen("Acme", "Schulung Angebot Plan Geheimplan", quellen=q, dokumente=d)
+    assert _rowboat_namen(k) == set()
+    assert "Aus Rowboat wird nichts gelesen: keine Wissensquelle für Videos freigegeben (WERKBANK_ROWBOAT_QUELLEN)." in k.hinweise
+
+
+def test_freigegebene_quelle_nur_deren_dokumente_und_fremde_nur_gezaehlt(tmp_path, monkeypatch):
+    firma(tmp_path, monkeypatch)
+    monkeypatch.setenv("WERKBANK_ROWBOAT_QUELLEN", "schulungen")        # andere Schreibweise
+    q, d = _quellen_zwei()
+    k = holen("Acme", "Schulung Angebot Plan Geheimplan Kontakte Liste", quellen=q, dokumente=d)
+    assert _rowboat_namen(k) == {"Schulungen/Angebot"}                  # Sperrwort im Dokumentnamen bleibt draussen
+    assert "1 Wissensquelle(n) nicht freigegeben und nicht gelesen" in k.hinweise
+    assert not any("Geheimprojekt" in h for h in k.hinweise)
+
+
+def test_zeilenende_in_der_variable_ist_harmlos(tmp_path, monkeypatch):
+    firma(tmp_path, monkeypatch)
+    monkeypatch.setenv("WERKBANK_ROWBOAT_QUELLEN", " Schulungen\r , \r")
+    q, d = _quellen_zwei()
+    k = holen("Acme", "Schulung Angebot", quellen=q, dokumente=d)
+    assert "Schulungen/Angebot" in _rowboat_namen(k)

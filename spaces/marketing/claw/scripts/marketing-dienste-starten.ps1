@@ -238,7 +238,8 @@ $Dienste = @(
         Port = 8155
         Args = @('-u', '-m', 'spaces.marketing.workers.werkbank_arbeiter')
         Cwd  = $OsRoot
-        Env  = @{ TON_STIMMEN_ORDNER = 'E:\marketing-stimmen' }
+        # WERKBANK_ROWBOAT_QUELLEN: Namen der Rowboat-Wissensquellen, die Videos nutzen duerfen (kommagetrennt, leer = keine)
+        Env  = @{ TON_STIMMEN_ORDNER = 'E:\marketing-stimmen'; WERKBANK_ROWBOAT_QUELLEN = '' }
         Was  = 'Werkbank-Arbeiter (Video-Auftraege: schreibt, spricht, rendert, laedt Clips hoch; fragt ueber :8154)'
     }
 )

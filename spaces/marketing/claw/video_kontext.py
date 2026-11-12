@@ -16,8 +16,14 @@ Innerhalb der erlaubten Menge sperrt die Wortliste `_GESPERRT` weiter (Video-Mat
 Eine Datei muss real im Firmenordner liegen; eine Verknuepfung nach aussen wird ignoriert. Ausgelassene Dateien
 stehen nur als Anzahl in `hinweise`, ohne Dateinamen (Namen koennen Personennamen sein).
 
-Rowboat-Dokumente (zweite Quelle) wählt die Erlaubt-Liste nicht aus: sie kommen aus den im Rowboat vom Betreiber
-eingerichteten Wissensquellen; ihre Namen laufen nur durch dieselbe Wortliste `_GESPERRT`.
+ROWBOAT (zweite Quelle) ist ebenfalls gesperrt, solange nichts freigegeben ist: Dokumente kommen nur aus Rowboat-
+Wissensquellen, deren NAME in der Umgebungsvariable WERKBANK_ROWBOAT_QUELLEN steht (kommagetrennt, genauer Name
+ohne Rand-Leerraum, ohne Gross-/Kleinschreibung; Standard leer = nichts aus Rowboat). Die Variable wird bei jedem
+Aufruf gelesen. Innerhalb einer freigegebenen Quelle sperrt `_GESPERRT` weiter (Quellen- und Dokumentnamen).
+Nicht freigegebene Quellen stehen nur als Anzahl in `hinweise`, ohne Namen.
+
+Material fuer Videos kommt damit aus genau drei Stellen: Marke.md/Markenhandbuch.md/Newsletter/ der Firma,
+`Video-Material/` im Firmenordner und die in WERKBANK_ROWBOAT_QUELLEN freigegebenen Rowboat-Quellen.
 Kundennamen darf ein Video nur nennen, wenn sie im Auftrag stehen.
 
 `holen` wirft nie. Rowboat ist fail-soft: ist es nicht erreichbar, steht das in `hinweise`.
@@ -144,16 +150,32 @@ def _marke(mandant: str, hinweise: list[str]) -> list[Dokument]:
 
 # --- Rowboat ----------------------------------------------------------------------------------
 
+def _freigegeben() -> set[str]:
+    """Namen der fuer Videos freigegebenen Rowboat-Quellen (WERKBANK_ROWBOAT_QUELLEN), klein geschrieben."""
+    roh = os.environ.get("WERKBANK_ROWBOAT_QUELLEN") or ""
+    return {t.strip().casefold() for t in roh.split(",") if t.strip()}
+
+
 def _rowboat(quellen, dokumente, hinweise: list[str]) -> list[Dokument]:
+    frei = _freigegeben()
+    if not frei:
+        hinweise.append("Aus Rowboat wird nichts gelesen: keine Wissensquelle für Videos freigegeben "
+                        "(WERKBANK_ROWBOAT_QUELLEN).")
+        return []
     r = quellen()
     if not isinstance(r, dict) or not r.get("ok"):
         hinweise.append("Rowboat nicht erreichbar, es gilt nur das Markenwissen")
         return []
     ergebnis: list[Dokument] = []
-    unlesbar = leer = 0
+    unlesbar = leer = fremd = 0
     for quelle in _liste(r.get("daten")):
         qid, qname = _erstes(quelle, _ID), _erstes(quelle, _NAME)
-        if not qid or not qname or _gesperrt(qname):
+        if not qid or not qname:
+            continue
+        if qname.strip().casefold() not in frei:
+            fremd += 1
+            continue
+        if _gesperrt(qname):
             continue
         d = dokumente(qid, True)
         if not isinstance(d, dict) or not d.get("ok"):
@@ -167,6 +189,8 @@ def _rowboat(quellen, dokumente, hinweise: list[str]) -> list[Dokument]:
                 leer += 1      # ohne Namen oder Inhalt nicht einzuordnen: bleibt draussen
                 continue
             ergebnis.append(Dokument(f"{qname}/{dname}", _kappen(text, DOKUMENT_MAX), "rowboat"))
+    if fremd:
+        hinweise.append(f"{fremd} Wissensquelle(n) nicht freigegeben und nicht gelesen")
     if unlesbar:
         hinweise.append(f"{unlesbar} Rowboat-Quelle(n) nicht lesbar")
     if leer:
