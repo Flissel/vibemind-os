@@ -32,7 +32,7 @@ def _standard_kategorien() -> dict[str, Kategorie]:
     return lade_kategorien()
 
 
-def _schema(kategorie: str, kategorien: Mapping[str, Kategorie] | None) -> WirksamesSchema:
+def schema_fuer(kategorie: str, kategorien: Mapping[str, Kategorie] | None) -> WirksamesSchema:
     kats = _standard_kategorien() if kategorien is None else kategorien
     if kategorie not in kats:
         raise ValueError("Unbekannte Kategorie")
@@ -41,7 +41,7 @@ def _schema(kategorie: str, kategorien: Mapping[str, Kategorie] | None) -> Wirks
     return wirksames_schema(kats, kategorie)
 
 
-def _zeit(wert: datetime, name: str) -> datetime:
+def zeit(wert: datetime, name: str) -> datetime:
     if not isinstance(wert, datetime):
         raise ValueError(f"Zeit '{name}' ungueltig")
     return wert.replace(tzinfo=ZEITZONE) if wert.tzinfo is None else wert
@@ -105,7 +105,9 @@ def _phase(row: Mapping[str, Any], jetzt: datetime) -> str:
     return "vergangen"
 
 
-def _laden(cur: psycopg.Cursor[Any], event_id: UUID, sperren: bool = False) -> dict[str, Any]:
+def event_laden(
+    cur: psycopg.Cursor[Any], event_id: UUID, *, sperren: bool = False,
+) -> dict[str, Any]:
     cur.execute("select * from event.event where id = %s" + (" for update" if sperren else ""),
                 (event_id,))
     row = cur.fetchone()
@@ -122,11 +124,11 @@ def event_anlegen(
     *, kategorien: Mapping[str, Kategorie] | None = None,
 ) -> dict[str, Any]:
     rechte.pruefe(k, "event_anlegen", firma_id)
-    schema = _schema(kategorie, kategorien)
+    schema = schema_fuer(kategorie, kategorien)
     name = name.strip()
     if not name:
         raise ValueError("Name fehlt")
-    beginn, ende = _zeit(beginn, "beginn"), _zeit(ende, "ende")
+    beginn, ende = zeit(beginn, "beginn"), zeit(ende, "ende")
     if ende < beginn:
         raise ValueError("Ende liegt vor dem Beginn")
     _eckdaten_pruefen(schema, {"ort_adresse": ort_adresse, "ort_link": ort_link,
@@ -154,12 +156,12 @@ def event_aendern(
     if falsch:
         raise ValueError(f"Feld '{falsch[0]}' ist nicht aenderbar")
     with transaktion(conn, k) as cur:
-        alt = _laden(cur, event_id, sperren=True)
+        alt = event_laden(cur, event_id, sperren=True)
         rechte.pruefe(k, "event_aendern", alt["firma_id"])
-        schema = _schema(alt["kategorie"], kategorien)
+        schema = schema_fuer(alt["kategorie"], kategorien)
         neu = dict(alt)
         for key, wert in felder.items():
-            neu[key] = _zeit(wert, key) if key in ("beginn", "ende") else wert
+            neu[key] = zeit(wert, key) if key in ("beginn", "ende") else wert
         if "name" in felder:
             neu["name"] = str(neu["name"]).strip()
             if not neu["name"]:
@@ -188,7 +190,7 @@ def event_status(
         raise ValueError("Unbekannter Status")
     aktion = "event_absagen" if status in ("abgesagt", "archiviert") else "event_aendern"
     with transaktion(conn, k) as cur:
-        alt = _laden(cur, event_id, sperren=True)
+        alt = event_laden(cur, event_id, sperren=True)
         rechte.pruefe(k, aktion, alt["firma_id"])
         cur.execute("update event.event set status=%s, geaendert=now() where id=%s returning *",
                     (status, event_id))
@@ -200,12 +202,12 @@ def event_status(
 
 def event_loeschen(conn: psycopg.Connection[Any], k: Kontext, event_id: UUID) -> None:
     with transaktion(conn, k) as cur:
-        alt = _laden(cur, event_id, sperren=True)
+        alt = event_laden(cur, event_id, sperren=True)
         rechte.pruefe(k, "event_loeschen", alt["firma_id"])
         cur.execute("delete from event.event where id = %s", (event_id,))
 
 
-def _like(text: str) -> str:
+def like_muster(text: str) -> str:
     return "%" + text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
 
 
@@ -217,7 +219,7 @@ def katalog(
     if firma_id is not None:
         rechte.pruefe(k, "lesen", firma_id)
     kats = _standard_kategorien() if kategorien is None else kategorien
-    jetzt_ = datetime.now(timezone.utc) if jetzt is None else _zeit(jetzt, "jetzt")
+    jetzt_ = datetime.now(timezone.utc) if jetzt is None else zeit(jetzt, "jetzt")
     sql = (
         "select e.*, f.name as firma_name,"
         " (select count(*) from event.aufgabe a where a.event_id = e.id and a.status <> 'erledigt')"
@@ -240,7 +242,7 @@ def katalog(
     if suche:
         sql += (" and (e.name ilike %s escape '\\' or e.ort_adresse ilike %s escape '\\'"
                 " or f.name ilike %s escape '\\')")
-        params += [_like(suche)] * 3
+        params += [like_muster(suche)] * 3
     with transaktion(conn, k) as cur:
         cur.execute(sql, params)
         rows = cur.fetchall()
@@ -265,9 +267,9 @@ def event(
     *, kategorien: Mapping[str, Kategorie] | None = None,
 ) -> dict[str, Any]:
     with transaktion(conn, k) as cur:
-        row = _laden(cur, event_id)
+        row = event_laden(cur, event_id)
         rechte.pruefe(k, "lesen", row["firma_id"])
-    s = _schema(row["kategorie"], kategorien)
+    s = schema_fuer(row["kategorie"], kategorien)
     row["schema"] = {
         "kategorie": s.kategorie, "name": s.name, "bausteine": list(s.bausteine),
         "felder": [asdict(f) for f in s.felder], "begriffe": dict(s.begriffe),
