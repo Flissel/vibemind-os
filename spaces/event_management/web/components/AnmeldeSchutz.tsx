@@ -1,6 +1,7 @@
 'use client'
 
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
+import { Kopfleiste } from '@/components/Kopfleiste'
 import { Meldung } from '@/components/Meldung'
 import { api, zurAnmeldung } from '@/lib/api'
 import type { Ich } from '@/lib/typen'
@@ -52,5 +53,10 @@ export function AnmeldeSchutz({ children }: { children: ReactNode }) {
       </div>
     )
   }
-  return <IchProvider ich={ich}>{children}</IchProvider>
+  return (
+    <IchProvider ich={ich}>
+      <Kopfleiste />
+      <main className="pt-[60px]">{children}</main>
+    </IchProvider>
+  )
 }

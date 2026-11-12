@@ -63,3 +63,18 @@ describe('Kopfleiste', () => {
     expect(api.abmelden).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('Kopfleiste Abmeldefehler', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('zeigt die Fehlermeldung unterhalb der festen Leiste (absolut positioniert)', async () => {
+    vi.spyOn(api, 'abmelden').mockRejectedValue(new Error('x'))
+    zeige(ich())
+    await userEvent.click(screen.getByRole('button', { name: 'Abmelden' }))
+    const meldung = await screen.findByRole('alert')
+    expect(meldung.parentElement?.className).toContain('absolute')
+    expect(meldung.parentElement?.className).toContain('top-full')
+  })
+})

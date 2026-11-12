@@ -55,7 +55,7 @@ export function Kopfleiste({ nachAbmeldung = zurAnmeldeseite }: { nachAbmeldung?
         </div>
       </div>
       {fehler !== null && (
-        <div className="mx-auto max-w-screen-2xl px-4 sm:px-6 lg:px-8">
+        <div className="absolute inset-x-0 top-full mx-auto max-w-screen-2xl px-4 pt-2 sm:px-6 lg:px-8">
           <Meldung fehler={fehler} />
         </div>
       )}

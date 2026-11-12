@@ -156,6 +156,14 @@ async function senden<T>(
   return antwort.body as T
 }
 
+/** POST ohne Sitzung und ohne CSRF-Token (öffentliche Routen wie das Einlösen einer Einladung);
+ *  ein 401 leitet hier nicht zur Anmeldung. */
+async function sendenOeffentlich<T>(pfad: string, daten?: unknown): Promise<T> {
+  const { status, body } = await roh('POST', pfad, daten)
+  if (status >= 400) throw new ApiFehler(status, detailText(body, status))
+  return body as T
+}
+
 /** `POST /api/anmelden` (ohne CSRF-Token, setzt das Sitzungs-Cookie). */
 async function anmelden(mail: string, passwort: string): Promise<Ich> {
   const { status, body } = await roh('POST', '/api/anmelden', { mail, passwort })
@@ -175,4 +183,4 @@ function vergessen(): void {
   csrf = null
 }
 
-export const api = { holen, senden, ich, anmelden, abmelden, vergessen }
+export const api = { holen, senden, sendenOeffentlich, ich, anmelden, abmelden, vergessen }

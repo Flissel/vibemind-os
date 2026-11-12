@@ -17,7 +17,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="de">
       <body className={`${schrift.className} min-h-screen bg-gray-50 text-gray-900 antialiased`}>
-        <main className="pt-[60px]">{children}</main>
+        {children}
       </body>
     </html>
   )

@@ -36,6 +36,20 @@ describe('AnmeldeSchutz', () => {
   it('stellt ich per Context bereit', async () => {
     vi.spyOn(api, 'ich').mockResolvedValue(ICH)
     render(<AnmeldeSchutz><Name /></AnmeldeSchutz>)
-    expect(await screen.findByText('Lea Beispiel')).toBeTruthy()
+    expect((await screen.findAllByText('Lea Beispiel')).length).toBeGreaterThan(0)
+  })
+})
+
+describe('AnmeldeSchutz Rahmen', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('zeigt Kopfleiste und Inhalt mit Abstand unter der Leiste', async () => {
+    vi.spyOn(api, 'ich').mockResolvedValue(ICH)
+    render(<AnmeldeSchutz><Name /></AnmeldeSchutz>)
+    await screen.findAllByText('Lea Beispiel')
+    expect(screen.getByRole('banner')).toBeTruthy()
+    expect(screen.getByRole('main').className).toContain('pt-[60px]')
   })
 })
