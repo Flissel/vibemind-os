@@ -59,6 +59,35 @@ Weitere Prozesse:
   `laura_rowboat_export`, `export_worker`, `webhook_delivery`, `mx_worker`,
   `openfang_approval_bridge`.
 
+### Video-Werkbank (Stufe 1, seit 12.11.2026)
+
+Lange Erklaervideos (3 bis 5 Minuten) entstehen Szene fuer Szene. Der Auftrag kommt aus dem
+Auftragsbuch (`art='video'`), die Szenen stehen in `marketing.video_werke`, `video_szenen` und
+`video_vorschlaege` (`db/098_auftragsbuch_video.sql`, `db/099_video_werkbank.sql`). Jeder
+Zustandswechsel ist eine SQL-Funktion `marketing.video_*`.
+
+| Prozess | Wo | Port | Code |
+|---|---|---|---|
+| Werkbank-Shim (Modell-Tuer) | PC | 8154 | `claw/shim/marketing_shim.py` |
+| Werkbank-Arbeiter | PC | 8155 (`/healthz`) | `workers/werkbank_arbeiter.py` |
+| Stimme (Satz zu WAV) | PC | 8138 (`/satz`) | `claw/ton_dienst.py` |
+| Werkbank-Bote (Vorschlaege nach Rowboat) | VM, systemd `marketing-werkbank-bote` | - | `workers/werkbank_bote.py` |
+| Arbeiter- und Pult-Routen | VM, marketing-api | 5510 | `api/werkbank.py` |
+
+- Folien: HyperFrames in `video_werkbank/` (sechs Vorlagen, 1920x1080, 30 Bilder/s). Einmalig
+  `npm ci` in diesem Ordner.
+- Ablauf: Gliederung, dann je Szene Text und Clip. Jedes Stueck segnet der Betreiber ab (Rowboat
+  oder Sales-Seite `/marketing/werkbank`). Sind alle Clips abgenommen, fuegt der Arbeiter das
+  Video zusammen (-14 LUFS) und Sales legt es in `/freigaben`.
+- Kontext fuer das Modell: aus dem Markenwissen nur `Marke.md`, `Markenhandbuch.md`,
+  `Newsletter/` und `Video-Material/` (`claw/video_kontext.py`). In `Video-Material/` keine
+  Unterordner und keine Personennamen in Dateinamen: der Dateiname geht mit ans Modell. Aus
+  Rowboat nur die Wissensquellen, die in `WERKBANK_ROWBOAT_QUELLEN` stehen (kommagetrennt,
+  leer = nichts; gesetzt im Startskript).
+- Budget: Agent `marketing-werkbank` in `config/agent_budget.yaml` (aeusseres Repo). Erstes
+  Testvideo am 12.11.2026: 6 Modellaufrufe (2 Gliederungen, 1 fuer alle Szenentexte, 3 Rueckgaben).
+- Betrieb und Stoerungen: sales-claw `docs/03_RUNBOOK.md`, Abschnitt "Video-Werkbank: Betrieb".
+
 ```mermaid
 flowchart LR
     Mensch[Sales-Oberflaeche und Pult] --> API[marketing-api :5510]
