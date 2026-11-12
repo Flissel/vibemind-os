@@ -27,11 +27,12 @@ def _zeile(minuten_her, actor, quelle="admin", titel="Aufbau planen"):
 
 
 class _Attrappe:
-    def __init__(self, text, sse=True, status=200, rohbody=None):
+    def __init__(self, text, sse=True, status=200, rohbody=None, modus=None):
         self.text = text
         self.sse = sse
         self.status = status
         self.rohbody = rohbody
+        self.modus = modus
         self.methoden = []
         self.auth = []
         outer = self
@@ -57,8 +58,18 @@ class _Attrappe:
                     return self._antwort(outer.status, None, b"")
                 if outer.rohbody is not None:
                     return self._antwort(200, "text/plain", outer.rohbody)
+                if outer.modus == "sse_leer":
+                    return self._antwort(200, "text/event-stream", b"event: message\n\n")
+                if outer.modus == "rpc_error" and req.get("method") == "tools/call":
+                    fehler = {"jsonrpc": "2.0", "id": 2, "error": {"code": -32000, "message": "x"}}
+                    return self._antwort(200, "application/json", json.dumps(fehler).encode())
                 if req.get("method") == "tools/call":
                     res = {"content": [{"type": "text", "text": outer.text}]}
+                    if outer.modus == "zweiteilig":
+                        a, b = outer.text.split("|")
+                        res["content"] = [{"type": "text", "text": a}, {"type": "text", "text": b}]
+                    if outer.modus == "iserror":
+                        res["isError"] = True
                 else:
                     res = {"protocolVersion": "2025-03-26", "capabilities": {}}
                 body = json.dumps({"jsonrpc": "2.0", "id": req.get("id"), "result": res})
@@ -166,6 +177,7 @@ def test_401_ist_unbekannt(monkeypatch, attrappe):
     _setze(monkeypatch, a.url)
     ok, signal, detail = wo._check_event_app_change(SPEC)
     assert ok is None
+    assert signal["status_code"] == 401
     assert TOKEN not in detail and TOKEN not in json.dumps(signal)
 
 
@@ -222,3 +234,49 @@ def test_observe_und_registrierung(monkeypatch, attrappe):
     a = attrappe(_zeile(1, "VibeMind"))
     _setze(monkeypatch, a.url)
     assert wo.observe(SPEC).verified_ok is True
+
+
+def test_quelle_filter(monkeypatch, attrappe):
+    a = attrappe(_zeile(1, "VibeMind", quelle="mitglied"))
+    _setze(monkeypatch, a.url)
+    assert wo._check_event_app_change({**SPEC, "quelle": "bot"})[0] is False
+    assert wo._check_event_app_change(SPEC)[0] is True
+    b = attrappe(_zeile(1, "VibeMind", quelle="mitglied") + "\n" + _zeile(1, "VibeMind", quelle="bot"))
+    _setze(monkeypatch, b.url)
+    assert wo._check_event_app_change({**SPEC, "quelle": " bot "})[0] is True
+    assert wo._check_event_app_change({**SPEC, "quelle": "bot"})[1]["treffer"] == 1
+    assert wo._check_event_app_change(SPEC)[1]["treffer"] == 2
+
+
+def test_jsonrpc_error_ist_none(monkeypatch, attrappe):
+    a = attrappe("", modus="rpc_error")
+    _setze(monkeypatch, a.url)
+    assert wo._check_event_app_change(SPEC)[0] is None
+
+
+def test_result_iserror_ist_none(monkeypatch, attrappe):
+    a = attrappe(_zeile(1, "VibeMind"), modus="iserror")
+    _setze(monkeypatch, a.url)
+    assert wo._check_event_app_change(SPEC)[0] is None
+
+
+def test_sse_ohne_data_ist_none(monkeypatch, attrappe):
+    a = attrappe("", modus="sse_leer")
+    _setze(monkeypatch, a.url)
+    assert wo._check_event_app_change(SPEC)[0] is None
+
+
+def test_unmoegliches_datum_wird_uebersprungen(monkeypatch, attrappe):
+    kaputt = "- 2030-13-45 12:00 · VibeMind (admin): „x“ angelegt"
+    a = attrappe(kaputt + "\n" + _zeile(1, "VibeMind"))
+    _setze(monkeypatch, a.url)
+    ok, signal, _ = wo._check_event_app_change(SPEC)
+    assert ok is True and signal["treffer"] == 1
+
+
+def test_mehrere_content_teile_werden_zeilenweise_gelesen(monkeypatch, attrappe):
+    # Ohne Trenner klebte Teil 2 an das Ende von Teil 1: der VibeMind-Eintrag
+    # ginge verloren.
+    a = attrappe(_zeile(1, "Anderer") + "|" + _zeile(1, "VibeMind"), modus="zweiteilig")
+    _setze(monkeypatch, a.url)
+    assert wo._check_event_app_change(SPEC)[1]["zeilen"] == 2

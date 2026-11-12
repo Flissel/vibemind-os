@@ -608,6 +608,16 @@ def _event_antwort_lesen(r):
     return json.loads(r.text)
 
 
+# Grenzen dieser Pruefung (bewusst, die App ist nicht aenderbar):
+# - Die Antwort ist Freitext, verglichen wird der Anzeigename. Wer Aufgaben oder
+#   Mitglieder anlegen kann, kann einen Treffer faelschen (Mitglied mit gleichem
+#   Namen; Titel mit Zeilenumbruch und nachgebauter Zeile). Es gibt keinen Schutz
+#   gegen gefaelschte Titel oder Mitgliedsnamen.
+# - Milderung: optionaler spec-Schluessel `quelle`; ist er gesetzt, muss die
+#   Quelle in Klammern exakt passen. Das Ergebnis ist ein Beleg, keine
+#   Autorisierung - darum bleibt on_fail "report".
+# - Sommerzeit: Stempel werden mit fold=0 gelesen; in der doppelten Herbststunde
+#   gilt die erste Lesart, die zweite wird hingenommen.
 def _check_event_app_change(spec: Dict[str, Any]):
     """Hat `actor` in den letzten `since_s` Sekunden etwas in der Event-App geaendert?
 
@@ -664,11 +674,13 @@ def _check_event_app_change(spec: Dict[str, Any]):
         result = antwort.get("result")
         if "error" in antwort or not isinstance(result, dict) or result.get("isError"):
             return None, signal, "list_recent_changes lieferte einen Fehler"
-        text = "".join(str(c.get("text", "")) for c in result.get("content") or []
+        text = "\n".join(str(c.get("text", "")) for c in result.get("content") or []
                        if isinstance(c, dict))
         jetzt = _event_jetzt()
         von = jetzt - timedelta(seconds=since_s + _EVENT_TOLERANZ_S)
         bis = jetzt + timedelta(seconds=_EVENT_TOLERANZ_S)
+        quelle = spec.get("quelle")
+        quelle = str(quelle).strip() if quelle is not None else None
         zeilen = treffer = 0
         for zeile in text.splitlines():
             m = _EVENT_ZEILE.match(zeile)
@@ -677,7 +689,12 @@ def _check_event_app_change(spec: Dict[str, Any]):
             zeilen += 1
             if m.group(2).strip() != actor:
                 continue
-            stempel = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+            if quelle is not None and m.group(3).strip() != quelle:
+                continue
+            try:
+                stempel = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+            except ValueError:
+                continue  # unmoegliches Datum: Zeile zaehlt nicht, Pruefung laeuft weiter
             if von <= stempel <= bis:
                 treffer += 1
         signal.update({"zeilen": zeilen, "treffer": treffer})
