@@ -386,6 +386,30 @@ def test_event_bindung_katalog_und_anlegen(db_admin: Any, welt: dict[str, Any]) 
         events.event_anlegen(stolper, k, welt["fa"], "fest", "Neu", b, e)
 
 
+# --- ort_link nur http(s) -------------------------------------------------------------
+
+
+@pytest.mark.parametrize("link", [
+    "javascript:alert(1)", "JAVASCRIPT:alert(1)", "data:text/html,x", "ftp://example.org/x",
+    "example.org", "", " https://example.org", "//example.org",
+])
+def test_ort_link_nur_http_oder_https(db_admin: Any, db_app: Any, link: str) -> None:
+    f = _firma(db_admin, "bsp-a")
+    k = _k(_person(db_admin, "a@example.org"), {f: "leitung"})
+    b, e = _zeiten()
+    conn = db_app()
+    with pytest.raises(ValueError, match="ort_link") as fehler:
+        events.event_anlegen(conn, k, f, "fest", "F", b, e, ort_link=link)
+    assert not link or link not in str(fehler.value)
+    row = events.event_anlegen(conn, k, f, "fest", "F", b, e, ort_link="https://example.org/a")
+    with pytest.raises(ValueError, match="ort_link"):
+        events.event_aendern(conn, k, row["id"], ort_link=link)
+    assert events.event_aendern(conn, k, row["id"], ort_link="http://example.org/b"
+                                )["ort_link"] == "http://example.org/b"
+    assert events.event_aendern(conn, k, row["id"], ort_link=None)["ort_link"] is None
+    assert db_admin.execute("select count(*) as n from event.event").fetchone()["n"] == 1
+
+
 # --- Verlauf: actor ist Anzeige, actor_person_id ist beweiskraeftig ----------------
 
 

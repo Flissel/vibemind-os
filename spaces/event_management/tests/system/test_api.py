@@ -16,15 +16,17 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
-from spaces.event_management.system import api, events, zugang
+from spaces.event_management.system import api, events, firmen, zugang
 from spaces.event_management.system.bausteine import REGISTRY
 from spaces.event_management.system.kategorien import KategorieFehler
+from spaces.event_management.system.kontext import Kontext, transaktion
 from spaces.event_management.system.mailer import SpeicherMailer
 
 BASIS = "https://events.example.org"
 PW = "ein-langes-passwort-1"
 GEHEIM = b"api-testgeheimnis-0123456789abcdef"  # >= 32 Byte
-BEGINN = datetime(2027, 3, 1, 18, 0, tzinfo=timezone.utc)
+# Relativ zu jetzt: ein festes Datum kippt im Katalog irgendwann von "kommend" auf "vergangen".
+BEGINN = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=30)
 OEFFENTLICH = {("POST", "/api/anmelden"), ("GET", "/api/einladung/{token}"),
                ("POST", "/api/einladung/{token}")}
 SCHREIBEND = {"POST", "PATCH", "PUT", "DELETE"}
@@ -377,6 +379,11 @@ NUR_FREMD = [
     *[f"{op}:{b}" for b in sorted(REGISTRY)
       for op in ("b_aendern_fremde_zeile", "b_loeschen_fremde_zeile")],
 ]
+# Lesende Zugriffe auf Event/Firma B (fremd: 404, eigen: 200).
+LESEN = [
+    "event_lesen", "verlauf_lesen", "mitglieder_lesen", "kontakte_lesen",
+    *[f"b_liste:{b}" for b in sorted(REGISTRY)],
+]
 
 
 def _anfrage(w: dict[str, Any], fall: str, eigen: bool) -> tuple[str, str, Any, str]:
@@ -420,6 +427,16 @@ def _anfrage(w: dict[str, Any], fall: str, eigen: bool) -> tuple[str, str, Any, 
         return "PATCH", f"/api/events/{w['ea']}/b/{b}/{w['zb'][b]}", _aenderung(b), "la"
     if op == "b_loeschen_fremde_zeile":
         return "DELETE", f"/api/events/{w['ea']}/b/{b}/{w['zb'][b]}", None, "la"
+    if op == "event_lesen":
+        return "GET", f"/api/events/{e}", None, "la"
+    if op == "verlauf_lesen":
+        return "GET", f"/api/events/{e}/verlauf", None, "la"
+    if op == "b_liste":
+        return "GET", f"/api/events/{e}/b/{b}", None, "la"
+    if op == "mitglieder_lesen":
+        return "GET", f"/api/firmen/{f}/mitglieder", None, "la"
+    if op == "kontakte_lesen":
+        return "GET", f"/api/firmen/{f}/kontakte", None, "la"
     raise AssertionError(fall)
 
 
@@ -436,15 +453,26 @@ def test_matrix_deckt_alle_schreibenden_routen_ab(app: FastAPI, welt: dict[str, 
     assert abgedeckt == schreibende
 
 
-@pytest.mark.parametrize("fall", FAMILIEN + NUR_FREMD)
+@pytest.mark.parametrize("fall", FAMILIEN + NUR_FREMD + LESEN)
 def test_mandantenmatrix_http(welt: dict[str, Any], db_admin: Any, mailer: SpeicherMailer,
                               fall: str) -> None:
     methode, url, daten, wer = _anfrage(welt, fall, eigen=False)
     vorher, mails = _stand(db_admin), len(mailer.gesendet)
     r = welt["c"][wer].request(methode, url, json=daten)
     assert r.status_code == (403 if fall == "firma_anlegen" else 404), r.text
+    if fall in LESEN:
+        assert r.json() == {"detail": "Nicht gefunden"}
     assert _stand(db_admin) == vorher
     assert len(mailer.gesendet) == mails
+
+
+@pytest.mark.parametrize("fall", LESEN)
+def test_mandantenmatrix_http_lesen_positivkontrolle(welt: dict[str, Any], fall: str) -> None:
+    methode, url, _, wer = _anfrage(welt, fall, eigen=True)
+    r = welt["c"][wer].request(methode, url)
+    assert r.status_code == 200, r.text
+    if fall != "verlauf_lesen":  # der Verlauf der Testwelt ist leer (Admin-Zeilen)
+        assert r.json(), fall
 
 
 @pytest.mark.parametrize("fall", FAMILIEN)
@@ -601,6 +629,17 @@ def test_kontakte_routen(welt: dict[str, Any]) -> None:
     assert c.get(f"/api/firmen/{welt['fb']}/mitglieder").status_code == 404
 
 
+def test_firma_kuerzel_doppelt_oder_mit_zeilenumbruch_422(welt: dict[str, Any],
+                                                           db_admin: Any) -> None:
+    b = welt["c"]["betreiber"]
+    vorher = _stand(db_admin)
+    r = b.post("/api/firmen", json={"name": "Doppelt", "kurz": "bsp-a"})
+    assert r.status_code == 422 and r.json() == {"detail": "Kürzel bereits vergeben"}
+    r = b.post("/api/firmen", json={"name": "Neu", "kurz": "neu\n"})
+    assert r.status_code == 422, r.text
+    assert _stand(db_admin) == vorher
+
+
 def test_letzte_leitung_422(welt: dict[str, Any]) -> None:
     c = welt["c"]["la"]
     r = c.delete(f"/api/firmen/{welt['fa']}/mitglieder/{welt['la']}")
@@ -633,7 +672,14 @@ def test_500_ohne_details(welt: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
         assert r.json() == {"detail": "interner Fehler"}
         assert "geheim" not in r.text and "Traceback" not in r.text
         assert f"GET {muster}" in server_log()
-    # Echter psycopg-Fehler (doppelter Kurzname): DETAIL nennt die Daten, Body/Log nicht.
+    # Echter, ungefangener psycopg-Fehler (UniqueViolation, die Fachschicht bildet ihn hier
+    # bewusst nicht ab): DETAIL nennt die Daten, Body/Log nicht.
+    def doppelt(conn: Any, k: Kontext, name: str, kurz: str) -> Any:
+        with transaktion(conn, k) as cur:
+            cur.execute("insert into event.firma (name, kurz) values (%s, %s)", (name, kurz))
+        raise AssertionError("unerreichbar")
+
+    monkeypatch.setattr(firmen, "firma_anlegen", doppelt)
     r = welt["c"]["betreiber"].post("/api/firmen", json={"name": "Doppelt", "kurz": "bsp-a"})
     assert r.status_code == 500 and r.json() == {"detail": "interner Fehler"}
     log = server_log()

@@ -104,6 +104,20 @@ def test_betreiber_legt_firma_an_und_listet(db_admin: Any, db_app: Any) -> None:
         firmen.firma_anlegen(db_app(), k, "X", "UNGUELTIG!")
 
 
+def test_firma_kuerzel_doppelt_und_zeilenumbruch(db_admin: Any, db_app: Any) -> None:
+    k = Kontext(person_id=None, betreiber=True)
+    firmen.firma_anlegen(db_app(), k, "Beispiel GmbH", "beispiel")
+    with pytest.raises(ValueError) as e:
+        firmen.firma_anlegen(db_app(), k, "Andere GmbH", "beispiel")
+    assert str(e.value) == "Kürzel bereits vergeben"  # ohne Daten, ohne psycopg-DETAIL
+    assert e.value.__cause__ is None and e.value.__suppress_context__
+    stolper: Any = _Stolperdraht()
+    for kurz in ("neu\n", "neu\r\n", "\nneu", "NEU", "n"):
+        with pytest.raises(ValueError, match="Kurzname"):
+            firmen.firma_anlegen(stolper, k, "Neu GmbH", kurz)
+    assert db_admin.execute("select count(*) n from event.firma").fetchone()["n"] == 1
+
+
 def test_leitung_fremder_firma_ohne_recht(db_admin: Any, db_app: Any) -> None:
     f1, f2 = _firma(db_admin, "firma-a"), _firma(db_admin, "firma-b")
     p, q = _person(db_admin, "a@example.org"), _person(db_admin, "b@example.org")

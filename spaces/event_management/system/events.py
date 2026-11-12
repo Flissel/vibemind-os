@@ -49,6 +49,14 @@ def zeit(wert: datetime, name: str) -> datetime:
     return wert.replace(tzinfo=ZEITZONE) if wert.tzinfo is None else wert
 
 
+def _ort_link(wert: Any) -> str | None:
+    """Nur http(s)-Links (kein javascript:, data: usw. in einem spaeter klickbaren Link)."""
+    link = pruefung.text_oder_none("ort_link", wert)
+    if link is not None and not link.startswith(("http://", "https://")):
+        raise ValueError("Feld 'ort_link' muss mit http:// oder https:// beginnen")
+    return link
+
+
 def _metadaten_pruefen(schema: WirksamesSchema, roh: Mapping[str, Any] | None) -> dict[str, Any]:
     if roh is not None and not isinstance(roh, Mapping):
         raise ValueError("Metadaten müssen ein Objekt sein")
@@ -117,7 +125,7 @@ def event_anlegen(
         raise ValueError("Name fehlt")
     beginn, ende = zeit(beginn, "beginn"), zeit(ende, "ende")
     ort_adresse = pruefung.text_oder_none("ort_adresse", ort_adresse)
-    ort_link = pruefung.text_oder_none("ort_link", ort_link)
+    ort_link = _ort_link(ort_link)
     beschreibung = pruefung.text_oder_none("beschreibung", beschreibung)
     if ende < beginn:
         raise ValueError("Ende liegt vor dem Beginn")
@@ -155,6 +163,8 @@ def event_aendern(
                 raise ValueError(f"Feld '{key}' darf nicht leer sein")
             if key in ("beginn", "ende"):
                 neu[key] = zeit(wert, key)
+            elif key == "ort_link":
+                neu[key] = _ort_link(wert)
             elif key != "metadaten":
                 neu[key] = pruefung.text_oder_none(key, wert)
         if "name" in felder:

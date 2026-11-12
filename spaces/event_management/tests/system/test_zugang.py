@@ -235,6 +235,36 @@ def test_einladen_prueft_recht_vor_sql(db_admin: Any, db_app: Any) -> None:
     assert m.gesendet == []
 
 
+@pytest.mark.parametrize("mail", [
+    "a@example.org, b@example.org", "a@example.org;b@example.org",
+    "a@example.org\nBcc: b@example.org", "a@example.org\r\nBcc: b@example.org",
+    "Anna <anna@example.org>", "anna", "a@b@example.org", "@example.org", "anna@",
+    "a b@example.org", '"a,b"@example.org', "", "   ",
+])
+def test_einladen_nur_genau_eine_adresse(db_admin: Any, mail: str) -> None:
+    f = _firma(db_admin, "empf")
+    m = mailer.SpeicherMailer()
+    leitung = Kontext(person_id=uuid4(), betreiber=False, rollen={f: "leitung"})
+    with pytest.raises(ValueError, match="Mailadresse") as e:
+        zugang.einladen(_Stolperdraht(), leitung, m, mail, "X", f,  # type: ignore[arg-type]
+                        "mitglied", BASIS)
+    assert "example.org" not in str(e.value)
+    assert m.gesendet == []
+
+
+def test_einladungsmail_name_einzeilig_und_gekuerzt(db_admin: Any, db_app: Any) -> None:
+    f = _firma(db_admin, "einzeilig")
+    m = mailer.SpeicherMailer()
+    name = "Anna\r\nBcc: x@example.org\tBeispiel\x0b\u2028" + "y" * 200
+    zugang.einladen(db_app(), _leitung(db_admin, f), m, "anna@example.org", name, f,
+                    "mitglied", BASIS)
+    erste = m.gesendet[0].text.split("\n")[0]
+    assert erste.startswith("Hallo Anna Bcc: x@example.org Beispiel y") and erste.endswith(",")
+    anrede = erste[len("Hallo "):-1]
+    assert len(anrede) <= 100 and anrede.isprintable()
+    assert m.gesendet[0].an == "anna@example.org"
+
+
 def test_mailfehler_wird_geloggt_und_weitergereicht(
     db_admin: Any, db_app: Any, caplog: pytest.LogCaptureFixture
 ) -> None:

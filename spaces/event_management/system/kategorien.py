@@ -9,6 +9,7 @@ from typing import Mapping
 
 import yaml
 
+from spaces.event_management.system import pruefung
 from spaces.event_management.system.bausteine import FELDTYPEN, KERN, PFLICHT, ZUSAETZE
 
 logger = logging.getLogger(__name__)
@@ -84,8 +85,12 @@ def _feld(roh: object, kid: str, datei: str) -> Feld:
     optionen = _liste(roh.get("optionen"), kid, datei, "optionen")
     if roh["typ"] == "auswahl" and not optionen:
         raise _fehler(kid, datei, f"Feld '{roh['id']}' (auswahl) braucht mindestens eine Option")
+    vorgabe = roh.get("vorgabe")
+    if vorgabe is not None and not pruefung.metadatum_ok(roh["typ"], optionen, vorgabe):
+        raise _fehler(kid, datei,
+                      f"vorgabe von Feld '{roh['id']}' passt nicht zum typ '{roh['typ']}'")
     return Feld(roh["id"], roh["typ"], roh["beschriftung"], bool(roh.get("pflicht", False)),
-                roh.get("vorgabe"), optionen)
+                vorgabe, optionen)
 
 
 def _parse(pfad: Path) -> Kategorie:
@@ -188,9 +193,19 @@ def wirksames_schema(kategorien: Mapping[str, Kategorie], kategorie_id: str) -> 
 
 
 def lade_kategorien(ordner: Path | None = None) -> dict[str, Kategorie]:
-    """Laedt alle *.yaml, prueft jede Kategorie und baut ihr wirksames Schema."""
+    """Laedt alle *.yaml, prueft jede Kategorie und baut ihr wirksames Schema.
+
+    Fail-closed: fehlender Ordner, kein einziges *.yaml oder fehlende `basis` sind ein
+    KategorieFehler (sonst startete die API ohne waehlbare Kategorien).
+    """
     ordner = ordner or STANDARD_ORDNER
+    if not ordner.is_dir():
+        raise KategorieFehler(f"Kategorien-Ordner fehlt: {ordner.name}")
     kategorien = {k.id: k for k in (_parse(p) for p in sorted(ordner.glob("*.yaml")))}
+    if not kategorien:
+        raise KategorieFehler(f"Keine Kategorien in {ordner.name}")
+    if "basis" not in kategorien:
+        raise KategorieFehler("Kategorie 'basis' fehlt")
     for kid in kategorien:
         wirksames_schema(kategorien, kid)
     logger.debug("%d Kategorien geladen aus %s", len(kategorien), ordner)

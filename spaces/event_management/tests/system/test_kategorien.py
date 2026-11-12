@@ -162,3 +162,49 @@ def test_auswahl_braucht_optionen(tmp_path: Path):
               "  - {id: x, typ: auswahl, beschriftung: X}\n")
     with pytest.raises(KategorieFehler, match=r"(?s)(?=.*au)(?=.*Option)"):
         lade_kategorien(tmp_path)
+
+
+# --- Vorgabe passt zum Typ (R2), fail-closed beim Laden ------------------------------
+
+
+@pytest.mark.parametrize(("typ", "vorgabe"), [
+    ("ja_nein", "'ja'"), ("ja_nein", "1"), ("zahl", "'viele'"), ("zahl", "true"),
+    ("zahl", ".nan"), ("zahl", ".inf"), ("text", "5"), ("langtext", "[a]"),
+    ("url", "'ftp://example.org'"), ("url", "'javascript:alert(1)'"),
+    ("datum", "'kein-datum'"), ("datum", "2027-01-01"),  # YAML-Datum ist kein ISO-Text
+    ("datumzeit", "'morgen'"), ("auswahl", "c"),
+])
+def test_vorgabe_muss_zum_typ_passen(tmp_path: Path, typ: str, vorgabe: str):
+    _basis(tmp_path)
+    extra = ", optionen: [a, b]" if typ == "auswahl" else ""
+    _schreibe(tmp_path, "vg", "id: vg\nname: V\neltern: basis\nfelder:\n"
+              f"  - {{id: x, typ: {typ}, beschriftung: X, vorgabe: {vorgabe}{extra}}}\n")
+    with pytest.raises(KategorieFehler, match=r"(?s)(?=.*vg)(?=.*vorgabe)"):
+        lade_kategorien(tmp_path)
+
+
+def test_passende_vorgaben_laden(tmp_path: Path):
+    _basis(tmp_path)
+    _schreibe(tmp_path, "ok", "id: ok\nname: O\neltern: basis\nfelder:\n"
+              "  - {id: a, typ: ja_nein, beschriftung: A, vorgabe: false}\n"
+              "  - {id: b, typ: zahl, beschriftung: B, vorgabe: 1.5}\n"
+              "  - {id: c, typ: url, beschriftung: C, vorgabe: 'https://example.org'}\n"
+              "  - {id: d, typ: datum, beschriftung: D, vorgabe: '2027-01-01'}\n"
+              "  - {id: e, typ: auswahl, beschriftung: E, vorgabe: b, optionen: [a, b]}\n"
+              "  - {id: f, typ: text, beschriftung: F}\n")
+    felder = {f.id: f.vorgabe for f in wirksames_schema(lade_kategorien(tmp_path), "ok").felder}
+    assert felder == {"a": False, "b": 1.5, "c": "https://example.org", "d": "2027-01-01",
+                      "e": "b", "f": None}
+
+
+def test_fehlender_oder_leerer_ordner(tmp_path: Path):
+    with pytest.raises(KategorieFehler):
+        lade_kategorien(tmp_path / "gibtsnicht")
+    with pytest.raises(KategorieFehler):
+        lade_kategorien(tmp_path)  # leer
+
+
+def test_fehlende_basis(tmp_path: Path):
+    _schreibe(tmp_path, "kind", "id: kind\nname: Kind\neltern: basis\n")
+    with pytest.raises(KategorieFehler, match="basis"):
+        lade_kategorien(tmp_path)

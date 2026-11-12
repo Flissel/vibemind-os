@@ -7,13 +7,14 @@ from typing import Any
 from uuid import UUID
 
 import psycopg
+from psycopg import errors
 
 from spaces.event_management.system import pruefung, rechte
 from spaces.event_management.system.kontext import Kontext, NichtGefunden, transaktion
 
 log = logging.getLogger(__name__)
 
-_KURZ = re.compile(r"^[a-z0-9-]{2,32}$")
+_KURZ = re.compile(r"[a-z0-9-]{2,32}")
 _ROLLEN = ("leitung", "mitglied")
 
 
@@ -23,14 +24,18 @@ def firma_anlegen(conn: psycopg.Connection[Any], k: Kontext, name: str, kurz: st
     kurz = pruefung.text("kurz", kurz)
     if not name:
         raise ValueError("Name fehlt")
-    if not _KURZ.match(kurz):
+    if not _KURZ.fullmatch(kurz):  # fullmatch: "$" liesse ein "\n" am Ende durch
         raise ValueError("Kurzname ungueltig")
-    with transaktion(conn, k) as cur:
-        cur.execute(
-            "insert into event.firma (name, kurz) values (%s, %s) returning id, name, kurz",
-            (name, kurz),
-        )
-        row = cur.fetchone()
+    try:
+        with transaktion(conn, k) as cur:
+            cur.execute(
+                "insert into event.firma (name, kurz) values (%s, %s) returning id, name, kurz",
+                (name, kurz),
+            )
+            row = cur.fetchone()
+    except errors.UniqueViolation:
+        # Ohne psycopg-DETAIL (nennt den Wert); einzige Unique-Spalte neben der id ist kurz.
+        raise ValueError("Kürzel bereits vergeben") from None
     assert row is not None
     return row
 

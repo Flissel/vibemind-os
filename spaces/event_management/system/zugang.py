@@ -12,6 +12,7 @@ import logging
 import secrets
 import threading
 import time
+from email.utils import getaddresses
 from typing import Any
 from uuid import UUID
 
@@ -27,6 +28,7 @@ _ROLLEN = ("leitung", "mitglied")
 _EINLADUNG_TAGE = 7
 _FEHLER_EINLADUNG = "Einladung ungültig oder abgelaufen"
 _PASSWORT_MIN = 12
+_ANREDE_MAX = 100
 
 _SCRYPT_N = 2**14
 _SCRYPT_R = 8
@@ -88,6 +90,24 @@ def _token_hash(token: str) -> str:
 # --- Einladung --------------------------------------------------------------------
 
 
+def _empfaenger(mail: str) -> str:
+    """Genau eine nackte addr-spec (kein Anzeigename, keine Liste, kein Zeilenumbruch),
+    sonst ValueError ohne die Adresse."""
+    adresse = mail.strip()
+    lokal, _, domain = adresse.partition("@")
+    if (adresse.count("@") != 1 or not lokal or not domain or "," in adresse
+            or any(c.isspace() or not c.isprintable() for c in adresse)
+            or getaddresses([adresse]) != [("", adresse)]):
+        raise ValueError("Mailadresse ungültig")
+    return adresse
+
+
+def _anrede(name: str) -> str:
+    """Personenname fuer den Mailtext: eine Zeile, ohne Steuerzeichen, hoechstens 100 Zeichen."""
+    zeile = "".join(c if c.isprintable() else " " for c in name)
+    return " ".join(zeile.split())[:_ANREDE_MAX]
+
+
 def einladen(
     conn: psycopg.Connection[Any], k: Kontext, mailer: Mailer, mail: str, name: str,
     firma_id: UUID, rolle: str, basis_url: str,
@@ -96,7 +116,7 @@ def einladen(
     rechte.pruefe(k, "einladen", firma_id)
     if rolle not in _ROLLEN:
         raise ValueError("Rolle ungueltig")
-    mail = pruefung.text("mail", mail)
+    mail = _empfaenger(pruefung.text("mail", mail))
     name = pruefung.text("name", name)
     person = firmen.person_finden_oder_anlegen(conn, mail, name)
     token = secrets.token_urlsafe(32)
@@ -116,7 +136,7 @@ def einladen(
     link = f"{basis_url.rstrip('/')}/einladung/{token}"
     betreff = f"Einladung zu {firma_name} im Event-Management"
     text = (
-        f"Hallo {person['name']},\n\n"
+        f"Hallo {_anrede(person['name'])},\n\n"
         f"Sie wurden zu „{firma_name}“ im Event-Management eingeladen (Rolle: {rolle}).\n\n"
         f"Über diesen Link nehmen Sie die Einladung an:\n{link}\n\n"
         f"Der Link ist {_EINLADUNG_TAGE} Tage gültig und funktioniert nur einmal.\n"
