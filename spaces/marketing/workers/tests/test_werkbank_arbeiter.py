@@ -714,8 +714,9 @@ def test_nachfrage_wartet_kurz(F):
     assert pausen == [wa.NOCH_EINMAL_PAUSE_S]
 
 
+# 12.11.2026: 8150/8151 gehoeren der Lern-Huelle (spaces.learning.huelle); Werkbank = 8154/8155.
 def test_ports_und_url():
-    assert wa.PORT == 8151 and wa.TAKT_S == 30 and wa.LLM_URL.endswith(":8150/v1")
+    assert wa.PORT == 8155 and wa.TAKT_S == 30 and wa.LLM_URL.endswith(":8154/v1")
     assert wa.arbeitsordner("0123abcd", 3).parts[-4:] == ("VibeMind", "werkbank", "0123abcd", "s3")
 
 

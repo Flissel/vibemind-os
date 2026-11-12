@@ -219,27 +219,27 @@ $Dienste = @(
     },
     # Video-Werkbank (11.11.2026): eigene Modell-Tuer mit eigenem Budget-Namen (Gliederung und Szenentexte
     # sollen die Tagesgrenzen der anderen Agenten nicht aufbrauchen) und der Arbeiter, der schreibt, spricht,
-    # rendert und hochlaedt. 8147 = Auftrags-Arbeiter und 8149 = pc_suche sind belegt.
+    # rendert und hochlaedt. 8147 = Auftrags-Arbeiter, 8149 = pc_suche und 8150/8151 = Lern-Huelle sind belegt.
     @{
         Name = 'marketing_werkbank_shim'
-        Port = 8150
+        Port = 8154
         Args = @((Join-Path $SpaceRoot 'claw\shim\marketing_shim.py'),
-                 '--host', '127.0.0.1', '--port', '8150', '--timeout', '900')
+                 '--host', '127.0.0.1', '--port', '8154', '--timeout', '900')
         Cwd  = $Root
         Env  = @{
             SHIM_EXTRA_MCP_CONFIG = (Join-Path $SpaceRoot 'claw\shim\marketing-mcp.json')
             VIBEMIND_AGENT        = 'marketing-werkbank'
             VIBEMIND_BUDGET_MODUL = 'C:\Users\User\Desktop\Vibemind_V1\scripts\claude_budget.py'
         }
-        Was  = 'Modell-Tuer :8150 nur fuer die Video-Werkbank (Budget marketing-werkbank)'
+        Was  = 'Modell-Tuer :8154 nur fuer die Video-Werkbank (Budget marketing-werkbank)'
     },
     @{
         Name = 'marketing_werkbank_arbeiter'
-        Port = 8151
+        Port = 8155
         Args = @('-u', '-m', 'spaces.marketing.workers.werkbank_arbeiter')
         Cwd  = $OsRoot
         Env  = @{ TON_STIMMEN_ORDNER = 'E:\marketing-stimmen' }
-        Was  = 'Werkbank-Arbeiter (Video-Auftraege: schreibt, spricht, rendert, laedt Clips hoch; fragt ueber :8150)'
+        Was  = 'Werkbank-Arbeiter (Video-Auftraege: schreibt, spricht, rendert, laedt Clips hoch; fragt ueber :8154)'
     }
 )
 

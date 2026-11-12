@@ -1,7 +1,7 @@
 """Werkbank-Arbeiter am PC (Video-Werkbank Stufe 1, 11.11.2026). Holt Video-Auftraege ueber die Marketing-API der VM
-(/api/werkbank/arbeiter, X-Bild-Key), sammelt Kontext, laesst Claude ueber die eigene Shim :8150 Gliederung und
+(/api/werkbank/arbeiter, X-Bild-Key), sammelt Kontext, laesst Claude ueber die eigene Shim :8154 Gliederung und
 Szenentexte schreiben, prueft jede Szene mechanisch gegen ihre Quellen, spricht und rendert freigegebene Szenen und
-laedt die Clips in Teilen hoch. Versendet wird nichts. Gestartet von marketing-dienste-starten.ps1; Gesundheits-Port 8151.
+laedt die Clips in Teilen hoch. Versendet wird nichts. Gestartet von marketing-dienste-starten.ps1; Gesundheits-Port 8155.
 
 Regeln, die hier gelten:
 - Hoechstens eine Szene je Werk und Durchlauf, und nie zwei Renders gleichzeitig (der PC hat wenig RAM, die GPU
@@ -36,9 +36,9 @@ from spaces.marketing.workers.video_zusammen import fertigstellen as video_ferti
 from spaces.marketing.workers.werkbank_api import WerkbankApi
 
 LOG = logging.getLogger("werkbank_arbeiter")
-PORT = 8151
+PORT = 8155
 TAKT_S = 30
-LLM_URL = os.environ.get("MARKETING_WERKBANK_LLM_URL", "http://127.0.0.1:8150/v1")
+LLM_URL = os.environ.get("MARKETING_WERKBANK_LLM_URL", "http://127.0.0.1:8154/v1")
 LLM_ZEITLIMIT_S = 900            # wie --timeout der Shim
 BLOCK = video_texte.BLOCK
 NOCH_EINMAL_PAUSE_S = 5          # zwischen einer unbrauchbaren Antwort und der Nachfrage

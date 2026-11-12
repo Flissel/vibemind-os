@@ -295,15 +295,15 @@ def test_beende_dienst_beendet_nur_eine_eindeutige_kopie(monkeypatch):
 
 
 def test_werkbank_dienste_stehen_im_startskript_und_in_den_regeln():
-    """11.11.2026: Shim :8150 und Arbeiter :8151 (8147 und 8149 sind belegt) - eine Liste, ein Wächter."""
+    """12.11.2026: Shim :8154 und Arbeiter :8155 (8147 und 8149 sind belegt; 8150/8151 gehoeren der Lern-Huelle, am 12.11. beim Ausrollen als Kollision gefunden) - eine Liste, ein Wächter."""
     import re
     from pathlib import Path
     skript = (Path(w.__file__).parent / "scripts" / "marketing-dienste-starten.ps1").read_text(encoding="utf-8")
     shim = re.search(r"Name = 'marketing_werkbank_shim'.*?Was\s+=", skript, re.S).group(0)
-    assert "Port = 8150" in shim and "'8150'" in shim and "'--timeout', '900'" in shim
+    assert "Port = 8154" in shim and "'8154'" in shim and "'--timeout', '900'" in shim
     assert "VIBEMIND_AGENT        = 'marketing-werkbank'" in shim and "claude_budget.py" in shim
     arbeiter = re.search(r"Name = 'marketing_werkbank_arbeiter'.*?Was\s+=", skript, re.S).group(0)
-    assert "Port = 8151" in arbeiter and "workers.werkbank_arbeiter" in arbeiter
+    assert "Port = 8155" in arbeiter and "workers.werkbank_arbeiter" in arbeiter
     assert r"TON_STIMMEN_ORDNER = 'E:\marketing-stimmen'" in arbeiter
     assert len(re.findall(r"Port = (\d+)", skript)) == len(set(re.findall(r"Port = (\d+)", skript)))
     assert w.REGELN["marketing_werkbank_shim"] == w.Regel("/health", True, True)
