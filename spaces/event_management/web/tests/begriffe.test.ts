@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { KERN, bausteinName, begriffe } from '@/lib/begriffe'
+import { KERN, bausteinName, begriffe, eintragName } from '@/lib/begriffe'
 
 function pythonNamen(konstante: string): string[] {
   // npm test läuft im Ordner web/; die Fachschicht liegt eine Ebene darüber.
@@ -34,5 +34,11 @@ describe('begriffe', () => {
     )
     expect(bausteinName('jury', { abgaben: 'X' })).toBe('Jury')
     expect(bausteinName('neu_unbekannt')).toBe('neu_unbekannt')
+  })
+
+  it('eintragName nennt Hilfseintraege der Registry deutsch, sonst wie bausteinName', () => {
+    expect(eintragName('aufgaben_kategorien')).toBe('Aufgaben-Kategorien')
+    expect(eintragName('aufgaben', { aufgaben: 'To-dos' })).toBe('To-dos')
+    expect(eintragName('jury')).toBe('Jury')
   })
 })

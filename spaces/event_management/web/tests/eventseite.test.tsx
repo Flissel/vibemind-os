@@ -303,4 +303,28 @@ describe('Event-Seite', () => {
     expect(zeile.textContent).toContain('web')
     expect(api.holen).toHaveBeenCalledWith('/api/events/e1/verlauf', { limit: '100' })
   })
+
+  it('Verlauf nennt Hilfseinträge der Registry deutsch statt mit ihrer Id', async () => {
+    reiterParam = 'verlauf'
+    verlauf = [
+      {
+        id: 2,
+        event_id: 'e1',
+        firma_id: 'f1',
+        zeitpunkt: '2026-11-12T22:30:00+00:00',
+        actor: 'lea@example.org',
+        actor_person_id: 'p1',
+        quelle: 'web',
+        baustein: 'aufgaben_kategorien',
+        aktion: 'angelegt',
+        ziel_id: null,
+      },
+    ]
+    mocke(LEITUNG)
+    render(<EventPage />)
+    await laden()
+    const zeile = (await screen.findByText('lea@example.org')).closest('tr')!
+    expect(zeile.textContent).toContain('Aufgaben-Kategorien')
+    expect(zeile.textContent).not.toContain('aufgaben_kategorien')
+  })
 })
