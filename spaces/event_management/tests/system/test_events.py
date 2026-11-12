@@ -282,3 +282,126 @@ def test_mitglied_darf_nicht_loeschen(db_admin: Any, db_app: Any) -> None:
     events.event_loeschen(conn, leitung, row["id"])
     assert db_admin.execute("select count(*) as n from event.event").fetchone()["n"] == 0
     assert db_admin.execute("select count(*) as n from event.verlauf").fetchone()["n"] == 0
+
+
+# --- Fremde Firma: RLS (zweites Tor) und Fachschicht (erstes Tor) ------------------
+
+
+class _Stolperdraht:
+    """Verbindungs-Attrappe: jeder Zugriff laesst den Test scheitern."""
+
+    def __getattr__(self, name: str) -> Any:
+        raise AssertionError(f"SQL-Zugriff vor der Pruefung: {name}")
+
+
+def _event_admin(admin: Any, f: UUID, name: str = "Feier") -> UUID:
+    b, e = _zeiten()
+    return admin.execute(
+        "insert into event.event (firma_id, kategorie, name, beginn, ende)"
+        " values (%s, 'fest', %s, %s, %s) returning id", (f, name, b, e),
+    ).fetchone()["id"]
+
+
+def _verlauf_admin(admin: Any, ev: UUID, f: UUID) -> None:
+    admin.execute(
+        "insert into event.verlauf (event_id, firma_id, actor, quelle, baustein, aktion)"
+        " values (%s, %s, 'Erika', 'test', 'event', 'angelegt')", (ev, f))
+
+
+def _stand(admin: Any) -> tuple[list[Any], list[Any]]:
+    return (admin.execute("select * from event.event order by id").fetchall(),
+            admin.execute("select * from event.verlauf order by id").fetchall())
+
+
+@pytest.fixture
+def welt(db_admin: Any) -> dict[str, Any]:
+    fa, fb = _firma(db_admin, "bsp-a"), _firma(db_admin, "bsp-b")
+    p = _person(db_admin, "a@example.org")
+    w = {"fa": fa, "fb": fb, "p": p, "k": _k(p, {fa: "leitung"}),
+         "ea": _event_admin(db_admin, fa, "Eigen"), "ea2": _event_admin(db_admin, fa, "Zweit"),
+         "eb": _event_admin(db_admin, fb, "Fremd")}
+    for ev, f in ((w["ea"], fa), (w["ea2"], fa), (w["eb"], fb)):
+        _verlauf_admin(db_admin, ev, f)
+    return w
+
+
+EVENT_OPS = ["event", "event_aendern", "event_status", "event_loeschen", "verlauf_lesen"]
+
+
+def _event_op(conn: Any, k: Kontext, op: str, event_id: UUID) -> Any:
+    if op == "event":
+        return events.event(conn, k, event_id)
+    if op == "event_aendern":
+        return events.event_aendern(conn, k, event_id, name="Umbenannt")
+    if op == "event_status":
+        return events.event_status(conn, k, event_id, "abgesagt")
+    if op == "event_loeschen":
+        return events.event_loeschen(conn, k, event_id)
+    if op == "verlauf_lesen":
+        return verlauf.lesen(conn, k, event_id)
+    raise AssertionError(op)
+
+
+@pytest.mark.parametrize("schicht", ["rls", "fachschicht"])
+@pytest.mark.parametrize("op", EVENT_OPS)
+def test_mandantenmatrix_events(db_admin: Any, db_app: Any, welt: dict[str, Any],
+                                op: str, schicht: str) -> None:
+    """Leitung A gegen Event B. `rls`: Verbindung sieht nur A (zweites Tor).
+    `fachschicht`: Superuser-Verbindung ohne RLS, nur die Fachschicht haelt (erstes Tor)."""
+    conn = db_app(firmen=[welt["fa"]]) if schicht == "rls" else db_admin
+    vorher = _stand(db_admin)
+    with pytest.raises(NichtGefunden):
+        _event_op(conn, welt["k"], op, welt["eb"])
+    assert _stand(db_admin) == vorher
+    _event_op(conn, welt["k"], op, welt["ea"])  # Positivkontrolle: eigene Firma geht
+
+
+@pytest.mark.parametrize("schicht", ["rls", "fachschicht"])
+def test_katalog_ohne_firma_nur_eigene_matrix(db_admin: Any, db_app: Any, welt: dict[str, Any],
+                                              schicht: str) -> None:
+    conn = db_app(firmen=[welt["fa"]]) if schicht == "rls" else db_admin
+    assert {r["id"] for r in events.katalog(conn, welt["k"])} == {welt["ea"], welt["ea2"]}
+    with pytest.raises(NichtGefunden):
+        events.katalog(conn, welt["k"], firma_id=welt["fb"])
+
+
+@pytest.mark.parametrize("op", EVENT_OPS)
+def test_event_bindung_fachschicht(db_admin: Any, welt: dict[str, Any], op: str) -> None:
+    """Kontext auf Event A1 gebunden: Event A2 derselben Firma ist unsichtbar (ohne RLS)."""
+    k = _k(welt["p"], {welt["fa"]: "leitung"}, event_id=welt["ea"])
+    vorher = _stand(db_admin)
+    with pytest.raises(NichtGefunden):
+        _event_op(db_admin, k, op, welt["ea2"])
+    assert _stand(db_admin) == vorher
+    _event_op(db_admin, k, op, welt["ea"])  # Positivkontrolle: das gebundene Event geht
+
+
+def test_event_bindung_katalog_und_anlegen(db_admin: Any, welt: dict[str, Any]) -> None:
+    k = _k(welt["p"], {welt["fa"]: "leitung"}, event_id=welt["ea"])
+    assert [r["id"] for r in events.katalog(db_admin, k)] == [welt["ea"]]
+    assert [r["id"] for r in events.katalog(db_admin, k, firma_id=welt["fa"])] == [welt["ea"]]
+    b, e = _zeiten()
+    stolper: Any = _Stolperdraht()
+    with pytest.raises(KeinRecht):
+        events.event_anlegen(stolper, k, welt["fa"], "fest", "Neu", b, e)
+
+
+# --- Status: Absage/Archiv zuruecknehmen nur mit event_absagen --------------------
+
+
+@pytest.mark.parametrize("endstatus", ["abgesagt", "archiviert"])
+def test_mitglied_kann_absage_nicht_zuruecknehmen(db_admin: Any, db_app: Any,
+                                                  endstatus: str) -> None:
+    f = _firma(db_admin, "bsp-a")
+    p = _person(db_admin, "a@example.org")
+    leitung, mitglied = _k(p, {f: "leitung"}), _k(p, {f: "mitglied"})
+    b, e = _zeiten()
+    conn = db_app()
+    row = events.event_anlegen(conn, leitung, f, "fest", "F", b, e)
+    events.event_status(conn, leitung, row["id"], endstatus)
+    for ziel in ("geplant", "laeuft", "entwurf"):
+        with pytest.raises(KeinRecht):
+            events.event_status(conn, mitglied, row["id"], ziel)
+    assert db_admin.execute("select status from event.event where id = %s",
+                            (row["id"],)).fetchone()["status"] == endstatus
+    assert events.event_status(conn, leitung, row["id"], "geplant")["status"] == "geplant"

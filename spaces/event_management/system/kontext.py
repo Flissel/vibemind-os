@@ -46,6 +46,13 @@ class Kontext:
         return cls(person_id=None, betreiber=False, rollen={}, actor="system", quelle="system")
 
 
+def event_bindung_pruefen(kontext: Kontext, event_id: UUID) -> None:
+    """Fachschicht-Gegenstueck zu `event.event_ok`: ein auf ein Event gebundener Kontext
+    sieht kein anderes Event (auch nicht derselben Firma). Wirft NichtGefunden."""
+    if kontext.event_id is not None and kontext.event_id != event_id:
+        raise NichtGefunden("Event nicht gefunden")
+
+
 @contextmanager
 def transaktion(conn: psycopg.Connection[Any], kontext: Kontext) -> Iterator[psycopg.Cursor[Any]]:
     """Transaktion mit lokal gesetztem RLS-Kontext (verfaellt mit Commit/Rollback).

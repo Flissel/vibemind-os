@@ -9,7 +9,9 @@ from uuid import UUID
 import psycopg
 
 from spaces.event_management.system import rechte
-from spaces.event_management.system.kontext import Kontext, NichtGefunden, transaktion
+from spaces.event_management.system.kontext import (
+    Kontext, NichtGefunden, event_bindung_pruefen, transaktion,
+)
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +41,7 @@ def lesen(
     seit: datetime | None = None, actor: str | None = None, limit: int = 100,
 ) -> list[dict[str, Any]]:
     """Eintraege eines Events, neueste zuerst."""
+    event_bindung_pruefen(k, event_id)
     with transaktion(conn, k) as cur:
         cur.execute("select firma_id from event.event where id = %s", (event_id,))
         ev = cur.fetchone()

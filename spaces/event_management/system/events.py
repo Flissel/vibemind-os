@@ -17,7 +17,9 @@ from spaces.event_management.system import rechte, verlauf
 from spaces.event_management.system.kategorien import (
     Feld, Kategorie, WirksamesSchema, lade_kategorien, wirksames_schema,
 )
-from spaces.event_management.system.kontext import Kontext, NichtGefunden, transaktion
+from spaces.event_management.system.kontext import (
+    KeinRecht, Kontext, NichtGefunden, event_bindung_pruefen, transaktion,
+)
 
 log = logging.getLogger(__name__)
 
@@ -106,8 +108,11 @@ def _phase(row: Mapping[str, Any], jetzt: datetime) -> str:
 
 
 def event_laden(
-    cur: psycopg.Cursor[Any], event_id: UUID, *, sperren: bool = False,
+    cur: psycopg.Cursor[Any], k: Kontext, event_id: UUID, *, sperren: bool = False,
 ) -> dict[str, Any]:
+    """Laedt ein Event; NichtGefunden, wenn es unsichtbar ist oder der Kontext auf ein
+    anderes Event gebunden ist (`k.event_id`, Gegenstueck zu `event.event_ok`)."""
+    event_bindung_pruefen(k, event_id)
     cur.execute("select * from event.event where id = %s" + (" for update" if sperren else ""),
                 (event_id,))
     row = cur.fetchone()
@@ -123,6 +128,8 @@ def event_anlegen(
     metadaten: dict[str, Any] | None = None,
     *, kategorien: Mapping[str, Kategorie] | None = None,
 ) -> dict[str, Any]:
+    if k.event_id is not None:
+        raise KeinRecht("Keine Berechtigung fuer event_anlegen")
     rechte.pruefe(k, "event_anlegen", firma_id)
     schema = schema_fuer(kategorie, kategorien)
     name = name.strip()
@@ -156,7 +163,7 @@ def event_aendern(
     if falsch:
         raise ValueError(f"Feld '{falsch[0]}' ist nicht aenderbar")
     with transaktion(conn, k) as cur:
-        alt = event_laden(cur, event_id, sperren=True)
+        alt = event_laden(cur, k, event_id, sperren=True)
         rechte.pruefe(k, "event_aendern", alt["firma_id"])
         schema = schema_fuer(alt["kategorie"], kategorien)
         neu = dict(alt)
@@ -188,9 +195,11 @@ def event_status(
 ) -> dict[str, Any]:
     if status not in _STATUS:
         raise ValueError("Unbekannter Status")
-    aktion = "event_absagen" if status in ("abgesagt", "archiviert") else "event_aendern"
     with transaktion(conn, k) as cur:
-        alt = event_laden(cur, event_id, sperren=True)
+        alt = event_laden(cur, k, event_id, sperren=True)
+        # Absagen/Archivieren und deren Ruecknahme brauchen dasselbe Recht.
+        ende = ("abgesagt", "archiviert")
+        aktion = "event_absagen" if status in ende or alt["status"] in ende else "event_aendern"
         rechte.pruefe(k, aktion, alt["firma_id"])
         cur.execute("update event.event set status=%s, geaendert=now() where id=%s returning *",
                     (status, event_id))
@@ -202,7 +211,7 @@ def event_status(
 
 def event_loeschen(conn: psycopg.Connection[Any], k: Kontext, event_id: UUID) -> None:
     with transaktion(conn, k) as cur:
-        alt = event_laden(cur, event_id, sperren=True)
+        alt = event_laden(cur, k, event_id, sperren=True)
         rechte.pruefe(k, "event_loeschen", alt["firma_id"])
         cur.execute("delete from event.event where id = %s", (event_id,))
 
@@ -236,6 +245,9 @@ def katalog(
     elif not k.betreiber:
         sql += " and e.firma_id = any(%s)"
         params.append(list(k.firmen))
+    if k.event_id is not None:
+        sql += " and e.id = %s"
+        params.append(k.event_id)
     if kategorie is not None:
         sql += " and e.kategorie = %s"
         params.append(kategorie)
@@ -267,7 +279,7 @@ def event(
     *, kategorien: Mapping[str, Kategorie] | None = None,
 ) -> dict[str, Any]:
     with transaktion(conn, k) as cur:
-        row = event_laden(cur, event_id)
+        row = event_laden(cur, k, event_id)
         rechte.pruefe(k, "lesen", row["firma_id"])
     s = schema_fuer(row["kategorie"], kategorien)
     row["schema"] = {

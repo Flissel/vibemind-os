@@ -304,3 +304,37 @@ def _fremd_versuch(conn: Any, k: Kontext, db_admin: Any, welt: dict[str, Any], t
                 kern.aendern(conn, k, welt["ea"], baustein, fremd_zeile, _aenderung(t))
             else:
                 kern.loeschen(conn, k, welt["ea"], baustein, fremd_zeile)
+
+
+@pytest.mark.parametrize("baustein", sorted(REGISTRY))
+@pytest.mark.parametrize("op", ["liste", "anlegen", "aendern", "loeschen"])
+def test_event_bindung_kern_fachschicht(db_admin: Any, welt: dict[str, Any],
+                                        baustein: str, op: str) -> None:
+    """Kontext auf Event A1 gebunden; Event A2 derselben Firma bleibt unerreichbar.
+    Superuser-Verbindung ohne RLS: nur die Fachschicht haelt."""
+    t = REGISTRY[baustein]
+    ea2 = _event(db_admin, welt["fa"])
+    zeile2 = _admin_zeile(db_admin, baustein, welt["fa"], ea2)
+    k = Kontext(person_id=welt["k"].person_id, betreiber=False, rollen=welt["k"].rollen,
+                event_id=welt["ea"])
+    vorher = db_admin.execute(
+        f"select * from event.{t.tabelle} where event_id = %s order by id", (ea2,)).fetchall()
+    verlauf_vorher = _anzahl(db_admin, "verlauf")
+    with pytest.raises(NichtGefunden):
+        if op == "liste":
+            kern.liste(db_admin, k, ea2, baustein)
+        elif op == "anlegen":
+            kern.anlegen(db_admin, k, ea2, baustein,
+                         _beispielwerte(baustein, db_admin, welt["fa"]))
+        elif op == "aendern":
+            kern.aendern(db_admin, k, ea2, baustein, zeile2, _aenderung(t))
+        else:
+            kern.loeschen(db_admin, k, ea2, baustein, zeile2)
+    assert db_admin.execute(
+        f"select * from event.{t.tabelle} where event_id = %s order by id", (ea2,)
+    ).fetchall() == vorher
+    assert _anzahl(db_admin, "verlauf") == verlauf_vorher
+    # Positivkontrolle: das gebundene Event funktioniert.
+    eigene = kern.anlegen(db_admin, k, welt["ea"], baustein,
+                          _beispielwerte(baustein, db_admin, welt["fa"]))
+    assert [r["id"] for r in kern.liste(db_admin, k, welt["ea"], baustein)] == [eigene["id"]]

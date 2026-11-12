@@ -120,7 +120,7 @@ def _vorspann(
     cur: psycopg.Cursor[Any], k: Kontext, event_id: UUID, t: BausteinTabelle,
     kategorien: Mapping[str, Kategorie] | None, *, schreiben: bool,
 ) -> dict[str, Any]:
-    ev = events.event_laden(cur, event_id)
+    ev = events.event_laden(cur, k, event_id)
     rechte.pruefe(k, "baustein_schreiben" if schreiben else "lesen", ev["firma_id"])
     if schreiben and ev["quelle"] == "legacy":
         raise ValueError("Legacy-Events sind schreibgeschützt")
