@@ -17,7 +17,7 @@ from uuid import UUID
 
 import psycopg
 
-from spaces.event_management.system import firmen, rechte
+from spaces.event_management.system import firmen, pruefung, rechte
 from spaces.event_management.system.kontext import Kontext, NichtGefunden, transaktion
 from spaces.event_management.system.mailer import Mailer
 
@@ -96,6 +96,8 @@ def einladen(
     rechte.pruefe(k, "einladen", firma_id)
     if rolle not in _ROLLEN:
         raise ValueError("Rolle ungueltig")
+    mail = pruefung.text("mail", mail)
+    name = pruefung.text("name", name)
     person = firmen.person_finden_oder_anlegen(conn, mail, name)
     token = secrets.token_urlsafe(32)
     with transaktion(conn, k) as cur:
@@ -168,6 +170,7 @@ def einladung_einloesen(
     """
     if not isinstance(token, str) or not token:
         raise ValueError(_FEHLER_EINLADUNG)
+    name = pruefung.text_oder_none("name", name)
     with transaktion(conn, Kontext.system()) as cur:
         cur.execute(
             "select e.id, e.person_id, e.firma_id, e.rolle, e.eingeloest,"

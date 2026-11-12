@@ -8,12 +8,14 @@ from uuid import UUID
 
 import psycopg
 
-from spaces.event_management.system import rechte
+from spaces.event_management.system import pruefung, rechte
 from spaces.event_management.system.kontext import (
     Kontext, NichtGefunden, event_bindung_pruefen, transaktion,
 )
 
 log = logging.getLogger(__name__)
+
+_LIMIT_MAX = 500
 
 
 def schreiben(
@@ -40,7 +42,10 @@ def lesen(
     conn: psycopg.Connection[Any], k: Kontext, event_id: UUID,
     seit: datetime | None = None, actor: str | None = None, limit: int = 100,
 ) -> list[dict[str, Any]]:
-    """Eintraege eines Events, neueste zuerst."""
+    """Eintraege eines Events, neueste zuerst; `limit` 1..500."""
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= _LIMIT_MAX:
+        raise ValueError(f"limit muss zwischen 1 und {_LIMIT_MAX} liegen")
+    actor = pruefung.text_oder_none("actor", actor)
     event_bindung_pruefen(k, event_id)
     with transaktion(conn, k) as cur:
         cur.execute("select firma_id from event.event where id = %s", (event_id,))

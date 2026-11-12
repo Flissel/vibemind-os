@@ -387,10 +387,7 @@ def erstelle_app(
         firma_id: UUID, person_id: UUID, daten: RolleDaten, s: Schreiben,
     ) -> dict[str, Any]:
         # PATCH aendert nur bestehende Mitgliedschaften; Aufnehmen geht nur per Einladung.
-        if not any(m["person_id"] == person_id
-                   for m in firmen.mitglieder(s.conn, s.k, firma_id)):
-            raise NichtGefunden("Mitgliedschaft nicht gefunden")
-        firmen.mitgliedschaft_setzen(s.conn, s.k, person_id, firma_id, daten.rolle)
+        firmen.rolle_aendern(s.conn, s.k, person_id, firma_id, daten.rolle)
         return {"person_id": person_id, "firma_id": firma_id, "rolle": daten.rolle}
 
     @app.delete("/api/firmen/{firma_id}/mitglieder/{person_id}")

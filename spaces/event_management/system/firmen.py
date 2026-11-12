@@ -8,8 +8,8 @@ from uuid import UUID
 
 import psycopg
 
-from spaces.event_management.system import rechte
-from spaces.event_management.system.kontext import KeinRecht, Kontext, NichtGefunden, transaktion
+from spaces.event_management.system import pruefung, rechte
+from spaces.event_management.system.kontext import Kontext, NichtGefunden, transaktion
 
 log = logging.getLogger(__name__)
 
@@ -19,7 +19,8 @@ _ROLLEN = ("leitung", "mitglied")
 
 def firma_anlegen(conn: psycopg.Connection[Any], k: Kontext, name: str, kurz: str) -> dict[str, Any]:
     rechte.pruefe(k, "firma_anlegen")
-    name = name.strip()
+    name = pruefung.text("name", name).strip()
+    kurz = pruefung.text("kurz", kurz)
     if not name:
         raise ValueError("Name fehlt")
     if not _KURZ.match(kurz):
@@ -49,8 +50,8 @@ def firmen(conn: psycopg.Connection[Any], k: Kontext) -> list[dict[str, Any]]:
 def person_finden_oder_anlegen(
     conn: psycopg.Connection[Any], mail: str, name: str
 ) -> dict[str, Any]:
-    mail = mail.strip().lower()
-    name = name.strip()
+    mail = pruefung.text("mail", mail).strip().lower()
+    name = pruefung.text("name", name).strip()
     if not mail or not name:
         raise ValueError("Mail und Name sind Pflicht")
     with transaktion(conn, Kontext.system()) as cur:
@@ -68,13 +69,30 @@ def person_finden_oder_anlegen(
 def mitgliedschaft_setzen(
     conn: psycopg.Connection[Any], k: Kontext, person_id: UUID, firma_id: UUID, rolle: str
 ) -> None:
+    """Legt eine NEUE Mitgliedschaft an (Recht `einladen`). Eine bestehende bleibt
+    unveraendert (ValueError), auch bei parallelem Anlegen; Rollen aendert nur
+    `rolle_aendern`."""
     if rolle not in _ROLLEN:
         raise ValueError("Rolle ungueltig")
-    # Wache vor SQL: mindestens eines der beiden Rechte, sonst KeinRecht/NichtGefunden.
-    try:
-        rechte.pruefe(k, "einladen", firma_id)
-    except KeinRecht:
-        rechte.pruefe(k, "rolle_aendern", firma_id)
+    rechte.pruefe(k, "einladen", firma_id)
+    with transaktion(conn, k) as cur:
+        cur.execute(
+            "insert into event.mitgliedschaft (person_id, firma_id, rolle) values (%s, %s, %s)"
+            " on conflict (person_id, firma_id) do nothing",
+            (person_id, firma_id, rolle),
+        )
+        if cur.rowcount != 1:
+            raise ValueError("Mitgliedschaft existiert bereits")
+
+
+def rolle_aendern(
+    conn: psycopg.Connection[Any], k: Kontext, person_id: UUID, firma_id: UUID, rolle: str
+) -> None:
+    """Aendert die Rolle einer BESTEHENDEN Mitgliedschaft (Recht `rolle_aendern`), in einer
+    Transaktion. Unbekannte Mitgliedschaft: NichtGefunden. Die letzte Leitung bleibt."""
+    if rolle not in _ROLLEN:
+        raise ValueError("Rolle ungueltig")
+    rechte.pruefe(k, "rolle_aendern", firma_id)
     with transaktion(conn, k) as cur:
         cur.execute(
             "select rolle from event.mitgliedschaft where person_id = %s and firma_id = %s"
@@ -82,16 +100,16 @@ def mitgliedschaft_setzen(
             (person_id, firma_id),
         )
         alt = cur.fetchone()
-        # Genaues Recht erst nach der Existenzpruefung, aber vor jedem Schreiben.
-        rechte.pruefe(k, "einladen" if alt is None else "rolle_aendern", firma_id)
-        if alt is not None:
-            if alt["rolle"] == "leitung" and rolle != "leitung":
-                _letzte_leitung_pruefen(cur, firma_id)
+        if alt is None:
+            raise NichtGefunden("Mitgliedschaft nicht gefunden")
+        if alt["rolle"] == "leitung" and rolle != "leitung":
+            _letzte_leitung_pruefen(cur, firma_id)
         cur.execute(
-            "insert into event.mitgliedschaft (person_id, firma_id, rolle) values (%s, %s, %s)"
-            " on conflict (person_id, firma_id) do update set rolle = excluded.rolle",
-            (person_id, firma_id, rolle),
+            "update event.mitgliedschaft set rolle = %s where person_id = %s and firma_id = %s",
+            (rolle, person_id, firma_id),
         )
+        if cur.rowcount != 1:
+            raise NichtGefunden("Mitgliedschaft nicht gefunden")
 
 
 def _letzte_leitung_pruefen(cur: psycopg.Cursor[Any], firma_id: UUID) -> None:

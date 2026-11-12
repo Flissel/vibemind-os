@@ -11,7 +11,7 @@ from uuid import UUID
 import psycopg
 from psycopg import errors, sql
 
-from spaces.event_management.system import events, rechte, verlauf
+from spaces.event_management.system import events, pruefung, rechte, verlauf
 from spaces.event_management.system.bausteine import REGISTRY, BausteinTabelle
 from spaces.event_management.system.kategorien import Kategorie
 from spaces.event_management.system.kontext import Kontext, NichtGefunden, transaktion
@@ -50,9 +50,7 @@ def _uuid(feld: str, wert: Any) -> UUID:
 
 def _wert(feld: str, typ: str, wert: Any) -> Any:
     if typ == "text":
-        if not isinstance(wert, str):
-            raise ValueError(f"Feld '{feld}' muss Text sein")
-        return wert
+        return pruefung.text(feld, wert)
     if typ == "uuid":
         return _uuid(feld, wert)
     if typ == "datumzeit":
@@ -217,9 +215,9 @@ def kontakt_anlegen(
     mail: str | None = None, telegram: str | None = None,
 ) -> dict[str, Any]:
     rechte.pruefe(k, "baustein_schreiben", firma_id)
-    for feld, wert in (("name", name), ("mail", mail), ("telegram", telegram)):
-        if wert is not None and not isinstance(wert, str):
-            raise ValueError(f"Feld '{feld}' muss Text sein")
+    name = pruefung.text("name", name)
+    mail = pruefung.text_oder_none("mail", mail)
+    telegram = pruefung.text_oder_none("telegram", telegram)
     if not name.strip():
         raise ValueError("Pflichtfeld 'name' fehlt")
     with transaktion(conn, k) as cur:
@@ -237,6 +235,7 @@ def kontakte(
     conn: psycopg.Connection[Any], k: Kontext, firma_id: UUID, suche: str | None = None,
 ) -> list[dict[str, Any]]:
     rechte.pruefe(k, "lesen", firma_id)
+    suche = pruefung.text_oder_none("suche", suche)
     query = "select * from event.kontakt where firma_id = %s"
     params: list[Any] = [firma_id]
     if suche:

@@ -123,6 +123,10 @@ def test_doppelte_wache_keinrecht_vor_sql() -> None:
     with pytest.raises(KeinRecht):
         firmen.mitgliedschaft_setzen(stolper, zu_weit, uuid4(), f, "leitung")
     with pytest.raises(KeinRecht):
+        firmen.rolle_aendern(stolper, zu_weit, uuid4(), f, "leitung")
+    with pytest.raises(NichtGefunden):
+        firmen.rolle_aendern(stolper, zu_weit, uuid4(), uuid4(), "leitung")
+    with pytest.raises(KeinRecht):
         firmen.mitglied_entfernen(stolper, zu_weit, uuid4(), f)
     with pytest.raises(KeinRecht):
         firmen.firma_anlegen(stolper, zu_weit, "Beispiel GmbH", "beispiel")
@@ -148,24 +152,48 @@ def test_letzte_leitung_nicht_entfernbar(db_admin: Any, db_app: Any) -> None:
     k = _ctx(p, {f: "leitung"})
     with pytest.raises(ValueError):
         firmen.mitglied_entfernen(db_app(), k, p, f)
-    with pytest.raises(ValueError):
-        firmen.mitgliedschaft_setzen(db_app(), k, p, f, "mitglied")
+    with pytest.raises(ValueError, match="letzte Leitung"):
+        firmen.rolle_aendern(db_app(), k, p, f, "mitglied")
     firmen.mitglied_entfernen(db_app(), k, q, f)
     assert [m["person_id"] for m in firmen.mitglieder(db_app(), k, f)] == [p]
-    with pytest.raises(ValueError):
-        firmen.mitgliedschaft_setzen(db_app(), k, p, f, "chef")
+    with pytest.raises(ValueError, match="Rolle"):
+        firmen.rolle_aendern(db_app(), k, p, f, "chef")
+    with pytest.raises(ValueError, match="Rolle"):
+        firmen.mitgliedschaft_setzen(db_app(), k, q, f, "chef")
 
 
-def test_mitgliedschaft_upsert_und_mitglieder(db_admin: Any, db_app: Any) -> None:
+def test_mitgliedschaft_neu_und_rolle_aendern(db_admin: Any, db_app: Any) -> None:
     f = _firma(db_admin, "firma-a")
     p, q = _person(db_admin, "a@example.org"), _person(db_admin, "b@example.org")
     _mitglied(db_admin, p, f, "leitung")
     k = _ctx(p, {f: "leitung"})
     firmen.mitgliedschaft_setzen(db_app(), k, q, f, "mitglied")
-    firmen.mitgliedschaft_setzen(db_app(), k, q, f, "leitung")
+    # Setzen legt nur neu an: eine bestehende Rolle wird nie still ueberschrieben.
+    with pytest.raises(ValueError, match="existiert bereits") as e:
+        firmen.mitgliedschaft_setzen(db_app(), k, q, f, "leitung")
+    assert str(q) not in str(e.value) and str(f) not in str(e.value)
+    rollen = {m["mail"]: m["rolle"] for m in firmen.mitglieder(db_app(), k, f)}
+    assert rollen == {"a@example.org": "leitung", "b@example.org": "mitglied"}
+    firmen.rolle_aendern(db_app(), k, q, f, "leitung")
     rollen = {m["mail"]: m["rolle"] for m in firmen.mitglieder(db_app(), k, f)}
     assert rollen == {"a@example.org": "leitung", "b@example.org": "leitung"}
-    firmen.mitgliedschaft_setzen(db_app(), k, p, f, "mitglied")  # zweite Leitung vorhanden
+    firmen.rolle_aendern(db_app(), k, p, f, "mitglied")  # zweite Leitung vorhanden
+
+
+def test_rolle_aendern_nur_bestehende_mitgliedschaft(db_admin: Any, db_app: Any) -> None:
+    f1, f2 = _firma(db_admin, "firma-a"), _firma(db_admin, "firma-b")
+    p, q = _person(db_admin, "a@example.org"), _person(db_admin, "b@example.org")
+    _mitglied(db_admin, p, f1, "leitung")
+    _mitglied(db_admin, q, f2, "mitglied")  # q ist nur in Firma B
+    k = _ctx(p, {f1: "leitung"})
+    vorher = db_admin.execute("select * from event.mitgliedschaft order by 1, 2").fetchall()
+    for person in (q, uuid4()):
+        with pytest.raises(NichtGefunden):
+            firmen.rolle_aendern(db_app(), k, person, f1, "leitung")
+    # Superuser-Verbindung ohne RLS: auch die Fachschicht legt nichts an.
+    with pytest.raises(NichtGefunden):
+        firmen.rolle_aendern(db_admin, k, q, f1, "leitung")
+    assert db_admin.execute("select * from event.mitgliedschaft order by 1, 2").fetchall() == vorher
 
 
 def test_person_finden_oder_anlegen(db_app: Any) -> None:
@@ -243,7 +271,7 @@ def test_transaktion_in_offener_transaktion_wirft(db_app: Any) -> None:
     conn.rollback()
 
 
-def test_mitgliedschaft_setzen_prueft_passende_aktion(
+def test_mitgliedschaft_setzen_und_rolle_aendern_pruefen_ihr_recht(
     db_admin: Any, db_app: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     f = _firma(db_admin, "firma-a")
@@ -255,12 +283,13 @@ def test_mitgliedschaft_setzen_prueft_passende_aktion(
     # Leitung ohne rolle_aendern: Rollenwechsel scheitert, Neuanlage geht.
     monkeypatch.setitem(rechte._ROLLEN, "leitung", alle - {"rolle_aendern"})
     with pytest.raises(KeinRecht):
-        firmen.mitgliedschaft_setzen(db_app(), k, q, f, "leitung")
+        firmen.rolle_aendern(db_app(), k, q, f, "leitung")
     firmen.mitgliedschaft_setzen(db_app(), k, r, f, "mitglied")
     # Leitung ohne einladen: Neuanlage scheitert, Rollenwechsel geht.
     monkeypatch.setitem(rechte._ROLLEN, "leitung", alle - {"einladen"})
     with pytest.raises(KeinRecht):
         firmen.mitgliedschaft_setzen(db_app(), k, uuid4(), f, "mitglied")
-    firmen.mitgliedschaft_setzen(db_app(), k, q, f, "leitung")
+    firmen.rolle_aendern(db_app(), k, q, f, "leitung")
     rollen = {m["mail"]: m["rolle"] for m in firmen.mitglieder(db_app(), k, f)}
-    assert rollen["b@example.org"] == "leitung"
+    assert rollen == {"a@example.org": "leitung", "b@example.org": "leitung",
+                      "c@example.org": "mitglied"}

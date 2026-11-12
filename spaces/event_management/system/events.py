@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import asdict
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from functools import cache
 from typing import Any
 from uuid import UUID
@@ -13,9 +13,9 @@ from zoneinfo import ZoneInfo
 import psycopg
 from psycopg.types.json import Jsonb
 
-from spaces.event_management.system import rechte, verlauf
+from spaces.event_management.system import pruefung, rechte, verlauf
 from spaces.event_management.system.kategorien import (
-    Feld, Kategorie, WirksamesSchema, lade_kategorien, wirksames_schema,
+    Kategorie, WirksamesSchema, lade_kategorien, wirksames_schema,
 )
 from spaces.event_management.system.kontext import (
     KeinRecht, Kontext, NichtGefunden, event_bindung_pruefen, transaktion,
@@ -49,29 +49,9 @@ def zeit(wert: datetime, name: str) -> datetime:
     return wert.replace(tzinfo=ZEITZONE) if wert.tzinfo is None else wert
 
 
-def _typ_ok(f: Feld, v: Any) -> bool:
-    if f.typ in ("text", "langtext"):
-        return isinstance(v, str)
-    if f.typ == "url":
-        return isinstance(v, str) and v.startswith(("http://", "https://"))
-    if f.typ == "zahl":
-        return isinstance(v, (int, float)) and not isinstance(v, bool)
-    if f.typ == "ja_nein":
-        return isinstance(v, bool)
-    if f.typ in ("datum", "datumzeit"):
-        if not isinstance(v, str):
-            return False
-        try:
-            (date if f.typ == "datum" else datetime).fromisoformat(v)
-        except ValueError:
-            return False
-        return True
-    if f.typ == "auswahl":
-        return isinstance(v, str) and v in f.optionen
-    return False
-
-
 def _metadaten_pruefen(schema: WirksamesSchema, roh: Mapping[str, Any] | None) -> dict[str, Any]:
+    if roh is not None and not isinstance(roh, Mapping):
+        raise ValueError("Metadaten müssen ein Objekt sein")
     roh = dict(roh or {})
     felder = {f.id: f for f in schema.felder}
     for name in roh:
@@ -80,7 +60,7 @@ def _metadaten_pruefen(schema: WirksamesSchema, roh: Mapping[str, Any] | None) -
     ergebnis: dict[str, Any] = {}
     for f in schema.felder:
         if roh.get(f.id) is not None:
-            if not _typ_ok(f, roh[f.id]):
+            if not pruefung.metadatum_ok(f.typ, f.optionen, roh[f.id]):
                 raise ValueError(f"Metadatenfeld '{f.id}' hat einen falschen Typ oder Wert")
             ergebnis[f.id] = roh[f.id]
         elif f.vorgabe is not None:
@@ -131,11 +111,14 @@ def event_anlegen(
     if k.event_id is not None:
         raise KeinRecht("Keine Berechtigung fuer event_anlegen")
     rechte.pruefe(k, "event_anlegen", firma_id)
-    schema = schema_fuer(kategorie, kategorien)
-    name = name.strip()
+    schema = schema_fuer(pruefung.text("kategorie", kategorie), kategorien)
+    name = pruefung.text("name", name).strip()
     if not name:
         raise ValueError("Name fehlt")
     beginn, ende = zeit(beginn, "beginn"), zeit(ende, "ende")
+    ort_adresse = pruefung.text_oder_none("ort_adresse", ort_adresse)
+    ort_link = pruefung.text_oder_none("ort_link", ort_link)
+    beschreibung = pruefung.text_oder_none("beschreibung", beschreibung)
     if ende < beginn:
         raise ValueError("Ende liegt vor dem Beginn")
     _eckdaten_pruefen(schema, {"ort_adresse": ort_adresse, "ort_link": ort_link,
@@ -168,9 +151,14 @@ def event_aendern(
         schema = schema_fuer(alt["kategorie"], kategorien)
         neu = dict(alt)
         for key, wert in felder.items():
-            neu[key] = zeit(wert, key) if key in ("beginn", "ende") else wert
+            if wert is None and key in ("name", "beginn", "ende"):
+                raise ValueError(f"Feld '{key}' darf nicht leer sein")
+            if key in ("beginn", "ende"):
+                neu[key] = zeit(wert, key)
+            elif key != "metadaten":
+                neu[key] = pruefung.text_oder_none(key, wert)
         if "name" in felder:
-            neu["name"] = str(neu["name"]).strip()
+            neu["name"] = neu["name"].strip()
             if not neu["name"]:
                 raise ValueError("Name fehlt")
         if neu["ende"] < neu["beginn"]:
@@ -227,6 +215,8 @@ def katalog(
 ) -> list[dict[str, Any]]:
     if firma_id is not None:
         rechte.pruefe(k, "lesen", firma_id)
+    kategorie = pruefung.text_oder_none("kategorie", kategorie)
+    suche = pruefung.text_oder_none("suche", suche)
     kats = _standard_kategorien() if kategorien is None else kategorien
     jetzt_ = datetime.now(timezone.utc) if jetzt is None else zeit(jetzt, "jetzt")
     sql = (
