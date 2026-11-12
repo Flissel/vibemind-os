@@ -261,21 +261,34 @@ def _aenderung(t: Any) -> dict[str, Any]:
 def test_mandantenmatrix_kern(db_admin: Any, db_app: Any, welt: dict[str, Any],
                               baustein: str, op: str, schicht: str) -> None:
     """Firma A gegen Event/Zeilen von Firma B. `rls`: Verbindung sieht nur A (zweites Tor).
-    `fachschicht`: Verbindung sieht beide, nur die Rechtepruefung haelt (erstes Tor)."""
+    `fachschicht`: Superuser-Verbindung ohne RLS, nur die Rechtepruefung haelt (erstes Tor)."""
     t = REGISTRY[baustein]
     fremd_zeile = _admin_zeile(db_admin, baustein, welt["fb"], welt["eb"])
-    vorher = db_admin.execute(
-        f"select * from event.{t.tabelle} where firma_id = %s order by id", (welt["fb"],)
-    ).fetchall()
-    verlauf_vorher = _anzahl(db_admin, "verlauf")
-    conn = db_app(firmen=[welt["fa"]] if schicht == "rls" else [welt["fa"], welt["fb"]])
+    # `fachschicht`: Superuser-Verbindung umgeht RLS, nichts wird versteckt; nur `pruefe` haelt.
+    conn = db_app(firmen=[welt["fa"]]) if schicht == "rls" else db_admin
     k = welt["k"]
     # Positivkontrolle: die eigene Firma funktioniert.
     eigene = kern.anlegen(conn, k, welt["ea"], baustein,
                           _beispielwerte(baustein, db_admin, welt["fa"]))
     assert eigene["firma_id"] == welt["fa"]
     assert [r["id"] for r in kern.liste(conn, k, welt["ea"], baustein)] == [eigene["id"]]
-    ev = welt["eb"]
+    legacy_ev = _event(db_admin, welt["fb"], quelle="legacy")
+    legacy_zeile = _admin_zeile(db_admin, baustein, welt["fb"], legacy_ev)
+    vorher = db_admin.execute(
+        f"select * from event.{t.tabelle} where firma_id = %s order by id", (welt["fb"],)
+    ).fetchall()
+    verlauf_vorher = _anzahl(db_admin, "verlauf")
+    for ev, zeile in ((welt["eb"], fremd_zeile), (legacy_ev, legacy_zeile)):
+        _fremd_versuch(conn, k, db_admin, welt, t, baustein, op, ev, zeile)
+    nachher = db_admin.execute(
+        f"select * from event.{t.tabelle} where firma_id = %s order by id", (welt["fb"],)
+    ).fetchall()
+    assert nachher == vorher
+    assert _anzahl(db_admin, "verlauf") == verlauf_vorher
+
+
+def _fremd_versuch(conn: Any, k: Kontext, db_admin: Any, welt: dict[str, Any], t: Any,
+                   baustein: str, op: str, ev: UUID, fremd_zeile: UUID) -> None:
     with pytest.raises((KeinRecht, NichtGefunden)):
         if op == "liste":
             kern.liste(conn, k, ev, baustein)
@@ -291,8 +304,3 @@ def test_mandantenmatrix_kern(db_admin: Any, db_app: Any, welt: dict[str, Any],
                 kern.aendern(conn, k, welt["ea"], baustein, fremd_zeile, _aenderung(t))
             else:
                 kern.loeschen(conn, k, welt["ea"], baustein, fremd_zeile)
-    nachher = db_admin.execute(
-        f"select * from event.{t.tabelle} where firma_id = %s order by id", (welt["fb"],)
-    ).fetchall()
-    assert nachher == vorher
-    assert _anzahl(db_admin, "verlauf") == verlauf_vorher + 1  # nur die eigene Anlage

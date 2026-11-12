@@ -121,12 +121,9 @@ def _vorspann(
     kategorien: Mapping[str, Kategorie] | None, *, schreiben: bool,
 ) -> dict[str, Any]:
     ev = events.event_laden(cur, event_id)
-    if schreiben:
-        if ev["quelle"] == "legacy":
-            raise ValueError("Legacy-Events sind schreibgeschützt")
-        rechte.pruefe(k, "baustein_schreiben", ev["firma_id"])
-    else:
-        rechte.pruefe(k, "lesen", ev["firma_id"])
+    rechte.pruefe(k, "baustein_schreiben" if schreiben else "lesen", ev["firma_id"])
+    if schreiben and ev["quelle"] == "legacy":
+        raise ValueError("Legacy-Events sind schreibgeschützt")
     _im_schema(ev, t, kategorien)
     return ev
 
