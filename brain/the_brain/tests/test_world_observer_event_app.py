@@ -35,6 +35,7 @@ class _Attrappe:
         self.modus = modus
         self.methoden = []
         self.auth = []
+        self.pfade = []
         outer = self
 
         class H(BaseHTTPRequestHandler):
@@ -52,6 +53,9 @@ class _Attrappe:
             def do_POST(self):
                 n = int(self.headers.get("Content-Length", 0))
                 req = json.loads(self.rfile.read(n) or b"{}")
+                outer.pfade.append(self.path)
+                if self.path != "/api/mcp":  # wie die echte App: nur dort MCP
+                    return self._antwort(404, None, b"")
                 outer.methoden.append(req.get("method"))
                 outer.auth.append(self.headers.get("Authorization"))
                 if outer.status != 200:
@@ -80,7 +84,8 @@ class _Attrappe:
                 self._antwort(200, "application/json", body.encode())
 
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
-        self.url = f"http://127.0.0.1:{self.srv.server_address[1]}/api/mcp"
+        self.basis = f"http://127.0.0.1:{self.srv.server_address[1]}"
+        self.url = f"{self.basis}/api/mcp"
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
 
     def close(self):
@@ -290,6 +295,30 @@ def test_name_mit_quelle_faelscht_nicht(monkeypatch, attrappe):
     assert ok is False and signal["treffer"] == 0
     ok, signal, _ = wo._check_event_app_change(SPEC)
     assert ok is False and signal["treffer"] == 0
+
+
+def test_attrappe_antwortet_nur_auf_api_mcp(monkeypatch, attrappe):
+    # Gegenprobe: ohne Pfad-Check waeren die URL-Tests unten wertlos.
+    a = attrappe(_zeile(1, "VibeMind"))
+    _setze(monkeypatch, a.basis + "/anderswo/api/mcp")
+    ok, signal, _ = wo._check_event_app_change(SPEC)
+    assert ok is None and signal["status_code"] == 404
+
+
+@pytest.mark.parametrize("anhang", ["", "/"])
+def test_basis_url_wird_ergaenzt(monkeypatch, attrappe, anhang):
+    # Im Space ist EVENT_APP_URL die Basis-URL (openclaw.json haengt /api/mcp an).
+    a = attrappe(_zeile(1, "VibeMind"))
+    _setze(monkeypatch, a.basis + anhang)
+    assert wo._check_event_app_change(SPEC)[0] is True
+    assert a.pfade == ["/api/mcp", "/api/mcp"]
+
+
+def test_mcp_url_mit_slash(monkeypatch, attrappe):
+    a = attrappe(_zeile(1, "VibeMind"))
+    _setze(monkeypatch, a.url + "/")
+    assert wo._check_event_app_change(SPEC)[0] is True
+    assert a.pfade == ["/api/mcp", "/api/mcp"]
 
 
 def test_titel_mit_klammer_doppelpunkt(monkeypatch, attrappe):

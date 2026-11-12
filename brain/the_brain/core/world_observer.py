@@ -618,6 +618,8 @@ def _event_antwort_lesen(r):
 #   " (<quelle>): „" verankert (rechte Seite, von der App gesetzt); ein Titel mit
 #   Zeilenumbruch und nachgebauter Zeile bleibt die bekannte Grenze. Das Ergebnis ist ein Beleg, keine
 #   Autorisierung - darum bleibt on_fail "report".
+# - Jede VibeMind-Zeile im Fenster zaehlt; die Pruefung ist nicht an den
+#   einzelnen Auftrag gebunden (zwei Auftraege im Fenster belegen sich gegenseitig).
 # - Sommerzeit: Stempel werden mit fold=0 gelesen; in der doppelten Herbststunde
 #   gilt die erste Lesart, die zweite wird hingenommen.
 def _check_event_app_change(spec: Dict[str, Any]):
@@ -626,10 +628,15 @@ def _check_event_app_change(spec: Dict[str, Any]):
     Unabhaengige Nachfrage ueber das MCP-Werkzeug list_recent_changes; die Antwort
     des Bots zaehlt nicht. spec: {check: event_app_change, actor: "VibeMind",
     since_s: 600, tz: "Europe/Berlin"}. Alles ausser einem klaren Ja/Nein -> None.
-    detail/signal nennen nur Zaehlwerte, nie Token, Namen oder Titel."""
-    url = (os.environ.get("EVENT_APP_URL") or "").strip()
+    detail/signal nennen nur Zaehlwerte, nie Token, Namen oder Titel.
+
+    EVENT_APP_URL darf die Basis-URL der App sein (wie im Space, dort haengt
+    openclaw.json /api/mcp an) oder schon die MCP-Adresse; beides geht."""
+    url = (os.environ.get("EVENT_APP_URL") or "").strip().rstrip("/")
     if not url:
         return None, {}, "EVENT_APP_URL fehlt - keine Nachfrage moeglich"
+    if not url.endswith("/api/mcp"):
+        url += "/api/mcp"
     try:
         from core.config import get_secret
         token = get_secret("EVENT_APP_TOKEN")
