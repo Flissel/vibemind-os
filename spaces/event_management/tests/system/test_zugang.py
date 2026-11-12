@@ -254,6 +254,53 @@ def test_mailfehler_wird_geloggt_und_weitergereicht(
     assert "eva@example.org" not in caplog.text and "/einladung/" not in caplog.text
 
 
+# --- Einladung ansehen (ohne Einloesen) -------------------------------------------
+
+
+def _hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def test_einladung_info_gueltig_dann_eingeloest(db_admin: Any, db_app: Any) -> None:
+    f, _, token = _einladen(db_app, db_admin)
+    firma_name = db_admin.execute("select name from event.firma where id = %s",
+                                  (f,)).fetchone()["name"]
+    vorher = db_admin.execute("select row_to_json(e)::text as z from event.einladung e"
+                              ).fetchall()
+    info = zugang.einladung_info(db_app(), token)
+    assert info == {"gueltig": True, "firma_name": firma_name, "braucht_passwort": True}
+    # Nur lesen: die Einladung bleibt unveraendert und einloesbar.
+    assert db_admin.execute("select row_to_json(e)::text as z from event.einladung e"
+                            ).fetchall() == vorher
+    zugang.einladung_einloesen(db_app(), token, PW, None)
+    assert zugang.einladung_info(db_app(), token) == {"gueltig": False}
+
+
+def test_einladung_info_person_mit_passwort(db_admin: Any, db_app: Any) -> None:
+    _person(db_admin, "bert@example.org", pw=PW)
+    _, _, token = _einladen(db_app, db_admin, mail="bert@example.org")
+    info = zugang.einladung_info(db_app(), token)
+    assert info["gueltig"] is True and info["braucht_passwort"] is False
+
+
+def test_einladung_info_abgelaufen_oder_inaktiv(db_admin: Any, db_app: Any) -> None:
+    _, _, abgelaufen = _einladen(db_app, db_admin)
+    db_admin.execute("update event.einladung set gueltig_bis = now() - interval '1 second'"
+                     " where token_hash = %s", (_hash(abgelaufen),))
+    assert zugang.einladung_info(db_app(), abgelaufen) == {"gueltig": False}
+    _, _, inaktiv = _einladen(db_app, db_admin, mail="carla@example.org")
+    db_admin.execute("update event.person set aktiv = false where mail = 'carla@example.org'")
+    assert zugang.einladung_info(db_app(), inaktiv) == {"gueltig": False}
+
+
+@pytest.mark.parametrize("token", [
+    "", "x", "unbekannt-" + "a" * 40, "\ud800", "a\x00b", "ä" * 5000, None, 123, b"bytes",
+], ids=["leer", "kurz", "unbekannt", "surrogat", "nul", "lang", "none", "int", "bytes"])
+def test_einladung_info_kaputte_tokens(db_admin: Any, db_app: Any, token: object) -> None:
+    _einladen(db_app, db_admin)  # es gibt eine echte Einladung, sie passt nur nicht
+    assert zugang.einladung_info(db_app(), token) == {"gueltig": False}  # type: ignore[arg-type]
+
+
 # --- Anmelden --------------------------------------------------------------------
 
 

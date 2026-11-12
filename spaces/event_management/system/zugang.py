@@ -131,6 +131,33 @@ def einladen(
         raise
 
 
+def einladung_info(conn: psycopg.Connection[Any], token: str) -> dict[str, Any]:
+    """Nur lesen: Firma und ob ein Passwort gesetzt werden muss.
+
+    Gueltig heisst: bekannt, nicht abgelaufen, nicht eingeloest, Person aktiv. Sonst
+    immer genau ``{"gueltig": False}`` (kein Orakel ueber den Grund); wirft nie bei
+    kaputten Tokens (leer, kein Text, NUL, einzelne Surrogate).
+    """
+    ungueltig: dict[str, Any] = {"gueltig": False}
+    if not isinstance(token, str) or not token:
+        return ungueltig
+    try:
+        h = _token_hash(token)
+    except UnicodeError:
+        return ungueltig
+    with transaktion(conn, Kontext.system()) as cur:
+        cur.execute(
+            "select e.firma_name, e.eingeloest, e.gueltig_bis > now() as gueltig, p.aktiv,"
+            " p.passwort_hash is not null as hat_pw"
+            " from event.einladung_holen(%s) e join event.person p on p.id = e.person_id",
+            (h,),
+        )
+        e = cur.fetchone()
+    if e is None or e["eingeloest"] is not None or not e["gueltig"] or not e["aktiv"]:
+        return ungueltig
+    return {"gueltig": True, "firma_name": e["firma_name"], "braucht_passwort": not e["hat_pw"]}
+
+
 def einladung_einloesen(
     conn: psycopg.Connection[Any], token: str, passwort: str, name: str | None
 ) -> UUID:

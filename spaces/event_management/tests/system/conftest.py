@@ -10,6 +10,8 @@
   event=None)`` fuer autocommit-Verbindungen als Login-Rolle `event_app_test`
   (Mitglied von `event_app`) auf derselben DB. Gesetzt werden nur die uebergebenen
   Kontextwerte `event.firmen`, `event.betreiber`, `event.person`, `event.event`.
+- `app_dsn` (Funktion): DSN der Login-Rolle `event_app_test` auf der DB von `db_admin`
+  (ohne gesetzten Kontext), z. B. fuer `api.erstelle_app`.
 """
 from __future__ import annotations
 
@@ -173,3 +175,8 @@ def db_app(
     finally:
         for conn in offen:
             conn.close()
+
+
+@pytest.fixture
+def app_dsn(pg_cluster: dict[str, Any], db_admin: psycopg.Connection[dict[str, Any]]) -> str:
+    return _dsn(pg_cluster["port"], db_admin.info.dbname, user=APP_ROLLE)
