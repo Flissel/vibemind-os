@@ -1,0 +1,5 @@
+id: webinar
+name: Webinar
+eltern: online_event
+felder:
+  - {id: anmeldung_noetig, typ: ja_nein, beschriftung: Anmeldung nötig, vorgabe: true}

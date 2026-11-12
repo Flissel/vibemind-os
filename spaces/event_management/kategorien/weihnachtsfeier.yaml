@@ -1,0 +1,6 @@
+id: weihnachtsfeier
+name: Weihnachtsfeier
+eltern: fest
+felder:
+  - {id: motto, typ: text, beschriftung: Motto}
+  - {id: wichteln, typ: ja_nein, beschriftung: Wichteln, vorgabe: false}

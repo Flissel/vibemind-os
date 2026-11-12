@@ -1,0 +1,7 @@
+id: online_event
+name: Online-Event
+eltern: basis
+bausteine: [online_raum, sprecher, aufzeichnung]
+eckdaten_pflicht: [ort_link]
+felder:
+  - {id: plattform, typ: auswahl, beschriftung: Plattform, optionen: [Zoom, Teams, Google Meet, Jitsi, Andere]}

@@ -1,0 +1,4 @@
+id: fest
+name: Fest
+eltern: veranstaltung
+bausteine: [helferschichten]

@@ -1,0 +1,6 @@
+id: veranstaltung
+name: Veranstaltung
+eltern: basis
+bausteine: [programm, verpflegung]
+felder:
+  - {id: kapazitaet, typ: zahl, beschriftung: Kapazität}

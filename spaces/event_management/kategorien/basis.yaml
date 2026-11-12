@@ -1,0 +1,13 @@
+id: basis
+name: Basis
+eltern: null
+abstrakt: true
+bausteine: [aufgaben, orga_team, teilnehmende, ablauf, budget, nachrichten, verlauf]
+begriffe:
+  aufgaben: Aufgaben
+  orga_team: Orga-Team
+  teilnehmende: Teilnehmende
+  ablauf: Ablauf
+  budget: Budget
+  nachrichten: Nachrichten
+  verlauf: Verlauf

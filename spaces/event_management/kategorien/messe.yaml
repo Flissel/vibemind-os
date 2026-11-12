@@ -1,0 +1,6 @@
+id: messe
+name: Messe
+eltern: veranstaltung
+bausteine: [aussteller, staende]
+felder:
+  - {id: halle, typ: text, beschriftung: Halle}

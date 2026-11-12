@@ -1,0 +1,5 @@
+id: festival
+name: Festival
+eltern: fest
+bausteine: [buehnen]
+begriffe: {ablauf: Timetable}

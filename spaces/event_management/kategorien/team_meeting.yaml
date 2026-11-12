@@ -1,0 +1,6 @@
+id: team_meeting
+name: Team-Meeting
+eltern: basis
+bausteine: [protokoll, beschluesse]
+ohne: [budget]
+begriffe: {ablauf: Tagesordnung}

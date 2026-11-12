@@ -1,0 +1,6 @@
+id: hackathon
+name: Hackathon
+eltern: basis
+bausteine: [wettbewerb_teams, abgaben, jury]
+felder:
+  - {id: thema, typ: text, beschriftung: Thema}
