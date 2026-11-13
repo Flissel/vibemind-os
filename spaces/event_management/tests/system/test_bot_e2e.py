@@ -269,10 +269,15 @@ def test_gruppe_von_code_bis_abbau(db_admin, welt, leitung, mcp, melden_schluess
     assert {"aufgaben_anlegen", "helferschichten_liste", "programm_liste"} <= namen
     for fremd in ("jury_liste", "abgaben_anlegen", "aussteller_liste", "protokoll_liste"):
         assert fremd not in namen
-    for name in namen:
-        eintrag, _, op = name.rpartition("_")
-        if eintrag in REGISTRY and op in ("liste", "anlegen", "aendern", "loeschen"):
-            assert (REGISTRY[eintrag].baustein or eintrag) in bausteine, name
+    # Genau erwartet: die vier Operationen jedes Registry-Eintrags, dessen Baustein die
+    # Kategorie hat, plus die Sonderwerkzeuge des Event-Schluessels (lesen, Kontakt
+    # anlegen, Nachrichten) -- kein Werkzeug mehr, keins weniger.
+    erwartet = {f"{eintrag}_{op}" for eintrag, t in REGISTRY.items()
+                if (t.baustein or eintrag) in bausteine
+                for op in ("liste", "anlegen", "aendern", "loeschen")}
+    erwartet |= {"event_info", "verlauf_lesen", "kontakte_suchen", "nachrichten_liste",
+                 "kontakt_anlegen", "nachricht_an_gruppe", "mail_entwerfen"}
+    assert namen == erwartet
     assert all("marke" not in w["inputSchema"].get("properties", {})
                for w in werkzeuge.values())
 

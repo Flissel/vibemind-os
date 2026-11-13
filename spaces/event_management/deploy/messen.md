@@ -21,7 +21,9 @@ Alternativen vor (Spec: „hält … an und legt Felix andere Wege vor“).
   der Live-Bot wäre dann gestört. Dazu kommen drei Test-Gruppen (A, B, „fremd“) und zwei
   Telegram-Konten: eines für die Leitung und ein zweites, unbekanntes für M5.
 - **Eigenes Budget.** Der Test-Shim hat eine eigene Budget-Datei mit Tagesgrenze
-  `MESS_TAGESGRENZE` (Vorgabe 5). Das Live-Budget wird nicht berührt.
+  `MESS_TAGESGRENZE` (Vorgabe 5). Das Live-Budget wird nicht berührt. Der Test-Shim nutzt
+  aber dasselbe Claude-Code-Abo-Token wie der Betrieb, sein Verbrauch zählt also auf
+  dasselbe Kontingent.
 - **Schalter.** Ohne `--ich-habe-ok` beendet sich das Skript mit Code 2, ohne etwas
   auszuführen. Den Schalter setzt nur, wer Felix' OK hat und den Claim eingetragen hat.
   Weil die Messung die VM betrifft, gehört der Claim ins WORKBOARD und in die
@@ -221,11 +223,15 @@ mit 20 Agenten unter 1 GiB fällt oder Swap neu belegt wird.
   Ohne ihn bricht `deploy/anbinden.sh` ab (Ruling T8-a). `main` ist ab Etappe 3 der
   Empfang und antwortet per `"*"` fremden Gruppen. Die Legacy-Werkzeuge dürfen deshalb
   nicht auf `main` liegen.
-- **Netz `event-agent` neu anlegen.** Das Compose setzt für `event-agent` jetzt einen
-  `ip_range` (dynamisch nur `.0/29`), damit die feste Adresse `10.250.10.14` von
-  `event-mcp` frei bleibt. Docker ändert die IPAM-Angaben eines bestehenden Netzes nicht.
-  Beim Ausrollen werden Shim und Claw darum einmal heruntergefahren, das Netz neu
-  angelegt und dann alles mit `--profile event-system` gestartet.
+- **Feste Adresse von event-mcp, kein `ip_range`.** `event-mcp` nimmt im bestehenden
+  Netz `event-agent` die feste Adresse `10.250.10.14`. Einen `ip_range` gibt es bewusst
+  nicht (Ruling T9-a): Er würde Docker zwingen, das Netz mitsamt dem laufenden Shim und
+  Claw neu anzulegen. Das Netz bleibt also, wie es ist, und kommt mit
+  `--profile event-system` nur dazu. Das Restrisiko ist eine Kollision: Hat Docker `.14`
+  gerade dynamisch an einen anderen Container im Netz vergeben, startet `event-mcp` nicht
+  („Address already in use“). Das ist selten, weil Shim und Claw die untersten Adressen
+  bekommen, und es zeigt sich als sichtbarer Startfehler, nicht als stiller. Abhilfe: den
+  Container, der `.14` hält, neu starten, dann `event-mcp` starten.
 - **Adresse von event-mcp.** `EVENT_MCP_URL` ist `http://event-mcp:8171`, sowohl in der
   Saat (`werte.local.json`, Server `melden`) als auch in `bereitstellung.env` des
   Arbeiters. So erreicht der Claw den Dienst im Netz `event-agent`.

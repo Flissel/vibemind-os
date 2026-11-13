@@ -496,15 +496,14 @@ def test_event_mcp_feste_adresse_im_agentennetz() -> None:
     compose = _compose()
     netz = compose["networks"]["event-agent"]
     assert netz["internal"] is True
+    # Ruling T9-a: das bestehende Netz bleibt wie es ist (kein ip_range), sonst muesste
+    # Docker es samt laufendem Shim und Claw neu anlegen.
+    assert netz["ipam"]["config"] == [{"subnet": "10.250.10.0/28"}]
     subnetz = ipaddress.ip_network(netz["ipam"]["config"][0]["subnet"])
-    bereich = ipaddress.ip_network(netz["ipam"]["config"][0]["ip_range"])
-    assert str(subnetz) == "10.250.10.0/28"
-    assert bereich.subnet_of(subnetz) and bereich != subnetz
     mcp = compose["services"]["event-mcp"]["networks"]
     adresse = ipaddress.ip_address(mcp["event-agent"]["ipv4_address"])
-    # Fest, im /28, ausserhalb des dynamischen Bereichs (Shim und Claw bekommen ihre
-    # Adressen von dort) und weder Netz-, Gateway- noch Broadcast-Adresse.
-    assert adresse in subnetz and adresse not in bereich
+    # Fest, im /28 und weder Netz-, Gateway- noch Broadcast-Adresse.
+    assert adresse in subnetz
     assert adresse not in (subnetz.network_address, subnetz.network_address + 1,
                            subnetz.broadcast_address)
     feste = [n["ipv4_address"] for d in compose["services"].values()

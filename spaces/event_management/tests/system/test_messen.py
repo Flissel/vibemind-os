@@ -330,8 +330,10 @@ def test_anleitung_nennt_rahmen_und_deploy_blocker():
     text = ANLEITUNG.read_text(encoding="utf-8")
     for begriff in ("nicht ausgeführt", SCHALTER, "Test-Bot", "ev-legacy", "anbinden.sh",
                     "DEPLOY-BLOCKER", "event-messung-", "aufraeumen", "WORKBOARD",
-                    "http://event-mcp:8171", "ip_range"):
+                    "http://event-mcp:8171", "Ruling T9-a", "Address already in use",
+                    "Claude-Code-Abo-Token"):
         assert begriff in text, begriff
+    assert "neu anlegen.**" not in text  # keine Netz-Neuanlage mehr (Ruling T9-a)
 
 
 def test_keine_geheimnisse_oder_echten_ziele():

@@ -204,8 +204,13 @@ services:
   # Werkzeug-Server der Bot-Agenten (system/mcp_server.py, CLI aus Task 4). Der Claw ruft
   # ihn im Netz event-agent als http://event-mcp:8171/mcp (der Name steht in
   # ERLAUBTE_HOSTS); EVENT_MCP_URL des Bereitstellungs-Arbeiters und der Saat ist darum
-  # http://event-mcp:8171. Feste Adresse 10.250.10.14 (ausserhalb ip_range), auf dem Host
-  # nur Loopback. App-DSN wie event-api (Ruling S3: melden ohne Admin-DSN).
+  # http://event-mcp:8171. Auf dem Host nur Loopback. App-DSN wie event-api (Ruling S3:
+  # melden ohne Admin-DSN).
+  # Feste Adresse 10.250.10.14 im bestehenden /28, ohne ip_range (Ruling T9-a).
+  # Restrisiko: hat Docker .14 gerade dynamisch an einen anderen Container im Netz
+  # vergeben (selten; Shim und Claw bekommen die untersten Adressen), startet event-mcp
+  # nicht ("Address already in use") -- ein sichtbarer Startfehler, kein stiller.
+  # Abhilfe: den Container, der .14 haelt, neu starten, dann event-mcp starten.
   event-mcp:
     image: event-management/system:etappe-4
     container_name: event-mcp
@@ -256,16 +261,14 @@ services:
 # /28 darin sind damit alle vergeben.
 networks:
   # Nur Claw <-> Shim (und Claw -> event-mcp), ohne Zugang nach aussen.
-  # ip_range: dynamische Adressen nur aus .0/29, damit die feste Adresse von event-mcp
-  # (.14) nie an Shim oder Claw vergeben ist. ACHTUNG Ausrollen (Etappe 4): Docker
-  # aendert die IPAM-Angaben eines bestehenden Netzes nicht; event-agent muss dafuer
-  # einmal neu angelegt werden (Shim und Claw kurz herunterfahren).
+  # Bewusst ohne ip_range (Ruling T9-a): eine Aenderung der IPAM-Angaben zwingt Docker,
+  # das bestehende Netz samt laufendem Shim und Claw neu anzulegen. event-mcp nimmt die
+  # feste Adresse .14 (die hoechste nutzbare); dynamisch vergibt Docker von unten.
   event-agent:
     internal: true
     ipam:
       config:
         - subnet: 10.250.10.0/28
-          ip_range: 10.250.10.0/29
   # Ausgang des Claw: Telegram und die Event-App.
   event-claw-aus:
     ipam:
