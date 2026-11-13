@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from spaces.event_management.system import marke, schluessel, werkzeuge
-from spaces.event_management.system.bausteine import REGISTRY
+from spaces.event_management.system.bausteine import KERN, REGISTRY, ZUSAETZE
 from spaces.event_management.system.kontext import NichtGefunden
 
 BEGINN = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=30)
@@ -213,6 +213,15 @@ def test_event_id_argument_gibt_es_nicht(db_admin, db_app, welt):
     for info in infos:
         for w in werkzeuge.katalog(app, info):
             assert not VERBOTEN & _schluessel_im_schema(w.eingabe), (info.art, w.name)
+
+
+def test_standard_begriffe_passen_zu_den_bausteinen():
+    """Drift-Waechter: jeder Baustein hat einen Standardnamen, kein Name ist verwaist."""
+    assert set(werkzeuge.STANDARD_BEGRIFFE) == set(KERN) | set(ZUSAETZE)
+    registry_bausteine = {t.baustein or n for n, t in REGISTRY.items()}
+    assert registry_bausteine <= set(werkzeuge.STANDARD_BEGRIFFE)
+    hilfs = {n for n, t in REGISTRY.items() if t.baustein is not None}
+    assert {n: werkzeuge.begriff(n) for n in hilfs} == {"aufgaben_kategorien": "Aufgaben-Kategorien"}
 
 
 # --- Ausfuehren ---------------------------------------------------------------------

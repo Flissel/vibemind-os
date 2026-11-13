@@ -18,6 +18,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from spaces.event_management.system import marke, mcp_server, schluessel, werkzeuge
+from spaces.event_management.system.kontext import KeinRecht, NichtGefunden
 
 BASIS = "http://127.0.0.1:8171"
 BEGINN = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=30)
@@ -212,7 +213,7 @@ def test_tool_call_schreibt_und_nennt_event(client, db_admin, db_app, welt):
 def test_fehler_als_werkzeug_ergebnis(client, db_admin, welt):
     key = _schluessel(db_admin, "event", event_id=welt["meeting"])
     unbekannt = _aufruf(client, key, "budget_liste", {})
-    assert unbekannt["isError"] is True and _text(unbekannt) == "unbekanntes Werkzeug"
+    assert unbekannt["isError"] is True and _text(unbekannt) == "nicht gefunden"
 
     wert = _aufruf(client, key, "aufgaben_anlegen", {"titel": "x", "event_id": str(welt["b"])})
     assert wert["isError"] is True and str(welt["b"]) not in _text(wert)
@@ -220,6 +221,45 @@ def test_fehler_als_werkzeug_ergebnis(client, db_admin, welt):
     leitung_key = _schluessel(db_admin, "leitung", person_id=welt["lea"])
     marke_falsch = _aufruf(client, leitung_key, "aufgaben_liste", {"marke": "mk_aaaaaaaaaaaa"})
     assert marke_falsch["isError"] is True and _text(marke_falsch) == marke.MARKE_UNGUELTIG
+
+    # NichtGefunden der Fachschicht: nur "nicht gefunden".
+    fehlt = _aufruf(client, key, "aufgaben_aendern", {"zeile": str(welt["b"]), "titel": "x"})
+    assert fehlt["isError"] is True and _text(fehlt) == "nicht gefunden"
+    # ValueError: eigener Text.
+    leer = _aufruf(client, key, "aufgaben_anlegen", {})
+    assert leer["isError"] is True and _text(leer) == "Pflichtargument 'titel' fehlt"
+
+
+def test_kein_recht_als_keine_berechtigung(client, db_admin, welt, monkeypatch):
+    key = _schluessel(db_admin, "event", event_id=welt["meeting"])
+
+    def verboten(*_a: Any, **_k: Any) -> Any:
+        raise KeinRecht("Keine Berechtigung fuer baustein_schreiben")
+
+    monkeypatch.setattr(werkzeuge, "ausfuehren", verboten)
+    ergebnis = _aufruf(client, key, "aufgaben_liste", {})
+    assert ergebnis["isError"] is True and _text(ergebnis) == "keine Berechtigung"
+
+    monkeypatch.setattr(werkzeuge, "katalog", verboten)
+    antwort = _rpc(client, key, "tools/list", {})
+    assert antwort.status_code == 200
+    assert antwort.json()["error"]["message"] == "keine Berechtigung"
+
+
+def test_tools_list_fehlertexte(client, db_admin, welt, monkeypatch):
+    key = _schluessel(db_admin, "event", event_id=welt["meeting"])
+    for fehler, erwartet in ((NichtGefunden("Event nicht gefunden"), "nicht gefunden"),
+                             (RuntimeError("geheim"), "interner Fehler")):
+        def kaputt(*_a: Any, _f: Exception = fehler, **_k: Any) -> Any:
+            raise _f
+
+        monkeypatch.setattr(werkzeuge, "katalog", kaputt)
+        antwort = _rpc(client, key, "tools/list", {})
+        assert antwort.status_code == 200
+        assert antwort.json()["error"]["message"] == erwartet
+    # Ein geloeschtes Event macht seinen Schluessel ungueltig: schon das Tor sagt 401.
+    db_admin.execute("delete from event.event where id = %s", (welt["meeting"],))
+    assert _rpc(client, key, "tools/list", {}).status_code == 401
 
 
 def test_interner_fehler_ohne_details(client, db_admin, welt, monkeypatch, caplog):
@@ -247,7 +287,7 @@ def test_logs_ohne_schluessel_und_kundentext(client, db_admin, welt, caplog):
     assert "Vertrauliche Notiz" not in caplog.text
 
 
-def test_parallel_zwei_schluessel_getrennt(client, db_admin, welt):
+def test_parallel_zwei_schluessel_getrennt(client, db_admin, welt, monkeypatch):
     """Review Focus 1: zwei Gespraeche mit verschiedenen Schluesseln gleichzeitig."""
     event_key = _schluessel(db_admin, "event", event_id=welt["meeting"])
     leitung_key = _schluessel(db_admin, "leitung", person_id=welt["lea"])
@@ -258,6 +298,24 @@ def test_parallel_zwei_schluessel_getrennt(client, db_admin, welt):
 
     katalog = {key: set(_werkzeuge(client, key)) for key in (event_key, leitung_key)}
     assert katalog[event_key] != katalog[leitung_key]
+
+    # Die ersten beiden Werkzeugaufrufe warten im Server-Thread aufeinander: sie laufen
+    # also nachweislich gleichzeitig (Timeout statt Haengen, wenn nicht).
+    original = werkzeuge.ausfuehren
+    treffpunkt = threading.Barrier(2)
+    sperre = threading.Lock()
+    zaehler = itertools.count()
+    getroffen: list[bool] = []
+
+    def mit_barriere(*a: Any, **k: Any) -> Any:
+        with sperre:
+            warten = next(zaehler) < 2
+        if warten:
+            treffpunkt.wait(timeout=30)
+            getroffen.append(True)
+        return original(*a, **k)
+
+    monkeypatch.setattr(werkzeuge, "ausfuehren", mit_barriere)
 
     def gespraech(key: str, kennung: str, extra: dict[str, Any], erwartet: dict[str, str]) -> None:
         try:
@@ -284,6 +342,7 @@ def test_parallel_zwei_schluessel_getrennt(client, db_admin, welt):
     for t in threads:
         t.join(timeout=300)
     assert fehler == []
+    assert getroffen == [True, True]
 
     zeilen = db_admin.execute("select event_id, titel from event.aufgabe").fetchall()
     assert len(zeilen) == 40

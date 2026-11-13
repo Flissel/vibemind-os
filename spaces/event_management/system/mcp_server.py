@@ -8,9 +8,10 @@ Low-Level-Servers wird bewusst nicht benutzt (eigene Request-Handler statt der
 Dekoratoren), denn er wuerde Kataloge verschiedener Schluessel vermischen.
 
 Vor der MCP-Verarbeitung lehnt eine ASGI-Pruefung fehlende oder ungueltige Schluessel mit
-HTTP 401 ab. Werkzeugfehler gehen als Text mit `isError` zurueck: NichtGefunden, KeinRecht
-und ValueError mit ihrer (datenfreien) Meldung, alles andere als "interner Fehler" (nur
-mit Typname geloggt). Geloggt werden nie Schluessel, Authorization-Header, Argumente oder
+HTTP 401 ab. Werkzeugfehler gehen als Text mit `isError` zurueck (`_fehlertext`):
+NichtGefunden "nicht gefunden" (ausser der Marken-Meldung), KeinRecht "keine Berechtigung",
+ValueError mit eigener (datenfreier) Meldung, alles andere "interner Fehler" (nur mit
+Typname geloggt). Geloggt werden nie Schluessel, Authorization-Header, Argumente oder
 Ergebnisse.
 
 CLI: ``python -m spaces.event_management.system.mcp_server`` (DSN aus
@@ -44,7 +45,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
-from spaces.event_management.system import schluessel, werkzeuge
+from spaces.event_management.system import marke, schluessel, werkzeuge
 from spaces.event_management.system.kategorien import Kategorie, lade_kategorien
 from spaces.event_management.system.kontext import NichtGefunden
 from spaces.event_management.system.mailer import Mailer
@@ -79,6 +80,24 @@ def _json_wert(wert: object) -> object:
     if isinstance(wert, Decimal):
         return int(wert) if wert == wert.to_integral_value() else float(wert)
     raise TypeError(type(wert).__name__)
+
+
+def _fehlertext(e: Exception) -> str | None:
+    """Fehlertext fuer den Client (gemeinsam.md, Ruling T4-a); None = interner Fehler.
+
+    NichtGefunden -> "nicht gefunden" (nur die Marken-Meldung bleibt, damit der Bot neu
+    waehlt), KeinRecht/PermissionError -> "keine Berechtigung", ValueError -> eigener
+    Text (datenfrei), ungueltige Zeichen -> "Ungültige Zeichen".
+    """
+    if isinstance(e, NichtGefunden):
+        return marke.MARKE_UNGUELTIG if str(e) == marke.MARKE_UNGUELTIG else "nicht gefunden"
+    if isinstance(e, PermissionError):
+        return "keine Berechtigung"
+    if isinstance(e, UnicodeError):
+        return "Ungültige Zeichen"
+    if isinstance(e, ValueError):
+        return str(e)
+    return None
 
 
 def _fehler(text: str) -> types.ServerResult:
@@ -133,11 +152,12 @@ def erstelle_mcp_app(
         try:
             klartext = klartext_der_anfrage()
             liste = await anyio.to_thread.run_sync(katalog_holen, klartext)
-        except NichtGefunden as e:
-            raise McpError(types.ErrorData(code=types.INVALID_REQUEST, message=str(e))) from None
-        except Exception as e:  # noqa: BLE001 - nur Typname, nie Inhalt
-            log.error("tools/list fehlgeschlagen: %s", type(e).__name__)
-            raise McpError(types.ErrorData(code=types.INTERNAL_ERROR, message=_INTERN)) from None
+        except Exception as e:  # noqa: BLE001 - Abbildung nach Vorgabe, nie Inhalt
+            text = _fehlertext(e)
+            if text is None:
+                log.error("tools/list fehlgeschlagen: %s", type(e).__name__)
+                raise McpError(types.ErrorData(code=types.INTERNAL_ERROR, message=_INTERN)) from None
+            raise McpError(types.ErrorData(code=types.INVALID_REQUEST, message=text)) from None
         return types.ServerResult(types.ListToolsResult(tools=[_tool(w) for w in liste]))
 
     async def tools_call(anfrage: types.CallToolRequest) -> types.ServerResult:
@@ -146,13 +166,12 @@ def erstelle_mcp_app(
         try:
             klartext = klartext_der_anfrage()
             text = await anyio.to_thread.run_sync(werkzeug_ausfuehren, klartext, name, argumente)
-        except UnicodeError:
-            return _fehler("Ungültige Zeichen")
-        except (NichtGefunden, PermissionError, ValueError) as e:
-            return _fehler(str(e))
-        except Exception as e:  # noqa: BLE001 - nur Typname, nie Inhalt
-            log.error("Werkzeug fehlgeschlagen: %s", type(e).__name__)
-            return _fehler(_INTERN)
+        except Exception as e:  # noqa: BLE001 - Abbildung nach Vorgabe, nie Inhalt
+            text = _fehlertext(e)
+            if text is None:
+                log.error("Werkzeug fehlgeschlagen: %s", type(e).__name__)
+                text = _INTERN
+            return _fehler(text)
         return types.ServerResult(types.CallToolResult(
             content=[types.TextContent(type="text", text=text)], isError=False))
 
@@ -273,6 +292,9 @@ def main() -> None:
     import uvicorn
 
     logging.basicConfig(level=logging.INFO)
+    # Das mcp-Paket loggt auf DEBUG Nachrichteninhalte; nie darunter, auch wenn die
+    # Wurzel spaeter auf DEBUG steht.
+    logging.getLogger("mcp").setLevel(logging.INFO)
     k = konfiguration()
     app = erstelle_mcp_app(k.dsn)
     # Kein Access-Log (Anfragen tragen den Schluessel im Header; sicher ist sicher).
