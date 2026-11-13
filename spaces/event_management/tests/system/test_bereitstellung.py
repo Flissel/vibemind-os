@@ -22,7 +22,7 @@ from spaces.event_management.system import (
 from spaces.event_management.system.bereitstellung import (
     AusfuehrerFehler, DockerAusfuehrer, SpeicherAusfuehrer,
 )
-from spaces.event_management.system.kontext import Kontext, NichtGefunden
+from spaces.event_management.system.kontext import Kontext
 from spaces.event_management.system.telegram import SpeicherTelegram
 
 BEGINN = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=30)
@@ -158,6 +158,14 @@ def _aus() -> SpeicherAusfuehrer:
     return SpeicherAusfuehrer(config=GRUND_CONFIG)
 
 
+def _teilstand_weg(aus: SpeicherAusfuehrer, agent: str) -> None:
+    """Nach einem gescheiterten/haengenden Anlegen: weder Agent noch Server noch Binding."""
+    c = aus.config
+    assert _agent(c, agent) is None and _bindungen(c, agent) == []
+    assert agent not in c["mcp"]["servers"]
+    _fremdes_unveraendert(c)
+
+
 # --- Anlegen ------------------------------------------------------------------------
 
 
@@ -256,12 +264,12 @@ def test_fehler_mitten_drin_endet_fehler_und_widerruft_schluessel(
     zeile = _auftrag(db_admin, auftrag_id)
     assert (zeile["status"], zeile["schritt"]) == ("fehler", "binding")
     assert zeile["fehler"] and "evk_" not in zeile["fehler"]
-    # Der gerade ausgestellte Schluessel ist widerrufen; der Teilstand bleibt fuer den Abbau.
+    # Der gerade ausgestellte Schluessel ist widerrufen, der Teilstand abgeraeumt; nur der
+    # Arbeitsbereich bleibt (nicht umbenannt).
     assert _schluessel(db_admin, zeile["schluessel_id"])["widerrufen"] is not None
     agent = "ev-" + _hex8(welt["fest"])
-    with pytest.raises(NichtGefunden):
-        schluessel.pruefen(app, _bearer(aus.config, agent))
-    assert _agent(aus.config, agent) is not None and _bindungen(aus.config, agent) == []
+    _teilstand_weg(aus, agent)
+    assert f"{WS}{agent}/SOUL.md" in aus.dateien
     assert "evk_" not in caplog.text and str(CHAT) not in caplog.text
 
     # Kein blinder Neuversuch: der naechste Lauf laesst den fehlerhaften Auftrag liegen.
@@ -283,6 +291,133 @@ def test_fehler_beim_schluessel_ausstellen(db_admin, db_app, welt, telegram):
     assert zeile["status"] == "fehler" and zeile["schluessel_id"] is None
     assert aus.config == GRUND_CONFIG
     assert db_admin.execute("select count(*) as n from event.schluessel").fetchone()["n"] == 0
+
+
+def test_fehler_beim_gruppen_schritt_raeumt_teilstand_ab(db_admin, db_app, welt, telegram):
+    """Scheitert der letzte Schritt, steht schon das Binding: es muss wieder weg, sonst
+    bediente ein Agent mit widerrufenem Schluessel die Gruppe."""
+    app = db_app()
+    auftrag_id = _gruppe(app, welt, telegram)
+    aus = _aus()
+    aus.scheitern.add(f"config_schreiben:channels.telegram.groups.{CHAT}.requireMention")
+    assert bereitstellung.lauf(db_admin, aus, mcp_url=MCP) == [auftrag_id]
+    zeile = _auftrag(db_admin, auftrag_id)
+    assert (zeile["status"], zeile["schritt"]) == ("fehler", "gruppe")
+    assert _schluessel(db_admin, zeile["schluessel_id"])["widerrufen"] is not None
+    _teilstand_weg(aus, "ev-" + _hex8(welt["fest"]))
+    assert str(CHAT) not in aus.config["channels"]["telegram"]["groups"]
+
+
+class _BindingNurEinmal(SpeicherAusfuehrer):
+    """Mit "bindings-zweites-mal" in `scheitern`: das erste Schreiben von `bindings` (das
+    Anlegen) gelingt, jedes weitere (das Abraeumen) scheitert."""
+
+    def config_schreiben(self, pfad: str, wert: object) -> None:
+        if (pfad == "bindings" and "bindings-zweites-mal" in self.scheitern
+                and ("config_schreiben", "bindings") in self.schreibvorgaenge):
+            raise AusfuehrerFehler("config_schreiben fehlgeschlagen")
+        super().config_schreiben(pfad, wert)
+
+
+def test_scheitert_auch_das_abraeumen_bleibt_der_auftrag_fehler(
+        db_admin, db_app, welt, telegram, caplog):
+    """Das Abraeumen ist nur best effort: scheitert es, bleibt der urspruengliche Fehler
+    stehen; den Rest raeumt der naechste Lauf als verwaisten Agenten ab."""
+    app = db_app()
+    auftrag_id = _gruppe(app, welt, telegram)
+    aus = _BindingNurEinmal(config=GRUND_CONFIG)
+    aus.scheitern.update({f"config_schreiben:channels.telegram.groups.{CHAT}.requireMention",
+                          "bindings-zweites-mal"})
+    with caplog.at_level(logging.DEBUG):
+        bereitstellung.lauf(db_admin, aus, mcp_url=MCP)
+    zeile = _auftrag(db_admin, auftrag_id)
+    assert (zeile["status"], zeile["schritt"]) == ("fehler", "gruppe")
+    agent = "ev-" + _hex8(welt["fest"])
+    # Binding blieb (sein Entfernen scheiterte), Agent und Server sind trotzdem weg.
+    assert _bindungen(aus.config, agent) != []
+    assert _agent(aus.config, agent) is None and agent not in aus.config["mcp"]["servers"]
+    assert "evk_" not in caplog.text and str(CHAT) not in caplog.text
+
+    aus.scheitern.clear()
+    [abbau] = bereitstellung.lauf(db_admin, aus, mcp_url=MCP)
+    assert _auftrag(db_admin, abbau)["art"] == "abbauen"
+    _abgebaut(aus, agent, CHAT)
+
+
+def _event(admin: Any, welt: dict[str, Any]) -> dict[str, Any]:
+    return admin.execute("select e.*, f.name as firma_name from event.event e join"
+                         " event.firma f on f.id = e.firma_id where e.id = %s",
+                         (welt["fest"],)).fetchone()
+
+
+def test_haengender_auftrag_nach_binding_wird_abgeraeumt(db_admin, db_app, welt, telegram):
+    app = db_app()
+    auftrag_id = _gruppe(app, welt, telegram)
+    sid, klartext = schluessel.ausstellen(db_admin, art="event", bezeichnung="haengt",
+                                          event_id=welt["fest"])
+    db_admin.execute("update event.bereitstellung set status = 'laeuft', schluessel_id = %s,"
+                     " schritt = 'binding', gestartet = now() - interval '11 minutes'"
+                     " where id = %s", (sid, auftrag_id))
+    aus = _aus()
+    # Der abgebrochene Lauf kam bis einschliesslich Binding.
+    for s in bereitstellung.schritte_anlegen(
+            _auftrag(db_admin, auftrag_id), schluessel_klartext=klartext, mcp_url=MCP,
+            schema=events.schema_fuer("fest", None), event=_event(db_admin, welt))[:4]:
+        s.ausfuehren(aus)
+    agent = "ev-" + _hex8(welt["fest"])
+    assert _bindungen(aus.config, agent) != []
+
+    assert bereitstellung.lauf(db_admin, aus, mcp_url=MCP) == []
+    zeile = _auftrag(db_admin, auftrag_id)
+    assert zeile["status"] == "fehler" and "10 Minuten" in zeile["fehler"]
+    assert _schluessel(db_admin, sid)["widerrufen"] is not None
+    _teilstand_weg(aus, agent)
+    # Kein Abbau-Auftrag noetig, der Arbeitsbereich bleibt unberuehrt.
+    assert [a["art"] for a in _auftraege(db_admin)] == ["anlegen"]
+    assert f"{WS}{agent}/SOUL.md" in aus.dateien
+
+
+def test_neues_anlegen_widerruft_schluessel_frueherer_anlegen(db_admin, db_app, welt, telegram):
+    """Derselbe Agent ein zweites Mal angelegt (ohne Abbau dazwischen): der Schluessel des
+    frueheren Anlegens wird nach dem Erfolg widerrufen, der neue gilt."""
+    app = db_app()
+    erstes = _gruppe(app, welt, telegram)
+    aus = _aus()
+    bereitstellung.lauf(db_admin, aus, mcp_url=MCP)
+    alt = _auftrag(db_admin, erstes)
+    zweites = _id(db_admin, "insert into event.bereitstellung (art, ziel, event_id, person_id,"
+                            " chat_id, agent_id) values ('anlegen', %s, %s, %s, %s, %s)"
+                            " returning id",
+                  (alt["ziel"], alt["event_id"], alt["person_id"], alt["chat_id"],
+                   alt["agent_id"]))
+    assert bereitstellung.lauf(db_admin, aus, mcp_url=MCP) == [zweites]
+    neu = _auftrag(db_admin, zweites)
+    assert neu["status"] == "erfolg"
+    assert _schluessel(db_admin, alt["schluessel_id"])["widerrufen"] is not None
+    assert _schluessel(db_admin, neu["schluessel_id"])["widerrufen"] is None
+    assert schluessel.pruefen(app, _bearer(aus.config, alt["agent_id"])).id == neu[
+        "schluessel_id"]
+
+
+def test_zweiter_lauf_gleichzeitig_endet_still(db_admin, db_app, welt, telegram, pg_cluster):
+    """Laeuft schon ein Arbeiter (Advisory-Lock gehalten), endet ein zweiter sofort."""
+    app = db_app()
+    auftrag_id = _gruppe(app, welt, telegram)
+    andere = psycopg.connect(f"host=127.0.0.1 port={pg_cluster['port']} user=postgres"
+                             f" dbname={db_admin.info.dbname}", autocommit=True)
+    try:
+        andere.execute("select pg_advisory_lock(%s)", (bereitstellung.SPERRE,))
+        aus = _aus()
+        assert bereitstellung.lauf(db_admin, aus, mcp_url=MCP) == []
+        assert aus.schreibvorgaenge == []
+        assert _auftrag(db_admin, auftrag_id)["status"] == "offen"
+        andere.execute("select pg_advisory_unlock(%s)", (bereitstellung.SPERRE,))
+        assert bereitstellung.lauf(db_admin, aus, mcp_url=MCP) == [auftrag_id]
+    finally:
+        andere.close()
+    # Der Lauf gibt seine Sperre wieder frei.
+    assert db_admin.execute("select count(*) as n from pg_locks where locktype = 'advisory'"
+                            ).fetchone()["n"] == 0
 
 
 # --- Abbauen ------------------------------------------------------------------------
@@ -314,12 +449,14 @@ def test_abbauen_entfernt_auch_teilstaende(db_admin, db_app, welt, telegram):
     app = db_app()
     auftrag_id = _gruppe(app, welt, telegram)
     aus = _aus()
-    # Teilstand: Arbeitsbereich, Server und Agent gesetzt, Binding gescheitert.
-    aus.scheitern.add("config_schreiben:bindings")
+    # Teilstand: Arbeitsbereich, Server und Agent gesetzt, Binding gescheitert, und beim
+    # Abraeumen danach scheiterte das Entfernen des Servers (er bleibt stehen).
+    aus.scheitern.update({"config_schreiben:bindings", "config_entfernen"})
     bereitstellung.lauf(db_admin, aus, mcp_url=MCP)
     aus.scheitern.clear()
     anlegen = _auftrag(db_admin, auftrag_id)
     assert anlegen["status"] == "fehler"
+    assert anlegen["agent_id"] in aus.config["mcp"]["servers"]
 
     abbau = _abbau_einfuegen(db_admin, anlegen)
     assert bereitstellung.lauf(db_admin, aus, mcp_url=MCP) == [abbau]
@@ -461,6 +598,9 @@ def test_reihenfolge_abbauen_vor_anlegen(db_admin, db_app, welt, telegram):
 
     neues = _gruppe(app, welt, telegram, CHAT_NEU)
     [abbau] = [a["id"] for a in _auftraege(db_admin) if a["art"] == "abbauen"]
+    # Beide in derselben Transaktion (bestaetigen), angelegt kommt aus dem Spalten-Default
+    # clock_timestamp(): der Abbau liegt trotzdem vorn.
+    assert _auftrag(db_admin, abbau)["angelegt"] < _auftrag(db_admin, neues)["angelegt"]
     aus.schreibvorgaenge.clear()
     assert bereitstellung.lauf(db_admin, aus, mcp_url=MCP) == [abbau, neues]
     # Das erste Schreiben entfernt das alte Binding, erst danach entsteht das neue.
@@ -505,19 +645,25 @@ def test_verwaiste_agenten_verlorener_rollen_werden_abgebaut(db_admin, db_app, w
     assert _agent(aus.config, bo) is not None
     bo_schluessel = _auftrag(db_admin, bo_auftrag)["schluessel_id"]
 
-    # Betreiber -> nur noch Leitung: RLS laesst den bo-Abbau beim Bestaetigen nicht zu.
+    # Betreiber -> nur noch Leitung, derselbe Direktchat: RLS laesst den bo-Abbau beim
+    # Bestaetigen nicht zu; der Arbeiter legt ihn VOR das ld-Anlegen (sonst CHAT_BELEGT).
     db_admin.execute("update event.person set betreiber = false where id = %s", (p,))
     nachher = Kontext(person_id=p, betreiber=False, rollen={welt["a"]: "leitung"})
-    _direkt(app, nachher, telegram, DIREKT_ANDERS)
+    ld_auftrag = _direkt(app, nachher, telegram)
     assert not [a for a in _auftraege(db_admin) if a["art"] == "abbauen"]
 
     bereitstellung.lauf(db_admin, aus, mcp_url=MCP)
     [abbau] = [a for a in _auftraege(db_admin) if a["art"] == "abbauen"]
     assert (abbau["agent_id"], abbau["ziel"], abbau["chat_id"], abbau["status"]) == (
         bo, "betreiber", DIREKT, "erfolg")
+    assert abbau["angelegt"] < _auftrag(db_admin, ld_auftrag)["angelegt"]
     _abgebaut(aus, bo, None)
     assert _schluessel(db_admin, bo_schluessel)["widerrufen"] is not None
-    assert _agent(aus.config, ld) is not None  # der neue Agent bleibt
+    # Der neue Agent steht, am selben Chat, mit gueltigem Leitungs-Schluessel.
+    assert _auftrag(db_admin, ld_auftrag)["status"] == "erfolg"
+    assert [b["match"]["peer"]["id"] for b in _bindungen(aus.config, ld)] == [str(DIREKT)]
+    info = schluessel.pruefen(app, _bearer(aus.config, ld))
+    assert (info.art, info.person_id) == ("leitung", p)
 
     # Kein zweiter Abbau fuer denselben Agenten.
     bereitstellung.lauf(db_admin, aus, mcp_url=MCP)
@@ -579,6 +725,13 @@ def test_event_app_darf_schluessel_bezug_nicht_setzen(db_admin, db_app, welt, te
         leitung.execute(
             "insert into event.bereitstellung (art, ziel, event_id, person_id, chat_id,"
             " agent_id, status) values ('anlegen', 'gruppe', %s, %s, %s, %s, 'erfolg')",
+            (welt["fest"], welt["lea"], CHAT, auftrag["agent_id"]))
+    # Auch die Reihenfolge nicht: angelegt setzt allein der Default (clock_timestamp()).
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        leitung.execute(
+            "insert into event.bereitstellung (art, ziel, event_id, person_id, chat_id,"
+            " agent_id, angelegt) values ('anlegen', 'gruppe', %s, %s, %s, %s,"
+            " now() - interval '1 day')",
             (welt["fest"], welt["lea"], CHAT, auftrag["agent_id"]))
 
 
@@ -684,7 +837,6 @@ def test_systemd_dateien_nur_vorbereitet():
     assert "-m spaces.event_management.system.bereitstellung lauf" in dienst
     assert "EnvironmentFile=" in dienst and "evk_" not in dienst and "Bearer" not in dienst
     assert "OnUnitInactiveSec=20s" in zeitgeber and "Unit=bereitstellung.service" in zeitgeber
-
 
 
 def test_cli_ohne_dsn_oder_mcp_url(monkeypatch, capsys, tmp_path):

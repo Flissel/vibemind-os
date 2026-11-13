@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -36,17 +38,27 @@ def _code() -> str:
 
 
 def _shell_zeilen() -> list[str]:
-    """Zeilen der Shell, ohne die eingebetteten JavaScript-Heredocs."""
+    """Zeilen der Shell, ohne die eingebetteten JavaScript- und Python-Heredocs."""
     aus: list[str] = []
-    im_js = False
+    ende: str | None = None
     for z in _code().splitlines():
-        if re.search(r"<<\s*'JS'", z):
-            im_js = True
-        if not im_js:
+        treffer = re.search(r"<<\s*'(JS|PY)'", z)
+        if treffer and ende is None:
+            ende = treffer.group(1)
+            aus.append(z)  # die oeffnende Zeile selbst ist Shell
+            continue
+        if ende is None:
             aus.append(z)
-        elif z.strip() == "JS":
-            im_js = False
+        elif z.strip() == ende:
+            ende = None
     return aus
+
+
+def _heredoc(oeffnend: str, ende: str) -> str:
+    """Rumpf des Heredocs, dessen oeffnende Zeile `oeffnend` enthaelt."""
+    text = SKRIPT.read_text(encoding="utf-8")
+    start = text.index("\n", text.index(oeffnend)) + 1
+    return text[start:text.index(f"\n{ende}\n", start)]
 
 
 # --- anbinden.sh -------------------------------------------------------------
@@ -212,6 +224,156 @@ def test_zeichenpruefung_ohne_wert_in_der_meldung() -> None:
     assert "LC_ALL=C" in code
     assert "[!" in code  # case-Muster fuer verbotene Zeichen
     assert "nicht druckbare" in code
+
+
+# --- Schutz der Legacy-Gruppe (Ruling T8-a) ------------------------------------
+
+LEGACY_BINDING = {"agentId": "ev-legacy", "match": {
+    "channel": "telegram", "peer": {"kind": "group", "id": "{{TELEGRAM_GRUPPE}}"}}}
+
+
+def _schutz(tmp_path: Path, konfig: object | str) -> int:
+    """Fuehrt den Python-Heredoc des Schutzes gegen eine Vorlage aus; Rueckgabe: Exit-Code."""
+    vorlage = tmp_path / "openclaw.json"
+    vorlage.write_text(konfig if isinstance(konfig, str) else json.dumps(konfig),
+                       encoding="utf-8")
+    skript = tmp_path / "schutz.py"
+    skript.write_text(_heredoc("<<'PY'", "PY"), encoding="utf-8")
+    r = subprocess.run([sys.executable, str(skript), str(vorlage)], stdin=subprocess.DEVNULL,
+                       capture_output=True, timeout=60)
+    # Der Schutz selbst gibt nichts aus (keine Daten, keine Tokens).
+    assert r.stdout == b"" and r.stderr == b""
+    return r.returncode
+
+
+def test_schutz_bricht_ab_solange_ev_legacy_fehlt(tmp_path: Path) -> None:
+    vorlage = json.loads(OPENCLAW.read_text(encoding="utf-8"))
+    # Stand Etappe 3: Legacy-Gruppe in der Saat, kein Agent daran gebunden -> Abbruch.
+    assert "{{TELEGRAM_GRUPPE}}" in OPENCLAW.read_text(encoding="utf-8")
+    assert _schutz(tmp_path, vorlage) == 3
+    # Nur `main` gebunden reicht nicht.
+    nur_main = dict(vorlage, bindings=[dict(LEGACY_BINDING, agentId="main")])
+    assert _schutz(tmp_path, nur_main) == 3
+    # Ein anderer Agent an einer anderen Gruppe reicht auch nicht.
+    anderswo = {"agentId": "ev-legacy", "match": {
+        "channel": "telegram", "peer": {"kind": "group", "id": "-1001234567890"}}}
+    assert _schutz(tmp_path, dict(vorlage, bindings=[anderswo])) == 3
+    # Etappe 4: ev-legacy an der Legacy-Gruppe -> weiter.
+    assert _schutz(tmp_path, dict(vorlage, bindings=[LEGACY_BINDING])) == 0
+    # Ohne Legacy-Gruppe in der Saat gibt es nichts zu schuetzen.
+    ohne = json.loads(json.dumps(vorlage).replace("{{TELEGRAM_GRUPPE}}", "-1001234567890"))
+    assert _schutz(tmp_path, ohne) == 0
+    # Kaputte Vorlage: eigener Code, eigene Meldung.
+    assert _schutz(tmp_path, "{kein json") == 2
+
+
+def test_schutz_steht_vor_jeder_aenderung_und_nennt_keine_daten() -> None:
+    code = _code()
+    schutz = code.index("python3 - config/openclaw.json <<'PY' || RC=$?")
+    for spaeter in ("mkdir -p ./laufzeit", "> ./laufzeit/gateway-token", "docker inspect",
+                    "docker compose run", "docker compose up -d"):
+        assert schutz < code.index(spaeter), spaeter
+    assert code.index('[ -z "$MLD" ]') < schutz  # stdin ist schon gelesen und geprueft
+    meldung = next(z for z in _shell_zeilen() if "ev-legacy fehlt" in z)
+    assert "ABBRUCH: ev-legacy fehlt – erst Etappe 4" in meldung and ">&2" in meldung
+    assert "$" not in meldung.split("echo", 1)[1]
+    block = code[code.index('if [ "$RC" = 3 ]'):]
+    assert "exit 1" in block[:block.index("\nfi\n")]
+
+
+# --- Saat erhaelt bereitgestellte Agenten (Ruling T8-b) -------------------------
+
+SAAT = {
+    "gateway": {"port": 19100, "auth": {"mode": "token"}},
+    "agents": {"list": [{"id": "main", "tools": {"allow": ["melden__gruppe_melden"]}}]},
+    "bindings": [{"agentId": "ev-legacy", "match": {
+        "channel": "telegram", "peer": {"kind": "group", "id": "-1009"}}}],
+    "channels": {"telegram": {"groups": {"-1009": {"requireMention": False},
+                                         "*": {"requireMention": True}}}},
+    "mcp": {"servers": {"melden": {"url": "http://melden.example.org/mcp"}}},
+}
+GEHEIM_EV = "evk_beispiel_nur_fuer_den_test_ev"
+GEHEIM_LD = "evk_beispiel_nur_fuer_den_test_ld"
+GRUPPE_EV = "-1001234567890"
+BEREITGESTELLT = {
+    "agenten": [{"id": "ev-0123abcd", "workspace": "/home/node/.openclaw/workspace-ev-0123abcd",
+                 "tools": {"allow": ["ev-0123abcd__*"]}},
+                {"id": "ld-89abcdef", "workspace": "/home/node/.openclaw/workspace-ld-89abcdef",
+                 "tools": {"allow": ["ld-89abcdef__*"]}}],
+    "server": {
+        "ev-0123abcd": {"url": "http://event-mcp.example.org:8171/mcp",
+                        "transport": "streamable-http",
+                        "headers": {"Authorization": f"Bearer {GEHEIM_EV}"}},
+        "ld-89abcdef": {"url": "http://event-mcp.example.org:8171/mcp",
+                        "transport": "streamable-http",
+                        "headers": {"Authorization": f"Bearer {GEHEIM_LD}"}}},
+    "bindings": [
+        {"agentId": "ev-0123abcd", "match": {
+            "channel": "telegram", "peer": {"kind": "group", "id": GRUPPE_EV}}},
+        {"agentId": "ld-89abcdef", "match": {
+            "channel": "telegram", "peer": {"kind": "direct", "id": "123456789"}},
+         "session": {"dmScope": "per-peer"}}],
+}
+
+
+def _mit_bereitgestellten(basis: dict) -> dict:
+    c = json.loads(json.dumps(basis))
+    c["agents"]["list"] += BEREITGESTELLT["agenten"]
+    c["mcp"]["servers"].update(BEREITGESTELLT["server"])
+    c["bindings"] = c.get("bindings", []) + BEREITGESTELLT["bindings"]
+    c["channels"]["telegram"]["groups"][GRUPPE_EV] = {"requireMention": False}
+    return c
+
+
+def _saat_laufen(tmp_path: Path, aktuell: dict) -> tuple[str, Path]:
+    """Fuehrt SAAT_JS mit lokalem node gegen Verzeichnisse unter tmp_path aus."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("kein node")
+    zustand, saat = tmp_path / "zustand", tmp_path / "saat"
+    for d in (zustand, saat / "workspace", saat / "workspace-brain"):
+        d.mkdir(parents=True)
+    (saat / "openclaw.json").write_text(json.dumps(SAAT), encoding="utf-8")
+    (zustand / "openclaw.json").write_text(json.dumps(aktuell), encoding="utf-8")
+    js = _heredoc("SAAT_JS=$(cat <<'JS'", "JS")
+    for alt, neu in (("const STATE = '/home/node/.openclaw';", zustand),
+                     ("const SEED = '/seed';", saat)):
+        assert js.count(alt) == 1
+        js = js.replace(alt, alt.split("=")[0] + "= " + json.dumps(neu.as_posix()) + ";")
+    skript = tmp_path / "saat.js"
+    skript.write_text(js, encoding="utf-8")
+    r = subprocess.run([node, str(skript)], stdin=subprocess.DEVNULL, capture_output=True,
+                       timeout=60)
+    ausgabe = r.stdout.decode("utf-8") + r.stderr.decode("utf-8")
+    assert r.returncode == 0, ausgabe
+    return ausgabe, zustand / "openclaw.json"
+
+
+def test_saat_ersetzt_und_uebernimmt_bereitgestellte_agenten(tmp_path: Path) -> None:
+    aktuell = _mit_bereitgestellten(SAAT)
+    aktuell["gateway"]["port"] = 19999                  # Abweichung -> Ersetzen
+    aktuell["gateway"]["auth"]["token"] = "gateway-geheim-beispiel"
+    aktuell["agents"]["list"].append({"id": "fremd"})   # nicht bereitgestellt -> weg
+    ausgabe, cfg = _saat_laufen(tmp_path, aktuell)
+    assert "openclaw.json: gesichert und durch die Saat ersetzt" in ausgabe
+    assert "2 Agenten, 2 Server, 2 Bindings, 1 Gruppen" in ausgabe
+    # Keine Werte in der Ausgabe: weder Schluessel noch Chat-IDs.
+    for wert in ("evk_", GRUPPE_EV, "123456789", "gateway-geheim"):
+        assert wert not in ausgabe
+    neu = json.loads(cfg.read_text(encoding="utf-8"))
+    assert neu == _mit_bereitgestellten(SAAT)
+    assert [p.name for p in cfg.parent.iterdir() if ".vor-anbinden-" in p.name]
+
+
+def test_saat_unveraendert_wenn_nur_bereitgestellte_teile_abweichen(tmp_path: Path) -> None:
+    aktuell = _mit_bereitgestellten(SAAT)
+    aktuell["gateway"]["auth"]["token"] = "gateway-geheim-beispiel"
+    aktuell["meta"] = {"lastTouchedVersion": "x"}
+    ausgabe, cfg = _saat_laufen(tmp_path, aktuell)
+    assert "openclaw.json: unveraendert" in ausgabe
+    assert json.loads(cfg.read_text(encoding="utf-8")) == aktuell
+    assert not [p for p in cfg.parent.iterdir() if ".vor-anbinden-" in p.name]
+    assert "evk_" not in ausgabe
 
 
 # --- Compose -----------------------------------------------------------------

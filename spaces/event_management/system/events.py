@@ -206,8 +206,7 @@ def _gruppe_abbauen(cur: psycopg.Cursor[Any], k: Kontext, event_id: UUID) -> Non
         with cur.connection.transaction():  # Savepoint: Ablehnung nur fuer den Auftrag
             cur.execute(
                 "insert into event.bereitstellung (art, ziel, event_id, person_id, chat_id,"
-                " agent_id, angelegt) values ('abbauen', 'gruppe', %s, %s, %s, %s,"
-                " clock_timestamp())",
+                " agent_id) values ('abbauen', 'gruppe', %s, %s, %s, %s)",
                 (event_id, k.person_id, gruppe["chat_id"], f"ev-{UUID(str(event_id)).hex[:8]}"))
     except psycopg.errors.InsufficientPrivilege:
         log.warning("Abbau-Auftrag uebersprungen (keine Berechtigung); der Arbeiter raeumt"

@@ -600,7 +600,7 @@ def test_bot_tabellen_rechte_und_checks(welt, db_admin):
         " from information_schema.columns"
         " where table_schema = 'event' and table_name = 'bereitstellung'").fetchall()
     assert {z["c"] for z in spalten if z["i"]} == {
-        "art", "ziel", "event_id", "person_id", "chat_id", "agent_id", "angelegt"}
+        "art", "ziel", "event_id", "person_id", "chat_id", "agent_id"}
     spalten = db_admin.execute(
         "select column_name as c,"
         " has_column_privilege('event_app', 'event.verbindung', column_name, 'insert') as i,"

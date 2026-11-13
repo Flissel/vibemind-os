@@ -13,6 +13,11 @@
 -- schluessel_id einschleusen und den Arbeiter beim Abbau einen fremden Schluessel
 -- widerrufen lassen.
 --
+-- angelegt: Default clock_timestamp() statt now(). now() ist der Transaktionsbeginn; ein
+-- `abbauen` und das folgende `anlegen` aus derselben Transaktion (verbinden.bestaetigen)
+-- bekaemen denselben Wert, und der Arbeiter arbeitet strikt nach angelegt. event_app darf
+-- angelegt nicht selbst setzen (sonst koennte ein Auftrag sich vordraengeln).
+--
 -- Die Policies bleiben wie in 004/006: ein `abbauen` beim Archivieren oder vor dem Loeschen
 -- eines Events laeuft in derselben Transaktion VOR dem Loeschen, die bestaetigte Verbindung
 -- ist dann noch da (bereitstellung_chat), und bereitstellung_anlegen erlaubt Leitung der
@@ -22,8 +27,11 @@ alter table event.bereitstellung
     add column if not exists schluessel_id uuid references event.schluessel (id)
         on delete set null;
 
+alter table event.bereitstellung
+    alter column angelegt set default clock_timestamp();
+
 revoke insert on event.bereitstellung from event_app;
-grant insert (art, ziel, event_id, person_id, chat_id, agent_id, angelegt)
+grant insert (art, ziel, event_id, person_id, chat_id, agent_id)
     on event.bereitstellung to event_app;
 
 -- Der Arbeiter sucht offene Auftraege in Reihenfolge und je Agent.

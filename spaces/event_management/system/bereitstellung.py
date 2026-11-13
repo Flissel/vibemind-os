@@ -8,23 +8,32 @@ Archivieren/Loeschen des Events, verwaister Agent) widerruft den Schluessel und 
 Binding, Agent, Server und Gruppen-Eintrag; der Arbeitsbereich wird nur umbenannt
 (``…-abgebaut-<datum>``), nie geloescht.
 
-Ablauf von `lauf` (Admin-DSN, autocommit-Verbindung):
+Ablauf von `lauf` (Admin-DSN, autocommit-Verbindung). Nur ein Lauf zugleich: haelt schon
+ein anderer die Advisory-Sperre SPERRE, endet der Lauf sofort und still.
 
 1. Haengende Auftraege (``laeuft`` seit mehr als HAENGT_MINUTEN) werden ``fehler``; ein
-   dabei schon ausgestellter Schluessel wird widerrufen.
+   dabei schon ausgestellter Schluessel wird widerrufen, der Teilstand eines `anlegen`
+   abgeraeumt (wie unten).
 2. Verwaiste Agenten: ``ev-/ld-/bo-``-Agenten in der Config, die kein bestaetigter Chat mehr
    traegt (Event archiviert/geloescht, Verbindung verworfen, Rolle verloren: Person nicht
-   mehr aktiv, keine Leitung mehr bzw. kein Betreiber mehr), bekommen einen
+   mehr aktiv, keine Leitung mehr bzw. kein Betreiber mehr; oder ihr `anlegen` scheiterte
+   und das Abraeumen blieb unvollstaendig), bekommen einen
    `abbauen`-Auftrag, nach dem Vorbild ihres letzten `anlegen`. Einmal: gibt es schon einen
-   juengeren Abbau (auch einen gescheiterten), wird kein weiterer angelegt.
+   juengeren Abbau (auch einen gescheiterten), wird kein weiterer angelegt. Wartet schon
+   ein `anlegen` auf denselben Chat (Betreiber -> Leitung im selben Direktchat), liegt der
+   Abbau direkt davor, sonst scheiterte das Anlegen am noch gebundenen Chat.
 3. Offene Auftraege strikt nach ``angelegt`` (dann id); ein Auftrag wartet, solange ein
    aelterer desselben Agenten offen ist oder laeuft (``for update skip locked``). So laeuft
    der Abbau von ``ev-X`` immer vor dem Neuaufbau von ``ev-X``.
    - anlegen: nur wenn der Auftrag noch zu einer bestaetigten Verbindung gehoert und die
      Rolle noch passt (sonst ``fehler``, Schritt ``pruefen``, ohne Schluessel). Dann
-     Schluessel ausstellen (Art event/leitung/betreiber, Bezug in ``schluessel_id``), die
-     Schritte ausfuehren; scheitert einer: ``fehler`` mit Schrittname und der gerade
-     ausgestellte Schluessel wird widerrufen. Kein automatischer Neuversuch.
+     Schluessel ausstellen (Art event/leitung/betreiber, Bezug in ``schluessel_id``, beides
+     in einer Transaktion), die Schritte ausfuehren; nach Erfolg die Schluessel frueherer
+     `anlegen` desselben Agenten widerrufen. Scheitert ein Schritt: ``fehler`` mit
+     Schrittname, der gerade ausgestellte Schluessel wird widerrufen und der Teilstand
+     best effort abgeraeumt (Binding, Agent, Server, Gruppe; der Arbeitsbereich bleibt,
+     unbenannt). Was dabei stehen bleibt, raeumt ein spaeterer Lauf als verwaisten Agenten
+     ab. Kein automatischer Neuversuch.
    - abbauen: Schluessel aller frueheren `anlegen` dieses Agenten widerrufen (nur solche,
      die zum Ziel passen), dann die Schritte.
 4. Abgelaufene Marken und Bestaetigungscodes werden geloescht.
@@ -74,6 +83,8 @@ HAENGT_MINUTEN = 10
 NICHT_MEHR_BESTAETIGT = "Verbindung nicht mehr bestätigt oder Rolle verloren"
 HAENGT = f"Abgebrochen: lief länger als {HAENGT_MINUTEN} Minuten"
 CHAT_BELEGT = "Chat ist schon an einen anderen Agenten gebunden"
+# Schluessel der Advisory-Sperre: nur ein Lauf zugleich (Timer und Handaufruf).
+SPERRE = 7_406_315_001
 
 AGENT_MUSTER = re.compile(r"(ev|ld|bo)-[0-9a-f]{8}")
 _SEGMENT = re.compile(r"[A-Za-z0-9_*-]+")
@@ -543,11 +554,14 @@ def schritte_abbauen(auftrag: Mapping[str, Any], *, datum: datetime) -> list[Sch
 
 # --- Datenbank ----------------------------------------------------------------------
 
-# Soll-Zustand eines anlegen-Auftrags `b`: eine bestaetigte Verbindung mit derselben Chat-ID
-# zum selben Ziel, und die Rolle passt noch (Gruppe: Event nicht archiviert/Legacy; leitung:
-# Person aktiv und irgendwo Leitung; betreiber: Person aktiv und Betreiber).
+# Soll-Zustand eines anlegen-Auftrags `b`: nicht gescheitert, eine bestaetigte Verbindung
+# mit derselben Chat-ID zum selben Ziel, und die Rolle passt noch (Gruppe: Event nicht
+# archiviert/Legacy; leitung: Person aktiv und irgendwo Leitung; betreiber: Person aktiv
+# und Betreiber). Ein gescheitertes `anlegen` traegt keinen Agenten: was davon noch in der
+# Config steht, ist verwaist.
 _SOLL = """
     b.art = 'anlegen'
+    and b.status in ('offen', 'laeuft', 'erfolg')
     and exists (
         select 1 from event.verbindung v
         where v.status = 'bestaetigt' and v.chat_id = b.chat_id
@@ -596,19 +610,52 @@ def _widerrufen(conn: psycopg.Connection[Any], schluessel_id: UUID) -> None:
         pass  # mit dem Event geloescht (Kaskade): ohnehin ungueltig
 
 
-def _haengende_beenden(conn: psycopg.Connection[Any], jetzt: datetime | None) -> None:
+# Schritte, nach denen ein gescheitertes `anlegen` schon etwas im Container hinterlassen
+# haben kann (der gescheiterte Schritt selbst zaehlt mit).
+_SCHRITTE_IM_CONTAINER = frozenset({"arbeitsbereich", "server", "agent", "binding", "gruppe"})
+
+
+def _teilstand_abraeumen(ausfuehrer: Ausfuehrer, auftrag: Mapping[str, Any]) -> None:
+    """Best effort nach gescheitertem oder haengendem `anlegen`: Binding, Agent, Server und
+    (Gruppe) den Gruppen-Eintrag wieder entfernen, damit kein Agent mit widerrufenem
+    Schluessel im Chat steht. Der Arbeitsbereich bleibt, wie er ist (nicht umbenannt). Jeder
+    Schritt wird versucht, Fehler nur protokolliert (Typname); was stehen bleibt, raeumt ein
+    spaeterer Lauf als verwaisten Agenten ab."""
+    if auftrag.get("schritt") not in _SCHRITTE_IM_CONTAINER:
+        return
+    try:
+        schritte = schritte_abbauen(auftrag, datum=datetime.now(timezone.utc))
+    except ValueError:
+        log.warning("Teilstand von Auftrag %s nicht abraeumbar (Daten ungueltig)",
+                    auftrag["id"])
+        return
+    for s in schritte:
+        if s.name == "arbeitsbereich":
+            continue
+        try:
+            s.ausfuehren(ausfuehrer)
+        except Exception as fehler:  # noqa: BLE001 - best effort, weiter mit dem naechsten
+            log.warning("Teilstand von Auftrag %s: Entfernen (%s) gescheitert (%s)",
+                        auftrag["id"], s.name, type(fehler).__name__)
+
+
+def _haengende_beenden(conn: psycopg.Connection[Any], ausfuehrer: Ausfuehrer,
+                       jetzt: datetime | None) -> None:
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             "update event.bereitstellung set status = 'fehler', fehler = %s, beendet = now()"
             " where status = 'laeuft'"
             " and gestartet < coalesce(%s::timestamptz, now()) - make_interval(mins => %s)"
-            " returning id, art, schluessel_id",
+            " returning id, art, ziel, event_id, person_id, chat_id, agent_id, schritt,"
+            " schluessel_id",
             (HAENGT, jetzt, HAENGT_MINUTEN))
         haengend = cur.fetchall()
     for zeile in haengend:
         log.warning("Auftrag %s haengt, auf fehler gesetzt", zeile["id"])
-        if zeile["art"] == "anlegen" and zeile["schluessel_id"] is not None:
-            _widerrufen(conn, zeile["schluessel_id"])
+        if zeile["art"] == "anlegen":
+            if zeile["schluessel_id"] is not None:
+                _widerrufen(conn, zeile["schluessel_id"])
+            _teilstand_abraeumen(ausfuehrer, zeile)
 
 
 def _agenten_in_config(config: Mapping[str, Any]) -> set[str]:
@@ -657,11 +704,18 @@ def _verwaiste_abbauen(conn: psycopg.Connection[Any], ausfuehrer: Ausfuehrer) ->
                         (agent, vorbild["angelegt"]))
             if cur.fetchone() is not None:
                 continue  # schon einmal abgebaut (oder versucht): kein zweiter Auftrag
+            # Wartet schon ein `anlegen` auf denselben Chat (Betreiber -> Leitung im selben
+            # Direktchat, neues Event in derselben Gruppe), muss der Abbau davor liegen: sonst
+            # scheitert das Anlegen am noch gebundenen Chat (CHAT_BELEGT).
             cur.execute(
                 "insert into event.bereitstellung (art, ziel, event_id, person_id, chat_id,"
-                " agent_id, angelegt) values ('abbauen', %s, %s, %s, %s, %s, clock_timestamp())",
+                " agent_id, angelegt) values ('abbauen', %s, %s, %s, %s, %s, coalesce("
+                "   (select min(o.angelegt) - interval '1 microsecond'"
+                "    from event.bereitstellung o"
+                "    where o.art = 'anlegen' and o.status = 'offen' and o.chat_id = %s),"
+                "   clock_timestamp()))",
                 (vorbild["ziel"], vorbild["event_id"], vorbild["person_id"], vorbild["chat_id"],
-                 agent))
+                 agent, vorbild["chat_id"]))
             log.info("Abbau fuer verwaisten Agenten %s angelegt", agent)
 
 
@@ -683,7 +737,7 @@ def _naechster(conn: psycopg.Connection[Any]) -> dict[str, Any] | None:
             "update event.bereitstellung b set status = 'laeuft', gestartet = now(),"
             " schritt = null, fehler = null where b.id = %s"
             " returning b.id, b.art, b.ziel, b.event_id, b.person_id, b.chat_id, b.agent_id,"
-            " b.angelegt", (zeile["id"],))
+            " b.angelegt, b.schritt", (zeile["id"],))
         return cur.fetchone()
 
 
@@ -718,22 +772,27 @@ def _anlegen(conn: psycopg.Connection[Any], ausfuehrer: Ausfuehrer, auftrag: dic
                 auftrag = dict(auftrag, person_name=person["name"] if person else "")
         schritt = "schluessel"
         try:
-            sid, klartext = schluessel.ausstellen(
-                conn, art=_SCHLUESSEL_ART[auftrag["ziel"]],
-                bezeichnung=f"Bereitstellung {auftrag['agent_id']}",
-                gueltig_tage=schluessel.MAX_TAGE,
-                event_id=auftrag["event_id"] if auftrag["ziel"] == "gruppe" else None,
-                person_id=None if auftrag["ziel"] == "gruppe" else auftrag["person_id"])
+            # Ausstellen und Bezug in einer Transaktion: nie ein Schluessel ohne Auftrag.
+            with conn.transaction():
+                neu_id, klartext = schluessel.ausstellen(
+                    conn, art=_SCHLUESSEL_ART[auftrag["ziel"]],
+                    bezeichnung=f"Bereitstellung {auftrag['agent_id']}",
+                    gueltig_tage=schluessel.MAX_TAGE,
+                    event_id=auftrag["event_id"] if auftrag["ziel"] == "gruppe" else None,
+                    person_id=None if auftrag["ziel"] == "gruppe" else auftrag["person_id"])
+                conn.execute("update event.bereitstellung set schluessel_id = %s,"
+                             " schritt = %s where id = %s", (neu_id, schritt, auftrag_id))
         except (ValueError, NichtGefunden) as fehler:
             raise BereitstellungFehler(str(fehler)) from None
-        conn.execute("update event.bereitstellung set schluessel_id = %s, schritt = %s"
-                     " where id = %s", (sid, schritt, auftrag_id))
+        sid = neu_id
         for s in schritte_anlegen(auftrag, schluessel_klartext=klartext, mcp_url=mcp_url,
                                   schema=schema, event=event):
             schritt = s.name
             s.ausfuehren(ausfuehrer)
             _schritt_merken(conn, auftrag_id, schritt)
         _beenden(conn, auftrag_id, "erfolg", schritt, None)
+        # Der Agent traegt jetzt den neuen Schluessel; die frueherer Anlegen gelten nicht mehr.
+        _schluessel_widerrufen(conn, auftrag)
         log.info("Agent %s angelegt", auftrag["agent_id"])
     except Exception as fehler:  # noqa: BLE001 - jeder Fehler beendet den Auftrag
         if sid is not None:
@@ -741,6 +800,7 @@ def _anlegen(conn: psycopg.Connection[Any], ausfuehrer: Ausfuehrer, auftrag: dic
         _beenden(conn, auftrag_id, "fehler", schritt, _fehlertext(fehler))
         log.warning("Auftrag %s gescheitert bei %s (%s)", auftrag_id, schritt,
                     type(fehler).__name__)
+        _teilstand_abraeumen(ausfuehrer, dict(auftrag, schritt=schritt))
 
 
 def _schluessel_widerrufen(conn: psycopg.Connection[Any], auftrag: Mapping[str, Any]) -> None:
@@ -797,18 +857,28 @@ def lauf(conn_admin: psycopg.Connection[Any], ausfuehrer: Ausfuehrer, *, mcp_url
          jetzt: datetime | None = None) -> list[UUID]:
     """Ein Lauf des Arbeiters (siehe Moduldoku). `conn_admin`: Admin-DSN, autocommit.
     Rueckgabe: ids der in diesem Lauf bearbeiteten Auftraege in Bearbeitungsreihenfolge.
-    `jetzt` verschiebt nur die Zeitgrenzen (haengend, abgelaufen) fuer Tests."""
-    _haengende_beenden(conn_admin, jetzt)
-    _verwaiste_abbauen(conn_admin, ausfuehrer)
-    erledigt: list[UUID] = []
-    while (auftrag := _naechster(conn_admin)) is not None:
-        if auftrag["art"] == "anlegen":
-            _anlegen(conn_admin, ausfuehrer, auftrag, mcp_url=mcp_url)
-        else:
-            _abbauen(conn_admin, ausfuehrer, auftrag, jetzt=jetzt)
-        erledigt.append(auftrag["id"])
-    _aufraeumen(conn_admin, jetzt)
-    return erledigt
+    `jetzt` verschiebt nur die Zeitgrenzen (haengend, abgelaufen) fuer Tests. Haelt schon
+    ein anderer Lauf die Sperre SPERRE, Rueckgabe [] ohne jede Aenderung."""
+    with conn_admin.cursor(row_factory=dict_row) as cur:
+        cur.execute("select pg_try_advisory_lock(%s) as frei", (SPERRE,))
+        zeile = cur.fetchone()
+    if zeile is None or not zeile["frei"]:
+        log.info("Ein anderer Lauf ist aktiv; nichts zu tun")
+        return []
+    try:
+        _haengende_beenden(conn_admin, ausfuehrer, jetzt)
+        _verwaiste_abbauen(conn_admin, ausfuehrer)
+        erledigt: list[UUID] = []
+        while (auftrag := _naechster(conn_admin)) is not None:
+            if auftrag["art"] == "anlegen":
+                _anlegen(conn_admin, ausfuehrer, auftrag, mcp_url=mcp_url)
+            else:
+                _abbauen(conn_admin, ausfuehrer, auftrag, jetzt=jetzt)
+            erledigt.append(auftrag["id"])
+        _aufraeumen(conn_admin, jetzt)
+        return erledigt
+    finally:
+        conn_admin.execute("select pg_advisory_unlock(%s)", (SPERRE,))
 
 
 # --- CLI ----------------------------------------------------------------------------

@@ -36,10 +36,18 @@
 # es noch keine openclaw.json) -> `docker compose up -d` -> Proben (Gateway,
 # Shim). Neustart nur bei Aenderung und nur, wenn der Claw schon lief.
 #
-# Der Vergleich der openclaw.json ignoriert die Schluesselfelder sowie die
-# Top-Level-Felder `meta` und `wizard`. Wird die Datei trotzdem bei jedem Lauf
-# ersetzt, hat OpenClaw weitere eigene Felder ergaenzt; das ist akzeptabel
-# (Sicherung + Neuanlage + Schluessel neu, Ergebnis bleibt gleich).
+# Der Vergleich der openclaw.json ignoriert die Schluesselfelder, die
+# Top-Level-Felder `meta` und `wizard` sowie alles, was der
+# Bereitstellungs-Arbeiter angelegt hat (Ruling T8-b): Agenten
+# `ev-|ld-|bo-<8 Hex>`, ihre MCP-Server, ihre Bindings und die Gruppen-Eintraege
+# ihrer Gruppen. Wird die Datei durch die Saat ersetzt, werden genau diese Teile
+# aus der aktuellen Datei uebernommen (nur Anzahlen in der Ausgabe; die
+# Server tragen Schluessel). Wird die Datei trotzdem bei jedem Lauf ersetzt,
+# hat OpenClaw weitere eigene Felder ergaenzt; das ist akzeptabel (Sicherung +
+# Neuanlage + Schluessel neu, Ergebnis bleibt gleich).
+#
+# Bricht ab, solange die Legacy-Gruppe der Saat keinen eigenen Agenten hat
+# (Ruling T8-a, ev-legacy kommt mit Etappe 4).
 #
 # Ausgaben nennen nur Namen und Zustaende, nie Werte.
 set -eu
@@ -81,6 +89,40 @@ zeichen_pruefen 4 "$CC"
 zeichen_pruefen 5 "$MLD"
 
 [ -f build/openclaw.json ] || { echo "ABBRUCH: build/openclaw.json fehlt (deploy/fuellen.py ausfuehren)." >&2; exit 1; }
+
+# Schutz der Legacy-Gruppe (Ruling T8-a): die Saat fuehrt die bisherige
+# Festival-Gruppe ({{TELEGRAM_GRUPPE}}) mit requireMention false. Ohne einen
+# eigenen Agenten neben `main`, der an sie gebunden ist (ev-legacy, Etappe 4),
+# antwortete dort der Empfang `main` mit nur den zwei Melde-Werkzeugen. Darum
+# Abbruch vor jeder Aenderung. Geprueft wird die Vorlage config/openclaw.json
+# (oeffentlich, ohne Werte); die Meldung nennt keine Daten.
+RC=0
+python3 - config/openclaw.json <<'PY' || RC=$?
+import json
+import sys
+
+GRUPPE = "{{TELEGRAM_GRUPPE}}"
+try:
+    with open(sys.argv[1], encoding="utf-8") as datei:
+        text = datei.read()
+    konfig = json.loads(text)
+except (OSError, ValueError):
+    sys.exit(2)
+if GRUPPE not in text:
+    sys.exit(0)
+eigene = [
+    b for b in (konfig.get("bindings") or [])
+    if isinstance(b, dict) and b.get("agentId") not in (None, "", "main")
+    and isinstance(b.get("match"), dict) and isinstance(b["match"].get("peer"), dict)
+    and b["match"]["peer"].get("id") == GRUPPE
+]
+sys.exit(0 if eigene else 3)
+PY
+if [ "$RC" = 3 ]; then
+  echo "ABBRUCH: ev-legacy fehlt – erst Etappe 4 (die Legacy-Gruppe hat in config/openclaw.json keinen eigenen Agenten neben main)." >&2
+  exit 1
+fi
+if [ "$RC" != 0 ]; then echo "ABBRUCH: config/openclaw.json nicht lesbar." >&2; exit 1; fi
 # Der Shim braucht laufzeit/claude-token, um ueberhaupt zu starten.
 if [ ! -f ./laufzeit/claude-token ] && [ -z "$CC" ]; then
   echo "ABBRUCH: laufzeit/claude-token fehlt und Zeile 4 (Claude-Code-OAuth-Token) ist leer." >&2
@@ -118,7 +160,9 @@ fi
 
 # --- 3. Saat ins Volume ------------------------------------------------------
 # openclaw.json: fehlt sie, kommt die Saat; weicht sie ab (ohne die vier
-# Schluesselfelder), wird sie gesichert und durch die Saat ersetzt. Von den
+# Schluesselfelder und ohne die bereitgestellten Agenten), wird sie gesichert
+# und durch die Saat ersetzt, die bereitgestellten Agenten samt Server,
+# Bindings und Gruppen-Eintraegen werden mitgenommen (Ruling T8-b). Von den
 # Arbeitsbereichen werden nur SOUL.md, AGENTS.md und skills/ ueberschrieben.
 SAAT_JS=$(cat <<'JS'
 const fs = require('fs');
@@ -131,8 +175,78 @@ const GEHEIM = [
   ['mcp', 'servers', 'event-app', 'headers', 'Authorization'],
   ['mcp', 'servers', 'melden', 'headers', 'Authorization'],
 ];
-function ohneGeheim(o) {
+// Vom Bereitstellungs-Arbeiter angelegt (Ruling T8-b): die Saat kennt diese
+// Agenten nicht; beim Ersetzen bleiben sie erhalten, im Vergleich zaehlen sie nicht.
+const AGENT = /^(ev|ld|bo)-[0-9a-f]{8}$/;
+function istObjekt(x) { return x !== null && typeof x === 'object' && !Array.isArray(x); }
+function gruppenVon(c) {
+  const t = istObjekt(c.channels) && istObjekt(c.channels.telegram) ? c.channels.telegram : null;
+  return t && istObjekt(t.groups) ? t.groups : null;
+}
+function bereitgestellt(c) {
+  const b = { agenten: [], server: {}, bindings: [], gruppen: {} };
+  if (!istObjekt(c)) return b;
+  if (istObjekt(c.agents) && Array.isArray(c.agents.list)) {
+    b.agenten = c.agents.list.filter((a) => istObjekt(a) && AGENT.test(String(a.id)));
+  }
+  if (istObjekt(c.mcp) && istObjekt(c.mcp.servers)) {
+    for (const k of Object.keys(c.mcp.servers)) if (AGENT.test(k)) b.server[k] = c.mcp.servers[k];
+  }
+  if (Array.isArray(c.bindings)) {
+    b.bindings = c.bindings.filter((x) => istObjekt(x) && AGENT.test(String(x.agentId)));
+  }
+  const g = gruppenVon(c);
+  for (const x of b.bindings) {
+    const p = istObjekt(x.match) && istObjekt(x.match.peer) ? x.match.peer : null;
+    if (p && p.kind === 'group' && g && Object.prototype.hasOwnProperty.call(g, String(p.id))) {
+      b.gruppen[String(p.id)] = g[String(p.id)];
+    }
+  }
+  return b;
+}
+// Entfernt die bereitgestellten Teile; `gruppen` (Chat-IDs) kommt aus der aktuellen
+// Datei und gilt fuer beide Seiten des Vergleichs gleich.
+function ohneBereitgestellt(c, gruppen) {
+  if (istObjekt(c.agents) && Array.isArray(c.agents.list)) {
+    c.agents.list = c.agents.list.filter((a) => !(istObjekt(a) && AGENT.test(String(a.id))));
+  }
+  if (istObjekt(c.mcp) && istObjekt(c.mcp.servers)) {
+    for (const k of Object.keys(c.mcp.servers)) if (AGENT.test(k)) delete c.mcp.servers[k];
+  }
+  if (Array.isArray(c.bindings)) {
+    c.bindings = c.bindings.filter((x) => !(istObjekt(x) && AGENT.test(String(x.agentId))));
+    if (c.bindings.length === 0) delete c.bindings;
+  }
+  const g = gruppenVon(c);
+  if (g) for (const k of gruppen) delete g[k];
+}
+function uebernehmen(c, b) {
+  if (b.agenten.length) {
+    if (!istObjekt(c.agents)) c.agents = {};
+    const liste = Array.isArray(c.agents.list) ? c.agents.list : [];
+    c.agents.list = liste.filter((a) => !(istObjekt(a) && AGENT.test(String(a.id)))).concat(b.agenten);
+  }
+  if (Object.keys(b.server).length) {
+    if (!istObjekt(c.mcp)) c.mcp = {};
+    if (!istObjekt(c.mcp.servers)) c.mcp.servers = {};
+    Object.assign(c.mcp.servers, b.server);
+  }
+  if (b.bindings.length) {
+    const liste = Array.isArray(c.bindings) ? c.bindings : [];
+    c.bindings = liste.filter((x) => !(istObjekt(x) && AGENT.test(String(x.agentId)))).concat(b.bindings);
+  }
+  if (Object.keys(b.gruppen).length) {
+    if (!istObjekt(c.channels)) c.channels = {};
+    if (!istObjekt(c.channels.telegram)) c.channels.telegram = {};
+    if (!istObjekt(c.channels.telegram.groups)) c.channels.telegram.groups = {};
+    const g = c.channels.telegram.groups;
+    // Eigene Eintraege der Saat (Legacy-Gruppe, "*") gewinnen.
+    for (const k of Object.keys(b.gruppen)) if (!Object.prototype.hasOwnProperty.call(g, k)) g[k] = b.gruppen[k];
+  }
+}
+function ohneGeheim(o, gruppen) {
   const c = JSON.parse(JSON.stringify(o));
+  ohneBereitgestellt(c, gruppen);
   delete c.meta;    // OpenClaw schreibt eigene Felder (meta, wizard, lastTouched*)
   delete c.wizard;
   for (const p of GEHEIM) {
@@ -166,15 +280,23 @@ try {
   } else {
     let aktuell = null;
     try { aktuell = JSON.parse(fs.readFileSync(CFG, 'utf8')); } catch (e) { aktuell = null; }
-    if (aktuell !== null && gleich(ohneGeheim(aktuell), ohneGeheim(saat))) {
+    const mit = bereitgestellt(aktuell);
+    const gruppen = Object.keys(mit.gruppen);
+    if (aktuell !== null && gleich(ohneGeheim(aktuell, gruppen), ohneGeheim(saat, gruppen))) {
       console.log('openclaw.json: unveraendert');
     } else {
       const zs = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '');
       fs.copyFileSync(CFG, CFG + '.vor-anbinden-' + zs);
       fs.chmodSync(CFG + '.vor-anbinden-' + zs, 0o600);
-      fs.copyFileSync(SEED + '/openclaw.json', CFG);
+      const neu = JSON.parse(JSON.stringify(saat));
+      uebernehmen(neu, mit);
+      fs.writeFileSync(CFG, JSON.stringify(neu, null, 2) + '\n', { mode: 0o600 });
       fs.chmodSync(CFG, 0o600);
       console.log('openclaw.json: gesichert und durch die Saat ersetzt');
+      // Nur Anzahlen: die Server tragen Schluessel, Bindings Chat-IDs.
+      console.log('bereitgestellte Agenten uebernommen: ' + mit.agenten.length + ' Agenten, '
+        + Object.keys(mit.server).length + ' Server, ' + mit.bindings.length + ' Bindings, '
+        + gruppen.length + ' Gruppen');
     }
   }
   for (const w of ['workspace', 'workspace-brain']) {

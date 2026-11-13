@@ -26,9 +26,10 @@ Bestaetigen (Ruling S5): Agent ``ev-<8 Hex der event_id>`` (Gruppe), ``ld-<8 Hex
 person_id>`` (Leitung) bzw. ``bo-…`` (Betreiber). Hat schon ein anderes Ziel mit denselben
 8 Hex eine bestaetigte Verbindung, ValueError statt Ueberschreiben. Eine bisher bestaetigte
 Verbindung desselben Ziels wird verworfen und bekommt einen `abbauen`-Auftrag, der vor dem
-neuen `anlegen` liegt (``angelegt = clock_timestamp()``). Darf die Person den alten Agenten
-nicht mehr abbauen (war Betreiber, ist es nicht mehr: RLS), entfaellt der Abbau-Auftrag;
-Agenten verlorener Rollen raeumt der Bereitstellungs-Arbeiter (Task 8, Admin-DSN) ab.
+neuen `anlegen` liegt (Spalten-Default ``angelegt = clock_timestamp()``, 007). Darf die
+Person den alten Agenten nicht mehr abbauen (war Betreiber, ist es nicht mehr: RLS),
+entfaellt der Abbau-Auftrag; Agenten verlorener Rollen raeumt der Bereitstellungs-Arbeiter
+(Task 8, Admin-DSN) ab.
 Eine Meldung ist MELDUNG_STUNDEN lang bestaetigbar (Ruling T7-d).
 
 Das zweite Tor sind die Policies aus ``db/006_verbinden.sql``. Logs nennen nie Codes,
@@ -440,8 +441,8 @@ def bestaetigen(conn: psycopg.Connection[Any], k: Kontext, verbindung_id: UUID) 
                 raise ValueError(NUR_GEMELDETE)
 
             auftrag = ("insert into event.bereitstellung (art, ziel, event_id, person_id,"
-                       " chat_id, agent_id, angelegt) values (%s, %s, %s, %s, %s, %s,"
-                       " clock_timestamp()) returning id")
+                       " chat_id, agent_id) values (%s, %s, %s, %s, %s, %s)"
+                       " returning id")
             for alt in alte:
                 alt_ziel, alt_agent = _alter_agent(cur, alt, ziel, agent)
                 try:
