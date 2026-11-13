@@ -119,12 +119,28 @@ class TelegramHttp:
         log.info("Telegram: Nachricht gesendet")
 
     def chat_info(self, chat_id: int) -> dict[str, Any]:
-        chat = self._aufruf("getChat", {"chat_id": chat_id})
+        """Titel, Art und ob der Bot Mitglied ist. Private Chats haben keinen `title`: dort
+        ist der Titel der Anzeigename der Person (damit sie in der Oberflaeche sieht, wessen
+        Chat sie bestaetigt), und getChatMember entfaellt (der Bot ist Gespraechspartner)."""
+        roh = self._aufruf("getChat", {"chat_id": chat_id})
+        chat: dict[str, Any] = roh if isinstance(roh, dict) else {}
+        art = str(chat.get("type") or "")
+        if art == "private":
+            return {"titel": _anzeigename(chat), "art": art, "bot_ist_mitglied": True}
         mitglied = self._aufruf("getChatMember", {"chat_id": chat_id, "user_id": self._bot_id})
-        chat = chat if isinstance(chat, dict) else {}
         status = mitglied.get("status") if isinstance(mitglied, dict) else None
-        return {"titel": chat.get("title"), "art": str(chat.get("type") or ""),
-                "bot_ist_mitglied": status in _MITGLIED}
+        return {"titel": chat.get("title"), "art": art, "bot_ist_mitglied": status in _MITGLIED}
+
+
+def _anzeigename(chat: Mapping[str, Any]) -> str | None:
+    """``Vorname Nachname (@nutzer)``; fehlende Teile entfallen, ganz leer: None."""
+    name = " ".join(str(chat[f]).strip() for f in ("first_name", "last_name")
+                    if isinstance(chat.get(f), str) and chat[f].strip())
+    nutzer = chat.get("username")
+    kennung = f"@{nutzer.strip()}" if isinstance(nutzer, str) and nutzer.strip() else ""
+    if name and kennung:
+        return f"{name} ({kennung})"
+    return name or kennung or None
 
 
 def _beschreibung(e: HTTPError) -> str:

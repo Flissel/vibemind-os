@@ -842,6 +842,8 @@ _SONDER_JE_ART: dict[str, tuple[str, ...]] = {
     "betreiber_lesen": (*_WAHL, *_EVENT_LESEN),
     "melden": ("gruppe_melden", "chat_melden"),
 }
+# Nur mit Person im Schluessel sichtbar (der Code wird als diese Person angelegt).
+_BRAUCHT_PERSON = frozenset({"gruppe_verbinden"})
 _OPS_JE_ART: dict[str, tuple[str, ...]] = {
     "event": _OPS, "leitung": _OPS, "betreiber": _OPS, "betreiber_lesen": _NUR_LESEN,
     "melden": (),
@@ -871,6 +873,8 @@ def _eintraege(conn: psycopg.Connection[Any], info: SchluesselInfo,
 
     ergebnis: dict[str, _Eintrag] = {}
     for name in _SONDER_JE_ART[art]:
+        if name in _BRAUCHT_PERSON and info.person_id is None:
+            continue
         s = _SONDER[name]
         w = Werkzeug(name, s.beschreibung,
                      _objekt(s.eigenschaften, list(s.pflicht),

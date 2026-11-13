@@ -298,4 +298,17 @@ describe('Meinen Telegram-Chat verbinden', () => {
     const schritte = await screen.findAllByRole('listitem')
     expect(schritte[0]?.textContent).toContain('Direktnachricht')
   })
+
+  it('gemeldeter Direktchat zeigt den Anzeigenamen aus Telegram (Bestätigen nicht blind)', async () => {
+    liste = [verbindung({ ...GEMELDET, art: 'direkt', chat_titel: 'Erika (@erika_beispiel)' })]
+    render(
+      <IchProvider ich={LEITUNG}>
+        <TelegramVerbinden art="direkt" titel="Mein Telegram-Chat" pfad="/api/ich/verbinden" darf />
+      </IchProvider>,
+    )
+    const zeile = (await screen.findByText('Erika (@erika_beispiel)')).closest('li') as HTMLElement
+    expect(zeile.textContent).toContain('Gemeldet: Erika (@erika_beispiel)')
+    await userEvent.click(within(zeile).getByRole('button', { name: 'Bestätigen' }))
+    expect(await screen.findByText('„Erika (@erika_beispiel)“ verbinden?')).toBeTruthy()
+  })
 })

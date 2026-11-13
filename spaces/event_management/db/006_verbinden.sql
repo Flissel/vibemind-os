@@ -98,23 +98,43 @@ create policy bereitstellung_chat on event.bereitstellung as restrictive for ins
 
 -- SD-Funktionen fuer das Melden (Ruling S3) ---------------------------------------------
 -- event-mcp hat nur die App-DSN und keinen Mandanten-Kontext. Beide Funktionen nehmen den
--- HASH des Codes: wer melden will, muss den Code besitzen (die id allein reicht nie).
+-- KLARTEXT-Code und hashen ihn selbst (Ruling T7-c): der Hash ist fuer Leitungen per
+-- SELECT lesbar und darf allein nicht zum Melden reichen; die id erst recht nicht.
+-- Normalisiert wie die Fachschicht (Rand weg, Grossbuchstaben), dann Formatpruefung
+-- (8 Zeichen ohne 0/O/1/I); ein Hash oder anderer Text passt nie.
 
--- Offener, nicht abgelaufener Code: id und art; sonst keine Zeile.
-create or replace function event.verbindung_finden(p_code_hash text)
-    returns table (id uuid, art text)
+-- Hash eines Code-Klartexts, oder null bei falschem Format (intern, kein Grant).
+create or replace function event.verbindung_code_hash(p_code text)
+    returns text
+    language sql immutable
+    set search_path = pg_catalog, pg_temp
+as $$
+    select case when upper(btrim(p_code)) ~ '^[A-HJ-NP-Z2-9]{8}$'
+                then encode(sha256(convert_to(upper(btrim(p_code)), 'UTF8')), 'hex') end
+$$;
+
+-- Bis 2026-11-13 (nie produktiv angewendet) nahmen die Funktionen den Hash und
+-- verbindung_finden lieferte auch die id; Rueckgabetyp aendert sich, daher drop.
+drop function if exists event.verbindung_finden(text);
+
+-- Offener, nicht abgelaufener Code: nur seine Art; sonst keine Zeile.
+create function event.verbindung_finden(p_code text)
+    returns table (art text)
     language sql stable security definer
     set search_path = event, pg_temp
 as $$
-    select v.id, v.art
+    select v.art
     from event.verbindung v
-    where v.code_hash = p_code_hash and v.status = 'offen' and v.ablauf > now()
+    where v.code_hash = event.verbindung_code_hash(p_code)
+      and v.status = 'offen' and v.ablauf > now()
 $$;
+
+drop function if exists event.verbindung_melden(text, bigint, text);
 
 -- Setzt Chat und Titel genau einmal (offen -> gemeldet); Vorzeichen passend zur Art
 -- (Gruppen negativ, Direktchats positiv). false, wenn nichts passt.
-create or replace function event.verbindung_melden(
-    p_code_hash text, p_chat_id bigint, p_titel text
+create function event.verbindung_melden(
+    p_code text, p_chat_id bigint, p_titel text
 ) returns boolean
     language plpgsql volatile security definer
     set search_path = event, pg_temp
@@ -125,7 +145,8 @@ begin
     end if;
     update event.verbindung v
     set chat_id = p_chat_id, chat_titel = p_titel, status = 'gemeldet', gemeldet = now()
-    where v.code_hash = p_code_hash and v.status = 'offen' and v.ablauf > now()
+    where v.code_hash = event.verbindung_code_hash(p_code)
+      and v.status = 'offen' and v.ablauf > now()
       and ((v.art = 'gruppe' and p_chat_id < 0) or (v.art = 'direkt' and p_chat_id > 0));
     return found;
 end
@@ -156,7 +177,7 @@ $$;
 
 revoke all on function
     event.verbindung_finden(text), event.verbindung_melden(text, bigint, text),
-    event.agent_belegt(text, uuid)
+    event.agent_belegt(text, uuid), event.verbindung_code_hash(text)
     from public;
 grant execute on function
     event.verbindung_finden(text), event.verbindung_melden(text, bigint, text),

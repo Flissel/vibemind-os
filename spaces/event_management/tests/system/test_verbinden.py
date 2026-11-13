@@ -10,6 +10,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import threading
+import time
 from collections.abc import Callable, Iterator
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -73,7 +75,8 @@ def telegram() -> SpeicherTelegram:
     t.chats[CHAT] = {"titel": "Beispielgruppe", "art": "supergroup", "bot_ist_mitglied": True}
     t.chats[CHAT_NEU] = {"titel": "Neue Gruppe", "art": "group", "bot_ist_mitglied": True}
     t.chats[CHAT_FREMD] = {"titel": "Ohne Bot", "art": "supergroup", "bot_ist_mitglied": False}
-    t.chats[DIREKT] = {"titel": None, "art": "private", "bot_ist_mitglied": True}
+    t.chats[DIREKT] = {"titel": "Erika (@erika_beispiel)", "art": "private",
+                       "bot_ist_mitglied": True}
     t.chats[DIREKT_ANDERS] = {"titel": None, "art": "private", "bot_ist_mitglied": True}
     return t
 
@@ -605,23 +608,142 @@ def test_sd_funktionen(db_admin, db_app, welt):
     code = verbinden.code_erzeugen(app, welt["leitung"], art="gruppe", event_id=welt["fest"])
     h = hashlib.sha256(code.encode("utf-8")).hexdigest()
     ohne = db_app()
-    assert ohne.execute("select * from event.verbindung_finden(%s)", (h,)).fetchall() == [
-        {"id": _verbindungen(db_admin)[0]["id"], "art": "gruppe"}]
-    assert ohne.execute("select * from event.verbindung_finden(%s)", ("e" * 64,)).fetchall() == []
+    # Ruling T7-c: Klartext rein, gehasht wird in der Funktion; Rueckgabe nur die Art.
+    assert ohne.execute("select * from event.verbindung_finden(%s)", (code,)).fetchall() == [
+        {"art": "gruppe"}]
+    assert ohne.execute("select * from event.verbindung_finden(%s)",
+                        (f" {code.lower()} ",)).fetchall() == [{"art": "gruppe"}]
+    for falsch in ("AAAAAAAA", h, "", "0" * 8):
+        assert ohne.execute("select * from event.verbindung_finden(%s)",
+                            (falsch,)).fetchall() == [], falsch
     melden = "select event.verbindung_melden(%s, %s, %s) as ok"
-    # Ans Code-Hash gebunden (Besitznachweis), Vorzeichen in SQL geprueft.
-    assert ohne.execute(melden, ("e" * 64, CHAT, "T")).fetchone()["ok"] is False
-    assert ohne.execute(melden, (h, DIREKT, "T")).fetchone()["ok"] is False
+    # Vorzeichen in SQL geprueft, Titel ohne Steuerzeichen.
+    assert ohne.execute(melden, ("AAAAAAAA", CHAT, "T")).fetchone()["ok"] is False
+    assert ohne.execute(melden, (code, DIREKT, "T")).fetchone()["ok"] is False
     with pytest.raises(psycopg.errors.InvalidParameterValue):
-        ohne.execute(melden, (h, CHAT, "a\nb"))
-    assert ohne.execute(melden, (h, CHAT, "Titel")).fetchone()["ok"] is True
-    assert ohne.execute(melden, (h, CHAT, "Titel")).fetchone()["ok"] is False
-    assert ohne.execute("select * from event.verbindung_finden(%s)", (h,)).fetchall() == []
+        ohne.execute(melden, (code, CHAT, "a\nb"))
+    assert ohne.execute(melden, (code, CHAT, "Titel")).fetchone()["ok"] is True
+    assert ohne.execute(melden, (code, CHAT, "Titel")).fetchone()["ok"] is False
+    assert ohne.execute("select * from event.verbindung_finden(%s)", (code,)).fetchall() == []
     rechte = db_admin.execute(
         "select has_function_privilege('public', 'event.verbindung_melden(text, bigint, text)',"
         " 'execute') as p, has_function_privilege('event_app',"
         " 'event.verbindung_melden(text, bigint, text)', 'execute') as a").fetchone()
     assert rechte == {"p": False, "a": True}
+
+
+def test_rls_hash_allein_reicht_nicht(db_admin, db_app, welt):
+    """Ruling T7-c: Der Code-Hash ist fuer die Leitung per SELECT lesbar, reicht aber auf
+    SQL-Ebene nicht zum Melden; nur der Klartext-Code."""
+    leitung = db_app(firmen=[welt["a"]], person=welt["lea"])
+    code = verbinden.code_erzeugen(db_app(), welt["leitung"], art="gruppe",
+                                   event_id=welt["fest"])
+    [zeile] = leitung.execute("select code_hash from event.verbindung").fetchall()
+    h = zeile["code_hash"]
+    assert h == hashlib.sha256(code.encode("utf-8")).hexdigest()
+    ohne = db_app()
+    assert ohne.execute("select * from event.verbindung_finden(%s)", (h,)).fetchall() == []
+    assert ohne.execute("select event.verbindung_melden(%s, %s, %s) as ok",
+                        (h, CHAT, "T")).fetchone()["ok"] is False
+    assert [z["status"] for z in _verbindungen(db_admin)] == ["offen"]
+
+
+def test_meldung_verfaellt_nach_24_stunden(db_admin, db_app, welt, telegram):
+    """Ruling T7-d: eine gemeldete Verbindung ist 24 h bestaetigbar, danach nicht mehr."""
+    app = db_app()
+    v = _gruppe_gemeldet(app, welt, telegram)
+    db_admin.execute("update event.verbindung set gemeldet = now() - interval '24 hours 1 minute'"
+                     " where id = %s", (v,))
+    assert verbinden.offene(app, welt["leitung"], event_id=welt["fest"]) == []
+    with pytest.raises(ValueError) as e:
+        verbinden.bestaetigen(app, welt["leitung"], v)
+    assert str(e.value) == verbinden.MELDUNG_ABGELAUFEN
+    assert _auftraege(db_admin) == []
+    # Knapp unter 24 h geht es noch.
+    db_admin.execute("update event.verbindung set gemeldet = now() - interval '23 hours'"
+                     " where id = %s", (v,))
+    verbinden.bestaetigen(app, welt["leitung"], v)
+    assert len(_auftraege(db_admin)) == 1
+
+
+def test_direktchat_zeigt_anzeigenamen(db_admin, db_app, welt, telegram):
+    """Ruling T7-b: der gemeldete Direktchat traegt den Namen aus Telegram, damit die
+    Person in der Oberflaeche sieht, wessen Chat sie bestaetigt."""
+    app = db_app()
+    code = verbinden.code_erzeugen(app, welt["leitung"], art="direkt", event_id=None)
+    assert verbinden.melden(app, code=code, chat_id=DIREKT, art="direkt",
+                            telegram=telegram) == verbinden.DANKE
+    [v] = verbinden.offene(app, welt["leitung"])
+    assert (v["status"], v["chat_titel"]) == ("gemeldet", "Erika (@erika_beispiel)")
+
+
+def test_betreiber_wird_leitung_alter_agent_bleibt_fuer_den_arbeiter(
+        db_admin, db_app, welt, telegram, caplog):
+    """Wer als Betreiber einen Direktchat (bo-) verbunden hat und jetzt nur noch Leitung ist,
+    darf den bo-Abbau per RLS nicht anlegen. Der Abbau wird uebersprungen (der Arbeiter aus
+    Task 8 raeumt Agenten verlorener Rollen mit der Admin-DSN ab), kein interner Fehler."""
+    app = db_app()
+    p = _person(db_admin, "wechsel@example.org", betreiber=True)
+    db_admin.execute("insert into event.mitgliedschaft values (%s, %s, 'leitung')",
+                     (p, welt["a"]))
+    vorher = Kontext(person_id=p, betreiber=True, rollen={welt["a"]: "leitung"})
+    code = verbinden.code_erzeugen(app, vorher, art="direkt", event_id=None)
+    verbinden.melden(app, code=code, chat_id=DIREKT, art="direkt", telegram=telegram)
+    [v] = [v for v in verbinden.offene(app, vorher) if v["status"] == "gemeldet"]
+    verbinden.bestaetigen(app, vorher, v["id"])
+
+    db_admin.execute("update event.person set betreiber = false where id = %s", (p,))
+    nachher = Kontext(person_id=p, betreiber=False, rollen={welt["a"]: "leitung"})
+    code = verbinden.code_erzeugen(app, nachher, art="direkt", event_id=None)
+    verbinden.melden(app, code=code, chat_id=DIREKT_ANDERS, art="direkt", telegram=telegram)
+    [v] = [v for v in verbinden.offene(app, nachher) if v["status"] == "gemeldet"]
+    with caplog.at_level(logging.INFO):
+        verbinden.bestaetigen(app, nachher, v["id"])
+    assert [(a["art"], a["ziel"], a["chat_id"], a["agent_id"]) for a in _auftraege(db_admin)] == [
+        ("anlegen", "betreiber", DIREKT, "bo-" + _hex8(p)),
+        ("anlegen", "leitung", DIREKT_ANDERS, "ld-" + _hex8(p))]
+    assert [(z["chat_id"], z["status"]) for z in _verbindungen(db_admin)
+            if z["chat_id"] is not None] == [(DIREKT, "verworfen"), (DIREKT_ANDERS, "bestaetigt")]
+    assert "Abbau uebersprungen" in caplog.text
+    assert str(DIREKT) not in caplog.text
+
+
+def test_gleichzeitige_gruppenbestaetigung_passende_meldung(db_admin, db_app, welt, telegram):
+    """Zwei Bestaetigungen derselben Event-Gruppe im Wettlauf: die zweite scheitert am
+    eindeutigen Index je Event und meldet das passend (nicht "Chat anderweitig verbunden")."""
+    app, beobachter = db_app(), db_app()
+    v = _gruppe_gemeldet(app, welt, telegram)
+    pid = app.execute("select pg_backend_pid() as pid").fetchone()["pid"]
+    ergebnis: dict[str, object] = {}
+
+    def bestaetigen() -> None:
+        try:
+            verbinden.bestaetigen(app, welt["leitung"], v)
+        except Exception as e:  # noqa: BLE001 - der Test prueft die Art
+            ergebnis["fehler"] = e
+
+    faden = threading.Thread(target=bestaetigen)
+    with db_admin.transaction():
+        # Die "andere" Bestaetigung: noch nicht festgeschrieben, haelt den Index-Eintrag.
+        _roh_gruppe(db_admin, welt, welt["lea"], status="bestaetigt", chat_id=CHAT_NEU,
+                    chat_titel="Neue Gruppe", gemeldet=datetime.now(timezone.utc),
+                    bestaetigt=datetime.now(timezone.utc))
+        faden.start()
+        for _ in range(400):
+            warten = beobachter.execute(
+                "select wait_event_type from pg_stat_activity where pid = %s",
+                (pid,)).fetchone()
+            if warten and warten["wait_event_type"] == "Lock":
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("Bestaetigung wartet nicht auf die andere")
+    faden.join(timeout=20)
+    assert not faden.is_alive()
+    fehler = ergebnis.get("fehler")
+    assert isinstance(fehler, ValueError), fehler
+    assert str(fehler) == verbinden.GRUPPE_SCHON_BESTAETIGT
+    assert len(_auftraege(db_admin)) == 0
 
 
 # --- Werkzeuge ------------------------------------------------------------------------
@@ -691,6 +813,12 @@ def test_gruppe_verbinden_werkzeug(db_admin, db_app, welt):
         werkzeuge.ausfuehren(app, lb, "gruppe_verbinden", {"marke": m})
     with pytest.raises(ValueError):
         werkzeuge.ausfuehren(app, lea, "gruppe_verbinden", {})
+    # Betreiber-Schluessel ohne Person: kann keinen Code anlegen, sieht das Werkzeug nicht.
+    ohne_person = _info(db_admin, "betreiber")
+    assert ohne_person.person_id is None
+    assert "gruppe_verbinden" not in {w.name for w in werkzeuge.katalog(app, ohne_person)}
+    with pytest.raises(NichtGefunden):
+        werkzeuge.ausfuehren(app, ohne_person, "gruppe_verbinden", {"marke": m})
 
 
 def test_mcp_melden_ueber_http(db_admin, app_dsn, db_app, welt, telegram):

@@ -92,6 +92,31 @@ def test_chat_info(monkeypatch: pytest.MonkeyPatch) -> None:
         "titel": "Beispielgruppe", "art": "supergroup", "bot_ist_mitglied": True}
 
 
+@pytest.mark.parametrize(("chat", "titel"), [
+    ({"first_name": "Erika", "last_name": "Muster", "username": "erika_beispiel"},
+     "Erika Muster (@erika_beispiel)"),
+    ({"first_name": "Erika", "username": "erika_beispiel"}, "Erika (@erika_beispiel)"),
+    ({"first_name": "Erika"}, "Erika"),
+    ({"username": "erika_beispiel"}, "@erika_beispiel"),
+    ({}, None),
+])
+def test_chat_info_privat_mit_anzeigename(monkeypatch: pytest.MonkeyPatch,
+                                          chat: dict[str, str], titel: str | None) -> None:
+    """Ruling T7-b: private Chats haben keinen `title`; der Anzeigename kommt aus
+    first_name/last_name/@username. getChatMember nur fuer Gruppen."""
+    aufrufe: list[str] = []
+
+    def oeffnen(anfrage: Any, timeout: float) -> _Antwort:
+        aufrufe.append(anfrage.full_url.rsplit("/", 1)[-1])
+        assert aufrufe[-1] == "getChat"
+        return _Antwort({"ok": True, "result": {"id": 123456789, "type": "private", **chat}})
+
+    monkeypatch.setattr(telegram, "urlopen", oeffnen)
+    assert TelegramHttp(TOKEN).chat_info(123456789) == {
+        "titel": titel, "art": "private", "bot_ist_mitglied": True}
+    assert aufrufe == ["getChat"]
+
+
 @pytest.mark.parametrize("fall", ["http", "netz", "antwort"])
 def test_telegram_fehlertext_maskiert_token(monkeypatch: pytest.MonkeyPatch,
                                             caplog: pytest.LogCaptureFixture,
