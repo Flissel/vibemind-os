@@ -267,6 +267,11 @@ def test_schutz_bricht_ab_solange_ev_legacy_fehlt(tmp_path: Path) -> None:
     assert _schutz(tmp_path, "{kein json") == 2
 
 
+def test_kopf_nennt_python3_als_voraussetzung() -> None:
+    kopf = SKRIPT.read_text(encoding="utf-8").split("set -eu", 1)[0]
+    assert re.search(r"^# .*Deploy-Host wird python3 gebraucht", kopf, re.M)
+
+
 def test_schutz_steht_vor_jeder_aenderung_und_nennt_keine_daten() -> None:
     code = _code()
     schutz = code.index("python3 - config/openclaw.json <<'PY' || RC=$?")

@@ -399,6 +399,79 @@ def test_neues_anlegen_widerruft_schluessel_frueherer_anlegen(db_admin, db_app, 
         "schluessel_id"]
 
 
+def test_gescheitertes_neues_anlegen_macht_den_agenten_verwaist(
+        db_admin, db_app, welt, telegram):
+    """Ein erneutes Anlegen scheitert, und auch das Abraeumen gelingt nur teilweise: das
+    fruehere erfolgreiche Anlegen traegt den Agenten nicht mehr (nur das juengste zaehlt),
+    der naechste Lauf baut ihn als verwaist ab. Der Schluessel des frueheren Anlegens ist
+    schon nach dem Fehlschlag widerrufen."""
+    app = db_app()
+    erstes = _gruppe(app, welt, telegram)
+    aus = _aus()
+    bereitstellung.lauf(db_admin, aus, mcp_url=MCP)
+    alt = _auftrag(db_admin, erstes)
+    agent = alt["agent_id"]
+    zweites = _id(db_admin, "insert into event.bereitstellung (art, ziel, event_id, person_id,"
+                            " chat_id, agent_id) values ('anlegen', %s, %s, %s, %s, %s)"
+                            " returning id",
+                  (alt["ziel"], alt["event_id"], alt["person_id"], alt["chat_id"], agent))
+    aus.scheitern.update({f"config_schreiben:mcp.servers.{agent}",
+                          f"config_entfernen:mcp.servers.{agent}"})
+    assert bereitstellung.lauf(db_admin, aus, mcp_url=MCP) == [zweites]
+    neu = _auftrag(db_admin, zweites)
+    assert (neu["status"], neu["schritt"]) == ("fehler", "server")
+    assert _schluessel(db_admin, neu["schluessel_id"])["widerrufen"] is not None
+    assert _schluessel(db_admin, alt["schluessel_id"])["widerrufen"] is not None
+    # Stehen geblieben ist der Server (mit dem alten, jetzt widerrufenen Schluessel).
+    assert agent in aus.config["mcp"]["servers"] and _agent(aus.config, agent) is None
+
+    aus.scheitern.clear()
+    [abbau] = bereitstellung.lauf(db_admin, aus, mcp_url=MCP)
+    zeile = _auftrag(db_admin, abbau)
+    assert (zeile["art"], zeile["status"]) == ("abbauen", "erfolg")
+    _abgebaut(aus, agent, CHAT)
+
+
+def test_schluessel_und_bezug_nur_gemeinsam(db_admin, db_app, welt, telegram):
+    """Scheitert das Setzen von schluessel_id, rollt auch das Ausstellen zurueck: kein
+    Schluessel ohne Auftrag."""
+    app = db_app()
+    auftrag_id = _gruppe(app, welt, telegram)
+    db_admin.execute("create function event.test_bezug_sperren() returns trigger"
+                     " language plpgsql as $$ begin raise exception 'gesperrt'; end $$")
+    db_admin.execute("create trigger test_bezug_sperren before update of schluessel_id"
+                     " on event.bereitstellung for each row"
+                     " when (new.schluessel_id is not null)"
+                     " execute function event.test_bezug_sperren()")
+    aus = _aus()
+    assert bereitstellung.lauf(db_admin, aus, mcp_url=MCP) == [auftrag_id]
+    zeile = _auftrag(db_admin, auftrag_id)
+    assert (zeile["status"], zeile["schritt"], zeile["schluessel_id"]) == (
+        "fehler", "schluessel", None)
+    assert db_admin.execute("select count(*) as n from event.schluessel").fetchone()["n"] == 0
+    assert aus.config == GRUND_CONFIG
+
+
+def test_fehler_beim_widerruf_frueherer_kippt_erfolg_nicht(
+        db_admin, db_app, welt, telegram, monkeypatch, caplog):
+    app = db_app()
+    auftrag_id = _gruppe(app, welt, telegram)
+
+    def kaputt(conn: Any, auftrag: Any) -> None:
+        raise RuntimeError("evk_nie_im_log")
+
+    monkeypatch.setattr(bereitstellung, "_schluessel_widerrufen", kaputt)
+    aus = _aus()
+    with caplog.at_level(logging.DEBUG):
+        assert bereitstellung.lauf(db_admin, aus, mcp_url=MCP) == [auftrag_id]
+    zeile = _auftrag(db_admin, auftrag_id)
+    assert (zeile["status"], zeile["fehler"]) == ("erfolg", None)
+    assert _schluessel(db_admin, zeile["schluessel_id"])["widerrufen"] is None
+    assert schluessel.pruefen(app, _bearer(aus.config, zeile["agent_id"])).id == zeile[
+        "schluessel_id"]
+    assert "RuntimeError" in caplog.text and "evk_" not in caplog.text
+
+
 def test_zweiter_lauf_gleichzeitig_endet_still(db_admin, db_app, welt, telegram, pg_cluster):
     """Laeuft schon ein Arbeiter (Advisory-Lock gehalten), endet ein zweiter sofort."""
     app = db_app()

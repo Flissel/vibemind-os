@@ -28,8 +28,10 @@ ein anderer die Advisory-Sperre SPERRE, endet der Lauf sofort und still.
    - anlegen: nur wenn der Auftrag noch zu einer bestaetigten Verbindung gehoert und die
      Rolle noch passt (sonst ``fehler``, Schritt ``pruefen``, ohne Schluessel). Dann
      Schluessel ausstellen (Art event/leitung/betreiber, Bezug in ``schluessel_id``, beides
-     in einer Transaktion), die Schritte ausfuehren; nach Erfolg die Schluessel frueherer
-     `anlegen` desselben Agenten widerrufen. Scheitert ein Schritt: ``fehler`` mit
+     in einer Transaktion), die Schritte ausfuehren; danach (Erfolg wie Fehler) die
+     Schluessel frueherer `anlegen` desselben Agenten widerrufen, getrennt abgefangen (ein
+     Fehler dort kippt keinen erfolgreichen Auftrag). Es zaehlt nur das juengste `anlegen`
+     je Agent: scheitert es, ist der Agent verwaist. Scheitert ein Schritt: ``fehler`` mit
      Schrittname, der gerade ausgestellte Schluessel wird widerrufen und der Teilstand
      best effort abgeraeumt (Binding, Agent, Server, Gruppe; der Arbeitsbereich bleibt,
      unbenannt). Was dabei stehen bleibt, raeumt ein spaeterer Lauf als verwaisten Agenten
@@ -557,11 +559,16 @@ def schritte_abbauen(auftrag: Mapping[str, Any], *, datum: datetime) -> list[Sch
 # Soll-Zustand eines anlegen-Auftrags `b`: nicht gescheitert, eine bestaetigte Verbindung
 # mit derselben Chat-ID zum selben Ziel, und die Rolle passt noch (Gruppe: Event nicht
 # archiviert/Legacy; leitung: Person aktiv und irgendwo Leitung; betreiber: Person aktiv
-# und Betreiber). Ein gescheitertes `anlegen` traegt keinen Agenten: was davon noch in der
-# Config steht, ist verwaist.
+# und Betreiber). Es zaehlt nur das juengste `anlegen` je Agent: scheitert ein erneutes
+# Anlegen, traegt ein frueheres erfolgreiches den Agenten nicht mehr. Ein gescheitertes
+# `anlegen` traegt keinen Agenten: was davon noch in der Config steht, ist verwaist.
 _SOLL = """
     b.art = 'anlegen'
     and b.status in ('offen', 'laeuft', 'erfolg')
+    and not exists (
+        select 1 from event.bereitstellung n
+        where n.agent_id = b.agent_id and n.art = 'anlegen'
+          and (n.angelegt, n.id) > (b.angelegt, b.id))
     and exists (
         select 1 from event.verbindung v
         where v.status = 'bestaetigt' and v.chat_id = b.chat_id
@@ -791,8 +798,6 @@ def _anlegen(conn: psycopg.Connection[Any], ausfuehrer: Ausfuehrer, auftrag: dic
             s.ausfuehren(ausfuehrer)
             _schritt_merken(conn, auftrag_id, schritt)
         _beenden(conn, auftrag_id, "erfolg", schritt, None)
-        # Der Agent traegt jetzt den neuen Schluessel; die frueherer Anlegen gelten nicht mehr.
-        _schluessel_widerrufen(conn, auftrag)
         log.info("Agent %s angelegt", auftrag["agent_id"])
     except Exception as fehler:  # noqa: BLE001 - jeder Fehler beendet den Auftrag
         if sid is not None:
@@ -801,6 +806,18 @@ def _anlegen(conn: psycopg.Connection[Any], ausfuehrer: Ausfuehrer, auftrag: dic
         log.warning("Auftrag %s gescheitert bei %s (%s)", auftrag_id, schritt,
                     type(fehler).__name__)
         _teilstand_abraeumen(ausfuehrer, dict(auftrag, schritt=schritt))
+    # Erfolg: der Agent traegt jetzt den neuen Schluessel. Fehler: der Agent ist abgeraeumt
+    # oder verwaist. In beiden Faellen gelten die Schluessel frueherer Anlegen nicht mehr.
+    # Getrennt abgefangen, damit ein Fehler hier einen erfolgreichen Auftrag nicht kippt.
+    _fruehere_widerrufen(conn, auftrag)
+
+
+def _fruehere_widerrufen(conn: psycopg.Connection[Any], auftrag: Mapping[str, Any]) -> None:
+    try:
+        _schluessel_widerrufen(conn, auftrag)
+    except Exception as fehler:  # noqa: BLE001 - best effort, nur Typname ins Log
+        log.warning("Fruehere Schluessel von %s nicht widerrufen (%s)", auftrag["agent_id"],
+                    type(fehler).__name__)
 
 
 def _schluessel_widerrufen(conn: psycopg.Connection[Any], auftrag: Mapping[str, Any]) -> None:

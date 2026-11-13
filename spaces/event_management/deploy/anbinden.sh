@@ -17,7 +17,8 @@
 #   Zeilen 1-3 und 5 duerfen nicht leer sein.
 #
 # Voraussetzung: `python deploy/fuellen.py werte.local.json build/` lief. Der
-# Claw-Container muss NICHT laufen.
+# Claw-Container muss NICHT laufen. Auf dem Deploy-Host wird python3 gebraucht
+# (Schutz der Legacy-Gruppe, Ruling T8-a).
 #
 # Schluesselwege (Begruendung): `openclaw config set <pfad> <wert>` nimmt den
 # Wert als Argument; er stuende dann in der Prozessliste und in `docker
