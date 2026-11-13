@@ -3,10 +3,13 @@
 -- Wird nur als Admin angewendet (db/anwenden.py). Tabellen und Funktionen gehoeren dem
 -- Admin; event_app ist nicht Eigentuemer, daher greift RLS ohne "force".
 --
--- Zugriff fuer event_app (Ruling S4):
---   schluessel, marke, bestaetigung  KEINE Grants; nur ueber die SD-Funktionen unten.
---   verbindung, bereitstellung       select/insert/update mit RLS (Firma des Events,
+-- Zugriff fuer event_app (Ruling S4, verschaerft im Review):
+--   schluessel, marke, bestaetigung  KEINE Grants; nur ueber die SD-Funktionen unten,
+--                                    gebunden an den Schluessel-HASH (Besitznachweis).
+--   verbindung                       select/insert/update mit RLS (Firma des Events,
 --                                    eigene Person oder Betreiber); kein delete.
+--   bereitstellung                   nur select/insert mit RLS; Auftraege aendert allein
+--                                    der Arbeiter mit der Admin-DSN (Task 8).
 -- Hashes sind immer sha256-Hex (64 Zeichen); ein Klartext passt nie in eine Hash-Spalte.
 
 -- Schluessel ------------------------------------------------------------------------
@@ -123,8 +126,9 @@ create policy verbindung_zugriff on event.verbindung for all
     );
 
 -- bereitstellung hat keine firma_id: die Firma kommt aus dem Event.
-drop policy if exists bereitstellung_zugriff on event.bereitstellung;
-create policy bereitstellung_zugriff on event.bereitstellung for all
+-- Lesen: Firma des Events, eigene Person oder Betreiber.
+drop policy if exists bereitstellung_lesen on event.bereitstellung;
+create policy bereitstellung_lesen on event.bereitstellung for select
     using (
         event.ist_betreiber()
         or (event_id is not null and exists (
@@ -132,14 +136,25 @@ create policy bereitstellung_zugriff on event.bereitstellung for all
             where e.id = bereitstellung.event_id
               and event.mandant_ok(e.firma_id) and event.event_ok(e.id)))
         or (event_id is null and person_id = event.person_id())
-    )
+    );
+-- Anlegen (ein Auftrag richtet einen Bot ein, daher enger als Lesen):
+--   betreiber  nur im Betreiber-Kontext
+--   gruppe     nur Leitung der Firma des Events (ein Mitglied reicht nicht)
+--   leitung    nur fuer die eigene Person, und nur mit einer aktuellen Leitung
+drop policy if exists bereitstellung_anlegen on event.bereitstellung;
+create policy bereitstellung_anlegen on event.bereitstellung for insert
     with check (
         event.ist_betreiber()
-        or (event_id is not null and exists (
+        or (ziel = 'gruppe' and event_id is not null and exists (
             select 1 from event.event e
+            join event.mitgliedschaft m on m.firma_id = e.firma_id
             where e.id = bereitstellung.event_id
-              and event.mandant_ok(e.firma_id) and event.event_ok(e.id)))
-        or (event_id is null and person_id = event.person_id())
+              and event.mandant_ok(e.firma_id) and event.event_ok(e.id)
+              and m.person_id = event.person_id() and m.rolle = 'leitung'))
+        or (ziel = 'leitung' and event_id is null and person_id = event.person_id()
+            and exists (
+                select 1 from event.mitgliedschaft m
+                where m.person_id = event.person_id() and m.rolle = 'leitung'))
     );
 
 -- Interne Helfer (nur fuer die SD-Funktionen, kein Grant an event_app) -------------------
@@ -189,6 +204,8 @@ as $$
 $$;
 
 -- SD-Funktionen fuer event_app: Schluessel, Marke, Bestaetigung --------------------------
+-- Marke und Bestaetigung nehmen den HASH des Schluessels, nicht seine id: wer sie nutzt,
+-- muss den Klartext besitzen (die id allein reicht nie).
 
 -- Liefert den Schluessel nur, wenn er gueltig ist (sonst keine Zeile).
 create or replace function event.schluessel_pruefen(p_hash text)
@@ -201,14 +218,17 @@ as $$
     where s.hash = p_hash and event.schluessel_aktiv(s.id)
 $$;
 
--- Legt eine Marke an; false, wenn der Schluessel ungueltig ist oder das Event nicht waehlen
--- darf. Kaputte Eingaben (kein Hash, Laufzeit ausserhalb 1..60 min) sind eine Ausnahme.
+-- Legt eine Marke an; false, wenn der Schluessel unbekannt/ungueltig ist oder das Event
+-- nicht waehlen darf. Kaputte Eingaben (kein Hash, Laufzeit ausserhalb 1..60 min) sind
+-- eine Ausnahme.
 create or replace function event.marke_anlegen(
-    p_hash text, p_schluessel uuid, p_event uuid, p_minuten integer
+    p_hash text, p_schluessel_hash text, p_event uuid, p_minuten integer
 ) returns boolean
     language plpgsql volatile security definer
     set search_path = event, pg_temp
 as $$
+declare
+    v_schluessel uuid;
 begin
     if p_hash is null or p_hash !~ '^[0-9a-f]{64}$' then
         raise exception 'Hash ungueltig' using errcode = 'invalid_parameter_value';
@@ -216,11 +236,13 @@ begin
     if p_minuten is null or p_minuten < 1 or p_minuten > 60 then
         raise exception 'Laufzeit ungueltig' using errcode = 'invalid_parameter_value';
     end if;
-    if not coalesce(event.schluessel_darf_event(p_schluessel, p_event), false) then
+    select s.id into v_schluessel from event.schluessel s where s.hash = p_schluessel_hash;
+    if v_schluessel is null
+            or not coalesce(event.schluessel_darf_event(v_schluessel, p_event), false) then
         return false;
     end if;
     insert into event.marke (wert_hash, schluessel_id, event_id, ablauf)
-    values (p_hash, p_schluessel, p_event, now() + make_interval(mins => p_minuten))
+    values (p_hash, v_schluessel, p_event, now() + make_interval(mins => p_minuten))
     on conflict (wert_hash) do nothing;
     return found;
 end
@@ -228,25 +250,28 @@ $$;
 
 -- event_id der Marke oder null (unbekannt, fremder Schluessel, abgelaufen, Schluessel
 -- ungueltig oder Event fuer ihn nicht mehr waehlbar).
-create or replace function event.marke_pruefen(p_hash text, p_schluessel uuid)
+create or replace function event.marke_pruefen(p_hash text, p_schluessel_hash text)
     returns uuid
     language sql stable security definer
     set search_path = event, pg_temp
 as $$
     select m.event_id
     from event.marke m
+    join event.schluessel s on s.id = m.schluessel_id
     where m.wert_hash = p_hash
-      and m.schluessel_id = p_schluessel
+      and s.hash = p_schluessel_hash
       and m.ablauf > now()
-      and event.schluessel_darf_event(p_schluessel, m.event_id)
+      and event.schluessel_darf_event(s.id, m.event_id)
 $$;
 
 create or replace function event.bestaetigung_anlegen(
-    p_hash text, p_schluessel uuid, p_aktion text, p_ziel jsonb, p_minuten integer
+    p_hash text, p_schluessel_hash text, p_aktion text, p_ziel jsonb, p_minuten integer
 ) returns boolean
     language plpgsql volatile security definer
     set search_path = event, pg_temp
 as $$
+declare
+    v_schluessel uuid;
 begin
     if p_hash is null or p_hash !~ '^[0-9a-f]{64}$' then
         raise exception 'Hash ungueltig' using errcode = 'invalid_parameter_value';
@@ -260,11 +285,12 @@ begin
     if p_minuten is null or p_minuten < 1 or p_minuten > 60 then
         raise exception 'Laufzeit ungueltig' using errcode = 'invalid_parameter_value';
     end if;
-    if not coalesce(event.schluessel_aktiv(p_schluessel), false) then
+    select s.id into v_schluessel from event.schluessel s where s.hash = p_schluessel_hash;
+    if v_schluessel is null or not coalesce(event.schluessel_aktiv(v_schluessel), false) then
         return false;
     end if;
     insert into event.bestaetigung (code_hash, schluessel_id, aktion, ziel, ablauf)
-    values (p_hash, p_schluessel, p_aktion, p_ziel, now() + make_interval(mins => p_minuten))
+    values (p_hash, v_schluessel, p_aktion, p_ziel, now() + make_interval(mins => p_minuten))
     on conflict (code_hash) do nothing;
     return found;
 end
@@ -272,7 +298,7 @@ $$;
 
 -- Atomar einmalig: nur der erste passende Aufruf setzt benutzt und bekommt true.
 create or replace function event.bestaetigung_einloesen(
-    p_hash text, p_schluessel uuid, p_aktion text, p_ziel jsonb
+    p_hash text, p_schluessel_hash text, p_aktion text, p_ziel jsonb
 ) returns boolean
     language sql volatile security definer
     set search_path = event, pg_temp
@@ -280,13 +306,15 @@ as $$
     with eingeloest as (
         update event.bestaetigung b
         set benutzt = now()
-        where b.code_hash = p_hash
-          and b.schluessel_id = p_schluessel
+        from event.schluessel s
+        where s.id = b.schluessel_id
+          and s.hash = p_schluessel_hash
+          and b.code_hash = p_hash
           and b.aktion = p_aktion
           and b.ziel = p_ziel
           and b.benutzt is null
           and b.ablauf > now()
-          and event.schluessel_aktiv(p_schluessel)
+          and event.schluessel_aktiv(s.id)
         returning 1
     )
     select count(*) = 1 from eingeloest
@@ -349,23 +377,25 @@ revoke all on
     event.schluessel, event.marke, event.bestaetigung, event.verbindung, event.bereitstellung
     from public;
 
-grant select, insert, update on event.verbindung, event.bereitstellung to event_app;
+grant select, insert, update on event.verbindung to event_app;
+-- bereitstellung: kein update/delete fuer event_app (nur der Arbeiter, Admin-DSN).
+grant select, insert on event.bereitstellung to event_app;
 
 revoke all on function
     event.schluessel_aktiv(uuid), event.schluessel_darf_event(uuid, uuid),
-    event.schluessel_pruefen(text), event.marke_anlegen(text, uuid, uuid, integer),
-    event.marke_pruefen(text, uuid),
-    event.bestaetigung_anlegen(text, uuid, text, jsonb, integer),
-    event.bestaetigung_einloesen(text, uuid, text, jsonb),
+    event.schluessel_pruefen(text), event.marke_anlegen(text, text, uuid, integer),
+    event.marke_pruefen(text, text),
+    event.bestaetigung_anlegen(text, text, text, jsonb, integer),
+    event.bestaetigung_einloesen(text, text, text, jsonb),
     event.anmeldung_holen(text), event.hat_passwort(uuid),
     event.passwort_setzen_wenn_leer(uuid, text, text)
     from public;
 
 grant execute on function
-    event.schluessel_pruefen(text), event.marke_anlegen(text, uuid, uuid, integer),
-    event.marke_pruefen(text, uuid),
-    event.bestaetigung_anlegen(text, uuid, text, jsonb, integer),
-    event.bestaetigung_einloesen(text, uuid, text, jsonb),
+    event.schluessel_pruefen(text), event.marke_anlegen(text, text, uuid, integer),
+    event.marke_pruefen(text, text),
+    event.bestaetigung_anlegen(text, text, text, jsonb, integer),
+    event.bestaetigung_einloesen(text, text, text, jsonb),
     event.anmeldung_holen(text), event.hat_passwort(uuid),
     event.passwort_setzen_wenn_leer(uuid, text, text)
     to event_app;

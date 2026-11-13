@@ -99,6 +99,19 @@ def test_kombinationen(db_admin, welt):
         schluessel.ausstellen(db_admin, art="event", bezeichnung="x", event_id=uuid4())
     with pytest.raises(NichtGefunden):
         schluessel.ausstellen(db_admin, art="leitung", bezeichnung="x", person_id=uuid4())
+    # Betreiber-Arten nur fuer Betreiber-Personen; keine Schluessel fuer inaktive Personen.
+    inaktiv = _person(db_admin, "inaktiv@example.org")
+    db_admin.execute("update event.person set aktiv = false where id = %s", (inaktiv,))
+    chef_inaktiv = _person(db_admin, "chef-inaktiv@example.org", betreiber=True)
+    db_admin.execute("update event.person set aktiv = false where id = %s", (chef_inaktiv,))
+    for art, person in (("betreiber", welt["lea"]), ("betreiber_lesen", welt["lea"]),
+                        ("leitung", inaktiv), ("melden", inaktiv),
+                        ("betreiber", chef_inaktiv)):
+        with pytest.raises(ValueError):
+            schluessel.ausstellen(db_admin, art=art, bezeichnung="x", person_id=person)
+    with pytest.raises(ValueError):
+        schluessel.ausstellen(db_admin, art="event", bezeichnung="x", event_id=welt["ea"],
+                              person_id=inaktiv)
     assert db_admin.execute("select count(*) as n from event.schluessel").fetchone()["n"] == 0
     # Grenzwert: 730 Tage gehen.
     schluessel.ausstellen(db_admin, art="melden", bezeichnung="x", gueltig_tage=730)
@@ -142,6 +155,9 @@ def test_pruefen_ok_und_einheitlich_abgelehnt(db_admin, db_app, welt):
         id=sid, art="leitung", event_id=None, firma_id=None, person_id=welt["lea"])
     assert schluessel.pruefen(db_admin, klartext) == erwartet
     assert schluessel.pruefen(db_app(), klartext) == erwartet
+    assert schluessel.pruefen(db_app(), klartext).schluessel_hash == hashlib.sha256(
+        klartext.encode("utf-8")).hexdigest()
+    assert "schluessel_hash" not in repr(erwartet)
 
     abgelaufen_id, abgelaufen = schluessel.ausstellen(db_admin, art="melden", bezeichnung="alt")
     db_admin.execute("update event.schluessel set ablauf = now() - interval '1 second'"
@@ -247,8 +263,12 @@ def test_kontext_leitung_inaktive_person(db_admin, db_app, welt):
     app = db_app()
     info = schluessel.pruefen(app, klartext)
     db_admin.execute("update event.person set aktiv = false where id = %s", (welt["lea"],))
-    with pytest.raises(NichtGefunden):
+    with pytest.raises(NichtGefunden) as e:
         schluessel.kontext_fuer(app, info)
+    # Dieselbe Meldung wie jede Ablehnung in pruefen (kein Orakel ueber den Grund).
+    with pytest.raises(NichtGefunden) as einheitlich:
+        schluessel.pruefen(app, "")
+    assert str(e.value) == str(einheitlich.value)
 
 
 @pytest.mark.parametrize("art", ["betreiber", "betreiber_lesen"])
@@ -276,78 +296,94 @@ def _h(wert: str) -> str:
 
 
 def test_marke_sd_funktionen(db_admin, db_app, welt):
+    """Gebunden an den Schluessel-HASH (Besitznachweis), nicht an die id."""
     app = db_app()
-    lea_id, _ = schluessel.ausstellen(db_admin, art="leitung", bezeichnung="x",
-                                      person_id=welt["lea"])
-    zweite_id, _ = schluessel.ausstellen(db_admin, art="leitung", bezeichnung="y",
-                                         person_id=welt["zweite"])
-    melden_id, _ = schluessel.ausstellen(db_admin, art="melden", bezeichnung="z")
-    event_id, _ = schluessel.ausstellen(db_admin, art="event", bezeichnung="e",
-                                        event_id=welt["ea"])
+    lea_id, lea = schluessel.ausstellen(db_admin, art="leitung", bezeichnung="x",
+                                        person_id=welt["lea"])
+    _, zweite = schluessel.ausstellen(db_admin, art="leitung", bezeichnung="y",
+                                      person_id=welt["zweite"])
+    _, melden = schluessel.ausstellen(db_admin, art="melden", bezeichnung="z")
+    _, ev = schluessel.ausstellen(db_admin, art="event", bezeichnung="e", event_id=welt["ea"])
 
-    def anlegen(wert: str, sid: UUID, ev: UUID, minuten: int = 30) -> bool:
+    def anlegen(wert: str, klartext: str, event_id: UUID, minuten: int = 30) -> bool:
         return app.execute("select event.marke_anlegen(%s, %s, %s, %s) as ok",
-                           (_h(wert), sid, ev, minuten)).fetchone()["ok"]
+                           (_h(wert), _h(klartext), event_id, minuten)).fetchone()["ok"]
 
-    def pruefen(wert: str, sid: UUID) -> Any:
+    def pruefen(wert: str, klartext: str) -> Any:
         return app.execute("select event.marke_pruefen(%s, %s) as e",
-                           (_h(wert), sid)).fetchone()["e"]
+                           (_h(wert), _h(klartext))).fetchone()["e"]
 
-    assert anlegen("mk_lea", lea_id, welt["ea"]) is True
-    assert pruefen("mk_lea", lea_id) == welt["ea"]
-    assert pruefen("mk_lea", zweite_id) is None          # fremder Schluessel
-    assert pruefen("mk_unbekannt", lea_id) is None
+    assert anlegen("mk_lea", lea, welt["ea"]) is True
+    assert pruefen("mk_lea", lea) == welt["ea"]
+    assert pruefen("mk_lea", zweite) is None          # fremder Schluessel
+    assert pruefen("mk_unbekannt", lea) is None
+    # Die id (oder ihr Text) ist kein Besitznachweis.
+    for falsch in (str(lea_id), _h(str(lea_id)), "", None):
+        assert app.execute("select event.marke_pruefen(%s, %s) as e",
+                           (_h("mk_lea"), falsch)).fetchone()["e"] is None
+        assert app.execute("select event.marke_anlegen(%s, %s, %s, 30) as ok",
+                           (_h("mk_id"), falsch, welt["ea"])).fetchone()["ok"] is False
     # Lea ist in B nur Mitglied, melden darf nie, Event-Schluessel nur sein Event.
-    assert anlegen("mk_b", lea_id, welt["eb"]) is False
-    assert anlegen("mk_m", melden_id, welt["ea"]) is False
-    assert anlegen("mk_e", event_id, welt["eb"]) is False
-    assert anlegen("mk_e", event_id, welt["ea"]) is True
+    assert anlegen("mk_b", lea, welt["eb"]) is False
+    assert anlegen("mk_m", melden, welt["ea"]) is False
+    assert anlegen("mk_e", ev, welt["eb"]) is False
+    assert anlegen("mk_e", ev, welt["ea"]) is True
     # Kaputte Eingaben sind Programmierfehler: Ausnahme statt false.
     with pytest.raises(psycopg.errors.InvalidParameterValue):
-        anlegen("mk_lang", lea_id, welt["ea"], minuten=61)
+        anlegen("mk_lang", lea, welt["ea"], minuten=61)
     with pytest.raises(psycopg.errors.InvalidParameterValue):
-        app.execute("select event.marke_anlegen('kein-hash', %s, %s, 30)", (lea_id, welt["ea"]))
+        app.execute("select event.marke_anlegen('kein-hash', %s, %s, 30)", (_h(lea), welt["ea"]))
     # Abgelaufen, oder Leitung inzwischen entzogen: Marke gilt nicht mehr.
     db_admin.execute("update event.marke set ablauf = now() - interval '1 second'"
                      " where wert_hash = %s", (_h("mk_e"),))
-    assert pruefen("mk_e", event_id) is None
+    assert pruefen("mk_e", ev) is None
     db_admin.execute("update event.mitgliedschaft set rolle = 'mitglied'"
                      " where person_id = %s and firma_id = %s", (welt["lea"], welt["a"]))
-    assert pruefen("mk_lea", lea_id) is None
+    assert pruefen("mk_lea", lea) is None
+    # Python-Seite: pruefen liefert den Hash fuer genau diese Aufrufe.
+    assert schluessel.pruefen(app, lea).schluessel_hash == _h(lea)
 
 
 def test_bestaetigung_sd_funktionen(db_admin, db_app, welt):
     app = db_app()
-    sid, _ = schluessel.ausstellen(db_admin, art="betreiber", bezeichnung="x")
-    anderer, _ = schluessel.ausstellen(db_admin, art="betreiber", bezeichnung="y")
+    sid, eigen = schluessel.ausstellen(db_admin, art="betreiber", bezeichnung="x")
+    _, anderer = schluessel.ausstellen(db_admin, art="betreiber", bezeichnung="y")
     ziel = json.dumps({"event_id": str(welt["ea"])})
 
-    def einloesen(code: str, s: UUID, aktion: str, z: str) -> bool:
-        return app.execute("select event.bestaetigung_einloesen(%s, %s, %s, %s::jsonb) as ok",
-                           (_h(code), s, aktion, z)).fetchone()["ok"]
+    def anlegen(code: str, klartext: str, aktion: str = "event_loeschen", z: str = ziel,
+                minuten: int = 5) -> bool:
+        return app.execute("select event.bestaetigung_anlegen(%s, %s, %s, %s::jsonb, %s) as ok",
+                           (_h(code), _h(klartext), aktion, z, minuten)).fetchone()["ok"]
 
-    assert app.execute("select event.bestaetigung_anlegen(%s, %s, %s, %s::jsonb, 5) as ok",
-                       (_h("bs_1"), sid, "event_loeschen", ziel)).fetchone()["ok"] is True
+    def einloesen(code: str, klartext: str, aktion: str, z: str) -> bool:
+        return app.execute("select event.bestaetigung_einloesen(%s, %s, %s, %s::jsonb) as ok",
+                           (_h(code), _h(klartext), aktion, z)).fetchone()["ok"]
+
+    assert anlegen("bs_1", eigen) is True
     for aktion, z, minuten in (("Event Loeschen", ziel, 5), ("event_loeschen", "[1]", 5),
                                ("event_loeschen", ziel, 0)):
         with pytest.raises(psycopg.errors.InvalidParameterValue):
-            app.execute("select event.bestaetigung_anlegen(%s, %s, %s, %s::jsonb, %s)",
-                        (_h("bs_x"), sid, aktion, z, minuten))
+            anlegen("bs_x", eigen, aktion, z, minuten)
+    # Die id ist kein Besitznachweis.
+    assert app.execute("select event.bestaetigung_anlegen(%s, %s, 'event_loeschen',"
+                       " %s::jsonb, 5) as ok", (_h("bs_id"), str(sid), ziel)
+                       ).fetchone()["ok"] is False
+    assert app.execute("select event.bestaetigung_einloesen(%s, %s, 'event_loeschen',"
+                       " %s::jsonb) as ok", (_h("bs_1"), str(sid), ziel)).fetchone()["ok"] is False
     assert einloesen("bs_1", anderer, "event_loeschen", ziel) is False
-    assert einloesen("bs_1", sid, "event_absagen", ziel) is False
-    assert einloesen("bs_1", sid, "event_loeschen",
+    assert einloesen("bs_1", eigen, "event_absagen", ziel) is False
+    assert einloesen("bs_1", eigen, "event_loeschen",
                      json.dumps({"event_id": str(welt["eb"])})) is False
-    assert einloesen("bs_1", sid, "event_loeschen", ziel) is True
-    assert einloesen("bs_1", sid, "event_loeschen", ziel) is False  # nur einmal
-    app.execute("select event.bestaetigung_anlegen(%s, %s, %s, %s::jsonb, 5)",
-                (_h("bs_2"), sid, "event_loeschen", ziel))
+    assert einloesen("bs_1", eigen, "event_loeschen", ziel) is True
+    assert einloesen("bs_1", eigen, "event_loeschen", ziel) is False  # nur einmal
+    anlegen("bs_2", eigen)
     db_admin.execute("update event.bestaetigung set ablauf = now() - interval '1 second'"
                      " where code_hash = %s", (_h("bs_2"),))
-    assert einloesen("bs_2", sid, "event_loeschen", ziel) is False
-    app.execute("select event.bestaetigung_anlegen(%s, %s, %s, %s::jsonb, 5)",
-                (_h("bs_3"), sid, "event_loeschen", ziel))
+    assert einloesen("bs_2", eigen, "event_loeschen", ziel) is False
+    anlegen("bs_3", eigen)
     schluessel.widerrufen(db_admin, sid)
-    assert einloesen("bs_3", sid, "event_loeschen", ziel) is False
+    assert einloesen("bs_3", eigen, "event_loeschen", ziel) is False
+    assert anlegen("bs_4", eigen) is False  # widerrufener Schluessel stellt nichts mehr aus
 
 
 # --- Rechte -------------------------------------------------------------------------
@@ -371,10 +407,10 @@ def test_event_app_sieht_schluesseltabellen_nicht(db_admin, db_app, welt):
 
 SD_FUNKTIONEN = (
     "schluessel_pruefen(text)",
-    "marke_anlegen(text, uuid, uuid, integer)",
-    "marke_pruefen(text, uuid)",
-    "bestaetigung_anlegen(text, uuid, text, jsonb, integer)",
-    "bestaetigung_einloesen(text, uuid, text, jsonb)",
+    "marke_anlegen(text, text, uuid, integer)",
+    "marke_pruefen(text, text)",
+    "bestaetigung_anlegen(text, text, text, jsonb, integer)",
+    "bestaetigung_einloesen(text, text, text, jsonb)",
     "anmeldung_holen(text)",
     "hat_passwort(uuid)",
     "passwort_setzen_wenn_leer(uuid, text, text)",
@@ -432,3 +468,16 @@ def test_cli_ausstellen_und_widerrufen(pg_cluster, db_admin, tmp_path, monkeypat
 
     monkeypatch.delenv("EVENT_ADMIN_DSN_FILE")
     assert schluessel.main(["ausstellen", "--art", "melden", "--bezeichnung", "x"]) == 2
+    capsys.readouterr()
+
+    # Unlesbare DSN-Datei (fehlt, Verzeichnis, kein UTF-8, leer): feste Meldung, Exit 2.
+    kaputt = tmp_path / "kaputt.txt"
+    kaputt.write_bytes(b"\xff\xfe\x00geheim")
+    leer = tmp_path / "leer.txt"
+    leer.write_text("  \n", encoding="utf-8")
+    for pfad in (tmp_path / "fehlt.txt", tmp_path, kaputt, leer):
+        monkeypatch.setenv("EVENT_ADMIN_DSN_FILE", str(pfad))
+        assert schluessel.main(["widerrufen", str(uuid4())]) == 2
+        aus = capsys.readouterr()
+        assert aus.out == "" and "Traceback" not in aus.err and "DSN" in aus.err
+        assert str(tmp_path) not in aus.err and "geheim" not in aus.err

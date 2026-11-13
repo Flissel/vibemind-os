@@ -23,7 +23,7 @@ import re
 import secrets
 import sys
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -53,6 +53,9 @@ class SchluesselInfo:
     event_id: UUID | None
     firma_id: UUID | None
     person_id: UUID | None
+    # sha256-Hex des Klartexts: Besitznachweis fuer die SD-Funktionen von Marke und
+    # Bestaetigung (die id allein reicht dort nie). Leer = nichts wird gefunden.
+    schluessel_hash: str = field(default="", repr=False, compare=False)
 
 
 def _hash(klartext: str) -> str:
@@ -67,7 +70,8 @@ def ausstellen(
 
     ValueError bei falscher Kombination (event ohne Event, leitung ohne Person, Event bei
     anderen Arten), leerer Bezeichnung oder Laufzeit ausserhalb 1..730 Tage;
-    NichtGefunden bei unbekanntem Event oder unbekannter Person.
+    NichtGefunden bei unbekanntem Event oder unbekannter Person; ValueError bei inaktiver
+    Person oder bei einem Betreiber-Schluessel fuer eine Person, die kein Betreiber ist.
     """
     if art not in ART:
         raise ValueError("Schlüssel-Art ungültig")
@@ -95,9 +99,14 @@ def ausstellen(
                 raise NichtGefunden("Event nicht gefunden")
             firma_id = ev["firma_id"]
         if person_id is not None:
-            cur.execute("select 1 from event.person where id = %s", (person_id,))
-            if cur.fetchone() is None:
+            cur.execute("select aktiv, betreiber from event.person where id = %s", (person_id,))
+            person = cur.fetchone()
+            if person is None:
                 raise NichtGefunden("Person nicht gefunden")
+            if not person["aktiv"]:
+                raise ValueError("Person ist nicht aktiv")
+            if art in ("betreiber", "betreiber_lesen") and not person["betreiber"]:
+                raise ValueError("Ein Betreiber-Schlüssel braucht eine Betreiber-Person")
         cur.execute(
             "insert into event.schluessel"
             " (hash, art, event_id, firma_id, person_id, bezeichnung, ablauf)"
@@ -143,7 +152,7 @@ def pruefen(conn: psycopg.Connection[Any], klartext: object) -> SchluesselInfo:
         raise NichtGefunden(_ABGELEHNT)
     return SchluesselInfo(
         id=zeile["id"], art=zeile["art"], event_id=zeile["event_id"],
-        firma_id=zeile["firma_id"], person_id=zeile["person_id"],
+        firma_id=zeile["firma_id"], person_id=zeile["person_id"], schluessel_hash=h,
     )
 
 
@@ -164,7 +173,11 @@ def kontext_fuer(conn: psycopg.Connection[Any], info: SchluesselInfo) -> Kontext
     if info.art == "leitung":
         if info.person_id is None:
             raise NichtGefunden(_ABGELEHNT)
-        person = firmen.kontext_fuer_person(conn, info.person_id)
+        try:
+            person = firmen.kontext_fuer_person(conn, info.person_id)
+        except NichtGefunden:
+            # Person seit pruefen inaktiv geworden: dieselbe Meldung wie jede Ablehnung.
+            raise NichtGefunden(_ABGELEHNT) from None
         rollen = {f: r for f, r in person.rollen.items() if r == "leitung"}
         return Kontext(person_id=info.person_id, betreiber=False, rollen=rollen,
                        actor=actor, quelle="bot")
@@ -179,11 +192,21 @@ def kontext_fuer(conn: psycopg.Connection[Any], info: SchluesselInfo) -> Kontext
 # --- CLI ----------------------------------------------------------------------------
 
 
+class _DsnFehlt(Exception):
+    """DSN-Datei nicht gesetzt oder nicht lesbar (Meldung fest, ohne Pfad oder Inhalt)."""
+
+
 def _dsn_lesen() -> str:
     datei = os.environ.get("EVENT_ADMIN_DSN_FILE", "").strip()
     if not datei:
-        return ""
-    return Path(datei).read_text(encoding="utf-8").strip()
+        raise _DsnFehlt("Kein DSN: EVENT_ADMIN_DSN_FILE setzen.")
+    try:
+        dsn = Path(datei).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        raise _DsnFehlt("DSN-Datei nicht lesbar (EVENT_ADMIN_DSN_FILE).") from None
+    if not dsn:
+        raise _DsnFehlt("DSN-Datei ist leer (EVENT_ADMIN_DSN_FILE).")
+    return dsn
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -202,9 +225,10 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    dsn = _dsn_lesen()
-    if not dsn:
-        print("Kein DSN: EVENT_ADMIN_DSN_FILE setzen.", file=sys.stderr)
+    try:
+        dsn = _dsn_lesen()
+    except _DsnFehlt as fehler:
+        print(str(fehler), file=sys.stderr)
         return 2
     try:
         conn = psycopg.connect(dsn, autocommit=True)
