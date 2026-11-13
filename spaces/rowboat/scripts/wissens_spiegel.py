@@ -345,7 +345,8 @@ def zusammenfuehren_planen(
     Ueberlappung: der Besitzer-Plan bleibt, dazu `konflikt_daneben` mit der Nicht-Besitzer-Fassung unter
     `konfliktname` auf beiden Seiten, hoechstens eine je Pfad und Tag (gibt es von heute schon eine, bleibt
     es beim Besitzer-Plan). `.json`, Binaer und Dateien ueber `MERGE_MAX_BYTES`/`MERGE_MAX_ZEILEN`: Besitzer-Plan.
-    `.html`/`.htm` werden nie gemischt, sondern immer wie eine Ueberlappung behandelt (Konfliktkopie daneben).
+    `.html`/`.htm` werden nie gemischt, sondern immer wie eine Ueberlappung behandelt (Konfliktkopie daneben),
+    unabhaengig von Groesse, Kodierung, Zeilenzahl und Basis (die Basis darf hier leer sein).
     Zurueck: Aktionen, zu schreibende Inhalte je Pfad, (Pfad, Konfliktname).
     """
     neu: list[Aktion] = []
@@ -362,10 +363,11 @@ def zusammenfuehren_planen(
         erledigt.add(a.pfad)
         eigene = [x for x in aktionen if x.pfad == a.pfad]
         basis, x_pc, x_vm = fassungen[a.pfad]
-        if not _zusammenfuehrbar(a.pfad, basis, x_pc, x_vm):
+        html = _nie_zeilenweise(a.pfad)
+        if not html and not _zusammenfuehrbar(a.pfad, basis, x_pc, x_vm):
             neu += eigene
             continue
-        ergebnis = None if _nie_zeilenweise(a.pfad) else _drei_wege(
+        ergebnis = None if html else _drei_wege(
             basis.decode("utf-8"), x_pc.decode("utf-8"), x_vm.decode("utf-8"))
         if ergebnis is not None:
             neu.append(Aktion("zusammenfuehren", a.pfad))
@@ -899,14 +901,15 @@ def _zusammenfuehren(
         alt, x_pc, x_vm = zuletzt.get(pfad), pc.get(pfad), vm.get(pfad)
         if alt is None or x_pc is None or x_vm is None:
             continue
-        basis = _basis_lesen(basis_ordner, pfad, alt.sha256)
+        html = _nie_zeilenweise(pfad)
+        basis = b"" if html else _basis_lesen(basis_ordner, pfad, alt.sha256)   # HTML braucht keine Basis
         if basis is None:
             continue
         try:
             daten = (pc_wurzel / roh_pc.get(pfad, pfad)).read_bytes()
         except OSError:
             continue
-        if _sha_bytes(daten) == x_pc.sha256 and _zusammenfuehrbar(pfad, basis, daten):
+        if _sha_bytes(daten) == x_pc.sha256 and (html or _zusammenfuehrbar(pfad, basis, daten)):
             kandidaten[pfad] = (basis, daten)
     if not kandidaten:
         return aktionen, {}, [], {}

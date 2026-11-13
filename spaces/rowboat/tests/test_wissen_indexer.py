@@ -323,3 +323,22 @@ def test_html_wird_als_titel_und_sichtbarer_text_eingebettet(wurzel, idx):
     gesamt = "\n".join(texte)
     assert "Sommerfest" in gesamt and "Grillen am See" in gesamt
     assert "zebra" not in gesamt and "<p>" not in gesamt
+
+
+def test_giftdatei_bricht_die_runde_nicht_ab(wurzel, idx, monkeypatch):
+    from wissen_suche import indexer as modul
+
+    schreiben(wurzel, "Konzepte/a.html", "<p>gift</p>")
+    schreiben(wurzel, "Konzepte/b.html", "<p>gut gut gut</p>")
+    echt = modul.html_text.lesen
+
+    def boese(text):
+        if "gift" in text:
+            raise RuntimeError("kaputt")
+        return echt(text)
+
+    monkeypatch.setattr(modul.html_text, "lesen", boese)
+    abgleichen(idx, wurzel)
+    einbetten_runde(idx, wurzel, FakeEinbetter())
+    assert idx.dateien()["Konzepte/b.html"].status == "fertig"
+    assert idx.dateien()["Konzepte/a.html"].status == "offen"      # Fehlversuch gezaehlt, Runde lief weiter

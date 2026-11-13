@@ -111,8 +111,8 @@ def _text_fuer_zerlegen(rel: str, daten: bytes) -> str:
     text = daten.decode("utf-8", errors="replace")
     if not rel.lower().endswith(HTML_ENDUNGEN):
         return text
-    kopf = html_text.titel(text)
-    return (kopf + "\n" if kopf else "") + html_text.sichtbarer_text(text)
+    kopf, sichtbar = html_text.lesen(text)
+    return (kopf + "\n" if kopf else "") + sichtbar
 
 
 def _lesen(pfad: Path) -> tuple[bytes, str]:
@@ -162,7 +162,12 @@ def einbetten_runde(index: WissensIndex, wurzel: Path, einbetter: Einbetter,
             continue
         if sha != bekannt[rel].sha256:
             continue        # seit dem Abgleich geaendert; der naechste Abgleich setzt den neuen Stand
-        abschnitte = zerlegen(rel, _text_fuer_zerlegen(rel, daten))
+        try:
+            abschnitte = zerlegen(rel, _text_fuer_zerlegen(rel, daten))
+        except Exception as exc:  # noqa: BLE001 - eine Giftdatei darf die Runde nicht abbrechen
+            log.warning("%s nicht zerlegbar (%s), uebersprungen", rel, type(exc).__name__)
+            index.fehlschlag(rel, f"nicht zerlegbar: {type(exc).__name__}")
+            continue
         if eingebettet and eingebettet + len(abschnitte) > max_abschnitte:
             break
         vektoren: list[list[float]] = []

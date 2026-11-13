@@ -1210,3 +1210,42 @@ def test_html_beidseitig_wird_nie_zeilenweise_zusammengefuehrt(seiten, meldungen
     assert (pc / k).read_text(encoding="utf-8") == pc_fassung and (vm / k).read_text(encoding="utf-8") == pc_fassung
     assert not any(n.endswith("(Konflikt 2026-10-25 14-03).md") for n in dateien(pc))
     assert ws.ist_konfliktdatei(k) and ws.besitzer(k) == ws.besitzer("Konzepte/k.html")
+
+
+def _html_beidseitig(seiten, pfad, start, pc_fassung, vm_fassung, basis_loeschen=False):
+    pc, vm, zustand = seiten
+    _gemeinsamer_start(pc, vm, zustand, pfad, start)
+    if basis_loeschen:
+        import shutil
+        shutil.rmtree(zustand.parent / ws.BASIS, ignore_errors=True)
+    schreibe(pc, pfad, pc_fassung)
+    schreibe(vm, pfad, vm_fassung)
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE, jetzt=JETZT) == 0
+    k = pfad[:-len(".html")] + " (Konflikt 2026-10-25 14-03).html"
+    assert (pc / pfad).read_bytes() == (vm / pfad).read_bytes()
+    assert (pc / k).read_bytes() == (vm / k).read_bytes()
+    return pc, vm, k
+
+
+def test_html_gross_beidseitig_bekommt_kopie_daneben(seiten, meldungen):
+    start = HTML_TEXT + "<!-- " + "x" * (300 * 1024) + " -->\n"        # > 256 KB
+    pc, vm, k = _html_beidseitig(seiten, "Konzepte/g.html", start, start.replace("Zeile 1", "PC"), start.replace("Zeile 7", "VM"))
+    assert (vm / "Konzepte/g.html").read_text(encoding="utf-8") == start.replace("Zeile 7", "VM")
+    assert (pc / k).read_text(encoding="utf-8") == start.replace("Zeile 1", "PC")
+    assert len(meldungen) == 1
+
+
+def test_html_ohne_basis_beidseitig_bekommt_kopie_daneben(seiten, meldungen):
+    pc, vm, k = _html_beidseitig(seiten, "Konzepte/o.html", HTML_TEXT, HTML_TEXT.replace("Zeile 1", "PC"),
+                                 HTML_TEXT.replace("Zeile 7", "VM"), basis_loeschen=True)
+    assert (pc / k).read_text(encoding="utf-8") == HTML_TEXT.replace("Zeile 1", "PC")
+    assert len(meldungen) == 1
+
+
+def test_html_nicht_utf8_beidseitig_bekommt_kopie_daneben(seiten, meldungen):
+    start = "<p>Gr\xfc\xdfe</p>\n<p>zwei</p>\n".encode("latin-1")
+    pc_f, vm_f = start.replace(b"zwei", b"PC"), start.replace(b"zwei", b"VM")
+    pc, vm, k = _html_beidseitig(seiten, "Konzepte/l.html", start, pc_f, vm_f)
+    assert (vm / "Konzepte/l.html").read_bytes() == vm_f
+    assert (pc / k).read_bytes() == pc_f
+    assert len(meldungen) == 1
