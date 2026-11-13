@@ -170,7 +170,7 @@ def einladung_info(conn: psycopg.Connection[Any], token: str) -> dict[str, Any]:
     with transaktion(conn, Kontext.system()) as cur:
         cur.execute(
             "select e.firma_name, e.eingeloest, e.gueltig_bis > now() as gueltig, p.aktiv,"
-            " p.passwort_hash is not null as hat_pw"
+            " event.hat_passwort(p.id) as hat_pw"
             " from event.einladung_holen(%s) e join event.person p on p.id = e.person_id",
             (h,),
         )
@@ -194,7 +194,7 @@ def einladung_einloesen(
     with transaktion(conn, Kontext.system()) as cur:
         cur.execute(
             "select e.id, e.person_id, e.firma_id, e.rolle, e.eingeloest,"
-            " e.gueltig_bis > now() as gueltig, p.aktiv, p.passwort_hash is not null as hat_pw"
+            " e.gueltig_bis > now() as gueltig, p.aktiv, event.hat_passwort(p.id) as hat_pw"
             " from event.einladung_holen(%s) e join event.person p on p.id = e.person_id",
             (_token_hash(token),),
         )
@@ -223,12 +223,14 @@ def einladung_einloesen(
         if cur.rowcount != 1:
             raise ValueError(_FEHLER_EINLADUNG)
         if neuer_hash is not None:
+            # passwort_hash ist fuer event_app unlesbar (004): "nur wenn leer" prueft die
+            # SD-Funktion, gebunden an die Person dieses Kontexts.
             cur.execute(
-                "update event.person set passwort_hash = %s, name = coalesce(%s, name)"
-                " where id = %s and passwort_hash is null and aktiv",
-                (neuer_hash, neuer_name, person_id),
+                "select event.passwort_setzen_wenn_leer(%s, %s, %s) as ok",
+                (person_id, neuer_hash, neuer_name),
             )
-            if cur.rowcount != 1:
+            gesetzt = cur.fetchone()
+            if gesetzt is None or not gesetzt["ok"]:
                 raise ValueError(_FEHLER_EINLADUNG)
         cur.execute(
             "insert into event.mitgliedschaft (person_id, firma_id, rolle) values (%s, %s, %s)"
@@ -285,8 +287,7 @@ def anmelden(
         return None
     with transaktion(conn, Kontext.system()) as cur:
         cur.execute(
-            "select id, passwort_hash, aktiv from event.person where lower(mail) = %s",
-            (schluessel,),
+            "select id, passwort_hash, aktiv from event.anmeldung_holen(%s)", (schluessel,)
         )
         p = cur.fetchone()
     gespeichert = p["passwort_hash"] if p is not None else None
