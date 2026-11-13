@@ -13,6 +13,7 @@ from uuid import UUID
 import pytest
 
 from spaces.event_management.system import marke, schluessel, werkzeuge
+from spaces.event_management.system.events import ZEITZONE
 from spaces.event_management.system.kontext import NichtGefunden
 from spaces.event_management.system.mailer import SpeicherMailer
 
@@ -34,12 +35,13 @@ def _firma(admin: Any, kurz: str) -> UUID:
 
 
 def _event(admin: Any, firma: UUID, name: str, *, kategorie: str = "team_meeting",
-           quelle: str = "neu", tage: int = 0) -> UUID:
-    beginn = BEGINN + timedelta(days=tage)
+           quelle: str = "neu", tage: int = 0, beginn: datetime | None = None,
+           status: str = "geplant") -> UUID:
+    start = BEGINN + timedelta(days=tage) if beginn is None else beginn
     return admin.execute(
-        "insert into event.event (firma_id, kategorie, name, beginn, ende, quelle)"
-        " values (%s, %s, %s, %s, %s, %s) returning id",
-        (firma, kategorie, name, beginn, beginn + timedelta(hours=3), quelle),
+        "insert into event.event (firma_id, kategorie, name, beginn, ende, quelle, status)"
+        " values (%s, %s, %s, %s, %s, %s, %s) returning id",
+        (firma, kategorie, name, start, start + timedelta(hours=3), quelle, status),
     ).fetchone()["id"]
 
 
@@ -154,7 +156,8 @@ def test_waehlen_eindeutig_mehrdeutig_keiner(db_admin, db_app, welt, lea):
     marken_vorher = _anzahl(db_admin, "marke")
     mehrdeutig = werkzeuge.ausfuehren(app, lea, "event_waehlen", {"suche": "Sommerfest"})
     assert set(mehrdeutig) == {"treffer", "hinweis"}
-    assert mehrdeutig["hinweis"] == "Bitte genauer"
+    assert mehrdeutig["hinweis"] == werkzeuge.GENAUER_DATUM
+    assert "datum" in mehrdeutig["hinweis"]
     assert mehrdeutig["treffer"] == [
         {"name": "Sommerfest Nord", "firma": FIRMA_A, "beginn": BEGINN},
         {"name": "Sommerfest Sued", "firma": FIRMA_A, "beginn": BEGINN + timedelta(days=1)},
@@ -171,6 +174,66 @@ def test_waehlen_eindeutig_mehrdeutig_keiner(db_admin, db_app, welt, lea):
         _event(db_admin, welt["a"], f"Serie {i:02d}", tage=10 + i)
     viele = werkzeuge.ausfuehren(app, lea, "event_waehlen", {"suche": "Serie"})
     assert len(viele["treffer"]) == 20 and "marke" not in viele
+
+
+def test_waehlen_gleicher_name_mit_datum(db_admin, db_app, welt, lea):
+    """T5-b: gleichnamige Events (wiederkehrende Runde) per Tag des Beginns waehlbar."""
+    app = db_app()
+    # 23:30 UTC ist in Berlin schon der naechste Tag.
+    spaet = datetime(2027, 3, 1, 23, 30, tzinfo=timezone.utc)
+    frueh = datetime(2027, 3, 8, 10, 0, tzinfo=timezone.utc)
+    erste = _event(db_admin, welt["a"], "Wochenrunde", beginn=spaet)
+    zweite = _event(db_admin, welt["a"], "Wochenrunde", beginn=frueh)
+
+    ohne = werkzeuge.ausfuehren(app, lea, "event_waehlen", {"suche": "Wochenrunde"})
+    assert "marke" not in ohne and "datum" in ohne["hinweis"]
+    assert [t["beginn"] for t in ohne["treffer"]] == [spaet, frueh]  # beginn unterscheidet
+
+    for datum, erwartet in (("2027-03-02", erste), ("2027-03-08", zweite)):
+        mit = werkzeuge.ausfuehren(app, lea, "event_waehlen",
+                                   {"suche": "Wochenrunde", "datum": datum})
+        assert set(mit) == {"marke", "event"}
+        assert marke.marke_aufloesen(app, lea, mit["marke"]) == erwartet
+    with pytest.raises(NichtGefunden):  # UTC-Datum, nicht Berliner Datum
+        werkzeuge.ausfuehren(app, lea, "event_waehlen", {"suche": "Wochenrunde",
+                                                         "datum": "2027-03-01"})
+
+    marken = _anzahl(db_admin, "marke")
+    for falsch in ("2027-13-01", "2027-02-30", "01.03.2027", "2027-3-1", "2027-03-02\n",
+                   "２０２７-03-02", "2027-03-02T10:00", ""):
+        with pytest.raises(ValueError) as e:
+            werkzeuge.ausfuehren(app, lea, "event_waehlen",
+                                 {"suche": "Wochenrunde", "datum": falsch})
+        assert str(e.value) == "Argument 'datum' muss ein Datum JJJJ-MM-TT sein", repr(falsch)
+    assert _anzahl(db_admin, "marke") == marken
+
+    lesen = _info(db_admin, "betreiber_lesen", person_id=welt["bea"])
+    schema = {w.name: w for w in werkzeuge.katalog(app, lesen)}["event_waehlen"].eingabe
+    assert schema["properties"]["datum"]["pattern"] == r"^\d{4}-\d{2}-\d{2}$"
+    assert schema["required"] == ["suche"]
+
+
+def test_waehlen_exakt_nur_unter_nicht_archivierten(db_admin, db_app, welt, lea):
+    """Minor 2: die Exakt-Regel gilt erst nach dem Weglassen archivierter Events."""
+    app = db_app()
+    _event(db_admin, welt["a"], "Jahresplanung", tage=-400, status="archiviert")
+    tag_alt = (BEGINN - timedelta(days=400)).astimezone(ZEITZONE).date().isoformat()
+    neu = _event(db_admin, welt["a"], "Jahresplanung", tage=5)
+    _event(db_admin, welt["a"], "Jahresplanung Nachlese", tage=6)
+
+    gewaehlt = werkzeuge.ausfuehren(app, lea, "event_waehlen", {"suche": "jahresplanung"})
+    assert marke.marke_aufloesen(app, lea, gewaehlt["marke"]) == neu
+
+    # Ist auch das neue archiviert, gibt es keinen eindeutigen aktiven Treffer mehr: die
+    # Trefferliste bleibt vollstaendig (auch mit dem archivierten Event).
+    db_admin.execute("update event.event set status = 'archiviert' where id = %s", (neu,))
+    liste = werkzeuge.ausfuehren(app, lea, "event_waehlen", {"suche": "jahresplanung"})
+    assert "marke" not in liste and len(liste["treffer"]) == 3
+    # Einzeltreffer bleibt einzeln: ein archiviertes Event wird klar abgelehnt.
+    with pytest.raises(ValueError) as e:
+        werkzeuge.ausfuehren(app, lea, "event_waehlen",
+                             {"suche": "Jahresplanung", "datum": tag_alt})
+    assert str(e.value) == "Event ist archiviert"
 
 
 def test_waehlen_nur_eigene_firmen(db_admin, db_app, welt, lea):
@@ -469,6 +532,26 @@ def test_bestaetigung_nur_einmal(db_admin, db_app, welt, lea):
     assert str(e.value) == marke.CODE_UNGUELTIG
     assert db_admin.execute("select 1 from event.event where id = %s",
                             (welt["nord"],)).fetchone() is not None
+
+
+def test_code_verbraucht_wenn_fachaktion_scheitert(db_admin, db_app, welt, lea):
+    """Ruling T5-d: der eingeloeste Code ist weg, auch wenn die Fachaktion danach scheitert."""
+    app = db_app()
+    db_admin.execute(
+        "insert into event.aufgabe (event_id, firma_id, titel, verantwortlich_id)"
+        " values (%s, %s, 'Raum buchen', %s)", (welt["nord"], welt["a"], welt["karl"]))
+    m = marke.marke_ausstellen(app, lea, welt["nord"])
+    argumente = {"marke": m, "kontakt": "Karl Beispiel"}
+    code = werkzeuge.ausfuehren(app, lea, "kontakt_entfernen", argumente)["bestaetigung"]
+
+    with pytest.raises(ValueError) as e:
+        werkzeuge.ausfuehren(app, lea, "kontakt_entfernen", {**argumente, "bestaetigung": code})
+    assert str(e.value) == "Kontakt wird noch verwendet"
+    with pytest.raises(ValueError) as e:
+        werkzeuge.ausfuehren(app, lea, "kontakt_entfernen", {**argumente, "bestaetigung": code})
+    assert str(e.value) == marke.CODE_UNGUELTIG
+    assert db_admin.execute("select 1 from event.kontakt where id = %s",
+                            (welt["karl"],)).fetchone() is not None
 
 
 def test_kontakt_entfernen_per_name_suche(db_admin, db_app, welt, lea):

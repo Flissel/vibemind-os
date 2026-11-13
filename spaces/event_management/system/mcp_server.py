@@ -299,15 +299,22 @@ def konfiguration(umgebung: Mapping[str, str] | None = None) -> Konfiguration:
     return Konfiguration(dsn, host, port, basis_url)
 
 
-def _mailer_aus_umgebung() -> Mailer | None:
-    """Derselbe Mailer wie event-api (`SmtpMailer.aus_umgebung`, EVENT_SMTP_*). Fehlt die
-    SMTP-Konfiguration, laeuft der Dienst ohne Einladen (das Werkzeug lehnt dann ab); die
-    Meldung nennt nur den Variablennamen."""
-    try:
-        return SmtpMailer.aus_umgebung()
-    except ValueError as e:
-        log.warning("Einladen per Bot aus: %s", e)
+SMTP_UMGEBUNG = ("EVENT_SMTP_HOST", "EVENT_SMTP_PORT", "EVENT_SMTP_USER",
+                 "EVENT_SMTP_ABSENDER", "EVENT_SMTP_PASSWORT_FILE")
+
+
+def _mailer_aus_umgebung(umgebung: Mapping[str, str] | None = None) -> Mailer | None:
+    """Derselbe Mailer wie event-api (`SmtpMailer.aus_umgebung`, EVENT_SMTP_*).
+
+    Ist KEINE EVENT_SMTP_*-Variable gesetzt, laeuft der Dienst ohne Einladen (das Werkzeug
+    lehnt dann ab). Eine teilweise oder ungueltige Konfiguration bricht den Start ab
+    (ValueError, die Meldung nennt nur den Variablennamen) – wie EVENT_BASIS_URL.
+    """
+    env = os.environ if umgebung is None else umgebung
+    if not any(env.get(name, "").strip() for name in SMTP_UMGEBUNG):
+        log.warning("Einladen per Bot aus: keine EVENT_SMTP_*-Konfiguration")
         return None
+    return SmtpMailer.aus_umgebung(env)
 
 
 def main() -> None:

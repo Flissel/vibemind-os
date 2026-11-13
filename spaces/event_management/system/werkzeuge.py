@@ -37,7 +37,7 @@ import logging
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
@@ -60,9 +60,10 @@ TEXT_MAX = 2000
 MAX_TREFFER = 20
 VERLAUF_VORGABE = 50
 GENAUER = "Bitte genauer"
+GENAUER_DATUM = "Bitte genauer – oder mit datum (JJJJ-MM-TT, Tag des Beginns) wählen"
 ARCHIVIERT = "Event ist archiviert"
 EINLADEN_AUS = "Einladen ist nicht eingerichtet"
-ROLLEN = ("leitung", "mitglied")
+_DATUM = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 # Deutsche Standardnamen (Gegenstueck zu web/lib/begriffe.ts); das Event-Schema
 # (`begriffe` der Kategorie) hat Vorrang.
@@ -191,7 +192,16 @@ def _wert_pruefen(name: str, s: Mapping[str, Any], wert: object) -> None:
         raise ValueError(f"Argument '{name}' ist zu lang (höchstens {s['maxLength']} Zeichen)")
     if "enum" in s and wert not in s["enum"]:
         raise ValueError(f"Argument '{name}' erlaubt nur: {', '.join(s['enum'])}")
-    if "pattern" in s and not re.match(s["pattern"], wert):
+    if s.get("format") == "date":
+        # fullmatch mit ASCII-Ziffern (das \d im Schema-Muster liesse Unicode-Ziffern und
+        # ein "\n" am Ende durch), dann echtes Kalenderdatum.
+        try:
+            if not _DATUM.fullmatch(wert):
+                raise ValueError
+            date.fromisoformat(wert)
+        except ValueError:
+            raise ValueError(f"Argument '{name}' muss ein Datum JJJJ-MM-TT sein") from None
+    elif "pattern" in s and not re.match(s["pattern"], wert):
         raise ValueError(f"Argument '{name}' muss mit http:// oder https:// beginnen")
     if s.get("format") == "uuid":
         try:
@@ -378,16 +388,14 @@ def _kontakte_finden(conn: psycopg.Connection[Any], k: Kontext, firma_id: UUID,
     return kern.kontakte(conn, k, firma_id, suche or None)
 
 
-def _exakt_bevorzugt(zeilen: list[dict[str, Any]], suche: str,
-                     felder: tuple[str, ...]) -> list[dict[str, Any]]:
-    """Mehrere Treffer, aber genau einer heisst exakt so (Gross-/Kleinschreibung egal):
-    nur dieser. Sonst waere ein Name, der Teil eines anderen ist, nie eindeutig waehlbar."""
-    if len(zeilen) <= 1:
-        return zeilen
+def _exakt_eindeutig(zeilen: list[dict[str, Any]], suche: str,
+                     felder: tuple[str, ...]) -> dict[str, Any] | None:
+    """Die eine Zeile, die exakt so heisst (Gross-/Kleinschreibung egal), sonst None.
+    Ohne diese Regel waere ein Name, der Teil eines anderen ist, nie eindeutig waehlbar."""
     s = suche.strip().casefold()
     exakt = [z for z in zeilen
              if any(str(z.get(f) or "").strip().casefold() == s for f in felder)]
-    return exakt if len(exakt) == 1 else zeilen
+    return exakt[0] if len(exakt) == 1 else None
 
 
 def _kontakte_suchen(conn: psycopg.Connection[Any], info: SchluesselInfo,
@@ -424,17 +432,27 @@ def _events_suchen(conn: psycopg.Connection[Any], info: SchluesselInfo, args: di
 
 def _event_waehlen(conn: psycopg.Connection[Any], info: SchluesselInfo, args: dict[str, Any],
                    u: _Umgebung) -> dict[str, Any]:
+    """Reihenfolge (Ruling T5-b): Suche, dann `datum` (Berliner Ortsdatum des Beginns),
+    dann die Exakt-Regel nur unter nicht archivierten Events. Bleiben mehrere, geht die
+    Trefferliste (mit `beginn` zur Unterscheidung) ohne Marke zurueck."""
     suche = args["suche"].strip()
     if not suche:
         raise ValueError("Suche fehlt")
-    zeilen = _exakt_bevorzugt(_events_finden(conn, info, suche, None, u.kategorien), suche,
-                              ("name",))
+    zeilen = _events_finden(conn, info, suche, None, u.kategorien)
+    if "datum" in args:
+        tag = date.fromisoformat(args["datum"])
+        zeilen = [z for z in zeilen if z["beginn"].astimezone(events.ZEITZONE).date() == tag]
     if not zeilen:
         raise NichtGefunden("Event nicht gefunden")
+    if len(zeilen) > 1:
+        aktiv = [z for z in zeilen if z["status"] != "archiviert"]
+        exakt = _exakt_eindeutig(aktiv, suche, ("name",))
+        if exakt is not None:
+            zeilen = [exakt]
     kurz = [{"name": z["name"], "firma": z["firma_name"], "beginn": z["beginn"]}
             for z in zeilen]
     if len(zeilen) > 1:
-        return {"treffer": kurz[:MAX_TREFFER], "hinweis": GENAUER}
+        return {"treffer": kurz[:MAX_TREFFER], "hinweis": GENAUER_DATUM}
     return {"marke": marke.marke_ausstellen(conn, info, zeilen[0]["id"]), "event": kurz[0]}
 
 
@@ -551,8 +569,11 @@ def _kontakt_entfernen(conn: psycopg.Connection[Any], info: SchluesselInfo,
     suche = args["kontakt"].strip()
     if not suche:
         raise ValueError("Kontakt fehlt")
-    zeilen = _exakt_bevorzugt(_kontakte_finden(conn, g.k, firma_id, suche), suche,
-                              ("name", "mail"))
+    zeilen = _kontakte_finden(conn, g.k, firma_id, suche)
+    if len(zeilen) > 1:
+        exakt = _exakt_eindeutig(zeilen, suche, ("name", "mail"))
+        if exakt is not None:
+            zeilen = [exakt]
     if not zeilen:
         raise NichtGefunden("Kontakt nicht gefunden")
     if len(zeilen) > 1:
@@ -576,7 +597,10 @@ def _rolle_aendern(conn: psycopg.Connection[Any], info: SchluesselInfo, args: di
     k = kontext_fuer(conn, info)
     firma = _firma_finden(conn, k, args["firma"])
     rechte.pruefe(k, "rolle_aendern", firma["id"])
-    rolle = next(r for r in ROLLEN if r == args["rolle"])  # kanonisch (Schema: enum)
+    # Kanonischer Wert aus der eigenen Liste (das Schema prueft schon per enum).
+    rolle = next((r for r in firmen.ROLLEN if r == args["rolle"]), None)
+    if rolle is None:
+        raise ValueError("Rolle ungültig")
     mail = args["mail"].strip().lower()
     person = next((m for m in firmen.mitglieder(conn, k, firma["id"])
                    if str(m["mail"]).lower() == mail), None)
@@ -609,7 +633,7 @@ class _Sonder:
 
 _FIRMA_SCHEMA: dict[str, Any] = {"type": "string", "maxLength": 32,
                                  "description": "Kürzel der Firma"}
-_ROLLE_SCHEMA: dict[str, Any] = {"type": "string", "enum": list(ROLLEN)}
+_ROLLE_SCHEMA: dict[str, Any] = {"type": "string", "enum": list(firmen.ROLLEN)}
 _ZEIT_SCHEMA: dict[str, Any] = {"type": "string", "format": "date-time",
                                 "description": "ISO-8601; ohne Zeitzone gilt Europe/Berlin"}
 _BESTAETIGUNG_SCHEMA: dict[str, Any] = {
@@ -642,9 +666,12 @@ _SONDER: dict[str, _Sonder] = {
          "kategorie": {"type": "string", "maxLength": 64}},
         (), False, False, _events_suchen),
     "event_waehlen": _Sonder(
-        "Ein Event per Suche wählen; liefert die Marke für alle Event-Werkzeuge",
-        {"suche": {"type": "string", "maxLength": 200}}, ("suche",), False, False,
-        _event_waehlen),
+        "Ein Event per Suche wählen; liefert die Marke für alle Event-Werkzeuge. Bei "
+        "gleichen Namen mit datum (Tag des Beginns) eingrenzen",
+        {"suche": {"type": "string", "maxLength": 200},
+         "datum": {"type": "string", "pattern": r"^\d{4}-\d{2}-\d{2}$", "format": "date",
+                   "description": "Tag des Beginns (JJJJ-MM-TT, Ortszeit Berlin)"}},
+        ("suche",), False, False, _event_waehlen),
     "event_anlegen": _Sonder(
         "Neues Event in einer Firma anlegen; liefert die Marke des neuen Events",
         {"firma": _FIRMA_SCHEMA,

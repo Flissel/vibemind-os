@@ -373,8 +373,7 @@ def test_konfiguration(tmp_path):
 # --- Einladen mit dem Mailer der App (Ruling S6) ------------------------------------
 
 EINLADUNGS_BASIS = "https://events.example.org"
-_SMTP_UMGEBUNG = ("EVENT_SMTP_HOST", "EVENT_SMTP_PORT", "EVENT_SMTP_USER",
-                  "EVENT_SMTP_ABSENDER", "EVENT_SMTP_PASSWORT_FILE")
+_SMTP_UMGEBUNG = mcp_server.SMTP_UMGEBUNG
 
 
 def _einladung(firma: str) -> dict[str, Any]:
@@ -438,9 +437,28 @@ def test_main_verdrahtet_mailer_und_basis_url(monkeypatch, tmp_path):
     assert erhalten[-1]["mailer"].host == "smtp.example.org"
     assert erhalten[-1]["basis_url"] == EINLADUNGS_BASIS
 
-    # Ohne SMTP-Konfiguration startet der Dienst trotzdem; Einladen ist dann aus.
+    # Teilweise oder ungueltige SMTP-Konfiguration: harter Abbruch (wie EVENT_BASIS_URL),
+    # die Meldung nennt nur den Variablennamen.
+    gestartet = len(erhalten)
+    monkeypatch.setenv("EVENT_SMTP_PORT", "kein-port")
+    with pytest.raises(ValueError) as e:
+        mcp_server.main()
+    assert str(e.value) == "EVENT_SMTP_PORT ungueltig"
+    monkeypatch.setenv("EVENT_SMTP_PORT", "587")
+    monkeypatch.delenv("EVENT_SMTP_USER")
+    with pytest.raises(ValueError) as e:
+        mcp_server.main()
+    assert str(e.value) == "EVENT_SMTP_USER fehlt"
+    monkeypatch.setenv("EVENT_BASIS_URL", "ftp://x")
+    with pytest.raises(ValueError):
+        mcp_server.main()
+    assert len(erhalten) == gestartet  # nichts gestartet
+    monkeypatch.setenv("EVENT_BASIS_URL", EINLADUNGS_BASIS)
+
+    # Gar keine EVENT_SMTP_*-Variable: der Dienst startet, Einladen ist aus.
     for name in _SMTP_UMGEBUNG:
-        monkeypatch.delenv(name)
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("EVENT_SMTP_HOST", "  ")  # leer zaehlt als nicht gesetzt
     mcp_server.main()
     assert erhalten[-1]["mailer"] is None and erhalten[-1]["basis_url"] == EINLADUNGS_BASIS
     monkeypatch.delenv("EVENT_BASIS_URL")
