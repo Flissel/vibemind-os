@@ -17,7 +17,7 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from spaces.event_management.system import api, events, firmen, zugang
-from spaces.event_management.system.bausteine import REGISTRY
+from spaces.event_management.system.bausteine import KERN, REGISTRY
 from spaces.event_management.system.kategorien import KategorieFehler
 from spaces.event_management.system.kontext import Kontext, transaktion
 from spaces.event_management.system.mailer import SpeicherMailer
@@ -32,6 +32,11 @@ OEFFENTLICH = {("POST", "/api/anmelden"), ("GET", "/api/einladung/{token}"),
 SCHREIBEND = {"POST", "PATCH", "PUT", "DELETE"}
 
 Fabrik = Callable[..., TestClient]
+
+# Registry-Eintraege der Kern-Bausteine (die Testwelt hat je Firma ein weihnachtsfeier-Event).
+# Zusatz-Bausteine laufen ueber dieselben generischen Routen; ihre Mandantenmatrix steht in
+# test_kern.py (Fachschicht, mit passender Kategorie) und test_rls.py (RLS).
+KERN_EINTRAEGE = sorted(n for n, t in REGISTRY.items() if (t.baustein or n) in KERN)
 
 
 @pytest.fixture(autouse=True)
@@ -188,7 +193,7 @@ def welt(db_admin: Any, fabrik: Fabrik) -> dict[str, Any]:
     for seite, firma, ev in (("a", fa, ea), ("b", fb, eb)):
         k = _kontakt(db_admin, firma, "Kontakt " + seite)
         w["k" + seite + "_frei"] = _kontakt(db_admin, firma, "Frei " + seite)
-        w["z" + seite] = {b: _admin_zeile(db_admin, b, firma, ev, k) for b in REGISTRY}
+        w["z" + seite] = {b: _admin_zeile(db_admin, b, firma, ev, k) for b in KERN_EINTRAEGE}
     w["c"] = {"la": fabrik("leitung-a@example.org"), "betreiber": fabrik("betreiber@example.org")}
     return w
 
@@ -372,19 +377,19 @@ FAMILIEN = [
     "firma_anlegen", "einladen", "rolle_aendern", "mitglied_entfernen",
     "event_anlegen", "event_aendern", "event_status", "event_loeschen", "kontakt_anlegen",
     "kontakt_aendern", "kontakt_entfernen",
-    *[f"{op}:{b}" for b in sorted(REGISTRY) for op in ("b_anlegen", "b_aendern", "b_loeschen")],
+    *[f"{op}:{b}" for b in KERN_EINTRAEGE for op in ("b_anlegen", "b_aendern", "b_loeschen")],
 ]
 # Nur Fremdversuch: fremde Person/Zeile ueber die eigene Firma/das eigene Event adressiert.
 NUR_FREMD = [
     "rolle_aendern_fremde_person", "mitglied_entfernen_fremde_person",
     "kontakt_aendern_fremder_kontakt", "kontakt_entfernen_fremder_kontakt",
-    *[f"{op}:{b}" for b in sorted(REGISTRY)
+    *[f"{op}:{b}" for b in KERN_EINTRAEGE
       for op in ("b_aendern_fremde_zeile", "b_loeschen_fremde_zeile")],
 ]
 # Lesende Zugriffe auf Event/Firma B (fremd: 404, eigen: 200).
 LESEN = [
     "event_lesen", "verlauf_lesen", "mitglieder_lesen", "kontakte_lesen",
-    *[f"b_liste:{b}" for b in sorted(REGISTRY)],
+    *[f"b_liste:{b}" for b in KERN_EINTRAEGE],
 ]
 
 

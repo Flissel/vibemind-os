@@ -1,4 +1,4 @@
-"""Bekannte Bausteine und Feldtypen der Event-Kategorien; Registry der Kern-Tabellen."""
+"""Bekannte Bausteine und Feldtypen der Event-Kategorien; Registry der Baustein-Tabellen."""
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -23,7 +23,7 @@ FELDTYPEN = frozenset({
 
 @dataclass(frozen=True)
 class BausteinTabelle:
-    """Tabelle eines Kern-Bausteins fuer die generische Fachschicht (`kern`).
+    """Tabelle eines Kern- oder Zusatz-Bausteins fuer die generische Fachschicht (`kern`).
 
     `felder` bildet jede schreibbare Spalte auf einen Feldtyp ab (Einfuegereihenfolge =
     Anzeige-Reihenfolge): ``text``, ``datumzeit``, ``ganzzahl``, ``url`` (http/https),
@@ -79,6 +79,82 @@ REGISTRY: dict[str, BausteinTabelle] = {
             {"titel": "text", "art": "auswahl:kosten,einnahme", "betrag_cent": "ganzzahl",
              "status": "auswahl:geplant,bestaetigt,bezahlt"},
             frozenset({"titel", "art", "betrag_cent"}), "angelegt, id",
+        ),
+        # Zusatz-Bausteine (db/003_zusatz_bausteine.sql); welche Kategorie welchen Zusatz
+        # hat, steht in kategorien/*.yaml.
+        BausteinTabelle(
+            "wettbewerb_teams", "wettbewerb_team",
+            {"name": "text", "thema": "text", "ansprech_id": "kontakt"},
+            frozenset({"name"}), "name, id",
+        ),
+        BausteinTabelle(
+            "abgaben", "abgabe",
+            {"team_id": "ref:wettbewerb_teams", "titel": "text", "link": "url",
+             "eingereicht": "datumzeit"},
+            frozenset({"team_id", "titel"}), "angelegt, id",
+        ),
+        BausteinTabelle(
+            "jury", "jury", {"kontakt_id": "kontakt", "rolle": "text"},
+            frozenset({"kontakt_id"}), "angelegt, id",
+        ),
+        BausteinTabelle(
+            "aussteller", "aussteller",
+            {"name": "text", "ansprech_id": "kontakt",
+             "status": "auswahl:angefragt,zugesagt,abgesagt"},
+            frozenset({"name"}), "name, id",
+        ),
+        BausteinTabelle(
+            "staende", "stand",
+            {"bezeichnung": "text", "aussteller_id": "ref:aussteller", "groesse": "text"},
+            frozenset({"bezeichnung"}), "bezeichnung, id",
+        ),
+        BausteinTabelle(
+            "sprecher", "sprecher",
+            {"kontakt_id": "kontakt", "thema": "text",
+             "status": "auswahl:angefragt,zugesagt,abgesagt"},
+            frozenset({"kontakt_id"}), "angelegt, id",
+        ),
+        BausteinTabelle(
+            "online_raum", "online_raum", {"titel": "text", "link": "url", "zugang": "text"},
+            frozenset({"titel", "link"}), "angelegt, id",
+        ),
+        BausteinTabelle(
+            "aufzeichnung", "aufzeichnung",
+            {"titel": "text", "link": "url",
+             "status": "auswahl:geplant,aufgenommen,veroeffentlicht"},
+            frozenset({"titel"}), "angelegt, id",
+        ),
+        BausteinTabelle(
+            "protokoll", "protokoll_punkt",
+            {"punkt": "text", "notiz": "text", "verantwortlich_id": "kontakt"},
+            frozenset({"punkt"}), "angelegt, id",
+        ),
+        BausteinTabelle(
+            "beschluesse", "beschluss",
+            {"text": "text", "gefasst": "datumzeit", "verantwortlich_id": "kontakt"},
+            frozenset({"text"}), "angelegt, id",
+        ),
+        BausteinTabelle(
+            "verpflegung", "verpflegung",
+            {"titel": "text", "menge": "ganzzahl", "anbieter": "text",
+             "betrag_cent": "ganzzahl"},
+            frozenset({"titel"}), "angelegt, id",
+        ),
+        BausteinTabelle(
+            "programm", "programm_punkt",
+            {"titel": "text", "beginn": "datumzeit", "ende": "datumzeit",
+             "beschreibung": "text"},
+            frozenset({"titel"}), "beginn, id",
+        ),
+        BausteinTabelle(
+            "helferschichten", "helferschicht",
+            {"titel": "text", "beginn": "datumzeit", "ende": "datumzeit",
+             "kontakt_id": "kontakt", "bedarf": "ganzzahl"},
+            frozenset({"titel", "beginn", "ende"}), "beginn, id",
+        ),
+        BausteinTabelle(
+            "buehnen", "buehne", {"name": "text", "ort": "text"},
+            frozenset({"name"}), "name, id",
         ),
     )
 }

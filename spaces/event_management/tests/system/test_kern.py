@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from spaces.event_management.system import kern, verlauf
-from spaces.event_management.system.bausteine import REGISTRY
+from spaces.event_management.system.bausteine import REGISTRY, ZUSAETZE
 from spaces.event_management.system.kontext import KeinRecht, Kontext, NichtGefunden
 
 BEGINN = datetime(2027, 3, 1, 18, 0, tzinfo=timezone.utc)
@@ -313,14 +313,44 @@ def test_feldtypen_kontakt_ref_url() -> None:
 
 def test_registry_inhalt() -> None:
     assert set(REGISTRY) == {"aufgaben", "aufgaben_kategorien", "orga_team", "teilnehmende",
-                             "ablauf", "budget"}
+                             "ablauf", "budget", *ZUSAETZE}
     assert REGISTRY["aufgaben_kategorien"].baustein == "aufgaben"
     for t in REGISTRY.values():
         assert not ({"id", "event_id", "firma_id", "angelegt"} & set(t.felder))
         assert t.pflicht <= set(t.felder)
 
 
-def _beispielwerte(baustein: str, admin: Any, firma: UUID) -> dict[str, Any]:
+# Zusatz-Bausteine brauchen ein Event, dessen Kategorie sie enthaelt (sonst weihnachtsfeier,
+# die ueber fest/veranstaltung auch helferschichten, programm und verpflegung hat).
+_KATEGORIE_FUER = {
+    "wettbewerb_teams": "hackathon", "abgaben": "hackathon", "jury": "hackathon",
+    "aussteller": "messe", "staende": "messe",
+    "sprecher": "online_event", "online_raum": "online_event", "aufzeichnung": "online_event",
+    "protokoll": "team_meeting", "beschluesse": "team_meeting", "buehnen": "festival",
+}
+
+
+def _kategorie_fuer(baustein: str) -> str:
+    return _KATEGORIE_FUER.get(baustein, "weihnachtsfeier")
+
+
+def _welt_fuer(admin: Any, welt: dict[str, Any], baustein: str) -> dict[str, Any]:
+    """Testwelt mit Events ea/eb der Kategorie, die den Baustein enthaelt."""
+    kategorie = _kategorie_fuer(baustein)
+    if kategorie == "weihnachtsfeier":
+        return welt
+    return {**welt, "ea": _event(admin, welt["fa"], kategorie),
+            "eb": _event(admin, welt["fb"], kategorie)}
+
+
+def _beispielwerte(baustein: str, admin: Any, firma: UUID, event: UUID) -> dict[str, Any]:
+    if baustein == "abgaben":
+        team = admin.execute(
+            "insert into event.wettbewerb_team (event_id, firma_id, name)"
+            " values (%s, %s, 'Team') returning id", (event, firma)).fetchone()["id"]
+        return {"team_id": team, "titel": "Abgabe"}
+    if baustein in ("jury", "sprecher"):
+        return {"kontakt_id": _kontakt(admin, firma)}
     return {
         "aufgaben": {"titel": "Aufgabe"},
         "aufgaben_kategorien": {"name": "Kat"},
@@ -328,12 +358,24 @@ def _beispielwerte(baustein: str, admin: Any, firma: UUID) -> dict[str, Any]:
         "teilnehmende": {"kontakt_id": _kontakt(admin, firma, "Tn")},
         "ablauf": {"titel": "Punkt", "beginn": BEGINN},
         "budget": {"titel": "Posten", "art": "kosten", "betrag_cent": 5},
+        "wettbewerb_teams": {"name": "Team"},
+        "aussteller": {"name": "Aussteller"},
+        "staende": {"bezeichnung": "A1"},
+        "online_raum": {"titel": "Raum", "link": "https://meet.example.org/raum"},
+        "aufzeichnung": {"titel": "Aufzeichnung"},
+        "protokoll": {"punkt": "Punkt"},
+        "beschluesse": {"text": "Beschluss"},
+        "verpflegung": {"titel": "Essen"},
+        "programm": {"titel": "Programmpunkt"},
+        "helferschichten": {"titel": "Schicht", "beginn": BEGINN,
+                            "ende": BEGINN + timedelta(hours=1)},
+        "buehnen": {"name": "Bühne"},
     }[baustein]
 
 
 def _admin_zeile(admin: Any, baustein: str, firma: UUID, event: UUID) -> UUID:
     t = REGISTRY[baustein]
-    w = _beispielwerte(baustein, admin, firma)
+    w = _beispielwerte(baustein, admin, firma, event)
     spalten = ["event_id", "firma_id", *w]
     return admin.execute(
         f"insert into event.{t.tabelle} ({', '.join(spalten)})"
@@ -345,8 +387,7 @@ def _admin_zeile(admin: Any, baustein: str, firma: UUID, event: UUID) -> UUID:
 def _aenderung(t: Any) -> dict[str, Any]:
     if "zusage" in t.felder:
         return {"zusage": "zugesagt"}
-    feld = "titel" if "titel" in t.felder else "name" if "name" in t.felder else "rolle"
-    return {feld: "x"}
+    return {next(f for f, typ in t.felder.items() if typ == "text"): "x"}
 
 
 @pytest.mark.parametrize("schicht", ["rls", "fachschicht"])
@@ -357,16 +398,17 @@ def test_mandantenmatrix_kern(db_admin: Any, db_app: Any, welt: dict[str, Any],
     """Firma A gegen Event/Zeilen von Firma B. `rls`: Verbindung sieht nur A (zweites Tor).
     `fachschicht`: Superuser-Verbindung ohne RLS, nur die Rechtepruefung haelt (erstes Tor)."""
     t = REGISTRY[baustein]
+    welt = _welt_fuer(db_admin, welt, baustein)
     fremd_zeile = _admin_zeile(db_admin, baustein, welt["fb"], welt["eb"])
     # `fachschicht`: Superuser-Verbindung umgeht RLS, nichts wird versteckt; nur `pruefe` haelt.
     conn = db_app(firmen=[welt["fa"]]) if schicht == "rls" else db_admin
     k = welt["k"]
     # Positivkontrolle: die eigene Firma funktioniert.
     eigene = kern.anlegen(conn, k, welt["ea"], baustein,
-                          _beispielwerte(baustein, db_admin, welt["fa"]))
+                          _beispielwerte(baustein, db_admin, welt["fa"], welt["ea"]))
     assert eigene["firma_id"] == welt["fa"]
     assert [r["id"] for r in kern.liste(conn, k, welt["ea"], baustein)] == [eigene["id"]]
-    legacy_ev = _event(db_admin, welt["fb"], quelle="legacy")
+    legacy_ev = _event(db_admin, welt["fb"], _kategorie_fuer(baustein), quelle="legacy")
     legacy_zeile = _admin_zeile(db_admin, baustein, welt["fb"], legacy_ev)
     vorher = db_admin.execute(
         f"select * from event.{t.tabelle} where firma_id = %s order by id", (welt["fb"],)
@@ -387,7 +429,8 @@ def _fremd_versuch(conn: Any, k: Kontext, db_admin: Any, welt: dict[str, Any], t
         if op == "liste":
             kern.liste(conn, k, ev, baustein)
         elif op == "anlegen":
-            kern.anlegen(conn, k, ev, baustein, _beispielwerte(baustein, db_admin, welt["fb"]))
+            kern.anlegen(conn, k, ev, baustein,
+                         _beispielwerte(baustein, db_admin, welt["fb"], ev))
         elif op == "aendern":
             kern.aendern(conn, k, ev, baustein, fremd_zeile, _aenderung(t))
         else:
@@ -407,7 +450,8 @@ def test_event_bindung_kern_fachschicht(db_admin: Any, welt: dict[str, Any],
     """Kontext auf Event A1 gebunden; Event A2 derselben Firma bleibt unerreichbar.
     Superuser-Verbindung ohne RLS: nur die Fachschicht haelt."""
     t = REGISTRY[baustein]
-    ea2 = _event(db_admin, welt["fa"])
+    welt = _welt_fuer(db_admin, welt, baustein)
+    ea2 = _event(db_admin, welt["fa"], _kategorie_fuer(baustein))
     zeile2 = _admin_zeile(db_admin, baustein, welt["fa"], ea2)
     k = Kontext(person_id=welt["k"].person_id, betreiber=False, rollen=welt["k"].rollen,
                 event_id=welt["ea"])
@@ -419,7 +463,7 @@ def test_event_bindung_kern_fachschicht(db_admin: Any, welt: dict[str, Any],
             kern.liste(db_admin, k, ea2, baustein)
         elif op == "anlegen":
             kern.anlegen(db_admin, k, ea2, baustein,
-                         _beispielwerte(baustein, db_admin, welt["fa"]))
+                         _beispielwerte(baustein, db_admin, welt["fa"], ea2))
         elif op == "aendern":
             kern.aendern(db_admin, k, ea2, baustein, zeile2, _aenderung(t))
         else:
@@ -430,5 +474,5 @@ def test_event_bindung_kern_fachschicht(db_admin: Any, welt: dict[str, Any],
     assert _anzahl(db_admin, "verlauf") == verlauf_vorher
     # Positivkontrolle: das gebundene Event funktioniert.
     eigene = kern.anlegen(db_admin, k, welt["ea"], baustein,
-                          _beispielwerte(baustein, db_admin, welt["fa"]))
+                          _beispielwerte(baustein, db_admin, welt["fa"], welt["ea"]))
     assert [r["id"] for r in kern.liste(db_admin, k, welt["ea"], baustein)] == [eigene["id"]]

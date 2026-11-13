@@ -1,5 +1,5 @@
-"""Generische Fachschicht der Kern-Bausteine (Aufgaben, Orga-Team, Teilnehmende, Ablauf,
-Budget) plus Kontakte. SQL wird nur aus Registry-Namen (`sql.Identifier`) gebaut."""
+"""Generische Fachschicht der Baustein-Tabellen aus der Registry (Kern- und Zusatz-Bausteine)
+plus Kontakte. SQL wird nur aus Registry-Namen (`sql.Identifier`) gebaut."""
 from __future__ import annotations
 
 import logging
@@ -206,11 +206,15 @@ def loeschen(
     t = _tabelle(baustein)
     with transaktion(conn, k) as cur:
         ev = _vorspann(cur, k, event_id, t, kategorien, schreiben=True)
-        cur.execute(
-            sql.SQL("delete from event.{} where id = %s and event_id = %s returning id").format(
-                sql.Identifier(t.tabelle)),
-            (zeile_id, event_id),
-        )
+        try:
+            cur.execute(
+                sql.SQL("delete from event.{} where id = %s and event_id = %s returning id")
+                .format(sql.Identifier(t.tabelle)),
+                (zeile_id, event_id),
+            )
+        except errors.ForeignKeyViolation:
+            # z. B. ein Wettbewerbs-Team, auf das noch Abgaben zeigen
+            raise ValueError("Eintrag wird noch verwendet") from None
         if cur.fetchone() is None:
             raise NichtGefunden("Eintrag nicht gefunden")
         verlauf.schreiben(cur, k, event_id, ev["firma_id"], baustein, "geloescht", zeile_id)

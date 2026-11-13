@@ -14,11 +14,34 @@ import pytest
 TOKEN = "beispiel-token-nur-fuer-tests"
 TOKEN_HASH = hashlib.sha256(TOKEN.encode("utf-8")).hexdigest()
 
+# Neue Tabellen aus 003 (Zusatz-Bausteine und nachricht): Pflichtspalten einer gueltigen
+# Zeile ausser event_id/firma_id. "<kontakt>"/"<team>" stehen fuer Zeilen derselben Firma
+# bzw. desselben Events.
+NEUE_TABELLEN: dict[str, dict[str, object]] = {
+    "wettbewerb_team": {"name": "Team Beispiel"},
+    "abgabe": {"team_id": "<team>", "titel": "Prototyp"},
+    "jury": {"kontakt_id": "<kontakt>"},
+    "aussteller": {"name": "Beispiel GmbH"},
+    "stand": {"bezeichnung": "A1"},
+    "sprecher": {"kontakt_id": "<kontakt>"},
+    "online_raum": {"titel": "Hauptraum", "link": "https://meet.example.org/raum"},
+    "aufzeichnung": {"titel": "Keynote"},
+    "protokoll_punkt": {"punkt": "Begrüßung"},
+    "beschluss": {"text": "Budget freigegeben"},
+    "verpflegung": {"titel": "Mittagessen"},
+    "programm_punkt": {"titel": "Eröffnung"},
+    "helferschicht": {"titel": "Einlass", "beginn": "2027-06-01T10:00:00+00:00",
+                      "ende": "2027-06-01T12:00:00+00:00"},
+    "buehne": {"name": "Hauptbühne"},
+    "nachricht": {"kanal": "gruppe", "text": "Hallo zusammen"},
+}
+
 # Mandanten-Tabellen mit RLS: ohne Kontext 0 Zeilen. person hat RLS, ist aber
 # ohne Kontext lesbar (Login), migration hat keine RLS.
 RLS_TABELLEN = (
     "firma", "mitgliedschaft", "event", "kontakt", "orga_team", "teilnehmende",
     "aufgabe_kategorie", "aufgabe", "ablauf", "budget_posten", "verlauf", "einladung",
+    *NEUE_TABELLEN,
 )
 
 
@@ -89,6 +112,81 @@ def _neue_aufgabe(conn: psycopg.Connection[dict[str, Any]], event_id: object, fi
         "insert into event.aufgabe (event_id, firma_id, titel) values (%s, %s, 'Neu')",
         (event_id, firma),
     )
+
+
+def _neue_zeile(conn: psycopg.Connection[dict[str, Any]], welt: dict[str, Any], tabelle: str,
+                event_id: object, firma: object, team: object = None) -> Any:
+    werte = {
+        spalte: welt["kontakt_a"] if wert == "<kontakt>" else team if wert == "<team>" else wert
+        for spalte, wert in NEUE_TABELLEN[tabelle].items()
+    }
+    spalten = ["event_id", "firma_id", *werte]
+    return _id(conn,
+               f"insert into event.{tabelle} ({', '.join(spalten)})"
+               f" values ({', '.join(['%s'] * len(spalten))}) returning id",
+               (event_id, firma, *werte.values()))
+
+
+@pytest.mark.parametrize("tabelle", sorted(NEUE_TABELLEN))
+def test_neue_tabellen_mandantenmatrix(welt, db_app, db_admin, tabelle):
+    """Zeile von Firma A (Event e1): Firma B sieht/aendert/loescht sie nicht und schreibt
+    nicht in A; das gewaehlte Event e2 blendet sie aus; Firma A selbst arbeitet normal."""
+    team = None
+    if tabelle == "abgabe":
+        team = _id(db_admin, "insert into event.wettbewerb_team (event_id, firma_id, name)"
+                   " values (%s, %s, 'Team A') returning id", (welt["e1"], welt["a"]))
+    zeile = _neue_zeile(db_admin, welt, tabelle, welt["e1"], welt["a"], team)
+    vorher = db_admin.execute(f"select * from event.{tabelle} order by id").fetchall()
+
+    fremd = db_app(firmen=[welt["b"]])
+    assert fremd.execute(f"select * from event.{tabelle} where id = %s", (zeile,)).fetchall() == []
+    assert _anzahl(fremd, tabelle) == 0
+    assert fremd.execute(
+        f"update event.{tabelle} set angelegt = now() where id = %s", (zeile,)).rowcount == 0
+    if tabelle == "nachricht":  # kein delete-Recht fuer event_app
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            fremd.execute("delete from event.nachricht where id = %s", (zeile,))
+    else:
+        assert fremd.execute(
+            f"delete from event.{tabelle} where id = %s", (zeile,)).rowcount == 0
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        _neue_zeile(fremd, welt, tabelle, welt["e1"], welt["a"], team)
+    assert db_admin.execute(f"select * from event.{tabelle} order by id").fetchall() == vorher
+
+    # Event-Bindung: mit e2 gewaehlt ist die Zeile aus e1 unsichtbar und unerreichbar.
+    gebunden = db_app(firmen=[welt["a"]], event=welt["e2"])
+    assert _anzahl(gebunden, tabelle) == 0
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        _neue_zeile(gebunden, welt, tabelle, welt["e1"], welt["a"], team)
+
+    # Positivkontrolle: Firma A sieht, aendert und legt an.
+    eigen = db_app(firmen=[welt["a"]])
+    assert [z["id"] for z in eigen.execute(f"select id from event.{tabelle}").fetchall()] == [
+        zeile]
+    assert eigen.execute(
+        f"update event.{tabelle} set angelegt = now() where id = %s", (zeile,)).rowcount == 1
+    # ... verschiebt die Zeile aber nicht in Firma B (with check).
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        eigen.execute(f"update event.{tabelle} set firma_id = %s, event_id = %s where id = %s",
+                      (welt["b"], welt["eb"], zeile))
+    _neue_zeile(eigen, welt, tabelle, welt["e1"], welt["a"], team)
+    assert _anzahl(eigen, tabelle) == 2
+    # Betreiber sieht alles.
+    assert _anzahl(db_app(betreiber=True), tabelle) == 2
+
+
+def test_neue_tabellen_rechte(db_admin):
+    """Grants an event_app: alles ausser delete auf nachricht; PUBLIC hat nichts."""
+    for tabelle in NEUE_TABELLEN:
+        rechte = db_admin.execute(
+            "select has_table_privilege('event_app', %(t)s, 'select') as s,"
+            " has_table_privilege('event_app', %(t)s, 'insert') as i,"
+            " has_table_privilege('event_app', %(t)s, 'update') as u,"
+            " has_table_privilege('event_app', %(t)s, 'delete') as d,"
+            " has_table_privilege('public', %(t)s, 'select') as p",
+            {"t": f"event.{tabelle}"}).fetchone()
+        assert rechte == {"s": True, "i": True, "u": True, "d": tabelle != "nachricht",
+                          "p": False}, tabelle
 
 
 def test_ohne_kontext_keine_zeilen(welt, db_app):
