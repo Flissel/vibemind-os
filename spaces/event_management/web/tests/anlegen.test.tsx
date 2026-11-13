@@ -150,7 +150,7 @@ describe('Event anlegen', () => {
     setze(/^Thema/, 'KI')
     setze(/^Plätze/, '40')
     fireEvent.click(weiter())
-    await screen.findByText(/Kommt mit dem Bot-Ausbau/)
+    await screen.findByText(/Nach dem Anlegen verbindest du die Gruppe/)
     await userEvent.click(screen.getByRole('button', { name: 'Event anlegen' }))
     await waitFor(() => expect(push).toHaveBeenCalledWith('/events/neu-1'))
     expect(senden).toHaveBeenCalledWith('POST', '/api/events', {

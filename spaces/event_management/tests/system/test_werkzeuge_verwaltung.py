@@ -376,7 +376,7 @@ def test_betreiber_lesen_hat_keine_verwaltung(db_admin, db_app, welt, lea):
     lesen = _info(db_admin, "betreiber_lesen", person_id=welt["bea"])
     assert not VERWALTUNG & _namen(app, lesen)
     assert {"events_suchen", "event_waehlen"} <= _namen(app, lesen)
-    assert _namen(app, _info(db_admin, "melden")) == set()
+    assert _namen(app, _info(db_admin, "melden")) == {"gruppe_melden", "chat_melden"}
     assert not VERWALTUNG & _namen(app, _info(db_admin, "event", event_id=welt["nord"]))
     assert _namen(app, lea) & VERWALTUNG == VERWALTUNG - {"firma_anlegen"}
     assert VERWALTUNG <= _namen(app, _info(db_admin, "betreiber", person_id=welt["bea"]))

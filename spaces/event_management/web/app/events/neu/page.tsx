@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useMemo, useState } from 'react'
 import { AnmeldeSchutz } from '@/components/AnmeldeSchutz'
@@ -318,7 +319,13 @@ function Anlegen() {
         <div className="space-y-4">
           <h2 className="text-lg font-bold text-gray-900">Telegram-Gruppe verbinden (optional)</h2>
           <p className="text-sm text-gray-600">
-            Kommt mit dem Bot-Ausbau. Du kannst die Gruppe später auf der Event-Seite verbinden.
+            Nach dem Anlegen verbindest du die Gruppe auf der Event-Seite: im Abschnitt „Telegram-Gruppe“
+            auf „Code erzeugen“ – dort stehen die drei Schritte. Deinen eigenen Chat mit dem Bot verbindest
+            du unter{' '}
+            <Link href="/ich/telegram" className="font-medium text-gray-900 underline">
+              Meinen Telegram-Chat verbinden
+            </Link>
+            .
           </p>
           <div className="flex gap-3">
             <button type="button" className={KNOPF_ZURUECK} onClick={() => setSchritt(2)}>

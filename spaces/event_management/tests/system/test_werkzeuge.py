@@ -196,8 +196,9 @@ def test_leitung_und_betreiber_vereinigung_mit_marke(db_admin, db_app, welt):
 
 
 def test_melden_hat_keine_baustein_werkzeuge(db_admin, db_app, welt):
+    """Der Empfangs-Agent meldet nur Codes (Task 7)."""
     app = db_app()
-    assert _namen(app, _info(db_admin, "melden")) == set()
+    assert _namen(app, _info(db_admin, "melden")) == {"gruppe_melden", "chat_melden"}
 
 
 def test_event_id_argument_gibt_es_nicht(db_admin, db_app, welt):

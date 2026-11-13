@@ -194,3 +194,26 @@ export interface Nachricht {
   /** Nur bei Mails: vor dem Versand live gezählt, danach die Zahl beim Versand. */
   empfaenger: number | null
 }
+
+export type VerbindungArt = 'gruppe' | 'direkt'
+
+export type VerbindungStatus = 'offen' | 'gemeldet' | 'bestaetigt' | 'verworfen'
+
+/** Eintrag von `GET /api/events/{id}/verbinden` bzw. `GET /api/ich/verbinden` (ohne Chat-ID
+ *  und Code): offene Codes, gemeldete Chats (mit Titel) und die bestätigte Verbindung. */
+export interface Verbindung {
+  id: string
+  art: VerbindungArt
+  status: VerbindungStatus
+  /** Titel der Gruppe laut Telegram (Direktchats: null). */
+  chat_titel: string | null
+  ablauf: string
+  gemeldet: string | null
+  bestaetigt: string | null
+}
+
+/** Antwort von `POST …/verbinden`: der Code erscheint nur hier. */
+export interface VerbindungsCode {
+  code: string
+  gueltig_bis: string
+}

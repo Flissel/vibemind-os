@@ -14,3 +14,9 @@ export function darfAnlegen(ich: Ich, firmaId?: string): boolean {
 export function darfVerwalten(ich: Ich, firmaId: string): boolean {
   return ich.betreiber || ich.rechte.verwalten.includes(firmaId)
 }
+
+/** Eigenen Telegram-Chat verbinden: wer irgendwo Leitung oder Betreiber ist
+ *  (system/verbinden.py, `code_ausstellen` mit art `direkt`). */
+export function darfDirektchat(ich: Ich): boolean {
+  return ich.betreiber || ich.rechte.verwalten.length > 0
+}

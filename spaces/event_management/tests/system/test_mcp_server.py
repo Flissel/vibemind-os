@@ -184,7 +184,7 @@ def test_tools_list_je_schluessel(client, db_admin, welt):
     assert "aufgaben_liste" in lesen
     assert not [n for n in lesen if n.endswith(("_anlegen", "_aendern", "_loeschen"))]
 
-    assert _werkzeuge(client, melden_key) == {}
+    assert set(_werkzeuge(client, melden_key)) == {"gruppe_melden", "chat_melden"}
 
 
 def test_tool_call_schreibt_und_nennt_event(client, db_admin, db_app, welt):

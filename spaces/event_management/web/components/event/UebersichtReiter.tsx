@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { Bestaetigen } from '@/components/Bestaetigen'
 import { useIch } from '@/components/IchKontext'
 import { Meldung } from '@/components/Meldung'
+import { TelegramVerbinden } from '@/components/TelegramVerbinden'
 import { SchemaFeld } from '@/components/formular/SchemaFeld'
 import { api } from '@/lib/api'
 import { darfVerwalten } from '@/lib/rechte'
@@ -236,6 +237,14 @@ export function UebersichtReiter({ event, onAktualisiert }: Props) {
           Speichern
         </button>
       </form>
+
+      <TelegramVerbinden
+        art="gruppe"
+        titel="Telegram-Gruppe"
+        pfad={`/api/events/${event.id}/verbinden`}
+        darf={verwalten}
+        gesperrt={event.status === 'archiviert' || event.quelle === 'legacy'}
+      />
 
       <section className="space-y-3">
         <h2 className="text-lg font-bold text-gray-900">Status</h2>

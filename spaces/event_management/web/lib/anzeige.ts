@@ -44,6 +44,8 @@ const AKTIONEN: Readonly<Record<string, string>> = {
   verworfen: 'verworfen',
   versendet: 'versendet',
   fehler: 'fehlgeschlagen',
+  gruppe_bestaetigt: 'Telegram-Gruppe verbunden',
+  gruppe_verworfen: 'Telegram-Gruppe verworfen',
 }
 
 const QUELLEN: Readonly<Record<string, string>> = {

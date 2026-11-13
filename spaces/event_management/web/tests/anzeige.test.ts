@@ -37,6 +37,8 @@ describe('Verlauf', () => {
     expect(aktionText('status_laeuft')).toBe('Status: läuft')
     expect(aktionText('status_entwurf')).toBe('Status: Entwurf')
     expect(aktionText('status_archiviert')).toBe('Status: archiviert')
+    expect(aktionText('gruppe_bestaetigt')).toBe('Telegram-Gruppe verbunden')
+    expect(aktionText('gruppe_verworfen')).toBe('Telegram-Gruppe verworfen')
     expect(aktionText('sonstwas')).toBe('sonstwas')
   })
   it('quelleText', () => {

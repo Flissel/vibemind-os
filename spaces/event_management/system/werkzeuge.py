@@ -32,7 +32,12 @@ Nachrichten (Task 6, `nachrichten.py`): `nachricht_an_gruppe` sendet ueber das T
 App an die bestaetigte Gruppe des Events (ohne Telegram: "Telegram ist nicht
 eingerichtet"), `mail_entwerfen` speichert nur einen Entwurf (freigeben kann allein eine
 Leitung in der Oberflaeche, versendet wird getrennt), `nachrichten_liste` liest.
-`betreiber_lesen` hat nur die Liste, `melden` nichts. Archiv lehnt die Fachschicht ab.
+`betreiber_lesen` hat nur die Liste. Archiv lehnt die Fachschicht ab.
+
+Verbinden (Task 7, `verbinden.py`): `gruppe_verbinden` (nur `leitung`/`betreiber`, mit Marke)
+liefert einen Einmal-Code samt Anleitung. Der `melden`-Schluessel (Empfangs-Agent) hat nur
+`gruppe_melden` und `chat_melden`; ihre Antwort ist bewusst nur `verbinden.DANKE` oder
+`verbinden.UNGUELTIG` (ohne Event: der Melder ist ein Fremder, bis die Leitung bestaetigt).
 
 Erweitern: neue Werkzeuge als `_Sonder`-Eintrag in `_SONDER` und ihr Name in
 `_SONDER_JE_ART`.
@@ -50,7 +55,7 @@ from uuid import UUID
 import psycopg
 
 from spaces.event_management.system import (
-    events, firmen, kern, marke, nachrichten, pruefung, rechte, verlauf, zugang,
+    events, firmen, kern, marke, nachrichten, pruefung, rechte, verbinden, verlauf, zugang,
 )
 from spaces.event_management.system.bausteine import REGISTRY
 from spaces.event_management.system.kategorien import Kategorie, WirksamesSchema
@@ -674,6 +679,34 @@ def _nachrichten_liste(conn: psycopg.Connection[Any], info: SchluesselInfo,
     return {"event": g.kopf, "nachrichten": [_nachricht(z) for z in zeilen]}
 
 
+# --- Verbinden (Task 7) ----------------------------------------------------------------
+
+
+def _gruppe_verbinden(conn: psycopg.Connection[Any], info: SchluesselInfo,
+                      args: dict[str, Any], u: _Umgebung) -> dict[str, Any]:
+    g = _binden(conn, info, args)
+    code = verbinden.code_erzeugen(conn, g.k, art="gruppe", event_id=g.event["id"])
+    return {"event": g.kopf, "code": code, "gueltig_minuten": verbinden.GUELTIG_MINUTEN,
+            "anleitung": verbinden.ANLEITUNG_GRUPPE.format(code=code)}
+
+
+def _melden_werkzeug(art: str) -> Ausfuehrung:
+    def ausfuehren(conn: psycopg.Connection[Any], info: SchluesselInfo, args: dict[str, Any],
+                   u: _Umgebung) -> dict[str, Any]:
+        return {"antwort": verbinden.melden(conn, code=args["code"], chat_id=args["chat_id"],
+                                            art=art, telegram=u.telegram)}
+    return ausfuehren
+
+
+_MELDEN_SCHEMA: dict[str, dict[str, Any]] = {
+    "code": {"type": "string", "maxLength": 32,
+             "description": "Der Code aus der Nachricht (8 Zeichen)"},
+    "chat_id": {"type": "integer", "minimum": -verbinden.CHAT_MAX,
+                "maximum": verbinden.CHAT_MAX,
+                "description": "Telegram-Chat-ID des Chats, aus dem die Nachricht kam"},
+}
+
+
 @dataclass(frozen=True)
 class _Sonder:
     beschreibung: str
@@ -784,20 +817,30 @@ _SONDER: dict[str, _Sonder] = {
     "nachrichten_liste": _Sonder(
         "Nachrichten des Events anzeigen (Gruppe und Mail, mit Status und Empfängerzahl)",
         {}, (), False, True, _nachrichten_liste),
+    "gruppe_verbinden": _Sonder(
+        "Einmal-Code erzeugen, um eine Telegram-Gruppe mit dem Event zu verbinden (gilt 15 "
+        "Minuten; die Leitung bestätigt danach in der Oberfläche)", {}, (), True, True,
+        _gruppe_verbinden),
+    "gruppe_melden": _Sonder(
+        "Code melden, der in einer Telegram-Gruppe an den Bot geschickt wurde",
+        _MELDEN_SCHEMA, ("code", "chat_id"), True, False, _melden_werkzeug("gruppe")),
+    "chat_melden": _Sonder(
+        "Code melden, der im Direktchat an den Bot geschickt wurde",
+        _MELDEN_SCHEMA, ("code", "chat_id"), True, False, _melden_werkzeug("direkt")),
 }
 
 _EVENT_LESEN = ("event_info", "verlauf_lesen", "kontakte_suchen", "nachrichten_liste")
 _NACHRICHTEN = ("nachricht_an_gruppe", "mail_entwerfen")
 _WAHL = ("events_suchen", "event_waehlen")
 _VERWALTUNG = ("event_anlegen", "einladen", "event_absagen", "event_archivieren",
-               "event_loeschen", "kontakt_entfernen", "rolle_aendern")
+               "event_loeschen", "kontakt_entfernen", "rolle_aendern", "gruppe_verbinden")
 _SONDER_JE_ART: dict[str, tuple[str, ...]] = {
     "event": (*_EVENT_LESEN, "kontakt_anlegen", *_NACHRICHTEN),
     "leitung": (*_WAHL, *_EVENT_LESEN, "kontakt_anlegen", *_NACHRICHTEN, *_VERWALTUNG),
     "betreiber": (*_WAHL, *_EVENT_LESEN, "kontakt_anlegen", *_NACHRICHTEN, *_VERWALTUNG,
                   "firma_anlegen"),
     "betreiber_lesen": (*_WAHL, *_EVENT_LESEN),
-    "melden": (),
+    "melden": ("gruppe_melden", "chat_melden"),
 }
 _OPS_JE_ART: dict[str, tuple[str, ...]] = {
     "event": _OPS, "leitung": _OPS, "betreiber": _OPS, "betreiber_lesen": _NUR_LESEN,
@@ -857,8 +900,8 @@ def ausfuehren(conn: psycopg.Connection[Any], info: SchluesselInfo, name: str,
     NichtGefunden("unbekanntes Werkzeug") ausserhalb des Katalogs; ValueError bei
     Argumenten ausserhalb des Schemas, Legacy-Events, archivierten Events (schreibende
     Baustein-Werkzeuge), fehlendem Bereich, `einladen` ohne `mailer`/`basis_url` und
-    `nachricht_an_gruppe` ohne `telegram`; sonst die Fehler der Fachschicht (NichtGefunden,
-    KeinRecht, ValueError).
+    `nachricht_an_gruppe`/`gruppe_melden`/`chat_melden` ohne `telegram`; sonst die Fehler
+    der Fachschicht (NichtGefunden, KeinRecht, ValueError).
     """
     eintrag = _eintraege(conn, info, kategorien).get(name) if isinstance(name, str) else None
     if eintrag is None:

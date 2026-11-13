@@ -517,16 +517,19 @@ def _verbindung(conn: psycopg.Connection[dict[str, Any]], person: object, event_
                (art, hashlib.sha256(code.encode("utf-8")).hexdigest(), event_id, firma, person))
 
 
-def test_verbindung_mandantenmatrix(welt, db_app, db_admin):
-    """Gruppen-Zeile von Firma A (Event e1): wie die Bausteine, aber ohne delete."""
+def test_verbindung_mandantenmatrix(bot_welt, db_app, db_admin):
+    """Gruppen-Zeile von Firma A (Event e1): sichtbar wie die Bausteine, ohne delete. Anlegen
+    und aendern nur als Leitung der Firma (006, Task 7); Lena ist Leitung in A."""
+    welt = bot_welt
+
     def gruppe(conn: psycopg.Connection[dict[str, Any]], code: str) -> Any:
-        return _verbindung(conn, welt["person"], welt["e1"], welt["a"], code)
+        return _verbindung(conn, welt["lena"], welt["e1"], welt["a"], code)
 
     zeile = gruppe(db_admin, "ABCD2345")
     vorher = db_admin.execute("select * from event.verbindung order by id").fetchall()
     verwerfen = "update event.verbindung set status = 'verworfen' where id = %s"
 
-    fremd = db_app(firmen=[welt["b"]])
+    fremd = db_app(firmen=[welt["b"]], person=welt["person"])
     assert fremd.execute("select * from event.verbindung where id = %s", (zeile,)).fetchall() == []
     assert _anzahl(fremd, "verbindung") == 0
     assert fremd.execute(verwerfen, (zeile,)).rowcount == 0
@@ -534,17 +537,17 @@ def test_verbindung_mandantenmatrix(welt, db_app, db_admin):
         gruppe(fremd, "FREMD234")
     assert db_admin.execute("select * from event.verbindung order by id").fetchall() == vorher
 
-    gebunden = db_app(firmen=[welt["a"]], event=welt["e2"])
+    gebunden = db_app(firmen=[welt["a"]], person=welt["lena"], event=welt["e2"])
     assert _anzahl(gebunden, "verbindung") == 0
     assert gebunden.execute(verwerfen, (zeile,)).rowcount == 0
     with pytest.raises(psycopg.errors.InsufficientPrivilege):
         gruppe(gebunden, "GEBUN234")
 
-    eigen = db_app(firmen=[welt["a"]])
+    eigen = db_app(firmen=[welt["a"]], person=welt["lena"])
     assert [z["id"] for z in eigen.execute("select id from event.verbindung").fetchall()] == [
         zeile]
     assert eigen.execute(verwerfen, (zeile,)).rowcount == 1
-    # ... verschiebt die Zeile aber nicht in Firma B (with check).
+    # ... verschiebt die Zeile aber nicht in Firma B (keine Spaltenrechte dafuer).
     with pytest.raises(psycopg.errors.InsufficientPrivilege):
         eigen.execute("update event.verbindung set firma_id = %s, event_id = %s where id = %s",
                       (welt["b"], welt["eb"], zeile))
@@ -557,20 +560,22 @@ def test_verbindung_mandantenmatrix(welt, db_app, db_admin):
     assert _anzahl(db_app(betreiber=True), "verbindung") == 2
 
 
-def test_verbindung_direktchat_nur_eigene_person(welt, db_app, db_admin):
-    anna = welt["person"]
-    bert = _id(db_admin, "insert into event.person (mail, name) values (%s, %s) returning id",
-               ("bert@example.org", "Bert Beispiel"))
-    zeile = _verbindung(db_admin, anna, code="ANNA2345")
-    selbst = db_app(person=anna)
+def test_verbindung_direktchat_nur_eigene_person(bot_welt, db_app, db_admin):
+    w = bot_welt
+    lena, mia = w["lena"], w["mia"]
+    zeile = _verbindung(db_admin, lena, code="LENA2345")
+    selbst = db_app(person=lena)
     assert [z["id"] for z in selbst.execute("select id from event.verbindung").fetchall()] == [
         zeile]
-    _verbindung(selbst, anna, code="ANNA3456")
+    _verbindung(selbst, lena, code="LENA3456")
     with pytest.raises(psycopg.errors.InsufficientPrivilege):
-        _verbindung(selbst, bert, code="BERT2345")
+        _verbindung(selbst, mia, code="MIAX2345")
     with pytest.raises(psycopg.errors.InsufficientPrivilege):
-        selbst.execute("update event.verbindung set person_id = %s where id = %s", (bert, zeile))
-    for andere in (db_app(person=bert), db_app(firmen=[welt["a"], welt["b"]]), db_app()):
+        selbst.execute("update event.verbindung set person_id = %s where id = %s", (mia, zeile))
+    # Ohne Leitung (oder Betreiber) kein eigener Direktchat-Code (006).
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        _verbindung(db_app(person=mia), mia, code="MIAX3456")
+    for andere in (db_app(person=mia), db_app(firmen=[w["a"], w["b"]]), db_app()):
         assert _anzahl(andere, "verbindung") == 0
     assert _anzahl(db_app(betreiber=True), "verbindung") == 2
 
@@ -584,8 +589,18 @@ def test_bot_tabellen_rechte_und_checks(welt, db_admin):
             " has_table_privilege('event_app', %(t)s, 'delete') as d,"
             " has_table_privilege('public', %(t)s, 'select') as p",
             {"t": f"event.{tabelle}"}).fetchone()
-        assert rechte == {"s": True, "i": True, "u": tabelle == "verbindung", "d": False,
+        # verbindung: insert/update nur auf einzelne Spalten (006), daher nicht tabellenweit.
+        assert rechte == {"s": True, "i": tabelle == "bereitstellung", "u": False, "d": False,
                           "p": False}, tabelle
+    spalten = db_admin.execute(
+        "select column_name as c,"
+        " has_column_privilege('event_app', 'event.verbindung', column_name, 'insert') as i,"
+        " has_column_privilege('event_app', 'event.verbindung', column_name, 'update') as u"
+        " from information_schema.columns"
+        " where table_schema = 'event' and table_name = 'verbindung'").fetchall()
+    assert {z["c"] for z in spalten if z["i"]} == {
+        "art", "code_hash", "event_id", "firma_id", "person_id", "ablauf"}
+    assert {z["c"] for z in spalten if z["u"]} == {"status", "bestaetigt"}
     # Gruppe braucht Event und Firma (zusammengesetzter FK), Direktchat keins von beiden.
     with pytest.raises(psycopg.errors.CheckViolation):
         db_admin.execute(
@@ -700,17 +715,30 @@ def _hex8(wert: object) -> str:
     return str(wert).replace("-", "")[:8]
 
 
+CHAT_DIREKT_CHEF = 123456780
+
+
 def _auftrag(conn: psycopg.Connection[dict[str, Any]], ziel: str, event_id: object = None,
-             person: object = None, agent: str | None = None) -> Any:
+             person: object = None, agent: str | None = None, chat: int | None = None) -> Any:
     """Auftrag mit passender Agent-ID (Ruling S5), ausser `agent` ist vorgegeben."""
     if agent is None:
         praefix = {"gruppe": "ev", "leitung": "ld", "betreiber": "bo"}[ziel]
         agent = f"{praefix}-" + _hex8(event_id if ziel == "gruppe" else person)
+    if chat is None:
+        chat = CHAT_GRUPPE if ziel == "gruppe" else CHAT_DIREKT
     return _id(conn,
                "insert into event.bereitstellung (art, ziel, event_id, person_id, chat_id,"
                " agent_id) values ('anlegen', %s, %s, %s, %s, %s) returning id",
-               (ziel, event_id, person, CHAT_GRUPPE if ziel == "gruppe" else CHAT_DIREKT,
-                agent))
+               (ziel, event_id, person, chat, agent))
+
+
+def _bestaetigt(admin: psycopg.Connection[dict[str, Any]], person: object, chat: int,
+                event_id: object = None, firma: object = None) -> None:
+    """Bestaetigte Verbindung (als Admin): ohne sie nimmt bereitstellung keinen Auftrag fuer
+    diesen Chat an (006)."""
+    zeile = _verbindung(admin, person, event_id, firma, code=f"C{chat}")
+    admin.execute("update event.verbindung set chat_id = %s, status = 'bestaetigt',"
+                  " gemeldet = now(), bestaetigt = now() where id = %s", (chat, zeile))
 
 
 def test_bereitstellung_lesen_mandant_und_person(bot_welt, db_app, db_admin):
@@ -732,6 +760,9 @@ def test_bereitstellung_lesen_mandant_und_person(bot_welt, db_app, db_admin):
 
 def test_bereitstellung_anlegen_nur_berechtigt(bot_welt, db_app, db_admin):
     w = bot_welt
+    _bestaetigt(db_admin, w["lena"], CHAT_GRUPPE, w["e1"], w["a"])
+    _bestaetigt(db_admin, w["lena"], CHAT_DIREKT)
+    _bestaetigt(db_admin, w["chef"], CHAT_DIREKT_CHEF)
     leitung_a = db_app(firmen=[w["a"]], person=w["lena"])
     mitglied_a = db_app(firmen=[w["a"]], person=w["mia"])
     anna_b = db_app(firmen=[w["b"]], person=w["person"])
@@ -768,14 +799,16 @@ def test_bereitstellung_anlegen_nur_berechtigt(bot_welt, db_app, db_admin):
             _auftrag(conn, ziel, **werte)
     with pytest.raises(psycopg.errors.CheckViolation):   # auch nicht als Betreiber
         _auftrag(db_app(betreiber=True, person=w["chef"]), "betreiber", person=w["chef"],
-                 agent="bo-" + _hex8(w["lena"]))
+                 agent="bo-" + _hex8(w["lena"]), chat=CHAT_DIREKT_CHEF)
     assert db_admin.execute("select count(*) as n from event.bereitstellung").fetchone()["n"] == 0
 
     # Positivkontrollen.
     gruppe = _auftrag(leitung_a, "gruppe", event_id=w["e1"], person=w["lena"])
     _auftrag(db_app(person=w["lena"]), "leitung", person=w["lena"])
-    _auftrag(db_app(betreiber=True, person=w["chef"]), "betreiber", person=w["chef"])
-    _auftrag(db_app(betreiber=True, person=w["chef"]), "leitung", person=w["chef"])
+    _auftrag(db_app(betreiber=True, person=w["chef"]), "betreiber", person=w["chef"],
+             chat=CHAT_DIREKT_CHEF)
+    _auftrag(db_app(betreiber=True, person=w["chef"]), "leitung", person=w["chef"],
+             chat=CHAT_DIREKT_CHEF)
     assert db_admin.execute("select count(*) as n from event.bereitstellung").fetchone()["n"] == 4
     assert db_admin.execute("select person_id, agent_id from event.bereitstellung where id = %s",
                             (gruppe,)).fetchone() == {"person_id": w["lena"],

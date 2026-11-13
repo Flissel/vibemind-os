@@ -28,7 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from spaces.event_management.system import (
-    events, firmen, kern, nachrichten, rechte, verlauf, zugang,
+    events, firmen, kern, nachrichten, rechte, verbinden, verlauf, zugang,
 )
 from spaces.event_management.system.bausteine import REGISTRY
 from spaces.event_management.system.kategorien import Kategorie, lade_kategorien, waehlbare
@@ -593,6 +593,35 @@ def erstelle_app(
     @app.post("/api/nachrichten/{nachricht_id}/verwerfen")
     def nachricht_verwerfen(nachricht_id: UUID, s: Schreiben) -> dict[str, Any]:
         return nachrichten.verwerfen(s.conn, s.k, nachricht_id)
+
+    # --- Telegram verbinden ---------------------------------------------------------
+    # Der Code erscheint nur in der Antwort des POST; gemeldet wird er vom Empfangs-Agenten
+    # ueber event-mcp (`gruppe_melden`/`chat_melden`), bestaetigt nur hier.
+
+    @app.post("/api/events/{event_id}/verbinden", status_code=201)
+    def gruppe_code(event_id: UUID, s: Schreiben) -> dict[str, Any]:
+        return verbinden.code_ausstellen(s.conn, s.k, art="gruppe", event_id=event_id)
+
+    @app.get("/api/events/{event_id}/verbinden")
+    def gruppe_verbindungen(event_id: UUID, s: Lesen) -> list[dict[str, Any]]:
+        return verbinden.offene(s.conn, s.k, event_id=event_id)
+
+    @app.post("/api/ich/verbinden", status_code=201)
+    def direkt_code(s: Schreiben) -> dict[str, Any]:
+        return verbinden.code_ausstellen(s.conn, s.k, art="direkt", event_id=None)
+
+    @app.get("/api/ich/verbinden")
+    def direkt_verbindungen(s: Lesen) -> list[dict[str, Any]]:
+        return verbinden.offene(s.conn, s.k)
+
+    @app.post("/api/verbindungen/{verbindung_id}/bestaetigen")
+    def verbindung_bestaetigen(verbindung_id: UUID, s: Schreiben) -> dict[str, Any]:
+        auftrag = verbinden.bestaetigen(s.conn, s.k, verbindung_id)
+        return {"id": verbindung_id, "status": "bestaetigt", "bereitstellung": auftrag}
+
+    @app.post("/api/verbindungen/{verbindung_id}/verwerfen")
+    def verbindung_verwerfen(verbindung_id: UUID, s: Schreiben) -> dict[str, Any]:
+        return verbinden.verwerfen(s.conn, s.k, verbindung_id)
 
     return app
 

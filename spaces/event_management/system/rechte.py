@@ -9,6 +9,7 @@ AKTIONEN = frozenset({
     "firma_anlegen", "lesen", "event_anlegen", "event_aendern", "event_loeschen",
     "event_absagen", "baustein_schreiben", "einladen", "rolle_aendern", "mitglied_entfernen",
     "nachricht_freigeben",  # Mail-Entwurf zum Versand freigeben: nur Leitung (und Betreiber)
+    "gruppe_verbinden",  # Telegram-Gruppe per Code verbinden und bestaetigen: nur Leitung
 })
 _ROLLEN: dict[str, frozenset[str]] = {
     "leitung": AKTIONEN - {"firma_anlegen"},

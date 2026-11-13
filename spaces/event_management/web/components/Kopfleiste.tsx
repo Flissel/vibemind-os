@@ -2,10 +2,11 @@
 
 import Link from 'next/link'
 import { useState } from 'react'
-import { LogOut } from 'lucide-react'
+import { LogOut, MessageCircle } from 'lucide-react'
 import { useIch } from '@/components/IchKontext'
 import { Meldung } from '@/components/Meldung'
 import { api } from '@/lib/api'
+import { darfDirektchat } from '@/lib/rechte'
 
 function zurAnmeldeseite(): void {
   window.location.assign('/anmelden')
@@ -40,6 +41,17 @@ export function Kopfleiste({ nachAbmeldung = zurAnmeldeseite }: { nachAbmeldung?
           </Link>
         </nav>
         <div className="flex items-center gap-3 text-sm">
+          {darfDirektchat(ich) && (
+            <Link
+              href="/ich/telegram"
+              aria-label="Meinen Telegram-Chat verbinden"
+              title="Meinen Telegram-Chat verbinden"
+              className="inline-flex items-center gap-1.5 font-medium text-gray-600 hover:text-gray-900"
+            >
+              <MessageCircle className="h-4 w-4" aria-hidden />
+              <span className="hidden md:inline">Telegram</span>
+            </Link>
+          )}
           <span className="text-gray-700">{ich.person.name}</span>
           <button
             type="button"
