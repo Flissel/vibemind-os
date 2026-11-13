@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import ipaddress
 import json
 import re
 import subprocess
@@ -417,3 +418,151 @@ def test_paket_importierbar():
     import importlib
 
     importlib.import_module("spaces.event_management")
+
+
+# --- Compose: Dienste des Event-Systems (Etappe 3, Task 9; nur Definition) --------------
+#
+# event-api, event-web und event-mcp stehen im Compose-Projekt des Space, starten aber nicht
+# mit: anbinden.sh ruft `docker compose up -d` ohne Profil auf, und das soll weiter nur
+# Shim und Claw hochfahren. Ihre Images baut Etappe 4 (Dockerfile). Geprueft wird nur die
+# YAML-Struktur; `docker compose config` laeuft hier nie.
+
+PROFIL = "event-system"
+NEUE_DIENSTE = ("event-api", "event-web", "event-mcp")
+PYTHON_DIENSTE = ("event-api", "event-mcp")
+
+
+def _compose() -> dict:
+    return yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+
+
+def _netze(compose: dict) -> dict[str, ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    return {name: ipaddress.ip_network(netz["ipam"]["config"][0]["subnet"])
+            for name, netz in compose["networks"].items()}
+
+
+def test_neue_dienste_nur_mit_profil_alte_ohne() -> None:
+    dienste = _compose()["services"]
+    for name in NEUE_DIENSTE:
+        assert dienste[name]["profiles"] == [PROFIL], name
+    for name in ("event-management-shim", "event-management-claw"):
+        assert "profiles" not in dienste[name], name
+
+
+def test_python_dienste_teilen_das_image_des_space() -> None:
+    dienste = _compose()["services"]
+    images = {dienste[name]["image"] for name in PYTHON_DIENSTE}
+    assert len(images) == 1
+    [image] = images
+    assert image.startswith("event-management/") and ":" in image
+    assert dienste["event-web"]["image"].startswith("event-management/")
+    assert dienste["event-web"]["image"] != image
+
+
+def test_event_mcp_kommando_port_und_healthcheck() -> None:
+    from spaces.event_management.system import mcp_server
+
+    mcp = _compose()["services"]["event-mcp"]
+    port = mcp_server.PORT_VORGABE
+    assert mcp["command"] == ["python", "-m", "spaces.event_management.system.mcp_server"]
+    assert mcp["environment"]["EVENT_MCP_PORT"] == str(port)
+    # Im Container auf allen Schnittstellen (der Claw kommt ueber event-agent), auf dem Host
+    # nur Loopback.
+    assert mcp["environment"]["EVENT_MCP_HOST"] == "0.0.0.0"
+    assert mcp["ports"] == [f"127.0.0.1:{port}:{port}"]
+    probe = " ".join(mcp["healthcheck"]["test"])
+    assert f"http://127.0.0.1:{port}/gesund" in probe
+    assert "event-mcp" in mcp_server.ERLAUBTE_HOSTS  # Name, unter dem der Claw ihn ruft
+
+
+def test_event_api_und_web_nur_loopback() -> None:
+    from spaces.event_management.system import api
+
+    dienste = _compose()["services"]
+    a = dienste["event-api"]
+    assert a["command"] == ["python", "-m", "spaces.event_management.system.api"]
+    assert a["environment"]["EVENT_API_PORT"] == str(api.PORT_VORGABE)
+    assert a["ports"] == [f"127.0.0.1:{api.PORT_VORGABE}:{api.PORT_VORGABE}"]
+    assert f"'127.0.0.1', {api.PORT_VORGABE}" in " ".join(a["healthcheck"]["test"])
+    w = dienste["event-web"]
+    assert w["ports"] == ["127.0.0.1:3170:3170"]
+    assert w["depends_on"]["event-api"]["condition"] == "service_healthy"
+    for name, dienst in dienste.items():
+        for p in dienst.get("ports", []):
+            assert str(p).startswith("127.0.0.1:"), name
+
+
+def test_event_mcp_feste_adresse_im_agentennetz() -> None:
+    compose = _compose()
+    netz = compose["networks"]["event-agent"]
+    assert netz["internal"] is True
+    subnetz = ipaddress.ip_network(netz["ipam"]["config"][0]["subnet"])
+    bereich = ipaddress.ip_network(netz["ipam"]["config"][0]["ip_range"])
+    assert str(subnetz) == "10.250.10.0/28"
+    assert bereich.subnet_of(subnetz) and bereich != subnetz
+    mcp = compose["services"]["event-mcp"]["networks"]
+    adresse = ipaddress.ip_address(mcp["event-agent"]["ipv4_address"])
+    # Fest, im /28, ausserhalb des dynamischen Bereichs (Shim und Claw bekommen ihre
+    # Adressen von dort) und weder Netz-, Gateway- noch Broadcast-Adresse.
+    assert adresse in subnetz and adresse not in bereich
+    assert adresse not in (subnetz.network_address, subnetz.network_address + 1,
+                           subnetz.broadcast_address)
+    feste = [n["ipv4_address"] for d in compose["services"].values()
+             if isinstance(d.get("networks"), dict)
+             for n in d["networks"].values() if isinstance(n, dict) and "ipv4_address" in n]
+    assert len(feste) == len(set(feste))
+
+
+def test_netze_im_freien_26_und_ueberschneidungsfrei() -> None:
+    compose = _compose()
+    netze = _netze(compose)
+    frei = ipaddress.ip_network("10.250.10.0/26")
+    assert all(n.subnet_of(frei) for n in netze.values())
+    liste = list(netze.values())
+    for i, a in enumerate(liste):
+        for b in liste[i + 1:]:
+            assert not a.overlaps(b), (a, b)
+    # Der Ausgang der App-Dienste (DB, Telegram, Mail) ist ein eigenes Netz; das
+    # Agentennetz bleibt intern.
+    aus = compose["networks"]["event-app-aus"]
+    assert not aus.get("internal")
+    dienste = compose["services"]
+    assert set(dienste["event-mcp"]["networks"]) == {"event-agent", "event-app-aus"}
+    assert set(dienste["event-api"]["networks"]) == {"event-app-aus"}
+    assert set(dienste["event-web"]["networks"]) == {"event-app-aus"}
+
+
+def test_geheimnisse_nur_als_datei_aus_laufzeit() -> None:
+    compose = _compose()
+    text = COMPOSE.read_text(encoding="utf-8")
+    for muster in (r"evk_[A-Za-z0-9]", r"bot\d+:", r"postgres(ql)?://", r"password=",
+                   r"-100\d{6,}"):
+        assert not re.search(muster, text), muster
+    geheim = compose["secrets"]
+    for name, eintrag in geheim.items():
+        assert eintrag["file"].startswith("./laufzeit/"), name
+    for name in PYTHON_DIENSTE:
+        dienst = compose["services"][name]
+        env = dienst["environment"]
+        for variable in env:
+            if any(t in variable for t in ("DSN", "TOKEN", "PASSWORT", "GEHEIMNIS")):
+                assert variable.endswith("_FILE"), (name, variable)
+                assert env[variable].startswith("/run/secrets/"), (name, variable)
+        eingehaengt = set(dienst["secrets"])
+        assert eingehaengt <= set(geheim)
+        for variable, wert in env.items():
+            if variable.endswith("_FILE"):
+                assert wert.removeprefix("/run/secrets/") in eingehaengt, (name, variable)
+        assert dienst["environment"]["EVENT_APP_DSN_FILE"] == "/run/secrets/event-app-dsn"
+        assert "TELEGRAM_BOT_TOKEN_FILE" in env
+    assert "EVENT_SITZUNG_GEHEIMNIS_FILE" in compose["services"]["event-api"]["environment"]
+
+
+def test_python_dienste_gehaertet() -> None:
+    dienste = _compose()["services"]
+    for name in NEUE_DIENSTE:
+        d = dienste[name]
+        assert d["read_only"] is True and d["cap_drop"] == ["ALL"], name
+        assert "no-new-privileges:true" in d["security_opt"], name
+        assert d["restart"] == "unless-stopped", name
+        assert "docker.sock" not in json.dumps(d), name
