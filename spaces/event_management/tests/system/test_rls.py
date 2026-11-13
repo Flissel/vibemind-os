@@ -608,6 +608,9 @@ def test_bot_tabellen_rechte_und_checks(welt, db_admin):
         ("gruppe", None, None, "ev-12345678"),
         ("leitung", None, None, "ld-12345678"),
         ("betreiber", welt["e1"], welt["person"], "bo-12345678"),
+        # Format stimmt, aber die 8 Hex gehoeren nicht zum Ziel.
+        ("gruppe", welt["e1"], None, "ev-" + str(welt["e2"]).replace("-", "")[:8]),
+        ("leitung", None, welt["person"], "ld-" + str(welt["e1"]).replace("-", "")[:8]),
     ):
         with pytest.raises(psycopg.errors.CheckViolation):
             db_admin.execute(
@@ -693,15 +696,21 @@ def bot_welt(welt: dict[str, Any], db_admin: psycopg.Connection[dict[str, Any]])
     return {**welt, "lena": lena, "mia": mia, "chef": chef}
 
 
+def _hex8(wert: object) -> str:
+    return str(wert).replace("-", "")[:8]
+
+
 def _auftrag(conn: psycopg.Connection[dict[str, Any]], ziel: str, event_id: object = None,
-             person: object = None) -> Any:
-    praefix = {"gruppe": "ev", "leitung": "ld", "betreiber": "bo"}[ziel]
-    quelle = event_id if ziel == "gruppe" else person
+             person: object = None, agent: str | None = None) -> Any:
+    """Auftrag mit passender Agent-ID (Ruling S5), ausser `agent` ist vorgegeben."""
+    if agent is None:
+        praefix = {"gruppe": "ev", "leitung": "ld", "betreiber": "bo"}[ziel]
+        agent = f"{praefix}-" + _hex8(event_id if ziel == "gruppe" else person)
     return _id(conn,
                "insert into event.bereitstellung (art, ziel, event_id, person_id, chat_id,"
                " agent_id) values ('anlegen', %s, %s, %s, %s, %s) returning id",
                (ziel, event_id, person, CHAT_GRUPPE if ziel == "gruppe" else CHAT_DIREKT,
-                f"{praefix}-" + str(quelle).replace("-", "")[:8]))
+                agent))
 
 
 def test_bereitstellung_lesen_mandant_und_person(bot_welt, db_app, db_admin):
@@ -727,18 +736,20 @@ def test_bereitstellung_anlegen_nur_berechtigt(bot_welt, db_app, db_admin):
     mitglied_a = db_app(firmen=[w["a"]], person=w["mia"])
     anna_b = db_app(firmen=[w["b"]], person=w["person"])
 
-    def abgelehnt(conn: psycopg.Connection[dict[str, Any]], ziel: str, **werte: object) -> None:
+    def abgelehnt(conn: psycopg.Connection[dict[str, Any]], ziel: str, **werte: Any) -> None:
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             _auftrag(conn, ziel, **werte)
 
-    # gruppe: nur Leitung der Firma des Events.
-    abgelehnt(mitglied_a, "gruppe", event_id=w["e1"])           # Mitglied reicht nicht
-    abgelehnt(db_app(firmen=[w["a"]]), "gruppe", event_id=w["e1"])  # Firma ohne Person
-    abgelehnt(anna_b, "gruppe", event_id=w["e1"])               # fremde Firma
-    abgelehnt(anna_b, "gruppe", event_id=w["eb"])               # Mitglied in B
-    abgelehnt(leitung_a, "gruppe", event_id=w["eb"])            # Leitung, aber nicht in B
+    # gruppe: nur Leitung der Firma des Events, person_id = die bestaetigende Leitung.
+    abgelehnt(mitglied_a, "gruppe", event_id=w["e1"], person=w["mia"])  # Mitglied reicht nicht
+    abgelehnt(db_app(firmen=[w["a"]]), "gruppe", event_id=w["e1"])      # Firma ohne Person
+    abgelehnt(anna_b, "gruppe", event_id=w["e1"], person=w["person"])   # fremde Firma
+    abgelehnt(anna_b, "gruppe", event_id=w["eb"], person=w["person"])   # Mitglied in B
+    abgelehnt(leitung_a, "gruppe", event_id=w["eb"], person=w["lena"])  # Leitung, nicht in B
     abgelehnt(db_app(firmen=[w["a"]], person=w["lena"], event=w["e2"]), "gruppe",
-              event_id=w["e1"])                                 # Event-Bindung
+              event_id=w["e1"], person=w["lena"])                       # Event-Bindung
+    abgelehnt(leitung_a, "gruppe", event_id=w["e1"])                    # ohne Person
+    abgelehnt(leitung_a, "gruppe", event_id=w["e1"], person=w["mia"])   # fremde Person
     # leitung: nur fuer sich selbst und nur mit einer aktuellen Leitung.
     abgelehnt(db_app(person=w["mia"]), "leitung", person=w["mia"])
     abgelehnt(anna_b, "leitung", person=w["person"])
@@ -746,18 +757,34 @@ def test_bereitstellung_anlegen_nur_berechtigt(bot_welt, db_app, db_admin):
     # betreiber: nur im Betreiber-Kontext, auch nicht fuer Leitung oder die eigene Person.
     abgelehnt(leitung_a, "betreiber", person=w["lena"])
     abgelehnt(db_app(person=w["chef"]), "betreiber", person=w["chef"])
+    # Agent-ID gehoert zum Ziel: kein fremder Agent unter eigenem Ziel (Tabellen-Check).
+    for ziel, werte in (
+        ("leitung", {"person": w["lena"], "agent": "ld-" + _hex8(w["mia"])}),
+        ("gruppe", {"event_id": w["e1"], "person": w["lena"], "agent": "ev-" + _hex8(w["e2"])}),
+        ("gruppe", {"event_id": w["e1"], "person": w["lena"], "agent": "ev-" + _hex8(w["lena"])}),
+    ):
+        conn = db_app(person=w["lena"]) if ziel == "leitung" else leitung_a
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _auftrag(conn, ziel, **werte)
+    with pytest.raises(psycopg.errors.CheckViolation):   # auch nicht als Betreiber
+        _auftrag(db_app(betreiber=True, person=w["chef"]), "betreiber", person=w["chef"],
+                 agent="bo-" + _hex8(w["lena"]))
     assert db_admin.execute("select count(*) as n from event.bereitstellung").fetchone()["n"] == 0
 
     # Positivkontrollen.
-    _auftrag(leitung_a, "gruppe", event_id=w["e1"])
+    gruppe = _auftrag(leitung_a, "gruppe", event_id=w["e1"], person=w["lena"])
     _auftrag(db_app(person=w["lena"]), "leitung", person=w["lena"])
     _auftrag(db_app(betreiber=True, person=w["chef"]), "betreiber", person=w["chef"])
-    assert db_admin.execute("select count(*) as n from event.bereitstellung").fetchone()["n"] == 3
-    # Nach Entzug der Leitung: kein neuer Direktchat-Auftrag mehr.
+    _auftrag(db_app(betreiber=True, person=w["chef"]), "leitung", person=w["chef"])
+    assert db_admin.execute("select count(*) as n from event.bereitstellung").fetchone()["n"] == 4
+    assert db_admin.execute("select person_id, agent_id from event.bereitstellung where id = %s",
+                            (gruppe,)).fetchone() == {"person_id": w["lena"],
+                                                      "agent_id": "ev-" + _hex8(w["e1"])}
+    # Nach Entzug der Leitung: kein neuer Auftrag mehr.
     db_admin.execute("update event.mitgliedschaft set rolle = 'mitglied' where person_id = %s",
                      (w["lena"],))
     abgelehnt(db_app(person=w["lena"]), "leitung", person=w["lena"])
-    abgelehnt(leitung_a, "gruppe", event_id=w["e1"])
+    abgelehnt(leitung_a, "gruppe", event_id=w["e1"], person=w["lena"])
 
 
 def test_bereitstellung_nicht_aenderbar_fuer_event_app(bot_welt, db_app, db_admin):

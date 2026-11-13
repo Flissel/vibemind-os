@@ -99,7 +99,11 @@ create table if not exists event.bereitstellung (
         (ziel = 'gruppe' and event_id is not null)
         or (ziel <> 'gruppe' and event_id is null and person_id is not null)
     ),
-    check (left(agent_id, 2) = case ziel when 'gruppe' then 'ev' when 'leitung' then 'ld' else 'bo' end)
+    check (left(agent_id, 2) = case ziel when 'gruppe' then 'ev' when 'leitung' then 'ld' else 'bo' end),
+    -- Die 8 Hex gehoeren zum Ziel selbst (Event bei gruppe, sonst Person): ein Auftrag kann
+    -- keinen Agenten eines fremden Events oder einer fremden Person anlegen oder abbauen.
+    check (agent_id = left(agent_id, 3)
+        || left(replace(coalesce(event_id, person_id)::text, '-', ''), 8))
 );
 
 -- RLS -------------------------------------------------------------------------------
@@ -139,18 +143,20 @@ create policy bereitstellung_lesen on event.bereitstellung for select
     );
 -- Anlegen (ein Auftrag richtet einen Bot ein, daher enger als Lesen):
 --   betreiber  nur im Betreiber-Kontext
---   gruppe     nur Leitung der Firma des Events (ein Mitglied reicht nicht)
+--   gruppe     nur Leitung der Firma des Events (ein Mitglied reicht nicht); person_id ist
+--              die bestaetigende Leitung selbst
 --   leitung    nur fuer die eigene Person, und nur mit einer aktuellen Leitung
 drop policy if exists bereitstellung_anlegen on event.bereitstellung;
 create policy bereitstellung_anlegen on event.bereitstellung for insert
     with check (
         event.ist_betreiber()
-        or (ziel = 'gruppe' and event_id is not null and exists (
-            select 1 from event.event e
-            join event.mitgliedschaft m on m.firma_id = e.firma_id
-            where e.id = bereitstellung.event_id
-              and event.mandant_ok(e.firma_id) and event.event_ok(e.id)
-              and m.person_id = event.person_id() and m.rolle = 'leitung'))
+        or (ziel = 'gruppe' and event_id is not null and person_id = event.person_id()
+            and exists (
+                select 1 from event.event e
+                join event.mitgliedschaft m on m.firma_id = e.firma_id
+                where e.id = bereitstellung.event_id
+                  and event.mandant_ok(e.firma_id) and event.event_ok(e.id)
+                  and m.person_id = event.person_id() and m.rolle = 'leitung'))
         or (ziel = 'leitung' and event_id is null and person_id = event.person_id()
             and exists (
                 select 1 from event.mitgliedschaft m
