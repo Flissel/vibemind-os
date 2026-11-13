@@ -1180,3 +1180,33 @@ def test_lange_pfade():
     k = ws.konfliktname(lang, JETZT, set())
     assert len(k) <= 240 and ws._windows_tauglich(k) and k.endswith(" (Konflikt 2026-10-25 14-03).md")
     assert ws.ist_konfliktdatei(k) and ws.besitzer(k) == "pc"
+
+
+HTML_TEXT = "<!doctype html>\n<html>\n<body>\n" + "".join(f"<p>Zeile {i}</p>\n" for i in range(1, 9)) + "</body>\n</html>\n"
+
+
+def test_html_einseitige_aenderung_wandert(seiten, meldungen):
+    pc, vm, zustand = seiten
+    _gemeinsamer_start(pc, vm, zustand, "Konzepte/k.html", HTML_TEXT)
+    neu = HTML_TEXT.replace("Zeile 3", "PC drei")
+    schreibe(pc, "Konzepte/k.html", neu)
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE, jetzt=JETZT) == 0
+    assert (vm / "Konzepte/k.html").read_text(encoding="utf-8") == neu
+    assert not any("Konflikt" in n for n in dateien(vm))
+
+
+def test_html_beidseitig_wird_nie_zeilenweise_zusammengefuehrt(seiten, meldungen):
+    pc, vm, zustand = seiten
+    _gemeinsamer_start(pc, vm, zustand, "Konzepte/k.html", HTML_TEXT)
+    pc_fassung = HTML_TEXT.replace("Zeile 1", "PC eins")      # laege bei .md weit genug auseinander: sauber gemischt
+    vm_fassung = HTML_TEXT.replace("Zeile 7", "VM sieben")
+    schreibe(pc, "Konzepte/k.html", pc_fassung)
+    schreibe(vm, "Konzepte/k.html", vm_fassung)
+    assert ws.lauf(pc, ZIEL, str(vm), zustand, laeufer=FakeVm(), heute=HEUTE, jetzt=JETZT) == 0
+    k = "Konzepte/k (Konflikt 2026-10-25 14-03).html"
+    # Besitzer (Unbekannt -> vm) gewinnt, die andere Fassung liegt als .html-Konfliktkopie daneben
+    assert (pc / "Konzepte/k.html").read_text(encoding="utf-8") == vm_fassung
+    assert (vm / "Konzepte/k.html").read_text(encoding="utf-8") == vm_fassung
+    assert (pc / k).read_text(encoding="utf-8") == pc_fassung and (vm / k).read_text(encoding="utf-8") == pc_fassung
+    assert not any(n.endswith("(Konflikt 2026-10-25 14-03).md") for n in dateien(pc))
+    assert ws.ist_konfliktdatei(k) and ws.besitzer(k) == ws.besitzer("Konzepte/k.html")

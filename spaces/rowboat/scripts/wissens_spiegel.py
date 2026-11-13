@@ -323,6 +323,12 @@ MERGE_MAX_BYTES = 256 * 1024  # groesser: kein Zusammenfuehren, Besitzer gewinnt
 MERGE_MAX_ZEILEN = 5000
 
 
+def _nie_zeilenweise(pfad: str) -> bool:
+    """HTML-Konzepte werden nie zeilenweise gemischt: auch eine "saubere" Mischung kann kaputtes HTML ergeben.
+    Bei beidseitiger Aenderung bleibt das Original gueltig und die andere Fassung liegt als Konfliktkopie daneben."""
+    return pfad.casefold().endswith((".html", ".htm"))
+
+
 def _zusammenfuehrbar(pfad: str, *daten: bytes) -> bool:
     """Text, nicht `.json` (eine Zeilen-Mischung kann ungueltiges JSON ergeben), unter den Grenzen."""
     if pfad.casefold().endswith(".json"):
@@ -339,6 +345,7 @@ def zusammenfuehren_planen(
     Ueberlappung: der Besitzer-Plan bleibt, dazu `konflikt_daneben` mit der Nicht-Besitzer-Fassung unter
     `konfliktname` auf beiden Seiten, hoechstens eine je Pfad und Tag (gibt es von heute schon eine, bleibt
     es beim Besitzer-Plan). `.json`, Binaer und Dateien ueber `MERGE_MAX_BYTES`/`MERGE_MAX_ZEILEN`: Besitzer-Plan.
+    `.html`/`.htm` werden nie gemischt, sondern immer wie eine Ueberlappung behandelt (Konfliktkopie daneben).
     Zurueck: Aktionen, zu schreibende Inhalte je Pfad, (Pfad, Konfliktname).
     """
     neu: list[Aktion] = []
@@ -358,7 +365,8 @@ def zusammenfuehren_planen(
         if not _zusammenfuehrbar(a.pfad, basis, x_pc, x_vm):
             neu += eigene
             continue
-        ergebnis = _drei_wege(basis.decode("utf-8"), x_pc.decode("utf-8"), x_vm.decode("utf-8"))
+        ergebnis = None if _nie_zeilenweise(a.pfad) else _drei_wege(
+            basis.decode("utf-8"), x_pc.decode("utf-8"), x_vm.decode("utf-8"))
         if ergebnis is not None:
             neu.append(Aktion("zusammenfuehren", a.pfad))
             inhalte[a.pfad] = ergebnis.encode("utf-8")

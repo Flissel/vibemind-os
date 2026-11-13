@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
 
+from . import html_text
 from .einbetten import Einbetter, EingabeAbgelehnt, PcNichtErreichbar
 from .index import WissensIndex
 from .zerlegen import zerlegen
@@ -28,6 +29,8 @@ MIN_BEKANNT_FUER_SCHUTZ = 10
 # Quarantaene der Kanal-Laeufe (Fork Teil E): Hintergrund-Agenten duerfen sie nicht lesen, also auch
 # nicht ueber wissen_suchen finden. Kanal-Laeufe lesen ihre eigenen Notizen direkt.
 QUARANTAENE = "kanal/"
+ENDUNGEN = (".md", ".html", ".htm")
+HTML_ENDUNGEN = (".html", ".htm")
 
 
 class Abgleich(NamedTuple):
@@ -43,8 +46,8 @@ class Runde(NamedTuple):
 
 
 def ausgeschlossen(rel: str) -> bool:
-    """Gilt fuer POSIX-Pfade relativ zu ``knowledge/``: Ausschluesse, versteckte Teile, kein ``.md``."""
-    if not rel.lower().endswith(".md"):
+    """Gilt fuer POSIX-Pfade relativ zu ``knowledge/``: Ausschluesse, versteckte Teile, kein ``.md``/``.html``."""
+    if not rel.lower().endswith(ENDUNGEN):
         return True
     if any(rel.startswith(a) or f"/{a}" in rel for a in AUSGESCHLOSSEN):
         return True
@@ -54,7 +57,7 @@ def ausgeschlossen(rel: str) -> bool:
 
 
 def bestand_scannen(wurzel: Path) -> dict[str, tuple[int, float]]:
-    """Alle ``*.md`` unter ``wurzel`` als ``{posix_rel_nfc: (groesse, mtime)}``.
+    """Alle ``*.md``/``*.html``/``*.htm`` unter ``wurzel`` als ``{posix_rel_nfc: (groesse, mtime)}``.
 
     Versteckte und ausgeschlossene Ordner werden nicht betreten; symbolische Links in Ordner werden
     nicht verfolgt, Datei-Links nur, wenn ihr Ziel innerhalb der Wurzel liegt.
@@ -101,6 +104,15 @@ def datei_pfad(wurzel: Path, rel: str) -> Path:
                 kandidat = pfad / gleich[0]
         pfad = kandidat
     return pfad
+
+
+def _text_fuer_zerlegen(rel: str, daten: bytes) -> str:
+    """Markdown wie es ist; HTML-Konzepte als ``titel + "\n" + sichtbarer_text`` statt Markup."""
+    text = daten.decode("utf-8", errors="replace")
+    if not rel.lower().endswith(HTML_ENDUNGEN):
+        return text
+    kopf = html_text.titel(text)
+    return (kopf + "\n" if kopf else "") + html_text.sichtbarer_text(text)
 
 
 def _lesen(pfad: Path) -> tuple[bytes, str]:
@@ -150,7 +162,7 @@ def einbetten_runde(index: WissensIndex, wurzel: Path, einbetter: Einbetter,
             continue
         if sha != bekannt[rel].sha256:
             continue        # seit dem Abgleich geaendert; der naechste Abgleich setzt den neuen Stand
-        abschnitte = zerlegen(rel, daten.decode("utf-8", errors="replace"))
+        abschnitte = zerlegen(rel, _text_fuer_zerlegen(rel, daten))
         if eingebettet and eingebettet + len(abschnitte) > max_abschnitte:
             break
         vektoren: list[list[float]] = []

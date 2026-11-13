@@ -15,6 +15,7 @@ from wissen_suche.index import WissensIndex  # noqa: E402
 from wissen_suche.indexer import (  # noqa: E402
     Indexer,
     abgleichen,
+    ausgeschlossen,
     bestand_scannen,
     einbetten_runde,
 )
@@ -296,3 +297,29 @@ def test_kanal_quarantaene_nicht_im_index(tmp_path):
     (tmp_path / "Kanal" / "a.md").write_text("x", encoding="utf-8")
     (tmp_path / "b.md").write_text("y", encoding="utf-8")
     assert list(bestand_scannen(tmp_path)) == ["b.md"]
+
+
+def test_indexer_nimmt_html(wurzel):
+    schreiben(wurzel, "Konzepte/k.html", "<p>x</p>")
+    schreiben(wurzel, "Konzepte/alt.HTM", "<p>x</p>")
+    schreiben(wurzel, "Kanal/q.html", "<p>x</p>")
+    schreiben(wurzel, "kanal/q2.html", "<p>x</p>")
+    schreiben(wurzel, "Konzepte/.versteckt/v.html", "<p>x</p>")
+    schreiben(wurzel, "Konzepte/stil.css", "a{}")
+    bestand = bestand_scannen(wurzel)
+    assert sorted(bestand) == ["Konzepte/alt.HTM", "Konzepte/k.html"]
+    assert ausgeschlossen("Konzepte/k.HTM") is False and ausgeschlossen("Konzepte/k.css") is True
+    assert ausgeschlossen("Kanal/q.html") is True and ausgeschlossen("Konzepte/.x.html") is True
+
+
+def test_html_wird_als_titel_und_sichtbarer_text_eingebettet(wurzel, idx):
+    schreiben(wurzel, "Konzepte/k.html",
+              "<title>Sommerfest</title><style>.zebra{}</style><script>var zebra=1</script><p>Grillen am See</p>")
+    einbetter = FakeEinbetter()
+    abgleichen(idx, wurzel)
+    einbetten_runde(idx, wurzel, einbetter)
+    texte = [t for (t,) in idx._db.execute("SELECT text FROM abschnitte")]
+    assert texte, "kein Abschnitt gespeichert"
+    gesamt = "\n".join(texte)
+    assert "Sommerfest" in gesamt and "Grillen am See" in gesamt
+    assert "zebra" not in gesamt and "<p>" not in gesamt
