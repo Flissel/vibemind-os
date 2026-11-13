@@ -4,6 +4,7 @@ import { useId, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Meldung } from '@/components/Meldung'
 import { api } from '@/lib/api'
+import { spaltenName, wertText } from '@/lib/anzeige'
 import { alsEuroEingabe, parseEuro } from '@/lib/euro'
 import type { BausteinInfo, Kontakt, Zeile } from '@/lib/typen'
 import { alsEingabe, ausEingabe } from '@/lib/zeit'
@@ -13,12 +14,6 @@ const EINGABE =
   'w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:border-gray-900 focus:outline-none'
 const BESCHRIFTUNG = 'mb-1 block text-sm font-medium text-gray-700'
 const EINGABEART: Record<string, string> = { ganzzahl: 'number', datumzeit: 'datetime-local', url: 'url' }
-
-/** Lesbare Spaltenüberschrift: `verantwortlich_id` -> „Verantwortlich", `betrag_cent` -> „Betrag". */
-export function spaltenName(spalte: string): string {
-  const text = spalte.replace(/_(id|cent)$/, '').replace(/_/g, ' ')
-  return text.charAt(0).toUpperCase() + text.slice(1)
-}
 
 export function istCent(spalte: string): boolean {
   return spalte.endsWith('_cent')
@@ -215,7 +210,7 @@ export function BausteinFormular({
             .split(',')
             .map((o) => (
               <option key={o} value={o}>
-                {o}
+                {wertText(o)}
               </option>
             ))}
         </select>

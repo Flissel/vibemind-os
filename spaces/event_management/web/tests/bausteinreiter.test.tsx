@@ -161,7 +161,7 @@ describe('BausteinReiter', () => {
     const zeile = (await screen.findByText('Halle buchen')).closest('tr') as HTMLElement
     await u.click(screen.getAllByRole('button', { name: '+ Hinzufügen' })[0] as HTMLElement)
     await u.type(screen.getByLabelText(/^Titel/), 'Catering')
-    fireEvent.change(screen.getByLabelText(/^Faellig/), { target: { value: '2026-12-01T09:30' } })
+    fireEvent.change(screen.getByLabelText(/^Fällig/), { target: { value: '2026-12-01T09:30' } })
     await u.click(screen.getByRole('button', { name: 'Speichern' }))
     await waitFor(() =>
       expect(senden).toHaveBeenCalledWith('POST', '/api/events/e1/b/aufgaben', {
@@ -172,8 +172,8 @@ describe('BausteinReiter', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Speichern' })).toBeNull())
     senden.mockClear()
     await u.click(within(zeile).getByRole('button', { name: 'Bearbeiten Halle buchen' }))
-    expect((screen.getByLabelText(/^Faellig/) as HTMLInputElement).value).toBe('2026-12-01T09:30')
-    fireEvent.change(screen.getByLabelText(/^Faellig/), { target: { value: '2026-12-02T18:45' } })
+    expect((screen.getByLabelText(/^Fällig/) as HTMLInputElement).value).toBe('2026-12-01T09:30')
+    fireEvent.change(screen.getByLabelText(/^Fällig/), { target: { value: '2026-12-02T18:45' } })
     await u.click(screen.getByRole('button', { name: 'Speichern' }))
     await waitFor(() =>
       expect(senden).toHaveBeenCalledWith('PATCH', '/api/events/e1/b/aufgaben/a1', {
@@ -290,5 +290,55 @@ describe('BausteinReiter', () => {
     await u.type(screen.getByLabelText(/^Betrag/), '5')
     await u.click(screen.getByRole('button', { name: 'Speichern' }))
     expect((await screen.findByRole('alert')).textContent).toContain('Betrag ist zu hoch')
+  })
+
+  it('zeigt deutsche Spaltenköpfe und Auswahlwerte (Rohwert bleibt der gesendete Wert)', async () => {
+    const u = userEvent.setup()
+    zeige('aufgaben')
+    await screen.findByText('Halle buchen')
+    expect(screen.getByRole('columnheader', { name: 'Fällig' })).toBeTruthy()
+    expect(screen.getByRole('columnheader', { name: 'Kategorie' })).toBeTruthy()
+    await u.click(screen.getAllByRole('button', { name: '+ Hinzufügen' })[0] as HTMLElement)
+    const status = screen.getByLabelText(/^Status/) as HTMLSelectElement
+    const arbeit = Array.from(status.options).find((o) => o.value === 'in_arbeit')
+    expect(arbeit?.textContent).toBe('in Arbeit')
+  })
+
+  it('zeigt Auswahlwerte in der Zelle deutsch', async () => {
+    tabellen.budget = [{ id: 'b1', titel: 'Saalmiete', art: 'einnahme', betrag_cent: 100, status: 'bestaetigt' }]
+    zeige('budget')
+    const zeile = (await screen.findByText('Saalmiete')).closest('tr') as HTMLElement
+    expect(within(zeile).getByText('bestätigt')).toBeTruthy()
+    expect(within(zeile).getByText('Einnahme')).toBeTruthy()
+  })
+
+  it('beim Wechsel des Bausteins verschwinden Löschfehler und Dialog', async () => {
+    const u = userEvent.setup()
+    const { rerender } = zeige('aufgaben')
+    const zeile = (await screen.findByText('Halle buchen')).closest('tr') as HTMLElement
+    senden.mockRejectedValueOnce(new ApiFehler(403, 'x'))
+    await u.click(within(zeile).getByRole('button', { name: 'Löschen Halle buchen' }))
+    await u.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Löschen' }))
+    await screen.findByText('Keine Berechtigung')
+    rerender(
+      <BausteinReiter eventId="e1" firmaId="f1" baustein="budget" begriffe={{}} verzeichnis={VERZEICHNIS} />,
+    )
+    await screen.findByText('Saalmiete')
+    expect(screen.queryByText('Keine Berechtigung')).toBeNull()
+  })
+
+  it('nach dem Speichern wird erst neu geladen; ein Ladefehler ist sichtbar, das Formular schließt', async () => {
+    const u = userEvent.setup()
+    zeige('budget')
+    await screen.findByText('Saalmiete')
+    await u.click(screen.getByRole('button', { name: '+ Hinzufügen' }))
+    await u.type(screen.getByLabelText(/^Titel/), 'Posten')
+    await u.selectOptions(screen.getByLabelText(/^Art/), 'kosten')
+    await u.type(screen.getByLabelText(/^Betrag/), '5')
+    delete tabellen.budget
+    await u.click(screen.getByRole('button', { name: 'Speichern' }))
+    await screen.findByText('Nicht gefunden')
+    expect(senden).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('button', { name: 'Speichern' })).toBeNull()
   })
 })

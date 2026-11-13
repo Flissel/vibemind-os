@@ -304,6 +304,61 @@ describe('Event-Seite', () => {
     expect(api.holen).toHaveBeenCalledWith('/api/events/e1/verlauf', { limit: '100' })
   })
 
+  it('Verlauf übersetzt Spalte, Aktion und Quelle ins Deutsche', async () => {
+    reiterParam = 'verlauf'
+    const basis = {
+      event_id: 'e1',
+      firma_id: 'f1',
+      zeitpunkt: '2026-11-12T22:30:00+00:00',
+      actor: 'lea@example.org',
+      actor_person_id: 'p1',
+      baustein: 'event',
+      ziel_id: null,
+    }
+    verlauf = [
+      { ...basis, id: 5, quelle: 'oberflaeche', aktion: 'geaendert' },
+      { ...basis, id: 6, quelle: 'bot', aktion: 'status_laeuft' },
+      { ...basis, id: 7, quelle: 'system', aktion: 'geloescht' },
+    ]
+    mocke(LEITUNG)
+    render(<EventPage />)
+    await laden()
+    await screen.findAllByText('lea@example.org')
+    expect(screen.getByRole('columnheader', { name: 'Wer' })).toBeTruthy()
+    const text = document.querySelector('tbody')?.textContent ?? ''
+    for (const erwartet of ['geändert', 'Status: läuft', 'gelöscht', 'Oberfläche', 'Bot', 'System']) {
+      expect(text).toContain(erwartet)
+    }
+  })
+
+  it('ein unbekannter ?reiter= zeigt die Übersicht als aktiv', async () => {
+    reiterParam = 'unbekannt'
+    mocke(LEITUNG)
+    render(<EventPage />)
+    await laden()
+    const nav = screen.getByRole('navigation', { name: 'Bereiche' })
+    expect(within(nav).getByText('Übersicht').getAttribute('aria-current')).toBe('page')
+    const aktive = within(nav)
+      .getAllByRole('link')
+      .filter((l) => l.getAttribute('aria-current') === 'page')
+    expect(aktive).toHaveLength(1)
+  })
+
+  it('Betreiber: Firmenname aus /api/ich, kein zusätzlicher /api/firmen-Abruf', async () => {
+    mocke({ ...LEITUNG, betreiber: true })
+    render(<EventPage />)
+    await laden()
+    expect(screen.getByText('Beispiel GmbH › Hackathon')).toBeTruthy()
+    expect((api.holen as unknown as { mock: { calls: string[][] } }).mock.calls.some((c) => c[0] === '/api/firmen')).toBe(false)
+  })
+
+  it('der Kopf zeigt für ein abgesagtes Event in der Zukunft "vorbei"', async () => {
+    mocke(LEITUNG, event({ status: 'abgesagt' }))
+    render(<EventPage />)
+    await laden()
+    expect(screen.getAllByText('vorbei').length).toBeGreaterThan(0)
+  })
+
   it('Verlauf nennt Hilfseinträge der Registry deutsch statt mit ihrer Id', async () => {
     reiterParam = 'verlauf'
     verlauf = [

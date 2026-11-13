@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { Meldung } from '@/components/Meldung'
 import { api } from '@/lib/api'
+import { aktionText, quelleText } from '@/lib/anzeige'
 import { eintragName } from '@/lib/begriffe'
 import type { VerlaufEintrag } from '@/lib/typen'
 import { zeigeDatum, zeigeZeit } from '@/lib/zeit'
@@ -40,7 +41,7 @@ export function VerlaufReiter({ eventId, begriffe }: Props) {
         <thead className="border-b border-gray-100 text-xs uppercase tracking-wide text-gray-500">
           <tr>
             <th className="px-4 py-2">Zeit</th>
-            <th className="px-4 py-2">Actor</th>
+            <th className="px-4 py-2">Wer</th>
             <th className="px-4 py-2">Baustein</th>
             <th className="px-4 py-2">Aktion</th>
             <th className="px-4 py-2">Quelle</th>
@@ -54,8 +55,8 @@ export function VerlaufReiter({ eventId, begriffe }: Props) {
               </td>
               <td className="px-4 py-2 text-gray-900">{v.actor}</td>
               <td className="px-4 py-2 text-gray-700">{v.baustein === 'event' ? 'Event' : eintragName(v.baustein, begriffe)}</td>
-              <td className="px-4 py-2 text-gray-700">{v.aktion}</td>
-              <td className="px-4 py-2 text-gray-500">{v.quelle}</td>
+              <td className="px-4 py-2 text-gray-700">{aktionText(v.aktion)}</td>
+              <td className="px-4 py-2 text-gray-500">{quelleText(v.quelle)}</td>
             </tr>
           ))}
         </tbody>

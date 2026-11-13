@@ -3,13 +3,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Bestaetigen } from '@/components/Bestaetigen'
 import { Meldung } from '@/components/Meldung'
-import {
-  BausteinFormular,
-  istCent,
-  refName,
-  spaltenName,
-} from '@/components/formular/BausteinFormular'
+import { BausteinFormular, istCent, refName } from '@/components/formular/BausteinFormular'
 import { api } from '@/lib/api'
+import { spaltenName, wertText } from '@/lib/anzeige'
 import { bausteinName } from '@/lib/begriffe'
 import { formatEuro } from '@/lib/euro'
 import type { BausteineKatalog, BausteinInfo, Kontakt, Zeile } from '@/lib/typen'
@@ -86,6 +82,8 @@ export function BausteinReiter({ eventId, firmaId, baustein, begriffe, verzeichn
     setGeladen(false)
     setLadeFehler(null)
     setFormular(null)
+    setLoeschen(null)
+    setAktionFehler(null)
     const kontaktLaden = braucheKontakte
       ? api.holen<Kontakt[]>(`/api/firmen/${firmaId}/kontakte`)
       : Promise.resolve<Kontakt[]>([])
@@ -113,8 +111,13 @@ export function BausteinReiter({ eventId, firmaId, baustein, begriffe, verzeichn
     const pfad = `/api/events/${eventId}/b/${eintrag}`
     if (zeile) await api.senden('PATCH', `${pfad}/${zeile.id}`, daten)
     else await api.senden('POST', pfad, daten)
+    try {
+      await laden(eintrag)
+    } catch (e) {
+      // Gespeichert ist gespeichert: ein Ladefehler darf das Formular nicht erneut absenden lassen.
+      setAktionFehler(e)
+    }
     setFormular(null)
-    await laden(eintrag)
   }
 
   async function loeschenBestaetigt() {
@@ -144,6 +147,7 @@ export function BausteinReiter({ eventId, firmaId, baustein, begriffe, verzeichn
       return `${zeigeDatum(wert)} ${zeigeZeit(wert)}`
     }
     if (istCent(spalte) && typeof wert === 'number') return formatEuro(wert)
+    if (typ.startsWith('auswahl:')) return wertText(String(wert))
     return String(wert)
   }
 
