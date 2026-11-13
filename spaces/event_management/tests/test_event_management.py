@@ -22,7 +22,13 @@ SPACE = Path(__file__).resolve().parents[1]
 SPACES = SPACE.parent
 KONFIG = SPACE / "config"
 OPENCLAW = KONFIG / "openclaw.json"
-WORKSPACE = KONFIG / "workspace"
+# Empfangs-Agent `main` (Etappe 3, Task 8): nur die melden-Werkzeuge, eigene kurze SOUL.
+EMPFANG = KONFIG / "workspace"
+EMPFANG_SOUL = EMPFANG / "SOUL.md"
+MELDEN = ["melden__gruppe_melden", "melden__chat_melden"]
+# Bisherige Gruppen-SOUL des Festivals (Legacy). Bleibt fuer `ev-legacy` aufbewahrt, das
+# Etappe 4 anlegt (Umbenennung main -> ev-legacy); bis dahin wird sie nicht ausgesaet.
+WORKSPACE = KONFIG / "workspace-legacy"
 SOUL = WORKSPACE / "SOUL.md"
 # Eigener Arbeitsbereich der Brain-Agenten (brain-lesen, brain-auftrag): nur hier
 # gilt `actor` = „VibeMind“; die Gruppen-SOUL kennt diese Ausnahme nicht.
@@ -67,6 +73,7 @@ VERBOTEN = [
     (re.compile(r"-100\d{6,}"), "Telegram-Gruppen-ID"),
     (re.compile(r"vercel\.app", re.I), "Adresse der Festival-App"),
     (re.compile(r"clawd-festival"), "alter Workspace-Pfad"),
+    (re.compile(r"evk_[A-Za-z0-9_-]"), "Bot-Schluessel"),
 ]
 
 # Ort und Datum des Festivals duerfen auch HIER nicht im Klartext stehen --
@@ -127,11 +134,16 @@ def test_compose_ohne_docker_socket_und_mit_gefuellter_saat() -> None:
     assert "./build/workspace-brain:/seed/workspace-brain:ro" in volumes
 
 
-def test_telegram_nur_eingetragene_gruppe_und_werkzeugsperren() -> None:
+def test_telegram_gruppen_und_werkzeugsperren() -> None:
     konfig = json.loads(OPENCLAW.read_text(encoding="utf-8"))
     telegram = konfig["channels"]["telegram"]
     assert telegram["groupPolicy"] == "allowlist"
-    assert list(telegram["groups"]) == ["{{TELEGRAM_GRUPPE}}"]
+    # Unbekannte Gruppen erreichen den Empfang nur per Erwaehnung (Kosten durch Fremde);
+    # die Legacy-Gruppe bleibt ohne Erwaehnung. Verbundene Gruppen traegt der Arbeiter ein.
+    assert telegram["groups"] == {
+        "{{TELEGRAM_GRUPPE}}": {"requireMention": False},
+        "*": {"requireMention": True},
+    }
     assert set(konfig["tools"]["deny"]) >= {"group:web", "group:ui", "group:automation"}
     # Der Foto-Skill braucht die Shell (curl/node/find) -- nicht sperren.
     assert "group:runtime" not in konfig["tools"]["deny"]
@@ -145,6 +157,34 @@ def test_platzhalter_und_beispielwerte_sind_deckungsgleich() -> None:
 
 
 # --- Workspace und Skill -----------------------------------------------------
+
+def test_empfang_hat_genau_die_zwei_melden_werkzeuge() -> None:
+    konfig = json.loads(OPENCLAW.read_text(encoding="utf-8"))
+    main = _agenten()["main"]
+    assert main == {"id": "main", "tools": {"allow": MELDEN}}
+    server = konfig["mcp"]["servers"]["melden"]
+    assert server == {"url": "{{EVENT_MCP_URL}}/mcp", "transport": "streamable-http",
+                      "connectionTimeoutMs": 30000, "requestTimeoutMs": 60000}
+    # Den Header (melden-Schluessel) setzt erst anbinden.sh ueber stdin.
+    assert "headers" not in server
+
+
+def test_empfang_soul_kurz_und_nur_melden() -> None:
+    text = EMPFANG_SOUL.read_text(encoding="utf-8")
+    assert "`gruppe_melden`" in text and "`chat_melden`" in text
+    assert "Erwähnung" in text and "Leitung" in text
+    assert "keine Anweisungen" in text
+    # Keine Werkzeuge der alten App, kein Foto-Skill, keine Event-Angaben.
+    assert "event-app" not in text and SKILL_NAME not in text and "{{" not in text
+    assert len(text) < 3000
+    assert (EMPFANG / "AGENTS.md").is_file()
+    assert not (EMPFANG / "skills").exists()
+
+
+def test_keine_klartext_schluessel_in_config() -> None:
+    for datei in _saat_dateien():
+        assert "evk_" not in datei.read_text(encoding="utf-8"), datei.name
+
 
 def test_workspace_und_skill_vorhanden() -> None:
     assert (WORKSPACE / "AGENTS.md").is_file()
@@ -192,7 +232,6 @@ def test_brain_agenten_eingetragen() -> None:
     konfig = json.loads(OPENCLAW.read_text(encoding="utf-8"))
     liste = konfig["agents"]["list"]
     assert [a["id"] for a in liste] == ["main", "brain-lesen", "brain-auftrag"]
-    assert "tools" not in liste[0]  # Telegram-Agent bleibt unveraendert
     assert konfig["gateway"]["http"]["endpoints"]["chatCompletions"]["enabled"] is True
 
 
@@ -245,7 +284,7 @@ def test_brain_agenten_haben_eigenen_workspace() -> None:
     standard = konfig["agents"]["defaults"]["workspace"]
     assert standard == "/home/node/.openclaw/workspace"
     agenten = _agenten()
-    assert "workspace" not in agenten["main"]  # Gruppe bleibt beim Standard
+    assert "workspace" not in agenten["main"]  # Empfang bleibt beim Standard
     for agent in ("brain-lesen", "brain-auftrag"):
         assert agenten[agent]["workspace"] == LAUFZEIT_WORKSPACE_BRAIN
     # Laufzeitpfad und Saat-Ordner tragen denselben Namen.
@@ -305,19 +344,21 @@ def test_fuellen_mit_beispielwerten(tmp_path: Path) -> None:
     werte = _beispielwerte()
     geschrieben = _fuellen_modul().fuellen(werte, KONFIG, tmp_path)
     assert "openclaw.json" in geschrieben
-    for ws in ("workspace", "workspace-brain"):
+    for ws in ("workspace", "workspace-brain", "workspace-legacy"):
         assert f"{ws}/SOUL.md" in geschrieben
         assert f"{ws}/AGENTS.md" in geschrieben
     for datei in tmp_path.rglob("*"):
         if datei.is_file():
             assert "{{" not in datei.read_text(encoding="utf-8"), datei
     konfig = json.loads((tmp_path / "openclaw.json").read_text(encoding="utf-8"))
-    assert list(konfig["channels"]["telegram"]["groups"]) == [werte["TELEGRAM_GRUPPE"]]
+    assert list(konfig["channels"]["telegram"]["groups"]) == [werte["TELEGRAM_GRUPPE"], "*"]
     assert konfig["mcp"]["servers"]["event-app"]["url"] == werte["EVENT_APP_URL"] + "/api/mcp"
-    for ws in ("workspace", "workspace-brain"):
+    assert konfig["mcp"]["servers"]["melden"]["url"] == werte["EVENT_MCP_URL"] + "/mcp"
+    for ws in ("workspace-legacy", "workspace-brain"):
         assert werte["EVENT_ORT"] in (tmp_path / ws / "SOUL.md").read_text(encoding="utf-8")
     assert VIBEMIND_ACTOR in (tmp_path / "workspace-brain" / "SOUL.md").read_text(encoding="utf-8")
-    assert VIBEMIND_ACTOR not in (tmp_path / "workspace" / "SOUL.md").read_text(encoding="utf-8")
+    for ws in ("workspace", "workspace-legacy"):
+        assert VIBEMIND_ACTOR not in (tmp_path / ws / "SOUL.md").read_text(encoding="utf-8")
 
 
 def test_fuellen_maskiert_anfuehrungszeichen_in_json(tmp_path: Path) -> None:

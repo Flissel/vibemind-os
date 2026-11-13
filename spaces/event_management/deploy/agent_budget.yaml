@@ -12,5 +12,5 @@ agenten:
     bereich: event-management
     klasse: auftrag
     modell: sonnet
-    tagesgrenze: 100
+    tagesgrenze: 300
     wrapper: shim

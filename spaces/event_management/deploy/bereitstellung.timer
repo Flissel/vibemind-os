@@ -1,0 +1,13 @@
+# Alle 20 Sekunden (wie sales admin_auftraege). Ein oneshot-Dienst laeuft nie doppelt:
+# solange ein Lauf dauert, startet der Timer keinen zweiten. NUR als Datei im Repo.
+[Unit]
+Description=Event-Bot: Bereitstellungs-Arbeiter alle 20 Sekunden
+
+[Timer]
+OnBootSec=60s
+OnUnitInactiveSec=20s
+AccuracySec=1s
+Unit=bereitstellung.service
+
+[Install]
+WantedBy=timers.target

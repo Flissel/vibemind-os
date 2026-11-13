@@ -5,8 +5,9 @@ und erlaubte WhatsApp-Nummer stehen in config/ nur als Platzhalter. Die echten
 Werte liegen in einer nie eingecheckten JSON-Datei (Vorlage:
 werte.beispiel.json); dieses Skript schreibt config/ gefuellt in ein Zielverzeichnis
 (ueblich: build/, gitignored), das docker-compose.yml als Saat einhaengt. Gefuellt
-wird ALLES unter config/: openclaw.json und beide Arbeitsbereiche, workspace/
-(Gruppe) und workspace-brain/ (Brain-Agenten).
+wird ALLES unter config/: openclaw.json und die Arbeitsbereiche workspace/
+(Empfang `main`), workspace-brain/ (Brain-Agenten) und workspace-legacy/ (bisherige
+Festival-Gruppe, fuer `ev-legacy` in Etappe 4; noch nicht ausgesaet).
 
 Schluessel gehoeren NICHT in die Wertedatei -- sie gehen nur per stdin ins
 Laufzeit-Volume (Muster *-anbinden.sh).

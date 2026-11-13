@@ -589,9 +589,18 @@ def test_bot_tabellen_rechte_und_checks(welt, db_admin):
             " has_table_privilege('event_app', %(t)s, 'delete') as d,"
             " has_table_privilege('public', %(t)s, 'select') as p",
             {"t": f"event.{tabelle}"}).fetchone()
-        # verbindung: insert/update nur auf einzelne Spalten (006), daher nicht tabellenweit.
-        assert rechte == {"s": True, "i": tabelle == "bereitstellung", "u": False, "d": False,
-                          "p": False}, tabelle
+        # insert/update nur auf einzelne Spalten (verbindung 006, bereitstellung 007), daher
+        # nicht tabellenweit.
+        assert rechte == {"s": True, "i": False, "u": False, "d": False, "p": False}, tabelle
+    # bereitstellung: nur die Spalten eines neuen Auftrags; Status, Schritt, Fehler und den
+    # Schluessel-Bezug setzt allein der Arbeiter (Admin-DSN).
+    spalten = db_admin.execute(
+        "select column_name as c,"
+        " has_column_privilege('event_app', 'event.bereitstellung', column_name, 'insert') as i"
+        " from information_schema.columns"
+        " where table_schema = 'event' and table_name = 'bereitstellung'").fetchall()
+    assert {z["c"] for z in spalten if z["i"]} == {
+        "art", "ziel", "event_id", "person_id", "chat_id", "agent_id", "angelegt"}
     spalten = db_admin.execute(
         "select column_name as c,"
         " has_column_privilege('event_app', 'event.verbindung', column_name, 'insert') as i,"

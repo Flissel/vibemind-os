@@ -1,0 +1,26 @@
+# Bereitstellungs-Arbeiter des Event-Bots: bestaetigte Telegram-Verbindungen -> Agenten im
+# Container event-management-claw (system/bereitstellung.py). NUR als Datei im Repo; das
+# Installieren auf der VM ist ein eigener Schritt mit OK (Etappe 4).
+#
+# Erwartet auf dem Host (Pfade an die VM anpassen):
+#   /etc/event-management/bereitstellung.env   0600, ohne Schluessel:
+#       EVENT_ADMIN_DSN_FILE=/etc/event-management/admin-dsn   (Datei 0600, DSN darin)
+#       EVENT_MCP_URL=http://<event-mcp aus Sicht des Claw-Containers>
+#       EVENT_CLAW_CONTAINER=event-management-claw
+#   Der Dienstnutzer darf `docker exec` (Gruppe docker).
+[Unit]
+Description=Event-Bot: Bereitstellungs-Auftraege abarbeiten (anlegen/abbauen von Agenten)
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+User=debian
+Group=debian
+WorkingDirectory=/home/debian/vibemind-os
+EnvironmentFile=/etc/event-management/bereitstellung.env
+ExecStart=/usr/bin/python3 -m spaces.event_management.system.bereitstellung lauf
+TimeoutStartSec=10min
+NoNewPrivileges=yes
+PrivateTmp=yes
+UMask=0077

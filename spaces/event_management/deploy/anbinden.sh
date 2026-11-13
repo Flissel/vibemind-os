@@ -3,14 +3,18 @@
 # Saat der Konfiguration und der Arbeitsbereiche, Schluessel, Neustart, Probe.
 # Wiederholbar. Muster: sales-claw deploy/post-anbinden.sh und gateway-saat.sh.
 #
-#   printf '%s\n%s\n%s\n%s\n' "$GW" "$TG" "$APP" "$CC" | bash deploy/anbinden.sh
+#   printf '%s\n%s\n%s\n%s\n%s\n' "$GW" "$TG" "$APP" "$CC" "$MLD" | bash deploy/anbinden.sh
 #
-# Genau vier Zeilen von stdin (nie als Argument, nie in einer Ausgabe):
+# Genau fuenf Zeilen von stdin (nie als Argument, nie in einer Ausgabe):
 #   1  Gateway-Token
 #   2  Telegram-Bot-Token
 #   3  Authorization-Wert der Event-App (Header des MCP-Servers `event-app`)
 #   4  Claude-Code-OAuth-Token fuer den Shim; leer = laufzeit/claude-token
-#      bleibt, wie es ist. Zeilen 1-3 duerfen nicht leer sein.
+#      bleibt, wie es ist.
+#   5  Authorization-Wert des Servers `melden` (Empfangs-Agent `main`):
+#      "Bearer <Schluessel der Art melden>", ausgestellt mit
+#      `python -m spaces.event_management.system.schluessel ausstellen --art melden`.
+#   Zeilen 1-3 und 5 duerfen nicht leer sein.
 #
 # Voraussetzung: `python deploy/fuellen.py werte.local.json build/` lief. Der
 # Claw-Container muss NICHT laufen.
@@ -24,6 +28,7 @@
 #   gateway.auth.token                          Gateway-Token
 #   channels.telegram.botToken                  Telegram-Bot-Token
 #   mcp.servers.event-app.headers.Authorization Event-App
+#   mcp.servers.melden.headers.Authorization    Empfang (melden-Schluessel)
 #
 # Ablauf: stdin pruefen -> Schluesseldateien auf dem Host -> Saat und Schluessel
 # per `docker compose run --rm --no-deps -T --entrypoint node` (braucht weder
@@ -45,17 +50,19 @@ cd "$(dirname "$0")/.."
 CLAW=event-management-claw
 SHIM=event-management-shim
 
-# --- 1. Vier Zeilen von stdin ------------------------------------------------
+# --- 1. Fuenf Zeilen von stdin -----------------------------------------------
 IFS= read -r GW || true
 IFS= read -r TG || true
 IFS= read -r APP || true
 IFS= read -r CC || true
+IFS= read -r MLD || true
 # CRLF aus der Pipeline wegnehmen (ein \r im Schluessel ist ein stiller Fehler).
-GW=${GW%$'\r'}; TG=${TG%$'\r'}; APP=${APP%$'\r'}; CC=${CC%$'\r'}
+GW=${GW%$'\r'}; TG=${TG%$'\r'}; APP=${APP%$'\r'}; CC=${CC%$'\r'}; MLD=${MLD%$'\r'}
 
 if [ -z "$GW" ]; then echo "ABBRUCH: Zeile 1 (Gateway-Token) ist leer." >&2; exit 1; fi
 if [ -z "$TG" ]; then echo "ABBRUCH: Zeile 2 (Telegram-Bot-Token) ist leer." >&2; exit 1; fi
 if [ -z "$APP" ]; then echo "ABBRUCH: Zeile 3 (Authorization der Event-App) ist leer." >&2; exit 1; fi
+if [ -z "$MLD" ]; then echo "ABBRUCH: Zeile 5 (Authorization des Empfangs) ist leer." >&2; exit 1; fi
 
 # Nur druckbares ASCII sowie Leer- und Tabzeichen; alles andere bricht ab, die
 # Meldung nennt die Zeile, nie den Wert.
@@ -71,6 +78,7 @@ zeichen_pruefen 1 "$GW"
 zeichen_pruefen 2 "$TG"
 zeichen_pruefen 3 "$APP"
 zeichen_pruefen 4 "$CC"
+zeichen_pruefen 5 "$MLD"
 
 [ -f build/openclaw.json ] || { echo "ABBRUCH: build/openclaw.json fehlt (deploy/fuellen.py ausfuehren)." >&2; exit 1; }
 # Der Shim braucht laufzeit/claude-token, um ueberhaupt zu starten.
@@ -109,7 +117,7 @@ else
 fi
 
 # --- 3. Saat ins Volume ------------------------------------------------------
-# openclaw.json: fehlt sie, kommt die Saat; weicht sie ab (ohne die drei
+# openclaw.json: fehlt sie, kommt die Saat; weicht sie ab (ohne die vier
 # Schluesselfelder), wird sie gesichert und durch die Saat ersetzt. Von den
 # Arbeitsbereichen werden nur SOUL.md, AGENTS.md und skills/ ueberschrieben.
 SAAT_JS=$(cat <<'JS'
@@ -121,6 +129,7 @@ const GEHEIM = [
   ['gateway', 'auth', 'token'],
   ['channels', 'telegram', 'botToken'],
   ['mcp', 'servers', 'event-app', 'headers', 'Authorization'],
+  ['mcp', 'servers', 'melden', 'headers', 'Authorization'],
 ];
 function ohneGeheim(o) {
   const c = JSON.parse(JSON.stringify(o));
@@ -202,6 +211,7 @@ const ZIELE = [
   ['gateway.auth.token', ['gateway', 'auth', 'token']],
   ['channels.telegram.botToken', ['channels', 'telegram', 'botToken']],
   ['mcp.servers.event-app.headers.Authorization', ['mcp', 'servers', 'event-app', 'headers', 'Authorization']],
+  ['mcp.servers.melden.headers.Authorization', ['mcp', 'servers', 'melden', 'headers', 'Authorization']],
 ];
 try {
   const c = JSON.parse(fs.readFileSync(CFG, 'utf8'));
@@ -233,7 +243,7 @@ try {
 }
 JS
 )
-AUS=$(printf '%s\n%s\n%s\n' "$GW" "$TG" "$APP" | docker compose run --rm --no-deps -T --entrypoint node "$CLAW" -e "$SCHLUESSEL_JS") \
+AUS=$(printf '%s\n%s\n%s\n%s\n' "$GW" "$TG" "$APP" "$MLD" | docker compose run --rm --no-deps -T --entrypoint node "$CLAW" -e "$SCHLUESSEL_JS") \
   || { printf '%s\n' "$AUS"; echo "ABBRUCH: Schluessel konnten nicht gesetzt werden." >&2; exit 1; }
 printf '%s\n' "$AUS"
 case "$AUS" in

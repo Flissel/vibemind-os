@@ -188,6 +188,32 @@ def event_aendern(
     return row
 
 
+def _gruppe_abbauen(cur: psycopg.Cursor[Any], k: Kontext, event_id: UUID) -> None:
+    """Legt fuer die bestaetigte Telegram-Gruppe des Events einen `abbauen`-Auftrag an
+    (Spec §4: beim Archivieren werden Agent, Server und Binding entfernt). Muss VOR einem
+    Loeschen laufen: die Kaskade nimmt die Verbindung mit, danach liesse RLS
+    (`bereitstellung_chat`) den Auftrag nicht mehr zu.
+
+    Lehnt RLS den Auftrag ab (Kontext ohne passende Person), entfaellt er nur fuer diesen
+    Aufruf; der Bereitstellungs-Arbeiter raeumt den Agenten dann als verwaist ab (ein
+    archiviertes oder geloeschtes Event hat keinen Soll-Agenten mehr)."""
+    cur.execute("select chat_id from event.verbindung where art = 'gruppe' and event_id = %s"
+                " and status = 'bestaetigt'", (event_id,))
+    gruppe = cur.fetchone()
+    if gruppe is None:
+        return
+    try:
+        with cur.connection.transaction():  # Savepoint: Ablehnung nur fuer den Auftrag
+            cur.execute(
+                "insert into event.bereitstellung (art, ziel, event_id, person_id, chat_id,"
+                " agent_id, angelegt) values ('abbauen', 'gruppe', %s, %s, %s, %s,"
+                " clock_timestamp())",
+                (event_id, k.person_id, gruppe["chat_id"], f"ev-{UUID(str(event_id)).hex[:8]}"))
+    except psycopg.errors.InsufficientPrivilege:
+        log.warning("Abbau-Auftrag uebersprungen (keine Berechtigung); der Arbeiter raeumt"
+                    " den Agenten als verwaist ab")
+
+
 def event_status(
     conn: psycopg.Connection[Any], k: Kontext, event_id: UUID, status: str,
 ) -> dict[str, Any]:
@@ -203,6 +229,8 @@ def event_status(
                     (status, event_id))
         row = cur.fetchone()
         assert row is not None
+        if status == "archiviert" and alt["status"] != "archiviert":
+            _gruppe_abbauen(cur, k, event_id)
         verlauf.schreiben(cur, k, event_id, row["firma_id"], "event", f"status_{status}", event_id)
     return row
 
@@ -211,6 +239,7 @@ def event_loeschen(conn: psycopg.Connection[Any], k: Kontext, event_id: UUID) ->
     with transaktion(conn, k) as cur:
         alt = event_laden(cur, k, event_id, sperren=True)
         rechte.pruefe(k, "event_loeschen", alt["firma_id"])
+        _gruppe_abbauen(cur, k, event_id)
         cur.execute("delete from event.event where id = %s", (event_id,))
 
 

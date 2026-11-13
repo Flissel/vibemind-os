@@ -22,8 +22,8 @@ BEISPIEL = SPACE / "werte.beispiel.json"
 OPENCLAW = SPACE / "config" / "openclaw.json"
 GITIGNORE = SPACE / ".gitignore"
 
-# Namen der Shell-Variablen, die Schluessel tragen (Zeilen 1-4 von stdin).
-SCHLUESSEL_VARIABLEN = ("GW", "TG", "APP", "CC")
+# Namen der Shell-Variablen, die Schluessel tragen (Zeilen 1-5 von stdin).
+SCHLUESSEL_VARIABLEN = ("GW", "TG", "APP", "CC", "MLD")
 
 
 def _compose() -> dict:
@@ -68,16 +68,16 @@ def test_set_eu_und_umask() -> None:
     assert re.search(r'cd "\$\(dirname', code)
 
 
-def test_werte_nur_per_stdin_vier_zeilen() -> None:
+def test_werte_nur_per_stdin_fuenf_zeilen() -> None:
     shell = "\n".join(_shell_zeilen())
-    assert len(re.findall(r"\bread\b", shell)) == 4
+    assert len(re.findall(r"\bread\b", shell)) == 5
     assert all(re.search(rf"IFS= read -r {v}\b", shell) for v in SCHLUESSEL_VARIABLEN)
     # Kein Wert als Argument: $1..$9, $@ und $* kommen in der Shell nicht vor.
     # (Die Hilfsfunktion zeichen_pruefen darf ihre eigenen Parameter lesen.)
     ohne_funktion = re.sub(r"zeichen_pruefen\(\) \{.*?\n\}", "", shell, flags=re.S)
     assert not re.search(r"\$[1-9@*]|\$\{[1-9@*]", ohne_funktion)
-    # Leere Zeilen 1-3 sind ein Fehler, Zeile 4 darf leer sein.
-    for v in ("GW", "TG", "APP"):
+    # Leere Zeilen 1-3 und 5 sind ein Fehler, Zeile 4 darf leer sein.
+    for v in ("GW", "TG", "APP", "MLD"):
         assert re.search(rf'\[ -z "\${v}" \]', shell), v
     assert not re.search(r'\[ -z "\$CC" \]\s*&&', shell)
 
@@ -193,6 +193,15 @@ def test_shim_probe_ohne_logausgabe() -> None:
     assert "docker logs $SHIM" in code  # nur als Hinweis in der Meldung
 
 
+def test_melden_schluessel_fuer_den_empfang_nur_per_stdin() -> None:
+    """Zeile 5: Authorization des Servers `melden` (Empfangs-Agent `main`, Task 8)."""
+    code = SKRIPT.read_text(encoding="utf-8")
+    # Im Saat-Vergleich ignoriert und als vierter Wert per stdin gesetzt.
+    assert code.count("['mcp', 'servers', 'melden', 'headers', 'Authorization']") == 2
+    assert "'mcp.servers.melden.headers.Authorization'" in code
+    assert "'%s\\n%s\\n%s\\n%s\\n' \"$GW\" \"$TG\" \"$APP\" \"$MLD\" | docker compose run" in code
+
+
 def test_vergleich_ignoriert_meta_und_wizard() -> None:
     code = SKRIPT.read_text(encoding="utf-8")
     assert "delete c.meta" in code and "delete c.wizard" in code
@@ -252,7 +261,7 @@ def test_budget_datei_kennt_genau_den_claw() -> None:
     assert list(budget["agenten"]) == ["event-management-claw"]
     assert budget["agenten"]["event-management-claw"] == {
         "bereich": "event-management", "klasse": "auftrag", "modell": "sonnet",
-        "tagesgrenze": 100, "wrapper": "shim"}
+        "tagesgrenze": 300, "wrapper": "shim"}
     assert budget["uebergang_unbekannte_zulassen"] is False
     assert budget["pause_bei_user_aktiv"] is False
     assert budget["pause_fenster_min"] == 10
