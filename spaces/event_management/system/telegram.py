@@ -9,6 +9,7 @@ weder Texte noch Chat-IDs.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import os
@@ -71,6 +72,9 @@ class TelegramHttp:
                  basis_url: str = BASIS_URL) -> None:
         if not isinstance(token, str) or not _TOKEN.fullmatch(token):
             raise ValueError("Bot-Token ungueltig")
+        # Sonst meldete urllib "unknown url type: <URL mit Token>".
+        if not isinstance(basis_url, str) or not basis_url.startswith(("https://", "http://")):
+            raise ValueError("basis_url muss mit http:// oder https:// beginnen")
         self._token = token
         self._bot_id = int(token.split(":", 1)[0])
         self.timeout = timeout
@@ -80,22 +84,23 @@ class TelegramHttp:
         return f"TelegramHttp(basis_url={self.basis_url!r}, timeout={self.timeout})"
 
     def _aufruf(self, methode: str, daten: Mapping[str, Any]) -> Any:
-        anfrage = Request(
-            f"{self.basis_url}/bot{self._token}/{methode}",
-            data=json.dumps(dict(daten)).encode("utf-8"),
-            headers={"Content-Type": "application/json"}, method="POST",
-        )
         fehler: str | None = None
         antwort: Any = None
         try:
+            # Auch das Bauen der Anfrage im try: jede Meldung daraus kann die URL zitieren.
+            anfrage = Request(
+                f"{self.basis_url}/bot{self._token}/{methode}",
+                data=json.dumps(dict(daten)).encode("utf-8"),
+                headers={"Content-Type": "application/json"}, method="POST",
+            )
             with urlopen(anfrage, timeout=self.timeout) as roh:
                 antwort = json.loads(roh.read().decode("utf-8"))
         except HTTPError as e:
             fehler = f"HTTP {e.code}: {_beschreibung(e)}"
-        except (URLError, TimeoutError, OSError) as e:
+        except (URLError, TimeoutError, OSError, http.client.HTTPException) as e:
             fehler = f"nicht erreichbar ({type(e).__name__})"
         except (ValueError, UnicodeDecodeError):
-            fehler = "Antwort unlesbar"
+            fehler = "Anfrage oder Antwort ungueltig"
         if fehler is None and not (isinstance(antwort, dict) and antwort.get("ok") is True):
             beschreibung = antwort.get("description") if isinstance(antwort, dict) else None
             fehler = str(beschreibung) if beschreibung else "Anfrage abgelehnt"

@@ -153,3 +153,33 @@ def test_aus_umgebung(tmp_path: Path) -> None:
         assert "TELEGRAM_BOT_TOKEN_FILE" in str(e.value) and str(datei) not in str(e.value)
     with pytest.raises(ValueError):
         telegram_aus_umgebung({"TELEGRAM_BOT_TOKEN_FILE": str(tmp_path / "fehlt")})
+
+
+def test_basis_url_ohne_schema_abgelehnt_ohne_token() -> None:
+    for schlecht in ("ftp://example.org", "api.telegram.org", ""):
+        with pytest.raises(ValueError) as e:
+            TelegramHttp(TOKEN, basis_url=schlecht)
+        assert TOKEN not in _alles_text(e.value)
+
+
+def test_fehler_beim_bauen_der_anfrage_maskiert(monkeypatch: pytest.MonkeyPatch) -> None:
+    def kaputt(url: str, **_: Any) -> Any:
+        raise ValueError(f"unknown url type: {url!r}")
+
+    monkeypatch.setattr(telegram, "Request", kaputt)
+    with pytest.raises(TelegramFehler) as e:
+        TelegramHttp(TOKEN).senden(CHAT, "Hallo")
+    assert TOKEN not in _alles_text(e.value) and e.value.__context__ is None
+
+
+def test_http_client_fehler_maskiert(monkeypatch: pytest.MonkeyPatch) -> None:
+    import http.client
+
+    def oeffnen(anfrage: Any, timeout: float) -> _Antwort:
+        raise http.client.BadStatusLine(f"Unsinn von {anfrage.full_url}")
+
+    monkeypatch.setattr(telegram, "urlopen", oeffnen)
+    with pytest.raises(TelegramFehler) as e:
+        TelegramHttp(TOKEN).senden(CHAT, "Hallo")
+    assert "nicht erreichbar (BadStatusLine)" in str(e.value)
+    assert TOKEN not in _alles_text(e.value) and e.value.__context__ is None

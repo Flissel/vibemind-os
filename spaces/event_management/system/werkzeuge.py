@@ -190,6 +190,8 @@ def _wert_pruefen(name: str, s: Mapping[str, Any], wert: object) -> None:
             raise ValueError(f"Argument '{name}' muss eine Liste sein")
         if len(wert) < s.get("minItems", 0):
             raise ValueError(f"Argument '{name}' braucht mindestens {s['minItems']} Eintrag")
+        if "maxItems" in s and len(wert) > s["maxItems"]:
+            raise ValueError(f"Argument '{name}' hat zu viele Einträge (höchstens {s['maxItems']})")
         for eintrag in wert:
             _wert_pruefen(name, s["items"], eintrag)
         return
@@ -776,7 +778,7 @@ _SONDER: dict[str, _Sonder] = {
         "der Freigabe durch eine Leitung in der Oberfläche",
         {"betreff": {"type": "string", "maxLength": nachrichten.BETREFF_MAX},
          "text": {"type": "string", "maxLength": nachrichten.TEXT_MAX},
-         "zusage": {"type": "array", "minItems": 1,
+         "zusage": {"type": "array", "minItems": 1, "maxItems": len(nachrichten.ZUSAGEN),
                     "items": {"type": "string", "enum": list(nachrichten.ZUSAGEN)}}},
         ("betreff", "text", "zusage"), True, True, _mail_entwerfen),
     "nachrichten_liste": _Sonder(

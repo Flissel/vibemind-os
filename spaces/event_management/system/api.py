@@ -167,6 +167,11 @@ class MailEntwurf(_Eingabe):
     zusage: list[str] = Field(min_length=1, max_length=len(nachrichten.ZUSAGEN))
 
 
+class FreigabeDaten(_Eingabe):
+    # Die Empfaengerzahl, die die Freigebende gesehen hat (Ruling T6-a); optional.
+    erwartet: int | None = Field(default=None, ge=0, strict=True)
+
+
 def _text_param(wert: str | None) -> str | None:
     if wert is not None:
         _sauber(wert)
@@ -568,6 +573,8 @@ def erstelle_app(
     def nachricht_an_gruppe(
         event_id: UUID, daten: GruppenNachricht, s: Schreiben,
     ) -> dict[str, Any]:
+        """201 auch bei einem Telegram-Fehler: gespeichert ist die Nachricht dann mit
+        ``status: 'fehler'`` (die Oberflaeche meldet das)."""
         return nachrichten.an_gruppe(s.conn, s.k, event_id, daten.text, telegram=telegram)
 
     @app.post("/api/events/{event_id}/nachrichten/mail", status_code=201)
@@ -576,8 +583,12 @@ def erstelle_app(
                                           daten.zusage)
 
     @app.post("/api/nachrichten/{nachricht_id}/freigeben")
-    def nachricht_freigeben(nachricht_id: UUID, s: Schreiben) -> dict[str, Any]:
-        return nachrichten.freigeben(s.conn, s.k, nachricht_id)
+    def nachricht_freigeben(
+        nachricht_id: UUID, s: Schreiben,
+        daten: Annotated[FreigabeDaten | None, Body()] = None,
+    ) -> dict[str, Any]:
+        erwartet = daten.erwartet if daten is not None else None
+        return nachrichten.freigeben(s.conn, s.k, nachricht_id, erwartet)
 
     @app.post("/api/nachrichten/{nachricht_id}/verwerfen")
     def nachricht_verwerfen(nachricht_id: UUID, s: Schreiben) -> dict[str, Any]:

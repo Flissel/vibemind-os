@@ -120,6 +120,12 @@ def _nachrichten(admin: Any) -> list[dict[str, Any]]:
     return admin.execute("select * from event.nachricht order by angelegt, id").fetchall()
 
 
+def _schnappschuss(admin: Any, nid: object) -> dict[str, str]:
+    return {z["mail"]: z["status"] for z in admin.execute(
+        "select mail, status from event.nachricht_empfaenger where nachricht_id = %s",
+        (nid,)).fetchall()}
+
+
 def _status(admin: Any, nid: object) -> str:
     return str(admin.execute("select status from event.nachricht where id = %s",
                              (nid,)).fetchone()["status"])
@@ -372,8 +378,10 @@ def test_versenden_nur_freigegebene_und_nur_einmal(db_admin, db_app, welt, pg_cl
         "anna@example.org", "ben@example.org", "cara@example.org"]
     assert {(m.betreff, m.text) for m in mailer.gesendet} == {("Programm", KUNDENTEXT)}
     zeile = db_admin.execute("select * from event.nachricht where id = %s", (frei,)).fetchone()
-    assert (zeile["status"], zeile["empfaenger_anzahl"], zeile["fehler"]) == (
-        "versendet", 3, None)
+    assert (zeile["status"], zeile["fehler"]) == ("versendet", None)
+    assert _schnappschuss(db_admin, frei) == {"anna@example.org": "versendet",
+                                              "ben@example.org": "versendet",
+                                              "cara@example.org": "versendet"}
     assert zeile["versendet"] is not None
     assert _status(db_admin, entwurf) == "entwurf" and _status(db_admin, verworfen) == "verworfen"
     for geheim in (KUNDENTEXT, "anna@example.org", "Programm"):
@@ -405,6 +413,9 @@ def test_versenden_fehler_je_empfaenger(db_admin, db_app, welt, caplog):
     assert zeile["status"] == "fehler" and zeile["fehler"] == "1 von 2 Mails nicht versendet"
     assert _status(db_admin, andere) == "versendet"
     assert "ben@example.org" not in caplog.text and "OSError" in caplog.text
+    assert db_admin.execute(
+        "select fehler from event.nachricht_empfaenger where mail = 'ben@example.org'"
+    ).fetchone() == {"fehler": "OSError"}
     assert nachrichten.versenden(db_admin, mailer) == 0
 
 
@@ -495,7 +506,7 @@ def test_werkzeuge_je_schluessel_art(db_admin, db_app, welt):
             assert not {"event_id", "firma_id", "person_id"} & set(w.eingabe["properties"])
     mail = {w.name: w for w in werkzeuge.katalog(app, infos["event"])}["mail_entwerfen"]
     assert mail.eingabe["properties"]["zusage"] == {
-        "type": "array", "minItems": 1,
+        "type": "array", "minItems": 1, "maxItems": 4,
         "items": {"type": "string", "enum": ["offen", "zugesagt", "vielleicht", "abgesagt"]}}
     assert mail.eingabe["required"] == ["betreff", "text", "zusage"]
 
@@ -547,7 +558,7 @@ def test_werkzeug_mail_entwerfen_und_liste(db_admin, db_app, welt, caplog):
     assert erg["empfaenger"] == 3 and erg["nachricht"]["status"] == "entwurf"
     assert "Freigabe" in erg["hinweis"]
     assert KUNDENTEXT not in caplog.text and "Programm" not in caplog.text
-    for falsch in ([], ["ja"], "zugesagt", [1], ["zugesagt", None]):
+    for falsch in ([], ["ja"], "zugesagt", [1], ["zugesagt", None], ["offen"] * 5):
         with pytest.raises(ValueError) as e:
             werkzeuge.ausfuehren(app, lea, "mail_entwerfen", {
                 "marke": m, "betreff": "B", "text": "T", "zusage": falsch})
@@ -657,8 +668,16 @@ def test_api_ablauf(db_admin, welt, fabrik, telegram):
     del ohne_csrf.headers["X-CSRF"]
     assert ohne_csrf.post(f"{url}/freigeben").status_code == 403
     assert _status(db_admin, entwurf["id"]) == "entwurf"
-    r = lea.post(f"{url}/freigeben")
+    # T6-a: die angezeigte Zahl muss noch stimmen.
+    r = lea.post(f"{url}/freigeben", json={"erwartet": 3})
+    assert r.status_code == 422
+    assert r.json() == {"detail": "Empfängerzahl hat sich geändert – bitte neu prüfen"}
+    for falsch in ({"erwartet": -1}, {"erwartet": "2"}, {"erwartet": True}, {"anders": 2}):
+        assert lea.post(f"{url}/freigeben", json=falsch).status_code == 422, falsch
+    assert _status(db_admin, entwurf["id"]) == "entwurf"
+    r = lea.post(f"{url}/freigeben", json={"erwartet": 2})
     assert r.status_code == 200 and r.json()["status"] == "freigegeben"
+    assert r.json()["empfaenger"] == 2
     assert lea.post(f"{url}/verwerfen").status_code == 422
 
     zweiter = mia.post(f"{basis}/mail", json={"betreff": "B", "text": "T",
@@ -666,3 +685,131 @@ def test_api_ablauf(db_admin, welt, fabrik, telegram):
     r = mia.post(f"/api/nachrichten/{zweiter['id']}/verwerfen")
     assert r.status_code == 200 and r.json()["status"] == "verworfen"
     assert lea.post(f"/api/nachrichten/{uuid4()}/freigeben").status_code == 404
+
+
+# --- Fixrunde 1: Schnappschuss, erwartet, Bot, Abbruch, Event zu ---------------------
+
+
+def test_freigabe_friert_empfaenger_ein(db_admin, db_app, welt):
+    """T6-a: wer nach der Freigabe Teilnehmende anlegt (auch der Bot), bekommt keine Mail."""
+    app = db_app()
+    nid = _freigegeben(app, welt, "fest", "Programm", ["zugesagt"])
+    assert _schnappschuss(db_admin, nid) == {"anna@example.org": "offen",
+                                             "ben@example.org": "offen"}
+    _teilnehmer(db_admin, welt["a"], welt["fest"], "Spaet", "spaet@example.org", "zugesagt")
+    # Live waeren es jetzt 3; die Liste zeigt die eingefrorene Zahl.
+    eintrag = {n["id"]: n for n in nachrichten.liste(app, welt["leitung"], welt["fest"])}[nid]
+    assert (eintrag["status"], eintrag["empfaenger"]) == ("freigegeben", 2)
+
+    # Nachtraeglich in den Schnappschuss schreiben geht fuer event_app nicht, auch nicht fuer
+    # die freigebende Leitung; aendern/loeschen gibt es gar nicht.
+    leitung = db_app(firmen=[welt["a"]], person=welt["lea"])
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        leitung.execute("insert into event.nachricht_empfaenger (nachricht_id, mail)"
+                        " values (%s, 'spaet@example.org')", (nid,))
+    for sql in ("update event.nachricht_empfaenger set mail = 'x@example.org'",
+                "delete from event.nachricht_empfaenger"):
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            leitung.execute(sql)
+
+    mailer = SpeicherMailer()
+    assert nachrichten.versenden(db_admin, mailer) == 1
+    assert sorted(m.an for m in mailer.gesendet) == ["anna@example.org", "ben@example.org"]
+
+
+def test_freigeben_erwartet(db_admin, db_app, welt):
+    app = db_app()
+    nid = nachrichten.mail_entwerfen(app, welt["leitung"], welt["fest"], "Info", "Hallo",
+                                     ["zugesagt"])["id"]
+    _teilnehmer(db_admin, welt["a"], welt["fest"], "Neu", "neu@example.org", "zugesagt")
+    for erwartet in (2, -1, True, "3"):
+        with pytest.raises(ValueError):
+            nachrichten.freigeben(app, welt["leitung"], nid, erwartet)  # type: ignore[arg-type]
+    with pytest.raises(ValueError) as e:
+        nachrichten.freigeben(app, welt["leitung"], nid, 2)
+    assert str(e.value) == "Empfängerzahl hat sich geändert – bitte neu prüfen"
+    assert _status(db_admin, nid) == "entwurf" and _schnappschuss(db_admin, nid) == {}
+    assert nachrichten.freigeben(app, welt["leitung"], nid, 3)["empfaenger"] == 3
+
+
+def test_freigeben_nie_aus_dem_bot(db_admin, db_app, welt):
+    """Auch Leitungs-/Betreiber-Schluessel (quelle bot) geben nie frei."""
+    app = db_app()
+    nid = nachrichten.mail_entwerfen(app, welt["leitung"], welt["fest"], "Info", "Hallo",
+                                     ["zugesagt"])["id"]
+    for art, person in (("leitung", welt["lea"]), ("betreiber", welt["bea"]),
+                        ("betreiber_lesen", welt["bea"])):
+        k = schluessel.kontext_fuer(app, _info(db_admin, art, person_id=person))
+        assert k.quelle == "bot"
+        with pytest.raises(KeinRecht):
+            nachrichten.freigeben(app, k, nid)
+    assert _status(db_admin, nid) == "entwurf"
+
+
+def test_versenden_abbruch_je_empfaenger_sichtbar(db_admin, db_app, welt):
+    """T6-c: at-most-once; nach einem Abbruch sieht man je Empfaenger, was passiert ist."""
+    app = db_app()
+    nid = _freigegeben(app, welt, "fest", "Programm", ["zugesagt", "vielleicht"])
+
+    class Absturz(BaseException):
+        pass
+
+    class Mailer(SpeicherMailer):
+        def senden(self, an: str, betreff: str, text: str) -> None:
+            if an.startswith("ben"):
+                raise Absturz()
+            super().senden(an, betreff, text)
+
+    mailer = Mailer()
+    with pytest.raises(Absturz):
+        nachrichten.versenden(db_admin, mailer)
+    assert [m.an for m in mailer.gesendet] == ["anna@example.org"]
+    assert _schnappschuss(db_admin, nid) == {"anna@example.org": "versendet",
+                                             "ben@example.org": "unterwegs",
+                                             "cara@example.org": "offen"}
+    # Kein Nachsenden: weder ben (unklar) noch cara (nicht gesendet).
+    assert nachrichten.versenden(db_admin, SpeicherMailer()) == 0
+    assert _status(db_admin, nid) == "versendet"
+
+
+def test_versenden_abgesagt_oder_archiviert_geht_nicht_raus(db_admin, db_app, welt):
+    app = db_app()
+    abgesagt = _freigegeben(app, welt, "fest", "Programm", ["zugesagt"])
+    archiviert = _freigegeben(app, welt, "anderes", "Anders", ["zugesagt"])
+    db_admin.execute("update event.event set status = 'abgesagt' where id = %s",
+                     (welt["fest"],))
+    db_admin.execute("update event.event set status = 'archiviert' where id = %s",
+                     (welt["anderes"],))
+    mailer = SpeicherMailer()
+    assert nachrichten.versenden(db_admin, mailer) == 2
+    assert mailer.gesendet == []
+    for nid in (abgesagt, archiviert):
+        zeile = db_admin.execute("select status, fehler from event.nachricht where id = %s",
+                                 (nid,)).fetchone()
+        assert zeile == {"status": "fehler", "fehler": "Event abgesagt/archiviert"}
+        assert set(_schnappschuss(db_admin, nid).values()) == {"offen"}
+    assert nachrichten.versenden(db_admin, mailer) == 0
+
+
+def test_rls_schnappschuss_mandantenmatrix(db_admin, db_app, welt):
+    app = db_app()
+    nid = _freigegeben(app, welt, "fest", "Programm", ["zugesagt"])
+    alle = "select count(*) as n from event.nachricht_empfaenger"
+    assert db_app(firmen=[welt["b"]]).execute(alle).fetchone()["n"] == 0
+    assert db_app(firmen=[welt["a"]], event=welt["anderes"]).execute(alle).fetchone()["n"] == 0
+    assert db_app().execute(alle).fetchone()["n"] == 0
+    assert db_app(firmen=[welt["a"]], event=welt["fest"]).execute(alle).fetchone()["n"] == 2
+    assert db_app(betreiber=True).execute(alle).fetchone()["n"] == 2
+    rechte = db_admin.execute(
+        "select has_table_privilege('event_app', 'event.nachricht_empfaenger', 'select') as s,"
+        " has_table_privilege('event_app', 'event.nachricht_empfaenger', 'insert') as i,"
+        " has_table_privilege('event_app', 'event.nachricht_empfaenger', 'update') as u,"
+        " has_table_privilege('event_app', 'event.nachricht_empfaenger', 'delete') as d,"
+        " has_table_privilege('public', 'event.nachricht_empfaenger', 'select') as p"
+    ).fetchone()
+    assert rechte == {"s": True, "i": True, "u": False, "d": False, "p": False}
+    # Fremde Firma kann keinen Schnappschuss an eine Nachricht von A haengen.
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        db_app(firmen=[welt["b"]], person=welt["lb"]).execute(
+            "insert into event.nachricht_empfaenger (nachricht_id, mail)"
+            " values (%s, 'x@example.org')", (nid,))

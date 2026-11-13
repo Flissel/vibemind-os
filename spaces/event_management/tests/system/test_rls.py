@@ -45,7 +45,7 @@ BOT_TABELLEN = ("verbindung", "bereitstellung")
 RLS_TABELLEN = (
     "firma", "mitgliedschaft", "event", "kontakt", "orga_team", "teilnehmende",
     "aufgabe_kategorie", "aufgabe", "ablauf", "budget_posten", "verlauf", "einladung",
-    *NEUE_TABELLEN, *BOT_TABELLEN,
+    *NEUE_TABELLEN, *BOT_TABELLEN, "nachricht_empfaenger",
 )
 
 

@@ -53,13 +53,15 @@ type Formular = 'gruppe' | 'mail' | null
 interface Props {
   eventId: string
   firmaId: string
+  /** Archivierte Events: keine neuen Nachrichten und keine Freigabe (die API lehnt ab). */
+  archiviert?: boolean
 }
 
 /** Reiter „Nachrichten": an die Telegram-Gruppe schreiben, Mails entwerfen und (nur
  *  Leitung) freigeben. Versendet werden Mails getrennt, nie aus der Oberfläche. */
-export function NachrichtenReiter({ eventId, firmaId }: Props) {
+export function NachrichtenReiter({ eventId, firmaId, archiviert = false }: Props) {
   const ich = useIch()
-  const verwalten = darfVerwalten(ich, firmaId)
+  const verwalten = darfVerwalten(ich, firmaId) && !archiviert
   const [liste, setListe] = useState<Nachricht[] | null>(null)
   const [ladeFehler, setLadeFehler] = useState<unknown>(null)
   const [formular, setFormular] = useState<Formular>(null)
@@ -168,7 +170,8 @@ export function NachrichtenReiter({ eventId, firmaId }: Props) {
   async function freigeben(n: Nachricht) {
     setFreigabe(null)
     await ausfuehren(async () => {
-      await api.senden('POST', `/api/nachrichten/${n.id}/freigeben`)
+      // Die gezeigte Zahl geht mit; hat sie sich inzwischen geändert, lehnt die API ab (422).
+      await api.senden('POST', `/api/nachrichten/${n.id}/freigeben`, { erwartet: n.empfaenger ?? 0 })
       return 'Freigegeben – die Mail geht mit dem nächsten Versandlauf raus'
     })
   }
@@ -189,32 +192,38 @@ export function NachrichtenReiter({ eventId, firmaId }: Props) {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
-          onClick={() => {
-            zuruecksetzen()
-            setFormular(formular === 'gruppe' ? null : 'gruppe')
-          }}
-          aria-expanded={formular === 'gruppe'}
-          className={formular === 'gruppe' ? KNOPF_RAND : KNOPF}
-        >
-          An Gruppe schreiben
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            zuruecksetzen()
-            setFormular(formular === 'mail' ? null : 'mail')
-          }}
-          aria-expanded={formular === 'mail'}
-          className={formular === 'mail' ? KNOPF_RAND : KNOPF}
-        >
-          Mail entwerfen
-        </button>
-      </div>
+      {archiviert ? (
+        <p className="rounded-lg bg-gray-50 px-3 py-2 text-sm text-gray-600">
+          Event ist archiviert – neue Nachrichten und Freigaben sind nicht mehr möglich.
+        </p>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              zuruecksetzen()
+              setFormular(formular === 'gruppe' ? null : 'gruppe')
+            }}
+            aria-expanded={formular === 'gruppe'}
+            className={formular === 'gruppe' ? KNOPF_RAND : KNOPF}
+          >
+            An Gruppe schreiben
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              zuruecksetzen()
+              setFormular(formular === 'mail' ? null : 'mail')
+            }}
+            aria-expanded={formular === 'mail'}
+            className={formular === 'mail' ? KNOPF_RAND : KNOPF}
+          >
+            Mail entwerfen
+          </button>
+        </div>
+      )}
 
-      {formular === 'gruppe' && (
+      {!archiviert && formular === 'gruppe' && (
         <form
           onSubmit={(e) => void anGruppe(e)}
           aria-label="An Gruppe schreiben"
@@ -245,7 +254,7 @@ export function NachrichtenReiter({ eventId, firmaId }: Props) {
         </form>
       )}
 
-      {formular === 'mail' && (
+      {!archiviert && formular === 'mail' && (
         <form
           onSubmit={(e) => void mailEntwerfen(e)}
           aria-label="Mail entwerfen"
@@ -365,7 +374,8 @@ export function NachrichtenReiter({ eventId, firmaId }: Props) {
                           {verwalten && (
                             <button
                               type="button"
-                              disabled={laeuft}
+                              disabled={laeuft || !n.empfaenger}
+                              title={n.empfaenger ? undefined : 'Keine Empfänger mit E-Mail-Adresse'}
                               onClick={() => setFreigabe(n)}
                               aria-label={`Freigeben: ${anfang(n)}`}
                               className={KNOPF}

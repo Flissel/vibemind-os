@@ -65,10 +65,10 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-function zeige(ich: Ich = LEITUNG) {
+function zeige(ich: Ich = LEITUNG, archiviert = false) {
   render(
     <IchProvider ich={ich}>
-      <NachrichtenReiter eventId="e1" firmaId="f1" />
+      <NachrichtenReiter eventId="e1" firmaId="f1" archiviert={archiviert} />
     </IchProvider>,
   )
 }
@@ -110,9 +110,29 @@ describe('NachrichtenReiter', () => {
     const dialog = screen.getByRole('dialog')
     expect(dialog.textContent).toContain('12 Empfänger')
     await u.click(within(dialog).getByRole('button', { name: 'Freigeben' }))
-    await waitFor(() => expect(senden).toHaveBeenCalledWith('POST', '/api/nachrichten/n1/freigeben'))
+    await waitFor(() => expect(senden).toHaveBeenCalledWith('POST', '/api/nachrichten/n1/freigeben', { erwartet: 12 }),
+    )
     expect(await screen.findByRole('status')).toBeTruthy()
     expect(api.holen).toHaveBeenCalledTimes(3) // zweimal gezeigt, danach neu geladen
+  })
+
+  it('Freigeben ist bei 0 Empfängern gesperrt', async () => {
+    liste = [nachricht({ id: 'n1', betreff: 'Niemand da', empfaenger: 0 })]
+    zeige(LEITUNG)
+    const zeile = await zeileVon('Niemand da')
+    const knopf = within(zeile).getByRole('button', { name: /^Freigeben/ }) as HTMLButtonElement
+    expect(knopf.disabled).toBe(true)
+    expect(knopf.title).toContain('Keine Empfänger')
+  })
+
+  it('archiviertes Event: keine Formulare, kein Freigeben, Hinweis; Verwerfen bleibt', async () => {
+    zeige(LEITUNG, true)
+    const zeile = await zeileVon('Programm am Samstag')
+    expect(screen.getByText(/Event ist archiviert/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'An Gruppe schreiben' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Mail entwerfen' })).toBeNull()
+    expect(within(zeile).queryByRole('button', { name: /^Freigeben/ })).toBeNull()
+    expect(within(zeile).getByRole('button', { name: /^Verwerfen/ })).toBeTruthy()
   })
 
   it('Betreiber darf freigeben', async () => {

@@ -17,7 +17,13 @@ interface Props {
 /** Einziger Einsteckpunkt für die Baustein-Reiter der Event-Seite. */
 export function BausteinSlot({ event, baustein, name, verzeichnis, fehler }: Props) {
   // Nachrichten haben eigene Routen statt Registry-Zeilen (kein Eintrag im Verzeichnis).
-  if (baustein === 'nachrichten') return <NachrichtenReiter eventId={event.id} firmaId={event.firma_id} />
+  if (baustein === 'nachrichten') return (
+      <NachrichtenReiter
+        eventId={event.id}
+        firmaId={event.firma_id}
+        archiviert={event.status === 'archiviert'}
+      />
+    )
   if (fehler) return <Meldung fehler={fehler} />
   if (!verzeichnis) return <p className="text-sm text-gray-500">Bereich „{name}“ wird geladen …</p>
   return (
