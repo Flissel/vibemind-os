@@ -19,6 +19,7 @@ from starlette.testclient import TestClient
 
 from spaces.event_management.system import marke, mcp_server, schluessel, werkzeuge
 from spaces.event_management.system.kontext import KeinRecht, NichtGefunden
+from spaces.event_management.system.mailer import SmtpMailer, SpeicherMailer
 
 BASIS = "http://127.0.0.1:8171"
 BEGINN = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=30)
@@ -367,3 +368,89 @@ def test_konfiguration(tmp_path):
                 {"EVENT_APP_DSN": "x", "EVENT_MCP_PORT": "70000"}):
         with pytest.raises(ValueError):
             mcp_server.konfiguration(env)
+
+
+# --- Einladen mit dem Mailer der App (Ruling S6) ------------------------------------
+
+EINLADUNGS_BASIS = "https://events.example.org"
+_SMTP_UMGEBUNG = ("EVENT_SMTP_HOST", "EVENT_SMTP_PORT", "EVENT_SMTP_USER",
+                  "EVENT_SMTP_ABSENDER", "EVENT_SMTP_PASSWORT_FILE")
+
+
+def _einladung(firma: str) -> dict[str, Any]:
+    return {"firma": firma, "mail": "neu@example.org", "name": "Nora Neu", "rolle": "mitglied"}
+
+
+def test_einladen_ueber_mcp_mit_mailer(app_dsn, db_admin, welt):
+    mailer = SpeicherMailer()
+    app = mcp_server.erstelle_mcp_app(app_dsn, mailer=mailer, basis_url=EINLADUNGS_BASIS)
+    key = _schluessel(db_admin, "leitung", person_id=welt["lea"])  # Leitung von firma-b
+    with TestClient(app, base_url=BASIS) as c:
+        ok = _aufruf(c, key, "einladen", _einladung("firma-b"))
+        assert ok["isError"] is False
+        assert json.loads(_text(ok)) == {"firma": {"name": "Beispiel firma-b", "kurz": "firma-b"},
+                                         "eingeladen": True}
+        fremd = _aufruf(c, key, "einladen", _einladung("firma-a"))
+        assert fremd["isError"] is True and _text(fremd) == "nicht gefunden"
+    assert [m.an for m in mailer.gesendet] == ["neu@example.org"]
+    assert f"{EINLADUNGS_BASIS}/einladung/" in mailer.gesendet[0].text
+    assert db_admin.execute("select count(*) as n from event.einladung").fetchone()["n"] == 1
+
+
+def test_einladen_ohne_mailer_sauber_abgelehnt(client, db_admin, welt):
+    key = _schluessel(db_admin, "leitung", person_id=welt["lea"])
+    ergebnis = _aufruf(client, key, "einladen", _einladung("firma-b"))
+    assert ergebnis["isError"] is True
+    assert _text(ergebnis) == "Einladen ist nicht eingerichtet"
+    assert db_admin.execute("select count(*) as n from event.einladung").fetchone()["n"] == 0
+    assert db_admin.execute("select count(*) as n from event.person where mail = %s",
+                            ("neu@example.org",)).fetchone()["n"] == 0
+
+
+def test_basis_url_geprueft(app_dsn):
+    for falsch in ("ftp://events.example.org", "events.example.org", ""):
+        with pytest.raises(ValueError):
+            mcp_server.erstelle_mcp_app(app_dsn, basis_url=falsch)
+
+
+def test_main_verdrahtet_mailer_und_basis_url(monkeypatch, tmp_path):
+    import uvicorn
+
+    erhalten: list[dict[str, Any]] = []
+
+    def app_bauen(dsn: str, **kw: Any) -> object:
+        erhalten.append({"dsn": dsn, **kw})
+        return object()
+
+    monkeypatch.setattr(mcp_server, "erstelle_mcp_app", app_bauen)
+    monkeypatch.setattr(uvicorn, "run", lambda *_a, **_k: None)
+    passwort = tmp_path / "smtp"
+    passwort.write_text("geheim\r\n", encoding="utf-8")
+    monkeypatch.delenv("EVENT_APP_DSN_FILE", raising=False)
+    for name, wert in (("EVENT_APP_DSN", "host=h"), ("EVENT_BASIS_URL", EINLADUNGS_BASIS),
+                       ("EVENT_SMTP_HOST", "smtp.example.org"), ("EVENT_SMTP_PORT", "587"),
+                       ("EVENT_SMTP_USER", "bot"), ("EVENT_SMTP_ABSENDER", "bot@example.org"),
+                       ("EVENT_SMTP_PASSWORT_FILE", str(passwort))):
+        monkeypatch.setenv(name, wert)
+
+    mcp_server.main()
+    assert isinstance(erhalten[-1]["mailer"], SmtpMailer)
+    assert erhalten[-1]["mailer"].host == "smtp.example.org"
+    assert erhalten[-1]["basis_url"] == EINLADUNGS_BASIS
+
+    # Ohne SMTP-Konfiguration startet der Dienst trotzdem; Einladen ist dann aus.
+    for name in _SMTP_UMGEBUNG:
+        monkeypatch.delenv(name)
+    mcp_server.main()
+    assert erhalten[-1]["mailer"] is None and erhalten[-1]["basis_url"] == EINLADUNGS_BASIS
+    monkeypatch.delenv("EVENT_BASIS_URL")
+    mcp_server.main()
+    assert erhalten[-1]["basis_url"] is None
+
+
+def test_konfiguration_basis_url():
+    k = mcp_server.konfiguration({"EVENT_APP_DSN": "x", "EVENT_BASIS_URL": " " + EINLADUNGS_BASIS})
+    assert k.basis_url == EINLADUNGS_BASIS
+    assert mcp_server.konfiguration({"EVENT_APP_DSN": "x"}).basis_url is None
+    with pytest.raises(ValueError):
+        mcp_server.konfiguration({"EVENT_APP_DSN": "x", "EVENT_BASIS_URL": "ftp://x"})

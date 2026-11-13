@@ -16,7 +16,8 @@ Ergebnisse.
 
 CLI: ``python -m spaces.event_management.system.mcp_server`` (DSN aus
 ``EVENT_APP_DSN_FILE`` oder ``EVENT_APP_DSN``, ``EVENT_MCP_PORT`` Vorgabe 8171,
-``EVENT_MCP_HOST`` Vorgabe 127.0.0.1).
+``EVENT_MCP_HOST`` Vorgabe 127.0.0.1; fuer `einladen` ``EVENT_BASIS_URL`` und die
+``EVENT_SMTP_*``-Werte wie event-api, ohne sie laeuft der Dienst ohne Einladen).
 """
 from __future__ import annotations
 
@@ -48,7 +49,7 @@ from starlette.types import Receive, Scope, Send
 from spaces.event_management.system import marke, schluessel, werkzeuge
 from spaces.event_management.system.kategorien import Kategorie, lade_kategorien
 from spaces.event_management.system.kontext import NichtGefunden
-from spaces.event_management.system.mailer import Mailer
+from spaces.event_management.system.mailer import Mailer, SmtpMailer
 
 log = logging.getLogger(__name__)
 
@@ -117,9 +118,13 @@ def erstelle_mcp_app(
     """Baut die event-mcp-App. Kategorien werden hier einmal geladen; der Pool und der
     Session-Manager laufen im Lifespan (uvicorn, ``with TestClient(app)``).
 
-    `mailer`, `basis_url` und `telegram` nehmen die Werkzeuge spaeterer Tasks
-    (Einladen, Nachrichten); sie liegen bis dahin nur in ``app.state``.
+    `mailer` und `basis_url` (fuer Einladungslinks, nur aus der Konfiguration) braucht
+    das Werkzeug `einladen` (Ruling S6); fehlt eines, lehnt es sauber ab. `telegram`
+    nehmen die Nachrichten-Werkzeuge (Task 6); es liegt bis dahin nur in ``app.state``.
     """
+    if basis_url is not None and not (
+            isinstance(basis_url, str) and basis_url.startswith(("https://", "http://"))):
+        raise ValueError("basis_url muss mit http:// oder https:// beginnen")
     kats: dict[str, Kategorie] = lade_kategorien(kategorien_ordner)
     pool: ConnectionPool[Any] = ConnectionPool(
         dsn, min_size=1, max_size=10, open=False, kwargs={"autocommit": True},
@@ -145,7 +150,8 @@ def erstelle_mcp_app(
     def werkzeug_ausfuehren(klartext: str, name: str, argumente: Mapping[str, object]) -> str:
         with pool.connection() as conn:
             info = schluessel.pruefen(conn, klartext)
-            ergebnis = werkzeuge.ausfuehren(conn, info, name, argumente, kategorien=kats)
+            ergebnis = werkzeuge.ausfuehren(conn, info, name, argumente, kategorien=kats,
+                                            mailer=mailer, basis_url=basis_url)
         return json.dumps(ergebnis, ensure_ascii=False, default=_json_wert)
 
     async def tools_list(_anfrage: types.ListToolsRequest) -> types.ServerResult:
@@ -252,9 +258,11 @@ class Konfiguration:
     dsn: str
     host: str
     port: int
+    basis_url: str | None = None  # fuer Einladungslinks; ohne: Einladen aus
 
     def __repr__(self) -> str:  # DSN nie ausgeben
-        return f"Konfiguration(host={self.host!r}, port={self.port})"
+        return (f"Konfiguration(host={self.host!r}, port={self.port},"
+                f" basis_url={self.basis_url!r})")
 
 
 def _datei_lesen(pfad: str, name: str) -> str:
@@ -285,7 +293,21 @@ def konfiguration(umgebung: Mapping[str, str] | None = None) -> Konfiguration:
     if not 0 < port < 65536:
         raise ValueError("EVENT_MCP_PORT ungueltig")
     host = env.get("EVENT_MCP_HOST", "").strip() or HOST_VORGABE
-    return Konfiguration(dsn, host, port)
+    basis_url = env.get("EVENT_BASIS_URL", "").strip() or None
+    if basis_url is not None and not basis_url.startswith(("https://", "http://")):
+        raise ValueError("EVENT_BASIS_URL ungueltig")
+    return Konfiguration(dsn, host, port, basis_url)
+
+
+def _mailer_aus_umgebung() -> Mailer | None:
+    """Derselbe Mailer wie event-api (`SmtpMailer.aus_umgebung`, EVENT_SMTP_*). Fehlt die
+    SMTP-Konfiguration, laeuft der Dienst ohne Einladen (das Werkzeug lehnt dann ab); die
+    Meldung nennt nur den Variablennamen."""
+    try:
+        return SmtpMailer.aus_umgebung()
+    except ValueError as e:
+        log.warning("Einladen per Bot aus: %s", e)
+        return None
 
 
 def main() -> None:
@@ -296,7 +318,9 @@ def main() -> None:
     # Wurzel spaeter auf DEBUG steht.
     logging.getLogger("mcp").setLevel(logging.INFO)
     k = konfiguration()
-    app = erstelle_mcp_app(k.dsn)
+    if k.basis_url is None:
+        log.warning("Einladen per Bot aus: EVENT_BASIS_URL fehlt")
+    app = erstelle_mcp_app(k.dsn, mailer=_mailer_aus_umgebung(), basis_url=k.basis_url)
     # Kein Access-Log (Anfragen tragen den Schluessel im Header; sicher ist sicher).
     uvicorn.run(app, host=k.host, port=k.port, access_log=False)
 

@@ -12,11 +12,23 @@ ueber `marke.kontext_mit_event` und ruft die Fachschicht; Rechte, Event-Bindung 
 prueft diese selbst. `betreiber_lesen` ist fachlich Betreiber; lesend haelt ihn allein
 dieser Katalog.
 
-Kontakte (Ruling S1): nur `kontakte_suchen` und `kontakt_anlegen` (Firma des Events);
-Aendern/Entfernen gibt es fuer den Bot nicht, weil die Kontakt-Fachschicht die
-Event-Bindung nicht prueft.
+Kontakte (Ruling S1): fuer den Event-Schluessel nur `kontakte_suchen` und
+`kontakt_anlegen` (Firma des Events); Aendern gibt es fuer den Bot nicht, Entfernen nur
+zweistufig fuer Leitung/Betreiber (die Firma kommt dort aus dem gebundenen Event).
 
-Erweitern (Task 5 ff.): neue Werkzeuge als `_Sonder`-Eintrag in `_SONDER` und ihr Name in
+Verwaltung (Task 5, nur `leitung`/`betreiber`): Event-Wahl, `event_anlegen`, `einladen`
+(Mailer und Basis-URL der App), `firma_anlegen` (nur `betreiber`) und die zweistufigen
+Aktionen `event_absagen`, `event_archivieren`, `event_loeschen`, `kontakt_entfernen`,
+`rolle_aendern`: der erste Aufruf ohne `bestaetigung` aendert nichts und liefert eine
+Zusammenfassung mit Code (`marke.bestaetigung_ausstellen`, gebunden an Aktion und die
+selbst aufgeloesten kanonischen IDs); erst der zweite Aufruf mit dem Code fuehrt aus. Der
+eingeloeste Code ist nur Zustimmung: Rechte und RLS prueft die Fachschicht trotzdem.
+Firmen heissen in Argumenten nur per Kuerzel (`kurz`), Events nur per Marke oder Suche.
+
+Archiv (Ruling T5-a): schreibende Baustein-Werkzeuge lehnen ein archiviertes gebundenes
+Event ab (alle Schluessel-Arten); Lesen bleibt erlaubt, die Marke bleibt gueltig.
+
+Erweitern: neue Werkzeuge als `_Sonder`-Eintrag in `_SONDER` und ihr Name in
 `_SONDER_JE_ART`.
 """
 from __future__ import annotations
@@ -31,10 +43,13 @@ from uuid import UUID
 
 import psycopg
 
-from spaces.event_management.system import events, kern, marke, pruefung, rechte, verlauf
+from spaces.event_management.system import (
+    events, firmen, kern, marke, pruefung, rechte, verlauf, zugang,
+)
 from spaces.event_management.system.bausteine import REGISTRY
 from spaces.event_management.system.kategorien import Kategorie, WirksamesSchema
 from spaces.event_management.system.kontext import Kontext, NichtGefunden, transaktion
+from spaces.event_management.system.mailer import Mailer
 from spaces.event_management.system.schluessel import SchluesselInfo, kontext_fuer
 
 log = logging.getLogger(__name__)
@@ -44,6 +59,10 @@ LEGACY = "Legacy-Event: bitte die alte App nutzen"
 TEXT_MAX = 2000
 MAX_TREFFER = 20
 VERLAUF_VORGABE = 50
+GENAUER = "Bitte genauer"
+ARCHIVIERT = "Event ist archiviert"
+EINLADEN_AUS = "Einladen ist nicht eingerichtet"
+ROLLEN = ("leitung", "mitglied")
 
 # Deutsche Standardnamen (Gegenstueck zu web/lib/begriffe.ts); das Event-Schema
 # (`begriffe` der Kategorie) hat Vorrang.
@@ -73,8 +92,18 @@ class Werkzeug:
 
 
 Kategorien = Mapping[str, Kategorie] | None
+
+
+@dataclass(frozen=True)
+class _Umgebung:
+    """Was die App den Werkzeugen mitgibt (Kategorien; Mailer und Basis-URL fuer Einladen)."""
+    kategorien: Kategorien = None
+    mailer: Mailer | None = None
+    basis_url: str | None = None
+
+
 Ausfuehrung = Callable[
-    [psycopg.Connection[Any], SchluesselInfo, dict[str, Any], Kategorien], dict[str, Any]
+    [psycopg.Connection[Any], SchluesselInfo, dict[str, Any], _Umgebung], dict[str, Any]
 ]
 
 
@@ -271,12 +300,15 @@ def _baustein_ausfuehrung(eintrag: str, op: str) -> Ausfuehrung:
     baustein = t.baustein or t.name
 
     def ausfuehren(conn: psycopg.Connection[Any], info: SchluesselInfo, args: dict[str, Any],
-                   kategorien: Kategorien) -> dict[str, Any]:
+                   u: _Umgebung) -> dict[str, Any]:
+        kategorien = u.kategorien
         g = _binden(conn, info, args)
         schema = _schema(g.event, kategorien)
         if schema is None or baustein not in schema.bausteine:
             begriffe = schema.begriffe if schema is not None else None
             raise ValueError(f"Dieses Event hat keinen Bereich {begriff(baustein, begriffe)}")
+        if op != "liste" and g.event["status"] == "archiviert":
+            raise ValueError(ARCHIVIERT)  # Ruling T5-a
         event_id = g.event["id"]
         if op == "liste":
             zeilen = kern.liste(conn, g.k, event_id, eintrag, kategorien=kategorien)
@@ -299,10 +331,10 @@ def _baustein_ausfuehrung(eintrag: str, op: str) -> Ausfuehrung:
 
 
 def _event_info(conn: psycopg.Connection[Any], info: SchluesselInfo, args: dict[str, Any],
-                kategorien: Kategorien) -> dict[str, Any]:
+                u: _Umgebung) -> dict[str, Any]:
     g = _binden(conn, info, args)
     ev = g.event
-    schema = _schema(ev, kategorien)
+    schema = _schema(ev, u.kategorien)
     begriffe = schema.begriffe if schema is not None else None
     return {
         "event": g.kopf,
@@ -318,7 +350,7 @@ def _event_info(conn: psycopg.Connection[Any], info: SchluesselInfo, args: dict[
 
 
 def _verlauf_lesen(conn: psycopg.Connection[Any], info: SchluesselInfo, args: dict[str, Any],
-                   kategorien: Kategorien) -> dict[str, Any]:
+                   u: _Umgebung) -> dict[str, Any]:
     g = _binden(conn, info, args)
     seit = events.zeit(datetime.fromisoformat(args["seit"]), "seit") if "seit" in args else None
     eintraege = verlauf.lesen(conn, g.k, g.event["id"], seit=seit,
@@ -334,24 +366,39 @@ def _kontakt(zeile: Mapping[str, Any]) -> dict[str, Any]:
     return {name: zeile[name] for name in ("id", "name", "mail", "telegram")}
 
 
-def _kontakte_suchen(conn: psycopg.Connection[Any], info: SchluesselInfo,
-                     args: dict[str, Any], kategorien: Kategorien) -> dict[str, Any]:
-    g = _binden(conn, info, args)
-    firma_id = g.event["firma_id"]
-    suche = (args.get("suche") or "").strip()
+def _kontakte_finden(conn: psycopg.Connection[Any], k: Kontext, firma_id: UUID,
+                     suche: str) -> list[dict[str, Any]]:
+    """Kontakte der Firma per ID (exakt) oder Name/Mail/Telegram (Teiltext)."""
     try:
         gesucht: UUID | None = UUID(suche) if suche else None
     except ValueError:
         gesucht = None
     if gesucht is not None:
-        zeilen = [z for z in kern.kontakte(conn, g.k, firma_id) if z["id"] == gesucht]
-    else:
-        zeilen = kern.kontakte(conn, g.k, firma_id, suche or None)
+        return [z for z in kern.kontakte(conn, k, firma_id) if z["id"] == gesucht]
+    return kern.kontakte(conn, k, firma_id, suche or None)
+
+
+def _exakt_bevorzugt(zeilen: list[dict[str, Any]], suche: str,
+                     felder: tuple[str, ...]) -> list[dict[str, Any]]:
+    """Mehrere Treffer, aber genau einer heisst exakt so (Gross-/Kleinschreibung egal):
+    nur dieser. Sonst waere ein Name, der Teil eines anderen ist, nie eindeutig waehlbar."""
+    if len(zeilen) <= 1:
+        return zeilen
+    s = suche.strip().casefold()
+    exakt = [z for z in zeilen
+             if any(str(z.get(f) or "").strip().casefold() == s for f in felder)]
+    return exakt if len(exakt) == 1 else zeilen
+
+
+def _kontakte_suchen(conn: psycopg.Connection[Any], info: SchluesselInfo,
+                     args: dict[str, Any], u: _Umgebung) -> dict[str, Any]:
+    g = _binden(conn, info, args)
+    zeilen = _kontakte_finden(conn, g.k, g.event["firma_id"], (args.get("suche") or "").strip())
     return {"event": g.kopf, "kontakte": [_kontakt(z) for z in zeilen[:MAX_TREFFER]]}
 
 
 def _kontakt_anlegen(conn: psycopg.Connection[Any], info: SchluesselInfo,
-                     args: dict[str, Any], kategorien: Kategorien) -> dict[str, Any]:
+                     args: dict[str, Any], u: _Umgebung) -> dict[str, Any]:
     g = _binden(conn, info, args)
     neu = kern.kontakt_anlegen(conn, g.k, g.event["firma_id"], args["name"],
                                args.get("mail"), args.get("telegram"))
@@ -365,9 +412,9 @@ def _events_finden(conn: psycopg.Connection[Any], info: SchluesselInfo, suche: s
 
 
 def _events_suchen(conn: psycopg.Connection[Any], info: SchluesselInfo, args: dict[str, Any],
-                   kategorien: Kategorien) -> dict[str, Any]:
+                   u: _Umgebung) -> dict[str, Any]:
     zeilen = _events_finden(conn, info, (args.get("suche") or "").strip() or None,
-                            args.get("kategorie"), kategorien)
+                            args.get("kategorie"), u.kategorien)
     return {"events": [
         {"name": z["name"], "firma": z["firma_name"], "kategorie": z["kategorie"],
          "beginn": z["beginn"], "ende": z["ende"], "phase": z["phase"], "status": z["status"]}
@@ -376,18 +423,178 @@ def _events_suchen(conn: psycopg.Connection[Any], info: SchluesselInfo, args: di
 
 
 def _event_waehlen(conn: psycopg.Connection[Any], info: SchluesselInfo, args: dict[str, Any],
-                   kategorien: Kategorien) -> dict[str, Any]:
+                   u: _Umgebung) -> dict[str, Any]:
     suche = args["suche"].strip()
     if not suche:
         raise ValueError("Suche fehlt")
-    zeilen = _events_finden(conn, info, suche, None, kategorien)
+    zeilen = _exakt_bevorzugt(_events_finden(conn, info, suche, None, u.kategorien), suche,
+                              ("name",))
     if not zeilen:
         raise NichtGefunden("Event nicht gefunden")
     kurz = [{"name": z["name"], "firma": z["firma_name"], "beginn": z["beginn"]}
             for z in zeilen]
     if len(zeilen) > 1:
-        return {"treffer": kurz[:MAX_TREFFER], "hinweis": "Bitte genauer"}
+        return {"treffer": kurz[:MAX_TREFFER], "hinweis": GENAUER}
     return {"marke": marke.marke_ausstellen(conn, info, zeilen[0]["id"]), "event": kurz[0]}
+
+
+# --- Verwaltung (Task 5) -------------------------------------------------------------
+
+
+def _firma_finden(conn: psycopg.Connection[Any], k: Kontext, kurz: str) -> dict[str, Any]:
+    """Firma per Kuerzel, nur wenn der Kontext sie lesen darf; sonst NichtGefunden (auch
+    fuer fremde Firmen, damit es kein Orakel ueber vergebene Kuerzel gibt)."""
+    with transaktion(conn, k) as cur:
+        cur.execute("select id, name, kurz from event.firma where kurz = %s",
+                    (kurz.strip().lower(),))
+        firma = cur.fetchone()
+    if firma is None:
+        raise NichtGefunden("Firma nicht gefunden")
+    rechte.pruefe(k, "lesen", firma["id"])
+    return firma
+
+
+def _firma_kopf(firma: Mapping[str, Any]) -> dict[str, str]:
+    return {"name": firma["name"], "kurz": firma["kurz"]}
+
+
+def _zweistufig(
+    conn: psycopg.Connection[Any], info: SchluesselInfo, args: Mapping[str, Any],
+    aktion: str, ziel: dict[str, str], kopf: dict[str, Any], zusammenfassung: str,
+    ausfuehren: Callable[[], dict[str, Any]],
+) -> dict[str, Any]:
+    """Ohne `bestaetigung`: nur Zusammenfassung und Code (aendert fachlich nichts). Mit:
+    Code fuer genau (Schluessel, aktion, ziel) einloesen, dann ausfuehren. `ziel` enthaelt
+    nur selbst aufgeloeste kanonische Werte, nie Nutzertext."""
+    code = args.get("bestaetigung")
+    if code is None:
+        return {**kopf, "zusammenfassung": zusammenfassung,
+                "bestaetigung": marke.bestaetigung_ausstellen(conn, info, aktion, ziel),
+                "gueltig_minuten": marke.BESTAETIGUNG_MINUTEN}
+    marke.bestaetigung_einloesen(conn, info, code, aktion, ziel)
+    return ausfuehren()
+
+
+def _event_anlegen(conn: psycopg.Connection[Any], info: SchluesselInfo, args: dict[str, Any],
+                   u: _Umgebung) -> dict[str, Any]:
+    k = kontext_fuer(conn, info)
+    firma = _firma_finden(conn, k, args["firma"])
+    neu = events.event_anlegen(
+        conn, k, firma["id"], args["kategorie"], args["name"],
+        datetime.fromisoformat(args["beginn"]), datetime.fromisoformat(args["ende"]),
+        args.get("ort_adresse"), args.get("ort_link"), args.get("beschreibung"),
+        kategorien=u.kategorien,
+    )
+    return {"event": {"name": neu["name"], "firma": firma["name"]},
+            "marke": marke.marke_ausstellen(conn, info, neu["id"]),
+            "kategorie": neu["kategorie"], "beginn": neu["beginn"], "ende": neu["ende"],
+            "status": neu["status"]}
+
+
+def _einladen(conn: psycopg.Connection[Any], info: SchluesselInfo, args: dict[str, Any],
+              u: _Umgebung) -> dict[str, Any]:
+    if u.mailer is None or u.basis_url is None:
+        raise ValueError(EINLADEN_AUS)
+    k = kontext_fuer(conn, info)
+    firma = _firma_finden(conn, k, args["firma"])
+    zugang.einladen(conn, k, u.mailer, args["mail"], args["name"], firma["id"], args["rolle"],
+                    u.basis_url)
+    return {"firma": _firma_kopf(firma), "eingeladen": True}
+
+
+def _firma_anlegen(conn: psycopg.Connection[Any], info: SchluesselInfo, args: dict[str, Any],
+                   u: _Umgebung) -> dict[str, Any]:
+    neu = firmen.firma_anlegen(conn, kontext_fuer(conn, info), args["name"], args["kurz"])
+    return {"firma": _firma_kopf(neu)}
+
+
+def _event_status_werkzeug(aktion: str, status: str, verb: str) -> Ausfuehrung:
+    def ausfuehren(conn: psycopg.Connection[Any], info: SchluesselInfo, args: dict[str, Any],
+                   u: _Umgebung) -> dict[str, Any]:
+        g = _binden(conn, info, args)
+        event_id: UUID = g.event["id"]
+        # Vorab: wer nicht darf, bekommt keinen Code (event_status prueft trotzdem selbst).
+        rechte.pruefe(g.k, "event_absagen", g.event["firma_id"])
+
+        def tun() -> dict[str, Any]:
+            neu = events.event_status(conn, g.k, event_id, status)
+            return {"event": g.kopf, "status": neu["status"]}
+
+        return _zweistufig(conn, info, args, aktion, {"event": str(event_id)},
+                           {"event": g.kopf},
+                           f"Event {g.kopf['name']} ({g.kopf['firma']}) {verb}", tun)
+
+    return ausfuehren
+
+
+def _event_loeschen(conn: psycopg.Connection[Any], info: SchluesselInfo, args: dict[str, Any],
+                    u: _Umgebung) -> dict[str, Any]:
+    g = _binden(conn, info, args)
+    event_id: UUID = g.event["id"]
+    rechte.pruefe(g.k, "event_loeschen", g.event["firma_id"])
+
+    def tun() -> dict[str, Any]:
+        events.event_loeschen(conn, g.k, event_id)
+        return {"event": g.kopf, "geloescht": True}
+
+    return _zweistufig(
+        conn, info, args, "event_loeschen", {"event": str(event_id)}, {"event": g.kopf},
+        f"Event {g.kopf['name']} ({g.kopf['firma']}) endgültig löschen, mit allen Einträgen",
+        tun)
+
+
+def _kontakt_entfernen(conn: psycopg.Connection[Any], info: SchluesselInfo,
+                       args: dict[str, Any], u: _Umgebung) -> dict[str, Any]:
+    g = _binden(conn, info, args)
+    firma_id: UUID = g.event["firma_id"]
+    rechte.pruefe(g.k, "mitglied_entfernen", firma_id)
+    suche = args["kontakt"].strip()
+    if not suche:
+        raise ValueError("Kontakt fehlt")
+    zeilen = _exakt_bevorzugt(_kontakte_finden(conn, g.k, firma_id, suche), suche,
+                              ("name", "mail"))
+    if not zeilen:
+        raise NichtGefunden("Kontakt nicht gefunden")
+    if len(zeilen) > 1:
+        return {"event": g.kopf, "treffer": [_kontakt(z) for z in zeilen[:MAX_TREFFER]],
+                "hinweis": GENAUER}
+    kontakt = zeilen[0]
+
+    def tun() -> dict[str, Any]:
+        kern.kontakt_entfernen(conn, g.k, firma_id, kontakt["id"])
+        return {"event": g.kopf, "kontakt": {"name": kontakt["name"], "entfernt": True}}
+
+    return _zweistufig(
+        conn, info, args, "kontakt_entfernen",
+        {"event": str(g.event["id"]), "kontakt": str(kontakt["id"])}, {"event": g.kopf},
+        f"Kontakt {kontakt['name']} aus der Firma entfernen "
+        f"(gewählt über Event {g.kopf['name']} ({g.kopf['firma']}))", tun)
+
+
+def _rolle_aendern(conn: psycopg.Connection[Any], info: SchluesselInfo, args: dict[str, Any],
+                   u: _Umgebung) -> dict[str, Any]:
+    k = kontext_fuer(conn, info)
+    firma = _firma_finden(conn, k, args["firma"])
+    rechte.pruefe(k, "rolle_aendern", firma["id"])
+    rolle = next(r for r in ROLLEN if r == args["rolle"])  # kanonisch (Schema: enum)
+    mail = args["mail"].strip().lower()
+    person = next((m for m in firmen.mitglieder(conn, k, firma["id"])
+                   if str(m["mail"]).lower() == mail), None)
+    if person is None:
+        raise NichtGefunden("Mitglied nicht gefunden")
+    person_id: UUID = person["person_id"]
+
+    def tun() -> dict[str, Any]:
+        firmen.rolle_aendern(conn, k, person_id, firma["id"], rolle)
+        return {"firma": _firma_kopf(firma),
+                "mitglied": {"name": person["name"], "mail": person["mail"], "rolle": rolle}}
+
+    return _zweistufig(
+        conn, info, args, "rolle_aendern",
+        {"firma": str(firma["id"]), "person": str(person_id), "rolle": rolle},
+        {"firma": _firma_kopf(firma)},
+        f"Rolle von {person['name']} ({person['mail']}) in der Firma {firma['name']} "
+        f"von {person['rolle']} auf {rolle} ändern", tun)
 
 
 @dataclass(frozen=True)
@@ -399,6 +606,16 @@ class _Sonder:
     braucht_event: bool  # True: Pflichtargument `marke` fuer Schluessel ohne festes Event
     ausfuehren: Ausfuehrung
 
+
+_FIRMA_SCHEMA: dict[str, Any] = {"type": "string", "maxLength": 32,
+                                 "description": "Kürzel der Firma"}
+_ROLLE_SCHEMA: dict[str, Any] = {"type": "string", "enum": list(ROLLEN)}
+_ZEIT_SCHEMA: dict[str, Any] = {"type": "string", "format": "date-time",
+                                "description": "ISO-8601; ohne Zeitzone gilt Europe/Berlin"}
+_BESTAETIGUNG_SCHEMA: dict[str, Any] = {
+    "type": "string", "maxLength": 64,
+    "description": "Code aus dem ersten Aufruf (gilt 5 Minuten); ohne ihn wird nur gefragt",
+}
 
 _SONDER: dict[str, _Sonder] = {
     "event_info": _Sonder(
@@ -428,14 +645,60 @@ _SONDER: dict[str, _Sonder] = {
         "Ein Event per Suche wählen; liefert die Marke für alle Event-Werkzeuge",
         {"suche": {"type": "string", "maxLength": 200}}, ("suche",), False, False,
         _event_waehlen),
+    "event_anlegen": _Sonder(
+        "Neues Event in einer Firma anlegen; liefert die Marke des neuen Events",
+        {"firma": _FIRMA_SCHEMA,
+         "kategorie": {"type": "string", "maxLength": 64,
+                       "description": "Kategorie-ID, z. B. team_meeting, festival, webinar"},
+         "name": {"type": "string", "maxLength": 200},
+         "beginn": _ZEIT_SCHEMA, "ende": _ZEIT_SCHEMA,
+         "ort_adresse": {"type": "string", "maxLength": 500},
+         "ort_link": {"type": "string", "pattern": "^https?://", "maxLength": TEXT_MAX},
+         "beschreibung": {"type": "string", "maxLength": TEXT_MAX}},
+        ("firma", "kategorie", "name", "beginn", "ende"), True, False, _event_anlegen),
+    "einladen": _Sonder(
+        "Person per Mail in eine Firma einladen (Einladungslink per Mail)",
+        {"firma": _FIRMA_SCHEMA, "mail": {"type": "string", "maxLength": 320},
+         "name": {"type": "string", "maxLength": 200}, "rolle": _ROLLE_SCHEMA},
+        ("firma", "mail", "name", "rolle"), True, False, _einladen),
+    "firma_anlegen": _Sonder(
+        "Neue Firma anlegen (nur Betreiber)",
+        {"name": {"type": "string", "maxLength": 200},
+         "kurz": {"type": "string", "maxLength": 32,
+                  "description": "Kürzel: 2 bis 32 Zeichen aus a-z, 0-9 und Bindestrich"}},
+        ("name", "kurz"), True, False, _firma_anlegen),
+    "event_absagen": _Sonder(
+        "Event absagen (zweistufig: erst Zusammenfassung und Code, dann mit Code ausführen)",
+        {"bestaetigung": _BESTAETIGUNG_SCHEMA}, (), True, True,
+        _event_status_werkzeug("event_absagen", "abgesagt", "absagen")),
+    "event_archivieren": _Sonder(
+        "Event archivieren (zweistufig: erst Zusammenfassung und Code, dann mit Code "
+        "ausführen)",
+        {"bestaetigung": _BESTAETIGUNG_SCHEMA}, (), True, True,
+        _event_status_werkzeug("event_archivieren", "archiviert", "archivieren")),
+    "event_loeschen": _Sonder(
+        "Event endgültig löschen (zweistufig: erst Zusammenfassung und Code, dann mit Code "
+        "ausführen)",
+        {"bestaetigung": _BESTAETIGUNG_SCHEMA}, (), True, True, _event_loeschen),
+    "kontakt_entfernen": _Sonder(
+        "Kontakt aus der Firma des Events entfernen (Name, Mail oder ID; zweistufig)",
+        {"kontakt": {"type": "string", "maxLength": 200},
+         "bestaetigung": _BESTAETIGUNG_SCHEMA}, ("kontakt",), True, True, _kontakt_entfernen),
+    "rolle_aendern": _Sonder(
+        "Rolle eines Mitglieds der Firma ändern (per Mail; zweistufig)",
+        {"firma": _FIRMA_SCHEMA, "mail": {"type": "string", "maxLength": 320},
+         "rolle": _ROLLE_SCHEMA, "bestaetigung": _BESTAETIGUNG_SCHEMA},
+        ("firma", "mail", "rolle"), True, False, _rolle_aendern),
 }
 
 _EVENT_LESEN = ("event_info", "verlauf_lesen", "kontakte_suchen")
 _WAHL = ("events_suchen", "event_waehlen")
+_VERWALTUNG = ("event_anlegen", "einladen", "event_absagen", "event_archivieren",
+               "event_loeschen", "kontakt_entfernen", "rolle_aendern")
 _SONDER_JE_ART: dict[str, tuple[str, ...]] = {
     "event": (*_EVENT_LESEN, "kontakt_anlegen"),
-    "leitung": (*_WAHL, *_EVENT_LESEN, "kontakt_anlegen"),
-    "betreiber": (*_WAHL, *_EVENT_LESEN, "kontakt_anlegen"),
+    "leitung": (*_WAHL, *_EVENT_LESEN, "kontakt_anlegen", *_VERWALTUNG),
+    "betreiber": (*_WAHL, *_EVENT_LESEN, "kontakt_anlegen", *_VERWALTUNG, "firma_anlegen"),
     "betreiber_lesen": (*_WAHL, *_EVENT_LESEN),
     "melden": (),
 }
@@ -489,15 +752,17 @@ def katalog(conn: psycopg.Connection[Any], info: SchluesselInfo,
 
 def ausfuehren(conn: psycopg.Connection[Any], info: SchluesselInfo, name: str,
                argumente: Mapping[str, object], *, kategorien: Kategorien = None,
+               mailer: Mailer | None = None, basis_url: str | None = None,
                ) -> dict[str, Any]:
     """Fuehrt ein Werkzeug aus dem Katalog des Schluessels aus.
 
     NichtGefunden("unbekanntes Werkzeug") ausserhalb des Katalogs; ValueError bei
-    Argumenten ausserhalb des Schemas, Legacy-Events und fehlendem Bereich; sonst die
-    Fehler der Fachschicht (NichtGefunden, KeinRecht, ValueError).
+    Argumenten ausserhalb des Schemas, Legacy-Events, archivierten Events (schreibende
+    Baustein-Werkzeuge), fehlendem Bereich und `einladen` ohne `mailer`/`basis_url`; sonst
+    die Fehler der Fachschicht (NichtGefunden, KeinRecht, ValueError).
     """
     eintrag = _eintraege(conn, info, kategorien).get(name) if isinstance(name, str) else None
     if eintrag is None:
         raise NichtGefunden(UNBEKANNT)
     args = argumente_pruefen(eintrag.werkzeug.eingabe, argumente)
-    return eintrag.ausfuehren(conn, info, args, kategorien)
+    return eintrag.ausfuehren(conn, info, args, _Umgebung(kategorien, mailer, basis_url))
