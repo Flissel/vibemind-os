@@ -2,6 +2,8 @@ import clsx from 'clsx'
 import Link from 'next/link'
 import type { ReactNode } from 'react'
 import { kategorieVerlauf } from '@/lib/farbe'
+import { ortText } from '@/lib/phase'
+import { STATUS } from '@/lib/status'
 import { zeigeSpanne } from '@/lib/zeit'
 import type { KatalogEvent, Phase } from '@/lib/typen'
 
@@ -11,12 +13,6 @@ export const PHASE: Record<Phase, { text: string; klasse: string }> = {
   laeuft: { text: 'läuft', klasse: 'bg-green-100 text-green-700' },
   kommend: { text: 'kommend', klasse: 'bg-blue-100 text-blue-700' },
   vergangen: { text: 'vorbei', klasse: 'bg-gray-100 text-gray-500' },
-}
-
-function ortText(e: KatalogEvent): string {
-  if (e.ort_adresse) return e.ort_adresse
-  if (e.ort_link) return 'online'
-  return 'Ort offen'
 }
 
 export function sichereUrl(url: string | null): string | null {
@@ -56,8 +52,8 @@ export function EventKachel({ event: e }: { event: KatalogEvent }) {
         <div className="flex flex-wrap gap-1.5">
           <span className={clsx(BADGE, 'bg-gray-100 text-gray-700')}>{e.kategorie_name}</span>
           <span className={clsx(BADGE, phase.klasse)}>{phase.text}</span>
-          {e.status === 'abgesagt' && (
-            <span className={clsx(BADGE, 'bg-red-100 text-red-700')}>abgesagt</span>
+          {(e.status === 'abgesagt' || e.status === 'archiviert') && (
+            <span className={clsx(BADGE, STATUS[e.status].klasse)}>{STATUS[e.status].text}</span>
           )}
           {e.quelle === 'legacy' && (
             <span className={clsx(BADGE, 'bg-yellow-100 text-yellow-700')}>Legacy</span>

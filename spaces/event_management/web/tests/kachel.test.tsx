@@ -64,6 +64,11 @@ describe('EventKachel', () => {
     expect(screen.getByText('Aufgaben 0/0 · 0 Zusagen')).toBeTruthy()
   })
 
+  it('zeigt ein Badge "archiviert"', () => {
+    render(<EventKachel event={katalogEvent({ status: 'archiviert', phase: 'vergangen' })} />)
+    expect(screen.getByText('archiviert')).toBeTruthy()
+  })
+
   it('zeigt Badges für abgesagt, Phase und Kategorie', () => {
     render(<EventKachel event={katalogEvent({ status: 'abgesagt', phase: 'vergangen' })} />)
     expect(screen.getByText('abgesagt')).toBeTruthy()

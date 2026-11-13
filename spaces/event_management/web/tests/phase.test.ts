@@ -60,3 +60,28 @@ describe('gruppiere', () => {
     expect(eingabe.map((e) => e.id)).toEqual(['b', 'a'])
   })
 })
+
+import { ortText, phaseAus } from '@/lib/phase'
+
+describe('phaseAus', () => {
+  const zeit = { beginn: '2026-11-10T10:00:00+01:00', ende: '2026-11-10T12:00:00+01:00' }
+  const um = (iso: string) => new Date(iso).getTime()
+  it('rechnet nach der Zeit', () => {
+    expect(phaseAus({ status: 'geplant', ...zeit }, um('2026-11-09T10:00:00+01:00'))).toBe('kommend')
+    expect(phaseAus({ status: 'geplant', ...zeit }, um('2026-11-10T11:00:00+01:00'))).toBe('laeuft')
+    expect(phaseAus({ status: 'geplant', ...zeit }, um('2026-11-11T10:00:00+01:00'))).toBe('vergangen')
+  })
+  it('abgesagt und archiviert gelten als vergangen, auch bei künftigem Termin', () => {
+    const frueh = um('2026-11-01T10:00:00+01:00')
+    expect(phaseAus({ status: 'abgesagt', ...zeit }, frueh)).toBe('vergangen')
+    expect(phaseAus({ status: 'archiviert', ...zeit }, frueh)).toBe('vergangen')
+  })
+})
+
+describe('ortText', () => {
+  it('Adresse, online oder offen', () => {
+    expect(ortText({ ort_adresse: 'Hauptstr. 1', ort_link: 'https://x.example.org' })).toBe('Hauptstr. 1')
+    expect(ortText({ ort_adresse: null, ort_link: 'https://x.example.org' })).toBe('online')
+    expect(ortText({ ort_adresse: null, ort_link: null })).toBe('Ort offen')
+  })
+})
