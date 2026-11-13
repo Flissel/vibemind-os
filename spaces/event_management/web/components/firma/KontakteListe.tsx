@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Bestaetigen } from '@/components/Bestaetigen'
 import { Meldung } from '@/components/Meldung'
 import { api } from '@/lib/api'
@@ -15,6 +15,10 @@ interface Props {
 export function KontakteListe({ firmaId, verwalten }: Props) {
   const [liste, setListe] = useState<Kontakt[] | null>(null)
   const [suche, setSuche] = useState('')
+  // Abgerufen wird mit der entprellten Suche, nicht bei jedem Tastendruck.
+  const [abfrage, setAbfrage] = useState('')
+  const [ladeFehler, setLadeFehler] = useState<unknown>(null)
+  const letzte = useRef(0)
   const [fehler, setFehler] = useState<unknown>(null)
   const [hinweis, setHinweis] = useState('')
   const [bearbeiten, setBearbeiten] = useState<Kontakt | null>(null)
@@ -27,16 +31,26 @@ export function KontakteListe({ firmaId, verwalten }: Props) {
   const [nMail, setNMail] = useState('')
   const [nTelegram, setNTelegram] = useState('')
 
+  useEffect(() => {
+    const t = setTimeout(() => setAbfrage(suche.trim()), 300)
+    return () => clearTimeout(t)
+  }, [suche])
+
+  // Nur die jüngste Antwort zählt; veraltete Antworten werden verworfen.
   const laden = useCallback(async () => {
+    const nr = ++letzte.current
     try {
-      const s = suche.trim()
-      setListe(
-        await api.holen<Kontakt[]>(`/api/firmen/${firmaId}/kontakte`, s ? { suche: s } : undefined),
+      const antwort = await api.holen<Kontakt[]>(
+        `/api/firmen/${firmaId}/kontakte`,
+        abfrage ? { suche: abfrage } : undefined,
       )
+      if (nr !== letzte.current) return
+      setLadeFehler(null)
+      setListe(antwort)
     } catch (e) {
-      setFehler(e)
+      if (nr === letzte.current) setLadeFehler(e)
     }
-  }, [firmaId, suche])
+  }, [firmaId, abfrage])
 
   useEffect(() => {
     void laden()
@@ -122,7 +136,7 @@ export function KontakteListe({ firmaId, verwalten }: Props) {
       <h2 id="kontakte-titel" className="mb-3 text-lg font-bold text-gray-900">
         Kontakte
       </h2>
-      <Meldung text={hinweis || undefined} fehler={fehler ?? undefined} className="mb-3" />
+      <Meldung text={hinweis || undefined} fehler={fehler ?? ladeFehler ?? undefined} className="mb-3" />
       <label htmlFor="kontakte-suche" className={BESCHRIFTUNG}>
         Suche
       </label>

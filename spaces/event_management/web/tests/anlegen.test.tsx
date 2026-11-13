@@ -178,6 +178,26 @@ describe('Event anlegen', () => {
     expect(body.metadaten).toEqual({ anmeldung_noetig: true })
   })
 
+  it('nach erfolgreichem Anlegen sendet ein zweiter Klick nichts mehr', async () => {
+    render(<EventNeu />)
+    await waehle('Messe')
+    fuelleEckdaten()
+    fireEvent.click(weiter())
+    const knopf = screen.getByRole('button', { name: 'Event anlegen' }) as HTMLButtonElement
+    await userEvent.click(knopf)
+    await waitFor(() => expect(push).toHaveBeenCalledTimes(1))
+    fireEvent.click(knopf)
+    expect(senden).toHaveBeenCalledTimes(1)
+  })
+
+  it('Betreiber: Firmen kommen aus /api/ich, kein zusätzlicher Abruf', async () => {
+    mocke({ ...LEITUNG, betreiber: true, rechte: { event_anlegen: [], verwalten: [] } })
+    render(<EventNeu />)
+    await waehle('Messe')
+    expect(screen.getByText('Beispiel GmbH')).toBeTruthy()
+    expect((api.holen as unknown as { mock: { calls: string[][] } }).mock.calls.some((c) => c[0] === '/api/firmen')).toBe(false)
+  })
+
   it('422 zeigt detail und führt zurück zu den Eckdaten', async () => {
     senden.mockRejectedValue(new ApiFehler(422, "Eckdatum 'ort_link' ist Pflicht"))
     render(<EventNeu />)

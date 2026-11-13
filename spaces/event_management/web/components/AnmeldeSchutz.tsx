@@ -32,6 +32,12 @@ export function AnmeldeSchutz({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  async function neuLaden() {
+    const daten = await api.ich()
+    if (daten === null) zurAnmeldung()
+    else setIch(daten)
+  }
+
   if (fehler) return <Meldung fehler={fehler} className="m-6" />
   if (!ich) {
     return (
@@ -42,7 +48,7 @@ export function AnmeldeSchutz({ children }: { children: ReactNode }) {
     )
   }
   return (
-    <IchProvider ich={ich}>
+    <IchProvider ich={ich} neuLaden={neuLaden}>
       <Kopfleiste />
       <main className="pt-[60px]">{children}</main>
     </IchProvider>

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { Bestaetigen } from '@/components/Bestaetigen'
+import { useIch, useIchNeuLaden } from '@/components/IchKontext'
 import { Meldung } from '@/components/Meldung'
 import { api } from '@/lib/api'
 import type { Mitglied, Rolle } from '@/lib/typen'
@@ -15,6 +16,8 @@ interface Props {
 }
 
 export function MitgliederListe({ firmaId, verwalten }: Props) {
+  const ich = useIch()
+  const ichNeuLaden = useIchNeuLaden()
   const [liste, setListe] = useState<Mitglied[] | null>(null)
   const [fehler, setFehler] = useState<unknown>(null)
   const [entfernen, setEntfernen] = useState<Mitglied | null>(null)
@@ -32,10 +35,21 @@ export function MitgliederListe({ firmaId, verwalten }: Props) {
     void laden()
   }, [laden])
 
+  /** Betrifft die Änderung die eigene Person, ändern sich ihre Rechte (Kopfleiste, Knöpfe). */
+  async function eigenesNeuLaden(m: Mitglied) {
+    if (m.person_id !== ich.person.id) return
+    try {
+      await ichNeuLaden()
+    } catch (e) {
+      setFehler(e)
+    }
+  }
+
   async function rolleAendern(m: Mitglied, rolle: Rolle) {
     setFehler(null)
     try {
       await api.senden('PATCH', `/api/firmen/${firmaId}/mitglieder/${m.person_id}`, { rolle })
+      await eigenesNeuLaden(m)
     } catch (e) {
       setFehler(e)
     }
@@ -48,6 +62,7 @@ export function MitgliederListe({ firmaId, verwalten }: Props) {
     setFehler(null)
     try {
       await api.senden('DELETE', `/api/firmen/${firmaId}/mitglieder/${entfernen.person_id}`)
+      await eigenesNeuLaden(entfernen)
     } catch (e) {
       setFehler(e)
     }

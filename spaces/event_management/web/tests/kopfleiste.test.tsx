@@ -40,9 +40,9 @@ describe('Kopfleiste', () => {
     expect(screen.getByText('Lea Beispiel')).toBeTruthy()
   })
 
-  it('ein Mitglied ohne Verwaltungsrecht sieht "Firmen" nicht', () => {
+  it('auch ein Mitglied ohne Verwaltungsrecht sieht "Firmen" (Kontakte pflegen)', () => {
     zeige(ich())
-    expect(screen.queryByRole('link', { name: 'Firmen' })).toBeNull()
+    expect(screen.getByRole('link', { name: 'Firmen' }).getAttribute('href')).toBe('/firmen')
   })
 
   it('wer eine Firma verwalten darf, sieht "Firmen"', () => {

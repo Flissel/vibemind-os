@@ -14,8 +14,7 @@ function zurAnmeldeseite(): void {
 export function Kopfleiste({ nachAbmeldung = zurAnmeldeseite }: { nachAbmeldung?: () => void }) {
   const ich = useIch()
   const [fehler, setFehler] = useState<unknown>(null)
-  const zeigeFirmen = ich.betreiber || ich.rechte.verwalten.length > 0
-
+  
   async function abmelden() {
     setFehler(null)
     try {
@@ -36,11 +35,9 @@ export function Kopfleiste({ nachAbmeldung = zurAnmeldeseite }: { nachAbmeldung?
           <Link href="/" className="text-sm font-medium text-gray-600 hover:text-gray-900">
             Katalog
           </Link>
-          {zeigeFirmen && (
-            <Link href="/firmen" className="text-sm font-medium text-gray-600 hover:text-gray-900">
-              Firmen
-            </Link>
-          )}
+          <Link href="/firmen" className="text-sm font-medium text-gray-600 hover:text-gray-900">
+            Firmen
+          </Link>
         </nav>
         <div className="flex items-center gap-3 text-sm">
           <span className="text-gray-700">{ich.person.name}</span>

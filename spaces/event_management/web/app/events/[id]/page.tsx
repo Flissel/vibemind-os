@@ -13,7 +13,7 @@ import { UebersichtReiter } from '@/components/event/UebersichtReiter'
 import { VerlaufReiter } from '@/components/event/VerlaufReiter'
 import { api } from '@/lib/api'
 import { bausteinName } from '@/lib/begriffe'
-import type { BausteineKatalog, EventDetail, Firma } from '@/lib/typen'
+import type { BausteineKatalog, EventDetail } from '@/lib/typen'
 
 interface ReiterInfo {
   /** Wert von `?reiter=`; `null` für die Übersicht (kein Parameter). */
@@ -36,7 +36,6 @@ function EventSeite({ id }: { id: string }) {
   const gewaehlt = useSearchParams().get('reiter')
   const [event, setEvent] = useState<EventDetail | null>(null)
   const [fehler, setFehler] = useState<unknown>(null)
-  const [firmaNachgeladen, setFirmaNachgeladen] = useState<Firma[]>([])
   const [verzeichnis, setVerzeichnis] = useState<BausteineKatalog | null>(null)
   const [verzeichnisFehler, setVerzeichnisFehler] = useState<unknown>(null)
 
@@ -73,26 +72,10 @@ function EventSeite({ id }: { id: string }) {
 
   const firmaId = event?.firma_id
   const bekannt = firmaId ? ich.firmen.find((f) => f.id === firmaId) : undefined
-  useEffect(() => {
-    if (!firmaId || bekannt || !ich.betreiber) return
-    let aktiv = true
-    api
-      .holen<Firma[]>('/api/firmen')
-      .then((liste) => {
-        if (aktiv) setFirmaNachgeladen(liste)
-      })
-      .catch(() => {
-        // Nur der Firmenname in der Brotkrume fehlt dann.
-      })
-    return () => {
-      aktiv = false
-    }
-  }, [firmaId, bekannt, ich.betreiber])
-
   if (fehler) return <Meldung fehler={fehler} className="m-6" />
   if (!event) return <p className="p-6 text-sm text-gray-500">Lädt …</p>
 
-  const firmaName = bekannt?.name ?? firmaNachgeladen.find((f) => f.id === event.firma_id)?.name ?? 'Firma'
+  const firmaName = bekannt?.name ?? 'Firma'
   const reiter = reiterListe(event)
   const aktiv = reiter.find((r) => r.schluessel === gewaehlt) ?? reiter[0]
 

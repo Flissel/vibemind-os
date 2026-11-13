@@ -11,7 +11,7 @@ import { KatalogFilter, type KategorieZaehlung } from '@/components/katalog/Kata
 import { api } from '@/lib/api'
 import { gruppiere } from '@/lib/phase'
 import { darfAnlegen } from '@/lib/rechte'
-import type { Firma, KatalogEvent } from '@/lib/typen'
+import type { KatalogEvent } from '@/lib/typen'
 
 const RASTER = 'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4'
 
@@ -65,29 +65,12 @@ function Katalog() {
   const [firma, setFirma] = useState('')
   const [kategorie, setKategorie] = useState('')
   const [events, setEvents] = useState<KatalogEvent[] | null>(null)
-  const [firmen, setFirmen] = useState<Firma[]>(ich.firmen)
   const [fehler, setFehler] = useState<unknown>(null)
 
   useEffect(() => {
     const t = setTimeout(() => setSuche(eingabe.trim()), 300)
     return () => clearTimeout(t)
   }, [eingabe])
-
-  useEffect(() => {
-    if (!ich.betreiber) return
-    let aktiv = true
-    api
-      .holen<Firma[]>('/api/firmen')
-      .then((liste) => {
-        if (aktiv) setFirmen(liste)
-      })
-      .catch((e: unknown) => {
-        if (aktiv) setFehler(e)
-      })
-    return () => {
-      aktiv = false
-    }
-  }, [ich.betreiber])
 
   useEffect(() => {
     let aktiv = true
@@ -121,6 +104,11 @@ function Katalog() {
     return [...karte.values()].sort((a, b) => a.name.localeCompare(b.name, 'de'))
   }, [events])
 
+  // Eine gewählte Kategorie, die nach Suche/Firmenwechsel nicht mehr vorkommt, wird verworfen.
+  useEffect(() => {
+    if (events && kategorie !== '' && !zaehlung.some((z) => z.id === kategorie)) setKategorie('')
+  }, [events, zaehlung, kategorie])
+
   const sichtbar = useMemo(
     () => (events ?? []).filter((e) => kategorie === '' || e.kategorie === kategorie),
     [events, kategorie],
@@ -143,7 +131,7 @@ function Katalog() {
       <KatalogFilter
         suche={eingabe}
         onSuche={setEingabe}
-        firmen={firmen}
+        firmen={ich.firmen}
         firma={firma}
         onFirma={setFirma}
         kategorien={zaehlung}

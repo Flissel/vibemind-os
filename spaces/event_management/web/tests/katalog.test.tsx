@@ -117,6 +117,28 @@ describe('Katalog', () => {
     )
   })
 
+  it('setzt eine gewählte Kategorie zurück, wenn sie nach der Suche nicht mehr vorkommt', async () => {
+    render(<Startseite />)
+    await screen.findByText('Nachtschicht')
+    fireEvent.click(screen.getByRole('button', { name: 'Workshop 1' }))
+    expect(screen.queryByText('Nachtschicht')).toBeNull()
+    holen.mockImplementation(async (pfad: string) => {
+      if (pfad === '/api/events') return EVENTS.filter((e) => e.kategorie === 'hackathon') as never
+      return [] as never
+    })
+    fireEvent.change(screen.getByLabelText('Firma'), { target: { value: 'f1' } })
+    await screen.findByText('Nachtschicht')
+    expect(screen.getByRole('button', { name: 'Alle 3', pressed: true })).toBeTruthy()
+  })
+
+  it('ruft für den Betreiber nicht zusätzlich /api/firmen ab', async () => {
+    mocke({ ...LEITUNG, betreiber: true })
+    render(<Startseite />)
+    await screen.findByText('Nachtschicht')
+    expect(holen.mock.calls.some((c: unknown[]) => c[0] === '/api/firmen')).toBe(false)
+    expect(screen.getByRole('option', { name: 'Beispiel GmbH' })).toBeTruthy()
+  })
+
   it('zeigt „+ Neues Event“ mit Anlegerecht', async () => {
     render(<Startseite />)
     const link = await screen.findByRole('link', { name: '+ Neues Event' })

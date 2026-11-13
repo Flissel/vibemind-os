@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import FirmaSeite from '@/app/firmen/[id]/page'
@@ -174,6 +174,48 @@ describe('/firmen/[id]', () => {
     await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Entfernen' }))
     await screen.findByText('Kontakt wird noch verwendet')
     expect(senden).toHaveBeenCalledWith('DELETE', '/api/firmen/f1/kontakte/k1')
+  })
+
+  it('nach der eigenen Rollenänderung wird /api/ich neu geladen', async () => {
+    render(<FirmaSeite />)
+    await screen.findByText('Max Muster')
+    const vorher = vi.mocked(api.ich).mock.calls.length
+    await userEvent.selectOptions(screen.getByLabelText('Rolle ändern: Lea Beispiel'), 'mitglied')
+    await waitFor(() => expect(vi.mocked(api.ich).mock.calls.length).toBe(vorher + 1))
+  })
+
+  it('die Rollenänderung einer anderen Person lädt /api/ich nicht neu', async () => {
+    render(<FirmaSeite />)
+    await screen.findByText('Max Muster')
+    const vorher = vi.mocked(api.ich).mock.calls.length
+    await userEvent.selectOptions(screen.getByLabelText('Rolle ändern: Max Muster'), 'leitung')
+    await waitFor(() => expect(senden).toHaveBeenCalled())
+    expect(vi.mocked(api.ich).mock.calls.length).toBe(vorher)
+  })
+
+  it('die Kontaktsuche wird 300 ms entprellt', async () => {
+    render(<FirmaSeite />)
+    await screen.findByText('Erika Kontakt')
+    const holen = vi.mocked(api.holen)
+    holen.mockClear()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const feld = screen.getByLabelText('Suche')
+      fireEvent.change(feld, { target: { value: 'e' } })
+      fireEvent.change(feld, { target: { value: 'er' } })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(250)
+      })
+      expect(holen.mock.calls.filter((c) => c[0] === '/api/firmen/f1/kontakte')).toHaveLength(0)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100)
+      })
+      const calls = holen.mock.calls.filter((c) => c[0] === '/api/firmen/f1/kontakte')
+      expect(calls).toHaveLength(1)
+      expect(calls[0]?.[1]).toEqual({ suche: 'er' })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('Mitglied kann Kontakte anlegen, aber nicht entfernen', async () => {

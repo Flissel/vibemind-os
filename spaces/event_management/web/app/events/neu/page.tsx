@@ -56,13 +56,13 @@ function Anlegen() {
   const [kategorien, setKategorien] = useState<Kategorie[] | null>(null)
   const [schemata, setSchemata] = useState<Record<string, WirksamesSchema>>({})
   const [ladefehler, setLadefehler] = useState<unknown>(null)
-  const [firmen, setFirmen] = useState<Firma[]>(
-    ich.betreiber ? [] : ich.firmen.filter((f) => ich.rechte.event_anlegen.includes(f.id)),
+  // `ich.firmen` listet dem Betreiber alle Firmen (system/firmen.py), sonst die eigenen.
+  const firmen: Firma[] = useMemo(
+    () => (ich.betreiber ? ich.firmen : ich.firmen.filter((f) => ich.rechte.event_anlegen.includes(f.id))),
+    [ich],
   )
   const [kategorie, setKategorie] = useState('')
-  const [firmaId, setFirmaId] = useState(
-    !ich.betreiber && ich.rechte.event_anlegen.length === 1 ? (ich.rechte.event_anlegen[0] ?? '') : '',
-  )
+  const [firmaId, setFirmaId] = useState(firmen.length === 1 ? (firmen[0]?.id ?? '') : '')
   const [name, setName] = useState('')
   const [beginn, setBeginn] = useState('')
   const [ende, setEnde] = useState('')
@@ -98,24 +98,6 @@ function Anlegen() {
       aktiv = false
     }
   }, [])
-
-  useEffect(() => {
-    if (!ich.betreiber) return
-    let aktiv = true
-    api
-      .holen<Firma[]>('/api/firmen')
-      .then((liste) => {
-        if (!aktiv) return
-        setFirmen(liste)
-        if (liste.length === 1) setFirmaId(liste[0]?.id ?? '')
-      })
-      .catch((e: unknown) => {
-        if (aktiv) setLadefehler(e)
-      })
-    return () => {
-      aktiv = false
-    }
-  }, [ich.betreiber])
 
   const schema: WirksamesSchema | undefined = schemata[kategorie]
   const pflicht = useMemo(() => new Set<string>(schema?.eckdaten_pflicht ?? []), [schema])
@@ -167,12 +149,12 @@ function Anlegen() {
         beschreibung: beschreibung.trim() || undefined,
         metadaten: meta,
       })
+      // `sendet` bleibt nach Erfolg gesetzt: bis zur Weiterleitung kein zweites Anlegen.
       router.push(`/events/${neu.id}`)
     } catch (e: unknown) {
       setSendefehler(e)
       // Alle Eingaben (und damit jeder 422) liegen in Schritt 2; dort steht die Meldung.
       setSchritt(2)
-    } finally {
       setSendet(false)
     }
   }
