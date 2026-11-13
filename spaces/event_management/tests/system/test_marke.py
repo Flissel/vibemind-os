@@ -126,11 +126,26 @@ def test_marke_laeuft_nach_30_min_ab(db_admin, db_app, welt):
     db_admin.execute("update event.marke set ablauf = now() - interval '1 minute'"
                      " where wert_hash = %s", (_sha(wert),))
     unbekannt = "mk_" + "a" * 12
-    schlecht: list[Any] = [wert, unbekannt, "", wert.upper(), wert[3:], wert + "a",
+    schlecht: list[Any] = [wert, unbekannt, "", wert[3:], wert + "a", wert[:-1] + "0",
                            wert[:-1] + "\x00", None, 42]
     for w in schlecht:
         with pytest.raises(NichtGefunden) as e:
             marke.marke_aufloesen(app, info, w)
+        assert str(e.value) == MARKE_UNGUELTIG
+
+
+def test_marke_tolerant_gegen_gross_und_leerzeichen(db_admin, db_app, welt):
+    """Telegram schreibt den Anfang gross, ein LLM haengt Leerzeichen an."""
+    app = db_app()
+    info = _info(db_admin, "leitung", person_id=welt["lea"])
+    wert = marke.marke_ausstellen(app, info, welt["ea"])
+    for variante in (wert.upper(), wert.capitalize(), "  " + wert + "\n",
+                     " " + wert.upper() + "\t"):
+        assert marke.marke_aufloesen(app, info, variante) == welt["ea"]
+    for kaputt in (wert[:3] + " " + wert[3:], wert.replace("_", "-"), "mk_" + wert[3:-1] + "0",
+                   "mk__" + wert[3:], "  "):
+        with pytest.raises(NichtGefunden) as e:
+            marke.marke_aufloesen(app, info, kaputt)
         assert str(e.value) == MARKE_UNGUELTIG
 
 
@@ -176,7 +191,7 @@ def test_marke_legacy_und_archiviert_abgelehnt(db_admin, db_app, welt):
             assert str(e.value) == "Legacy-Event: bitte die alte App nutzen"
             with pytest.raises(ValueError) as e:
                 marke.marke_ausstellen(conn, info, welt["archiviert"])
-            assert "archiviert" in str(e.value)
+            assert str(e.value) == "Event ist archiviert"
     assert _anzahl(db_admin, "marke") == 0
 
 
@@ -195,7 +210,6 @@ def test_bestaetigung_einmalig(db_admin, db_app, welt):
     assert zeile["code_hash"] == _sha(code) and code[3:] not in zeile["j"]
     assert timedelta(minutes=4) < zeile["rest"] <= timedelta(minutes=5)
 
-    # Reihenfolge der Ziel-Schluessel egal (jsonb-Gleichheit).
     assert marke.bestaetigung_einloesen(app, info, code, "event_loeschen", dict(ziel)) is None
     with pytest.raises(ValueError) as e:
         marke.bestaetigung_einloesen(app, info, code, "event_loeschen", ziel)
@@ -204,6 +218,7 @@ def test_bestaetigung_einmalig(db_admin, db_app, welt):
 
     zwei = {"firma_id": str(welt["a"]), "kontakt_id": str(uuid4())}
     code2 = marke.bestaetigung_ausstellen(app, info, "kontakt_entfernen", zwei)
+    # Reihenfolge der Ziel-Schluessel egal (jsonb-Gleichheit).
     marke.bestaetigung_einloesen(
         app, info, code2, "kontakt_entfernen", dict(reversed(list(zwei.items()))))
 
@@ -224,7 +239,7 @@ def test_bestaetigung_falsche_aktion_oder_ziel(db_admin, db_app, welt):
         (lea, code, "kontakt_entfernen", {**ziel, "event_id": str(welt["ea"])}),  # Zusatz
         (lea, code, "kontakt_entfernen", {}),
         (zweite, code, "kontakt_entfernen", ziel),                            # anderer Schluessel
-        (lea, code.upper(), "kontakt_entfernen", ziel),
+        (lea, code[:-1] + "0", "kontakt_entfernen", ziel),                  # Zeichen fremd
         (lea, code[3:], "kontakt_entfernen", ziel),
         (lea, "bs_" + "a" * 8, "kontakt_entfernen", ziel),
         (lea, None, "kontakt_entfernen", ziel),
@@ -255,6 +270,21 @@ def test_bestaetigung_falsche_aktion_oder_ziel(db_admin, db_app, welt):
         marke.bestaetigung_einloesen(app, zweite, offen, "event_loeschen", {"event_id": "x"})
     with pytest.raises(NichtGefunden):
         marke.bestaetigung_ausstellen(app, zweite, "event_loeschen", {"event_id": "x"})
+
+
+def test_bestaetigung_tolerant_gegen_gross_und_leerzeichen(db_admin, db_app, welt):
+    app = db_app()
+    info = _info(db_admin, "leitung", person_id=welt["lea"])
+    ziel = {"event_id": str(welt["ea"])}
+    code = marke.bestaetigung_ausstellen(app, info, "event_loeschen", ziel)
+    for kaputt in (code[:3] + " " + code[3:], code.replace("_", "-"), code[:-1] + "0", "   "):
+        with pytest.raises(ValueError) as e:
+            marke.bestaetigung_einloesen(app, info, kaputt, "event_loeschen", ziel)
+        assert str(e.value) == CODE_UNGUELTIG
+    # Kaputte Varianten haben ihn nicht verbraucht; Telegram-Grossschreibung + Leerzeichen geht.
+    marke.bestaetigung_einloesen(app, info, " " + code.capitalize() + "\n", "event_loeschen", ziel)
+    with pytest.raises(ValueError):
+        marke.bestaetigung_einloesen(app, info, code.upper(), "event_loeschen", ziel)  # einmalig
 
 
 def test_bestaetigung_abgelaufen(db_admin, db_app, welt):

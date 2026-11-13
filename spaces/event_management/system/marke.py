@@ -121,7 +121,11 @@ def marke_ausstellen(conn: psycopg.Connection[Any], info: SchluesselInfo, event_
 def marke_aufloesen(conn: psycopg.Connection[Any], info: SchluesselInfo, marke: str) -> UUID:
     """event_id der Marke; NichtGefunden mit immer derselben Meldung bei fremdem
     Schluessel, Ablauf, unbekannter oder kaputter Marke."""
-    if not isinstance(marke, str) or not _MARKE_FORMAT.fullmatch(marke):
+    # Telegram schreibt den Anfang gross, ein LLM haengt Leerzeichen an: normalisieren.
+    if not isinstance(marke, str):
+        raise NichtGefunden(MARKE_UNGUELTIG)
+    marke = marke.strip().lower()
+    if not _MARKE_FORMAT.fullmatch(marke):
         raise NichtGefunden(MARKE_UNGUELTIG)
     with transaktion(conn, Kontext.system()) as cur:
         cur.execute("select event.marke_pruefen(%s, %s) as event_id",
@@ -181,7 +185,10 @@ def bestaetigung_einloesen(
         sauber = _ziel(ziel)
     except ValueError:
         raise ValueError(CODE_UNGUELTIG) from None
-    if not isinstance(code, str) or not _CODE_FORMAT.fullmatch(code):
+    if not isinstance(code, str):
+        raise ValueError(CODE_UNGUELTIG)
+    code = code.strip().lower()  # wie bei der Marke: Gross-/Leerzeichen tolerieren
+    if not _CODE_FORMAT.fullmatch(code):
         raise ValueError(CODE_UNGUELTIG)
     with transaktion(conn, Kontext.system()) as cur:
         cur.execute(
