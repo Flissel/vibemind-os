@@ -9,7 +9,8 @@ export function darfAnlegen(ich: Ich, firmaId?: string): boolean {
   return ich.rechte.event_anlegen.includes(firmaId)
 }
 
-/** Leitungsrechte in der Firma (Mitglieder, Absagen, Archivieren). */
+/** Leitungsrechte in der Firma (Mitglieder, Absagen, Archivieren, Mails freigeben –
+ *  Aktion `nachricht_freigeben` in system/rechte.py). */
 export function darfVerwalten(ich: Ich, firmaId: string): boolean {
   return ich.betreiber || ich.rechte.verwalten.includes(firmaId)
 }

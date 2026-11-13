@@ -27,11 +27,14 @@ from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from spaces.event_management.system import events, firmen, kern, rechte, verlauf, zugang
+from spaces.event_management.system import (
+    events, firmen, kern, nachrichten, rechte, verlauf, zugang,
+)
 from spaces.event_management.system.bausteine import REGISTRY
 from spaces.event_management.system.kategorien import Kategorie, lade_kategorien, waehlbare
 from spaces.event_management.system.kontext import KeinRecht, Kontext, NichtGefunden, transaktion
 from spaces.event_management.system.mailer import Mailer, SmtpMailer
+from spaces.event_management.system.telegram import Telegram, telegram_aus_umgebung
 
 log = logging.getLogger(__name__)
 
@@ -154,6 +157,16 @@ class KontaktAenderung(_Eingabe):
     telegram: str | None = Field(default=None, max_length=200)
 
 
+class GruppenNachricht(_Eingabe):
+    text: str = Field(max_length=nachrichten.TEXT_MAX)
+
+
+class MailEntwurf(_Eingabe):
+    betreff: str = Field(max_length=nachrichten.BETREFF_MAX)
+    text: str = Field(max_length=nachrichten.TEXT_MAX)
+    zusage: list[str] = Field(min_length=1, max_length=len(nachrichten.ZUSAGEN))
+
+
 def _text_param(wert: str | None) -> str | None:
     if wert is not None:
         _sauber(wert)
@@ -247,11 +260,13 @@ class Sitzung:
 def erstelle_app(
     dsn: str, geheimnis: bytes, mailer: Mailer, basis_url: str,
     kategorien_ordner: Path | None = None, *, cookie_sicher: bool = True,
+    telegram: Telegram | None = None,
 ) -> FastAPI:
     """Baut die App. Kategorien werden hier einmal geladen (KategorieFehler bricht ab).
 
     `basis_url` (fuer Einladungslinks) kommt nur aus der Konfiguration, nie aus der
     Anfrage. Der Pool oeffnet sich im Lifespan (uvicorn, ``with TestClient(app)``).
+    Ohne `telegram` lehnt die Nachricht an die Gruppe mit 422 ab.
     """
     if not isinstance(geheimnis, bytes) or len(geheimnis) < GEHEIMNIS_MIN_BYTES:
         raise ValueError(f"Geheimnis braucht mindestens {GEHEIMNIS_MIN_BYTES} Bytes")
@@ -541,6 +556,33 @@ def erstelle_app(
         kern.kontakt_entfernen(s.conn, s.k, firma_id, kontakt_id)
         return Response(status_code=204)
 
+    # --- Nachrichten ----------------------------------------------------------------
+    # Mails werden hier nur entworfen und freigegeben; versendet wird getrennt
+    # (`python -m spaces.event_management.system.nachrichten versenden`).
+
+    @app.get("/api/events/{event_id}/nachrichten")
+    def nachrichten_liste(event_id: UUID, s: Lesen) -> list[dict[str, Any]]:
+        return nachrichten.liste(s.conn, s.k, event_id)
+
+    @app.post("/api/events/{event_id}/nachrichten/gruppe", status_code=201)
+    def nachricht_an_gruppe(
+        event_id: UUID, daten: GruppenNachricht, s: Schreiben,
+    ) -> dict[str, Any]:
+        return nachrichten.an_gruppe(s.conn, s.k, event_id, daten.text, telegram=telegram)
+
+    @app.post("/api/events/{event_id}/nachrichten/mail", status_code=201)
+    def mail_entwerfen(event_id: UUID, daten: MailEntwurf, s: Schreiben) -> dict[str, Any]:
+        return nachrichten.mail_entwerfen(s.conn, s.k, event_id, daten.betreff, daten.text,
+                                          daten.zusage)
+
+    @app.post("/api/nachrichten/{nachricht_id}/freigeben")
+    def nachricht_freigeben(nachricht_id: UUID, s: Schreiben) -> dict[str, Any]:
+        return nachrichten.freigeben(s.conn, s.k, nachricht_id)
+
+    @app.post("/api/nachrichten/{nachricht_id}/verwerfen")
+    def nachricht_verwerfen(nachricht_id: UUID, s: Schreiben) -> dict[str, Any]:
+        return nachrichten.verwerfen(s.conn, s.k, nachricht_id)
+
     return app
 
 
@@ -602,8 +644,11 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO)
     k = konfiguration()
+    telegram = telegram_aus_umgebung()
+    if telegram is None:
+        log.warning("Nachrichten an die Gruppe aus: TELEGRAM_BOT_TOKEN_FILE fehlt")
     app = erstelle_app(k.dsn, k.geheimnis, SmtpMailer.aus_umgebung(), k.basis_url,
-                       cookie_sicher=k.cookie_sicher)
+                       cookie_sicher=k.cookie_sicher, telegram=telegram)
     # Kein Access-Log: der Pfad von /api/einladung/{token} enthaelt das Token.
     uvicorn.run(app, host="0.0.0.0", port=k.port, access_log=False)
 

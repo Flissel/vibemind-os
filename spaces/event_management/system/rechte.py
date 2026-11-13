@@ -8,6 +8,7 @@ from spaces.event_management.system.kontext import KeinRecht, Kontext, NichtGefu
 AKTIONEN = frozenset({
     "firma_anlegen", "lesen", "event_anlegen", "event_aendern", "event_loeschen",
     "event_absagen", "baustein_schreiben", "einladen", "rolle_aendern", "mitglied_entfernen",
+    "nachricht_freigeben",  # Mail-Entwurf zum Versand freigeben: nur Leitung (und Betreiber)
 })
 _ROLLEN: dict[str, frozenset[str]] = {
     "leitung": AKTIONEN - {"firma_anlegen"},

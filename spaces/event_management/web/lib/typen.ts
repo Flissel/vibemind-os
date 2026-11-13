@@ -169,3 +169,28 @@ export interface VerlaufEintrag {
 export type EinladungInfo =
   | { gueltig: false }
   | { gueltig: true; firma_name: string; braucht_passwort: boolean }
+
+export type NachrichtKanal = 'gruppe' | 'mail'
+
+export type NachrichtStatus = 'entwurf' | 'freigegeben' | 'versendet' | 'fehler' | 'verworfen'
+
+export type Zusage = 'offen' | 'zugesagt' | 'vielleicht' | 'abgesagt'
+
+/** Eintrag von `GET /api/events/{id}/nachrichten` (auch die Antwort der POST-Routen). */
+export interface Nachricht {
+  id: string
+  event_id: string
+  kanal: NachrichtKanal
+  betreff: string | null
+  text: string
+  status: NachrichtStatus
+  angelegt: string
+  erstellt_von: string | null
+  freigegeben: string | null
+  versendet: string | null
+  fehler: string | null
+  /** Nur bei Mails: die Zusagen, an die sie geht. */
+  zusage: Zusage[] | null
+  /** Nur bei Mails: vor dem Versand live gezählt, danach die Zahl beim Versand. */
+  empfaenger: number | null
+}

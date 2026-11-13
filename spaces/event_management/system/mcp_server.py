@@ -17,7 +17,8 @@ Ergebnisse.
 CLI: ``python -m spaces.event_management.system.mcp_server`` (DSN aus
 ``EVENT_APP_DSN_FILE`` oder ``EVENT_APP_DSN``, ``EVENT_MCP_PORT`` Vorgabe 8171,
 ``EVENT_MCP_HOST`` Vorgabe 127.0.0.1; fuer `einladen` ``EVENT_BASIS_URL`` und die
-``EVENT_SMTP_*``-Werte wie event-api, ohne sie laeuft der Dienst ohne Einladen).
+``EVENT_SMTP_*``-Werte wie event-api, ohne sie laeuft der Dienst ohne Einladen; fuer
+`nachricht_an_gruppe` ``TELEGRAM_BOT_TOKEN_FILE``, ohne sie lehnt das Werkzeug ab).
 """
 from __future__ import annotations
 
@@ -50,6 +51,7 @@ from spaces.event_management.system import marke, schluessel, werkzeuge
 from spaces.event_management.system.kategorien import Kategorie, lade_kategorien
 from spaces.event_management.system.kontext import NichtGefunden
 from spaces.event_management.system.mailer import Mailer, SmtpMailer
+from spaces.event_management.system.telegram import Telegram, telegram_aus_umgebung
 
 log = logging.getLogger(__name__)
 
@@ -113,14 +115,14 @@ def _tool(w: werkzeuge.Werkzeug) -> types.Tool:
 
 def erstelle_mcp_app(
     dsn: str, *, mailer: Mailer | None = None, basis_url: str | None = None,
-    telegram: object | None = None, kategorien_ordner: Path | None = None,
+    telegram: Telegram | None = None, kategorien_ordner: Path | None = None,
 ) -> Starlette:
     """Baut die event-mcp-App. Kategorien werden hier einmal geladen; der Pool und der
     Session-Manager laufen im Lifespan (uvicorn, ``with TestClient(app)``).
 
     `mailer` und `basis_url` (fuer Einladungslinks, nur aus der Konfiguration) braucht
     das Werkzeug `einladen` (Ruling S6); fehlt eines, lehnt es sauber ab. `telegram`
-    nehmen die Nachrichten-Werkzeuge (Task 6); es liegt bis dahin nur in ``app.state``.
+    braucht `nachricht_an_gruppe`; ohne lehnt es mit "Telegram ist nicht eingerichtet" ab.
     """
     if basis_url is not None and not (
             isinstance(basis_url, str) and basis_url.startswith(("https://", "http://"))):
@@ -151,7 +153,8 @@ def erstelle_mcp_app(
         with pool.connection() as conn:
             info = schluessel.pruefen(conn, klartext)
             ergebnis = werkzeuge.ausfuehren(conn, info, name, argumente, kategorien=kats,
-                                            mailer=mailer, basis_url=basis_url)
+                                            mailer=mailer, basis_url=basis_url,
+                                            telegram=telegram)
         return json.dumps(ergebnis, ensure_ascii=False, default=_json_wert)
 
     async def tools_list(_anfrage: types.ListToolsRequest) -> types.ServerResult:
@@ -327,7 +330,11 @@ def main() -> None:
     k = konfiguration()
     if k.basis_url is None:
         log.warning("Einladen per Bot aus: EVENT_BASIS_URL fehlt")
-    app = erstelle_mcp_app(k.dsn, mailer=_mailer_aus_umgebung(), basis_url=k.basis_url)
+    telegram = telegram_aus_umgebung()
+    if telegram is None:
+        log.warning("Nachrichten an die Gruppe aus: TELEGRAM_BOT_TOKEN_FILE fehlt")
+    app = erstelle_mcp_app(k.dsn, mailer=_mailer_aus_umgebung(), basis_url=k.basis_url,
+                           telegram=telegram)
     # Kein Access-Log (Anfragen tragen den Schluessel im Header; sicher ist sicher).
     uvicorn.run(app, host=k.host, port=k.port, access_log=False)
 

@@ -38,6 +38,12 @@ const AKTIONEN: Readonly<Record<string, string>> = {
   angelegt: 'angelegt',
   geaendert: 'geändert',
   geloescht: 'gelöscht',
+  gesendet: 'gesendet',
+  entworfen: 'entworfen',
+  freigegeben: 'freigegeben',
+  verworfen: 'verworfen',
+  versendet: 'versendet',
+  fehler: 'fehlgeschlagen',
 }
 
 const QUELLEN: Readonly<Record<string, string>> = {

@@ -28,6 +28,12 @@ Firmen heissen in Argumenten nur per Kuerzel (`kurz`), Events nur per Marke oder
 Archiv (Ruling T5-a): schreibende Baustein-Werkzeuge lehnen ein archiviertes gebundenes
 Event ab (alle Schluessel-Arten); Lesen bleibt erlaubt, die Marke bleibt gueltig.
 
+Nachrichten (Task 6, `nachrichten.py`): `nachricht_an_gruppe` sendet ueber das Telegram der
+App an die bestaetigte Gruppe des Events (ohne Telegram: "Telegram ist nicht
+eingerichtet"), `mail_entwerfen` speichert nur einen Entwurf (freigeben kann allein eine
+Leitung in der Oberflaeche, versendet wird getrennt), `nachrichten_liste` liest.
+`betreiber_lesen` hat nur die Liste, `melden` nichts. Archiv lehnt die Fachschicht ab.
+
 Erweitern: neue Werkzeuge als `_Sonder`-Eintrag in `_SONDER` und ihr Name in
 `_SONDER_JE_ART`.
 """
@@ -44,13 +50,14 @@ from uuid import UUID
 import psycopg
 
 from spaces.event_management.system import (
-    events, firmen, kern, marke, pruefung, rechte, verlauf, zugang,
+    events, firmen, kern, marke, nachrichten, pruefung, rechte, verlauf, zugang,
 )
 from spaces.event_management.system.bausteine import REGISTRY
 from spaces.event_management.system.kategorien import Kategorie, WirksamesSchema
 from spaces.event_management.system.kontext import Kontext, NichtGefunden, transaktion
 from spaces.event_management.system.mailer import Mailer
 from spaces.event_management.system.schluessel import SchluesselInfo, kontext_fuer
+from spaces.event_management.system.telegram import Telegram
 
 log = logging.getLogger(__name__)
 
@@ -97,10 +104,12 @@ Kategorien = Mapping[str, Kategorie] | None
 
 @dataclass(frozen=True)
 class _Umgebung:
-    """Was die App den Werkzeugen mitgibt (Kategorien; Mailer und Basis-URL fuer Einladen)."""
+    """Was die App den Werkzeugen mitgibt (Kategorien; Mailer und Basis-URL fuer Einladen;
+    Telegram fuer Nachrichten an die Gruppe)."""
     kategorien: Kategorien = None
     mailer: Mailer | None = None
     basis_url: str | None = None
+    telegram: Telegram | None = None
 
 
 Ausfuehrung = Callable[
@@ -176,6 +185,14 @@ def _objekt(eigenschaften: Mapping[str, dict[str, Any]], pflicht: list[str],
 def _wert_pruefen(name: str, s: Mapping[str, Any], wert: object) -> None:
     if wert is None:
         raise ValueError(f"Argument '{name}' darf nicht leer sein")
+    if s["type"] == "array":
+        if not isinstance(wert, list):
+            raise ValueError(f"Argument '{name}' muss eine Liste sein")
+        if len(wert) < s.get("minItems", 0):
+            raise ValueError(f"Argument '{name}' braucht mindestens {s['minItems']} Eintrag")
+        for eintrag in wert:
+            _wert_pruefen(name, s["items"], eintrag)
+        return
     if s["type"] == "integer":
         if isinstance(wert, bool) or not isinstance(wert, int):
             raise ValueError(f"Argument '{name}' muss eine ganze Zahl sein")
@@ -621,6 +638,40 @@ def _rolle_aendern(conn: psycopg.Connection[Any], info: SchluesselInfo, args: di
         f"von {person['rolle']} auf {rolle} ändern", tun)
 
 
+# --- Nachrichten (Task 6) -------------------------------------------------------------
+
+
+_ENTWURF_HINWEIS = ("Entwurf gespeichert – versendet wird erst nach der Freigabe durch eine "
+                    "Leitung in der Oberfläche")
+
+
+def _nachricht(zeile: Mapping[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in zeile.items() if k != "event_id"}
+
+
+def _nachricht_an_gruppe(conn: psycopg.Connection[Any], info: SchluesselInfo,
+                         args: dict[str, Any], u: _Umgebung) -> dict[str, Any]:
+    g = _binden(conn, info, args)
+    neu = nachrichten.an_gruppe(conn, g.k, g.event["id"], args["text"], telegram=u.telegram)
+    return {"event": g.kopf, "nachricht": _nachricht(neu)}
+
+
+def _mail_entwerfen(conn: psycopg.Connection[Any], info: SchluesselInfo, args: dict[str, Any],
+                    u: _Umgebung) -> dict[str, Any]:
+    g = _binden(conn, info, args)
+    neu = nachrichten.mail_entwerfen(conn, g.k, g.event["id"], args["betreff"], args["text"],
+                                     args["zusage"])
+    return {"event": g.kopf, "nachricht": _nachricht(neu), "empfaenger": neu["empfaenger"],
+            "hinweis": _ENTWURF_HINWEIS}
+
+
+def _nachrichten_liste(conn: psycopg.Connection[Any], info: SchluesselInfo,
+                       args: dict[str, Any], u: _Umgebung) -> dict[str, Any]:
+    g = _binden(conn, info, args)
+    zeilen = nachrichten.liste(conn, g.k, g.event["id"])
+    return {"event": g.kopf, "nachrichten": [_nachricht(z) for z in zeilen]}
+
+
 @dataclass(frozen=True)
 class _Sonder:
     beschreibung: str
@@ -716,16 +767,33 @@ _SONDER: dict[str, _Sonder] = {
         {"firma": _FIRMA_SCHEMA, "mail": {"type": "string", "maxLength": 320},
          "rolle": _ROLLE_SCHEMA, "bestaetigung": _BESTAETIGUNG_SCHEMA},
         ("firma", "mail", "rolle"), True, False, _rolle_aendern),
+    "nachricht_an_gruppe": _Sonder(
+        "Nachricht sofort an die verbundene Telegram-Gruppe des Events senden",
+        {"text": {"type": "string", "maxLength": nachrichten.TEXT_MAX}}, ("text",), True, True,
+        _nachricht_an_gruppe),
+    "mail_entwerfen": _Sonder(
+        "Mail an Teilnehmende (nach Zusage) als Entwurf speichern; versendet wird erst nach "
+        "der Freigabe durch eine Leitung in der Oberfläche",
+        {"betreff": {"type": "string", "maxLength": nachrichten.BETREFF_MAX},
+         "text": {"type": "string", "maxLength": nachrichten.TEXT_MAX},
+         "zusage": {"type": "array", "minItems": 1,
+                    "items": {"type": "string", "enum": list(nachrichten.ZUSAGEN)}}},
+        ("betreff", "text", "zusage"), True, True, _mail_entwerfen),
+    "nachrichten_liste": _Sonder(
+        "Nachrichten des Events anzeigen (Gruppe und Mail, mit Status und Empfängerzahl)",
+        {}, (), False, True, _nachrichten_liste),
 }
 
-_EVENT_LESEN = ("event_info", "verlauf_lesen", "kontakte_suchen")
+_EVENT_LESEN = ("event_info", "verlauf_lesen", "kontakte_suchen", "nachrichten_liste")
+_NACHRICHTEN = ("nachricht_an_gruppe", "mail_entwerfen")
 _WAHL = ("events_suchen", "event_waehlen")
 _VERWALTUNG = ("event_anlegen", "einladen", "event_absagen", "event_archivieren",
                "event_loeschen", "kontakt_entfernen", "rolle_aendern")
 _SONDER_JE_ART: dict[str, tuple[str, ...]] = {
-    "event": (*_EVENT_LESEN, "kontakt_anlegen"),
-    "leitung": (*_WAHL, *_EVENT_LESEN, "kontakt_anlegen", *_VERWALTUNG),
-    "betreiber": (*_WAHL, *_EVENT_LESEN, "kontakt_anlegen", *_VERWALTUNG, "firma_anlegen"),
+    "event": (*_EVENT_LESEN, "kontakt_anlegen", *_NACHRICHTEN),
+    "leitung": (*_WAHL, *_EVENT_LESEN, "kontakt_anlegen", *_NACHRICHTEN, *_VERWALTUNG),
+    "betreiber": (*_WAHL, *_EVENT_LESEN, "kontakt_anlegen", *_NACHRICHTEN, *_VERWALTUNG,
+                  "firma_anlegen"),
     "betreiber_lesen": (*_WAHL, *_EVENT_LESEN),
     "melden": (),
 }
@@ -780,16 +848,19 @@ def katalog(conn: psycopg.Connection[Any], info: SchluesselInfo,
 def ausfuehren(conn: psycopg.Connection[Any], info: SchluesselInfo, name: str,
                argumente: Mapping[str, object], *, kategorien: Kategorien = None,
                mailer: Mailer | None = None, basis_url: str | None = None,
+               telegram: Telegram | None = None,
                ) -> dict[str, Any]:
     """Fuehrt ein Werkzeug aus dem Katalog des Schluessels aus.
 
     NichtGefunden("unbekanntes Werkzeug") ausserhalb des Katalogs; ValueError bei
     Argumenten ausserhalb des Schemas, Legacy-Events, archivierten Events (schreibende
-    Baustein-Werkzeuge), fehlendem Bereich und `einladen` ohne `mailer`/`basis_url`; sonst
-    die Fehler der Fachschicht (NichtGefunden, KeinRecht, ValueError).
+    Baustein-Werkzeuge), fehlendem Bereich, `einladen` ohne `mailer`/`basis_url` und
+    `nachricht_an_gruppe` ohne `telegram`; sonst die Fehler der Fachschicht (NichtGefunden,
+    KeinRecht, ValueError).
     """
     eintrag = _eintraege(conn, info, kategorien).get(name) if isinstance(name, str) else None
     if eintrag is None:
         raise NichtGefunden(UNBEKANNT)
     args = argumente_pruefen(eintrag.werkzeug.eingabe, argumente)
-    return eintrag.ausfuehren(conn, info, args, _Umgebung(kategorien, mailer, basis_url))
+    return eintrag.ausfuehren(conn, info, args,
+                              _Umgebung(kategorien, mailer, basis_url, telegram))
