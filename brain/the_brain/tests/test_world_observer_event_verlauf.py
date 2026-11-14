@@ -193,3 +193,29 @@ def test_token_aus_datei(monkeypatch, doubles, tmp_path):
     monkeypatch.setenv("EVENT_MCP_URL", v.basis + "/mcp")  # auch mit /mcp am Ende
     monkeypatch.setenv("EVENT_VERLAUF_TOKEN_FILE", str(datei))
     assert wo._check_event_change(SPEC)[0] is True
+
+
+def test_volle_seite_ohne_treffer_ist_unklar(monkeypatch, doubles):
+    """Review T5: aenderungen_seit liefert hoechstens 100 Zeilen (neueste zuerst). Ist die
+    Seite voll und kein Treffer dabei, kann der Eintrag des Bots abgeschnitten sein: unklar
+    (None), nicht False."""
+    fremd = [_eintrag(1, "bot:event") for _ in range(wo._EVENT_VERLAUF_MAX)]
+    v = doubles(_Verlauf, fremd)
+    _verlauf_setzen(monkeypatch, v)
+    ok, signal, detail = wo._check_event_verlauf(SPEC)
+    assert ok is None
+    assert signal["verlauf_zeilen"] == wo._EVENT_VERLAUF_MAX and signal["verlauf_treffer"] == 0
+    assert "abgeschnitten" in detail
+    # Eine Zeile weniger: klar False wie bisher.
+    v2 = doubles(_Verlauf, fremd[:-1])
+    _verlauf_setzen(monkeypatch, v2)
+    assert wo._check_event_verlauf(SPEC)[0] is False
+    # Volle Seite MIT Treffer bleibt True.
+    v3 = doubles(_Verlauf, fremd[:-1] + [_eintrag(2)])
+    _verlauf_setzen(monkeypatch, v3)
+    assert wo._check_event_verlauf(SPEC)[0] is True
+
+
+def test_grenze_wie_im_katalog():
+    werkzeuge = pytest.importorskip("spaces.event_management.system.werkzeuge")
+    assert wo._EVENT_VERLAUF_MAX == werkzeuge.MAX_AENDERUNGEN

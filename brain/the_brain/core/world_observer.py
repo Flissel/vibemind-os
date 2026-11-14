@@ -587,6 +587,9 @@ def _check_sqlite_row(spec: Dict[str, Any]):
 _EVENT_ZEILE = re.compile(r"^- (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) · (.+) \(([^()]*)\): „")
 # Stempel sind nur minutengenau; so viel Spielraum an beiden Fensterraendern.
 _EVENT_TOLERANZ_S = 120
+# aenderungen_seit (event-mcp) liefert hoechstens so viele Zeilen, neueste zuerst
+# (werkzeuge.MAX_AENDERUNGEN). Volle Seite ohne Treffer = abgeschnitten = unklar.
+_EVENT_VERLAUF_MAX = 100
 
 
 def _event_jetzt():
@@ -798,6 +801,9 @@ def _check_event_verlauf(spec: Dict[str, Any]):
             if von <= stempel <= bis:
                 treffer += 1
         signal.update({"verlauf_zeilen": zeilen, "verlauf_treffer": treffer})
+        if treffer == 0 and zeilen >= _EVENT_VERLAUF_MAX:
+            # Review T5: die Seite ist voll, der Eintrag des Bots kann abgeschnitten sein.
+            return None, signal, f"verlauf: {zeilen} Zeilen (abgeschnitten), 0 vom Bot im Fenster"
         return treffer > 0, signal, f"verlauf: {zeilen} Zeilen gelesen, {treffer} vom Bot im Fenster"
     except Exception as e:
         # Nur der Typ: Meldungen koennten URL oder Inhalte enthalten.
