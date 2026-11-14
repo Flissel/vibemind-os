@@ -9,20 +9,24 @@
 # und endet mit 2, bevor irgendein Programm laeuft. Den Schalter setzt nur, wer Felix' OK
 # fuer genau diese Phase und den Claim (WORKBOARD bzw. maschinenweite Koordination) hat.
 #
-# Phasen in dieser Reihenfolge. Jede erfolgreiche Phase schreibt laufzeit/ausrollen/<phase>.ok;
-# ohne die Stempel aller Vorphasen bricht eine Phase mit dem Namen der fehlenden ab.
+# Phasen in dieser Reihenfolge (Abschluss-Review F-3). Jede erfolgreiche Phase schreibt
+# laufzeit/ausrollen/<phase>.ok; ohne die Stempel aller Vorphasen bricht eine Phase mit dem
+# Namen der fehlenden ab. Die beiden bauen-Varianten verlangen nur `pruefen` und sind
+# voneinander unabhaengig; alle spaeteren Phasen verlangen beide.
 #   pruefen        Vorbedingungen messen, nichts aendern (PG >= 15, Images, werte.local.json,
 #                  laufzeit/-Dateien 0600, Claim, .14 frei, Host-Python, Repo-Pfad der Units).
+#   bauen system   genau EIN Image je Aufruf, gedeckelt (klassischer Builder, --memory).
+#   bauen web      dito. Danach misst Task 7 (deploy/messen.md, braucht tags.env und das
+#                  System-Image), erst dann geht es weiter.
 #   sichern        pg_dump -n event und openclaw.json des Claw nach laufzeit/sicherung/.
 #   migrieren      db/anwenden.py als supabase_admin (DSN nur aus EVENT_ADMIN_DSN_FILE).
-#   bauen system   genau EIN Image je Aufruf, gedeckelt (klassischer Builder, --memory).
-#   bauen web      dito.
-#   shim           Shim-Image mit dem neuen claude_budget.py (80-%-Warnung); nur den Shim
-#                  neu anlegen. Rueckweg: vorheriges Image.
+#   shim           Shim-Image mit dem neuen claude_budget.py (80-%-Warnung) aus
+#                  EVENT_SHIM_BAUKONTEXT bauen; nur den Shim neu anlegen. Rueckweg: vorheriges Image.
 #   dienste        compose --profile event-system up -d event-api event-mcp event-web.
+#   tailnet        tailscale serve fuer event-web (danach: Schluessel, erster Betreiber,
+#                  Firma und Legacy-Eintrag, siehe ausrollen.md).
 #   anbinden       Hinweis, dann deploy/anbinden.sh; die 7 Zeilen kommen ueber stdin.
 #   timer          bereitstellung und nachrichten als systemd-Timer installieren, starten.
-#   tailnet        tailscale serve fuer event-web.
 #   zurueck <phase>  Rueckweg der Phase (nur, wenn keine spaetere Phase mehr gestempelt ist).
 #
 # Tags: EVENT_SYSTEM_TAG und EVENT_WEB_TAG verlangt das Compose bei JEDEM Aufruf. Ort: die
@@ -73,7 +77,7 @@ MEMINFO=${AUSROLLEN_MEMINFO:-/proc/meminfo}
 ETC=${AUSROLLEN_ETC:-/etc/event-management}
 SYSTEMD=${AUSROLLEN_SYSTEMD:-/etc/systemd/system}
 TAILNET_PORT=${AUSROLLEN_TAILNET_PORT:-3170}
-PHASEN="pruefen sichern migrieren bauen-system bauen-web shim dienste anbinden timer tailnet"
+PHASEN="pruefen bauen-system bauen-web sichern migrieren shim dienste tailnet anbinden timer"
 PGENV=$ST/pg.env
 STAT=${AUSROLLEN_STAT:-stat}   # Messprogramme (nur Tests ersetzen sie)
 CURL=${AUSROLLEN_CURL:-curl}
@@ -117,27 +121,36 @@ claw_image() { grep -m1 -o 'ghcr.io/openclaw/openclaw:[A-Za-z0-9_.-]*' docker-co
 # --- 2. Stempel und Reihenfolge ---------------------------------------------------------
 stempel() { printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$ST/$1.ok"; }
 stempel_weg() { rm -f "${ST:?}/${1:?}.ok"; }
+# Die jeweils andere bauen-Variante (F-3: beide sind voneinander unabhaengig).
+geschwister() {
+  case "$1" in
+    bauen-system) echo bauen-web ;;
+    bauen-web) echo bauen-system ;;
+  esac
+}
+
 # Ruling T6-a: jede Phase loescht vor ihrer Arbeit den eigenen Stempel und die aller
 # spaeteren Phasen; ein gescheiterter Wiederholungslauf hinterlaesst so keinen alten Stempel.
+# Ausnahme (F-3): ein Neubau laesst den Stempel der anderen bauen-Variante stehen.
 eigene_und_spaetere_stempel_weg() {
-  local q ab=0
+  local q ab=0 andere
+  andere=$(geschwister "$1")
   for q in $PHASEN; do
     [ "$q" = "$1" ] && ab=1
+    [ -n "$andere" ] && [ "$q" = "$andere" ] && continue
     if [ "$ab" = 1 ]; then stempel_weg "$q"; fi
   done
 }
 
 vorphasen() {
-  case "$1" in
-    bauen-system|bauen-web) echo "pruefen sichern migrieren" ;;
-    *)
-      local p out=""
-      for p in $PHASEN; do
-        [ "$p" = "$1" ] && break
-        out="$out $p"
-      done
-      echo "$out" ;;
-  esac
+  local p out="" andere
+  andere=$(geschwister "$1")
+  for p in $PHASEN; do
+    [ "$p" = "$1" ] && break
+    [ -n "$andere" ] && [ "$p" = "$andere" ] && continue
+    out="$out $p"
+  done
+  echo "$out"
 }
 
 verlange_vorphasen() {
@@ -462,15 +475,18 @@ neueste_sicherung() { ls -1 "$SICH"/openclaw-* 2>/dev/null | sort | tail -1 || t
 phase_zurueck() {
   local p=${1:-}
   case "$p" in
-    pruefen|sichern|migrieren|bauen|shim|dienste|anbinden|timer|tailnet) ;;
-    *) abbruch "zurueck braucht eine Phase: pruefen sichern migrieren bauen shim dienste anbinden timer tailnet" ;;
+    pruefen|bauen|sichern|migrieren|shim|dienste|tailnet|anbinden|timer) ;;
+    *) abbruch "zurueck braucht eine Phase: pruefen bauen sichern migrieren shim dienste tailnet anbinden timer" ;;
   esac
   if [ "$p" = bauen ]; then
     case "${2:-}" in system|web) p="bauen-$2" ;; *) abbruch "zurueck bauen system|web" ;; esac
   fi
-  # Nur rueckwaerts: spaetere Phasen zuerst zuruecknehmen.
-  local q spaeter=0
+  # Nur rueckwaerts: spaetere Phasen zuerst zuruecknehmen (die andere bauen-Variante zaehlt
+  # nicht als spaeter, F-3).
+  local q spaeter=0 andere
+  andere=$(geschwister "$p")
   for q in $PHASEN; do
+    if [ -n "$andere" ] && [ "$q" = "$andere" ]; then continue; fi
     if [ "$spaeter" = 1 ] && [ -f "$ST/$q.ok" ]; then
       abbruch "Phase $q ist noch gestempelt: erst 'zurueck ${q/-/ }'"
     fi
@@ -535,9 +551,9 @@ phase_zurueck() {
 PHASE=${1:-}
 [ "$#" -gt 0 ] && shift
 case "$PHASE" in
-  pruefen|sichern|migrieren|bauen|shim|dienste|anbinden|timer|tailnet|zurueck) ;;
+  pruefen|bauen|sichern|migrieren|shim|dienste|tailnet|anbinden|timer|zurueck) ;;
   *)
-    echo "Phase unbekannt oder fehlt. Phasen: pruefen sichern migrieren bauen(system|web) shim dienste anbinden timer tailnet, dazu zurueck <phase>" >&2
+    echo "Phase unbekannt oder fehlt. Phasen: pruefen bauen(system|web) sichern migrieren shim dienste tailnet anbinden timer, dazu zurueck <phase>" >&2
     exit 64 ;;
 esac
 mkdir -p "$ST"

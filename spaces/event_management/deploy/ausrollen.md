@@ -44,7 +44,7 @@ Nach jeder Phase steht ein Ledger-Eintrag, der nur Ergebnisse nennt, keine IDs.
 
 Das Compose verlangt `EVENT_SYSTEM_TAG` und `EVENT_WEB_TAG` bei **jedem** Aufruf, auch bei
 Diensten ohne Profil. Das Skript hält sie in der nicht geheimen Datei
-`laufzeit/ausrollen/tags.env`: `bauen` legt sie beim ersten Aufruf an (Git-Kurz-SHA des
+`laufzeit/ausrollen/tags.env`: `bauen` (gleich nach `pruefen`) legt sie beim ersten Aufruf an (Git-Kurz-SHA des
 Repos, oder die beiden Variablen aus der Umgebung), jede andere Phase liest sie und
 exportiert sie. Weicht eine gesetzte Variable ab: Abbruch. Wer `deploy/anbinden.sh` oder
 `deploy/messen.sh` von Hand startet, exportiert beide Variablen zuvor selbst, etwa
@@ -56,10 +56,18 @@ Jede Phase schreibt `laufzeit/ausrollen/<phase>.ok` und verlangt die Stempel ihr
 Vorphasen. Fehlt einer, bricht sie mit dem Namen der Vorphase ab. Rückwege gehen nur
 rückwärts: Solange eine spätere Phase gestempelt ist, verweigert `zurueck` die frühere.
 
+Feste Reihenfolge (Abschluss-Review F-3): `pruefen` → `bauen system` → `bauen web` →
+**messen (Task 7)** → `sichern` → `migrieren` → `shim` → `dienste` → Schlüssel ausstellen →
+`tailnet` → erster Betreiber, Firma und Legacy-Eintrag → `anbinden` → `timer` →
+Brain-Umgebung. Die Schritte ohne Phasennamen sind Handarbeit mit eigenem OK; ihre
+Anleitung steht unten an ihrer Stelle.
+
 Jede Phase löscht gleich nach dem Schalter, vor ihrer Arbeit, ihren eigenen Stempel und die
-aller späteren Phasen (feste Reihenfolge: pruefen, sichern, migrieren, bauen system, bauen
-web, shim, dienste, anbinden, timer, tailnet). Scheitert ein Wiederholungslauf, bleibt also
-kein alter Stempel stehen und die nächste Phase verweigert mit dem Namen der fehlenden.
+aller späteren Phasen. Scheitert ein Wiederholungslauf, bleibt also kein alter Stempel stehen
+und die nächste Phase verweigert mit dem Namen der fehlenden. Ausnahme: die beiden
+`bauen`-Varianten verlangen nur `pruefen` und lassen einander stehen; erst die späteren
+Phasen verlangen beide.
+
 Alle Läufe, auch `zurueck`, nehmen eine nicht blockierende Sperre auf
 `laufzeit/ausrollen/lock` (`flock`, util-linux); hält sie ein anderer Lauf, bricht das Skript
 ab: nie parallel ausrollen.
@@ -78,7 +86,31 @@ Paketen aus `requirements.txt`, Repo-Pfad wie in den `.service`-Dateien, Host-En
 - **Abbruch:** jede Zeile `FEHLT`. Erst beheben, dann wiederholen.
 - **Rückweg:** `--ich-habe-ok zurueck pruefen` (nur der Stempel fällt).
 
-### 2. `sichern`  (`--ich-habe-ok sichern`)
+### 2./3. `bauen system`, `bauen web`  (`--ich-habe-ok bauen system`, danach `--ich-habe-ok bauen web`)
+
+`bauen` baut **genau ein** Image je Aufruf, gedeckelt: klassischer Builder
+(`DOCKER_BUILDKIT=0`) mit `--memory` und `--memory-swap` (Vorgabe 4g,
+`AUSROLLEN_BAU_SPEICHER`). Vor dem Bauen muss `MemAvailable` ≥ 1,5 GiB sein. Beide Aufrufe
+verlangen nur `pruefen`, sind voneinander unabhängig und laufen nacheinander, nie parallel
+(BuildKit-Race, ungedeckelte Builds trieben die VM schon in Swap-Not).
+
+- **OK von Felix:** ja, je Image.
+- **Abbruch:** `MemAvailable` fällt unter 1,5 GiB oder Swap belegt sich neu, Build-Fehler.
+- **Rückweg:** `--ich-habe-ok zurueck bauen system` bzw. `zurueck bauen web` löscht das Image
+  (`docker rmi`); das geht nur, wenn kein Container es mehr nutzt (erst `zurueck dienste`).
+- **Unabhängig:** Ein Neubau von `system` lässt den Stempel von `web` stehen (und
+  umgekehrt), löscht aber die Stempel aller späteren Phasen ab `sichern`. Jede spätere
+  Phase verlangt beide.
+
+### Danach: messen (Task 7)
+
+Erst jetzt gibt es `laufzeit/ausrollen/tags.env` und das Image
+`event-management/system:<tag>`, die `deploy/messen.sh` braucht. Die Messpunkte M1–M6
+laufen nach `deploy/messen.md` (eigener Claim, eigenes OK, Testpaar). Erst wenn alle
+bestanden sind oder eine Alternative entschieden und umgesetzt ist, geht es mit
+`sichern` weiter.
+
+### 4. `sichern`  (`--ich-habe-ok sichern`)
 
 Zuerst prüft die Phase per `psql`, ob das Schema `event` existiert. Wenn ja, läuft
 `pg_dump -n event -Fc` nach `laufzeit/sicherung/event-<zeit>.dump`. Wenn nicht (erster Lauf
@@ -91,31 +123,18 @@ entsteht eine Marke `openclaw-<zeit>.keine`.
 - **Abbruch:** die Schema-Prüfung oder `pg_dump` scheitert, oder die Sicherung ist leer.
 - **Rückweg:** `--ich-habe-ok zurueck sichern` (Stempel fällt, Dateien bleiben liegen).
 
-### 3. `migrieren`  (`--ich-habe-ok migrieren`)
+### 5. `migrieren`  (`--ich-habe-ok migrieren`)
 
 `db/anwenden.py` als `supabase_admin`; die DSN kommt nur aus `EVENT_ADMIN_DSN_FILE`
 (Vorgabe `laufzeit/admin-dsn`). Das Skript prüft vorher Rolle und PG ≥ 15.
 
 - **OK von Felix:** ja.
 - **Abbruch:** andere Rolle als `supabase_admin`, PG < 15, jede Migration mit Fehler (jede
-  läuft in eigener Transaktion; die Sicherung aus Phase 2 liegt bereit).
+  läuft in eigener Transaktion; die Sicherung aus Phase 4 liegt bereit).
 - **Rückweg:** `--ich-habe-ok zurueck migrieren` führt **nichts** aus, es nennt den Weg.
   Das Schema `event` ist neu; ein Löschen ist destruktiv und braucht ein eigenes OK:
   `DROP SCHEMA event CASCADE;` und bei Bedarf `pg_restore` aus der Sicherung. Danach den
   Stempel `laufzeit/ausrollen/migrieren.ok` von Hand entfernen.
-
-### 4./5. `bauen system`, `bauen web`  (`--ich-habe-ok bauen system`, danach `--ich-habe-ok bauen web`)
-
-`bauen` baut **genau ein** Image je Aufruf, gedeckelt: klassischer Builder
-(`DOCKER_BUILDKIT=0`) mit `--memory` und `--memory-swap` (Vorgabe 4g,
-`AUSROLLEN_BAU_SPEICHER`). Vor dem Bauen muss `MemAvailable` ≥ 1,5 GiB sein. Beide Aufrufe
-laufen nacheinander, nie parallel (BuildKit-Race, ungedeckelte Builds trieben die VM schon
-in Swap-Not).
-
-- **OK von Felix:** ja, je Image.
-- **Abbruch:** `MemAvailable` fällt unter 1,5 GiB oder Swap belegt sich neu, Build-Fehler.
-- **Rückweg:** `--ich-habe-ok zurueck bauen system` bzw. `zurueck bauen web` löscht das Image
-  (`docker rmi`); das geht nur, wenn kein Container es mehr nutzt (erst `zurueck dienste`).
 
 ### 6. `shim`  (`--ich-habe-ok shim`)
 
@@ -158,7 +177,7 @@ Meldung nach Telegram schicken.
 - **Rückweg:** `--ich-habe-ok zurueck dienste` = `docker compose --profile event-system stop
   event-web event-mcp event-api` (stoppen, nichts löschen).
 
-### Schlüssel ausstellen (zwischen `dienste` und `anbinden`)
+### Schlüssel ausstellen (nach `dienste`, vor `tailnet`)
 
 Vier Schlüssel; die Klartexte gehen **direkt in 0600-Dateien**, nie auf den Bildschirm
 (die CLI schreibt den Klartext auf stdout und die Schlüssel-ID auf stderr; darum immer mit
@@ -188,6 +207,17 @@ nicht übernehmen. Zum Widerruf: `… schluessel widerrufen <id>`.
 - **Abbruch:** eine Datei bleibt leer, oder ein Klartext taucht in einer Ausgabe auf (dann den
   Schlüssel sofort widerrufen).
 
+### 8. `tailnet`  (`--ich-habe-ok tailnet`)
+
+`tailscale serve --bg --https=3170 http://127.0.0.1:3170` für `event-web`. Vor dem ersten
+Lauf `tailscale serve --help` der installierten Version gegen diese Zeile prüfen (die
+Schreibweise der Optionen wechselt zwischen Versionen).
+
+- **OK von Felix:** ja, denn ab hier ist die Oberfläche im Tailnet sichtbar. Sie wird
+  gleich gebraucht: der erste Betreiber legt dort die Firma des Legacy-Events an.
+- **Abbruch:** `tailscale serve` meldet einen Fehler oder `status` zeigt etwas Unerwartetes.
+- **Rückweg:** `--ich-habe-ok zurueck tailnet` = `tailscale serve --https=3170 off`.
+
 ### Vor `anbinden`: Arbeitsbereich vergleichen
 
 `deploy/anbinden.sh` überschreibt bei **jedem** Lauf `SOUL.md`, `AGENTS.md` und `skills` aller
@@ -209,7 +239,7 @@ was nur dort steht. Darum vorher:
 4. Erst dann: `touch laufzeit/ausrollen/workspace-geprueft`. Ohne diese Datei verweigert
    `anbinden`.
 
-### 8. `anbinden`  (`--ich-habe-ok anbinden`)
+### 9. `anbinden`  (`--ich-habe-ok anbinden`)
 
 Ruft `deploy/anbinden.sh`; es liest **genau sieben Zeilen** von stdin: Gateway-Token,
 Telegram-Token, Authorization der Event-App, Claude-Code-OAuth-Token (leer = bleibt),
@@ -230,11 +260,11 @@ Argument. Ohne Terminal-Ausgabe der Schlüssel, etwa:
 - **Abbruch:** Arbeitsbereich unterscheidet sich, `healthz` des Claw antwortet nicht
   (60 s), der Shim antwortet nicht.
 - **Rückweg:** `--ich-habe-ok zurueck anbinden` spielt die Sicherung der `openclaw.json`
-  (Phase 2) in das Volume zurück und startet den Claw neu. Gab es vorher keinen Claw, wird
+  (Phase 4) in das Volume zurück und startet den Claw neu. Gab es vorher keinen Claw, wird
   er gestoppt; das Volume bleibt. Die in diesem Lauf ausgestellten Schlüssel danach mit
   `… schluessel widerrufen <id>` widerrufen.
 
-### 9. `timer`  (`--ich-habe-ok timer`)
+### 10. `timer`  (`--ich-habe-ok timer`)
 
 Installiert `bereitstellung` und `nachrichten` (Service + Timer) nach
 `/etc/systemd/system` (mit `sudo`), `daemon-reload`, `enable --now` beider Timer.
@@ -244,16 +274,6 @@ Installiert `bereitstellung` und `nachrichten` (Service + Timer) nach
   meist Host-Python ohne Paket oder falscher Repo-Pfad).
 - **Rückweg:** `--ich-habe-ok zurueck timer` (Timer stoppen und deaktivieren, die vier
   Dateien entfernen, `daemon-reload`).
-
-### 10. `tailnet`  (`--ich-habe-ok tailnet`)
-
-`tailscale serve --bg --https=3170 http://127.0.0.1:3170` für `event-web`. Vor dem ersten
-Lauf `tailscale serve --help` der installierten Version gegen diese Zeile prüfen (die
-Schreibweise der Optionen wechselt zwischen Versionen).
-
-- **OK von Felix:** ja, denn ab hier ist die Oberfläche im Tailnet sichtbar.
-- **Abbruch:** `tailscale serve` meldet einen Fehler oder `status` zeigt etwas Unerwartetes.
-- **Rückweg:** `--ich-habe-ok zurueck tailnet` = `tailscale serve --https=3170 off`.
 
 ## Netzweg Brain → event-mcp (Entscheidung in Teil B)
 
@@ -297,5 +317,5 @@ ohne Werte in den Ledger. Rückweg: Zeile entfernen, `dienste` erneut, `tailscal
 - **Quelle des Shim-Images.** Der Baukontext (Dockerfile und Shim-Dateien) liegt im
   bewerbung-bot-Bestand außerhalb dieses Repos. Bis er in ein Repo wandert, braucht die
   Phase `shim` `EVENT_SHIM_BAUKONTEXT` von Hand.
-- **`tailscale serve`-Syntax** gegen die installierte Version prüfen (siehe Phase 10).
+- **`tailscale serve`-Syntax** gegen die installierte Version prüfen (siehe Phase 8).
 - **`pg_dump`-Client** auf dem Host darf nicht älter sein als der Server (PG ≥ 15).

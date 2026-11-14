@@ -26,8 +26,11 @@ DEPLOY = SPACE / "deploy"
 SKRIPT = DEPLOY / "ausrollen.sh"
 ANLEITUNG = DEPLOY / "ausrollen.md"
 SCHALTER = "--ich-habe-ok"
-PHASEN = ["pruefen", "sichern", "migrieren", "bauen-system", "bauen-web", "shim", "dienste",
-          "anbinden", "timer", "tailnet"]
+# Abschluss-Review F-3: gebaut wird gleich nach `pruefen` (Task 7 braucht tags.env und das
+# System-Image), `tailnet` kommt vor `anbinden` (erster Betreiber per Oberflaeche).
+PHASEN = ["pruefen", "bauen-system", "bauen-web", "sichern", "migrieren", "shim", "dienste",
+          "tailnet", "anbinden", "timer"]
+BIS_DIENSTE = PHASEN[:PHASEN.index("dienste") + 1]
 GEHEIM = "geheim-xyz-0815"
 FAKE_TOKEN = "123456:" + "B" * 35
 
@@ -279,7 +282,7 @@ def test_bash_syntax_und_lf():
 @braucht_bash
 def test_reihenfolge_erzwungen(pj: Projekt):
     pj.tags()
-    pj.stempel("pruefen", "sichern")  # migrieren.ok fehlt
+    pj.stempel("pruefen", "bauen-system", "bauen-web", "sichern")  # migrieren.ok fehlt
     lauf = pj.lauf("dienste")
     _, err = _aus(lauf)
     assert lauf.returncode == 1 and "migrieren" in err
@@ -288,13 +291,16 @@ def test_reihenfolge_erzwungen(pj: Projekt):
 
 
 @braucht_bash
-@pytest.mark.parametrize("phase,args,fehlt", [
-    ("sichern", [], "pruefen"), ("migrieren", [], "sichern"), ("bauen", ["system"], "pruefen"),
-    ("shim", [], "pruefen"), ("anbinden", [], "pruefen"), ("timer", [], "pruefen"), ("tailnet", [], "pruefen"),
+@pytest.mark.parametrize("phase,args,vorher,fehlt", [
+    ("sichern", [], [], "pruefen"), ("sichern", [], ["pruefen"], "bauen-system"),
+    ("sichern", [], ["pruefen", "bauen-system"], "bauen-web"),
+    ("migrieren", [], ["pruefen", "bauen-system", "bauen-web"], "sichern"),
+    ("bauen", ["system"], [], "pruefen"), ("bauen", ["web"], [], "pruefen"),
+    ("shim", [], [], "pruefen"), ("anbinden", [], [], "pruefen"), ("timer", [], [], "pruefen"),
+    ("tailnet", [], [], "pruefen"), ("anbinden", [], BIS_DIENSTE, "tailnet"),
 ])
-def test_jede_phase_nennt_die_fehlende_vorphase(phase, args, fehlt, pj: Projekt):
-    if fehlt == "sichern":
-        pj.stempel("pruefen")
+def test_jede_phase_nennt_die_fehlende_vorphase(phase, args, vorher, fehlt, pj: Projekt):
+    pj.stempel(*vorher)
     lauf = pj.lauf(phase, *args)
     _, err = _aus(lauf)
     assert lauf.returncode == 1 and f"Vorphase {fehlt} fehlt" in err
@@ -310,6 +316,37 @@ def test_shim_braucht_beide_builds(pj: Projekt):
 
 
 @braucht_bash
+@pytest.mark.parametrize("was", ["system", "web"])
+def test_bauen_braucht_nur_pruefen(was, pj: Projekt):
+    """F-3: gebaut wird vor sichern/migrieren; jede bauen-Variante verlangt nur pruefen."""
+    pj.stempel("pruefen")
+    lauf = pj.lauf("bauen", was, umgebung={"EVENT_SYSTEM_TAG": "abc12345", "EVENT_WEB_TAG": "abc12345"})
+    assert lauf.returncode == 0, _aus(lauf)[1]
+    assert len([z for z in pj.log() if z.startswith("docker build")]) == 1
+    assert pj.stempel_da(f"bauen-{was}")
+
+
+@braucht_bash
+def test_bauen_varianten_unabhaengig(pj: Projekt):
+    """F-3: ein Neubau einer Variante loescht den Stempel der anderen nicht, wohl aber alle
+    spaeteren Phasen; die spaeteren verlangen beide."""
+    umg = {"EVENT_SYSTEM_TAG": "abc12345", "EVENT_WEB_TAG": "abc12345"}
+    pj.stempel(*BIS_DIENSTE)
+    assert pj.lauf("bauen", "system", umgebung=umg).returncode == 0
+    assert pj.stempel_da("bauen-system") and pj.stempel_da("bauen-web") and pj.stempel_da("pruefen")
+    for spaeter in ("sichern", "migrieren", "shim", "dienste"):
+        assert not pj.stempel_da(spaeter), spaeter
+    pj.stempel("sichern", "migrieren")
+    assert pj.lauf("bauen", "web").returncode == 0
+    assert pj.stempel_da("bauen-system") and pj.stempel_da("bauen-web")
+    assert not pj.stempel_da("sichern") and not pj.stempel_da("migrieren")
+    # sichern verlangt beide Builds
+    (pj.lz / "ausrollen" / "bauen-web.ok").unlink()
+    lauf = pj.lauf("sichern")
+    assert lauf.returncode == 1 and "Vorphase bauen-web fehlt" in _aus(lauf)[1]
+
+
+@braucht_bash
 def test_unbekannte_phase(pj: Projekt):
     lauf = pj.lauf("loeschen")
     assert lauf.returncode == 64 and pj.log() == []
@@ -320,7 +357,7 @@ def test_unbekannte_phase(pj: Projekt):
 
 @braucht_bash
 def test_bauen_einzeln_und_gedeckelt(pj: Projekt):
-    pj.stempel("pruefen", "sichern", "migrieren")
+    pj.stempel("pruefen")
     lauf = pj.lauf("bauen", "system", umgebung={"EVENT_SYSTEM_TAG": "abc12345", "EVENT_WEB_TAG": "abc12345"})
     assert lauf.returncode == 0, _aus(lauf)[1]
     builds = [z for z in pj.log() if z.startswith("docker build")]
@@ -465,7 +502,7 @@ def test_pruefen_host_python_und_repo_pfad(pj: Projekt):
 @braucht_bash
 def test_sichern_ohne_schema_schreibt_marke_statt_dump(pj: Projekt):
     pj.pruefen_bereit()
-    pj.stempel("pruefen")
+    pj.stempel("pruefen", "bauen-system", "bauen-web")
     lauf = pj.lauf("sichern", umgebung={"FAKE_SCHEMA": "leer"})
     assert lauf.returncode == 0, _aus(lauf)[1]
     assert not any(z.startswith("pg_dump") for z in pj.log())
@@ -478,7 +515,7 @@ def test_sichern_ohne_schema_schreibt_marke_statt_dump(pj: Projekt):
 @braucht_bash
 def test_sichern_dumpt_nur_schema_event_und_kopiert_openclaw_json(pj: Projekt):
     pj.pruefen_bereit()
-    pj.stempel("pruefen")
+    pj.stempel("pruefen", "bauen-system", "bauen-web")
     lauf = pj.lauf("sichern")
     assert lauf.returncode == 0, _aus(lauf)[1]
     dump = [z for z in pj.log() if z.startswith("pg_dump")]
@@ -491,7 +528,7 @@ def test_sichern_dumpt_nur_schema_event_und_kopiert_openclaw_json(pj: Projekt):
 @braucht_bash
 def test_migrieren_nur_als_supabase_admin_und_dsn_aus_datei(pj: Projekt):
     pj.pruefen_bereit()
-    pj.stempel("pruefen", "sichern")
+    pj.stempel("pruefen", "bauen-system", "bauen-web", "sichern")
     falsch = pj.lauf("migrieren", umgebung={"FAKE_PGUSER": "postgres"})
     assert falsch.returncode == 1 and "supabase_admin" in _aus(falsch)[1]
     assert not any("anwenden" in z for z in pj.log())
@@ -504,9 +541,10 @@ def test_migrieren_nur_als_supabase_admin_und_dsn_aus_datei(pj: Projekt):
 @braucht_bash
 def test_migrieren_pg_14_bricht_ab(pj: Projekt):
     pj.pruefen_bereit()
-    pj.stempel("pruefen", "sichern")
+    pj.stempel("pruefen", "bauen-system", "bauen-web", "sichern")
     lauf = pj.lauf("migrieren", umgebung={"FAKE_PG_NUM": "140001"})
     assert lauf.returncode == 1 and not any("anwenden" in z for z in pj.log())
+    assert "aelter als 15" in _aus(lauf)[1]  # nicht nur eine fehlende Vorphase
 
 
 # --- shim ---------------------------------------------------------------------------------------
@@ -552,7 +590,7 @@ def test_shim_mit_baukontext_baut_gedeckelt_und_merkt_den_rueckweg(pj: Projekt):
 
 @braucht_bash
 def test_anbinden_verlangt_den_workspace_vergleich(pj: Projekt):
-    pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web", "shim", "dienste")
+    pj.stempel(*BIS_DIENSTE, "tailnet")
     pj.tags()
     lauf = pj.lauf("anbinden", eingabe="a\nb\nc\nd\ne\nf\ng\n")
     assert lauf.returncode == 1 and "workspace-legacy" in _aus(lauf)[1]
@@ -561,7 +599,7 @@ def test_anbinden_verlangt_den_workspace_vergleich(pj: Projekt):
 
 @braucht_bash
 def test_anbinden_reicht_die_sieben_zeilen_durch_ohne_sie_zu_zeigen(pj: Projekt):
-    pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web", "shim", "dienste")
+    pj.stempel(*BIS_DIENSTE, "tailnet")
     pj.tags()
     (pj.lz / "ausrollen" / "workspace-geprueft").write_text("x", encoding="utf-8")
     zeilen = [FAKE_TOKEN, "tg-" + GEHEIM, "Bearer " + GEHEIM, "oauth-" + GEHEIM, "m-" + GEHEIM, "l-" + GEHEIM, "a-" + GEHEIM]
@@ -581,7 +619,7 @@ def test_anbinden_reicht_die_sieben_zeilen_durch_ohne_sie_zu_zeigen(pj: Projekt)
 @braucht_bash
 def test_timer_installiert_und_startet_beide(pj: Projekt):
     pj.pruefen_bereit()
-    pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web", "shim", "dienste", "anbinden")
+    pj.stempel(*BIS_DIENSTE, "tailnet", "anbinden")
     lauf = pj.lauf("timer")
     assert lauf.returncode == 0, _aus(lauf)[1]
     log = pj.log()
@@ -593,7 +631,7 @@ def test_timer_installiert_und_startet_beide(pj: Projekt):
 
 @braucht_bash
 def test_tailnet_serve(pj: Projekt):
-    pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web", "shim", "dienste", "anbinden", "timer")
+    pj.stempel(*BIS_DIENSTE)
     lauf = pj.lauf("tailnet")
     assert lauf.returncode == 0, _aus(lauf)[1]
     assert "tailscale serve --bg --https=3170 http://127.0.0.1:3170" in pj.log()
@@ -607,6 +645,8 @@ def test_keine_werte_in_ausgabe(pj: Projekt):
     pj.pruefen_bereit()
     gesammelt = ""
     for phase in (["pruefen"], ["sichern"], ["migrieren"]):
+        if phase == ["sichern"]:
+            pj.stempel("bauen-system", "bauen-web")  # gebaut wird zwischen pruefen und sichern
         lauf = pj.lauf(*phase, umgebung={"EVENT_SYSTEM_TAG": "abc12345", "EVENT_WEB_TAG": "abc12345"})
         assert lauf.returncode == 0, _aus(lauf)
         gesammelt += "".join(_aus(lauf))
@@ -641,8 +681,7 @@ def test_zurueck_je_phase_definiert(pj: Projekt):
     (pj.lz / "sicherung" / "openclaw-20261114T000000Z.json").write_text("{}", encoding="utf-8")
     (pj.lz / "ausrollen" / "shim.vorher").write_text("sha256:vorher123\n", encoding="utf-8")
     pj.stempel(*PHASEN)
-    rueckwaerts = [["tailnet"], ["timer"], ["anbinden"], ["dienste"], ["shim"], ["bauen", "web"], ["bauen", "system"],
-                   ["migrieren"]]
+    rueckwaerts = [["timer"], ["anbinden"], ["tailnet"], ["dienste"], ["shim"], ["migrieren"]]
     for args in rueckwaerts:
         lauf = pj.lauf("zurueck", *args)
         assert lauf.returncode == 0, (args, _aus(lauf))
@@ -652,14 +691,28 @@ def test_zurueck_je_phase_definiert(pj: Projekt):
     assert "sudo systemctl disable --now bereitstellung.timer nachrichten.timer" in log
     assert any(z.startswith("docker cp ") and "openclaw-20261114T000000Z.json" in z for z in log)
     assert "docker compose --profile event-system stop event-web event-mcp event-api" in log
-    assert "docker rmi event-management/web:abc12345" in log and "docker rmi event-management/system:abc12345" in log
     # migrieren: kein automatischer Eingriff in die Datenbank, Stempel bleibt bis zur Handarbeit
     assert not any("DROP" in z or "pg_restore" in z for z in log)
     assert pj.stempel_da("migrieren")
     (pj.lz / "ausrollen" / "migrieren.ok").unlink()
-    for phase in ("sichern", "pruefen"):
-        assert pj.lauf("zurueck", phase).returncode == 0 and not pj.stempel_da(phase)
+    assert pj.lauf("zurueck", "sichern").returncode == 0 and not pj.stempel_da("sichern")
+    # F-3: die beiden bauen-Varianten sind voneinander unabhaengig, auch rueckwaerts.
+    for args in (["bauen", "system"], ["bauen", "web"]):
+        lauf = pj.lauf("zurueck", *args)
+        assert lauf.returncode == 0, (args, _aus(lauf))
+    log = pj.log()
+    assert "docker rmi event-management/web:abc12345" in log and "docker rmi event-management/system:abc12345" in log
+    assert pj.lauf("zurueck", "pruefen").returncode == 0 and not pj.stempel_da("pruefen")
     assert not pj.stempel_da("tailnet") and not pj.stempel_da("dienste")
+
+
+@braucht_bash
+def test_zurueck_bauen_verweigert_solange_sichern_gestempelt(pj: Projekt):
+    pj.tags()
+    pj.stempel("pruefen", "bauen-system", "bauen-web", "sichern")
+    lauf = pj.lauf("zurueck", "bauen", "web")
+    assert lauf.returncode == 1 and "erst 'zurueck sichern'" in _aus(lauf)[1]
+    assert not any(z.startswith("docker rmi") for z in pj.log())
 
 
 @braucht_bash
@@ -675,7 +728,7 @@ def test_zurueck_nur_rueckwaerts(pj: Projekt):
 @braucht_bash
 def test_zurueck_anbinden_ohne_sicherung_bricht_ab(pj: Projekt):
     pj.tags()
-    pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web", "shim", "dienste", "anbinden")
+    pj.stempel(*BIS_DIENSTE, "tailnet", "anbinden")
     lauf = pj.lauf("zurueck", "anbinden")
     assert lauf.returncode == 1 and "keine Sicherung" in _aus(lauf)[1]
 
@@ -683,7 +736,7 @@ def test_zurueck_anbinden_ohne_sicherung_bricht_ab(pj: Projekt):
 @braucht_bash
 def test_zurueck_anbinden_frisches_volume_stoppt_nur_den_claw(pj: Projekt):
     pj.tags()
-    pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web", "shim", "dienste", "anbinden")
+    pj.stempel(*BIS_DIENSTE, "tailnet", "anbinden")
     (pj.lz / "sicherung").mkdir()
     (pj.lz / "sicherung" / "openclaw-20261114T000000Z.keine").write_text("", encoding="utf-8")
     lauf = pj.lauf("zurueck", "anbinden")
@@ -792,24 +845,26 @@ def test_keine_geheimnisse_oder_echten_ziele():
 def test_t6a_gescheiterter_wiederholungslauf_hinterlaesst_keinen_stempel(pj: Projekt):
     pj.pruefen_bereit()
     assert pj.lauf("pruefen").returncode == 0
-    pj.stempel("sichern", "migrieren")
+    pj.stempel("bauen-system", "bauen-web", "sichern", "migrieren")
     assert pj.stempel_da("pruefen")
     (pj.lz / "ausrollen" / "claim").unlink()  # pruefen scheitert jetzt
     lauf = pj.lauf("pruefen")
     assert lauf.returncode == 1
     assert not pj.stempel_da("pruefen") and not pj.stempel_da("sichern") and not pj.stempel_da("migrieren")
+    assert not pj.stempel_da("bauen-system") and not pj.stempel_da("bauen-web")
     folge = pj.lauf("sichern")
     assert folge.returncode == 1 and "Vorphase pruefen fehlt" in _aus(folge)[1]
 
 
 @braucht_bash
 def test_t6a_bauen_loescht_nur_eigene_und_spaetere(pj: Projekt):
-    pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web", "shim", "dienste")
+    pj.stempel(*BIS_DIENSTE)
     pj.meminfo.write_text("MemAvailable: 100 kB\n", encoding="utf-8")  # Lauf scheitert
     lauf = pj.lauf("bauen", "web", umgebung={"EVENT_SYSTEM_TAG": "abc12345", "EVENT_WEB_TAG": "abc12345"})
     assert lauf.returncode == 1
-    assert pj.stempel_da("bauen-system") and pj.stempel_da("migrieren")
-    assert not pj.stempel_da("bauen-web") and not pj.stempel_da("shim") and not pj.stempel_da("dienste")
+    assert pj.stempel_da("bauen-system") and pj.stempel_da("pruefen")  # die andere Variante bleibt
+    for weg in ("bauen-web", "sichern", "migrieren", "shim", "dienste"):
+        assert not pj.stempel_da(weg), weg
 
 
 @braucht_bash

@@ -36,14 +36,19 @@ Alternativen vor (Spec: „hält … an und legt Felix andere Wege vor“).
   Adresspools der VM sind erschöpft), und alles erreicht sich über 127.0.0.1. Der
   Wegwerf-Postgres nimmt dort ohne Passwort an (`trust`). Die Agenten im Test-Claw haben
   nur ihre MCP-Werkzeuge.
+- **Zeitpunkt im Ausrollen (Abschluss-Review F-3).** Gemessen wird nach
+  `ausrollen.sh --ich-habe-ok pruefen`, `bauen system` und `bauen web` und **vor** `sichern`:
+  erst `bauen` legt `laufzeit/ausrollen/tags.env` und das System-Image an, und erst mit
+  bestandenen Messpunkten (oder entschiedener Alternative) geht das Ausrollen weiter
+  (`deploy/ausrollen.md`, Abschnitt „Danach: messen“).
 - **Voraussetzungen.**
   - `EVENT_SYSTEM_TAG` ist exportiert (Git-Kurz-SHA des Images). `messen.sh` bricht sonst
     sofort ab, denn der Tag steckt im Image-Namen `event-management/system:<tag>` und das
-    Compose verlangt ihn ebenfalls. Beim Ausrollen liegt er in
+    Compose verlangt ihn ebenfalls. Nach `bauen` liegt er in
     `laufzeit/ausrollen/tags.env`: `set -a; . laufzeit/ausrollen/tags.env; set +a`
     (siehe `deploy/ausrollen.md`).
-  - Das Image `event-management/system:$EVENT_SYSTEM_TAG` existiert. Das Dockerfile entsteht in
-    Etappe 4; vorher sind nur `vorbereiten`, `dm`, `stand`, `protokoll`, `last` und
+  - Das Image `event-management/system:$EVENT_SYSTEM_TAG` existiert (`ausrollen.sh bauen
+    system`); vorher sind nur `vorbereiten`, `dm`, `stand`, `protokoll`, `last` und
     `aufraeumen` möglich.
   - Auf dem Host laufen `python3` (mit den Paketen des Bereitstellungs-Arbeiters) und
     `docker`, im Space-Ordner einer vibemind-os-Arbeitskopie.

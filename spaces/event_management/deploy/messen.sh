@@ -66,8 +66,10 @@ PG=event-messung-pg
 VOL_STATE=event-messung-state
 CLAW_IMAGE=ghcr.io/openclaw/openclaw:2026.7.1-slim
 SHIM_IMAGE=event-management/shim:2.1.268
-# Tag wie im Compose: aus EVENT_SYSTEM_TAG, ohne Wert Abbruch (kein Geheimnis).
-: "${EVENT_SYSTEM_TAG:?ABBRUCH: EVENT_SYSTEM_TAG fehlt, Git Kurz SHA des Images setzen}"
+# Tag wie im Compose: aus EVENT_SYSTEM_TAG, ohne Wert Abbruch (kein Geheimnis). Beim
+# Ausrollen legt `ausrollen.sh bauen` ihn in laufzeit/ausrollen/tags.env an; gemessen wird
+# darum NACH `bauen system`/`bauen web` und VOR `sichern` (Abschluss-Review F-3).
+: "${EVENT_SYSTEM_TAG:?ABBRUCH: EVENT_SYSTEM_TAG fehlt. Erst ausrollen.sh bauen system, dann laufzeit/ausrollen/tags.env per set -a laden}"
 SYSTEM_IMAGE=event-management/system:$EVENT_SYSTEM_TAG
 PG_IMAGE=postgres:16
 LZ=laufzeit/messung
@@ -471,7 +473,7 @@ EOF
 testinstanz() {
   [ -f "$LZ/telegram-token" ] || abbruch "erst: vorbereiten"
   docker image inspect "$SYSTEM_IMAGE" >/dev/null 2>&1 \
-    || abbruch "Image $SYSTEM_IMAGE fehlt (baut Etappe 4)."
+    || abbruch "Image $SYSTEM_IMAGE fehlt (erst: ausrollen.sh --ich-habe-ok bauen system)."
   docker run -d --name "$PG" --network "container:$SHIM" \
     --tmpfs /var/lib/postgresql/data:size=512m -e POSTGRES_HOST_AUTH_METHOD=trust \
     "$PG_IMAGE" -c listen_addresses=127.0.0.1 -c shared_buffers=32MB >/dev/null

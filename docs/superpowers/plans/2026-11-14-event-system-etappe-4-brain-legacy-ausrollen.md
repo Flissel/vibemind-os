@@ -313,7 +313,11 @@
 - Jede Phase beginnt mit der Frage an Felix: „Phase X jetzt? Rückweg: …“ und endet mit einem Eintrag im Ledger. Der Eintrag nennt nur Ergebnisse, keine IDs.
 - Schlägt eine Phase fehl, geht es zuerst den Rückweg, dann folgt der Bericht. Nie improvisiert weiterbauen.
 
+**Reihenfolge Teil B (Abschluss-Review F-3):** `pruefen` → `bauen system` → `bauen web` → Task 7 (messen, braucht `tags.env`/`EVENT_SYSTEM_TAG` und das System-Image) → `sichern` → `migrieren` → `shim` → `dienste` → Schlüssel → `tailnet` → erster Betreiber, Firma, Legacy-Eintrag → `anbinden` → `timer` → Brain-Umgebung. Task 7 läuft also zwischen den Schritten 2 und 3 von Task 8; maßgeblich ist `deploy/ausrollen.md`.
+
 ### Task 7: Live messen (M1–M6)
+
+Vorher: Task 8, Schritte 1 und 2 (`pruefen`, `bauen system`, `bauen web`). Erst dann gibt es `laufzeit/ausrollen/tags.env` und das Image `event-management/system:<tag>`.
 
 - [ ] **Step 1:** Claim im WORKBOARD und in `002_Koordination_Live.md` setzen und committen. Nur die eigene Zeile stagen.
 - [ ] **Step 2:** Nach Felix-OK `deploy/messen.md` abarbeiten:
@@ -332,24 +336,25 @@
 Die Phasen laufen in dieser Reihenfolge, jede mit eigenem OK:
 
 1. `ausrollen.sh --ich-habe-ok pruefen`. Alle Vorbedingungen müssen grün sein.
-2. `sichern`.
-3. `migrieren`. Danach `select … from event.schema_migrationen` (oder wie `anwenden.py` es nennt) mit 001–009.
-4. `bauen system`, dann `bauen web`, einzeln. Vor jedem Build Speicher messen (`/proc/meminfo` SwapFree/MemAvailable, Memory „brain-core-Deploy: VM-Speicher messen“).
-5. `dienste`. Die Proben `/gesund` für API und MCP sind grün, die Web-Startseite liefert 200 aus dem Container-Netz.
-6. Schlüssel ausstellen (`schluessel ausstellen`) mit Admin-DSN auf der VM:
+2. `bauen system`, dann `bauen web`, einzeln. Beide verlangen nur `pruefen`. Vor jedem Build Speicher messen (`/proc/meminfo` SwapFree/MemAvailable, Memory „brain-core-Deploy: VM-Speicher messen“). **Danach Task 7 (messen).**
+3. `sichern`.
+4. `migrieren`. Danach `select … from event.schema_migrationen` (oder wie `anwenden.py` es nennt) mit 001–009.
+5. `shim` mit `EVENT_SHIM_BAUKONTEXT` (Rezept in `deploy/ausrollen.md`; ohne Baukontext bricht die Phase ab).
+6. `dienste`. Die Proben `/gesund` für API und MCP sind grün, die Web-Startseite liefert 200 aus dem Container-Netz.
+7. Schlüssel ausstellen (`schluessel ausstellen`) mit Admin-DSN auf der VM:
    - `melden`;
    - `betreiber_lesen` mit Name `VibeMind` für `bn-lesen`;
    - `betreiber` mit Name `VibeMind` für `bn-auftrag`;
    - `betreiber_lesen` mit Name `Pruefung` für den Observer.
 
    Die Klartexte gehen direkt in Dateien unter `laufzeit/` (0600) und nie in eine Ausgabe.
-7. `legacy eintragen` mit der lokalen Datei (Firma vorher anlegen).
-8. `anbinden`. `printf` mit 7 Zeilen aus Dateien geht an `anbinden.sh`. Danach prüfen:
-   - Die Legacy-Gruppe antwortet weiter. Ein Test-Satz in der Gruppe kommt über `ev-legacy` und nutzt die alten Werkzeuge.
-   - `main` antwortet in einer fremden Testgruppe nur auf @-Erwähnung.
-9. `timer`. Die Units laufen, das Journal zeigt Läufe ohne Fehler.
-10. `tailnet`. Felix öffnet die Oberfläche über das Tailnet und meldet sich per Einladung an.
-11. Brain-Umgebung: `EVENT_MCP_URL` und `EVENT_VERLAUF_TOKEN_FILE` über den dokumentierten Launcher- bzw. Secret-Weg setzen, kein `service update`. Den Netzweg wie beim Gateway in der Brain-Anmeldung wählen. Die Wahl kommt in den Ledger, ohne Werte.
+8. `tailnet`. Ab hier ist die Oberfläche im Tailnet sichtbar.
+9. Erster Betreiber (`python3 -m spaces.event_management.system.betreiber anlegen`, Passwort per stdin), Felix meldet sich über das Tailnet an und legt die Firma des Legacy-Events in der Oberfläche an; dann `legacy eintragen` mit der lokalen Datei.
+10. `anbinden`. `printf` mit 7 Zeilen aus Dateien geht an `anbinden.sh`. Danach prüfen:
+    - Die Legacy-Gruppe antwortet weiter. Ein Test-Satz in der Gruppe kommt über `ev-legacy` und nutzt die alten Werkzeuge.
+    - `main` antwortet in einer fremden Testgruppe nur auf @-Erwähnung.
+11. `timer`. Die Units laufen, das Journal zeigt Läufe ohne Fehler. Ein erneutes `anbinden` danach stoppt `bereitstellung.timer` selbst; `timer` startet ihn wieder.
+12. Brain-Umgebung: `EVENT_MCP_URL` und `EVENT_VERLAUF_TOKEN_FILE` über den dokumentierten Launcher- bzw. Secret-Weg setzen, kein `service update`. Den Netzweg (`deploy/ausrollen.md`, „Netzweg Brain → event-mcp“) wählen. Die Wahl kommt in den Ledger, ohne Werte.
 
 ### Task 9: Abnahme und Abschluss
 
