@@ -864,6 +864,92 @@ def test_schluessel_nie_in_argv(monkeypatch, db_admin, db_app, welt, telegram):
         assert aufruf["timeout"] == 60
 
 
+# JS-Vorspann fuer die node-Laeufe unten: protokolliert die PFADE (nie Inhalte) der
+# Schreibaufrufe nach $SPION_LOG; mit SPION_RENAME_FEHLER=1 scheitert renameSync.
+SPION_JS = r"""
+const __fs = require('fs');
+const __log = [];
+for (const __n of ['writeFileSync', 'copyFileSync', 'renameSync', 'chmodSync', 'unlinkSync']) {
+  const __o = __fs[__n];
+  __fs[__n] = function (...a) {
+    const n = (__n === 'copyFileSync' || __n === 'renameSync') ? 2 : 1;
+    __log.push([__n].concat(a.slice(0, n).map(String)));
+    if (__n === 'renameSync' && process.env.SPION_RENAME_FEHLER === '1') {
+      const e = new Error('rename gescheitert (Test)'); e.code = 'EIO'; throw e;
+    }
+    return __o.apply(this, a);
+  };
+}
+process.on('exit', () => { __fs.appendFileSync(process.env.SPION_LOG, JSON.stringify(__log)); });
+"""
+
+
+def _node_auftrag(tmp_path, auftrag: dict, *, rename_fehler: bool = False):
+    """Fuehrt _NODE mit lokalem node gegen tmp_path/zustand/openclaw.json aus."""
+    import json
+    import os
+    import shutil
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("kein node")
+    zustand = tmp_path / "zustand"
+    zustand.mkdir()
+    cfg = zustand / "openclaw.json"
+    cfg.write_text(json.dumps({"agents": {"list": []}}), encoding="utf-8")
+    alt = "const CFG = '/home/node/.openclaw/openclaw.json';"
+    assert bereitstellung._NODE.count(alt) == 1
+    skript = tmp_path / "auftrag.js"
+    skript.write_text(SPION_JS + bereitstellung._NODE.replace(
+        alt, "const CFG = " + json.dumps(cfg.as_posix()) + ";"), encoding="utf-8")
+    log = tmp_path / "spion.json"
+    umgebung = {**os.environ, "SPION_LOG": str(log),
+                "SPION_RENAME_FEHLER": "1" if rename_fehler else "0"}
+    r = subprocess.run([node, str(skript)], input=json.dumps(auftrag).encode("utf-8"),
+                       capture_output=True, timeout=60, env=umgebung)
+    return r.returncode, cfg, json.loads(log.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("auftrag", [
+    {"op": "setzen", "pfad": ["mcp", "servers", "ev-0123abcd"], "wert": {"url": "http://x"}},
+    {"op": "entfernen", "pfad": ["agents", "list"]},
+])
+def test_node_schreibt_openclaw_json_atomar(tmp_path, auftrag):
+    """F6: nie direkt in openclaw.json schreiben (ein Leser des Gateways saehe sonst eine
+    halbe Datei), sondern Temp-Datei im selben Verzeichnis, 0600, dann renameSync."""
+    import json
+    import os
+    import posixpath
+    import stat
+
+    code, cfg, log = _node_auftrag(tmp_path, auftrag)
+    assert code == 0
+    ziel = cfg.as_posix()
+    assert not [e for e in log if e[0] in ("writeFileSync", "copyFileSync") and e[-1] == ziel]
+    umbenannt = [e for e in log if e[0] == "renameSync"]
+    assert len(umbenannt) == 1 and umbenannt[0][2] == ziel
+    tmp = umbenannt[0][1]
+    assert tmp != ziel and posixpath.dirname(tmp) == posixpath.dirname(ziel)
+    assert ["writeFileSync", tmp] in log and ["chmodSync", tmp] in log
+    assert log.index(["chmodSync", tmp]) < log.index(umbenannt[0])
+    assert [p.name for p in cfg.parent.iterdir()] == ["openclaw.json"]
+    neu = json.loads(cfg.read_text(encoding="utf-8"))
+    if auftrag["op"] == "setzen":
+        assert neu["mcp"]["servers"]["ev-0123abcd"] == {"url": "http://x"}
+    else:
+        assert neu == {"agents": {}}
+    if os.name != "nt":
+        assert stat.S_IMODE(cfg.stat().st_mode) == 0o600
+
+
+def test_node_raeumt_temp_datei_auf_wenn_rename_scheitert(tmp_path):
+    code, cfg, log = _node_auftrag(tmp_path, {"op": "setzen", "pfad": ["a"], "wert": 1},
+                                   rename_fehler=True)
+    assert code != 0
+    assert [p.name for p in cfg.parent.iterdir()] == ["openclaw.json"]
+    assert cfg.read_text(encoding="utf-8") == '{"agents": {"list": []}}'
+
+
 def test_docker_ausfuehrer_fehler_ohne_werte(monkeypatch):
     falsch = _FalschesRun(code=1)
     monkeypatch.setattr(bereitstellung.subprocess, "run", falsch)

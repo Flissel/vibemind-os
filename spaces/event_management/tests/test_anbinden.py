@@ -7,8 +7,10 @@ Ausgabe gelangt und dass Saat und Netze so geschnitten sind wie beschlossen.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -330,27 +332,72 @@ def _mit_bereitgestellten(basis: dict) -> dict:
     return c
 
 
-def _saat_laufen(tmp_path: Path, aktuell: dict) -> tuple[str, Path]:
-    """Fuehrt SAAT_JS mit lokalem node gegen Verzeichnisse unter tmp_path aus."""
+# JS-Vorspann: protokolliert die PFADE (nie Inhalte) der Schreibaufrufe nach $SPION_LOG.
+SPION_JS = r"""
+const __fs = require('fs');
+const __log = [];
+for (const __n of ['writeFileSync', 'copyFileSync', 'renameSync', 'chmodSync']) {
+  const __o = __fs[__n];
+  __fs[__n] = function (...a) {
+    const n = (__n === 'copyFileSync' || __n === 'renameSync') ? 2 : 1;
+    __log.push([__n].concat(a.slice(0, n).map(String)));
+    return __o.apply(this, a);
+  };
+}
+process.on('exit', () => { __fs.appendFileSync(process.env.SPION_LOG, JSON.stringify(__log)); });
+"""
+
+
+def _node(tmp_path: Path, js: str, eingabe: bytes = b"") -> tuple[str, list[list[str]]]:
+    """Fuehrt js (mit Spion-Vorspann) mit lokalem node aus; Ausgabe und Schreibprotokoll."""
     node = shutil.which("node")
     if node is None:
         pytest.skip("kein node")
+    skript = tmp_path / "lauf.js"
+    skript.write_text(SPION_JS + js, encoding="utf-8")
+    log = tmp_path / "spion.json"
+    r = subprocess.run([node, str(skript)], input=eingabe, capture_output=True, timeout=60,
+                       env={**os.environ, "SPION_LOG": str(log)})
+    ausgabe = r.stdout.decode("utf-8") + r.stderr.decode("utf-8")
+    assert r.returncode == 0, ausgabe
+    return ausgabe, json.loads(log.read_text(encoding="utf-8"))
+
+
+def _atomar_geschrieben(log: list[list[str]], cfg: Path) -> None:
+    """F6: openclaw.json nur per Temp-Datei im selben Verzeichnis (0600) + renameSync."""
+    ziel = cfg.as_posix()
+    assert not [e for e in log if e[0] in ("writeFileSync", "copyFileSync") and e[-1] == ziel]
+    umbenannt = [e for e in log if e[0] == "renameSync" and e[2] == ziel]
+    assert len(umbenannt) == 1
+    tmp = umbenannt[0][1]
+    assert tmp != ziel and tmp.rsplit("/", 1)[0] == ziel.rsplit("/", 1)[0]
+    assert ["chmodSync", tmp] in log
+    assert log.index(["chmodSync", tmp]) < log.index(umbenannt[0])
+    assert not [p for p in cfg.parent.iterdir() if ".tmp-" in p.name]
+    if os.name != "nt":
+        assert stat.S_IMODE(cfg.stat().st_mode) == 0o600
+
+
+def _saat_laufen(tmp_path: Path, aktuell: dict | None,
+                 log: list[list[str]] | None = None) -> tuple[str, Path]:
+    """Fuehrt SAAT_JS mit lokalem node gegen Verzeichnisse unter tmp_path aus.
+
+    aktuell None: es gibt noch keine openclaw.json. Ist `log` eine Liste, landet dort das
+    Schreibprotokoll."""
     zustand, saat = tmp_path / "zustand", tmp_path / "saat"
     for d in (zustand, saat / "workspace", saat / "workspace-brain"):
         d.mkdir(parents=True)
     (saat / "openclaw.json").write_text(json.dumps(SAAT), encoding="utf-8")
-    (zustand / "openclaw.json").write_text(json.dumps(aktuell), encoding="utf-8")
+    if aktuell is not None:
+        (zustand / "openclaw.json").write_text(json.dumps(aktuell), encoding="utf-8")
     js = _heredoc("SAAT_JS=$(cat <<'JS'", "JS")
     for alt, neu in (("const STATE = '/home/node/.openclaw';", zustand),
                      ("const SEED = '/seed';", saat)):
         assert js.count(alt) == 1
         js = js.replace(alt, alt.split("=")[0] + "= " + json.dumps(neu.as_posix()) + ";")
-    skript = tmp_path / "saat.js"
-    skript.write_text(js, encoding="utf-8")
-    r = subprocess.run([node, str(skript)], stdin=subprocess.DEVNULL, capture_output=True,
-                       timeout=60)
-    ausgabe = r.stdout.decode("utf-8") + r.stderr.decode("utf-8")
-    assert r.returncode == 0, ausgabe
+    ausgabe, protokoll = _node(tmp_path, js)
+    if log is not None:
+        log.extend(protokoll)
     return ausgabe, zustand / "openclaw.json"
 
 
@@ -379,6 +426,45 @@ def test_saat_unveraendert_wenn_nur_bereitgestellte_teile_abweichen(tmp_path: Pa
     assert json.loads(cfg.read_text(encoding="utf-8")) == aktuell
     assert not [p for p in cfg.parent.iterdir() if ".vor-anbinden-" in p.name]
     assert "evk_" not in ausgabe
+
+
+def test_saat_ersetzt_atomar(tmp_path: Path) -> None:
+    aktuell = _mit_bereitgestellten(SAAT)
+    aktuell["gateway"]["port"] = 19999
+    log: list[list[str]] = []
+    ausgabe, cfg = _saat_laufen(tmp_path, aktuell, log)
+    assert "openclaw.json: gesichert und durch die Saat ersetzt" in ausgabe
+    _atomar_geschrieben(log, cfg)
+    assert json.loads(cfg.read_text(encoding="utf-8")) == _mit_bereitgestellten(SAAT)
+
+
+def test_saat_legt_atomar_an(tmp_path: Path) -> None:
+    log: list[list[str]] = []
+    ausgabe, cfg = _saat_laufen(tmp_path, None, log)
+    assert "openclaw.json: angelegt" in ausgabe
+    _atomar_geschrieben(log, cfg)
+    assert json.loads(cfg.read_text(encoding="utf-8")) == SAAT
+
+
+def test_schluessel_atomar_und_ohne_werte_in_der_ausgabe(tmp_path: Path) -> None:
+    zustand = tmp_path / "zustand"
+    zustand.mkdir()
+    cfg = zustand / "openclaw.json"
+    cfg.write_text(json.dumps(SAAT), encoding="utf-8")
+    js = _heredoc("SCHLUESSEL_JS=$(cat <<'JS'", "JS")
+    alt = "const CFG = '/home/node/.openclaw/openclaw.json';"
+    assert js.count(alt) == 1
+    js = js.replace(alt, "const CFG = " + json.dumps(cfg.as_posix()) + ";")
+    werte = ["gateway-beispiel", "123:tg-beispiel", "Bearer evk_beispiel_app",
+             "Bearer evk_beispiel_melden"]
+    ausgabe, log = _node(tmp_path, js, ("\n".join(werte) + "\n").encode("utf-8"))
+    assert ausgabe.count(": gesetzt") == 4
+    for wert in werte:
+        assert wert not in ausgabe
+    _atomar_geschrieben(log, cfg)
+    neu = json.loads(cfg.read_text(encoding="utf-8"))
+    assert neu["gateway"]["auth"]["token"] == "gateway-beispiel"
+    assert neu["mcp"]["servers"]["melden"]["headers"]["Authorization"] == werte[3]
 
 
 # --- Compose -----------------------------------------------------------------

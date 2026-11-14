@@ -170,6 +170,19 @@ const fs = require('fs');
 const STATE = '/home/node/.openclaw';
 const SEED = '/seed';
 const CFG = STATE + '/openclaw.json';
+// Atomar (F6): Temp-Datei im selben Verzeichnis (0600), dann rename. Das Gateway sieht
+// so nie eine halb geschriebene openclaw.json.
+function atomar(ziel, text) {
+  const tmp = ziel + '.tmp-' + process.pid;
+  try {
+    fs.writeFileSync(tmp, text, { mode: 0o600 });
+    fs.chmodSync(tmp, 0o600);
+    fs.renameSync(tmp, ziel);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch (e2) { /* schon weg */ }
+    throw e;
+  }
+}
 const GEHEIM = [
   ['gateway', 'auth', 'token'],
   ['channels', 'telegram', 'botToken'],
@@ -275,8 +288,7 @@ function gleich(a, b) { return JSON.stringify(stabil(a)) === JSON.stringify(stab
 try {
   const saat = JSON.parse(fs.readFileSync(SEED + '/openclaw.json', 'utf8'));
   if (!fs.existsSync(CFG)) {
-    fs.copyFileSync(SEED + '/openclaw.json', CFG);
-    fs.chmodSync(CFG, 0o600);
+    atomar(CFG, fs.readFileSync(SEED + '/openclaw.json', 'utf8'));
     console.log('openclaw.json: angelegt');
   } else {
     let aktuell = null;
@@ -291,8 +303,7 @@ try {
       fs.chmodSync(CFG + '.vor-anbinden-' + zs, 0o600);
       const neu = JSON.parse(JSON.stringify(saat));
       uebernehmen(neu, mit);
-      fs.writeFileSync(CFG, JSON.stringify(neu, null, 2) + '\n', { mode: 0o600 });
-      fs.chmodSync(CFG, 0o600);
+      atomar(CFG, JSON.stringify(neu, null, 2) + '\n');
       console.log('openclaw.json: gesichert und durch die Saat ersetzt');
       // Nur Anzahlen: die Server tragen Schluessel, Bindings Chat-IDs.
       console.log('bereitgestellte Agenten uebernommen: ' + mit.agenten.length + ' Agenten, '
@@ -329,6 +340,19 @@ esac
 SCHLUESSEL_JS=$(cat <<'JS'
 const fs = require('fs');
 const CFG = '/home/node/.openclaw/openclaw.json';
+// Atomar (F6): Temp-Datei im selben Verzeichnis (0600), dann rename. Das Gateway sieht
+// so nie eine halb geschriebene openclaw.json.
+function atomar(ziel, text) {
+  const tmp = ziel + '.tmp-' + process.pid;
+  try {
+    fs.writeFileSync(tmp, text, { mode: 0o600 });
+    fs.chmodSync(tmp, 0o600);
+    fs.renameSync(tmp, ziel);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch (e2) { /* schon weg */ }
+    throw e;
+  }
+}
 const ZEILEN = fs.readFileSync(0, 'utf8').split('\n');
 const ZIELE = [
   ['gateway.auth.token', ['gateway', 'auth', 'token']],
@@ -357,8 +381,7 @@ try {
     }
   });
   if (geaendert && !process.exitCode) {
-    fs.writeFileSync(CFG, JSON.stringify(c, null, 2) + '\n', { mode: 0o600 });
-    fs.chmodSync(CFG, 0o600);
+    atomar(CFG, JSON.stringify(c, null, 2) + '\n');
   }
 } catch (e) {
   console.log('Schluessel: Fehler (' + (e && e.code ? e.code : 'unbekannt') + ')');

@@ -233,9 +233,18 @@ const BEREICH = /^\/home\/node\/\.openclaw\/workspace-(ev|ld|bo)-[0-9a-f]{8}$/;
 const DATEI = /^\/home\/node\/\.openclaw\/workspace-(ev|ld|bo)-[0-9a-f]{8}\/[A-Za-z0-9_-]{1,64}\.md$/;
 const ABGEBAUT = /^\/home\/node\/\.openclaw\/workspace-(ev|ld|bo)-[0-9a-f]{8}-abgebaut-\d{8}-\d{6}$/;
 function lesen() { return JSON.parse(fs.readFileSync(CFG, 'utf8')); }
+// Atomar: Temp-Datei im selben Verzeichnis (0600), dann rename. Das Gateway liest
+// openclaw.json beim Neuladen; es sieht so nie eine halb geschriebene Datei.
 function schreiben(c) {
-  fs.writeFileSync(CFG, JSON.stringify(c, null, 2) + '\n', { mode: 0o600 });
-  fs.chmodSync(CFG, 0o600);
+  const tmp = CFG + '.tmp-' + process.pid;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(c, null, 2) + '\n', { mode: 0o600 });
+    fs.chmodSync(tmp, 0o600);
+    fs.renameSync(tmp, CFG);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch (e2) { /* schon weg */ }
+    throw e;
+  }
 }
 function pfadOk(p) {
   return Array.isArray(p) && p.length > 0
