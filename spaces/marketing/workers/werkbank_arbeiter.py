@@ -303,7 +303,8 @@ def _gliederung(c: _Lauf, werk: dict) -> str | None:
         vorige = werk.get("gliederung") if wunsch and isinstance(werk.get("gliederung"), dict) and werk["gliederung"] else None
         system, nachricht = video_texte.gliederung_prompt(eingabe, ktx, c.brief(), wunsch, vorige)
         geholt = {d.name for d in ktx.dokumente}
-        belegtexte = [auftrag, *(d.text for d in ktx.dokumente)]       # M11: Zahlen in Titel, Hook, Stufennamen
+        konzept = video_texte.konzepttext(eingabe)
+        belegtexte = [auftrag, *([konzept] if konzept else []), *(d.text for d in ktx.dokumente)]   # M11: Zahlen in Titel, Hook, Stufennamen
         gliederung, _ = _fragen_lesen(c, aid, system, nachricht,
                                       lambda a: video_texte.gliederung_lesen(a, geholt, belegtexte))
     except BudgetErschoepft:
@@ -369,12 +370,12 @@ def _szenen_fragen(c: _Lauf, werk: dict, ktx, zeilen: list[dict], fehler_je_nr: 
     return {s["nr"]: s for s in gelesen}
 
 
-def _bewerten(zeile: dict, szene: dict | None, auftrag: str, ktx) -> list[str]:
+def _bewerten(zeile: dict, szene: dict | None, auftrag: str, ktx, konzept: str = "") -> list[str]:
     if szene is None:
         return ["Die Szene fehlt in der Antwort oder ist nicht lesbar."]
     if zeile.get("rueckgabe_von") == "clip" and szene.get("aendert_text") is False:
         szene["sprechtext"] = str(zeile.get("sprechtext") or "")     # nur das Bild ist neu: der Text bleibt, wie er war
-    return video_texte.szene_pruefen(szene, auftrag, ktx)
+    return video_texte.szene_pruefen(szene, auftrag, ktx, konzept)
 
 
 def _abgeben(c: _Lauf, zeile: dict, szene: dict) -> bool | list[str]:
@@ -452,6 +453,7 @@ def _texte(c: _Lauf, werk: dict) -> str | None:
         return "budget"
     c.lease(aid)
     auftrag = video_texte.auftragstext(werk.get("eingabe") or {})
+    konzept = video_texte.konzepttext(werk.get("eingabe") or {})
     abgegeben = 0
     try:
         ktx = c.kontext(str(werk.get("mandant") or ""), auftrag)
@@ -462,7 +464,7 @@ def _texte(c: _Lauf, werk: dict) -> str | None:
             antworten = _szenen_fragen(c, werk, ktx, gruppe, None)
             for zeile in gruppe:
                 szene = antworten.get(zeile["nr"])
-                fehler = _bewerten(zeile, szene, auftrag, ktx)
+                fehler = _bewerten(zeile, szene, auftrag, ktx, konzept)
                 if not fehler:
                     abgegeben += _abgeben_oder_durchfallen(c, zeile, szene, durchgefallen)
                 else:
@@ -475,7 +477,7 @@ def _texte(c: _Lauf, werk: dict) -> str | None:
             antworten = _szenen_fragen(c, werk, ktx, [z for z, _ in stapel], {z["nr"]: f for z, f in stapel})
             for zeile, _alt in stapel:
                 szene = antworten.get(zeile["nr"])
-                fehler = _bewerten(zeile, szene, auftrag, ktx)
+                fehler = _bewerten(zeile, szene, auftrag, ktx, konzept)
                 if not fehler:
                     abgegeben += _abgeben_oder_durchfallen(c, zeile, szene, endgueltig)
                 else:

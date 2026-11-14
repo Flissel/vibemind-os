@@ -35,12 +35,15 @@ sourceId/_id, title, inhalt/text/body und ein Umschlag {quellen|sources|items|do
 """
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 
 from spaces.marketing.claw import markenwissen, werkzeuge, wissen
 
 BUDGET_VORGABE = 60_000
+RESERVIERT = "konzept"           # Quellenname des Konzepts im Auftrag; kein Dokument darf so heissen
+LOG = logging.getLogger("video_kontext")
 DOKUMENT_MAX = 20_000            # Obergrenze je Dokument (Zeichen)
 _VERMERK = " … (gekürzt)"
 # Erlaubt-Liste fuer Markenwissen (Firmenordner): Dateien direkt im Ordner / Ordner der obersten Ebene
@@ -214,6 +217,11 @@ def holen(mandant: str, frage: str, budget: int = BUDGET_VORGABE,
     except Exception:  # noqa: BLE001 - Rowboat darf nie den Auftrag kippen
         hinweise.append("Rowboat nicht erreichbar, es gilt nur das Markenwissen")
 
+    reserviert = [d for d in alle if d.name.strip().casefold() == RESERVIERT]
+    if reserviert:                 # "konzept" ist die Quelle des Konzepts im Auftrag, kein Dokument darf so heissen
+        LOG.warning("%d Dokument(e) mit dem reservierten Namen \"%s\" abgelehnt", len(reserviert), RESERVIERT)
+        hinweise.append(f"{len(reserviert)} Dokument(e) mit dem reservierten Namen \"{RESERVIERT}\" nicht gelesen")
+        alle = [d for d in alle if d not in reserviert]
     gesehen: set[str] = set()
     einzig = []
     for d in alle:               # Rowboat legt gleichnamige Dokumente doppelt an: der Name zaehlt einmal

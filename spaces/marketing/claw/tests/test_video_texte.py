@@ -470,3 +470,107 @@ def test_gliederung_aus_konzept_andere_steuerzeichen_werden_entfernt_tab_und_zei
     g = video_texte.gliederung_aus_konzept(e)
     assert g["titel"] == "Titel"
     assert szenen_liste(g)[0]["kurz"] == "ab" + chr(9) + "c" + chr(10) + "d"
+
+
+# --- Task 4: Konzept bei Rueckgabe und in den Szenentexten ----------------------------------------
+
+GOLDEN = json.loads((Path(__file__).parent / "video_texte_prompts_golden.json").read_text(encoding="utf-8"))
+_KTX1 = Kontext([Dokument("Marke.md", "Wir sind VibeMind. 30 % weniger.", "marke")], [])
+_E1 = {"thema": "Thema", "beschreibung": "Text", "minuten": 4, "zielgruppe": "Teams"}
+_G1 = {"titel": "T", "hook": "H", "stufen": [{"name": "Einstieg", "szenen": [
+    {"kurz": f"S{i}", "bildart": "slide", "quellen": []} for i in range(8)]}], "fehlt": []}
+
+
+def test_prompts_ohne_konzept_sind_zeichengleich_mit_heute():
+    assert list(gliederung_prompt(_E1, _KTX1, "Brief")) == GOLDEN["g1"]
+    assert list(gliederung_prompt(_E1, _KTX1, "Brief", "Kürzer", _G1)) == GOLDEN["g2"]
+    assert list(szenen_prompt(_E1, _G1, szenen_liste(_G1)[:3], _KTX1, "Brief")) == GOLDEN["s1"]
+
+
+def _mit_notiz():
+    e = KONZEPT_EINGABE()
+    for st in e["konzept"]["stufen"]:
+        for s in st["szenen"]:
+            s["notiz"] = f"Notiz zu {s['kurz']}"
+    e["konzept"]["stufen"][0]["szenen"][0]["notiz"] = "Nur im Konzept: 777 Teilnehmer"
+    return e
+
+
+def test_konzepttext_enthaelt_alle_textfelder_und_ist_ohne_konzept_leer():
+    e = _mit_notiz()
+    t = video_texte.konzepttext(e)
+    k = e["konzept"]
+    for feld in (k["thema"], k["hook"], k["kernaussage"], k["abschluss"], "Szene 1.0", "Nur im Konzept: 777 Teilnehmer"):
+        assert feld in t
+    assert video_texte.konzepttext(_E1) == "" and video_texte.konzepttext({"konzept": None}) == ""
+    assert video_texte.konzepttext(None) == ""
+
+
+def test_gliederung_prompt_rueckgabe_mit_wunsch_hat_verbindliche_vorlage():
+    e = _mit_notiz()
+    g = video_texte.gliederung_aus_konzept(e)
+    system, nutzer = gliederung_prompt(e, _KTX1, "Brief", "Mach Szene 2 kürzer", g)
+    assert "# Verbindliche Vorlage" in nutzer and "Wer übt, wird besser." in nutzer and "Jetzt anfangen." in nutzer
+    assert "Szene 1.0" in nutzer and "Nur im Konzept: 777 Teilnehmer" in nutzer and "konzept" in nutzer
+    assert nutzer.index("# Verbindliche Vorlage") < nutzer.index("# Wunsch des Auftraggebers zur Überarbeitung")
+    assert "Mach Szene 2 kürzer" in nutzer
+
+
+def test_gliederung_prompt_mit_konzept_ohne_wunsch_hat_die_vorlage_auch():
+    assert "# Verbindliche Vorlage" in gliederung_prompt(_mit_notiz(), _KTX1, "Brief")[1]
+
+
+def test_szenen_prompt_enthaelt_kernaussage_abschluss_und_die_notiz_der_szene():
+    e = _mit_notiz()
+    g = video_texte.gliederung_aus_konzept(e)
+    zeilen = szenen_liste(g)[:2]
+    _, nutzer = szenen_prompt(e, g, zeilen, _KTX1, "Brief")
+    assert "Wer übt, wird besser." in nutzer and "Jetzt anfangen." in nutzer
+    assert "Nur im Konzept: 777 Teilnehmer" in nutzer and "Notiz zu Szene 1.1" in nutzer
+    assert "Notiz zu Szene 2.0" not in nutzer                      # nicht angefragte Szene: keine Notiz
+
+
+def test_szenen_prompt_notiz_nur_wenn_die_szene_noch_die_des_konzepts_ist():
+    e = _mit_notiz()
+    g = video_texte.gliederung_aus_konzept(e)
+    g["stufen"][0]["szenen"][0]["kurz"] = "Ganz neue Szene"          # nach einer Rueckgabe umgeschrieben
+    _, nutzer = szenen_prompt(e, g, szenen_liste(g)[:2], _KTX1, "Brief")
+    assert "Nur im Konzept: 777 Teilnehmer" not in nutzer and "Notiz zu Szene 1.1" in nutzer
+
+
+def test_gliederung_lesen_nimmt_konzept_als_quelle_an():
+    text = GLIEDERUNG_MIT("konzept")
+    g, fehler = gliederung_lesen(text, set(), [AUFTRAG])
+    assert fehler == [] and g["stufen"][0]["szenen"][0]["quellen"] == ["konzept"]
+    g, fehler = gliederung_lesen(GLIEDERUNG_MIT("konzept"), {"Marke.md"}, [AUFTRAG])
+    assert fehler == []
+
+
+def test_gliederung_lesen_zahl_im_titel_nur_aus_dem_konzept_ist_belegt():
+    text = json.dumps({"titel": "777 Teilnehmer", "hook": "H", "fehlt": [], "stufen": [
+        {"name": "Einstieg", "szenen": [{"kurz": f"S{i}", "bildart": "slide", "quellen": ["konzept"]} for i in range(8)]}]})
+    assert gliederung_lesen(text, set(), [AUFTRAG])[0] is None
+    assert gliederung_lesen(text, set(), [AUFTRAG, "Nur im Konzept: 777 Teilnehmer"])[0] is not None
+
+
+def _szene_mit_beleg(aussage, quelle="konzept", sprech=None):
+    sprech = sprech or LANG.replace("Der dritte Satz", "Der dritte Satz mit 777 Teilnehmern")
+    return SZENE(sprechtext=sprech, belege=[{"aussage": aussage, "quelle": quelle}], ohne_sachaussage=False)
+
+
+def test_szene_pruefen_zahl_nur_im_konzept_ist_mit_quelle_konzept_belegt():
+    konzept = "Szene 1: Nur im Konzept: 777 Teilnehmer"
+    s = _szene_mit_beleg("Es kamen 777 Teilnehmer")
+    fehler = szene_pruefen(s, AUFTRAG, KONTEXT, konzept)
+    assert not [f for f in fehler if "777" in f or "geholt" in f]
+
+
+def test_szene_pruefen_zahl_die_nirgends_steht_bleibt_fehler():
+    s = _szene_mit_beleg("Es kamen 888 Teilnehmer", sprech=LANG.replace("Der dritte Satz", "Der dritte Satz mit 888 Teilnehmern"))
+    fehler = szene_pruefen(s, AUFTRAG, KONTEXT, "Nur im Konzept: 777 Teilnehmer")
+    assert any("888" in f and "Quelle" in f for f in fehler)
+
+
+def test_szene_pruefen_konzept_ohne_konzepttext_ist_keine_quelle():
+    fehler = szene_pruefen(_szene_mit_beleg("Es kamen 777 Teilnehmer"), AUFTRAG, KONTEXT)
+    assert any("geholt" in f for f in fehler)

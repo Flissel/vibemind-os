@@ -151,6 +151,48 @@ def _dokumente_text(kontext: Kontext) -> str:
     return "\n\n".join(f"### {d.name}\n{d.text}" for d in kontext.dokumente)
 
 
+def _konzept(eingabe: object) -> dict:
+    k = eingabe.get("konzept") if isinstance(eingabe, dict) else None
+    return k if isinstance(k, dict) else {}
+
+
+def _konzept_szenen(konzept: dict) -> list[dict]:
+    """Alle Szenen des Konzepts flach, in Reihenfolge (nur Objekte)."""
+    stufen = konzept.get("stufen")
+    return [s for st in (stufen if isinstance(stufen, list) else []) if isinstance(st, dict)
+            for s in (st.get("szenen") if isinstance(st.get("szenen"), list) else []) if isinstance(s, dict)]
+
+
+def konzepttext(eingabe: dict) -> str:
+    """Alle Textfelder des Konzepts (thema, hook, kernaussage, je Szene kurz und notiz, abschluss), eine Zeile je
+    Feld; die Quelle "konzept" der Pruefung. Leer ohne Konzept."""
+    k = _konzept(eingabe)
+    zeilen = [k.get("thema"), k.get("hook"), k.get("kernaussage")]
+    for s in _konzept_szenen(k):
+        zeilen += [s.get("kurz"), s.get("notiz")]
+    zeilen.append(k.get("abschluss"))
+    return "\n".join(t for t in (_text(z) for z in zeilen) if t)
+
+
+def _vorlage_text(konzept: dict) -> str:
+    """Das Konzept als lesbarer Block fuer die Prompts (nur Textfelder)."""
+    teile = [f"Thema: {_text(konzept.get('thema'))}", f"Hook: {_text(konzept.get('hook'))}",
+             f"Kernaussage: {_text(konzept.get('kernaussage'))}"]
+    nr = 0
+    for st in konzept.get("stufen") if isinstance(konzept.get("stufen"), list) else []:
+        if not isinstance(st, dict):
+            continue
+        teile.append(f"Stufe {_text(st.get('name'))}:")
+        for s in st.get("szenen") if isinstance(st.get("szenen"), list) else []:
+            if not isinstance(s, dict):
+                continue
+            nr += 1
+            notiz = _text(s.get("notiz"))
+            teile.append(f"  {nr}. {_text(s.get('kurz'))} ({_text(s.get('bildart'))})" + (f" - Notiz: {notiz}" if notiz else ""))
+    teile.append(f"Abschluss: {_text(konzept.get('abschluss'))}")
+    return "\n".join(teile)
+
+
 GLIEDERUNG_FORM = """{"titel": "…", "hook": "ein Satz, der am Ende wiederholt wird",
  "stufen": [{"name": "Einstieg", "szenen": [{"kurz": "worum es in der Szene geht", "bildart": "slide|avatar_gross|avatar_slide|clip", "quellen": ["Dokumentname oder auftrag"]}]}],
  "fehlt": ["dazu fehlt mir Material: …"]}"""
@@ -175,6 +217,11 @@ def gliederung_prompt(eingabe: dict, kontext: Kontext, brief: str, wunsch: str =
         f"- `fehlt`: je fehlendem Material ein Satz \"{FEHLT_PRAEFIX} …\". Leere Liste, wenn nichts fehlt.",
         "# Antwortform (nur dieses JSON)\n" + GLIEDERUNG_FORM,
     ]
+    konzept = _konzept(eingabe)
+    if konzept:
+        teile.append("# Verbindliche Vorlage (das Konzept des Auftraggebers)\n" + _vorlage_text(konzept)
+                     + "\nDas Konzept ist verbindlich: Stufen, Szenen und Reihenfolge bleiben, außer der Wunsch ändert sie. "
+                     f"Für Szenen, die aus dem Konzept stammen, ist die Quelle \"{KONZEPT}\" erlaubt.")
     if vorige is not None:
         teile.append("# Bisherige Gliederung\n" + json.dumps(vorige, ensure_ascii=False))
     if wunsch.strip():
@@ -240,7 +287,7 @@ def gliederung_lesen(text: str, geholt: set[str],
             for q in roh_quellen:
                 if not isinstance(q, str):
                     fehler.append(f"Szene {anzahl}: Eine Quelle ist ein Name (Text), kein Objekt oder keine Liste.")
-                elif q != AUFTRAG and q not in geholt:
+                elif q not in (AUFTRAG, KONZEPT) and q not in geholt:
                     fehler.append(f"Szene {anzahl}: Die Quelle \"{q}\" wurde nicht geholt. Erlaubt sind "
                                   f"\"{AUFTRAG}\" und die gelieferten Dokumentnamen.")
                 else:
@@ -355,20 +402,33 @@ def szenen_prompt(eingabe: dict, gliederung: dict, szenen: list[dict], kontext: 
     block = szenen[:BLOCK]
     plan = "\n".join(f"{s['nr']}. [{s.get('stufe', '')}] {s.get('kurz', '')} ({s.get('bildart', '')})"
                      for s in szenen_liste(gliederung))
+    konzept = _konzept(eingabe)
+    ksz = _konzept_szenen(konzept)
     aufgaben = []
     for s in block:
         zeilen = [f"Szene {s.get('nr')}: {s.get('kurz', '')}", f"  Bildart: {s.get('bildart', '')}",
                   f"  Geplante Quellen: {', '.join(s.get('quellen') or []) or 'keine'}"]
+        nr = s.get("nr")
+        if isinstance(nr, int) and 1 <= nr <= len(ksz) and _text(ksz[nr - 1].get("notiz")) \
+                and _text(ksz[nr - 1].get("kurz")) == _text(s.get("kurz")):    # nur, wenn es noch die Szene des Konzepts ist
+            zeilen.append(f"  Notiz aus dem Konzept: {_text(ksz[nr - 1].get('notiz'))}")
         if s.get("wunsch"):
             zeilen += [f"  ZURÜCKGEGEBEN von {s.get('rueckgabe_von') or 'dem Auftraggeber'}. Wunsch: {s['wunsch']}",
                        f"  Bisheriger Sprechtext: {s.get('sprechtext', '')}",
                        "  Bisheriges Bild: " + json.dumps(s.get("bild"), ensure_ascii=False)]
         aufgaben.append("\n".join(zeilen))
+    vorlage = []
+    if konzept:
+        vorlage = ["# Konzept des Auftraggebers (verbindliche Vorlage)\nKernaussage: " + _text(konzept.get("kernaussage"))
+                   + "\nAbschluss: " + _text(konzept.get("abschluss"))
+                   + f"\nQuelle \"{KONZEPT}\" ist erlaubt für Aussagen, die in diesem Konzept stehen (Kernaussage, "
+                   "Abschluss, Notizen der Szenen)."]
     nutzer = "\n\n".join([
         "Schreibe die folgenden Szenen eines Erklärvideos.",
         "# Auftrag\n" + _auftrag_text(eingabe),
         f"# Gliederung (Titel: {gliederung.get('titel', '')}; Hook: {gliederung.get('hook', '')})\n" + plan,
         "# Material (Quellen mit ihren Namen)\n" + _dokumente_text(kontext),
+        *vorlage,
         "# Zu schreibende Szenen\n" + "\n\n".join(aufgaben),
         "# Regeln für jede Szene\n"
         f"- `sprechtext`: {SAETZE_MIN} bis {SAETZE_MAX} Sätze, {WOERTER_MIN} bis {WOERTER_MAX} Wörter, gesprochene "
@@ -460,13 +520,15 @@ def _belege_lesen(szene: dict, fehler: list[str]) -> list[dict]:
     return belege
 
 
-def szene_pruefen(szene: dict, auftragstext: str, kontext: Kontext) -> list[str]:
+def szene_pruefen(szene: dict, auftragstext: str, kontext: Kontext, konzepttext: str = "") -> list[str]:
     """Mechanische Pruefung einer Szene; leer = darf ans Text-Tor. Wirft bei keiner Form der Modellantwort."""
     if not isinstance(szene, dict):
         return ["Die Szene ist kein Objekt."]
     fehler: list[str] = []
     quellen = {d.name: d.text for d in kontext.dokumente}
     quellen[AUFTRAG] = auftragstext if isinstance(auftragstext, str) else ""
+    if isinstance(konzepttext, str) and konzepttext.strip():       # ohne Konzept ist "konzept" keine Quelle
+        quellen[KONZEPT] = konzepttext
     belege = _belege_lesen(szene, fehler)
     sprech = szene.get("sprechtext") if isinstance(szene.get("sprechtext"), str) else ""
     if not sprech.strip():

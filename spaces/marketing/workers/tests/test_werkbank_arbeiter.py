@@ -1052,3 +1052,33 @@ def test_auftrag_ohne_konzept_und_eingabe_none_laufen_wie_heute(F):
     f = Fragen()
     ein_durchlauf(api, fragen=f, **F)
     assert len(f.nachrichten) == 1
+
+
+# --- Task 4: Konzept als Quelle bei den Szenentexten ----------------------------------------------
+
+def _konzept_text_werk(notiz):
+    k = _konzept()
+    k["stufen"][0]["szenen"][0]["notiz"] = notiz
+    return _konzept_werk(k, stand="text_ok", gliederung=GLIEDERUNG, szenen=[zeile(1, kurz="K1.0")])
+
+
+def test_szenentext_mit_zahl_nur_aus_der_konzeptnotiz_geht_durch_und_traegt_quelle_konzept(F):
+    belege = [{"aussage": "Es kamen 777 Teilnehmer.", "quelle": "konzept"}]
+
+    def szene(nr, nachricht):
+        assert "Notiz aus dem Konzept: Nur hier: 777 Teilnehmer" in nachricht and "Kernaussage: Kern." in nachricht
+        return szene_dict(nr, sprechtext=SATZ + " Es kamen 777 Teilnehmer.", belege=belege, ohne_sachaussage=False)
+    api = FakeApi([_konzept_text_werk("Nur hier: 777 Teilnehmer")])
+    ein_durchlauf(api, fragen=Fragen(szene=szene), **F)
+    t = api.rufe("szene_text")[0]
+    assert t["belege"] == belege and t["quellen"] == ["konzept"]
+
+
+def test_szenentext_mit_zahl_die_nirgends_steht_faellt_durch(F):
+    belege = [{"aussage": "Es kamen 888 Teilnehmer.", "quelle": "konzept"}]
+
+    def szene(nr, nachricht):
+        return szene_dict(nr, sprechtext=SATZ + " Es kamen 888 Teilnehmer.", belege=belege, ohne_sachaussage=False)
+    api = FakeApi([_konzept_text_werk("Nur hier: 777 Teilnehmer")])
+    ein_durchlauf(api, fragen=Fragen(szene=szene), **F)
+    assert api.zaehlt("szene_text") == 0

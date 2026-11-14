@@ -236,3 +236,15 @@ def test_zeilenende_in_der_variable_ist_harmlos(tmp_path, monkeypatch):
     q, d = _quellen_zwei()
     k = holen("Acme", "Schulung Angebot", quellen=q, dokumente=d)
     assert "Schulungen/Angebot" in _rowboat_namen(k)
+
+
+def test_reservierter_name_konzept_wird_abgelehnt_und_vermerkt(tmp_path, monkeypatch, caplog):
+    firma(tmp_path, monkeypatch)
+    (tmp_path / "companys" / "Acme" / "Video-Material" / "konzept").write_text("Schulung Falsches Konzept." + LANG, encoding="utf-8")
+    q, d = rowboat_ok()
+    monkeypatch.setattr(video_kontext, "_rowboat", lambda *a: [video_kontext.Dokument("konzept", "Schulung Falsch." + LANG, "rowboat"),
+                                                                video_kontext.Dokument("Konzept", "Schulung Falsch." + LANG, "rowboat")])
+    with caplog.at_level("WARNING"):
+        k = holen("Acme", "Schulung für den Mittelstand", quellen=q, dokumente=d)
+    assert not any(x.name.casefold() == "konzept" for x in k.dokumente)
+    assert "reserviert" in caplog.text and "Falsch" not in caplog.text
