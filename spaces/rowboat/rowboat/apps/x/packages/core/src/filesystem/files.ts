@@ -59,6 +59,13 @@ export type WriteTextOptions = {
   expectedEtag?: string;
 };
 
+// Optional check evaluated INSIDE the path's queue slot, against the content
+// that is really about to be written (`next`) and what the file holds right
+// now (`current`, null when it does not exist). Return an error message to
+// refuse the write (it is thrown as an Error with exactly that text), or null
+// to allow it. Check and write are atomic per path.
+export type WriteGuard = (current: string | null, next: string) => string | null | Promise<string | null>;
+
 export type RemoveOptions = {
   recursive?: boolean;
   trash?: boolean;
@@ -72,6 +79,42 @@ const MAX_BYTES_LABEL = `${MAX_BYTES / 1024} KB`;
 
 let knowledgeCommitTimer: ReturnType<typeof setTimeout> | null = null;
 let canonicalWorkspaceRoot: string | null = null;
+
+// Serialises whole-file writes per resolved absolute path inside this process.
+// Without it, parallel read-modify-write calls (several editText calls on one
+// file in a single agent turn) read the same old content and the last write
+// drops the earlier ones. The map holds the tail of each path's chain and the
+// entry is removed once the chain is idle. A failing step never blocks later
+// steps; every caller still gets its own result or error.
+const writeQueues = new Map<string, Promise<unknown>>();
+
+function writeQueueKey(resolvedPath: string): string {
+  const key = path.resolve(resolvedPath);
+  return process.platform === 'win32' ? key.toLowerCase() : key;
+}
+
+async function runWriteGuard(guard: WriteGuard | undefined, current: string | null, next: string): Promise<void> {
+  if (!guard) return;
+  const message = await guard(current, next);
+  if (message) throw new Error(message);
+}
+
+function withWriteQueue<T>(resolvedPath: string, fn: () => Promise<T>): Promise<T> {
+  const key = writeQueueKey(resolvedPath);
+  const prev = writeQueues.get(key) ?? Promise.resolve();
+  const run = prev.then(fn, fn);
+  const tail = run.then(() => undefined, () => undefined);
+  writeQueues.set(key, tail);
+  void tail.then(() => {
+    if (writeQueues.get(key) === tail) writeQueues.delete(key);
+  });
+  return run;
+}
+
+/** Test-only: number of paths with pending queued writes. */
+export function _pendingWriteQueueSize(): number {
+  return writeQueues.size;
+}
 
 // Exported as the one live containment check: permission decisions
 // (assembly/permission-metadata) key on it, so a divergent copy is a
@@ -410,8 +453,22 @@ export async function readBuffer(inputPath: string): Promise<{ buffer: Buffer; p
   };
 }
 
-export async function writeText(inputPath: string, data: string, opts?: WriteTextOptions) {
+export async function writeText(inputPath: string, data: string, opts?: WriteTextOptions, guard?: WriteGuard) {
   const resolved = resolveFilePath(inputPath);
+  return withWriteQueue(resolved.resolvedPath, () => writeTextUnqueued(inputPath, data, opts, guard));
+}
+
+async function writeTextUnqueued(inputPath: string, data: string, opts?: WriteTextOptions, guard?: WriteGuard) {
+  const resolved = resolveFilePath(inputPath);
+  if (guard) {
+    let current: string | null = null;
+    try {
+      current = await fs.readFile(resolved.resolvedPath, 'utf8');
+    } catch {
+      current = null;
+    }
+    await runWriteGuard(guard, current, data);
+  }
   const atomic = opts?.atomic !== false;
   const mkdirp = opts?.mkdirp !== false;
 
@@ -452,6 +509,11 @@ export async function writeText(inputPath: string, data: string, opts?: WriteTex
 // and HTML concepts are never written through this path.
 export async function writeBuffer(inputPath: string, data: Buffer, opts?: WriteTextOptions) {
   const resolved = resolveFilePath(inputPath);
+  return withWriteQueue(resolved.resolvedPath, () => writeBufferUnqueued(inputPath, data, opts));
+}
+
+async function writeBufferUnqueued(inputPath: string, data: Buffer, opts?: WriteTextOptions) {
+  const resolved = resolveFilePath(inputPath);
   const atomic = opts?.atomic !== false;
   const mkdirp = opts?.mkdirp !== false;
 
@@ -485,7 +547,12 @@ export async function writeBuffer(inputPath: string, data: Buffer, opts?: WriteT
   };
 }
 
-export async function editText(inputPath: string, oldString: string, newString: string, replaceAll = false) {
+export async function editText(inputPath: string, oldString: string, newString: string, replaceAll = false, guard?: WriteGuard) {
+  const resolved = resolveFilePath(inputPath);
+  return withWriteQueue(resolved.resolvedPath, () => editTextUnqueued(inputPath, oldString, newString, replaceAll, guard));
+}
+
+async function editTextUnqueued(inputPath: string, oldString: string, newString: string, replaceAll: boolean, guard?: WriteGuard) {
   const resolved = resolveFilePath(inputPath);
   await assertTextFile(resolved.resolvedPath);
   const content = await fs.readFile(resolved.resolvedPath, 'utf8');
@@ -501,7 +568,8 @@ export async function editText(inputPath: string, oldString: string, newString: 
   const newContent = replaceAll
     ? content.replaceAll(oldString, newString)
     : content.replace(oldString, newString);
-  await writeText(inputPath, newContent, { atomic: true, mkdirp: true });
+  await runWriteGuard(guard, content, newContent);
+  await writeTextUnqueued(inputPath, newContent, { atomic: true, mkdirp: true });
   return {
     success: true,
     path: resolved.originalPath,

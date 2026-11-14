@@ -9,7 +9,7 @@ import { WorkDir } from "../../../config/config.js";
 import { BuiltinToolsSchema } from "../types.js";
 import type { ToolContext } from "../exec-tool.js";
 import { ChannelRunGuard } from "../../turns/channel-run-guard.js";
-import { autorunIntroductionError } from "../../../knowledge/autorun-write-check.js";
+import { autorunIntroductionError, autorunIntroductionErrorForContent } from "../../../knowledge/autorun-write-check.js";
 import { sandboxChecker } from "../headless-sandbox.js";
 import { quarantineChecker, quarantineMode } from "../channel-quarantine.js";
 
@@ -182,11 +182,15 @@ export const fileTools: z.infer<typeof BuiltinToolsSchema> = {
                 : null;
             if (autorunError) return { error: autorunError };
             try {
+                // The pre-check above is early denial on a snapshot; this guard runs
+                // inside the path's write slot and judges the real result.
                 return await files.writeText(filePath, data, {
                     atomic,
                     mkdirp,
                     expectedEtag,
-                });
+                }, ctx?.autorunContentForbidden
+                    ? (current, next) => autorunIntroductionErrorForContent('file-writeText', current, next)
+                    : undefined);
             } catch (error) {
                 return {
                     error: error instanceof Error ? error.message : 'Unknown error',
@@ -220,7 +224,9 @@ export const fileTools: z.infer<typeof BuiltinToolsSchema> = {
                 : null;
             if (autorunError) return { error: autorunError };
             try {
-                return await files.editText(filePath, oldString, newString, replaceAll);
+                return await files.editText(filePath, oldString, newString, replaceAll, ctx?.autorunContentForbidden
+                    ? (current, next) => autorunIntroductionErrorForContent('file-editText', current, next)
+                    : undefined);
             } catch (error) {
                 return { error: error instanceof Error ? error.message : 'Unknown error' };
             }

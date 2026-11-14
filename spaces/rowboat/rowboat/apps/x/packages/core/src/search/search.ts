@@ -114,14 +114,14 @@ async function searchKnowledge(query: string, limit: number): Promise<SearchResu
     if (seenPaths.has(relPath)) continue;
     const html = await readHtmlHead(file);
     if (html === null) continue;
-    const text = konzept.htmlVisibleText(html);
+    const text = konzept.htmlSearchText(html);
     const at = text.toLowerCase().indexOf(lowerQuery);
     if (at < 0) continue;
     seenPaths.add(relPath);
     results.push({
       type: 'knowledge',
       title: konzept.htmlTitle(html) || knowledgeTitle(file),
-      preview: snippetAround(text, at),
+      preview: snippetAround(text, at).replace(/\s+/g, ' '),
       path: relPath,
     });
   }
@@ -382,10 +382,10 @@ function snippetAround(text: string, at: number): string {
   return text.substring(start, start + 150).trim();
 }
 
-/** Preview for an HTML file matched by name: start of its visible text. */
+/** Preview for an HTML file matched by name: start of its visible text plus concept-block text. */
 async function htmlPreview(filePath: string): Promise<string> {
   const html = await readHtmlHead(filePath);
-  return html === null ? '' : konzept.htmlVisibleText(html).substring(0, 150);
+  return html === null ? '' : konzept.htmlSearchText(html).replace(/\s+/g, ' ').substring(0, 150);
 }
 
 /**

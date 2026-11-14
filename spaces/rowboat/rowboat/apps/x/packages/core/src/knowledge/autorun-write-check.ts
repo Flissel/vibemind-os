@@ -83,13 +83,28 @@ async function treeHasTrigger(absPath: string): Promise<boolean> {
     return false;
 }
 
+function refusal(what: string): string {
+    return `Refused: ${what} would create a note that starts a background agent (live: / live_note frontmatter or a task / tell-rowboat block). Only the user can create such notes from the desktop chat.`;
+}
+
+// Same rule on already-known content: used as the in-queue write guard
+// (filesystem/files.ts WriteGuard), so it judges what is really written.
+export function autorunIntroductionErrorForContent(
+    toolName: string,
+    current: string | null,
+    next: string,
+): string | null {
+    if (!hasAutorunTrigger(next)) return null;
+    if (current !== null && hasAutorunTrigger(current)) return null;
+    return refusal(toolName === "file-writeText" ? "this write" : "this edit");
+}
+
 // Error message when the write would introduce an autorun trigger, else null.
 export async function autorunIntroductionError(
     toolName: string,
     args: Record<string, unknown>,
 ): Promise<string | null> {
-    const refuse = (what: string) =>
-        `Refused: ${what} would create a note that starts a background agent (live: / live_note frontmatter or a task / tell-rowboat block). Only the user can create such notes from the desktop chat.`;
+    const refuse = refusal;
     if (toolName === "file-writeText" || toolName === "file-editText") {
         if (typeof args.path !== "string" || !args.path) return null;
         const target = resolveFilePath(args.path).resolvedPath;

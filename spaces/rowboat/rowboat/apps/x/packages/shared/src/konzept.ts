@@ -230,7 +230,62 @@ function findBlock(html: string): string | null {
   return null
 }
 
-export type UmschreibBereich = { start: number; end: number; art: 'json' | 'text' }
+function textzeile(v: unknown): string | null {
+  if (typeof v !== 'string') return null
+  const z = v.replace(/\s+/g, ' ').trim()
+  return z === '' ? null : z
+}
+
+/**
+ * Die Textfelder des Videokonzepts im ersten Datenblock für die Suche, eine Zeile je Feld in Seitenreihenfolge:
+ * thema, zielgruppe, hook, kernaussage, je Stufe name, je Szene kurz und notiz, abschluss. Gleicher Scanner und
+ * gleiche Grenze (KONZEPT_BLOCK_MAX) wie {@link readKonzept}, aber nachsichtig: es zählt nur, dass der Block ein
+ * JSON-Objekt mit einem Objekt `video` ist; `art`, `bezuege` und die Prüfung von {@link checkVideoKonzept} sind
+ * nicht nötig. Nur Zeichenketten; Werte sind Klartext (nicht als Markup oder Entität gelesen), Leerraum
+ * zusammengezogen, leere entfallen. Alles andere liefert `[]`, ohne Fehler.
+ */
+export function konzeptBlockTexte(html: string): string[] {
+  const roh = findBlock(html)
+  if (roh === null || roh.length > KONZEPT_BLOCK_MAX) return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(roh)
+  } catch {
+    return []
+  }
+  if (!isRecord(parsed) || !isRecord(parsed.video)) return []
+  const v = parsed.video
+  const out: string[] = []
+  const add = (x: unknown) => {
+    const z = textzeile(x)
+    if (z !== null) out.push(z)
+  }
+  add(v.thema)
+  add(v.zielgruppe)
+  add(v.hook)
+  add(v.kernaussage)
+  if (Array.isArray(v.stufen)) {
+    for (const s of v.stufen) {
+      if (!isRecord(s)) continue
+      add(s.name)
+      if (!Array.isArray(s.szenen)) continue
+      for (const sz of s.szenen) {
+        if (!isRecord(sz)) continue
+        add(sz.kurz)
+        add(sz.notiz)
+      }
+    }
+  }
+  add(v.abschluss)
+  return out
+}
+
+/** Text, den die Suche je HTML-Datei sieht: sichtbarer Text, dann die Textfelder des Datenblocks ({@link konzeptBlockTexte}), je Feld eine Zeile. */
+export function htmlSearchText(html: string): string {
+  return [htmlVisibleText(html), ...konzeptBlockTexte(html)].join('\n')
+}
+
+export type UmschreibBereich ={ start: number; end: number; art: 'json' | 'text' }
 
 /**
  * Bereiche einer HTML-Datei, in denen `[[...]]` als Verweis gilt: der Inhalt des ersten Datenblocks

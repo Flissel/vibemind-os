@@ -82,4 +82,16 @@ describe("autorunContentForbidden (background agents, channel runs)", () => {
         const copy = await runBuiltin("file-copy", { from: p("fenced.md"), to: p("copy-desk.md") }, ctx());
         expect(copy.error).toBeUndefined();
     });
+
+    it("judges the combined result of parallel edits: each harmless alone, forbidden together", async () => {
+        await fs.writeFile(p("split.md"), "Intro\nAAA\nBBB\n");
+        const [first, second] = await Promise.all([
+            runBuiltin("file-editText", { path: p("split.md"), oldString: "AAA", newString: "```" }, ctx(true)),
+            runBuiltin("file-editText", { path: p("split.md"), oldString: "\nBBB", newString: "task\nBBB" }, ctx(true)),
+        ]);
+        const results = [first, second];
+        expect(results.filter((r) => typeof r.error === "string" && r.error.includes("background agent"))).toHaveLength(1);
+        expect(results.filter((r) => r.success === true)).toHaveLength(1);
+        expect(await fs.readFile(p("split.md"), "utf8")).not.toMatch(/```task/);
+    });
 });

@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
+  KONZEPT_BLOCK_MAX,
   KONZEPT_LESE_MAX,
   WORKSPACE_HTML_CSP,
   checkVideoKonzept,
   frameNavigationDecision,
   htmlTitle,
   htmlVisibleText,
+  htmlSearchText,
+  konzeptBlockTexte,
   isKanalPath,
   isKnowledgeHtmlPath,
   readKonzept,
@@ -576,4 +579,100 @@ describe('Gastbereich', () => {
     expect(typLesungen).toBe(1)
   })
   it('führt webrtc nicht mehr in der Regel', () => { expect(WORKSPACE_HTML_CSP).not.toContain('webrtc'); expect(WORKSPACE_HTML_CSP).toContain('sandbox allow-scripts') })
+})
+
+describe('konzeptBlockTexte / htmlSearchText (Suche)', () => {
+  const video = (extra: Record<string, unknown> = {}) => ({
+    thema: 'Thema Eins', zielgruppe: 'Zielgruppe Zwei', minuten: 4, hook: 'Hook Drei', kernaussage: 'Kern Vier',
+    stufen: [
+      { name: 'Stufe Fuenf', szenen: [{ kurz: 'Kurz Sechs', bildart: 'avatar_slide', notiz: 'Notiz Sieben' }, { kurz: 'Kurz Acht', bildart: 'clip' }] },
+      { name: 'Stufe Neun', szenen: [{ kurz: 'Kurz Zehn', bildart: 'slide', notiz: '  Notiz\n Elf ' }] },
+    ],
+    abschluss: 'Abschluss Zwoelf', auftrag: null, ...extra,
+  })
+  const block = (daten: unknown) => SEITE(typeof daten === 'string' ? daten : JSON.stringify(daten))
+
+  it('liefert alle Textfelder in Reihenfolge, eine Zeile je Feld', () => {
+    const html = block({ art: 'videokonzept', bezuege: ['[[X]]'], video: video() })
+    expect(konzeptBlockTexte(html)).toEqual([
+      'Thema Eins', 'Zielgruppe Zwei', 'Hook Drei', 'Kern Vier', 'Stufe Fuenf', 'Kurz Sechs', 'Notiz Sieben', 'Kurz Acht',
+      'Stufe Neun', 'Kurz Zehn', 'Notiz Elf', 'Abschluss Zwoelf',
+    ])
+  })
+
+  it('htmlSearchText: erst der statische Text, dann die Felder, je Feld eine Zeile', () => {
+    const html = block({ art: 'videokonzept', bezuege: [], video: video() })
+    const t = htmlSearchText(html)
+    expect(t.startsWith('Mein & Konzept Hallo Welt\nThema Eins\nZielgruppe Zwei\n')).toBe(true)
+    expect(t.endsWith('\nAbschluss Zwoelf')).toBe(true)
+  })
+
+  it('bezuege, art, bildart, minuten, firma sind kein Text', () => {
+    const html = block({ art: 'videokonzept', bezuege: ['[[Geheimbezug]]'], video: video({ firma: 'Firmenname' }) })
+    const t = htmlSearchText(html)
+    for (const nein of ['Geheimbezug', 'videokonzept', 'avatar_slide', 'clip', 'Firmenname', 'minuten']) expect(t).not.toContain(nein)
+  })
+
+  it('Werte sind Klartext: Tags und Entitaeten bleiben woertlich', () => {
+    const html = block({ art: 'videokonzept', bezuege: [], video: video({ hook: '<b>fett</b> &amp; so' }) })
+    expect(konzeptBlockTexte(html)).toContain('<b>fett</b> &amp; so')
+  })
+
+  it('ein Block von mehr als KONZEPT_BLOCK_MAX Zeichen fuegt nichts hinzu', () => {
+    const gross = block({ art: 'videokonzept', bezuege: [], video: video({ hook: 'x'.repeat(KONZEPT_BLOCK_MAX) }) })
+    expect(konzeptBlockTexte(gross)).toEqual([])
+    expect(htmlSearchText(gross)).toBe('Mein & Konzept Hallo Welt')
+    const knapp = JSON.stringify({ art: 'videokonzept', bezuege: [], video: video({ hook: 'y' }), fuell: '' })
+    const auf = KONZEPT_BLOCK_MAX - knapp.length
+    const genau = block(JSON.stringify({ art: 'videokonzept', bezuege: [], video: video({ hook: 'y' }), fuell: 'z'.repeat(auf) }))
+    expect(konzeptBlockTexte(genau)).toContain('y')
+    const eins = block(JSON.stringify({ art: 'videokonzept', bezuege: [], video: video({ hook: 'y' }), fuell: 'z'.repeat(auf + 1) }))
+    expect(konzeptBlockTexte(eins)).toEqual([])
+  })
+
+  it('kaputtes JSON, kein video, video kein Objekt: nichts, kein Fehler', () => {
+    expect(konzeptBlockTexte(block('{"art": "videokonzept", '))).toEqual([])
+    expect(konzeptBlockTexte(block({ art: 'konzept', bezuege: [] }))).toEqual([])
+    expect(konzeptBlockTexte(block({ art: 'videokonzept', video: 'text' }))).toEqual([])
+    expect(konzeptBlockTexte(block({ art: 'videokonzept', video: [video()] }))).toEqual([])
+    expect(konzeptBlockTexte(block('[1,2]'))).toEqual([])
+    expect(konzeptBlockTexte('<p>kein Block</p>')).toEqual([])
+    expect(htmlSearchText('<p>kein Block</p>')).toBe('kein Block')
+  })
+
+  it('nur der erste Block zaehlt', () => {
+    const erster = JSON.stringify({ art: 'videokonzept', bezuege: [], video: video({ thema: 'Erstes Thema' }) })
+    const zweiter = JSON.stringify({ art: 'videokonzept', bezuege: [], video: video({ thema: 'Zweites Thema' }) })
+    const html = `<script type="application/json" id="rowboat-konzept">${erster}</script><script type="application/json" id="rowboat-konzept">${zweiter}</script>`
+    const t = konzeptBlockTexte(html)
+    expect(t).toContain('Erstes Thema')
+    expect(t).not.toContain('Zweites Thema')
+  })
+
+  it('</script in einem Wert beendet den Block; was folgt, ist kein Blocktext', () => {
+    const json = JSON.stringify({ art: 'videokonzept', bezuege: [], video: video({ hook: 'vor </script><p>Nachwort</p> nach' }) })
+    const html = `<script type="application/json" id="rowboat-konzept">${json}</script>`
+    expect(() => konzeptBlockTexte(html)).not.toThrow()
+    expect(konzeptBlockTexte(html)).toEqual([]) // abgeschnittenes JSON ist unlesbar
+    expect(htmlSearchText(html)).not.toContain('Thema Eins')
+  })
+
+  it('Werte, die keine Zeichenketten sind, entfallen; leere ebenso', () => {
+    const v = {
+      thema: 5, zielgruppe: '   ', hook: null, kernaussage: { a: 1 }, abschluss: ['x'],
+      stufen: [{ name: 7, szenen: [{ kurz: 1, notiz: false }, 'quatsch', { kurz: 'Gueltig' }] }, 'nope', { name: 'Name', szenen: 'keine' }],
+    }
+    expect(konzeptBlockTexte(block({ art: 'videokonzept', bezuege: [], video: v }))).toEqual(['Gueltig', 'Name'])
+  })
+
+  it('auch ein Block, den readKonzept/checkVideoKonzept ablehnen, ist durchsuchbar (6 Szenen, ohne art)', () => {
+    const v = video()
+    v.stufen = [{ name: 'S', szenen: Array.from({ length: 6 }, (_, i) => ({ kurz: `Szene ${i}`, bildart: 'slide' })) }]
+    const html = block({ video: { ...v, thema: 'Quittenprobe' } })
+    expect(readKonzept(html).daten).toBeNull()
+    expect(checkVideoKonzept(v).length).toBeGreaterThan(0)
+    const t = konzeptBlockTexte(html)
+    expect(t[0]).toBe('Quittenprobe')
+    expect(t).toContain('Szene 5')
+  })
 })

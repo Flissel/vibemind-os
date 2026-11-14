@@ -8,13 +8,16 @@ To re-pin the kernel plugin catalog, change `DESKTOP_PLUGIN_CATALOG_PIN` on bran
 Flissel/rowboat (in `apps/x/apps/renderer/src/lib/rowboat-plugin-api.ts`), then run the sync.
 
 - Fork: https://github.com/Flissel/rowboat (branch `vibemind`)
-- Fork commit: `40ba520b181171cc85c0f7b37e15947fa2250450`
+- Fork commit: `5a6c00e11d4ddc80b4f912393e151db6d4e92c27`
 - Upstream base: rowboatlabs/rowboat `72e9d8c`
 - EHL repo: https://github.com/Flissel/ehl-munich-2026 (`schema/`)
 - EHL commit: `44c1024c7804c696bc283bd14a9d08bd87a38230`
 
 ## Patches on top of upstream (EHL hierarchy graph, VibeMind)
 
+- 5a6c00e1 fix(search): Suche liest die Textfelder des Videokonzept-Blocks
+- b00f5637 fix(files): Autorun-Pruefung im selben Schreibschritt, parallele Aenderungen einzeln harmlos zusammen verboten
+- fc288840 fix(files): Schreibzugriffe je Datei nacheinander, gleichzeitige Aenderungen ueberschreiben sich nicht
 - 40ba520b fix(konzept): Stolperdraht ohne Aufruf im Ereignis, Seiten-Navigationen nur verhindern
 - 24738289 fix(konzept): Zeitueberschreitung setzt die Bestaetigung zurueck, genaue Attributpruefung
 - 48ee0af9 feat(konzept): Konzepte im Gastbereich statt im Rahmen
