@@ -113,6 +113,7 @@ case "$1 $2" in
   "deploy/pg_hilfe.py env")
     printf 'PGHOST=db.example.org\nPGUSER=%s\nPGDATABASE=postgres\nPGPASSWORD=geheim-xyz-0815\n' "${FAKE_PGUSER:-supabase_admin}" > "$4" ;;
   "deploy/pg_hilfe.py deps") [ -n "${FAKE_DEPS_FEHLEN:-}" ] && echo "$FAKE_DEPS_FEHLEN" ;;
+  "deploy/pg_hilfe.py app-rolle") [ -n "${FAKE_APP_ROLLE_FEHLER:-}" ] && exit 1 ;;
 esac
 exit 0
 """
@@ -582,8 +583,21 @@ def test_migrieren_nur_als_supabase_admin_und_dsn_aus_datei(pj: Projekt):
     assert not any("anwenden" in z for z in pj.log())
     lauf = pj.lauf("migrieren")
     assert lauf.returncode == 0, _aus(lauf)[1]
-    assert "python3 -m spaces.event_management.db.anwenden" in pj.log()
+    log = pj.log()
+    assert "python3 -m spaces.event_management.db.anwenden" in log
+    rolle = [i for i, z in enumerate(log) if z.startswith("python3 deploy/pg_hilfe.py app-rolle ")]
+    assert len(rolle) == 1 and rolle[0] > log.index("python3 -m spaces.event_management.db.anwenden")
+    assert log[rolle[0]].endswith("laufzeit/event-app-dsn")
     assert pj.stempel_da("migrieren")
+
+
+@braucht_bash
+def test_migrieren_ohne_app_rolle_kein_stempel(pj: Projekt):
+    pj.pruefen_bereit()
+    pj.stempel("pruefen", "bauen-system", "bauen-web", "sichern")
+    lauf = pj.lauf("migrieren", umgebung={"FAKE_APP_ROLLE_FEHLER": "1"})
+    assert lauf.returncode == 1 and "Login-Rolle der App" in _aus(lauf)[1]
+    assert not pj.stempel_da("migrieren")
 
 
 @braucht_bash

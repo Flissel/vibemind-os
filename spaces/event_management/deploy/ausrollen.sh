@@ -351,6 +351,8 @@ phase_migrieren() {
   [ "$nr" -ge 150000 ] || abbruch "PostgreSQL ist aelter als 15"
   EVENT_ADMIN_DSN_FILE="$ADMIN_DSN_DATEI" "$PY" -m spaces.event_management.db.anwenden </dev/null \
     || abbruch "Migration fehlgeschlagen (Sicherung: $SICH)"
+  # Login-Rolle der App (event_app ist NOLOGIN): Name und Passwort aus laufzeit/event-app-dsn.
+  "$PY" deploy/pg_hilfe.py app-rolle "$ADMIN_DSN_DATEI" "$LZ/event-app-dsn" </dev/null     || abbruch "Login-Rolle der App nicht angelegt (Rueckweg: siehe ausrollen.md, migrieren)"
   stempel migrieren
 }
 

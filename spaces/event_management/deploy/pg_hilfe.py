@@ -7,6 +7,8 @@ und danach loescht.
 
   python3 deploy/pg_hilfe.py env <dsn-datei> <ziel>   schreibt die Umgebungsdatei
   python3 deploy/pg_hilfe.py deps <requirements.txt>  nennt fehlende Module (eins je Zeile)
+  python3 deploy/pg_hilfe.py app-rolle <admin-dsn-datei> <app-dsn-datei>
+      legt die Login-Rolle der App-DSN an (Mitglied von event_app) oder setzt ihr Passwort neu
 
 Ausgaben nennen nie Werte der DSN.
 """
@@ -65,6 +67,57 @@ def umgebungsdatei(umgebung: dict[str, str], ziel: Path) -> None:
     os.chmod(ziel, 0o600)
 
 
+ROLLEN_NAME = re.compile(r"^[a-z][a-z0-9_]{2,62}$")
+ROLLEN_VERBOTEN = {"event_app", "postgres", "authenticator", "anon", "authenticated", "service_role"}
+PASSWORT_MINDESTLAENGE = 24
+
+
+def app_rolle_aus_dsn(dsn: str) -> tuple[str, str]:
+    """Name und Passwort der Login-Rolle aus der App-DSN; prueft beides vor jeder DB-Arbeit."""
+    try:
+        from psycopg.conninfo import conninfo_to_dict
+    except ImportError:
+        raise HilfeFehler("psycopg fehlt auf dem Host") from None
+    try:
+        teile = conninfo_to_dict(dsn.strip())
+    except Exception:  # noqa: BLE001 - Meldung der Bibliothek koennte Werte enthalten
+        raise HilfeFehler("App-DSN nicht lesbar") from None
+    name = str(teile.get("user") or "")
+    passwort = str(teile.get("password") or "")
+    if not ROLLEN_NAME.match(name) or name in ROLLEN_VERBOTEN or name.startswith(("pg_", "supabase")):
+        raise HilfeFehler("App-DSN: user muss eine eigene Rolle sein (a-z, 0-9, _; nicht event_app/postgres/supabase*)")
+    if len(passwort) < PASSWORT_MINDESTLAENGE:
+        raise HilfeFehler(f"App-DSN: password fehlt oder ist kuerzer als {PASSWORT_MINDESTLAENGE} Zeichen")
+    return name, passwort
+
+
+def app_rolle(conn: object, app_dsn: str) -> str:
+    """Legt die Login-Rolle der App an (oder setzt ihr Passwort neu) und macht sie zum Mitglied
+    von event_app. Das Passwort geht nur als SCRAM-Verifier an die DB. Rollen mit
+    Sonderrechten fasst die Funktion nicht an. Gibt den Rollennamen zurueck."""
+    from psycopg import sql
+
+    name, passwort = app_rolle_aus_dsn(app_dsn)
+    if conn.execute("select 1 from pg_roles where rolname = 'event_app'").fetchone() is None:  # type: ignore[attr-defined]
+        raise HilfeFehler("Rolle event_app fehlt (erst die Migrationen)")
+    if conn.execute("select 1 from pg_namespace where nspname = 'event'").fetchone() is None:  # type: ignore[attr-defined]
+        raise HilfeFehler("Schema event fehlt (erst die Migrationen)")
+    vorhanden = conn.execute(  # type: ignore[attr-defined]
+        "select (rolsuper or rolcreaterole or rolcreatedb or rolreplication or rolbypassrls) as sonder"
+        " from pg_roles where rolname = %s", (name,)).fetchone()
+    if vorhanden is not None:
+        sonder = vorhanden["sonder"] if isinstance(vorhanden, dict) else vorhanden[0]
+        if sonder:
+            raise HilfeFehler("Rolle der App-DSN hat Sonderrechte und wird nicht angefasst")
+    verifier = conn.pgconn.encrypt_password(  # type: ignore[attr-defined]
+        passwort.encode("utf-8"), name.encode("utf-8"), b"scram-sha-256").decode("ascii")
+    befehl = "alter role {} with login password {}" if vorhanden is not None else "create role {} login password {}"
+    with conn.transaction():  # type: ignore[attr-defined]
+        conn.execute(sql.SQL(befehl).format(sql.Identifier(name), sql.Literal(verifier)))  # type: ignore[attr-defined]
+        conn.execute(sql.SQL("grant event_app to {}").format(sql.Identifier(name)))  # type: ignore[attr-defined]
+    return name
+
+
 def fehlende_module(requirements: Path) -> list[str]:
     fehlt: list[str] = []
     for zeile in requirements.read_text(encoding="utf-8").splitlines():
@@ -90,6 +143,30 @@ def main(argv: list[str]) -> int:
             except (OSError, UnicodeError):
                 raise HilfeFehler("DSN-Datei nicht lesbar") from None
             umgebungsdatei(dsn_zu_umgebung(dsn), Path(argv[3]))
+            return 0
+        if len(argv) == 4 and argv[1] == "app-rolle":
+            try:
+                admin_dsn = Path(argv[2]).read_text(encoding="utf-8").strip()
+                app_dsn = Path(argv[3]).read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                raise HilfeFehler("DSN-Datei nicht lesbar") from None
+            app_rolle_aus_dsn(app_dsn)  # vor jeder Verbindung pruefen
+            try:
+                import psycopg
+            except ImportError:
+                raise HilfeFehler("psycopg fehlt auf dem Host") from None
+            try:
+                conn = psycopg.connect(admin_dsn, autocommit=True)
+            except Exception:  # noqa: BLE001 - Meldung koennte Werte enthalten
+                raise HilfeFehler("Verbindung mit der Admin-DSN gescheitert") from None
+            with conn:
+                try:
+                    app_rolle(conn, app_dsn)
+                except HilfeFehler:
+                    raise
+                except Exception as fehler:  # noqa: BLE001 - nur die Klasse, nie Werte
+                    raise HilfeFehler(f"App-Rolle nicht angelegt ({type(fehler).__name__})") from None
+            print("App-Rolle bereit (Mitglied von event_app)", file=sys.stderr)
             return 0
         if len(argv) == 3 and argv[1] == "deps":
             for modul in fehlende_module(Path(argv[2])):

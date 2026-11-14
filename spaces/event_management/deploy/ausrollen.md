@@ -25,7 +25,9 @@ Nach jeder Phase steht ein Ledger-Eintrag, der nur Ergebnisse nennt, keine IDs.
   `supabase_admin`, nur hier und in `EVENT_ADMIN_DSN_FILE`), `event-app-dsn`,
   `event-sitzung-geheimnis`, `event-telegram-token`, `event-smtp-passwort`,
   `event-app.env`. Dazu `werte.local.json` (aus `werte.beispiel.json`, alle Schlüssel
-  gefüllt).
+  gefüllt). `admin-dsn` zeigt aus Sicht des Hosts auf die Datenbank, `event-app-dsn` aus
+  Sicht der Container (`host=host.docker.internal`) und nennt die Login-Rolle der App, die
+  `migrieren` anlegt (Phase 5), nie `event_app` selbst.
 - **Host-Dateien** für die Timer: `/etc/event-management/bereitstellung.env` und
   `nachrichten.env` (0600; Inhalt siehe Kopf der `.service`-Dateien).
 - **Python-Umgebung.** `bereitstellung` und `nachrichten` laufen als Systemdienste mit
@@ -136,13 +138,21 @@ entsteht eine Marke `openclaw-<zeit>.keine`.
 `db/anwenden.py` als `supabase_admin`; die DSN kommt nur aus `EVENT_ADMIN_DSN_FILE`
 (Vorgabe `laufzeit/admin-dsn`). Das Skript prüft vorher Rolle und PG ≥ 15.
 
+Danach legt `deploy/pg_hilfe.py app-rolle` die **Login-Rolle der App** an: `event_app` ist
+NOLOGIN, die Dienste verbinden sich mit der Rolle aus `laufzeit/event-app-dsn` (`user`,
+eigener Name wie `event_dienst`, `password` mindestens 24 Zeichen). Die Rolle wird Mitglied
+von `event_app`; gibt es sie schon, bekommt sie nur das Passwort aus der Datei neu. Das
+Passwort geht als SCRAM-Verifier an die Datenbank, nie im Klartext. Eine vorhandene Rolle mit
+Sonderrechten (Superuser, CREATEROLE …) fasst das Skript nicht an.
+
 - **OK von Felix:** ja.
 - **Abbruch:** andere Rolle als `supabase_admin`, PG < 15, jede Migration mit Fehler (jede
   läuft in eigener Transaktion; die Sicherung aus Phase 4 liegt bereit).
 - **Rückweg:** `--ich-habe-ok zurueck migrieren` führt **nichts** aus, es nennt den Weg.
   Das Schema `event` ist neu; ein Löschen ist destruktiv und braucht ein eigenes OK:
-  `DROP SCHEMA event CASCADE;` und bei Bedarf `pg_restore` aus der Sicherung. Danach den
-  Stempel `laufzeit/ausrollen/migrieren.ok` von Hand entfernen.
+  `DROP SCHEMA event CASCADE;` und bei Bedarf `pg_restore` aus der Sicherung, dazu
+  `DROP ROLE <login-rolle>;` (Name aus `laufzeit/event-app-dsn`). Danach den Stempel
+  `laufzeit/ausrollen/migrieren.ok` von Hand entfernen.
 
 ### 6. `shim`  (`--ich-habe-ok shim`)
 
