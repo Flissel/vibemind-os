@@ -3,3 +3,5 @@ werte.local.json
 build/
 # Schluesseldateien und Shim-Budget, von deploy/anbinden.sh angelegt.
 laufzeit/
+# Python-Umgebung der Host-Schritte (ausrollen.md, Vorher).
+.venv/

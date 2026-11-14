@@ -186,6 +186,8 @@ class Projekt:
             dienst = self.space / "deploy" / f"{name}.service"
             text = re.sub(r"^WorkingDirectory=.*$", f"WorkingDirectory={wurzel}",
                           dienst.read_text(encoding="utf-8"), flags=re.M)
+            text = re.sub(r"^ExecStart=\S+", f"ExecStart={wurzel}/spaces/event_management/.venv/bin/python",
+                          text, flags=re.M)
             dienst.write_text(text, encoding="utf-8", newline="\n")
             self._geheim(self.etc / f"{name}.env", "EVENT_MCP_URL=http://event-mcp:8171\n")
         werte = '{\n' + ",\n".join(f'  "{k}": "x"' for k in
@@ -223,6 +225,7 @@ class Projekt:
                "AR_PROTOKOLL": str(self.protokoll), "HOME": str(self.wurzel),
                "AUSROLLEN_STAT": self._pfad_wie_bash(self.bin) + "/stat",
                "AUSROLLEN_FLOCK": self._pfad_wie_bash(self.bin) + "/flock",
+               "AUSROLLEN_PYTHON": self._pfad_wie_bash(self.bin) + "/python3",
                "AUSROLLEN_CURL": self._pfad_wie_bash(self.bin) + "/curl",
                "AUSROLLEN_MEMINFO": self._pfad_wie_bash(self.meminfo.parent) + "/" + self.meminfo.name,
                "AUSROLLEN_ETC": self._pfad_wie_bash(self.etc), "AUSROLLEN_SYSTEMD": self._pfad_wie_bash(self.systemd),
@@ -498,17 +501,47 @@ def test_pruefen_adresse_14_belegt(pj: Projekt):
 
 
 @braucht_bash
-def test_pruefen_host_python_und_repo_pfad(pj: Projekt):
+def test_pruefen_python_umgebung_und_repo_pfad(pj: Projekt):
     pj.pruefen_bereit()
     lauf = pj.lauf("pruefen", umgebung={"FAKE_DEPS_FEHLEN": "psycopg_pool"})
     out = _aus(lauf)[0]
-    assert lauf.returncode == 1 and "Host-Python ohne Module: psycopg_pool" in out
+    assert lauf.returncode == 1 and "Python-Umgebung ohne Module: psycopg_pool" in out
     # Repo-Pfad der Units: falscher Pfad -> benannt (Pfad aus der .service-Datei)
     dienst = pj.space / "deploy" / "nachrichten.service"
     dienst.write_text(re.sub(r"^WorkingDirectory=.*$", "WorkingDirectory=/home/debian/vibemind-os",
                              dienst.read_text(encoding="utf-8"), flags=re.M), encoding="utf-8", newline="\n")
     lauf = pj.lauf("pruefen")
     assert lauf.returncode == 1 and "nachrichten.service erwartet das Repo unter /home/debian/vibemind-os" in _aus(lauf)[0]
+
+
+@braucht_bash
+def test_pruefen_ohne_python_umgebung_meldet_fehlt(pj: Projekt):
+    pj.pruefen_bereit()
+    lauf = pj.lauf("pruefen", umgebung={"AUSROLLEN_PYTHON": "/gibt/es/nicht/python"})
+    out = _aus(lauf)[0]
+    assert lauf.returncode == 1
+    assert "FEHLT  Python-Umgebung fehlt: /gibt/es/nicht/python" in out
+    assert not any("pg_hilfe.py deps" in z for z in pj.log())
+
+
+@braucht_bash
+def test_pruefen_unit_mit_system_python_meldet_fehlt(pj: Projekt):
+    pj.pruefen_bereit()
+    dienst = pj.space / "deploy" / "bereitstellung.service"
+    dienst.write_text(re.sub(r"^ExecStart=\S+", "ExecStart=/usr/bin/python3", dienst.read_text(encoding="utf-8"),
+                             flags=re.M), encoding="utf-8", newline="\n")
+    lauf = pj.lauf("pruefen")
+    out = _aus(lauf)[0]
+    assert lauf.returncode == 1 and "bereitstellung.service startet /usr/bin/python3 statt" in out
+    assert "ok     nachrichten.service nutzt die Python-Umgebung des Space" in out
+
+
+def test_units_starten_die_python_umgebung_des_space():
+    for name in ("bereitstellung", "nachrichten"):
+        text = (DEPLOY / f"{name}.service").read_text(encoding="utf-8")
+        assert re.search(r"^ExecStart=/home/debian/vibemind-os/spaces/event_management/\.venv/bin/python -m ",
+                         text, flags=re.M), name
+    assert ".venv/" in (SPACE / ".gitignore").read_text(encoding="utf-8").splitlines()
 
 
 # --- sichern, migrieren ---------------------------------------------------------------------------

@@ -28,12 +28,19 @@ Nach jeder Phase steht ein Ledger-Eintrag, der nur Ergebnisse nennt, keine IDs.
   gefüllt).
 - **Host-Dateien** für die Timer: `/etc/event-management/bereitstellung.env` und
   `nachrichten.env` (0600; Inhalt siehe Kopf der `.service`-Dateien).
-- **Host-Python.** `bereitstellung` und `nachrichten` laufen als Systemdienste mit
-  `/usr/bin/python3 -m spaces.event_management.system.<x>`. Der Host-Python braucht die
-  Pakete aus `spaces/event_management/requirements.txt` (psycopg, psycopg-pool, PyYAML,
-  …). `pruefen` meldet fehlende Module; installiert wird mit OK von Hand
-  (`python3 -m pip install -r spaces/event_management/requirements.txt`, bzw. die
-  Distribution-Pakete).
+- **Python-Umgebung.** `bereitstellung` und `nachrichten` laufen als Systemdienste mit
+  `/home/debian/vibemind-os/spaces/event_management/.venv/bin/python -m
+  spaces.event_management.system.<x>`; dieselbe Umgebung nutzen das Skript und alle
+  Handschritte unten (`$PY`). Der Debian-Python der VM ist "externally managed" und hat
+  kein pip, deshalb eine eigene Umgebung (nicht im Git, `.venv/` ist ignoriert). Anlegen
+  mit OK, im Repo-Wurzelordner:
+  ```
+  python3 -m venv spaces/event_management/.venv
+  spaces/event_management/.venv/bin/pip install -r spaces/event_management/requirements.txt
+  PY=/home/debian/vibemind-os/spaces/event_management/.venv/bin/python
+  ```
+  `pruefen` meldet eine fehlende Umgebung, fehlende Module und Units, die einen anderen
+  Python starten. Rückweg: den Ordner `.venv` löschen.
 - **Netz.** Das Netz `event-agent` bleibt ohne `ip_range`. `event-mcp` nimmt die feste
   Adresse `10.250.10.14`; `pruefen` liest mit `docker network inspect`, ob ein anderer
   Container sie hält (dann diesen Container neu starten, bevor es weitergeht).
@@ -80,7 +87,7 @@ höchstens 8g.
 ### 1. `pruefen`  (`--ich-habe-ok pruefen`)
 
 Misst ohne Änderung: PostgreSQL ≥ 15, Images (Shim, Claw), `werte.local.json` vollständig,
-`laufzeit/`-Dateien da und 0600, Claim gesetzt, `10.250.10.14` frei, Host-Python mit den
+`laufzeit/`-Dateien da und 0600, Claim gesetzt, `10.250.10.14` frei, Python-Umgebung mit den
 Paketen aus `requirements.txt`, Repo-Pfad wie in den `.service`-Dateien, Host-Env-Dateien.
 
 - **OK von Felix:** nein (nur Lesen); der Controller meldet das Ergebnis.
@@ -218,10 +225,10 @@ Vier Schlüssel; die Klartexte gehen **direkt in 0600-Dateien**, nie auf den Bil
 umask 077
 mkdir -p laufzeit/schluessel
 export EVENT_ADMIN_DSN_FILE=laufzeit/admin-dsn
-python3 -m spaces.event_management.system.schluessel ausstellen --art melden --bezeichnung "Empfang main" > laufzeit/schluessel/melden
-python3 -m spaces.event_management.system.schluessel ausstellen --art betreiber_lesen --bezeichnung "Brain lesen" --name VibeMind > laufzeit/schluessel/bn-lesen
-python3 -m spaces.event_management.system.schluessel ausstellen --art betreiber --bezeichnung "Brain Auftrag" --name VibeMind > laufzeit/schluessel/bn-auftrag
-python3 -m spaces.event_management.system.schluessel ausstellen --art betreiber_lesen --bezeichnung "Pruefung" --name Pruefung > laufzeit/schluessel/pruefung
+"$PY" -m spaces.event_management.system.schluessel ausstellen --art melden --bezeichnung "Empfang main" > laufzeit/schluessel/melden
+"$PY" -m spaces.event_management.system.schluessel ausstellen --art betreiber_lesen --bezeichnung "Brain lesen" --name VibeMind > laufzeit/schluessel/bn-lesen
+"$PY" -m spaces.event_management.system.schluessel ausstellen --art betreiber --bezeichnung "Brain Auftrag" --name VibeMind > laufzeit/schluessel/bn-auftrag
+"$PY" -m spaces.event_management.system.schluessel ausstellen --art betreiber_lesen --bezeichnung "Pruefung" --name Pruefung > laufzeit/schluessel/pruefung
 ```
 
 - `melden`: Zeile 5 von `anbinden` (Server `melden`, Agent `main`).
@@ -260,7 +267,7 @@ nie als Argument; am Terminal fragt die CLI verdeckt. Auf dem Host, im Repo:
 ```
 umask 077
 export EVENT_ADMIN_DSN_FILE=laufzeit/admin-dsn
-python3 -m spaces.event_management.system.betreiber anlegen --mail <mail> --name "<Name>" \
+"$PY" -m spaces.event_management.system.betreiber anlegen --mail <mail> --name "<Name>" \
   < laufzeit/eingabe/betreiber-passwort
 rm laufzeit/eingabe/betreiber-passwort
 ```
@@ -275,7 +282,7 @@ unverändert. Ein zweiter Lauf ändert nichts.
 3. **Legacy-Eintrag:** die lokale Datei `laufzeit/legacy-event.json` (0600, nie im Git) mit
    `{"firma_kurz", "name", "beginn", "ende", "ort", "legacy_url"}` (Zeiten ISO 8601,
    `legacy_url` mit `https://`), dann
-   `python3 -m spaces.event_management.system.legacy eintragen laufzeit/legacy-event.json`.
+   `"$PY" -m spaces.event_management.system.legacy eintragen laufzeit/legacy-event.json`.
    Ausgabe nur die Event-ID. Idempotent über `legacy_url`.
 
 - **OK von Felix:** ja (er wählt Mail und Passwort und legt die Firma an).
@@ -283,7 +290,7 @@ unverändert. Ein zweiter Lauf ändert nichts.
   Legacy-Eintrag steht das Festival in der Firma, schreibgeschützt.
 - **Abbruch:** Exit ungleich 0 oder eine Ausgabe außer der ID und dem festen Text; die
   Anmeldung scheitert; `legacy eintragen` meldet „Firma nicht gefunden“ (Kürzel prüfen).
-- **Rückweg:** `python3 -m spaces.event_management.system.betreiber entziehen <person-id>`
+- **Rückweg:** `"$PY" -m spaces.event_management.system.betreiber entziehen <person-id>`
   nimmt das Betreiber-Recht und macht offene Sitzungen ungültig; die Person bleibt. Die
   Firma und der Legacy-Eintrag stören leer nicht; löschen ist destruktiv und braucht ein
   eigenes OK.
@@ -294,7 +301,7 @@ unverändert. Ein zweiter Lauf ändert nichts.
 Arbeitsbereiche. Der Live-Arbeitsbereich der Festival-Gruppe darf dabei nichts verlieren,
 was nur dort steht. Darum vorher:
 
-1. `python3 deploy/fuellen.py werte.local.json build/` (die gefüllte Saat).
+1. `"$PY" deploy/fuellen.py werte.local.json build/` (die gefüllte Saat).
 2. Den Live-Arbeitsbereich aus dem Claw-Volume holen (falls dort schon einer liegt) und
    vergleichen, zunächst nur Namen:
    `docker cp event-management-claw:/home/node/.openclaw/workspace-legacy laufzeit/sicherung/workspace-live`
@@ -347,7 +354,7 @@ Installiert `bereitstellung` und `nachrichten` (Service + Timer) nach
 
 - **OK von Felix:** ja.
 - **Abbruch:** ein Timer wird nicht `active`; der erste Lauf scheitert (Journal ansehen,
-  meist Host-Python ohne Paket oder falscher Repo-Pfad).
+  meist Python-Umgebung ohne Paket oder falscher Repo-Pfad).
 - **Rückweg:** `--ich-habe-ok zurueck timer` (Timer stoppen und deaktivieren, die vier
   Dateien entfernen, `daemon-reload`).
 
@@ -413,7 +420,7 @@ ohne Werte in den Ledger. Rückweg: Zeile entfernen, `dienste` erneut, `tailscal
 
 | Was | Wer |
 | --- | --- |
-| Vorbedingungen (PG, Images, Dateien, Claim, `.14`, Host-Python) | `ausrollen.sh pruefen`, der Controller liest das Ergebnis |
+| Vorbedingungen (PG, Images, Dateien, Claim, `.14`, Python-Umgebung) | `ausrollen.sh pruefen`, der Controller liest das Ergebnis |
 | Sicherung vollständig (Dump nicht leer, `openclaw.json` da) | `ausrollen.sh sichern` |
 | Migrationen angewendet | `db/anwenden.py` (nennt die Dateinamen) |
 | Speicher beim Bauen (`MemAvailable`, Swap) | `ausrollen.sh bauen` vorher, der Controller beobachtet währenddessen |

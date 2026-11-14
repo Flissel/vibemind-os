@@ -14,7 +14,7 @@
 # Namen der fehlenden ab. Die beiden bauen-Varianten verlangen nur `pruefen` und sind
 # voneinander unabhaengig; alle spaeteren Phasen verlangen beide.
 #   pruefen        Vorbedingungen messen, nichts aendern (PG >= 15, Images, werte.local.json,
-#                  laufzeit/-Dateien 0600, Claim, .14 frei, Host-Python, Repo-Pfad der Units).
+#                  laufzeit/-Dateien 0600, Claim, .14 frei, Python-Umgebung, Repo-Pfad der Units).
 #   bauen system   genau EIN Image je Aufruf, gedeckelt (klassischer Builder, --memory).
 #   bauen web      dito. Danach misst Task 7 (deploy/messen.md, braucht tags.env und das
 #                  System-Image), erst dann geht es weiter.
@@ -78,6 +78,10 @@ ADMIN_DSN_DATEI=${EVENT_ADMIN_DSN_FILE:-$LZ/admin-dsn}
 BAU_SPEICHER=${AUSROLLEN_BAU_SPEICHER:-4g}
 MEMINFO=${AUSROLLEN_MEMINFO:-/proc/meminfo}
 ETC=${AUSROLLEN_ETC:-/etc/event-management}
+# Python der Host-Schritte und der Units: eigene Umgebung des Space (Debian-Python ist
+# "externally managed" und hat kein pip). Anlegen: ausrollen.md, Abschnitt "Vorher".
+PY_SOLL=$SPACE/.venv/bin/python
+PY=${AUSROLLEN_PYTHON:-$PY_SOLL}
 SYSTEMD=${AUSROLLEN_SYSTEMD:-/etc/systemd/system}
 TAILNET_PORT=${AUSROLLEN_TAILNET_PORT:-3170}
 PHASEN="pruefen bauen-system bauen-web sichern migrieren shim dienste tailnet anbinden timer"
@@ -204,7 +208,7 @@ tags_anlegen() {
 }
 
 # --- 4. Datenbank-Zugang ohne Geheimnis im Argument -----------------------------------------
-pg_bereit() { python3 deploy/pg_hilfe.py env "$ADMIN_DSN_DATEI" "$PGENV" >/dev/null || return 1; }
+pg_bereit() { "$PY" deploy/pg_hilfe.py env "$ADMIN_DSN_DATEI" "$PGENV" >/dev/null || return 1; }
 pg_mit() { ( set -a; . "./$PGENV"; set +a; "$@" ); }
 pg_version_num() { pg_mit psql -Atq -c 'show server_version_num' </dev/null 2>/dev/null || echo 0; }
 
@@ -277,17 +281,23 @@ phase_pruefen() {
 
   # Host-Units (bereitstellung, nachrichten): Python-Abhaengigkeiten, Repo-Pfad, Env-Dateien
   local fehlende
-  if fehlende=$(python3 deploy/pg_hilfe.py deps requirements.txt 2>/dev/null); then
-    if [ -z "$fehlende" ]; then ok "Host-Python hat die Abhaengigkeiten aus requirements.txt"
-    else fehlt "Host-Python ohne Module: $(printf '%s' "$fehlende" | tr '\n' ' ')"; fi
+  if [ ! -x "$PY" ]; then
+    fehlt "Python-Umgebung fehlt: $PY (anlegen: ausrollen.md, Abschnitt Vorher)"
+  elif fehlende=$("$PY" deploy/pg_hilfe.py deps requirements.txt 2>/dev/null); then
+    if [ -z "$fehlende" ]; then ok "Python-Umgebung hat die Abhaengigkeiten aus requirements.txt"
+    else fehlt "Python-Umgebung ohne Module: $(printf '%s' "$fehlende" | tr '\n' ' ')"; fi
   else
-    fehlt "Host-Python (python3 deps) nicht pruefbar"
+    fehlt "Python-Umgebung (deps) nicht pruefbar"
   fi
   for f in bereitstellung nachrichten; do
     local wd
     wd=$(sed -n 's/^WorkingDirectory=//p' "deploy/$f.service" | head -1)
     if [ "$wd" = "$REPO" ]; then ok "Repo liegt unter $wd (von $f.service erwartet)"
     else fehlt "$f.service erwartet das Repo unter $wd (hier: $REPO)"; fi
+    local exe
+    exe=$(sed -n 's/^ExecStart=\([^ ]*\).*/\1/p' "deploy/$f.service" | head -1)
+    if [ "$exe" = "$PY_SOLL" ]; then ok "$f.service nutzt die Python-Umgebung des Space"
+    else fehlt "$f.service startet $exe statt $PY_SOLL"; fi
     if [ ! -f "$ETC/$f.env" ]; then fehlt "$ETC/$f.env fehlt"
     elif [ "$(modus_von "$ETC/$f.env")" != 600 ]; then fehlt "$ETC/$f.env hat nicht 0600"
     else ok "$ETC/$f.env (0600)"; fi
@@ -339,7 +349,7 @@ phase_migrieren() {
   pgenv_weg
   case "$nr" in ''|*[!0-9]*) nr=0 ;; esac
   [ "$nr" -ge 150000 ] || abbruch "PostgreSQL ist aelter als 15"
-  EVENT_ADMIN_DSN_FILE="$ADMIN_DSN_DATEI" python3 -m spaces.event_management.db.anwenden </dev/null \
+  EVENT_ADMIN_DSN_FILE="$ADMIN_DSN_DATEI" "$PY" -m spaces.event_management.db.anwenden </dev/null \
     || abbruch "Migration fehlgeschlagen (Sicherung: $SICH)"
   stempel migrieren
 }
@@ -462,7 +472,7 @@ phase_anbinden() {
   if systemctl is-active --quiet bereitstellung.service </dev/null; then
     abbruch "bereitstellung.service laeuft gerade (schreibt openclaw.json). Warten, bis er fertig ist, dann anbinden erneut; der Timer bleibt gestoppt"
   fi
-  python3 deploy/fuellen.py werte.local.json build/ </dev/null || abbruch "fuellen.py fehlgeschlagen"
+  "$PY" deploy/fuellen.py werte.local.json build/ </dev/null || abbruch "fuellen.py fehlgeschlagen"
   bash deploy/anbinden.sh || abbruch "anbinden.sh fehlgeschlagen (Rueckweg: zurueck anbinden)"
   stempel anbinden
   info "Weiter mit: --ich-habe-ok timer (installiert und startet bereitstellung.timer und nachrichten.timer)."
