@@ -86,3 +86,121 @@ def test_lange_data_bilder_im_attribut_bleiben_tag():
     bild = "data:image/png;base64," + "A" * 50_000
     html = f'<p>vor</p><img alt="b" src="{bild}"><p>nach</p>'
     assert html_text.sichtbarer_text(html) == "vor nach"
+
+
+# --- Videokonzept: der Datenblock traegt den Text, die Seite wird per Skript gezeichnet -------------------
+
+def _block(daten, attrs='type="application/json" id="rowboat-konzept"'):
+    import json
+    return f"<script {attrs}>{json.dumps(daten, ensure_ascii=False)}</script>"
+
+
+_VIDEO = {
+    "thema": "Quittenernte", "zielgruppe": "Hobbygaertner", "minuten": 4, "hook": "Hakenwort",
+    "kernaussage": "Kernwort",
+    "stufen": [
+        {"name": "Stufeeins", "szenen": [{"kurz": "Kurzeins", "bildart": "slide", "notiz": "Quittenprobe"},
+                                         {"kurz": "Kurzzwei", "bildart": "clip"}]},
+        {"name": "Stufezwei", "szenen": [{"kurz": "Kurzdrei", "bildart": "avatar_gross", "notiz": "Notizdrei"}]},
+    ],
+    "abschluss": "Schlusswort", "auftrag": None,
+}
+
+
+def test_videokonzept_felder_stehen_in_reihenfolge_nach_dem_sichtbaren_text():
+    html = "<p>Statisch</p>" + _block({"art": "videokonzept", "bezuege": ["[[Bezugwort]]"], "video": _VIDEO})
+    zeilen = html_text.sichtbarer_text(html).split("\n")
+    assert zeilen == ["Statisch", "Quittenernte", "Hobbygaertner", "Hakenwort", "Kernwort", "Stufeeins",
+                      "Kurzeins", "Quittenprobe", "Kurzzwei", "Stufezwei", "Kurzdrei", "Notizdrei", "Schlusswort"]
+
+
+def test_videokonzept_ohne_statischen_text():
+    zeilen = html_text.sichtbarer_text(_block({"art": "videokonzept", "bezuege": [], "video": _VIDEO})).split("\n")
+    assert zeilen[0] == "Quittenernte" and zeilen[-1] == "Schlusswort"
+
+
+def test_videokonzept_bezuege_bildart_minuten_sind_kein_text():
+    text = html_text.sichtbarer_text(_block({"art": "videokonzept", "bezuege": ["[[Bezugwort]]"], "video": _VIDEO}))
+    for nein in ("Bezugwort", "avatar_gross", "slide", "clip", "videokonzept", "4"):
+        assert nein not in text.split()
+    assert "Bezugwort" not in text and "avatar_gross" not in text
+
+
+def test_videokonzept_block_ueber_20000_zeichen_fuegt_nichts_hinzu():
+    video = dict(_VIDEO, hook="x" * 19_990)
+    import json
+    zu_lang = json.dumps({"art": "videokonzept", "bezuege": [], "video": video})
+    assert len(zu_lang) > 20_000
+    assert html_text.sichtbarer_text("<p>A</p><script type=\"application/json\" id=\"rowboat-konzept\">" + zu_lang
+                                     + "</script>") == "A"
+    knapp = {"art": "videokonzept", "bezuege": [], "video": {"hook": "y" * 100}}
+    assert "y" * 100 in html_text.sichtbarer_text(_block(knapp))
+
+
+def test_videokonzept_genau_20000_zeichen_zaehlen():
+    import json
+    leer = json.dumps({"art": "videokonzept", "bezuege": [], "video": {"hook": ""}})
+    fuell = 20_000 - len(leer)
+    block = json.dumps({"art": "videokonzept", "bezuege": [], "video": {"hook": "z" * fuell}})
+    assert len(block) == 20_000
+    html = '<script type="application/json" id="rowboat-konzept">' + block + "</script>"
+    assert html_text.sichtbarer_text(html) == "z" * fuell
+    html2 = '<script type="application/json" id="rowboat-konzept">' + block + " </script>"
+    assert html_text.sichtbarer_text(html2) == ""
+
+
+def test_videokonzept_kaputtes_json_und_fehlendes_video_fuegt_nichts_hinzu():
+    kopf = '<p>A</p><script type="application/json" id="rowboat-konzept">'
+    for roh in ('{"art": "videokonzept", "video": {"hook": "Zebra"', "nicht json", "", "[1,2]", "null",
+                '{"art": "konzept", "bezuege": []}', '{"video": "Zebra"}', '{"video": ["Zebra"]}', '{"video": null}'):
+        assert html_text.sichtbarer_text(kopf + roh + "</script>") == "A"
+
+
+def test_videokonzept_nur_der_erste_block_zaehlt():
+    zwei = (_block({"art": "videokonzept", "bezuege": [], "video": {"hook": "Erster"}})
+            + _block({"art": "videokonzept", "bezuege": [], "video": {"hook": "Zweiter"}}))
+    assert html_text.sichtbarer_text(zwei) == "Erster"
+    # ein erster, unbrauchbarer Block verbraucht den Platz: der zweite zaehlt nicht
+    kaputt_dann_gut = ('<script type="application/json" id="rowboat-konzept">{kaputt</script>'
+                       + _block({"art": "videokonzept", "bezuege": [], "video": {"hook": "Zweiter"}}))
+    assert html_text.sichtbarer_text(kaputt_dann_gut) == ""
+
+
+def test_videokonzept_andere_skripte_zaehlen_nicht():
+    andere_id = _block({"video": {"hook": "Nein"}}, 'type="application/json" id="anderer"')
+    anderer_typ = _block({"video": {"hook": "Nein"}}, 'type="text/javascript" id="rowboat-konzept"')
+    ohne_typ = _block({"video": {"hook": "Nein"}}, 'id="rowboat-konzept"')
+    assert html_text.sichtbarer_text(andere_id + anderer_typ + ohne_typ) == ""
+    mit_parametern = _block({"video": {"hook": "Ja"}}, "ID='rowboat-konzept' TYPE=' Application/JSON ; charset=utf-8'")
+    assert html_text.sichtbarer_text(mit_parametern) == "Ja"
+
+
+def test_videokonzept_script_ende_im_wert_beendet_den_block():
+    html = ('<script type="application/json" id="rowboat-konzept">{"video": {"hook": "Vorn</script>'
+            '<p>Danach</p>", "kurz": "Hinten"}}</p>')
+    text = html_text.sichtbarer_text(html)
+    assert text == 'Danach ", "kurz": "Hinten"}}'      # Rest ist gewoehnlicher sichtbarer Text, kein Blocktext
+    assert "Vorn" not in text
+
+
+def test_videokonzept_nicht_text_werte_werden_uebersprungen():
+    video = {"thema": 5, "zielgruppe": None, "hook": ["Liste"], "kernaussage": {"a": "Objekt"}, "stufen": "x",
+             "abschluss": "Ende"}
+    assert html_text.sichtbarer_text(_block({"video": video})) == "Ende"
+    video = {"stufen": [7, {"name": 3, "szenen": "kaputt"}, {"name": "Gut", "szenen": [None, "s",
+             {"kurz": 1, "notiz": True}, {"kurz": "Kurz", "notiz": None}]}], "hook": "H"}
+    assert html_text.sichtbarer_text(_block({"video": video})) == "H\nGut\nKurz".replace("H\nGut", "H\nGut")
+
+
+def test_videokonzept_felder_getrimmt_leere_uebersprungen_markup_bleibt_woertlich():
+    video = {"thema": "  <b>fett</b> &amp;\n zwei  ", "zielgruppe": "   ", "hook": "", "abschluss": "Ende"}
+    assert html_text.sichtbarer_text(_block({"video": video})) == "<b>fett</b> &amp; zwei\nEnde"
+
+
+def test_videokonzept_hostile_eingabe_bleibt_linear():
+    boese = '<script type="application/json" id="rowboat-konzept">' + '{"video":' * 2000 + "</script>"
+    start = time.perf_counter()
+    assert html_text.sichtbarer_text(boese * 20) == ""
+    assert time.perf_counter() - start < 2
+    tief = '<script id="rowboat-konzept" type="application/json">' + "[" * 19_000 + "</script>"
+    assert html_text.sichtbarer_text(tief) == ""
