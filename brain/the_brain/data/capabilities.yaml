@@ -2205,13 +2205,17 @@
 # zusaetzlich Schreibverb UND Orga-Objekt (Aufgabe, Task, Team, Mitglied,
 # Helfer, Schicht, Slot, Zeitplan, Timetable, Budget) mit Festival-, Orga-,
 # Event- oder Veranstaltungsbezug; "erledigt" allein ist kein Auftrag.
+# Etappe 4 (Katalog): als Event-Bezug zaehlen auch Webinar, Hackathon, Messe,
+# Weihnachtsfeier, Teammeeting und Fest. Der Kalender-Ausschluss (meeting\w*)
+# gewinnt: "Team-Meeting"/"Team Meeting" bleiben ausgeschlossen, nur das
+# zusammengeschriebene "Teammeeting" erreicht den Event-Bot (Ruling Task 4).
 - capability: event_do
   space: event-management
   description: "hand a write order (create, change or assign tasks, members, timetable) for a festival or event to the Event-Bot"
   match_patterns:
-    - "^(?!.*\\b(?:kalender\\w*|calendar|termin\\w*|meeting\\w*)\\b)(?!.*\\b(?:posts?|newsletter\\w*|kampagne\\w*|podcasts?|videos?|bild(?:er|ern|es)?|bubbles?|idee(?:n)?|leads?|crm|kurs(?:e|en|es)?|charts?|präsentation(?:en)?|praesentation(?:en)?|instagram\\w*|reels?)\\b).*\\b(?:trag|trage|leg|lege|erstelle|weise|ändere|aendere|markiere|setze)\\b.{0,40}\\b(?:festival\\w*|orga|event|veranstaltung\\w*)\\b.{0,60}\\b(?:aufgabe|task|team|mitglied|helfer|schicht|slot|zeitplan|timetable|budget)\\w*"
-    - "^(?!.*\\b(?:kalender\\w*|calendar|termin\\w*|meeting\\w*)\\b)(?!.*\\b(?:posts?|newsletter\\w*|kampagne\\w*|podcasts?|videos?|bild(?:er|ern|es)?|bubbles?|idee(?:n)?|leads?|crm|kurs(?:e|en|es)?|charts?|präsentation(?:en)?|praesentation(?:en)?|instagram\\w*|reels?)\\b).*\\b(?:trag|trage|leg|lege|erstelle|weise|ändere|aendere|markiere|setze)\\b.{0,60}\\b(?:aufgabe|task|team|mitglied|helfer|schicht|slot|zeitplan|timetable|budget)\\w*.{0,40}\\b(?:festival\\w*|orga|event|veranstaltung\\w*)\\b"
-    - "^(?!.*\\b(?:kalender\\w*|calendar|termin\\w*|meeting\\w*)\\b)(?!.*\\b(?:posts?|newsletter\\w*|kampagne\\w*|podcasts?|videos?|bild(?:er|ern|es)?|bubbles?|idee(?:n)?|leads?|crm|kurs(?:e|en|es)?|charts?|präsentation(?:en)?|praesentation(?:en)?|instagram\\w*|reels?)\\b).*\\b(?:festival\\w*|orga|event|veranstaltung\\w*)\\b.{0,60}\\b(?:aufgabe|task|team|mitglied|helfer|schicht|slot|zeitplan|timetable|budget)\\w*.{0,60}\\b(?:anlegen|eintragen|zuweisen|ändern|aendern|markieren|setzen)\\b"
+    - "^(?!.*\\b(?:kalender\\w*|calendar|termin\\w*|meeting\\w*)\\b)(?!.*\\b(?:posts?|newsletter\\w*|kampagne\\w*|podcasts?|videos?|bild(?:er|ern|es)?|bubbles?|idee(?:n)?|leads?|crm|kurs(?:e|en|es)?|charts?|präsentation(?:en)?|praesentation(?:en)?|instagram\\w*|reels?)\\b).*\\b(?:trag|trage|leg|lege|erstelle|weise|ändere|aendere|markiere|setze)\\b.{0,40}\\b(?:festival\\w*|orga|event|veranstaltung\\w*|webinar\\w*|hackathon\\w*|messe\\b|weihnachtsfeier\\w*|team.?meeting\\w*|fest\\b)\\b.{0,60}\\b(?:aufgabe|task|team|mitglied|helfer|schicht|slot|zeitplan|timetable|budget)\\w*"
+    - "^(?!.*\\b(?:kalender\\w*|calendar|termin\\w*|meeting\\w*)\\b)(?!.*\\b(?:posts?|newsletter\\w*|kampagne\\w*|podcasts?|videos?|bild(?:er|ern|es)?|bubbles?|idee(?:n)?|leads?|crm|kurs(?:e|en|es)?|charts?|präsentation(?:en)?|praesentation(?:en)?|instagram\\w*|reels?)\\b).*\\b(?:trag|trage|leg|lege|erstelle|weise|ändere|aendere|markiere|setze)\\b.{0,60}\\b(?:aufgabe|task|team|mitglied|helfer|schicht|slot|zeitplan|timetable|budget)\\w*.{0,40}\\b(?:festival\\w*|orga|event|veranstaltung\\w*|webinar\\w*|hackathon\\w*|messe\\b|weihnachtsfeier\\w*|team.?meeting\\w*|fest\\b)\\b"
+    - "^(?!.*\\b(?:kalender\\w*|calendar|termin\\w*|meeting\\w*)\\b)(?!.*\\b(?:posts?|newsletter\\w*|kampagne\\w*|podcasts?|videos?|bild(?:er|ern|es)?|bubbles?|idee(?:n)?|leads?|crm|kurs(?:e|en|es)?|charts?|präsentation(?:en)?|praesentation(?:en)?|instagram\\w*|reels?)\\b).*\\b(?:festival\\w*|orga|event|veranstaltung\\w*|webinar\\w*|hackathon\\w*|messe\\b|weihnachtsfeier\\w*|team.?meeting\\w*|fest\\b)\\b.{0,60}\\b(?:aufgabe|task|team|mitglied|helfer|schicht|slot|zeitplan|timetable|budget)\\w*.{0,60}\\b(?:anlegen|eintragen|zuweisen|ändern|aendern|markieren|setzen)\\b"
   execution_target: "direct:spaces.event_management.uebergabe:auftrag"
   arg_kwarg: text
   validator:
@@ -2230,7 +2234,7 @@
   space: event-management
   description: "ask the Event-Bot a read-only question about a festival or event (tasks, budget, guests, team, helpers)"
   match_patterns:
-    - "^(?!.*\\b(?:kalender\\w*|calendar|termin\\w*|meeting\\w*)\\b)(?!.*\\b(?:posts?|newsletter\\w*|kampagne\\w*|podcasts?|videos?|bild(?:er|ern|es)?|bubbles?|idee(?:n)?|leads?|crm|kurs(?:e|en|es)?|charts?|präsentation(?:en)?|praesentation(?:en)?|instagram\\w*|reels?)\\b).*(\\bfestival|\\bveranstaltung|\\bevent\\b).{0,40}(aufgabe|budget|gäste|gaeste|team|helfer)"
-    - "^(?!.*\\b(?:kalender\\w*|calendar|termin\\w*|meeting\\w*)\\b)(?!.*\\b(?:posts?|newsletter\\w*|kampagne\\w*|podcasts?|videos?|bild(?:er|ern|es)?|bubbles?|idee(?:n)?|leads?|crm|kurs(?:e|en|es)?|charts?|präsentation(?:en)?|praesentation(?:en)?|instagram\\w*|reels?)\\b).*(aufgabe|budget|gäste|gaeste|team|helfer).{0,40}(\\bfestival|\\bveranstaltung|\\bevent\\b)"
+    - "^(?!.*\\b(?:kalender\\w*|calendar|termin\\w*|meeting\\w*)\\b)(?!.*\\b(?:posts?|newsletter\\w*|kampagne\\w*|podcasts?|videos?|bild(?:er|ern|es)?|bubbles?|idee(?:n)?|leads?|crm|kurs(?:e|en|es)?|charts?|präsentation(?:en)?|praesentation(?:en)?|instagram\\w*|reels?)\\b).*(\\bfestival|\\bveranstaltung|\\bevent\\b|\\bwebinar|\\bhackathon|\\bmesse\\b|\\bweihnachtsfeier|\\bteam.?meeting|\\bfest\\b).{0,40}(aufgabe|budget|gäste|gaeste|team|helfer)"
+    - "^(?!.*\\b(?:kalender\\w*|calendar|termin\\w*|meeting\\w*)\\b)(?!.*\\b(?:posts?|newsletter\\w*|kampagne\\w*|podcasts?|videos?|bild(?:er|ern|es)?|bubbles?|idee(?:n)?|leads?|crm|kurs(?:e|en|es)?|charts?|präsentation(?:en)?|praesentation(?:en)?|instagram\\w*|reels?)\\b).*(aufgabe|budget|gäste|gaeste|team|helfer).{0,40}(\\bfestival|\\bveranstaltung|\\bevent\\b|\\bwebinar|\\bhackathon|\\bmesse\\b|\\bweihnachtsfeier|\\bteam.?meeting|\\bfest\\b)"
   execution_target: "direct:spaces.event_management.uebergabe:frage"
   arg_kwarg: text

@@ -110,6 +110,29 @@ POSITIV = {
         "Weise beim Festival den Helfern die Aufgabe Becher zu",
     ],
 }
+# Etappe 4, Task 4: weitere Event-Kategorien des Katalogs. "Team-Meeting" (mit
+# Trenner) bleibt beim Kalender-Ausschluss (Ruling, siehe NEGATIV); nur das
+# zusammengeschriebene "Teammeeting" erreicht den Event-Bot.
+POSITIV_KATEGORIEN = {
+    "event_ask": [
+        "Was ist beim Hackathon bei den Aufgaben offen?",
+        "Wie steht das Budget der Weihnachtsfeier?",
+        "Welche Helfer hat die Messe?",
+        "Zeig mir das Budget vom Webinar",
+        # ("Wer ist beim Fest im Team?" nimmt vorher knowledge_query, wie jede Wer-Frage.)
+        "Zeig mir die Aufgaben vom Fest",
+    ],
+    "event_do": [
+        "Lege für den Hackathon eine Aufgabe Catering an",
+        "Trag beim Webinar die Aufgabe Technik-Check ein",
+        "Weise bei der Weihnachtsfeier dem Team die Aufgabe Deko zu",
+        "Lege für die Messe eine Schicht am Stand an",
+        "Trag beim Fest die Aufgabe Grill ein",
+        "Lege für das Teammeeting eine Aufgabe Raum an",
+    ],
+}
+for _name, _saetze in POSITIV_KATEGORIEN.items():
+    POSITIV[_name] = POSITIV[_name] + _saetze
 NEGATIV = [
     "Erinnere mich morgen an den Termin",
     "Erstelle eine Aufgabe im Projekt",
@@ -134,7 +157,39 @@ NEGATIV = [
     "Ändere die Orga meines Projekts",
     "Ist beim Festival schon alles erledigt?",  # Frage, kein Auftrag
     "Plane einen Post zum Event mit dem Team",
+    # Etappe 4, Task 4: Kalender und fremde Spaces gewinnen auch gegen die neuen
+    # Kategorien.
+    "Was steht im Kalender für das Meeting?",
+    # Ruling: der Kalender-Ausschluss (meeting\w*) gewinnt gegen team.?meeting. Kosten:
+    # dieser Auftrag wird nicht erkannt.
+    "Team-Meeting Aufgabe anlegen",
+    "Lege für das Team-Meeting eine Aufgabe an",
+    "Ich messe die Temperatur",
+    "Ich messe die Temperatur und lege eine Notiz an",
+    "Erstelle einen Post zum Hackathon",
+    "Trag das Webinar in meinen Kalender ein",
+    "Lege für die Weihnachtsfeier einen Termin an",
+    "Erstelle ein Video über die Messe",
 ]
+
+
+@pytest.mark.parametrize("name", ["event_ask", "event_do"])
+def test_neue_kategorien_in_jedem_muster(name):
+    for p in _caps()[name]["match_patterns"]:
+        for wort in ("webinar", "hackathon", "messe", "weihnachtsfeier", "team.?meeting", "fest"):
+            assert wort in p, (name, wort)
+        # Die bestehenden Ausschluesse bleiben vorn.
+        assert p.startswith("^(?!.*\\b(?:kalender\\w*|calendar|termin\\w*|meeting\\w*)\\b)"), p
+
+
+def test_registry_keywords_kennen_die_kategorien():
+    eintrag = yaml.safe_load(REGISTRY.read_text(encoding="utf-8"))["spaces"]["event-management"]
+    (muster,) = eintrag["keywords"]
+    for satz in ("Hackathon am Freitag", "das Webinar", "die Messe", "Weihnachtsfeier",
+                 "Teammeeting", "Fest im Hof", "Festival", "Veranstaltung"):
+        assert re.search(muster, satz, re.IGNORECASE), satz
+    for satz in ("Festung", "Messer", "Ich messen"):
+        assert not re.search(muster, satz, re.IGNORECASE), satz
 
 # Gemessen am Basisstand (capabilities.yaml ohne event_*-Eintraege), nicht geraten.
 BESTEHENDE_ZIELE = {

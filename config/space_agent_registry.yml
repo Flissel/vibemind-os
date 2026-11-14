@@ -328,7 +328,7 @@ spaces:
     generate_agent: false
     aliases: [festival, orga, veranstaltung]
     prefixes: [event.]
-    keywords: ["festival|veranstaltung|orga.?gruppe|event.?orga"]
+    keywords: ['festival|veranstaltung|orga.?gruppe|event.?orga|webinar|hackathon|messe\b|weihnachtsfeier|team.?meeting|fest\b']
     enabled: true
     description: "Event organisation assistant: tasks, teams, budget and guest counts of an event via the Event-Bot."
     mcp_servers: []
