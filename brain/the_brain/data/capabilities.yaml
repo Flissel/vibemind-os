@@ -2222,15 +2222,17 @@
   execution_target: "direct:spaces.event_management.uebergabe:auftrag"
   arg_kwarg: text
   validator:
-    kind: "truth:event_app_change"
+    kind: "truth:event_change"
+    # Zweite Quelle: strukturierter Verlauf des event-mcp (actor exakt, zeitpunkt exakt),
+    # danach der Legacy-Weg ueber die alte App (actor_legacy). True, wenn eine Quelle
+    # True liefert; False nur, wenn beide klar False liefern.
     # report, nicht block: erst nach Nachweis im ausgerollten Brain anheben
-    # (wie schedule_openclaw_cron). Die echte Quelle (`quelle`) wird beim
-    # Ausrollen (Task 6) gemessen und hier nachgetragen; bis dahin sucht die
-    # Pruefung ohne Quellenfilter nach einer Aenderung von "VibeMind".
+    # (wie schedule_openclaw_cron).
     on_fail: "report"
     postcondition:
-      check: event_app_change
-      actor: "VibeMind"
+      check: event_change
+      actor_verlauf: "bot:betreiber:VibeMind"
+      actor_legacy: "VibeMind"
       since_s: 600
 
 - capability: event_ask

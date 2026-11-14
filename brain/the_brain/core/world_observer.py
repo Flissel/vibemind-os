@@ -713,6 +713,119 @@ def _check_event_app_change(spec: Dict[str, Any]):
         return None, signal, f"event_app_change nicht pruefbar ({type(e).__name__})"
 
 
+# --- event_change: zweite Quelle `verlauf` (event-mcp) + Legacy-Weg ------------------
+# Der Verlauf ist strukturiert (actor, zeitpunkt exakt); der Vergleich ist exakt auf
+# `actor_verlauf` (z. B. "bot:betreiber:VibeMind"). Der Schluessel ist ein eigener
+# betreiber_lesen-Schluessel (Name "Pruefung"), unabhaengig vom Bot.
+def _check_event_verlauf(spec: Dict[str, Any]):
+    """Hat `actor_verlauf` in den letzten `since_s` Sekunden einen Verlaufseintrag
+    (Werkzeug aenderungen_seit des event-mcp)? Alles ausser Ja/Nein -> None.
+    detail/signal nennen nur Zaehlwerte, nie Token, URL, Namen oder Titel."""
+    base = (os.environ.get("EVENT_MCP_URL") or "").strip().rstrip("/")
+    if not base:
+        return None, {}, "EVENT_MCP_URL fehlt - keine Nachfrage moeglich"
+    url = base if base.endswith("/mcp") else base + "/mcp"
+    try:
+        from core.config import get_secret
+        token = get_secret("EVENT_VERLAUF_TOKEN")
+    except Exception:
+        token = os.environ.get("EVENT_VERLAUF_TOKEN")
+    token = (token or "").strip()
+    if not token:
+        return None, {}, "kein Token (EVENT_VERLAUF_TOKEN[_FILE])"
+    try:
+        import requests  # lazy
+    except Exception:
+        return None, {}, "requests not available"
+    signal: Dict[str, Any] = {}
+    try:
+        import json
+        import math
+        from datetime import datetime, timedelta, timezone
+        actor = str(spec.get("actor_verlauf") or "").strip()
+        if not actor:
+            return None, {}, "actor_verlauf fehlt"
+        since_s = float(spec.get("since_s", 600))
+        minuten = min(1440, max(1, math.ceil((since_s + _EVENT_TOLERANZ_S) / 60)))
+        headers = {"Accept": "application/json, text/event-stream",
+                   "Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+
+        def rpc(payload):
+            r = requests.post(url, json=payload, headers=headers, timeout=OBSERVE_TIMEOUT)
+            signal["verlauf_status"] = r.status_code
+            if r.status_code >= 400:
+                return None, f"http {r.status_code}"
+            sid = r.headers.get("Mcp-Session-Id")
+            if sid:
+                headers["Mcp-Session-Id"] = sid
+            return _event_antwort_lesen(r), ""
+
+        init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                           "clientInfo": {"name": "world_observer", "version": "1"}}}
+        antwort, grund = rpc(init)
+        if antwort is None or "error" in antwort:
+            return None, signal, grund or "initialize abgelehnt"
+        call = {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "aenderungen_seit", "arguments": {"minuten": minuten}}}
+        antwort, grund = rpc(call)
+        if antwort is None:
+            return None, signal, grund
+        result = antwort.get("result")
+        if "error" in antwort or not isinstance(result, dict) or result.get("isError"):
+            return None, signal, "aenderungen_seit lieferte einen Fehler"
+        text = "".join(str(c.get("text", "")) for c in result.get("content") or []
+                       if isinstance(c, dict))
+        zeilen_roh = json.loads(text).get("aenderungen")
+        if not isinstance(zeilen_roh, list):
+            return None, signal, "aenderungen_seit: unerwartete Antwort"
+        jetzt = _event_jetzt()
+        von = jetzt - timedelta(seconds=since_s + _EVENT_TOLERANZ_S)
+        bis = jetzt + timedelta(seconds=_EVENT_TOLERANZ_S)
+        zeilen = treffer = 0
+        for z in zeilen_roh:
+            if not isinstance(z, dict):
+                continue
+            zeilen += 1
+            if z.get("actor") != actor:
+                continue
+            try:
+                stempel = datetime.fromisoformat(str(z.get("zeitpunkt")))
+            except ValueError:
+                continue
+            if stempel.tzinfo is None:
+                stempel = stempel.replace(tzinfo=timezone.utc)
+            if von <= stempel <= bis:
+                treffer += 1
+        signal.update({"verlauf_zeilen": zeilen, "verlauf_treffer": treffer})
+        return treffer > 0, signal, f"verlauf: {zeilen} Zeilen gelesen, {treffer} vom Bot im Fenster"
+    except Exception as e:
+        # Nur der Typ: Meldungen koennten URL oder Inhalte enthalten.
+        return None, signal, f"verlauf nicht pruefbar ({type(e).__name__})"
+
+
+def _check_event_change(spec: Dict[str, Any]):
+    """Wahrheitspruefung fuer event_do: erst `verlauf` (event-mcp), dann der Legacy-Weg
+    (_check_event_app_change). True, wenn eine Quelle True liefert; False nur, wenn beide
+    klar False liefern; sonst None. spec: {actor_verlauf, actor_legacy, since_s,
+    [quelle, tz]}. detail/signal nennen nur Zaehlwerte."""
+    ok_v, sig_v, det_v = _check_event_verlauf(spec)
+    legacy_spec = {k: v for k, v in spec.items() if k not in ("actor_verlauf", "actor_legacy")}
+    legacy_spec["actor"] = spec.get("actor_legacy") or "VibeMind"
+    ok_l, sig_l, det_l = _check_event_app_change(legacy_spec)
+    signal: Dict[str, Any] = {"verlauf_treffer": sig_v.get("verlauf_treffer"),
+                              "verlauf_zeilen": sig_v.get("verlauf_zeilen"),
+                              "legacy_treffer": sig_l.get("treffer"),
+                              "legacy_zeilen": sig_l.get("zeilen")}
+    signal = {k: v for k, v in signal.items() if v is not None}
+    detail = f"{det_v}; legacy: {det_l}"
+    if ok_v is True or ok_l is True:
+        return True, signal, detail
+    if ok_v is False and ok_l is False:
+        return False, signal, detail
+    return None, signal, detail
+
+
 # Map of check-name → fn. To add a check, add one function above + an entry here.
 _CHECKS = {
     "process_running": _check_process_running,
@@ -726,6 +839,7 @@ _CHECKS = {
     "supabase_node_in_bubble": _check_supabase_node_in_bubble,
     "supabase_bubble_node_count": _check_supabase_bubble_node_count,
     "event_app_change": _check_event_app_change,
+    "event_change": _check_event_change,
 }
 
 

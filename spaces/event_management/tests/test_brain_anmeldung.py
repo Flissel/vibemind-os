@@ -60,8 +60,10 @@ def test_event_space_im_brain_angemeldet():
     }
     assert all(c["arg_kwarg"] == "text" and c["space"] == "event-management" for c in _caps().values())
     val = _caps()["event_do"]["validator"]
-    assert val["kind"] == "truth:event_app_change" and val["on_fail"] == "report"
-    assert val["postcondition"] == {"check": "event_app_change", "actor": "VibeMind", "since_s": 600}
+    assert val["kind"] == "truth:event_change" and val["on_fail"] == "report"
+    assert val["postcondition"] == {
+        "check": "event_change", "actor_verlauf": "bot:betreiber:VibeMind",
+        "actor_legacy": "VibeMind", "since_s": 600}
 
     wirkung = yaml.safe_load(EFFECTS.read_text(encoding="utf-8"))
     wirkung = wirkung.get("effects", wirkung)
