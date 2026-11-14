@@ -12,7 +12,8 @@ GEHEIM = re.compile(r"(key|token|secret|passw|geheim)", re.IGNORECASE)
 
 def dienst(name: str = "rowboat-server") -> dict:
     compose = yaml.safe_load((HEADLESS / "compose.yml").read_text(encoding="utf-8"))
-    assert sorted(compose["services"]) == ["rowboat-server", "rowboat-shim", "rowboat-werkzeuge", "rowboat-wissen"]
+    assert sorted(compose["services"]) == ["rowboat-auftraege", "rowboat-server", "rowboat-shim", "rowboat-werkzeuge",
+                                        "rowboat-wissen"]
     return compose["services"][name]
 
 
@@ -64,7 +65,7 @@ def _env_dateien(svc: dict) -> list[str]:
 
 
 def test_compose_ohne_geheimnis():
-    for dienstname in ("rowboat-server", "rowboat-shim", "rowboat-wissen", "rowboat-werkzeuge"):
+    for dienstname in ("rowboat-server", "rowboat-shim", "rowboat-wissen", "rowboat-werkzeuge", "rowboat-auftraege"):
         svc = dienst(dienstname)
         for name, wert in umgebung(svc).items():
             assert not GEHEIM.search(name), f"Geheimnis-artiger Name in environment: {name}"
@@ -76,6 +77,7 @@ def test_compose_ohne_geheimnis():
     assert _env_dateien(dienst("rowboat-wissen")) == []
     assert _env_dateien(dienst("rowboat-shim")) == ["./claude-token"]
     assert _env_dateien(dienst("rowboat-werkzeuge")) == ["./werkzeuge.env"]
+    assert _env_dateien(dienst("rowboat-auftraege")) == ["./auftraege.env"]
 
 
 def test_dockerfile_node22():
@@ -348,7 +350,11 @@ def test_mcp_eintrag_ohne_geheimnis():
     e = json.loads((HEADLESS / "mcp-eintrag.json").read_text(encoding="utf-8"))
     # OHNE Schraegstrich: mcp 1.27 bedient /mcp und leitet /mcp/ per 307 um (rowboat-wissen mit
     # mcp 1.9.4 ist umgekehrt und braucht /mcp/, Teil C 231107b6) - am 26.10. mit TestClient geprueft.
-    assert e == {"vibemind-werkzeuge": {"type": "http", "url": "http://127.0.0.1:8150/mcp"}}
+    # rowboat-auftraege: der Bearer-Kopf ist nur ein Platzhalter; den Wert traegt der Betreiber auf der VM aus der
+    # Datei auftraege-zugang ein (README "Auftraege").
+    assert e == {"vibemind-werkzeuge": {"type": "http", "url": "http://127.0.0.1:8150/mcp"},
+                 "rowboat-auftraege": {"type": "http", "url": "http://127.0.0.1:8156/mcp",
+                                       "headers": {"Authorization": "Bearer <AUS-DATEI auftraege-zugang>"}}}
 
 
 def test_dockerignore_haelt_werkzeuge_env_fern():
@@ -395,3 +401,111 @@ def test_bauen_nur_werkzeuge_ueberspringt_den_server_bau():
     skript = (HEADLESS / "bauen.ps1").read_text(encoding="utf-8")
     zweig = skript.index("if ($NurWerkzeuge)")
     assert zweig < skript.index("Invoke-Schritt $Quelle @('npm', 'run', 'deps')")
+
+
+# --- Teil B der Konzept-Flaeche: Auftraege-Container rowboat-auftraege -----------------------------------
+
+AUFTRAEGE = HEADLESS / "auftraege"
+WISSEN_NUR_LESEND = {"type": "bind", "source": "/home/debian/rowboat-data/knowledge", "target": "/wissen",
+                     "read_only": True, "bind": {"create_host_path": False}}
+
+
+def test_auftraege_dienst_vertrag():
+    svc = dienst("rowboat-auftraege")
+    env = umgebung(svc)
+    assert svc["build"] == "./auftraege"
+    assert svc["image"] == "rowboat-auftraege:local"
+    # Host-Netz ohne ports: der Dienst bindet nur 127.0.0.1 (server.HOST), nur Prozesse auf der VM erreichen ihn.
+    assert svc["network_mode"] == "host"
+    assert "ports" not in svc
+    assert svc["restart"] == "unless-stopped"
+    assert svc["mem_limit"] == "256m"
+    assert svc["cpus"] == "0.5"
+    assert svc["user"] == "1000:1000"
+    assert "depends_on" not in svc
+    assert env["AUFTRAEGE_PORT"] == "8156"
+    assert env["WISSEN_ORDNER"] == "/wissen"
+    assert env["SALES_UI_URL"] == "http://127.0.0.1:8791"
+    assert env["AUFTRAEGE_ZUGANG_DATEI"] == "/schluessel/auftraege-zugang"
+    assert env["SALES_SCHLUESSEL_DATEI"] == "/schluessel/sales-schluessel"
+    assert env["AUFTRAEGE_LOG"] == "/log/auftraege.log"
+    # Laden-Anzeige ist kein Geheimnis, aber je Ausrollen verschieden: aus auftraege.env; fehlt sie, startet der
+    # Dienst nicht (server.StartFehler), die anderen Dienste bleiben davon unberuehrt.
+    assert svc["env_file"] == [{"path": "./auftraege.env", "required": False}]
+    probe = " ".join(svc["healthcheck"]["test"])
+    assert "http://127.0.0.1:8156/health" in probe and "python3" in probe
+    assert "rowboat-auftraege" not in dienst("rowboat-server")["depends_on"]
+
+
+def test_auftraege_wissen_nur_lesend_und_schluessel_pflicht():
+    volumes = dienst("rowboat-auftraege")["volumes"]
+    assert volumes[0] == WISSEN_NUR_LESEND
+    # Schluesseldateien als nur lesende Datei-Mounts ohne create_host_path: fehlt eine, legt compose den Container
+    # nicht an (und erfindet keinen root-Ordner an ihrer Stelle); ist sie leer, verweigert server.py den Start.
+    assert volumes[1:3] == [
+        {"type": "bind", "source": "./auftraege-zugang", "target": "/schluessel/auftraege-zugang", "read_only": True,
+         "bind": {"create_host_path": False}},
+        {"type": "bind", "source": "./sales-schluessel", "target": "/schluessel/sales-schluessel", "read_only": True,
+         "bind": {"create_host_path": False}},
+    ]
+    assert volumes[3] == {"type": "bind", "source": "./auftraege-log", "target": "/log",
+                          "bind": {"create_host_path": False}}
+    assert len(volumes) == 4
+    assert all(v["read_only"] for v in volumes if v["target"] != "/log")
+
+
+def test_auftraege_ports_stimmen_mit_dem_dienst():
+    import importlib.util
+    import sys
+    sys.path.insert(0, str(AUFTRAEGE))
+    spec = importlib.util.spec_from_file_location("auftraege_server_deploy", AUFTRAEGE / "server.py")
+    modul = importlib.util.module_from_spec(spec)
+    sys.modules["auftraege_server_deploy"] = modul          # dataclass loest Annotationen ueber sys.modules auf
+    spec.loader.exec_module(modul)
+    assert modul.HOST == "127.0.0.1" and modul.PORT_VORGABE == 8156
+    assert modul.SALES_URL_VORGABE == umgebung(dienst("rowboat-auftraege"))["SALES_UI_URL"]
+
+
+def test_auftraege_dockerfile():
+    text = (AUFTRAEGE / "Dockerfile").read_text(encoding="utf-8")
+    assert text.splitlines()[0] == "FROM python:3.12-slim"
+    assert "pip install --no-cache-dir mcp==1.27.0" in text
+    assert "COPY server.py konzept_lesen.py /opt/auftraege/" in text
+    assert "USER 1000:1000" in text
+    assert 'CMD ["python3", "/opt/auftraege/server.py"]' in text
+    befehle = "\n".join(z for z in text.splitlines() if not z.lstrip().startswith("#"))
+    assert not re.search(r"(?i)auftraege-zugang|sales-schluessel|auftraege\.env|token\s*=", befehle)
+
+
+def test_dockerignore_haelt_auftraege_schluessel_fern():
+    zeilen = (HEADLESS / ".dockerignore").read_text(encoding="utf-8").split()
+    for muster in ("auftraege/", "auftraege.env", "auftraege-zugang", "sales-schluessel", "auftraege-log/"):
+        assert muster in zeilen, muster
+
+
+def test_bauen_kopiert_auftraege_kontext():
+    skript = (HEADLESS / "bauen.ps1").read_text(encoding="utf-8")
+    assert "[switch]$NurAuftraege" in skript
+    assert "$auftraegeDateien = @('Dockerfile', 'server.py', 'konzept_lesen.py')" in skript
+    assert "$basis/auftraege" in skript and "mkdir -p -m 0700 $basis/auftraege-log" in skript
+    zweig = skript.index("if ($NurAuftraege)")
+    assert zweig < skript.index("Invoke-Schritt $Quelle @('npm', 'run', 'deps')")
+    # Schluesseldateien und Einstellungen legt das Skript nie an und kopiert sie nie (nur der Betreiber auf der VM).
+    code = re.sub(r"<#.*?#>", "", skript, flags=re.DOTALL)
+    code = "\n".join(z for z in code.splitlines() if not z.lstrip().startswith("#"))
+    for name in ("auftraege-zugang", "sales-schluessel", "auftraege.env"):
+        assert name not in code, name
+
+
+def test_readme_auftraege():
+    readme = (HEADLESS / "README.md").read_text(encoding="utf-8")
+    teil = readme.split("## Aufträge `rowboat-auftraege` (127.0.0.1:8156)", 1)[1].split("\n## ", 1)[0]
+    for wort in ("127.0.0.1:8156/mcp", "video_auftrag_aus_konzept", "auftraege-zugang", "sales-schluessel",
+                 "AUFTRAEGE_LADEN_ANZEIGE", "umask 077", "read -rs", "mcp.json", "Rückweg", "/health", "401",
+                 "readOnlyMcpTools", "auftraege.log", "Neustart"):
+        assert wort in teil, wort
+    # Kein Befehl gibt einen Schluessel aus: kein cat der Schluesseldateien, echo/printf nur in eine Datei.
+    for zeile in teil.splitlines():
+        if "auftraege-zugang" in zeile or "sales-schluessel" in zeile:
+            assert not re.search(r"\bcat\b", zeile), zeile
+            assert not re.search(r"\b(echo|printf)\b", zeile) or ">" in zeile, zeile

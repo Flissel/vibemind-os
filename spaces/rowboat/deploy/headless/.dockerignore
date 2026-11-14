@@ -10,3 +10,9 @@ werkzeuge/
 werkzeuge.env
 werkzeuge.env*
 .werkzeuge.env.neu.*
+# Auftraege-Container: eigener Bau-Kontext; Schluesseldateien, Einstellungen und Protokoll nie in einen Build
+auftraege/
+auftraege.env
+auftraege-zugang
+sales-schluessel
+auftraege-log/

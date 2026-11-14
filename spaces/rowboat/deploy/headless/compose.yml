@@ -130,3 +130,59 @@ services:
       timeout: 5s
       start_period: 30s
       retries: 3
+
+  # Auftraege (Konzept-Flaeche Teil B): MCP rowboat-auftraege nur auf 127.0.0.1:8156/mcp mit genau einem Werkzeug,
+  # video_auftrag_aus_konzept (Videokonzept aus knowledge/Konzepte -> Sales-Annahme POST /api/auftraege/video).
+  # Jede MCP-Anfrage braucht den Dienstschluessel (./auftraege-zugang, 0600); den Sales-Schluessel liest der Dienst
+  # aus ./sales-schluessel (0600). Beide als nur lesende Datei-Mounts ohne create_host_path: fehlt eine Datei, legt
+  # compose den Container nicht an; ist sie leer, startet der Dienst nicht. Wissensordner nur lesend.
+  # ./auftraege.env traegt nur AUFTRAEGE_LADEN_ANZEIGE (kein Geheimnis); fehlt sie, startet der Dienst nicht.
+  rowboat-auftraege:
+    build: ./auftraege
+    image: rowboat-auftraege:local
+    network_mode: host
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: "0.5"
+    user: "1000:1000"
+    env_file:
+      - path: ./auftraege.env
+        required: false
+    environment:
+      AUFTRAEGE_PORT: "8156"
+      WISSEN_ORDNER: /wissen
+      SALES_UI_URL: http://127.0.0.1:8791
+      AUFTRAEGE_ZUGANG_DATEI: /schluessel/auftraege-zugang
+      SALES_SCHLUESSEL_DATEI: /schluessel/sales-schluessel
+      AUFTRAEGE_LOG: /log/auftraege.log
+    volumes:
+      - type: bind
+        source: /home/debian/rowboat-data/knowledge
+        target: /wissen
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./auftraege-zugang
+        target: /schluessel/auftraege-zugang
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./sales-schluessel
+        target: /schluessel/sales-schluessel
+        read_only: true
+        bind:
+          create_host_path: false
+      # Protokoll auftraege.log (dreht bei 1 MB, drei Vorgaenger); bauen.ps1 legt den Ordner 0700 an.
+      - type: bind
+        source: ./auftraege-log
+        target: /log
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8156/health', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3

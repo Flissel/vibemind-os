@@ -40,6 +40,19 @@ def test_kanal_vorgabe_kennt_alle_werkzeuge():
         assert f'"vibemind-werkzeuge:{fn.__name__}"' in vorgabe, fn.__name__
 
 
+def test_auftraege_werkzeug_in_keiner_kanal_freigabeliste():
+    """Gegenprobe (Konzept-Flaeche Teil B): aus Telegram/WhatsApp gibt es keine Uebergabe an die Werkbank. Das
+    schreibende Werkzeug von rowboat-auftraege steht weder in der Fork-Vorgabe noch in einer channels.json-Vorlage."""
+    text = KANAL_VORGABE.read_text(encoding="utf-8")
+    vorgabe = text.split("DEFAULT_CHANNEL_READ_ONLY_MCP_TOOLS", 1)[1].split("];", 1)[0]
+    assert '"vibemind-werkzeuge:github_repos"' in vorgabe          # die Liste wurde wirklich gefunden
+    assert "video_auftrag_aus_konzept" not in vorgabe and "rowboat-auftraege" not in vorgabe
+    for datei in HEADLESS.parent.rglob("*.json"):
+        inhalt = datei.read_text(encoding="utf-8")
+        if "readOnlyMcpTools" in inhalt or datei.name.startswith("channels"):
+            assert "video_auftrag_aus_konzept" not in inhalt, datei
+
+
 def test_frontmatter_und_tools():
     fm = _frontmatter()
     assert fm["name"] == "zentrale-werkzeuge"

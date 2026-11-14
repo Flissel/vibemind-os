@@ -240,3 +240,87 @@ cd ~/rowboat-headless && docker compose up -d --build rowboat-werkzeuge   # nur 
 curl -s http://127.0.0.1:8150/health                                       # {"status":"ok"}
 docker compose logs rowboat-werkzeuge | grep Zugang                        # Ergebnis der Schreibprobe
 ```
+
+## Aufträge `rowboat-auftraege` (127.0.0.1:8156)
+
+MCP-Server `rowboat-auftraege` (Streamable HTTP, `http://127.0.0.1:8156/mcp`, dazu `GET /health`) mit genau einem
+Werkzeug, `video_auftrag_aus_konzept(pfad, stand)`: Er liest ein Videokonzept `knowledge/Konzepte/**/*.html`
+(höchstens 1 MB, nie unter `knowledge/Kanal/`) selbst aus dem nur lesend eingehängten Wissensordner, prüft den
+Datenblock wie die App (`auftraege/konzept_lesen.py`, Nachbau von `readKonzept`/`checkVideoKonzept`, gemessen an
+`tests/konzept_vektoren.json`) und schickt ihn an die Sales-Annahme `POST /api/auftraege/video`
+(`SALES_UI_URL`, Vorgabe `http://127.0.0.1:8791`). Quelle: `auftraege/`, Konzept-Fläche Teil B
+(`Vibemind_V1/docs/superpowers/plans/2026-11-14-konzept-flaeche-teil-b.md`, Aufgabe 5).
+
+- **Das Ja von Felix** setzt Rowboats Freigabeschicht durch (Fork, Aufgabe 7): für dieses Werkzeug fragt die App immer
+  einen Menschen und schreibt in `stand` den sha256 der Datei, die die Rückfrage gezeigt hat. Weicht die Datei davon
+  ab, lehnt der Dienst ab ("Das Konzept hat sich seit der Rückfrage geändert. …") und sendet nichts.
+- **Mit Anmeldung:** außer `GET /health` braucht jede Anfrage `Authorization: Bearer <Dienstschlüssel>`, sonst 401.
+  Grenze (Festlegung 1 des Plans): wer auf der VM Rowboats `config/mcp.json` lesen kann, kann den Dienst direkt
+  aufrufen; Rückhalt sind die Tagesgrenze in Sales und das Absegnen jedes Stücks auf der Werkbank.
+- **Nie in einer Kanal-Freigabeliste:** `video_auftrag_aus_konzept` gehört weder in die Fork-Vorgabe
+  `DEFAULT_CHANNEL_READ_ONLY_MCP_TOOLS` noch in `~/rowboat-data/config/channels.json` -> `readOnlyMcpTools`
+  (aus Telegram/WhatsApp gibt es keine Übergabe). `tests/test_zentrale_skill.py` prüft die Vorgabe.
+- **Kein Wiederholen:** keine Verbindung -> "Die Annahme ist gerade nicht erreichbar. Es wurde nichts übergeben.";
+  Verbindung stand, aber 20 s keine Antwort, Abbruch oder 5xx -> "… ist unklar – bitte auf der Werkbank-Seite
+  nachsehen …" (Sales könnte angelegt haben). 400/409/413/429 geben den Satz von Sales weiter.
+- **Protokoll** `~/rowboat-headless/auftraege-log/auftraege.log` (dreht bei 1 MB, drei Vorgänger): je Aufruf Zeit,
+  Pfad und Ergebnis (`auftrag <nr>` oder `fehler <art>`); nie ein Schlüssel, nie Konzeptinhalt.
+- Port 8156 ist ein Port des Mini-PC (nur Loopback). Die Port-Liste `vibemind.config.json` im äußeren Repo führt
+  die Ports des PC.
+
+Dateien auf der VM unter `~/rowboat-headless/` (alle 0600, keine im Repo, keine im Image; `bauen.ps1` legt nur
+`auftraege-log/` an, nie eine Schlüsseldatei):
+
+| Datei | Inhalt | Woher |
+|---|---|---|
+| `auftraege-zugang` | Dienstschlüssel (Bearer am MCP-Endpunkt) | auf der VM erzeugt, s. u. |
+| `sales-schluessel` | Schlüssel der Herkunft `rowboat` der Sales-Annahme | Sales: `python -m freigabe_schluessel anlegen rowboat` (sales-mcp) |
+| `auftraege.env` | `AUFTRAEGE_LADEN_ANZEIGE=<Laden>` (kein Geheimnis, steht in der Werkzeugbeschreibung) | Betreiber |
+
+Beide Schlüssel liest der Dienst beim Start: ein neuer Schlüssel braucht einen Neustart des Dienstes. Fehlt eine
+Datei, legt compose den Container nicht an; ist sie leer oder fehlt `AUFTRAEGE_LADEN_ANZEIGE`, startet der Dienst
+nicht und nennt nur den Variablennamen.
+
+Schlüssel anlegen (gibt nichts aus; der Sales-Schlüssel wird verdeckt eingefügt, dann Enter):
+
+```sh
+cd ~/rowboat-headless
+( umask 077; python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > auftraege-zugang )
+( umask 077; IFS= read -rs k; printf '%s\n' "$k" > sales-schluessel; unset k )
+( umask 077; printf 'AUFTRAEGE_LADEN_ANZEIGE=%s\n' 'Felix (fin2gether)' > auftraege.env )
+```
+
+Eintrag in Rowboats `config/mcp.json` (Vorlage `mcp-eintrag.json`, Platzhalter `<AUS-DATEI auftraege-zugang>`):
+das Skript setzt den Wert aus der Datei ein, schreibt `mcp.json` mit 0600 und gibt den Schlüssel nie aus.
+
+```sh
+python3 - <<'PY'
+import json, os, pathlib
+h = pathlib.Path.home()
+eintrag = json.loads((h / "rowboat-headless/mcp-eintrag.json").read_text())["rowboat-auftraege"]
+eintrag["headers"]["Authorization"] = "Bearer " + (h / "rowboat-headless/auftraege-zugang").read_text().strip()
+ziel = h / "rowboat-data/config/mcp.json"
+cfg = json.loads(ziel.read_text()) if ziel.exists() else {}
+cfg.setdefault("mcpServers", {})["rowboat-auftraege"] = eintrag
+neu = ziel.with_name(".mcp.json.neu")
+with os.fdopen(os.open(neu, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+    json.dump(cfg, f, indent=2)
+os.replace(neu, ziel)
+print("rowboat-auftraege in mcp.json eingetragen")
+PY
+```
+
+Start und Probe (nur mit Betreiber-OK):
+
+```sh
+pwsh -File spaces/rowboat/deploy/headless/bauen.ps1 -NurAuftraege            # am PC: nur dieser Kontext
+cd ~/rowboat-headless && docker compose up -d --build rowboat-auftraege      # auf der VM
+curl -s http://127.0.0.1:8156/health                                         # {"status":"ok"}
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8156/mcp   # 401 ohne Schlüssel
+tail -n 5 ~/rowboat-headless/auftraege-log/auftraege.log                     # je Übergabe eine Zeile
+```
+
+**Rückweg:** `docker compose stop rowboat-auftraege && docker compose rm -f rowboat-auftraege`, den Eintrag
+`rowboat-auftraege` aus `~/rowboat-data/config/mcp.json` nehmen und in Sales den `rowboat`-Schlüssel sperren.
+Bestehende Aufträge und Konzepte bleiben unberührt; `auftraege-zugang`, `sales-schluessel` und das Protokoll
+bleiben liegen, bis der Betreiber sie löscht.
