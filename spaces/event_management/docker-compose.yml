@@ -98,14 +98,16 @@ services:
       - event-management-claw-state:/home/node/.openclaw
       - event-management-claw-keys:/home/node/.config/openclaw
       # Gefuellte Saat (deploy/fuellen.py), nicht config/workspace mit
-      # offenen Platzhaltern. Zwei Arbeitsbereiche: workspace (Gruppe, Agent
-      # main) und workspace-brain (brain-lesen/brain-auftrag, eigene SOUL --
-      # nur dort gilt actor "VibeMind"). Laufzeitpfade in config/openclaw.json.
+      # offenen Platzhaltern. Drei Arbeitsbereiche: workspace (Empfang, Agent
+      # main), workspace-legacy (Legacy-Gruppe, Agent ev-legacy) und
+      # workspace-brain (brain-lesen/brain-auftrag, eigene SOUL -- nur dort gilt
+      # actor "VibeMind"). Laufzeitpfade in config/openclaw.json.
       # Saat der Konfiguration (ohne Schluessel); deploy/anbinden.sh legt sie
       # ins Volume und setzt die Schluessel per stdin.
       - ./build/openclaw.json:/seed/openclaw.json:ro
       - ./build/workspace:/seed/workspace:ro
       - ./build/workspace-brain:/seed/workspace-brain:ro
+      - ./build/workspace-legacy:/seed/workspace-legacy:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # Der Image-Healthcheck probt fest 127.0.0.1:18789 -- daran ist der alte

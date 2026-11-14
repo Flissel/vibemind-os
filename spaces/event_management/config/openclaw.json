@@ -47,6 +47,13 @@
         }
       },
       {
+        "id": "ev-legacy",
+        "workspace": "/home/node/.openclaw/workspace-legacy",
+        "tools": {
+          "allow": ["event-app__*"]
+        }
+      },
+      {
         "id": "brain-lesen",
         "workspace": "/home/node/.openclaw/workspace-brain",
         "tools": {
@@ -93,6 +100,18 @@
       }
     ]
   },
+  "bindings": [
+    {
+      "agentId": "ev-legacy",
+      "match": {
+        "channel": "telegram",
+        "peer": {
+          "kind": "group",
+          "id": "{{TELEGRAM_GRUPPE}}"
+        }
+      }
+    }
+  ],
   "plugins": {
     "entries": {
       "telegram": {

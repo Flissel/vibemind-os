@@ -148,7 +148,7 @@ def test_saat_ueberschreibt_nur_soul_agents_und_skills() -> None:
     code = SKRIPT.read_text(encoding="utf-8")
     assert "SOUL.md" in code and "AGENTS.md" in code and "skills" in code
     assert "SEED = '/seed'" in code
-    assert "['workspace', 'workspace-brain']" in code
+    assert "['workspace', 'workspace-brain', 'workspace-legacy']" in code
     # Kein Ueberschreiben des ganzen Arbeitsbereichs.
     assert not re.search(r"cpSync\(\s*[^,]*workspace[^,]*,\s*[^,]*workspace[^,]*\)", code)
     assert "vor-anbinden-" in code
@@ -250,8 +250,9 @@ def _schutz(tmp_path: Path, konfig: object | str) -> int:
 
 def test_schutz_bricht_ab_solange_ev_legacy_fehlt(tmp_path: Path) -> None:
     vorlage = json.loads(OPENCLAW.read_text(encoding="utf-8"))
-    # Stand Etappe 3: Legacy-Gruppe in der Saat, kein Agent daran gebunden -> Abbruch.
     assert "{{TELEGRAM_GRUPPE}}" in OPENCLAW.read_text(encoding="utf-8")
+    # Ohne Binding an die Legacy-Gruppe in der Saat -> Abbruch (die echte Saat hat es seit Etappe 4).
+    vorlage.pop("bindings")
     assert _schutz(tmp_path, vorlage) == 3
     # Nur `main` gebunden reicht nicht.
     nur_main = dict(vorlage, bindings=[dict(LEGACY_BINDING, agentId="main")])
@@ -286,6 +287,96 @@ def test_schutz_steht_vor_jeder_aenderung_und_nennt_keine_daten() -> None:
     assert "$" not in meldung.split("echo", 1)[1]
     block = code[code.index('if [ "$RC" = 3 ]'):]
     assert "exit 1" in block[:block.index("\nfi\n")]
+
+
+# --- ev-legacy: Legacy-Gruppe mit eigenem Agenten (Etappe 4, Task 2) ------------
+
+def _vorlage() -> dict:
+    return json.loads(OPENCLAW.read_text(encoding="utf-8"))
+
+
+def test_ev_legacy_an_legacy_gruppe_gebunden() -> None:
+    bindings = [b for b in _vorlage()["bindings"]
+                if b["match"].get("peer", {}).get("id") == "{{TELEGRAM_GRUPPE}}"]
+    assert len(bindings) == 1
+    assert bindings[0] == LEGACY_BINDING
+    assert bindings[0]["match"]["peer"]["kind"] == "group"
+    gruppen = _vorlage()["channels"]["telegram"]["groups"]
+    assert gruppen["{{TELEGRAM_GRUPPE}}"]["requireMention"] is False
+
+
+def test_ev_legacy_nur_alte_werkzeuge() -> None:
+    agenten = {a["id"]: a for a in _vorlage()["agents"]["list"]}
+    assert agenten["ev-legacy"] == {
+        "id": "ev-legacy", "workspace": "/home/node/.openclaw/workspace-legacy",
+        "tools": {"allow": ["event-app__*"]}}
+
+
+def test_main_bleibt_empfang() -> None:
+    konfig = _vorlage()
+    agenten = {a["id"]: a for a in konfig["agents"]["list"]}
+    assert agenten["main"]["tools"]["allow"] == ["melden__gruppe_melden", "melden__chat_melden"]
+    assert not [b for b in konfig["bindings"] if b["agentId"] == "main"]
+
+
+def test_schutz_laesst_ausrollen_zu(tmp_path: Path) -> None:
+    # Mit der echten Saat-Datei: bisher Exit 3, jetzt 0.
+    assert _schutz(tmp_path, _vorlage()) == 0
+
+
+def test_saat_kennt_workspace_legacy() -> None:
+    assert "'workspace-legacy'" in _code()
+    assert (SPACE / "config" / "workspace-legacy" / "SOUL.md").is_file()
+
+
+def test_ev_legacy_ist_kein_arbeiter_agent() -> None:
+    # Ruling T8-b: ev-legacy gehoert zur Saat; das Arbeiter-Muster darf ihn nicht erfassen.
+    treffer = re.search(r"const AGENT = /(.+)/;", _code())
+    assert treffer is not None
+    muster = re.compile(treffer.group(1))
+    assert muster.pattern == "^(ev|ld|bo)-[0-9a-f]{8}$"
+    assert not muster.match("ev-legacy")
+    assert muster.match("ev-1a2b3c4d")
+
+
+def _echte_saat() -> dict:
+    return _vorlage()
+
+
+def test_zweiter_lauf_erhaelt_alles(tmp_path: Path) -> None:
+    # Task 4 erweitert diese Pruefung um die Server bn-lesen/bn-auftrag.
+    saat = _echte_saat()
+    arbeiter = {"id": "ev-1a2b3c4d", "workspace": "/home/node/.openclaw/workspace-ev-1a2b3c4d",
+                "tools": {"allow": ["ev-1a2b3c4d__*"]}}
+    server = {"url": "http://event-mcp.example.org:8171/mcp", "transport": "streamable-http",
+              "headers": {"Authorization": "Bearer evk_beispiel_nur_fuer_den_test"}}
+    bind = {"agentId": "ev-1a2b3c4d", "match": {
+        "channel": "telegram", "peer": {"kind": "group", "id": "-1001234567890"}}}
+    aktuell = json.loads(json.dumps(saat))
+    aktuell["agents"]["list"].append(arbeiter)
+    aktuell["mcp"]["servers"]["ev-1a2b3c4d"] = server
+    aktuell["bindings"].append(bind)
+    aktuell["channels"]["telegram"]["groups"]["-1001234567890"] = {"requireMention": False}
+    aktuell["gateway"]["port"] = 19999  # abweichende Saat -> Ersetzen
+
+    ausgabe, cfg = _saat_laufen(tmp_path, aktuell, seed=saat)
+    assert "gesichert und durch die Saat ersetzt" in ausgabe
+    erwartet = json.loads(json.dumps(saat))
+    erwartet["agents"]["list"].append(arbeiter)
+    erwartet["mcp"]["servers"]["ev-1a2b3c4d"] = server
+    erwartet["bindings"].append(bind)
+    erwartet["channels"]["telegram"]["groups"]["-1001234567890"] = {"requireMention": False}
+    neu = json.loads(cfg.read_text(encoding="utf-8"))
+    assert neu == erwartet
+    ids = [a["id"] for a in neu["agents"]["list"]]
+    assert "ev-legacy" in ids and "ev-1a2b3c4d" in ids
+    assert {b["agentId"] for b in neu["bindings"]} == {"ev-legacy", "ev-1a2b3c4d"}
+    assert "evk_" not in ausgabe and "-1001234567890" not in ausgabe
+
+    # Zweiter Lauf, gleiche Saat: nichts mehr zu tun.
+    ausgabe2, cfg = _saat_laufen(tmp_path, None, seed=saat)
+    assert "openclaw.json: unveraendert" in ausgabe2
+    assert json.loads(cfg.read_text(encoding="utf-8")) == erwartet
 
 
 # --- Saat erhaelt bereitgestellte Agenten (Ruling T8-b) -------------------------
@@ -356,6 +447,7 @@ def _node(tmp_path: Path, js: str, eingabe: bytes = b"") -> tuple[str, list[list
     skript = tmp_path / "lauf.js"
     skript.write_text(SPION_JS + js, encoding="utf-8")
     log = tmp_path / "spion.json"
+    log.unlink(missing_ok=True)  # mehrere Laeufe je Test: Protokoll nie anhaengen
     r = subprocess.run([node, str(skript)], input=eingabe, capture_output=True, timeout=60,
                        env={**os.environ, "SPION_LOG": str(log)})
     ausgabe = r.stdout.decode("utf-8") + r.stderr.decode("utf-8")
@@ -379,15 +471,17 @@ def _atomar_geschrieben(log: list[list[str]], cfg: Path) -> None:
 
 
 def _saat_laufen(tmp_path: Path, aktuell: dict | None,
-                 log: list[list[str]] | None = None) -> tuple[str, Path]:
+                 log: list[list[str]] | None = None,
+                 seed: dict | None = None) -> tuple[str, Path]:
     """Fuehrt SAAT_JS mit lokalem node gegen Verzeichnisse unter tmp_path aus.
 
     aktuell None: es gibt noch keine openclaw.json. Ist `log` eine Liste, landet dort das
-    Schreibprotokoll."""
+    Schreibprotokoll. `seed` ersetzt die Saat-Datei (Standard: SAAT)."""
     zustand, saat = tmp_path / "zustand", tmp_path / "saat"
-    for d in (zustand, saat / "workspace", saat / "workspace-brain"):
-        d.mkdir(parents=True)
-    (saat / "openclaw.json").write_text(json.dumps(SAAT), encoding="utf-8")
+    for d in (zustand, saat / "workspace", saat / "workspace-brain", saat / "workspace-legacy"):
+        d.mkdir(parents=True, exist_ok=True)
+    (saat / "openclaw.json").write_text(json.dumps(seed if seed is not None else SAAT),
+                                        encoding="utf-8")
     if aktuell is not None:
         (zustand / "openclaw.json").write_text(json.dumps(aktuell), encoding="utf-8")
     js = _heredoc("SAAT_JS=$(cat <<'JS'", "JS")

@@ -311,7 +311,7 @@ try {
         + gruppen.length + ' Gruppen');
     }
   }
-  for (const w of ['workspace', 'workspace-brain']) {
+  for (const w of ['workspace', 'workspace-brain', 'workspace-legacy']) {
     const quelle = SEED + '/' + w;
     const ziel = STATE + '/' + w;
     if (!fs.existsSync(quelle)) { console.log(w + ': Saat fehlt'); process.exitCode = 1; continue; }

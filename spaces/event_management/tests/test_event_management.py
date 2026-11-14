@@ -133,6 +133,7 @@ def test_compose_ohne_docker_socket_und_mit_gefuellter_saat() -> None:
     assert not any("docker.sock" in v for v in volumes)
     assert "./build/workspace:/seed/workspace:ro" in volumes
     assert "./build/workspace-brain:/seed/workspace-brain:ro" in volumes
+    assert "./build/workspace-legacy:/seed/workspace-legacy:ro" in volumes
 
 
 def test_telegram_gruppen_und_werkzeugsperren() -> None:
@@ -240,7 +241,7 @@ def _erlaubt(agent: str) -> list[str]:
 def test_brain_agenten_eingetragen() -> None:
     konfig = json.loads(OPENCLAW.read_text(encoding="utf-8"))
     liste = konfig["agents"]["list"]
-    assert [a["id"] for a in liste] == ["main", "brain-lesen", "brain-auftrag"]
+    assert [a["id"] for a in liste] == ["main", "ev-legacy", "brain-lesen", "brain-auftrag"]
     assert konfig["gateway"]["http"]["endpoints"]["chatCompletions"]["enabled"] is True
 
 
