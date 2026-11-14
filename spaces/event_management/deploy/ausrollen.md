@@ -255,6 +255,26 @@ Schreibweise der Optionen wechselt zwischen Versionen).
 - **Abbruch:** `tailscale serve` meldet einen Fehler oder `status` zeigt etwas Unerwartetes.
 - **Rückweg:** `--ich-habe-ok zurueck tailnet` = `tailscale serve --https=3170 off`.
 
+## Netzweg Brain → event-mcp (Entscheidung in Teil B)
+
+Der Brain fragt für die Wahrheitsprüfung `event_change` den Verlauf über event-mcp ab
+(`aenderungen_seit`, Schlüssel „Pruefung“). event-mcp lauscht auf dem Host nur auf
+`127.0.0.1:8171` und lässt per DNS-Rebinding-Schutz nur die Host-Kopfzeilen `127.0.0.1`,
+`localhost`, `event-mcp` und `host.docker.internal` zu. Läuft der Brain nicht auf der VM,
+braucht es einen Weg dorthin. Felix entscheidet ihn vor dem Schritt „Brain-Umgebung“:
+
+- **`tailscale serve`** für Port 8171 auf einem eigenen Tailnet-Port (wie `tailnet` für
+  event-web). Der Brain ruft dann `https://<tailnet-name-der-vm>:<port>`; diese Host-Kopfzeile
+  muss erlaubt werden.
+- **Tailnet-Port** (Port nur auf der Tailscale-Adresse der VM veröffentlichen). Auch dann
+  kommt die Anfrage mit dem Tailnet-Namen oder der Tailnet-Adresse als Host.
+
+In beiden Fällen kommt der Name als `EVENT_MCP_ZUSATZ_HOSTS=<host>[:<port>]` (Komma-Liste)
+in `laufzeit/event-app.env`, danach `--ich-habe-ok dienste` erneut (legt event-mcp neu an).
+Ein Eintrag ohne Port gilt für jeden Port. Ein ungültiger Eintrag lässt event-mcp nicht
+starten; die Meldung nennt nur den Variablennamen. Kein Wert steht im Repo; die Wahl kommt
+ohne Werte in den Ledger. Rückweg: Zeile entfernen, `dienste` erneut, `tailscale serve … off`.
+
 ## Wer misst was
 
 | Was | Wer |

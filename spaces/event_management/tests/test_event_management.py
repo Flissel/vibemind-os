@@ -649,6 +649,19 @@ def test_event_mcp_kommando_port_und_healthcheck() -> None:
     assert "event-mcp" in mcp_server.ERLAUBTE_HOSTS  # Name, unter dem der Claw ihn ruft
 
 
+def test_event_mcp_zusatz_hosts_optional_aus_der_env_datei() -> None:
+    """F-4: EVENT_MCP_ZUSATZ_HOSTS (Netzweg des Brain) ist ein privater, nicht geheimer Wert
+    und kommt wie EVENT_BASIS_URL aus laufzeit/event-app.env. `environment` darf ihn nicht
+    setzen: ein Eintrag dort (auch leer) ueberschriebe die Env-Datei bei jedem
+    `compose up`, in dessen Shell die Variable fehlt."""
+    mcp = _compose()["services"]["event-mcp"]
+    assert {"path": "./laufzeit/event-app.env", "required": True} in mcp["env_file"]
+    assert "EVENT_MCP_ZUSATZ_HOSTS" not in mcp["environment"]
+    text = COMPOSE.read_text(encoding="utf-8")
+    kopf = text.split("  event-mcp:\n", 1)[0].rsplit("\n\n", 1)[1]
+    assert "EVENT_MCP_ZUSATZ_HOSTS" in kopf and "event-app.env" in kopf
+
+
 def test_event_api_und_web_nur_loopback() -> None:
     from spaces.event_management.system import api
 

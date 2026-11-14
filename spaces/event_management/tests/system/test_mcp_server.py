@@ -148,6 +148,64 @@ def test_fremder_host_abgelehnt(app_dsn, db_admin, welt):
         assert _rpc(c, key, "tools/list", {}).status_code == 200
 
 
+
+# --- Zusatz-Hosts fuer den Netzweg des Brain (Abschluss-Review F-4) ------------------
+
+
+@pytest.mark.parametrize("zusatz,basis", [
+    ("brain-weg.example.org:8443", "http://brain-weg.example.org:8443"),
+    ("brain-weg.example.org", "http://brain-weg.example.org"),
+    ("brain-weg.example.org", "https://brain-weg.example.org:8443"),
+    ("Brain-Weg.Example.org", "http://brain-weg.example.org"),
+])
+def test_zusatz_host_erlaubt(app_dsn, db_admin, welt, zusatz, basis):
+    key = _schluessel(db_admin, "event", event_id=welt["meeting"])
+    app = mcp_server.erstelle_mcp_app(app_dsn, zusatz_hosts=(zusatz,))
+    with TestClient(app, base_url=basis) as c:
+        assert _rpc(c, key, "tools/list", {}).status_code == 200
+
+
+def test_zusatz_host_laesst_fremde_weiter_draussen(app_dsn, db_admin, welt):
+    key = _schluessel(db_admin, "event", event_id=welt["meeting"])
+    zusatz = ("brain-weg.example.org:8443",)
+    for basis in ("http://boese.example.org", "http://brain-weg.example.org:9999",
+                  "http://brain-weg.example.org", "http://x.brain-weg.example.org:8443"):
+        with TestClient(mcp_server.erstelle_mcp_app(app_dsn, zusatz_hosts=zusatz),
+                        base_url=basis) as c:
+            assert _rpc(c, key, "tools/list", {}).status_code == 421, basis
+    # Die festen Hosts bleiben erlaubt.
+    with TestClient(mcp_server.erstelle_mcp_app(app_dsn, zusatz_hosts=zusatz),
+                    base_url="http://event-mcp:8171") as c:
+        assert _rpc(c, key, "tools/list", {}).status_code == 200
+
+
+def test_konfiguration_zusatz_hosts():
+    basis = {"EVENT_APP_DSN": "host=h"}
+    assert mcp_server.konfiguration(basis).zusatz_hosts == ()
+    for leer in ("", "   "):
+        k = mcp_server.konfiguration({**basis, "EVENT_MCP_ZUSATZ_HOSTS": leer})
+        assert k.zusatz_hosts == ()
+    k = mcp_server.konfiguration(
+        {**basis, "EVENT_MCP_ZUSATZ_HOSTS": " vm.tailnet.example.org , 10.0.0.5:8443"})
+    assert k.zusatz_hosts == ("vm.tailnet.example.org", "10.0.0.5:8443")
+    assert "tailnet" not in repr(k)
+
+
+@pytest.mark.parametrize("muell", [
+    "http://vm.example.org", "vm.example.org/mcp", "vm example.org", "vm.example.org:0",
+    "vm.example.org:65536", "vm.example.org:*", "-vm.example.org", "vm..example.org",
+    "vm.example.org,", ",", "vm.example.org:80:81", "user@vm.example.org", "[::1]:8171",
+    "vm.example.org:08443", "a" * 64 + ".example.org", "*", "vm_x.example.org",
+])
+def test_konfiguration_zusatz_hosts_muell_bricht_ab(muell):
+    with pytest.raises(ValueError) as e:
+        mcp_server.konfiguration({"EVENT_APP_DSN": "host=h", "EVENT_MCP_ZUSATZ_HOSTS": muell})
+    assert str(e.value) == "EVENT_MCP_ZUSATZ_HOSTS ungueltig"
+    with pytest.raises(ValueError) as e2:
+        mcp_server.erstelle_mcp_app("host=h", zusatz_hosts=(muell,))
+    assert str(e2.value) == "EVENT_MCP_ZUSATZ_HOSTS ungueltig"
+
+
 # --- Werkzeuge ----------------------------------------------------------------------
 
 

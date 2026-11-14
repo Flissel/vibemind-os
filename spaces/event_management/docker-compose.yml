@@ -222,6 +222,12 @@ services:
   # vergeben (selten; Shim und Claw bekommen die untersten Adressen), startet event-mcp
   # nicht ("Address already in use") -- ein sichtbarer Startfehler, kein stiller.
   # Abhilfe: den Container, der .14 haelt, neu starten, dann event-mcp starten.
+  # Netzweg des Brain (Abschluss-Review F-4, Entscheidung in Teil B): erreicht der Brain
+  # event-mcp unter einem weiteren Namen (z. B. Tailnet), steht dieser optional als
+  # EVENT_MCP_ZUSATZ_HOSTS=<host>[:<port>][,...] in laufzeit/event-app.env (privat, nicht
+  # geheim, wie EVENT_BASIS_URL). Bewusst NICHT unter `environment`: ein Eintrag dort
+  # (auch leer) ueberschriebe die Env-Datei bei jedem `compose up` ohne die Shell-Variable.
+  # Ohne Eintrag gelten nur die festen Namen; Muell im Wert bricht den Start ab.
   event-mcp:
     build:
       context: .

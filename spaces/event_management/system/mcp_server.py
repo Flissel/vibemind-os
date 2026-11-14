@@ -16,7 +16,8 @@ Ergebnisse.
 
 CLI: ``python -m spaces.event_management.system.mcp_server`` (DSN aus
 ``EVENT_APP_DSN_FILE`` oder ``EVENT_APP_DSN``, ``EVENT_MCP_PORT`` Vorgabe 8171,
-``EVENT_MCP_HOST`` Vorgabe 127.0.0.1; fuer `einladen` ``EVENT_BASIS_URL`` und die
+``EVENT_MCP_HOST`` Vorgabe 127.0.0.1, ``EVENT_MCP_ZUSATZ_HOSTS`` weitere erlaubte
+Host-Kopfzeilen (siehe `zusatz_hosts_pruefen`); fuer `einladen` ``EVENT_BASIS_URL`` und die
 ``EVENT_SMTP_*``-Werte wie event-api, ohne sie laeuft der Dienst ohne Einladen; fuer
 `nachricht_an_gruppe` ``TELEGRAM_BOT_TOKEN_FILE``, ohne sie lehnt das Werkzeug ab).
 """
@@ -25,7 +26,8 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import AsyncIterator, Mapping
+import re
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -62,7 +64,41 @@ ERLAUBTE_HOSTS = [
     "host.docker.internal:*", "127.0.0.1:*", "localhost:*", "event-mcp:*",
 ]
 _SCHLUESSEL_UNGUELTIG = "Schlüssel fehlt oder ist ungültig"
+_ZUSATZ_UNGUELTIG = "EVENT_MCP_ZUSATZ_HOSTS ungueltig"
+_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+_ZUSATZ_HOST = re.compile(rf"(?P<name>{_LABEL}(?:\.{_LABEL})*)(?::(?P<port>[1-9][0-9]{{0,4}}))?")
 _INTERN = "interner Fehler"
+
+
+def zusatz_hosts_pruefen(eintraege: Sequence[str]) -> tuple[str, ...]:
+    """Prueft weitere erlaubte Host-Kopfzeilen (DNS-Rebinding-Schutz) fuer den Netzweg des
+    Brain, z. B. den Tailnet-Namen der VM (Abschluss-Review F-4).
+
+    Jeder Eintrag ist `hostname` oder `hostname:port` (Port 1-65535, keine Muster, kein
+    Schema, kein Pfad, kein IPv6); Grossbuchstaben werden klein. ValueError mit festem Text
+    ohne den Wert, sobald ein Eintrag nicht passt.
+    """
+    geprueft: list[str] = []
+    for roh in eintraege:
+        eintrag = roh.strip().lower() if isinstance(roh, str) else ""
+        treffer = _ZUSATZ_HOST.fullmatch(eintrag)
+        if treffer is None or len(treffer.group("name")) > 253:
+            raise ValueError(_ZUSATZ_UNGUELTIG)
+        port = treffer.group("port")
+        if port is not None and int(port) > 65535:
+            raise ValueError(_ZUSATZ_UNGUELTIG)
+        geprueft.append(eintrag)
+    return tuple(geprueft)
+
+
+def _erlaubte_hosts(zusatz: Sequence[str]) -> list[str]:
+    """Feste Hosts plus Zusatz-Hosts; ein Zusatz ohne Port gilt mit jedem Port."""
+    hosts = list(ERLAUBTE_HOSTS)
+    for eintrag in zusatz_hosts_pruefen(zusatz):
+        hosts.append(eintrag)
+        if ":" not in eintrag:
+            hosts.append(f"{eintrag}:*")
+    return hosts
 
 
 def _bearer(wert: str | None) -> str | None:
@@ -116,6 +152,7 @@ def _tool(w: werkzeuge.Werkzeug) -> types.Tool:
 def erstelle_mcp_app(
     dsn: str, *, mailer: Mailer | None = None, basis_url: str | None = None,
     telegram: Telegram | None = None, kategorien_ordner: Path | None = None,
+    zusatz_hosts: Sequence[str] = (),
 ) -> Starlette:
     """Baut die event-mcp-App. Kategorien werden hier einmal geladen; der Pool und der
     Session-Manager laufen im Lifespan (uvicorn, ``with TestClient(app)``).
@@ -123,10 +160,12 @@ def erstelle_mcp_app(
     `mailer` und `basis_url` (fuer Einladungslinks, nur aus der Konfiguration) braucht
     das Werkzeug `einladen` (Ruling S6); fehlt eines, lehnt es sauber ab. `telegram`
     braucht `nachricht_an_gruppe`; ohne lehnt es mit "Telegram ist nicht eingerichtet" ab.
+    `zusatz_hosts` erweitert die erlaubten Host-Kopfzeilen (`zusatz_hosts_pruefen`).
     """
     if basis_url is not None and not (
             isinstance(basis_url, str) and basis_url.startswith(("https://", "http://"))):
         raise ValueError("basis_url muss mit http:// oder https:// beginnen")
+    erlaubte_hosts = _erlaubte_hosts(zusatz_hosts)
     kats: dict[str, Kategorie] = lade_kategorien(kategorien_ordner)
     pool: ConnectionPool[Any] = ConnectionPool(
         dsn, min_size=1, max_size=10, open=False, kwargs={"autocommit": True},
@@ -193,7 +232,7 @@ def erstelle_mcp_app(
     manager = StreamableHTTPSessionManager(
         app=server, stateless=True, json_response=True,
         security_settings=TransportSecuritySettings(
-            enable_dns_rebinding_protection=True, allowed_hosts=list(ERLAUBTE_HOSTS)),
+            enable_dns_rebinding_protection=True, allowed_hosts=erlaubte_hosts),
     )
 
     def schluessel_gueltig(klartext: str) -> bool:
@@ -262,10 +301,11 @@ class Konfiguration:
     host: str
     port: int
     basis_url: str | None = None  # fuer Einladungslinks; ohne: Einladen aus
+    zusatz_hosts: tuple[str, ...] = ()  # weitere erlaubte Host-Kopfzeilen (F-4)
 
-    def __repr__(self) -> str:  # DSN nie ausgeben
+    def __repr__(self) -> str:  # DSN nie ausgeben, Zusatz-Hosts nur als Anzahl
         return (f"Konfiguration(host={self.host!r}, port={self.port},"
-                f" basis_url={self.basis_url!r})")
+                f" basis_url={self.basis_url!r}, zusatz_hosts={len(self.zusatz_hosts)})")
 
 
 def _datei_lesen(pfad: str, name: str) -> str:
@@ -299,7 +339,9 @@ def konfiguration(umgebung: Mapping[str, str] | None = None) -> Konfiguration:
     basis_url = env.get("EVENT_BASIS_URL", "").strip() or None
     if basis_url is not None and not basis_url.startswith(("https://", "http://")):
         raise ValueError("EVENT_BASIS_URL ungueltig")
-    return Konfiguration(dsn, host, port, basis_url)
+    zusatz_roh = env.get("EVENT_MCP_ZUSATZ_HOSTS", "").strip()
+    zusatz = zusatz_hosts_pruefen(zusatz_roh.split(",")) if zusatz_roh else ()
+    return Konfiguration(dsn, host, port, basis_url, zusatz)
 
 
 SMTP_UMGEBUNG = ("EVENT_SMTP_HOST", "EVENT_SMTP_PORT", "EVENT_SMTP_USER",
@@ -333,8 +375,10 @@ def main() -> None:
     telegram = telegram_aus_umgebung()
     if telegram is None:
         log.warning("Nachrichten an die Gruppe aus: TELEGRAM_BOT_TOKEN_FILE fehlt")
+    if k.zusatz_hosts:
+        log.info("Zusatz-Hosts erlaubt: %d", len(k.zusatz_hosts))
     app = erstelle_mcp_app(k.dsn, mailer=_mailer_aus_umgebung(), basis_url=k.basis_url,
-                           telegram=telegram)
+                           telegram=telegram, zusatz_hosts=k.zusatz_hosts)
     # Kein Access-Log (Anfragen tragen den Schluessel im Header; sicher ist sicher).
     uvicorn.run(app, host=k.host, port=k.port, access_log=False)
 
