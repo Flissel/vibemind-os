@@ -66,7 +66,8 @@
             "event-app__get_guest_stats",
             "event-app__list_recent_changes",
             "event-app__get_festival_info",
-            "event-app__list_timetable"
+            "event-app__list_timetable",
+            "bn-lesen__*"
           ]
         }
       },
@@ -94,7 +95,8 @@
             "event-app__send_message_to_member",
             "event-app__create_timetable_slot",
             "event-app__update_timetable_slot",
-            "event-app__delete_timetable_slot"
+            "event-app__delete_timetable_slot",
+            "bn-auftrag__*"
           ]
         }
       }
@@ -158,6 +160,18 @@
         "requestTimeoutMs": 60000
       },
       "melden": {
+        "url": "{{EVENT_MCP_URL}}/mcp",
+        "transport": "streamable-http",
+        "connectionTimeoutMs": 30000,
+        "requestTimeoutMs": 60000
+      },
+      "bn-lesen": {
+        "url": "{{EVENT_MCP_URL}}/mcp",
+        "transport": "streamable-http",
+        "connectionTimeoutMs": 30000,
+        "requestTimeoutMs": 60000
+      },
+      "bn-auftrag": {
         "url": "{{EVENT_MCP_URL}}/mcp",
         "transport": "streamable-http",
         "connectionTimeoutMs": 30000,

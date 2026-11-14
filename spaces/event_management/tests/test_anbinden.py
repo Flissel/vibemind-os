@@ -26,8 +26,8 @@ BEISPIEL = SPACE / "werte.beispiel.json"
 OPENCLAW = SPACE / "config" / "openclaw.json"
 GITIGNORE = SPACE / ".gitignore"
 
-# Namen der Shell-Variablen, die Schluessel tragen (Zeilen 1-5 von stdin).
-SCHLUESSEL_VARIABLEN = ("GW", "TG", "APP", "CC", "MLD")
+# Namen der Shell-Variablen, die Schluessel tragen (Zeilen 1-7 von stdin).
+SCHLUESSEL_VARIABLEN = ("GW", "TG", "APP", "CC", "MLD", "BNL", "BNA")
 
 
 def _compose() -> dict:
@@ -82,18 +82,76 @@ def test_set_eu_und_umask() -> None:
     assert re.search(r'cd "\$\(dirname', code)
 
 
-def test_werte_nur_per_stdin_fuenf_zeilen() -> None:
+def test_werte_nur_per_stdin_sieben_zeilen() -> None:
     shell = "\n".join(_shell_zeilen())
-    assert len(re.findall(r"\bread\b", shell)) == 5
+    assert len(re.findall(r"\bread\b", shell)) == 7
     assert all(re.search(rf"IFS= read -r {v}\b", shell) for v in SCHLUESSEL_VARIABLEN)
     # Kein Wert als Argument: $1..$9, $@ und $* kommen in der Shell nicht vor.
     # (Die Hilfsfunktion zeichen_pruefen darf ihre eigenen Parameter lesen.)
     ohne_funktion = re.sub(r"zeichen_pruefen\(\) \{.*?\n\}", "", shell, flags=re.S)
     assert not re.search(r"\$[1-9@*]|\$\{[1-9@*]", ohne_funktion)
-    # Leere Zeilen 1-3 und 5 sind ein Fehler, Zeile 4 darf leer sein.
-    for v in ("GW", "TG", "APP", "MLD"):
+    # Leere Zeilen 1-3 und 5-7 sind ein Fehler, Zeile 4 darf leer sein.
+    for v in ("GW", "TG", "APP", "MLD", "BNL", "BNA"):
         assert re.search(rf'\[ -z "\${v}" \]', shell), v
     assert not re.search(r'\[ -z "\$CC" \]\s*&&', shell)
+    for nr, v in enumerate(SCHLUESSEL_VARIABLEN, start=1):
+        assert re.search(rf'zeichen_pruefen {nr} "\${v}"', shell), v
+    kopf = SKRIPT.read_text(encoding="utf-8").split("set -eu", 1)[0]
+    assert "Genau sieben Zeilen" in kopf
+    assert "'%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n'" in kopf  # Aufrufbeispiel mit 7 Werten
+
+
+def _bash() -> str:
+    """Git-Bash (bzw. bash unter Linux). WSL-bash versteht die Windows-Pfade nicht."""
+    pfad = shutil.which("bash")
+    if pfad is None:
+        pytest.skip("kein bash")
+    klein = pfad.lower()
+    if os.name == "nt" and ("system32" in klein or "windowsapps" in klein):
+        pytest.skip("nur WSL-bash gefunden")
+    return pfad
+
+
+def _anbinden_lauf(tmp_path: Path, zeilen: list[str]) -> subprocess.CompletedProcess[bytes]:
+    """Startet eine KOPIE des Skripts in tmp_path/deploy (ohne build/): auch wenn die
+    stdin-Pruefung durchliefe, bricht es vor jeder Wirkung an `build/openclaw.json fehlt`
+    ab. Es fasst so weder den Space-Ordner noch docker an."""
+    deploy = tmp_path / "deploy"
+    deploy.mkdir(exist_ok=True)
+    kopie = deploy / "anbinden.sh"
+    kopie.write_bytes(SKRIPT.read_bytes())
+    eingabe = "".join(z + "\n" for z in zeilen).encode("utf-8")
+    return subprocess.run([_bash(), str(kopie)], input=eingabe, capture_output=True,
+                          timeout=60, cwd=tmp_path)
+
+
+def test_anbinden_braucht_sieben_zeilen(tmp_path: Path) -> None:
+    werte = ["gateway-beispiel", "123:tg-beispiel", "Bearer evk_beispiel_app", "",
+             "Bearer evk_beispiel_melden", "Bearer evk_beispiel_bn_lesen",
+             "Bearer evk_beispiel_bn_auftrag"]
+    faelle = {
+        "sechs Zeilen": (werte[:6], "Zeile 7"),
+        "Zeile 6 leer": (werte[:5] + ["", werte[6]], "Zeile 6"),
+        "Zeile 7 leer": (werte[:6] + [""], "Zeile 7"),
+    }
+    for fall, (zeilen, meldung) in faelle.items():
+        r = _anbinden_lauf(tmp_path, zeilen)
+        ausgabe = (r.stdout + r.stderr).decode("utf-8", "replace")
+        assert r.returncode != 0, fall
+        assert "ABBRUCH" in ausgabe and meldung in ausgabe, (fall, ausgabe)
+        assert "build/openclaw.json" not in ausgabe, fall  # Abbruch schon an stdin
+        for wert in werte:
+            if wert:
+                assert wert not in ausgabe, fall
+        assert not (tmp_path / "laufzeit").exists(), fall
+    # Gegenprobe: mit sieben vollen Zeilen laeuft die stdin-Pruefung durch und das
+    # Skript bricht erst an der fehlenden Saat ab (in der Kopie gibt es kein build/).
+    r = _anbinden_lauf(tmp_path, werte)
+    ausgabe = (r.stdout + r.stderr).decode("utf-8", "replace")
+    assert r.returncode != 0 and "build/openclaw.json fehlt" in ausgabe, ausgabe
+    for wert in werte:
+        if wert:
+            assert wert not in ausgabe
 
 
 def test_kein_docker_cp_und_keine_werte_in_docker_argumenten() -> None:
@@ -213,7 +271,19 @@ def test_melden_schluessel_fuer_den_empfang_nur_per_stdin() -> None:
     # Im Saat-Vergleich ignoriert und als vierter Wert per stdin gesetzt.
     assert code.count("['mcp', 'servers', 'melden', 'headers', 'Authorization']") == 2
     assert "'mcp.servers.melden.headers.Authorization'" in code
-    assert "'%s\\n%s\\n%s\\n%s\\n' \"$GW\" \"$TG\" \"$APP\" \"$MLD\" | docker compose run" in code
+    assert ("'%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' \"$GW\" \"$TG\" \"$APP\" \"$MLD\" \"$BNL\" \"$BNA\""
+            " | docker compose run") in code
+
+
+@pytest.mark.parametrize("server", ["bn-lesen", "bn-auftrag"])
+def test_brain_schluessel_nur_per_stdin(server: str) -> None:
+    """Zeilen 6 und 7: Authorization der Server `bn-lesen` und `bn-auftrag` (Brain)."""
+    code = SKRIPT.read_text(encoding="utf-8")
+    # Im Saat-Vergleich ignoriert und per stdin gesetzt.
+    assert code.count(f"['mcp', 'servers', '{server}', 'headers', 'Authorization']") == 2
+    assert f"'mcp.servers.{server}.headers.Authorization'" in code
+    kopf = code.split("set -eu", 1)[0]
+    assert f"mcp.servers.{server}.headers.Authorization" in kopf
 
 
 def test_vergleich_ignoriert_meta_und_wizard() -> None:
@@ -373,10 +443,25 @@ def test_zweiter_lauf_erhaelt_alles(tmp_path: Path) -> None:
     assert {b["agentId"] for b in neu["bindings"]} == {"ev-legacy", "ev-1a2b3c4d"}
     assert "evk_" not in ausgabe and "-1001234567890" not in ausgabe
 
-    # Zweiter Lauf, gleiche Saat: nichts mehr zu tun.
+    # Brain (Task 4): beide Server und die Erlaubnislisten kommen aus der Saat.
+    for name, agent in (("bn-lesen", "brain-lesen"), ("bn-auftrag", "brain-auftrag")):
+        assert neu["mcp"]["servers"][name] == saat["mcp"]["servers"][name]
+        allow = next(a for a in neu["agents"]["list"] if a["id"] == agent)["tools"]["allow"]
+        assert f"{name}__*" in allow
+
+    # Zwischen den Laeufen setzt Schritt 4 die Schluessel (hier nachgestellt): die
+    # Header der Brain-Server, des Empfangs und der Event-App.
+    mit_schluesseln = json.loads(cfg.read_text(encoding="utf-8"))
+    for name in ("event-app", "melden", "bn-lesen", "bn-auftrag"):
+        mit_schluesseln["mcp"]["servers"][name]["headers"] = {
+            "Authorization": f"Bearer evk_beispiel_nur_fuer_den_test_{name}"}
+    cfg.write_text(json.dumps(mit_schluesseln), encoding="utf-8")
+
+    # Zweiter Lauf, gleiche Saat: nichts mehr zu tun, alle Header bleiben.
     ausgabe2, cfg = _saat_laufen(tmp_path, None, seed=saat)
     assert "openclaw.json: unveraendert" in ausgabe2
-    assert json.loads(cfg.read_text(encoding="utf-8")) == erwartet
+    assert json.loads(cfg.read_text(encoding="utf-8")) == mit_schluesseln
+    assert "evk_" not in ausgabe2
 
 
 # --- Saat erhaelt bereitgestellte Agenten (Ruling T8-b) -------------------------
@@ -550,15 +635,48 @@ def test_schluessel_atomar_und_ohne_werte_in_der_ausgabe(tmp_path: Path) -> None
     assert js.count(alt) == 1
     js = js.replace(alt, "const CFG = " + json.dumps(cfg.as_posix()) + ";")
     werte = ["gateway-beispiel", "123:tg-beispiel", "Bearer evk_beispiel_app",
-             "Bearer evk_beispiel_melden"]
+             "Bearer evk_beispiel_melden", "Bearer evk_beispiel_bn_lesen",
+             "Bearer evk_beispiel_bn_auftrag"]
     ausgabe, log = _node(tmp_path, js, ("\n".join(werte) + "\n").encode("utf-8"))
-    assert ausgabe.count(": gesetzt") == 4
+    assert ausgabe.count(": gesetzt") == 6
     for wert in werte:
         assert wert not in ausgabe
     _atomar_geschrieben(log, cfg)
     neu = json.loads(cfg.read_text(encoding="utf-8"))
     assert neu["gateway"]["auth"]["token"] == "gateway-beispiel"
     assert neu["mcp"]["servers"]["melden"]["headers"]["Authorization"] == werte[3]
+    assert neu["mcp"]["servers"]["bn-lesen"]["headers"]["Authorization"] == werte[4]
+    assert neu["mcp"]["servers"]["bn-auftrag"]["headers"]["Authorization"] == werte[5]
+    # Ein zweiter Lauf mit denselben Werten aendert nichts.
+    ausgabe, log = _node(tmp_path, js, ("\n".join(werte) + "\n").encode("utf-8"))
+    assert ausgabe.count(": unveraendert") == 6 and ": gesetzt" not in ausgabe
+    assert not [e for e in log if e[0] == "renameSync"]
+
+
+def test_schluessel_bricht_ohne_brain_werte_ab(tmp_path: Path) -> None:
+    """Fehlt Wert 5 oder 6 (Zeile 6/7 von stdin), wird nichts geschrieben."""
+    zustand = tmp_path / "zustand"
+    zustand.mkdir()
+    cfg = zustand / "openclaw.json"
+    cfg.write_text(json.dumps(SAAT), encoding="utf-8")
+    js = _heredoc("SCHLUESSEL_JS=$(cat <<'JS'", "JS")
+    js = js.replace("const CFG = '/home/node/.openclaw/openclaw.json';",
+                    "const CFG = " + json.dumps(cfg.as_posix()) + ";")
+    skript = tmp_path / "schluessel.js"
+    skript.write_text(js, encoding="utf-8")
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("kein node")
+    werte = ["gateway-beispiel", "123:tg-beispiel", "Bearer evk_beispiel_app",
+             "Bearer evk_beispiel_melden", "Bearer evk_beispiel_bn_lesen"]
+    r = subprocess.run([node, str(skript)], input=("\n".join(werte) + "\n").encode("utf-8"),
+                       capture_output=True, timeout=60)
+    ausgabe = (r.stdout + r.stderr).decode("utf-8")
+    assert r.returncode != 0
+    assert "mcp.servers.bn-auftrag.headers.Authorization: Wert fehlt" in ausgabe
+    assert json.loads(cfg.read_text(encoding="utf-8")) == SAAT
+    for wert in werte:
+        assert wert not in ausgabe
 
 
 # --- Compose -----------------------------------------------------------------

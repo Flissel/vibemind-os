@@ -245,18 +245,30 @@ def test_brain_agenten_eingetragen() -> None:
     assert konfig["gateway"]["http"]["endpoints"]["chatCompletions"]["enabled"] is True
 
 
+# Etappe 4, Task 4: der Brain arbeitet am Katalog ueber eigene Betreiber-Schluessel (Name
+# `VibeMind`): `bn-lesen` (Art betreiber_lesen) und `bn-auftrag` (Art betreiber). Die
+# App-Werkzeuge bleiben nur fuer das Legacy-Festival.
+BRAIN_SERVER = {"brain-lesen": "bn-lesen", "brain-auftrag": "bn-auftrag"}
+
+
 @pytest.mark.parametrize("agent", ["brain-lesen", "brain-auftrag"])
-def test_brain_agenten_nur_app_werkzeuge(agent: str) -> None:
+def test_brain_agenten_nur_app_werkzeuge_und_eigener_katalog(agent: str) -> None:
     eintrag = _agenten()[agent]
     assert "deny" not in eintrag["tools"]
     assert set(eintrag["tools"]) == {"allow"}
     for name in eintrag["tools"]["allow"]:
+        if name == f"{BRAIN_SERVER[agent]}__*":
+            continue  # der eigene Katalog-Server; der Schluessel begrenzt die Rechte
         assert name.startswith(APP_PRAEFIX), name
         assert "*" not in name, name
 
 
+def _app_erlaubt(agent: str) -> list[str]:
+    return [n.removeprefix(APP_PRAEFIX) for n in _erlaubt(agent) if n.startswith(APP_PRAEFIX)]
+
+
 def test_brain_lesen_darf_nicht_schreiben() -> None:
-    namen = [n.removeprefix(APP_PRAEFIX) for n in _erlaubt("brain-lesen")]
+    namen = _app_erlaubt("brain-lesen")
     assert len(namen) == len(set(namen))
     assert set(namen) == APP_LESEND
     _, schreiben = _werkzeuge_aus_soul()
@@ -264,9 +276,26 @@ def test_brain_lesen_darf_nicht_schreiben() -> None:
 
 
 def test_brain_auftrag_hat_alle_app_werkzeuge() -> None:
-    namen = [n.removeprefix(APP_PRAEFIX) for n in _erlaubt("brain-auftrag")]
+    namen = _app_erlaubt("brain-auftrag")
     assert len(namen) == len(set(namen))
     assert set(namen) == APP_ALLE and len(APP_ALLE) == 20
+
+
+def test_brain_server_und_allow_listen() -> None:
+    konfig = json.loads(OPENCLAW.read_text(encoding="utf-8"))
+    server = konfig["mcp"]["servers"]
+    for name in ("bn-lesen", "bn-auftrag"):
+        # Wie `melden`: dieselbe URL des Katalog-Servers; den Header (Schluessel mit Name
+        # VibeMind) setzt erst anbinden.sh ueber stdin (Zeilen 6 und 7).
+        assert server[name] == {"url": "{{EVENT_MCP_URL}}/mcp", "transport": "streamable-http",
+                                "connectionTimeoutMs": 30000, "requestTimeoutMs": 60000}
+    assert set(_erlaubt("brain-lesen")) == {APP_PRAEFIX + n for n in APP_LESEND} | {"bn-lesen__*"}
+    assert set(_erlaubt("brain-auftrag")) == {APP_PRAEFIX + n for n in APP_ALLE} | {"bn-auftrag__*"}
+    assert len(_erlaubt("brain-lesen")) == 10 and len(_erlaubt("brain-auftrag")) == 21
+    # Kein anderer Agent bekommt die Brain-Server.
+    for agent, eintrag in _agenten().items():
+        if agent not in BRAIN_SERVER:
+            assert not [n for n in eintrag["tools"]["allow"] if n.startswith("bn-")], agent
 
 
 def test_soul_regelt_actor_fuer_vibemind() -> None:
@@ -364,6 +393,8 @@ def test_fuellen_mit_beispielwerten(tmp_path: Path) -> None:
     assert list(konfig["channels"]["telegram"]["groups"]) == [werte["TELEGRAM_GRUPPE"], "*"]
     assert konfig["mcp"]["servers"]["event-app"]["url"] == werte["EVENT_APP_URL"] + "/api/mcp"
     assert konfig["mcp"]["servers"]["melden"]["url"] == werte["EVENT_MCP_URL"] + "/mcp"
+    for name in ("bn-lesen", "bn-auftrag"):
+        assert konfig["mcp"]["servers"][name]["url"] == werte["EVENT_MCP_URL"] + "/mcp"
     for ws in ("workspace-legacy", "workspace-brain"):
         assert werte["EVENT_ORT"] in (tmp_path / ws / "SOUL.md").read_text(encoding="utf-8")
     assert VIBEMIND_ACTOR in (tmp_path / "workspace-brain" / "SOUL.md").read_text(encoding="utf-8")
