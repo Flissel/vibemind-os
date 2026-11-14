@@ -403,10 +403,10 @@ def test_brain_soul_regeln() -> None:
 
 
 def test_brain_soul_sendet_nichts_und_legt_nichts_an() -> None:
-    """Ruling T4-b: bn-auftrag__* gibt dem Brain mit dem Betreiber-Schluessel auch
-    nachricht_an_gruppe (sendet sofort), einladen (sendet Mail), firma_anlegen und
-    event_anlegen. Diese vier stehen in Regel 5 (nur beschreiben), und Senden bleibt
-    ausdruecklich ausgeschlossen."""
+    """Ruling T4-b: nachricht_an_gruppe (sendet sofort), einladen (sendet Mail),
+    firma_anlegen und event_anlegen stehen in Regel 5 (nur beschreiben); seit F-2 fehlen
+    sie zusaetzlich in der Erlaubnisliste von brain-auftrag. Senden bleibt ausdruecklich
+    ausgeschlossen."""
     text = BRAIN_SOUL.read_text(encoding="utf-8")
     regeln = _abschnitt(text, "Regeln")
     regel5 = regeln.split("5. ", 1)[1]
@@ -416,6 +416,46 @@ def test_brain_soul_sendet_nichts_und_legt_nichts_an() -> None:
     nicht = _abschnitt(text, "Was du nicht kannst")
     assert "- Nachrichten in Gruppen oder Chats schicken." in nicht
     assert "- E-Mails an Gäste schicken." in nicht
+
+
+# F-1: was ohne Rueckfrage loescht oder nach aussen wirkt. Zweistufig ist ein Werkzeug,
+# wenn sein Schema `bestaetigung` kennt (einladen nur fuer die Rolle leitung, darum hier).
+NACH_AUSSEN = frozenset({"nachricht_an_gruppe", "einladen", "firma_anlegen", "event_anlegen"})
+
+
+def _regel5(text: str) -> str:
+    return _abschnitt(text, "Regeln").split("5. ", 1)[1]
+
+
+def brain_soul_regel5_pruefen(text: str) -> None:
+    from spaces.event_management.system import werkzeuge
+
+    regel5 = _regel5(text)
+    erreichbar = {n.removeprefix("bn-auftrag__") for n in _erlaubt("brain-auftrag")
+                  if n.startswith("bn-auftrag__")}
+    sofort = {n for n in werkzeuge.namen("betreiber")
+              if n.endswith("_loeschen") or n in NACH_AUSSEN}
+    for name in sorted(sofort):
+        # Entweder gar nicht erreichbar (F-2) oder in Regel 5 als „nur beschreiben“.
+        assert name not in erreichbar or f"`{name}`" in regel5, name
+    for name in sorted(NACH_AUSSEN):
+        assert f"`{name}`" in regel5, name
+    assert "`<baustein>_loeschen`" in regel5 and "ohne Rückfrage" in regel5
+    # Die zweistufigen, die erreichbar bleiben, stehen namentlich in Regel 5.
+    for name in ("event_absagen", "event_archivieren", "kontakt_entfernen", "rolle_aendern"):
+        assert name in erreichbar and f"`{name}`" in regel5, name
+    # Die falsche Pauschale (F-1) ist weg: nicht jedes Katalog-Werkzeug fragt erst.
+    flach = " ".join(text.split())
+    assert "Ein Katalog-Werkzeug liefert ohne `bestaetigung` nur eine Zusammenfassung" not in flach
+    # „Du kennst nur Zahlen“ gilt nur fuer das Legacy-Festival; der Katalog liest Namen.
+    niemals = " ".join(_abschnitt(text, "Was du niemals tust").split())
+    assert "Keine Gästedaten herausgeben. Du kennst nur Zahlen." not in niemals
+    assert "`kontakte_suchen`" in niemals and "`…_liste`" in niemals
+    assert "`get_guest_stats`" in niemals
+
+
+def test_brain_soul_regel5_nennt_was_sofort_wirkt() -> None:
+    brain_soul_regel5_pruefen(BRAIN_SOUL.read_text(encoding="utf-8"))
 
 
 def test_brain_agents_kennt_beide_werkzeugfamilien() -> None:
