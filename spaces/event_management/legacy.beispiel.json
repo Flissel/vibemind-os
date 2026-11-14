@@ -1,0 +1,8 @@
+{
+  "firma_kurz": "testfirma",
+  "name": "{{FESTIVAL_NAME}}",
+  "beginn": "2027-08-01T10:00:00+02:00",
+  "ende": "2027-08-03T18:00:00+02:00",
+  "ort": "{{FESTIVAL_ORT}}",
+  "legacy_url": "https://alte-app.example.org/festival/{{ID}}"
+}

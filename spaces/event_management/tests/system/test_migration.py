@@ -212,3 +212,27 @@ def test_verlauf_actor_person_id_verweist_auf_person(db_admin):
         " values (%s, %s, 'System', 'system', 'event', 'angelegt')", (ev, firma_id))
     assert db_admin.execute("select actor_person_id from event.verlauf").fetchone()[
         "actor_person_id"] is None
+
+
+def test_alle_migrationen_zweimal(db_admin):
+    # Alle vorhandenen Dateien (nicht fest 001-009): zweiter Lauf aendert nichts.
+    assert anwenden.anwenden(db_admin) == []
+    assert anwenden.anwenden(db_admin) == []
+    vermerkt = [z["nr"] for z in db_admin.execute(
+        "select nr from event.migration order by nr").fetchall()]
+    assert vermerkt == [nr for nr, _, _ in anwenden.migrationen()]
+
+
+def test_abgebrochene_migration_hinterlaesst_nichts(db_admin, tmp_path):
+    (tmp_path / "900_probe.sql").write_text(
+        "create table event.probe_abbruch (id int);\n"
+        "insert into event.probe_abbruch values (1);\n"
+        "select 1 / 0;\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(psycopg.errors.DivisionByZero):
+        anwenden.anwenden(db_admin, ordner=tmp_path)
+    assert db_admin.execute(
+        "select to_regclass('event.probe_abbruch') as t").fetchone()["t"] is None
+    assert db_admin.execute(
+        "select count(*) as n from event.migration where nr = 900").fetchone()["n"] == 0
