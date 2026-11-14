@@ -233,7 +233,7 @@ def _parser() -> argparse.ArgumentParser:
     aus.add_argument("--event-id", type=UUID)
     aus.add_argument("--person-id", type=UUID)
     aus.add_argument("--name", help="Name des Aufrufers im actor (A-Z, a-z, 0-9, _)")
-    weg =befehle.add_parser("widerrufen", help="Schlüssel widerrufen")
+    weg = befehle.add_parser("widerrufen", help="Schlüssel widerrufen")
     weg.add_argument("id", type=UUID)
     return parser
 
