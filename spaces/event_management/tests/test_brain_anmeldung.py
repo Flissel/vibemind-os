@@ -60,8 +60,10 @@ def test_event_space_im_brain_angemeldet():
     }
     assert all(c["arg_kwarg"] == "text" and c["space"] == "event-management" for c in _caps().values())
     val = _caps()["event_do"]["validator"]
-    assert val["kind"] == "truth:event_app_change" and val["on_fail"] == "report"
-    assert val["postcondition"] == {"check": "event_app_change", "actor": "VibeMind", "since_s": 600}
+    assert val["kind"] == "truth:event_change" and val["on_fail"] == "report"
+    assert val["postcondition"] == {
+        "check": "event_change", "actor_verlauf": "bot:betreiber:VibeMind",
+        "actor_legacy": "VibeMind", "since_s": 600}
 
     wirkung = yaml.safe_load(EFFECTS.read_text(encoding="utf-8"))
     wirkung = wirkung.get("effects", wirkung)
@@ -110,6 +112,38 @@ POSITIV = {
         "Weise beim Festival den Helfern die Aufgabe Becher zu",
     ],
 }
+# Etappe 4, Task 4: weitere Event-Kategorien des Katalogs. "Team-Meeting" (mit
+# Trenner) bleibt beim Kalender-Ausschluss (Ruling, siehe NEGATIV); nur das
+# zusammengeschriebene "Teammeeting" erreicht den Event-Bot.
+POSITIV_KATEGORIEN = {
+    "event_ask": [
+        "Was ist beim Hackathon bei den Aufgaben offen?",
+        "Wie steht das Budget der Weihnachtsfeier?",
+        "Welche Helfer hat die Messe?",
+        "Zeig mir das Budget vom Webinar",
+        # ("Wer ist beim Fest im Team?" nimmt vorher knowledge_query, wie jede Wer-Frage.)
+        "Zeig mir die Aufgaben vom Fest",
+    ],
+    "event_do": [
+        "Lege für den Hackathon eine Aufgabe Catering an",
+        "Trag beim Webinar die Aufgabe Technik-Check ein",
+        "Weise bei der Weihnachtsfeier dem Team die Aufgabe Deko zu",
+        "Lege für die Messe eine Schicht am Stand an",
+        "Trag beim Fest die Aufgabe Grill ein",
+        "Lege für das Teammeeting eine Aufgabe Raum an",
+        # Ruling T4-a: "fest"/"messe" nur mit Artikel bzw. als Kompositum.
+        "Lege für das Sommerfest eine Aufgabe Catering an",
+        "Trag beim Hoffest die Aufgabe Grill ein",
+        "Lege auf der Messe eine Schicht am Stand an",
+        "Lege für die Buchmesse eine Aufgabe Standbau an",
+    ],
+}
+POSITIV_KATEGORIEN["event_ask"] += [
+    "Welche Aufgaben hat das Team für die Messe?",
+    "Wie steht das Budget vom Sommerfest?",
+]
+for _name, _saetze in POSITIV_KATEGORIEN.items():
+    POSITIV[_name] = POSITIV[_name] + _saetze
 NEGATIV = [
     "Erinnere mich morgen an den Termin",
     "Erstelle eine Aufgabe im Projekt",
@@ -134,7 +168,63 @@ NEGATIV = [
     "Ändere die Orga meines Projekts",
     "Ist beim Festival schon alles erledigt?",  # Frage, kein Auftrag
     "Plane einen Post zum Event mit dem Team",
+    # Etappe 4, Task 4: Kalender und fremde Spaces gewinnen auch gegen die neuen
+    # Kategorien.
+    "Was steht im Kalender für das Meeting?",
+    # Ruling: der Kalender-Ausschluss (meeting\w*) gewinnt gegen team.?meeting. Kosten:
+    # dieser Auftrag wird nicht erkannt.
+    "Team-Meeting Aufgabe anlegen",
+    "Lege für das Team-Meeting eine Aufgabe an",
+    "Ich messe die Temperatur",
+    "Ich messe die Temperatur und lege eine Notiz an",
+    "Erstelle einen Post zum Hackathon",
+    "Trag das Webinar in meinen Kalender ein",
+    "Lege für die Weihnachtsfeier einen Termin an",
+    "Erstelle ein Video über die Messe",
+    # Review Task 4 (Ruling T4-a): "fest"/"messe" als Verbteil oder Verb sind kein Event.
+    "Lege die Aufgabe fest",
+    "Lege im Projekt fest, welche Aufgabe das Team macht",
+    "Erstelle eine Aufgabe im Projekt und setze die Frist fest",
+    "Setze das Budget fest",
+    "Das Budget steht fest",
+    "Halte fest: das Team braucht Budget",
+    "Ich messe das Budget",
+    "Lege im Manifest eine Aufgabe an",
+    "Lege für das Manifest des Teams eine Aufgabe an",
 ]
+
+# Ruling T4-a: die erlaubten Formen von "fest" und "messe" (im YAML-Text des Musters).
+FEST_ARTIKEL = r"(?:das|dem|vom|beim|zum|aufs?|unser\w*|ein\w*)\s+fest\b"
+FEST_KOMPOSITUM = r"(?!manifest)\w{3,}fest\b"
+MESSE_ARTIKEL = r"(?:die|der|zur|auf\s+der|einer?)\s+messe\b"
+MESSE_KOMPOSITUM = r"\w+messe\b"
+
+
+@pytest.mark.parametrize("name", ["event_ask", "event_do"])
+def test_neue_kategorien_in_jedem_muster(name):
+    for p in _caps()[name]["match_patterns"]:
+        for wort in ("webinar", "hackathon", "weihnachtsfeier", "team.?meeting"):
+            assert wort in p, (name, wort)
+        for form in (FEST_ARTIKEL, FEST_KOMPOSITUM, MESSE_ARTIKEL, MESSE_KOMPOSITUM):
+            assert form in p, (name, form)
+        # Kein nacktes "fest"/"messe" als eigene Alternative (Ruling T4-a).
+        assert not re.search(r"[|(](?:\\b)?(?:fest|messe)\\b", p), (name, p)
+        # Die bestehenden Ausschluesse bleiben vorn.
+        assert p.startswith("^(?!.*\\b(?:kalender\\w*|calendar|termin\\w*|meeting\\w*)\\b)"), p
+
+
+def test_registry_keywords_kennen_die_kategorien():
+    eintrag = yaml.safe_load(REGISTRY.read_text(encoding="utf-8"))["spaces"]["event-management"]
+    (muster,) = eintrag["keywords"]
+    for satz in ("Hackathon am Freitag", "das Webinar", "die Messe", "Weihnachtsfeier",
+                 "Teammeeting", "das Fest im Hof", "Sommerfest", "Buchmesse", "Festival",
+                 "Veranstaltung"):
+        assert re.search(muster, satz, re.IGNORECASE), satz
+    for satz in ("Festung", "Messer", "Ich messen", "Lege die Aufgabe fest", "Ich messe das Budget",
+                 "Das Budget steht fest", "Halte fest", "Manifest"):
+        assert not re.search(muster, satz, re.IGNORECASE), satz
+    for form in (FEST_ARTIKEL, FEST_KOMPOSITUM, MESSE_ARTIKEL, MESSE_KOMPOSITUM):
+        assert form in muster, form
 
 # Gemessen am Basisstand (capabilities.yaml ohne event_*-Eintraege), nicht geraten.
 BESTEHENDE_ZIELE = {

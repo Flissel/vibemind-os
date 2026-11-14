@@ -1,0 +1,17 @@
+# Kontext des System-Images: nichts Privates, nichts Gebautes, keine Tests.
+laufzeit/
+werte.local.json
+*.env
+**/*.env
+build/
+node_modules/
+.next/
+tests/
+.superpowers/
+.git/
+__pycache__/
+**/__pycache__/
+*.pyc
+web/
+config/
+deploy/

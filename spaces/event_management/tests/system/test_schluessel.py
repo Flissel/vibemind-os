@@ -288,6 +288,70 @@ def test_kontext_melden_ohne_firmen(db_admin, db_app, welt):
                         actor="bot:melden", quelle="bot")
 
 
+# --- Name (Etappe 4, Task 4): eigener Schluessel je Aufrufer, sichtbar im actor ---------
+
+
+def test_schluessel_name_im_actor(db_admin, db_app, welt):
+    app = db_app()
+    for art in ("betreiber", "betreiber_lesen"):
+        sid, klartext = schluessel.ausstellen(db_admin, art=art, bezeichnung="Brain",
+                                              name="VibeMind")
+        assert db_admin.execute("select name from event.schluessel where id = %s",
+                                (sid,)).fetchone()["name"] == "VibeMind"
+        info = schluessel.pruefen(app, klartext)
+        assert info.name == "VibeMind"
+        k = schluessel.kontext_fuer(app, info)
+        assert k == Kontext(person_id=None, betreiber=True, rollen={}, event_id=None,
+                            actor=f"bot:{art}:VibeMind", quelle="bot")
+    # Mit Name auch fuer die anderen Arten; ohne Name bleibt der actor wie bisher.
+    _, ev = schluessel.ausstellen(db_admin, art="event", bezeichnung="Gruppe",
+                                  event_id=welt["ea"], name="Gruppe_A")
+    assert schluessel.kontext_fuer(app, schluessel.pruefen(app, ev)).actor == "bot:event:Gruppe_A"
+    _, ohne = schluessel.ausstellen(db_admin, art="betreiber", bezeichnung="Brain")
+    info = schluessel.pruefen(app, ohne)
+    assert info.name is None
+    assert schluessel.kontext_fuer(app, info).actor == "bot:betreiber"
+
+
+@pytest.mark.parametrize("name", ["A", "x" * 40, "VibeMind", "Brain_2"])
+def test_name_erlaubt(db_admin, name):
+    sid, _ = schluessel.ausstellen(db_admin, art="melden", bezeichnung="x", name=name)
+    assert db_admin.execute("select name from event.schluessel where id = %s",
+                            (sid,)).fetchone()["name"] == name
+
+
+def test_name_nur_erlaubte_zeichen(db_admin, welt):
+    schlecht: list[Any] = ["", " ", "x" * 41, "Vibe Mind", "Vibe-Mind", "Vibe:Mind", "Grün",
+                           "VibeMind\n", "\nVibeMind", "Vibe\x00Mind", 5, b"VibeMind"]
+    for name in schlecht:
+        with pytest.raises(ValueError) as e:
+            schluessel.ausstellen(db_admin, art="betreiber", bezeichnung="x", name=name)
+        # Feste Meldung, ohne den Wert.
+        assert str(e.value) == "Name ungültig"
+    assert db_admin.execute("select count(*) as n from event.schluessel").fetchone()["n"] == 0
+    # Zweites Netz: der Check in 009 haelt auch einen direkten Schreibzugriff auf.
+    sid, _ = schluessel.ausstellen(db_admin, art="melden", bezeichnung="x")
+    for name in ("", "x" * 41, "Vibe Mind", "Vibe-Mind", "VibeMind\n", "Grün"):
+        with pytest.raises(psycopg.errors.CheckViolation):
+            db_admin.execute("update event.schluessel set name = %s where id = %s", (name, sid))
+
+
+def test_event_app_kann_name_nicht_setzen(db_admin, db_app, welt):
+    sid, _ = schluessel.ausstellen(db_admin, art="betreiber", bezeichnung="x", name="VibeMind")
+    for conn in (db_app(), db_app(betreiber=True), db_app(firmen=[welt["a"]])):
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("update event.schluessel set name = 'Fremd' where id = %s", (sid,))
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("select name from event.schluessel")
+    for recht in ("SELECT", "INSERT", "UPDATE"):
+        for rolle in ("event_app", "public"):
+            assert db_admin.execute(
+                "select has_column_privilege(%s, 'event.schluessel', 'name', %s) as r",
+                (rolle, recht)).fetchone()["r"] is False, (rolle, recht)
+    assert db_admin.execute("select name from event.schluessel where id = %s",
+                            (sid,)).fetchone()["name"] == "VibeMind"
+
+
 # --- Marke und Bestaetigung (nur die SD-Funktionen; Fachschicht folgt in Task 3) ------
 
 
@@ -453,6 +517,16 @@ def test_cli_ausstellen_und_widerrufen(pg_cluster, db_admin, tmp_path, monkeypat
     assert klartext not in aus.err and "127.0.0.1" not in aus.out + aus.err
     info = schluessel.pruefen(db_admin, klartext)
     assert info.event_id == welt["ea"]
+
+    # --name (Etappe 4): Name des Aufrufers, landet im actor.
+    assert schluessel.main(["ausstellen", "--art", "betreiber", "--bezeichnung", "Brain",
+                            "--name", "VibeMind"]) == 0
+    benannt = capsys.readouterr().out.strip()
+    assert schluessel.pruefen(db_admin, benannt).name == "VibeMind"
+    assert schluessel.main(["ausstellen", "--art", "betreiber", "--bezeichnung", "Brain",
+                            "--name", "Vibe Mind"]) == 1
+    falsch = capsys.readouterr()
+    assert falsch.out == "" and "Name ungültig" in falsch.err
 
     assert schluessel.main(["widerrufen", str(info.id)]) == 0
     weg = capsys.readouterr()

@@ -12,15 +12,16 @@ Dateien nur nach, wenn darin etwas fehlt, das du brauchst.
 
 ## Werkzeuge
 
-Du hast nur die Werkzeuge der Event-App. Keine Shell, kein Dateisystem, kein
-Web und keine Nachrichten an Kanäle. Was die Werkzeuge nicht hergeben, meldest
-du als Grenze zurück.
+Du hast die Werkzeuge des Event-Katalogs (`bn-lesen__…` bzw. `bn-auftrag__…`)
+und, nur für das Legacy-Festival, die der alten Event-App (`event-app__…`).
+Welche du wann nimmst, regelt `SOUL.md`. Keine Shell, kein Dateisystem und kein
+Web. Was die Werkzeuge nicht hergeben, meldest du als Grenze zurück.
 
 ## Gedächtnis
 
 Jeder Auftrag ist eine eigene Sitzung. Lege keine Notizen oder
-Erinnerungsdateien an; der Verlauf steht in der Event-App
-(`list_recent_changes`).
+Erinnerungsdateien an; der Verlauf steht im Katalog (`verlauf_lesen`) bzw.
+beim Legacy-Festival in der alten App (`list_recent_changes`).
 
 ## Rote Linien
 

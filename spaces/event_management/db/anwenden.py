@@ -51,8 +51,10 @@ def migrationen(ordner: Path | None = None) -> list[tuple[int, str, Path]]:
     return [(nr, gefunden[nr].name, gefunden[nr]) for nr in sorted(gefunden)]
 
 
-def anwenden(conn: psycopg.Connection) -> list[str]:
-    """Wendet fehlende Migrationen an. Rueckgabe: Namen der neu angewendeten Dateien."""
+def anwenden(conn: psycopg.Connection, *, ordner: Path | None = None) -> list[str]:
+    """Wendet fehlende Migrationen an. Rueckgabe: Namen der neu angewendeten Dateien.
+
+    `ordner` ersetzt den Standardordner (nur fuer Tests)."""
     with conn.transaction():
         conn.execute(_VORBEREITUNG)
     with conn.transaction(), conn.cursor(row_factory=tuple_row) as cur:
@@ -60,7 +62,7 @@ def anwenden(conn: psycopg.Connection) -> list[str]:
         erledigt = {zeile[0] for zeile in cur.fetchall()}
 
     neu: list[str] = []
-    for nr, name, pfad in migrationen():
+    for nr, name, pfad in migrationen(ordner):
         if nr in erledigt:
             continue
         sql_text = pfad.read_text(encoding="utf-8")

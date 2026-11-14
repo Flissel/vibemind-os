@@ -49,7 +49,7 @@ import logging
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -71,6 +71,7 @@ UNBEKANNT = "unbekanntes Werkzeug"
 LEGACY = "Legacy-Event: bitte die alte App nutzen"
 TEXT_MAX = 2000
 MAX_TREFFER = 20
+MAX_AENDERUNGEN = 100
 VERLAUF_VORGABE = 50
 GENAUER = "Bitte genauer"
 GENAUER_DATUM = "Bitte genauer – oder mit datum (JJJJ-MM-TT, Tag des Beginns) wählen"
@@ -481,6 +482,32 @@ def _event_waehlen(conn: psycopg.Connection[Any], info: SchluesselInfo, args: di
     return {"marke": marke.marke_ausstellen(conn, info, zeilen[0]["id"]), "event": kurz[0]}
 
 
+def _aenderungen_seit(conn: psycopg.Connection[Any], info: SchluesselInfo,
+                      args: dict[str, Any], u: _Umgebung) -> dict[str, Any]:
+    """Wahrheitspruefung (Etappe 4): Verlaufszeilen aller Events der letzten `minuten`,
+    neueste zuerst, hoechstens 100. Nur Metadaten (nie Titel oder Inhalte der Zeilen);
+    ohne Marke, denn der Betreiber sieht alles (RLS: Betreiber-Kontext)."""
+    k = kontext_fuer(conn, info)
+    with transaktion(conn, k) as cur:
+        cur.execute(
+            "select e.name as event, f.kurz as firma, v.zeitpunkt, v.actor, v.quelle,"
+            " v.baustein, v.aktion from event.verlauf v"
+            " join event.event e on e.id = v.event_id"
+            " join event.firma f on f.id = v.firma_id"
+            " where v.zeitpunkt >= now() - make_interval(mins => %s)"
+            " order by v.zeitpunkt desc, v.id desc limit %s",
+            (args["minuten"], MAX_AENDERUNGEN),
+        )
+        zeilen = cur.fetchall()
+    return {"aenderungen": [
+        {"event": z["event"], "firma": z["firma"],
+         "zeitpunkt": z["zeitpunkt"].astimezone(timezone.utc).isoformat(),
+         "actor": z["actor"], "quelle": z["quelle"], "baustein": z["baustein"],
+         "aktion": z["aktion"]}
+        for z in zeilen
+    ]}
+
+
 # --- Verwaltung (Task 5) -------------------------------------------------------------
 
 
@@ -775,6 +802,10 @@ _SONDER: dict[str, _Sonder] = {
          "datum": {"type": "string", "pattern": r"^\d{4}-\d{2}-\d{2}$", "format": "date",
                    "description": "Tag des Beginns (JJJJ-MM-TT, Ortszeit Berlin)"}},
         ("suche",), False, False, _event_waehlen),
+    "aenderungen_seit": _Sonder(
+        "Letzte Änderungen aller Events der vergangenen Minuten (nur Metadaten, höchstens 100)",
+        {"minuten": {"type": "integer", "minimum": 1, "maximum": 1440}},
+        ("minuten",), False, False, _aenderungen_seit),
     "event_anlegen": _Sonder(
         "Neues Event in einer Firma anlegen; liefert die Marke des neuen Events",
         {"firma": _FIRMA_SCHEMA,
@@ -857,8 +888,8 @@ _SONDER_JE_ART: dict[str, tuple[str, ...]] = {
     "event": (*_EVENT_LESEN, "kontakt_anlegen", *_NACHRICHTEN),
     "leitung": (*_WAHL, *_EVENT_LESEN, "kontakt_anlegen", *_NACHRICHTEN, *_VERWALTUNG),
     "betreiber": (*_WAHL, *_EVENT_LESEN, "kontakt_anlegen", *_NACHRICHTEN, *_VERWALTUNG,
-                  "firma_anlegen"),
-    "betreiber_lesen": (*_WAHL, *_EVENT_LESEN),
+                  "firma_anlegen", "aenderungen_seit"),
+    "betreiber_lesen": (*_WAHL, *_EVENT_LESEN, "aenderungen_seit"),
     "melden": ("gruppe_melden", "chat_melden"),
 }
 # Nur mit Person im Schluessel sichtbar (der Code wird als diese Person angelegt).
@@ -905,6 +936,20 @@ def _eintraege(conn: psycopg.Connection[Any], info: SchluesselInfo,
             w = _baustein_werkzeug(eintrag, op, begriffe, mit_marke=mit_marke)
             ergebnis[w.name] = _Eintrag(w, _baustein_ausfuehrung(eintrag, op))
     return ergebnis
+
+
+def namen(art: str) -> list[str]:
+    """Alle Werkzeugnamen, die ein Schluessel dieser Art hoechstens sieht, ohne Datenbank.
+
+    Obermenge des Katalogs: alle Bausteine der REGISTRY, `gruppe_verbinden` auch ohne
+    Person (fuer Art `event` haengt der echte Katalog zusaetzlich vom Schema des Events ab).
+    Grundlage der festen Erlaubnisliste von `brain-auftrag` in config/openclaw.json
+    (Abschluss-Review F-2; der Test haelt beide gleich). ValueError bei unbekannter Art.
+    """
+    if art not in _SONDER_JE_ART:
+        raise ValueError("Schlüssel-Art unbekannt")
+    return [*_SONDER_JE_ART[art],
+            *(f"{eintrag}_{op}" for eintrag in REGISTRY for op in _OPS_JE_ART[art])]
 
 
 def katalog(conn: psycopg.Connection[Any], info: SchluesselInfo,

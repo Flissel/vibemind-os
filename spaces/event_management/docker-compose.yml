@@ -30,7 +30,9 @@
 # Event-System (Etappe 3, nur Definition): event-api, event-web und event-mcp haben das
 # Profil `event-system`. Ein `docker compose up -d` ohne Profil (deploy/anbinden.sh)
 # startet sie NICHT; erst Etappe 4 mit Felix' OK (`--profile event-system`). Ihre Images
-# baut Etappe 4 (Dockerfile ist dort Thema). Geheimnisse nur als Dateien unter laufzeit/
+# baut `docker compose --profile event-system build` (Dockerfile.system, web/Dockerfile);
+# der Tag kommt aus EVENT_SYSTEM_TAG / EVENT_WEB_TAG (Git-Kurz-SHA, ohne Wert bricht
+# Compose ab). Geheimnisse nur als Dateien unter laufzeit/
 # (gitignored) und als *_FILE-Variablen; die nicht geheimen, aber privaten Werte
 # (EVENT_BASIS_URL, EVENT_SMTP_HOST/PORT/USER/ABSENDER) in laufzeit/event-app.env.
 services:
@@ -96,14 +98,16 @@ services:
       - event-management-claw-state:/home/node/.openclaw
       - event-management-claw-keys:/home/node/.config/openclaw
       # Gefuellte Saat (deploy/fuellen.py), nicht config/workspace mit
-      # offenen Platzhaltern. Zwei Arbeitsbereiche: workspace (Gruppe, Agent
-      # main) und workspace-brain (brain-lesen/brain-auftrag, eigene SOUL --
-      # nur dort gilt actor "VibeMind"). Laufzeitpfade in config/openclaw.json.
+      # offenen Platzhaltern. Drei Arbeitsbereiche: workspace (Empfang, Agent
+      # main), workspace-legacy (Legacy-Gruppe, Agent ev-legacy) und
+      # workspace-brain (brain-lesen/brain-auftrag, eigene SOUL -- nur dort gilt
+      # actor "VibeMind"). Laufzeitpfade in config/openclaw.json.
       # Saat der Konfiguration (ohne Schluessel); deploy/anbinden.sh legt sie
       # ins Volume und setzt die Schluessel per stdin.
       - ./build/openclaw.json:/seed/openclaw.json:ro
       - ./build/workspace:/seed/workspace:ro
       - ./build/workspace-brain:/seed/workspace-brain:ro
+      - ./build/workspace-legacy:/seed/workspace-legacy:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # Der Image-Healthcheck probt fest 127.0.0.1:18789 -- daran ist der alte
@@ -122,7 +126,10 @@ services:
   # Oberflaeche erreicht sie ueber event-app-aus. DSN = App-Rolle (event_app), nie die
   # Admin-DSN; liegt die Datenbank auf dem Host, zeigt der DSN auf host.docker.internal.
   event-api:
-    image: event-management/system:etappe-4
+    build:
+      context: .
+      dockerfile: Dockerfile.system
+    image: event-management/system:${EVENT_SYSTEM_TAG:?EVENT_SYSTEM_TAG fehlt, Git Kurz SHA des Images setzen}
     container_name: event-api
     profiles: [event-system]
     restart: unless-stopped
@@ -169,7 +176,11 @@ services:
   # http://event-api:8170) legt `next build` beim Bauen des Images fest, nicht die
   # Laufzeit. Zugang nur ueber das Tailnet (z. B. tailscale serve auf 127.0.0.1:3170).
   event-web:
-    image: event-management/web:etappe-4
+    build:
+      context: ./web
+      args:
+        EVENT_API_URL: http://event-api:8170
+    image: event-management/web:${EVENT_WEB_TAG:?EVENT_WEB_TAG fehlt, Git Kurz SHA des Images setzen}
     container_name: event-web
     profiles: [event-system]
     restart: unless-stopped
@@ -211,8 +222,17 @@ services:
   # vergeben (selten; Shim und Claw bekommen die untersten Adressen), startet event-mcp
   # nicht ("Address already in use") -- ein sichtbarer Startfehler, kein stiller.
   # Abhilfe: den Container, der .14 haelt, neu starten, dann event-mcp starten.
+  # Netzweg des Brain (Abschluss-Review F-4, Entscheidung in Teil B): erreicht der Brain
+  # event-mcp unter einem weiteren Namen (z. B. Tailnet), steht dieser optional als
+  # EVENT_MCP_ZUSATZ_HOSTS=<host>[:<port>][,...] in laufzeit/event-app.env (privat, nicht
+  # geheim, wie EVENT_BASIS_URL). Bewusst NICHT unter `environment`: ein Eintrag dort
+  # (auch leer) ueberschriebe die Env-Datei bei jedem `compose up` ohne die Shell-Variable.
+  # Ohne Eintrag gelten nur die festen Namen; Muell im Wert bricht den Start ab.
   event-mcp:
-    image: event-management/system:etappe-4
+    build:
+      context: .
+      dockerfile: Dockerfile.system
+    image: event-management/system:${EVENT_SYSTEM_TAG:?EVENT_SYSTEM_TAG fehlt, Git Kurz SHA des Images setzen}
     container_name: event-mcp
     profiles: [event-system]
     restart: unless-stopped

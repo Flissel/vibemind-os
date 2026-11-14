@@ -1,0 +1,11 @@
+# Laufzeit-Abhaengigkeiten der Fachschicht (system/), aus den tatsaechlichen Importen
+# ermittelt und gepinnt. Einzige Quelle fuer Dockerfile.system.
+fastapi==0.135.3
+uvicorn==0.44.0
+starlette==1.0.0
+pydantic==2.12.5
+anyio==4.13.0
+mcp==1.27.0
+psycopg[binary]==3.3.5
+psycopg-pool==3.3.1
+PyYAML==6.0.3

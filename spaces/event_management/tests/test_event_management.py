@@ -133,6 +133,7 @@ def test_compose_ohne_docker_socket_und_mit_gefuellter_saat() -> None:
     assert not any("docker.sock" in v for v in volumes)
     assert "./build/workspace:/seed/workspace:ro" in volumes
     assert "./build/workspace-brain:/seed/workspace-brain:ro" in volumes
+    assert "./build/workspace-legacy:/seed/workspace-legacy:ro" in volumes
 
 
 def test_telegram_gruppen_und_werkzeugsperren() -> None:
@@ -240,22 +241,65 @@ def _erlaubt(agent: str) -> list[str]:
 def test_brain_agenten_eingetragen() -> None:
     konfig = json.loads(OPENCLAW.read_text(encoding="utf-8"))
     liste = konfig["agents"]["list"]
-    assert [a["id"] for a in liste] == ["main", "brain-lesen", "brain-auftrag"]
+    assert [a["id"] for a in liste] == ["main", "ev-legacy", "brain-lesen", "brain-auftrag"]
     assert konfig["gateway"]["http"]["endpoints"]["chatCompletions"]["enabled"] is True
 
 
+# Etappe 4, Task 4: der Brain arbeitet am Katalog ueber eigene Betreiber-Schluessel (Name
+# `VibeMind`): `bn-lesen` (Art betreiber_lesen) und `bn-auftrag` (Art betreiber). Die
+# App-Werkzeuge bleiben nur fuer das Legacy-Festival.
+BRAIN_SERVER = {"brain-lesen": "bn-lesen", "brain-auftrag": "bn-auftrag"}
+
+
+# Abschluss-Review F-2: brain-auftrag bekommt KEIN `bn-auftrag__*`, sondern eine feste
+# Liste: der Betreiber-Katalog ohne die Werkzeuge, die sofort nach aussen wirken oder
+# etwas anlegen, das nur Felix anlegt, und ohne jedes Loeschen. Ein neuer Baustein macht
+# den Test rot, bis die Liste nachgezogen ist.
+BRAIN_AUFTRAG_OHNE = frozenset({"nachricht_an_gruppe", "einladen", "firma_anlegen",
+                                "event_anlegen"})
+
+
+def _brain_auftrag_katalog() -> set[str]:
+    from spaces.event_management.system import werkzeuge
+
+    return {n for n in werkzeuge.namen("betreiber")
+            if n not in BRAIN_AUFTRAG_OHNE and not n.endswith("_loeschen")}
+
+
 @pytest.mark.parametrize("agent", ["brain-lesen", "brain-auftrag"])
-def test_brain_agenten_nur_app_werkzeuge(agent: str) -> None:
+def test_brain_agenten_nur_app_werkzeuge_und_eigener_katalog(agent: str) -> None:
     eintrag = _agenten()[agent]
     assert "deny" not in eintrag["tools"]
     assert set(eintrag["tools"]) == {"allow"}
     for name in eintrag["tools"]["allow"]:
+        if name == "bn-lesen__*" and agent == "brain-lesen":
+            continue  # Katalog nur lesend (betreiber_lesen, test_betreiber_lesen_nur_lesend)
+        if name.startswith("bn-auftrag__") and agent == "brain-auftrag":
+            assert "*" not in name, name  # feste Liste, kein Muster (F-2)
+            continue
         assert name.startswith(APP_PRAEFIX), name
         assert "*" not in name, name
 
 
+def test_brain_auftrag_feste_liste_aus_dem_katalog() -> None:
+    """F-2: genau der Betreiber-Katalog minus Ausschluesse, ohne Muster, ohne Doppel."""
+    katalog = [n.removeprefix("bn-auftrag__") for n in _erlaubt("brain-auftrag")
+               if n.startswith("bn-auftrag__")]
+    assert len(katalog) == len(set(katalog))
+    assert set(katalog) == _brain_auftrag_katalog()
+    assert not [n for n in katalog if n.endswith("_loeschen")]
+    assert not BRAIN_AUFTRAG_OHNE & set(katalog)
+    # Lesen und die zweistufigen Aktionen bleiben erreichbar (die SOUL fuehrt sie).
+    assert {"event_waehlen", "events_suchen", "kontakte_suchen", "aufgaben_liste",
+            "aufgaben_anlegen", "event_absagen", "rolle_aendern"} <= set(katalog)
+
+
+def _app_erlaubt(agent: str) -> list[str]:
+    return [n.removeprefix(APP_PRAEFIX) for n in _erlaubt(agent) if n.startswith(APP_PRAEFIX)]
+
+
 def test_brain_lesen_darf_nicht_schreiben() -> None:
-    namen = [n.removeprefix(APP_PRAEFIX) for n in _erlaubt("brain-lesen")]
+    namen = _app_erlaubt("brain-lesen")
     assert len(namen) == len(set(namen))
     assert set(namen) == APP_LESEND
     _, schreiben = _werkzeuge_aus_soul()
@@ -263,9 +307,28 @@ def test_brain_lesen_darf_nicht_schreiben() -> None:
 
 
 def test_brain_auftrag_hat_alle_app_werkzeuge() -> None:
-    namen = [n.removeprefix(APP_PRAEFIX) for n in _erlaubt("brain-auftrag")]
+    namen = _app_erlaubt("brain-auftrag")
     assert len(namen) == len(set(namen))
     assert set(namen) == APP_ALLE and len(APP_ALLE) == 20
+
+
+def test_brain_server_und_allow_listen() -> None:
+    konfig = json.loads(OPENCLAW.read_text(encoding="utf-8"))
+    server = konfig["mcp"]["servers"]
+    for name in ("bn-lesen", "bn-auftrag"):
+        # Wie `melden`: dieselbe URL des Katalog-Servers; den Header (Schluessel mit Name
+        # VibeMind) setzt erst anbinden.sh ueber stdin (Zeilen 6 und 7).
+        assert server[name] == {"url": "{{EVENT_MCP_URL}}/mcp", "transport": "streamable-http",
+                                "connectionTimeoutMs": 30000, "requestTimeoutMs": 60000}
+    assert set(_erlaubt("brain-lesen")) == {APP_PRAEFIX + n for n in APP_LESEND} | {"bn-lesen__*"}
+    assert set(_erlaubt("brain-auftrag")) == ({APP_PRAEFIX + n for n in APP_ALLE}
+                                              | {"bn-auftrag__" + n for n in _brain_auftrag_katalog()})
+    assert len(_erlaubt("brain-lesen")) == 10
+    assert len(_erlaubt("brain-auftrag")) == 20 + len(_brain_auftrag_katalog())
+    # Kein anderer Agent bekommt die Brain-Server.
+    for agent, eintrag in _agenten().items():
+        if agent not in BRAIN_SERVER:
+            assert not [n for n in eintrag["tools"]["allow"] if n.startswith("bn-")], agent
 
 
 def test_soul_regelt_actor_fuer_vibemind() -> None:
@@ -298,6 +361,107 @@ def test_brain_agenten_haben_eigenen_workspace() -> None:
         assert agenten[agent]["workspace"] == LAUFZEIT_WORKSPACE_BRAIN
     # Laufzeitpfad und Saat-Ordner tragen denselben Namen.
     assert LAUFZEIT_WORKSPACE_BRAIN.rsplit("/", 1)[1] == WORKSPACE_BRAIN.name
+
+
+def _abschnitt(text: str, titel: str) -> str:
+    assert f"\n## {titel}\n" in text, titel
+    return text.split(f"\n## {titel}\n", 1)[1].split("\n## ")[0]
+
+
+def test_brain_soul_regeln() -> None:
+    """Etappe 4, Task 4: der Brain arbeitet am Katalog (bn-lesen/bn-auftrag); die
+    App-Werkzeuge nur noch fuer das Legacy-Festival."""
+    from spaces.event_management.system import werkzeuge
+
+    text = BRAIN_SOUL.read_text(encoding="utf-8")
+    regeln = _abschnitt(text, "Regeln")
+    # (1) Jede Nachricht nennt ein Event; zuerst event_waehlen.
+    assert "`event_waehlen`" in regeln and "Zuerst" in regeln
+    assert "nennt ein Event" in regeln
+    # (2) Mehrere Treffer: Trefferliste, nichts aendern.
+    assert "Trefferliste" in regeln and "änderst nichts" in regeln
+    # (3) Legacy: genau der Text des Katalogs, dann (und nur dann) event-app__.
+    assert werkzeuge.LEGACY == "Legacy-Event: bitte die alte App nutzen"
+    assert f"„{werkzeuge.LEGACY}“" in regeln
+    assert "`event-app__…`" in regeln and "sonst nie" in regeln
+    # (4) Jede Antwort nennt Event und Firma.
+    assert "Jede Antwort nennt Event und Firma" in regeln
+    # (5) Riskantes zweistufig: beschreiben statt ausfuehren, „Bestätigung nötig“.
+    assert "„Bestätigung nötig“" in regeln and "`bestaetigung`" in regeln
+    assert "beschreibst" in regeln
+    # Eigene Katalog-Server; der Name steht im Schluessel, nicht im Werkzeug.
+    assert "`bn-lesen__…`" in text and "`bn-auftrag__…`" in text
+    assert "bot:betreiber:VibeMind" in text
+    # Die App-Tabelle bleibt (Legacy) und steht im Legacy-Abschnitt.
+    legacy = _abschnitt(text, "Legacy-Festival")
+    assert "**Lesen**" in legacy and "**Schreiben**" in legacy
+    # Keine echten Daten: nur die drei Platzhalter des Legacy-Festivals.
+    assert set(PLATZHALTER.findall(text)) == {"EVENT_NAME", "EVENT_DATUM", "EVENT_ORT"}
+    for muster, was in VERBOTEN:
+        assert not muster.search(text), was
+    assert "example" not in text.lower() and "http" not in text
+
+
+def test_brain_soul_sendet_nichts_und_legt_nichts_an() -> None:
+    """Ruling T4-b: nachricht_an_gruppe (sendet sofort), einladen (sendet Mail),
+    firma_anlegen und event_anlegen stehen in Regel 5 (nur beschreiben); seit F-2 fehlen
+    sie zusaetzlich in der Erlaubnisliste von brain-auftrag. Senden bleibt ausdruecklich
+    ausgeschlossen."""
+    text = BRAIN_SOUL.read_text(encoding="utf-8")
+    regeln = _abschnitt(text, "Regeln")
+    regel5 = regeln.split("5. ", 1)[1]
+    for werkzeug in ("nachricht_an_gruppe", "einladen", "firma_anlegen", "event_anlegen"):
+        assert f"`{werkzeug}`" in regel5, werkzeug
+    assert "„Bestätigung nötig“" in regel5
+    nicht = _abschnitt(text, "Was du nicht kannst")
+    assert "- Nachrichten in Gruppen oder Chats schicken." in nicht
+    assert "- E-Mails an Gäste schicken." in nicht
+
+
+# F-1: was ohne Rueckfrage loescht oder nach aussen wirkt. Zweistufig ist ein Werkzeug,
+# wenn sein Schema `bestaetigung` kennt (einladen nur fuer die Rolle leitung, darum hier).
+NACH_AUSSEN = frozenset({"nachricht_an_gruppe", "einladen", "firma_anlegen", "event_anlegen"})
+
+
+def _regel5(text: str) -> str:
+    return _abschnitt(text, "Regeln").split("5. ", 1)[1]
+
+
+def brain_soul_regel5_pruefen(text: str) -> None:
+    from spaces.event_management.system import werkzeuge
+
+    regel5 = _regel5(text)
+    erreichbar = {n.removeprefix("bn-auftrag__") for n in _erlaubt("brain-auftrag")
+                  if n.startswith("bn-auftrag__")}
+    sofort = {n for n in werkzeuge.namen("betreiber")
+              if n.endswith("_loeschen") or n in NACH_AUSSEN}
+    for name in sorted(sofort):
+        # Entweder gar nicht erreichbar (F-2) oder in Regel 5 als „nur beschreiben“.
+        assert name not in erreichbar or f"`{name}`" in regel5, name
+    for name in sorted(NACH_AUSSEN):
+        assert f"`{name}`" in regel5, name
+    assert "`<baustein>_loeschen`" in regel5 and "ohne Rückfrage" in regel5
+    # Die zweistufigen, die erreichbar bleiben, stehen namentlich in Regel 5.
+    for name in ("event_absagen", "event_archivieren", "kontakt_entfernen", "rolle_aendern"):
+        assert name in erreichbar and f"`{name}`" in regel5, name
+    # Die falsche Pauschale (F-1) ist weg: nicht jedes Katalog-Werkzeug fragt erst.
+    flach = " ".join(text.split())
+    assert "Ein Katalog-Werkzeug liefert ohne `bestaetigung` nur eine Zusammenfassung" not in flach
+    # „Du kennst nur Zahlen“ gilt nur fuer das Legacy-Festival; der Katalog liest Namen.
+    niemals = " ".join(_abschnitt(text, "Was du niemals tust").split())
+    assert "Keine Gästedaten herausgeben. Du kennst nur Zahlen." not in niemals
+    assert "`kontakte_suchen`" in niemals and "`…_liste`" in niemals
+    assert "`get_guest_stats`" in niemals
+
+
+def test_brain_soul_regel5_nennt_was_sofort_wirkt() -> None:
+    brain_soul_regel5_pruefen(BRAIN_SOUL.read_text(encoding="utf-8"))
+
+
+def test_brain_agents_kennt_beide_werkzeugfamilien() -> None:
+    text = (WORKSPACE_BRAIN / "AGENTS.md").read_text(encoding="utf-8")
+    assert "`bn-lesen__…`" in text and "`bn-auftrag__…`" in text and "`event-app__…`" in text
+    assert "Du hast nur die Werkzeuge der Event-App" not in text
 
 
 def test_brain_workspace_vorhanden_ohne_gruppenteile() -> None:
@@ -363,6 +527,8 @@ def test_fuellen_mit_beispielwerten(tmp_path: Path) -> None:
     assert list(konfig["channels"]["telegram"]["groups"]) == [werte["TELEGRAM_GRUPPE"], "*"]
     assert konfig["mcp"]["servers"]["event-app"]["url"] == werte["EVENT_APP_URL"] + "/api/mcp"
     assert konfig["mcp"]["servers"]["melden"]["url"] == werte["EVENT_MCP_URL"] + "/mcp"
+    for name in ("bn-lesen", "bn-auftrag"):
+        assert konfig["mcp"]["servers"][name]["url"] == werte["EVENT_MCP_URL"] + "/mcp"
     for ws in ("workspace-legacy", "workspace-brain"):
         assert werte["EVENT_ORT"] in (tmp_path / ws / "SOUL.md").read_text(encoding="utf-8")
     assert VIBEMIND_ACTOR in (tmp_path / "workspace-brain" / "SOUL.md").read_text(encoding="utf-8")
@@ -481,6 +647,19 @@ def test_event_mcp_kommando_port_und_healthcheck() -> None:
     probe = " ".join(mcp["healthcheck"]["test"])
     assert f"http://127.0.0.1:{port}/gesund" in probe
     assert "event-mcp" in mcp_server.ERLAUBTE_HOSTS  # Name, unter dem der Claw ihn ruft
+
+
+def test_event_mcp_zusatz_hosts_optional_aus_der_env_datei() -> None:
+    """F-4: EVENT_MCP_ZUSATZ_HOSTS (Netzweg des Brain) ist ein privater, nicht geheimer Wert
+    und kommt wie EVENT_BASIS_URL aus laufzeit/event-app.env. `environment` darf ihn nicht
+    setzen: ein Eintrag dort (auch leer) ueberschriebe die Env-Datei bei jedem
+    `compose up`, in dessen Shell die Variable fehlt."""
+    mcp = _compose()["services"]["event-mcp"]
+    assert {"path": "./laufzeit/event-app.env", "required": True} in mcp["env_file"]
+    assert "EVENT_MCP_ZUSATZ_HOSTS" not in mcp["environment"]
+    text = COMPOSE.read_text(encoding="utf-8")
+    kopf = text.split("  event-mcp:\n", 1)[0].rsplit("\n\n", 1)[1]
+    assert "EVENT_MCP_ZUSATZ_HOSTS" in kopf and "event-app.env" in kopf
 
 
 def test_event_api_und_web_nur_loopback() -> None:

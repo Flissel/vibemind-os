@@ -168,7 +168,13 @@ def test_images_wie_im_compose():
     dienste = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]
     assert k["CLAW_IMAGE"] == dienste["event-management-claw"]["image"]
     assert k["SHIM_IMAGE"] == dienste["event-management-shim"]["image"]
-    assert k["SYSTEM_IMAGE"] == dienste["event-mcp"]["image"]
+    # Der Tag kommt wie im Compose aus EVENT_SYSTEM_TAG; Repo und Name muessen gleich sein.
+    compose_image = dienste["event-mcp"]["image"]
+    assert compose_image.split(":", 1)[0] == "event-management/system"
+    assert "${EVENT_SYSTEM_TAG:?" in compose_image
+    shell = _shell()
+    assert re.search(r"^SYSTEM_IMAGE=event-management/system:\$EVENT_SYSTEM_TAG$", shell, re.M)
+    assert re.search(r'^: "\$\{EVENT_SYSTEM_TAG:\?[^}"]+\}"$', shell, re.M)
 
 
 def test_werte_nur_ueber_stdin():
@@ -238,6 +244,7 @@ def test_test_config_ohne_betrieb_und_ohne_platzhalter():
     assert "{{" not in text
     assert [a["id"] for a in config["agents"]["list"]] == ["main"]
     assert config["mcp"]["servers"] == {}
+    assert config["bindings"] == []  # kein Betriebs-Binding (ev-legacy / Legacy-Gruppe)
     telegram = config["channels"]["telegram"]
     assert telegram["groups"] == {"*": {"requireMention": True}}
     assert telegram["groupPolicy"] == "allowlist"
@@ -342,14 +349,15 @@ def test_m5_prueft_getrennte_dm_sitzungen():
         assert begriff in m5, begriff
 
 
-def test_anleitung_nennt_rahmen_und_deploy_blocker():
+def test_anleitung_nennt_rahmen_und_erledigten_blocker():
     text = ANLEITUNG.read_text(encoding="utf-8")
     for begriff in ("nicht ausgeführt", SCHALTER, "Test-Bot", "ev-legacy", "anbinden.sh",
-                    "DEPLOY-BLOCKER", "event-messung-", "aufraeumen", "WORKBOARD",
+                    "(erledigt)", "EVENT_SYSTEM_TAG", "event-messung-", "aufraeumen", "WORKBOARD",
                     "http://event-mcp:8171", "Ruling T9-a", "Address already in use",
                     "Claude-Code-Abo-Token"):
         assert begriff in text, begriff
     assert "neu anlegen.**" not in text  # keine Netz-Neuanlage mehr (Ruling T9-a)
+    assert "DEPLOY-BLOCKER" not in text  # ev-legacy ist seit Etappe 4 Task 2 geloest
 
 
 def test_keine_geheimnisse_oder_echten_ziele():

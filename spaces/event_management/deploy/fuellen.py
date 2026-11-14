@@ -7,7 +7,7 @@ werte.beispiel.json); dieses Skript schreibt config/ gefuellt in ein Zielverzeic
 (ueblich: build/, gitignored), das docker-compose.yml als Saat einhaengt. Gefuellt
 wird ALLES unter config/: openclaw.json und die Arbeitsbereiche workspace/
 (Empfang `main`), workspace-brain/ (Brain-Agenten) und workspace-legacy/ (bisherige
-Festival-Gruppe, fuer `ev-legacy` in Etappe 4; noch nicht ausgesaet).
+Festival-Gruppe, fuer `ev-legacy`).
 
 Schluessel gehoeren NICHT in die Wertedatei -- sie gehen nur per stdin ins
 Laufzeit-Volume (Muster *-anbinden.sh).
