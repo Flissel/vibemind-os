@@ -348,6 +348,55 @@ def test_einladen_mit_dem_mailer_der_app(db_admin, db_app, welt, lea):
     assert len(mailer.gesendet) == 1 and _anzahl(db_admin, "einladung") == 1
 
 
+def test_einladen_als_leitung_zweistufig(db_admin, db_app, welt, lea):
+    """Abschluss-Review F4: eine Leitung einladen gibt Verwaltungsrechte weiter -- wie
+    rolle_aendern erst Zusammenfassung und Code, dann mit Code (gebunden an Firma, Mail in
+    Kleinbuchstaben und Rolle)."""
+    app = db_app()
+    mailer = SpeicherMailer()
+    argumente = {"firma": "firma-a", "mail": " Nora.Neu@Example.org ", "name": "Nora Neu",
+                 "rolle": "leitung"}
+    eingabe = {w.name: w for w in werkzeuge.katalog(app, lea)}["einladen"].eingabe
+    assert "bestaetigung" in eingabe["properties"]
+    assert "bestaetigung" not in eingabe["required"]
+
+    vorher = _stand(db_admin)
+    erster = werkzeuge.ausfuehren(app, lea, "einladen", argumente, mailer=mailer,
+                                  basis_url=BASIS_URL)
+    assert _stand(db_admin) == vorher and mailer.gesendet == []
+    assert _anzahl(db_admin, "einladung") == 0
+    assert erster["bestaetigung"].startswith("bs_") and erster["gueltig_minuten"] == 5
+    assert erster["firma"] == {"name": FIRMA_A, "kurz": "firma-a"}
+    assert "nora.neu@example.org" in erster["zusammenfassung"]
+    assert "Leitung" in erster["zusammenfassung"] and FIRMA_A in erster["zusammenfassung"]
+
+    # Der Code gilt nur fuer genau dieses Ziel (andere Mail; fremde Firma ist gar nicht
+    # sichtbar). Rolle mitglied ist ohnehin einstufig und braucht keinen Code.
+    code = erster["bestaetigung"]
+    for anders in ({"mail": "andere@example.org"}, {"firma": "firma-b"}):
+        with pytest.raises((ValueError, NichtGefunden)):
+            werkzeuge.ausfuehren(app, lea, "einladen", {**argumente, **anders,
+                                                        "bestaetigung": code},
+                                 mailer=mailer, basis_url=BASIS_URL)
+    assert mailer.gesendet == [] and _anzahl(db_admin, "einladung") == 0
+
+    # Mit Code (Mail anders geschrieben, kanonisch gleich): ausgefuehrt.
+    zweiter = werkzeuge.ausfuehren(app, lea, "einladen",
+                                   {**argumente, "mail": "nora.neu@example.org",
+                                    "bestaetigung": code},
+                                   mailer=mailer, basis_url=BASIS_URL)
+    assert zweiter == {"firma": {"name": FIRMA_A, "kurz": "firma-a"}, "eingeladen": True}
+    assert [m.an for m in mailer.gesendet] == ["nora.neu@example.org"]
+    assert db_admin.execute("select rolle from event.einladung").fetchone() == {
+        "rolle": "leitung"}
+    # Ein Code wirkt nur einmal.
+    with pytest.raises(ValueError):
+        werkzeuge.ausfuehren(app, lea, "einladen", {**argumente, "bestaetigung": code},
+                             mailer=mailer, basis_url=BASIS_URL)
+
+    # Mitglied einladen bleibt einstufig (siehe test_einladen_mit_dem_mailer_der_app).
+
+
 def test_firma_anlegen_nur_betreiber(db_admin, db_app, welt, lea):
     app = db_app()
     bea = _info(db_admin, "betreiber", person_id=welt["bea"])

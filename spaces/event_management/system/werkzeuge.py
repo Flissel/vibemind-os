@@ -19,7 +19,8 @@ zweistufig fuer Leitung/Betreiber (die Firma kommt dort aus dem gebundenen Event
 Verwaltung (Task 5, nur `leitung`/`betreiber`): Event-Wahl, `event_anlegen`, `einladen`
 (Mailer und Basis-URL der App), `firma_anlegen` (nur `betreiber`) und die zweistufigen
 Aktionen `event_absagen`, `event_archivieren`, `event_loeschen`, `kontakt_entfernen`,
-`rolle_aendern`: der erste Aufruf ohne `bestaetigung` aendert nichts und liefert eine
+`rolle_aendern` sowie `einladen` mit Rolle `leitung` (Abschluss-Review F4): der erste
+Aufruf ohne `bestaetigung` aendert nichts und liefert eine
 Zusammenfassung mit Code (`marke.bestaetigung_ausstellen`, gebunden an Aktion und die
 selbst aufgeloesten kanonischen IDs); erst der zweite Aufruf mit dem Code fuehrt aus. Der
 eingeloeste Code ist nur Zustimmung: Rechte und RLS prueft die Fachschicht trotzdem.
@@ -539,9 +540,25 @@ def _einladen(conn: psycopg.Connection[Any], info: SchluesselInfo, args: dict[st
         raise ValueError(EINLADEN_AUS)
     k = kontext_fuer(conn, info)
     firma = _firma_finden(conn, k, args["firma"])
-    zugang.einladen(conn, k, u.mailer, args["mail"], args["name"], firma["id"], args["rolle"],
-                    u.basis_url)
-    return {"firma": _firma_kopf(firma), "eingeladen": True}
+    if args["rolle"] != "leitung":
+        zugang.einladen(conn, k, u.mailer, args["mail"], args["name"], firma["id"],
+                        args["rolle"], u.basis_url)
+        return {"firma": _firma_kopf(firma), "eingeladen": True}
+    # Eine Leitung einladen gibt Verwaltungsrechte weiter (Abschluss-Review F4): zweistufig
+    # wie rolle_aendern. Ziel kanonisch: Firma-UUID, Mail ohne Rand in Kleinbuchstaben.
+    rechte.pruefe(k, "einladen", firma["id"])
+    mail = args["mail"].strip().lower()
+    mailer, basis_url = u.mailer, u.basis_url
+
+    def tun() -> dict[str, Any]:
+        zugang.einladen(conn, k, mailer, mail, args["name"], firma["id"], "leitung", basis_url)
+        return {"firma": _firma_kopf(firma), "eingeladen": True}
+
+    return _zweistufig(
+        conn, info, args, "einladen",
+        {"firma": str(firma["id"]), "mail": mail, "rolle": "leitung"},
+        {"firma": _firma_kopf(firma)},
+        f"{args['name']} ({mail}) als Leitung in die Firma {firma['name']} einladen", tun)
 
 
 def _firma_anlegen(conn: psycopg.Connection[Any], info: SchluesselInfo, args: dict[str, Any],
@@ -770,9 +787,11 @@ _SONDER: dict[str, _Sonder] = {
          "beschreibung": {"type": "string", "maxLength": TEXT_MAX}},
         ("firma", "kategorie", "name", "beginn", "ende"), True, False, _event_anlegen),
     "einladen": _Sonder(
-        "Person per Mail in eine Firma einladen (Einladungslink per Mail)",
+        "Person per Mail in eine Firma einladen (Einladungslink per Mail; als Leitung "
+        "zweistufig: erst Zusammenfassung und Code, dann mit Code ausführen)",
         {"firma": _FIRMA_SCHEMA, "mail": {"type": "string", "maxLength": 320},
-         "name": {"type": "string", "maxLength": 200}, "rolle": _ROLLE_SCHEMA},
+         "name": {"type": "string", "maxLength": 200}, "rolle": _ROLLE_SCHEMA,
+         "bestaetigung": _BESTAETIGUNG_SCHEMA},
         ("firma", "mail", "name", "rolle"), True, False, _einladen),
     "firma_anlegen": _Sonder(
         "Neue Firma anlegen (nur Betreiber)",
