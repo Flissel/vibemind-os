@@ -1085,6 +1085,7 @@ def test_gruppe_verbinden_werkzeug(db_admin, db_app, welt):
     assert erg["event"] == {"name": "Sommerfest", "firma": "Beispiel GmbH"}
     assert CODE_MUSTER.fullmatch(erg["code"]) and erg["gueltig_minuten"] == 15
     assert erg["code"] in erg["anleitung"]
+    assert "Prüfcode" in erg["anleitung"]    # F1: Bestaetigen nur mit dem Code aus dem Chat
     [zeile] = _verbindungen(db_admin)
     assert (zeile["art"], zeile["event_id"], zeile["person_id"]) == (
         "gruppe", welt["fest"], welt["lea"])

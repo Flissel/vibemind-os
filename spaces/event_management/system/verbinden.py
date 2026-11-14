@@ -120,8 +120,9 @@ AKTION = "gruppe_verbinden"
 ANLEITUNG_GRUPPE = (
     "1. Füge den Event-Bot zur Telegram-Gruppe hinzu. "
     "2. Schreib in der Gruppe an den Bot (mit @-Erwähnung): {code} "
-    "3. Bestätige die gemeldete Gruppe danach in der Oberfläche (Event-Übersicht, "
-    "Abschnitt „Telegram-Gruppe“). Der Code gilt 15 Minuten."
+    "3. Der Bot schreibt danach einen Prüfcode in die Gruppe. Bestätige die gemeldete Gruppe "
+    "mit diesem Prüfcode in der Oberfläche (Event-Übersicht, Abschnitt „Telegram-Gruppe“). "
+    "Der Code gilt 15 Minuten."
 )
 
 _SPALTEN = ("id, art, status, chat_titel, ablauf, gemeldet, bestaetigt,"
