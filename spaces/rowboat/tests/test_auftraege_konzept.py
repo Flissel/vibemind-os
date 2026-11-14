@@ -45,7 +45,7 @@ def test_kopie_gleicht_der_datei_im_fork():
 
 def test_vektoren_vollstaendig():
     assert sorted(DATEI) == ["_hinweis", "faelle"]
-    assert len(FAELLE) == 233
+    assert len(FAELLE) == 236
     namen = {f["name"] for f in FAELLE}
     assert len(namen) == len(FAELLE)
     for muss in (
@@ -106,14 +106,14 @@ def _block(video: dict, **oben) -> str:
 def test_js_trim_menge():
     # String.prototype.trim: WhiteSpace + LineTerminator; ohne U+0085, U+200B, U+180E und U+001C-U+001F
     for z in "\t\n\x0b\x0c\r \xa0\u1680\u2000\u2005\u200a\u2028\u2029\u202f\u205f\u3000\ufeff":
-        assert kl._trim(z + "ab" + z) == "ab", hex(ord(z))
+        assert kl.js_trim(z + "ab" + z) == "ab", hex(ord(z))
     for z in "\x85\u200b\u180e\x1c\x1f":
-        assert kl._trim(z + "ab" + z) == z + "ab" + z, hex(ord(z))
+        assert kl.js_trim(z + "ab" + z) == z + "ab" + z, hex(ord(z))
 
 
 def test_laenge_in_utf16_einheiten():
-    assert kl._laenge("a\U0001F600") == 3
-    assert kl._laenge("\ud800") == 1          # einzelnes Surrogat (JSON-Escape) zaehlt eine Einheit
+    assert kl.utf16_laenge("a\U0001F600") == 3
+    assert kl.utf16_laenge("\ud800") == 1          # einzelnes Surrogat (JSON-Escape) zaehlt eine Einheit
 
 
 @pytest.mark.parametrize("roh", ["[\u0663]", "{\"a\": \u0661}", "01", "1.", ".5", "+1", "0x10", "1e", "'a'", "\"\\x41\"",
@@ -141,7 +141,7 @@ def test_json_tief_verschachtelt_ohne_rekursion():
     # JSON.parse in V8 arbeitet ohne Rekursion; 9000 Ebenen passen in einen 20 000-Zeichen-Block.
     tief = "[" * 9000 + "]" * 9000
     block = _block(_gueltiges_video(), extra="")[:-1] + ',"tief":' + tief + "}"
-    assert kl._laenge(block) <= 20_000
+    assert kl.utf16_laenge(block) <= 20_000
     daten, satz = kl.lesen(_html(block))
     assert satz is None and kl.video_pruefen(daten) is None
 
@@ -203,8 +203,16 @@ def test_modul_ist_rein_und_vendorbar():
     for verboten in ("open(", "print(", "logging", "os.", "sys.", "socket", "subprocess"):
         assert verboten not in quelle, verboten
     doku = ast.get_docstring(baum)
-    assert "e93a3e93" in doku and "sales-claw" in doku and "byte" in doku.lower()
-    assert {"lesen", "video_pruefen", "video_pruefen_objekt"} <= {n.name for n in baum.body if isinstance(n, ast.FunctionDef)}
+    assert "Stand: " in doku and "folgt Fork-Commit aa793dce" in doku
+    assert "sales-claw" in doku and "byte" in doku.lower()
+    oeffentlich = {"lesen", "video_pruefen", "video_pruefen_objekt", "js_trim", "utf16_laenge"}
+    assert oeffentlich <= {n.name for n in baum.body if isinstance(n, ast.FunctionDef)}
+
+
+def test_quelle_ist_reines_ascii():
+    # Umlaute und Trim-Zeichen stehen als \u-Escapes; ein Editor oder eine Kopie kann sie so nicht still aendern.
+    roh = (ORDNER / "konzept_lesen.py").read_bytes()
+    assert roh.isascii(), [i for i, b in enumerate(roh) if b > 127][:5]
 
 
 # --- Laufzeit: linear auch bei feindlichen Dateien (Grenzen grosszuegig, Messwerte im Bericht) -----------
