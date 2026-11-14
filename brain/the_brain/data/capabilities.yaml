@@ -2228,6 +2228,11 @@
     # True liefert; False nur, wenn beide klar False liefern.
     # report, nicht block: erst nach Nachweis im ausgerollten Brain anheben
     # (wie schedule_openclaw_cron).
+    # Bekannte Abweichung von Spec §5 (Abschluss-Review F-6): die Pruefung filtert nur
+    # nach actor, nicht nach Event (Spec verlangt beides). Grund: uebergabe liefert kein
+    # strukturiertes Event, nach dem sich filtern liesse. Folge: eine Aenderung desselben
+    # actors an einem ANDEREN Event innerhalb des Fensters bestaetigt faelschlich. Darum
+    # bleibt on_fail bei report.
     on_fail: "report"
     postcondition:
       check: event_change
