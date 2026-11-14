@@ -68,8 +68,9 @@ def umgebungsdatei(umgebung: dict[str, str], ziel: Path) -> None:
     os.chmod(ziel, 0o600)
 
 
-ROLLEN_NAME = re.compile(r"^[a-z][a-z0-9_]{2,62}$")
-ROLLEN_VERBOTEN = {"event_app", "postgres", "authenticator", "anon", "authenticated", "service_role"}
+# Nur eigene Dienst-Rollen mit festem Praefix: ein Tippfehler in der App-DSN darf nie eine
+# fremde Rolle (pgbouncer, pgsodium_*, service_role ...) umstellen.
+ROLLEN_NAME = re.compile(r"^event_dienst[a-z0-9_]{0,40}$")
 PASSWORT_MINDESTLAENGE = 24
 
 
@@ -85,8 +86,8 @@ def app_rolle_aus_dsn(dsn: str) -> tuple[str, str]:
         raise HilfeFehler("App-DSN nicht lesbar") from None
     name = str(teile.get("user") or "")
     passwort = str(teile.get("password") or "")
-    if not ROLLEN_NAME.match(name) or name in ROLLEN_VERBOTEN or name.startswith(("pg_", "supabase")):
-        raise HilfeFehler("App-DSN: user muss eine eigene Rolle sein (a-z, 0-9, _; nicht event_app/postgres/supabase*)")
+    if not ROLLEN_NAME.match(name):
+        raise HilfeFehler("App-DSN: user muss mit event_dienst beginnen (a-z, 0-9, _)")
     if len(passwort) < PASSWORT_MINDESTLAENGE:
         raise HilfeFehler(f"App-DSN: password fehlt oder ist kuerzer als {PASSWORT_MINDESTLAENGE} Zeichen")
     return name, passwort
@@ -110,6 +111,13 @@ def app_rolle(conn: object, app_dsn: str) -> str:
         sonder = vorhanden["sonder"] if isinstance(vorhanden, dict) else vorhanden[0]
         if sonder:
             raise HilfeFehler("Rolle der App-DSN hat Sonderrechte und wird nicht angefasst")
+        fremd = conn.execute(  # type: ignore[attr-defined]
+            "select count(*) as n from pg_auth_members m join pg_roles g on g.oid = m.roleid"
+            " join pg_roles r on r.oid = m.member where r.rolname = %s and g.rolname <> 'event_app'",
+            (name,)).fetchone()
+        n = fremd["n"] if isinstance(fremd, dict) else fremd[0]
+        if n:
+            raise HilfeFehler("Rolle der App-DSN gehoert weiteren Rollen an und wird nicht angefasst")
     verifier = conn.pgconn.encrypt_password(  # type: ignore[attr-defined]
         passwort.encode("utf-8"), name.encode("utf-8"), b"scram-sha-256").decode("ascii")
     befehl = "alter role {} with login password {}" if vorhanden is not None else "create role {} login password {}"
@@ -119,18 +127,33 @@ def app_rolle(conn: object, app_dsn: str) -> str:
     return name
 
 
-def docker_umgebungsdatei(umgebung: dict[str, str], ziel: Path) -> None:
-    """Rohform fuer `docker run --env-file` (Werte ohne Quoting, eine Zeile je Variable)."""
-    for wert in umgebung.values():
-        if any(z in wert for z in ("\n", "\r", "\0")):
-            raise HilfeFehler("DSN-Wert mit Zeilenumbruch passt nicht in eine Docker-Env-Datei")
-    text = "".join(f"{k}={v}\n" for k, v in sorted(umgebung.items()))
+def _datei_0600(ziel: Path, text: str) -> None:
     fd = os.open(ziel, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         os.write(fd, text.encode("utf-8"))
     finally:
         os.close(fd)
     os.chmod(ziel, 0o600)
+
+
+def _pgpass_wert(wert: str) -> str:
+    return wert.replace("\\", "\\\\").replace(":", "\\:")
+
+
+def docker_umgebungsdatei(umgebung: dict[str, str], ziel: Path) -> None:
+    """Fuer `docker run`: <ziel> ist die Env-Datei OHNE Passwort (Rohform fuer --env-file,
+    landet in der Container-Konfiguration), das Passwort steht nur in <ziel>.pgpass (0600),
+    die das Skript schreibgeschuetzt nach /run/pgpass einhaengt (PGPASSFILE)."""
+    for wert in umgebung.values():
+        if any(z in wert for z in ("\n", "\r", "\0")):
+            raise HilfeFehler("DSN-Wert mit Zeilenumbruch passt nicht in eine Docker-Env-Datei")
+    if "PGSSLROOTCERT" in umgebung:
+        raise HilfeFehler("sslrootcert geht nicht mit dem Postgres-Image (Pfad des Hosts)")
+    ohne = {k: v for k, v in umgebung.items() if k != "PGPASSWORD"}
+    ohne["PGPASSFILE"] = "/run/pgpass"
+    _datei_0600(ziel, "".join(f"{k}={v}\n" for k, v in sorted(ohne.items())))
+    passwort = umgebung.get("PGPASSWORD", "")
+    _datei_0600(Path(f"{ziel}.pgpass"), f"*:*:*:*:{_pgpass_wert(passwort)}\n" if passwort else "")
 
 
 def fehlende_module(requirements: Path) -> list[str]:

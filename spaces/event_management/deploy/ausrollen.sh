@@ -124,7 +124,7 @@ fi
 modus_von() { "$STAT" -c %a "$1"; }
 abbruch() { echo "ABBRUCH: $*" >&2; exit 1; }
 info() { echo "$*"; }
-pgenv_weg() { rm -f "${PGENV:?}" "${PGENV:?}.docker"; }
+pgenv_weg() { rm -f "${PGENV:?}" "${PGENV:?}.docker" "${PGENV:?}.docker.pgpass"; }
 trap pgenv_weg EXIT
 
 shim_image() { grep -m1 -o 'event-management/shim:[A-Za-z0-9_.-]*' docker-compose.yml; }
@@ -223,7 +223,10 @@ pg_bereit() {
 pg_mit() {
   if [ -n "$PG_IMAGE" ]; then
     local prog=$1; shift
-    docker run --rm -i --network host --env-file "./$PGENV.docker" --entrypoint "$prog" "$PG_IMAGE" "$@"
+    # Passwort nur als schreibgeschuetzt eingehaengte pgpass-Datei, nie in der Container-Umgebung;
+    # --pull never: ein fehlendes Image wird nie still nachgeladen (fail-closed).
+    docker run --rm -i --pull never --network host --env-file "./$PGENV.docker" \
+      -v "$SPACE/$PGENV.docker.pgpass:/run/pgpass:ro" --entrypoint "$prog" "$PG_IMAGE" "$@"
   else
     ( set -a; . "./$PGENV"; set +a; "$@" )
   fi
@@ -526,10 +529,20 @@ phase_timer() {
     [ -f "$ETC/$u.env" ] || abbruch "$ETC/$u.env fehlt"
     sudo cp "deploy/$u.service" "deploy/$u.timer" "$SYSTEMD/" || abbruch "Units nicht installiert"
   done
+  # 80-%-Meldung an Felix: nur wenn ihre Einstellungen da sind (Bot und Chat waehlt Felix).
+  local timer="bereitstellung.timer nachrichten.timer"
+  if [ -f "$ETC/budget-melden.env" ]; then
+    sudo cp deploy/budget-melden.service deploy/budget-melden.timer "$SYSTEMD/" || abbruch "Units nicht installiert"
+    timer="$timer budget-melden.timer"
+  else
+    info "budget-melden.timer nicht eingerichtet ($ETC/budget-melden.env fehlt; ausrollen.md, Phase timer)"
+  fi
   sudo systemctl daemon-reload
-  sudo systemctl enable --now bereitstellung.timer nachrichten.timer || abbruch "Timer nicht gestartet (Rueckweg: zurueck timer)"
-  systemctl is-active bereitstellung.timer nachrichten.timer >/dev/null || abbruch "Timer laufen nicht"
-  info "Timer bereitstellung und nachrichten: aktiv"
+  # shellcheck disable=SC2086
+  sudo systemctl enable --now $timer || abbruch "Timer nicht gestartet (Rueckweg: zurueck timer)"
+  # shellcheck disable=SC2086
+  systemctl is-active $timer >/dev/null || abbruch "Timer laufen nicht"
+  info "Timer aktiv: $timer"
   stempel timer
 }
 
@@ -607,8 +620,10 @@ phase_zurueck() {
       info "Schluessel dieses Laufs von Hand widerrufen: system.schluessel widerrufen <id> (ausrollen.md)." ;;
     timer)
       sudo systemctl disable --now bereitstellung.timer nachrichten.timer || true
+      sudo systemctl disable --now budget-melden.timer 2>/dev/null || true
       sudo rm -f "${SYSTEMD:?}/bereitstellung.service" "${SYSTEMD:?}/bereitstellung.timer" \
-                 "${SYSTEMD:?}/nachrichten.service" "${SYSTEMD:?}/nachrichten.timer"
+                 "${SYSTEMD:?}/nachrichten.service" "${SYSTEMD:?}/nachrichten.timer" \
+                 "${SYSTEMD:?}/budget-melden.service" "${SYSTEMD:?}/budget-melden.timer"
       sudo systemctl daemon-reload ;;
     tailnet)
       tailscale serve --https="$TAILNET_PORT" off ;;

@@ -34,8 +34,10 @@ Nach jeder Phase steht ein Ledger-Eintrag, der nur Ergebnisse nennt, keine IDs.
   `/home/debian/vibemind-os/spaces/event_management/.venv/bin/python -m
   spaces.event_management.system.<x>`; dieselbe Umgebung nutzen das Skript und alle
   Handschritte unten (`$PY`). Der Debian-Python der VM ist "externally managed" und hat
-  kein pip, deshalb eine eigene Umgebung (nicht im Git, `.venv/` ist ignoriert). Anlegen
-  mit OK, im Repo-Wurzelordner:
+  kein pip, deshalb eine eigene Umgebung (nicht im Git, `.venv/` ist ignoriert). Sie braucht
+  das Debian-Paket `python3-venv` (fehlt es, scheitert `venv` mit „ensurepip is not
+  available“; dann `sudo apt install python3-venv`, eigenes OK). Anlegen mit OK, im
+  Repo-Wurzelordner:
   ```
   python3 -m venv spaces/event_management/.venv
   spaces/event_management/.venv/bin/pip install -r spaces/event_management/requirements.txt
@@ -49,9 +51,12 @@ Nach jeder Phase steht ein Ledger-Eintrag, der nur Ergebnisse nennt, keine IDs.
   `laufzeit/ausrollen/pg-image` (oder `EVENT_PG_IMAGE`). Am einfachsten das Image des
   Datenbank-Containers selbst, dann passt die Version immer:
   `docker inspect -f '{{.Config.Image}}' <db-container> > laufzeit/ausrollen/pg-image`.
-  Das Skript ruft dann `docker run --rm -i --network host --env-file … --entrypoint
-  psql|pg_dump <image>`; der Zugang steht nur in einer 0600-Env-Datei, die nach dem Aufruf
-  gelöscht wird, nie im Argument. Der Dump geht über stdout in die Sicherungsdatei.
+  Das Skript ruft dann `docker run --rm -i --pull never --network host --env-file …
+  -v …pgpass:/run/pgpass:ro --entrypoint psql|pg_dump <image>`: Host, Port, Rolle und
+  Datenbank stehen in der Env-Datei, das Passwort nur in einer 0600-pgpass-Datei, die
+  schreibgeschützt eingehängt wird (so landet es nicht in der Container-Konfiguration); beide
+  werden nach dem Aufruf gelöscht, nie steht etwas im Argument. Ein fehlendes Image wird nicht
+  nachgeladen. Der Dump geht über stdout in die Sicherungsdatei.
 - **Netz.** Das Netz `event-agent` bleibt ohne `ip_range`. `event-mcp` nimmt die feste
   Adresse `10.250.10.14`; `pruefen` liest mit `docker network inspect`, ob ein anderer
   Container sie hält (dann diesen Container neu starten, bevor es weitergeht).
@@ -148,11 +153,12 @@ entsteht eine Marke `openclaw-<zeit>.keine`.
 (Vorgabe `laufzeit/admin-dsn`). Das Skript prüft vorher Rolle und PG ≥ 15.
 
 Danach legt `deploy/pg_hilfe.py app-rolle` die **Login-Rolle der App** an: `event_app` ist
-NOLOGIN, die Dienste verbinden sich mit der Rolle aus `laufzeit/event-app-dsn` (`user`,
-eigener Name wie `event_dienst`, `password` mindestens 24 Zeichen). Die Rolle wird Mitglied
+NOLOGIN, die Dienste verbinden sich mit der Rolle aus `laufzeit/event-app-dsn` (`user`
+beginnt mit `event_dienst`, `password` mindestens 24 Zeichen). Die Rolle wird Mitglied
 von `event_app`; gibt es sie schon, bekommt sie nur das Passwort aus der Datei neu. Das
 Passwort geht als SCRAM-Verifier an die Datenbank, nie im Klartext. Eine vorhandene Rolle mit
-Sonderrechten (Superuser, CREATEROLE …) fasst das Skript nicht an.
+Sonderrechten (Superuser, CREATEROLE …) oder mit Mitgliedschaften außer `event_app` fasst
+das Skript nicht an.
 
 - **OK von Felix:** ja.
 - **Abbruch:** andere Rolle als `supabase_admin`, PG < 15, jede Migration mit Fehler (jede
@@ -222,7 +228,8 @@ unter `laufzeit/shim-budget/`. Dazu ruft er `budget_warnung`; im Shim-Container 
 `VIBEMIND_BUDGET_WARNEN_CMD` eine WARNING-Logzeile (der Container hat weder
 `notify_telegram.py` noch ein Telegram-Token und bekommt keins). Am PC kann
 `VIBEMIND_BUDGET_WARNEN_CMD="python scripts/notify_telegram.py Tagesbudget-Warnung"` die
-Meldung nach Telegram schicken.
+Meldung nach Telegram schicken. Auf der VM liest der Host-Dienst `budget-melden` (Phase
+`timer`) die Zeile und schickt sie per Telegram an Felix.
 
 ### 7. `dienste`  (`--ich-habe-ok dienste`)
 
@@ -372,11 +379,22 @@ Argument. Ohne Terminal-Ausgabe der Schlüssel, etwa:
 Installiert `bereitstellung` und `nachrichten` (Service + Timer) nach
 `/etc/systemd/system` (mit `sudo`), `daemon-reload`, `enable --now` beider Timer.
 
+Gibt es `/etc/event-management/budget-melden.env`, kommt **`budget-melden`** dazu (alle
+5 Minuten, `system/budget_melden.py`): Er liest die Zeilen `art=warnung` aus
+`laufzeit/shim-budget/` (heute und gestern) und schickt jede genau einmal per Telegram an
+Felix; gemerkt wird in `laufzeit/budget-melden.json`, ein gescheiterter Versand wird beim
+nächsten Lauf wiederholt. Der Shim bekommt dafür kein Token. Einstellungen (0600, Kopf von
+`deploy/budget-melden.service`): `BUDGET_ORDNER`, `BUDGET_ZUSTAND`,
+`BUDGET_TELEGRAM_TOKEN_FILE` (Datei 0600 mit dem Bot-Token) und `BUDGET_TELEGRAM_CHAT_ID`.
+Welcher Bot und welcher Chat, entscheidet Felix; der Bot muss den Chat anschreiben dürfen
+(Felix hat ihm einmal geschrieben). Ohne die Datei bleibt `budget-melden` aus, die Phase
+meldet das und besteht trotzdem.
+
 - **OK von Felix:** ja.
 - **Abbruch:** ein Timer wird nicht `active`; der erste Lauf scheitert (Journal ansehen,
   meist Python-Umgebung ohne Paket oder falscher Repo-Pfad).
-- **Rückweg:** `--ich-habe-ok zurueck timer` (Timer stoppen und deaktivieren, die vier
-  Dateien entfernen, `daemon-reload`).
+- **Rückweg:** `--ich-habe-ok zurueck timer` (Timer stoppen und deaktivieren, auch
+  `budget-melden`, die Unit-Dateien entfernen, `daemon-reload`).
 
 ### Brain-Umgebung (nach `timer`)
 
@@ -451,10 +469,8 @@ ohne Werte in den Ledger. Rückweg: Zeile entfernen, `dienste` erneut, `tailscal
 
 ## Offen
 
-- **Zustellung der Budget-Warnung an Felix.** Der Wächter im Shim-Container schreibt die
-  Zeile `warnung` ins Tagesprotokoll unter `laufzeit/shim-budget/`. Dass der VM-Host sie
-  liest und an Felix weitergibt (Telegram vom Host aus), ist ein **Folgeplan** und hier
-  nicht gebaut. Der Shim bekommt dafür kein Telegram-Token.
+- **Zustellung der Budget-Warnung an Felix.** Gebaut (`budget-melden`, Phase `timer`);
+  offen ist nur die Wahl von Bot und Chat für `/etc/event-management/budget-melden.env`.
 - **Quelle des Shim-Images.** Das bisherige Image stammt aus dem bewerbung-bot-Bestand;
   `shim` baut es nach dem Rezept in Phase 6 aus der Rowboat-Dockerfile (CMD auf
   `0.0.0.0:8125`) neu. Shim und Werkzeugmodul liegen weiter in keinem Repo; bis sie in eines

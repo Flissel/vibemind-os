@@ -1,0 +1,27 @@
+# 80-%-Warnung des Event-Shims an Felix (system/budget_melden.py). NUR als Datei im Repo;
+# `ausrollen.sh timer` installiert die Unit, wenn /etc/event-management/budget-melden.env
+# existiert (sonst bleibt sie aus).
+#
+# Erwartet auf dem Host:
+#   /etc/event-management/budget-melden.env   0600, ohne Schluessel:
+#       BUDGET_ORDNER=/home/debian/vibemind-os/spaces/event_management/laufzeit/shim-budget
+#       BUDGET_ZUSTAND=/home/debian/vibemind-os/spaces/event_management/laufzeit/budget-melden.json
+#       BUDGET_TELEGRAM_TOKEN_FILE=/etc/event-management/budget-telegram-token   (Datei 0600)
+#       BUDGET_TELEGRAM_CHAT_ID=<Chat von Felix>
+#   Kein docker noetig: liest nur das gemountete Tagesprotokoll und spricht Telegram.
+[Unit]
+Description=Event-Bot: 80-%-Warnung des Tagesbudgets melden
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=debian
+Group=debian
+WorkingDirectory=/home/debian/vibemind-os
+EnvironmentFile=/etc/event-management/budget-melden.env
+ExecStart=/home/debian/vibemind-os/spaces/event_management/.venv/bin/python -m spaces.event_management.system.budget_melden lauf
+TimeoutStartSec=2min
+NoNewPrivileges=yes
+PrivateTmp=yes
+UMask=0077
