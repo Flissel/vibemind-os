@@ -173,11 +173,12 @@ bewerbung-bot-Bestand; dessen Baukontext liegt nicht in diesem Repo. Darum stell
 Kontext nach diesem Rezept zusammen und nennt ihn in `EVENT_SHIM_BAUKONTEXT`.
 
 **Rezept für den Baukontext** (auf dem Rechner mit beiden Repos, danach als Ordner auf den
-Host; nur Dateien, keine Werte):
+Host; nur Dateien, keine Werte). Der Ordner liegt **außerhalb des Repos**: die Shim-Module
+sind privat, das Repo ist öffentlich; liegt der Kontext im Repo, bricht die Phase ab:
 
 ```
 umask 077
-K=laufzeit/shim-kontext
+K=$HOME/event-shim-kontext
 mkdir -p "$K"
 # 1. Aus vibemind-os: Dockerfile, Start-Skript und Budget-Huelle des Rowboat-Shims.
 cp spaces/rowboat/deploy/headless/shim/Dockerfile \
@@ -201,7 +202,7 @@ Die Phase prüft vor jedem Docker-Aufruf: alle sieben Dateien da (`Dockerfile`, 
 `claude_budget.py`, `agent_budget.yaml`), `claude_budget.py` hat `budget_warnung`, die CMD
 der Dockerfile startet auf `0.0.0.0` und `8125`. Sonst Abbruch ohne Stempel.
 
-- **Mit Baukontext** (`EVENT_SHIM_BAUKONTEXT=laufzeit/shim-kontext`): Die Phase tagt das
+- **Mit Baukontext** (`EVENT_SHIM_BAUKONTEXT=$HOME/event-shim-kontext`): Die Phase tagt das
   bisherige Image als `…:vorher` und merkt sich dessen Id in `laufzeit/ausrollen/shim.vorher`,
   aber nur, wenn es noch keine `shim.vorher` gibt oder der letzte Shim-Lauf gelang (so
   zerstört ein Wiederholungslauf nach einem gescheiterten Gesundheitstest den Rückweg nicht);

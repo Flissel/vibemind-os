@@ -440,6 +440,13 @@ phase_shim() {
   # (Abschluss-Review F-5). Er liegt nicht in diesem Repo; das Rezept steht in ausrollen.md.
   k=${EVENT_SHIM_BAUKONTEXT:-}
   [ -n "$k" ] || abbruch "EVENT_SHIM_BAUKONTEXT fehlt: ohne Neubau bleibt claude_budget.py alt (keine 80-%-Warnung). Baukontext nach ausrollen.md (Phase shim) zusammenstellen"
+  # R-3: Die Shim-Module sind privat, das Repo ist oeffentlich: Kontext nie im Repo.
+  local k_echt repo_echt
+  k_echt=$(cd "$k" 2>/dev/null && pwd -P) || abbruch "Baukontext $k nicht lesbar"
+  repo_echt=$(cd "$REPO" && pwd -P)
+  case "$k_echt/" in
+    "$repo_echt/"*) abbruch "Baukontext liegt im Repo: private Shim-Module gehoeren nicht ins oeffentliche Repo (Ordner ausserhalb anlegen, ausrollen.md Phase shim)" ;;
+  esac
   for f in Dockerfile start.sh rowboat_shim_huelle.py claude_code_openai_shim.py            claude_code_openai_tools.py claude_budget.py agent_budget.yaml; do
     [ -f "$k/$f" ] || abbruch "Baukontext unvollstaendig: $f fehlt (Rezept: ausrollen.md, Phase shim)"
   done

@@ -444,6 +444,10 @@ def brain_soul_regel5_pruefen(text: str) -> None:
     # Die zweistufigen, die erreichbar bleiben, stehen namentlich in Regel 5.
     for name in ("event_absagen", "event_archivieren", "kontakt_entfernen", "rolle_aendern"):
         assert name in erreichbar and f"`{name}`" in regel5, name
+    # R-1: event_loeschen ist zweistufig (werkzeuge.py), steht also bei den zweistufigen und
+    # nicht bei den sofort wirkenden.
+    zweistufig, _, sofort_teil = regel5.partition("Werkzeuge, die sofort wirken")
+    assert sofort_teil and "`event_loeschen`" in zweistufig and "`event_loeschen`" not in sofort_teil
     # Die falsche Pauschale (F-1) ist weg: nicht jedes Katalog-Werkzeug fragt erst.
     flach = " ".join(text.split())
     assert "Ein Katalog-Werkzeug liefert ohne `bestaetigung` nur eine Zusammenfassung" not in flach

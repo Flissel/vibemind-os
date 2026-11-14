@@ -641,7 +641,8 @@ ROWBOAT_CMD = 'CMD ["python3", "/opt/shim/rowboat_shim_huelle.py", "--host", "12
 
 def _shim_kontext(pj: Projekt, *, ohne: str = "", dockerfile: str = SHIM_DOCKERFILE,
                   budget: str = "def budget_warnung(agent, heute, grenze):\n    pass\n") -> dict[str, str]:
-    kontext = pj.wurzel / "shim-kontext"
+    # ausserhalb der Projektkopie (= Repo im Test), R-3
+    kontext = pj.wurzel.parent / f"shim-kontext-{pj.wurzel.name}"
     kontext.mkdir(exist_ok=True)
     for name in SHIM_DATEIEN:
         if name != ohne:
@@ -662,6 +663,19 @@ def test_shim_ohne_baukontext_bricht_ab(pj: Projekt):
     pj.tags()
     lauf = pj.lauf("shim")
     assert lauf.returncode == 1 and "EVENT_SHIM_BAUKONTEXT" in _aus(lauf)[1]
+    _shim_nichts_getan(pj)
+
+
+@braucht_bash
+def test_shim_baukontext_im_repo_bricht_ab(pj: Projekt):
+    # R-3: private Shim-Module duerfen nicht im oeffentlichen Repo liegen.
+    pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web")
+    pj.tags()
+    draussen = _shim_kontext(pj)["EVENT_SHIM_BAUKONTEXT"]
+    drinnen = pj.space / "laufzeit" / "shim-kontext"
+    shutil.copytree(draussen, drinnen)
+    lauf = pj.lauf("shim", umgebung={"EVENT_SHIM_BAUKONTEXT": drinnen.as_posix()})
+    assert lauf.returncode == 1 and "Baukontext liegt im Repo" in _aus(lauf)[1]
     _shim_nichts_getan(pj)
 
 
