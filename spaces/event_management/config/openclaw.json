@@ -29,6 +29,9 @@
       }
     }
   },
+  "session": {
+    "dmScope": "per-channel-peer"
+  },
   "agents": {
     "defaults": {
       "model": {

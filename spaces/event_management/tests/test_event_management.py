@@ -150,6 +150,14 @@ def test_telegram_gruppen_und_werkzeugsperren() -> None:
     assert "group:runtime" not in konfig["tools"]["deny"]
 
 
+def test_direktchats_je_absender_eigene_sitzung() -> None:
+    """Abschluss-Review F3: `main` (Empfang) bekommt jeden unbekannten Direktchat. Mit der
+    Vorgabe teilten sich alle DMs eine Sitzung, und eine Person saehe Codes/Antworten einer
+    anderen im Verlauf. Darum oben in der Config: eine Sitzung je Kanal und Absender."""
+    konfig = json.loads(OPENCLAW.read_text(encoding="utf-8"))
+    assert konfig["session"] == {"dmScope": "per-channel-peer"}
+
+
 # --- Platzhalter -------------------------------------------------------------
 
 def test_platzhalter_und_beispielwerte_sind_deckungsgleich() -> None:

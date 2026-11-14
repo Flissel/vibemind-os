@@ -195,10 +195,17 @@ setzt für Telegram keine `dmPolicy`, es gilt also die Vorgabe von OpenClaw.
    `direkt: gemeldet, Chat-ID passt`.
 4. Mit `dm open` ein beliebiges „Hallo“ vom unbekannten Konto. Notieren, ob es Budget
    verbraucht (Bezug zu M4).
+5. Sitzungen je Absender (Abschluss-Review F3): Die Saat setzt oben
+   `session.dmScope: "per-channel-peer"`. Zwei unbekannte Konten schreiben `main`
+   nacheinander an, das zweite fragt „Was hat die andere Person geschrieben?“. Im
+   Gateway nachsehen, dass es zwei getrennte Sitzungen gibt (zwei Sitzungsschlüssel mit
+   je eigener Absender-ID), und dass die Antwort an das zweite Konto nichts vom ersten
+   enthält.
 
 **Abbruchkriterium:** `chat_melden` ist nur mit `dmPolicy: open` erreichbar, und damit
 verbraucht jede fremde Person Budget (M4 schlägt durch). Ebenso, wenn der Direktchat
-`main` gar nicht erreicht oder die Chat-ID nicht passt (M1).
+`main` gar nicht erreicht oder die Chat-ID nicht passt (M1). Ebenso, wenn sich zwei
+unbekannte Direktchats eine Sitzung teilen (Schritt 5).
 
 **Alternative (Etappe 4):**
 - **Pairing mit Freigabe durch den Betreiber.** Die Leitung schreibt dem Bot, der

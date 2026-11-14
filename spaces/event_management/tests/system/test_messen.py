@@ -335,6 +335,13 @@ def test_m1_hat_gegenprobe_mit_fremder_chat_id():
         assert begriff in m1, begriff
 
 
+def test_m5_prueft_getrennte_dm_sitzungen():
+    """Abschluss-Review F3: zwei unbekannte Direktchats duerfen sich keine Sitzung teilen."""
+    m5 = _abschnitte()["M5"]
+    for begriff in ("per-channel-peer", "Zwei unbekannte Konten", "getrennte Sitzungen"):
+        assert begriff in m5, begriff
+
+
 def test_anleitung_nennt_rahmen_und_deploy_blocker():
     text = ANLEITUNG.read_text(encoding="utf-8")
     for begriff in ("nicht ausgeführt", SCHALTER, "Test-Bot", "ev-legacy", "anbinden.sh",
