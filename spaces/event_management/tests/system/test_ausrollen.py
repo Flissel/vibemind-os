@@ -84,6 +84,21 @@ case "$1 $2" in
   "network inspect") [ -n "${FAKE_NETZ:-}" ] && { printf '%s\n' "$FAKE_NETZ"; exit 0; }; exit 1 ;;
   "container inspect") exit 0 ;;
 esac
+if [ "$1" = run ]; then
+  shift; ep=""; ef=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --entrypoint) ep=$2; shift 2 ;;
+      --env-file) ef=$2; shift 2 ;;
+      --network) shift 2 ;;
+      --rm|-i) shift ;;
+      *) break ;;
+    esac
+  done
+  shift
+  if [ -n "$ef" ]; then while IFS== read -r k v; do export "$k=$v"; done < "$ef"; fi
+  exec "$(dirname "$0")/$ep" "$@"
+fi
 case "$1" in
   inspect) case "$*" in *Health*) echo "${FAKE_HEALTH:-healthy}";; *) echo sha256:vorher123;; esac ;;
   cp) case "$2" in event-management-claw:*) printf '{}' > "$3";; esac ;;
@@ -92,8 +107,9 @@ exit 0
 """
 PG_DUMP = r"""#!/bin/sh
 echo "pg_dump $*" >> "$AR_PROTOKOLL"
+[ "$1" = --version ] && { echo "pg_dump (PostgreSQL) ${FAKE_PGDUMP_HAUPT:-16}.4"; exit 0; }
 [ "${PGPASSWORD:-}" = "geheim-xyz-0815" ] || exit 9
-while [ $# -gt 0 ]; do [ "$1" = "-f" ] && { printf 'dump' > "$2"; }; shift; done
+printf 'dump'
 exit 0
 """
 FLOCK = r"""#!/bin/sh
@@ -453,8 +469,10 @@ def test_pruefen_besteht_und_stempelt(pj: Projekt):
     assert "FEHLT" not in out and pj.stempel_da("pruefen")
     # read-only: kein Build, kein up, kein Schreiben ausser Stempel
     log = " ".join(pj.log())
-    for verboten in ("docker build", " up ", "docker run", "docker rm", "pg_dump", "anwenden"):
+    for verboten in ("docker build", " up ", "docker run", "docker rm", "anwenden"):
         assert verboten not in log, verboten
+    # pg_dump nur zur Versionsabfrage, nie ein Dump
+    assert [z for z in pj.log() if z.startswith("pg_dump")] == ["pg_dump --version"]
     assert any(z.startswith("docker network inspect") for z in pj.log())
     assert not (pj.lz / "ausrollen" / "pg.env").exists()
 
@@ -975,6 +993,61 @@ def test_pg_hilfe_deps(tmp_path: Path):
     namen = [re.split(r"[=<>!~\[ ;]", z, maxsplit=1)[0].lower() for z in
              (SPACE / "requirements.txt").read_text(encoding="utf-8").splitlines() if z.strip() and not z.startswith("#")]
     assert "pyyaml" in namen and "psycopg-pool" in namen
+
+
+@braucht_bash
+def test_pruefen_ohne_pg_werkzeuge_auf_dem_host_meldet_fehlt(pj: Projekt):
+    pj.pruefen_bereit()
+    if shutil.which("psql") is not None or shutil.which("pg_dump") is not None:
+        pytest.skip("echte psql/pg_dump im PATH")
+    (pj.bin / "psql").unlink()
+    (pj.bin / "pg_dump").unlink()
+    lauf = pj.lauf("pruefen")
+    assert lauf.returncode == 1 and "psql/pg_dump fehlen auf dem Host" in _aus(lauf)[0]
+
+
+@braucht_bash
+def test_pruefen_mit_pg_image_nutzt_docker_run_mit_env_datei(pj: Projekt):
+    pj.pruefen_bereit()
+    (pj.lz / "ausrollen" / "pg-image").write_text("public.ecr.aws/supabase/postgres:17.6\n", encoding="utf-8")
+    lauf = pj.lauf("pruefen", umgebung={"FAKE_PGDUMP_HAUPT": "17", "FAKE_PG_NUM": "170006"})
+    out, err = _aus(lauf)
+    assert lauf.returncode == 0, out + err
+    assert "ok     Postgres-Werkzeuge aus Image public.ecr.aws/supabase/postgres:17.6" in out
+    assert "ok     pg_dump 17 passt zum Server" in out
+    runs = [z for z in pj.log() if z.startswith("docker run")]
+    assert runs and all("--network host --env-file ./laufzeit/ausrollen/pg.env.docker" in z for z in runs)
+    assert all(GEHEIM not in z for z in pj.log())
+    assert not (pj.lz / "ausrollen" / "pg.env.docker").exists() and not (pj.lz / "ausrollen" / "pg.env").exists()
+
+
+@braucht_bash
+def test_pruefen_pg_dump_aelter_als_server_meldet_fehlt(pj: Projekt):
+    pj.pruefen_bereit()
+    lauf = pj.lauf("pruefen", umgebung={"FAKE_PGDUMP_HAUPT": "15", "FAKE_PG_NUM": "170006"})
+    assert lauf.returncode == 1 and "pg_dump 15 ist aelter als der Server (17)" in _aus(lauf)[0]
+
+
+@braucht_bash
+def test_sichern_mit_pg_image_dumpt_ueber_docker(pj: Projekt):
+    pj.pruefen_bereit()
+    (pj.lz / "ausrollen" / "pg-image").write_text("pg:17\n", encoding="utf-8")
+    pj.stempel("pruefen", "bauen-system", "bauen-web")
+    lauf = pj.lauf("sichern")
+    assert lauf.returncode == 0, _aus(lauf)[1]
+    dumps = list((pj.lz / "sicherung").glob("event-*.dump"))
+    assert len(dumps) == 1 and dumps[0].read_text(encoding="utf-8") == "dump"
+    assert any(z.startswith("docker run") and "--entrypoint pg_dump pg:17 -n event -Fc" in z for z in pj.log())
+
+
+def test_pg_hilfe_docker_env_ist_roh_und_lehnt_zeilenumbruch_ab(tmp_path: Path):
+    h = _hilfe()
+    ziel = tmp_path / "pg.env.docker"
+    h.docker_umgebungsdatei({"PGUSER": "u", "PGPASSWORD": "a b'c$d"}, ziel)
+    assert ziel.read_text(encoding="utf-8") == "PGPASSWORD=a b'c$d\nPGUSER=u\n"
+    with pytest.raises(h.HilfeFehler) as e:
+        h.docker_umgebungsdatei({"PGPASSWORD": f"{GEHEIM}\nX=1"}, ziel)
+    assert GEHEIM not in str(e.value)
 
 
 # --- Anleitung --------------------------------------------------------------------------------------------------

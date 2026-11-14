@@ -86,6 +86,11 @@ SYSTEMD=${AUSROLLEN_SYSTEMD:-/etc/systemd/system}
 TAILNET_PORT=${AUSROLLEN_TAILNET_PORT:-3170}
 PHASEN="pruefen bauen-system bauen-web sichern migrieren shim dienste tailnet anbinden timer"
 PGENV=$ST/pg.env
+# psql/pg_dump: vom Host oder aus einem Postgres-Image (--network host), wenn der Host keine
+# passenden Werkzeuge hat (pg_dump muss mindestens die Hauptversion des Servers haben).
+# Image aus EVENT_PG_IMAGE oder aus der nicht geheimen Datei laufzeit/ausrollen/pg-image.
+PG_IMAGE=${EVENT_PG_IMAGE:-}
+if [ -z "$PG_IMAGE" ] && [ -f "$ST/pg-image" ]; then PG_IMAGE=$(tr -d '[:space:]' < "$ST/pg-image"); fi
 STAT=${AUSROLLEN_STAT:-stat}   # Messprogramme (nur Tests ersetzen sie)
 CURL=${AUSROLLEN_CURL:-curl}
 FLOCK=${AUSROLLEN_FLOCK:-flock}
@@ -119,7 +124,7 @@ fi
 modus_von() { "$STAT" -c %a "$1"; }
 abbruch() { echo "ABBRUCH: $*" >&2; exit 1; }
 info() { echo "$*"; }
-pgenv_weg() { rm -f "${PGENV:?}"; }
+pgenv_weg() { rm -f "${PGENV:?}" "${PGENV:?}.docker"; }
 trap pgenv_weg EXIT
 
 shim_image() { grep -m1 -o 'event-management/shim:[A-Za-z0-9_.-]*' docker-compose.yml; }
@@ -208,9 +213,23 @@ tags_anlegen() {
 }
 
 # --- 4. Datenbank-Zugang ohne Geheimnis im Argument -----------------------------------------
-pg_bereit() { "$PY" deploy/pg_hilfe.py env "$ADMIN_DSN_DATEI" "$PGENV" >/dev/null || return 1; }
-pg_mit() { ( set -a; . "./$PGENV"; set +a; "$@" ); }
+pg_bereit() {
+  "$PY" deploy/pg_hilfe.py env "$ADMIN_DSN_DATEI" "$PGENV" >/dev/null || return 1
+  if [ -n "$PG_IMAGE" ]; then
+    "$PY" deploy/pg_hilfe.py env "$ADMIN_DSN_DATEI" "$PGENV.docker" --docker >/dev/null || return 1
+  fi
+}
+# pg_mit <programm> <argumente>: psql/pg_dump mit dem Zugang aus der Env-Datei (nie im Argument).
+pg_mit() {
+  if [ -n "$PG_IMAGE" ]; then
+    local prog=$1; shift
+    docker run --rm -i --network host --env-file "./$PGENV.docker" --entrypoint "$prog" "$PG_IMAGE" "$@"
+  else
+    ( set -a; . "./$PGENV"; set +a; "$@" )
+  fi
+}
 pg_version_num() { pg_mit psql -Atq -c 'show server_version_num' </dev/null 2>/dev/null || echo 0; }
+pg_dump_haupt() { { pg_mit pg_dump --version </dev/null 2>/dev/null || true; } | sed -n 's/.*(PostgreSQL) \([0-9]*\).*/\1/p' | head -1; }
 
 # --- 5. Phasen ----------------------------------------------------------------------------------
 
@@ -268,11 +287,25 @@ phase_pruefen() {
     ok "Netz $NETZ noch nicht angelegt ($MCP_IP frei)"
   fi
 
-  # Datenbank: PG >= 15
+  # Datenbank-Werkzeuge: Image oder Host
+  if [ -n "$PG_IMAGE" ]; then
+    if docker image inspect "$PG_IMAGE" >/dev/null 2>&1; then ok "Postgres-Werkzeuge aus Image $PG_IMAGE"
+    else fehlt "Image $PG_IMAGE fuer psql/pg_dump fehlt"; fi
+  elif command -v psql >/dev/null 2>&1 && command -v pg_dump >/dev/null 2>&1; then
+    ok "psql und pg_dump auf dem Host"
+  else
+    fehlt "psql/pg_dump fehlen auf dem Host (Image in laufzeit/ausrollen/pg-image eintragen, siehe ausrollen.md)"
+  fi
+
+  # Datenbank: PG >= 15, pg_dump mindestens so neu wie der Server
   if pg_bereit; then
-    local nr
+    local nr haupt
     nr=$(pg_version_num)
     case "$nr" in ''|*[!0-9]*) nr=0 ;; esac
+    haupt=$(pg_dump_haupt)
+    case "$haupt" in ''|*[!0-9]*) haupt=0 ;; esac
+    if [ "$nr" -gt 0 ] && [ "$haupt" -ge $((nr / 10000)) ]; then ok "pg_dump $haupt passt zum Server"
+    else fehlt "pg_dump $haupt ist aelter als der Server ($((nr / 10000)))"; fi
     if [ "$nr" -ge 150000 ]; then ok "PostgreSQL >= 15"; else fehlt "PostgreSQL >= 15 (gemessen: $((nr / 10000)))"; fi
   else
     fehlt "Datenbank-Zugang (DSN-Datei lesbar, psycopg auf dem Host?)"
@@ -324,7 +357,7 @@ phase_sichern() {
     : > "$SICH/event-$ts.keine-schema"
     info "Schema event existiert noch nicht: nichts zu sichern (Marke event-$ts.keine-schema)"
   else
-    pg_mit pg_dump -n event -Fc -f "$SICH/event-$ts.dump" </dev/null || abbruch "pg_dump fehlgeschlagen"
+    pg_mit pg_dump -n event -Fc </dev/null > "$SICH/event-$ts.dump" || abbruch "pg_dump fehlgeschlagen"
     pgenv_weg
     [ -s "$SICH/event-$ts.dump" ] || abbruch "Sicherung ist leer"
     info "Sicherung: $SICH/event-$ts.dump"

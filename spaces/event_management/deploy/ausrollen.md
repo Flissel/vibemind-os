@@ -43,6 +43,15 @@ Nach jeder Phase steht ein Ledger-Eintrag, der nur Ergebnisse nennt, keine IDs.
   ```
   `pruefen` meldet eine fehlende Umgebung, fehlende Module und Units, die einen anderen
   Python starten. Rückweg: den Ordner `.venv` löschen.
+- **Postgres-Werkzeuge.** `pruefen` und `sichern` brauchen `psql` und ein `pg_dump`, das
+  mindestens die Hauptversion des Servers hat. Fehlen sie auf dem Host (oder ist der Client
+  älter), nimmt das Skript sie aus einem Image: dessen Name kommt in die nicht geheime Datei
+  `laufzeit/ausrollen/pg-image` (oder `EVENT_PG_IMAGE`). Am einfachsten das Image des
+  Datenbank-Containers selbst, dann passt die Version immer:
+  `docker inspect -f '{{.Config.Image}}' <db-container> > laufzeit/ausrollen/pg-image`.
+  Das Skript ruft dann `docker run --rm -i --network host --env-file … --entrypoint
+  psql|pg_dump <image>`; der Zugang steht nur in einer 0600-Env-Datei, die nach dem Aufruf
+  gelöscht wird, nie im Argument. Der Dump geht über stdout in die Sicherungsdatei.
 - **Netz.** Das Netz `event-agent` bleibt ohne `ip_range`. `event-mcp` nimmt die feste
   Adresse `10.250.10.14`; `pruefen` liest mit `docker network inspect`, ob ein anderer
   Container sie hält (dann diesen Container neu starten, bevor es weitergeht).
