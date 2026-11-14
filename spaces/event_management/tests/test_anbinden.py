@@ -726,7 +726,7 @@ def test_budget_datei_kennt_genau_den_claw() -> None:
     assert list(budget["agenten"]) == ["event-management-claw"]
     assert budget["agenten"]["event-management-claw"] == {
         "bereich": "event-management", "klasse": "auftrag", "modell": "sonnet",
-        "tagesgrenze": 300, "wrapper": "shim"}
+        "tagesgrenze": 300, "wrapper": "shim", "warnen_ab": 0.8}
     assert budget["uebergang_unbekannte_zulassen"] is False
     assert budget["pause_bei_user_aktiv"] is False
     assert budget["pause_fenster_min"] == 10

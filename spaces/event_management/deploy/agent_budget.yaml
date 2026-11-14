@@ -14,3 +14,6 @@ agenten:
     modell: sonnet
     tagesgrenze: 300
     wrapper: shim
+    # Ab 80 % der Tagesgrenze schreibt der Waechter eine Zeile art=warnung ins Tagesprotokoll
+    # (laufzeit/shim-budget). Zustellung an Felix: Folgeplan (siehe deploy/ausrollen.md).
+    warnen_ab: 0.8
