@@ -133,18 +133,29 @@ services:
 
   # Auftraege (Konzept-Flaeche Teil B): MCP rowboat-auftraege nur auf 127.0.0.1:8156/mcp mit genau einem Werkzeug,
   # video_auftrag_aus_konzept (Videokonzept aus knowledge/Konzepte -> Sales-Annahme POST /api/auftraege/video).
+  # Der Dienst BEREITET NUR VOR: den Auftrag legt Sales erst an, wenn Felix auf der Werkbank-Seite bestaetigt.
   # Jede MCP-Anfrage braucht den Dienstschluessel (./auftraege-zugang, 0600); den Sales-Schluessel liest der Dienst
   # aus ./sales-schluessel (0600). Beide als nur lesende Datei-Mounts ohne create_host_path: fehlt eine Datei, legt
   # compose den Container nicht an; ist sie leer, startet der Dienst nicht. Wissensordner nur lesend.
-  # ./auftraege.env traegt nur AUFTRAEGE_LADEN_ANZEIGE (kein Geheimnis); fehlt sie, startet der Dienst nicht.
+  # ./auftraege.env traegt AUFTRAEGE_LADEN_ANZEIGE (Pflicht) und SALES_UI_ANZEIGE_URL (optional; dann muessen die
+  # Links von Sales genau dorthin zeigen) - beides kein Geheimnis.
+  # Profil "auftraege": ein "docker compose up -d" fuer den ganzen Stapel laesst den Dienst aus, damit er nicht an
+  # fehlenden Schluesseldateien scheitert. Start nur mit "docker compose --profile auftraege up -d rowboat-auftraege".
   rowboat-auftraege:
+    profiles: ["auftraege"]
     build: ./auftraege
     image: rowboat-auftraege:local
     network_mode: host
     restart: unless-stopped
     mem_limit: 256m
     cpus: "0.5"
+    pids_limit: 64
     user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     env_file:
       - path: ./auftraege.env
         required: false

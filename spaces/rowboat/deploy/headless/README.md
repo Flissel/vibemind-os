@@ -58,7 +58,7 @@ Probe:
 
 ```sh
 cd ~/rowboat-headless
-docker compose up -d --build     # starten (baut node-pty im Image)
+docker compose up -d --build     # starten (baut node-pty im Image; rowboat-auftraege nur mit --profile auftraege)
 docker compose stop              # stoppen
 docker compose logs -f --tail 200
 curl -s http://100.67.177.45:3220/health
@@ -244,27 +244,45 @@ docker compose logs rowboat-werkzeuge | grep Zugang                        # Erg
 ## Aufträge `rowboat-auftraege` (127.0.0.1:8156)
 
 MCP-Server `rowboat-auftraege` (Streamable HTTP, `http://127.0.0.1:8156/mcp`, dazu `GET /health`) mit genau einem
-Werkzeug, `video_auftrag_aus_konzept(pfad, stand)`: Er liest ein Videokonzept `knowledge/Konzepte/**/*.html`
+Werkzeug, `video_auftrag_aus_konzept(pfad)`: Er liest ein Videokonzept `knowledge/Konzepte/**/*.html`
 (höchstens 1 MB, nie unter `knowledge/Kanal/`) selbst aus dem nur lesend eingehängten Wissensordner, prüft den
 Datenblock wie die App (`auftraege/konzept_lesen.py`, Nachbau von `readKonzept`/`checkVideoKonzept`, gemessen an
-`tests/konzept_vektoren.json`) und schickt ihn an die Sales-Annahme `POST /api/auftraege/video`
-(`SALES_UI_URL`, Vorgabe `http://127.0.0.1:8791`). Quelle: `auftraege/`, Konzept-Fläche Teil B
-(`Vibemind_V1/docs/superpowers/plans/2026-11-14-konzept-flaeche-teil-b.md`, Aufgabe 5).
+den 236 Fällen in `tests/konzept_vektoren.json`) und legt in Sales eine **vorbereitete Übergabe** an
+(`POST /api/auftraege/video`, `SALES_UI_URL`, Vorgabe `http://127.0.0.1:8791`). Quelle: `auftraege/`, Konzept-Fläche
+Teil B (`Vibemind_V1/docs/superpowers/plans/2026-11-14-konzept-flaeche-teil-b.md`, Aufgaben 5 und 10).
 
-- **Das Ja von Felix** setzt Rowboats Freigabeschicht durch (Fork, Aufgabe 7): für dieses Werkzeug fragt die App immer
-  einen Menschen und schreibt in `stand` den sha256 der Datei, die die Rückfrage gezeigt hat. Weicht die Datei davon
-  ab, lehnt der Dienst ab ("Das Konzept hat sich seit der Rückfrage geändert. …") und sendet nichts.
+- **Das Ja sitzt in Sales** (Spec Abschnitt 14): Der Dienst erzeugt keinen Auftrag. Sales antwortet
+  `{"status": "vorbereitet", "vorgang": "<8 hex>", "link": "<URL>"}`; der Agent nennt den Link. Den Auftrag legt
+  Sales erst an, wenn Felix die Übergabe auf der Werkbank-Seite hinter seinem Login mit „Ja, übergeben" bestätigt.
+  Übergeben wird der Stand, den Sales beim Vorbereiten gespeichert hat. Vorbereitete Übergaben verfallen nach 24 h,
+  je Laden sind höchstens 5 offen (429), dasselbe Konzept nicht zweimal (409).
+- **Was zum Modell zurückgeht, ist geprüft:** nur `status`, `vorgang` (genau 8 Kleinbuchstaben-Hex) und `link`
+  (http(s), höchstens 300 Zeichen, nur druckbares ASCII, ohne Zugangsdaten; ist `SALES_UI_ANZEIGE_URL` gesetzt, muss
+  der Link genau auf deren Ursprung zeigen). Sätze von Sales höchstens 300 Zeichen, ohne Steuer- und Formatzeichen.
+  Alles andere: „Die Annahme hat unerwartet geantwortet. Bitte auf der Werkbank-Seite nachsehen."
+- **Pfadregel** (gleich der Sales-Grenze): genau `knowledge/Konzepte/…/<Name>.html`, höchstens 500 Zeichen, `/` als
+  Trenner, keine leeren, `.`- oder `..`-Segmente, kein `\`, kein `:`, keine Steuerzeichen, kein einzelnes Surrogat,
+  kein Segment mit Punkt oder Leerzeichen am Ende. Kein Segment ab `Konzepte` (auch `Konzepte` selbst) darf ein
+  Symlink oder eine Junction sein; gelesen wird nur eine reguläre Datei, einmal geöffnet (`O_NOFOLLOW|O_NONBLOCK`)
+  und am offenen Griff geprüft (dieselbe Datei wie beim Prüfen, Größe). Der Rumpf an Sales darf 64 KiB nicht
+  überschreiten („Das Konzept ist zu groß für die Übergabe.", es geht nichts hinaus).
 - **Mit Anmeldung:** außer `GET /health` braucht jede Anfrage `Authorization: Bearer <Dienstschlüssel>`, sonst 401.
-  Grenze (Festlegung 1 des Plans): wer auf der VM Rowboats `config/mcp.json` lesen kann, kann den Dienst direkt
-  aufrufen; Rückhalt sind die Tagesgrenze in Sales und das Absegnen jedes Stücks auf der Werkbank.
+  Der Agent erreicht den Dienst (der Schlüssel steht in Rowboats `config/mcp.json`) und kann Übergaben ungefragt
+  vorbereiten; ohne den Klick von Felix in Sales bleiben sie folgenlos.
 - **Nie in einer Kanal-Freigabeliste:** `video_auftrag_aus_konzept` gehört weder in die Fork-Vorgabe
   `DEFAULT_CHANNEL_READ_ONLY_MCP_TOOLS` noch in `~/rowboat-data/config/channels.json` -> `readOnlyMcpTools`
   (aus Telegram/WhatsApp gibt es keine Übergabe). `tests/test_zentrale_skill.py` prüft die Vorgabe.
-- **Kein Wiederholen:** keine Verbindung -> "Die Annahme ist gerade nicht erreichbar. Es wurde nichts übergeben.";
-  Verbindung stand, aber 20 s keine Antwort, Abbruch oder 5xx -> "… ist unklar – bitte auf der Werkbank-Seite
-  nachsehen …" (Sales könnte angelegt haben). 400/409/413/429 geben den Satz von Sales weiter.
+- **Kein Wiederholen:** keine Verbindung -> „Die Annahme ist gerade nicht erreichbar. Es wurde nichts vorbereitet.";
+  jeder Fehler vor dem Senden sagt ebenfalls „Es wurde nichts vorbereitet." Nur wenn die Anfrage gesendet sein
+  könnte (20 s ohne Antwortbeginn, Abbruch, Antwortkörper nicht binnen 5 s vollständig) -> „… ist unklar – bitte auf
+  der Werkbank-Seite nachsehen …". Eine vollständig empfangene Antwort wird nie verworfen. 400/409/413/429 geben
+  den Satz von Sales weiter, 401 sagt, dass Sales den Schlüssel nicht angenommen hat.
 - **Protokoll** `~/rowboat-headless/auftraege-log/auftraege.log` (dreht bei 1 MB, drei Vorgänger): je Aufruf Zeit,
-  Pfad und Ergebnis (`auftrag <nr>` oder `fehler <art>`); nie ein Schlüssel, nie Konzeptinhalt.
+  Pfad und Ergebnis (`vorbereitet <vorgang>` oder `fehler <art>`); nie ein Schlüssel, nie Konzeptinhalt, nie der Link.
+- **Container gehärtet:** nur lesbares Wurzeldateisystem (`read_only`, `/tmp` als tmpfs, schreibbar nur
+  `auftraege-log/`), `cap_drop: [ALL]`, `no-new-privileges`, uid 1000, `pids_limit` 64.
+- **Eigenes Compose-Profil `auftraege`:** `docker compose up -d` für den ganzen Stapel lässt den Dienst aus und
+  scheitert so nicht an fehlenden Schlüsseldateien. Gestartet wird er nur mit `--profile auftraege` (s. u.).
 - Port 8156 ist ein Port des Mini-PC (nur Loopback). Die Port-Liste `vibemind.config.json` im äußeren Repo führt
   die Ports des PC.
 
@@ -275,23 +293,32 @@ Dateien auf der VM unter `~/rowboat-headless/` (alle 0600, keine im Repo, keine 
 |---|---|---|
 | `auftraege-zugang` | Dienstschlüssel (Bearer am MCP-Endpunkt) | auf der VM erzeugt, s. u. |
 | `sales-schluessel` | Schlüssel der Herkunft `rowboat` der Sales-Annahme | Sales: `python -m freigabe_schluessel anlegen rowboat` (sales-mcp) |
-| `auftraege.env` | `AUFTRAEGE_LADEN_ANZEIGE=<Laden>` (kein Geheimnis, steht in der Werkzeugbeschreibung) | Betreiber |
+| `auftraege.env` | `AUFTRAEGE_LADEN_ANZEIGE=<Laden>` (Pflicht, steht in der Werkzeugbeschreibung) und `SALES_UI_ANZEIGE_URL=<Adresse der Sales-Oberfläche>` (optional, prüft die Links); kein Geheimnis | Betreiber |
 
 Beide Schlüssel liest der Dienst beim Start: ein neuer Schlüssel braucht einen Neustart des Dienstes. Fehlt eine
 Datei, legt compose den Container nicht an; ist sie leer oder fehlt `AUFTRAEGE_LADEN_ANZEIGE`, startet der Dienst
 nicht und nennt nur den Variablennamen.
 
-Schlüssel anlegen (gibt nichts aus; der Sales-Schlüssel wird verdeckt eingefügt, dann Enter):
+Schlüssel anlegen (gibt nichts aus; der Sales-Schlüssel wird verdeckt eingefügt, dann Enter). Läuft in jeder
+POSIX-Shell (`sh`/`dash`, nicht nur `bash`): Die Eingabe wird mit `stty -echo` verdeckt, die Anzeige wird auch bei
+Abbruch (Strg+C) wieder eingeschaltet. Jede Datei entsteht erst als `.neu` mit 0600 und ersetzt das Ziel nur,
+wenn sie vollständig und nicht leer ist; ein Rest `.neu` aus einem abgebrochenen Lauf wird vorher gelöscht, damit
+nie eine Datei mit alten Rechten weiterlebt. Kein Befehl gibt einen Schlüssel aus.
 
 ```sh
 cd ~/rowboat-headless
-( umask 077; python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > auftraege-zugang )
-( umask 077; IFS= read -rs k; printf '%s\n' "$k" > sales-schluessel; unset k )
+rm -f auftraege-zugang.neu sales-schluessel.neu
+( umask 077; python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > auftraege-zugang.neu \
+    && mv -f auftraege-zugang.neu auftraege-zugang )
+( umask 077; trap 'stty echo' EXIT; trap 'exit 1' INT TERM; stty -echo; IFS= read -r k; stty echo; echo
+  [ -n "$k" ] && printf '%s\n' "$k" > sales-schluessel.neu && mv -f sales-schluessel.neu sales-schluessel )
 ( umask 077; printf 'AUFTRAEGE_LADEN_ANZEIGE=%s\n' 'Felix (fin2gether)' > auftraege.env )
+ls -l auftraege-zugang sales-schluessel auftraege.env       # alle -rw------- ; Inhalt nie anzeigen
 ```
 
 Eintrag in Rowboats `config/mcp.json` (Vorlage `mcp-eintrag.json`, Platzhalter `<AUS-DATEI auftraege-zugang>`):
-das Skript setzt den Wert aus der Datei ein, schreibt `mcp.json` mit 0600 und gibt den Schlüssel nie aus.
+das Skript setzt den Wert aus der Datei ein, schreibt `mcp.json` mit 0600 und gibt den Schlüssel nie aus. Ein Rest
+`.mcp.json.neu` wird erst gelöscht, dann neu mit `O_EXCL` und 0600 angelegt (nie eine alte Datei mit anderen Rechten).
 
 ```sh
 python3 - <<'PY'
@@ -303,24 +330,28 @@ ziel = h / "rowboat-data/config/mcp.json"
 cfg = json.loads(ziel.read_text()) if ziel.exists() else {}
 cfg.setdefault("mcpServers", {})["rowboat-auftraege"] = eintrag
 neu = ziel.with_name(".mcp.json.neu")
-with os.fdopen(os.open(neu, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+neu.unlink(missing_ok=True)
+with os.fdopen(os.open(neu, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as f:
     json.dump(cfg, f, indent=2)
 os.replace(neu, ziel)
 print("rowboat-auftraege in mcp.json eingetragen")
 PY
 ```
 
-Start und Probe (nur mit Betreiber-OK):
+Start und Probe (nur mit Betreiber-OK). Der Dienst liegt im Profil `auftraege`; ohne `--profile auftraege` startet
+compose ihn nicht:
 
 ```sh
 pwsh -File spaces/rowboat/deploy/headless/bauen.ps1 -NurAuftraege            # am PC: nur dieser Kontext
-cd ~/rowboat-headless && docker compose up -d --build rowboat-auftraege      # auf der VM
+cd ~/rowboat-headless && docker compose --profile auftraege up -d --build rowboat-auftraege   # auf der VM
 curl -s http://127.0.0.1:8156/health                                         # {"status":"ok"}
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8156/mcp   # 401 ohne Schlüssel
-tail -n 5 ~/rowboat-headless/auftraege-log/auftraege.log                     # je Übergabe eine Zeile
+tail -n 5 ~/rowboat-headless/auftraege-log/auftraege.log                     # je Aufruf eine Zeile
 ```
 
-**Rückweg:** `docker compose stop rowboat-auftraege && docker compose rm -f rowboat-auftraege`, den Eintrag
-`rowboat-auftraege` aus `~/rowboat-data/config/mcp.json` nehmen und in Sales den `rowboat`-Schlüssel sperren.
-Bestehende Aufträge und Konzepte bleiben unberührt; `auftraege-zugang`, `sales-schluessel` und das Protokoll
-bleiben liegen, bis der Betreiber sie löscht.
+**Rückweg:** `docker compose --profile auftraege stop rowboat-auftraege && docker compose --profile auftraege rm -f
+rowboat-auftraege`, den Eintrag `rowboat-auftraege` aus `~/rowboat-data/config/mcp.json` nehmen und in Sales den
+`rowboat`-Schlüssel sperren. Offene vorbereitete Übergaben verfallen in Sales nach 24 h (oder dort mit „Nein"
+verwerfen). Bestehende Aufträge und Konzepte bleiben unberührt; `auftraege-zugang`, `sales-schluessel` und das
+Protokoll bleiben liegen, bis der Betreiber sie löscht. Ein späteres `docker compose up -d` ohne Profil ist davon
+nicht betroffen.

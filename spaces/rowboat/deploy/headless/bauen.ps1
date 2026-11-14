@@ -96,7 +96,7 @@ if ($NurAuftraege) {
     Invoke-Schritt $PSScriptRoot @('ssh', $vmHost, "mkdir -p $basis/auftraege && mkdir -p -m 0700 $basis/auftraege-log")
     Invoke-Schritt $auftraegeOrdner (@('scp', '-q') + $auftraegeDateien + @("${vmHost}:$basis/auftraege/"))
     Invoke-Schritt $PSScriptRoot @('scp', '-q', 'compose.yml', '.dockerignore', 'mcp-eintrag.json', "${vmHost}:$basis/")
-    Write-Host "Auftraege uebertragen nach ${vmHost}:$basis - Start: ssh $vmHost 'cd $basis && docker compose up -d --build rowboat-auftraege'"
+    Write-Host "Auftraege uebertragen nach ${vmHost}:$basis - Start: ssh $vmHost 'cd $basis && docker compose --profile auftraege up -d --build rowboat-auftraege'"
     return
 }
 if ($NurWerkzeuge) {
@@ -187,4 +187,4 @@ foreach ($teil in $wissenTeile) {
 }
 Invoke-Schritt $skillOrdner @('scp', '-q', 'SKILL.md', "${vmHost}:$skillZiel/")
 Invoke-Schritt $werkzeugSkillOrdner @('scp', '-q', 'SKILL.md', "${vmHost}:$werkzeugSkillZiel/")
-Write-Host "Uebertragen nach ${vmHost}:$basis - Start: ssh $vmHost 'cd $basis && docker compose up -d --build'"
+Write-Host "Uebertragen nach ${vmHost}:$basis - Start: ssh $vmHost 'cd $basis && docker compose up -d --build' (rowboat-auftraege liegt im Profil auftraege und startet so NICHT mit; dafuer: docker compose --profile auftraege up -d --build rowboat-auftraege)"

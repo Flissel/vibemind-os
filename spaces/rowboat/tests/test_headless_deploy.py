@@ -437,6 +437,39 @@ def test_auftraege_dienst_vertrag():
     assert "rowboat-auftraege" not in dienst("rowboat-server")["depends_on"]
 
 
+def test_auftraege_nur_im_eigenen_profil():
+    # I1: ein "docker compose up -d" fuer den ganzen Stapel darf nicht an fehlenden Schluesseldateien scheitern.
+    compose = yaml.safe_load((HEADLESS / "compose.yml").read_text(encoding="utf-8"))
+    for name, svc in compose["services"].items():
+        if name == "rowboat-auftraege":
+            assert svc["profiles"] == ["auftraege"]
+        else:
+            assert "profiles" not in svc, name
+            assert "rowboat-auftraege" not in (svc.get("depends_on") or []), name
+
+
+def test_auftraege_container_gehaertet():
+    svc = dienst("rowboat-auftraege")
+    assert svc["read_only"] is True
+    assert svc["tmpfs"] == ["/tmp"]
+    assert svc["cap_drop"] == ["ALL"]
+    assert "cap_add" not in svc and "privileged" not in svc
+    assert svc["security_opt"] == ["no-new-privileges:true"]
+    assert svc["pids_limit"] == 64
+    assert svc["user"] == "1000:1000"
+    # Schreibbar ist nur das Protokoll (eigener Mount); alles andere nur lesend.
+    schreibbar = [v["target"] for v in svc["volumes"] if not v.get("read_only")]
+    assert schreibbar == ["/log"]
+
+
+def test_andere_dienste_ohne_auftraege_haertung_unveraendert():
+    # Die Haertung gilt nur fuer rowboat-auftraege; die anderen Dienste bleiben wie sie waren.
+    for name in ("rowboat-server", "rowboat-shim", "rowboat-werkzeuge", "rowboat-wissen"):
+        svc = dienst(name)
+        for schluessel in ("profiles", "read_only", "cap_drop", "security_opt", "pids_limit", "tmpfs"):
+            assert schluessel not in svc, (name, schluessel)
+
+
 def test_auftraege_wissen_nur_lesend_und_schluessel_pflicht():
     volumes = dienst("rowboat-auftraege")["volumes"]
     assert volumes[0] == WISSEN_NUR_LESEND
@@ -495,15 +528,24 @@ def test_bauen_kopiert_auftraege_kontext():
     code = "\n".join(z for z in code.splitlines() if not z.lstrip().startswith("#"))
     for name in ("auftraege-zugang", "sales-schluessel", "auftraege.env"):
         assert name not in code, name
+    # Gedruckte Startbefehle fuer den Auftraege-Dienst nennen das Profil (sonst startet compose ihn nicht).
+    for zeile in skript.splitlines():
+        if "up -d" in zeile and "rowboat-auftraege" in zeile:
+            assert "--profile auftraege" in zeile, zeile
 
 
 def test_readme_auftraege():
     readme = (HEADLESS / "README.md").read_text(encoding="utf-8")
     teil = readme.split("## Aufträge `rowboat-auftraege` (127.0.0.1:8156)", 1)[1].split("\n## ", 1)[0]
     for wort in ("127.0.0.1:8156/mcp", "video_auftrag_aus_konzept", "auftraege-zugang", "sales-schluessel",
-                 "AUFTRAEGE_LADEN_ANZEIGE", "umask 077", "read -rs", "mcp.json", "Rückweg", "/health", "401",
-                 "readOnlyMcpTools", "auftraege.log", "Neustart"):
+                 "AUFTRAEGE_LADEN_ANZEIGE", "SALES_UI_ANZEIGE_URL", "umask 077", "stty -echo", "mcp.json", "Rückweg",
+                 "/health", "401", "readOnlyMcpTools", "auftraege.log", "Neustart", "--profile auftraege",
+                 "vorbereitet", "500 Zeichen", "O_EXCL"):
         assert wort in teil, wort
+    assert "read -rs" not in teil and "`stand`" not in teil and "pfad, stand" not in teil
+    for zeile in teil.splitlines():
+        if "docker compose" in zeile and "up" in zeile and "rowboat-auftraege" in zeile:
+            assert "--profile auftraege" in zeile, zeile
     # Kein Befehl gibt einen Schluessel aus: kein cat der Schluesseldateien, echo/printf nur in eine Datei.
     for zeile in teil.splitlines():
         if "auftraege-zugang" in zeile or "sales-schluessel" in zeile:
