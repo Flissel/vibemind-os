@@ -422,26 +422,45 @@ def test_zweiter_lauf_erhaelt_alles(tmp_path: Path) -> None:
               "headers": {"Authorization": "Bearer evk_beispiel_nur_fuer_den_test"}}
     bind = {"agentId": "ev-1a2b3c4d", "match": {
         "channel": "telegram", "peer": {"kind": "group", "id": "-1001234567890"}}}
+    # Review R1: je ein Arbeiter-Agent jeder Art (ev- Gruppe, ld- Leitung im Direktchat,
+    # bo- Betreiber im Direktchat), alle drei mit eigenem Server und Binding.
+    leitung = {"id": "ld-5e6f7a8b", "workspace": "/home/node/.openclaw/workspace-ld-5e6f7a8b",
+               "tools": {"allow": ["ld-5e6f7a8b__*"]}}
+    betreiber = {"id": "bo-9c0d1e2f", "workspace": "/home/node/.openclaw/workspace-bo-9c0d1e2f",
+                 "tools": {"allow": ["bo-9c0d1e2f__*"]}}
+    server_ld = {**server, "headers": {"Authorization": "Bearer evk_beispiel_nur_fuer_den_test_ld"}}
+    server_bo = {**server, "headers": {"Authorization": "Bearer evk_beispiel_nur_fuer_den_test_bo"}}
+    bind_ld = {"agentId": "ld-5e6f7a8b", "match": {
+        "channel": "telegram", "peer": {"kind": "direct", "id": "1234567"}},
+        "session": {"dmScope": "per-peer"}}
+    bind_bo = {"agentId": "bo-9c0d1e2f", "match": {
+        "channel": "telegram", "peer": {"kind": "direct", "id": "7654321"}},
+        "session": {"dmScope": "per-peer"}}
+
+    def _arbeiter_dazu(konfig: dict) -> None:
+        konfig["agents"]["list"].extend([arbeiter, leitung, betreiber])
+        konfig["mcp"]["servers"].update({"ev-1a2b3c4d": server, "ld-5e6f7a8b": server_ld,
+                                         "bo-9c0d1e2f": server_bo})
+        konfig["bindings"].extend([bind, bind_ld, bind_bo])
+        konfig["channels"]["telegram"]["groups"]["-1001234567890"] = {"requireMention": False}
+
     aktuell = json.loads(json.dumps(saat))
-    aktuell["agents"]["list"].append(arbeiter)
-    aktuell["mcp"]["servers"]["ev-1a2b3c4d"] = server
-    aktuell["bindings"].append(bind)
-    aktuell["channels"]["telegram"]["groups"]["-1001234567890"] = {"requireMention": False}
+    _arbeiter_dazu(aktuell)
     aktuell["gateway"]["port"] = 19999  # abweichende Saat -> Ersetzen
 
     ausgabe, cfg = _saat_laufen(tmp_path, aktuell, seed=saat)
     assert "gesichert und durch die Saat ersetzt" in ausgabe
     erwartet = json.loads(json.dumps(saat))
-    erwartet["agents"]["list"].append(arbeiter)
-    erwartet["mcp"]["servers"]["ev-1a2b3c4d"] = server
-    erwartet["bindings"].append(bind)
-    erwartet["channels"]["telegram"]["groups"]["-1001234567890"] = {"requireMention": False}
+    _arbeiter_dazu(erwartet)
     neu = json.loads(cfg.read_text(encoding="utf-8"))
     assert neu == erwartet
     ids = [a["id"] for a in neu["agents"]["list"]]
-    assert "ev-legacy" in ids and "ev-1a2b3c4d" in ids
-    assert {b["agentId"] for b in neu["bindings"]} == {"ev-legacy", "ev-1a2b3c4d"}
+    assert {"ev-legacy", "ev-1a2b3c4d", "ld-5e6f7a8b", "bo-9c0d1e2f"} <= set(ids)
+    assert {b["agentId"] for b in neu["bindings"]} == {"ev-legacy", "ev-1a2b3c4d", "ld-5e6f7a8b",
+                                                       "bo-9c0d1e2f"}
+    assert {"ld-5e6f7a8b", "bo-9c0d1e2f"} <= set(neu["mcp"]["servers"])
     assert "evk_" not in ausgabe and "-1001234567890" not in ausgabe
+    assert "1234567" not in ausgabe and "7654321" not in ausgabe
 
     # Brain (Task 4): beide Server und die Erlaubnislisten kommen aus der Saat.
     for name, agent in (("bn-lesen", "brain-lesen"), ("bn-auftrag", "brain-auftrag")):
