@@ -28,7 +28,8 @@ log = logging.getLogger(__name__)
 
 KATEGORIE = "festival"
 _ERLAUBT = frozenset({"Firma nicht gefunden", "legacy_url muss mit https:// beginnen",
-                      "Name fehlt", "Ende liegt vor dem Beginn", "Ort ungueltig"})
+                      "Name fehlt", "Ende liegt vor dem Beginn", "Ort ungueltig",
+                      "Legacy-Event gehoert einer anderen Firma"})
 
 
 def eintragen(
@@ -37,7 +38,8 @@ def eintragen(
 ) -> UUID:
     """Legt das Legacy-Event an oder aktualisiert die Eckdaten (idempotent ueber `legacy_url`).
 
-    ValueError("Firma nicht gefunden") bei unbekanntem Kuerzel; ValueError bei einer URL
+    ValueError("Firma nicht gefunden") bei unbekanntem Kuerzel; ValueError bei einem
+    Event dieser URL in einer anderen Firma (nichts wird geaendert); ValueError bei einer URL
     ohne https://, leerem Namen oder Ende vor Beginn.
     """
     if (not isinstance(legacy_url, str) or not legacy_url.startswith("https://")
@@ -51,19 +53,24 @@ def eintragen(
     if ort is not None and not isinstance(ort, str):
         raise ValueError("Ort ungueltig")
     with conn_admin.transaction(), conn_admin.cursor(row_factory=dict_row) as cur:
+        # Es gibt keinen Unique-Index auf legacy_url: der Advisory-Lock serialisiert
+        # gleichzeitige Erstaufrufe (Ruling T3-a); `for update` sperrt nur vorhandene Zeilen.
+        cur.execute("select pg_advisory_xact_lock(hashtext('legacy:' || %s))", (legacy_url,))
         cur.execute("select id from event.firma where kurz = %s", (firma_kurz,))
         firma = cur.fetchone()
         if firma is None:
             raise ValueError("Firma nicht gefunden")
         cur.execute(
-            "select id from event.event where quelle = 'legacy' and legacy_url = %s"
+            "select id, firma_id from event.event where quelle = 'legacy' and legacy_url = %s"
             " for update", (legacy_url,))
         vorhanden = cur.fetchone()
         if vorhanden is not None:
+            if vorhanden["firma_id"] != firma["id"]:
+                raise ValueError("Legacy-Event gehoert einer anderen Firma")
             cur.execute(
-                "update event.event set firma_id=%s, name=%s, beginn=%s, ende=%s,"
+                "update event.event set name=%s, beginn=%s, ende=%s,"
                 " ort_adresse=%s, geaendert=now() where id=%s returning id",
-                (firma["id"], name.strip(), beginn, ende, ort, vorhanden["id"]))
+                (name.strip(), beginn, ende, ort, vorhanden["id"]))
         else:
             cur.execute(
                 "insert into event.event (firma_id, kategorie, name, beginn, ende,"

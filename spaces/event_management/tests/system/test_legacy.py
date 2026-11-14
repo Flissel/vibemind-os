@@ -123,3 +123,83 @@ def test_legacy_event_fuer_bot_gesperrt(db_admin, db_app):
         werkzeuge.ausfuehren(app, info, "aufgaben_anlegen", {"marke": wert, "titel": "x"})
     assert str(e.value) == LEGACY_TEXT
     assert db_admin.execute("select count(*) as n from event.aufgabe").fetchone()["n"] == 0
+
+
+def test_andere_firma_abgelehnt(db_admin):
+    _firma(db_admin, "testfirma")
+    _firma(db_admin, "zweitfirma")
+    eid = _eintragen(db_admin)
+    vorher = db_admin.execute("select * from event.event where id = %s", (eid,)).fetchone()
+    with pytest.raises(ValueError, match="Legacy-Event gehoert einer anderen Firma"):
+        _eintragen(db_admin, firma_kurz="zweitfirma", name="Anderer Name")
+    nachher = db_admin.execute("select * from event.event where id = %s", (eid,)).fetchone()
+    assert nachher == vorher
+    assert db_admin.execute("select count(*) as n from event.event").fetchone()["n"] == 1
+
+
+def test_cli_meldet_andere_firma(leere_db_dsn, tmp_path, monkeypatch, capsys):
+    with psycopg.connect(leere_db_dsn, autocommit=True, row_factory=dict_row) as c:
+        anwenden.anwenden(c)
+        _firma(c, "testfirma")
+        _firma(c, "zweitfirma")
+        _eintragen(c)
+    dsn_datei = tmp_path / "dsn.txt"
+    dsn_datei.write_text(leere_db_dsn + "\n", encoding="utf-8")
+    eingabe = tmp_path / "e.json"
+    eingabe.write_text(json.dumps({
+        "firma_kurz": "zweitfirma", "name": "Geheimname", "beginn": BEGINN.isoformat(),
+        "ende": (BEGINN + timedelta(days=1)).isoformat(), "ort": None, "legacy_url": URL,
+    }), encoding="utf-8")
+    monkeypatch.setenv("EVENT_ADMIN_DSN_FILE", str(dsn_datei))
+    assert legacy.main(["eintragen", str(eingabe)]) == 2
+    roh = capsys.readouterr()
+    assert roh.out == ""
+    assert "Legacy-Event gehoert einer anderen Firma" in roh.err
+    assert "Geheimname" not in roh.err
+
+
+def test_eintragen_serialisiert_ueber_advisory_lock(db_admin, pg_cluster):
+    """Zweiter Aufruf wartet auf den Advisory-Lock der URL und sieht danach das Event des
+    ersten (kein Duplikat). Deterministisch: Warten wird in pg_stat_activity beobachtet."""
+    import threading
+    import time
+
+    _firma(db_admin)
+    dsn = f"host=127.0.0.1 port={pg_cluster['port']} user=postgres dbname={db_admin.info.dbname}"
+    ergebnis: dict[str, Any] = {}
+
+    def zweiter() -> None:
+        try:
+            with psycopg.connect(dsn, autocommit=True, row_factory=dict_row) as c2:
+                ergebnis["id"] = _eintragen(c2, name="Zweiter")
+        except Exception as fehler:  # noqa: BLE001 - im Hauptthread geprueft
+            ergebnis["fehler"] = fehler
+
+    with psycopg.connect(dsn, autocommit=True, row_factory=dict_row) as c1:
+        with c1.transaction():
+            c1.execute("select pg_advisory_xact_lock(hashtext('legacy:' || %s))", (URL,))
+            erste = c1.execute(
+                "insert into event.event (firma_id, kategorie, name, beginn, ende, quelle,"
+                " legacy_url) select id, 'festival', 'Erster', %s, %s, 'legacy', %s"
+                " from event.firma where kurz = 'testfirma' returning id",
+                (BEGINN, BEGINN, URL)).fetchone()["id"]
+            thread = threading.Thread(target=zweiter)
+            thread.start()
+            ende = time.monotonic() + 30
+            wartet = False
+            while time.monotonic() < ende and thread.is_alive():
+                wartet = db_admin.execute(
+                    "select count(*) > 0 as w from pg_locks where locktype = 'advisory'"
+                    " and not granted").fetchone()["w"]
+                if wartet:
+                    break
+                time.sleep(0.05)
+            assert wartet, "zweiter Aufruf wartet nicht auf den Advisory-Lock"
+            assert "id" not in ergebnis and "fehler" not in ergebnis
+        # Transaktion committet: Lock frei, der zweite Aufruf laeuft weiter.
+    thread.join(timeout=30)
+    assert not thread.is_alive()
+    assert "fehler" not in ergebnis, ergebnis.get("fehler")
+    assert ergebnis["id"] == erste
+    zeilen = db_admin.execute("select name from event.event").fetchall()
+    assert [z["name"] for z in zeilen] == ["Zweiter"]
