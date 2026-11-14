@@ -77,6 +77,33 @@ PHASEN="pruefen sichern migrieren bauen-system bauen-web shim dienste anbinden t
 PGENV=$ST/pg.env
 STAT=${AUSROLLEN_STAT:-stat}   # Messprogramme (nur Tests ersetzen sie)
 CURL=${AUSROLLEN_CURL:-curl}
+FLOCK=${AUSROLLEN_FLOCK:-flock}
+GESUND_VERSUCHE=${AUSROLLEN_GESUND_VERSUCHE:-75}   # je 2 s: 150 s
+case "$GESUND_VERSUCHE" in
+  ''|*[!0-9]*) echo "ABBRUCH: AUSROLLEN_GESUND_VERSUCHE muss eine Zahl sein." >&2; exit 1 ;;
+esac
+
+# Test-Haken (Pfade/Programme ersetzbar): laut melden, nur Namen. BAU_SPEICHER und
+# TAILNET_PORT sind Einstellungen, keine Haken.
+HAKEN=""
+for _v in $(compgen -v AUSROLLEN_); do
+  case "$_v" in
+    AUSROLLEN_BAU_SPEICHER|AUSROLLEN_TAILNET_PORT) ;;
+    *) HAKEN="$HAKEN $_v" ;;
+  esac
+done
+if [ -n "$HAKEN" ]; then
+  echo "ACHTUNG: Test-Haken gesetzt:$HAKEN (im Betrieb nie setzen)" >&2
+fi
+# Speicherdeckel: Zahl + m|g, hoechstens 8g.
+if [[ "$BAU_SPEICHER" =~ ^[1-9][0-9]*[mg]$ ]]; then
+  _n=${BAU_SPEICHER%[mg]}
+  if [ "${BAU_SPEICHER: -1}" = g ]; then _n=$((_n * 1024)); fi
+  [ "$_n" -le 8192 ] || { echo "ABBRUCH: AUSROLLEN_BAU_SPEICHER darf hoechstens 8g sein." >&2; exit 1; }
+else
+  echo "ABBRUCH: AUSROLLEN_BAU_SPEICHER muss Zahl plus m oder g sein (z. B. 4g, hoechstens 8g)." >&2
+  exit 1
+fi
 
 modus_von() { "$STAT" -c %a "$1"; }
 abbruch() { echo "ABBRUCH: $*" >&2; exit 1; }
@@ -90,6 +117,15 @@ claw_image() { grep -m1 -o 'ghcr.io/openclaw/openclaw:[A-Za-z0-9_.-]*' docker-co
 # --- 2. Stempel und Reihenfolge ---------------------------------------------------------
 stempel() { printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$ST/$1.ok"; }
 stempel_weg() { rm -f "${ST:?}/${1:?}.ok"; }
+# Ruling T6-a: jede Phase loescht vor ihrer Arbeit den eigenen Stempel und die aller
+# spaeteren Phasen; ein gescheiterter Wiederholungslauf hinterlaesst so keinen alten Stempel.
+eigene_und_spaetere_stempel_weg() {
+  local q ab=0
+  for q in $PHASEN; do
+    [ "$q" = "$1" ] && ab=1
+    if [ "$ab" = 1 ]; then stempel_weg "$q"; fi
+  done
+}
 
 vorphasen() {
   case "$1" in
@@ -254,10 +290,19 @@ phase_sichern() {
   local ts
   ts=$(date -u +%Y%m%dT%H%M%SZ)
   pg_bereit || abbruch "Datenbank-Zugang nicht lesbar"
-  pg_mit pg_dump -n event -Fc -f "$SICH/event-$ts.dump" </dev/null || abbruch "pg_dump fehlgeschlagen"
-  pgenv_weg
-  [ -s "$SICH/event-$ts.dump" ] || abbruch "Sicherung ist leer"
-  info "Sicherung: $SICH/event-$ts.dump"
+  # Ruling T6-b: gibt es das Schema event noch nicht (erster Lauf), gibt es nichts zu sichern.
+  local schema
+  schema=$(pg_mit psql -Atq -c "select 1 from pg_namespace where nspname='event'" </dev/null)     || abbruch "Schema-Pruefung fehlgeschlagen"
+  if [ -z "$schema" ]; then
+    pgenv_weg
+    : > "$SICH/event-$ts.keine-schema"
+    info "Schema event existiert noch nicht: nichts zu sichern (Marke event-$ts.keine-schema)"
+  else
+    pg_mit pg_dump -n event -Fc -f "$SICH/event-$ts.dump" </dev/null || abbruch "pg_dump fehlgeschlagen"
+    pgenv_weg
+    [ -s "$SICH/event-$ts.dump" ] || abbruch "Sicherung ist leer"
+    info "Sicherung: $SICH/event-$ts.dump"
+  fi
   if docker container inspect "$CLAW" >/dev/null 2>&1; then
     docker cp "$CLAW:/home/node/.openclaw/openclaw.json" "$SICH/openclaw-$ts.json" >/dev/null \
       || abbruch "openclaw.json nicht kopierbar"
@@ -317,7 +362,7 @@ phase_bauen() {
 
 shim_gesund() {
   local i s
-  for i in $(seq 1 30); do
+  for i in $(seq 1 "$GESUND_VERSUCHE"); do
     s=$(docker inspect -f '{{.State.Health.Status}}' "$SHIM" 2>/dev/null || true)
     [ "$s" = healthy ] && return 0
     sleep 2
@@ -336,8 +381,12 @@ phase_shim() {
   if [ -n "${EVENT_SHIM_BAUKONTEXT:-}" ]; then
     [ -f "$EVENT_SHIM_BAUKONTEXT/Dockerfile" ] || abbruch "EVENT_SHIM_BAUKONTEXT hat kein Dockerfile"
     bau_speicher_pruefen
-    docker tag "$img" "${img%:*}:vorher" || abbruch "Rueckweg-Tag nicht setzbar"
-    docker image inspect -f '{{.Id}}' "$img" > "$ST/shim.vorher"
+    # Ruling T6-c: den Rueckweg nur setzen, wenn es noch keinen gibt oder der letzte Shim-Lauf
+    # gelang; nach einem gescheiterten Lauf zeigt `vorher` weiter auf das Original.
+    if [ ! -f "$ST/shim.vorher" ] || [ "${SHIM_OK_VORHER:-nein}" = ja ]; then
+      docker tag "$img" "${img%:*}:vorher" || abbruch "Rueckweg-Tag nicht setzbar"
+      docker image inspect -f '{{.Id}}' "$img" > "$ST/shim.vorher"
+    fi
     export DOCKER_BUILDKIT=0
     docker build --memory="$BAU_SPEICHER" --memory-swap="$BAU_SPEICHER" -t "$img" "$EVENT_SHIM_BAUKONTEXT" </dev/null \
       || abbruch "Build shim fehlgeschlagen (Rueckweg: zurueck shim)"
@@ -492,15 +541,27 @@ case "$PHASE" in
     exit 64 ;;
 esac
 mkdir -p "$ST"
+# Nie zwei Laeufe zugleich (auch zurueck): nicht blockierende Sperre.
+if ! type -P "$FLOCK" >/dev/null 2>&1 && [ ! -x "$FLOCK" ]; then
+  abbruch "flock fehlt (util-linux), ohne Sperre wird nicht ausgerollt"
+fi
+exec 9>"$ST/lock"
+"$FLOCK" -n 9 || abbruch "Ein anderer Lauf haelt laufzeit/ausrollen/lock; nie parallel ausrollen."
 if [ "$PHASE" = zurueck ]; then
   phase_zurueck "$@"
   exit 0
 fi
+# Stand des letzten Shim-Laufs merken, bevor Ruling T6-a den Stempel loescht.
+SHIM_OK_VORHER=nein
+[ -f "$ST/shim.ok" ] && SHIM_OK_VORHER=ja
 if [ "$PHASE" = bauen ]; then
-  case "${1:-}" in system|web) verlange_vorphasen "bauen-$1" ;; esac
+  case "${1:-}" in
+    system|web) verlange_vorphasen "bauen-$1"; eigene_und_spaetere_stempel_weg "bauen-$1" ;;
+  esac
   phase_bauen "$@"
 else
   [ "$#" -eq 0 ] || abbruch "Phase $PHASE nimmt kein Argument"
   verlange_vorphasen "$PHASE"
+  eigene_und_spaetere_stempel_weg "$PHASE"
   "phase_$PHASE"
 fi

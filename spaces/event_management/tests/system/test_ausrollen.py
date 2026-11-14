@@ -68,7 +68,7 @@ case "$1 $2" in
   "container inspect") exit 0 ;;
 esac
 case "$1" in
-  inspect) case "$*" in *Health*) echo healthy;; *) echo sha256:vorher123;; esac ;;
+  inspect) case "$*" in *Health*) echo "${FAKE_HEALTH:-healthy}";; *) echo sha256:vorher123;; esac ;;
   cp) case "$2" in event-management-claw:*) printf '{}' > "$3";; esac ;;
 esac
 exit 0
@@ -79,8 +79,15 @@ echo "pg_dump $*" >> "$AR_PROTOKOLL"
 while [ $# -gt 0 ]; do [ "$1" = "-f" ] && { printf 'dump' > "$2"; }; shift; done
 exit 0
 """
+FLOCK = r"""#!/bin/sh
+[ -n "${FAKE_FLOCK_HELD:-}" ] && exit 1
+exit 0
+"""
 PSQL = r"""#!/bin/sh
 echo "psql $*" >> "$AR_PROTOKOLL"
+case "$*" in
+  *pg_namespace*) [ "${FAKE_SCHEMA:-ja}" = ja ] && echo 1; exit 0 ;;
+esac
 echo "${FAKE_PG_NUM:-160004}"
 """
 PYTHON3 = r"""#!/bin/sh
@@ -144,6 +151,7 @@ class Projekt:
         _schreibe(self.bin / "python3", PYTHON3)
         _schreibe(self.bin / "curl", CURL)
         _schreibe(self.bin / "stat", STAT)
+        _schreibe(self.bin / "flock", FLOCK)
         self.etc = tmp / "etc"
         self.etc.mkdir()
         self.systemd = tmp / "systemd"
@@ -196,6 +204,7 @@ class Projekt:
                "PATH": str(self.bin) + os.pathsep + os.environ.get("PATH", ""),
                "AR_PROTOKOLL": str(self.protokoll), "HOME": str(self.wurzel),
                "AUSROLLEN_STAT": self._pfad_wie_bash(self.bin) + "/stat",
+               "AUSROLLEN_FLOCK": self._pfad_wie_bash(self.bin) + "/flock",
                "AUSROLLEN_CURL": self._pfad_wie_bash(self.bin) + "/curl",
                "AUSROLLEN_MEMINFO": self._pfad_wie_bash(self.meminfo.parent) + "/" + self.meminfo.name,
                "AUSROLLEN_ETC": self._pfad_wie_bash(self.etc), "AUSROLLEN_SYSTEMD": self._pfad_wie_bash(self.systemd),
@@ -451,6 +460,19 @@ def test_pruefen_host_python_und_repo_pfad(pj: Projekt):
 
 
 # --- sichern, migrieren ---------------------------------------------------------------------------
+
+
+@braucht_bash
+def test_sichern_ohne_schema_schreibt_marke_statt_dump(pj: Projekt):
+    pj.pruefen_bereit()
+    pj.stempel("pruefen")
+    lauf = pj.lauf("sichern", umgebung={"FAKE_SCHEMA": "leer"})
+    assert lauf.returncode == 0, _aus(lauf)[1]
+    assert not any(z.startswith("pg_dump") for z in pj.log())
+    assert any("pg_namespace" in z for z in pj.log())
+    assert list((pj.lz / "sicherung").glob("event-*.keine-schema"))
+    assert not list((pj.lz / "sicherung").glob("event-*.dump"))
+    assert pj.stempel_da("sichern")
 
 
 @braucht_bash
@@ -761,3 +783,103 @@ def test_keine_geheimnisse_oder_echten_ziele():
             treffer = [t for t in re.findall(muster, text)
                        if t not in ("127.0.0.1", "0.0.0.0") and not t.startswith("10.250.10.")]
             assert treffer == [], (datei.name, muster, treffer)
+
+
+# --- Fix-Runde 1 (Rulings T6-a bis T6-d) ----------------------------------------------------------
+
+
+@braucht_bash
+def test_t6a_gescheiterter_wiederholungslauf_hinterlaesst_keinen_stempel(pj: Projekt):
+    pj.pruefen_bereit()
+    assert pj.lauf("pruefen").returncode == 0
+    pj.stempel("sichern", "migrieren")
+    assert pj.stempel_da("pruefen")
+    (pj.lz / "ausrollen" / "claim").unlink()  # pruefen scheitert jetzt
+    lauf = pj.lauf("pruefen")
+    assert lauf.returncode == 1
+    assert not pj.stempel_da("pruefen") and not pj.stempel_da("sichern") and not pj.stempel_da("migrieren")
+    folge = pj.lauf("sichern")
+    assert folge.returncode == 1 and "Vorphase pruefen fehlt" in _aus(folge)[1]
+
+
+@braucht_bash
+def test_t6a_bauen_loescht_nur_eigene_und_spaetere(pj: Projekt):
+    pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web", "shim", "dienste")
+    pj.meminfo.write_text("MemAvailable: 100 kB\n", encoding="utf-8")  # Lauf scheitert
+    lauf = pj.lauf("bauen", "web", umgebung={"EVENT_SYSTEM_TAG": "abc12345", "EVENT_WEB_TAG": "abc12345"})
+    assert lauf.returncode == 1
+    assert pj.stempel_da("bauen-system") and pj.stempel_da("migrieren")
+    assert not pj.stempel_da("bauen-web") and not pj.stempel_da("shim") and not pj.stempel_da("dienste")
+
+
+@braucht_bash
+def test_t6c_shim_vorher_bleibt_nach_gescheitertem_lauf(pj: Projekt):
+    pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web")
+    pj.tags()
+    kontext = pj.wurzel / "shim-kontext"
+    kontext.mkdir()
+    (kontext / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    umg = {"EVENT_SHIM_BAUKONTEXT": kontext.as_posix()}
+    # Lauf 1: Bau ok, Gesundheitspruefung scheitert (ein Versuch)
+    erst = pj.lauf("shim", umgebung={**umg, "FAKE_HEALTH": "starting", "AUSROLLEN_GESUND_VERSUCHE": "1"})
+    assert erst.returncode == 1 and not pj.stempel_da("shim")
+    assert (pj.lz / "ausrollen" / "shim.vorher").read_text(encoding="utf-8").strip() == "sha256:vorher123"
+    tags_lauf1 = [z for z in pj.log() if z.startswith("docker tag ")]
+    assert len(tags_lauf1) == 1
+    # Lauf 2: das Image heisst jetzt anders (neues Image unter dem alten Namen); der Rueckweg bleibt
+    (pj.bin / "docker").write_text(DOCKER.replace("sha256:vorher123", "sha256:neu456"), encoding="utf-8", newline="\n")
+    zweit = pj.lauf("shim", umgebung=umg)
+    assert zweit.returncode == 0, _aus(zweit)[1]
+    assert (pj.lz / "ausrollen" / "shim.vorher").read_text(encoding="utf-8").strip() == "sha256:vorher123"
+    assert len([z for z in pj.log() if z.startswith("docker tag ")]) == 1  # nicht erneut getaggt
+    # Lauf 3 nach erfolgreichem Lauf 2: jetzt darf der Rueckweg neu gesetzt werden
+    dritt = pj.lauf("shim", umgebung=umg)
+    assert dritt.returncode == 0
+    assert (pj.lz / "ausrollen" / "shim.vorher").read_text(encoding="utf-8").strip() == "sha256:neu456"
+
+
+@braucht_bash
+def test_t6d_lock_gehalten_bricht_ab_auch_bei_zurueck(pj: Projekt):
+    pj.pruefen_bereit()
+    for args in (["pruefen"], ["zurueck", "pruefen"]):
+        lauf = pj.lauf(*args, umgebung={"FAKE_FLOCK_HELD": "1"})
+        assert lauf.returncode == 1 and "nie parallel" in _aus(lauf)[1]
+        assert pj.log() == []
+    assert not pj.stempel_da("pruefen")
+
+
+@braucht_bash
+def test_t6d_haken_werden_laut_genannt_ohne_werte(pj: Projekt):
+    pj.pruefen_bereit()
+    lauf = pj.lauf("pruefen")
+    err = _aus(lauf)[1]
+    assert "ACHTUNG: Test-Haken gesetzt:" in err
+    for name in ("AUSROLLEN_STAT", "AUSROLLEN_CURL", "AUSROLLEN_MEMINFO", "AUSROLLEN_ETC", "AUSROLLEN_FLOCK"):
+        assert name in err
+    assert str(pj.bin.name) not in err.split("ACHTUNG", 1)[1].splitlines()[0].replace("AUSROLLEN_", "")
+
+
+@braucht_bash
+@pytest.mark.parametrize("wert", ["0g", "9g", "9000m", "4", "g", "-1g", "4G", "8192m1", "$(id)", "4g;x"])
+def test_t6d_bau_speicher_wird_validiert(wert, pj: Projekt):
+    pj.stempel("pruefen", "sichern", "migrieren")
+    lauf = pj.lauf("bauen", "web", umgebung={"AUSROLLEN_BAU_SPEICHER": wert, "EVENT_SYSTEM_TAG": "abc12345",
+                                             "EVENT_WEB_TAG": "abc12345"})
+    assert lauf.returncode == 1 and "AUSROLLEN_BAU_SPEICHER" in _aus(lauf)[1]
+    assert pj.log() == []
+
+
+@braucht_bash
+@pytest.mark.parametrize("wert", ["1m", "512m", "4g", "8g", "8192m"])
+def test_t6d_bau_speicher_gueltig(wert, pj: Projekt):
+    pj.stempel("pruefen", "sichern", "migrieren")
+    lauf = pj.lauf("bauen", "web", umgebung={"AUSROLLEN_BAU_SPEICHER": wert, "EVENT_SYSTEM_TAG": "abc12345",
+                                             "EVENT_WEB_TAG": "abc12345"})
+    assert lauf.returncode == 0, _aus(lauf)[1]
+    assert any(f"--memory={wert}" in z for z in pj.log())
+
+
+def test_t6d_shim_wartet_150_sekunden():
+    code = _code()
+    assert 'GESUND_VERSUCHE=${AUSROLLEN_GESUND_VERSUCHE:-75}' in code  # 75 x 2 s
+    assert 'seq 1 "$GESUND_VERSUCHE"' in code

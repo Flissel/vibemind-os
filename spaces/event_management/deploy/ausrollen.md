@@ -56,6 +56,18 @@ Jede Phase schreibt `laufzeit/ausrollen/<phase>.ok` und verlangt die Stempel ihr
 Vorphasen. Fehlt einer, bricht sie mit dem Namen der Vorphase ab. Rückwege gehen nur
 rückwärts: Solange eine spätere Phase gestempelt ist, verweigert `zurueck` die frühere.
 
+Jede Phase löscht gleich nach dem Schalter, vor ihrer Arbeit, ihren eigenen Stempel und die
+aller späteren Phasen (feste Reihenfolge: pruefen, sichern, migrieren, bauen system, bauen
+web, shim, dienste, anbinden, timer, tailnet). Scheitert ein Wiederholungslauf, bleibt also
+kein alter Stempel stehen und die nächste Phase verweigert mit dem Namen der fehlenden.
+Alle Läufe, auch `zurueck`, nehmen eine nicht blockierende Sperre auf
+`laufzeit/ausrollen/lock` (`flock`, util-linux); hält sie ein anderer Lauf, bricht das Skript
+ab: nie parallel ausrollen.
+
+Das Skript meldet laut (nur Namen), wenn ein `AUSROLLEN_*`-Test-Haken gesetzt ist; im
+Betrieb setzt man keinen. `AUSROLLEN_BAU_SPEICHER` muss `<Zahl>m` oder `<Zahl>g` sein,
+höchstens 8g.
+
 ### 1. `pruefen`  (`--ich-habe-ok pruefen`)
 
 Misst ohne Änderung: PostgreSQL ≥ 15, Images (Shim, Claw), `werte.local.json` vollständig,
@@ -68,12 +80,15 @@ Paketen aus `requirements.txt`, Repo-Pfad wie in den `.service`-Dateien, Host-En
 
 ### 2. `sichern`  (`--ich-habe-ok sichern`)
 
-`pg_dump -n event -Fc` nach `laufzeit/sicherung/event-<zeit>.dump`, dazu eine Kopie der
-`openclaw.json` des Claw (`openclaw-<zeit>.json`, enthält Schlüssel, 0600). Gibt es den
-Claw noch nicht, entsteht eine Marke `openclaw-<zeit>.keine`.
+Zuerst prüft die Phase per `psql`, ob das Schema `event` existiert. Wenn ja, läuft
+`pg_dump -n event -Fc` nach `laufzeit/sicherung/event-<zeit>.dump`. Wenn nicht (erster Lauf
+auf einer Datenbank ohne das Schema), gibt es nichts zu sichern: Es entsteht die Marke
+`event-<zeit>.keine-schema`, und die Phase besteht. Dazu kommt eine Kopie der `openclaw.json`
+des Claw (`openclaw-<zeit>.json`, enthält Schlüssel, 0600). Gibt es den Claw noch nicht,
+entsteht eine Marke `openclaw-<zeit>.keine`.
 
 - **OK von Felix:** ja.
-- **Abbruch:** `pg_dump` scheitert oder die Sicherung ist leer.
+- **Abbruch:** die Schema-Prüfung oder `pg_dump` scheitert, oder die Sicherung ist leer.
 - **Rückweg:** `--ich-habe-ok zurueck sichern` (Stempel fällt, Dateien bleiben liegen).
 
 ### 3. `migrieren`  (`--ich-habe-ok migrieren`)
@@ -112,13 +127,15 @@ bewerbung-bot-Bestand; **der Baukontext liegt nicht in diesem Repo.**
 
 - **Mit Baukontext:** `EVENT_SHIM_BAUKONTEXT=<Ordner>` setzen (Dockerfile, die Shim-Dateien
   und das neue `scripts/claude_budget.py` des äußeren Repos darin). Die Phase tagt das
-  bisherige Image als `…:vorher`, merkt sich dessen Id in `laufzeit/ausrollen/shim.vorher`,
-  baut gedeckelt unter dem alten Namen und legt **nur den Shim** neu an
+  bisherige Image als `…:vorher` und merkt sich dessen Id in `laufzeit/ausrollen/shim.vorher`,
+  aber nur, wenn es noch keine `shim.vorher` gibt oder der letzte Shim-Lauf gelang (so
+  zerstört ein Wiederholungslauf nach einem gescheiterten Gesundheitstest den Rückweg nicht);
+  danach baut sie gedeckelt unter dem alten Namen und legt **nur den Shim** neu an
   (`docker compose up -d --no-deps --force-recreate event-management-shim`).
 - **Ohne Baukontext:** die Phase prüft nur, dass das erwartete Image da ist, und legt den
   Shim neu an. Sie sagt es laut: das eingebackene `claude_budget.py` bleibt alt.
 - **OK von Felix:** ja (der Shim startet neu, kurze Unterbrechung der Claude-Aufrufe).
-- **Abbruch:** der Shim wird nicht `healthy` (60 s).
+- **Abbruch:** der Shim wird nicht `healthy` (150 s).
 - **Rückweg:** `--ich-habe-ok zurueck shim` setzt den Tag auf das vorherige Image zurück
   und legt den Shim neu an.
 
