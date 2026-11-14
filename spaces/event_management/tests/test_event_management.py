@@ -330,6 +330,51 @@ def test_brain_agenten_haben_eigenen_workspace() -> None:
     assert LAUFZEIT_WORKSPACE_BRAIN.rsplit("/", 1)[1] == WORKSPACE_BRAIN.name
 
 
+def _abschnitt(text: str, titel: str) -> str:
+    assert f"\n## {titel}\n" in text, titel
+    return text.split(f"\n## {titel}\n", 1)[1].split("\n## ")[0]
+
+
+def test_brain_soul_regeln() -> None:
+    """Etappe 4, Task 4: der Brain arbeitet am Katalog (bn-lesen/bn-auftrag); die
+    App-Werkzeuge nur noch fuer das Legacy-Festival."""
+    from spaces.event_management.system import werkzeuge
+
+    text = BRAIN_SOUL.read_text(encoding="utf-8")
+    regeln = _abschnitt(text, "Regeln")
+    # (1) Jede Nachricht nennt ein Event; zuerst event_waehlen.
+    assert "`event_waehlen`" in regeln and "Zuerst" in regeln
+    assert "nennt ein Event" in regeln
+    # (2) Mehrere Treffer: Trefferliste, nichts aendern.
+    assert "Trefferliste" in regeln and "änderst nichts" in regeln
+    # (3) Legacy: genau der Text des Katalogs, dann (und nur dann) event-app__.
+    assert werkzeuge.LEGACY == "Legacy-Event: bitte die alte App nutzen"
+    assert f"„{werkzeuge.LEGACY}“" in regeln
+    assert "`event-app__…`" in regeln and "sonst nie" in regeln
+    # (4) Jede Antwort nennt Event und Firma.
+    assert "Jede Antwort nennt Event und Firma" in regeln
+    # (5) Riskantes zweistufig: beschreiben statt ausfuehren, „Bestätigung nötig“.
+    assert "„Bestätigung nötig“" in regeln and "`bestaetigung`" in regeln
+    assert "beschreibst" in regeln
+    # Eigene Katalog-Server; der Name steht im Schluessel, nicht im Werkzeug.
+    assert "`bn-lesen__…`" in text and "`bn-auftrag__…`" in text
+    assert "bot:betreiber:VibeMind" in text
+    # Die App-Tabelle bleibt (Legacy) und steht im Legacy-Abschnitt.
+    legacy = _abschnitt(text, "Legacy-Festival")
+    assert "**Lesen**" in legacy and "**Schreiben**" in legacy
+    # Keine echten Daten: nur die drei Platzhalter des Legacy-Festivals.
+    assert set(PLATZHALTER.findall(text)) == {"EVENT_NAME", "EVENT_DATUM", "EVENT_ORT"}
+    for muster, was in VERBOTEN:
+        assert not muster.search(text), was
+    assert "example" not in text.lower() and "http" not in text
+
+
+def test_brain_agents_kennt_beide_werkzeugfamilien() -> None:
+    text = (WORKSPACE_BRAIN / "AGENTS.md").read_text(encoding="utf-8")
+    assert "`bn-lesen__…`" in text and "`bn-auftrag__…`" in text and "`event-app__…`" in text
+    assert "Du hast nur die Werkzeuge der Event-App" not in text
+
+
 def test_brain_workspace_vorhanden_ohne_gruppenteile() -> None:
     assert (WORKSPACE_BRAIN / "AGENTS.md").is_file()
     text = BRAIN_SOUL.read_text(encoding="utf-8")
