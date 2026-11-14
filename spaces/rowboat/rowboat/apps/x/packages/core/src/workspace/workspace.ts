@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import type { Stats } from 'node:fs';
 import path from 'node:path';
-import { workspace } from '@x/shared';
+import { workspace, konzept } from '@x/shared';
 import { z } from 'zod';
 import { RemoveOptions, WriteFileOptions, WriteFileResult } from 'packages/shared/dist/workspace.js';
 import { WorkDir } from '../config/config.js';
@@ -66,7 +66,7 @@ export function absToRelPosix(absPath: string): string | null {
 
 function isKnowledgeMarkdownRelPath(relPath: string): boolean {
   const normalized = relPath.replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase();
-  return normalized.startsWith('knowledge/') && normalized.endsWith('.md');
+  return normalized.startsWith('knowledge/') && (normalized.endsWith('.md') || konzept.isKnowledgeHtmlPath(normalized));
 }
 
 // ============================================================================
@@ -283,7 +283,7 @@ export async function writeFile(
   });
 
   // Schedule a debounced version history commit for knowledge files
-  if (relPath.startsWith('knowledge/') && relPath.endsWith('.md')) {
+  if (relPath.startsWith('knowledge/') && (relPath.endsWith('.md') || konzept.isKnowledgeHtmlPath(relPath))) {
     scheduleKnowledgeCommit(path.basename(relPath));
   }
 

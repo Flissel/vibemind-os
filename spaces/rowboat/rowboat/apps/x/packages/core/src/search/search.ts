@@ -3,6 +3,7 @@ import fs from 'fs';
 import fsp from 'fs/promises';
 import readline from 'readline';
 import { execFile } from 'child_process';
+import { konzept } from '@x/shared';
 import { WorkDir } from '../config/config.js';
 
 interface SearchResult {
@@ -98,9 +99,35 @@ async function searchKnowledge(query: string, limit: number): Promise<SearchResu
     // grep failed (no matches or dir issue) — continue
   }
 
+  let allFiles: string[] = [];
+  try {
+    allFiles = await listKnowledgeFiles(KNOWLEDGE_DIR);
+  } catch {
+    // ignore errors
+  }
+
+  // HTML content search — read in Node (no grep), match on the visible text only
+  for (const file of allFiles) {
+    if (results.length >= limit) break;
+    if (!konzept.isHtmlPath(file)) continue;
+    const relPath = path.relative(WorkDir, file);
+    if (seenPaths.has(relPath)) continue;
+    const html = await readHtmlHead(file);
+    if (html === null) continue;
+    const text = konzept.htmlVisibleText(html);
+    const at = text.toLowerCase().indexOf(lowerQuery);
+    if (at < 0) continue;
+    seenPaths.add(relPath);
+    results.push({
+      type: 'knowledge',
+      title: konzept.htmlTitle(html) || knowledgeTitle(file),
+      preview: snippetAround(text, at),
+      path: relPath,
+    });
+  }
+
   // Filename search — check files whose name matches the query
   try {
-    const allFiles = await listKnowledgeFiles(KNOWLEDGE_DIR);
     for (const file of allFiles) {
       if (results.length >= limit) break;
       const relPath = path.relative(WorkDir, file);
@@ -113,7 +140,9 @@ async function searchKnowledge(query: string, limit: number): Promise<SearchResu
         // xlsx/xls are zip archives — reading "first lines" yields garbage
         const preview = lower.endsWith('.xlsx') || lower.endsWith('.xls')
           ? 'Spreadsheet'
-          : await readFirstLines(file, 2);
+          : konzept.isHtmlPath(file)
+            ? await htmlPreview(file)
+            : await readFirstLines(file, 2);
         results.push({
           type: 'knowledge',
           title,
@@ -314,7 +343,7 @@ async function listKnowledgeFiles(dir: string): Promise<string[]> {
         results.push(...nested);
       } else if (entry.isFile()) {
         const lower = entry.name.toLowerCase();
-        if (lower.endsWith('.md') || SPREADSHEET_EXTS.some((ext) => lower.endsWith(ext))) {
+        if (lower.endsWith('.md') || konzept.isHtmlPath(lower) || SPREADSHEET_EXTS.some((ext) => lower.endsWith(ext))) {
           results.push(fullPath);
         }
       }
@@ -323,6 +352,40 @@ async function listKnowledgeFiles(dir: string): Promise<string[]> {
     // ignore
   }
   return results;
+}
+
+/**
+ * Read at most KONZEPT_LESE_MAX bytes of an HTML file as UTF-8.
+ * Returns null for unreadable or non-UTF-8 files (they are skipped, not fatal).
+ */
+async function readHtmlHead(filePath: string): Promise<string | null> {
+  let handle: fsp.FileHandle | undefined;
+  try {
+    handle = await fsp.open(filePath, 'r');
+    // Sized from the file (not a fixed 1 MiB per file per query), not zero-filled: only the
+    // bytesRead prefix is decoded. The cap here is bytes; the shared scanner caps characters.
+    const { size } = await handle.stat();
+    const buf = Buffer.allocUnsafe(Math.min(size, konzept.KONZEPT_LESE_MAX));
+    const { bytesRead } = await handle.read(buf, 0, buf.length, 0);
+    // stream: a multi-byte character cut at the byte limit is not an error
+    return new TextDecoder('utf-8', { fatal: true }).decode(buf.subarray(0, bytesRead), { stream: true });
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+/** ~150-char plain-text snippet around a match position. */
+function snippetAround(text: string, at: number): string {
+  const start = Math.max(0, at - 40);
+  return text.substring(start, start + 150).trim();
+}
+
+/** Preview for an HTML file matched by name: start of its visible text. */
+async function htmlPreview(filePath: string): Promise<string> {
+  const html = await readHtmlHead(filePath);
+  return html === null ? '' : konzept.htmlVisibleText(html).substring(0, 150);
 }
 
 /**

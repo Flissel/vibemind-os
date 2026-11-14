@@ -5,9 +5,9 @@ import { getViewerType, isCacheableViewerPath } from '@/lib/file-types'
 
 const CACHE_LIMIT = 3
 
-function renderViewer(path: string): JSX.Element | null {
+function renderViewer(path: string, active: boolean): JSX.Element | null {
   const type = getViewerType(path)
-  if (type === 'html') return <HtmlFileViewer path={path} />
+  if (type === 'html') return <HtmlFileViewer path={path} active={active} />
   if (type === 'pdf') return <PdfFileViewer path={path} />
   return null
 }
@@ -45,7 +45,7 @@ export function PersistentViewerCache({ activePath }: PersistentViewerCacheProps
           className="absolute inset-0"
           style={{ display: p === activePath ? 'block' : 'none' }}
         >
-          {renderViewer(p)}
+          {renderViewer(p, p === activePath)}
         </div>
       ))}
     </div>

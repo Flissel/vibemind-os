@@ -37,6 +37,7 @@ import spacesSkill from "./spaces/skill.js";
 import whiteboardSkill from "./whiteboard/skill.js";
 import chartsSkill from "./charts/skill.js";
 import voiceSkill from "./voice/skill.js";
+import konzeptSkill from "./konzept/skill.js";
 
 const CURRENT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CATALOG_PREFIX = "src/runtime/assembly/skills";
@@ -251,7 +252,22 @@ const definitions: SkillDefinition[] = [
     content: voiceSkill,
     tools: ["text-to-speech", "transcribe-audio"],
   },
+  {
+    id: "konzept",
+    title: "Konzepte (HTML-Seiten)",
+    summary: "Write a clickable single-file HTML concept into knowledge/Konzepte/ that opens in a pane next to the chat. Load for a Konzept, Videokonzept, \"als Seite\", HTML-Seite or Konzept-Canvas request (not whiteboard drawing, not design questions about code). Video concepts use a built-in page template. Ordinary notes stay with doc-collab.",
+    content: konzeptSkill,
+    tools: ["file-writeText", "file-editText", "file-mkdir"],
+  },
 ];
+
+// Skills a mobile channel run (Telegram / WhatsApp) must not load: the concept
+// pane is a desktop surface and channel runs may write only under knowledge/Kanal/.
+const CHANNEL_DENIED_SKILLS = new Set<string>(["konzept"]);
+
+export function isSkillDeniedInChannel(skillId: string): boolean {
+  return CHANNEL_DENIED_SKILLS.has(skillId);
+}
 
 type SkillEntry = SkillDefinition & { catalogPath: string; skillFile?: string };
 

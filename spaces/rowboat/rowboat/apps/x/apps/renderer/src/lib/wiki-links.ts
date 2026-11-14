@@ -1,3 +1,4 @@
+import { konzept } from '@x/shared'
 import { getViewerType } from './file-types'
 
 const KNOWLEDGE_PREFIX = 'knowledge/'
@@ -32,7 +33,7 @@ export const ensureMarkdownExtension = (path: string) => {
   if (!basePath) return heading ? `#${heading}` : path
   // Media files (spreadsheets etc.) are mentionable as-is; only extensionless
   // note names get .md appended.
-  const hasFileExtension = basePath.toLowerCase().endsWith('.md') || getViewerType(basePath) !== null
+  const hasFileExtension = basePath.toLowerCase().endsWith('.md') || getViewerType(basePath) !== null || konzept.isHtmlPath(basePath)
   const filePath = hasFileExtension ? basePath : `${basePath}.md`
   return heading ? `${filePath}#${heading}` : filePath
 }

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { resolveSkill, availableSkills, skillToolNames, setBuiltinToolsSkillTools } from "../assembly/skills/index.js";
+import { resolveSkill, availableSkills, skillToolNames, setBuiltinToolsSkillTools, isSkillDeniedInChannel } from "../assembly/skills/index.js";
 import { COPILOT_BASE_TOOLS } from "../assembly/copilot/base-tools.js";
 import { builtinToolDescriptor } from "./descriptors.js";
 import { TOOL_ADDITIONS_KEY } from "./tool-additions.js";
@@ -52,13 +52,22 @@ export const BuiltinTools: z.infer<typeof BuiltinToolsSchema> = {
         inputSchema: z.object({
             skillName: z.string().describe("Skill identifier or path (e.g., 'workflow-run-ops' or 'src/runtime/assembly/skills/workflow-run-ops/skill.ts')"),
         }),
-        execute: async ({ skillName }: { skillName: string }) => {
+        execute: async ({ skillName }: { skillName: string }, ctx?: ToolContext) => {
             const resolved = resolveSkill(skillName);
 
             if (!resolved) {
                 return {
                     success: false,
                     message: `Skill '${skillName}' not found. Available skills: ${availableSkills.join(", ")}`,
+                };
+            }
+
+            // Mobile channel runs may not load every skill (e.g. the HTML concept
+            // pane skill); refuse after resolving so aliases/paths are covered too.
+            if (ctx?.channel && isSkillDeniedInChannel(resolved.id)) {
+                return {
+                    success: false,
+                    message: "Konzepte lassen sich nur in der App anlegen, nicht aus einem Kanal.",
                 };
             }
 

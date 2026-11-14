@@ -5,6 +5,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import ForceGraph3D, { type ForceGraphMethods, type LinkObject, type NodeObject } from 'react-force-graph-3d'
 import { forceRadial } from 'd3-force-3d'
 import { SHELL_SPACING_3D, graph3dSignature, shellRadius, toGraph3d, type Graph3dLink, type Graph3dNode, type Point3d } from '@/lib/graph-hierarchy'
+import { graphLabelHtml } from '@/lib/graph-html'
 import { useSectionVisible } from '@/lib/section-visibility'
 import type { GraphEdge, GraphNode } from './graph-view'
 
@@ -31,12 +32,12 @@ const LINK_DISTANCE: Record<Graph3dLink['kind'], number> = {
 }
 
 // Stable accessors: new functions on every render make the library re-apply them and the graph jitter.
-const nodeLabel = (node: Node3d) => node.name
+const nodeLabel = (node: Node3d) => graphLabelHtml(node.name) // the library renders this string as HTML
 const nodeColor = (node: Node3d) => node.color
 const nodeVal = (node: Node3d) => node.val
 const linkColor = (link: Link3d) => `rgba(${LINK_RGB[link.kind]}, ${link.opacity})`
 const linkWidth = (link: Link3d) => link.width
-const linkLabel = (link: Link3d) => link.relation ?? ''
+const linkLabel = (link: Link3d) => graphLabelHtml(link.relation ?? '')
 const linkDistance = (link: Link3d) => LINK_DISTANCE[link.kind]
 
 // Last known layout, by node id. Module scope on purpose: it outlives a remount (see below), so coming back to the

@@ -77,6 +77,20 @@ describe("builtins under a channel context", () => {
         ).resolves.toMatchObject({ ok: false });
     });
 
+    it("loadSkill refuses the konzept skill in channel runs (also by path) and loads it on the desktop", async () => {
+        const load = BuiltinTools.loadSkill.execute;
+        const refused = (await load({ skillName: "konzept" }, ctx(channel))) as { success: boolean; message?: string };
+        expect(refused.success).toBe(false);
+        expect(refused.message).toBe("Konzepte lassen sich nur in der App anlegen, nicht aus einem Kanal.");
+        const byPath = (await load({ skillName: "src/runtime/assembly/skills/konzept/skill.ts" }, ctx(channel))) as { success: boolean };
+        expect(byPath.success).toBe(false);
+        const desktop = (await load({ skillName: "konzept" }, ctx())) as { success: boolean; attachedTools?: string[] };
+        expect(desktop.success).toBe(true);
+        expect(desktop.attachedTools).toEqual(["file-writeText", "file-editText", "file-mkdir"]);
+        // Other skills stay loadable in channel runs.
+        expect(((await load({ skillName: "doc-collab" }, ctx(channel))) as { success: boolean }).success).toBe(true);
+    });
+
     it("desktop fetch-url keeps the old path (no channel host policy)", async () => {
         const fetchUrl = BuiltinTools["fetch-url"].execute;
         // Port 9 (discard) on loopback: refused quickly, no external traffic.

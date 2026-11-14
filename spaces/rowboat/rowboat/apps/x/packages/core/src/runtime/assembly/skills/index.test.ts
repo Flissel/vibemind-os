@@ -502,3 +502,33 @@ describe("presentation intent routes to the deck tools", () => {
     expect(resolved!.content).toContain("deck-create");
   });
 });
+
+describe("konzept skill", () => {
+  it("is registered with write tools and the rules the viewer relies on", async () => {
+    const skills = await loadSkillsIndex();
+    const resolved = skills.resolveSkill("konzept");
+    expect(resolved).not.toBeNull();
+    expect(skills.skillToolNames("konzept")).toEqual(["file-writeText", "file-editText", "file-mkdir"]);
+    const body = resolved!.content;
+    expect(body).toContain("rowboat-konzept");
+    expect(body).toContain("knowledge/Konzepte/");
+    expect(body).toContain("rowboat:notiz-oeffnen");
+    expect(body).toContain("rowboat:link-oeffnen");
+    expect(body).toContain("knowledge/Kanal/");
+    // The template is embedded from the constant, not pasted by hand.
+    const { VIDEOKONZEPT_VORLAGE } = await import("./konzept/vorlage.js");
+    expect(body).toContain(VIDEOKONZEPT_VORLAGE);
+    // The escape the skill teaches is present as a literal backslash form.
+    expect(body).toContain("<" + String.fromCharCode(92) + "/script");
+    expect(body).toContain(String.fromCharCode(92) + "u003c");
+    const catalog = skills.buildSkillCatalog();
+    expect(catalog).toContain("## Konzepte (HTML-Seiten)");
+    expect(catalog).toContain("Videokonzept");
+  });
+
+  it("is denied in channel runs, other skills are not", async () => {
+    const skills = await loadSkillsIndex();
+    expect(skills.isSkillDeniedInChannel("konzept")).toBe(true);
+    expect(skills.isSkillDeniedInChannel("doc-collab")).toBe(false);
+  });
+});

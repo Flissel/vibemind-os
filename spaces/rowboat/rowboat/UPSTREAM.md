@@ -8,13 +8,50 @@ To re-pin the kernel plugin catalog, change `DESKTOP_PLUGIN_CATALOG_PIN` on bran
 Flissel/rowboat (in `apps/x/apps/renderer/src/lib/rowboat-plugin-api.ts`), then run the sync.
 
 - Fork: https://github.com/Flissel/rowboat (branch `vibemind`)
-- Fork commit: `2981a0a76cc92821feda32832544a1715830b607`
+- Fork commit: `40ba520b181171cc85c0f7b37e15947fa2250450`
 - Upstream base: rowboatlabs/rowboat `72e9d8c`
 - EHL repo: https://github.com/Flissel/ehl-munich-2026 (`schema/`)
 - EHL commit: `44c1024c7804c696bc283bd14a9d08bd87a38230`
 
 ## Patches on top of upstream (EHL hierarchy graph, VibeMind)
 
+- 40ba520b fix(konzept): Stolperdraht ohne Aufruf im Ereignis, Seiten-Navigationen nur verhindern
+- 24738289 fix(konzept): Zeitueberschreitung setzt die Bestaetigung zurueck, genaue Attributpruefung
+- 48ee0af9 feat(konzept): Konzepte im Gastbereich statt im Rahmen
+- c5bf4566 fix(konzept): Gast zuerst bewachen, dann WebRTC-Richtlinie und Fensterregel setzen
+- 8ac39b12 fix(konzept): beendeter Gast bleibt tot, kanonische Gast-Adresse, kein zweites Hauptfenster
+- 49e921be fix(konzept): data-Adressen mit Leerzeichen erlauben, Start wartet hoechstens 2 s
+- 39f1a854 fix(konzept): Gast kann nicht umgeleitet werden, Anhaengen nur bei bestaetigtem totem Netz
+- 67ff7ede feat(konzept): Gast-Sitzung mit totem Netz und Anhaenge-Waechter
+- 4940575c fix(konzept): .xhtml im HTML-Betrachter statt "Im System oeffnen"
+- d9bcd634 fix(konzept): PDF-Ausnahme nur fuer den genauen Namen *.pdf (R51)
+- 028ffc63 fix(konzept): eigenes Dokument nur unter knowledge/, PDFs frei, kein Oeffnen im System (R48-R50)
+- af32322e fix(konzept): Konzept-Rahmen auf Lebenszeit eingesperrt, Schemata zweistufig (R47)
+- 16ec09a9 fix(konzept): Auto-Oeffnen je Agenten-Zug, Suche liest nach Dateigroesse
+- 6f053bbf fix(konzept): Kein-Netz-Regel nur fuer Wissens-HTML, Rueckhalt im Hauptprozess
+- 0c8b0182 fix(skills): kurz bleibt Zusammenfassung, Ausloeser eindeutig, Stufe ohne Namen
+- e633cc87 fix(skills): Laengenschaetzung als Spanne, Grenzen benennen, Seite faellt lesbar aus
+- 44583971 feat(skills): Faehigkeit konzept mit Videokonzept-Vorlage
+- dcfa0090 fix(konzept): Zeitpunkte aus den Eingabe-Ereignissen, Abbrechen verwirft laufende Pruefung
+- f1823ac0 fix(konzept): Bestaetigungszeile ohne Adresse, Oeffnen erst nach bewusstem Ansteuern, Ruhezeit nach Abbrechen
+- 9af4d282 fix(konzept): Bestaetigung in der Kopfzeile, Sperre ab dem ersten Bild, eine Anfrage zur Zeit
+- bfa29089 fix(konzept): auch Notiz-Verweise nur nach Bestaetigung, Leiste gegen Zeitdruck-Klicks gehaertet, neue Ansicht nur fuer Wissens-HTML
+- 83b9890d fix(konzept): Weblinks nur nach Bestaetigung in der App, Notiz-Verweise nur nach Klick im Rahmen, alte Ansicht fuer fremde Quellen
+- a97b0a1d feat(konzept): Flaeche neben dem Chat mit Neuladen, Kopfzeile und Auto-Oeffnen
+- 21425b3c feat(search): Text in HTML-Dateien finden
+- e62a7ee3 fix(knowledge): Entity-Ziele umschreiben, JSON-Zeichenketten linear lesen
+- 3ec0b31f fix(knowledge): Umschreiben nur in JSON-Zeichenketten, ein Scanner, nie Bytes beschaedigen
+- 4ca3c2c5 feat(knowledge): Umbenennen und Versionsverlauf auch fuer HTML
+- b23018c6 fix(graph): Knotentitel aus dem rohen HTML, nicht aus dem sichtbaren Text
+- 9d8d99b5 fix(graph): Knotennamen an HTML-Senken entschaerfen, kein Markdown in HTML-Dateien, Verweise ohne Endung
+- 82d31c9e feat(graph): HTML-Dateien als Knoten mit Kanten aus bezuege und Wiki-Links
+- 9441b036 fix(workspace): dekodierten Anfragepfad als Dateinamen pruefen
+- 95d2e1e3 fix(workspace): Dateisystempfade nur am letzten Segment pruefen
+- c4ddb2bb fix(workspace): HTML-Erkennung auch bei Sonderzeichen im Pfad, Fehlerseiten und Fern-Antworten
+- a5ec7abe fix(workspace): HTML-Regel auch fuer Verknuepfungen und erkannte HTML-Antworten
+- 52a7209b feat(workspace): HTML mit Typ und Kein-Netz-Regel ausliefern, Navigation im Rahmen sperren
+- cf854003 fix(shared): Konzept-Bausteine linear und fehlertolerant lesen, Pfade normalisieren
+- 2678da2f feat(shared): Konzept-Bausteine (Datenblock, Titel, Text, Kein-Netz-Regel)
 - 2981a0a7 fix(integrations): verstaendliche Meldung bei abgelehnter Anmeldung, Fehler 10 s sichtbar
 - 1cff4c86 fix(integrations): VerfuegbareVorlageDto aus shared importieren
 - 76e040b3 merge: vibemind in claude/katalog-teil4 (Plugin-System Teil 4)

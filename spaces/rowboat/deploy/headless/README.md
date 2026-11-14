@@ -168,6 +168,35 @@ docker exec $C sh -c 'kill <pid>'                 # Rest beenden (PID aus Sicht 
 
 `cpus: "1.0"` in `compose.yml` begrenzt einen solchen Ausreisser zusaetzlich auf einen Kern.
 
+## HTML-Konzepte (Konzept-Flaeche)
+
+Seit Fork `40ba520b` (14.11.2026) schreibt der Rowboat-Agent klickbare Ein-Datei-Seiten nach
+`knowledge/Konzepte/*.html` (hoechstens 1 MB). Die App zeigt sie neben dem Chat, sie sind Knoten im
+Wissensgraphen, durchsuchbar (`rowboat-wissen` liest den sichtbaren Text) und werden wie Notizen gespiegelt.
+Entwurf: `Vibemind_V1/docs/superpowers/specs/2026-11-13-konzept-flaeche-rowboat-design.md`.
+
+- **Geltungsbereich:** alle Schutzregeln gelten nur fuer HTML unter `knowledge/`. HTML an anderen Orten des
+  Arbeitsordners (z. B. Berichte von Hintergrundaufgaben) hat sie nicht.
+- **Kein Netz:** der Server liefert Wissens-HTML mit einer Kein-Netz-Regel aus (`default-src 'none'`, nur
+  Inline-Skript/-Stil, Bilder/Schrift/Medien nur als `data:`/`blob:`, `sandbox allow-scripts`). In der App
+  laeuft die Seite in einem abgeschotteten Gast (eigene Sitzung `konzept`, toter Proxy, WebRTC nur ueber den
+  Proxy, keine Dateien, keine Fenster, keine Navigation). Kann der tote Proxy beim Start nicht bestaetigt
+  werden, zeigt die App statt der Seite "Konzepte lassen sich hier nicht anzeigen.".
+- **Links und Notizen** aus einer Seite oeffnen sich nie von selbst: die Seite bittet, die App fragt in der
+  Kopfzeile der Flaeche nach ("Link oeffnen? (Adresse unten)").
+- **Bekannter Rest, vom Betreiber am 14.11.2026 angenommen:** `<link rel="dns-prefetch">` in einer Seite
+  loest eine Namensaufloesung beim Betriebssystem aus. Darueber koennte eine Seite Daten in Rechnernamen
+  nach aussen tragen (braucht einen Namensserver des Angreifers). Keine erprobte Einstellung von
+  Electron 39 stellt das ab.
+- **Eingebettet in VibeMind (Voice-App):** dort werden Konzepte nicht ausgefuehrt, es erscheint nur der
+  Hinweis. Ansehen geht in Rowboats eigenem Fenster.
+- **Versucht etwas, den Gast umzulenken,** wird er beendet: "Dieses Konzept wurde angehalten." mit
+  "Neu laden".
+- **Rueckweg:** Pin in `spaces/rowboat/rowboat/UPSTREAM.md` auf Fork `2981a0a7` zuruecksetzen
+  (`sync_desktop.py`), PC-App und Server neu bauen. Auf der VM liegt der vorige Server-Stand als
+  `~/rowboat-headless/app.vor-konzept-20261114`. Vorhandene Dateien unter `knowledge/Konzepte/` bleiben
+  liegen; die alte App zeigt sie als gewoehnliche Dateien.
+
 ## Werkzeuge `rowboat-werkzeuge` (127.0.0.1:8150)
 
 MCP-Server `vibemind-werkzeuge` (Streamable HTTP, `http://127.0.0.1:8150/mcp`, ohne Schraegstrich:

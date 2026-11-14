@@ -307,6 +307,7 @@ import { WikiLink } from '@/extensions/wiki-link'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { Command, CommandEmpty, CommandItem, CommandList } from '@/components/ui/command'
 import { ensureMarkdownExtension, normalizeWikiPath, splitWikiFragment, wikiLabel } from '@/lib/wiki-links'
+import { canCreateWikiTarget } from '@/lib/graph-html'
 import { extractAllFrontmatterValues, buildFrontmatter } from '@/lib/frontmatter'
 import { RowboatMentionPopover } from './rowboat-mention-popover'
 import '@/styles/editor.css'
@@ -1302,6 +1303,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
     : ''
   const canCreate = Boolean(
     createCandidate
+      && canCreateWikiTarget(createCandidate)
       && !orderedFiles.some((path) => path.toLowerCase() === createCandidate.toLowerCase())
   )
 

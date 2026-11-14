@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canOpenInApp, getViewerType } from './file-types'
+import { canOpenInApp, getViewerType, isCacheableViewerPath } from './file-types'
 
 // canOpenInApp is the predicate file cards use to choose the in-app route over
 // the OS opener. It must stay in step with the file-view router in App.tsx:
@@ -36,5 +36,14 @@ describe('canOpenInApp', () => {
     expect(canOpenInApp('a.md')).toBe(true)
     expect(canOpenInApp('a.pptx')).toBe(getViewerType('a.pptx') !== null)
     expect(canOpenInApp('a.zip')).toBe(getViewerType('a.zip') !== null)
+  })
+})
+
+describe('xhtml', () => {
+  it('opens .xhtml in the html viewer, case-insensitively', () => {
+    expect(getViewerType('knowledge/Konzepte/x.xhtml')).toBe('html')
+    expect(getViewerType('X.XHTML')).toBe('html')
+    expect(canOpenInApp('knowledge/Konzepte/x.xhtml')).toBe(true)
+    expect(isCacheableViewerPath('knowledge/Konzepte/x.xhtml')).toBe(true)
   })
 })

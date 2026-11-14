@@ -1,6 +1,8 @@
 // Modified for VibeMind (Flissel/rowboat vibemind): tests for graphFileData.
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_FORCES, buildHierarchyGraph, graphFileData, hierarchyForces, initialHierarchyPositions, parseHierarchy, parseVaultMap, SHELL_SPACING_3D, graph3dSignature, seedPosition3d, shellRadius, toGraph3d, vaultMapNodeId } from './graph-hierarchy'
+import { graphHtmlData } from './graph-html'
+import { toKnowledgePath } from './wiki-links'
 
 type Graph3dNodeLike = { x?: number; y?: number; z?: number }
 
@@ -342,5 +344,25 @@ describe('graphFileData', () => {
     expect(graphFileData({ data: 42 })).toBe('')
     expect(graphFileData(null)).toBe('')
     expect(graphFileData(undefined)).toBe('')
+  })
+})
+
+describe('HTML-Konzepte im Graphen', () => {
+  it('zieht Kanten aus bezuege eines HTML-Konzepts und aus Notizen darauf', () => {
+    const html = `<title>K</title><script type="application/json" id="rowboat-konzept">{"art":"konzept","bezuege":["[[Marke/Marke]]","[[Fehlt]]"]}</script>`
+    const nodes = new Set(['knowledge/Marke/Marke.md', 'knowledge/Konzepte/Ä b.html', 'knowledge/Notiz.md'])
+    const { edges } = buildHierarchyGraph([
+      { path: 'knowledge/Konzepte/Ä b.html', data: graphHtmlData(html) },
+      { path: 'knowledge/Notiz.md', data: 'siehe [[Konzepte/Ä b.html|das Konzept]]' },
+      { path: 'knowledge/Marke/Marke.md', data: '' },
+    ], nodes, toKnowledgePath)
+    expect(edges).toHaveLength(2)
+    expect(edges.every((e) => e.kind === 'link')).toBe(true)
+  })
+
+  it('loest .htm und .xhtml ohne angehaengtes .md auf', () => {
+    expect(toKnowledgePath('Konzepte/a.htm')).toBe('knowledge/Konzepte/a.htm')
+    expect(toKnowledgePath('Konzepte/a.xhtml')).toBe('knowledge/Konzepte/a.xhtml')
+    expect(toKnowledgePath('Konzepte/a.HTML|Name')).toBe('knowledge/Konzepte/a.HTML')
   })
 })

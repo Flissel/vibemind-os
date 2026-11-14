@@ -11,14 +11,14 @@ import { noteSpaceVisit } from '@/lib/spaces-visits'
 import { railForOpening, rememberRail } from '@/lib/spaces-rail-memory'
 import * as React from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useRef } from 'react'
-import { workspace, quickAskShortcut, pttKey, type ipc } from '@x/shared';
+import { workspace, quickAskShortcut, pttKey, konzept, type ipc } from '@x/shared';
 import { RunEvent } from '@x/shared/src/runs.js';
 import type { ToolUIPart } from 'ai';
 import './App.css'
 import z from 'zod';
 import { CheckIcon, LoaderIcon, PanelLeftIcon, ChevronLeftIcon, ChevronRightIcon, Plus, HistoryIcon, MessageSquare } from 'lucide-react';
 import { cn, compactPath, parentPath } from '@/lib/utils';
-import { EMAIL_ENABLED, SPACES_ENABLED } from '@/lib/feature-flags';
+import { EMAIL_ENABLED, LOCAL_RUNTIME, SPACES_ENABLED } from '@/lib/feature-flags';
 import { gateEmailView } from '@/lib/email-gate';
 import { SHORTCUTS, isRichTextTarget } from '@/lib/shortcuts';
 import { Keys } from '@/components/keys';
@@ -92,8 +92,10 @@ import { BillingErrorDialog } from "@/components/billing-error-dialog"
 import { CreditCelebration } from "@/components/credit-celebration"
 import { matchBillingError, type BillingErrorMatch } from "@/lib/billing-error"
 import { dispatchCreditExhausted, dispatchCreditReplenished } from "@/lib/credit-status"
+import { rewriteOpenDocumentForRename, renamedFileName } from '@/lib/wiki-rename'
 import { ensureMarkdownExtension, normalizeWikiPath, splitWikiFragment, stripKnowledgePrefix, toKnowledgePath, wikiLabel } from '@/lib/wiki-links'
 import { buildHierarchyGraph, graphFileData, parseVaultMap, vaultMapNodeId, type NodeInfo } from '@/lib/graph-hierarchy'
+import { canCreateWikiTarget, graphHtmlNode, graphNodeLabel, knowledgeHtmlFiles, resolveWikiTarget } from '@/lib/graph-html'
 import { splitFrontmatter, joinFrontmatter } from '@/lib/frontmatter'
 import { extractConferenceLink } from '@/lib/calendar-event'
 import { OnboardingModal } from '@/components/onboarding'
@@ -143,6 +145,7 @@ import * as analytics from '@/lib/analytics'
 import { playAckCue, playAlertCue, playPopCue } from '@/lib/call-sounds'
 import { useTheme } from '@/contexts/theme-context'
 import { isMac } from '@/lib/shortcut'
+import { konzeptSchreibvorgaenge, type ZugGedaechtnis } from '@/lib/konzept-flaeche'
 
 type DirEntry = z.infer<typeof workspace.DirEntry>
 type RunEventType = z.infer<typeof RunEvent>
@@ -262,22 +265,6 @@ const getBaseName = (path: string) => {
   return file.replace(/\.md$/i, '')
 }
 
-const WIKI_LINK_TOKEN_REGEX = /\[\[([^[\]]+)\]\]/g
-const KNOWLEDGE_PREFIX = 'knowledge/'
-
-const normalizeRelPathForWiki = (relPath: string) =>
-  relPath.replace(/\\/g, '/').replace(/^\/+/, '')
-
-const stripKnowledgePrefixForWiki = (relPath: string) => {
-  const normalized = normalizeRelPathForWiki(relPath)
-  return normalized.toLowerCase().startsWith(KNOWLEDGE_PREFIX)
-    ? normalized.slice(KNOWLEDGE_PREFIX.length)
-    : normalized
-}
-
-const stripMarkdownExtensionForWiki = (wikiPath: string) =>
-  wikiPath.toLowerCase().endsWith('.md') ? wikiPath.slice(0, -3) : wikiPath
-
 type LinkedGoogleDocMeta = {
   id: string
   title: string
@@ -313,70 +300,6 @@ const parseLinkedGoogleDocFrontmatter = (raw: string | null | undefined): Linked
     doc[key] = value
   }
   return doc.id && doc.title ? doc as LinkedGoogleDocMeta : null
-}
-
-const wikiPathCompareKey = (wikiPath: string) =>
-  stripMarkdownExtensionForWiki(wikiPath).toLowerCase()
-
-const splitWikiPathPrefix = (rawPath: string) => {
-  let normalized = rawPath.trim().replace(/^\/+/, '').replace(/^\.\//, '')
-  const hadKnowledgePrefix = /^knowledge\//i.test(normalized)
-  if (hadKnowledgePrefix) {
-    normalized = normalized.slice(KNOWLEDGE_PREFIX.length)
-  }
-  return { pathWithoutPrefix: normalized, hadKnowledgePrefix }
-}
-
-const rewriteWikiLinksForRenamedFileInMarkdown = (
-  markdown: string,
-  fromRelPath: string,
-  toRelPath: string
-) => {
-  const normalizedFrom = normalizeRelPathForWiki(fromRelPath)
-  const normalizedTo = normalizeRelPathForWiki(toRelPath)
-  const lowerFrom = normalizedFrom.toLowerCase()
-  const lowerTo = normalizedTo.toLowerCase()
-  if (!lowerFrom.startsWith(KNOWLEDGE_PREFIX) || !lowerFrom.endsWith('.md')) return markdown
-  if (!lowerTo.startsWith(KNOWLEDGE_PREFIX) || !lowerTo.endsWith('.md')) return markdown
-
-  const fromWikiPath = stripKnowledgePrefixForWiki(normalizedFrom)
-  const toWikiPath = stripKnowledgePrefixForWiki(normalizedTo)
-  const fromCompareKey = wikiPathCompareKey(fromWikiPath)
-  const fromBaseName = stripMarkdownExtensionForWiki(fromWikiPath).split('/').pop()?.toLowerCase() ?? null
-  const toWikiPathWithoutExtension = stripMarkdownExtensionForWiki(toWikiPath)
-  const toBaseName = toWikiPathWithoutExtension.split('/').pop() ?? toWikiPathWithoutExtension
-
-  return markdown.replace(WIKI_LINK_TOKEN_REGEX, (fullMatch, innerRaw: string) => {
-    const pipeIndex = innerRaw.indexOf('|')
-    const pathAndAnchor = pipeIndex >= 0 ? innerRaw.slice(0, pipeIndex) : innerRaw
-    const aliasSuffix = pipeIndex >= 0 ? innerRaw.slice(pipeIndex) : ''
-
-    const hashIndex = pathAndAnchor.indexOf('#')
-    const pathPart = hashIndex >= 0 ? pathAndAnchor.slice(0, hashIndex) : pathAndAnchor
-    const anchorSuffix = hashIndex >= 0 ? pathAndAnchor.slice(hashIndex) : ''
-
-    const leadingWhitespace = pathPart.match(/^\s*/)?.[0] ?? ''
-    const trailingWhitespace = pathPart.match(/\s*$/)?.[0] ?? ''
-    const rawPath = pathPart.trim()
-    if (!rawPath) return fullMatch
-
-    const { pathWithoutPrefix, hadKnowledgePrefix } = splitWikiPathPrefix(rawPath)
-    if (!pathWithoutPrefix) return fullMatch
-
-    const matchesFullPath = wikiPathCompareKey(pathWithoutPrefix) === fromCompareKey
-    const isBareTarget = !pathWithoutPrefix.includes('/')
-    const targetBaseName = stripMarkdownExtensionForWiki(pathWithoutPrefix).toLowerCase()
-    const matchesBareSelfName = Boolean(fromBaseName && isBareTarget && targetBaseName === fromBaseName)
-    if (!matchesFullPath && !matchesBareSelfName) return fullMatch
-
-    const preserveMarkdownExtension = rawPath.toLowerCase().endsWith('.md')
-    const rewrittenTarget = matchesBareSelfName
-      ? (preserveMarkdownExtension ? `${toBaseName}.md` : toBaseName)
-      : (preserveMarkdownExtension ? toWikiPath : toWikiPathWithoutExtension)
-    const finalPath = hadKnowledgePrefix ? `${KNOWLEDGE_PREFIX}${rewrittenTarget}` : rewrittenTarget
-
-    return `[[${leadingWhitespace}${finalPath}${trailingWhitespace}${anchorSuffix}${aliasSuffix}]]`
-  })
 }
 
 const getAncestorDirectoryPaths = (path: string): string[] => {
@@ -3505,11 +3428,7 @@ function App() {
                 renameInProgressRef.current = true
                 await window.ipc.invoke('workspace:rename', { from: pathAtStart, to: targetPath })
                 pathToSave = targetPath
-                const rewrittenBody = rewriteWikiLinksForRenamedFileInMarkdown(
-                  debouncedContent,
-                  pathAtStart,
-                  targetPath
-                )
+                const rewrittenBody = rewriteOpenDocumentForRename(debouncedContent, pathAtStart, targetPath, false)
                 contentToSave = joinFrontmatter(frontmatterByPathRef.current.get(pathAtStart) ?? null, rewrittenBody)
                 renamedFrom = pathAtStart
                 renamedTo = targetPath
@@ -3522,11 +3441,7 @@ function App() {
                 deleteInitialContentForPath(pathAtStart)
                 const cachedContent = editorContentByPathRef.current.get(pathAtStart)
                 if (cachedContent !== undefined) {
-                  const rewrittenCachedContent = rewriteWikiLinksForRenamedFileInMarkdown(
-                    cachedContent,
-                    pathAtStart,
-                    targetPath
-                  )
+                  const rewrittenCachedContent = rewriteOpenDocumentForRename(cachedContent, pathAtStart, targetPath, false)
                   editorContentByPathRef.current.delete(pathAtStart)
                   editorContentByPathRef.current.set(targetPath, rewrittenCachedContent)
                   setEditorContentByPath((prev) => {
@@ -3534,11 +3449,7 @@ function App() {
                     if (oldContent === undefined) return prev
                     const next = { ...prev }
                     delete next[pathAtStart]
-                    next[targetPath] = rewriteWikiLinksForRenamedFileInMarkdown(
-                      oldContent,
-                      pathAtStart,
-                      targetPath
-                    )
+                    next[targetPath] = rewriteOpenDocumentForRename(oldContent, pathAtStart, targetPath, false)
                     return next
                   })
                 }
@@ -6169,6 +6080,69 @@ function App() {
     }
   }, [sessionChat.chatState?.conversation, runId, navigateToView])
 
+  // Flaeche: when the assistant writes an HTML concept under knowledge/ (not Kanal), open it next to
+  // the chat on the FIRST write of that path in each agent turn -- and only if it is not already
+  // shown. Later writes in the same turn only reload, so a user who closed the pane is not pulled
+  // back until the agent writes again in a later turn (spec 5.4). Every write also tells an open
+  // viewer to reload. Same seeding semantics as the deck effect above (no replay on session switch).
+  const processedKonzeptToolsRef = useRef<{ key: string | null; ids: Set<string> }>({ key: null, ids: new Set() })
+  // Per chat, surviving chat-tab switches: the turn of the last concept write and the paths opened in it.
+  const konzeptTurnByRunRef = useRef<Map<string, ZugGedaechtnis>>(new Map())
+  useEffect(() => {
+    if (!LOCAL_RUNTIME) return // the Flaeche is desktop-only; the web build must not move the chat or open files
+    const conversation = sessionChat.chatState?.conversation
+    if (!conversation) return
+    const completed = conversation.filter(
+      (item): item is ToolCall =>
+        isToolCall(item) && (item.name === 'file-writeText' || item.name === 'file-editText') && item.status === 'completed'
+    )
+    if (processedKonzeptToolsRef.current.key !== runId) {
+      processedKonzeptToolsRef.current = { key: runId, ids: new Set(completed.map((t) => t.id)) }
+      return
+    }
+    const runKey = runId ?? ''
+    let memory = konzeptTurnByRunRef.current.get(runKey)
+    if (!memory) {
+      memory = { turn: null, opened: new Set() }
+      konzeptTurnByRunRef.current.set(runKey, memory)
+    }
+    const view = currentViewStateRef.current
+    const writes = konzeptSchreibvorgaenge(
+      conversation,
+      processedKonzeptToolsRef.current.ids,
+      memory,
+      view.type === 'file' ? view.path : null,
+    )
+    let movedChat = false
+    for (const { path: konzeptPath, open: openIt } of writes) {
+      if (openIt) {
+        if (!movedChat && isFullScreenChat && assistantLayout.assistant) {
+          movedChat = true
+          moveAssistantChat(assistantLayout.assistant, 'sidebar')
+        }
+        void navigateToView({ type: 'file', path: konzeptPath })
+      }
+      window.dispatchEvent(new CustomEvent('rowboat:html-touched', { detail: { path: konzeptPath } }))
+    }
+  }, [sessionChat.chatState?.conversation, runId, navigateToView, isFullScreenChat, assistantLayout.assistant, moveAssistantChat])
+
+  // Requests from the Flaeche viewer: open a note (only after the user confirmed it in the viewer's
+  // header row; path and existence already checked there), or show the graph.
+  useEffect(() => {
+    const onOpenNote = (e: Event) => {
+      const detail = e instanceof CustomEvent ? (e.detail as unknown) : null
+      const path = typeof detail === 'object' && detail !== null ? (detail as { path?: unknown }).path : null
+      if (typeof path === 'string') void navigateToViewRef.current({ type: 'file', path })
+    }
+    const onShowGraph = () => { void navigateToViewRef.current({ type: 'graph' }) }
+    window.addEventListener('rowboat:open-note', onOpenNote)
+    window.addEventListener('rowboat:show-in-graph', onShowGraph)
+    return () => {
+      window.removeEventListener('rowboat:open-note', onOpenNote)
+      window.removeEventListener('rowboat:show-in-graph', onShowGraph)
+    }
+  }, [])
+
   // Handle image upload for the markdown editor
   const handleImageUpload = useCallback(async (file: File): Promise<string | null> => {
     try {
@@ -6345,13 +6319,18 @@ function App() {
     )
     return Array.from(new Set(files.map(stripKnowledgePrefix)))
   }, [tree])
+  // Graph, wiki-link resolution and [[ completion also see HTML concepts (with extension);
+  // knowledgeFiles stays markdown-only for everything that assumes Markdown.
+  const knowledgeGraphFiles = React.useMemo(() => (
+    [...knowledgeFiles, ...knowledgeHtmlFiles(collectFilePaths(tree))]
+  ), [tree, knowledgeFiles])
   const knowledgeFilePaths = React.useMemo(() => (
-    knowledgeFiles.reduce<string[]>((acc, filePath) => {
+    knowledgeGraphFiles.reduce<string[]>((acc, filePath) => {
       const resolved = toKnowledgePath(filePath)
       if (resolved) acc.push(resolved)
       return acc
     }, [])
-  ), [knowledgeFiles])
+  ), [knowledgeGraphFiles])
   const knowledgeFilePathsKey = knowledgeFilePaths.join('\n')
 
   // Compute visible files (files whose parent directories are expanded)
@@ -6511,14 +6490,14 @@ function App() {
     rename: async (oldPath: string, newName: string, isDir: boolean) => {
       try {
         const parts = oldPath.split('/')
-        // For files, ensure .md extension
-        const finalName = isDir ? newName : (newName.endsWith('.md') ? newName : `${newName}.md`)
+        // For files, ensure the extension (.md for notes; HTML concepts keep theirs)
+        const finalName = renamedFileName(oldPath, newName, isDir)
         parts[parts.length - 1] = finalName
         const newPath = parts.join('/')
         await window.ipc.invoke('workspace:rename', { from: oldPath, to: newPath })
         untitledRenameReadyPathsRef.current.delete(oldPath)
         const rewriteForRename = (content: string) =>
-          isDir ? content : rewriteWikiLinksForRenamedFileInMarkdown(content, oldPath, newPath)
+          rewriteOpenDocumentForRename(content, oldPath, newPath, isDir)
         if (editorPathRef.current === oldPath) {
           editorPathRef.current = newPath
         }
@@ -6987,20 +6966,26 @@ function App() {
 
     const targetPath = ensureMarkdownExtension(basePath)
     const targetKey = targetPath.toLowerCase()
-    const exactMatch = knowledgeFiles.find((filePath) => normalizeWikiPath(filePath).toLowerCase() === targetKey)
+    const exactMatch = knowledgeGraphFiles.find((filePath) => normalizeWikiPath(filePath).toLowerCase() === targetKey)
     if (exactMatch) return toKnowledgePath(exactMatch)
 
     if (!basePath.includes('/')) {
       const targetBaseName = targetPath.split('/').pop()?.toLowerCase()
-      const basenameMatches = knowledgeFiles.filter((filePath) => {
+      const basenameMatches = knowledgeGraphFiles.filter((filePath) => {
         const normalizedFile = normalizeWikiPath(filePath)
         return normalizedFile.split('/').pop()?.toLowerCase() === targetBaseName
       })
       if (basenameMatches.length === 1) return toKnowledgePath(basenameMatches[0])
     }
 
+    // Extensionless link without x.md: exactly one x.html/.htm/.xhtml wins.
+    // Exact-case comparison, same as the graph edges (nodeSet.has).
+    const known = new Set(knowledgeGraphFiles.map((f) => toKnowledgePath(f)))
+    const htmlHit = resolveWikiTarget(basePath, (p) => known.has(p))
+    if (htmlHit && htmlHit !== toKnowledgePath(basePath)) return htmlHit
+
     return toKnowledgePath(basePath)
-  }, [knowledgeFiles])
+  }, [knowledgeGraphFiles])
 
   const ensureWikiFile = useCallback(async (wikiPath: string) => {
     const resolvedPath = resolveWikiFilePath(wikiPath)
@@ -7008,6 +6993,8 @@ function App() {
     try {
       const exists = await window.ipc.invoke('workspace:exists', { path: resolvedPath })
       if (!exists.exists) {
+        // Never write Markdown into an HTML path.
+        if (!canCreateWikiTarget(resolvedPath)) return null
         const title = wikiLabel(wikiPath) || 'New Note'
         await window.ipc.invoke('workspace:writeFile', {
           path: resolvedPath,
@@ -7032,7 +7019,7 @@ function App() {
   }, [ensureWikiFile, navigateToFile])
 
   const wikiLinkConfig = React.useMemo(() => ({
-    files: knowledgeFiles,
+    files: knowledgeGraphFiles,
     recent: recentWikiFiles,
     onOpen: (path: string) => {
       void openWikiLink(path)
@@ -7040,7 +7027,7 @@ function App() {
     onCreate: (path: string) => {
       void ensureWikiFile(path)
     },
-  }), [knowledgeFiles, recentWikiFiles, openWikiLink, ensureWikiFile])
+  }), [knowledgeGraphFiles, recentWikiFiles, openWikiLink, ensureWikiFile])
 
   const isBrainGraphOpen = isKnowledgeViewOpen && knowledgeViewMode === 'graph'
 
@@ -7070,10 +7057,15 @@ function App() {
         graphFilePaths.map(async (path) => {
           try {
             const result = await window.ipc.invoke('workspace:readFile', { path })
-            return { path, data: graphFileData(result) }
+            const data = graphFileData(result)
+            if (konzept.isHtmlPath(path)) {
+              const node = graphHtmlNode(path, data)
+              return { path, data: node.data, label: node.label }
+            }
+            return { path, data, label: graphNodeLabel(path, data) }
           } catch (err) {
             console.error('Failed to read file for graph:', path, err)
-            return { path, data: '' }
+            return { path, data: '', label: graphNodeLabel(path, '') }
           }
         })
       )
@@ -7086,7 +7078,7 @@ function App() {
       } catch {
         vaultMap = undefined
       }
-      const { edges: typedEdges, info: hierarchyInfo } = buildHierarchyGraph(contents, nodeSet, toKnowledgePath, vaultMap)
+      const { edges: typedEdges, info: hierarchyInfo } = buildHierarchyGraph(contents, nodeSet, (raw) => resolveWikiTarget(raw, (p) => nodeSet.has(p)), vaultMap)
       edges.push(...typedEdges)
 
       const degreeMap = new Map<string, number>()
@@ -7124,6 +7116,7 @@ function App() {
         }
       }
 
+      const labelByPath = new Map(contents.map((c) => [c.path, c.label]))
       const nodes = graphFilePaths.map((path) => {
         const degree = degreeMap.get(path) ?? 0
         const radius = 6 + Math.min(18, degree * 2)
@@ -7135,7 +7128,7 @@ function App() {
         const colors = getNodeColors(groupIndex, depth)
         return {
           id: path,
-          label: wikiLabel(path) || path,
+          label: labelByPath.get(path) ?? graphNodeLabel(path, ''),
           degree,
           radius,
           group,

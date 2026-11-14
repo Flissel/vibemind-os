@@ -1,6 +1,6 @@
 import "./node-guard.js";
 import { resolveFilePreview } from './file-previews.js';
-import { app, BrowserWindow, desktopCapturer, dialog, powerMonitor, protocol, net, shell, session, safeStorage, type Session } from "electron";
+import { app, BrowserWindow, desktopCapturer, dialog, powerMonitor, protocol, net, shell, session, safeStorage, webFrameMain, type Session, type WebContents } from "electron";
 import path from "node:path";
 import fsPromises from "node:fs/promises";
 import os from "node:os";
@@ -52,6 +52,20 @@ import container, { registerBrowserControlService, registerNotificationService, 
 import { forwardRpc } from "./rpc-forwarder.js";
 import { bounceAllLive, getClient as getSpaceClient, listOrgs as listSpaceOrgs } from "@x/core/dist/spaces/orgs.js";
 import { parseOrgUrl } from "@x/shared/dist/spaces.js";
+import {
+  backstopDecision,
+  createBackstopState,
+  frameNavigationDecision,
+  htmlResponseHeaders,
+  KONZEPT_GAST_ARG,
+  isFrameChainConfined,
+  isKnowledgeFrameUrl,
+  konzeptDocumentKey,
+  noteFrameCommit,
+  noteFramesAttached,
+  workspaceResponseDecision,
+  type BackstopState,
+} from "@x/shared/dist/konzept.js";
 import type { CodeModeManager } from "@x/core/dist/code-mode/acp/manager.js";
 import type { ISessions } from "@x/core/dist/runtime/sessions/index.js";
 import { browserViewManager, BROWSER_PARTITION } from "./browser/view.js";
@@ -77,6 +91,7 @@ import { setupZoomShortcuts } from "./zoom.js";
 import { initMeetingPopup, showMeetingPopup } from "./meeting-popup.js";
 import { initQuickAsk, onAppWindowClosed } from "./quick-ask.js";
 import { embedRequested, startEmbedHost, stopEmbedHost } from "./embed-host.js";
+import { konzeptGastBereit, prepareKonzeptGast, setupKonzeptGast } from "./konzept-gast.js";
 
 // Captured as early as possible so it reflects actual process start. Used to
 // gate grace-eligible notifications (e.g. the burst of background-task
@@ -205,6 +220,11 @@ const preloadPath = app.isPackaged
   : path.join(__dirname, "../../../preload/dist/preload.js");
 console.log("preloadPath", preloadPath);
 
+// Vorschalt-Skript der Konzept-Gaeste (<webview partition="konzept">), gebaut neben dem App-Preload.
+const konzeptGastPreloadPath = app.isPackaged
+  ? path.join(__dirname, "../preload/dist/konzept-gast.js")
+  : path.join(__dirname, "../../../preload/dist/konzept-gast.js");
+
 const rendererPath = app.isPackaged
   ? path.join(__dirname, "../renderer/dist") // Production
   : path.join(__dirname, "../../../renderer/dist"); // Development
@@ -234,9 +254,57 @@ async function listSpaceAssets(orgId: string, spaceId: string): Promise<Array<{ 
   return entries;
 }
 
+/**
+ * Adressen (ohne Fragment), die dieser Prozess als Wissens-HTML ausgeliefert hat, auch wenn der Name es
+ * nicht verraet (Symlink-Ziel im Wissensordner, HTML nach Content-Type). Navigationssperre und
+ * Anfrage-Rueckhalt erkennen solche Rahmen daran. Begrenzt; die aelteste Adresse faellt zuerst heraus.
+ */
+const servedKnowledgeHtml = new Set<string>();
+function rememberKnowledgeHtml(url: string): void {
+  const key = konzeptDocumentKey(url);
+  servedKnowledgeHtml.delete(key);
+  servedKnowledgeHtml.add(key);
+  if (servedKnowledgeHtml.size > 500) {
+    const oldest = servedKnowledgeHtml.values().next().value;
+    if (oldest !== undefined) servedKnowledgeHtml.delete(oldest);
+  }
+}
+function wasServedAsKnowledgeHtml(url: string): boolean {
+  return servedKnowledgeHtml.has(konzeptDocumentKey(url));
+}
+
+/**
+ * Wissens-HTML (R38) bekommt Typ, Kein-Netz-Regel und nosniff, egal was die Quelle (file:// oder
+ * Fern-Server) geschickt hat; generische Typen im Wissensordner bekommen nosniff. Alles andere geht
+ * unveraendert durch, wie vor der Konzept-Flaeche. `relPaths`: angefragter Pfad und, lokal, das
+ * aufgeloeste Ziel relativ zur aufgeloesten Wurzel. Rumpf, Status und Range-Verhalten bleiben.
+ */
+function withWorkspaceHtmlHeaders(res: Response, relPaths: string[], documentUrl: string, remember = true): Response {
+  const decision = workspaceResponseDecision({
+    relPaths,
+    contentType: res.headers.get("content-type"),
+    ok: res.ok,
+    csp: res.headers.get("content-security-policy"),
+  });
+  if (decision === "unveraendert") return res;
+  const headers = new Headers(res.headers);
+  // fetch() hat einen komprimierten Rumpf schon entpackt: Kodierung und Laenge passen nicht mehr.
+  if (headers.has("content-encoding")) {
+    headers.delete("content-encoding");
+    headers.delete("content-length");
+  }
+  const extra = decision === "konzept" ? htmlResponseHeaders() : { "X-Content-Type-Options": "nosniff" };
+  for (const [name, value] of Object.entries(extra)) headers.set(name, value);
+  if (decision === "konzept" && res.ok && remember) rememberKnowledgeHtml(documentUrl);
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
 // VibeMind-Einbettung: der app://-Rumpf als eigene Funktion, damit der Einbettungszugang
 // dieselben Inhalte ausliefern kann (serveApp). Rumpf unveraendert.
-async function handleAppRequest(request: Request): Promise<Response> {
+// Konzept-Gaeste (Partition `konzept`) rufen ihn mit `rememberKnowledgeHtml: false` auf: ihre Ladevorgaenge
+// (jedes Neu-Einhaengen mit ?v=N) duerfen das Ausgeliefert-Register der Standard-Sitzung nicht fuellen.
+async function handleAppRequest(request: Request, options: { rememberKnowledgeHtml?: boolean } = {}): Promise<Response> {
+    const remember = options.rememberKnowledgeHtml !== false;
     const url = new URL(request.url);
 
     if (url.host === 'file-preview') {
@@ -262,7 +330,12 @@ async function handleAppRequest(request: Request): Promise<Response> {
             const headers = new Headers({ authorization: `Bearer ${key}` });
             const range = request.headers.get("range");
             if (range) headers.set("range", range);
-            return fetch(`${baseUrl}/workspace/${relPath.split("/").map(encodeURIComponent).join("/")}`, { headers });
+            return withWorkspaceHtmlHeaders(
+              await fetch(`${baseUrl}/workspace/${relPath.split("/").map(encodeURIComponent).join("/")}`, { headers }),
+              [relPath],
+              request.url,
+              remember,
+            );
           }
           const absPath = resolveWorkspacePath(relPath);
           // Parity with the server's /workspace route: `..` is guarded above,
@@ -273,7 +346,12 @@ async function handleAppRequest(request: Request): Promise<Response> {
           if (realTarget !== realRoot && !realTarget.startsWith(realRoot + path.sep)) {
             return new Response("Forbidden", { status: 403 });
           }
-          return net.fetch(pathToFileURL(realTarget).toString());
+          return withWorkspaceHtmlHeaders(
+            await net.fetch(pathToFileURL(realTarget).toString()),
+            [relPath, path.relative(realRoot, realTarget)],
+            request.url,
+            remember,
+          );
         } catch {
           return new Response("Forbidden", { status: 403 });
         }
@@ -491,7 +569,132 @@ function wasLaunchedAtLogin(): boolean {
   }
 }
 
+/**
+ * Rueckhalt-Zustand je Ansicht (R45, R46): Schluessel webContents.id, Inhalt `confined`/`recentlyConfined` nach
+ * frameTreeNodeId. frameTreeNodeId bezeichnet den Rahmen-Knoten im Baum, bleibt ueber Navigationen und
+ * Prozesswechsel des Rahmens gleich und wird von Chromium nicht wiederverwendet; processId/routingId wechseln dagegen
+ * beim Prozesswechsel. Die Uebergaenge (noteFrameCommit, noteFramesAttached) und die Entscheidung (backstopDecision)
+ * liegen rein in @x/shared; hier nur das Auslesen aus Electron.
+ */
+const backstopByContents = new Map<number, BackstopState>();
+const trackedContents = new WeakSet<WebContents>();
+const EMPTY_IDS: ReadonlySet<number> = new Set();
+const EMPTY_RECENT: ReadonlyMap<number, number> = new Map();
+const isConfinedUrl = (url: string) => isKnowledgeFrameUrl(url) || wasServedAsKnowledgeHtml(url);
+
+/** Knoten-Ids aller Rahmen im Baum der Ansicht; null, wenn der Baum nicht lesbar ist (dann wird nichts entlassen). */
+function attachedFrameIds(wc: WebContents): Set<number> | null {
+  try {
+    return new Set(wc.mainFrame.framesInSubtree.map((f) => f.frameTreeNodeId));
+  } catch {
+    return null;
+  }
+}
+
+/** Knoten-Ids und Adressen eines Rahmens und seiner Vorfahren (der Rahmen zuerst); null, wenn nicht lesbar. */
+function frameChain(frame: Electron.WebFrameMain | null | undefined): { ids: number[]; urls: string[] } | null {
+  if (!frame) return null;
+  try {
+    const ids: number[] = [];
+    const urls: string[] = [];
+    for (let f: Electron.WebFrameMain | null = frame; f; f = f.parent) {
+      ids.push(f.frameTreeNodeId);
+      urls.push(f.url);
+    }
+    return { ids, urls };
+  } catch {
+    return null; // Rahmen schon verworfen
+  }
+}
+
+/** Sperrt der Rueckhalt-Zustand diesen Rahmen oder einen Vorfahren (R47)? Fuer die Navigationssperre. */
+function isFrameConfinedByState(wc: WebContents, frame: Electron.WebFrameMain | null | undefined): boolean {
+  const state = backstopByContents.get(wc.id);
+  const chain = frameChain(frame);
+  if (!state || !chain) return false;
+  return isFrameChainConfined(chain.ids, state.confined, state.recentlyConfined, Date.now());
+}
+
+function trackConfinedFrames(wc: WebContents): void {
+  if (trackedContents.has(wc)) return;
+  trackedContents.add(wc);
+  const contentsId = wc.id;
+  const state = createBackstopState();
+  backstopByContents.set(contentsId, state);
+  const committed = (url: string, isMainFrame: boolean, processId: number, routingId: number) => {
+    const now = Date.now();
+    const live = attachedFrameIds(wc);
+    if (live) noteFramesAttached(state, live, now);
+    if (isMainFrame) return; // die App selbst; ihr Hauptrahmen wird nie eingesperrt
+    try {
+      const frame = webFrameMain.fromId(processId, routingId);
+      if (!frame) return;
+      noteFrameCommit(state, {
+        frameId: frame.frameTreeNodeId,
+        parentId: frame.parent?.frameTreeNodeId ?? null,
+        url,
+        servedAsKnowledgeHtml: wasServedAsKnowledgeHtml(url),
+        now,
+      });
+    } catch {
+      // Rahmen schon verworfen: der Rueckhalt entscheidet dann nach der Ansicht
+    }
+  };
+  wc.on("did-frame-navigate", (_event, url, _code, _status, isMainFrame, processId, routingId) =>
+    committed(url, isMainFrame, processId, routingId));
+  wc.on("did-navigate-in-page", (_event, url, isMainFrame, processId, routingId) =>
+    committed(url, isMainFrame, processId, routingId));
+  wc.once("destroyed", () => backstopByContents.delete(contentsId));
+}
+
+/**
+ * Rueckhalt der Kein-Netz-Regel (R40, R43-R47) auf der Standard-Sitzung. Den Rahmen liefert Electron 39 nur als
+ * details.frame (die Details tragen weder processId noch frameId/frameToken, also kein webFrameMain.fromId/
+ * fromFrameToken). Ausgelesen werden Knoten-Id und Adresse des Rahmens, die Ids seiner Vorfahren, ob er im Baum der
+ * Ansicht haengt, und ob er oder ein Vorfahr eine Adresse unter knowledge/ zeigt; der Verweiser nie. Fehler im
+ * Rueckhalt: abbrechen (ausser Hauptrahmen). Die App registriert sonst kein onBeforeRequest auf dieser Sitzung.
+ */
+const backstopSessions = new WeakSet<Session>();
+function configureKnowledgeHtmlRequestBackstop(ses: Session): void {
+  if (backstopSessions.has(ses)) return;
+  backstopSessions.add(ses);
+  app.on("web-contents-created", (_event, wc) => {
+    if (wc.session === ses) trackConfinedFrames(wc);
+  });
+  ses.webRequest.onBeforeRequest((details, callback) => {
+    let cancel = true;
+    try {
+      const now = Date.now();
+      const wc = details.webContents;
+      const state = wc ? backstopByContents.get(wc.id) : undefined;
+      const live = wc ? attachedFrameIds(wc) : null;
+      if (state && live) noteFramesAttached(state, live, now);
+      const chain = frameChain(details.frame);
+      const frameId = chain ? chain.ids[0] : null;
+      cancel = backstopDecision({
+        url: details.url,
+        resourceType: details.resourceType,
+        frameId,
+        frameUrl: chain ? chain.urls[0] : null,
+        ancestorIds: chain ? chain.ids.slice(1) : [],
+        attached: frameId !== null && live !== null && live.has(frameId),
+        chainConfinedByUrl: chain ? chain.urls.some(isConfinedUrl) : false,
+        confined: state?.confined ?? EMPTY_IDS,
+        recentlyConfined: state?.recentlyConfined ?? EMPTY_RECENT,
+        now,
+        appUrl: app.isPackaged ? null : DEV_SERVER_URL,
+      });
+    } catch {
+      cancel = details.resourceType !== "mainFrame";
+    }
+    callback(cancel ? { cancel: true } : {});
+  });
+}
+
 function createWindow(options: { startHidden?: boolean } = {}) {
+  // Konzept-Flaeche: nur wenn die Gast-Sitzung eingerichtet und ihr toter Proxy bestaetigt ist (prepareKonzeptGast in
+  // app.whenReady), bekommt das Fenster <webview> und das Kennzeichen fuer die Oberflaeche (sonst Hinweis statt Seite).
+  const konzeptGast = konzeptGastBereit();
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -511,11 +714,16 @@ function createWindow(options: { startHidden?: boolean } = {}) {
       // Enable Chromium's built-in PDFium plugin so <iframe src="*.pdf">
       // renders PDFs natively (zoom/scroll/print toolbar included).
       plugins: true,
+      webviewTag: konzeptGast,
+      additionalArguments: konzeptGast ? [KONZEPT_GAST_ARG] : [],
     },
   });
+  setupKonzeptGast(win);
 
   configureSessionPermissions(session.defaultSession);
   configureAppDisplayMediaHandler(session.defaultSession);
+  configureKnowledgeHtmlRequestBackstop(session.defaultSession);
+  trackConfinedFrames(win.webContents);
   configureSessionPermissions(session.fromPartition(BROWSER_PARTITION), BROWSER_EXTRA_PERMISSIONS);
 
   mainWindow = win;
@@ -585,7 +793,24 @@ function createWindow(options: { startHidden?: boolean } = {}) {
   // navigation untouched so the embeds keep working.
   win.webContents.on("will-frame-navigate", (event) => {
     if (event.isMainFrame) return;
-    if (!event.frame?.url.startsWith("app://workspace/") && !event.frame?.url.startsWith("app://space-document/")) return;
+    // Konzept-Flaeche (R43, R47): ein Rahmen unter app://workspace/knowledge/ (oder als Wissens-HTML
+    // ausgeliefert, oder laut Rueckhalt-Zustand eingesperrt, auch ueber einen Vorfahren) darf nicht
+    // wegnavigieren (Seitenwechsel, meta refresh, Formular, Link). Der erste Ladevorgang eines neuen
+    // Rahmens ist nicht betroffen: frame.url noch leer/about:blank, Knoten noch nicht im Zustand. Die
+    // Ansicht laedt neu, indem sie den Rahmen neu einhaengt (neuer Knoten). Andere app://workspace-Seiten
+    // (Hintergrund-Berichte) wie vorher.
+    let frameUrl = "";
+    try {
+      frameUrl = event.frame?.url ?? "";
+    } catch {
+      frameUrl = "";
+    }
+    const confinedByState = isFrameConfinedByState(win.webContents, event.frame);
+    if (frameNavigationDecision(frameUrl, wasServedAsKnowledgeHtml(frameUrl), confinedByState) === "block") {
+      event.preventDefault();
+      return;
+    }
+    if (!frameUrl.startsWith("app://workspace/") && !frameUrl.startsWith("app://space-document/")) return;
     if (routeExternalNavigation(event.url)) event.preventDefault();
   });
 
@@ -619,6 +844,13 @@ app.whenReady().then(async () => {
   // In production this serves the renderer SPA; in dev (and prod) it also
   // serves workspace files via app://workspace/<rel-path> for media previews.
   registerAppProtocol();
+
+  // Konzept-Flaeche: Gast-Sitzung (Partition `konzept`) jetzt einrichten; vor dem ersten Fenster wird auf die
+  // Bestaetigung des toten Proxys gewartet (zeitlich begrenzt, Fehler -> kein Gastbereich).
+  const konzeptGastFertig = prepareKonzeptGast({
+    serve: (request) => handleAppRequest(request, { rememberKnowledgeHtml: false }),
+    guestPreloadPath: konzeptGastPreloadPath,
+  });
 
   // Initialize auto-updater (no-ops in dev). Update state is pushed to the
   // renderer (updater:status), which owns the restart prompt — see updater.ts.
@@ -690,6 +922,11 @@ app.whenReady().then(async () => {
   setupBrowserEventForwarding();
   setupBrowserExtensions();
 
+  // Konzept-Flaeche: Entscheidung ueber den Gastbereich abwarten (hoechstens 2 s ab Start der Einrichtung, meist
+  // laengst erledigt), BEVOR Einbettung, Schnellfrage oder Menue ein Fenster erzeugen koennen. So bekommt jedes
+  // Fenster dieselbe ganze Entscheidung (webviewTag + Kennzeichen + Gastgeber, oder nichts davon).
+  await konzeptGastFertig;
+
   // VibeMind-Einbettung (Spec 2026-10-17): nur mit --embed / ROWBOAT_EMBED=1.
   if (embedRequested()) {
     startEmbedHost({ showApp, preloadPath, serveApp: handleAppRequest }).catch((error) => {
@@ -759,7 +996,8 @@ app.whenReady().then(async () => {
     toggleMeetingNotes: toggleMeetingNotesFromMenus,
   });
 
-  createWindow({ startHidden: wasLaunchedAtLogin() });
+  // Ein frueherer Weg (zweiter Start, Schnellfrage, Menue) kann das Hauptfenster schon erzeugt haben: kein zweites.
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow({ startHidden: wasLaunchedAtLogin() });
 
   // Menu bar icon: open the app / start-stop meeting notes without the window.
   createAppTray({

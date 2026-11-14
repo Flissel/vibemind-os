@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import { injectBrowserAction } from 'electron-chrome-extensions/browser-action';
-import { ipc as ipcShared, flags } from '@x/shared';
+import { ipc as ipcShared, flags, konzept } from '@x/shared';
 
 // Expose the <browser-action-list> custom element (extension action icons +
 // popups for the embedded browser pane). App documents only — this preload
@@ -71,6 +71,9 @@ contextBridge.exposeInMainWorld('ipc', ipc);
 // login-shell merge), so flags resolve synchronously before any renderer code.
 contextBridge.exposeInMainWorld('featureFlags', {
   spaces: flags.spacesEnabled(),
+  // Konzept-Flaeche: der Hauptprozess hat den Gastbereich (Partition `konzept`) eingerichtet und reicht das per
+  // additionalArguments herein. Fehlt es, zeigt die Oberflaeche einen Hinweis statt der Seite.
+  konzeptGast: process.argv.includes(konzept.KONZEPT_GAST_ARG),
 });
 
 contextBridge.exposeInMainWorld('electronUtils', {

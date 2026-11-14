@@ -41,6 +41,8 @@ declare global {
       spaces: boolean;
       /** False in the browser build: no core runs beside the page (src/web/host.ts). */
       localRuntime?: boolean;
+      /** True only when the main process set up the concept guest area (`<webview partition="konzept">`). */
+      konzeptGast?: boolean;
     };
   }
 }

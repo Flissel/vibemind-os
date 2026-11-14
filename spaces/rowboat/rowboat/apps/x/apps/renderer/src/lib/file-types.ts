@@ -11,6 +11,7 @@ export type ViewerType = 'html' | 'image' | 'video' | 'audio' | 'pdf' | 'docx' |
 const VIEWER_BY_EXT: Record<string, ViewerType> = {
   html: 'html',
   htm: 'html',
+  xhtml: 'html',
   png: 'image',
   jpg: 'image',
   jpeg: 'image',
