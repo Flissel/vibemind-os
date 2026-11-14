@@ -1174,3 +1174,25 @@ def test_budgetpause_auftrag_ohne_konzept_bleibt_budget_neben_einem_konzept_auft
     f = Fragen()
     assert ein_durchlauf(api, fragen=f, jetzt=uhr, **F) == "budget"
     assert f.nachrichten == []
+
+
+# --- Task 4 Fix-Runde 2: eingebaute Wuensche ------------------------------------------------------
+
+@pytest.mark.parametrize("fassung,wuensche,erwartet", [
+    (0, 0, 0), (1, 0, 0),
+    (1, 1, 0),          # "nochmal" mit W1 ist angehaengt, aber noch nicht gebaut (Fassung 1 aus dem Konzept)
+    (2, 1, 1),          # W1 ist in Fassung 2 gebaut
+    (2, 2, 1),          # W2 steht schon in der Liste, ist aber noch nicht gebaut
+    (3, 2, 2), (3, 0, 0), (2, None, 0),
+])
+def test_eingebaute_wuensche_nach_gespeicherter_fassung(fassung, wuensche, erwartet):
+    liste = None if wuensche is None else [{"wunsch": f"W{i}"} for i in range(wuensche)]
+    assert wa._eingebaute_wuensche({"gliederung_fassung": fassung, "gliederung_wuensche": liste}) == erwartet
+
+
+def test_wunsch_ohne_bisherige_gliederung_bekommt_nicht_das_konzept_als_unveraenderliche_vorlage(F):
+    k = _konzept(stufen=1, je=2)                               # unbrauchbar: erste Gliederung ging ueber das Modell
+    api = FakeApi([_konzept_werk(k, gliederung_wunsch="Nur 10 Szenen")])
+    f = Fragen()
+    ein_durchlauf(api, fragen=f, **F)
+    assert "bleiben wie dort" not in f.nachrichten[0] and wa.video_texte.RANGFOLGE_WUNSCH_OHNE_BISHER in f.nachrichten[0]

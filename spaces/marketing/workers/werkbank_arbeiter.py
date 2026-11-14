@@ -270,6 +270,14 @@ def _gliederung_geparkt(c: _Lauf, werk: dict) -> bool:
     return bool(werk.get("gliederung_aufgegeben")) or _gliederung_schluessel(werk) in c.gedaechtnis["aufgegeben"]
 
 
+def _eingebaute_wuensche(werk: dict) -> int:
+    """Wuensche, die schon in die gespeicherte Gliederung eingebaut sind. Jede gespeicherte Fassung nach der ersten
+    baut einen Wunsch ein, also hoechstens `gliederung_fassung - 1`; die Liste `gliederung_wuensche` kann auch den
+    neuen, noch nicht gebauten Wunsch enthalten und wird deshalb damit gedeckelt."""
+    wuensche = len(werk.get("gliederung_wuensche") or [])
+    return max(0, min(wuensche, int(werk.get("gliederung_fassung") or 0) - 1))
+
+
 def _gliederung(c: _Lauf, werk: dict) -> str | None:
     aid, eingabe = str(werk["auftrag"]), werk.get("eingabe") or {}
     fassung = int(werk.get("gliederung_fassung") or 0)
@@ -303,7 +311,7 @@ def _gliederung(c: _Lauf, werk: dict) -> str | None:
         ktx = c.kontext(str(werk.get("mandant") or ""), auftrag)
         vorige = werk.get("gliederung") if wunsch and isinstance(werk.get("gliederung"), dict) and werk["gliederung"] else None
         system, nachricht = video_texte.gliederung_prompt(eingabe, ktx, c.brief(), wunsch, vorige,
-                                                      len(werk.get("gliederung_wuensche") or []))
+                                                      _eingebaute_wuensche(werk))
         geholt = {d.name for d in ktx.dokumente}
         konzept = video_texte.konzepttext(eingabe)
         belegtexte = [auftrag, *([konzept] if konzept else []), *(d.text for d in ktx.dokumente)]   # M11: Zahlen in Titel, Hook, Stufennamen
