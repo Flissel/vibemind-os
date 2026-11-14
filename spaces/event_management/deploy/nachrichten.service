@@ -1,0 +1,29 @@
+# Mailversand der Nachrichten-Freigabe: freigegebene Event-Nachrichten per SMTP verschicken
+# (system/nachrichten.py, `versenden`). NUR als Datei im Repo; das Installieren auf der VM
+# ist ein eigener Schritt mit OK (Etappe 4).
+#
+# Erwartet auf dem Host (Pfade an die VM anpassen):
+#   /etc/event-management/nachrichten.env   0600, ohne Schluessel:
+#       EVENT_ADMIN_DSN_FILE=/etc/event-management/admin-dsn       (Datei 0600, DSN darin)
+#       EVENT_SMTP_HOST=smtp.example.org
+#       EVENT_SMTP_PORT=587
+#       EVENT_SMTP_USER=event@example.org
+#       EVENT_SMTP_ABSENDER=event@example.org
+#       EVENT_SMTP_PASSWORT_FILE=/etc/event-management/smtp-passwort  (Datei 0600)
+#   Kein docker noetig: der Versand spricht nur Postgres und SMTP.
+[Unit]
+Description=Event-System: freigegebene Nachrichten per Mail versenden
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=debian
+Group=debian
+WorkingDirectory=/home/debian/vibemind-os
+EnvironmentFile=/etc/event-management/nachrichten.env
+ExecStart=/usr/bin/python3 -m spaces.event_management.system.nachrichten versenden
+TimeoutStartSec=10min
+NoNewPrivileges=yes
+PrivateTmp=yes
+UMask=0077

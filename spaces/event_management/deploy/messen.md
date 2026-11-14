@@ -251,6 +251,11 @@ mit 20 Agenten unter 1 GiB fällt oder Swap neu belegt wird.
   („Address already in use“). Das ist selten, weil Shim und Claw die untersten Adressen
   bekommen, und es zeigt sich als sichtbarer Startfehler, nicht als stiller. Abhilfe: den
   Container, der `.14` hält, neu starten, dann `event-mcp` starten.
+- **Nachrichtenversand per Timer.** Freigegebene Nachrichten verschickt erst
+  `deploy/nachrichten.service` über `deploy/nachrichten.timer` (jede Minute,
+  `nachrichten versenden` mit der Admin-DSN aus `EVENT_ADMIN_DSN_FILE` und `EVENT_SMTP_*`
+  aus `/etc/event-management/nachrichten.env`). Ohne den Timer bleiben freigegebene Mails
+  liegen. Beide Dateien liegen nur im Repo; sie werden beim Ausrollen mit OK installiert.
 - **Adresse von event-mcp.** `EVENT_MCP_URL` ist `http://event-mcp:8171`, sowohl in der
   Saat (`werte.local.json`, Server `melden`) als auch in `bereitstellung.env` des
   Arbeiters. So erreicht der Claw den Dienst im Netz `event-agent`.

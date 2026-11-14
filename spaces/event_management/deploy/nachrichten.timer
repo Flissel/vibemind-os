@@ -1,0 +1,13 @@
+# Jede Minute freigegebene Nachrichten versenden. Ein oneshot-Dienst laeuft nie doppelt:
+# solange ein Lauf dauert, startet der Timer keinen zweiten. NUR als Datei im Repo.
+[Unit]
+Description=Event-System: Nachrichtenversand jede Minute
+
+[Timer]
+OnBootSec=90s
+OnUnitInactiveSec=60s
+AccuracySec=5s
+Unit=nachrichten.service
+
+[Install]
+WantedBy=timers.target

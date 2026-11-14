@@ -921,6 +921,30 @@ def test_systemd_dateien_nur_vorbereitet():
     assert "OnUnitInactiveSec=20s" in zeitgeber and "Unit=bereitstellung.service" in zeitgeber
 
 
+def test_systemd_dateien_nachrichten_versand():
+    """F5: der Mailversand der Nachrichten-Freigabe braucht einen eigenen Timer, sonst
+    bleiben freigegebene Mails liegen. Nur Dateien im Repo, ohne Geheimnisse."""
+    import re
+    from pathlib import Path
+
+    deploy = Path(bereitstellung.__file__).resolve().parents[1] / "deploy"
+    dienst = (deploy / "nachrichten.service").read_text(encoding="utf-8")
+    zeitgeber = (deploy / "nachrichten.timer").read_text(encoding="utf-8")
+    assert "Type=oneshot" in dienst
+    assert "-m spaces.event_management.system.nachrichten versenden" in dienst
+    assert "EnvironmentFile=" in dienst
+    assert "EVENT_ADMIN_DSN_FILE" in dienst and "EVENT_SMTP_PASSWORT_FILE" in dienst
+    assert "Unit=nachrichten.service" in zeitgeber and "OnUnitInactiveSec=60s" in zeitgeber
+    for text in (dienst, zeitgeber):
+        assert "NUR als Datei im Repo" in text
+        for muster in (r"evk_", r"Bearer", r"bot\d+:", r"\d{6,}:[A-Za-z0-9_-]{20,}",
+                       r"postgres(ql)?://", r"password=", r"EVENT_SMTP_PASSWORT=", r"-100\d{6,}"):
+            assert not re.search(muster, text), muster
+    messen = (deploy / "messen.md").read_text(encoding="utf-8")
+    ausrollen = messen.split("## Ausrollen", 1)[1]
+    assert "nachrichten.timer" in ausrollen
+
+
 def test_cli_ohne_dsn_oder_mcp_url(monkeypatch, capsys, tmp_path):
     monkeypatch.delenv("EVENT_ADMIN_DSN_FILE", raising=False)
     monkeypatch.setenv("EVENT_MCP_URL", "http://event-mcp.example.org:8171")
