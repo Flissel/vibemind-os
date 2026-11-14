@@ -422,3 +422,51 @@ def test_gliederung_aus_konzept_unbekannte_bildart_oder_leeres_kurz_ist_none():
     e = KONZEPT_EINGABE()
     e["konzept"]["stufen"][1]["szenen"][0]["kurz"] = ""
     assert video_texte.gliederung_aus_konzept(e) is None
+
+
+# --- Fix Runde 1: Grenzen, Steuerzeichen, Stufen ----------------------------------------------
+
+@pytest.mark.parametrize("stufen,je,anzahl", [(2, 4, 8), (3, 5, 15)])
+def test_gliederung_aus_konzept_grenzen_8_und_15_gelten(stufen, je, anzahl):
+    g = video_texte.gliederung_aus_konzept(KONZEPT_EINGABE(stufen=stufen, je=je))
+    assert g is not None and len(szenen_liste(g)) == anzahl
+
+
+@pytest.mark.parametrize("stufen,je", [(1, 7), (4, 4)])
+def test_gliederung_aus_konzept_7_und_16_szenen_fallen_zurueck(stufen, je):
+    assert video_texte.gliederung_aus_konzept(KONZEPT_EINGABE(stufen=stufen, je=je)) is None
+
+
+def test_gliederung_aus_konzept_mehr_als_8_stufen_werden_wie_beim_modell_angenommen():
+    # Die Werkbank begrenzt nur die Szenenzahl (gliederung_lesen kennt keine Stufengrenze); die 8 Stufen prueft Sales.
+    e = KONZEPT_EINGABE(stufen=10, je=1)
+    g = video_texte.gliederung_aus_konzept(e)
+    assert g is not None and len(g["stufen"]) == 10
+
+
+@pytest.mark.parametrize("eingabe", [None, [], "x", 5])
+def test_gliederung_aus_konzept_eingabe_kein_dict_ist_none(eingabe):
+    assert video_texte.gliederung_aus_konzept(eingabe) is None
+
+
+@pytest.mark.parametrize("ort", ["thema", "hook", "stufe", "kurz", "notiz", "kernaussage"])
+def test_gliederung_aus_konzept_nul_irgendwo_ist_none(ort):
+    NUL = chr(0)
+    e = KONZEPT_EINGABE()
+    k = e["konzept"]
+    if ort in ("thema", "hook", "kernaussage"):
+        k[ort] += NUL
+    elif ort == "stufe":
+        k["stufen"][0]["name"] += NUL
+    else:
+        k["stufen"][0]["szenen"][0][ort] += NUL
+    assert video_texte.gliederung_aus_konzept(e) is None
+
+
+def test_gliederung_aus_konzept_andere_steuerzeichen_werden_entfernt_tab_und_zeilenumbruch_bleiben():
+    e = KONZEPT_EINGABE()
+    e["konzept"]["thema"] = "Ti" + chr(1) + "tel" + chr(27)
+    e["konzept"]["stufen"][0]["szenen"][0]["kurz"] = "a" + chr(8) + "b" + chr(9) + "c" + chr(10) + "d" + chr(31)
+    g = video_texte.gliederung_aus_konzept(e)
+    assert g["titel"] == "Titel"
+    assert szenen_liste(g)[0]["kurz"] == "ab" + chr(9) + "c" + chr(10) + "d"

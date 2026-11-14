@@ -262,6 +262,27 @@ def gliederung_lesen(text: str, geholt: set[str],
     return {"titel": titel, "hook": hook, "stufen": stufen, "fehlt": fehlt}, []
 
 
+_STEUER = re.compile(r"[\x00-\x08\x0b-\x1f]")
+
+
+def _hat_nul(wert: object, tiefe: int = 0) -> bool:
+    """Steht irgendwo im (verschachtelten) Wert ein NUL-Zeichen, auch in einem Schluessel?"""
+    if isinstance(wert, str):
+        return chr(0) in wert
+    if tiefe > 6:
+        return False
+    if isinstance(wert, dict):
+        return any(_hat_nul(k, tiefe + 1) or _hat_nul(v, tiefe + 1) for k, v in wert.items())
+    if isinstance(wert, list):
+        return any(_hat_nul(v, tiefe + 1) for v in wert)
+    return False
+
+
+def _rein(wert: object) -> str:
+    """Text getrimmt und ohne C0-Steuerzeichen (ausser Tab und Zeilenumbruch)."""
+    return _STEUER.sub("", _text(wert)).strip()
+
+
 def gliederung_aus_konzept(eingabe: dict) -> dict | None:
     """Die erste Gliederung eins zu eins aus `eingabe["konzept"]` (kein Modell): Titel = Thema, Hook, Stufen und
     Szenen (`kurz`, `bildart`) in der Reihenfolge des Konzepts, jede Szene mit der Quelle "konzept". None, wenn das
@@ -270,21 +291,23 @@ def gliederung_aus_konzept(eingabe: dict) -> dict | None:
     konzept = eingabe.get("konzept") if isinstance(eingabe, dict) else None
     if not isinstance(konzept, dict):
         return None
-    titel, hook = _text(konzept.get("thema")), _text(konzept.get("hook"))
+    if _hat_nul(konzept):           # NUL kann Postgres weder in text noch in jsonb speichern
+        return None
+    titel, hook = _rein(konzept.get("thema")), _rein(konzept.get("hook"))
     stufen_roh = konzept.get("stufen")
     if not titel or not hook or not isinstance(stufen_roh, list) or not stufen_roh:
         return None
     stufen, anzahl = [], 0
     for st in stufen_roh:
-        name = _text(st.get("name")) if isinstance(st, dict) else ""
+        name = _rein(st.get("name")) if isinstance(st, dict) else ""
         szenen_roh = st.get("szenen") if isinstance(st, dict) else None
         if not name or not isinstance(szenen_roh, list):
             return None
         szenen = []
         for s in szenen_roh:
-            if not isinstance(s, dict) or not _text(s.get("kurz")) or s.get("bildart") not in BILDARTEN:
+            if not isinstance(s, dict) or not _rein(s.get("kurz")) or s.get("bildart") not in BILDARTEN:
                 return None
-            szenen.append({"kurz": _text(s["kurz"]), "bildart": s["bildart"], "quellen": [KONZEPT]})
+            szenen.append({"kurz": _rein(s["kurz"]), "bildart": s["bildart"], "quellen": [KONZEPT]})
         anzahl += len(szenen)
         stufen.append({"name": name, "szenen": szenen})
     if not SZENEN_MIN <= anzahl <= SZENEN_MAX:

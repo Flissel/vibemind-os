@@ -982,3 +982,73 @@ def test_konzept_gliederung_422_wird_aufgegeben_statt_neu_versucht(F):
     api.gliederung = abgelehnt
     assert ein_durchlauf(api, fragen=Fragen(), **F) == "fehler"
     assert api.zaehlt("gliederung_aufgegeben") == 1
+
+
+# --- Fix Runde 1: nur die erste Fassung, Rueckfaelle ---------------------------------------------
+
+def test_rueckgabe_ohne_wunsch_geht_ueber_das_modell_nicht_ueber_das_konzept(F):
+    api = FakeApi([_konzept_werk(_konzept(), gliederung=GLIEDERUNG, gliederung_fassung=1, gliederung_wunsch=None)])
+    f = Fragen()
+    ein_durchlauf(api, fragen=f, **F)
+    assert len(f.nachrichten) == 1 and api.zaehlt("aufruf") == 1
+    assert api.rufe("gliederung")[0]["gliederung"]["titel"] == "Titel"          # vom Modell, nicht "Konzeptthema"
+
+
+def test_konzept_gliederung_bei_text_wartet_baut_nichts(F):
+    api = FakeApi([_konzept_werk(_konzept(), stand="text_wartet")])
+    f = Fragen()
+    ein_durchlauf(api, fragen=f, **F)
+    assert api.zaehlt("gliederung") == 0 and f.nachrichten == [] and api.zaehlt("aufruf") == 0
+
+
+def test_konzept_gliederung_409_ist_still_und_baut_nicht_neu_auf_dem_modell(F):
+    api = FakeApi([_konzept_werk(_konzept())])
+    def besetzt(aid, gliederung, quellen):
+        raise ApiFehler(409, "x")
+    api.gliederung = besetzt
+    f = Fragen()
+    ein_durchlauf(api, fragen=f, **F)
+    assert f.nachrichten == [] and api.zaehlt("gliederung_aufgegeben") == 0 and api.zaehlt("hinweis") == 0
+
+
+def test_konzept_gliederung_anderer_4xx_faellt_aufs_modell_und_versucht_das_konzept_nicht_wieder(F):
+    api = FakeApi([_konzept_werk(_konzept())])
+    gesehen = []
+    echt = api.gliederung
+    def abgelehnt(aid, gliederung, quellen):
+        gesehen.append(gliederung["titel"])
+        if gliederung["titel"] == "Konzeptthema":
+            raise ApiFehler(400, "x")
+        return echt(aid, gliederung, quellen)
+    api.gliederung = abgelehnt
+    f = Fragen()
+    ein_durchlauf(api, fragen=f, **F)
+    assert gesehen == ["Konzeptthema", "Titel"] and len(f.nachrichten) == 1
+    ein_durchlauf(api, fragen=f, **F)                      # naechster Tick: kein erneuter Konzeptversuch
+    assert "Konzeptthema" not in gesehen[2:]
+
+
+def test_konzept_gliederung_5xx_wird_weitergereicht_wie_beim_modellweg(F):
+    api = FakeApi([_konzept_werk(_konzept())])
+    def kaputt(aid, gliederung, quellen):
+        raise ApiFehler(500, "x")
+    api.gliederung = kaputt
+    f = Fragen()
+    ein_durchlauf(api, fragen=f, **F)                       # der Schritt meldet "fehler", spaeter neuer Versuch
+    assert f.nachrichten == [] and api.zaehlt("gliederung_aufgegeben") == 0
+
+
+def test_unbrauchbares_konzept_wird_im_log_vermerkt_ohne_inhalt(F, caplog):
+    k = _konzept(stufen=1, je=2)
+    k["kernaussage"] = "GEHEIMER-INHALT"
+    api = FakeApi([_konzept_werk(k)])
+    with caplog.at_level("WARNING", logger="werkbank_arbeiter"):
+        ein_durchlauf(api, fragen=Fragen(), **F)
+    assert "nicht verwertbar" in caplog.text and "GEHEIMER-INHALT" not in caplog.text
+
+
+def test_auftrag_ohne_konzept_und_eingabe_none_laufen_wie_heute(F):
+    api = FakeApi([werk(eingabe=None)])
+    f = Fragen()
+    ein_durchlauf(api, fragen=f, **F)
+    assert len(f.nachrichten) == 1

@@ -198,7 +198,7 @@ def _gedaechtnis(api) -> dict:
     g = getattr(api, "_werkbank_gedaechtnis", None)
     if g is None:
         g = {"aufgegeben": {}, "budget_bis": 0.0, "budget_gemeldet": set(), "fehler_offen": {},
-             "meldungen_offen": {}}
+             "meldungen_offen": {}, "konzept_verworfen": set()}
         try:
             api._werkbank_gedaechtnis = g
         except AttributeError:
@@ -279,11 +279,20 @@ def _gliederung(c: _Lauf, werk: dict) -> str | None:
         return None
     if _gliederung_geparkt(c, werk):
         return None
-    if not wunsch:                        # erste Gliederung eines Konzept-Auftrags: eins zu eins, ohne Modell
+    if (not wunsch and not werk.get("gliederung") and fassung == 0
+            and aid not in c.gedaechtnis["konzept_verworfen"]):
+        # Nur die ERSTE Fassung eines Konzept-Auftrags: eins zu eins aus dem Konzept, ohne Modell.
         aus_konzept = video_texte.gliederung_aus_konzept(eingabe)
         if aus_konzept is not None:
-            c.lease(aid)
-            return _gliederung_speichern(c, werk, aus_konzept)
+            try:
+                return _gliederung_speichern(c, werk, aus_konzept)
+            except ApiFehler as e:
+                if not 400 <= e.code < 500:       # 5xx: kann voruebergehend sein, wie beim Modellweg
+                    raise
+                LOG.warning("Gliederung aus dem Konzept abgelehnt: API %s - weiter ueber das Modell", e.code)
+                c.gedaechtnis["konzept_verworfen"].add(aid)
+        elif eingabe.get("konzept"):
+            LOG.warning("Konzept im Auftrag nicht verwertbar - Gliederung ueber das Modell")
     if c.budget:
         _budget_melden(c, werk)
         return "budget"
