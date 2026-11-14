@@ -15,7 +15,7 @@ from spaces.event_management.system.kontext import Kontext, NichtGefunden, trans
 log = logging.getLogger(__name__)
 
 _KURZ = re.compile(r"[a-z0-9-]{2,32}")
-_ROLLEN = ("leitung", "mitglied")
+ROLLEN = ("leitung", "mitglied")
 
 
 def firma_anlegen(conn: psycopg.Connection[Any], k: Kontext, name: str, kurz: str) -> dict[str, Any]:
@@ -77,7 +77,7 @@ def mitgliedschaft_setzen(
     """Legt eine NEUE Mitgliedschaft an (Recht `einladen`). Eine bestehende bleibt
     unveraendert (ValueError), auch bei parallelem Anlegen; Rollen aendert nur
     `rolle_aendern`."""
-    if rolle not in _ROLLEN:
+    if rolle not in ROLLEN:
         raise ValueError("Rolle ungueltig")
     rechte.pruefe(k, "einladen", firma_id)
     with transaktion(conn, k) as cur:
@@ -95,7 +95,7 @@ def rolle_aendern(
 ) -> None:
     """Aendert die Rolle einer BESTEHENDEN Mitgliedschaft (Recht `rolle_aendern`), in einer
     Transaktion. Unbekannte Mitgliedschaft: NichtGefunden. Die letzte Leitung bleibt."""
-    if rolle not in _ROLLEN:
+    if rolle not in ROLLEN:
         raise ValueError("Rolle ungueltig")
     rechte.pruefe(k, "rolle_aendern", firma_id)
     with transaktion(conn, k) as cur:

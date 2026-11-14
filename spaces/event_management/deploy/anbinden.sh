@@ -3,17 +3,22 @@
 # Saat der Konfiguration und der Arbeitsbereiche, Schluessel, Neustart, Probe.
 # Wiederholbar. Muster: sales-claw deploy/post-anbinden.sh und gateway-saat.sh.
 #
-#   printf '%s\n%s\n%s\n%s\n' "$GW" "$TG" "$APP" "$CC" | bash deploy/anbinden.sh
+#   printf '%s\n%s\n%s\n%s\n%s\n' "$GW" "$TG" "$APP" "$CC" "$MLD" | bash deploy/anbinden.sh
 #
-# Genau vier Zeilen von stdin (nie als Argument, nie in einer Ausgabe):
+# Genau fuenf Zeilen von stdin (nie als Argument, nie in einer Ausgabe):
 #   1  Gateway-Token
 #   2  Telegram-Bot-Token
 #   3  Authorization-Wert der Event-App (Header des MCP-Servers `event-app`)
 #   4  Claude-Code-OAuth-Token fuer den Shim; leer = laufzeit/claude-token
-#      bleibt, wie es ist. Zeilen 1-3 duerfen nicht leer sein.
+#      bleibt, wie es ist.
+#   5  Authorization-Wert des Servers `melden` (Empfangs-Agent `main`):
+#      "Bearer <Schluessel der Art melden>", ausgestellt mit
+#      `python -m spaces.event_management.system.schluessel ausstellen --art melden`.
+#   Zeilen 1-3 und 5 duerfen nicht leer sein.
 #
 # Voraussetzung: `python deploy/fuellen.py werte.local.json build/` lief. Der
-# Claw-Container muss NICHT laufen.
+# Claw-Container muss NICHT laufen. Auf dem Deploy-Host wird python3 gebraucht
+# (Schutz der Legacy-Gruppe, Ruling T8-a).
 #
 # Schluesselwege (Begruendung): `openclaw config set <pfad> <wert>` nimmt den
 # Wert als Argument; er stuende dann in der Prozessliste und in `docker
@@ -24,6 +29,7 @@
 #   gateway.auth.token                          Gateway-Token
 #   channels.telegram.botToken                  Telegram-Bot-Token
 #   mcp.servers.event-app.headers.Authorization Event-App
+#   mcp.servers.melden.headers.Authorization    Empfang (melden-Schluessel)
 #
 # Ablauf: stdin pruefen -> Schluesseldateien auf dem Host -> Saat und Schluessel
 # per `docker compose run --rm --no-deps -T --entrypoint node` (braucht weder
@@ -31,10 +37,18 @@
 # es noch keine openclaw.json) -> `docker compose up -d` -> Proben (Gateway,
 # Shim). Neustart nur bei Aenderung und nur, wenn der Claw schon lief.
 #
-# Der Vergleich der openclaw.json ignoriert die Schluesselfelder sowie die
-# Top-Level-Felder `meta` und `wizard`. Wird die Datei trotzdem bei jedem Lauf
-# ersetzt, hat OpenClaw weitere eigene Felder ergaenzt; das ist akzeptabel
-# (Sicherung + Neuanlage + Schluessel neu, Ergebnis bleibt gleich).
+# Der Vergleich der openclaw.json ignoriert die Schluesselfelder, die
+# Top-Level-Felder `meta` und `wizard` sowie alles, was der
+# Bereitstellungs-Arbeiter angelegt hat (Ruling T8-b): Agenten
+# `ev-|ld-|bo-<8 Hex>`, ihre MCP-Server, ihre Bindings und die Gruppen-Eintraege
+# ihrer Gruppen. Wird die Datei durch die Saat ersetzt, werden genau diese Teile
+# aus der aktuellen Datei uebernommen (nur Anzahlen in der Ausgabe; die
+# Server tragen Schluessel). Wird die Datei trotzdem bei jedem Lauf ersetzt,
+# hat OpenClaw weitere eigene Felder ergaenzt; das ist akzeptabel (Sicherung +
+# Neuanlage + Schluessel neu, Ergebnis bleibt gleich).
+#
+# Bricht ab, solange die Legacy-Gruppe der Saat keinen eigenen Agenten hat
+# (Ruling T8-a, ev-legacy kommt mit Etappe 4).
 #
 # Ausgaben nennen nur Namen und Zustaende, nie Werte.
 set -eu
@@ -45,17 +59,19 @@ cd "$(dirname "$0")/.."
 CLAW=event-management-claw
 SHIM=event-management-shim
 
-# --- 1. Vier Zeilen von stdin ------------------------------------------------
+# --- 1. Fuenf Zeilen von stdin -----------------------------------------------
 IFS= read -r GW || true
 IFS= read -r TG || true
 IFS= read -r APP || true
 IFS= read -r CC || true
+IFS= read -r MLD || true
 # CRLF aus der Pipeline wegnehmen (ein \r im Schluessel ist ein stiller Fehler).
-GW=${GW%$'\r'}; TG=${TG%$'\r'}; APP=${APP%$'\r'}; CC=${CC%$'\r'}
+GW=${GW%$'\r'}; TG=${TG%$'\r'}; APP=${APP%$'\r'}; CC=${CC%$'\r'}; MLD=${MLD%$'\r'}
 
 if [ -z "$GW" ]; then echo "ABBRUCH: Zeile 1 (Gateway-Token) ist leer." >&2; exit 1; fi
 if [ -z "$TG" ]; then echo "ABBRUCH: Zeile 2 (Telegram-Bot-Token) ist leer." >&2; exit 1; fi
 if [ -z "$APP" ]; then echo "ABBRUCH: Zeile 3 (Authorization der Event-App) ist leer." >&2; exit 1; fi
+if [ -z "$MLD" ]; then echo "ABBRUCH: Zeile 5 (Authorization des Empfangs) ist leer." >&2; exit 1; fi
 
 # Nur druckbares ASCII sowie Leer- und Tabzeichen; alles andere bricht ab, die
 # Meldung nennt die Zeile, nie den Wert.
@@ -71,8 +87,43 @@ zeichen_pruefen 1 "$GW"
 zeichen_pruefen 2 "$TG"
 zeichen_pruefen 3 "$APP"
 zeichen_pruefen 4 "$CC"
+zeichen_pruefen 5 "$MLD"
 
 [ -f build/openclaw.json ] || { echo "ABBRUCH: build/openclaw.json fehlt (deploy/fuellen.py ausfuehren)." >&2; exit 1; }
+
+# Schutz der Legacy-Gruppe (Ruling T8-a): die Saat fuehrt die bisherige
+# Festival-Gruppe ({{TELEGRAM_GRUPPE}}) mit requireMention false. Ohne einen
+# eigenen Agenten neben `main`, der an sie gebunden ist (ev-legacy, Etappe 4),
+# antwortete dort der Empfang `main` mit nur den zwei Melde-Werkzeugen. Darum
+# Abbruch vor jeder Aenderung. Geprueft wird die Vorlage config/openclaw.json
+# (oeffentlich, ohne Werte); die Meldung nennt keine Daten.
+RC=0
+python3 - config/openclaw.json <<'PY' || RC=$?
+import json
+import sys
+
+GRUPPE = "{{TELEGRAM_GRUPPE}}"
+try:
+    with open(sys.argv[1], encoding="utf-8") as datei:
+        text = datei.read()
+    konfig = json.loads(text)
+except (OSError, ValueError):
+    sys.exit(2)
+if GRUPPE not in text:
+    sys.exit(0)
+eigene = [
+    b for b in (konfig.get("bindings") or [])
+    if isinstance(b, dict) and b.get("agentId") not in (None, "", "main")
+    and isinstance(b.get("match"), dict) and isinstance(b["match"].get("peer"), dict)
+    and b["match"]["peer"].get("id") == GRUPPE
+]
+sys.exit(0 if eigene else 3)
+PY
+if [ "$RC" = 3 ]; then
+  echo "ABBRUCH: ev-legacy fehlt – erst Etappe 4 (die Legacy-Gruppe hat in config/openclaw.json keinen eigenen Agenten neben main)." >&2
+  exit 1
+fi
+if [ "$RC" != 0 ]; then echo "ABBRUCH: config/openclaw.json nicht lesbar." >&2; exit 1; fi
 # Der Shim braucht laufzeit/claude-token, um ueberhaupt zu starten.
 if [ ! -f ./laufzeit/claude-token ] && [ -z "$CC" ]; then
   echo "ABBRUCH: laufzeit/claude-token fehlt und Zeile 4 (Claude-Code-OAuth-Token) ist leer." >&2
@@ -109,21 +160,107 @@ else
 fi
 
 # --- 3. Saat ins Volume ------------------------------------------------------
-# openclaw.json: fehlt sie, kommt die Saat; weicht sie ab (ohne die drei
-# Schluesselfelder), wird sie gesichert und durch die Saat ersetzt. Von den
+# openclaw.json: fehlt sie, kommt die Saat; weicht sie ab (ohne die vier
+# Schluesselfelder und ohne die bereitgestellten Agenten), wird sie gesichert
+# und durch die Saat ersetzt, die bereitgestellten Agenten samt Server,
+# Bindings und Gruppen-Eintraegen werden mitgenommen (Ruling T8-b). Von den
 # Arbeitsbereichen werden nur SOUL.md, AGENTS.md und skills/ ueberschrieben.
 SAAT_JS=$(cat <<'JS'
 const fs = require('fs');
 const STATE = '/home/node/.openclaw';
 const SEED = '/seed';
 const CFG = STATE + '/openclaw.json';
+// Atomar (F6): Temp-Datei im selben Verzeichnis (0600), dann rename. Das Gateway sieht
+// so nie eine halb geschriebene openclaw.json.
+function atomar(ziel, text) {
+  const tmp = ziel + '.tmp-' + process.pid;
+  try {
+    fs.writeFileSync(tmp, text, { mode: 0o600 });
+    fs.chmodSync(tmp, 0o600);
+    fs.renameSync(tmp, ziel);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch (e2) { /* schon weg */ }
+    throw e;
+  }
+}
 const GEHEIM = [
   ['gateway', 'auth', 'token'],
   ['channels', 'telegram', 'botToken'],
   ['mcp', 'servers', 'event-app', 'headers', 'Authorization'],
+  ['mcp', 'servers', 'melden', 'headers', 'Authorization'],
 ];
-function ohneGeheim(o) {
+// Vom Bereitstellungs-Arbeiter angelegt (Ruling T8-b): die Saat kennt diese
+// Agenten nicht; beim Ersetzen bleiben sie erhalten, im Vergleich zaehlen sie nicht.
+const AGENT = /^(ev|ld|bo)-[0-9a-f]{8}$/;
+function istObjekt(x) { return x !== null && typeof x === 'object' && !Array.isArray(x); }
+function gruppenVon(c) {
+  const t = istObjekt(c.channels) && istObjekt(c.channels.telegram) ? c.channels.telegram : null;
+  return t && istObjekt(t.groups) ? t.groups : null;
+}
+function bereitgestellt(c) {
+  const b = { agenten: [], server: {}, bindings: [], gruppen: {} };
+  if (!istObjekt(c)) return b;
+  if (istObjekt(c.agents) && Array.isArray(c.agents.list)) {
+    b.agenten = c.agents.list.filter((a) => istObjekt(a) && AGENT.test(String(a.id)));
+  }
+  if (istObjekt(c.mcp) && istObjekt(c.mcp.servers)) {
+    for (const k of Object.keys(c.mcp.servers)) if (AGENT.test(k)) b.server[k] = c.mcp.servers[k];
+  }
+  if (Array.isArray(c.bindings)) {
+    b.bindings = c.bindings.filter((x) => istObjekt(x) && AGENT.test(String(x.agentId)));
+  }
+  const g = gruppenVon(c);
+  for (const x of b.bindings) {
+    const p = istObjekt(x.match) && istObjekt(x.match.peer) ? x.match.peer : null;
+    if (p && p.kind === 'group' && g && Object.prototype.hasOwnProperty.call(g, String(p.id))) {
+      b.gruppen[String(p.id)] = g[String(p.id)];
+    }
+  }
+  return b;
+}
+// Entfernt die bereitgestellten Teile; `gruppen` (Chat-IDs) kommt aus der aktuellen
+// Datei und gilt fuer beide Seiten des Vergleichs gleich.
+function ohneBereitgestellt(c, gruppen) {
+  if (istObjekt(c.agents) && Array.isArray(c.agents.list)) {
+    c.agents.list = c.agents.list.filter((a) => !(istObjekt(a) && AGENT.test(String(a.id))));
+  }
+  if (istObjekt(c.mcp) && istObjekt(c.mcp.servers)) {
+    for (const k of Object.keys(c.mcp.servers)) if (AGENT.test(k)) delete c.mcp.servers[k];
+  }
+  if (Array.isArray(c.bindings)) {
+    c.bindings = c.bindings.filter((x) => !(istObjekt(x) && AGENT.test(String(x.agentId))));
+    if (c.bindings.length === 0) delete c.bindings;
+  }
+  const g = gruppenVon(c);
+  if (g) for (const k of gruppen) delete g[k];
+}
+function uebernehmen(c, b) {
+  if (b.agenten.length) {
+    if (!istObjekt(c.agents)) c.agents = {};
+    const liste = Array.isArray(c.agents.list) ? c.agents.list : [];
+    c.agents.list = liste.filter((a) => !(istObjekt(a) && AGENT.test(String(a.id)))).concat(b.agenten);
+  }
+  if (Object.keys(b.server).length) {
+    if (!istObjekt(c.mcp)) c.mcp = {};
+    if (!istObjekt(c.mcp.servers)) c.mcp.servers = {};
+    Object.assign(c.mcp.servers, b.server);
+  }
+  if (b.bindings.length) {
+    const liste = Array.isArray(c.bindings) ? c.bindings : [];
+    c.bindings = liste.filter((x) => !(istObjekt(x) && AGENT.test(String(x.agentId)))).concat(b.bindings);
+  }
+  if (Object.keys(b.gruppen).length) {
+    if (!istObjekt(c.channels)) c.channels = {};
+    if (!istObjekt(c.channels.telegram)) c.channels.telegram = {};
+    if (!istObjekt(c.channels.telegram.groups)) c.channels.telegram.groups = {};
+    const g = c.channels.telegram.groups;
+    // Eigene Eintraege der Saat (Legacy-Gruppe, "*") gewinnen.
+    for (const k of Object.keys(b.gruppen)) if (!Object.prototype.hasOwnProperty.call(g, k)) g[k] = b.gruppen[k];
+  }
+}
+function ohneGeheim(o, gruppen) {
   const c = JSON.parse(JSON.stringify(o));
+  ohneBereitgestellt(c, gruppen);
   delete c.meta;    // OpenClaw schreibt eigene Felder (meta, wizard, lastTouched*)
   delete c.wizard;
   for (const p of GEHEIM) {
@@ -151,21 +288,27 @@ function gleich(a, b) { return JSON.stringify(stabil(a)) === JSON.stringify(stab
 try {
   const saat = JSON.parse(fs.readFileSync(SEED + '/openclaw.json', 'utf8'));
   if (!fs.existsSync(CFG)) {
-    fs.copyFileSync(SEED + '/openclaw.json', CFG);
-    fs.chmodSync(CFG, 0o600);
+    atomar(CFG, fs.readFileSync(SEED + '/openclaw.json', 'utf8'));
     console.log('openclaw.json: angelegt');
   } else {
     let aktuell = null;
     try { aktuell = JSON.parse(fs.readFileSync(CFG, 'utf8')); } catch (e) { aktuell = null; }
-    if (aktuell !== null && gleich(ohneGeheim(aktuell), ohneGeheim(saat))) {
+    const mit = bereitgestellt(aktuell);
+    const gruppen = Object.keys(mit.gruppen);
+    if (aktuell !== null && gleich(ohneGeheim(aktuell, gruppen), ohneGeheim(saat, gruppen))) {
       console.log('openclaw.json: unveraendert');
     } else {
       const zs = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '');
       fs.copyFileSync(CFG, CFG + '.vor-anbinden-' + zs);
       fs.chmodSync(CFG + '.vor-anbinden-' + zs, 0o600);
-      fs.copyFileSync(SEED + '/openclaw.json', CFG);
-      fs.chmodSync(CFG, 0o600);
+      const neu = JSON.parse(JSON.stringify(saat));
+      uebernehmen(neu, mit);
+      atomar(CFG, JSON.stringify(neu, null, 2) + '\n');
       console.log('openclaw.json: gesichert und durch die Saat ersetzt');
+      // Nur Anzahlen: die Server tragen Schluessel, Bindings Chat-IDs.
+      console.log('bereitgestellte Agenten uebernommen: ' + mit.agenten.length + ' Agenten, '
+        + Object.keys(mit.server).length + ' Server, ' + mit.bindings.length + ' Bindings, '
+        + gruppen.length + ' Gruppen');
     }
   }
   for (const w of ['workspace', 'workspace-brain']) {
@@ -197,11 +340,25 @@ esac
 SCHLUESSEL_JS=$(cat <<'JS'
 const fs = require('fs');
 const CFG = '/home/node/.openclaw/openclaw.json';
+// Atomar (F6): Temp-Datei im selben Verzeichnis (0600), dann rename. Das Gateway sieht
+// so nie eine halb geschriebene openclaw.json.
+function atomar(ziel, text) {
+  const tmp = ziel + '.tmp-' + process.pid;
+  try {
+    fs.writeFileSync(tmp, text, { mode: 0o600 });
+    fs.chmodSync(tmp, 0o600);
+    fs.renameSync(tmp, ziel);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch (e2) { /* schon weg */ }
+    throw e;
+  }
+}
 const ZEILEN = fs.readFileSync(0, 'utf8').split('\n');
 const ZIELE = [
   ['gateway.auth.token', ['gateway', 'auth', 'token']],
   ['channels.telegram.botToken', ['channels', 'telegram', 'botToken']],
   ['mcp.servers.event-app.headers.Authorization', ['mcp', 'servers', 'event-app', 'headers', 'Authorization']],
+  ['mcp.servers.melden.headers.Authorization', ['mcp', 'servers', 'melden', 'headers', 'Authorization']],
 ];
 try {
   const c = JSON.parse(fs.readFileSync(CFG, 'utf8'));
@@ -224,8 +381,7 @@ try {
     }
   });
   if (geaendert && !process.exitCode) {
-    fs.writeFileSync(CFG, JSON.stringify(c, null, 2) + '\n', { mode: 0o600 });
-    fs.chmodSync(CFG, 0o600);
+    atomar(CFG, JSON.stringify(c, null, 2) + '\n');
   }
 } catch (e) {
   console.log('Schluessel: Fehler (' + (e && e.code ? e.code : 'unbekannt') + ')');
@@ -233,7 +389,7 @@ try {
 }
 JS
 )
-AUS=$(printf '%s\n%s\n%s\n' "$GW" "$TG" "$APP" | docker compose run --rm --no-deps -T --entrypoint node "$CLAW" -e "$SCHLUESSEL_JS") \
+AUS=$(printf '%s\n%s\n%s\n%s\n' "$GW" "$TG" "$APP" "$MLD" | docker compose run --rm --no-deps -T --entrypoint node "$CLAW" -e "$SCHLUESSEL_JS") \
   || { printf '%s\n' "$AUS"; echo "ABBRUCH: Schluessel konnten nicht gesetzt werden." >&2; exit 1; }
 printf '%s\n' "$AUS"
 case "$AUS" in

@@ -17,10 +17,11 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from spaces.event_management.system import api, events, firmen, zugang
-from spaces.event_management.system.bausteine import REGISTRY
+from spaces.event_management.system.bausteine import KERN, REGISTRY
 from spaces.event_management.system.kategorien import KategorieFehler
 from spaces.event_management.system.kontext import Kontext, transaktion
 from spaces.event_management.system.mailer import SpeicherMailer
+from spaces.event_management.system.telegram import SpeicherTelegram
 
 BASIS = "https://events.example.org"
 PW = "ein-langes-passwort-1"
@@ -32,6 +33,11 @@ OEFFENTLICH = {("POST", "/api/anmelden"), ("GET", "/api/einladung/{token}"),
 SCHREIBEND = {"POST", "PATCH", "PUT", "DELETE"}
 
 Fabrik = Callable[..., TestClient]
+
+# Registry-Eintraege der Kern-Bausteine (die Testwelt hat je Firma ein weihnachtsfeier-Event).
+# Zusatz-Bausteine laufen ueber dieselben generischen Routen; ihre Mandantenmatrix steht in
+# test_kern.py (Fachschicht, mit passender Kategorie) und test_rls.py (RLS).
+KERN_EINTRAEGE = sorted(n for n, t in REGISTRY.items() if (t.baustein or n) in KERN)
 
 
 @pytest.fixture(autouse=True)
@@ -139,8 +145,14 @@ def mailer() -> SpeicherMailer:
 
 
 @pytest.fixture
-def app(app_dsn: str, mailer: SpeicherMailer) -> FastAPI:
-    return api.erstelle_app(app_dsn, GEHEIM, mailer, BASIS, cookie_sicher=False)
+def telegram() -> SpeicherTelegram:
+    return SpeicherTelegram()
+
+
+@pytest.fixture
+def app(app_dsn: str, mailer: SpeicherMailer, telegram: SpeicherTelegram) -> FastAPI:
+    return api.erstelle_app(app_dsn, GEHEIM, mailer, BASIS, cookie_sicher=False,
+                            telegram=telegram)
 
 
 @pytest.fixture
@@ -170,6 +182,16 @@ def fabrik(app: FastAPI) -> Iterator[Fabrik]:
             assert haupt is not None
 
 
+# Pruefcode der gemeldeten Verbindungen der Testwelt (Beispielwert, F1).
+PRUEF = {"pruefcode": "ABCDEF"}
+
+
+def _pruefcode_setzen(admin: Any, verbindung_id: object) -> None:
+    admin.execute("insert into event.verbindung_pruefung (verbindung_id, pruef_hash)"
+                  " values (%s, encode(sha256(convert_to(%s, 'UTF8')), 'hex'))",
+                  (verbindung_id, PRUEF["pruefcode"]))
+
+
 @pytest.fixture
 def welt(db_admin: Any, fabrik: Fabrik) -> dict[str, Any]:
     fa, fb = _firma(db_admin, "bsp-a"), _firma(db_admin, "bsp-b")
@@ -188,8 +210,40 @@ def welt(db_admin: Any, fabrik: Fabrik) -> dict[str, Any]:
     for seite, firma, ev in (("a", fa, ea), ("b", fb, eb)):
         k = _kontakt(db_admin, firma, "Kontakt " + seite)
         w["k" + seite + "_frei"] = _kontakt(db_admin, firma, "Frei " + seite)
-        w["z" + seite] = {b: _admin_zeile(db_admin, b, firma, ev, k) for b in REGISTRY}
-    w["c"] = {"la": fabrik("leitung-a@example.org"), "betreiber": fabrik("betreiber@example.org")}
+        w["z" + seite] = {b: _admin_zeile(db_admin, b, firma, ev, k) for b in KERN_EINTRAEGE}
+        # Nachrichten: bestaetigte Telegram-Gruppe, ein Teilnehmer mit Mail (Zusage offen)
+        # und ein Mail-Entwurf an ihn.
+        db_admin.execute("update event.kontakt set mail = %s where id = %s",
+                         (f"kontakt-{seite}@example.org", k))
+        w["vt" + seite] = db_admin.execute(
+            "insert into event.verbindung (art, code_hash, event_id, firma_id, person_id,"
+            " ablauf, chat_id, status, gemeldet, bestaetigt) values ('gruppe', %s, %s, %s,"
+            " %s, now() + interval '15 minutes', %s, 'bestaetigt', now(), now())"
+            " returning id",
+            (("a" if seite == "a" else "b") * 64, ev, firma, w["l" + seite],
+             -1001234567890 if seite == "a" else -1001234567891)).fetchone()["id"]
+        w["n" + seite] = db_admin.execute(
+            "insert into event.nachricht (event_id, firma_id, kanal, betreff, text,"
+            " empfaenger_filter) values (%s, %s, 'mail', 'Betreff', 'Text',"
+            " '{\"zusage\": [\"offen\"]}') returning id", (ev, firma)).fetchone()["id"]
+        # Verbinden (Task 7): eine weitere, gemeldete Gruppe zum Bestaetigen/Verwerfen.
+        w["v" + seite] = db_admin.execute(
+            "insert into event.verbindung (art, code_hash, event_id, firma_id, person_id,"
+            " ablauf, chat_id, chat_titel, status, gemeldet, pruefcode_gesendet) values"
+            " ('gruppe', %s, %s, %s, %s, now() + interval '15 minutes', %s, 'Beispielgruppe',"
+            " 'gemeldet', now(), now()) returning id",
+            (("c" if seite == "a" else "d") * 64, ev, firma, w["l" + seite],
+             -1001234567892 if seite == "a" else -1001234567893)).fetchone()["id"]
+        _pruefcode_setzen(db_admin, w["v" + seite])
+    # Gemeldeter Direktchat der Leitung B (nur sie selbst darf ihn bestaetigen).
+    w["vd_b"] = db_admin.execute(
+        "insert into event.verbindung (art, code_hash, person_id, ablauf, chat_id, status,"
+        " gemeldet, pruefcode_gesendet) values ('direkt', %s, %s, now() + interval"
+        " '15 minutes', 123456789, 'gemeldet', now(), now()) returning id",
+        ("e" * 64, lb)).fetchone()["id"]
+    _pruefcode_setzen(db_admin, w["vd_b"])
+    w["c"] = {"la": fabrik("leitung-a@example.org"), "ma": fabrik("mitglied-a@example.org"),
+              "betreiber": fabrik("betreiber@example.org")}
     return w
 
 
@@ -302,7 +356,7 @@ def test_ohne_cookie_401(app: FastAPI, fabrik: Fabrik, db_admin: Any) -> None:
             assert r.status_code == 401, (methode, route.path, r.text)
             geprueft.add((methode, route.path))
     assert ("GET", "/api/ich") in geprueft and ("POST", "/api/abmelden") in geprueft
-    assert len(geprueft) == 23  # neue Route? dann hier bewusst nachziehen
+    assert len(geprueft) == 38  # neue Route? dann hier bewusst nachziehen (F1: trennen)
     # Gefaelschter oder kaputter Cookie
     p = _person(db_admin, "eva@example.org")
     echt = zugang.cookie_ausstellen(p, 1, GEHEIM)
@@ -334,7 +388,7 @@ def test_ohne_csrf_403(app: FastAPI, welt: dict[str, Any], db_admin: Any,
             r = la.request(methode, _pfad(route.path), json={})
             assert r.status_code == 403, (methode, route.path, r.text)
             geprueft.add((methode, route.path))
-    assert len(geprueft) == 13 and ("POST", "/api/abmelden") in geprueft
+    assert len(geprueft) == 24 and ("POST", "/api/abmelden") in geprueft
 
     vorher = _stand(db_admin)
     url = f"/api/firmen/{welt['fa']}/kontakte"
@@ -371,18 +425,27 @@ def test_abmelden_entwertet_cookie_ueberall(db_admin: Any, fabrik: Fabrik) -> No
 FAMILIEN = [
     "firma_anlegen", "einladen", "rolle_aendern", "mitglied_entfernen",
     "event_anlegen", "event_aendern", "event_status", "event_loeschen", "kontakt_anlegen",
-    *[f"{op}:{b}" for b in sorted(REGISTRY) for op in ("b_anlegen", "b_aendern", "b_loeschen")],
+    "kontakt_aendern", "kontakt_entfernen", "nachricht_gruppe", "nachricht_mail",
+    "nachricht_freigeben", "nachricht_verwerfen",
+    "gruppe_code", "verbindung_bestaetigen", "verbindung_verwerfen", "verbindung_trennen",
+    "direkt_code",
+    *[f"{op}:{b}" for b in KERN_EINTRAEGE for op in ("b_anlegen", "b_aendern", "b_loeschen")],
 ]
+# Fremdversuch endet hier mit 403 statt 404 (kein fremder Mandant, sondern fehlendes Recht).
+FREMD_403 = {"firma_anlegen", "direkt_code"}
 # Nur Fremdversuch: fremde Person/Zeile ueber die eigene Firma/das eigene Event adressiert.
 NUR_FREMD = [
     "rolle_aendern_fremde_person", "mitglied_entfernen_fremde_person",
-    *[f"{op}:{b}" for b in sorted(REGISTRY)
+    "kontakt_aendern_fremder_kontakt", "kontakt_entfernen_fremder_kontakt",
+    "verbindung_bestaetigen_fremde_person",
+    *[f"{op}:{b}" for b in KERN_EINTRAEGE
       for op in ("b_aendern_fremde_zeile", "b_loeschen_fremde_zeile")],
 ]
 # Lesende Zugriffe auf Event/Firma B (fremd: 404, eigen: 200).
 LESEN = [
-    "event_lesen", "verlauf_lesen", "mitglieder_lesen", "kontakte_lesen",
-    *[f"b_liste:{b}" for b in sorted(REGISTRY)],
+    "event_lesen", "verlauf_lesen", "mitglieder_lesen", "kontakte_lesen", "nachrichten_lesen",
+    "verbinden_lesen",
+    *[f"b_liste:{b}" for b in KERN_EINTRAEGE],
 ]
 
 
@@ -417,6 +480,16 @@ def _anfrage(w: dict[str, Any], fall: str, eigen: bool) -> tuple[str, str, Any, 
         return "DELETE", f"/api/events/{e}", None, "la"
     if op == "kontakt_anlegen":
         return "POST", f"/api/firmen/{f}/kontakte", {"name": "Neuer Kontakt"}, "la"
+    if op == "kontakt_aendern":
+        return ("PATCH", f"/api/firmen/{f}/kontakte/{w['k' + s + '_frei']}",
+                {"name": "Umbenannt"}, "la")
+    if op == "kontakt_entfernen":
+        return "DELETE", f"/api/firmen/{f}/kontakte/{w['k' + s + '_frei']}", None, "la"
+    if op == "kontakt_aendern_fremder_kontakt":
+        return ("PATCH", f"/api/firmen/{w['fa']}/kontakte/{w['kb_frei']}",
+                {"name": "Umbenannt"}, "la")
+    if op == "kontakt_entfernen_fremder_kontakt":
+        return "DELETE", f"/api/firmen/{w['fa']}/kontakte/{w['kb_frei']}", None, "la"
     if op == "b_anlegen":
         return "POST", f"/api/events/{e}/b/{b}", _neue_werte(b, w["k" + s + "_frei"]), "la"
     if op == "b_aendern":
@@ -427,6 +500,32 @@ def _anfrage(w: dict[str, Any], fall: str, eigen: bool) -> tuple[str, str, Any, 
         return "PATCH", f"/api/events/{w['ea']}/b/{b}/{w['zb'][b]}", _aenderung(b), "la"
     if op == "b_loeschen_fremde_zeile":
         return "DELETE", f"/api/events/{w['ea']}/b/{b}/{w['zb'][b]}", None, "la"
+    if op == "nachricht_gruppe":
+        return "POST", f"/api/events/{e}/nachrichten/gruppe", {"text": "Hallo"}, "la"
+    if op == "nachricht_mail":
+        return ("POST", f"/api/events/{e}/nachrichten/mail",
+                {"betreff": "Info", "text": "Hallo", "zusage": ["offen"]}, "la")
+    if op == "nachricht_freigeben":
+        return "POST", f"/api/nachrichten/{w['n' + s]}/freigeben", None, "la"
+    if op == "nachricht_verwerfen":
+        return "POST", f"/api/nachrichten/{w['n' + s]}/verwerfen", None, "la"
+    if op == "gruppe_code":
+        return "POST", f"/api/events/{e}/verbinden", None, "la"
+    if op == "verbindung_bestaetigen":
+        return "POST", f"/api/verbindungen/{w['v' + s]}/bestaetigen", PRUEF, "la"
+    if op == "verbindung_verwerfen":
+        return "POST", f"/api/verbindungen/{w['v' + s]}/verwerfen", None, "la"
+    if op == "verbindung_bestaetigen_fremde_person":
+        return "POST", f"/api/verbindungen/{w['vd_b']}/bestaetigen", PRUEF, "la"
+    if op == "verbindung_trennen":
+        return "POST", f"/api/verbindungen/{w['vt' + s]}/trennen", None, "la"
+    if op == "direkt_code":
+        # Fremd: ein Mitglied ohne Leitung (der Direktchat gehoert immer der eigenen Person).
+        return "POST", "/api/ich/verbinden", None, "la" if eigen else "ma"
+    if op == "verbinden_lesen":
+        return "GET", f"/api/events/{e}/verbinden", None, "la"
+    if op == "nachrichten_lesen":
+        return "GET", f"/api/events/{e}/nachrichten", None, "la"
     if op == "event_lesen":
         return "GET", f"/api/events/{e}", None, "la"
     if op == "verlauf_lesen":
@@ -455,15 +554,16 @@ def test_matrix_deckt_alle_schreibenden_routen_ab(app: FastAPI, welt: dict[str, 
 
 @pytest.mark.parametrize("fall", FAMILIEN + NUR_FREMD + LESEN)
 def test_mandantenmatrix_http(welt: dict[str, Any], db_admin: Any, mailer: SpeicherMailer,
-                              fall: str) -> None:
+                              telegram: SpeicherTelegram, fall: str) -> None:
     methode, url, daten, wer = _anfrage(welt, fall, eigen=False)
     vorher, mails = _stand(db_admin), len(mailer.gesendet)
     r = welt["c"][wer].request(methode, url, json=daten)
-    assert r.status_code == (403 if fall == "firma_anlegen" else 404), r.text
+    assert r.status_code == (403 if fall in FREMD_403 else 404), r.text
     if fall in LESEN:
         assert r.json() == {"detail": "Nicht gefunden"}
     assert _stand(db_admin) == vorher
     assert len(mailer.gesendet) == mails
+    assert telegram.gesendet == []
 
 
 @pytest.mark.parametrize("fall", LESEN)

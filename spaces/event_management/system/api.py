@@ -27,11 +27,14 @@ from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from spaces.event_management.system import events, firmen, kern, verlauf, zugang
+from spaces.event_management.system import (
+    events, firmen, kern, nachrichten, rechte, verbinden, verlauf, zugang,
+)
 from spaces.event_management.system.bausteine import REGISTRY
 from spaces.event_management.system.kategorien import Kategorie, lade_kategorien, waehlbare
 from spaces.event_management.system.kontext import KeinRecht, Kontext, NichtGefunden, transaktion
 from spaces.event_management.system.mailer import Mailer, SmtpMailer
+from spaces.event_management.system.telegram import Telegram, telegram_aus_umgebung
 
 log = logging.getLogger(__name__)
 
@@ -148,10 +151,45 @@ class KontaktDaten(_Eingabe):
     telegram: str | None = Field(default=None, max_length=200)
 
 
+class KontaktAenderung(_Eingabe):
+    name: str | None = Field(default=None, max_length=200)
+    mail: str | None = Field(default=None, max_length=320)
+    telegram: str | None = Field(default=None, max_length=200)
+
+
+class GruppenNachricht(_Eingabe):
+    text: str = Field(max_length=nachrichten.TEXT_MAX)
+
+
+class MailEntwurf(_Eingabe):
+    betreff: str = Field(max_length=nachrichten.BETREFF_MAX)
+    text: str = Field(max_length=nachrichten.TEXT_MAX)
+    zusage: list[str] = Field(min_length=1, max_length=len(nachrichten.ZUSAGEN))
+
+
+class PruefcodeDaten(_Eingabe):
+    # Der Pruefcode, den der Dienst nach dem Melden in den Telegram-Chat geschickt hat (F1).
+    pruefcode: str = Field(max_length=32)
+
+
+class FreigabeDaten(_Eingabe):
+    # Die Empfaengerzahl, die die Freigebende gesehen hat (Ruling T6-a); optional.
+    erwartet: int | None = Field(default=None, ge=0, strict=True)
+
+
 def _text_param(wert: str | None) -> str | None:
     if wert is not None:
         _sauber(wert)
     return wert
+
+
+def _darf(k: Kontext, aktion: str, firma_id: UUID) -> bool:
+    """Antwort von `rechte.pruefe` als bool (die Rollentabelle steht nur dort)."""
+    try:
+        rechte.pruefe(k, aktion, firma_id)
+    except (KeinRecht, NichtGefunden):
+        return False
+    return True
 
 
 # --- Fehlerabbildung -------------------------------------------------------------------
@@ -232,11 +270,13 @@ class Sitzung:
 def erstelle_app(
     dsn: str, geheimnis: bytes, mailer: Mailer, basis_url: str,
     kategorien_ordner: Path | None = None, *, cookie_sicher: bool = True,
+    telegram: Telegram | None = None,
 ) -> FastAPI:
     """Baut die App. Kategorien werden hier einmal geladen (KategorieFehler bricht ab).
 
     `basis_url` (fuer Einladungslinks) kommt nur aus der Konfiguration, nie aus der
     Anfrage. Der Pool oeffnet sich im Lifespan (uvicorn, ``with TestClient(app)``).
+    Ohne `telegram` lehnt die Nachricht an die Gruppe mit 422 ab.
     """
     if not isinstance(geheimnis, bytes) or len(geheimnis) < GEHEIMNIS_MIN_BYTES:
         raise ValueError(f"Geheimnis braucht mindestens {GEHEIMNIS_MIN_BYTES} Bytes")
@@ -309,8 +349,13 @@ def erstelle_app(
             person = cur.fetchone()
         if person is None:
             raise NichtGefunden("Person nicht gefunden")
-        return {"person": person, "betreiber": k.betreiber,
-                "firmen": firmen_mit_rolle(conn, k), "csrf": zugang.csrf_token(cookie, geheimnis)}
+        sichtbar = firmen_mit_rolle(conn, k)
+        ids = [f["id"] for f in sichtbar]
+        # Nur fuers Ein-/Ausblenden in der Oberflaeche; jede Route prueft selbst.
+        return {"person": person, "betreiber": k.betreiber, "firmen": sichtbar,
+                "rechte": {"event_anlegen": [f for f in ids if _darf(k, "event_anlegen", f)],
+                           "verwalten": [f for f in ids if _darf(k, "mitglied_entfernen", f)]},
+                "csrf": zugang.csrf_token(cookie, geheimnis)}
 
     def baustein_name(baustein: str) -> str:
         if baustein not in REGISTRY:
@@ -394,6 +439,14 @@ def erstelle_app(
     def mitglied_entfernen(firma_id: UUID, person_id: UUID, s: Schreiben) -> dict[str, Any]:
         firmen.mitglied_entfernen(s.conn, s.k, person_id, firma_id)
         return {"ok": True}
+
+    # --- Bausteine (Registry) ---------------------------------------------------------
+
+    @app.get("/api/bausteine")
+    def bausteine(s: Lesen) -> dict[str, Any]:
+        return {name: {"baustein": t.baustein or t.name, "felder": dict(t.felder),
+                       "pflicht": sorted(t.pflicht), "reihenfolge": list(t.felder)}
+                for name, t in REGISTRY.items()}
 
     # --- Kategorien -----------------------------------------------------------------
 
@@ -501,6 +554,87 @@ def erstelle_app(
         return kern.kontakt_anlegen(s.conn, s.k, firma_id, daten.name, daten.mail,
                                     daten.telegram)
 
+    @app.patch("/api/firmen/{firma_id}/kontakte/{kontakt_id}")
+    def kontakt_aendern(
+        firma_id: UUID, kontakt_id: UUID, daten: KontaktAenderung, s: Schreiben,
+    ) -> dict[str, Any]:
+        return kern.kontakt_aendern(s.conn, s.k, firma_id, kontakt_id,
+                                    daten.model_dump(exclude_unset=True))
+
+    @app.delete("/api/firmen/{firma_id}/kontakte/{kontakt_id}", status_code=204)
+    def kontakt_entfernen(firma_id: UUID, kontakt_id: UUID, s: Schreiben) -> Response:
+        kern.kontakt_entfernen(s.conn, s.k, firma_id, kontakt_id)
+        return Response(status_code=204)
+
+    # --- Nachrichten ----------------------------------------------------------------
+    # Mails werden hier nur entworfen und freigegeben; versendet wird getrennt
+    # (`python -m spaces.event_management.system.nachrichten versenden`).
+
+    @app.get("/api/events/{event_id}/nachrichten")
+    def nachrichten_liste(event_id: UUID, s: Lesen) -> list[dict[str, Any]]:
+        return nachrichten.liste(s.conn, s.k, event_id)
+
+    @app.post("/api/events/{event_id}/nachrichten/gruppe", status_code=201)
+    def nachricht_an_gruppe(
+        event_id: UUID, daten: GruppenNachricht, s: Schreiben,
+    ) -> dict[str, Any]:
+        """201 auch bei einem Telegram-Fehler: gespeichert ist die Nachricht dann mit
+        ``status: 'fehler'`` (die Oberflaeche meldet das)."""
+        return nachrichten.an_gruppe(s.conn, s.k, event_id, daten.text, telegram=telegram)
+
+    @app.post("/api/events/{event_id}/nachrichten/mail", status_code=201)
+    def mail_entwerfen(event_id: UUID, daten: MailEntwurf, s: Schreiben) -> dict[str, Any]:
+        return nachrichten.mail_entwerfen(s.conn, s.k, event_id, daten.betreff, daten.text,
+                                          daten.zusage)
+
+    @app.post("/api/nachrichten/{nachricht_id}/freigeben")
+    def nachricht_freigeben(
+        nachricht_id: UUID, s: Schreiben,
+        daten: Annotated[FreigabeDaten | None, Body()] = None,
+    ) -> dict[str, Any]:
+        erwartet = daten.erwartet if daten is not None else None
+        return nachrichten.freigeben(s.conn, s.k, nachricht_id, erwartet)
+
+    @app.post("/api/nachrichten/{nachricht_id}/verwerfen")
+    def nachricht_verwerfen(nachricht_id: UUID, s: Schreiben) -> dict[str, Any]:
+        return nachrichten.verwerfen(s.conn, s.k, nachricht_id)
+
+    # --- Telegram verbinden ---------------------------------------------------------
+    # Der Code erscheint nur in der Antwort des POST; gemeldet wird er vom Empfangs-Agenten
+    # ueber event-mcp (`gruppe_melden`/`chat_melden`), bestaetigt nur hier, mit dem Pruefcode,
+    # den der Dienst danach in den Chat geschickt hat (F1). Der Pruefcode steht in keiner
+    # Antwort und in keinem Log (Validierungsfehler wiederholen keine Eingaben).
+
+    @app.post("/api/events/{event_id}/verbinden", status_code=201)
+    def gruppe_code(event_id: UUID, s: Schreiben) -> dict[str, Any]:
+        return verbinden.code_ausstellen(s.conn, s.k, art="gruppe", event_id=event_id)
+
+    @app.get("/api/events/{event_id}/verbinden")
+    def gruppe_verbindungen(event_id: UUID, s: Lesen) -> list[dict[str, Any]]:
+        return verbinden.offene(s.conn, s.k, event_id=event_id)
+
+    @app.post("/api/ich/verbinden", status_code=201)
+    def direkt_code(s: Schreiben) -> dict[str, Any]:
+        return verbinden.code_ausstellen(s.conn, s.k, art="direkt", event_id=None)
+
+    @app.get("/api/ich/verbinden")
+    def direkt_verbindungen(s: Lesen) -> list[dict[str, Any]]:
+        return verbinden.offene(s.conn, s.k)
+
+    @app.post("/api/verbindungen/{verbindung_id}/bestaetigen")
+    def verbindung_bestaetigen(verbindung_id: UUID, daten: PruefcodeDaten,
+                               s: Schreiben) -> dict[str, Any]:
+        auftrag = verbinden.bestaetigen(s.conn, s.k, verbindung_id, daten.pruefcode)
+        return {"id": verbindung_id, "status": "bestaetigt", "bereitstellung": auftrag}
+
+    @app.post("/api/verbindungen/{verbindung_id}/trennen")
+    def verbindung_trennen(verbindung_id: UUID, s: Schreiben) -> dict[str, Any]:
+        return verbinden.trennen(s.conn, s.k, verbindung_id)
+
+    @app.post("/api/verbindungen/{verbindung_id}/verwerfen")
+    def verbindung_verwerfen(verbindung_id: UUID, s: Schreiben) -> dict[str, Any]:
+        return verbinden.verwerfen(s.conn, s.k, verbindung_id)
+
     return app
 
 
@@ -562,8 +696,11 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO)
     k = konfiguration()
+    telegram = telegram_aus_umgebung()
+    if telegram is None:
+        log.warning("Nachrichten an die Gruppe aus: TELEGRAM_BOT_TOKEN_FILE fehlt")
     app = erstelle_app(k.dsn, k.geheimnis, SmtpMailer.aus_umgebung(), k.basis_url,
-                       cookie_sicher=k.cookie_sicher)
+                       cookie_sicher=k.cookie_sicher, telegram=telegram)
     # Kein Access-Log: der Pfad von /api/einladung/{token} enthaelt das Token.
     uvicorn.run(app, host="0.0.0.0", port=k.port, access_log=False)
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import ipaddress
 import json
 import re
 import subprocess
@@ -22,7 +23,13 @@ SPACE = Path(__file__).resolve().parents[1]
 SPACES = SPACE.parent
 KONFIG = SPACE / "config"
 OPENCLAW = KONFIG / "openclaw.json"
-WORKSPACE = KONFIG / "workspace"
+# Empfangs-Agent `main` (Etappe 3, Task 8): nur die melden-Werkzeuge, eigene kurze SOUL.
+EMPFANG = KONFIG / "workspace"
+EMPFANG_SOUL = EMPFANG / "SOUL.md"
+MELDEN = ["melden__gruppe_melden", "melden__chat_melden"]
+# Bisherige Gruppen-SOUL des Festivals (Legacy). Bleibt fuer `ev-legacy` aufbewahrt, das
+# Etappe 4 anlegt (Umbenennung main -> ev-legacy); bis dahin wird sie nicht ausgesaet.
+WORKSPACE = KONFIG / "workspace-legacy"
 SOUL = WORKSPACE / "SOUL.md"
 # Eigener Arbeitsbereich der Brain-Agenten (brain-lesen, brain-auftrag): nur hier
 # gilt `actor` = „VibeMind“; die Gruppen-SOUL kennt diese Ausnahme nicht.
@@ -67,6 +74,7 @@ VERBOTEN = [
     (re.compile(r"-100\d{6,}"), "Telegram-Gruppen-ID"),
     (re.compile(r"vercel\.app", re.I), "Adresse der Festival-App"),
     (re.compile(r"clawd-festival"), "alter Workspace-Pfad"),
+    (re.compile(r"evk_[A-Za-z0-9_-]"), "Bot-Schluessel"),
 ]
 
 # Ort und Datum des Festivals duerfen auch HIER nicht im Klartext stehen --
@@ -127,14 +135,27 @@ def test_compose_ohne_docker_socket_und_mit_gefuellter_saat() -> None:
     assert "./build/workspace-brain:/seed/workspace-brain:ro" in volumes
 
 
-def test_telegram_nur_eingetragene_gruppe_und_werkzeugsperren() -> None:
+def test_telegram_gruppen_und_werkzeugsperren() -> None:
     konfig = json.loads(OPENCLAW.read_text(encoding="utf-8"))
     telegram = konfig["channels"]["telegram"]
     assert telegram["groupPolicy"] == "allowlist"
-    assert list(telegram["groups"]) == ["{{TELEGRAM_GRUPPE}}"]
+    # Unbekannte Gruppen erreichen den Empfang nur per Erwaehnung (Kosten durch Fremde);
+    # die Legacy-Gruppe bleibt ohne Erwaehnung. Verbundene Gruppen traegt der Arbeiter ein.
+    assert telegram["groups"] == {
+        "{{TELEGRAM_GRUPPE}}": {"requireMention": False},
+        "*": {"requireMention": True},
+    }
     assert set(konfig["tools"]["deny"]) >= {"group:web", "group:ui", "group:automation"}
     # Der Foto-Skill braucht die Shell (curl/node/find) -- nicht sperren.
     assert "group:runtime" not in konfig["tools"]["deny"]
+
+
+def test_direktchats_je_absender_eigene_sitzung() -> None:
+    """Abschluss-Review F3: `main` (Empfang) bekommt jeden unbekannten Direktchat. Mit der
+    Vorgabe teilten sich alle DMs eine Sitzung, und eine Person saehe Codes/Antworten einer
+    anderen im Verlauf. Darum oben in der Config: eine Sitzung je Kanal und Absender."""
+    konfig = json.loads(OPENCLAW.read_text(encoding="utf-8"))
+    assert konfig["session"] == {"dmScope": "per-channel-peer"}
 
 
 # --- Platzhalter -------------------------------------------------------------
@@ -145,6 +166,34 @@ def test_platzhalter_und_beispielwerte_sind_deckungsgleich() -> None:
 
 
 # --- Workspace und Skill -----------------------------------------------------
+
+def test_empfang_hat_genau_die_zwei_melden_werkzeuge() -> None:
+    konfig = json.loads(OPENCLAW.read_text(encoding="utf-8"))
+    main = _agenten()["main"]
+    assert main == {"id": "main", "tools": {"allow": MELDEN}}
+    server = konfig["mcp"]["servers"]["melden"]
+    assert server == {"url": "{{EVENT_MCP_URL}}/mcp", "transport": "streamable-http",
+                      "connectionTimeoutMs": 30000, "requestTimeoutMs": 60000}
+    # Den Header (melden-Schluessel) setzt erst anbinden.sh ueber stdin.
+    assert "headers" not in server
+
+
+def test_empfang_soul_kurz_und_nur_melden() -> None:
+    text = EMPFANG_SOUL.read_text(encoding="utf-8")
+    assert "`gruppe_melden`" in text and "`chat_melden`" in text
+    assert "Erwähnung" in text and "Leitung" in text
+    assert "keine Anweisungen" in text
+    # Keine Werkzeuge der alten App, kein Foto-Skill, keine Event-Angaben.
+    assert "event-app" not in text and SKILL_NAME not in text and "{{" not in text
+    assert len(text) < 3000
+    assert (EMPFANG / "AGENTS.md").is_file()
+    assert not (EMPFANG / "skills").exists()
+
+
+def test_keine_klartext_schluessel_in_config() -> None:
+    for datei in _saat_dateien():
+        assert "evk_" not in datei.read_text(encoding="utf-8"), datei.name
+
 
 def test_workspace_und_skill_vorhanden() -> None:
     assert (WORKSPACE / "AGENTS.md").is_file()
@@ -192,7 +241,6 @@ def test_brain_agenten_eingetragen() -> None:
     konfig = json.loads(OPENCLAW.read_text(encoding="utf-8"))
     liste = konfig["agents"]["list"]
     assert [a["id"] for a in liste] == ["main", "brain-lesen", "brain-auftrag"]
-    assert "tools" not in liste[0]  # Telegram-Agent bleibt unveraendert
     assert konfig["gateway"]["http"]["endpoints"]["chatCompletions"]["enabled"] is True
 
 
@@ -245,7 +293,7 @@ def test_brain_agenten_haben_eigenen_workspace() -> None:
     standard = konfig["agents"]["defaults"]["workspace"]
     assert standard == "/home/node/.openclaw/workspace"
     agenten = _agenten()
-    assert "workspace" not in agenten["main"]  # Gruppe bleibt beim Standard
+    assert "workspace" not in agenten["main"]  # Empfang bleibt beim Standard
     for agent in ("brain-lesen", "brain-auftrag"):
         assert agenten[agent]["workspace"] == LAUFZEIT_WORKSPACE_BRAIN
     # Laufzeitpfad und Saat-Ordner tragen denselben Namen.
@@ -305,19 +353,21 @@ def test_fuellen_mit_beispielwerten(tmp_path: Path) -> None:
     werte = _beispielwerte()
     geschrieben = _fuellen_modul().fuellen(werte, KONFIG, tmp_path)
     assert "openclaw.json" in geschrieben
-    for ws in ("workspace", "workspace-brain"):
+    for ws in ("workspace", "workspace-brain", "workspace-legacy"):
         assert f"{ws}/SOUL.md" in geschrieben
         assert f"{ws}/AGENTS.md" in geschrieben
     for datei in tmp_path.rglob("*"):
         if datei.is_file():
             assert "{{" not in datei.read_text(encoding="utf-8"), datei
     konfig = json.loads((tmp_path / "openclaw.json").read_text(encoding="utf-8"))
-    assert list(konfig["channels"]["telegram"]["groups"]) == [werte["TELEGRAM_GRUPPE"]]
+    assert list(konfig["channels"]["telegram"]["groups"]) == [werte["TELEGRAM_GRUPPE"], "*"]
     assert konfig["mcp"]["servers"]["event-app"]["url"] == werte["EVENT_APP_URL"] + "/api/mcp"
-    for ws in ("workspace", "workspace-brain"):
+    assert konfig["mcp"]["servers"]["melden"]["url"] == werte["EVENT_MCP_URL"] + "/mcp"
+    for ws in ("workspace-legacy", "workspace-brain"):
         assert werte["EVENT_ORT"] in (tmp_path / ws / "SOUL.md").read_text(encoding="utf-8")
     assert VIBEMIND_ACTOR in (tmp_path / "workspace-brain" / "SOUL.md").read_text(encoding="utf-8")
-    assert VIBEMIND_ACTOR not in (tmp_path / "workspace" / "SOUL.md").read_text(encoding="utf-8")
+    for ws in ("workspace", "workspace-legacy"):
+        assert VIBEMIND_ACTOR not in (tmp_path / ws / "SOUL.md").read_text(encoding="utf-8")
 
 
 def test_fuellen_maskiert_anfuehrungszeichen_in_json(tmp_path: Path) -> None:
@@ -376,3 +426,150 @@ def test_paket_importierbar():
     import importlib
 
     importlib.import_module("spaces.event_management")
+
+
+# --- Compose: Dienste des Event-Systems (Etappe 3, Task 9; nur Definition) --------------
+#
+# event-api, event-web und event-mcp stehen im Compose-Projekt des Space, starten aber nicht
+# mit: anbinden.sh ruft `docker compose up -d` ohne Profil auf, und das soll weiter nur
+# Shim und Claw hochfahren. Ihre Images baut Etappe 4 (Dockerfile). Geprueft wird nur die
+# YAML-Struktur; `docker compose config` laeuft hier nie.
+
+PROFIL = "event-system"
+NEUE_DIENSTE = ("event-api", "event-web", "event-mcp")
+PYTHON_DIENSTE = ("event-api", "event-mcp")
+
+
+def _compose() -> dict:
+    return yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+
+
+def _netze(compose: dict) -> dict[str, ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    return {name: ipaddress.ip_network(netz["ipam"]["config"][0]["subnet"])
+            for name, netz in compose["networks"].items()}
+
+
+def test_neue_dienste_nur_mit_profil_alte_ohne() -> None:
+    dienste = _compose()["services"]
+    for name in NEUE_DIENSTE:
+        assert dienste[name]["profiles"] == [PROFIL], name
+    for name in ("event-management-shim", "event-management-claw"):
+        assert "profiles" not in dienste[name], name
+
+
+def test_python_dienste_teilen_das_image_des_space() -> None:
+    dienste = _compose()["services"]
+    images = {dienste[name]["image"] for name in PYTHON_DIENSTE}
+    assert len(images) == 1
+    [image] = images
+    assert image.startswith("event-management/") and ":" in image
+    assert dienste["event-web"]["image"].startswith("event-management/")
+    assert dienste["event-web"]["image"] != image
+
+
+def test_event_mcp_kommando_port_und_healthcheck() -> None:
+    from spaces.event_management.system import mcp_server
+
+    mcp = _compose()["services"]["event-mcp"]
+    port = mcp_server.PORT_VORGABE
+    assert mcp["command"] == ["python", "-m", "spaces.event_management.system.mcp_server"]
+    assert mcp["environment"]["EVENT_MCP_PORT"] == str(port)
+    # Im Container auf allen Schnittstellen (der Claw kommt ueber event-agent), auf dem Host
+    # nur Loopback.
+    assert mcp["environment"]["EVENT_MCP_HOST"] == "0.0.0.0"
+    assert mcp["ports"] == [f"127.0.0.1:{port}:{port}"]
+    probe = " ".join(mcp["healthcheck"]["test"])
+    assert f"http://127.0.0.1:{port}/gesund" in probe
+    assert "event-mcp" in mcp_server.ERLAUBTE_HOSTS  # Name, unter dem der Claw ihn ruft
+
+
+def test_event_api_und_web_nur_loopback() -> None:
+    from spaces.event_management.system import api
+
+    dienste = _compose()["services"]
+    a = dienste["event-api"]
+    assert a["command"] == ["python", "-m", "spaces.event_management.system.api"]
+    assert a["environment"]["EVENT_API_PORT"] == str(api.PORT_VORGABE)
+    assert a["ports"] == [f"127.0.0.1:{api.PORT_VORGABE}:{api.PORT_VORGABE}"]
+    assert f"'127.0.0.1', {api.PORT_VORGABE}" in " ".join(a["healthcheck"]["test"])
+    w = dienste["event-web"]
+    assert w["ports"] == ["127.0.0.1:3170:3170"]
+    assert w["depends_on"]["event-api"]["condition"] == "service_healthy"
+    for name, dienst in dienste.items():
+        for p in dienst.get("ports", []):
+            assert str(p).startswith("127.0.0.1:"), name
+
+
+def test_event_mcp_feste_adresse_im_agentennetz() -> None:
+    compose = _compose()
+    netz = compose["networks"]["event-agent"]
+    assert netz["internal"] is True
+    # Ruling T9-a: das bestehende Netz bleibt wie es ist (kein ip_range), sonst muesste
+    # Docker es samt laufendem Shim und Claw neu anlegen.
+    assert netz["ipam"]["config"] == [{"subnet": "10.250.10.0/28"}]
+    subnetz = ipaddress.ip_network(netz["ipam"]["config"][0]["subnet"])
+    mcp = compose["services"]["event-mcp"]["networks"]
+    adresse = ipaddress.ip_address(mcp["event-agent"]["ipv4_address"])
+    # Fest, im /28 und weder Netz-, Gateway- noch Broadcast-Adresse.
+    assert adresse in subnetz
+    assert adresse not in (subnetz.network_address, subnetz.network_address + 1,
+                           subnetz.broadcast_address)
+    feste = [n["ipv4_address"] for d in compose["services"].values()
+             if isinstance(d.get("networks"), dict)
+             for n in d["networks"].values() if isinstance(n, dict) and "ipv4_address" in n]
+    assert len(feste) == len(set(feste))
+
+
+def test_netze_im_freien_26_und_ueberschneidungsfrei() -> None:
+    compose = _compose()
+    netze = _netze(compose)
+    frei = ipaddress.ip_network("10.250.10.0/26")
+    assert all(n.subnet_of(frei) for n in netze.values())
+    liste = list(netze.values())
+    for i, a in enumerate(liste):
+        for b in liste[i + 1:]:
+            assert not a.overlaps(b), (a, b)
+    # Der Ausgang der App-Dienste (DB, Telegram, Mail) ist ein eigenes Netz; das
+    # Agentennetz bleibt intern.
+    aus = compose["networks"]["event-app-aus"]
+    assert not aus.get("internal")
+    dienste = compose["services"]
+    assert set(dienste["event-mcp"]["networks"]) == {"event-agent", "event-app-aus"}
+    assert set(dienste["event-api"]["networks"]) == {"event-app-aus"}
+    assert set(dienste["event-web"]["networks"]) == {"event-app-aus"}
+
+
+def test_geheimnisse_nur_als_datei_aus_laufzeit() -> None:
+    compose = _compose()
+    text = COMPOSE.read_text(encoding="utf-8")
+    for muster in (r"evk_[A-Za-z0-9]", r"bot\d+:", r"postgres(ql)?://", r"password=",
+                   r"-100\d{6,}"):
+        assert not re.search(muster, text), muster
+    geheim = compose["secrets"]
+    for name, eintrag in geheim.items():
+        assert eintrag["file"].startswith("./laufzeit/"), name
+    for name in PYTHON_DIENSTE:
+        dienst = compose["services"][name]
+        env = dienst["environment"]
+        for variable in env:
+            if any(t in variable for t in ("DSN", "TOKEN", "PASSWORT", "GEHEIMNIS")):
+                assert variable.endswith("_FILE"), (name, variable)
+                assert env[variable].startswith("/run/secrets/"), (name, variable)
+        eingehaengt = set(dienst["secrets"])
+        assert eingehaengt <= set(geheim)
+        for variable, wert in env.items():
+            if variable.endswith("_FILE"):
+                assert wert.removeprefix("/run/secrets/") in eingehaengt, (name, variable)
+        assert dienst["environment"]["EVENT_APP_DSN_FILE"] == "/run/secrets/event-app-dsn"
+        assert "TELEGRAM_BOT_TOKEN_FILE" in env
+    assert "EVENT_SITZUNG_GEHEIMNIS_FILE" in compose["services"]["event-api"]["environment"]
+
+
+def test_python_dienste_gehaertet() -> None:
+    dienste = _compose()["services"]
+    for name in NEUE_DIENSTE:
+        d = dienste[name]
+        assert d["read_only"] is True and d["cap_drop"] == ["ALL"], name
+        assert "no-new-privileges:true" in d["security_opt"], name
+        assert d["restart"] == "unless-stopped", name
+        assert "docker.sock" not in json.dumps(d), name

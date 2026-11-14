@@ -29,6 +29,9 @@
       }
     }
   },
+  "session": {
+    "dmScope": "per-channel-peer"
+  },
   "agents": {
     "defaults": {
       "model": {
@@ -38,7 +41,10 @@
     },
     "list": [
       {
-        "id": "main"
+        "id": "main",
+        "tools": {
+          "allow": ["melden__gruppe_melden", "melden__chat_melden"]
+        }
       },
       {
         "id": "brain-lesen",
@@ -111,6 +117,9 @@
       "groups": {
         "{{TELEGRAM_GRUPPE}}": {
           "requireMention": false
+        },
+        "*": {
+          "requireMention": true
         }
       }
     },
@@ -125,6 +134,12 @@
     "servers": {
       "event-app": {
         "url": "{{EVENT_APP_URL}}/api/mcp",
+        "transport": "streamable-http",
+        "connectionTimeoutMs": 30000,
+        "requestTimeoutMs": 60000
+      },
+      "melden": {
+        "url": "{{EVENT_MCP_URL}}/mcp",
         "transport": "streamable-http",
         "connectionTimeoutMs": 30000,
         "requestTimeoutMs": 60000

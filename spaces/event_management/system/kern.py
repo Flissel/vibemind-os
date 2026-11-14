@@ -1,5 +1,5 @@
-"""Generische Fachschicht der Kern-Bausteine (Aufgaben, Orga-Team, Teilnehmende, Ablauf,
-Budget) plus Kontakte. SQL wird nur aus Registry-Namen (`sql.Identifier`) gebaut."""
+"""Generische Fachschicht der Baustein-Tabellen aus der Registry (Kern- und Zusatz-Bausteine)
+plus Kontakte. SQL wird nur aus Registry-Namen (`sql.Identifier`) gebaut."""
 from __future__ import annotations
 
 import logging
@@ -51,8 +51,14 @@ def _uuid(feld: str, wert: Any) -> UUID:
 def _wert(feld: str, typ: str, wert: Any) -> Any:
     if typ == "text":
         return pruefung.text(feld, wert)
-    if typ == "uuid":
+    if typ in ("uuid", "kontakt") or typ.startswith("ref:"):
+        # Ob der Verweis auf eine passende Zeile zeigt, sichern die Fremdschluessel.
         return _uuid(feld, wert)
+    if typ == "url":
+        wert = pruefung.text(feld, wert)
+        if not wert.startswith(("http://", "https://")):
+            raise ValueError(f"Feld '{feld}' muss mit http:// oder https:// beginnen")
+        return wert
     if typ == "datumzeit":
         if isinstance(wert, str):
             try:
@@ -200,11 +206,15 @@ def loeschen(
     t = _tabelle(baustein)
     with transaktion(conn, k) as cur:
         ev = _vorspann(cur, k, event_id, t, kategorien, schreiben=True)
-        cur.execute(
-            sql.SQL("delete from event.{} where id = %s and event_id = %s returning id").format(
-                sql.Identifier(t.tabelle)),
-            (zeile_id, event_id),
-        )
+        try:
+            cur.execute(
+                sql.SQL("delete from event.{} where id = %s and event_id = %s returning id")
+                .format(sql.Identifier(t.tabelle)),
+                (zeile_id, event_id),
+            )
+        except errors.ForeignKeyViolation:
+            # z. B. ein Wettbewerbs-Team, auf das noch Abgaben zeigen
+            raise ValueError("Eintrag wird noch verwendet") from None
         if cur.fetchone() is None:
             raise NichtGefunden("Eintrag nicht gefunden")
         verlauf.schreiben(cur, k, event_id, ev["firma_id"], baustein, "geloescht", zeile_id)
@@ -229,6 +239,66 @@ def kontakt_anlegen(
         row = cur.fetchone()
         assert row is not None
     return row
+
+
+_KONTAKT_FELDER = ("name", "mail", "telegram")
+
+
+def kontakt_aendern(
+    conn: psycopg.Connection[Any], k: Kontext, firma_id: UUID, kontakt_id: UUID,
+    werte: dict[str, Any],
+) -> dict[str, Any]:
+    """Aendert `name`, `mail` und/oder `telegram` eines Kontakts der Firma (wie Anlegen:
+    Recht `baustein_schreiben`). Kontakt fremd oder unbekannt: NichtGefunden."""
+    rechte.pruefe(k, "baustein_schreiben", firma_id)
+    if not isinstance(werte, Mapping):
+        raise ValueError("Werte müssen ein Objekt sein")
+    if any(name not in _KONTAKT_FELDER for name in werte):
+        raise ValueError("Unbekanntes oder nicht schreibbares Feld")
+    if not werte:
+        raise ValueError("Keine Werte zum Ändern")
+    v: dict[str, str | None] = {}
+    for name in _KONTAKT_FELDER:
+        if name not in werte:
+            continue
+        if name == "name":
+            if werte["name"] is None:
+                raise ValueError("Pflichtfeld 'name' darf nicht leer sein")
+            neu = pruefung.text("name", werte["name"]).strip()
+            if not neu:
+                raise ValueError("Pflichtfeld 'name' darf nicht leer sein")
+            v["name"] = neu
+        else:
+            v[name] = pruefung.text_oder_none(name, werte[name])
+    with transaktion(conn, k) as cur:
+        cur.execute(
+            sql.SQL("update event.kontakt set {} where id = %s and firma_id = %s returning *")
+            .format(sql.SQL(", ").join(
+                sql.SQL("{} = %s").format(sql.Identifier(c)) for c in v)),
+            [*v.values(), kontakt_id, firma_id],
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise NichtGefunden("Kontakt nicht gefunden")
+    return row
+
+
+def kontakt_entfernen(
+    conn: psycopg.Connection[Any], k: Kontext, firma_id: UUID, kontakt_id: UUID,
+) -> None:
+    """Loescht einen Kontakt der Firma (Recht `mitglied_entfernen`, also Leitung).
+    Noch verwendet (Orga-Team, Teilnehmende, Verantwortlich): ValueError."""
+    rechte.pruefe(k, "mitglied_entfernen", firma_id)
+    with transaktion(conn, k) as cur:
+        try:
+            cur.execute(
+                "delete from event.kontakt where id = %s and firma_id = %s returning id",
+                (kontakt_id, firma_id),
+            )
+        except errors.ForeignKeyViolation:
+            raise ValueError("Kontakt wird noch verwendet") from None
+        if cur.fetchone() is None:
+            raise NichtGefunden("Kontakt nicht gefunden")
 
 
 def kontakte(

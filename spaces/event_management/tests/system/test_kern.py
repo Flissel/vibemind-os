@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from spaces.event_management.system import kern, verlauf
-from spaces.event_management.system.bausteine import REGISTRY
+from spaces.event_management.system.bausteine import REGISTRY, ZUSAETZE
 from spaces.event_management.system.kontext import KeinRecht, Kontext, NichtGefunden
 
 BEGINN = datetime(2027, 3, 1, 18, 0, tzinfo=timezone.utc)
@@ -217,16 +217,140 @@ def test_kontakte_anlegen_und_suche(db_admin: Any, db_app: Any, welt: dict[str, 
     kern.kontakt_anlegen(conn, lese, fa, "Mitglied darf")
 
 
+def _kontakt_zeile(admin: Any, kontakt: UUID) -> dict[str, Any] | None:
+    return admin.execute("select * from event.kontakt where id = %s", (kontakt,)).fetchone()
+
+
+@pytest.mark.parametrize("schicht", ["rls", "fachschicht"])
+def test_kontakt_aendern_und_entfernen(db_admin: Any, db_app: Any, welt: dict[str, Any],
+                                       schicht: str) -> None:
+    """`rls`: Verbindung sieht nur Firma A. `fachschicht`: Superuser ohne RLS, nur die
+    Rechtepruefung und die Firmenbindung im SQL halten."""
+    fa, fb, k = welt["fa"], welt["fb"], welt["k"]
+    conn = db_app(firmen=[fa]) if schicht == "rls" else db_admin
+    kt = _kontakt(db_admin, fa, "Max Muster")
+    neu = kern.kontakt_aendern(conn, k, fa, kt, {"name": "  Max Beispiel ",
+                                                 "mail": "max@example.org"})
+    assert (neu["name"], neu["mail"], neu["telegram"]) == ("Max Beispiel", "max@example.org",
+                                                          None)
+    neu = kern.kontakt_aendern(conn, k, fa, kt, {"telegram": "@max_bsp", "mail": None})
+    assert (neu["name"], neu["mail"], neu["telegram"]) == ("Max Beispiel", None, "@max_bsp")
+    zeile = _kontakt_zeile(db_admin, kt)
+    assert zeile is not None and zeile["telegram"] == "@max_bsp"
+
+    mitglied = _k(k.person_id, {fa: "mitglied"})
+    assert kern.kontakt_aendern(conn, mitglied, fa, kt, {"name": "Max M."})["name"] == "Max M."
+    with pytest.raises(KeinRecht):
+        kern.kontakt_entfernen(conn, mitglied, fa, kt)
+    assert _kontakt_zeile(db_admin, kt) is not None
+
+    for werte, meldung in (
+        ({}, "Keine Werte"), ({"firma_id": str(fb)}, "Unbekanntes"),
+        ({"person_id": str(uuid4())}, "Unbekanntes"), ({"name": "   "}, "name"),
+        ({"name": None}, "name"), ({"mail": "a\x00b"}, "mail"), ({"telegram": 5}, "telegram"),
+    ):
+        with pytest.raises(ValueError, match=meldung):
+            kern.kontakt_aendern(conn, k, fa, kt, werte)
+    zeile = _kontakt_zeile(db_admin, kt)
+    assert zeile is not None and zeile["name"] == "Max M."
+
+    benutzt = _kontakt(db_admin, fa, "Im Orga-Team")
+    kern.anlegen(conn, k, welt["ea"], "orga_team", {"kontakt_id": benutzt})
+    with pytest.raises(ValueError, match="^Kontakt wird noch verwendet$"):
+        kern.kontakt_entfernen(conn, k, fa, benutzt)
+    assert _kontakt_zeile(db_admin, benutzt) is not None
+
+    kern.kontakt_entfernen(conn, k, fa, kt)
+    assert _kontakt_zeile(db_admin, kt) is None
+    with pytest.raises(NichtGefunden):
+        kern.kontakt_entfernen(conn, k, fa, kt)
+    with pytest.raises(NichtGefunden):
+        kern.kontakt_aendern(conn, k, fa, kt, {"name": "Weg"})
+
+
+@pytest.mark.parametrize("schicht", ["rls", "fachschicht"])
+def test_kontakt_aendern_entfernen_mandantenmatrix(db_admin: Any, db_app: Any,
+                                                    welt: dict[str, Any], schicht: str) -> None:
+    fa, fb, k = welt["fa"], welt["fb"], welt["k"]
+    conn = db_app(firmen=[fa]) if schicht == "rls" else db_admin
+    fremd = _kontakt(db_admin, fb, "Fremd Beispiel")
+    vorher = _kontakt_zeile(db_admin, fremd)
+    # Fremde Firma direkt adressiert, und der fremde Kontakt ueber die eigene Firma.
+    for firma in (fb, fa):
+        with pytest.raises(NichtGefunden):
+            kern.kontakt_aendern(conn, k, firma, fremd, {"name": "Gekapert"})
+        with pytest.raises(NichtGefunden):
+            kern.kontakt_entfernen(conn, k, firma, fremd)
+    assert _kontakt_zeile(db_admin, fremd) == vorher
+
+
+def test_registry_typen_vokabular() -> None:
+    erlaubt = {"text", "datumzeit", "ganzzahl", "kontakt", "url"}
+    for t in REGISTRY.values():
+        for typ in t.felder.values():
+            if typ.startswith("ref:"):
+                assert typ[len("ref:"):] in REGISTRY, typ
+            else:
+                assert typ in erlaubt or typ.startswith("auswahl:"), typ
+    assert REGISTRY["aufgaben"].felder["kategorie_id"] == "ref:aufgaben_kategorien"
+    for baustein, feld in (("aufgaben", "verantwortlich_id"), ("orga_team", "kontakt_id"),
+                           ("teilnehmende", "kontakt_id"), ("ablauf", "verantwortlich_id")):
+        assert REGISTRY[baustein].felder[feld] == "kontakt"
+
+
+def test_feldtypen_kontakt_ref_url() -> None:
+    u = uuid4()
+    assert kern._wert("kontakt_id", "kontakt", str(u)) == u
+    assert kern._wert("kategorie_id", "ref:aufgaben_kategorien", u) == u
+    for typ in ("kontakt", "ref:aufgaben_kategorien"):
+        with pytest.raises(ValueError, match="UUID"):
+            kern._wert("x_id", typ, "keine-uuid")
+    assert kern._wert("link", "url", "https://example.org/a") == "https://example.org/a"
+    for schlecht in ("ftp://example.org", "example.org", 5, "https://a\x00"):
+        with pytest.raises(ValueError, match="link"):
+            kern._wert("link", "url", schlecht)
+
+
 def test_registry_inhalt() -> None:
     assert set(REGISTRY) == {"aufgaben", "aufgaben_kategorien", "orga_team", "teilnehmende",
-                             "ablauf", "budget"}
+                             "ablauf", "budget", *ZUSAETZE}
     assert REGISTRY["aufgaben_kategorien"].baustein == "aufgaben"
     for t in REGISTRY.values():
         assert not ({"id", "event_id", "firma_id", "angelegt"} & set(t.felder))
         assert t.pflicht <= set(t.felder)
 
 
-def _beispielwerte(baustein: str, admin: Any, firma: UUID) -> dict[str, Any]:
+# Zusatz-Bausteine brauchen ein Event, dessen Kategorie sie enthaelt (sonst weihnachtsfeier,
+# die ueber fest/veranstaltung auch helferschichten, programm und verpflegung hat).
+_KATEGORIE_FUER = {
+    "wettbewerb_teams": "hackathon", "abgaben": "hackathon", "jury": "hackathon",
+    "aussteller": "messe", "staende": "messe",
+    "sprecher": "online_event", "online_raum": "online_event", "aufzeichnung": "online_event",
+    "protokoll": "team_meeting", "beschluesse": "team_meeting", "buehnen": "festival",
+}
+
+
+def _kategorie_fuer(baustein: str) -> str:
+    return _KATEGORIE_FUER.get(baustein, "weihnachtsfeier")
+
+
+def _welt_fuer(admin: Any, welt: dict[str, Any], baustein: str) -> dict[str, Any]:
+    """Testwelt mit Events ea/eb der Kategorie, die den Baustein enthaelt."""
+    kategorie = _kategorie_fuer(baustein)
+    if kategorie == "weihnachtsfeier":
+        return welt
+    return {**welt, "ea": _event(admin, welt["fa"], kategorie),
+            "eb": _event(admin, welt["fb"], kategorie)}
+
+
+def _beispielwerte(baustein: str, admin: Any, firma: UUID, event: UUID) -> dict[str, Any]:
+    if baustein == "abgaben":
+        team = admin.execute(
+            "insert into event.wettbewerb_team (event_id, firma_id, name)"
+            " values (%s, %s, 'Team') returning id", (event, firma)).fetchone()["id"]
+        return {"team_id": team, "titel": "Abgabe"}
+    if baustein in ("jury", "sprecher"):
+        return {"kontakt_id": _kontakt(admin, firma)}
     return {
         "aufgaben": {"titel": "Aufgabe"},
         "aufgaben_kategorien": {"name": "Kat"},
@@ -234,12 +358,24 @@ def _beispielwerte(baustein: str, admin: Any, firma: UUID) -> dict[str, Any]:
         "teilnehmende": {"kontakt_id": _kontakt(admin, firma, "Tn")},
         "ablauf": {"titel": "Punkt", "beginn": BEGINN},
         "budget": {"titel": "Posten", "art": "kosten", "betrag_cent": 5},
+        "wettbewerb_teams": {"name": "Team"},
+        "aussteller": {"name": "Aussteller"},
+        "staende": {"bezeichnung": "A1"},
+        "online_raum": {"titel": "Raum", "link": "https://meet.example.org/raum"},
+        "aufzeichnung": {"titel": "Aufzeichnung"},
+        "protokoll": {"punkt": "Punkt"},
+        "beschluesse": {"text": "Beschluss"},
+        "verpflegung": {"titel": "Essen"},
+        "programm": {"titel": "Programmpunkt"},
+        "helferschichten": {"titel": "Schicht", "beginn": BEGINN,
+                            "ende": BEGINN + timedelta(hours=1)},
+        "buehnen": {"name": "Bühne"},
     }[baustein]
 
 
 def _admin_zeile(admin: Any, baustein: str, firma: UUID, event: UUID) -> UUID:
     t = REGISTRY[baustein]
-    w = _beispielwerte(baustein, admin, firma)
+    w = _beispielwerte(baustein, admin, firma, event)
     spalten = ["event_id", "firma_id", *w]
     return admin.execute(
         f"insert into event.{t.tabelle} ({', '.join(spalten)})"
@@ -251,8 +387,7 @@ def _admin_zeile(admin: Any, baustein: str, firma: UUID, event: UUID) -> UUID:
 def _aenderung(t: Any) -> dict[str, Any]:
     if "zusage" in t.felder:
         return {"zusage": "zugesagt"}
-    feld = "titel" if "titel" in t.felder else "name" if "name" in t.felder else "rolle"
-    return {feld: "x"}
+    return {next(f for f, typ in t.felder.items() if typ == "text"): "x"}
 
 
 @pytest.mark.parametrize("schicht", ["rls", "fachschicht"])
@@ -263,16 +398,17 @@ def test_mandantenmatrix_kern(db_admin: Any, db_app: Any, welt: dict[str, Any],
     """Firma A gegen Event/Zeilen von Firma B. `rls`: Verbindung sieht nur A (zweites Tor).
     `fachschicht`: Superuser-Verbindung ohne RLS, nur die Rechtepruefung haelt (erstes Tor)."""
     t = REGISTRY[baustein]
+    welt = _welt_fuer(db_admin, welt, baustein)
     fremd_zeile = _admin_zeile(db_admin, baustein, welt["fb"], welt["eb"])
     # `fachschicht`: Superuser-Verbindung umgeht RLS, nichts wird versteckt; nur `pruefe` haelt.
     conn = db_app(firmen=[welt["fa"]]) if schicht == "rls" else db_admin
     k = welt["k"]
     # Positivkontrolle: die eigene Firma funktioniert.
     eigene = kern.anlegen(conn, k, welt["ea"], baustein,
-                          _beispielwerte(baustein, db_admin, welt["fa"]))
+                          _beispielwerte(baustein, db_admin, welt["fa"], welt["ea"]))
     assert eigene["firma_id"] == welt["fa"]
     assert [r["id"] for r in kern.liste(conn, k, welt["ea"], baustein)] == [eigene["id"]]
-    legacy_ev = _event(db_admin, welt["fb"], quelle="legacy")
+    legacy_ev = _event(db_admin, welt["fb"], _kategorie_fuer(baustein), quelle="legacy")
     legacy_zeile = _admin_zeile(db_admin, baustein, welt["fb"], legacy_ev)
     vorher = db_admin.execute(
         f"select * from event.{t.tabelle} where firma_id = %s order by id", (welt["fb"],)
@@ -293,7 +429,8 @@ def _fremd_versuch(conn: Any, k: Kontext, db_admin: Any, welt: dict[str, Any], t
         if op == "liste":
             kern.liste(conn, k, ev, baustein)
         elif op == "anlegen":
-            kern.anlegen(conn, k, ev, baustein, _beispielwerte(baustein, db_admin, welt["fb"]))
+            kern.anlegen(conn, k, ev, baustein,
+                         _beispielwerte(baustein, db_admin, welt["fb"], ev))
         elif op == "aendern":
             kern.aendern(conn, k, ev, baustein, fremd_zeile, _aenderung(t))
         else:
@@ -313,7 +450,8 @@ def test_event_bindung_kern_fachschicht(db_admin: Any, welt: dict[str, Any],
     """Kontext auf Event A1 gebunden; Event A2 derselben Firma bleibt unerreichbar.
     Superuser-Verbindung ohne RLS: nur die Fachschicht haelt."""
     t = REGISTRY[baustein]
-    ea2 = _event(db_admin, welt["fa"])
+    welt = _welt_fuer(db_admin, welt, baustein)
+    ea2 = _event(db_admin, welt["fa"], _kategorie_fuer(baustein))
     zeile2 = _admin_zeile(db_admin, baustein, welt["fa"], ea2)
     k = Kontext(person_id=welt["k"].person_id, betreiber=False, rollen=welt["k"].rollen,
                 event_id=welt["ea"])
@@ -325,7 +463,7 @@ def test_event_bindung_kern_fachschicht(db_admin: Any, welt: dict[str, Any],
             kern.liste(db_admin, k, ea2, baustein)
         elif op == "anlegen":
             kern.anlegen(db_admin, k, ea2, baustein,
-                         _beispielwerte(baustein, db_admin, welt["fa"]))
+                         _beispielwerte(baustein, db_admin, welt["fa"], ea2))
         elif op == "aendern":
             kern.aendern(db_admin, k, ea2, baustein, zeile2, _aenderung(t))
         else:
@@ -336,5 +474,5 @@ def test_event_bindung_kern_fachschicht(db_admin: Any, welt: dict[str, Any],
     assert _anzahl(db_admin, "verlauf") == verlauf_vorher
     # Positivkontrolle: das gebundene Event funktioniert.
     eigene = kern.anlegen(db_admin, k, welt["ea"], baustein,
-                          _beispielwerte(baustein, db_admin, welt["fa"]))
+                          _beispielwerte(baustein, db_admin, welt["fa"], welt["ea"]))
     assert [r["id"] for r in kern.liste(db_admin, k, welt["ea"], baustein)] == [eigene["id"]]

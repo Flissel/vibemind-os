@@ -26,6 +26,13 @@
 #
 # EIGENSTAENDIGER Compose-Deploy, nicht Teil des vibemind-Swarm-Stacks; nie
 # ueber `service update`/`stack deploy`. Noch nicht ausgerollt.
+#
+# Event-System (Etappe 3, nur Definition): event-api, event-web und event-mcp haben das
+# Profil `event-system`. Ein `docker compose up -d` ohne Profil (deploy/anbinden.sh)
+# startet sie NICHT; erst Etappe 4 mit Felix' OK (`--profile event-system`). Ihre Images
+# baut Etappe 4 (Dockerfile ist dort Thema). Geheimnisse nur als Dateien unter laufzeit/
+# (gitignored) und als *_FILE-Variablen; die nicht geheimen, aber privaten Werte
+# (EVENT_BASIS_URL, EVENT_SMTP_HOST/PORT/USER/ABSENDER) in laufzeit/event-app.env.
 services:
   event-management-shim:
     # Der Controller hat dieses Image lokal aus bewerbung-bot/shim:2.1.268
@@ -109,11 +116,154 @@ services:
       start_period: 90s
       retries: 3
 
+  # --- Event-System (Profil event-system, nicht gestartet) -------------------------
+
+  # Fachschicht + Oberflaechen-API (system/api.py). Auf dem Host nur Loopback; die
+  # Oberflaeche erreicht sie ueber event-app-aus. DSN = App-Rolle (event_app), nie die
+  # Admin-DSN; liegt die Datenbank auf dem Host, zeigt der DSN auf host.docker.internal.
+  event-api:
+    image: event-management/system:etappe-4
+    container_name: event-api
+    profiles: [event-system]
+    restart: unless-stopped
+    init: true
+    command: ["python", "-m", "spaces.event_management.system.api"]
+    env_file:
+      - path: ./laufzeit/event-app.env
+        required: true
+    environment:
+      TZ: Europe/Berlin
+      PYTHONDONTWRITEBYTECODE: "1"
+      EVENT_API_PORT: "8170"
+      EVENT_APP_DSN_FILE: /run/secrets/event-app-dsn
+      EVENT_SITZUNG_GEHEIMNIS_FILE: /run/secrets/event-sitzung-geheimnis
+      TELEGRAM_BOT_TOKEN_FILE: /run/secrets/event-telegram-token
+      EVENT_SMTP_PASSWORT_FILE: /run/secrets/event-smtp-passwort
+    secrets:
+      - event-app-dsn
+      - event-sitzung-geheimnis
+      - event-telegram-token
+      - event-smtp-passwort
+    ports:
+      - "127.0.0.1:8170:8170"
+    networks:
+      - event-app-aus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Ohne Anmeldung antwortet /api/ich mit 401; lebendig heisst: Antwort unter 500.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import http.client,sys; c=http.client.HTTPConnection('127.0.0.1', 8170, timeout=5); c.request('GET', '/api/ich'); sys.exit(0 if c.getresponse().status < 500 else 1)"]
+      interval: 1m
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  # Oberflaeche (Next.js, output standalone). Das Ziel der /api-Rewrites (EVENT_API_URL =
+  # http://event-api:8170) legt `next build` beim Bauen des Images fest, nicht die
+  # Laufzeit. Zugang nur ueber das Tailnet (z. B. tailscale serve auf 127.0.0.1:3170).
+  event-web:
+    image: event-management/web:etappe-4
+    container_name: event-web
+    profiles: [event-system]
+    restart: unless-stopped
+    init: true
+    command: ["node", "server.js"]
+    depends_on:
+      event-api:
+        condition: service_healthy
+    environment:
+      TZ: Europe/Berlin
+      PORT: "3170"
+      HOSTNAME: 0.0.0.0
+      NEXT_TELEMETRY_DISABLED: "1"
+    ports:
+      - "127.0.0.1:3170:3170"
+    networks:
+      - event-app-aus
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3170/').then((r)=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))\""]
+      interval: 1m
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  # Werkzeug-Server der Bot-Agenten (system/mcp_server.py, CLI aus Task 4). Der Claw ruft
+  # ihn im Netz event-agent als http://event-mcp:8171/mcp (der Name steht in
+  # ERLAUBTE_HOSTS); EVENT_MCP_URL des Bereitstellungs-Arbeiters und der Saat ist darum
+  # http://event-mcp:8171. Auf dem Host nur Loopback. App-DSN wie event-api (Ruling S3:
+  # melden ohne Admin-DSN).
+  # Feste Adresse 10.250.10.14 im bestehenden /28, ohne ip_range (Ruling T9-a).
+  # Restrisiko: hat Docker .14 gerade dynamisch an einen anderen Container im Netz
+  # vergeben (selten; Shim und Claw bekommen die untersten Adressen), startet event-mcp
+  # nicht ("Address already in use") -- ein sichtbarer Startfehler, kein stiller.
+  # Abhilfe: den Container, der .14 haelt, neu starten, dann event-mcp starten.
+  event-mcp:
+    image: event-management/system:etappe-4
+    container_name: event-mcp
+    profiles: [event-system]
+    restart: unless-stopped
+    init: true
+    command: ["python", "-m", "spaces.event_management.system.mcp_server"]
+    env_file:
+      - path: ./laufzeit/event-app.env
+        required: true
+    environment:
+      TZ: Europe/Berlin
+      PYTHONDONTWRITEBYTECODE: "1"
+      EVENT_MCP_HOST: 0.0.0.0
+      EVENT_MCP_PORT: "8171"
+      EVENT_APP_DSN_FILE: /run/secrets/event-app-dsn
+      TELEGRAM_BOT_TOKEN_FILE: /run/secrets/event-telegram-token
+      EVENT_SMTP_PASSWORT_FILE: /run/secrets/event-smtp-passwort
+    secrets:
+      - event-app-dsn
+      - event-telegram-token
+      - event-smtp-passwort
+    ports:
+      - "127.0.0.1:8171:8171"
+    networks:
+      event-agent:
+        ipv4_address: 10.250.10.14
+      event-app-aus: {}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:8171/gesund', timeout=5); sys.exit(0)"]
+      interval: 1m
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
 # Feste Subnetze: Auf offload-vm sind die vordefinierten Docker-Adresspools
 # erschoepft ("all predefined address pools have been fully subnetted",
-# gemessen 12.11.2026). 10.250.10.0/26 ist dort frei (keine 10er-Route).
+# gemessen 12.11.2026). 10.250.10.0/26 ist dort frei (keine 10er-Route); die vier
+# /28 darin sind damit alle vergeben.
 networks:
-  # Nur Claw <-> Shim, ohne Zugang nach aussen.
+  # Nur Claw <-> Shim (und Claw -> event-mcp), ohne Zugang nach aussen.
+  # Bewusst ohne ip_range (Ruling T9-a): eine Aenderung der IPAM-Angaben zwingt Docker,
+  # das bestehende Netz samt laufendem Shim und Claw neu anzulegen. event-mcp nimmt die
+  # feste Adresse .14 (die hoechste nutzbare); dynamisch vergibt Docker von unten.
   event-agent:
     internal: true
     ipam:
@@ -129,6 +279,23 @@ networks:
     ipam:
       config:
         - subnet: 10.250.10.32/28
+  # Netz der App-Dienste (event-api, event-web, event-mcp): Datenbank, Telegram-Bot-API
+  # (nur getChat/sendMessage, nie getUpdates -- das Polling bleibt beim Claw), Mail.
+  event-app-aus:
+    ipam:
+      config:
+        - subnet: 10.250.10.48/28
+
+# Nur fuer die Dienste mit Profil event-system; die Dateien legt Etappe 4 an (0600).
+secrets:
+  event-app-dsn:
+    file: ./laufzeit/event-app-dsn
+  event-sitzung-geheimnis:
+    file: ./laufzeit/event-sitzung-geheimnis
+  event-telegram-token:
+    file: ./laufzeit/event-telegram-token
+  event-smtp-passwort:
+    file: ./laufzeit/event-smtp-passwort
 
 volumes:
   event-management-claw-state:
