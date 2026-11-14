@@ -21,11 +21,14 @@
 #   sichern        pg_dump -n event und openclaw.json des Claw nach laufzeit/sicherung/.
 #   migrieren      db/anwenden.py als supabase_admin (DSN nur aus EVENT_ADMIN_DSN_FILE).
 #   shim           Shim-Image mit dem neuen claude_budget.py (80-%-Warnung) aus
-#                  EVENT_SHIM_BAUKONTEXT bauen; nur den Shim neu anlegen. Rueckweg: vorheriges Image.
+#                  EVENT_SHIM_BAUKONTEXT bauen (Pflicht, Rezept in ausrollen.md; ohne ihn
+#                  Abbruch); nur den Shim neu anlegen. Rueckweg: vorheriges Image.
 #   dienste        compose --profile event-system up -d event-api event-mcp event-web.
 #   tailnet        tailscale serve fuer event-web (danach: Schluessel, erster Betreiber,
 #                  Firma und Legacy-Eintrag, siehe ausrollen.md).
-#   anbinden       Hinweis, dann deploy/anbinden.sh; die 7 Zeilen kommen ueber stdin.
+#   anbinden       Hinweis, dann deploy/anbinden.sh; die 7 Zeilen kommen ueber stdin. Stoppt
+#                  vorher bereitstellung.timer (der Arbeiter schreibt openclaw.json);
+#                  `timer` startet ihn wieder.
 #   timer          bereitstellung und nachrichten als systemd-Timer installieren, starten.
 #   zurueck <phase>  Rueckweg der Phase (nur, wenn keine spaetere Phase mehr gestempelt ist).
 #
@@ -385,27 +388,30 @@ shim_gesund() {
 
 phase_shim() {
   tags_laden
-  local img
+  local img k f
   img=$(shim_image)
+  # Das Image backt claude_budget.py ein (rowboat/deploy/headless/shim/Dockerfile). Ohne
+  # Neubau bliebe die alte Fassung ohne 80-%-Warnung im Shim; darum ist der Baukontext Pflicht
+  # (Abschluss-Review F-5). Er liegt nicht in diesem Repo; das Rezept steht in ausrollen.md.
+  k=${EVENT_SHIM_BAUKONTEXT:-}
+  [ -n "$k" ] || abbruch "EVENT_SHIM_BAUKONTEXT fehlt: ohne Neubau bleibt claude_budget.py alt (keine 80-%-Warnung). Baukontext nach ausrollen.md (Phase shim) zusammenstellen"
+  for f in Dockerfile start.sh rowboat_shim_huelle.py claude_code_openai_shim.py            claude_code_openai_tools.py claude_budget.py agent_budget.yaml; do
+    [ -f "$k/$f" ] || abbruch "Baukontext unvollstaendig: $f fehlt (Rezept: ausrollen.md, Phase shim)"
+  done
+  grep -q '^def budget_warnung' "$k/claude_budget.py"     || abbruch "claude_budget.py im Baukontext ist alt (kein budget_warnung); das aus dem aeusseren Repo nehmen"
+  # Compose-Healthcheck und SHIM_URL des Claw erwarten 0.0.0.0:8125, die Rowboat-Dockerfile
+  # startet auf 127.0.0.1:8121.
+  grep -Eq '^CMD .*"--host", *"0\.0\.0\.0", *"--port", *"8125"' "$k/Dockerfile"     || abbruch "Dockerfile im Baukontext startet den Shim nicht auf 0.0.0.0:8125 (CMD nach ausrollen.md anpassen)"
   docker image inspect "$img" >/dev/null 2>&1 || abbruch "Image $img fehlt (Quelle: bewerbung-bot, siehe ausrollen.md)"
-  # Das Image backt claude_budget.py ein (rowboat/deploy/headless/shim/Dockerfile). Der
-  # Baukontext (Dockerfile, Shim-Dateien, neues claude_budget.py) liegt nicht in diesem
-  # Repo; wer ihn vorbereitet hat, nennt ihn in EVENT_SHIM_BAUKONTEXT.
-  if [ -n "${EVENT_SHIM_BAUKONTEXT:-}" ]; then
-    [ -f "$EVENT_SHIM_BAUKONTEXT/Dockerfile" ] || abbruch "EVENT_SHIM_BAUKONTEXT hat kein Dockerfile"
-    bau_speicher_pruefen
-    # Ruling T6-c: den Rueckweg nur setzen, wenn es noch keinen gibt oder der letzte Shim-Lauf
-    # gelang; nach einem gescheiterten Lauf zeigt `vorher` weiter auf das Original.
-    if [ ! -f "$ST/shim.vorher" ] || [ "${SHIM_OK_VORHER:-nein}" = ja ]; then
-      docker tag "$img" "${img%:*}:vorher" || abbruch "Rueckweg-Tag nicht setzbar"
-      docker image inspect -f '{{.Id}}' "$img" > "$ST/shim.vorher"
-    fi
-    export DOCKER_BUILDKIT=0
-    docker build --memory="$BAU_SPEICHER" --memory-swap="$BAU_SPEICHER" -t "$img" "$EVENT_SHIM_BAUKONTEXT" </dev/null \
-      || abbruch "Build shim fehlgeschlagen (Rueckweg: zurueck shim)"
-  else
-    info "HINWEIS: ohne EVENT_SHIM_BAUKONTEXT bleibt das eingebackene claude_budget.py alt (keine 80-%-Warnung)."
+  bau_speicher_pruefen
+  # Ruling T6-c: den Rueckweg nur setzen, wenn es noch keinen gibt oder der letzte Shim-Lauf
+  # gelang; nach einem gescheiterten Lauf zeigt `vorher` weiter auf das Original.
+  if [ ! -f "$ST/shim.vorher" ] || [ "${SHIM_OK_VORHER:-nein}" = ja ]; then
+    docker tag "$img" "${img%:*}:vorher" || abbruch "Rueckweg-Tag nicht setzbar"
+    docker image inspect -f '{{.Id}}' "$img" > "$ST/shim.vorher"
   fi
+  export DOCKER_BUILDKIT=0
+  docker build --memory="$BAU_SPEICHER" --memory-swap="$BAU_SPEICHER" -t "$img" "$k" </dev/null     || abbruch "Build shim fehlgeschlagen (Rueckweg: zurueck shim)"
   mkdir -p "$LZ/shim-budget"
   docker compose up -d --no-deps --force-recreate "$SHIM" || abbruch "Shim nicht neu angelegt"
   shim_gesund || abbruch "Shim wird nicht gesund (docker logs $SHIM ansehen, Rueckweg: zurueck shim)"
@@ -444,9 +450,22 @@ phase_anbinden() {
   fi
   [ -f "$ST/workspace-geprueft" ] || abbruch "Erst den Live-Arbeitsbereich pruefen: anbinden.sh ueberschreibt SOUL.md, AGENTS.md und skills je Arbeitsbereich. workspace-legacy im Claw-Volume mit config/workspace-legacy vergleichen (ausrollen.md, Schritt vor anbinden); danach: touch $ST/workspace-geprueft"
   info "Hinweis: anbinden.sh ueberschreibt die Arbeitsbereiche bei JEDEM Lauf (Vergleich: ausrollen.md)."
+  # Abschluss-Review F-5: Der Bereitstellungs-Arbeiter schreibt openclaw.json, anbinden.sh
+  # auch. Laeuft der Timer schon (erneutes anbinden nach `timer`), erst stoppen; ein gerade
+  # laufender Arbeiter muss fertig sein. Wieder an: `--ich-habe-ok timer` (dessen Stempel hat
+  # dieser Lauf nach T6-a schon geloescht). Alle systemctl-Aufrufe ohne stdin: die 7 Zeilen
+  # gehoeren anbinden.sh.
+  if systemctl is-active --quiet bereitstellung.timer </dev/null; then
+    sudo systemctl stop bereitstellung.timer </dev/null || abbruch "bereitstellung.timer nicht gestoppt"
+    info "bereitstellung.timer gestoppt (Arbeiter schreibt openclaw.json)."
+  fi
+  if systemctl is-active --quiet bereitstellung.service </dev/null; then
+    abbruch "bereitstellung.service laeuft gerade (schreibt openclaw.json). Warten, bis er fertig ist, dann anbinden erneut; der Timer bleibt gestoppt"
+  fi
   python3 deploy/fuellen.py werte.local.json build/ </dev/null || abbruch "fuellen.py fehlgeschlagen"
   bash deploy/anbinden.sh || abbruch "anbinden.sh fehlgeschlagen (Rueckweg: zurueck anbinden)"
   stempel anbinden
+  info "Weiter mit: --ich-habe-ok timer (installiert und startet bereitstellung.timer und nachrichten.timer)."
 }
 
 phase_timer() {

@@ -38,7 +38,8 @@ Nach jeder Phase steht ein Ledger-Eintrag, der nur Ergebnisse nennt, keine IDs.
   Adresse `10.250.10.14`; `pruefen` liest mit `docker network inspect`, ob ein anderer
   Container sie hält (dann diesen Container neu starten, bevor es weitergeht).
 - **Images von Shim und Claw** sind schon da (`event-management/shim:…` aus dem
-  bewerbung-Bestand, `ghcr.io/openclaw/openclaw:…`). `system` und `web` baut `bauen`.
+  bewerbung-Bestand, `ghcr.io/openclaw/openclaw:…`). `system` und `web` baut `bauen`, den
+  Shim baut `shim` neu (Baukontext nach dem Rezept in Phase 6).
 
 ### Tags (eine Stelle)
 
@@ -140,21 +141,51 @@ entsteht eine Marke `openclaw-<zeit>.keine`.
 
 Der Shim backt `claude_budget.py` beim Bauen ein (`spaces/rowboat/deploy/headless/shim/
 Dockerfile`, Zeile `COPY … claude_budget.py …`); ein Mount ist es nicht. Ohne neuen Bau
-kennt der laufende Shim `warnen_ab` nicht und warnt nie. Quelle des Image
+kennt der laufende Shim `warnen_ab` nicht und warnt nie. Das bisherige Image
 `event-management/shim:…` ist ein vom Controller umgetaggtes Image aus dem
-bewerbung-bot-Bestand; **der Baukontext liegt nicht in diesem Repo.**
+bewerbung-bot-Bestand; dessen Baukontext liegt nicht in diesem Repo. Darum stellt man den
+Kontext nach diesem Rezept zusammen und nennt ihn in `EVENT_SHIM_BAUKONTEXT`.
 
-- **Mit Baukontext:** `EVENT_SHIM_BAUKONTEXT=<Ordner>` setzen (Dockerfile, die Shim-Dateien
-  und das neue `scripts/claude_budget.py` des äußeren Repos darin). Die Phase tagt das
+**Rezept für den Baukontext** (auf dem Rechner mit beiden Repos, danach als Ordner auf den
+Host; nur Dateien, keine Werte):
+
+```
+umask 077
+K=laufzeit/shim-kontext
+mkdir -p "$K"
+# 1. Aus vibemind-os: Dockerfile, Start-Skript und Budget-Huelle des Rowboat-Shims.
+cp spaces/rowboat/deploy/headless/shim/Dockerfile \
+   spaces/rowboat/deploy/headless/shim/start.sh \
+   spaces/rowboat/deploy/headless/shim/rowboat_shim_huelle.py "$K/"
+# 2. Der Event-Shim lauscht auf 0.0.0.0:8125 (Compose-Healthcheck, SHIM_URL des Claw),
+#    der Rowboat-Shim auf 127.0.0.1:8121: nur die CMD-Zeile der Kopie anpassen.
+sed -i 's/"--host", "127.0.0.1", "--port", "8121"/"--host", "0.0.0.0", "--port", "8125"/' "$K/Dockerfile"
+# 3. Aus dem äußeren Repo: claude_budget.py mit `budget_warnung` (Stand nach dem Budget-Commit).
+cp <äußeres-repo>/scripts/claude_budget.py "$K/"
+# 4. Shim und Werkzeugmodul: dieselben Dateien wie für den Rowboat-Shim (bauen.ps1,
+#    Quelle am PC `~/.local/bin`, nicht im Repo).
+cp <shim-quelle>/claude_code_openai_shim.py <shim-quelle>/claude_code_openai_tools.py "$K/"
+# 5. agent_budget.yaml verlangt nur das COPY der Dockerfile; im Betrieb liest der Shim die
+#    gemountete deploy/agent_budget.yaml (VIBEMIND_BUDGET_CONFIG im Compose).
+cp spaces/event_management/deploy/agent_budget.yaml "$K/"
+```
+
+Die Phase prüft vor jedem Docker-Aufruf: alle sieben Dateien da (`Dockerfile`, `start.sh`,
+`rowboat_shim_huelle.py`, `claude_code_openai_shim.py`, `claude_code_openai_tools.py`,
+`claude_budget.py`, `agent_budget.yaml`), `claude_budget.py` hat `budget_warnung`, die CMD
+der Dockerfile startet auf `0.0.0.0` und `8125`. Sonst Abbruch ohne Stempel.
+
+- **Mit Baukontext** (`EVENT_SHIM_BAUKONTEXT=laufzeit/shim-kontext`): Die Phase tagt das
   bisherige Image als `…:vorher` und merkt sich dessen Id in `laufzeit/ausrollen/shim.vorher`,
   aber nur, wenn es noch keine `shim.vorher` gibt oder der letzte Shim-Lauf gelang (so
   zerstört ein Wiederholungslauf nach einem gescheiterten Gesundheitstest den Rückweg nicht);
   danach baut sie gedeckelt unter dem alten Namen und legt **nur den Shim** neu an
   (`docker compose up -d --no-deps --force-recreate event-management-shim`).
-- **Ohne Baukontext:** die Phase prüft nur, dass das erwartete Image da ist, und legt den
-  Shim neu an. Sie sagt es laut: das eingebackene `claude_budget.py` bleibt alt.
+- **Ohne Baukontext** bricht die Phase ab (Abschluss-Review F-5): kein Neuanlegen, kein
+  Stempel. Ein Shim mit altem `claude_budget.py` wäre ein stiller Fehler (keine Warnung).
 - **OK von Felix:** ja (der Shim startet neu, kurze Unterbrechung der Claude-Aufrufe).
-- **Abbruch:** der Shim wird nicht `healthy` (150 s).
+- **Abbruch:** Baukontext fehlt oder ist unvollständig; der Bau scheitert; der Shim wird
+  nicht `healthy` (150 s).
 - **Rückweg:** `--ich-habe-ok zurueck shim` setzt den Tag auf das vorherige Image zurück
   und legt den Shim neu an.
 
@@ -218,6 +249,45 @@ Schreibweise der Optionen wechselt zwischen Versionen).
 - **Abbruch:** `tailscale serve` meldet einen Fehler oder `status` zeigt etwas Unerwartetes.
 - **Rückweg:** `--ich-habe-ok zurueck tailnet` = `tailscale serve --https=3170 off`.
 
+### Erster Betreiber, Firma und Legacy-Eintrag (nach `tailnet`, vor `anbinden`)
+
+Ohne Betreiber kann sich niemand an der Oberfläche anmelden, und anlegen lässt er sich dort
+auch nicht: die Datenbank erlaubt `betreiber = true` nur über einen Betreiber (RLS
+`person_anlegen`). Den ersten legt darum eine kleine Admin-CLI mit der Admin-DSN an. Das
+Passwort (mindestens 12 Zeichen, wie bei Einladungen) kommt per stdin aus einer 0600-Datei,
+nie als Argument; am Terminal fragt die CLI verdeckt. Auf dem Host, im Repo:
+
+```
+umask 077
+export EVENT_ADMIN_DSN_FILE=laufzeit/admin-dsn
+python3 -m spaces.event_management.system.betreiber anlegen --mail <mail> --name "<Name>" \
+  < laufzeit/eingabe/betreiber-passwort
+rm laufzeit/eingabe/betreiber-passwort
+```
+
+Ausgabe: nur die Person-ID (stdout) und ein fester Text (stderr), nie Mail, Name, Passwort
+oder DSN. Gibt es die Mail schon, wird diese Person Betreiber; ein vorhandenes Passwort bleibt
+unverändert. Ein zweiter Lauf ändert nichts.
+
+1. **Anmelden** über das Tailnet (Phase 8) mit Mail und Passwort.
+2. **Firma anlegen** in der Oberfläche: „Firmen“, „+ Firma anlegen“, Name und Kürzel der
+   Firma des Legacy-Events (Kürzel = `firma_kurz` unten).
+3. **Legacy-Eintrag:** die lokale Datei `laufzeit/legacy-event.json` (0600, nie im Git) mit
+   `{"firma_kurz", "name", "beginn", "ende", "ort", "legacy_url"}` (Zeiten ISO 8601,
+   `legacy_url` mit `https://`), dann
+   `python3 -m spaces.event_management.system.legacy eintragen laufzeit/legacy-event.json`.
+   Ausgabe nur die Event-ID. Idempotent über `legacy_url`.
+
+- **OK von Felix:** ja (er wählt Mail und Passwort und legt die Firma an).
+- **Prüfen:** die Anmeldung gelingt, „Firmen“ zeigt „+ Firma anlegen“; nach dem
+  Legacy-Eintrag steht das Festival in der Firma, schreibgeschützt.
+- **Abbruch:** Exit ungleich 0 oder eine Ausgabe außer der ID und dem festen Text; die
+  Anmeldung scheitert; `legacy eintragen` meldet „Firma nicht gefunden“ (Kürzel prüfen).
+- **Rückweg:** `python3 -m spaces.event_management.system.betreiber entziehen <person-id>`
+  nimmt das Betreiber-Recht und macht offene Sitzungen ungültig; die Person bleibt. Die
+  Firma und der Legacy-Eintrag stören leer nicht; löschen ist destruktiv und braucht ein
+  eigenes OK.
+
 ### Vor `anbinden`: Arbeitsbereich vergleichen
 
 `deploy/anbinden.sh` überschreibt bei **jedem** Lauf `SOUL.md`, `AGENTS.md` und `skills` aller
@@ -256,9 +326,15 @@ Argument. Ohne Terminal-Ausgabe der Schlüssel, etwa:
 
 (`laufzeit/eingabe/` legt der Controller aus dem Tresor an, je Datei eine Zeile, 0600.)
 
+- **Erneut nach `timer`:** Der Bereitstellungs-Arbeiter schreibt `openclaw.json`,
+  `anbinden.sh` auch. Darum stoppt `anbinden` einen laufenden `bereitstellung.timer`
+  selbst (`sudo systemctl stop bereitstellung.timer`) und bricht ab, solange
+  `bereitstellung.service` gerade läuft (dann warten und erneut). Nach T6-a ist der
+  Stempel von `timer` danach weg: `--ich-habe-ok timer` startet den Timer wieder.
+  `nachrichten.timer` bleibt an.
 - **OK von Felix:** ja, nach dem Arbeitsbereich-Vergleich.
-- **Abbruch:** Arbeitsbereich unterscheidet sich, `healthz` des Claw antwortet nicht
-  (60 s), der Shim antwortet nicht.
+- **Abbruch:** Arbeitsbereich unterscheidet sich, `bereitstellung.service` läuft gerade,
+  `healthz` des Claw antwortet nicht (60 s), der Shim antwortet nicht.
 - **Rückweg:** `--ich-habe-ok zurueck anbinden` spielt die Sicherung der `openclaw.json`
   (Phase 4) in das Volume zurück und startet den Claw neu. Gab es vorher keinen Claw, wird
   er gestoppt; das Volume bleibt. Die in diesem Lauf ausgestellten Schlüssel danach mit
@@ -274,6 +350,44 @@ Installiert `bereitstellung` und `nachrichten` (Service + Timer) nach
   meist Host-Python ohne Paket oder falscher Repo-Pfad).
 - **Rückweg:** `--ich-habe-ok zurueck timer` (Timer stoppen und deaktivieren, die vier
   Dateien entfernen, `daemon-reload`).
+
+### Brain-Umgebung (nach `timer`)
+
+Die Wahrheitsprüfung `event_change` des Brain fragt den Verlauf über event-mcp ab. Sie
+braucht zwei Werte: `EVENT_MCP_URL` (Basis von event-mcp ohne `/mcp`, über den Netzweg unten)
+und `EVENT_VERLAUF_TOKEN_FILE` (Pfad zu einer Datei mit dem Schlüssel „Pruefung“ aus
+`laufzeit/schluessel/pruefung`, `betreiber_lesen`). Ohne sie meldet die Prüfung „unklar“
+statt „ja“ oder „nein“.
+
+Der Brain läuft im vibemind-Swarm-Stack des äußeren Repos. Der Weg dorthin ist der
+dokumentierte, nie `docker service update` (räumt den Stack ab) und nie ein
+`docker stack deploy` von Hand:
+
+1. **Netzweg** wählen und einrichten (Abschnitt „Netzweg Brain → event-mcp“), inklusive
+   `EVENT_MCP_ZUSATZ_HOSTS` und erneutem `dienste`.
+2. **Schlüssel als Swarm-Secret,** direkt aus der Datei, ohne Ausgabe:
+   `docker secret create event_verlauf_token_v1 <pfad>/pruefung` (die Datei kommt als
+   0600-Datei auf den Rechner des Brain, nie per Chat oder Mail; Secrets sind unveränderlich,
+   ein neuer Schlüssel bekommt `_v2`). Danach die lokale Kopie löschen.
+3. **Stack-Datei** des äußeren Repos (`infra/swarm/vibemind-stack.yml`): bei `brain-core` und
+   bei jedem Dienst, der dessen Umgebung spiegelt und Capabilities prüft, unter
+   `environment` `EVENT_MCP_URL=<basis>` und
+   `EVENT_VERLAUF_TOKEN_FILE=/run/secrets/event_verlauf_token_v1`, unter `secrets` den Namen,
+   oben im `secrets:`-Block `event_verlauf_token_v1: {external: true}`. Commit im äußeren
+   Repo, keine Werte außer der Basis-URL.
+4. **Ausrollen nur über den Launcher** (der macht das Stack-Deploy samt Secrets), mit den
+   Betriebsregeln des Launchers (Speicher der Docker-VM vorher messen).
+
+- **OK von Felix:** ja (der Brain startet neu; Schritt 1 und 4 je mit eigenem OK).
+- **Prüfen:** eine `event.do`-Probe auf ein Testevent; die Prüfung nennt `verlauf: …`
+  statt „EVENT_MCP_URL fehlt“ oder „kein Token“.
+- **Abbruch:** event-mcp antwortet mit 421 (Host nicht erlaubt: `EVENT_MCP_ZUSATZ_HOSTS`
+  prüfen) oder 401 (Schlüssel falsch oder widerrufen); der Launcher meldet ein fehlendes
+  Secret; der Brain wird nicht gesund.
+- **Rückweg:** die drei Einträge aus der Stack-Datei nehmen, über den Launcher neu
+  ausrollen (die Prüfung fällt auf „unklar“ zurück, `event_app_change` bleibt), den
+  Schlüssel mit `… schluessel widerrufen <id>` widerrufen. Das Secret bleibt bis zu einem
+  eigenen OK liegen.
 
 ## Netzweg Brain → event-mcp (Entscheidung in Teil B)
 
@@ -314,8 +428,11 @@ ohne Werte in den Ledger. Rückweg: Zeile entfernen, `dienste` erneut, `tailscal
   Zeile `warnung` ins Tagesprotokoll unter `laufzeit/shim-budget/`. Dass der VM-Host sie
   liest und an Felix weitergibt (Telegram vom Host aus), ist ein **Folgeplan** und hier
   nicht gebaut. Der Shim bekommt dafür kein Telegram-Token.
-- **Quelle des Shim-Images.** Der Baukontext (Dockerfile und Shim-Dateien) liegt im
-  bewerbung-bot-Bestand außerhalb dieses Repos. Bis er in ein Repo wandert, braucht die
-  Phase `shim` `EVENT_SHIM_BAUKONTEXT` von Hand.
+- **Quelle des Shim-Images.** Das bisherige Image stammt aus dem bewerbung-bot-Bestand;
+  `shim` baut es nach dem Rezept in Phase 6 aus der Rowboat-Dockerfile (CMD auf
+  `0.0.0.0:8125`) neu. Shim und Werkzeugmodul liegen weiter in keinem Repo; bis sie in eines
+  wandern, stellt man `EVENT_SHIM_BAUKONTEXT` von Hand zusammen.
+- **Ab welchem Rechner der Brain läuft,** entscheidet den Netzweg und wohin die Datei des
+  Schlüssels „Pruefung“ geht (Schritt „Brain-Umgebung“).
 - **`tailscale serve`-Syntax** gegen die installierte Version prüfen (siehe Phase 8).
 - **`pg_dump`-Client** auf dem Host darf nicht älter sein als der Server (PG ≥ 15).

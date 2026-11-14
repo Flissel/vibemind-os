@@ -54,7 +54,21 @@ def _code() -> str:
 
 # --- Attrappen und Projektkopie ---------------------------------------------------------
 
-ATTRAPPEN_ALLGEMEIN = ("tailscale", "systemctl", "sudo")
+ATTRAPPEN_ALLGEMEIN = ("tailscale", "sudo")
+# `systemctl is-active` antwortet je Unit: aktiv sind die Units in FAKE_AKTIV (Leerzeichen-
+# getrennt; ohne Variable die beiden Timer, kein Dienst laeuft gerade). Leere Variable: keine.
+SYSTEMCTL = r"""#!/bin/sh
+echo "systemctl $*" >> "$AR_PROTOKOLL"
+if [ "$1" = is-active ]; then
+  shift
+  aktiv=" ${FAKE_AKTIV-bereitstellung.timer nachrichten.timer} "
+  for u; do
+    case "$u" in --*) continue ;; esac
+    case "$aktiv" in *" $u "*) ;; *) exit 3 ;; esac
+  done
+fi
+exit 0
+"""
 STAT = r"""#!/bin/sh
 for _letzte; do :; done
 if [ -f "$_letzte.modus" ]; then cat "$_letzte.modus"; echo; else echo 600; fi
@@ -148,6 +162,7 @@ class Projekt:
         self.protokoll = tmp / "aufrufe.log"
         for name in ATTRAPPEN_ALLGEMEIN:
             _schreibe(self.bin / name, f'#!/bin/sh\necho "{name} $*" >> "$AR_PROTOKOLL"\nexit 0\n')
+        _schreibe(self.bin / "systemctl", SYSTEMCTL)
         _schreibe(self.bin / "docker", DOCKER)
         _schreibe(self.bin / "pg_dump", PG_DUMP)
         _schreibe(self.bin / "psql", PSQL)
@@ -550,28 +565,71 @@ def test_migrieren_pg_14_bricht_ab(pj: Projekt):
 # --- shim ---------------------------------------------------------------------------------------
 
 
+SHIM_DATEIEN = ("Dockerfile", "start.sh", "rowboat_shim_huelle.py", "claude_code_openai_shim.py",
+                "claude_code_openai_tools.py", "claude_budget.py", "agent_budget.yaml")
+# So sieht die Dockerfile nach dem Rezept in ausrollen.md aus: CMD auf 0.0.0.0:8125 (Healthcheck
+# im Compose und SHIM_URL des Claw), nicht 127.0.0.1:8121 wie beim Rowboat-Shim.
+SHIM_DOCKERFILE = ('FROM scratch\n'
+                   'CMD ["python3", "/opt/shim/rowboat_shim_huelle.py", "--host", "0.0.0.0", "--port", "8125"]\n')
+ROWBOAT_CMD = 'CMD ["python3", "/opt/shim/rowboat_shim_huelle.py", "--host", "127.0.0.1", "--port", "8121"]\n'
+
+
+def _shim_kontext(pj: Projekt, *, ohne: str = "", dockerfile: str = SHIM_DOCKERFILE,
+                  budget: str = "def budget_warnung(agent, heute, grenze):\n    pass\n") -> dict[str, str]:
+    kontext = pj.wurzel / "shim-kontext"
+    kontext.mkdir(exist_ok=True)
+    for name in SHIM_DATEIEN:
+        if name != ohne:
+            inhalt = {"Dockerfile": dockerfile, "claude_budget.py": budget}.get(name, "# x\n")
+            (kontext / name).write_text(inhalt, encoding="utf-8", newline="\n")
+    return {"EVENT_SHIM_BAUKONTEXT": kontext.as_posix()}
+
+
+def _shim_nichts_getan(pj: Projekt) -> None:
+    assert not [z for z in pj.log() if z.startswith(("docker build", "docker tag", "docker compose"))]
+    assert not pj.stempel_da("shim")
+
+
 @braucht_bash
-def test_shim_ohne_baukontext_legt_nur_neu_an(pj: Projekt):
+def test_shim_ohne_baukontext_bricht_ab(pj: Projekt):
+    # Abschluss-Review F-5: ohne Neubau bliebe claude_budget.py alt (keine 80-%-Warnung).
     pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web")
     pj.tags()
     lauf = pj.lauf("shim")
-    out, err = _aus(lauf)
-    assert lauf.returncode == 0, err
-    assert "HINWEIS" in out and "claude_budget.py" in out
-    assert not [z for z in pj.log() if z.startswith("docker build")]
-    assert "docker compose up -d --no-deps --force-recreate event-management-shim" in pj.log()
-    assert not any("event-management-claw" in z and "recreate" in z for z in pj.log())
-    assert pj.stempel_da("shim")
+    assert lauf.returncode == 1 and "EVENT_SHIM_BAUKONTEXT" in _aus(lauf)[1]
+    _shim_nichts_getan(pj)
+
+
+@braucht_bash
+@pytest.mark.parametrize("fehlt", SHIM_DATEIEN)
+def test_shim_baukontext_unvollstaendig_bricht_ab(fehlt, pj: Projekt):
+    pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web")
+    pj.tags()
+    lauf = pj.lauf("shim", umgebung=_shim_kontext(pj, ohne=fehlt))
+    assert lauf.returncode == 1 and fehlt in _aus(lauf)[1]
+    _shim_nichts_getan(pj)
+
+
+@braucht_bash
+@pytest.mark.parametrize("fall,dockerfile,budget,erwartet", [
+    ("altes claude_budget", SHIM_DOCKERFILE, "def pruefen(agent):\n    pass\n", "budget_warnung"),
+    ("Rowboat-CMD unveraendert", "FROM scratch\n" + ROWBOAT_CMD, None, "8125"),
+    ("ohne CMD", "FROM scratch\n", None, "8125"),
+])
+def test_shim_baukontext_inhalt_geprueft(fall, dockerfile, budget, erwartet, pj: Projekt):
+    pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web")
+    pj.tags()
+    extra = {} if budget is None else {"budget": budget}
+    lauf = pj.lauf("shim", umgebung=_shim_kontext(pj, dockerfile=dockerfile, **extra))
+    assert lauf.returncode == 1 and erwartet in _aus(lauf)[1], fall
+    _shim_nichts_getan(pj)
 
 
 @braucht_bash
 def test_shim_mit_baukontext_baut_gedeckelt_und_merkt_den_rueckweg(pj: Projekt):
     pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web")
     pj.tags()
-    kontext = pj.wurzel / "shim-kontext"
-    kontext.mkdir()
-    (kontext / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
-    lauf = pj.lauf("shim", umgebung={"EVENT_SHIM_BAUKONTEXT": kontext.as_posix()})
+    lauf = pj.lauf("shim", umgebung=_shim_kontext(pj))
     assert lauf.returncode == 0, _aus(lauf)[1]
     log = pj.log()
     assert any(z.startswith("docker tag event-management/shim:") and ":vorher" in z for z in log)
@@ -611,6 +669,71 @@ def test_anbinden_reicht_die_sieben_zeilen_durch_ohne_sie_zu_zeigen(pj: Projekt)
     for wert in zeilen:
         assert wert not in out + err and not any(wert in z for z in pj.log())
     assert pj.stempel_da("anbinden")
+
+
+def _anbinden_bereit(pj: Projekt, *stempel: str) -> str:
+    pj.stempel(*(stempel or (*BIS_DIENSTE, "tailnet")))
+    pj.tags()
+    (pj.lz / "ausrollen" / "workspace-geprueft").write_text("x", encoding="utf-8")
+    return "a\nb\nc\nd\ne\nf\ng\n"
+
+
+@braucht_bash
+def test_anbinden_stoppt_den_bereitstellungs_timer(pj: Projekt):
+    # Abschluss-Review F-5: der Arbeiter schreibt openclaw.json; anbinden.sh auch.
+    eingabe = _anbinden_bereit(pj)
+    lauf = pj.lauf("anbinden", eingabe=eingabe, umgebung={"FAKE_AKTIV": "bereitstellung.timer nachrichten.timer"})
+    out, err = _aus(lauf)
+    assert lauf.returncode == 0, err
+    log = pj.log()
+    stopp = log.index("sudo systemctl stop bereitstellung.timer")
+    assert stopp < log.index("anbinden.sh stdin-zeilen=7")  # stdin nicht verbraucht
+    assert not any("stop" in z and "nachrichten" in z for z in log)
+    assert "--ich-habe-ok timer" in out
+
+
+@braucht_bash
+def test_anbinden_ohne_aktiven_timer_stoppt_nichts(pj: Projekt):
+    eingabe = _anbinden_bereit(pj)
+    lauf = pj.lauf("anbinden", eingabe=eingabe, umgebung={"FAKE_AKTIV": ""})
+    assert lauf.returncode == 0, _aus(lauf)[1]
+    assert not any("systemctl stop" in z for z in pj.log())
+    assert "anbinden.sh stdin-zeilen=7" in pj.log()
+
+
+@braucht_bash
+def test_anbinden_bricht_ab_solange_der_arbeiter_laeuft(pj: Projekt):
+    eingabe = _anbinden_bereit(pj)
+    lauf = pj.lauf("anbinden", eingabe=eingabe,
+                   umgebung={"FAKE_AKTIV": "bereitstellung.timer bereitstellung.service"})
+    assert lauf.returncode == 1 and "bereitstellung.service" in _aus(lauf)[1]
+    log = pj.log()
+    assert "sudo systemctl stop bereitstellung.timer" in log  # Timer bleibt gestoppt
+    assert not any("anbinden.sh" in z or "fuellen.py" in z for z in log)
+    assert not pj.stempel_da("anbinden")
+
+
+@braucht_bash
+def test_anbinden_nach_timer_und_timer_startet_wieder(pj: Projekt):
+    pj.pruefen_bereit()
+    eingabe = _anbinden_bereit(pj, *PHASEN)
+    lauf = pj.lauf("anbinden", eingabe=eingabe)
+    assert lauf.returncode == 0, _aus(lauf)[1]
+    assert "sudo systemctl stop bereitstellung.timer" in pj.log()
+    assert pj.stempel_da("anbinden") and not pj.stempel_da("timer")  # T6-a
+    pj.protokoll.unlink()
+    wieder = pj.lauf("timer")
+    assert wieder.returncode == 0, _aus(wieder)[1]
+    assert "sudo systemctl enable --now bereitstellung.timer nachrichten.timer" in pj.log()
+    assert pj.stempel_da("timer")
+
+
+def test_anbinden_systemctl_ohne_stdin():
+    # Die 7 Zeilen auf stdin gehoeren anbinden.sh; systemctl/sudo duerfen sie nicht lesen.
+    code = _code()
+    rumpf = code.split("phase_anbinden() {", 1)[1].split("\n}\n", 1)[0]
+    zeilen = [z for z in rumpf.splitlines() if "systemctl" in z]
+    assert len(zeilen) >= 3 and all("</dev/null" in z for z in zeilen)
 
 
 # --- timer, tailnet ----------------------------------------------------------------------------------
@@ -827,6 +950,52 @@ def test_anleitung_nennt_jede_phase_mit_rueckweg_und_abbruch():
     assert "evk_" not in text
 
 
+def _abschnitt(text: str, titel_anfang: str) -> str:
+    teile = [t for t in re.split(r"(?m)^(?=#{2,3} )", text) if t.startswith(("## " + titel_anfang,
+                                                                            "### " + titel_anfang))]
+    assert len(teile) == 1, titel_anfang
+    return teile[0]
+
+
+def test_anleitung_handschritte_aus_dem_abschluss_review():
+    # Abschluss-Review F-5: die Teil-B-Schritte ohne Phasennamen stehen an ihrer Stelle, mit
+    # OK, Abbruch und Rueckweg.
+    text = ANLEITUNG.read_text(encoding="utf-8")
+    titel = [z for z in text.splitlines() if z.startswith("### ")]
+    def pos(anfang: str) -> int:
+        treffer = [i for i, z in enumerate(titel) if z.startswith("### " + anfang)]
+        assert len(treffer) == 1, (anfang, titel)
+        return treffer[0]
+    assert (pos("8. `tailnet`") < pos("Erster Betreiber") < pos("Vor `anbinden`") < pos("9. `anbinden`")
+            < pos("10. `timer`") < pos("Brain-Umgebung"))
+
+    erster = _abschnitt(text, "Erster Betreiber")
+    for stichwort in ("system.betreiber anlegen", "betreiber entziehen", "EVENT_ADMIN_DSN_FILE",
+                      "Firma anlegen", "system.legacy eintragen", "firma_kurz", "OK von Felix",
+                      "Abbruch", "Rückweg"):
+        assert stichwort in erster, stichwort
+    assert "--passwort" not in erster  # Passwort nur per stdin
+
+    brain = _abschnitt(text, "Brain-Umgebung")
+    for stichwort in ("EVENT_MCP_URL", "EVENT_VERLAUF_TOKEN_FILE", "laufzeit/schluessel/pruefung",
+                      "Launcher", "docker service update", "OK von Felix", "Abbruch", "Rückweg",
+                      "Netzweg"):
+        assert stichwort in brain, stichwort
+    assert re.search(r"[Nn]ie\b.*`docker service update`", brain)
+
+    anbinden = _abschnitt(text, "9. `anbinden`")
+    assert "bereitstellung.timer" in anbinden and "--ich-habe-ok timer" in anbinden
+
+    shim = _abschnitt(text, "6. `shim`")
+    for stichwort in ("spaces/rowboat/deploy/headless/shim", "claude_code_openai_shim.py",
+                      "claude_code_openai_tools.py", "rowboat_shim_huelle.py", "start.sh",
+                      "scripts/claude_budget.py", "agent_budget.yaml", "budget_warnung",
+                      "0.0.0.0", "8125", "EVENT_SHIM_BAUKONTEXT"):
+        assert stichwort in shim, stichwort
+    assert "Ohne Baukontext" in shim and "bricht" in shim.split("Ohne Baukontext", 1)[1].split("\n- ", 1)[0]
+    assert "legt den\n  Shim neu an. Sie sagt es laut" not in shim
+
+
 def test_keine_geheimnisse_oder_echten_ziele():
     for datei in (SKRIPT, ANLEITUNG, DEPLOY / "pg_hilfe.py"):
         text = datei.read_text(encoding="utf-8")
@@ -871,10 +1040,7 @@ def test_t6a_bauen_loescht_nur_eigene_und_spaetere(pj: Projekt):
 def test_t6c_shim_vorher_bleibt_nach_gescheitertem_lauf(pj: Projekt):
     pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web")
     pj.tags()
-    kontext = pj.wurzel / "shim-kontext"
-    kontext.mkdir()
-    (kontext / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
-    umg = {"EVENT_SHIM_BAUKONTEXT": kontext.as_posix()}
+    umg = _shim_kontext(pj)
     # Lauf 1: Bau ok, Gesundheitspruefung scheitert (ein Versuch)
     erst = pj.lauf("shim", umgebung={**umg, "FAKE_HEALTH": "starting", "AUSROLLEN_GESUND_VERSUCHE": "1"})
     assert erst.returncode == 1 and not pj.stempel_da("shim")
