@@ -26,6 +26,7 @@ BLOCK_ID = "rowboat-konzept"
 FEHLVERSUCHE_MAX = 100      # so oft gilt ein nicht schliessendes "<" als Text, danach endet der Lauf
 
 _LEERRAUM = re.compile(r"\s+")
+_EINZEL_SURROGAT = re.compile("[\ud800-\udfff]")     # json.loads laesst "\ud800" als einzelnes Surrogat stehen
 _NAME = re.compile(r"/?[a-z][a-z0-9:-]*", re.I | re.A)
 _GLEICH_ODER_ENDE = re.compile(r"[=>]")
 _WERT_ENDE = re.compile(r"[\s>]")
@@ -102,7 +103,8 @@ def _video_zeilen(roh: str) -> list[str]:
 
     def feld(wert: object) -> None:
         if isinstance(wert, str):
-            glatt = _LEERRAUM.sub(" ", wert).strip()
+            # Ein einzelnes Surrogat liesse sich nicht als UTF-8 speichern (sqlite wirft) und vergiftete die Runde.
+            glatt = _LEERRAUM.sub(" ", _EINZEL_SURROGAT.sub("�", wert)).strip()
             if glatt:
                 zeilen.append(glatt)
 

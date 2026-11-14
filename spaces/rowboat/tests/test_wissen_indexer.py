@@ -342,3 +342,30 @@ def test_giftdatei_bricht_die_runde_nicht_ab(wurzel, idx, monkeypatch):
     einbetten_runde(idx, wurzel, FakeEinbetter())
     assert idx.dateien()["Konzepte/b.html"].status == "fertig"
     assert idx.dateien()["Konzepte/a.html"].status == "offen"      # Fehlversuch gezaehlt, Runde lief weiter
+
+
+def test_videokonzept_text_wird_eingebettet(wurzel, idx):
+    schreiben(wurzel, "Konzepte/v.html",
+              '<title>Quitten</title><p>Statisch</p><script type="application/json" id="rowboat-konzept">'
+              '{"art":"videokonzept","bezuege":[],"video":{"hook":"Haken","stufen":[{"name":"S","szenen":'
+              '[{"kurz":"K","bildart":"slide","notiz":"Quittenprobe"}]}]}}</script>')
+    abgleichen(idx, wurzel)
+    einbetten_runde(idx, wurzel, FakeEinbetter())
+    gesamt = "\n".join(t for (t,) in idx._db.execute("SELECT text FROM abschnitte"))
+    assert "Quittenprobe" in gesamt and "Quitten" in gesamt and "Statisch" in gesamt
+    assert "bildart" not in gesamt
+
+
+def test_einzelnes_surrogat_im_block_vergiftet_die_runde_nicht(wurzel, idx):
+    schreiben(wurzel, "Konzepte/a.html",
+              '<script type="application/json" id="rowboat-konzept">'
+              '{"art":"videokonzept","bezuege":[],"video":{"hook":"a\\ud800b Quittenprobe"}}</script>')
+    schreiben(wurzel, "Konzepte/b.html", "<p>gut gut gut</p>")
+    schreiben(wurzel, "Konzepte/c.md", "# Z\n\nNotiz")
+    abgleichen(idx, wurzel)
+    r = einbetten_runde(idx, wurzel, FakeEinbetter())        # darf nicht werfen
+    assert r.pc_erreichbar and r.offen == 0
+    assert {rel: d.status for rel, d in idx.dateien().items()} == {
+        "Konzepte/a.html": "fertig", "Konzepte/b.html": "fertig", "Konzepte/c.md": "fertig"}
+    gesamt = "\n".join(t for (t,) in idx._db.execute("SELECT text FROM abschnitte"))
+    assert "Quittenprobe" in gesamt

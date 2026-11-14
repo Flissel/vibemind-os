@@ -121,9 +121,9 @@ def test_videokonzept_ohne_statischen_text():
 
 def test_videokonzept_bezuege_bildart_minuten_sind_kein_text():
     text = html_text.sichtbarer_text(_block({"art": "videokonzept", "bezuege": ["[[Bezugwort]]"], "video": _VIDEO}))
-    for nein in ("Bezugwort", "avatar_gross", "slide", "clip", "videokonzept", "4"):
-        assert nein not in text.split()
-    assert "Bezugwort" not in text and "avatar_gross" not in text
+    for nein in ("Bezugwort", "avatar_gross", "slide", "clip", "videokonzept"):
+        assert nein not in text
+    assert "4" not in text.split()
 
 
 def test_videokonzept_block_ueber_20000_zeichen_fuegt_nichts_hinzu():
@@ -189,7 +189,7 @@ def test_videokonzept_nicht_text_werte_werden_uebersprungen():
     assert html_text.sichtbarer_text(_block({"video": video})) == "Ende"
     video = {"stufen": [7, {"name": 3, "szenen": "kaputt"}, {"name": "Gut", "szenen": [None, "s",
              {"kurz": 1, "notiz": True}, {"kurz": "Kurz", "notiz": None}]}], "hook": "H"}
-    assert html_text.sichtbarer_text(_block({"video": video})) == "H\nGut\nKurz".replace("H\nGut", "H\nGut")
+    assert html_text.sichtbarer_text(_block({"video": video})) == "H\nGut\nKurz"
 
 
 def test_videokonzept_felder_getrimmt_leere_uebersprungen_markup_bleibt_woertlich():
@@ -204,3 +204,30 @@ def test_videokonzept_hostile_eingabe_bleibt_linear():
     assert time.perf_counter() - start < 2
     tief = '<script id="rowboat-konzept" type="application/json">' + "[" * 19_000 + "</script>"
     assert html_text.sichtbarer_text(tief) == ""
+
+
+def test_videokonzept_video_entscheidet_auch_ohne_passende_art():
+    # Bewusst weicher als readKonzept (das art/bezuege verlangt): ein Objekt "video" genuegt fuer die Suche.
+    assert html_text.sichtbarer_text(_block({"art": "konzept", "video": {"hook": "Hakenwort"}})) == "Hakenwort"
+    assert html_text.sichtbarer_text(_block({"video": {"hook": "Hakenwort"}})) == "Hakenwort"
+
+
+def test_videokonzept_offener_erster_block_fuegt_nichts_hinzu():
+    offen = '<p>A</p><script type="application/json" id="rowboat-konzept">{"video": {"hook": "Zebra"}}'
+    assert html_text.sichtbarer_text(offen) == "A"
+    assert html_text.sichtbarer_text(offen + _block({"video": {"hook": "Nein"}})) == "A"
+
+
+def test_einzelne_surrogate_kommen_nie_in_den_text():
+    # ensure_ascii=True schreibt "\\ud800" als Escape in den Block; json.loads macht daraus ein einzelnes Surrogat
+    roh = ('{"video": {"thema": "a\\ud800b", "hook": "\\udfffx", "stufen": [{"name": "n\\udc00", "szenen": '
+           '[{"kurz": "k\\ud800", "notiz": "\\ud83d\\ude00 Paar"}]}]}}')
+    text = html_text.sichtbarer_text('<script type="application/json" id="rowboat-konzept">' + roh + "</script>")
+    text.encode("utf-8")                                        # wirft bei einem einzelnen Surrogat
+    assert "a\ufffdb" in text and "\U0001F600 Paar" in text     # ein gueltiges Paar bleibt ein Zeichen
+
+
+def test_zahlenverweis_auf_surrogat_im_statischen_text_ist_kein_surrogat():
+    for html in ("<p>a&#xD800;b</p>", "<p>a&#55296;b</p>", "<title>t&#xDFFF;</title>"):
+        html_text.sichtbarer_text(html).encode("utf-8")
+        (html_text.titel(html) or "").encode("utf-8")
