@@ -471,3 +471,80 @@ def test_events_suchen_und_waehlen(db_admin, db_app, welt):
     assert "marke" not in mehrere and len(mehrere["treffer"]) >= 2
     with pytest.raises(NichtGefunden):
         werkzeuge.ausfuehren(app, info, "event_waehlen", {"suche": "Fremde Runde"})
+
+
+# --- aenderungen_seit (Wahrheitspruefung, Etappe 4) ----------------------------------
+
+
+def _verlauf_zeile(admin: Any, event: UUID, firma: UUID, actor: str, *,
+                   minuten_her: int = 1, baustein: str = "aufgaben") -> None:
+    admin.execute(
+        "insert into event.verlauf (event_id, firma_id, zeitpunkt, actor, quelle, baustein,"
+        " aktion) values (%s, %s, now() - make_interval(mins => %s), %s, 'bot', %s, 'anlegen')",
+        (event, firma, minuten_her, actor, baustein),
+    )
+
+
+def test_aenderungen_seit_nur_betreiber(db_admin, db_app, welt):
+    app = db_app()
+    for info in (_info(db_admin, "event", event_id=welt["meeting"]),
+                 _info(db_admin, "leitung", person_id=welt["lea"]),
+                 _info(db_admin, "melden")):
+        assert "aenderungen_seit" not in _namen(app, info)
+        with pytest.raises(NichtGefunden) as e:
+            werkzeuge.ausfuehren(app, info, "aenderungen_seit", {"minuten": 10})
+        assert str(e.value) == "unbekanntes Werkzeug"
+    for art in ("betreiber", "betreiber_lesen"):
+        info = _info(db_admin, art, person_id=welt["bea"], name="Pruefung")
+        katalog = {w.name: w for w in werkzeuge.katalog(app, info)}
+        assert katalog["aenderungen_seit"].schreibend is False
+        assert "marke" not in _schluessel_im_schema(katalog["aenderungen_seit"].eingabe)
+
+
+def test_aenderungen_ohne_inhalte(db_admin, db_app, welt):
+    app = db_app()
+    db_admin.execute(
+        "insert into event.aufgabe (event_id, firma_id, titel) values (%s, %s, %s)",
+        (welt["meeting"], welt["a"], "Geheimer Aufgabentitel"),
+    )
+    _verlauf_zeile(db_admin, welt["meeting"], welt["a"], "bot:betreiber:VibeMind")
+    _verlauf_zeile(db_admin, welt["fremd"], welt["b"], "Erika Beispiel", baustein="budget")
+    info = _info(db_admin, "betreiber_lesen", person_id=welt["bea"], name="Pruefung")
+    antwort = werkzeuge.ausfuehren(app, info, "aenderungen_seit", {"minuten": 10})
+    assert "Geheimer Aufgabentitel" not in repr(antwort)
+    zeilen = antwort["aenderungen"]
+    assert {z["firma"] for z in zeilen} == {"firma-a", "firma-b"}  # firmenuebergreifend
+    z = next(z for z in zeilen if z["actor"] == "bot:betreiber:VibeMind")
+    assert z["event"] == "Teamrunde Beispiel"
+    assert set(z) == {"event", "firma", "zeitpunkt", "actor", "quelle", "baustein", "aktion"}
+    assert (z["quelle"], z["baustein"], z["aktion"]) == ("bot", "aufgaben", "anlegen")
+
+
+def test_aenderungen_grenze_100(db_admin, db_app, welt):
+    app = db_app()
+    for i in range(105):
+        _verlauf_zeile(db_admin, welt["meeting"], welt["a"], "bot:event", minuten_her=1)
+    info = _info(db_admin, "betreiber_lesen", person_id=welt["bea"], name="Pruefung")
+    zeilen = werkzeuge.ausfuehren(app, info, "aenderungen_seit", {"minuten": 1440})["aenderungen"]
+    assert len(zeilen) == 100
+    zeiten = [z["zeitpunkt"] for z in zeilen]
+    assert zeiten == sorted(zeiten, reverse=True)
+
+
+def test_aenderungen_zeitfenster(db_admin, db_app, welt):
+    app = db_app()
+    _verlauf_zeile(db_admin, welt["meeting"], welt["a"], "alt", minuten_her=120)
+    _verlauf_zeile(db_admin, welt["meeting"], welt["a"], "neu", minuten_her=5)
+    info = _info(db_admin, "betreiber", person_id=welt["bea"], name="Pruefung")
+    zeilen = werkzeuge.ausfuehren(app, info, "aenderungen_seit", {"minuten": 60})["aenderungen"]
+    assert [z["actor"] for z in zeilen] == ["neu"]
+
+
+def test_minuten_ausserhalb_abgelehnt(db_admin, db_app, welt):
+    app = db_app()
+    info = _info(db_admin, "betreiber_lesen", person_id=welt["bea"], name="Pruefung")
+    for falsch in (0, -1, 1441, "10", True, 1.5):
+        with pytest.raises(ValueError):
+            werkzeuge.ausfuehren(app, info, "aenderungen_seit", {"minuten": falsch})
+    with pytest.raises(ValueError):
+        werkzeuge.ausfuehren(app, info, "aenderungen_seit", {})
