@@ -14,6 +14,7 @@ Chat-IDs sind Beispielwerte.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -188,16 +189,31 @@ def _event_anlegen(leitung: TestClient, welt: dict[str, Any], name: str,
     return UUID(r.json()["id"])
 
 
-def _bestaetigen(leitung: TestClient, offen_url: str, titel: str) -> None:
+def _pruefcode(telegram: SpeicherTelegram, chat: int) -> str:
+    """Der Pruefcode, den der Dienst nach dem Melden in genau diesen Chat geschickt hat (F1):
+    nur wer den Chat liest, kann bestaetigen."""
+    texte = [text for ziel, text in telegram.gesendet if ziel == chat]
+    treffer = re.search(r"Event-System: ([A-Z2-9]{6}) ", texte[-1]) if texte else None
+    assert treffer is not None, "kein Pruefcode im Chat"
+    return treffer.group(1)
+
+
+def _bestaetigen(leitung: TestClient, offen_url: str, titel: str,
+                 telegram: SpeicherTelegram, chat: int) -> None:
     gemeldet = [v for v in leitung.get(offen_url).json() if v["status"] == "gemeldet"]
     assert [v["chat_titel"] for v in gemeldet] == [titel]
-    r = leitung.post(f"/api/verbindungen/{gemeldet[0]['id']}/bestaetigen")
+    assert gemeldet[0]["pruefcode_zugestellt"] is True
+    pruef = _pruefcode(telegram, chat)
+    r = leitung.post(f"/api/verbindungen/{gemeldet[0]['id']}/bestaetigen",
+                     json={"pruefcode": pruef})
+    assert pruef not in r.text
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "bestaetigt" and r.json()["bereitstellung"]
 
 
 def _gruppe_verbinden(leitung: TestClient, mcp: TestClient, melden_schluessel: str,
-                      event_id: UUID, chat: int, titel: str) -> None:
+                      event_id: UUID, chat: int, titel: str,
+                      telegram: SpeicherTelegram) -> None:
     """Leitung erzeugt den Code (API), der Empfang meldet ihn (MCP), die Leitung bestaetigt
     den angezeigten Gruppentitel (API)."""
     url = f"/api/events/{event_id}/verbinden"
@@ -206,7 +222,7 @@ def _gruppe_verbinden(leitung: TestClient, mcp: TestClient, melden_schluessel: s
     antwort = _aufruf(mcp, melden_schluessel, "gruppe_melden",
                       {"code": r.json()["code"], "chat_id": chat})
     assert antwort == {"antwort": verbinden.DANKE}
-    _bestaetigen(leitung, url, titel)
+    _bestaetigen(leitung, url, titel, telegram, chat)
 
 
 def _agent(config: dict[str, Any], agent: str) -> dict[str, Any] | None:
@@ -242,7 +258,8 @@ def _ev(event_id: UUID) -> str:
 
 def test_gruppe_von_code_bis_abbau(db_admin, welt, leitung, mcp, melden_schluessel, telegram):
     event_id = _event_anlegen(leitung, welt, "Sommerfest")
-    _gruppe_verbinden(leitung, mcp, melden_schluessel, event_id, CHAT, "Beispielgruppe")
+    _gruppe_verbinden(leitung, mcp, melden_schluessel, event_id, CHAT, "Beispielgruppe",
+                      telegram)
 
     aus = SpeicherAusfuehrer(config=GRUND_CONFIG)
     assert _lauf(db_admin, aus) == ["anlegen:erfolg:None"]
@@ -327,7 +344,7 @@ def test_leitung_direktchat_waehlt_und_sagt_zweistufig_ab(
     antwort = _aufruf(mcp, melden_schluessel, "chat_melden",
                       {"code": r.json()["code"], "chat_id": DIREKT})
     assert antwort == {"antwort": verbinden.DANKE}
-    _bestaetigen(leitung, "/api/ich/verbinden", "Lea (@lea_beispiel)")
+    _bestaetigen(leitung, "/api/ich/verbinden", "Lea (@lea_beispiel)", telegram, DIREKT)
 
     aus = SpeicherAusfuehrer(config=GRUND_CONFIG)
     assert _lauf(db_admin, aus) == ["anlegen:erfolg:None"]
@@ -379,8 +396,10 @@ def test_schluessel_zweier_events_und_des_empfangs_getrennt(
         db_admin, welt, leitung, mcp, melden_schluessel, telegram):
     fest = _event_anlegen(leitung, welt, "Sommerfest", "fest")
     hack = _event_anlegen(leitung, welt, "Hackathon Nord", "hackathon")
-    _gruppe_verbinden(leitung, mcp, melden_schluessel, fest, CHAT, "Beispielgruppe")
-    _gruppe_verbinden(leitung, mcp, melden_schluessel, hack, CHAT_ZWEI, "Zweite Gruppe")
+    _gruppe_verbinden(leitung, mcp, melden_schluessel, fest, CHAT, "Beispielgruppe",
+                      telegram)
+    _gruppe_verbinden(leitung, mcp, melden_schluessel, hack, CHAT_ZWEI, "Zweite Gruppe",
+                      telegram)
     aus = SpeicherAusfuehrer(config=GRUND_CONFIG)
     assert _lauf(db_admin, aus) == ["anlegen:erfolg:None", "anlegen:erfolg:None"]
     config = aus.config_lesen()

@@ -326,6 +326,15 @@ def test_anleitung_nennt_jeden_messpunkt_mit_abbruch_und_alternative():
         assert "messen.sh --ich-habe-ok" in teil, punkt
 
 
+def test_m1_hat_gegenprobe_mit_fremder_chat_id():
+    """Abschluss-Review F1: M1 prueft den Rueckkanal-Pruefcode und bricht ab, wenn eine
+    Meldung aus Gruppe B mit der Chat-ID von A durchgeht."""
+    m1 = _abschnitte()["M1"]
+    for begriff in ("Prüfcode", "Gegenprobe", "Gruppe B", "Chat-ID von Gruppe A",
+                    "Abbruch auch, wenn die Gegenprobe"):
+        assert begriff in m1, begriff
+
+
 def test_anleitung_nennt_rahmen_und_deploy_blocker():
     text = ANLEITUNG.read_text(encoding="utf-8")
     for begriff in ("nicht ausgeführt", SCHALTER, "Test-Bot", "ev-legacy", "anbinden.sh",

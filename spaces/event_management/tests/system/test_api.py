@@ -182,6 +182,16 @@ def fabrik(app: FastAPI) -> Iterator[Fabrik]:
             assert haupt is not None
 
 
+# Pruefcode der gemeldeten Verbindungen der Testwelt (Beispielwert, F1).
+PRUEF = {"pruefcode": "ABCDEF"}
+
+
+def _pruefcode_setzen(admin: Any, verbindung_id: object) -> None:
+    admin.execute("insert into event.verbindung_pruefung (verbindung_id, pruef_hash)"
+                  " values (%s, encode(sha256(convert_to(%s, 'UTF8')), 'hex'))",
+                  (verbindung_id, PRUEF["pruefcode"]))
+
+
 @pytest.fixture
 def welt(db_admin: Any, fabrik: Fabrik) -> dict[str, Any]:
     fa, fb = _firma(db_admin, "bsp-a"), _firma(db_admin, "bsp-b")
@@ -205,12 +215,13 @@ def welt(db_admin: Any, fabrik: Fabrik) -> dict[str, Any]:
         # und ein Mail-Entwurf an ihn.
         db_admin.execute("update event.kontakt set mail = %s where id = %s",
                          (f"kontakt-{seite}@example.org", k))
-        db_admin.execute(
+        w["vt" + seite] = db_admin.execute(
             "insert into event.verbindung (art, code_hash, event_id, firma_id, person_id,"
-            " ablauf, chat_id, status, bestaetigt) values ('gruppe', %s, %s, %s, %s,"
-            " now() + interval '15 minutes', %s, 'bestaetigt', now())",
+            " ablauf, chat_id, status, gemeldet, bestaetigt) values ('gruppe', %s, %s, %s,"
+            " %s, now() + interval '15 minutes', %s, 'bestaetigt', now(), now())"
+            " returning id",
             (("a" if seite == "a" else "b") * 64, ev, firma, w["l" + seite],
-             -1001234567890 if seite == "a" else -1001234567891))
+             -1001234567890 if seite == "a" else -1001234567891)).fetchone()["id"]
         w["n" + seite] = db_admin.execute(
             "insert into event.nachricht (event_id, firma_id, kanal, betreff, text,"
             " empfaenger_filter) values (%s, %s, 'mail', 'Betreff', 'Text',"
@@ -218,16 +229,19 @@ def welt(db_admin: Any, fabrik: Fabrik) -> dict[str, Any]:
         # Verbinden (Task 7): eine weitere, gemeldete Gruppe zum Bestaetigen/Verwerfen.
         w["v" + seite] = db_admin.execute(
             "insert into event.verbindung (art, code_hash, event_id, firma_id, person_id,"
-            " ablauf, chat_id, chat_titel, status, gemeldet) values ('gruppe', %s, %s, %s, %s,"
-            " now() + interval '15 minutes', %s, 'Beispielgruppe', 'gemeldet', now())"
-            " returning id",
+            " ablauf, chat_id, chat_titel, status, gemeldet, pruefcode_gesendet) values"
+            " ('gruppe', %s, %s, %s, %s, now() + interval '15 minutes', %s, 'Beispielgruppe',"
+            " 'gemeldet', now(), now()) returning id",
             (("c" if seite == "a" else "d") * 64, ev, firma, w["l" + seite],
              -1001234567892 if seite == "a" else -1001234567893)).fetchone()["id"]
+        _pruefcode_setzen(db_admin, w["v" + seite])
     # Gemeldeter Direktchat der Leitung B (nur sie selbst darf ihn bestaetigen).
     w["vd_b"] = db_admin.execute(
         "insert into event.verbindung (art, code_hash, person_id, ablauf, chat_id, status,"
-        " gemeldet) values ('direkt', %s, %s, now() + interval '15 minutes', 123456789,"
-        " 'gemeldet', now()) returning id", ("e" * 64, lb)).fetchone()["id"]
+        " gemeldet, pruefcode_gesendet) values ('direkt', %s, %s, now() + interval"
+        " '15 minutes', 123456789, 'gemeldet', now(), now()) returning id",
+        ("e" * 64, lb)).fetchone()["id"]
+    _pruefcode_setzen(db_admin, w["vd_b"])
     w["c"] = {"la": fabrik("leitung-a@example.org"), "ma": fabrik("mitglied-a@example.org"),
               "betreiber": fabrik("betreiber@example.org")}
     return w
@@ -342,7 +356,7 @@ def test_ohne_cookie_401(app: FastAPI, fabrik: Fabrik, db_admin: Any) -> None:
             assert r.status_code == 401, (methode, route.path, r.text)
             geprueft.add((methode, route.path))
     assert ("GET", "/api/ich") in geprueft and ("POST", "/api/abmelden") in geprueft
-    assert len(geprueft) == 37  # neue Route? dann hier bewusst nachziehen
+    assert len(geprueft) == 38  # neue Route? dann hier bewusst nachziehen (F1: trennen)
     # Gefaelschter oder kaputter Cookie
     p = _person(db_admin, "eva@example.org")
     echt = zugang.cookie_ausstellen(p, 1, GEHEIM)
@@ -374,7 +388,7 @@ def test_ohne_csrf_403(app: FastAPI, welt: dict[str, Any], db_admin: Any,
             r = la.request(methode, _pfad(route.path), json={})
             assert r.status_code == 403, (methode, route.path, r.text)
             geprueft.add((methode, route.path))
-    assert len(geprueft) == 23 and ("POST", "/api/abmelden") in geprueft
+    assert len(geprueft) == 24 and ("POST", "/api/abmelden") in geprueft
 
     vorher = _stand(db_admin)
     url = f"/api/firmen/{welt['fa']}/kontakte"
@@ -413,7 +427,8 @@ FAMILIEN = [
     "event_anlegen", "event_aendern", "event_status", "event_loeschen", "kontakt_anlegen",
     "kontakt_aendern", "kontakt_entfernen", "nachricht_gruppe", "nachricht_mail",
     "nachricht_freigeben", "nachricht_verwerfen",
-    "gruppe_code", "verbindung_bestaetigen", "verbindung_verwerfen", "direkt_code",
+    "gruppe_code", "verbindung_bestaetigen", "verbindung_verwerfen", "verbindung_trennen",
+    "direkt_code",
     *[f"{op}:{b}" for b in KERN_EINTRAEGE for op in ("b_anlegen", "b_aendern", "b_loeschen")],
 ]
 # Fremdversuch endet hier mit 403 statt 404 (kein fremder Mandant, sondern fehlendes Recht).
@@ -497,11 +512,13 @@ def _anfrage(w: dict[str, Any], fall: str, eigen: bool) -> tuple[str, str, Any, 
     if op == "gruppe_code":
         return "POST", f"/api/events/{e}/verbinden", None, "la"
     if op == "verbindung_bestaetigen":
-        return "POST", f"/api/verbindungen/{w['v' + s]}/bestaetigen", None, "la"
+        return "POST", f"/api/verbindungen/{w['v' + s]}/bestaetigen", PRUEF, "la"
     if op == "verbindung_verwerfen":
         return "POST", f"/api/verbindungen/{w['v' + s]}/verwerfen", None, "la"
     if op == "verbindung_bestaetigen_fremde_person":
-        return "POST", f"/api/verbindungen/{w['vd_b']}/bestaetigen", None, "la"
+        return "POST", f"/api/verbindungen/{w['vd_b']}/bestaetigen", PRUEF, "la"
+    if op == "verbindung_trennen":
+        return "POST", f"/api/verbindungen/{w['vt' + s]}/trennen", None, "la"
     if op == "direkt_code":
         # Fremd: ein Mitglied ohne Leitung (der Direktchat gehoert immer der eigenen Person).
         return "POST", "/api/ich/verbinden", None, "la" if eigen else "ma"

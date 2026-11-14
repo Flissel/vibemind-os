@@ -38,6 +38,8 @@ PW = "ein-langes-passwort-1"
 GEHEIM = b"api-testgeheimnis-0123456789abcdef"
 BASIS = "https://events.example.org"
 CODE_MUSTER = re.compile(r"[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}")
+PRUEFEN = "select event.verbindung_pruefcode_pruefen(%s, %s) as e"
+PRUEF_MUSTER = re.compile(r"Event-System: ([ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}) ")
 
 
 @pytest.fixture(autouse=True)
@@ -118,13 +120,29 @@ def _hex8(wert: object) -> str:
     return str(wert).replace("-", "")[:8]
 
 
+def _pruefcode(t: SpeicherTelegram, chat: int) -> str:
+    """Pruefcode aus der juengsten Nachricht des Dienstes an diesen Chat."""
+    texte = [text for ziel, text in t.gesendet if ziel == chat]
+    assert texte, "kein Pruefcode an diesen Chat gesendet"
+    treffer = PRUEF_MUSTER.search(texte[-1])
+    assert treffer is not None
+    return treffer.group(1)
+
+
+def _pc(admin: Any, t: SpeicherTelegram, verbindung_id: UUID) -> str:
+    """Pruefcode der Verbindung (ueber ihren gemeldeten Chat)."""
+    chat = admin.execute("select chat_id from event.verbindung where id = %s",
+                         (verbindung_id,)).fetchone()["chat_id"]
+    return _pruefcode(t, chat)
+
+
 def _gruppe_gemeldet(app: Any, welt: dict[str, Any], t: SpeicherTelegram, *,
-                     event: str = "fest", chat: int = CHAT) -> UUID:
+                     event: str = "fest", chat: int = CHAT, wer: str = "leitung") -> UUID:
     """Leitung erzeugt einen Code, der Empfang meldet ihn; Rueckgabe: Verbindungs-ID."""
-    code = verbinden.code_erzeugen(app, welt["leitung"], art="gruppe", event_id=welt[event])
+    code = verbinden.code_erzeugen(app, welt[wer], art="gruppe", event_id=welt[event])
     assert verbinden.melden(app, code=code, chat_id=chat, art="gruppe",
                             telegram=t) == verbinden.DANKE
-    gemeldet = [v for v in verbinden.offene(app, welt["leitung"], event_id=welt[event])
+    gemeldet = [v for v in verbinden.offene(app, welt[wer], event_id=welt[event])
                 if v["status"] == "gemeldet"]
     assert len(gemeldet) == 1
     return gemeldet[0]["id"]
@@ -325,7 +343,8 @@ def test_ohne_bestaetigung_kein_auftrag(db_admin, db_app, welt, telegram):
                             telegram=telegram) == verbinden.DANKE
     assert _auftraege(db_admin) == []
     assert {z["status"] for z in _verbindungen(db_admin)} == {"gemeldet"}
-    assert telegram.gesendet == []
+    # Gesendet wurden nur die beiden Pruefcodes, in die gemeldeten Chats (F1).
+    assert [chat for chat, _ in telegram.gesendet] == [CHAT, DIREKT]
 
 
 def test_bestaetigen_legt_genau_einen_auftrag_an(db_admin, db_app, welt, telegram):
@@ -335,7 +354,7 @@ def test_bestaetigen_legt_genau_einen_auftrag_an(db_admin, db_app, welt, telegra
     assert [(v["status"], v["chat_titel"]) for v in offene] == [("gemeldet", "Beispielgruppe")]
     assert not {"chat_id", "code_hash", "person_id"} & set(offene[0])
 
-    auftrag = verbinden.bestaetigen(app, welt["leitung"], vid)
+    auftrag = verbinden.bestaetigen(app, welt["leitung"], vid, _pc(db_admin, telegram, vid))
     assert _auftraege(db_admin) == [{
         "art": "anlegen", "ziel": "gruppe", "event_id": welt["fest"], "person_id": welt["lea"],
         "chat_id": CHAT, "agent_id": "ev-" + _hex8(welt["fest"]), "status": "offen"}]
@@ -345,7 +364,7 @@ def test_bestaetigen_legt_genau_einen_auftrag_an(db_admin, db_app, welt, telegra
     assert zeile["chat_id"] == CHAT
     # Zweimal bestaetigen geht nicht, und es entsteht kein zweiter Auftrag.
     with pytest.raises(ValueError) as e:
-        verbinden.bestaetigen(app, welt["leitung"], vid)
+        verbinden.bestaetigen(app, welt["leitung"], vid, _pc(db_admin, telegram, vid))
     assert str(e.value) == verbinden.NUR_GEMELDETE
     assert len(_auftraege(db_admin)) == 1
     verlauf = db_admin.execute("select quelle, baustein, aktion, ziel_id from event.verlauf"
@@ -366,8 +385,8 @@ def test_direktchat_leitung_und_betreiber(db_admin, db_app, welt, telegram):
         andere = welt["betreiber"] if k is welt["leitung"] else welt["leitung"]
         assert v["id"] not in {x["id"] for x in verbinden.offene(app, andere)}
         with pytest.raises(NichtGefunden):
-            verbinden.bestaetigen(app, andere, v["id"])
-        verbinden.bestaetigen(app, k, v["id"])
+            verbinden.bestaetigen(app, andere, v["id"], _pc(db_admin, telegram, v["id"]))
+        verbinden.bestaetigen(app, k, v["id"], _pc(db_admin, telegram, v["id"]))
         assert _auftraege(db_admin)[-1] == {
             "art": "anlegen", "ziel": ziel, "event_id": None, "person_id": k.person_id,
             "chat_id": chat, "agent_id": f"{praefix}-" + _hex8(k.person_id), "status": "offen"}
@@ -378,16 +397,16 @@ def test_fremde_firma_kann_nicht_bestaetigen(db_admin, db_app, welt, telegram):
     app = db_app()
     vid = _gruppe_gemeldet(app, welt, telegram)
     with pytest.raises(NichtGefunden):
-        verbinden.bestaetigen(app, welt["fremd_leitung"], vid)
+        verbinden.bestaetigen(app, welt["fremd_leitung"], vid, _pc(db_admin, telegram, vid))
     with pytest.raises(NichtGefunden):
         verbinden.verwerfen(app, welt["fremd_leitung"], vid)
     with pytest.raises(NichtGefunden):
         verbinden.offene(app, welt["fremd_leitung"], event_id=welt["fest"])
     # Mitglied der eigenen Firma: keine Leitung, also KeinRecht.
     with pytest.raises(KeinRecht):
-        verbinden.bestaetigen(app, welt["mitglied"], vid)
+        verbinden.bestaetigen(app, welt["mitglied"], vid, _pc(db_admin, telegram, vid))
     with pytest.raises(NichtGefunden):
-        verbinden.bestaetigen(app, welt["leitung"], uuid4())
+        verbinden.bestaetigen(app, welt["leitung"], uuid4(), "ABCDEF")
     assert _auftraege(db_admin) == []
     assert _verbindungen(db_admin)[0]["status"] == "gemeldet"
 
@@ -402,7 +421,7 @@ def test_bestaetigen_nie_aus_dem_bot(db_admin, db_app, welt, telegram):
         k = schluessel.kontext_fuer(app, schluessel.pruefen(app, klartext))
         assert k.quelle == "bot"
         with pytest.raises(KeinRecht):
-            verbinden.bestaetigen(app, k, vid)
+            verbinden.bestaetigen(app, k, vid, _pc(db_admin, telegram, vid))
         with pytest.raises(KeinRecht):
             verbinden.verwerfen(app, k, vid)
     assert _auftraege(db_admin) == [] and _verbindungen(db_admin)[0]["status"] == "gemeldet"
@@ -411,11 +430,11 @@ def test_bestaetigen_nie_aus_dem_bot(db_admin, db_app, welt, telegram):
 def test_neue_gruppe_baut_alte_ab(db_admin, db_app, welt, telegram):
     app = db_app()
     alt = _gruppe_gemeldet(app, welt, telegram)
-    verbinden.bestaetigen(app, welt["leitung"], alt)
+    verbinden.bestaetigen(app, welt["leitung"], alt, _pc(db_admin, telegram, alt))
     neu = _gruppe_gemeldet(app, welt, telegram, chat=CHAT_NEU)
     # Daneben noch ein offener Code: er verfaellt mit der Bestaetigung.
     verbinden.code_erzeugen(app, welt["leitung"], art="gruppe", event_id=welt["fest"])
-    verbinden.bestaetigen(app, welt["leitung"], neu)
+    verbinden.bestaetigen(app, welt["leitung"], neu, _pc(db_admin, telegram, neu))
     agent = "ev-" + _hex8(welt["fest"])
     assert _auftraege(db_admin) == [
         {"art": "anlegen", "ziel": "gruppe", "event_id": welt["fest"], "person_id": welt["lea"],
@@ -430,7 +449,7 @@ def test_neue_gruppe_baut_alte_ab(db_admin, db_app, welt, telegram):
     assert sorted(status.values()) == ["bestaetigt", "verworfen", "verworfen"]
     # Die alte Gruppe kann danach wieder verbunden werden (jetzt als Ersatz der neuen).
     wieder = _gruppe_gemeldet(app, welt, telegram)
-    verbinden.bestaetigen(app, welt["leitung"], wieder)
+    verbinden.bestaetigen(app, welt["leitung"], wieder, _pc(db_admin, telegram, wieder))
     assert [a["chat_id"] for a in _auftraege(db_admin)][-2:] == [CHAT_NEU, CHAT]
 
 
@@ -440,7 +459,7 @@ def test_neuer_direktchat_baut_alten_ab(db_admin, db_app, welt, telegram):
         code = verbinden.code_erzeugen(app, welt["leitung"], art="direkt", event_id=None)
         verbinden.melden(app, code=code, chat_id=chat, art="direkt", telegram=telegram)
         [v] = [v for v in verbinden.offene(app, welt["leitung"]) if v["status"] == "gemeldet"]
-        verbinden.bestaetigen(app, welt["leitung"], v["id"])
+        verbinden.bestaetigen(app, welt["leitung"], v["id"], _pc(db_admin, telegram, v["id"]))
     agent = "ld-" + _hex8(welt["lea"])
     assert [(a["art"], a["chat_id"], a["agent_id"]) for a in _auftraege(db_admin)] == [
         ("anlegen", DIREKT, agent), ("abbauen", DIREKT, agent),
@@ -449,10 +468,11 @@ def test_neuer_direktchat_baut_alten_ab(db_admin, db_app, welt, telegram):
 
 def test_gruppe_schon_mit_anderem_event_verbunden(db_admin, db_app, welt, telegram):
     app = db_app()
-    verbinden.bestaetigen(app, welt["leitung"], _gruppe_gemeldet(app, welt, telegram))
+    erste = _gruppe_gemeldet(app, welt, telegram)
+    verbinden.bestaetigen(app, welt["leitung"], erste, _pc(db_admin, telegram, erste))
     zweite = _gruppe_gemeldet(app, welt, telegram, event="anderes")
     with pytest.raises(ValueError) as e:
-        verbinden.bestaetigen(app, welt["leitung"], zweite)
+        verbinden.bestaetigen(app, welt["leitung"], zweite, _pc(db_admin, telegram, zweite))
     assert str(e.value) == verbinden.SCHON_VERBUNDEN
     assert len(_auftraege(db_admin)) == 1
     assert db_admin.execute("select status from event.verbindung where id = %s",
@@ -465,10 +485,11 @@ def test_agent_kollision_value_error(db_admin, db_app, welt, telegram):
     zwilling = UUID(f"{_hex8(welt['fest'])}-0000-4000-8000-000000000001")
     assert zwilling != welt["fest"]
     welt["zwilling"] = _event(db_admin, welt["a"], "Zwilling", zwilling)
-    verbinden.bestaetigen(app, welt["leitung"], _gruppe_gemeldet(app, welt, telegram))
+    erste = _gruppe_gemeldet(app, welt, telegram)
+    verbinden.bestaetigen(app, welt["leitung"], erste, _pc(db_admin, telegram, erste))
     vid = _gruppe_gemeldet(app, welt, telegram, event="zwilling", chat=CHAT_NEU)
     with pytest.raises(ValueError) as e:
-        verbinden.bestaetigen(app, welt["leitung"], vid)
+        verbinden.bestaetigen(app, welt["leitung"], vid, _pc(db_admin, telegram, vid))
     assert str(e.value) == verbinden.AGENT_KOLLISION
     assert len(_auftraege(db_admin)) == 1
 
@@ -483,7 +504,7 @@ def test_verwerfen(db_admin, db_app, welt, telegram):
     with pytest.raises(ValueError):
         verbinden.verwerfen(app, welt["leitung"], vid)
     with pytest.raises(ValueError):
-        verbinden.bestaetigen(app, welt["leitung"], vid)
+        verbinden.bestaetigen(app, welt["leitung"], vid, _pc(db_admin, telegram, vid))
     assert _auftraege(db_admin) == []
     assert verbinden.offene(app, welt["leitung"], event_id=welt["fest"]) == []
 
@@ -493,7 +514,8 @@ def test_offene_liste(db_admin, db_app, welt, telegram):
     code = verbinden.code_erzeugen(app, welt["leitung"], art="gruppe", event_id=welt["fest"])
     [v] = verbinden.offene(app, welt["mitglied"], event_id=welt["fest"])
     assert (v["status"], v["art"], v["chat_titel"]) == ("offen", "gruppe", None)
-    assert set(v) == {"id", "art", "status", "chat_titel", "ablauf", "gemeldet", "bestaetigt"}
+    assert set(v) == {"id", "art", "status", "chat_titel", "ablauf", "gemeldet", "bestaetigt",
+                      "pruefcode_zugestellt"}
     # Abgelaufene offene Codes zaehlen nicht.
     db_admin.execute("update event.verbindung set ablauf = now() - interval '1 second'")
     assert verbinden.offene(app, welt["leitung"], event_id=welt["fest"]) == []
@@ -558,6 +580,10 @@ def test_rls_kein_direktes_bestaetigen_oder_chat_id(db_admin, db_app, welt, tele
     with pytest.raises(psycopg.errors.InsufficientPrivilege):
         mitglied.execute("update event.verbindung set status = 'verworfen' where id = %s",
                          (vid,))
+    # Auch die Leitung erst nach richtigem Pruefcode (008, F1).
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        leitung.execute(bestaetigen, (vid,))
+    assert leitung.execute(PRUEFEN, (vid, _pruefcode(telegram, CHAT))).fetchone()["e"] == "ok"
     assert leitung.execute(bestaetigen, (vid,)).rowcount == 1
     zeile = db_admin.execute("select status, chat_id from event.verbindung where id = %s",
                              (vid,)).fetchone()
@@ -578,7 +604,15 @@ def test_rls_direktchat_nur_die_person_selbst(db_admin, db_app, welt, telegram):
     # Betreiber sieht die Zeile, darf sie aber nicht fuer die Person bestaetigen.
     with pytest.raises(psycopg.errors.InsufficientPrivilege):
         db_app(betreiber=True, person=welt["bea"]).execute(bestaetigen, (vid,))
-    assert db_app(person=welt["lea"]).execute(bestaetigen, (vid,)).rowcount == 1
+    lea = db_app(person=welt["lea"])
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):  # erst der Pruefcode (F1)
+        lea.execute(bestaetigen, (vid,))
+    # Der Betreiber kann den Pruefcode fuer die Person auch nicht pruefen.
+    betreiber = db_app(betreiber=True, person=welt["bea"])
+    assert betreiber.execute(PRUEFEN, (vid, _pruefcode(telegram, DIREKT))).fetchone()["e"] == (
+        "falsch")
+    assert lea.execute(PRUEFEN, (vid, _pruefcode(telegram, DIREKT))).fetchone()["e"] == "ok"
+    assert lea.execute(bestaetigen, (vid,)).rowcount == 1
 
 
 def test_rls_auftrag_nur_fuer_bestaetigten_chat(db_admin, db_app, welt, telegram):
@@ -594,7 +628,7 @@ def test_rls_auftrag_nur_fuer_bestaetigten_chat(db_admin, db_app, welt, telegram
     vid = _gruppe_gemeldet(app, welt, telegram)
     with pytest.raises(psycopg.errors.InsufficientPrivilege):  # nur gemeldet
         leitung.execute(auftrag, ("anlegen", welt["fest"], welt["lea"], CHAT, agent))
-    verbinden.bestaetigen(app, welt["leitung"], vid)
+    verbinden.bestaetigen(app, welt["leitung"], vid, _pc(db_admin, telegram, vid))
     with pytest.raises(psycopg.errors.InsufficientPrivilege):  # anderer Chat
         leitung.execute(auftrag, ("anlegen", welt["fest"], welt["lea"], CHAT_FREMD, agent))
     with pytest.raises(psycopg.errors.InsufficientPrivilege):  # anderes Event
@@ -616,7 +650,7 @@ def test_sd_funktionen(db_admin, db_app, welt):
     for falsch in ("AAAAAAAA", h, "", "0" * 8):
         assert ohne.execute("select * from event.verbindung_finden(%s)",
                             (falsch,)).fetchall() == [], falsch
-    melden = "select event.verbindung_melden(%s, %s, %s) as ok"
+    melden = "select event.verbindung_melden(%s, %s, %s, 'ABCDEF') as ok"
     # Vorzeichen in SQL geprueft, Titel ohne Steuerzeichen.
     assert ohne.execute(melden, ("AAAAAAAA", CHAT, "T")).fetchone()["ok"] is False
     assert ohne.execute(melden, (code, DIREKT, "T")).fetchone()["ok"] is False
@@ -626,9 +660,10 @@ def test_sd_funktionen(db_admin, db_app, welt):
     assert ohne.execute(melden, (code, CHAT, "Titel")).fetchone()["ok"] is False
     assert ohne.execute("select * from event.verbindung_finden(%s)", (code,)).fetchall() == []
     rechte = db_admin.execute(
-        "select has_function_privilege('public', 'event.verbindung_melden(text, bigint, text)',"
-        " 'execute') as p, has_function_privilege('event_app',"
-        " 'event.verbindung_melden(text, bigint, text)', 'execute') as a").fetchone()
+        "select has_function_privilege('public',"
+        " 'event.verbindung_melden(text, bigint, text, text)', 'execute') as p,"
+        " has_function_privilege('event_app',"
+        " 'event.verbindung_melden(text, bigint, text, text)', 'execute') as a").fetchone()
     assert rechte == {"p": False, "a": True}
 
 
@@ -643,8 +678,8 @@ def test_rls_hash_allein_reicht_nicht(db_admin, db_app, welt):
     assert h == hashlib.sha256(code.encode("utf-8")).hexdigest()
     ohne = db_app()
     assert ohne.execute("select * from event.verbindung_finden(%s)", (h,)).fetchall() == []
-    assert ohne.execute("select event.verbindung_melden(%s, %s, %s) as ok",
-                        (h, CHAT, "T")).fetchone()["ok"] is False
+    assert ohne.execute("select event.verbindung_melden(%s, %s, %s, %s) as ok",
+                        (h, CHAT, "T", "ABCDEF")).fetchone()["ok"] is False
     assert [z["status"] for z in _verbindungen(db_admin)] == ["offen"]
 
 
@@ -656,13 +691,13 @@ def test_meldung_verfaellt_nach_24_stunden(db_admin, db_app, welt, telegram):
                      " where id = %s", (v,))
     assert verbinden.offene(app, welt["leitung"], event_id=welt["fest"]) == []
     with pytest.raises(ValueError) as e:
-        verbinden.bestaetigen(app, welt["leitung"], v)
+        verbinden.bestaetigen(app, welt["leitung"], v, _pc(db_admin, telegram, v))
     assert str(e.value) == verbinden.MELDUNG_ABGELAUFEN
     assert _auftraege(db_admin) == []
     # Knapp unter 24 h geht es noch.
     db_admin.execute("update event.verbindung set gemeldet = now() - interval '23 hours'"
                      " where id = %s", (v,))
-    verbinden.bestaetigen(app, welt["leitung"], v)
+    verbinden.bestaetigen(app, welt["leitung"], v, _pc(db_admin, telegram, v))
     assert len(_auftraege(db_admin)) == 1
 
 
@@ -690,7 +725,7 @@ def test_betreiber_wird_leitung_alter_agent_bleibt_fuer_den_arbeiter(
     code = verbinden.code_erzeugen(app, vorher, art="direkt", event_id=None)
     verbinden.melden(app, code=code, chat_id=DIREKT, art="direkt", telegram=telegram)
     [v] = [v for v in verbinden.offene(app, vorher) if v["status"] == "gemeldet"]
-    verbinden.bestaetigen(app, vorher, v["id"])
+    verbinden.bestaetigen(app, vorher, v["id"], _pc(db_admin, telegram, v["id"]))
 
     db_admin.execute("update event.person set betreiber = false where id = %s", (p,))
     nachher = Kontext(person_id=p, betreiber=False, rollen={welt["a"]: "leitung"})
@@ -698,7 +733,7 @@ def test_betreiber_wird_leitung_alter_agent_bleibt_fuer_den_arbeiter(
     verbinden.melden(app, code=code, chat_id=DIREKT_ANDERS, art="direkt", telegram=telegram)
     [v] = [v for v in verbinden.offene(app, nachher) if v["status"] == "gemeldet"]
     with caplog.at_level(logging.INFO):
-        verbinden.bestaetigen(app, nachher, v["id"])
+        verbinden.bestaetigen(app, nachher, v["id"], _pc(db_admin, telegram, v["id"]))
     assert [(a["art"], a["ziel"], a["chat_id"], a["agent_id"]) for a in _auftraege(db_admin)] == [
         ("anlegen", "betreiber", DIREKT, "bo-" + _hex8(p)),
         ("anlegen", "leitung", DIREKT_ANDERS, "ld-" + _hex8(p))]
@@ -713,12 +748,13 @@ def test_gleichzeitige_gruppenbestaetigung_passende_meldung(db_admin, db_app, we
     eindeutigen Index je Event und meldet das passend (nicht "Chat anderweitig verbunden")."""
     app, beobachter = db_app(), db_app()
     v = _gruppe_gemeldet(app, welt, telegram)
+    pruef = _pc(db_admin, telegram, v)
     pid = app.execute("select pg_backend_pid() as pid").fetchone()["pid"]
     ergebnis: dict[str, object] = {}
 
     def bestaetigen() -> None:
         try:
-            verbinden.bestaetigen(app, welt["leitung"], v)
+            verbinden.bestaetigen(app, welt["leitung"], v, pruef)
         except Exception as e:  # noqa: BLE001 - der Test prueft die Art
             ergebnis["fehler"] = e
 
@@ -744,6 +780,251 @@ def test_gleichzeitige_gruppenbestaetigung_passende_meldung(db_admin, db_app, we
     assert isinstance(fehler, ValueError), fehler
     assert str(fehler) == verbinden.GRUPPE_SCHON_BESTAETIGT
     assert len(_auftraege(db_admin)) == 0
+
+
+# --- Rueckkanal-Pruefcode (Abschluss-Review F1, Ruling F-a) -----------------------------
+
+
+def test_pruefcode_geht_in_genau_den_gemeldeten_chat(db_admin, db_app, welt, telegram, caplog):
+    app = db_app()
+    code = verbinden.code_erzeugen(app, welt["leitung"], art="gruppe", event_id=welt["fest"])
+    with caplog.at_level(logging.DEBUG):
+        antwort = verbinden.melden(app, code=code, chat_id=CHAT, art="gruppe", telegram=telegram)
+    assert antwort == verbinden.DANKE          # die Antwort an den Bot bleibt einheitlich
+    [(chat, text)] = telegram.gesendet
+    assert chat == CHAT
+    pruef = _pruefcode(telegram, CHAT)
+    assert text == verbinden.PRUEFCODE_TEXT.format(pruefcode=pruef)
+    # Der Text nennt weder Event noch Firma (Fremde im Chat erfahren nichts).
+    assert "Sommerfest" not in text and "Beispiel GmbH" not in text
+    assert pruef not in antwort and pruef not in caplog.text
+    # Oberflaeche: zugestellt, aber kein Code und kein Hash in der Liste.
+    [v] = verbinden.offene(app, welt["leitung"], event_id=welt["fest"])
+    assert v["pruefcode_zugestellt"] is True
+    assert pruef not in str(v)
+    # Gespeichert nur als Hash, in einer Tabelle, die event_app nicht lesen darf.
+    [zeile] = db_admin.execute("select * from event.verbindung_pruefung").fetchall()
+    assert zeile["pruef_hash"] == hashlib.sha256(pruef.encode("utf-8")).hexdigest()
+    assert zeile["fehlversuche"] == 0 and zeile["geprueft"] is None
+    for conn in (db_app(firmen=[welt["a"]], person=welt["lea"]),
+                 db_app(betreiber=True, person=welt["bea"]), db_app()):
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("select pruef_hash from event.verbindung_pruefung")
+    rechte = db_admin.execute(
+        "select has_table_privilege('event_app', 'event.verbindung_pruefung', 'select') as s,"
+        " has_table_privilege('event_app', 'event.verbindung_pruefung', 'update') as u,"
+        " has_column_privilege('event_app', 'event.verbindung', 'pruefcode_gesendet',"
+        " 'update') as g").fetchone()
+    assert rechte == {"s": False, "u": False, "g": False}
+
+
+def test_fremder_chat_ohne_pruefcode_nicht_bestaetigbar(db_admin, db_app, welt, telegram):
+    """Angriff aus F1: Leitung B meldet ihren Code mit der Chat-ID der Gruppe A (der Bot ist
+    dort Mitglied, getChat passt). Der Pruefcode landet in Gruppe A; ohne ihn geht nichts."""
+    app = db_app()
+    vid = _gruppe_gemeldet(app, welt, telegram, event="fremd", chat=CHAT, wer="fremd_leitung")
+    assert [c for c, _ in telegram.gesendet] == [CHAT]
+    # Vier Versuche (der fuenfte wuerde die Verbindung verwerfen, siehe Sperre-Test).
+    for falsch in ("ZZZZZZ", "  ", "ABCDEFGH", None):
+        with pytest.raises(ValueError) as e:
+            verbinden.bestaetigen(app, welt["fremd_leitung"], vid, falsch)  # type: ignore[arg-type]
+        assert str(e.value) == verbinden.PRUEFCODE_FALSCH
+    assert _auftraege(db_admin) == []
+    zeile = db_admin.execute("select status from event.verbindung where id = %s",
+                             (vid,)).fetchone()
+    assert zeile["status"] == "gemeldet"
+    # Die Gruppe A bleibt frei: A kann sie fuer das eigene Event verbinden.
+    eigen = _gruppe_gemeldet(app, welt, telegram)
+    verbinden.bestaetigen(app, welt["leitung"], eigen, _pc(db_admin, telegram, eigen))
+    assert [a["chat_id"] for a in _auftraege(db_admin)] == [CHAT]
+
+
+def test_mit_pruefcode_bestaetigbar(db_admin, db_app, welt, telegram):
+    app = db_app()
+    vid = _gruppe_gemeldet(app, welt, telegram)
+    pruef = _pruefcode(telegram, CHAT)
+    # Von Hand getippt: Kleinbuchstaben und Rand sind egal.
+    verbinden.bestaetigen(app, welt["leitung"], vid, f" {pruef.lower()}\n")
+    assert [a["art"] for a in _auftraege(db_admin)] == ["anlegen"]
+    zeile = db_admin.execute("select geprueft from event.verbindung_pruefung"
+                             " where verbindung_id = %s", (vid,)).fetchone()
+    assert zeile["geprueft"] is not None
+
+
+def test_sperre_nach_5_falschen_pruefcodes(db_admin, db_app, welt, telegram):
+    app = db_app()
+    vid = _gruppe_gemeldet(app, welt, telegram)
+    pruef = _pruefcode(telegram, CHAT)
+    falsch = "ZZZZZZ" if pruef != "ZZZZZZ" else "YYYYYY"
+    for _ in range(4):
+        with pytest.raises(ValueError) as e:
+            verbinden.bestaetigen(app, welt["leitung"], vid, falsch)
+        assert str(e.value) == verbinden.PRUEFCODE_FALSCH
+    assert db_admin.execute("select fehlversuche from event.verbindung_pruefung").fetchone() == {
+        "fehlversuche": 4}
+    # Der fuenfte Fehlversuch verwirft die Verbindung (dieselbe Meldung, keine Zusatzinfo).
+    with pytest.raises(ValueError) as e:
+        verbinden.bestaetigen(app, welt["leitung"], vid, falsch)
+    assert str(e.value) == verbinden.PRUEFCODE_FALSCH
+    assert db_admin.execute("select status from event.verbindung where id = %s",
+                            (vid,)).fetchone()["status"] == "verworfen"
+    # Danach hilft auch der richtige Code nicht mehr.
+    with pytest.raises(ValueError) as e:
+        verbinden.bestaetigen(app, welt["leitung"], vid, pruef)
+    assert str(e.value) == verbinden.NUR_GEMELDETE
+    assert _auftraege(db_admin) == []
+
+    # Vier Fehlversuche, dann der richtige: geht.
+    vid = _gruppe_gemeldet(app, welt, telegram, chat=CHAT_NEU)
+    for _ in range(4):
+        with pytest.raises(ValueError):
+            verbinden.bestaetigen(app, welt["leitung"], vid, "ZZZZZZ" if _pc(
+                db_admin, telegram, vid) != "ZZZZZZ" else "YYYYYY")
+    verbinden.bestaetigen(app, welt["leitung"], vid, _pc(db_admin, telegram, vid))
+    assert [a["chat_id"] for a in _auftraege(db_admin)] == [CHAT_NEU]
+
+
+def test_pruefcode_nicht_zustellbar(db_admin, db_app, welt, telegram, caplog):
+    """Senden scheitert: die Meldung bleibt (eigene Transaktion), wird als nicht zustellbar
+    angezeigt und laesst sich verwerfen; die Antwort an den Bot bleibt dieselbe."""
+    app = db_app()
+    code = verbinden.code_erzeugen(app, welt["leitung"], art="gruppe", event_id=welt["fest"])
+    telegram.fehler = "Telegram-Fehler: Forbidden: bot was kicked"
+    with caplog.at_level(logging.DEBUG):
+        assert verbinden.melden(app, code=code, chat_id=CHAT, art="gruppe",
+                                telegram=telegram) == verbinden.DANKE
+    assert "nicht zustellbar" in caplog.text and str(CHAT) not in caplog.text
+    [v] = verbinden.offene(app, welt["leitung"], event_id=welt["fest"])
+    assert (v["status"], v["pruefcode_zugestellt"]) == ("gemeldet", False)
+    with pytest.raises(ValueError) as e:
+        verbinden.bestaetigen(app, welt["leitung"], v["id"], "ABCDEF")
+    assert str(e.value) == verbinden.PRUEFCODE_NICHT_ZUSTELLBAR
+    # Kein Fehlversuch gezaehlt; Verwerfen geht.
+    assert db_admin.execute("select fehlversuche from event.verbindung_pruefung").fetchone() == {
+        "fehlversuche": 0}
+    assert verbinden.verwerfen(app, welt["leitung"], v["id"])["status"] == "verworfen"
+    assert _auftraege(db_admin) == []
+
+
+def test_rls_bestaetigt_nur_mit_geprueftem_pruefcode(db_admin, db_app, welt, telegram):
+    """Zweites Tor: auch mit App-DSN setzt eine Leitung `bestaetigt` nicht am Pruefcode
+    vorbei, und das Vergleichen per SD-Funktion verraet Fremden nichts."""
+    app = db_app()
+    vid = _gruppe_gemeldet(app, welt, telegram)
+    pruef = _pruefcode(telegram, CHAT)
+    leitung = db_app(firmen=[welt["a"]], person=welt["lea"])
+    bestaetigen = ("update event.verbindung set status = 'bestaetigt', bestaetigt = now()"
+                   " where id = %s")
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        leitung.execute(bestaetigen, (vid,))
+    pruefen = "select event.verbindung_pruefcode_pruefen(%s, %s) as e"
+    # Fremde Leitung, ohne Kontext, unbekannte id: 'falsch' -- auch mit dem richtigen Code,
+    # und ohne zu zaehlen.
+    for conn, wer in ((db_app(firmen=[welt["b"]], person=welt["lb"]), "fremd"),
+                      (db_app(), "ohne"), (db_app(firmen=[welt["a"]], person=welt["mia"]),
+                                           "mitglied")):
+        assert conn.execute(pruefen, (vid, pruef)).fetchone()["e"] == "falsch", wer
+    assert leitung.execute(pruefen, (uuid4(), pruef)).fetchone()["e"] == "falsch"
+    assert db_admin.execute("select fehlversuche, geprueft from event.verbindung_pruefung"
+                            ).fetchone() == {"fehlversuche": 0, "geprueft": None}
+    # Die Leitung selbst: richtig -> geprueft, danach darf sie bestaetigen.
+    assert leitung.execute(pruefen, (vid, pruef)).fetchone()["e"] == "ok"
+    assert leitung.execute(bestaetigen, (vid,)).rowcount == 1
+    # verbindung_melden verlangt einen gueltigen Pruefcode.
+    code = verbinden.code_erzeugen(app, welt["leitung"], art="gruppe", event_id=welt["anderes"])
+    with pytest.raises(psycopg.errors.InvalidParameterValue):
+        db_app().execute("select event.verbindung_melden(%s, %s, %s, %s)",
+                         (code, CHAT_NEU, "T", "kurz"))
+
+
+# --- Trennen (F1) -----------------------------------------------------------------------
+
+
+def test_trennen_gibt_den_chat_frei_und_baut_ab(db_admin, db_app, welt, telegram):
+    app = db_app()
+    vid = _gruppe_gemeldet(app, welt, telegram)
+    verbinden.bestaetigen(app, welt["leitung"], vid, _pc(db_admin, telegram, vid))
+    with pytest.raises(KeinRecht):
+        verbinden.trennen(app, welt["mitglied"], vid)
+    with pytest.raises(NichtGefunden):
+        verbinden.trennen(app, welt["fremd_leitung"], vid)
+    ergebnis = verbinden.trennen(app, welt["leitung"], vid)
+    assert ergebnis["status"] == "verworfen" and ergebnis["bereitstellung"]
+    agent = "ev-" + _hex8(welt["fest"])
+    assert [(a["art"], a["chat_id"], a["agent_id"]) for a in _auftraege(db_admin)] == [
+        ("anlegen", CHAT, agent), ("abbauen", CHAT, agent)]
+    assert db_admin.execute("select id from event.bereitstellung where art = 'abbauen'"
+                            ).fetchone()["id"] == ergebnis["bereitstellung"]
+    assert db_admin.execute("select status from event.verbindung where id = %s",
+                            (vid,)).fetchone()["status"] == "verworfen"
+    verlauf = db_admin.execute("select aktion from event.verlauf order by id").fetchall()
+    assert [z["aktion"] for z in verlauf] == ["gruppe_bestaetigt", "gruppe_getrennt"]
+    # Nur bestaetigte Verbindungen lassen sich trennen.
+    with pytest.raises(ValueError) as e:
+        verbinden.trennen(app, welt["leitung"], vid)
+    assert str(e.value) == verbinden.NUR_BESTAETIGTE_TRENNEN
+    # Der Chat ist frei: dieselbe Gruppe fuer ein anderes Event.
+    zweite = _gruppe_gemeldet(app, welt, telegram, event="anderes")
+    verbinden.bestaetigen(app, welt["leitung"], zweite, _pc(db_admin, telegram, zweite))
+    assert _auftraege(db_admin)[-1]["agent_id"] == "ev-" + _hex8(welt["anderes"])
+
+
+def test_trennen_direktchat_nur_die_person_selbst(db_admin, db_app, welt, telegram):
+    app = db_app()
+    code = verbinden.code_erzeugen(app, welt["leitung"], art="direkt", event_id=None)
+    verbinden.melden(app, code=code, chat_id=DIREKT, art="direkt", telegram=telegram)
+    [v] = verbinden.offene(app, welt["leitung"])
+    verbinden.bestaetigen(app, welt["leitung"], v["id"], _pruefcode(telegram, DIREKT))
+    with pytest.raises(NichtGefunden):
+        verbinden.trennen(app, welt["betreiber"], v["id"])
+    verbinden.trennen(app, welt["leitung"], v["id"])
+    agent = "ld-" + _hex8(welt["lea"])
+    assert [(a["art"], a["ziel"], a["chat_id"], a["agent_id"]) for a in _auftraege(db_admin)] == [
+        ("anlegen", "leitung", DIREKT, agent), ("abbauen", "leitung", DIREKT, agent)]
+    assert verbinden.offene(app, welt["leitung"]) == []
+
+
+def test_bot_kann_weder_bestaetigen_noch_trennen(db_admin, db_app, welt, telegram):
+    app = db_app()
+    vid = _gruppe_gemeldet(app, welt, telegram)
+    pruef = _pruefcode(telegram, CHAT)
+    infos = [schluessel.ausstellen(db_admin, art=art, bezeichnung="Test", **arg)[1]
+             for art, arg in (("leitung", {"person_id": welt["lea"]}),
+                              ("betreiber", {"person_id": welt["bea"]}),
+                              ("event", {"event_id": welt["fest"]}))]
+    for klartext in infos:
+        k = schluessel.kontext_fuer(app, schluessel.pruefen(app, klartext))
+        with pytest.raises(KeinRecht):
+            verbinden.bestaetigen(app, k, vid, pruef)
+    verbinden.bestaetigen(app, welt["leitung"], vid, pruef)
+    for klartext in infos:
+        k = schluessel.kontext_fuer(app, schluessel.pruefen(app, klartext))
+        with pytest.raises(KeinRecht):
+            verbinden.trennen(app, k, vid)
+    assert [a["art"] for a in _auftraege(db_admin)] == ["anlegen"]
+
+
+# --- Archivieren und Loeschen geben die Gruppe frei (F2) ---------------------------------
+
+
+@pytest.mark.parametrize("weg", ["archivieren", "loeschen"])
+def test_archiv_oder_loeschen_gibt_die_gruppe_frei(db_admin, db_app, welt, telegram, weg):
+    from spaces.event_management.system import events
+
+    app = db_app()
+    vid = _gruppe_gemeldet(app, welt, telegram)
+    verbinden.bestaetigen(app, welt["leitung"], vid, _pc(db_admin, telegram, vid))
+    if weg == "archivieren":
+        events.event_status(app, welt["leitung"], welt["fest"], "archiviert")
+        assert db_admin.execute("select status from event.verbindung where id = %s",
+                                (vid,)).fetchone()["status"] == "verworfen"
+    else:
+        events.event_loeschen(app, welt["leitung"], welt["fest"])
+    assert [a["art"] for a in _auftraege(db_admin)] == ["anlegen", "abbauen"]
+    # Dieselbe Gruppe laesst sich fuer ein neues Event bestaetigen.
+    neu = _gruppe_gemeldet(app, welt, telegram, event="anderes")
+    verbinden.bestaetigen(app, welt["leitung"], neu, _pc(db_admin, telegram, neu))
+    assert _auftraege(db_admin)[-1]["agent_id"] == "ev-" + _hex8(welt["anderes"])
 
 
 # --- Werkzeuge ------------------------------------------------------------------------
@@ -908,17 +1189,37 @@ def test_api_gruppe_ablauf(db_admin, db_app, welt, fabrik, telegram):
     [gemeldet] = lea.get(basis).json()
     assert (gemeldet["status"], gemeldet["chat_titel"]) == ("gemeldet", "Beispielgruppe")
     url = f"/api/verbindungen/{gemeldet['id']}"
-    assert mia.post(f"{url}/bestaetigen").status_code == 403
-    assert lb.post(f"{url}/bestaetigen").status_code == 404
-    assert ohne_csrf.post(f"{url}/bestaetigen").status_code == 403
+    pruef = {"pruefcode": _pruefcode(telegram, CHAT)}
+    assert mia.post(f"{url}/bestaetigen", json=pruef).status_code == 403
+    assert lb.post(f"{url}/bestaetigen", json=pruef).status_code == 404
+    assert ohne_csrf.post(f"{url}/bestaetigen", json=pruef).status_code == 403
+    # Ohne Pruefcode: Validierung; falsch: 422 mit fester Meldung, ohne den Code zu nennen.
+    ohne = lea.post(f"{url}/bestaetigen")
+    assert ohne.status_code == 422
+    r = lea.post(f"{url}/bestaetigen", json={"pruefcode": "ZZZZZZ"})
+    if pruef["pruefcode"] != "ZZZZZZ":
+        assert (r.status_code, r.json()) == (422, {"detail": verbinden.PRUEFCODE_FALSCH})
+    assert pruef["pruefcode"] not in r.text + ohne.text
     assert _auftraege(db_admin) == []
-    r = lea.post(f"{url}/bestaetigen")
+    r = lea.post(f"{url}/bestaetigen", json=pruef)
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "bestaetigt" and r.json()["bereitstellung"]
+    assert pruef["pruefcode"] not in r.text
+    assert pruef["pruefcode"] not in lea.get(basis).text
     assert len(_auftraege(db_admin)) == 1
-    assert lea.post(f"{url}/bestaetigen").status_code == 422
+    assert lea.post(f"{url}/bestaetigen", json=pruef).status_code == 422
     assert lea.post(f"{url}/verwerfen").status_code == 422
-    assert lea.post(f"/api/verbindungen/{uuid4()}/bestaetigen").status_code == 404
+    assert lea.post(f"/api/verbindungen/{uuid4()}/bestaetigen", json=pruef).status_code == 404
+    # Trennen: nur Leitung der Firma, gibt die Gruppe frei und legt den Abbau an.
+    assert mia.post(f"{url}/trennen").status_code == 403
+    assert lb.post(f"{url}/trennen").status_code == 404
+    assert ohne_csrf.post(f"{url}/trennen").status_code == 403
+    r = lea.post(f"{url}/trennen")
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "verworfen" and r.json()["bereitstellung"]
+    assert [a["art"] for a in _auftraege(db_admin)] == ["anlegen", "abbauen"]
+    assert lea.post(f"{url}/trennen").status_code == 422
+    assert lea.get(basis).json() == []
 
 
 def test_api_direktchat(db_admin, db_app, welt, fabrik, telegram):
@@ -931,6 +1232,8 @@ def test_api_direktchat(db_admin, db_app, welt, fabrik, telegram):
                      telegram=telegram)
     [v] = lea.get("/api/ich/verbinden").json()
     assert v["status"] == "gemeldet" and v["art"] == "direkt"
-    assert mia.post(f"/api/verbindungen/{v['id']}/bestaetigen").status_code == 404
+    assert mia.post(f"/api/verbindungen/{v['id']}/bestaetigen",
+                    json={"pruefcode": _pruefcode(telegram, DIREKT)}).status_code == 404
+    assert mia.post(f"/api/verbindungen/{v['id']}/trennen").status_code == 404
     assert lea.post(f"/api/verbindungen/{v['id']}/verwerfen").json()["status"] == "verworfen"
     assert lea.get("/api/ich/verbinden").json() == []

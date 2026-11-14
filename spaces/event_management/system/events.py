@@ -196,9 +196,14 @@ def _gruppe_abbauen(cur: psycopg.Cursor[Any], k: Kontext, event_id: UUID) -> Non
 
     Lehnt RLS den Auftrag ab (Kontext ohne passende Person), entfaellt er nur fuer diesen
     Aufruf; der Bereitstellungs-Arbeiter raeumt den Agenten dann als verwaist ab (ein
-    archiviertes oder geloeschtes Event hat keinen Soll-Agenten mehr)."""
-    cur.execute("select chat_id from event.verbindung where art = 'gruppe' and event_id = %s"
-                " and status = 'bestaetigt'", (event_id,))
+    archiviertes oder geloeschtes Event hat keinen Soll-Agenten mehr).
+
+    Die bestaetigte Verbindung wird in derselben Transaktion verworfen (Abschluss-Review
+    F2): sonst hielte der eindeutige Index `verbindung_chat_bestaetigt` die Gruppe fuer immer
+    fest, und sie liesse sich fuer kein neues Event bestaetigen. Archivieren/Loeschen darf
+    nur Leitung oder Betreiber, und genau die erlaubt `verbindung_aendern` (006/008)."""
+    cur.execute("update event.verbindung set status = 'verworfen' where art = 'gruppe'"
+                " and event_id = %s and status = 'bestaetigt' returning chat_id", (event_id,))
     gruppe = cur.fetchone()
     if gruppe is None:
         return

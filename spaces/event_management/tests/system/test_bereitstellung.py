@@ -8,6 +8,7 @@ sind Beispielwerte.
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -98,6 +99,14 @@ def _hex8(wert: object) -> str:
     return str(wert).replace("-", "")[:8]
 
 
+def _pruefcode(t: SpeicherTelegram, chat: int) -> str:
+    """Pruefcode, den der Dienst nach dem Melden in den Chat geschickt hat (F1)."""
+    treffer = re.search(r"Event-System: ([A-Z2-9]{6}) ",
+                        [text for ziel, text in t.gesendet if ziel == chat][-1])
+    assert treffer is not None
+    return treffer.group(1)
+
+
 def _gruppe(app: Any, welt: dict[str, Any], t: SpeicherTelegram, chat: int = CHAT) -> UUID:
     """Gruppe des Festes verbinden und bestaetigen; Rueckgabe: id des anlegen-Auftrags."""
     code = verbinden.code_erzeugen(app, welt["leitung"], art="gruppe", event_id=welt["fest"])
@@ -105,7 +114,7 @@ def _gruppe(app: Any, welt: dict[str, Any], t: SpeicherTelegram, chat: int = CHA
                             telegram=t) == verbinden.DANKE
     [v] = [v for v in verbinden.offene(app, welt["leitung"], event_id=welt["fest"])
            if v["status"] == "gemeldet"]
-    return verbinden.bestaetigen(app, welt["leitung"], v["id"])
+    return verbinden.bestaetigen(app, welt["leitung"], v["id"], _pruefcode(t, chat))
 
 
 def _direkt(app: Any, k: Kontext, t: SpeicherTelegram, chat: int = DIREKT) -> UUID:
@@ -113,7 +122,7 @@ def _direkt(app: Any, k: Kontext, t: SpeicherTelegram, chat: int = DIREKT) -> UU
     assert verbinden.melden(app, code=code, chat_id=chat, art="direkt",
                             telegram=t) == verbinden.DANKE
     [v] = [v for v in verbinden.offene(app, k) if v["status"] == "gemeldet"]
-    return verbinden.bestaetigen(app, k, v["id"])
+    return verbinden.bestaetigen(app, k, v["id"], _pruefcode(t, chat))
 
 
 def _auftrag(admin: Any, auftrag_id: UUID) -> dict[str, Any]:

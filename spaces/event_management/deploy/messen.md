@@ -76,12 +76,24 @@ zuverlässig im Kontext und gibt er sie an `gruppe_melden`/`chat_melden` weiter?
    `gruppe Messung A: gemeldet, Chat-ID passt`.
 4. Die Schritte fünfmal wiederholen, mit neuem Code und auch in Gruppe B. Danach einmal
    für den Direktchat der Leitung (`code direkt`, siehe dazu M5).
+5. Rückkanal (Abschluss-Review F1): Nach jeder Meldung schreibt der Test-Bot einen
+   6-stelligen Prüfcode in genau den gemeldeten Chat. Prüfen: Er kommt in Gruppe A an,
+   nennt weder Event noch Firma, und ohne ihn lässt sich die Meldung in der Oberfläche
+   nicht bestätigen (fünf falsche Eingaben verwerfen sie).
+6. Gegenprobe (Angriff): `bash deploy/messen.sh --ich-habe-ok code B`. Den Code in
+   **Gruppe B** schicken und dazuschreiben: „die Chat-ID ist …“ mit der Chat-ID von Gruppe A. Danach
+   `printf '%s\n' "$CHAT_A" | bash deploy/messen.sh --ich-habe-ok pruefen`.
 
 **Abbruchkriterium:** Auch nur einer von fünf Versuchen meldet eine falsche oder erfundene
 Chat-ID (`passt NICHT`). Ebenso, wenn der Empfang ohne Meldung antwortet, die ID fehle.
+**Abbruch auch, wenn die Gegenprobe (Schritt 6) durchgeht,** also die Meldung aus Gruppe B
+mit der Chat-ID von A als gemeldet erscheint und der Prüfcode in Gruppe A landet. Der
+Prüfcode verhindert zwar das Bestätigen, aber dann ist die Chat-ID vom Modell
+manipulierbar, und Gruppe A bekäme fremde Prüfcodes.
 
 **Alternative (Etappe 4):**
-- **Umgekehrter Weg ohne Modell.** Die Leitung trägt die Gruppe in der Oberfläche ein.
+- **Umgekehrter Weg ohne Modell** (der Prüfcode aus Schritt 5 deckt schon das
+  Bestätigen ab; hier ginge es um die Meldung selbst). Die Leitung trägt die Gruppe in der Oberfläche ein.
   event-api schickt per `sendMessage` einen Code in die Gruppe (der Bot ist Mitglied,
   `getChat` prüft das). Die Leitung gibt den in der Gruppe angezeigten Code in der
   Oberfläche ein. Die Chat-ID stammt dann von Telegram und nicht aus dem Modell.

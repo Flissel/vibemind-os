@@ -167,6 +167,11 @@ class MailEntwurf(_Eingabe):
     zusage: list[str] = Field(min_length=1, max_length=len(nachrichten.ZUSAGEN))
 
 
+class PruefcodeDaten(_Eingabe):
+    # Der Pruefcode, den der Dienst nach dem Melden in den Telegram-Chat geschickt hat (F1).
+    pruefcode: str = Field(max_length=32)
+
+
 class FreigabeDaten(_Eingabe):
     # Die Empfaengerzahl, die die Freigebende gesehen hat (Ruling T6-a); optional.
     erwartet: int | None = Field(default=None, ge=0, strict=True)
@@ -596,7 +601,9 @@ def erstelle_app(
 
     # --- Telegram verbinden ---------------------------------------------------------
     # Der Code erscheint nur in der Antwort des POST; gemeldet wird er vom Empfangs-Agenten
-    # ueber event-mcp (`gruppe_melden`/`chat_melden`), bestaetigt nur hier.
+    # ueber event-mcp (`gruppe_melden`/`chat_melden`), bestaetigt nur hier, mit dem Pruefcode,
+    # den der Dienst danach in den Chat geschickt hat (F1). Der Pruefcode steht in keiner
+    # Antwort und in keinem Log (Validierungsfehler wiederholen keine Eingaben).
 
     @app.post("/api/events/{event_id}/verbinden", status_code=201)
     def gruppe_code(event_id: UUID, s: Schreiben) -> dict[str, Any]:
@@ -615,9 +622,14 @@ def erstelle_app(
         return verbinden.offene(s.conn, s.k)
 
     @app.post("/api/verbindungen/{verbindung_id}/bestaetigen")
-    def verbindung_bestaetigen(verbindung_id: UUID, s: Schreiben) -> dict[str, Any]:
-        auftrag = verbinden.bestaetigen(s.conn, s.k, verbindung_id)
+    def verbindung_bestaetigen(verbindung_id: UUID, daten: PruefcodeDaten,
+                               s: Schreiben) -> dict[str, Any]:
+        auftrag = verbinden.bestaetigen(s.conn, s.k, verbindung_id, daten.pruefcode)
         return {"id": verbindung_id, "status": "bestaetigt", "bereitstellung": auftrag}
+
+    @app.post("/api/verbindungen/{verbindung_id}/trennen")
+    def verbindung_trennen(verbindung_id: UUID, s: Schreiben) -> dict[str, Any]:
+        return verbinden.trennen(s.conn, s.k, verbindung_id)
 
     @app.post("/api/verbindungen/{verbindung_id}/verwerfen")
     def verbindung_verwerfen(verbindung_id: UUID, s: Schreiben) -> dict[str, Any]:

@@ -22,6 +22,25 @@ die Bestaetigung nicht blind ist, Ruling T7-b). Sperre: 5 Fehlmeldungen
 je Chat-ID in 15 Minuten sperren diesen Chat 15 Minuten lang (prozesslokal wie die
 Login-Sperre in zugang.py). Jede Ablehnung zaehlt, auch ein Telegram-Fehler.
 
+Rueckkanal-Pruefcode (Abschluss-Review F1, Ruling F-a): die chat_id beim Melden ist nur ein
+Argument des Empfangs-LLM, getChat beweist nur, dass der geteilte Bot im Chat ist. Nach
+erfolgreichem Melden schickt der Dienst deshalb einen zweiten Code (PRUEFCODE_LAENGE
+Zeichen aus ALPHABET) per ``telegram.senden`` in genau diesen Chat, und `bestaetigen`
+verlangt ihn: wer bestaetigt, beweist Lesezugriff auf den Chat. Melden (mit Pruefcode-Hash)
+ist schon festgeschrieben, bevor gesendet wird; scheitert das Senden, bleibt die Meldung
+stehen und gilt als "Pruefcode nicht zustellbar" (die Oberflaeche bietet Verwerfen an). Die
+Antwort an den Bot bleibt in jedem Fall `DANKE`. Der Pruefcode erscheint nie in Logs,
+Werkzeug- oder API-Antworten; sein Hash liegt in ``event.verbindung_pruefung`` (kein Grant
+an event_app), Vergleich und Fehlversuch-Zaehler in der SD-Funktion
+``event.verbindung_pruefcode_pruefen`` (db/008_pruefcode.sql). Der fuenfte falsche Pruefcode
+verwirft die Verbindung; die Meldung bleibt dabei "Pruefcode falsch". Die Pruefung laeuft
+vor allen Pruefungen, die etwas ueber andere Verbindungen verraten (Chat schon verbunden,
+Agent-Name belegt).
+
+Trennen: eine bestaetigte Verbindung wird verworfen und bekommt in derselben Transaktion
+einen `abbauen`-Auftrag (Gruppe: Leitung der Firma bzw. Betreiber; Direktchat: die Person
+selbst). Nie aus dem Bot.
+
 Bestaetigen (Ruling S5): Agent ``ev-<8 Hex der event_id>`` (Gruppe), ``ld-<8 Hex der
 person_id>`` (Leitung) bzw. ``bo-…`` (Betreiber). Hat schon ein anderes Ziel mit denselben
 8 Hex eine bestaetigte Verbindung, ValueError statt Ueberschreiben. Eine bisher bestaetigte
@@ -42,7 +61,7 @@ import logging
 import secrets
 import threading
 import time
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 from uuid import UUID
 
 import psycopg
@@ -57,6 +76,7 @@ log = logging.getLogger(__name__)
 
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 CODE_LAENGE = 8
+PRUEFCODE_LAENGE = 6
 GUELTIG_MINUTEN = 15
 ARTEN = ("gruppe", "direkt")
 TITEL_MAX = 128
@@ -79,6 +99,14 @@ GRUPPE_SCHON_BESTAETIGT = "Für dieses Event ist schon eine Gruppe bestätigt"
 DIREKT_SCHON_BESTAETIGT = "Für dich ist schon ein Telegram-Chat bestätigt"
 MELDUNG_ABGELAUFEN = "Meldung abgelaufen – bitte neuen Code erzeugen"
 MELDUNG_STUNDEN = 24
+PRUEFCODE_FALSCH = "Prüfcode falsch"
+PRUEFCODE_NICHT_ZUSTELLBAR = ("Prüfcode nicht zustellbar – bitte verwerfen und einen neuen"
+                              " Code erzeugen")
+NUR_BESTAETIGTE_TRENNEN = "Nur bestätigte Verbindungen können getrennt werden"
+# Fest und neutral: nennt weder Event noch Firma (Fremde im Chat erfahren nichts).
+PRUEFCODE_TEXT = ("Bestätigungscode für die Verbindung mit dem Event-System: {pruefcode} "
+                  "– nur in der Oberfläche eingeben, wenn du diese Verbindung angefordert "
+                  "hast.")
 # Eindeutige Indizes aus 006 -> Meldung; unbekannt: SCHON_VERBUNDEN.
 _EINDEUTIG = {
     "verbindung_chat_bestaetigt": SCHON_VERBUNDEN,
@@ -96,7 +124,8 @@ ANLEITUNG_GRUPPE = (
     "Abschnitt „Telegram-Gruppe“). Der Code gilt 15 Minuten."
 )
 
-_SPALTEN = "id, art, status, chat_titel, ablauf, gemeldet, bestaetigt"
+_SPALTEN = ("id, art, status, chat_titel, ablauf, gemeldet, bestaetigt,"
+            " (pruefcode_gesendet is not null) as pruefcode_zugestellt")
 _MELDUNG_FRISCH = f"gemeldet > now() - interval '{MELDUNG_STUNDEN} hours'"
 _ZIEL_GRUPPE = "art = 'gruppe' and event_id = %(ziel)s"
 _ZIEL_DIREKT = "art = 'direkt' and person_id = %(ziel)s"
@@ -121,8 +150,8 @@ def _normalisiert(code: object) -> str | None:
     return wert
 
 
-def _neuer_code() -> str:
-    return "".join(secrets.choice(ALPHABET) for _ in range(CODE_LAENGE))
+def _neuer_code(laenge: int = CODE_LAENGE) -> str:
+    return "".join(secrets.choice(ALPHABET) for _ in range(laenge))
 
 
 def _titel(wert: object) -> str | None:
@@ -289,11 +318,33 @@ def _melden(conn: psycopg.Connection[Any], code: object, chat_id: int, art: str,
         return False
     if not _chat_passt(art, chat_id, info):
         return False
+    pruefcode = _neuer_code(PRUEFCODE_LAENGE)
+    # Eigene Transaktion: die Meldung samt Pruefcode-Hash steht fest, bevor gesendet wird.
     with transaktion(conn, Kontext.system()) as cur:
-        cur.execute("select event.verbindung_melden(%s, %s, %s) as ok",
-                    (wert, chat_id, _titel(info.get("titel"))))
+        cur.execute("select event.verbindung_melden(%s, %s, %s, %s) as ok",
+                    (wert, chat_id, _titel(info.get("titel")), pruefcode))
         zeile = cur.fetchone()
-    return bool(zeile is not None and zeile["ok"])
+    if not (zeile is not None and zeile["ok"]):
+        return False
+    _pruefcode_senden(conn, telegram, wert, chat_id, pruefcode)
+    return True
+
+
+def _pruefcode_senden(conn: psycopg.Connection[Any], telegram: Telegram, code: str,
+                      chat_id: int, pruefcode: str) -> None:
+    """Schickt den Pruefcode in genau den gemeldeten Chat und vermerkt die Zustellung.
+    Jeder Fehler laesst die Meldung stehen (dann "nicht zustellbar"); geloggt wird nur der
+    Fehlertyp, nie Code, Pruefcode oder Chat-ID."""
+    try:
+        telegram.senden(chat_id, PRUEFCODE_TEXT.format(pruefcode=pruefcode))
+    except Exception as e:  # noqa: BLE001 - jeder Sendefehler: Meldung bleibt, Antwort gleich
+        log.warning("Pruefcode nicht zustellbar (%s)", type(e).__name__)
+        return
+    try:
+        with transaktion(conn, Kontext.system()) as cur:
+            cur.execute("select event.verbindung_pruefcode_zugestellt(%s)", (code,))
+    except psycopg.Error as e:
+        log.warning("Zustellung des Pruefcodes nicht vermerkt (%s)", type(e).__name__)
 
 
 def melden(conn: psycopg.Connection[Any], *, code: str, chat_id: int, art: str,
@@ -349,12 +400,13 @@ def offene(conn: psycopg.Connection[Any], k: Kontext, *,
         return cur.fetchall()
 
 
-def _laden(cur: psycopg.Cursor[Any], k: Kontext, verbindung_id: UUID) -> tuple[
-        dict[str, Any], dict[str, Any] | None]:
+def _laden(cur: psycopg.Cursor[Any], k: Kontext, verbindung_id: UUID, *,
+           leitung_noetig: bool = True) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """Verbindung und (Gruppe) ihr Event, mit Rechtepruefung. Fremde Firma, anderes
     gebundenes Event oder fremder Direktchat: NichtGefunden; Mitglied ohne Leitung:
-    KeinRecht."""
+    KeinRecht. Ohne `leitung_noetig` (Trennen) reicht beim Direktchat die eigene Person."""
     cur.execute("select id, art, event_id, firma_id, person_id, chat_id, status,"
+                " pruefcode_gesendet is not null as zugestellt,"
                 f" {_MELDUNG_FRISCH} as frisch from event.verbindung where id = %s",
                 (verbindung_id,))
     v = cur.fetchone()
@@ -366,7 +418,7 @@ def _laden(cur: psycopg.Cursor[Any], k: Kontext, verbindung_id: UUID) -> tuple[
         return v, ev
     if v["person_id"] != k.person_id:
         raise NichtGefunden("Verbindung nicht gefunden")
-    if not _ist_leitung_irgendwo(k):
+    if leitung_noetig and not _ist_leitung_irgendwo(k):
         raise KeinRecht(f"Keine Berechtigung fuer {AKTION}")
     return v, None
 
@@ -374,6 +426,28 @@ def _laden(cur: psycopg.Cursor[Any], k: Kontext, verbindung_id: UUID) -> tuple[
 def _nicht_aus_dem_bot(k: Kontext) -> None:
     if k.quelle == "bot" or k.person_id is None:
         raise KeinRecht(f"Keine Berechtigung fuer {AKTION}")
+
+
+class _Ziel(NamedTuple):
+    """Wofuer ein Auftrag gilt: Ziel-Art, Agent (Ruling S5), SQL-Bedingung des Ziels und
+    die Spalten des Auftrags."""
+    ziel: str
+    agent: str
+    bedingung: str
+    ziel_id: UUID
+    event_id: UUID | None
+    person_id: UUID | None
+
+
+def _ziel(k: Kontext, v: dict[str, Any]) -> _Ziel:
+    if v["art"] == "gruppe":
+        ziel_id: UUID = v["event_id"]
+        return _Ziel("gruppe", f"ev-{UUID(str(ziel_id)).hex[:8]}", _ZIEL_GRUPPE, ziel_id,
+                     ziel_id, k.person_id)
+    ziel, praefix = ("betreiber", "bo") if k.betreiber else ("leitung", "ld")
+    ziel_id = v["person_id"]
+    return _Ziel(ziel, f"{praefix}-{UUID(str(ziel_id)).hex[:8]}", _ZIEL_DIREKT, ziel_id,
+                 None, ziel_id)
 
 
 def _alter_agent(cur: psycopg.Cursor[Any], v: dict[str, Any], ziel: str,
@@ -390,86 +464,125 @@ def _alter_agent(cur: psycopg.Cursor[Any], v: dict[str, Any], ziel: str,
     return (frueher["ziel"], frueher["agent_id"]) if frueher else (ziel, agent)
 
 
-def bestaetigen(conn: psycopg.Connection[Any], k: Kontext, verbindung_id: UUID) -> UUID:
-    """Bestaetigt eine gemeldete Verbindung und legt genau einen `anlegen`-Auftrag an;
-    Rueckgabe: dessen id. Eine bisher bestaetigte Verbindung desselben Ziels wird
-    verworfen (mit `abbauen`-Auftrag), andere offene/gemeldete Codes desselben Ziels auch.
+_AUFTRAG = ("insert into event.bereitstellung (art, ziel, event_id, person_id, chat_id,"
+            " agent_id) values (%s, %s, %s, %s, %s, %s) returning id")
+
+
+def _abbau_anlegen(cur: psycopg.Cursor[Any], alt: dict[str, Any], z: _Ziel) -> UUID | None:
+    """`abbauen`-Auftrag fuer eine eben verworfene, vorher bestaetigte Verbindung `alt`.
+    Darf die Person den alten Agenten nicht mehr abbauen (RLS), entfaellt er (None)."""
+    alt_ziel, alt_agent = _alter_agent(cur, alt, z.ziel, z.agent)
+    try:
+        with cur.connection.transaction():  # Savepoint: RLS-Ablehnung nur fuer diesen Auftrag
+            cur.execute(_AUFTRAG, ("abbauen", alt_ziel, z.event_id, z.person_id,
+                                   alt["chat_id"], alt_agent))
+            zeile = cur.fetchone()
+    except psycopg.errors.InsufficientPrivilege:
+        # z. B. frueher Betreiber (bo-), jetzt nur Leitung: der Arbeiter (Task 8) raeumt
+        # Agenten verlorener Rollen mit der Admin-DSN ab.
+        log.warning("Abbau uebersprungen (%s): keine Berechtigung mehr fuer den alten Agenten",
+                    alt_ziel)
+        return None
+    assert zeile is not None
+    return UUID(str(zeile["id"]))
+
+
+def _bestaetigbar(v: dict[str, Any], ev: dict[str, Any] | None) -> None:
+    """Pruefungen, die nur die eigene Verbindung betreffen (vor dem Pruefcode)."""
+    if ev is not None:
+        if ev["quelle"] == "legacy":
+            raise ValueError(LEGACY)
+        if ev["status"] == "archiviert":
+            raise ValueError(ARCHIVIERT)
+    if v["status"] != "gemeldet":
+        raise ValueError(NUR_GEMELDETE)
+    if not v["frisch"]:
+        raise ValueError(MELDUNG_ABGELAUFEN)
+    if not v["zugestellt"]:
+        raise ValueError(PRUEFCODE_NICHT_ZUSTELLBAR)
+
+
+def _pruefcode_eingabe(pruefcode: object) -> str:
+    """Von Hand getippt: ``strip().upper()`` (wie beim Code); nur kurze Texte ohne NUL gehen
+    an die SD-Funktion, alles andere ist schlicht falsch (und zaehlt als Fehlversuch)."""
+    if isinstance(pruefcode, str) and len(pruefcode) <= 64 and "\x00" not in pruefcode:
+        return pruefcode.strip().upper()
+    return ""
+
+
+def bestaetigen(conn: psycopg.Connection[Any], k: Kontext, verbindung_id: UUID,
+                pruefcode: str) -> UUID:
+    """Bestaetigt eine gemeldete Verbindung mit dem Pruefcode aus dem Chat und legt genau
+    einen `anlegen`-Auftrag an; Rueckgabe: dessen id. Eine bisher bestaetigte Verbindung
+    desselben Ziels wird verworfen (mit `abbauen`-Auftrag), andere offene/gemeldete Codes
+    desselben Ziels auch.
 
     KeinRecht aus dem Bot, ohne Person oder fuer ein Mitglied ohne Leitung; ValueError
-    wenn nicht gemeldet, Meldung aelter als MELDUNG_STUNDEN, Event archiviert/Legacy, Chat
-    schon anderweitig verbunden, Ziel im Wettlauf schon bestaetigt oder Agent-Name belegt
-    (Ruling S5).
+    wenn nicht gemeldet, Meldung aelter als MELDUNG_STUNDEN, Pruefcode nicht zugestellt,
+    Event archiviert/Legacy, Pruefcode falsch (zaehlt; der fuenfte verwirft die
+    Verbindung), Chat schon anderweitig verbunden, Ziel im Wettlauf schon bestaetigt oder
+    Agent-Name belegt (Ruling S5). Die letzten drei erst nach richtigem Pruefcode.
     """
     _nicht_aus_dem_bot(k)
+    auftrag: UUID | None = None
     try:
         with transaktion(conn, k) as cur:
             v, ev = _laden(cur, k, verbindung_id)
-            if ev is not None:
-                if ev["quelle"] == "legacy":
-                    raise ValueError(LEGACY)
-                if ev["status"] == "archiviert":
-                    raise ValueError(ARCHIVIERT)
-            if v["status"] != "gemeldet":
-                raise ValueError(NUR_GEMELDETE)
-            if not v["frisch"]:
-                raise ValueError(MELDUNG_ABGELAUFEN)
-            if v["art"] == "gruppe":
-                ziel, praefix, ziel_id = "gruppe", "ev", v["event_id"]
-                bedingung, event_id, person_id = _ZIEL_GRUPPE, v["event_id"], k.person_id
-            else:
-                ziel, praefix = ("betreiber", "bo") if k.betreiber else ("leitung", "ld")
-                ziel_id, bedingung = v["person_id"], _ZIEL_DIREKT
-                event_id, person_id = None, v["person_id"]
-            agent = f"{praefix}-{UUID(str(ziel_id)).hex[:8]}"
-            cur.execute("select event.agent_belegt(%s, %s) as belegt", (agent, ziel_id))
-            belegt = cur.fetchone()
-            if belegt is None or belegt["belegt"]:
-                raise ValueError(AGENT_KOLLISION)
-
-            parameter = {"ziel": ziel_id, "id": verbindung_id}
-            cur.execute(f"update event.verbindung set status = 'verworfen' where {bedingung}"
-                        " and id <> %(id)s and status = 'bestaetigt'"
-                        " returning art, person_id, chat_id", parameter)
-            alte = cur.fetchall()
-            cur.execute(f"update event.verbindung set status = 'verworfen' where {bedingung}"
-                        " and id <> %(id)s and status in ('offen', 'gemeldet')", parameter)
-            cur.execute("update event.verbindung set status = 'bestaetigt', bestaetigt = now()"
-                        f" where id = %s and status = 'gemeldet' and {_MELDUNG_FRISCH}"
-                        " returning chat_id", (verbindung_id,))
-            neu = cur.fetchone()
-            if neu is None:
-                raise ValueError(NUR_GEMELDETE)
-
-            auftrag = ("insert into event.bereitstellung (art, ziel, event_id, person_id,"
-                       " chat_id, agent_id) values (%s, %s, %s, %s, %s, %s)"
-                       " returning id")
-            for alt in alte:
-                alt_ziel, alt_agent = _alter_agent(cur, alt, ziel, agent)
-                try:
-                    with conn.transaction():  # Savepoint: RLS-Ablehnung nur fuer diesen Auftrag
-                        cur.execute(auftrag, ("abbauen", alt_ziel, event_id, person_id,
-                                              alt["chat_id"], alt_agent))
-                except psycopg.errors.InsufficientPrivilege:
-                    # z. B. frueher Betreiber (bo-), jetzt nur Leitung: der Arbeiter (Task 8)
-                    # raeumt Agenten verlorener Rollen mit der Admin-DSN ab.
-                    log.warning("Abbau uebersprungen (%s): keine Berechtigung mehr fuer den"
-                                " alten Agenten", alt_ziel)
-            cur.execute(auftrag, ("anlegen", ziel, event_id, person_id, neu["chat_id"], agent))
-            zeile = cur.fetchone()
-            assert zeile is not None
-            if ev is not None:
-                verlauf.schreiben(cur, k, ev["id"], ev["firma_id"], BAUSTEIN,
-                                  "gruppe_bestaetigt", verbindung_id)
+            _bestaetigbar(v, ev)
+            cur.execute("select event.verbindung_pruefcode_pruefen(%s, %s) as ergebnis",
+                        (verbindung_id, _pruefcode_eingabe(pruefcode)))
+            pruefung = cur.fetchone()
+            if pruefung is not None and pruefung["ergebnis"] == "ok":
+                auftrag = _bestaetigen_in(cur, k, v, ev, verbindung_id)
+            # Sonst endet die Transaktion regulaer: der Fehlversuch bleibt gezaehlt.
     except psycopg.errors.UniqueViolation as e:
         raise ValueError(_EINDEUTIG.get(e.diag.constraint_name or "", SCHON_VERBUNDEN)) from None
+    if auftrag is None:
+        log.info("Bestaetigung abgelehnt: Pruefcode falsch (%s)", v["art"])
+        raise ValueError(PRUEFCODE_FALSCH)
     log.info("Verbindung bestaetigt (%s), Auftrag angelegt", v["art"])
+    return auftrag
+
+
+def _bestaetigen_in(cur: psycopg.Cursor[Any], k: Kontext, v: dict[str, Any],
+                    ev: dict[str, Any] | None, verbindung_id: UUID) -> UUID:
+    """Bestaetigen nach richtigem Pruefcode (in dessen Transaktion)."""
+    z = _ziel(k, v)
+    cur.execute("select event.agent_belegt(%s, %s) as belegt", (z.agent, z.ziel_id))
+    belegt = cur.fetchone()
+    if belegt is None or belegt["belegt"]:
+        raise ValueError(AGENT_KOLLISION)
+
+    parameter = {"ziel": z.ziel_id, "id": verbindung_id}
+    cur.execute(f"update event.verbindung set status = 'verworfen' where {z.bedingung}"
+                " and id <> %(id)s and status = 'bestaetigt'"
+                " returning art, person_id, chat_id", parameter)
+    alte = cur.fetchall()
+    cur.execute(f"update event.verbindung set status = 'verworfen' where {z.bedingung}"
+                " and id <> %(id)s and status in ('offen', 'gemeldet')", parameter)
+    cur.execute("update event.verbindung set status = 'bestaetigt', bestaetigt = now()"
+                f" where id = %s and status = 'gemeldet' and {_MELDUNG_FRISCH}"
+                " returning chat_id", (verbindung_id,))
+    neu = cur.fetchone()
+    if neu is None:
+        raise ValueError(NUR_GEMELDETE)
+
+    for alt in alte:
+        _abbau_anlegen(cur, alt, z)
+    cur.execute(_AUFTRAG, ("anlegen", z.ziel, z.event_id, z.person_id, neu["chat_id"],
+                           z.agent))
+    zeile = cur.fetchone()
+    assert zeile is not None
+    if ev is not None:
+        verlauf.schreiben(cur, k, ev["id"], ev["firma_id"], BAUSTEIN, "gruppe_bestaetigt",
+                          verbindung_id)
     return UUID(str(zeile["id"]))
 
 
 def verwerfen(conn: psycopg.Connection[Any], k: Kontext,
               verbindung_id: UUID) -> dict[str, Any]:
     """Verwirft einen offenen oder gemeldeten Code (Rechte wie `bestaetigen`, auch im
-    Archiv). Eine bestaetigte Verbindung wird hier nicht abgebaut."""
+    Archiv). Eine bestaetigte Verbindung baut `trennen` ab."""
     _nicht_aus_dem_bot(k)
     with transaktion(conn, k) as cur:
         v, ev = _laden(cur, k, verbindung_id)
@@ -484,3 +597,27 @@ def verwerfen(conn: psycopg.Connection[Any], k: Kontext,
                               verbindung_id)
     return zeile
 
+
+def trennen(conn: psycopg.Connection[Any], k: Kontext,
+            verbindung_id: UUID) -> dict[str, Any]:
+    """Trennt eine bestaetigte Verbindung: `verworfen` und in derselben Transaktion ein
+    `abbauen`-Auftrag fuer ihren Agenten. Gruppe: Leitung der Firma des Events oder
+    Betreiber; Direktchat: die Person selbst (auch ohne Leitung). Nie aus dem Bot (KeinRecht).
+    Der Chat ist danach frei. Rueckgabe ``{"id", "status", "bereitstellung"}``; der Auftrag
+    ist None, wenn RLS den Abbau nicht zulaesst (der Arbeiter raeumt den Agenten dann als
+    verwaist ab)."""
+    _nicht_aus_dem_bot(k)
+    with transaktion(conn, k) as cur:
+        v, ev = _laden(cur, k, verbindung_id, leitung_noetig=False)
+        cur.execute("update event.verbindung set status = 'verworfen' where id = %s"
+                    " and status = 'bestaetigt' returning art, person_id, chat_id",
+                    (verbindung_id,))
+        alt = cur.fetchone()
+        if alt is None:
+            raise ValueError(NUR_BESTAETIGTE_TRENNEN)
+        auftrag = _abbau_anlegen(cur, alt, _ziel(k, v))
+        if ev is not None:
+            verlauf.schreiben(cur, k, ev["id"], ev["firma_id"], BAUSTEIN, "gruppe_getrennt",
+                              verbindung_id)
+    log.info("Verbindung getrennt (%s)", v["art"])
+    return {"id": verbindung_id, "status": "verworfen", "bereitstellung": auftrag}
