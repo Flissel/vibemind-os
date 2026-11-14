@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useId, useState } from 'react'
+import { type ReactNode, useEffect, useId, useState } from 'react'
 import clsx from 'clsx'
 
 interface Props {
@@ -12,6 +12,10 @@ interface Props {
   namePruefen?: string
   gefaehrlich?: boolean
   laeuft?: boolean
+  /** Zusätzliche Eingaben unter dem Text (z. B. ein Prüfcode). */
+  children?: ReactNode
+  /** false sperrt den Bestätigen-Knopf (z. B. solange die Zusatzeingabe fehlt). */
+  bereit?: boolean
   onBestaetigen: () => void
   onAbbrechen: () => void
 }
@@ -24,13 +28,15 @@ export function Bestaetigen({
   namePruefen,
   gefaehrlich = false,
   laeuft = false,
+  children,
+  bereit = true,
   onBestaetigen,
   onAbbrechen,
 }: Props) {
   const [eingabe, setEingabe] = useState('')
   const titelId = useId()
   const feldId = useId()
-  const freigegeben = (namePruefen === undefined || eingabe === namePruefen) && !laeuft
+  const freigegeben = (namePruefen === undefined || eingabe === namePruefen) && bereit && !laeuft
 
   useEffect(() => {
     function taste(e: KeyboardEvent) {
@@ -52,6 +58,7 @@ export function Bestaetigen({
           {titel}
         </h2>
         <p className="mt-2 text-sm text-gray-600">{text}</p>
+        {children}
         {namePruefen !== undefined && (
           <div className="mt-4">
             <label htmlFor={feldId} className="block text-sm text-gray-700">

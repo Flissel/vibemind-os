@@ -210,6 +210,8 @@ export interface Verbindung {
   ablauf: string
   gemeldet: string | null
   bestaetigt: string | null
+  /** Hat der Bot den Prüfcode in den gemeldeten Chat geschickt? Sonst nicht bestätigbar. */
+  pruefcode_zugestellt: boolean
 }
 
 /** Antwort von `POST …/verbinden`: der Code erscheint nur hier. */

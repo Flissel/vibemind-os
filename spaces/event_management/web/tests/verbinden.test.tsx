@@ -6,7 +6,7 @@ import { IchProvider } from '@/components/IchKontext'
 import { Kopfleiste } from '@/components/Kopfleiste'
 import { ABFRAGE_MS, TelegramVerbinden } from '@/components/TelegramVerbinden'
 import { UebersichtReiter } from '@/components/event/UebersichtReiter'
-import { api } from '@/lib/api'
+import { api, ApiFehler } from '@/lib/api'
 import type { EventDetail, Ich, Verbindung, VerbindungsCode } from '@/lib/typen'
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }))
@@ -38,6 +38,7 @@ function verbindung(o: Partial<Verbindung>): Verbindung {
     ablauf: CODE.gueltig_bis,
     gemeldet: null,
     bestaetigt: null,
+    pruefcode_zugestellt: false,
     ...o,
   }
 }
@@ -48,6 +49,12 @@ const GEMELDET = verbindung({
   status: 'gemeldet',
   chat_titel: 'Beispielgruppe',
   gemeldet: '2026-11-13T10:01:00+00:00',
+  pruefcode_zugestellt: true,
+})
+const BESTAETIGT = verbindung({
+  ...GEMELDET,
+  status: 'bestaetigt',
+  bestaetigt: '2026-11-13T10:02:00+00:00',
 })
 
 let liste: Verbindung[]
@@ -62,8 +69,12 @@ beforeEach(() => {
       return CODE as never
     }
     if (pfad.endsWith('/bestaetigen')) {
-      liste = [verbindung({ ...GEMELDET, status: 'bestaetigt', bestaetigt: '2026-11-13T10:02:00+00:00' })]
+      liste = [BESTAETIGT]
       return { id: 'v1', status: 'bestaetigt', bereitstellung: 'b1' } as never
+    }
+    if (pfad.endsWith('/trennen')) {
+      liste = []
+      return { id: 'v1', status: 'verworfen', bereitstellung: 'b2' } as never
     }
     return verbindung({ status: 'verworfen' }) as never
   })
@@ -109,6 +120,8 @@ describe('TelegramVerbinden', () => {
     expect(schritte[0]?.textContent).toContain('zur Telegram-Gruppe hinzu')
     expect(schritte[1]?.textContent).toContain('ABCD2345')
     expect(schritte[2]?.textContent).toContain('Bestätige')
+    // Hinweis auf den Prüfcode, den der Bot danach in die Gruppe schreibt (F1).
+    expect(schritte[2]?.textContent).toContain('Prüfcode')
     expect(screen.getByRole('button', { name: 'Neuen Code erzeugen' })).toBeTruthy()
   })
 
@@ -127,8 +140,15 @@ describe('TelegramVerbinden', () => {
     expect(senden).not.toHaveBeenCalled()
     const dialog = screen.getByRole('dialog')
     expect(dialog.textContent).toContain('Beispielgruppe')
-    await u.click(within(dialog).getByRole('button', { name: 'Verbinden' }))
-    await waitFor(() => expect(senden).toHaveBeenCalledWith('POST', '/api/verbindungen/v1/bestaetigen'))
+    // Erst mit dem Prüfcode aus dem Chat lässt sich bestätigen.
+    const verbinden = within(dialog).getByRole('button', { name: 'Verbinden' }) as HTMLButtonElement
+    expect(verbinden.disabled).toBe(true)
+    await u.type(within(dialog).getByLabelText('Code aus dem Telegram-Chat'), ' ab2cd3 ')
+    expect(verbinden.disabled).toBe(false)
+    await u.click(verbinden)
+    await waitFor(() =>
+      expect(senden).toHaveBeenCalledWith('POST', '/api/verbindungen/v1/bestaetigen', { pruefcode: 'AB2CD3' }),
+    )
     expect(await screen.findByRole('status')).toBeTruthy()
     expect(await screen.findByText(/Verbunden mit/)).toBeTruthy()
   })
@@ -139,6 +159,48 @@ describe('TelegramVerbinden', () => {
     const zeile = (await screen.findByText('Beispielgruppe')).closest('li') as HTMLElement
     await userEvent.click(within(zeile).getByRole('button', { name: 'Verwerfen' }))
     await waitFor(() => expect(senden).toHaveBeenCalledWith('POST', '/api/verbindungen/v1/verwerfen'))
+  })
+
+  it('falscher Prüfcode: Meldung der API, kein Erfolg', async () => {
+    liste = [GEMELDET]
+    senden.mockRejectedValueOnce(new ApiFehler(422, 'Prüfcode falsch'))
+    const u = userEvent.setup()
+    zeige()
+    const zeile = (await screen.findByText('Beispielgruppe')).closest('li') as HTMLElement
+    await u.click(within(zeile).getByRole('button', { name: 'Bestätigen' }))
+    const dialog = screen.getByRole('dialog')
+    await u.type(within(dialog).getByLabelText('Code aus dem Telegram-Chat'), 'ZZZZZZ')
+    await u.click(within(dialog).getByRole('button', { name: 'Verbinden' }))
+    expect((await screen.findByRole('alert')).textContent).toContain('Prüfcode falsch')
+    expect(screen.queryByText(/Verbunden mit/)).toBeNull()
+  })
+
+  it('Prüfcode nicht zustellbar: kein Bestätigen, Verwerfen angeboten', async () => {
+    liste = [verbindung({ ...GEMELDET, pruefcode_zugestellt: false })]
+    zeige()
+    const zeile = (await screen.findByText('Beispielgruppe')).closest('li') as HTMLElement
+    expect(zeile.textContent).toContain('Prüfcode nicht zustellbar')
+    expect(within(zeile).queryByRole('button', { name: 'Bestätigen' })).toBeNull()
+    await userEvent.click(within(zeile).getByRole('button', { name: 'Verwerfen' }))
+    await waitFor(() => expect(senden).toHaveBeenCalledWith('POST', '/api/verbindungen/v1/verwerfen'))
+  })
+
+  it('Verbindung trennen nur mit Recht und nach Rückfrage', async () => {
+    liste = [BESTAETIGT]
+    zeige(MITGLIED, false)
+    expect(await screen.findByText(/Verbunden mit/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Verbindung trennen' })).toBeNull()
+
+    cleanup()
+    const u = userEvent.setup()
+    zeige(LEITUNG, true)
+    await u.click(await screen.findByRole('button', { name: 'Verbindung trennen' }))
+    expect(senden).not.toHaveBeenCalled()
+    const dialog = screen.getByRole('dialog')
+    expect(dialog.textContent).toContain('Beispielgruppe')
+    await u.click(within(dialog).getByRole('button', { name: 'Trennen' }))
+    await waitFor(() => expect(senden).toHaveBeenCalledWith('POST', '/api/verbindungen/v1/trennen'))
+    expect(await screen.findByText('Noch keine Telegram-Gruppe verbunden.')).toBeTruthy()
   })
 
   it('fragt alle 5 s nach, solange der Code offen ist, und hört nach der Meldung auf', async () => {
@@ -181,8 +243,12 @@ describe('TelegramVerbinden', () => {
     expect(abfragen()).toBe(vorher + 1)
 
     await u.click(within(zeile).getByRole('button', { name: 'Bestätigen' }))
-    await u.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Verbinden' }))
-    await waitFor(() => expect(senden).toHaveBeenCalledWith('POST', '/api/verbindungen/v0/bestaetigen'))
+    const dialog = screen.getByRole('dialog')
+    await u.type(within(dialog).getByLabelText('Code aus dem Telegram-Chat'), 'AB2CD3')
+    await u.click(within(dialog).getByRole('button', { name: 'Verbinden' }))
+    await waitFor(() =>
+      expect(senden).toHaveBeenCalledWith('POST', '/api/verbindungen/v0/bestaetigen', { pruefcode: 'AB2CD3' }),
+    )
     await screen.findByText(/Verbunden mit/)
     const danach = abfragen()
     await weiter(5 * ABFRAGE_MS)
@@ -259,6 +325,15 @@ describe('Event-Übersicht: Telegram-Gruppe', () => {
     expect(within(zeile).queryByRole('button')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Code erzeugen' })).toBeNull()
   })
+
+  it('Leitung trennt die verbundene Gruppe in der Event-Übersicht', async () => {
+    liste = [BESTAETIGT]
+    const u = userEvent.setup()
+    zeigeUebersicht(LEITUNG)
+    await u.click(await screen.findByRole('button', { name: 'Verbindung trennen' }))
+    await u.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Trennen' }))
+    await waitFor(() => expect(senden).toHaveBeenCalledWith('POST', '/api/verbindungen/v1/trennen'))
+  })
 })
 
 describe('Meinen Telegram-Chat verbinden', () => {
@@ -310,5 +385,17 @@ describe('Meinen Telegram-Chat verbinden', () => {
     expect(zeile.textContent).toContain('Gemeldet: Erika (@erika_beispiel)')
     await userEvent.click(within(zeile).getByRole('button', { name: 'Bestätigen' }))
     expect(await screen.findByText('„Erika (@erika_beispiel)“ verbinden?')).toBeTruthy()
+  })
+
+  it('/ich/telegram: eigenen Chat trennen', async () => {
+    vi.spyOn(api, 'ich').mockResolvedValue(LEITUNG)
+    liste = [verbindung({ ...BESTAETIGT, art: 'direkt', chat_titel: 'Erika (@erika_beispiel)' })]
+    const u = userEvent.setup()
+    render(<TelegramPage />)
+    expect(await screen.findByText('Erika (@erika_beispiel)')).toBeTruthy()
+    await u.click(screen.getByRole('button', { name: 'Verbindung trennen' }))
+    await u.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Trennen' }))
+    await waitFor(() => expect(senden).toHaveBeenCalledWith('POST', '/api/verbindungen/v1/trennen'))
+    expect(await screen.findByText('Noch kein Telegram-Chat verbunden.')).toBeTruthy()
   })
 })
