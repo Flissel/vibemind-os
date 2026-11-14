@@ -1059,14 +1059,15 @@ def test_auftrag_ohne_konzept_und_eingabe_none_laufen_wie_heute(F):
 def _konzept_text_werk(notiz):
     k = _konzept()
     k["stufen"][0]["szenen"][0]["notiz"] = notiz
-    return _konzept_werk(k, stand="text_ok", gliederung=GLIEDERUNG, szenen=[zeile(1, kurz="K1.0")])
+    g = wa.video_texte.gliederung_aus_konzept({"konzept": k})
+    return _konzept_werk(k, stand="text_ok", gliederung=g, szenen=[zeile(1, kurz="K1.0")])
 
 
 def test_szenentext_mit_zahl_nur_aus_der_konzeptnotiz_geht_durch_und_traegt_quelle_konzept(F):
     belege = [{"aussage": "Es kamen 777 Teilnehmer.", "quelle": "konzept"}]
 
     def szene(nr, nachricht):
-        assert "Notiz aus dem Konzept: Nur hier: 777 Teilnehmer" in nachricht and "Kernaussage: Kern." in nachricht
+        assert "Nur hier: 777 Teilnehmer" in nachricht and "Kernaussage: \"Kern.\"" in nachricht
         return szene_dict(nr, sprechtext=SATZ + " Es kamen 777 Teilnehmer.", belege=belege, ohne_sachaussage=False)
     api = FakeApi([_konzept_text_werk("Nur hier: 777 Teilnehmer")])
     ein_durchlauf(api, fragen=Fragen(szene=szene), **F)
@@ -1082,3 +1083,94 @@ def test_szenentext_mit_zahl_die_nirgends_steht_faellt_durch(F):
     api = FakeApi([_konzept_text_werk("Nur hier: 777 Teilnehmer")])
     ein_durchlauf(api, fragen=Fragen(szene=szene), **F)
     assert api.zaehlt("szene_text") == 0
+
+
+# --- Task 4 Fix-Runde 1: Rueckgabe mit Konzept, Rangfolge, Log, 5xx -------------------------------
+
+def _gliederung_mit_stufe(name, quelle="konzept"):
+    szenen = [{"kurz": f"K1.{i}", "bildart": "slide", "quellen": [quelle]} for i in range(9)]
+    return json.dumps({"titel": "Titel mit 7 Teilnehmern", "hook": "Hook", "fehlt": [], "stufen": [
+        {"name": name, "szenen": szenen[:3]}, {"name": "Schluss", "szenen": szenen[3:]}]})
+
+
+def _rueckgabe_werk(stufenname, wuensche=()):
+    k = _konzept()
+    k["stufen"][0]["name"] = stufenname
+    k["abschluss"] = "7 Teilnehmer kamen."
+    aus_konzept = wa.video_texte.gliederung_aus_konzept({"konzept": k})
+    return _konzept_werk(k, gliederung=aus_konzept, gliederung_fassung=1 + len(wuensche),
+                         gliederung_wunsch="Titel kürzer", gliederung_wuensche=[{"wunsch": w} for w in wuensche])
+
+
+def test_rueckgabe_mit_wunsch_stufenname_mit_zahl_und_quelle_konzept_wird_gespeichert(F):
+    api = FakeApi([_rueckgabe_werk("In 7 Schritten zum Ziel")])
+    f = Fragen(gliederung=_gliederung_mit_stufe("In 7 Schritten zum Ziel"))
+    assert ein_durchlauf(api, fragen=f, **F) == "gliederung"
+    assert len(f.nachrichten) == 1 and api.zaehlt("aufruf") == 1 and api.zaehlt("hinweis") == 0
+    g = api.rufe("gliederung")[0]
+    assert g["gliederung"]["stufen"][0]["name"] == "In 7 Schritten zum Ziel" and g["quellen"] == []
+    assert "# Rangfolge bei Konflikten" in f.nachrichten[0] and "Titel kürzer" in f.nachrichten[0]
+
+
+def test_rueckgabe_ohne_konzept_lehnt_die_quelle_konzept_ab(F):
+    api = FakeApi([werk(gliederung_wunsch="Kürzer", gliederung=GLIEDERUNG, gliederung_fassung=1)])
+    f = Fragen(gliederung=_gliederung_mit_stufe("Einstieg"))
+    assert ein_durchlauf(api, fragen=f, **F) == "fehler"
+    assert len(f.nachrichten) == 2 and "wurde nicht geholt" in f.nachrichten[1]
+
+
+def test_spaetere_rueckgabe_gibt_die_zahl_der_frueheren_wuensche_an_den_prompt(F):
+    api = FakeApi([_rueckgabe_werk("Einstieg", wuensche=("Lass Szene 3 weg",))])
+    f = Fragen(gliederung=_gliederung_mit_stufe("Einstieg"))
+    ein_durchlauf(api, fragen=f, **F)
+    assert wa.video_texte.RANGFOLGE_SPAETER in f.nachrichten[0]
+    api = FakeApi([_rueckgabe_werk("Einstieg")])
+    f = Fragen(gliederung=_gliederung_mit_stufe("Einstieg"))
+    ein_durchlauf(api, fragen=f, **F)
+    assert wa.video_texte.RANGFOLGE_RUECKGABE in f.nachrichten[0] and wa.video_texte.RANGFOLGE_SPAETER not in f.nachrichten[0]
+
+
+def test_unbrauchbares_konzept_log_nur_einmal_je_auftrag(F, caplog):
+    k = _konzept(stufen=1, je=2)
+    api = FakeApi([_konzept_werk(k)])
+    f = Fragen()
+    with caplog.at_level("WARNING", logger="werkbank_arbeiter"):
+        for _ in range(3):
+            ein_durchlauf(api, fragen=f, **F)
+    assert caplog.text.count("nicht verwertbar") == 1
+
+
+def test_konzept_gliederung_5xx_meldet_fehler_und_versucht_das_konzept_im_naechsten_takt_wieder(F):
+    api = FakeApi([_konzept_werk(_konzept())])
+    versuche = []
+
+    def kaputt(aid, gliederung, quellen):
+        versuche.append(gliederung["titel"])
+        raise ApiFehler(500, "x")
+    api.gliederung = kaputt
+    f = Fragen()
+    assert ein_durchlauf(api, fragen=f, **F) == "fehler"
+    ein_durchlauf(api, fragen=f, **F)
+    assert versuche == ["Konzeptthema", "Konzeptthema"] and f.nachrichten == []
+
+
+def test_konzept_gliederung_422_zweiter_takt_speichert_nicht_erneut(F):
+    api = FakeApi([_konzept_werk(_konzept())])
+    n = []
+
+    def abgelehnt(aid, gliederung, quellen):
+        n.append(1)
+        raise ApiFehler(422, "x")
+    api.gliederung = abgelehnt
+    ein_durchlauf(api, fragen=Fragen(), **F)
+    ein_durchlauf(api, fragen=Fragen(), **F)
+    assert len(n) == 1
+
+
+def test_budgetpause_auftrag_ohne_konzept_bleibt_budget_neben_einem_konzept_auftrag(F):
+    uhr = Uhr()
+    api = FakeApi([werk(), _konzept_werk(_konzept(), auftrag=AID_B)])
+    ein_durchlauf(api, fragen=wirft(BudgetErschoepft()), jetzt=uhr, **F)
+    f = Fragen()
+    assert ein_durchlauf(api, fragen=f, jetzt=uhr, **F) == "budget"
+    assert f.nachrichten == []

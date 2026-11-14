@@ -198,7 +198,7 @@ def _gedaechtnis(api) -> dict:
     g = getattr(api, "_werkbank_gedaechtnis", None)
     if g is None:
         g = {"aufgegeben": {}, "budget_bis": 0.0, "budget_gemeldet": set(), "fehler_offen": {},
-             "meldungen_offen": {}, "konzept_verworfen": set()}
+             "meldungen_offen": {}, "konzept_verworfen": set(), "konzept_gemeldet": set()}
         try:
             api._werkbank_gedaechtnis = g
         except AttributeError:
@@ -291,7 +291,8 @@ def _gliederung(c: _Lauf, werk: dict) -> str | None:
                     raise
                 LOG.warning("Gliederung aus dem Konzept abgelehnt: API %s - weiter ueber das Modell", e.code)
                 c.gedaechtnis["konzept_verworfen"].add(aid)
-        elif eingabe.get("konzept"):
+        elif eingabe.get("konzept") and aid not in c.gedaechtnis["konzept_gemeldet"]:
+            c.gedaechtnis["konzept_gemeldet"].add(aid)          # einmal je Auftrag, nicht in jedem Takt
             LOG.warning("Konzept im Auftrag nicht verwertbar - Gliederung ueber das Modell")
     if c.budget:
         _budget_melden(c, werk)
@@ -301,12 +302,13 @@ def _gliederung(c: _Lauf, werk: dict) -> str | None:
         auftrag = video_texte.auftragstext(eingabe)
         ktx = c.kontext(str(werk.get("mandant") or ""), auftrag)
         vorige = werk.get("gliederung") if wunsch and isinstance(werk.get("gliederung"), dict) and werk["gliederung"] else None
-        system, nachricht = video_texte.gliederung_prompt(eingabe, ktx, c.brief(), wunsch, vorige)
+        system, nachricht = video_texte.gliederung_prompt(eingabe, ktx, c.brief(), wunsch, vorige,
+                                                      len(werk.get("gliederung_wuensche") or []))
         geholt = {d.name for d in ktx.dokumente}
         konzept = video_texte.konzepttext(eingabe)
         belegtexte = [auftrag, *([konzept] if konzept else []), *(d.text for d in ktx.dokumente)]   # M11: Zahlen in Titel, Hook, Stufennamen
         gliederung, _ = _fragen_lesen(c, aid, system, nachricht,
-                                      lambda a: video_texte.gliederung_lesen(a, geholt, belegtexte))
+                                      lambda a: video_texte.gliederung_lesen(a, geholt, belegtexte, bool(konzept)))
     except BudgetErschoepft:
         _budget_getroffen(c, werk)
         return "budget"

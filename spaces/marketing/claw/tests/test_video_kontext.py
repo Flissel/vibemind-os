@@ -238,13 +238,19 @@ def test_zeilenende_in_der_variable_ist_harmlos(tmp_path, monkeypatch):
     assert "Schulungen/Angebot" in _rowboat_namen(k)
 
 
-def test_reservierter_name_konzept_wird_abgelehnt_und_vermerkt(tmp_path, monkeypatch, caplog):
+def test_reservierter_name_wird_abgelehnt_vermerkt_und_aehnliche_namen_bleiben(tmp_path, monkeypatch, caplog):
     firma(tmp_path, monkeypatch)
-    (tmp_path / "companys" / "Acme" / "Video-Material" / "konzept").write_text("Schulung Falsches Konzept." + LANG, encoding="utf-8")
+    (tmp_path / "companys" / "Acme" / "Video-Material" / "konzept.md").write_text("Schulung Konzeptdatei." + LANG, encoding="utf-8")
     q, d = rowboat_ok()
-    monkeypatch.setattr(video_kontext, "_rowboat", lambda *a: [video_kontext.Dokument("konzept", "Schulung Falsch." + LANG, "rowboat"),
-                                                                video_kontext.Dokument("Konzept", "Schulung Falsch." + LANG, "rowboat")])
+    # Echte Namen sind immer "Ordner/Datei"; die Namen "konzept" kommen nur ueber eine gepatchte Quelle herein.
+    monkeypatch.setattr(video_kontext, "_rowboat", lambda *a: [
+        video_kontext.Dokument("konzept", "Schulung Falsch." + LANG, "rowboat"),
+        video_kontext.Dokument(" Konzept ", "Schulung Falsch." + LANG, "rowboat"),
+        video_kontext.Dokument("konzept/Plan", "Schulung Plan." + LANG, "rowboat")])
     with caplog.at_level("WARNING"):
         k = holen("Acme", "Schulung für den Mittelstand", quellen=q, dokumente=d)
-    assert not any(x.name.casefold() == "konzept" for x in k.dokumente)
+    namen = {x.name for x in k.dokumente}
+    assert "konzept" not in namen and not any(n.strip().casefold() == "konzept" for n in namen)
+    assert "konzept/Plan" in namen and "Video-Material/konzept.md" in namen
+    assert any("2 Dokument(e) mit dem reservierten Namen" in h for h in k.hinweise)
     assert "reserviert" in caplog.text and "Falsch" not in caplog.text
