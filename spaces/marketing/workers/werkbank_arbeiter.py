@@ -254,7 +254,7 @@ def _quellen_der_gliederung(gliederung: dict) -> list[str]:
     gesehen: list[str] = []
     for s in video_texte.szenen_liste(gliederung):
         for q in s.get("quellen") or []:
-            if q != video_texte.AUFTRAG and q not in gesehen:
+            if q not in (video_texte.AUFTRAG, video_texte.KONZEPT) and q not in gesehen:
                 gesehen.append(q)
     return gesehen
 
@@ -279,6 +279,11 @@ def _gliederung(c: _Lauf, werk: dict) -> str | None:
         return None
     if _gliederung_geparkt(c, werk):
         return None
+    if not wunsch:                        # erste Gliederung eines Konzept-Auftrags: eins zu eins, ohne Modell
+        aus_konzept = video_texte.gliederung_aus_konzept(eingabe)
+        if aus_konzept is not None:
+            c.lease(aid)
+            return _gliederung_speichern(c, werk, aus_konzept)
     if c.budget:
         _budget_melden(c, werk)
         return "budget"
@@ -299,6 +304,14 @@ def _gliederung(c: _Lauf, werk: dict) -> str | None:
         c.hinweis(aid, f"gliederung_f{fassung}{_wunsch_zusatz(werk.get('gliederung_wuensche'))}", SATZ_GLIEDERUNG)
         c.aufgeben(lambda: c.api.gliederung_aufgegeben(aid, GRUND_GLIEDERUNG, wunsch), schluessel)
         return "fehler"
+    return _gliederung_speichern(c, werk, gliederung)
+
+
+def _gliederung_speichern(c: _Lauf, werk: dict, gliederung: dict) -> str | None:
+    """Die fertige Gliederung ueber die API speichern (ins erste Tor); gemeinsam fuer Modell und Konzept."""
+    aid, fassung = str(werk["auftrag"]), int(werk.get("gliederung_fassung") or 0)
+    wunsch = str(werk.get("gliederung_wunsch") or "").strip()
+    schluessel = _gliederung_schluessel(werk)
     c.lease(aid)                          # die Anfrage kann lange gedauert haben
     try:
         c.api.gliederung(aid, gliederung, _quellen_der_gliederung(gliederung))

@@ -25,6 +25,7 @@ SAETZE_MIN, SAETZE_MAX = 2, 8
 BILDARTEN = ("slide", "avatar_gross", "avatar_slide", "clip")
 UEBERGAENGE = ("schnitt", "blende")
 AUFTRAG = "auftrag"
+KONZEPT = "konzept"
 KI_HINWEIS = "Dieses Video wurde mit KI erstellt."
 FEHLT_PRAEFIX = "dazu fehlt mir Material:"
 GRENZE_VIELE = "Die Szene hat zu viele Belege:"
@@ -259,6 +260,36 @@ def gliederung_lesen(text: str, geholt: set[str],
     if fehler:
         return None, fehler
     return {"titel": titel, "hook": hook, "stufen": stufen, "fehlt": fehlt}, []
+
+
+def gliederung_aus_konzept(eingabe: dict) -> dict | None:
+    """Die erste Gliederung eins zu eins aus `eingabe["konzept"]` (kein Modell): Titel = Thema, Hook, Stufen und
+    Szenen (`kurz`, `bildart`) in der Reihenfolge des Konzepts, jede Szene mit der Quelle "konzept". None, wenn das
+    Konzept fehlt oder nicht verwertbar ist (Thema/Hook leer, Stufe ohne Namen, Szene ohne `kurz` oder mit
+    unbekannter Bildart, Szenenzahl ausserhalb der Grenzen) - dann gilt der Weg ueber das Modell."""
+    konzept = eingabe.get("konzept") if isinstance(eingabe, dict) else None
+    if not isinstance(konzept, dict):
+        return None
+    titel, hook = _text(konzept.get("thema")), _text(konzept.get("hook"))
+    stufen_roh = konzept.get("stufen")
+    if not titel or not hook or not isinstance(stufen_roh, list) or not stufen_roh:
+        return None
+    stufen, anzahl = [], 0
+    for st in stufen_roh:
+        name = _text(st.get("name")) if isinstance(st, dict) else ""
+        szenen_roh = st.get("szenen") if isinstance(st, dict) else None
+        if not name or not isinstance(szenen_roh, list):
+            return None
+        szenen = []
+        for s in szenen_roh:
+            if not isinstance(s, dict) or not _text(s.get("kurz")) or s.get("bildart") not in BILDARTEN:
+                return None
+            szenen.append({"kurz": _text(s["kurz"]), "bildart": s["bildart"], "quellen": [KONZEPT]})
+        anzahl += len(szenen)
+        stufen.append({"name": name, "szenen": szenen})
+    if not SZENEN_MIN <= anzahl <= SZENEN_MAX:
+        return None
+    return {"titel": titel, "hook": hook, "stufen": stufen, "fehlt": []}
 
 
 def szenen_liste(gliederung: dict) -> list[dict]:

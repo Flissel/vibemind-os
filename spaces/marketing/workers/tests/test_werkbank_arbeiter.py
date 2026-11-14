@@ -923,3 +923,62 @@ def test_keine_szene_solange_die_stimme_nicht_bereit_ist(F, caplog):
         assert ein_durchlauf(api, stimme_bereit=lambda: bereit[0], **F) == "clip"
     assert len(api.rufe("szene_nehmen")) == 1 and api.rufe("szene_clip")
     assert sum(r.getMessage() == "Stimme bereit" for r in caplog.records) == 1
+
+
+# --- Erste Gliederung aus dem Konzept (kein Modellaufruf) --------------------------------------
+
+def _konzept(stufen=3, je=3):
+    return {"thema": "Konzeptthema", "zielgruppe": "Teams", "minuten": 4, "hook": "Der Hook.", "kernaussage": "Kern.",
+            "abschluss": "Ende.", "auftrag": "", "pfad": "x", "name": "x",
+            "stufen": [{"name": f"Stufe {s}", "szenen": [{"kurz": f"K{s}.{i}", "bildart": "slide", "notiz": "n"}
+                                                       for i in range(je)]} for s in range(1, stufen + 1)]}
+
+
+def _konzept_werk(konzept, **kw):
+    eingabe = {"thema": "Thema", "beschreibung": "Text", "minuten": 4, "von": "rowboat", "konzept": konzept}
+    return werk(eingabe=eingabe, **kw)
+
+
+def test_konzept_auftrag_bekommt_gliederung_ohne_kontext_und_modell(F):
+    api = FakeApi([_konzept_werk(_konzept())], naechster={"id": AID_A})
+    f, ktx = Fragen(), []
+    F["kontext"] = lambda mandant, frage: ktx.append(1) or KONTEXT
+    assert ein_durchlauf(api, fragen=f, **F) == "gliederung"
+    assert f.nachrichten == [] and ktx == [] and api.zaehlt("aufruf") == 0
+    g = api.rufe("gliederung")[0]
+    assert g["quellen"] == []                                           # "konzept" ist kein Dokument (wie "auftrag")
+    assert g["gliederung"]["titel"] == "Konzeptthema" and len(wa.video_texte.szenen_liste(g["gliederung"])) == 9
+    assert all(s["quellen"] == ["konzept"] for s in wa.video_texte.szenen_liste(g["gliederung"]))
+
+
+def test_konzept_auftrag_mit_wunsch_nimmt_den_heutigen_weg(F):
+    api = FakeApi([_konzept_werk(_konzept(), gliederung_wunsch="Kürzer", gliederung=GLIEDERUNG, gliederung_fassung=1)])
+    f = Fragen()
+    ein_durchlauf(api, fragen=f, **F)
+    assert len(f.nachrichten) == 1 and api.zaehlt("aufruf") == 1
+
+
+def test_unbrauchbares_konzept_nimmt_den_heutigen_weg(F):
+    api = FakeApi([_konzept_werk(_konzept(stufen=1, je=2))])
+    f = Fragen()
+    assert ein_durchlauf(api, fragen=f, **F) == "gliederung"
+    assert len(f.nachrichten) == 1 and api.zaehlt("aufruf") == 1
+
+
+def test_konzept_gliederung_kommt_auch_in_der_budgetpause(F):
+    uhr, api = Uhr(), FakeApi([werk(), _konzept_werk(_konzept(), auftrag=AID_B)])
+    ein_durchlauf(api, fragen=wirft(BudgetErschoepft()), jetzt=uhr, **F)      # Pause beginnt
+    assert _gedaechtnis(api)["budget_bis"] > uhr.t
+    api.werke = [_konzept_werk(_konzept(), auftrag=AID_B)]
+    f = Fragen()
+    ein_durchlauf(api, fragen=f, jetzt=uhr, **F)                 # Rueckgabe "budget": die Pause laeuft noch
+    assert api.rufe("gliederung")[0]["aid"] == AID_B and f.nachrichten == []
+
+
+def test_konzept_gliederung_422_wird_aufgegeben_statt_neu_versucht(F):
+    api = FakeApi([_konzept_werk(_konzept())])
+    def abgelehnt(aid, gliederung, quellen):
+        raise ApiFehler(422, "x")
+    api.gliederung = abgelehnt
+    assert ein_durchlauf(api, fragen=Fragen(), **F) == "fehler"
+    assert api.zaehlt("gliederung_aufgegeben") == 1

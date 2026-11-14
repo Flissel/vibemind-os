@@ -2,6 +2,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from spaces.marketing.claw import video_texte
 from spaces.marketing.claw.video_kontext import Dokument, Kontext
 from spaces.marketing.claw.video_texte import (BLOCK, gliederung_lesen, gliederung_prompt, kopf, szene_pruefen,
@@ -372,3 +374,51 @@ def test_kopf_kappt_titel_und_beschreibung():
     assert len(k["beschreibung"].encode("utf-8")) <= 5000 and k["beschreibung"].endswith(video_texte.KI_HINWEIS)
     assert "0:00 Einstieg" in k["beschreibung"]
     assert kopf({"stufen": "x"}, "y")["zeitmarken"] == []
+
+
+# --- Gliederung eins zu eins aus dem Konzept ---------------------------------------------------
+
+def KONZEPT_EINGABE(stufen=3, je=3, **kw):
+    konzept = {"thema": "Schulung in drei Schritten", "zielgruppe": "Teams", "minuten": 4, "hook": "Drei Schritte, ein Ziel.",
+               "kernaussage": "Wer übt, wird besser.", "abschluss": "Jetzt anfangen.", "auftrag": "", "pfad": "x", "name": "x",
+               "stufen": [{"name": f"Stufe {s}", "szenen": [
+                   {"kurz": f"Szene {s}.{i}", "bildart": ("slide", "avatar_slide", "avatar_gross", "clip")[i % 4],
+                    "notiz": "n"} for i in range(je)]} for s in range(1, stufen + 1)]}
+    konzept.update(kw)
+    return {"thema": "Thema", "beschreibung": "B", "minuten": 4, "von": "rowboat", "konzept": konzept}
+
+
+def test_gliederung_aus_konzept_szene_fuer_szene_gleich():
+    e = KONZEPT_EINGABE()
+    g = video_texte.gliederung_aus_konzept(e)
+    assert video_texte.KONZEPT == "konzept"
+    assert g["titel"] == "Schulung in drei Schritten" and g["hook"] == "Drei Schritte, ein Ziel." and g["fehlt"] == []
+    assert [s["name"] for s in g["stufen"]] == ["Stufe 1", "Stufe 2", "Stufe 3"]
+    erwartet = [(s["kurz"], s["bildart"]) for st in e["konzept"]["stufen"] for s in st["szenen"]]
+    assert [(s["kurz"], s["bildart"]) for s in szenen_liste(g)] == erwartet and len(erwartet) == 9
+    assert all(s["quellen"] == ["konzept"] for s in szenen_liste(g))
+    assert all(set(s) == {"kurz", "bildart", "quellen"} for st in g["stufen"] for s in st["szenen"])
+
+
+def test_gliederung_aus_konzept_nimmt_alle_vier_bildarten():
+    g = video_texte.gliederung_aus_konzept(KONZEPT_EINGABE(stufen=2, je=4))
+    assert {s["bildart"] for s in szenen_liste(g)} == set(video_texte.BILDARTEN)
+
+
+@pytest.mark.parametrize("eingabe", [
+    {}, {"konzept": None}, {"konzept": "text"}, {"konzept": {}},
+    KONZEPT_EINGABE(stufen=1, je=3),                                    # 3 Szenen: unter der Grenze
+    KONZEPT_EINGABE(stufen=4, je=4),                                    # 16 Szenen: über der Grenze
+    KONZEPT_EINGABE(thema=""), KONZEPT_EINGABE(hook=" "), KONZEPT_EINGABE(stufen=0),
+])
+def test_gliederung_aus_konzept_unbrauchbar_ist_none(eingabe):
+    assert video_texte.gliederung_aus_konzept(eingabe) is None
+
+
+def test_gliederung_aus_konzept_unbekannte_bildart_oder_leeres_kurz_ist_none():
+    e = KONZEPT_EINGABE()
+    e["konzept"]["stufen"][0]["szenen"][0]["bildart"] = "foto"
+    assert video_texte.gliederung_aus_konzept(e) is None
+    e = KONZEPT_EINGABE()
+    e["konzept"]["stufen"][1]["szenen"][0]["kurz"] = ""
+    assert video_texte.gliederung_aus_konzept(e) is None
