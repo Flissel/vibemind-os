@@ -369,6 +369,22 @@ def test_brain_soul_regeln() -> None:
     assert "example" not in text.lower() and "http" not in text
 
 
+def test_brain_soul_sendet_nichts_und_legt_nichts_an() -> None:
+    """Ruling T4-b: bn-auftrag__* gibt dem Brain mit dem Betreiber-Schluessel auch
+    nachricht_an_gruppe (sendet sofort), einladen (sendet Mail), firma_anlegen und
+    event_anlegen. Diese vier stehen in Regel 5 (nur beschreiben), und Senden bleibt
+    ausdruecklich ausgeschlossen."""
+    text = BRAIN_SOUL.read_text(encoding="utf-8")
+    regeln = _abschnitt(text, "Regeln")
+    regel5 = regeln.split("5. ", 1)[1]
+    for werkzeug in ("nachricht_an_gruppe", "einladen", "firma_anlegen", "event_anlegen"):
+        assert f"`{werkzeug}`" in regel5, werkzeug
+    assert "„Bestätigung nötig“" in regel5
+    nicht = _abschnitt(text, "Was du nicht kannst")
+    assert "- Nachrichten in Gruppen oder Chats schicken." in nicht
+    assert "- E-Mails an Gäste schicken." in nicht
+
+
 def test_brain_agents_kennt_beide_werkzeugfamilien() -> None:
     text = (WORKSPACE_BRAIN / "AGENTS.md").read_text(encoding="utf-8")
     assert "`bn-lesen__…`" in text and "`bn-auftrag__…`" in text and "`event-app__…`" in text
