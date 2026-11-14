@@ -10,6 +10,8 @@ CLI (Admin-DSN aus der Datei in ``EVENT_ADMIN_DSN_FILE``)::
 
     python -m spaces.event_management.system.schluessel ausstellen --art event \\
         --bezeichnung "Gruppe Sommerfest" --event-id <uuid>
+    python -m spaces.event_management.system.schluessel ausstellen --art betreiber_lesen \\
+        --bezeichnung "Brain lesend" --name VibeMind
     python -m spaces.event_management.system.schluessel widerrufen <uuid>
 """
 from __future__ import annotations
@@ -44,6 +46,8 @@ _TOKEN_BYTES = 32
 _FORMAT = re.compile(r"evk_[A-Za-z0-9_-]{43}")
 # Eine Meldung fuer alle Ablehnungsgruende (kein Orakel: unbekannt, abgelaufen, ...).
 _ABGELEHNT = "Schlüssel nicht gefunden"
+# Name des Aufrufers (z. B. "VibeMind"); derselbe Check steht in db/009.
+_NAME = re.compile(r"[A-Za-z0-9_]{1,40}")
 
 
 @dataclass(frozen=True)
@@ -53,6 +57,8 @@ class SchluesselInfo:
     event_id: UUID | None
     firma_id: UUID | None
     person_id: UUID | None
+    # Name des Aufrufers; mit Name wird der actor `bot:<art>:<name>`.
+    name: str | None = None
     # sha256-Hex des Klartexts: Besitznachweis fuer die SD-Funktionen von Marke und
     # Bestaetigung (die id allein reicht dort nie). Leer = nichts wird gefunden.
     schluessel_hash: str = field(default="", repr=False, compare=False)
@@ -65,16 +71,20 @@ def _hash(klartext: str) -> str:
 def ausstellen(
     conn_admin: psycopg.Connection[Any], *, art: str, bezeichnung: str,
     gueltig_tage: int = 365, event_id: UUID | None = None, person_id: UUID | None = None,
+    name: str | None = None,
 ) -> tuple[UUID, str]:
     """Legt einen Schluessel an. Rueckgabe (id, Klartext); der Klartext existiert nur hier.
 
     ValueError bei falscher Kombination (event ohne Event, leitung ohne Person, Event bei
-    anderen Arten), leerer Bezeichnung oder Laufzeit ausserhalb 1..730 Tage;
-    NichtGefunden bei unbekanntem Event oder unbekannter Person; ValueError bei inaktiver
-    Person oder bei einem Betreiber-Schluessel fuer eine Person, die kein Betreiber ist.
+    anderen Arten), leerer Bezeichnung, Laufzeit ausserhalb 1..730 Tage oder einem `name`
+    ausserhalb ``[A-Za-z0-9_]{1,40}``; NichtGefunden bei unbekanntem Event oder unbekannter
+    Person; ValueError bei inaktiver Person oder bei einem Betreiber-Schluessel fuer eine
+    Person, die kein Betreiber ist.
     """
     if art not in ART:
         raise ValueError("Schlüssel-Art ungültig")
+    if name is not None and (not isinstance(name, str) or not _NAME.fullmatch(name)):
+        raise ValueError("Name ungültig")
     bezeichnung = pruefung.text("bezeichnung", bezeichnung).strip()
     if not bezeichnung:
         raise ValueError("Bezeichnung fehlt")
@@ -109,10 +119,11 @@ def ausstellen(
                 raise ValueError("Ein Betreiber-Schlüssel braucht eine Betreiber-Person")
         cur.execute(
             "insert into event.schluessel"
-            " (hash, art, event_id, firma_id, person_id, bezeichnung, ablauf)"
-            " values (%s, %s, %s, %s, %s, %s, now() + make_interval(days => %s))"
+            " (hash, art, event_id, firma_id, person_id, bezeichnung, name, ablauf)"
+            " values (%s, %s, %s, %s, %s, %s, %s, now() + make_interval(days => %s))"
             " returning id",
-            (_hash(klartext), art, event_id, firma_id, person_id, bezeichnung, gueltig_tage),
+            (_hash(klartext), art, event_id, firma_id, person_id, bezeichnung, name,
+             gueltig_tage),
         )
         zeile = cur.fetchone()
     assert zeile is not None
@@ -143,7 +154,7 @@ def pruefen(conn: psycopg.Connection[Any], klartext: object) -> SchluesselInfo:
     h = _hash(klartext)
     with transaktion(conn, Kontext.system()) as cur:
         cur.execute(
-            "select id, hash, art, event_id, firma_id, person_id"
+            "select id, hash, art, event_id, firma_id, person_id, name"
             " from event.schluessel_pruefen(%s)",
             (h,),
         )
@@ -152,7 +163,8 @@ def pruefen(conn: psycopg.Connection[Any], klartext: object) -> SchluesselInfo:
         raise NichtGefunden(_ABGELEHNT)
     return SchluesselInfo(
         id=zeile["id"], art=zeile["art"], event_id=zeile["event_id"],
-        firma_id=zeile["firma_id"], person_id=zeile["person_id"], schluessel_hash=h,
+        firma_id=zeile["firma_id"], person_id=zeile["person_id"], name=zeile["name"],
+        schluessel_hash=h,
     )
 
 
@@ -163,8 +175,10 @@ def kontext_fuer(conn: psycopg.Connection[Any], info: SchluesselInfo) -> Kontext
     leitung         nur Firmen, in denen die Person JETZT Leitung ist; nie Betreiber
     betreiber(_lesen)  Betreiber (lesend erzwingt der Werkzeugkatalog)
     melden          keine Firmen
+
+    actor: `bot:<art>:<name>` bei einem Schluessel mit Name, sonst `bot:<art>`.
     """
-    actor = f"bot:{info.art}"
+    actor = f"bot:{info.art}:{info.name}" if info.name else f"bot:{info.art}"
     if info.art == "event":
         if info.event_id is None or info.firma_id is None:
             raise NichtGefunden(_ABGELEHNT)
@@ -218,7 +232,8 @@ def _parser() -> argparse.ArgumentParser:
     aus.add_argument("--gueltig-tage", type=int, default=365)
     aus.add_argument("--event-id", type=UUID)
     aus.add_argument("--person-id", type=UUID)
-    weg = befehle.add_parser("widerrufen", help="Schlüssel widerrufen")
+    aus.add_argument("--name", help="Name des Aufrufers im actor (A-Z, a-z, 0-9, _)")
+    weg =befehle.add_parser("widerrufen", help="Schlüssel widerrufen")
     weg.add_argument("id", type=UUID)
     return parser
 
@@ -242,7 +257,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 sid, klartext = ausstellen(
                     conn, art=args.art, bezeichnung=args.bezeichnung,
                     gueltig_tage=args.gueltig_tage, event_id=args.event_id,
-                    person_id=args.person_id,
+                    person_id=args.person_id, name=args.name,
                 )
                 print(f"Schlüssel-ID: {sid}", file=sys.stderr)
                 print(klartext)
