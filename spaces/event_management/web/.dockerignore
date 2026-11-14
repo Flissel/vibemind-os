@@ -2,6 +2,8 @@ laufzeit/
 werte.local.json
 *.env
 **/*.env
+.env*
+**/.env*
 build/
 node_modules/
 .next/

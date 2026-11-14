@@ -55,6 +55,19 @@ def test_keine_geheimnisse_im_kontext() -> None:
             assert p in eintraege or "**/" + p in eintraege, (pfad.name, p)
 
 
+def test_web_kontext_ohne_next_env_dateien() -> None:
+    """Review: Next.js liest `.env`, `.env.local`, `.env.production(.local)`. `*.env` trifft
+    nur `.env`; der Web-Kontext schliesst darum `.env*` aus (Wurzel und Unterordner)."""
+    import fnmatch
+
+    eintraege = set(_zeilen(IGNORE_WEB))
+    assert ".env*" in eintraege and "**/.env*" in eintraege
+    muster = [e.removeprefix("**/") for e in eintraege if not e.startswith("!")]
+    for name in (".env", ".env.local", ".env.production", ".env.production.local",
+                 ".env.development.local"):
+        assert any(fnmatch.fnmatchcase(name, m) for m in muster), name
+
+
 def test_web_rewrite_aus_build_arg() -> None:
     assert "process.env.EVENT_API_URL" in NEXT_CONFIG.read_text(encoding="utf-8")
     text = WEB_DOCKERFILE.read_text(encoding="utf-8")
