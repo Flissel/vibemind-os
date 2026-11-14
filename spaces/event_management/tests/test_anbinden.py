@@ -447,7 +447,18 @@ def test_zweiter_lauf_erhaelt_alles(tmp_path: Path) -> None:
     for name, agent in (("bn-lesen", "brain-lesen"), ("bn-auftrag", "brain-auftrag")):
         assert neu["mcp"]["servers"][name] == saat["mcp"]["servers"][name]
         allow = next(a for a in neu["agents"]["list"] if a["id"] == agent)["tools"]["allow"]
-        assert f"{name}__*" in allow
+        vorlage = next(a for a in saat["agents"]["list"] if a["id"] == agent)["tools"]["allow"]
+        assert allow == vorlage
+    # F-2: bn-lesen bleibt ein Muster (Katalog nur lesend), bn-auftrag ist eine feste Liste
+    # ohne Muster, ohne Loeschen und ohne die vier nach aussen wirkenden Werkzeuge.
+    auftrag = next(a for a in neu["agents"]["list"] if a["id"] == "brain-auftrag")["tools"]["allow"]
+    bn = [n for n in auftrag if n.startswith("bn-auftrag__")]
+    assert bn and "bn-auftrag__*" not in auftrag and not [n for n in bn if "*" in n]
+    for verboten in ("nachricht_an_gruppe", "einladen", "firma_anlegen", "event_anlegen",
+                     "event_loeschen", "aufgaben_loeschen"):
+        assert f"bn-auftrag__{verboten}" not in auftrag, verboten
+    assert "bn-lesen__*" in next(a for a in neu["agents"]["list"]
+                                 if a["id"] == "brain-lesen")["tools"]["allow"]
 
     # Zwischen den Laeufen setzt Schritt 4 die Schluessel (hier nachgestellt): die
     # Header der Brain-Server, des Empfangs und der Event-App.

@@ -251,16 +251,47 @@ def test_brain_agenten_eingetragen() -> None:
 BRAIN_SERVER = {"brain-lesen": "bn-lesen", "brain-auftrag": "bn-auftrag"}
 
 
+# Abschluss-Review F-2: brain-auftrag bekommt KEIN `bn-auftrag__*`, sondern eine feste
+# Liste: der Betreiber-Katalog ohne die Werkzeuge, die sofort nach aussen wirken oder
+# etwas anlegen, das nur Felix anlegt, und ohne jedes Loeschen. Ein neuer Baustein macht
+# den Test rot, bis die Liste nachgezogen ist.
+BRAIN_AUFTRAG_OHNE = frozenset({"nachricht_an_gruppe", "einladen", "firma_anlegen",
+                                "event_anlegen"})
+
+
+def _brain_auftrag_katalog() -> set[str]:
+    from spaces.event_management.system import werkzeuge
+
+    return {n for n in werkzeuge.namen("betreiber")
+            if n not in BRAIN_AUFTRAG_OHNE and not n.endswith("_loeschen")}
+
+
 @pytest.mark.parametrize("agent", ["brain-lesen", "brain-auftrag"])
 def test_brain_agenten_nur_app_werkzeuge_und_eigener_katalog(agent: str) -> None:
     eintrag = _agenten()[agent]
     assert "deny" not in eintrag["tools"]
     assert set(eintrag["tools"]) == {"allow"}
     for name in eintrag["tools"]["allow"]:
-        if name == f"{BRAIN_SERVER[agent]}__*":
-            continue  # der eigene Katalog-Server; der Schluessel begrenzt die Rechte
+        if name == "bn-lesen__*" and agent == "brain-lesen":
+            continue  # Katalog nur lesend (betreiber_lesen, test_betreiber_lesen_nur_lesend)
+        if name.startswith("bn-auftrag__") and agent == "brain-auftrag":
+            assert "*" not in name, name  # feste Liste, kein Muster (F-2)
+            continue
         assert name.startswith(APP_PRAEFIX), name
         assert "*" not in name, name
+
+
+def test_brain_auftrag_feste_liste_aus_dem_katalog() -> None:
+    """F-2: genau der Betreiber-Katalog minus Ausschluesse, ohne Muster, ohne Doppel."""
+    katalog = [n.removeprefix("bn-auftrag__") for n in _erlaubt("brain-auftrag")
+               if n.startswith("bn-auftrag__")]
+    assert len(katalog) == len(set(katalog))
+    assert set(katalog) == _brain_auftrag_katalog()
+    assert not [n for n in katalog if n.endswith("_loeschen")]
+    assert not BRAIN_AUFTRAG_OHNE & set(katalog)
+    # Lesen und die zweistufigen Aktionen bleiben erreichbar (die SOUL fuehrt sie).
+    assert {"event_waehlen", "events_suchen", "kontakte_suchen", "aufgaben_liste",
+            "aufgaben_anlegen", "event_absagen", "rolle_aendern"} <= set(katalog)
 
 
 def _app_erlaubt(agent: str) -> list[str]:
@@ -290,8 +321,10 @@ def test_brain_server_und_allow_listen() -> None:
         assert server[name] == {"url": "{{EVENT_MCP_URL}}/mcp", "transport": "streamable-http",
                                 "connectionTimeoutMs": 30000, "requestTimeoutMs": 60000}
     assert set(_erlaubt("brain-lesen")) == {APP_PRAEFIX + n for n in APP_LESEND} | {"bn-lesen__*"}
-    assert set(_erlaubt("brain-auftrag")) == {APP_PRAEFIX + n for n in APP_ALLE} | {"bn-auftrag__*"}
-    assert len(_erlaubt("brain-lesen")) == 10 and len(_erlaubt("brain-auftrag")) == 21
+    assert set(_erlaubt("brain-auftrag")) == ({APP_PRAEFIX + n for n in APP_ALLE}
+                                              | {"bn-auftrag__" + n for n in _brain_auftrag_katalog()})
+    assert len(_erlaubt("brain-lesen")) == 10
+    assert len(_erlaubt("brain-auftrag")) == 20 + len(_brain_auftrag_katalog())
     # Kein anderer Agent bekommt die Brain-Server.
     for agent, eintrag in _agenten().items():
         if agent not in BRAIN_SERVER:

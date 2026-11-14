@@ -938,6 +938,20 @@ def _eintraege(conn: psycopg.Connection[Any], info: SchluesselInfo,
     return ergebnis
 
 
+def namen(art: str) -> list[str]:
+    """Alle Werkzeugnamen, die ein Schluessel dieser Art hoechstens sieht, ohne Datenbank.
+
+    Obermenge des Katalogs: alle Bausteine der REGISTRY, `gruppe_verbinden` auch ohne
+    Person (fuer Art `event` haengt der echte Katalog zusaetzlich vom Schema des Events ab).
+    Grundlage der festen Erlaubnisliste von `brain-auftrag` in config/openclaw.json
+    (Abschluss-Review F-2; der Test haelt beide gleich). ValueError bei unbekannter Art.
+    """
+    if art not in _SONDER_JE_ART:
+        raise ValueError("Schlüssel-Art unbekannt")
+    return [*_SONDER_JE_ART[art],
+            *(f"{eintrag}_{op}" for eintrag in REGISTRY for op in _OPS_JE_ART[art])]
+
+
 def katalog(conn: psycopg.Connection[Any], info: SchluesselInfo,
             *, kategorien: Kategorien = None) -> list[Werkzeug]:
     """Werkzeuge, die dieser Schluessel jetzt sehen darf."""

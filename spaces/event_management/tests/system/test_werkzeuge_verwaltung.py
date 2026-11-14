@@ -420,6 +420,22 @@ def test_firma_anlegen_nur_betreiber(db_admin, db_app, welt, lea):
     assert _anzahl(db_admin, "firma") == 4
 
 
+def test_namen_deckt_den_echten_katalog(db_admin, db_app, welt):
+    """F-2: `werkzeuge.namen` (Grundlage der Erlaubnisliste von brain-auftrag) ist genau
+    der Katalog eines Betreiber-Schluessels mit Person; ohne Person fehlt nur
+    gruppe_verbinden."""
+    app = db_app()
+    mit = _info(db_admin, "betreiber", person_id=welt["bea"])
+    ohne = _info(db_admin, "betreiber", name="VibeMind")
+    assert _namen(app, mit) == set(werkzeuge.namen("betreiber"))
+    assert _namen(app, ohne) == set(werkzeuge.namen("betreiber")) - {"gruppe_verbinden"}
+    assert len(werkzeuge.namen("betreiber")) == len(set(werkzeuge.namen("betreiber")))
+    lesen = _info(db_admin, "betreiber_lesen", person_id=welt["bea"])
+    assert _namen(app, lesen) == set(werkzeuge.namen("betreiber_lesen"))
+    with pytest.raises(ValueError):
+        werkzeuge.namen("gibt-es-nicht")
+
+
 def test_betreiber_lesen_hat_keine_verwaltung(db_admin, db_app, welt, lea):
     app = db_app()
     lesen = _info(db_admin, "betreiber_lesen", person_id=welt["bea"])
