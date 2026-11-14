@@ -168,7 +168,13 @@ def test_images_wie_im_compose():
     dienste = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]
     assert k["CLAW_IMAGE"] == dienste["event-management-claw"]["image"]
     assert k["SHIM_IMAGE"] == dienste["event-management-shim"]["image"]
-    assert k["SYSTEM_IMAGE"] == dienste["event-mcp"]["image"]
+    # Der Tag kommt wie im Compose aus EVENT_SYSTEM_TAG; Repo und Name muessen gleich sein.
+    compose_image = dienste["event-mcp"]["image"]
+    assert compose_image.split(":", 1)[0] == "event-management/system"
+    assert "${EVENT_SYSTEM_TAG:?" in compose_image
+    shell = _shell()
+    assert re.search(r"^SYSTEM_IMAGE=event-management/system:\$EVENT_SYSTEM_TAG$", shell, re.M)
+    assert re.search(r'^: "\$\{EVENT_SYSTEM_TAG:\?[^}"]+\}"$', shell, re.M)
 
 
 def test_werte_nur_ueber_stdin():
@@ -238,6 +244,7 @@ def test_test_config_ohne_betrieb_und_ohne_platzhalter():
     assert "{{" not in text
     assert [a["id"] for a in config["agents"]["list"]] == ["main"]
     assert config["mcp"]["servers"] == {}
+    assert config["bindings"] == []  # kein Betriebs-Binding (ev-legacy / Legacy-Gruppe)
     telegram = config["channels"]["telegram"]
     assert telegram["groups"] == {"*": {"requireMention": True}}
     assert telegram["groupPolicy"] == "allowlist"
