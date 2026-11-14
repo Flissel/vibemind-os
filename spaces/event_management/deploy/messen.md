@@ -37,7 +37,12 @@ Alternativen vor (Spec: „hält … an und legt Felix andere Wege vor“).
   Wegwerf-Postgres nimmt dort ohne Passwort an (`trust`). Die Agenten im Test-Claw haben
   nur ihre MCP-Werkzeuge.
 - **Voraussetzungen.**
-  - Das Image `event-management/system:etappe-4` existiert. Das Dockerfile entsteht in
+  - `EVENT_SYSTEM_TAG` ist exportiert (Git-Kurz-SHA des Images). `messen.sh` bricht sonst
+    sofort ab, denn der Tag steckt im Image-Namen `event-management/system:<tag>` und das
+    Compose verlangt ihn ebenfalls. Beim Ausrollen liegt er in
+    `laufzeit/ausrollen/tags.env`: `set -a; . laufzeit/ausrollen/tags.env; set +a`
+    (siehe `deploy/ausrollen.md`).
+  - Das Image `event-management/system:$EVENT_SYSTEM_TAG` existiert. Das Dockerfile entsteht in
     Etappe 4; vorher sind nur `vorbereiten`, `dm`, `stand`, `protokoll`, `last` und
     `aufraeumen` möglich.
   - Auf dem Host laufen `python3` (mit den Paketen des Bereitstellungs-Arbeiters) und
@@ -236,12 +241,12 @@ mit 20 Agenten unter 1 GiB fällt oder Swap neu belegt wird.
 
 ## Ausrollen: was vorher feststehen muss
 
-- **DEPLOY-BLOCKER: `ev-legacy`.** Vor dem ersten Ausrollen der Etappe 3 braucht die
-  Legacy-Festivalgruppe einen eigenen Agenten `ev-legacy`: Arbeitsbereich
-  `workspace-legacy`, die Werkzeuge `event-app__…` und ein Binding an die Legacy-Gruppe.
-  Ohne ihn bricht `deploy/anbinden.sh` ab (Ruling T8-a). `main` ist ab Etappe 3 der
-  Empfang und antwortet per `"*"` fremden Gruppen. Die Legacy-Werkzeuge dürfen deshalb
-  nicht auf `main` liegen.
+- **`ev-legacy` (erledigt).** Die Legacy-Festivalgruppe hat ihren eigenen Agenten
+  `ev-legacy` (Arbeitsbereich `workspace-legacy`, Werkzeuge `event-app__…`, Binding an die
+  Legacy-Gruppe); `deploy/anbinden.sh` bricht darum nicht mehr ab (Ruling T8-a, gelöst mit
+  Etappe 4). `main` ist der Empfang und antwortet per `"*"` fremden Gruppen, die
+  Legacy-Werkzeuge liegen deshalb nicht auf `main`. Offen bleibt der Vergleich des
+  Live-Arbeitsbereichs vor `anbinden` (`deploy/ausrollen.md`).
 - **Feste Adresse von event-mcp, kein `ip_range`.** `event-mcp` nimmt im bestehenden
   Netz `event-agent` die feste Adresse `10.250.10.14`. Einen `ip_range` gibt es bewusst
   nicht (Ruling T9-a): Er würde Docker zwingen, das Netz mitsamt dem laufenden Shim und

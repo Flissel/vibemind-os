@@ -349,14 +349,15 @@ def test_m5_prueft_getrennte_dm_sitzungen():
         assert begriff in m5, begriff
 
 
-def test_anleitung_nennt_rahmen_und_deploy_blocker():
+def test_anleitung_nennt_rahmen_und_erledigten_blocker():
     text = ANLEITUNG.read_text(encoding="utf-8")
     for begriff in ("nicht ausgeführt", SCHALTER, "Test-Bot", "ev-legacy", "anbinden.sh",
-                    "DEPLOY-BLOCKER", "event-messung-", "aufraeumen", "WORKBOARD",
+                    "(erledigt)", "EVENT_SYSTEM_TAG", "event-messung-", "aufraeumen", "WORKBOARD",
                     "http://event-mcp:8171", "Ruling T9-a", "Address already in use",
                     "Claude-Code-Abo-Token"):
         assert begriff in text, begriff
     assert "neu anlegen.**" not in text  # keine Netz-Neuanlage mehr (Ruling T9-a)
+    assert "DEPLOY-BLOCKER" not in text  # ev-legacy ist seit Etappe 4 Task 2 geloest
 
 
 def test_keine_geheimnisse_oder_echten_ziele():
