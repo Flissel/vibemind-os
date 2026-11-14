@@ -1,0 +1,11 @@
+laufzeit/
+werte.local.json
+*.env
+**/*.env
+build/
+node_modules/
+.next/
+tests/
+.superpowers/
+.git/
+*.tsbuildinfo

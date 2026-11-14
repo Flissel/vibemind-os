@@ -1,0 +1,28 @@
+# Image event-management/system: event-api, event-mcp und die CLIs (bereitstellung,
+# nachrichten, schluessel, legacy). Build-Kontext ist spaces/event_management/; der Code
+# landet unter /app/spaces/event_management, damit die Importe
+# `spaces.event_management.system...` stimmen:
+#   docker build -f Dockerfile.system -t event-management/system:<git-kurz-sha> .
+FROM python:3.12.7-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONPATH=/app
+
+RUN groupadd --system --gid 10001 event \
+    && useradd --system --uid 10001 --gid event --no-create-home --shell /usr/sbin/nologin event
+
+WORKDIR /app
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install -r /tmp/requirements.txt && rm /tmp/requirements.txt
+
+COPY __init__.py uebergabe.py /app/spaces/event_management/
+COPY system/ /app/spaces/event_management/system/
+COPY kategorien/ /app/spaces/event_management/kategorien/
+COPY db/ /app/spaces/event_management/db/
+
+USER event
+EXPOSE 8170 8171
+CMD ["python", "-m", "spaces.event_management.system.api"]
