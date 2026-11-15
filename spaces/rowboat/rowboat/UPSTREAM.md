@@ -8,13 +8,21 @@ To re-pin the kernel plugin catalog, change `DESKTOP_PLUGIN_CATALOG_PIN` on bran
 Flissel/rowboat (in `apps/x/apps/renderer/src/lib/rowboat-plugin-api.ts`), then run the sync.
 
 - Fork: https://github.com/Flissel/rowboat (branch `vibemind`)
-- Fork commit: `5a6c00e11d4ddc80b4f912393e151db6d4e92c27`
+- Fork commit: `02328ec59ce733deea5fad425c35a8297ecd73b9`
 - Upstream base: rowboatlabs/rowboat `72e9d8c`
 - EHL repo: https://github.com/Flissel/ehl-munich-2026 (`schema/`)
 - EHL commit: `44c1024c7804c696bc283bd14a9d08bd87a38230`
 
 ## Patches on top of upstream (EHL hierarchy graph, VibeMind)
 
+- 02328ec5 fix(konzept): Uebergabe-Text fuer unklare Antworten, Bestaetigen bleibt beim Nutzer
+- ebd2cc63 feat(konzept): Uebergabe wird in Sales bestaetigt
+- 4562558e Revert "feat(freigabe): Uebergabe an die Werkbank nur mit Ja eines Menschen"
+- aa793dce fix(konzept): Vorlagen-Test an Auftragszeile und neue Grenzen angepasst
+- 08bc4839 feat(freigabe): Uebergabe an die Werkbank nur mit Ja eines Menschen
+- e93a3e93 test(konzept): Pruef-Faelle fuer Scanner- und Parser-Raender
+- 2561d528 fix(konzept): Uebergabe-Text ohne stilles Aendern, Grenzen wie die Sales-Annahme
+- efeace1d feat(konzept): Auftragsnummer im Datenblock, Uebergabe in der Faehigkeit
 - 5a6c00e1 fix(search): Suche liest die Textfelder des Videokonzept-Blocks
 - b00f5637 fix(files): Autorun-Pruefung im selben Schreibschritt, parallele Aenderungen einzeln harmlos zusammen verboten
 - fc288840 fix(files): Schreibzugriffe je Datei nacheinander, gleichzeitige Aenderungen ueberschreiben sich nicht

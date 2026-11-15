@@ -59,7 +59,7 @@ Write the skeleton yourself, in the order above: \`<title>\`, data block with \`
 A video concept has \`"art": "videokonzept"\` and a \`video\` object. **Use the template below and change ONLY the data block** and the title text. The title appears twice, in \`<title>\` and in the page heading \`<h1>\`; change both and keep them identical. Its script draws the whole page from the data block — stages as collapsible sections, scenes as cards, summary, warnings, references.
 
 Limits (the app checks them):
-- \`thema\` 3–300 characters; \`zielgruppe\`; \`minuten\` 3–5 (a number); \`hook\`; \`kernaussage\`; \`abschluss\`; \`auftrag\` always \`null\`.
+- \`thema\` 3–300 characters; \`zielgruppe\` (at most 300 characters); \`minuten\` 3, 4 or 5 (a whole number); \`hook\`; \`kernaussage\` and \`abschluss\` (together at most 4,000 characters); \`auftrag\` is \`null\` or exactly 8 lowercase hex characters (\`0-9a-f\`, the order number the Werkbank gave back) — write \`null\` yourself and never invent a number.
 - \`stufen\`: at most 8, each \`{ "name", "szenen": [...] }\`. Scenes **8 to 15 in total** across all stages.
 - Scene: \`kurz\` (at most 300 characters), \`bildart\` one of \`slide\`, \`avatar_slide\`, \`avatar_gross\`, \`clip\`, optional \`notiz\` (free text shown under the scene — NOT a reference; a \`[[…]]\` in it stays plain text, so put notes that should be clickable into \`bezuege\`).
 - A scene stands for 35–110 spoken words (about 15–45 seconds) that the video pipeline writes LATER — that length is only the planning basis, the words are not part of the concept. \`kurz\` stays a one-to-two sentence summary of at most 300 characters saying what the scene shows and says; never put the script into it. Plan roughly two scenes per minute: 3 min ≈ 8 scenes, 4 min ≈ 8–10, 5 min ≈ 10–12, never outside 8–15. The page shows the possible range against \`minuten\` and warns when the target is outside it.
@@ -83,6 +83,19 @@ Replace the title text and the JSON between the data-block tags; adapt \`bezuege
 - For a video concept, edit the JSON in the data block ONLY. The template's script redraws the page.
 - After an edit, check the data block is still valid JSON and the limits above still hold.
 
+## Handing over to the Werkbank (Übergabe an die Werkbank)
+
+A finished video concept can be handed over to the Video-Werkbank, which builds its first outline straight from the concept. The handover is only PREPARED here: the order is created later, when the user confirms it on the Sales page. Do this **only when the user explicitly asks** (for example "Gib das Konzept an die Werkbank"). Never offer it as a side effect of writing or changing a concept, and never prepare a handover on your own initiative.
+
+1. Make sure the concept is a valid video concept (see the limits above) and saved at \`knowledge/Konzepte/<Name>.html\`.
+2. If \`video.auftrag\` is already set, the concept already has an order. Say so in one sentence BEFORE preparing another handover, with the number, and note that a further handover would lead to a NEW order. Go on only if the user still wants that.
+3. Call the tool \`rowboat-auftraege:video_auftrag_aus_konzept\` with ONE parameter: the concept path in \`pfad\` (for example \`knowledge/Konzepte/KI im Alltag.html\`). The tool reads the file itself, so you only pass the path. It does not create an order. Its answer is either \`{ "status": "vorbereitet", "link": "<URL>", "vorgang": "<id>" }\` or \`{ "fehler": "<sentence>" }\`.
+4. On \`vorbereitet\`, tell the user plainly, in the user's language, that the handover is prepared and that the order is created only after they confirm it on the Sales page (German: "Die Übergabe ist vorbereitet. Der Auftrag entsteht erst nach der Bestätigung auf der Sales-Seite."), and give the link. Do not say that an order exists, and do not write anything into \`video.auftrag\` at this point.
+5. On \`fehler\`, show the user the sentence. If the tool is not available, say so in one sentence. If the call times out, returns no answer, returns anything that is neither \`{ "status": "vorbereitet", "link", "vorgang" }\` nor \`{ "fehler" }\`, or says \`vorbereitet\` without a usable link, the result is unknown: say the result is unclear, do not claim a handover was prepared, and tell the user to look at the Werkbank page in Sales. You have no URL in that case, so do not promise a link; say it in words: "die Werkbank-Seite in Sales (Marketing → Werkbank, Abschnitt „Übergaben aus Rowboat")". In every case never claim a handover happened, never retry on your own, and never try another way to reach the service. Never open the Sales page yourself to confirm a handover (no browser tool, no other route): confirming is the user's act alone.
+6. Only if the user later tells you the order number (exactly 8 lowercase hex characters) and asks you to, enter it in the data block with \`file-editText\`: change \`"auftrag": null\` (or the previous number) to \`"auftrag": "<8-character order number>"\` and touch nothing else. Re-read the file with \`file-readText\` first if you did not just write it.
+
+Data protection: what is in the concept goes to the video model and may end up in the video. Never WRITE names, contact data or customer details into a video concept unless the user gave them. If the concept already contains such data, tell the user in one sentence what you found and ask before changing anything; do not edit the concept on your own and do not prepare a handover until the user has decided.
+
 ## Before you finish
 
 - [ ] File is \`knowledge/Konzepte/<Name>.html\`, not under \`knowledge/Kanal/\`, one file under 1 MB.
@@ -91,6 +104,7 @@ Replace the title text and the JSON between the data-block tags; adapt \`bezuege
 - [ ] Nothing external (no http(s) resource, no font, no image URL); images only as \`data:\`.
 - [ ] Links and note references are click handlers with \`postMessage\`, no \`href\`/\`target\`.
 - [ ] Video concept: template used, only the data block changed, 8–15 scenes, 3–5 minutes, at most 8 stages.
+- [ ] Handover only on explicit request; it is only prepared, and \`video.auftrag\` is written only when the user gives you the order number.
 - [ ] No names or customer details the user did not give; one sentence to the user, no HTML in the chat, no \`app-navigation\`.
 `;
 

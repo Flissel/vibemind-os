@@ -79,7 +79,7 @@ button:hover, button:focus-visible { background: var(--akzent); color: var(--akz
   // Eine Szene traegt 35 bis 110 gesprochene Woerter, also etwa 15 bis 45 Sekunden.
   var SEKUNDEN_MIN = 15;
   var SEKUNDEN_MAX = 45;
-  var SZENEN_MIN = 8, SZENEN_MAX = 15, MINUTEN_MIN = 3, MINUTEN_MAX = 5, STUFEN_MAX = 8;
+  var SZENEN_MIN = 8, SZENEN_MAX = 15, MINUTEN_MIN = 3, MINUTEN_MAX = 5, STUFEN_MAX = 8, ZIELGRUPPE_MAX = 300, KERN_ABSCHLUSS_MAX = 4000;
   var wurzel = document.getElementById('inhalt');
 
   function el(tag, klasse, text) {
@@ -133,6 +133,9 @@ button:hover, button:focus-visible { background: var(--akzent); color: var(--akz
     var hinweise = [];
     if (szenen.length < SZENEN_MIN || szenen.length > SZENEN_MAX) hinweise.push('Es sind ' + SZENEN_MIN + ' bis ' + SZENEN_MAX + ' Szenen vorgesehen, hier sind es ' + szenen.length + '.');
     if (!zielOk || v.minuten < MINUTEN_MIN || v.minuten > MINUTEN_MAX) hinweise.push('Die Länge soll zwischen ' + MINUTEN_MIN + ' und ' + MINUTEN_MAX + ' Minuten liegen.');
+    if (zielOk && v.minuten >= MINUTEN_MIN && v.minuten <= MINUTEN_MAX && v.minuten % 1 !== 0) hinweise.push('Die Länge soll eine ganze Zahl von Minuten sein.');
+    if (typeof v.zielgruppe === 'string' && v.zielgruppe.length > ZIELGRUPPE_MAX) hinweise.push('Die Zielgruppe soll höchstens ' + ZIELGRUPPE_MAX + ' Zeichen lang sein.');
+    if (typeof v.kernaussage === 'string' && typeof v.abschluss === 'string' && (v.kernaussage.trim() + '\n\n' + v.abschluss.trim()).length > KERN_ABSCHLUSS_MAX) hinweise.push('Kernaussage und Abschluss sollen zusammen höchstens ' + KERN_ABSCHLUSS_MAX + ' Zeichen lang sein.');
     if (stufen.length > STUFEN_MAX) hinweise.push('Es sind höchstens ' + STUFEN_MAX + ' Stufen vorgesehen, hier sind es ' + stufen.length + '.');
     if (zielOk && (v.minuten * 60 < von || v.minuten * 60 > bis)) hinweise.push('Mit ' + szenen.length + ' Szenen sind etwa ' + minSek(von) + ' bis ' + minSek(bis) + ' möglich; Ziel sind ' + v.minuten + ' Minuten.');
     if (hinweise.length) {
@@ -147,7 +150,7 @@ button:hover, button:focus-visible { background: var(--akzent); color: var(--akz
 
     wurzel.appendChild(el('p', 'leise', v.thema));
     wurzel.appendChild(el('p', 'leise', 'Zielgruppe: ' + v.zielgruppe + ' · ' + v.minuten + ' Minuten'));
-    if (v.auftrag) wurzel.appendChild(el('p', 'leise', 'Übergeben als Auftrag ' + v.auftrag));
+    if (typeof v.auftrag === 'string' && /^[0-9a-f]{8}$/.test(v.auftrag)) wurzel.appendChild(el('p', 'leise', 'Übergeben als Auftrag ' + v.auftrag));
 
     wurzel.appendChild(el('h2', null, 'Hook'));
     wurzel.appendChild(el('blockquote', null, v.hook));

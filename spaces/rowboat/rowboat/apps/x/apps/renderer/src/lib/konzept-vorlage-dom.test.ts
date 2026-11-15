@@ -47,15 +47,38 @@ describe('Videokonzept-Vorlage im Dokument', () => {
   })
 
   it('warnt außerhalb der Grenzen und zeigt den Auftrag, Daten landen nur als Text', () => {
-    const video = { ...VIDEO, minuten: 9, hook: '<img src=x onerror=alert(1)>', auftrag: 'A-7',
+    const video = { ...VIDEO, minuten: 9, hook: '<img src=x onerror=alert(1)>', auftrag: 'a1b2c3d4',
       stufen: [{ name: 'S', szenen: [{ kurz: '<b>fett</b>', bildart: 'clip', notiz: 'n' }] }] }
     zeige(seiteMit(video))
     expect(document.querySelector('.warnung')?.textContent).toContain('8 bis 15 Szenen')
     expect(document.querySelector('.warnung')?.textContent).toContain('3 und 5 Minuten')
-    expect(document.body.textContent).toContain('Übergeben als Auftrag A-7')
+    expect(document.body.textContent).toContain('Übergeben als Auftrag a1b2c3d4')
     expect(document.querySelector('blockquote img')).toBeNull()
     expect(document.querySelector('.szene b')).toBeNull()
     expect(document.querySelector('.badge')?.textContent).toBe('Clip')
+  })
+
+  it('zeigt die Auftragszeile nur bei genau 8 kleinen Hex-Zeichen', () => {
+    for (const falsch of ['A-7', 'A1B2C3D4', 'a1b2c3d', 'a1b2c3d45', 'xyz', '', 12345678, true]) {
+      zeige(seiteMit({ ...VIDEO, auftrag: falsch }))
+      expect(document.getElementById('inhalt')?.textContent, String(falsch)).not.toContain('Übergeben als Auftrag')
+    }
+    zeige(seiteMit({ ...VIDEO, auftrag: null }))
+    expect(document.getElementById('inhalt')?.textContent).not.toContain('Übergeben als Auftrag')
+    zeige(seiteMit({ ...VIDEO, auftrag: '00ffab12' }))
+    expect(document.getElementById('inhalt')?.textContent).toContain('Übergeben als Auftrag 00ffab12')
+    expect(document.querySelector('.warnung')).toBeNull()
+  })
+
+  it('warnt bei nicht ganzen Minuten, langer Zielgruppe und langer Kernaussage plus Abschluss, an den Grenzen nicht', () => {
+    const warn = (v: object): string => { zeige(seiteMit({ ...VIDEO, ...v })); return document.querySelector('.warnung')?.textContent ?? '' }
+    expect(warn({ minuten: 4.5 })).toContain('ganze Zahl von Minuten')
+    expect(warn({ minuten: 4 })).toBe('')
+    expect(warn({ zielgruppe: 'z'.repeat(301) })).toContain('Die Zielgruppe soll höchstens 300 Zeichen lang sein.')
+    expect(warn({ zielgruppe: 'z'.repeat(300) })).toBe('')
+    expect(warn({ kernaussage: 'k'.repeat(1999), abschluss: 'a'.repeat(2000) })).toContain('Kernaussage und Abschluss sollen zusammen höchstens 4000 Zeichen lang sein.')
+    expect(warn({ kernaussage: 'k'.repeat(1999), abschluss: 'a'.repeat(1999) })).toBe('')
+    expect(warn({ kernaussage: ` ${'k'.repeat(1999)} `, abschluss: `${'a'.repeat(1999)}\n` })).toBe('')
   })
 
   it('warnt vor der Spanne nur, wenn das Ziel außerhalb von Szenen × 15 s bis × 45 s liegt', () => {
