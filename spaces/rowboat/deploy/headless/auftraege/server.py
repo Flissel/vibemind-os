@@ -8,7 +8,8 @@ wenn Felix die Uebergabe auf der Werkbank-Seite hinter seinem Login bestaetigt (
 genau einmal geoeffnet und gelesen; dieselben Bytes gehen in die Pruefung und in den Rumpf.
 
 Sales antwortet ``200 {"status": "vorbereitet", "vorgang": "<8 hex>", "link": "<URL>"}`` oder ``{"fehler": "<Satz>"}``
-mit 400/401/409/413/429. Durchgereicht werden nur diese drei Felder, geprueft und gedeckelt; Saetze von Sales hoechstens
+mit 400/401/409/413/429, oder 503 mit ``{"fehler": ...}`` (Tabelle/Recht fehlt, vor jedem Eintrag: nichts
+vorbereitet, der Satz geht durch). Ein anderer 5xx-Status ohne ``fehler`` bleibt "unerwartet". Durchgereicht werden nur diese drei Felder, geprueft und gedeckelt; Saetze von Sales hoechstens
 300 Zeichen ohne Steuerzeichen. Alles andere ist "unerwartet".
 
 Bindet nur ``127.0.0.1`` (Host-Netz), Pfad ``/mcp``, dazu ``GET /health`` ohne Anmeldung. Jede andere Anfrage braucht
@@ -17,7 +18,7 @@ der Datei in ``SALES_SCHLUESSEL_DATEI``. Beide Dateien werden beim START gelesen
 fehlt eine oder ist sie leer, startet der Dienst nicht. Kein Schluessel steht je im Log, im ``repr`` oder in einer
 Antwort. Protokoll ``AUFTRAEGE_LOG``: je Aufruf eine Zeile mit Zeit, Pfad, Ergebnis (``vorbereitet <vorgang>`` oder
 Fehlerart), nie Konzeptinhalt. Kein Wiederholen: "unklar" heisst es nur, wenn die Anfrage moeglicherweise gesendet
-wurde (Zeitlimit oder Abbruch danach); jeder Fehler davor sagt, dass nichts vorbereitet wurde.
+wurde (Zeitlimit oder Abbruch danach; das Zeitlimit gilt fuer Verbinden, Kopf und Koerper zusammen); jeder Fehler davor sagt, dass nichts vorbereitet wurde.
 """
 from __future__ import annotations
 
@@ -30,8 +31,10 @@ import logging
 import logging.handlers
 import os
 import re
+import socket
 import stat
 import sys
+import threading
 import time
 import unicodedata
 import urllib.parse
@@ -51,10 +54,9 @@ HOST = "127.0.0.1"
 PORT_VORGABE = 8156
 SALES_URL_VORGABE = "http://127.0.0.1:8791"
 ANNAHME_PFAD = "/api/auftraege/video"
-ZEITLIMIT_S = 20                 # Verbinden + Senden + Antwortbeginn
-KOERPER_ZEIT_S = 5               # danach eigenes Limit fuer den Antwortkoerper
+ZEITLIMIT_S = 20                 # EIN Budget: Verbinden + Senden + Antwortkopf + Antwortkoerper, einmal gemessen
 DATEI_MAX = 1_048_576
-PFAD_MAX = 500                   # wie Sales (pfad/name hoechstens 500 Zeichen)
+PFAD_MAX = 500                   # wie Sales (pfad/name hoechstens 500 UTF-16-Einheiten)
 RUMPF_MAX = 64 * 1024            # Sales nimmt hoechstens 64 KiB
 ANTWORT_MAX = 64 * 1024
 SATZ_VON_SALES_MAX = 300
@@ -73,6 +75,8 @@ SATZ_NICHT_LESBAR = "Die Konzeptdatei lässt sich nicht lesen."
 SATZ_ZU_GROSS = "Die Konzeptdatei ist größer als 1 MB."
 SATZ_KEIN_BLOCK = "In der Datei steht kein Datenblock eines Videokonzepts."
 SATZ_ZEICHEN = "Das Konzept enthält ungültige Zeichen (ein einzelnes Surrogat). Es wurde nichts vorbereitet."
+SATZ_NUL = "Das Konzept enthält ein unzulässiges Zeichen. Bitte die Datei prüfen."
+SATZ_NICHT_BEREIT = "Die Annahme ist gerade nicht bereit. Es wurde nichts vorbereitet."
 SATZ_RUMPF_GROSS = "Das Konzept ist zu groß für die Übergabe."
 SATZ_UNKLAR_ZEIT = ("Die Annahme hat nicht rechtzeitig geantwortet. Ob die Übergabe vorbereitet wurde, ist unklar – "
                     "bitte auf der Werkbank-Seite nachsehen, bevor du es noch einmal versuchst.")
@@ -191,7 +195,7 @@ def pfad_pruefen(pfad: object) -> tuple[list[str] | None, str | None]:
     """-> (Segmente ab ``Konzepte``, None) oder (None, Satz). Nur ``knowledge/Konzepte/**/*.html``, streng."""
     if not isinstance(pfad, str) or not pfad.strip():
         return None, SATZ_PFAD_FEHLT
-    if (len(pfad) > PFAD_MAX or "\\" in pfad or ":" in pfad or pfad.startswith("/")
+    if (konzept_lesen.utf16_laenge(pfad) > PFAD_MAX or "\\" in pfad or ":" in pfad or pfad.startswith("/")
             or any(ord(z) < 0x20 or ord(z) == 0x7F or 0xD800 <= ord(z) <= 0xDFFF for z in pfad)):
         return None, SATZ_PFAD_UNGUELTIG
     teile = pfad.split("/")
@@ -264,6 +268,17 @@ def datei_lesen(wissen: Path, teile: list[str]) -> tuple[bytes | None, str | Non
     return roh, None
 
 
+def _hat_nul(wert: object) -> bool:
+    """Steht irgendwo im geparsten Konzept (Texte und Schluessel) ein U+0000? Postgres kann es nicht speichern."""
+    if isinstance(wert, str):
+        return "\x00" in wert
+    if isinstance(wert, dict):
+        return any(_hat_nul(k) or _hat_nul(v) for k, v in wert.items())
+    if isinstance(wert, (list, tuple)):
+        return any(_hat_nul(v) for v in wert)
+    return False
+
+
 # --- Rumpf fuer Sales ----------------------------------------------------------------------------------------
 
 def rumpf_bauen(video: dict, pfad: str) -> dict:
@@ -295,36 +310,51 @@ HttpSenden = Callable[[str, dict, bytes, float], tuple[int, bytes]]
 
 
 def http_senden(url: str, kopf: dict, rumpf: bytes, zeitlimit: float) -> tuple[int, bytes]:
-    """Ein POST ohne Wiederholen. NichtVerbunden: keine Verbindung (nichts gesendet). Unklar: Verbindung stand, aber
-    kein Antwortbeginn binnen ``zeitlimit`` (ab Beginn gemessen), Abbruch, oder der Koerper kam nicht binnen
-    ``KOERPER_ZEIT_S`` vollstaendig. Ein vollstaendig empfangener Koerper wird nie verworfen. Gelesen werden
-    hoechstens ``ANTWORT_MAX + 1`` Byte (mehr deutet ``antwort_deuten`` als unerwartet)."""
+    """Ein POST ohne Wiederholen, EIN Zeitbudget ``zeitlimit`` ab Aufruf fuer Verbinden, Senden, Antwortkopf und
+    Antwortkoerper zusammen. NichtVerbunden: keine Verbindung (nichts gesendet). Unklar: Verbindung stand, aber die
+    Antwort kam nicht vollstaendig binnen des Budgets, oder Abbruch. Ein vollstaendig empfangener Koerper wird nie
+    verworfen: Vollstaendigkeit wird vor jedem weiteren Lesen geprueft. Ein Wachhund trennt die Verbindung zur Frist,
+    damit auch tropfende Kopfzeilen das Budget nicht dehnen. Gelesen werden hoechstens ``ANTWORT_MAX + 1`` Byte
+    (mehr deutet ``antwort_deuten`` als unerwartet)."""
     teile = urllib.parse.urlsplit(url)
     frist = time.monotonic() + zeitlimit
     klasse = http.client.HTTPSConnection if teile.scheme == "https" else http.client.HTTPConnection
     verbindung = klasse(teile.hostname, teile.port, timeout=zeitlimit)
+    wachhund: threading.Timer | None = None
     try:
         try:
             verbindung.connect()
         except OSError:
             raise NichtVerbunden() from None
         sock = verbindung.sock           # bleibt gueltig, auch wenn http.client die Verbindung nach der Antwort abgibt
-        try:
-            def rest(bis: float) -> float:
-                r = bis - time.monotonic()
-                if r <= 0:
-                    raise TimeoutError()
-                return r
 
-            sock.settimeout(rest(frist))
+        def rest() -> float:
+            r = frist - time.monotonic()
+            if r <= 0:
+                raise TimeoutError()
+            return r
+
+        def trennen() -> None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+        vor_senden = frist - time.monotonic()
+        if vor_senden <= 0:
+            raise NichtVerbunden()       # das Verbinden hat das Budget verbraucht; gesendet wurde nichts
+        wachhund = threading.Timer(vor_senden, trennen)
+        wachhund.daemon = True
+        wachhund.start()
+        try:
+            sock.settimeout(rest())
             verbindung.request("POST", teile.path or "/", body=rumpf, headers=kopf)
-            sock.settimeout(rest(frist))
+            sock.settimeout(rest())
             antwort = verbindung.getresponse()
-            koerper_frist = time.monotonic() + KOERPER_ZEIT_S
             stuecke: list[bytes] = []
             n = 0
-            while n <= ANTWORT_MAX:
-                sock.settimeout(rest(koerper_frist))
+            while n <= ANTWORT_MAX and not (antwort.isclosed() or antwort.length == 0):
+                sock.settimeout(rest())
                 stueck = antwort.read1(ANTWORT_MAX + 1 - n)
                 if not stueck:
                     break
@@ -334,6 +364,8 @@ def http_senden(url: str, kopf: dict, rumpf: bytes, zeitlimit: float) -> tuple[i
         except (OSError, http.client.HTTPException):
             raise Unklar() from None
     finally:
+        if wachhund is not None:
+            wachhund.cancel()
         verbindung.close()
 
 
@@ -382,6 +414,9 @@ def antwort_deuten(status: int, daten: bytes, anzeige: Ursprung | None = None) -
         return {"fehler": SATZ_UNERWARTET}, "fehler unerwartet 200"
     if status == 401:
         return {"fehler": SATZ_SALES_401}, "fehler sales 401"
+    if status == 503 and isinstance(j, dict) and isinstance(j.get("fehler"), str):
+        # Sales antwortet 503 mit Satz nur VOR jedem Eintrag ("noch nicht eingerichtet"): nichts vorbereitet.
+        return {"fehler": satz_saeubern(j["fehler"]) or SATZ_NICHT_BEREIT}, "fehler sales 503"
     if status in _SALES_ABLEHNUNG:
         satz = satz_saeubern(j.get("fehler")) if isinstance(j, dict) else None
         return {"fehler": satz or SATZ_ABGELEHNT}, f"fehler sales {status}"
@@ -434,6 +469,8 @@ class Dienst:
         satz = (satz or SATZ_KEIN_BLOCK) if daten is None else konzept_lesen.video_pruefen(daten)
         if satz:
             return {"fehler": satz}, "fehler konzept"
+        if _hat_nul(daten):
+            return {"fehler": SATZ_NUL}, "fehler zeichen"
         try:
             rumpf = json.dumps(rumpf_bauen(daten["video"], pfad), ensure_ascii=False).encode("utf-8")
         except UnicodeEncodeError:

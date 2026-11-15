@@ -376,6 +376,44 @@ def test_pfad_mit_genau_500_zeichen_geht(ort, sales, aufbau_fuer):
     assert aufbau_fuer(sales.url).dienst.uebergeben(pfad) == VORBEREITET
 
 
+def _utf16(s: str) -> int:
+    return len(s.encode("utf-16-le")) // 2
+
+
+def test_pfad_zaehlt_utf16_einheiten_wie_sales(ort, sales, aufbau_fuer):
+    # Emoji = 1 Zeichen, 2 UTF-16-Einheiten: 500 Einheiten gehen, 501 Einheiten (aber nur 500 Zeichen) nicht.
+    kopf = "knowledge/Konzepte/" + "a" * 200 + "/" + "b" * 200 + "/"
+    ok = kopf + "c" * 72 + "\U0001F600.html"
+    zu_lang = kopf + "c" * 73 + "\U0001F600.html"
+    assert _utf16(ok) == 500 and len(zu_lang) == 500 and _utf16(zu_lang) == 501
+    ergebnis = aufbau_fuer(sales.url).dienst.uebergeben(zu_lang)
+    assert "ungültig" in ergebnis["fehler"] and sales.anfragen == []
+    try:
+        ablegen(ort, ok.removeprefix("knowledge/"), konzept_html())
+    except OSError as e:
+        pytest.skip(f"so lange Pfade lassen sich hier nicht anlegen: {e}")
+    assert aufbau_fuer(sales.url).dienst.uebergeben(ok) == VORBEREITET
+
+
+@pytest.mark.parametrize("wo", ["thema", "hook", "kernaussage", "szene_kurz", "szene_notiz", "stufe_name",
+                                "zielgruppe", "abschluss"])
+def test_nul_im_konzepttext_geht_nicht_an_sales(ort, sales, aufbau_fuer, wo):
+    v = video()
+    if wo == "szene_kurz":
+        v["stufen"][0]["szenen"][0]["kurz"] = "Sze\x00ne"
+    elif wo == "szene_notiz":
+        v["stufen"][0]["szenen"][-1]["notiz"] = "la\x00ut"
+    elif wo == "stufe_name":
+        v["stufen"][0]["name"] = "Ein\x00stieg"
+    else:
+        v[wo] = "ab\x00c" + v[wo]
+    pfad = ablegen(ort, "Konzepte/x.html", konzept_html(v))
+    ergebnis = aufbau_fuer(sales.url).dienst.uebergeben(pfad)
+    assert ergebnis == {"fehler": "Das Konzept enthält ein unzulässiges Zeichen. Bitte die Datei prüfen."}
+    assert sales.anfragen == []
+    assert "fehler zeichen" in protokoll(ort)
+
+
 def test_pfad_kein_text(aufbau_fuer, sales):
     assert "Pfad" in aufbau_fuer(sales.url).dienst.uebergeben(None)["fehler"]   # type: ignore[arg-type]
     assert sales.anfragen == []
@@ -626,6 +664,42 @@ def test_sales_401(ort, sales, aufbau_fuer):
     assert "Schlüssel" in satz and "Es wurde nichts vorbereitet." in satz and SALES_KEY not in satz
 
 
+NICHT_EINGERICHTET = "Die Übergabe ist auf diesem Laden noch nicht eingerichtet."
+NICHT_BEREIT = "Die Annahme ist gerade nicht bereit. Es wurde nichts vorbereitet."
+
+
+def test_sales_503_mit_satz_heisst_nichts_vorbereitet(ort, sales, aufbau_fuer):
+    sales.status, sales.antwort = 503, {"fehler": NICHT_EINGERICHTET}
+    pfad = ablegen(ort, "Konzepte/x.html", konzept_html())
+    assert aufbau_fuer(sales.url).dienst.uebergeben(pfad) == {"fehler": NICHT_EINGERICHTET}
+    assert len(sales.anfragen) == 1
+    assert "fehler sales 503" in protokoll(ort)
+
+
+@pytest.mark.parametrize("satz, erwartet", [
+    ("Schlecht\x00\u202e eingerichtet.\n" + "x" * 400, "Schlecht eingerichtet. " + "x" * 277),
+    ("\x00\u200b ", NICHT_BEREIT),
+])
+def test_sales_503_satz_wird_gesaeubert_und_gedeckelt(ort, sales, aufbau_fuer, satz, erwartet):
+    sales.status, sales.antwort = 503, {"fehler": satz}
+    pfad = ablegen(ort, "Konzepte/x.html", konzept_html())
+    assert aufbau_fuer(sales.url).dienst.uebergeben(pfad) == {"fehler": erwartet}
+
+
+@pytest.mark.parametrize("antwort", [b"kaputt", {"anderes": "x"}, {"fehler": ["liste"]}, {"fehler": None}, b""])
+def test_sales_503_ohne_satz_bleibt_unerwartet(ort, sales, aufbau_fuer, antwort):
+    sales.status, sales.antwort = 503, antwort
+    pfad = ablegen(ort, "Konzepte/x.html", konzept_html())
+    assert aufbau_fuer(sales.url).dienst.uebergeben(pfad) == {"fehler": UNERWARTET}
+
+
+@pytest.mark.parametrize("status", [500, 502, 504])
+def test_anderer_5xx_mit_satz_bleibt_unerwartet(ort, sales, aufbau_fuer, status):
+    sales.status, sales.antwort = status, {"fehler": "Irgendwas."}
+    pfad = ablegen(ort, "Konzepte/x.html", konzept_html())
+    assert aufbau_fuer(sales.url).dienst.uebergeben(pfad) == {"fehler": UNERWARTET}
+
+
 @pytest.mark.parametrize("status, antwort", [(500, {"fehler": "x"}), (503, b"kaputt"), (200, b"kein json"),
                                              (200, b""), (302, b""), (404, {"fehler": "x"}), (403, b"")])
 def test_unerwartete_antwort(ort, sales, aufbau_fuer, status, antwort):
@@ -654,26 +728,81 @@ def test_zeitlimit_ohne_wiederholen(ort, sales, aufbau_fuer):
     assert "fehler unklar" in protokoll(ort)
 
 
-def test_vollstaendige_antwort_nach_der_frist_wird_nicht_verworfen(ort, aufbau_fuer):
-    # M5: Kopf kommt vor der Frist, der Rest des Koerpers danach (binnen KOERPER_ZEIT_S) -> das Ergebnis zaehlt.
-    koerper = json.dumps(VORBEREITET).encode("utf-8")
-
+def _antwort_roh(koerper: bytes, kopf_pause: float = 0.0, teil: int = 5, koerper_pause: float = 0.0):
+    """Attrappe auf rohem Socket: Kopf nach ``kopf_pause``, dann ``teil`` Byte, nach ``koerper_pause`` der Rest."""
     def antworten(v: socket.socket) -> None:
+        time.sleep(kopf_pause)
         v.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n"
-                  + f"Content-Length: {len(koerper)}\r\n\r\n".encode("ascii") + koerper[:5])
-        time.sleep(0.6)
-        v.sendall(koerper[5:])
+                  + f"Content-Length: {len(koerper)}\r\n\r\n".encode("ascii") + koerper[:teil])
+        time.sleep(koerper_pause)
+        v.sendall(koerper[teil:])
+    return antworten
 
-    url, lauscher = roher_lauscher(antworten)
+
+def _ruf(ort, aufbau_fuer, url, zeitlimit):
     pfad = ablegen(ort, "Konzepte/x.html", konzept_html())
+    start = time.monotonic()
+    ergebnis = aufbau_fuer(url, zeitlimit=zeitlimit).dienst.uebergeben(pfad)
+    return ergebnis, time.monotonic() - start
+
+
+KOERPER = json.dumps(VORBEREITET).encode("utf-8")
+
+
+def test_verzoegerter_kopf_binnen_des_budgets_zaehlt(ort, aufbau_fuer):
+    url, lauscher = roher_lauscher(_antwort_roh(KOERPER, kopf_pause=0.6, teil=len(KOERPER)))
     try:
-        assert aufbau_fuer(url, zeitlimit=0.3).dienst.uebergeben(pfad) == VORBEREITET
+        assert _ruf(ort, aufbau_fuer, url, 2.0)[0] == VORBEREITET
     finally:
         lauscher.close()
 
 
-def test_tropfender_koerper_ist_begrenzt(ort, aufbau_fuer, monkeypatch):
-    monkeypatch.setattr(server, "KOERPER_ZEIT_S", 0.5)
+def test_kopf_nach_dem_budget_ist_unklar(ort, aufbau_fuer):
+    url, lauscher = roher_lauscher(_antwort_roh(KOERPER, kopf_pause=1.5, teil=len(KOERPER)))
+    try:
+        ergebnis, dauer = _ruf(ort, aufbau_fuer, url, 0.5)
+        assert ergebnis == {"fehler": UNKLAR_ZEIT} and dauer < 1.3
+    finally:
+        lauscher.close()
+
+
+def test_verzoegerter_koerper_nach_dem_budget_ist_unklar(ort, aufbau_fuer):
+    url, lauscher = roher_lauscher(_antwort_roh(KOERPER, teil=5, koerper_pause=1.5))
+    try:
+        ergebnis, dauer = _ruf(ort, aufbau_fuer, url, 0.5)
+        assert ergebnis == {"fehler": UNKLAR_ZEIT} and dauer < 1.3
+    finally:
+        lauscher.close()
+
+
+def test_vollstaendige_antwort_kurz_vor_dem_limit_wird_nicht_verworfen(ort, aufbau_fuer):
+    # Kopf nach 0.5 s, Rest des Koerpers 0.6 s spaeter (Limit 1.5 s): vollstaendig vor dem Limit -> zaehlt.
+    url, lauscher = roher_lauscher(_antwort_roh(KOERPER, kopf_pause=0.5, teil=5, koerper_pause=0.6))
+    try:
+        assert _ruf(ort, aufbau_fuer, url, 1.5)[0] == VORBEREITET
+    finally:
+        lauscher.close()
+
+
+def test_kopf_und_koerper_teilen_ein_budget(ort, aufbau_fuer):
+    # Je Phase 0.7 s: einzeln unter dem Limit von 1.0 s, zusammen darueber -> unklar (ein Budget, nicht zwei).
+    url, lauscher = roher_lauscher(_antwort_roh(KOERPER, kopf_pause=0.7, teil=5, koerper_pause=0.7))
+    try:
+        ergebnis, dauer = _ruf(ort, aufbau_fuer, url, 1.0)
+        assert ergebnis == {"fehler": UNKLAR_ZEIT} and dauer < 1.6
+    finally:
+        lauscher.close()
+
+
+def test_koerper_komplett_mit_dem_kopf_zaehlt_ohne_weiteres_lesen(ort, aufbau_fuer):
+    url, lauscher = roher_lauscher(_antwort_roh(KOERPER, teil=len(KOERPER)))
+    try:
+        assert _ruf(ort, aufbau_fuer, url, 1.0)[0] == VORBEREITET
+    finally:
+        lauscher.close()
+
+
+def test_tropfender_koerper_ist_begrenzt(ort, aufbau_fuer):
     halt = threading.Event()
 
     def antworten(v: socket.socket) -> None:
@@ -682,11 +811,26 @@ def test_tropfender_koerper_ist_begrenzt(ort, aufbau_fuer, monkeypatch):
             v.sendall(b" ")
 
     url, lauscher = roher_lauscher(antworten)
-    pfad = ablegen(ort, "Konzepte/x.html", konzept_html())
-    start = time.monotonic()
     try:
-        assert aufbau_fuer(url, zeitlimit=5).dienst.uebergeben(pfad) == {"fehler": UNKLAR_ZEIT}
-        assert time.monotonic() - start < 2
+        ergebnis, dauer = _ruf(ort, aufbau_fuer, url, 0.5)
+        assert ergebnis == {"fehler": UNKLAR_ZEIT} and dauer < 2
+    finally:
+        halt.set()
+        lauscher.close()
+
+
+def test_tropfender_kopf_ist_begrenzt(ort, aufbau_fuer):
+    halt = threading.Event()
+
+    def antworten(v: socket.socket) -> None:
+        v.sendall(b"HTTP/1.1 200 OK\r\n")
+        while not halt.wait(0.1):
+            v.sendall(b"X-Tropf: 1\r\n")
+
+    url, lauscher = roher_lauscher(antworten)
+    try:
+        ergebnis, dauer = _ruf(ort, aufbau_fuer, url, 0.6)
+        assert ergebnis == {"fehler": UNKLAR_ZEIT} and dauer < 2
     finally:
         halt.set()
         lauscher.close()
