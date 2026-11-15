@@ -26,6 +26,17 @@
             "name": "claude-code-sonnet"
           }
         ]
+      },
+      "empfang": {
+        "baseUrl": "http://event-management-shim-empfang:8125/v1",
+        "api": "openai-completions",
+        "apiKey": "shim-prueft-keinen-schluessel",
+        "models": [
+          {
+            "id": "claude-code-sonnet",
+            "name": "claude-code-sonnet"
+          }
+        ]
       }
     }
   },
@@ -42,6 +53,9 @@
     "list": [
       {
         "id": "main",
+        "model": {
+          "primary": "empfang/claude-code-sonnet"
+        },
         "tools": {
           "allow": ["melden__gruppe_melden", "melden__chat_melden"]
         }
@@ -208,6 +222,7 @@
     "telegram": {
       "enabled": true,
       "groupPolicy": "allowlist",
+      "groupAllowFrom": ["*"],
       "groups": {
         "{{TELEGRAM_GRUPPE}}": {
           "requireMention": false

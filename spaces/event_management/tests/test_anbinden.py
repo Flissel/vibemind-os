@@ -711,13 +711,22 @@ def test_schluessel_bricht_ohne_brain_werte_ab(tmp_path: Path) -> None:
 
 # --- Compose -----------------------------------------------------------------
 
-def test_shim_dienst_mit_eigenem_budget_agenten() -> None:
-    shim = _compose()["services"]["event-management-shim"]
+SHIMS = {"event-management-shim": "event-management-claw",
+         "event-management-shim-empfang": "event-management-empfang"}
+BUDGET_ANTWORTEN = {
+    "event-management-shim": "Für heute ist mein Kontingent aufgebraucht. Ab morgen antworte ich wieder; Dringendes bitte direkt an die Orga.",
+    "event-management-shim-empfang": "Für heute ist mein Kontingent aufgebraucht. Ab morgen kann ich wieder Gruppen verbinden.",
+}
+
+
+@pytest.mark.parametrize("dienst", sorted(SHIMS))
+def test_shim_dienst_mit_eigenem_budget_agenten(dienst: str) -> None:
+    shim = _compose()["services"][dienst]
     assert shim["image"] == "event-management/shim:2.1.268"
-    assert shim["container_name"] == "event-management-shim"
+    assert shim["container_name"] == dienst
     assert shim["init"] is True and shim["read_only"] is True
     env = shim["environment"]
-    assert env["VIBEMIND_AGENT"] == "event-management-claw"
+    assert env["VIBEMIND_AGENT"] == SHIMS[dienst]
     assert env["SHIM_TOOL_CALLS"] == "1"
     assert env["VIBEMIND_BUDGET_DIR"] == "/budget"
     assert env["VIBEMIND_BUDGET_CONFIG"] == "/opt/event/agent_budget.yaml"
@@ -732,6 +741,13 @@ def test_shim_dienst_mit_eigenem_budget_agenten() -> None:
     assert "8125" in " ".join(shim["healthcheck"]["test"])
 
 
+@pytest.mark.parametrize("dienst", sorted(SHIMS))
+def test_shims_antworten_freundlich(dienst: str) -> None:
+    # Statt "LLM request failed." (und vier Wiederholungen) bei leerem Tagesbudget.
+    env = _compose()["services"][dienst]["environment"]
+    assert env["VIBEMIND_BUDGET_ANTWORT"] == BUDGET_ANTWORTEN[dienst]
+
+
 def test_netze_getrennt_und_agentennetz_intern() -> None:
     compose = _compose()
     claw = compose["services"]["event-management-claw"]
@@ -740,6 +756,8 @@ def test_netze_getrennt_und_agentennetz_intern() -> None:
     assert set(shim["networks"]) == {"event-agent", "event-shim-aus"}
     assert "event-shim-aus" not in claw["networks"]
     assert "event-claw-aus" not in shim["networks"]
+    empfang = compose["services"]["event-management-shim-empfang"]
+    assert set(empfang["networks"]) == set(shim["networks"])
     assert compose["networks"]["event-agent"]["internal"] is True
     assert not (compose["networks"]["event-claw-aus"] or {}).get("internal")
     assert not (compose["networks"]["event-shim-aus"] or {}).get("internal")
@@ -747,16 +765,20 @@ def test_netze_getrennt_und_agentennetz_intern() -> None:
 
 def test_claw_wartet_auf_den_shim_und_haengt_die_saat_ein() -> None:
     claw = _compose()["services"]["event-management-claw"]
-    assert claw["depends_on"]["event-management-shim"]["condition"] == "service_healthy"
+    for shim in SHIMS:
+        assert claw["depends_on"][shim]["condition"] == "service_healthy"
     assert "./build/openclaw.json:/seed/openclaw.json:ro" in claw["volumes"]
 
 
-def test_budget_datei_kennt_genau_den_claw() -> None:
+def test_budget_datei_kennt_genau_den_claw_und_den_empfang() -> None:
     budget = yaml.safe_load(BUDGET.read_text(encoding="utf-8"))
-    assert list(budget["agenten"]) == ["event-management-claw"]
+    assert list(budget["agenten"]) == ["event-management-claw", "event-management-empfang"]
     assert budget["agenten"]["event-management-claw"] == {
         "bereich": "event-management", "klasse": "auftrag", "modell": "sonnet",
         "tagesgrenze": 300, "wrapper": "shim", "warnen_ab": 0.8}
+    assert budget["agenten"]["event-management-empfang"] == {
+        "bereich": "event-management", "klasse": "auftrag", "modell": "sonnet",
+        "tagesgrenze": 50, "wrapper": "shim", "warnen_ab": 0.8}
     assert budget["uebergang_unbekannte_zulassen"] is False
     assert budget["pause_bei_user_aktiv"] is False
     assert budget["pause_fenster_min"] == 10

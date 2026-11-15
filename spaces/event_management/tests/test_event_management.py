@@ -146,9 +146,30 @@ def test_telegram_gruppen_und_werkzeugsperren() -> None:
         "{{TELEGRAM_GRUPPE}}": {"requireMention": False},
         "*": {"requireMention": True},
     }
+    # M1 (Messung 15.11.): Gruppen, die nur ueber "*" erlaubt sind, lassen ohne
+    # groupAllowFrom keinen Absender durch (still verworfen). Offen ist Felix-Entscheid (a);
+    # die Kosten fremder Gruppen deckelt das Empfangsbudget (test_nur_main_nutzt_den_empfang).
+    assert telegram["groupAllowFrom"] == ["*"]
     assert set(konfig["tools"]["deny"]) >= {"group:web", "group:ui", "group:automation"}
     # Der Foto-Skill braucht die Shell (curl/node/find) -- nicht sperren.
     assert "group:runtime" not in konfig["tools"]["deny"]
+
+
+def test_nur_main_nutzt_den_empfang() -> None:
+    """M4 (Messung 15.11.): Erwaehnungen in fremden Gruppen leerten das gemeinsame Budget.
+    Darum rechnet nur der Empfang `main` ueber einen eigenen Shim (eigenes Budget) ab; alle
+    anderen Agenten (Legacy, Brain, vom Arbeiter angelegte ev-*) erben den Gruppen-Shim."""
+    konfig = json.loads(OPENCLAW.read_text(encoding="utf-8"))
+    agenten = {a["id"]: a for a in konfig["agents"]["list"]}
+    assert agenten["main"]["model"] == {"primary": "empfang/claude-code-sonnet"}
+    for name, agent in agenten.items():
+        if name != "main":
+            assert "model" not in agent, name
+    assert konfig["agents"]["defaults"]["model"]["primary"] == "shim/claude-code-sonnet"
+    anbieter = konfig["models"]["providers"]
+    assert anbieter["empfang"]["baseUrl"] == "http://event-management-shim-empfang:8125/v1"
+    ohne_url = lambda d: {k: v for k, v in d.items() if k != "baseUrl"}  # noqa: E731
+    assert ohne_url(anbieter["empfang"]) == ohne_url(anbieter["shim"])
 
 
 def test_direktchats_je_absender_eigene_sitzung() -> None:
@@ -171,7 +192,9 @@ def test_platzhalter_und_beispielwerte_sind_deckungsgleich() -> None:
 def test_empfang_hat_genau_die_zwei_melden_werkzeuge() -> None:
     konfig = json.loads(OPENCLAW.read_text(encoding="utf-8"))
     main = _agenten()["main"]
-    assert main == {"id": "main", "tools": {"allow": MELDEN}}
+    # model: eigener Empfangs-Shim mit eigenem Budget (test_nur_main_nutzt_den_empfang).
+    assert main == {"id": "main", "model": {"primary": "empfang/claude-code-sonnet"},
+                    "tools": {"allow": MELDEN}}
     server = konfig["mcp"]["servers"]["melden"]
     assert server == {"url": "{{EVENT_MCP_URL}}/mcp", "transport": "streamable-http",
                       "connectionTimeoutMs": 30000, "requestTimeoutMs": 60000}

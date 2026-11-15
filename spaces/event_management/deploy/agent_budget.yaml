@@ -17,3 +17,12 @@ agenten:
     # Ab 80 % der Tagesgrenze schreibt der Waechter eine Zeile art=warnung ins Tagesprotokoll
     # (laufzeit/shim-budget). Zustellung an Felix: Host-Dienst budget-melden (ausrollen.md, timer).
     warnen_ab: 0.8
+  # Nur der Empfang `main` (eigener Shim event-management-shim-empfang): fremde Gruppen
+  # koennen hoechstens das Verbinden fuer einen Tag stilllegen (Messung M4, 15.11.).
+  event-management-empfang:
+    bereich: event-management
+    klasse: auftrag
+    modell: sonnet
+    tagesgrenze: 50
+    wrapper: shim
+    warnen_ab: 0.8
