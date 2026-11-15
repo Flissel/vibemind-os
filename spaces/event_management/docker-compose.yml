@@ -48,6 +48,9 @@ services:
     # CLAUDE_CODE_OAUTH_TOKEN steht nur in laufzeit/claude-token (gitignored,
     # von deploy/anbinden.sh per stdin geschrieben). Ohne ihn bricht der
     # Entrypoint mit Exit 78 ab.
+    # Event-Huelle statt der CMD des Images: laedt dessen shim_huelle.py (eingebaute
+    # Werkzeuge aus, Transkripte aufraeumen) und ergaenzt nur VIBEMIND_BUDGET_ANTWORT.
+    command: ["python3", "/opt/shim/event_shim_huelle.py", "--host", "0.0.0.0", "--port", "8125"]
     env_file:
       - path: ./laufzeit/claude-token
         required: false
@@ -56,7 +59,8 @@ services:
       VIBEMIND_AGENT: event-management-claw
       VIBEMIND_BUDGET_DIR: /budget
       VIBEMIND_BUDGET_CONFIG: /opt/event/agent_budget.yaml
-      # Bei leerem Tagesbudget dieser Text statt "LLM request failed." (rowboat_shim_huelle.py).
+      # Bei leerem Tagesbudget dieser Text statt "LLM request failed."
+      # (deploy/shim/event_shim_huelle.py, ueber der Basis-Huelle des Images).
       VIBEMIND_BUDGET_ANTWORT: "Für heute ist mein Kontingent aufgebraucht. Ab morgen antworte ich wieder; Dringendes bitte direkt an die Orga."
     volumes:
       - type: bind
@@ -65,6 +69,7 @@ services:
         bind:
           create_host_path: false
       - ./deploy/agent_budget.yaml:/opt/event/agent_budget.yaml:ro
+      - ./deploy/shim/event_shim_huelle.py:/opt/shim/event_shim_huelle.py:ro
     read_only: true
     tmpfs:
       - /tmp:size=256m
@@ -95,6 +100,9 @@ services:
     # CLAUDE_CODE_OAUTH_TOKEN steht nur in laufzeit/claude-token (gitignored,
     # von deploy/anbinden.sh per stdin geschrieben). Ohne ihn bricht der
     # Entrypoint mit Exit 78 ab.
+    # Event-Huelle statt der CMD des Images: laedt dessen shim_huelle.py (eingebaute
+    # Werkzeuge aus, Transkripte aufraeumen) und ergaenzt nur VIBEMIND_BUDGET_ANTWORT.
+    command: ["python3", "/opt/shim/event_shim_huelle.py", "--host", "0.0.0.0", "--port", "8125"]
     env_file:
       - path: ./laufzeit/claude-token
         required: false
@@ -103,7 +111,8 @@ services:
       VIBEMIND_AGENT: event-management-empfang
       VIBEMIND_BUDGET_DIR: /budget
       VIBEMIND_BUDGET_CONFIG: /opt/event/agent_budget.yaml
-      # Bei leerem Tagesbudget dieser Text statt "LLM request failed." (rowboat_shim_huelle.py).
+      # Bei leerem Tagesbudget dieser Text statt "LLM request failed."
+      # (deploy/shim/event_shim_huelle.py, ueber der Basis-Huelle des Images).
       VIBEMIND_BUDGET_ANTWORT: "Für heute ist mein Kontingent aufgebraucht. Ab morgen kann ich wieder Gruppen verbinden."
     volumes:
       - type: bind
@@ -112,6 +121,7 @@ services:
         bind:
           create_host_path: false
       - ./deploy/agent_budget.yaml:/opt/event/agent_budget.yaml:ro
+      - ./deploy/shim/event_shim_huelle.py:/opt/shim/event_shim_huelle.py:ro
     read_only: true
     tmpfs:
       - /tmp:size=256m

@@ -751,6 +751,18 @@ def test_shims_antworten_freundlich(dienst: str) -> None:
     assert env["VIBEMIND_BUDGET_ANTWORT"] == BUDGET_ANTWORTEN[dienst]
 
 
+@pytest.mark.parametrize("dienst", sorted(BUDGET_ANTWORTEN))
+def test_shims_starten_die_event_huelle(dienst: str) -> None:
+    # Die Antwort setzt deploy/shim/event_shim_huelle.py um; sie laedt die Basis-Huelle des
+    # Images (shim_huelle.py: eingebaute Werkzeuge aus, Transkripte aufraeumen) und laeuft
+    # read-only eingehaengt, versioniert in diesem Repo.
+    shim = _compose()["services"][dienst]
+    assert shim["command"] == ["python3", "/opt/shim/event_shim_huelle.py",
+                               "--host", "0.0.0.0", "--port", "8125"]
+    assert "./deploy/shim/event_shim_huelle.py:/opt/shim/event_shim_huelle.py:ro" in shim["volumes"]
+    assert (SPACE / "deploy" / "shim" / "event_shim_huelle.py").is_file()
+
+
 def test_netze_getrennt_und_agentennetz_intern() -> None:
     compose = _compose()
     claw = compose["services"]["event-management-claw"]
