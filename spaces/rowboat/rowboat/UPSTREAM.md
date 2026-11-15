@@ -8,13 +8,18 @@ To re-pin the kernel plugin catalog, change `DESKTOP_PLUGIN_CATALOG_PIN` on bran
 Flissel/rowboat (in `apps/x/apps/renderer/src/lib/rowboat-plugin-api.ts`), then run the sync.
 
 - Fork: https://github.com/Flissel/rowboat (branch `vibemind`)
-- Fork commit: `02328ec59ce733deea5fad425c35a8297ecd73b9`
+- Fork commit: `989a2dbe5d65dfac23c1809ad8fa9a7f91c05470`
 - Upstream base: rowboatlabs/rowboat `72e9d8c`
 - EHL repo: https://github.com/Flissel/ehl-munich-2026 (`schema/`)
 - EHL commit: `44c1024c7804c696bc283bd14a9d08bd87a38230`
 
 ## Patches on top of upstream (EHL hierarchy graph, VibeMind)
 
+- 989a2dbe fix(graph): Ladezustand statt Leertext im Konzepte-Graphen, Abzeichen HTML-Seite
+- 54e624ad perf(graph): Namensindex je Graph-Aufbau statt Suche je Verweis
+- 5255c66d feat(brain): Konzepte als Kategorie, Knopf Neues Konzept
+- f48e82d4 feat(graph): eigener Graph fuer Konzepte, Umschalter Notizen | Konzepte
+- 8dfbc077 feat(graph): Konzepte-Graph und Notizen-Graph als reine Helfer, Konzepte per Name aufloesen
 - 02328ec5 fix(konzept): Uebergabe-Text fuer unklare Antworten, Bestaetigen bleibt beim Nutzer
 - ebd2cc63 feat(konzept): Uebergabe wird in Sales bestaetigt
 - 4562558e Revert "feat(freigabe): Uebergabe an die Werkbank nur mit Ja eines Menschen"

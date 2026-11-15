@@ -11,9 +11,11 @@ import {
   Network,
   Pencil,
   SearchIcon,
+  Sparkles,
   Table2,
   Trash2,
 } from 'lucide-react'
+import { konzept } from '@x/shared'
 
 import {
   ContextMenu,
@@ -64,6 +66,8 @@ type KnowledgeViewProps = {
   onOpenNote: (path: string) => void
   onOpenSearch: () => void
   onVoiceNoteCreated?: (path: string) => void
+  /** Opens a new chat with the given message prepared in the composer (not sent). */
+  onNewKonzept?: (message: string) => void
 }
 
 // Folders that have their own dedicated destinations elsewhere in the app.
@@ -76,9 +80,18 @@ function isMarkdown(node: TreeNode): boolean {
   return node.kind === 'file' && node.name.toLowerCase().endsWith('.md')
 }
 
-// All markdown notes within a node (recurses into subfolders).
+// VibeMind: an HTML concept under knowledge/ counts and lists like a note.
+function isKonzept(node: TreeNode): boolean {
+  return node.kind === 'file' && konzept.isKnowledgeHtmlPath(node.path)
+}
+
+/** Prepared, not yet sent message of the „Neues Konzept" button. */
+export const NEUES_KONZEPT_NACHRICHT =
+  'Lade bitte zuerst die Fähigkeit „konzept". Ich möchte ein neues Konzept als HTML-Seite. Frag mich kurz, wofür es sein soll.'
+
+// All markdown notes and HTML concepts within a node (recurses into subfolders).
 function collectNotes(node: TreeNode): TreeNode[] {
-  if (node.kind === 'file') return isMarkdown(node) ? [node] : []
+  if (node.kind === 'file') return isMarkdown(node) || isKonzept(node) ? [node] : []
   const out: TreeNode[] = []
   for (const child of node.children ?? []) out.push(...collectNotes(child))
   return out
@@ -146,6 +159,7 @@ function getFileManagerName(): string {
 
 function displayName(node: TreeNode): string {
   if (isMarkdown(node)) return node.name.slice(0, -3)
+  if (isKonzept(node)) return node.name.replace(/\.(html?|xhtml)$/i, '')
   return node.name
 }
 
@@ -161,6 +175,7 @@ export function KnowledgeView({
   onOpenNote,
   onOpenSearch,
   onVoiceNoteCreated,
+  onNewKonzept,
 }: KnowledgeViewProps) {
   const [renameTarget, setRenameTarget] = useState<string | null>(null)
 
@@ -174,7 +189,7 @@ export function KnowledgeView({
     [topLevel],
   )
   const looseNotes = useMemo(
-    () => sortNodes(topLevel.filter((n) => isMarkdown(n))),
+    () => sortNodes(topLevel.filter((n) => isMarkdown(n) || isKonzept(n))),
     [topLevel],
   )
 
@@ -220,6 +235,16 @@ export function KnowledgeView({
               onClick={() => onModeChange('files')}
             />
           </div>
+          {onNewKonzept && (
+            <button
+              type="button"
+              onClick={() => onNewKonzept(NEUES_KONZEPT_NACHRICHT)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+            >
+              <Sparkles className="size-4" />
+              <span>Neues Konzept</span>
+            </button>
+          )}
           <VoiceNoteButton onNoteCreated={onVoiceNoteCreated} />
         </div>
       </div>
@@ -646,8 +671,16 @@ function ItemRow({
             onDone={onClearRename}
           />
         ) : (
-          <span className="block truncate text-sm font-semibold text-foreground">
-            {displayName(node)}
+          <span className="flex min-w-0 items-center gap-2">
+            <span className="block truncate text-sm font-semibold text-foreground">
+              {displayName(node)}
+            </span>
+            {/* Neutral badge: the listing has no file content, and no file is read per row. */}
+            {isKonzept(node) && (
+              <span className="shrink-0 rounded border border-border px-1.5 py-px text-[11px] text-muted-foreground">
+                HTML-Seite
+              </span>
+            )}
           </span>
         )}
       </div>

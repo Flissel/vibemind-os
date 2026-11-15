@@ -34,6 +34,10 @@ type GraphViewProps = {
   isLoading?: boolean
   error?: string | null
   onSelectNode?: (id: string) => void
+  /** VibeMind: text when there are no nodes (default "No notes found."). */
+  emptyText?: string
+  /** VibeMind: legend heading (default "Folders"). */
+  legendTitle?: string
 }
 
 type NodePosition = {
@@ -65,7 +69,7 @@ function arcPath(source: { x: number; y: number }, target: { x: number; y: numbe
   return `M${source.x},${source.y}A${dr},${dr} 0 0,1 ${target.x},${target.y}`
 }
 
-export function GraphView({ nodes, edges, error, onSelectNode }: GraphViewProps) {
+export function GraphView({ nodes, edges, error, onSelectNode, emptyText = 'No notes found.', legendTitle = 'Folders' }: GraphViewProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const positionsRef = useRef<Map<string, NodePosition>>(new Map())
   const motionSeedsRef = useRef<Map<string, { phase: number; amplitude: number; speed: number }>>(new Map())
@@ -545,8 +549,8 @@ export function GraphView({ nodes, edges, error, onSelectNode }: GraphViewProps)
       ) : null}
 
       {!error && nodes.length === 0 ? (
-        <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
-          No notes found.
+        <div className="absolute inset-0 flex items-center justify-center px-6 text-center text-sm text-muted-foreground">
+          {emptyText}
         </div>
       ) : null}
 
@@ -556,7 +560,7 @@ export function GraphView({ nodes, edges, error, onSelectNode }: GraphViewProps)
           onPointerDown={(event) => event.stopPropagation()}
         >
           <div className="mb-2 text-[13px] text-muted-foreground">
-            Folders
+            {legendTitle}
           </div>
           <div className="grid gap-1">
             {legendItems.map((item) => {

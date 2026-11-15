@@ -19,6 +19,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { collectFiles, frontmatterPaths } from '@/lib/bases-files'
 import { cn } from '@/lib/utils'
 import { splitFrontmatter, extractAllFrontmatterValues } from '@/lib/frontmatter'
 import { useDebounce } from '@/hooks/use-debounce'
@@ -115,16 +116,6 @@ function getFileManagerName(): string {
   return 'File Manager'
 }
 
-function collectFiles(nodes: TreeNode[]): { path: string; name: string; mtimeMs: number }[] {
-  return nodes.flatMap((n) =>
-    n.kind === 'file' && n.name.endsWith('.md')
-      ? [{ path: n.path, name: n.name.replace(/\.md$/i, ''), mtimeMs: n.stat?.mtimeMs ?? 0 }]
-      : n.children
-        ? collectFiles(n.children)
-        : [],
-  )
-}
-
 function getFolder(path: string): string {
   const parts = path.split('/')
   if (parts.length >= 3) return parts[1]
@@ -190,7 +181,7 @@ export function BasesView({ tree, onSelectNote, config, onConfigChange, isDefaul
   useEffect(() => {
     const gen = ++loadGenRef.current
     let cancelled = false
-    const paths = notes.map((n) => n.path)
+    const paths = frontmatterPaths(notes.map((n) => n.path))
 
     async function load() {
       const BATCH = 30

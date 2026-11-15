@@ -188,12 +188,15 @@ export function parseVaultMap(text: string, toNodeId: (wikiPath: string) => stri
 }
 
 /** Typed edges (one per unordered pair, strongest kind wins) and hierarchy info per node. Front matter wins;
- * `fallback` (from the vault map) fills in level, domain and parent for notes that have none. */
+ * `fallback` (from the vault map) fills in level, domain and parent for notes that have none.
+ * VibeMind: `frontMatterToNodeId` (default `toNodeId`) resolves every link inside the front matter (parent,
+ * relations, plain links there); `toNodeId` resolves the body links. */
 export function buildHierarchyGraph(
   contents: { path: string; data: string }[],
   nodeSet: Set<string>,
   toNodeId: (wikiTarget: string) => string | null,
   fallback?: Map<string, NodeInfo>,
+  frontMatterToNodeId: (wikiTarget: string) => string | null = toNodeId,
 ): { edges: HierarchyEdge[]; info: Map<string, NodeInfo> } {
   const edges = new Map<string, HierarchyEdge>()
   const info = new Map<string, NodeInfo>()
@@ -204,26 +207,44 @@ export function buildHierarchyGraph(
     if (existing && RANK[existing.kind] >= RANK[kind]) return
     edges.set(key, relation ? { source, target, kind, relation } : { source, target, kind })
   }
-  const add = (source: string, rawTarget: string, kind: EdgeKind, relation?: string) => {
-    const target = toNodeId(rawTarget)
+  const add = (source: string, rawTarget: string, kind: EdgeKind, relation?: string, resolve = toNodeId) => {
+    const target = resolve(rawTarget)
     if (target) addEdge(source, target, kind, relation)
   }
   for (const { path, data } of contents) {
     const hierarchy = parseHierarchy(data)
     const mapped = fallback?.get(path)
-    const frontParent = hierarchy.parent ? toNodeId(hierarchy.parent) : null
+    const frontParent = hierarchy.parent ? frontMatterToNodeId(hierarchy.parent) : null
     const mappedParent = !hierarchy.parent && mapped?.parentId && nodeSet.has(mapped.parentId) ? mapped.parentId : undefined
     info.set(path, {
       level: hierarchy.level ?? mapped?.level,
       parentId: frontParent && nodeSet.has(frontParent) ? frontParent : mappedParent,
       domain: hierarchy.domain ?? mapped?.domain,
     })
-    if (hierarchy.parent) add(path, hierarchy.parent, 'parent')
+    if (hierarchy.parent) add(path, hierarchy.parent, 'parent', undefined, frontMatterToNodeId)
     else if (mappedParent) addEdge(path, mappedParent, 'parent')
-    for (const relation of hierarchy.relations) add(path, relation.target, 'relation', relation.name)
-    for (const match of data.matchAll(LINK)) add(path, match[1], 'link')
+    for (const relation of hierarchy.relations) add(path, relation.target, 'relation', relation.name, frontMatterToNodeId)
+    const { frontMatter, body } = splitWikiLinkTargets(data)
+    for (const target of frontMatter) add(path, target, 'link', undefined, frontMatterToNodeId)
+    for (const target of body) add(path, target, 'link')
   }
   return { edges: Array.from(edges.values()), info }
+}
+
+/** Raw `[[…]]` targets of a note's text, as the graph edges read them (VibeMind: Konzepte-Graph uses the same list). */
+export function wikiLinkTargets(data: string): string[] {
+  return Array.from(data.matchAll(LINK), (m) => m[1])
+}
+
+/**
+ * {@link wikiLinkTargets} split into the links inside the front matter (they come first in the text) and the body
+ * links. Together they are exactly `wikiLinkTargets(data)`, in the same order.
+ */
+export function splitWikiLinkTargets(data: string): { frontMatter: string[]; body: string[] } {
+  const all = wikiLinkTargets(data)
+  const { raw } = splitFrontmatter(data.replace(/^﻿/, ''))
+  const count = raw ? Math.min(all.length, wikiLinkTargets(raw).length) : 0
+  return { frontMatter: all.slice(0, count), body: all.slice(count) }
 }
 
 // ---- 3D view (react-force-graph-3d): nodes on one sphere shell per level ----
