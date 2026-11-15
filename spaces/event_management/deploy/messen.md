@@ -186,12 +186,14 @@ beide Shims mit einem freundlichen Text statt mit einem Fehler. Nachgemessen wir
    („Für heute ist mein Kontingent aufgebraucht. Ab morgen kann ich wieder Gruppen
    verbinden.“).
 3. Danach in Gruppe A schreiben. Erwartet: eine normale Antwort (das Budget der Gruppen
-   ist unberührt). `protokoll` zeigt, welcher Shim gebucht hat.
+   ist unberührt). Welcher Budget-Agent gebucht hat (`event-messung-claw` oder
+   `event-messung-empfang`), steht in `laufzeit/messung/shim-budget/`.
 4. Ohne @-Erwähnung in „fremd“ schreiben. Erwartet wird keine Antwort und kein Verbrauch
    (`requireMention`).
 5. In Gruppe A weiterschreiben, bis die Gruppengrenze erreicht ist. Erwartet: der
    Gruppentext („Für heute ist mein Kontingent aufgebraucht. Ab morgen antworte ich
-   wieder; Dringendes bitte direkt an die Orga.“), kein „LLM request failed.“.
+   wieder; Dringendes bitte direkt an die Orga.“) genau einmal, danach bleibt der Bot in A
+   still (`NO_REPLY`), kein „LLM request failed.“.
 
 **Abbruchkriterium:** Gruppe A antwortet nach Schritt 2 nicht normal (der Empfang zehrt
 noch vom Budget der Gruppen), oder irgendwo erscheint „LLM request failed.“ statt eines der

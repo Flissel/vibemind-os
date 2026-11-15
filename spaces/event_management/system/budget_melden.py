@@ -40,7 +40,7 @@ class MeldeFehler(RuntimeError):
 def nachricht(tag: str, agent: str, heute: int, grenze: int) -> str:
     anteil = round(100 * heute / grenze) if grenze else 0
     return (f"Event-Bot: Tagesbudget zu {anteil} % erreicht ({heute} von {grenze} Laeufen, "
-            f"Agent {agent}, {tag}). Ab der Grenze antwortet der Bot heute nicht mehr. "
+            f"Agent {agent}, {tag}). Ab der Grenze schickt der Bot heute nur noch einen Hinweis je Chat. "
             f"Die Warnung kommt ab 80 %, einmal pro Tag.")
 
 

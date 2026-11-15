@@ -4,7 +4,9 @@ Laedt die Budget-Huelle des Shim-Images (`shim_huelle.py`, aus dem Repo bewerbun
 unter /opt/shim, nicht in diesem oeffentlichen Repo) aus dem eigenen Ordner und aendert
 genau eine Stelle: Lehnt der Budget-Waechter wegen der Tagesgrenze ab, antwortet der Shim
 mit dem Text aus `VIBEMIND_BUDGET_ANTWORT` statt mit einem Fehler (OpenClaw zeigte sonst
-"LLM request failed."). Alle anderen Ablehnungen und Fehler bleiben Fehler. Die
+"LLM request failed."). Steht der Text schon im Verlauf der Sitzung, kommt stattdessen
+OpenClaws stilles `NO_REPLY` (verbundene Gruppen brauchen keine Erwaehnung; sonst bekaeme
+jede Nachricht den Text). Alle anderen Ablehnungen und Fehler bleiben Fehler. Die
 Schutzfunktionen der Basis (eingebaute CLI-Werkzeuge aus, Transkripte aufraeumen,
 Werkzeugaufrufe als Block) bleiben unveraendert, denn ihr main() laeuft wie bisher.
 
@@ -35,6 +37,8 @@ BASIS = HIER / "shim_huelle.py"
 # So beginnt die Ablehnung der Basis bei erschoepfter Tagesgrenze (claude_budget: Grund
 # "tagesgrenze"); die Klammer schliesst andere Gruende mit gleichem Anfang aus.
 TAGESGRENZE = "budget: abgelehnt (tagesgrenze)"
+# OpenClaw (2026.7.1, SILENT_REPLY_TOKEN): diese Antwort schickt nichts in den Chat.
+STILL = "NO_REPLY"
 
 
 def antwort_aus_umgebung(umgebung: Mapping[str, str]) -> str | None:
@@ -58,7 +62,10 @@ def antwort_einbauen(basis: ModuleType, antwort: str | None) -> None:
             except shim.ShimError as exc:
                 if not str(exc).startswith(TAGESGRENZE):
                     raise
-                return {"result": antwort, "is_error": False, "usage": {},
+                # Verbundene Gruppen brauchen keine Erwaehnung: jede Nachricht kaeme hier an.
+                # Der Text steht darum nur einmal je Sitzung im Chat, danach bleibt der Bot still.
+                schon = antwort in str(kwargs.get("transcript") or "")
+                return {"result": STILL if schon else antwort, "is_error": False, "usage": {},
                         "stop_reason": "end_turn"}
 
         shim.run_claude = run_claude

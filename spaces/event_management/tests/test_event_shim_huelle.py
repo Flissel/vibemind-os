@@ -85,6 +85,21 @@ def test_tagesgrenze_mit_antwort_gibt_text_zurueck(eh, basis):
                                            "stop_reason": "end_turn"}
 
 
+@pytest.mark.parametrize(("transcript", "erwartet"), [
+    ("user: Hallo", TEXT),
+    (None, TEXT),
+    (f"user: Hallo\nassistant: {TEXT}\nuser: Und jetzt?", "NO_REPLY"),
+])
+def test_text_nur_einmal_je_sitzung(eh, basis, transcript, erwartet):
+    # Verbundene Gruppen brauchen keine Erwaehnung (requireMention false): ohne diese Regel
+    # bekaeme jede Nachricht jedes Mitglieds den Text. Steht er schon im Verlauf, bleibt der
+    # Bot still (OpenClaw SILENT_REPLY_TOKEN "NO_REPLY", 2026.7.1).
+    eh.antwort_einbauen(basis, TEXT)
+    shim = _shim()
+    basis.umhuellen(shim, _budget(False, "tagesgrenze"), "a")
+    assert shim.run_claude(prompt="x", transcript=transcript)["result"] == erwartet
+
+
 @pytest.mark.parametrize("grund", ["pausiert_user_aktiv", "not_aus", "waechter_fehler",
                                    "unbekannter_agent", "tagesgrenzeX"])
 def test_andere_gruende_bleiben_fehler(eh, basis, grund):
@@ -139,6 +154,8 @@ def test_main_laedt_die_basis_aus_dem_eigenen_ordner(tmp_path, monkeypatch, caps
     shutil.copy(HUELLE, tmp_path / "event_shim_huelle.py")
     (tmp_path / "shim_huelle.py").write_text(ATTRAPPE, encoding="utf-8")
     monkeypatch.setenv("VIBEMIND_BUDGET_ANTWORT", TEXT)
+    # main() traegt die Basis als sys.modules["shim_huelle"] ein; nach dem Test wieder weg.
+    monkeypatch.setitem(sys.modules, "shim_huelle", ModuleType("platzhalter"))
     modul = _laden(tmp_path / "event_shim_huelle.py", "event_shim_huelle_main")
     modul.main()
     basis = sys.modules["shim_huelle"]

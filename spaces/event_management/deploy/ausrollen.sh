@@ -474,7 +474,7 @@ phase_shim() {
   [ -f deploy/shim/event_shim_huelle.py ] \
     || abbruch "deploy/shim/event_shim_huelle.py fehlt (Compose haengt sie in beide Shims ein)"
   # Gebaut wird mit dem Legacy-Builder (unten): der kennt keine benannten Kontexte.
-  if grep -q -- '--from=fremd' "$k/Dockerfile"; then
+  if grep -Eq '^[[:space:]]*COPY[[:space:]]+--from=fremd' "$k/Dockerfile"; then
     abbruch "Dockerfile im Baukontext nutzt --from=fremd: der Legacy-Builder kennt keine benannten Kontexte (COPY flach machen, ausrollen.md Phase shim)"
   fi
   # Compose-Healthcheck und SHIM_URL des Claw erwarten 0.0.0.0:8125 (Compose startet zwar die

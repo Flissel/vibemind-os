@@ -186,7 +186,12 @@ keine Befehle im Container mit dem OAuth-Token) und räumt die Transkripte im tm
 leerem Budget (`VIBEMIND_BUDGET_ANTWORT`) kommt nicht aus dem Image, sondern aus
 `deploy/shim/event_shim_huelle.py` in diesem Repo: Compose hängt sie read-only in beide
 Shims und startet sie per `command`. Sie lädt die Basis-Hülle und ersetzt nur deren
-`umhuellen`. Änderungen an ihr brauchen also keinen Neubau, nur ein Neuanlegen der Shims.
+`umhuellen`. Änderungen an ihr brauchen also keinen Neubau, nur ein Neuanlegen der Shims
+(ein Datei-Mount zeigt nach `git checkout` sonst weiter die alte Fassung; OK von Felix):
+`docker compose up -d --no-deps --force-recreate event-management-shim
+event-management-shim-empfang`. Je Sitzung steht der Text nur einmal im Chat; danach
+antwortet der Shim mit OpenClaws stillem `NO_REPLY` (verbundene Gruppen brauchen keine
+Erwähnung, sonst bekäme jede Nachricht den Text).
 
 **Rezept für den Baukontext** (auf dem Rechner mit allen Repos, danach als Ordner auf den
 Host; nur Dateien, keine Werte). Der Ordner liegt **außerhalb des Repos**: die Shim-Module

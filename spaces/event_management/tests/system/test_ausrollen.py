@@ -647,9 +647,10 @@ SHIM_DATEIEN = ("Dockerfile", "start.sh", "shim_huelle.py", "claude_code_openai_
 # COPY flach (kein --from=fremd, der Legacy-Builder kennt keine benannten Kontexte), CMD auf
 # 0.0.0.0:8125 (Healthcheck im Compose und SHIM_URL des Claw).
 SHIM_DOCKERFILE = ('FROM scratch\n'
+                   '# Rezept: COPY --from=fremd flach gemacht (Kommentar bricht nicht ab)\n'
                    'COPY claude_code_openai_shim.py claude_code_openai_tools.py claude_budget.py /opt/shim/\n'
                    'CMD ["python3", "/opt/shim/shim_huelle.py", "--host", "0.0.0.0", "--port", "8125"]\n')
-FREMD_DOCKERFILE = SHIM_DOCKERFILE.replace("COPY claude", "COPY --from=fremd claude")
+FREMD_DOCKERFILE = SHIM_DOCKERFILE.replace("\nCOPY claude", "\nCOPY --from=fremd claude")
 ROWBOAT_CMD = 'CMD ["python3", "/opt/shim/rowboat_shim_huelle.py", "--host", "127.0.0.1", "--port", "8121"]\n'
 # Die Basis-Huelle aus bewerbung: ihre Schutzfunktionen und `umhuellen` (darauf setzt die
 # Event-Huelle auf) muessen da sein.
