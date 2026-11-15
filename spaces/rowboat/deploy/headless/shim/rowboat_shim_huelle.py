@@ -13,6 +13,11 @@ Pflicht-Umgebung (compose.yml):
     VIBEMIND_BUDGET_DIR=/budget     Zaehldateien im Volume; sonst laege das Konto im Container
                                     und waere nach jedem Neubau leer
     VIBEMIND_BUDGET_CONFIG          Pfad zu agent_budget.yaml (Dockerfile setzt /opt/shim/...)
+Wahlweise:
+    VIBEMIND_BUDGET_ANTWORT         fester Text, der bei erreichter Tagesgrenze als normale
+                                    Antwort zurueckgeht (statt ShimError -> "LLM request failed."
+                                    beim Aufrufer). Nur fuer Grund "tagesgrenze"; ohne die
+                                    Variable (oder leer) bleibt alles wie bisher.
 Aufruf:
     python3 rowboat_shim_huelle.py --host 127.0.0.1 --port 8121
 """
@@ -51,8 +56,17 @@ def budget_ordner_pruefen(umgebung: Mapping[str, str]) -> Path:
     return ordner
 
 
-def umhuellen(shim: ModuleType, budget: Any, agent: str) -> None:
-    """Ersetzt shim.run_claude durch eine Fassung mit Pruefen und Buchen (fail-closed)."""
+def antwort_aus_umgebung(umgebung: Mapping[str, str]) -> str | None:
+    """Text fuer die erreichte Tagesgrenze; leer oder fehlend heisst: keiner."""
+    return (umgebung.get("VIBEMIND_BUDGET_ANTWORT") or "").strip() or None
+
+
+def umhuellen(shim: ModuleType, budget: Any, agent: str, antwort: str | None = None) -> None:
+    """Ersetzt shim.run_claude durch eine Fassung mit Pruefen und Buchen (fail-closed).
+
+    Mit `antwort` gibt eine an der Tagesgrenze abgelehnte Anfrage diesen Text als normales
+    Ergebnis zurueck (ohne CLI-Aufruf, ohne Buchung). Andere Ablehnungsgruende bleiben Fehler:
+    ein kaputter Waechter soll laut scheitern, nicht freundlich schweigen."""
     original = shim.run_claude
 
     @functools.wraps(original)
@@ -63,13 +77,15 @@ def umhuellen(shim: ModuleType, budget: Any, agent: str) -> None:
         except Exception:  # noqa: BLE001 - fail-closed wie im Abo-Wrapper
             erlaubt, grund = False, "waechter_fehler"
         if not erlaubt:
+            if antwort and grund == "tagesgrenze":
+                return {"result": antwort, "is_error": False, "usage": {}, "stop_reason": "end_turn"}
             raise shim.ShimError(f"budget: abgelehnt ({grund}) fuer {agent}")
         start = time.monotonic()
         ergebnis = "fehler"
         try:
-            antwort = original(**kwargs)
+            payload = original(**kwargs)
             ergebnis = "ok"
-            return antwort
+            return payload
         finally:
             try:
                 budget.buchen(agent, ergebnis, time.monotonic() - start)
@@ -123,10 +139,12 @@ def main() -> None:
     sys.path.insert(0, str(HIER))
     import claude_budget
 
-    umhuellen(shim, claude_budget, agent)
+    antwort = antwort_aus_umgebung(os.environ)
+    umhuellen(shim, claude_budget, agent, antwort)
     if shim.tool_calls_enabled():
         textaufrufe_abfangen(shim.load_tools_module())
-    sys.stderr.write(f"budget-waechter aktiv fuer {agent} (shim: {shim_pfad})\n")
+    sys.stderr.write(f"budget-waechter aktiv fuer {agent} (shim: {shim_pfad}, "
+                     f"antwort={'ja' if antwort else 'nein'})\n")
     shim.main()
 
 

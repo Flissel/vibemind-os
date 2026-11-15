@@ -32,15 +32,15 @@ class FalscherShim:
 
 
 class FalschesBudget:
-    def __init__(self, erlaubt: bool = True, wirft: bool = False) -> None:
-        self.erlaubt, self.wirft = erlaubt, wirft
+    def __init__(self, erlaubt: bool = True, wirft: bool = False, grund: str = "tagesgrenze") -> None:
+        self.erlaubt, self.wirft, self.grund = erlaubt, wirft, grund
         self.log: list[tuple] = []
 
     def pruefen(self, agent):
         self.log.append(("pruefen", agent))
         if self.wirft:
             raise OSError("zaehldatei weg")
-        return SimpleNamespace(erlaubt=self.erlaubt, grund="ok" if self.erlaubt else "tagesgrenze")
+        return SimpleNamespace(erlaubt=self.erlaubt, grund="ok" if self.erlaubt else self.grund)
 
     def buchen(self, agent, ergebnis, dauer_s):
         self.log.append(("buchen", agent, ergebnis))
@@ -102,3 +102,49 @@ def test_textaufruf_wird_fehler():
     assert ergebnis.errors and ergebnis.had_block
     normal = werkzeuge.parse_reply("Hier ist die Antwort.", tools)
     assert normal.errors == [] and normal.text == "Hier ist die Antwort."
+
+
+# --- Feste Antwort bei Tagesgrenze (VIBEMIND_BUDGET_ANTWORT, opt-in; Event-Management 15.11.) ---
+
+def test_tagesgrenze_mit_antwort_gibt_text_zurueck():
+    shim, budget = FalscherShim(), FalschesBudget(erlaubt=False)
+    huelle.umhuellen(shim, budget, "event-management-claw", antwort="Fuer heute ist Schluss.")
+    payload = shim.run_claude(prompt="x")
+    assert payload["result"] == "Fuer heute ist Schluss."
+    assert payload["is_error"] is False
+    assert payload["stop_reason"] == "end_turn" and payload["usage"] == {}
+    assert shim.aufrufe == []
+    assert budget.log == [("pruefen", "event-management-claw")]  # nichts gebucht
+
+
+@pytest.mark.parametrize("grund", ["waechter_fehler", "not_aus", "unbekannter_agent"])
+def test_andere_gruende_bleiben_fehler_trotz_antwort(grund):
+    shim, budget = FalscherShim(), FalschesBudget(erlaubt=False, grund=grund)
+    huelle.umhuellen(shim, budget, "event-management-claw", antwort="Fuer heute ist Schluss.")
+    with pytest.raises(ShimError, match=grund):
+        shim.run_claude(prompt="x")
+    assert shim.aufrufe == []
+
+
+def test_waechter_ausnahme_bleibt_fehler_trotz_antwort():
+    shim, budget = FalscherShim(), FalschesBudget(wirft=True)
+    huelle.umhuellen(shim, budget, "event-management-claw", antwort="Fuer heute ist Schluss.")
+    with pytest.raises(ShimError, match="waechter_fehler"):
+        shim.run_claude(prompt="x")
+
+
+@pytest.mark.parametrize("umgebung, erwartet", [
+    ({}, None),
+    ({"VIBEMIND_BUDGET_ANTWORT": "  "}, None),
+    ({"VIBEMIND_BUDGET_ANTWORT": " Hallo "}, "Hallo"),
+])
+def test_antwort_aus_umgebung(umgebung, erwartet):
+    assert huelle.antwort_aus_umgebung(umgebung) == erwartet
+
+
+def test_antwort_leer_gilt_als_ungesetzt():
+    shim, budget = FalscherShim(), FalschesBudget(erlaubt=False)
+    huelle.umhuellen(shim, budget, "rowboat-server",
+                     antwort=huelle.antwort_aus_umgebung({"VIBEMIND_BUDGET_ANTWORT": ""}))
+    with pytest.raises(ShimError, match="tagesgrenze"):
+        shim.run_claude(prompt="x")
