@@ -1,0 +1,13 @@
+# Alle 5 Minuten nach neuen Budget-Warnungen sehen. Ein oneshot-Dienst laeuft nie doppelt.
+# NUR als Datei im Repo.
+[Unit]
+Description=Event-Bot: Budget-Warnung alle 5 Minuten melden
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+AccuracySec=10s
+Unit=budget-melden.service
+
+[Install]
+WantedBy=timers.target

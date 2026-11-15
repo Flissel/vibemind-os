@@ -76,6 +76,7 @@ if [ -f "$_letzte.modus" ]; then cat "$_letzte.modus"; echo; else echo 600; fi
 
 DOCKER = r"""#!/bin/sh
 echo "docker $*" >> "$AR_PROTOKOLL"
+case "$1 $*" in "compose "*" up "*) echo "compose-env uid=${EVENT_UID:-} gid=${EVENT_GID:-}" >> "$AR_PROTOKOLL" ;; esac
 case "$1 $2" in
   "image inspect")
     [ -n "${FAKE_IMAGE_FEHLT:-}" ] && case "$*" in *"$FAKE_IMAGE_FEHLT"*) exit 1;; esac
@@ -90,13 +91,17 @@ if [ "$1" = run ]; then
     case "$1" in
       --entrypoint) ep=$2; shift 2 ;;
       --env-file) ef=$2; shift 2 ;;
-      --network) shift 2 ;;
+      --network|--pull) shift 2 ;;
+      -v) case "$2" in *:/run/pgpass:ro) pgpass_quelle=${2%:/run/pgpass:ro} ;; esac; shift 2 ;;
       --rm|-i) shift ;;
       *) break ;;
     esac
   done
   shift
   if [ -n "$ef" ]; then while IFS== read -r k v; do export "$k=$v"; done < "$ef"; fi
+  if [ "${PGPASSFILE:-}" = /run/pgpass ] && [ -n "${pgpass_quelle:-}" ] && [ -f "$pgpass_quelle" ]; then
+    PGPASSWORD=$(cut -d: -f5- < "$pgpass_quelle"); export PGPASSWORD
+  fi
   exec "$(dirname "$0")/$ep" "$@"
 fi
 case "$1" in
@@ -169,7 +174,8 @@ class Projekt:
         self.space = tmp / "spaces" / "event_management"
         (self.space / "deploy").mkdir(parents=True)
         for name in ("ausrollen.sh", "pg_hilfe.py", "bereitstellung.service", "bereitstellung.timer",
-                     "nachrichten.service", "nachrichten.timer"):
+                     "nachrichten.service", "nachrichten.timer", "budget-melden.service",
+                 "budget-melden.timer"):
             shutil.copy(DEPLOY / name, self.space / "deploy" / name)
         for name in ("docker-compose.yml", "werte.beispiel.json", "requirements.txt"):
             shutil.copy(SPACE / name, self.space / name)
@@ -455,6 +461,9 @@ def test_dienste_exportiert_tags_und_startet_nur_die_drei(pj: Projekt):
     assert ups == ["docker compose --profile event-system up -d event-api event-mcp event-web"]
     assert any("127.0.0.1:8171/gesund" in z for z in pj.log())
     assert pj.stempel_da("dienste")
+    # event-api/event-mcp laufen als Besitzer der Secret-Dateien (Compose: EVENT_UID/GID).
+    env = [z for z in pj.log() if z.startswith("compose-env")]
+    assert env and re.fullmatch(r"compose-env uid=\d+ gid=\d+", env[0]), env
 
 
 # --- pruefen ----------------------------------------------------------------------------------
@@ -641,7 +650,8 @@ ROWBOAT_CMD = 'CMD ["python3", "/opt/shim/rowboat_shim_huelle.py", "--host", "12
 
 def _shim_kontext(pj: Projekt, *, ohne: str = "", dockerfile: str = SHIM_DOCKERFILE,
                   budget: str = "def budget_warnung(agent, heute, grenze):\n    pass\n") -> dict[str, str]:
-    kontext = pj.wurzel / "shim-kontext"
+    # ausserhalb der Projektkopie (= Repo im Test), R-3
+    kontext = pj.wurzel.parent / f"shim-kontext-{pj.wurzel.name}"
     kontext.mkdir(exist_ok=True)
     for name in SHIM_DATEIEN:
         if name != ohne:
@@ -662,6 +672,19 @@ def test_shim_ohne_baukontext_bricht_ab(pj: Projekt):
     pj.tags()
     lauf = pj.lauf("shim")
     assert lauf.returncode == 1 and "EVENT_SHIM_BAUKONTEXT" in _aus(lauf)[1]
+    _shim_nichts_getan(pj)
+
+
+@braucht_bash
+def test_shim_baukontext_im_repo_bricht_ab(pj: Projekt):
+    # R-3: private Shim-Module duerfen nicht im oeffentlichen Repo liegen.
+    pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web")
+    pj.tags()
+    draussen = _shim_kontext(pj)["EVENT_SHIM_BAUKONTEXT"]
+    drinnen = pj.space / "laufzeit" / "shim-kontext"
+    shutil.copytree(draussen, drinnen)
+    lauf = pj.lauf("shim", umgebung={"EVENT_SHIM_BAUKONTEXT": drinnen.as_posix()})
+    assert lauf.returncode == 1 and "Baukontext liegt im Repo" in _aus(lauf)[1]
     _shim_nichts_getan(pj)
 
 
@@ -814,7 +837,40 @@ def test_timer_installiert_und_startet_beide(pj: Projekt):
     assert any(z.startswith("sudo cp deploy/bereitstellung.service deploy/bereitstellung.timer") for z in log)
     assert any(z.startswith("sudo cp deploy/nachrichten.service deploy/nachrichten.timer") for z in log)
     assert "sudo systemctl enable --now bereitstellung.timer nachrichten.timer" in log
+    assert not any("budget-melden" in z for z in log if z.startswith("sudo"))
+    assert "budget-melden.timer nicht eingerichtet" in _aus(lauf)[0]
     assert pj.stempel_da("timer")
+
+
+@braucht_bash
+def test_timer_mit_budget_melden_env_installiert_drei(pj: Projekt):
+    pj.pruefen_bereit()
+    pj._geheim(pj.etc / "budget-melden.env", "BUDGET_ORDNER=x\n")
+    pj.stempel(*BIS_DIENSTE, "tailnet", "anbinden")
+    lauf = pj.lauf("timer", umgebung={"FAKE_AKTIV": "bereitstellung.timer nachrichten.timer budget-melden.timer"})
+    assert lauf.returncode == 0, _aus(lauf)[1]
+    log = pj.log()
+    assert any(z.startswith("sudo cp deploy/budget-melden.service deploy/budget-melden.timer") for z in log)
+    assert "sudo systemctl enable --now bereitstellung.timer nachrichten.timer budget-melden.timer" in log
+    assert pj.stempel_da("timer")
+
+
+@braucht_bash
+def test_zurueck_timer_nimmt_auch_budget_melden_weg(pj: Projekt):
+    pj.stempel(*BIS_DIENSTE, "tailnet", "anbinden", "timer")
+    lauf = pj.lauf("zurueck", "timer")
+    assert lauf.returncode == 0, _aus(lauf)[1]
+    log = pj.log()
+    assert "sudo systemctl disable --now budget-melden.timer" in log
+    assert any(z.startswith("sudo rm -f") and "budget-melden.timer" in z for z in log)
+
+
+def test_budget_melden_unit_nutzt_python_umgebung():
+    text = (DEPLOY / "budget-melden.service").read_text(encoding="utf-8")
+    assert re.search(r"^ExecStart=/home/debian/vibemind-os/spaces/event_management/\.venv/bin/python "
+                     r"-m spaces\.event_management\.system\.budget_melden lauf$", text, flags=re.M)
+    assert "EnvironmentFile=/etc/event-management/budget-melden.env" in text
+    assert "Unit=budget-melden.service" in (DEPLOY / "budget-melden.timer").read_text(encoding="utf-8")
 
 
 @braucht_bash
@@ -1016,9 +1072,11 @@ def test_pruefen_mit_pg_image_nutzt_docker_run_mit_env_datei(pj: Projekt):
     assert "ok     Postgres-Werkzeuge aus Image public.ecr.aws/supabase/postgres:17.6" in out
     assert "ok     pg_dump 17 passt zum Server" in out
     runs = [z for z in pj.log() if z.startswith("docker run")]
-    assert runs and all("--network host --env-file ./laufzeit/ausrollen/pg.env.docker" in z for z in runs)
+    assert runs and all("--pull never --network host --env-file ./laufzeit/ausrollen/pg.env.docker" in z
+                        and "pg.env.docker.pgpass:/run/pgpass:ro" in z for z in runs)
     assert all(GEHEIM not in z for z in pj.log())
-    assert not (pj.lz / "ausrollen" / "pg.env.docker").exists() and not (pj.lz / "ausrollen" / "pg.env").exists()
+    for rest in ("pg.env", "pg.env.docker", "pg.env.docker.pgpass"):
+        assert not (pj.lz / "ausrollen" / rest).exists(), rest
 
 
 @braucht_bash
@@ -1043,8 +1101,14 @@ def test_sichern_mit_pg_image_dumpt_ueber_docker(pj: Projekt):
 def test_pg_hilfe_docker_env_ist_roh_und_lehnt_zeilenumbruch_ab(tmp_path: Path):
     h = _hilfe()
     ziel = tmp_path / "pg.env.docker"
-    h.docker_umgebungsdatei({"PGUSER": "u", "PGPASSWORD": "a b'c$d"}, ziel)
-    assert ziel.read_text(encoding="utf-8") == "PGPASSWORD=a b'c$d\nPGUSER=u\n"
+    h.docker_umgebungsdatei({"PGUSER": "u", "PGPASSWORD": "a b'c$d:e\\f"}, ziel)
+    # Review 4: das Passwort steht nicht in der Env-Datei (landet sonst in der Container-Konfiguration)
+    assert ziel.read_text(encoding="utf-8") == "PGPASSFILE=/run/pgpass\nPGUSER=u\n"
+    assert (tmp_path / "pg.env.docker.pgpass").read_text(encoding="utf-8") == "*:*:*:*:a b'c$d\\:e\\\\f\n"
+    if os.name != "nt":
+        assert oct((tmp_path / "pg.env.docker.pgpass").stat().st_mode & 0o777) == "0o600"
+    with pytest.raises(h.HilfeFehler):
+        h.docker_umgebungsdatei({"PGUSER": "u", "PGSSLROOTCERT": "/etc/ssl/x.pem"}, ziel)
     with pytest.raises(h.HilfeFehler) as e:
         h.docker_umgebungsdatei({"PGPASSWORD": f"{GEHEIM}\nX=1"}, ziel)
     assert GEHEIM not in str(e.value)

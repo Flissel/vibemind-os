@@ -67,12 +67,28 @@ def test_vorhandenes_passwort_bleibt(db_admin, db_app):
         "insert into event.person (mail, name, passwort_hash) values (%s, %s, %s) returning id",
         (MAIL, NAME, alt)).fetchone()["id"]
     erg = betreiber.anlegen(db_admin, mail=MAIL, name=NAME, passwort=PASSWORT)
-    assert erg.person_id == pid and not erg.passwort_gesetzt
+    assert erg.person_id == pid and not erg.passwort_gesetzt and erg.hochgestuft
     assert _person(db_admin, pid)["passwort_hash"] == alt and _person(db_admin, pid)["betreiber"]
     assert zugang.anmelden(db_app(), MAIL, PASSWORT) is None
-    # Zweiter Lauf: idempotent.
-    assert betreiber.anlegen(db_admin, mail=MAIL, name=NAME, passwort=PASSWORT).person_id == pid
+    # Zweiter Lauf: idempotent, und die Person war jetzt schon Betreiber.
+    zweiter = betreiber.anlegen(db_admin, mail=MAIL, name=NAME, passwort=PASSWORT)
+    assert zweiter.person_id == pid and not zweiter.hochgestuft and not zweiter.passwort_gesetzt
     assert db_admin.execute("select count(*) as n from event.person").fetchone()["n"] == 1
+
+
+def test_meldung_unterscheidet_hochstufung_von_nichts_geaendert():
+    # R-2: der Bediener erkennt am Text, ob sich etwas geaendert hat.
+    texte = {
+        (True, False, True): "Betreiber angelegt.",
+        (False, True, True): "Vorhandene Person ist jetzt Betreiber, Passwort gesetzt.",
+        (False, True, False): "Vorhandene Person ist jetzt Betreiber, Passwort unverändert.",
+        (False, False, True): "Person war schon Betreiber, Passwort gesetzt.",
+        (False, False, False): "Person war schon Betreiber, nichts geändert.",
+    }
+    for (neu, hoch, pw), text in texte.items():
+        erg = betreiber.Ergebnis(person_id=uuid4(), neu=neu, passwort_gesetzt=pw, hochgestuft=hoch)
+        assert betreiber.meldung(erg) == text
+    assert len(set(texte.values())) == len(texte)
 
 
 @pytest.mark.parametrize("mail,passwort,meldung", [
@@ -151,7 +167,7 @@ def test_cli_gibt_nur_die_id_aus(leere_db_dsn, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO("ein-ganz-anderes-passwort\n"))
     assert betreiber.main(["anlegen", "--mail", MAIL, "--name", NAME]) == 0
     roh = capsys.readouterr()
-    assert UUID(roh.out.strip()) == pid and "unverändert" in roh.err
+    assert UUID(roh.out.strip()) == pid and "war schon Betreiber, nichts geändert" in roh.err
 
     # Rueckweg
     assert betreiber.main(["entziehen", str(pid)]) == 0

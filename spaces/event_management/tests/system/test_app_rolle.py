@@ -81,6 +81,42 @@ def test_rolle_mit_sonderrechten_wird_nicht_angefasst(db_admin, rolle):
     assert not info["rolcanlogin"] and not info["mitglied"]
 
 
+def test_rolle_mit_fremder_mitgliedschaft_wird_nicht_angefasst(db_admin, rolle):
+    # Review 2: Rechte kommen auch ueber Mitgliedschaften (pg_read_all_data, service_role ...).
+    h = _hilfe()
+    db_admin.execute(sql.SQL("create role {} nologin").format(sql.Identifier(rolle)))
+    db_admin.execute(sql.SQL("grant pg_read_all_data to {}").format(sql.Identifier(rolle)))
+    with pytest.raises(h.HilfeFehler):
+        h.app_rolle(db_admin, _app_dsn(rolle))
+    info = _info(db_admin, rolle)
+    assert not info["rolcanlogin"] and not info["mitglied"]
+
+
+class _Spion:
+    """Reicht alles an die Verbindung durch und merkt sich die SQL-Texte von execute."""
+
+    def __init__(self, conn):
+        self._conn = conn
+        self.texte: list[str] = []
+
+    def execute(self, anfrage, *args, **kwargs):
+        text = anfrage if isinstance(anfrage, str) else anfrage.as_string(self._conn)
+        self.texte.append(text + " " + repr(args))
+        return self._conn.execute(anfrage, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def test_passwort_geht_nie_im_klartext_an_die_datenbank(db_admin, rolle):
+    # Review 5: der Server hasht Klartext selbst; pruefbar ist nur, was gesendet wird.
+    h = _hilfe()
+    spion = _Spion(db_admin)
+    h.app_rolle(spion, _app_dsn(rolle))
+    assert spion.texte and all(GEHEIM not in t for t in spion.texte)
+    assert any("SCRAM-SHA-256$" in t and "password" in t.lower() for t in spion.texte)
+
+
 def test_ohne_event_app_bricht_ab(leere_db_dsn):
     # event_app ist clusterweit und existiert nach anderen Tests womoeglich schon; geprueft wird
     # deshalb nur, dass die Meldung keine Werte nennt, wenn die DB ohne Schema event ist.
@@ -95,6 +131,7 @@ def test_ohne_event_app_bricht_ab(leere_db_dsn):
 @pytest.mark.parametrize("dsn", [
     _app_dsn("event_app"), _app_dsn("postgres"), _app_dsn("supabase_admin"), _app_dsn("pg_monitor"),
     _app_dsn("Gross"), _app_dsn("a"), _app_dsn("event_dienst", "kurz"),
+    _app_dsn("pgbouncer"), _app_dsn("pgsodium_keyholder"), _app_dsn("service_role"), _app_dsn("dienst_event"),
     "host=x port=1 user=event_dienst dbname=postgres",
     f"host=x port=1 password={GEHEIM} dbname=postgres",
     f"kein dsn {GEHEIM}",

@@ -124,7 +124,7 @@ fi
 modus_von() { "$STAT" -c %a "$1"; }
 abbruch() { echo "ABBRUCH: $*" >&2; exit 1; }
 info() { echo "$*"; }
-pgenv_weg() { rm -f "${PGENV:?}" "${PGENV:?}.docker"; }
+pgenv_weg() { rm -f "${PGENV:?}" "${PGENV:?}.docker" "${PGENV:?}.docker.pgpass"; }
 trap pgenv_weg EXIT
 
 shim_image() { grep -m1 -o 'event-management/shim:[A-Za-z0-9_.-]*' docker-compose.yml; }
@@ -223,7 +223,10 @@ pg_bereit() {
 pg_mit() {
   if [ -n "$PG_IMAGE" ]; then
     local prog=$1; shift
-    docker run --rm -i --network host --env-file "./$PGENV.docker" --entrypoint "$prog" "$PG_IMAGE" "$@"
+    # Passwort nur als schreibgeschuetzt eingehaengte pgpass-Datei, nie in der Container-Umgebung;
+    # --pull never: ein fehlendes Image wird nie still nachgeladen (fail-closed).
+    docker run --rm -i --pull never --network host --env-file "./$PGENV.docker" \
+      -v "$SPACE/$PGENV.docker.pgpass:/run/pgpass:ro" --entrypoint "$prog" "$PG_IMAGE" "$@"
   else
     ( set -a; . "./$PGENV"; set +a; "$@" )
   fi
@@ -440,6 +443,13 @@ phase_shim() {
   # (Abschluss-Review F-5). Er liegt nicht in diesem Repo; das Rezept steht in ausrollen.md.
   k=${EVENT_SHIM_BAUKONTEXT:-}
   [ -n "$k" ] || abbruch "EVENT_SHIM_BAUKONTEXT fehlt: ohne Neubau bleibt claude_budget.py alt (keine 80-%-Warnung). Baukontext nach ausrollen.md (Phase shim) zusammenstellen"
+  # R-3: Die Shim-Module sind privat, das Repo ist oeffentlich: Kontext nie im Repo.
+  local k_echt repo_echt
+  k_echt=$(cd "$k" 2>/dev/null && pwd -P) || abbruch "Baukontext $k nicht lesbar"
+  repo_echt=$(cd "$REPO" && pwd -P)
+  case "$k_echt/" in
+    "$repo_echt/"*) abbruch "Baukontext liegt im Repo: private Shim-Module gehoeren nicht ins oeffentliche Repo (Ordner ausserhalb anlegen, ausrollen.md Phase shim)" ;;
+  esac
   for f in Dockerfile start.sh rowboat_shim_huelle.py claude_code_openai_shim.py            claude_code_openai_tools.py claude_budget.py agent_budget.yaml; do
     [ -f "$k/$f" ] || abbruch "Baukontext unvollstaendig: $f fehlt (Rezept: ausrollen.md, Phase shim)"
   done
@@ -480,6 +490,8 @@ probe() {
 
 phase_dienste() {
   tags_laden
+  # event-api/event-mcp lesen die Secret-Dateien unter laufzeit/ (0600, dieser Nutzer).
+  EVENT_UID=$(id -u); EVENT_GID=$(id -g); export EVENT_UID EVENT_GID
   docker compose --profile event-system up -d event-api event-mcp event-web </dev/null \
     || abbruch "Dienste nicht gestartet (Rueckweg: zurueck dienste)"
   probe event-mcp http://127.0.0.1:8171/gesund ja
@@ -519,10 +531,20 @@ phase_timer() {
     [ -f "$ETC/$u.env" ] || abbruch "$ETC/$u.env fehlt"
     sudo cp "deploy/$u.service" "deploy/$u.timer" "$SYSTEMD/" || abbruch "Units nicht installiert"
   done
+  # 80-%-Meldung an Felix: nur wenn ihre Einstellungen da sind (Bot und Chat waehlt Felix).
+  local timer="bereitstellung.timer nachrichten.timer"
+  if [ -f "$ETC/budget-melden.env" ]; then
+    sudo cp deploy/budget-melden.service deploy/budget-melden.timer "$SYSTEMD/" || abbruch "Units nicht installiert"
+    timer="$timer budget-melden.timer"
+  else
+    info "budget-melden.timer nicht eingerichtet ($ETC/budget-melden.env fehlt; ausrollen.md, Phase timer)"
+  fi
   sudo systemctl daemon-reload
-  sudo systemctl enable --now bereitstellung.timer nachrichten.timer || abbruch "Timer nicht gestartet (Rueckweg: zurueck timer)"
-  systemctl is-active bereitstellung.timer nachrichten.timer >/dev/null || abbruch "Timer laufen nicht"
-  info "Timer bereitstellung und nachrichten: aktiv"
+  # shellcheck disable=SC2086
+  sudo systemctl enable --now $timer || abbruch "Timer nicht gestartet (Rueckweg: zurueck timer)"
+  # shellcheck disable=SC2086
+  systemctl is-active $timer >/dev/null || abbruch "Timer laufen nicht"
+  info "Timer aktiv: $timer"
   stempel timer
 }
 
@@ -600,8 +622,10 @@ phase_zurueck() {
       info "Schluessel dieses Laufs von Hand widerrufen: system.schluessel widerrufen <id> (ausrollen.md)." ;;
     timer)
       sudo systemctl disable --now bereitstellung.timer nachrichten.timer || true
+      sudo systemctl disable --now budget-melden.timer 2>/dev/null || true
       sudo rm -f "${SYSTEMD:?}/bereitstellung.service" "${SYSTEMD:?}/bereitstellung.timer" \
-                 "${SYSTEMD:?}/nachrichten.service" "${SYSTEMD:?}/nachrichten.timer"
+                 "${SYSTEMD:?}/nachrichten.service" "${SYSTEMD:?}/nachrichten.timer" \
+                 "${SYSTEMD:?}/budget-melden.service" "${SYSTEMD:?}/budget-melden.timer"
       sudo systemctl daemon-reload ;;
     tailnet)
       tailscale serve --https="$TAILNET_PORT" off ;;

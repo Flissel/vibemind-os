@@ -52,6 +52,17 @@ class Ergebnis:
     person_id: UUID
     neu: bool
     passwort_gesetzt: bool
+    hochgestuft: bool = False  # war vorher nicht Betreiber
+
+
+def meldung(erg: Ergebnis) -> str:
+    """Fester Text fuer stderr: neu, hochgestuft oder schon Betreiber (R-2)."""
+    if erg.neu:
+        return "Betreiber angelegt."
+    pw = "Passwort gesetzt." if erg.passwort_gesetzt else None
+    if erg.hochgestuft:
+        return "Vorhandene Person ist jetzt Betreiber, " + (pw or "Passwort unverändert.")
+    return "Person war schon Betreiber, " + (pw or "nichts geändert.")
 
 
 def _mail(roh: object) -> str:
@@ -88,7 +99,7 @@ def anlegen(conn_admin: psycopg.Connection[Any], *, mail: str, name: str,
         # Zwei gleichzeitige Laeufe fuer dieselbe Mail: der zweite wartet und findet die Person.
         cur.execute("select pg_advisory_xact_lock(hashtext('betreiber:' || %s))", (mail,))
         cur.execute(
-            "select id, aktiv, passwort_hash is not null as hat_pw from event.person"
+            "select id, aktiv, betreiber, passwort_hash is not null as hat_pw from event.person"
             " where lower(mail) = %s for update",
             (mail,),
         )
@@ -109,7 +120,8 @@ def anlegen(conn_admin: psycopg.Connection[Any], *, mail: str, name: str,
             " passwort_hash = coalesce(passwort_hash, %s) where id = %s",
             (h, zeile["id"]),
         )
-        return Ergebnis(person_id=zeile["id"], neu=False, passwort_gesetzt=not zeile["hat_pw"])
+        return Ergebnis(person_id=zeile["id"], neu=False, passwort_gesetzt=not zeile["hat_pw"],
+                        hochgestuft=not zeile["betreiber"])
 
 
 def entziehen(conn_admin: psycopg.Connection[Any], person_id: UUID) -> None:
@@ -189,14 +201,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             if args.befehl == "anlegen":
                 erg = anlegen(conn, mail=args.mail, name=args.name, passwort=passwort)
-                if erg.neu:
-                    print("Betreiber angelegt.", file=sys.stderr)
-                elif erg.passwort_gesetzt:
-                    print("Vorhandene Person ist jetzt Betreiber, Passwort gesetzt.",
-                          file=sys.stderr)
-                else:
-                    print("Vorhandene Person ist Betreiber, Passwort unverändert.",
-                          file=sys.stderr)
+                print(meldung(erg), file=sys.stderr)
                 print(erg.person_id)
             else:
                 entziehen(conn, args.person_id)

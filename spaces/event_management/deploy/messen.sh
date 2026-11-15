@@ -479,7 +479,9 @@ testinstanz() {
     "$PG_IMAGE" -c listen_addresses=127.0.0.1 -c shared_buffers=32MB >/dev/null
   warten "Test-Postgres" pg_lebt
   im_space "$TESTDATEN_PY" </dev/null | python3 -c "$ABLEGEN_PY" "$LZ"
+  # Als Besitzer der Token-Datei (0600) wie im Compose (EVENT_UID/GID), nicht als `event`.
   docker run -d --name "$MCP" --network "container:$SHIM" --read-only --tmpfs /tmp:size=64m \
+    --user "$(id -u):$(id -g)" \
     --security-opt no-new-privileges:true --cap-drop ALL \
     -e EVENT_APP_DSN="$APP_DSN" -e EVENT_MCP_HOST=127.0.0.1 -e EVENT_MCP_PORT=8171 \
     -e TELEGRAM_BOT_TOKEN_FILE=/run/secrets/telegram-token \
