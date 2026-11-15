@@ -38,6 +38,16 @@ def test_dockerfile_web_basis_gepinnt() -> None:
         assert "latest" not in b
 
 
+def test_dockerfile_web_node_kann_require_esm() -> None:
+    # Tailwind 4 (@tailwindcss/node) laedt magic-string 1.x per require(); das Paket ist
+    # reines ESM. require(esm) gibt es ohne Schalter erst ab Node 22.12. Mit 22.11.0
+    # scheiterte `bauen web` auf der VM ("require() of ES Module ... not supported").
+    for b in _basen(WEB_DOCKERFILE):
+        m = re.match(r"node:(\d+)\.(\d+)\.(\d+)", b)
+        assert m, b
+        assert tuple(int(x) for x in m.groups()) >= (22, 12, 0), b
+
+
 def test_dockerfiles_laufen_nicht_als_root() -> None:
     for pfad in (SYSTEM_DOCKERFILE, WEB_DOCKERFILE):
         users = [z.split(None, 1)[1].strip() for z in _zeilen(pfad) if z.upper().startswith("USER ")]
