@@ -206,21 +206,31 @@ cp spaces/event_management/deploy/agent_budget.yaml "$K/"
 Die Phase prüft vor jedem Docker-Aufruf: alle sieben Dateien da (`Dockerfile`, `start.sh`,
 `rowboat_shim_huelle.py`, `claude_code_openai_shim.py`, `claude_code_openai_tools.py`,
 `claude_budget.py`, `agent_budget.yaml`), `claude_budget.py` hat `budget_warnung`, die CMD
-der Dockerfile startet auf `0.0.0.0` und `8125`. Sonst Abbruch ohne Stempel.
+der Dockerfile startet auf `0.0.0.0` und `8125`, und `rowboat_shim_huelle.py` kennt
+`VIBEMIND_BUDGET_ANTWORT`. Sonst Abbruch ohne Stempel. Fehlt nur die Budget-Antwort, ist
+die Hülle im Kontext alt: Rezept Schritt 1 neu ausführen (aktuelle Hülle aus vibemind-os
+kopieren). Ohne sie antwortet der Shim bei leerem Budget weiter mit „LLM request failed.“
+statt mit dem freundlichen Text.
+
+Aus demselben Image laufen **zwei Shims**: `event-management-shim` (Gruppen-Agenten,
+Budget-Agent `event-management`) und `event-management-shim-empfang` (nur der Empfang
+`main`, eigener Budget-Agent `event-management-empfang`). So leert eine fremde Erwähnung in
+einer offenen Gruppe nie das Budget der verbundenen Gruppen.
 
 - **Mit Baukontext** (`EVENT_SHIM_BAUKONTEXT=$HOME/event-shim-kontext`): Die Phase tagt das
   bisherige Image als `…:vorher` und merkt sich dessen Id in `laufzeit/ausrollen/shim.vorher`,
   aber nur, wenn es noch keine `shim.vorher` gibt oder der letzte Shim-Lauf gelang (so
   zerstört ein Wiederholungslauf nach einem gescheiterten Gesundheitstest den Rückweg nicht);
-  danach baut sie gedeckelt unter dem alten Namen und legt **nur den Shim** neu an
-  (`docker compose up -d --no-deps --force-recreate event-management-shim`).
+  danach baut sie gedeckelt unter dem alten Namen und legt **nur die beiden Shims** neu an
+  (`docker compose up -d --no-deps --force-recreate event-management-shim
+  event-management-shim-empfang`); beide müssen `healthy` werden.
 - **Ohne Baukontext** bricht die Phase ab (Abschluss-Review F-5): kein Neuanlegen, kein
   Stempel. Ein Shim mit altem `claude_budget.py` wäre ein stiller Fehler (keine Warnung).
 - **OK von Felix:** ja (der Shim startet neu, kurze Unterbrechung der Claude-Aufrufe).
 - **Abbruch:** Baukontext fehlt oder ist unvollständig; der Bau scheitert; der Shim wird
-  nicht `healthy` (150 s).
+  nicht `healthy` (150 s je Shim).
 - **Rückweg:** `--ich-habe-ok zurueck shim` setzt den Tag auf das vorherige Image zurück
-  und legt den Shim neu an.
+  und legt beide Shims neu an.
 
 Das Budget-Verhalten: Ab `warnen_ab: 0.8` (also 240 von 300 Aufrufen) schreibt der Wächter
 einmal je Tag eine Zeile `{"art": "warnung", "agent", "heute", "grenze"}` in das Tagesprotokoll

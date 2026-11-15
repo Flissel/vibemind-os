@@ -220,7 +220,7 @@ def test_reihenfolge_schluesseldateien_saat_compose_up_healthz() -> None:
     schluessel = code.index('-e "$SCHLUESSEL_JS"')
     hoch = code.index("docker compose up -d\n")
     gesund = code.index("/healthz")
-    shim = code.index("shim /v1/models")
+    shim = code.index('echo "$s /v1/models: ok"')  # Probe beider Shims (Gruppen, Empfang)
     assert dateien < saat < schluessel < hoch < gesund < shim
     assert code.index("> ./laufzeit/claude-token") < saat
     assert "mkdir -p ./laufzeit ./laufzeit/shim-budget" in code
@@ -246,7 +246,8 @@ def test_neustart_nur_bei_aenderung_und_healthz_probe() -> None:
     pos = code.index("docker compose restart")
     assert re.search(r'if \[ "\$GEAENDERT" = 1 \] && \[ "\$CLAW_LAUFEND" = "true" \]', code[:pos][-300:])
     # Neuer Claude-Token: Shim und Claw neu anlegen (env_file nur beim Anlegen gelesen).
-    assert 'docker compose up -d --force-recreate "$SHIM"' in code
+    # Beide Shims (Gruppen und Empfang) lesen claude-token nur beim Anlegen.
+    assert 'docker compose up -d --force-recreate "$SHIM" "$SHIM_E"' in code
     assert 'docker compose up -d --force-recreate "$CLAW"' in code
     port = json.loads(OPENCLAW.read_text(encoding="utf-8"))["gateway"]["port"]
     assert f"127.0.0.1:{port}/healthz" in code
@@ -259,10 +260,12 @@ def test_neustart_nur_bei_aenderung_und_healthz_probe() -> None:
 
 def test_shim_probe_ohne_logausgabe() -> None:
     code = _code()
-    assert 'docker exec "$SHIM" python3 -c' in code
+    assert "SHIM_E=event-management-shim-empfang" in code
+    assert 'for s in "$SHIM" "$SHIM_E"; do' in code  # beide Shims werden geprobt
+    assert 'docker exec "$s" python3 -c' in code
     assert "127.0.0.1:8125/v1/models" in code
     assert "docker logs" not in "\n".join(z for z in _shell_zeilen() if "echo" not in z)
-    assert "docker logs $SHIM" in code  # nur als Hinweis in der Meldung
+    assert "docker logs $s" in code  # nur als Hinweis in der Meldung
 
 
 def test_melden_schluessel_fuer_den_empfang_nur_per_stdin() -> None:

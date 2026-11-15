@@ -67,6 +67,7 @@ cd "$(dirname "$0")/.."
 
 CLAW=event-management-claw
 SHIM=event-management-shim
+SHIM_E=event-management-shim-empfang  # eigener Shim (eigenes Budget) nur fuer den Empfang main
 
 # --- 1. Sieben Zeilen von stdin ----------------------------------------------
 IFS= read -r GW || true
@@ -419,8 +420,9 @@ esac
 # --- 5. Starten: compose kuemmert sich um depends_on -------------------------
 docker compose up -d
 if [ "$CC_NEU" = 1 ] && [ "$SHIM_LAUFEND" = "true" ]; then
-  docker compose up -d --force-recreate "$SHIM"   # env_file wird nur beim Anlegen gelesen
-  echo "$SHIM: neu angelegt (neuer Claude-Token)"
+  # env_file wird nur beim Anlegen gelesen; beide Shims (Gruppen, Empfang) teilen den Token.
+  docker compose up -d --force-recreate "$SHIM" "$SHIM_E"
+  echo "$SHIM, $SHIM_E: neu angelegt (neuer Claude-Token)"
 fi
 if [ "$GEAENDERT" = 1 ] && [ "$CLAW_LAUFEND" = "true" ]; then
   if [ "$CC_NEU" = 1 ]; then
@@ -449,9 +451,11 @@ else
   exit 1
 fi
 
-if docker exec "$SHIM" python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8125/v1/models', timeout=3)" >/dev/null 2>&1; then
-  echo "shim /v1/models: ok"
-else
-  echo "ABBRUCH: Shim antwortet nicht (docker logs $SHIM ansehen)." >&2
-  exit 1
-fi
+for s in "$SHIM" "$SHIM_E"; do
+  if docker exec "$s" python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8125/v1/models', timeout=3)" >/dev/null 2>&1; then
+    echo "$s /v1/models: ok"
+  else
+    echo "ABBRUCH: $s antwortet nicht (docker logs $s ansehen)." >&2
+    exit 1
+  fi
+done

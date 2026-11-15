@@ -649,13 +649,15 @@ ROWBOAT_CMD = 'CMD ["python3", "/opt/shim/rowboat_shim_huelle.py", "--host", "12
 
 
 def _shim_kontext(pj: Projekt, *, ohne: str = "", dockerfile: str = SHIM_DOCKERFILE,
-                  budget: str = "def budget_warnung(agent, heute, grenze):\n    pass\n") -> dict[str, str]:
+                  budget: str = "def budget_warnung(agent, heute, grenze):\n    pass\n",
+                  huelle: str = "# liest VIBEMIND_BUDGET_ANTWORT\n") -> dict[str, str]:
     # ausserhalb der Projektkopie (= Repo im Test), R-3
     kontext = pj.wurzel.parent / f"shim-kontext-{pj.wurzel.name}"
     kontext.mkdir(exist_ok=True)
     for name in SHIM_DATEIEN:
         if name != ohne:
-            inhalt = {"Dockerfile": dockerfile, "claude_budget.py": budget}.get(name, "# x\n")
+            inhalt = {"Dockerfile": dockerfile, "claude_budget.py": budget,
+                      "rowboat_shim_huelle.py": huelle}.get(name, "# x\n")
             (kontext / name).write_text(inhalt, encoding="utf-8", newline="\n")
     return {"EVENT_SHIM_BAUKONTEXT": kontext.as_posix()}
 
@@ -714,6 +716,28 @@ def test_shim_baukontext_inhalt_geprueft(fall, dockerfile, budget, erwartet, pj:
 
 
 @braucht_bash
+def test_shim_alte_huelle_bricht_ab(pj: Projekt):
+    # Ohne VIBEMIND_BUDGET_ANTWORT antwortet der Shim bei leerem Budget weiter mit
+    # "LLM request failed." -- still falsch, darum Abbruch vor dem Bau.
+    pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web")
+    pj.tags()
+    lauf = pj.lauf("shim", umgebung=_shim_kontext(pj, huelle="# alt\n"))
+    assert lauf.returncode == 1 and "Budget-Antwort" in _aus(lauf)[1]
+    _shim_nichts_getan(pj)
+
+
+SHIM_DIENSTE = ("event-management-shim", "event-management-shim-empfang")
+
+
+def _beide_shims_neu_und_gesund(log: list[str]) -> None:
+    ups = [z for z in log if z.startswith("docker compose") and " up " in z]
+    assert len(ups) == 1, ups
+    assert all(d in ups[0].split() for d in SHIM_DIENSTE), ups[0]
+    for d in SHIM_DIENSTE:
+        assert any(z.startswith("docker inspect") and "Health" in z and z.split()[-1] == d for z in log), d
+
+
+@braucht_bash
 def test_shim_mit_baukontext_baut_gedeckelt_und_merkt_den_rueckweg(pj: Projekt):
     pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web")
     pj.tags()
@@ -724,10 +748,12 @@ def test_shim_mit_baukontext_baut_gedeckelt_und_merkt_den_rueckweg(pj: Projekt):
     builds = [z for z in log if z.startswith("docker build")]
     assert len(builds) == 1 and "--memory=4g" in builds[0]
     assert (pj.lz / "ausrollen" / "shim.vorher").read_text(encoding="utf-8").strip() == "sha256:vorher123"
+    _beide_shims_neu_und_gesund(log)
     pj.protokoll.unlink()
     zurueck = pj.lauf("zurueck", "shim")
     assert zurueck.returncode == 0, _aus(zurueck)[1]
     assert any(z.startswith("docker tag sha256:vorher123 event-management/shim:") for z in pj.log())
+    _beide_shims_neu_und_gesund(pj.log())
     assert not pj.stempel_da("shim")
 
 
@@ -1178,6 +1204,9 @@ def test_anleitung_handschritte_aus_dem_abschluss_review():
         assert stichwort in shim, stichwort
     assert "Ohne Baukontext" in shim and "bricht" in shim.split("Ohne Baukontext", 1)[1].split("\n- ", 1)[0]
     assert "legt den\n  Shim neu an. Sie sagt es laut" not in shim
+    # Empfangsbudget: die Phase legt beide Shims an, der Kontext braucht die neue Huelle.
+    for stichwort in ("event-management-shim-empfang", "VIBEMIND_BUDGET_ANTWORT", "Schritt 1"):
+        assert stichwort in shim, stichwort
 
 
 def test_keine_geheimnisse_oder_echten_ziele():

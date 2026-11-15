@@ -69,6 +69,7 @@ export PYTHONPATH
 
 CLAW=event-management-claw
 SHIM=event-management-shim
+SHIM_E=event-management-shim-empfang  # eigener Shim (eigenes Budget) nur fuer den Empfang main
 NETZ=event-agent
 MCP_IP=10.250.10.14
 LZ=laufzeit
@@ -425,13 +426,22 @@ phase_bauen() {
 }
 
 shim_gesund() {
-  local i s
+  local name=$1 i s
   for i in $(seq 1 "$GESUND_VERSUCHE"); do
-    s=$(docker inspect -f '{{.State.Health.Status}}' "$SHIM" 2>/dev/null || true)
+    s=$(docker inspect -f '{{.State.Health.Status}}' "$name" 2>/dev/null || true)
     [ "$s" = healthy ] && return 0
     sleep 2
   done
   return 1
+}
+
+# Beide Shims (Gruppen und Empfang) teilen Image und claude-token: immer zusammen neu anlegen.
+shims_neu_anlegen() {
+  local s
+  docker compose up -d --no-deps --force-recreate "$SHIM" "$SHIM_E" || abbruch "Shims nicht neu angelegt"
+  for s in "$SHIM" "$SHIM_E"; do
+    shim_gesund "$s" || abbruch "$s wird nicht gesund (docker logs $s ansehen, Rueckweg: zurueck shim)"
+  done
 }
 
 phase_shim() {
@@ -454,6 +464,8 @@ phase_shim() {
     [ -f "$k/$f" ] || abbruch "Baukontext unvollstaendig: $f fehlt (Rezept: ausrollen.md, Phase shim)"
   done
   grep -q '^def budget_warnung' "$k/claude_budget.py"     || abbruch "claude_budget.py im Baukontext ist alt (kein budget_warnung); das aus dem aeusseren Repo nehmen"
+  # Ohne VIBEMIND_BUDGET_ANTWORT kaeme bei leerem Budget weiter "LLM request failed." (M4).
+  grep -q 'VIBEMIND_BUDGET_ANTWORT' "$k/rowboat_shim_huelle.py"     || abbruch "rowboat_shim_huelle.py im Baukontext ist alt (keine Budget-Antwort); aus vibemind-os neu kopieren"
   # Compose-Healthcheck und SHIM_URL des Claw erwarten 0.0.0.0:8125, die Rowboat-Dockerfile
   # startet auf 127.0.0.1:8121.
   grep -Eq '^CMD .*"--host", *"0\.0\.0\.0", *"--port", *"8125"' "$k/Dockerfile"     || abbruch "Dockerfile im Baukontext startet den Shim nicht auf 0.0.0.0:8125 (CMD nach ausrollen.md anpassen)"
@@ -468,9 +480,8 @@ phase_shim() {
   export DOCKER_BUILDKIT=0
   docker build --memory="$BAU_SPEICHER" --memory-swap="$BAU_SPEICHER" -t "$img" "$k" </dev/null     || abbruch "Build shim fehlgeschlagen (Rueckweg: zurueck shim)"
   mkdir -p "$LZ/shim-budget"
-  docker compose up -d --no-deps --force-recreate "$SHIM" || abbruch "Shim nicht neu angelegt"
-  shim_gesund || abbruch "Shim wird nicht gesund (docker logs $SHIM ansehen, Rueckweg: zurueck shim)"
-  info "$SHIM: neu angelegt, gesund"
+  shims_neu_anlegen
+  info "$SHIM, $SHIM_E: neu angelegt, gesund"
   stempel shim
 }
 
@@ -596,8 +607,7 @@ phase_zurueck() {
       tags_laden
       if [ -f "$ST/shim.vorher" ]; then
         docker tag "$(cat "$ST/shim.vorher")" "$(shim_image)" || abbruch "vorheriges Image nicht mehr da"
-        docker compose up -d --no-deps --force-recreate "$SHIM"
-        shim_gesund || abbruch "Shim wird nicht gesund"
+        shims_neu_anlegen
         rm -f "${ST:?}/shim.vorher"
       else
         info "shim: es wurde nichts gebaut, nur neu angelegt; kein Image zurueckzusetzen."
