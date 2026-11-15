@@ -76,6 +76,7 @@ if [ -f "$_letzte.modus" ]; then cat "$_letzte.modus"; echo; else echo 600; fi
 
 DOCKER = r"""#!/bin/sh
 echo "docker $*" >> "$AR_PROTOKOLL"
+case "$1 $*" in "compose "*" up "*) echo "compose-env uid=${EVENT_UID:-} gid=${EVENT_GID:-}" >> "$AR_PROTOKOLL" ;; esac
 case "$1 $2" in
   "image inspect")
     [ -n "${FAKE_IMAGE_FEHLT:-}" ] && case "$*" in *"$FAKE_IMAGE_FEHLT"*) exit 1;; esac
@@ -460,6 +461,9 @@ def test_dienste_exportiert_tags_und_startet_nur_die_drei(pj: Projekt):
     assert ups == ["docker compose --profile event-system up -d event-api event-mcp event-web"]
     assert any("127.0.0.1:8171/gesund" in z for z in pj.log())
     assert pj.stempel_da("dienste")
+    # event-api/event-mcp laufen als Besitzer der Secret-Dateien (Compose: EVENT_UID/GID).
+    env = [z for z in pj.log() if z.startswith("compose-env")]
+    assert env and re.fullmatch(r"compose-env uid=\d+ gid=\d+", env[0]), env
 
 
 # --- pruefen ----------------------------------------------------------------------------------

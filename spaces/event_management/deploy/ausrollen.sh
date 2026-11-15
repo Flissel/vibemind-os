@@ -490,6 +490,8 @@ probe() {
 
 phase_dienste() {
   tags_laden
+  # event-api/event-mcp lesen die Secret-Dateien unter laufzeit/ (0600, dieser Nutzer).
+  EVENT_UID=$(id -u); EVENT_GID=$(id -g); export EVENT_UID EVENT_GID
   docker compose --profile event-system up -d event-api event-mcp event-web </dev/null \
     || abbruch "Dienste nicht gestartet (Rueckweg: zurueck dienste)"
   probe event-mcp http://127.0.0.1:8171/gesund ja

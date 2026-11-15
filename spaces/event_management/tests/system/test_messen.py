@@ -163,6 +163,15 @@ def test_nur_das_testpaar_wird_angefasst():
         assert not re.search(rf"\b{name}=\$\{{", shell), name  # keine Umgebung als Ziel
 
 
+def test_mcp_laeuft_als_besitzer_der_token_datei():
+    # Wie im Compose (EVENT_UID/GID): die Token-Datei unter laufzeit/messung ist 0600 und
+    # gehoert dem Host-Nutzer; als `event` (10001) aus dem Image war sie unlesbar.
+    shell = _shell()
+    start = shell.index('docker run -d --name "$MCP"')
+    aufruf = shell[start:shell.index("mcp_server", start)]
+    assert '--user "$(id -u):$(id -g)"' in aufruf, aufruf
+
+
 def test_images_wie_im_compose():
     k = _konstanten()
     dienste = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]

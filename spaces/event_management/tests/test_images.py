@@ -104,6 +104,15 @@ def test_compose_tags_pflicht() -> None:
         assert m.group(2) and "-" not in m.group(2), image
 
 
+def test_compose_system_dienste_laufen_als_besitzer_der_secrets() -> None:
+    # Datei-Secrets behalten im Compose (ohne Swarm) Besitzer und Modus der Host-Datei
+    # (laufzeit/*, 0600, debian). Als `event` (10001) aus dem Image waeren sie unlesbar;
+    # gefunden bei der Messung am 15.11. ("TELEGRAM_BOT_TOKEN_FILE nicht lesbar").
+    dienste = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]
+    for name in ("event-api", "event-mcp"):
+        assert dienste[name].get("user") == "${EVENT_UID:-1000}:${EVENT_GID:-1000}", name
+
+
 def test_compose_build_abschnitte() -> None:
     dienste = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]
     assert dienste["event-api"]["build"]["dockerfile"] == "Dockerfile.system"

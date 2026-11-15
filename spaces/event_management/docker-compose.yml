@@ -135,6 +135,10 @@ services:
     restart: unless-stopped
     init: true
     command: ["python", "-m", "spaces.event_management.system.api"]
+    # Datei-Secrets behalten ohne Swarm Besitzer und Modus der Host-Datei (laufzeit/*,
+    # 0600). Darum laeuft der Dienst als deren Besitzer statt als `event` aus dem Image;
+    # ausrollen.sh setzt EVENT_UID/EVENT_GID (Messung 15.11.).
+    user: "${EVENT_UID:-1000}:${EVENT_GID:-1000}"
     env_file:
       - path: ./laufzeit/event-app.env
         required: true
@@ -238,6 +242,10 @@ services:
     restart: unless-stopped
     init: true
     command: ["python", "-m", "spaces.event_management.system.mcp_server"]
+    # Datei-Secrets behalten ohne Swarm Besitzer und Modus der Host-Datei (laufzeit/*,
+    # 0600). Darum laeuft der Dienst als deren Besitzer statt als `event` aus dem Image;
+    # ausrollen.sh setzt EVENT_UID/EVENT_GID (Messung 15.11.).
+    user: "${EVENT_UID:-1000}:${EVENT_GID:-1000}"
     env_file:
       - path: ./laufzeit/event-app.env
         required: true
