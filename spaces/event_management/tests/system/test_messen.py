@@ -145,7 +145,8 @@ def _konstanten() -> dict[str, str]:
 
 def test_nur_das_testpaar_wird_angefasst():
     k = _konstanten()
-    for name in ("CLAW", "SHIM", "MCP", "PG", "VOL_STATE"):
+    assert k["SHIM_E"] == "event-messung-shim-empfang"
+    for name in ("CLAW", "SHIM", "SHIM_E", "MCP", "PG", "VOL_STATE"):
         assert k[name].startswith("event-messung-"), name
     shell = _shell()
     for verboten in ("event-management-claw", "event-management-shim", "docker compose",
@@ -155,12 +156,14 @@ def test_nur_das_testpaar_wird_angefasst():
         assert verboten not in shell, verboten
     # Jeder docker-Aufruf nennt ein Testobjekt ueber seine Konstante (nie einen Namen
     # aus einer Variablen der Umgebung).
-    testobjekt = re.compile(r"\$(CLAW|SHIM|MCP|PG|VOL_STATE)\b")
+    testobjekt = re.compile(r"\$(CLAW|SHIM|SHIM_E|MCP|PG|VOL_STATE)\b")
     for z in shell.splitlines():
         if re.search(r"\bdocker (run|exec|rm|logs|stats|inspect|volume)\b", z):
             assert testobjekt.search(z), z
-    for name in ("CLAW", "SHIM", "MCP", "PG", "VOL_STATE"):
+    for name in ("CLAW", "SHIM", "SHIM_E", "MCP", "PG", "VOL_STATE"):
         assert not re.search(rf"\b{name}=\$\{{", shell), name  # keine Umgebung als Ziel
+    # aufraeumen entfernt auch den Empfangs-Shim
+    assert re.search(r'docker rm -f [^\n]*"\$SHIM_E"', shell)
 
 
 def test_mcp_laeuft_als_besitzer_der_token_datei():
@@ -184,6 +187,69 @@ def test_images_wie_im_compose():
     shell = _shell()
     assert re.search(r"^SYSTEM_IMAGE=event-management/system:\$EVENT_SYSTEM_TAG$", shell, re.M)
     assert re.search(r'^: "\$\{EVENT_SYSTEM_TAG:\?[^}"]+\}"$', shell, re.M)
+
+
+def _docker_run(shell: str, name: str) -> str:
+    start = shell.index(f'docker run -d --name "{name}"')
+    return shell[start:shell.index(">/dev/null", start)]
+
+
+def _compose_antworten() -> dict[str, str]:
+    dienste = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]
+    return {d: dienste[d]["environment"]["VIBEMIND_BUDGET_ANTWORT"]
+            for d in ("event-management-shim", "event-management-shim-empfang")}
+
+
+# Wie im Compose: die Event-Huelle aus diesem Repo, read-only ueber der Basis des Images.
+HUELLE = "/opt/shim/event_shim_huelle.py"
+HUELLE_MOUNT = f'-v "$PWD/deploy/shim/event_shim_huelle.py:{HUELLE}:ro"'
+
+
+def test_empfangs_shim_im_testpaar():
+    shell = _shell()
+    empfang = _docker_run(shell, "$SHIM_E")
+    for teil in ('--network "container:$SHIM"', "--read-only", "--cap-drop ALL",
+                 "no-new-privileges:true", HUELLE_MOUNT,
+                 "-e VIBEMIND_AGENT=event-messung-empfang",
+                 '-e VIBEMIND_BUDGET_ANTWORT="$ANTWORT_EMPFANG"',
+                 f"python3 {HUELLE} --host 127.0.0.1 --port 8126"):
+        assert teil in empfang, teil
+    gruppen = _docker_run(shell, "$SHIM")
+    assert HUELLE_MOUNT in gruppen
+    assert f"python3 {HUELLE} --host 127.0.0.1 --port 8125" in gruppen
+    assert "rowboat" not in shell  # nicht die Rowboat-Huelle (Befund 15.11.)
+    assert '-e VIBEMIND_BUDGET_ANTWORT="$ANTWORT_GRUPPEN"' in gruppen
+    # Beide Budget-Agenten mit eigener Grenze; die Empfangsgrenze wird geprueft.
+    assert 'GRENZE_E=${MESS_EMPFANGSGRENZE:-3}' in shell
+    assert '[[ "$GRENZE_E" =~ ^[0-9]{1,3}$ ]] || abbruch "MESS_EMPFANGSGRENZE' in shell
+    assert "  event-messung-empfang:\n" in _text() and "tagesgrenze: $GRENZE_E" in _text()
+    # Die Texte stehen woertlich im Skript (Host-Python der VM hat kein yaml) und sind
+    # gleich denen im Compose.
+    texte = dict(re.findall(r"^(ANTWORT_GRUPPEN|ANTWORT_EMPFANG)='([^']+)'$", _text(), re.M))
+    compose = _compose_antworten()
+    assert texte["ANTWORT_GRUPPEN"] == compose["event-management-shim"]
+    assert texte["ANTWORT_EMPFANG"] == compose["event-management-shim-empfang"]
+
+
+def test_empfangsgrenze_keine_zahl_bricht_ab(attrappen, tmp_path):
+    bash = _bash()
+    if bash is None:
+        pytest.skip("keine bash")
+    ordner, protokoll = attrappen
+    deploy = tmp_path / "space" / "deploy"
+    deploy.mkdir(parents=True)
+    shutil.copy(SKRIPT, deploy / "messen.sh")
+    umgebung = {**os.environ, "PATH": str(ordner) + os.pathsep + os.environ.get("PATH", ""),
+                "MESS_PROTOKOLL": str(protokoll), "HOME": str(tmp_path),
+                "EVENT_SYSTEM_TAG": "test", "MESS_EMPFANGSGRENZE": "abc"}
+    lauf = subprocess.run([bash, str(deploy / "messen.sh"), SCHALTER, "vorbereiten"],
+                          input=f"{FAKE_TOKEN}\nx\ny\n".encode(), cwd=tmp_path, env=umgebung,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60, check=False)
+    fehler = lauf.stderr.decode("utf-8", "replace")
+    assert lauf.returncode == 1 and "MESS_EMPFANGSGRENZE" in fehler, fehler
+    aufrufe = protokoll.read_text(encoding="utf-8") if protokoll.exists() else ""
+    assert "docker" not in aufrufe, aufrufe
+    assert FAKE_TOKEN not in fehler
 
 
 def test_werte_nur_ueber_stdin():
@@ -261,6 +327,9 @@ def test_test_config_ohne_betrieb_und_ohne_platzhalter():
     assert config["gateway"]["bind"] == "loopback"
     assert config["gateway"]["auth"] == {"mode": "token", "token": "gateway-test"}
     assert config["models"]["providers"]["shim"]["baseUrl"] == "http://127.0.0.1:8125/v1"
+    assert config["models"]["providers"]["empfang"]["baseUrl"] == "http://127.0.0.1:8126/v1"
+    assert config["agents"]["list"][0]["model"]["primary"] == "empfang/claude-code-sonnet"
+    assert telegram["groupAllowFrom"] == ["*"]
     assert config["channels"]["whatsapp"] == {"enabled": False}
     assert set(dateien) == {"SOUL.md", "AGENTS.md"}
     assert "gruppe_melden" in dateien["SOUL.md"]
@@ -349,6 +418,17 @@ def test_m1_hat_gegenprobe_mit_fremder_chat_id():
     for begriff in ("Prüfcode", "Gegenprobe", "Gruppe B", "Chat-ID von Gruppe A",
                     "Abbruch auch, wenn die Gegenprobe"):
         assert begriff in m1, begriff
+
+
+def test_m4_misst_das_empfangsbudget():
+    m4 = _abschnitte()["M4"]
+    for begriff in ("MESS_EMPFANGSGRENZE=3", "viermal", "Empfangstext", "Gruppentext",
+                    "LLM request failed.", "event-messung-shim-empfang"):
+        assert begriff in m4, begriff
+
+
+def test_m5_entfaellt():
+    assert "entfällt (Felix 15.11.)" in _abschnitte()["M5"]
 
 
 def test_m5_prueft_getrennte_dm_sitzungen():

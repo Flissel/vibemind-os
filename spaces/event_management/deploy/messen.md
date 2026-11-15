@@ -21,8 +21,12 @@ Alternativen vor (Spec: „hält … an und legt Felix andere Wege vor“).
   der Live-Bot wäre dann gestört. Dazu kommen drei Test-Gruppen (A, B, „fremd“) und zwei
   Telegram-Konten: eines für die Leitung und ein zweites, unbekanntes für M5.
 - **Eigenes Budget.** Der Test-Shim hat eine eigene Budget-Datei mit Tagesgrenze
-  `MESS_TAGESGRENZE` (Vorgabe 5). Das Live-Budget wird nicht berührt. Der Test-Shim nutzt
-  aber dasselbe Claude-Code-Abo-Token wie der Betrieb, sein Verbrauch zählt also auf
+  `MESS_TAGESGRENZE` (Vorgabe 5). Der Empfang `main` läuft wie im Betrieb über einen
+  eigenen Shim (`event-messung-shim-empfang`, Grenze `MESS_EMPFANGSGRENZE`, Vorgabe 3).
+  Beide Test-Shims starten wie im Betrieb die Event-Hülle aus diesem Repo
+  (`deploy/shim/event_shim_huelle.py`, read-only über der Basis-Hülle des Images), gemessen
+  wird also die aktuelle Hülle ohne Neubau. Das Live-Budget wird nicht berührt. Die Test-Shims
+  nutzen aber dasselbe Claude-Code-Abo-Token wie der Betrieb, ihr Verbrauch zählt also auf
   dasselbe Kontingent.
 - **Schalter.** Ohne `--ich-habe-ok` beendet sich das Skript mit Code 2, ohne etwas
   auszuführen. Den Schalter setzt nur, wer Felix' OK hat und den Claim eingetragen hat.
@@ -79,7 +83,9 @@ zeigt Telegram Web in der Adresszeile. Sie kommt nur in die Pipe, nie in eine No
 **Frage:** Hat der Empfang `main` die Telegram-Chat-ID der Gruppe bzw. des Direktchats
 zuverlässig im Kontext und gibt er sie an `gruppe_melden`/`chat_melden` weiter?
 
-1. Testpaar und Testinstanz starten, den Test-Bot in Gruppe A aufnehmen.
+1. Testpaar und Testinstanz starten, den Test-Bot in Gruppe A aufnehmen. Absender sind
+   offen (`groupAllowFrom: ["*"]` kommt aus der Saat, Felix 15.11.); ein eigener
+   Test-Schritt dafür entfällt.
 2. `bash deploy/messen.sh --ich-habe-ok code A`. Den Code in Gruppe A mit @-Erwähnung
    des Test-Bots schicken.
 3. `printf '%s\n' "$CHAT_A" | bash deploy/messen.sh --ich-habe-ok pruefen`. Erwartet wird
@@ -167,19 +173,30 @@ ein Abbau nach 60 s noch antwortet.
 alle verbundenen Gruppen aller Firmen stilllegen? Das wäre ein mandantenübergreifender
 DoS.
 
-1. `MESS_TAGESGRENZE=5` beim Vorbereiten (Vorgabe). Gruppe A verbinden
-   (`printf '%s\n' "$CHAT_A" | bash deploy/messen.sh --ich-habe-ok anlegen <ev-A>`).
+Erste Messung (15.11.): Mit einem gemeinsamen Budget leerten Erwähnungen in „fremd“ das
+Budget der Gruppen, danach kam überall „LLM request failed.“. Entscheidung Felix 15.11.:
+Absender bleiben offen, der Empfang bekommt ein eigenes Budget (`event-messung-shim-empfang`,
+im Betrieb `event-management-shim-empfang` mit 50 je Tag), und bei leerem Budget antworten
+beide Shims mit einem freundlichen Text statt mit einem Fehler. Nachgemessen wird so:
+
+1. `MESS_TAGESGRENZE=5 MESS_EMPFANGSGRENZE=3` beim Vorbereiten (Vorgaben). Gruppe A
+   verbinden (`printf '%s\n' "$CHAT_A" | bash deploy/messen.sh --ich-habe-ok anlegen <ev-A>`).
    Den Test-Bot in die Gruppe „fremd“ aufnehmen, sie aber nicht verbinden.
-2. In „fremd“ fünfmal den Bot erwähnen. Notieren, wie viele Antworten kommen.
-3. Danach in Gruppe A schreiben. Notieren, ob eine Antwort kommt und was der Test-Shim
-   meldet (`protokoll`).
+2. In „fremd“ viermal den Bot erwähnen. Erwartet: drei Antworten, danach der Empfangstext
+   („Für heute ist mein Kontingent aufgebraucht. Ab morgen kann ich wieder Gruppen
+   verbinden.“).
+3. Danach in Gruppe A schreiben. Erwartet: eine normale Antwort (das Budget der Gruppen
+   ist unberührt). `protokoll` zeigt, welcher Shim gebucht hat.
 4. Ohne @-Erwähnung in „fremd“ schreiben. Erwartet wird keine Antwort und kein Verbrauch
    (`requireMention`).
+5. In Gruppe A weiterschreiben, bis die Gruppengrenze erreicht ist. Erwartet: der
+   Gruppentext („Für heute ist mein Kontingent aufgebraucht. Ab morgen antworte ich
+   wieder; Dringendes bitte direkt an die Orga.“), kein „LLM request failed.“.
 
-**Abbruchkriterium:** Erwähnungen in einer fremden Gruppe verbrauchen das Budget, das die
-verbundenen Gruppen brauchen, sodass Gruppe A nach Schritt 2 nicht mehr antwortet. Das ist
-laut Entwurf zu erwarten. Ausgerollt wird dann erst mit einer der Alternativen. Abbruch
-gilt auch, wenn in „fremd“ schon Nachrichten ohne Erwähnung Budget verbrauchen.
+**Abbruchkriterium:** Gruppe A antwortet nach Schritt 2 nicht normal (der Empfang zehrt
+noch vom Budget der Gruppen), oder irgendwo erscheint „LLM request failed.“ statt eines der
+beiden Texte. Abbruch gilt auch, wenn in „fremd“ schon Nachrichten ohne Erwähnung Budget
+verbrauchen.
 
 **Alternative (Etappe 4):**
 - **Eigenes Budget für den Empfang.** Ein zweiter Shim-Agent mit kleiner Tagesgrenze,
@@ -191,6 +208,10 @@ gilt auch, wenn in „fremd“ schon Nachrichten ohne Erwähnung Budget verbrauc
 - **Warnung bei 80 %** (im Review von Task 8 auf Etappe 4 verschoben).
 
 ## M5 `dmPolicy` und Pairing für `chat_melden`
+
+**Stand:** entfällt (Felix 15.11.). Der Direktchat bleibt bei der Vorgabe von OpenClaw;
+Leitungen werden über die Oberfläche verbunden. Die Schritte bleiben für eine spätere
+Messung stehen.
 
 **Frage:** Erreicht der Direktchat einer unbekannten Person (der Leitung vor dem Verbinden)
 überhaupt den Empfang `main`? Nur dann kann der Empfang `chat_melden` aufrufen. Die Saat

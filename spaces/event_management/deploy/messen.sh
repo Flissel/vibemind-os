@@ -9,8 +9,9 @@
 # fuer genau diese Messung hat und den Claim (WORKBOARD bzw. maschinenweite Koordination)
 # eingetragen hat.
 #
-# Ziel ist ausschliesslich das Testpaar event-messung-shim/-claw (dazu, ab `testinstanz`,
-# event-messung-pg/-mcp) mit eigenem Volume, eigenem Test-Bot und eigenem Budget. Der
+# Ziel ist ausschliesslich das Testpaar event-messung-shim/-claw mit dem Empfangs-Shim
+# event-messung-shim-empfang (dazu, ab `testinstanz`, event-messung-pg/-mcp) mit eigenem
+# Volume, eigenem Test-Bot und eigenem Budget. Der
 # Betrieb wird nie angefasst: kein `docker compose`, kein Container ohne Praefix
 # event-messung-, kein Live-Token. Alle Testcontainer teilen den Netz-Namensraum des
 # Test-Shims (`--network container:`): kein neues Docker-Netz (die Adresspools der VM sind
@@ -22,7 +23,10 @@
 # Schritte (Reihenfolge und Beobachtungen: messen.md):
 #   vorbereiten      Test-Shim und Test-Claw starten. stdin, 3 Zeilen: Token des
 #                    Test-Bots, Claude-Code-OAuth-Token, Gateway-Token (frei gewaehlt).
-#                    Tagesgrenze des Test-Shims: MESS_TAGESGRENZE (Vorgabe 5).
+#                    Tagesgrenze des Test-Shims: MESS_TAGESGRENZE (Vorgabe 5), des
+#                    Empfangs-Shims (nur `main`): MESS_EMPFANGSGRENZE (Vorgabe 3).
+#                    Beide Shims starten wie im Compose die Event-Huelle aus diesem
+#                    Repo (deploy/shim, read-only ueber der Basis-Huelle des Images).
 #   testinstanz      Wegwerf-Postgres + event-mcp (Image aus Etappe 4) mit Testdaten:
 #                    Firma, Leitung, "Messung A" (fest), "Messung B" (hackathon) und ihre
 #                    Schluessel; setzt den melden-Server des Empfangs (main).
@@ -36,7 +40,7 @@
 #                    Neustarts, `openclaw config validate`.
 #   protokoll [min]  Logs von Test-Claw und Test-MCP nach laufzeit/messung/.
 #   last <n>         n Platzhalter-Agenten anlegen, Speicher/Platte messen, wieder entfernen.
-#   aufraeumen       Testcontainer, Volume und laufzeit/messung entfernen.
+#   aufraeumen       Testcontainer (beide Shims), Volume und laufzeit/messung entfernen.
 set -eu
 umask 077
 
@@ -61,6 +65,7 @@ set -o pipefail
 # --- 1. Feste Ziele (nur Testobjekte) ------------------------------------------------
 CLAW=event-messung-claw
 SHIM=event-messung-shim
+SHIM_E=event-messung-shim-empfang
 MCP=event-messung-mcp
 PG=event-messung-pg
 VOL_STATE=event-messung-state
@@ -77,8 +82,12 @@ LZ=laufzeit/messung
 MCP_URL=http://127.0.0.1:8171/mcp
 ADMIN_DSN="host=127.0.0.1 port=5432 user=postgres dbname=postgres"
 APP_DSN="host=127.0.0.1 port=5432 user=event_mess dbname=postgres"
+# Freundliche Antwort bei leerem Tagesbudget, woertlich wie VIBEMIND_BUDGET_ANTWORT im
+# Compose (ein Test haelt sie gleich; der Host-Python der VM hat kein yaml).
+ANTWORT_GRUPPEN='Für heute ist mein Kontingent aufgebraucht. Ab morgen antworte ich wieder; Dringendes bitte direkt an die Orga.'
+ANTWORT_EMPFANG='Für heute ist mein Kontingent aufgebraucht. Ab morgen kann ich wieder Gruppen verbinden.'
 
-for ziel in "$CLAW" "$SHIM" "$MCP" "$PG" "$VOL_STATE"; do
+for ziel in "$CLAW" "$SHIM" "$SHIM_E" "$MCP" "$PG" "$VOL_STATE"; do
   case "$ziel" in
     event-messung-*) ;;
     *) echo "ABBRUCH: $ziel ist kein Testobjekt." >&2; exit 1 ;;
@@ -95,7 +104,7 @@ cr_weg() { printf '%s' "${1%$'\r'}"; }
 # --- 2. Eingebettete Programme ---------------------------------------------------------
 
 # Test-Config aus der Saat-VORLAGE (config/openclaw.json, ohne private Werte): nur der
-# Empfang `main`, keine Legacy-Gruppe (weder ev-legacy noch ihr Binding), keine Event-App, kein Brain; Test-Bot-Token und
+# Empfang `main` (ueber den Empfangs-Shim :8126; groupAllowFrom wie in der Saat), keine Legacy-Gruppe (weder ev-legacy noch ihr Binding), keine Event-App, kein Brain; Test-Bot-Token und
 # Gateway-Token von stdin. Ausgabe: JSON fuer SAAT_JS.
 SAAT_PY=$(cat <<'PY'
 import json
@@ -107,6 +116,7 @@ gw = sys.stdin.readline().rstrip("\r\n")
 c = json.loads(Path("config/openclaw.json").read_text(encoding="utf-8"))
 c["gateway"]["auth"] = {"mode": "token", "token": gw}
 c["models"]["providers"]["shim"]["baseUrl"] = "http://127.0.0.1:8125/v1"
+c["models"]["providers"]["empfang"]["baseUrl"] = "http://127.0.0.1:8126/v1"
 c["agents"]["list"] = [a for a in c["agents"]["list"] if a.get("id") == "main"]
 c["mcp"]["servers"] = {}
 c["bindings"] = []  # Legacy-Binding (ev-legacy, {{TELEGRAM_GRUPPE}}) gehoert zum Betrieb
@@ -376,6 +386,10 @@ shim_lebt() {
   docker exec "$SHIM" python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8125/v1/models', timeout=3)"
 }
 
+shim_e_lebt() {
+  docker exec "$SHIM_E" python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8126/v1/models', timeout=3)"
+}
+
 claw_lebt() {
   docker exec "$CLAW" node -e "fetch('http://127.0.0.1:19100/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 }
@@ -409,7 +423,7 @@ agent_pruefen() {
 }
 
 messung() {
-  docker stats --no-stream --format '{{.Name}}: {{.MemUsage}}' "$CLAW" "$SHIM"
+  docker stats --no-stream --format '{{.Name}}: {{.MemUsage}}' "$CLAW" "$SHIM" "$SHIM_E"
   docker exec "$CLAW" du -sk /home/node/.openclaw | sed 's/[[:space:]].*/ KiB im Zustand des Claws/'
   grep -E '^(MemAvailable|SwapFree):' /proc/meminfo
 }
@@ -426,7 +440,11 @@ vorbereiten() {
   [ -n "$GW" ] || abbruch "Zeile 3 (Gateway-Token) ist leer."
   GRENZE=${MESS_TAGESGRENZE:-5}
   [[ "$GRENZE" =~ ^[0-9]{1,3}$ ]] || abbruch "MESS_TAGESGRENZE ist keine Zahl bis 999."
-  if docker inspect "$CLAW" >/dev/null 2>&1 || docker inspect "$SHIM" >/dev/null 2>&1; then
+  GRENZE_E=${MESS_EMPFANGSGRENZE:-3}
+  [[ "$GRENZE_E" =~ ^[0-9]{1,3}$ ]] || abbruch "MESS_EMPFANGSGRENZE ist keine Zahl bis 999."
+  [ -f deploy/shim/event_shim_huelle.py ] || abbruch "deploy/shim/event_shim_huelle.py fehlt."
+  if docker inspect "$CLAW" >/dev/null 2>&1 || docker inspect "$SHIM" >/dev/null 2>&1 \
+     || docker inspect "$SHIM_E" >/dev/null 2>&1; then
     abbruch "Testpaar existiert schon (erst: aufraeumen)."
   fi
 
@@ -434,7 +452,7 @@ vorbereiten() {
   printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$CC" >"$LZ/claude-token"
   printf '%s\n' "$TG" >"$LZ/telegram-token"
   cat >"$LZ/agent_budget.yaml" <<EOF
-# Budget des TEST-Shims (Messung). Nur dieser Test-Agent, kleine Tagesgrenze.
+# Budget der TEST-Shims (Messung): Gruppen und Empfang getrennt, kleine Tagesgrenzen.
 uebergang_unbekannte_zulassen: false
 pause_bei_user_aktiv: false
 pause_fenster_min: 10
@@ -447,18 +465,39 @@ agenten:
     modell: sonnet
     tagesgrenze: $GRENZE
     wrapper: shim
+  event-messung-empfang:
+    bereich: event-management
+    klasse: auftrag
+    modell: sonnet
+    tagesgrenze: $GRENZE_E
+    wrapper: shim
 EOF
-  echo "laufzeit/messung: Schluesseldateien und Budget (Tagesgrenze $GRENZE) geschrieben"
+  echo "laufzeit/messung: Schluesseldateien und Budget (Tagesgrenzen $GRENZE / Empfang $GRENZE_E) geschrieben"
 
   docker run -d --name "$SHIM" --init --read-only \
     --tmpfs /tmp:size=256m --tmpfs /home/node:size=256m \
     --security-opt no-new-privileges:true --cap-drop ALL \
     --env-file "$LZ/claude-token" -e SHIM_TOOL_CALLS=1 -e VIBEMIND_AGENT="$CLAW" \
     -e VIBEMIND_BUDGET_DIR=/budget -e VIBEMIND_BUDGET_CONFIG=/opt/event/agent_budget.yaml \
+    -e VIBEMIND_BUDGET_ANTWORT="$ANTWORT_GRUPPEN" \
     -v "$PWD/$LZ/shim-budget:/budget" \
     -v "$PWD/$LZ/agent_budget.yaml:/opt/event/agent_budget.yaml:ro" \
-    "$SHIM_IMAGE" >/dev/null
+    -v "$PWD/deploy/shim/event_shim_huelle.py:/opt/shim/event_shim_huelle.py:ro" \
+    "$SHIM_IMAGE" python3 /opt/shim/event_shim_huelle.py --host 127.0.0.1 --port 8125 >/dev/null
   warten "Test-Shim /v1/models" shim_lebt
+
+  # Empfangs-Shim: nur fuer `main`, eigener Budget-Agent, im Netz des Test-Shims auf :8126.
+  docker run -d --name "$SHIM_E" --network "container:$SHIM" --init --read-only \
+    --tmpfs /tmp:size=256m --tmpfs /home/node:size=256m \
+    --security-opt no-new-privileges:true --cap-drop ALL \
+    --env-file "$LZ/claude-token" -e SHIM_TOOL_CALLS=1 -e VIBEMIND_AGENT=event-messung-empfang \
+    -e VIBEMIND_BUDGET_DIR=/budget -e VIBEMIND_BUDGET_CONFIG=/opt/event/agent_budget.yaml \
+    -e VIBEMIND_BUDGET_ANTWORT="$ANTWORT_EMPFANG" \
+    -v "$PWD/$LZ/shim-budget:/budget" \
+    -v "$PWD/$LZ/agent_budget.yaml:/opt/event/agent_budget.yaml:ro" \
+    -v "$PWD/deploy/shim/event_shim_huelle.py:/opt/shim/event_shim_huelle.py:ro" \
+    "$SHIM_IMAGE" python3 /opt/shim/event_shim_huelle.py --host 127.0.0.1 --port 8126 >/dev/null
+  warten "Empfangs-Shim /v1/models" shim_e_lebt
 
   printf '%s\n%s\n' "$TG" "$GW" | python3 -c "$SAAT_PY" \
     | docker run --rm -i -v "$VOL_STATE:/home/node/.openclaw" --entrypoint node "$CLAW_IMAGE" -e "$SAAT_JS"
@@ -555,7 +594,7 @@ last() {
 }
 
 aufraeumen() {
-  docker rm -f "$CLAW" "$MCP" "$PG" "$SHIM" >/dev/null 2>&1 || true
+  docker rm -f "$CLAW" "$MCP" "$PG" "$SHIM_E" "$SHIM" >/dev/null 2>&1 || true
   docker volume rm "$VOL_STATE" >/dev/null 2>&1 || true
   rm -rf "$LZ"
   echo "Testpaar, Volume und $LZ entfernt"
