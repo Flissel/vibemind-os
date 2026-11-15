@@ -179,6 +179,8 @@ class Projekt:
             shutil.copy(DEPLOY / name, self.space / "deploy" / name)
         for name in ("docker-compose.yml", "werte.beispiel.json", "requirements.txt"):
             shutil.copy(SPACE / name, self.space / name)
+        (self.space / "deploy" / "shim").mkdir()
+        shutil.copy(DEPLOY / "shim" / "event_shim_huelle.py", self.space / "deploy" / "shim")
         _schreibe(self.space / "deploy" / "anbinden.sh", ANBINDEN)
         self.bin = tmp / "bin"
         self.bin.mkdir()
@@ -639,25 +641,32 @@ def test_migrieren_pg_14_bricht_ab(pj: Projekt):
 # --- shim ---------------------------------------------------------------------------------------
 
 
-SHIM_DATEIEN = ("Dockerfile", "start.sh", "rowboat_shim_huelle.py", "claude_code_openai_shim.py",
+SHIM_DATEIEN = ("Dockerfile", "start.sh", "shim_huelle.py", "claude_code_openai_shim.py",
                 "claude_code_openai_tools.py", "claude_budget.py", "agent_budget.yaml")
-# So sieht die Dockerfile nach dem Rezept in ausrollen.md aus: CMD auf 0.0.0.0:8125 (Healthcheck
-# im Compose und SHIM_URL des Claw), nicht 127.0.0.1:8121 wie beim Rowboat-Shim.
+# So sieht die Dockerfile aus bewerbung (deploy/bot/shim) nach dem Rezept in ausrollen.md aus:
+# COPY flach (kein --from=fremd, der Legacy-Builder kennt keine benannten Kontexte), CMD auf
+# 0.0.0.0:8125 (Healthcheck im Compose und SHIM_URL des Claw).
 SHIM_DOCKERFILE = ('FROM scratch\n'
-                   'CMD ["python3", "/opt/shim/rowboat_shim_huelle.py", "--host", "0.0.0.0", "--port", "8125"]\n')
+                   'COPY claude_code_openai_shim.py claude_code_openai_tools.py claude_budget.py /opt/shim/\n'
+                   'CMD ["python3", "/opt/shim/shim_huelle.py", "--host", "0.0.0.0", "--port", "8125"]\n')
+FREMD_DOCKERFILE = SHIM_DOCKERFILE.replace("COPY claude", "COPY --from=fremd claude")
 ROWBOAT_CMD = 'CMD ["python3", "/opt/shim/rowboat_shim_huelle.py", "--host", "127.0.0.1", "--port", "8121"]\n'
+# Die Basis-Huelle aus bewerbung: ihre Schutzfunktionen und `umhuellen` (darauf setzt die
+# Event-Huelle auf) muessen da sein.
+BASIS_FUNKTIONEN = ("eingebaute_werkzeuge_aus", "transkripte_aufraeumen", "umhuellen")
+BASIS_HUELLE = "".join(f"def {f}(*a):\n    pass\n" for f in BASIS_FUNKTIONEN)
 
 
 def _shim_kontext(pj: Projekt, *, ohne: str = "", dockerfile: str = SHIM_DOCKERFILE,
                   budget: str = "def budget_warnung(agent, heute, grenze):\n    pass\n",
-                  huelle: str = "# liest VIBEMIND_BUDGET_ANTWORT\n") -> dict[str, str]:
+                  huelle: str = BASIS_HUELLE) -> dict[str, str]:
     # ausserhalb der Projektkopie (= Repo im Test), R-3
     kontext = pj.wurzel.parent / f"shim-kontext-{pj.wurzel.name}"
     kontext.mkdir(exist_ok=True)
     for name in SHIM_DATEIEN:
         if name != ohne:
             inhalt = {"Dockerfile": dockerfile, "claude_budget.py": budget,
-                      "rowboat_shim_huelle.py": huelle}.get(name, "# x\n")
+                      "shim_huelle.py": huelle}.get(name, "# x\n")
             (kontext / name).write_text(inhalt, encoding="utf-8", newline="\n")
     return {"EVENT_SHIM_BAUKONTEXT": kontext.as_posix()}
 
@@ -703,8 +712,9 @@ def test_shim_baukontext_unvollstaendig_bricht_ab(fehlt, pj: Projekt):
 @braucht_bash
 @pytest.mark.parametrize("fall,dockerfile,budget,erwartet", [
     ("altes claude_budget", SHIM_DOCKERFILE, "def pruefen(agent):\n    pass\n", "budget_warnung"),
-    ("Rowboat-CMD unveraendert", "FROM scratch\n" + ROWBOAT_CMD, None, "8125"),
+    ("Rowboat-CMD", "FROM scratch\n" + ROWBOAT_CMD, None, "8125"),
     ("ohne CMD", "FROM scratch\n", None, "8125"),
+    ("benannter Kontext fremd", FREMD_DOCKERFILE, None, "--from=fremd"),
 ])
 def test_shim_baukontext_inhalt_geprueft(fall, dockerfile, budget, erwartet, pj: Projekt):
     pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web")
@@ -716,13 +726,28 @@ def test_shim_baukontext_inhalt_geprueft(fall, dockerfile, budget, erwartet, pj:
 
 
 @braucht_bash
-def test_shim_alte_huelle_bricht_ab(pj: Projekt):
-    # Ohne VIBEMIND_BUDGET_ANTWORT antwortet der Shim bei leerem Budget weiter mit
-    # "LLM request failed." -- still falsch, darum Abbruch vor dem Bau.
+@pytest.mark.parametrize("fehlt", BASIS_FUNKTIONEN)
+def test_shim_basis_huelle_ohne_schutz_bricht_ab(fehlt, pj: Projekt):
+    # Eine andere Huelle (etwa die Rowboat-Huelle) liesse die eingebauten CLI-Werkzeuge an
+    # und die Transkripte im tmpfs-HOME liegen -- still falsch, darum Abbruch vor dem Bau.
     pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web")
     pj.tags()
-    lauf = pj.lauf("shim", umgebung=_shim_kontext(pj, huelle="# alt\n"))
-    assert lauf.returncode == 1 and "Budget-Antwort" in _aus(lauf)[1]
+    huelle = "".join(f"def {f}(*a):\n    pass\n" for f in BASIS_FUNKTIONEN if f != fehlt)
+    lauf = pj.lauf("shim", umgebung=_shim_kontext(pj, huelle=huelle))
+    fehler = _aus(lauf)[1]
+    assert lauf.returncode == 1 and "shim_huelle.py" in fehler and fehlt in fehler
+    _shim_nichts_getan(pj)
+
+
+@braucht_bash
+def test_shim_ohne_event_huelle_bricht_ab(pj: Projekt):
+    # Compose haengt deploy/shim/event_shim_huelle.py ein; fehlt sie, legte Docker einen
+    # leeren Ordner an und der Shim startete nicht.
+    pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web")
+    pj.tags()
+    (pj.space / "deploy" / "shim" / "event_shim_huelle.py").unlink()
+    lauf = pj.lauf("shim", umgebung=_shim_kontext(pj))
+    assert lauf.returncode == 1 and "event_shim_huelle.py" in _aus(lauf)[1]
     _shim_nichts_getan(pj)
 
 
@@ -1197,16 +1222,19 @@ def test_anleitung_handschritte_aus_dem_abschluss_review():
     assert "bereitstellung.timer" in anbinden and "--ich-habe-ok timer" in anbinden
 
     shim = _abschnitt(text, "6. `shim`")
-    for stichwort in ("spaces/rowboat/deploy/headless/shim", "claude_code_openai_shim.py",
-                      "claude_code_openai_tools.py", "rowboat_shim_huelle.py", "start.sh",
+    for stichwort in ("deploy/bot/shim", "claude_code_openai_shim.py",
+                      "claude_code_openai_tools.py", "shim_huelle.py", "start.sh",
                       "scripts/claude_budget.py", "agent_budget.yaml", "budget_warnung",
                       "0.0.0.0", "8125", "EVENT_SHIM_BAUKONTEXT"):
         assert stichwort in shim, stichwort
     assert "Ohne Baukontext" in shim and "bricht" in shim.split("Ohne Baukontext", 1)[1].split("\n- ", 1)[0]
     assert "legt den\n  Shim neu an. Sie sagt es laut" not in shim
     # Empfangsbudget: die Phase legt beide Shims an, der Kontext braucht die neue Huelle.
-    for stichwort in ("event-management-shim-empfang", "VIBEMIND_BUDGET_ANTWORT", "Schritt 1"):
+    for stichwort in ("event-management-shim-empfang", "VIBEMIND_BUDGET_ANTWORT",
+                      "event_shim_huelle.py", "eingebaute_werkzeuge_aus", "--from=fremd",
+                      "transkripte_aufraeumen"):
         assert stichwort in shim, stichwort
+    assert "spaces/rowboat/deploy/headless/shim" not in shim  # falsche Basis (15.11.)
 
 
 def test_keine_geheimnisse_oder_echten_ziele():

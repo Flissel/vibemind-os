@@ -448,7 +448,7 @@ phase_shim() {
   tags_laden
   local img k f
   img=$(shim_image)
-  # Das Image backt claude_budget.py ein (rowboat/deploy/headless/shim/Dockerfile). Ohne
+  # Das Image backt claude_budget.py ein (bewerbung: deploy/bot/shim/Dockerfile). Ohne
   # Neubau bliebe die alte Fassung ohne 80-%-Warnung im Shim; darum ist der Baukontext Pflicht
   # (Abschluss-Review F-5). Er liegt nicht in diesem Repo; das Rezept steht in ausrollen.md.
   k=${EVENT_SHIM_BAUKONTEXT:-}
@@ -460,14 +460,25 @@ phase_shim() {
   case "$k_echt/" in
     "$repo_echt/"*) abbruch "Baukontext liegt im Repo: private Shim-Module gehoeren nicht ins oeffentliche Repo (Ordner ausserhalb anlegen, ausrollen.md Phase shim)" ;;
   esac
-  for f in Dockerfile start.sh rowboat_shim_huelle.py claude_code_openai_shim.py            claude_code_openai_tools.py claude_budget.py agent_budget.yaml; do
+  for f in Dockerfile start.sh shim_huelle.py claude_code_openai_shim.py            claude_code_openai_tools.py claude_budget.py agent_budget.yaml; do
     [ -f "$k/$f" ] || abbruch "Baukontext unvollstaendig: $f fehlt (Rezept: ausrollen.md, Phase shim)"
   done
   grep -q '^def budget_warnung' "$k/claude_budget.py"     || abbruch "claude_budget.py im Baukontext ist alt (kein budget_warnung); das aus dem aeusseren Repo nehmen"
-  # Ohne VIBEMIND_BUDGET_ANTWORT kaeme bei leerem Budget weiter "LLM request failed." (M4).
-  grep -q 'VIBEMIND_BUDGET_ANTWORT' "$k/rowboat_shim_huelle.py"     || abbruch "rowboat_shim_huelle.py im Baukontext ist alt (keine Budget-Antwort); aus vibemind-os neu kopieren"
-  # Compose-Healthcheck und SHIM_URL des Claw erwarten 0.0.0.0:8125, die Rowboat-Dockerfile
-  # startet auf 127.0.0.1:8121.
+  # Basis ist die Huelle aus bewerbung (15.11.): nur sie schaltet die eingebauten
+  # CLI-Werkzeuge ab und raeumt die Transkripte im tmpfs-HOME auf; auf ihr `umhuellen` setzt
+  # deploy/shim/event_shim_huelle.py (die freundliche Budget-Antwort) auf.
+  for f in eingebaute_werkzeuge_aus transkripte_aufraeumen umhuellen; do
+    grep -q "^def $f(" "$k/shim_huelle.py" \
+      || abbruch "shim_huelle.py im Baukontext ohne $f: nicht die Basis-Huelle aus bewerbung (deploy/bot/shim)"
+  done
+  [ -f deploy/shim/event_shim_huelle.py ] \
+    || abbruch "deploy/shim/event_shim_huelle.py fehlt (Compose haengt sie in beide Shims ein)"
+  # Gebaut wird mit dem Legacy-Builder (unten): der kennt keine benannten Kontexte.
+  if grep -q -- '--from=fremd' "$k/Dockerfile"; then
+    abbruch "Dockerfile im Baukontext nutzt --from=fremd: der Legacy-Builder kennt keine benannten Kontexte (COPY flach machen, ausrollen.md Phase shim)"
+  fi
+  # Compose-Healthcheck und SHIM_URL des Claw erwarten 0.0.0.0:8125 (Compose startet zwar die
+  # Event-Huelle per command, die CMD bleibt aber der Rueckfall).
   grep -Eq '^CMD .*"--host", *"0\.0\.0\.0", *"--port", *"8125"' "$k/Dockerfile"     || abbruch "Dockerfile im Baukontext startet den Shim nicht auf 0.0.0.0:8125 (CMD nach ausrollen.md anpassen)"
   docker image inspect "$img" >/dev/null 2>&1 || abbruch "Image $img fehlt (Quelle: bewerbung-bot, siehe ausrollen.md)"
   bau_speicher_pruefen

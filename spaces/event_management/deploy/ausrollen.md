@@ -171,14 +171,24 @@ das Skript nicht an.
 
 ### 6. `shim`  (`--ich-habe-ok shim`)
 
-Der Shim backt `claude_budget.py` beim Bauen ein (`spaces/rowboat/deploy/headless/shim/
-Dockerfile`, Zeile `COPY … claude_budget.py …`); ein Mount ist es nicht. Ohne neuen Bau
-kennt der laufende Shim `warnen_ab` nicht und warnt nie. Das bisherige Image
+Der Shim backt `claude_budget.py` beim Bauen ein (Dockerfile aus dem Repo bewerbung,
+`deploy/bot/shim/Dockerfile`, Zeile `COPY … claude_budget.py …`); ein Mount ist es nicht.
+Ohne neuen Bau kennt der laufende Shim `warnen_ab` nicht und warnt nie. Das bisherige Image
 `event-management/shim:…` ist ein vom Controller umgetaggtes Image aus dem
 bewerbung-bot-Bestand; dessen Baukontext liegt nicht in diesem Repo. Darum stellt man den
 Kontext nach diesem Rezept zusammen und nennt ihn in `EVENT_SHIM_BAUKONTEXT`.
 
-**Rezept für den Baukontext** (auf dem Rechner mit beiden Repos, danach als Ordner auf den
+**Basis ist die Hülle aus bewerbung** (`shim_huelle.py`, Befund 15.11.). Nur sie schaltet
+die eingebauten Werkzeuge der Claude-CLI ab (`eingebaute_werkzeuge_aus`: kein Datei-Lesen,
+keine Befehle im Container mit dem OAuth-Token) und räumt die Transkripte im tmpfs-HOME auf
+(`transkripte_aufraeumen`, sonst ENOSPC nach wenigen Tagen). Die Rowboat-Hülle
+(`spaces/rowboat/…`) kann beides nicht und ist hier falsch. Die freundliche Antwort bei
+leerem Budget (`VIBEMIND_BUDGET_ANTWORT`) kommt nicht aus dem Image, sondern aus
+`deploy/shim/event_shim_huelle.py` in diesem Repo: Compose hängt sie read-only in beide
+Shims und startet sie per `command`. Sie lädt die Basis-Hülle und ersetzt nur deren
+`umhuellen`. Änderungen an ihr brauchen also keinen Neubau, nur ein Neuanlegen der Shims.
+
+**Rezept für den Baukontext** (auf dem Rechner mit allen Repos, danach als Ordner auf den
 Host; nur Dateien, keine Werte). Der Ordner liegt **außerhalb des Repos**: die Shim-Module
 sind privat, das Repo ist öffentlich; liegt der Kontext im Repo, bricht die Phase ab:
 
@@ -186,17 +196,16 @@ sind privat, das Repo ist öffentlich; liegt der Kontext im Repo, bricht die Pha
 umask 077
 K=$HOME/event-shim-kontext
 mkdir -p "$K"
-# 1. Aus vibemind-os: Dockerfile, Start-Skript und Budget-Huelle des Rowboat-Shims.
-cp spaces/rowboat/deploy/headless/shim/Dockerfile \
-   spaces/rowboat/deploy/headless/shim/start.sh \
-   spaces/rowboat/deploy/headless/shim/rowboat_shim_huelle.py "$K/"
-# 2. Der Event-Shim lauscht auf 0.0.0.0:8125 (Compose-Healthcheck, SHIM_URL des Claw),
-#    der Rowboat-Shim auf 127.0.0.1:8121: nur die CMD-Zeile der Kopie anpassen.
-sed -i 's/"--host", "127.0.0.1", "--port", "8121"/"--host", "0.0.0.0", "--port", "8125"/' "$K/Dockerfile"
+# 1. Aus dem Repo bewerbung: Dockerfile, Start-Skript, Basis-Huelle (und deren Budget-Datei,
+#    die die Dockerfile kopiert; im Betrieb gilt die gemountete deploy/agent_budget.yaml).
+cp <bewerbung>/deploy/bot/shim/Dockerfile <bewerbung>/deploy/bot/shim/start.sh \
+   <bewerbung>/deploy/bot/shim/shim_huelle.py "$K/"
+# 2. Die Phase baut mit dem Legacy-Builder (DOCKER_BUILDKIT=0); der kennt den benannten
+#    Kontext `fremd` nicht. Alles liegt flach in $K: COPY --from=fremd zu COPY machen.
+sed -i 's/^COPY --from=fremd /COPY /' "$K/Dockerfile"
 # 3. Aus dem äußeren Repo: claude_budget.py mit `budget_warnung` (Stand nach dem Budget-Commit).
 cp <äußeres-repo>/scripts/claude_budget.py "$K/"
-# 4. Shim und Werkzeugmodul: dieselben Dateien wie für den Rowboat-Shim (bauen.ps1,
-#    Quelle am PC `~/.local/bin`, nicht im Repo).
+# 4. Shim und Werkzeugmodul (Quelle am PC `~/.local/bin`, nicht im Repo).
 cp <shim-quelle>/claude_code_openai_shim.py <shim-quelle>/claude_code_openai_tools.py "$K/"
 # 5. agent_budget.yaml verlangt nur das COPY der Dockerfile; im Betrieb liest der Shim die
 #    gemountete deploy/agent_budget.yaml (VIBEMIND_BUDGET_CONFIG im Compose).
@@ -204,13 +213,12 @@ cp spaces/event_management/deploy/agent_budget.yaml "$K/"
 ```
 
 Die Phase prüft vor jedem Docker-Aufruf: alle sieben Dateien da (`Dockerfile`, `start.sh`,
-`rowboat_shim_huelle.py`, `claude_code_openai_shim.py`, `claude_code_openai_tools.py`,
-`claude_budget.py`, `agent_budget.yaml`), `claude_budget.py` hat `budget_warnung`, die CMD
-der Dockerfile startet auf `0.0.0.0` und `8125`, und `rowboat_shim_huelle.py` kennt
-`VIBEMIND_BUDGET_ANTWORT`. Sonst Abbruch ohne Stempel. Fehlt nur die Budget-Antwort, ist
-die Hülle im Kontext alt: Rezept Schritt 1 neu ausführen (aktuelle Hülle aus vibemind-os
-kopieren). Ohne sie antwortet der Shim bei leerem Budget weiter mit „LLM request failed.“
-statt mit dem freundlichen Text.
+`shim_huelle.py`, `claude_code_openai_shim.py`, `claude_code_openai_tools.py`,
+`claude_budget.py`, `agent_budget.yaml`), `claude_budget.py` hat `budget_warnung`,
+`shim_huelle.py` hat `eingebaute_werkzeuge_aus`, `transkripte_aufraeumen` und `umhuellen`
+(sonst ist es nicht die Basis aus bewerbung), `deploy/shim/event_shim_huelle.py` liegt im
+Repo, die Dockerfile nutzt kein `--from=fremd` mehr (Rezept Schritt 2) und ihre CMD startet
+auf `0.0.0.0` und `8125`. Sonst Abbruch ohne Stempel.
 
 Aus demselben Image laufen **zwei Shims**: `event-management-shim` (Gruppen-Agenten,
 Budget-Agent `event-management`) und `event-management-shim-empfang` (nur der Empfang
