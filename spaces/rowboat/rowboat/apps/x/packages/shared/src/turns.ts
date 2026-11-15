@@ -1,4 +1,4 @@
-// Modified for VibeMind (Flissel/rowboat vibemind): turn_created.config.channel (channel-run restrictions) and config.sandbox (headless runs).
+// Modified for VibeMind (Flissel/rowboat vibemind): turn_created.config.channel (channel-run restrictions) and config.sandbox (headless runs); tool_invocation_requested.trustedMcp.
 import { z } from "zod";
 import {
     AssistantContentPart,
@@ -394,6 +394,19 @@ export const ToolInvocationRequested = z.object({
     toolName: z.string(),
     execution: z.enum(["sync", "async"]),
     input: z.json(),
+    // Modified for VibeMind (Flissel/rowboat vibemind): present only when the
+    // call runs WITHOUT a permission prompt because it is on the trusted MCP
+    // list (vertraute-mcp-werkzeuge.ts). Records why no prompt appeared and
+    // which entry URL the check accepted; the executor refuses if the entry it
+    // uses no longer matches.
+    trustedMcp: z
+        .object({
+            source: z.literal("vertraut"),
+            serverName: z.string(),
+            toolName: z.string(),
+            url: z.string(),
+        })
+        .optional(),
 });
 
 export const ToolProgress = z.object({

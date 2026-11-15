@@ -44,6 +44,22 @@ describe('deriveSpacesMcpServers', () => {
         expect(entries['spaces-rowboat-labs-dev-gagan']!.headers.authorization).toBe('Bearer dev-gagan');
     });
 
+    // Modified for VibeMind (Flissel/rowboat vibemind): a derived entry can never shadow an mcp.json entry
+    // outside the spaces- namespace, e.g. the trusted "rowboat-auftraege" (vertraute-mcp-werkzeuge.ts).
+    it('derived names always start with "spaces-", whatever the org is called', () => {
+        const entries = deriveSpacesMcpServers([
+            org({ id: 'org-1', name: 'rowboat-auftraege' }),
+            org({ id: 'rowboat-auftraege', name: '***' }),
+            org({ id: 'org-3', name: 'rowboat-auftraege' }),
+            org({ id: 'org-4', name: 'rowboat-auftraege', memberId: 'x' }),
+        ]);
+        expect(Object.keys(entries)).toHaveLength(4);
+        for (const name of Object.keys(entries)) {
+            expect(name.startsWith('spaces-'), name).toBe(true);
+        }
+        expect(entries).not.toHaveProperty('rowboat-auftraege');
+    });
+
     it('falls back to the org id when the name slugs to nothing, and on a full name+member collision', () => {
         const unnamed = deriveSpacesMcpServers([org({ id: 'org-1', name: '***' })]);
         expect(Object.keys(unnamed)).toEqual(['spaces-org-1']);

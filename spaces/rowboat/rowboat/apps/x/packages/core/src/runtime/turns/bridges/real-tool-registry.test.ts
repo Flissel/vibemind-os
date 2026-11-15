@@ -193,6 +193,29 @@ describe("RealToolRegistry", () => {
         expect(calls[1].ctx).not.toHaveProperty("headlessSandbox");
     });
 
+    // Modified for VibeMind (Flissel/rowboat vibemind): the trusted-call marker reaches the executor.
+    it("passes trustedMcp into the ToolContext only when set (builtin and mcp attachments)", async () => {
+        const { registry, calls } = makeRegistry(async () => ({ ok: 1 }));
+        const trustedMcp = {
+            serverName: "rowboat-auftraege",
+            toolName: "video_auftrag_aus_konzept",
+            url: "http://127.0.0.1:8156/mcp",
+        };
+        const builtinTool = (await registry.resolve(descriptor())) as SyncRuntimeTool;
+        const mcpTool = (await registry.resolve(
+            descriptor({
+                toolId: "mcp:rowboat-auftraege:video_auftrag_aus_konzept",
+                name: "video_auftrag_aus_konzept",
+            }),
+        )) as SyncRuntimeTool;
+        await builtinTool.execute({}, makeCtx({ trustedMcp }));
+        await mcpTool.execute({}, makeCtx({ trustedMcp }));
+        await mcpTool.execute({}, makeCtx());
+        expect(calls[0].ctx.trustedMcp).toEqual(trustedMcp);
+        expect(calls[1].ctx.trustedMcp).toEqual(trustedMcp);
+        expect(calls[2].ctx).not.toHaveProperty("trustedMcp");
+    });
+
     it("re-keys registry calls a tool makes with ctx.runId to the call scope", async () => {
         // Builtins address the abort registry with ctx.runId (the turn id).
         // The scoped wrapper must pin those to the per-call key, or a

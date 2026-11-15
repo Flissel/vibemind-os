@@ -1,5 +1,6 @@
-// Modified for VibeMind (Flissel/rowboat vibemind): ToolContext.channel / autorunContentForbidden / headlessSandbox, channel quarantine (Teil E).
+// Modified for VibeMind (Flissel/rowboat vibemind): ToolContext.channel / autorunContentForbidden / headlessSandbox, channel quarantine (Teil E); ToolContext.trustedMcp.
 import { ToolAttachment } from "@x/shared/dist/agent.js";
+import type { VertrauterMcpAufruf } from "@x/shared/dist/vertraute-mcp-werkzeuge.js";
 import { RunEvent } from "@x/shared/dist/runs.js";
 import { z } from "zod";
 import { BuiltinTools } from "./catalog.js";
@@ -45,10 +46,19 @@ export interface ToolContext {
     // Set for runs no user is watching (headless, legacy engine, channel):
     // file builtins are confined to the sandbox (headless-sandbox.ts).
     headlessSandbox?: HeadlessSandbox;
+    // Set only for a call the permission checker allowed WITHOUT a prompt
+    // (trusted MCP list): executeTool then connects only if the entry it uses
+    // still has the checked, trusted URL.
+    trustedMcp?: VertrauterMcpAufruf;
 }
 
-async function execMcpTool(agentTool: z.infer<typeof ToolAttachment> & { type: "mcp" }, input: Record<string, unknown>): Promise<unknown> {
-    const result = await executeTool(agentTool.mcpServerName, agentTool.name, input);
+async function execMcpTool(agentTool: z.infer<typeof ToolAttachment> & { type: "mcp" }, input: Record<string, unknown>, ctx?: ToolContext): Promise<unknown> {
+    const result = await executeTool(
+        agentTool.mcpServerName,
+        agentTool.name,
+        input,
+        ctx?.trustedMcp ? { vertraut: ctx.trustedMcp } : {},
+    );
     return result;
 }
 
@@ -59,7 +69,7 @@ export async function execTool(agentTool: z.infer<typeof ToolAttachment>, input:
     switch (agentTool.type) {
         case "mcp":
             // MCP tools: let complete on graceful stop (most are fast)
-            return execMcpTool(agentTool, input);
+            return execMcpTool(agentTool, input, ctx);
         case "builtin": {
             const builtinTool = BuiltinTools[agentTool.name];
             if (!builtinTool || !builtinTool.execute) {

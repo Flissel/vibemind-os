@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import type { ConversationMessage, JsonValue } from "@x/shared/dist/turns.js";
+import type { VertrauterMcpAufruf } from "@x/shared/dist/vertraute-mcp-werkzeuge.js";
 
 export interface PermissionCheckInput {
     turnId: string;
@@ -11,6 +12,11 @@ export interface PermissionCheckInput {
 
 export interface PermissionCheckAllowed {
     required: false;
+    // Modified for VibeMind (Flissel/rowboat vibemind): set when the call is
+    // allowed only because it is on the trusted MCP list. The runtime records
+    // it on the invocation and hands it to the executor, which refuses if the
+    // entry it is about to use no longer matches.
+    trustedMcp?: VertrauterMcpAufruf;
 }
 
 export interface PermissionCheckRequired {

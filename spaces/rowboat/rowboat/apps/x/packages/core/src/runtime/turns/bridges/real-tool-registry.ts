@@ -1,4 +1,4 @@
-// Modified for VibeMind (Flissel/rowboat vibemind): forwards ToolExecutionContext.channel to builtins (Teil E).
+// Modified for VibeMind (Flissel/rowboat vibemind): forwards ToolExecutionContext.channel to builtins (Teil E), and .trustedMcp.
 import type { ChildProcess } from "child_process";
 import type { z } from "zod";
 import type { ToolAttachment } from "@x/shared/dist/agent.js";
@@ -185,6 +185,9 @@ export class RealToolRegistry implements IToolRegistry {
                                 : {}),
                             ...(ctx.headlessSandbox
                                 ? { headlessSandbox: ctx.headlessSandbox }
+                                : {}),
+                            ...(ctx.trustedMcp
+                                ? { trustedMcp: ctx.trustedMcp }
                                 : {}),
                             publish: async (event) => {
                                 if (event.type === "tool-output-stream") {

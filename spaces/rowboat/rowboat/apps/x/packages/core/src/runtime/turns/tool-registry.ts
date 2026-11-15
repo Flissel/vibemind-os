@@ -1,5 +1,6 @@
-// Modified for VibeMind (Flissel/rowboat vibemind): ToolExecutionContext.channel (Teil E).
+// Modified for VibeMind (Flissel/rowboat vibemind): ToolExecutionContext.channel (Teil E), .trustedMcp.
 import type { z } from "zod";
+import type { VertrauterMcpAufruf } from "@x/shared/dist/vertraute-mcp-werkzeuge.js";
 import type {
     JsonValue,
     ToolDescriptor,
@@ -25,6 +26,10 @@ export interface ToolExecutionContext {
     // Set for headless and channel runs: file builtins are confined to this
     // sandbox (runtime/tools/headless-sandbox.ts).
     headlessSandbox?: { ownFiles: string[]; ownDirs: string[]; readDirs: string[] };
+    // Set only for a call the permission checker allowed WITHOUT a prompt
+    // because it is on the trusted MCP list: the executor connects only if the
+    // entry it uses still matches (mcp.ts executeTool).
+    trustedMcp?: VertrauterMcpAufruf;
 }
 
 export interface SyncRuntimeTool {

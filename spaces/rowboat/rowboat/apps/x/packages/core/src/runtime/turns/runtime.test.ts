@@ -36,6 +36,7 @@ import type {
 import { composeModelRequest } from "./compose-model-request.js";
 import { TurnRuntime } from "./runtime.js";
 import type { IChannelRunGuard } from "./channel-run-guard.js";
+import { RealPermissionChecker } from "./bridges/real-permission-checker.js";
 import { quarantineMode } from "../tools/channel-quarantine.js";
 import { getCurrentUseCase } from "../../analytics/use_case.js";
 import type {
@@ -337,6 +338,8 @@ function makeRuntime(opts: {
     modelRegistry?: IModelRegistry;
     toolRegistry?: IToolRegistry;
     channelRunGuard?: IChannelRunGuard;
+    // A real checker instead of the fake (VibeMind: trusted MCP tool tests).
+    realChecker?: IPermissionChecker;
 } = {}) {
     const repo = opts.repo ?? new InMemoryTurnRepo();
     const models = new FakeModelRegistry(opts.models ?? []);
@@ -353,7 +356,7 @@ function makeRuntime(opts: {
         modelRegistry: opts.modelRegistry ?? models,
         toolRegistry: opts.toolRegistry ?? new FakeToolRegistry(opts.tools ?? defaultTools),
         contextResolver: new TurnRepoContextResolver({ turnRepo: repo }),
-        permissionChecker: checker,
+        permissionChecker: opts.realChecker ?? checker,
         permissionClassifier: classifier,
         lifecycleBus: bus,
         turnEventBus,
@@ -3771,6 +3774,141 @@ describe("channel runs (VibeMind Teil E)", () => {
         expect(classifier.batches).toEqual([]);
         expect(checker.calls).toEqual([]);
         expect(log.some((e) => e.type === "tool_permission_required")).toBe(false);
+    });
+
+    // Modified for VibeMind (Flissel/rowboat vibemind): the trusted Werkbank handoff tool with the REAL
+    // RealPermissionChecker (only the server lookup is injected).
+    describe("trusted MCP tool (Werkbank handoff) with the real permission checker", () => {
+        const URL_OK = "http://127.0.0.1:8156/mcp";
+        const handoff = { serverName: "rowboat-auftraege", toolName: "video_auftrag_aus_konzept" };
+        const other = { serverName: "github", toolName: "create_issue" };
+        const trusted = { ...handoff, url: URL_OK };
+
+        function realChecker(url: string | null = URL_OK) {
+            return new RealPermissionChecker({ getMcpServerUrl: async () => url });
+        }
+
+        function invocationFor(log: TEvent[], toolCallId: string) {
+            return log.find(
+                (e): e is Extract<TEvent, { type: "tool_invocation_requested" }> =>
+                    e.type === "tool_invocation_requested" && e.toolCallId === toolCallId,
+            );
+        }
+
+        async function run(
+            config: Parameters<TurnRuntime["createTurn"]>[0]["config"],
+            opts: {
+                checker?: IPermissionChecker;
+                classifier?: FakePermissionClassifier;
+                calls?: Array<{ id: string; input: JsonValue }>;
+            } = {},
+        ) {
+            const executed: string[] = [];
+            const contexts: ToolExecutionContext[] = [];
+            const calls = opts.calls ?? [{ id: "V", input: handoff }];
+            const { runtime, repo } = makeRuntime({
+                agent: channelAgent,
+                tools: recordingTools(executed, contexts),
+                realChecker: opts.checker ?? realChecker(),
+                ...(opts.classifier ? { classifier: opts.classifier } : {}),
+                models: [
+                    respond(completedResp(assistantCalls(
+                        ...calls.map((c) => toolCallPart(c.id, "executeMcpTool", c.input)),
+                    ))),
+                    respond(completedResp(assistantText("done"))),
+                ],
+            });
+            const turnId = await newTurn(runtime, { config });
+            const first = await advanceAndSettle(runtime, turnId);
+            return { log: await persisted(repo, turnId), executed, contexts, runtime, repo, turnId, first };
+        }
+
+        it("desktop: runs without a prompt, logs the reason on the invocation, hands the marker to the executor", async () => {
+            const { log, executed, contexts } = await run({ humanAvailable: true });
+            expect(resultFor(log, "V")).toMatchObject({ source: "sync", result: { isError: false } });
+            expect(log.some((e) => e.type === "tool_permission_required")).toBe(false);
+            expect(invocationFor(log, "V")?.trustedMcp).toEqual({ source: "vertraut", ...trusted });
+            expect(executed).toEqual(["executeMcpTool"]);
+            expect(contexts[0].trustedMcp).toEqual(trusted);
+        });
+
+        it("channel run: refused before the checker, nothing executed", async () => {
+            const { log, executed } = await run({ humanAvailable: true, autoPermission: true, channel });
+            expect(resultFor(log, "V")).toMatchObject({ source: "runtime", result: { isError: true } });
+            expect(JSON.stringify(resultFor(log, "V")?.result.output)).toContain(
+                "rowboat-auftraege:video_auftrag_aus_konzept",
+            );
+            expect(executed).toEqual([]);
+        });
+
+        it("E7a run without a human: the trusted call executes, an untrusted MCP call in the same batch is denied", async () => {
+            const { log, executed, contexts } = await run(
+                { humanAvailable: false, autoPermission: true },
+                {
+                    classifier: new FakePermissionClassifier((requests) =>
+                        requests.map((r) => ({ toolCallId: r.toolCallId, decision: "defer" as const, reason: "?" })),
+                    ),
+                    calls: [
+                        { id: "V", input: handoff },
+                        { id: "X", input: other },
+                    ],
+                },
+            );
+            expect(resultFor(log, "V")).toMatchObject({ source: "sync", result: { isError: false } });
+            expect(resultFor(log, "X")).toMatchObject({ source: "runtime", result: { isError: true } });
+            expect(
+                log.some((e) => e.type === "tool_permission_resolved" && e.toolCallId === "V"),
+            ).toBe(false);
+            expect(executed).toEqual(["executeMcpTool"]);
+            expect(contexts).toHaveLength(1);
+            expect(contexts[0].trustedMcp).toEqual(trusted);
+        });
+
+        it("E7b/E8 auto permission: the trusted call skips the classifier, the untrusted one reaches it", async () => {
+            const classifier = new FakePermissionClassifier((requests) =>
+                requests.map((r) => ({ toolCallId: r.toolCallId, decision: "allow" as const, reason: "ok" })),
+            );
+            const { log, executed, contexts } = await run(
+                { humanAvailable: true, autoPermission: true },
+                {
+                    classifier,
+                    calls: [
+                        { id: "V", input: handoff },
+                        { id: "X", input: other },
+                    ],
+                },
+            );
+            expect(classifier.batches).toHaveLength(1);
+            expect(classifier.batches[0].map((r) => r.toolCallId)).toEqual(["X"]);
+            expect(executed).toEqual(["executeMcpTool", "executeMcpTool"]);
+            // Only the trusted call carries the marker; the classifier-approved one does not.
+            const byCall = new Map(contexts.map((c) => [c.toolCallId, c]));
+            expect(byCall.get("V")?.trustedMcp).toEqual(trusted);
+            expect(byCall.get("X")).not.toHaveProperty("trustedMcp");
+            expect(invocationFor(log, "X")).not.toHaveProperty("trustedMcp");
+        });
+
+        it("(d) entry points elsewhere: the checker asks; after a human Ja the call runs WITHOUT the marker", async () => {
+            const { runtime, repo, turnId, first, executed, contexts } = await run(
+                { humanAvailable: true },
+                { checker: realChecker("http://192.168.1.65:8156/mcp") },
+            );
+            expect(first.outcome).toMatchObject({
+                status: "suspended",
+                pendingPermissions: [expect.objectContaining({ toolCallId: "V" })],
+            });
+            expect(executed).toEqual([]);
+            await advanceAndSettle(runtime, turnId, {
+                type: "permission_decision",
+                toolCallId: "V",
+                decision: "allow",
+            });
+            const log = await persisted(repo, turnId);
+            expect(resultFor(log, "V")).toMatchObject({ source: "sync", result: { isError: false } });
+            expect(executed).toEqual(["executeMcpTool"]);
+            expect(contexts[0]).not.toHaveProperty("trustedMcp");
+            expect(invocationFor(log, "V")).not.toHaveProperty("trustedMcp");
+        });
     });
 
     it("desktop turns are unchanged: full tool set, POST runs, MCP goes through checker + classifier", async () => {

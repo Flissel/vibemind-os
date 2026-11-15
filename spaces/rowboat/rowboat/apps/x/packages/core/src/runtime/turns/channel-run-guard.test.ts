@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { z } from "zod";
 import type { ToolDescriptor } from "@x/shared/dist/turns.js";
+import { DEFAULT_CHANNEL_READ_ONLY_MCP_TOOLS } from "@x/shared/dist/channels.js";
 import { CHANNEL_RUN_INSTRUCTIONS, ChannelRunGuard, hasLiveFrontmatter, type ChannelRunPolicy } from "./channel-run-guard.js";
 
 const ROOT = path.resolve("/rowboat-ws");
@@ -125,6 +126,30 @@ describe("ChannelRunGuard.check", () => {
         await expect(guard.check(builtin("executeMcpTool", { serverName: "wissen", toolName: "wissen_suchen" }), empty))
             .resolves.toMatchObject({ kind: "deny" });
         expect(guard.offers(descriptor("mcp:wissen:wissen_suchen"), empty)).toBe(false);
+    });
+
+    it("refuses the Werkbank handoff tool in channel runs although it needs no prompt on the desktop", async () => {
+        // Das Übergabe-Werkzeug ist im Desktop-Chat ohne Rückfrage erlaubt (vertraute-mcp-werkzeuge.ts);
+        // der Kanal-Wächter entscheidet in Kanal-Läufen aber vor der Rechteprüfung und lässt es nicht durch.
+        for (const p of [policy, { readOnlyMcpTools: [...DEFAULT_CHANNEL_READ_ONLY_MCP_TOOLS] }]) {
+            await expect(
+                guard.check(
+                    builtin("executeMcpTool", { serverName: "rowboat-auftraege", toolName: "video_auftrag_aus_konzept" }),
+                    p,
+                ),
+            ).resolves.toMatchObject({ kind: "deny" });
+            await expect(
+                guard.check(
+                    {
+                        toolId: "mcp:rowboat-auftraege:video_auftrag_aus_konzept",
+                        toolName: "video_auftrag_aus_konzept",
+                        input: {},
+                    },
+                    p,
+                ),
+            ).resolves.toMatchObject({ kind: "deny" });
+            expect(guard.offers(descriptor("mcp:rowboat-auftraege:video_auftrag_aus_konzept"), p)).toBe(false);
+        }
     });
 
     it("refuses reads of config, keys, channel state, trash and token/env files", async () => {

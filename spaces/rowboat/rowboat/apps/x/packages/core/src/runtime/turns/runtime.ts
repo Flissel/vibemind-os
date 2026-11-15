@@ -1,6 +1,7 @@
 // Modified for VibeMind (Flissel/rowboat vibemind): channel-origin turns are
 // restricted by the channel-run guard (tool snapshot filter, call-time guard,
-// no classifier) — Teil E.
+// no classifier) — Teil E. Trusted MCP calls (checker trustedMcp) are logged
+// on the invocation and bound to the executed entry.
 import { z } from "zod";
 import type { TurnAnalytics } from "@x/shared/dist/analytics.js";
 import {
@@ -34,6 +35,7 @@ import {
     outstandingPermissions,
     reduceTurn,
 } from "@x/shared/dist/turns.js";
+import type { VertrauterMcpAufruf } from "@x/shared/dist/vertraute-mcp-werkzeuge.js";
 import type { IMonotonicallyIncreasingIdGenerator } from "../../application/lib/id-gen.js";
 import { withUseCase } from "../../analytics/use_case.js";
 import type { IAgentResolver } from "./agent-resolver.js";
@@ -421,6 +423,11 @@ class TurnAdvance {
     // Checker "allowed" outcomes are deliberately not durable: after a crash
     // the checker is simply re-consulted.
     private readonly checkerAllowed = new Set<string>();
+    // VibeMind: checker "allowed" because of the trusted MCP list — the
+    // checked entry, logged on the invocation and handed to the executor
+    // (which refuses if the entry it uses no longer matches). Same lifetime
+    // as checkerAllowed: re-derived by re-consulting the checker after a crash.
+    private readonly trustedMcpCalls = new Map<string, VertrauterMcpAufruf>();
     private appended = false;
     private cancelReason: string | undefined;
 
@@ -845,6 +852,9 @@ class TurnAdvance {
                 });
                 if (!check.required) {
                     this.checkerAllowed.add(tc.toolCallId);
+                    if (check.trustedMcp) {
+                        this.trustedMcpCalls.set(tc.toolCallId, check.trustedMcp);
+                    }
                 } else {
                     await this.append(
                         permissionRequiredEvent(
@@ -1059,7 +1069,13 @@ class TurnAdvance {
                 continue;
             }
             await this.append(
-                invocationEvent(this.turnId, this.now(), tc, tool.descriptor),
+                invocationEvent(
+                    this.turnId,
+                    this.now(),
+                    tc,
+                    tool.descriptor,
+                    this.trustedMcpCalls.get(tc.toolCallId),
+                ),
             );
             if (tool.descriptor.execution === "async") {
                 continue; // exposed; the result arrives through advanceTurn
@@ -1116,6 +1132,7 @@ class TurnAdvance {
             // Runs no user watches are confined to the file sandbox.
             const sandboxed =
                 !!channel || (this.definition.sessionId === null && !desktopChild);
+            const trustedMcp = this.trustedMcpCalls.get(tc.toolCallId);
             const result = await syncTool.execute(tc.input, {
                 turnId: this.turnId,
                 sessionId: this.definition.sessionId,
@@ -1132,6 +1149,7 @@ class TurnAdvance {
                           },
                       }
                     : {}),
+                ...(trustedMcp ? { trustedMcp } : {}),
                 reportProgress: async (progress) => {
                     await this.append({
                         type: "tool_progress",
@@ -1777,6 +1795,7 @@ function invocationEvent(
     ts: string,
     tc: ToolCallState,
     descriptor: z.infer<typeof ToolDescriptor>,
+    trustedMcp?: VertrauterMcpAufruf,
 ): z.infer<typeof ToolInvocationRequested> {
     return {
         type: "tool_invocation_requested",
@@ -1787,5 +1806,7 @@ function invocationEvent(
         toolName: tc.toolName,
         execution: descriptor.execution,
         input: (tc.input ?? null) as JsonValue,
+        // VibeMind: why this call ran without a prompt, and which URL was checked.
+        ...(trustedMcp ? { trustedMcp: { source: "vertraut" as const, ...trustedMcp } } : {}),
     };
 }

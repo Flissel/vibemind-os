@@ -1,8 +1,10 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): executeMcpTool forwards ToolContext.trustedMcp to executeTool.
 // Builtin tools: mcp domain. Entries moved VERBATIM from the historical
 // monolith — the merge order in ../builtin-tools.ts preserves the original
 // catalog key order (provider-payload bytes; see the key-order test there).
 
 import { z } from "zod";
+import type { ToolContext } from "../exec-tool.js";
 import { executeTool, listServers, listTools } from "../../../mcp/mcp.js";
 import container from "../../../di/container.js";
 import { IMcpConfigRepo } from "../../../mcp/repo.js";
@@ -99,9 +101,16 @@ export const mcpTools: z.infer<typeof BuiltinToolsSchema> = {
             toolName: z.string().describe('Name of the tool to execute'),
             arguments: z.record(z.string(), z.any()).optional().describe('Arguments to pass to the tool (as key-value pairs matching the tool\'s input schema). MUST include all required parameters from the tool\'s inputSchema.'),
         }),
-        execute: async ({ serverName, toolName, arguments: args = {} }: { serverName: string, toolName: string, arguments?: Record<string, unknown> }) => {
+        execute: async ({ serverName, toolName, arguments: args = {} }: { serverName: string, toolName: string, arguments?: Record<string, unknown> }, ctx?: ToolContext) => {
             try {
-                const result = await executeTool(serverName, toolName, args);
+                // VibeMind: a prompt-free (trusted) call connects only if the
+                // entry used now still has the checked URL (mcp.ts executeTool).
+                const result = await executeTool(
+                    serverName,
+                    toolName,
+                    args,
+                    ctx?.trustedMcp ? { vertraut: ctx.trustedMcp } : {},
+                );
                 return {
                     success: true,
                     serverName,

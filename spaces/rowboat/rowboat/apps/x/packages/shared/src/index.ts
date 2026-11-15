@@ -42,4 +42,5 @@ export * as integrations from './integrations.js';
 export * as embedChannels from './embed-channels.js';
 export * as konzept from './konzept.js';
 export * as wikiRewrite from './wiki-rewrite.js';
+export * as vertrauteMcpWerkzeuge from './vertraute-mcp-werkzeuge.js';
 export { PrefixLogger };
