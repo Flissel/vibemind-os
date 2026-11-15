@@ -25,6 +25,8 @@
   7. Ohne -NurBauen ausserdem den Bau-Kontext des Auftraege-Containers (rowboat-auftraege) nach
      ~/rowboat-headless/auftraege/ (Dockerfile, server.py, konzept_lesen.py) und legt ~/rowboat-headless/auftraege-log
      (0700) fuer das Protokoll an. Schluesseldateien und auftraege.env legt dieses Skript NIE an (README "Auftraege").
+     Schluesseldateien heissen ueberall auftraege-zugang und sales-schluessel. Reihenfolge beim Ausrollen: SQL in Sales,
+     Sales-Code, dieser Dienst mit --profile auftraege, zuletzt der mcp.json-Eintrag (README "Reihenfolge beim Ausrollen").
   Mit -NurWerkzeuge: kein npm-Bau; kopiert nur Schritt 6 plus compose.yml und .dockerignore.
   Mit -NurAuftraege: kein npm-Bau; kopiert nur Schritt 7 plus compose.yml, .dockerignore und mcp-eintrag.json.
   Loescht nichts auf der VM; vorhandene Dateien gleichen Namens werden ueberschrieben.

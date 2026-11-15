@@ -243,6 +243,28 @@ docker compose logs rowboat-werkzeuge | grep Zugang                        # Erg
 
 ## Aufträge `rowboat-auftraege` (127.0.0.1:8156)
 
+**Reihenfolge beim Ausrollen** (jeder Schritt erst, wenn der vorige geprüft ist; bis Schritt 4 bleibt das Feature
+dunkel):
+
+1. **SQL in Sales zuerst:** `db/freigabe-eingang.sql` und `db/video-uebergabe.sql` auf das Schema `sales` (nur dieses;
+   die Annahme verweigert jedes andere). Beide sind additiv. Danach `\d sales.freigabe_schluessel` prüfen: der alte
+   CHECK auf `herkunft` darf `rowboat` nicht mehr ausschließen.
+2. **Sales-Code** (sales-claw-Zweig mergen, `update.sh`). Vorher in der Sales-Umgebung (nur Namen prüfen, nie die
+   Datei öffnen): `UI_SESSION_SECRET` gesetzt (sonst 403 beim Bestätigen), `UI_BASIS_URL` = die Adresse, die Felix
+   wirklich öffnet (sonst zeigt der Link auf `127.0.0.1:8791`), `MARKETING_MANDANT` gesetzt.
+3. **Dieser Dienst** mit `--profile auftraege`: Schlüssel und `auftraege.env` anlegen (s. u.; dort
+   `SALES_UI_ANZEIGE_URL` = `UI_BASIS_URL` des Ladens), **Port 8156 muss frei sein**:
+   `ss -ltn | grep ':8156 '` (keine Ausgabe = frei), nur `rowboat-auftraege` bauen (nicht parallel zu anderen
+   Builds, vorher freien Speicher prüfen), `docker compose config` einmal auf der VM laufen lassen
+   (`env_file` mit `required: false` und `create_host_path` brauchen ein neues Compose), dann Start und Probe.
+4. **Zuletzt der Eintrag in `mcp.json`** (s. u.): erst damit existiert das Werkzeug für den Agenten.
+
+**Stoppen / Rückgängig:** Dienst `docker compose --profile auftraege stop rowboat-auftraege` (und `rm -f`), Eintrag
+`rowboat-auftraege` aus `~/rowboat-data/config/mcp.json` nehmen (Details unter „Rückweg" unten).
+**Not-Aus auf der Sales-Seite:** den `rowboat`-Schlüssel ersetzen oder abschalten, siehe sales-claw
+`docs/03_RUNBOOK.md`, Abschnitt „Not-Aus für Rowboat-Übergaben" (danach antwortet Sales mit 401, der Dienst meldet
+„Schlüssel nicht angenommen"; offene Übergaben verfallen nach 24 h oder lassen sich mit „Nein" verwerfen).
+
 MCP-Server `rowboat-auftraege` (Streamable HTTP, `http://127.0.0.1:8156/mcp`, dazu `GET /health`) mit genau einem
 Werkzeug, `video_auftrag_aus_konzept(pfad)`: Er liest ein Videokonzept `knowledge/Konzepte/**/*.html`
 (höchstens 1 MB, nie unter `knowledge/Kanal/`) selbst aus dem nur lesend eingehängten Wissensordner, prüft den
@@ -260,7 +282,7 @@ Teil B (`Vibemind_V1/docs/superpowers/plans/2026-11-14-konzept-flaeche-teil-b.md
   (http(s), höchstens 300 Zeichen, nur druckbares ASCII, ohne Zugangsdaten; ist `SALES_UI_ANZEIGE_URL` gesetzt, muss
   der Link genau auf deren Ursprung zeigen). Sätze von Sales höchstens 300 Zeichen, ohne Steuer- und Formatzeichen.
   Alles andere: „Die Annahme hat unerwartet geantwortet. Bitte auf der Werkbank-Seite nachsehen."
-- **Pfadregel** (gleich der Sales-Grenze): genau `knowledge/Konzepte/…/<Name>.html`, höchstens 500 Zeichen, `/` als
+- **Pfadregel** (gleich der Sales-Grenze): genau `knowledge/Konzepte/…/<Name>.html`, höchstens 500 Zeichen, genauer 500 UTF-16-Einheiten (ein Emoji zählt 2), `/` als
   Trenner, keine leeren, `.`- oder `..`-Segmente, kein `\`, kein `:`, keine Steuerzeichen, kein einzelnes Surrogat,
   kein Segment mit Punkt oder Leerzeichen am Ende. Kein Segment ab `Konzepte` (auch `Konzepte` selbst) darf ein
   Symlink oder eine Junction sein; gelesen wird nur eine reguläre Datei, einmal geöffnet (`O_NOFOLLOW|O_NONBLOCK`)
@@ -274,9 +296,14 @@ Teil B (`Vibemind_V1/docs/superpowers/plans/2026-11-14-konzept-flaeche-teil-b.md
   (aus Telegram/WhatsApp gibt es keine Übergabe). `tests/test_zentrale_skill.py` prüft die Vorgabe.
 - **Kein Wiederholen:** keine Verbindung -> „Die Annahme ist gerade nicht erreichbar. Es wurde nichts vorbereitet.";
   jeder Fehler vor dem Senden sagt ebenfalls „Es wurde nichts vorbereitet." Nur wenn die Anfrage gesendet sein
-  könnte (20 s ohne Antwortbeginn, Abbruch, Antwortkörper nicht binnen 5 s vollständig) -> „… ist unklar – bitte auf
-  der Werkbank-Seite nachsehen …". Eine vollständig empfangene Antwort wird nie verworfen. 400/409/413/429 geben
-  den Satz von Sales weiter, 401 sagt, dass Sales den Schlüssel nicht angenommen hat.
+  könnte (Antwort nicht vollständig binnen **einem** Budget von 20 s für Verbinden, Kopf und Körper zusammen, oder
+  Abbruch) -> „… ist unklar – bitte auf der Werkbank-Seite nachsehen …". Eine binnen des Budgets vollständig
+  empfangene Antwort wird nie verworfen. 400/409/413/429 und **503 mit `fehler`-Satz** (Tabelle oder Recht fehlt in
+  Sales: „Die Übergabe ist auf diesem Laden noch nicht eingerichtet." – Sales antwortet so nur vor jedem Eintrag,
+  es wurde nichts vorbereitet) geben den Satz von Sales weiter; ein anderer 5xx ohne `fehler`-Satz heißt
+  „unerwartet … nachsehen". 401 sagt, dass Sales den Schlüssel nicht angenommen hat.
+- **Unzulässige Zeichen:** ein U+0000 irgendwo im Konzepttext wird vor dem Senden abgelehnt („Das Konzept enthält
+  ein unzulässiges Zeichen. Bitte die Datei prüfen."); Postgres kann es nicht speichern.
 - **Protokoll** `~/rowboat-headless/auftraege-log/auftraege.log` (dreht bei 1 MB, drei Vorgänger): je Aufruf Zeit,
   Pfad und Ergebnis (`vorbereitet <vorgang>` oder `fehler <art>`); nie ein Schlüssel, nie Konzeptinhalt, nie der Link.
 - **Container gehärtet:** nur lesbares Wurzeldateisystem (`read_only`, `/tmp` als tmpfs, schreibbar nur
@@ -293,7 +320,13 @@ Dateien auf der VM unter `~/rowboat-headless/` (alle 0600, keine im Repo, keine 
 |---|---|---|
 | `auftraege-zugang` | Dienstschlüssel (Bearer am MCP-Endpunkt) | auf der VM erzeugt, s. u. |
 | `sales-schluessel` | Schlüssel der Herkunft `rowboat` der Sales-Annahme | Sales: `python -m freigabe_schluessel anlegen rowboat` (sales-mcp) |
-| `auftraege.env` | `AUFTRAEGE_LADEN_ANZEIGE=<Laden>` (Pflicht, steht in der Werkzeugbeschreibung) und `SALES_UI_ANZEIGE_URL=<Adresse der Sales-Oberfläche>` (optional, prüft die Links); kein Geheimnis | Betreiber |
+| `auftraege.env` | `AUFTRAEGE_LADEN_ANZEIGE=<Laden>` (Pflicht, steht in der Werkzeugbeschreibung) und `SALES_UI_ANZEIGE_URL=<Ursprung der Sales-Oberfläche>` (prüft die Links; **muss dem `UI_BASIS_URL` des Ladens genau entsprechen**: Schema, Host, Port; sonst gilt jeder Erfolg als „unerwartet", obwohl die Übergabe existiert); kein Geheimnis | Betreiber |
+
+Es gibt genau diese zwei Schlüsseldateien, überall mit denselben Namen (compose, `bauen.ps1`, `mcp-eintrag.json`,
+Tests): `auftraege-zugang` und `sales-schluessel`. Ein anderer Name aus älteren Plänen
+(`auftraege-sales-schluessel`) gilt nicht. Den Sales-Schlüssel nie anzeigen, direkt in die Datei leiten:
+`docker compose exec -T sales-ui python -m freigabe_schluessel anlegen rowboat | (umask 077; tee ~/rowboat-headless/sales-schluessel > /dev/null)`
+(auf dem Mini-PC im Sales-Ordner; danach `ls -l`, nie `cat`).
 
 Beide Schlüssel liest der Dienst beim Start: ein neuer Schlüssel braucht einen Neustart des Dienstes. Fehlt eine
 Datei, legt compose den Container nicht an; ist sie leer oder fehlt `AUFTRAEGE_LADEN_ANZEIGE`, startet der Dienst

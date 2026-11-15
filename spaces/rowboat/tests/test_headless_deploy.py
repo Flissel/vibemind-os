@@ -551,3 +551,20 @@ def test_readme_auftraege():
         if "auftraege-zugang" in zeile or "sales-schluessel" in zeile:
             assert not re.search(r"\bcat\b", zeile), zeile
             assert not re.search(r"\b(echo|printf)\b", zeile) or ">" in zeile, zeile
+
+
+def test_auftraege_readme_nennt_reihenfolge_und_einheitliche_dateinamen():
+    readme = (HEADLESS / "README.md").read_text(encoding="utf-8")
+    abschnitt = readme[readme.index("## Aufträge `rowboat-auftraege`"):]
+    for muster in ("Reihenfolge beim Ausrollen", "SQL in Sales zuerst", "--profile auftraege", "UI_BASIS_URL",
+                   "SALES_UI_ANZEIGE_URL", "ss -ltn | grep ':8156 '", "03_RUNBOOK.md", "Rückweg"):
+        assert muster in abschnitt, muster
+    assert abschnitt.index("SQL in Sales zuerst") < abschnitt.index("Zuletzt der Eintrag in `mcp.json`")
+    # Dieselben zwei Dateinamen wie compose.yml und mcp-eintrag.json
+    compose = (HEADLESS / "compose.yml").read_text(encoding="utf-8")
+    eintrag = (HEADLESS / "mcp-eintrag.json").read_text(encoding="utf-8")
+    for name in ("auftraege-zugang", "sales-schluessel"):
+        assert name in compose and name in abschnitt
+    assert "auftraege-zugang" in eintrag
+    assert "auftraege-sales-schluessel" not in compose + eintrag
+    assert "auftraege-sales-schluessel" not in abschnitt.replace("(`auftraege-sales-schluessel`)", "")
