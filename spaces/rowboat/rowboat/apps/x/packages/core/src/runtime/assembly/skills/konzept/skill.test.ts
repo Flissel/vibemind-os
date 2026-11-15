@@ -23,6 +23,18 @@ describe('Fähigkeit konzept: Übergabe an die Werkbank (Bestätigung in Sales)'
     expect(abschnitt).toContain('"fehler"');
   });
 
+  it('nennt den Weg zum Werkzeug: MCP-Fähigkeit, Ausführungswerkzeug, Server, Werkzeug, Argument', () => {
+    expect(abschnitt).toMatch(/NOT one of your attached tools/);
+    expect(abschnitt).toContain('loadSkill');
+    expect(abschnitt).toContain('mcp-integration');
+    expect(abschnitt).toContain('executeMcpTool');
+    expect(abschnitt).toContain('"serverName": "rowboat-auftraege"');
+    expect(abschnitt).toContain('"toolName": "video_auftrag_aus_konzept"');
+    expect(abschnitt).toContain('"arguments": { "pfad": "knowledge/Konzepte/<Name>.html" }');
+    expect(abschnitt).toContain('listMcpTools');
+    expect(abschnitt).toMatch(/not listed there, tell the user so[^.]*do not claim a handover/);
+  });
+
   it('negativ: kein stand, keine Ja-Abfrage der App, kein Wiederholen', () => {
     expect(abschnitt).not.toMatch(/\bstand\b/);
     expect(abschnitt).not.toMatch(/asks the user for a yes/i);

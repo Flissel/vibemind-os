@@ -62,7 +62,8 @@ export function istVertrauterMcpName(serverName: string, toolName: string): bool
  * `http://:@…`) und Leerraum am Anfang/Ende. Wer auf einen Textvergleich umstellt, ändert also Verhalten.
  *
  * Die Prüfung gilt nur für den ersten Sprung zu dieser Adresse (keine Aussage über Weiterleitungen) und nur
- * für die neue Laufzeit (`RealPermissionChecker`); Alt-Engine und IPC-Weg fragen weiter nach.
+ * für die neue Laufzeit (`RealPermissionChecker`); Alt-Engine und IPC-Weg (`mcp:executeTool`) haben nie nach einem MCP-Aufruf gefragt; die Eintragsprüfung im
+ * Ausführer greift dort nicht, weil diese Aufrufe keine Markierung (`vertraut`) tragen.
  *
  * @param n.serverUrl URL des Eintrags, den die Ausführung für `serverName` auflöst; `null` für stdio-Server
  *   oder wenn es keinen Eintrag gibt (dann nie vertraut).
