@@ -85,6 +85,10 @@ case "$1 $2" in
   "network inspect") [ -n "${FAKE_NETZ:-}" ] && { printf '%s\n' "$FAKE_NETZ"; exit 0; }; exit 1 ;;
   "container inspect") exit 0 ;;
 esac
+case "$*" in *compose.project*)
+  [ "${FAKE_PROJEKT:-event-management}" = - ] && exit 1
+  echo "${FAKE_PROJEKT:-event-management}"; exit 0 ;;
+esac
 if [ "$1" = run ]; then
   shift; ep=""; ef=""
   while [ $# -gt 0 ]; do
@@ -203,6 +207,9 @@ class Projekt:
         self.meminfo.write_text("MemTotal: 16000000 kB\nMemAvailable: 8000000 kB\n", encoding="utf-8")
         self.lz = self.space / "laufzeit"
         (self.lz / "ausrollen").mkdir(parents=True)
+        # Shim-Laufzeit wie nach dem Umzug aus ~/event-management (ausrollen.md)
+        (self.lz / "shim-budget").mkdir()
+        self._geheim(self.lz / "claude-token", "CLAUDE_CODE_OAUTH_TOKEN=x\n")
 
     # Vorbereitung eines Zustands, in dem `pruefen` besteht
     def pruefen_bereit(self) -> None:
@@ -783,6 +790,79 @@ def test_shim_mit_baukontext_baut_gedeckelt_und_merkt_den_rueckweg(pj: Projekt):
     assert any(z.startswith("docker tag sha256:vorher123 event-management/shim:") for z in pj.log())
     _beide_shims_neu_und_gesund(pj.log())
     assert not pj.stempel_da("shim")
+
+
+# --- Compose-Projekt (Live-Stack event-management) -------------------------------------------
+
+
+@braucht_bash
+def test_pruefen_fremdes_compose_projekt_meldet_fehlt(pj: Projekt):
+    pj.pruefen_bereit()
+    lauf = pj.lauf("pruefen", umgebung={"FAKE_PROJEKT": "event_management"})
+    out = _aus(lauf)[0]
+    assert lauf.returncode == 1 and "FEHLT" in out and "event_management" in out
+    assert not pj.stempel_da("pruefen")
+
+
+@braucht_bash
+def test_pruefen_ohne_container_ist_projekt_ok(pj: Projekt):
+    pj.pruefen_bereit()
+    lauf = pj.lauf("pruefen", umgebung={"FAKE_PROJEKT": "-"})
+    assert lauf.returncode == 0, _aus(lauf)
+    assert "Compose-Projekt event-management" in _aus(lauf)[0]
+
+
+def _bereit_fuer(pj: Projekt, phase: str) -> tuple[dict[str, str], str]:
+    pj.tags()
+    if phase == "shim":
+        pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web")
+        return _shim_kontext(pj), ""
+    if phase == "dienste":
+        pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web", "shim")
+        return {}, ""
+    return {}, _anbinden_bereit(pj)
+
+
+@braucht_bash
+@pytest.mark.parametrize("phase", ["shim", "dienste", "anbinden"])
+def test_fremdes_projekt_bricht_vor_jeder_docker_aenderung_ab(phase, pj: Projekt):
+    umgebung, eingabe = _bereit_fuer(pj, phase)
+    lauf = pj.lauf(phase, eingabe=eingabe, umgebung={**umgebung, "FAKE_PROJEKT": "event_management"})
+    assert lauf.returncode == 1 and "Compose-Projekt" in _aus(lauf)[1]
+    assert not [z for z in pj.log() if z.startswith(("docker build", "docker tag", "docker compose"))]
+    assert not any("anbinden.sh" in z for z in pj.log())
+    assert not pj.stempel_da(phase)
+
+
+@braucht_bash
+def test_pruefen_und_shim_verlangen_claude_token(pj: Projekt):
+    pj.pruefen_bereit()
+    (pj.lz / "claude-token").unlink()
+    lauf = pj.lauf("pruefen")
+    assert lauf.returncode == 1 and "claude-token" in _aus(lauf)[0]
+    umgebung, _ = _bereit_fuer(pj, "shim")
+    lauf = pj.lauf("shim", umgebung=umgebung)
+    assert lauf.returncode == 1 and "claude-token" in _aus(lauf)[1]
+    _shim_nichts_getan(pj)
+
+
+@braucht_bash
+def test_shim_ohne_budget_ordner_bei_laufendem_shim_bricht_ab(pj: Projekt):
+    # Ein vergessener Umzug setzte sonst still die Tageszaehler des Live-Shims zurueck.
+    (pj.lz / "shim-budget").rmdir()
+    umgebung, _ = _bereit_fuer(pj, "shim")
+    lauf = pj.lauf("shim", umgebung=umgebung)
+    assert lauf.returncode == 1 and "shim-budget" in _aus(lauf)[1]
+    _shim_nichts_getan(pj)
+
+
+@braucht_bash
+def test_shim_ohne_budget_ordner_auf_frischer_vm_legt_ihn_an(pj: Projekt):
+    (pj.lz / "shim-budget").rmdir()
+    umgebung, _ = _bereit_fuer(pj, "shim")
+    lauf = pj.lauf("shim", umgebung={**umgebung, "FAKE_PROJEKT": "-"})
+    assert lauf.returncode == 0, _aus(lauf)[1]
+    assert (pj.lz / "shim-budget").is_dir()
 
 
 # --- anbinden --------------------------------------------------------------------------------------

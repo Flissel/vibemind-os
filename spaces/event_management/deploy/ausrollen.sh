@@ -129,6 +129,26 @@ info() { echo "$*"; }
 pgenv_weg() { rm -f "${PGENV:?}" "${PGENV:?}.docker" "${PGENV:?}.docker.pgpass"; }
 trap pgenv_weg EXIT
 
+# Compose-Projekt eines Containers (Label); Exit != 0, wenn es den Container nicht gibt.
+compose_projekt_von() {
+  docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$1" 2>/dev/null
+}
+# Je vorhandenem Container (Claw, beide Shims), der NICHT zum Projekt $PROJEKT gehoert, eine
+# Zeile "<container> <projekt>". Sonst haenge Compose die Container nicht um, sondern
+# scheiterte an den Namen und Netzen des Live-Stacks oder legte leere Volumes an.
+fremde_projekte() {
+  local c p
+  for c in "$CLAW" "$SHIM" "$SHIM_E"; do
+    p=$(compose_projekt_von "$c") || continue
+    [ "$p" = "$PROJEKT" ] || echo "$c ${p:-ohne-projekt}"
+  done
+}
+projekt_verlangen() {
+  local f
+  f=$(fremde_projekte)
+  [ -z "$f" ] || abbruch "Compose-Projekt: $(printf '%s' "$f" | tr '\n' ';' | sed 's/;$//') statt $PROJEKT (Umzug des Live-Stacks: ausrollen.md)"
+}
+
 shim_image() { grep -m1 -o 'event-management/shim:[A-Za-z0-9_.-]*' docker-compose.yml; }
 claw_image() { grep -m1 -o 'ghcr.io/openclaw/openclaw:[A-Za-z0-9_.-]*' docker-compose.yml; }
 
@@ -261,7 +281,8 @@ phase_pruefen() {
 
   # laufzeit/-Dateien: da und 0600
   for f in "$ADMIN_DSN_DATEI" "$LZ/event-app-dsn" "$LZ/event-sitzung-geheimnis" \
-           "$LZ/event-telegram-token" "$LZ/event-smtp-passwort" "$LZ/event-app.env"; do
+           "$LZ/event-telegram-token" "$LZ/event-smtp-passwort" "$LZ/event-app.env" \
+           "$LZ/claude-token"; do
     if [ ! -f "$f" ]; then fehlt "$f fehlt"
     elif [ "$(modus_von "$f")" != 600 ]; then fehlt "$f hat nicht 0600"
     else ok "$f (0600)"; fi
@@ -278,6 +299,18 @@ phase_pruefen() {
     done
   else
     info "offen  Images system/web (kommen mit 'bauen')"
+  fi
+
+  # Vorhandene Container gehoeren zum Compose-Projekt des Repos (Live-Stack, Umzug)
+  local fremd
+  fremd=$(fremde_projekte)
+  if [ -z "$fremd" ]; then ok "Compose-Projekt $PROJEKT (vorhandene Container passen)"
+  else
+    while read -r k f; do
+      fehlt "Container $k gehoert zum Compose-Projekt $f, erwartet $PROJEKT (Umzug: ausrollen.md)"
+    done <<EOF
+$fremd
+EOF
   fi
 
   # .14 im Netz event-agent frei (nur Lesen)
@@ -447,6 +480,16 @@ shims_neu_anlegen() {
 
 phase_shim() {
   tags_laden
+  projekt_verlangen
+  [ -f "$LZ/claude-token" ] || abbruch "$LZ/claude-token fehlt (Umzug aus dem Live-Stack: ausrollen.md)"
+  # Laeuft schon ein Shim, gehoert sein Tagesprotokoll mit: ein leerer Ordner setzte die
+  # Zaehler still zurueck. Auf einer frischen VM legt die Phase ihn an.
+  if [ ! -d "$LZ/shim-budget" ]; then
+    if compose_projekt_von "$SHIM" >/dev/null; then
+      abbruch "$LZ/shim-budget fehlt, obwohl $SHIM laeuft (Tagesprotokoll aus dem Live-Stack holen: ausrollen.md, Umzug)"
+    fi
+    mkdir -p "$LZ/shim-budget"
+  fi
   local img k f
   img=$(shim_image)
   # Das Image backt claude_budget.py ein (bewerbung: deploy/bot/shim/Dockerfile). Ohne
@@ -491,7 +534,6 @@ phase_shim() {
   fi
   export DOCKER_BUILDKIT=0
   docker build --memory="$BAU_SPEICHER" --memory-swap="$BAU_SPEICHER" -t "$img" "$k" </dev/null     || abbruch "Build shim fehlgeschlagen (Rueckweg: zurueck shim)"
-  mkdir -p "$LZ/shim-budget"
   shims_neu_anlegen
   info "$SHIM, $SHIM_E: neu angelegt, gesund"
   stempel shim
@@ -513,6 +555,7 @@ probe() {
 
 phase_dienste() {
   tags_laden
+  projekt_verlangen
   # event-api/event-mcp lesen die Secret-Dateien unter laufzeit/ (0600, dieser Nutzer).
   EVENT_UID=$(id -u); EVENT_GID=$(id -g); export EVENT_UID EVENT_GID
   docker compose --profile event-system up -d event-api event-mcp event-web </dev/null \
@@ -525,6 +568,7 @@ phase_dienste() {
 
 phase_anbinden() {
   tags_laden
+  projekt_verlangen
   if [ -t 0 ]; then
     abbruch "anbinden liest die 7 Zeilen von stdin (Gateway, Telegram, Event-App, CC, melden, bn-lesen, bn-auftrag), nicht vom Terminal"
   fi
