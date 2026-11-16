@@ -1419,6 +1419,23 @@ def test_anleitung_handschritte_aus_dem_abschluss_review():
     assert "spaces/rowboat/deploy/headless/shim" not in shim  # falsche Basis (15.11.)
 
 
+def test_anleitung_umzug_des_live_stacks():
+    # 16.11.: Der laufende Bot ist das Compose-Projekt event-management aus einem Ordner
+    # ausserhalb des Repos; vor `shim` zieht er ins Repo um (Felix: Festival-Bot bleibt).
+    text = ANLEITUNG.read_text(encoding="utf-8")
+    titel = [z for z in text.splitlines() if z.startswith("### ")]
+    umzug = [i for i, z in enumerate(titel) if z.startswith("### Umzug des Live-Stacks")]
+    shim = [i for i, z in enumerate(titel) if z.startswith("### 6. `shim`")]
+    assert len(umzug) == 1 and umzug[0] < shim[0]
+    abschnitt = _abschnitt(text, "Umzug des Live-Stacks")
+    for stichwort in ("name: event-management", "claude-token", "shim-budget", "bot-token",
+                      "bot-gleich", "event-telegram-token.testbot", "gateway-token",
+                      "OK von Felix", "Rückweg", "nicht noch einmal `pruefen`"):
+        assert stichwort in abschnitt, stichwort
+    assert "Compose-Projekt" in _abschnitt(text, "6. `shim`")
+    assert "Bot" in _abschnitt(text, "7. `dienste`")
+
+
 def test_keine_geheimnisse_oder_echten_ziele():
     for datei in (SKRIPT, ANLEITUNG, DEPLOY / "pg_hilfe.py"):
         text = datei.read_text(encoding="utf-8")

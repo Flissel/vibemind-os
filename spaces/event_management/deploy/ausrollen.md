@@ -134,6 +134,51 @@ laufen nach `deploy/messen.md` (eigener Claim, eigenes OK, Testpaar). Erst wenn 
 bestanden sind oder eine Alternative entschieden und umgesetzt ist, geht es mit
 `sichern` weiter.
 
+### Umzug des Live-Stacks (nach `migrieren`, vor `shim`)
+
+Der laufende Bot (Claw und Shim) ist das Compose-Projekt `event-management`, gestartet aus
+einem eigenen Ordner außerhalb des Repos (auf der VM `~/event-management`). Die Compose-Datei
+des Repos trägt darum fest `name: event-management`: Compose hängt dieselben Container um und
+übernimmt deren Netze und Volumes (Claw-Zustand, Schlüssel, Telegram-Bot), statt ein zweites
+Projekt `event_management` mit leeren Volumes anzulegen. Was dem Repo dafür fehlt, liegt im
+alten Ordner. Ab `shim` prüfen die Phasen selbst: Gehört ein vorhandener Container zu einem
+anderen Compose-Projekt, brechen `shim`, `dienste` und `anbinden` vor jeder Docker-Änderung ab.
+
+Entscheidung Felix (16.11.): **der Festival-Bot bleibt** der Bot des Systems. Die App
+(`event-api`, `event-mcp`) muss also dessen Token nutzen, nicht den Testbot der Messung.
+
+Im Space-Ordner auf der VM, `umask 077`:
+
+```
+ALT=$HOME/event-management
+cp -p "$ALT/laufzeit/claude-token" laufzeit/          # OAuth-Token des Shims (0600)
+mkdir -p laufzeit/shim-budget
+cp -rp "$ALT/laufzeit/shim-budget/." laufzeit/shim-budget/   # Tagesprotokoll: Zähler laufen weiter
+mv laufzeit/event-telegram-token laufzeit/event-telegram-token.testbot
+"$PY" deploy/pg_hilfe.py bot-token "$(ls -1 laufzeit/sicherung/openclaw-*.json | tail -1)" \
+    laufzeit/event-telegram-token                     # Ausgabe: geschrieben
+"$PY" deploy/pg_hilfe.py bot-gleich laufzeit/event-telegram-token \
+    "$(ls -1 laufzeit/sicherung/openclaw-*.json | tail -1)"   # Ausgabe: gleich
+(set -a; . laufzeit/ausrollen/tags.env; docker compose config | grep '^name:')  # name: event-management
+```
+
+`bot-token` liest `channels.telegram.botToken` aus der Kopie der `openclaw.json`, die
+`sichern` gezogen hat, schreibt es 0600 und überschreibt nie eine vorhandene Datei; beide
+Befehle zeigen nie einen Wert. Das `gateway-token` schreibt `anbinden` selbst (Zeile 1); dort
+ist die Zeile „Telegram-Bot-Token“ ebenfalls der Festival-Bot. Ab hier `$ALT` nicht mehr mit
+`docker compose` bedienen: `shim` legt die Shims aus dem Repo im selben Projekt neu an (das
+Label `working_dir` wechselt), `anbinden` den Claw.
+
+Danach nicht noch einmal `pruefen` laufen lassen: es löscht die Stempel aller späteren Phasen
+(dann wären `bauen`, `sichern` und `migrieren` erneut fällig). Die Prüfungen auf Projekt,
+`claude-token`, `shim-budget` und Bot laufen in `shim` und `dienste` selbst.
+
+- **OK von Felix:** ja (die Bot-Wahl ist gefallen; der Umzug selbst ändert keinen Container).
+- **Abbruch:** `bot-gleich` meldet `ungleich` oder `fehlt`; eine Datei im alten Ordner fehlt.
+- **Rückweg:** `rm laufzeit/event-telegram-token && mv laufzeit/event-telegram-token.testbot
+  laufzeit/event-telegram-token`; die kopierten Dateien entfernen. Der alte Ordner bleibt
+  unberührt, solange `shim` nicht lief.
+
 ### 4. `sichern`  (`--ich-habe-ok sichern`)
 
 Zuerst prüft die Phase per `psql`, ob das Schema `event` existiert. Wenn ja, läuft
@@ -225,6 +270,11 @@ Die Phase prüft vor jedem Docker-Aufruf: alle sieben Dateien da (`Dockerfile`, 
 Repo, die Dockerfile nutzt kein `--from=fremd` mehr (Rezept Schritt 2) und ihre CMD startet
 auf `0.0.0.0` und `8125`. Sonst Abbruch ohne Stempel.
 
+Vor jeder Docker-Änderung prüft die Phase: vorhandene Container gehören zum
+Compose-Projekt `event-management` (sonst Abbruch, siehe Umzug), `laufzeit/claude-token` ist
+da, und läuft schon ein Shim, auch sein Tagesprotokoll `laufzeit/shim-budget` (auf einer
+frischen VM legt die Phase den Ordner an).
+
 Aus demselben Image laufen **zwei Shims**: `event-management-shim` (Gruppen-Agenten,
 Budget-Agent `event-management`) und `event-management-shim-empfang` (nur der Empfang
 `main`, eigener Budget-Agent `event-management-empfang`). So leert eine fremde Erwähnung in
@@ -255,6 +305,10 @@ Meldung nach Telegram schicken. Auf der VM liest der Host-Dienst `budget-melden`
 `timer`) die Zeile und schickt sie per Telegram an Felix.
 
 ### 7. `dienste`  (`--ich-habe-ok dienste`)
+
+Vorher: Compose-Projekt wie bei `shim`, und `laufzeit/event-telegram-token` muss derselbe Bot
+sein wie in der jüngsten Kopie der `openclaw.json` aus `sichern` (`pg_hilfe.py bot-gleich`);
+sonst Abbruch ohne Docker-Aufruf. `pruefen` meldet denselben Vergleich (vor `sichern`: offen).
 
 `docker compose --profile event-system up -d event-api event-mcp event-web`, danach Proben:
 `event-mcp` `/gesund` = 200, `event-api` `/api/ich` und `event-web` `/` antworten unter 500.
