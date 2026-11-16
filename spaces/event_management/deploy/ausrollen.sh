@@ -70,7 +70,8 @@ export PYTHONPATH
 CLAW=event-management-claw
 SHIM=event-management-shim
 SHIM_E=event-management-shim-empfang  # eigener Shim (eigenes Budget) nur fuer den Empfang main
-NETZ=event-agent
+PROJEKT=event-management             # Compose-Projekt (name: in docker-compose.yml) = Live-Stack
+NETZ=${PROJEKT}_event-agent          # Compose setzt den Projektnamen vor den Netznamen
 MCP_IP=10.250.10.14
 LZ=laufzeit
 ST=$LZ/ausrollen

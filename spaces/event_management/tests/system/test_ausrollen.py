@@ -528,6 +528,8 @@ def test_pruefen_adresse_14_belegt(pj: Projekt):
     assert belegt.returncode == 1 and "10.250.10.14" in _aus(belegt)[0] and "belegt" in _aus(belegt)[0]
     eigener = pj.lauf("pruefen", umgebung={"FAKE_NETZ": "event-mcp 10.250.10.14/28"})
     assert eigener.returncode == 0
+    # Compose haengt den Projektnamen davor: das Netz heisst event-management_event-agent.
+    assert "docker network inspect event-management_event-agent -f" in "\n".join(pj.log())
 
 
 @braucht_bash

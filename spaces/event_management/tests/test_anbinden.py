@@ -34,6 +34,12 @@ def _compose() -> dict:
     return yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
 
 
+def test_compose_projekt_heisst_wie_der_live_stack() -> None:
+    # Live laeuft als Projekt event-management (~/event-management); ohne name: hiesse es
+    # nach dem Ordner event_management: zweite Netze im selben Adressraum, leere Volumes.
+    assert _compose()["name"] == "event-management"
+
+
 def _code() -> str:
     text = SKRIPT.read_text(encoding="utf-8")
     return "\n".join(z for z in text.splitlines() if not z.lstrip().startswith("#"))

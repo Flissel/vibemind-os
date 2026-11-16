@@ -35,6 +35,12 @@
 # Compose ab). Geheimnisse nur als Dateien unter laufzeit/
 # (gitignored) und als *_FILE-Variablen; die nicht geheimen, aber privaten Werte
 # (EVENT_BASIS_URL, EVENT_SMTP_HOST/PORT/USER/ABSENDER) in laufzeit/event-app.env.
+#
+# Projektname fest: Der laufende Bot ist das Compose-Projekt `event-management` (Volumes
+# event-management_event-management-claw-*, Netze event-management_event-*). Ohne `name:`
+# hiesse das Projekt nach dem Ordner `event_management`: zweite Netze im selben Adressraum
+# (Abbruch) und leere Volumes fuer den Claw. Siehe deploy/ausrollen.md, Umzug.
+name: event-management
 services:
   event-management-shim:
     # Der Controller hat dieses Image lokal aus bewerbung-bot/shim:2.1.268
