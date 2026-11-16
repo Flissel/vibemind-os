@@ -139,6 +139,7 @@ case "$1 $2" in
     printf 'PGHOST=db.example.org\nPGUSER=%s\nPGDATABASE=postgres\nPGPASSWORD=geheim-xyz-0815\n' "${FAKE_PGUSER:-supabase_admin}" > "$4" ;;
   "deploy/pg_hilfe.py deps") [ -n "${FAKE_DEPS_FEHLEN:-}" ] && echo "$FAKE_DEPS_FEHLEN" ;;
   "deploy/pg_hilfe.py app-rolle") [ -n "${FAKE_APP_ROLLE_FEHLER:-}" ] && exit 1 ;;
+  "deploy/pg_hilfe.py bot-gleich") exit "${FAKE_BOT:-0}" ;;
 esac
 exit 0
 """
@@ -464,6 +465,7 @@ def test_tags_widerspruch_bricht_ab(pj: Projekt):
 def test_dienste_exportiert_tags_und_startet_nur_die_drei(pj: Projekt):
     pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web", "shim")
     pj.tags()
+    _claw_sicherung(pj)
     lauf = pj.lauf("dienste")
     assert lauf.returncode == 0, _aus(lauf)[1]
     ups = [z for z in pj.log() if " up " in z]
@@ -792,6 +794,102 @@ def test_shim_mit_baukontext_baut_gedeckelt_und_merkt_den_rueckweg(pj: Projekt):
     assert not pj.stempel_da("shim")
 
 
+# --- Derselbe Bot fuer Claw und App ------------------------------------------------------------
+
+
+def _claw_sicherung(pj: Projekt, name: str = "openclaw-20261116T000000Z.json") -> None:
+    (pj.lz / "sicherung").mkdir(exist_ok=True)
+    (pj.lz / "sicherung" / name).write_text("{}", encoding="utf-8")
+
+
+def _openclaw(tmp_path: Path, token: object = FAKE_TOKEN, name: str = "openclaw.json") -> Path:
+    import json
+    datei = tmp_path / name
+    inhalt = {"channels": {"telegram": {"enabled": True}}}
+    if token is not None:
+        inhalt["channels"]["telegram"]["botToken"] = token
+    datei.write_text(json.dumps(inhalt), encoding="utf-8")
+    return datei
+
+
+def _hilfe_lauf(*argumente: object) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(DEPLOY / "pg_hilfe.py"), *map(str, argumente)],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60, check=False)
+
+
+def _ohne_token(lauf: subprocess.CompletedProcess) -> None:
+    alles = lauf.stdout.decode() + lauf.stderr.decode()
+    assert FAKE_TOKEN not in alles and "B" * 35 not in alles
+
+
+def test_pg_hilfe_bot_gleich(tmp_path: Path):
+    datei = tmp_path / "event-telegram-token"
+    datei.write_text(FAKE_TOKEN + "\n  ", encoding="utf-8")
+    gleich = _hilfe_lauf("bot-gleich", datei, _openclaw(tmp_path))
+    assert (gleich.returncode, gleich.stdout.decode().strip()) == (0, "gleich")
+    anders = _hilfe_lauf("bot-gleich", datei, _openclaw(tmp_path, "654321:" + "B" * 35, "anders.json"))
+    assert (anders.returncode, anders.stdout.decode().strip()) == (1, "ungleich")
+    kaputt = tmp_path / "kaputt.json"
+    kaputt.write_text('{"channels": {"telegram": {"botToken": "' + FAKE_TOKEN, encoding="utf-8")
+    for json_datei in (_openclaw(tmp_path, None, "ohne.json"), _openclaw(tmp_path, 42, "zahl.json"), kaputt,
+                       tmp_path / "gibt-es-nicht.json"):
+        lauf = _hilfe_lauf("bot-gleich", datei, json_datei)
+        assert (lauf.returncode, lauf.stdout.decode().strip()) == (2, "fehlt"), json_datei.name
+        _ohne_token(lauf)
+    leer = tmp_path / "leer"
+    leer.write_text(" \n", encoding="utf-8")
+    assert _hilfe_lauf("bot-gleich", leer, _openclaw(tmp_path)).returncode == 2
+    for lauf in (gleich, anders):
+        _ohne_token(lauf)
+
+
+def test_pg_hilfe_bot_token_schreibt_0600_und_ueberschreibt_nie(tmp_path: Path):
+    ziel = tmp_path / "event-telegram-token"
+    lauf = _hilfe_lauf("bot-token", _openclaw(tmp_path), ziel)
+    assert (lauf.returncode, lauf.stdout.decode().strip()) == (0, "geschrieben")
+    assert ziel.read_text(encoding="utf-8") == FAKE_TOKEN + "\n"
+    if os.name != "nt":
+        assert (ziel.stat().st_mode & 0o777) == 0o600
+    _ohne_token(lauf)
+    nochmal = _hilfe_lauf("bot-token", _openclaw(tmp_path, "654321:" + "B" * 35, "anders.json"), ziel)
+    assert (nochmal.returncode, nochmal.stdout.decode().strip()) == (1, "ziel existiert")
+    assert ziel.read_text(encoding="utf-8") == FAKE_TOKEN + "\n"
+    _ohne_token(nochmal)
+    ohne = _hilfe_lauf("bot-token", _openclaw(tmp_path, None, "ohne.json"), tmp_path / "neu")
+    assert (ohne.returncode, ohne.stdout.decode().strip()) == (2, "fehlt")
+    assert not (tmp_path / "neu").exists()
+
+
+@braucht_bash
+@pytest.mark.parametrize("fall", ["anderer-bot", "ohne-sicherung", "nur-marke"])
+def test_dienste_bricht_bei_anderem_bot_ab(fall, pj: Projekt):
+    pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web", "shim")
+    pj.tags()
+    umgebung = {}
+    if fall == "anderer-bot":
+        _claw_sicherung(pj)
+        umgebung = {"FAKE_BOT": "1"}
+    elif fall == "nur-marke":
+        _claw_sicherung(pj, "openclaw-20261116T000000Z.keine")
+    lauf = pj.lauf("dienste", umgebung=umgebung)
+    assert lauf.returncode == 1 and "Bot" in _aus(lauf)[1]
+    assert not [z for z in pj.log() if z.startswith("docker compose")]
+    assert not pj.stempel_da("dienste")
+
+
+@braucht_bash
+def test_pruefen_meldet_anderen_bot(pj: Projekt):
+    pj.pruefen_bereit()
+    ohne = pj.lauf("pruefen")
+    assert ohne.returncode == 0 and "offen  Bot-Vergleich (nach sichern)" in _aus(ohne)[0]
+    _claw_sicherung(pj)
+    gleich = pj.lauf("pruefen")
+    assert gleich.returncode == 0 and "Bot" in _aus(gleich)[0]
+    anders = pj.lauf("pruefen", umgebung={"FAKE_BOT": "1"})
+    out = _aus(anders)[0]
+    assert anders.returncode == 1 and any(z.startswith("FEHLT") and "Bot" in z for z in out.splitlines())
+
+
 # --- Compose-Projekt (Live-Stack event-management) -------------------------------------------
 
 
@@ -819,6 +917,7 @@ def _bereit_fuer(pj: Projekt, phase: str) -> tuple[dict[str, str], str]:
         return _shim_kontext(pj), ""
     if phase == "dienste":
         pj.stempel("pruefen", "sichern", "migrieren", "bauen-system", "bauen-web", "shim")
+        _claw_sicherung(pj)
         return {}, ""
     return {}, _anbinden_bereit(pj)
 

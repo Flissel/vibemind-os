@@ -10,12 +10,19 @@ und danach loescht.
   python3 deploy/pg_hilfe.py deps <requirements.txt>  nennt fehlende Module (eins je Zeile)
   python3 deploy/pg_hilfe.py app-rolle <admin-dsn-datei> <app-dsn-datei>
       legt die Login-Rolle der App-DSN an (Mitglied von event_app) oder setzt ihr Passwort neu
+  python3 deploy/pg_hilfe.py bot-gleich <tokendatei> <openclaw.json>
+      gleich (0) / ungleich (1) / fehlt (2): nutzt die App denselben Telegram-Bot wie der Claw?
+      Verglichen wird nur die Bot-Nummer (vor dem Doppelpunkt).
+  python3 deploy/pg_hilfe.py bot-token <openclaw.json> <ziel>
+      schreibt channels.telegram.botToken nach <ziel> (0600); ein vorhandenes Ziel bleibt
+      unberuehrt (1), ohne Token: fehlt (2)
 
-Ausgaben nennen nie Werte der DSN.
+Ausgaben nennen nie Werte der DSN oder Tokens.
 """
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
 import shlex
@@ -173,8 +180,58 @@ def fehlende_module(requirements: Path) -> list[str]:
     return fehlt
 
 
+def bot_token_aus(openclaw: Path) -> str | None:
+    """channels.telegram.botToken einer openclaw.json; None bei fehlender/kaputter Datei."""
+    try:
+        wert = json.loads(openclaw.read_text(encoding="utf-8"))["channels"]["telegram"]["botToken"]
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+        return None
+    return wert.strip() or None if isinstance(wert, str) else None
+
+
+def bot_nummer(token: str) -> str:
+    return token.strip().split(":", 1)[0]
+
+
+def _bot_gleich(tokendatei: Path, openclaw: Path) -> int:
+    try:
+        token = tokendatei.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        token = ""
+    claw = bot_token_aus(openclaw)
+    if not token or claw is None:
+        print("fehlt")
+        return 2
+    gleich = bot_nummer(token) == bot_nummer(claw)
+    print("gleich" if gleich else "ungleich")
+    return 0 if gleich else 1
+
+
+def _bot_token(openclaw: Path, ziel: Path) -> int:
+    token = bot_token_aus(openclaw)
+    if token is None:
+        print("fehlt")
+        return 2
+    try:
+        fd = os.open(ziel, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        print("ziel existiert")
+        return 1
+    try:
+        os.write(fd, (token + "\n").encode("utf-8"))
+    finally:
+        os.close(fd)
+    os.chmod(ziel, 0o600)
+    print("geschrieben")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     try:
+        if len(argv) == 4 and argv[1] == "bot-gleich":
+            return _bot_gleich(Path(argv[2]), Path(argv[3]))
+        if len(argv) == 4 and argv[1] == "bot-token":
+            return _bot_token(Path(argv[2]), Path(argv[3]))
         if argv[1:2] == ["env"] and (len(argv) == 4 or (len(argv) == 5 and argv[4] == "--docker")):
             try:
                 dsn = Path(argv[2]).read_text(encoding="utf-8")

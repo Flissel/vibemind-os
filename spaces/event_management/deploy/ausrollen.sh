@@ -143,6 +143,18 @@ fremde_projekte() {
     [ "$p" = "$PROJEKT" ] || echo "$c ${p:-ohne-projekt}"
   done
 }
+# Kopie der openclaw.json des Claw aus `sichern` (nur .json, nicht die Marke .keine).
+neueste_claw_json() { ls -1 "$SICH"/openclaw-*.json 2>/dev/null | sort | tail -1 || true; }
+# App (laufzeit/event-telegram-token) und Claw muessen denselben Bot nutzen, sonst schickt die
+# App ueber einen anderen Bot, als der Claw liest. 0 gleich, 1 ungleich, 2 fehlt/keine Kopie.
+bot_vergleich() {
+  local j rc=0
+  j=$(neueste_claw_json)
+  [ -n "$j" ] || return 2
+  "$PY" deploy/pg_hilfe.py bot-gleich "$LZ/event-telegram-token" "$j" </dev/null >/dev/null 2>&1 || rc=$?
+  return "$rc"
+}
+
 projekt_verlangen() {
   local f
   f=$(fremde_projekte)
@@ -312,6 +324,16 @@ phase_pruefen() {
 $fremd
 EOF
   fi
+
+  # Derselbe Bot fuer App und Claw (Vergleich mit der Kopie aus `sichern`)
+  local brc=0
+  bot_vergleich || brc=$?
+  case "$brc" in
+    0) ok "Bot von event-telegram-token = Bot des Claw" ;;
+    1) fehlt "Bot von $LZ/event-telegram-token ist nicht der Bot des Claw (Umzug: ausrollen.md)" ;;
+    *) if [ -n "$(neueste_claw_json)" ]; then fehlt "Bot-Vergleich: Token oder botToken in der Sicherung fehlt"
+       else info "offen  Bot-Vergleich (nach sichern)"; fi ;;
+  esac
 
   # .14 im Netz event-agent frei (nur Lesen)
   local belegt
@@ -556,6 +578,13 @@ probe() {
 phase_dienste() {
   tags_laden
   projekt_verlangen
+  local brc=0
+  bot_vergleich || brc=$?
+  case "$brc" in
+    0) ;;
+    1) abbruch "Bot von $LZ/event-telegram-token ist nicht der Bot des Claw: die App schickte ueber einen anderen Bot (Umzug: ausrollen.md)" ;;
+    *) abbruch "Bot-Vergleich nicht moeglich: Kopie der openclaw.json aus 'sichern' oder Token fehlt" ;;
+  esac
   # event-api/event-mcp lesen die Secret-Dateien unter laufzeit/ (0600, dieser Nutzer).
   EVENT_UID=$(id -u); EVENT_GID=$(id -g); export EVENT_UID EVENT_GID
   docker compose --profile event-system up -d event-api event-mcp event-web </dev/null \
