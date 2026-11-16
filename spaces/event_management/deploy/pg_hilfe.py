@@ -186,7 +186,19 @@ def bot_token_aus(openclaw: Path) -> str | None:
         wert = json.loads(openclaw.read_text(encoding="utf-8"))["channels"]["telegram"]["botToken"]
     except (OSError, UnicodeError, ValueError, KeyError, TypeError):
         return None
-    return wert.strip() or None if isinstance(wert, str) else None
+    if not isinstance(wert, str):
+        return None
+    return echtes_token(wert)
+
+
+# Form eines Telegram-Bot-Tokens: Bot-Nummer, Doppelpunkt, Geheimteil. Platzhalter wie
+# ${...} oder {{...}} bestaetigten sich sonst selbst als "gleich" (Final-Review I-1).
+TOKEN_FORM = re.compile(r"\d+:[A-Za-z0-9_-]{30,}")
+
+
+def echtes_token(wert: str) -> str | None:
+    wert = wert.strip()
+    return wert if TOKEN_FORM.fullmatch(wert) else None
 
 
 def bot_nummer(token: str) -> str:
@@ -195,11 +207,11 @@ def bot_nummer(token: str) -> str:
 
 def _bot_gleich(tokendatei: Path, openclaw: Path) -> int:
     try:
-        token = tokendatei.read_text(encoding="utf-8").strip()
+        token = echtes_token(tokendatei.read_text(encoding="utf-8"))
     except (OSError, UnicodeError):
-        token = ""
+        token = None
     claw = bot_token_aus(openclaw)
-    if not token or claw is None:
+    if token is None or claw is None:
         print("fehlt")
         return 2
     gleich = bot_nummer(token) == bot_nummer(claw)

@@ -154,7 +154,8 @@ ALT=$HOME/event-management
 cp -p "$ALT/laufzeit/claude-token" laufzeit/          # OAuth-Token des Shims (0600)
 mkdir -p laufzeit/shim-budget
 cp -rp "$ALT/laufzeit/shim-budget/." laufzeit/shim-budget/   # Tagesprotokoll: Zähler laufen weiter
-mv laufzeit/event-telegram-token laufzeit/event-telegram-token.testbot
+# Testbot nur einmal beiseitelegen: ein zweiter Lauf ersetzte sonst den Rueckweg.
+[ -e laufzeit/event-telegram-token.testbot ] || mv laufzeit/event-telegram-token laufzeit/event-telegram-token.testbot
 "$PY" deploy/pg_hilfe.py bot-token "$(ls -1 laufzeit/sicherung/openclaw-*.json | tail -1)" \
     laufzeit/event-telegram-token                     # Ausgabe: geschrieben
 "$PY" deploy/pg_hilfe.py bot-gleich laufzeit/event-telegram-token \

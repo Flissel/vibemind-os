@@ -129,18 +129,20 @@ info() { echo "$*"; }
 pgenv_weg() { rm -f "${PGENV:?}" "${PGENV:?}.docker" "${PGENV:?}.docker.pgpass"; }
 trap pgenv_weg EXIT
 
-# Compose-Projekt eines Containers (Label); Exit != 0, wenn es den Container nicht gibt.
+# Compose-Projekt und -Dienst eines Containers (Labels) als "<projekt>/<dienst>"; Exit != 0,
+# wenn es den Container nicht gibt.
 compose_projekt_von() {
-  docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$1" 2>/dev/null
+  docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}/{{index .Config.Labels "com.docker.compose.service"}}' "$1" 2>/dev/null
 }
-# Je vorhandenem Container (Claw, beide Shims), der NICHT zum Projekt $PROJEKT gehoert, eine
-# Zeile "<container> <projekt>". Sonst haenge Compose die Container nicht um, sondern
+# Je vorhandenem Container (Claw, beide Shims), der NICHT Dienst <container> im Projekt
+# $PROJEKT ist (Dienst- = Containername in docker-compose.yml), eine Zeile
+# "<container> <projekt>/<dienst>". Sonst haenge Compose die Container nicht um, sondern
 # scheiterte an den Namen und Netzen des Live-Stacks oder legte leere Volumes an.
 fremde_projekte() {
   local c p
   for c in "$CLAW" "$SHIM" "$SHIM_E"; do
     p=$(compose_projekt_von "$c") || continue
-    [ "$p" = "$PROJEKT" ] || echo "$c ${p:-ohne-projekt}"
+    [ "$p" = "$PROJEKT/$c" ] || echo "$c ${p:-ohne-projekt}"
   done
 }
 # Kopie der openclaw.json des Claw aus `sichern` (nur .json, nicht die Marke .keine).
@@ -319,7 +321,7 @@ phase_pruefen() {
   if [ -z "$fremd" ]; then ok "Compose-Projekt $PROJEKT (vorhandene Container passen)"
   else
     while read -r k f; do
-      fehlt "Container $k gehoert zum Compose-Projekt $f, erwartet $PROJEKT (Umzug: ausrollen.md)"
+      fehlt "Container $k ist Compose-Projekt/Dienst $f, erwartet $PROJEKT/$k (Umzug: ausrollen.md)"
     done <<EOF
 $fremd
 EOF

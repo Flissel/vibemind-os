@@ -87,7 +87,8 @@ case "$1 $2" in
 esac
 case "$*" in *compose.project*)
   [ "${FAKE_PROJEKT:-event-management}" = - ] && exit 1
-  echo "${FAKE_PROJEKT:-event-management}"; exit 0 ;;
+  for _c; do :; done  # letzter Parameter = Container; Dienstname wie der Container
+  echo "${FAKE_PROJEKT:-event-management}/${FAKE_DIENST:-$_c}"; exit 0 ;;
 esac
 if [ "$1" = run ]; then
   shift; ep=""; ef=""
@@ -860,6 +861,21 @@ def test_pg_hilfe_bot_token_schreibt_0600_und_ueberschreibt_nie(tmp_path: Path):
     assert not (tmp_path / "neu").exists()
 
 
+@pytest.mark.parametrize("platzhalter", ["${TELEGRAM_BOT_TOKEN}", "{{TELEGRAM_TOKEN}}", "123:kurz",
+                                         "bot" + FAKE_TOKEN, FAKE_TOKEN + " x"])
+def test_pg_hilfe_nimmt_nur_echte_telegram_tokens(platzhalter, tmp_path: Path):
+    # Final-Review I-1: ein Platzhalter in der Sicherung waere sonst als Token kopiert worden
+    # und haette sich selbst als "gleich" bestaetigt.
+    quelle = _openclaw(tmp_path, platzhalter)
+    ziel = tmp_path / "neu"
+    lauf = _hilfe_lauf("bot-token", quelle, ziel)
+    assert (lauf.returncode, lauf.stdout.decode().strip()) == (2, "fehlt") and not ziel.exists()
+    datei = tmp_path / "token"
+    datei.write_text(platzhalter + "\n", encoding="utf-8")
+    gleich = _hilfe_lauf("bot-gleich", datei, quelle)
+    assert (gleich.returncode, gleich.stdout.decode().strip()) == (2, "fehlt")
+
+
 @braucht_bash
 @pytest.mark.parametrize("fall", ["anderer-bot", "ohne-sicherung", "nur-marke"])
 def test_dienste_bricht_bei_anderem_bot_ab(fall, pj: Projekt):
@@ -908,6 +924,21 @@ def test_pruefen_ohne_container_ist_projekt_ok(pj: Projekt):
     lauf = pj.lauf("pruefen", umgebung={"FAKE_PROJEKT": "-"})
     assert lauf.returncode == 0, _aus(lauf)
     assert "Compose-Projekt event-management" in _aus(lauf)[0]
+
+
+@braucht_bash
+def test_falscher_compose_dienst_meldet_fehlt_und_shim_baut_nicht(pj: Projekt):
+    # Final-Review I-2: gleicher Projektname, aber anderer Dienstname liesse `up --force-recreate`
+    # erst nach Bau und Tag scheitern (Containername belegt).
+    pj.pruefen_bereit()
+    lauf = pj.lauf("pruefen", umgebung={"FAKE_DIENST": "festival-shim"})
+    out = _aus(lauf)[0]
+    assert lauf.returncode == 1 and any(z.startswith("FEHLT") and "festival-shim" in z for z in out.splitlines())
+    pj.protokoll.unlink()
+    umgebung, _ = _bereit_fuer(pj, "shim")
+    lauf = pj.lauf("shim", umgebung={**umgebung, "FAKE_DIENST": "festival-shim"})
+    assert lauf.returncode == 1 and "Compose-Projekt" in _aus(lauf)[1]
+    _shim_nichts_getan(pj)
 
 
 def _bereit_fuer(pj: Projekt, phase: str) -> tuple[dict[str, str], str]:
@@ -1432,6 +1463,9 @@ def test_anleitung_umzug_des_live_stacks():
                       "bot-gleich", "event-telegram-token.testbot", "gateway-token",
                       "OK von Felix", "Rückweg", "nicht noch einmal `pruefen`"):
         assert stichwort in abschnitt, stichwort
+    # Final-Review: ein zweiter Umzugslauf darf die Testbot-Sicherung (Rueckweg) nicht ersetzen.
+    assert "[ -e laufzeit/event-telegram-token.testbot ] ||" in abschnitt
+    assert not re.search(r"(?m)^mv laufzeit/event-telegram-token ", abschnitt)
     assert "Compose-Projekt" in _abschnitt(text, "6. `shim`")
     assert "Bot" in _abschnitt(text, "7. `dienste`")
 
