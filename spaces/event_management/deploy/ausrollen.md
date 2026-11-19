@@ -352,14 +352,16 @@ nicht übernehmen. Zum Widerruf: `… schluessel widerrufen <id>`.
 
 ### 8. `tailnet`  (`--ich-habe-ok tailnet`)
 
-`tailscale serve --bg --https=3170 http://127.0.0.1:3170` für `event-web`. Vor dem ersten
+`sudo tailscale serve --bg --https=3170 http://127.0.0.1:3170` für `event-web`. Vor dem ersten
 Lauf `tailscale serve --help` der installierten Version gegen diese Zeile prüfen (die
-Schreibweise der Optionen wechselt zwischen Versionen).
+Schreibweise der Optionen wechselt zwischen Versionen). `sudo`, weil tailscaled `serve` ohne
+gesetzten Operator für normale Benutzer verweigert („Access denied: serve config denied“);
+den Operator (`tailscale set --operator=…`) setzen wir nicht, er gilt maschinenweit.
 
 - **OK von Felix:** ja, denn ab hier ist die Oberfläche im Tailnet sichtbar. Sie wird
   gleich gebraucht: der erste Betreiber legt dort die Firma des Legacy-Events an.
 - **Abbruch:** `tailscale serve` meldet einen Fehler oder `status` zeigt etwas Unerwartetes.
-- **Rückweg:** `--ich-habe-ok zurueck tailnet` = `tailscale serve --https=3170 off`.
+- **Rückweg:** `--ich-habe-ok zurueck tailnet` = `sudo tailscale serve --https=3170 off`.
 
 ### Erster Betreiber, Firma und Legacy-Eintrag (nach `tailnet`, vor `anbinden`)
 

@@ -647,7 +647,10 @@ phase_timer() {
 }
 
 phase_tailnet() {
-  tailscale serve --bg --https="$TAILNET_PORT" "http://127.0.0.1:3170" || abbruch "tailscale serve fehlgeschlagen"
+  # Ohne Operator verweigert tailscaled `serve` fuer normale Benutzer; den Operator setzen
+  # wir nicht (maschinenweit), sondern rufen wie bei den Units sudo.
+  sudo tailscale serve --bg --https="$TAILNET_PORT" "http://127.0.0.1:3170" </dev/null \
+    || abbruch "tailscale serve fehlgeschlagen"
   tailscale serve status || true
   stempel tailnet
 }
@@ -725,7 +728,7 @@ phase_zurueck() {
                  "${SYSTEMD:?}/budget-melden.service" "${SYSTEMD:?}/budget-melden.timer"
       sudo systemctl daemon-reload ;;
     tailnet)
-      tailscale serve --https="$TAILNET_PORT" off ;;
+      sudo tailscale serve --https="$TAILNET_PORT" off </dev/null ;;
   esac
   stempel_weg "$p"
   info "zurueck $p: erledigt."

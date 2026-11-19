@@ -1142,7 +1142,9 @@ def test_tailnet_serve(pj: Projekt):
     pj.stempel(*BIS_DIENSTE)
     lauf = pj.lauf("tailnet")
     assert lauf.returncode == 0, _aus(lauf)[1]
-    assert "tailscale serve --bg --https=3170 http://127.0.0.1:3170" in pj.log()
+    # Ohne gesetzten Operator verweigert tailscaled `serve` fuer normale Benutzer
+    # ("Access denied: serve config denied", VM 19.11.); wie die Units also per sudo.
+    assert "sudo tailscale serve --bg --https=3170 http://127.0.0.1:3170" in pj.log()
 
 
 # --- keine Werte in der Ausgabe -------------------------------------------------------------------------
@@ -1195,7 +1197,7 @@ def test_zurueck_je_phase_definiert(pj: Projekt):
         assert lauf.returncode == 0, (args, _aus(lauf))
         assert "erledigt" in _aus(lauf)[0] or args == ["migrieren"]
     log = pj.log()
-    assert "tailscale serve --https=3170 off" in log
+    assert "sudo tailscale serve --https=3170 off" in log
     assert "sudo systemctl disable --now bereitstellung.timer nachrichten.timer" in log
     assert any(z.startswith("docker cp ") and "openclaw-20261114T000000Z.json" in z for z in log)
     assert "docker compose --profile event-system stop event-web event-mcp event-api" in log
