@@ -11,13 +11,20 @@ Callable `frage` herein.
 from __future__ import annotations
 
 import json
+import os
+import threading
+import time
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from pathlib import Path
+from typing import Any, Callable, Mapping, Optional
 
 from .capability_targets import result_indicates_failure
 
 MAX_PRUEFTEXT = 4000
+MAX_GRUND = 500
 _MAX_PARAMETER = 1000
+
+_MODI = ("0", "schatten", "sichtbar")
 
 _FRAGE_PRAEFIXE = ("please enter", "which idea", "what would you like me to")
 
@@ -90,3 +97,40 @@ def beurteile(*, ok: bool, ergebnis: object, fehler: Optional[str], parameter: o
     if frage is None:
         return _KEIN_URTEIL
     return _modell_urteil(frage, ergebnis, parameter)
+
+
+def modus(umgebung: Optional[Mapping[str, str]] = None) -> str:
+    """Schalter SCHRITT_WAECHTER: "0", "schatten" oder "sichtbar"; sonst "0"."""
+    env = os.environ if umgebung is None else umgebung
+    wert = env.get("SCHRITT_WAECHTER", "0")
+    return wert if wert in _MODI else "0"
+
+
+def vorgabe_pfad() -> Path:
+    """<the_brain>/data/schritt_waechter.jsonl, vom Ort dieser Datei aus."""
+    return Path(__file__).resolve().parent.parent / "data" / "schritt_waechter.jsonl"
+
+
+class Schatten:
+    """Schreibt je Schritt eine JSON-Zeile in die Schatten-Datei."""
+
+    def __init__(self, pfad: Path) -> None:
+        self._pfad = Path(pfad)
+        self._sperre = threading.Lock()
+
+    def schreibe(self, *, plan_id: str, step_id: str, capability: Optional[str],
+                 urteil: Urteil, dauer_s: float, ts: Optional[float] = None) -> None:
+        zeile = json.dumps({
+            "ts": time.time() if ts is None else ts,
+            "plan_id": plan_id,
+            "step_id": step_id,
+            "capability": capability,
+            "auffaellig": urteil.auffaellig,
+            "grund": urteil.grund[:MAX_GRUND],
+            "quelle": urteil.quelle,
+            "dauer_s": dauer_s,
+        }, ensure_ascii=False) + "\n"
+        with self._sperre:
+            self._pfad.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._pfad, "a", encoding="utf-8", newline="") as f:
+                f.write(zeile)
