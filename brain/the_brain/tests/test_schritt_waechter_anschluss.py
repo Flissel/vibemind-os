@@ -214,6 +214,28 @@ def test_waechter_fehler_aendert_hopresult_nicht(tmp_path, monkeypatch):
     _vergleiche_mit_lauf_ohne_waechter(tmp_path, plan, ergebnis)
 
 
+def test_kaputter_waechter_warnt_genau_einmal(tmp_path, monkeypatch, caplog):
+    import logging
+    _umgebung(tmp_path, monkeypatch, {
+        "erstellt": "Bubble 'X' (id=1) created.",
+        "zweiter": "Bubble 'Y' (id=2) created.",
+    })
+    kaputt = _KaputterSchatten(tmp_path / "schatten.jsonl")
+
+    def plan():
+        return _plan("plan_warnung", [_hop("s1", "erstellt"),
+                                      _hop("s2", "zweiter", depends_on=["s1"])])
+
+    with caplog.at_level(logging.WARNING, logger="core.plan_executor"):
+        ergebnis = _executor(tmp_path, "mit", kaputt).execute(plan())
+
+    warnungen = [r for r in caplog.records if "Schritt-Waechter" in r.getMessage()]
+    assert kaputt.aufrufe == 2
+    assert len(warnungen) == 1
+    assert "OSError" in warnungen[0].getMessage()
+    _vergleiche_mit_lauf_ohne_waechter(tmp_path, plan, ergebnis)
+
+
 def test_testlaeufe_werden_nicht_beurteilt(tmp_path, monkeypatch):
     _umgebung(tmp_path, monkeypatch, {"rueckfrage": "Please enter a space first."})
     datei = tmp_path / "schatten.jsonl"

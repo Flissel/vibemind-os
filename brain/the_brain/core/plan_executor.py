@@ -319,8 +319,9 @@ class PlanExecutor:
                 from .schritt_waechter import Schatten, modus, vorgabe_pfad
                 if modus() != "0":
                     schritt_waechter = Schatten(vorgabe_pfad())
-            except Exception:
+            except Exception as exc:
                 schritt_waechter = None
+                self._schritt_waechter_warne("Bau", exc)
         self._schritt_waechter = schritt_waechter
         self._subscribers: "weakref.WeakSet[asyncio.Queue]" = weakref.WeakSet()
         self._publish_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -1387,8 +1388,20 @@ class PlanExecutor:
                 step_id=hr.step_id, capability=hr.capability,
                 urteil=_urteil, dauer_s=_dauer,
             )
+        except Exception as exc:
+            # never let the Schritt-Waechter break execution
+            self._schritt_waechter_warne("Beurteilung", exc)
+
+    def _schritt_waechter_warne(self, wo: str, exc: BaseException) -> None:
+        """Einmal je Instanz warnen, danach still. Wirft nie."""
+        try:
+            if getattr(self, "_schritt_waechter_gewarnt", False):
+                return
+            self._schritt_waechter_gewarnt = True
+            logger.warning("Schritt-Waechter (%s) ausgefallen: %s: %s",
+                           wo, type(exc).__name__, exc)
         except Exception:
-            pass  # never let the Schritt-Waechter break execution
+            pass
 
     def _exec_hop_kern(
         self, hop: HopSpec, state: Dict[str, Any],

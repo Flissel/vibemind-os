@@ -4,19 +4,29 @@ Beurteilt einen ausgefuehrten Plan-Schritt: auffaellig (True), unauffaellig
 (False, nur wenn ein Modell es bestaetigt) oder nicht beurteilt (None).
 Ein nicht beurteilter Schritt gilt nie als unauffaellig.
 
-Reine Funktion ohne Seiteneffekte, kein Netz. Das Modell kommt nur als
-Callable `frage` herein.
+`beurteile` und `modus` sind reine Funktionen, kein Netz; das Modell kommt nur
+als Callable `frage` herein. Die Klasse `Schatten` schreibt die Zeilen in die
+Schatten-Datei (einziger Seiteneffekt des Moduls).
+
+Schritte ohne Zeile (der Anschluss in plan_executor beurteilt sie nicht):
+- wegen eines gescheiterten Vorgaengers uebersprungene Schritte
+- vom start_when-Gate gesperrte Schritte
+- Eltern-Sammelschritte von repeat-Hops
+- Pending-Ergebnisse (Agenten-Auftraege auf dem Nutzerweg; das Ergebnis kommt
+  spaeter ueber den Nachfasser und nie ueber _exec_hop)
+- Abstuerze des Kerns, fuer die execute() selbst ein Ergebnis baut
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import Callable, Mapping, Optional
 
 from .capability_targets import result_indicates_failure
 
@@ -25,6 +35,13 @@ MAX_GRUND = 500
 _MAX_PARAMETER = 1000
 
 _MODI = ("0", "schatten", "sichtbar")
+
+# Platzhalter in Bezeichner-Form. Deckt die beiden Renderer-Formen aus
+# plan_executor.py (Zeile 52: {{state.X}}; Zeilen 2276-2278: {{item}},
+# {{loop.index}}, {{loop.index0}}, {{loop.value}}) und vom Planner erfundene
+# Bezeichner wie {{output_var}}. Ausdruecke mit $, Leerzeichen oder Operatoren
+# im Inhalt (etwa n8n {{ $json.x }}) zaehlen nicht.
+_PLATZHALTER = re.compile(r"\{\{\s*[A-Za-z_][\w.\[\]]*\s*\}\}")
 
 _FRAGE_PRAEFIXE = ("please enter", "which idea", "what would you like me to")
 
@@ -61,12 +78,12 @@ def _regel(ok: bool, ergebnis: object, fehler: Optional[str], parameter: object,
     if result_indicates_failure(ergebnis):
         return "Ergebnis zeigt einen Fehlschlag"
     text = _als_text(ergebnis, MAX_PRUEFTEXT)
-    if "{{" in text:
+    if _PLATZHALTER.search(text):
         return "Ergebnis enthaelt einen unaufgeloesten Platzhalter"
     klein = text.strip().lower()
     if any(klein.startswith(p) for p in _FRAGE_PRAEFIXE):
         return "Ergebnis ist eine Rueckfrage statt einer Ausfuehrung"
-    if "{{" in _als_text(parameter, MAX_PRUEFTEXT):
+    if _PLATZHALTER.search(_als_text(parameter, MAX_PRUEFTEXT)):
         return "Parameter enthaelt einen unaufgeloesten Platzhalter"
     if vorgaenger_auffaellig:
         return "Vorgaenger-Schritt war auffaellig"
@@ -102,7 +119,7 @@ def beurteile(*, ok: bool, ergebnis: object, fehler: Optional[str], parameter: o
 def modus(umgebung: Optional[Mapping[str, str]] = None) -> str:
     """Schalter SCHRITT_WAECHTER: "0", "schatten" oder "sichtbar"; sonst "0"."""
     env = os.environ if umgebung is None else umgebung
-    wert = env.get("SCHRITT_WAECHTER", "0")
+    wert = str(env.get("SCHRITT_WAECHTER", "0")).strip().lower()
     return wert if wert in _MODI else "0"
 
 

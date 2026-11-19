@@ -55,6 +55,21 @@ def test_modus():
     assert modus({}) == "0" and modus({"SCHRITT_WAECHTER": "schatten"}) == "schatten"
     assert modus({"SCHRITT_WAECHTER": "sichtbar"}) == "sichtbar" and modus({"SCHRITT_WAECHTER": "1"}) == "0"
 
+def test_modus_vertraegt_leerraum_und_grossschreibung():
+    assert modus({"SCHRITT_WAECHTER": " Schatten" + chr(13) + chr(10)}) == "schatten"
+    assert modus({"SCHRITT_WAECHTER": "SICHTBAR"}) == "sichtbar"
+    assert modus({"SCHRITT_WAECHTER": "1"}) == "0" and modus({"SCHRITT_WAECHTER": ""}) == "0"
+
+@pytest.mark.parametrize("parameter", ["{{state.bubble_id}}", "{{ item }}"])
+def test_platzhalter_im_parameter_bleibt_auffaellig(parameter):
+    assert u(parameter=parameter).auffaellig is True
+
+def test_fremde_vorlagen_sind_durch_die_platzhalter_regel_nicht_auffaellig():
+    keine = Urteil(None, "", "keine")
+    assert u(ergebnis="Workflow gespeichert: {{ $json.name }}") == keine
+    assert u(parameter="{{ $json.x }}") == keine
+    assert u(ergebnis="Ausdruck {{ a + b }}") == keine
+
 def test_schreibe_eine_zeile_je_schritt(tmp_path):
     s = Schatten(tmp_path / "unter" / "w.jsonl")
     s.schreibe(plan_id="p", step_id="s1", capability="bubble_create",
