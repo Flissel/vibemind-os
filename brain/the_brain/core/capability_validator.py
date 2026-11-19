@@ -65,6 +65,15 @@ def _rule_non_empty_result(raw: Any, *, intent: str = "", arg: Any = None) -> Di
     return {"valid": True, "reason": "non-empty result"}
 
 
+def _rule_dict_nonempty(raw: Any, **_) -> Dict[str, Any]:
+    """Pass if raw is a dict with at least one key (research targets return one)."""
+    if not isinstance(raw, dict):
+        return {"valid": False, "reason": f"expected dict, got {type(raw).__name__}"}
+    if not raw:
+        return {"valid": False, "reason": "result is an empty dict"}
+    return {"valid": True, "reason": "non-empty dict"}
+
+
 def _rule_has_score(raw: Any, **_) -> Dict[str, Any]:
     """Pass if raw is a dict with a numeric 'score' or 'total_score' field."""
     if not isinstance(raw, dict):
@@ -245,6 +254,9 @@ RULES: Dict[str, Callable[..., Dict[str, Any]]] = {
     # were authored with `string_nonempty` instead of `non_empty_result`.
     # Same semantics, just legacy naming. Both work.
     "string_nonempty": _rule_non_empty_result,
+    # Used by the four research_* capabilities; was named in capabilities.yaml
+    # without being registered, so every successful research step read "invalid".
+    "dict_nonempty": _rule_dict_nonempty,
     "has_score": _rule_has_score,
     "score_in_range": _rule_score_in_range,
     "bubble_id_present": _rule_bubble_id_present,
