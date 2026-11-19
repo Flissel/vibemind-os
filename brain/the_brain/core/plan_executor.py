@@ -1339,6 +1339,61 @@ class PlanExecutor:
         self, hop: HopSpec, state: Dict[str, Any],
         plan_ctx: Optional[Dict[str, Any]] = None,
     ) -> HopResult:
+        """Fuehrt den Schritt aus (_exec_hop_kern) und laesst danach den
+        Schritt-Waechter jede Rueckgabe sehen, auch die fruehen. Das HopResult
+        geht unveraendert zurueck; eine Ausnahme des Kerns geht unveraendert
+        nach oben, ohne Waechter-Aufruf."""
+        hr = self._exec_hop_kern(hop, state, plan_ctx)
+        self._schritt_waechter_beurteile(hop, hr, plan_ctx)
+        return hr
+
+    def _schritt_waechter_beurteile(
+        self, hop: HopSpec, hr: HopResult,
+        plan_ctx: Optional[Dict[str, Any]],
+    ) -> None:
+        """Schritt-Waechter (Schatten): beurteilt den fertigen Schritt und
+        schreibt eine Zeile in die Schatten-Datei. Nur beobachten: liest alles
+        aus `hr` und veraendert es nicht. Nicht beurteilt werden Testlaeufe
+        (decision_outcome.is_test_run) und pending-Ergebnisse (Schritt noch
+        nicht fertig). Auffaellige step_id je Plan stehen in
+        plan_ctx["_waechter_auffaellig"]; der Vorgaenger-Bezug laeuft nur ueber
+        hop.depends_on. Ohne plan_ctx gilt kein Vorgaenger als auffaellig und
+        plan_id ist leer. dauer_s ist die Zeit des Urteils, nicht die des
+        Schritts. Kein Fehler hier darf die Ausfuehrung beruehren."""
+        try:
+            _waechter = getattr(self, "_schritt_waechter", None)
+            if _waechter is None or hr.pending:
+                return
+            pc = plan_ctx if isinstance(plan_ctx, dict) else {}
+            from .decision_outcome import is_test_run
+            if is_test_run(pc.get("plan_intent", "") or "", pc.get("trace_id", "") or ""):
+                return
+            from .schritt_waechter import beurteile
+            with self._lock:
+                _auffaellig = pc.setdefault("_waechter_auffaellig", set())
+                _vorgaenger = any(d in _auffaellig for d in hop.depends_on)
+            _tw = time.perf_counter()
+            _urteil = beurteile(
+                ok=hr.ok, ergebnis=hr.result, fehler=hr.error,
+                parameter=hr.rendered_arg, vorgaenger_auffaellig=_vorgaenger,
+                frage=None,
+            )
+            _dauer = time.perf_counter() - _tw
+            if _urteil.auffaellig is True:
+                with self._lock:
+                    _auffaellig.add(hr.step_id)
+            _waechter.schreibe(
+                plan_id=pc.get("plan_id", "") or "",
+                step_id=hr.step_id, capability=hr.capability,
+                urteil=_urteil, dauer_s=_dauer,
+            )
+        except Exception:
+            pass  # never let the Schritt-Waechter break execution
+
+    def _exec_hop_kern(
+        self, hop: HopSpec, state: Dict[str, Any],
+        plan_ctx: Optional[Dict[str, Any]] = None,
+    ) -> HopResult:
         """Resolve template, build executor, call, validate, capture KG hits.
 
         Phase 11.U.A — `plan_ctx` carries the per-plan info (decision_context,
@@ -1999,41 +2054,6 @@ class PlanExecutor:
                     ).start()
             except Exception:
                 pass  # never let L4 break execution
-
-        # Schritt-Waechter (Schatten): beurteilt den fertigen Schritt und schreibt
-        # eine Zeile in die Schatten-Datei. Nur beobachten: ok, err,
-        # result_payload, verdict und das HopResult bleiben unberuehrt.
-        # Testlaeufe (decision_outcome.is_test_run) werden nicht beurteilt.
-        # Auffaellige step_id je Plan stehen in plan_ctx["_waechter_auffaellig"];
-        # der Vorgaenger-Bezug laeuft nur ueber hop.depends_on. dauer_s ist die
-        # Zeit des Urteils, nicht die des Schritts.
-        try:
-            _waechter = getattr(self, "_schritt_waechter", None)
-            if _waechter is not None:
-                from .decision_outcome import is_test_run
-                if not is_test_run(plan_ctx.get("plan_intent", "") or "",
-                                   plan_ctx.get("trace_id", "") or ""):
-                    from .schritt_waechter import beurteile
-                    with self._lock:
-                        _auffaellig = plan_ctx.setdefault("_waechter_auffaellig", set())
-                        _vorgaenger = any(d in _auffaellig for d in hop.depends_on)
-                    _tw = time.perf_counter()
-                    _urteil = beurteile(
-                        ok=ok, ergebnis=result_payload, fehler=err,
-                        parameter=rendered_arg, vorgaenger_auffaellig=_vorgaenger,
-                        frage=None,
-                    )
-                    _dauer = time.perf_counter() - _tw
-                    if _urteil.auffaellig is True:
-                        with self._lock:
-                            _auffaellig.add(hop.step_id)
-                    _waechter.schreibe(
-                        plan_id=plan_ctx.get("plan_id", "") or "",
-                        step_id=hop.step_id, capability=hop.capability,
-                        urteil=_urteil, dauer_s=_dauer,
-                    )
-        except Exception:
-            pass  # never let the Schritt-Waechter break execution
 
         # Phase 7.3 — record provider outcome for adaptive routing
         try:
