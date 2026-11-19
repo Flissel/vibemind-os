@@ -1,3 +1,4 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): RPC accepts only Content-Type application/json (#330, fix round 2).
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { ipc } from '@x/shared';
@@ -10,6 +11,18 @@ export function createRpcRoutes(handlers: RpcHandlers): Hono {
   const app = new Hono();
 
   app.post('/rpc/:channel', async (c) => {
+    // VibeMind (#330, fix round 2, review N2): only JSON clients. A browser
+    // form (text/plain, urlencoded, multipart) or a cross-origin request
+    // without a CORS preflight cannot send application/json, so a page the
+    // agent opens can never drive RPC even when it knows a key. Every
+    // legitimate client (packages/client rpc.ts, main's rpc-forwarder and
+    // server-host, the VibeMind bots) sends application/json.
+    if (!isJsonContentType(c.req.header('content-type'))) {
+      return c.json(
+        { error: { code: 'unsupported_media_type', message: 'POST /rpc/* needs Content-Type: application/json' } },
+        415,
+      );
+    }
     const channel = c.req.param('channel');
     // Unexposed channels 404 like unknown ones — don't enumerate the surface.
     if (!isRpcChannel(channel) || !(channel in handlers)) {
@@ -49,6 +62,12 @@ export function createRpcRoutes(handlers: RpcHandlers): Hono {
   });
 
   return app;
+}
+
+// The media type alone, parameters (charset) ignored, case-insensitive.
+export function isJsonContentType(header: string | undefined): boolean {
+  if (!header) return false;
+  return header.split(';')[0].trim().toLowerCase() === 'application/json';
 }
 
 function describeCause(cause: unknown): string {

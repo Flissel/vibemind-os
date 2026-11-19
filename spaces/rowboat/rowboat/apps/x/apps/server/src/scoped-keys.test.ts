@@ -155,7 +155,7 @@ describe('server with a scoped key', () => {
     method: 'POST',
     body: '{}',
     ...init,
-    headers: { authorization: `Bearer ${t}` },
+    headers: { authorization: `Bearer ${t}`, 'content-type': 'application/json' },
   });
 
   it('may call its own channel', async () => {

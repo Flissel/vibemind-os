@@ -41,7 +41,9 @@ describe('todo channels for the Freigabe messenger', () => {
   const call = async (channel: string, body: unknown, auth = true) => {
     const res = await fetch(`${base}/rpc/${channel}`, {
       method: 'POST',
-      headers: auth ? { authorization: `Bearer ${server.key}` } : {},
+      headers: auth
+        ? { authorization: `Bearer ${server.key}`, 'content-type': 'application/json' }
+        : { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
     return { status: res.status, json: (await res.json()) as any };

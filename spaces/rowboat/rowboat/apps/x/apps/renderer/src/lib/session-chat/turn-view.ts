@@ -548,7 +548,9 @@ export function buildSessionChatState(
     for (const tc of latest.toolCalls) {
       const resolved = tc.permission?.resolved
       if (!resolved) continue
-      if (resolved.source === 'human') {
+      // 'delegated' (VibeMind #330): answered through a scoped key or the
+      // embed bridge — shown as answered, like the human's own answer.
+      if (resolved.source === 'human' || resolved.source === 'delegated') {
         permissionResponses.set(tc.toolCallId, resolved.decision === 'allow' ? 'approve' : 'deny')
       } else if (resolved.source === 'classifier') {
         autoPermissionDecisions.set(tc.toolCallId, {

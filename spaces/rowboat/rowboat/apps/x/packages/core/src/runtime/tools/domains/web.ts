@@ -1,11 +1,12 @@
-// Modified for VibeMind (Flissel/rowboat vibemind): fetch-url in channel runs goes through channel-fetch (Teil E).
+// Modified for VibeMind (Flissel/rowboat vibemind): fetch-url in channel runs goes through channel-fetch (Teil E); never the own local server (#330).
 // Builtin tools: web domain. Entries moved VERBATIM from the historical
 // monolith — the merge order in ../builtin-tools.ts preserves the original
 // catalog key order (provider-payload bytes; see the key-order test there).
 
 import { z } from "zod";
 import type { ToolContext } from "../exec-tool.js";
-import { channelFetch } from "../channel-fetch.js";
+import { channelFetch, defaultChannelFetchDeps } from "../channel-fetch.js";
+import { connectGuardedFetch, guardedFetch, ownServerRefusal } from "../own-server-guard.js";
 import * as path from "path";
 import * as fs from "fs/promises";
 import { WorkDir } from "../../../config/config.js";
@@ -159,23 +160,17 @@ export const fetchUrlTools: z.infer<typeof BuiltinToolsSchema> = {
                 if (headers && Object.keys(headers).length > 0) {
                     return { ok: false, status: 0, error: 'fetch-url with custom headers is not allowed in channel runs.' };
                 }
-                return channelFetch(url, method);
+                // Fix round 1 (#330): never the own server, on any hop.
+                // Fix round 2: the transport checks the connect address too.
+                return channelFetch(url, method, {
+                    ...defaultChannelFetchDeps,
+                    fetch: connectGuardedFetch(),
+                    checkUrl: (u) => ownServerRefusal(u),
+                });
             }
-            try {
-                const parsed = new URL(url);
-                if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-                    return { ok: false, status: 0, error: 'Only http(s) URLs are allowed.' };
-                }
-                const m = (method || 'GET').toUpperCase();
-                const res = await fetch(url, { method: m, headers, body: m === 'GET' || m === 'HEAD' ? undefined : body });
-                let text = await res.text();
-                const MAX = 200_000;
-                const truncated = text.length > MAX;
-                if (truncated) text = text.slice(0, MAX);
-                return { ok: res.ok, status: res.status, statusText: res.statusText, body: text, truncated };
-            } catch (e) {
-                return { ok: false, status: 0, error: e instanceof Error ? e.message : String(e) };
-            }
+            // Fix round 1 (#330, review C1): never Rowboat's own local server,
+            // the first request and every redirect hop.
+            return guardedFetch(url, method, headers, body);
         },
     },
 };

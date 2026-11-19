@@ -18,6 +18,9 @@ export interface ChannelFetchDeps {
     ) => Promise<Response>;
     // Deadline for the whole request chain (default 20 s).
     timeoutMs?: number;
+    // Extra per-hop check (fix round 1 of #330: never Rowboat's own server,
+    // even on a public address of this machine). A message refuses the hop.
+    checkUrl?: (url: URL) => Promise<string | null>;
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -35,7 +38,7 @@ type FetchResult =
     | { ok: boolean; status: number; statusText: string; body: string; truncated: boolean }
     | { ok: false; status: 0; error: string };
 
-function parseV4(ip: string): number[] | null {
+export function parseV4(ip: string): number[] | null {
     const parts = ip.split(".");
     if (parts.length !== 4) return null;
     const octets = parts.map((p) => (/^\d{1,3}$/.test(p) ? Number(p) : NaN));
@@ -55,7 +58,7 @@ function privateV4([a, b]: number[]): boolean {
     );
 }
 
-function expandV6(input: string): number[] | null {
+export function expandV6(input: string): number[] | null {
     let s = input.toLowerCase();
     const zone = s.indexOf("%");
     if (zone >= 0) s = s.slice(0, zone);
@@ -178,7 +181,7 @@ export async function channelFetch(
     const signal = AbortSignal.timeout(timeoutMs);
     try {
         for (let hop = 0; ; hop++) {
-            const blocked = await checkHost(url, deps);
+            const blocked = (await deps.checkUrl?.(url)) ?? (await checkHost(url, deps));
             if (blocked) {
                 return { ok: false, status: 0, error: blocked };
             }
@@ -205,7 +208,7 @@ export async function channelFetch(
 
 // Reads at most `limit` characters, then cancels the stream instead of
 // downloading the rest.
-async function readLimited(res: Response, limit: number): Promise<{ text: string; truncated: boolean }> {
+export async function readLimited(res: Response, limit: number): Promise<{ text: string; truncated: boolean }> {
     if (!res.body) {
         return { text: "", truncated: false };
     }

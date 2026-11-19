@@ -1,12 +1,10 @@
-import dns from 'node:dns/promises';
-import net from 'node:net';
+// Modified for VibeMind (Flissel/rowboat vibemind): the fetch proxy lives in fetch-proxy.ts and never relays to the own server (#330, fix round 3).
 import type express from 'express';
 import { generateText, type ModelMessage } from 'ai';
 import type { RowboatAppManifest } from '@x/shared/dist/rowboat-app.js';
 import { registerHostApiRoute, sendError, readBody } from './server.js';
+import { handleFetchProxy } from './fetch-proxy.js';
 import {
-    MAX_PROXY_RESPONSE_BYTES,
-    PROXY_TIMEOUT_MS,
     MAX_LLM_REQUEST_BYTES,
     LLM_MAX_OUTPUT_TOKENS,
     LLM_MAX_CONCURRENT_PER_APP,
@@ -141,132 +139,7 @@ async function handleToolsExecute(
 // §7.5 Fetch proxy with SSRF guards
 // ---------------------------------------------------------------------------
 
-function isForbiddenAddress(ip: string): boolean {
-    if (net.isIPv4(ip)) {
-        const [a, b] = ip.split('.').map(Number);
-        if (a === 127 || a === 0) return true; // loopback / this-network
-        if (a === 10) return true; // RFC1918
-        if (a === 172 && b >= 16 && b <= 31) return true; // RFC1918
-        if (a === 192 && b === 168) return true; // RFC1918
-        if (a === 169 && b === 254) return true; // link-local
-        return false;
-    }
-    const lower = ip.toLowerCase();
-    if (lower === '::1' || lower === '::') return true; // loopback / unspecified
-    if (lower.startsWith('fe80')) return true; // link-local
-    if (lower.startsWith('fc') || lower.startsWith('fd')) return true; // unique-local
-    if (lower.startsWith('::ffff:')) return isForbiddenAddress(lower.slice(7)); // v4-mapped
-    return false;
-}
-
-/** Reject URLs whose host resolves to loopback/private/link-local space. */
-async function ssrfCheck(url: URL): Promise<string | null> {
-    const host = url.hostname.toLowerCase();
-    if (host === 'localhost' || host.endsWith('.localhost')) return 'localhost addresses are forbidden';
-    if (net.isIP(host)) {
-        return isForbiddenAddress(host) ? `address ${host} is forbidden` : null;
-    }
-    try {
-        const records = await dns.lookup(host, { all: true });
-        for (const r of records) {
-            if (isForbiddenAddress(r.address)) return `${host} resolves to forbidden address ${r.address}`;
-        }
-        return null;
-    } catch {
-        return `cannot resolve host ${host}`;
-    }
-}
-
-async function handleFetchProxy(
-    _slug: string,
-    _manifest: RowboatAppManifest,
-    req: express.Request,
-    res: express.Response,
-): Promise<void> {
-    const body = await readJsonBody(req, res, MAX_LLM_REQUEST_BYTES);
-    if (!body) return;
-    const rawUrl = typeof body.url === 'string' ? body.url : '';
-    const method = (typeof body.method === 'string' ? body.method : 'GET').toUpperCase();
-    if (method !== 'GET' && method !== 'POST') return sendError(res, 400, 'bad_request', 'method must be GET or POST');
-
-    let target: URL;
-    try {
-        target = new URL(rawUrl);
-    } catch {
-        return sendError(res, 400, 'invalid_url', 'url must be a valid absolute URL');
-    }
-    if (target.protocol !== 'http:' && target.protocol !== 'https:') {
-        return sendError(res, 400, 'invalid_url', 'only http(s) URLs are allowed');
-    }
-
-    // Strip credential-bearing / routing headers; pass the rest through.
-    const headers: Record<string, string> = {};
-    if (body.headers && typeof body.headers === 'object') {
-        for (const [k, v] of Object.entries(body.headers as Record<string, unknown>)) {
-            if (typeof v !== 'string') continue;
-            const key = k.toLowerCase();
-            if (key === 'host' || key === 'cookie') continue;
-            headers[k] = v;
-        }
-    }
-    const requestBody = typeof body.body === 'string' ? body.body : undefined;
-
-    // Follow redirects manually so every hop passes the SSRF check (§7.5).
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
-    res.on('close', () => { if (!res.writableEnded) controller.abort(); });
-    try {
-        let current = target;
-        for (let hop = 0; hop < 5; hop++) {
-            const violation = await ssrfCheck(current);
-            if (violation) return sendError(res, 403, 'address_forbidden', violation);
-
-            const upstream = await fetch(current, {
-                method,
-                headers,
-                body: method === 'POST' ? requestBody : undefined,
-                redirect: 'manual',
-                signal: controller.signal,
-            });
-
-            if (upstream.status >= 300 && upstream.status < 400) {
-                const location = upstream.headers.get('location');
-                if (!location) break;
-                current = new URL(location, current);
-                continue;
-            }
-
-            // Stream with the response-size cap.
-            const reader = upstream.body?.getReader();
-            let text = '';
-            let truncated = false;
-            if (reader) {
-                const decoder = new TextDecoder();
-                let received = 0;
-                for (;;) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    received += value.byteLength;
-                    if (received > MAX_PROXY_RESPONSE_BYTES) {
-                        truncated = true;
-                        text += decoder.decode(value.subarray(0, value.byteLength - (received - MAX_PROXY_RESPONSE_BYTES)));
-                        void reader.cancel();
-                        break;
-                    }
-                    text += decoder.decode(value, { stream: true });
-                }
-            }
-            res.json({ ok: upstream.ok, status: upstream.status, statusText: upstream.statusText, text, truncated });
-            return;
-        }
-        sendError(res, 502, 'too_many_redirects', 'redirect chain too long or missing location');
-    } catch (e) {
-        if (controller.signal.aborted) return sendError(res, 504, 'upstream_timeout', `upstream did not respond within ${PROXY_TIMEOUT_MS}ms`);
-        sendError(res, 502, 'fetch_failed', e instanceof Error ? e.message : String(e));
-    } finally {
-        clearTimeout(timeout);
-    }
-}
+// Moved to fetch-proxy.ts (VibeMind #330, fix round 3, review I-A).
 
 // ---------------------------------------------------------------------------
 // §7.6 LLM generation

@@ -86,16 +86,23 @@ export const AskHumanResponseEvent = BaseRunEvent.extend({
     response: z.string(),
 });
 
+// Modified for VibeMind (Flissel/rowboat vibemind): humanOnly (ticket #330).
+// A request that touches a protected workspace entry (config/, keys,
+// channels/, ...) is answered by a human only: it never goes to the auto
+// classifier, is denied when no human is available, and an "always allow"
+// answer is not persisted.
 export const ToolPermissionMetadata = z.discriminatedUnion("kind", [
     z.object({
         kind: z.literal("command"),
         commandNames: z.array(z.string()),
+        humanOnly: z.boolean().optional(),
     }),
     z.object({
         kind: z.literal("file"),
         operation: z.enum(["read", "list", "search", "write", "delete"]),
         paths: z.array(z.string()),
         pathPrefix: z.string(),
+        humanOnly: z.boolean().optional(),
     }),
     // A Composio action execution (composio-execute-tool).
     z.object({
@@ -110,10 +117,12 @@ export const ToolPermissionMetadata = z.discriminatedUnion("kind", [
         toolName: z.string(),
     }),
     // Generic fail-closed request: a tool with no more specific policy.
+    // humanOnly (VibeMind #330, Task 17): addMcpServer with a command.
     z.object({
         kind: z.literal("tool"),
         toolId: z.string(),
         toolName: z.string(),
+        humanOnly: z.boolean().optional(),
     }),
 ]);
 

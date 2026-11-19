@@ -13,6 +13,20 @@ import { watcher as watcherCore, workspace } from '@x/core';
 import { WorkDir } from '@x/core/dist/config/config.js';
 import { workspace as workspaceShared } from '@x/shared';
 import * as mcpCore from '@x/core/dist/mcp/mcp.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { applyHumanWorkspaceOp } from '@x/core/dist/config/human-config-writes.js';
+import {
+  RESTRICTED_REFUSAL,
+  restrictedCallRefused,
+  restrictedResult,
+  originIsRestricted,
+  answeredByForOrigin,
+  forwardHeadersForOrigin,
+  type CallerOrigin,
+} from '@x/core/dist/security/restricted-principal.js';
+// VibeMind (#330, Task 17 fix round 2): one resolution for the shell:*
+// channels and the restricted-caller gate.
+import { resolveShellPath } from '@x/core/dist/workspace/shell-path.js';
 import * as runsCore from '@x/core/dist/runtime/legacy/runs.js';
 import { bus } from '@x/core/dist/runtime/legacy/bus.js';
 import { serviceBus } from '@x/core/dist/services/service_bus.js';
@@ -327,18 +341,6 @@ function markdownToHtml(markdown: string, title: string): string {
 
 const previewOwners = new Set<number>();
 
-function resolveShellPath(filePath: string): string {
-  if (filePath.startsWith('~')) {
-    return path.join(os.homedir(), filePath.slice(1));
-  }
-
-  if (path.isAbsolute(filePath)) {
-    return filePath;
-  }
-
-  return workspace.resolveWorkspacePath(filePath);
-}
-
 type InvokeChannels = ipc.InvokeChannels;
 type IPCChannels = ipc.IPCChannels;
 
@@ -401,20 +403,60 @@ export function listInvokeChannels(): InvokeChannels[] {
   return [...invokeTable.keys()];
 }
 
+// VibeMind (ticket #330, Task 17 fix round 1): who called the handler running
+// now. 'embed' = the embed bridge (embed-host.ts): its token sits in
+// embed.json and is also used by other local programs (the rowboat-ui access
+// for agents). Handlers read it with currentIpcOrigin().
+// Fix round 2 (review m-5): every handler runs inside invokeIpcChannel, which
+// always sets the origin.
+// Fix round 3 (operator decision 19.11.2026): whether the embed is restricted
+// is core's EMBED_IS_TRUSTED (security/restricted-principal.ts, true for now:
+// the embed is treated as the renderer). A handler reached outside
+// invokeIpcChannel has no recorded origin ('unknown') and stays restricted.
+type IpcOrigin = 'renderer' | 'embed';
+const ipcOrigin = new AsyncLocalStorage<IpcOrigin>();
+function currentIpcOrigin(): CallerOrigin {
+  return ipcOrigin.getStore() ?? 'unknown';
+}
+function answeredByForCaller(): 'human' | 'delegated' {
+  return answeredByForOrigin(currentIpcOrigin());
+}
+
 export async function invokeIpcChannel(
   channel: string,
   event: Electron.IpcMainInvokeEvent,
   rawArgs: unknown,
+  origin: IpcOrigin = 'renderer',
 ): Promise<unknown> {
   const handler = invokeTable.get(channel as InvokeChannels);
   if (!handler) throw new Error(`No handler registered for '${channel}'`);
   const typed = channel as InvokeChannels;
   // Validate request payload
   const args = ipc.validateRequest(typed, rawArgs);
+  // Fix round 3: restricted only while the embed is not trusted
+  // (EMBED_IS_TRUSTED, core); the renderer never is.
+  const restricted = originIsRestricted(origin);
+  // Review I-1 / F-2: a restricted embed may neither read nor change protected
+  // workspace entries through any path-taking channel, nor change config or
+  // authority (the core sets also cover the main-only channels: shell:*,
+  // spreadsheet:*, exportCopy, server:*, app:set*, phone:push:register).
+  if (restricted && (await restrictedCallRefused(typed, args))) {
+    throw new Error(RESTRICTED_REFUSAL);
+  }
   // Strangler-fig: channels migrated to rowboat-server cross localhost HTTP
   // instead of calling their in-process handler (which stays in the map as
-  // the ROWBOAT_FORWARD_MIGRATED=0 kill switch).
-  const result = shouldForwardChannel(typed) ? await forwardRpc(typed, args) : await handler(event, args);
+  // the ROWBOAT_FORWARD_MIGRATED=0 kill switch). A forwarded call of a
+  // restricted origin carries the restricted header, so the server applies
+  // the same rules; a trusted embed's call carries none.
+  let result = shouldForwardChannel(typed)
+    ? await forwardRpc(typed, args, { headers: forwardHeadersForOrigin(origin) })
+    : await ipcOrigin.run(origin, () => handler(event, args));
+  // Listings filtered, credentials blanked (bot token, voice keys, Rowboat
+  // access token, pairing token, WhatsApp pairing QR) — for forwarded and
+  // main-served channels alike.
+  if (restricted) {
+    result = await restrictedResult(typed, args, result);
+  }
   // Validate response payload
   return ipc.validateResponse(typed, result);
 }
@@ -1202,20 +1244,30 @@ export function setupIpcHandlers() {
     'workspace:readFile': async (_event, args) => {
       return workspace.readFile(args.path, args.encoding);
     },
+    // VibeMind (ticket #330, Task 17): these are human write paths (Settings
+    // and the file UI of the app's own renderer; the embed bridge is refused
+    // for protected entries in invokeIpcChannel). Normally these channels are
+    // forwarded to rowboat-server with the owner key (core-deps.ts does the
+    // same there); these in-process handlers are the kill-switch path.
     'workspace:writeFile': async (_event, args) => {
-      return workspace.writeFile(args.path, args.data, args.opts);
+      return applyHumanWorkspaceOp(
+        { kind: 'writeFile', path: args.path, data: args.data, encoding: args.opts?.encoding },
+        () => workspace.writeFile(args.path, args.data, args.opts),
+      );
     },
     'workspace:mkdir': async (_event, args) => {
-      return workspace.mkdir(args.path, args.recursive);
+      return applyHumanWorkspaceOp({ kind: 'mkdir', path: args.path }, () => workspace.mkdir(args.path, args.recursive));
     },
     'workspace:rename': async (_event, args) => {
-      return workspace.rename(args.from, args.to, args.overwrite);
+      return applyHumanWorkspaceOp({ kind: 'rename', from: args.from, to: args.to }, () =>
+        workspace.rename(args.from, args.to, args.overwrite));
     },
     'workspace:copy': async (_event, args) => {
-      return workspace.copy(args.from, args.to, args.overwrite);
+      return applyHumanWorkspaceOp({ kind: 'copy', from: args.from, to: args.to }, () =>
+        workspace.copy(args.from, args.to, args.overwrite));
     },
     'workspace:remove': async (_event, args) => {
-      return workspace.remove(args.path, args.opts);
+      return applyHumanWorkspaceOp({ kind: 'remove', path: args.path }, () => workspace.remove(args.path, args.opts));
     },
     'workspace:pickImage': async (event) => {
       const win = senderWindow(event.sender);
@@ -1413,12 +1465,17 @@ export function setupIpcHandlers() {
       return { messageId: await runsCore.createMessage(args.runId, args.message, args.voiceInput, args.voiceOutput, args.searchEnabled, args.middlePaneContext, args.codeMode, args.codeCwd, args.codePolicy) };
     },
     'runs:authorizePermission': async (_event, args) => {
-      await runsCore.authorizePermission(args.runId, args.authorization);
+      // VibeMind #330 (Task 17 fix round 1): a restricted caller's answer is
+      // delegated (fix round 3: the embed only while EMBED_IS_TRUSTED is false).
+      await runsCore.authorizePermission(args.runId, args.authorization, answeredByForCaller());
       return { success: true };
     },
     'codeRun:resolvePermission': async (_event, args) => {
+      // VibeMind #330 (Task 17 fix round 2, review F-1): a restricted caller's
+      // answer is delegated — once or reject only (fix round 3: the embed only
+      // while EMBED_IS_TRUSTED is false).
       const registry = container.resolve<CodePermissionRegistry>('codePermissionRegistry');
-      registry.resolve(args.requestId, args.decision);
+      registry.resolve(args.requestId, args.decision, answeredByForCaller());
       return { success: true };
     },
     'runs:provideHumanInput': async (_event, args) => {
@@ -1508,7 +1565,9 @@ export function setupIpcHandlers() {
       return { removed: removed ?? null };
     },
     'sessions:respondToPermission': async (_event, args) => {
-      await container.resolve<ISessions>('sessions').respondToPermission(args.turnId, args.toolCallId, args.decision, args.metadata);
+      // VibeMind #330 (Task 17 fix round 1): a restricted caller's answer is
+      // delegated (fix round 3: the embed only while EMBED_IS_TRUSTED is false).
+      await container.resolve<ISessions>('sessions').respondToPermission(args.turnId, args.toolCallId, args.decision, args.metadata, answeredByForCaller());
       return { success: true };
     },
     'sessions:respondToAskHuman': async (_event, args) => {
@@ -3274,6 +3333,10 @@ export function setupIpcHandlers() {
     // Rowboat server (phone pairing) — client-local: answered by main, which
     // hosts the transport.
     'server:getPairingInfo': async () => {
+      // VibeMind #330 (Task 17): the token IS the owner key (server-key
+      // content); invokeIpcChannel blanks it for a restricted caller
+      // (restrictedResult, core security/restricted-principal.ts). Fix round 3:
+      // the trusted embed gets it, as the renderer does.
       return getPairingInfo();
     },
     'server:setLanEnabled': async (_event, args) => {

@@ -1,7 +1,9 @@
 // Modified for VibeMind (Flissel/rowboat vibemind): channel-origin turns are
 // restricted by the channel-run guard (tool snapshot filter, call-time guard,
 // no classifier) — Teil E. Trusted MCP calls (checker trustedMcp) are logged
-// on the invocation and bound to the executed entry.
+// on the invocation and bound to the executed entry. Human-only requests
+// (protected paths, ticket #330) skip the classifier; only a human's allow
+// marks the execution humanApproved.
 import { z } from "zod";
 import type { TurnAnalytics } from "@x/shared/dist/analytics.js";
 import {
@@ -61,7 +63,7 @@ import type {
     LlmStreamEvent,
     ResolvedModel,
 } from "./model-registry.js";
-import type { IPermissionChecker, IPermissionClassifier } from "./permission.js";
+import { isHumanOnlyRequest, type IPermissionChecker, type IPermissionClassifier } from "./permission.js";
 import type { ITurnRepo } from "./repo.js";
 import { HotStream } from "./stream.js";
 import type { IToolRegistry, RuntimeTool, SyncRuntimeTool } from "./tool-registry.js";
@@ -670,13 +672,30 @@ class TurnAdvance {
                         `no pending permission for tool call ${input.toolCallId}`,
                     );
                 }
+                // VibeMind #330 (Task 17 fix round 1, review I-2): a restricted
+                // caller's answer is never the human's approval. Fix round 3
+                // (review m-1): only an explicit "human" is the human (fails closed).
+                const delegated = input.answeredBy !== "human";
+                if (delegated) {
+                    if (input.decision === "allow" && isHumanOnlyRequest(tc.permission.required.request)) {
+                        throw new TurnInputError(
+                            `tool call ${input.toolCallId} needs the human's own answer; this caller may only deny it`,
+                        );
+                    }
+                    const scope = permissionScopeOf(input.metadata);
+                    if (scope === "always" || scope === "session") {
+                        throw new TurnInputError(
+                            `this caller may not answer with scope "${scope}"; only a one-time answer is accepted`,
+                        );
+                    }
+                }
                 await this.append({
                     type: "tool_permission_resolved",
                     turnId: this.turnId,
                     ts: this.now(),
                     toolCallId: input.toolCallId,
                     decision: input.decision,
-                    source: "human",
+                    source: delegated ? "delegated" : "human",
                     ...(input.metadata === undefined
                         ? {}
                         : { metadata: input.metadata }),
@@ -915,6 +934,9 @@ class TurnAdvance {
                 !tc.permission.classification &&
                 !tc.permission.classificationFailed &&
                 tc.permission.required.checkerError === undefined &&
+                // VibeMind #330: protected writes are for a human only; they
+                // fall through to the human / deny fallback.
+                !isHumanOnlyRequest(tc.permission.required.request) &&
                 !tc.result,
         );
         if (candidates.length === 0) {
@@ -1133,6 +1155,12 @@ class TurnAdvance {
             const sandboxed =
                 !!channel || (this.definition.sessionId === null && !desktopChild);
             const trustedMcp = this.trustedMcpCalls.get(tc.toolCallId);
+            // VibeMind #330: only a human's allow in the permission prompt
+            // lets execTool write protected paths (never the classifier, never
+            // a call the checker let through without a prompt).
+            const humanApproved =
+                tc.permission?.resolved?.decision === "allow" &&
+                tc.permission.resolved.source === "human";
             const result = await syncTool.execute(tc.input, {
                 turnId: this.turnId,
                 sessionId: this.definition.sessionId,
@@ -1150,6 +1178,7 @@ class TurnAdvance {
                       }
                     : {}),
                 ...(trustedMcp ? { trustedMcp } : {}),
+                ...(humanApproved ? { humanApproved: true } : {}),
                 reportProgress: async (progress) => {
                     await this.append({
                         type: "tool_progress",
@@ -1585,6 +1614,19 @@ function parseToolAdditions(
     }
     const parsed = ToolAdditionsMetadata.safeParse(metadata);
     return parsed.success ? parsed.data.toolAdditions : undefined;
+}
+
+// VibeMind #330 (Task 17 fix round 1): the scope a permission answer carries
+// in its metadata ({ scope: "once" | "session" | "always" }), if any. Any
+// non-string scope counts as present (fails closed for a restricted caller).
+function permissionScopeOf(metadata: JsonValue | undefined): string | null {
+    if (metadata === null || typeof metadata !== "object" || Array.isArray(metadata)) {
+        return null;
+    }
+    if (!("scope" in metadata) || metadata.scope === undefined || metadata.scope === null) {
+        return null;
+    }
+    return typeof metadata.scope === "string" ? metadata.scope : "always";
 }
 
 // The default budget for turns created without an explicit maxModelCalls:

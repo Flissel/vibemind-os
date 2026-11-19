@@ -652,7 +652,7 @@ describe("external input routing (13.5)", () => {
 
     it("respondToPermission advances with a permission_decision input", async () => {
         const { sessions, fake, turnId } = await setupSuspended();
-        await sessions.respondToPermission(turnId, "tc1", "allow", { scope: "once" });
+        await sessions.respondToPermission(turnId, "tc1", "allow", { scope: "once" }, "human");
         expect(fake.advanceCalls).toEqual([
             {
                 turnId,
@@ -661,9 +661,33 @@ describe("external input routing (13.5)", () => {
                     toolCallId: "tc1",
                     decision: "allow",
                     metadata: { scope: "once" },
+                    answeredBy: "human",
                 },
                 takeInputs: expect.any(Function),
             },
+        ]);
+    });
+
+    // VibeMind #330 (Task 17 fix round 1): who answered reaches the runtime.
+    it("respondToPermission passes a delegated answer through as answeredBy", async () => {
+        const { sessions, fake, turnId } = await setupSuspended();
+        await sessions.respondToPermission(turnId, "tc1", "deny", undefined, "delegated");
+        expect(fake.advanceCalls).toEqual([
+            {
+                turnId,
+                input: { type: "permission_decision", toolCallId: "tc1", decision: "deny", answeredBy: "delegated" },
+                takeInputs: expect.any(Function),
+            },
+        ]);
+    });
+
+    // Task 17 fix round 3 (review m-1): answeredBy has no default; a call that
+    // does not say who answered reaches the runtime as delegated.
+    it("respondToPermission without answeredBy passes delegated", async () => {
+        const { sessions, fake, turnId } = await setupSuspended();
+        await sessions.respondToPermission(turnId, "tc1", "allow", undefined, undefined as unknown as "human");
+        expect(fake.advanceCalls).toMatchObject([
+            { turnId, input: { type: "permission_decision", toolCallId: "tc1", decision: "allow", answeredBy: "delegated" } },
         ]);
     });
 

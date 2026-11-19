@@ -1,4 +1,4 @@
-// Modified for VibeMind (Flissel/rowboat vibemind): ToolExecutionContext.channel (Teil E), .trustedMcp.
+// Modified for VibeMind (Flissel/rowboat vibemind): ToolExecutionContext.channel (Teil E), .trustedMcp, .humanApproved (#330).
 import type { z } from "zod";
 import type { VertrauterMcpAufruf } from "@x/shared/dist/vertraute-mcp-werkzeuge.js";
 import type {
@@ -30,6 +30,9 @@ export interface ToolExecutionContext {
     // because it is on the trusted MCP list: the executor connects only if the
     // entry it uses still matches (mcp.ts executeTool).
     trustedMcp?: VertrauterMcpAufruf;
+    // VibeMind (ticket #330): set only when a human allowed this call in the
+    // permission prompt; execTool writes protected paths only then.
+    humanApproved?: boolean;
 }
 
 export interface SyncRuntimeTool {

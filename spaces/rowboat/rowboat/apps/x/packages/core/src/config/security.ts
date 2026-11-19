@@ -1,3 +1,4 @@
+// Modified for VibeMind (Flissel/rowboat vibemind): in-memory allow-lists, no mtime re-read (ticket #330, Task 17).
 import path from "path";
 import fs from "fs";
 import fsPromises from "fs/promises";
@@ -49,17 +50,37 @@ export type FileAccessGrant = {
     pathPrefix: string;
 };
 
-let cachedAllowList: string[] | null = null;
-let cachedFileAccessAllowList: FileAccessGrant[] | null = null;
-let cachedMtimeMs: number | null = null;
+type SecurityState = { allowedCommands: string[]; allowedFileAccess: FileAccessGrant[] };
+
+// Modified for VibeMind (Flissel/rowboat vibemind): ticket #330, Task 17.
+// The allow-lists the app enforces live in memory, loaded once (at startup,
+// or at first use). They change only through addToSecurityConfig /
+// addFileAccessGrant (a human "always allow") and reloadSecurityConfig (the
+// human write paths: Settings / workspace:* handlers). The file is no longer
+// re-read when its mtime changes: content written to it any other way (a
+// shell command, another program) takes effect only after a restart or a
+// Settings save.
+let state: SecurityState | null = null;
+
+function loadedState(): SecurityState {
+    if (state === null) state = readSecurityConfig();
+    return state;
+}
 
 export async function addToSecurityConfig(commands: string[]): Promise<void> {
     ensureSecurityConfigSync();
+    const live = loadedState();
+    // The file keeps what it holds (as before); only the human's commands
+    // are added to the live state, never a raw write since load.
     const current = readSecurityConfig();
+    const added: string[] = [];
     const merged = new Set(current.allowedCommands);
     for (const cmd of commands) {
         const normalized = cmd.trim().toLowerCase();
-        if (normalized) merged.add(normalized);
+        if (normalized) {
+            merged.add(normalized);
+            added.push(normalized);
+        }
     }
     await fsPromises.writeFile(
         SECURITY_CONFIG_PATH,
@@ -69,12 +90,15 @@ export async function addToSecurityConfig(commands: string[]): Promise<void> {
         }, null, 2) + "\n",
         "utf8",
     );
-    // Reset cache so next read picks up the new file
-    resetSecurityAllowListCache();
+    state = {
+        allowedCommands: Array.from(new Set([...live.allowedCommands, ...added])),
+        allowedFileAccess: live.allowedFileAccess,
+    };
 }
 
 export async function addFileAccessGrant(grant: FileAccessGrant): Promise<void> {
     ensureSecurityConfigSync();
+    const live = loadedState();
     const current = readSecurityConfig();
     const normalizedGrant = normalizeFileAccessGrant(grant);
     const exists = current.allowedFileAccess.some(existing =>
@@ -94,7 +118,14 @@ export async function addFileAccessGrant(grant: FileAccessGrant): Promise<void> 
         }, null, 2) + "\n",
         "utf8",
     );
-    resetSecurityAllowListCache();
+    const known = live.allowedFileAccess.some(existing =>
+        existing.operation === normalizedGrant.operation
+        && existing.pathPrefix === normalizedGrant.pathPrefix
+    );
+    state = {
+        allowedCommands: live.allowedCommands,
+        allowedFileAccess: known ? live.allowedFileAccess : [...live.allowedFileAccess, normalizedGrant],
+    };
 }
 
 /**
@@ -114,7 +145,7 @@ export async function ensureSecurityConfig(): Promise<void> {
 }
 
 /**
- * Sync version for internal use by getSecurityAllowList() and readAllowList().
+ * Sync version for internal use by readSecurityConfig().
  */
 function ensureSecurityConfigSync() {
     if (!fs.existsSync(SECURITY_CONFIG_PATH)) {
@@ -205,61 +236,65 @@ function parseSecurityPayload(payload: unknown): { allowedCommands: string[]; al
     return { allowedCommands: [], allowedFileAccess: [] };
 }
 
-function readSecurityConfig(): { allowedCommands: string[]; allowedFileAccess: FileAccessGrant[] } {
-    ensureSecurityConfigSync();
-
+// A broken file (or broken content) falls back to the defaults.
+function parseSecurityContent(configContent: string): SecurityState {
     try {
-        const configContent = fs.readFileSync(SECURITY_CONFIG_PATH, "utf8");
-        const parsed = JSON.parse(configContent);
-        return parseSecurityPayload(parsed);
+        return parseSecurityPayload(JSON.parse(configContent));
     } catch (error) {
         console.warn(`Failed to read security config at ${SECURITY_CONFIG_PATH}: ${error instanceof Error ? error.message : error}`);
         return { allowedCommands: DEFAULT_ALLOW_LIST, allowedFileAccess: [] };
     }
 }
 
-function readAllowList(): string[] {
-    return readSecurityConfig().allowedCommands;
+function readSecurityConfig(): SecurityState {
+    let configContent: string;
+    try {
+        // Inside the try: a missing config/ folder (removed by the human)
+        // falls back to the defaults instead of throwing.
+        ensureSecurityConfigSync();
+        configContent = fs.readFileSync(SECURITY_CONFIG_PATH, "utf8");
+    } catch (error) {
+        console.warn(`Failed to read security config at ${SECURITY_CONFIG_PATH}: ${error instanceof Error ? error.message : error}`);
+        return { allowedCommands: DEFAULT_ALLOW_LIST, allowedFileAccess: [] };
+    }
+    return parseSecurityContent(configContent);
 }
 
 export function getSecurityAllowList(): string[] {
-    ensureSecurityConfigSync();
-    try {
-        const stats = fs.statSync(SECURITY_CONFIG_PATH);
-        if (cachedAllowList && cachedMtimeMs === stats.mtimeMs) {
-            return cachedAllowList;
-        }
-        cachedAllowList = readAllowList();
-        cachedMtimeMs = stats.mtimeMs;
-        return cachedAllowList;
-    } catch {
-        cachedAllowList = null;
-        cachedFileAccessAllowList = null;
-        cachedMtimeMs = null;
-        return readAllowList();
-    }
+    return loadedState().allowedCommands;
 }
 
 export function getFileAccessAllowList(): FileAccessGrant[] {
-    ensureSecurityConfigSync();
-    try {
-        const stats = fs.statSync(SECURITY_CONFIG_PATH);
-        if (cachedFileAccessAllowList && cachedMtimeMs === stats.mtimeMs) {
-            return cachedFileAccessAllowList;
-        }
-        cachedFileAccessAllowList = readSecurityConfig().allowedFileAccess;
-        cachedMtimeMs = stats.mtimeMs;
-        return cachedFileAccessAllowList;
-    } catch {
-        cachedAllowList = null;
-        cachedFileAccessAllowList = null;
-        cachedMtimeMs = null;
-        return readSecurityConfig().allowedFileAccess;
-    }
+    return loadedState().allowedFileAccess;
 }
 
+/**
+ * Replaces the live allow-lists. Only for startup and the human write paths
+ * (human-config-writes.ts): with `content` (what the human just wrote) that
+ * content is applied, otherwise the file as it is now.
+ */
+export function reloadSecurityConfig(content?: string): void {
+    state = content === undefined ? readSecurityConfig() : parseSecurityContent(content);
+}
+
+/**
+ * Revocation only (the human removed or moved security.json, or changed a
+ * folder that holds it): no new content is applied. The live commands shrink
+ * to those that are both live now and in the default list, and every file
+ * grant is dropped. That is never wider than the current state nor than what
+ * a restart would load (the re-created default file), so it fails closed in
+ * both directions: `*` and grants the human removed with the file are gone,
+ * and a default command the human had taken out does not come back.
+ */
+export function revokeSecurityConfigToDefaults(): void {
+    const live = loadedState();
+    state = {
+        allowedCommands: live.allowedCommands.filter((cmd) => DEFAULT_ALLOW_LIST.includes(cmd)),
+        allowedFileAccess: [],
+    };
+}
+
+/** Drops the live state; the next use loads the file again (tests). */
 export function resetSecurityAllowListCache() {
-    cachedAllowList = null;
-    cachedFileAccessAllowList = null;
-    cachedMtimeMs = null;
+    state = null;
 }

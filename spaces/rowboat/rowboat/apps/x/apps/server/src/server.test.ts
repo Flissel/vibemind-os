@@ -125,7 +125,7 @@ describe('rowboat-server transport', () => {
 
   const authed = (init?: RequestInit): RequestInit => ({
     ...init,
-    headers: { ...(init?.headers as Record<string, string>), authorization: `Bearer ${server.key}` },
+    headers: { 'content-type': 'application/json', ...(init?.headers as Record<string, string>), authorization: `Bearer ${server.key}` },
   });
 
   it('serves /health unauthenticated', async () => {
@@ -219,6 +219,71 @@ describe('rowboat-server transport', () => {
 
     const missing = await fetch(`${base}/workspace/notes/nope.md`, authed());
     expect(missing.status).toBe(404);
+  });
+
+  // VibeMind (#330, fix round 2, review N2): a browser form or a no-preflight
+  // cross-origin request cannot send Content-Type application/json, so RPC
+  // refuses every other type; the query token is for GET and WebSockets only.
+  it('refuses an RPC POST whose Content-Type is not application/json (415)', async () => {
+    for (const contentType of [
+      'text/plain',
+      'text/plain;charset=UTF-8',
+      'application/x-www-form-urlencoded',
+      'multipart/form-data; boundary=x',
+      'application/jsonp',
+      'application/json-patch+json',
+    ]) {
+      const res = await fetch(
+        `${base}/rpc/sessions:list`,
+        authed({ method: 'POST', body: '{}', headers: { 'content-type': contentType } }),
+      );
+      expect(res.status, contentType).toBe(415);
+      expect(((await res.json()) as { error: { code: string } }).error.code, contentType).toBe('unsupported_media_type');
+    }
+    // fetch() labels a bare string body text/plain: refused as well.
+    const bare = await fetch(`${base}/rpc/sessions:list`, {
+      method: 'POST',
+      body: '{}',
+      headers: { authorization: `Bearer ${server.key}` },
+    });
+    expect(bare.status).toBe(415);
+  });
+
+  it('accepts application/json with parameters and in any case', async () => {
+    for (const contentType of ['application/json', 'application/json; charset=utf-8', 'Application/JSON']) {
+      const res = await fetch(
+        `${base}/rpc/sessions:list`,
+        authed({ method: 'POST', body: '{}', headers: { 'content-type': contentType } }),
+      );
+      expect(res.status, contentType).toBe(200);
+    }
+  });
+
+  it('does not take ?token= for an RPC POST; GET keeps it', async () => {
+    const post = await fetch(`${base}/rpc/sessions:list?token=${server.key}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(post.status).toBe(401);
+    const get = await fetch(`${base}/workspace/notes/hello.md?token=${server.key}`);
+    expect(get.status).toBe(200);
+  });
+
+  it('answers no CORS preflight permissively', async () => {
+    for (const url of [`${base}/rpc/sessions:list`, `${base}/rpc/sessions:list?token=${server.key}`]) {
+      const res = await fetch(url, {
+        method: 'OPTIONS',
+        headers: {
+          origin: 'http://evil.example',
+          'access-control-request-method': 'POST',
+          'access-control-request-headers': 'content-type,authorization',
+        },
+      });
+      expect(res.status, url).toBeGreaterThanOrEqual(400);
+      expect(res.headers.get('access-control-allow-origin'), url).toBeNull();
+      expect(res.headers.get('access-control-allow-headers'), url).toBeNull();
+    }
   });
 
   it('closes unauthorized websockets with 4401', async () => {

@@ -17,9 +17,29 @@ function sanitizeToken(token: string): string {
   return token.trim().replace(/^['"()]+|['"()]+$/g, '');
 }
 
+// Modified for VibeMind (Flissel/rowboat vibemind): output redirects (ticket
+// #330). Redirects that write nothing anywhere: stderr into stdout (2>&1) and
+// output into the null device (>nul, 1>nul, 2>nul, >/dev/null, 1>/dev/null,
+// 2>/dev/null, any case), each a
+// whole token. Removed before the command is analysed, so the "&" of 2>&1 no
+// longer reads as a command separator ("1" as a command name).
+const HARMLESS_REDIRECT_REGEX = /(?<![^\s;&|()])(?:2>&1|[12]?>\s*(?:nul|\/dev\/null))(?=$|[\s;&|()])/gi;
+
+export function stripHarmlessRedirects(command: string): string {
+  return command.replace(HARMLESS_REDIRECT_REGEX, ' ');
+}
+
+// True when the command still writes output to a file (">" or ">>") after
+// the harmless redirects are removed. Such a command is never on the
+// allow-list fast path: `echo` is allow-listed, `echo x > file` writes a file.
+// A ">" inside quotes also counts (fails closed).
+export function hasOutputRedirect(command: string): boolean {
+  return stripHarmlessRedirects(command).includes('>');
+}
+
 export function extractCommandNames(command: string): string[] {
   const discovered = new Set<string>();
-  const segments = command.split(COMMAND_SPLIT_REGEX);
+  const segments = stripHarmlessRedirects(command).split(COMMAND_SPLIT_REGEX);
 
   for (const segment of segments) {
     const tokens = segment.trim().split(/\s+/).filter(Boolean);

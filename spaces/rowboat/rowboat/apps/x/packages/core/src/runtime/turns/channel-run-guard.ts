@@ -28,6 +28,7 @@ import { isPathInside, resolveFilePathForPermission } from "../../filesystem/fil
 import { hasAutorunTrigger, hasLiveFrontmatter } from "../../knowledge/autorun-triggers.js";
 import { resultingWriteContent } from "../../knowledge/autorun-write-check.js";
 import { isQuarantineFolderName, QUARANTINE_REL } from "../../knowledge/quarantine.js";
+import { PROTECTED_WORKSPACE_ENTRIES } from "../tools/protected-paths.js";
 
 export { hasLiveFrontmatter };
 
@@ -97,16 +98,10 @@ const CHANNEL_BUILTINS = new Set<string>([
 
 // Workspace entries a channel run may never touch (read, list, search or
 // write): credentials, app-internal state, deleted files.
-const SENSITIVE_ENTRIES = [
-    "config",
-    "server-key",
-    "cipher-key",
-    "embed.json",
-    ".electron-data",
-    // telegram-state.json and the WhatsApp linked-device credentials.
-    "channels",
-    ".trash",
-];
+// The protected entries (protected-paths.ts, ticket #330: config/, keys,
+// channels/ with telegram-state.json and the WhatsApp linked-device
+// credentials, ...) plus deleted files.
+const SENSITIVE_ENTRIES = [...PROTECTED_WORKSPACE_ENTRIES, ".trash"];
 
 // The only workspace subtree a channel run may modify is the quarantine
 // knowledge/Kanal/ (fix round 4): nothing autonomous reads it, so a note a

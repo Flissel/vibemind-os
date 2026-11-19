@@ -1,5 +1,6 @@
 import * as os from 'os';
-import type { ApprovalPolicy, CodeRunEvent, CodingAgent, PermissionAsk, PermissionDecision, RunPromptResult } from './types.js';
+// Modified for VibeMind (Flissel/rowboat vibemind): ask resolves to AskDecision (ticket #330, Task 17 fix round 2, review F-1).
+import type { ApprovalPolicy, AskDecision, CodeRunEvent, CodingAgent, PermissionAsk, RunPromptResult } from './types.js';
 import { AcpClient, type CodeAgentModelOptions } from './client.js';
 import { PermissionBroker } from './permission-broker.js';
 import { readStoredSession, writeStoredSession, clearStoredSession } from './session-store.js';
@@ -16,7 +17,7 @@ export interface RunPromptArgs {
     /** Reasoning-effort level (e.g. "high"); applied alongside the model. */
     effort?: string;
     /** Called when the policy needs the user to decide (the "ask" path). */
-    ask: (ask: PermissionAsk) => Promise<PermissionDecision>;
+    ask: (ask: PermissionAsk) => Promise<AskDecision>;
     /** Stream sink for this prompt's run. */
     onEvent: (event: CodeRunEvent) => void;
     /** Aborts the turn on stop; the manager cancels then force-kills the adapter. */

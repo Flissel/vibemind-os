@@ -18,6 +18,8 @@ import type { CodeRunFeed } from "../../../code-mode/feed.js";
 import type { ToolContext } from "../exec-tool.js";
 import { expandHomePath } from "../../../filesystem/files.js";
 import { BuiltinToolsSchema } from "../types.js";
+// Modified for VibeMind (Flissel/rowboat vibemind): protected cwd needs the human (#330).
+import { canonicalCodeAgentCwd, isProtectedPath } from "../protected-paths.js";
 
 
 
@@ -56,6 +58,12 @@ export const codeAgentRunTools: z.infer<typeof BuiltinToolsSchema> = {
         execute: async ({ agent, cwd, prompt }: { agent: 'claude' | 'codex', cwd?: string, prompt: string }, ctx?: ToolContext) => {
             if (!ctx) {
                 throw new Error('code_agent_run requires run context (runId / streaming).');
+            }
+            // VibeMind (ticket #330): the permission check and this tool
+            // resolve the cwd argument the same way only for absolute paths.
+            const approvedCwdArg = cwd ? await canonicalCodeAgentCwd(cwd) : null;
+            if (cwd && approvedCwdArg === null) {
+                throw new Error(`code_agent_run: cwd must be an absolute path (or start with ~), got "${cwd}".`);
             }
             // Code-section sessions pin agent/cwd/policy/model server-side: the
             // turn's chat session id IS the code session id, so resolve the meta
@@ -110,6 +118,26 @@ export const codeAgentRunTools: z.infer<typeof BuiltinToolsSchema> = {
             // engine keeps its established cwd — switching mid-conversation
             // would silently drop the coding agent's ACP context. Scratch
             // runs outside registered projects stay plain chats.
+            // VibeMind (ticket #330): the coding agent writes below its cwd
+            // itself; a cwd that reaches a protected workspace path needs the
+            // human's approval of this call FOR THAT DIRECTORY. The permission
+            // request was computed from the cwd argument with the same helper
+            // (canonicalCodeAgentCwd), so an approval only covers a run whose
+            // canonical cwd is that one. Checked before adoption (which may
+            // create a worktree) and again for the cwd really used.
+            const approvedCwd = ctx.humanApproved === true && approvedCwdArg ? approvedCwdArg : null;
+            const refuseProtectedCwd = async (dir: string) => {
+                const canonical = (await canonicalCodeAgentCwd(dir)) ?? path.resolve(dir);
+                if ((await isProtectedPath(canonical)) && canonical !== approvedCwd) {
+                    // Review M2 (#330): without a cwd argument no prompt can
+                    // be raised; naming the directory explicitly does that.
+                    const hint = cwd
+                        ? ''
+                        : ` To ask the human, pass this directory explicitly as the \`cwd\` argument (${canonical}); that raises the permission prompt.`;
+                    throw new Error(`code_agent_run: the working directory ${canonical} contains or is a protected workspace path (config/, keys, channels/, app data). This needs the human's approval for exactly this directory in the permission prompt; it was not given for this call.${hint}`);
+                }
+            };
+            if (candidate) await refuseProtectedCwd(candidate);
             let adoptedThisCall = false;
             const adoptionService = !pinned && ctx.sessionId && candidate ? resolveService() : null;
             // The Command Center session is the DISPATCHER — it assigns
@@ -171,6 +199,7 @@ export const codeAgentRunTools: z.infer<typeof BuiltinToolsSchema> = {
                 throw new Error('code_agent_run: no working directory — name a project folder, or register a repo in the Code section (one registered repo becomes the default; with several, pick one in Settings → Code).');
             }
             const effectiveCwd = path.resolve(expandHomePath(effectiveCwdRaw));
+            await refuseProtectedCwd(effectiveCwd);
             // Fail loudly if the directory is missing. Otherwise the spawn below fails with
             // Node's misleading "spawn <command> ENOENT" (it blames the executable, not the
             // bad cwd), which reads as "the coding engine isn't installed" — see the enriched

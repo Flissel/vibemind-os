@@ -1,4 +1,4 @@
-// Modified for VibeMind (Flissel/rowboat vibemind): ToolContext.channel / autorunContentForbidden / headlessSandbox, channel quarantine (Teil E); ToolContext.trustedMcp.
+// Modified for VibeMind (Flissel/rowboat vibemind): ToolContext.channel / autorunContentForbidden / headlessSandbox, channel quarantine (Teil E); ToolContext.trustedMcp; protected paths need ToolContext.humanApproved (#330).
 import { ToolAttachment } from "@x/shared/dist/agent.js";
 import type { VertrauterMcpAufruf } from "@x/shared/dist/vertraute-mcp-werkzeuge.js";
 import { RunEvent } from "@x/shared/dist/runs.js";
@@ -8,6 +8,7 @@ import { executeTool } from "../../mcp/mcp.js";
 import { IAbortRegistry } from "../turns/abort-registry.js";
 import { sandboxChecker, type HeadlessSandbox } from "./headless-sandbox.js";
 import { quarantineChecker, quarantineMode } from "./channel-quarantine.js";
+import { needsHumanForProtectedPath } from "./protected-paths.js";
 
 /**
  * Context passed to every tool execution, providing abort signal and run metadata.
@@ -50,6 +51,11 @@ export interface ToolContext {
     // (trusted MCP list): executeTool then connects only if the entry it uses
     // still has the checked, trusted URL.
     trustedMcp?: VertrauterMcpAufruf;
+    // VibeMind (ticket #330): true only when a human approved this very call
+    // in the permission prompt (turn runtime, permission source "human").
+    // Writes to protected paths (protected-paths.ts) are refused otherwise;
+    // the legacy engine never sets it.
+    humanApproved?: boolean;
 }
 
 async function execMcpTool(agentTool: z.infer<typeof ToolAttachment> & { type: "mcp" }, input: Record<string, unknown>, ctx?: ToolContext): Promise<unknown> {
@@ -85,6 +91,14 @@ export async function execTool(agentTool: z.infer<typeof ToolAttachment>, input:
             if (mode) {
                 const refused = await quarantineChecker().toolError(agentTool.name, input, mode);
                 if (refused) return { error: refused };
+            }
+            // Protected paths (ticket #330): config/, keys, channels/ ... are
+            // written (fix round 1: and read) only after a human approved
+            // this call.
+            if (ctx?.humanApproved !== true && (await needsHumanForProtectedPath(agentTool.name, input))) {
+                return {
+                    error: `"${agentTool.name}" would read or change a protected workspace path (config/, keys, channels/, app data) or call Rowboat's own local server. This needs the human's approval in the permission prompt; it was not given for this call.`,
+                };
             }
             return builtinTool.execute(input, ctx);
         }

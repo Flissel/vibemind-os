@@ -24,6 +24,7 @@ import path from "node:path";
 import { WorkDir } from "../../config/config.js";
 import { isPathInside, resolveFilePathForPermission } from "../../filesystem/files.js";
 import { hasAutorunTrigger } from "../../knowledge/autorun-triggers.js";
+import { PROTECTED_WORKSPACE_ENTRIES } from "./protected-paths.js";
 
 export interface HeadlessSandbox {
     // Workspace-relative files this run may write even outside knowledge/
@@ -38,13 +39,9 @@ export interface HeadlessSandbox {
 
 export const EMPTY_SANDBOX: HeadlessSandbox = { ownFiles: [], ownDirs: [], readDirs: [] };
 
+// The protected entries (protected-paths.ts, ticket #330) plus app state.
 const SECRET_ENTRIES = [
-    "config",
-    "server-key",
-    "cipher-key",
-    "embed.json",
-    ".electron-data",
-    "channels",
+    ...PROTECTED_WORKSPACE_ENTRIES,
     ".trash",
     "storage",
     "bg-tasks",

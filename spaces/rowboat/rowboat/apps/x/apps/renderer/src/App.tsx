@@ -1,5 +1,6 @@
 // Modified for EHL (Flissel/rowboat ehl-schema-graph): hierarchical brain graph.
-// Modified for VibeMind (Flissel/rowboat vibemind): tolerant graph file read (graphFileData).
+// Modified for VibeMind (Flissel/rowboat vibemind): tolerant graph file read (graphFileData);
+// a refused permission answer reaches the prompt card (#330, Task 17 fix round 2).
 import { OpenBrowserContext } from '@/contexts/browser-context';
 import { WorkspaceSessionTabs } from './components/code/workspace-session-tabs'
 import { DocumentFileViewer } from '@/components/document-file-viewer'
@@ -92,6 +93,7 @@ import { UpdateCard } from "@/components/update-card"
 import { BillingErrorDialog } from "@/components/billing-error-dialog"
 import { CreditCelebration } from "@/components/credit-celebration"
 import { matchBillingError, type BillingErrorMatch } from "@/lib/billing-error"
+import { isRestrictedAnswerRefusal } from "@/lib/restricted-answer"
 import { dispatchCreditExhausted, dispatchCreditReplenished } from "@/lib/credit-status"
 import { rewriteOpenDocumentForRename, renamedFileName } from '@/lib/wiki-rename'
 import { normalizeWikiPath, splitWikiFragment, stripKnowledgePrefix, toKnowledgePath, wikiLabel } from '@/lib/wiki-links'
@@ -4626,6 +4628,9 @@ function App() {
         response === 'approve' ? 'allow' : 'deny',
       )
     } catch (error) {
+      // VibeMind (#330, Task 17 fix round 2): an answer the host refuses for
+      // this caller goes back to the prompt card, which shows where to answer.
+      if (isRestrictedAnswerRefusal(error)) throw error
       console.error('Failed to authorize permission:', error)
     }
   }, [runId, sessionChat])

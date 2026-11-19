@@ -3,6 +3,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { IpcMainInvokeEvent } from 'electron';
 import { WorkDir } from '@x/core/dist/config/config.js';
+// VibeMind (#330, Task 17 fix round 3): app:// gate moved into core, where it
+// follows EMBED_IS_TRUSTED and is tested for both values.
+import { embedMayServe } from '@x/core/dist/security/restricted-principal.js';
 import { generateEmbedToken, startEmbedBridge, type EmbedBridge } from '@x/server';
 import { isEmbedUnsupportedInvoke } from '@x/shared/dist/embed-channels.js';
 import { invokeIpcChannel, listInvokeChannels } from './ipc.js';
@@ -32,10 +35,15 @@ export async function startEmbedHost(options: {
   const live = await startEmbedBridge({
     token,
     invoke: (channel, sender, args) =>
-      invokeIpcChannel(channel, { sender } as unknown as IpcMainInvokeEvent, args),
+      // VibeMind (#330, Task 17): 'embed'. Fix round 3: restricted only while
+      // core's EMBED_IS_TRUSTED is false; trusted, it is treated as the renderer.
+      invokeIpcChannel(channel, { sender } as unknown as IpcMainInvokeEvent, args, 'embed'),
     invokeChannels: listInvokeChannels,
     isUnsupported: isEmbedUnsupportedInvoke,
-    serveApp: options.serveApp,
+    // VibeMind (#330, Task 17 fix round 1, review I-1): app://workspace/<path>
+    // serves workspace files; a protected entry is not served to a restricted
+    // embed (fix round 3: everything is served while the embed is trusted).
+    serveApp: async (request) => (await embedMayServe(request.url)) ? options.serveApp(request) : new Response('Forbidden', { status: 403 }),
     onShowApp: options.showApp,
     // app:openUrl ist ein Fenster-Kanal: nur an die anderen Einbettungs-Verbindungen, nie ueber
     // mirrorToEmbed und nie an Rowboats eigenes Fenster.

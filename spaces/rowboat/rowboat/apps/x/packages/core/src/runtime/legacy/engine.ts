@@ -28,6 +28,7 @@ import { IMessageQueue, type MiddlePaneContext } from "../../application/lib/mes
 import { IRunsRepo } from "./repo.js";
 import { IRunsLock } from "./lock.js";
 import { IAbortRegistry } from "../turns/abort-registry.js";
+import { partitionHumanOnly } from "../turns/permission.js";
 import { PrefixLogger } from "@x/shared";
 import { captureLlmUsage } from "../../analytics/usage.js";
 import { enterUseCase, withUseCase, type UseCase } from "../../analytics/use_case.js";
@@ -1048,13 +1049,30 @@ export async function* streamAgent({
                     });
                 };
                 if (state.permissionMode === "auto") {
+                    // Modified for VibeMind (Flissel/rowboat vibemind): ticket
+                    // #330. Human-only requests (protected paths) never reach
+                    // the classifier; they go straight to the human prompt.
+                    // (An approval there still does not let execTool write a
+                    // protected path: this engine never sets humanApproved.)
+                    const { humanOnly, classifiable } = partitionHumanOnly(permissionCandidates);
+                    for (const candidate of humanOnly) {
+                        loopLogger.log('human-only permission, skipping classifier:', candidate.toolCall.toolCallId);
+                        yield* processEvent({
+                            runId,
+                            type: "tool-permission-request",
+                            toolCall: candidate.toolCall,
+                            permission: candidate.permission,
+                            subflow: [],
+                        });
+                        notifyPermissionPrompt(candidate.toolCall);
+                    }
                     let decisionsByToolCallId = new Map<string, { decision: "allow" | "deny"; reason: string }>();
                     try {
-                        const decisions = await classifyToolPermissions({
+                        const decisions = classifiable.length === 0 ? [] : await classifyToolPermissions({
                             runId,
                             agentName: state.agentName,
                             messages: convertFromMessages(state.messages),
-                            candidates: permissionCandidates,
+                            candidates: classifiable,
                             useCase: state.runUseCase ?? "copilot_chat",
                             subUseCase: state.runSubUseCase,
                         });
@@ -1069,7 +1087,7 @@ export async function* streamAgent({
                         );
                     }
 
-                    for (const candidate of permissionCandidates) {
+                    for (const candidate of classifiable) {
                         const decision = decisionsByToolCallId.get(candidate.toolCall.toolCallId);
                         if (!decision) {
                             loopLogger.log('auto-permission missing decision, falling back to prompt:', candidate.toolCall.toolCallId);

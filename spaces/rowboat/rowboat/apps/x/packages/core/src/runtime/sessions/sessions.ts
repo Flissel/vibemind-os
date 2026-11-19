@@ -488,13 +488,16 @@ export class SessionsImpl implements ISessions {
         turnId: string,
         toolCallId: string,
         decision: "allow" | "deny",
-        metadata?: JsonValue,
+        metadata: JsonValue | undefined,
+        answeredBy: "human" | "delegated",
     ): Promise<void> {
         await this.advanceWithInput(turnId, {
             type: "permission_decision",
             toolCallId,
             decision,
             ...(metadata === undefined ? {} : { metadata }),
+            // Fix round 3 (review m-1): only an explicit "human" is the human.
+            answeredBy: answeredBy === "human" ? "human" : "delegated",
         });
     }
 

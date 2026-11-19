@@ -16,6 +16,18 @@ import { isSignedIn } from '@x/core/dist/account/account.js';
 import { getRowboatConfig } from '@x/core/dist/config/rowboat.js';
 import { getAccessToken } from '@x/core/dist/auth/tokens.js';
 import * as mcpCore from '@x/core/dist/mcp/mcp.js';
+import {
+  applyHumanWorkspaceOp,
+  workspaceOpTouchesProtected,
+  type HumanWorkspaceOp,
+} from '@x/core/dist/config/human-config-writes.js';
+import { currentAuthKind } from './auth-context.js';
+import {
+  RESTRICTED_GUARDED_CHANNELS,
+  RESTRICTED_REFUSAL,
+  restrictedCallRefused,
+  restrictedResult,
+} from '@x/core/dist/security/restricted-principal.js';
 import * as runsCore from '@x/core/dist/runtime/legacy/runs.js';
 import { getModelCatalog } from '@x/core/dist/models/catalog.js';
 import { listModelsForProvider } from '@x/core/dist/models/models.js';
@@ -152,6 +164,21 @@ let lastAppsFingerprint: string | null = null;
 import type { RpcHandlers } from './channels.js';
 import type { EventSources } from './server.js';
 
+// VibeMind (ticket #330, Task 17): a workspace:* write is a human write path
+// only when the owner key authenticated it. Any other caller (a scoped key, or
+// no request context at all) may not touch a protected workspace entry
+// (config/, keys, channels/, ... — Task 16 list) and never runs the
+// approval/reload of mcp.json / security.json.
+async function workspaceWrite<T>(op: HumanWorkspaceOp, perform: () => Promise<T>): Promise<T> {
+  if (currentAuthKind() === 'owner') {
+    return applyHumanWorkspaceOp(op, perform);
+  }
+  if (await workspaceOpTouchesProtected(op)) {
+    throw new Error('This key may not change protected workspace entries (config/, keys, channels/, app data).');
+  }
+  return perform();
+}
+
 // Canonical implementations of the exposed channels against the @x/core DI
 // container — the same thin pass-throughs Electron main registers in
 // apps/main/src/ipc.ts, minus the Electron event argument. As channels
@@ -160,7 +187,7 @@ import type { EventSources } from './server.js';
 
 export function createCoreRpcHandlers(opts?: { sessionsIndexReady?: Promise<void> }): RpcHandlers {
   const sessions = () => container.resolve<ISessions>('sessions');
-  return {
+  const handlers: RpcHandlers = {
     'projects:list': async () => {
       await opts?.sessionsIndexReady;
       return { projects: await listProjects(container.resolve<ISessions>('sessions')) };
@@ -178,7 +205,7 @@ export function createCoreRpcHandlers(opts?: { sessionsIndexReady?: Promise<void
     'sessions:getTurn': async (args) => sessions().getTurn(args.turnId),
     'sessions:sendMessage': async (args) => sessions().sendMessage(args.sessionId, args.input, args.config),
     'sessions:respondToPermission': async (args) => {
-      await sessions().respondToPermission(args.turnId, args.toolCallId, args.decision, args.metadata);
+      await sessions().respondToPermission(args.turnId, args.toolCallId, args.decision, args.metadata, answeredBy());
       return { success: true };
     },
     'sessions:respondToAskHuman': async (args) => {
@@ -338,11 +365,24 @@ export function createCoreRpcHandlers(opts?: { sessionsIndexReady?: Promise<void
     'turnLimits:getSettings': async () => loadTurnLimitsSettings(),
     'retention:getSettings': async () => loadRetentionSettings(),
     // ── Phase 2: workspace & knowledge writes, todo/home/deck, settings setters ──
-    'workspace:writeFile': async (args) => workspaceCore.writeFile(args.path, args.data, args.opts),
-    'workspace:mkdir': async (args) => workspaceCore.mkdir(args.path, args.recursive),
-    'workspace:rename': async (args) => workspaceCore.rename(args.from, args.to, args.overwrite),
-    'workspace:copy': async (args) => workspaceCore.copy(args.from, args.to, args.overwrite),
-    'workspace:remove': async (args) => workspaceCore.remove(args.path, args.opts),
+    // VibeMind (ticket #330, Task 17): with the owner key these are human
+    // write paths (the connected client's Settings / file UI, the Electron
+    // renderer via main's forwarder): a write to config/mcp.json or
+    // config/security.json takes effect now; a change made any other way
+    // (e.g. a hand edit on the server box) after a restart (trust on boot).
+    'workspace:writeFile': async (args) =>
+      workspaceWrite({ kind: 'writeFile', path: args.path, data: args.data, encoding: args.opts?.encoding }, () =>
+        workspaceCore.writeFile(args.path, args.data, args.opts)),
+    'workspace:mkdir': async (args) =>
+      workspaceWrite({ kind: 'mkdir', path: args.path }, () => workspaceCore.mkdir(args.path, args.recursive)),
+    'workspace:rename': async (args) =>
+      workspaceWrite({ kind: 'rename', from: args.from, to: args.to }, () =>
+        workspaceCore.rename(args.from, args.to, args.overwrite)),
+    'workspace:copy': async (args) =>
+      workspaceWrite({ kind: 'copy', from: args.from, to: args.to }, () =>
+        workspaceCore.copy(args.from, args.to, args.overwrite)),
+    'workspace:remove': async (args) =>
+      workspaceWrite({ kind: 'remove', path: args.path }, () => workspaceCore.remove(args.path, args.opts)),
     'deck:generateOutline': async (args) => {
       try {
         const outline = await generateDeckOutline(args);
@@ -1040,7 +1080,7 @@ export function createCoreRpcHandlers(opts?: { sessionsIndexReady?: Promise<void
       return { messageId: await runsCore.createMessage(args.runId, args.message, args.voiceInput, args.voiceOutput, args.searchEnabled, args.middlePaneContext, args.codeMode, args.codeCwd, args.codePolicy) };
     },
     'runs:authorizePermission': async (args) => {
-      await runsCore.authorizePermission(args.runId, args.authorization);
+      await runsCore.authorizePermission(args.runId, args.authorization, answeredBy());
       return { success: true };
     },
     'runs:provideHumanInput': async (args) => {
@@ -1434,7 +1474,9 @@ export function createCoreRpcHandlers(opts?: { sessionsIndexReady?: Promise<void
     // ── Phase 5: code-mode & terminal (verbatim lifts) ──
     'codeRun:resolvePermission': async (args) => {
       const registry = container.resolve<CodePermissionRegistry>('codePermissionRegistry');
-      registry.resolve(args.requestId, args.decision);
+      // VibeMind (#330, Task 17 fix round 2, review F-1): a non-owner answer
+      // is delegated — once or reject only.
+      registry.resolve(args.requestId, args.decision, answeredBy());
       return { success: true };
     },
     'codeMode:getConfig': async () => {
@@ -1601,6 +1643,42 @@ export function createCoreRpcHandlers(opts?: { sessionsIndexReady?: Promise<void
     // Rowboat Apps handlers (spec §13)
 
   };
+  return guardRestrictedCallers(handlers);
+}
+
+// VibeMind (ticket #330, Task 17 fix round 1, review I-1; fix round 2, review
+// F-2): a caller that is not the owner (a scoped key, the owner key lowered by
+// x-rowboat-principal for the embed bridge, or no request context) may neither
+// read nor change protected workspace entries through any channel that takes
+// a path, may not change config or authority (the deny set and the
+// policy-setting calls), and gets credentials blanked and listings filtered
+// (@x/core security/restricted-principal.ts names every channel in
+// RESTRICTED_GUARDED_CHANNELS). Each wrapped handler carries
+// RESTRICTED_GUARD_MARK, so a test can find any guarded channel left unwrapped.
+export const RESTRICTED_GUARD_MARK: unique symbol = Symbol('restricted-guard');
+
+export function guardRestrictedCallers(handlers: RpcHandlers): RpcHandlers {
+  const guarded: Record<string, (args: unknown) => unknown> = {};
+  for (const [channel, handler] of Object.entries(handlers) as Array<[string, (args: unknown) => unknown]>) {
+    if (!RESTRICTED_GUARDED_CHANNELS.has(channel)) {
+      guarded[channel] = handler;
+      continue;
+    }
+    const wrapped = async (args: unknown) => {
+      if (currentAuthKind() === 'owner') return handler(args);
+      if (await restrictedCallRefused(channel, args)) throw new Error(RESTRICTED_REFUSAL);
+      return restrictedResult(channel, args, await handler(args));
+    };
+    Object.defineProperty(wrapped, RESTRICTED_GUARD_MARK, { value: true });
+    guarded[channel] = wrapped;
+  }
+  return guarded as RpcHandlers;
+}
+
+// VibeMind (ticket #330, Task 17 fix round 1, review I-2): only the owner key
+// answers a permission request as the human.
+function answeredBy(): 'human' | 'delegated' {
+  return currentAuthKind() === 'owner' ? 'human' : 'delegated';
 }
 
 // Turn/session feeds come from core's in-process buses. workspace:didChange

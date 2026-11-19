@@ -1,4 +1,4 @@
-// Modified for VibeMind (Flissel/rowboat vibemind): effectiveServerUrl and the trusted-call check in executeTool (vertraute-mcp-werkzeuge.ts).
+// Modified for VibeMind (Flissel/rowboat vibemind): effectiveServerUrl and the trusted-call check in executeTool (vertraute-mcp-werkzeuge.ts); stdio spawn gate (stdio-approvals.ts, #330 Task 17).
 import container from "../di/container.js";
 import { Client } from "@modelcontextprotocol/sdk/client";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
@@ -19,6 +19,7 @@ import {
     vertrauterAufrufPasst,
 } from "@x/shared/dist/vertraute-mcp-werkzeuge.js";
 import { spacesMcpServers } from "../spaces/orgs.js";
+import { isStdioEntryApproved } from "./stdio-approvals.js";
 
 type mcpState = {
     state: z.infer<typeof connectionState>,
@@ -93,6 +94,16 @@ async function getClient(
     try {
         // create transport
         if ("command" in config) {
+            // VibeMind (ticket #330, Task 17): a stdio entry starts its
+            // process only when a human approved exactly this entry in this
+            // process lifetime (stdio-approvals.ts). URL entries are not
+            // gated here.
+            if (!isStdioEntryApproved(serverName, config)) {
+                throw new Error(
+                    `MCP server ${serverName} was added or changed outside the app, so it was not started. ` +
+                    `Restart Rowboat or save the server in Settings to start it.`,
+                );
+            }
             transport = new StdioClientTransport({
                 command: config.command,
                 args: config.args,

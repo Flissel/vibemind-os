@@ -771,6 +771,7 @@ describe("partial human permission decisions (26.3)", () => {
             type: "permission_decision",
             toolCallId: "P1",
             decision: "allow",
+            answeredBy: "human",
         });
         expect(afterAllow.outcome).toMatchObject({
             status: "suspended",
@@ -795,6 +796,7 @@ describe("partial human permission decisions (26.3)", () => {
             type: "permission_decision",
             toolCallId: "P2",
             decision: "deny",
+            answeredBy: "human",
         });
         expect(afterDeny.outcome?.status).toBe("completed");
 
@@ -816,11 +818,13 @@ describe("partial human permission decisions (26.3)", () => {
             type: "permission_decision",
             toolCallId: "P1",
             decision: "allow",
+            answeredBy: "human",
         });
         const { error } = await advanceAndSettle(runtime, turnId, {
             type: "permission_decision",
             toolCallId: "P1",
             decision: "deny",
+            answeredBy: "human",
         });
         expect(error).toBeInstanceOf(TurnInputError);
     });
@@ -896,11 +900,13 @@ describe("automatic permission classification (26.4)", () => {
             type: "permission_decision",
             toolCallId: "CD",
             decision: "allow",
+            answeredBy: "human",
         });
         const final = await advanceAndSettle(runtime, turnId, {
             type: "permission_decision",
             toolCallId: "CF",
             decision: "deny",
+            answeredBy: "human",
         });
         expect(final.outcome?.status).toBe("completed");
 
@@ -3437,7 +3443,7 @@ describe("added inputs (steering)", () => {
         const { outcome } = await advanceAndSettle(
             runtime,
             turnId,
-            { type: "permission_decision", toolCallId: "tc1", decision: "allow" },
+            { type: "permission_decision", toolCallId: "tc1", decision: "allow", answeredBy: "human" },
             { takeInputs: () => pending.splice(0) },
         );
         expect(outcome?.status).toBe("completed");
@@ -3902,6 +3908,7 @@ describe("channel runs (VibeMind Teil E)", () => {
                 type: "permission_decision",
                 toolCallId: "V",
                 decision: "allow",
+                answeredBy: "human",
             });
             const log = await persisted(repo, turnId);
             expect(resultFor(log, "V")).toMatchObject({ source: "sync", result: { isError: false } });

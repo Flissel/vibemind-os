@@ -7,6 +7,7 @@ import { ICodeSessionsRepo } from "../../code-mode/sessions/repo.js";
 import { IAgentRuntime } from "./engine.js";
 import { IBus } from "../../application/lib/bus.js";
 import { IAbortRegistry } from "../turns/abort-registry.js";
+import { isHumanOnlyRequest } from "../turns/permission.js";
 import { IRunsLock } from "./lock.js";
 import { forceCloseAllMcpClients } from "../../mcp/mcp.js";
 import { extractCommandNames } from "../../application/lib/command-executor.js";
@@ -63,8 +64,35 @@ export async function createMessage(runId: string, message: UserMessageContentTy
     return id;
 }
 
-export async function authorizePermission(runId: string, ev: z.infer<typeof ToolPermissionAuthorizePayload>): Promise<void> {
+// answeredBy (VibeMind #330, Task 17 fix round 1, review I-2): "delegated" is
+// a restricted caller (scoped server key, embed bridge). It may only give a
+// one-time answer and may not approve a human-only request.
+export async function authorizePermission(
+    runId: string,
+    ev: z.infer<typeof ToolPermissionAuthorizePayload>,
+    answeredBy: "human" | "delegated",
+): Promise<void> {
     const { scope, ...rest } = ev;
+
+    // Fix round 3 (review m-1): no default; only an explicit "human" is the human.
+    if (answeredBy !== "human") {
+        if (scope === "always" || scope === "session") {
+            throw new Error(`this caller may not answer with scope "${scope}"; only a one-time answer is accepted`);
+        }
+        if (rest.response === "approve") {
+            const run = await container.resolve<IRunsRepo>('runsRepo').fetch(runId);
+            const request = run.log.find(
+                (e): e is z.infer<typeof ToolPermissionRequestEvent> =>
+                    e.type === "tool-permission-request"
+                    && e.toolCall.toolCallId === rest.toolCallId
+                    && JSON.stringify(e.subflow) === JSON.stringify(rest.subflow)
+            );
+            // A request not in the log cannot be shown to be ordinary: fails closed.
+            if (!request || isHumanOnlyRequest(request.permission)) {
+                throw new Error(`tool call ${rest.toolCallId} needs the human's own answer; this caller may only deny it`);
+            }
+        }
+    }
 
     // For "always" scope, derive command from the run log and persist to security config
     if (rest.response === "approve" && scope === "always") {
@@ -76,7 +104,12 @@ export async function authorizePermission(runId: string, ev: z.infer<typeof Tool
                 && e.toolCall.toolCallId === rest.toolCallId
                 && JSON.stringify(e.subflow) === JSON.stringify(rest.subflow)
         );
-        if (permReqEvent?.permission?.kind === "file") {
+        // Modified for VibeMind (Flissel/rowboat vibemind): ticket #330. A
+        // human-only request (protected path) is approved for this call only;
+        // "always" never becomes a stored grant.
+        if (isHumanOnlyRequest(permReqEvent?.permission)) {
+            // nothing persisted
+        } else if (permReqEvent?.permission?.kind === "file") {
             await addFileAccessGrant({
                 operation: permReqEvent.permission.operation,
                 pathPrefix: permReqEvent.permission.pathPrefix,

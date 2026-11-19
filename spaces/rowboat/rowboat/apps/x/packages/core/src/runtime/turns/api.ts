@@ -70,6 +70,12 @@ export type TurnExternalInput =
           toolCallId: string;
           decision: "allow" | "deny";
           metadata?: JsonValue;
+          // Who answered (VibeMind #330, Task 17 fix round 1). "delegated": a
+          // restricted caller (scoped server key, embed bridge) — may not allow
+          // a human-only request nor answer with scope "always"/"session", and
+          // is recorded as source "delegated". Fix round 3 (review m-1):
+          // required; an input without it is treated as delegated.
+          answeredBy: "human" | "delegated";
       }
     | {
           type: "async_tool_progress";

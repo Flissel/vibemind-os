@@ -22,11 +22,17 @@ export function shouldForwardChannel(channel: string): boolean {
   return forwardingEnabled() && isRpcChannel(channel);
 }
 
-export async function forwardRpc(channel: string, args: unknown): Promise<unknown> {
+// opts.headers (VibeMind #330, Task 17 fix round 1; fix round 3): the caller's
+// principal headers from core's forwardHeadersForOrigin. For a restricted
+// caller they lower the owner-key request to a scoped one on the server: no
+// protected workspace entries, no permission answer as the human
+// (apps/server server.ts, core-deps.ts). The trusted embed sends none.
+export async function forwardRpc(channel: string, args: unknown, opts?: { headers?: Record<string, string> }): Promise<unknown> {
   const server = await whenServerReady();
   const res = await fetch(`${server.baseUrl}/rpc/${channel}`, {
     method: 'POST',
     headers: {
+      ...(opts?.headers ?? {}),
       'content-type': 'application/json',
       authorization: `Bearer ${server.key}`,
     },

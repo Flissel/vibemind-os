@@ -380,7 +380,10 @@ export const ToolPermissionResolved = z.object({
     ts: z.string(),
     toolCallId: z.string(),
     decision: z.enum(["allow", "deny"]),
-    source: z.enum(["classifier", "human", "human_unavailable"]),
+    // "delegated" (VibeMind #330, Task 17 fix round 1): answered by a
+    // restricted caller (a scoped server key, the embed bridge) — never
+    // treated as the human's approval.
+    source: z.enum(["classifier", "human", "human_unavailable", "delegated"]),
     reason: z.string().optional(),
     metadata: z.json().optional(),
 });

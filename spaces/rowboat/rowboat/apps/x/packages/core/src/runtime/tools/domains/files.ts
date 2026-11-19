@@ -1,4 +1,4 @@
-// Modified for VibeMind (Flissel/rowboat vibemind): channel read filter for file-grep / file-glob / file-list, autorun-content check for write tools, channel quarantine (Teil E).
+// Modified for VibeMind (Flissel/rowboat vibemind): channel read filter for file-grep / file-glob / file-list, autorun-content check for write tools, channel quarantine (Teil E); file-grep skips protected files without a human (#330).
 // Builtin tools: files domain. Entries moved VERBATIM from the historical
 // monolith — the merge order in ../builtin-tools.ts preserves the original
 // catalog key order (provider-payload bytes; see the key-order test there).
@@ -12,6 +12,7 @@ import { ChannelRunGuard } from "../../turns/channel-run-guard.js";
 import { autorunIntroductionError, autorunIntroductionErrorForContent } from "../../../knowledge/autorun-write-check.js";
 import { sandboxChecker } from "../headless-sandbox.js";
 import { quarantineChecker, quarantineMode } from "../channel-quarantine.js";
+import { protectedContentFilter } from "../protected-paths.js";
 
 // Per-match read filter for grep / glob: channel runs and sandboxed (headless)
 // runs each add their rule; desktop turns get none.
@@ -359,10 +360,15 @@ export const fileTools: z.infer<typeof BuiltinToolsSchema> = {
             maxResults?: number;
         }, ctx?: ToolContext) => {
             try {
+                // Fix round 1 (#330, review C1): a search no human approved
+                // never reads protected files (server-key, config/, ...).
+                const base = matchFilter(ctx);
+                const guarded = ctx?.humanApproved === true ? base : async (absPath: string) =>
+                    (await protectedContentFilter(absPath)) && (!base || (await base(absPath)));
                 return await files.grep({
                     pattern, searchPath, fileGlob, contextLines, maxResults,
                     // Channel runs: every match must pass the read filter.
-                    ...(matchFilter(ctx) ? { pathFilter: matchFilter(ctx) } : {}),
+                    ...(guarded ? { pathFilter: guarded } : {}),
                 });
             } catch (error) {
                 return { error: error instanceof Error ? error.message : 'Unknown error' };

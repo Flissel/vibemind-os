@@ -8,13 +8,73 @@ To re-pin the kernel plugin catalog, change `DESKTOP_PLUGIN_CATALOG_PIN` on bran
 Flissel/rowboat (in `apps/x/apps/renderer/src/lib/rowboat-plugin-api.ts`), then run the sync.
 
 - Fork: https://github.com/Flissel/rowboat (branch `vibemind`)
-- Fork commit: `1251b09ceddb5032c19ce420400080cb93865ebd`
+- Fork commit: `2d47d8a67eefa6e06b3d7104e640ad92568b0fb4`
 - Upstream base: rowboatlabs/rowboat `72e9d8c`
 - EHL repo: https://github.com/Flissel/ehl-munich-2026 (`schema/`)
 - EHL commit: `44c1024c7804c696bc283bd14a9d08bd87a38230`
 
 ## Patches on top of upstream (EHL hierarchy graph, VibeMind)
 
+- 2d47d8a6 feat(main): the embed bridge follows core's EMBED_IS_TRUSTED
+- fc623ff3 test(server): embed forwarding under both trust-switch values; new scoped denials
+- dd2d7cbf fix(runtime): answeredBy is required on every permission answer
+- 666b4907 feat(security): embed trust switch; scoped keys lose Spaces authority, tool execution and app consent
+- 24b559ef fix(security): engines/ and mcp-servers/ are protected workspace entries
+- 9187b3bf feat(renderer): inline hint when an answer is refused for the embedded view
+- e68cb8d4 fix(main): embed results masked, shell paths resolved by core, code-run answers delegated
+- 7327d1ad fix(server): guard every restricted channel, mask credentials, delegate code-run answers
+- b5a08175 fix(code-mode): answeredBy is required on code-run permission answers
+- 9762512f fix(config): boot log names only the first command token, no parse text
+- 11064044 feat(security): deny config and authority channels to restricted callers
+- 45cbda03 fix(code-mode): a delegated code-run answer is once or reject only
+- c9336847 fix(main): the embed bridge is a restricted caller
+- b580c4af fix(server): scoped and restricted callers lose protected reads and human answers
+- 1a5b8923 feat(config): log approved stdio servers and allow-list at boot
+- 3384afd5 feat(security): restricted callers may not read protected entries
+- 9078e144 fix(permissions): a delegated answer never counts as the human's
+- c769a3a8 fix(security): main IPC applies human config writes by op, embed bridge may not touch protected entries
+- 7ee0c08b fix(security): server workspace writes are a human path only with the owner key
+- d6308078 fix(security): approvals mirror the latest human config, human paths approve only what was sent
+- eb3cd927 fix(security): Settings and workspace handlers apply mcp.json and security.json at once
+- 4fdf2587 fix(security): addMcpServer with a command asks a human only
+- d0c5c9c8 fix(security): no process start or shell rights from config written outside a human path
+- 3ec76e7e fix(security): sync-flush decoders, real connect-time proxy test, defence-in-depth comments
+- 83c08c16 test(core): retry the temp-dir cleanup in the own-server-target tests
+- 65dd1d63 fix(core): the apps fetch proxy follows redirects with fetch-url's rules
+- 58a1820b fix(main): agent-browser pages hand only mailto: to the OS
+- e98f23b2 fix(core): the apps fetch proxy never relays to the own server
+- de05fc16 fix(core): decoders are pipeline stages, at most 5 content codings
+- 3e91d1dc feat(core): the apps server's host API counts as own server
+- a9d6658e fix(core): fetch-url transport drops Host/Origin overrides and behaves like fetch
+- f7889820 fix(core): fetch-url checks the address it really connects to
+- 5d8ee955 feat(server): RPC takes only application/json and no query token on POST
+- 3f8e7581 feat(core): executeCommand naming the own server is human-only (second layer)
+- 65e1a492 fix(core): exists/stat on the workspace root or a parent folder need no human
+- bf10c11d feat(main): the agent-driven browser session never reaches the own server
+- 63715f82 feat(core): one own-server predicate for fetch-url and browser sessions
+- a55cfae6 fix(core): the native realpath check really runs
+- cbc01279 feat(renderer): human-only permission prompts offer no session or always scope
+- f2f77ab4 fix(core): code_agent_run error tells the model to pass a protected cwd explicitly
+- 448a5616 feat(core): every builtin that reads a local file goes through the protected-read gate
+- 0bb3e61f feat(core): fetch-url never reaches Rowboat's own local server
+- 92253357 feat(core): reading a protected workspace entry needs the human too
+- cc75c2a7 feat(core): extensions/ is a protected workspace entry
+- 1bc9c828 fix(core): UNC paths and alias drives count as protected; 8.3 shape on normalized command
+- 31a0c45d feat(core): scoped-keys.json and code-mode are protected workspace entries
+- be8a7bb6 fix(core): only the 8.3 short-name shape of "~" counts as a protected name
+- 3ba1a4c2 fix(core): every non-harmless output redirect is human-only
+- 4673707a fix(core): bind code_agent_run approval to the canonical cwd it was asked for
+- 09a4ca2f fix(core): plain-shape allow rule for redirect commands and 8.3 short names
+- 37f46cc5 feat(core): legacy engine keeps human-only requests from the classifier and never stores them
+- 8288bfa0 fix(core): redirect check keeps the whole-command rule and catches directory changes
+- da2a98ca feat(core): code_agent_run on a protected working directory needs the human
+- 244c4aa2 fix(core): redirects are human-only unless every target is a literal unprotected path
+- 41fde48d feat(core): turn runtime keeps human-only requests from the classifier and marks human approval
+- 0736c9e8 feat(core): redirects with shell-built names are human-only
+- d1c246d9 feat(core): execTool refuses protected writes without human approval
+- 8d2a6897 feat(core): human-only permission requests for protected writes and redirects
+- b950ede0 feat(core): protected workspace paths and isProtectedWrite
+- 4cbcff0d feat(shared): humanOnly flag on file and command permission requests
 - 1251b09c fix(konzept): Faehigkeit nennt den Weg zum Uebergabe-Werkzeug (MCP-Faehigkeit, Server, Werkzeug, Argument)
 - 4ba33cff fix(freigabe): vertrauter Aufruf nur, wenn der ausgefuehrte Eintrag noch die gepruefte Adresse hat
 - 4ef1f169 feat(freigabe): Uebergabe-Werkzeug der Werkbank laeuft ohne Rueckfrage (nur vorbereiten, Ja bleibt in Sales)

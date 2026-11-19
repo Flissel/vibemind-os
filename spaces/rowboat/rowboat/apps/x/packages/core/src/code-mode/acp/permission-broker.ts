@@ -4,7 +4,8 @@ import type {
     PermissionOption,
     PermissionOptionKind,
 } from '@agentclientprotocol/sdk';
-import type { ApprovalPolicy, PermissionDecision, PermissionAsk } from './types.js';
+// Modified for VibeMind (Flissel/rowboat vibemind): "allow_once_only" from a restricted caller (ticket #330, Task 17 fix round 2, review F-1).
+import type { ApprovalPolicy, AskDecision, PermissionDecision, PermissionAsk } from './types.js';
 
 // Tool kinds that don't mutate anything — eligible for `auto-approve-reads`.
 const READ_KINDS = new Set(['read', 'search', 'fetch', 'think']);
@@ -37,6 +38,14 @@ function pickOption(options: PermissionOption[], decision: PermissionDecision): 
     return undefined;
 }
 
+// VibeMind (#330, review F-1): a restricted caller's one-time allow is
+// allow_once when the agent offers it, else a reject — never the agent's
+// allow_always (which the agent itself would remember).
+function effectiveDecision(options: PermissionOption[], decision: AskDecision): PermissionDecision {
+    if (decision !== 'allow_once_only') return decision;
+    return options.some((o) => o.kind === 'allow_once') ? 'allow_once' : 'reject';
+}
+
 function selected(optionId: string): RequestPermissionResponse {
     return { outcome: { outcome: 'selected', optionId } };
 }
@@ -49,7 +58,7 @@ function memoryKey(ask: PermissionAsk): string {
 export interface PermissionBrokerOptions {
     policy: ApprovalPolicy;
     // Called only when the policy can't decide on its own (the "ask" path).
-    ask: (ask: PermissionAsk) => Promise<PermissionDecision>;
+    ask: (ask: PermissionAsk) => Promise<AskDecision>;
     // Notified of every resolved request so the engine can emit a stream event.
     onResolved?: (ask: PermissionAsk, decision: PermissionDecision, auto: boolean) => void;
 }
@@ -86,6 +95,6 @@ export class PermissionBroker {
 
         // 3. Ask the user.
         const decision = await this.opts.ask(ask);
-        return finish(decision, false);
+        return finish(effectiveDecision(request.options, decision), false);
     }
 }

@@ -1,4 +1,6 @@
 "use client";
+// Modified for VibeMind (Flissel/rowboat vibemind): human-only requests show no session/always scope (#330);
+// a refused answer from the embedded view shows an inline hint (#330, Task 17 fix round 2).
 
 import { Button } from "@/components/ui/button";
 import {
@@ -8,6 +10,7 @@ import {
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { isRestrictedAnswerRefusal, RESTRICTED_ANSWER_HINT } from "@/lib/restricted-answer";
 import { CheckIcon, ChevronDownIcon, ShieldQuestionIcon, XIcon } from "lucide-react";
 import { useState, type ComponentProps, type ReactNode } from "react";
 import { quietRowContainerClass, quietRowGlyphSlotClass, quietRowTriggerClass } from "@/components/ai-elements/tool";
@@ -15,12 +18,17 @@ import { ToolCallPart } from "@x/shared/dist/message.js";
 import { ToolPermissionMetadata } from "@x/shared/dist/runs.js";
 import z from "zod";
 
+// VibeMind (#330, Task 17 fix round 2): a handler may return a promise; when
+// the host refuses the answer for this (restricted) caller, the card shows an
+// inline hint instead of failing silently.
+type AnswerHandler = () => void | Promise<void>;
+
 export type PermissionRequestProps = ComponentProps<"div"> & {
   toolCall: z.infer<typeof ToolCallPart>;
-  onApprove?: () => void;
-  onApproveSession?: () => void;
-  onApproveAlways?: () => void;
-  onDeny?: () => void;
+  onApprove?: AnswerHandler;
+  onApproveSession?: AnswerHandler;
+  onApproveAlways?: AnswerHandler;
+  onDeny?: AnswerHandler;
   isProcessing?: boolean;
   response?: 'approve' | 'deny' | null;
   permission?: z.infer<typeof ToolPermissionMetadata>;
@@ -88,13 +96,30 @@ export const PermissionRequest = ({
   // Scope actions ("Allow for Session"/"Always Allow") render only when the
   // caller wires them: the legacy code-mode path persists grants, but the
   // turns path has no grant persistence yet and must not show dead buttons.
+  // VibeMind (#330, review M4): a human-only request (protected workspace
+  // path) is answered for this one call only — no session or "always" grant.
+  const humanOnly =
+    (permission?.kind === "file" || permission?.kind === "command") && permission.humanOnly === true;
   const hasScopeActions =
+    !humanOnly &&
     Boolean(onApproveSession || onApproveAlways) &&
     Boolean(command || filePermission);
 
   // Once a response is chosen the ask collapses to a quiet one-line row;
   // clicking it re-expands the request details.
   const [expanded, setExpanded] = useState(false);
+  const [refused, setRefused] = useState(false);
+
+  const answer = (handler?: AnswerHandler) => () => {
+    if (!handler) return;
+    setRefused(false);
+    void Promise.resolve()
+      .then(handler)
+      .catch((error: unknown) => {
+        if (isRestrictedAnswerRefusal(error)) setRefused(true);
+        else console.error("Failed to answer permission request:", error);
+      });
+  };
 
   // One-line ask: "Run `npm test`?" / "Write to `~/notes/plan.md`?"
   const summary: ReactNode = command ? (
@@ -181,7 +206,7 @@ export const PermissionRequest = ({
             <Button
               variant="default"
               size="sm"
-              onClick={onApprove}
+              onClick={answer(onApprove)}
               disabled={isProcessing}
               className={cn("h-7 rounded-full px-3 text-xs", hasScopeActions && "rounded-r-none")}
             >
@@ -201,10 +226,10 @@ export const PermissionRequest = ({
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={onApproveSession}>
+                  <DropdownMenuItem onClick={answer(onApproveSession)}>
                     Allow for Session
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={onApproveAlways}>
+                  <DropdownMenuItem onClick={answer(onApproveAlways)}>
                     Always Allow
                   </DropdownMenuItem>
                 </DropdownMenuContent>
@@ -214,7 +239,7 @@ export const PermissionRequest = ({
           <Button
             variant="outline"
             size="sm"
-            onClick={onDeny}
+            onClick={answer(onDeny)}
             disabled={isProcessing}
             className="h-7 rounded-full px-3 text-xs text-red-600 hover:bg-red-500/10 hover:text-red-600 dark:text-red-500"
           >
@@ -223,6 +248,16 @@ export const PermissionRequest = ({
           </Button>
         </div>
       </div>
+      {humanOnly && (
+        <p className="mt-1.5 text-xs text-muted-foreground">
+          Protected path: only you can approve this, and only for this one call.
+        </p>
+      )}
+      {refused && (
+        <p role="status" className="mt-1.5 text-xs text-amber-700 dark:text-amber-500">
+          {RESTRICTED_ANSWER_HINT}
+        </p>
+      )}
       {expanded && <div className="mt-2 border-t pt-2">{details}</div>}
     </div>
   );

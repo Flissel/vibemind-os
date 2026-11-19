@@ -96,6 +96,30 @@ describe("RealPermissionChecker", () => {
         });
     });
 
+    // VibeMind (ticket #330, Task 17): a stdio entry starts a process, so the
+    // request is for a human only (never classified, denied headless).
+    it("addMcpServer with a command raises a human-only request; a URL entry the generic one", async () => {
+        const { checker } = makeChecker(new Error("must not be called"), {
+            addMcpServer: "prompt",
+        });
+        const add = (config: unknown) =>
+            checker.check({
+                ...input,
+                toolId: "builtin:addMcpServer",
+                toolName: "addMcpServer",
+                input: { serverName: "s", config } as never,
+            });
+        expect(await add({ command: "calc.exe" })).toEqual({
+            required: true,
+            request: { kind: "tool", toolId: "builtin:addMcpServer", toolName: "addMcpServer", humanOnly: true },
+        });
+        expect(await add({ command: "node", url: "http://x" })).toMatchObject({ request: { humanOnly: true } });
+        expect(await add({ url: "http://127.0.0.1:8156/mcp" })).toEqual({
+            required: true,
+            request: { kind: "tool", toolId: "builtin:addMcpServer", toolName: "addMcpServer" },
+        });
+    });
+
     it("gates composio-execute with a toolkit/tool request", async () => {
         const { checker } = makeChecker(new Error("must not be called"), {
             "composio-execute-tool": "composio-execute",
