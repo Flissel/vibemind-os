@@ -408,7 +408,11 @@ unverändert. Ein zweiter Lauf ändert nichts.
 Arbeitsbereiche. Der Live-Arbeitsbereich der Festival-Gruppe darf dabei nichts verlieren,
 was nur dort steht. Darum vorher:
 
-1. `"$PY" deploy/fuellen.py werte.local.json build/` (die gefüllte Saat).
+1. `"$PY" deploy/fuellen.py werte.local.json build/` (die gefüllte Saat). `EVENT_MCP_URL`
+   muss `http://event-mcp:8171` sein: event-mcp prüft den Host-Header und antwortet unter
+   einer IP (etwa `10.250.10.14`) mit 421, die Agenten hätten still keine Werkzeuge
+   (VM 19.11.). `fuellen.py` lehnt IP-Hosts darum ab. Dasselbe gilt für `EVENT_MCP_URL` in
+   `/etc/event-management/bereitstellung.env` (Phase `timer`).
 2. Den Live-Arbeitsbereich aus dem Claw-Volume holen (falls dort schon einer liegt) und
    vergleichen, zunächst nur Namen:
    `docker cp event-management-claw:/home/node/.openclaw/workspace-legacy laufzeit/sicherung/workspace-live`

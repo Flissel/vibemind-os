@@ -587,6 +587,21 @@ def test_fuellen_lehnt_unbrauchbare_werte_ab(tmp_path: Path, schlecht: object) -
         modul.fuellen(_beispielwerte() | {"EVENT_ORT": schlecht}, KONFIG, tmp_path)
 
 
+@pytest.mark.parametrize("url", ["http://10.250.10.14:8171", "http://[fd00::14]:8171",
+                                 "http://127.0.0.1:8171"])
+def test_fuellen_lehnt_ip_als_mcp_host_ab(tmp_path: Path, url: str) -> None:
+    # event-mcp prueft den Host-Header (DNS-Rebinding-Schutz, ERLAUBTE_HOSTS): unter einer
+    # IP antwortet er 421, die Agenten haetten still keine Werkzeuge (VM 19.11.).
+    modul = _fuellen_modul()
+    with pytest.raises(modul.FuellFehler, match="EVENT_MCP_URL") as fehler:
+        modul.fuellen(_beispielwerte() | {"EVENT_MCP_URL": url}, KONFIG, tmp_path)
+    assert url not in str(fehler.value)  # Meldungen nennen nie Werte
+
+
+def test_beispielwerte_nutzen_den_namen_aus_erlaubte_hosts() -> None:
+    assert _beispielwerte()["EVENT_MCP_URL"] == "http://event-mcp:8171"
+
+
 def test_fuellen_schreibt_nie_in_die_saat() -> None:
     modul = _fuellen_modul()
     with pytest.raises(modul.FuellFehler):

@@ -19,10 +19,12 @@ Aufruf:  python deploy/fuellen.py <werte.json> <zielverzeichnis>
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 SPACE = Path(__file__).resolve().parents[1]
 QUELLE = SPACE / "config"
@@ -47,6 +49,22 @@ def _pruefe_werte(werte: dict[str, object], benutzt: set[str]) -> None:
             raise FuellFehler(f"{name}: darf keinen Zeilenumbruch enthalten")
         if "{{" in wert or "}}" in wert:
             raise FuellFehler(f"{name}: darf keine Platzhalter-Klammern enthalten")
+    _pruefe_mcp_host(werte.get("EVENT_MCP_URL"))
+
+
+def _pruefe_mcp_host(url: object) -> None:
+    """event-mcp prueft den Host-Header (DNS-Rebinding-Schutz, ERLAUBTE_HOSTS in
+    system/mcp_server.py) und antwortet unter einer IP mit 421: die Agenten haetten still
+    keine Werkzeuge. Darum nur Namen, ueblich http://event-mcp:8171."""
+    if not isinstance(url, str):
+        return
+    try:
+        host = urlsplit(url).hostname or ""
+        ipaddress.ip_address(host)
+    except ValueError:
+        return  # kein IP-Literal (oder unlesbar: das meldet spaeter der Dienst selbst)
+    raise FuellFehler("EVENT_MCP_URL: Host muss ein Name sein (z. B. event-mcp), keine "
+                      "IP-Adresse; event-mcp lehnt IP-Hosts ab (DNS-Rebinding-Schutz)")
 
 
 def fuellen(werte: dict[str, object], quelle: Path, ziel: Path) -> list[str]:
