@@ -1432,6 +1432,12 @@ def test_anleitung_handschritte_aus_dem_abschluss_review():
                       "Netzweg"):
         assert stichwort in brain, stichwort
     assert re.search(r"[Nn]ie\b.*`docker service update`", brain)
+    # Ein erneutes `dienste` loescht die Stempel von tailnet/anbinden/timer (Ruling T6-a);
+    # fuer den Zusatz-Host reicht es, nur event-mcp neu anzulegen (Rollout 19.11.).
+    netzweg = _abschnitt(text, "Netzweg Brain")
+    assert "up -d --no-deps event-mcp" in netzweg
+    assert "erneutem `dienste`" not in brain
+    assert "dienste` erneut" not in netzweg
 
     anbinden = _abschnitt(text, "9. `anbinden`")
     assert "bereitstellung.timer" in anbinden and "--ich-habe-ok timer" in anbinden

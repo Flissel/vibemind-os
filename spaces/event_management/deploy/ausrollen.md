@@ -493,7 +493,7 @@ dokumentierte, nie `docker service update` (räumt den Stack ab) und nie ein
 `docker stack deploy` von Hand:
 
 1. **Netzweg** wählen und einrichten (Abschnitt „Netzweg Brain → event-mcp“), inklusive
-   `EVENT_MCP_ZUSATZ_HOSTS` und erneutem `dienste`.
+   `EVENT_MCP_ZUSATZ_HOSTS` und neu angelegtem event-mcp.
 2. **Schlüssel als Swarm-Secret,** direkt aus der Datei, ohne Ausgabe:
    `docker secret create event_verlauf_token_v1 <pfad>/pruefung` (die Datei kommt als
    0600-Datei auf den Rechner des Brain, nie per Chat oder Mail; Secrets sind unveränderlich,
@@ -533,10 +533,30 @@ braucht es einen Weg dorthin. Felix entscheidet ihn vor dem Schritt „Brain-Umg
   kommt die Anfrage mit dem Tailnet-Namen oder der Tailnet-Adresse als Host.
 
 In beiden Fällen kommt der Name als `EVENT_MCP_ZUSATZ_HOSTS=<host>[:<port>]` (Komma-Liste)
-in `laufzeit/event-app.env`, danach `--ich-habe-ok dienste` erneut (legt event-mcp neu an).
+in `laufzeit/event-app.env` (vorher nach `laufzeit/sicherung/` kopieren). Danach nur event-mcp
+neu anlegen, im Space-Ordner und mit derselben Umgebung wie `ausrollen.sh`:
+
+```bash
+set -a; . laufzeit/ausrollen/tags.env; set +a
+export EVENT_UID=$(id -u) EVENT_GID=$(id -g)
+docker compose --profile event-system up -d --no-deps event-mcp
+```
+
+Die Phase `dienste` dafür nicht noch einmal laufen lassen: jede Phase löscht vor ihrer Arbeit die Stempel aller
+späteren Phasen (Ruling T6-a), danach fehlten `tailnet`, `anbinden` und `timer`, und
+`anbinden` verlangt die sieben Schlüssel-Zeilen noch einmal. Mit `--dry-run` vorher prüfen,
+dass nur event-mcp neu angelegt wird.
+
 Ein Eintrag ohne Port gilt für jeden Port. Ein ungültiger Eintrag lässt event-mcp nicht
 starten; die Meldung nennt nur den Variablennamen. Kein Wert steht im Repo; die Wahl kommt
-ohne Werte in den Ledger. Rückweg: Zeile entfernen, `dienste` erneut, `tailscale serve … off`.
+ohne Werte in den Ledger.
+
+**Prüfen:** Initialize über `https://<tailnet-name-der-vm>:<port>/mcp` mit dem Schlüssel
+„Pruefung“ (Kopfzeile aus der Datei, auf der VM selbst) gibt 200, vorher 421; Host
+`event-mcp:8171` bleibt 200, die IP bleibt 421.
+
+**Rückweg:** Zeile entfernen, event-mcp wie oben neu anlegen,
+`sudo tailscale serve --https=<port> off`.
 
 ## Wer misst was
 
