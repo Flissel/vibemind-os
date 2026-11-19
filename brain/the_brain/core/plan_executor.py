@@ -33,12 +33,15 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, List, Optional, Set, Tuple
 
 from .plan_schema import (
     HopResult, HopSpec, Plan, contract_pass_from,
     ON_FAIL_ABORT, ON_FAIL_CONTINUE, ON_FAIL_REPLAN,
 )
+
+if TYPE_CHECKING:
+    from .schritt_waechter import Schatten
 
 logger = logging.getLogger(__name__)
 
@@ -293,6 +296,7 @@ class PlanExecutor:
         dispatcher: Any = None,
         kg: Any = None,
         recorder: Optional[PlanRecorder] = None,
+        schritt_waechter: Optional["Schatten"] = None,
     ) -> None:
         self.capability_router = capability_router
         self.validator = validator
@@ -307,6 +311,17 @@ class PlanExecutor:
         except Exception:
             self._exec_log = None
         self.recorder = recorder or PlanRecorder()
+        # Schritt-Waechter (Schatten). Eine Instanz je Executor; parallele
+        # Schritte teilen sie (die Sperre gilt je Instanz). Ohne Angabe nur bei
+        # SCHRITT_WAECHTER != "0". Ein Fehler hier laesst den Waechter aus.
+        if schritt_waechter is None:
+            try:
+                from .schritt_waechter import Schatten, modus, vorgabe_pfad
+                if modus() != "0":
+                    schritt_waechter = Schatten(vorgabe_pfad())
+            except Exception:
+                schritt_waechter = None
+        self._schritt_waechter = schritt_waechter
         self._subscribers: "weakref.WeakSet[asyncio.Queue]" = weakref.WeakSet()
         self._publish_loop: Optional[asyncio.AbstractEventLoop] = None
         self._lock = threading.RLock()
@@ -1984,6 +1999,41 @@ class PlanExecutor:
                     ).start()
             except Exception:
                 pass  # never let L4 break execution
+
+        # Schritt-Waechter (Schatten): beurteilt den fertigen Schritt und schreibt
+        # eine Zeile in die Schatten-Datei. Nur beobachten: ok, err,
+        # result_payload, verdict und das HopResult bleiben unberuehrt.
+        # Testlaeufe (decision_outcome.is_test_run) werden nicht beurteilt.
+        # Auffaellige step_id je Plan stehen in plan_ctx["_waechter_auffaellig"];
+        # der Vorgaenger-Bezug laeuft nur ueber hop.depends_on. dauer_s ist die
+        # Zeit des Urteils, nicht die des Schritts.
+        try:
+            _waechter = getattr(self, "_schritt_waechter", None)
+            if _waechter is not None:
+                from .decision_outcome import is_test_run
+                if not is_test_run(plan_ctx.get("plan_intent", "") or "",
+                                   plan_ctx.get("trace_id", "") or ""):
+                    from .schritt_waechter import beurteile
+                    with self._lock:
+                        _auffaellig = plan_ctx.setdefault("_waechter_auffaellig", set())
+                        _vorgaenger = any(d in _auffaellig for d in hop.depends_on)
+                    _tw = time.perf_counter()
+                    _urteil = beurteile(
+                        ok=ok, ergebnis=result_payload, fehler=err,
+                        parameter=rendered_arg, vorgaenger_auffaellig=_vorgaenger,
+                        frage=None,
+                    )
+                    _dauer = time.perf_counter() - _tw
+                    if _urteil.auffaellig is True:
+                        with self._lock:
+                            _auffaellig.add(hop.step_id)
+                    _waechter.schreibe(
+                        plan_id=plan_ctx.get("plan_id", "") or "",
+                        step_id=hop.step_id, capability=hop.capability,
+                        urteil=_urteil, dauer_s=_dauer,
+                    )
+        except Exception:
+            pass  # never let the Schritt-Waechter break execution
 
         # Phase 7.3 — record provider outcome for adaptive routing
         try:
