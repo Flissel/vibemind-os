@@ -260,7 +260,22 @@ BEGIN
                 EXECUTE format('SELECT to_jsonb(t) FROM %s t WHERE t.id::text = $1', r.tabelle)
                    INTO v_jetzt USING r.zeilen_id;
 
-                IF r.vorgang = 'DELETE' THEN
+                IF r.tabelle LIKE 'marketing.%' THEN
+                    -- Marketing: nur der Verweis auf die Bubble kommt zurueck. An status
+                    -- haengen dort Ausloeser, die bei 'approved' den Versand anstossen;
+                    -- eine Zuruecknahme schreibt deshalb nie einen Status und legt
+                    -- dort nichts an und loescht nichts.
+                    IF r.vorgang <> 'UPDATE'
+                       OR (r.vorher - v_technisch - 'bubble_id') <> (r.nachher - v_technisch - 'bubble_id') THEN
+                        RAISE EXCEPTION 'aenderung_nicht_zuruecknehmbar: % %', r.tabelle, r.zeilen_id;
+                    END IF;
+                    IF v_jetzt IS NULL
+                       OR (v_jetzt ->> 'bubble_id') IS DISTINCT FROM (r.nachher ->> 'bubble_id') THEN
+                        RAISE EXCEPTION 'aenderung_konflikt: % %', r.tabelle, r.zeilen_id;
+                    END IF;
+                    EXECUTE format('UPDATE %s t SET bubble_id = $1 WHERE t.id::text = $2', r.tabelle)
+                      USING r.vorher ->> 'bubble_id', r.zeilen_id;
+                ELSIF r.vorgang = 'DELETE' THEN
                     IF v_jetzt IS NOT NULL THEN
                         RAISE EXCEPTION 'aenderung_konflikt: % %', r.tabelle, r.zeilen_id;
                     END IF;
