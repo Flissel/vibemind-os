@@ -26,6 +26,14 @@ REQUEST_TIMEOUT_SECONDS = 15
 BUBBLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$")
 IDEA_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$")
 EDGE_TYPE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,63}$")
+CHANGE_SOURCES = ("agent", "hand", "zurueck")
+CHANGE_ERROR_CODES = ("aenderung_konflikt", "aenderung_unbekannt", "aenderung_nicht_zuruecknehmbar")
+# Nur diese Meldungen von ideen_zurueck duerfen woertlich an den Aufrufer zurueck.
+CHANGE_ERROR_PATTERN = re.compile(
+    r"^(?:" + "|".join(CHANGE_ERROR_CODES) + r"): [A-Za-z0-9._:-]{1,200}(?: [A-Za-z0-9._:-]{1,200})?$"
+)
+CHANGE_LIST_ROW_CAP = 500
+CHANGE_LIST_ENTRY_CAP = 20
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -177,6 +185,35 @@ TOOLS: list[dict[str, Any]] = [
         "name": "idea_disconnect",
         "description": "Delete one durable canvas edge by id.",
         "inputSchema": {"type": "object", "properties": {"edge_id": {"type": "string", "minLength": 1}}, "required": ["edge_id"]},
+    },
+    {
+        "name": "aenderung_liste",
+        "description": (
+            "List the most recent recorded changes to ideas and bubbles, newest first, "
+            "grouped the way they can be undone (one plan = one group). Read-only."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50},
+                "quelle": {"type": "string", "enum": ["agent", "hand", "zurueck"]},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "aenderung_zurueck",
+        "description": (
+            "Undo one recorded change to ideas and bubbles as a whole (zurueck, undo). "
+            "Without 'gruppe': the most recent change made by an agent that is still open. "
+            "With 'gruppe': exactly that change, as named by aenderung_liste. "
+            "Fails without any partial effect if a row was changed again afterwards."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"gruppe": {"type": "string", "minLength": 1, "maxLength": 200}},
+            "additionalProperties": False,
+        },
     },
 ]
 
@@ -351,6 +388,7 @@ def _request(
     params: Mapping[str, str] | None = None,
     body: Any = None,
     env: Mapping[str, str] | None = None,
+    error_detail: bool = False,
 ) -> Any:
     url, key = _config(env or os.environ)
     endpoint = f"{url}/rest/v1/{path.lstrip('/')}"
@@ -372,7 +410,8 @@ def _request(
         with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
             raw = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
-        raise ToolError(f"supabase_http_error: status={exc.code}") from exc
+        detail = _change_error(exc) if error_detail else None
+        raise ToolError(detail or f"supabase_http_error: status={exc.code}") from exc
     except urllib.error.URLError as exc:
         raise ToolError("supabase_unreachable") from exc
     except OSError as exc:
@@ -383,6 +422,63 @@ def _request(
         return json.loads(raw)
     except json.JSONDecodeError as exc:
         raise ToolError("supabase_invalid_response") from exc
+
+
+def _change_error(exc: urllib.error.HTTPError) -> str | None:
+    """Return the documented ideen_zurueck error, never other database text."""
+    try:
+        message = json.loads(exc.read(4096).decode("utf-8")).get("message")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not isinstance(message, str):
+        return None
+    if CHANGE_ERROR_PATTERN.fullmatch(message):
+        return message
+    for code in CHANGE_ERROR_CODES:
+        if message.startswith(f"{code}:"):
+            return code
+    return None
+
+
+def _only_arguments(arguments: Mapping[str, Any], allowed: set[str]) -> None:
+    unknown = sorted(set(arguments) - allowed)
+    if unknown:
+        raise ToolError(f"invalid_arguments: unknown argument '{unknown[0]}'")
+
+
+def _change_groups(rows: Any, limit: int) -> list[dict[str, Any]]:
+    """Fold protocol rows (newest first) into the groups ideen_zurueck undoes."""
+    if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
+        raise ToolError("supabase_invalid_response")
+    groups: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        name = row.get("gruppe")
+        if not isinstance(name, str):
+            raise ToolError("supabase_invalid_response")
+        group = groups.setdefault(name, {
+            "gruppe": name,
+            "quelle": row.get("quelle"),
+            "erstellt_am": row.get("erstellt_am"),
+            "zurueckgenommen": True,
+            "anzahl": 0,
+            "eintraege": [],
+        })
+        group["anzahl"] += 1
+        group["erstellt_am"] = row.get("erstellt_am")  # rows come newest first
+        if row.get("zurueckgenommen_am") is None:
+            group["zurueckgenommen"] = False
+        if len(group["eintraege"]) < CHANGE_LIST_ENTRY_CAP:
+            group["eintraege"].append({
+                "tabelle": row.get("tabelle"),
+                "vorgang": row.get("vorgang"),
+                "zeilen_id": row.get("zeilen_id"),
+                "titel": row.get("vorher_titel") or row.get("nachher_titel")
+                or row.get("vorher_name") or row.get("nachher_name"),
+            })
+    ordered = list(groups.values())
+    if len(rows) >= CHANGE_LIST_ROW_CAP and len(ordered) > 1:
+        ordered.pop()  # the oldest group may be cut off by the row cap
+    return ordered[:limit]
 
 
 def _patch_fields(
@@ -766,6 +862,43 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         )
     if name == "idea_disconnect":
         return _request("DELETE", "canvas_edges", params={"id": f"eq.{_required_string(arguments, 'edge_id')}"})
+    if name == "aenderung_liste":
+        _only_arguments(arguments, {"limit", "quelle"})
+        limit = arguments.get("limit", 10)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
+            raise ToolError("invalid_arguments: 'limit' must be an integer from 1 to 50")
+        params = {
+            "select": (
+                "id,gruppe,quelle,erstellt_am,tabelle,vorgang,zeilen_id,zurueckgenommen_am,"
+                "vorher_titel:vorher->>title,nachher_titel:nachher->>title,"
+                "vorher_name:vorher->>name,nachher_name:nachher->>name"
+            ),
+            "order": "id.desc",
+            "limit": str(CHANGE_LIST_ROW_CAP),
+        }
+        if "quelle" in arguments:
+            source = arguments["quelle"]
+            if source not in CHANGE_SOURCES:
+                raise ToolError("invalid_arguments: 'quelle' must be agent, hand or zurueck")
+            params["quelle"] = f"eq.{source}"
+        return _change_groups(_request("GET", "ideen_aenderungen", params=params), limit)
+    if name == "aenderung_zurueck":
+        _only_arguments(arguments, {"gruppe"})
+        body: dict[str, Any] = {}
+        if "gruppe" in arguments:
+            group = arguments["gruppe"]
+            if (
+                not isinstance(group, str)
+                or not 1 <= len(group) <= 200
+                or group != group.strip()
+                or not group.isprintable()
+            ):
+                raise ToolError("invalid_arguments: 'gruppe' must be a group name from aenderung_liste")
+            body["p_gruppe"] = group
+        result = _request("POST", "rpc/ideen_zurueck", body=body, error_detail=True)
+        if not isinstance(result, Mapping) or "anzahl" not in result:
+            raise ToolError("supabase_invalid_response")
+        return result
     raise ToolError(f"unknown_tool: {name}")
 
 

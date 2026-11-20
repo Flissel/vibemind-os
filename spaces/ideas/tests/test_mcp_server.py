@@ -51,6 +51,8 @@ class IdeasMcpServerContractTests(unittest.TestCase):
                 "idea_delete",
                 "idea_connect",
                 "idea_disconnect",
+                "aenderung_liste",
+                "aenderung_zurueck",
             ],
         )
         create = response["result"]["tools"][2]
@@ -981,6 +983,177 @@ class IdeasMcpServerContractTests(unittest.TestCase):
 
         self.assertEqual(observed["body"]["title"], "x" * 80 + "…")
         self.assertEqual(observed["body"]["content"], original_title)
+
+    def test_aenderung_liste_groups_rows_newest_group_first(self) -> None:
+        server = load_server()
+        calls = []
+        rows = [
+            {"id": 9, "gruppe": "plan-2", "quelle": "agent", "erstellt_am": "2026-11-20T10:00:02Z",
+             "tabelle": "public.canvas_nodes", "vorgang": "UPDATE", "zeilen_id": "n1",
+             "zurueckgenommen_am": None, "vorher_titel": "Idee", "nachher_titel": "Idee",
+             "vorher_name": None, "nachher_name": None},
+            {"id": 8, "gruppe": "plan-2", "quelle": "agent", "erstellt_am": "2026-11-20T10:00:01Z",
+             "tabelle": "public.ideas", "vorgang": "DELETE", "zeilen_id": "b1",
+             "zurueckgenommen_am": None, "vorher_titel": "Alte Bubble", "nachher_titel": None,
+             "vorher_name": None, "nachher_name": None},
+            {"id": 7, "gruppe": "hand-41", "quelle": "hand", "erstellt_am": "2026-11-20T09:00:00Z",
+             "tabelle": "public.projects", "vorgang": "INSERT", "zeilen_id": "p1",
+             "zurueckgenommen_am": "2026-11-20T09:05:00Z", "vorher_titel": None, "nachher_titel": None,
+             "vorher_name": None, "nachher_name": "Projekt"},
+        ]
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            return rows
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            result = server.call_tool("aenderung_liste", {})
+
+        self.assertEqual(result, [
+            {
+                "gruppe": "plan-2", "quelle": "agent", "erstellt_am": "2026-11-20T10:00:01Z",
+                "zurueckgenommen": False, "anzahl": 2,
+                "eintraege": [
+                    {"tabelle": "public.canvas_nodes", "vorgang": "UPDATE", "zeilen_id": "n1", "titel": "Idee"},
+                    {"tabelle": "public.ideas", "vorgang": "DELETE", "zeilen_id": "b1", "titel": "Alte Bubble"},
+                ],
+            },
+            {
+                "gruppe": "hand-41", "quelle": "hand", "erstellt_am": "2026-11-20T09:00:00Z",
+                "zurueckgenommen": True, "anzahl": 1,
+                "eintraege": [
+                    {"tabelle": "public.projects", "vorgang": "INSERT", "zeilen_id": "p1", "titel": "Projekt"},
+                ],
+            },
+        ])
+        (method, path, kwargs), = calls
+        self.assertEqual((method, path), ("GET", "ideen_aenderungen"))
+        self.assertEqual(kwargs["params"]["order"], "id.desc")
+        self.assertNotIn("quelle", kwargs["params"])
+        # nie die ganzen Zeilen holen, nur Titel und Name daraus
+        self.assertNotIn("vorher", kwargs["params"]["select"].split(","))
+        self.assertNotIn("nachher", kwargs["params"]["select"].split(","))
+
+    def test_aenderung_liste_limits_groups_and_filters_by_source(self) -> None:
+        server = load_server()
+        calls = []
+        rows = [
+            {"id": 30 - n, "gruppe": f"plan-{n}", "quelle": "agent", "erstellt_am": "2026-11-20T10:00:00Z",
+             "tabelle": "public.ideas", "vorgang": "INSERT", "zeilen_id": f"b{n}",
+             "zurueckgenommen_am": None, "vorher_titel": None, "nachher_titel": "T",
+             "vorher_name": None, "nachher_name": None}
+            for n in range(5)
+        ]
+
+        def request(method, path, **kwargs):
+            calls.append(kwargs["params"])
+            return rows
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            result = server.call_tool("aenderung_liste", {"limit": 2, "quelle": "agent"})
+
+        self.assertEqual([group["gruppe"] for group in result], ["plan-0", "plan-1"])
+        self.assertEqual(calls[0]["quelle"], "eq.agent")
+
+    def test_aenderung_liste_rejects_invalid_arguments_without_requests(self) -> None:
+        server = load_server()
+        with mock.patch.object(server, "_request") as request:
+            for arguments in ({"limit": 0}, {"limit": 51}, {"quelle": "jemand"}, {"quelle": 3}, {"tabelle": "x"}):
+                with self.assertRaises(server.ToolError) as raised:
+                    server.call_tool("aenderung_liste", arguments)
+                self.assertTrue(str(raised.exception).startswith("invalid_arguments"))
+        request.assert_not_called()
+
+    def test_aenderung_zurueck_calls_the_database_function_once(self) -> None:
+        server = load_server()
+        calls = []
+        answer = {"gruppe": "plan-2", "anzahl": 2, "erstellt_am": "2026-11-20T10:00:01Z", "eintraege": []}
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            return answer
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            latest = server.call_tool("aenderung_zurueck", {})
+            named = server.call_tool("aenderung_zurueck", {"gruppe": "hand-41"})
+
+        self.assertEqual(latest, answer)
+        self.assertEqual(named, answer)
+        self.assertEqual([(m, p) for m, p, _k in calls], [("POST", "rpc/ideen_zurueck")] * 2)
+        self.assertEqual(calls[0][2]["body"], {})
+        self.assertEqual(calls[1][2]["body"], {"p_gruppe": "hand-41"})
+        self.assertTrue(all(k.get("error_detail") is True for _m, _p, k in calls))
+
+    def test_aenderung_zurueck_rejects_invalid_arguments_without_requests(self) -> None:
+        server = load_server()
+        with mock.patch.object(server, "_request") as request:
+            for arguments in ({"gruppe": ""}, {"gruppe": " plan"}, {"gruppe": 7}, {"gruppe": "x" * 201},
+                              {"gruppe": "a\nb"}, {"id": "b1"}, {"gruppe": "plan-1", "force": True}):
+                with self.assertRaises(server.ToolError) as raised:
+                    server.call_tool("aenderung_zurueck", arguments)
+                self.assertTrue(str(raised.exception).startswith("invalid_arguments"))
+        request.assert_not_called()
+
+    def test_aenderung_zurueck_rejects_unexpected_database_answer(self) -> None:
+        server = load_server()
+        with mock.patch.object(server, "_request", return_value=[{"x": 1}]):
+            with self.assertRaises(server.ToolError) as raised:
+                server.call_tool("aenderung_zurueck", {})
+        self.assertEqual(str(raised.exception), "supabase_invalid_response")
+
+    def _call_zurueck_with_http_error(self, server, status: int, body: bytes):
+        import io
+        import urllib.error
+
+        def opener(request, timeout):
+            raise urllib.error.HTTPError(request.full_url, status, "Bad Request", {}, io.BytesIO(body))
+
+        with mock.patch.dict(
+            os.environ,
+            {"SUPABASE_URL": "https://supabase.proxmox.example", "SUPABASE_SERVICE_ROLE_KEY": "test-service-role-key"},
+            clear=True,
+        ), mock.patch.object(server.urllib.request, "urlopen", opener):
+            return server.handle_message({
+                "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                "params": {"name": "aenderung_zurueck", "arguments": {}},
+            })
+
+    def test_aenderung_zurueck_reports_which_row_blocks_the_undo(self) -> None:
+        server = load_server()
+        for message in (
+            "aenderung_konflikt: public.canvas_nodes n1",
+            "aenderung_unbekannt: plan-9",
+            "aenderung_nicht_zuruecknehmbar: marketing.broadcast_proposals 0b1c2d3e-0000-4000-8000-000000000001",
+        ):
+            response = self._call_zurueck_with_http_error(
+                server, 400, json.dumps({"code": "P0001", "message": message}).encode("utf-8")
+            )
+            self.assertTrue(response["result"]["isError"])
+            self.assertEqual(json.loads(response["result"]["content"][0]["text"]), {"error": message})
+
+    def test_aenderung_zurueck_never_passes_other_database_text_through(self) -> None:
+        server = load_server()
+        cases = (
+            (400, json.dumps({"message": "relation secret_table does not exist"}).encode("utf-8")),
+            (400, json.dumps({"message": "aenderung_konflikt: public.ideas b1\nDETAIL: key=test-service-role-key"}).encode("utf-8")),
+            (401, json.dumps({"message": "permission denied for function ideen_zurueck"}).encode("utf-8")),
+            (500, b"<html>kaputt</html>"),
+        )
+        for status, body in cases:
+            response = self._call_zurueck_with_http_error(server, status, body)
+            text = response["result"]["content"][0]["text"]
+            self.assertTrue(response["result"]["isError"])
+            self.assertNotIn("secret_table", text)
+            self.assertNotIn("test-service-role-key", text)
+            self.assertNotIn("permission denied", text)
+        self.assertEqual(
+            json.loads(self._call_zurueck_with_http_error(server, *cases[1])["result"]["content"][0]["text"]),
+            {"error": "aenderung_konflikt"},
+        )
+        self.assertEqual(
+            json.loads(self._call_zurueck_with_http_error(server, *cases[0])["result"]["content"][0]["text"]),
+            {"error": "supabase_http_error: status=400"},
+        )
 
     def test_stdio_process_serves_initialize_and_tools_list(self) -> None:
         request_lines = "\n".join(
