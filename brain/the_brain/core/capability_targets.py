@@ -1677,7 +1677,8 @@ class SupabaseExecutor(_BaseRemoteExecutor):
         from .supabase_ideas_client import SupabaseIdeasClient
         from . import supabase_ideas_ops as _ops
 
-        client = SupabaseIdeasClient()
+        # Plan-Kennung fuer "Zurueck": reist als Kopf, nie als Argument der Operation.
+        client = SupabaseIdeasClient(aenderung_id=payload.pop("_aenderung_id", None))
         # Run async logic in a fresh event loop (we're already in a
         # ThreadPoolExecutor worker — asyncio.run is safe here).
         # Phase 11.U.H — operation → ops-coroutine mapping (replaces the

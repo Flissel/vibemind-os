@@ -46,7 +46,13 @@ class SupabaseIdeasClient:
         self,
         url: Optional[str] = None,
         anon_key: Optional[str] = None,
+        aenderung_id: Optional[str] = None,
     ) -> None:
+        # "Zurueck" (Migration 20261120_ideen_aenderungen): die Ausloeser in der
+        # Supabase fassen alle Schreibvorgaenge mit derselben Kennung zu einer
+        # Aenderung zusammen. Eine unbrauchbare Kennung wird weggelassen, die
+        # Aenderung gilt dann als von Hand - besser als eine gebrochene Anfrage.
+        self.aenderung_id = self._aenderung_id_sauber(aenderung_id)
         # Keine Vorgabewerte: eine tote Vorgabeadresse oder ein
         # Platzhalter-Schluessel liessen jede Anfrage still ins Leere laufen
         # (401, bis 2026-09-24 live so vorgefunden). Aufloesung erst hier,
@@ -71,11 +77,22 @@ class SupabaseIdeasClient:
             "edges_created": 0, "edges_deleted": 0,
         }
 
+    @staticmethod
+    def _aenderung_id_sauber(wert: Any) -> Optional[str]:
+        if not isinstance(wert, str):
+            return None
+        wert = wert.strip()
+        if not wert or len(wert) > 200 or not wert.isascii() or not wert.isprintable():
+            return None
+        return wert
+
     def _headers(self, *, prefer: Optional[str] = None) -> Dict[str, str]:
         h = {
             "apikey": self.key,
             "Content-Type": "application/json",
         }
+        if self.aenderung_id:
+            h["X-Aenderung-Id"] = self.aenderung_id
         # Only set Bearer when key looks like a real JWT (3 dot-separated parts).
         # Local Supabase rejects "Bearer anon" with 401 PGRST301 because it
         # tries to JWT-verify it. Plain `apikey: anon` is enough for anon RLS.

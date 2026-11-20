@@ -278,6 +278,18 @@ _BUNDLE_SCHLUESSEL = ("channel_intent", "brain_plan", "space_execution_contracts
                       "lifecycle", "handoff")
 
 
+def _aenderung_id_fuer(target: Any, plan_ctx: Optional[Dict[str, Any]]) -> str:
+    """Plan-Kennung, unter der die Supabase die Schreibvorgaenge eines Plans gruppiert.
+
+    Nur fuer ``supabase:``-Ziele: dort setzt der Client sie als Kopf
+    ``X-Aenderung-Id``. Andere Ausfuehrer bekommen sie nicht in die Nutzlast.
+    """
+    if not isinstance(target, str) or not target.lower().startswith("supabase:"):
+        return ""
+    plan_id = (plan_ctx or {}).get("plan_id")
+    return plan_id if isinstance(plan_id, str) else ""
+
+
 def _auftragsweg(plan_ctx: Optional[Dict[str, Any]]) -> bool:
     """K1-Auftragsweg nur bei Flag an UND Nutzeranfrage (plan_ctx hat antwortkanal).
 
@@ -1785,6 +1797,10 @@ class PlanExecutor:
         }
         if _auftrag_uebergabe is not None:
             _extra["_uebergabe"] = _auftrag_uebergabe
+        if not _k1_auftrag:
+            _aenderung_id = _aenderung_id_fuer(target, plan_ctx)
+            if _aenderung_id:
+                _extra["_aenderung_id"] = _aenderung_id
         if _k1_auftrag:
             _extra["_trace_id"] = plan_ctx.get("trace_id", "") or ""
             _extra["_plan_id"] = plan_ctx.get("plan_id", "") or ""
