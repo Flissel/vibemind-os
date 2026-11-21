@@ -16,7 +16,7 @@ EXPECTED_LAURA_PIN = "909a43d499ffe00f4fd3d779127da45debf64f0c"
 def test_gitmodules_declares_laura():
     text = (REPO_ROOT / ".gitmodules").read_text(encoding="utf-8")
     assert 'path = spaces/video/laura' in text
-    assert "Lauras_star" in text
+    assert "vibemind-video-space" in text  # bis 21.11.2026 Lauras_star
 
 
 def test_laura_mcp_entrypoint_declared():

@@ -5,7 +5,7 @@ Neuroscience-inspired cognitive routing system. This is a **standalone submodule
 ## Architecture
 
 ```
-Git Submodule: github.com/Flissel/the_brain
+Git Submodule: github.com/Vibemind-LAB/vibemind-routing-cognitive
     ↓
 5 Microservices:
     ├── Brain Server     (port 5000)  — Central unified brain + dashboards
@@ -20,7 +20,7 @@ Git Submodule: github.com/Flissel/the_brain
 | Property | Value |
 |----------|-------|
 | **Backend Agent** | None (standalone microservices) |
-| **Submodule** | `the_brain/` (git: github.com/Flissel/the_brain) |
+| **Submodule** | `the_brain/` (git: github.com/Vibemind-LAB/vibemind-routing-cognitive) |
 | **Accuracy** | 77% routing accuracy (10×4 trained matrix) |
 | **Learning** | Continuous Hebbian plasticity |
 

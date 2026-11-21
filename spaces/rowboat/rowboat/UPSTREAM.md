@@ -7,7 +7,7 @@ it refuses to run when these copies were edited here.
 To re-pin the kernel plugin catalog, change `DESKTOP_PLUGIN_CATALOG_PIN` on branch `vibemind` of
 Flissel/rowboat (in `apps/x/apps/renderer/src/lib/rowboat-plugin-api.ts`), then run the sync.
 
-- Fork: https://github.com/Flissel/rowboat (branch `vibemind`)
+- Fork: https://github.com/Vibemind-LAB/vibemind-business-data-space (branch `vibemind`)
 - Fork commit: `2d47d8a67eefa6e06b3d7104e640ad92568b0fb4`
 - Upstream base: rowboatlabs/rowboat `72e9d8c`
 - EHL repo: https://github.com/Flissel/ehl-munich-2026 (`schema/`)

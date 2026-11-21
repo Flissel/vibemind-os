@@ -20,7 +20,7 @@ Shuttle Pipeline: Evaluate → Requirements → Design → Promote
 |----------|-------|
 | **Backend Agent** | None (events handled by BubblesAgent) |
 | **Event Prefix** | `bubble.evaluate`, `bubble.promote` |
-| **Submodule** | `swe_desgine/` (git: github.com/Flissel/swe_desgine) |
+| **Submodule** | `swe_desgine/` (git: github.com/Vibemind-LAB/vibemind-software-design-space) |
 
 ## Shuttle Pipeline
 

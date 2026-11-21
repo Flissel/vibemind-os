@@ -12,40 +12,40 @@
 	url = https://github.com/Flissel/openfang.git
 [submodule "la-fungus-search"]
 	path = la-fungus-search
-	url = https://github.com/Flissel/la_fungus_search.git
+	url = https://github.com/Vibemind-LAB/vibemind-context.git
 [submodule "coding-engine"]
 	path = coding-engine
-	url = https://github.com/Flissel/coding-engine.git
+	url = https://github.com/Vibemind-LAB/vibemind-coding-space.git
 [submodule "spaces/video/vibevideo"]
 	path = spaces/video/vibevideo
 	url = https://github.com/Flissel/vibevideo.git
 [submodule "spaces/video/vibevideo_deepfake"]
 	path = spaces/video/vibevideo_deepfake
-	url = https://github.com/Flissel/vibevideo-deepfake.git
+	url = https://github.com/Vibemind-LAB/vibemind-video-deepfake.git
 [submodule "spaces/shuttles/swe_desgine"]
 	path = spaces/shuttles/swe_desgine
-	url = https://github.com/Flissel/swe_desgine.git
+	url = https://github.com/Vibemind-LAB/vibemind-software-design-space.git
 [submodule "brain/the_brain/tribe"]
 	path = brain/the_brain/tribe
 	url = https://github.com/Flissel/tribev2.git
 [submodule "spaces/desktop/Automation_ui"]
 	path = spaces/desktop/Automation_ui
-	url = https://github.com/Flissel/Automation_ui.git
+	url = https://github.com/Vibemind-LAB/vibemind-desktop-space.git
 [submodule "spaces/captain_cook"]
 	path = spaces/captain_cook
-	url = https://github.com/Flissel/Captain_cook.git
+	url = https://github.com/Vibemind-LAB/vibemind-captain-cook.git
 [submodule "spaces/sales"]
 	path = spaces/sales
 	url = https://github.com/Flissel/aisalesorgcore.git
 [submodule "spaces/video/laura"]
 	path = spaces/video/laura
-	url = https://github.com/Vibemind-LAB/Lauras_star.git
+	url = https://github.com/Vibemind-LAB/vibemind-video-space.git
 [submodule "spaces/sales-claw"]
 	path = spaces/sales-claw
-	url = https://github.com/Flissel/sales-claw.git
+	url = https://github.com/Vibemind-LAB/vibemind-sales-space.git
 [submodule "spaces/learning"]
 	path = spaces/learning
-	url = https://github.com/Flissel/vibemind-learning.git
+	url = https://github.com/Vibemind-LAB/vibemind-learning-space.git
 [submodule "spaces/coding/clawcode"]
 	path = spaces/coding/clawcode
 	url = https://github.com/Flissel/ClawCode.git

@@ -27,7 +27,7 @@ marked `managed_by: schema`, so edits to its body are overwritten.
 Update the pinned copies from the fork and the EHL repo:
 
 ```
-python spaces/rowboat/scripts/sync_desktop.py --fork <clone of Flissel/rowboat> --fork-ref vibemind --ehl <clone of Flissel/ehl-munich-2026> --ehl-ref <branch or commit>
+python spaces/rowboat/scripts/sync_desktop.py --fork <clone of Vibemind-LAB/vibemind-business-data-space> --fork-ref vibemind --ehl <clone of Flissel/ehl-munich-2026> --ehl-ref <branch or commit>
 ```
 
 The sync keeps `node_modules` and the harbor `dist`, and `npm run dev` neither rebuilds harbor nor re-runs
@@ -43,7 +43,7 @@ The web app's kernel plugin catalog pin is mirrored in the desktop renderer
 (`rowboat/apps/x/apps/renderer/src/lib/rowboat-plugin-api.ts`, `DESKTOP_PLUGIN_CATALOG_PIN`), and
 `rowboat/apps/rowboat/test/plugins/catalog-pin-guard.test.ts` fails when the two differ. Do not edit that file here
 (the next sync would stop on it as an edit by hand). Change `DESKTOP_PLUGIN_CATALOG_PIN` on the fork branch
-`vibemind` (Flissel/rowboat), then run the sync.
+`vibemind` (Vibemind-LAB/vibemind-business-data-space), then run the sync.
 
 Notes:
 
