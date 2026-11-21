@@ -1072,15 +1072,25 @@ class McpExecutor(_BaseRemoteExecutor):
         result = response["result"]
         if not isinstance(result, dict):
             raise RuntimeError("OpenFang MCP JSON-RPC response omitted result")
+        if self.tool == "aenderung_zurueck":
+            # Entscheidet am Inhalt, nicht am Fehlerkennzeichen (siehe dort).
+            return self._pruefe_werkzeug_ergebnis(result)
         if result.get("isError") is True:
-            from .aenderung_zurueck_contract import aenderung_fehler_aus_mcp_ergebnis
-            # Nur die drei benannten Meldungen von "zurueck" duerfen durch: Sie sagen,
-            # welcher Eintrag im Weg steht. Jeder andere Werkzeugtext bleibt verborgen.
-            meldung = aenderung_fehler_aus_mcp_ergebnis(result)
-            raise RuntimeError(
-                f"OpenFang MCP tool returned isError=true: {meldung}" if meldung
-                else "OpenFang MCP tool returned isError=true"
-            )
+            raise RuntimeError("OpenFang MCP tool returned isError=true")
+        return result
+
+    def _pruefe_werkzeug_ergebnis(self, result: Any) -> Any:
+        """Fuer "zurueck": ohne gueltige Quittung scheitert der Schritt.
+
+        Die Meldung nennt bei einem Konflikt Tabelle und Kennung des Eintrags, der im
+        Weg steht; anderer Werkzeugtext bleibt verborgen.
+        """
+        if self.tool != "aenderung_zurueck":
+            return result
+        from .aenderung_zurueck_contract import quittung_oder_fehler
+        meldung = quittung_oder_fehler(result)
+        if meldung:
+            raise RuntimeError(meldung)
         return result
 
     def call(self, *args, **kwargs) -> Dict[str, Any]:

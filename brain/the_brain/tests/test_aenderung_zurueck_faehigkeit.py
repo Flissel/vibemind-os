@@ -322,3 +322,45 @@ def test_plan_schritt_wird_nach_einem_fehler_nicht_wiederholt(monkeypatch):
         ergebnis={"ok": False, "error": "OpenFangUnavailable: gateway down"})
     assert hr.ok is False
     assert len(ausfuehrer.aufrufe) == 1
+
+
+# ── Werkzeugfehler ohne Fehlerkennzeichen (OpenFang reicht isError nicht durch) ──
+
+
+def test_quittung_pruefen_laesst_gueltige_quittung_durch():
+    from core.aenderung_zurueck_contract import quittung_oder_fehler
+    assert quittung_oder_fehler(_mcp_ergebnis({"gruppe": "plan_a", "anzahl": 1, "eintraege": []})) == ""
+    assert quittung_oder_fehler(_mcp_ergebnis({"gruppe": None, "anzahl": 0, "eintraege": []})) == ""
+
+
+@pytest.mark.parametrize("ergebnis, erwartet", [
+    # so kam es am 21.11. im Betrieb an: Fehlertext, aber isError false
+    (_mcp_ergebnis({"error": "configuration_error: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set"}),
+     "aenderung_zurueck: Werkzeug meldet einen Fehler (configuration_error)"),
+    (_mcp_ergebnis({"error": "aenderung_konflikt: public.canvas_nodes n1"}),
+     "aenderung_zurueck: aenderung_konflikt: public.canvas_nodes n1"),
+    (_mcp_ergebnis({"error": "aenderung_unbekannt: plan-9"}, fehler=True),
+     "aenderung_zurueck: aenderung_unbekannt: plan-9"),
+    (_mcp_ergebnis({"error": "supabase_http_error: status=500"}),
+     "aenderung_zurueck: Werkzeug meldet einen Fehler (supabase_http_error)"),
+    (_mcp_ergebnis({"error": "boese\nKEY=geheim"}), "aenderung_zurueck: Werkzeug meldet einen Fehler"),
+    (_mcp_ergebnis({"irgendwas": 1}), "aenderung_zurueck: keine gueltige Quittung"),
+    ("Text", "aenderung_zurueck: keine gueltige Quittung"),
+])
+def test_quittung_pruefen_macht_aus_fehlertext_einen_fehler(ergebnis, erwartet):
+    from core.aenderung_zurueck_contract import quittung_oder_fehler
+    assert quittung_oder_fehler(ergebnis) == erwartet
+
+
+def test_plan_schritt_scheitert_wenn_das_werkzeug_nur_einen_fehlertext_liefert(monkeypatch):
+    """Am 21.11. meldete der Schritt ok, obwohl nichts zurueckgenommen war."""
+    from core import capability_targets as ct
+
+    ausfuehrer = ct.McpExecutor(AENDERUNG_ZURUECK_TARGET)
+    fehlertext = _mcp_ergebnis({"error": "configuration_error: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set"})
+    with pytest.raises(RuntimeError, match="aenderung_zurueck: Werkzeug meldet einen Fehler"):
+        ausfuehrer._pruefe_werkzeug_ergebnis(fehlertext)
+    gut = _mcp_ergebnis({"gruppe": "plan_a", "anzahl": 1, "eintraege": []})
+    assert ausfuehrer._pruefe_werkzeug_ergebnis(gut) is gut
+    # andere Werkzeuge bleiben unberuehrt
+    assert ct.McpExecutor("mcp:brain-ideas:spaces-ideas:idea_connect")._pruefe_werkzeug_ergebnis(fehlertext) is fehlertext

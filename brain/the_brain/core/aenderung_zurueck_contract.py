@@ -75,6 +75,31 @@ def extract_aenderung_zurueck_receipt(value: Any) -> tuple[Optional[dict[str, An
     return {"gruppe": gruppe, "anzahl": anzahl}, ""
 
 
+def quittung_oder_fehler(value: Any) -> str:
+    """"" bei gueltiger Quittung, sonst eine Fehlermeldung fuer den Plan-Schritt.
+
+    OpenFang reicht das Fehlerkennzeichen des Werkzeugs nicht verlaesslich durch: Am
+    21.11.2026 kam ein Fehlertext mit ``isError: false`` an, und der Schritt galt als
+    gelungen, obwohl nichts zurueckgenommen war. Deshalb entscheidet der Inhalt.
+    Durchgereicht werden nur die drei benannten Meldungen und sonst hoechstens der
+    Fehlername vor dem Doppelpunkt, nie freier Werkzeugtext.
+    """
+    payload = _mcp_text(value, fehler=False)
+    if payload is None:
+        payload = _mcp_text(value, fehler=True)
+    if isinstance(payload, dict) and "error" in payload:
+        meldung = payload["error"]
+        if isinstance(meldung, str) and _FEHLER.fullmatch(meldung):
+            return f"aenderung_zurueck: {meldung}"
+        name = meldung.split(":", 1)[0] if isinstance(meldung, str) else ""
+        if re.fullmatch(r"[a-z][a-z_]{0,40}", name):
+            return f"aenderung_zurueck: Werkzeug meldet einen Fehler ({name})"
+        return "aenderung_zurueck: Werkzeug meldet einen Fehler"
+    if extract_aenderung_zurueck_receipt(value)[0] is None:
+        return "aenderung_zurueck: keine gueltige Quittung"
+    return ""
+
+
 def aenderung_fehler_aus_mcp_ergebnis(value: Any) -> str:
     """Eine der drei benannten Meldungen von ideen_zurueck, sonst ""."""
     payload = _mcp_text(value, fehler=True)
