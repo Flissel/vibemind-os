@@ -152,7 +152,12 @@ def test_die_drei_meldungen_kommen_durch_anderes_nicht():
 
 
 @pytest.fixture
-def _dienst(monkeypatch):
+def _dienst(monkeypatch, tmp_path):
+    from core import config as core_config
+    # get_secret liest sonst die .env und /run/secrets dieser Maschine mit.
+    monkeypatch.setattr(core_config, "_load_env_file", lambda *a, **k: None)
+    monkeypatch.setattr(core_config, "_SECRETS_DIR", str(tmp_path))
+    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY_FILE", raising=False)
     monkeypatch.setattr(wo, "GROUND_TRUTH_ENABLED", True)
     monkeypatch.setenv("SUPABASE_URL", "http://supabase.test")
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "dienst-schluessel")
@@ -221,6 +226,16 @@ def test_ohne_dienstschluessel_ungeprueft(monkeypatch, _dienst):
     get = _antwort(monkeypatch, [])
     assert wo.observe({"check": "supabase_aenderung_zurueck", "gruppe": "plan_1", "anzahl": 1}).verified_ok is None
     get.assert_not_called()
+
+
+def test_dienstschluessel_aus_der_datei_wie_im_stack(monkeypatch, _dienst, tmp_path):
+    datei = tmp_path / "dienst"
+    datei.write_text("schluessel-aus-datei\n", encoding="utf-8")
+    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY_FILE", str(datei))
+    get = _antwort(monkeypatch, [{"id": 8, "zurueckgenommen_am": "2026-11-20T10:05:00Z"}])
+    assert wo.observe({"check": "supabase_aenderung_zurueck", "gruppe": "plan_1", "anzahl": 1}).verified_ok is True
+    assert get.call_args.kwargs["headers"]["apikey"] == "schluessel-aus-datei"
 
 
 @pytest.mark.parametrize("status", [301, 401, 500])

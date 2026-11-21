@@ -424,7 +424,14 @@ def _check_supabase_aenderung_zurueck(spec: Dict[str, Any]):
     elif not ist_gruppe(gruppe) or anzahl == 0:
         return None, ungeprueft, "invalid undo receipt"
     raw_base = os.environ.get("SUPABASE_URL", "")
-    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    # Im Stack kommt der Dienstschluessel als Datei (SUPABASE_SERVICE_ROLE_KEY_FILE),
+    # nicht als Umgebungswert; get_secret liest Datei, /run/secrets und Umgebung.
+    try:
+        from core.config import get_secret
+        key = get_secret("SUPABASE_SERVICE_ROLE_KEY")
+    except Exception:
+        key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    key = (key or "").strip()
     try:
         parsed = urlsplit(raw_base)
         valid_base = (
