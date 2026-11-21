@@ -278,6 +278,12 @@ _BUNDLE_SCHLUESSEL = ("channel_intent", "brain_plan", "space_execution_contracts
                       "lifecycle", "handoff")
 
 
+# Ereignisse, die der Plan nie wiederholt: Eine verlorene Antwort kann auf eine schon
+# angewandte Aenderung folgen. Bei "zurueck" naehme ein zweiter Versuch die
+# naechstaeltere Aenderung zurueck.
+_EINMAL_EREIGNISSE = frozenset({"bubble.create", "idea.aenderung_zurueck"})
+
+
 def _aenderung_id_fuer(target: Any, plan_ctx: Optional[Dict[str, Any]]) -> str:
     """Plan-Kennung, unter der die Supabase die Schreibvorgaenge eines Plans gruppiert.
 
@@ -1596,10 +1602,14 @@ class PlanExecutor:
                     elapsed_s=time.time() - t0,
                     contract_pass=False, reward=-1.0,
                 )
-            if event_id == "bubble.create":
+            if event_id in _EINMAL_EREIGNISSE:
                 # A failed MCP response can follow an already-applied mutation.
                 # Never replay deterministic bubble.create at the Plan layer.
                 single_plan_attempt = True
+            if event_id == "idea.aenderung_zurueck":
+                from .aenderung_zurueck_contract import gruppe_aus_plan_argument
+                rendered_arg = gruppe_aus_plan_argument(
+                    rendered_arg, plan_ctx.get("plan_intent", ""))
             assigned_agent = None
             try:
                 assigned_agent = get_registry().get_event_agent(event_id) if event_id else None

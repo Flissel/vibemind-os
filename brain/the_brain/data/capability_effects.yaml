@@ -23,6 +23,7 @@ effects:
   idea_add: write
   idea_to_project: write
   idea_connect: write
+  aenderung_zurueck: write
   idea_auto_link: write
   idea_disconnect: write
   idea_link_to_root: write

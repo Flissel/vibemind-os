@@ -538,6 +538,22 @@ class CapabilityValidator:
                     verify_signal={"status": "unverified", "reason": receipt_reason},
                 )
             pc = {"check": "supabase_edge_ids", "expect": pc.get("expect", "present"), **receipt}
+        elif kind == "truth:supabase_aenderung_zurueck":
+            # Die Gruppe kommt nur aus der Quittung des Werkzeugs, nie aus dem
+            # Satz oder aus frei gefundenen Kennungen im Ergebnistext.
+            try:
+                from core.aenderung_zurueck_contract import extract_aenderung_zurueck_receipt
+                receipt, receipt_reason = extract_aenderung_zurueck_receipt(raw_result)
+            except Exception:
+                receipt, receipt_reason = None, "MCP result receipt is invalid"
+            if receipt is None:
+                return self._envelope(
+                    valid=False,
+                    reason=f"ground-truth UNVERIFIED: {receipt_reason}",
+                    kind=kind, on_fail=on_fail, t0=t0, verified=None,
+                    verify_signal={"status": "unverified", "reason": receipt_reason},
+                )
+            pc = {"check": "supabase_aenderung_zurueck", **receipt}
         else:
             # Fill {arg}/{result}/{result_id} from the op so the check re-queries the
             # exact row touched. If a placeholder can't resolve (left as "{...}"), we

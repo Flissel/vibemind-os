@@ -66,7 +66,7 @@ spaces:
     enabled: true
     description: "Idea notes inside bubbles — create, update, link, format."
     mcp_servers: [vibemind-db, spaces-ideas]
-    mcp_tools: { spaces-ideas: [idea_connect] }
+    mcp_tools: { spaces-ideas: [idea_connect, aenderung_zurueck] }
     default_context: [current_space, current_bubble, idea_titles]
     events:
       idea.list:                { tool: db_ideas_list,   required_params: [] }
@@ -77,6 +77,14 @@ spaces:
       idea.connect:
         tool: idea_connect
         required_params: [from_id, to_id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
+      # "Zurueck": nimmt die juengste Aenderung eines Agenten an Ideen und Bubbles
+      # zurueck (oder die genannte Gruppe). Nur ueber den Ideen-Server, weil nur der
+      # Dienstschluessel ideen_zurueck aufrufen darf.
+      idea.aenderung_zurueck:
+        tool: aenderung_zurueck
+        required_params: []
         required_provenance: [approval_ref, cost_ref]
         execution: { kind: mcp, server: spaces-ideas }
       idea.auto_link:           { tool: db_canvas_edge_create, required_params: [] }

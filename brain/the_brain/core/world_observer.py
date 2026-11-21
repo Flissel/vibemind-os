@@ -404,6 +404,75 @@ def _check_supabase_edge_ids(spec: Dict[str, Any]):
     return True, {"edge_id": expected["id"], "rows_found": 1}, "durable edge verified"
 
 
+def _check_supabase_aenderung_zurueck(spec: Dict[str, Any]):
+    """Nachpruefung fuer "zurueck": steht die Gruppe im Protokoll als zurueckgenommen?
+
+    Liest ``ideen_aenderungen`` mit dem Dienstschluessel (der offene Schluessel darf
+    das Protokoll nicht lesen). spec: ``gruppe`` und ``anzahl`` aus der Quittung des
+    Werkzeugs. Mit Gruppe: jede ihrer Zeilen muss zurueckgenommen sein. Ohne Gruppe
+    (Werkzeug meldete "nichts offen"): es darf keine offene Aenderung eines Agenten geben.
+    """
+    from core.aenderung_zurueck_contract import ist_gruppe
+
+    ungeprueft = {"status": "unverified"}
+    gruppe, anzahl = spec.get("gruppe"), spec.get("anzahl")
+    if isinstance(anzahl, bool) or not isinstance(anzahl, int) or anzahl < 0:
+        return None, ungeprueft, "invalid undo receipt"
+    if gruppe is None:
+        if anzahl != 0 or "gruppe" not in spec:
+            return None, ungeprueft, "invalid undo receipt"
+    elif not ist_gruppe(gruppe) or anzahl == 0:
+        return None, ungeprueft, "invalid undo receipt"
+    raw_base = os.environ.get("SUPABASE_URL", "")
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    try:
+        parsed = urlsplit(raw_base)
+        valid_base = (
+            parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+            and parsed.username is None and parsed.password is None
+            and not parsed.query and not parsed.fragment
+        )
+        _ = parsed.port
+    except (TypeError, ValueError):
+        valid_base = False
+    if not valid_base:
+        return None, ungeprueft, "SUPABASE_URL is required and must be valid"
+    if not key:
+        return None, ungeprueft, "SUPABASE_SERVICE_ROLE_KEY is required"
+    params = {"select": "id,zurueckgenommen_am", "limit": "1000"}
+    if gruppe is None:
+        params.update({"quelle": "eq.agent", "zurueckgenommen_am": "is.null", "limit": "1"})
+    else:
+        params["gruppe"] = f"eq.{gruppe}"
+    try:
+        import requests
+        response = requests.get(
+            f"{raw_base.rstrip('/')}/rest/v1/ideen_aenderungen",
+            params=params,
+            headers={"apikey": key, "Authorization": f"Bearer {key}"},
+            timeout=OBSERVE_TIMEOUT,
+            allow_redirects=False,
+        )
+        if response.status_code >= 300:
+            return None, ungeprueft, "undo protocol read-back unavailable"
+        rows = response.json()
+        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+            return None, ungeprueft, "undo protocol read-back malformed"
+    except Exception:
+        return None, ungeprueft, "undo protocol read-back unavailable"
+    if gruppe is None:
+        if rows:
+            return False, {"offen": len(rows)}, "an agent change is still open, but the tool reported none"
+        return True, {"offen": 0}, "no open agent change, confirmed in the protocol"
+    if not rows:
+        return False, {"gruppe": gruppe, "zeilen": 0}, "group not found in the protocol"
+    offen = sum(1 for row in rows if row.get("zurueckgenommen_am") is None)
+    signal = {"gruppe": gruppe, "zeilen": len(rows), "offen": offen}
+    if offen:
+        return False, signal, "group is not fully undone in the protocol"
+    return True, signal, "group is marked undone in the protocol"
+
+
 def _check_supabase_node_in_bubble(spec: Dict[str, Any]):
     """Ground-truth for idea_move — confirm the node is now under the target bubble.
     Resolve the bubble TITLE to its id (ideas row), then check canvas_nodes for the
@@ -842,6 +911,7 @@ _CHECKS = {
     "sqlite_row": _check_sqlite_row,
     "supabase_edge": _check_supabase_edge,
     "supabase_edge_ids": _check_supabase_edge_ids,
+    "supabase_aenderung_zurueck": _check_supabase_aenderung_zurueck,
     "supabase_node_in_bubble": _check_supabase_node_in_bubble,
     "supabase_bubble_node_count": _check_supabase_bubble_node_count,
     "event_app_change": _check_event_app_change,

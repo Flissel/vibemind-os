@@ -677,6 +677,29 @@
     kind: rule:string_nonempty
     on_fail: report
 
+- capability: aenderung_zurueck
+  description: "undo the last change to ideas and bubbles as a whole: take back what the assistant just created, changed or deleted, bring a deleted bubble or idea back (zurück, rückgängig, nimm das zurück, mach die letzte Änderung rückgängig, stell die gelöschte Bubble wieder her). Leave the argument EMPTY to undo the most recent change; pass a group name only if the user named one."
+  anchor_phrases:
+    - "undo the last change"
+    - "take that back"
+    - "bring the deleted bubble back"
+    - "mach das rückgängig"
+    - "nimm die letzte Änderung zurück"
+    - "stell die gelöschte Bubble wieder her"
+    - "zurück, das war falsch"
+  # Bewusst KEINE match_patterns: Die Abkuerzung ueber Muster setzte das letzte Wort
+  # des Satzes als Gruppe ein. Die Anfrage geht ueber den Planer.
+  execution_target: "mcp:brain-ideas:spaces-ideas:aenderung_zurueck"
+  arg_kwarg: gruppe
+  validator:
+    # Zweiter Weg: Das Aenderungsprotokoll wird mit dem Dienstschluessel gelesen;
+    # die Gruppe aus der Quittung muss dort als zurueckgenommen stehen. Die
+    # Zuruecknahme ist dann schon geschehen, deshalb report statt block.
+    kind: truth:supabase_aenderung_zurueck
+    on_fail: report
+    postcondition:
+      check: supabase_aenderung_zurueck
+
 - capability: idea_connect
   description: "connect two ideas via a relation, link related ideas, draw an edge between two notes, create a connection edge in the idea graph"
   anchor_phrases:

@@ -26,6 +26,7 @@ capabilities:
   # --- verändern ---
   - {name: idea_update,            writes: true}
   - {name: idea_delete,            writes: true}
+  - {name: aenderung_zurueck,      writes: true}
   - {name: idea_move,              writes: true}
 
   # --- Graph ---

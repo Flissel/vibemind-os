@@ -99,6 +99,7 @@ class SpaceEventBus:
         "idea.create",  "idea.update",  "idea.delete",
         "idea.connect", "idea.disconnect", "idea.auto_link",
         "idea.move",
+        "idea.aenderung_zurueck",
     }
     _BUBBLES_OPERATION_EVENT_ID = "bubbles.operation_projection"
     _BUBBLES_LIFECYCLES = {

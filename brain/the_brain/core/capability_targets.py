@@ -1073,7 +1073,14 @@ class McpExecutor(_BaseRemoteExecutor):
         if not isinstance(result, dict):
             raise RuntimeError("OpenFang MCP JSON-RPC response omitted result")
         if result.get("isError") is True:
-            raise RuntimeError("OpenFang MCP tool returned isError=true")
+            from .aenderung_zurueck_contract import aenderung_fehler_aus_mcp_ergebnis
+            # Nur die drei benannten Meldungen von "zurueck" duerfen durch: Sie sagen,
+            # welcher Eintrag im Weg steht. Jeder andere Werkzeugtext bleibt verborgen.
+            meldung = aenderung_fehler_aus_mcp_ergebnis(result)
+            raise RuntimeError(
+                f"OpenFang MCP tool returned isError=true: {meldung}" if meldung
+                else "OpenFang MCP tool returned isError=true"
+            )
         return result
 
     def call(self, *args, **kwargs) -> Dict[str, Any]:
@@ -1279,6 +1286,7 @@ _CANONICAL_SPACE_EVENT_IDS = {
     "idea_update": "idea.update",
     "idea_expand": "idea.expand",
     "idea_connect": "idea.connect",
+    "aenderung_zurueck": "idea.aenderung_zurueck",
     "idea_to_project": "idea.to_project",
     "code_generate": "code.generate",
     "code_modify": "code.modify",
