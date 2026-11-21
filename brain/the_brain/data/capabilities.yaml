@@ -687,8 +687,18 @@
     - "nimm die letzte Änderung zurück"
     - "stell die gelöschte Bubble wieder her"
     - "zurück, das war falsch"
-  # Bewusst KEINE match_patterns: Die Abkuerzung ueber Muster setzte das letzte Wort
-  # des Satzes als Gruppe ein. Die Anfrage geht ueber den Planer.
+  # Muster sind Pflicht: Ohne sie verwirft der Katalog den Eintrag ganz (gemessen am
+  # 21.11.2026: "capability not found", keine Nachpruefung). Die Abkuerzung ueber Muster
+  # setzt zwar das letzte Wort des Satzes als Argument ein; das faengt der Plan-Ausfuehrer
+  # ab (gruppe_aus_plan_argument nimmt nur eine Kennung, die woertlich in der Anfrage steht).
+  # Eng gefasst, damit "mach das Format rueckgaengig" bei idea_format_revert bleibt.
+  match_patterns:
+    - "^\\s*(zur(ü|ue)ck|r(ü|ue)ckg(ä|ae)ngig|undo)\\s*[.!]?\\s*$"
+    - "\\bmach(e)?\\s+(das|es|die\\s+(letzte\\s+)?(ä|ae)nderung)\\s+(bitte\\s+)?(wieder\\s+)?r(ü|ue)ckg(ä|ae)ngig\\b"
+    - "\\bnimm\\s+(das|es|die\\s+(letzte\\s+)?(ä|ae)nderung|[\\w:.-]*[0-9][\\w:.-]*)\\s+(bitte\\s+)?(wieder\\s+)?zur(ü|ue)ck\\b"
+    - "\\bstell(e)?\\s+die\\s+gel(ö|oe)schte\\s+(bubble|idee)\\s+wieder\\s+her\\b"
+    - "\\bundo\\s+(the\\s+)?last\\s+change\\b"
+    - "\\btake\\s+that\\s+back\\b"
   execution_target: "mcp:brain-ideas:spaces-ideas:aenderung_zurueck"
   arg_kwarg: gruppe
   validator:

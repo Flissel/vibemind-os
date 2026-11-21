@@ -28,20 +28,41 @@ def ist_gruppe(wert: Any) -> bool:
             and wert == wert.strip() and wert.isprintable())
 
 
-def gruppe_aus_plan_argument(argument: Any, absicht: Any) -> str:
+_KENNUNG_IM_SATZ = re.compile(r"[A-Za-z0-9][A-Za-z0-9:_.-]*")
+
+
+def _sieht_wie_kennung_aus(wort: str) -> bool:
+    return (ist_gruppe(wort) and bool(re.search(r"[0-9]", wort))
+            and bool(re.search(r"[:_-]", wort)))
+
+
+def gruppe_aus_plan_argument(argument: Any, absicht: Any) -> Optional[str]:
     """Die Gruppe nur uebernehmen, wenn der Mensch sie selbst genannt hat.
 
-    "zurueck" ohne Angabe meint immer die juengste Aenderung. Der Planer fuellt das
-    Argument aber gern mit einem Wort aus dem Satz ("letzte") oder erfindet eine
-    Kennung. Eine echte Gruppe steht woertlich in der Anfrage und sieht wie eine
-    Kennung aus (Ziffer, Binde- oder Unterstrich, Doppelpunkt). Alles andere wird zu "".
+    "zurueck" ohne Angabe meint immer die juengste Aenderung. Planer und
+    Muster-Abkuerzung fuellen das Argument aber gern mit einem Wort aus dem Satz
+    ("letzte", "zurueck") oder erfinden eine Kennung. Eine echte Gruppe steht woertlich
+    in der Anfrage und sieht wie eine Kennung aus (Ziffer plus Binde-, Unterstrich
+    oder Doppelpunkt, etwa ``hand-4711`` oder ``plan_7f3a``).
+
+    Rueckgabe: die Gruppe; "" fuer "die juengste"; ``None``, wenn die Anfrage mehrere
+    Kennungen nennt und das Argument keine davon ist. Dann darf nichts zurueckgenommen
+    werden, sonst traefe es die falsche Aenderung.
     """
-    if not isinstance(argument, str) or not isinstance(absicht, str):
+    if not isinstance(absicht, str):
         return ""
-    gruppe = argument.strip()
-    if not ist_gruppe(gruppe) or not re.search(r"[0-9:_-]", gruppe):
-        return ""
-    return gruppe if gruppe in absicht else ""
+    if isinstance(argument, str):
+        gruppe = argument.strip()
+        if _sieht_wie_kennung_aus(gruppe) and gruppe in absicht:
+            return gruppe
+    genannt = []
+    for wort in _KENNUNG_IM_SATZ.findall(absicht):
+        wort = wort.rstrip(".:-_")
+        if _sieht_wie_kennung_aus(wort) and wort not in genannt:
+            genannt.append(wort)
+    if len(genannt) == 1:
+        return genannt[0]
+    return None if genannt else ""
 
 
 def _mcp_text(value: Any, *, fehler: bool) -> Optional[Any]:

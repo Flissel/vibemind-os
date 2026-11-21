@@ -1608,8 +1608,19 @@ class PlanExecutor:
                 single_plan_attempt = True
             if event_id == "idea.aenderung_zurueck":
                 from .aenderung_zurueck_contract import gruppe_aus_plan_argument
-                rendered_arg = gruppe_aus_plan_argument(
+                _gruppe = gruppe_aus_plan_argument(
                     rendered_arg, plan_ctx.get("plan_intent", ""))
+                if _gruppe is None:
+                    return HopResult(
+                        step_id=hop.step_id, ok=False,
+                        error=("aenderung_zurueck: Die Anfrage nennt mehrere Kennungen; "
+                               "es wurde nichts zurueckgenommen"),
+                        capability=hop.capability, target=target,
+                        rendered_arg=rendered_arg, kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False, reward=-1.0,
+                    )
+                rendered_arg = _gruppe
             assigned_agent = None
             try:
                 assigned_agent = get_registry().get_event_agent(event_id) if event_id else None

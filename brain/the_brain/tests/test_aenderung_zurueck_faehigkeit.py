@@ -55,8 +55,8 @@ def test_katalogeintrag():
     cap = _capability()
     assert cap["execution_target"] == AENDERUNG_ZURUECK_TARGET
     assert cap["arg_kwarg"] == "gruppe"
-    # Die Abkuerzung ueber Muster wuerde das letzte Wort als Gruppe einsetzen.
-    assert "match_patterns" not in cap
+    # Ohne Muster verwirft der Katalog den Eintrag ganz (im Betrieb gemessen am 21.11.).
+    assert cap["match_patterns"]
     assert cap["validator"]["kind"] == "truth:supabase_aenderung_zurueck"
     effects = yaml.safe_load((DATA / "capability_effects.yaml").read_text(encoding="utf-8"))
     assert effects["effects"]["aenderung_zurueck"] == "write"
@@ -83,11 +83,51 @@ def test_plan_ausfuehrer_versucht_zurueck_nur_einmal():
     ("plan_7f3a9c1e", "mach das rueckgaengig", ""),      # vom Planer erfunden
     ("  hand-4711 ", "nimm hand-4711 zurueck", "hand-4711"),
     (None, "zurueck", ""),
-    ({"gruppe": "hand-1"}, "nimm hand-1 zurueck", ""),
+    ({"gruppe": "hand-1"}, "nimm hand-1 zurueck", "hand-1"),
+    # die Muster-Abkuerzung setzt das letzte Wort ein: die Kennung kommt dann aus dem Satz
+    ("zurueck", "nimm hand-4711 zurueck", "hand-4711"),
+    ("zur\u00fcck", "nimm plan_7f3a9c1e bitte wieder zur\u00fcck.", "plan_7f3a9c1e"),
+    ("", "nimm die Aenderung vom 21.11. zurueck", ""),
+    # mehrere Kennungen und keine davon als Argument: nichts zuruecknehmen
+    ("zurueck", "nimm hand-4711 und plan_7f3a zurueck", None),
+    ("hand-4711", "nimm hand-4711 zurueck, nicht plan_7f3a", "hand-4711"),
     ("x" * 201 + "-1", "x" * 201 + "-1", ""),
 ])
 def test_gruppe_nur_wenn_der_mensch_sie_genannt_hat(argument, absicht, erwartet):
     assert gruppe_aus_plan_argument(argument, absicht) == erwartet
+
+
+def test_der_katalog_kennt_die_faehigkeit_und_waehlt_sie():
+    """Im Betrieb fehlte sie zuerst: Eintraege ohne Muster laedt der Katalog nicht."""
+    from core.capability_router import CapabilityRouter
+    router = CapabilityRouter(DATA / "capabilities.yaml")
+    detail = router.get_capability("aenderung_zurueck")
+    assert detail and detail["execution_target"] == AENDERUNG_ZURUECK_TARGET
+    assert detail["validator"]["kind"] == "truth:supabase_aenderung_zurueck"
+    for satz in ("zur\u00fcck", "Zurueck!", "mach das r\u00fcckg\u00e4ngig", "mach die letzte \u00c4nderung bitte wieder r\u00fcckg\u00e4ngig",
+                 "nimm das zur\u00fcck", "nimm die letzte Aenderung zurueck", "nimm hand-4711 zurueck",
+                 "stell die gel\u00f6schte Bubble wieder her", "undo the last change", "take that back"):
+        treffer = router.route(satz)
+        assert treffer is not None and treffer.capability == "aenderung_zurueck", satz
+    for satz in ("mach das Format r\u00fcckg\u00e4ngig", "undo the format", "geh zur\u00fcck zur Bubble Marketing",
+                 "l\u00f6sche die Idee Testlauf", "nimm die Idee zur\u00fcck in die Bubble"):
+        treffer = router.route(satz)
+        assert treffer is None or treffer.capability != "aenderung_zurueck", satz
+
+
+def test_plan_schritt_mit_mehreren_kennungen_nimmt_nichts_zurueck(monkeypatch):
+    hr, ausfuehrer, _ziele = _zurueck_schritt(
+        monkeypatch, argument="zurueck", absicht="nimm hand-4711 und plan_7f3a zurueck",
+        ergebnis={"ok": True, "result": _mcp_ergebnis({"gruppe": "x-1", "anzahl": 1, "eintraege": []})})
+    assert hr.ok is False and "mehrere Kennungen" in hr.error
+    assert ausfuehrer.aufrufe == []
+
+
+def test_plan_schritt_liest_die_kennung_aus_dem_satz(monkeypatch):
+    _hr, ausfuehrer, _ziele = _zurueck_schritt(
+        monkeypatch, argument="zurueck", absicht="nimm hand-4711 zurueck",
+        ergebnis={"ok": True, "result": _mcp_ergebnis({"gruppe": "hand-4711", "anzahl": 1, "eintraege": []})})
+    assert ausfuehrer.aufrufe == [("hand-4711", "gruppe", {"_runtime_authority"})]
 
 
 # ── Quittung des Werkzeugs ───────────────────────────────────────────────
