@@ -69,6 +69,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
                     "maxLength": 128,
                     "pattern": "^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$",
                 },
+                "aenderung_id": {"type": "string", "minLength": 1, "maxLength": 200},
             },
             "required": ["bubble_id"],
             "additionalProperties": False,
@@ -97,6 +98,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
                     "maxLength": 64,
                     "pattern": "^[A-Za-z0-9][A-Za-z0-9:_-]{0,63}$",
                 },
+                "aenderung_id": {"type": "string", "minLength": 1, "maxLength": 200},
             },
             "required": ["from_id", "to_id"],
             "additionalProperties": False,
@@ -1154,6 +1156,108 @@ class IdeasMcpServerContractTests(unittest.TestCase):
             json.loads(self._call_zurueck_with_http_error(server, *cases[0])["result"]["content"][0]["text"]),
             {"error": "supabase_http_error: status=400"},
         )
+
+    def _call_with_recorded_requests(self, server, name, arguments, answers):
+        seen = []
+
+        class Response:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps(self.payload).encode("utf-8")
+
+        def opener(request, timeout):
+            seen.append((request.get_method(), dict(request.header_items())))
+            return Response(answers.pop(0) if answers else [])
+
+        with mock.patch.dict(
+            os.environ,
+            {"SUPABASE_URL": "https://supabase.proxmox.example", "SUPABASE_SERVICE_ROLE_KEY": "test-service-role-key"},
+            clear=True,
+        ), mock.patch.object(server.urllib.request, "urlopen", opener):
+            result = server.call_tool(name, arguments)
+        return result, seen
+
+    def test_aenderung_id_travels_as_header_on_writes_only(self) -> None:
+        server = load_server()
+        _result, seen = self._call_with_recorded_requests(
+            server, "bubble_create", {"title": "Neu", "aenderung_id": "plan_7f3a"},
+            [[], [{"id": "b1", "title": "Neu"}]],
+        )
+        self.assertEqual([method for method, _headers in seen], ["GET", "POST"])
+        self.assertNotIn("X-aenderung-id", seen[0][1])
+        self.assertEqual(seen[1][1]["X-aenderung-id"], "plan_7f3a")
+
+    def test_without_aenderung_id_no_header_is_sent(self) -> None:
+        server = load_server()
+        _result, seen = self._call_with_recorded_requests(
+            server, "bubble_create", {"title": "Neu"}, [[], [{"id": "b1", "title": "Neu"}]],
+        )
+        self.assertTrue(all("X-aenderung-id" not in headers for _method, headers in seen))
+
+    def test_aenderung_id_does_not_leak_into_the_next_call(self) -> None:
+        server = load_server()
+        self._call_with_recorded_requests(
+            server, "idea_disconnect", {"edge_id": "e1", "aenderung_id": "plan_1"}, [[]])
+        _result, seen = self._call_with_recorded_requests(server, "idea_disconnect", {"edge_id": "e2"}, [[]])
+        self.assertNotIn("X-aenderung-id", seen[0][1])
+
+    def test_aenderung_id_is_not_passed_to_strict_tools_as_argument(self) -> None:
+        server = load_server()
+        calls = []
+
+        def request(method, path, **kwargs):
+            calls.append((method, path))
+            if method == "GET" and path == "ideas":
+                return [{"id": "bubble-1", "title": "T", "description": "", "score": 1}]
+            if method == "POST":
+                return [kwargs["body"]]
+            return [{"id": "bubble-1", "status": "promoted", "promoted_to_project_id": "x"}]
+
+        # bubble_promote verlangt genau das Argument bubble_id; die Kennung darf dort nie ankommen.
+        with mock.patch.object(server, "_request", side_effect=request):
+            try:
+                server.call_tool("bubble_promote", {"bubble_id": "bubble-1", "aenderung_id": "plan_1"})
+            except server.ToolError as exc:
+                self.assertFalse(str(exc).startswith("invalid_arguments"), str(exc))
+        self.assertEqual(calls[0], ("GET", "ideas"))
+        with mock.patch.object(server, "_request") as request_mock:
+            with self.assertRaises(server.ToolError) as raised:
+                server.call_tool("bubble_promote", {"bubble_id": "bubble-1", "fremd": "x"})
+        self.assertTrue(str(raised.exception).startswith("invalid_arguments"))
+        request_mock.assert_not_called()
+
+    def test_aenderung_id_is_rejected_on_reads_and_when_malformed(self) -> None:
+        server = load_server()
+        with mock.patch.object(server, "_request") as request:
+            for name, arguments in (
+                ("bubble_list", {"aenderung_id": "plan_1"}),
+                ("aenderung_zurueck", {"aenderung_id": "plan_1"}),
+                ("bubble_create", {"title": "x", "aenderung_id": ""}),
+                ("bubble_create", {"title": "x", "aenderung_id": "a\nb"}),
+                ("bubble_create", {"title": "x", "aenderung_id": "pl\u00e4n"}),
+                ("bubble_create", {"title": "x", "aenderung_id": "x" * 201}),
+                ("bubble_create", {"title": "x", "aenderung_id": 7}),
+            ):
+                with self.assertRaises(server.ToolError) as raised:
+                    server.call_tool(name, arguments)
+                self.assertTrue(str(raised.exception).startswith("invalid_arguments"), (name, arguments))
+        request.assert_not_called()
+
+    def test_only_writing_tools_advertise_aenderung_id(self) -> None:
+        server = load_server()
+        with_id = {tool["name"] for tool in server.TOOLS if "aenderung_id" in tool["inputSchema"].get("properties", {})}
+        self.assertEqual(with_id, {
+            "bubble_create", "bubble_update", "bubble_delete", "bubble_promote",
+            "idea_create", "idea_update", "idea_delete", "idea_connect", "idea_disconnect",
+        })
 
     def test_stdio_process_serves_initialize_and_tools_list(self) -> None:
         request_lines = "\n".join(

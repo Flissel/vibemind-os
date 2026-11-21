@@ -8,6 +8,7 @@ environment.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import re
@@ -218,6 +219,24 @@ TOOLS: list[dict[str, Any]] = [
 ]
 
 
+# "Zurueck": Schreibende Werkzeuge nehmen wahlweise die Kennung der Aenderung entgegen
+# (das Gehirn gibt seine Plan-Kennung mit). Sie reist als Kopf X-Aenderung-Id zur
+# Datenbank; dort fassen die Ausloeser alle Schreibvorgaenge mit derselben Kennung zu
+# einer Aenderung zusammen, die aenderung_zurueck in einem Zug zuruecknimmt. Ohne
+# Kennung gilt ein Schreibvorgang wie bisher als Handaenderung.
+CHANGE_WRITE_TOOLS = frozenset({
+    "bubble_create", "bubble_update", "bubble_delete", "bubble_promote",
+    "idea_create", "idea_update", "idea_delete", "idea_connect", "idea_disconnect",
+})
+for _tool in TOOLS:
+    if _tool["name"] in CHANGE_WRITE_TOOLS:
+        _tool["inputSchema"].setdefault("properties", {})["aenderung_id"] = {
+            "type": "string", "minLength": 1, "maxLength": 200,
+        }
+del _tool
+_CHANGE_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar("aenderung_id", default=None)
+
+
 class ToolError(Exception):
     """Expected, safe-to-return tool errors."""
 
@@ -395,16 +414,20 @@ def _request(
     if params:
         endpoint = f"{endpoint}?{urllib.parse.urlencode(params)}"
     data = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation",
+    }
+    change_id = _CHANGE_ID.get()
+    if change_id and method != "GET":
+        headers["X-Aenderung-Id"] = change_id
     request = urllib.request.Request(
         endpoint,
         data=data,
         method=method,
-        headers={
-            "apikey": key,
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-            "Prefer": "return=representation",
-        },
+        headers=headers,
     )
     try:
         with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
@@ -632,7 +655,33 @@ def _reconcile_unrepresented_project_create(
 
 
 def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
-    """Call one explicit Ideas/Bubbles operation; no arbitrary table access."""
+    """Call one explicit Ideas/Bubbles operation; no arbitrary table access.
+
+    Writing tools accept an optional ``aenderung_id``; it is taken out of the
+    arguments before the tool sees them and travels as a request header.
+    """
+    if "aenderung_id" not in arguments:
+        return _call_tool(name, arguments)
+    change_id = arguments["aenderung_id"]
+    if name not in CHANGE_WRITE_TOOLS:
+        raise ToolError("invalid_arguments: 'aenderung_id' is only accepted by writing tools")
+    if (
+        not isinstance(change_id, str)
+        or not 1 <= len(change_id) <= 200
+        or change_id != change_id.strip()
+        or not change_id.isascii()
+        or not change_id.isprintable()
+    ):
+        raise ToolError("invalid_arguments: 'aenderung_id' must be a printable ASCII string of 1 to 200 characters")
+    token = _CHANGE_ID.set(change_id)
+    try:
+        return _call_tool(name, {k: v for k, v in arguments.items() if k != "aenderung_id"})
+    finally:
+        _CHANGE_ID.reset(token)
+
+
+def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
+    """Dispatch to the single tool implementation (arguments without aenderung_id)."""
     if name == "bubble_list":
         return _request(
             "GET",
