@@ -1003,7 +1003,8 @@ class McpExecutor(_BaseRemoteExecutor):
                 "authority_status": "pending_approval",
                 "invocation_id": prepared.invocation_id,
             }
-        tool_payload = _strip_runtime_authority_refs(payload)
+        tool_payload = self._mit_aenderung_id(
+            _strip_runtime_authority_refs(payload), runtime_context.plan_id)
         base, api_key = self._configuration()
         control_headers = {
             "Accept": "application/json",
@@ -1078,6 +1079,25 @@ class McpExecutor(_BaseRemoteExecutor):
         if result.get("isError") is True:
             raise RuntimeError("OpenFang MCP tool returned isError=true")
         return result
+
+    # Schreibende Werkzeuge des Ideen-Servers, denen das Gehirn seine Plan-Kennung
+    # mitgibt ("zurueck": ein Plan = eine Aenderung). Ohne idea_connect: dessen Vertrag
+    # laesst genau die drei festen Argumente zu; Verbindungen gelten weiter als Handaenderung.
+    _IDEEN_WERKZEUGE_MIT_KENNUNG = frozenset({
+        "bubble_create", "bubble_update", "bubble_delete", "bubble_promote",
+        "idea_create", "idea_update", "idea_delete", "idea_disconnect",
+    })
+
+    def _mit_aenderung_id(self, tool_payload: Any, plan_id: Any) -> Any:
+        """Plan-Kennung als Argument ``aenderung_id`` anhaengen, wo der Ideen-Server sie annimmt."""
+        if (self.server != "spaces-ideas" or self.tool not in self._IDEEN_WERKZEUGE_MIT_KENNUNG
+                or not isinstance(tool_payload, dict)):
+            return tool_payload
+        from .supabase_ideas_client import SupabaseIdeasClient
+        kennung = SupabaseIdeasClient._aenderung_id_sauber(plan_id)
+        if not kennung:
+            return tool_payload
+        return {**tool_payload, "aenderung_id": kennung}
 
     def _pruefe_werkzeug_ergebnis(self, result: Any) -> Any:
         """Fuer "zurueck": ohne gueltige Quittung scheitert der Schritt.

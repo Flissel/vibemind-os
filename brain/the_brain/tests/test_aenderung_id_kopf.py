@@ -87,3 +87,42 @@ def test_plan_ausfuehrer_ohne_plan_kennung_setzt_nichts(ctx):
 
 def test_plan_ausfuehrer_vertraegt_ein_ziel_das_kein_text_ist():
     assert _aenderung_id_fuer(None, {"plan_id": "p-1"}) == ""
+
+
+# ── mcp-Weg ueber den Ideen-Server ───────────────────────────────────────
+
+
+@pytest.mark.parametrize("ziel", [
+    "mcp:brain-bubbles:spaces-ideas:bubble_create",
+    "mcp:brain-researcher:spaces-ideas:idea_create",
+    "mcp:brain-researcher:spaces-ideas:idea_update",
+    "mcp:brain-bubbles:spaces-ideas:bubble_promote",
+])
+def test_mcp_weg_gibt_die_plan_kennung_als_argument_mit(ziel):
+    ausfuehrer = capability_targets.McpExecutor(ziel)
+    assert ausfuehrer._mit_aenderung_id({"title": "Neu"}, "plan-7f3a") == {"title": "Neu", "aenderung_id": "plan-7f3a"}
+
+
+@pytest.mark.parametrize("ziel", [
+    "mcp:brain-ideas:spaces-ideas:idea_connect",        # fester Vertrag: nur drei Argumente
+    "mcp:brain-ideas:spaces-ideas:aenderung_zurueck",   # nimmt selbst zurueck
+    "mcp:brain-ideas:spaces-ideas:bubble_list",         # liest nur
+    "mcp:brain-knowledge:spaces-minibook:minibook_status",
+])
+def test_mcp_weg_laesst_andere_werkzeuge_unberuehrt(ziel):
+    ausfuehrer = capability_targets.McpExecutor(ziel)
+    nutzlast = {"from_id": "a", "to_id": "b"}
+    assert ausfuehrer._mit_aenderung_id(nutzlast, "plan-7f3a") == nutzlast
+
+
+@pytest.mark.parametrize("kennung", ["", None, "a\nb", "x" * 201, 7])
+def test_mcp_weg_ohne_brauchbare_kennung_haengt_nichts_an(kennung):
+    ausfuehrer = capability_targets.McpExecutor("mcp:brain-bubbles:spaces-ideas:bubble_create")
+    assert ausfuehrer._mit_aenderung_id({"title": "Neu"}, kennung) == {"title": "Neu"}
+
+
+def test_mcp_weg_ueberschreibt_die_nutzlast_nicht():
+    ausfuehrer = capability_targets.McpExecutor("mcp:brain-bubbles:spaces-ideas:bubble_create")
+    nutzlast = {"title": "Neu"}
+    ausfuehrer._mit_aenderung_id(nutzlast, "plan-1")
+    assert nutzlast == {"title": "Neu"}
