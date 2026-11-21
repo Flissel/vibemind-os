@@ -73,11 +73,11 @@ without the bridge, without the approval gate, without the transition
 repertoire. Pinning that would be worse than nothing. Pinning the PR branch
 instead pins a commit that a squash-merge will orphan.
 
-So the entry waits for [Flissel/Musik#1][pr] to land. The repo's own
+So the entry waits for [Vibemind-LAB/vibemind-music-space#1][pr] to land. The repo's own
 `submodule_policy` expects this anyway:
 `pin_change_requires_separate_commit: true`.
 
-[pr]: https://github.com/Flissel/Musik/pull/1
+[pr]: https://github.com/Vibemind-LAB/vibemind-music-space/pull/1
 
 ## Next
 

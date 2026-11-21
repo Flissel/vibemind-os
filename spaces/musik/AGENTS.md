@@ -3,11 +3,11 @@
 Entry point for any agent (or human) touching `spaces/musik/`. Read **Hard
 Rules** first; they are the reason the rest is safe.
 
-The engine lives in a separate repo ([Flissel/Musik][engine]) and carries its
+The engine lives in a separate repo ([Vibemind-LAB/vibemind-music-space][engine]) and carries its
 own specs: `docs/FREIGABE.md` (the gate), `docs/SPACE.md` (this space),
 `docs/GENERATOR.md`, `docs/STEUERUNG.md` (the protocol).
 
-[engine]: https://github.com/Flissel/Musik
+[engine]: https://github.com/Vibemind-LAB/vibemind-music-space
 
 ---
 

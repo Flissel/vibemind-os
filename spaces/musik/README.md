@@ -13,12 +13,12 @@
 A Vibemind-Space for **DJing**: two decks, a mixer, beat-grid-aware scheduling
 and a repertoire of transitions, driven over MCP.
 
-The audio engine is a separate Rust project — [Flissel/Musik][engine] — and
+The audio engine is a separate Rust project — [Vibemind-LAB/vibemind-music-space][engine] — and
 stays that way. It is not a Python package and does not become one; it speaks a
 line protocol over a socket, and `mcp/musik/` in that repo turns it into MCP
 tools.
 
-[engine]: https://github.com/Flissel/Musik
+[engine]: https://github.com/Vibemind-LAB/vibemind-music-space
 
 ## What is actually here
 
