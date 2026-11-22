@@ -392,3 +392,29 @@ def test_runbook_endet_mit_den_offenen_punkten_fuer_stufe_2() -> None:
     for stichwort in ("Herkunft erzwingen", "auftrag.naechster(p_an)", "brain-rowboat", "mcp_discovery",
                       "Rechteträger ohne startbares Modell", "harte Sperre"):
         assert stichwort in offen, stichwort
+
+
+_OPENFANG_START = ('"<PFAD-ZUR-VENV>/Scripts/python.exe" "<PFAD-ZUM-AEUSSEREN-REPO>/scripts/mcp_mit_env.py" '
+                   '--env OPENFANG_API_KEY --set OPENFANG_URL=http://127.0.0.1:4200 -- '
+                   '"<ZWEIG-CHECKOUT>/spaces/auftragsbuch/deploy/openfang_aufruf.py"')
+
+
+def test_runbook_openfang_aufrufe_laufen_ueber_das_hilfsprogramm_mit_der_markerregel_wie_bisher() -> None:
+    punkte = _punkte(_zeilen(RUNBOOK))
+    (pruefen,) = [p for p in punkte if "werkzeuge-je-agent" in p]
+    assert f"`{_OPENFANG_START} werkzeuge-je-agent auftragsbuch`" in pruefen
+    assert _LESEND in pruefen and _JA not in pruefen
+    assert "`brain-sales: mcp_auftragsbuch_auftrag_lesen, mcp_auftragsbuch_auftrag_probe`" in pruefen
+    (gegen,) = [p for p in punkte if "gegenprobe brain-sales" in p]
+    assert f"`{_OPENFANG_START} gegenprobe brain-sales sales_post_pruefen`" in gegen
+    assert _JA in gegen and "direkt an OpenFang" in gegen
+    assert "`abgelehnt von OpenFang (erwartet)`" in gegen and "`DURCHGELASSEN: Unbekannte Auftragsart - anhalten`" in gegen
+    (entfernen,) = [p for p in punkte if "agent-entfernen brain-sales" in p]
+    assert f"`{_OPENFANG_START} agent-entfernen brain-sales`" in entfernen
+    assert _JA in entfernen and "DELETE /api/agents/<kennung>" in entfernen
+    assert "`entfernt`" in entfernen and "`nicht vorhanden`" in entfernen
+    # Der OpenFang-Schluessel steht nur in Befehlen ueber mcp_mit_env.py und das Hilfsprogramm, nie in curl.
+    for befehl in re.findall(r"`([^`]*)`", _text()):
+        if "OPENFANG_API_KEY" in befehl:
+            assert befehl.startswith(_OPENFANG_START + " "), befehl
+    assert "curl" not in " ".join(p for p in punkte if "OpenFang" in p and "/api/" in p)

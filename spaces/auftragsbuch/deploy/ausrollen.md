@@ -212,9 +212,11 @@ Werkzeug-Servers `auftragsbuch` steht seit Task 7 in `openfang/openfang.vibemind
      das nicht; bis dahin braucht es einen erneuten Neustart (eigenes Ja).
    - `GET /api/agents` zeigt `brain-sales` mit `mcp_servers_mode: allowlist`; seine Werkzeug-Liste enthält genau
      `mcp_auftragsbuch_auftrag_probe` und `mcp_auftragsbuch_auftrag_lesen`.
-   - Welche Agenten führen ein Werkzeug `mcp_auftragsbuch_*` (Werkzeug-Liste je Agent,
-     `GET /api/agents/<kennung>/tools`)? Erwartet ist genau `brain-sales` mit zwei Werkzeugen. Jeder weitere Agent
-     wird notiert und dem Betreiber gemeldet. Ein Agent mit leerem `mcp_servers` sieht alle Werkzeug-Server, mit
+   - Welche Agenten führen ein Werkzeug `mcp_auftragsbuch_*`? Am PC, der Schlüssel von OpenFang kommt aus der
+     Root-`.env` und steht nie auf der Kommandozeile:
+     `"<PFAD-ZUR-VENV>/Scripts/python.exe" "<PFAD-ZUM-AEUSSEREN-REPO>/scripts/mcp_mit_env.py" --env OPENFANG_API_KEY --set OPENFANG_URL=http://127.0.0.1:4200 -- "<ZWEIG-CHECKOUT>/spaces/auftragsbuch/deploy/openfang_aufruf.py" werkzeuge-je-agent auftragsbuch`.
+     Erwartet ist genau eine Zeile `brain-sales: mcp_auftragsbuch_auftrag_lesen, mcp_auftragsbuch_auftrag_probe`
+     und Exit 0. Jeder weitere Agent steht als eigene Zeile (Exit 1); er wird notiert und dem Betreiber gemeldet. Ein Agent mit leerem `mcp_servers` sieht alle Werkzeug-Server, mit
      leerem `capabilities.tools` auch alle ihre Werkzeuge; nach dem Repo (Test
      `tests/test_openfang_offene_mcp_zugaenge.py`) gilt das für `capability-gap-filer` und
      `learning-course-factory`, sofern sie im Betrieb geladen sind. Die Sperre je Auftragsart in OpenFang gilt nur
@@ -243,8 +245,10 @@ Der Rückweg arbeitet mit den in Schritt 1 notierten Werten, nie mit festen.
 - **Prüfen:** `GET /api/mcp/servers` ohne `auftragsbuch`, `GET /api/agents` ohne `brain-sales`. Nach dem Code stellt
   OpenFang Agenten aus seiner eigenen Datenbank wieder her, auch ohne `agent.toml`; dann steht `brain-sales` nach dem
   Neustart noch da. Dieser Schritt liest nur und ändert nichts.
-- **Eigenes Ja des Betreibers:** nur wenn `brain-sales` noch da ist: ihn über die OpenFang-API abmelden
-  (`DELETE /api/agents/<kennung>`), danach erneut prüfen.
+- **Eigenes Ja des Betreibers:** nur wenn `brain-sales` noch da ist: ihn über die OpenFang-API abmelden. Das
+  Hilfsprogramm löst die Kennung selbst auf und sendet `DELETE /api/agents/<kennung>`; es akzeptiert nur den Namen
+  `brain-sales`: `"<PFAD-ZUR-VENV>/Scripts/python.exe" "<PFAD-ZUM-AEUSSEREN-REPO>/scripts/mcp_mit_env.py" --env OPENFANG_API_KEY --set OPENFANG_URL=http://127.0.0.1:4200 -- "<ZWEIG-CHECKOUT>/spaces/auftragsbuch/deploy/openfang_aufruf.py" agent-entfernen brain-sales`. Ausgabe `entfernt` oder `nicht vorhanden` (je Exit 0),
+  sonst `unerwartet (<Status>)` (Exit 1). Danach erneut prüfen.
 
 Die Merges auf `main`, `master` und im äußeren Repo bleiben; sie zurückzunehmen wäre ein eigener Schritt mit eigenem
 Ja und ist hier nicht vorgesehen.
@@ -269,10 +273,13 @@ Probe und Lesen sind zwei getrennte Pläne: Das Gehirn legt die Antwort eines We
    `execution_target: mcp:brain-sales:auftragsbuch:sales_post_pruefen` nennt. Erwartung: Er scheitert im Gehirn,
    weil das Ziel nicht registriert ist; an OpenFang wird nichts gesendet, in `auftrag.auftraege` entsteht keine
    Zeile.
-5. **Eigenes Ja des Betreibers:** Gegenprobe direkt an OpenFang: derselbe Aufruf von `sales_post_pruefen`, mit dem
-   Schlüssel des Gehirns und der Kennung von `brain-sales`. Erwartung: OpenFang lehnt ab, weil das Werkzeug für
-   `brain-sales` nicht freigeschaltet ist; in `auftrag.auftraege` entsteht keine Zeile. Kommt stattdessen
-   `Unbekannte Auftragsart`, hat OpenFang durchgelassen (erst die Datenbank hat abgelehnt): anhalten und melden.
+5. **Eigenes Ja des Betreibers:** Gegenprobe direkt an OpenFang: derselbe Aufruf von `sales_post_pruefen` im Namen
+   von `brain-sales` (das Hilfsprogramm löst die Kennung selbst auf; Schlüssel aus der Root-`.env`, nie auf der
+   Kommandozeile): `"<PFAD-ZUR-VENV>/Scripts/python.exe" "<PFAD-ZUM-AEUSSEREN-REPO>/scripts/mcp_mit_env.py" --env OPENFANG_API_KEY --set OPENFANG_URL=http://127.0.0.1:4200 -- "<ZWEIG-CHECKOUT>/spaces/auftragsbuch/deploy/openfang_aufruf.py" gegenprobe brain-sales sales_post_pruefen`.
+   Erwartung: `abgelehnt von OpenFang (erwartet)` und Exit 0, weil das Werkzeug für `brain-sales` nicht
+   freigeschaltet ist; in `auftrag.auftraege` entsteht keine Zeile. Kommt stattdessen
+   `DURCHGELASSEN: Unbekannte Auftragsart - anhalten` (Exit 1), hat OpenFang durchgelassen (erst die Datenbank hat
+   abgelehnt): anhalten und melden. `unerwartet (<Grund>)` (Exit 1) ist ebenfalls ein Befund für den Betreiber.
 6. **Eigenes Ja des Betreibers:** Dienst stoppen, auf dem Mini-PC: `AUFTRAGSBUCH_TAG=<laufender Tag> docker compose stop`.
    Dann Plan 1 erneut: Der Schritt scheitert sofort mit einer Meldung, die den Server nennt, hinter `tailscale serve`
    eher `auftragsbuch: unerwartete Antwort (502)`, sonst `auftragsbuch nicht erreichbar`; kein anderer Weg wird
