@@ -49,8 +49,9 @@ def _opener() -> urllib.request.OpenerDirector:
 def http_senden(url: str, schluessel: str) -> Senden:
     """Baut die Sendefunktion: POST mit Bearer-Schluessel; liefert (Status, Koerper).
 
-    Weder Proxy noch Weiterleitung (3xx kommt als Status zurueck). HTTP-Fehlerstatus kommen als Ergebnis zurueck, nicht als Ausnahme. Nicht erreichbar, Zeitlimit
-    und Verbindungsabbruch sind OSError (urllib.error.URLError ist eine) bzw. HTTPException.
+    Weder Proxy noch Weiterleitung (3xx kommt als Status zurueck). HTTP-Fehlerstatus kommen als
+    Ergebnis zurueck, nicht als Ausnahme. Nicht erreichbar, Zeitlimit und Verbindungsabbruch
+    sind OSError (urllib.error.URLError ist eine) bzw. HTTPException.
     """
     kopf = {
         "Authorization": f"Bearer {schluessel}",

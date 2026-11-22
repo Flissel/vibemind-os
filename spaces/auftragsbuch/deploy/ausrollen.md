@@ -1,9 +1,10 @@
 # Auftragsbuch ausrollen (Plan-Tasks 8 bis 10)
 
-Schrittfolge mit Rückweg. Jeder zustimmungspflichtige Schritt (Einspielen der Migration, Bauen und Starten,
-Merge, Eintrag und Neustart von OpenFang, Ausrollen von `brain-core`, Stoppen und Starten des Dienstes) trägt
-den Marker **Eigenes Ja des Betreibers:** und braucht sein eigenes Ja. Ein Ja für eine Stufe oder für einen
-anderen Schritt gilt nicht.
+Schrittfolge mit Rückweg. Jeder Schritt, der auf dem Mini-PC, an der Datenbank, an OpenFang (Konfiguration,
+Agenten-Ordner, Neustart), am Betriebs-Checkout, am Gehirn (`brain-core`) oder an `master` etwas ändert, startet
+oder stoppt, trägt den Marker **Eigenes Ja des Betreibers:** und braucht sein eigenes Ja. Das gilt auch für jede
+Aktion eines Rückwegs. Ein Ja für eine Stufe oder für einen anderen Schritt gilt nicht. Reine Lese- und
+Prüfschritte (Probe in `ROLLBACK`, `\ddp`, Rauchproben, `GET`) brauchen keinen Marker.
 Das Repo ist öffentlich: Diese Anleitung nennt keine Adressen, Namen oder Schlüssel; sie stehen nur auf den
 Rechnern selbst. Platzhalter stehen in `<…>`.
 
@@ -31,27 +32,34 @@ rein zusätzlich.
    `auftrag` Rechte für `anon`, `authenticated` oder `sales_app` geben. Wenn ja: anhalten und klären, bevor
    eingespielt wird (die neue Tabelle `auftrag.brain_arten` darf diese Rollen nichts geben).
 3. **Probe-Lauf auf der echten Datenbank:** `100` und `verify_100` in **einer** Transaktion mit `ROLLBACK`
-   (`migration_probe`). Voraussetzung: `096` bis `099` sind eingespielt. Erwartung: kein Fehler. Bei einem Fehler:
-   anhalten, nichts einspielen.
+   (`migration_probe`). Die Probe ändert nichts, läuft vor dem Einspielen und ist vom Ja zum Einspielen
+   (Schritt 4) mit abgedeckt. Voraussetzung: `096` bis `099` sind eingespielt. Erwartung: kein Fehler. Bei einem
+   Fehler: anhalten, nichts einspielen.
 4. **Eigenes Ja des Betreibers:** `100_auftragsbuch_brain.sql` einspielen. `098` wird danach **nicht** erneut
    eingespielt: Sein CHECK auf `art` lehnt Zeilen des Gehirns ab.
 5. **Prüfen:** `SELECT an, art, version FROM auftrag.brain_arten` liefert genau `brain | probe | 1`. Der
    Dienst `auftrag-bote` läuft weiter und sein Herzschlag ist frisch.
-6. **Rolle `brain_app`:** Anmeldung und Passwort setzen, das Passwort nur verdeckt per stdin, nie auf der
+6. **Eigenes Ja des Betreibers:** Rolle `brain_app`: Anmeldung und Passwort setzen, das Passwort nur verdeckt per stdin, nie auf der
    Kommandozeile (Muster `spaces/event_management/deploy/pg_hilfe.py`). Das Passwort wird dabei per Skript erzeugt
    und nicht angezeigt; für Stufe 2 liegt es als DSN-Zeile bereit, ohne je sichtbar zu werden.
 
-**Rückweg:** `DROP FUNCTION` für die drei Funktionen, `DROP TABLE auftrag.brain_arten`, den alten CHECK
-`art IN ('reel', 'video')` wiederherstellen (nur möglich, solange keine Zeile mit `von = 'brain'` existiert),
-`DROP ROLE brain_app`. Die zwei Spalten bleiben.
+**Rückweg:**
+
+- **Eigenes Ja des Betreibers:** `DROP FUNCTION` für die drei Funktionen.
+- **Eigenes Ja des Betreibers:** `DROP TABLE auftrag.brain_arten`.
+- **Eigenes Ja des Betreibers:** den alten CHECK `art IN ('reel', 'video')` wiederherstellen (nur möglich, solange keine Zeile mit
+  `von = 'brain'` existiert).
+- **Eigenes Ja des Betreibers:** `DROP ROLE brain_app`.
+
+Die zwei Spalten bleiben.
 
 ## Stufe 2 (Plan-Task 9): Dienst auf dem Mini-PC starten
 
 Neu ist ein Container `auftragsbuch` in einem eigenen Compose-Projekt; kein anderer Dienst wird neu gestartet.
 
-1. **Code auf den Mini-PC** bringen (Checkout des Zweigs im Ordner des Betreibers); der Dienst liegt in
+1. **Eigenes Ja des Betreibers:** Code auf den Mini-PC bringen (Checkout des Zweigs im Ordner des Betreibers); der Dienst liegt in
    `<ordner>/spaces/auftragsbuch`.
-2. **Schlüssel und DSN verdeckt ablegen, derselbe Schlüssel auf beiden Rechnern.** Der Schlüssel entsteht am PC
+2. **Eigenes Ja des Betreibers:** Schlüssel und DSN verdeckt ablegen, derselbe Schlüssel auf beiden Rechnern. Der Schlüssel entsteht am PC
    und wird nie angezeigt. Ein Skript am PC (Beispiel: `bash` oder `python`) tut alles in einem Lauf, ohne dass
    ein Wert auf dem Bildschirm, in der Prozessliste oder in der Shell-Historie steht:
    - Es erzeugt den Schlüssel in eine Shell-Variable (z. B. `SCHLUESSEL=$(python -c 'import secrets; print(secrets.token_urlsafe(32))')`).
@@ -63,13 +71,13 @@ Neu ist ein Container `auftragsbuch` in einem eigenen Compose-Projekt; kein ande
      `anbinden.sh` legt `laufzeit/` (Modus 700) an und schreibt `laufzeit/dsn` sowie nur den sha256-Hash des
      Schlüssels nach `laufzeit/schluessel-hash`.
    - Zuletzt `unset DSN SCHLUESSEL`.
-3. **`laufzeit/werte.env`** auf dem Mini-PC aus `deploy/werte.beispiel.env` füllen (`AUFTRAGSBUCH_LADEN`,
+3. **Eigenes Ja des Betreibers:** `laufzeit/werte.env` auf dem Mini-PC aus `deploy/werte.beispiel.env` füllen (`AUFTRAGSBUCH_LADEN`,
    `AUFTRAGSBUCH_MANDANT`, `AUFTRAGSBUCH_ZUSATZ_HOSTS` mit dem Namen, unter dem der PC den Dienst aufruft).
 4. **Eigenes Ja des Betreibers:** Image bauen und starten, nur im Ordner `<ordner>/spaces/auftragsbuch`:
    `AUFTRAGSBUCH_TAG=<Git-Kurz-SHA> docker compose up -d --build`. Gehören die Dateien in `laufzeit/` nicht der
    UID 1000, vorher `AUFTRAGSBUCH_UID` und `AUFTRAGSBUCH_GID` auf deren Besitzer setzen (`id -u`, `id -g`). Der Port
    ist nur an `127.0.0.1` des Mini-PC gebunden.
-5. **Netzweg einrichten** wie in Task 0 gemessen: `tailscale serve` auf Port 8172 zum lokalen Port.
+5. **Eigenes Ja des Betreibers:** Netzweg einrichten wie in Task 0 gemessen: `tailscale serve` auf Port 8172 zum lokalen Port.
 6. **Rauchprobe vom PC** (Adresse und Schlüssel aus der Wurzel-`.env`, nichts davon in die Shell-Historie):
    - `GET /gesund` ohne Schlüssel: HTTP 200.
    - MCP-Weg ohne Schlüssel: HTTP 401.
@@ -79,9 +87,12 @@ Neu ist ein Container `auftragsbuch` in einem eigenen Compose-Projekt; kein ande
      `auftrag.auftraege` ist keine Zeile entstanden.
    - `AUFTRAGSBUCH_TAG=<laufender Tag> docker compose logs auftragsbuch` nennt nur Werkzeugname, Ergebnis und Dauer.
 
-**Rückweg:** `AUFTRAGSBUCH_TAG=<laufender Tag> docker compose down` im Ordner des Dienstes, den Netzweg entfernen
-(`tailscale serve` für Port 8172 abschalten). `laufzeit/` kann bleiben oder gelöscht werden; der Schlüssel am PC
-wird aus der Wurzel-`.env` entfernt.
+**Rückweg:**
+
+- **Eigenes Ja des Betreibers:** `AUFTRAGSBUCH_TAG=<laufender Tag> docker compose down` im Ordner des Dienstes.
+- **Eigenes Ja des Betreibers:** den Netzweg entfernen (`tailscale serve` für Port 8172 abschalten).
+- **Eigenes Ja des Betreibers:** den Schlüssel am PC aus der Wurzel-`.env` entfernen; `laufzeit/` auf dem Mini-PC kann bleiben oder gelöscht
+  werden.
 
 ## Stufe 3 (Plan-Task 10): OpenFang und Gehirn anschließen
 
@@ -98,7 +109,7 @@ Jede der folgenden Handlungen braucht ihr eigenes Ja, jeweils vor dem Schritt, i
    (`AUFTRAGSBUCH_SCHLUESSEL`) stehen in der Wurzel-`.env` des PC; `scripts/mcp_mit_env.py` reicht sie der Brücke
    `bruecke.py`, die jeden Aufruf an den Dienst weiterleitet (ohne Proxy, ohne Weiterleitung). Dasselbe Muster
    nutzen `spaces-ideas` und `laura`.
-3. **Rechteträger `brain-sales`:** Das Manifest wird zusätzlich **von Hand** nach
+3. **Eigenes Ja des Betreibers:** Rechteträger `brain-sales`: Das Manifest wird zusätzlich **von Hand** nach
    `~/.openfang/agents/brain-sales/agent.toml` gelegt (OpenFang lädt Agenten von dort).
 4. **Eigenes Ja des Betreibers:** OpenFang neu starten. Prüfen:
    - `GET /api/mcp/servers` zeigt `auftragsbuch` als verbunden mit vier Werkzeugen;
@@ -108,9 +119,13 @@ Jede der folgenden Handlungen braucht ihr eigenes Ja, jeweils vor dem Schritt, i
    Werkzeug-Server verbunden hat, wie am 21.11. (dieselbe Spec, 7n und 7r). Lehre aus dem Zwischenfall dort: nie
    gleichzeitig mit dem Neustart von OpenFang.
 
-**Rückweg:** Betriebs-Checkout zurück auf `dfc67d54`, altes Abbild `vibemind-brain-core:zurueck-dfc67d54`,
-Eintrag des Servers aus der OpenFang-Datei entfernen (und den Rechteträger unter `~/.openfang/agents/`).
-**Eigenes Ja des Betreibers:** OpenFang neu starten (auch der Rückweg-Neustart braucht es).
+**Rückweg:**
+
+- **Eigenes Ja des Betreibers:** den Betriebs-Checkout zurück auf `dfc67d54` setzen.
+- **Eigenes Ja des Betreibers:** `brain-core` mit dem alten Abbild `vibemind-brain-core:zurueck-dfc67d54` ausrollen.
+- **Eigenes Ja des Betreibers:** den Eintrag des Servers aus der OpenFang-Datei entfernen.
+- **Eigenes Ja des Betreibers:** den Rechteträger unter `~/.openfang/agents/` entfernen.
+- **Eigenes Ja des Betreibers:** OpenFang neu starten (auch der Rückweg-Neustart braucht es).
 
 ## Abschluss (Plan-Task 11)
 

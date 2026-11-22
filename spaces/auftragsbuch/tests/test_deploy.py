@@ -191,3 +191,54 @@ def test_runbook_jeder_compose_befehl_setzt_den_tag() -> None:
     assert len(befehle) >= 4
     for befehl in befehle:
         assert befehl.startswith("AUFTRAGSBUCH_TAG="), befehl
+
+
+# Regel fuer die ganze Datei: Was auf dem Mini-PC, an der Datenbank, an OpenFang, am Betriebs-
+# Checkout, am Gehirn oder an `master` etwas aendert, startet oder stoppt, braucht im selben
+# Punkt den Marker. Lesende Schritte (Probe in ROLLBACK, `\ddp`, Rauchproben) sind frei.
+_EINGRIFF = re.compile(
+    r"docker compose[^`]*\b(?:up|down|stop|start)\b|einspielen|\bDROP\b|ALTER ROLE|Passwort"
+    r"|merge|checkout|neu starten|Neustart|brain-core|openfang\.vibemind\.toml|OpenFang-Datei"
+    r"|~/\.openfang/agents|tailscale serve|anbinden\.sh|werte\.env|wiederherstellen|entfern",
+    re.IGNORECASE,
+)
+
+
+def _punkte(zeilen: list[str]) -> list[str]:
+    """Zerlegt die Stufen des Runbooks in nummerierte und Spiegelstrich-Punkte samt eingerueckter Folgezeilen."""
+    start = next(i for i, z in enumerate(zeilen) if z.startswith("## Stufe 1"))
+    punkte: list[str] = []
+    offen = False
+    for zeile in zeilen[start:]:
+        if re.match(r"\d+\. |- ", zeile):
+            punkte.append(zeile)
+            offen = True
+        elif zeile.startswith(" ") and offen:
+            punkte[-1] += "\n" + zeile
+        else:
+            offen = False  # Leerzeile, Ueberschrift oder Absatz beendet den Punkt
+    return punkte
+
+
+def test_runbook_regel_jeder_eingreifende_punkt_traegt_das_ja() -> None:
+    fehlend = []
+    for punkt in _punkte(_zeilen(RUNBOOK)):
+        if "ROLLBACK" in punkt:  # Probe-Lauf ohne Aenderung, vom Ja zum Einspielen gedeckt
+            continue
+        if _EINGRIFF.search(punkt) and _JA not in punkt:
+            fehlend.append(punkt.splitlines()[0][:70])
+    assert fehlend == []
+
+
+def test_runbook_probe_ist_vom_ja_zum_einspielen_gedeckt() -> None:
+    probe = next(p for p in _punkte(_zeilen(RUNBOOK)) if "ROLLBACK" in p)
+    assert "vom Ja zum Einspielen" in probe and "vor dem Einspielen" in probe
+
+
+def test_runbook_rueckweg_ist_eine_liste_mit_einer_aktion_je_punkt() -> None:
+    zeilen = _zeilen(RUNBOOK)
+    koepfe = [i for i, z in enumerate(zeilen) if z.startswith("**Rückweg")]
+    assert len(koepfe) == 3
+    for i in koepfe:
+        assert zeilen[i] == "**Rückweg:**"
+        assert zeilen[i + 1] == "" and zeilen[i + 2].startswith("- ")
