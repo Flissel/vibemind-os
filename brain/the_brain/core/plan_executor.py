@@ -35,6 +35,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, List, Optional, Set, Tuple
 
+from .step_space import space_for_step
 from .plan_schema import (
     HopResult, HopSpec, Plan, contract_pass_from,
     ON_FAIL_ABORT, ON_FAIL_CONTINUE, ON_FAIL_REPLAN,
@@ -2294,6 +2295,8 @@ class PlanExecutor:
                 "description": h.description,
                 "capability": h.capability,
                 "execution_target": h.execution_target,
+                # Space des Schritts (Registry); None = allgemeine Aufgabe. Die App wechselt danach.
+                "space": space_for_step(h.capability, h.execution_target),
                 "depends_on": list(h.depends_on),
                 "rendered_arg": _render_template(
                     h.arg_template, state,
@@ -2417,6 +2420,7 @@ def _hop_event(h: HopSpec, hr: HopResult) -> Dict[str, Any]:
         "description": h.description,
         "capability": hr.capability,
         "target": hr.target,
+        "space": space_for_step(hr.capability, hr.target or h.execution_target),
         "ok": hr.ok,
         "error": hr.error,
         "elapsed_s": hr.elapsed_s,
