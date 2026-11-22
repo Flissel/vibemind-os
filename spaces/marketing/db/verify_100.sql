@@ -250,6 +250,34 @@ BEGIN
     RAISE EXCEPTION '100.6: sales_anlegen verloren'; END IF;
 END $$;
 
+-- 6 (Fortsetzung): brain_arten ist fuer PUBLIC, anon, authenticated und sales_app verschlossen (nur Rollen, die es
+-- gibt), und brain_app darf im Schema auftrag genau die drei Funktionen ausfuehren, keine weitere
+DO $$
+DECLARE v_rolle text; v_recht text; v_soll oid[]; v_ist oid[]; v_namen text;
+BEGIN
+  FOREACH v_rolle IN ARRAY ARRAY['public', 'anon', 'authenticated', 'sales_app'] LOOP
+    IF v_rolle = 'public' OR EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_rolle) THEN
+      FOREACH v_recht IN ARRAY ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE'] LOOP
+        IF has_table_privilege(v_rolle, 'auftrag.brain_arten', v_recht) THEN
+          RAISE EXCEPTION '100.6: % darf % auf brain_arten', v_rolle, v_recht; END IF;
+      END LOOP;
+    END IF;
+  END LOOP;
+
+  v_soll := ARRAY(SELECT o FROM unnest(ARRAY[
+      'auftrag.brain_anlegen(text,text,int,text,text,jsonb,text,int)'::regprocedure::oid,
+      'auftrag.brain_lesen(uuid)'::regprocedure::oid,
+      'auftrag.brain_probe_erledigen(uuid)'::regprocedure::oid]) AS o ORDER BY o);
+  v_ist := ARRAY(SELECT p.oid FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                  WHERE n.nspname = 'auftrag' AND has_function_privilege('brain_app', p.oid, 'EXECUTE')
+                  ORDER BY p.oid);
+  IF v_ist IS DISTINCT FROM v_soll THEN
+    SELECT string_agg(p.proname, ', ' ORDER BY p.proname) INTO v_namen
+      FROM pg_proc p WHERE p.oid = ANY (v_ist) AND NOT (p.oid = ANY (v_soll));
+    RAISE EXCEPTION '100.6: brain_app darf im Schema auftrag nicht genau die drei Funktionen (zusaetzlich: %)',
+      coalesce(v_namen, '-'); END IF;
+END $$;
+
 -- 7: Tagesgrenzen. Die Zeilen bis kurz unter die Grenze werden direkt per INSERT gesetzt (als Probe-Ersatz fuer
 -- viele echte Aufrufe), die Ablehnung selbst kommt aus brain_anlegen. Alles Seeden zaehlt zum heutigen Tag,
 -- weil now() in der Transaktion still steht.

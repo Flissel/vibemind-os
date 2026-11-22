@@ -114,3 +114,29 @@ def test_verify_100_blockstruktur():
     for n in range(1, 7):
         assert f"100.{n}:" in v, n
     assert v.count("DO $$") == v.count("END $$;")
+
+
+def test_sperrwunsch_bricht_nach_fuenf_sekunden_ab():
+    zeilen = _code_zeilen(_sql())
+    assert zeilen[1] == "SET LOCAL lock_timeout = '5s';"
+
+
+def test_tabellenrechte_nur_fuer_vorhandene_rollen_entzogen():
+    s = _sql()
+    assert "REVOKE ALL ON TABLE auftrag.brain_arten FROM PUBLIC;" in s
+    # anon/authenticated gibt es nicht ueberall: je Rolle erst auf Existenz pruefen
+    block = s.split("REVOKE ALL ON TABLE auftrag.brain_arten FROM PUBLIC;", 1)[1].split("END $$;", 1)[0]
+    assert "ARRAY['anon', 'authenticated', 'sales_app']" in block
+    assert "FROM pg_roles WHERE rolname = r" in block
+    assert "format('REVOKE ALL ON TABLE auftrag.brain_arten FROM %I', r)" in block
+
+
+def test_verify_100_prueft_tabellenrechte_und_alle_funktionen_des_schemas():
+    v = VERIFY.read_text(encoding="utf-8")
+    assert "ARRAY['public', 'anon', 'authenticated', 'sales_app']" in v
+    for recht in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+        assert f"'{recht}'" in v
+    assert "has_table_privilege(v_rolle, 'auftrag.brain_arten', v_recht)" in v
+    # Schleife ueber pg_proc im Schema auftrag: brain_app darf genau die drei Funktionen
+    assert "FROM pg_proc" in v and "nspname = 'auftrag'" in v
+    assert "has_function_privilege('brain_app', p.oid, 'EXECUTE')" in v

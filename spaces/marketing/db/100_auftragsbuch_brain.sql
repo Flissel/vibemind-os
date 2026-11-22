@@ -5,8 +5,12 @@
 -- drei SECURITY-DEFINER-Funktionen (brain_anlegen, brain_lesen, brain_probe_erledigen) und die Rolle brain_app,
 -- die nur diese drei ausfuehren darf. brain_anlegen schreibt selbst (ohne den allgemeinen Anlegeweg), mit
 -- Tagesgrenzen: 60 Auftraege des Gehirns und 50 Proben je Kalendertag (Europe/Berlin).
--- Die Rolle ist NOLOGIN; Anmeldung und Geheimnis richtet der Betrieb getrennt ein, nicht diese Datei.
+-- Die Rolle ist NOLOGIN und bleibt es. Der Dienst meldet sich mit einer eigenen Anmelde-Rolle an, die Mitglied
+-- von brain_app ist; sie legt der Betrieb beim Ausrollen an (spaces/auftragsbuch/deploy/db_zugang.sh), nicht diese Datei.
 BEGIN;
+
+-- Ein Sperrwunsch auf der echten Tabelle bricht nach 5 Sekunden ab, statt den Betrieb warten zu lassen.
+SET LOCAL lock_timeout = '5s';
 
 -- Spalten fuer Version der Auftragsart und Plan-Kennung; beide frei (Altzeilen bleiben NULL).
 ALTER TABLE auftrag.auftraege ADD COLUMN IF NOT EXISTS art_version int;
@@ -24,7 +28,18 @@ CREATE TABLE IF NOT EXISTS auftrag.brain_arten (
     PRIMARY KEY (an, art, version)
 );
 INSERT INTO auftrag.brain_arten (an, art, version) VALUES ('brain', 'probe', 1) ON CONFLICT DO NOTHING;
+-- Niemand ausser dem Eigentuemer fasst die Tabelle an (Muster 099). anon und authenticated gibt es nicht in jeder
+-- Installation: je Rolle erst auf Existenz pruefen. brain_app liest sie nur ueber brain_anlegen.
 REVOKE ALL ON TABLE auftrag.brain_arten FROM PUBLIC;
+DO $$
+DECLARE r text;
+BEGIN
+    FOREACH r IN ARRAY ARRAY['anon', 'authenticated', 'sales_app'] LOOP
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+            EXECUTE format('REVOKE ALL ON TABLE auftrag.brain_arten FROM %I', r);
+        END IF;
+    END LOOP;
+END $$;
 
 DO $$
 BEGIN
