@@ -48,3 +48,65 @@ capabilities:
 
   # --- deterministisch, HEAD gegen ROWBOAT_URL ---
   - {name: rowboat_status,        writes: false}
+
+# --- Auftragsarten (ADR-0005) ---
+# Was das Gehirn dem Rowboat-Agenten auftragen darf. Die Capabilities oben
+# bleiben unverändert.
+auftragsarten:
+  - art: vorschlaege_anlegen
+    version: 1
+    veraendert: true
+    frist_min: 5
+    nachpruefung: beleg
+    beschreibung: >-
+      Der Rowboat-Agent legt die übergebenen Punkte als Vorschläge im
+      To-do-Tab von Rowboat an und meldet je Punkt, ob er neu angelegt wurde,
+      schon vorhanden war oder früher abgelehnt wurde. Links auf die
+      Freigabe-Seite sind nicht erlaubt: Daran erkennt der Freigabe-Bote
+      seine eigenen Vorschläge.
+    eingabe:
+      type: object
+      additionalProperties: false
+      required: [punkte]
+      properties:
+        punkte:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            type: object
+            additionalProperties: false
+            required: [punkt_id, titel, frist, link]
+            properties:
+              punkt_id:
+                type: string
+                pattern: "^[a-f0-9]{16}$"
+              titel:
+                type: string
+                maxLength: 200
+              frist:
+                type: [string, "null"]
+                pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+              link:
+                type: string
+                maxLength: 500
+                not:
+                  pattern: "/freigaben#fg-"
+    ergebnis:
+      type: object
+      additionalProperties: false
+      required: [punkte]
+      properties:
+        punkte:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [punkt_id, stand]
+            properties:
+              punkt_id:
+                type: string
+                pattern: "^[a-f0-9]{16}$"
+              stand:
+                type: string
+                enum: [neu, schon_vorhanden, frueher_abgelehnt]

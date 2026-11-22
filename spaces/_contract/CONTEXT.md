@@ -176,3 +176,28 @@ Eine Arbeitseinheit innerhalb eines Jobs, mit Abhängigkeiten zu anderen Tasks
 desselben Jobs.
 
 _Vermeiden_: Job, Schritt, Ticket, Aufgabe (allein), Subtask
+
+## Auftragsart
+
+Eine feste Sorte von Auftrag, die das Gehirn einem Space geben darf: mit
+Eingabe, Ergebnis, Nachprüfung und Frist, je in fester Form und mit Version. Der
+Vertrag eines Space ist die Liste seiner Auftragsarten; was dort nicht steht,
+kann ihm nicht aufgetragen werden.
+
+_Vermeiden_: Auftragstyp, Befehl, Aufgabe, Job, Task
+
+## Rechteträger
+
+Der Agent, der im Auftragsbuch als Besitzer der Aufträge einer Art auftritt und
+dessen Rechte aus dem Vertrag abgeleitet werden. Er darf nur die Auftragsarten
+seines Space übernehmen und melden; fremde Aufträge sieht er nicht.
+
+_Vermeiden_: Besitzer, Owner, Eigentümer, Nutzer, Rolle
+
+## Abholer
+
+Der Teil eines Space, der offene Aufträge seiner Arten aus dem Auftragsbuch holt,
+an den Agenten übergibt und dessen Ergebnis zurückmeldet. Der Abholer holt und
+meldet; die Arbeit selbst macht der Agent.
+
+_Vermeiden_: Worker, Poller, Consumer, Empfänger, Dienst

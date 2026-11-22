@@ -1,0 +1,68 @@
+# Schlanker Vertrag für den Space `sales` (Auftragsarten, ADR-0005).
+#
+# Die Capabilities dieses Space kommen erst mit Stufe 4 des Auftragsvertrags
+# dazu; bis dahin trägt der Vertrag nur seine Auftragsarten.
+#
+# Titel in `faellig` dürfen den Namen des Kontakts und den Betreff nennen.
+# Mail-Text, Adressen und Nummern stehen nie in einem Feld.
+
+id: sales
+description: "Geschäftspost prüfen, fällige Punkte melden, Antwortentwürfe zur Freigabe anlegen"
+prefixes: ["sales."]
+
+capabilities: []
+
+auftragsarten:
+  - art: post_pruefen
+    version: 1
+    veraendert: true
+    frist_min: 15
+    nachpruefung: beleg
+    beschreibung: >-
+      Der Sales-Agent prüft die Geschäftspost von heute und meldet die Punkte,
+      um die sich der Betreiber heute kümmern muss. Auf Wunsch legt er dazu
+      Antwortentwürfe an; diese warten immer auf die Freigabe des Betreibers
+      und werden nie von selbst gesendet. Gemeldet werden nur Kennungen,
+      Titel, Fristen und Links, nie der Mail-Text.
+    eingabe:
+      type: object
+      additionalProperties: false
+      required: [zeitraum, entwuerfe_anlegen]
+      properties:
+        zeitraum:
+          type: string
+          enum: [heute]
+        entwuerfe_anlegen:
+          type: boolean
+    ergebnis:
+      type: object
+      additionalProperties: false
+      required: [faellig, anzahl_gelesen, kontakte_neu]
+      properties:
+        faellig:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [punkt_id, titel, frist, link, entwurf_id]
+            properties:
+              punkt_id:
+                type: string
+                pattern: "^[a-f0-9]{16}$"
+              titel:
+                type: string
+                maxLength: 200
+              frist:
+                type: [string, "null"]
+                pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+              link:
+                type: string
+                maxLength: 500
+              entwurf_id:
+                type: [string, "null"]
+        anzahl_gelesen:
+          type: integer
+          minimum: 0
+        kontakte_neu:
+          type: integer
+          minimum: 0
