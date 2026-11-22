@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import itertools
 import json
 import logging
@@ -205,3 +206,45 @@ def test_konfiguration_nennt_jede_fehlende_variable(tmp_path):
     assert (k.host, k.port, k.zusatz_hosts) == ("0.0.0.0", 9000, ("a.example.invalid", "b.example.invalid:8172"))
     with pytest.raises(ValueError):
         mcp_server.konfiguration({**voll, "AUFTRAGSBUCH_PORT": "0"})
+
+
+# --- Log-Setup: nur der Logger `auftragsbuch` schreibt ------------------------------------
+
+
+@pytest.fixture
+def log_strom():
+    """Setzt `log_einrichten` auf einen eigenen Strom und stellt den Logging-Zustand danach wieder her."""
+    wurzel, eigener = logging.getLogger(), logging.getLogger("auftragsbuch")
+    vorher = (wurzel.handlers[:], wurzel.level, eigener.handlers[:], eigener.level, eigener.propagate)
+    strom = io.StringIO()
+    mcp_server.log_einrichten(strom)
+    try:
+        yield strom
+    finally:
+        wurzel.handlers[:], wurzel.level = vorher[0], vorher[1]
+        eigener.handlers[:], eigener.level, eigener.propagate = vorher[2], vorher[3], vorher[4]
+
+
+def test_log_argumente_erreichen_das_log_nicht(buch, log_strom):
+    with TestClient(mcp_server.app_bauen(buch, ARTEN, HASH, []), base_url=BASIS) as c:
+        antwort = _rpc(c, SCHLUESSEL, "tools/call", {"name": "auftrag_probe", "arguments": "GEHEIMWERT-ARG"})
+    assert antwort.status_code < 500
+    assert "GEHEIMWERT-ARG" not in log_strom.getvalue()
+
+
+def test_log_fremder_host_erreicht_das_log_nicht(buch, log_strom):
+    with TestClient(mcp_server.app_bauen(buch, ARTEN, HASH, []), base_url="http://boese-GEHEIMHOST.example") as c:
+        assert _rpc(c, SCHLUESSEL, "tools/list", {}).status_code == 421
+    assert "GEHEIMHOST" not in log_strom.getvalue()
+
+
+def test_log_pool_warnungen_erreichen_das_log_nicht(log_strom):
+    logging.getLogger("psycopg.pool").warning("error connecting in 'x': connection to server at \"10.9.9.9\" failed")
+    logging.warning("root 10.9.9.9")
+    assert "10.9.9.9" not in log_strom.getvalue()
+
+
+def test_log_eigener_logger_schreibt(buch, log_strom):
+    with TestClient(mcp_server.app_bauen(buch, ARTEN, HASH, []), base_url=BASIS) as c:
+        _aufruf(c, "auftrag_probe", {})
+    assert "werkzeug=auftrag_probe ergebnis=ok" in log_strom.getvalue()

@@ -24,12 +24,13 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import anyio
 from mcp import types
@@ -147,7 +148,7 @@ def app_bauen(buch: Buch, arten: dict, schluessel_hash: str, zusatz_hosts: Seque
     async def tools_call(anfrage: types.CallToolRequest) -> types.ServerResult:
         name = anfrage.params.name
         argumente = anfrage.params.arguments or {}
-        start = time.monotonic()
+        start = time.perf_counter()
         fehlertyp = ""
         try:
             text = await anyio.to_thread.run_sync(ausfuehren, name, argumente)
@@ -156,7 +157,7 @@ def app_bauen(buch: Buch, arten: dict, schluessel_hash: str, zusatz_hosts: Seque
             ergebnis, text = _fehlertext(e)
             fehler = True
             fehlertyp = type(e).__name__ if ergebnis == "intern" else ""
-        dauer_ms = int((time.monotonic() - start) * 1000)
+        dauer_ms = int((time.perf_counter() - start) * 1000)
         # Der Name kommt vom Client: nur bekannte Namen ins Log.
         logname = name if name in bekannte else "(unbekannt)"
         if fehlertyp:
@@ -262,11 +263,26 @@ def konfiguration(umgebung: Mapping[str, str] | None = None) -> Konfiguration:
     return Konfiguration(dsn, hash_wert, laden, mandant, ordner, host, port, zusatz)
 
 
+def log_einrichten(strom: TextIO | None = None) -> None:
+    """Es schreibt nur noch der Logger `auftragsbuch`.
+
+    Bibliotheken (mcp, psycopg.pool, httpx ...) loggen ueber die Wurzel und koennten Argumente,
+    Host-Koepfe oder Datenbank-Adressen nennen. Darum bekommt `auftragsbuch` einen eigenen Handler
+    ohne Weitergabe, die Wurzel hat nur einen NullHandler und die Stufe CRITICAL.
+    """
+    eigener = logging.getLogger("auftragsbuch")
+    handler = logging.StreamHandler(strom if strom is not None else sys.stderr)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    eigener.handlers[:] = [handler]
+    eigener.setLevel(logging.INFO)
+    eigener.propagate = False
+    wurzel = logging.getLogger()
+    wurzel.handlers[:] = [logging.NullHandler()]
+    wurzel.setLevel(logging.CRITICAL)
+
+
 def main(umgebung: Mapping[str, str] | None = None) -> None:
     """Startet den Dienst; eine fehlende oder ungueltige Einstellung beendet mit einer Meldung."""
-    logging.basicConfig(level=logging.INFO)
-    # Das mcp-Paket loggt auf DEBUG Nachrichteninhalte; nie darunter.
-    logging.getLogger("mcp").setLevel(logging.INFO)
     try:
         k = konfiguration(umgebung)
         arten = lade_auftragsarten(k.vertrag_ordner)
@@ -278,6 +294,7 @@ def main(umgebung: Mapping[str, str] | None = None) -> None:
         raise SystemExit(f"auftragsbuch: {e}") from None
     import uvicorn
 
+    log_einrichten()
     pool.open(wait=True, timeout=30)
     try:
         # Kein Access-Log (Anfragen tragen den Schluessel im Header).
