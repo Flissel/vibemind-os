@@ -75,3 +75,17 @@ def test_werkzeug_server_in_vorlage():
     args = _gemeinsam_pruefen(server)
     assert args[-1].startswith("${VIBEMIND_ROOT}/")
     assert set(ENV_NAMEN) <= set(server["env"])
+
+
+def test_navigator_kennt_sales_ohne_aliase():
+    from core.space_contract import registry_health
+    from spaces._navigator.registry import SPACES
+    import yaml
+
+    nav = SPACES["sales"]
+    assert nav["event_prefix"] == "sales."
+    assert nav["aliases"] == []
+    assert nav["renderer_id"] is None
+    caps = list(yaml.safe_load((BRAIN / "data" / "capabilities.yaml").read_text(encoding="utf-8")))
+    probleme = registry_health(load_space_contract(REGISTRY), capabilities=caps)["issues"]
+    assert not any("sales" in p.get("spaces", []) for p in probleme if p["kind"] == "navigator_missing_spaces")

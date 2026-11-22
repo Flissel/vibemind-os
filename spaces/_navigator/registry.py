@@ -55,6 +55,16 @@ SPACES: Dict[str, SpaceMeta] = {
         "capabilities": ["event.ask", "event.do"],
         "renderer_id": None,
     },
+    "sales": {
+        "label": "Sales",
+        "event_prefix": "sales.",
+        "stream": None,
+        "aliases": [],
+        "description": "Sales (sales-claw): the Brain places orders of a fixed kind in the order book for the Sales agent. There is no user-facing surface to navigate to yet.",
+        "use_when": "Never for navigation: no user-facing Sales surface exists yet; the Brain only places and reads orders in the order book",
+        "capabilities": ["sales.auftrag_probe", "sales.auftrag_lesen"],
+        "renderer_id": None,
+    },
     "brain": {
         "label": "Brain",
         "event_prefix": "brain.",
