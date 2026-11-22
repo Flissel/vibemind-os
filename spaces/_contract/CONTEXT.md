@@ -188,9 +188,11 @@ _Vermeiden_: Auftragstyp, Befehl, Aufgabe, Job, Task
 
 ## Rechteträger
 
-Der Agent, der im Auftragsbuch als Besitzer der Aufträge einer Art auftritt und
-dessen Rechte aus dem Vertrag abgeleitet werden. Er darf nur die Auftragsarten
-seines Space übernehmen und melden; fremde Aufträge sieht er nicht.
+Nur Ausweis und Träger der Rechte in OpenFang, in dessen Namen das Gehirn einen
+Auftrag **anlegt** und **liest**; seine Rechte leiten sich aus dem Vertrag ab.
+Er bekommt nie selbst einen Auftrag, bearbeitet keine Nachricht und wird nie als
+Agent mit Modell gestartet. Die Arbeit macht der Agent des Space; Aufträge
+übernimmt der Abholer.
 
 _Vermeiden_: Besitzer, Owner, Eigentümer, Nutzer, Rolle
 
