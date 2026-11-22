@@ -185,6 +185,79 @@ def test_start_ohne_umgebung_nennt_die_variable(monkeypatch):
     assert "AUFTRAGSBUCH_DSN_FILE" in str(e.value)
 
 
+_DSN_GEHEIM = "postgresql://dienst:GEHEIMPASS@db.beispiel.invalid:5432/postgres"
+
+
+@pytest.fixture
+def start_umgebung(tmp_path, monkeypatch):
+    """Vollstaendige Umgebung fuer main(); Logging und uvicorn bleiben unberuehrt."""
+    dsn = tmp_path / "dsn"
+    dsn.write_text(_DSN_GEHEIM + "\n", encoding="utf-8")
+    hashdatei = tmp_path / "hash"
+    hashdatei.write_text(HASH + "\n", encoding="utf-8")
+    monkeypatch.setattr(mcp_server, "log_einrichten", lambda strom=None: None)
+    import uvicorn
+
+    def kein_start(*_a, **_k):
+        raise AssertionError("uvicorn darf nicht starten")
+
+    monkeypatch.setattr(uvicorn, "run", kein_start)
+    return {"AUFTRAGSBUCH_DSN_FILE": str(dsn), "AUFTRAGSBUCH_SCHLUESSEL_HASH_FILE": str(hashdatei),
+            "AUFTRAGSBUCH_LADEN": "laden-1", "AUFTRAGSBUCH_MANDANT": "mandant-1",
+            "AUFTRAGSBUCH_VERTRAG_ORDNER": str(Path(__file__).resolve().parents[2] / "_contract")}
+
+
+def _ohne_stapel(e: pytest.ExceptionInfo) -> None:
+    assert e.value.__cause__ is None and e.value.__suppress_context__
+
+
+def test_start_datenbank_nicht_erreichbar_ohne_stapel_und_dsn(start_umgebung, monkeypatch):
+    import psycopg_pool
+
+    geschlossen: list[bool] = []
+
+    class Pool:
+        def __init__(self, *_a, **_k) -> None:
+            pass
+
+        def open(self, wait: bool = False, timeout: float = 0) -> None:
+            raise psycopg_pool.PoolTimeout(f"pool initialization incomplete: {_DSN_GEHEIM}")
+
+        def close(self) -> None:
+            geschlossen.append(True)
+
+    monkeypatch.setattr(psycopg_pool, "ConnectionPool", Pool)
+    with pytest.raises(SystemExit) as e:
+        mcp_server.main(start_umgebung)
+    assert str(e.value) == "auftragsbuch: Datenbank nicht erreichbar (PoolTimeout)"
+    _ohne_stapel(e)
+    assert geschlossen == [True]
+
+
+def test_start_pool_nicht_baubar_ohne_dsn(start_umgebung, monkeypatch):
+    import psycopg
+    import psycopg_pool
+
+    def kaputt(*_a, **_k):
+        raise psycopg.ProgrammingError(f"invalid connection option in {_DSN_GEHEIM}")
+
+    monkeypatch.setattr(psycopg_pool, "ConnectionPool", kaputt)
+    with pytest.raises(SystemExit) as e:
+        mcp_server.main(start_umgebung)
+    assert str(e.value) == "auftragsbuch: Datenbank nicht erreichbar (ProgrammingError)"
+    _ohne_stapel(e)
+
+
+def test_start_vertrag_nicht_ladbar_nennt_nur_den_typ(start_umgebung, tmp_path):
+    ordner = tmp_path / "vertraege"
+    ordner.mkdir()
+    (ordner / "kaputt.contract.yaml").write_text("id: x\nauftragsarten: GEHEIM-INHALT\n", encoding="utf-8")
+    with pytest.raises(SystemExit) as e:
+        mcp_server.main({**start_umgebung, "AUFTRAGSBUCH_VERTRAG_ORDNER": str(ordner)})
+    assert str(e.value) == "auftragsbuch: Vertrag nicht ladbar (VertragsFehler)"
+    _ohne_stapel(e)
+
+
 def test_konfiguration_nennt_jede_fehlende_variable(tmp_path):
     dsn = tmp_path / "dsn"
     dsn.write_text("postgresql://x\n", encoding="utf-8")

@@ -282,20 +282,38 @@ def log_einrichten(strom: TextIO | None = None) -> None:
 
 
 def main(umgebung: Mapping[str, str] | None = None) -> None:
-    """Startet den Dienst; eine fehlende oder ungueltige Einstellung beendet mit einer Meldung."""
+    """Startet den Dienst; jeder Startfehler endet mit einer Meldung ohne Stapel und ohne Werte.
+
+    Eine fehlende oder ungueltige Einstellung nennt den Variablennamen. Scheitern das Laden der
+    Vertraege oder die Datenbank (Pool bauen oder oeffnen), nennt die Meldung nur den Typnamen:
+    `Vertrag nicht ladbar (<Typ>)` bzw. `Datenbank nicht erreichbar (<Typ>)`, nie die DSN.
+    """
     try:
         k = konfiguration(umgebung)
+    except ValueError as e:
+        raise SystemExit(f"auftragsbuch: {e}") from None
+    try:
         arten = lade_auftragsarten(k.vertrag_ordner)
-        from psycopg_pool import ConnectionPool
+    except Exception as e:  # noqa: BLE001 - nur der Typname geht in die Meldung
+        raise SystemExit(f"auftragsbuch: Vertrag nicht ladbar ({type(e).__name__})") from None
+    from psycopg_pool import ConnectionPool
 
+    try:
         pool: Any = ConnectionPool(k.dsn, min_size=1, max_size=5, open=False, name="auftragsbuch")
+    except Exception as e:  # noqa: BLE001 - die Meldung der Bibliothek kann die DSN nennen
+        raise SystemExit(f"auftragsbuch: Datenbank nicht erreichbar ({type(e).__name__})") from None
+    try:
         app = app_bauen(PgBuch(pool, k.laden, k.mandant), arten, k.schluessel_hash, k.zusatz_hosts)
     except ValueError as e:
         raise SystemExit(f"auftragsbuch: {e}") from None
     import uvicorn
 
     log_einrichten()
-    pool.open(wait=True, timeout=30)
+    try:
+        pool.open(wait=True, timeout=30)
+    except Exception as e:  # noqa: BLE001 - PoolTimeout o. Ae.; die Meldung kann die DSN nennen
+        pool.close()
+        raise SystemExit(f"auftragsbuch: Datenbank nicht erreichbar ({type(e).__name__})") from None
     try:
         # Kein Access-Log (Anfragen tragen den Schluessel im Header).
         uvicorn.run(app, host=k.host, port=k.port, access_log=False)
