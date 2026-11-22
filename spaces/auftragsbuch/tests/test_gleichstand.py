@@ -1,4 +1,5 @@
 """Gleichstand von Space-Vertraegen, Space-Verzeichnis und Werkzeug-Dienst."""
+import copy
 from pathlib import Path
 
 import yaml
@@ -80,3 +81,10 @@ def test_dienst_mit_fehlendem_oder_zusaetzlichem_werkzeug():
     assert gleichstand(ARTEN, {}, [], dienst_werkzeuge=soll) == []
     assert gleichstand(ARTEN, {}, [], dienst_werkzeuge=soll[:-1]) != []
     assert gleichstand(ARTEN, {}, [], dienst_werkzeuge=soll + ["extra"]) != []
+
+
+def test_echter_stand_ohne_freischaltung_faellt_auf():
+    """Gegen den echten Stand: Ohne `auftrag_probe` in mcp_tools meldet der Abgleich das Ereignis."""
+    reg = copy.deepcopy(registry_echt())
+    reg["sales"]["mcp_tools"]["auftragsbuch"].remove("auftrag_probe")
+    assert any("sales.auftrag_probe" in s for s in gleichstand(ARTEN, reg, capabilities_echt()))
