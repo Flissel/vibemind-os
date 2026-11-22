@@ -7,9 +7,12 @@ from __future__ import annotations
 import json
 import os
 import socket
+import ssl
 import subprocess
 import sys
 import threading
+import urllib.error
+import urllib.request
 from collections.abc import Callable, Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -226,3 +229,139 @@ def test_stdout_bleibt_sauber(dienst: _Attrappe) -> None:
     fehler = lauf.stderr.decode("utf-8")
     assert SCHLUESSEL not in fehler and str(dienst.port) not in fehler and "127.0.0.1" not in fehler
     assert "tools/list" in fehler and "status=200" in fehler
+
+# --- Eigene Zertifikatsliste (AUFTRAGSBUCH_CA_DATEI) -------------------------------------------------
+
+ZERT_TEXT = "auftragsbuch: Zertifikat nicht pruefbar"
+GEHEIM = "GEHEIM-host.beispiel.invalid-Detail"
+
+
+def _ca_bundle() -> Path:
+    """Das certifi-Buendel des Test-Interpreters; nur Testeingabe, nichts davon liegt im Repo."""
+    certifi = pytest.importorskip("certifi")
+    return Path(certifi.where())
+
+
+def _https_handler(opener: urllib.request.OpenerDirector) -> urllib.request.HTTPSHandler:
+    (handler,) = [h for h in opener.handlers if isinstance(h, urllib.request.HTTPSHandler)]
+    return handler
+
+
+def test_ca_datei_baut_eigenen_kontext_ohne_systemspeicher(monkeypatch: pytest.MonkeyPatch) -> None:
+    bundle = _ca_bundle()
+
+    def verboten(*args: object, **kwargs: object) -> None:
+        raise AssertionError("Systemspeicher darf nicht geladen werden")
+
+    monkeypatch.setattr(ssl, "create_default_context", verboten)
+    monkeypatch.setattr(ssl.SSLContext, "load_default_certs", verboten)
+    opener = bruecke._opener(str(bundle))
+    kontext = _https_handler(opener)._context  # type: ignore[attr-defined]
+    assert isinstance(kontext, ssl.SSLContext)
+    assert kontext.verify_mode == ssl.CERT_REQUIRED
+    assert kontext.check_hostname is True
+    stats = kontext.cert_store_stats()
+    assert stats["x509_ca"] > 0
+    # Nur die Datei: nicht mehr Zertifikate, als die Datei traegt.
+    in_datei = bundle.read_text(encoding="ascii", errors="ignore").count("-----BEGIN CERTIFICATE-----")
+    assert stats["x509"] <= in_datei
+    # Der Opener behaelt: kein Proxy, keine Weiterleitung.
+    assert not any(isinstance(h, urllib.request.ProxyHandler) for h in opener.handlers)  # leer: gar nicht erst eingehaengt
+    assert any(isinstance(h, bruecke._KeinRedirect) for h in opener.handlers)
+
+
+def test_http_senden_reicht_die_ca_datei_durch(monkeypatch: pytest.MonkeyPatch) -> None:
+    bundle = _ca_bundle()
+    gesehen: list[str | None] = []
+    echt = bruecke._opener
+
+    def spion(ca_datei: str | None = None) -> urllib.request.OpenerDirector:
+        gesehen.append(ca_datei)
+        return echt(ca_datei)
+
+    monkeypatch.setattr(bruecke, "_opener", spion)
+    bruecke.http_senden("https://beispiel.invalid/mcp", SCHLUESSEL, str(bundle))
+    assert gesehen == [str(bundle)]
+
+
+@pytest.mark.parametrize("ca_datei", [None, ""])
+def test_ohne_ca_datei_bleibt_der_opener_wie_bisher(ca_datei: str | None) -> None:
+    opener = bruecke._opener(ca_datei) if ca_datei is not None else bruecke._opener()
+    assert _https_handler(opener)._context is None  # type: ignore[attr-defined]
+    assert any(isinstance(h, bruecke._KeinRedirect) for h in opener.handlers)
+
+
+def test_ca_datei_fehler_sind_ein_eigener_fehlertyp(tmp_path: Path) -> None:
+    leer = tmp_path / "leer.pem"
+    leer.write_text("kein zertifikat\n", encoding="ascii")
+    for pfad in (tmp_path / "fehlt.pem", tmp_path, leer):
+        with pytest.raises(bruecke.CaDateiFehler):
+            bruecke._opener(str(pfad))
+
+
+def _lauf_ca(ca: str) -> subprocess.CompletedProcess[bytes]:
+    return _lauf({"AUFTRAGSBUCH_URL": "https://beispiel.invalid/mcp", "AUFTRAGSBUCH_SCHLUESSEL": SCHLUESSEL,
+                  "AUFTRAGSBUCH_CA_DATEI": ca}, ANFRAGE + "\n")
+
+
+def test_start_mit_unbrauchbarer_ca_datei_endet_mit_exit_2(tmp_path: Path) -> None:
+    leer = tmp_path / "ohne-zertifikat-GEHEIMNAME.pem"
+    leer.write_text("das ist kein zertifikat\n", encoding="ascii")
+    for pfad in (tmp_path / "fehlt-GEHEIMNAME.pem", tmp_path, leer):
+        lauf = _lauf_ca(str(pfad))
+        assert lauf.returncode == 2, pfad
+        assert lauf.stderr.decode("utf-8").strip() == "auftragsbuch-bruecke: AUFTRAGSBUCH_CA_DATEI nicht ladbar"
+        assert b"GEHEIMNAME" not in lauf.stderr and str(tmp_path).encode() not in lauf.stderr
+        assert lauf.stdout == b""
+
+
+def test_leere_ca_datei_variable_ist_wie_nicht_gesetzt(dienst: _Attrappe) -> None:
+    lauf = _lauf({"AUFTRAGSBUCH_URL": dienst.url, "AUFTRAGSBUCH_SCHLUESSEL": SCHLUESSEL,
+                  "AUFTRAGSBUCH_CA_DATEI": "  "}, ANFRAGE + "\n")
+    assert lauf.returncode == 0
+    assert json.loads(lauf.stdout.decode("utf-8")) == json.loads(dienst.antwort)
+
+
+def test_start_mit_ca_datei_und_http_dienst_laeuft(dienst: _Attrappe) -> None:
+    """Die eigene Liste betrifft nur https; ein gueltiges Buendel verhindert den Start nicht."""
+    lauf = _lauf({"AUFTRAGSBUCH_URL": dienst.url, "AUFTRAGSBUCH_SCHLUESSEL": SCHLUESSEL,
+                  "AUFTRAGSBUCH_CA_DATEI": str(_ca_bundle())}, ANFRAGE + "\n")
+    assert lauf.returncode == 0
+    assert json.loads(lauf.stdout.decode("utf-8")) == json.loads(dienst.antwort)
+
+
+def _wirft(fehler: BaseException) -> Callable[[bytes], tuple[int, bytes]]:
+    def senden(_k: bytes) -> tuple[int, bytes]:
+        raise fehler
+
+    return senden
+
+
+@pytest.mark.parametrize("fehler", [
+    urllib.error.URLError(ssl.SSLCertVerificationError(1, GEHEIM)),
+    ssl.SSLCertVerificationError(1, GEHEIM),
+], ids=["in-URLError", "bloss"])
+def test_zertifikatsfehler_hat_eigenen_text(fehler: BaseException, capsys: pytest.CaptureFixture[str]) -> None:
+    antwort = bruecke.weiterreichen(ANFRAGE, _wirft(fehler))
+    assert antwort is not None
+    daten = json.loads(antwort)
+    assert daten["id"] == 1 and daten["error"] == {"code": -32000, "message": ZERT_TEXT}
+    ausgabe = capsys.readouterr()
+    assert GEHEIM not in antwort and "beispiel" not in antwort
+    assert GEHEIM not in ausgabe.out + ausgabe.err and "beispiel" not in ausgabe.err
+    assert "tools/list" in ausgabe.err
+
+
+def test_zertifikatsfehler_bei_notification_bleibt_still() -> None:
+    zeile = '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+    fehler = urllib.error.URLError(ssl.SSLCertVerificationError(1, GEHEIM))
+    assert bruecke.weiterreichen(zeile, _wirft(fehler)) is None
+
+
+def test_anderer_urlerror_bleibt_nicht_erreichbar() -> None:
+    fehler = urllib.error.URLError(ConnectionRefusedError(GEHEIM))
+    daten = json.loads(bruecke.weiterreichen(ANFRAGE, _wirft(fehler)) or "")
+    assert daten["error"]["message"] == "auftragsbuch nicht erreichbar"
+    # Auch ein TLS-Fehler, der kein Pruefungsfehler ist (z. B. Handshake), bleibt "nicht erreichbar".
+    daten = json.loads(bruecke.weiterreichen(ANFRAGE, _wirft(urllib.error.URLError(ssl.SSLError(1, GEHEIM)))) or "")
+    assert daten["error"]["message"] == "auftragsbuch nicht erreichbar"

@@ -7,6 +7,10 @@ eine Zeile auf stdout. Der Dienst ist zustandslos, es gibt keine Sitzungskopfzei
 
 Umgebung: AUFTRAGSBUCH_URL (Adresse des MCP-Weges) und AUFTRAGSBUCH_SCHLUESSEL (Bearer-Wert);
 fehlt eine, endet der Start mit Exit 2 und einer Meldung, die nur den Namen nennt.
+Optional AUFTRAGSBUCH_CA_DATEI: Pfad einer PEM-Datei mit CA-Zertifikaten. Ist sie gesetzt, prueft die
+Bruecke TLS nur gegen diese Datei und nicht gegen den Zertifikatsspeicher des Systems (Windows kann
+abgelaufene Zwischenzertifikate halten, die OpenSSL 1.1 dann waehlt). Ist die Datei nicht ladbar,
+endet der Start mit Exit 2 und einer Meldung, die nur den Namen nennt.
 
 Nur Standardbibliothek (laeuft unter dem Python des PC). Auf stdout stehen ausschliesslich
 JSON-RPC-Zeilen. Auf stderr stehen nur Methode, Status und Dauer, nie Adresse, Schluessel,
@@ -19,6 +23,7 @@ import http.client
 import json
 import os
 import re
+import ssl
 import sys
 import time
 import urllib.error
@@ -41,17 +46,46 @@ class _KeinRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _opener() -> urllib.request.OpenerDirector:
-    """Eigener Opener ohne Proxy (Umgebung, Registry) und ohne Weiterleitung."""
-    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _KeinRedirect())
+class CaDateiFehler(Exception):
+    """AUFTRAGSBUCH_CA_DATEI ist nicht ladbar; der Text nennt nie den Pfad."""
 
 
-def http_senden(url: str, schluessel: str) -> Senden:
+def _ca_kontext(ca_datei: str) -> ssl.SSLContext:
+    """TLS-Kontext, der nur die Zertifikate der Datei kennt (Pruefung und Hostname an).
+
+    Bewusst weder `ssl.create_default_context()` noch `load_default_certs()`: Beide holten den
+    Zertifikatsspeicher des Systems zurueck.
+    """
+    kontext = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    kontext.verify_mode = ssl.CERT_REQUIRED
+    kontext.check_hostname = True
+    try:
+        kontext.load_verify_locations(cafile=ca_datei)
+    except (OSError, ssl.SSLError, ValueError):
+        raise CaDateiFehler("AUFTRAGSBUCH_CA_DATEI nicht ladbar") from None
+    if kontext.cert_store_stats()["x509"] == 0:  # manche OpenSSL-Staende melden eine leere Datei nicht
+        raise CaDateiFehler("AUFTRAGSBUCH_CA_DATEI nicht ladbar")
+    return kontext
+
+
+def _opener(ca_datei: str | None = None) -> urllib.request.OpenerDirector:
+    """Eigener Opener ohne Proxy (Umgebung, Registry) und ohne Weiterleitung.
+
+    Mit `ca_datei` (nicht leer) prueft er HTTPS nur gegen diese Datei; ohne bleibt es beim Standard.
+    """
+    handler: list[Any] = [urllib.request.ProxyHandler({}), _KeinRedirect()]
+    if ca_datei:
+        handler.append(urllib.request.HTTPSHandler(context=_ca_kontext(ca_datei)))
+    return urllib.request.build_opener(*handler)
+
+
+def http_senden(url: str, schluessel: str, ca_datei: str | None = None) -> Senden:
     """Baut die Sendefunktion: POST mit Bearer-Schluessel; liefert (Status, Koerper).
 
     Weder Proxy noch Weiterleitung (3xx kommt als Status zurueck). HTTP-Fehlerstatus kommen als
     Ergebnis zurueck, nicht als Ausnahme. Nicht erreichbar, Zeitlimit und Verbindungsabbruch
-    sind OSError (urllib.error.URLError ist eine) bzw. HTTPException.
+    sind OSError (urllib.error.URLError ist eine) bzw. HTTPException. Mit `ca_datei` siehe _opener;
+    eine nicht ladbare Datei wirft CaDateiFehler schon hier, vor der ersten Anfrage.
     """
     kopf = {
         "Authorization": f"Bearer {schluessel}",
@@ -59,7 +93,7 @@ def http_senden(url: str, schluessel: str) -> Senden:
         "Accept": "application/json, text/event-stream",
     }
 
-    opener = _opener()
+    opener = _opener(ca_datei)
 
     def senden(koerper: bytes) -> tuple[int, bytes]:
         anfrage = urllib.request.Request(url, data=koerper, headers=kopf, method="POST")
@@ -94,6 +128,13 @@ def _json_aus(koerper: bytes) -> Any | None:
     return None
 
 
+def _ist_zertifikatsfehler(fehler: BaseException) -> bool:
+    """Wahr bei einem TLS-Pruefungsfehler, auch eingewickelt in urllib.error.URLError."""
+    if isinstance(fehler, urllib.error.URLError):
+        fehler = fehler.reason if isinstance(fehler.reason, BaseException) else fehler
+    return isinstance(fehler, ssl.SSLCertVerificationError)
+
+
 def _methode(nachricht: Any) -> str:
     wert = nachricht.get("method") if isinstance(nachricht, dict) else None
     return wert if isinstance(wert, str) and _METHODE.fullmatch(wert) else "?"
@@ -117,7 +158,10 @@ def weiterreichen(zeile: str, senden: Senden) -> str | None:
     methode = _methode(nachricht)
     try:
         status, koerper = senden(zeile.encode("utf-8"))
-    except (OSError, http.client.HTTPException, ValueError):
+    except (OSError, http.client.HTTPException, ValueError) as fehler:
+        if _ist_zertifikatsfehler(fehler):
+            _melden(methode, "zertifikat", start)
+            return _fehler(id_, _FEHLER_CODE, "auftragsbuch: Zertifikat nicht pruefbar") if ist_anfrage else None
         _melden(methode, "nicht-erreichbar", start)
         return _fehler(id_, _FEHLER_CODE, "auftragsbuch nicht erreichbar") if ist_anfrage else None
     _melden(methode, str(status), start)
@@ -142,7 +186,12 @@ def main() -> int:
     if not url.lower().startswith(("http://", "https://")):
         print("auftragsbuch-bruecke: AUFTRAGSBUCH_URL ungueltig", file=sys.stderr)
         return 2
-    senden = http_senden(url, schluessel)
+    ca_datei = os.environ.get("AUFTRAGSBUCH_CA_DATEI", "").strip()
+    try:
+        senden = http_senden(url, schluessel, ca_datei or None)
+    except CaDateiFehler as fehler:
+        print(f"auftragsbuch-bruecke: {fehler}", file=sys.stderr)
+        return 2
     for roh in sys.stdin.buffer:
         zeile = roh.decode("utf-8", errors="replace").strip()
         if not zeile:

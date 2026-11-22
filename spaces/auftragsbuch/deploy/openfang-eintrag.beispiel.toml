@@ -4,6 +4,8 @@
 # im oeffentlichen Repo. Darum steht dort weder die Adresse des Mini-PC noch ein Schluessel:
 # OpenFang startet am PC die kleine Bruecke bruecke.py, und scripts/mcp_mit_env.py (aeusseres
 # Repo) reicht ihr AUFTRAGSBUCH_URL und AUFTRAGSBUCH_SCHLUESSEL aus der Root-.env des PC.
+# AUFTRAGSBUCH_CA_DATEI (optional) nennt eine eigene Zertifikatsliste fuer die TLS-Pruefung, weil der
+# Windows-Speicher abgelaufene Zwischenzertifikate halten kann; fehlt sie dort, wird sie uebersprungen.
 # Die Platzhalter in <...> werden am PC eingesetzt, nie im Repo.
 [[mcp_servers]]
 name = "auftragsbuch"
@@ -12,4 +14,4 @@ timeout_secs = 60
 [mcp_servers.transport]
 type = "stdio"
 command = "<PFAD-ZUR-VENV>/Scripts/python.exe"
-args = ["<PFAD-ZUM-AEUSSEREN-REPO>/scripts/mcp_mit_env.py", "--env", "AUFTRAGSBUCH_URL", "--env", "AUFTRAGSBUCH_SCHLUESSEL", "--", "<PFAD-ZU-VIBEMIND-OS>/spaces/auftragsbuch/bruecke.py"]
+args = ["<PFAD-ZUM-AEUSSEREN-REPO>/scripts/mcp_mit_env.py", "--env", "AUFTRAGSBUCH_URL", "--env", "AUFTRAGSBUCH_SCHLUESSEL", "--env", "AUFTRAGSBUCH_CA_DATEI", "--", "<PFAD-ZU-VIBEMIND-OS>/spaces/auftragsbuch/bruecke.py"]

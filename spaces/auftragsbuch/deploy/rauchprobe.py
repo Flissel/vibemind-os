@@ -4,7 +4,10 @@ Nur Standardbibliothek (Python 3.11). Adresse und Schluessel kommen aus der Root
 je auf einer Kommandozeile zu stehen:
 
   python <aeusseres-repo>/scripts/mcp_mit_env.py --env AUFTRAGSBUCH_URL --env AUFTRAGSBUCH_SCHLUESSEL \\
-    -- <vibemind-os>/spaces/auftragsbuch/deploy/rauchprobe.py
+    --env AUFTRAGSBUCH_CA_DATEI -- <vibemind-os>/spaces/auftragsbuch/deploy/rauchprobe.py
+
+AUFTRAGSBUCH_CA_DATEI (optional, Pfad einer PEM-Datei mit CA-Zertifikaten) geht mit der ganzen
+Umgebung an die Bruecke; die Rauchprobe liest sie nicht selbst.
 
 Startet bruecke.py als Unterprozess (wie OpenFang) und prueft:
   1. initialize antwortet,
@@ -33,7 +36,7 @@ ZEITLIMIT_S = 150
 # Die festen Fehlermeldungen der Bruecke (bruecke.py); alles andere wird nicht durchgereicht.
 _BRUECKEN_MELDUNG = re.compile(
     r"auftragsbuch(?: nicht erreichbar|: Schlüssel abgelehnt|: unerwartete Antwort \([0-9]{3}\)"
-    r"|: ungültige Zeile)"
+    r"|: ungültige Zeile|: Zertifikat nicht pruefbar)"
 )
 
 

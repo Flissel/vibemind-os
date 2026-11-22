@@ -221,3 +221,34 @@ def test_gegen_den_echten_dienst_ueber_die_echte_bruecke() -> None:
     assert lauf.stdout.splitlines() == ["ok initialize", "ok tools/list (vier Werkzeuge)",
                                         "ok tools/call sales_post_pruefen (Unbekannte Auftragsart)"]
     _ohne_geheimes(lauf, port)
+
+
+def test_zertifikatsmeldung_der_bruecke_wird_als_fester_grund_durchgereicht() -> None:
+    fest = "auftragsbuch: Zertifikat nicht pruefbar"
+    antwort: dict = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": fest}}
+    assert rauchprobe._fehlergrund(antwort) == fest
+    antwort["error"]["message"] = fest + " GEHEIM"
+    assert rauchprobe._fehlergrund(antwort) == "Fehlerantwort"
+
+
+def test_bruecke_bekommt_die_ca_datei_in_ihre_umgebung(monkeypatch: pytest.MonkeyPatch) -> None:
+    gesehen: dict[str, str] = {}
+
+    def attrappe(*args: object, **kwargs: dict[str, str]) -> subprocess.CompletedProcess[bytes]:
+        gesehen.update(kwargs["env"])  # type: ignore[arg-type]
+        return subprocess.CompletedProcess(args, 0, b"", b"")
+
+    monkeypatch.setattr(rauchprobe.subprocess, "run", attrappe)
+    rauchprobe.bruecke_fragen({"AUFTRAGSBUCH_URL": "x", "AUFTRAGSBUCH_CA_DATEI": "ca.pem"})
+    assert gesehen["AUFTRAGSBUCH_CA_DATEI"] == "ca.pem"
+
+
+def test_ca_datei_wirkt_durch_die_rauchprobe_bis_in_die_bruecke(dienst: _Dienst, tmp_path: Path) -> None:
+    """Unbrauchbare Liste: Die Bruecke beendet sich mit Exit 2, die Rauchprobe sieht keine Antwort."""
+    leer = tmp_path / "leer.pem"
+    leer.write_text("kein zertifikat\n", encoding="ascii")
+    lauf = _lauf({"AUFTRAGSBUCH_URL": dienst.url, "AUFTRAGSBUCH_SCHLUESSEL": SCHLUESSEL,
+                  "AUFTRAGSBUCH_CA_DATEI": str(leer)})
+    assert lauf.returncode == 1
+    assert lauf.stdout.splitlines()[0] == "FEHLER initialize (keine Antwort)"
+    assert str(tmp_path) not in lauf.stdout + lauf.stderr

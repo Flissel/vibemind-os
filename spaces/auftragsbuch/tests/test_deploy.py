@@ -213,7 +213,8 @@ def test_beispiel_eintrag_ist_stdio_ohne_schluessel() -> None:
     assert transport["type"] == "stdio"
     args = transport["args"]
     assert "--env" in args
-    assert "AUFTRAGSBUCH_URL" in args and "AUFTRAGSBUCH_SCHLUESSEL" in args
+    for name in ("AUFTRAGSBUCH_URL", "AUFTRAGSBUCH_SCHLUESSEL", "AUFTRAGSBUCH_CA_DATEI"):
+        assert args[args.index(name) - 1] == "--env", name
     assert args[-1].endswith("bruecke.py")
     assert "headers" not in eintrag and "auth_headers" not in eintrag
     assert "headers" not in transport
@@ -423,3 +424,28 @@ def test_runbook_openfang_aufrufe_laufen_ueber_das_hilfsprogramm_mit_der_markerr
         if "OPENFANG_API_KEY" in befehl:
             assert befehl.startswith(_OPENFANG_START + " "), befehl
     assert "curl" not in " ".join(p for p in punkte if "OpenFang" in p and "/api/" in p)
+
+
+_BRUECKEN_START = re.compile(r"mcp_mit_env\.py[^`]*?(?:bruecke|rauchprobe)\.py")
+
+
+def test_runbook_jeder_bruecken_start_reicht_die_ca_datei_durch() -> None:
+    befehle = [b for b in re.findall(r"`([^`]*)`", _text()) if _BRUECKEN_START.search(b)]
+    assert len(befehle) >= 1
+    for befehl in befehle:
+        assert "--env AUFTRAGSBUCH_URL --env AUFTRAGSBUCH_SCHLUESSEL --env AUFTRAGSBUCH_CA_DATEI --" in befehl, befehl
+
+
+def test_runbook_stufe_2_schreibt_die_ca_datei_in_die_root_env_und_nimmt_sie_zurueck() -> None:
+    punkte = _punkte(_zeilen(RUNBOOK))
+    (schreiben,) = [p for p in punkte if "pc_env_setzen.py" in p and "--entfernen" not in p]
+    assert _JA in schreiben
+    assert "AUFTRAGSBUCH_CA_DATEI=<PFAD-ZUR-VENV>/Lib/site-packages/certifi/cacert.pem" in schreiben
+    assert "kein Geheimnis" in schreiben and "22.11." in schreiben and "Zertifikat nicht pruefbar" in schreiben
+    (zurueck,) = [p for p in punkte if "--entfernen" in p]
+    assert _JA in zurueck
+    assert "--entfernen AUFTRAGSBUCH_URL AUFTRAGSBUCH_SCHLUESSEL AUFTRAGSBUCH_CA_DATEI" in zurueck
+    (ausgang,) = [p for p in punkte if "Ausgangsstand festhalten" in p]
+    assert "AUFTRAGSBUCH_\\(URL\\|SCHLUESSEL\\|CA_DATEI\\)=" in ausgang and "`3`" in ausgang
+    (heben,) = [p for p in punkte if "Betriebs-Checkout heben" in p]
+    assert "AUFTRAGSBUCH_CA_DATEI" in heben

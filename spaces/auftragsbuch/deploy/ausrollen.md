@@ -138,14 +138,19 @@ Dienst meldet sich an der Datenbank mit der eigenen Anmelde-Rolle `auftragsbuch_
    `tailscale serve --bg --https=8172 http://127.0.0.1:8172` (wie beim Event-Dienst, ggf. mit `sudo`). Nie
    `tailscale serve reset`: Das nähme auch alle anderen Freigaben weg. Danach zeigt `tailscale serve status` 8172
    neben den bisherigen Freigaben, auch die des Event-Dienstes.
-8. **Eigenes Ja des Betreibers:** Adresse und Schlüssel in die Root-`.env` des PC, in der Shell aus Schritt 4:
-   `printf 'AUFTRAGSBUCH_URL=%s\nAUFTRAGSBUCH_SCHLUESSEL=%s\n' 'https://<name-des-mini-pc-im-tailnet>:8172/mcp' "$SCHLUESSEL" | "<PFAD-ZUR-VENV>/Scripts/python.exe" "<ZWEIG-CHECKOUT>/spaces/auftragsbuch/deploy/pc_env_setzen.py" "<PFAD-ZUM-AEUSSEREN-REPO>/.env"`,
+8. **Eigenes Ja des Betreibers:** Adresse, Schlüssel und Zertifikatsliste in die Root-`.env` des PC, in der Shell
+   aus Schritt 4:
+   `printf 'AUFTRAGSBUCH_URL=%s\nAUFTRAGSBUCH_SCHLUESSEL=%s\nAUFTRAGSBUCH_CA_DATEI=<PFAD-ZUR-VENV>/Lib/site-packages/certifi/cacert.pem\n' 'https://<name-des-mini-pc-im-tailnet>:8172/mcp' "$SCHLUESSEL" | "<PFAD-ZUR-VENV>/Scripts/python.exe" "<ZWEIG-CHECKOUT>/spaces/auftragsbuch/deploy/pc_env_setzen.py" "<PFAD-ZUM-AEUSSEREN-REPO>/.env"`,
    danach `unset SCHLUESSEL`. Die Adresse endet genau auf `/mcp`, ohne Schrägstrich (mit Schrägstrich antwortet der
    Dienst mit 307, die Brücke meldet dann `unerwartete Antwort (307)`). `pc_env_setzen.py` ersetzt vorhandene Zeilen
    statt doppelt anzuhängen und gibt keinen Wert aus. Die Root-`.env` ist die gewählte Ablage: Jeder Prozess, der
-   diese Datei lesen kann, hält Adresse und Schlüssel des Dienstes.
+   diese Datei lesen kann, hält Adresse und Schlüssel des Dienstes. Die dritte Zeile, `AUFTRAGSBUCH_CA_DATEI`, ist
+   kein Geheimnis, sondern der Pfad zur Zertifikatsliste (`cacert.pem`) im Paket `certifi` der Venv: Der Zertifikatsspeicher von
+   Windows kann abgelaufene Zwischenzertifikate halten, die die TLS-Bibliothek dieses Pythons dann wählt (gemessen am
+   22.11.), und die Brücke prüft dann nur gegen diese Liste. Fehlt die Zeile, meldet die Rauchprobe
+   `Zertifikat nicht pruefbar`.
 9. **Rauchprobe vom PC** über die echte Brücke, Adresse und Schlüssel aus der Root-`.env`:
-   `"<PFAD-ZUR-VENV>/Scripts/python.exe" "<PFAD-ZUM-AEUSSEREN-REPO>/scripts/mcp_mit_env.py" --env AUFTRAGSBUCH_URL --env AUFTRAGSBUCH_SCHLUESSEL -- "<ZWEIG-CHECKOUT>/spaces/auftragsbuch/deploy/rauchprobe.py"`.
+   `"<PFAD-ZUR-VENV>/Scripts/python.exe" "<PFAD-ZUM-AEUSSEREN-REPO>/scripts/mcp_mit_env.py" --env AUFTRAGSBUCH_URL --env AUFTRAGSBUCH_SCHLUESSEL --env AUFTRAGSBUCH_CA_DATEI -- "<ZWEIG-CHECKOUT>/spaces/auftragsbuch/deploy/rauchprobe.py"`.
    Sie legt nichts an: `initialize`, `tools/list` und der `tools/call` von `sales_post_pruefen`, der mit
    `Unbekannte Auftragsart` scheitern muss, schreiben keine Zeile. Erwartung: drei Zeilen `ok …`
    (`initialize`, `tools/list (vier Werkzeuge)`, `tools/call sales_post_pruefen (Unbekannte Auftragsart)`). Danach
@@ -155,9 +160,9 @@ Dienst meldet sich an der Datenbank mit der eigenen Anmelde-Rolle `auftragsbuch_
 
 **Rückweg:**
 
-- **Eigenes Ja des Betreibers:** Adresse und Schlüssel aus der Root-`.env` des PC entfernen (vorher den Rückweg von
-  Stufe 3, falls ausgeführt):
-  `"<PFAD-ZUR-VENV>/Scripts/python.exe" "<ZWEIG-CHECKOUT>/spaces/auftragsbuch/deploy/pc_env_setzen.py" "<PFAD-ZUM-AEUSSEREN-REPO>/.env" --entfernen AUFTRAGSBUCH_URL AUFTRAGSBUCH_SCHLUESSEL`.
+- **Eigenes Ja des Betreibers:** Adresse, Schlüssel und Zertifikatsliste aus der Root-`.env` des PC entfernen
+  (vorher den Rückweg von Stufe 3, falls ausgeführt):
+  `"<PFAD-ZUR-VENV>/Scripts/python.exe" "<ZWEIG-CHECKOUT>/spaces/auftragsbuch/deploy/pc_env_setzen.py" "<PFAD-ZUM-AEUSSEREN-REPO>/.env" --entfernen AUFTRAGSBUCH_URL AUFTRAGSBUCH_SCHLUESSEL AUFTRAGSBUCH_CA_DATEI`.
 - **Eigenes Ja des Betreibers:** den Netzweg abschalten, auf dem Mini-PC: `tailscale serve --https=8172 off` (nur
   diese Freigabe).
 - **Eigenes Ja des Betreibers:** `AUFTRAGSBUCH_TAG=<laufender Tag> docker compose down` im Ordner des Dienstes.
@@ -175,8 +180,8 @@ Werkzeug-Servers `auftragsbuch` steht seit Task 7 in `openfang/openfang.vibemind
    `docker service inspect vibemind_brain-core --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}'`
    (`<AUSGANG-ABBILD>`), dazu im äußeren Repo der Vertragstest
    `python -m pytest tests/integration/test_openfang_mcp_authority_contract_v1.py -q` (Ausgangswert: 4 rot, 14 grün)
-   und `grep -c '^AUFTRAGSBUCH_\(URL\|SCHLUESSEL\)=' "<PFAD-ZUM-AEUSSEREN-REPO>/.env"` (muss `2` liefern, sonst
-   zuerst Stufe 2, Schritt 8). Dieser Schritt liest nur und ändert nichts.
+   und `grep -c '^AUFTRAGSBUCH_\(URL\|SCHLUESSEL\|CA_DATEI\)=' "<PFAD-ZUM-AEUSSEREN-REPO>/.env"` (muss `3` liefern,
+   sonst zuerst Stufe 2, Schritt 8). Dieser Schritt liest nur und ändert nichts.
 2. **Eigenes Ja des Betreibers:** openfang mergen und pushen: im Submodul `openfang` des `<ZWEIG-CHECKOUT>`
    `cc/auftragsvertrag` nach `main` (Fast-Forward, sonst ein echter Merge; kein Squash, kein Rebase, damit der
    Verweis von vibemind-os erreichbar bleibt), dann `git push origin main`. Prüfen:
@@ -192,8 +197,8 @@ Werkzeug-Servers `auftragsbuch` steht seit Task 7 in `openfang/openfang.vibemind
    `git -C <BETRIEBS-CHECKOUT> fetch origin`, `git -C <BETRIEBS-CHECKOUT> checkout --detach origin/master`,
    `git -C <BETRIEBS-CHECKOUT> submodule update openfang` (nur dieses Submodul). Damit wird der Eintrag
    `auftragsbuch` in der wirksamen Datei beim nächsten Neustart von OpenFang wirksam, auch bei einem Neustart durch
-   den Wächter. Voraussetzung: `AUFTRAGSBUCH_URL` und `AUFTRAGSBUCH_SCHLUESSEL` stehen in der Root-`.env`
-   (Schritt 1).
+   den Wächter. Voraussetzung: `AUFTRAGSBUCH_URL`, `AUFTRAGSBUCH_SCHLUESSEL` und `AUFTRAGSBUCH_CA_DATEI` stehen in der
+   Root-`.env` (Schritt 1).
 6. **Prüfen** nach dem Heben: `grep -c '^name = "auftragsbuch"$' <BETRIEBS-CHECKOUT>/openfang/openfang.vibemind.toml`
    liefert genau `1`; der Vertragstest aus Schritt 1 erneut, verglichen mit dem Ausgangswert 4 rot / 14 grün (ein
    neuer roter Test ist ein Befund für den Betreiber, der Vertrag dort wird nicht stillschweigend geändert). Dieser

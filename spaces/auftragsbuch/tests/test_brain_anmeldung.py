@@ -23,7 +23,7 @@ REGISTRY = ROOT / "config" / "space_agent_registry.yml"
 KONKRET = ROOT / "openfang" / "openfang.vibemind.toml"
 VORLAGE = ROOT / "openfang" / "openfang.vibemind.toml.template"
 BRUECKE = "spaces/auftragsbuch/bruecke.py"
-ENV_NAMEN = ("AUFTRAGSBUCH_URL", "AUFTRAGSBUCH_SCHLUESSEL")
+ENV_NAMEN = ("AUFTRAGSBUCH_URL", "AUFTRAGSBUCH_SCHLUESSEL", "AUFTRAGSBUCH_CA_DATEI")
 
 
 def test_sales_ist_angemeldet():
