@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import TextIO
 
@@ -93,11 +94,20 @@ def entfernen(inhalt: str, namen: list[str]) -> str:
 
 
 def _schreiben(datei: Path, inhalt: str) -> None:
-    """Schreibt in einem Zug (temporaere Datei daneben, dann ersetzen); Rechte der Datei bleiben."""
-    neu = datei.with_name(datei.name + ".neu")
-    neu.write_bytes(inhalt.encode("utf-8"))
-    shutil.copymode(datei, neu)
-    os.replace(neu, datei)
+    """Schreibt in einem Zug (temporaere Datei daneben, dann ersetzen); Rechte der Datei bleiben.
+
+    Die temporaere Datei heisst `<datei>.vor-schreiben-<zufall>` und faellt damit unter das Ignore-Muster
+    `.env.vor-*`; sie wird mit Rechten nur fuer den Besitzer angelegt und in jedem Ausgang entfernt.
+    """
+    kennung, name = tempfile.mkstemp(prefix=datei.name + ".vor-schreiben-", dir=datei.parent)
+    neu = Path(name)
+    try:
+        with os.fdopen(kennung, "wb") as ausgang:
+            ausgang.write(inhalt.encode("utf-8"))
+        shutil.copymode(datei, neu)
+        os.replace(neu, datei)
+    finally:
+        neu.unlink(missing_ok=True)
 
 
 def _lesen(datei: Path) -> str:
@@ -131,6 +141,11 @@ def main(argv: list[str], eingabe: TextIO | None = None, ausgabe: TextIO | None 
             return 0
     except EnvFehler as fehler:
         print(f"pc_env_setzen: {fehler}", file=sys.stderr)
+        return 2
+    except OSError as fehler:
+        # nur der Typ: die Meldung eines OSError kann Pfade oder Inhalte tragen
+        print(f"pc_env_setzen: Schreiben fehlgeschlagen ({type(fehler).__name__}); die Datei ist unveraendert",
+              file=sys.stderr)
         return 2
     print(__doc__, file=sys.stderr)
     return 2

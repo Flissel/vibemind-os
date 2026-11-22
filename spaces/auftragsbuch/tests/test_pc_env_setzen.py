@@ -116,3 +116,46 @@ def test_terminal_und_fehlende_datei_werden_abgelehnt(tmp_path: Path, capsys: py
     assert pc_env_setzen.main([str(tmp_path / "fehlt.env")], _Pipe(EINGABE), _Pipe()) == 2
     assert not (tmp_path / "fehlt.env").exists()
     assert GEHEIM not in capsys.readouterr().err
+
+
+def test_temp_datei_traegt_ignore_namen_und_verschwindet_bei_fehlgeschlagenem_ersetzen(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    import fnmatch
+
+    datei = _env(tmp_path, b"A=1\nAUFTRAGSBUCH_SCHLUESSEL=alt-geheim\n")
+    gesehen: list[str] = []
+
+    def kaputt(quelle: object, ziel: object) -> None:
+        gesehen.append(Path(str(quelle)).name)
+        # waehrend des Ersetzens liegt die Kopie mit dem neuen Wert daneben
+        assert GEHEIM in Path(str(quelle)).read_text(encoding="utf-8")
+        raise PermissionError(13, f"gesperrt {GEHEIM} {URL}")
+
+    monkeypatch.setattr(pc_env_setzen.os, "replace", kaputt)
+    aus = _Pipe()
+    assert pc_env_setzen.main([str(datei)], _Pipe(EINGABE), aus) != 0
+    assert len(gesehen) == 1 and fnmatch.fnmatch(gesehen[0], ".env.vor-*")
+    assert [p.name for p in tmp_path.iterdir()] == [".env"]
+    assert datei.read_bytes() == b"A=1\nAUFTRAGSBUCH_SCHLUESSEL=alt-geheim\n"
+    gesamt = aus.getvalue() + "".join(capsys.readouterr())
+    assert GEHEIM not in gesamt and URL not in gesamt and "alt-geheim" not in gesamt
+    assert "PermissionError" in gesamt
+
+
+def test_entfernen_raeumt_bei_fehlgeschlagenem_ersetzen_ebenfalls_auf(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    datei = _env(tmp_path, b"A=1\nAUFTRAGSBUCH_URL=x\n")
+
+    def kaputt(quelle: object, ziel: object) -> None:
+        raise OSError("weg")
+
+    monkeypatch.setattr(pc_env_setzen.os, "replace", kaputt)
+    assert pc_env_setzen.main([str(datei), "--entfernen", "AUFTRAGSBUCH_URL"], _Terminal(), _Pipe()) != 0
+    assert [p.name for p in tmp_path.iterdir()] == [".env"]
+    assert datei.read_bytes() == b"A=1\nAUFTRAGSBUCH_URL=x\n"
+
+
+def test_erfolg_hinterlaesst_keine_temp_datei(tmp_path: Path) -> None:
+    datei = _env(tmp_path, b"A=1\n")
+    assert _setzen(datei) == 0
+    assert [p.name for p in tmp_path.iterdir()] == [".env"]
