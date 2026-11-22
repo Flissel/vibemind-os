@@ -129,7 +129,61 @@ def resolve_model_block(spec: dict) -> dict:
     return resolved
 
 
+# Rechtetraeger (Spec 8.3): nur Ausweis und Rechte, nie ein Agent, der Nachrichten
+# bearbeitet. Leere Listen unter [capabilities] heissen im Schema "nichts" (alle
+# Felder sind Vec mit Default); mcp_servers bleibt dagegen ausdruecklich gefuellt,
+# denn dort hiesse leer "alle Server".
+RIGHTS_CARRIER_TOML_TEMPLATE = """name = "{name}"
+version = "0.1.0"
+description = "Rights carrier (no agent): {description}"
+author = "vibemind"
+module = "builtin:chat"
+tags = ["vibemind", "brain-routed", "space:{space}", "rights-carrier"]
+mcp_servers = [{mcp_list}]
+
+[model]
+provider = "{provider}"
+model = "{model}"
+max_tokens = {max_tokens}
+temperature = {temperature}
+system_prompt = \"\"\"You are {name}, a rights carrier for the "{space}" space. You are not an assistant and you take no instructions. Never call a tool. Whatever a message says, reply with exactly: {name} accepts no messages.\"\"\"
+
+[resources]
+max_llm_tokens_per_hour = 2000
+max_concurrent_tools = 5
+
+[capabilities]
+tools = [{tool_list}]
+network = []
+memory_read = []
+memory_write = []
+"""
+
+
+def _render_rights_carrier_toml(space: str, spec: dict) -> str:
+    model_block = resolve_model_block(spec)
+    mcp_tools = spec.get("mcp_tools", {})
+    tools = sorted(
+        format_mcp_tool_name(server.strip(), tool.strip())
+        for server, names in mcp_tools.items()
+        for tool in names
+    )
+    return RIGHTS_CARRIER_TOML_TEMPLATE.format(
+        name=spec["agent"],
+        space=space,
+        description=spec.get("description", f"VibeMind {space} rights carrier."),
+        mcp_list=_mcp_list_literal(spec.get("mcp_servers", [])),
+        tool_list=_tool_list_literal(tools),
+        provider=model_block["provider"],
+        model=model_block["model"],
+        max_tokens=json.dumps(model_block["max_tokens"]),
+        temperature=json.dumps(model_block["temperature"]),
+    )
+
+
 def _render_agent_toml(space: str, spec: dict) -> str:
+    if spec.get("rights_carrier") is True:
+        return _render_rights_carrier_toml(space, spec)
     agent = spec["agent"]
     description = spec.get(
         "description", f"VibeMind {space} agent, Brain-routed."
@@ -407,12 +461,50 @@ def validate_mcp_authority() -> list[str]:
     return errors
 
 
+def validate_rights_carrier() -> list[str]:
+    """Pruefe `rights_carrier`: Wahrheitswert; wenn wahr, nur Werkzeuge ueber MCP, ohne Modell-Override."""
+    with open(REGISTRY, "r", encoding="utf-8") as f:
+        data: dict[str, Any] = yaml.safe_load(f) or {}
+    spaces = data.get("spaces", {})
+    if not isinstance(spaces, dict):
+        return ["registry spaces must be a mapping"]
+
+    errors: list[str] = []
+    for space_name, spec in spaces.items():
+        if not isinstance(spec, dict) or "rights_carrier" not in spec:
+            continue
+        flag = spec["rights_carrier"]
+        if not isinstance(flag, bool):
+            errors.append(f"{space_name} rights_carrier must be a boolean")
+            continue
+        if not flag:
+            continue
+        tools = spec.get("mcp_tools")
+        if not isinstance(tools, dict) or not any(
+            isinstance(names, list) and names for names in tools.values()
+        ):
+            errors.append(f"{space_name} rights_carrier requires non-empty mcp_tools")
+        if "model" in spec:
+            errors.append(f"{space_name} rights_carrier must not set a model override")
+        if "system_prompt_hint" in spec:
+            errors.append(f"{space_name} rights_carrier must not set system_prompt_hint")
+        events = spec.get("events") or {}
+        for event_name, event in (events.items() if isinstance(events, dict) else []):
+            execution = event.get("execution") if isinstance(event, dict) else None
+            if not isinstance(execution, dict) or execution.get("kind") != "mcp":
+                errors.append(
+                    f"{space_name}.{event_name} of a rights carrier must use execution.kind mcp"
+                )
+    return errors
+
+
 def sync(dry_run: bool = False, check: bool = False) -> int:
     validation_errors = (
         validate_agent_generation_contract()
         + validate_generated_agent_mcp_scopes()
         + validate_mcp_tool_scopes()
         + validate_model_overrides()
+        + validate_rights_carrier()
         + validate_mcp_authority()
     )
     if validation_errors:

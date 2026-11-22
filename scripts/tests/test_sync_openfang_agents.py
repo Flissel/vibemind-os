@@ -407,3 +407,93 @@ spaces:
 """)
 
     assert module.sync() == 1
+
+
+TRAEGER = """version: 1
+spaces:
+  sales:
+    agent: brain-sales
+    rights_carrier: true
+    enabled: true
+    mcp_servers: [auftragsbuch]
+    mcp_tools: {auftragsbuch: [auftrag_probe, auftrag_lesen]}
+    events:
+      sales.auftrag_probe:
+        tool: auftrag_probe
+        required_provenance: [approval_ref, cost_ref]
+        execution: {kind: mcp, server: auftragsbuch}
+"""
+
+
+def test_rights_carrier_manifest_has_no_agent_rights(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, TRAEGER)
+
+    assert module.sync() == 0
+    text = (tmp_path / "agents" / "brain-sales" / "agent.toml").read_text(encoding="utf-8")
+    document = tomllib.loads(text)
+
+    assert document["mcp_servers"] == ["auftragsbuch"]
+    assert document["capabilities"]["tools"] == [
+        "mcp_auftragsbuch_auftrag_lesen",
+        "mcp_auftragsbuch_auftrag_probe",
+    ]
+    assert document["capabilities"]["network"] == []
+    assert document["capabilities"]["memory_read"] == []
+    assert document["capabilities"]["memory_write"] == []
+    assert "rights-carrier" in document["tags"]
+    assert document["description"].startswith("Rights carrier (no agent): ")
+    assert document["resources"]["max_llm_tokens_per_hour"] == 2000
+    prompt = document["model"]["system_prompt"]
+    assert "brain-sales accepts no messages." in prompt
+    assert "user_text" not in prompt
+    assert "memory_store" not in text and "memory_recall" not in text
+
+
+def _traeger_mit(zeile_alt: str, zeile_neu: str) -> str:
+    assert zeile_alt in TRAEGER
+    return TRAEGER.replace(zeile_alt, zeile_neu)
+
+
+def test_rights_carrier_must_be_boolean(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch,
+                        _traeger_mit("rights_carrier: true", 'rights_carrier: "ja"'))
+    assert any("rights_carrier" in e for e in module.validate_rights_carrier())
+    assert module.sync() == 1
+
+
+def test_rights_carrier_requires_mcp_tools(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch,
+                        _traeger_mit("mcp_tools: {auftragsbuch: [auftrag_probe, auftrag_lesen]}", "mcp_tools: {}"))
+    assert any("mcp_tools" in e for e in module.validate_rights_carrier())
+
+
+def test_rights_carrier_rejects_model_override_and_prompt_hint(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch,
+                        TRAEGER + "    model: {max_tokens: 100}\n    system_prompt_hint: hallo\n")
+    fehler = module.validate_rights_carrier()
+    assert any("model" in e for e in fehler)
+    assert any("system_prompt_hint" in e for e in fehler)
+
+
+def test_rights_carrier_events_must_be_mcp(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch,
+                        TRAEGER + "      sales.anderes: {tool: x, required_params: []}\n")
+    assert any("sales.anderes" in e for e in module.validate_rights_carrier())
+
+
+def test_space_without_rights_carrier_renders_as_before(tmp_path, monkeypatch):
+    """Der echte Eintrag `ideas` erzeugt weiter byte-gleich das eingecheckte Manifest."""
+    import pytest
+    modul = _load_sync_module()
+    vorhanden = ROOT / "openfang" / "agents" / "brain-ideas" / "agent.toml"
+    if not vorhanden.exists():
+        pytest.skip("Submodul openfang nicht ausgecheckt")
+    import yaml
+    spec = yaml.safe_load(modul.REGISTRY.read_text(encoding="utf-8"))["spaces"]["ideas"]
+    assert "rights_carrier" not in spec
+    assert modul._render_agent_toml("ideas", spec) == vorhanden.read_text(encoding="utf-8")

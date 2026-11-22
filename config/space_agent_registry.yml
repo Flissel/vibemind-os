@@ -358,6 +358,8 @@ spaces:
   # Auftragsbuchs fuer den Rechtetraeger brain-sales erreichbar.
   sales:
     agent: brain-sales
+    # Rechtetraeger: nur Ausweis und Rechte, kein Agent, der Nachrichten bearbeitet (Spec 8.3).
+    rights_carrier: true
     prefixes: [sales.]
     enabled: true
     description: "Sales (sales-claw): the Brain places orders of a fixed kind in the order book; the Sales agent takes them."

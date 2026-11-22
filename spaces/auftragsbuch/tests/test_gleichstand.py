@@ -25,6 +25,7 @@ def space(tools: list[str], ereignisse: dict[str, str] | None = None) -> dict:
     """Verzeichnis-Eintrag eines Rechtetraegers; `ereignisse` bildet Ereignisname auf Werkzeug ab."""
     return {
         "agent": "brain-sales",
+        "rights_carrier": True,
         "mcp_servers": ["auftragsbuch"],
         "mcp_tools": {"auftragsbuch": tools},
         "events": {
@@ -88,3 +89,11 @@ def test_echter_stand_ohne_freischaltung_faellt_auf():
     reg = copy.deepcopy(registry_echt())
     reg["sales"]["mcp_tools"]["auftragsbuch"].remove("auftrag_probe")
     assert any("sales.auftrag_probe" in s for s in gleichstand(ARTEN, reg, capabilities_echt()))
+
+
+def test_space_mit_auftragsbuch_ohne_rechtetraeger_faellt_auf():
+    reg = {"sales": space(tools=["auftrag_lesen"])}
+    reg["sales"]["rights_carrier"] = False
+    assert any("rights_carrier" in s for s in gleichstand(ARTEN, reg, []))
+    reg["sales"]["rights_carrier"] = True
+    assert gleichstand(ARTEN, reg, []) == []

@@ -89,3 +89,20 @@ def test_navigator_kennt_sales_ohne_aliase():
     caps = list(yaml.safe_load((BRAIN / "data" / "capabilities.yaml").read_text(encoding="utf-8")))
     probleme = registry_health(load_space_contract(REGISTRY), capabilities=caps)["issues"]
     assert not any("sales" in p.get("spaces", []) for p in probleme if p["kind"] == "navigator_missing_spaces")
+
+
+def test_manifest_von_brain_sales_ist_nur_ausweis():
+    import pytest
+
+    pfad = ROOT / "openfang" / "agents" / "brain-sales" / "agent.toml"
+    if not pfad.exists():
+        pytest.skip("Submodul openfang nicht ausgecheckt")
+    m = tomllib.loads(pfad.read_text(encoding="utf-8"))
+    assert m["mcp_servers"] == ["auftragsbuch"]
+    assert set(m["capabilities"]["tools"]) == {
+        "mcp_auftragsbuch_auftrag_probe", "mcp_auftragsbuch_auftrag_lesen"}
+    for schluessel in ("network", "memory_read", "memory_write"):
+        assert m["capabilities"][schluessel] == []
+    prompt = m["model"]["system_prompt"]
+    assert "accepts no messages" in prompt and "user_text" not in prompt
+    assert "rights-carrier" in m["tags"]

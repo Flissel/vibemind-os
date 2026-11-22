@@ -60,6 +60,12 @@ def gleichstand(
                     f"das nicht unter mcp_tools.{SERVER} freigeschaltet ist."
                 )
 
+        # Regel 5: Jeder Space mit dem Auftragsbuch-Server ist ein Rechtetraeger (nur Ausweis).
+        if hat_server and eintrag.get("rights_carrier") is not True:
+            abweichungen.append(
+                f"Space {space_id}: nutzt den Server {SERVER}, traegt aber nicht rights_carrier: true."
+            )
+
         if hat_server and eintrag.get("agent"):
             rechtetraeger_agenten[str(eintrag["agent"])] = space_id
 
