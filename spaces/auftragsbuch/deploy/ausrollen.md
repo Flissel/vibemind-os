@@ -274,12 +274,18 @@ Probe und Lesen sind zwei getrennte Pläne: Das Gehirn legt die Antwort eines We
 
 1. **Eigenes Ja des Betreibers:** Plan 1, Probe über das Gehirn: `POST /api/multihop/execute` mit genau einem
    Schritt ohne Absicht: `step_id: probe`, `execution_target: mcp:brain-sales:auftragsbuch:auftrag_probe`,
-   `arg_template: {}`, `output_var: probe`. Erwartung: Schritt `ok`; aus dem abgelegten Ergebnis (JSON-Text) die
+   `description` (Pflichtfeld, beliebiger Text), `arg_template: ""` (leerer Text, kein `{}`: das Gehirn macht aus
+   einem leeren Objekt den Text `{}` und reicht ihn als Argument `value` weiter, das die geschlossene Eingabe des
+   Werkzeugs ablehnt), `output_var: probe`. Erwartung: Schritt `ok`; aus dem abgelegten Ergebnis (JSON-Text) die
    Kennung `auftrag_id` und den `vertrag_hash` notieren.
-2. **Eigenes Ja des Betreibers:** Plan 2, Lesen: ein Schritt `step_id: lesen`,
-   `execution_target: mcp:brain-sales:auftragsbuch:auftrag_lesen`, `arg_template: {"id": "<auftrag_id aus Plan 1>"}`
-   (die Kennung von Hand eingesetzt). Erwartung: Schritt `ok`; `stand == "fertig"`, `an == "brain"`,
-   `art == "probe"`.
+2. **Eigenes Ja des Betreibers:** Plan 2, Lesen: ein Schritt `step_id: lesen`, `description`,
+   `execution_target: mcp:brain-sales:auftragsbuch:auftrag_lesen`, `arg_kwarg: id`,
+   `arg_template: "<auftrag_id aus Plan 1>"` (die Kennung von Hand eingesetzt; ohne `arg_kwarg` käme sie als
+   `value` an). Erwartung: Schritt `ok`; `stand == "fertig"`, `an == "brain"`, `art == "probe"`.
+   So gelaufen am 22.11.2026: Plan 1 in 0,9 s, Plan 2 in 1,1 s. Die Belege zu beiden Schritten liefert
+   `GET /api/runtime/receipts/<invocation_id>` von OpenFang (`invocation_id` =
+   `brain-mcp-` + die ersten 32 Zeichen von sha256 über `<plan_id>\n<plan_revision>\n<step_id>`); das allgemeine
+   Protokoll `/api/audit/recent` führt diese Aufrufe nicht.
 3. **Belege nachlesen**, unabhängig vom Gehirn: in `auftrag.auftraege` genau eine neue Zeile `von = brain, an = brain,
    art = probe, stand = fertig`; in der OpenFang-Datenbank zu beiden Schritten eine Freigabe und ein Beleg im Namen
    von `brain-sales`. Dieser Schritt liest nur und ändert nichts.
