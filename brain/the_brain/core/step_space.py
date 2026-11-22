@@ -59,6 +59,34 @@ def _space_aus_ereignis(ereignis: str, vertrag: SpaceContract) -> Optional[str]:
     return treffer
 
 
+_MCP_ZIEL = re.compile(r"^mcp:([^:]+):([^:]+):([^:]+)$")
+
+
+def _space_aus_mcp_ziel(ziel: str, vertrag: SpaceContract) -> Optional[str]:
+    """``mcp:<agent>:<server>:<werkzeug>`` ueber das Verzeichnis: Der Werkzeug-Server muss
+    nicht wie der Space heissen (``auftragsbuch`` gehoert zu ``sales``).
+
+    Zuerst das Ereignis, das genau dieses Werkzeug auf diesem Server ausfuehrt. Sonst der
+    Space, dem der Agent gehoert, sofern das genau einer ist.
+    """
+    gefunden = _MCP_ZIEL.match(ziel)
+    if not gefunden:
+        return None
+    agent, server, werkzeug = gefunden.groups()
+    mit_agent = []
+    for space_id, meta in vertrag.spaces.items():
+        if meta.get("agent") != agent:
+            continue
+        mit_agent.append(space_id)
+        for ereignis in (meta.get("events") or {}).values():
+            if not isinstance(ereignis, dict):
+                continue
+            ausfuehrung = ereignis.get("execution") or {}
+            if ereignis.get("tool") == werkzeug and ausfuehrung.get("server") == server:
+                return space_id
+    return mit_agent[0] if len(mit_agent) == 1 else None
+
+
 def space_for_step(
     capability: str,
     execution_target: str = "",
@@ -102,6 +130,6 @@ def space_for_step(
                     or normalize_space_id(gefunden.group(1), vertrag)
                 if space:
                     return space
-        return None
+        return _space_aus_mcp_ziel(ziel, vertrag)
     except Exception:
         return None

@@ -100,3 +100,18 @@ def test_die_schritt_meldungen_tragen_den_space():
     assert _hop_event(schritt, ergebnis)["space"] == "bubbles"
     allgemein = HopSpec(step_id="s2", description="Plaudern", capability="chitchat", arg_template="")
     assert _hop_event(allgemein, HopResult(step_id="s2", capability="chitchat", ok=True))["space"] is None
+
+@pytest.mark.parametrize("ziel, space", [
+    # Ein Schritt nur mit Ziel: der Werkzeug-Server heisst nicht wie der Space.
+    ("mcp:brain-sales:auftragsbuch:auftrag_probe", "sales"),
+    ("mcp:brain-sales:auftragsbuch:auftrag_lesen", "sales"),
+    # Werkzeug ohne eigenes Ereignis: der Agent gehoert genau einem Space.
+    ("mcp:brain-sales:auftragsbuch:noch_ohne_ereignis", "sales"),
+])
+def test_mcp_ziel_wird_ueber_das_verzeichnis_aufgeloest(vertrag, ziel, space):
+    assert space_for_step("", ziel, vertrag) == space
+
+
+def test_mcp_ziel_mit_fremdem_agenten_bleibt_allgemein(vertrag):
+    assert space_for_step("", "mcp:niemand:auftragsbuch:auftrag_probe", vertrag) is None
+    assert space_for_step("", "mcp:kaputt", vertrag) is None

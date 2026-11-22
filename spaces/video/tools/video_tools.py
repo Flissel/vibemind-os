@@ -171,7 +171,23 @@ def _load_env_fallback() -> None:
 
 _load_env_fallback()
 
-LAURA_URL = os.environ.get("LAURA_API_URL", "http://127.0.0.1:8765")
+def laura_adresse(env=None) -> str:
+    """Adresse des Video-Dienstes: ``LAURA_API_URL``, sonst ``LAURA_URL`` (so nennt ihn die
+    Startumgebung der App), sonst dieser Rechner.
+
+    In einem Container ist "dieser Rechner" der Container selbst. Laeuft der Dienst
+    woanders, muss eine der beiden Variablen gesetzt sein, sonst meldet der Status
+    zu Recht "nicht erreichbar".
+    """
+    env = os.environ if env is None else env
+    for name in ("LAURA_API_URL", "LAURA_URL"):
+        wert = str(env.get(name) or "").strip().rstrip("/")
+        if wert:
+            return wert
+    return "http://127.0.0.1:8765"
+
+
+LAURA_URL = laura_adresse()
 VOICEOVER_URL = os.environ.get("LAURA_VOICEOVER_URL", "http://127.0.0.1:8898")
 
 

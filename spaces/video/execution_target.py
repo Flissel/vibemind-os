@@ -205,7 +205,12 @@ def _space_status(event_type: str) -> Dict[str, Any]:
     if not isinstance(result, dict):
         raise RuntimeError("video status tool returned a non-object result")
     if event_type == "video.status":
-        available = bool(result.get("vibevideo_installed") and result.get("deepfake_installed"))
+        # Der Video-Dienst (Laura) traegt den Space. Die beiden alten Befehlszeilen-
+        # Werkzeuge liegen in keinem Abbild; allein an ihnen gemessen war der Status
+        # immer "nicht verfuegbar", auch wenn der Dienst lief.
+        laura = result.get("laura")
+        laura_ok = isinstance(laura, dict) and laura.get("ok") is True
+        available = laura_ok or bool(result.get("vibevideo_installed") and result.get("deepfake_installed"))
     else:
         available = bool(result.get("available"))
     if not available:

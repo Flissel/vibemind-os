@@ -189,3 +189,47 @@ def test_brain_direct_executor_forwards_plan_payload_to_video_tool(
     assert accepted["status"] == "accepted"
     assert _wait_for_terminal(accepted["job_id"])["status"] == "completed"
     assert received["text"] == "Hallo aus dem Brain"
+
+
+def test_provider_status_is_available_when_laura_answers(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Die alten Befehlszeilen-Werkzeuge liegen in keinem Abbild; der Video-Dienst (Laura) zaehlt.
+    monkeypatch.setattr(
+        execution_target,
+        "_resolve_tool",
+        lambda _event_type: lambda: {
+            "success": True,
+            "laura": {"ok": True, "status": 200, "url": "http://video.example.test:8765"},
+            "vibevideo_installed": False,
+            "deepfake_installed": False,
+        },
+    )
+
+    result = execution_target.execute_video({"event_type": "video.status"})
+
+    assert result["status"] == "available"
+    assert result["success"] is True
+
+
+def test_provider_status_fails_closed_when_laura_does_not_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        execution_target,
+        "_resolve_tool",
+        lambda _event_type: lambda: {
+            "success": True,
+            "laura": {"ok": False, "error": "refused", "url": "http://127.0.0.1:8765"},
+            "vibevideo_installed": False,
+            "deepfake_installed": False,
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="video providers unavailable"):
+        execution_target.execute_video({"event_type": "video.status"})
+
+
+def test_laura_address_falls_back_to_the_name_the_app_uses() -> None:
+    from spaces.video.tools.video_tools import laura_adresse
+
+    assert laura_adresse({}) == "http://127.0.0.1:8765"
+    assert laura_adresse({"LAURA_URL": " http://video.example.test:8765/ "}) == "http://video.example.test:8765"
+    assert laura_adresse({"LAURA_API_URL": "http://a.example.test:1", "LAURA_URL": "http://b.example.test:2"}) == "http://a.example.test:1"
+    assert laura_adresse({"LAURA_API_URL": "  ", "LAURA_URL": "http://b.example.test:2"}) == "http://b.example.test:2"
