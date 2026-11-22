@@ -215,8 +215,16 @@ Werkzeug-Servers `auftragsbuch` steht seit Task 7 in `openfang/openfang.vibemind
    - Welche Agenten führen ein Werkzeug `mcp_auftragsbuch_*`? Am PC, der Schlüssel von OpenFang kommt aus der
      Root-`.env` und steht nie auf der Kommandozeile:
      `"<PFAD-ZUR-VENV>/Scripts/python.exe" "<PFAD-ZUM-AEUSSEREN-REPO>/scripts/mcp_mit_env.py" --env OPENFANG_API_KEY --set OPENFANG_URL=http://127.0.0.1:4200 -- "<ZWEIG-CHECKOUT>/spaces/auftragsbuch/deploy/openfang_aufruf.py" werkzeuge-je-agent auftragsbuch`.
-     Erwartet ist genau eine Zeile `brain-sales: mcp_auftragsbuch_auftrag_lesen, mcp_auftragsbuch_auftrag_probe`
-     und Exit 0. Jeder weitere Agent steht als eigene Zeile (Exit 1); er wird notiert und dem Betreiber gemeldet. Ein Agent mit leerem `mcp_servers` sieht alle Werkzeug-Server, mit
+     Das Hilfsprogramm holt die Agentenliste und je Agent dessen Detail (die Liste trägt keine Werkzeuge) und gibt
+     zwei Gruppen aus. Gruppe 1, ausdrücklich: Agenten mit einem Werkzeug `mcp_auftragsbuch_*` in
+     `capabilities.tools`, je Zeile Name und diese Werkzeuge. Erwartet ist genau eine Zeile
+     `brain-sales: mcp_auftragsbuch_auftrag_lesen, mcp_auftragsbuch_auftrag_probe`; nur dann Exit 0, jeder weitere
+     Agent oder eine abweichende Werkzeugmenge ergibt Exit 1. Gruppe 2 unter der Überschrift
+     `offener Zugang (sieht alle Werkzeuge des Servers):`: Agenten mit leerer oder `*`-Werkzeugliste, die den Server
+     sehen (`mcp_servers_mode` `all`, `auftragsbuch` in `mcp_servers` oder `mcp_servers` leer), je Zeile nur der
+     Name. Sie wird immer ausgegeben und ändert den Exit-Code nicht (bekannte Lücke, siehe „Offene Punkte für
+     Stufe 2“); jeder dort genannte Agent wird notiert und dem Betreiber gemeldet. Scheitert ein Detail-Abruf,
+     endet der Befehl mit Exit 1 und `unerwartet (<Status>)`. Ein Agent mit leerem `mcp_servers` sieht alle Werkzeug-Server, mit
      leerem `capabilities.tools` auch alle ihre Werkzeuge; nach dem Repo (Test
      `tests/test_openfang_offene_mcp_zugaenge.py`) gilt das für `capability-gap-filer` und
      `learning-course-factory`, sofern sie im Betrieb geladen sind. Die Sperre je Auftragsart in OpenFang gilt nur

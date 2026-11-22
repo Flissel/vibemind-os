@@ -405,6 +405,8 @@ def test_runbook_openfang_aufrufe_laufen_ueber_das_hilfsprogramm_mit_der_markerr
     assert f"`{_OPENFANG_START} werkzeuge-je-agent auftragsbuch`" in pruefen
     assert _LESEND in pruefen and _JA not in pruefen
     assert "`brain-sales: mcp_auftragsbuch_auftrag_lesen, mcp_auftragsbuch_auftrag_probe`" in pruefen
+    assert "`offener Zugang (sieht alle Werkzeuge des Servers):`" in pruefen and "ändert den Exit-Code nicht" in pruefen
+    assert "`unerwartet (<Status>)`" in pruefen and "`capabilities.tools`" in pruefen
     (gegen,) = [p for p in punkte if "gegenprobe brain-sales" in p]
     assert f"`{_OPENFANG_START} gegenprobe brain-sales sales_post_pruefen`" in gegen
     assert _JA in gegen and "direkt an OpenFang" in gegen

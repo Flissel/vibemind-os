@@ -7,9 +7,12 @@ scripts/mcp_mit_env.py aus der Root-.env des aeusseren Repos gesetzt, wie bei de
     -- <vibemind-os>/spaces/auftragsbuch/deploy/openfang_aufruf.py <unterbefehl> ...
 
 Unterbefehle (jeder gibt nur das Genannte aus, nie Schluessel, Adresse oder einen Antwortkoerper):
-  werkzeuge-je-agent auftragsbuch      GET /api/agents; je Agent mit einem Werkzeug `mcp_auftragsbuch_*` eine Zeile
-                                       `<Agent>: <Werkzeuge>`. Exit 0 nur, wenn genau `brain-sales` mit genau
-                                       `mcp_auftragsbuch_auftrag_lesen` und `mcp_auftragsbuch_auftrag_probe` dasteht.
+  werkzeuge-je-agent auftragsbuch      GET /api/agents (Liste ohne Werkzeuge), dann je Agent GET /api/agents/<Kennung>.
+                                       Gruppe 1: je Agent mit `mcp_auftragsbuch_*` in `capabilities.tools` eine Zeile
+                                       `<Agent>: <Werkzeuge>`; Exit 0 nur, wenn genau `brain-sales` mit genau
+                                       `mcp_auftragsbuch_auftrag_lesen` und `..._auftrag_probe` dasteht. Gruppe 2 unter
+                                       `offener Zugang ...:`: Agenten mit leeren oder `*`-Werkzeugen, die den Server
+                                       sehen (nur Namen; aendert den Exit nicht). Scheitert ein Detail: Exit 1.
   gegenprobe brain-sales sales_post_pruefen
                                        tools/call von `mcp_auftragsbuch_sales_post_pruefen` an OpenFangs /mcp im Namen
                                        des Agenten (ohne Freigabe- und Kostenkopf: Ablehnung ist das Erwartete).
@@ -136,36 +139,69 @@ def _kennung(agenten: list[dict[str, object]], name: str) -> str | None:
     return None
 
 
-def _werkzeugnamen(agent: Mapping[str, object]) -> set[str]:
-    """Werkzeugnamen eines Agenten, defensiv aus `capabilities.tools` und `tools` (Text oder Objekt mit `name`)."""
-    quellen: list[object] = [agent.get("tools")]
-    faehigkeiten = agent.get("capabilities")
-    if isinstance(faehigkeiten, dict):
-        quellen.append(faehigkeiten.get("tools"))
-    namen: set[str] = set()
-    for quelle in quellen:
-        if not isinstance(quelle, list):
-            continue
-        for eintrag in quelle:
-            name = eintrag.get("name") if isinstance(eintrag, dict) else eintrag
-            if isinstance(name, str):
-                namen.add(name)
-    return namen
+def _detail(client: OpenFang, kennung: str) -> tuple[dict[str, object] | None, str]:
+    """(Detail, Grund) von GET /api/agents/<kennung>; Detail ist None bei Fehler."""
+    status, text = client.senden("GET", f"/api/agents/{urllib.parse.quote(kennung, safe='')}")
+    if status is None:
+        return None, "nicht erreichbar"
+    if status in (401, 403):
+        return None, "Schluessel abgelehnt"
+    if status != 200:
+        return None, f"Status {status}"
+    try:
+        detail = json.loads(text)
+    except ValueError:
+        return None, "keine JSON-Antwort"
+    if not isinstance(detail, dict):
+        return None, "Agentendetail ungueltig"
+    return detail, ""
+
+
+def _werkzeugnamen(detail: Mapping[str, object]) -> list[str]:
+    """`capabilities.tools` des Agenten-Details (Namen); alles andere zaehlt als leer."""
+    faehigkeiten = detail.get("capabilities")
+    werkzeuge = faehigkeiten.get("tools") if isinstance(faehigkeiten, dict) else None
+    return [w for w in werkzeuge if isinstance(w, str)] if isinstance(werkzeuge, list) else []
+
+
+def _sieht_server(detail: Mapping[str, object], server: str) -> bool:
+    """`mcp_servers_mode == all`, der Server steht in `mcp_servers`, oder `mcp_servers` ist leer."""
+    liste = detail.get("mcp_servers")
+    namen = [n for n in liste if isinstance(n, str)] if isinstance(liste, list) else []
+    return detail.get("mcp_servers_mode") == "all" or server in namen or not namen
 
 
 def werkzeuge_je_agent(client: OpenFang, aus: TextIO, fehler: TextIO) -> int:
+    """Gruppe 1 `<Agent>: <Werkzeuge>` (ausdruecklich, bestimmt den Exit); Gruppe 2 nur Namen (offener Zugang)."""
     agenten, grund = _agentenliste(client)
     if agenten is None:
         print(f"unerwartet ({grund})", file=fehler)
         return 1
-    gefunden: dict[str, list[str]] = {}
-    for agent in agenten:
-        treffer = sorted(n for n in _werkzeugnamen(agent) if n.startswith(WERKZEUG_VORSATZ))
+    ausdruecklich: dict[str, list[str]] = {}
+    offen: list[str] = []
+    for agent in agenten:  # die Liste traegt keine Werkzeuge: je Agent das Detail holen
+        kennung = agent.get("id") or agent.get("agent_id")
+        if not isinstance(kennung, str) or not kennung.strip():
+            print("unerwartet (Agentenliste ungueltig)", file=fehler)
+            return 1
+        detail, grund = _detail(client, kennung.strip())
+        if detail is None:
+            print(f"unerwartet ({grund})", file=fehler)
+            return 1
+        name = str(detail.get("name") or agent.get("name") or "?")
+        werkzeuge = _werkzeugnamen(detail)
+        treffer = sorted(w for w in werkzeuge if w.startswith(WERKZEUG_VORSATZ))
         if treffer:
-            gefunden[str(agent.get("name") or "?")] = treffer
-    for name, treffer in gefunden.items():
+            ausdruecklich[name] = treffer
+        if (not werkzeuge or "*" in werkzeuge) and _sieht_server(detail, "auftragsbuch"):
+            offen.append(name)
+    for name, treffer in ausdruecklich.items():
         print(f"{name}: {', '.join(treffer)}", file=aus)
-    if gefunden == {ERWARTET_AGENT: list(ERWARTETE_WERKZEUGE)}:
+    if offen:
+        print("offener Zugang (sieht alle Werkzeuge des Servers):", file=aus)
+        for name in offen:
+            print(name, file=aus)
+    if ausdruecklich == {ERWARTET_AGENT: list(ERWARTETE_WERKZEUGE)}:
         return 0
     print(f"abweichend: erwartet genau {ERWARTET_AGENT} mit {', '.join(ERWARTETE_WERKZEUGE)}", file=fehler)
     return 1

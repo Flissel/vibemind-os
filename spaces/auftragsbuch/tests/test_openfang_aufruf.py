@@ -29,14 +29,23 @@ KENNUNG = "kennung-123"
 Antwort = tuple[int, object]
 
 
+def _detail(name: str, werkzeuge: list[str], server: list[str], modus: str) -> dict[str, object]:
+    return {"id": name, "name": name, "capabilities": {"network": [], "tools": werkzeuge},
+            "mcp_servers": server, "mcp_servers_mode": modus}
+
+
 class _Attrappe:
     def __init__(self) -> None:
         self.port = 0
         self.anfragen: list[dict[str, object]] = []
-        self.agenten: object = [
-            {"id": KENNUNG, "name": "brain-sales", "capabilities": {"tools": [PROBE, LESEN]}},
-            {"id": "x2", "name": "anderer", "capabilities": {"tools": ["file_read"]}},
-        ]
+        # Wie die Live-Liste (22.11. gemessen): nur Kopfdaten, keine Werkzeuge.
+        self.agenten: object = [{"id": KENNUNG, "name": "brain-sales", "state": "Running"},
+                                {"id": "x2", "name": "anderer", "state": "Running"}]
+        # GET /api/agents/<id>: (Status, Objekt); wie live mit capabilities, mcp_servers, mcp_servers_mode.
+        self.details: dict[str, Antwort] = {
+            KENNUNG: (200, _detail("brain-sales", [PROBE, LESEN], ["auftragsbuch"], "allowlist")),
+            "x2": (200, _detail("anderer", ["file_read"], [], "allowlist")),
+        }
         self.agenten_status = 200
         self.mcp: Callable[[dict[str, object]], Antwort] = lambda _k: (200, {"jsonrpc": "2.0", "id": 1, "error": {
             "code": -32001, "message": "tool not allowed"}})
@@ -86,6 +95,9 @@ def openfang() -> Iterator[_Attrappe]:
                     self._antworten(302, None, att.agenten_ort)
                 else:
                     self._antworten(att.agenten_status, att.agenten)
+            elif self.path.startswith("/api/agents/") and self.path[len("/api/agents/"):] in att.details:
+                status, koerper = att.details[self.path[len("/api/agents/"):]]
+                self._antworten(status, koerper)
             else:
                 self._antworten(200, {"ziel": "erreicht"})
 
@@ -125,49 +137,103 @@ def _kein_geheimnis(openfang: _Attrappe, *texte: str) -> None:
 
 # ---- werkzeuge-je-agent ----
 
-def test_werkzeuge_je_agent_erwartet_genau_brain_sales(openfang: _Attrappe) -> None:
+OFFEN = "offener Zugang (sieht alle Werkzeuge des Servers):"
+
+
+def _setze(openfang: _Attrappe, *agenten: tuple[str, list[str], list[str], str]) -> None:
+    """Liste und Details der Attrappe neu setzen; Kennung ist der Name (brain-sales behaelt KENNUNG)."""
+    openfang.agenten = [{"id": KENNUNG if n == "brain-sales" else n, "name": n} for n, *_ in agenten]
+    openfang.details = {(KENNUNG if n == "brain-sales" else n): (200, _detail(n, w, srv, m)) for n, w, srv, m in agenten}
+
+
+def test_werkzeuge_je_agent_nur_brain_sales_ausdruecklich_ist_exit_0(openfang: _Attrappe) -> None:
     code, aus, fehler = _lauf(["werkzeuge-je-agent", "auftragsbuch"], openfang.umgebung)
     assert code == 0 and fehler == ""
     assert aus == f"brain-sales: {LESEN}, {PROBE}\n"
     _kein_geheimnis(openfang, aus, fehler)
-    (anfrage,) = openfang.anfragen
-    assert anfrage["methode"] == "GET" and anfrage["pfad"] == "/api/agents"
-    assert anfrage["kopf"]["authorization"] == f"Bearer {SCHLUESSEL}"  # type: ignore[index]
+    # erst die Liste, dann das Detail je Agent
+    assert openfang.pfade() == ["GET /api/agents", f"GET /api/agents/{KENNUNG}", "GET /api/agents/x2"]
+    for anfrage in openfang.anfragen:
+        assert anfrage["kopf"]["authorization"] == f"Bearer {SCHLUESSEL}"  # type: ignore[index]
 
 
-def test_werkzeuge_je_agent_nimmt_objekt_mit_agents_und_werkzeuge_als_objekte(openfang: _Attrappe) -> None:
-    openfang.agenten = {"agents": [{"id": KENNUNG, "name": "brain-sales", "tools": [{"name": PROBE}, {"name": LESEN}]}]}
+def test_werkzeuge_je_agent_nimmt_auch_objekt_mit_agents(openfang: _Attrappe) -> None:
+    openfang.agenten = {"agents": openfang.agenten}
     code, aus, _ = _lauf(["werkzeuge-je-agent", "auftragsbuch"], openfang.umgebung)
     assert code == 0 and aus == f"brain-sales: {LESEN}, {PROBE}\n"
 
 
-@pytest.mark.parametrize("agenten, zeilen", [
-    # ein weiterer Agent sieht Werkzeuge des Dienstes
-    ([{"name": "brain-sales", "capabilities": {"tools": [PROBE, LESEN]}},
-      {"name": "offen", "capabilities": {"tools": [LESEN, "datei_lesen"]}}],
-     [f"brain-sales: {LESEN}, {PROBE}", f"offen: {LESEN}"]),
-    # brain-sales mit zu vielen Werkzeugen
-    ([{"name": "brain-sales", "capabilities": {"tools": [PROBE, LESEN, POST_PRUEFEN]}}],
-     [f"brain-sales: {LESEN}, {PROBE}, {POST_PRUEFEN}"]),
-    # brain-sales mit zu wenigen
-    ([{"name": "brain-sales", "capabilities": {"tools": [PROBE]}}], [f"brain-sales: {PROBE}"]),
-    # niemand
-    ([{"name": "brain-sales", "capabilities": {"tools": []}}], []),
-])
-def test_werkzeuge_je_agent_weicht_ab_mit_exit_1(openfang: _Attrappe, agenten: list[dict[str, object]],
-                                                  zeilen: list[str]) -> None:
-    openfang.agenten = agenten
+def test_werkzeuge_je_agent_zweiter_ausdruecklicher_agent_ist_exit_1(openfang: _Attrappe) -> None:
+    _setze(openfang, ("brain-sales", [PROBE, LESEN], ["auftragsbuch"], "allowlist"),
+           ("zweiter", [LESEN, "datei_lesen"], ["auftragsbuch"], "allowlist"))
     code, aus, fehler = _lauf(["werkzeuge-je-agent", "auftragsbuch"], openfang.umgebung)
     assert code == 1
-    assert aus.splitlines() == zeilen
+    assert aus.splitlines() == [f"brain-sales: {LESEN}, {PROBE}", f"zweiter: {LESEN}"]
     assert "abweichend" in fehler
     _kein_geheimnis(openfang, aus, fehler)
 
 
+@pytest.mark.parametrize("werkzeuge", [[PROBE, LESEN, POST_PRUEFEN], [PROBE], []])
+def test_werkzeuge_je_agent_brain_sales_mit_falscher_menge_ist_exit_1(openfang: _Attrappe,
+                                                                      werkzeuge: list[str]) -> None:
+    _setze(openfang, ("brain-sales", werkzeuge, ["auftragsbuch"], "allowlist"))
+    code, aus, fehler = _lauf(["werkzeuge-je-agent", "auftragsbuch"], openfang.umgebung)
+    assert code == 1 and "abweichend" in fehler
+    # leere Werkzeugliste heisst offener Zugang: brain-sales steht dann in Gruppe 2, nicht in Gruppe 1
+    assert aus.splitlines() == ([f"brain-sales: {', '.join(sorted(werkzeuge))}"] if werkzeuge else [OFFEN, "brain-sales"])
+
+
+@pytest.mark.parametrize("werkzeuge, server, modus", [
+    ([], [], "allowlist"),                       # leere Liste, leeres mcp_servers: sieht alles
+    (["*"], ["auftragsbuch"], "allowlist"),      # Stern, Server ausdruecklich erlaubt
+    ([], ["anderer-server"], "all"),             # Modus all
+])
+def test_werkzeuge_je_agent_nennt_offene_agenten_ohne_den_exit_zu_aendern(
+        openfang: _Attrappe, werkzeuge: list[str], server: list[str], modus: str) -> None:
+    _setze(openfang, ("brain-sales", [PROBE, LESEN], ["auftragsbuch"], "allowlist"), ("offen", werkzeuge, server, modus))
+    code, aus, fehler = _lauf(["werkzeuge-je-agent", "auftragsbuch"], openfang.umgebung)
+    assert code == 0 and fehler == ""
+    assert aus.splitlines() == [f"brain-sales: {LESEN}, {PROBE}", OFFEN, "offen"]
+    _kein_geheimnis(openfang, aus, fehler)
+
+
+@pytest.mark.parametrize("werkzeuge, server, modus", [
+    ([], ["anderer-server"], "allowlist"),       # sieht den Server nicht
+    (["datei_lesen"], [], "all"),                # eigene Werkzeugliste ohne Server-Werkzeuge
+    (["datei_lesen"], ["auftragsbuch"], "allowlist"),
+])
+def test_werkzeuge_je_agent_nennt_geschlossene_agenten_nicht(
+        openfang: _Attrappe, werkzeuge: list[str], server: list[str], modus: str) -> None:
+    _setze(openfang, ("brain-sales", [PROBE, LESEN], ["auftragsbuch"], "allowlist"), ("zu", werkzeuge, server, modus))
+    code, aus, _ = _lauf(["werkzeuge-je-agent", "auftragsbuch"], openfang.umgebung)
+    assert code == 0 and aus == f"brain-sales: {LESEN}, {PROBE}\n"
+
+
+def test_werkzeuge_je_agent_offener_agent_allein_ist_exit_1_weil_brain_sales_fehlt(openfang: _Attrappe) -> None:
+    _setze(openfang, ("offen", [], [], "allowlist"))
+    code, aus, _ = _lauf(["werkzeuge-je-agent", "auftragsbuch"], openfang.umgebung)
+    assert code == 1 and aus.splitlines() == [OFFEN, "offen"]
+
+
+@pytest.mark.parametrize("status", [500, 404, 401])
+def test_werkzeuge_je_agent_fehlgeschlagenes_detail_ist_exit_1_ohne_ausgabe(openfang: _Attrappe, status: int) -> None:
+    openfang.details["x2"] = (status, {"fehler": "GEHEIM-detail"})
+    code, aus, fehler = _lauf(["werkzeuge-je-agent", "auftragsbuch"], openfang.umgebung)
+    erwartet = "Schluessel abgelehnt" if status == 401 else f"Status {status}"
+    assert code == 1 and aus == "" and fehler == f"unerwartet ({erwartet})\n"
+    assert "GEHEIM-detail" not in aus + fehler
+
+
+def test_werkzeuge_je_agent_detail_ohne_objekt_ist_exit_1(openfang: _Attrappe) -> None:
+    openfang.details["x2"] = (200, ["liste"])
+    code, aus, fehler = _lauf(["werkzeuge-je-agent", "auftragsbuch"], openfang.umgebung)
+    assert code == 1 and aus == "" and fehler == "unerwartet (Agentendetail ungueltig)\n"
+
+
 @pytest.mark.parametrize("status, agenten, grund", [
     (401, None, "Schluessel abgelehnt"), (500, None, "Status 500"), (200, "kaputt", "Agentenliste ungueltig")])
-def test_werkzeuge_je_agent_fehler_nennen_festen_grund(openfang: _Attrappe, status: int, agenten: object,
-                                                       grund: str) -> None:
+def test_werkzeuge_je_agent_fehler_der_liste_nennen_festen_grund(openfang: _Attrappe, status: int, agenten: object,
+                                                                 grund: str) -> None:
     openfang.agenten_status, openfang.agenten = status, agenten
     code, aus, fehler = _lauf(["werkzeuge-je-agent", "auftragsbuch"], openfang.umgebung)
     assert code == 1 and aus == "" and fehler == f"unerwartet ({grund})\n"
@@ -316,7 +382,7 @@ def test_proxy_aus_der_umgebung_wird_ignoriert(openfang: _Attrappe, monkeypatch:
     monkeypatch.delenv("NO_PROXY", raising=False)
     monkeypatch.delenv("no_proxy", raising=False)
     assert _lauf(["werkzeuge-je-agent", "auftragsbuch"], openfang.umgebung)[0] == 0
-    assert len(openfang.anfragen) == 1
+    assert openfang.anfragen
 
 
 def test_dienst_aus_ist_fester_grund_ohne_adresse() -> None:
