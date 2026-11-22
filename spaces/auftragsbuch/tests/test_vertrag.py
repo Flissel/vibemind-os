@@ -9,6 +9,7 @@ from spaces.auftragsbuch.vertrag import (
     VertragsFehler,
     lade_auftragsarten,
     pruefe_eingabe,
+    pruefe_ergebnis,
     vertrag_hash,
     werkzeugname,
 )
@@ -97,6 +98,63 @@ def test_form_pruefung_nennt_keine_werte(tmp_path):
     with pytest.raises(FormFehler) as e:
         pruefe_eingabe(a, {"zeitraum": "geheim-123", "entwuerfe_anlegen": True})
     assert "geheim-123" not in str(e.value)
+
+
+def _offen(innen: dict) -> dict:
+    """Ergebnis-Schema mit einem verschachtelten Teil-Schema `innen` unter properties/faellig."""
+    return {"type": "object", "additionalProperties": False, "properties": {"faellig": innen}}
+
+
+_PUNKT_OFFEN = {"type": "object", "properties": {"titel": {"type": "string"}}}
+
+
+@pytest.mark.parametrize("ergebnis, pfad", [
+    (_offen({"type": "array", "items": _PUNKT_OFFEN}), "properties/faellig/items"),
+    (_offen({"type": "array", "prefixItems": [{"type": "string"}, _PUNKT_OFFEN]}),
+     "properties/faellig/prefixItems/1"),
+    (_offen({"anyOf": [{"type": "null"}, _PUNKT_OFFEN]}), "properties/faellig/anyOf/1"),
+    (_offen({"oneOf": [_PUNKT_OFFEN]}), "properties/faellig/oneOf/0"),
+    (_offen({"allOf": [_PUNKT_OFFEN]}), "properties/faellig/allOf/0"),
+    (_offen({"type": ["object", "null"], "properties": {"titel": {"type": "string"}}}),
+     "properties/faellig"),
+    (_offen({"type": "object", "additionalProperties": True}), "properties/faellig"),
+    (_offen({"type": "object", "additionalProperties": False, "properties": {"tief": _PUNKT_OFFEN}}),
+     "properties/faellig/properties/tief"),
+])
+def test_verschachtelt_offenes_objekt_scheitert_mit_datei_art_und_pfad(tmp_path, ergebnis, pfad):
+    schreibe(tmp_path, "demo", [{**GUELTIG, "ergebnis": ergebnis}])
+    with pytest.raises(VertragsFehler) as e:
+        lade_auftragsarten(tmp_path)
+    text = str(e.value)
+    assert "demo.contract.yaml" in text and "post_pruefen" in text and "ergebnis" in text
+    assert "additionalProperties" in text and f"'{pfad}'" in text
+
+
+def test_offenes_objekt_unter_not_ist_erlaubt(tmp_path):
+    ergebnis = _offen({"type": "string", "not": {"type": "object"}})
+    schreibe(tmp_path, "demo", [{**GUELTIG, "ergebnis": ergebnis}])
+    assert ("demo", "post_pruefen") in lade_auftragsarten(tmp_path)
+
+
+def test_verschachtelt_geschlossen_laedt_und_haelt_den_mailtext_auf(tmp_path):
+    punkt = {"type": "object", "additionalProperties": False, "properties": {"titel": {"type": "string"}}}
+    ergebnis = _offen({"type": "array", "items": punkt})
+    schreibe(tmp_path, "demo", [{**GUELTIG, "ergebnis": ergebnis}])
+    a = lade_auftragsarten(tmp_path)[("demo", "post_pruefen")]
+    pruefe_ergebnis(a, {"faellig": [{"titel": "t"}]})
+    with pytest.raises(FormFehler) as e:
+        pruefe_ergebnis(a, {"faellig": [{"titel": "t", "text": "ganzer Mail-Text"}]})
+    assert "ganzer Mail-Text" not in str(e.value) and "'faellig/0'" in str(e.value)
+
+
+def test_feldpfad_nennt_nur_schluessel_aus_dem_schema(tmp_path):
+    eingabe = {"type": "object", "additionalProperties": False,
+               "patternProperties": {"^x": {"type": "integer"}}}
+    schreibe(tmp_path, "demo", [{**GUELTIG, "eingabe": eingabe}])
+    a = lade_auftragsarten(tmp_path)[("demo", "post_pruefen")]
+    with pytest.raises(FormFehler) as e:
+        pruefe_eingabe(a, {"x-GEHEIMER-SCHLUESSEL": "kein int"})
+    assert "GEHEIMER" not in str(e.value) and "Regel 'type'" in str(e.value)
 
 
 def test_hash_ist_stabil_und_aendert_sich_mit_der_form(tmp_path):

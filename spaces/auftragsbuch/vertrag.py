@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -63,6 +64,48 @@ def _ist_ganzzahl(wert: object) -> bool:
     return isinstance(wert, int) and not isinstance(wert, bool)
 
 
+# Teil-Schemata, die der Lader durchgeht: einzelnes Schema, Liste von Schemata, Name -> Schema.
+# `not` fehlt bewusst: ein offenes Objekt unter `not` laesst nichts zusaetzlich durch.
+_EIN_SCHEMA = ("items", "contains", "if", "then", "else", "additionalProperties")
+_SCHEMA_LISTE = ("prefixItems", "anyOf", "oneOf", "allOf")
+_SCHEMA_TABELLE = ("properties", "patternProperties", "dependentSchemas", "$defs")
+
+
+def _teil_schemata(schema: dict) -> list[tuple[tuple[object, ...], object]]:
+    """(Pfad im Schema, Teil-Schema) fuer jedes direkte Teil-Schema."""
+    teile: list[tuple[tuple[object, ...], object]] = []
+    for wort in _EIN_SCHEMA:
+        wert = schema.get(wort)
+        if isinstance(wert, dict):
+            teile.append(((wort,), wert))
+        elif wort == "items" and isinstance(wert, list):  # aeltere Listenform
+            teile += [((wort, i), t) for i, t in enumerate(wert)]
+    for wort in _SCHEMA_LISTE:
+        wert = schema.get(wort)
+        if isinstance(wert, list):
+            teile += [((wort, i), t) for i, t in enumerate(wert)]
+    for wort in _SCHEMA_TABELLE:
+        wert = schema.get(wort)
+        if isinstance(wert, dict):
+            teile += [((wort, k), t) for k, t in wert.items()]
+    return teile
+
+
+def _ist_objekt_typ(schema: dict) -> bool:
+    typ = schema.get("type")
+    return typ == "object" or (isinstance(typ, list) and "object" in typ)
+
+
+def _pruefe_geschlossen(name: str, schema: object, ort: str, pfad: tuple[object, ...]) -> None:
+    """Jedes Teil-Schema mit type object (auch in einer Typ-Liste) braucht additionalProperties: false."""
+    if not isinstance(schema, dict):
+        return
+    if pfad and _ist_objekt_typ(schema) and schema.get("additionalProperties") is not False:
+        raise VertragsFehler(f"{ort}: {name} braucht additionalProperties: false bei '{_pfad(pfad)}'")
+    for teil_pfad, teil in _teil_schemata(schema):
+        _pruefe_geschlossen(name, teil, ort, pfad + teil_pfad)
+
+
 def _pruefe_schema(name: str, schema: object, ort: str) -> dict:
     if not isinstance(schema, dict):
         raise VertragsFehler(f"{ort}: {name} muss ein Objekt (JSON Schema) sein")
@@ -77,6 +120,7 @@ def _pruefe_schema(name: str, schema: object, ort: str) -> dict:
             f"{ort}: {name} ist kein gueltiges JSON Schema "
             f"(Regel '{e.validator}' bei '{_pfad(e.path)}')"
         ) from None
+    _pruefe_geschlossen(name, schema, ort, ())
     return schema
 
 
@@ -157,13 +201,30 @@ def lade_auftragsarten(ordner: Path) -> dict[tuple[str, str], Auftragsart]:
     return ergebnis
 
 
+def _schema_schluessel(schema: object) -> set[str]:
+    """Alle Feldnamen, die das Schema unter `properties` nennt (auf jeder Tiefe)."""
+    if not isinstance(schema, dict):
+        return set()
+    eigene = schema.get("properties")
+    namen = {k for k in eigene if isinstance(k, str)} if isinstance(eigene, dict) else set()
+    for _ort, teil in _teil_schemata(schema):
+        namen |= _schema_schluessel(teil)
+    return namen
+
+
+def _feldpfad(teile: Iterable[object], bekannt: set[str]) -> str:
+    """Feldpfad nur aus Schluesseln des Schemas und Listen-Indizes; alles andere wird `?`."""
+    return _pfad(t if isinstance(t, int) or t in bekannt else "?" for t in teile)
+
+
 def _pruefe_form(name: str, schema: dict, wert: object) -> None:
+    bekannt = _schema_schluessel(schema)
     fehler = sorted(
         Draft202012Validator(schema).iter_errors(wert),
-        key=lambda e: (list(map(str, e.absolute_path)), e.validator),
+        key=lambda e: (_feldpfad(e.absolute_path, bekannt), e.validator),
     )
     if fehler:
-        teile = [f"Regel '{e.validator}' bei '{_pfad(e.absolute_path)}'" for e in fehler]
+        teile = [f"Regel '{e.validator}' bei '{_feldpfad(e.absolute_path, bekannt)}'" for e in fehler]
         raise FormFehler(f"{name} verletzt das Schema: " + "; ".join(teile))
 
 
