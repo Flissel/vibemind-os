@@ -1,0 +1,46 @@
+# Compose-Projekt `auftragsbuch`: ein Dienst, kein anderer Container wird beruehrt.
+# Laeuft auf dem Mini-PC im Ordner spaces/auftragsbuch (Anleitung: deploy/ausrollen.md):
+#   AUFTRAGSBUCH_TAG=<git-kurz-sha> docker compose up -d --build
+#
+# Nicht hier und nicht im Repo (oeffentlich): DSN, Schluessel-Hash, private Werte. Die beiden
+# Geheimnisse kommen als Dateien aus ./laufzeit/ (von deploy/anbinden.sh per stdin geschrieben)
+# und werden nur ueber *_FILE gelesen. Die privaten Einstellungen stehen in ./laufzeit/werte.env
+# (Vorlage: deploy/werte.beispiel.env).
+name: auftragsbuch
+
+services:
+  auftragsbuch:
+    build:
+      context: ../..
+      dockerfile: spaces/auftragsbuch/Dockerfile
+    image: auftragsbuch/dienst:${AUFTRAGSBUCH_TAG:?AUFTRAGSBUCH_TAG fehlt, Git Kurz SHA des Images setzen}
+    container_name: auftragsbuch
+    restart: unless-stopped
+    init: true
+    mem_limit: 256m
+    # Datei-Secrets aus ./laufzeit/ (Modus 0600) behalten Besitzer und Modus des Hosts; darum
+    # laeuft der Dienst als Besitzer dieser Dateien (UID/GID des Benutzers, der anbinden.sh ausfuehrt).
+    user: "${AUFTRAGSBUCH_UID:-1000}:${AUFTRAGSBUCH_GID:-1000}"
+    env_file:
+      - ./laufzeit/werte.env
+    environment:
+      TZ: Europe/Berlin
+      AUFTRAGSBUCH_HOST: 0.0.0.0
+      AUFTRAGSBUCH_PORT: "8172"
+      AUFTRAGSBUCH_VERTRAG_ORDNER: /app/spaces/_contract
+      AUFTRAGSBUCH_DSN_FILE: /run/secrets/auftragsbuch-dsn
+      AUFTRAGSBUCH_SCHLUESSEL_HASH_FILE: /run/secrets/auftragsbuch-schluessel-hash
+    volumes:
+      - ./laufzeit/dsn:/run/secrets/auftragsbuch-dsn:ro
+      - ./laufzeit/schluessel-hash:/run/secrets/auftragsbuch-schluessel-hash:ro
+    # Auf dem Mini-PC nur Loopback; nach aussen geht es nur ueber `tailscale serve` (Port 8172).
+    ports:
+      - "127.0.0.1:8172:8172"
+    networks:
+      - datenbank
+
+networks:
+  # Netz der Supabase-Datenbank auf dem Mini-PC; es gehoert nicht zu diesem Projekt.
+  datenbank:
+    name: debian_default
+    external: true

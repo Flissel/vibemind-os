@@ -1,0 +1,15 @@
+# Beispiel fuer den Eintrag des Werkzeug-Servers `auftragsbuch` in OpenFang (stdio).
+#
+# OpenFang laedt Werkzeug-Server nur aus openfang/openfang.vibemind.toml, und diese Datei liegt
+# im oeffentlichen Repo. Darum steht dort weder die Adresse des Mini-PC noch ein Schluessel:
+# OpenFang startet am PC die kleine Bruecke bruecke.py, und scripts/mcp_mit_env.py (aeusseres
+# Repo) reicht ihr AUFTRAGSBUCH_URL und AUFTRAGSBUCH_SCHLUESSEL aus der Root-.env des PC.
+# Die Platzhalter in <...> werden am PC eingesetzt, nie im Repo.
+[[mcp_servers]]
+name = "auftragsbuch"
+timeout_secs = 60
+
+[mcp_servers.transport]
+type = "stdio"
+command = "<PFAD-ZUR-VENV>/Scripts/python.exe"
+args = ["<PFAD-ZUM-AEUSSEREN-REPO>/scripts/mcp_mit_env.py", "--env", "AUFTRAGSBUCH_URL", "--env", "AUFTRAGSBUCH_SCHLUESSEL", "--", "<PFAD-ZU-VIBEMIND-OS>/spaces/auftragsbuch/bruecke.py"]

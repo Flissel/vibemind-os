@@ -1,0 +1,8 @@
+# Eigene Ignore-Liste fuer Dockerfile (Build-Kontext ist die Repo-Wurzel, siehe docker-compose.yml).
+# Sie ersetzt die Wurzel-.dockerignore; ins Image kommt nur, was das Dockerfile braucht.
+*
+!spaces/__init__.py
+!spaces/auftragsbuch/requirements.txt
+!spaces/auftragsbuch/*.py
+!spaces/_contract/*.contract.yaml
+**/__pycache__/
