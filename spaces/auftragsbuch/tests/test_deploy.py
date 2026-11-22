@@ -17,6 +17,7 @@ import yaml
 DIENST = Path(__file__).resolve().parents[1]
 ANBINDEN = DIENST / "deploy" / "anbinden.sh"
 COMPOSE = DIENST / "docker-compose.yml"
+RUNBOOK = DIENST / "deploy" / "ausrollen.md"
 EINTRAG = DIENST / "deploy" / "openfang-eintrag.beispiel.toml"
 
 _VARIABLE = re.compile(r"\$\{?(?:dsn|schluessel)\b")
@@ -159,3 +160,34 @@ def test_beispiel_eintrag_ist_stdio_ohne_schluessel() -> None:
     assert "headers" not in eintrag and "auth_headers" not in eintrag
     assert "headers" not in transport
     assert "http://" not in text and "https://" not in text
+
+
+_JA = "**Eigenes Ja des Betreibers:**"
+_JA_SCHRITTE = [
+    "`100_auftragsbuch_brain.sql` einspielen",
+    "Image bauen und starten",
+    "einmal je Merge",
+    "Eintrag des Werkzeug-Servers (stdio)",
+    "OpenFang neu starten",
+    "`brain-core` mit dem neuen Abbild ausrollen",
+    "Dienst stoppen",
+    "Dienst wieder starten",
+]
+
+
+def test_runbook_jeder_zustimmungsschritt_hat_sein_eigenes_ja() -> None:
+    zeilen = _zeilen(RUNBOOK)
+    for schritt in _JA_SCHRITTE:
+        treffer = [z for z in zeilen if schritt in z]
+        assert treffer, schritt
+        assert all(_JA in z for z in treffer), schritt
+    # Rueckweg-Neustart und Neustart in Stufe 3 sind getrennte Schritte.
+    assert len([z for z in zeilen if "OpenFang neu starten" in z]) == 2
+
+
+def test_runbook_jeder_compose_befehl_setzt_den_tag() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    befehle = re.findall(r"`([^`]*docker compose[^`]*)`", text)
+    assert len(befehle) >= 4
+    for befehl in befehle:
+        assert befehl.startswith("AUFTRAGSBUCH_TAG="), befehl

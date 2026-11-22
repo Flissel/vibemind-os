@@ -32,6 +32,7 @@ class _Attrappe:
         self.kopf: dict[str, str] = {}
         self.koerper: bytes = b""
         self.pfad = ""
+        self.location = ""
 
     @property
     def url(self) -> str:
@@ -51,6 +52,8 @@ def dienst() -> Iterator[_Attrappe]:
             att.kopf = {k.lower(): v for k, v in self.headers.items()}
             att.koerper = self.rfile.read(int(self.headers.get("Content-Length", "0")))
             self.send_response(att.status)
+            if att.location:
+                self.send_header("Location", att.location)
             if att.antwort:
                 self.send_header("Content-Type", att.inhalt_typ)
             self.send_header("Content-Length", str(len(att.antwort)))
@@ -142,6 +145,48 @@ def test_sse_antwort_wird_gelesen(dienst: _Attrappe) -> None:
     antwort = bruecke.weiterreichen(ANFRAGE, _senden(dienst.url))
     assert antwort is not None
     assert json.loads(antwort) == {"jsonrpc": "2.0", "id": 1, "result": {"s": "sse"}}
+
+
+def test_weiterleitung_wird_nicht_gefolgt(dienst: _Attrappe) -> None:
+    """Ein 3xx darf den Schluessel nicht an einen anderen Host tragen."""
+    ziel_gesehen: list[str] = []
+
+    class Ziel(BaseHTTPRequestHandler):
+        def log_message(self, *args: object) -> None:
+            pass
+
+        def do_POST(self) -> None:
+            ziel_gesehen.append("POST")
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        do_GET = do_POST
+
+    ziel = ThreadingHTTPServer(("127.0.0.1", 0), Ziel)
+    ziel.daemon_threads = True
+    threading.Thread(target=ziel.serve_forever, daemon=True).start()
+    try:
+        dienst.status = 302
+        dienst.antwort = b""
+        dienst.location = f"http://127.0.0.1:{ziel.server_address[1]}/x"
+        antwort = bruecke.weiterreichen(ANFRAGE, _senden(dienst.url))
+    finally:
+        ziel.shutdown()
+        ziel.server_close()
+    assert ziel_gesehen == []
+    daten = json.loads(antwort or "")
+    assert daten["error"]["message"] == "auftragsbuch: unerwartete Antwort (302)"
+
+
+def test_proxy_aus_der_umgebung_wird_ignoriert(dienst: _Attrappe, monkeypatch: pytest.MonkeyPatch) -> None:
+    tot = f"http://127.0.0.1:{_frei()}"
+    for name in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.setenv(name, tot)
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    antwort = bruecke.weiterreichen(ANFRAGE, _senden(dienst.url))
+    assert json.loads(antwort or "") == json.loads(dienst.antwort)
 
 
 def test_ungueltige_zeile_ist_fehlerantwort_ohne_senden() -> None:

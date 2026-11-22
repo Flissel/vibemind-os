@@ -34,10 +34,22 @@ _METHODE = re.compile(r"[A-Za-z0-9_./-]{1,64}")
 Senden = Callable[[bytes], tuple[int, bytes]]
 
 
+class _KeinRedirect(urllib.request.HTTPRedirectHandler):
+    """Folgt keiner Weiterleitung: Der Schluessel darf nur an die konfigurierte Adresse gehen."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+def _opener() -> urllib.request.OpenerDirector:
+    """Eigener Opener ohne Proxy (Umgebung, Registry) und ohne Weiterleitung."""
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _KeinRedirect())
+
+
 def http_senden(url: str, schluessel: str) -> Senden:
     """Baut die Sendefunktion: POST mit Bearer-Schluessel; liefert (Status, Koerper).
 
-    HTTP-Fehlerstatus kommen als Ergebnis zurueck, nicht als Ausnahme. Nicht erreichbar, Zeitlimit
+    Weder Proxy noch Weiterleitung (3xx kommt als Status zurueck). HTTP-Fehlerstatus kommen als Ergebnis zurueck, nicht als Ausnahme. Nicht erreichbar, Zeitlimit
     und Verbindungsabbruch sind OSError (urllib.error.URLError ist eine) bzw. HTTPException.
     """
     kopf = {
@@ -46,10 +58,12 @@ def http_senden(url: str, schluessel: str) -> Senden:
         "Accept": "application/json, text/event-stream",
     }
 
+    opener = _opener()
+
     def senden(koerper: bytes) -> tuple[int, bytes]:
         anfrage = urllib.request.Request(url, data=koerper, headers=kopf, method="POST")
         try:
-            with urllib.request.urlopen(anfrage, timeout=ZEITLIMIT_S) as antwort:
+            with opener.open(anfrage, timeout=ZEITLIMIT_S) as antwort:
                 return antwort.status, antwort.read()
         except urllib.error.HTTPError as e:
             try:
