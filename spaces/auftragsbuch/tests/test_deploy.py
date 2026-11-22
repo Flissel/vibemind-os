@@ -163,28 +163,6 @@ def test_beispiel_eintrag_ist_stdio_ohne_schluessel() -> None:
 
 
 _JA = "**Eigenes Ja des Betreibers:**"
-_JA_SCHRITTE = [
-    "`100_auftragsbuch_brain.sql` einspielen",
-    "Image bauen und starten",
-    "einmal je Merge",
-    "Eintrag des Werkzeug-Servers (stdio)",
-    "OpenFang neu starten",
-    "`brain-core` mit dem neuen Abbild ausrollen",
-    "Dienst stoppen",
-    "Dienst wieder starten",
-]
-
-
-def test_runbook_jeder_zustimmungsschritt_hat_sein_eigenes_ja() -> None:
-    zeilen = _zeilen(RUNBOOK)
-    for schritt in _JA_SCHRITTE:
-        treffer = [z for z in zeilen if schritt in z]
-        assert treffer, schritt
-        assert all(_JA in z for z in treffer), schritt
-    # Rueckweg-Neustart und Neustart in Stufe 3 sind getrennte Schritte.
-    assert len([z for z in zeilen if "OpenFang neu starten" in z]) == 2
-
-
 def test_runbook_jeder_compose_befehl_setzt_den_tag() -> None:
     text = RUNBOOK.read_text(encoding="utf-8")
     befehle = re.findall(r"`([^`]*docker compose[^`]*)`", text)
@@ -198,7 +176,7 @@ def test_runbook_jeder_compose_befehl_setzt_den_tag() -> None:
 # Punkt den Marker. Lesende Schritte (Probe in ROLLBACK, `\ddp`, Rauchproben) sind frei.
 _EINGRIFF = re.compile(
     r"docker compose[^`]*\b(?:up|down|stop|start)\b|einspielen|\bDROP\b|ALTER ROLE|Passwort"
-    r"|merge|checkout|neu starten|Neustart|brain-core|openfang\.vibemind\.toml|OpenFang-Datei"
+    r"|auftrag_probe|tools/call|merge|checkout|neu starten|Neustart|brain-core|openfang\.vibemind\.toml|OpenFang-Datei"
     r"|~/\.openfang/agents|tailscale serve|anbinden\.sh|werte\.env|wiederherstellen|entfern",
     re.IGNORECASE,
 )
@@ -220,19 +198,35 @@ def _punkte(zeilen: list[str]) -> list[str]:
     return punkte
 
 
+_GEDECKT = "ist vom Ja zum Einspielen mit abgedeckt"  # Pflichtsatz der Sicherung und der Probe in ROLLBACK
+_NICHTS = "legt nichts an"  # Pflichtsatz der Rauchprobe (nur lesend, erwarteter Fehlschlag)
+
+
 def test_runbook_regel_jeder_eingreifende_punkt_traegt_das_ja() -> None:
-    fehlend = []
-    for punkt in _punkte(_zeilen(RUNBOOK)):
-        if "ROLLBACK" in punkt:  # Probe-Lauf ohne Aenderung, vom Ja zum Einspielen gedeckt
-            continue
-        if _EINGRIFF.search(punkt) and _JA not in punkt:
-            fehlend.append(punkt.splitlines()[0][:70])
+    punkte = _punkte(_zeilen(RUNBOOK))
+    gedeckt = [p for p in punkte if _GEDECKT in p]
+    rauch = [p for p in punkte if _NICHTS in p]
+    # Genau die Sicherung und die Probe in ROLLBACK sind ueber ihren Pflichtsatz ausgenommen,
+    # genau die Rauchprobe darf Aufrufe ohne Marker nennen, und sie fuehrt nichts aus, was anlegt.
+    assert len(gedeckt) == 2 and all("ändert nichts an der Datenbank" in p for p in gedeckt)
+    assert any("ROLLBACK" in p for p in gedeckt) and any("Sicherung" in p for p in gedeckt)
+    assert len(rauch) == 1 and "tools/call `auftrag_probe`" not in rauch[0] and _JA not in rauch[0]
+    frei = gedeckt + rauch
+    fehlend = [p.splitlines()[0][:70] for p in punkte
+               if _EINGRIFF.search(p) and _JA not in p and not any(p is f for f in frei)]
     assert fehlend == []
+    # Mindestzahlen: ein leerer oder zerlegter Text darf den Test nicht stillschweigend bestehen lassen.
+    assert len(punkte) >= 32
+    assert len([p for p in punkte if _JA in p]) >= 24
 
 
-def test_runbook_probe_ist_vom_ja_zum_einspielen_gedeckt() -> None:
-    probe = next(p for p in _punkte(_zeilen(RUNBOOK)) if "ROLLBACK" in p)
-    assert "vom Ja zum Einspielen" in probe and "vor dem Einspielen" in probe
+def test_runbook_abschluss_ist_eine_nummerierte_liste_mit_marker_an_der_probe() -> None:
+    zeilen = _zeilen(RUNBOOK)
+    start = next(i for i, z in enumerate(zeilen) if z.startswith("## Abschluss"))
+    punkte = [z for z in zeilen[start:] if re.match(r"\d+\. ", z)]
+    assert len(punkte) >= 4
+    probe = next(z for z in zeilen[start:] if "auftrag_probe" in z)
+    assert re.match(r"\d+\. ", probe) and _JA in probe
 
 
 def test_runbook_rueckweg_ist_eine_liste_mit_einer_aktion_je_punkt() -> None:

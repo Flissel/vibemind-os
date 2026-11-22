@@ -27,13 +27,15 @@ sofort committen; bei fremdem aktivem Claim nichts anfassen und nachfragen.
 Die Migration legt zwei Spalten, eine Tabelle, drei Funktionen und eine Rolle an und erweitert einen CHECK. Sie ist
 rein zusätzlich.
 
-1. **Sicherung** des Schemas `auftrag` nach dem Muster der bisherigen Sicherungen unter `~/backups/`.
+1. **Sicherung** des Schemas `auftrag` nach dem Muster der bisherigen Sicherungen unter `~/backups/`. Sie
+   ändert nichts an der Datenbank, schreibt nur eine Sicherungsdatei und ist vom Ja zum Einspielen mit abgedeckt
+   (Schritt 4).
 2. **Standard-Rechte prüfen:** In `psql` mit `\ddp` nachsehen, ob Standard-Rechte neuen Tabellen im Schema
    `auftrag` Rechte für `anon`, `authenticated` oder `sales_app` geben. Wenn ja: anhalten und klären, bevor
    eingespielt wird (die neue Tabelle `auftrag.brain_arten` darf diese Rollen nichts geben).
 3. **Probe-Lauf auf der echten Datenbank:** `100` und `verify_100` in **einer** Transaktion mit `ROLLBACK`
-   (`migration_probe`). Die Probe ändert nichts, läuft vor dem Einspielen und ist vom Ja zum Einspielen
-   (Schritt 4) mit abgedeckt. Voraussetzung: `096` bis `099` sind eingespielt. Erwartung: kein Fehler. Bei einem
+   (`migration_probe`). Sie ändert nichts an der Datenbank, läuft vor dem Einspielen und ist vom Ja zum Einspielen mit abgedeckt
+   (Schritt 4). Voraussetzung: `096` bis `099` sind eingespielt. Erwartung: kein Fehler. Bei einem
    Fehler: anhalten, nichts einspielen.
 4. **Eigenes Ja des Betreibers:** `100_auftragsbuch_brain.sql` einspielen. `098` wird danach **nicht** erneut
    eingespielt: Sein CHECK auf `art` lehnt Zeilen des Gehirns ab.
@@ -78,7 +80,9 @@ Neu ist ein Container `auftragsbuch` in einem eigenen Compose-Projekt; kein ande
    UID 1000, vorher `AUFTRAGSBUCH_UID` und `AUFTRAGSBUCH_GID` auf deren Besitzer setzen (`id -u`, `id -g`). Der Port
    ist nur an `127.0.0.1` des Mini-PC gebunden.
 5. **Eigenes Ja des Betreibers:** Netzweg einrichten wie in Task 0 gemessen: `tailscale serve` auf Port 8172 zum lokalen Port.
-6. **Rauchprobe vom PC** (Adresse und Schlüssel aus der Wurzel-`.env`, nichts davon in die Shell-Historie):
+6. **Rauchprobe vom PC** (Adresse und Schlüssel aus der Wurzel-`.env`, nichts davon in die Shell-Historie).
+   Sie legt nichts an: `/gesund`, `tools/list` und der erwartete Fehlschlag `Unbekannte Auftragsart` schreiben
+   keine Zeile, darum braucht sie kein eigenes Ja:
    - `GET /gesund` ohne Schlüssel: HTTP 200.
    - MCP-Weg ohne Schlüssel: HTTP 401.
    - mit Schlüssel `tools/list`: genau `auftrag_probe`, `auftrag_lesen`, `rowboat_vorschlaege_anlegen`,
@@ -129,17 +133,14 @@ Jede der folgenden Handlungen braucht ihr eigenes Ja, jeweils vor dem Schritt, i
 
 ## Abschluss (Plan-Task 11)
 
-Probe von Anfang bis Ende über das Gehirn: `auftrag_probe`, dann `auftrag_lesen` (`stand == "fertig"`,
-`an == "brain"`, `art == "probe"`).
-
-Gegenproben:
-
-- `sales_post_pruefen` ist im Gehirn nicht registriert und bei OpenFang für `brain-sales` nicht freigeschaltet.
-- **Eigenes Ja des Betreibers:** Dienst stoppen: `AUFTRAGSBUCH_TAG=<laufender Tag> docker compose stop`.
-  Der Plan-Schritt scheitert sofort mit `auftragsbuch nicht erreichbar`.
-- **Eigenes Ja des Betreibers:** Dienst wieder starten: `AUFTRAGSBUCH_TAG=<laufender Tag> docker compose start`.
-  Prüfen: `GET /gesund` vom PC antwortet wieder mit HTTP 200, und ein `tools/list` mit Schlüssel liefert wieder
-  die vier Werkzeuge.
-
-Danach den Vertrags-Hash aus der Probe mit `vertrag_hash(lade_auftragsarten(…))` im Betriebs-Checkout
-vergleichen.
+1. **Eigenes Ja des Betreibers:** Probe von Anfang bis Ende über das Gehirn: `auftrag_probe` legt eine Zeile im Auftragsbuch an, danach
+   `auftrag_lesen` (liest nur): `stand == "fertig"`, `an == "brain"`, `art == "probe"`.
+2. Gegenprobe (nur lesend): `sales_post_pruefen` ist im Gehirn nicht registriert und bei OpenFang für `brain-sales`
+   nicht freigeschaltet; der Plan-Schritt scheitert, bevor etwas gesendet wird.
+3. **Eigenes Ja des Betreibers:** Dienst stoppen: `AUFTRAGSBUCH_TAG=<laufender Tag> docker compose stop`. Der Plan-Schritt scheitert sofort
+   mit `auftragsbuch nicht erreichbar`.
+4. **Eigenes Ja des Betreibers:** Dienst wieder starten: `AUFTRAGSBUCH_TAG=<laufender Tag> docker compose start`. Prüfen (nur lesend):
+   `GET /gesund` vom PC antwortet wieder mit HTTP 200, und ein `tools/list` mit Schlüssel liefert wieder die vier
+   Werkzeuge.
+5. Vertrags-Hash aus der Probe mit `vertrag_hash(lade_auftragsarten(…))` über die Vertragsdateien des Betriebs
+   vergleichen (nur lesend).
