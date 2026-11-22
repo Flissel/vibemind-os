@@ -221,31 +221,37 @@ def test_beispiel_eintrag_ist_stdio_ohne_schluessel() -> None:
 
 
 _JA = "**Eigenes Ja des Betreibers:**"
+
+
 def test_runbook_jeder_compose_befehl_setzt_den_tag() -> None:
-    text = RUNBOOK.read_text(encoding="utf-8")
+    text = _text()
     befehle = re.findall(r"`([^`]*docker compose[^`]*)`", text)
-    assert len(befehle) >= 4
+    assert len(befehle) >= 6
     for befehl in befehle:
         assert befehl.startswith("AUFTRAGSBUCH_TAG="), befehl
 
 
-# Regel fuer die ganze Datei: Was auf dem Mini-PC, an der Datenbank, an OpenFang, am Betriebs-
-# Checkout, am Gehirn oder an `master` etwas aendert, startet oder stoppt, braucht im selben
-# Punkt den Marker. Lesende Schritte (Probe in ROLLBACK, `\ddp`, Rauchproben) sind frei.
-_EINGRIFF = re.compile(
-    r"docker compose[^`]*\b(?:up|down|stop|start)\b|einspielen|\bDROP\b|ALTER ROLE|Passwort"
-    r"|auftrag_probe|tools/call|merge|checkout|neu starten|Neustart|brain-core|openfang\.vibemind\.toml|OpenFang-Datei"
-    r"|~/\.openfang/agents|tailscale serve|anbinden\.sh|werte\.env|wiederherstellen|entfern",
-    re.IGNORECASE,
-)
+def _flach(text: str) -> str:
+    """Fasst Zeilenumbrueche und Einrueckung zu je einem Leerzeichen zusammen (Saetze laufen ueber Zeilen)."""
+    return " ".join(text.split())
 
 
-def _punkte(zeilen: list[str]) -> list[str]:
-    """Zerlegt die Stufen des Runbooks in nummerierte und Spiegelstrich-Punkte samt eingerueckter Folgezeilen."""
-    start = next(i for i, z in enumerate(zeilen) if z.startswith("## Stufe 1"))
+def _text() -> str:
+    return _flach(RUNBOOK.read_text(encoding="utf-8"))
+
+
+def _punkte(zeilen: list[str], ab: str = "## Stufe 1") -> list[str]:
+    """Zerlegt das Runbook ab `ab` in nummerierte und Spiegelstrich-Punkte samt eingerueckter Folgezeilen.
+
+    Jeder Punkt kommt flach zurueck (siehe _flach). Schluss ist der Abschnitt `## Offene Punkte`: Er
+    beschreibt keine Handlung.
+    """
+    start = next(i for i, z in enumerate(zeilen) if z.startswith(ab))
     punkte: list[str] = []
     offen = False
     for zeile in zeilen[start:]:
+        if zeile.startswith("## Offene Punkte"):
+            break
         if re.match(r"\d+\. |- ", zeile):
             punkte.append(zeile)
             offen = True
@@ -253,38 +259,69 @@ def _punkte(zeilen: list[str]) -> list[str]:
             punkte[-1] += "\n" + zeile
         else:
             offen = False  # Leerzeile, Ueberschrift oder Absatz beendet den Punkt
-    return punkte
+    return [_flach(p) for p in punkte]
 
 
-_GEDECKT = "ist vom Ja zum Einspielen mit abgedeckt"  # Pflichtsatz der Sicherung und der Probe in ROLLBACK
-_NICHTS = "legt nichts an"  # Pflichtsatz der Rauchprobe (nur lesend, erwarteter Fehlschlag)
+# Regel fuer die ganze Datei: Jeder Punkt (Schritt oder Aktion eines Rueckwegs) traegt entweder den
+# Marker oder genau einen der Pflichtsaetze fuer Ausnahmen. Ein Wort im Text macht keine Ausnahme.
+_LESEND = "Dieser Schritt liest nur und ändert nichts."
+_RAUCH = "Sie legt nichts an:"  # Rauchprobe vom PC: ruft ein Werkzeug auf, das ablehnen muss
+_GEDECKT = "ist vom Ja zur Probe mit abgedeckt"  # Sicherung: schreibt nur eine Datei unter ~/backups/
+_BLEIBT = "Dieser Punkt ändert nichts."  # Normalfall im Rueckweg von Stufe 1
+_AUSNAHMEN = (_LESEND, _RAUCH, _GEDECKT, _BLEIBT)
+# Befehle, die etwas aendern, starten oder stoppen; in einem ausgenommenen Punkt duerfen sie nicht stehen.
+_BEFEHL = re.compile(
+    r"docker compose[^`]*\b(?:up|down|stop|start)\b|tailscale serve --(?:bg|https=\d+ off)|bash [^`]*deploy/"
+    r"|anbinden\.sh|db_zugang|pc_env_setzen|\b(?:DROP|ALTER|GRANT|REVOKE|INSERT|UPDATE)\b|DELETE FROM"
+    r"|git (?:-C \S+ )?(?:merge|push|pull|checkout|submodule update)|\b(?:cp|rm|mkdir)\b|tar -x"
+    r"|POST /api|DELETE /api|> \.env|einspielen|migration_probe|neu starten"
+)
 
 
-def test_runbook_regel_jeder_eingreifende_punkt_traegt_das_ja() -> None:
+def _ausnahmen(punkt: str) -> list[str]:
+    return [s for s in _AUSNAHMEN if s in punkt]
+
+
+def _kopf(punkt: str) -> str:
+    return punkt[:70]
+
+
+def test_runbook_regel_jeder_punkt_traegt_das_ja_oder_genau_eine_ausnahme() -> None:
     punkte = _punkte(_zeilen(RUNBOOK))
-    gedeckt = [p for p in punkte if _GEDECKT in p]
-    rauch = [p for p in punkte if _NICHTS in p]
-    # Genau die Sicherung und die Probe in ROLLBACK sind ueber ihren Pflichtsatz ausgenommen,
-    # genau die Rauchprobe darf Aufrufe ohne Marker nennen, und sie fuehrt nichts aus, was anlegt.
-    assert len(gedeckt) == 2 and all("ändert nichts an der Datenbank" in p for p in gedeckt)
-    assert any("ROLLBACK" in p for p in gedeckt) and any("Sicherung" in p for p in gedeckt)
-    assert len(rauch) == 1 and "tools/call `auftrag_probe`" not in rauch[0] and _JA not in rauch[0]
-    frei = gedeckt + rauch
-    fehlend = [p.splitlines()[0][:70] for p in punkte
-               if _EINGRIFF.search(p) and _JA not in p and not any(p is f for f in frei)]
-    assert fehlend == []
+    ohne = [_kopf(p) for p in punkte if _JA not in p and len(_ausnahmen(p)) != 1]
+    assert ohne == [], "weder Marker noch genau ein Pflichtsatz"
+    doppelt = [_kopf(p) for p in punkte if _JA in p and _ausnahmen(p)]
+    assert doppelt == [], "Marker und Pflichtsatz zugleich"
+    frei_mit_befehl = [_kopf(p) for p in punkte if _JA not in p and _BEFEHL.search(p)]
+    assert frei_mit_befehl == [], "ausgenommener Punkt nennt einen eingreifenden Befehl"
     # Mindestzahlen: ein leerer oder zerlegter Text darf den Test nicht stillschweigend bestehen lassen.
-    assert len(punkte) >= 32
-    assert len([p for p in punkte if _JA in p]) >= 24
+    assert len(punkte) >= 50
+    assert len([p for p in punkte if _JA in p]) >= 38
+    assert len([p for p in punkte if _LESEND in p]) >= 8
+
+
+def test_runbook_ausnahmen_stehen_nur_wo_sie_hingehoeren() -> None:
+    punkte = _punkte(_zeilen(RUNBOOK))
+    (rauch,) = [p for p in punkte if _RAUCH in p]
+    assert "tools/call" in rauch and "rauchprobe.py" in rauch and "auftrag_probe" not in rauch
+    (gedeckt,) = [p for p in punkte if _GEDECKT in p]
+    assert "Sicherung" in gedeckt and "ändert nichts an der Datenbank" in gedeckt and "~/backups/" in gedeckt
+    (probe,) = [p for p in punkte if "migration_probe" in p]
+    assert _JA in probe and "ROLLBACK" in probe and "lock_timeout" in probe
+    (bleibt,) = [p for p in punkte if _BLEIBT in p]
+    assert "Normalfall" in bleibt and "CHECK" in bleibt
+    # Jede Aktion des Rueckwegs von Stufe 1 hinter dem Normalfall braucht ihr eigenes Ja.
+    stufe1 = punkte[: next(i for i, p in enumerate(punkte) if "Bau-Ordner auf dem" in p)]
+    nach = stufe1[stufe1.index(bleibt) + 1:]
+    assert len(nach) == 3 and all(_JA in p for p in nach)
 
 
 def test_runbook_abschluss_ist_eine_nummerierte_liste_mit_marker_an_der_probe() -> None:
-    zeilen = _zeilen(RUNBOOK)
-    start = next(i for i, z in enumerate(zeilen) if z.startswith("## Abschluss"))
-    punkte = [z for z in zeilen[start:] if re.match(r"\d+\. ", z)]
-    assert len(punkte) >= 4
-    probe = next(z for z in zeilen[start:] if "auftrag_probe" in z)
-    assert re.match(r"\d+\. ", probe) and _JA in probe
+    punkte = _punkte(_zeilen(RUNBOOK), ab="## Abschluss")
+    assert len(punkte) >= 8 and all(re.match(r"\d+\. ", p) for p in punkte)
+    probe = next(p for p in punkte if "auftrag_probe" in p)
+    assert _JA in probe
+    assert all(_JA in p for p in punkte if "docker compose" in p or "direkt an OpenFang" in p)
 
 
 def test_runbook_rueckweg_ist_eine_liste_mit_einer_aktion_je_punkt() -> None:
@@ -294,3 +331,64 @@ def test_runbook_rueckweg_ist_eine_liste_mit_einer_aktion_je_punkt() -> None:
     for i in koepfe:
         assert zeilen[i] == "**Rückweg:**"
         assert zeilen[i + 1] == "" and zeilen[i + 2].startswith("- ")
+
+
+_VERBOTEN = ("docker service update", "stack deploy", "system prune", "volume prune", "--remove-orphans")
+
+
+def test_runbook_nennt_keine_verbotenen_befehle() -> None:
+    text = _text()
+    for befehl in _VERBOTEN:
+        assert befehl not in text, befehl
+    # `tailscale serve reset` nur als Warnung "Nie `tailscale serve reset`", nie als Anweisung.
+    stellen = [m.start() for m in re.finditer(r"tailscale serve reset", text)]
+    assert len(stellen) == 1
+    assert all(text[s - 5:s] == "Nie `" for s in stellen)
+    assert "`tailscale serve --bg --https=8172 http://127.0.0.1:8172`" in text
+    assert "`tailscale serve --https=8172 off`" in text
+
+
+def test_runbook_geheimnisse_nur_ueber_variable_und_printf() -> None:
+    text = _text()
+    assert "Authorization" not in text and "Bearer" not in text
+    befehle = re.findall(r"`([^`]*)`", text)
+    mit_schluessel = [b for b in befehle if "$SCHLUESSEL" in b]
+    assert len(mit_schluessel) == 2
+    assert all(b.startswith("printf ") and " | " in b for b in mit_schluessel), mit_schluessel
+    assert "`SCHLUESSEL=$(python -c 'import secrets; print(secrets.token_urlsafe(32))')`" in text
+    assert "`unset SCHLUESSEL`" in text
+    assert "`bash deploy/db_zugang.sh`" in text
+    assert "'https://<name-des-mini-pc-im-tailnet>:8172/mcp'" in text
+    assert "Jeder Prozess, der diese Datei lesen kann, hält Adresse und Schlüssel des Dienstes." in text
+
+
+def test_runbook_baut_aus_dem_commit_und_laesst_den_fremden_checkout_in_ruhe() -> None:
+    text = _text()
+    archiv = "`git -c core.autocrlf=false archive <commit> spaces/__init__.py spaces/auftragsbuch spaces/_contract"
+    assert archiv in text
+    assert "~/auftragsbuch-build" in text
+    # Der Checkout ~/vibemind-os auf dem Mini-PC kommt in keinem Befehl vor.
+    assert [b for b in re.findall(r"`([^`]*)`", text) if "~/vibemind-os" in b and b != "~/vibemind-os"] == []
+    assert "dfc67d54" not in text
+
+
+def test_runbook_stufe_3_merget_in_der_richtigen_reihenfolge_und_kopiert_unveraendert() -> None:
+    text = _text()
+    reihenfolge = [text.index(s) for s in ("openfang mergen und pushen", "vibemind-os mergen und pushen",
+                                            "im äußeren Repo den Verweis", "Betriebs-Checkout heben")]
+    assert reihenfolge == sorted(reihenfolge)
+    assert "**unverändert**" in text and "Den Anbieter nicht umstellen" in text
+    assert "<AUSGANG-CHECKOUT>" in text and "<AUSGANG-ABBILD>" in text
+    assert "`DELETE /api/agents/<kennung>`" in text
+    assert "Belegt ist das nicht" in text
+    assert "tests/test_openfang_offene_mcp_zugaenge.py" in text
+
+
+def test_runbook_endet_mit_den_offenen_punkten_fuer_stufe_2() -> None:
+    zeilen = _zeilen(RUNBOOK)
+    start = zeilen.index("## Offene Punkte für Stufe 2")
+    assert all(not z.startswith("## ") for z in zeilen[start + 1:])
+    offen = "\n".join(zeilen[start:])
+    for stichwort in ("Herkunft erzwingen", "auftrag.naechster(p_an)", "brain-rowboat", "mcp_discovery",
+                      "Rechteträger ohne startbares Modell", "harte Sperre"):
+        assert stichwort in offen, stichwort
