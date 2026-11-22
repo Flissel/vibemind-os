@@ -1,9 +1,10 @@
 """Statische Tests der Ausroll-Dateien des Auftragsbuchs (kein Docker, kein Netz).
 
 Muster: spaces/event_management/tests/system/test_ausrollen.py. Geprueft wird nur der Text der
-Dateien: anbinden.sh liest nur von stdin und gibt nichts aus, Compose bindet nur an Loopback und
-reicht Geheimnisse nur als Dateien, nichts Privates steht im Ordner, das OpenFang-Beispiel ist
-ein stdio-Eintrag ohne Schluessel.
+Dateien: anbinden.sh und db_zugang.sh lesen Geheimnisse nur von stdin bzw. erzeugen sie selbst und
+geben nichts aus, Compose bindet nur an Loopback und reicht Geheimnisse nur als Dateien, nichts
+Privates steht im Ordner, das OpenFang-Beispiel ist ein stdio-Eintrag ohne Schluessel, das Runbook
+haelt seine Regeln ein.
 """
 from __future__ import annotations
 
@@ -16,23 +17,30 @@ import yaml
 
 DIENST = Path(__file__).resolve().parents[1]
 ANBINDEN = DIENST / "deploy" / "anbinden.sh"
+DB_ZUGANG = DIENST / "deploy" / "db_zugang.sh"
 COMPOSE = DIENST / "docker-compose.yml"
 RUNBOOK = DIENST / "deploy" / "ausrollen.md"
 EINTRAG = DIENST / "deploy" / "openfang-eintrag.beispiel.toml"
 
-_VARIABLE = re.compile(r"\$\{?(?:dsn|schluessel)\b")
-# Erlaubt: printf '%s' "$var" in eine Datei unter laufzeit/ oder per Pipe in sha256sum.
+_VARIABLE = re.compile(r"\$\{?(?:dsn|schluessel|passwort)\b")
+# Erlaubt: printf '%s' "$var" in eine Datei unter laufzeit/, per Pipe in sha256sum oder per Pipe in
+# die Hilfe deploy/db_zugang.py (die selbst keinen Wert ausgibt).
 _ERLAUBT = re.compile(
-    r"""\bprintf '%s(?:\\n)?' "\$\{?(?:dsn|schluessel)\}?" *(?:\| *sha256sum\b|> *laufzeit/)"""
+    r"""\bprintf '%s(?:\\n)?' "\$\{?(?:dsn|schluessel|passwort)\}?" *"""
+    r"""(?:\| *sha256sum\b|> *laufzeit/|\| *python3 deploy/db_zugang\.py (?:sql|dsn-schreiben)\b)"""
 )
 
 
-def _gibt_wert_aus(zeile: str) -> bool:
-    """Wahr, wenn eine Zeile DSN oder Schluessel ausgeben koennte.
+_LEERTEST = re.compile(r"""\[ +-[zn] +"\$\{?(?:dsn|schluessel|passwort)\}?" +\]""")
 
-    Kommentare zaehlen nicht. `set -x` ist immer verdaechtig. Eine Zeile, die eine der beiden
-    Variablen nennt, darf kein `echo`, `tee`, `logger`, `>&` und kein Here-Doc/-String enthalten;
-    `printf` ist nur in der erlaubten Form (siehe _ERLAUBT) in Ordnung.
+
+def _gibt_wert_aus(zeile: str) -> bool:
+    """Wahr, wenn eine Zeile DSN, Schluessel oder Passwort ausgeben oder als Argument weitergeben koennte.
+
+    Kommentare zaehlen nicht. `set -x` ist immer verdaechtig. Eine Zeile, die eine der Variablen
+    nennt, darf kein `echo`, `tee`, `logger`, `>&` und kein Here-Doc/-String enthalten; `printf`
+    ist nur in der erlaubten Form (siehe _ERLAUBT) in Ordnung. Sonst darf die Variable nur in
+    einem Leer-Test `[ -z "$var" ]`/`[ -n "$var" ]` stehen (kein Argument eines Programms).
     """
     code = "" if zeile.lstrip().startswith("#") else zeile
     if re.search(r"\bset\s+-[a-z]*x", code):
@@ -43,7 +51,7 @@ def _gibt_wert_aus(zeile: str) -> bool:
         return True
     if re.search(r"\bprintf\b", code):
         return _ERLAUBT.search(code) is None
-    return False
+    return _VARIABLE.search(_LEERTEST.sub("", code)) is not None
 
 
 def _zeilen(pfad: Path) -> list[str]:
@@ -64,27 +72,64 @@ def test_pruefer_unterscheidet_ausgabe_von_pipe_und_datei() -> None:
         """printf '%s' "$schluessel" | tee x""",
         'sha256sum <<< "$schluessel"',
         "set -x",
+        'printf \'%s\\n\' "$passwort" | python3 andere.py',
+        'psql -c "ALTER ROLE x PASSWORD \'$passwort\'"',
     ]
     assert [z for z in gut if _gibt_wert_aus(z)] == []
     assert [z for z in schlecht if _gibt_wert_aus(z)] == schlecht
 
 
-def test_anbinden_nur_stdin_und_ohne_ausgabe() -> None:
+def _code(pfad: Path) -> str:
+    """Skripttext ohne Kommentarzeilen."""
+    return "\n".join(z for z in _zeilen(pfad) if not z.lstrip().startswith("#"))
+
+
+@pytest.mark.parametrize("pfad", sorted((DIENST / "deploy").glob("*.sh")), ids=lambda p: p.name)
+def test_shell_skripte_ohne_crlf(pfad: Path) -> None:
+    roh = pfad.read_bytes()
+    assert roh.startswith(b"#!/usr/bin/env bash\n")
+    assert b"\r" not in roh
+
+
+def test_anbinden_nur_eine_zeile_von_stdin_und_ohne_ausgabe() -> None:
     text = ANBINDEN.read_text(encoding="utf-8")
+    code = _code(ANBINDEN)
     assert text.startswith("#!")
-    assert "umask 077" in text
-    assert "read -r" in text
-    assert "mkdir" in text and "chmod 700" in text
-    assert "sha256sum" in text
+    assert "umask 077" in code
+    assert code.count("read -r") == 1, "genau eine Zeile: der Schluessel"
+    assert re.search(r"if \[ -t 0 \]", code), "bricht ab, wenn stdin ein Terminal ist"
+    assert re.search(r"if \[ ! -s laufzeit/dsn \]", code), "bricht ab, wenn laufzeit/dsn fehlt"
+    assert code.index("[ -t 0 ]") < code.index("read -r")
+    assert "chmod 700" in code and "sha256sum" in code
     assert "docker cp" not in text
     assert not re.search(r"\$\{?[1-9@*#]", text), "keine Argumente aus der Kommandozeile"
     assert [z for z in _zeilen(ANBINDEN) if _gibt_wert_aus(z)] == []
 
 
-def test_anbinden_schreibt_beide_dateien() -> None:
-    text = ANBINDEN.read_text(encoding="utf-8")
-    assert re.search(r"> *laufzeit/dsn\b", text)
-    assert re.search(r"> *laufzeit/schluessel-hash\b", text)
+def test_anbinden_schreibt_nur_den_hash() -> None:
+    code = _code(ANBINDEN)
+    assert re.search(r"> *laufzeit/schluessel-hash\b", code)
+    assert not re.search(r"> *laufzeit/dsn\b", code), "die DSN schreibt db_zugang.sh"
+    assert "$dsn" not in code
+
+
+def test_db_zugang_erzeugt_passwort_und_gibt_es_nie_aus() -> None:
+    text = DB_ZUGANG.read_text(encoding="utf-8")
+    code = _code(DB_ZUGANG)
+    assert "umask 077" in code
+    assert "passwort=$(openssl rand -hex 24)" in code
+    assert "read " not in code, "das Passwort entsteht auf dem Mini-PC, nichts kommt von aussen"
+    assert not re.search(r"\$\{?[1-9@*#]", text), "keine Argumente aus der Kommandozeile"
+    assert [z for z in _zeilen(DB_ZUGANG) if _gibt_wert_aus(z)] == []
+    # Kein SQL mit Passwort auf einer Kommandozeile: das SQL kommt nur ueber stdin aus der Hilfe.
+    assert "password" not in code.lower()
+    assert "psql -c" not in code and " -c " not in code
+    assert re.search(r"\| *docker exec -i \"\$container\" psql\b", code)
+    assert "-v ON_ERROR_STOP=1" in code
+    assert "python3 deploy/db_zugang.py sql" in code and "python3 deploy/db_zugang.py dsn-schreiben" in code
+    assert code.index("db_zugang.py sql") < code.index("dsn-schreiben"), "erst die Rolle, dann die DSN"
+    assert "unset passwort" in code
+    assert "chmod 700 laufzeit" in code
 
 
 @pytest.fixture(scope="module")
@@ -123,8 +168,21 @@ def test_compose_haengt_im_externen_datenbanknetz(compose: dict) -> None:
     assert compose["services"]["auftragsbuch"]["networks"] == ["datenbank"]
 
 
-def test_gitignore_haelt_laufzeit_fern() -> None:
-    assert "laufzeit/" in _zeilen(DIENST / ".gitignore")
+def test_gitignore_haelt_laufzeit_und_compose_env_fern() -> None:
+    zeilen = _zeilen(DIENST / ".gitignore")
+    assert "laufzeit/" in zeilen
+    assert ".env" in zeilen  # AUFTRAGSBUCH_UID/GID fuer Compose, nur auf dem Mini-PC
+
+
+def test_werte_beispiel_nennt_alle_werte_mit_platzhaltern() -> None:
+    werte = {}
+    for zeile in _zeilen(DIENST / "deploy" / "werte.beispiel.env"):
+        if zeile and not zeile.startswith("#"):
+            name, wert = zeile.split("=", 1)
+            werte[name] = wert
+    assert set(werte) == {"AUFTRAGSBUCH_LADEN", "AUFTRAGSBUCH_MANDANT", "AUFTRAGSBUCH_ZUSATZ_HOSTS",
+                          "AUFTRAGSBUCH_DB_CONTAINER", "AUFTRAGSBUCH_DB_HOST", "AUFTRAGSBUCH_DB_NAME"}
+    assert all(re.fullmatch(r"<[A-Z-]+>", w) for w in werte.values()), werte
 
 
 def test_keine_privaten_werte() -> None:

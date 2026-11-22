@@ -1,35 +1,38 @@
 #!/usr/bin/env bash
-# deploy/anbinden.sh -- legt die beiden Geheimnisse des Dienstes auftragsbuch ab.
+# deploy/anbinden.sh -- legt den Hash des Schluessels des Dienstes auftragsbuch ab.
 # Laeuft auf dem Mini-PC im Ordner spaces/auftragsbuch (egal von wo aufgerufen), wiederholbar.
+# Vorher hat deploy/db_zugang.sh laufzeit/dsn geschrieben.
 #
-#   printf '%s\n%s\n' "$DSN" "$SCHLUESSEL" | bash deploy/anbinden.sh
+#   printf '%s\n' "$SCHLUESSEL" | ssh <mini-pc> 'bash ~/auftragsbuch-build/spaces/auftragsbuch/deploy/anbinden.sh'
 #
-# Genau zwei Zeilen von stdin, nie als Argument, nie in einer Ausgabe:
-#   1  DSN der Datenbank-Rolle brain_app  -> laufzeit/dsn
-#   2  Schluessel des Dienstes            -> nur sein sha256-Hash nach laufzeit/schluessel-hash
-# Der Klartext des Schluessels wird nirgends abgelegt. Der Hash entsteht per Pipe in sha256sum
-# (kein Argument, damit nichts in der Prozessliste steht). Das Skript gibt keinen der beiden
-# Werte aus, auch nicht im Fehlerfall.
+# Genau eine Zeile von stdin, nie als Argument, nie in einer Ausgabe: der Schluessel. Nur sein
+# sha256-Hash kommt nach laufzeit/schluessel-hash; der Klartext wird nirgends abgelegt. Der Hash
+# entsteht per Pipe in sha256sum (kein Argument, damit nichts in der Prozessliste steht). Ist
+# stdin ein Terminal, bricht das Skript ab (der Schluessel soll nicht getippt und sichtbar werden).
 set -euo pipefail
 umask 077
 
 cd "$(dirname "$0")/.."
 
-dsn=""
-schluessel=""
-read -r dsn || true
-read -r schluessel || true
-if [ -z "$dsn" ] || [ -z "$schluessel" ]; then
-  echo "anbinden: zwei nichtleere Zeilen von stdin noetig (DSN, Schluessel)" >&2
+if [ -t 0 ]; then
+  echo "anbinden: der Schluessel kommt per Pipe auf stdin, nicht vom Terminal" >&2
+  exit 2
+fi
+if [ ! -s laufzeit/dsn ]; then
+  echo "anbinden: laufzeit/dsn fehlt, zuerst deploy/db_zugang.sh ausfuehren" >&2
   exit 2
 fi
 
-mkdir -p laufzeit
+schluessel=""
+read -r schluessel || true
+if [ -z "$schluessel" ]; then
+  echo "anbinden: eine nichtleere Zeile von stdin noetig (Schluessel)" >&2
+  exit 2
+fi
+
 chmod 700 laufzeit
-
-printf '%s\n' "$dsn" > laufzeit/dsn
 printf '%s' "$schluessel" | sha256sum | cut -d' ' -f1 > laufzeit/schluessel-hash
-chmod 600 laufzeit/dsn laufzeit/schluessel-hash
-unset dsn schluessel
+chmod 600 laufzeit/schluessel-hash
+unset schluessel
 
-echo "anbinden: laufzeit/dsn und laufzeit/schluessel-hash geschrieben"
+echo "anbinden: laufzeit/schluessel-hash geschrieben"
