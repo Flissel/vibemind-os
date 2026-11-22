@@ -29,6 +29,19 @@ KENNUNG = "kennung-123"
 Antwort = tuple[int, object]
 
 
+_NICHT_ERLAUBT = f"Tool not permitted for caller agent: {POST_PRUEFEN}"
+
+
+def _fehler(code: object, nachricht: str) -> dict[str, object]:
+    return {"jsonrpc": "2.0", "id": 1, "error": {"code": code, "message": nachricht}}
+
+
+def _server_liste(verbunden: bool, werkzeuge: list[str], name: str = "auftragsbuch") -> dict[str, object]:
+    eintrag = {"connected": verbunden, "name": name, "tools_count": len(werkzeuge),
+               "tools": [{"name": w, "description": "d"} for w in werkzeuge]}
+    return {"configured": [], "connected": [eintrag], "total_configured": 1, "total_connected": 1}
+
+
 def _detail(name: str, werkzeuge: list[str], server: list[str], modus: str) -> dict[str, object]:
     return {"id": name, "name": name, "capabilities": {"network": [], "tools": werkzeuge},
             "mcp_servers": server, "mcp_servers_mode": modus}
@@ -47,8 +60,11 @@ class _Attrappe:
             "x2": (200, _detail("anderer", ["file_read"], [], "allowlist")),
         }
         self.agenten_status = 200
-        self.mcp: Callable[[dict[str, object]], Antwort] = lambda _k: (200, {"jsonrpc": "2.0", "id": 1, "error": {
-            "code": -32001, "message": "tool not allowed"}})
+        # Standardantwort von /mcp: die echte Ablehnung (OpenFang, routes.rs): -32602, Werkzeug nicht erlaubt.
+        self.mcp: Callable[[dict[str, object]], Antwort] = lambda _k: (200, _fehler(-32602, _NICHT_ERLAUBT))
+        self.mcp_abbruch = False  # True: /mcp bricht die Verbindung ohne Antwort ab (Transportfehler)
+        # GET /api/mcp/servers (wie live gemessen): connected = Liste von {connected, name, tools, tools_count}
+        self.mcp_server: Antwort = (200, _server_liste(True, [PROBE, LESEN, POST_PRUEFEN, "mcp_auftragsbuch_rowboat"]))
         self.loeschen_status = 200
         self.agenten_ort = ""  # nicht leer: GET /api/agents antwortet 302 dorthin
 
@@ -95,6 +111,8 @@ def openfang() -> Iterator[_Attrappe]:
                     self._antworten(302, None, att.agenten_ort)
                 else:
                     self._antworten(att.agenten_status, att.agenten)
+            elif self.path == "/api/mcp/servers":
+                self._antworten(*att.mcp_server)
             elif self.path.startswith("/api/agents/") and self.path[len("/api/agents/"):] in att.details:
                 status, koerper = att.details[self.path[len("/api/agents/"):]]
                 self._antworten(status, koerper)
@@ -103,7 +121,10 @@ def openfang() -> Iterator[_Attrappe]:
 
         def do_POST(self) -> None:
             eintrag = self._aufnehmen()
-            if self.path == "/mcp":
+            if self.path == "/mcp" and att.mcp_abbruch:
+                self.close_connection = True
+                self.connection.close()
+            elif self.path == "/mcp":
                 status, koerper = att.mcp(eintrag)
                 self._antworten(status, koerper)
             else:
@@ -209,6 +230,24 @@ def test_werkzeuge_je_agent_nennt_geschlossene_agenten_nicht(
     assert code == 0 and aus == f"brain-sales: {LESEN}, {PROBE}\n"
 
 
+def test_werkzeuge_je_agent_gleichnamige_agenten_werden_beide_gezeigt(openfang: _Attrappe) -> None:
+    openfang.agenten = [{"id": KENNUNG, "name": "brain-sales"}, {"id": "zweite-kennung", "name": "brain-sales"}]
+    openfang.details = {KENNUNG: (200, _detail("brain-sales", [PROBE, LESEN], ["auftragsbuch"], "allowlist")),
+                        "zweite-kennung": (200, _detail("brain-sales", [LESEN], ["auftragsbuch"], "allowlist"))}
+    code, aus, _ = _lauf(["werkzeuge-je-agent", "auftragsbuch"], openfang.umgebung)
+    assert code == 1
+    assert aus.splitlines() == [f"brain-sales (Kennung {KENNUNG}): {LESEN}, {PROBE}",
+                                f"brain-sales (Kennung zweite-kennung): {LESEN}"]
+
+
+def test_werkzeuge_je_agent_gleichnamige_agenten_mit_gleicher_menge_sind_nicht_genau_einer(
+        openfang: _Attrappe) -> None:
+    openfang.agenten = [{"id": KENNUNG, "name": "brain-sales"}, {"id": "zweite-kennung", "name": "brain-sales"}]
+    openfang.details = {k: (200, _detail("brain-sales", [PROBE, LESEN], ["auftragsbuch"], "allowlist"))
+                        for k in (KENNUNG, "zweite-kennung")}
+    assert _lauf(["werkzeuge-je-agent", "auftragsbuch"], openfang.umgebung)[0] == 1
+
+
 def test_werkzeuge_je_agent_offener_agent_allein_ist_exit_1_weil_brain_sales_fehlt(openfang: _Attrappe) -> None:
     _setze(openfang, ("offen", [], [], "allowlist"))
     code, aus, _ = _lauf(["werkzeuge-je-agent", "auftragsbuch"], openfang.umgebung)
@@ -241,11 +280,16 @@ def test_werkzeuge_je_agent_fehler_der_liste_nennen_festen_grund(openfang: _Attr
 
 # ---- gegenprobe ----
 
-def test_gegenprobe_ablehnung_ist_erwartet(openfang: _Attrappe) -> None:
-    code, aus, fehler = _lauf(["gegenprobe", "brain-sales", "sales_post_pruefen"], openfang.umgebung)
-    assert (code, aus, fehler) == (0, "abgelehnt von OpenFang (erwartet)\n", "")
-    assert openfang.pfade() == ["GET /api/agents", "POST /mcp"]
-    aufruf = openfang.anfragen[1]
+GEGEN = ["gegenprobe", "brain-sales", "sales_post_pruefen"]
+OK_ABGELEHNT = "abgelehnt von OpenFang (erwartet)\n"
+
+
+def test_gegenprobe_nur_die_echte_ablehnung_ist_erwartet(openfang: _Attrappe) -> None:
+    code, aus, fehler = _lauf(GEGEN, openfang.umgebung)
+    assert (code, aus, fehler) == (0, OK_ABGELEHNT, "")
+    # erst Kennung, dann die positive Kontrolle am Server, dann der Aufruf
+    assert openfang.pfade() == ["GET /api/agents", "GET /api/mcp/servers", "POST /mcp"]
+    aufruf = openfang.anfragen[2]
     assert aufruf["kopf"]["x-openfang-agent-id"] == KENNUNG  # type: ignore[index]
     assert aufruf["kopf"]["authorization"] == f"Bearer {SCHLUESSEL}"  # type: ignore[index]
     # ohne Freigabe- und Kostenkopf: Ablehnung ist das Erwartete
@@ -256,10 +300,81 @@ def test_gegenprobe_ablehnung_ist_erwartet(openfang: _Attrappe) -> None:
     _kein_geheimnis(openfang, aus, fehler)
 
 
-def test_gegenprobe_403_ist_ebenfalls_ablehnung(openfang: _Attrappe) -> None:
+def test_gegenprobe_recht_vorhanden_nur_freigabe_fehlte_ist_durchgelassen(openfang: _Attrappe) -> None:
+    openfang.mcp = lambda _k: (200, _fehler(-32040, "Runtime authority denied tool execution"))
+    code, aus, fehler = _lauf(GEGEN, openfang.umgebung)
+    assert (code, aus, fehler) == (1, "DURCHGELASSEN: Recht vorhanden, nur die Freigabe fehlte - anhalten\n", "")
+
+
+def test_gegenprobe_code_32040_mit_anderer_nachricht_ist_nur_unerwartet(openfang: _Attrappe) -> None:
+    openfang.mcp = lambda _k: (200, _fehler(-32040, "etwas anderes"))
+    assert _lauf(GEGEN, openfang.umgebung)[:2] == (1, "unerwartet (JSON-RPC-Fehler -32040)\n")
+
+
+@pytest.mark.parametrize("code_wert", [-32601, -32001, -32002, -32600, -32603])
+def test_gegenprobe_anderer_jsonrpc_fehler_ist_unerwartet(openfang: _Attrappe, code_wert: int) -> None:
+    openfang.mcp = lambda _k: (200, _fehler(code_wert, "Method not found GEHEIM-detail"))
+    code, aus, fehler = _lauf(GEGEN, openfang.umgebung)
+    assert (code, aus, fehler) == (1, f"unerwartet (JSON-RPC-Fehler {code_wert})\n", "")
+
+
+@pytest.mark.parametrize("nachricht", [
+    "Tool not permitted for caller agent: mcp_auftragsbuch_auftrag_probe",   # falscher Werkzeugname
+    f"xTool not permitted for caller agent: {POST_PRUEFEN}",                  # falscher Anfang
+    f"Tool not permitted for caller agent: x{POST_PRUEFEN}",                  # Name nicht genau
+    f"Tool not permitted for caller agent: {POST_PRUEFEN} und mehr",
+    "Tool not permitted for caller agent: ", "tool not allowed"])
+def test_gegenprobe_32602_mit_falscher_nachricht_ist_unerwartet(openfang: _Attrappe, nachricht: str) -> None:
+    openfang.mcp = lambda _k: (200, _fehler(-32602, nachricht))
+    assert _lauf(GEGEN, openfang.umgebung)[:2] == (1, "unerwartet (JSON-RPC-Fehler -32602)\n")
+
+
+def test_gegenprobe_richtige_nachricht_mit_anderem_code_ist_unerwartet(openfang: _Attrappe) -> None:
+    openfang.mcp = lambda _k: (200, _fehler(-32001, _NICHT_ERLAUBT))
+    assert _lauf(GEGEN, openfang.umgebung)[:2] == (1, "unerwartet (JSON-RPC-Fehler -32001)\n")
+
+
+def test_gegenprobe_jsonrpc_code_ohne_zahl_nennt_nur_den_festen_text(openfang: _Attrappe) -> None:
+    openfang.mcp = lambda _k: (200, _fehler("GEHEIM-code", "x"))
+    code, aus, _ = _lauf(GEGEN, openfang.umgebung)
+    assert code == 1 and aus == "unerwartet (JSON-RPC-Fehler)\n"
+
+
+def test_gegenprobe_http_403_ist_keine_ablehnung(openfang: _Attrappe) -> None:
     openfang.mcp = lambda _k: (403, {"error": "forbidden"})
-    assert _lauf(["gegenprobe", "brain-sales", "sales_post_pruefen"], openfang.umgebung)[:2] == (
-        0, "abgelehnt von OpenFang (erwartet)\n")
+    assert _lauf(GEGEN, openfang.umgebung)[:2] == (1, "unerwartet (Status 403)\n")
+    # auch mit der Nachricht der echten Ablehnung zaehlt nur ein 200 mit JSON-RPC-Fehler
+    openfang.mcp = lambda _k: (403, _fehler(-32602, _NICHT_ERLAUBT))
+    assert _lauf(GEGEN, openfang.umgebung)[:2] == (1, "unerwartet (Status 403)\n")
+
+
+def test_gegenprobe_server_nicht_verbunden_sendet_keinen_aufruf(openfang: _Attrappe) -> None:
+    openfang.mcp_server = (200, _server_liste(False, [POST_PRUEFEN]))
+    code, aus, _ = _lauf(GEGEN, openfang.umgebung)
+    assert (code, aus) == (1, "unerwartet (Server auftragsbuch nicht verbunden)\n")
+    openfang.mcp_server = (200, _server_liste(True, [POST_PRUEFEN], name="anderer"))
+    assert _lauf(GEGEN, openfang.umgebung)[:2] == (1, "unerwartet (Server auftragsbuch nicht verbunden)\n")
+    openfang.mcp_server = (200, {"configured": [], "connected": []})
+    assert _lauf(GEGEN, openfang.umgebung)[:2] == (1, "unerwartet (Server auftragsbuch nicht verbunden)\n")
+    assert "POST /mcp" not in openfang.pfade()
+
+
+def test_gegenprobe_werkzeug_fehlt_am_server_sendet_keinen_aufruf(openfang: _Attrappe) -> None:
+    openfang.mcp_server = (200, _server_liste(True, [PROBE, LESEN]))
+    code, aus, _ = _lauf(GEGEN, openfang.umgebung)
+    assert (code, aus) == (1, "unerwartet (Werkzeug am Server nicht vorhanden)\n")
+    assert "POST /mcp" not in openfang.pfade()
+
+
+@pytest.mark.parametrize("status, koerper, grund", [
+    (500, None, "Status 500"), (401, None, "Schluessel abgelehnt"),
+    (200, "kaputt", "Serverliste ungueltig"), (200, {"connected": "x"}, "Serverliste ungueltig")])
+def test_gegenprobe_fehler_der_serverliste_sendet_keinen_aufruf(openfang: _Attrappe, status: int, koerper: object,
+                                                                grund: str) -> None:
+    openfang.mcp_server = (status, koerper)
+    code, aus, _ = _lauf(GEGEN, openfang.umgebung)
+    assert (code, aus) == (1, f"unerwartet ({grund})\n")
+    assert "POST /mcp" not in openfang.pfade()
 
 
 @pytest.mark.parametrize("status", [200, 403, 500])
@@ -267,7 +382,7 @@ def test_gegenprobe_erkennt_durchgelassen_am_datenbanktext_und_druckt_keinen_koe
         openfang: _Attrappe, status: int) -> None:
     openfang.mcp = lambda _k: (status, {"jsonrpc": "2.0", "id": 1, "result": {
         "isError": True, "content": [{"type": "text", "text": "Unbekannte Auftragsart GEHEIM-detail"}]}})
-    code, aus, fehler = _lauf(["gegenprobe", "brain-sales", "sales_post_pruefen"], openfang.umgebung)
+    code, aus, fehler = _lauf(GEGEN, openfang.umgebung)
     assert code == 1 and aus == "DURCHGELASSEN: Unbekannte Auftragsart - anhalten\n" and fehler == ""
     assert "GEHEIM-detail" not in aus + fehler
 
@@ -283,14 +398,22 @@ def test_gegenprobe_erkennt_durchgelassen_am_datenbanktext_und_druckt_keinen_koe
 def test_gegenprobe_sonst_unerwartet_mit_festem_grund(openfang: _Attrappe, status: int, koerper: object,
                                                       grund: str) -> None:
     openfang.mcp = lambda _k: (status, koerper)
-    code, aus, fehler = _lauf(["gegenprobe", "brain-sales", "sales_post_pruefen"], openfang.umgebung)
+    code, aus, fehler = _lauf(GEGEN, openfang.umgebung)
     assert code == 1 and aus == f"unerwartet ({grund})\n" and fehler == ""
     assert "GEHEIM-ergebnis" not in aus
 
 
+def test_gegenprobe_transportfehler_beim_aufruf_ist_unerwartet(openfang: _Attrappe) -> None:
+    openfang.mcp_abbruch = True
+    code, aus, fehler = _lauf(GEGEN, openfang.umgebung)
+    assert (code, aus, fehler) == (1, "unerwartet (nicht erreichbar)\n", "")
+    assert openfang.pfade()[-1] == "POST /mcp"
+    _kein_geheimnis(openfang, aus, fehler)
+
+
 def test_gegenprobe_unregistrierter_agent_ruft_nichts_auf(openfang: _Attrappe) -> None:
     openfang.agenten = []
-    code, aus, _ = _lauf(["gegenprobe", "brain-sales", "sales_post_pruefen"], openfang.umgebung)
+    code, aus, _ = _lauf(GEGEN, openfang.umgebung)
     assert code == 1 and aus == "unerwartet (Agent nicht registriert)\n"
     assert openfang.pfade() == ["GET /api/agents"]
 

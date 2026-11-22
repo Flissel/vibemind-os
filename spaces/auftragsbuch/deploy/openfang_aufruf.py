@@ -14,10 +14,14 @@ Unterbefehle (jeder gibt nur das Genannte aus, nie Schluessel, Adresse oder eine
                                        `offener Zugang ...:`: Agenten mit leeren oder `*`-Werkzeugen, die den Server
                                        sehen (nur Namen; aendert den Exit nicht). Scheitert ein Detail: Exit 1.
   gegenprobe brain-sales sales_post_pruefen
-                                       tools/call von `mcp_auftragsbuch_sales_post_pruefen` an OpenFangs /mcp im Namen
-                                       des Agenten (ohne Freigabe- und Kostenkopf: Ablehnung ist das Erwartete).
-                                       `abgelehnt von OpenFang (erwartet)` (Exit 0), `DURCHGELASSEN: Unbekannte
-                                       Auftragsart - anhalten` (Exit 1) oder `unerwartet (<Grund>)` (Exit 1).
+                                       Vorab GET /api/mcp/servers: Server `auftragsbuch` muss verbunden sein und das
+                                       Werkzeug fuehren (sonst `unerwartet (...)`, ohne Aufruf). Dann tools/call von
+                                       `mcp_auftragsbuch_sales_post_pruefen` an OpenFangs /mcp im Namen des Agenten
+                                       (ohne Freigabe- und Kostenkopf). Nur JSON-RPC-Fehler -32602 mit der Nachricht
+                                       `Tool not permitted for caller agent: <Werkzeug>` ist die erwartete Ablehnung
+                                       (`abgelehnt von OpenFang (erwartet)`, Exit 0). `DURCHGELASSEN: ...` (Exit 1):
+                                       Datenbanktext `Unbekannte Auftragsart` oder Fehler -32040 (Recht vorhanden, nur
+                                       die Freigabe fehlte). Alles andere: `unerwartet (<fester Grund>)` (Exit 1).
   agent-entfernen brain-sales          DELETE /api/agents/<Kennung>; `entfernt`, `nicht vorhanden` oder
                                        `unerwartet (<Status>)`. Nur der Name `brain-sales` ist zulaessig.
 
@@ -26,6 +30,7 @@ Weiterleitung (sonst ginge der Schluessel mit). Exit 2 bei Bedienfehlern und feh
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -46,6 +51,11 @@ GEGENPROBE_WERKZEUG = "sales_post_pruefen"
 # Gleiche gueltige Eingabe wie in deploy/rauchprobe.py (Werkzeug-Argumente der Bruecke).
 GUELTIGE_EINGABE = {"zeitraum": "heute", "entwuerfe_anlegen": False}
 DURCHGELASSEN_TEXT = "Unbekannte Auftragsart"
+# Antworten von OpenFangs /mcp (routes.rs): Werkzeug nicht im Werkzeugsatz des Aufrufers / Recht da, Freigabe fehlt.
+ABLEHNUNG_CODE = -32602
+ABLEHNUNG_NACHRICHT = "Tool not permitted for caller agent: "
+FREIGABE_CODE = -32040
+FREIGABE_NACHRICHT = "Runtime authority denied tool execution"
 _NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _AUFRUF = ("Aufruf: werkzeuge-je-agent auftragsbuch | gegenprobe <agent> sales_post_pruefen"
            " | agent-entfernen brain-sales")
@@ -89,7 +99,7 @@ class OpenFang:
                 return fehler.code, fehler.read(MAX_ANTWORT).decode("utf-8", errors="replace")
             finally:
                 fehler.close()
-        except (OSError, ValueError):
+        except (OSError, ValueError, http.client.HTTPException):
             return None, ""
 
 
@@ -177,7 +187,7 @@ def werkzeuge_je_agent(client: OpenFang, aus: TextIO, fehler: TextIO) -> int:
     if agenten is None:
         print(f"unerwartet ({grund})", file=fehler)
         return 1
-    ausdruecklich: dict[str, list[str]] = {}
+    ausdruecklich: list[tuple[str, str, list[str]]] = []  # (Kennung, Name, Werkzeuge): nach Kennung, nicht Name
     offen: list[str] = []
     for agent in agenten:  # die Liste traegt keine Werkzeuge: je Agent das Detail holen
         kennung = agent.get("id") or agent.get("agent_id")
@@ -192,22 +202,62 @@ def werkzeuge_je_agent(client: OpenFang, aus: TextIO, fehler: TextIO) -> int:
         werkzeuge = _werkzeugnamen(detail)
         treffer = sorted(w for w in werkzeuge if w.startswith(WERKZEUG_VORSATZ))
         if treffer:
-            ausdruecklich[name] = treffer
+            ausdruecklich.append((kennung.strip(), name, treffer))
         if (not werkzeuge or "*" in werkzeuge) and _sieht_server(detail, "auftragsbuch"):
             offen.append(name)
-    for name, treffer in ausdruecklich.items():
-        print(f"{name}: {', '.join(treffer)}", file=aus)
+    namen = [n for _, n, _ in ausdruecklich]
+    for kennung, name, treffer in ausdruecklich:
+        titel = f"{name} (Kennung {kennung})" if namen.count(name) > 1 else name
+        print(f"{titel}: {', '.join(treffer)}", file=aus)
     if offen:
         print("offener Zugang (sieht alle Werkzeuge des Servers):", file=aus)
         for name in offen:
             print(name, file=aus)
-    if ausdruecklich == {ERWARTET_AGENT: list(ERWARTETE_WERKZEUGE)}:
+    if [(n, t) for _, n, t in ausdruecklich] == [(ERWARTET_AGENT, list(ERWARTETE_WERKZEUGE))]:
         return 0
     print(f"abweichend: erwartet genau {ERWARTET_AGENT} mit {', '.join(ERWARTETE_WERKZEUGE)}", file=fehler)
     return 1
 
 
+def _server_kontrolle(client: OpenFang, werkzeug: str) -> str | None:
+    """Positive Kontrolle: Server `auftragsbuch` verbunden und fuehrt das Werkzeug. None = in Ordnung, sonst Grund."""
+    status, text = client.senden("GET", "/api/mcp/servers")
+    if status is None:
+        return "nicht erreichbar"
+    if status in (401, 403):
+        return "Schluessel abgelehnt"
+    if status != 200:
+        return f"Status {status}"
+    try:
+        koerper = json.loads(text)
+    except ValueError:
+        return "Serverliste ungueltig"
+    verbunden = koerper.get("connected") if isinstance(koerper, dict) else None
+    if not isinstance(verbunden, list):
+        return "Serverliste ungueltig"
+    eintraege = [e for e in verbunden if isinstance(e, dict) and e.get("name") == "auftragsbuch"
+                 and e.get("connected") is True]
+    if not eintraege:
+        return "Server auftragsbuch nicht verbunden"
+    for eintrag in eintraege:
+        werkzeuge = eintrag.get("tools")
+        if isinstance(werkzeuge, list) and any(isinstance(w, dict) and w.get("name") == werkzeug for w in werkzeuge):
+            return None
+    return "Werkzeug am Server nicht vorhanden"
+
+
+def _fehlercode(antwort: object) -> tuple[bool, object, object]:
+    """(ist JSON-RPC-Fehler ohne result, code, message)."""
+    if not isinstance(antwort, dict) or "error" not in antwort or "result" in antwort:
+        return False, None, None
+    fehler = antwort["error"]
+    if not isinstance(fehler, dict):
+        return True, None, None
+    return True, fehler.get("code"), fehler.get("message")
+
+
 def gegenprobe(client: OpenFang, agent: str, aus: TextIO) -> int:
+    werkzeug = WERKZEUG_VORSATZ + GEGENPROBE_WERKZEUG
     agenten, grund = _agentenliste(client)
     if agenten is None:
         print(f"unerwartet ({grund})", file=aus)
@@ -216,10 +266,16 @@ def gegenprobe(client: OpenFang, agent: str, aus: TextIO) -> int:
     if kennung is None:
         print("unerwartet (Agent nicht registriert)", file=aus)
         return 1
+    # Ohne verbundenen Server fehlt das Werkzeug ueberall, und OpenFang antwortete ebenfalls "nicht erlaubt":
+    # das darf nicht wie die Ablehnung aussehen.
+    grund_server = _server_kontrolle(client, werkzeug)
+    if grund_server is not None:
+        print(f"unerwartet ({grund_server})", file=aus)
+        return 1
     status, text = client.senden(
         "POST", "/mcp",
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-         "params": {"name": WERKZEUG_VORSATZ + GEGENPROBE_WERKZEUG, "arguments": {"eingabe": GUELTIGE_EINGABE}}},
+         "params": {"name": werkzeug, "arguments": {"eingabe": GUELTIGE_EINGABE}}},
         {"X-OpenFang-Agent-Id": kennung})
     if DURCHGELASSEN_TEXT in text:
         print(f"DURCHGELASSEN: {DURCHGELASSEN_TEXT} - anhalten", file=aus)
@@ -230,9 +286,6 @@ def gegenprobe(client: OpenFang, agent: str, aus: TextIO) -> int:
     if status == 401:
         print("unerwartet (Schluessel abgelehnt)", file=aus)
         return 1
-    if status == 403:
-        print("abgelehnt von OpenFang (erwartet)", file=aus)
-        return 0
     if status != 200:
         print(f"unerwartet (Status {status})", file=aus)
         return 1
@@ -241,10 +294,19 @@ def gegenprobe(client: OpenFang, agent: str, aus: TextIO) -> int:
     except ValueError:
         print("unerwartet (keine JSON-Antwort)", file=aus)
         return 1
-    if isinstance(antwort, dict) and "error" in antwort and "result" not in antwort:
+    ist_fehler, code, nachricht = _fehlercode(antwort)
+    if not ist_fehler:
+        print("unerwartet (angenommen ohne Ablehnung)", file=aus)
+        return 1
+    if code == ABLEHNUNG_CODE and nachricht == ABLEHNUNG_NACHRICHT + werkzeug:
         print("abgelehnt von OpenFang (erwartet)", file=aus)
         return 0
-    print("unerwartet (angenommen ohne Ablehnung)", file=aus)
+    if code == FREIGABE_CODE and nachricht == FREIGABE_NACHRICHT:
+        print("DURCHGELASSEN: Recht vorhanden, nur die Freigabe fehlte - anhalten", file=aus)
+        return 1
+    # Nur ein ganzzahliger Code wird genannt; alles andere bleibt ungenannt.
+    nenne = f" {code}" if isinstance(code, int) and not isinstance(code, bool) else ""
+    print(f"unerwartet (JSON-RPC-Fehler{nenne})", file=aus)
     return 1
 
 

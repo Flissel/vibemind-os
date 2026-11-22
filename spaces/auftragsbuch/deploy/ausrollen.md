@@ -217,7 +217,8 @@ Werkzeug-Servers `auftragsbuch` steht seit Task 7 in `openfang/openfang.vibemind
      `"<PFAD-ZUR-VENV>/Scripts/python.exe" "<PFAD-ZUM-AEUSSEREN-REPO>/scripts/mcp_mit_env.py" --env OPENFANG_API_KEY --set OPENFANG_URL=http://127.0.0.1:4200 -- "<ZWEIG-CHECKOUT>/spaces/auftragsbuch/deploy/openfang_aufruf.py" werkzeuge-je-agent auftragsbuch`.
      Das Hilfsprogramm holt die Agentenliste und je Agent dessen Detail (die Liste trägt keine Werkzeuge) und gibt
      zwei Gruppen aus. Gruppe 1, ausdrücklich: Agenten mit einem Werkzeug `mcp_auftragsbuch_*` in
-     `capabilities.tools`, je Zeile Name und diese Werkzeuge. Erwartet ist genau eine Zeile
+     `capabilities.tools`, je Zeile Name und diese Werkzeuge (gleichnamige Agenten stehen beide da, mit
+     `(Kennung …)` am Namen). Erwartet ist genau eine Zeile
      `brain-sales: mcp_auftragsbuch_auftrag_lesen, mcp_auftragsbuch_auftrag_probe`; nur dann Exit 0, jeder weitere
      Agent oder eine abweichende Werkzeugmenge ergibt Exit 1. Gruppe 2 unter der Überschrift
      `offener Zugang (sieht alle Werkzeuge des Servers):`: Agenten mit leerer oder `*`-Werkzeugliste, die den Server
@@ -284,10 +285,18 @@ Probe und Lesen sind zwei getrennte Pläne: Das Gehirn legt die Antwort eines We
 5. **Eigenes Ja des Betreibers:** Gegenprobe direkt an OpenFang: derselbe Aufruf von `sales_post_pruefen` im Namen
    von `brain-sales` (das Hilfsprogramm löst die Kennung selbst auf; Schlüssel aus der Root-`.env`, nie auf der
    Kommandozeile): `"<PFAD-ZUR-VENV>/Scripts/python.exe" "<PFAD-ZUM-AEUSSEREN-REPO>/scripts/mcp_mit_env.py" --env OPENFANG_API_KEY --set OPENFANG_URL=http://127.0.0.1:4200 -- "<ZWEIG-CHECKOUT>/spaces/auftragsbuch/deploy/openfang_aufruf.py" gegenprobe brain-sales sales_post_pruefen`.
+   Das Hilfsprogramm prüft vorab über `GET /api/mcp/servers`, dass der Server `auftragsbuch` verbunden ist und das
+   Werkzeug führt (sonst `unerwartet (Server auftragsbuch nicht verbunden)` bzw.
+   `unerwartet (Werkzeug am Server nicht vorhanden)`, ohne Aufruf): Ohne verbundenen Server fehlte das Werkzeug
+   überall und die Antwort sähe wie eine Ablehnung aus. Als Ablehnung zählt nur der JSON-RPC-Fehler `-32602` mit der
+   Nachricht `Tool not permitted for caller agent: mcp_auftragsbuch_sales_post_pruefen`.
    Erwartung: `abgelehnt von OpenFang (erwartet)` und Exit 0, weil das Werkzeug für `brain-sales` nicht
    freigeschaltet ist; in `auftrag.auftraege` entsteht keine Zeile. Kommt stattdessen
    `DURCHGELASSEN: Unbekannte Auftragsart - anhalten` (Exit 1), hat OpenFang durchgelassen (erst die Datenbank hat
-   abgelehnt): anhalten und melden. `unerwartet (<Grund>)` (Exit 1) ist ebenfalls ein Befund für den Betreiber.
+   abgelehnt); kommt `DURCHGELASSEN: Recht vorhanden, nur die Freigabe fehlte - anhalten` (Exit 1), war das Recht da
+   und nur die Freigabe fehlte, die Sperre hat nicht gehalten: in beiden Fällen anhalten und melden.
+   `unerwartet (<Grund>)` (Exit 1), auch `unerwartet (JSON-RPC-Fehler <Code>)` und jeder HTTP-Fehler, ist ebenfalls
+   ein Befund für den Betreiber, keine Ablehnung.
 6. **Eigenes Ja des Betreibers:** Dienst stoppen, auf dem Mini-PC: `AUFTRAGSBUCH_TAG=<laufender Tag> docker compose stop`.
    Dann Plan 1 erneut: Der Schritt scheitert sofort mit einer Meldung, die den Server nennt, hinter `tailscale serve`
    eher `auftragsbuch: unerwartete Antwort (502)`, sonst `auftragsbuch nicht erreichbar`; kein anderer Weg wird

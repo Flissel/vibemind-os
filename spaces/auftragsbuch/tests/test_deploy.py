@@ -410,6 +410,9 @@ def test_runbook_openfang_aufrufe_laufen_ueber_das_hilfsprogramm_mit_der_markerr
     (gegen,) = [p for p in punkte if "gegenprobe brain-sales" in p]
     assert f"`{_OPENFANG_START} gegenprobe brain-sales sales_post_pruefen`" in gegen
     assert _JA in gegen and "direkt an OpenFang" in gegen
+    assert "GET /api/mcp/servers" in gegen and "`-32602`" in gegen and "Tool not permitted for caller agent" in gegen
+    assert "`DURCHGELASSEN: Recht vorhanden, nur die Freigabe fehlte - anhalten`" in gegen
+    assert "`unerwartet (Server auftragsbuch nicht verbunden)`" in gegen
     assert "`abgelehnt von OpenFang (erwartet)`" in gegen and "`DURCHGELASSEN: Unbekannte Auftragsart - anhalten`" in gegen
     (entfernen,) = [p for p in punkte if "agent-entfernen brain-sales" in p]
     assert f"`{_OPENFANG_START} agent-entfernen brain-sales`" in entfernen
