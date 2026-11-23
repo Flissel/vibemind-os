@@ -9,6 +9,12 @@ erfuellt die Determinismus-Grenze der Spec, ohne dass ein Modell Zahlen erfindet
 
 Zeitrechnung: timestretch_ratio ist Ziel-Tempo geteilt durch Quell-Tempo, die
 Ausgabedauer eines Abschnitts also Quelldauer geteilt durch das Verhaeltnis.
+
+Tonart-Brueche: liess sich keine Reihenfolge ohne Bruch finden (siehe
+architect.py), steht an manchen Naehten ein harmonisch unvertraegliches Paar.
+Dort ueberblendet man nicht - zwei Tonarten uebereinander klingen schief. Ein
+Bruch-Uebergang bekommt deshalb nur `cut` oder `filter_sweep`, auch wenn das
+Profil sie nicht nennt (BREAK_TECHNIQUES).
 """
 
 from pydantic import BaseModel, Field
@@ -19,6 +25,7 @@ from djset.agents.base import (
     StageRulesViolated,
     run_agent,
 )
+from djset.camelot import break_indices
 from djset.contracts import (
     MAX_RATIO,
     MIN_RATIO,
@@ -40,6 +47,12 @@ MAX_ROUNDS = 3
 # Abstand ab, den normal gemastertes Material untereinander hat; alles
 # darueber ist keine Lautheitsdifferenz mehr, sondern eine Fehlmessung.
 MAX_GAIN_DB = 6.0
+
+# Was an einem Tonart-Bruch erlaubt ist: ein harter Schnitt oder ein
+# Filter-Sweep, der die Klangfarbe wegnimmt, bevor die neue Tonart kommt. Gilt
+# unabhaengig von den Techniken des Profils - der Bericht nennt es, wenn eine
+# davon dort nicht stand.
+BREAK_TECHNIQUES: tuple[Technique, ...] = ("cut", "filter_sweep")
 
 
 class TransitionChoice(BaseModel):
@@ -72,8 +85,21 @@ Woran du dich orientierst:
   automatisch zu einem Schnitt gemacht - die Tempi liegen zu weit auseinander,
   um sie anzugleichen. Deine Technikwahl wird dort verworfen; waehle trotzdem
   eine aus der erlaubten Liste.
-
+{break_hint}
 Antworte ausschliesslich mit dem geforderten JSON."""
+
+BREAK_HINT = """- Steht bei einem Uebergang "Tonart-Bruch", passen die beiden Tonarten
+  nicht zusammen. Dort ist nur cut oder filter_sweep erlaubt, auch wenn die
+  Liste oben sie nicht nennt.
+"""
+
+
+def break_seams(
+    order: list[str], by_id: dict[str, TrackAnalysis], profile: Profile
+) -> set[int]:
+    """Die Naehte i (zwischen order[i] und order[i+1]), die ein Tonart-Bruch sind."""
+    keys = [by_id[track_id].key.camelot for track_id in order]
+    return set(break_indices(keys, profile.harmonic_strictness))
 
 
 def snap_to_downbeat(time_s: float, grid: BeatGrid) -> float:
@@ -246,6 +272,7 @@ def build_mixplan(
     # Materialrechnung, fuer play_to_s und fuer die Position des Uebergangs.
     outros = {tid: _snapped_outro(by_id[tid]) for tid in order}
     gains = _gains(order, by_id)
+    breaks = break_seams(order, by_id, profile)
 
     # Zwei Korrekturen an dem, was das Modell gewaehlt hat.
     #
@@ -269,6 +296,11 @@ def build_mixplan(
         if _is_unstretchable(
             outgoing, ratios[outgoing.id], target_bpm
         ) or _is_unstretchable(incoming, ratios[incoming.id], target_bpm):
+            technique = "cut"
+        # Nachbedingung am Tonart-Bruch: nur cut oder filter_sweep. Der Prompt
+        # und _check verlangen das schon vom Modell; hier haengt es nicht mehr
+        # an dessen Antwort.
+        if index in breaks and technique not in BREAK_TECHNIQUES:
             technique = "cut"
 
         out_bars = _available_bars(
@@ -376,6 +408,7 @@ def build_mixplan(
 
 
 def _table(setlist: Setlist, by_id: dict[str, TrackAnalysis], profile: Profile) -> str:
+    breaks = break_seams(setlist.order, by_id, profile)
     lines = []
     for index in range(len(setlist.order) - 1):
         a = by_id[setlist.order[index]]
@@ -385,6 +418,8 @@ def _table(setlist: Setlist, by_id: dict[str, TrackAnalysis], profile: Profile) 
         a_stretchable = MIN_RATIO <= profile.bpm.target / a.bpm.value <= MAX_RATIO
         b_stretchable = MIN_RATIO <= profile.bpm.target / b.bpm.value <= MAX_RATIO
         note = "" if (a_stretchable and b_stretchable) else "  [Tempi nicht angleichbar]"
+        if index in breaks:
+            note += "  [Tonart-Bruch: nur cut oder filter_sweep]"
         lines.append(
             f"{index + 1}. {a.id} ({a.bpm.value:.1f} BPM, {a.key.camelot}, "
             f"Energie {a.verdict.energy_level:.2f}) nach {b.id} "
@@ -394,11 +429,21 @@ def _table(setlist: Setlist, by_id: dict[str, TrackAnalysis], profile: Profile) 
     return "\n".join(lines)
 
 
-def _check(answer: DesignerAnswer, wanted: int, profile: Profile) -> str | None:
+def _check(
+    answer: DesignerAnswer,
+    wanted: int,
+    profile: Profile,
+    breaks: frozenset[int] = frozenset(),
+) -> str | None:
     if len(answer.choices) != wanted:
         return f"Du hast {len(answer.choices)} Uebergaenge geliefert, gebraucht werden {wanted}."
-    allowed = set(profile.transition.techniques)
     for index, choice in enumerate(answer.choices):
+        # Am Tonart-Bruch gilt nur BREAK_TECHNIQUES, sonst das Profil.
+        allowed = (
+            set(BREAK_TECHNIQUES)
+            if index in breaks
+            else set(profile.transition.techniques)
+        )
         if choice.technique not in allowed:
             return (
                 f"Uebergang {index + 1} benutzt {choice.technique}, erlaubt sind nur: "
@@ -424,6 +469,7 @@ def design(
     """Waehlt die Uebergaenge und rechnet daraus den Mixplan."""
     by_id = {a.id: a for a in analyses}
     wanted = len(setlist.order) - 1
+    breaks = frozenset(break_seams(setlist.order, by_id, profile))
     prompt = PROMPT.format(
         genre=profile.genre,
         bpm_target=profile.bpm.target,
@@ -432,12 +478,13 @@ def design(
         bars_max=profile.transition.bars_max,
         table=_table(setlist, by_id, profile),
         count=wanted,
+        break_hint=BREAK_HINT if breaks else "",
     )
 
     current = prompt
     answer = run_agent(client, current, DesignerAnswer, budget, retries=1)
     for _round in range(MAX_ROUNDS - 1):
-        problem = _check(answer, wanted, profile)
+        problem = _check(answer, wanted, profile, breaks)
         if problem is None:
             break
         current = f"{prompt}\n\nDein letzter Versuch war unbrauchbar: {problem}"
@@ -447,7 +494,7 @@ def design(
         # nicht erlaubt, oder eine Taktzahl ausserhalb des Korridors kaeme sonst
         # bis in den Renderer - der Mixplan waere schemagueltig und trotzdem
         # nicht das, was das Profil verlangt.
-        problem = _check(answer, wanted, profile)
+        problem = _check(answer, wanted, profile, breaks)
         if problem is not None:
             raise StageRulesViolated(
                 f"Der Transition-Designer lieferte nach {MAX_ROUNDS} Versuchen "

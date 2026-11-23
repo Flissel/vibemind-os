@@ -442,3 +442,20 @@ def test_build_run_bleibt_fertig_wenn_die_mp3_scheitert(
     ausgabe = capsys.readouterr().out
     assert f"  MP3: nicht geschrieben - {fehler}" in ausgabe
     assert f"  MP3: {run.path('set.mp3')}" not in ausgabe
+
+
+def test_build_run_schreibt_den_abschnitt_tonart_brueche(
+    tmp_path, profile, monkeypatch
+):
+    """A1: der Bericht hat einen eigenen Abschnitt fuer Tonart-Brueche - die
+    vier Clicktracks haben dieselbe Tonart, also steht dort "Keine"."""
+    run, files, flach, client = _lauf_mit_ersetztem_renderer(
+        tmp_path, profile, monkeypatch
+    )
+    monkeypatch.setattr(cli, "to_mp3", lambda quelle, ziel: ziel.write_bytes(b""))
+
+    cli.build_run(run, files, flach, client, _budget())
+
+    bericht = run.path("qa-report.md").read_text(encoding="utf-8")
+    abschnitt = bericht.split("## Tonart-Brueche", 1)[1].split("\n## ", 1)[0]
+    assert "Keine" in abschnitt

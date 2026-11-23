@@ -3,7 +3,13 @@ import json
 import pytest
 
 from djset.agents.base import Budget, StageRulesViolated
-from djset.agents.designer import MAX_GAIN_DB, design, snap_to_downbeat
+from djset.agents.designer import (
+    MAX_GAIN_DB,
+    TransitionChoice,
+    build_mixplan,
+    design,
+    snap_to_downbeat,
+)
 from djset.contracts import (
     MAX_RATIO,
     MIN_RATIO,
@@ -362,3 +368,74 @@ def test_bars_outside_the_corridor_after_every_round_raises(profile: Profile) ->
         design(client, setlist, tracks, profile, _budget())
 
     assert client.calls == 3
+
+
+# --- A1: ein Tonart-Bruch bekommt nur cut oder filter_sweep -----------------
+
+
+def _bruch_set() -> list[TrackAnalysis]:
+    """b (8B) nach c (2A) passt harmonisch nicht - die zweite Naht ist ein Bruch."""
+    return [
+        make_analysis("a", camelot="8A", energy=0.3),
+        make_analysis("b", camelot="8B", energy=0.5),
+        make_analysis("c", camelot="2A", energy=0.7),
+    ]
+
+
+def _zwei_wahlen(erste: str, zweite: str) -> str:
+    return json.dumps(
+        {"choices": [{"technique": erste, "bars": 16}, {"technique": zweite, "bars": 16}]}
+    )
+
+
+def test_ein_blend_am_tonart_bruch_wird_neu_gefragt(profile: Profile) -> None:
+    setlist = Setlist(order=["a", "b", "c"], note="")
+    client = FakeClient(
+        [_zwei_wahlen("blend", "blend"), _zwei_wahlen("blend", "filter_sweep")]
+    )
+
+    plan = design(client, setlist, _bruch_set(), profile, _budget())
+
+    assert client.calls == 2
+    assert "Tonart-Bruch" in client.prompts[0]
+    assert "cut" in client.prompts[1] and "filter_sweep" in client.prompts[1]
+    assert [t.technique for t in plan.transitions] == ["blend", "filter_sweep"]
+
+
+def test_cut_am_tonart_bruch_ist_erlaubt_auch_wenn_das_profil_ihn_nicht_nennt(
+    profile: Profile,
+) -> None:
+    assert "cut" not in profile.transition.techniques
+    setlist = Setlist(order=["a", "b", "c"], note="")
+    client = FakeClient([_zwei_wahlen("eq_swap", "cut")])
+
+    plan = design(client, setlist, _bruch_set(), profile, _budget())
+
+    assert client.calls == 1
+    assert [t.technique for t in plan.transitions] == ["eq_swap", "cut"]
+
+
+def test_build_mixplan_macht_aus_einem_blend_am_bruch_einen_schnitt(
+    profile: Profile,
+) -> None:
+    """Die Nachbedingung haengt nicht am Modell: wer build_mixplan direkt mit
+    einem blend am Bruch ruft, bekommt einen Schnitt."""
+    setlist = Setlist(order=["a", "b", "c"], note="")
+    choices = [
+        TransitionChoice(technique="blend", bars=16),
+        TransitionChoice(technique="blend", bars=16),
+    ]
+
+    plan = build_mixplan(setlist, _bruch_set(), choices, profile)
+
+    assert [t.technique for t in plan.transitions] == ["blend", "cut"]
+
+
+def test_ohne_tonart_bruch_bleibt_der_prompt_wie_er_war(profile: Profile) -> None:
+    tracks = many(4)
+    setlist = Setlist(order=[t.id for t in tracks], note="")
+    client = FakeClient([_choices(3)])
+
+    design(client, setlist, tracks, profile, _budget())
+
+    assert "Tonart-Bruch" not in client.prompts[0]

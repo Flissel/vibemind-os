@@ -261,3 +261,61 @@ def test_without_tempo_information_there_is_no_tempo_section(profile: Profile) -
     text = render_qa_report(_report(-2.0, []), _shortlist(), [], None, simple_plan(), profile)
 
     assert "Tempo-Bereich" not in text
+
+
+# --- A1: Tonart-Brueche im Bericht ------------------------------------------
+
+
+def _abschnitt(text: str, titel: str) -> str:
+    return text.split(f"## {titel}", 1)[1].split("\n## ", 1)[0]
+
+
+def test_der_bericht_nennt_jeden_tonart_bruch(profile: Profile) -> None:
+    """simple_plan: t0 -> t1 -> t2, beide Uebergaenge blend. t1 (8B) nach t2
+    (2A) passt nicht - der Bericht nennt beide Songs und beide Tonarten, und
+    dass blend dort gar nicht haette stehen duerfen, faellt durch die Technik
+    in der Zeile auf."""
+    tonarten = {"t0": "8A", "t1": "8B", "t2": "2A"}
+
+    text = render_qa_report(
+        _report(-2.0, []), _shortlist(), [], None, simple_plan(), profile,
+        tonarten=tonarten,
+    )
+
+    abschnitt = _abschnitt(text, "Tonart-Brueche")
+    assert "`t1` (8B) nach `t2` (2A)" in abschnitt
+    assert "`t0`" not in abschnitt
+
+
+def test_eine_ergaenzte_technik_am_bruch_wird_genannt(profile: Profile) -> None:
+    """cut steht nicht in den Techniken des Profils - am Bruch ist er trotzdem
+    erlaubt, und der Bericht sagt das."""
+    plan = simple_plan()
+    plan = MixPlan.model_validate(
+        plan.model_dump()
+        | {
+            "transitions": [
+                plan.transitions[0].model_dump(),
+                plan.transitions[1].model_dump() | {"technique": "cut"},
+            ]
+        }
+    )
+    assert "cut" not in profile.transition.techniques
+
+    text = render_qa_report(
+        _report(-2.0, []), _shortlist(), [], None, plan, profile,
+        tonarten={"t0": "8A", "t1": "8B", "t2": "2A"},
+    )
+
+    abschnitt = _abschnitt(text, "Tonart-Brueche")
+    assert "cut" in abschnitt
+    assert "ergaenzt" in abschnitt
+
+
+def test_ohne_bruch_sagt_der_abschnitt_keine(profile: Profile) -> None:
+    text = render_qa_report(
+        _report(-2.0, []), _shortlist(), [], None, simple_plan(), profile,
+        tonarten={"t0": "8A", "t1": "8B", "t2": "9B"},
+    )
+
+    assert "Keine" in _abschnitt(text, "Tonart-Brueche")

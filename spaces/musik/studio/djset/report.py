@@ -12,6 +12,7 @@ nachvollziehbar ist - nicht nur im Erfolgsfall, auch dann, wenn nichts zu
 melden war.
 """
 
+from djset.camelot import is_compatible
 from djset.contracts import (
     AudioFormat,
     CritiqueLog,
@@ -118,6 +119,34 @@ def _shortened_transitions(plan: MixPlan, profile: Profile) -> list[str]:
     ]
 
 
+def _key_breaks(
+    plan: MixPlan, profile: Profile, tonarten: dict[str, str]
+) -> list[str]:
+    """Jeder Uebergang zwischen zwei harmonisch unvertraeglichen Songs.
+
+    Solche Naehte gibt es nur, wenn sich keine Reihenfolge ohne Bruch finden
+    liess (siehe agents/architect.py). Dort laeuft nur cut oder filter_sweep
+    (agents/designer.py, BREAK_TECHNIQUES) - auch wenn das Profil die
+    Technik nicht nennt. Das steht dann mit in der Zeile.
+    """
+    lines = []
+    for t in plan.transitions:
+        von, nach = tonarten[t.from_track], tonarten[t.to_track]
+        if is_compatible(von, nach, profile.harmonic_strictness):
+            continue
+        line = (
+            f"`{t.from_track}` ({von}) nach `{t.to_track}` ({nach}): "
+            f"{t.technique}"
+        )
+        if t.technique not in profile.transition.techniques:
+            line += (
+                " - steht nicht in den Techniken des Profils, fuer den Bruch "
+                "ergaenzt"
+            )
+        lines.append(line + ".")
+    return lines
+
+
 def _status_line(qa: QaReport, corrected: bool) -> str:
     """Die eine Zeile, die beantwortet, ob der Lauf ohne Nachlesen brauchbar ist.
 
@@ -166,6 +195,7 @@ def render_qa_report(
     profile: Profile,
     corrected: bool = False,
     tempo: TempoWahl | None = None,
+    tonarten: dict[str, str] | None = None,
 ) -> str:
     """Der Bericht als Markdown.
 
@@ -194,6 +224,10 @@ def render_qa_report(
     Bereich des Sets strecken liess, mit seinem gemessenen Tempo. Ohne
     `tempo` gibt es diese Sektion nicht - ein Lauf aus watch/ hat keinen
     Bestand, aus dem etwas haette draussen bleiben koennen.
+
+    `tonarten` (Track-ID -> Camelot) schaltet den Abschnitt "Tonart-Brueche"
+    ein: jede Naht zwischen zwei harmonisch unvertraeglichen Songs, mit beiden
+    IDs, beiden Tonarten und der Technik dort.
     """
     lines = ["# QA-Bericht", "", f"**Status:** {_status_line(qa, corrected)}", ""]
 
@@ -234,6 +268,18 @@ def render_qa_report(
             f"Takte des Profils."
         )
     lines.append("")
+
+    if tonarten is not None:
+        lines += ["## Tonart-Brueche", ""]
+        brueche = _key_breaks(plan, profile, tonarten)
+        if brueche:
+            lines += [f"- {text}" for text in brueche]
+        else:
+            lines.append(
+                f"- Keine - jedes Nachbarpaar passt harmonisch "
+                f"(Strenge {profile.harmonic_strictness})."
+            )
+        lines.append("")
 
     lines += ["## Aussortiertes Material", ""]
     if shortlist.rejected:

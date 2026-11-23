@@ -133,3 +133,62 @@ def test_a_missing_track_after_every_round_raises(profile: Profile) -> None:
 
     assert client.calls == 3
     assert ids[4] in str(caught.value)
+
+
+# --- A1: ohne vertraegliche Reihenfolge zaehlt die Mindestzahl an Bruechen --
+
+
+def _insel_set() -> list:
+    """Drei Tracks, von denen einer auf keiner Seite passt: 2A ist weder zu
+    8A noch zu 8B benachbart. Jede Reihenfolge hat mindestens einen Bruch."""
+    return [
+        make_analysis("a", camelot="8A", energy=0.3),
+        make_analysis("b", camelot="8B", energy=0.5),
+        make_analysis("c", camelot="2A", energy=0.7),
+    ]
+
+
+def test_ohne_vertraegliche_reihenfolge_reicht_das_minimum_an_bruechen(
+    profile: Profile,
+) -> None:
+    """Vorher: drei Versuche, dann StageRulesViolated - bei vorhandenen Songs
+    fast immer, weil es fuer sie selten eine bruchfreie Reihenfolge gibt."""
+    ids = ["a", "b", "c"]
+    client = FakeClient([_answer(ids)])
+
+    setlist = arrange(client, _shortlist(ids), _insel_set(), profile, _budget())
+
+    assert client.calls == 1
+    assert setlist.order == ids
+    # Der Architect bekommt die Obergrenze genannt.
+    assert "hoechstens 1" in client.prompts[0]
+    # Und der Bruch steht in der Setlist-Notiz, mit beiden Songs und Tonarten.
+    assert "Fixture-Reihenfolge." in setlist.note
+    assert "b (8B)" in setlist.note and "c (2A)" in setlist.note
+
+
+def test_mehr_brueche_als_noetig_werden_neu_gefragt(profile: Profile) -> None:
+    """a-c-b hat zwei Brueche (8A/2A und 2A/8B), noetig ist nur einer."""
+    client = FakeClient([_answer(["a", "c", "b"]), _answer(["c", "a", "b"])])
+
+    setlist = arrange(
+        client, _shortlist(["a", "b", "c"]), _insel_set(), profile, _budget()
+    )
+
+    assert client.calls == 2
+    assert "hoechstens 1" in client.prompts[1]
+    assert setlist.order == ["c", "a", "b"]
+    assert "c (2A)" in setlist.note and "a (8A)" in setlist.note
+
+
+def test_mit_vertraeglicher_reihenfolge_bleibt_der_prompt_ohne_bruchregel(
+    profile: Profile,
+) -> None:
+    tracks = many(4)
+    ids = [t.id for t in tracks]
+    client = FakeClient([_answer(ids)])
+
+    setlist = arrange(client, _shortlist(ids), tracks, profile, _budget())
+
+    assert "Tonart-Bruch" not in client.prompts[0]
+    assert setlist.note == "Fixture-Reihenfolge."

@@ -313,6 +313,7 @@ def build_run(
             profile,
             correction is not None,
             tempo=tempo,
+            tonarten={a.id: a.key.camelot for a in analyses},
         ),
     )
     # Jetzt ist der Lauf fertig - und erst jetzt traegt er die Marke dafuer.
