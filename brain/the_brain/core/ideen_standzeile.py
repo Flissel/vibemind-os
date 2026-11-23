@@ -22,6 +22,7 @@ _NAMEN = {
     "idea.aenderung_zurueck": "Zurücknehmen", "idea.expand": "Ausformulieren", "idea.explain": "Einschätzen",
     "idea.summarize": "Zusammenfassen", "idea.whitepaper": "White Paper", "idea.document": "Dokument schreiben",
     "bubble_list": "Bubbles zeigen", "bubble.list": "Bubbles zeigen", "idea.root": "Wurzel festlegen",
+    "idea.group": "Nach Thema gruppieren", "idea.group_layout": "Gruppen anordnen",
 }
 
 
