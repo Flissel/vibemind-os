@@ -218,6 +218,45 @@ def test_stand_einer_zeile(zeile, erwartet) -> None:
     assert st.stand(A1, lambda i: zeile) == {**erwartet, "auftrag_id": A1}
 
 
+@pytest.mark.parametrize("pruefung, ergebnis", [
+    # Lauf 7 (falsch gruen): Werkzeug fehlte, Pruefung UNVERIFIED (placeholder) -> stand "fertig".
+    ({"verified": None, "reason": "placeholder", "kind": "UNVERIFIED", "fortsetzung": "keine"},
+     "Werkzeug bubble_evaluate nicht verfügbar"),
+    ({"verified": True, "reason": "ok", "fortsetzung": "keine"}, {"text": "Error: unknown tool bubble_evaluate"}),
+])
+def test_stand_fehlendes_werkzeug_ist_fehler(pruefung, ergebnis) -> None:
+    zeile = {**_zeile("fertig", pruefung, _iso(78)), "capability": "bubble_evaluate", "ergebnis": ergebnis}
+    aus = st.stand(A1, lambda i: zeile)
+    assert aus["stand"] == "fehler" and aus["ok"] is False and aus["meldung"] == st.WERKZEUG_FEHLT_SATZ
+
+
+@pytest.mark.parametrize("pruefung, ergebnis", [
+    ({"verified": None, "reason": "placeholder", "kind": "UNVERIFIED", "fortsetzung": "keine"}, "Bewertung gesetzt."),
+    # Ohne Pruefer (etwa Coding) ist der Auftrag oft gelungen: kein rotes ✕, sondern ein Hinweis.
+    ({"verified": None, "reason": "kein Pruefer", "kind": None, "fortsetzung": "keine"}, None),
+])
+def test_stand_ohne_bestaetigung_ist_ungeprueft(pruefung, ergebnis) -> None:
+    zeile = {**_zeile("fertig", pruefung, _iso(78)), "capability": "bubble_evaluate", "ergebnis": ergebnis}
+    assert st.stand(A1, lambda i: zeile) == {"stand": "ungeprueft", "ok": False, "hinweis": True,
+                                             "meldung": st.UNGEPRUEFT_SATZ, "dauer_s": 78.0, "auftrag_id": A1}
+
+
+def test_stand_fertig_mit_bestaetigter_pruefung() -> None:
+    zeile = {**_zeile("fertig", {"verified": True, "reason": "ok", "fortsetzung": "keine"}, _iso(12)),
+             "ergebnis": "Bewertung gesetzt."}
+    assert st.stand(A1, lambda i: zeile) == {"stand": "fertig", "ok": True, "meldung": "Der Auftrag ist fertig.",
+                                             "dauer_s": 12.0, "auftrag_id": A1}
+
+
+def test_tabelle_liest_das_ergebnis_fuer_den_stand(monkeypatch) -> None:
+    gesendet = []
+    tabelle = aa.AuftragsTabelle.__new__(aa.AuftragsTabelle)
+    monkeypatch.setattr(tabelle, "_req", lambda methode, params=None, **kw: gesendet.append(params) or [],
+                        raising=False)
+    tabelle.lesen(A1)
+    assert "ergebnis" in gesendet[0]["select"].split(",")
+
+
 def test_stand_vorschlag_nennt_die_saetze() -> None:
     zeile = _zeile("fertig", {"rueckweg": "vorschlag", "fortsetzung": "fertig",
                               "meldung": vs.meldung_geaendert("Sponsoren")}, _iso(43))
@@ -384,6 +423,63 @@ def test_router_vorschlag_verwerfen(monkeypatch) -> None:
     body = client.post("/api/multihop/execute", json={"intent": "Vorschlag verwerfen", "context": {}}).json()
     assert ausfuehrer.plaene == [] and tabelle.erledigt == ["verworfen"] and body["ok"] is True
     assert body["final_text"].startswith("Der Vorschlag ist verworfen")
+
+
+class _ErledigtTabelle(_VorschlagTabelle):
+    """Merkt das Erledigen an der Zeile, wie die echte Tabelle (pruefung.vorschlag_erledigt)."""
+
+    def vorschlag_erledigen(self, z, wie):
+        ok = super().vorschlag_erledigen(z, wie)
+        if ok:
+            z["pruefung"] = {**z["pruefung"], "vorschlag_erledigt": wie}
+        return ok
+
+    def letzter_erledigter_vorschlag(self, seit, bubble_id=None):
+        return self.zeile if self.erledigt else None
+
+    def lesen(self, i):
+        return {**self.zeile, "status": "fertig", "angelegt": _iso(0)}
+
+
+def test_verwerfen_nach_uebernehmen_sagt_es_ehrlich_und_stand_folgt(monkeypatch) -> None:
+    # Lauf 7: "Vorschlag verwerfen" nach dem Uebernehmen sagte "nichts geändert", /stand blieb "vorschlag".
+    tabelle = _ErledigtTabelle(_vorschlag_zeile("einschaetzen"))
+    monkeypatch.setattr(aa, "tabelle_aus_umgebung", lambda: tabelle)
+    client, ausfuehrer = _client(monkeypatch, {"ok": True, "result": {"content": [{"type": "text", "text": "{}"}]}})
+    assert client.get(f"/api/agent-auftraege/{A1}/stand").json()["stand"] == "vorschlag"
+    client.post("/api/multihop/execute", json={"intent": "Vorschlag übernehmen", "context": KONTEXT})
+    assert len(ausfuehrer.plaene) == 1
+    body = client.get(f"/api/agent-auftraege/{A1}/stand").json()
+    assert body["stand"] == "uebernommen" and body["ok"] is True and "saetze" not in body
+    body = client.post("/api/multihop/execute", json={"intent": "Vorschlag verwerfen", "context": KONTEXT}).json()
+    assert body["final_text"] == vs.SCHON_UEBERNOMMEN and "nichts geändert" not in body["final_text"]
+    assert body["hinweis"] is True and len(ausfuehrer.plaene) == 1 and tabelle.erledigt == ["uebernommen"]
+    # Ein zweites Uebernehmen sagt dasselbe, statt "kein offener Vorschlag".
+    body = client.post("/api/multihop/execute",
+                       json={"intent": "Vorschlag trotzdem übernehmen", "context": KONTEXT}).json()
+    assert body["final_text"] == vs.SCHON_UEBERNOMMEN and len(ausfuehrer.plaene) == 1
+
+
+def test_tabelle_letzter_erledigter_vorschlag_fragt_nur_erledigte(monkeypatch) -> None:
+    gesendet = []
+    tabelle = aa.AuftragsTabelle.__new__(aa.AuftragsTabelle)
+    monkeypatch.setattr(tabelle, "_req", lambda methode, params=None, **kw: gesendet.append((methode, params)) or [],
+                        raising=False)
+    assert tabelle.letzter_erledigter_vorschlag("2026-11-24T00:00:00+00:00", "b0b1e001") is None
+    ((methode, params),) = gesendet
+    assert methode == "GET" and params["pruefung->>vorschlag_erledigt"] == "not.is.null"
+    assert params["pruefung->>rueckweg"] == "eq.vorschlag" and params["uebergabe->rueckweg->>bubble_id"] == "eq.b0b1e001"
+
+
+def test_verwerfen_nach_verwerfen_sagt_schon_verworfen(monkeypatch) -> None:
+    tabelle = _ErledigtTabelle(_vorschlag_zeile())
+    monkeypatch.setattr(aa, "tabelle_aus_umgebung", lambda: tabelle)
+    client, _ = _client(monkeypatch, {"ok": True})
+    client.post("/api/multihop/execute", json={"intent": "Vorschlag verwerfen", "context": KONTEXT})
+    body = client.post("/api/multihop/execute", json={"intent": "Vorschlag verwerfen", "context": KONTEXT}).json()
+    assert body["final_text"] == vs.SCHON_VERWORFEN
+    body = client.post("/api/multihop/execute", json={"intent": "Vorschlag zeigen", "context": KONTEXT}).json()
+    assert body["final_text"] == vs.KEINER
 
 
 def test_stand_nach_vorschlag_verwerfen_sagt_verworfen(monkeypatch) -> None:

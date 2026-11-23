@@ -101,6 +101,28 @@ def zeigen(zeile: Optional[Mapping[str, Any]]) -> str:
     return f"Vorschlag für {_name(pruefung.get('titel'))}: {text}{nachsatz}"
 
 
+SCHON_UEBERNOMMEN = ("Der Vorschlag ist schon übernommen; verwerfen lässt er sich nicht mehr. "
+                     "Mit „Zurück“ nimmst du die Änderung zurück.")
+SCHON_VERWORFEN = "Der Vorschlag ist schon verworfen; an der Notiz ist nichts geändert."
+
+
+def schon_erledigt(art: str, erledigte: Optional[Mapping[str, Any]]) -> Optional[str]:
+    """Der ehrliche Satz, wenn kein Vorschlag mehr offen ist, der letzte aber schon erledigt wurde.
+
+    Lauf 7: "Vorschlag verwerfen" nach dem Übernehmen sagte "nichts geändert". ``None``: kein
+    erledigter Vorschlag bekannt, oder der Satz passt nicht (Zeigen sagt weiter "kein offener").
+    """
+    if art == "zeigen" or not erledigte:
+        return None
+    wie = (erledigte.get("pruefung") or {}).get("vorschlag_erledigt") if isinstance(
+        erledigte.get("pruefung"), Mapping) else None
+    if wie == "uebernommen":
+        return SCHON_UEBERNOMMEN
+    if wie == "verworfen":
+        return SCHON_VERWORFEN
+    return None
+
+
 def ueberschreibt(zeile: Optional[Mapping[str, Any]]) -> bool:
     """Ersetzt das Übernehmen den Text der Notiz (Ausformulieren)? Dann warnt der erste Satz."""
     if not zeile:

@@ -199,6 +199,17 @@ def test_unbekannte_notiz_ergibt_eine_gezielte_rueckfrage() -> None:
         "Eine Notiz „Gibtsnicht“")
 
 
+@pytest.mark.parametrize("bubble", [{"id": None, "title": "Stadtfest"}, {"title": "Stadtfest"},
+                                    {"id": "", "title": "Stadtfest"}])
+@pytest.mark.parametrize("satz", ["Bewerte die Notiz Sponsoren mit 50", "Was steht bei Sponsoren?",
+                                  "Formuliere Sponsoren aus", "Wie viele Karten gibt es hier?"])
+def test_offene_bubble_ohne_kennung_ist_wie_kontext_unbekannt(bubble, satz) -> None:
+    # Lauf 7: Die App meldete "in der Bubble", aber ohne Kennung; die Antwort war
+    # "finde ich in dieser Bubble nicht". Richtig ist: ich weiss nicht, welche Bubble offen ist.
+    antwort = abk.loese(satz, {"space": "ideas", "bubble": bubble, "cards": []})
+    assert antwort == {"rueckfrage": abk._BUBBLE_UNKLAR}
+
+
 # ── was die Abkuerzung bewusst NICHT nimmt ───────────────────────────────
 
 @pytest.mark.parametrize("satz", [
@@ -208,7 +219,8 @@ def test_unbekannte_notiz_ergibt_eine_gezielte_rueckfrage() -> None:
     # dem Kontext (Rueckweg, test_modellfunktionen_tragen_die_karte_aus_dem_kontext).
     # Ohne genannte Karte bleibt der Satz beim bisherigen Weg:
     "Was hältst du davon?",
-    "Bewerte die Bubble",                    # ohne Zahl: Urteil
+    # "Bewerte die Bubble" (ohne Zahl) ist seit Lauf 7 ein Urteil und laeuft als Einschaetzen
+    # (tests/test_bubble_evaluate_weg.py); der alte Weg war ein Auftrag ohne Werkzeug.
     "Fass die Notiz zusammen",
     "Wie wird das Wetter?",
     "",

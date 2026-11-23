@@ -2458,6 +2458,13 @@ def _try_capability_shortcut(state, intent: str):
         # Mensch in Anfuehrungszeichen setzt.
         from core.ideen_abkuerzung import listen_suchwort
         arg_template = listen_suchwort(intent)
+    elif arg_kwarg and m.capability == "bubble_create":
+        # Lauf 7: das letzte grossgeschriebene Wort wurde zum Titel ("X (Prüfung)" -> "Prüfung").
+        # Der Titel kommt Wort fuer Wort aus dem Satz; ohne erkennbaren Titel entscheidet der Planer.
+        from core.ideen_abkuerzung import bubble_titel
+        arg_template = bubble_titel(intent)
+        if not arg_template:
+            return None
     elif arg_kwarg:
         try:
             arg_template = _extract_arg_template(intent, m.capability)
@@ -2672,9 +2679,13 @@ def _feste_antwort(plan, exec_result, ideen_fest: bool, vorgabe: str, kontext: A
                 antwort_desktop["fehler"] = str(schritt.get("error") or "")
             return antwort_desktop
         alt = (str(getattr(plan, "plan_id", "")).startswith("shortcut_")
-               and capability in ("aenderung_zurueck", "bubble_list"))
+               and capability in ("aenderung_zurueck", "bubble_list", "bubble_create"))
         if not ideen_fest and not alt:
             return _planer_fehler_ideen(hops, exec_result)
+        if alt and capability == "bubble_create":
+            # Lauf 7: nach dem Anlegen kam keine Antwort. Der Satz nennt den Titel aus dem Satz.
+            titel = str(hops[0].arg_template or "").strip()
+            vorgabe = f"Bubble „{titel}“ angelegt." if titel else "Die Bubble ist angelegt."
         schritt = (exec_result.get("executed") or {}).get(hops[0].step_id) or {}
         if not isinstance(schritt, dict):
             schritt = {}
@@ -2685,7 +2696,7 @@ def _feste_antwort(plan, exec_result, ideen_fest: bool, vorgabe: str, kontext: A
             return None
         antwort: Dict[str, Any] = {
             "final_text": text,
-            "space": "bubbles" if capability == "bubble_list" else "ideas",
+            "space": "bubbles" if capability in ("bubble_list", "bubble_create") else "ideas",
         }
         if not ok:
             antwort["fehler"] = str(schritt.get("error") or "")
@@ -2734,12 +2745,26 @@ def _vorschlag_behandeln(art: str, intent: str, kontext: Any):
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[vorschlag] nicht lesbar: {type(e).__name__}")
         return None, _vs.NICHT_LESBAR, {"hinweis": True}
+    def _schon_erledigt():
+        # Lauf 7: kein offener Vorschlag mehr, der letzte ist aber schon uebernommen/verworfen.
+        try:
+            erledigte = tabelle.letzter_erledigter_vorschlag(_vs.seit_iso(), bubble_id)
+            if erledigte is None and bubble_id is not None:
+                erledigte = tabelle.letzter_erledigter_vorschlag(_vs.seit_iso())
+        except Exception:  # noqa: BLE001
+            return None
+        return _vs.schon_erledigt(art, erledigte)
+
+    if zeile is None and art != "zeigen":
+        satz = _schon_erledigt()
+        if satz is not None:
+            return None, satz, {"hinweis": True}
     if art == "zeigen" or zeile is None:
         return None, _vs.zeigen(zeile), ({} if zeile is not None else {"hinweis": True})
     if art == "verwerfen":
-        erledigt = tabelle.vorschlag_erledigen(zeile, "verworfen")
-        return None, ("Der Vorschlag ist verworfen; an der Notiz ist nichts geändert." if erledigt
-                      else _vs.KEINER), {}
+        if tabelle.vorschlag_erledigen(zeile, "verworfen"):
+            return None, "Der Vorschlag ist verworfen; an der Notiz ist nichts geändert.", {}
+        return None, (_schon_erledigt() or _vs.KEINER), {"hinweis": True}
     aufrufe, satz = _vs.uebernehmen(zeile)
     if not aufrufe:
         return None, satz, {"hinweis": True}

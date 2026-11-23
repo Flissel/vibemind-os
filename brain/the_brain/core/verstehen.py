@@ -171,16 +171,25 @@ _BUBBLE = re.compile(r"\bbubbles?\b", re.IGNORECASE)
 _IN_BUBBLE = re.compile(
     r"\s*\b(?:in|zu|an|bei|für|fuer)\s+(?:der|die|diese[rn]?)\s+bubble\s+[„\"']?"
     r"(?P<name>[^„“”\"'.,!?]{1,80}?)[“”\"']?\s*(?=$|[.,!?])", re.IGNORECASE)
+# Lauf 7: "In der Bubble Y: Halt fest: X" am Satzanfang. Ohne eigenes Muster las _IN_BUBBLE
+# den ganzen Rest als Bubble-Namen ("Y: Halt fest: X"). Der Name endet am Doppelpunkt/Komma.
+_BUBBLE_VORNE = re.compile(
+    r"^\s*(?:in|zu|an|bei|für|fuer)\s+(?:der|die|diese[rn]?)\s+bubble\s+[„\"']?"
+    r"(?P<name>[^„“”\"':,.!?]{1,80}?)[“”\"']?\s*[:,]\s*(?P<rest>\S.*)$", re.IGNORECASE | re.DOTALL)
 
 
 def bubble_name_im_satz(satz: Any) -> Tuple[Optional[str], str]:
-    """("Stadtfest", "Halt fest: Preise prüfen") aus "Halt fest: Preise prüfen in der Bubble Stadtfest".
+    """("Stadtfest", "Halt fest: Preise prüfen") aus "Halt fest: Preise prüfen in der Bubble Stadtfest"
+    oder aus "In der Bubble Stadtfest: Halt fest: Preise prüfen".
 
     ``(None, satz)``, wenn der Satz keine Bubble beim Namen nennt. Wirft nie.
     """
     try:
         if not isinstance(satz, str):
             return None, ""
+        vorne = _BUBBLE_VORNE.match(satz)
+        if vorne and vorne.group("name").strip():
+            return vorne.group("name").strip(), vorne.group("rest").strip()
         m = _IN_BUBBLE.search(satz)
         if not m or not m.group("name").strip():
             return None, satz
@@ -289,10 +298,12 @@ def bubble_aus_dem_satz(satz: Any) -> bool:
     gehen darum immer ueber die Bubble-Liste (wie aus einem fremden Reiter). Wirft nie.
     """
     try:
-        if not isinstance(satz, str) or not _FESTHALTEN.match(satz):
+        if not isinstance(satz, str):
             return False
-        name, _rest = bubble_name_im_satz(satz)
-        return bool(name)
+        name, rest = bubble_name_im_satz(satz)
+        # Der Festhalte-Satz steht vorne ("Halt fest: X in der Bubble Y") oder nach der Bubble
+        # ("In der Bubble Y: Halt fest: X").
+        return bool(name) and bool(_FESTHALTEN.match(rest))
     except Exception:  # noqa: BLE001
         return False
 

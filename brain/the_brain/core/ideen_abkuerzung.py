@@ -276,10 +276,20 @@ def _karte(name: str, kontext: dict) -> dict:
             isinstance(k, dict) and not ist_kennung(k.get("id")) and _normal(k.get("title")) == wort for k in roh):
         # Die Karte steht am Canvas, aber die App hat keine Kennung der Datenbank mitgegeben.
         raise _Rueckfrage(f"Die Notiz „{genannt}“ kann ich gerade nicht zuordnen. Öffne die Bubble noch einmal.")
+    if _bubble_ohne_kennung(kontext):
+        # Lauf 7: Die App meldet eine offene Bubble, aber ohne Kennung. Dann weiss ich nicht, was
+        # in ihr liegt: kein "finde ich in dieser Bubble nicht", sondern wie ohne Kontext.
+        raise _Rueckfrage(_BUBBLE_UNKLAR)
     gesamt = kontext.get("cards_total")
     if isinstance(gesamt, int) and not isinstance(gesamt, bool) and gesamt > len(karten):
         raise _Rueckfrage(f"Unter den sichtbaren Notizen finde ich „{genannt}“ nicht. Markiere die Notiz.")
     raise _Rueckfrage(f"Eine Notiz „{genannt}“ finde ich in dieser Bubble nicht.")
+
+
+def _bubble_ohne_kennung(kontext: dict) -> bool:
+    """Die App nennt eine offene Bubble (``bubble`` ist ein Eintrag), aber ohne Kennung der Datenbank."""
+    bubble = kontext.get("bubble")
+    return isinstance(bubble, dict) and bool(bubble) and not ist_kennung(bubble.get("id"))
 
 
 def _bubble(name: Optional[str], kontext: dict) -> dict:
@@ -791,6 +801,11 @@ _URTEIL = (
     rf"was\s+h(?:ä|ae)ltst\s+du\s+von\s+(?:dieser|der)\s+bubble",
     rf"sch(?:ä|ae)tz(?:e)?\s+(?:diese|die)\s+bubble\s+ein",
     rf"wie\s+sch(?:ä|ae)tzt\s+du\s+(?:diese|die)\s+bubble\s+ein",
+    # Lauf 7: ohne Zahl fiel "Bewerte diese Bubble" auf bubble.evaluate (Auftrag an brain-bubbles,
+    # ohne Werkzeug). Mit Zahl bleibt es der feste Satz bubble.rate.
+    rf"bewerte\s+(?:diese|die)\s+bubble",
+    rf"(?:ist|w(?:ä|ae)re)\s+(?:diese|die)\s+bubble\s+(?:schon\s+)?(?:reif|fertig|bereit)"
+    rf"(?:\s+f(?:ü|ue)r\s+(?:die\s+|das\s+|den\s+|ein\s+|eine\s+)?\w+)?",
 )
 
 
@@ -1157,6 +1172,40 @@ def arg_vorlage(argumente: dict) -> str:
     # Nur innerhalb von Zeichenfolgen ersetzen: verschachtelte Objekte (Gruppen) bleiben JSON.
     return re.sub(r'"(?:[^"\\]|\\.)*"',
                   lambda m: m.group(0).replace("{", "\\u007b").replace("}", "\\u007d"), roh)
+
+
+BUBBLE_TITEL_ZEICHEN = 200
+_NEUE_BUBBLE = re.compile(
+    r"^\s*(?:bitte\s+)?(?:(?P<leg>leg(?:e)?)\s+|erstell(?:e)?\s+|mach(?:e)?\s+)?(?:mir\s+|uns\s+)?"
+    r"(?:eine\s+)?neue\s+bubble\s*(?::\s*|(?:mit\s+(?:dem\s+)?(?:titel|namen)|namens|called|named)\s*:?\s*)?"
+    r"(?P<t>.+?)\s*$", re.IGNORECASE | re.DOTALL)
+
+
+def bubble_titel(satz: Any) -> str:
+    """Der Titel aus "Lege eine neue Bubble X an" / "Erstelle eine neue Bubble X" / "Neue Bubble: X",
+    Wort für Wort (Klammern und Zusätze bleiben). ``""``: kein solcher Satz oder kein Titel.
+
+    Lauf 7: "Lege eine neue Bubble X (Prüfung) an" legte eine Bubble "Prüfung" an; die alte
+    Abkürzung nahm das letzte großgeschriebene Wort. Wirft nie.
+    """
+    try:
+        if not isinstance(satz, str):
+            return ""
+        text = re.sub(r"\s+", " ", satz).strip().rstrip(".!")
+        m = _NEUE_BUBBLE.match(text)
+        if not m:
+            return ""
+        titel = m.group("t").strip()
+        if m.group("leg"):
+            # "Lege ... an": das trennbare "an" gehört nicht zum Titel.
+            titel = re.sub(r"(?:^|\s+)an$", "", titel, flags=re.IGNORECASE).strip()
+        if len(titel) >= 2 and titel[0] in "„\"'“" and titel[-1] in "“\"'”":
+            titel = titel[1:-1].strip()
+        if not titel or len(titel) > BUBBLE_TITEL_ZEICHEN:
+            return ""
+        return titel
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def listen_suchwort(satz: Any) -> str:

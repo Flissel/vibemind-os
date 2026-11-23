@@ -222,6 +222,30 @@ def test_freigabe_und_nicht_bestaetigt() -> None:
     assert pruefung["rueckweg"] == "fehler" and "nicht bestätigen" in pruefung["meldung"]
 
 
+def test_fehlendes_recht_heisst_erlaubnis_fehlt() -> None:
+    # Lauf 8: "Tool not permitted for caller agent: ..." -> nicht "Bitte prüfe das Canvas".
+    roh = json.dumps({"gruppen": [{"name": "Alles", "karten": [f"K{i}" for i in range(1, 7)]}]})
+
+    def verboten(ereignis, argumente):
+        raise RuntimeError("Tool not permitted for caller agent: mcp_beispiel_gruppen")
+
+    pruefung, _, _ = _verarbeiten(roh, aufruf=verboten)
+    assert pruefung["rueckweg"] == "fehler" and pruefung["verified"] is False
+    assert pruefung["meldung"] == "Dem Agenten fehlt die Erlaubnis für das Anordnen. Geändert habe ich nichts."
+
+    def abgelehnt(ereignis, argumente):
+        return {"error": {"code": -32602, "message": "Tool not permitted for caller agent: mcp_beispiel_gruppen"}}
+
+    pruefung, _, _ = _verarbeiten(roh, aufruf=abgelehnt, pruefe=lambda e, a, q: (None, "no result"))
+    assert pruefung["meldung"] == dok.RECHT_FEHLT_GRUPPEN
+    # Andere Fehler bleiben beim alten Satz.
+    def kaputt(ereignis, argumente):
+        raise RuntimeError("connection reset")
+
+    pruefung, _, _ = _verarbeiten(roh, aufruf=kaputt)
+    assert pruefung["meldung"] == "Das Anordnen der Gruppen ist gescheitert. Bitte prüfe das Canvas."
+
+
 def test_arg_vorlage_laesst_verschachtelte_objekte_als_json() -> None:
     from core import ideen_abkuerzung as abk
 

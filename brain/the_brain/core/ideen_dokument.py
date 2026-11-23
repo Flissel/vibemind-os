@@ -770,6 +770,20 @@ def _gruppieren_vorbereiten(event_id: str, arg: Mapping[str, Any], wunsch: Any, 
     return nachricht_gruppieren(bubble_titel, block, wunsch, gekuerzt), rueckweg
 
 
+# Lauf 8: "Tool not permitted for caller agent: ..." -> ein Recht fehlt; "Bitte prüfe das Canvas" passt dort nicht.
+RECHT_FEHLT_GRUPPEN = "Dem Agenten fehlt die Erlaubnis für das Anordnen. Geändert habe ich nichts."
+_NICHT_ERLAUBT = re.compile(r"\bnot\s+permitted\b|\bnicht\s+erlaubt\b|\bpermission\s+denied\b", re.IGNORECASE)
+
+
+def _recht_fehlt(antwort: Any) -> bool:
+    """Meldet die Antwort des Werkzeugs ein fehlendes Recht? (Text oder {"error"/"text"/"message": ...})"""
+    if isinstance(antwort, Mapping):
+        return any(_recht_fehlt(antwort.get(k)) for k in ("error", "text", "message", "result", "content"))
+    if isinstance(antwort, (list, tuple)):
+        return any(_recht_fehlt(t) for t in antwort[:10])
+    return isinstance(antwort, str) and bool(_NICHT_ERLAUBT.search(antwort[:2000]))
+
+
 def _gruppen_schreiben(rueckweg: Mapping[str, Any], gruppen: list[dict[str, Any]], *, aufruf: Aufruf,
                        pruefe: Pruefe) -> tuple[Optional[bool], str, str]:
     """(ok, reason, deutscher Satz) fuer den einen festen Aufruf ``idea.group_layout``."""
@@ -782,9 +796,13 @@ def _gruppen_schreiben(rueckweg: Mapping[str, Any], gruppen: list[dict[str, Any]
     except FreigabeAusstehend:
         return None, _WARTET_GRUPPEN, "Die Gruppen warten auf Freigabe; geändert ist noch nichts."
     except Exception as e:  # noqa: BLE001
+        if _recht_fehlt(str(e)):
+            return False, f"idea.group_layout: not permitted: {str(e)[:200]}", RECHT_FEHLT_GRUPPEN
         return None, f"idea.group_layout: {type(e).__name__}: {str(e)[:200]}", \
             "Das Anordnen der Gruppen ist gescheitert. Bitte prüfe das Canvas."
     ok, grund = pruefe("idea.group_layout", argumente, quittung)
+    if ok is not True and _recht_fehlt(quittung):
+        return False, f"idea.group_layout: not permitted: {grund}", RECHT_FEHLT_GRUPPEN
     if ok is not True:
         return ok, f"idea.group_layout: {grund}", \
             "Ich konnte nicht bestätigen, dass die Gruppen so auf dem Canvas stehen. Bitte prüfe das Canvas."
