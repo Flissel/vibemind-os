@@ -2081,12 +2081,15 @@ class PlanExecutor:
                     hintergrund=True,
                 )
         if last.get("pending") is True:
+            # Ein angenommener Auftrag (K1) wartet auf den Agenten, nicht auf eine Freigabe:
+            # kein Fehlertext, eigener Status. Nur ohne Auftrag ist es eine offene Freigabe.
+            _angenommen = isinstance(result_payload, dict) and bool(result_payload.get("auftrag_id"))
             return HopResult(
                 step_id=hop.step_id, ok=False, result=result_payload,
-                error="runtime authority approval pending",
+                error=None if _angenommen else "runtime authority approval pending",
                 elapsed_s=round(time.time() - t0, 2), capability=hop.capability,
                 target=target, rendered_arg=rendered_arg, kg_hits=kg_hits,
-                authority_status="pending_approval",
+                authority_status="auftrag_angenommen" if _angenommen else "pending_approval",
                 invocation_id=last.get("invocation_id"), pending=True,
                 contract_pass=None, reward=0.0,
             )
