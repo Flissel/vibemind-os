@@ -56,6 +56,8 @@ VERTRAEGE: dict[str, dict[str, Any]] = {
             "Notiz noch in den anderen Karten der Bubble stehen. "
             # Lauf 16 (45): zwei Schluesse ueber die Notiz hinaus (eine Empfehlung, eine Wertung).
             "Keine Empfehlungen, Ratschlaege oder Wertungen, die weder die Notiz noch die anderen Karten tragen. "
+            # Lauf 16 (47): ein Fall- und Geschlechtsfehler im Ergebnis; nur erbeten, nicht geprueft.
+            "Schreibe korrektes Deutsch: Artikel, Fall und Geschlecht muessen stimmen. "
             "Sprich NIE ueber die Notiz („Die Notiz beschreibt …“, „Der Text behandelt …“, „Es geht um …“); "
             "das wird abgelehnt.\n"
             "Beispiel. Notiz: „Sponsoren: Stadtwerke fragen, Bäckerei? Budget 2.000 €“.\n"

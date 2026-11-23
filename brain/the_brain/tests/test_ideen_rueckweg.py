@@ -149,6 +149,12 @@ def test_auftrag_verbietet_empfehlungen_ohne_grundlage() -> None:
     assert nachricht.index("Keine Empfehlungen") < nachricht.index("<<<NOTIZ")
 
 
+def test_auftrag_bittet_um_korrektes_deutsch() -> None:
+    # Lauf 16 (47): nur erbeten, keine Pruefung dafuer.
+    nachricht, _ = _vorbereiten()
+    assert "Schreibe korrektes Deutsch" in nachricht and nachricht.index("korrektes Deutsch") < nachricht.index("<<<NOTIZ")
+
+
 @pytest.mark.parametrize("notiz, ergebnis", [
     ("Jeder Stand zahlt 50 € Gebühr.",
      "Jeder Stand zahlt eine Gebühr von 50 €. Ob das für alle Stände gilt, ist noch offen."),
