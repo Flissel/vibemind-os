@@ -54,6 +54,8 @@ VERTRAEGE: dict[str, dict[str, Any]] = {
             "erfinde keine offenen Fragen, Vorbehalte oder Zwischenstaende. Haenge nichts an, was einer Aussage "
             "der Notiz widerspricht oder sie einschraenkt. Keine Zahlen, Namen oder Termine, die weder in der "
             "Notiz noch in den anderen Karten der Bubble stehen. "
+            # Lauf 16 (45): zwei Schluesse ueber die Notiz hinaus (eine Empfehlung, eine Wertung).
+            "Keine Empfehlungen, Ratschlaege oder Wertungen, die weder die Notiz noch die anderen Karten tragen. "
             "Sprich NIE ueber die Notiz („Die Notiz beschreibt …“, „Der Text behandelt …“, „Es geht um …“); "
             "das wird abgelehnt.\n"
             "Beispiel. Notiz: „Sponsoren: Stadtwerke fragen, Bäckerei? Budget 2.000 €“.\n"

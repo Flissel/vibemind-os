@@ -142,6 +142,13 @@ def test_auftrag_verbietet_erfundene_offene_fragen() -> None:
     assert "erfinde keine offenen Fragen" in nachricht and "Sag jeden Gedanken nur einmal" in nachricht
 
 
+def test_auftrag_verbietet_empfehlungen_ohne_grundlage() -> None:
+    # Lauf 16 (45): zwei Schluesse ueber Notiz und Nachbarn hinaus.
+    nachricht, _ = _vorbereiten()
+    assert "Keine Empfehlungen, Ratschlaege oder Wertungen" in nachricht
+    assert nachricht.index("Keine Empfehlungen") < nachricht.index("<<<NOTIZ")
+
+
 @pytest.mark.parametrize("notiz, ergebnis", [
     ("Jeder Stand zahlt 50 € Gebühr.",
      "Jeder Stand zahlt eine Gebühr von 50 €. Ob das für alle Stände gilt, ist noch offen."),
