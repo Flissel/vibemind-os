@@ -110,8 +110,17 @@ Datei `brain/the_brain/core/plan_executor.py`:
 
 Datei `brain/the_brain/core/plan_executor.py`, `_exec_hop_kern` (Zeile 1442). Das Muster `confirmed_events`
 steht bei Zeile 1519 (`confirmed = event_id in plan_ctx.get("confirmed_events", set())`), aber nur im
-Desktop-Zweig. Das neue Tor gehört **davor**, direkt nachdem `event_id` aus `canonical_space_event_id(...)`
-(Zeile 1511) feststeht, damit es für jedes Ereignis gilt und nicht nur für Desktop:
+Desktop-Zweig. Achtung bei der Platzierung: `event_id` wird in Zeile 1511 aus `canonical_space_event_id(...)`
+gebildet, aber für die Fähigkeiten `desktop_skill` und `browser_automation` in Zeile 1518
+(`event_id = desktop_route.event_id`) überschrieben. Erst danach ist es endgültig, und genau dort entsteht
+auch `desktop.task`. Ein Tor direkt nach Zeile 1511 sähe die falsche Kennung und ließe `desktop.task` durch.
+
+Das Tor gehört deshalb **nach dem ganzen Desktop-Block** (nach dem Zweig
+`if hop.capability in ("desktop_skill", "browser_automation"):`, der mit dem `return HopResult(...)` bei
+Zeile 1531 endet) und **vor** den Kommentar „Resolve deterministic MCP metadata ...“ bzw.
+`_canonical_space_event_agent(event_id)` (Zeile 1532 ff.). Dort ist `event_id` für alle Zweige endgültig.
+Alternativ dasselbe Tor zusätzlich im Desktop-Zweig direkt nach Zeile 1518; zwingend ist nur: nie vor der
+Überschreibung.
 
 ```python
 ereignis = <Verzeichniseintrag zu event_id>   # siehe Abschnitt 5
@@ -121,7 +130,7 @@ if not erlaubt(plan_ctx.get("herkunft"), ereignis):
                      elapsed_s=time.time() - t0, contract_pass=False, reward=-1.0)
 ```
 
-(Die Felder entsprechen dem bestehenden `HopResult` bei Zeile 1521 ff.)
+(Die Felder entsprechen dem bestehenden `HopResult` bei Zeile 1521 ff.; Zeilenangaben vor dem Einfügen gegenlesen.)
 
 Das Tor gilt auch für ein **ausdrücklich genanntes** `execution_target` (Zeilen 1461 bis 1487: Ziel aus dem
 Hop oder aus der Registry-Auflösung). Ein Aufrufer darf das Tor nicht umgehen, indem er statt der Fähigkeit
@@ -198,4 +207,6 @@ Ob der Lader des Verzeichnisses ein unbekanntes Feld toleriert, wurde nicht gepr
 - Schlüssel wechseln heißt: neuen Hash in die Variable, den Aufrufer neu bestücken, beides gleichzeitig.
 - Der Test belegt die Prüfung selbst, nicht das Einhängen. Nach dem Einbauen je ein Test am Hop: ohne Kopfzeilen
   abgelehnt, mit richtigen angenommen, ausdrücklich genanntes `execution_target` ohne Kopfzeilen abgelehnt,
+  `desktop_skill`- und `browser_automation`-Hop ohne Eingangs-Kopf scheitert mit `ABLEHNUNG` (belegt, dass das
+  Tor nach der Überschreibung von `event_id` sitzt),
   fortgesetzter Plan-Rest bewahrt die Herkunft.
