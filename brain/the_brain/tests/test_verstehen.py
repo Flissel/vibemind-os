@@ -452,19 +452,45 @@ def test_screenshot_aus_sales_geht_an_den_desktop(monkeypatch, echter_muster_rou
 
 # ── Regel "Planer nur im Space mit Weg" (unabhaengig vom cos) ─────────────
 
+# So schickt die App den Ideen-Bereich: immer mit Bubble, Karten oder Bubble-Liste.
+IDEEN = {"space": "ideas", "bubble": {"id": "b0b1e001", "title": "Stadtfest"}, "cards": []}
+
+
+@pytest.mark.parametrize("kontext,erwartet", [
+    ({"space": "ideas"}, None),
+    ({"space": "ideas", "bubble": None, "cards": None, "bubbles": None}, None),
+    ({"space": "ideas", "cards": []}, "ideas"),
+    ({"space": "ideas", "bubbles": [{"id": "b0b1e001", "title": "Stadtfest"}]}, "ideas"),
+    ({"space": "Ideen", "bubble": {"id": "b0b1e001"}}, "ideas"),
+    ({"space": "clawport"}, "clawport"),
+])
+def test_ideen_kontext_ohne_bubble_gilt_als_unbekannt(kontext, erwartet) -> None:
+    assert v.space_aus_kontext(kontext) == erwartet
+
+
+def test_falscher_ideen_kontext_laesst_den_planer_zu(monkeypatch, echter_muster_router) -> None:
+    # Nachmessung: aus jedem Reiter kam context.space='ideas' ohne Bubble; die Regel liess den
+    # Planer dann ueberall zu. Ohne Belege gilt der Bereich als unbekannt.
+    client, state = _client(monkeypatch, STARK, planer=_Planer("idea_list"), muster=echter_muster_router,
+                            ausfuehrer=_Ausfuehrer({"x": 1}))
+    body = client.post("/api/multihop/execute", json={"intent": "Welche Notizen zum Thema Bühne habe ich schon",
+                                                      "context": {"space": "ideas"}}).json()
+    assert state.multihop_planner.aufrufe == 0 and state.plan_executor.plaene == []
+    assert body["weg"] == "nicht-verstanden" and body["final_text"] == "Das habe ich nicht verstanden."
+
 @pytest.mark.parametrize("cls", [SCHWACH, STARK], ids=["schwach", "stark"])
 def test_im_ideen_bereich_darf_freie_sprache_an_den_planer(monkeypatch, echter_muster_router, cls) -> None:
     ausfuehrer = _Ausfuehrer({"x": 1})
     client, state = _client(monkeypatch, cls, ausfuehrer=ausfuehrer, planer=_Planer("idea_list"),
                             muster=echter_muster_router, synth=_Synth("Hier sind die Notizen."))
     client.post("/api/multihop/execute",
-                json={"intent": "Welche Notizen zum Thema Bühne habe ich schon", "context": {"space": "ideas"}})
+                json={"intent": "Welche Notizen zum Thema Bühne habe ich schon", "context": IDEEN})
     assert state.multihop_planner.aufrufe == 1 and len(ausfuehrer.plaene) == 1
 
 
 def test_kurztext_im_ideen_bereich_geht_nicht_an_den_planer(monkeypatch, echter_muster_router) -> None:
     client, state = _client(monkeypatch, STARK, muster=echter_muster_router)
-    body = client.post("/api/multihop/execute", json={"intent": "Rom Wetter", "context": {"space": "ideas"}}).json()
+    body = client.post("/api/multihop/execute", json={"intent": "Rom Wetter", "context": IDEEN}).json()
     assert state.multihop_planner.aufrufe == 0
     assert body["final_text"].startswith("Das habe ich nicht verstanden. In Ideen kann ich z. B. „")
 
@@ -502,7 +528,7 @@ def test_sicherer_planer_plan_aus_ideen_laeuft_auch_in_fremden_space(monkeypatch
                             synth=_Synth("Zwei Monitore sind angeschlossen."))
     body = client.post("/api/multihop/execute",
                        json={"intent": "Wie viele Monitore hängen gerade am Rechner",
-                             "context": {"space": "ideas"}}).json()
+                             "context": IDEEN}).json()
     assert [h.capability for h in ausfuehrer.plaene[0].hops] == ["desktop_status"]
     assert body["ok"] is True
 
@@ -512,7 +538,7 @@ def test_mehrdeutiger_planer_plan_laeuft_nicht(monkeypatch) -> None:
     client, state = _client(monkeypatch, STARK, ausfuehrer=ausfuehrer,
                             planer=_MehrPlaner(["video_team_status", "bubble_stats"]))
     body = client.post("/api/multihop/execute",
-                       json={"intent": "Wie läuft es bei Stadtfest?", "context": {"space": "ideas"}}).json()
+                       json={"intent": "Wie läuft es bei Stadtfest?", "context": IDEEN}).json()
     assert state.multihop_planner.aufrufe == 1 and ausfuehrer.plaene == []
     assert body["weg"] == "mehrdeutig"
     assert body["final_text"].startswith("Das habe ich nicht verstanden. In Ideen kann ich z. B.")
@@ -521,7 +547,7 @@ def test_mehrdeutiger_planer_plan_laeuft_nicht(monkeypatch) -> None:
 def test_genannter_space_ohne_weg_schlaegt_starken_cosinus(monkeypatch) -> None:
     client, state = _client(monkeypatch, STARK, planer=_Planer("bubble_stats"))
     body = client.post("/api/multihop/execute",
-                       json={"intent": "Wie ist der Stand im SWE Design?", "context": {"space": "ideas"}}).json()
+                       json={"intent": "Wie ist der Stand im SWE Design?", "context": IDEEN}).json()
     assert state.multihop_planner.aufrufe == 0 and state.plan_executor.plaene == []
     assert body["weg"] == "kein-weg"
 
@@ -560,7 +586,7 @@ def test_auffangnetz_ersetzt_rohtext(monkeypatch) -> None:
                         ausfuehrer=_Ausfuehrer(None, ok=False),
                         synth=_Synth("Multi-hop plan: 0/1 steps succeeded for intent: x"))
     body = client.post("/api/multihop/execute", json={"intent": "Öffne die Seite bitte",
-                                                      "context": {"space": "ideas"}}).json()
+                                                      "context": IDEEN}).json()
     assert body["ok"] is False and body["final_text"] == v.FEHLERSATZ
     assert "Multi-hop plan" in body["fehler"]
 
@@ -570,7 +596,7 @@ def test_kein_haken_ohne_ergebnis(monkeypatch) -> None:
                         ausfuehrer=_Ausfuehrer("Timeout after 30s", ok=True),
                         synth=_Synth("Die Seite ist offen."))
     body = client.post("/api/multihop/execute", json={"intent": "Öffne die Seite bitte",
-                                                      "context": {"space": "ideas"}}).json()
+                                                      "context": IDEEN}).json()
     assert body["ok"] is False
 
 
@@ -579,7 +605,7 @@ def test_starker_satz_geht_weiter_an_den_planer(monkeypatch) -> None:
                             ausfuehrer=_Ausfuehrer({"url": "https://example.com"}),
                             synth=_Synth("Die Seite ist offen."))
     body = client.post("/api/multihop/execute", json={"intent": "Öffne example.com im Browser",
-                                                      "context": {"space": "ideas"}}).json()
+                                                      "context": IDEEN}).json()
     assert state.multihop_planner.aufrufe == 1
     assert body["ok"] is True and body["final_text"] == "Die Seite ist offen."
 

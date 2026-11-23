@@ -86,7 +86,23 @@ def space_aus_kontext(kontext: Any) -> Optional[str]:
             return None
         kennung = roh.strip().lower()
         kennung = _ALIASE.get(kennung, kennung)
+        if kennung == "ideas" and not ideen_kontext_belegt(kontext):
+            # Verteidigung gegen falschen Kontext (Nachmessung 23.11.2026: die App schickte aus
+            # jedem Reiter 'ideas'). Im Ideen-Bereich schickt sie immer bubble, cards oder bubbles
+            # mit; fehlt alles, gilt der Bereich als unbekannt und der Planer bleibt zu.
+            return None
         return kennung if kennung in SPACES else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+_IDEEN_BELEGE = ("bubble", "cards", "bubbles")
+
+
+def ideen_kontext_belegt(kontext: Any) -> bool:
+    """True, wenn der Kontext bubble, cards oder bubbles mitbringt (nicht None)."""
+    try:
+        return isinstance(kontext, dict) and any(kontext.get(k) is not None for k in _IDEEN_BELEGE)
     except Exception:  # noqa: BLE001
         return None
 
