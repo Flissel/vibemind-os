@@ -35,13 +35,17 @@ def test_nicht_verstanden_nennt_beispiele_des_space() -> None:
     assert satz.startswith("Das habe ich nicht verstanden. In Ideen kann ich z. B. „")
     assert satz.count("„") == 3
     assert v.nicht_verstanden(None) == "Das habe ich nicht verstanden."
-    assert v.nicht_verstanden("swedesign").endswith("Im Bereich „SWE Design“ gibt es dafür noch keinen Weg.")
+    assert v.nicht_verstanden("swedesign").endswith("Im Bereich „SWE Design“ gibt es dafür noch keinen Weg."
+                                                    + v.AUSWEG)
+    # Lauf 8: Sales und MiroFish nennen den Bereich und einen Satz, der ueberall geht.
+    for space in ("sales", "mirofish"):
+        assert v.nicht_verstanden(space).endswith("Was überall geht: „Welche Bubbles gibt es?“")
     assert v.nicht_verstanden("desktop") == (  # fester Satz seit 23.11. (core/feste_lesesaetze.py)
         "Das habe ich nicht verstanden. In Desktop kann ich z. B. „Welche Fenster sind offen?“.")
     # Punkt 7 (Lauf 4): nie mehr nackt; ohne festen Satz der Bereich und ein ehrlicher Satz.
     for space, name in (("flowzen", "Blue Rose"), ("mirofish", "MiroFish"), ("sales", "Sales")):
         assert v.nicht_verstanden(space) == (f"Das habe ich nicht verstanden. Im Bereich „{name}“ kenne ich noch "
-                                             "keinen Satz, den ich sicher ausführen kann.")
+                                             "keinen Satz, den ich sicher ausführen kann." + v.AUSWEG)
 
 
 @pytest.mark.parametrize("satz,space", [
@@ -311,8 +315,8 @@ def test_unter_schwelle_ohne_space(monkeypatch) -> None:
 
 
 NV = "Das habe ich nicht verstanden."
-KEIN = "Im Bereich „{}“ gibt es dafür noch keinen Weg."
-OHNE_SATZ = "Im Bereich „{}“ kenne ich noch keinen Satz, den ich sicher ausführen kann."
+KEIN = "Im Bereich „{}“ gibt es dafür noch keinen Weg." + v.AUSWEG
+OHNE_SATZ = "Im Bereich „{}“ kenne ich noch keinen Satz, den ich sicher ausführen kann." + v.AUSWEG
 
 # Die 16 Saetze aus dem Rundgang 23.11.2026 (Satz, Space der App -> erwarteter Weg). Der
 # Klassierer liefert wie gemessen einen schwachen Cosinus; der Muster-Router ist der echte.

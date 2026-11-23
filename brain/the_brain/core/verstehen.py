@@ -126,10 +126,14 @@ def _beispielteil(space: Optional[str]) -> str:
         saetze = " oder ".join(f"„{b}“" for b in eintrag.beispiele[:3])
         return f" In {eintrag.name} kann ich z. B. {saetze}."
     if space in OHNE_WEG:
-        return f" Im Bereich „{eintrag.name}“ gibt es dafür noch keinen Weg."
+        return f" Im Bereich „{eintrag.name}“ gibt es dafür noch keinen Weg.{AUSWEG}"
     # Lauf 4 der Pruefung: aus Rowboat, Blue Rose, MiroFish und Sales kam nur das nackte
     # "nicht verstanden". Ohne belegten Beispielsatz: Bereich nennen und ehrlich bleiben.
-    return f" Im Bereich „{eintrag.name}“ kenne ich noch keinen Satz, den ich sicher ausführen kann."
+    # Lauf 8: dazu ein Satz, der in jedem Bereich geht, als Ausweg.
+    return f" Im Bereich „{eintrag.name}“ kenne ich noch keinen Satz, den ich sicher ausführen kann.{AUSWEG}"
+
+
+AUSWEG = " Was überall geht: „Welche Bubbles gibt es?“"
 
 
 def nicht_verstanden(space: Optional[str]) -> str:
