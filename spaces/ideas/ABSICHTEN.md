@@ -36,6 +36,9 @@ Im Gehirn gilt für diese Ereignisse ein fester Vertrag (`brain/the_brain/core/i
 nur die Felder des Werkzeugs, nur Kennungen, und nach jedem Schreiben eine Nachprüfung am echten Zustand.
 Ein Schritt nennt dafür das Ereignis selbst (`idea.format`, `bubble.promote`).
 
+`idea_list` antwortet in der Vorgabe kurz: Kennung, Titel, Format, Bewertung, Lage und die ersten 200
+Zeichen des Texts. Ganze Zeilen gibt es nur mit `full: true`, den ganzen Text einer Karte über `idea_get`.
+
 Die Werkzeuge verlangen Kennungen, keine Namen. Der Name aus dem Satz („die Notiz Preise") wird vorher
 aufgelöst: aus dem Vorspeicher der App oder über `idea_list`. Das ist ein Lesen ohne Modell.
 

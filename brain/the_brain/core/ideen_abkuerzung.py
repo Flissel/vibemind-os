@@ -291,6 +291,12 @@ def fehlersatz(fehler: Any) -> str:
     der Mensch liest. Es kommen Feldnamen und Fehlernamen durch, nie Werte.
     """
     text = str(fehler or "")
+    if "Ideen-Dienst nicht erreichbar" in text:
+        return ("Der Ideen-Dienst läuft gerade nicht. Bitte prüfe das Canvas, bevor du es wiederholst."
+                if "transport_closed" in text
+                else "Der Ideen-Dienst hat nicht geantwortet. Es ist unklar, ob etwas geändert wurde.")
+    if "keine lesbare Antwort" in text:
+        return "Der Ideen-Dienst hat unlesbar geantwortet. Bitte prüfe das Canvas."
     m = re.search(r"Ideen-Werkzeug meldet einen Fehler(?: \((?P<name>[a-z_]+)(?:: (?P<feld>[a-z_]+))?\))?", text)
     if m:
         name, feld = m.group("name"), m.group("feld")
