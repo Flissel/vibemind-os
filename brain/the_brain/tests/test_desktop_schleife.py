@@ -799,6 +799,18 @@ def test_laeuft_im_gehirn_schon_eine_schleife_startet_keine_zweite(echt, monkeyp
         halt.set()
 
 
+def test_auch_ein_noch_nicht_gestarteter_faden_zaehlt_als_besetzt(echt, monkeypatch):
+    # Kein Fenster zwischen Eintragen und Starten, in dem eine zweite Schleife durchkaeme.
+    import threading as _threading
+    import core.desktop_schleife as schleife
+
+    monkeypatch.setitem(schleife._LAUFEND, "dt-gleich", _threading.Thread(target=lambda: None))
+    bindungen = lambda tagesrest: {"werkzeug": echt.werkzeug, "agent": echt.agent_mit(), "budget_rest": tagesrest}  # noqa: E731
+    ok, ergebnis, _ = nach_aufgabenstart(_start_umschlag(echt), herkunft="getippt", tagesrest=5, hintergrund=True,
+                                         bindungen=bindungen)
+    assert (ok, ergebnis["grund"]) == (False, "schon_eine_aufgabe") and echt.fragen == []
+
+
 def test_auch_im_hintergrund_wird_die_herkunft_vorher_geprueft(echt):
     from core.desktop_schleife import laufende_schleife
     bindungen = lambda tagesrest: {"werkzeug": echt.werkzeug, "agent": echt.agent_mit(), "budget_rest": tagesrest}  # noqa: E731
