@@ -38,6 +38,10 @@ ALLE = [s for s in v.SPACES if s != "ideas"]
     ("Welche Agenten gibt es in Rowboat?", "thebrain", "rowboat_spaces"),
     ("Welche Spaces stehen in roarboot?", None, "rowboat_spaces"),
     ("Welche Agenten gibt es?", "roarboot", "rowboat_spaces"),
+    # Lauf 16 (48): ein Zusatz in Klammern am Satzende stoert den festen Satz nicht.
+    ("Woran denkt das Gehirn gerade? (Skript 1)", "thebrain", "thebrain_gedanken"),
+    ("Woran denkt das Gehirn gerade (Test) [2]", "thebrain", "thebrain_gedanken"),
+    ("Welche Fenster sind offen? [Probe]", "desktop", "desktop_fenster"),
 ])
 def test_satz_bindet_den_festen_weg(satz, space, faehigkeit) -> None:
     assert v.feste_lesefrage(satz, space) == {"capability": faehigkeit}
@@ -51,6 +55,8 @@ def test_satz_bindet_den_festen_weg(satz, space, faehigkeit) -> None:
     ("Schließ alle Fenster", "desktop"),              # kein Lesesatz
     ("Welche Fenster sind offen und schließ sie", "desktop"),
     ("Welche Teams laufen gerade in der Agent Farm?", "agentfarm"),
+    ("Woran denkt das Gehirn gerade? (Skript 1) und warum", "thebrain"),   # nur ein Zusatz am Ende zaehlt nicht
+    ("Woran denkt das Gehirn gerade? (Skript 1)", "ideas"),
 ])
 def test_kein_fester_weg(satz, space) -> None:
     assert v.feste_lesefrage(satz, space) is None
