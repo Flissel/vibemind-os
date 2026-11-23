@@ -411,7 +411,7 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
 
 def _tool_result(payload: Any, *, is_error: bool = False) -> dict[str, Any]:
     return {
-        "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False, sort_keys=True)}],
+        "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=True, sort_keys=True)}],
         "isError": is_error,
     }
 
@@ -449,25 +449,32 @@ def handle_message(message: Mapping[str, Any]) -> dict[str, Any] | None:
 
 
 def main() -> int:
-    for stream in (sys.stdin, sys.stdout):
-        stream.reconfigure(encoding="utf-8")  # Windows nimmt sonst die Codepage der Konsole
-    for line in sys.stdin:
-        if not line.strip():
+    """JSON-RPC-Zeilen über stdio, bis die Eingabe endet.
+
+    Bytes rein, Bytes raus: Die Anfrage ist UTF-8, egal was die Codepage sagt, und die
+    Antwort ist reines ASCII. Unter Windows ist eine umgeleitete Ausgabe ohne
+    PYTHONIOENCODING cp1252; ein Pfeil oder Emoji ließ `print` scheitern und beendete
+    den Ideen-Dienst (23.11.2026). Eine fehlerhafte Anfrage beendet die Schleife nie.
+    """
+    stdin, stdout = sys.stdin.buffer, sys.stdout.buffer
+    for raw_line in stdin:
+        if not raw_line.strip():
             continue
-        message = None
+        request_id = None
         try:
-            message = json.loads(line)
+            message = json.loads(raw_line.decode("utf-8"))
             if not isinstance(message, Mapping):
                 raise ValueError("request must be an object")
+            request_id = message.get("id")
             response = handle_message(message)
-        except (ValueError, json.JSONDecodeError):
+        except (ValueError, UnicodeDecodeError):
             response = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}}
-        except Exception as exc:  # der Dienst darf an einer einzelnen Nachricht nicht sterben
-            kennung = message.get("id") if isinstance(message, Mapping) else None
-            fehler = {"code": -32603, "message": f"internal error: {type(exc).__name__}"}
-            response = {"jsonrpc": "2.0", "id": kennung, "error": fehler}
+        except Exception as exc:  # noqa: BLE001 - eine Anfrage darf den Dienst nie beenden
+            fehler = {"error": f"internal_error: {type(exc).__name__}"}
+            response = {"jsonrpc": "2.0", "id": request_id, "result": _tool_result(fehler, is_error=True)}
         if response is not None:
-            print(json.dumps(response, ensure_ascii=False), flush=True)
+            stdout.write(json.dumps(response, ensure_ascii=True).encode("ascii") + b"\n")
+            stdout.flush()
     return 0
 
 

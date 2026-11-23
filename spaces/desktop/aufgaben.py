@@ -38,7 +38,11 @@ def ordner(env: Mapping[str, str] | None = None) -> Path:
     basis = env.get("LOCALAPPDATA", "").strip()
     if basis:
         return Path(basis) / "VibeMind" / "desktop-aufgaben"
-    return Path.home() / ".vibemind" / "desktop-aufgaben"
+    # Kein Raten über den Benutzerordner: OpenFang startet Werkzeug-Dienste mit leerer
+    # Umgebung, und App und Dienst müssen denselben Ordner lesen.
+    raise AufgabenFehler(
+        "konfiguration: VIBEMIND_DESKTOP_AUFGABEN_DIR oder LOCALAPPDATA muss in der Umgebung des Dienstes stehen"
+    )
 
 
 def _jetzt() -> float:
