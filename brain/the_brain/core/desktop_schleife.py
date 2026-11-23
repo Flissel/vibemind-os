@@ -22,7 +22,8 @@ import time
 from typing import Any, Callable, Mapping, Optional
 
 from .desktop_schleife_contract import (
-    AGENT, ANWEISUNG, EREIGNISSE, AktionAbgelehnt, AufrufAbgelehnt, ZIEL_SERVER, pruefe_aktion, pruefe_aufruf,
+    AGENT, ANWEISUNG, EREIGNISSE, AktionAbgelehnt, AufrufAbgelehnt, ZIEL_SERVER, auswahl_bestaetigt, pruefe_aktion,
+    pruefe_aufruf,
 )
 
 logger = logging.getLogger(__name__)
@@ -101,6 +102,7 @@ def fuehre_aufgabe(
     abgelehnt: Optional[str] = None
     vorher: Optional[str] = None  # Aktion des unmittelbar vorher ausgefuehrten Schritts
     vorher_fenster = ""  # Fenster, in dem dieser Schritt geprueft wurde
+    offene_auswahl: Optional[Mapping[str, Any]] = None  # Auswahl, deren Zustand noch zu pruefen ist
 
     def abschluss(zustand: str, grund: str, text: str, *, schon_beendet: bool = False) -> dict[str, Any]:
         if not schon_beendet:
@@ -154,6 +156,15 @@ def fuehre_aufgabe(
             if not gesehen:
                 return abschluss("fehlgeschlagen", "bildschirm_nicht_lesbar", "Der Bildschirm konnte nicht gelesen werden.")
 
+            # Nachpruefung einer Auswahl aus der Runde davor, bevor der Agent weiter gefragt wird.
+            if offene_auswahl is not None:
+                bestaetigt = auswahl_bestaetigt(offene_auswahl, elemente)
+                offene_auswahl = None
+                if bestaetigt is False:
+                    return abschluss("fehlgeschlagen", "auswahl_nicht_bestaetigt",
+                                     "Der gewaehlte Eintrag ist danach nicht ausgewaehlt.")
+                vermerk(f"Runde {runde}: Auswahl " + ("bestaetigt" if bestaetigt else "nicht pruefbar"))
+
             laeufe += 1
             try:
                 antwort = agent(_frage(auftrag, runde, runden, list(stand.get("schritte") or []), text, elemente,
@@ -194,6 +205,7 @@ def fuehre_aufgabe(
             if schritt.get("ok") is False:
                 return abschluss("fehlgeschlagen", "schritt_fehlgeschlagen", str(schritt.get("meldung") or ""))
             vorher, vorher_fenster = aktion["schritt"]["action"], fenster
+            offene_auswahl = aktion.get("auswahl")
 
         return abschluss("fehlgeschlagen", "rundengrenze", f"Nach {runden} Runden nicht fertig.")
     except FreigabeAusstehend:

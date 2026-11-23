@@ -271,15 +271,17 @@ def _elements() -> dict[str, Any]:
         rand = roh.get("bounds") if isinstance(roh, Mapping) else None
         if not isinstance(rand, Mapping) or rand.get("width", 0) <= 0 or rand.get("height", 0) <= 0:
             continue  # ohne sichtbare Fläche gibt es nichts zu klicken
-        elemente.append(
-            {
-                "name": str(roh.get("name") or "")[:80],
-                "typ": str(roh.get("control_type") or "").removesuffix("Control"),
-                "x": int(rand["left"] + rand["width"] // 2),
-                "y": int(rand["top"] + rand["height"] // 2),
-                "aktiv": roh.get("is_enabled") is not False,
-            }
-        )
+        eintrag = {
+            "name": str(roh.get("name") or "")[:80],
+            "typ": str(roh.get("control_type") or "").removesuffix("Control"),
+            "x": int(rand["left"] + rand["width"] // 2),
+            "y": int(rand["top"] + rand["height"] // 2),
+            "aktiv": roh.get("is_enabled") is not False,
+        }
+        # Nur wo der Dienst den Auswahlzustand kennt (SelectionItemPattern); sonst fehlt das Feld.
+        if isinstance(roh.get("is_selected"), bool):
+            eintrag["ausgewaehlt"] = roh["is_selected"]
+        elemente.append(eintrag)
     fenster = antwort.get("window") if isinstance(antwort.get("window"), Mapping) else {}
     return {"fenster": str(fenster.get("title") or "")[:120], "elemente": elemente[:MAX_ELEMENTE]}
 
