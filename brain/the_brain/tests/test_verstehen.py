@@ -575,6 +575,64 @@ def test_fester_satz_eines_anderen_space_laeuft_aus_jedem_reiter(monkeypatch, ko
     assert body["final_text"] == "Es sind keine geplanten Aufgaben eingetragen." and body["ok"] is True
 
 
+LEICHT = {"level": "easy", "score": 0.9, "method": "qwen-cosine", "reason": "x"}
+
+
+class _Chat:
+    def __init__(self, text):
+        self.text = text
+        self.aufrufe = 0
+
+    def send(self, satz):
+        self.aufrufe += 1
+        return {"text": self.text}
+
+
+@pytest.mark.parametrize("satz", ["hmm", "ok gut", "Rom?"])
+def test_kurztext_geht_nicht_an_den_chat(monkeypatch, satz) -> None:
+    client, state = _client(monkeypatch, LEICHT)
+    state.brain_chat = _Chat("I'm not entirely sure, but the user asks about: hmm")
+    body = client.post("/api/multihop/execute", json={"intent": satz, "context": IDEEN}).json()
+    assert state.brain_chat.aufrufe == 0
+    assert body["weg"] == "nicht-verstanden" and body["final_text"].startswith("Das habe ich nicht verstanden.")
+
+
+def test_englischer_auffangtext_des_chats_verlaesst_das_gehirn_nicht(monkeypatch) -> None:
+    client, state = _client(monkeypatch, LEICHT)
+    state.brain_chat = _Chat("I'm not entirely sure, but the user asks about: what is this")
+    body = client.post("/api/multihop/execute", json={"intent": "Was meinst du dazu eigentlich", "context": {}}).json()
+    assert state.brain_chat.aufrufe == 1
+    assert body["final_text"] == "Das habe ich nicht verstanden." and body["ok"] is False
+
+
+def test_deutsche_chat_antwort_bleibt(monkeypatch) -> None:
+    client, state = _client(monkeypatch, LEICHT)
+    state.brain_chat = _Chat("Gern, ich bin da. Was soll ich für dich festhalten?")
+    body = client.post("/api/multihop/execute", json={"intent": "Hallo, bist du da?", "context": {}}).json()
+    assert body["final_text"] == "Gern, ich bin da. Was soll ich für dich festhalten?" and body["ok"] is True
+
+
+@pytest.mark.parametrize("text,erwartet", [
+    ("I'm not entirely sure, but the user asks about: hmm", True),
+    ("Here is the sales pipeline with 3 open deals.", True),
+    ("Die Seite ist offen.", False),
+    ("Der Sales-Report ist fertig: 3 offene Deals im CRM.", False),
+    ("OK", False),
+    (None, False),
+])
+def test_englisch_erkennen(text, erwartet) -> None:
+    assert v.englisch(text) is erwartet
+
+
+def test_englische_synthese_wird_ersetzt(monkeypatch) -> None:
+    client, _ = _client(monkeypatch, STARK, planer=_Planer("browser_open"),
+                        ausfuehrer=_Ausfuehrer({"url": "https://example.com"}),
+                        synth=_Synth("Here is the page you asked for, it is open now."))
+    body = client.post("/api/multihop/execute", json={"intent": "Öffne example.com im Browser",
+                                                      "context": IDEEN}).json()
+    assert "Here is" not in body["final_text"] and "Here is" in body["fehler"]
+
+
 def test_fester_lesesatz_fehler_ist_kein_haken(monkeypatch) -> None:
     client, _ = _client(monkeypatch, SCHWACH, ausfuehrer=_Ausfuehrer(None, ok=False))
     body = client.post("/api/multihop/execute", json={"intent": "Zeig meine Aufträge"}).json()

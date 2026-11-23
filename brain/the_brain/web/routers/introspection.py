@@ -3002,6 +3002,12 @@ async def _multihop_execute(request: Request):
                 return _ehrlich(pe, trace_id, intent, "nicht-verstanden",
                                 _verstehen.nicht_verstanden(_bezug), _bezug)
 
+            if level == "easy" and _verstehen.regel_an() and _verstehen.kurztext(intent):
+                # Kurztext ("hmm") ist keine Frage: nicht an den Chat-Handler, dessen
+                # Auffangtext englisch zurueckkam (Nachmessung 23.11.2026).
+                return _ehrlich(pe, trace_id, intent, "nicht-verstanden",
+                                _verstehen.nicht_verstanden(_bezug), _bezug)
+
             if level == "easy":
                 # einfache Frage/Smalltalk → direkte Chat-Antwort, KEIN Planer.
                 # brain_chat.send(msg) -> BrainChatResponse (.to_dict()), sync →
@@ -3021,6 +3027,11 @@ async def _multihop_execute(request: Request):
                     except Exception as e:  # noqa: BLE001
                         logger.warning(f"[multihop] easy-chat failed ({e})")
                 _final = (reply.strip() if isinstance(reply, str) and reply.strip() else "Alles klar.")
+                if _verstehen.regel_an() and (_verstehen.englisch(_final) or _verstehen.rohtext(_final)):
+                    # Englische oder rohe Auffangtexte des Chat-Handlers verlassen das Gehirn nie.
+                    logger.info(f"[verstehen] Chat-Antwort nicht deutsch/roh verworfen: {_final[:80]!r}")
+                    return _ehrlich(pe, trace_id, intent, "nicht-verstanden",
+                                    _verstehen.nicht_verstanden(_bezug), _bezug)
                 _trace_lite(pe, trace_id, intent, "easy-chat", _final)
                 return JSONResponse({
                     "ok": True, "difficulty": "easy", "executed": {},
@@ -3281,7 +3292,7 @@ def _auffangnetz(out: Dict[str, Any]) -> Dict[str, Any]:
         if _verstehen.schritte_ohne_antwort(out.get("executed")):
             out["ok"] = False
         text = out.get("final_text")
-        if _verstehen.rohtext(text):
+        if _verstehen.rohtext(text) or _verstehen.englisch(text):
             if isinstance(text, str) and text.strip():
                 out["fehler"] = text[:2000]
             out["final_text"] = (_verstehen.FEHLERSATZ if not out.get("ok")

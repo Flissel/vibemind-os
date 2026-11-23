@@ -484,6 +484,28 @@ def rohtext(text: Any) -> bool:
     return bool(_ROH.search(t))
 
 
+# Englische Auffangtexte (Chat-Handler, Synthese) verlassen das Gehirn nie (Nachmessung
+# 23.11.2026: "hmm" -> "I'm not entirely sure, but the user asks about: hmm ..."). Erkannt an
+# Funktionswoertern, nicht an Fachbegriffen: "Die Seite ist offen" bleibt deutsch.
+_EN_WOERTER = frozenset(
+    "the and is are was were you your i i'm it's not but what which this that with about "
+    "for from have has can could would should will there here sure user asks sorry".split())
+_DE_WOERTER = frozenset(
+    "der die das den dem des und ist sind war nicht ich du sie es ein eine einen einem "
+    "zu mit was wie im in auf für von hat habe kann gibt noch schon".split())
+
+
+def englisch(text: Any) -> bool:
+    """True, wenn ein Text ueberwiegend englisch ist (mindestens zwei englische Funktionswoerter
+    und mehr englische als deutsche)."""
+    if not isinstance(text, str):
+        return False
+    woerter = re.findall(r"[a-zäöüß']+", text.lower())
+    en = sum(1 for w in woerter if w in _EN_WOERTER)
+    de = sum(1 for w in woerter if w in _DE_WOERTER)
+    return en >= 2 and en > de
+
+
 _KEINE_ANTWORT = re.compile(r"timeout|timed out|unavailable|not reachable|nicht erreichbar|"
                             r"keine lesbare antwort|no response", re.IGNORECASE)
 
