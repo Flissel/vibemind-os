@@ -96,6 +96,10 @@ effects:
   rowboat_search: read
   rowboat_query: read
   rowboat_status: read
+  desktop_status: read
+  desktop_task_status: read
+  desktop_screen_read: read
+  desktop_screenshot: read
   minibook.list_projects: read
   minibook.status: read
   rose.recommend: read
