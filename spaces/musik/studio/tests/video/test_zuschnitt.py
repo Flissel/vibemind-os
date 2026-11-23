@@ -67,3 +67,35 @@ def test_ziel_laenger_als_der_song() -> None:
     with pytest.raises(VideoFehler, match=r"59\.5"):
         zuschnitt_planen(GRID, DAUER, 70.0, "anfang", LEER)
 
+
+
+def test_gleichstand_bleibt_beim_fruehen_start_auch_bei_krummem_takt() -> None:
+    grid = BeatGrid(first_downbeat_s=0.37, bar_length_s=1.9047619, confidence=0.9)
+    z = zuschnitt_planen(grid, DAUER, 16.0, "hoehepunkt", [0.3] * 20)
+    assert z.start_s == pytest.approx(0.37)
+
+
+def test_unsinnige_eingaben_sind_videofehler() -> None:
+    with pytest.raises(VideoFehler):
+        zuschnitt_planen(GRID, DAUER, float("nan"), "anfang", LEER)
+    with pytest.raises(VideoFehler):
+        kaputt = BeatGrid.model_construct(first_downbeat_s=0.5, bar_length_s=0.0, confidence=0.9)
+        zuschnitt_planen(kaputt, DAUER, 10.0, "anfang", LEER)
+
+
+def test_ziel_genau_an_der_grenze() -> None:
+    grenze = traegt_s(GRID, DAUER)
+    z = zuschnitt_planen(GRID, DAUER, grenze, "anfang", LEER)
+    assert z.ende_s == pytest.approx(DAUER)
+    with pytest.raises(VideoFehler):
+        zuschnitt_planen(GRID, DAUER, grenze + 1e-6, "anfang", LEER)
+
+
+def test_verspaeteter_beat_kippt_den_einzigen_takt_nicht() -> None:
+    beats = np.array([0.5, 2.62])
+    z = zuschnitt_planen(GRID, DAUER, 2.5, "anfang", LEER, beats)
+    assert z.takte == 1
+    assert z.schluss_s == pytest.approx(2.5)
+    assert z.ende_s - z.schluss_s >= AUSKLANG_MIN_S
+
+

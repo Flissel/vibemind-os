@@ -65,6 +65,10 @@ def zuschnitt_planen(
     beats: np.ndarray | None = None,
 ) -> Zuschnitt:
     takt = grid.bar_length_s
+    if not math.isfinite(takt) or takt <= 0:
+        raise VideoFehler(f"Ungueltige Taktlaenge im Raster: {takt}")
+    if not math.isfinite(ziel_s) or ziel_s <= 0:
+        raise VideoFehler(f"Ungueltiges Ziel: {ziel_s}")
     mindest_s = takt + AUSKLANG_MIN_S
     if ziel_s < mindest_s - _EPS:
         raise VideoFehler(f"Das Ziel von {ziel_s:.1f} s ist zu kurz: mindestens {mindest_s:.1f} s")
@@ -80,11 +84,20 @@ def zuschnitt_planen(
         starts.append(grid.first_downbeat_s + k * takt)
         k += 1
 
-    if einstieg == "anfang":
-        start = starts[0]
-    else:
-        # max() liefert bei Gleichstand das erste Element: der fruehere Start.
-        start = max(starts, key=lambda s: _fenster_energie(energie, 4 * takt, s, ziel_s))
+    if not starts:  # Gleitkomma-Rauschen an der Grenze: wie "zu lang" behandeln
+        raise VideoFehler(
+            f"Das Ziel von {ziel_s:.1f} s ist laenger als der Song traegt ({tragbar:.1f} s)"
+        )
+
+    start = starts[0]
+    if einstieg == "hoehepunkt":
+        # Ein spaeterer Start gewinnt nur bei klar hoeherer Energie; Rundungsrauschen
+        # (~1e-16) darf einen Gleichstand nicht entscheiden, der fruehere bleibt.
+        beste = _fenster_energie(energie, 4 * takt, start, ziel_s)
+        for kandidat in starts[1:]:
+            wert = _fenster_energie(energie, 4 * takt, kandidat, ziel_s)
+            if wert > beste + _EPS:
+                start, beste = kandidat, wert
 
     toleranz_s = EINRASTEN_SCHLAEGE * takt / 4
     eingerastet = _einrasten(start, beats, toleranz_s)
@@ -97,5 +110,8 @@ def zuschnitt_planen(
         schluss = _einrasten(start + takte * takt, beats, toleranz_s)
         if ende - schluss >= AUSKLANG_MIN_S - _EPS:
             return Zuschnitt(start_s=start, schluss_s=schluss, ende_s=ende, takte=takte)
+        if takte == 1:  # gueltiges Ziel nicht an einem verspaeteten Beat scheitern lassen
+            return Zuschnitt(start_s=start, schluss_s=start + takt, ende_s=ende, takte=1)
         takte -= 1
     raise VideoFehler(f"Das Ziel von {ziel_s:.1f} s ist zu kurz: mindestens {mindest_s:.1f} s")
+
