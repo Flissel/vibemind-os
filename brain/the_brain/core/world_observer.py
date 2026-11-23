@@ -959,8 +959,31 @@ def _check_event_change(spec: Dict[str, Any]):
     return None, signal, detail
 
 
+def _check_desktop_aufgabenbuch(spec: Dict[str, Any]):
+    """Nachpruefung von desktop_task_start: steht die Aufgabe mit diesem Satz im Aufgabenbuch
+    und laeuft (oder ist fertig)? Liest ueber den festen Aufruf desktop_task_status."""
+    from core.desktop_schleife import aufgabenbuch_pruefen
+
+    erwartet = spec.get("erwartet")
+    if not isinstance(erwartet, dict):
+        return None, {"status": "unverified"}, "keine Erwartung"
+    return aufgabenbuch_pruefen(erwartet)
+
+
+def _check_desktop_sicht(spec: Dict[str, Any]):
+    """Ist auf dem Bildschirm zu sehen, was der Schritt erwartet? Liest ueber desktop_blick."""
+    from core.desktop_sicht import sicht_pruefen
+
+    erwartet = spec.get("erwartet")
+    if not isinstance(erwartet, dict):
+        return None, {"status": "unverified"}, "keine Erwartung"
+    return sicht_pruefen(erwartet, spec.get("laufzeit"))
+
+
 # Map of check-name → fn. To add a check, add one function above + an entry here.
 _CHECKS = {
+    "desktop_aufgabenbuch": _check_desktop_aufgabenbuch,
+    "desktop_sicht": _check_desktop_sicht,
     "process_running": _check_process_running,
     "port_open": _check_port_open,
     "file_exists": _check_file_exists,

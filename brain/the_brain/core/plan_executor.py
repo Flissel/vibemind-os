@@ -302,6 +302,11 @@ _BUNDLE_SCHLUESSEL = ("channel_intent", "brain_plan", "space_execution_contracts
 _EINMAL_EREIGNISSE = frozenset({"bubble.create", "idea.aenderung_zurueck"})
 
 
+def _desktop_tagesrest() -> int:
+    from .desktop_tagesrest import tagesrest
+    return tagesrest()
+
+
 def _aenderung_id_fuer(target: Any, plan_ctx: Optional[Dict[str, Any]]) -> str:
     """Plan-Kennung, unter der die Supabase die Schreibvorgaenge eines Plans gruppiert.
 
@@ -727,6 +732,7 @@ class PlanExecutor:
         openfang_handoff_bundle: Optional[Dict[str, Any]] = None,
         start_state: Optional[Dict[str, Any]] = None,
         antwortkanal: Optional[Dict[str, Any]] = None,
+        eingabe_herkunft: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Walk the DAG. Returns a dict with `executed` (step_id → HopResult),
         `state`, `plan`, `ok`, `elapsed_s`, `replans`.
@@ -839,6 +845,10 @@ class PlanExecutor:
             "trace_id": getattr(plan, "trace_id", "") or "",
             "confirmed_events": set(confirmed_events or ()),
             "antwortkanal": antwortkanal,
+            # Desktop-Schleife: nur der Aufrufer weiss, ob der Satz getippt wurde. Der Tagesrest
+            # wird erst gelesen, wenn die Schleife ihn braucht.
+            "eingabe_herkunft": eingabe_herkunft,
+            "desktop_tagesrest": _desktop_tagesrest,
         }
         if isinstance(openfang_handoff_bundle, dict):
             for key in (
@@ -1828,6 +1838,36 @@ class PlanExecutor:
                     contract_pass=False, reward=-1.0,
                 )
 
+        # desktop.task: Der Auftragssatz kommt aus der getippten Absicht ("Desktop-Aufgabe: ..."),
+        # ohne den Vorsatz, nie aus dem gerenderten Argument. Eine Aufgabe wird nie doppelt gestartet.
+        from .desktop_schleife import ist_aufgabenstart as _ist_desktop_start
+        if _ist_desktop_start(target):
+            # Herkunft VOR dem Start: ohne "getippt" kein Aufruf am Werkzeug-Dienst und damit
+            # auch kein Eintrag im Aufgabenbuch.
+            if plan_ctx.get("eingabe_herkunft") != "getippt":
+                return HopResult(
+                    step_id=hop.step_id, ok=False,
+                    error="desktop.task: nur aus getippter Eingabe",
+                    capability=hop.capability, target=target,
+                    rendered_arg=rendered_arg, kg_hits=kg_hits,
+                    elapsed_s=time.time() - t0,
+                    contract_pass=False, reward=-1.0,
+                )
+            from .desktop_schleife_contract import auftrag_aus_absicht
+            _desktop_auftrag = auftrag_aus_absicht(plan_ctx.get("plan_intent", ""))
+            if _desktop_auftrag is None:
+                return HopResult(
+                    step_id=hop.step_id, ok=False,
+                    error='desktop.task: der Satz muss mit "Desktop-Aufgabe:" beginnen',
+                    capability=hop.capability, target=target,
+                    rendered_arg=rendered_arg, kg_hits=kg_hits,
+                    elapsed_s=time.time() - t0,
+                    contract_pass=False, reward=-1.0,
+                )
+            rendered_arg = _desktop_auftrag
+            hop.arg_kwarg = "task"
+            single_plan_attempt = True
+
         # Build the right executor for the target prefix (Phase 4)
         try:
             if _k1_auftrag:
@@ -1957,6 +1997,26 @@ class PlanExecutor:
         ok = bool(last.get("ok"))
         result_payload = last.get("result")
         err = None if ok else (last.get("error") or "executor returned not ok")
+        if ok:
+            # desktop.task, Schritt 3: Nach dem festen Aufruf desktop_task_start fuehrt das
+            # Gehirn die Schleife (sehen, Agent fragen, pruefen, ein Schritt). Alles Weitere
+            # steht in desktop_schleife; ohne "getippt" und ohne Tagesrest bricht sie ab.
+            from .desktop_schleife import ist_aufgabenstart, nach_aufgabenstart
+            if ist_aufgabenstart(target):
+                # Der Hop antwortet sofort ("Aufgabe laeuft, Kennung ..."); die Schleife laeuft
+                # im Hintergrund weiter, jeder ihrer festen Aufrufe mit eigenem Laufzeit-Kontext.
+                ok, result_payload, err = nach_aufgabenstart(
+                    result_payload,
+                    herkunft=(plan_ctx or {}).get("eingabe_herkunft"),
+                    tagesrest=(plan_ctx or {}).get("desktop_tagesrest"),
+                    laufzeit={
+                        "plan_id": plan_ctx.get("plan_id", "standalone-plan"),
+                        "plan_revision": plan_ctx.get("plan_revision", 1),
+                        "correlation_id": plan_ctx.get("trace_id") or plan_ctx.get("plan_id", "standalone-plan"),
+                        "step_id": hop.step_id,
+                    },
+                    hintergrund=True,
+                )
         if last.get("pending") is True:
             return HopResult(
                 step_id=hop.step_id, ok=False, result=result_payload,
@@ -1981,8 +2041,13 @@ class PlanExecutor:
         verdict = None
         if ok and hop.validator and self.validator is not None:
             try:
+                _validator_cfg = hop.validator
+                if isinstance(_validator_cfg, dict) and _validator_cfg.get("kind") == "truth:desktop_sicht":
+                    # Der Blick braucht einen eigenen Laufzeit-Kontext; dafuer die Plan-Angaben.
+                    from .desktop_sicht import laufzeit_aus_plan
+                    _validator_cfg = {**_validator_cfg, "_laufzeit": laufzeit_aus_plan(plan_ctx, hop.step_id)}
                 verdict = self.validator.validate(
-                    hop.validator,
+                    _validator_cfg,
                     intent=hop.description,
                     arg=rendered_arg,
                     raw_result=result_payload,

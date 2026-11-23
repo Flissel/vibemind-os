@@ -46,6 +46,7 @@ effects:
   coding_task_anthropic: write
   coding_task: write
   rose.accept: write
+  desktop_task_start: write
   # --- write, truth: kommt in Task 5 ---
   component_note_write: write
   code_generate: write

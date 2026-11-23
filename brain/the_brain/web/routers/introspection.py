@@ -2546,6 +2546,20 @@ def _feste_antwort(plan, exec_result, ideen_fest: bool, vorgabe: str, kontext: A
         if len(hops) != 1:
             return None
         capability = hops[0].capability or ""
+        if capability.startswith("desktop_"):
+            from core.desktop_antwort import antwort_fuer_desktop
+            # Desktop: fester Satz aus dem Werkzeug-Ergebnis, Space "desktop", nie Rohtext.
+            schritt = (exec_result.get("executed") or {}).get(hops[0].step_id) or {}
+            if not isinstance(schritt, dict):
+                schritt = {}
+            ok = bool(exec_result.get("ok"))
+            text = antwort_fuer_desktop(capability, ok, schritt.get("result"), schritt.get("error"))
+            if text is None:
+                return None
+            antwort_desktop: Dict[str, Any] = {"final_text": text, "space": "desktop"}
+            if not ok:
+                antwort_desktop["fehler"] = str(schritt.get("error") or "")
+            return antwort_desktop
         alt = (str(getattr(plan, "plan_id", "")).startswith("shortcut_")
                and capability in ("aenderung_zurueck", "bubble_list"))
         if not ideen_fest and not alt:
@@ -2832,7 +2846,17 @@ async def multihop_execute(request: Request):
     _kanal_roh = body.get("antwortkanal")
     _art = _kanal_roh.get("art") if isinstance(_kanal_roh, dict) else None
     antwortkanal = {"art": _art if isinstance(_art, str) and _art in ("api", "telegram", "dashboard") else "api"}
-    exec_result = await _asyncio.to_thread(pe.execute, plan, antwortkanal=antwortkanal)
+    # "getippt" behauptet nicht der Aufrufer: Die App belegt es je Satz mit einem Zeichen aus dem
+    # gemeinsamen Schluessel. Ein mitgebrachter Plan gilt nie als getippt.
+    from core.desktop_tagesrest import KOPF_EINGABE as _KOPF_EINGABE, herkunft_pruefen as _herkunft_pruefen
+    exec_result = await _asyncio.to_thread(
+        pe.execute, plan, antwortkanal=antwortkanal,
+        eingabe_herkunft=_herkunft_pruefen(
+            body.get("context"), str(body.get("intent") or body.get("message") or "").strip(),
+            request.headers.get(_KOPF_EINGABE),
+            plan_vom_aufrufer=body.get("plan") is not None,
+        ),
+    )
     # MH-5a (Phase 0) — top-level plan_id: the reward-capable correlate.
     # POST /api/multihop/plan/{plan_id}/reward and /api/decisions/reward both
     # key on plan_id; the voice bridge reads data.get("plan_id") — nested-only
@@ -2843,6 +2867,15 @@ async def multihop_execute(request: Request):
         "plan_id": plan.plan_id,
         **exec_result,
     }
+    # Augen des Desktop-Space: Saetze mit Fenstertitel nur fuer Chat und Standzeile. Sie stehen
+    # nur in dieser Antwort, nie im Plan-Schnappschuss (dort nur Wahrheitswerte).
+    try:
+        from core.desktop_sicht import saetze_fuer_plan
+        _sicht = saetze_fuer_plan(plan.plan_id)
+        if _sicht:
+            out["sicht"] = _sicht
+    except Exception:  # noqa: BLE001
+        pass
 
     # K1: wartet ein Agenten-Auftrag, sofort quittieren - keine LLM-Synthese.
     from core.agent_auftraege import offene_auftraege, quittung

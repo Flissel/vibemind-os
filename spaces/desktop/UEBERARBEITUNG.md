@@ -99,7 +99,7 @@ den laufenden Dienst: `desktop_task_start` unter 1 ms, `desktop_screen_read` 0,5
 | 1 | Agent und Absichten im Verzeichnis | geliefert (`ABSICHTEN.md`), Eintrag durch die Koordination offen |
 | 2 | Satz landet bei `brain-desktop` | offen: Weg über das Gehirn gesperrt, Eintrag fehlt |
 | 3 | Agent führt über OpenFang aus | offen: Werkzeug-Dienst in OpenFang eintragen; echte Ausführung nur mit Felix' Ja |
-| 4 | App springt und zeigt | offen: Hülle baut nach `ANZEIGE.md`; Dienst muss ausgerollt sein |
+| 4 | App springt und zeigt | entfällt (Felix 23.11.): Der Space ist kein Ziel der Navigation mehr, siehe Abschnitt 10. Die Antwort trägt weiter `space: "desktop"` für die Standzeile; ob die App springt, regelt die Hülle. Im Space und im Gehirn baut nichts auf den Sprung. |
 | 5 | Agent im Rowboat-Verzeichnis | offen, Koordination |
 | 6 | nach 2 s sichtbar, dass die Aufgabe läuft | Baustein fertig (fester Aufruf unter 5 ms, Abfrage 1 mal je Sekunde); in der App noch nicht gemessen |
 | 7 | aufgeschrieben, was angezeigt wird | `ANZEIGE.md` geschrieben; Vorlage bei Felix und Umsetzung in der App offen |
@@ -179,3 +179,197 @@ Nicht gemessen: derselbe Lauf über OpenFang (dort hat `brain-desktop` die Werkz
 Vorhanden sind `spaces.desktop.automation_ui_client` (ersetzt) und
 `spaces.desktop.Automation_ui.backend.app.services.clawdbot_bridge` (im Submodul).
 Insgesamt 9 Quelldateien und 14 Testdateien der App importieren aus `spaces.desktop`.
+
+## 8. Der Agent und seine Werkzeuge über den Abo-Wrapper (23.11., nach dem Neustart)
+
+Ein Agent in OpenFang kann seine Werkzeuge nicht selbst aufrufen: Der Abo-Wrapper startet
+Claude mit `--safe-mode`, und das schaltet Werkzeug-Dienste ab. Im äußeren Repo liegt im Zweig
+`cc/wrapper-werkzeuge` eine Erweiterung (Vorgabe aus, ein Dienst für einen Agenten aus einer
+festen Beschreibung, Werkzeugliste abschließend). Zwei Läufe aus dem Arbeitsordner, beide im
+Trockenlauf, beide auf `brain-desktop` gebucht:
+
+| Lauf | Aufbau | Ergebnis |
+|---|---|---|
+| 1 | mit `--safe-mode` | 10,0 s, kein Werkzeug-Aufruf; das Modell meldet, die Werkzeuge fehlen |
+| 2 | Messschalter, ohne `--safe-mode`, Wegwerf-Verzeichnis, `--tools ""` | 12,9 s gesamt, davon 8,2 s Claude; fünf Aufrufe in sechs Zügen; Aufgabenbuch: zwei Schritte, `echt: false` |
+
+Was in Lauf 2 geladen war (Startereignis von Claude, nur Namen):
+
+- Werkzeuge: genau die neun von `spaces-desktop`, kein eingebautes.
+- Werkzeug-Dienste: nur `spaces-desktop`. Befehle: keine. Skills: keine.
+- Plugins: vier eingebaute (`cc-plugin-agents-md`, `-telemetry`, `-privacy`,
+  `-plugin-authoring`), keines der vom Nutzer installierten.
+- Agenten-Namen: sechs eingebaute; ohne Werkzeug zum Starten nicht benutzbar.
+- Hooks: kein Hook-Ereignis in der Ausgabe.
+- Nutzer-`CLAUDE.md`: nicht bewiesen. Die erste Anfrage hatte 2.868 Tokens für System-Text
+  und neun Werkzeug-Beschreibungen; die Datei allein hat rund 3 kB. Das spricht dagegen,
+  dass sie geladen wurde, ist aber eine Schätzung.
+
+Ob `--safe-mode` für diesen einen Agenten ersetzt wird, entscheidet Felix. In den Betrieb
+ist nichts davon gegangen.
+
+## 9. Weg 2: Das Gehirn führt die Schleife (23.11., Entscheidung von Felix)
+
+Der Agent bekommt keine Werkzeuge. Je Runde liest das Gehirn den Bildschirm, fragt
+`brain-desktop` nach genau einer Aktion, prüft sie gegen einen Vertrag und führt sie als
+festen Aufruf aus. Dateien: `brain/the_brain/core/desktop_schleife.py`,
+`desktop_schleife_contract.py`, elf Zeilen in `plan_executor.py`. Im Werkzeug-Dienst neu:
+die Aktion `note` (eine Zeile ins Aufgabenbuch, am Bildschirm geschieht nichts).
+
+Getestet mit einem Agenten als Attrappe gegen den echten Werkzeug-Dienst: 47 Tests in
+`brain/the_brain/tests/test_desktop_schleife.py`, dazu unverändert 26 im Space.
+
+Nicht gemessen:
+
+- Ein Lauf mit echtem Agenten. Ob Haiku oder Sonnet zuverlässig ein einzelnes JSON-Objekt
+  liefert und wie oft der Vertrag einen sinnvollen Vorschlag ablehnt, ist offen.
+- Der Planausführer als Ganzes mit dem Eingriff. Die große Testreihe des Gehirns lief nicht
+  (Speicher bei 70,6, über der Schwelle); geprüft ist nur, dass die Datei gelesen wird und
+  die Schleife für sich läuft.
+- Die Dauer: ein Agentenlauf je Runde, also grob 7 bis 10 s je Schritt und bis zu acht
+  Budget-Läufe je Aufgabe.
+- Die Schleife läuft im Hop des Planausführers bis zu 8 Minuten. Ob das Gehirn so lange auf
+  einen Hop warten darf oder die Schleife in den Hintergrund gehört, entscheidet die
+  Koordination.
+
+Der Zweig `cc/wrapper-werkzeuge` im äußeren Repo (Weg 1) bleibt liegen und geht nicht in den
+Betrieb.
+
+## 10. Der Space als Augen (23.11., Vorgabe von Felix)
+
+Der Desktop-Space arbeitet im Hintergrund mit. Er ist kein Ziel der Navigation. Er liest,
+in welchem Programm und Fenster wir sind, und bestätigt nach einem Schritt eines anderen
+Space, dass etwas wirklich passiert ist. Später kann er beim Auswählen klicken. Quelle fürs
+Mitsehen sind Programm, Fenstertitel und Bedienelemente; Texterkennung nur auf Zuruf.
+
+### Stufe 1, gebaut (nur lesend)
+
+**Werkzeug `desktop_blick`** (`mcp_server.py`, `blick.py`). Liefert `programm`
+(Programmdatei ohne `.exe`), `fenstertitel` (höchstens 120 Zeichen), `monitor` (1-basiert,
+Reihenfolge wie `desktop_screenshot`), `elemente` (höchstens 20, je `name` und `art`, ohne
+Klickpunkt), `elemente_gekuerzt`, `elemente_lesbar`, `zeitpunkt` (UTC) und `dauer_ms`.
+Programm, Titel und Monitor liest der Werkzeug-Dienst selbst über user32/kernel32; die
+Elemente kommen von `GET /api/mcp/elements`. Ein Blick zählt nicht als Hinsehen für einen
+Schritt der Schleife.
+
+**Messung am laufenden Dienst (23.11., Trockenlauf, sechs Läufe):** 4 bis 23 ms je Blick.
+Nur das Fenster lokal: 0,2 bis 0,9 ms. Zum Vergleich: `desktop_screen_read` 2,3 s.
+
+**Befund:** Der laufende Desktop-Dienst antwortet auf `/api/mcp/elements` mit
+`success: false, error: "uiautomation unavailable"`. Ihm fehlt das Paket `uiautomation`. Damit
+liefert er gerade keine Bedienelemente, auch nicht für `desktop_elements` der Schleife (dort
+ist es ein Fehler, die Schleife sieht also nur OCR-Text). Der Blick meldet das als
+`elemente_lesbar: false`; die Nachprüfung sagt dann UNVERIFIED statt REFUTED. Die schnelle
+Messung oben gilt deshalb ohne Elementabfrage. Mit `uiautomation` geht der Dienst durch bis
+zu 2.000 Knoten des Fensters; die Dauer ist dann neu zu messen.
+
+**Sperrliste** (fest in `blick.py`, getestet in `tests/test_blick.py`). Ein gesperrtes
+Fenster liefert nur `gesperrt: true`, `zeitpunkt` und `dauer_ms`: kein Titel, kein Programm,
+keine Elemente, auch kein Grund. Erkannt wird an drei Stellen:
+
+1. **Programmdatei** (beginnt mit): Passwort-Manager (KeePass/KeePassXC, 1Password,
+   Bitwarden, Dashlane, LastPass, Enpass, RoboForm, Keeper, NordPass, Proton Pass, Password
+   Safe), Banking-Programme (StarMoney, Programme mit "banking" im Namen, Finanzmanager,
+   MoneyMoney, Hibiscus, Subsembly, Outbank), Windows-Anmeldung und -Kennwortabfrage
+   (`credentialuibroker`, `consent` = Benutzerkontensteuerung, `logonui`, `lockapp`, `credwiz`).
+2. **Fenstertitel** (enthält): Kennzeichen privater Fenster (InPrivate, Inkognito/Incognito,
+   Privates Surfen, Private Browsing, privates Fenster), Namen von Passwort-Managern und
+   "Passwort/Password/Kennwort", Banken und Zahlungsdienste (Sparkasse, Volksbank, Postbank,
+   comdirect, DKB, N26, PayPal, Klarna, ...), Banking-Wörter (Banking, Überweisung,
+   Kontostand, pushTAN, SEPA), Anmeldung (Anmelden, Login, Sign in, Zwei-Faktor,
+   Bestätigungscode, Windows-Sicherheit).
+3. **Bedienelemente** (Name, Automation-Id, Klasse): Passwort, Kennwort, Passphrase,
+   Sicherheits- und Einmalcode, Kartennummer, IBAN, CVC; an Eingabefeldern zusätzlich die
+   Wörter PIN, TAN, OTP, PWD. Ein solches Element sperrt das ganze Fenster.
+
+Geprüft wird am Fenster, BEVOR der Desktop-Dienst nach Elementen gefragt wird, und noch
+einmal an dem Fenster, das der Dienst tatsächlich gelesen hat (falls es inzwischen
+gewechselt hat). Im Zweifel (Fehler in der Prüfung) gilt gesperrt.
+
+Was durchrutschen kann:
+
+- **Chrome-Inkognito:** Chrome schreibt "Inkognito" nicht in den Fenstertitel. Ein
+  Inkognito-Fenster mit einer Seite ohne verräterischen Titel wird gezeigt. Abhilfe nur über
+  die Bedienhilfen des Fensters oder den Fensterstil; nicht gebaut.
+- **Webseiten mit neutralem Titel:** Banken oder Kennwortseiten, deren Titel keinen der
+  Teile enthält, erkennt nur die Elementprüfung. Solange der Dienst keine Elemente liefert
+  (Befund oben), gibt es diese zweite Prüfung nicht.
+- **Unbenannte Anmeldefelder:** Ein Kennwortfeld ohne Namen und ohne passende Kennung wird
+  nicht erkannt; das Merkmal "Kennwortfeld" der Bedienhilfen reicht der Dienst nicht durch.
+- **Nur die ersten 60 Elemente** werden geprüft; ein Anmeldefeld weiter hinten im Baum
+  rutscht durch.
+- **Unbekannte Programme:** nur die genannten Passwort-Manager und Banking-Programme.
+- **Andere sichtbare Fenster:** Der Blick zeigt nur das aktive Fenster; was daneben offen
+  ist, prüft er nicht, zeigt es aber auch nicht.
+- **Elementnamen sind Inhalt:** Listeneinträge können Betreffzeilen, Dateinamen oder Namen
+  tragen. Deshalb höchstens 20 Namen, je 60 Zeichen.
+
+**Nachprüfung `truth:desktop_sicht`** (`brain/the_brain/core/desktop_sicht.py`, Zweige in
+`capability_validator.py` und `world_observer.py`). Eine Fähigkeit eines beliebigen Space
+schreibt in `capabilities.yaml`:
+
+```yaml
+validator:
+  kind: truth:desktop_sicht
+  on_fail: report
+  postcondition:
+    programm: "^(chrome|msedge)$"     # Muster auf die Programmdatei
+    fenstertitel_enthaelt: "{arg}"    # {arg} = Argument des Schritts
+    element_enthaelt: "Speichern"
+```
+
+VERIFIED, wenn alles zu sehen ist; REFUTED, wenn Lesbares nicht passt; UNVERIFIED bei
+gesperrtem Fenster, unlesbaren oder abgeschnittenen Elementen, fehlenden Plan-Angaben oder
+wartender Freigabe. Der Grund ist ein Satz: "Zu sehen: Fenster „…“ in Programm …". Das
+Signal enthält nur Wahrheitswerte. Gelesen wird über `desktop_blick` mit eigenem
+Laufzeit-Kontext (Ereignis `desktop.blick` im Verzeichnis, eingetragen); die Plan-Angaben
+reicht der Plan-Ausführer unter `_laufzeit` an den Validator weiter, die Fähigkeit selbst
+bleibt unverändert. Noch benutzt keine Fähigkeit den Prüfer.
+
+### Vorschlag, noch nicht gebaut
+
+**(a) Blick als Kontext für einen Schritt eines anderen Space, ohne dass er gespeichert wird.**
+
+- Die Fähigkeit erklärt es selbst: `sicht: vorher` in `capabilities.yaml`. Nur dann liest das
+  Gehirn direkt vor dem Schritt einen Blick (fester Aufruf, eigener Laufzeit-Kontext wie oben).
+- Der Blick lebt nur im Speicher des Hops, als lokale Variable in `_exec_hop_kern`, nicht in
+  `plan_ctx`, `state` oder `HopResult`. An den Schritt geht er als internes Argument `_sicht`;
+  Angaben mit Unterstrich erreichen einen Werkzeug-Dienst nie (das prüft der Test mit dem
+  nachgebauten OpenFang schon heute). Bei einem Agenten-Schritt wird er als gekennzeichneter
+  Block an die Nachricht gehängt ("SICHT, nur für diesen Schritt, nicht speichern").
+- Was das Gehirn darüber festhält, ist nur eine Zählzeile: gelesen ja/nein, gesperrt ja/nein,
+  Anzahl Elemente, Dauer. Das gilt für Logger, `plan_started` und andere Bus-Ereignisse, den
+  Plan-Recorder, `decision_outcome`, Erfahrungs- und Lernspeicher.
+- **Widerspruch, offen:** Der Grund-Satz von `truth:desktop_sicht` enthält heute den
+  Fenstertitel, wie verlangt. Das Urteil des Validators landet im `HopResult` und damit im
+  Plan-Recorder. Vorschlag: Der Satz geht nur in die Antwort an den Chat; gespeichert wird
+  "VERIFIED (programm, fenstertitel, element)". Entscheidung bei der Koordination.
+
+**(b) Dauerndes Mitlesen oder ein Blick je Schritt?** Ein Blick je Schritt reicht. Kosten
+heute: 4 bis 25 ms lokal, dazu je Blick eine Zulassung und eine Kostenreservierung bei
+OpenFang (zwei Anfragen, ein Eintrag je Blick). Bei zwei Blicken je Schritt (vorher als
+Kontext, nachher als Nachprüfung) ist das gegen die Laufzeit des Schritts selbst
+vernachlässigbar. Dauerndes Mitlesen ginge im Desktop-Dienst über das Windows-Ereignis
+"Vordergrundfenster gewechselt" (`SetWinEventHook`, `EVENT_SYSTEM_FOREGROUND`) fast
+kostenlos, aber: Der Dienst muss dafür neu ausgerollt werden, es braucht einen Kanal zum
+Gehirn oder zur App, und ein Strom von Fenstertiteln ist ein Tätigkeitsprotokoll des
+Nutzers. Empfehlung: kein Takt und kein Dauerstrom. Erst wenn die Standzeile das aktive
+Programm zeigen soll, ein Ereignis im Dienst, mit derselben Sperrliste und ohne Verlauf (nur
+der letzte Stand).
+
+**(c) "Wähl den zweiten Eintrag aus"**, ohne Modell:
+
+1. Blick mit Klickpunkten (nur intern im Gehirn, nicht in der Antwort): die Elemente der
+   Arten ListItem, TreeItem, TabItem, MenuItem, DataItem.
+2. Auflösen: Ordnungswort ("ersten" bis "zehnten", "letzten") aus dem Satz; Einträge
+   derselben Art, die in einer Spalte oder Zeile liegen, nach `y`, dann `x` sortieren. Gibt es
+   mehrere solche Listen, wird nachgefragt statt geraten.
+3. Vertrag: eine neue Aktion `auswahl` in `desktop_schleife_contract.py`. Erlaubt ist nur ein
+   Klick, keine Taste, und nur auf ein Element, das im Blick genau so steht, aktiv ist und zu
+   den Auswahl-Arten gehört. Heikle Stämme (löschen, senden, kaufen, ...) gelten wie bisher:
+   Ein Eintrag "Konto löschen" wird nur ausgewählt, wenn der Satz es wörtlich verlangt.
+4. Ausführen als Schritt im Aufgabenbuch (`desktop_task_step`), damit die App es zeigt und der
+   Not-Aus greift; Trockenlauf bleibt Vorgabe, echt nur mit Felix' Ja.
+5. Nachprüfen mit einem zweiten Blick: Der Eintrag ist ausgewählt. Dafür muss der
+   Desktop-Dienst den Auswahlzustand liefern (Muster "SelectionItem", heute nicht in der
+   Antwort); bis dahin ersatzweise ein geänderter Fenstertitel, sonst UNVERIFIED.
