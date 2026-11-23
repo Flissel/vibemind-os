@@ -139,5 +139,39 @@ DJ-Tracks (Weg `build`/watch), nicht zu fertigen Songs:
   durchgelassen. Das Urteil ist also auch uneinheitlich.
 
 Ein DJ blendet bei einem Song ohne Outro 16–32 Takte vor dem Ende über
-laufende Musik. Ob die Kette das für Läufe aus dem Bestand so machen soll,
-entscheidet Felix (offen).
+laufende Musik. Felix 23.11.: „Ja, so bauen“.
+
+Behoben in `d17209a1` (Test zuerst, 498 + 25 grün): `dsp.analyze.mischbereich`
+gibt jedem Ende mindestens 16 Takte, bei sehr kurzen Tracks ein Drittel. Ein
+längeres gemessenes Intro oder Outro bleibt. Die Messung selbst bleibt
+unverändert. Designer, Analyst und Curator arbeiten mit dem Mischbereich. Ein
+fehlendes leises Intro oder Outro ist im Prompt kein Aussortiergrund mehr.
+
+### Lauf 3 — `...-03`, exit 2
+
+Derselbe Wunsch mit `d17209a1`. `--length 8` stoppte die Vorprüfung
+(spielbar 7,4 Minuten), also `--length 7`. 3,7 Minuten Laufzeit.
+
+- Bereich 85.9–94.1 BPM (Ziel 91.0). Alle drei Songs im Set, keiner
+  aussortiert: `no-chicks-no-eggs` → `farewell-kiss` → `smaragd-green-eyes`.
+- Beide Übergänge mit 16 Takten (`filter_sweep` am Tonart-Bruch 7A→3A,
+  dann `eq_swap`). QA: „Keine verkürzten Übergänge“. Fund 2 ist damit am
+  echten Bestand behoben.
+- Set 7:59 (`set.mp3`), −15.1 LUFS, True Peak −1.3 dB nach einer
+  Pegelkorrektur der QA.
+- Hinweis Länge: 8.0 statt 7 Minuten. Mit drei Songs gibt das Material
+  nicht weniger her, ohne einen Song zu kürzen.
+
+QA, blockierend (*measured*):
+
+```
+Befund (seam): An der Naht von no-chicks-no-eggs nach farewell-kiss bei 2:54
+stimmt das Timing nicht: ein Intervall um die Naht weicht 0.07 Schlaege vom
+naechsten ganzen Schlag ab, gemitteltes Tempo 91.4 BPM, erwartet waren
+91.0 BPM ohne Abweichung ueber 0.05 Schlaege.
+```
+
+Anders als Lauf 1 (114.7 statt 120 BPM) liegt das gemittelte Tempo hier
+richtig. Die Abweichung ist ein einzelnes Intervall, 0,07 Schläge sind bei
+91 BPM etwa 46 ms. Ob das hörbar stolpert, hat niemand gehört (offen,
+Felix hört gegen). Die Naht bei 4:39 ist laut Messung sauber.
