@@ -415,6 +415,26 @@ def test_halt_fest_aus_video_schreibt_in_die_genannte_bubble(monkeypatch, echter
     assert "Bubble Stadtfest" not in hop.arg_template
 
 
+def test_halt_fest_aus_video_nennt_das_ziel(monkeypatch, echter_muster_router) -> None:
+    # (33): Die App springt bis in die Bubble und zur neuen Karte, nicht nur auf die Ideen-Uebersicht.
+    _bubble_liste(monkeypatch, [{"id": "b0b1e001", "title": "Stadtfest"}])
+    ausfuehrer = _Ausfuehrer({"content": [{"type": "text", "text": '{"id": "a0000009"}'}]})
+    client, _ = _client(monkeypatch, SCHWACH, ausfuehrer=ausfuehrer, muster=echter_muster_router)
+    body = client.post("/api/multihop/execute", json={"intent": "Halt fest: Preise prüfen in der Bubble Stadtfest",
+                                                      "context": {"space": "video"}}).json()
+    assert body["ziel"] == {"space": "ideas", "bubble_id": "b0b1e001", "node_id": "a0000009"}
+    assert ausfuehrer.plaene[0].ziel_bubble_id == "b0b1e001"
+
+
+def test_lesen_nennt_kein_ziel(monkeypatch, echter_muster_router) -> None:
+    ausfuehrer = _Ausfuehrer({"content": [{"type": "text", "text": "[]"}]})
+    client, _ = _client(monkeypatch, SCHWACH, ausfuehrer=ausfuehrer, muster=echter_muster_router)
+    body = client.post("/api/multihop/execute", json={"intent": "Was steht bei Sponsoren?", "context": {
+        "space": "ideas", "bubble": {"id": "b0b1e001", "title": "Stadtfest"},
+        "cards": [{"id": "a0000001", "title": "Sponsoren"}]}}).json()
+    assert ausfuehrer.plaene and "ziel" not in body
+
+
 # Lauf 9 (31): So kommt der Kontext nach Rowboat -> Ideen an (isInsideBubble false, bubble null).
 # Die Karten koennen noch aus der zuletzt offenen Bubble stammen.
 NACH_ROWBOAT = [

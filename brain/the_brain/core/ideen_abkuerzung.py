@@ -1130,6 +1130,44 @@ def _mehrzahl(anzahl: int, eins: str, viele: str) -> str:
     return f"{anzahl} {eins if anzahl == 1 else viele}"
 
 
+def ziel_fuer_schritt(capability: Any, ok: bool, argumente: Any, ergebnis: Any,
+                      kontext: Any = None) -> Optional[dict]:
+    """(33) Wohin die App nach einem festen Schreibaufruf springt: ``{space, bubble_id, node_id}``.
+
+    Nur wenn der Aufruf geklappt hat, schreibt und eine Bubble kennt (aus den Argumenten oder
+    der offenen bzw. im Satz genannten Bubble des Kontexts). ``node_id`` ist die Karte, die
+    geschrieben wurde, sonst ``None``. Wirft nie.
+    """
+    try:
+        from .ideen_fest_contract import FESTE_EREIGNISSE
+
+        spec = FESTE_EREIGNISSE.get(str(capability or ""))
+        if not ok or not spec or spec.get("liest_nur"):
+            return None
+        if isinstance(argumente, str):
+            try:
+                argumente = json.loads(argumente)
+            except ValueError:
+                argumente = {}
+        argumente = argumente if isinstance(argumente, dict) else {}
+        bubble_id = argumente.get("bubble_id")
+        if str(capability).startswith("bubble.") and not ist_kennung(bubble_id):
+            bubble_id = argumente.get("id")          # bubble.rate: die Kennung ist die Bubble
+        if not ist_kennung(bubble_id) and isinstance(kontext, dict) and isinstance(kontext.get("bubble"), dict):
+            bubble_id = kontext["bubble"].get("id")
+        if not ist_kennung(bubble_id):
+            return None
+        node_id = None
+        if str(capability).startswith("idea."):
+            node_id = argumente.get("id")
+            if not ist_kennung(node_id):
+                inhalt = _mcp_json(ergebnis)
+                node_id = inhalt.get("id") if isinstance(inhalt, dict) else None
+        return {"space": "ideas", "bubble_id": bubble_id, "node_id": node_id if ist_kennung(node_id) else None}
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def antwort_fuer_schritt(capability: Any, ok: bool, ergebnis: Any, fehler: Any,
                          vorgabe: str = "", kontext: Any = None) -> Optional[str]:
     """Der deutsche Satz fuer den Chat nach einem festen Schritt.

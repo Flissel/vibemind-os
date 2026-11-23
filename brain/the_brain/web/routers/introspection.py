@@ -2646,6 +2646,13 @@ def _planer_fehler_ideen(hops, exec_result) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _ziel_bubble(kontext: Any) -> str:
+    """Kennung der offenen oder im Satz genannten Bubble aus dem Kontext, sonst ''. Wirft nie."""
+    bubble = kontext.get("bubble") if isinstance(kontext, dict) else None
+    kennung = bubble.get("id") if isinstance(bubble, dict) else None
+    return kennung if isinstance(kennung, str) else ""
+
+
 def _feste_antwort(plan, exec_result, ideen_fest: bool, vorgabe: str, kontext: Any) -> Optional[Dict[str, Any]]:
     """Antwortfelder fuer einen festen Ein-Schritt-Plan, oder ``None`` (dann Synthese wie bisher).
 
@@ -2700,6 +2707,14 @@ def _feste_antwort(plan, exec_result, ideen_fest: bool, vorgabe: str, kontext: A
         }
         if not ok:
             antwort["fehler"] = str(schritt.get("error") or "")
+        elif ideen_fest:
+            # (33) Wohin die App springt: Bubble und Karte, in die der Aufruf geschrieben hat.
+            from core.ideen_abkuerzung import ziel_fuer_schritt
+
+            ziel = ziel_fuer_schritt(capability, ok, schritt.get("rendered_arg") or hops[0].arg_template,
+                                     schritt.get("result"), kontext)
+            if ziel:
+                antwort["ziel"] = ziel
         return antwort
     except Exception as e:  # noqa: BLE001 - dann lieber die bisherige Synthese
         logger.warning(f"[feste-antwort] uebersprungen: {type(e).__name__}: {e}")
@@ -2945,6 +2960,8 @@ async def _multihop_execute(request: Request):
                     "final_text": _ideen_antwort, "trace_id": trace_id,
                 })
             _ideen_fest = plan is not None
+            if _ideen_fest:
+                plan.ziel_bubble_id = _ziel_bubble(body.get("context"))
         # Lesefrage nach einem Bereich ("Was steht in meinem Journal?", "Welche Events stehen
         # an?"): kein Kartentitel und kein fremder Muster-Treffer (Nachmessung: Events liefen zu
         # den Auftraegen), sondern ein ehrlicher Satz. Eine Karte genau dieses Namens hat oben
@@ -3003,6 +3020,8 @@ async def _multihop_execute(request: Request):
                 return JSONResponse({"ok": True, "space": "ideas", "executed": {}, "status": "abgebrochen",
                                      "final_text": _ideen_antwort, "trace_id": trace_id})
             _ideen_fest = plan is not None
+            if _ideen_fest:
+                plan.ziel_bubble_id = _ziel_bubble(_ideen_kontext)
             if not _ideen_fest:
                 _ideen_kontext = None
 
