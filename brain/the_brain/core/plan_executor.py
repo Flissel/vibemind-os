@@ -312,7 +312,7 @@ def _abschluss_ereignis(plan_id: str, ok: bool, result: Dict[str, Any], executed
     """
     if result.get("pending"):
         return {"plan_id": plan_id, "ok": True, "pending": True, "status": "angenommen",
-                "hop_count": len(executed)}
+                "fertig": False, "hop_count": len(executed)}
     nutzlast: Dict[str, Any] = {"plan_id": plan_id, "ok": ok, "elapsed_s": result.get("elapsed_s"),
                                 "hop_count": len(executed)}
     if not ok:

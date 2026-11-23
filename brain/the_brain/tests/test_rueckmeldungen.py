@@ -109,7 +109,7 @@ def test_plan_completed_hinweis_und_angenommen_ohne_dauer() -> None:
     wartet = {"s1": HopResult(step_id="s1", ok=False, pending=True)}
     angenommen = _abschluss_ereignis("ideen_3", False, {"elapsed_s": 2.0, "pending": True}, wartet)
     assert angenommen == {"plan_id": "ideen_3", "ok": True, "pending": True, "status": "angenommen",
-                          "hop_count": 1}
+                          "fertig": False, "hop_count": 1}
 
 
 # ── Router: Felder in der Antwort, Ausgang fuer "Zurück", Annahme ohne Dauer ──

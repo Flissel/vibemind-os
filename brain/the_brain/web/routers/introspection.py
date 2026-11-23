@@ -3219,6 +3219,8 @@ async def _multihop_execute(request: Request):
         out["ok"] = True
         out["pending"] = True
         out["status"] = "angenommen"
+        # Angenommen ist auch nicht fertig: kein "✓ fertig", bis der Abschluss kommt.
+        out["fertig"] = False
         # Die Dauer bis zur Annahme ist nicht die des Laufs; sie kommt mit dem Abschluss.
         out.pop("elapsed_s", None)
         try:
@@ -3243,6 +3245,7 @@ async def _multihop_execute(request: Request):
             pe.recorder.attach_final(plan.plan_id, out["final_text"])
         except Exception:  # noqa: BLE001
             pass
+        _abschluss_berichtigen(pe, plan, exec_result, out)
         return JSONResponse(out)
 
     # Optional final synthesis — Phase 11.T.4 uses asynthesize() so the
@@ -3277,7 +3280,28 @@ async def _multihop_execute(request: Request):
         except Exception as e:
             out["synthesis_error"] = f"{type(e).__name__}: {e}"
 
-    return JSONResponse(_auffangnetz(out))
+    out = _auffangnetz(out)
+    _abschluss_berichtigen(pe, plan, exec_result, out)
+    return JSONResponse(out)
+
+
+def _abschluss_berichtigen(pe, plan, exec_result: Dict[str, Any], out: Dict[str, Any]) -> None:
+    """Hat das Gehirn nach dem Lauf auf ok=False gestellt (keine Antwort, nicht lesbar), steht im
+    Strom noch ``plan_completed`` mit ok=True. Dann ein zweites ``plan_completed`` mit ok=False
+    und ``berichtigt``, damit die Standzeile keinen Haken zeigt. Wirft nie."""
+    try:
+        if not exec_result.get("ok") or out.get("ok") or exec_result.get("pending"):
+            return
+        veroeffentlichen = getattr(pe, "_publish", None)
+        if not callable(veroeffentlichen):
+            return
+        nutzlast: Dict[str, Any] = {"plan_id": plan.plan_id, "ok": False, "berichtigt": True,
+                                    "hop_count": len(exec_result.get("executed") or {})}
+        if out.get("nicht_lesbar"):
+            nutzlast["nicht_lesbar"] = True
+        veroeffentlichen("plan_completed", nutzlast)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[auffangnetz] Abschluss nicht berichtigt: {type(e).__name__}")
 
 
 def _auffangnetz(out: Dict[str, Any]) -> Dict[str, Any]:
@@ -3297,6 +3321,13 @@ def _auffangnetz(out: Dict[str, Any]) -> Dict[str, Any]:
                 out["fehler"] = text[:2000]
             out["final_text"] = (_verstehen.FEHLERSATZ if not out.get("ok")
                                  else _verstehen.ROH_ERFOLG_SATZ)
+            # "Nicht lesbar" ist kein Erfolg: kein Haken in der App (Nachmessung 23.11.2026).
+            # Ohne Text und ohne Synthese (mitgebrachter Plan, der Aufrufer liest executed)
+            # bleibt ok, wie es ist.
+            lesbar_versucht = (isinstance(text, str) and text.strip()) or out.get("synthesis_error")
+            if lesbar_versucht and out.get("ok"):
+                out["nicht_lesbar"] = True
+                out["ok"] = False
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[auffangnetz] uebersprungen: {type(e).__name__}: {e}")
     return out

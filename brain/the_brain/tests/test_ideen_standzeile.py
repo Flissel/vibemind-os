@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import sys
+
+import pytest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -59,6 +61,21 @@ def test_angenommener_auftrag_ist_kein_fehler_und_freigabe_wartet() -> None:
     assert "runtime authority" not in _roh(ereignis)
 
 
-def test_andere_spaces_bleiben_unveraendert() -> None:
-    ereignis = {"capability": "desktop_open", "space": "desktop", "description": "roh", "error": "E"}
+def test_andere_spaces_ohne_fehler_bleiben_unveraendert() -> None:
+    ereignis = {"capability": "desktop_open", "space": "desktop", "description": "roh", "error": None}
     assert fuer_app(ereignis) is ereignis
+
+
+@pytest.mark.parametrize("fehler,satz", [
+    ("ConnectionError: HTTPConnectionPool(host='coding-api', port=8000): Max retries exceeded",
+     "Der Dienst ist gerade nicht erreichbar; geändert habe ich nichts."),
+    ("ReadTimeout: timed out after 30s", "Der Dienst hat nicht rechtzeitig geantwortet."),
+    ("KeyError: 'x'", "Der Schritt hat nicht geklappt."),
+])
+def test_andere_spaces_kein_rohfehler_im_strom(fehler, satz) -> None:
+    # Nachmessung 23.11.2026: in der Standzeile stand "ConnectionError: HTTPConnectionPool(...".
+    ereignis = {"capability": "code_status", "space": "projects", "description": "Status", "ok": False,
+                "error": fehler, "result_preview": "None"}
+    neu = fuer_app(ereignis)
+    assert neu["error"] == satz and neu["result_preview"] == ""
+    assert ereignis["error"] == fehler  # Kopie; der Rohtext bleibt im Schnappschuss

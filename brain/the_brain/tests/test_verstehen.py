@@ -633,6 +633,40 @@ def test_englische_synthese_wird_ersetzt(monkeypatch) -> None:
     assert "Here is" not in body["final_text"] and "Here is" in body["fehler"]
 
 
+class _Strom(_Ausfuehrer):
+    """Ausfuehrer mit Strom wie der echte PlanExecutor (sammelt veroeffentlichte Ereignisse)."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.ereignisse = []
+
+    def _publish(self, art, nutzlast):
+        self.ereignisse.append((art, nutzlast))
+
+
+def test_nicht_lesbar_ist_kein_haken_und_der_strom_wird_berichtigt(monkeypatch) -> None:
+    # Nachmessung: "Der Schritt lief, aber die Antwort kann ich nicht lesbar wiedergeben." kam als
+    # "✓ fertig in 1,3 s". Nicht lesbar ist ok:false, auch im Strom.
+    ausfuehrer = _Strom({"x": 1})
+    client, _ = _client(monkeypatch, STARK, planer=_Planer("browser_open"), ausfuehrer=ausfuehrer,
+                        synth=_Synth("{'x': 1}"))
+    body = client.post("/api/multihop/execute", json={"intent": "Öffne example.com im Browser",
+                                                      "context": IDEEN}).json()
+    assert body["final_text"] == v.ROH_ERFOLG_SATZ
+    assert body["ok"] is False and body["nicht_lesbar"] is True
+    (abschluss,) = [n for a, n in ausfuehrer.ereignisse if a == "plan_completed"]
+    assert abschluss["ok"] is False and abschluss["berichtigt"] is True and abschluss["nicht_lesbar"] is True
+
+
+def test_lesbarer_erfolg_wird_nicht_berichtigt(monkeypatch) -> None:
+    ausfuehrer = _Strom({"url": "https://example.com"})
+    client, _ = _client(monkeypatch, STARK, planer=_Planer("browser_open"), ausfuehrer=ausfuehrer,
+                        synth=_Synth("Die Seite ist offen."))
+    body = client.post("/api/multihop/execute", json={"intent": "Öffne example.com im Browser",
+                                                      "context": IDEEN}).json()
+    assert body["ok"] is True and ausfuehrer.ereignisse == []
+
+
 def test_fester_lesesatz_fehler_ist_kein_haken(monkeypatch) -> None:
     client, _ = _client(monkeypatch, SCHWACH, ausfuehrer=_Ausfuehrer(None, ok=False))
     body = client.post("/api/multihop/execute", json={"intent": "Zeig meine Aufträge"}).json()
