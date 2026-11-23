@@ -505,11 +505,46 @@ _FUELLWOERTER = frozenset(
     "der die das den dem des ein eine einen einem einer eines und oder aber auch noch nur schon sehr "
     "ist sind war waren wird werden wurde hat haben hatte mit fuer für von vom zum zur bei auf aus nach "
     "wir ich sie er es ihr uns unser unsere dass als wie wenn dann damit sich nicht kein keine "
-    "diese dieser dieses dort hier mehr alle jede jeder jedes".split())
+    "diese dieser dieses dort hier mehr alle jede jeder jedes "
+    # Lauf 18 (49): Hilfs- und Modalverben und kleine Woerter tragen keine Aussage.
+    "muss muessen müssen soll sollen sollte kann koennen können will wollen bis beim ab sowie bereits "
+    "gibt geben braucht brauchen".split())
+# Lauf 18 (49): Endungen, damit "liefert" und "liefern", "Stand" und "Stände" gleich zaehlen.
+_ENDUNGEN = ("ungen", "ern", "ert", "en", "er", "es", "em", "et", "e", "n", "s", "t")
+
+
+def _stamm(wort: str) -> str:
+    """Grober deutscher Wortstamm: ohne Umlaute, ohne eine gaengige Endung; nie kuerzer als 4."""
+    w = wort.casefold().replace("ä", "a").replace("ö", "o").replace("ü", "u").replace("ß", "ss")
+    for endung in _ENDUNGEN:
+        if w.endswith(endung) and len(w) - len(endung) >= 4:
+            return w[:-len(endung)]
+    return w
 
 
 def _inhaltswoerter(satz: str) -> set[str]:
-    return {w for w in re.findall(r"\w+", satz.casefold()) if len(w) > 2 and w not in _FUELLWOERTER}
+    return {_stamm(w) for w in re.findall(r"\w+", satz.casefold()) if len(w) > 2 and w not in _FUELLWOERTER}
+
+
+def _saetze(text: str) -> list[str]:
+    return [s for s in re.split(r"(?<=[.!?])\s+|\n+", text.strip()) if s.strip()]
+
+
+def wiederholt_sich(a: set[str], b: set[str], notiz: set[str]) -> bool:
+    """Ob zwei Saetze (als Inhaltswort-Staemme) dieselbe Aussage sind.
+
+    Lauf 12: fast dieselben Woerter (90 % des kuerzeren Satzes). Lauf 18 (49): dieselbe Aussage mit
+    umgestellter Wortfolge und ein, zwei getauschten Woertern; darum auch zwei Drittel des laengeren
+    Satzes (sechs Inhaltswoerter, zwei davon getauscht).
+    Nennt aber jeder der beiden Saetze ein eigenes Wort der Notiz ("Stadtwerke" hier, "Bäckerei"
+    dort), ist das eine Aufzaehlung und keine Wiederholung.
+    """
+    if min(len(a), len(b)) < 4:
+        return False
+    gemeinsam = len(a & b)
+    if gemeinsam < 0.9 * min(len(a), len(b)) and 3 * gemeinsam < 2 * max(len(a), len(b)):
+        return False
+    return not ((a - b) & notiz and (b - a) & notiz)
 
 
 def ausformulierung_pruefen(notiz: Any, ergebnis: Any) -> str:
@@ -518,11 +553,11 @@ def ausformulierung_pruefen(notiz: Any, ergebnis: Any) -> str:
         return ""
     if _OFFEN_IM_ERGEBNIS.search(ergebnis) and not _OFFEN_IN_DER_NOTIZ.search(str(notiz or "")):
         return ERFINDET_OFFENES
-    saetze = [_inhaltswoerter(s) for s in re.split(r"(?<=[.!?])\s+|\n+", ergebnis.strip())]
-    saetze = [s for s in saetze if len(s) >= 4]
+    notizwoerter = _inhaltswoerter(str(notiz or ""))
+    saetze = [_inhaltswoerter(s) for s in _saetze(ergebnis)]
     for i, a in enumerate(saetze):
         for b in saetze[i + 1:]:
-            if len(a & b) >= 0.9 * min(len(a), len(b)):
+            if wiederholt_sich(a, b, notizwoerter):
                 return WIEDERHOLT_SICH
     return ""
 

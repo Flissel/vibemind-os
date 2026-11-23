@@ -197,6 +197,37 @@ def test_aehnlich_gebaute_saetze_sind_keine_wiederholung() -> None:
     assert rw.ausformulierung_pruefen("Sponsoren: Stadtwerke, Bäckerei", ergebnis) == ""
 
 
+@pytest.mark.parametrize("notiz, ergebnis", [
+    # Lauf 18 (49): dieselbe Aussage, umgestellt, andere Wortform ("liefert"/"liefern").
+    ("Plakate: Druckerei bis Mai",
+     "Für das Stadtfest brauchen wir eine Druckerei, die die Plakate bis Ende Mai liefert. "
+     "Bis Ende Mai muss eine Druckerei die Plakate für das Stadtfest liefern."),
+    # ... und zwei getauschte Woerter ("liefert"/"bringt", "Plakate"/"Poster").
+    ("Plakate",
+     "Die Druckerei liefert die Plakate für das Stadtfest bis Ende Mai. "
+     "Bis Ende Mai bringt die Druckerei die Poster für das Stadtfest."),
+])
+def test_umgestellte_wiederholung_wird_erkannt(notiz, ergebnis) -> None:
+    assert rw.ausformulierung_pruefen(notiz, ergebnis) == rw.WIEDERHOLT_SICH
+
+
+@pytest.mark.parametrize("notiz, ergebnis", [
+    ("Bühnenplan", "Die Bühne wird am Freitag am Marktplatz aufgebaut. Am Sonntag wird die Bühne am Marktplatz abgebaut."),
+    ("Druckerei", "Die Druckerei liefert die Plakate bis Ende Mai. Die Flyer liefert dieselbe Druckerei schon Mitte April."),
+    ("Sponsoren", "Die Stadtwerke zahlen die Bühne und den Strom für das Stadtfest. "
+                  "Die Bäckerei zahlt die Getränke und das Zelt für das Stadtfest."),
+    ("Vegane Suppe", "Am Stand gibt es eine vegane Suppe aus regionalem Gemüse. Die Suppe kostet vier Euro und wird "
+                     "in Bechern ausgegeben. Wer mag, bekommt Brot dazu."),
+])
+def test_verwandte_saetze_mit_neuer_aussage_sind_keine_wiederholung(notiz, ergebnis) -> None:
+    assert rw.ausformulierung_pruefen(notiz, ergebnis) == ""
+
+
+def test_wortstamm_ohne_umlaut_und_endung() -> None:
+    assert rw._stamm("liefert") == rw._stamm("liefern") == "lief"
+    assert rw._stamm("Stände") == rw._stamm("Stand") and rw._stamm("Mai") == "mai"
+
+
 def test_ausformulieren_auftrag_sagt_das_ergebnis_ist_die_notiz() -> None:
     # Lauf 10 (35): "kaum ausgebaut", "beschreibt nur".
     nachricht, _ = _vorbereiten()
