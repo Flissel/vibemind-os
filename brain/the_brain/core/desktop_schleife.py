@@ -385,17 +385,21 @@ def nach_aufgabenstart(
             with _LAUFEND_SPERRE:
                 _LAUFEND.pop(task_id, None)
 
+    # Jeder Eintrag zaehlt als besetzt, auch ein noch nicht gestarteter Faden; ausgetragen wird
+    # nur in ``lauf`` (finally) oder hier, wenn der Start scheitert. Start unter der Sperre.
     with _LAUFEND_SPERRE:
-        if any(f.is_alive() for f in _LAUFEND.values()):
-            besetzt = True
-        else:
-            besetzt = False
+        besetzt = bool(_LAUFEND)
+        if not besetzt:
             faden = threading.Thread(target=lauf, name=f"desktop-schleife-{task_id}", daemon=True)
             _LAUFEND[task_id] = faden
+            try:
+                faden.start()
+            except Exception:
+                _LAUFEND.pop(task_id, None)
+                raise
     if besetzt:
         return abbrechen("schon_eine_aufgabe", "Es laeuft schon eine Desktop-Aufgabe.",
                          "desktop.task: es laeuft schon eine Desktop-Aufgabe")
-    faden.start()
     return True, {
         "task_id": task_id, "zustand": "laeuft", "auftrag": auftrag,
         "text": f"Aufgabe laeuft, Kennung {task_id}", "nachweis": nachweis,
