@@ -65,6 +65,20 @@ def meldung_geaendert(titel: Any, uebernehmbar: bool = True, ueberschreibt: bool
     return satz + "."
 
 
+FRAGWUERDIG = "result questionable"
+
+
+def meldung_fragwuerdig(grund: str) -> str:
+    """(46) Die Prüfung hält ein Ausformulier-Ergebnis zurück: Grund und Angebot, nichts geschrieben."""
+    kern = re.sub(r";\s*es wurde nichts geändert\.?\s*$", "", str(grund or "").strip()).rstrip(". ")
+    return f"{kern}. Geändert habe ich nichts. Du kannst den Text trotzdem ansehen: Sag „Vorschlag zeigen“."
+
+
+def _fragwuerdig(zeile: Optional[Mapping[str, Any]]) -> bool:
+    pruefung, _rueckweg = _teile(zeile or {})
+    return pruefung.get("reason") == FRAGWUERDIG
+
+
 def meldung_fehlt() -> str:
     return ("Die Notiz gibt es nicht mehr; mein Text liegt als Vorschlag vor. "
             "Sag „Vorschlag zeigen“, dann zeige ich ihn.")
@@ -94,7 +108,8 @@ def zeigen(zeile: Optional[Mapping[str, Any]]) -> str:
     if not uebernehmen(zeile)[0]:
         nachsatz = " Sag „Vorschlag verwerfen“, wenn du ihn nicht brauchst."
     elif ueberschreibt(zeile):
-        nachsatz = (f" Er würde den jetzigen Text der Notiz ersetzen, auch deine Änderung. Sag „{TROTZDEM_SATZ}“, "
+        auch = "" if _fragwuerdig(zeile) else ", auch deine Änderung"
+        nachsatz = (f" Er würde den jetzigen Text der Notiz ersetzen{auch}. Sag „{TROTZDEM_SATZ}“, "
                     "dann ersetze ich ihn, oder „Vorschlag verwerfen“.")
     else:
         nachsatz = " Sag „Vorschlag übernehmen“, dann schreibe ich ihn an die Notiz, oder „Vorschlag verwerfen“."
@@ -148,8 +163,9 @@ def ueberschreibt(zeile: Optional[Mapping[str, Any]]) -> bool:
 def warnung(zeile: Optional[Mapping[str, Any]]) -> str:
     """Der Satz auf "Vorschlag übernehmen", wenn das Übernehmen die Notiz überschreibt."""
     pruefung, _rueckweg = _teile(zeile or {})
-    return (f"Achtung: Der Vorschlag ersetzt den jetzigen Text der Notiz {_name(pruefung.get('titel'))}, "
-            f"auch deine Änderung von vorhin. Sag „{TROTZDEM_SATZ}“, dann ersetze ich ihn "
+    auch = "" if _fragwuerdig(zeile) else ", auch deine Änderung von vorhin"
+    return (f"Achtung: Der Vorschlag ersetzt den jetzigen Text der Notiz {_name(pruefung.get('titel'))}"
+            f"{auch}. Sag „{TROTZDEM_SATZ}“, dann ersetze ich ihn "
             "(direkt danach holt „Mach das rückgängig“ den alten Text zurück), oder „Vorschlag zeigen“ "
             "bzw. „Vorschlag verwerfen“. Geändert habe ich nichts.")
 

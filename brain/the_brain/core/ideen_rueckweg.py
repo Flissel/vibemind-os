@@ -611,7 +611,12 @@ def zurueckschreiben(auftrag: Mapping[str, Any], *, lies_karte: Callable[[str], 
             # Erst hier: die Notiz ist unveraendert, also genau die, die der Agent gelesen hat.
             satz = ausformulierung_pruefen(karte.get("content"), werte["text"])
             if satz:
-                return aus("abgelehnt", False, "result rejected", satz)
+                # Lauf 16 (46): abgelehnt war der Text fuer den Menschen unsichtbar. Jetzt Vorschlag
+                # mit dem Grund; geschrieben wird nur mit "Vorschlag trotzdem übernehmen".
+                from .ideen_vorschlag import FRAGWUERDIG, meldung_fragwuerdig
+                titel = karte.get("title") if isinstance(karte.get("title"), str) else ""
+                return aus("vorschlag", None, FRAGWUERDIG, meldung_fragwuerdig(satz),
+                           vorschlag=vorschlag, werte=werte, titel=titel[:200])
         geschrieben: list[str] = []
         for ereignis, roh_argumente in schreibplan(rueckweg, werte):
             argumente, grund = feste_argumente(ereignis, roh_argumente)
