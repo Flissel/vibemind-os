@@ -116,9 +116,18 @@ def beginnen(text: str, *, trocken: bool, env: Mapping[str, str] | None = None) 
         "beendet": None,
         "schritte": [],
         "ergebnis": None,
+        "blick": False,  # hat der Agent seit dem letzten Schritt auf den Bildschirm gesehen?
     }
     _schreiben(_pfad(kennung, env), aufgabe)
     return aufgabe
+
+
+def hingesehen(env: Mapping[str, str] | None = None) -> None:
+    """Vermerkt bei der laufenden Aufgabe, dass der Bildschirm gerade gelesen wurde."""
+    aufgabe = letzte(env)
+    if aufgabe and aufgabe["zustand"] == OFFEN and not aufgabe.get("blick"):
+        aufgabe["blick"] = True
+        _schreiben(_pfad(aufgabe["id"], env), aufgabe)
 
 
 def _offene(aufgabe_id: str, env: Mapping[str, str] | None) -> dict[str, Any]:
@@ -129,7 +138,12 @@ def _offene(aufgabe_id: str, env: Mapping[str, str] | None) -> dict[str, Any]:
 
 
 def schritt_beginnen(
-    aufgabe_id: str, *, art: str, angaben: Mapping[str, Any], env: Mapping[str, str] | None = None
+    aufgabe_id: str,
+    *,
+    art: str,
+    angaben: Mapping[str, Any],
+    braucht_blick: bool = True,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Prüft vor JEDEM Schritt Not-Aus, Laufzeit und Obergrenze und bucht ihn dann als begonnen.
 
@@ -139,6 +153,12 @@ def schritt_beginnen(
     aufgabe = _offene(aufgabe_id, env)  # schließt eine abgelaufene Aufgabe und lehnt dann ab
     if not_aus(env):
         raise AufgabenFehler("not_aus: die Datei STOP liegt im Aufgaben-Ordner")
+    if braucht_blick and not aufgabe.get("blick"):
+        # Wird vom Werkzeug durchgesetzt, nicht nur von der Anweisung verlangt: Wer
+        # klickt oder tippt, muss den Bildschirm seit dem letzten Schritt gelesen haben.
+        raise AufgabenFehler(
+            "nicht_hingesehen: vor diesem Schritt zuerst desktop_elements oder desktop_screen_read aufrufen"
+        )
     if len(aufgabe["schritte"]) >= MAX_SCHRITTE:
         aufgabe["zustand"] = "abgebrochen"
         aufgabe["beendet"] = _jetzt()
@@ -156,6 +176,8 @@ def schritt_beginnen(
         "dauer_ms": None,
     }
     aufgabe["schritte"].append(schritt)
+    if braucht_blick:
+        aufgabe["blick"] = False  # der Bildschirm ist nach diesem Schritt ein anderer
     _schreiben(_pfad(aufgabe_id, env), aufgabe)
     return aufgabe, schritt
 

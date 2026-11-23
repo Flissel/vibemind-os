@@ -50,7 +50,41 @@ class DesktopMcpServerTests(unittest.TestCase):
         self.addCleanup(self.http.stop)
 
     def start(self, text="Editor öffnen") -> str:
-        return self.server.call_tool("desktop_task_start", {"task": text})["id"]
+        kennung = self.server.call_tool("desktop_task_start", {"task": text})["id"]
+        self.blick()
+        return kennung
+
+    def blick(self) -> None:
+        self.server.call_tool("desktop_screen_read", {})
+        self.aufrufe.clear()
+
+    def test_a_step_without_a_fresh_look_is_refused_by_the_tool(self) -> None:
+        os.environ["VIBEMIND_DESKTOP_AUSFUEHREN"] = "1"
+        kennung = self.server.call_tool("desktop_task_start", {"task": "ohne Blick"})["id"]
+        klick = {"task_id": kennung, "action": "click", "x": 1, "y": 1}
+        with self.assertRaisesRegex(self.server.ToolError, "^nicht_hingesehen"):
+            self.server.call_tool("desktop_task_step", klick)
+        self.server.call_tool("desktop_elements", {})  # zählt als Blick
+        self.server.call_tool("desktop_task_step", klick)
+        with self.assertRaisesRegex(self.server.ToolError, "^nicht_hingesehen"):
+            self.server.call_tool("desktop_task_step", klick)  # ein Blick reicht für einen Schritt
+        self.server.call_tool("desktop_task_step", {"task_id": kennung, "action": "wait", "seconds": 0})
+        with self.assertRaisesRegex(self.server.ToolError, "^nicht_hingesehen"):
+            self.server.call_tool("desktop_task_step", klick)  # Warten ist kein Blick
+        posts = [a for a in self.aufrufe if a[0] == "POST"]
+        self.assertEqual(posts, [("POST", "/api/mcp/click", {"x": 1, "y": 1})])
+        stand = self.server.call_tool("desktop_task_status", {"task_id": kennung})
+        self.assertEqual([s["art"] for s in stand["schritte"]], ["click", "wait"])
+
+    def test_a_failed_look_does_not_count(self) -> None:
+        kennung = self.server.call_tool("desktop_task_start", {"task": "blind"})["id"]
+        self.http.stop()
+        with mock.patch.object(self.server, "_http", side_effect=self.server.ToolError("dienst_nicht_erreichbar: x")):
+            with self.assertRaises(self.server.ToolError):
+                self.server.call_tool("desktop_screen_read", {})
+        self.http.start()
+        with self.assertRaisesRegex(self.server.ToolError, "^nicht_hingesehen"):
+            self.server.call_tool("desktop_task_step", {"task_id": kennung, "action": "key", "key": "enter"})
 
     def test_tools_list_is_the_stable_surface(self) -> None:
         namen = [tool["name"] for tool in self.server.TOOLS]
@@ -99,9 +133,10 @@ class DesktopMcpServerTests(unittest.TestCase):
             {"action": "hotkey", "keys": ["ctrl", "s"]},
             {"action": "scroll", "direction": "down", "amount": 2},
         ):
+            self.server.call_tool("desktop_screen_read", {})
             self.server.call_tool("desktop_task_step", {"task_id": kennung, **angaben})
         self.assertEqual(
-            self.aufrufe,
+            [a for a in self.aufrufe if a[0] == "POST"],
             [
                 ("POST", "/api/mcp/click", {"x": 1, "y": 2}),
                 ("POST", "/api/mcp/type", {"text": "hallo"}),

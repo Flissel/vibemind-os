@@ -40,6 +40,8 @@ MAX_BILDSCHIRMTEXT = 6000
 MAX_WARTEN_SEKUNDEN = 5
 MAX_ELEMENTE = 60
 ARTEN = ("click", "type", "key", "hotkey", "scroll", "wait")
+# Nur was der Agent wirklich zu lesen bekommt, zählt als Blick; ein gespeichertes Bild nicht.
+BLICK_WERKZEUGE = ("desktop_screen_read", "desktop_elements", "desktop_find")
 
 _AUFGABE_ID = {"type": "string", "pattern": "^" + aufgaben.ID_MUSTER.pattern + "$"}
 
@@ -92,6 +94,8 @@ TOOLS: list[dict[str, Any]] = [
         "name": "desktop_task_step",
         "description": (
             "Execute ONE step of a running task on the real screen and record it. "
+            "Refused with nicht_hingesehen unless desktop_elements, desktop_screen_read or desktop_find "
+            "was called since the previous step. "
             "action: click (x, y), type (text), key (key), hotkey (keys), scroll (direction, amount), wait (seconds)."
         ),
         "inputSchema": {
@@ -343,7 +347,7 @@ def _task_step(arguments: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(warum, str) and warum.strip():
         ins_buch = {**ins_buch, "warum": warum.strip()[:120]}
     # Not-Aus, Laufzeit und Obergrenze werden hier vor jedem einzelnen Schritt geprüft.
-    aufgabe, begonnen = aufgaben.schritt_beginnen(kennung, art=art, angaben=ins_buch)
+    aufgabe, begonnen = aufgaben.schritt_beginnen(kennung, art=art, angaben=ins_buch, braucht_blick=art != "wait")
 
     start = time.monotonic()
     ok, echt, meldung = True, False, "ausgeführt"
@@ -372,14 +376,14 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         if name == "desktop_status":
             _nur(arguments, set())
             return _status()
-        if name == "desktop_screen_read":
-            _nur(arguments, set())
-            return _screen_read()
-        if name == "desktop_elements":
-            _nur(arguments, set())
-            return _elements()
-        if name == "desktop_find":
-            return _find(arguments)
+        if name in BLICK_WERKZEUGE:
+            if name == "desktop_find":
+                ergebnis = _find(arguments)
+            else:
+                _nur(arguments, set())
+                ergebnis = _screen_read() if name == "desktop_screen_read" else _elements()
+            aufgaben.hingesehen()  # nur ein gelungener Blick zählt
+            return ergebnis
         if name == "desktop_screenshot":
             return _screenshot(arguments)
         if name == "desktop_task_start":

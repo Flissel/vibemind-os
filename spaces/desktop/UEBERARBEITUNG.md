@@ -57,6 +57,10 @@ Im Space (`vibemind-os`, Zweig `cc/space-desktop`):
   - Höchstens 40 Schritte und 10 Minuten je Aufgabe; danach ist die Aufgabe `abgebrochen`
     bzw. `abgelaufen`, mit Meldung im Ergebnis, und nimmt keinen Schritt mehr an.
   - Not-Aus, Laufzeit und Obergrenze werden vor jedem einzelnen Schritt geprüft.
+  - Kein Schritt ohne Blick: Klicken, Tippen, Tasten und Scrollen lehnt das Werkzeug mit
+    `nicht_hingesehen` ab, wenn der Agent seit dem letzten Schritt nicht `desktop_elements`,
+    `desktop_screen_read` oder `desktop_find` aufgerufen hat. Ein fehlgeschlagener Blick,
+    ein gespeichertes Bild und Warten zählen nicht.
   - Jeder Schritt steht vor der Ausführung im Aufgabenbuch (Art, Ort, Zeit); `echt` sagt,
     ob er wirklich an Maus oder Tastatur ging.
   - Nicht im Code absicherbar: dass eine Aufgabe von Felix getippt wurde. Der Werkzeug-Dienst
@@ -83,7 +87,7 @@ Im Dienst (`Automation_ui`, öffentliches Repo, lokaler Zweig `cc/space-desktop`
   antwortet nur noch, wenn der Dienst mit `AUTOMATION_UI_ENABLE_SHELL=1` gestartet wird.
   Aufrufer über HTTP gibt es in vibemind-os, im Dienst-Repo und in der App keine (gesucht).
 
-Tests: 22 im Space (`python -m pytest spaces/desktop/tests`), 12 im Dienst
+Tests: 24 im Space (`python -m pytest spaces/desktop/tests`), 12 im Dienst
 (`cd backend && python -m pytest tests -o addopts=""`); alle grün. Die Tests des Dienstes
 lesen den echten Bildschirm, bewegen aber nichts. Trockenprobe des Werkzeug-Dienstes gegen
 den laufenden Dienst: `desktop_task_start` unter 1 ms, `desktop_screen_read` 0,5 s.
@@ -151,7 +155,8 @@ Was das zeigt:
 - Der Agent hat mit `fehlgeschlagen` abgeschlossen, weil die Schritte nicht ausgeführt
   wurden. Im Trockenlauf ist das die ehrliche Meldung; die Prüferin sollte es so erwarten.
 - Er hat zwischen den Schritten nicht wieder hingesehen, obwohl die Anweisung das verlangt.
-  Für echte Klicks ist das ein Grund mehr für die Modellklasse `sonnet`.
+  Seitdem setzt das Werkzeug es durch (Abschnitt 3); der zweite Schritt dieser Messung würde
+  heute abgelehnt. Mit einem Modell ist das noch nicht neu gemessen.
 - Bis zum ersten Werkzeug vergehen 5,6 s. Die 2 s aus Abnahmepunkt 6 hält nur der feste
   Aufruf `desktop_task_start` durch das Gehirn, nicht der Agent.
 

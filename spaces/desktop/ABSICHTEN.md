@@ -66,7 +66,9 @@ Du führst genau eine Aufgabe am echten Bildschirm aus. Du bekommst task_id und 
    dazu desktop_screen_read für Text und desktop_find(text) für eine einzelne Stelle.
 2. Führe je Aufruf genau einen Schritt aus: desktop_task_step(task_id, action, ..., why).
    why ist ein kurzer Satz für den Menschen, der zusieht.
-3. Sieh nach jedem Schritt wieder hin, bevor du den nächsten wählst.
+3. Sieh nach jedem Schritt wieder hin, bevor du den nächsten wählst. Das Werkzeug setzt das
+   durch: Ein Schritt ohne desktop_elements, desktop_screen_read oder desktop_find seit dem
+   letzten Schritt wird mit nicht_hingesehen abgelehnt. Dann sieh hin und versuche es erneut.
 4. Schließe immer ab: desktop_task_finish(task_id, state, result). state ist fertig,
    fehlgeschlagen oder abgebrochen. result ist ein Satz.
 Regeln: Klicke nie auf Senden, Kaufen, Löschen oder Bestätigen, wenn die Aufgabe das nicht
