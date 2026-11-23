@@ -100,7 +100,7 @@ Auftragsbuch bauen, wird daraus `write`.
 bearbeitet keine Nachrichten. `agents.primary` ist die Quelle der Modell-Übergabe eines Schritts; stünde der Träger
 dort, könnte der Router ihm eine Modell-Nachricht schicken. Es genügt `execution_target`. Das ist ohne Folgen: Der
 Router liest `agents` freiwillig (`capability_router.py`: `entry.get("agents") or {}`), und ein Ziel `mcp:` springt
-vor der Agentenwahl der Diskussion ab (`has_execution_target`). Im Katalog von `948f436f` haben 92 von 127 Einträgen
+vor der Agentenwahl der Diskussion ab (`has_execution_target`, `discourse_engine.py` Zeile 1313). Im Katalog von `948f436f` haben 92 von 127 Einträgen
 keinen `agents`-Block, darunter die Einträge `aenderung_zurueck` und `idea_connect` mit Ziel `mcp:`. Die Wahl des
 Agenten steckt im Ziel selbst (`mcp:brain-rowboat:...`); damit entfällt auch die Abhängigkeit von Block 1, Punkt 3
 (Agent bei OpenFang bekannt) für den Katalog. Prüfen tut das `test_eintrag_hat_keinen_agents_block`.
