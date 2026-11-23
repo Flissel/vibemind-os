@@ -404,6 +404,57 @@ def _check_supabase_edge_ids(spec: Dict[str, Any]):
     return True, {"edge_id": expected["id"], "rows_found": 1}, "durable edge verified"
 
 
+def _check_supabase_ideen_fest(spec: Dict[str, Any]):
+    """Nachpruefung der festen Aufrufe des Ideen-Space am echten Zustand.
+
+    spec: ``erwartet`` aus ideen_fest_contract.nachpruefung (Kennungen aus der Quittung
+    des Werkzeugs). Gelesen wird mit dem Dienstschluessel, ohne Weiterleitungen.
+    """
+    from core.ideen_fest_contract import pruefe_zustand
+
+    ungeprueft = {"status": "unverified"}
+    raw_base = os.environ.get("SUPABASE_URL", "")
+    try:
+        from core.config import get_secret
+        key = get_secret("SUPABASE_SERVICE_ROLE_KEY")
+    except Exception:
+        key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    key = (key or "").strip()
+    try:
+        parsed = urlsplit(raw_base)
+        valid_base = (
+            parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+            and parsed.username is None and parsed.password is None
+            and not parsed.query and not parsed.fragment
+        )
+        _ = parsed.port
+    except (TypeError, ValueError):
+        valid_base = False
+    if not valid_base:
+        return None, ungeprueft, "SUPABASE_URL is required and must be valid"
+    if not key:
+        return None, ungeprueft, "SUPABASE_SERVICE_ROLE_KEY is required"
+
+    def lies(tabelle: str, params: Dict[str, str]):
+        try:
+            import requests
+            response = requests.get(
+                f"{raw_base.rstrip('/')}/rest/v1/{tabelle}",
+                params=params,
+                headers={"apikey": key, "Authorization": f"Bearer {key}"},
+                timeout=OBSERVE_TIMEOUT,
+                allow_redirects=False,
+            )
+            if response.status_code >= 300:
+                return None
+            rows = response.json()
+        except Exception:
+            return None
+        return rows if isinstance(rows, list) else None
+
+    return pruefe_zustand(spec.get("erwartet"), lies)
+
+
 def _check_supabase_aenderung_zurueck(spec: Dict[str, Any]):
     """Nachpruefung fuer "zurueck": steht die Gruppe im Protokoll als zurueckgenommen?
 
@@ -908,8 +959,31 @@ def _check_event_change(spec: Dict[str, Any]):
     return None, signal, detail
 
 
+def _check_desktop_aufgabenbuch(spec: Dict[str, Any]):
+    """Nachpruefung von desktop_task_start: steht die Aufgabe mit diesem Satz im Aufgabenbuch
+    und laeuft (oder ist fertig)? Liest ueber den festen Aufruf desktop_task_status."""
+    from core.desktop_schleife import aufgabenbuch_pruefen
+
+    erwartet = spec.get("erwartet")
+    if not isinstance(erwartet, dict):
+        return None, {"status": "unverified"}, "keine Erwartung"
+    return aufgabenbuch_pruefen(erwartet)
+
+
+def _check_desktop_sicht(spec: Dict[str, Any]):
+    """Ist auf dem Bildschirm zu sehen, was der Schritt erwartet? Liest ueber desktop_blick."""
+    from core.desktop_sicht import sicht_pruefen
+
+    erwartet = spec.get("erwartet")
+    if not isinstance(erwartet, dict):
+        return None, {"status": "unverified"}, "keine Erwartung"
+    return sicht_pruefen(erwartet, spec.get("laufzeit"))
+
+
 # Map of check-name → fn. To add a check, add one function above + an entry here.
 _CHECKS = {
+    "desktop_aufgabenbuch": _check_desktop_aufgabenbuch,
+    "desktop_sicht": _check_desktop_sicht,
     "process_running": _check_process_running,
     "port_open": _check_port_open,
     "file_exists": _check_file_exists,
@@ -919,6 +993,7 @@ _CHECKS = {
     "supabase_edge": _check_supabase_edge,
     "supabase_edge_ids": _check_supabase_edge_ids,
     "supabase_aenderung_zurueck": _check_supabase_aenderung_zurueck,
+    "supabase_ideen_fest": _check_supabase_ideen_fest,
     "supabase_node_in_bubble": _check_supabase_node_in_bubble,
     "supabase_bubble_node_count": _check_supabase_bubble_node_count,
     "event_app_change": _check_event_app_change,

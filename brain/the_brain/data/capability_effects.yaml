@@ -46,6 +46,7 @@ effects:
   coding_task_anthropic: write
   coding_task: write
   rose.accept: write
+  desktop_task_start: write
   # --- write, truth: kommt in Task 5 ---
   component_note_write: write
   code_generate: write
@@ -96,6 +97,10 @@ effects:
   rowboat_search: read
   rowboat_query: read
   rowboat_status: read
+  desktop_status: read
+  desktop_task_status: read
+  desktop_screen_read: read
+  desktop_screenshot: read
   minibook.list_projects: read
   minibook.status: read
   rose.recommend: read
