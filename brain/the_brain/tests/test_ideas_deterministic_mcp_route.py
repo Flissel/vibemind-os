@@ -131,9 +131,15 @@ def test_plan_idea_connect_replaces_legacy_target_and_sends_only_durable_ids(mon
 
     assert result.ok is True
     assert built_targets == ["mcp:brain-ideas:spaces-ideas:idea_connect"]
-    assert executor.calls == [
-        ({"from_id": "idea-1", "to_id": "idea-2", "edge_type": "related"}, None, None)
-    ]
+    # Die Werkzeug-Argumente sind nur die drei Kennungsfelder. Daneben reist seit dem
+    # Laufzeit-Kontext fuer MCP-Aufrufe genau ein Zusatz: wer im Auftrag welches Space ruft.
+    ((arguments, arg_kwarg, extra),) = executor.calls
+    assert arguments == {"from_id": "idea-1", "to_id": "idea-2", "edge_type": "related"}
+    assert arg_kwarg is None
+    assert set(extra) == {"_runtime_authority"}
+    kontext = extra["_runtime_authority"]
+    assert (kontext.space_id, kontext.agent_name) == ("ideas", "brain-ideas")
+    assert "title" not in repr(kontext)
     assert validator.calls == [CANONICAL_VALIDATOR]
 
 
@@ -480,6 +486,53 @@ def test_id_truth_validator_re_reads_exact_mcp_receipt_with_explicit_service_con
     assert "title" not in str(calls)
 
 
+def test_idea_connect_receipt_without_iserror_flag_is_read_from_content() -> None:
+    """OpenFang laesst isError weg: die Quittung selbst entscheidet (Arbeitslauf 23.11.2026)."""
+    receipt = _mcp_receipt()
+    del receipt["isError"]
+    parsed, _ = extract_idea_connect_mcp_receipt(receipt)
+    assert parsed == {"edge_id": "edge-1", "from_id": "idea-1", "to_id": "idea-2", "edge_type": "related"}
+
+    receipt["isError"] = True
+    assert extract_idea_connect_mcp_receipt(receipt)[0] is None
+
+    fehler = _mcp_receipt()
+    del fehler["isError"]
+    fehler["content"][0]["text"] = json.dumps({"error": "idea_connect_create_unverified"})
+    assert extract_idea_connect_mcp_receipt(fehler)[0] is None
+
+
+def test_id_truth_observer_reads_service_key_from_secret_file(monkeypatch, tmp_path) -> None:
+    """Im Stack kommt der Schluessel nur als Datei; frueher blieb die Kante deshalb ungeprueft."""
+    seen: list[str] = []
+
+    class _Response:
+        status_code = 200
+        def json(self):
+            return [{"id": "edge-1", "from_node_id": "idea-1", "to_node_id": "idea-2", "edge_type": "related"}]
+
+    def get(_url, *, params, headers, timeout, allow_redirects):
+        seen.append(headers["apikey"])
+        return _Response()
+
+    import requests
+    datei = tmp_path / "schluessel"
+    datei.write_text("datei-schluessel-test\n", encoding="utf-8")
+    monkeypatch.setattr(world_observer, "GROUND_TRUTH_ENABLED", True)
+    monkeypatch.setenv("SUPABASE_URL", "https://supabase.example")
+    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY_FILE", str(datei))
+    monkeypatch.setattr(requests, "get", get)
+
+    observed = world_observer.observe({
+        "check": "supabase_edge_ids", "edge_id": "edge-1", "from_id": "idea-1", "to_id": "idea-2", "edge_type": "related",
+    })
+
+    assert observed.verdict == world_observer.VERIFIED
+    assert seen == ["datei-schluessel-test"]
+    assert "datei-schluessel-test" not in str(observed)
+
+
 def test_id_truth_observer_has_no_lan_or_anon_default(monkeypatch) -> None:
     monkeypatch.setattr(world_observer, "GROUND_TRUTH_ENABLED", True)
     monkeypatch.delenv("SUPABASE_URL", raising=False)
@@ -532,7 +585,7 @@ def test_id_truth_observer_does_not_follow_or_leak_redirect(monkeypatch) -> None
 
     import requests
     monkeypatch.setattr(world_observer, "GROUND_TRUTH_ENABLED", True)
-    monkeypatch.setenv("SUPABASE_URL", "http://192.168.178.65:54321")
+    monkeypatch.setenv("SUPABASE_URL", "http://192.0.2.10:54321")  # Dokumentationsadresse (RFC 5737)
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-key")
     monkeypatch.setattr(requests, "get", get)
 

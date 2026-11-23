@@ -1461,6 +1461,7 @@ class PlanExecutor:
         """
         plan_ctx = plan_ctx or {}
         t0 = time.time()
+        _ideen_rueckweg: Optional[Dict[str, Any]] = None  # Rueckweg eines Ideen-Modellauftrags
         repeat_ctx = getattr(hop, "_repeat_ctx", None)
         rendered_arg = _render_template(hop.arg_template, state, repeat_ctx=repeat_ctx)
 
@@ -1701,7 +1702,34 @@ class PlanExecutor:
             authoritative_target = isinstance(target, str) and target.startswith(
                 ("openfang:", "mcp:", "n8n-mcp:", "coding-engine:")
             )
+            from . import ideen_rueckweg as _rueckweg_mod
             if (assigned_agent and not authoritative_target
+                    and _rueckweg_mod.ist_modell_ereignis(event_id)):
+                # Ideen-Modellauftrag mit Rueckweg: der Agent bekommt die Notiz als Daten und
+                # die Antwortform, kein Werkzeug und kein bevorzugtes Werkzeug. Geschrieben
+                # wird spaeter im Gehirn (Nachfasser -> ideen_rueckweg), mit Vertrag und
+                # Nachpruefung. Ohne Auftragsweg gibt es keinen Rueckweg: dann nicht starten.
+                def _rueckweg_fehler(meldung: str) -> HopResult:
+                    return HopResult(
+                        step_id=hop.step_id, ok=False, error=f"ideen_rueckweg: {meldung}",
+                        capability=hop.capability, target=target,
+                        rendered_arg=rendered_arg, kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False, reward=-1.0,
+                    )
+                if not _auftragsweg(plan_ctx):
+                    return _rueckweg_fehler(
+                        "Diese Modellfunktion läuft nur als Auftrag; der Auftragsweg ist hier aus.")
+                try:
+                    rendered_arg, _ideen_rueckweg = _rueckweg_mod.auftrag_vorbereiten(
+                        event_id, rendered_arg, plan_ctx.get("plan_intent", ""),
+                        lies_karte=_rueckweg_mod.lies_karte, suche_titel=_rueckweg_mod.suche_titel)
+                except _rueckweg_mod.RueckwegFehler as e:
+                    return _rueckweg_fehler(str(e))
+                target = f"openfang:{assigned_agent}"
+                hop.arg_kwarg = None
+                logger.info(f"[plan-executor] {event_id}: Modellauftrag mit Rueckweg via openfang:{assigned_agent}")
+            elif (assigned_agent and not authoritative_target
                     and not preserve_structured_target):
                 params = {}
                 if isinstance(rendered_arg, dict):
@@ -1837,6 +1865,10 @@ class PlanExecutor:
                     elapsed_s=time.time() - t0,
                     contract_pass=False, reward=-1.0,
                 )
+
+        if _ideen_rueckweg is not None:
+            # Der Rueckweg reist in der Uebergabe des Auftrags; der Nachfasser liest ihn dort.
+            _auftrag_uebergabe = {**(_auftrag_uebergabe or {}), "rueckweg": _ideen_rueckweg}
 
         # desktop.task: Der Auftragssatz kommt aus der getippten Absicht ("Desktop-Aufgabe: ..."),
         # ohne den Vorsatz, nie aus dem gerenderten Argument. Eine Aufgabe wird nie doppelt gestartet.

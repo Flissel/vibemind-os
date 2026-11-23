@@ -46,6 +46,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
                 "bubble_promote",
                 "idea_list",
                 "idea_get",
+                "idea_read",
                 "idea_create",
                 "idea_update",
                 "idea_delete",
@@ -81,7 +82,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
             "additionalProperties": False,
         })
 
-        connect = response["result"]["tools"][11]
+        connect = response["result"]["tools"][12]
         self.assertEqual(connect["inputSchema"], {
             "type": "object",
             "properties": {

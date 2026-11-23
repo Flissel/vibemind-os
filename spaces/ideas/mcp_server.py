@@ -23,7 +23,7 @@ from typing import Any, Mapping
 
 
 SERVER_NAME = "spaces-ideas"
-SERVER_VERSION = "1.1.0"
+SERVER_VERSION = "1.2.0"
 PROTOCOL_VERSION = "2024-11-05"
 REQUEST_TIMEOUT_SECONDS = 15
 BUBBLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$")
@@ -48,8 +48,11 @@ ARRANGE_NODE_CAP = 100
 ARRANGE_CELL_WIDTH = 240   # Karte 200 breit + 40 Abstand
 ARRANGE_CELL_HEIGHT = 140  # Karte 100 hoch + 40 Abstand
 AUTO_LINK_THRESHOLD = 0.30  # wie auto_link_op im Gehirn
+AUTO_LINK_NODE_CAP = 500  # reine Rechnung auf Titeln (125 000 Paare), schreibt hoechstens 'limit' Kanten
+AUTO_LINK_ID_CHUNK = 100  # so viele Kennungen je Abfrage der vorhandenen Kanten
 IDEA_PREVIEW_CHARS = 200  # idea_list zeigt so viele Zeichen des Inhalts; alles Weitere ueber idea_get
-IDEA_LIST_SHORT_SELECT = "id,title,content,node_type,x,y,linked_idea_id,metadata,format_schema"
+IDEA_COUNT_CAP = 5000  # bis hierhin zaehlt idea_list die wahre Gesamtzahl (nur Kennungen)
+IDEA_LIST_SHORT_SELECT ="id,title,content,node_type,x,y,linked_idea_id,metadata,content_json"
 REASON_ENTRY_CAP = 50 # so viele Begruendungen haelt eine Bubble, die aeltesten fallen weg
 
 TOOLS: list[dict[str, Any]] = [
@@ -118,9 +121,11 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "idea_list",
         "description": (
-            "List canvas ideas, optionally scoped to a bubble id. Short by default: id, title, format, "
-            "score, position and the first characters of the text. 'full': true returns whole rows; "
-            "for the whole text of one idea use idea_get."
+            "List canvas ideas, optionally scoped to a bubble id, top left first. Short by default: an "
+            "object {karten, gezeigt, gesamt, gekuerzt}; each card has id, title, format, score, position, "
+            "the first characters of the text and a readable 'karte'. 'gesamt' is the true number of ideas, "
+            "counted even when the list is cut at 'limit'. 'full': true returns whole rows as a plain list; "
+            "for the whole text of one idea use idea_read or idea_get."
         ),
         "inputSchema": {
             "type": "object",
@@ -135,6 +140,20 @@ TOOLS: list[dict[str, Any]] = [
         "name": "idea_get",
         "description": "Get one canvas idea by durable id.",
         "inputSchema": {"type": "object", "properties": {"id": {"type": "string", "minLength": 1}}, "required": ["id"]},
+    },
+    {
+        "name": "idea_read",
+        "description": (
+            "Read one canvas idea the way a person reads it: German title and kind, the whole content as "
+            "sections of plain lines (no field names, no JSON), its rating and its connections by title. "
+            "Read-only."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 64}},
+            "required": ["id"],
+            "additionalProperties": False,
+        },
     },
     {
         "name": "idea_create",
@@ -157,13 +176,17 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "idea_update",
-        "description": "Update a canvas idea by durable id.",
+        "description": (
+            "Update a canvas idea by durable id. 'content_append' adds text after the stored text "
+            "(a text that only repeats the title counts as empty); it excludes 'content'."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "id": {"type": "string", "minLength": 1},
                 "title": {"type": "string"},
                 "content": {"type": "string"},
+                "content_append": {"type": "string", "minLength": 1, "maxLength": 20000},
                 "node_type": {"type": "string"},
                 "x": {"type": "integer"},
                 "y": {"type": "integer"},
@@ -601,14 +624,12 @@ def _short_idea(row: Mapping[str, Any]) -> dict[str, Any]:
     """What canvas and chat need of one idea: no full text, no stored renderings."""
     metadata = row.get("metadata")
     rating = metadata.get("bewertung") if isinstance(metadata, Mapping) else None
-    schema = row.get("format_schema")
-    fmt = schema.get("type") if isinstance(schema, Mapping) else None
     content = row.get("content")
     content = content if isinstance(content, str) else ""
     return {
         "id": row.get("id"),
         "title": row.get("title"),
-        "format": fmt if isinstance(fmt, str) and fmt else "note",
+        "format": _card_format(row),
         "score": rating.get("wert") if isinstance(rating, Mapping) else None,
         "node_type": row.get("node_type"),
         "x": row.get("x"),
@@ -616,6 +637,297 @@ def _short_idea(row: Mapping[str, Any]) -> dict[str, Any]:
         "linked_idea_id": row.get("linked_idea_id"),
         "preview": content[:IDEA_PREVIEW_CHARS],
         "content_length": len(content),
+        "karte": _card_short(row),
+    }
+
+
+# ── Kartenansicht ────────────────────────────────────────────────────────────
+# Was eine Karte einem Menschen zeigt: deutsche Beschriftungen, kurze Zeilen, keine
+# Kennungen, kein JSON, keine Feldnamen. Gemessen am Bestand (spaces/ideas/KARTEN.md):
+# bei 91 von 241 Karten steht der Inhalt nur im strukturierten Feld ``content_json``,
+# der Text wiederholt bloss den Titel. ``format_schema.type`` ist dort "object" (ein
+# JSON-Schema), das Format steht in ``content_json.type``.
+
+FORMAT_NAMES = {
+    "note": "Notiz", "table": "Tabelle", "action_list": "Aufgabenliste", "pros_cons": "Pro und Contra",
+    "hierarchy": "Gliederung", "technical_specs": "Anforderungen", "kanban": "Kanban", "mindmap": "Mindmap",
+    "swot": "SWOT-Analyse", "user_story": "Nutzergeschichten", "flowchart": "Ablauf",
+    "comparison_table": "Vergleich", "research": "Recherche",
+}
+FORMAT_ALIASES = {"pros_cons_table": "pros_cons"}
+# Vorlagentext der alten Formatier-Agenten: sieht aus wie Inhalt, sagt aber nichts.
+TEMPLATE_TEXTS = frozenset({
+    "Konkrete Anforderung", "Betroffene Komponente", "Was analysiert wird", "Technische Spezifikation",
+    "Gesamtbewertung der aktuellen Situation", "SWOT Analyse", "Mind Map", "User Stories", "Gliederung",
+})
+CARD_LINES = 3          # so viele Zeilen zeigt die Karte zugeklappt
+CARD_LINE_CHARS = 120   # so lang darf eine Zeile auf der Karte sein
+# (Art der Kante, liegt die gelesene Karte am Anfang?) -> was die andere Karte fuer sie ist.
+# Im Bestand zeigt parent_child vom Oberpunkt zum Unterpunkt (Buehnen -> Lichtanlage) und
+# expanded_from von der Ausgangskarte zur Weiterentwicklung (Helferliste -> Helferliste Druck).
+EDGE_NAMES = {
+    ("parent_child", True): "Unterpunkt", ("parent_child", False): "Oberpunkt",
+    ("expanded_from", True): "Weiterentwicklung", ("expanded_from", False): "Ausgangspunkt",
+}
+READ_EDGE_CAP = 50
+_MD_PREFIX = re.compile(r"^\s*(?:#{1,6}\s+|>\s*|[-*+]\s+)")  # Nummern bleiben: sie tragen die Reihenfolge
+_MD_MARKS = re.compile(r"(\*\*|__|`|~~)")
+_MD_HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
+_RESEARCH_TITLE = re.compile(r"^Research:\s*(.*?)\s*(\d{4})-(\d{2})-(\d{2})(?:\s+[\d:]+)?\s*$")
+
+
+def _card_format(row: Mapping[str, Any]) -> str:
+    """The idea's format name as stored: content_json.type, else the schema's const."""
+    structured = row.get("content_json")
+    fmt = structured.get("type") if isinstance(structured, Mapping) else None
+    if not isinstance(fmt, str) or not fmt:
+        schema = row.get("format_schema")
+        if isinstance(schema, Mapping):
+            properties = schema.get("properties")
+            kind = properties.get("type") if isinstance(properties, Mapping) else None
+            fmt = kind.get("const") if isinstance(kind, Mapping) else None
+            if not isinstance(fmt, str) or not fmt:
+                fmt = schema.get("type") if schema.get("type") != "object" else None
+    if (not isinstance(fmt, str) or not fmt) and row.get("node_type") == "research":
+        fmt = "research"
+    fmt = FORMAT_ALIASES.get(fmt, fmt) if isinstance(fmt, str) else None
+    return fmt or "note"
+
+
+def _plain(value: Any, limit: int | None = CARD_LINE_CHARS) -> str:
+    """One line for people: no markdown marks, no template text, cut with an ellipsis."""
+    if not isinstance(value, str):
+        return ""
+    text = _MD_MARKS.sub("", _MD_PREFIX.sub("", value)).strip()
+    text = " ".join(text.split())
+    if not text or text in TEMPLATE_TEXTS:
+        return ""
+    if limit is not None and len(text) > limit:
+        text = text[: limit - 1].rstrip() + "…"
+    return text
+
+
+def _count(number: int, one: str, many: str) -> str:
+    return f"{number} {one if number == 1 else many}"
+
+
+def _card_title(row: Mapping[str, Any]) -> str:
+    title = row.get("title") if isinstance(row.get("title"), str) else ""
+    research = _RESEARCH_TITLE.match(title)
+    if research:
+        title = f"Recherche: {research.group(1)}"
+    title = " ".join(title.replace("_", " ").split())
+    return title or "Ohne Titel"
+
+
+def _card_source(row: Mapping[str, Any]) -> str | None:
+    """Where the card came from, said in one short sentence; None for a card typed by hand."""
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), Mapping) else {}
+    title = row.get("title") if isinstance(row.get("title"), str) else ""
+    research = _RESEARCH_TITLE.match(title)
+    if research or row.get("node_type") == "research":
+        parts = ["Recherche"]
+        if research:
+            parts[0] += f" vom {research.group(4)}.{research.group(3)}.{research.group(2)}"
+        count = metadata.get("citation_count")
+        if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+            parts.append(_count(count, "Quelle", "Quellen"))
+        return " · ".join(parts)
+    if metadata.get("ai_generated"):
+        origin = _plain(metadata.get("source_title"))
+        return f"Vorschlag aus „{origin.replace('_', ' ')}“" if origin else "Vorschlag"
+    return None
+
+
+def _items(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _field(item: Any, *names: str) -> Any:
+    if isinstance(item, str):
+        return item
+    if isinstance(item, Mapping):
+        for name in names:
+            if item.get(name):
+                return item.get(name)
+    return None
+
+
+def _text_sections(text: str, title: str, limit: int | None) -> list[tuple[str | None, list[str]]]:
+    """Markdown or plain text split by headings; a text that only repeats the title says nothing."""
+    if not text.strip() or text.strip() == title.strip():
+        return []
+    sections: list[tuple[str | None, list[str]]] = [(None, [])]
+    for raw in text.splitlines():
+        heading = _MD_HEADING.match(raw.strip())
+        if heading:
+            sections.append((_plain(heading.group(2), limit) or None, []))
+            continue
+        stripped = raw.strip()
+        if not stripped or set(stripped) <= set("-|: =*_"):
+            continue
+        if stripped.startswith("|"):
+            stripped = " · ".join(cell.strip() for cell in stripped.strip("|").split("|") if cell.strip())
+        line = _plain(stripped, limit)
+        if line:
+            sections[-1][1].append(line)
+    return [(head, lines) for head, lines in sections if lines or head]
+
+
+def _structured_sections(fmt: str, data: Mapping[str, Any], limit: int | None) -> tuple[list[tuple[str | None, list[str]]], str | None]:
+    """Sections and a short count for each known format; unknown shapes give nothing."""
+    def lines(items: Any, *names: str) -> list[str]:
+        return [line for line in (_plain(_field(item, *names), limit) for item in _items(items)) if line]
+
+    if fmt == "pros_cons":
+        pros, cons = lines(data.get("pros"), "point"), lines(data.get("cons"), "point")
+        return [("Pro", pros), ("Contra", cons)], f"{len(pros)} Pro · {len(cons)} Contra"
+    if fmt == "swot":
+        parts = [("Stärken", "Stärke", "strengths"), ("Schwächen", "Schwäche", "weaknesses"),
+                 ("Chancen", "Chance", "opportunities"), ("Risiken", "Risiko", "threats")]
+        found = [(name, one, lines(data.get(key), "point")) for name, one, key in parts]
+        count = " · ".join(_count(len(items), one, name) for name, one, items in found if items)
+        return [(name, items) for name, _, items in found], count or None
+    if fmt == "technical_specs":
+        found = lines(data.get("specifications"), "requirement")
+        return [("Anforderungen", found)], _count(len(found), "Anforderung", "Anforderungen") if found else None
+    if fmt == "user_story":
+        stories = []
+        for story in _items(data.get("stories")):
+            if isinstance(story, Mapping):
+                line = _plain(" ".join(part for part in (story.get("role"), story.get("want")) if isinstance(part, str)), limit)
+                if line:
+                    stories.append(line)
+        return [("Nutzergeschichten", stories)], _count(len(stories), "Geschichte", "Geschichten") if stories else None
+    if fmt == "flowchart":
+        steps = [_plain(_field(node, "label"), limit) for node in _items(data.get("nodes"))
+                 if isinstance(node, Mapping) and node.get("type") not in ("start", "end")]
+        steps = [step for step in steps if step]
+        return [("Schritte", steps)], _count(len(steps), "Schritt", "Schritte") if steps else None
+    if fmt == "mindmap":
+        sections = []
+        for branch in _items(data.get("branches")):
+            head = _plain(_field(branch, "label"), limit)
+            if head:
+                sections.append((head, lines(branch.get("children") if isinstance(branch, Mapping) else None, "label")))
+        center = data.get("center")
+        middle = _plain(_field(center, "description", "label"), limit)
+        if middle:
+            sections.insert(0, (None, [middle]))
+        count = sum(1 for head, _ in sections if head)
+        return sections, _count(count, "Zweig", "Zweige") if count else None
+    if fmt == "hierarchy":
+        sections = []
+        for level in _items(data.get("levels")):
+            for item in _items(level.get("items") if isinstance(level, Mapping) else None):
+                head = _plain(_field(item, "name"), limit)
+                if head:
+                    sections.append((head, lines(item.get("children") if isinstance(item, Mapping) else None, "name")))
+        return sections, _count(len(sections), "Punkt", "Punkte") if sections else None
+    if fmt == "table":
+        headers = [_plain(cell, limit) for cell in _items(data.get("headers"))]
+        rows = [" · ".join(_plain(cell, limit) for cell in row if _plain(cell, limit))
+                for row in _items(data.get("rows")) if isinstance(row, list)]
+        rows = [row for row in rows if row]
+        head = " · ".join(cell for cell in headers if cell) or None
+        return [(head, rows)], _count(len(rows), "Zeile", "Zeilen") if rows else None
+    if fmt == "action_list":
+        states = {"completed": " (erledigt)", "in_progress": " (in Arbeit)", "blocked": " (blockiert)"}
+        tasks, done = [], 0
+        for item in _items(data.get("items")):
+            task = _plain(_field(item, "task"), limit)
+            if task:
+                status = item.get("status") if isinstance(item, Mapping) else None
+                done += status == "completed"
+                tasks.append(task + states.get(status, ""))
+        return [("Aufgaben", tasks)], f"{done} von {len(tasks)} erledigt" if tasks else None
+    if fmt == "kanban":
+        sections = []
+        for column in _items(data.get("columns")):
+            head = _plain(_field(column, "name"), limit)
+            if head:
+                sections.append((head, lines(column.get("cards") if isinstance(column, Mapping) else None, "title")))
+        cards = sum(len(found) for _, found in sections)
+        return sections, f"{_count(cards, 'Karte', 'Karten')} in {_count(len(sections), 'Spalte', 'Spalten')}" if sections else None
+    if fmt == "comparison_table":
+        options = lines(data.get("options"), "name")
+        return [("Optionen", options)], _count(len(options), "Option", "Optionen") if options else None
+    return [], None
+
+
+def _card_parts(row: Mapping[str, Any], limit: int | None) -> tuple[str, list[tuple[str | None, list[str]]], str | None, bool]:
+    """(format, sections, count, is_text) for one card; sections hold only readable lines."""
+    fmt = _card_format(row)
+    title = row.get("title") if isinstance(row.get("title"), str) else ""
+    structured = row.get("content_json") if isinstance(row.get("content_json"), Mapping) else {}
+    sections, count = _structured_sections(fmt, structured, limit)
+    sections = [(head, found) for head, found in sections if found]
+    if sections:
+        return fmt, sections, count, False
+    text = structured.get("text") if isinstance(structured.get("text"), str) else row.get("content")
+    sections = _text_sections(text if isinstance(text, str) else "", title, limit)
+    headings = sum(1 for head, _ in sections if head)
+    count = f"{headings} Abschnitte" if headings > 1 else None
+    return fmt, sections, count, True
+
+
+def _card_short(row: Mapping[str, Any]) -> dict[str, Any]:
+    """The closed card: title, kind, up to three readable lines, a count, where it came from."""
+    fmt, sections, count, is_text = _card_parts(row, CARD_LINE_CHARS)
+    labelled = fmt in ("pros_cons", "swot", "kanban")
+    if is_text:
+        summary = next((found for head, found in sections
+                        if head and re.search(r"summary|zusammenfassung|kurzfassung|fazit", head, re.I)), None)
+        if summary is None:
+            summary = next((found for head, found in sections if found and not all(":" in line[:40] for line in found)),
+                           next((found for _, found in sections if found), []))
+        shown = summary[:CARD_LINES]
+    else:
+        shown = []
+        for head, found in sections:
+            for line in found:
+                shown.append(f"{head}: {line}" if labelled and head else line)
+        shown = shown[:CARD_LINES]
+    return {
+        "titel": _card_title(row),
+        "art": FORMAT_NAMES.get(fmt, "Notiz"),
+        "zeilen": shown,
+        "umfang": count,
+        "quelle": _card_source(row),
+        "leer": not shown,
+    }
+
+
+def _card_read(row: Mapping[str, Any], edges: list[dict[str, Any]], titles: Mapping[str, str]) -> dict[str, Any]:
+    """The opened card: everything readable, sections in order, connections by title."""
+    fmt, sections, count, is_text = _card_parts(row, None)
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), Mapping) else {}
+    rating = metadata.get("bewertung")
+    score = rating.get("wert") if isinstance(rating, Mapping) else None
+    links = []
+    for edge in edges:
+        starts_here = edge.get("from_node_id") == row.get("id")
+        other = edge.get("to_node_id") if starts_here else edge.get("from_node_id")
+        if isinstance(other, str) and other in titles:
+            links.append({"id": other, "titel": titles[other],
+                          "art": EDGE_NAMES.get((edge.get("edge_type"), starts_here), "verwandt")})
+    text = None
+    if is_text:
+        raw = (row.get("content_json") or {}).get("text") if isinstance(row.get("content_json"), Mapping) else None
+        raw = raw if isinstance(raw, str) else row.get("content")
+        title = row.get("title") if isinstance(row.get("title"), str) else ""
+        text = raw if isinstance(raw, str) and raw.strip() and raw.strip() != title.strip() else None
+    return {
+        "id": row.get("id"),
+        "titel": _card_title(row),
+        "art": FORMAT_NAMES.get(fmt, "Notiz"),
+        "umfang": count,
+        "quelle": _card_source(row),
+        "bewertung": score,
+        "abschnitte": [{"ueberschrift": head, "zeilen": found} for head, found in sections],
+        "text": text,
+        "verbindungen": links,
+        "leer": not any(found for _, found in sections),
     }
 
 
@@ -640,8 +952,12 @@ def _number(value: Any) -> float:
     return float(value)
 
 
-def _bubble_nodes(bubble_id: str, select: str) -> list[dict[str, Any]]:
-    """Read the canvas ideas of one bubble; refuse to act on a cut-off list."""
+def _bubble_nodes(bubble_id: str, select: str, cap: int = ARRANGE_NODE_CAP) -> list[dict[str, Any]]:
+    """Read the canvas ideas of one bubble; refuse to act on a cut-off list.
+
+    The refusal names the real count and the limit, so the chat can say what works
+    ("Ordnen geht bis 100 Notizen; hier sind es 101") instead of a bare error.
+    """
     rows = _request(
         "GET",
         "canvas_nodes",
@@ -649,7 +965,7 @@ def _bubble_nodes(bubble_id: str, select: str) -> list[dict[str, Any]]:
             "select": select,
             "linked_idea_id": f"eq.{bubble_id}",
             "order": "id.asc",
-            "limit": str(ARRANGE_NODE_CAP + 1),
+            "limit": str(cap + 1),
         },
     )
     if not isinstance(rows, list) or not all(
@@ -657,8 +973,10 @@ def _bubble_nodes(bubble_id: str, select: str) -> list[dict[str, Any]]:
         for row in rows
     ):
         raise ToolError("supabase_invalid_response")
-    if len(rows) > ARRANGE_NODE_CAP:
-        raise ToolError(f"too_many_ideas: more than {ARRANGE_NODE_CAP} in this bubble")
+    if len(rows) > cap:
+        total = _count_ideas(f"eq.{bubble_id}")
+        counted = f"{total} ideas" if total is not None else "more ideas"
+        raise ToolError(f"too_many_ideas: {counted} in this bubble, limit {cap}")
     return rows
 
 
@@ -742,6 +1060,31 @@ def _change_groups(rows: Any, limit: int) -> list[dict[str, Any]]:
     return ordered[:limit]
 
 
+def _with_appended_content(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    """"Ergaenze bei X: ..." without the old text in the request: append to what is stored.
+
+    A text that only repeats the title (201 of 241 cards, see KARTEN.md) counts as empty,
+    so the card does not start with its own title twice.
+    """
+    append = arguments.get("content_append")
+    if "content" in arguments:
+        raise ToolError("invalid_arguments: 'content_append' and 'content' exclude each other")
+    if not isinstance(append, str) or not append.strip():
+        raise ToolError("invalid_arguments: 'content_append' must be a non-empty string")
+    idea_id = _durable_id(arguments, "id")
+    node = _first_row(_request(
+        "GET", "canvas_nodes", params={"select": "id,title,content", "id": f"eq.{idea_id}", "limit": "1"},
+    ))
+    if node is None:
+        raise ToolError("idea_not_found")
+    old = node.get("content") if isinstance(node.get("content"), str) else ""
+    title = node.get("title") if isinstance(node.get("title"), str) else ""
+    keep = old.rstrip() if old.strip() and old.strip() != title.strip() else ""
+    merged = f"{keep}\n\n{append.strip()}" if keep else append.strip()
+    rest = {key: value for key, value in arguments.items() if key != "content_append"}
+    return {**rest, "content": merged}
+
+
 def _patch_fields(
     arguments: Mapping[str, Any],
     allowed: set[str],
@@ -802,6 +1145,20 @@ def _compensate_project(project_id: str, error: str) -> None:
     except ToolError as exc:
         raise ToolError(f"{error}; compensation_failed: {exc}") from exc
     raise ToolError(error)
+
+
+def _count_ideas(bubble_filter: str | None) -> int | None:
+    """How many ideas there are, counted on ids only; None when the count cannot be trusted."""
+    params = {"select": "id", "limit": str(IDEA_COUNT_CAP + 1)}
+    if bubble_filter:
+        params["linked_idea_id"] = bubble_filter
+    try:
+        ids = _request("GET", "canvas_nodes", params=params)
+    except ToolError:
+        return None
+    if not isinstance(ids, list) or len(ids) > IDEA_COUNT_CAP:
+        return None
+    return len(ids)
 
 
 def _is_definitive_project_post_error(error: ToolError) -> bool:
@@ -1061,9 +1418,12 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         full = arguments.get("full", False)
         if not isinstance(full, bool):
             raise ToolError("invalid_arguments: 'full' must be true or false")
+        limit = _bounded_limit(arguments, 50)
         params = {
             "select": "*" if full else IDEA_LIST_SHORT_SELECT,
-            "limit": str(_bounded_limit(arguments, 50)),
+            # Lesereihenfolge am Canvas: oben links zuerst; "die ersten" heisst damit etwas.
+            "order": "y.asc,x.asc,id.asc",
+            "limit": str(limit),
         }
         if bubble_id is not None:
             if not isinstance(bubble_id, str) or not bubble_id.strip():
@@ -1072,9 +1432,45 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         rows = _request("GET", "canvas_nodes", params=params)
         if full or not isinstance(rows, list):
             return rows
-        return [_short_idea(row) for row in rows if isinstance(row, Mapping)]
+        cards = [_short_idea(row) for row in rows if isinstance(row, Mapping)]
+        total: int | None = len(cards)
+        if len(rows) >= limit:
+            total = _count_ideas(params.get("linked_idea_id"))
+        return {
+            "karten": cards,
+            "gezeigt": len(cards),
+            "gesamt": total,  # None: Zaehlung nicht moeglich, mindestens "gezeigt"
+            "gekuerzt": total is None or total > len(cards),
+        }
     if name == "idea_get":
         return _request("GET", "canvas_nodes", params={"select": "*", "id": f"eq.{_required_string(arguments, 'id')}", "limit": "1"})
+    if name == "idea_read":
+        _only_arguments(arguments, {"id"})
+        idea_id = _durable_id(arguments, "id")
+        node = _first_row(_request(
+            "GET", "canvas_nodes",
+            params={"select": "id,title,content,node_type,metadata,content_json,format_schema", "id": f"eq.{idea_id}", "limit": "1"},
+        ))
+        if node is None:
+            raise ToolError("idea_not_found")
+        edges = _request(
+            "GET", "canvas_edges",
+            params={"select": "from_node_id,to_node_id,edge_type",
+                    "or": f"(from_node_id.eq.{idea_id},to_node_id.eq.{idea_id})", "limit": str(READ_EDGE_CAP)},
+        )
+        edges = [edge for edge in edges if isinstance(edge, dict)] if isinstance(edges, list) else []
+        others = sorted({
+            other for edge in edges
+            for other in (edge.get("from_node_id"), edge.get("to_node_id"))
+            if isinstance(other, str) and other != idea_id and IDEA_ID_PATTERN.fullmatch(other)
+        })
+        titles: dict[str, str] = {}
+        if others:
+            rows = _request("GET", "canvas_nodes", params={"select": "id,title", "id": f"in.({','.join(others)})"})
+            for row in rows if isinstance(rows, list) else []:
+                if isinstance(row, Mapping) and isinstance(row.get("id"), str):
+                    titles[row["id"]] = _card_title(row)
+        return _card_read(node, edges, titles)
     if name == "idea_create":
         node_type = arguments.get("node_type", "note")
         content = arguments.get("content", "")
@@ -1112,6 +1508,8 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
             },
         )
     if name == "idea_update":
+        if "content_append" in arguments:
+            arguments = _with_appended_content(arguments)
         return _request(
             "PATCH",
             "canvas_nodes",
@@ -1189,6 +1587,11 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
                 "content_json": dict(previous),
             }
         else:
+            # Ohne Text zeigt die Huelle eine leere Tabelle oder ein leeres Kanban
+            # (Arbeitslauf 23.11.2026). Ein Text, der nur den Titel wiederholt, zaehlt als leer.
+            text = str(node.get("content") or "").strip()
+            if fmt != "note" and (not text or text == str(node.get("title") or "").strip()):
+                raise ToolError("idea_format_no_content")
             patch = {
                 "format_schema": {"type": fmt},
                 "content_json": {"type": fmt, "title": node.get("title") or "", "text": node.get("content") or ""},
@@ -1230,23 +1633,28 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         limit = arguments.get("limit", 20)
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
             raise ToolError("invalid_arguments: 'limit' must be an integer from 1 to 50")
-        nodes = _bubble_nodes(bubble_id, "id,title")
+        # Reine Rechnung auf Titeln: bis AUTO_LINK_NODE_CAP Karten (Ordnen bleibt bei 100,
+        # weil es jede Karte einzeln verschiebt).
+        nodes = _bubble_nodes(bubble_id, "id,title", AUTO_LINK_NODE_CAP)
         candidates = _link_candidates(nodes)
         created: list[dict[str, Any]] = []
         if candidates:
+            linked: set[frozenset[Any]] = set()
             # Die Kennungen sind gegen IDEA_ID_PATTERN geprueft: kein Komma, keine Klammer.
-            id_list = "(" + ",".join(node["id"] for node in nodes) + ")"
-            edges = _request(
-                "GET",
-                "canvas_edges",
-                params={"select": "from_node_id,to_node_id", "from_node_id": f"in.{id_list}", "limit": "1000"},
-            )
-            if not isinstance(edges, list):
-                raise ToolError("supabase_invalid_response")
-            linked = {
-                frozenset((edge.get("from_node_id"), edge.get("to_node_id")))
-                for edge in edges if isinstance(edge, Mapping)
-            }
+            # In Teilen, damit die Adresse auch bei 500 Karten kurz bleibt.
+            for start in range(0, len(nodes), AUTO_LINK_ID_CHUNK):
+                id_list = "(" + ",".join(node["id"] for node in nodes[start:start + AUTO_LINK_ID_CHUNK]) + ")"
+                edges = _request(
+                    "GET",
+                    "canvas_edges",
+                    params={"select": "from_node_id,to_node_id", "from_node_id": f"in.{id_list}", "limit": "5000"},
+                )
+                if not isinstance(edges, list):
+                    raise ToolError("supabase_invalid_response")
+                linked.update(
+                    frozenset((edge.get("from_node_id"), edge.get("to_node_id")))
+                    for edge in edges if isinstance(edge, Mapping)
+                )
             for overlap, from_id, to_id in candidates:
                 if len(created) >= limit:
                     break
@@ -1303,7 +1711,20 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
             raise ToolError("bubble_not_found")
         if idea_ids:
             # Ein Verweis darf nie ins Leere oder in eine fremde Bubble zeigen.
-            known = {node["id"] for node in _bubble_nodes(bubble_id, "id")}
+            # Nur die genannten Karten lesen: so gilt keine Obergrenze fuer die Bubble.
+            rows = _request(
+                "GET",
+                "canvas_nodes",
+                params={
+                    "select": "id",
+                    "id": "in.(" + ",".join(idea_ids) + ")",
+                    "linked_idea_id": f"eq.{bubble_id}",
+                    "limit": str(len(idea_ids)),
+                },
+            )
+            if not isinstance(rows, list):
+                raise ToolError("supabase_invalid_response")
+            known = {row.get("id") for row in rows if isinstance(row, Mapping)}
             missing = [idea_id for idea_id in idea_ids if idea_id not in known]
             if missing:
                 raise ToolError(f"idea_not_in_bubble: {missing[0]}")

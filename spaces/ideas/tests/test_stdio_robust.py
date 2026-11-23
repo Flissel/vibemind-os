@@ -152,8 +152,16 @@ class IdeaListKurzTests(unittest.TestCase):
         from unittest import mock
         server = self._server()
         with mock.patch.object(server, "_request", return_value=[dict(zeile) for zeile in self.ZEILEN]) as request:
-            result = server.call_tool("idea_list", {"bubble_id": "bub1"})
+            antwort = server.call_tool("idea_list", {"bubble_id": "bub1"})
 
+        result = antwort.pop("karten")
+        self.assertEqual(antwort, {"gezeigt": 2, "gesamt": 2, "gekuerzt": False})
+        self.assertEqual(request.call_count, 1)  # nicht voll: keine zweite Abfrage zum Zaehlen
+        karten = [eintrag.pop("karte") for eintrag in result]
+        self.assertEqual([(k["titel"], k["art"], k["leer"]) for k in karten],
+                         [("Preise", "Tabelle", False), ("Kurz", "Notiz", False)])
+        self.assertEqual(karten[1]["zeilen"], ["nur kurz"])
+        self.assertLessEqual(len(karten[0]["zeilen"][0]), server.CARD_LINE_CHARS)
         self.assertEqual(result, [
             {"id": "n1", "title": "Preise", "format": "table", "score": 80, "node_type": "note",
              "x": 10.0, "y": 20.0, "linked_idea_id": "bub1",
@@ -162,7 +170,8 @@ class IdeaListKurzTests(unittest.TestCase):
              "x": 0, "y": 0, "linked_idea_id": "bub1", "preview": "nur kurz", "content_length": 8},
         ])
         params = request.call_args.kwargs["params"]
-        self.assertNotIn("content_json", params["select"])
+        self.assertNotIn("format_schema", params["select"])  # die grossen Schemata bleiben in der Datenbank
+        self.assertNotIn("previous_content_json", params["select"])
         self.assertEqual(params["linked_idea_id"], "eq.bub1")
 
     def test_voller_inhalt_nur_auf_ausdrueckliche_anfrage(self) -> None:
