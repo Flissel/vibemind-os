@@ -1158,6 +1158,59 @@ def _mehrzahl(anzahl: int, eins: str, viele: str) -> str:
     return f"{anzahl} {eins if anzahl == 1 else viele}"
 
 
+def zurueck_was(inhalt: dict, anzahl: int) -> str:
+    """Lauf 18 (51): was "zurück" zurückgenommen hat, mit Karte und Art statt nur der Zahl.
+
+    ``eintraege`` (Tabelle, Vorgang, Titel) kommen aus der Datenbank, ``arten`` (Zahl je Art:
+    text, titel, position, ueberschrift, karte_neu, ...) vom Ideen-Server, wenn er sie lesen konnte.
+    Fehlt beides, bleibt es bei der Zahl.
+    """
+    zahl = _mehrzahl(anzahl, "Änderung", "Änderungen")
+    eintraege = [e for e in inhalt.get("eintraege") or [] if isinstance(e, dict)]
+    roh = inhalt.get("arten")
+    arten = {k: v for k, v in roh.items() if _ganzzahl(v)} if isinstance(roh, dict) else {}
+    gruppe = inhalt.get("gruppe") if isinstance(inhalt.get("gruppe"), str) else ""
+
+    def name(e: dict) -> str:
+        t = re.sub(r"\s+", " ", str(e.get("titel") or e.get("name") or "")).strip()
+        return f"„{t if len(t) <= 60 else t[:57].rstrip() + '…'}“" if t else ""
+
+    if anzahl == 1 and len(eintraege) == 1:
+        e = eintraege[0]
+        tabelle, vorgang, n = e.get("tabelle"), e.get("vorgang"), name(e)
+        if tabelle == "public.canvas_nodes" and n:
+            if vorgang == "INSERT":
+                return f"die neue Karte {n}"
+            if vorgang == "DELETE":
+                return f"das Löschen von {n}; die Karte ist wieder da"
+            art = next(iter(arten)) if len(arten) == 1 else ""
+            if art == "text":
+                # Den Text einer Karte aendert ein Folgeplan (Plan-Kennung mit "-r") nur beim Ausformulieren.
+                return (f"der ausformulierte Text von {n}" if gruppe.endswith("-r")
+                        else f"die Textänderung an {n}")
+            if art == "titel":
+                return f"die Umbenennung; die Karte heißt wieder {n}"
+            if art == "position":
+                return f"die Verschiebung von {n}"
+            return f"die Änderung an {n}"
+        if tabelle == "public.canvas_edges":
+            return {"INSERT": "die neue Verbindung", "DELETE": "das Lösen einer Verbindung; sie ist wieder da"}.get(
+                vorgang, "die Änderung an einer Verbindung")
+        if tabelle == "public.ideas" and n:
+            return {"INSERT": f"die neue Bubble {n}",
+                    "DELETE": f"das Löschen der Bubble {n}; sie ist wieder da"}.get(vorgang, f"die Änderung an der Bubble {n}")
+        return zahl
+    positionen = arten.get("position", 0)
+    if positionen and arten.get("ueberschrift"):
+        return f"die Gruppierung ({_mehrzahl(positionen, 'Position', 'Positionen')})"
+    if positionen and set(arten) == {"position"}:
+        return f"die Anordnung ({_mehrzahl(positionen, 'Position', 'Positionen')})"
+    titel = list(dict.fromkeys(t for t in (str(e.get("titel") or e.get("name") or "").strip() for e in eintraege) if t))
+    if titel and len(eintraege) == anzahl:
+        return f"{zahl} an {_aufzaehlung(titel)}"
+    return zahl
+
+
 def ziel_fuer_schritt(capability: Any, ok: bool, argumente: Any, ergebnis: Any,
                       kontext: Any = None) -> Optional[dict]:
     """(33) Wohin die App nach einem festen Schreibaufruf springt: ``{space, bubble_id, node_id}``.
@@ -1270,7 +1323,7 @@ def antwort_fuer_schritt(capability: Any, ok: bool, ergebnis: Any, fehler: Any,
             if not isinstance(anzahl, int) or isinstance(anzahl, bool):
                 return None
             return ("Es gibt nichts zurückzunehmen." if anzahl == 0
-                    else f"Zurückgenommen: {_mehrzahl(anzahl, 'Änderung', 'Änderungen')}.")
+                    else f"Zurückgenommen: {zurueck_was(inhalt, anzahl)}.")
         if capability == "bubble_list":
             # Der aeltere Leseweg liefert Text: "15 bubbles:\n- Titel (id=..., score=...)".
             if not isinstance(ergebnis, str):

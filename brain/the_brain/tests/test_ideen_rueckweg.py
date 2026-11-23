@@ -197,6 +197,37 @@ def test_aehnlich_gebaute_saetze_sind_keine_wiederholung() -> None:
     assert rw.ausformulierung_pruefen("Sponsoren: Stadtwerke, Bäckerei", ergebnis) == ""
 
 
+@pytest.mark.parametrize("notiz, ergebnis", [
+    # Lauf 18 (49): dieselbe Aussage, umgestellt, andere Wortform ("liefert"/"liefern").
+    ("Plakate: Druckerei bis Mai",
+     "Für das Stadtfest brauchen wir eine Druckerei, die die Plakate bis Ende Mai liefert. "
+     "Bis Ende Mai muss eine Druckerei die Plakate für das Stadtfest liefern."),
+    # ... und zwei getauschte Woerter ("liefert"/"bringt", "Plakate"/"Poster").
+    ("Plakate",
+     "Die Druckerei liefert die Plakate für das Stadtfest bis Ende Mai. "
+     "Bis Ende Mai bringt die Druckerei die Poster für das Stadtfest."),
+])
+def test_umgestellte_wiederholung_wird_erkannt(notiz, ergebnis) -> None:
+    assert rw.ausformulierung_pruefen(notiz, ergebnis) == rw.WIEDERHOLT_SICH
+
+
+@pytest.mark.parametrize("notiz, ergebnis", [
+    ("Bühnenplan", "Die Bühne wird am Freitag am Marktplatz aufgebaut. Am Sonntag wird die Bühne am Marktplatz abgebaut."),
+    ("Druckerei", "Die Druckerei liefert die Plakate bis Ende Mai. Die Flyer liefert dieselbe Druckerei schon Mitte April."),
+    ("Sponsoren", "Die Stadtwerke zahlen die Bühne und den Strom für das Stadtfest. "
+                  "Die Bäckerei zahlt die Getränke und das Zelt für das Stadtfest."),
+    ("Vegane Suppe", "Am Stand gibt es eine vegane Suppe aus regionalem Gemüse. Die Suppe kostet vier Euro und wird "
+                     "in Bechern ausgegeben. Wer mag, bekommt Brot dazu."),
+])
+def test_verwandte_saetze_mit_neuer_aussage_sind_keine_wiederholung(notiz, ergebnis) -> None:
+    assert rw.ausformulierung_pruefen(notiz, ergebnis) == ""
+
+
+def test_wortstamm_ohne_umlaut_und_endung() -> None:
+    assert rw._stamm("liefert") == rw._stamm("liefern") == "lief"
+    assert rw._stamm("Stände") == rw._stamm("Stand") and rw._stamm("Mai") == "mai"
+
+
 def test_ausformulieren_auftrag_sagt_das_ergebnis_ist_die_notiz() -> None:
     # Lauf 10 (35): "kaum ausgebaut", "beschreibt nur".
     nachricht, _ = _vorbereiten()
@@ -396,6 +427,72 @@ def test_beschreibung_bleibt_abgelehnt() -> None:
     ideen = Ideen()
     pruefung = rw.zurueckschreiben(_fertig('{"text": "Die Notiz beschreibt die Frist."}'), **ideen.anschluss())
     assert pruefung["rueckweg"] == "abgelehnt" and ideen.aufrufe == []
+
+
+NACHBAR_BUEHNE = {"id": "a0000002", "title": "Bühnenplan",
+                  "content": "Der Aufbau der Bühne beginnt am Freitag um acht Uhr am Marktplatz."}
+ABGESCHRIEBEN = "Die Frist läuft bis Ende März. Der Aufbau der Bühne beginnt am Freitag um acht Uhr."
+
+
+def test_auftrag_sagt_nur_was_zum_thema_gehoert_und_nichts_abschreiben() -> None:
+    # Lauf 18 (50)
+    nachricht, _ = _mit_nachbarn([NACHBAR_BUEHNE])
+    assert "nur, was zum Thema DIESER Notiz gehoert" in nachricht
+    assert "kein Satz darf aus einer anderen Karte abgeschrieben sein" in nachricht
+
+
+def test_abgeschriebener_satz_zu_anderem_thema_wird_zurueckgehalten() -> None:
+    # Lauf 18 (50): der letzte Satz fast woertlich aus einer Nachbarkarte, ohne Bezug zur Notiz.
+    texte = ["Bühnenplan " + NACHBAR_BUEHNE["content"]]
+    assert rw.ausformulierung_pruefen("Frist bis März", ABGESCHRIEBEN, titel="Sponsoren", nachbarn=texte) == (
+        rw.SCHREIBT_AB)
+    # Ohne Nachbarn keine Pruefung darauf.
+    assert rw.ausformulierung_pruefen("Frist bis März", ABGESCHRIEBEN, titel="Sponsoren") == ""
+
+
+@pytest.mark.parametrize("notiz, titel, ergebnis", [
+    # teilt ein Wort mit der Notiz: gehoert zum Thema, auch wenn woertlich
+    ("Frist für den Aufbau", "Fristen", ABGESCHRIEBEN),
+    # ... oder mit ihrem Titel
+    ("Frist bis März", "Bühne", ABGESCHRIEBEN),
+    # in eigenen Worten: weniger als 80 % in gleicher Folge
+    ("Frist bis März", "Sponsoren",
+     "Die Frist läuft bis Ende März. Freitags früh wird auf dem Marktplatz schon die Bühne gebaut."),
+    # zu kurz, um es sicher zu sagen
+    ("Frist bis März", "Sponsoren", "Die Frist läuft bis Ende März. Aufbau ab Freitag."),
+])
+def test_kein_abschreiben_wenn_thema_passt_oder_eigene_worte(notiz, titel, ergebnis) -> None:
+    texte = ["Bühnenplan " + NACHBAR_BUEHNE["content"], "Aufbau ab Freitag"]
+    assert rw.ausformulierung_pruefen(notiz, ergebnis, titel=titel, nachbarn=texte) == ""
+
+
+def test_rueckweg_haelt_abgeschriebenes_als_vorschlag_zurueck() -> None:
+    from core import ideen_vorschlag as vs
+
+    ideen = Ideen()
+    gefragt = []
+
+    def lies_nachbarn(bubble, kennung):
+        gefragt.append((bubble, kennung))
+        return [NACHBAR_BUEHNE, {"id": "a0000001", "title": "Sponsoren", "content": ABGESCHRIEBEN}]
+
+    pruefung = rw.zurueckschreiben(_fertig(json.dumps({"text": ABGESCHRIEBEN})),
+                                   **ideen.anschluss(), lies_nachbarn=lies_nachbarn)
+    assert gefragt == [("b0b1e001", "a0000001")] and ideen.aufrufe == []
+    assert pruefung["rueckweg"] == "vorschlag" and pruefung["reason"] == vs.FRAGWUERDIG
+    assert pruefung["meldung"].startswith("Der Agent hat einen Satz fast wörtlich aus einer anderen Karte übernommen")
+    assert pruefung["vorschlag"] == ABGESCHRIEBEN
+
+
+def test_rueckweg_schreibt_wenn_nachbarn_nicht_lesbar() -> None:
+    def kaputt(_b, _k):
+        raise RuntimeError("weg")
+
+    for lies in (kaputt, lambda _b, _k: None):
+        ideen = Ideen()
+        pruefung = rw.zurueckschreiben(_fertig(json.dumps({"text": ABGESCHRIEBEN})),
+                                       **ideen.anschluss(), lies_nachbarn=lies)
+        assert pruefung["rueckweg"] == "geschrieben"
 
 
 def test_geaenderte_karte_wird_nicht_ueberschrieben_sondern_vorschlag() -> None:

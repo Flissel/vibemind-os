@@ -354,7 +354,10 @@ def ohne_titelzusatz(text: Any, titel: Any) -> str:
 
 
 NACHBARN_HINWEIS = ("Unter NACHBARN stehen andere Karten derselben Bubble, gekuerzt. Was dort steht und zur Notiz "
-                    "passt, darfst du aufgreifen, um sie auszubauen; schreib sie nicht ab und haeng sie nicht an.")
+                    "passt, darfst du aufgreifen, um sie auszubauen; schreib sie nicht ab und haeng sie nicht an. "
+                    # Lauf 18 (50): ein fast woertlich uebernommener Satz zu einem anderen Thema.
+                    "Uebernimm aus den NACHBARN nur, was zum Thema DIESER Notiz gehoert, in eigenen Worten; "
+                    "kein Satz darf aus einer anderen Karte abgeschrieben sein.")
 
 
 def nachricht(vertrag_name: str, karte: Mapping[str, Any], wunsch: Any,
@@ -505,25 +508,97 @@ _FUELLWOERTER = frozenset(
     "der die das den dem des ein eine einen einem einer eines und oder aber auch noch nur schon sehr "
     "ist sind war waren wird werden wurde hat haben hatte mit fuer für von vom zum zur bei auf aus nach "
     "wir ich sie er es ihr uns unser unsere dass als wie wenn dann damit sich nicht kein keine "
-    "diese dieser dieses dort hier mehr alle jede jeder jedes".split())
+    "diese dieser dieses dort hier mehr alle jede jeder jedes "
+    # Lauf 18 (49): Hilfs- und Modalverben und kleine Woerter tragen keine Aussage.
+    "muss muessen müssen soll sollen sollte kann koennen können will wollen bis beim ab sowie bereits "
+    "gibt geben braucht brauchen".split())
+# Lauf 18 (49): Endungen, damit "liefert" und "liefern", "Stand" und "Stände" gleich zaehlen.
+_ENDUNGEN = ("ungen", "ern", "ert", "en", "er", "es", "em", "et", "e", "n", "s", "t")
+
+
+def _stamm(wort: str) -> str:
+    """Grober deutscher Wortstamm: ohne Umlaute, ohne eine gaengige Endung; nie kuerzer als 4."""
+    w = wort.casefold().replace("ä", "a").replace("ö", "o").replace("ü", "u").replace("ß", "ss")
+    for endung in _ENDUNGEN:
+        if w.endswith(endung) and len(w) - len(endung) >= 4:
+            return w[:-len(endung)]
+    return w
 
 
 def _inhaltswoerter(satz: str) -> set[str]:
-    return {w for w in re.findall(r"\w+", satz.casefold()) if len(w) > 2 and w not in _FUELLWOERTER}
+    return {_stamm(w) for w in re.findall(r"\w+", satz.casefold()) if len(w) > 2 and w not in _FUELLWOERTER}
 
 
-def ausformulierung_pruefen(notiz: Any, ergebnis: Any) -> str:
-    """"" oder der deutsche Satz, warum das Ausformulier-Ergebnis nicht an die Notiz darf."""
+def _saetze(text: str) -> list[str]:
+    return [s for s in re.split(r"(?<=[.!?])\s+|\n+", text.strip()) if s.strip()]
+
+
+def wiederholt_sich(a: set[str], b: set[str], notiz: set[str]) -> bool:
+    """Ob zwei Saetze (als Inhaltswort-Staemme) dieselbe Aussage sind.
+
+    Lauf 12: fast dieselben Woerter (90 % des kuerzeren Satzes). Lauf 18 (49): dieselbe Aussage mit
+    umgestellter Wortfolge und ein, zwei getauschten Woertern; darum auch zwei Drittel des laengeren
+    Satzes (sechs Inhaltswoerter, zwei davon getauscht).
+    Nennt aber jeder der beiden Saetze ein eigenes Wort der Notiz ("Stadtwerke" hier, "Bäckerei"
+    dort), ist das eine Aufzaehlung und keine Wiederholung.
+    """
+    if min(len(a), len(b)) < 4:
+        return False
+    gemeinsam = len(a & b)
+    if gemeinsam < 0.9 * min(len(a), len(b)) and 3 * gemeinsam < 2 * max(len(a), len(b)):
+        return False
+    return not ((a - b) & notiz and (b - a) & notiz)
+
+
+SCHREIBT_AB = ("Der Agent hat einen Satz fast wörtlich aus einer anderen Karte übernommen, der nicht zum Thema "
+               "der Notiz gehört; es wurde nichts geändert.")
+ABSCHRIFT_ANTEIL = 0.8     # so viel des Satzes (Woerter in Folge) steht woertlich in einer anderen Karte
+ABSCHRIFT_MIN_WOERTER = 5  # kuerzere Saetze sind zu oft zufaellig gleich
+
+
+def _woerter(text: str) -> list[str]:
+    return re.findall(r"\w+", text.casefold())
+
+
+def abgeschrieben(satz: str, nachbarn: list[str]) -> bool:
+    """Ob der Satz zu ``ABSCHRIFT_ANTEIL`` woertlich (gleiche Woerter in gleicher Folge) in einem Nachbartext steht."""
+    from difflib import SequenceMatcher
+
+    woerter = _woerter(satz)
+    if len(woerter) < ABSCHRIFT_MIN_WOERTER:
+        return False
+    for text in nachbarn:
+        vergleich = SequenceMatcher(None, woerter, _woerter(text), autojunk=False)
+        gleich = sum(block.size for block in vergleich.get_matching_blocks())
+        if gleich >= ABSCHRIFT_ANTEIL * len(woerter):
+            return True
+    return False
+
+
+def ausformulierung_pruefen(notiz: Any, ergebnis: Any, *, titel: Any = None,
+                            nachbarn: Optional[list[str]] = None) -> str:
+    """"" oder der deutsche Satz, warum das Ausformulier-Ergebnis nicht an die Notiz darf.
+
+    ``nachbarn`` sind die Texte der anderen Karten der Bubble (Titel und Inhalt); ohne sie
+    entfaellt die Pruefung auf Abgeschriebenes.
+    """
     if not isinstance(ergebnis, str):
         return ""
     if _OFFEN_IM_ERGEBNIS.search(ergebnis) and not _OFFEN_IN_DER_NOTIZ.search(str(notiz or "")):
         return ERFINDET_OFFENES
-    saetze = [_inhaltswoerter(s) for s in re.split(r"(?<=[.!?])\s+|\n+", ergebnis.strip())]
-    saetze = [s for s in saetze if len(s) >= 4]
-    for i, a in enumerate(saetze):
-        for b in saetze[i + 1:]:
-            if len(a & b) >= 0.9 * min(len(a), len(b)):
+    notizwoerter = _inhaltswoerter(str(notiz or ""))
+    saetze = _saetze(ergebnis)
+    woerter = [_inhaltswoerter(s) for s in saetze]
+    for i, a in enumerate(woerter):
+        for b in woerter[i + 1:]:
+            if wiederholt_sich(a, b, notizwoerter):
                 return WIEDERHOLT_SICH
+    # Lauf 18 (50): Ein Satz, der fast woertlich in einer anderen Karte steht und kein
+    # Inhaltswort mit der Notiz (Text oder Titel) teilt, gehoert nicht zu ihrem Thema.
+    thema = notizwoerter | _inhaltswoerter(titel_als_name(titel) if titel else "")
+    for satz, inhalt in zip(saetze, woerter):
+        if nachbarn and not inhalt & thema and abgeschrieben(satz, nachbarn):
+            return SCHREIBT_AB
     return ""
 
 
@@ -570,9 +645,34 @@ Aufruf = Callable[[str, dict[str, Any]], Any]
 Pruefe = Callable[[str, dict[str, Any], Any], tuple[Optional[bool], str]]
 
 
+def nachbartexte(rueckweg: Mapping[str, Any],
+                 lies_nachbarn: Optional[Callable[[str, str], Optional[list]]]) -> list[str]:
+    """Titel und Inhalt der anderen Karten der Bubble; leer, wenn nicht lesbar."""
+    bubble, kennung = rueckweg.get("bubble_id"), rueckweg.get("karte_id")
+    if lies_nachbarn is None or not bubble or not kennung:
+        return []
+    try:
+        zeilen = lies_nachbarn(bubble, kennung)
+    except Exception:  # noqa: BLE001 - ohne Nachbarn entfaellt nur diese Pruefung
+        return []
+    if not isinstance(zeilen, list):
+        return []
+    texte = []
+    for z in zeilen:
+        if isinstance(z, Mapping) and z.get("id") != kennung:
+            text = " ".join(str(z.get(feld) or "") for feld in ("title", "content")).strip()
+            if text:
+                texte.append(text)
+    return texte
+
+
 def zurueckschreiben(auftrag: Mapping[str, Any], *, lies_karte: Callable[[str], Optional[Mapping[str, Any]]],
-                     aufruf: Aufruf, pruefe: Pruefe) -> dict[str, Any]:
+                     aufruf: Aufruf, pruefe: Pruefe,
+                     lies_nachbarn: Optional[Callable[[str, str], Optional[list]]] = None) -> dict[str, Any]:
     """Das Ergebnis eines fertigen Auftrags an die Karte bringen. Wirft nie.
+
+    ``lies_nachbarn(bubble_id, karte_id)`` liefert die anderen Karten der Bubble fuer die
+    Pruefung auf Abgeschriebenes (nur Ausformulieren); nicht lesbar heisst: ohne diese Pruefung.
 
     Rueckgabe ist die Pruefung des Auftrags: ``verified`` (True/False/None), ``reason``
     (technisch), ``kind`` "ideen_rueckweg", ``rueckweg`` (geschrieben | vorschlag |
@@ -609,7 +709,8 @@ def zurueckschreiben(auftrag: Mapping[str, Any], *, lies_karte: Callable[[str], 
                        vorschlag=vorschlag, werte=werte, titel=titel[:200])
         if rueckweg["vertrag"] == "ausformulieren":
             # Erst hier: die Notiz ist unveraendert, also genau die, die der Agent gelesen hat.
-            satz = ausformulierung_pruefen(karte.get("content"), werte["text"])
+            satz = ausformulierung_pruefen(karte.get("content"), werte["text"], titel=karte.get("title"),
+                                           nachbarn=nachbartexte(rueckweg, lies_nachbarn))
             if satz:
                 # Lauf 16 (46): abgelehnt war der Text fuer den Menschen unsichtbar. Jetzt Vorschlag
                 # mit dem Grund; geschrieben wird nur mit "Vorschlag trotzdem übernehmen".
@@ -755,4 +856,4 @@ def anschluss(auftrag: Mapping[str, Any]) -> dict[str, Any]:
         ok, _signal, grund = _check_supabase_ideen_fest({"erwartet": erwartet})
         return ok, grund
 
-    return {"lies_karte": lies_karte, "aufruf": aufruf, "pruefe": pruefe}
+    return {"lies_karte": lies_karte, "aufruf": aufruf, "pruefe": pruefe, "lies_nachbarn": lies_nachbarn}

@@ -1414,6 +1414,67 @@ KANBAN_COLORS = {
 }
 
 
+def _change_kind(row: Mapping[str, Any]) -> str:
+    """What one protocol row changed, in words the brain turns into a sentence."""
+    table, operation = row.get("tabelle"), row.get("vorgang")
+    if table == "public.canvas_edges":
+        return "verbindung"
+    if table == "public.ideas":
+        return "bubble"
+    if table != "public.canvas_nodes":
+        return "sonst"
+    if operation == "DELETE":
+        return "karte_geloescht"
+    if row.get("kopf") is not None:
+        return "ueberschrift"
+    if operation == "INSERT":
+        return "karte_neu"
+    if row.get("vorher_content") != row.get("nachher_content"):
+        return "text"
+    if row.get("vorher_titel") != row.get("nachher_titel"):
+        return "titel"
+    if row.get("vorher_x") != row.get("nachher_x") or row.get("vorher_y") != row.get("nachher_y"):
+        return "position"
+    return "sonst"
+
+
+def _change_kinds(result: Mapping[str, Any]) -> dict[str, int] | None:
+    """Lauf 18 (51): count what an undone change consisted of ("text": 1, "position": 27, ...).
+
+    The database function names rows and their operation, not which fields an update
+    touched. This reads the protocol of the group afterwards (read only). Only needed when
+    a card was updated; any failure leaves the answer as the database gave it.
+    """
+    group, entries = result.get("gruppe"), result.get("eintraege")
+    if not isinstance(group, str) or not isinstance(entries, list) or not any(
+        isinstance(e, Mapping) and e.get("tabelle") == "public.canvas_nodes" and e.get("vorgang") == "UPDATE"
+        for e in entries
+    ):
+        return None
+    try:
+        rows = _request("GET", "ideen_aenderungen", params={
+            "select": (
+                "tabelle,vorgang,"
+                "vorher_content:vorher->>content,nachher_content:nachher->>content,"
+                "vorher_titel:vorher->>title,nachher_titel:nachher->>title,"
+                "vorher_x:vorher->>x,nachher_x:nachher->>x,vorher_y:vorher->>y,nachher_y:nachher->>y,"
+                "kopf:nachher->metadata->>" + GROUP_HEAD_KEY
+            ),
+            "gruppe": f"eq.{group}",
+            "order": "id.asc",
+            "limit": str(CHANGE_LIST_ROW_CAP),
+        })
+    except Exception:  # noqa: BLE001 - the undo itself is done; only the wording gets poorer
+        return None
+    if not isinstance(rows, list) or not rows or not all(isinstance(row, Mapping) for row in rows):
+        return None
+    kinds: dict[str, int] = {}
+    for row in rows:
+        kind = _change_kind(row)
+        kinds[kind] = kinds.get(kind, 0) + 1
+    return kinds
+
+
 def _change_groups(rows: Any, limit: int) -> list[dict[str, Any]]:
     """Fold protocol rows (newest first) into the groups ideen_zurueck undoes."""
     if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
@@ -2300,7 +2361,8 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         result = _request("POST", "rpc/ideen_zurueck", body=body, error_detail=True)
         if not isinstance(result, Mapping) or "anzahl" not in result:
             raise ToolError("supabase_invalid_response")
-        return result
+        kinds = _change_kinds(result)
+        return {**result, "arten": kinds} if kinds else result
     raise ToolError(f"unknown_tool: {name}")
 
 
