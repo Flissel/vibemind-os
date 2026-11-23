@@ -77,6 +77,16 @@ class KanbanTests(unittest.TestCase):
         self.assertEqual(sections, [("Offen", ["Logo"]), ("In Arbeit", []), ("Erledigt", ["Druck"])])
         self.assertEqual(count, "2 Karten in 3 Spalten")
 
+    def test_zurueckgeschriebenes_board_zaehlt_karten_nicht_doppelt(self) -> None:
+        # Lauf 11: "2 Karten in 6 Spalten", zwei "Offen"-Spalten mit demselben Text.
+        offen = [{"title": "Logo"}, {"title": "Bühne mieten"}]
+        board = {"columns": [{"name": "Offen", "cards": offen}, {"name": "In Arbeit", "cards": []},
+                             {"name": "Erledigt", "cards": []}, {"name": "Offen", "cards": offen},
+                             {"name": "In Arbeit", "cards": []}, {"name": "Erledigt", "cards": []}]}
+        sections, count = self.server._structured_sections("kanban", board, 200)
+        self.assertEqual(sections, [("Offen", ["Logo", "Bühne mieten"]), ("In Arbeit", []), ("Erledigt", [])])
+        self.assertEqual(count, "2 Karten in 3 Spalten")
+
     def test_zeilen_ohne_statuszeile_gehen_nach_offen(self) -> None:
         # Lauf 8: die erste Zeile landete in "In Arbeit", eine Spalte "Offen" gab es nicht.
         board = self.server._kanban_from_text("Logo entwerfen\nIn Arbeit: Bühnenplan\n- [x] Druckerei", "")

@@ -938,7 +938,10 @@ def _structured_sections(fmt: str, data: Mapping[str, Any], limit: int | None) -
                 head = KANBAN_NAMES.get(head.casefold(), head)
                 found = lines(column.get("cards") if isinstance(column, Mapping) else None, "title")
                 if head.casefold() in by_name:
-                    by_name[head.casefold()].extend(found)
+                    # Lauf 11: Die zweite "Offen"-Spalte trug dieselben Karten noch einmal
+                    # ("2 Karten in 6 Spalten"); eine Karte steht je Spalte nur einmal.
+                    schon = by_name[head.casefold()]
+                    schon.extend(k for k in found if k not in schon)
                 else:
                     by_name[head.casefold()] = found
                     sections.append((head, found))
