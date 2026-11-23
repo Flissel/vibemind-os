@@ -13,6 +13,7 @@ from djset.contracts import (
     BpmRange,
     MixPlan,
     Profile,
+    QaFinding,
     QaReport,
     TrackMeasurements,
 )
@@ -459,3 +460,65 @@ def test_build_run_schreibt_den_abschnitt_tonart_brueche(
     bericht = run.path("qa-report.md").read_text(encoding="utf-8")
     abschnitt = bericht.split("## Tonart-Brueche", 1)[1].split("\n## ", 1)[0]
     assert "Keine" in abschnitt
+
+
+def _qa_mit(befunde: list[tuple[str, str]]):
+    def fake_check_set(path: Path, plan: MixPlan, *args, **kwargs) -> QaReport:
+        return QaReport(
+            length_s=110.0,
+            target_length_s=110.0,
+            audio_format=AudioFormat(channels=2, sample_rate=44_100, subtype="FLOAT"),
+            lufs_integrated=-14.0,
+            true_peak=-2.0,
+            findings=[QaFinding(kind=kind, text=text) for kind, text in befunde],
+        )
+
+    return fake_check_set
+
+
+def test_ein_roter_qa_bericht_endet_mit_2_und_nennt_die_befunde(
+    tmp_path, profile, monkeypatch, capsys
+):
+    """A3: vorher sah ein Lauf mit blockierendem Befund auf der Konsole fertig
+    aus (exit 0, kein Wort zur QA)."""
+    run, files, flach, client = _lauf_mit_ersetztem_renderer(
+        tmp_path, profile, monkeypatch
+    )
+    monkeypatch.setattr(
+        cli,
+        "check_set",
+        _qa_mit([("gap", "Bei 1:23 steht Stille."), ("length", "Etwas kurz.")]),
+    )
+    monkeypatch.setattr(cli, "to_mp3", lambda quelle, ziel: ziel.write_bytes(b""))
+
+    assert cli.build_run(run, files, flach, client, _budget()) == 2
+
+    ausgabe = capsys.readouterr().out
+    assert "  QA: Befunde vorhanden" in ausgabe
+    assert "Bei 1:23 steht Stille." in ausgabe
+    zeilen = ausgabe.splitlines()
+    befund = next(z for z in zeilen if "Bei 1:23" in z)
+    hinweis = next(z for z in zeilen if "Etwas kurz." in z)
+    assert befund != hinweis
+    assert "gap" in befund and "Hinweis" in hinweis
+
+
+def test_nur_hinweise_bleiben_exit_0_und_stehen_in_der_ausgabe(
+    tmp_path, profile, monkeypatch, capsys
+):
+    run, files, flach, client = _lauf_mit_ersetztem_renderer(
+        tmp_path, profile, monkeypatch
+    )
+    monkeypatch.setattr(cli, "check_set", _qa_mit([("length", "Etwas kurz.")]))
+    monkeypatch.setattr(cli, "to_mp3", lambda quelle, ziel: ziel.write_bytes(b""))
+
+    assert cli.build_run(run, files, flach, client, _budget()) == 0
+
+    ausgabe = capsys.readouterr().out
+    assert "  QA: Ausgeliefert, mit Hinweisen" in ausgabe
+    assert "Etwas kurz." in ausgabe
+
+
+def test_main_reicht_den_rueckgabewert_durch(monkeypatch):
+    monkeypatch.setattr(cli, "cmd_build", lambda *a, **k: 2)
+    assert cli.main(["build", "--run", "x"]) == 2

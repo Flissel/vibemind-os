@@ -147,7 +147,7 @@ def _key_breaks(
     return lines
 
 
-def _status_line(qa: QaReport, corrected: bool) -> str:
+def status_line(qa: QaReport, corrected: bool) -> str:
     """Die eine Zeile, die beantwortet, ob der Lauf ohne Nachlesen brauchbar ist.
 
     `corrected` wird VOR `qa.ok` geprueft. Der normale Erfolgsfall einer
@@ -229,7 +229,7 @@ def render_qa_report(
     ein: jede Naht zwischen zwei harmonisch unvertraeglichen Songs, mit beiden
     IDs, beiden Tonarten und der Technik dort.
     """
-    lines = ["# QA-Bericht", "", f"**Status:** {_status_line(qa, corrected)}", ""]
+    lines = ["# QA-Bericht", "", f"**Status:** {status_line(qa, corrected)}", ""]
 
     lines += [
         "## Das fertige Set",

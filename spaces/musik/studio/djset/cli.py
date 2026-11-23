@@ -37,7 +37,7 @@ from djset.render.stretch import (
     UnsupportedSampleRate,
 )
 from djset.render.tracklist import render_tracklist
-from djset.report import correction_gain_db, render_qa_report
+from djset.report import correction_gain_db, render_qa_report, status_line
 from djset.run import FINISHED_MARKER, Run, RunNotFound, slugify
 from djset.tempo import TempoWahl, waehle_tempo
 from djset.watch import (
@@ -351,7 +351,15 @@ def build_run(
         print(f"  MP3: nicht geschrieben - {mp3_fehler}")
     print(f"  Tracklist: {run.path('tracklist.md')}")
     print(f"  QA-Bericht: {run.path('qa-report.md')}")
-    return 0
+    # Die Statuszeile des Berichts und jeder Befund auch hier: ein Lauf mit
+    # blockierendem Befund darf auf der Konsole nicht fertig aussehen. Exit 2
+    # heisst "ausgeliefert, aber rot" - 1 bleibt der Abbruch.
+    print(f"  QA: {status_line(qa, correction is not None)}")
+    for finding in qa.blocking:
+        print(f"    Befund ({finding.kind}): {finding.text}")
+    for finding in qa.hints:
+        print(f"    Hinweis ({finding.kind}): {finding.text}")
+    return 2 if qa.blocking else 0
 
 
 def _songs_laden(

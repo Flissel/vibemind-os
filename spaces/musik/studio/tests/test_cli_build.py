@@ -384,7 +384,9 @@ def test_a_true_peak_finding_triggers_exactly_one_corrective_re_render(
 
     code = cmd_build(tmp_path, run.run_id, client, _budget())
 
-    assert code == 0
+    # Fix-Welle A3: auch nach der Korrektur bleibt ein True-Peak-Befund - der
+    # Bericht ist rot, also Exit 2 statt 0 (1 bleibt der Abbruch).
+    assert code == 2
     # Genau ein korrigierender Re-Render: der erste Aufruf unveraendert, der
     # zweite mit dem aus dem ersten Befund berechneten (negativen) Gain - und
     # kein dritter, obwohl der zweite Bericht immer noch nicht sauber ist.
