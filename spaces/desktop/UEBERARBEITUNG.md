@@ -207,3 +207,30 @@ Was in Lauf 2 geladen war (Startereignis von Claude, nur Namen):
 
 Ob `--safe-mode` für diesen einen Agenten ersetzt wird, entscheidet Felix. In den Betrieb
 ist nichts davon gegangen.
+
+## 9. Weg 2: Das Gehirn führt die Schleife (23.11., Entscheidung von Felix)
+
+Der Agent bekommt keine Werkzeuge. Je Runde liest das Gehirn den Bildschirm, fragt
+`brain-desktop` nach genau einer Aktion, prüft sie gegen einen Vertrag und führt sie als
+festen Aufruf aus. Dateien: `brain/the_brain/core/desktop_schleife.py`,
+`desktop_schleife_contract.py`, elf Zeilen in `plan_executor.py`. Im Werkzeug-Dienst neu:
+die Aktion `note` (eine Zeile ins Aufgabenbuch, am Bildschirm geschieht nichts).
+
+Getestet mit einem Agenten als Attrappe gegen den echten Werkzeug-Dienst: 47 Tests in
+`brain/the_brain/tests/test_desktop_schleife.py`, dazu unverändert 26 im Space.
+
+Nicht gemessen:
+
+- Ein Lauf mit echtem Agenten. Ob Haiku oder Sonnet zuverlässig ein einzelnes JSON-Objekt
+  liefert und wie oft der Vertrag einen sinnvollen Vorschlag ablehnt, ist offen.
+- Der Planausführer als Ganzes mit dem Eingriff. Die große Testreihe des Gehirns lief nicht
+  (Speicher bei 70,6, über der Schwelle); geprüft ist nur, dass die Datei gelesen wird und
+  die Schleife für sich läuft.
+- Die Dauer: ein Agentenlauf je Runde, also grob 7 bis 10 s je Schritt und bis zu acht
+  Budget-Läufe je Aufgabe.
+- Die Schleife läuft im Hop des Planausführers bis zu 8 Minuten. Ob das Gehirn so lange auf
+  einen Hop warten darf oder die Schleife in den Hintergrund gehört, entscheidet die
+  Koordination.
+
+Der Zweig `cc/wrapper-werkzeuge` im äußeren Repo (Weg 1) bleibt liegen und geht nicht in den
+Betrieb.
