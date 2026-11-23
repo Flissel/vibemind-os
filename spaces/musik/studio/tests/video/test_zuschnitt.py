@@ -3,7 +3,7 @@ import pytest
 
 from djset.contracts import BeatGrid
 from djset.video.laenge import VideoFehler
-from djset.video.zuschnitt import AUSKLANG_MIN_S, traegt_s, zuschnitt_planen
+from djset.video.zuschnitt import AUSKLANG_MIN_S, taktstarts, traegt_s, zuschnitt_planen
 
 GRID = BeatGrid(first_downbeat_s=0.5, bar_length_s=2.0, confidence=0.9)
 DAUER = 60.0
@@ -97,5 +97,39 @@ def test_verspaeteter_beat_kippt_den_einzigen_takt_nicht() -> None:
     assert z.takte == 1
     assert z.schluss_s == pytest.approx(2.5)
     assert z.ende_s - z.schluss_s >= AUSKLANG_MIN_S
+def test_taktstarts_beginnen_am_ersten_taktanfang_und_passen_noch_in_den_song() -> None:
+    starts = taktstarts(GRID, DAUER, 30.0)
+    assert starts[0] == pytest.approx(0.5)
+    assert starts[1] - starts[0] == pytest.approx(2.0)
+    assert starts[-1] + 30.0 <= DAUER + 1e-9 < starts[-1] + 2.0 + 30.0
+    assert len(starts) == 15
 
 
+def test_taktstarts_mit_kaputtem_raster_sind_videofehler() -> None:
+    kaputt = BeatGrid.model_construct(first_downbeat_s=0.5, bar_length_s=0.0, confidence=0.9)
+    with pytest.raises(VideoFehler):
+        taktstarts(kaputt, DAUER, 10.0)
+
+
+def test_erlaubt_schraenkt_anfang_auf_den_fruehesten_erlaubten_ein() -> None:
+    z = zuschnitt_planen(GRID, DAUER, 10.0, "anfang", LEER, erlaubt=[12.5, 14.5])
+    assert z.start_s == pytest.approx(12.5)
+
+
+def test_erlaubt_schraenkt_hoehepunkt_ein() -> None:
+    # Ohne Einschraenkung gewinnt das laute Fenster bei ~25 s; erlaubt sind nur frueher liegende.
+    energie = [0.2] * 3 + [0.9] * 2 + [0.2] * 3
+    frei = zuschnitt_planen(GRID, DAUER, 16.0, "hoehepunkt", energie)
+    assert frei.start_s >= 24.0
+    z = zuschnitt_planen(GRID, DAUER, 16.0, "hoehepunkt", energie, erlaubt=[0.5, 2.5, 4.5])
+    assert z.start_s in (0.5, 2.5, 4.5)
+
+
+def test_leeres_erlaubt_ist_ein_videofehler() -> None:
+    with pytest.raises(VideoFehler, match="erlaubt"):
+        zuschnitt_planen(GRID, DAUER, 10.0, "anfang", LEER, erlaubt=[])
+
+
+def test_erlaubt_ohne_tragfaehigen_start_ist_ein_videofehler() -> None:
+    with pytest.raises(VideoFehler, match="erlaubt"):
+        zuschnitt_planen(GRID, DAUER, 10.0, "anfang", LEER, erlaubt=[1.1])

@@ -97,3 +97,17 @@ def test_falsche_samplerate_ist_videofehler(tmp_path: Path) -> None:
     datei = _sinus(tmp_path / "48k.wav", 0.3, sr=48_000)
     with pytest.raises(VideoFehler, match="48k.wav"):
         videomusik_pruefen(datei, SAMPLES, -14.0)
+
+def test_luecke_nach_dem_schluss_ist_kein_befund_davor_schon(tmp_path: Path) -> None:
+    quelle = _ton(tmp_path / "q.wav")
+    ziel = tmp_path / "z.wav"
+    videomusik_rendern(quelle, _zuschnitt(), SAMPLES, ziel)
+    signal, _ = sf.read(str(ziel), dtype="float32")
+    signal[SR * 3: SR * 3 + SR] = 0.0  # Stille ab 3,0 s im Stueck
+    sf.write(str(ziel), signal, SR, subtype="FLOAT")
+
+    spaet = videomusik_pruefen(ziel, SAMPLES, -14.0, schluss_s=2.5)
+    frueh = videomusik_pruefen(ziel, SAMPLES, -14.0, schluss_s=6.3)
+
+    assert "luecke" not in [b.art for b in spaet]
+    assert "luecke" in [b.art for b in frueh]

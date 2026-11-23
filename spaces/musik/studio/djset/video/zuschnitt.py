@@ -6,6 +6,7 @@ Videoende bleibt; die Gesamtlaenge `ende_s - start_s` ist exakt das Ziel.
 """
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -19,6 +20,8 @@ AUSKLANG_MIN_S = 0.5
 # einen erkannten Beat geschoben; weiter weg traut man dem Beat nicht mehr.
 EINRASTEN_SCHLAEGE = 0.25
 _EPS = 1e-9
+# Abgleich erlaubter Starts mit dem Raster: dieselbe Zeit, nur anders gerundet.
+_ERLAUBT_TOL_S = 1e-6
 
 Einstieg = Literal["anfang", "hoehepunkt"]
 
@@ -56,6 +59,26 @@ def _fenster_energie(energie: list[float], schritt_s: float, start: float, laeng
     return summe / laenge
 
 
+def taktstarts(grid: BeatGrid, dauer_s: float, ziel_s: float) -> list[float]:
+    """Alle Taktanfaenge, ab denen ziel_s Musik noch in den Song passt."""
+    takt = grid.bar_length_s
+    if not math.isfinite(takt) or takt <= 0:  # sonst endlos
+        raise VideoFehler(f"Ungueltige Taktlaenge im Raster: {takt}")
+    if not math.isfinite(ziel_s) or not math.isfinite(dauer_s):
+        raise VideoFehler(f"Ungueltige Laenge: Song {dauer_s}, Ziel {ziel_s}")
+    starts: list[float] = []
+    k = 0
+    while grid.first_downbeat_s + k * takt + ziel_s <= dauer_s + _EPS:
+        starts.append(grid.first_downbeat_s + k * takt)
+        k += 1
+    return starts
+
+
+def schlusstakte(takt_s: float, ziel_s: float) -> int:
+    """Wie viele ganze Takte vor dem Ausklang passen (ungerastet)."""
+    return math.floor((ziel_s - AUSKLANG_MIN_S) / takt_s + _EPS)
+
+
 def zuschnitt_planen(
     grid: BeatGrid,
     dauer_s: float,
@@ -63,7 +86,14 @@ def zuschnitt_planen(
     einstieg: Einstieg,
     energie: list[float],
     beats: np.ndarray | None = None,
+    erlaubt: Sequence[float] | None = None,
 ) -> Zuschnitt:
+    """Plant den Zuschnitt.
+
+    `erlaubt`: nur diese Taktanfaenge kommen als Start in Frage (z. B. die, deren
+    Fenster den Zielpegel erreichen). Leer ist ein Fehler; den Rueckfall auf alle
+    Starts entscheidet der Aufrufer.
+    """
     takt = grid.bar_length_s
     if not math.isfinite(takt) or takt <= 0:
         raise VideoFehler(f"Ungueltige Taktlaenge im Raster: {takt}")
@@ -78,11 +108,13 @@ def zuschnitt_planen(
             f"Das Ziel von {ziel_s:.1f} s ist laenger als der Song traegt ({tragbar:.1f} s)"
         )
 
-    starts: list[float] = []
-    k = 0
-    while grid.first_downbeat_s + k * takt + ziel_s <= dauer_s + _EPS:
-        starts.append(grid.first_downbeat_s + k * takt)
-        k += 1
+    starts = taktstarts(grid, dauer_s, ziel_s)
+    if erlaubt is not None:
+        if len(erlaubt) == 0:
+            raise VideoFehler("Kein erlaubter Start fuer den Zuschnitt")
+        starts = [s for s in starts if any(abs(s - e) <= _ERLAUBT_TOL_S for e in erlaubt)]
+        if not starts:
+            raise VideoFehler("Kein erlaubter Start liegt auf einem tragfaehigen Taktanfang")
 
     if not starts:  # Gleitkomma-Rauschen an der Grenze: wie "zu lang" behandeln
         raise VideoFehler(
@@ -105,7 +137,7 @@ def zuschnitt_planen(
         start = eingerastet
     ende = start + ziel_s
 
-    takte = math.floor((ziel_s - AUSKLANG_MIN_S) / takt + _EPS)
+    takte = schlusstakte(takt, ziel_s)
     while takte >= 1:
         schluss = _einrasten(start + takte * takt, beats, toleranz_s)
         if ende - schluss >= AUSKLANG_MIN_S - _EPS:

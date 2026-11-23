@@ -32,9 +32,14 @@ class VideoBefund(BaseModel):
 
 
 def videomusik_pruefen(
-    datei: Path, samples: int, lufs_ziel: float, sr: int = SR
+    datei: Path, samples: int, lufs_ziel: float, sr: int = SR, schluss_s: float | None = None
 ) -> list[VideoBefund]:
-    """Alle Abweichungen des gerenderten Stuecks; leere Liste = in Ordnung."""
+    """Alle Abweichungen des gerenderten Stuecks; leere Liste = in Ordnung.
+
+    schluss_s ist die Zeit des letzten Taktanfangs im Stueck. Danach klingt es
+    aus und faellt zu null; eine Stille dort ist gewollt und keine Luecke. Ohne
+    Angabe zaehlt jede Stille mitten im Stueck.
+    """
     datei = Path(datei)
     try:
         signal, rate = sf.read(str(datei), dtype="float32", always_2d=True)
@@ -83,6 +88,8 @@ def videomusik_pruefen(
 
     mono = np.max(np.abs(signal), axis=1) if signal.size else np.zeros(0, dtype=np.float32)
     for start in luecken(mono, sr):
+        if schluss_s is not None and start >= schluss_s:
+            continue
         befunde.append(VideoBefund(
             art="luecke",
             text=f"{datei.name}: bei {start:.2f} s steht laenger als 0,5 s Stille mitten im Stueck.",

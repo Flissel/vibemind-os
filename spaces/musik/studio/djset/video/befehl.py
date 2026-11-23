@@ -30,6 +30,7 @@ from djset.export import to_mp3
 from djset.render.stretch import SR, RenderFailed, RenderToolMissing
 from djset.run import Run, slugify
 from djset.tempo import tempo_unsicher
+from djset.video.fenster import fenster_messen, tauglich
 from djset.video.klang import videomusik_rendern
 from djset.video.laenge import (
     VideoFehler,
@@ -42,7 +43,7 @@ from djset.video.pruefung import videomusik_pruefen
 from djset.video.unterlegen import ORIGINALTON_DB, unterlegen
 from djset.video.vertrag import VideomusikErgebnis, VideoWahl, laura_clip
 from djset.video.waehler import kandidaten, video_waehlen
-from djset.video.zuschnitt import traegt_s, zuschnitt_planen
+from djset.video.zuschnitt import schlusstakte, taktstarts, traegt_s, zuschnitt_planen
 
 WAV = "videomusik.wav"
 MP3 = "videomusik.mp3"
@@ -282,8 +283,23 @@ def _video(
     except Exception as fehler:  # noqa: BLE001 - ohne Beats rastet der Zuschnitt nur nicht ein
         beats = None
         hinweise.append(f"Beats nicht erkannt ({fehler}); der Schnitt liegt auf dem Raster.")
+    # Nur Starts, deren Fenster in der wirklich gerenderten Quelle den Zielpegel
+    # unter dem Spitzendeckel erreichen koennen und vor dem Schluss keine Luecke
+    # haben. Gibt es keinen, gilt der alte Weg mit allen Starts, samt Hinweis.
+    alle_starts = taktstarts(messung.beatgrid, messung.duration_s, ziel_s)
+    schluss_im_stueck = schlusstakte(messung.beatgrid.bar_length_s, ziel_s) * messung.beatgrid.bar_length_s
+    fenster = fenster_messen(quelle, alle_starts, ziel_s, schluss_im_stueck, lufs_ziel=lufs_ziel)
+    erlaubt = [f.start_s for f in fenster if tauglich(f, lufs_ziel)]
+    if not erlaubt:
+        bester = max((f.erreichbar_lufs for f in fenster), default=-math.inf)
+        erreichbar = f"{bester:.1f}" if math.isfinite(bester) else "keiner"
+        hinweise.append(
+            f"kein Ausschnitt von {song.titel} erreicht {lufs_ziel:.1f} LUFS unter dem "
+            f"Spitzendeckel; bester erreichbarer Pegel {erreichbar} LUFS"
+        )
     zuschnitt = zuschnitt_planen(
-        messung.beatgrid, messung.duration_s, ziel_s, wahl.einstieg, messung.energy, beats
+        messung.beatgrid, messung.duration_s, ziel_s, wahl.einstieg, messung.energy, beats,
+        erlaubt=erlaubt or None,
     )
     run.write_text("zuschnitt.json", json.dumps(dataclasses.asdict(zuschnitt), indent=2))
 
@@ -293,7 +309,9 @@ def _video(
         hinweise.append(
             f"Der Pegel ist am True-Peak-Deckel begrenzt: {pegel.lufs:.1f} LUFS statt {lufs_ziel:.1f}."
         )
-    befunde = videomusik_pruefen(wav, samples, lufs_ziel)
+    befunde = videomusik_pruefen(
+        wav, samples, lufs_ziel, schluss_s=zuschnitt.schluss_s - zuschnitt.start_s
+    )
     to_mp3(wav, run.path(MP3))
 
     clip = (

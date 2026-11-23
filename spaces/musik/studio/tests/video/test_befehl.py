@@ -33,7 +33,12 @@ def _wahl(song_id: str = "a", gesang: bool = False) -> str:
     )
 
 
-def _bestand(tmp_path: Path, ids: tuple[str, ...] = ("a",)) -> Path:
+def _bestand(
+    tmp_path: Path,
+    ids: tuple[str, ...] = ("a",),
+    intro_leise_s: float = 0.0,
+    mit_sinus: bool = True,
+) -> Path:
     """Songs aus Click-Tracks (126 BPM, 16 Takte, rund 30 s) ohne Messung:
     der Befehl misst sie selbst nach."""
     daten = tmp_path / "daten"
@@ -45,8 +50,16 @@ def _bestand(tmp_path: Path, ids: tuple[str, ...] = ("a",)) -> Path:
         # den True-Peak-Deckel. Ein tiefer Ton darunter macht ihn pegelbar,
         # die Klicks tragen weiter das Raster.
         signal, rate = sf.read(wav, dtype="float64")
-        signal = signal + 0.6 * np.sin(2 * np.pi * 200.0 * np.arange(len(signal)) / rate)
-        sf.write(wav, signal / np.max(np.abs(signal)), rate, subtype="FLOAT")
+        if mit_sinus:
+            signal = signal + 0.6 * np.sin(2 * np.pi * 200.0 * np.arange(len(signal)) / rate)
+        signal = signal / np.max(np.abs(signal))
+        if intro_leise_s:
+            # Fast leeres Intro (-50 dB) mit einem lauten Schlag kurz vor seinem Ende:
+            # kein Fenster, das dort beginnt, kann den Zielpegel erreichen.
+            signal[: round(intro_leise_s * rate)] *= 0.003
+            schlag = round((intro_leise_s - 0.6) * rate)
+            signal[schlag: schlag + 20] = 0.9
+        sf.write(wav, signal, rate, subtype="FLOAT")
         eintrag = SongEintrag(
             id=song_id,
             titel=song_id,
@@ -337,3 +350,31 @@ def test_main_video_reicht_die_argumente_durch(tmp_path, monkeypatch):
     cli.main(["video", "--wunsch", "x", "--sekunden", "12", "--unterlegen"])
     assert gesehen["unterlegen_db"] == -6.0
     assert gesehen["video"] is None
+
+def test_leises_intro_mit_schlag_wird_uebersprungen(tmp_path, budget):
+    daten = _bestand(tmp_path, intro_leise_s=12.0)
+
+    code = _video(daten, ZaehlenderClient([_wahl()]), budget, aus_sekunden(12))
+
+    assert code == 0
+    lauf = _lauf(daten)
+    zuschnitt = json.loads((lauf / "zuschnitt.json").read_text(encoding="utf-8"))
+    # Der erste Taktanfang (nahe 0) laege im leisen Intro: gewaehlt wird ein Start dahinter.
+    assert zuschnitt["start_s"] > 3.0
+    ergebnis = VideomusikErgebnis.model_validate_json(
+        (lauf / "videomusik.json").read_text(encoding="utf-8")
+    )
+    assert abs(ergebnis.lufs - (-14.0)) <= 1.0
+    assert "erreicht" not in (lauf / "bericht.md").read_text(encoding="utf-8")
+
+
+def test_ohne_tauglichen_ausschnitt_laeuft_der_alte_weg_mit_hinweis(tmp_path, budget):
+    # Ein Clicktrack ohne Untergrund ist ueberall zu spitz fuer -14 LUFS.
+    daten = _bestand(tmp_path, mit_sinus=False)
+
+    code = _video(daten, ZaehlenderClient([_wahl()]), budget, aus_sekunden(12))
+
+    assert code == 2
+    bericht = (_lauf(daten) / "bericht.md").read_text(encoding="utf-8")
+    assert "kein Ausschnitt von a erreicht -14.0 LUFS unter dem Spitzendeckel" in bericht
+    assert "bester erreichbarer Pegel" in bericht
