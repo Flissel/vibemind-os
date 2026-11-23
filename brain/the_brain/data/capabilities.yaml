@@ -1773,6 +1773,28 @@
     primary: [brain-desktop]
     supporting: []
 
+- capability: desktop_task_start
+  description: "start a desktop task typed by a human, beginning with 'Desktop-Aufgabe:'; the brain reads the screen, asks brain-desktop for exactly one action per round, checks it against a contract and executes it"
+  anchor_phrases:
+    - "Desktop-Aufgabe: Öffne den Editor und schreibe Hallo Welt"
+    - "Desktop-Aufgabe: Suche im Browser nach dem Wetter"
+  # Nur mit Vorsatz am Satzanfang. Der Plan-Ausfuehrer nimmt den Satz aus der getippten
+  # Absicht (ohne Vorsatz), nicht aus dem gerenderten Argument, und startet nur einmal.
+  match_patterns:
+    - "^\\s*desktop[-\\s]?aufgabe\\s*:\\s*\\S"
+  execution_target: "mcp:brain-desktop:spaces-desktop:desktop_task_start"
+  arg_kwarg: task
+  agents:
+    primary: [brain-desktop]
+    supporting: []
+  validator:
+    # Zweiter Weg: das Aufgabenbuch selbst (desktop_task_status). Die Aufgabe muss mit genau
+    # diesem Satz dort stehen und laufen oder fertig sein. report: gestartet ist sie schon.
+    kind: truth:desktop_aufgabenbuch
+    on_fail: report
+    postcondition:
+      check: desktop_aufgabenbuch
+
 - capability: desktop_task_status
   description: "read the state and the steps of the current desktop task from the task journal"
   anchor_phrases:

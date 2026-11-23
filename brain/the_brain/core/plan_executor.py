@@ -1838,6 +1838,25 @@ class PlanExecutor:
                     contract_pass=False, reward=-1.0,
                 )
 
+        # desktop.task: Der Auftragssatz kommt aus der getippten Absicht ("Desktop-Aufgabe: ..."),
+        # ohne den Vorsatz, nie aus dem gerenderten Argument. Eine Aufgabe wird nie doppelt gestartet.
+        from .desktop_schleife import ist_aufgabenstart as _ist_desktop_start
+        if _ist_desktop_start(target):
+            from .desktop_schleife_contract import auftrag_aus_absicht
+            _desktop_auftrag = auftrag_aus_absicht(plan_ctx.get("plan_intent", ""))
+            if _desktop_auftrag is None:
+                return HopResult(
+                    step_id=hop.step_id, ok=False,
+                    error='desktop.task: der Satz muss mit "Desktop-Aufgabe:" beginnen',
+                    capability=hop.capability, target=target,
+                    rendered_arg=rendered_arg, kg_hits=kg_hits,
+                    elapsed_s=time.time() - t0,
+                    contract_pass=False, reward=-1.0,
+                )
+            rendered_arg = _desktop_auftrag
+            hop.arg_kwarg = "task"
+            single_plan_attempt = True
+
         # Build the right executor for the target prefix (Phase 4)
         try:
             if _k1_auftrag:
@@ -1973,10 +1992,19 @@ class PlanExecutor:
             # steht in desktop_schleife; ohne "getippt" und ohne Tagesrest bricht sie ab.
             from .desktop_schleife import ist_aufgabenstart, nach_aufgabenstart
             if ist_aufgabenstart(target):
+                # Der Hop antwortet sofort ("Aufgabe laeuft, Kennung ..."); die Schleife laeuft
+                # im Hintergrund weiter, jeder ihrer festen Aufrufe mit eigenem Laufzeit-Kontext.
                 ok, result_payload, err = nach_aufgabenstart(
                     result_payload,
                     herkunft=(plan_ctx or {}).get("eingabe_herkunft"),
                     tagesrest=(plan_ctx or {}).get("desktop_tagesrest"),
+                    laufzeit={
+                        "plan_id": plan_ctx.get("plan_id", "standalone-plan"),
+                        "plan_revision": plan_ctx.get("plan_revision", 1),
+                        "correlation_id": plan_ctx.get("trace_id") or plan_ctx.get("plan_id", "standalone-plan"),
+                        "step_id": hop.step_id,
+                    },
+                    hintergrund=True,
                 )
         if last.get("pending") is True:
             return HopResult(
