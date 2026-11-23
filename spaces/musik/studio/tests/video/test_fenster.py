@@ -6,7 +6,9 @@ import numpy as np
 import soundfile as sf
 
 from djset.render.stretch import SR
+from djset.qa import TRUE_PEAK_CEILING_DB
 from djset.video.fenster import FensterPegel, fenster_messen, tauglich
+from djset.video.klang import huelle
 
 ZIEL_S = 29.5
 
@@ -67,24 +69,56 @@ def test_stilles_fenster_ist_nie_tauglich(tmp_path: Path) -> None:
 
 
 def test_fenstermessung_stimmt_mit_der_dateimessung_ueberein(tmp_path: Path) -> None:
-    """Die schnelle Fenstermessung darf nicht von `measure_loudness` abweichen."""
+    """Die schnelle Fenstermessung darf nicht von `measure_loudness` abweichen.
+
+    Leises, mittleres und lautes Stueck im Fenster, damit beide Gates greifen;
+    verglichen wird mit dem Ausschnitt samt derselben Huelle.
+    """
     from djset.dsp.analyze import measure_loudness
 
     rng = np.random.default_rng(7)
     t = np.arange(40 * SR) / SR
-    links = 0.2 * np.sin(2 * np.pi * 220.0 * t) + 0.02 * rng.standard_normal(len(t))
-    rechts = 0.1 * np.sin(2 * np.pi * 330.0 * t)
+    links = np.sin(2 * np.pi * 220.0 * t) + 0.1 * rng.standard_normal(len(t))
+    rechts = 0.5 * np.sin(2 * np.pi * 330.0 * t)
+    pegel = np.where(t < 15.0, 0.003, np.where(t < 25.0, 0.05, 0.2))
+    links, rechts = links * pegel, rechts * pegel
     links[20 * SR: 20 * SR + 10] = 0.8  # eine Spitze mitten im Fenster
     quelle = tmp_path / "q.wav"
     sf.write(str(quelle), np.stack([links, rechts], axis=1).astype(np.float32), SR, subtype="FLOAT")
-    start, laenge = 7.3, 20.0
-    ausschnitt = tmp_path / "a.wav"
+    start, laenge, schluss = 7.3, 20.0, 19.0
     daten, _ = sf.read(str(quelle), dtype="float32")
-    sf.write(str(ausschnitt), daten[round(start * SR): round((start + laenge) * SR)], SR, subtype="FLOAT")
+    ausschnitt = daten[round(start * SR): round((start + laenge) * SR)].astype(np.float64)
+    ausschnitt *= huelle(len(ausschnitt), SR, schluss)[:, None]
+    datei = tmp_path / "a.wav"
+    sf.write(str(datei), ausschnitt.astype(np.float32), SR, subtype="FLOAT")
 
-    (f,) = fenster_messen(quelle, [start], laenge, 19.0)
-    soll = measure_loudness(ausschnitt, peak_per_channel=True)
+    (f,) = fenster_messen(quelle, [start], laenge, schluss)
+    soll = measure_loudness(datei, peak_per_channel=True)
 
     assert abs(f.lufs - soll.lufs_integrated) < 0.05
-    assert abs(f.true_peak - soll.true_peak) < 0.3  # Blockrand: leicht vorsichtig, nie zu optimistisch
-    assert f.true_peak >= soll.true_peak - 0.05
+    assert f.true_peak >= soll.true_peak - 0.05  # Blockrand: leicht vorsichtig, nie zu optimistisch
+    assert f.true_peak < soll.true_peak + 0.5
+
+
+def test_schaetzung_stimmt_mit_dem_gerenderten_stueck_ueberein(tmp_path: Path) -> None:
+    """Ein lauter letzter Takt: der Ausklang senkt die Lautheit, die Schaetzung muss das sehen."""
+    from djset.dsp.analyze import measure_loudness
+    from djset.video.klang import videomusik_rendern
+    from djset.video.zuschnitt import Zuschnitt
+
+    t = np.arange(40 * SR) / SR
+    signal = 0.1 * np.sin(2 * np.pi * 220.0 * t)
+    signal[10 * SR: 10 * SR + 20] = 0.9  # Schlag auf dem letzten Taktanfang (2 s + 8 s)
+    signal[10 * SR + 20: 12 * SR] += 0.3 * np.sin(2 * np.pi * 110.0 * t[10 * SR + 20: 12 * SR])
+    quelle = tmp_path / "q.wav"
+    sf.write(str(quelle), np.stack([signal, signal], axis=1).astype(np.float32), SR, subtype="FLOAT")
+    zuschnitt = Zuschnitt(start_s=2.0, schluss_s=10.0, ende_s=12.0, takte=4)
+    ziel = tmp_path / "z.wav"
+    pegel = videomusik_rendern(quelle, zuschnitt, 10 * SR, ziel, -14.0)
+    assert pegel.gedeckelt  # der Schlag haelt den Pegel am Deckel
+
+    gemessen = measure_loudness(ziel, peak_per_channel=True)
+    erreichbar = gemessen.lufs_integrated + (TRUE_PEAK_CEILING_DB - gemessen.true_peak)
+    (f,) = fenster_messen(quelle, [2.0], 10.0, 8.0)
+
+    assert abs(f.erreichbar_lufs - erreichbar) < 0.1

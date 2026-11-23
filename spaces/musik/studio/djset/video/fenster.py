@@ -18,7 +18,7 @@ import pyloudnorm
 from djset.dsp.analyze import _LEVEL_FLOOR_DB
 from djset.qa import TRUE_PEAK_CEILING_DB, luecken
 from djset.render.stretch import SR
-from djset.video.klang import EINBLENDE_S, _laden
+from djset.video.klang import _laden, huelle
 from djset.video.laenge import VideoFehler
 from djset.video.pruefung import LUFS_TOLERANZ
 
@@ -66,11 +66,11 @@ def _spitzen_je_block(signal: np.ndarray, sr: int) -> np.ndarray:
     return spitzen
 
 
-def _gewichtet(signal: np.ndarray, sr: int) -> np.ndarray:
-    """Die kumulierte K-bewertete Leistung (beide Kanaele), Probe fuer Probe.
+def _leistung(signal: np.ndarray, sr: int) -> np.ndarray:
+    """Die K-bewertete Leistung (beide Kanaele), Probe fuer Probe.
 
     Das K-Filter (BS.1770) laeuft einmal ueber die ganze Quelle; ein Fenster liest
-    seine Bloecke dann aus der Summe. Der Einschwingfehler des Filters am
+    seine Bloecke dann aus der Leistung. Der Einschwingfehler des Filters am
     Fensteranfang liegt weit unter 0,01 LU.
     """
     gefiltert = signal.astype(np.float64)
@@ -78,16 +78,18 @@ def _gewichtet(signal: np.ndarray, sr: int) -> np.ndarray:
         for kanal in range(gefiltert.shape[1]):  # die Stufen filtern nur eindimensional
             gefiltert[:, kanal] = stufe.apply_filter(gefiltert[:, kanal])
     leistung = np.sum(np.square(gefiltert), axis=1)
-    return np.concatenate(([0.0], np.cumsum(leistung)))
+    return leistung
 
 
-def _lautheit(summe: np.ndarray, anfang: int, laenge: int, sr: int) -> float:
+def _lautheit(leistung: np.ndarray, sr: int) -> float:
     """Integrierte Lautheit nach BS.1770 (400-ms-Bloecke, 75 % Ueberlappung, beide Gates)."""
     block = round(_GATE_BLOCK_S * sr)
     schritt = round(_GATE_BLOCK_S * (1 - _GATE_UEBERLAPPUNG) * sr)
+    laenge = len(leistung)
     if laenge < block:
         return _LEVEL_FLOOR_DB
-    von = anfang + np.arange(0, laenge - block + 1, schritt)
+    summe = np.concatenate(([0.0], np.cumsum(leistung)))
+    von = np.arange(0, laenge - block + 1, schritt)
     z = (summe[von + block] - summe[von]) / block
     z = z[z > 0]
     l = -0.691 + 10.0 * np.log10(z)
@@ -122,7 +124,7 @@ def fenster_messen(
     schluss_n = max(round(schluss_im_stueck_s * sr), 0)
     block = round(_BLOCK_S * sr)
     spitzen = _spitzen_je_block(signal, sr)
-    summe = _gewichtet(signal, sr)
+    leistung = _leistung(signal, sr)
     betrag = np.max(np.abs(signal), axis=1)  # wie die Pruefung: lauterer Kanal je Probe
     ergebnis: list[FensterPegel] = []
     for start in starts:
@@ -130,7 +132,10 @@ def fenster_messen(
         stueck = betrag[anfang:anfang + laenge]
         if len(stueck) < sr // 2:  # unter 0,5 s misst pyloudnorm nichts mehr
             raise VideoFehler(f"{name}: Fenster ab {start:.2f} s ist zu kurz zum Messen")
-        lufs = _lautheit(summe, anfang, len(stueck), sr)
+        # Das Stueck wird mit Einblendung und Ausklang gerendert; der Ausklang senkt die
+        # integrierte Lautheit. Gemessen wird deshalb mit derselben Huelle wie im Render.
+        kurve = huelle(laenge, sr, schluss_im_stueck_s)[: len(stueck)]
+        lufs = _lautheit(leistung[anfang:anfang + len(stueck)] * kurve**2, sr)
         spitze = float(np.max(spitzen[anfang // block: -(-(anfang + len(stueck)) // block)]))
         spitze_db = 20.0 * math.log10(spitze) if spitze > 0 else _LEVEL_FLOOR_DB
         if not math.isfinite(lufs) or lufs <= _STILLE_LUFS:
@@ -138,9 +143,7 @@ def fenster_messen(
         else:
             erreichbar = lufs + (TRUE_PEAK_CEILING_DB - spitze_db)
         gain_db = min(lufs_ziel - lufs, TRUE_PEAK_CEILING_DB - spitze_db) if math.isfinite(erreichbar) else 0.0
-        gehoert = stueck[:schluss_n] * 10.0 ** (gain_db / 20.0)
-        einblende = min(round(EINBLENDE_S * sr), len(gehoert))
-        gehoert[:einblende] *= np.linspace(0.0, 1.0, einblende, endpoint=False)
+        gehoert = (stueck * kurve)[:schluss_n] * 10.0 ** (gain_db / 20.0)
         ergebnis.append(FensterPegel(
             start_s=start,
             lufs=lufs,

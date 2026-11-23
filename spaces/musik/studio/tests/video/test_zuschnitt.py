@@ -117,13 +117,15 @@ def test_erlaubt_schraenkt_anfang_auf_den_fruehesten_erlaubten_ein() -> None:
 
 
 def test_erlaubt_schraenkt_hoehepunkt_ein() -> None:
-    # Ohne Einschraenkung gewinnt das laute Fenster bei ~25 s; erlaubt sind nur frueher liegende.
-    energie = [0.2] * 3 + [0.9] * 2 + [0.2] * 3
+    # Energie je 4 Takte (8 s). Frei gewinnt das laute Fenster bei ~24 s. Erlaubt sind
+    # nur Starts 0.5, 2.5, 4.5 (Fenster 16 s): der mit der hoechsten Energie unter ihnen
+    # gewinnt, auch wenn er nicht der fruehste ist.
+    energie = [0.2, 0.2, 0.2, 0.9, 0.9, 0.2, 0.2, 0.2]
     frei = zuschnitt_planen(GRID, DAUER, 16.0, "hoehepunkt", energie)
     assert frei.start_s >= 24.0
-    z = zuschnitt_planen(GRID, DAUER, 16.0, "hoehepunkt", energie, erlaubt=[0.5, 2.5, 4.5])
-    assert z.start_s in (0.5, 2.5, 4.5)
-
+    erlaubt = [0.5, 12.5, 14.5]
+    z = zuschnitt_planen(GRID, DAUER, 16.0, "hoehepunkt", energie, erlaubt=erlaubt)
+    assert z.start_s == pytest.approx(14.5)
 
 def test_leeres_erlaubt_ist_ein_videofehler() -> None:
     with pytest.raises(VideoFehler, match="erlaubt"):

@@ -63,6 +63,27 @@ def _messen(pfad: Path, quelle: Path) -> Loudness:
     return werte
 
 
+def huelle(samples: int, sr: int, schluss_im_stueck_s: float) -> np.ndarray:
+    """Die Verstaerkung je Probe des fertigen Stuecks: Einblendung, dann Ausklang.
+
+    Die Einblendung ist winzig (gegen Knacken). Ab dem letzten Taktanfang faellt
+    eine Kosinus-Halbwelle von 1 exakt auf 0 bis zur letzten Probe. Auch die
+    Fensterschaetzung (enster.py) nutzt sie, damit sie das Stueck so misst, wie
+    es gerendert wird.
+    """
+    kurve = np.ones(samples, dtype=np.float64)
+    einblende = min(round(EINBLENDE_S * sr), samples)
+    if einblende > 0:
+        kurve[:einblende] *= np.linspace(0.0, 1.0, einblende, endpoint=False)
+    aus_start = min(max(round(schluss_im_stueck_s * sr), 0), samples - 1)
+    laenge = samples - aus_start
+    if laenge > 1:
+        kurve[aus_start:] *= 0.5 * (1.0 + np.cos(np.linspace(0.0, np.pi, laenge)))
+    else:
+        kurve[-1] = 0.0
+    return kurve
+
+
 def videomusik_rendern(
     quelle: Path,
     zuschnitt: Zuschnitt,
@@ -84,18 +105,7 @@ def videomusik_rendern(
     schnitt = signal[anfang:anfang + samples]
     stueck[: len(schnitt)] = schnitt
 
-    einblende = min(round(EINBLENDE_S * sr), samples)
-    if einblende > 0:
-        stueck[:einblende] *= np.linspace(0.0, 1.0, einblende, endpoint=False)[:, None]
-
-    # Ausblenden: von schluss_s bis zur letzten Probe, 1 -> exakt 0.
-    aus_start = min(max(round((zuschnitt.schluss_s - zuschnitt.start_s) * sr), 0), samples - 1)
-    laenge = samples - aus_start
-    if laenge > 1:
-        kurve = 0.5 * (1.0 + np.cos(np.linspace(0.0, np.pi, laenge)))
-        stueck[aus_start:] *= kurve[:, None]
-    else:
-        stueck[-1] = 0.0
+    stueck *= huelle(samples, sr, zuschnitt.schluss_s - zuschnitt.start_s)[:, None]
 
     ziel.parent.mkdir(parents=True, exist_ok=True)
     # Der ungepegelte Zwischenstand liegt in einem Temp-Ordner neben dem Ziel:
