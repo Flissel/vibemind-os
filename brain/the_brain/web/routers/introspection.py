@@ -2546,6 +2546,20 @@ def _feste_antwort(plan, exec_result, ideen_fest: bool, vorgabe: str, kontext: A
         if len(hops) != 1:
             return None
         capability = hops[0].capability or ""
+        if capability.startswith("desktop_"):
+            from core.desktop_antwort import antwort_fuer_desktop
+            # Desktop: fester Satz aus dem Werkzeug-Ergebnis, Space "desktop", nie Rohtext.
+            schritt = (exec_result.get("executed") or {}).get(hops[0].step_id) or {}
+            if not isinstance(schritt, dict):
+                schritt = {}
+            ok = bool(exec_result.get("ok"))
+            text = antwort_fuer_desktop(capability, ok, schritt.get("result"), schritt.get("error"))
+            if text is None:
+                return None
+            antwort_desktop: Dict[str, Any] = {"final_text": text, "space": "desktop"}
+            if not ok:
+                antwort_desktop["fehler"] = str(schritt.get("error") or "")
+            return antwort_desktop
         alt = (str(getattr(plan, "plan_id", "")).startswith("shortcut_")
                and capability in ("aenderung_zurueck", "bubble_list"))
         if not ideen_fest and not alt:
