@@ -467,3 +467,18 @@ Der ursprüngliche Vorschlag:
 5. Nachprüfen mit einem zweiten Blick: Der Eintrag ist ausgewählt. Dafür muss der
    Desktop-Dienst den Auswahlzustand liefern (Muster "SelectionItem", heute nicht in der
    Antwort); bis dahin ersatzweise ein geänderter Fenstertitel, sonst UNVERIFIED.
+
+## 8. Nachmessung am echten Dienst und Fensterliste (23.11.2026, abends)
+
+Dienst kurz gestartet (Datenbank im Arbeitsordner der Sitzung, kein Schalter zum Ausführen),
+nur gelesen, danach wieder aus. Eigene Testseiten in einem eigenen Edge-Profil, nichts Privates.
+
+| Was | Ergebnis |
+|---|---|
+| Edge-Reparatur: Edge-Fenster ohne Anmeldefeld ("Testseite Leer") | nicht gesperrt, 20 Elemente, 375 ms |
+| IsPassword: Kennwortfeld ohne verräterischen Namen ("Geheimfeld", Titel neutral) | gesperrt; Titel allein sperrt nicht, 1 Element mit `is_password` |
+| `desktop_fenster` am echten Rechner | 8 Fenster, beide Testseiten in der Liste, unter 1 ms |
+
+Grenze von `desktop_fenster`: Es prüft Programm und Titel, nicht die Bedienelemente jedes
+Fensters. Eine Anmeldeseite mit neutralem Titel steht mit ihrem Titel in der Liste (nur der
+Titel, kein Inhalt). Der Blick auf das aktive Fenster sperrt sie weiterhin.
