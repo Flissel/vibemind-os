@@ -9,8 +9,8 @@ Deshalb liest die App den Stand selbst: ``GET /api/agent-auftraege/{id}/stand`` 
 Hier steht nur die reine Abbildung Zeile -> Stand. Die Dauer gibt es erst mit dem
 Abschluss (angelegt bis beendet, beim White Paper über alle Teile).
 
-Stände: ``laeuft`` (ohne Dauer), ``fertig``, ``vorschlag``, ``verworfen``, ``abgebrochen``,
-``wartet``, ``fehler``. ``ok`` ist nur bei ``fehler`` False; ``vorschlag``, ``verworfen`` und
+Stände: ``laeuft`` (ohne Dauer), ``fertig``, ``vorschlag``, ``uebernommen``, ``verworfen``,
+``abgebrochen``, ``wartet``, ``fehler``. ``ok`` ist nur bei ``fehler`` False; ``vorschlag``, ``verworfen`` und
 ``abgebrochen`` sind Hinweise (``hinweis: true``), keine Fehler.
 """
 from __future__ import annotations
@@ -27,6 +27,7 @@ _STATUS_SATZ = {
     "abgelehnt": "Der Auftrag wurde abgelehnt; es wurde nichts geändert.",
     "fehler": "Der Auftrag ist gescheitert; es wurde nichts geändert.",
 }
+UEBERNOMMEN_SATZ = "Der Vorschlag ist übernommen."
 
 
 def ist_kennung(wert: Any) -> bool:
@@ -85,6 +86,9 @@ def stand_einer_zeile(zeile: Mapping[str, Any]) -> dict[str, Any]:
         # Nachmessung 23.11.2026: nach "Vorschlag verwerfen" stand hier weiter "vorschlag".
         return {"stand": "verworfen", "ok": True, "hinweis": True,
                 "meldung": "Der Vorschlag ist verworfen; an der Notiz ist nichts geändert."}
+    if rueckweg == "vorschlag" and pruefung.get("vorschlag_erledigt") == "uebernommen":
+        # Lauf 7: nach dem Übernehmen blieb der Stand auf "vorschlag".
+        return {"stand": "uebernommen", "ok": True, "meldung": UEBERNOMMEN_SATZ}
     if rueckweg == "vorschlag":
         return {"stand": "vorschlag", "ok": True, "hinweis": True, "meldung": meldung,
                 "saetze": _vorschlag_saetze(zeile)}

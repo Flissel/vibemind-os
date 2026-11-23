@@ -2734,12 +2734,26 @@ def _vorschlag_behandeln(art: str, intent: str, kontext: Any):
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[vorschlag] nicht lesbar: {type(e).__name__}")
         return None, _vs.NICHT_LESBAR, {"hinweis": True}
+    def _schon_erledigt():
+        # Lauf 7: kein offener Vorschlag mehr, der letzte ist aber schon uebernommen/verworfen.
+        try:
+            erledigte = tabelle.letzter_erledigter_vorschlag(_vs.seit_iso(), bubble_id)
+            if erledigte is None and bubble_id is not None:
+                erledigte = tabelle.letzter_erledigter_vorschlag(_vs.seit_iso())
+        except Exception:  # noqa: BLE001
+            return None
+        return _vs.schon_erledigt(art, erledigte)
+
+    if zeile is None and art != "zeigen":
+        satz = _schon_erledigt()
+        if satz is not None:
+            return None, satz, {"hinweis": True}
     if art == "zeigen" or zeile is None:
         return None, _vs.zeigen(zeile), ({} if zeile is not None else {"hinweis": True})
     if art == "verwerfen":
-        erledigt = tabelle.vorschlag_erledigen(zeile, "verworfen")
-        return None, ("Der Vorschlag ist verworfen; an der Notiz ist nichts geändert." if erledigt
-                      else _vs.KEINER), {}
+        if tabelle.vorschlag_erledigen(zeile, "verworfen"):
+            return None, "Der Vorschlag ist verworfen; an der Notiz ist nichts geändert.", {}
+        return None, (_schon_erledigt() or _vs.KEINER), {"hinweis": True}
     aufrufe, satz = _vs.uebernehmen(zeile)
     if not aufrufe:
         return None, satz, {"hinweis": True}

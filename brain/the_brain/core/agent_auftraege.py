@@ -136,6 +136,16 @@ class AuftragsTabelle:
         zeilen = self._req("GET", params=params)
         return zeilen[0] if isinstance(zeilen, list) and zeilen and isinstance(zeilen[0], dict) else None
 
+    def letzter_erledigter_vorschlag(self, seit_iso: str, bubble_id: Optional[str] = None) -> Optional[dict]:
+        """Der juengste schon erledigte Vorschlag (uebernommen oder verworfen), optional einer Bubble."""
+        params = {"pruefung->>rueckweg": "eq.vorschlag", "pruefung->>vorschlag_erledigt": "not.is.null",
+                  "beendet": f"gt.{seit_iso}", "order": "beendet.desc", "limit": "1",
+                  "select": "id,capability,beendet,pruefung,uebergabe"}
+        if bubble_id is not None:
+            params["uebergabe->rueckweg->>bubble_id"] = f"eq.{bubble_id}"
+        zeilen = self._req("GET", params=params)
+        return zeilen[0] if isinstance(zeilen, list) and zeilen and isinstance(zeilen[0], dict) else None
+
     def vorschlag_erledigen(self, zeile: dict, wie: str) -> bool:
         """Vorschlag als erledigt markieren ("uebernommen"/"verworfen"); False, wenn schon erledigt."""
         pruefung = {**(zeile.get("pruefung") or {}), "vorschlag_erledigt": wie}
