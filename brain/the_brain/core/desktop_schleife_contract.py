@@ -311,6 +311,48 @@ SCHLEIFEN_WERKZEUGE = (
 )
 # Was zusaetzlich zu den schon freigegebenen Werkzeugen ins Verzeichnis (mcp_tools) muss.
 NEU_FREIZUGEBEN = ("desktop_elements", "desktop_task_step")
+# Das Ereignis im Verzeichnis, ueber das jedes Werkzeug der Schleife gebunden sein MUSS. Der
+# Laufzeit-Kontext eines festen Aufrufs entsteht nur, wenn das Verzeichnis genau so bindet.
+EREIGNISSE = {
+    "desktop_task_status": "desktop.task.status",
+    "desktop_elements": "desktop.elements",
+    "desktop_screen_read": "desktop.read",
+    "desktop_task_step": "desktop.task.step",
+    "desktop_task_finish": "desktop.task.stop",
+}
+
+# Eine Desktop-Aufgabe beginnt nur mit diesem Vorsatz. Ins Aufgabenbuch kommt der Rest des Satzes.
+_VORSATZ = re.compile(r"^\s*desktop[-\s]?aufgabe\s*:\s*(\S.*?)\s*$", re.IGNORECASE | re.DOTALL)
+_FEHLERCODE = re.compile(r"[a-z][a-z_]{0,39}")
+
+
+def auftrag_aus_absicht(absicht: Any) -> Optional[str]:
+    """Der Auftragssatz ohne den Vorsatz "Desktop-Aufgabe:", sonst None.
+
+    Kommt aus der getippten Absicht des Plans, nicht aus dem Argument, das der Planer
+    gerendert hat (die Abkuerzung ueber Muster setzt dort nur das letzte Wort ein).
+    """
+    if not isinstance(absicht, str):
+        return None
+    treffer = _VORSATZ.match(absicht)
+    if not treffer:
+        return None
+    auftrag = " ".join(treffer.group(1).split())
+    return auftrag if 0 < len(auftrag) <= 500 else None
+
+
+def fehlercode_aus_ergebnis(ergebnis: Any) -> str:
+    """Nur der Code einer Fehlerantwort des Werkzeug-Dienstes ("not_aus", "aufgabe_beendet").
+
+    Freier Text bleibt draussen: Er kann Bildschirmtext enthalten.
+    """
+    try:
+        texte = [t.get("text") for t in ergebnis.get("content") if isinstance(t, Mapping)]
+        fehler = json.loads(texte[0]).get("error")
+        code = str(fehler).split(":", 1)[0].strip()
+    except Exception:  # noqa: BLE001 - jede unlesbare Form heisst: kein Code
+        return "werkzeug_fehler"
+    return code if _FEHLERCODE.fullmatch(code) else "werkzeug_fehler"
 
 
 class AufrufAbgelehnt(Exception):

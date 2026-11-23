@@ -14,13 +14,18 @@ Werkzeug-Dienst; diese Datei setzt nichts.
 """
 from __future__ import annotations
 
+import itertools
 import json
+import logging
+import threading
 import time
 from typing import Any, Callable, Mapping, Optional
 
 from .desktop_schleife_contract import (
-    AGENT, ANWEISUNG, AktionAbgelehnt, AufrufAbgelehnt, ZIEL_SERVER, pruefe_aktion, pruefe_aufruf,
+    AGENT, ANWEISUNG, EREIGNISSE, AktionAbgelehnt, AufrufAbgelehnt, ZIEL_SERVER, pruefe_aktion, pruefe_aufruf,
 )
+
+logger = logging.getLogger(__name__)
 
 MAX_RUNDEN = 8
 # Die Aufgabe laeuft im Werkzeug-Dienst nach 600 s ab. Die Schleife hoert vorher auf, damit
@@ -36,6 +41,11 @@ Agent = Callable[[str], str]
 
 class WerkzeugFehler(Exception):
     """Ein fester Aufruf ist gescheitert; der Text ist die Meldung des Werkzeug-Dienstes."""
+
+
+class FreigabeAusstehend(Exception):
+    """Ein fester Aufruf wartet auf Freigabe in OpenFang. Bewusst KEIN WerkzeugFehler: Kein
+    ``except WerkzeugFehler`` der Schleife darf ihn schlucken; die Schleife haelt an."""
 
 
 def _frage(auftrag: str, runde: int, runden: int, schritte: list, text: str, elemente: list,
@@ -96,14 +106,14 @@ def fuehre_aufgabe(
         if not schon_beendet:
             try:
                 werkzeug("desktop_task_finish", {"task_id": task_id, "state": zustand, "result": text[:500]})
-            except WerkzeugFehler:
+            except (WerkzeugFehler, FreigabeAusstehend):
                 pass  # z. B. inzwischen von aussen beendet; der Stand im Buch gilt
         return {"task_id": task_id, "zustand": zustand, "grund": grund, "ergebnis": text, "agentenlaeufe": laeufe}
 
     def vermerk(text: str) -> None:
         try:
             werkzeug("desktop_task_step", {"task_id": task_id, "action": "note", "text": text[:120]})
-        except WerkzeugFehler:
+        except (WerkzeugFehler, FreigabeAusstehend):
             pass
 
     # Ein Agentenlauf je Runde: die Rundenzahl wird VOR dem Start gegen das Tagesbudget geprueft.
@@ -115,98 +125,173 @@ def fuehre_aufgabe(
     if runden < 1:
         return abschluss("fehlgeschlagen", "budget_erschoepft", "Das Tagesbudget von brain-desktop reicht fuer keine Runde.")
 
-    for runde in range(1, runden + 1):
-        try:
-            stand = werkzeug("desktop_task_status", {"task_id": task_id})
-        except WerkzeugFehler as fehler:
-            return abschluss("fehlgeschlagen", "aufgabenbuch_nicht_lesbar", str(fehler))
-        if not isinstance(stand, Mapping) or stand.get("zustand") != "laeuft":
-            zustand = str((stand or {}).get("zustand") or "unbekannt") if isinstance(stand, Mapping) else "unbekannt"
-            return abschluss(zustand, "von_aussen_beendet", "Die Aufgabe wurde ausserhalb der Schleife beendet.",
-                             schon_beendet=True)
-        if uhr() - start > ZEITGRENZE_SEKUNDEN:
-            return abschluss("fehlgeschlagen", "zeitgrenze", f"Zeitgrenze von {ZEITGRENZE_SEKUNDEN} s erreicht.")
+    try:
+        for runde in range(1, runden + 1):
+            try:
+                stand = werkzeug("desktop_task_status", {"task_id": task_id})
+            except WerkzeugFehler as fehler:
+                return abschluss("fehlgeschlagen", "aufgabenbuch_nicht_lesbar", str(fehler))
+            if not isinstance(stand, Mapping) or stand.get("zustand") != "laeuft":
+                zustand = str((stand or {}).get("zustand") or "unbekannt") if isinstance(stand, Mapping) else "unbekannt"
+                return abschluss(zustand, "von_aussen_beendet", "Die Aufgabe wurde ausserhalb der Schleife beendet.",
+                                 schon_beendet=True)
+            if uhr() - start > ZEITGRENZE_SEKUNDEN:
+                return abschluss("fehlgeschlagen", "zeitgrenze", f"Zeitgrenze von {ZEITGRENZE_SEKUNDEN} s erreicht.")
 
-        elemente, fenster, text, gesehen = [], "", "", False
-        try:
-            gelesen = werkzeug("desktop_elements", {})
-            elemente = list(gelesen.get("elemente") or [])[:MAX_ELEMENTE]
-            fenster = str(gelesen.get("fenster") or "")
-            gesehen = True
-        except WerkzeugFehler:
-            pass
-        try:
-            text = str(werkzeug("desktop_screen_read", {}).get("text") or "")[:MAX_BILDSCHIRMTEXT]
-            gesehen = True
-        except WerkzeugFehler:
-            pass
-        if not gesehen:
-            return abschluss("fehlgeschlagen", "bildschirm_nicht_lesbar", "Der Bildschirm konnte nicht gelesen werden.")
+            elemente, fenster, text, gesehen = [], "", "", False
+            try:
+                gelesen = werkzeug("desktop_elements", {})
+                elemente = list(gelesen.get("elemente") or [])[:MAX_ELEMENTE]
+                fenster = str(gelesen.get("fenster") or "")
+                gesehen = True
+            except WerkzeugFehler:
+                pass
+            try:
+                text = str(werkzeug("desktop_screen_read", {}).get("text") or "")[:MAX_BILDSCHIRMTEXT]
+                gesehen = True
+            except WerkzeugFehler:
+                pass
+            if not gesehen:
+                return abschluss("fehlgeschlagen", "bildschirm_nicht_lesbar", "Der Bildschirm konnte nicht gelesen werden.")
 
-        laeufe += 1
-        try:
-            antwort = agent(_frage(auftrag, runde, runden, list(stand.get("schritte") or []), text, elemente,
-                                   fenster, abgelehnt))
-        except Exception as fehler:  # noqa: BLE001 - Agent nicht erreichbar, Budget, Zeit
-            return abschluss("fehlgeschlagen", "agent_nicht_erreichbar", type(fehler).__name__)
+            laeufe += 1
+            try:
+                antwort = agent(_frage(auftrag, runde, runden, list(stand.get("schritte") or []), text, elemente,
+                                       fenster, abgelehnt))
+            except Exception as fehler:  # noqa: BLE001 - Agent nicht erreichbar, Budget, Zeit
+                return abschluss("fehlgeschlagen", "agent_nicht_erreichbar", type(fehler).__name__)
 
-        try:
-            # Hat sich das Fenster seit dem letzten Schritt geaendert (ein Dialog ist aufgegangen),
-            # gilt der Vorlauf nicht mehr: Enter traefe dann etwas, das niemand geprueft hat.
-            vorlauf = vorher if fenster and fenster == vorher_fenster else None
-            aktion = pruefe_aktion(antwort, auftrag=auftrag, elemente=elemente, vorher=vorlauf)
-        except AktionAbgelehnt as fehler:
-            ablehnungen += 1
-            vorher = None
-            abgelehnt = str(fehler)
-            vermerk(f"Runde {runde}: Vorschlag abgelehnt ({fehler.code})")
-            if ablehnungen >= MAX_ABLEHNUNGEN:
-                return abschluss("fehlgeschlagen", "vorschlaege_abgelehnt", f"Zwei Vorschlaege abgelehnt, zuletzt: {fehler}")
-            continue
-        abgelehnt = None
+            try:
+                # Hat sich das Fenster seit dem letzten Schritt geaendert (ein Dialog ist aufgegangen),
+                # gilt der Vorlauf nicht mehr: Enter traefe dann etwas, das niemand geprueft hat.
+                vorlauf = vorher if fenster and fenster == vorher_fenster else None
+                aktion = pruefe_aktion(antwort, auftrag=auftrag, elemente=elemente, vorher=vorlauf)
+            except AktionAbgelehnt as fehler:
+                ablehnungen += 1
+                vorher = None
+                abgelehnt = str(fehler)
+                vermerk(f"Runde {runde}: Vorschlag abgelehnt ({fehler.code})")
+                if ablehnungen >= MAX_ABLEHNUNGEN:
+                    return abschluss("fehlgeschlagen", "vorschlaege_abgelehnt", f"Zwei Vorschlaege abgelehnt, zuletzt: {fehler}")
+                continue
+            abgelehnt = None
 
-        if "ende" in aktion:
-            if aktion["ende"] == "fertig":
-                return abschluss("fertig", "agent_meldet_fertig", aktion["text"])
-            return abschluss("abgebrochen", "agent_bricht_ab", aktion["text"])
+            if "ende" in aktion:
+                if aktion["ende"] == "fertig":
+                    return abschluss("fertig", "agent_meldet_fertig", aktion["text"])
+                return abschluss("abgebrochen", "agent_bricht_ab", aktion["text"])
 
-        try:
-            ergebnis = werkzeug("desktop_task_step", {"task_id": task_id, **aktion["schritt"]})
-        except WerkzeugFehler as fehler:
-            meldung = str(fehler)
-            if meldung.startswith("not_aus"):
-                return abschluss("abgebrochen", "not_aus", "Angehalten ueber die Datei STOP.")
-            if meldung.startswith("aufgabe_beendet") or meldung.startswith("schritte_erschoepft"):
-                return abschluss("abgebrochen", "von_aussen_beendet", meldung, schon_beendet=True)
-            return abschluss("fehlgeschlagen", "schritt_abgelehnt", meldung)
-        schritt = (ergebnis or {}).get("schritt") or {}
-        if schritt.get("ok") is False:
-            return abschluss("fehlgeschlagen", "schritt_fehlgeschlagen", str(schritt.get("meldung") or ""))
-        vorher, vorher_fenster = aktion["schritt"]["action"], fenster
+            try:
+                ergebnis = werkzeug("desktop_task_step", {"task_id": task_id, **aktion["schritt"]})
+            except WerkzeugFehler as fehler:
+                meldung = str(fehler)
+                if meldung.startswith("not_aus"):
+                    return abschluss("abgebrochen", "not_aus", "Angehalten ueber die Datei STOP.")
+                if meldung.startswith("aufgabe_beendet") or meldung.startswith("schritte_erschoepft"):
+                    return abschluss("abgebrochen", "von_aussen_beendet", meldung, schon_beendet=True)
+                return abschluss("fehlgeschlagen", "schritt_abgelehnt", meldung)
+            schritt = (ergebnis or {}).get("schritt") or {}
+            if schritt.get("ok") is False:
+                return abschluss("fehlgeschlagen", "schritt_fehlgeschlagen", str(schritt.get("meldung") or ""))
+            vorher, vorher_fenster = aktion["schritt"]["action"], fenster
 
-    return abschluss("fehlgeschlagen", "rundengrenze", f"Nach {runden} Runden nicht fertig.")
+        return abschluss("fehlgeschlagen", "rundengrenze", f"Nach {runden} Runden nicht fertig.")
+    except FreigabeAusstehend:
+        # Ein fester Aufruf wartet auf Freigabe: nichts mehr ausfuehren. Ob der Abschluss
+        # selbst noch durchgeht, ist offen; sonst laeuft die Aufgabe nach 600 s ab.
+        return abschluss("abgebrochen", "freigabe_ausstehend",
+                         "Ein fester Aufruf wartet auf Freigabe; die Aufgabe wurde angehalten.")
 
 
-def anschluss(*, tagesrest: Callable[[], int]) -> dict[str, Any]:
+def _laufzeit_pruefen(laufzeit: Any) -> dict[str, Any]:
+    """Die Angaben des Plans, aus denen je fester Aufruf ein Laufzeit-Kontext entsteht."""
+    if not isinstance(laufzeit, Mapping):
+        raise WerkzeugFehler("laufzeit_fehlt: ohne Plan-Angaben keine festen Aufrufe")
+    werte = {k: laufzeit.get(k) for k in ("plan_id", "plan_revision", "correlation_id", "step_id", "task_id")}
+    if not werte["correlation_id"]:
+        werte["correlation_id"] = werte["plan_id"]
+    texte_ok = all(isinstance(werte[k], str) and werte[k].strip()
+                   for k in ("plan_id", "correlation_id", "step_id", "task_id"))
+    revision = werte["plan_revision"]
+    if not texte_ok or isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+        raise WerkzeugFehler("laufzeit_fehlt: plan_id, plan_revision, step_id und task_id sind noetig")
+    return werte
+
+
+def laufzeit_kontext(name: str, laufzeit: Mapping[str, Any], nummer: Any) -> Any:
+    """Der Laufzeit-Kontext EINES festen Aufrufs, wie ihn McpExecutor verlangt.
+
+    Agent und Raum kommen aus dem Verzeichnis; das Werkzeug muss dort ueber genau das
+    Ereignis aus ``EREIGNISSE`` gebunden sein. Jeder Aufruf bekommt eine eigene
+    Schritt-Kennung und damit eine eigene Freigabe und Kostenreservierung.
+    """
+    from .capability_targets import find_registered_mcp_authority
+    from .openfang_runtime_authority import RuntimeInvocationContext, runtime_invocation_id
+
+    werte = _laufzeit_pruefen(laufzeit)
+    ereignis = EREIGNISSE.get(name)
+    autoritaet = find_registered_mcp_authority(AGENT, ZIEL_SERVER, name) if ereignis else None
+    if autoritaet is None or autoritaet.event_id != ereignis or not autoritaet.space_id:
+        raise WerkzeugFehler(f"nicht_gebunden: {name} ist im Verzeichnis nicht ueber {ereignis} gebunden")
+    schritt = f"{werte['step_id']}/{werte['task_id']}/{nummer}/{name}"
+    return RuntimeInvocationContext(
+        correlation_id=werte["correlation_id"], plan_id=werte["plan_id"],
+        plan_revision=werte["plan_revision"], step_id=schritt,
+        space_id=autoritaet.space_id, agent_name=autoritaet.agent,
+        invocation_id=runtime_invocation_id(werte["plan_id"], werte["plan_revision"], schritt),
+    )
+
+
+def fester_aufruf(name: str, argumente: dict, kontext: Any) -> Any:
+    """Ein fester Aufruf ueber die echte McpExecutor-Klasse, mit Laufzeit-Kontext."""
+    from .capability_targets import McpExecutor
+
+    antwort = McpExecutor(f"mcp:{AGENT}:{ZIEL_SERVER}:{name}").call_with_arg(
+        dict(argumente), extra_params={"_runtime_authority": kontext})
+    if antwort.get("pending") is True:
+        raise FreigabeAusstehend(f"{name}: Freigabe ausstehend")
+    if not antwort.get("ok"):
+        meldung = str(antwort.get("error") or "fester Aufruf gescheitert")
+        # Die Basisklasse stellt den Namen der Ausnahme voran ("RuntimeError: not_aus").
+        teile = meldung.split(": ", 1)
+        if len(teile) == 2 and teile[0].isidentifier() and teile[0][:1].isupper():
+            meldung = teile[1]
+        raise WerkzeugFehler(meldung)
+    return werkzeug_inhalt(antwort.get("result"))
+
+
+def anschluss(*, tagesrest: Callable[[], int], laufzeit: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
     """Die echten Bindungen fuer ``fuehre_aufgabe``: feste Aufrufe und Agent ueber OpenFang.
 
-    Hier und nur hier wird OpenFang benutzt. ``tagesrest`` kommt vom Budget-Waechter des
-    Betriebs und wird hereingereicht, weil er ausserhalb dieses Repos liegt.
+    Hier und nur hier wird OpenFang benutzt. Jeder feste Aufruf bekommt seinen eigenen
+    Laufzeit-Kontext (``laufzeit_kontext``); ohne Plan-Angaben scheitert er, bevor etwas
+    das Netz erreicht. Der Agent-Aufruf (``openfang:brain-desktop``) braucht keinen: Den
+    prueft OpenFang ueber Budget und Werkzeugliste des Agenten (er hat keine Werkzeuge).
     """
-    from .capability_targets import McpExecutor, OpenFangExecutor
+    from .capability_targets import OpenFangExecutor
+
+    zaehler = itertools.count(1)
+    sperre = threading.Lock()
 
     def werkzeug(name: str, argumente: dict) -> Any:
-        antwort = McpExecutor(f"mcp:{AGENT}:{ZIEL_SERVER}:{name}").call_with_arg(dict(argumente))
-        if not antwort.get("ok"):
-            raise WerkzeugFehler(str(antwort.get("error") or "fester Aufruf gescheitert"))
-        return werkzeug_inhalt(antwort.get("result"))
+        with sperre:
+            nummer = f"{next(zaehler):03d}"
+        return fester_aufruf(name, argumente, laufzeit_kontext(name, laufzeit or {}, nummer))
 
     def agent(nachricht: str) -> str:
         antwort = OpenFangExecutor(f"openfang:{AGENT}").call_with_arg(nachricht)
         if not antwort.get("ok"):
             raise RuntimeError(str(antwort.get("error") or "Agent nicht erreichbar"))
         ergebnis = antwort.get("result")
-        return ergebnis if isinstance(ergebnis, str) else json.dumps(ergebnis, ensure_ascii=False)
+        # OpenFangExecutor liefert {"response": "<Text>", "tool_calls": [...], ...}. Nur der Text
+        # ist die Antwort des Agenten; Werkzeugaufrufe hat brain-desktop keine.
+        if isinstance(ergebnis, Mapping):
+            if ergebnis.get("tool_calls"):
+                raise RuntimeError("brain-desktop hat Werkzeuge benutzt, obwohl er keine hat")
+            ergebnis = ergebnis.get("response")
+        if not isinstance(ergebnis, str):
+            raise RuntimeError("brain-desktop lieferte keinen Text")
+        return ergebnis
 
     return {"werkzeug": werkzeug, "agent": agent, "budget_rest": tagesrest}
 
@@ -214,10 +299,20 @@ def anschluss(*, tagesrest: Callable[[], int]) -> dict[str, Any]:
 START_ZIEL = f"mcp:{AGENT}:{ZIEL_SERVER}:desktop_task_start"
 HERKUNFT_GETIPPT = "getippt"
 
+# Hoechstens EINE Schleife zugleich: Es gibt nur einen Bildschirm.
+_LAUFEND: dict[str, threading.Thread] = {}
+_LAUFEND_SPERRE = threading.Lock()
+
 
 def ist_aufgabenstart(target: Any) -> bool:
     """Ist das der feste Aufruf, mit dem ``desktop.task`` eine Aufgabe oeffnet?"""
     return isinstance(target, str) and target.replace(" ", "") == START_ZIEL
+
+
+def laufende_schleife() -> Optional[threading.Thread]:
+    """Der Faden der Schleife, die gerade laeuft (fuer Tests und Diagnose), sonst None."""
+    with _LAUFEND_SPERRE:
+        return next(iter(_LAUFEND.values()), None)
 
 
 def nach_aufgabenstart(
@@ -225,6 +320,8 @@ def nach_aufgabenstart(
     *,
     herkunft: Any,
     tagesrest: Any,
+    laufzeit: Optional[Mapping[str, Any]] = None,
+    hintergrund: bool = False,
     bindungen: Optional[Callable[..., dict]] = None,
 ) -> tuple[bool, Any, Optional[str]]:
     """Der Eingriff im Plan-Ausfuehrer: nach gelungenem ``desktop_task_start`` die Schleife fahren.
@@ -235,6 +332,12 @@ def nach_aufgabenstart(
       abgebrochen, ohne dass der Agent gefragt wird.
     - ``tagesrest`` ist die Zahl der Laeufe, die brain-desktop heute noch hat (Zahl oder
       Funktion). Fehlt sie, gilt 0.
+    - ``laufzeit``: plan_id, plan_revision, correlation_id, step_id des Plans; daraus
+      entsteht je fester Aufruf ein eigener Laufzeit-Kontext.
+    - ``hintergrund``: Der Hop antwortet sofort ("Aufgabe laeuft, Kennung ..."), die
+      Schleife laeuft in einem eigenen Faden weiter. Herkunft wird VORHER geprueft; Vertrag,
+      Grenzen und Stopp gelten im Faden unveraendert. Laeuft schon eine, wird die neue
+      abgebrochen.
     Der Auftragssatz kommt aus dem Aufgabenbuch (Feld ``aufgabe``), nicht aus dem Plan.
     """
     try:
@@ -247,20 +350,95 @@ def nach_aufgabenstart(
         wert = tagesrest() if callable(tagesrest) else tagesrest
         return int(wert) if isinstance(wert, int) and not isinstance(wert, bool) else 0
 
-    gebunden = (bindungen or anschluss)(tagesrest=rest)
-    if herkunft != HERKUNFT_GETIPPT:
+    if bindungen is not None:
+        gebunden = bindungen(tagesrest=rest)
+    else:
+        gebunden = anschluss(tagesrest=rest, laufzeit={**(laufzeit or {}), "task_id": task_id})
+
+    def abbrechen(grund: str, text: str, fehler: str) -> tuple[bool, Any, Optional[str]]:
         try:
-            gebunden["werkzeug"]("desktop_task_finish", {
-                "task_id": task_id, "state": "abgebrochen",
-                "result": "Nicht aus getippter Eingabe: die Aufgabe wird nicht ausgefuehrt.",
-            })
-        except WerkzeugFehler:
+            gebunden["werkzeug"]("desktop_task_finish", {"task_id": task_id, "state": "abgebrochen", "result": text})
+        except (WerkzeugFehler, FreigabeAusstehend):
             pass
-        return False, {"task_id": task_id, "zustand": "abgebrochen", "grund": "herkunft"}, (
-            "desktop.task: nur aus getippter Eingabe")
-    ergebnis = fuehre_aufgabe(task_id, auftrag, **gebunden)
-    ok = ergebnis["zustand"] == "fertig"
-    return ok, ergebnis, None if ok else f"desktop.task: {ergebnis['grund']}"
+        return False, {"task_id": task_id, "zustand": "abgebrochen", "grund": grund}, fehler
+
+    if herkunft != HERKUNFT_GETIPPT:
+        return abbrechen("herkunft", "Nicht aus getippter Eingabe: die Aufgabe wird nicht ausgefuehrt.",
+                         "desktop.task: nur aus getippter Eingabe")
+    nachweis = {k: (laufzeit or {}).get(k) for k in ("plan_id", "plan_revision", "correlation_id", "step_id")}
+    if not hintergrund:
+        ergebnis = {**fuehre_aufgabe(task_id, auftrag, **gebunden), "auftrag": auftrag, "nachweis": nachweis}
+        ok = ergebnis["zustand"] == "fertig"
+        return ok, ergebnis, None if ok else f"desktop.task: {ergebnis['grund']}"
+
+    def lauf() -> None:
+        try:
+            fuehre_aufgabe(task_id, auftrag, **gebunden)
+        except Exception as fehler:  # noqa: BLE001 - der Faden darf nie still sterben
+            logger.warning("[desktop] Schleife %s brach ab: %s", task_id, type(fehler).__name__)
+            try:
+                gebunden["werkzeug"]("desktop_task_finish", {
+                    "task_id": task_id, "state": "fehlgeschlagen", "result": "Die Schleife brach unerwartet ab."})
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            with _LAUFEND_SPERRE:
+                _LAUFEND.pop(task_id, None)
+
+    with _LAUFEND_SPERRE:
+        if any(f.is_alive() for f in _LAUFEND.values()):
+            besetzt = True
+        else:
+            besetzt = False
+            faden = threading.Thread(target=lauf, name=f"desktop-schleife-{task_id}", daemon=True)
+            _LAUFEND[task_id] = faden
+    if besetzt:
+        return abbrechen("schon_eine_aufgabe", "Es laeuft schon eine Desktop-Aufgabe.",
+                         "desktop.task: es laeuft schon eine Desktop-Aufgabe")
+    faden.start()
+    return True, {
+        "task_id": task_id, "zustand": "laeuft", "auftrag": auftrag,
+        "text": f"Aufgabe laeuft, Kennung {task_id}", "nachweis": nachweis,
+    }, None
+
+
+def nachweis_aus_ergebnis(ergebnis: Any) -> tuple[Optional[dict], str]:
+    """Was die Nachpruefung am Aufgabenbuch braucht, aus dem Ergebnis des Hops."""
+    if not isinstance(ergebnis, Mapping):
+        return None, "kein Ergebnis des Aufgabenstarts"
+    task_id, auftrag, nachweis = ergebnis.get("task_id"), ergebnis.get("auftrag"), ergebnis.get("nachweis")
+    if not isinstance(task_id, str) or not isinstance(auftrag, str) or not isinstance(nachweis, Mapping):
+        return None, "Aufgabenstart ohne Kennung, Auftrag oder Plan-Angaben"
+    return {"task_id": task_id, "auftrag": auftrag, **dict(nachweis)}, ""
+
+
+def aufgabenbuch_pruefen(erwartet: Mapping[str, Any], *, lesen: Optional[Callable[..., Any]] = None):
+    """Zweiter Weg fuer ``desktop_task_start``: das Aufgabenbuch selbst lesen.
+
+    VERIFIED, wenn die Aufgabe dort steht, mit genau diesem Auftragssatz, und laeuft oder
+    fertig ist; REFUTED bei anderem Satz oder bei abgebrochen/fehlgeschlagen/abgelaufen;
+    sonst UNVERIFIED. Gibt ``(ok, signal, grund)`` wie ein Pruefer von world_observer.
+    """
+    task_id = erwartet.get("task_id")
+    try:
+        if lesen is None:
+            kontext = laufzeit_kontext("desktop_task_status", {**dict(erwartet), "task_id": task_id}, "nachpruefung")
+            stand = fester_aufruf("desktop_task_status", {"task_id": task_id}, kontext)
+        else:
+            stand = lesen("desktop_task_status", {"task_id": task_id})
+    except FreigabeAusstehend:
+        return None, {"status": "unverified"}, "Nachpruefung wartet auf Freigabe"
+    except WerkzeugFehler as fehler:
+        return None, {"status": "unverified"}, f"Aufgabenbuch nicht lesbar: {str(fehler)[:80]}"
+    zustand = stand.get("zustand") if isinstance(stand, Mapping) else None
+    signal = {"zustand": zustand if isinstance(zustand, str) else None}
+    if not isinstance(stand, Mapping) or stand.get("id") != task_id:
+        return False, signal, "Aufgabe steht nicht im Aufgabenbuch"
+    if stand.get("aufgabe") != erwartet.get("auftrag"):
+        return False, signal, "im Aufgabenbuch steht ein anderer Auftragssatz"
+    if zustand in ("laeuft", "fertig"):
+        return True, signal, f"Aufgabe {zustand}"
+    return False, signal, f"Aufgabe {zustand}"
 
 
 def werkzeug_inhalt(ergebnis: Any) -> Any:

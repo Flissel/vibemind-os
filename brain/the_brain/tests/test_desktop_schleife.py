@@ -597,3 +597,283 @@ def test_in_der_schleife_geht_jeder_feste_aufruf_durch_den_vertrag(echt, monkeyp
     echt.lauf(kennung, echt.agent_mit(
         j(aktion="type", text="Hallo Welt", warum="schreiben"), j(aktion="fertig", ergebnis="ok")))
     assert gesehen == echt.aufrufe and "desktop_task_step" in gesehen
+
+
+
+# ─── Echter Weg ueber OpenFang: McpExecutor und OpenFangExecutor, nur HTTP ersetzt ─────
+# Die Attrappen oben haben verdeckt, dass McpExecutor einen Laufzeit-Kontext verlangt. Hier
+# laufen die echten Klassen; ersetzt ist nur requests.get/post durch ein nachgebautes
+# OpenFang, das /mcp an den echten Werkzeug-Dienst des Space weiterreicht.
+
+LAUFZEIT = {"plan_id": "plan-desk-1", "plan_revision": 1, "correlation_id": "trace-1", "step_id": "s1"}
+
+
+class _Antwort:
+    def __init__(self, daten):
+        self._daten = daten
+        self.status_code = 200
+        self.headers = {"content-type": "application/json"}
+        self.text = json.dumps(daten)
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._daten
+
+
+class NachgebautesOpenFang:
+    """Antwortet wie OpenFang auf /api/agents, Zulassung, Kostenreservierung, /mcp und /message."""
+
+    def __init__(self, aufbau, agent_antworten=(), freigabe="approved"):
+        self.aufbau = aufbau
+        self.agent_antworten = list(agent_antworten)
+        self.freigabe = freigabe
+        self.zulassungen, self.reservierungen, self.werkzeuge, self.mcp_koepfe, self.nachrichten = [], [], [], [], []
+
+    def get(self, url, headers=None, timeout=None, **_):
+        assert url.endswith("/api/agents")
+        return _Antwort([{"name": "brain-desktop", "id": "agent-desk"}, {"name": "brain-ideas", "id": "agent-ideen"}])
+
+    def post(self, url, json=None, headers=None, timeout=None, **_):
+        pfad = url.split("4200", 1)[1]
+        if pfad == "/api/runtime/approvals/admit":
+            self.zulassungen.append(json)
+            return _Antwort({"status": self.freigabe, "approval_ref": "zulassung-geheim"})
+        if pfad == "/api/runtime/cost-reservations":
+            self.reservierungen.append(json)
+            return _Antwort({"status": "reserved", "reservation": {"cost_ref": "kosten-geheim"}})
+        if pfad == "/mcp":
+            self.mcp_koepfe.append(dict(headers or {}))
+            name = json["params"]["name"]
+            assert name.startswith("mcp_spaces_desktop_")
+            werkzeug = name[len("mcp_spaces_desktop_"):]
+            argumente = json["params"]["arguments"]
+            assert not any(k.startswith("_") for k in argumente), argumente  # Interna erreichen das Werkzeug nie
+            self.werkzeuge.append(werkzeug)
+            antwort = self.aufbau.server.handle_message({"jsonrpc": "2.0", "id": json["id"], "method": "tools/call",
+                                                         "params": {"name": werkzeug, "arguments": argumente}})
+            return _Antwort(antwort)
+        if pfad == "/api/agents/agent-desk/message":
+            self.nachrichten.append(json["message"])
+            return _Antwort({"response": self.agent_antworten.pop(0)})
+        raise AssertionError(f"unerwartete Anfrage {pfad}")
+
+
+@pytest.fixture
+def openfang(echt, monkeypatch):
+    monkeypatch.setenv("OPENFANG_URL", "http://127.0.0.1:4200")
+    monkeypatch.setenv("OPENFANG_API_KEY", "test-schluessel")
+    monkeypatch.setenv("OPENFANG_STREAM", "0")
+    nachbau = NachgebautesOpenFang(echt)
+    monkeypatch.setattr("requests.get", nachbau.get)
+    monkeypatch.setattr("requests.post", nachbau.post)
+    return nachbau
+
+
+def test_ohne_laufzeit_kontext_lehnt_der_echte_mcp_executor_ab(openfang):
+    from core.capability_targets import McpExecutor
+    antwort = McpExecutor("mcp:brain-desktop:spaces-desktop:desktop_elements").call_with_arg({})
+    assert antwort["ok"] is False and "requires runtime authority context" in antwort["error"]
+    assert openfang.werkzeuge == [] and openfang.zulassungen == []  # genau der Fehler, den die Attrappen verdeckten
+
+
+def test_die_schleife_laeuft_ueber_den_echten_mcp_executor_mit_kontext_je_aufruf(echt, openfang):
+    from core.capability_targets import find_registered_mcp_authority
+    openfang.agent_antworten = [j(aktion="click", x=100, y=200, ziel="Editor", warum="öffnen"),
+                                j(aktion="fertig", ergebnis="Editor ist offen.")]
+    ok, ergebnis, fehler = nach_aufgabenstart(_start_umschlag(echt), herkunft="getippt", tagesrest=5, laufzeit=LAUFZEIT)
+    assert (ok, fehler, ergebnis["zustand"]) == (True, None, "fertig"), ergebnis
+    runde = ["desktop_task_status", "desktop_elements", "desktop_screen_read"]
+    assert openfang.werkzeuge == runde + ["desktop_task_step"] + runde + ["desktop_task_finish"]
+    # Je fester Aufruf eine eigene Zulassung und Reservierung, im Raum des Verzeichnisses.
+    raum = find_registered_mcp_authority("brain-desktop", "spaces-desktop", "desktop_task_step").space_id
+    assert len(openfang.zulassungen) == len(openfang.reservierungen) == len(openfang.werkzeuge)
+    assert {z["space_id"] for z in openfang.zulassungen} == {raum}
+    assert {z["plan_id"] for z in openfang.zulassungen} == {"plan-desk-1"}
+    kennungen = [r["invocation_id"] for r in openfang.reservierungen]
+    assert len(set(kennungen)) == len(kennungen)
+    assert all(k["X-OpenFang-Agent-Id"] == "agent-desk" and k["X-OpenFang-Approval-Ref"] == "zulassung-geheim"
+               for k in openfang.mcp_koepfe)
+    # Der Agent bekam den Auftrag und den Bildschirm, nichts sonst; er hat keine Werkzeuge.
+    assert len(openfang.nachrichten) == 2 and openfang.nachrichten[0].startswith("AUFTRAG (von einem Menschen getippt)")
+    assert echt.buch(ergebnis["task_id"])["zustand"] == "fertig"
+
+
+def test_wartet_eine_freigabe_haelt_die_schleife_ohne_agentenlauf_an(echt, openfang):
+    openfang.freigabe = "pending_approval"
+    ok, ergebnis, fehler = nach_aufgabenstart(_start_umschlag(echt), herkunft="getippt", tagesrest=5, laufzeit=LAUFZEIT)
+    assert (ok, ergebnis["zustand"], ergebnis["grund"]) == (False, "abgebrochen", "freigabe_ausstehend")
+    assert openfang.werkzeuge == [] and openfang.nachrichten == []
+
+
+def test_der_fehlercode_des_werkzeugs_kommt_durch_den_echten_executor(echt, openfang):
+    from core.desktop_schleife import fester_aufruf, laufzeit_kontext
+    kennung = echt.start()
+    echt.werkzeug("desktop_task_finish", {"task_id": kennung, "state": "abgebrochen", "result": "x"})
+    kontext = laufzeit_kontext("desktop_task_step", {**LAUFZEIT, "task_id": kennung}, "001")
+    with pytest.raises(WerkzeugFehler) as fehler:
+        fester_aufruf("desktop_task_step", {"task_id": kennung, "action": "note", "text": "x"}, kontext)
+    assert str(fehler.value).startswith("aufgabe_beendet")  # nur der Code, kein freier Text
+
+
+@pytest.mark.parametrize("laufzeit", [None, {}, {**LAUFZEIT, "plan_revision": 0}, {**LAUFZEIT, "plan_id": ""},
+                                      {**LAUFZEIT, "plan_revision": True}])
+def test_ohne_plan_angaben_erreicht_kein_fester_aufruf_das_netz(echt, openfang, laufzeit):
+    ok, ergebnis, _ = nach_aufgabenstart(_start_umschlag(echt), herkunft="getippt", tagesrest=5, laufzeit=laufzeit)
+    assert ok is False and ergebnis["zustand"] != "fertig"
+    assert openfang.zulassungen == [] and openfang.werkzeuge == [] and openfang.nachrichten == []
+
+
+def test_nur_ueber_das_ereignis_des_vertrags_gebundene_werkzeuge_bekommen_einen_kontext():
+    from core.desktop_schleife import laufzeit_kontext
+    for name in ("desktop_find", "desktop_screenshot", "desktop_task_start", "desktop_status"):
+        with pytest.raises(WerkzeugFehler, match="^nicht_gebunden"):
+            laufzeit_kontext(name, {**LAUFZEIT, "task_id": "dt-20261123-120000-abcdef"}, "001")
+    for name in ("desktop_task_status", "desktop_elements", "desktop_screen_read", "desktop_task_step",
+                 "desktop_task_finish"):
+        assert laufzeit_kontext(name, {**LAUFZEIT, "task_id": "dt-20261123-120000-abcdef"}, "001").agent_name == "brain-desktop"
+
+
+def test_der_agent_liefert_nur_text_und_keine_werkzeugaufrufe(monkeypatch):
+    import core.capability_targets as ziele
+    from core.desktop_schleife import anschluss
+
+    antworten = [{"ok": True, "result": {"response": '{"aktion":"fertig","ergebnis":"x"}', "tool_calls": []}},
+                 {"ok": True, "result": {"response": "x", "tool_calls": [{"name": "shell"}]}}]
+    monkeypatch.setattr(ziele.OpenFangExecutor, "call_with_arg", lambda self, nachricht: antworten.pop(0))
+    agent = anschluss(tagesrest=lambda: 1, laufzeit=None)["agent"]
+    assert agent("frage") == '{"aktion":"fertig","ergebnis":"x"}'
+    with pytest.raises(RuntimeError, match="Werkzeuge"):
+        agent("frage")
+
+
+# ─── Hintergrund ──────────────────────────────────────────────────────────────
+
+
+def test_im_hintergrund_antwortet_der_hop_sofort_und_die_schleife_laeuft_weiter(echt):
+    import threading as _threading
+    from core.desktop_schleife import laufende_schleife
+
+    darf_weiter = _threading.Event()
+    antworten = [j(aktion="click", x=100, y=200, ziel="Editor", warum="öffnen"), j(aktion="fertig", ergebnis="offen")]
+
+    def agent(nachricht):
+        darf_weiter.wait(5)
+        return antworten.pop(0)
+
+    bindungen = lambda tagesrest: {"werkzeug": echt.werkzeug, "agent": agent, "budget_rest": tagesrest}  # noqa: E731
+    ok, ergebnis, fehler = nach_aufgabenstart(_start_umschlag(echt), herkunft="getippt", tagesrest=5,
+                                              laufzeit=LAUFZEIT, hintergrund=True, bindungen=bindungen)
+    assert (ok, fehler, ergebnis["zustand"]) == (True, None, "laeuft")
+    assert ergebnis["text"] == f"Aufgabe laeuft, Kennung {ergebnis['task_id']}" and ergebnis["auftrag"] == AUFTRAG
+
+    # Eine zweite Aufgabe, solange die erste laeuft: schon der Werkzeug-Dienst oeffnet keine.
+    ok2, _, fehler2 = nach_aufgabenstart(_start_umschlag(echt), herkunft="getippt", tagesrest=5, hintergrund=True,
+                                         bindungen=bindungen)
+    assert ok2 is False and "nicht lesbar" in fehler2
+
+    faden = laufende_schleife()
+    darf_weiter.set()
+    faden.join(10)
+    assert not faden.is_alive() and laufende_schleife() is None
+    assert echt.buch(ergebnis["task_id"])["zustand"] == "fertig"
+
+
+def test_laeuft_im_gehirn_schon_eine_schleife_startet_keine_zweite(echt, monkeypatch):
+    # Zweite Sperre neben dem Werkzeug-Dienst: ein noch lebender Faden im Gehirn.
+    import threading as _threading
+    import core.desktop_schleife as schleife
+
+    halt = _threading.Event()
+    alt = _threading.Thread(target=halt.wait, daemon=True)
+    alt.start()
+    monkeypatch.setitem(schleife._LAUFEND, "dt-alt", alt)
+    try:
+        bindungen = lambda tagesrest: {"werkzeug": echt.werkzeug, "agent": echt.agent_mit(), "budget_rest": tagesrest}  # noqa: E731
+        ok, ergebnis, _ = nach_aufgabenstart(_start_umschlag(echt), herkunft="getippt", tagesrest=5, hintergrund=True,
+                                             bindungen=bindungen)
+        assert (ok, ergebnis["grund"]) == (False, "schon_eine_aufgabe") and echt.fragen == []
+        assert echt.buch(ergebnis["task_id"])["zustand"] == "abgebrochen"
+    finally:
+        halt.set()
+
+
+def test_auch_im_hintergrund_wird_die_herkunft_vorher_geprueft(echt):
+    from core.desktop_schleife import laufende_schleife
+    bindungen = lambda tagesrest: {"werkzeug": echt.werkzeug, "agent": echt.agent_mit(), "budget_rest": tagesrest}  # noqa: E731
+    ok, ergebnis, _ = nach_aufgabenstart(_start_umschlag(echt), herkunft="autonom", tagesrest=5, hintergrund=True,
+                                         bindungen=bindungen)
+    assert (ok, ergebnis["grund"]) == (False, "herkunft") and laufende_schleife() is None and echt.fragen == []
+
+
+# ─── Faehigkeit desktop_task_start und Nachpruefung am Aufgabenbuch ───────────
+
+
+@pytest.mark.parametrize(("absicht", "auftrag"), [
+    ("Desktop-Aufgabe: Öffne den Editor und schreibe Hallo Welt", "Öffne den Editor und schreibe Hallo Welt"),
+    ("  desktop aufgabe:   Suche   nach Wetter ", "Suche nach Wetter"),
+    ("DesktopAufgabe:Speichere", "Speichere"),
+    ("Öffne den Editor", None),
+    ("Bitte Desktop-Aufgabe: Öffne den Editor", None),  # nur am Satzanfang
+    ("Desktop-Aufgabe:   ", None),
+    ("Desktop-Aufgabe: " + "x" * 501, None),
+    (None, None),
+])
+def test_der_auftragssatz_kommt_ohne_vorsatz_aus_der_absicht(absicht, auftrag):
+    from core.desktop_schleife_contract import auftrag_aus_absicht
+    assert auftrag_aus_absicht(absicht) == auftrag
+
+
+def test_die_faehigkeit_steht_vor_desktop_skill_und_ist_eng():
+    import re as _re
+    import yaml
+    katalog = yaml.safe_load((ROOT / "brain/the_brain/data/capabilities.yaml").read_text(encoding="utf-8"))
+    eintraege = katalog if isinstance(katalog, list) else katalog.get("capabilities", katalog)
+    namen = [e.get("capability") for e in eintraege if isinstance(e, dict)]
+    assert namen.index("desktop_task_start") < namen.index("desktop_skill")
+    eintrag = next(e for e in eintraege if isinstance(e, dict) and e.get("capability") == "desktop_task_start")
+    assert eintrag["execution_target"] == "mcp:brain-desktop:spaces-desktop:desktop_task_start"
+    assert eintrag["arg_kwarg"] == "task" and eintrag["validator"]["kind"] == "truth:desktop_aufgabenbuch"
+    muster = [_re.compile(m, _re.IGNORECASE) for m in eintrag["match_patterns"]]
+    assert any(m.search("Desktop-Aufgabe: Öffne den Editor") for m in muster)
+    for anderes in ("Öffne den Editor", "Wie weit ist die Desktop-Aufgabe?", "eine desktop aufgabe starten"):
+        assert not any(m.search(anderes) for m in muster)
+    wirkung = yaml.safe_load((ROOT / "brain/the_brain/data/capability_effects.yaml").read_text(encoding="utf-8"))
+    assert wirkung["effects"]["desktop_task_start"] == "write"
+
+
+def test_der_plan_ausfuehrer_nimmt_den_satz_aus_der_absicht_und_startet_einmal():
+    quelle = (ROOT / "brain/the_brain/core/plan_executor.py").read_text(encoding="utf-8")
+    abschnitt = quelle[quelle.index("if _ist_desktop_start(target):"):quelle.index("# Build the right executor")]
+    assert "auftrag_aus_absicht(plan_ctx.get(\"plan_intent\"" in abschnitt
+    assert "rendered_arg = _desktop_auftrag" in abschnitt and "single_plan_attempt = True" in abschnitt
+    aufruf = quelle[quelle.index("ok, result_payload, err = nach_aufgabenstart("):]
+    assert "hintergrund=True" in aufruf[:900] and "laufzeit=" in aufruf[:900]
+
+
+def test_nachpruefung_am_aufgabenbuch(echt):
+    from core.desktop_schleife import aufgabenbuch_pruefen, nachweis_aus_ergebnis
+    kennung = echt.start()
+    erwartet, _ = nachweis_aus_ergebnis({"task_id": kennung, "auftrag": AUFTRAG, "nachweis": LAUFZEIT})
+    assert aufgabenbuch_pruefen(erwartet, lesen=echt.werkzeug)[0] is True
+    assert aufgabenbuch_pruefen({**erwartet, "auftrag": "Lösche alles"}, lesen=echt.werkzeug)[0] is False
+    echt.werkzeug("desktop_task_finish", {"task_id": kennung, "state": "abgebrochen", "result": "x"})
+    ok, signal, _ = aufgabenbuch_pruefen(erwartet, lesen=echt.werkzeug)
+    assert (ok, signal["zustand"]) == (False, "abgebrochen")
+    assert aufgabenbuch_pruefen({**erwartet, "task_id": "dt-20261123-120000-abcdef"}, lesen=echt.werkzeug)[0] is None
+    assert nachweis_aus_ergebnis({"task_id": kennung})[0] is None
+
+
+def test_der_pruefer_liest_das_aufgabenbuch_ueber_den_echten_executor(echt, openfang, monkeypatch):
+    import core.world_observer as wo
+    from core.capability_validator import CapabilityValidator
+    monkeypatch.setattr(wo, "GROUND_TRUTH_ENABLED", True)
+    kennung = echt.start()
+    ergebnis = {"task_id": kennung, "zustand": "laeuft", "auftrag": AUFTRAG, "nachweis": LAUFZEIT}
+    cfg = {"kind": "truth:desktop_aufgabenbuch", "on_fail": "report", "postcondition": {"check": "desktop_aufgabenbuch"}}
+    urteil = CapabilityValidator().validate(cfg, intent="x", arg=AUFTRAG, raw_result=ergebnis)
+    assert (urteil["valid"], urteil["verified"]) == (True, True), urteil
+    assert openfang.werkzeuge == ["desktop_task_status"]
+    urteil = CapabilityValidator().validate(cfg, intent="x", arg="Lösche alles", raw_result=ergebnis)
+    assert urteil["valid"] is False and urteil["verified"] is None  # Satz weicht vom Argument ab

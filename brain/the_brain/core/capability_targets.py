@@ -1086,6 +1086,11 @@ class McpExecutor(_BaseRemoteExecutor):
                 if meldung:
                     raise RuntimeError(meldung)
         if result.get("isError") is True:
+            if self.server == "spaces-desktop":
+                # Die Desktop-Schleife entscheidet am Code (not_aus, aufgabe_beendet, ...);
+                # nur der Code kommt durch, nie freier Text (er kann Bildschirmtext sein).
+                from .desktop_schleife_contract import fehlercode_aus_ergebnis
+                raise RuntimeError(fehlercode_aus_ergebnis(result))
             raise RuntimeError("OpenFang MCP tool returned isError=true")
         return result
 
