@@ -173,5 +173,34 @@ naechsten ganzen Schlag ab, gemitteltes Tempo 91.4 BPM, erwartet waren
 
 Anders als Lauf 1 (114.7 statt 120 BPM) liegt das gemittelte Tempo hier
 richtig. Die Abweichung ist ein einzelnes Intervall, 0,07 Schläge sind bei
-91 BPM etwa 46 ms. Ob das hörbar stolpert, hat niemand gehört (offen,
-Felix hört gegen). Die Naht bei 4:39 ist laut Messung sauber.
+91 BPM etwa 46 ms. Die Naht bei 4:39 ist laut Messung sauber.
+
+*gehört* — Felix 23.11. zur Naht bei 2:54: „Stolpert hörbar“.
+
+**Fund 3: ein Song hat nicht überall dasselbe Tempo.** Ursache gemessen,
+nicht geraten. Für jeden Mischbereich eine Ausgleichsgerade durch die
+erkannten Beats gelegt (*measured*):
+
+| Song | Bereich | Tempo gesamt | Tempo lokal | Phase gg. Raster | Streuung nach lokaler Geraden |
+|---|---|---|---|---|---|
+| no-chicks-no-eggs | Outro 186–233 s | 85.88 | 85.89 | +0.01 | 0.02 |
+| farewell-kiss | Intro 0–41 s | 94.06 | **93.04** | −0.08 | 0.03 |
+| farewell-kiss | Outro 102–145 s | 94.06 | **95.07** | +0.11 | 0.30 |
+| smaragd-green-eyes | Outro 153–194 s | 93.97 | 94.25 | **−0.45** | 0.11 |
+| mind-makers | Intro 1–33 s | 121.16 | 119.70 | −0.03 | 0.23 |
+| love-s-just-a-game | Intro / Outro | 119.98 | 120.00 / 120.01 | +0.12 / +0.06 | 0.05 / 0.02 |
+
+`farewell-kiss` wird über den Song schneller, von 93.0 im Intro auf 95.1
+im Outro. Die Kette streckt jeden Song mit einem
+Verhältnis aus dem Gesamttempo (91.0 / 94.06). Das Intro läuft damit bei
+90.0 statt 91.0 BPM, 1,1 % zu langsam. Über die 64 Schläge des Übergangs
+wandern die beiden Spuren um etwa 0,7 Schläge auseinander. Das ist das
+Stolpern. Die QA misst nur ein kurzes Fenster an der Naht und sah davon
+0,07 Schläge.
+
+Dazu kommt: das Raster ist eine einzige Gerade ab dem ersten Beat. Wo ein
+Song driftet, liegen die Cue-Punkte daneben (`smaragd-green-eyes` am Ende
+fast einen halben Schlag). Songs mit stabilem Tempo (`love-s-just-a-game`,
+das Outro von `no-chicks-no-eggs`) sind sauber.
+
+Fix offen, Felix entscheidet.
