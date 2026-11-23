@@ -105,6 +105,7 @@ effects:
   desktop_fenster: read
   thebrain_gedanken: read
   rowboat_spaces: read
+  desktop_bestaetigen: read
   minibook.list_projects: read
   minibook.status: read
   rose.recommend: read

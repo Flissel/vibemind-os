@@ -12,12 +12,10 @@ Antwort an die App abgeholt (:func:`antwort`). Ins Protokoll geht :func:`protoko
 from __future__ import annotations
 
 import itertools
-import threading
 import time
-import uuid
-from collections import OrderedDict
 from typing import Any, Mapping, Optional
 
+from .fluechtige_saetze import abholen as _abholen, merken as _merken
 from .desktop_schleife import FreigabeAusstehend, WerkzeugFehler, fester_aufruf
 from .desktop_schleife_contract import AGENT, ZIEL_SERVER
 
@@ -27,31 +25,6 @@ CAPABILITY = "desktop_fenster"
 IM_SATZ = 8               # so viele Fenster nennt der Satz, der Rest ist "und K weitere"
 MAX_TITEL_IM_SATZ = 50
 _ZAEHLER = itertools.count(1)
-
-MAX_SAETZE = 50
-SATZ_HALTBAR_S = 600
-_SAETZE: "OrderedDict[str, tuple[float, str]]" = OrderedDict()
-_SPERRE = threading.Lock()
-
-
-def _merken(satz: str) -> str:
-    kennung = uuid.uuid4().hex[:16]
-    with _SPERRE:
-        grenze = time.monotonic() - SATZ_HALTBAR_S
-        for alt in [k for k, (t, _) in _SAETZE.items() if t < grenze]:
-            del _SAETZE[alt]
-        _SAETZE[kennung] = (time.monotonic(), satz)
-        while len(_SAETZE) > MAX_SAETZE:
-            _SAETZE.popitem(last=False)
-    return kennung
-
-
-def _abholen(kennung: Any) -> Optional[str]:
-    with _SPERRE:
-        eintrag = _SAETZE.pop(str(kennung or ""), None)
-    if eintrag is None or eintrag[0] < time.monotonic() - SATZ_HALTBAR_S:
-        return None
-    return eintrag[1]
 
 
 def kontext() -> Any:

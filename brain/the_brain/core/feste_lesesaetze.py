@@ -5,6 +5,7 @@ Ergaenzt die Tabelle in core/verstehen.py (``_FESTE_LESEFRAGEN``, ``FESTE_ANTWOR
 * Desktop    "Welche Fenster sind offen?"           -> desktop_fenster (core/desktop_fenster.py)
 * The Brain  "Woran denkt das Gehirn gerade?"       -> thebrain_gedanken  (core/thebrain_gedanken.py)
 * Rowboat    "Welche Agenten gibt es in Rowboat?"   -> rowboat_spaces  (core/rowboat_spaces.py)
+* Augen      "Bestätige: Fenster X ist vorn und zeigt Y" -> desktop_bestaetigen (core/desktop_augen.py)
 
 Agent Farm bekommt keinen Satz: hinter agentfarm_list_teams laeuft kein Dienst (siehe
 docs im Bericht an die Koordination), der Satz bleibt "noch kein Weg".
@@ -40,9 +41,18 @@ def _nur_mit_desktop(muster: re.Pattern) -> re.Pattern:
     return _Beide()  # type: ignore[return-value]
 
 
+class _Bestaetigung:
+    """Muster-Ersatz: "Bestätige: Fenster X ist vorn (und zeigt Y)" (core/desktop_augen.py)."""
+
+    def search(self, text: str):
+        from .desktop_augen import auftrag_aus_satz
+        return auftrag_aus_satz(text)
+
+
 def lesefragen(alle: Tuple[Any, ...]) -> tuple:
     """Eintraege fuer ``_FESTE_LESEFRAGEN``: (Muster, Faehigkeit, Spaces). ``alle``: jeder Reiter."""
     return (
+        (_Bestaetigung(), "desktop_bestaetigen", alle),
         (_nur_mit_desktop(_FENSTER), "desktop_fenster", alle),
         (_FENSTER, "desktop_fenster", ("desktop", None)),
         (_GEDANKEN, "thebrain_gedanken", alle),
@@ -61,6 +71,16 @@ def _desktop_fenster_protokoll(ergebnis: Any) -> Optional[str]:
     return protokoll(ergebnis)
 
 
+def _desktop_bestaetigen(ergebnis: Any) -> Optional[str]:
+    from .desktop_augen import antwort
+    return antwort(ergebnis)
+
+
+def _desktop_bestaetigen_protokoll(ergebnis: Any) -> Optional[str]:
+    from .desktop_augen import protokoll
+    return protokoll(ergebnis)
+
+
 def _thebrain_gedanken(ergebnis: Any) -> Optional[str]:
     from .thebrain_gedanken import antwort
     return antwort(ergebnis)
@@ -74,9 +94,9 @@ def _rowboat_spaces(ergebnis: Any) -> Optional[str]:
 def antworten() -> Dict[str, Callable[[Any], Optional[str]]]:
     """Eintraege fuer ``FESTE_ANTWORTEN``."""
     return {"desktop_fenster": _desktop_fenster, "thebrain_gedanken": _thebrain_gedanken,
-            "rowboat_spaces": _rowboat_spaces}
+            "rowboat_spaces": _rowboat_spaces, "desktop_bestaetigen": _desktop_bestaetigen}
 
 
 def protokolle() -> Dict[str, Callable[[Any], Optional[str]]]:
     """Satz fuer Plan-Verlauf und Protokolle, wenn die Antwort Bildschirminhalt traegt."""
-    return {"desktop_fenster": _desktop_fenster_protokoll}
+    return {"desktop_fenster": _desktop_fenster_protokoll, "desktop_bestaetigen": _desktop_bestaetigen_protokoll}

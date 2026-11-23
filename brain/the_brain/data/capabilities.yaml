@@ -2386,3 +2386,10 @@
   match_patterns:
     - "^welche\\s+(?:agenten|spaces)\\s+(?:gibt es|stehen|sind)\\s+(?:in|im)\\s+rowboat\\b"
   execution_target: "direct:core.rowboat_spaces:spaces_lesen"
+
+- capability: desktop_bestaetigen
+  space: desktop
+  description: "after an action in any space: confirm read-only that window X is in front and shows control Y ('Bestätige: Fenster X ist vorn und zeigt Y'); never reads password fields, blocked windows are 'nicht prüfbar'. Args fenster, zeigt, programm or the sentence"
+  match_patterns:
+    - "^\\s*(?:bitte\\s+)?(?:bestätige|bestaetige)\\s*:?\\s*(?:das\\s+)?fenster\\s+.+\\s+ist\\s+vorne?\\b"
+  execution_target: "direct:core.desktop_augen:bestaetigen"

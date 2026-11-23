@@ -1348,6 +1348,70 @@ def test_fensterliste_ohne_freigabe_sagt_nichts(echt, openfang, monkeypatch):
     assert openfang.werkzeuge == []  # ohne Zulassung erreicht nichts den Werkzeug-Dienst
 
 
+# ─── Augen: "Bestätige: Fenster X ist vorn und zeigt Y" (core/desktop_augen.py) ─────
+
+
+def _bestaetigen(**argumente):
+    from core.capability_targets import DirectExecutor
+    return DirectExecutor("direct:core.desktop_augen:bestaetigen").call_with_arg(
+        argumente.pop("value", ""), extra_params={"_step_id": "s1", **argumente})
+
+
+def test_bestaetigung_aus_dem_satz_ueber_den_echten_executor(sicht, openfang):
+    from core import desktop_augen
+    antwort = _bestaetigen(_intent="Bestätige: Fenster Start ist vorn und zeigt Wetter")
+    assert antwort["ok"] is True, antwort
+    ergebnis = antwort["result"]
+    assert (ergebnis["success"], ergebnis["bestaetigt"]) == (True, True)
+    assert ergebnis["signal"] == {"gesperrt": False, "fenstertitel": True, "element": True}
+    assert set(ergebnis) == {"success", "bestaetigt", "signal", "grund", "satz_id"}
+    assert "Start" not in json.dumps(antwort) and "notepad" not in json.dumps(antwort)
+    assert openfang.werkzeuge == ["desktop_blick"] and len(openfang.zulassungen) == 1
+    assert openfang.zulassungen[0]["plan_id"].startswith("augen-")
+    assert desktop_augen.protokoll(ergebnis) == "Bestätigung am Bildschirm: ja (Titel nur in der Antwort an die App)."
+    assert desktop_augen.antwort(ergebnis) == "Bestätigt. Zu sehen: Fenster „Start“ in Programm notepad."
+    assert desktop_augen.antwort(ergebnis) is None  # einmal abgeholt, dann weg
+
+
+def test_bestaetigung_mit_feldern_fuer_andere_spaces(sicht, openfang):
+    ergebnis = _bestaetigen(fenster="Start", zeigt="Drucken", programm="^notepad$")["result"]
+    assert ergebnis["bestaetigt"] is False
+    assert ergebnis["signal"] == {"gesperrt": False, "programm": True, "fenstertitel": True, "element": False}
+    from core import desktop_augen
+    assert desktop_augen.antwort(ergebnis) == (
+        "Nicht bestätigt. Zu sehen: Fenster „Start“ in Programm notepad. Nicht wie erwartet: element.")
+
+
+def test_bestaetigung_liest_nie_ein_kennwortfeld(sicht, openfang):
+    # Neutraler Titel, neutraler Name: nur IsPassword verraet das Feld. Das Fenster ist gesperrt.
+    sicht.eintraege = [{"name": "Geheimfeld", "control_type": "EditControl", "is_password": True, "is_enabled": True,
+                        "value": "hunter2", "bounds": {"left": 0, "top": 0, "width": 20, "height": 20}}]
+    ergebnis = _bestaetigen(fenster="Start", zeigt="Geheimfeld")["result"]
+    assert (ergebnis["bestaetigt"], ergebnis["signal"]) == (None, {"gesperrt": True})
+    from core import desktop_augen
+    satz = desktop_augen.antwort(ergebnis)
+    assert satz == "Nicht prüfbar. Das Fenster ist gesperrt; am Bildschirm wurde nichts geprüft."
+    for geheim in ("hunter2", "Geheimfeld", "Start"):
+        assert geheim not in json.dumps(ergebnis) and geheim not in satz
+
+
+def test_bestaetigung_ohne_freigabe_ist_nicht_pruefbar(sicht, openfang):
+    openfang.freigabe = "pending"
+    ergebnis = _bestaetigen(fenster="Start")["result"]
+    assert (ergebnis["success"], ergebnis["bestaetigt"]) == (True, None)
+    assert openfang.werkzeuge == []
+    from core import desktop_augen
+    assert desktop_augen.antwort(ergebnis).startswith("Nicht prüfbar.")
+
+
+@pytest.mark.parametrize("argumente", [{}, {"value": "Öffne den Editor"}, {"fenster": "   "},
+                                       {"fenster": "Start", "programm": "(["}, {"fenster": "x" * 300}])
+def test_bestaetigung_ohne_klaren_auftrag_liest_nichts(sicht, openfang, argumente):
+    ergebnis = _bestaetigen(**argumente)["result"]
+    assert (ergebnis["success"], ergebnis["error"]) == (False, "auftrag_unklar")
+    assert openfang.werkzeuge == []
+
+
 def test_sicht_widerlegt_was_lesbar_nicht_passt(sicht, openfang):
     from core.capability_validator import CapabilityValidator
     urteil = CapabilityValidator().validate(_sicht_cfg(element_enthaelt="Drucken"), intent="x", arg="", raw_result={})

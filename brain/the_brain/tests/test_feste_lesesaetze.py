@@ -121,7 +121,8 @@ def test_fenster_satz_liegt_nur_fluechtig_und_einmal() -> None:
 
 def test_fenster_satz_verfaellt(monkeypatch) -> None:
     kennung = desktop_fenster._merken("alt")
-    monkeypatch.setattr(desktop_fenster, "SATZ_HALTBAR_S", -1)
+    from core import fluechtige_saetze
+    monkeypatch.setattr(fluechtige_saetze, "HALTBAR_S", -1)
     assert desktop_fenster.antwort({"success": True, "satz_id": kennung}) is None
 
 
@@ -268,3 +269,52 @@ def test_agent_farm_bleibt_ehrlich(monkeypatch) -> None:
     ausfuehrer = _Ausfuehrer(None)
     body = _frage(monkeypatch, ausfuehrer, "Welche Teams laufen gerade in der Agent Farm?", "agentfarm")
     assert ausfuehrer.plaene == [] and body["weg"] == "kein-weg"
+
+
+# ── Augen: "Bestätige: Fenster X ist vorn und zeigt Y" ─────────────────────
+
+@pytest.mark.parametrize("satz,erwartet", [
+    ("Bestätige: Fenster Editor ist vorn und zeigt Speichern", ("Editor", "Speichern")),
+    ("bestaetige fenster „Unbenannt - Editor“ ist vorne und zeigt „Datei“.", ("Unbenannt - Editor", "Datei")),
+    ("Bitte bestätige, dass das Fenster Rechner ist vorn", ("Rechner", None)),
+    ("Fenster Editor ist vorn und zeigt Speichern", ("Editor", "Speichern")),
+    ("Prüfe: Fenster Mail ist vorn", ("Mail", None)),
+])
+def test_bestaetigungssatz(satz, erwartet) -> None:
+    from core.desktop_augen import auftrag_aus_satz
+    assert auftrag_aus_satz(satz) == erwartet
+
+
+@pytest.mark.parametrize("satz", ["Bestätige den Termin", "Fenster schließen", "Welche Fenster sind offen?",
+                                  "Bestätige: Fenster ist vorn", None])
+def test_kein_bestaetigungssatz(satz) -> None:
+    from core.desktop_augen import auftrag_aus_satz
+    assert auftrag_aus_satz(satz) is None
+
+
+@pytest.mark.parametrize("space", ["desktop", "video", "sales", None])
+def test_bestaetigung_aus_jedem_reiter(space) -> None:
+    satz = "Bestätige: Fenster Editor ist vorn und zeigt Speichern"
+    assert v.feste_lesefrage(satz, space) == {"capability": "desktop_bestaetigen"}
+
+
+def test_bestaetigung_auftrag_aus_feldern_oder_absicht() -> None:
+    from core.desktop_augen import auftrag
+    assert auftrag({"fenster": "Editor", "zeigt": "Speichern", "programm": "notepad"}) == {
+        "fenstertitel_enthaelt": "Editor", "element_enthaelt": "Speichern", "programm": "notepad"}
+    assert auftrag({"value": "", "_intent": "Bestätige: Fenster Editor ist vorn"}) == {
+        "fenstertitel_enthaelt": "Editor"}
+    assert auftrag("Fenster Editor ist vorn und zeigt Datei") == {
+        "fenstertitel_enthaelt": "Editor", "element_enthaelt": "Datei"}
+    assert auftrag({"value": "irgendwas"}) is None
+
+
+def test_bestaetigung_ende_zu_ende_titel_nie_im_verlauf(monkeypatch) -> None:
+    from core import fluechtige_saetze
+    satz = "Bestätigt. Zu sehen: Fenster „Brief an Erika - Editor“ in Programm notepad."
+    ausfuehrer = _Ausfuehrer(lambda: {"success": True, "bestaetigt": True, "signal": {"gesperrt": False},
+                                      "grund": "x", "satz_id": fluechtige_saetze.merken(satz)})
+    body = _frage(monkeypatch, ausfuehrer, "Bestätige: Fenster Brief ist vorn und zeigt Speichern", "sales")
+    assert [h.capability for h in ausfuehrer.plaene[0].hops] == ["desktop_bestaetigen"]
+    assert (body["ok"], body["final_text"]) == (True, satz)
+    assert ausfuehrer.recorder.finals == ["Bestätigung am Bildschirm: ja (Titel nur in der Antwort an die App)."]
