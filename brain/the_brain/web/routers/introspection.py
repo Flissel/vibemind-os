@@ -2845,6 +2845,17 @@ async def _multihop_execute(request: Request):
                 return JSONResponse({"ok": not _vs_felder.get("hinweis"), "space": "ideas", "executed": {},
                                      "final_text": _ideen_antwort, "trace_id": trace_id, **_vs_felder})
             _ideen_fest = True
+        # Space der App (context.space) als Signal: feste Lesesaetze aller Spaces zuerst, egal
+        # welcher Reiter (core/verstehen); ehrliche Saetze fuer Spaces ohne laufenden Weg.
+        # Ein fester Satz laeuft ohne Planer.
+        _space = _verstehen.space_aus_kontext(body.get("context"))
+        if not skip_shortcut and plan is None and not _bubble_wahl:
+            _lesen = _verstehen.feste_lesefrage(intent, _space)
+            if _lesen and _lesen.get("antwort"):
+                return _ehrlich(pe, trace_id, intent, "noch-nicht", _lesen["antwort"], _space)
+            if _lesen and _lesen.get("capability"):
+                plan = _fester_leseplan(intent, _lesen["capability"])
+                _fest_lesen = _lesen["capability"] if plan is not None else ""
         # Ideen-Space: feste Saetze laufen ohne Planer und ohne Modell. Die App gibt
         # dafuer ihren Kontext mit; Namen werden daraus aufgeloest, nie geraten.
         if plan is None and not _bubble_wahl and not skip_shortcut and isinstance(body.get("context"), dict):
@@ -2864,16 +2875,6 @@ async def _multihop_execute(request: Request):
                     "final_text": _ideen_antwort, "trace_id": trace_id,
                 })
             _ideen_fest = plan is not None
-        # Space der App (context.space) als Signal: feste Lesesaetze je Space, ehrliche Saetze
-        # fuer Spaces ohne laufenden Weg (core/verstehen). Ein fester Satz laeuft ohne Planer.
-        _space = _verstehen.space_aus_kontext(body.get("context"))
-        if not skip_shortcut and plan is None:
-            _lesen = _verstehen.feste_lesefrage(intent, _space)
-            if _lesen and _lesen.get("antwort"):
-                return _ehrlich(pe, trace_id, intent, "noch-nicht", _lesen["antwort"], _space)
-            if _lesen and _lesen.get("capability"):
-                plan = _fester_leseplan(intent, _lesen["capability"])
-                _fest_lesen = _lesen["capability"] if plan is not None else ""
         # Phase 11.Q2 — Capability-Router shortcut. If the router has a
         # high-confidence regex match for a single-action intent, skip
         # the LLM planner and build a 1-hop plan directly. Wrapped in

@@ -95,15 +95,24 @@ def test_feste_lesefrage_bindet_schedule_list(satz, space) -> None:
     assert v.feste_lesefrage(satz, space) == {"capability": "schedule_list"}
 
 
-def test_feste_lesefrage_nicht_im_ideen_space_und_nicht_fremd() -> None:
-    assert v.feste_lesefrage("Zeig meine Aufträge", "ideas") is None
-    assert v.feste_lesefrage("Zeig meine Aufträge", "video") is None
+@pytest.mark.parametrize("space", ["ideas", "video", "desktop", "roarboot", None])
+def test_feste_lesefrage_gilt_in_jedem_reiter(space) -> None:
+    # Nachmessung 23.11.2026: die App schickte aus jedem Reiter 'ideas'; der feste Satz lief
+    # dann ueber den Planer (14 s). Feste Saetze gelten unabhaengig von context.space.
+    assert v.feste_lesefrage("Welche geplanten Aufgaben gibt es?", space) == {"capability": "schedule_list"}
+    assert v.feste_lesefrage("Zeig meine Aufträge", space) == {"capability": "schedule_list"}
+
+
+def test_feste_lesefrage_nur_am_satzanfang() -> None:
     assert v.feste_lesefrage("Wie ist der Stand?", "orders") is None
+    assert v.feste_lesefrage("Halt fest: Zeig meine Aufträge morgen", "ideas") is None
 
 
 def test_videoprojekte_ehrlich_noch_nicht() -> None:
     antwort = v.feste_lesefrage("Welche Videoprojekte gibt es?", "video")
     assert antwort and "noch nicht" in antwort["antwort"]
+    # Im Ideen-Bereich ist das ein Notizsatz, kein "noch nicht".
+    assert v.feste_lesefrage("Halt fest: Videoprojekte prüfen", "ideas") is None
 
 
 def test_schedule_list_satz() -> None:
@@ -526,6 +535,18 @@ def test_fester_lesesatz_auftraege_deutsch_statt_dict(monkeypatch) -> None:
     assert [h.capability for h in ausfuehrer.plaene[0].hops] == ["schedule_list"]
     assert body["final_text"] == "Es sind keine geplanten Aufgaben eingetragen."
     assert body["ok"] is True
+
+
+@pytest.mark.parametrize("kontext", [{"space": "ideas"}, {"space": "ideas", "bubble": {"id": "b0b1e001",
+                                     "title": "Stadtfest"}}, {"space": "clawport"}, {}])
+def test_fester_satz_eines_anderen_space_laeuft_aus_jedem_reiter(monkeypatch, kontext) -> None:
+    ausfuehrer = _Ausfuehrer({"success": True, "tasks": [], "count": 0})
+    client, state = _client(monkeypatch, STARK, ausfuehrer=ausfuehrer, planer=_Planer("idea_list"))
+    body = client.post("/api/multihop/execute",
+                       json={"intent": "Welche geplanten Aufgaben gibt es?", "context": kontext}).json()
+    assert state.multihop_planner.aufrufe == 0
+    assert [h.capability for h in ausfuehrer.plaene[0].hops] == ["schedule_list"]
+    assert body["final_text"] == "Es sind keine geplanten Aufgaben eingetragen." and body["ok"] is True
 
 
 def test_fester_lesesatz_fehler_ist_kein_haken(monkeypatch) -> None:

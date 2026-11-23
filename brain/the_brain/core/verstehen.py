@@ -347,18 +347,23 @@ _NOCH_NICHT = (
 def feste_lesefrage(satz: Any, space: Optional[str]) -> Optional[Dict[str, str]]:
     """Haeufigste Lesefrage eines Space: ``{"capability": ...}`` oder ``{"antwort": ...}``.
 
-    ``None``: kein fester Satz. Ein Satz aus dem Ideen-Space wird hier nie gebunden (dort
-    entscheidet die Ideen-Abkuerzung).
+    ``None``: kein fester Satz. Feste Lesesaetze gelten in jedem Reiter, unabhaengig von
+    ``context.space`` (Nachmessung 23.11.2026: die App schickte aus jedem Reiter 'ideas', und
+    "Welche geplanten Aufgaben gibt es?" lief ueber den Planer). Sie sind am Satzanfang
+    verankert und treffen keinen Ideen-Satz. Die ehrlichen "noch nicht"-Saetze suchen dagegen
+    irgendwo im Text und gelten nur in ihrem Space (nie im Ideen-Space, "Halt fest: ...").
     """
     try:
-        if not isinstance(satz, str) or space == "ideas":
+        if not isinstance(satz, str):
             return None
         text = re.sub(r"\s+", " ", satz).strip().rstrip("?.!").strip()
         if not text or len(text) > 200:
             return None
-        for muster, faehigkeit, spaces in _FESTE_LESEFRAGEN:
-            if space in spaces and muster.search(text):
+        for muster, faehigkeit, _spaces in _FESTE_LESEFRAGEN:
+            if muster.search(text):
                 return {"capability": faehigkeit}
+        if space == "ideas":
+            return None
         for muster, spaces, antwort in _NOCH_NICHT:
             if space in spaces and muster.search(text):
                 return {"antwort": antwort}
