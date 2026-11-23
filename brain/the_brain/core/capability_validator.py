@@ -554,6 +554,24 @@ class CapabilityValidator:
                     verify_signal={"status": "unverified", "reason": receipt_reason},
                 )
             pc = {"check": "supabase_aenderung_zurueck", **receipt}
+        elif kind == "truth:supabase_ideen_fest":
+            # Feste Aufrufe des Ideen-Space: die Erwartung entsteht aus den geprueften
+            # Argumenten und der Quittung des Werkzeugs. Sie liegt unter "erwartet",
+            # damit freier Text (Titel, Begruendung) nie als Platzhalter gelesen wird.
+            try:
+                from core.ideen_fest_contract import nachpruefung
+                ereignis = pc.get("ereignis") if isinstance(pc, dict) else None
+                erwartet, receipt_reason = nachpruefung(ereignis, arg, raw_result)
+            except Exception:
+                erwartet, receipt_reason = None, "MCP result receipt is invalid"
+            if erwartet is None:
+                return self._envelope(
+                    valid=False,
+                    reason=f"ground-truth UNVERIFIED: {receipt_reason}",
+                    kind=kind, on_fail=on_fail, t0=t0, verified=None,
+                    verify_signal={"status": "unverified", "reason": receipt_reason},
+                )
+            pc = {"check": "supabase_ideen_fest", "erwartet": erwartet}
         else:
             # Fill {arg}/{result}/{result_id} from the op so the check re-queries the
             # exact row touched. If a placeholder can't resolve (left as "{...}"), we

@@ -389,7 +389,6 @@ class PlannerLLM:
                     tool_name,
                     prompt=prompt["user"],
                     system=prompt["system"],
-                    model=use_model,
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
                 )
@@ -399,7 +398,6 @@ class PlannerLLM:
                     self.dispatcher.dispatch, tool_name,
                     prompt=prompt["user"],
                     system=prompt["system"],
-                    model=use_model,
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
                 )
@@ -545,6 +543,8 @@ class PlannerLLM:
 
     def _call_and_parse(self, prompt: Dict[str, str], *, model: Optional[str] = None) -> Optional[Plan]:
         use_model = model or self.model
+        # The model name only picks the role. It is never passed on: the dispatcher rejects any
+        # direct model override, OpenFang's role configuration decides which model answers.
         # Route to the right subagent kind based on model prefix.
         lower = use_model.lower()
         if lower.startswith("ollama/") or lower.startswith("llama3") or lower.startswith("phi3") or lower.startswith("qwen2"):
@@ -560,7 +560,6 @@ class PlannerLLM:
                 tool_name,
                 prompt=prompt["user"],
                 system=prompt["system"],
-                model=use_model,
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
             )

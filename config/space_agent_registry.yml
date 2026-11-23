@@ -34,7 +34,7 @@ spaces:
     # Bewusst minimal: genau die drei Operationen, die bubble_promote
     # braucht (Idee lesen, Projekt anlegen, Idee als promoted markieren).
     mcp_tools:
-      spaces-ideas: [bubble_create]
+      spaces-ideas: [bubble_create, bubble_rate, bubble_promote]
       vibemind-db: [db_ideas_get, db_ideas_update, db_projects_create]
     system_prompt_hint: "You manage bubbles (idea clusters) on the VibeMind canvas. Use the preferred_tool hint in the intent envelope; only call other tools if the hint fails."
     default_context: [current_space, current_bubble, idea_count]
@@ -55,7 +55,18 @@ spaces:
       bubble.stats:             { tool: vibemind_bubbles,       required_params: [] }
       bubble.score:             { tool: vibemind_bubbles,       required_params: [bubble_id] }
       bubble.evaluate:          { tool: vibemind_bubble_update, required_params: [bubble_id] }
-      bubble.promote:           { tool: vibemind_bubble_update, required_params: [bubble_id] }
+      # Fest, ohne Modell: nur ganze Bubbles werden befoerdert (Felix 23.11.2026).
+      bubble.promote:
+        tool: bubble_promote
+        required_params: [bubble_id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
+      # Fest, ohne Modell: Zahl 0 bis 100 an der Bubble.
+      bubble.rate:
+        tool: bubble_rate
+        required_params: [id, score]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
       bubble.current:           { tool: vibemind_bubbles,       required_params: [] }
 
   # ─── Ideas (notes inside bubbles) ───────────────────────────────────
@@ -66,12 +77,60 @@ spaces:
     enabled: true
     description: "Idea notes inside bubbles — create, update, link, format."
     mcp_servers: [vibemind-db, spaces-ideas]
-    mcp_tools: { spaces-ideas: [idea_connect, aenderung_zurueck] }
+    # 23.11.2026: feste Werkzeuge des Ideen-Space (spaces/ideas/mcp_server.py), alle ohne Modell und ueber
+    # aenderung_id ruecknehmbar. Befoerdert werden nur ganze Bubbles; die Begruendung einer Bewertung geht
+    # ueber bewertung_begruenden an die Bubble (Felix 23.11.).
+    mcp_tools:
+      spaces-ideas:
+        - idea_connect
+        - aenderung_zurueck
+        - idea_create
+        - idea_update
+        - idea_list
+        - idea_format
+        - idea_arrange
+        - idea_auto_link
+        - idea_rate
+        - bewertung_begruenden
     default_context: [current_space, current_bubble, idea_titles]
     events:
-      idea.list:                { tool: db_ideas_list,   required_params: [] }
-      idea.create:              { tool: db_ideas_create, required_params: [title] }
-      idea.update:              { tool: db_ideas_update, required_params: [idea_id] }
+      # Feste Aufrufe (ohne Modell) ueber den Ideen-Server, nur mit Kennungen;
+      # Vertrag und Nachpruefung: brain/the_brain/core/ideen_fest_contract.py.
+      idea.list:
+        tool: idea_list
+        required_params: []
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
+      idea.create:
+        tool: idea_create
+        required_params: [bubble_id, title]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
+      idea.update:
+        tool: idea_update
+        required_params: [id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
+      idea.format:
+        tool: idea_format
+        required_params: [id, format]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
+      idea.arrange:
+        tool: idea_arrange
+        required_params: [bubble_id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
+      idea.rate:
+        tool: idea_rate
+        required_params: [id, score]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
+      idea.rate_reason:
+        tool: bewertung_begruenden
+        required_params: [bubble_id, text]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
       idea.delete:              { tool: db_ideas_delete, required_params: [idea_id] }
       idea.find:                { tool: db_ideas_list,   required_params: [query] }
       idea.connect:
@@ -87,7 +146,11 @@ spaces:
         required_params: []
         required_provenance: [approval_ref, cost_ref]
         execution: { kind: mcp, server: spaces-ideas }
-      idea.auto_link:           { tool: db_canvas_edge_create, required_params: [] }
+      idea.auto_link:
+        tool: idea_auto_link
+        required_params: [bubble_id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
       idea.add_image:           { tool: db_ideas_update, required_params: [idea_id] }
       idea.current_space:       { tool: db_ideas_list,   required_params: [] }
       idea.format_table:        { tool: db_ideas_update, required_params: [idea_id] }

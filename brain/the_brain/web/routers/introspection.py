@@ -2452,7 +2452,13 @@ def _try_capability_shortcut(state, intent: str):
         logger.debug(f"[shortcut] get_capability failed: {e}")
 
     arg_template = ""
-    if arg_kwarg:
+    if arg_kwarg and m.capability == "bubble_list":
+        # "Welche Bubbles habe ich im Ideenbereich?" nahm das letzte grossgeschriebene
+        # Wort als Suchwort und fand nichts. Eine Liste sucht nur nach dem, was der
+        # Mensch in Anfuehrungszeichen setzt.
+        from core.ideen_abkuerzung import listen_suchwort
+        arg_template = listen_suchwort(intent)
+    elif arg_kwarg:
         try:
             arg_template = _extract_arg_template(intent, m.capability)
         except Exception as e:
@@ -2485,6 +2491,83 @@ def _try_capability_shortcut(state, intent: str):
         f"arg={arg_template!r} (regex)"
     )
     return plan
+
+
+def _try_ideen_abkuerzung(intent: str, kontext: Any):
+    """Feste Saetze des Ideen-Space ohne Planer und ohne Modell.
+
+    ``kontext`` ist der Kontext der App aus dem Anfragekoerper (offene Bubble, sichtbare
+    Karten, Auswahl; siehe spaces/ideas/ANZEIGE.md). Rueckgabe:
+      (None, None, "")        kein fester Satz -> der bisherige Weg entscheidet
+      (None, frage, "")       Rueckfrage an den Menschen, kein Aufruf
+      (plan, None, antwort)   Plan mit genau einem festen Aufruf und fertigem Antworttext
+    Wirft nie.
+    """
+    try:
+        from core.ideen_abkuerzung import arg_vorlage, loese
+        from core.plan_schema import Plan as _Plan, HopSpec as _HopSpec
+
+        treffer = loese(intent, kontext)
+        if not treffer:
+            return None, None, ""
+        if "rueckfrage" in treffer:
+            logger.info("[ideen-abkuerzung] Rueckfrage statt Aufruf")
+            return None, str(treffer["rueckfrage"]), ""
+        plan = _Plan(
+            plan_id=f"ideen_{int(time.time() * 1000)}",
+            intent=intent,
+            rationale=f"Ideen-Abkuerzung: {treffer['ereignis']} (fester Aufruf)",
+            hops=[_HopSpec(
+                step_id="s1",
+                description=f"{treffer['ereignis']} via Ideen-Abkuerzung",
+                capability=treffer["capability"],
+                arg_template=arg_vorlage(treffer["argumente"]),
+            )],
+            final_synthesis_prompt="",
+            estimated_cost_usd=0.0,
+        )
+        logger.info(f"[ideen-abkuerzung] {treffer['ereignis']!r} (fester Aufruf)")
+        return plan, None, str(treffer.get("antwort") or "")
+    except Exception as e:  # noqa: BLE001 - nie die Anfrage daran scheitern lassen
+        logger.warning(f"[ideen-abkuerzung] uebersprungen: {type(e).__name__}: {e}")
+        return None, None, ""
+
+
+def _feste_antwort(plan, exec_result, ideen_fest: bool, vorgabe: str, kontext: Any) -> Optional[Dict[str, Any]]:
+    """Antwortfelder fuer einen festen Ein-Schritt-Plan, oder ``None`` (dann Synthese wie bisher).
+
+    Liefert ``final_text`` (deutscher Satz, ohne Kennungen), ``space`` und bei einem
+    Fehler ``fehler`` (technischer Text). Bei einem Fehler nie eine Erfolgsmeldung. Wirft nie.
+    """
+    try:
+        from core.ideen_abkuerzung import antwort_fuer_schritt
+
+        hops = getattr(plan, "hops", None) or []
+        if len(hops) != 1:
+            return None
+        capability = hops[0].capability or ""
+        alt = (str(getattr(plan, "plan_id", "")).startswith("shortcut_")
+               and capability in ("aenderung_zurueck", "bubble_list"))
+        if not ideen_fest and not alt:
+            return None
+        schritt = (exec_result.get("executed") or {}).get(hops[0].step_id) or {}
+        if not isinstance(schritt, dict):
+            schritt = {}
+        ok = bool(exec_result.get("ok"))
+        text = antwort_fuer_schritt(
+            capability, ok, schritt.get("result"), schritt.get("error"), vorgabe, kontext)
+        if text is None:
+            return None
+        antwort: Dict[str, Any] = {
+            "final_text": text,
+            "space": "bubbles" if capability == "bubble_list" else "ideas",
+        }
+        if not ok:
+            antwort["fehler"] = str(schritt.get("error") or "")
+        return antwort
+    except Exception as e:  # noqa: BLE001 - dann lieber die bisherige Synthese
+        logger.warning(f"[feste-antwort] uebersprungen: {type(e).__name__}: {e}")
+        return None
 
 
 @router.post("/api/multihop/execute")
@@ -2525,18 +2608,31 @@ async def multihop_execute(request: Request):
 
     from core.plan_schema import Plan as _Plan
     plan = None
+    _ideen_fest = False     # Plan stammt aus der Ideen-Abkuerzung (ein fester Aufruf)
+    _ideen_antwort = ""
     if plan_dict:
         try:
             plan = _Plan.from_dict(plan_dict)
         except Exception as e:
             return JSONResponse({"error": f"invalid plan: {e}", "trace_id": trace_id}, status_code=400)
     elif intent:
+        # Ideen-Space: feste Saetze laufen ohne Planer und ohne Modell. Die App gibt
+        # dafuer ihren Kontext mit; Namen werden daraus aufgeloest, nie geraten.
+        if not skip_shortcut and isinstance(body.get("context"), dict):
+            plan, _ideen_frage, _ideen_antwort = _try_ideen_abkuerzung(intent, body.get("context"))
+            if _ideen_frage:
+                _trace_lite(pe, trace_id, intent, "ideen-rueckfrage", _ideen_frage)
+                return JSONResponse({
+                    "ok": False, "rueckfrage": True, "space": "ideas", "executed": {},
+                    "final_text": _ideen_frage, "trace_id": trace_id,
+                })
+            _ideen_fest = plan is not None
         # Phase 11.Q2 — Capability-Router shortcut. If the router has a
         # high-confidence regex match for a single-action intent, skip
         # the LLM planner and build a 1-hop plan directly. Wrapped in
         # try/except so any bug here falls through to the LLM path
         # instead of 500'ing the whole request.
-        if not skip_shortcut:
+        if not skip_shortcut and plan is None:
             try:
                 plan = _try_capability_shortcut(state, intent)
             except Exception as e:
@@ -2754,6 +2850,18 @@ async def multihop_execute(request: Request):
     if _auftraege:
         out["auftraege"] = _auftraege
         out["final_text"] = quittung(_auftraege)
+        try:
+            pe.recorder.attach_final(plan.plan_id, out["final_text"])
+        except Exception:  # noqa: BLE001
+            pass
+        return JSONResponse(out)
+
+    # Fester Aufruf: der Antworttext steht fest, ein Modell formuliert nichts. Das gilt
+    # fuer Plaene der Ideen-Abkuerzung und fuer die aelteren Ein-Schritt-Abkuerzungen
+    # "zurueck" und "zeige meine Bubbles" (deren Rohtext stand sonst im Chat).
+    _fest = _feste_antwort(plan, exec_result, _ideen_fest, _ideen_antwort, body.get("context"))
+    if _fest is not None:
+        out.update(_fest)
         try:
             pe.recorder.attach_final(plan.plan_id, out["final_text"])
         except Exception:  # noqa: BLE001
