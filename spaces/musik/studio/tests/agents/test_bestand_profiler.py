@@ -112,6 +112,20 @@ def test_needed_hoechstens_alle_passenden_songs(songs, wahl, budget):
     assert profile.track_count.needed == len(wahl.drin) == 3
 
 
+def test_das_modell_kann_den_gesang_ausschalten(songs, wahl, budget):
+    """Plan 1c: "instrumental" im Wunsch heisst gesang false - das Modell
+    entscheidet es, der Code laesst es stehen."""
+    entwurf = json.loads(json.dumps(DRAFT)) | {"gesang": False}
+    client = FakeClient([json.dumps(entwurf)])
+
+    profile = build_profile_from_bestand(
+        client, "instrumental unter einem Video", 20, songs, wahl, budget
+    )
+
+    assert profile.gesang is False
+    assert "gesang" in client.prompts[0]
+
+
 def test_benoetigte_songs_zaehlt_die_kuerzesten():
     # 100 s Uebergang abgezogen: 100, 200, 300 spielbar.
     dauern = [400.0, 200.0, 300.0, 1000.0]

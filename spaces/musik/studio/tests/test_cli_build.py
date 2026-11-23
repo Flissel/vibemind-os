@@ -358,7 +358,11 @@ def test_a_true_peak_finding_triggers_exactly_one_corrective_re_render(
     qa_calls: list[Path] = []
 
     def fake_check_set(
-        path: Path, plan: MixPlan, wunsch_laenge_s: float | None = None
+        path: Path,
+        plan: MixPlan,
+        wunsch_laenge_s: float | None = None,
+        stimmspuren=None,
+        ungetrennt=None,
     ) -> QaReport:
         qa_calls.append(path)
         return reports[len(qa_calls) - 1]
@@ -371,13 +375,15 @@ def test_a_true_peak_finding_triggers_exactly_one_corrective_re_render(
         target: Path,
         master_gain_db: float = 0.0,
         sr: int | None = None,
-    ) -> None:
+        stimmen=None,
+    ) -> list:
         render_calls.append(master_gain_db)
         # Die Datei muss entstehen: cmd_build rendert unter einem
         # Zwischennamen und benennt erst nach dem Bericht um. Ein Fake, der
         # nichts schreibt, waere kein Renderer.
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"")
+        return []
 
     monkeypatch.setattr(cli, "check_set", fake_check_set)
     monkeypatch.setattr(cli, "render", fake_render)
@@ -443,9 +449,7 @@ def test_a_crash_in_stage_nine_leaves_the_run_unfinished(
     """
     run = _prepared_with_mixable_tracks(tmp_path, profile, 4)
 
-    def exploding_check_set(
-        path: Path, plan: MixPlan, wunsch_laenge_s: float | None = None
-    ) -> QaReport:
+    def exploding_check_set(path: Path, plan: MixPlan, **_) -> QaReport:
         raise RuntimeError("Stufe 9 abgestuerzt")
 
     monkeypatch.setattr(cli, "check_set", exploding_check_set)

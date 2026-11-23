@@ -39,6 +39,8 @@ Lege fest:
   nachgerechnet)
 - style_vocab: Stilbegriffe, die Wunsch und Material treffen
 - structure: geforderte Mindestlaenge von Intro und Outro in Takten
+- gesang: false, wenn der Wunsch Musik ohne Gesang verlangt (instrumental,
+  unter einem Video, unter Sprache), sonst true
 
 Die Felder genre, length_minutes, bpm und track_count werden nach deiner
 Antwort ueberschrieben. Trage trotzdem schemagueltige Werte ein - also einen nichtleeren

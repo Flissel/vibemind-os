@@ -29,13 +29,15 @@ from djset.contracts import (
     CritiqueRound,
     MixPlan,
     Profile,
+    QaReport,
     Setlist,
     TrackMeasurements,
 )
 from djset.critic import Critique, critique
+from djset.dsp.trennen import INSTALLATION, DemucsTrenner, Trenner, trenner_fehlt
 from djset.export import to_mp3
 from djset.qa import check_set
-from djset.render.engine import ImpossibleMixPlan, render
+from djset.render.engine import ImpossibleMixPlan, StimmSpur, render
 from djset.render.stretch import (
     RenderFailed,
     RenderToolMissing,
@@ -101,6 +103,12 @@ BUILD_BUDGET_SECONDS = 3600.0
 # Spec Abschnitt 7: weist der Critic zweimal zurueck, wird der beste bisherige
 # Plan genommen. Weder Endlosschleife noch Abbruch.
 CRITIC_ROUNDS = 2
+
+
+def _trenner() -> Trenner | None:
+    """Der Stimmtrenner, oder None, wenn Demucs nicht installiert ist. Die
+    Tests ersetzen diese Funktion, damit kein Modell geladen wird."""
+    return DemucsTrenner() if trenner_fehlt() is None else None
 
 
 def _laenge_gueltig(length_minutes: float) -> bool:
@@ -212,6 +220,7 @@ def build_run(
     client: AgentClient,
     budget: Budget,
     messungen: dict[str, TrackMeasurements] | None = None,
+    stimmen: dict[str, tuple[Path, Path]] | None = None,
 ) -> int:
     """Der Kern eines build-Laufs, ab der Analyse: Stufen 3 bis 9.
 
@@ -224,6 +233,11 @@ def build_run(
     `messungen` bringt der Einstieg `set` mit: die gespeicherten Messungen
     der Songs. Die Analyse misst dann nicht neu, damit das Tempo im Lauf
     nicht von tempo.json abweichen kann. `build` gibt keine mit.
+
+    `stimmen` (Plan 1c) bringt ebenfalls nur `set` mit: je getrenntem Song
+    die Pfade von Stimme und Begleitung. Der Renderer legt die Stimme dann
+    auf eine eigene Spur und wechselt sie im Uebergang, die QA misst, ob zwei
+    Stimmen gleichzeitig singen. Ohne `stimmen` misst sie das nicht.
     """
     # Vor dem ersten Modellaufruf: ein kaputtes tempo.json soll nicht erst
     # nach dem Rendern auffallen, wenn jedes Token bezahlt ist. Liegt es da,
@@ -319,7 +333,7 @@ def build_run(
     try:
         # Stufe 8: rendern.
         sources = {file.id: file.path for file in files}
-        render(best, sources, partial)
+        spuren = render(best, sources, partial, stimmen=stimmen)
         run.write_text(
             "tracklist.md", render_tracklist(best, {a.id: a for a in analyses})
         )
@@ -328,15 +342,30 @@ def build_run(
         # Der Laengen-Hinweis misst gegen die gewuenschte Laenge, nicht gegen
         # die des Plans - die stimmt fast immer mit sich selbst ueberein.
         wunsch_laenge_s = profile.length_minutes * 60.0
-        qa = check_set(partial, best, wunsch_laenge_s=wunsch_laenge_s)
+        ungetrennt = [
+            e.track_id for e in best.entries if e.track_id not in (stimmen or {})
+        ]
+
+        def nachmessen(stimmspuren: list[StimmSpur]) -> QaReport:
+            return check_set(
+                partial,
+                best,
+                wunsch_laenge_s=wunsch_laenge_s,
+                stimmspuren=stimmspuren if stimmen is not None else None,
+                ungetrennt=ungetrennt,
+            )
+
+        qa = nachmessen(spuren)
         correction = correction_gain_db(qa)
         # Auf `correction is not None` verzweigt, nicht auf ein danebenstehendes
         # bool: sonst kann der f-String unten ein None bekommen, sobald die
         # beiden auseinanderlaufen.
         if correction is not None:
             print(f"  QA: Pegel um {correction:.1f} dB korrigiert, rendere neu")
-            render(best, sources, partial, master_gain_db=correction)
-            qa = check_set(partial, best, wunsch_laenge_s=wunsch_laenge_s)
+            spuren = render(
+                best, sources, partial, master_gain_db=correction, stimmen=stimmen
+            )
+            qa = nachmessen(spuren)
     except RenderToolMissing as error:
         print(f"Fehler: {error}", file=sys.stderr)
         return 1
@@ -487,13 +516,18 @@ def cmd_set(
     client: AgentClient,
     budget: Budget,
     today: date,
+    ohne_gesang: bool = False,
 ) -> int:
     """Baut ein Set aus Songs, die schon im Bestand liegen.
 
     Alles bis zum Anlegen des Laufs ist Vorab-Check und kostet kein Token:
     Songs laden, fehlende Messungen nachholen, den Tempo-Bereich waehlen,
-    pruefen, ob genug Songs hineinpassen und ob ihre Laenge reicht. Erst dann
-    fragt der Profiler das Modell, danach laeuft dieselbe Kette wie bei build.
+    pruefen, ob genug Songs hineinpassen und ob ihre Laenge reicht, fehlende
+    Stimmen trennen. Erst dann fragt der Profiler das Modell, danach laeuft
+    dieselbe Kette wie bei build.
+
+    `ohne_gesang` schaltet die Stimmen aller Songs ab. Das geht nur, wenn
+    jeder Song im Bereich getrennt ist - sonst bricht `set` vor dem Modell ab.
     """
     if not wunsch.strip():
         print("Fehler: --wunsch darf nicht leer sein.", file=sys.stderr)
@@ -574,6 +608,19 @@ def cmd_set(
         print(f"Fehler: {error}", file=sys.stderr)
         return 1
 
+    stimmen = _stimmen_holen(bestand, im_bereich)
+    if stimmen is None:
+        return 1
+    ungetrennt = [song.id for song in im_bereich if song.id not in stimmen]
+    if ohne_gesang and ungetrennt:
+        print(
+            f"Fehler: --ohne-gesang braucht die getrennte Stimme jedes Songs, "
+            f"nicht getrennt sind: {', '.join(ungetrennt)}. "
+            f"{trenner_fehlt() or 'Installation: ' + INSTALLATION}",
+            file=sys.stderr,
+        )
+        return 1
+
     # Der Wunsch ist freier Text und kann lang sein - im Ordnernamen nur
     # gekappt, sonst sprengt er unter Windows schnell die Pfadlaenge. Das
     # Profil bekommt ihn weiter ganz.
@@ -587,6 +634,10 @@ def cmd_set(
     except AgentError as error:
         print(f"Fehler beim Erzeugen des Profils: {error}", file=sys.stderr)
         return 1
+    if ohne_gesang:
+        # Der Nutzer hat es ausdruecklich gesagt - das gilt vor dem, was das
+        # Modell aus dem Wunsch gelesen hat.
+        profile = profile.model_copy(update={"gesang": False})
     run.write_model("profile.json", profile)
 
     print(f"Run: {run.run_id}")
@@ -601,7 +652,42 @@ def cmd_set(
     for song_id, abschnitte in wahl.unsicher.items():
         print(_unsicher_zeile(song_id, tempi[song_id], abschnitte))
     messungen = {song.id: song.messung for song in im_bereich if song.messung}
-    return build_run(run, files, profile, client, budget, messungen=messungen)
+    return build_run(
+        run, files, profile, client, budget, messungen=messungen, stimmen=stimmen
+    )
+
+
+def _stimmen_holen(
+    bestand: Bestand, songs: list[SongEintrag]
+) -> dict[str, tuple[Path, Path]] | None:
+    """Trennt, was noch nicht getrennt ist, und gibt die Pfade aller
+    getrennten Songs zurueck. Ohne Demucs oder bei einem Fehler beim Trennen
+    bleibt ein Song ungetrennt und klingt im Set wie bisher - das ist ein
+    Hinweis, kein Abbruch. None nur nach einer Meldung ueber einen Bestand,
+    dessen Stimmdateien fehlen."""
+    trenner = _trenner()
+    fehlend = [song.id for song in songs if song.stimmen is None]
+    if fehlend and trenner is None:
+        grund = trenner_fehlt() or "kein Trenner bereit"
+        print(f"  Stimmen nicht getrennt ({', '.join(fehlend)}): {grund}")
+    elif trenner is not None:
+        for song_id in fehlend:
+            print(f"  trenne Stimme von {song_id} ...")
+            try:
+                bestand.trennen(song_id, trenner)
+            except BestandFehler as error:
+                print(f"  {error} - der Song bleibt ungetrennt")
+
+    stimmen: dict[str, tuple[Path, Path]] = {}
+    try:
+        for song in songs:
+            pfade = bestand.stimmen_pfade(song.id)
+            if pfade is not None:
+                stimmen[song.id] = pfade
+    except BestandFehler as error:
+        print(f"Fehler: {error}", file=sys.stderr)
+        return None
+    return stimmen
 
 
 def _mm_ss(sekunden: float) -> str:
@@ -666,6 +752,20 @@ def cmd_aufnehmen(
         # Aufgenommen bleibt er - aber set laesst ihn draussen, und das soll
         # hier schon sichtbar sein, nicht erst beim Set.
         print(_unsicher_zeile(song_id, messung.bpm.value, abschnitte))
+
+    # Plan 1c: die Stimme gleich mit trennen, dann muss set es nicht nachholen.
+    # Ohne Demucs bleibt der Song ungetrennt aufgenommen - das ist kein Fehler.
+    trenner = _trenner()
+    if trenner is None:
+        grund = trenner_fehlt() or "kein Trenner bereit"
+        print(f"  Stimme nicht getrennt: {grund}")
+        return 0
+    try:
+        bestand.trennen(eintrag.id, trenner)
+    except BestandFehler as error:
+        print(f"Fehler: {error}", file=sys.stderr)
+        return 1
+    print(f"  Stimme getrennt ({trenner.modell})")
     return 0
 
 
@@ -832,6 +932,11 @@ def main(argv: list[str] | None = None) -> int:
     set_parser.add_argument(
         "--songs", default=None, help="Song-IDs mit Komma getrennt, sonst alle"
     )
+    set_parser.add_argument(
+        "--ohne-gesang",
+        action="store_true",
+        help="nur die Begleitung jedes Songs spielen, die Stimmen bleiben aus",
+    )
 
     record_parser = subparsers.add_parser(
         "record", help="Vom Leitungs-/Aux-Eingang in watch/ aufnehmen"
@@ -938,6 +1043,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_seconds=BUILD_BUDGET_SECONDS,
             ),
             date.today(),
+            ohne_gesang=args.ohne_gesang,
         )
     if args.command == "record":
         return cmd_record(

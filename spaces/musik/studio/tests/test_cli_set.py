@@ -27,6 +27,7 @@ from tests.agents.test_profiler import DRAFT
 from tests.fixtures.analyses import make_analysis
 from tests.fixtures.fake_client import FakeClient, ZaehlenderClient
 from tests.fixtures.make_audio import click_track, click_track_with_quiet_edges
+from tests.fixtures.trenner import HalbTrenner
 
 HEUTE = date(2026, 11, 23)
 
@@ -98,6 +99,7 @@ class _BuildRunAufzeichnung:
         client: object,
         budget: Budget,
         messungen: dict[str, TrackMeasurements] | None = None,
+        stimmen: dict[str, tuple[Path, Path]] | None = None,
     ) -> int:
         self.aufrufe.append(
             {
@@ -106,6 +108,7 @@ class _BuildRunAufzeichnung:
                 "profile": profile,
                 "client": client,
                 "messungen": messungen,
+                "stimmen": stimmen,
             }
         )
         return 0
@@ -116,6 +119,20 @@ def build_run_aufzeichnung(monkeypatch) -> _BuildRunAufzeichnung:
     aufzeichnung = _BuildRunAufzeichnung()
     monkeypatch.setattr(cli, "build_run", aufzeichnung)
     return aufzeichnung
+
+
+@pytest.fixture(autouse=True)
+def ohne_demucs(monkeypatch) -> None:
+    """Kein Test dieser Datei laedt Demucs: ohne eigene Angabe ist kein
+    Trenner da. Die Tests zur Gesangsspur setzen einen HalbTrenner."""
+    monkeypatch.setattr(cli, "_trenner", lambda: None)
+
+
+@pytest.fixture
+def halb_trenner(monkeypatch) -> HalbTrenner:
+    trenner = HalbTrenner()
+    monkeypatch.setattr(cli, "_trenner", lambda: trenner)
+    return trenner
 
 
 def test_set_bricht_vor_dem_modell_ab_wenn_zu_wenige_passen(
@@ -255,9 +272,16 @@ def test_set_misst_fehlende_messungen_nach(tmp_path, budget, build_run_aufzeichn
 def test_main_set_nimmt_daten_aus_der_umgebung(tmp_path, monkeypatch):
     gesehen: dict[str, object] = {}
 
-    def fake_set(daten, wunsch, length_minutes, songs, client, budget, today) -> int:
+    def fake_set(
+        daten, wunsch, length_minutes, songs, client, budget, today, ohne_gesang
+    ) -> int:
         gesehen.update(
-            daten=daten, wunsch=wunsch, length=length_minutes, songs=songs, today=today
+            daten=daten,
+            wunsch=wunsch,
+            length=length_minutes,
+            songs=songs,
+            today=today,
+            ohne_gesang=ohne_gesang,
         )
         return 0
 
@@ -272,12 +296,16 @@ def test_main_set_nimmt_daten_aus_der_umgebung(tmp_path, monkeypatch):
     assert gesehen["length"] == 20.0
     assert gesehen["songs"] == ["a", "b"]
     assert isinstance(gesehen["today"], date)
+    assert gesehen["ohne_gesang"] is False
+
+    cli.main(["set", "--wunsch", "Party", "--length", "20", "--ohne-gesang"])
+    assert gesehen["ohne_gesang"] is True
 
 
 def test_main_set_daten_schlaegt_die_umgebung(tmp_path, monkeypatch):
     gesehen: dict[str, object] = {}
 
-    def fake_set(daten, wunsch, length_minutes, songs, client, budget, today) -> int:
+    def fake_set(daten, wunsch, length_minutes, songs, client, budget, today, **_) -> int:
         gesehen.update(daten=daten, songs=songs)
         return 0
 
@@ -373,12 +401,19 @@ def _lauf_mit_ersetztem_renderer(tmp_path, profile, monkeypatch):
         ]
     )
 
-    def fake_render(plan: MixPlan, sources, target: Path, master_gain_db=0.0, sr=None):
+    def fake_render(
+        plan: MixPlan, sources, target: Path, master_gain_db=0.0, sr=None, stimmen=None
+    ):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"")
+        return []
 
     def fake_check_set(
-        path: Path, plan: MixPlan, wunsch_laenge_s: float | None = None
+        path: Path,
+        plan: MixPlan,
+        wunsch_laenge_s: float | None = None,
+        stimmspuren=None,
+        ungetrennt=None,
     ) -> QaReport:
         return QaReport(
             length_s=110.0,
@@ -688,7 +723,7 @@ def test_build_run_gibt_der_qa_die_gewuenschte_laenge(tmp_path, profile, monkeyp
     gesehen: list[float | None] = []
     fake = _qa_mit([])
 
-    def merkt_sich(path: Path, plan: MixPlan, wunsch_laenge_s=None) -> QaReport:
+    def merkt_sich(path: Path, plan: MixPlan, wunsch_laenge_s=None, **_) -> QaReport:
         gesehen.append(wunsch_laenge_s)
         return fake(path, plan)
 
@@ -823,3 +858,126 @@ def test_set_misst_fehlende_lokale_raster_nach(
         exclude={"lokale_raster"}
     )
     assert "messe lokale Raster von a" in capsys.readouterr().out
+
+
+# --- Plan 1c: Gesangsspur ----------------------------------------------------
+
+
+def test_set_trennt_fehlende_stimmen_vor_dem_modell_und_gibt_sie_weiter(
+    tmp_path, budget, build_run_aufzeichnung, halb_trenner, capsys
+):
+    bestand = _bestand(tmp_path, {"a": 124.0, "b": 126.0, "c": 128.0, "d": 174.0})
+    client = ZaehlenderClient([json.dumps(DRAFT)])
+
+    assert cmd_set(tmp_path, "Party", 20, None, client, budget, HEUTE) == 0
+
+    # Nur die Songs im Bereich, nicht d.
+    assert sorted(p.name for p in halb_trenner.aufrufe) == ["a.wav", "b.wav", "c.wav"]
+    stimmen = build_run_aufzeichnung.aufrufe[0]["stimmen"]
+    assert stimmen == {s: bestand.stimmen_pfade(s) for s in ("a", "b", "c")}
+    assert "trenne Stimme von a" in capsys.readouterr().out
+
+
+def test_set_trennt_schon_getrennte_songs_nicht_noch_einmal(
+    tmp_path, budget, build_run_aufzeichnung, halb_trenner
+):
+    bestand = _bestand(tmp_path, {"a": 124.0, "b": 126.0, "c": 128.0})
+    bestand.trennen("a", HalbTrenner())
+    client = ZaehlenderClient([json.dumps(DRAFT)])
+
+    assert cmd_set(tmp_path, "Party", 20, None, client, budget, HEUTE) == 0
+
+    assert sorted(p.name for p in halb_trenner.aufrufe) == ["b.wav", "c.wav"]
+
+
+def test_set_ohne_demucs_laeuft_ohne_getrennte_stimmen(
+    tmp_path, budget, build_run_aufzeichnung, capsys
+):
+    _bestand(tmp_path, {"a": 124.0, "b": 126.0, "c": 128.0})
+    client = ZaehlenderClient([json.dumps(DRAFT)])
+
+    assert cmd_set(tmp_path, "Party", 20, None, client, budget, HEUTE) == 0
+
+    assert build_run_aufzeichnung.aufrufe[0]["stimmen"] == {}
+    assert "nicht getrennt" in capsys.readouterr().out
+
+
+def test_ohne_gesang_schaltet_das_profil_aus(
+    tmp_path, budget, build_run_aufzeichnung, halb_trenner
+):
+    _bestand(tmp_path, {"a": 124.0, "b": 126.0, "c": 128.0})
+    client = ZaehlenderClient([json.dumps(DRAFT)])
+
+    assert cmd_set(
+        tmp_path, "Party", 20, None, client, budget, HEUTE, ohne_gesang=True
+    ) == 0
+
+    aufruf = build_run_aufzeichnung.aufrufe[0]
+    assert aufruf["profile"].gesang is False
+    assert aufruf["run"].read_model("profile.json", Profile).gesang is False
+
+
+def test_ohne_gesang_ohne_getrennte_stimmen_bricht_vor_dem_modell_ab(
+    tmp_path, zaehlender_client, budget, capsys
+):
+    _bestand(tmp_path, {"a": 124.0, "b": 126.0, "c": 128.0})
+
+    assert cmd_set(
+        tmp_path, "Party", 20, None, zaehlender_client, budget, HEUTE, ohne_gesang=True
+    ) == 1
+
+    assert zaehlender_client.aufrufe == 0
+    err = capsys.readouterr().err
+    assert "a, b, c" in err
+    assert "pip install" in err
+    assert not (tmp_path / "runs").exists()
+
+
+def test_build_run_legt_die_stimmen_und_misst_sie(tmp_path, profile, monkeypatch):
+    run, files, _flach, client = _lauf_mit_ersetztem_renderer(
+        tmp_path, profile, monkeypatch
+    )
+    gerendert: dict[str, object] = {}
+    geprueft: dict[str, object] = {}
+    spur = object()
+    render_vorher, check_vorher = cli.render, cli.check_set
+
+    def render_mit(*args, **kwargs):
+        gerendert.update(kwargs)
+        render_vorher(*args, **kwargs)
+        return [spur]
+
+    def check_mit(*args, **kwargs):
+        geprueft.update(kwargs)
+        return check_vorher(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "render", render_mit)
+    monkeypatch.setattr(cli, "check_set", check_mit)
+    monkeypatch.setattr(cli, "to_mp3", lambda quelle, ziel: ziel.write_bytes(b""))
+    stimmen = {"t0": (tmp_path / "s.wav", tmp_path / "b.wav")}
+
+    cli.build_run(run, files, _flach, client, _budget(), stimmen=stimmen)
+
+    assert gerendert["stimmen"] == stimmen
+    assert geprueft["stimmspuren"] == [spur]
+    assert geprueft["ungetrennt"] == ["t1", "t2", "t3"]
+
+
+def test_aufnehmen_trennt_gleich_mit(tmp_path, halb_trenner, capsys):
+    bestand = Bestand(tmp_path)
+    click_track(bestand.eingang / "lied.wav", bpm=126.0, bars=16)
+
+    assert cli.cmd_aufnehmen(tmp_path, "lied.wav", "Lied", "suno-eigen", None, HEUTE) == 0
+
+    assert bestand.stimmen_pfade("lied") is not None
+    assert "Stimme getrennt" in capsys.readouterr().out
+
+
+def test_aufnehmen_ohne_demucs_sagt_es(tmp_path, capsys):
+    bestand = Bestand(tmp_path)
+    click_track(bestand.eingang / "lied.wav", bpm=126.0, bars=16)
+
+    assert cli.cmd_aufnehmen(tmp_path, "lied.wav", "Lied", "suno-eigen", None, HEUTE) == 0
+
+    assert bestand.hole("lied").stimmen is None
+    assert "Stimme nicht getrennt" in capsys.readouterr().out
