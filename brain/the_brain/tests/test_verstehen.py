@@ -340,6 +340,39 @@ def test_bubbles_aus_jedem_reiter_springt_weiter(monkeypatch, echter_muster_rout
     assert state.multihop_planner.aufrufe == 0
 
 
+def test_halt_fest_aus_video_landet_im_ideen_bereich(monkeypatch, echter_muster_router) -> None:
+    client, state = _client(monkeypatch, SCHWACH, muster=echter_muster_router)
+    body = client.post("/api/multihop/execute",
+                       json={"intent": "Halt fest: Preise prüfen in der Bubble Stadtfest",
+                             "context": {"space": "video"}}).json()
+    assert state.multihop_planner.aufrufe == 0
+    assert body["space"] == "ideas" and body["weg"] == "ideen"
+    assert "Bubble" in body["final_text"]  # Ideen-Rueckfrage: welche Bubble
+
+
+def test_zurueck_aus_rowboat_greift_nicht_ins_ideen_canvas(monkeypatch, echter_muster_router) -> None:
+    ausfuehrer = _Ausfuehrer({"x": 1})
+    client, _ = _client(monkeypatch, SCHWACH, ausfuehrer=ausfuehrer, muster=echter_muster_router)
+    body = client.post("/api/multihop/execute", json={"intent": "Nimm das zurück", "context": {"space": "roarboot"}}).json()
+    assert body.get("space") != "ideas"
+
+
+def test_screenshot_aus_sales_geht_an_den_desktop(monkeypatch, echter_muster_router) -> None:
+    ausfuehrer = _Ausfuehrer({"bild": "ok"})
+    client, state = _client(monkeypatch, SCHWACH, ausfuehrer=ausfuehrer, muster=echter_muster_router)
+    client.post("/api/multihop/execute", json={"intent": "Mach einen Screenshot", "context": {"space": "sales"}})
+    assert [h.capability for p in ausfuehrer.plaene for h in p.hops] == ["desktop_screenshot"]
+    assert state.multihop_planner.aufrufe == 0
+
+
+def test_ideen_unter_schwelle_nennt_ideen_beispiele(monkeypatch, echter_muster_router) -> None:
+    client, state = _client(monkeypatch, SCHWACH, muster=echter_muster_router)
+    body = client.post("/api/multihop/execute",
+                       json={"intent": "Wie war das Wetter gestern in Rom", "context": {"space": "ideas"}}).json()
+    assert state.multihop_planner.aufrufe == 0
+    assert body["final_text"].startswith("Das habe ich nicht verstanden. In Ideen kann ich z. B. „")
+
+
 def test_sicherer_planer_plan_laeuft_auch_in_fremden_space(monkeypatch) -> None:
     ausfuehrer = _Ausfuehrer({"anzahl": 3})
     client, state = _client(monkeypatch, STARK, planer=_Planer("bubble_stats"), ausfuehrer=ausfuehrer,

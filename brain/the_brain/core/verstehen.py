@@ -148,6 +148,21 @@ _VOR = r"(?:im|in|ins|aus|zum|zur|beim|bei)\s+(?:dem\s+|der\s+|den\s+|die\s+|das
 _NACH = r"[- ]?(?:space|bereich|reiter|tab)\b"
 
 
+_BUBBLE = re.compile(r"\bbubbles?\b", re.IGNORECASE)
+
+
+def ideen_satz_von_aussen(satz: Any) -> bool:
+    """Darf ein Satz aus einem anderen Reiter die festen Ideen-Saetze versuchen?
+
+    Nur wenn er eine Bubble oder den Ideen-Bereich nennt ("Halt fest: ... in der Bubble X");
+    sonst griffen kurze Ideen-Saetze wie "Zurück" aus jedem Reiter ins Ideen-Canvas.
+    """
+    try:
+        return isinstance(satz, str) and (bool(_BUBBLE.search(satz)) or genannter_space(satz) == "ideas")
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def genannter_space(satz: Any) -> Optional[str]:
     """Space, den der Satz beim Namen nennt, oder ``None``. Wirft nie."""
     try:

@@ -2674,6 +2674,7 @@ async def multihop_execute(request: Request):
     _fest_lesen = ""        # fester Lesesatz eines Space (core/verstehen), z. B. schedule_list
     _space = None           # Space der App aus context.space, None wenn nicht gesendet
     _planer_plan = False    # Plan stammt vom LLM-Planer (nur dort gilt die Mehrdeutigkeits-Pruefung)
+    _ideen_kontext = None   # Ideen-Kontext fuer einen festen Ideen-Satz aus einem anderen Reiter
     if plan_dict:
         try:
             plan = _Plan.from_dict(plan_dict)
@@ -2719,6 +2720,26 @@ async def multihop_execute(request: Request):
             except Exception as e:
                 logger.exception(f"[multihop] shortcut crashed for intent={intent!r}: {e}")
                 plan = None  # fall through to LLM
+
+        # Feste Ideen-Saetze aus einem anderen Reiter (z. B. "Halt fest: ... in der Bubble X" aus
+        # Video): sie gehoeren zum Ideen-Bereich und laufen dort, mit Sprung. Nur wenn der Satz
+        # eine Bubble oder den Ideen-Bereich nennt, damit "Zurück" in Rowboat nicht ins Ideen-
+        # Canvas greift.
+        if (not skip_shortcut and plan is None and _space != "ideas" and _verstehen.regel_an()
+                and _verstehen.ideen_satz_von_aussen(intent)):
+            _ideen_kontext = {"space": "ideas"}
+            plan, _ideen_frage, _ideen_antwort = _try_ideen_abkuerzung(intent, _ideen_kontext)
+            if _ideen_frage:
+                _trace_lite(pe, trace_id, intent, "ideen-rueckfrage", _ideen_frage)
+                return JSONResponse({"ok": False, "rueckfrage": True, "space": "ideas", "executed": {},
+                                     "final_text": _ideen_frage, "trace_id": trace_id, "weg": "ideen"})
+            if plan is None and _ideen_antwort:
+                _trace_lite(pe, trace_id, intent, "ideen-lokal", _ideen_antwort)
+                return JSONResponse({"ok": True, "space": "ideas", "executed": {},
+                                     "final_text": _ideen_antwort, "trace_id": trace_id})
+            _ideen_fest = plan is not None
+            if not _ideen_fest:
+                _ideen_kontext = None
 
         # Space beim Namen: starkes Signal vor dem Planer (feste Saetze und Muster-Treffer haben
         # schon gegriffen und gelten immer, mit Sprung). Nennt der Satz einen Space ohne
@@ -3002,7 +3023,8 @@ async def multihop_execute(request: Request):
     if _fest_lesen:
         _fest = _lese_antwort(plan, exec_result, _fest_lesen)
     else:
-        _fest = _feste_antwort(plan, exec_result, _ideen_fest, _ideen_antwort, body.get("context"))
+        _fest = _feste_antwort(plan, exec_result, _ideen_fest, _ideen_antwort,
+                               _ideen_kontext if _ideen_kontext is not None else body.get("context"))
     if _fest is not None:
         out.update(_fest)
         if _verstehen.schritte_ohne_antwort(out.get("executed")):
