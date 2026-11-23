@@ -2467,8 +2467,9 @@ class PlanExecutor:
                 auftrag_id, type(e).__name__, e)
 
     def _publish_started(self, hops: List[HopSpec], state: Dict[str, Any]) -> None:
+        from .ideen_standzeile import fuer_app
         for h in hops:
-            self._publish("hop_started", {
+            self._publish("hop_started", fuer_app({
                 "step_id": h.step_id,
                 "description": h.description,
                 "capability": h.capability,
@@ -2480,7 +2481,7 @@ class PlanExecutor:
                     h.arg_template, state,
                     repeat_ctx=getattr(h, "_repeat_ctx", None),
                 ),
-            })
+            }))
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
@@ -2593,13 +2594,14 @@ def _hop_event(h: HopSpec, hr: HopResult) -> Dict[str, Any]:
         result_preview = repr(res)[:500]
     except Exception:
         result_preview = "<unrepr>"
-    return {
+    ereignis = {
         "step_id": hr.step_id,
         "description": h.description,
         "capability": hr.capability,
         "target": hr.target,
         "space": space_for_step(hr.capability, hr.target or h.execution_target),
         "ok": hr.ok,
+        "pending": bool(getattr(hr, "pending", False)),
         "error": hr.error,
         "elapsed_s": hr.elapsed_s,
         "validator": hr.validator_verdict,
@@ -2609,3 +2611,6 @@ def _hop_event(h: HopSpec, hr: HopResult) -> Dict[str, Any]:
         "retried": hr.retried,
         "bridges": hr.bridges,
     }
+    # Standzeile der App: fuer Ideen-Schritte deutsche Saetze statt Rohtext (Arbeitslauf 2).
+    from .ideen_standzeile import fuer_app
+    return fuer_app(ereignis, ergebnis=res)

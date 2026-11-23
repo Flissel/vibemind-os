@@ -744,6 +744,9 @@ def fehlersatz(fehler: Any, capability: Any = None) -> str:
         return "Die Nachprüfung war nicht möglich. Die Änderung ist nicht bestätigt."
     if "approval pending" in text or "pending_approval" in text:
         return "Das wartet auf eine Freigabe."
+    if re.search(r"time[\s_-]?out|timed out|Zeitüberschreitung|Zeitueberschreitung", text, re.IGNORECASE):
+        return ("Der Dienst hat nicht rechtzeitig geantwortet. Es ist unklar, ob etwas geändert wurde; "
+                "bitte prüfe das Canvas, bevor du es wiederholst.")
     if "outcome_unknown" in text or "in_progress" in text:
         return "Es ist unklar, ob die Änderung angekommen ist. Bitte prüfe das Canvas, bevor du es wiederholst."
     if "isError=true" in text:
