@@ -81,3 +81,11 @@ def test_nach_einstellen():
 
 def test_nach_einstellen_alles_da():
     assert nach_einstellen([_p(A)], [A]) == ({A: "neu"}, [])
+
+
+def test_nach_einstellen_mit_rowboat_texten():
+    # Rowboat gibt normalisierte Volltexte zurueck (Leerraum zusammengefasst, getrimmt)
+    texte = [f"[Gehirn]  Foo   ·  #{A}  ", f"[Gehirn] Bar\t· #{C.upper()}"]
+    stand, fehlen = nach_einstellen([_p(A), _p(B), _p(C)], texte)
+    assert stand == {A: "neu", C: "neu"}
+    assert fehlen == [B]

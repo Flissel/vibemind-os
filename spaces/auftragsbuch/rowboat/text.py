@@ -10,7 +10,7 @@ from urllib.parse import unquote
 
 TITEL_MAX = 160
 _KENNUNG_AM_ENDE = re.compile(r"#([a-f0-9]{16})$")
-_TITEL_VERBOTEN = re.compile(r"[@\[\]()]")
+_TITEL_VERBOTEN = re.compile(r"[@\[\]()\x00-\x1f\x7f]")
 _LINK_KODIEREN = {"@": "%40", "[": "%5B", "]": "%5D", "(": "%28", ")": "%29"}
 _FREIGABE = "/freigaben#fg-"
 

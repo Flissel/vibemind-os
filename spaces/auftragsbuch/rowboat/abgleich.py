@@ -63,8 +63,13 @@ def einordnen(punkte: list[dict], offen: list[str], liste: list[str], signale: l
 
 
 def nach_einstellen(neu: list[dict], hinzugefuegt: list[str]) -> tuple[dict[str, str], list[str]]:
-    """Stand `neu` je Kennung aus `hinzugefuegt`; dazu die Kennungen aus `neu`, die fehlen."""
-    da = set(hinzugefuegt)
+    """Stand `neu` je Kennung, die in `hinzugefuegt` steht; dazu die Kennungen aus `neu`, die fehlen.
+
+    `hinzugefuegt` sind die Texte, die Rowboat (`addSuggestions`) zurueckgibt (normalisiert:
+    Leerraum zusammengefasst, getrimmt), nicht die Kennungen. Abgeglichen wird ueber die
+    Kennung am Textende (`kennung_in`); ein Eintrag ohne Kennung zaehlt als Rohwert.
+    """
+    da = {kennung_in(t) or t for t in hinzugefuegt}
     stand: dict[str, str] = {}
     fehlen: list[str] = []
     for p in neu:

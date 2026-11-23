@@ -70,3 +70,9 @@ def test_kennung_in_ohne_treffer():
     assert kennung_in(f"#{ID} danach") is None
     assert kennung_in("#abc") is None
     assert kennung_in(None) is None  # type: ignore[arg-type]
+
+
+def test_steuerzeichen_im_titel_entfernt():
+    t = vorschlag(_punkt(titel="a\x00b\x07c\x1bd\x7fe\tf", frist=None, link=""))
+    assert t == f"[Gehirn] a b c d e f · #{ID}"
+    assert not any(ord(z) < 32 or ord(z) == 127 for z in t)
