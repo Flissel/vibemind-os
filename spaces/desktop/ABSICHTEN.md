@@ -88,9 +88,16 @@ Grenzen, fest im Code:
 - **Klicken:** nur ein Bedienelement, das das Gehirn in dieser Runde selbst gelesen hat (Name
   und Klickpunkt müssen übereinstimmen). Der Name braucht einen Bezug zum Auftragssatz
   (gemeinsamer Wortanfang von vier Buchstaben, Füllwörter zählen nicht).
-- **Heikle Ziele** (senden, löschen, kaufen, bezahlen, bestätigen, entfernen, ...): nur, wenn
-  derselbe Wortstamm im Auftragssatz steht.
-- **Tasten:** feste Liste. Keine Windows-Taste, kein Alt+F4.
+- **Heikle Ziele** (senden, löschen, kaufen, bezahlen, bestätigen, installieren, ausführen,
+  zulassen, akzeptieren, freigeben, herunterladen, Ja/OK/Yes, ...): nur, wenn ein Wort im
+  Auftragssatz mit demselben Stamm beginnt. Ein Stamm mitten im Wort zählt nicht ("Absender"
+  verlangt kein Senden).
+- **Tasten:** feste Liste. Keine Windows-Taste, kein Alt+F4. Enter und Leertaste nur direkt
+  nach einem ausgeführten Klick oder Tippen und nur, wenn der Satz Suchen, Senden, Bestätigen,
+  Speichern, Öffnen o. ä. nennt. Jede Tastenkombination braucht ihren Zweck im Satz (Strg+V
+  nur mit "einfügen", weil die Zwischenablage vom Bildschirm stammen kann).
+- **Jeder feste Aufruf** der Schleife geht durch `pruefe_aufruf`: nur die fünf Werkzeuge der
+  Schleife, je Werkzeug genau die erlaubten Argumente.
 
 Was das kostet: Zwischenschritte, deren Beschriftung nichts mit dem Satz zu tun hat (ein Menü
 "Datei", um zu "Speichern" zu kommen), lehnt der Vertrag ab. Der Satz muss sie nennen, oder
