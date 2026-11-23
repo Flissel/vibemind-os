@@ -424,3 +424,43 @@ def test_true_peak_nimmt_den_lauteren_kanal(tmp_path: Path) -> None:
 
     # True Peak liegt bei oder knapp ueber dem Abtastspitzenwert des lauten Kanals.
     assert report.true_peak >= peak_left - 0.1
+
+
+# --- A4: Stille am Rand ist keine Luecke ------------------------------------
+
+
+def test_stille_am_ende_und_am_anfang_ist_keine_luecke(tmp_path: Path) -> None:
+    """Der letzte Song klingt aus, der erste kann still anfangen - beides ist
+    kein Loch im Set und darf den Bericht nicht rot machen."""
+    plan = simple_plan()
+    target = tmp_path / "set.wav"
+    render(plan, sources_for(tmp_path), target, master_gain_db=-12.0)
+    signal, sr = sf.read(target, dtype="float32")
+    signal[: int(1.5 * sr)] = 0.0
+    signal[-int(2.0 * sr) :] = 0.0
+    sf.write(target, signal, sr)
+
+    report = check_set(target, plan)
+
+    assert not [f for f in report.findings if f.kind == "gap"]
+
+
+def test_stille_mitten_im_set_bleibt_eine_luecke_auch_mit_stillen_raendern(
+    tmp_path: Path,
+) -> None:
+    plan = simple_plan()
+    target = tmp_path / "set.wav"
+    render(plan, sources_for(tmp_path), target, master_gain_db=-12.0)
+    signal, sr = sf.read(target, dtype="float32")
+    signal[: int(1.5 * sr)] = 0.0
+    signal[int(5.0 * sr) : int(6.0 * sr)] = 0.0
+    signal[-int(2.0 * sr) :] = 0.0
+    sf.write(target, signal, sr)
+
+    report = check_set(target, plan)
+
+    gaps = [f for f in report.findings if f.kind == "gap"]
+    # Eine Luecke, und zwar die in der Mitte (die Pulse davor klingen leise
+    # aus, deshalb beginnt sie knapp vor Sekunde 5).
+    assert len(gaps) == 1
+    assert "0:04" in gaps[0].text or "0:05" in gaps[0].text

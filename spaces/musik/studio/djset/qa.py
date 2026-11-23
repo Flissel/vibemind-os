@@ -103,7 +103,12 @@ _GAP_FLOOR = 10 ** (-60.0 / 20.0)
 
 
 def _gaps(signal: np.ndarray, sr: int) -> list[float]:
-    """Anfaenge aller Stillen, die laenger als GAP_SECONDS dauern."""
+    """Anfaenge aller Stillen im Set, die laenger als GAP_SECONDS dauern.
+
+    Eine Stille am Rand zaehlt nicht: der letzte Song darf ausklingen und der
+    erste still anfangen - beides ist kein Loch zwischen zwei Songs. Nur
+    eine stille Strecke mit Signal davor UND dahinter ist eine Luecke.
+    """
     quiet = np.abs(signal) < _GAP_FLOOR
     if not quiet.any():
         return []
@@ -115,7 +120,11 @@ def _gaps(signal: np.ndarray, sr: int) -> list[float]:
     if quiet[-1]:
         stops.append(len(quiet))
     needed = int(GAP_SECONDS * sr)
-    return [start / sr for start, stop in zip(starts, stops) if stop - start >= needed]
+    return [
+        start / sr
+        for start, stop in zip(starts, stops)
+        if stop - start >= needed and start > 0 and stop < len(quiet)
+    ]
 
 
 def _seam_drift_beats(
