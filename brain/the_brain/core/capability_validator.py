@@ -591,6 +591,25 @@ class CapabilityValidator:
                     verify_signal={"status": "unverified", "reason": receipt_reason},
                 )
             pc = {"check": "desktop_aufgabenbuch", "erwartet": erwartet}
+        elif kind == "truth:desktop_sicht":
+            # Bildschirm als Augen: die Erwartung aus der Postcondition ({arg} = Argument des
+            # Schritts), gelesen ueber desktop_blick mit eigenem Laufzeit-Kontext. Die Plan-Angaben
+            # dafuer reicht der Plan-Ausfuehrer unter "_laufzeit" mit.
+            try:
+                from core.desktop_sicht import erwartung_aus
+                erwartet, receipt_reason = erwartung_aus(validator_cfg.get("postcondition"), arg)
+            except Exception:
+                erwartet, receipt_reason = None, "Erwartung an den Bildschirm ist unlesbar"
+            if erwartet is not None and not isinstance(validator_cfg.get("_laufzeit"), dict):
+                erwartet, receipt_reason = None, "ohne Plan-Angaben keine Nachpruefung am Bildschirm"
+            if erwartet is None:
+                return self._envelope(
+                    valid=False,
+                    reason=f"ground-truth UNVERIFIED: {receipt_reason}",
+                    kind=kind, on_fail=on_fail, t0=t0, verified=None,
+                    verify_signal={"status": "unverified", "reason": receipt_reason},
+                )
+            pc = {"check": "desktop_sicht", "erwartet": erwartet, "laufzeit": validator_cfg["_laufzeit"]}
         else:
             # Fill {arg}/{result}/{result_id} from the op so the check re-queries the
             # exact row touched. If a placeholder can't resolve (left as "{...}"), we

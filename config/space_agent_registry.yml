@@ -218,11 +218,19 @@ spaces:
         - desktop_task_status
         - desktop_elements
         - desktop_task_step
+        - desktop_blick
     default_context: [current_space, active_window]
     events:
       # Feste Aufrufe (ohne Modell) ueber den Desktop-Server.
       desktop.status:
         tool: desktop_status
+        required_params: []
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-desktop }
+      # Augen fuer andere Spaces (Felix 23.11.): Programm, Fenstertitel, Bedienelemente, ohne OCR.
+      # Nur fuer die Nachpruefung truth:desktop_sicht (core/desktop_sicht.py); kein Satz fuehrt hierher.
+      desktop.blick:
+        tool: desktop_blick
         required_params: []
         required_provenance: [approval_ref, cost_ref]
         execution: { kind: mcp, server: spaces-desktop }

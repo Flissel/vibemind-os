@@ -1003,3 +1003,105 @@ def test_ohne_getippte_herkunft_ruft_der_plan_ausfuehrer_den_dienst_gar_nicht(ec
     assert (ergebnis.ok, ergebnis.error) == (False, "desktop.task: nur aus getippter Eingabe")
     assert openfang.zulassungen == [] and openfang.reservierungen == [] and openfang.werkzeuge == []
     assert list(echt.ordner.glob("*.json")) == []  # kein Eintrag im Aufgabenbuch
+
+
+# ─── Augen fuer andere Spaces: desktop_blick und truth:desktop_sicht ──────────
+
+
+@pytest.fixture
+def sicht(echt, openfang, monkeypatch):
+    import core.world_observer as wo
+    monkeypatch.setattr(wo, "GROUND_TRUTH_ENABLED", True)
+    monkeypatch.setattr(echt.server.blick, "vordergrund", lambda: None)  # nie das echte Fenster lesen
+    monkeypatch.setattr(echt.server.blick, "programm_aus_pid", lambda pid: "notepad")
+    return echt
+
+
+def _sicht_cfg(laufzeit=True, **erwartet):
+    cfg = {"kind": "truth:desktop_sicht", "on_fail": "report", "postcondition": erwartet}
+    if laufzeit:
+        cfg["_laufzeit"] = {k: LAUFZEIT[k] for k in ("plan_id", "plan_revision", "correlation_id", "step_id")}
+    return cfg
+
+
+def test_sicht_bestaetigt_programm_titel_und_element_ueber_den_echten_executor(sicht, openfang):
+    from core.capability_targets import find_registered_mcp_authority
+    from core.capability_validator import CapabilityValidator
+    cfg = _sicht_cfg(programm="^notepad$", fenstertitel_enthaelt="{arg}", element_enthaelt="wetter")
+    urteil = CapabilityValidator().validate(cfg, intent="x", arg="Start", raw_result={"ok": True})
+    assert (urteil["valid"], urteil["verified"]) == (True, True), urteil
+    assert "Zu sehen: Fenster „Start“ in Programm notepad." in urteil["reason"]
+    assert openfang.werkzeuge == ["desktop_blick"] and len(openfang.zulassungen) == 1
+    raum = find_registered_mcp_authority("brain-desktop", "spaces-desktop", "desktop_blick")
+    assert raum.event_id == "desktop.blick" and openfang.zulassungen[0]["space_id"] == raum.space_id
+    assert openfang.zulassungen[0]["plan_id"] == "plan-desk-1"
+    # Im Signal steht nur, was passte, kein Inhalt vom Bildschirm.
+    assert urteil["verify_signal"] == {"gesperrt": False, "programm": True, "fenstertitel": True, "element": True}
+
+
+def test_sicht_widerlegt_was_lesbar_nicht_passt(sicht, openfang):
+    from core.capability_validator import CapabilityValidator
+    urteil = CapabilityValidator().validate(_sicht_cfg(element_enthaelt="Drucken"), intent="x", arg="", raw_result={})
+    assert (urteil["valid"], urteil["verified"]) == (False, False)
+    assert "Nicht wie erwartet: element." in urteil["reason"]
+
+
+def test_sicht_sagt_nichts_ueber_ein_gesperrtes_fenster(sicht, openfang):
+    from core.capability_validator import CapabilityValidator
+    sicht.fenster_titel = "Sparkasse Online-Banking"
+    urteil = CapabilityValidator().validate(_sicht_cfg(fenstertitel_enthaelt="Sparkasse"), intent="x", arg="",
+                                            raw_result={})
+    assert (urteil["valid"], urteil["verified"]) == (False, None)
+    assert "Sparkasse" not in urteil["reason"] and "Sparkasse" not in json.dumps(urteil["verify_signal"])
+
+
+def test_sicht_ohne_lesbare_elemente_ist_nicht_widerlegt(sicht, openfang, monkeypatch):
+    from core.capability_validator import CapabilityValidator
+    monkeypatch.setattr(sicht.server, "_http", lambda *a, **k: {"success": False, "window": {"title": "Start"}})
+    urteil = CapabilityValidator().validate(_sicht_cfg(element_enthaelt="Wetter"), intent="x", arg="", raw_result={})
+    assert (urteil["valid"], urteil["verified"]) == (False, None) and "nicht pruefbar" in urteil["reason"]
+
+
+@pytest.mark.parametrize("cfg", [
+    _sicht_cfg(laufzeit=False, fenstertitel_enthaelt="Start"),
+    _sicht_cfg(),
+    _sicht_cfg(fenster="Start"),
+    _sicht_cfg(programm="(["),
+    _sicht_cfg(fenstertitel_enthaelt="{arg}"),
+])
+def test_sicht_ohne_brauchbare_angaben_erreicht_den_dienst_nicht(sicht, openfang, cfg):
+    from core.capability_validator import CapabilityValidator
+    urteil = CapabilityValidator().validate(cfg, intent="x", arg="", raw_result={})
+    assert urteil["verified"] is None and urteil["valid"] is False
+    assert openfang.zulassungen == [] and openfang.werkzeuge == []
+
+
+def test_der_plan_ausfuehrer_gibt_dem_blick_die_plan_angaben_mit(monkeypatch):
+    from core.plan_executor import PlanExecutor
+    from core.plan_schema import HopSpec
+
+    class Ausfuehrer:
+        def call_with_arg(self, arg, arg_kwarg=None, extra_params=None):
+            return {"ok": True, "result": {"ok": True}}
+
+        def is_resolvable(self):
+            return True
+
+    class Pruefer:
+        def __init__(self):
+            self.cfgs = []
+
+        def validate(self, cfg, **_):
+            self.cfgs.append(cfg)
+            return {"valid": True, "kind": cfg["kind"], "on_fail": "report", "verified": True}
+
+    monkeypatch.setattr("core.plan_executor.PlanExecutor._capture_kg_hits", lambda *args: [])
+    monkeypatch.setattr("core.capability_targets.build_executor", lambda target: Ausfuehrer())
+    pruefer = Pruefer()
+    validator = {"kind": "truth:desktop_sicht", "on_fail": "report", "postcondition": {"fenstertitel_enthaelt": "x"}}
+    hop = HopSpec(step_id="s7", description="x", capability="irgendwas", arg_template="a",
+                  execution_target="direct:egal", validator=validator)
+    PlanExecutor(validator=pruefer)._exec_hop(hop, {}, {"plan_id": "plan-9", "plan_revision": 2, "trace_id": "t-9"})
+    assert pruefer.cfgs[0]["_laufzeit"] == {"plan_id": "plan-9", "plan_revision": 2, "correlation_id": "t-9",
+                                            "step_id": "s7"}
+    assert "_laufzeit" not in hop.validator  # die Faehigkeit selbst bleibt unveraendert

@@ -3,6 +3,12 @@
 Stand: 23.11.2026, Entwurf der Desktop-Sitzung. Zur Vorlage bei Felix; für die Hülle als
 Anzeige-Beschreibung (was, aus welcher Quelle, in welchem Zustand).
 
+> **Nachtrag 23.11. (Felix):** Der Space ist kein Ziel der Navigation mehr. Er arbeitet als
+> Augen im Hintergrund (`desktop_blick`, Nachprüfung `truth:desktop_sicht`), siehe
+> `UEBERARBEITUNG.md` Abschnitt 10. Die Antwort trägt weiter `space: "desktop"` für die
+> Standzeile; ob die App springt, regelt die Hülle. Die Teile unten gelten für eine laufende
+> Desktop-Aufgabe.
+
 ## Wozu der Space da ist
 
 Der Nutzer tippt eine Aufgabe ("öffne den Editor und schreibe ..."). `brain-desktop` führt
