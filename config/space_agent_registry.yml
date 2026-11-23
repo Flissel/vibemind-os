@@ -200,16 +200,61 @@ spaces:
     keywords: ["screenshot|bildschirm|klick|browser|click"]
     enabled: true
     description: "Desktop/window automation via pyautogui/moire."
-    mcp_servers: [vibemind-db, desktop-automation]
+    mcp_servers: [vibemind-db, desktop-automation, spaces-desktop]
+    # 23.11.2026: feste Werkzeuge des Desktop-Space (spaces/desktop/mcp_server.py). Ohne den Schalter
+    # VIBEMIND_DESKTOP_AUSFUEHREN ist jede Aufgabe ein Trockenlauf. Die Schritte einer Aufgabe fuehrt das
+    # Gehirn selbst aus (Felix 23.11.: "Weg 2, Gehirn fuehrt"); der Agent bekommt keine eigenen Haende.
+    # Freigegeben ist nur, was ein Ereignis unten bindet. desktop_task_step (der eigentliche Klick),
+    # desktop_elements und desktop_find kommen erst mit der Schleife dazu, zusammen mit ihrem Vertrag.
+    mcp_tools:
+      spaces-desktop:
+        - desktop_status
+        - desktop_screen_read
+        - desktop_screenshot
+        - desktop_task_start
+        - desktop_task_finish
+        - desktop_task_status
     default_context: [current_space, active_window]
     events:
+      # Feste Aufrufe (ohne Modell) ueber den Desktop-Server.
+      desktop.status:
+        tool: desktop_status
+        required_params: []
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-desktop }
+      desktop.read:
+        tool: desktop_screen_read
+        required_params: []
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-desktop }
+      desktop.task.status:
+        tool: desktop_task_status
+        required_params: []
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-desktop }
+      desktop.task.stop:
+        tool: desktop_task_finish
+        required_params: [task_id, state]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-desktop }
       desktop.open_app:       { tool: desktop_open_app,    required_params: [app_name], requires_confirmation: true, result_validation: external_receipt }
       desktop.click:          { tool: desktop_click,       required_params: [element], requires_confirmation: true, result_validation: external_receipt }
       desktop.type:           { tool: desktop_type,        required_params: [text], requires_confirmation: true, result_validation: external_receipt }
       desktop.press_key:      { tool: desktop_press_key,   required_params: [key], requires_confirmation: true, result_validation: external_receipt }
-      desktop.screenshot:     { tool: desktop_screenshot,  required_params: [] }
+      desktop.screenshot:
+        tool: desktop_screenshot
+        required_params: []
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-desktop }
       desktop.scroll:         { tool: desktop_scroll,      required_params: [direction], requires_confirmation: true, result_validation: external_receipt }
-      desktop.task:           { tool: desktop_task,        required_params: [task], requires_confirmation: true, result_validation: external_receipt }
+      # Legt nur die Aufgabe im Aufgabenbuch an (Trockenlauf ohne Schalter); Schritte folgen ueber das Gehirn.
+      desktop.task:
+        tool: desktop_task_start
+        required_params: [task]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-desktop }
+        requires_confirmation: true
+        result_validation: external_receipt
       desktop.task.create:    { tool: desktop_task,        required_params: [task], requires_confirmation: true, result_validation: external_receipt }
       desktop.task.update:    { tool: desktop_task,        required_params: [task_id], requires_confirmation: true, result_validation: external_receipt }
       desktop.task.list:      { tool: desktop_task,        required_params: [] }

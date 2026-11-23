@@ -1757,6 +1757,63 @@
       check: file_exists
       path: "{result_path}"
 
+# Desktop-Space, feste Aufrufe ohne Modell (23.11.2026). Stehen vor desktop_skill, weil der erste
+# Treffer gewinnt. Ohne VIBEMIND_DESKTOP_AUSFUEHREN am Werkzeug-Dienst ist alles ein Trockenlauf.
+- capability: desktop_status
+  description: "read whether the desktop automation service is running, how many monitors are attached and whether real clicks are enabled"
+  anchor_phrases:
+    - "Läuft der Desktop-Dienst?"
+    - "Desktop Status"
+    - "Wie viele Monitore sind dran?"
+  match_patterns:
+    - "\\bdesktop[-\\s]?(dienst|status|service)\\b"
+    - "\\bwie\\s+viele\\s+monitore\\b"
+  execution_target: "mcp:brain-desktop:spaces-desktop:desktop_status"
+  agents:
+    primary: [brain-desktop]
+    supporting: []
+
+- capability: desktop_task_status
+  description: "read the state and the steps of the current desktop task from the task journal"
+  anchor_phrases:
+    - "Wie weit ist die Desktop-Aufgabe?"
+    - "Was hat der Desktop-Agent zuletzt getan?"
+  match_patterns:
+    - "\\bwie\\s+weit\\s+ist\\s+die\\s+desktop[-\\s]?aufgabe\\b"
+    - "\\bwas\\s+hat\\s+der\\s+desktop[-\\s]?agent\\b"
+    - "\\bstand\\s+der\\s+desktop[-\\s]?aufgabe\\b"
+  execution_target: "mcp:brain-desktop:spaces-desktop:desktop_task_status"
+  agents:
+    primary: [brain-desktop]
+    supporting: []
+
+- capability: desktop_screen_read
+  description: "read the text that is currently visible on the screen"
+  anchor_phrases:
+    - "Was steht gerade auf dem Bildschirm?"
+    - "Lies den Bildschirm vor."
+  match_patterns:
+    - "\\bwas\\s+steht\\s+(gerade\\s+|jetzt\\s+)?auf\\s+(dem|meinem)\\s+bildschirm\\b"
+    - "\\blies\\s+(mir\\s+)?den\\s+bildschirm\\b"
+  execution_target: "mcp:brain-desktop:spaces-desktop:desktop_screen_read"
+  agents:
+    primary: [brain-desktop]
+    supporting: []
+
+- capability: desktop_screenshot
+  description: "take a screenshot of the desktop or of one monitor"
+  anchor_phrases:
+    - "Mach einen Screenshot vom Bildschirm."
+    - "Bildschirmfoto"
+  match_patterns:
+    - "\\bbildschirmfoto\\b"
+    - "\\bmach\\w*\\s+(bitte\\s+)?(einen\\s+|ein\\s+)?screenshot\\s*[.!]?\\s*$"
+    - "\\bscreenshot\\s+(vom|von\\s+meinem|des)\\s+(bildschirm|desktop|monitor)"
+  execution_target: "mcp:brain-desktop:spaces-desktop:desktop_screenshot"
+  agents:
+    primary: [brain-desktop]
+    supporting: []
+
 - capability: desktop_skill
   description: "automate excel word powerpoint outlook chrome desktop apps, fill cells type text click buttons, hr workflows like onboarding offboarding timesheet payroll, anything requiring UI automation on the user's Windows desktop with telegram approval"
   anchor_phrases:
