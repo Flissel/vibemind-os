@@ -2867,6 +2867,15 @@ async def multihop_execute(request: Request):
         "plan_id": plan.plan_id,
         **exec_result,
     }
+    # Augen des Desktop-Space: Saetze mit Fenstertitel nur fuer Chat und Standzeile. Sie stehen
+    # nur in dieser Antwort, nie im Plan-Schnappschuss (dort nur Wahrheitswerte).
+    try:
+        from core.desktop_sicht import saetze_fuer_plan
+        _sicht = saetze_fuer_plan(plan.plan_id)
+        if _sicht:
+            out["sicht"] = _sicht
+    except Exception:  # noqa: BLE001
+        pass
 
     # K1: wartet ein Agenten-Auftrag, sofort quittieren - keine LLM-Synthese.
     from core.agent_auftraege import offene_auftraege, quittung

@@ -1030,7 +1030,12 @@ def test_sicht_bestaetigt_programm_titel_und_element_ueber_den_echten_executor(s
     cfg = _sicht_cfg(programm="^notepad$", fenstertitel_enthaelt="{arg}", element_enthaelt="wetter")
     urteil = CapabilityValidator().validate(cfg, intent="x", arg="Start", raw_result={"ok": True})
     assert (urteil["valid"], urteil["verified"]) == (True, True), urteil
-    assert "Zu sehen: Fenster „Start“ in Programm notepad." in urteil["reason"]
+    # Im Urteil nur Wahrheitswerte und Zaehlzeile; der Satz mit Titel liegt fluechtig bereit.
+    assert "Sicht bestaetigt (programm, fenstertitel, element); Blick: " in urteil["reason"]
+    assert "Start" not in urteil["reason"] and "notepad" not in urteil["reason"]
+    from core.desktop_sicht import saetze_fuer_plan
+    assert saetze_fuer_plan("plan-desk-1") == ["Zu sehen: Fenster „Start“ in Programm notepad."]
+    assert saetze_fuer_plan("plan-desk-1") == []  # einmal abgeholt, dann weg
     assert openfang.werkzeuge == ["desktop_blick"] and len(openfang.zulassungen) == 1
     raum = find_registered_mcp_authority("brain-desktop", "spaces-desktop", "desktop_blick")
     assert raum.event_id == "desktop.blick" and openfang.zulassungen[0]["space_id"] == raum.space_id
@@ -1043,7 +1048,10 @@ def test_sicht_widerlegt_was_lesbar_nicht_passt(sicht, openfang):
     from core.capability_validator import CapabilityValidator
     urteil = CapabilityValidator().validate(_sicht_cfg(element_enthaelt="Drucken"), intent="x", arg="", raw_result={})
     assert (urteil["valid"], urteil["verified"]) == (False, False)
-    assert "Nicht wie erwartet: element." in urteil["reason"]
+    assert urteil["reason"].startswith("ground-truth REFUTED: Sicht widerlegt (element); Blick: ")
+    from core.desktop_sicht import saetze_fuer_plan
+    assert saetze_fuer_plan("plan-desk-1") == [
+        "Zu sehen: Fenster „Start“ in Programm notepad. Nicht wie erwartet: element."]
 
 
 def test_sicht_sagt_nichts_ueber_ein_gesperrtes_fenster(sicht, openfang):
@@ -1059,7 +1067,8 @@ def test_sicht_ohne_lesbare_elemente_ist_nicht_widerlegt(sicht, openfang, monkey
     from core.capability_validator import CapabilityValidator
     monkeypatch.setattr(sicht.server, "_http", lambda *a, **k: {"success": False, "window": {"title": "Start"}})
     urteil = CapabilityValidator().validate(_sicht_cfg(element_enthaelt="Wetter"), intent="x", arg="", raw_result={})
-    assert (urteil["valid"], urteil["verified"]) == (False, None) and "nicht pruefbar" in urteil["reason"]
+    assert (urteil["valid"], urteil["verified"]) == (False, None)
+    assert "Sicht nicht pruefbar (Bedienelemente)" in urteil["reason"] and "Start" not in urteil["reason"]
 
 
 @pytest.mark.parametrize("cfg", [
@@ -1105,3 +1114,45 @@ def test_der_plan_ausfuehrer_gibt_dem_blick_die_plan_angaben_mit(monkeypatch):
     assert pruefer.cfgs[0]["_laufzeit"] == {"plan_id": "plan-9", "plan_revision": 2, "correlation_id": "t-9",
                                             "step_id": "s7"}
     assert "_laufzeit" not in hop.validator  # die Faehigkeit selbst bleibt unveraendert
+
+
+def test_der_fenstertitel_steht_nie_im_gespeicherten_plan_schnappschuss(sicht, openfang, monkeypatch, tmp_path):
+    # Ein ganzer Plan durch den echten Plan-Ausfuehrer: ein Schritt eines anderen Space, danach
+    # die Nachpruefung am Bildschirm. Gesucht wird im Recorder (Speicher und Datei) nach Titel,
+    # Programm und Elementname. Der Satz mit Titel kommt nur ueber saetze_fuer_plan.
+    import core.plan_critic as kritik
+    from core.capability_validator import CapabilityValidator
+    from core.desktop_sicht import saetze_fuer_plan
+    from core.plan_executor import PlanExecutor, PlanRecorder
+    from core.plan_schema import HopSpec, Plan
+
+    class Ausfuehrer:
+        def call_with_arg(self, arg, arg_kwarg=None, extra_params=None):
+            return {"ok": True, "result": {"ok": True}}
+
+        def is_resolvable(self):
+            return True
+
+    titel = "Geheimer Entwurf Quartalszahlen - Editor"
+    sicht.fenster_titel = titel
+    monkeypatch.setattr(kritik, "critique", lambda *a, **k: {})  # kein Modell
+    monkeypatch.setattr("core.plan_executor.PlanExecutor._capture_kg_hits", lambda *args: [])
+    monkeypatch.setattr("core.capability_targets.build_executor", lambda target: Ausfuehrer())
+    validator = {"kind": "truth:desktop_sicht", "on_fail": "report",
+                 "postcondition": {"fenstertitel_enthaelt": "Quartalszahlen", "element_enthaelt": "Wetter"}}
+    hop = HopSpec(step_id="s1", description="Datei oeffnen", capability="irgendwas", arg_template="a",
+                  execution_target="direct:egal", validator=validator)
+    datei = tmp_path / "verlauf.jsonl"
+    recorder = PlanRecorder(path=datei)
+    ergebnis = PlanExecutor(validator=CapabilityValidator(), recorder=recorder).execute(
+        Plan("plan-sicht-1", "oeffne die Datei", "", [hop], trace_id="t-sicht"))
+
+    urteil = ergebnis["executed"]["s1"]["validator_verdict"]
+    assert urteil["verified"] is True, urteil
+    gespeichert = json.dumps(recorder.get("plan-sicht-1"), ensure_ascii=False, default=str)
+    auf_platte = datei.read_text(encoding="utf-8")
+    assert "plan-sicht-1" in auf_platte
+    for geheim in (titel, "Quartalszahlen - Editor", "Geheimer Entwurf", "notepad", "Konto löschen"):
+        assert geheim not in gespeichert and geheim not in auf_platte, geheim
+    assert "Sicht bestaetigt (fenstertitel, element)" in gespeichert
+    assert saetze_fuer_plan("plan-sicht-1") == [f"Zu sehen: Fenster „{titel}“ in Programm notepad."]

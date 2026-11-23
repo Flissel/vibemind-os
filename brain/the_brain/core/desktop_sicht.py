@@ -13,12 +13,21 @@ Jede Faehigkeit, auch eines anderen Space, kann sie als Validator benutzen::
 Gelesen wird ueber den festen Aufruf ``desktop_blick`` (Ereignis ``desktop.blick``) mit einem
 eigenen Laufzeit-Kontext je Pruefung. VERIFIED, wenn alles Erwartete zu sehen ist; REFUTED,
 wenn etwas Lesbares nicht passt; UNVERIFIED, wenn das Fenster gesperrt ist, die Elemente nicht
-lesbar sind oder der Blick nicht gelingt. Das Signal enthaelt nur Wahrheitswerte, keinen Inhalt.
+lesbar sind oder der Blick nicht gelingt.
+
+Was gespeichert wird (Entscheidung der Koordination, 23.11.): Urteil und Signal enthalten nur
+Wahrheitswerte und eine Zaehlzeile, nie Fenstertitel, Programm oder Elementnamen. Sie landen im
+HopResult und damit in Plan-Recorder, Verlauf und Lernspeicher. Der Satz mit dem Fenstertitel
+("Zu sehen: Fenster „…“ in Programm …") liegt nur fluechtig im Speicher dieses Moduls und geht
+ueber ``saetze_fuer_plan`` in die Antwort an Chat und Standzeile.
 """
 from __future__ import annotations
 
 import itertools
 import re
+import threading
+import time
+from collections import OrderedDict
 from typing import Any, Callable, Mapping, Optional
 
 from .desktop_schleife import FreigabeAusstehend, WerkzeugFehler, fester_aufruf
@@ -30,6 +39,38 @@ FELDER = ("programm", "fenstertitel_enthaelt", "element_enthaelt")
 MAX_ERWARTUNG = 200
 MAX_TITEL_IM_SATZ = 60
 _ZAEHLER = itertools.count(1)
+
+# Fluechtige Saetze fuer die Antwort: (plan_id, step_id) -> (Zeitpunkt, Satz). Nie auf Platte.
+MAX_SAETZE = 50
+SATZ_HALTBAR_S = 600
+_SAETZE: "OrderedDict[tuple[str, str], tuple[float, str]]" = OrderedDict()
+_SAETZE_SPERRE = threading.Lock()
+
+
+def _merken(laufzeit: Any, satz: str) -> None:
+    if not isinstance(laufzeit, Mapping):
+        return
+    schluessel = (str(laufzeit.get("plan_id") or ""), str(laufzeit.get("step_id") or ""))
+    if not all(schluessel):
+        return
+    with _SAETZE_SPERRE:
+        _SAETZE.pop(schluessel, None)
+        _SAETZE[schluessel] = (time.monotonic(), satz)
+        while len(_SAETZE) > MAX_SAETZE:
+            _SAETZE.popitem(last=False)
+
+
+def saetze_fuer_plan(plan_id: Any) -> list[str]:
+    """Die Saetze eines Plans fuer Chat und Standzeile; danach sind sie weg. Wirft nie."""
+    try:
+        grenze = time.monotonic() - SATZ_HALTBAR_S
+        with _SAETZE_SPERRE:
+            for alt in [k for k, (t, _) in _SAETZE.items() if t < grenze]:
+                del _SAETZE[alt]
+            treffer = [k for k in _SAETZE if k[0] == str(plan_id)]
+            return [_SAETZE.pop(k)[1] for k in treffer]
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def erwartung_aus(postcondition: Any, arg: Any) -> tuple[Optional[dict], str]:
@@ -118,7 +159,8 @@ def sicht_pruefen(erwartet: Mapping[str, Any], laufzeit: Any = None, *,
     if not isinstance(blick, Mapping):
         return None, {"status": "unverified"}, "Blick unlesbar"
     if blick.get("gesperrt") is not False:
-        return None, {"gesperrt": True}, "Das Fenster ist gesperrt (Sperrliste); nichts geprueft."
+        _merken(laufzeit, "Das Fenster ist gesperrt; am Bildschirm wurde nichts geprüft.")
+        return None, {"gesperrt": True}, "Sicht nicht pruefbar: Fenster gesperrt (Sperrliste)"
 
     teile: dict[str, Optional[bool]] = {}
     if "programm" in erwartet:
@@ -135,11 +177,19 @@ def sicht_pruefen(erwartet: Mapping[str, Any], laufzeit: Any = None, *,
         else:
             teile["element"] = False
 
-    satz = _satz(blick)
+    # Gespeichert wird nur dies: Wahrheitswerte und eine Zaehlzeile, kein Inhalt vom Bildschirm.
+    elemente = blick.get("elemente")
+    dauer = blick.get("dauer_ms")
+    zaehlzeile = (f"Blick: {len(elemente) if isinstance(elemente, list) else 0} Elemente, "
+                  f"{dauer if isinstance(dauer, int) and not isinstance(dauer, bool) else '?'} ms")
     signal: dict[str, Any] = {"gesperrt": False, **teile}
+    satz = _satz(blick)  # nur fuer Chat und Standzeile
     if any(v is False for v in teile.values()):
         fehlt = ", ".join(k for k, v in teile.items() if v is False)
-        return False, signal, f"{satz} Nicht wie erwartet: {fehlt}."
+        _merken(laufzeit, f"{satz} Nicht wie erwartet: {fehlt}.")
+        return False, signal, f"Sicht widerlegt ({fehlt}); {zaehlzeile}"
     if all(v is True for v in teile.values()):
-        return True, signal, satz
-    return None, signal, f"{satz} Bedienelemente nicht pruefbar."
+        _merken(laufzeit, satz)
+        return True, signal, f"Sicht bestaetigt ({', '.join(teile)}); {zaehlzeile}"
+    _merken(laufzeit, f"{satz} Bedienelemente nicht prüfbar.")
+    return None, signal, f"Sicht nicht pruefbar (Bedienelemente); {zaehlzeile}"
