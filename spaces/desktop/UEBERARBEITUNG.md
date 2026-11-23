@@ -54,7 +54,14 @@ Im Space (`vibemind-os`, Zweig `cc/space-desktop`):
   - Schritte nur innerhalb einer laufenden Aufgabe; höchstens eine Aufgabe zugleich.
   - Ohne `VIBEMIND_DESKTOP_AUSFUEHREN=1` ist alles ein Trockenlauf: gebucht, nicht ausgeführt.
   - Datei `STOP` im Aufgaben-Ordner hält jeden Schritt und jede neue Aufgabe an.
-  - Höchstens 40 Schritte und 10 Minuten je Aufgabe.
+  - Höchstens 40 Schritte und 10 Minuten je Aufgabe; danach ist die Aufgabe `abgebrochen`
+    bzw. `abgelaufen`, mit Meldung im Ergebnis, und nimmt keinen Schritt mehr an.
+  - Not-Aus, Laufzeit und Obergrenze werden vor jedem einzelnen Schritt geprüft.
+  - Jeder Schritt steht vor der Ausführung im Aufgabenbuch (Art, Ort, Zeit); `echt` sagt,
+    ob er wirklich an Maus oder Tastatur ging.
+  - Nicht im Code absicherbar: dass eine Aufgabe von Felix getippt wurde. Der Werkzeug-Dienst
+    sieht nur den Aufruf. Das muss dort gelten, wo die Aufgabe entsteht (Gehirn, Verzeichnis:
+    `desktop.task` nur aus getippter Eingabe, nie aus Hintergrundläufen).
   - Die Adresse des Dienstes muss der eigene Rechner sein.
   - Kein Shell-Werkzeug, keine Dateien, kein Rechtsklick. Unbekannte Angaben werden abgelehnt.
   - Getippter Text steht nicht im Aufgabenbuch, nur seine Länge.
@@ -76,7 +83,7 @@ Im Dienst (`Automation_ui`, öffentliches Repo, lokaler Zweig `cc/space-desktop`
   antwortet nur noch, wenn der Dienst mit `AUTOMATION_UI_ENABLE_SHELL=1` gestartet wird.
   Aufrufer über HTTP gibt es in vibemind-os, im Dienst-Repo und in der App keine (gesucht).
 
-Tests: 19 im Space (`python -m pytest spaces/desktop/tests`), 12 im Dienst
+Tests: 22 im Space (`python -m pytest spaces/desktop/tests`), 12 im Dienst
 (`cd backend && python -m pytest tests -o addopts=""`); alle grün. Die Tests des Dienstes
 lesen den echten Bildschirm, bewegen aber nichts. Trockenprobe des Werkzeug-Dienstes gegen
 den laufenden Dienst: `desktop_task_start` unter 1 ms, `desktop_screen_read` 0,5 s.

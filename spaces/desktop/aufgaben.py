@@ -128,37 +128,52 @@ def _offene(aufgabe_id: str, env: Mapping[str, str] | None) -> dict[str, Any]:
     return aufgabe
 
 
-def schritt_pruefen(aufgabe_id: str, env: Mapping[str, str] | None = None) -> dict[str, Any]:
-    """Darf diese Aufgabe jetzt einen weiteren Schritt ausführen?"""
-    aufgabe = _offene(aufgabe_id, env)
+def schritt_beginnen(
+    aufgabe_id: str, *, art: str, angaben: Mapping[str, Any], env: Mapping[str, str] | None = None
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Prüft vor JEDEM Schritt Not-Aus, Laufzeit und Obergrenze und bucht ihn dann als begonnen.
+
+    Gebucht wird vor der Ausführung: Was am Bildschirm geschieht, steht schon im Buch,
+    auch wenn danach etwas abbricht. `ok` ist bis zum Abschluss None.
+    """
+    aufgabe = _offene(aufgabe_id, env)  # schließt eine abgelaufene Aufgabe und lehnt dann ab
     if not_aus(env):
         raise AufgabenFehler("not_aus: die Datei STOP liegt im Aufgaben-Ordner")
     if len(aufgabe["schritte"]) >= MAX_SCHRITTE:
-        raise AufgabenFehler(f"schritte_erschoepft: höchstens {MAX_SCHRITTE} Schritte je Aufgabe")
-    return aufgabe
-
-
-def schritt_buchen(
-    aufgabe_id: str,
-    *,
-    art: str,
-    angaben: Mapping[str, Any],
-    ok: bool,
-    meldung: str,
-    dauer_ms: int,
-    env: Mapping[str, str] | None = None,
-) -> dict[str, Any]:
-    aufgabe = _offene(aufgabe_id, env)
+        aufgabe["zustand"] = "abgebrochen"
+        aufgabe["beendet"] = _jetzt()
+        aufgabe["ergebnis"] = f"Abgebrochen: Obergrenze von {MAX_SCHRITTE} Schritten erreicht."
+        _schreiben(_pfad(aufgabe_id, env), aufgabe)
+        raise AufgabenFehler(f"schritte_erschoepft: höchstens {MAX_SCHRITTE} Schritte je Aufgabe; die Aufgabe ist abgebrochen")
     schritt = {
         "nr": len(aufgabe["schritte"]) + 1,
         "zeit": _jetzt(),
         "art": art,
         "angaben": dict(angaben),
-        "ok": bool(ok),
-        "meldung": meldung[:200],
-        "dauer_ms": int(dauer_ms),
+        "ok": None,
+        "echt": False,
+        "meldung": "läuft",
+        "dauer_ms": None,
     }
     aufgabe["schritte"].append(schritt)
+    _schreiben(_pfad(aufgabe_id, env), aufgabe)
+    return aufgabe, schritt
+
+
+def schritt_abschliessen(
+    aufgabe_id: str,
+    nr: int,
+    *,
+    ok: bool,
+    echt: bool,
+    meldung: str,
+    dauer_ms: int,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Trägt den Ausgang eines begonnenen Schritts nach, auch wenn die Aufgabe inzwischen endete."""
+    aufgabe = lesen(aufgabe_id, env)
+    schritt = aufgabe["schritte"][nr - 1]
+    schritt.update({"ok": bool(ok), "echt": bool(echt), "meldung": meldung[:200], "dauer_ms": int(dauer_ms)})
     _schreiben(_pfad(aufgabe_id, env), aufgabe)
     return schritt
 

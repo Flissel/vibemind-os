@@ -339,28 +339,30 @@ def _schritt_auftrag(arguments: Mapping[str, Any]) -> tuple[str, dict[str, Any],
 def _task_step(arguments: Mapping[str, Any]) -> dict[str, Any]:
     art, ins_buch, an_dienst, pfad = _schritt_auftrag(arguments)
     kennung = arguments.get("task_id")
-    aufgabe = aufgaben.schritt_pruefen(kennung)
     warum = arguments.get("why")
     if isinstance(warum, str) and warum.strip():
         ins_buch = {**ins_buch, "warum": warum.strip()[:120]}
+    # Not-Aus, Laufzeit und Obergrenze werden hier vor jedem einzelnen Schritt geprüft.
+    aufgabe, begonnen = aufgaben.schritt_beginnen(kennung, art=art, angaben=ins_buch)
 
     start = time.monotonic()
-    ok, meldung = True, "ausgeführt"
-    if art == "wait":
-        time.sleep(float(ins_buch["seconds"]))
-        meldung = "gewartet"
-    elif aufgabe["trocken"] or not _ausfuehren_erlaubt(os.environ):
-        meldung = "trocken: gebucht, nicht ausgeführt"
-    else:
-        try:
+    ok, echt, meldung = True, False, "ausgeführt"
+    try:
+        if art == "wait":
+            time.sleep(float(ins_buch["seconds"]))
+            meldung = "gewartet"
+        elif aufgabe["trocken"] or not _ausfuehren_erlaubt(os.environ):
+            meldung = "trocken: gebucht, nicht ausgeführt"
+        else:
+            echt = True  # ab hier kann der Dienst gehandelt haben, auch wenn die Antwort ausbleibt
             antwort = _http("POST", pfad, an_dienst, timeout=SCHRITT_TIMEOUT)
             ok = isinstance(antwort, Mapping) and antwort.get("success") is True
             if not ok:
                 meldung = "der Desktop-Dienst meldet keinen Erfolg"
-        except ToolError as exc:
-            ok, meldung = False, str(exc)
-    schritt = aufgaben.schritt_buchen(
-        kennung, art=art, angaben=ins_buch, ok=ok, meldung=meldung, dauer_ms=int((time.monotonic() - start) * 1000)
+    except ToolError as exc:
+        ok, meldung = False, str(exc)
+    schritt = aufgaben.schritt_abschliessen(
+        kennung, begonnen["nr"], ok=ok, echt=echt, meldung=meldung, dauer_ms=int((time.monotonic() - start) * 1000)
     )
     return {"task_id": kennung, "schritt": schritt}
 

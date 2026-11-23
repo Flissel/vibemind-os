@@ -173,9 +173,49 @@ class DesktopMcpServerTests(unittest.TestCase):
                 self.server.call_tool("desktop_task_step", {"task_id": kennung, "action": "wait", "seconds": 0})
             with self.assertRaisesRegex(self.server.ToolError, "^schritte_erschoepft"):
                 self.server.call_tool("desktop_task_step", {"task_id": kennung, "action": "wait", "seconds": 0})
+        stand = self.server.call_tool("desktop_task_status", {})
+        self.assertEqual((stand["zustand"], len(stand["schritte"])), ("abgebrochen", 2))
+        self.assertIn("Obergrenze", stand["ergebnis"])
+
+        os.environ["VIBEMIND_DESKTOP_AUSFUEHREN"] = "1"
+        zweite = self.start("läuft ab")
         with mock.patch.object(self.server.aufgaben, "LAUFZEIT_SEKUNDEN", -1):
-            self.assertEqual(self.server.call_tool("desktop_task_status", {})["zustand"], "abgelaufen")
+            with self.assertRaisesRegex(self.server.ToolError, "^aufgabe_beendet: Zustand ist abgelaufen"):
+                self.server.call_tool("desktop_task_step", {"task_id": zweite, "action": "click", "x": 1, "y": 1})
+        self.assertEqual(self.aufrufe, [])
         self.start("nach Ablauf geht eine neue")
+
+    def test_a_real_step_is_in_the_journal_before_the_service_is_called(self) -> None:
+        os.environ["VIBEMIND_DESKTOP_AUSFUEHREN"] = "1"
+        kennung = self.start()
+        gesehen = []
+
+        def dienst(method, pfad, body=None, *, timeout):
+            gesehen.append(self.server.aufgaben.lesen(kennung)["schritte"][-1].copy())
+            return {"success": True}
+
+        self.http.stop()
+        with mock.patch.object(self.server, "_http", side_effect=dienst):
+            antwort = self.server.call_tool("desktop_task_step", {"task_id": kennung, "action": "click", "x": 5, "y": 6})
+        self.http.start()
+        self.assertEqual((gesehen[0]["art"], gesehen[0]["angaben"], gesehen[0]["ok"]), ("click", {"x": 5, "y": 6}, None))
+        self.assertGreater(gesehen[0]["zeit"], 0)
+        self.assertEqual((antwort["schritt"]["ok"], antwort["schritt"]["echt"]), (True, True))
+
+    def test_stop_is_checked_before_every_single_step(self) -> None:
+        os.environ["VIBEMIND_DESKTOP_AUSFUEHREN"] = "1"
+        kennung = self.start()
+        self.server.call_tool("desktop_task_step", {"task_id": kennung, "action": "click", "x": 1, "y": 1})
+        Path(self.ordner.name, "STOP").write_text("", encoding="utf-8")
+        with self.assertRaisesRegex(self.server.ToolError, "^not_aus"):
+            self.server.call_tool("desktop_task_step", {"task_id": kennung, "action": "click", "x": 2, "y": 2})
+        self.assertEqual(len(self.aufrufe), 1)
+        self.assertEqual(len(self.server.call_tool("desktop_task_status", {"task_id": kennung})["schritte"]), 1)
+
+    def test_dry_steps_are_marked_as_not_real(self) -> None:
+        kennung = self.start()
+        schritt = self.server.call_tool("desktop_task_step", {"task_id": kennung, "action": "key", "key": "enter"})["schritt"]
+        self.assertEqual((schritt["echt"], schritt["ok"]), (False, True))
 
     def test_invalid_step_input_is_refused_before_anything_happens(self) -> None:
         os.environ["VIBEMIND_DESKTOP_AUSFUEHREN"] = "1"

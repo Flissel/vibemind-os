@@ -31,6 +31,8 @@ Alle Adressen am eigenen Rechner: `http://127.0.0.1:8007`. Die App benutzt heute
 | Dienst nicht erreichbar | `/api/health/health` antwortet nicht | "Desktop-Dienst startet" bzw. "nicht erreichbar", kein Bild |
 | keine Aufgabe | `task: null` oder letzte Aufgabe beendet | Bild, Aufgabenzeile leer oder letztes Ergebnis grau |
 | `laeuft` | Aufgabe offen | Aufgabenzeile hervorgehoben, Schrittliste wächst, Knopf "Anhalten" aktiv |
+| `laeuft` + `trocken: false` | der Agent steuert Maus und Tastatur | dauerhaft sichtbares Banner "Der Agent steuert gerade Maus und Tastatur", bis der Zustand wechselt |
+| Schritt mit `ok: null` | dieser Schritt wird gerade ausgeführt | Schritt in der Liste als "läuft" markiert |
 | `laeuft` + `trocken: true` | Schritte werden gebucht, aber nicht ausgeführt | deutliche Marke "Trockenlauf: es wird nichts geklickt" |
 | `fertig` | Agent meldet Erfolg | Ergebnis grün |
 | `fehlgeschlagen` | Agent oder ein Schritt meldet Fehler | Ergebnis rot, der fehlgeschlagene Schritt markiert |
@@ -61,12 +63,14 @@ Je Aufgabe eine Datei `dt-JJJJMMTT-HHMMSS-xxxxxx.json`:
   "beendet": null,
   "schritte": [
     {"nr": 1, "zeit": 1795415652.4, "art": "click", "angaben": {"x": 412, "y": 88, "warum": "Startknopf"},
-     "ok": true, "meldung": "ausgeführt", "dauer_ms": 410}
+     "ok": true, "echt": true, "meldung": "ausgeführt", "dauer_ms": 410}
   ],
   "ergebnis": null
 }
 ```
 
+Jeder Schritt wird vor der Ausführung gebucht (`ok: null`, `meldung: läuft`) und danach
+ergänzt. `echt: true` heißt: Der Schritt ging wirklich an Maus oder Tastatur.
 Getippter Text steht nie im Aufgabenbuch, nur seine Länge (`angaben.zeichen`).
 
 Für den Ereignisweg der App (Felder Space, Auftrag, Stufe, Zustand, Ergebnis-Verweis):
