@@ -23,7 +23,7 @@ from typing import Any, Mapping
 
 
 SERVER_NAME = "spaces-ideas"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "1.1.0"
 PROTOCOL_VERSION = "2024-11-05"
 REQUEST_TIMEOUT_SECONDS = 15
 BUBBLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$")
@@ -48,7 +48,9 @@ ARRANGE_NODE_CAP = 100
 ARRANGE_CELL_WIDTH = 240   # Karte 200 breit + 40 Abstand
 ARRANGE_CELL_HEIGHT = 140  # Karte 100 hoch + 40 Abstand
 AUTO_LINK_THRESHOLD = 0.30  # wie auto_link_op im Gehirn
-REASON_ENTRY_CAP = 50  # so viele Begruendungen haelt eine Bubble, die aeltesten fallen weg
+IDEA_PREVIEW_CHARS = 200  # idea_list zeigt so viele Zeichen des Inhalts; alles Weitere ueber idea_get
+IDEA_LIST_SHORT_SELECT = "id,title,content,node_type,x,y,linked_idea_id,metadata,format_schema"
+REASON_ENTRY_CAP = 50 # so viele Begruendungen haelt eine Bubble, die aeltesten fallen weg
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -115,12 +117,17 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "idea_list",
-        "description": "List canvas ideas, optionally scoped to a bubble id.",
+        "description": (
+            "List canvas ideas, optionally scoped to a bubble id. Short by default: id, title, format, "
+            "score, position and the first characters of the text. 'full': true returns whole rows; "
+            "for the whole text of one idea use idea_get."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "bubble_id": {"type": "string"},
                 "limit": {"type": "integer", "default": 50, "minimum": 1, "maximum": 100},
+                "full": {"type": "boolean", "default": False},
             },
         },
     },
@@ -590,6 +597,28 @@ def _only_arguments(arguments: Mapping[str, Any], allowed: set[str]) -> None:
         raise ToolError(f"invalid_arguments: unknown argument '{unknown[0]}'")
 
 
+def _short_idea(row: Mapping[str, Any]) -> dict[str, Any]:
+    """What canvas and chat need of one idea: no full text, no stored renderings."""
+    metadata = row.get("metadata")
+    rating = metadata.get("bewertung") if isinstance(metadata, Mapping) else None
+    schema = row.get("format_schema")
+    fmt = schema.get("type") if isinstance(schema, Mapping) else None
+    content = row.get("content")
+    content = content if isinstance(content, str) else ""
+    return {
+        "id": row.get("id"),
+        "title": row.get("title"),
+        "format": fmt if isinstance(fmt, str) and fmt else "note",
+        "score": rating.get("wert") if isinstance(rating, Mapping) else None,
+        "node_type": row.get("node_type"),
+        "x": row.get("x"),
+        "y": row.get("y"),
+        "linked_idea_id": row.get("linked_idea_id"),
+        "preview": content[:IDEA_PREVIEW_CHARS],
+        "content_length": len(content),
+    }
+
+
 def _durable_id(arguments: Mapping[str, Any], name: str) -> str:
     """Require a stored id verbatim; it is safe to place into a PostgREST filter."""
     value = arguments.get(name)
@@ -1029,12 +1058,21 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         return project
     if name == "idea_list":
         bubble_id = arguments.get("bubble_id")
-        params = {"select": "*", "limit": str(_bounded_limit(arguments, 50))}
+        full = arguments.get("full", False)
+        if not isinstance(full, bool):
+            raise ToolError("invalid_arguments: 'full' must be true or false")
+        params = {
+            "select": "*" if full else IDEA_LIST_SHORT_SELECT,
+            "limit": str(_bounded_limit(arguments, 50)),
+        }
         if bubble_id is not None:
             if not isinstance(bubble_id, str) or not bubble_id.strip():
                 raise ToolError("invalid_arguments: 'bubble_id' must be a non-empty string")
             params["linked_idea_id"] = f"eq.{bubble_id.strip()}"
-        return _request("GET", "canvas_nodes", params=params)
+        rows = _request("GET", "canvas_nodes", params=params)
+        if full or not isinstance(rows, list):
+            return rows
+        return [_short_idea(row) for row in rows if isinstance(row, Mapping)]
     if name == "idea_get":
         return _request("GET", "canvas_nodes", params={"select": "*", "id": f"eq.{_required_string(arguments, 'id')}", "limit": "1"})
     if name == "idea_create":
@@ -1381,18 +1419,35 @@ def handle_message(message: Mapping[str, Any]) -> dict[str, Any] | None:
 
 
 def main() -> int:
-    for line in sys.stdin:
-        if not line.strip():
+    """Serve JSON-RPC lines over stdio until the input ends.
+
+    Bytes in, bytes out: the request is UTF-8 whatever the console code page says, and
+    the response is pure ASCII (``ensure_ascii``). On Windows a redirected stdout is
+    cp1252 unless PYTHONIOENCODING is set; an arrow or emoji in a note then made
+    ``print`` fail and ended the process ("Transport closed" in OpenFang, 2026-11-23).
+    One failing request must never end the loop.
+    """
+    stdin, stdout = sys.stdin.buffer, sys.stdout.buffer
+    for raw_line in stdin:
+        if not raw_line.strip():
             continue
+        request_id = None
         try:
-            message = json.loads(line)
+            message = json.loads(raw_line.decode("utf-8"))
             if not isinstance(message, Mapping):
                 raise ValueError("request must be an object")
+            request_id = message.get("id")
             response = handle_message(message)
-        except (ValueError, json.JSONDecodeError):
+        except (ValueError, UnicodeDecodeError):
             response = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}}
+        except Exception as exc:  # noqa: BLE001 - never let one request end the server
+            response = {
+                "jsonrpc": "2.0", "id": request_id,
+                "result": _tool_result({"error": f"internal_error: {type(exc).__name__}"}, is_error=True),
+            }
         if response is not None:
-            print(json.dumps(response, ensure_ascii=False), flush=True)
+            stdout.write(json.dumps(response, ensure_ascii=True).encode("ascii") + b"\n")
+            stdout.flush()
     return 0
 
 

@@ -170,6 +170,31 @@ def test_fehlertext_zaehlt_auch_ohne_fehlerkennzeichen() -> None:
     assert vertrag.fehler_aus_ergebnis(_quittung([])) == ""
 
 
+def test_echte_fehlerform_von_openfang_wenn_der_ideen_server_beendet_ist() -> None:
+    """Form gemessen am 23.11.2026 ueber POST /mcp (idea_list, nur lesend)."""
+    gemessen = {
+        "_meta": {"runtime_admission": {"replayed": False}},
+        "content": [{"type": "text",
+                     "text": "Error: MCP tool call failed: MCP tool call failed: Transport closed"}],
+        "isError": True,
+    }
+    assert vertrag.fehler_aus_ergebnis(gemessen) == "Ideen-Dienst nicht erreichbar (transport_closed)"
+    anderer = {**gemessen, "content": [{"type": "text", "text": "Error: tool timed out; key=geheim"}]}
+    assert vertrag.fehler_aus_ergebnis(anderer) == "Ideen-Dienst nicht erreichbar (openfang_tool_error)"
+    assert "geheim" not in vertrag.fehler_aus_ergebnis(anderer)
+    # Kein JSON ohne Fehlerkennzeichen bleibt "unlesbar" und gilt nie als gelungen.
+    assert vertrag.fehler_aus_ergebnis({"content": [{"type": "text", "text": "ok"}], "isError": False}) == (
+        "Ideen-Werkzeug: keine lesbare Antwort")
+    # Das Zusatzfeld _meta stoert das Lesen einer gueltigen Antwort nicht.
+    gut = {"_meta": {"runtime_admission": {}}, "isError": False,
+           "content": [{"type": "text", "text": json.dumps([{"id": "n1"}])}]}
+    assert vertrag.fehler_aus_ergebnis(gut) == ""
+    assert vertrag.nachpruefung("idea.rate", {"id": "n1", "score": 5}, gut)[0] is not None
+    assert vertrag.feste_argumente("idea.list", {"bubble_id": "bub1", "full": True})[0] == {
+        "bubble_id": "bub1", "full": True}
+    assert vertrag.feste_argumente("idea.list", {"full": "ja"})[0] is None
+
+
 # ── Erwartung aus Argumenten und Quittung ────────────────────────────────
 
 def test_erwartung_je_ereignis() -> None:

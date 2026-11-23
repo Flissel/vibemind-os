@@ -43,7 +43,9 @@ FESTE_EREIGNISSE: dict[str, dict[str, Any]] = {
     "idea.list": {
         "werkzeug": "idea_list",
         "pflicht": {},
-        "wahl": {"bubble_id": _K, "limit": ("zahl", 1, 100)},
+        # Vorgabe kurz (Kennung, Titel, Format, Bewertung, Anfang des Texts). "full" gibt
+        # ganze Zeilen; den ganzen Text einer Karte liefert sonst idea_get.
+        "wahl": {"bubble_id": _K, "limit": ("zahl", 1, 100), "full": ("ja_nein",)},
         "liest_nur": True,
     },
     "idea.format": {
@@ -131,6 +133,8 @@ def _feld_gueltig(art: tuple, wert: Any) -> bool:
         return _ist_zahl(wert) and art[1] <= wert <= art[2]
     if art[0] == "wahl":
         return isinstance(wert, str) and wert in art[1]
+    if art[0] == "ja_nein":
+        return isinstance(wert, bool)
     if art[0] == "kennungen":
         return (isinstance(wert, list) and len(wert) <= art[1]
                 and all(ist_kennung(item) for item in wert)
@@ -217,6 +221,16 @@ def fehler_aus_ergebnis(value: Any) -> str:
     """
     inhalt, gefunden = _mcp_inhalt(value)
     if not gefunden:
+        # Kein JSON: dann spricht nicht das Werkzeug, sondern OpenFang (gemessen 23.11.2026:
+        # isError=true, Text "Error: MCP tool call failed: ... Transport closed", weil der
+        # Prozess des Ideen-Servers beendet war). Nur ein fester Fehlername kommt durch.
+        if isinstance(value, dict) and value.get("isError") is True:
+            teile = value.get("content")
+            text = teile[0].get("text") if (isinstance(teile, list) and teile
+                                            and isinstance(teile[0], dict)) else ""
+            if isinstance(text, str) and "transport closed" in text.lower():
+                return "Ideen-Dienst nicht erreichbar (transport_closed)"
+            return "Ideen-Dienst nicht erreichbar (openfang_tool_error)"
         return "Ideen-Werkzeug: keine lesbare Antwort"
     if isinstance(inhalt, dict) and "error" in inhalt:
         meldung = inhalt["error"]
