@@ -71,6 +71,28 @@ def test_gruppieren_sagt_ehrlich_dass_es_noch_nicht_geht(satz) -> None:
     assert antwort["rueckfrage"].startswith("Das kann ich noch nicht")
 
 
+@pytest.mark.parametrize("satz", ["Füge ein Bild zu Bühnenplan hinzu", "Häng ein Foto an die Karte Sponsoren",
+                                  "Setze ein Bild in diese Notiz"])
+def test_bild_an_karte_sagt_ehrlich_dass_es_noch_nicht_geht(satz) -> None:
+    assert abk.loese(satz, KONTEXT) == {"rueckfrage": abk.BILD_NOCH_NICHT}
+
+
+@pytest.mark.parametrize("satz", ["Recherchiere zu Bühnenplan", "Recherchiere zu dieser Bubble",
+                                  "Mach eine Recherche zu Sponsoren", "Bitte recherchiere über Stadtfest"])
+def test_recherche_zu_karte_sagt_ehrlich_dass_es_noch_nicht_geht(satz) -> None:
+    assert abk.loese(satz, KONTEXT) == {"rueckfrage": abk.RECHERCHE_NOCH_NICHT}
+
+
+def test_recherche_im_web_bleibt_beim_browser_weg() -> None:
+    antwort = abk.loese("Recherchiere im Web zu Sponsoren", KONTEXT)
+    assert antwort is None or antwort.get("rueckfrage") != abk.RECHERCHE_NOCH_NICHT
+
+
+def test_bildungsplan_ist_kein_bild() -> None:
+    antwort = abk.loese("Füge Bildungsplan zu Stadtfest hinzu", KONTEXT)
+    assert antwort is None or antwort.get("rueckfrage") != abk.BILD_NOCH_NICHT
+
+
 def test_ordnen_und_verbinden_bleiben_wie_sie_sind() -> None:
     assert abk.loese("Ordne die Karten", KONTEXT)["ereignis"] == "idea.arrange"
     assert abk.loese("Verbinde, was zusammengehört", KONTEXT)["ereignis"] == "idea.auto_link"

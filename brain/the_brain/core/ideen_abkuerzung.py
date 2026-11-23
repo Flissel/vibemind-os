@@ -539,7 +539,8 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
             if not 1 <= laeufe <= 30:
                 raise _Rueckfrage("Ein White Paper darf 1 bis 30 Läufe brauchen.")
             argumente["max_laeufe"] = laeufe
-        return _treffer("idea.whitepaper", argumente, "", capability="idea_whitepaper")
+        # Nie direkt starten: der Router fragt zuerst mit dem Umfang (core/whitepaper_bestaetigung).
+        return {**_treffer("idea.whitepaper", argumente, "", capability="idea_whitepaper"), "bestaetigen": True}
 
     # ── Wurzel der Bubble festlegen (fuer das White Paper, geht der berechneten vor) ──
     if re.fullmatch(r"(?:l(?:ö|oe)sch(?:e)?|entfern(?:e)?)\s+die\s+(?:feste|festgelegte|gesetzte)?\s*wurzel"
@@ -650,9 +651,31 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
             or re.fullmatch(r"(?:bilde|mach(?:e)?)\s+(?:themen)?gruppen(?:\s+.*)?", text, _I)
             or re.fullmatch(r"was\s+geh(?:ö|oe)rt\s+(?:hier\s+)?zusammen\s*\??", text, _I)):
         raise _Rueckfrage(GRUPPIEREN_NOCH_NICHT)
+    # ── Bild an eine Karte: dafuer gibt es im Ideen-Space keinen Weg (das Ereignis
+    #    idea.add_image zeigte auf ein Werkzeug, das es nicht gibt). Ehrlich sagen.
+    if (re.search(r"\b(?:ein(?:e|en)?\s+|das\s+|die\s+)?(?:bild|bilder|foto|fotos|grafik|image|picture)\b", text, _I)
+            and re.search(r"\b(?:f(?:ü|ue)g\w*|h(?:ä|ae)ng\w*|setz\w*|pack\w*|lad\w*|add|attach|einf(?:ü|ue)g\w*)\b",
+                          text, _I)
+            and re.search(r"\b(?:karte|notiz|idee|bubble|card|note|an\s+\w+|zu\s+\w+|in\s+\w+)\b", text, _I)):
+        raise _Rueckfrage(BILD_NOCH_NICHT)
+    # ── Recherche zu einer Karte oder Bubble: der Weg, der die Recherche-Karte anlegt
+    #    (spaces/research, research_start/research_status), ist an das Gehirn nicht
+    #    angebunden, und der Pruefweg research:* meldete im Betrieb "report file was never
+    #    written". Nicht binden, ehrlich sagen. "Recherchiere im Web/Netz/Internet ..."
+    #    bleibt beim Browser-Weg und wird hier nicht abgefangen.
+    if (re.match(r"(?:bitte\s+)?(?:recherchier\w*|mach(?:e)?\s+(?:eine\s+)?recherche|starte\s+(?:eine\s+)?recherche)"
+                 r"\s+(?:zu|über|ueber|für|fuer|bei|an)\b", text, _I)
+            and not re.search(r"\bim\s+(?:web|netz|internet)\b", text, _I)):
+        raise _Rueckfrage(RECHERCHE_NOCH_NICHT)
     return None
 
 
+RECHERCHE_NOCH_NICHT = ("Das kann ich noch nicht: zu einer Karte oder Bubble recherchieren und das Ergebnis "
+                        "als Karte ablegen. Geändert habe ich nichts.")
+
+
+BILD_NOCH_NICHT = ("Das kann ich noch nicht: Bilder an Karten hängen. Im Ideen-Space gibt es dafür noch "
+                   "keinen Weg; geändert habe ich nichts.")
 GRUPPIEREN_NOCH_NICHT = ("Das kann ich noch nicht: nach Thema gruppieren braucht ein Modell, und das gibt es "
                          "hier noch nicht. Was geht: „Ordne die Karten“, „Sortiere die Karten nach Bewertung“ "
                          "oder „Finde Verbindungen“.")
@@ -707,6 +730,23 @@ _WERKZEUGFEHLER = {
 
 def _feld(name: str) -> str:
     return _FELDNAMEN.get(name, f"„{name}“")
+
+
+# Fehlertexte, bei denen nichts schiefging: das Gehirn hat bewusst nichts geaendert und
+# sagt warum (Hinweis) oder fragt nach (Rueckfrage). Die App zeigt das ruhig, nicht als ✕.
+_HINWEISE = ("idea_format_table_no_columns", "idea_format_no_content", "Läufe; die Grenze ist",
+             "mehr als 30 starte ich nicht", "starte ich nur nach Rückfrage")
+_RUECKFRAGEN = ("aenderung_zurueck_frage: ", "mehrere Kennungen")
+
+
+def fehlerart(fehler: Any) -> Optional[str]:
+    """``"hinweis"``, ``"rueckfrage"`` oder ``None`` (ein echter Fehler)."""
+    text = str(fehler or "")
+    if any(m in text for m in _RUECKFRAGEN):
+        return "rueckfrage"
+    if any(m in text for m in _HINWEISE):
+        return "hinweis"
+    return None
 
 
 def fehlersatz(fehler: Any, capability: Any = None) -> str:

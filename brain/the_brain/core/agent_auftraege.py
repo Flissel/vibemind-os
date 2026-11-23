@@ -93,6 +93,30 @@ class AuftragsTabelle:
                             json={"pruefung": pruefung})
         return len(offen or []) + len(laufend or [])
 
+    def lesen(self, auftrag_id: str) -> Optional[dict]:
+        """Eine Zeile fuer den Stand (core/auftrag_stand); ``None``, wenn es sie nicht gibt."""
+        zeilen = self._req("GET", params={"id": f"eq.{auftrag_id}", "limit": "1",
+                                          "select": "id,capability,status,angelegt,beendet,pruefung,uebergabe"})
+        return zeilen[0] if isinstance(zeilen, list) and zeilen and isinstance(zeilen[0], dict) else None
+
+    def letzter_vorschlag(self, seit_iso: str, bubble_id: Optional[str] = None) -> Optional[dict]:
+        """Der juengste offene Vorschlag (core/ideen_vorschlag), optional nur einer Bubble."""
+        params = {"pruefung->>rueckweg": "eq.vorschlag", "pruefung->>vorschlag_erledigt": "is.null",
+                  "beendet": f"gt.{seit_iso}", "order": "beendet.desc", "limit": "1",
+                  "select": "id,capability,beendet,pruefung,uebergabe"}
+        if bubble_id is not None:
+            params["uebergabe->rueckweg->>bubble_id"] = f"eq.{bubble_id}"
+        zeilen = self._req("GET", params=params)
+        return zeilen[0] if isinstance(zeilen, list) and zeilen and isinstance(zeilen[0], dict) else None
+
+    def vorschlag_erledigen(self, zeile: dict, wie: str) -> bool:
+        """Vorschlag als erledigt markieren ("uebernommen"/"verworfen"); False, wenn schon erledigt."""
+        pruefung = {**(zeile.get("pruefung") or {}), "vorschlag_erledigt": wie}
+        zeilen = self._req("PATCH", rueckgabe=True,
+                           params={"id": f"eq.{zeile['id']}", "pruefung->>vorschlag_erledigt": "is.null"},
+                           json={"pruefung": pruefung})
+        return bool(zeilen)
+
     def abgelaufene_markieren(self, jetzt_iso: Optional[str] = None) -> int:
         jetzt_iso = jetzt_iso or datetime.now(timezone.utc).isoformat()
         zeilen = self._req("PATCH", rueckgabe=True,

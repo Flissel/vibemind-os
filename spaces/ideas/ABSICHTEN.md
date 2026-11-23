@@ -61,9 +61,10 @@ Ergebnis kommt später über die Datenbank an.
 
 1. `ideas.mcp_tools.spaces-ideas` erweitern um: `idea_create`, `idea_update`, `idea_list`, `idea_format`,
    `idea_arrange`, `idea_auto_link`, `idea_rate`, `bubble_rate`, `bubble_promote`, `bewertung_begruenden`.
-2. Die Ereignisse `idea.create`, `idea.update`, `idea.list`, `idea.auto_link` und die `idea.format_*` vom
-   breiten Datenbank-Server auf `spaces-ideas` umbinden; `idea.format`, `idea.arrange`, `idea.rate`,
-   `bubble.rate`, `idea.rate_reason` neu eintragen.
+2. Die Ereignisse `idea.create`, `idea.update`, `idea.list`, `idea.auto_link` vom breiten
+   Datenbank-Server auf `spaces-ideas` umbinden; `idea.format`, `idea.arrange`, `idea.rate`,
+   `bubble.rate`, `idea.rate_reason` neu eintragen. Die alten `idea.format_*` und `idea.convert_format`
+   sind ausgetragen; Darstellung wechseln geht nur noch über `idea.format`.
 3. Den Agenten `brain-ideas` in OpenFang mit derselben Werkzeugliste neu erzeugen.
 
 Die neuen Werkzeuge `idea_format`, `idea_arrange`, `idea_auto_link`, `idea_rate`, `bubble_rate` und

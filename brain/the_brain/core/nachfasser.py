@@ -155,8 +155,10 @@ class Nachfasser:
         elif verified is False:
             z["abgelehnt_pruefung"] += 1
         self._protokollieren(a, a.get("capability") or "", verified, pruefung.get("reason"))
-        abschluss = {**pruefung, "fortsetzung": "fertig" if pruefung.get("rueckweg") in ("geschrieben", "weiter")
-                     else "fehler"}
+        # Ein Vorschlag (Karte inzwischen geaendert) ist kein Fehlschlag: die Meldung nennt
+        # "Vorschlag zeigen/übernehmen" (core/ideen_vorschlag), die App liest sie ueber den Stand.
+        abschluss = {**pruefung, "fortsetzung": "fertig"
+                     if pruefung.get("rueckweg") in ("geschrieben", "weiter", "vorschlag") else "fehler"}
         if abschluss["fortsetzung"] == "fehler":
             # Der Ausfuehrer haengt das an seine Meldung an; ein deutscher Satz, kein Rohtext.
             abschluss["fortsetzung_fehler"] = pruefung.get("meldung") or "Rückweg gescheitert"

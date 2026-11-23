@@ -44,8 +44,8 @@ from typing import Any, Callable, Iterable, Mapping, Optional
 from .ideen_abkuerzung import ist_kennung as ist_db_kennung
 from .ideen_fest_contract import feste_argumente, ist_kennung
 from .ideen_rueckweg import (
-    _HTML, _STEUER, _VORREDE, _WERKZEUG, _ZAUN, _ZAUNZEICHEN, FreigabeAusstehend, RueckwegFehler, _sauber, _zaun_ersatz,
-    ist_verweigerung,
+    _HTML, _STEUER, _VORREDE, _WERKZEUG, _ZAUN, _ZAUNZEICHEN, VERWEIGERT, FreigabeAusstehend, RueckwegFehler, _sauber,
+    _zaun_ersatz, ein_json_objekt, ist_verweigerung,
 )
 
 _WARTET = "idea.document: approval pending"
@@ -421,7 +421,7 @@ def _text_ok(wert: Any, grenze: int, was: str) -> tuple[Optional[str], str]:
     if _HTML.search(wert):
         return None, "Der Text des Agenten enthält HTML oder Skript; es wurde nichts geändert."
     if ist_verweigerung(wert):
-        return None, "Der Agent hat den Auftrag abgelehnt statt ihn zu erledigen; es wurde nichts geändert."
+        return None, VERWEIGERT
     if _VORREDE.search(wert):
         return None, "Der Agent hat eine Vorrede statt nur des Ergebnisses geliefert; es wurde nichts geändert."
     return wert.strip(), ""
@@ -439,7 +439,10 @@ def ergebnis_pruefen(vertrag: str, roh: Any, kuerzel: Iterable[str]) -> tuple[Op
     try:
         werte = json.loads(text)
     except ValueError:
-        return None, _FORM
+        # Genau ein Objekt darf aus Vor-/Nachtext oder Codeblock kommen; sonst streng.
+        werte = ein_json_objekt(text)
+        if werte is None:
+            return None, VERWEIGERT if ist_verweigerung(text) else _FORM
     felder = {"zusammenfassen": {"absaetze", "verweise"}, "abschnitt": {"ueberschrift", "text", "verweise"}}.get(vertrag)
     if felder is None:
         return None, "Der Auftrag nennt einen unbekannten Vertrag."
@@ -594,9 +597,8 @@ def _zusammenfassen_vorbereiten(event_id: str, arg: Mapping[str, Any], wunsch: A
     return nachricht_zusammenfassen(bubble_titel, block, wunsch, gekuerzt), rueckweg
 
 
-def _white_paper_vorbereiten(event_id: str, arg: Mapping[str, Any], wunsch: Any, bubble_id: str,
-                             bubble_titel: str, karten: list[dict[str, Any]], lesen: Lesen, dokument_id: str,
-                             gesetzt: Optional[str] = None):
+def _teile_planen(karten: list[dict[str, Any]], lesen: Lesen, gesetzt: Optional[str]):
+    """Wurzel, Zweige und Teile wie beim Start; ``RueckwegFehler``, wenn es nichts zu schreiben gibt."""
     if not karten:
         raise RueckwegFehler("Diese Bubble hat keine Karten; es gibt kein White Paper zu schreiben.")
     kanten = lesen.kanten([k["id"] for k in karten])
@@ -612,14 +614,55 @@ def _white_paper_vorbereiten(event_id: str, arg: Mapping[str, Any], wunsch: Any,
     if not teile:
         raise RueckwegFehler("In dieser Bubble steht außer der Wurzel nichts Lesbares; "
                              "es gibt kein White Paper zu schreiben.")
+    return nach_id, bau, texte, wurzel, teile
+
+
+def _ueber_grenze(anzahl: int, grenze: int) -> Optional[str]:
+    if anzahl <= grenze:
+        return None
+    if anzahl > LAEUFE_OBERGRENZE:
+        return (f"Das White Paper bräuchte {anzahl} Läufe; mehr als {LAEUFE_OBERGRENZE} "
+                "starte ich nicht. Teil die Bubble oder fasse sie zusammen.")
+    return (f"Das White Paper bräuchte {anzahl} Läufe; die Grenze ist {grenze}. "
+            f"Sag „Erstelle ein White Paper aus dieser Bubble mit bis zu {anzahl} Läufen“, "
+            "wenn es so viele sein dürfen.")
+
+
+def white_paper_frage(rendered_arg: Any, *, lesen: Lesen) -> tuple[str, bool]:
+    """Die Rückfrage vor dem Start: (Satz, darf bestätigt werden). Liest nur, legt nichts an.
+
+    Über der Grenze ist der Satz der Hinweis auf "mit bis zu N Läufen"; der darf nicht
+    bestätigt werden. ``RueckwegFehler`` wie beim Start (keine Bubble, nichts lesbar ...).
+    """
+    arg = _argument(rendered_arg)
+    bubble = _bubble_finden(arg, lesen)
+    karten = _karten_lesen(str(bubble["id"]), lesen)
+    nach_id, _bau, texte, wurzel, teile = _teile_planen(karten, lesen, gesetzte_wurzel(bubble))
+    zuviel = _ueber_grenze(len(teile), laeufe_grenze(arg.get("max_laeufe")))
+    if zuviel:
+        return zuviel, False
+    lesbar = sum(len(teil) for teil in teile) + (1 if wurzel and texte.get(wurzel) else 0)
+    leer = sum(1 for i in nach_id if not texte[i] and i != wurzel)
+    n = len(teile)
+    laeufe = "einen Lauf" if n == 1 else f"etwa {n} Läufe"
+    abschnitte = "einem Abschnitt" if n == 1 else f"{n} Abschnitten"
+    karten_satz = "1 lesbare Karte" if lesbar == 1 else f"{lesbar} lesbare Karten"
+    leer_satz = ("" if not leer else
+                 ", 1 Karte ohne Inhalt wird nur genannt" if leer == 1 else
+                 f", {leer} Karten ohne Inhalt werden nur genannt")
+    titel = _sauber(titel_von(bubble), 80) or "diese Bubble"
+    return (f"Das White Paper für „{titel}“ braucht {laeufe} ({karten_satz} in {abschnitte}{leer_satz}). "
+            "Sag „Ja, erstellen“, dann beginne ich."), True
+
+
+def _white_paper_vorbereiten(event_id: str, arg: Mapping[str, Any], wunsch: Any, bubble_id: str,
+                             bubble_titel: str, karten: list[dict[str, Any]], lesen: Lesen, dokument_id: str,
+                             gesetzt: Optional[str] = None):
+    nach_id, bau, texte, wurzel, teile = _teile_planen(karten, lesen, gesetzt)
     grenze = laeufe_grenze(arg.get("max_laeufe"))
-    if len(teile) > grenze:
-        if len(teile) > LAEUFE_OBERGRENZE:
-            raise RueckwegFehler(f"Das White Paper bräuchte {len(teile)} Läufe; mehr als {LAEUFE_OBERGRENZE} "
-                                 "starte ich nicht. Teil die Bubble oder fasse sie zusammen.")
-        raise RueckwegFehler(f"Das White Paper bräuchte {len(teile)} Läufe; die Grenze ist {grenze}. "
-                             f"Sag „Erstelle ein White Paper aus dieser Bubble mit bis zu {len(teile)} Läufen“, "
-                             "wenn es so viele sein dürfen.")
+    zuviel = _ueber_grenze(len(teile), grenze)
+    if zuviel:
+        raise RueckwegFehler(zuviel)
     in_teilen = {i for teil in teile for i in teil}
     leer = [titel_von(nach_id[i]) for i in sorted(nach_id, key=lambda i: _lage(nach_id[i]))
             if not texte[i] and i != wurzel]

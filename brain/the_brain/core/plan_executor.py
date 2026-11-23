@@ -302,6 +302,31 @@ _BUNDLE_SCHLUESSEL = ("channel_intent", "brain_plan", "space_execution_contracts
 _EINMAL_EREIGNISSE = frozenset({"bubble.create", "idea.aenderung_zurueck"})
 
 
+def _abschluss_ereignis(plan_id: str, ok: bool, result: Dict[str, Any], executed: Dict[str, Any]) -> Dict[str, Any]:
+    """Nutzlast von ``plan_completed`` fuer die App.
+
+    - Angenommener Auftrag (pending): ``status: "angenommen"`` ohne Dauer. Die Dauer der
+      Annahme ist nicht die des Laufs (Dritter Lauf: "fertig in 2,0 s" bei 165 s).
+    - Hinweis oder Rueckfrage (bewusst nichts geaendert): ``hinweis``/``rueckfrage`` true,
+      damit die App das nicht als ✕ zeigt.
+    """
+    if result.get("pending"):
+        return {"plan_id": plan_id, "ok": True, "pending": True, "status": "angenommen",
+                "hop_count": len(executed)}
+    nutzlast: Dict[str, Any] = {"plan_id": plan_id, "ok": ok, "elapsed_s": result.get("elapsed_s"),
+                                "hop_count": len(executed)}
+    if not ok:
+        try:
+            from core.ideen_abkuerzung import fehlerart
+            fehler = next((hr.error for hr in executed.values() if not hr.ok and not hr.pending and hr.error), "")
+            art = fehlerart(fehler)
+            if art:
+                nutzlast[art] = True
+        except Exception:  # noqa: BLE001
+            pass
+    return nutzlast
+
+
 def _desktop_tagesrest() -> int:
     from .desktop_tagesrest import tagesrest
     return tagesrest()
@@ -1121,6 +1146,15 @@ class PlanExecutor:
             with self._lock:
                 self.stats["total_elapsed_s"] += elapsed
             ok = all(hr.ok for hr in executed.values())
+            # Kein Erfolg ohne Ergebnis (Rundgang 23.11.2026: "keine lesbare Antwort" mit ✓):
+            # ein Schritt, dessen Ziel nichts Verwertbares geantwortet hat, ist kein Erfolg.
+            if ok:
+                try:
+                    from core.verstehen import ohne_antwort
+                    ok = not any(ohne_antwort(hr.result) for hr in executed.values()
+                                 if hr.ok and not hr.pending)
+                except Exception:  # noqa: BLE001
+                    pass
             result = {
                 "ok": ok,
                 "plan": plan.to_dict(),
@@ -1138,12 +1172,7 @@ class PlanExecutor:
                     "authority_status": pending_hop.authority_status,
                     "invocation_id": pending_hop.invocation_id,
                 })
-            self._publish("plan_completed", {
-                "plan_id": plan.plan_id,
-                "ok": ok,
-                "elapsed_s": result["elapsed_s"],
-                "hop_count": len(executed),
-            })
+            self._publish("plan_completed", _abschluss_ereignis(plan.plan_id, ok, result, executed))
             self._tappend(plan, "execution", "plan-executor",
                          f"completed ok={ok} in {result['elapsed_s']}s")
 
@@ -1744,6 +1773,11 @@ class PlanExecutor:
                 if not _auftragsweg(plan_ctx):
                     return _rueckweg_fehler(
                         "Diese Modellfunktion läuft nur als Auftrag; der Auftragsweg ist hier aus.")
+                if event_id == "idea.whitepaper":
+                    # Nie direkt: nur mit dem Schluessel aus "Ja, erstellen" (einmal einloesbar).
+                    from . import whitepaper_bestaetigung as _wp
+                    if not _wp.einloesen(_dokument_mod._argument(rendered_arg).get("bestaetigung")):
+                        return _rueckweg_fehler(_wp.OHNE_SCHLUESSEL)
                 try:
                     if _dokument_mod.ist_dokument_ereignis(event_id):
                         # Zusammenfassung / White Paper: Bubble lesen, Wurzel und Teile planen,
