@@ -43,13 +43,13 @@ SPACES: Dict[str, Space] = {
         "Ordne die Notizen im Raster",
     ), ("idea.", "idea_", "ideen_", "bubble.", "bubble_", "aenderung_zurueck", "bewertung_begruenden")),
     "projects": Space("Project Space", (), ("code_", "coding_")),
-    "desktop": Space("Desktop", (), ("desktop_", "desktop.")),
+    "desktop": Space("Desktop", ("Welche Fenster sind offen?",), ("desktop_", "desktop.")),
     "swedesign": Space("SWE Design"),
-    "roarboot": Space("Rowboat", (), ("rowboat_", "rowboat.")),
+    "roarboot": Space("Rowboat", ("Welche Agenten gibt es in Rowboat?",), ("rowboat_", "rowboat.")),
     "clawport": Space("Dashboard", ("Welche geplanten Aufgaben gibt es?",), ("schedule_", "schedule.")),
     "video": Space("Video Studio", (), ("video_", "video.")),
     "agentfarm": Space("Agent Farm", (), ("agentfarm_", "agentfarm.")),
-    "thebrain": Space("The Brain"),
+    "thebrain": Space("The Brain", ("Woran denkt das Gehirn gerade?",), ("thebrain_", "thebrain.")),
     "flowzen": Space("Blue Rose", (), ("rose.", "rose_", "flowzen")),
     "mirofish": Space("MiroFish", (), ("mirofish.", "mirofish_")),
     "sales": Space("Sales", (), ("sales.", "sales_")),
@@ -98,7 +98,8 @@ def space_name(space: Optional[str]) -> str:
 
 # Spaces ohne laufenden Weg (Rundgang 23.11.2026 und Inventur der Lesewege): kein Dienst,
 # kein Werkzeug oder kein Agent, der eine Lesefrage dort beantworten kann.
-OHNE_WEG = frozenset({"swedesign", "projects", "learning", "events", "marketing", "agentfarm", "thebrain"})
+# The Brain hat seit 23.11. den festen Satz "Woran denkt das Gehirn gerade?" (core/feste_lesesaetze.py).
+OHNE_WEG = frozenset({"swedesign", "projects", "learning", "events", "marketing", "agentfarm"})
 
 
 def _beispielteil(space: Optional[str]) -> str:
@@ -130,7 +131,7 @@ def kein_weg(space: Optional[str]) -> str:
 # oder als Wortteil mit Bindestrich ("Marketing-Kampagnen").
 _EIGENE_NAMEN = {
     "swedesign": ("swe design", "swe-design", "swedesign"),
-    "roarboot": ("rowboat",),
+    "roarboot": ("rowboat", "roarboot"),
     "agentfarm": ("agent farm", "agent-farm", "agentfarm"),
     "thebrain": ("the brain",),
     "flowzen": ("blue rose", "blaue rose", "flowzen"),
@@ -297,6 +298,11 @@ _FESTE_LESEFRAGEN = (
                 re.IGNORECASE),
      "schedule_list", ("orders", "clawport", None)),
 )
+# Desktop, The Brain, Rowboat (23.11.2026): eigene Datei, hier nur angehaengt.
+from .feste_lesesaetze import (  # noqa: E402
+    antworten as _weitere_antworten, lesefragen as _weitere_lesefragen, protokolle as _weitere_protokolle,
+)
+_FESTE_LESEFRAGEN = _FESTE_LESEFRAGEN + _weitere_lesefragen(tuple(SPACES) + (None,))
 
 # Saetze, deren Weg nachweislich nicht laeuft: ehrlich sagen statt Planer.
 _NOCH_NICHT = (
@@ -367,7 +373,9 @@ def antwort_schedule_list(ergebnis: Any) -> Optional[str]:
         return None
 
 
-FESTE_ANTWORTEN = {"schedule_list": antwort_schedule_list}
+FESTE_ANTWORTEN = {"schedule_list": antwort_schedule_list, **_weitere_antworten()}
+# Satz fuer Plan-Verlauf und Protokolle, wenn die Antwort Bildschirminhalt traegt (Fenstertitel).
+FESTE_PROTOKOLLE = _weitere_protokolle()
 
 
 # ── Space-Wache ────────────────────────────────────────────────────────────

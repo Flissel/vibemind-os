@@ -178,9 +178,21 @@ SPACES: Dict[str, SpaceMeta] = {
         "aliases": ["roarboot", "kg", "knowledge-graph", "retrieval"],
         "description": "Knowledge graph retrieval, structured-data queries, Rowboat KG.",
         "use_when": "User wants to query a knowledge graph or retrieve structured facts",
-        "capabilities": ["rowboat.query"],
+        "capabilities": ["rowboat.query", "rowboat.spaces"],
         # Explicit external legacy renderer adapter; never use as a Space ID.
         "renderer_id": "roarboot",
+    },
+    # 23.11.2026: Reiter "The Brain" (Kennung thebrain). Nur Lesen ueber die eigene Schnittstelle
+    # des Gehirns; fester Satz "Woran denkt das Gehirn gerade?" (brain/the_brain/core/feste_lesesaetze.py).
+    "thebrain": {
+        "label": "The Brain",
+        "event_prefix": "thebrain.",
+        "stream": None,
+        "aliases": ["the_brain"],
+        "description": "The brain itself: read its latest background thoughts through its own interface.",
+        "use_when": "User asks what the brain is currently thinking about",
+        "capabilities": ["thebrain.gedanken"],
+        "renderer_id": "thebrain",
     },
     "schedule": {
         "label": "Schedule",

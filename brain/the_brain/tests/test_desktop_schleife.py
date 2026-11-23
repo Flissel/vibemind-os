@@ -1312,6 +1312,42 @@ def test_sicht_bestaetigt_programm_titel_und_element_ueber_den_echten_executor(s
     assert urteil["verify_signal"] == {"gesperrt": False, "programm": True, "fenstertitel": True, "element": True}
 
 
+def test_fensterliste_ueber_den_echten_executor_titel_nur_fluechtig(echt, openfang, monkeypatch):
+    # Fester Lesesatz "Welche Fenster sind offen?": echter McpExecutor, nachgebautes OpenFang,
+    # echter Werkzeug-Dienst; ersetzt ist nur die Fensterliste von Windows (erfundene Titel).
+    from core.capability_targets import DirectExecutor, find_registered_mcp_authority
+    from core import desktop_fenster
+    monkeypatch.setattr(echt.server.blick, "sichtbare_fenster", lambda: [
+        {"hwnd": 1, "titel": "Einkaufsliste - Editor", "programm": "notepad"},
+        {"hwnd": 2, "titel": "Tresor - KeePass", "programm": "keepass"},
+        {"hwnd": 3, "titel": "Neuer Tab - InPrivate", "programm": "msedge"},
+    ])
+    antwort = DirectExecutor("direct:core.desktop_fenster:fenster_lesen").call_with_arg(
+        "", extra_params={"_intent": "Welche Fenster sind offen?", "_step_id": "s1"})
+    assert antwort["ok"] is True, antwort
+    ergebnis = antwort["result"]
+    assert set(ergebnis) == {"success", "anzahl", "gesperrt", "satz_id"}
+    assert (ergebnis["anzahl"], ergebnis["gesperrt"]) == (3, 2)
+    for geheim in ("Einkaufsliste", "notepad", "KeePass", "InPrivate"):
+        assert geheim not in json.dumps(antwort)  # nichts davon im HopResult
+    assert openfang.werkzeuge == ["desktop_fenster"] and echt.dienst_aufrufe == []
+    raum = find_registered_mcp_authority("brain-desktop", "spaces-desktop", "desktop_fenster")
+    assert raum.event_id == "desktop.fenster" and openfang.zulassungen[0]["space_id"] == raum.space_id
+    assert "KeePass" not in json.dumps(openfang.zulassungen)
+    assert desktop_fenster.antwort(ergebnis) == (
+        "3 Fenster offen: notepad „Einkaufsliste - Editor“, ein gesperrtes Fenster, ein gesperrtes Fenster.")
+    assert desktop_fenster.antwort(ergebnis) is None
+
+
+def test_fensterliste_ohne_freigabe_sagt_nichts(echt, openfang, monkeypatch):
+    from core import desktop_fenster
+    openfang.freigabe = "pending"
+    monkeypatch.setattr(echt.server.blick, "sichtbare_fenster", lambda: [{"hwnd": 1, "titel": "A", "programm": "b"}])
+    ergebnis = desktop_fenster.fenster_lesen({})
+    assert ergebnis["success"] is False and set(ergebnis) == {"success", "error"}
+    assert openfang.werkzeuge == []  # ohne Zulassung erreicht nichts den Werkzeug-Dienst
+
+
 def test_sicht_widerlegt_was_lesbar_nicht_passt(sicht, openfang):
     from core.capability_validator import CapabilityValidator
     urteil = CapabilityValidator().validate(_sicht_cfg(element_enthaelt="Drucken"), intent="x", arg="", raw_result={})

@@ -35,7 +35,9 @@ def test_nicht_verstanden_nennt_beispiele_des_space() -> None:
     assert satz.count("„") == 3
     assert v.nicht_verstanden(None) == "Das habe ich nicht verstanden."
     assert v.nicht_verstanden("swedesign").endswith("Im Bereich „SWE Design“ gibt es dafür noch keinen Weg.")
-    assert v.nicht_verstanden("desktop") == "Das habe ich nicht verstanden."  # Weg da, nur kein fester Satz
+    assert v.nicht_verstanden("desktop") == (  # fester Satz seit 23.11. (core/feste_lesesaetze.py)
+        "Das habe ich nicht verstanden. In Desktop kann ich z. B. „Welche Fenster sind offen?“.")
+    assert v.nicht_verstanden("flowzen") == "Das habe ich nicht verstanden."  # Weg da, nur kein fester Satz
 
 
 @pytest.mark.parametrize("satz,space", [
@@ -303,14 +305,14 @@ KEIN = "Im Bereich „{}“ gibt es dafür noch keinen Weg."
 RUNDGANG = [
     ("Welche Bubbles gibt es?", "ideas", ("lauf", "bubble_list")),
     ("Wie ist der Code-Status?", "projects", ("nicht-verstanden", NV + " " + KEIN.format("Project Space"))),
-    ("Welche Fenster sind gerade auf dem Desktop offen?", "desktop", ("nicht-verstanden", NV)),
+    ("Welche Fenster sind gerade auf dem Desktop offen?", "desktop", ("lauf", "desktop_fenster")),
     ("Wie ist der Stand im SWE Design?", "swedesign", ("kein-weg", "Im Bereich „SWE Design“ kann ich das noch nicht")),
-    ("Welche Agenten gibt es in Rowboat?", "roarboot", ("nicht-verstanden", NV)),
+    ("Welche Agenten gibt es in Rowboat?", "roarboot", ("lauf", "rowboat_spaces")),
     ("Welche geplanten Aufgaben gibt es im Dashboard?", "clawport", ("lauf", "schedule_list")),
     ("Welche Videoprojekte gibt es?", "video", ("noch-nicht", "Die Liste der Videoprojekte kann ich noch nicht")),
     ("Welche Teams laufen gerade in der Agent Farm?", "agentfarm",
      ("kein-weg", "Im Bereich „Agent Farm“ kann ich das noch nicht")),
-    ("Woran denkt das Gehirn gerade?", "thebrain", ("nicht-verstanden", NV + " " + KEIN.format("The Brain"))),
+    ("Woran denkt das Gehirn gerade?", "thebrain", ("lauf", "thebrain_gedanken")),
     ("Was steht in meinem Journal?", "flowzen", ("nicht-verstanden", NV)),
     ("Welche Simulationen gibt es in MiroFish?", "mirofish", ("nicht-verstanden", NV)),
     ("Wie viele Kontakte habe ich im Sales?", "sales", ("nicht-verstanden", NV)),
