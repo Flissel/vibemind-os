@@ -16,6 +16,9 @@ from djset.video.laenge import VideoFehler, aus_video
 
 # Vorgabe: die Musik liegt 6 dB unter dem Originalton, der bleibt hoerbar.
 ORIGINALTON_DB = -6.0
+# Die Summe aus Original und Musik darf nicht uebersteuern: -1 dBFS wie der Deckel der Musik.
+# level=0 schaltet die automatische Pegelanhebung des Limiters ab, er soll nur kappen.
+_SUMMEN_DECKEL = 0.891
 _FFMPEG_TIMEOUT_S = 600
 _FFPROBE_TIMEOUT_S = 60
 
@@ -56,7 +59,8 @@ def unterlegen(
     if mit_original:
         filter_ = (
             f"[1:a]volume={musik_db}dB[m];"
-            "[0:a][m]amix=inputs=2:duration=longest:normalize=0,apad[a]"
+            "[0:a][m]amix=inputs=2:duration=longest:normalize=0,"
+            f"alimiter=limit={_SUMMEN_DECKEL}:level=0,apad[a]"
         )
     else:
         # Allein bleibt die Musik auf ihrem Pegel: `musik_db` regelt nur das Verhaeltnis zum Original.

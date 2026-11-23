@@ -140,3 +140,34 @@ def test_zielordner_nicht_anlegbar_ist_videofehler(tmp_path: Path) -> None:
     with pytest.raises(VideoFehler, match="x.mp4"):
         unterlegen(video, musik, ziel)
     assert not list(tmp_path.glob("*.teil*"))
+
+
+def test_summe_aus_lautem_original_und_musik_uebersteuert_nicht(tmp_path: Path) -> None:
+    video = tmp_path / "laut.mp4"
+    subprocess.run(
+        [
+            ffmpeg_path(), "-v", "error", "-y",
+            "-f", "lavfi", "-i", "testsrc=duration=3:size=160x120:rate=25",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=3,volume=7.12,afade=t=out:st=2.5:d=0.5",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "256k", str(video),
+        ],
+        check=True, capture_output=True,
+    )
+    t = np.arange(round(3 * SR)) / SR
+    # Wie das echte Stueck klingt die Musik am Ende aus: ein harter Schnitt wuerde AAC ueberschwingen lassen.
+    huellkurve = np.minimum(1.0, np.clip((3.0 - t) / 0.5, 0.0, 1.0))
+    ton = (0.89 * huellkurve * np.sin(2 * np.pi * 1000.0 * t)).astype(np.float32)
+    musik = tmp_path / "laut.wav"
+    sf.write(str(musik), np.stack([ton, ton], axis=1), SR)
+    ziel = tmp_path / "mix.mp4"
+
+    unterlegen(video, musik, ziel, -6.0)
+
+    wav = tmp_path / "mix.wav"
+    subprocess.run(
+        [ffmpeg_path(), "-v", "error", "-y", "-i", str(ziel), "-vn", "-c:a", "pcm_f32le", str(wav)],
+        check=True, capture_output=True,
+    )
+    signal, _ = sf.read(str(wav), dtype="float64")
+    assert np.max(np.abs(signal)) <= 0.95  # Deckel -1 dBFS (0,891) plus AAC-Rest
+    assert np.max(np.abs(signal)) > 0.5  # nicht still geregelt
