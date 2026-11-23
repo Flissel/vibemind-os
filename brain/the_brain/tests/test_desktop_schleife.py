@@ -433,6 +433,12 @@ def test_auswahl_ordnungswort_und_lesereihenfolge():
         "Achte auf den Eintrag", "Achten Sie auf die zweite Datei", "achte darauf, den 2. Eintrag zu nehmen",
     )] == [(1, liste), (2, liste), (-1, liste), (3, reiter), (-1, reiter), None, None, None, (8, reiter), None,
            None, (2, liste), (2, liste)]
+    # Zwei Stellen im Satz, auch wenn eine davon kein Nomen direkt dahinter hat: ablehnen.
+    assert [auswahl_gemeint(s) for s in (
+        "der zweite der Einträge im ersten Ordner", "die zweite Zeile in der dritten Tabelle",
+        "das zweite von den Einträgen", "Achte auf den ersten Eintrag und den zweiten Reiter",
+        "den ersten Eintrag, nicht den letzten",
+    )] == [None, None, None, None, None]
     assert [e["name"] for e in auswahl_reihe(LISTE, "listitem")] == [
         "Angebot.txt", "Notizen.txt", "Bericht.txt", "Rechnungen löschen"]
 

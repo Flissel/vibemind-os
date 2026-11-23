@@ -208,19 +208,27 @@ def auswahl_gemeint(auftrag: str) -> Optional[tuple[int, frozenset[str]]]:
     keine oder mehrere verschiedene Angaben im Satz stehen: Dann wird nachgefragt."""
     woerter = [w.strip(",;:!?()\"'") for w in _norm(auftrag).split()]
     gefunden = set()
+    genannt = 0  # Ordnungswoerter, die eine Stelle meinen, auch ohne erkanntes Nomen
     for i, wort in enumerate(woerter):
         treffer = _ORDNUNG.match(wort)
         if not treffer:
             continue
         stelle = int(treffer.group(1)) if treffer.group(1) else ORDNUNGSWOERTER[treffer.group(2)]
+        mit_nomen = False
         for folgend in woerter[i + 1:i + 1 + AUSWAHL_NAEHE]:
             if folgend in AUSWAHL_SPERRWOERTER:
                 break
             arten = _nomen_art(folgend.rstrip("."))
             if arten is not None and stelle != 0:
                 gefunden.add((stelle, arten))
+                mit_nomen = True
                 break
-    return gefunden.pop() if len(gefunden) == 1 else None
+        # Nur "achte/achten" ist auch ein Verb ("achten Sie auf ..."); jedes andere Ordnungswort
+        # nennt eine Stelle, selbst wenn kein Nomen dahinter erkannt wird ("der zweite der Eintraege").
+        if mit_nomen or treffer.group(2) != "achte":
+            genannt += 1
+    # Zwei Stellen im Satz: nachfragen, nie eine davon nehmen.
+    return gefunden.pop() if len(gefunden) == 1 and genannt == 1 else None
 
 
 def auswahl_reihe(elemente: Sequence[Mapping[str, Any]], art: str) -> list[Mapping[str, Any]]:
