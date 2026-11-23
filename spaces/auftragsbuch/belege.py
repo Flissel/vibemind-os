@@ -7,9 +7,9 @@ Lesers lautet das Ergebnis `nicht_pruefbar` (nie ein Fehler nach aussen, nie ein
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Callable
 
+from spaces.auftragsbuch.rowboat.text import kennung_in
 from spaces.auftragsbuch.vertrag import Auftragsart
 
 log = logging.getLogger("auftragsbuch")
@@ -18,16 +18,6 @@ ENTFAELLT = "entfaellt"
 BESTAETIGT = "bestaetigt"
 NICHT_BESTAETIGT = "nicht_bestaetigt"
 NICHT_PRUEFBAR = "nicht_pruefbar"
-
-_KENNUNG_AM_ENDE = re.compile(r"#([a-f0-9]{16})$")
-
-
-def _kennung_in(text: object) -> str | None:
-    """Wie rowboat/text.kennung_in (Task 7): Leerraum zusammenfassen, klein schreiben, `#<16 hex>` am Ende."""
-    if not isinstance(text, str):
-        return None
-    treffer = _KENNUNG_AM_ENDE.search(re.sub(r"\s+", " ", text).strip().lower())
-    return treffer.group(1) if treffer else None
 
 
 def _items(bloecke: list, ziel: list[str]) -> None:
@@ -42,7 +32,7 @@ def _kennungen_in_rowboat(leser: Callable[[str, object], object]) -> set[str]:
         raise ValueError("unerwartete Form")
     texte: list[str] = [str(t) for t in todo.get("suggestions") or []]
     _items([b["item"] for b in todo["list"]["blocks"] if b.get("kind") == "item"], texte)
-    return {k for k in map(_kennung_in, texte) if k}
+    return {k for k in map(kennung_in, texte) if k}
 
 
 def _vorschlaege_anlegen(eingabe: dict, ergebnis: dict, leser: Callable[[str, object], object]) -> str:

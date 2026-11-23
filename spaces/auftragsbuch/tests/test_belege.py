@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from spaces.auftragsbuch.belege import _kennung_in, beleg
+from spaces.auftragsbuch.belege import beleg
+from spaces.auftragsbuch.rowboat.text import kennung_in
 from spaces.auftragsbuch.vertrag import lade_auftragsarten
 
 ARTEN = lade_auftragsarten(Path(__file__).resolve().parents[2] / "_contract")
@@ -25,10 +26,10 @@ def _leser(todo):
 
 
 def test_kennung_nur_am_textende_klein_und_zusammengefasst():
-    assert _kennung_in(f"Text  \n #{P.upper()}  ") == P
-    assert _kennung_in(f"Text #{P} danach") is None
-    assert _kennung_in("Text #abc") is None
-    assert _kennung_in(None) is None
+    assert kennung_in(f"Text  \n #{P.upper()}  ") == P
+    assert kennung_in(f"Text #{P} danach") is None
+    assert kennung_in("Text #abc") is None
+    assert kennung_in(None) is None
 
 
 def test_liste_und_vorschlaege_zaehlen_und_unterpunkte():
