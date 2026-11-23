@@ -2824,6 +2824,9 @@ async def _multihop_execute(request: Request):
         # jeder andere Satz verwirft sie (core/whitepaper_bestaetigung).
         from core import whitepaper_bestaetigung as _wp
         _wp_antwort = _wp.satz_pruefen(intent)
+        # Antwort auf die Frage nach einer von mehreren gleichnamigen Bubbles (core/verstehen);
+        # jeder andere Satz laesst sie verfallen.
+        _bubble_wahl = _verstehen.bubble_antwort(intent)
         if _wp_antwort and _wp_antwort.get("satz"):
             _trace_lite(pe, trace_id, intent, "ideen-rueckfrage", _wp_antwort["satz"])
             return JSONResponse({"ok": False, "rueckfrage": True, "space": "ideas", "executed": {},
@@ -2844,7 +2847,7 @@ async def _multihop_execute(request: Request):
             _ideen_fest = True
         # Ideen-Space: feste Saetze laufen ohne Planer und ohne Modell. Die App gibt
         # dafuer ihren Kontext mit; Namen werden daraus aufgeloest, nie geraten.
-        if plan is None and not skip_shortcut and isinstance(body.get("context"), dict):
+        if plan is None and not _bubble_wahl and not skip_shortcut and isinstance(body.get("context"), dict):
             plan, _ideen_frage, _ideen_antwort = _try_ideen_abkuerzung(intent, body.get("context"))
             if _ideen_frage:
                 _trace_lite(pe, trace_id, intent, "ideen-rueckfrage", _ideen_frage)
@@ -2887,16 +2890,23 @@ async def _multihop_execute(request: Request):
         # Video): sie gehoeren zum Ideen-Bereich und laufen dort, mit Sprung. Nur wenn der Satz
         # eine Bubble oder den Ideen-Bereich nennt, damit "Zurück" in Rowboat nicht ins Ideen-
         # Canvas greift.
-        if (not skip_shortcut and plan is None and _space != "ideas" and _verstehen.regel_an()
-                and _verstehen.ideen_satz_von_aussen(intent)):
+        if not skip_shortcut and plan is None and (_bubble_wahl or (
+                _space != "ideas" and _verstehen.regel_an() and _verstehen.ideen_satz_von_aussen(intent))):
             _ideen_kontext = {"space": "ideas"}
             _ideen_satz = intent
-            _bubble_name, _rest = _verstehen.bubble_name_im_satz(intent)
-            if _bubble_name:
+            _bubble_name, _rest = (None, intent) if _bubble_wahl else _verstehen.bubble_name_im_satz(intent)
+            if _bubble_wahl:
+                # Antwort auf "Es gibt 2 Bubbles mit dem Titel ...": der gemerkte Satz laeuft
+                # in der gewaehlten Bubble.
+                _ideen_kontext["bubble"] = _bubble_wahl["bubble"]
+                _ideen_satz = _bubble_wahl["rest"]
+            elif _bubble_name:
                 # "in der Bubble X": vor dem Aufruf ueber die Bubble-Liste lesen (kein Modell);
                 # genau ein Titel -> diese Bubble gilt als offen, sonst Rueckfrage.
-                _gewaehlt, _frage = _verstehen.bubble_waehlen(_bubble_name, await _bubbles_suchen(_bubble_name))
+                _zeilen = await _bubbles_suchen(_bubble_name)
+                _gewaehlt, _frage = _verstehen.bubble_waehlen(_bubble_name, _zeilen)
                 if _gewaehlt is None:
+                    _verstehen.bubble_frage_merken(_rest, _bubble_name, _zeilen)
                     _trace_lite(pe, trace_id, intent, "ideen-rueckfrage", _frage)
                     return JSONResponse({"ok": False, "rueckfrage": True, "space": "ideas", "executed": {},
                                          "final_text": _frage, "trace_id": trace_id, "weg": "ideen"})
