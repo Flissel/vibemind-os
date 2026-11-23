@@ -34,6 +34,7 @@ from djset.dsp.analyze import (
     measure_track,
     tempo_abschnitte,
 )
+from djset.dsp.trennen import Trenner
 from djset.render.stretch import RenderToolMissing
 from djset.run import slugify
 from djset.watch import AUDIO_SUFFIXES
@@ -83,6 +84,14 @@ def pruefe_herkunft(text: str) -> str:
     )
 
 
+class Stimmen(BaseModel):
+    """Die getrennten Spuren eines Songs, Dateinamen unter songs/."""
+
+    stimme: str  # <id>.stimme.wav
+    begleitung: str  # <id>.begleitung.wav
+    modell: str  # womit getrennt wurde, z.B. htdemucs
+
+
 class SongEintrag(BaseModel):
     id: str  # song_id_aus_titel(titel), eindeutig im Bestand
     titel: str
@@ -95,6 +104,9 @@ class SongEintrag(BaseModel):
     # Tempo je Abschnitt (dsp.analyze.tempo_abschnitte). None: noch nicht
     # gemessen - Eintraege von vor dieser Pruefung; set holt es nach.
     tempo_abschnitte: list[float] | None = None
+    # Stimme und Begleitung als eigene Dateien (Plan 1c). None: noch nicht
+    # getrennt; set holt es nach, wenn Demucs bereitsteht.
+    stimmen: Stimmen | None = None
 
     @field_validator("herkunft")
     @classmethod
@@ -253,6 +265,61 @@ class Bestand:
         aktualisiert = eintrag.model_copy(update={"messung": messung})
         _schreibe_atomar(self._json(song_id), aktualisiert.model_dump_json(indent=2))
         return aktualisiert
+
+    def trennen(self, song_id: str, trenner: Trenner) -> SongEintrag:
+        """Legt Stimme und Begleitung neben den Song.
+
+        Alles-oder-nichts wie aufnehmen(): getrennt wird in einen
+        Arbeitsordner, erst danach wandern beide Dateien nach songs/ und der
+        Eintrag wird geschrieben. Die Messung bleibt unberuehrt.
+        """
+        eintrag = self.hole(song_id)
+        quelle = self.pfad(song_id)
+        stimmen = Stimmen(
+            stimme=f"{song_id}.stimme.wav",
+            begleitung=f"{song_id}.begleitung.wav",
+            modell=trenner.modell,
+        )
+        arbeit = Path(tempfile.mkdtemp(dir=self.wurzel, prefix=".trennen-"))
+        ziele = [self.songs / stimmen.stimme, self.songs / stimmen.begleitung]
+        try:
+            entwurf = [arbeit / stimmen.stimme, arbeit / stimmen.begleitung]
+            try:
+                trenner.trennen(quelle, entwurf[0], entwurf[1])
+            except Exception as fehler:  # noqa: BLE001 - jede Trennstoerung endet gleich
+                raise BestandFehler(
+                    f"Trennen von {song_id} gescheitert: {fehler}"
+                ) from fehler
+            aktualisiert = eintrag.model_copy(update={"stimmen": stimmen})
+            try:
+                for von, nach in zip(entwurf, ziele):
+                    os.replace(von, nach)
+                _schreibe_atomar(
+                    self._json(song_id), aktualisiert.model_dump_json(indent=2)
+                )
+            except BaseException:
+                for ziel in ziele:
+                    ziel.unlink(missing_ok=True)
+                raise
+        finally:
+            shutil.rmtree(arbeit, ignore_errors=True)
+        return aktualisiert
+
+    def stimmen_pfade(self, song_id: str) -> tuple[Path, Path] | None:
+        """(Stimme, Begleitung) oder None, wenn der Song nicht getrennt ist."""
+        eintrag = self.hole(song_id)
+        if eintrag.stimmen is None:
+            return None
+        pfade = (
+            self.songs / eintrag.stimmen.stimme,
+            self.songs / eintrag.stimmen.begleitung,
+        )
+        for pfad in pfade:
+            if not pfad.is_file():
+                raise BestandFehler(
+                    f"{pfad.name} zu {song_id!r} ist eingetragen, fehlt aber unter songs/"
+                )
+        return pfade
 
     def alle(self) -> list[SongEintrag]:
         return sorted(

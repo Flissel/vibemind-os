@@ -17,6 +17,7 @@ from djset.bestand import (
 from djset.render.stretch import ffmpeg_path
 from djset.run import slugify
 from tests.fixtures.make_audio import click_track
+from tests.fixtures.trenner import HalbTrenner, KaputtTrenner
 
 HEUTE = date(2026, 11, 23)
 
@@ -222,3 +223,62 @@ def test_song_eintrag_prueft_die_herkunft_selbst():
             aufgenommen_am=HEUTE,
             pruefsumme="0" * 64,
         )
+
+
+# --- Plan 1c: Gesangsspur ----------------------------------------------------
+
+
+def test_ein_neuer_song_hat_noch_keine_stimmen(bestand, eingang_wav):
+    bestand.aufnehmen("lied.wav", "Lied", "suno-eigen", HEUTE)
+    assert bestand.hole("lied").stimmen is None
+    assert bestand.stimmen_pfade("lied") is None
+
+
+def test_trennen_legt_stimme_und_begleitung_neben_den_song(bestand, eingang_wav):
+    bestand.aufnehmen("lied.wav", "Lied", "suno-eigen", HEUTE)
+    trenner = HalbTrenner()
+
+    eintrag = bestand.trennen("lied", trenner)
+
+    assert eintrag.stimmen is not None
+    assert eintrag.stimmen.stimme == "lied.stimme.wav"
+    assert eintrag.stimmen.begleitung == "lied.begleitung.wav"
+    assert eintrag.stimmen.modell == "halb-test"
+    assert bestand.hole("lied").stimmen == eintrag.stimmen
+    stimme, begleitung = bestand.stimmen_pfade("lied")
+    assert stimme == bestand.songs / "lied.stimme.wav"
+    assert begleitung == bestand.songs / "lied.begleitung.wav"
+    song, _ = sf.read(bestand.pfad("lied"), dtype="float32")
+    summe = sf.read(stimme, dtype="float32")[0] + sf.read(begleitung, dtype="float32")[0]
+    assert abs(song - summe).max() < 1e-6
+    assert trenner.aufrufe == [bestand.pfad("lied")]
+
+
+def test_trennen_laesst_die_messung_stehen(bestand, eingang_wav):
+    bestand.aufnehmen("lied.wav", "Lied", "suno-eigen", HEUTE)
+    gemessen = bestand.messen("lied")
+
+    eintrag = bestand.trennen("lied", HalbTrenner())
+
+    assert eintrag.messung == gemessen.messung
+
+
+def test_gescheitertes_trennen_hinterlaesst_nichts(bestand, eingang_wav):
+    bestand.aufnehmen("lied.wav", "Lied", "suno-eigen", HEUTE)
+    vorher = sorted(p.name for p in bestand.songs.iterdir())
+
+    with pytest.raises(BestandFehler, match="lied"):
+        bestand.trennen("lied", KaputtTrenner())
+
+    assert sorted(p.name for p in bestand.songs.iterdir()) == vorher
+    assert bestand.hole("lied").stimmen is None
+    assert not [p for p in bestand.wurzel.iterdir() if p.name.startswith(".trennen")]
+
+
+def test_eingetragene_aber_fehlende_stimme_ist_ein_fehler(bestand, eingang_wav):
+    bestand.aufnehmen("lied.wav", "Lied", "suno-eigen", HEUTE)
+    bestand.trennen("lied", HalbTrenner())
+    (bestand.songs / "lied.stimme.wav").unlink()
+
+    with pytest.raises(BestandFehler, match="lied.stimme.wav"):
+        bestand.stimmen_pfade("lied")
