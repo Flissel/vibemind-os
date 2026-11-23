@@ -77,12 +77,12 @@ def test_art_hash_post_pruefen_v2_festgehalten():
     # v1 hatte 75fb9ae6496d8cde21531cda7109ce4e647ca298a24e7959f43be57467b54189
     a = lade_auftragsarten(ORDNER)[("sales", "post_pruefen")]
     assert a.version == 2
-    assert art_hash(a) == "a2e72e7575ba93d138d34eea07eaa9da35c6398104092bc121e67bf482cde58f"
+    assert art_hash(a) == "33235cd08d2f890411d79c746073caaa735f47bfbec8bc4a44f8275be44e24f7"
 
 
 def test_art_hash_vorschlaege_anlegen_v2_festgehalten():
     a = lade_auftragsarten(ORDNER)[("rowboat", "vorschlaege_anlegen")]
-    assert art_hash(a) == "56a91ce06f16caf222bb5c09509bbbde4fa43ec11f3a386400164be0f56fa15a"
+    assert art_hash(a) == "c9262c7f7005e0e3a2141d3394a752d993c3aa9793710e889ba901c93e509335"
 
 
 def test_art_hash_kontakt_finden():
@@ -100,6 +100,14 @@ def test_art_hash_kontakt_finden():
     ("/freigaben#fg-1", False),
     ("https://beispiel.invalid/freigaben#fg-1", False),
     ("/mit leerzeichen", False),
+    ("/pfad", True),
+    ("/x\n", False),
+    ("\n", False),
+    ("https://beispiel.invalid/x\n", False),
+    ("//evil.example", False),
+    ("/FREIGABEN#FG-1", False),
+    ("/freigaben#FG-1", False),
+    ("/Freigaben#fg-1", False),
 ])
 def test_vorschlaege_anlegen_link_muster(link, ok):
     v = lade_auftragsarten(ORDNER)[("rowboat", "vorschlaege_anlegen")]
@@ -143,6 +151,9 @@ def test_vorschlaege_anlegen_ist_version_2_und_nennt_den_abholer():
     ("/sales/punkt/1", "mit leerzeichen", False),
     ("/sales/punkt/1", "x" * 65, False),
     ("/sales/punkt/1", "", False),
+    ("/sales/punkt/1\n", None, False),
+    ("//evil.example", None, False),
+    ("/sales/punkt/1 x", None, False),
 ])
 def test_post_pruefen_v2_muster_fuer_link_und_entwurf_id(link, entwurf_id, ok):
     p = lade_auftragsarten(ORDNER)[("sales", "post_pruefen")]

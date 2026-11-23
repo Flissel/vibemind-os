@@ -91,9 +91,11 @@ auftragsarten:
               link:
                 type: string
                 maxLength: 500
-                pattern: '^(|/[^\s]*|https://[^\s]+)$'
+                pattern: '^(|/(?!/)[^\s]*|https://[^\s]+)$'
                 not:
-                  pattern: "/freigaben#fg-"
+                  anyOf:
+                    - pattern: '\s'
+                    - pattern: '/[Ff][Rr][Ee][Ii][Gg][Aa][Bb][Ee][Nn]#[Ff][Gg]-'
     ergebnis:
       type: object
       additionalProperties: false
