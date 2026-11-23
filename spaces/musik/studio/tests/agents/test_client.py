@@ -4,7 +4,9 @@
 """
 
 import asyncio
+import math
 
+import anyio
 import pytest
 from pydantic import BaseModel
 
@@ -59,3 +61,49 @@ def test_die_zeitueberschreitung_wird_als_transportfehler_wiederholt(monkeypatch
 
     assert len(aufrufe) == 3
     assert pausen == [1.0, 2.0]
+
+
+# --- Nachzug B5: das Zeitlimit ist ein anyio-Abbruch, das Aufraeumen laeuft --
+
+
+def _haengt_mit_aufraeumen(protokoll: list[str]):
+    """Wie das SDK: der Generator raeumt in seinem finally auf, und zwar in
+    einem abgeschirmten anyio-Bereich (SubprocessCLITransport.close). Das
+    Abschirmen wirkt nur gegen einen Abbruch, der aus einem anyio-Bereich
+    kommt - ein roher asyncio-Abbruch (wait_for) ueberspringt es."""
+
+    async def query(prompt: str, options: object):  # noqa: ARG001
+        protokoll.append(f"frist:{anyio.current_effective_deadline()}")
+        try:
+            await anyio.sleep(30)
+            yield None  # pragma: no cover - wird nie erreicht
+        finally:
+            with anyio.CancelScope(shield=True):
+                await anyio.sleep(0.01)
+                protokoll.append("aufgeraeumt")
+
+    return query
+
+
+def test_das_zeitlimit_ist_eine_anyio_frist_die_das_sdk_sieht(monkeypatch):
+    """Vorher asyncio.wait_for: das SDK sah keine Frist (unendlich) und bekam
+    einen rohen asyncio-Abbruch, den close() laut eigener Doku nicht
+    behandelt - terminate/kill fiel aus, der CLI-Kindprozess lief weiter."""
+    protokoll: list[str] = []
+    monkeypatch.setattr(client_modul, "query", _haengt_mit_aufraeumen(protokoll))
+
+    with pytest.raises(TimeoutError, match="Zeitlimit"):
+        ClaudeClient(zeitlimit_s=0.05).complete("Hallo", {})
+
+    frist = float(protokoll[0].removeprefix("frist:"))
+    assert math.isfinite(frist)
+
+
+def test_beim_zeitlimit_laeuft_das_aufraeumen_des_generators(monkeypatch):
+    protokoll: list[str] = []
+    monkeypatch.setattr(client_modul, "query", _haengt_mit_aufraeumen(protokoll))
+
+    with pytest.raises(TimeoutError, match="Zeitlimit"):
+        ClaudeClient(zeitlimit_s=0.05).complete("Hallo", {})
+
+    assert protokoll[-1] == "aufgeraeumt"

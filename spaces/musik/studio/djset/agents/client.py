@@ -22,10 +22,22 @@ greift - und das Budget prueft nur zwischen zwei Aufrufen. Nach
 MODELL_ZEITLIMIT_S wird abgebrochen, mit einem TimeoutError. Das ist kein
 AgentError, also behandelt agents/base.py ihn als Transportfehler und
 wiederholt mit Backoff.
+
+Die Frist ist ein anyio-Bereich (`anyio.fail_after`), kein `asyncio.wait_for`:
+SubprocessCLITransport.close im SDK raeumt in einem abgeschirmten anyio-Bereich
+auf, und das Abschirmen wirkt laut seiner Doku nur gegen einen Abbruch aus
+einem anyio-Bereich. Ein roher asyncio-Abbruch ueberspraenge terminate/kill,
+und der CLI-Kindprozess liefe bis zum Ende von dj-set weiter. `aclosing`
+schliesst den Generator noch innerhalb der Frist, damit sein Aufraeumen dort
+laeuft und nicht erst beim Herunterfahren der Ereignisschleife. anyio kommt
+mit claude-agent-sdk (dessen eigene Abhaengigkeit) und ist keine neue.
 """
 
 import asyncio
 import json
+from contextlib import aclosing
+
+import anyio
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, TextBlock, query
 
@@ -55,9 +67,8 @@ class ClaudeClient:
 
     async def _complete_with_timeout(self, prompt: str) -> str:
         try:
-            return await asyncio.wait_for(
-                self._complete_async(prompt), timeout=self._zeitlimit_s
-            )
+            with anyio.fail_after(self._zeitlimit_s):
+                return await self._complete_async(prompt)
         except TimeoutError as error:
             raise TimeoutError(
                 f"Modellaufruf nach dem Zeitlimit von {self._zeitlimit_s:.0f} s "
@@ -68,9 +79,10 @@ class ClaudeClient:
         # Keine Werkzeuge noetig - wir wollen nur eine JSON-Antwort im Text.
         options = ClaudeAgentOptions(model=self._model, tools=[])
         chunks: list[str] = []
-        async for message in query(prompt=prompt, options=options):
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        chunks.append(block.text)
+        async with aclosing(query(prompt=prompt, options=options)) as messages:
+            async for message in messages:
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            chunks.append(block.text)
         return "".join(chunks)
