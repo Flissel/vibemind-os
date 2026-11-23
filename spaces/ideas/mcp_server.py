@@ -54,6 +54,10 @@ IDEA_PREVIEW_CHARS = 200  # idea_list zeigt so viele Zeichen des Inhalts; alles 
 IDEA_COUNT_CAP = 5000  # bis hierhin zaehlt idea_list die wahre Gesamtzahl (nur Kennungen)
 IDEA_LIST_SHORT_SELECT ="id,title,content,node_type,x,y,linked_idea_id,metadata,content_json"
 REASON_ENTRY_CAP = 50 # so viele Begruendungen haelt eine Bubble, die aeltesten fallen weg
+GROUP_MAX = 12  # so viele Gruppen nimmt idea_group
+GROUP_NAME_CHARS = 60
+GROUP_ROWS = 10  # so viele Karten untereinander; eine groessere Gruppe bekommt eine weitere Spalte
+GROUP_HEAD_KEY = "gruppen_kopf"  # metadata der Ueberschrift-Karten von idea_group
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -375,6 +379,37 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "idea_group",
+        "description": (
+            "Lay out the cards of one bubble in groups: one column per group with a heading card on top "
+            "(metadata.gruppen_kopf), the cards below. Heading cards of an earlier grouping are reused or "
+            "removed. Cards not named stay where they are. 'verbinden': also connect each heading card to "
+            "its cards. One undoable change."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "bubble_id": {"type": "string", "pattern": _ID_SCHEMA_PATTERN},
+                "gruppen": {
+                    "type": "array", "minItems": 1, "maxItems": GROUP_MAX,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "minLength": 1, "maxLength": GROUP_NAME_CHARS},
+                            "ids": {"type": "array", "minItems": 1, "maxItems": ARRANGE_NODE_CAP,
+                                    "items": {"type": "string", "pattern": _ID_SCHEMA_PATTERN}},
+                        },
+                        "required": ["name", "ids"],
+                        "additionalProperties": False,
+                    },
+                },
+                "verbinden": {"type": "boolean", "default": False},
+            },
+            "required": ["bubble_id", "gruppen"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "aenderung_liste",
         "description": (
             "List the most recent recorded changes to ideas and bubbles, newest first, "
@@ -415,7 +450,7 @@ CHANGE_WRITE_TOOLS = frozenset({
     "bubble_create", "bubble_update", "bubble_delete", "bubble_promote",
     "idea_create", "idea_update", "idea_delete", "idea_connect", "idea_disconnect",
     "idea_format", "idea_arrange", "idea_auto_link", "idea_rate", "bubble_rate",
-    "bewertung_begruenden", "idea_document", "bubble_wurzel",
+    "bewertung_begruenden", "idea_document", "bubble_wurzel", "idea_group",
 })
 for _tool in TOOLS:
     if _tool["name"] in CHANGE_WRITE_TOOLS:
@@ -1072,6 +1107,126 @@ def _grid_positions(nodes: list[dict[str, Any]], order: str, columns: int | None
         (origin_x + (index % columns) * ARRANGE_CELL_WIDTH, origin_y + (index // columns) * ARRANGE_CELL_HEIGHT)
         for index in range(len(nodes))
     ]
+
+
+def _is_group_head(node: Mapping[str, Any]) -> bool:
+    metadata = node.get("metadata")
+    return isinstance(metadata, Mapping) and metadata.get(GROUP_HEAD_KEY) is True
+
+
+def _group_arguments(value: Any) -> list[dict[str, Any]]:
+    """The groups of idea_group, strictly: names are plain one-line text, every id at most once."""
+    if not isinstance(value, list) or not 1 <= len(value) <= GROUP_MAX:
+        raise ToolError(f"invalid_arguments: 'gruppen' must be a list of 1 to {GROUP_MAX} groups")
+    seen: set[str] = set()
+    groups = []
+    for group in value:
+        if not isinstance(group, Mapping) or set(group) != {"name", "ids"}:
+            raise ToolError("invalid_arguments: 'gruppen' items must have exactly 'name' and 'ids'")
+        name = group["name"].strip() if isinstance(group["name"], str) else ""
+        if not name or len(name) > GROUP_NAME_CHARS or any(ord(c) < 32 for c in name):
+            raise ToolError(f"invalid_arguments: 'name' must be one line of 1 to {GROUP_NAME_CHARS} characters")
+        ids = group["ids"]
+        if (not isinstance(ids, list) or not ids
+                or not all(isinstance(i, str) and IDEA_ID_PATTERN.fullmatch(i) for i in ids)):
+            raise ToolError("invalid_arguments: 'ids' must be a non-empty list of idea ids")
+        if seen & set(ids) or len(set(ids)) != len(ids):
+            raise ToolError("invalid_arguments: 'ids' must name every idea at most once")
+        seen.update(ids)
+        groups.append({"name": name, "ids": list(ids)})
+    return groups
+
+
+def _group_layout(groups: list[dict[str, Any]], cards: Mapping[str, Mapping[str, Any]],
+                  ) -> tuple[list[tuple[int, int]], dict[str, tuple[int, int]]]:
+    """One column per group (more for groups over GROUP_ROWS), heading cell on top.
+
+    Anchored at the top left of the grouped cards. Cards that are not grouped stay where
+    they are; if one of them lies in the new block, the block starts below it.
+    """
+    grouped = {i for group in groups for i in group["ids"]}
+    staying = [node for key, node in cards.items() if key not in grouped]
+    origin_x = round(min(_number(cards[i].get("x")) for i in grouped))
+    origin_y = round(min(_number(cards[i].get("y")) for i in grouped))
+    spans = [max(1, math.ceil(len(group["ids"]) / GROUP_ROWS)) for group in groups]
+    width = sum(spans) * ARRANGE_CELL_WIDTH
+    height = (min(GROUP_ROWS, max(len(group["ids"]) for group in groups)) + 1) * ARRANGE_CELL_HEIGHT
+    in_block = [node for node in staying
+                if origin_x - ARRANGE_CELL_WIDTH < _number(node.get("x")) < origin_x + width
+                and origin_y - ARRANGE_CELL_HEIGHT < _number(node.get("y")) < origin_y + height]
+    if in_block:
+        origin_y = round(max(_number(node.get("y")) for node in in_block)) + ARRANGE_CELL_HEIGHT
+    heads: list[tuple[int, int]] = []
+    places: dict[str, tuple[int, int]] = {}
+    column = 0
+    for group, span in zip(groups, spans):
+        heads.append((origin_x + column * ARRANGE_CELL_WIDTH, origin_y))
+        for index, key in enumerate(group["ids"]):
+            places[key] = (origin_x + (column + index // GROUP_ROWS) * ARRANGE_CELL_WIDTH,
+                           origin_y + (index % GROUP_ROWS + 1) * ARRANGE_CELL_HEIGHT)
+        column += span
+    return heads, places
+
+
+def _group(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    """idea_group: heading cards, card positions and (optionally) connections in one change."""
+    _only_arguments(arguments, {"bubble_id", "gruppen", "verbinden"})
+    bubble_id = _durable_id(arguments, "bubble_id")
+    groups = _group_arguments(arguments.get("gruppen"))
+    connect = arguments.get("verbinden", False)
+    if not isinstance(connect, bool):
+        raise ToolError("invalid_arguments: 'verbinden' must be true or false")
+    nodes = _bubble_nodes(bubble_id, "id,title,x,y,metadata", ARRANGE_NODE_CAP + GROUP_MAX)
+    heads = sorted((node for node in nodes if _is_group_head(node)),
+                   key=lambda node: (_number(node.get("y")), _number(node.get("x")), node["id"]))
+    cards = {node["id"]: node for node in nodes if not _is_group_head(node)}
+    if len(cards) > ARRANGE_NODE_CAP:
+        raise ToolError(f"too_many_ideas: {len(cards)} ideas in this bubble, limit {ARRANGE_NODE_CAP}")
+    for group in groups:
+        for key in group["ids"]:
+            if key not in cards:
+                raise ToolError(f"idea_not_in_bubble: {key}")
+    head_places, places = _group_layout(groups, cards)
+
+    result_groups, positions, edges = [], [], []
+    for index, (group, (x, y)) in enumerate(zip(groups, head_places)):
+        if index < len(heads):
+            head_id = heads[index]["id"]
+            # Verbindungen einer frueheren Gruppierung gehoeren zur alten Gruppe.
+            _request("DELETE", "canvas_edges", params={"from_node_id": f"eq.{head_id}"})
+            _request("PATCH", "canvas_nodes", params={"id": f"eq.{head_id}"},
+                     body={"title": group["name"], "x": x, "y": y})
+        else:
+            head_id = uuid.uuid4().hex[:8]
+            _request("POST", "canvas_nodes", body={
+                "id": head_id, "node_type": "note", "title": group["name"], "content": "", "x": x, "y": y,
+                "linked_idea_id": bubble_id,
+                "metadata": {"width": 200.0, "height": 100.0, GROUP_HEAD_KEY: True},
+            })
+        positions.append({"id": head_id, "x": x, "y": y})
+        result_groups.append({"name": group["name"], "kopf_id": head_id, "ids": group["ids"]})
+    removed = []
+    for head in heads[len(groups):]:
+        _request("DELETE", "canvas_edges", params={"from_node_id": f"eq.{head['id']}"})
+        _request("DELETE", "canvas_edges", params={"to_node_id": f"eq.{head['id']}"})
+        _request("DELETE", "canvas_nodes", params={"id": f"eq.{head['id']}"})
+        removed.append(head["id"])
+    moved = 0
+    for key, (x, y) in places.items():
+        positions.append({"id": key, "x": x, "y": y})
+        if _number(cards[key].get("x")) == x and _number(cards[key].get("y")) == y:
+            continue
+        _request("PATCH", "canvas_nodes", params={"id": f"eq.{key}"}, body={"x": x, "y": y})
+        moved += 1
+    if connect:
+        for group in result_groups:
+            for key in group["ids"]:
+                _request("POST", "canvas_edges", body={
+                    "id": uuid.uuid4().hex, "from_node_id": group["kopf_id"], "to_node_id": key,
+                    "edge_type": "related"})
+                edges.append({"from_id": group["kopf_id"], "to_id": key})
+    return {"bubble_id": bubble_id, "gruppen": result_groups, "positionen": positions,
+            "verschoben": moved, "entfernt": removed, "kanten": edges}
 
 
 def _title_words(title: Any) -> frozenset[str]:
@@ -1968,6 +2123,8 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         if updated is None:
             raise ToolError("bubble_wurzel_unverified")
         return {"bubble_id": bubble_id, "wurzel": root_id}
+    if name == "idea_group":
+        return _group(arguments)
     if name == "bubble_rate":
         _only_arguments(arguments, {"id", "score"})
         bubble_id = _durable_id(arguments, "id")

@@ -47,7 +47,7 @@ aufgelöst: aus dem Vorspeicher der App oder über `idea_list`. Das ist ein Lese
 | Absicht | Beispielsätze | Was das Modell entscheidet | Schreibt über |
 |---|---|---|---|
 | `idea.rewrite` | „Formuliere die Notiz aus" / „Fass die Notiz zusammen" / „Bau aus dem Text eine echte Tabelle" | den neuen Text | `idea_update`, `idea_format` |
-| `idea.group` | „Ordne die Notizen nach Thema" / „Was gehört zusammen?" | die Gruppen | `idea_update` (Lage), `idea_connect` |
+| `idea.group` | „Ordne die Notizen nach Thema" / „Was gehört zusammen?" | die Gruppen | `idea_group` (Lage, Überschriften, Verbindungen in einer Änderung; KARTEN.md) |
 | `idea.evaluate` | „Was hältst du von dieser Notiz?" / „Bewerte die Bubble" (ohne Zahl) | Urteil und Begründung | `idea_rate`, `bubble_rate`, `bewertung_begruenden` |
 
 Von Felix entschieden (23.11.): Befördert werden nur ganze Bubbles; eine Absicht „Notiz befördern" gibt es

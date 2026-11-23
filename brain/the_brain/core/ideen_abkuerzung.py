@@ -281,8 +281,9 @@ def _bubble(name: Optional[str], kontext: dict) -> dict:
 
 # Obergrenzen des Ideen-Servers (spaces/ideas/mcp_server.py: ARRANGE_NODE_CAP,
 # AUTO_LINK_NODE_CAP). Ordnen verschiebt jede Karte einzeln, Verbinden rechnet nur.
-GRENZEN = {"idea.arrange": 100, "idea.auto_link": 500}
-_TAETIGKEIT = {"idea.arrange": "Ordnen", "idea.auto_link": "Verbinden nach gleichen Wörtern"}
+GRENZEN = {"idea.arrange": 100, "idea.auto_link": 500, "idea.group": 100, "idea.group_layout": 100}
+_TAETIGKEIT = {"idea.arrange": "Ordnen", "idea.auto_link": "Verbinden nach gleichen Wörtern",
+               "idea.group": "Gruppieren", "idea.group_layout": "Gruppieren"}
 
 
 def ist_ideen_faehigkeit(capability: Any) -> bool:
@@ -643,14 +644,19 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
         treffer = _treffer("idea.list", {"bubble_id": _offene_bubble(kontext), "full": True, "limit": 100}, "")
         treffer["lies"] = {"id": karte["id"], "title": str(karte.get("title") or "")}
         return treffer
-    # ── nach Thema gruppieren: braucht ein Modell, gibt es noch nicht. Ehrlich sagen,
-    #    statt an Planer oder Chat zu fallen ("Idea '' not found", englischer Lexikontext).
+    # ── nach Thema gruppieren: Modellauftrag mit Rueckweg "gruppieren" (core/ideen_dokument).
+    #    Der Agent nennt nur Gruppen mit Kuerzeln; Lage, Ueberschriften und (auf Wunsch)
+    #    Verbindungen setzt das Gehirn in einer zuruecknehmbaren Aenderung (idea.group_layout).
     if (re.match(r"(?:bitte\s+)?(?:gruppiere|clustere|cluster)\b", text, _I)
             or re.fullmatch(r"(?:ordne|sortiere)\s+(?:die\s+)?(?:notizen|karten|ideen)\s+nach\s+(?:thema|themen|inhalt)",
                             text, _I)
             or re.fullmatch(r"(?:bilde|mach(?:e)?)\s+(?:themen)?gruppen(?:\s+.*)?", text, _I)
             or re.fullmatch(r"was\s+geh(?:ö|oe)rt\s+(?:hier\s+)?zusammen\s*\??", text, _I)):
-        raise _Rueckfrage(GRUPPIEREN_NOCH_NICHT)
+        bubble_id = _offene_bubble(kontext)
+        _grenze_pruefen("idea.group", kontext)
+        verbinden = re.search(r"\bverbind\w*|\bverlink\w*|\bverkn(?:ü|ue)pf\w*", text, _I) is not None
+        return _treffer("idea.group", {"bubble_id": bubble_id, **({"verbinden": True} if verbinden else {})},
+                        "", capability="idea_group")
     # ── Bild an eine Karte: dafuer gibt es im Ideen-Space keinen Weg (das Ereignis
     #    idea.add_image zeigte auf ein Werkzeug, das es nicht gibt). Ehrlich sagen.
     if (re.search(r"\b(?:ein(?:e|en)?\s+|das\s+|die\s+)?(?:bild|bilder|foto|fotos|grafik|image|picture)\b", text, _I)
@@ -676,9 +682,6 @@ RECHERCHE_NOCH_NICHT = ("Das kann ich noch nicht: zu einer Karte oder Bubble rec
 
 BILD_NOCH_NICHT = ("Das kann ich noch nicht: Bilder an Karten hängen. Im Ideen-Space gibt es dafür noch "
                    "keinen Weg; geändert habe ich nichts.")
-GRUPPIEREN_NOCH_NICHT = ("Das kann ich noch nicht: nach Thema gruppieren braucht ein Modell, und das gibt es "
-                         "hier noch nicht. Was geht: „Ordne die Karten“, „Sortiere die Karten nach Bewertung“ "
-                         "oder „Finde Verbindungen“.")
 LESE_ZEICHEN = 1500
 
 
@@ -965,7 +968,9 @@ def arg_vorlage(argumente: dict) -> str:
     Einlesen steht wieder der urspruengliche Text da.
     """
     roh = json.dumps(argumente, ensure_ascii=False)
-    return "{" + roh[1:-1].replace("{", "\\u007b").replace("}", "\\u007d") + "}"
+    # Nur innerhalb von Zeichenfolgen ersetzen: verschachtelte Objekte (Gruppen) bleiben JSON.
+    return re.sub(r'"(?:[^"\\]|\\.)*"',
+                  lambda m: m.group(0).replace("{", "\\u007b").replace("}", "\\u007d"), roh)
 
 
 def listen_suchwort(satz: Any) -> str:

@@ -65,10 +65,20 @@ def test_antwort_zeigt_nur_die_gefragte_karte_und_den_lebenden_text() -> None:
     "Gruppiere die Notizen", "gruppiere nach Thema", "Ordne die Karten nach Thema", "Was gehört zusammen?",
     "Bilde Themengruppen", "Cluster die Ideen",
 ])
-def test_gruppieren_sagt_ehrlich_dass_es_noch_nicht_geht(satz) -> None:
-    antwort = abk.loese(satz, KONTEXT)
-    assert antwort == {"rueckfrage": abk.GRUPPIEREN_NOCH_NICHT}
-    assert antwort["rueckfrage"].startswith("Das kann ich noch nicht")
+def test_gruppieren_wird_ein_auftrag_mit_rueckweg(satz) -> None:
+    treffer = abk.loese(satz, KONTEXT)
+    assert treffer["ereignis"] == "idea.group" and treffer["capability"] == "idea_group"
+    assert treffer["argumente"] == {"bubble_id": "b0b1e001"}
+
+
+def test_gruppieren_und_verbinden() -> None:
+    treffer = abk.loese("Gruppiere die Notizen und verbinde sie", KONTEXT)
+    assert treffer["argumente"] == {"bubble_id": "b0b1e001", "verbinden": True}
+
+
+def test_gruppieren_ueber_hundert_karten_sagt_die_grenze() -> None:
+    antwort = abk.loese("Ordne die Notizen nach Thema", {**KONTEXT, "cards_total": 101})
+    assert antwort["rueckfrage"].startswith("Gruppieren geht bis 100 Notizen; hier sind es 101.")
 
 
 @pytest.mark.parametrize("satz", ["Füge ein Bild zu Bühnenplan hinzu", "Häng ein Foto an die Karte Sponsoren",

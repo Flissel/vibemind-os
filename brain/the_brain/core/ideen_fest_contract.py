@@ -23,10 +23,12 @@ VALIDATOR_ART = "truth:supabase_ideen_fest"
 PRUEFUNG = "supabase_ideen_fest"
 
 # Feldarten: ("kennung",) ("text", hoechstens, leer_erlaubt) ("zahl", von, bis)
-# ("wahl", werte) ("kennungen", hoechstens)
+# ("wahl", werte) ("kennungen", hoechstens) ("gruppen", hoechstens Gruppen, Namenslaenge, Karten)
 _K = ("kennung",)
 _WERT = ("zahl", 0, 100)
 _LAGE = ("zahl", -1_000_000, 1_000_000)
+GRUPPEN_MAX = 12          # wie GROUP_MAX im Ideen-Server
+GRUPPEN_NAME_ZEICHEN = 60
 
 FESTE_EREIGNISSE: dict[str, dict[str, Any]] = {
     "idea.create": {
@@ -93,6 +95,13 @@ FESTE_EREIGNISSE: dict[str, dict[str, Any]] = {
         "pflicht": {"bubble_id": _K},
         "wahl": {},
     },
+    # Gruppen nach Thema (Rueckweg "gruppieren", core/ideen_dokument): je Gruppe eine Spalte mit
+    # Ueberschrift-Karte; Lage, Koepfe und Verbindungen in einer Aenderung.
+    "idea.group_layout": {
+        "werkzeug": "idea_group",
+        "pflicht": {"bubble_id": _K, "gruppen": ("gruppen", GRUPPEN_MAX, GRUPPEN_NAME_ZEICHEN, 100)},
+        "wahl": {"verbinden": ("ja_nein",)},
+    },
     # Dokument-Karte (Zusammenfassung, White Paper): geschrieben nur vom Gehirn nach dem
     # Rueckweg eines Modellauftrags (core/ideen_dokument). Die Kennung steht beim Anlegen
     # des Auftrags fest; ein zweiter Aufruf ersetzt dieselbe Karte.
@@ -155,6 +164,21 @@ def _feld_gueltig(art: tuple, wert: Any) -> bool:
         return isinstance(wert, str) and wert in art[1]
     if art[0] == "ja_nein":
         return isinstance(wert, bool)
+    if art[0] == "gruppen":
+        if not isinstance(wert, list) or not 1 <= len(wert) <= art[1]:
+            return False
+        alle: list = []
+        for gruppe in wert:
+            if not isinstance(gruppe, dict) or set(gruppe) != {"name", "ids"}:
+                return False
+            name, ids = gruppe["name"], gruppe["ids"]
+            if (not isinstance(name, str) or not name.strip() or len(name.strip()) > art[2]
+                    or any(ord(c) < 32 for c in name)):
+                return False
+            if not isinstance(ids, list) or not 1 <= len(ids) <= art[3] or not all(ist_kennung(i) for i in ids):
+                return False
+            alle += ids
+        return len(set(alle)) == len(alle) <= art[3]
     if art[0] == "kennungen":
         return (isinstance(wert, list) and len(wert) <= art[1]
                 and all(ist_kennung(item) for item in wert)
@@ -374,6 +398,37 @@ def nachpruefung(event_id: str, argumente: Any, raw_result: Any) -> tuple[Option
                 return None, ungueltig
             kanten.append([kante["from_id"], kante["to_id"]])
         return {"art": "kanten", "kanten": kanten}, ""
+    if event_id == "idea.group_layout":
+        lagen, angelegt, gruppen = inhalt.get("positionen"), inhalt.get("kanten"), inhalt.get("gruppen")
+        if (inhalt.get("bubble_id") != argumente["bubble_id"] or not isinstance(lagen, list)
+                or not isinstance(angelegt, list) or not isinstance(gruppen, list)
+                or len(gruppen) != len(argumente["gruppen"])):
+            return None, ungueltig
+        sauber, kanten = [], []
+        for lage in lagen:
+            if (not isinstance(lage, dict) or not ist_kennung(lage.get("id"))
+                    or not _ist_zahl(lage.get("x")) or not _ist_zahl(lage.get("y"))):
+                return None, ungueltig
+            sauber.append({"id": lage["id"], "x": lage["x"], "y": lage["y"]})
+        # Jede genannte Karte muss in der Quittung eine Lage haben, sonst ist sie nicht gesetzt.
+        gesetzt = {lage["id"] for lage in sauber}
+        if not all(i in gesetzt for gruppe in argumente["gruppen"] for i in gruppe["ids"]):
+            return None, ungueltig
+        koepfe = []
+        for soll, ist in zip(argumente["gruppen"], gruppen):
+            if (not isinstance(ist, dict) or not ist_kennung(ist.get("kopf_id")) or ist["kopf_id"] not in gesetzt
+                    or ist.get("ids") != soll["ids"]):
+                return None, ungueltig
+            koepfe.append({"id": ist["kopf_id"], "title": soll["name"].strip()})
+        for kante in angelegt:
+            if (not isinstance(kante, dict) or not ist_kennung(kante.get("from_id"))
+                    or not ist_kennung(kante.get("to_id"))):
+                return None, ungueltig
+            kanten.append([kante["from_id"], kante["to_id"]])
+        if argumente.get("verbinden") is True and len(kanten) != len(gesetzt) - len(koepfe):
+            return None, ungueltig
+        return {"art": "gruppen", "bubble_id": argumente["bubble_id"], "lagen": sauber, "koepfe": koepfe,
+                "kanten": kanten}, ""
     if event_id == "bubble.promote":
         if not ist_kennung(inhalt.get("id")) or inhalt.get("from_idea_id") != argumente["bubble_id"]:
             return None, ungueltig
@@ -490,6 +545,30 @@ def pruefe_zustand(erwartet: Any, lies: Lesen) -> tuple[Optional[bool], dict[str
         if fehlend:
             return False, {"fehlend": len(fehlend)}, f"{len(fehlend)} connection(s) not found"
         return True, {"rows_found": len(kanten)}, "connections verified"
+
+    if art == "gruppen":
+        # Lage aller Karten und Koepfe, Titel der Koepfe, Verbindungen: alles muss stimmen.
+        koepfe = erwartet.get("koepfe")
+        if not isinstance(koepfe, list) or not all(isinstance(k, dict) and ist_kennung(k.get("id")) for k in koepfe):
+            return None, offen, "invalid expectation"
+        ergebnis = pruefe_zustand({"art": "lagen", "bubble_id": erwartet.get("bubble_id"),
+                                   "lagen": erwartet.get("lagen")}, lies)
+        if ergebnis[0] is not True:
+            return ergebnis
+        if koepfe:
+            zeilen = lies("canvas_nodes", {"select": "id,title,metadata",
+                                           "id": "in.(" + ",".join(k["id"] for k in koepfe) + ")", "limit": "50"})
+            if zeilen is None:
+                return None, offen, "read-back unavailable"
+            ist = {z.get("id"): z for z in zeilen if isinstance(z, dict)}
+            falsch = [k["id"] for k in koepfe if k["id"] not in ist or ist[k["id"]].get("title") != k["title"]
+                      or _pfad(ist[k["id"]], "metadata.gruppen_kopf") is not True]
+            if falsch:
+                return False, {"abweichend": len(falsch)}, f"{len(falsch)} heading card(s) differ"
+        ergebnis = pruefe_zustand({"art": "kanten", "kanten": erwartet.get("kanten")}, lies)
+        if ergebnis[0] is not True:
+            return ergebnis
+        return True, {"rows_found": len(erwartet.get("lagen") or [])}, "groups verified"
 
     if art == "befoerdert":
         project_id = erwartet.get("project_id")
