@@ -1481,6 +1481,7 @@ class PlanExecutor:
 
         single_plan_attempt = False
         strict_mcp_arguments = None
+        strict_event_id = "idea.connect"
 
         # A canonical Space event routes through its assigned OpenFang agent.
         # Agent YAMLs remain metadata, while config/space_agent_registry.yml is
@@ -1591,6 +1592,34 @@ class PlanExecutor:
                         contract_pass=False, reward=-1.0,
                     )
                 hop.validator = canonical_idea_connect_validator_config()
+            from .ideen_fest_contract import (
+                EINMAL_EREIGNISSE as _IDEEN_EINMAL, feste_argumente,
+                ist_fester_aufruf, validator_config as _ideen_validator_config,
+            )
+            if ist_fester_aufruf(event_id, deterministic_target):
+                # Feste Aufrufe des Ideen-Space: nur ueber den Ideen-Server, nur mit
+                # Kennungen, und (ausser beim Lesen) nur mit Nachpruefung am Zustand.
+                # Gilt genau dann, wenn das Verzeichnis das Ereignis auf das Werkzeug
+                # des Vertrags bindet; sonst bleibt der bisherige Weg.
+                def _ideen_fehler(meldung: str) -> HopResult:
+                    return HopResult(
+                        step_id=hop.step_id, ok=False, error=meldung,
+                        capability=hop.capability, target=target,
+                        rendered_arg=rendered_arg, kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False, reward=-1.0,
+                    )
+                strict_mcp_arguments, clarification = feste_argumente(event_id, rendered_arg)
+                if strict_mcp_arguments is None:
+                    return _ideen_fehler(clarification)
+                rendered_arg = strict_mcp_arguments
+                hop.arg_kwarg = None
+                hop.validator = _ideen_validator_config(event_id)
+                if hop.validator is not None and self.validator is None:
+                    return _ideen_fehler(f"canonical {event_id} validator unavailable")
+                strict_event_id = event_id
+                if event_id in _IDEEN_EINMAL:
+                    single_plan_attempt = True
             if event_id == "bubble.create" and not deterministic_target:
                 return HopResult(
                     step_id=hop.step_id, ok=False,
@@ -1946,7 +1975,7 @@ class PlanExecutor:
                             or verdict.get("valid") is not True
                             or verdict.get("verified") is not True):
                         ok = False
-                        err = "validator blocked: canonical idea.connect truth unverified"
+                        err = f"validator blocked: canonical {strict_event_id} truth unverified"
                         with self._lock:
                             self.stats["validator_blocks"] += 1
                 # on_fail=block converts to overall fail
@@ -1965,13 +1994,17 @@ class PlanExecutor:
                 verdict = {
                     "valid": False,
                     "reason": "validator error",
-                    "kind": "truth:supabase_edge_ids" if strict_mcp_arguments is not None else "unknown",
+                    "kind": (
+                        "unknown" if strict_mcp_arguments is None
+                        else "truth:supabase_edge_ids" if strict_event_id == "idea.connect"
+                        else "truth:supabase_ideen_fest"
+                    ),
                     "on_fail": "block" if strict_mcp_arguments is not None else "report",
                     "verified": None,
                 }
                 if strict_mcp_arguments is not None:
                     ok = False
-                    err = "validator blocked: canonical idea.connect validator error"
+                    err = f"validator blocked: canonical {strict_event_id} validator error"
                     with self._lock:
                         self.stats["validator_blocks"] += 1
 

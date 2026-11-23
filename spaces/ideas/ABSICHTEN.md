@@ -28,6 +28,14 @@ Alle festen Aufrufe laufen als `execution: { kind: mcp, server: spaces-ideas }` 
 | `idea.list` (lesen) | „Zeig die Notizen dieser Bubble" / „Was steht hier?" | `idea_list` | keine (`bubble_id` empfohlen) |
 | `idea.aenderung_zurueck` | „Zurück" / „Nimm das zurück" | `aenderung_zurueck` | keine |
 
+`bubble.rate` und `bubble.promote` gehören nach ihrer Vorsilbe dem Space `bubbles`. Sie laufen deshalb im
+Namen von `brain-bubbles` über den Ideen-Server, genau wie schon `bubble.create`. `brain-ideas` braucht die
+beiden Werkzeuge nicht.
+
+Im Gehirn gilt für diese Ereignisse ein fester Vertrag (`brain/the_brain/core/ideen_fest_contract.py`):
+nur die Felder des Werkzeugs, nur Kennungen, und nach jedem Schreiben eine Nachprüfung am echten Zustand.
+Ein Schritt nennt dafür das Ereignis selbst (`idea.format`, `bubble.promote`).
+
 Die Werkzeuge verlangen Kennungen, keine Namen. Der Name aus dem Satz („die Notiz Preise") wird vorher
 aufgelöst: aus dem Vorspeicher der App oder über `idea_list`. Das ist ein Lesen ohne Modell.
 
