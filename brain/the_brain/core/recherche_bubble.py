@@ -48,12 +48,15 @@ def _name_wie_openfang(wert: str) -> str:
 def ist_recherche_ziel(ziel: Any) -> bool:
     """True fuer jedes Ziel, das beim Recherche-Server landen kann, egal in welcher Schreibweise.
 
-    Absichtlich streng: jeder Teil zwischen Doppelpunkten wird verglichen, nicht nur der dritte.
+    OpenFang sucht das Werkzeug unter ``mcp_<server>_<tool>``; dabei verschwimmt die Grenze
+    zwischen Server und Werkzeug ("spaces" + "research_research_start" ergibt denselben Namen).
+    Darum absichtlich streng: das ganze Ziel ohne Leerraum, Doppelpunkt wie Unterstrich, und
+    der Servername darf nirgends darin vorkommen.
     """
     if not isinstance(ziel, str):
         return False
-    server = _name_wie_openfang(SERVER)
-    return any(_name_wie_openfang(teil) == server for teil in ziel.split(":"))
+    flach = _name_wie_openfang(re.sub(r"\s+", "", ziel)).replace(":", "_")
+    return _name_wie_openfang(SERVER) in flach
 
 GILT_S = 120
 FRIST_S = 90 * 60          # wie die Zeitgrenze des Kindprozesses im Recherche-Server (5400 s)

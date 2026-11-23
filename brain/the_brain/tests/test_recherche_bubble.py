@@ -289,6 +289,8 @@ def test_tabelle_legt_laufende_zeile_an_und_schliesst_nur_laufende() -> None:
     ("eigener_alias", "mcp:brain-researcher:spaces-research:research_start"),
     ("eigener_alias", "mcp:brain-researcher: Spaces_Research :research_start"),
     ("eigener_alias", "mcp:anderer-agent:SPACES-RESEARCH:research_status"),
+    ("eigener_alias", "mcp:brain-researcher:spaces:research_research_start"),
+    ("eigener_alias", "mcp:brain-researcher:Spaces-Res earch:research_start"),
 ])
 def test_plan_kann_keine_recherche_starten(monkeypatch, faehigkeit, ziel) -> None:
     from core.plan_executor import PlanExecutor
