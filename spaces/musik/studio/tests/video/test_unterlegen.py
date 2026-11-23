@@ -114,3 +114,29 @@ def test_fehler_sind_videofehler_ohne_halbe_datei(tmp_path: Path) -> None:
         unterlegen(video, kaputt, ziel)
     assert not ziel.exists()
     assert not list(tmp_path.glob("*.teil*"))
+
+
+def test_schreibfehler_am_ziel_ist_videofehler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    video = kurzes_video(tmp_path, 1.0)
+    musik = _musik(tmp_path / "m.wav", 1.0)
+    ziel = tmp_path / "x.mp4"
+
+    def _verweigert(quelle: object, ziel_: object) -> None:
+        raise PermissionError("Zugriff verweigert")
+
+    monkeypatch.setattr("djset.video.unterlegen.os.replace", _verweigert)
+    with pytest.raises(VideoFehler, match="x.mp4"):
+        unterlegen(video, musik, ziel)
+    assert not ziel.exists()
+    assert not list(tmp_path.glob("*.teil*"))
+
+
+def test_zielordner_nicht_anlegbar_ist_videofehler(tmp_path: Path) -> None:
+    video = kurzes_video(tmp_path, 1.0)
+    musik = _musik(tmp_path / "m.wav", 1.0)
+    datei = tmp_path / "ist_eine_datei"
+    datei.write_bytes(b"x")
+    ziel = datei / "unter" / "x.mp4"
+    with pytest.raises(VideoFehler, match="x.mp4"):
+        unterlegen(video, musik, ziel)
+    assert not list(tmp_path.glob("*.teil*"))

@@ -66,3 +66,34 @@ def test_luecke_mitten_im_stueck(tmp_path: Path) -> None:
     arten = [b.art for b in videomusik_pruefen(ziel, SAMPLES, -14.0)]
     assert "luecke" in arten
     assert isinstance(videomusik_pruefen(ziel, SAMPLES, -14.0)[0], VideoBefund)
+
+
+def _sinus(pfad: Path, amplitude: float, sr: int = SR) -> Path:
+    t = np.arange(round(SAMPLES / SR * sr)) / sr
+    signal = (amplitude * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
+    sf.write(str(pfad), np.stack([signal, signal], axis=1), sr, subtype="FLOAT")
+    return pfad
+
+
+def test_zu_leises_stueck_ist_pegelbefund(tmp_path: Path) -> None:
+    # Amplitude 0.05 liegt bei rund -25 LUFS, weit unter dem Ziel von -14.
+    datei = _sinus(tmp_path / "leise.wav", 0.05)
+    befunde = videomusik_pruefen(datei, SAMPLES, -14.0)
+    assert "pegel" in [b.art for b in befunde]
+    assert "spitze" not in [b.art for b in befunde]
+
+
+def test_zu_lautes_stueck_ist_spitzenbefund(tmp_path: Path) -> None:
+    datei = _sinus(tmp_path / "laut.wav", 0.99)
+    arten = [b.art for b in videomusik_pruefen(datei, SAMPLES, -14.0)]
+    assert "spitze" in arten
+
+
+def test_falsche_samplerate_ist_videofehler(tmp_path: Path) -> None:
+    import pytest
+
+    from djset.video.laenge import VideoFehler
+
+    datei = _sinus(tmp_path / "48k.wav", 0.3, sr=48_000)
+    with pytest.raises(VideoFehler, match="48k.wav"):
+        videomusik_pruefen(datei, SAMPLES, -14.0)

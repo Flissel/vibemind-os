@@ -62,7 +62,10 @@ def unterlegen(
         # Allein bleibt die Musik auf ihrem Pegel: `musik_db` regelt nur das Verhaeltnis zum Original.
         filter_ = "[1:a]apad[a]"
 
-    ziel.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        ziel.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as fehler:
+        raise VideoFehler(f"{ziel}: Zielordner nicht anlegbar ({fehler})") from fehler
     zwischen = ziel.with_name(f"{ziel.stem}.teil{os.getpid()}{ziel.suffix}")
     cmd = [
         ffmpeg_path(), "-v", "error", "-y", "-i", str(video), "-i", str(musik),
@@ -78,6 +81,8 @@ def unterlegen(
             ende = "\n".join(lauf.stderr.strip().splitlines()[-5:]) or "keine Meldung"
             raise VideoFehler(f"ffmpeg konnte {video.name} nicht mit {musik.name} mischen: {ende}")
         os.replace(zwischen, ziel)
+    except OSError as fehler:
+        raise VideoFehler(f"{ziel}: Ergebnis nicht schreibbar ({fehler})") from fehler
     except subprocess.TimeoutExpired:
         raise VideoFehler(
             f"ffmpeg hat {video.name} nicht in {_FFMPEG_TIMEOUT_S} s fertig gemischt"
