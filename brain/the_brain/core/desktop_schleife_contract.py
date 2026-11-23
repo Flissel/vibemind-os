@@ -40,6 +40,17 @@ AUSWAHL_NOMEN: dict[str, frozenset[str]] = {
         "eintrag", "datei", "ordner", "zeile", "element", "item", "entry", "file", "folder", "row")},
 }
 AUSWAHL_NAEHE = 3  # so viele Woerter nach dem Ordnungswort darf das Nomen stehen
+# Zwischen Ordnungswort und Nomen stehen nur Eigenschaftswoerter, weitere Ordnungswoerter oder
+# "und/oder". Steht dort ein Artikel, Pronomen oder Verhaeltniswort, ist das Ordnungswort keins
+# ("achte auf den Eintrag", "achten Sie auf die Datei").
+AUSWAHL_SPERRWOERTER = frozenset({
+    "der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem", "einer", "eines",
+    "auf", "in", "im", "an", "am", "zu", "zum", "zur", "mit", "von", "vom", "für", "fuer", "bei",
+    "nach", "aus", "über", "ueber", "unter", "vor", "hinter", "neben",
+    "ich", "du", "er", "sie", "es", "wir", "ihr", "man", "mich", "dich", "sich", "mir", "dir",
+    "the", "a", "an", "on", "at", "to", "of", "for", "with", "you", "it", "this", "that",
+    "dann", "bitte", "nicht", "darauf", "dass",
+})
 ORDNUNGSWOERTER: dict[str, int] = {
     "erste": 1, "zweite": 2, "dritte": 3, "vierte": 4, "fünfte": 5, "fuenfte": 5, "sechste": 6,
     "siebte": 7, "siebente": 7, "achte": 8, "neunte": 9, "zehnte": 10, "letzte": -1,
@@ -203,6 +214,8 @@ def auswahl_gemeint(auftrag: str) -> Optional[tuple[int, frozenset[str]]]:
             continue
         stelle = int(treffer.group(1)) if treffer.group(1) else ORDNUNGSWOERTER[treffer.group(2)]
         for folgend in woerter[i + 1:i + 1 + AUSWAHL_NAEHE]:
+            if folgend in AUSWAHL_SPERRWOERTER:
+                break
             arten = _nomen_art(folgend.rstrip("."))
             if arten is not None and stelle != 0:
                 gefunden.add((stelle, arten))

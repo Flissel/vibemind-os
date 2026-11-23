@@ -121,6 +121,12 @@ class BlickTests(unittest.TestCase):
         self.elemente = [element("Pin to Quick access"), element("Anheften")]
         self.assertIs(self.blick()["gesperrt"], False)
 
+    def test_ein_unbenanntes_kennwortfeld_sperrt_ueber_is_password(self) -> None:
+        self.elemente = [element("Weiter"), element("", "Edit", is_password=True)]
+        self.assertEqual(set(self.blick()), {"gesperrt", "zeitpunkt", "dauer_ms"})
+        self.elemente = [element("Weiter"), element("", "Edit", is_password=False), element("", "Edit")]
+        self.assertIs(self.blick()["gesperrt"], False)
+
     def test_edge_symbolleiste_sperrt_nicht_aber_ein_kartenfeld_der_seite(self) -> None:
         # So in Edge gemessen: Knöpfe der Symbolleiste, an jedem Edge-Fenster.
         leiste = [element("Anzeigen Ihrer virtuellen Kartennummer", class_name="EdgeTokenizationIconView"),

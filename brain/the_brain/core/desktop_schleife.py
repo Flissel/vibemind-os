@@ -44,6 +44,10 @@ class WerkzeugFehler(Exception):
     """Ein fester Aufruf ist gescheitert; der Text ist die Meldung des Werkzeug-Dienstes."""
 
 
+class AgentBenutzteWerkzeug(RuntimeError):
+    """brain-desktop hat im Lauf ein Werkzeug angesetzt; er darf nur Text liefern."""
+
+
 class FreigabeAusstehend(Exception):
     """Ein fester Aufruf wartet auf Freigabe in OpenFang. Bewusst KEIN WerkzeugFehler: Kein
     ``except WerkzeugFehler`` der Schleife darf ihn schlucken; die Schleife haelt an."""
@@ -169,6 +173,9 @@ def fuehre_aufgabe(
             try:
                 antwort = agent(_frage(auftrag, runde, runden, list(stand.get("schritte") or []), text, elemente,
                                        fenster, abgelehnt))
+            except AgentBenutzteWerkzeug:
+                return abschluss("abgebrochen", "agent_hat_werkzeug_benutzt",
+                                 "brain-desktop hat ein Werkzeug angesetzt; die Schleife wurde beendet.")
             except Exception as fehler:  # noqa: BLE001 - Agent nicht erreichbar, Budget, Zeit
                 return abschluss("fehlgeschlagen", "agent_nicht_erreichbar", type(fehler).__name__)
 
@@ -294,15 +301,22 @@ def anschluss(*, tagesrest: Callable[[], int], laufzeit: Optional[Mapping[str, A
         return fester_aufruf(name, argumente, laufzeit_kontext(name, laufzeit or {}, nummer))
 
     def agent(nachricht: str) -> str:
-        antwort = OpenFangExecutor(f"openfang:{AGENT}").call_with_arg(nachricht)
+        # nur_text: nur ueber den Stream (sonst sind Werkzeugaufrufe unsichtbar) und Abbruch beim
+        # ersten tool_use. Die Stelle VOR der Ausfuehrung liegt in OpenFang, nicht hier.
+        antwort = OpenFangExecutor(f"openfang:{AGENT}", nur_text=True).call_with_arg(nachricht)
         if not antwort.get("ok"):
-            raise RuntimeError(str(antwort.get("error") or "Agent nicht erreichbar"))
+            fehler = str(antwort.get("error") or "Agent nicht erreichbar")
+            if fehler.startswith("WerkzeugaufrufImLauf"):
+                raise AgentBenutzteWerkzeug(fehler)
+            raise RuntimeError(fehler)
         ergebnis = antwort.get("result")
-        # OpenFangExecutor liefert {"response": "<Text>", "tool_calls": [...], ...}. Nur der Text
-        # ist die Antwort des Agenten; Werkzeugaufrufe hat brain-desktop keine.
+        # OpenFangExecutor liefert {"response": "<Text>", "tool_calls": [...], "stream": ...}. Nur
+        # der Text ist die Antwort des Agenten.
         if isinstance(ergebnis, Mapping):
             if ergebnis.get("tool_calls"):
-                raise RuntimeError("brain-desktop hat Werkzeuge benutzt, obwohl er keine hat")
+                raise AgentBenutzteWerkzeug("brain-desktop hat Werkzeuge benutzt")
+            if ergebnis.get("stream") is not True:
+                raise RuntimeError("ohne Stream sind Werkzeugaufrufe des Agenten nicht sichtbar")
             ergebnis = ergebnis.get("response")
         if not isinstance(ergebnis, str):
             raise RuntimeError("brain-desktop lieferte keinen Text")

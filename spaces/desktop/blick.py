@@ -78,6 +78,9 @@ def titel_gesperrt(titel: Any) -> bool:
 
 def element_gesperrt(element: Mapping[str, Any]) -> bool:
     # Kurze Wörter ("PIN", "TAN") nur an Eingabefeldern: sonst sperrte "Pin to Quick access" den Explorer.
+    # Kennwortfeld laut Bedienhilfe (UIA IsPassword): auch ohne Namen oder Kennung.
+    if element.get("is_password") is True:
+        return True
     eingabe = _klein(element.get("control_type") or element.get("typ")).removesuffix("control") in ("edit", "combobox")
     for feld in ("name", "automation_id", "class_name"):
         text = _klein(element.get(feld))

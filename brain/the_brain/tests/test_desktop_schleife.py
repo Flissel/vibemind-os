@@ -429,7 +429,10 @@ def test_auswahl_ordnungswort_und_lesereihenfolge():
     assert [auswahl_gemeint(s) for s in (
         "den ersten Eintrag", "die 2. Zeile", "die letzte markierte Datei!", "den dritten Tab", "the last tab",
         "den Eintrag", "den ersten", "1. und 2. Eintrag", "den achten Reitern", "die erste Tabelle",
-    )] == [(1, liste), (2, liste), (-1, liste), (3, reiter), (-1, reiter), None, None, None, (8, reiter), None]
+        # "achten" als Verb: zwischen Wort und Nomen steht ein Artikel oder Pronomen.
+        "Achte auf den Eintrag", "Achten Sie auf die zweite Datei", "achte darauf, den 2. Eintrag zu nehmen",
+    )] == [(1, liste), (2, liste), (-1, liste), (3, reiter), (-1, reiter), None, None, None, (8, reiter), None,
+           None, (2, liste), (2, liste)]
     assert [e["name"] for e in auswahl_reihe(LISTE, "listitem")] == [
         "Angebot.txt", "Notizen.txt", "Bericht.txt", "Rechnungen löschen"]
 
@@ -777,14 +780,53 @@ class _Antwort:
         return self._daten
 
 
+class _Strom:
+    """SSE-Antwort wie /api/agents/<id>/message/stream."""
+
+    def __init__(self, ereignisse):
+        self.status_code = 200
+        self.headers = {"content-type": "text/event-stream"}
+        self._zeilen = [z for art, daten in ereignisse for z in (f"event: {art}", "data: " + json.dumps(daten), "")]
+        self.geschlossen = False
+
+    def raise_for_status(self):
+        return None
+
+    def iter_lines(self, decode_unicode=True):
+        yield from self._zeilen
+
+    def close(self):
+        self.geschlossen = True
+
+
 class NachgebautesOpenFang:
-    """Antwortet wie OpenFang auf /api/agents, Zulassung, Kostenreservierung, /mcp und /message."""
+    """Antwortet wie OpenFang auf /api/agents, Zulassung, Kostenreservierung, /mcp und /message(/stream).
+
+    Eine Agenten-Antwort ist Text oder ``{"werkzeug": name, "argumente": {...}}``: Dann fuehrt
+    das nachgebaute OpenFang das Werkzeug im Namen des Agenten aus, wie der schlimmste Fall in
+    tool_runner.rs, und meldet erst danach ``tool_use``/``tool_result`` im Stream.
+    """
 
     def __init__(self, aufbau, agent_antworten=(), freigabe="approved"):
         self.aufbau = aufbau
         self.agent_antworten = list(agent_antworten)
         self.freigabe = freigabe
+        self.stream_kaputt = False
+        self.blockierend = []  # Aufrufe von /message ohne Stream
+        self.agent_werkzeuge = []  # was der Agent selbst ausgefuehrt hat
         self.zulassungen, self.reservierungen, self.werkzeuge, self.mcp_koepfe, self.nachrichten = [], [], [], [], []
+
+    def _agent_strom(self, nachricht):
+        self.nachrichten.append(nachricht)
+        antwort = self.agent_antworten.pop(0)
+        if isinstance(antwort, dict):
+            name = antwort["werkzeug"]
+            ergebnis = self.aufbau.server.handle_message({"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {
+                "name": name[len("mcp_spaces_desktop_"):], "arguments": antwort["argumente"]}})
+            self.agent_werkzeuge.append((name, ergebnis))
+            return _Strom([("tool_use", {"tool": name}), ("tool_result", {"tool": name, "input": antwort["argumente"]}),
+                           ("chunk", {"content": "erledigt"}), ("done", {})])
+        return _Strom([("chunk", {"content": antwort}), ("done", {})])
 
     def get(self, url, headers=None, timeout=None, **_):
         assert url.endswith("/api/agents")
@@ -809,21 +851,30 @@ class NachgebautesOpenFang:
             antwort = self.aufbau.server.handle_message({"jsonrpc": "2.0", "id": json["id"], "method": "tools/call",
                                                          "params": {"name": werkzeug, "arguments": argumente}})
             return _Antwort(antwort)
+        if pfad == "/api/agents/agent-desk/message/stream":
+            if self.stream_kaputt:
+                raise ConnectionError("stream abgerissen")
+            return self._agent_strom(json["message"])
         if pfad == "/api/agents/agent-desk/message":
+            self.blockierend.append(json["message"])
             self.nachrichten.append(json["message"])
             return _Antwort({"response": self.agent_antworten.pop(0)})
         raise AssertionError(f"unerwartete Anfrage {pfad}")
 
 
-@pytest.fixture
-def openfang(echt, monkeypatch):
+def _nachgebautes_openfang(aufbau, monkeypatch):
     monkeypatch.setenv("OPENFANG_URL", "http://127.0.0.1:4200")
     monkeypatch.setenv("OPENFANG_API_KEY", "test-schluessel")
-    monkeypatch.setenv("OPENFANG_STREAM", "0")
-    nachbau = NachgebautesOpenFang(echt)
+    monkeypatch.setenv("OPENFANG_STREAM", "0")  # gilt fuer andere Agenten; brain-desktop nimmt immer den Stream
+    nachbau = NachgebautesOpenFang(aufbau)
     monkeypatch.setattr("requests.get", nachbau.get)
     monkeypatch.setattr("requests.post", nachbau.post)
     return nachbau
+
+
+@pytest.fixture
+def openfang(echt, monkeypatch):
+    return _nachgebautes_openfang(echt, monkeypatch)
 
 
 def test_ohne_laufzeit_kontext_lehnt_der_echte_mcp_executor_ab(openfang):
@@ -911,13 +962,52 @@ def test_der_agent_liefert_nur_text_und_keine_werkzeugaufrufe(monkeypatch):
     import core.capability_targets as ziele
     from core.desktop_schleife import anschluss
 
-    antworten = [{"ok": True, "result": {"response": '{"aktion":"fertig","ergebnis":"x"}', "tool_calls": []}},
-                 {"ok": True, "result": {"response": "x", "tool_calls": [{"name": "shell"}]}}]
+    from core.desktop_schleife import AgentBenutzteWerkzeug
+
+    antworten = [{"ok": True, "result": {"response": '{"aktion":"fertig","ergebnis":"x"}', "tool_calls": [],
+                                         "stream": True}},
+                 {"ok": True, "result": {"response": "x", "tool_calls": [{"name": "shell"}], "stream": True}},
+                 {"ok": True, "result": {"response": "x", "tool_calls": [], "stream": False}},
+                 {"ok": False, "error": "WerkzeugaufrufImLauf: agent 'brain-desktop' hat ein Werkzeug benutzt: x"}]
     monkeypatch.setattr(ziele.OpenFangExecutor, "call_with_arg", lambda self, nachricht: antworten.pop(0))
     agent = anschluss(tagesrest=lambda: 1, laufzeit=None)["agent"]
     assert agent("frage") == '{"aktion":"fertig","ergebnis":"x"}'
-    with pytest.raises(RuntimeError, match="Werkzeuge"):
+    with pytest.raises(AgentBenutzteWerkzeug):
         agent("frage")
+    with pytest.raises(RuntimeError, match="ohne Stream"):  # dort waeren Werkzeugaufrufe unsichtbar
+        agent("frage")
+    with pytest.raises(AgentBenutzteWerkzeug):
+        agent("frage")
+
+
+def test_ruft_der_agent_selbst_ein_werkzeug_endet_die_schleife_und_der_trockenlauf_haelt(trocken, monkeypatch):
+    # Schlimmster Fall: OpenFang fuehrt den Klick des Agenten aus, bevor das Gehirn tool_use sieht.
+    nachbau = _nachgebautes_openfang(trocken, monkeypatch)
+    kennung_vorab = None
+
+    def antwort_mit_klick():
+        return {"werkzeug": "mcp_spaces_desktop_desktop_task_step",
+                "argumente": {"task_id": kennung_vorab, "action": "click", "x": 300, "y": 200, "why": "Konto löschen"}}
+
+    umschlag = _start_umschlag(trocken)
+    kennung_vorab = json.loads(umschlag["content"][0]["text"])["id"]
+    nachbau.agent_antworten = [antwort_mit_klick(), j(aktion="fertig", ergebnis="nie gefragt")]
+    ok, ergebnis, _ = nach_aufgabenstart(umschlag, herkunft="getippt", tagesrest=5, laufzeit=LAUFZEIT)
+
+    assert (ok, ergebnis["zustand"], ergebnis["grund"]) == (False, "abgebrochen", "agent_hat_werkzeug_benutzt")
+    assert len(nachbau.nachrichten) == 1  # keine zweite Runde
+    assert trocken.dienst_aufrufe == []  # der Trockenlauf-Schalter haelt: nichts erreicht den Desktop-Dienst
+    schritte = trocken.buch(kennung_vorab)["schritte"]
+    assert [(s["art"], s["echt"]) for s in schritte if s["art"] == "click"] == [("click", False)]
+    assert nachbau.blockierend == []
+
+
+def test_ohne_stream_fragt_die_schleife_den_agenten_nicht_blockierend(echt, openfang):
+    openfang.stream_kaputt = True
+    openfang.agent_antworten = [j(aktion="fertig", ergebnis="x")]
+    ok, ergebnis, _ = nach_aufgabenstart(_start_umschlag(echt), herkunft="getippt", tagesrest=5, laufzeit=LAUFZEIT)
+    assert (ok, ergebnis["grund"]) == (False, "agent_nicht_erreichbar")
+    assert openfang.blockierend == [] and echt.dienst_aufrufe == []
 
 
 # ─── Hintergrund ──────────────────────────────────────────────────────────────
