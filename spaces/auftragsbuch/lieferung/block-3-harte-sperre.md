@@ -1,8 +1,9 @@
 # Lieferung Block 3: Harte Sperre für den Werkzeug-Server `auftragsbuch`
 
 Fertiger Block zum Einbauen durch die Koordination (sie betreut OpenFang). Dieses Repo ändert an OpenFang nichts.
-Die Zeilenangaben gelten nach dem Stand vom 22.11. und wurden am Quelltext geprüft; bitte beim Einbauen
-trotzdem noch einmal gegenlesen.
+Die Zeilenangaben gelten nach dem Stand vom 22.11. und sind gegen `origin/master` (`948f436f`, geprüft am 23.11.)
+nachgezogen: unverändert, denn das Unterprojekt `openfang` steht dort auf demselben Stand (`eada7ecf`) wie vorher. Bitte
+beim Einbauen trotzdem noch einmal gegenlesen.
 
 ## Das Problem in einem Satz
 

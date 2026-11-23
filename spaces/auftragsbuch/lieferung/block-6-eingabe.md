@@ -1,9 +1,9 @@
 # Lieferung Block 6: Katalog-Eintrag und Eingabe für `rowboat.vorschlaege_anlegen`
 
 Fertiger Block zum Einbauen durch die Koordination (sie betreut den Kern des Gehirns). Dieses Repo ändert am
-Gehirn nichts. Die Zeilenangaben gelten nach dem Stand vom 23.11. (Basis `2a4df2e7`) und wurden am Quelltext
-geprüft; bitte beim Einbauen noch einmal gegenlesen, denn `plan_executor.py` und `introspection.py` werden gerade
-von anderer Seite bearbeitet und die Zeilen verschieben sich.
+Gehirn nichts. Die Zeilenangaben sind gegen `origin/master` (`948f436f`, geprüft am 23.11.; vorher `ae9f2dfe`) nachgezogen.
+Was master inzwischen an denselben Stellen geändert hat, steht in `kollisionen-948f436f.md`. Bitte beim Einbauen
+trotzdem noch einmal gegenlesen, denn die Zeilen verschieben sich mit jeder weiteren Änderung.
 
 ## Das Problem in einem Satz
 
@@ -58,8 +58,8 @@ Ideen-Aufruf.
 
 ## 1. Katalog-Eintrag
 
-Zum Einfügen in `brain/the_brain/data/capabilities.yaml`, direkt hinter den Eintrag `rowboat_status` (Zeile 1983
-bis 1996). Muster sind Pflicht (ohne sie verwirft der Katalog den Eintrag, siehe die Anmerkung bei
+Zum Einfügen in `brain/the_brain/data/capabilities.yaml`, direkt hinter den Eintrag `rowboat_status` (Zeile 2002
+bis 2016). Muster sind Pflicht (ohne sie verwirft der Katalog den Eintrag, siehe die Anmerkung bei
 `aenderung_zurueck`, Zeile 689 ff.). Die Muster sind eng gefasst und wurden gegen alle Muster des Katalogs
 geprüft: Die Beispielsätze treffen nur diesen Eintrag, „Setz einen Timer auf 5 Minuten" und „Rowboat Status" treffen
 ihn nicht. Die Datei selbst ist hier **nicht** geändert.
@@ -86,7 +86,7 @@ ihn nicht. Die Datei selbst ist hier **nicht** geändert.
     supporting: []
 ```
 
-Dazu in `brain/the_brain/data/capability_effects.yaml` eine Zeile unter `# --- external ---` (Zeile 110, neben
+Dazu in `brain/the_brain/data/capability_effects.yaml` eine Zeile unter `# --- external ---` (Zeile 111, neben
 `desktop_skill: external`; **nicht** bei `rowboat_status: read`), sonst fällt `test_jede_capability_hat_eine_klasse` (die Klasse ist Pflicht für
 jede Fähigkeit):
 
@@ -106,7 +106,7 @@ vorher bekannt sein (Block 1, Reihenfolge Punkt 3), sonst warnt der Router.
 
 ### 2.1 Ereignis-Name für die Fähigkeit
 
-`brain/the_brain/core/capability_targets.py`, `_CANONICAL_SPACE_EVENT_IDS` (Zeile 1347): einen Eintrag ergänzen
+`brain/the_brain/core/capability_targets.py`, `_CANONICAL_SPACE_EVENT_IDS` (Zeile 1352): einen Eintrag ergänzen
 
 ```python
     "rowboat_vorschlaege_anlegen": "rowboat.vorschlaege_anlegen",
@@ -114,13 +114,16 @@ vorher bekannt sein (Block 1, Reihenfolge Punkt 3), sonst warnt der Router.
 
 Ohne ihn bleibt `event_id` im Hop `rowboat_vorschlaege_anlegen`, das Verzeichnis kennt dann kein Ereignis dazu
 (Ereignisse heißen dort `rowboat.…`), und weder das Tor aus Block 2 noch der Aufruf unten sehen es. So geht es auch
-heute `rowboat_status`: Dort ist das egal, hier nicht.
+heute `rowboat_status`: Dort ist das egal, hier nicht. Master hat `desktop_task_start` ohne solchen Eintrag eingeführt;
+dessen Hop behält die Kennung `desktop_task_start` und läuft über das ausdrückliche Ziel aus dem Katalog. Für
+`rowboat_vorschlaege_anlegen` reicht das nicht, denn Block 2 und die Eingabe unten hängen an der Kennung
+`rowboat.vorschlaege_anlegen` (siehe `kollisionen-948f436f.md`, Nr. 2).
 
 ### 2.2 Argument aus dem Satz bauen
 
 `brain/the_brain/core/plan_executor.py`, in `_exec_hop_kern`, **direkt hinter** dem Block der festen Ideen-Aufrufe
-(`if ist_fester_aufruf(event_id, deterministic_target):` ab Zeile 1616, der Block endet vor
-`if event_id == "bubble.create" and not deterministic_target:` bei Zeile 1640):
+(`if ist_fester_aufruf(event_id, deterministic_target):` ab Zeile 1626, der Block endet vor
+`if event_id == "bubble.create" and not deterministic_target:` bei Zeile 1650):
 
 ```python
             if event_id == "rowboat.vorschlaege_anlegen" and deterministic_target:
@@ -128,7 +131,7 @@ heute `rowboat_status`: Dort ist das egal, hier nicht.
                     RUECKFRAGE_KEIN_INHALT, argumente as _vorschlaege_argumente,
                     waehle_roh as _vorschlaege_waehle_roh,
                 )
-                # Der Satz des Betreibers (plan_ctx["plan_intent"], wie bei idea.aenderung_zurueck, Zeile 1659)
+                # Der Satz des Betreibers (plan_ctx["plan_intent"], wie bei idea.aenderung_zurueck, Zeile 1669)
                 # ersetzt das Hop-Argument nur, wenn dieses wie das Kurzweg-Argument aussieht (ein einzelnes
                 # Wort gleich dem letzten Wort des Satzes, oder ein Listenname). Eine Feldubergabe bleibt.
                 roh = _vorschlaege_waehle_roh(rendered_arg, plan_ctx.get("plan_intent", ""))
@@ -151,7 +154,7 @@ heute `rowboat_status`: Dort ist das egal, hier nicht.
                 single_plan_attempt = True
 ```
 
-Das ist dieselbe Gestalt wie bei den festen Ideen-Aufrufen (Zeile 1617 bis 1639): Das Wörterbuch ersetzt das
+Das ist dieselbe Gestalt wie bei den festen Ideen-Aufrufen (Zeile 1627 bis 1649): Das Wörterbuch ersetzt das
 Argument, `arg_kwarg` entfällt, ein Fehler bricht den Schritt vor dem Ausführer ab. Der Ausführer bekommt
 `{"eingabe": {...}, "plan_id": ...}`; das ist genau die Form des Werkzeugs (`werkzeuge.py`: erlaubt sind nur
 `eingabe` und `plan_id`, Pflicht ist `eingabe`).

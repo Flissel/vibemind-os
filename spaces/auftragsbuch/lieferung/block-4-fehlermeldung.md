@@ -1,8 +1,9 @@
 # Lieferung Block 4: Fehlermeldung des Auftragsbuchs
 
 Fertiger Block zum Einbauen durch die Koordination (sie betreut den Kern des Gehirns). Dieses Repo ändert am
-Gehirn nichts. Die Zeilenangaben gelten nach dem Stand vom 23.11. und wurden am Quelltext geprüft; bitte beim
-Einbauen noch einmal gegenlesen, denn die Zeilen verschieben sich.
+Gehirn nichts. Die Zeilenangaben sind gegen `origin/master` (`948f436f`, geprüft am 23.11.; vorher `ae9f2dfe`) nachgezogen.
+Master hat im selben `isError`-Zweig einen neuen Fall für `spaces-desktop` eingefügt (`kollisionen-948f436f.md`,
+Nr. 3). Bitte beim Einbauen trotzdem noch einmal gegenlesen, denn die Zeilen verschieben sich.
 
 ## Das Problem in einem Satz
 
@@ -42,7 +43,7 @@ Zwei Wege führen im Gehirn zum Fehler, beide in `McpExecutor._call`
    `raise RuntimeError(f"OpenFang MCP JSON-RPC error: {message}")` (1072).
 2. **Werkzeugfehler.** Der Dienst antwortet mit `isError: true` und einem Text in `content[0].text` (so bei den
    Ablehnungen der Datenbank, bei `unerwartete Antwort` und bei `Ergebnis in falscher Form`). `result` ist das
-   MCP-Ergebnis; es endet in `raise RuntimeError("OpenFang MCP tool returned isError=true")` (1089).
+   MCP-Ergebnis; es endet in `raise RuntimeError("OpenFang MCP tool returned isError=true")` (heute 1094).
 
 `fehlertext` nimmt beide Formen: ein MCP-Ergebnis (`content[].text`), ein Fehlerobjekt (`message`), ein
 Wörterbuch mit `error` darin oder `text`. Alles andere (fehlende Teile, falsche Typen, `None`) ergibt die
@@ -60,7 +61,8 @@ if self.server == "auftragsbuch":
     raise RuntimeError(fehlertext(self.server, self.tool, error if isinstance(error, dict) else {"message": message}))
 raise RuntimeError(f"OpenFang MCP JSON-RPC error: {message}")
 
-# bei 1088/1089, statt des bisherigen raise:
+# bei 1088, im isError-Zweig: Der Fall für spaces-desktop steht dort seit master (1089 bis 1093); das
+# bisherige generische raise steht jetzt bei 1094. Der neue Fall kommt davor oder danach, nie dazwischen:
 if result.get("isError") is True:
     if self.server == "auftragsbuch":
         raise RuntimeError(fehlertext(self.server, self.tool, result))

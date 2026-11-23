@@ -1,9 +1,10 @@
 # Lieferung Block 5: Ergebnistext und Protokoll
 
 Fertiger Block zum Einbauen durch die Koordination (sie betreut den Kern des Gehirns). Dieses Repo ändert am
-Gehirn nichts. Die Zeilenangaben gelten nach dem Stand vom 23.11. und wurden am Quelltext geprüft; bitte beim
-Einbauen noch einmal gegenlesen, denn `plan_executor.py` wird gerade von anderer Seite bearbeitet und die Zeilen
-verschieben sich.
+Gehirn nichts. Die Zeilenangaben sind gegen `origin/master` (`948f436f`, geprüft am 23.11.; vorher `ae9f2dfe`) nachgezogen.
+Master hat in `plan_executor.py` Zeilen eingefügt, aber keine der Einhängestellen dieses Blocks verändert
+(`kollisionen-948f436f.md`, Nr. 7). Bitte beim Einbauen trotzdem noch einmal gegenlesen, denn die Zeilen
+verschieben sich mit jeder weiteren Änderung.
 
 ## Das Problem in einem Satz
 
@@ -55,21 +56,21 @@ Block 4).
 
 ## Wo einhängen
 
-Das Schritt-Ergebnis (`result_payload`) entsteht in `brain/the_brain/core/plan_executor.py` bei 1958 und wandert
-in `HopResult.result` (Rückgabe bei 2169). Das Ziel steht in `hr.target` bzw. `h.execution_target`. Vier Stellen
+Das Schritt-Ergebnis (`result_payload`) entsteht in `brain/the_brain/core/plan_executor.py` bei 1998 und wandert
+in `HopResult.result` (Rückgabe bei 2234). Das Ziel steht in `hr.target` bzw. `h.execution_target`. Vier Stellen
 geben den Inhalt heute weiter:
 
-1. **Standzeile für die Oberfläche: `_hop_event`** (ab 2461). Bei 2465 steht
+1. **Standzeile für die Oberfläche: `_hop_event`** (ab 2526). Bei 2530 steht
    `result_preview = repr(res)[:500]`. Davor einhängen:
    ```python
    text = vorschau(hr.target or h.execution_target, hr.result)
    result_preview = text if text is not None else repr(res)[:500]
    ```
-2. **Kurztext für TriBE: `_tribe_text`** (2204 bis 2216, Kürzung auf 240 Zeichen bei 2214). Dort ebenso:
+2. **Kurztext für TriBE: `_tribe_text`** (2269 bis 2281, Kürzung auf 240 Zeichen bei 2279). Dort ebenso:
    `preview = vorschau(hop.execution_target, result_payload)`, und nur wenn das `None` ist,
    `repr(result_payload)` mit der alten Kürzung.
-3. **Dauerhafter Snapshot (`recorder.record`)**: in `execute` bei 1257 steht
-   `"executed": {sid: asdict(hr) for sid, hr in executed.items()}` (dieselbe Zeile bei 1117 für das Ereignis
+3. **Dauerhafter Snapshot (`recorder.record`)**: in `execute` bei 1267 steht
+   `"executed": {sid: asdict(hr) for sid, hr in executed.items()}` (dieselbe Zeile bei 1127 für das Ereignis
    des abgebrochenen Plans). Das ist es, was dauerhaft liegt. Dort das Ergebnis ersetzen:
    ```python
    def _fuer_protokoll(hr):
@@ -79,11 +80,11 @@ geben den Inhalt heute weiter:
    "executed": {sid: _fuer_protokoll(hr) for sid, hr in executed.items()},
    ```
    Andere Ziele laufen unverändert durch, weil `fuers_protokoll` sie zurückgibt.
-4. **Zustand der Schritte: `_safe_state_snapshot`** (2447, Kürzung bei 1500 Zeichen) legt `repr` jedes
-   Zustandswerts ab (`"state"` im Snapshot bei 1259). Stehen Schritt-Ergebnisse dort unter ihrer
+4. **Zustand der Schritte: `_safe_state_snapshot`** (2512, Kürzung bei 1500 Zeichen) legt `repr` jedes
+   Zustandswerts ab (`"state"` im Snapshot bei 1268). Stehen Schritt-Ergebnisse dort unter ihrer
    Schritt-Kennung, muss dieselbe Ersetzung auch dort gelten; die Zuordnung Schritt zu Ziel liegt in `executed`.
 
-Außerdem schreibt `decision_recall.record(... hop_results=hop_results_list ...)` (1194) Zusammenfassungen; bitte
+Außerdem schreibt `decision_recall.record(... hop_results=hop_results_list ...)` (1204) Zusammenfassungen; bitte
 prüfen, ob dort `hr.result` im Klartext verwendet wird (`_summarize` in `decision_recall.py`, 47), und
 gegebenenfalls dieselbe Ersetzung anwenden.
 

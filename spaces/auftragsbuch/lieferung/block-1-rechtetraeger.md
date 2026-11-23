@@ -2,9 +2,9 @@
 
 Fertiger Block zum Einbauen durch die Koordination (sie betreut den Kern des Gehirns, den Agenten-Generator und das
 Verzeichnis). Dieses Repo ändert an diesen Stellen nichts; geliefert sind der Wortlaut des Verzeichnis-Eintrags, die
-Regel und die geprüften Einbaustellen. Die Zeilenangaben gelten nach dem Stand vom 23.11. (Basis `2a4df2e7`) und
-wurden am Quelltext geprüft; bitte beim Einbauen noch einmal gegenlesen, denn `plan_executor.py` und
-`introspection.py` werden gerade von anderer Seite bearbeitet und die Zeilen verschieben sich.
+Regel und die geprüften Einbaustellen. Die Zeilenangaben sind gegen `origin/master` (`948f436f`, geprüft am 23.11.; vorher `ae9f2dfe`) nachgezogen.
+Was master inzwischen an denselben Stellen geändert hat, steht in `kollisionen-948f436f.md`. Bitte beim Einbauen
+trotzdem noch einmal gegenlesen, denn die Zeilen verschieben sich mit jeder weiteren Änderung.
 
 ## Das Problem in einem Satz
 
@@ -131,38 +131,41 @@ Zu lesen:
 
 ### 3.2 `brain/the_brain/core/capability_targets.py` (Ziel und Rechte beim Aufruf)
 
-- **`_mcp_authority`** (Zeile 1215). Das ist die einzige Stelle, die aus Space und Ereignis den Dreiklang
-  Agent/Server/Werkzeug bildet. Heute `values["agent"] = space.get("agent")` (Zeile 1222) und die Erlaubnislisten
-  aus `space.get("mcp_servers")` (Zeile 1240) und `space.get("mcp_tools")` (Zeile 1249). Mit der Regel: Träger zum
+- **`_mcp_authority`** (Zeile 1220). Das ist die einzige Stelle, die aus Space und Ereignis den Dreiklang
+  Agent/Server/Werkzeug bildet. Heute `values["agent"] = space.get("agent")` (Zeile 1227) und die Erlaubnislisten
+  aus `space.get("mcp_servers")` (Zeile 1245) und `space.get("mcp_tools")` (Zeile 1254). Mit der Regel: Träger zum
   Server des Ereignisses suchen; gefunden, dann dessen `agent`, `mcp_servers` und `mcp_tools` benutzen. Die
   Fehlermeldungen (`... is not in {space_id}.mcp_servers`) dann auf den Träger umstellen.
-- **`find_registered_mcp_authority`** (Zeile 1269) geht alle Ereignisse durch und vergleicht
+- **`find_registered_mcp_authority`** (Zeile 1274) geht alle Ereignisse durch und vergleicht
   `(agent, server, tool)` mit dem Aufruf. Bei `_mcp_authority` richtig gelöst, braucht diese Funktion keine eigene
   Änderung; zu prüfen ist, dass `("brain-rowboat", "auftragsbuch", "rowboat_vorschlaege_anlegen")` gefunden wird
   und `("rowboat-chat", "auftragsbuch", ...)` **nicht**.
 - **`McpExecutor._call`** (Zeile 980): `authority.agent != runtime_context.agent_name` (Zeile 996) bleibt wahr, weil
-  der Planausführer den Kontext aus derselben Berechtigung baut (`plan_executor.py` Zeile 1878 bis 1884, dort
+  der Planausführer den Kontext aus derselben Berechtigung baut (`plan_executor.py` Zeile 1918 bis 1924, dort
   `find_registered_mcp_authority(*target.split(":", 3)[1:])`). Keine Änderung nötig, nur im Test belegen.
-- **`resolve_registry_execution_target`** (Zeile 1319, Rückgabe über `_mcp_authority(...).target` in Zeile 1343)
+- **`resolve_registry_execution_target`** (Zeile 1324, Rückgabe über `_mcp_authority(...).target` in Zeile 1348)
   liefert danach von selbst `mcp:brain-rowboat:auftragsbuch:rowboat_vorschlaege_anlegen` für
   `rowboat.vorschlaege_anlegen`; das ist genau das Ziel des Katalog-Eintrags aus Block 6.
+- **Neu seit master (`948f436f`):** Die Desktop-Schleife ruft `find_registered_mcp_authority("brain-desktop",
+  "spaces-desktop", <werkzeug>)` selbst auf (`core/desktop_schleife.py`, `core/desktop_sicht.py`). Für Spaces ohne
+  `rights_carriers` muss die Auflösung deshalb byte-gleich bleiben; siehe `kollisionen-948f436f.md`, Nr. 5.
 
 ### 3.2a `brain/the_brain/core/plan_executor.py` (Prüfung „Agent-Bereich" im Hop)
 
 Diese Stelle fällt leicht durch, weil sie nicht nach „Rechten" aussieht, aber sie lässt den Schritt sonst scheitern.
 
 - **`_canonical_space_event_agent`** (Zeile 62 bis 84) liefert heute `space["agent"]`, also `rowboat-chat`.
-  `_exec_hop_kern` übernimmt das als `canonical_agent` (Zeile 1536) und verlangt danach
-  (Zeile 1560 bis 1573), dass das Ziel aus dem Verzeichnis mit `mcp:<canonical_agent>:` beginnt, sonst bricht der
+  `_exec_hop_kern` übernimmt das als `canonical_agent` (Zeile 1546) und verlangt danach
+  (Zeile 1570 bis 1583), dass das Ziel aus dem Verzeichnis mit `mcp:<canonical_agent>:` beginnt, sonst bricht der
   Hop mit „agent scope drift" ab. Das Ziel von `rowboat.vorschlaege_anlegen` beginnt aber mit
   `mcp:brain-rowboat:` und würde so abgelehnt.
 - Einbau: `_canonical_space_event_agent` gibt für ein Ereignis mit `execution.kind: mcp` den Träger zurück, wenn
   dessen Server bei einem Träger des Space steht (dieselbe Auflösung wie in `_mcp_authority`, am besten eine
   gemeinsame kleine Funktion in `capability_targets.py`, die beide benutzen); sonst unverändert `space["agent"]`.
-  Der Wert gilt danach auch als `assigned_agent` (Zeile 1685), wirkt dort aber nur bei Zielen, die nicht schon
-  `mcp:` heißen (`authoritative_target`, Zeile 1694 bis 1718); unser Ziel heißt `mcp:`.
+  Der Wert gilt danach auch als `assigned_agent` (Zeile 1695), wirkt dort aber nur bei Zielen, die nicht schon
+  `mcp:` heißen (`authoritative_target`, Zeile 1704 bis 1728); unser Ziel heißt `mcp:`.
 - Der vorhandene Test `test_deterministic_mcp_agent_scope_drift_fails_before_executor`
-  (`test_plan_executor_registered_openfang.py` Zeile 932) ersetzt `_canonical_space_event_agent` und bleibt wie er
+  (`test_plan_executor_registered_openfang.py` Zeile 933) ersetzt `_canonical_space_event_agent` und bleibt wie er
   ist; er belegt nur, dass die Prüfung selbst steht.
 
 ### 3.3 `brain/the_brain/core/step_space.py` (Space eines Schritts)
@@ -183,13 +186,13 @@ Aus dem Quelltext erhoben (Suche nach `rights_carrier`, `validate_rights_carrier
 
 | Datei (Zeile) | Heute | Neuer Fall |
 | --- | --- | --- |
-| `scripts/tests/test_sync_openfang_agents.py` (Zeile 405, Festwert `TRAEGER`) | Eintrag mit `rights_carrier: true` | Zweiter Festwert mit `rowboat`-Eintrag (Agent `rowboat-chat`, `rights_carriers` mit `brain-rowboat`) |
+| `scripts/tests/test_sync_openfang_agents.py` (Zeile 412, Festwert `TRAEGER`) | Eintrag mit `rights_carrier: true` | Zweiter Festwert mit `rowboat`-Eintrag (Agent `rowboat-chat`, `rights_carriers` mit `brain-rowboat`) |
 | dieselbe Datei, `test_rights_carrier_manifest_has_no_agent_rights` (Zeile 428) | Manifest von `brain-sales` hat nur die zwei Werkzeuge und kein Gedächtnis | Gleiches für `brain-rowboat`: Server `auftragsbuch`, Werkzeuge `mcp_auftragsbuch_rowboat_vorschlaege_anlegen` und `mcp_auftragsbuch_auftrag_lesen`, `rowboat-chat` wird nicht neu geschrieben (geschützt) |
 | dieselbe Datei, `test_rights_carrier_must_be_boolean`, `..._requires_mcp_tools`, `..._rejects_model_override_and_prompt_hint`, `..._events_must_be_mcp` (Zeilen 458, 466, 473, 482) | prüfen nur `rights_carrier: true` | je ein Gegenstück für einen Eintrag unter `rights_carriers` (Wahrheitswert entfällt; dafür: Eintrag ohne `agent`, doppelter Träger, Server des Trägers steht am Space, beides zugleich) |
 | dieselbe Datei, `test_registry_mcp_authority_requires_allowed_server_and_provenance_contract` (Zeile 28) | `validate_mcp_authority` meldet falschen Server, Werkzeug, Herkunft | Ereignis am Auftragsbuch mit Träger: kein Fehler; Werkzeug nur am Space statt am Träger: Fehler |
 | dieselbe Datei, `test_space_without_rights_carrier_renders_as_before` (Zeile 489) | echter Eintrag `ideas` rendert byte-gleich | bleibt; ein Space ohne `rights_carriers` ändert nichts |
 | `spaces/auftragsbuch/tests/test_brain_anmeldung.py` (Zeilen 38 und 43: `test_ziele_sind_registriert`, `test_keine_auftragsart_ist_freigeschaltet`) | `find_registered_mcp_authority("brain-sales", "auftragsbuch", ...)` | `("brain-rowboat", "auftragsbuch", "rowboat_vorschlaege_anlegen")` und `auftrag_lesen` gefunden, Space `rowboat`; `("rowboat-chat", "auftragsbuch", ...)` ist `None`; `resolve_registry_execution_target("rowboat.vorschlaege_anlegen")` ist das Ziel aus Block 6 |
-| `brain/the_brain/tests/test_plan_executor_registered_openfang.py` (Zeile 932, Muster `_write_idea_mcp_registry`) | Hop mit Ziel vom Ideen-Agenten, Drift wird abgelehnt | Hop für `rowboat.vorschlaege_anlegen` mit Träger: kommt durch die Prüfung und baut den Ausführer für `mcp:brain-rowboat:auftragsbuch:...`; Hop mit Ziel `mcp:rowboat-chat:auftragsbuch:...` wird abgelehnt |
+| `brain/the_brain/tests/test_plan_executor_registered_openfang.py` (Zeile 933, Muster `_write_idea_mcp_registry`) | Hop mit Ziel vom Ideen-Agenten, Drift wird abgelehnt | Hop für `rowboat.vorschlaege_anlegen` mit Träger: kommt durch die Prüfung und baut den Ausführer für `mcp:brain-rowboat:auftragsbuch:...`; Hop mit Ziel `mcp:rowboat-chat:auftragsbuch:...` wird abgelehnt |
 | `brain/the_brain/tests/test_step_space.py` (Zeile 104 bis 117, `test_mcp_ziel_wird_ueber_das_verzeichnis_aufgeloest`) | Ziele mit `brain-sales` | `("mcp:brain-rowboat:auftragsbuch:rowboat_vorschlaege_anlegen", "rowboat")` und ein Ziel mit `brain-rowboat` auf fremdem Werkzeug als Gegenprobe |
 | `brain/the_brain/tests/test_rowboat_space_contract.py` (Zeile 38 und 81) | Agent `rowboat-chat`, Ereignis `rowboat.status` | bleibt grün (Agent bleibt `rowboat-chat`); dazu ein Fall, dass `rowboat.vorschlaege_anlegen` im Verzeichnis steht und `required_origin: betreiber` trägt |
 | `spaces/auftragsbuch/tests/test_gleichstand.py` | (hier, fertig) | `test_traeger_im_space_erlaubt`, `test_traeger_mit_openfang_ziel_faellt_auf`, `test_auftragsbuch_ohne_traeger_faellt_auf` und weitere; `test_vorschlag_der_lieferung_haelt_den_gleichstand` liest den Block aus Abschnitt 2 |

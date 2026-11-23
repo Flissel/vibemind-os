@@ -1,9 +1,10 @@
 # Lieferung Block 2: Herkunft einer Anfrage
 
 Fertiger Block zum Einbauen durch die Koordination (sie betreut den Kern des Gehirns). Dieses Repo ändert am
-Gehirn nichts. Die Zeilenangaben gelten nach dem Stand vom 23.11. und wurden am Quelltext geprüft; bitte beim
-Einbauen noch einmal gegenlesen, denn `plan_executor.py` und `introspection.py` werden gerade von anderer Seite
-bearbeitet und die Zeilen verschieben sich.
+Gehirn nichts. Die Zeilenangaben sind gegen `origin/master` (`948f436f`, geprüft am 23.11.; vorher `ae9f2dfe`) nachgezogen.
+Was master inzwischen an denselben Stellen geändert hat (vor allem die Herkunft "getippt" der Desktop-Schleife),
+steht in `kollisionen-948f436f.md`. Bitte beim Einbauen trotzdem noch einmal gegenlesen, denn die Zeilen
+verschieben sich mit jeder weiteren Änderung.
 
 ## Das Problem in einem Satz
 
@@ -76,10 +77,10 @@ gilt dasselbe Muster: aus der Datei lesen (`Path(...).read_text().strip()`), nie
 
 ### 1. Eingang: nur aus den Kopfzeilen
 
-Datei `brain/the_brain/web/routers/introspection.py`, Funktion `multihop_execute` (ab Zeile 2574). Direkt vor
-dem Aufruf von `pe.execute` (Zeile 2835,
-`await _asyncio.to_thread(pe.execute, plan, antwortkanal=antwortkanal)`), neben der Bildung von
-`antwortkanal` (Zeile 2834):
+Datei `brain/the_brain/web/routers/introspection.py`, Funktion `multihop_execute` (ab Zeile 2588). Direkt vor
+dem Aufruf von `pe.execute` (heute Zeile 2852 bis 2859; seit master schon mit dem Parameter
+`eingabe_herkunft=_herkunft_pruefen(...)`, der die Herkunft "getippt" der Desktop-Schleife trägt, siehe
+`kollisionen-948f436f.md`, Nr. 1), neben der Bildung von `antwortkanal` (Zeile 2848):
 
 ```python
 herkunft = eingang_pruefen(
@@ -88,8 +89,15 @@ herkunft = eingang_pruefen(
     os.environ,
 )
 ...
-exec_result = await _asyncio.to_thread(pe.execute, plan, antwortkanal=antwortkanal, herkunft=herkunft)
+exec_result = await _asyncio.to_thread(
+    pe.execute, plan, antwortkanal=antwortkanal,
+    eingabe_herkunft=<unverändert, wie auf master>,   # Desktop-Schleife, eigenes Zeichen
+    herkunft=herkunft,                                # dieser Block
+)
 ```
+
+Beide Parameter bleiben getrennt, solange die Koordination nichts anderes entscheidet (Begründung in
+`kollisionen-948f436f.md`, Nr. 1).
 
 Wichtig: Die Herkunft kommt **nur** aus diesen zwei Kopfzeilen. Nie aus dem Körper (`body`), nie aus
 `context`, nie aus `antwortkanal` (dort gilt weiter nur die feste Liste `api`, `telegram`, `dashboard`).
@@ -98,11 +106,11 @@ Wichtig: Die Herkunft kommt **nur** aus diesen zwei Kopfzeilen. Nie aus dem Kör
 
 Datei `brain/the_brain/core/plan_executor.py`:
 
-- `execute(...)` (Zeile 721, Parameterliste bis 730): neuer Parameter `herkunft: Optional[str] = None`.
-- `plan_ctx` (Zeilen 826 bis 842, dort stehen schon `confirmed_events` und `antwortkanal`): neuer Eintrag
+- `execute(...)` (Zeile 726, Parameterliste bis 736): neuer Parameter `herkunft: Optional[str] = None`.
+- `plan_ctx` (Zeilen 832 bis 852, dort stehen schon `confirmed_events`, `antwortkanal` und seit master `eingabe_herkunft`): neuer Eintrag
   `"herkunft": herkunft or "unbekannt"`.
 - Der Plan-Rest, der bei einem wartenden Auftrag gespeichert wird: `_auftrag_plan_rest_speichern`
-  (Zeile 2260), Wörterbuch `plan_rest` (Zeilen 2323 bis 2328, dort steht schon `antwortkanal`): ergänzen um
+  (Zeile 2325), Wörterbuch `plan_rest` (Zeilen 2388 bis 2393, dort steht schon `antwortkanal`): ergänzen um
   `"herkunft": plan_ctx.get("herkunft")`.
 - Beim Wiederaufnehmen: `core/nachfasser.py` Zeile 161 (`self.plan_executor.execute(Plan.from_dict(rest["plan"]),
   start_state=state, antwortkanal=rest.get("antwortkanal"))`) bekommt zusätzlich
@@ -112,18 +120,18 @@ Datei `brain/the_brain/core/plan_executor.py`:
 
 ### 3. Tor im Hop
 
-Datei `brain/the_brain/core/plan_executor.py`, `_exec_hop_kern` (Zeile 1442). Das Muster `confirmed_events`
-steht bei Zeile 1519 (`confirmed = event_id in plan_ctx.get("confirmed_events", set())`), aber nur im
-Desktop-Zweig. Achtung bei der Platzierung: `event_id` wird in Zeile 1511 aus `canonical_space_event_id(...)`
-gebildet, aber für die Fähigkeiten `desktop_skill` und `browser_automation` in Zeile 1518
+Datei `brain/the_brain/core/plan_executor.py`, `_exec_hop_kern` (Zeile 1452). Das Muster `confirmed_events`
+steht bei Zeile 1529 (`confirmed = event_id in plan_ctx.get("confirmed_events", set())`), aber nur im
+Desktop-Zweig. Achtung bei der Platzierung: `event_id` wird in Zeile 1521 aus `canonical_space_event_id(...)`
+gebildet, aber für die Fähigkeiten `desktop_skill` und `browser_automation` in Zeile 1528
 (`event_id = desktop_route.event_id`) überschrieben. Erst danach ist es endgültig, und genau dort entsteht
-auch `desktop.task`. Ein Tor direkt nach Zeile 1511 sähe die falsche Kennung und ließe `desktop.task` durch.
+auch `desktop.task`. Ein Tor direkt nach Zeile 1521 sähe die falsche Kennung und ließe `desktop.task` durch.
 
 Das Tor gehört deshalb **nach dem ganzen Desktop-Block** (nach dem Zweig
 `if hop.capability in ("desktop_skill", "browser_automation"):`, der mit dem `return HopResult(...)` bei
-Zeile 1531 endet) und **vor** den Kommentar „Resolve deterministic MCP metadata ...“ bzw.
-`_canonical_space_event_agent(event_id)` (Zeile 1532 ff.). Dort ist `event_id` für alle Zweige endgültig.
-Alternativ dasselbe Tor zusätzlich im Desktop-Zweig direkt nach Zeile 1518; zwingend ist nur: nie vor der
+Zeile 1541 endet) und **vor** den Kommentar „Resolve deterministic MCP metadata ...“ bzw.
+`_canonical_space_event_agent(event_id)` (Zeile 1543 ff.). Dort ist `event_id` für alle Zweige endgültig.
+Alternativ dasselbe Tor zusätzlich im Desktop-Zweig direkt nach Zeile 1528; zwingend ist nur: nie vor der
 Überschreibung.
 
 ```python
@@ -134,13 +142,13 @@ if not erlaubt(plan_ctx.get("herkunft"), ereignis):
                      elapsed_s=time.time() - t0, contract_pass=False, reward=-1.0)
 ```
 
-(Die Felder entsprechen dem bestehenden `HopResult` bei Zeile 1521 ff.; Zeilenangaben vor dem Einfügen gegenlesen.)
+(Die Felder entsprechen dem bestehenden `HopResult` bei Zeile 1531 ff.; Zeilenangaben vor dem Einfügen gegenlesen.)
 
-Das Tor gilt auch für ein **ausdrücklich genanntes** `execution_target` (Zeilen 1461 bis 1487: Ziel aus dem
+Das Tor gilt auch für ein **ausdrücklich genanntes** `execution_target` (Zeilen 1471 bis 1497: Ziel aus dem
 Hop oder aus der Registry-Auflösung). Ein Aufrufer darf das Tor nicht umgehen, indem er statt der Fähigkeit
 direkt ein Ziel `mcp:<agent>:<server>:<werkzeug>` nennt. Dort ist kein Ereignisname bekannt; deshalb das
 Ereignis anhand des Ziels im Verzeichnis nachschlagen (Agent, Server, Werkzeug) und dieselbe Prüfung machen.
-Die Stelle, an der das Ziel für `mcp:` zerlegt wird (`find_registered_mcp_authority`, Zeilen 1879 bis 1884),
+Die Stelle, an der das Ziel für `mcp:` zerlegt wird (`find_registered_mcp_authority`, Zeilen 1919 bis 1924),
 ist dafür der natürliche Ort.
 
 **Kein Durchlass bei Fehlgriff.** Findet die Suche zu (Agent, Server, Werkzeug) kein Ereignis, darf sie nicht `{}`
@@ -154,9 +162,9 @@ zweiten Prüfung an der Laufzeitgrenze (Abschnitt 4).
 ### 4. Zweite Prüfung an der Laufzeitgrenze
 
 - `core/openfang_runtime_authority.py`, `RuntimeInvocationContext` (Zeile 18, eingefrorene Datenklasse): neues
-  Feld `herkunft: str = "unbekannt"` (mit Vorgabewert, damit `deterministic_gateway.py` Zeile 57 und die
+  Feld `herkunft: str = "unbekannt"` (mit Vorgabewert, damit `brain/the_brain/deterministic_gateway.py` Zeile 57 und die
   Tests weiter laufen).
-- `core/plan_executor.py` Zeile 1887: beim Bauen von `RuntimeInvocationContext(...)` zusätzlich
+- `core/plan_executor.py` Zeile 1927: beim Bauen von `RuntimeInvocationContext(...)` zusätzlich
   `herkunft=plan_ctx.get("herkunft") or "unbekannt"`.
 - `core/capability_targets.py`, `McpExecutor._call` (Klasse ab Zeile 855, `_call` bei Zeile 980; nicht in
   `openfang_runtime_authority.py`): direkt nach der Prüfung
@@ -164,7 +172,7 @@ zweiten Prüfung an der Laufzeitgrenze (Abschnitt 4).
   Verzeichniseintrag zur Kombination Agent/Server/Werkzeug, und bei Ablehnung `PermissionError(ABLEHNUNG)`
   werfen (wie die Nachbarprüfungen). So hält die Sperre auch, wenn jemand den Hop am Planausführer vorbei in
   den Ausführer bringt.
-- `deterministic_gateway.py` Zeile 57 baut ebenfalls einen `RuntimeInvocationContext`; mit dem Vorgabewert
+- `brain/the_brain/deterministic_gateway.py` Zeile 57 baut ebenfalls einen `RuntimeInvocationContext`; mit dem Vorgabewert
   `"unbekannt"` bleibt dieser Weg für Betreiber-Ereignisse gesperrt. Braucht er welche, muss er die Herkunft
   ausdrücklich bekommen. Das ist eine eigene Entscheidung und nicht Teil dieser Lieferung.
 
@@ -172,7 +180,7 @@ zweiten Prüfung an der Laufzeitgrenze (Abschnitt 4).
 
 Das Verzeichnis der Ereignisse ist `config/space_agent_registry.yml` (Kopfzeile dort: „Single source of
 truth: event_type → space → agent → mcp_scope → tool_hint“). Das neue Feld steht dort am Ereignis, neben
-`requires_confirmation` (Beispiel `desktop.task`, Zeile 251 ff.):
+`requires_confirmation` (Beispiel `desktop.task`, Zeile 276 ff.):
 
 ```yaml
       desktop.task:
@@ -185,12 +193,12 @@ Zu setzen an:
 
 | Ereignis | Stand im Verzeichnis heute |
 | --- | --- |
-| `desktop.task` | vorhanden (Zeile 251), Feld ergänzen |
+| `desktop.task` | vorhanden (Zeile 276). **Nicht blind ergänzen:** master sperrt `desktop.task` schon selbst über `eingabe_herkunft == "getippt"`, siehe `kollisionen-948f436f.md`, Nr. 1 |
 | `rowboat.vorschlaege_anlegen` | **noch kein Ereignis.** `vorschlaege_anlegen` ist bisher nur eine Auftragsart in `spaces/_contract/rowboat.contract.yaml` (Zeile 56). Das Feld kommt an das Ereignis, sobald es eingetragen wird. |
 | `sales.kontakt_finden` | **noch kein Ereignis**, auch keine Auftragsart; gleiches Vorgehen |
 | `sales.post_pruefen` | **noch kein Ereignis.** `post_pruefen` ist bisher nur eine Auftragsart in `spaces/_contract/sales.contract.yaml` (Zeile 16) |
 
-Nicht setzen an `sales.auftrag_probe` und `sales.auftrag_lesen` (Zeilen 478 und 483): Sie sind die
+Nicht setzen an `sales.auftrag_probe` und `sales.auftrag_lesen` (Zeilen 503 und 508): Sie sind die
 Vor- und Nachprüfungen und müssen auch aus einer unbekannten Herkunft laufen.
 
 Ob der Lader des Verzeichnisses ein unbekanntes Feld toleriert, wurde nicht geprüft; beim Einbauen nachsehen.
@@ -201,7 +209,10 @@ Ob der Lader des Verzeichnisses ein unbekanntes Feld toleriert, wurde nicht gepr
   **Diese Datei gibt es in diesem Stand nicht:** `voice/` ist in diesem Arbeitsbaum leer, und unter dem Pfad
   liegt auch in `Vibemind_V1` nichts. Die Koordination muss die richtige Stelle der App-Hülle benennen, die
   `/api/multihop/execute` aufruft; dort kommen die beiden Kopfzeilen hin, mit dem Eingang `app` und dem
-  Schlüssel aus dessen Geheimnisablage.
+  Schlüssel aus dessen Geheimnisablage. Neu seit master (`948f436f`): Der Pin der Hülle (`voice`) wurde laut
+  Commit-Text auf einen Stand mit „Zeichen für getippte Sätze" gesetzt; die Hülle sendet also für getippte
+  Sätze schon die Kopfzeile `X-Vibemind-Eingabe`. Der Inhalt der Hülle liegt in diesem Arbeitsbaum nicht vor und
+  wurde nicht gelesen; die Zuordnung zu den Kopfzeilen dieses Blocks steht in `kollisionen-948f436f.md`, Nr. 1.
 - Betreiber-Chat: `scripts/openfang_brain_gateway_wrapper.py`. Diese Datei gibt es in diesem Arbeitsbaum nicht
   (der Ordner `scripts/` enthält sie nicht); sie liegt nur im Stand `Vibemind_V1` auf der Maschine und ruft dort
   `POST /api/multihop/execute` auf. Eingang `telegram-betreiber`, Schlüssel aus der Geheimnisablage,
