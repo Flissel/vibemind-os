@@ -42,10 +42,12 @@ class KanbanTests(unittest.TestCase):
         farben = [s["color"] for s in board["columns"]]
         self.assertTrue(all(isinstance(f, str) and f.startswith("#") and f.lower() != "#e9ecef" for f in farben))
         self.assertEqual(len(set(farben)), 3)
-        # Diagramm-Ansicht: todo/doing/done.
-        self.assertEqual(board["todo"], [{"title": "Logo"}])
-        self.assertEqual(board["doing"], [{"title": "Bühnenplan"}])
-        self.assertEqual(board["done"], [{"title": "Druck"}])
+
+    def test_neues_board_hat_nur_spalten(self) -> None:
+        # Die Huelle zeichnet aus columns; die alten Felder todo/doing/done gibt es bei neuen Boards nicht mehr.
+        board = self.server._kanban_from_text("Offen: Logo\nIn Arbeit: Bühnenplan\nErledigt: Druck", "")
+        self.assertEqual(set(board), {"columns"})
+        self.assertEqual(_namen(board), [("Offen", ["Logo"]), ("In Arbeit", ["Bühnenplan"]), ("Erledigt", ["Druck"])])
 
     def test_fertig_und_erledigt_sind_eine_spalte(self) -> None:
         # Lauf 10 (34): "Offen, In Arbeit, Fertig, Offen, In Arbeit, Erledigt" in der App.

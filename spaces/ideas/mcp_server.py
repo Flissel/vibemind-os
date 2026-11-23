@@ -1392,12 +1392,9 @@ def _kanban_from_text(text: str, title: str) -> dict[str, Any] | None:
         col["color"] = KANBAN_COLORS.get(col["name"].casefold(), KANBAN_COLOR_CYCLE[n % len(KANBAN_COLOR_CYCLE)])
     if not count:
         return None
-    # Die Diagramm-Ansicht der Huelle (format-renderer._buildKanban) liest todo/doing/done.
-    board: dict[str, Any] = {"columns": columns, "todo": [], "doing": [], "done": []}
-    for col in columns:
-        spur = KANBAN_LANES.get(col["name"].casefold(), "todo")
-        board[spur].extend({"title": k["title"]} for k in col["cards"])
-    return board
+    # Nur Spalten: die Huelle zeichnet Karte und Diagramm aus columns (seit 6742fe7); die alten
+    # Felder todo/doing/done liest sie nur noch bei Boards ohne columns.
+    return {"columns": columns}
 
 
 # Gleichbedeutende Statuswoerter tragen einen Spaltennamen (Lauf 10: "Fertig" neben "Erledigt").
@@ -1405,10 +1402,6 @@ KANBAN_NAMES = {"offen": "Offen", "todo": "Offen", "to do": "Offen", "to-do": "O
                 "in arbeit": "In Arbeit", "doing": "In Arbeit", "läuft": "In Arbeit", "laeuft": "In Arbeit",
                 "erledigt": "Erledigt", "fertig": "Erledigt", "done": "Erledigt",
                 "geplant": "Geplant", "blockiert": "Blockiert", "später": "Später", "spaeter": "Später"}
-
-
-KANBAN_LANES = {"in arbeit": "doing", "doing": "doing", "läuft": "doing", "laeuft": "doing", "blockiert": "doing",
-                "erledigt": "done", "fertig": "done", "done": "done"}
 
 
 KANBAN_COLOR_CYCLE = ("#6c757d", "#0d6efd", "#198754", "#6f42c1", "#fd7e14", "#20c997", "#dc3545", "#495057")
