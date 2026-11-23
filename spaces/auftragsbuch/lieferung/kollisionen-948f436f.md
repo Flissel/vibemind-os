@@ -79,7 +79,7 @@ Die Überschneidung im Einzelnen:
   `plan_ctx["herkunft"]` (das Objekt) und `plan_ctx["eingabe_herkunft"]` (`eingabe_herkunft(h)`, `"getippt"` oder
   `None`). Der Parameter `eingabe_herkunft` von `execute` **entfällt ohne Alias** (Begründung in Block 2, Abschnitt 2: sonst schaltet eine einzige Zeichenkette `desktop.task` frei). Umzustellen: `introspection.py:2854` (`herkunft=` statt `eingabe_herkunft=`); `test_desktop_schleife.py:1001` setzt `plan_ctx` direkt und bleibt; `test_desktop_schleife.py:863` prüft den Quelltext und bleibt wahr; `plan_executor.py:735` und `:850` sind die Einbaustellen. Aufrufer von `execute(..., eingabe_herkunft="getippt")` wurden auf master nicht gefunden.
 - Plan-Rest und Nachfasser tragen `weitergeben(h)` weiter: `{art, weitergegeben: True}`; zählt als Betreiber, ergibt nie
-  `"getippt"`. Der Nachfasser ruft `weitergeben(rest.get("herkunft"))` (der Rest ist gespeicherte Daten). Der Nachfasser ruft `weitergeben(rest.get("herkunft"))` (der Rest ist gespeicherte Daten).
+  `"getippt"`. Der Nachfasser ruft `weitergeben(rest.get("herkunft"))` (der Rest ist gespeicherte Daten).
 - Die Textstellen des Einbaus (`plan_executor.py` Zeile 726 bis 736, 832 bis 852, 1841 bis 1847,
   `desktop_schleife.nach_aufgabenstart` Zeile 366, `multihop_execute` Zeile 2849 bis 2859) stehen in
   `block-2-herkunft.md`; die Funktionen in `herkunft/herkunft.py` (28 Tests).
