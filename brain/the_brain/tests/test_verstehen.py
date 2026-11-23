@@ -804,6 +804,33 @@ def test_halt_fest_bubble_am_satzanfang(monkeypatch, echter_muster_router, satz,
     assert arg["bubble_id"] == "b0b1e001" and arg["title"] == "Preise prüfen"
 
 
+@pytest.mark.parametrize("satz, titel", [
+    ("Lege eine neue Bubble Stadtfest (Prüfung) an", "Stadtfest (Prüfung)"),
+    ("Erstelle eine neue Bubble Sommerfest am See", "Sommerfest am See"),
+    ("Neue Bubble: Druckerei Angebote", "Druckerei Angebote"),
+    ("Lege eine neue Bubble „Bühnenplan 2027“ an.", "Bühnenplan 2027"),
+    ("Mach mir eine neue Bubble mit dem Titel Sponsoren", "Sponsoren"),
+    ("Zeig die Notizen", ""),
+    ("Lege eine neue Bubble an", ""),
+])
+def test_bubble_titel_wortwoertlich(satz, titel) -> None:
+    from core.ideen_abkuerzung import bubble_titel
+    assert bubble_titel(satz) == titel
+
+
+@pytest.mark.parametrize("kontext", [IDEEN, {"space": "video"}], ids=["ideen", "video"])
+def test_neue_bubble_titel_wortwoertlich_und_antwort(monkeypatch, echter_muster_router, kontext) -> None:
+    # Lauf 7: "Lege eine neue Bubble X (Prüfung) an" legte "Prüfung" an und zeigte keine Antwort.
+    ausfuehrer = _Ausfuehrer("Created bubble 'Stadtfest (Prüfung)'")
+    client, state = _client(monkeypatch, SCHWACH, ausfuehrer=ausfuehrer, muster=echter_muster_router)
+    body = client.post("/api/multihop/execute", json={"intent": "Lege eine neue Bubble Stadtfest (Prüfung) an",
+                                                      "context": kontext}).json()
+    (plan,) = ausfuehrer.plaene
+    assert plan.hops[0].capability == "bubble_create" and plan.hops[0].arg_template == "Stadtfest (Prüfung)"
+    assert state.multihop_planner.aufrufe == 0
+    assert body["final_text"] == "Bubble „Stadtfest (Prüfung)“ angelegt." and body["ok"] is True
+
+
 def test_bubble_name_am_satzanfang() -> None:
     assert v.bubble_name_im_satz("In der Bubble Stadtfest: Halt fest: Preise prüfen") == (
         "Stadtfest", "Halt fest: Preise prüfen")

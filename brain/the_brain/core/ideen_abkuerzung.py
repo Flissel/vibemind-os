@@ -1159,6 +1159,40 @@ def arg_vorlage(argumente: dict) -> str:
                   lambda m: m.group(0).replace("{", "\\u007b").replace("}", "\\u007d"), roh)
 
 
+BUBBLE_TITEL_ZEICHEN = 200
+_NEUE_BUBBLE = re.compile(
+    r"^\s*(?:bitte\s+)?(?:(?P<leg>leg(?:e)?)\s+|erstell(?:e)?\s+|mach(?:e)?\s+)?(?:mir\s+|uns\s+)?"
+    r"(?:eine\s+)?neue\s+bubble\s*(?::\s*|(?:mit\s+(?:dem\s+)?(?:titel|namen)|namens|called|named)\s*:?\s*)?"
+    r"(?P<t>.+?)\s*$", re.IGNORECASE | re.DOTALL)
+
+
+def bubble_titel(satz: Any) -> str:
+    """Der Titel aus "Lege eine neue Bubble X an" / "Erstelle eine neue Bubble X" / "Neue Bubble: X",
+    Wort für Wort (Klammern und Zusätze bleiben). ``""``: kein solcher Satz oder kein Titel.
+
+    Lauf 7: "Lege eine neue Bubble X (Prüfung) an" legte eine Bubble "Prüfung" an; die alte
+    Abkürzung nahm das letzte großgeschriebene Wort. Wirft nie.
+    """
+    try:
+        if not isinstance(satz, str):
+            return ""
+        text = re.sub(r"\s+", " ", satz).strip().rstrip(".!")
+        m = _NEUE_BUBBLE.match(text)
+        if not m:
+            return ""
+        titel = m.group("t").strip()
+        if m.group("leg"):
+            # "Lege ... an": das trennbare "an" gehört nicht zum Titel.
+            titel = re.sub(r"(?:^|\s+)an$", "", titel, flags=re.IGNORECASE).strip()
+        if len(titel) >= 2 and titel[0] in "„\"'“" and titel[-1] in "“\"'”":
+            titel = titel[1:-1].strip()
+        if not titel or len(titel) > BUBBLE_TITEL_ZEICHEN:
+            return ""
+        return titel
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def listen_suchwort(satz: Any) -> str:
     """Suchwort fuer "zeige meine Bubbles": nur, was der Mensch in Anfuehrungszeichen setzt.
 
