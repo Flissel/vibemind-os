@@ -443,6 +443,7 @@ def loese(satz: Any, kontext: Any) -> Optional[dict]:
     text = re.sub(r"\s+", " ", satz).strip().rstrip(".!")
     if not text or len(text) > 4000:
         return None
+    zeilen = zeilen_text(satz)
     schluessel = _offen_schluessel(kontext)
     try:
         offen = _OFFEN.get(schluessel)
@@ -454,12 +455,38 @@ def loese(satz: Any, kontext: Any) -> Optional[dict]:
             if antwort is not None:
                 return antwort
         _OFFEN.pop(schluessel, None)
-        return _loese(text, kontext)
+        return _loese(text, {**kontext, "_zeilen": zeilen})
     except _Rueckfrage as frage:
-        _merken(schluessel, text, frage)
+        _merken(schluessel, text, frage, zeilen)
         return {"rueckfrage": str(frage)}
     except Exception:
         return None
+
+
+def zeilen_text(satz: Any) -> str:
+    """Der Satz mit seinen Zeilen: Leerraum je Zeile zusammengezogen, leere Zeilen hoechstens einzeln.
+
+    Erkannt wird ein Satz einzeilig (``text``); der Notiztext beim Festhalten und Ergaenzen
+    behaelt die Zeilen (Lauf 13, (41): die Statuszeilen eines Kanban-Textes gingen verloren).
+    """
+    zeilen = [re.sub(r"[^\S\n]+", " ", z).strip() for z in str(satz or "").replace("\r\n", "\n").split("\n")]
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(zeilen))
+    return text.strip().rstrip(".!")
+
+
+def _mit_zeilen(kurz: str, kontext: dict) -> str:
+    """Der Schluss des Satzes (``kurz``, einzeilig) mit den Zeilen des Originals; sonst ``kurz``."""
+    zeilen = kontext.get("_zeilen")
+    if not isinstance(zeilen, str) or "\n" not in zeilen:
+        return kurz
+    noetig = len(re.sub(r"\s", "", kurz))
+    gezaehlt, start = 0, len(zeilen)
+    while start > 0 and gezaehlt < noetig:
+        start -= 1
+        if not zeilen[start].isspace():
+            gezaehlt += 1
+    lang = zeilen[start:].strip()
+    return lang if re.sub(r"\s+", " ", lang) == kurz else kurz
 
 
 def _jetzt() -> float:
@@ -467,10 +494,10 @@ def _jetzt() -> float:
     return time.monotonic()
 
 
-def _merken(schluessel: str, text: str, frage: _Rueckfrage) -> None:
+def _merken(schluessel: str, text: str, frage: _Rueckfrage, zeilen: Optional[str] = None) -> None:
     if len(frage.kandidaten) >= 2 and frage.name is not None:
         _OFFEN[schluessel] = {"satz": text, "name": frage.name, "kandidaten": frage.kandidaten,
-                              "frage": str(frage), "zeit": _jetzt()}
+                              "frage": str(frage), "zeit": _jetzt(), "zeilen": zeilen}
     else:
         _OFFEN.pop(schluessel, None)
 
@@ -498,11 +525,11 @@ def _auf_rueckfrage(text: str, offen: dict, kontext: dict) -> Optional[dict]:
     _OFFEN.pop(schluessel, None)
     gewaehlt = {**offen.get("gewaehlt", {}), offen["name"]: offen["kandidaten"][wahl]}
     try:
-        return _loese(offen["satz"], {**kontext, "_gewaehlt": gewaehlt})
+        return _loese(offen["satz"], {**kontext, "_gewaehlt": gewaehlt, "_zeilen": offen.get("zeilen")})
     except _Rueckfrage as frage:
         # Ein zweiter Name im selben Satz ist auch unklar ("Verbinde A mit B"): weiter fragen,
         # die erste Wahl bleibt.
-        _merken(schluessel, offen["satz"], frage)
+        _merken(schluessel, offen["satz"], frage, offen.get("zeilen"))
         if schluessel in _OFFEN:
             _OFFEN[schluessel]["gewaehlt"] = gewaehlt
         return {"rueckfrage": str(frage)}
@@ -526,8 +553,8 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
         r"(?:halt(?:e)?\s+fest|notiz|notiere|schreib(?:e)?\s+auf|merk(?:e)?\s+dir)\s*[:,]?\s*(?:dass\s+)?(?P<t>.+)",
         text, _I)
     if m:
-        satz = m.group("t").strip()
-        titel = _kurztitel(satz)
+        satz = _mit_zeilen(m.group("t").strip(), kontext)
+        titel = _kurztitel(satz.split("\n", 1)[0])
         argumente = {"bubble_id": _offene_bubble(kontext), "title": titel}
         if titel != satz:
             argumente["content"] = satz
@@ -546,6 +573,7 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
         gefunden = _karte_und_rest(text, kopf, trenner, kontext)
         if gefunden:
             karte, zusatz = gefunden
+            zusatz = _mit_zeilen(zusatz, kontext)
             return _treffer("idea.update", {"id": karte["id"], "content_append": zusatz},
                             f"{_titel(karte)} ergänzt.")
 

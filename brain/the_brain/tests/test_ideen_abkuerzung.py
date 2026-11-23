@@ -534,6 +534,35 @@ def test_festhalten_kurzer_titel_und_ganzer_satz_als_text() -> None:
     assert kurz["title"] == "Druckerei anrufen" and "content" not in kurz
 
 
+def test_festhalten_behaelt_die_zeilen_im_text() -> None:
+    # (41): Ein Kanban-Text kam einzeilig an der Karte an; die Statuszeilen waren weg.
+    satz = "Halte fest: Aufgaben fürs Stadtfest\r\nOffen:  Logo\n\n\n\tIn Arbeit: Bühnenplan \nErledigt: Druck."
+    argumente = abk.loese(satz, KONTEXT)["argumente"]
+    assert argumente["title"] == "Aufgaben fürs Stadtfest"
+    assert argumente["content"] == "Aufgaben fürs Stadtfest\nOffen: Logo\n\nIn Arbeit: Bühnenplan\nErledigt: Druck"
+    # Erkannt wird der Satz wie bisher einzeilig: auch mit Umbruch direkt nach dem Auftakt.
+    assert abk.loese("Notiz:\nOffen: Logo\nErledigt: Druck", KONTEXT)["argumente"]["content"] == \
+        "Offen: Logo\nErledigt: Druck"
+
+
+def test_ergaenzen_behaelt_die_zeilen() -> None:
+    treffer = abk.loese("Ergänze bei Druckerei:\nOffen: Angebot\nErledigt: Muster", KONTEXT)
+    assert treffer["argumente"] == {"id": "a0000002", "content_append": "Offen: Angebot\nErledigt: Muster"}
+
+
+def test_zeilen_auch_nach_der_rueckfrage() -> None:
+    # Zwei Karten "Doppelt": erst Rueckfrage, dann die Wahl; der Zusatz behaelt seine Zeilen.
+    abk._OFFEN.clear()
+    assert "rueckfrage" in abk.loese("Ergänze bei Doppelt:\nOffen: Logo\nErledigt: Druck", KONTEXT)
+    treffer = abk.loese("die erste", KONTEXT)
+    assert treffer["argumente"]["content_append"] == "Offen: Logo\nErledigt: Druck"
+
+
+def test_einzeiliger_satz_bleibt_wie_er_war() -> None:
+    assert abk.zeilen_text("Halt fest:  Preise   prüfen.") == "Halt fest: Preise prüfen"
+    assert abk._mit_zeilen("Preise prüfen", {"_zeilen": "Halt fest: Preise prüfen"}) == "Preise prüfen"
+
+
 # ── Arbeitslauf 23.11.2026: Grenzen und Fehlersaetze ───────────────────────
 
 def test_ordnen_ueber_der_grenze_sagt_was_geht() -> None:
