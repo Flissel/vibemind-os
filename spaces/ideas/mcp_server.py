@@ -1292,6 +1292,77 @@ def _table_from_text(text: str, title: str) -> dict[str, Any] | None:
     return None
 
 
+KANBAN_COLUMNS = ("Offen", "In Arbeit", "Erledigt")
+KANBAN_MAX_COLUMNS = 8
+_KANBAN_STATUS = re.compile(
+    r"^(?P<k>offen|todo|to do|to-do|geplant|in arbeit|doing|l(?:ä|ae)uft|blockiert|erledigt|fertig|done|"
+    r"sp(?:ä|ae)ter)\s*:\s*(?P<v>.*)$", re.IGNORECASE)
+_KANBAN_HEAD = re.compile(r"^(?:#{1,6}\s*(?P<h>.+?)|(?P<c>[^:]{1,40}?)\s*:)\s*$")
+_KANBAN_ITEM = re.compile(r"^(?:[-*•+]\s+|\d{1,3}[.)]\s+)?(?:\[(?P<x>[ xX])\]\s*)?(?P<t>.*)$")
+
+
+def _kanban_from_text(text: str, title: str) -> dict[str, Any] | None:
+    """Columns with cards from the card's text, without a model; ``None`` if nothing is left.
+
+    Lauf 5: "Kanban" only switched the kind; the board stayed empty. Headings ("## Offen",
+    "In Arbeit:") and status lines ("Offen: Logo") start columns, lines below are cards.
+    Without any of them every line is a card in "Offen" ("[x]" goes to "Erledigt"),
+    next to empty "In Arbeit" and "Erledigt".
+    """
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if lines and title.strip() and lines[0] == title.strip():
+        lines = lines[1:]
+    columns: list[dict[str, Any]] = []
+    by_name: dict[str, dict[str, Any]] = {}
+    count = 0
+
+    def column(name: str) -> dict[str, Any] | None:
+        name = name.strip()[:TABLE_CELL_CHARS]
+        key = name.casefold()
+        if key not in by_name:
+            if len(columns) >= KANBAN_MAX_COLUMNS:
+                return None
+            by_name[key] = {"name": name, "cards": []}
+            columns.append(by_name[key])
+        return by_name[key]
+
+    def card(target: dict[str, Any] | None, value: str) -> None:
+        nonlocal count
+        value = value.strip()[:TABLE_CELL_CHARS]
+        if target is not None and value and count < TABLE_MAX_ROWS:
+            count += 1
+            target["cards"].append({"id": f"k{count}", "title": value})
+
+    current: dict[str, Any] | None = None
+    loose: list[tuple[bool, str]] = []
+    for line in lines:
+        status = _KANBAN_STATUS.match(line)
+        head = _KANBAN_HEAD.match(line)
+        if status:
+            current = column(status.group("k")[:1].upper() + status.group("k")[1:])
+            card(current, status.group("v"))
+        elif head:
+            current = column(head.group("h") or head.group("c"))
+        else:
+            item = _KANBAN_ITEM.match(line)
+            done = bool(item and item.group("x") in ("x", "X"))
+            value = item.group("t") if item else line
+            if current is None:
+                loose.append((done, value))
+            else:
+                card(current, value)
+    if not columns:
+        for name in KANBAN_COLUMNS:
+            column(name)
+        for done, value in loose:
+            card(by_name["erledigt" if done else "offen"], value)
+    elif loose:
+        # Zeilen vor der ersten Spalte gehen nicht verloren: in die erste Spalte.
+        for _, value in loose:
+            card(columns[0], value)
+    return {"columns": columns} if count else None
+
+
 def _change_groups(rows: Any, limit: int) -> list[dict[str, Any]]:
     """Fold protocol rows (newest first) into the groups ideen_zurueck undoes."""
     if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
@@ -1938,6 +2009,11 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
                 if table is None:
                     raise ToolError("idea_format_table_no_columns")
                 structured.update(table)
+            if fmt == "kanban":
+                board = _kanban_from_text(_live_text(node) or "", str(node.get("title") or ""))
+                if board is None:
+                    raise ToolError("idea_format_no_content")
+                structured.update(board)
             patch = {
                 "format_schema": {"type": fmt},
                 "content_json": structured,
