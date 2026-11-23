@@ -111,3 +111,31 @@ def test_luecke_nach_dem_schluss_ist_kein_befund_davor_schon(tmp_path: Path) -> 
 
     assert "luecke" not in [b.art for b in spaet]
     assert "luecke" in [b.art for b in frueh]
+
+def _stueck_mit_stille(tmp_path: Path, von_s: float, bis_s: float) -> Path:
+    quelle = _ton(tmp_path / "q.wav")
+    ziel = tmp_path / "z.wav"
+    videomusik_rendern(quelle, _zuschnitt(), SAMPLES, ziel)
+    signal, _ = sf.read(str(ziel), dtype="float32")
+    signal[round(von_s * SR): round(bis_s * SR)] = 0.0
+    sf.write(str(ziel), signal, SR, subtype="FLOAT")
+    return ziel
+
+
+def test_stille_die_bis_zum_schluss_reicht_ist_eine_luecke(tmp_path: Path) -> None:
+    # Schluss bei 6,3 s im Stueck; Musik bis 3 s, danach Stille bis in den Ausklang.
+    ziel = _stueck_mit_stille(tmp_path, 3.0, 7.3)
+    befunde = videomusik_pruefen(ziel, SAMPLES, -14.0, schluss_s=6.3)
+    assert "luecke" in [b.art for b in befunde]
+
+
+def test_stille_am_anfang_ist_eine_luecke(tmp_path: Path) -> None:
+    ziel = _stueck_mit_stille(tmp_path, 0.0, 3.0)
+    befunde = videomusik_pruefen(ziel, SAMPLES, -14.0, schluss_s=6.3)
+    assert "luecke" in [b.art for b in befunde]
+
+
+def test_stille_nur_im_ausklang_ist_kein_befund(tmp_path: Path) -> None:
+    ziel = _stueck_mit_stille(tmp_path, 6.4, 7.3)
+    befunde = videomusik_pruefen(ziel, SAMPLES, -14.0, schluss_s=6.3)
+    assert "luecke" not in [b.art for b in befunde]

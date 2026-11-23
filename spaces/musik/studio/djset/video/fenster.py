@@ -16,11 +16,11 @@ import numpy as np
 import pyloudnorm
 
 from djset.dsp.analyze import _LEVEL_FLOOR_DB
-from djset.qa import TRUE_PEAK_CEILING_DB, luecken
+from djset.qa import TRUE_PEAK_CEILING_DB
 from djset.render.stretch import SR
 from djset.video.klang import _laden, huelle
 from djset.video.laenge import VideoFehler
-from djset.video.pruefung import LUFS_TOLERANZ
+from djset.video.pruefung import LUFS_TOLERANZ, luecken_vor_schluss
 
 # True Peak je Block von 50 ms: Die Fenster beginnen auf Taktanfaengen, ein Block
 # gehoert ganz zum Fenster oder zu dessen Rand und wird dann mitgezaehlt
@@ -143,13 +143,13 @@ def fenster_messen(
         else:
             erreichbar = lufs + (TRUE_PEAK_CEILING_DB - spitze_db)
         gain_db = min(lufs_ziel - lufs, TRUE_PEAK_CEILING_DB - spitze_db) if math.isfinite(erreichbar) else 0.0
-        gehoert = (stueck * kurve)[:schluss_n] * 10.0 ** (gain_db / 20.0)
+        gehoert = (stueck * kurve) * 10.0 ** (gain_db / 20.0)
         ergebnis.append(FensterPegel(
             start_s=start,
             lufs=lufs,
             true_peak=spitze_db,
             erreichbar_lufs=erreichbar,
-            luecke=bool(luecken(gehoert, sr)),
+            luecke=bool(luecken_vor_schluss(gehoert, sr, schluss_n)),
         ))
     return ergebnis
 

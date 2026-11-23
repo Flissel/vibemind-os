@@ -122,3 +122,30 @@ def test_schaetzung_stimmt_mit_dem_gerenderten_stueck_ueberein(tmp_path: Path) -
     (f,) = fenster_messen(quelle, [2.0], 10.0, 8.0)
 
     assert abs(f.erreichbar_lufs - erreichbar) < 0.1
+
+def test_stille_bis_zum_schluss_und_am_anfang_ist_eine_luecke(tmp_path: Path) -> None:
+    t = np.arange(40 * SR) / SR
+    quelle = tmp_path / "rand.wav"
+    signal = 0.1 * np.sin(2 * np.pi * 220.0 * t)
+    signal[10 * SR: 20 * SR] = 0.0  # Musik bis 10 s, Stille bis zum Schluss bei 18 s und darueber hinaus
+    signal[20 * SR: 22 * SR] = 0.0
+    sf.write(str(quelle), signal.astype(np.float32), SR, subtype="FLOAT")
+    (ende,) = fenster_messen(quelle, [0.0], 20.0, 14.0)
+    assert ende.luecke  # Stille von 10 s bis zum Schluss bei 14 s
+
+    anfang = 0.1 * np.sin(2 * np.pi * 220.0 * t)
+    anfang[: 3 * SR] = 0.0
+    quelle2 = tmp_path / "anfang.wav"
+    sf.write(str(quelle2), anfang.astype(np.float32), SR, subtype="FLOAT")
+    (f,) = fenster_messen(quelle2, [0.0], 20.0, 18.0)
+    assert f.luecke
+
+
+def test_stille_nur_im_ausklang_bleibt_tauglich(tmp_path: Path) -> None:
+    t = np.arange(40 * SR) / SR
+    signal = 0.1 * np.sin(2 * np.pi * 220.0 * t)
+    signal[15 * SR:] = 0.0  # Stille ab dem Schluss bei 15 s
+    quelle = tmp_path / "ausklang.wav"
+    sf.write(str(quelle), signal.astype(np.float32), SR, subtype="FLOAT")
+    (f,) = fenster_messen(quelle, [0.0], 20.0, 15.0)
+    assert not f.luecke

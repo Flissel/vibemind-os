@@ -14,7 +14,7 @@ import soundfile as sf
 from pydantic import BaseModel
 
 from djset.dsp.analyze import measure_loudness
-from djset.qa import TRUE_PEAK_CEILING_DB, luecken
+from djset.qa import _GAP_FLOOR, GAP_SECONDS, TRUE_PEAK_CEILING_DB, luecken
 from djset.render.stretch import SR
 from djset.video.laenge import VideoFehler
 
@@ -24,6 +24,26 @@ AUSKLANG_STILL_DB = -60.0
 _AUSKLANG_FENSTER_S = 0.01
 # Die Pegelung deckelt auf genau -1,0 dBTP; Messrauschen im Mikro-dB-Bereich ist kein Befund.
 _SPITZE_TOLERANZ_DB = 0.01
+
+
+def luecken_vor_schluss(betrag: np.ndarray, sr: int, schluss_n: int) -> list[float]:
+    """Anfaenge aller Stillen ueber GAP_SECONDS in [0, schluss_n), in Sekunden.
+
+    Anders als `qa.luecken` (Set-Pfad, dort ist eine Stille am Rand gewollt) zaehlen
+    hier beide Raender als "innen": das Stueck klingt erst ab dem Schluss aus, und
+    der Ausklang endet auf null. Eine Stille, die vor dem Schluss beginnt und bis
+    zum Schluss oder zum Stueckende reicht, ist deshalb eine Luecke, ebenso eine
+    Stille gleich am Anfang (hinter der winzigen Einblende). Stille erst im
+    Ausklang (ab schluss_n) bleibt unbeachtet.
+    """
+    teil = np.abs(betrag[: max(schluss_n, 0)]) < _GAP_FLOOR
+    if teil.size == 0 or not teil.any():
+        return []
+    rand = np.diff(np.concatenate(([0], teil.astype(np.int8), [0])))
+    starts = np.flatnonzero(rand == 1)
+    stops = np.flatnonzero(rand == -1)
+    noetig = int(GAP_SECONDS * sr)
+    return [float(a) / sr for a, b in zip(starts, stops) if b - a >= noetig]
 
 
 class VideoBefund(BaseModel):
@@ -87,11 +107,13 @@ def videomusik_pruefen(
         ))
 
     mono = np.max(np.abs(signal), axis=1) if signal.size else np.zeros(0, dtype=np.float32)
-    for start in luecken(mono, sr):
-        if schluss_s is not None and start >= schluss_s:
-            continue
+    if schluss_s is None:
+        gefunden = luecken(mono, sr)
+    else:
+        gefunden = luecken_vor_schluss(mono, sr, round(schluss_s * sr))
+    for start in gefunden:
         befunde.append(VideoBefund(
             art="luecke",
-            text=f"{datei.name}: bei {start:.2f} s steht laenger als 0,5 s Stille mitten im Stueck.",
+            text=f"{datei.name}: bei {start:.2f} s steht laenger als 0,5 s Stille vor dem Schluss.",
         ))
     return befunde
