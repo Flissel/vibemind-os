@@ -421,7 +421,8 @@ _FESTE_LESEFRAGEN = (
 )
 # Desktop, The Brain, Rowboat (23.11.2026): eigene Datei, hier nur angehaengt.
 from .feste_lesesaetze import (  # noqa: E402
-    antworten as _weitere_antworten, lesefragen as _weitere_lesefragen, protokolle as _weitere_protokolle,
+    antworten as _weitere_antworten, fehlersaetze as _weitere_fehlersaetze, lesefragen as _weitere_lesefragen,
+    protokolle as _weitere_protokolle,
 )
 # Die weiteren Saetze gelten nicht im Ideen-Bereich: dort entscheidet die Ideen-Abkuerzung.
 _FESTE_LESEFRAGEN = _FESTE_LESEFRAGEN + _weitere_lesefragen(tuple(s for s in SPACES if s != "ideas") + (None,))
@@ -516,6 +517,8 @@ def lese_zusatz(satz: Any, capability: str) -> str:
     return ""
 # Satz fuer Plan-Verlauf und Protokolle, wenn die Antwort Bildschirminhalt traegt (Fenstertitel).
 FESTE_PROTOKOLLE = _weitere_protokolle()
+# Genauer Satz statt FEHLERSATZ, wenn ein fester Weg sagen kann, was fehlt (Ergebnis, Fehler).
+FESTE_FEHLERSAETZE = _weitere_fehlersaetze()
 
 
 # ── Space-Wache ────────────────────────────────────────────────────────────

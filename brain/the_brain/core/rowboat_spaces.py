@@ -59,6 +59,17 @@ def spaces_lesen(value: Any = None, **_: Any) -> dict:
     return {"success": True, "spaces": spaces, "anzahl": len(spaces)}
 
 
+def fehlersatz(ergebnis: Any, fehler: Any = None) -> str:
+    """Genauer Satz, wenn die Karten nicht gelesen werden konnten."""
+    if isinstance(ergebnis, Mapping) and isinstance(ergebnis.get("result"), Mapping) and "error" not in ergebnis:
+        ergebnis = ergebnis["result"]
+    art = ergebnis.get("error") if isinstance(ergebnis, Mapping) else None
+    if art in ("karten_fehlen", "keine_karten"):
+        return ("Welche VibeMind-Spaces in Rowboat stehen, kann ich noch nicht sagen: die Lese-Karten "
+                "(spaces/rowboat/vibemind-spaces) fehlen auf diesem Stand.")
+    return "Die VibeMind-Spaces in Rowboat kann ich gerade nicht lesen. Geändert habe ich nichts."
+
+
 def antwort(ergebnis: Any) -> Optional[str]:
     """"In Rowboat stehen 14 VibeMind-Spaces: Bubbles, …. Läuft heute: Bubbles, Desktop, Ideen."."""
     try:

@@ -97,6 +97,26 @@ def antworten() -> Dict[str, Callable[[Any], Optional[str]]]:
             "rowboat_spaces": _rowboat_spaces, "desktop_bestaetigen": _desktop_bestaetigen}
 
 
+def _desktop_fenster_fehler(ergebnis: Any, fehler: Any = None) -> Optional[str]:
+    from .desktop_fenster import fehlersatz
+    return fehlersatz(ergebnis, fehler)
+
+
+def _rowboat_spaces_fehler(ergebnis: Any, fehler: Any = None) -> Optional[str]:
+    from .rowboat_spaces import fehlersatz
+    return fehlersatz(ergebnis, fehler)
+
+
+def _thebrain_gedanken_fehler(ergebnis: Any, fehler: Any = None) -> Optional[str]:
+    return "Die Gedanken des Gehirns kann ich gerade nicht lesen: seine eigene Schnittstelle antwortet nicht."
+
+
+def fehlersaetze() -> Dict[str, Callable[..., Optional[str]]]:
+    """Genauer Satz statt des allgemeinen Fehlersatzes, wenn klar ist, was fehlt."""
+    return {"desktop_fenster": _desktop_fenster_fehler, "rowboat_spaces": _rowboat_spaces_fehler,
+            "thebrain_gedanken": _thebrain_gedanken_fehler}
+
+
 def protokolle() -> Dict[str, Callable[[Any], Optional[str]]]:
     """Satz fuer Plan-Verlauf und Protokolle, wenn die Antwort Bildschirminhalt traegt."""
     return {"desktop_fenster": _desktop_fenster_protokoll, "desktop_bestaetigen": _desktop_bestaetigen_protokoll}

@@ -1344,7 +1344,7 @@ def test_fensterliste_ohne_freigabe_sagt_nichts(echt, openfang, monkeypatch):
     openfang.freigabe = "pending"
     monkeypatch.setattr(echt.server.blick, "sichtbare_fenster", lambda: [{"hwnd": 1, "titel": "A", "programm": "b"}])
     ergebnis = desktop_fenster.fenster_lesen({})
-    assert ergebnis["success"] is False and set(ergebnis) == {"success", "error"}
+    assert ergebnis == {"success": False, "error": "freigabe_ausstehend"}
     assert openfang.werkzeuge == []  # ohne Zulassung erreicht nichts den Werkzeug-Dienst
 
 

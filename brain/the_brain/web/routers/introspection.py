@@ -3498,7 +3498,15 @@ def _lese_antwort(plan, exec_result, capability: str, frage: str = "") -> Dict[s
             return {"final_text": satz, "ok": True,
                     "_protokoll": protokoll(schritt.get("result")) or "Antwort nur an die App."}
         return {"final_text": satz, "ok": True}
-    return {"final_text": _verstehen.FEHLERSATZ, "ok": False,
+    # Genauer Satz, wenn der Weg sagen kann, was fehlt (Dienst aus, Freigabe fehlt, Karten fehlen).
+    genau = None
+    fehlersatz = getattr(_verstehen, "FESTE_FEHLERSAETZE", {}).get(capability)
+    if fehlersatz is not None:
+        try:
+            genau = fehlersatz(schritt.get("result"), schritt.get("error"))
+        except Exception:  # noqa: BLE001
+            genau = None
+    return {"final_text": genau or _verstehen.FEHLERSATZ, "ok": False,
             "fehler": str(schritt.get("error") or "keine lesbare Antwort")[:2000]}
 
 

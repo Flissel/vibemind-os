@@ -245,9 +245,40 @@ def test_fenster_titel_nur_in_der_antwort_nie_im_verlauf(monkeypatch) -> None:
 
 
 def test_fenster_ohne_dienst_ist_kein_haken(monkeypatch) -> None:
-    ausfuehrer = _Ausfuehrer({"success": False, "error": "dienst_fehlt"})
+    ausfuehrer = _Ausfuehrer({"success": False, "error": "dienst_aus"})
     body = _frage(monkeypatch, ausfuehrer, "Welche Fenster sind offen?", "desktop")
-    assert body["ok"] is False and body["final_text"] == v.FEHLERSATZ
+    assert body["ok"] is False
+    assert body["final_text"] == ("Die Fensterliste kann ich gerade nicht lesen: der Werkzeug-Dienst des Desktop "
+                                  "antwortet nicht.")
+
+
+@pytest.mark.parametrize("meldung,art", [
+    ("OpenFang MCP JSON-RPC error: Tool not permitted for caller agent: mcp_spaces_desktop_desktop_fenster",
+     "nicht_freigegeben"),
+    ("OpenFang runtime approval was not approved", "freigabe_ausstehend"),
+    ("Connection refused", "dienst_aus"),
+    ("fenster_unlesbar: die Fensterliste ist nicht lesbar", "fenster_unlesbar"),
+    ("nicht_gebunden: desktop_fenster ist nicht gebunden", "nicht_gebunden"),
+    ("irgendwas anderes", "werkzeug_fehler"),
+])
+def test_fenster_fehler_wird_eingeordnet(meldung, art) -> None:
+    assert desktop_fenster.fehlerart(meldung) == art
+
+
+def test_fenster_ohne_freigabe_sagt_genau_das(monkeypatch) -> None:
+    ausfuehrer = _Ausfuehrer({"success": False, "error": "nicht_freigegeben"})
+    body = _frage(monkeypatch, ausfuehrer, "Welche Fenster sind offen?", "desktop")
+    assert body["final_text"].startswith("Die Fensterliste kann ich noch nicht lesen: OpenFang hat dem Desktop-Agenten")
+    assert desktop_fenster.fehlersatz({"success": False, "error": "werkzeug_fehler"}) == desktop_fenster.ALLGEMEIN
+
+
+def test_rowboat_ohne_karten_sagt_genau_das(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VIBEMIND_SPACES_KARTEN", str(tmp_path / "fehlt"))
+    ausfuehrer = _Ausfuehrer(lambda: rowboat_spaces.spaces_lesen({"value": ""}))
+    body = _frage(monkeypatch, ausfuehrer, "Welche Agenten gibt es in Rowboat?", "roarboot")
+    assert body["ok"] is False
+    assert body["final_text"] == ("Welche VibeMind-Spaces in Rowboat stehen, kann ich noch nicht sagen: die "
+                                  "Lese-Karten (spaces/rowboat/vibemind-spaces) fehlen auf diesem Stand.")
 
 
 def test_gedanken_ende_zu_ende(monkeypatch) -> None:

@@ -83,7 +83,7 @@ def fenster_lesen(value: Any = None, **_: Any) -> dict:
     except FreigabeAusstehend:
         return {"success": False, "error": "freigabe_ausstehend"}
     except WerkzeugFehler as fehler:
-        return {"success": False, "error": str(fehler).split(":", 1)[0][:40] or "werkzeug_fehler"}
+        return {"success": False, "error": fehlerart(str(fehler))}
     text = satz(liste)
     if text is None:
         return {"success": False, "error": "unlesbar"}
@@ -91,6 +91,45 @@ def fenster_lesen(value: Any = None, **_: Any) -> dict:
     anzahl = liste.get("anzahl") if isinstance(liste.get("anzahl"), int) else len(fenster)
     gesperrt = sum(1 for f in fenster if f.get("gesperrt") is not False)
     return {"success": True, "anzahl": anzahl, "gesperrt": gesperrt, "satz_id": _merken(text)}
+
+
+# Was fehlt, aus der Fehlermeldung des festen Aufrufs (ohne Bildschirminhalt: der Aufruf
+# scheiterte, bevor ein Titel gelesen wurde).
+_FEHLERARTEN = (
+    ("nicht_freigegeben", ("not permitted", "nicht freigegeben", "not allowed")),
+    ("freigabe_ausstehend", ("approval was not approved", "pending", "ausstehend")),
+    ("nicht_gebunden", ("nicht_gebunden",)),
+    ("fenster_unlesbar", ("fenster_unlesbar",)),
+    ("dienst_aus", ("connection", "refused", "verweigert", "unreachable", "not reachable", "timed out",
+                    "timeout", "openfang_url", "no mcp server", "not connected", "unknown server")),
+)
+
+FEHLERSAETZE = {
+    "nicht_freigegeben": ("Die Fensterliste kann ich noch nicht lesen: OpenFang hat dem Desktop-Agenten das "
+                          "Werkzeug desktop_fenster nicht freigegeben."),
+    "freigabe_ausstehend": "Die Fensterliste kann ich gerade nicht lesen: die Freigabe für den Aufruf fehlt.",
+    "nicht_gebunden": "Die Fensterliste kann ich noch nicht lesen: das Werkzeug ist im Verzeichnis nicht gebunden.",
+    "fenster_unlesbar": "Die Fensterliste ist auf diesem Rechner nicht lesbar.",
+    "dienst_aus": "Die Fensterliste kann ich gerade nicht lesen: der Werkzeug-Dienst des Desktop antwortet nicht.",
+}
+ALLGEMEIN = "Die Fensterliste kann ich gerade nicht lesen. Geändert habe ich nichts."
+
+
+def fehlerart(meldung: str) -> str:
+    text = str(meldung or "").lower()
+    for art, teile in _FEHLERARTEN:
+        if any(teil in text for teil in teile):
+            return art
+    return "werkzeug_fehler"
+
+
+def fehlersatz(ergebnis: Any, fehler: Any = None) -> str:
+    """Genauer Satz, wenn die Fensterliste nicht gelesen werden konnte."""
+    ergebnis = _ergebnis(ergebnis)
+    art = ergebnis.get("error") if isinstance(ergebnis, Mapping) else None
+    if art not in FEHLERSAETZE and fehler:
+        art = fehlerart(str(fehler))
+    return FEHLERSAETZE.get(str(art), ALLGEMEIN)
 
 
 def _ergebnis(ergebnis: Any) -> Any:
