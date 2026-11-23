@@ -119,3 +119,42 @@ def test_aus_satz_ohne_anker_ist_none_und_wirft_nie():
     for satz in ("Schreib eine Mail an Oma", "Setz einen Timer auf 5 Minuten", "", "   ",
                  "Leg mir auf die To-do-Liste", None, 5, ["x"]):
         assert aus_satz(satz) is None, satz
+
+
+# --- Endpruefung: nachgestelltes Wort wird nie zum Punkt, Feldubergabe bleibt unberuehrt ---
+
+def test_aus_satz_vertraegt_nachgestellte_hoeflichkeit():
+    from vorschlaege_eingabe import aus_satz
+    for satz in ("Leg mir Milch auf die To-do-Liste, danke", "Leg mir Milch auf die To-do-Liste bitte",
+                 "Leg mir Milch auf die To-do-Liste, bitte!", "Leg mir Milch auf die To-do-Liste!",
+                 "Leg mir Milch auf die To-do-Liste, danke schön."):
+        assert aus_satz(satz) == "Milch", satz
+
+
+def test_hop_argument_danke_ohne_treffer_ergibt_rueckfrage():
+    from vorschlaege_eingabe import RUECKFRAGE_KEIN_INHALT, waehle_roh
+    assert waehle_roh("danke", "Mach mir bitte was auf die Liste, danke") is None
+    assert isinstance(RUECKFRAGE_KEIN_INHALT, str) and RUECKFRAGE_KEIN_INHALT
+
+
+def test_feldubergabe_bleibt_unveraendert():
+    from vorschlaege_eingabe import waehle_roh
+    liste = ["Milch", "Brot"]
+    assert waehle_roh(liste, "Leg mir die fälligen Mails auf die To-do-Liste") is liste
+    assert waehle_roh({"titel": ["Milch"]}, "Leg mir die fälligen Mails auf die To-do-Liste") == {"titel": ["Milch"]}
+    assert waehle_roh("Milch; Brot", "Leg mir die fälligen Mails auf die To-do-Liste") == "Milch; Brot"
+    assert waehle_roh("Milch", "Leg mir Brot auf die To-do-Liste") == "Milch"
+
+
+def test_kurzweg_argument_wird_durch_den_satz_ersetzt():
+    from vorschlaege_eingabe import waehle_roh
+    assert waehle_roh("To-do-Liste", "Leg mir Milch kaufen auf die To-do-Liste") == "Milch kaufen"
+    assert waehle_roh("Liste.", "Setz Brot; Eier auf meine Liste.") == "Brot; Eier"
+    assert waehle_roh("danke", "Leg mir Milch auf die To-do-Liste, danke") == "Milch"
+    assert waehle_roh("TODO-LISTE", "Schreib Zahnarzt auf die Aufgabenliste") == "Zahnarzt"
+
+
+def test_waehle_roh_wirft_nie():
+    from vorschlaege_eingabe import waehle_roh
+    for hop, satz in ((None, None), (5, "x"), ("danke", None), ("x", 5), (object(), "Leg mir x auf die Liste")):
+        waehle_roh(hop, satz)

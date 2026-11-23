@@ -101,7 +101,29 @@ def test_eingebauter_eintrag_der_abweicht_wird_gemeldet(monkeypatch):
         test_eintrag_ist_neu_und_hat_pflichtfelder()
 
 
-def test_schnipsel_nutzt_aus_satz_und_plan_intent():
+def test_schnipsel_nutzt_waehle_roh_und_plan_intent():
     text = LIEFERUNG.read_text(encoding="utf-8")
-    assert "_vorschlaege_aus_satz(plan_ctx.get(\"plan_intent\", \"\"))" in text
+    assert "_vorschlaege_waehle_roh(rendered_arg, plan_ctx.get(\"plan_intent\", \"\"))" in text
     assert "```yaml\n  rowboat_vorschlaege_anlegen: external" in text
+
+
+def test_nachgestelltes_wort_trifft_weiter_und_wird_nie_zum_punkt():
+    import sys
+    sys.path.insert(0, str(HIER))
+    from vorschlaege_eingabe import argumente, waehle_roh
+    e = _eintrag()
+    for satz, inhalt in (("Leg mir Milch auf die To-do-Liste, danke", "Milch"),
+                         ("Leg mir Milch auf die To-do-Liste bitte", "Milch"),
+                         ("Setz Brot auf meine Liste, danke!", "Brot")):
+        assert _trifft(e, satz), satz
+        letztes = re.sub(r"[^\w-]", "", satz.split()[-1])  # was der Kurzweg als Argument weitergibt
+        roh = waehle_roh(letztes, satz)
+        ergebnis = argumente(roh, "plan-1")
+        assert [p["titel"] for p in ergebnis[0]["eingabe"]["punkte"]] == [inhalt], satz
+
+
+def test_satz_mit_text_nach_der_liste_trifft_nicht_mehr():
+    e = _eintrag()
+    for satz in ("Leg mir Milch auf die To-do-Liste und ruf Oma an", "Setz Brot auf meine Liste morgen",
+                 "Put milk to my to-do list tomorrow"):
+        assert not _trifft(e, satz), satz

@@ -20,11 +20,12 @@ _NUMMER_ODER_STRICH = re.compile(r"^\s*(?:\d{1,3}\s*[.)]|[-*•])\s+")
 _LISTENNAME = re.compile(r"^(?:(?:die|meine|unsere)\s+)?(?:to-?do|aufgaben|task)?[-\s]?(?:liste|list)$", re.I)
 _SATZ = re.compile(
     r"^\s*(?:leg|lege|setz|setze|schreib|schreibe)\b(?P<inhalt>.+?)\s+(?:auf|in)\s+(?:die|meine|unsere)\s+"
-    r"(?:(?:to-?do|aufgaben)[-\s]?)?liste\s*[.!?]*\s*$",
+    r"(?:(?:to-?do|aufgaben)[-\s]?)?liste(?:\s*[,;]?\s*(?:danke(?:\s+sch(?:ö|oe)n)?|bitte))?\s*[.!?]*\s*$",
     re.I | re.S,
 )
 _FUELLWORT_ANFANG = re.compile(r"^\s*(?:mir|bitte)\b", re.I)
 _RUECKFRAGE = "clarification required: "
+RUECKFRAGE_KEIN_INHALT = _RUECKFRAGE + "which items should go on the to-do list?"
 _FORM = _RUECKFRAGE + "titles of the to-do items (1 to 50) as a JSON list, one per line, or separated by ;"
 
 
@@ -55,6 +56,33 @@ def aus_satz(satz: str) -> str | None:
             inhalt = ohne
         inhalt = inhalt.strip()
         return inhalt or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _letztes_wort(text: str) -> str:
+    teile = text.split()
+    return re.sub(r"^[^\w]+|[^\w]+$", "", teile[-1]).lower() if teile else ""
+
+
+def waehle_roh(hop_argument: Any, plan_intent: Any) -> Any:
+    """Das Argument fuer ``argumente``: das des Hops, ausser es ist das Kurzweg-Argument.
+
+    Kurzweg-Argument: ein einzelnes Wort, das dem letzten Wort der Anfrage gleicht (ohne Satzzeichen,
+    ohne Beachtung der Gross-/Kleinschreibung), oder ein Listenname. Dann gilt der Inhalt aus der
+    Anfrage (``aus_satz``); passt die Anfrage zu keinem Anker, ``None`` (-> Rueckfrage). Alles andere,
+    etwa eine Feldubergabe als Liste, bleibt unveraendert. Wirft nie.
+    """
+    try:
+        if not isinstance(hop_argument, str):
+            return hop_argument
+        satz = plan_intent if isinstance(plan_intent, str) else ""
+        wort = hop_argument.strip()
+        kurzweg = bool(wort) and (
+            (len(wort.split()) == 1 and re.sub(r"^[^\w]+|[^\w]+$", "", wort).lower() == _letztes_wort(satz))
+            or _ist_listenname(_leerraum(wort))
+        )
+        return aus_satz(satz) if kurzweg else hop_argument
     except Exception:  # noqa: BLE001
         return None
 

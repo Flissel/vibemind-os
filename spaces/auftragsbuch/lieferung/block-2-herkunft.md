@@ -23,8 +23,12 @@ Ordner `spaces/auftragsbuch/lieferung/herkunft/`, ohne Abhängigkeiten außer de
   - `braucht_betreiber(ereignis) -> bool`: wahr bei `required_origin: betreiber`.
   - `erlaubt(herkunft, ereignis) -> bool`: falsch nur, wenn der Betreiber verlangt wird und die Herkunft keiner
     seiner Eingänge ist.
+  - `erlaubt_werkzeug(herkunft, server, tool, ereignis_oder_None) -> bool`: das Tor für ein ausdrücklich genanntes Ziel
+    `mcp:<agent>:<server>:<werkzeug>`. Ein Werkzeug am Server `auftragsbuch`, zu dem die Suche im Verzeichnis **kein**
+    Ereignis fand (`None` oder leer), wird abgelehnt, auch bei Betreiber-Herkunft; ausgenommen sind `auftrag_lesen`
+    und `auftrag_probe`. Jeder andere Server verhält sich wie `erlaubt`. Wirft nie.
   - `ABLEHNUNG = "Nur aus einer Eingabe des Betreibers"`
-- `test_herkunft.py` (14 Tests). Aufruf von der Repo-Wurzel:
+- `test_herkunft.py` (19 Tests). Aufruf von der Repo-Wurzel:
   `python -m pytest spaces/auftragsbuch/lieferung/herkunft/test_herkunft.py -q -p no:cacheprovider`.
   Der Test setzt seinen eigenen Ordner selbst auf den Suchpfad, ein Paket ist nicht nötig.
 
@@ -138,6 +142,14 @@ direkt ein Ziel `mcp:<agent>:<server>:<werkzeug>` nennt. Dort ist kein Ereignisn
 Ereignis anhand des Ziels im Verzeichnis nachschlagen (Agent, Server, Werkzeug) und dieselbe Prüfung machen.
 Die Stelle, an der das Ziel für `mcp:` zerlegt wird (`find_registered_mcp_authority`, Zeilen 1879 bis 1884),
 ist dafür der natürliche Ort.
+
+**Kein Durchlass bei Fehlgriff.** Findet die Suche zu (Agent, Server, Werkzeug) kein Ereignis, darf sie nicht `{}`
+weitergeben, denn `erlaubt` lässt ein Ereignis ohne `required_origin` durch. Stattdessen
+`erlaubt_werkzeug(plan_ctx.get("herkunft"), server, werkzeug, ereignis_oder_None)` aufrufen (`None`, wenn nichts
+gefunden wurde): Ein Werkzeug am Auftragsbuch ohne Verzeichnis-Ereignis wird abgelehnt, nur `auftrag_lesen` und
+`auftrag_probe` laufen auch ohne. Das ist wichtig, weil Block 1 den Suchschlüssel ändert (Träger `brain-rowboat`
+statt Space-Agent); trifft die Suche danach daneben, bleibt das Tor zu, statt offen zu stehen. Dasselbe gilt in der
+zweiten Prüfung an der Laufzeitgrenze (Abschnitt 4).
 
 ### 4. Zweite Prüfung an der Laufzeitgrenze
 

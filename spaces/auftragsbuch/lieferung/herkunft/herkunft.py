@@ -53,3 +53,26 @@ def erlaubt(herkunft: str | None, ereignis: Mapping[str, Any]) -> bool:
     if not braucht_betreiber(ereignis):
         return True
     return herkunft in EINGAENGE_BETREIBER
+
+
+SERVER_AUFTRAGSBUCH = "auftragsbuch"
+OHNE_EREIGNIS_ERLAUBT: frozenset[str] = frozenset({"auftrag_lesen", "auftrag_probe"})
+
+
+def erlaubt_werkzeug(
+    herkunft: str | None, server: str, tool: str, ereignis: Mapping[str, Any] | None
+) -> bool:
+    """Tor fuer ein ausdruecklich genanntes Ziel ``mcp:<agent>:<server>:<werkzeug>``.
+
+    ``ereignis`` ist der Verzeichniseintrag, den die Suche nach (Agent, Server, Werkzeug) fand,
+    sonst ``None`` oder leer. Ein Werkzeug am Auftragsbuch ohne gefundenes Ereignis wird abgelehnt
+    (nie ``{}`` weiterreichen: das liesse es durch), ausser ``auftrag_lesen`` und ``auftrag_probe``.
+    Andere Server verhalten sich wie ``erlaubt``. Wirft nie.
+    """
+    try:
+        gefunden = ereignis if isinstance(ereignis, Mapping) and len(ereignis) > 0 else None
+        if server == SERVER_AUFTRAGSBUCH and gefunden is None:
+            return tool in OHNE_EREIGNIS_ERLAUBT
+        return erlaubt(herkunft, gefunden if gefunden is not None else {})
+    except Exception:  # noqa: BLE001 - im Zweifel ablehnen
+        return False

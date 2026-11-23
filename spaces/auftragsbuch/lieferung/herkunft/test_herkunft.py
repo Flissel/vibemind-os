@@ -110,3 +110,39 @@ def test_fehler_meldet_keinen_schluessel():
         eingang_pruefen("app", SCHLUESSEL, None)  # type: ignore[arg-type]
     except Exception as exc:  # pragma: no cover
         assert SCHLUESSEL not in repr(exc)
+
+
+# --- Endpruefung: kein Fail-open bei Zielen am Auftragsbuch ---
+
+def test_unbekanntes_auftragsbuch_werkzeug_ohne_ereignis_wird_abgelehnt():
+    from herkunft import erlaubt_werkzeug
+    for herkunft in ("app", "telegram-betreiber", "unbekannt", None):
+        assert erlaubt_werkzeug(herkunft, "auftragsbuch", "rowboat_vorschlaege_anlegen", None) is False
+        assert erlaubt_werkzeug(herkunft, "auftragsbuch", "rowboat_vorschlaege_anlegen", {}) is False
+
+
+def test_lesen_und_probe_ohne_ereignis_bleiben_erlaubt():
+    from herkunft import erlaubt_werkzeug
+    for tool in ("auftrag_lesen", "auftrag_probe"):
+        assert erlaubt_werkzeug("unbekannt", "auftragsbuch", tool, None) is True
+
+
+def test_auftragsbuch_werkzeug_mit_ereignis_folgt_dem_verzeichnis():
+    from herkunft import erlaubt_werkzeug
+    ereignis = {"required_origin": "betreiber"}
+    assert erlaubt_werkzeug("app", "auftragsbuch", "rowboat_vorschlaege_anlegen", ereignis) is True
+    assert erlaubt_werkzeug("unbekannt", "auftragsbuch", "rowboat_vorschlaege_anlegen", ereignis) is False
+    assert erlaubt_werkzeug("unbekannt", "auftragsbuch", "sales_post_pruefen", {"tool": "x"}) is True
+
+
+def test_anderer_server_ohne_ereignis_wie_bisher():
+    from herkunft import erlaubt_werkzeug
+    assert erlaubt_werkzeug("unbekannt", "spaces-ideas", "idea_create", None) is True
+    assert erlaubt_werkzeug(None, "spaces-rowboat", "rowboat_status", {}) is True
+    assert erlaubt_werkzeug("unbekannt", "spaces-desktop", "x", {"required_origin": "betreiber"}) is False
+
+
+def test_erlaubt_werkzeug_wirft_nie():
+    from herkunft import erlaubt_werkzeug
+    assert erlaubt_werkzeug("app", 5, None, "kaputt") in (True, False)  # type: ignore[arg-type]
+    assert erlaubt_werkzeug("app", "auftragsbuch", None, None) is False  # type: ignore[arg-type]

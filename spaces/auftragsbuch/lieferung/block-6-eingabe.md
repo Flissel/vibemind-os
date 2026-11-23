@@ -34,11 +34,16 @@ Ordner `spaces/auftragsbuch/lieferung/eingabe/`:
   - Rückfrage, wenn nichts übrig bleibt, wenn es nach dem Zusammenfallen mehr als 50 Punkte sind, wenn ein Titel
     länger als 200 Zeichen ist (Grenze des Vertrags; es wird nie still gekürzt), bei Nicht-Text-Einträgen, bei
     einem Objekt mit anderen Schlüsseln als `titel` oder bei kaputtem JSON (Text, der mit `[` oder `{` beginnt).
+- Dritte Funktion `waehle_roh(hop_argument, plan_intent)`: gibt das Hop-Argument unverändert zurück, außer es sieht
+  wie das Kurzweg-Argument aus (ein einzelnes Wort gleich dem letzten Wort der Anfrage, ohne Satzzeichen und
+  Groß-/Kleinschreibung, oder ein Listenname); dann den Inhalt aus `aus_satz(plan_intent)`, und `None`, wenn der Satz
+  zu keinem Anker passt (Rückfrage `RUECKFRAGE_KEIN_INHALT`). Eine Feldübergabe (Liste, Objekt, mehrere Titel) wird nie
+  überschrieben. Wirft nie.
 - Zweite Funktion `aus_satz(satz: str) -> str | None`: schneidet den Inhalt zwischen Ankerverb (`leg`, `lege`,
   `setz`, `setze`, `schreib`, `schreibe`, mit „mir" und „bitte") und „auf/in die|meine|unsere (To-do-|Aufgaben-)Liste"
-  aus der Anfrage, Satzzeichen am Ende ignoriert. Passt der Satz nicht, `None`. Wirft nie.
+  aus der Anfrage; Satzzeichen und nachgestelltes „, danke", „bitte" am Ende werden ignoriert. Passt der Satz nicht, `None`. Wirft nie.
 - `test_vorschlaege_eingabe.py` ( darunter `test_ergebnis_passt_zum_vertrag` gegen `pruefe_eingabe` und
-  den echten Vertrag; ab Fix-Runde 1 insgesamt 10 Tests) und `test_katalog_eintrag.py` (4 Tests; liest den Eintrag unten aus diesem Dokument und
+  den echten Vertrag; jetzt insgesamt 15 Tests) und `test_katalog_eintrag.py` (4 Tests; liest den Eintrag unten aus diesem Dokument und
   prüft ihn gegen den echten Katalog). Aufruf von der Repo-Wurzel, je Datei einzeln:
   `python -m pytest spaces/auftragsbuch/lieferung/eingabe/test_vorschlaege_eingabe.py -q -p no:cacheprovider`
   `python -m pytest spaces/auftragsbuch/lieferung/eingabe/test_katalog_eintrag.py -q -p no:cacheprovider`
@@ -67,9 +72,9 @@ ihn nicht. Die Datei selbst ist hier **nicht** geändert.
     - "Setz ... auf meine Liste"
     - "Schreib ... auf die Aufgabenliste"
   match_patterns:
-    - "\\b(?:leg|lege|setz|setze|schreib|schreibe)\\b.{1,300}\\b(?:auf|in)\\s+(?:die|meine|unsere)\\s+(?:to-?do|aufgaben)[-\\s]?liste\\b"
-    - "\\b(?:setz|setze)\\b.{1,300}\\bauf\\s+(?:meine|die)\\s+liste\\s*[.!]?\\s*$"
-    - "\\b(?:put|add)\\b.{1,300}\\bto\\s+my\\s+(?:to-?do|task)\\s+list\\b"
+    - "\\b(?:leg|lege|setz|setze|schreib|schreibe)\\b.{1,300}\\b(?:auf|in)\\s+(?:die|meine|unsere)\\s+(?:to-?do|aufgaben)[-\\s]?liste(?:\\s*,?\\s*(?:danke|bitte))?\\s*[.!?]*\\s*$"
+    - "\\b(?:setz|setze)\\b.{1,300}\\bauf\\s+(?:meine|die)\\s+liste(?:\\s*,?\\s*(?:danke|bitte))?\\s*[.!?]*\\s*$"
+    - "\\b(?:put|add)\\b.{1,300}\\bto\\s+my\\s+(?:to-?do|task)\\s+list(?:\\s*,?\\s*(?:please|thanks))?\\s*[.!?]*\\s*$"
   execution_target: "mcp:brain-rowboat:auftragsbuch:rowboat_vorschlaege_anlegen"
   validator:
     # Das Auftragsbuch antwortet mit der Auftragskennung; ob Rowboat den Vorschlag wirklich
@@ -120,13 +125,18 @@ heute `rowboat_status`: Dort ist das egal, hier nicht.
 ```python
             if event_id == "rowboat.vorschlaege_anlegen" and deterministic_target:
                 from .vorschlaege_eingabe import (
-                    argumente as _vorschlaege_argumente, aus_satz as _vorschlaege_aus_satz,
+                    RUECKFRAGE_KEIN_INHALT, argumente as _vorschlaege_argumente,
+                    waehle_roh as _vorschlaege_waehle_roh,
                 )
                 # Der Satz des Betreibers (plan_ctx["plan_intent"], wie bei idea.aenderung_zurueck, Zeile 1659)
-                # geht vor dem Kurzweg-Argument; passt er zu keinem Anker, bleibt das Argument des Hops.
-                strict_mcp_arguments, clarification = _vorschlaege_argumente(
-                    _vorschlaege_aus_satz(plan_ctx.get("plan_intent", "")) or rendered_arg,
-                    plan_ctx.get("plan_id") or "")
+                # ersetzt das Hop-Argument nur, wenn dieses wie das Kurzweg-Argument aussieht (ein einzelnes
+                # Wort gleich dem letzten Wort des Satzes, oder ein Listenname). Eine Feldubergabe bleibt.
+                roh = _vorschlaege_waehle_roh(rendered_arg, plan_ctx.get("plan_intent", ""))
+                if roh is None:
+                    strict_mcp_arguments, clarification = None, RUECKFRAGE_KEIN_INHALT
+                else:
+                    strict_mcp_arguments, clarification = _vorschlaege_argumente(
+                        roh, plan_ctx.get("plan_id") or "")
                 if strict_mcp_arguments is None:
                     return HopResult(
                         step_id=hop.step_id, ok=False, error=clarification,
@@ -153,8 +163,10 @@ Ausführer gebaut wird.
 
 - **Letztes Wort als Argument (behoben).** Der Muster-Kurzweg (Kommentar bei `aenderung_zurueck`,
   `capabilities.yaml` ab Zeile 689) setzt das letzte Wort des Satzes als Argument ein, hier also „To-do-Liste".
-  Zwei Netze: `aus_satz` holt den Inhalt aus dem Satz (`plan_intent`, siehe 2.2), und `argumente` lehnt einen Titel
-  ab, der nur der Listenname ist. Bleibt die Anfrage ohne Anker (Planer hat den Satz umformuliert) und das
+  Drei Netze: Die Muster sind am Ende verankert (nur Leerraum, `.!?` und „danke"/„bitte" folgen der Liste; ein
+  Satz mit weiterem Text trifft nicht), `waehle_roh` holt den Inhalt aus dem Satz (`plan_intent`, siehe 2.2) und nur
+  dann, wenn das Hop-Argument wie der Kurzweg aussieht, und `argumente` lehnt einen Titel ab, der nur der Listenname
+  ist. „Leg mir Milch auf die To-do-Liste, danke" ergibt „Milch", nie „danke". Bleibt die Anfrage ohne Anker (Planer hat den Satz umformuliert) und das
   Argument ist eine echte Liste von Titeln, gilt diese Liste. Empfohlen: nach dem Einbauen einen Test mit „Setz Oma
   anrufen auf meine Liste" über den ganzen Weg.
 - Nur der Betreiber darf das auslösen (`required_origin: betreiber`, Block 1 und 2). Ohne die Kopfzeilen aus
