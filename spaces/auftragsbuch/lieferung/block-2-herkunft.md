@@ -25,8 +25,8 @@ Ordner `spaces/auftragsbuch/lieferung/herkunft/`, ohne Abhängigkeiten außer de
   - `herkunft_bestimmen(getippt: bool, eingang) -> dict`: das **eine** Herkunfts-Objekt. `getippt` ist das Ergebnis von
     `herkunft_pruefen(...) == "getippt"` (master, Zeichen `X-Vibemind-Eingabe`) und gewinnt immer:
     `{"art": "getippt"}`. Sonst `{"art": "eingang:<name>"}`, wenn `eingang` ein Betreiber-Eingang ist, sonst
-    `{"art": None}`. `eingang` ist der Name aus `eingang_pruefen` oder ein Aufruf ohne Argumente, der ihn liefert;
-    dann wird der Eingang nur geprüft, wenn nicht getippt. Wirft nie.
+    `{"art": None}`. `eingang` ist **nur** ein Aufruf ohne Argumente, der den Namen aus `eingang_pruefen` liefert (er läuft nur, wenn
+    nicht getippt); eine rohe Zeichenkette ergibt `{"art": None}`, denn sie hätte keinen Echtheitsnachweis. Wirft nie.
   - `eingabe_herkunft(h) -> "getippt" | None`: der Wert für `plan_ctx["eingabe_herkunft"]` (Desktop-Schleife, master).
     `"getippt"` nur bei `art == "getippt"` und nicht weitergegeben; jede andere oder falsche Form ergibt `None`.
   - `ist_betreiber(h) -> bool`: wahr bei `getippt` oder `eingang:<n>` mit `n` in `EINGAENGE_BETREIBER`, auch wenn
@@ -39,7 +39,7 @@ Ordner `spaces/auftragsbuch/lieferung/herkunft/`, ohne Abhängigkeiten außer de
     Ereignis fand (`None` oder leer), wird abgelehnt, auch bei Betreiber-Herkunft; ausgenommen sind `auftrag_lesen`
     und `auftrag_probe`. Jeder andere Server verhält sich wie `erlaubt`. Wirft nie.
   - `ABLEHNUNG = "Nur aus einer Eingabe des Betreibers"`
-- `test_herkunft.py` (28 Tests). Aufruf von der Repo-Wurzel:
+- `test_herkunft.py` (31 Tests). Aufruf von der Repo-Wurzel:
   `python -m pytest spaces/auftragsbuch/lieferung/herkunft/test_herkunft.py -q -p no:cacheprovider`.
   Der Test setzt seinen eigenen Ordner selbst auf den Suchpfad, ein Paket ist nicht nötig.
 
@@ -146,31 +146,41 @@ Hinweis für alle, die es für eine Lücke halten.
 
 Datei `brain/the_brain/core/plan_executor.py`:
 
-- `execute(...)` (master Zeile 726 bis 736, dort steht `eingabe_herkunft: Optional[str] = None` in Zeile 735): neuer
-  Parameter `herkunft: Optional[dict] = None`.
-  **[Wahl]** `eingabe_herkunft` bleibt als Kompat-Alias: Ist `herkunft` nicht gesetzt und `eingabe_herkunft == "getippt"`,
-  gilt `herkunft = {"art": "getippt"}`; sind beide gesetzt, gewinnt `herkunft`. Begründung: Auf master rufen Tests und
-  die Desktop-Schleife `execute(..., eingabe_herkunft="getippt")` auf; ein Alias hält sie lauffähig, und der Parameter
-  kann in einem eigenen Schritt entfallen, wenn kein Aufrufer ihn mehr nennt. Der Alias darf nie zusätzlich etwas
-  freischalten, was `herkunft` nicht auch ergäbe.
+- `execute(...)` (master Zeile 726 bis 736, dort steht `eingabe_herkunft: Optional[str] = None` in Zeile 735): der
+  Parameter `eingabe_herkunft` **entfällt**; neu ist nur `herkunft: Optional[dict] = None`. **Es gibt keinen Alias**:
+  „getippt" allein als Zeichenkette dürfte sonst jeder Aufrufer im Prozess behaupten und damit `desktop.task`
+  freischalten. Nach dem Einbau entscheidet nur das Objekt. „Nicht gesetzt" heißt `herkunft is None` (unbekannt).
 - `plan_ctx` (master Zeilen 832 bis 852, `"eingabe_herkunft"` steht in Zeile 850): beide Einträge kommen aus
-  **einer** Quelle:
+  **einer** Quelle, `plan_ctx["eingabe_herkunft"]` wird ausschließlich aus dem Objekt abgeleitet:
   ```python
-  "herkunft": herkunft,                              # das Objekt, None = unbekannt
-  "eingabe_herkunft": eingabe_herkunft(herkunft),    # "getippt" oder None, wie die Desktop-Schleife es erwartet
+  "herkunft": herkunft,                                    # das Objekt, None = unbekannt
+  "eingabe_herkunft": eingabe_herkunft_von(herkunft),      # "getippt" oder None
   ```
-  (die Funktion aus `herkunft.py`; sie darf nicht denselben Namen wie der Alias-Parameter verdecken, beim Einbauen
-  `from .herkunft import eingabe_herkunft as eingabe_herkunft_von` o. ä.). Die Prüfung
-  `plan_ctx.get("eingabe_herkunft") != "getippt"` (Zeile 1847) und
+  (`from .herkunft import eingabe_herkunft as eingabe_herkunft_von`, damit der Name nicht mit der Schleife kollidiert).
+  Die Prüfung `plan_ctx.get("eingabe_herkunft") != "getippt"` (Zeile 1847) und
   `nach_aufgabenstart(herkunft=(plan_ctx or {}).get("eingabe_herkunft"), ...)` (Zeile 2010, Prüfung in
   `desktop_schleife.py` Zeile 366) bleiben unverändert.
+- **Aufrufer und Tests von master, die umzustellen sind** (`git grep -n eingabe_herkunft origin/master`):
+  - `brain/the_brain/web/routers/introspection.py:2854`: `eingabe_herkunft=_herkunft_pruefen(...)` wird zu
+    `herkunft=herkunft` (Abschnitt 1).
+  - `brain/the_brain/tests/test_desktop_schleife.py:1001`: setzt `plan_ctx["eingabe_herkunft"] = herkunft` direkt und
+    ruft `execute` nicht auf; bleibt, wie es ist. Ein Test, der `execute(..., eingabe_herkunft="getippt")` aufriefe, wurde
+    auf master nicht gefunden; kommt einer hinzu, lautet die Umstellung `herkunft={"art": "getippt"}`.
+  - `brain/the_brain/tests/test_desktop_schleife.py:863`: prüft den Quelltext (`plan_ctx.get("eingabe_herkunft") !=
+    "getippt"` steht vor `auftrag_aus_absicht(`); bleibt wahr.
+  - `plan_executor.py:735` (Parameter) und `:850` (Eintrag in `plan_ctx`) sind die Einbaustellen selbst.
+  Das Objekt entsteht **nur** im Router durch `herkunft_bestimmen`. Es kommt nie aus `body`, nie aus `Plan.from_dict`
+  und nie aus einem mitgebrachten Plan oder Rest. `execute` verlässt sich nicht auf die Form, sondern wertet nur über
+  `ist_betreiber` und `eingabe_herkunft` aus.
 - Der Plan-Rest, der bei einem wartenden Auftrag gespeichert wird: `_auftrag_plan_rest_speichern`
   (Zeile 2325), Wörterbuch `plan_rest` (Zeilen 2388 bis 2393, dort steht schon `antwortkanal`): ergänzen um
   `"herkunft": weitergeben(plan_ctx.get("herkunft"))`. `eingabe_herkunft` kommt **nicht** in den Plan-Rest.
 - Beim Wiederaufnehmen: `core/nachfasser.py` Zeile 161 (`self.plan_executor.execute(Plan.from_dict(rest["plan"]),
   start_state=state, antwortkanal=rest.get("antwortkanal"))`) bekommt zusätzlich
-  `herkunft=rest.get("herkunft")`. Das ist schon die weitergegebene Form: Sie zählt als Betreiber, ergibt aber nie
-  `"getippt"`; die Desktop-Schleife startet aus einem fortgesetzten Plan nicht. Ein Plan-Rest ohne das Feld (aus
+  `herkunft=weitergeben(rest.get("herkunft"))`. Der Plan-Rest ist gespeicherte Daten; ein nicht weitergegebenes
+  `{"art": "getippt"}` aus einem alten Rest oder einer veränderten Datei würde die Desktop-Schleife sonst neu starten.
+  `weitergeben` ist idempotent und macht aus einer falschen Form `art None`. Das Ergebnis zählt als Betreiber, ergibt
+  aber nie `"getippt"`; die Desktop-Schleife startet aus einem fortgesetzten Plan nicht. Ein Plan-Rest ohne das Feld (aus
   der Zeit vor dieser Änderung) ergibt `None` und damit „unbekannt": ein fortgesetzter Altbestand darf keine
   Betreiber-Ereignisse mehr auslösen. Das ist gewollt.
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 EINGAENGE_BETREIBER: frozenset[str] = frozenset({"app", "telegram-betreiber"})
@@ -52,18 +52,18 @@ ART_GETIPPT = "getippt"
 _VORSATZ_EINGANG = "eingang:"
 
 
-def herkunft_bestimmen(getippt: bool, eingang: Any) -> dict[str, Any]:
+def herkunft_bestimmen(getippt: bool, eingang: Callable[[], str]) -> dict[str, Any]:
     """Das eine Herkunfts-Objekt einer Anfrage.
 
     ``getippt``: ist das Ergebnis von ``herkunft_pruefen(...) == "getippt"`` (Zeichen ``X-Vibemind-Eingabe``);
-    es gewinnt immer. Sonst zaehlt ein gueltiger Eingang aus Block 2: ``eingang`` ist der Name, den
-    ``eingang_pruefen`` lieferte, oder ein Aufruf ohne Argumente, der ihn liefert (dann wird der Eingang nur
-    geprueft, wenn nicht getippt). Sonst ``{"art": None}``. Wirft nie.
+    es gewinnt immer. Sonst zaehlt ein gueltiger Eingang aus Block 2: ``eingang`` ist ein Aufruf ohne
+    Argumente, der den Namen aus ``eingang_pruefen`` liefert (er laeuft nur, wenn nicht getippt). Eine rohe
+    Zeichenkette zaehlt nie: Sie haette keinen Echtheitsnachweis. Sonst ``{"art": None}``. Wirft nie.
     """
     try:
         if getippt is True:
             return {"art": ART_GETIPPT}
-        name = eingang() if callable(eingang) else eingang
+        name = eingang() if callable(eingang) else None  # nur die Aufruf-Form: rohe Namen haben keinen Echtheitsnachweis
         if isinstance(name, str) and name in EINGAENGE_BETREIBER:
             return {"art": _VORSATZ_EINGANG + name}
     except Exception:  # noqa: BLE001

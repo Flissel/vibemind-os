@@ -165,7 +165,7 @@ def test_getippt_hat_vorrang_und_der_eingang_wird_nicht_geprueft():
 
 def test_kein_getippt_plus_gueltiger_eingang():
     from herkunft import herkunft_bestimmen
-    assert herkunft_bestimmen(False, "app") == {"art": "eingang:app"}
+    assert herkunft_bestimmen(False, lambda: "app") == {"art": "eingang:app"}
     assert herkunft_bestimmen(False, lambda: "telegram-betreiber") == {"art": "eingang:telegram-betreiber"}
 
 
@@ -173,7 +173,7 @@ def test_weder_noch_ergibt_art_none():
     from herkunft import herkunft_bestimmen
     for eingang in ("unbekannt", "", None, "dashboard", 5, lambda: "unbekannt", lambda: 1 / 0):
         assert herkunft_bestimmen(False, eingang) == {"art": None}
-    assert herkunft_bestimmen("ja", "app") == {"art": "eingang:app"}  # nur echtes True zaehlt als getippt
+    assert herkunft_bestimmen("ja", lambda: "app") == {"art": "eingang:app"}  # nur echtes True zaehlt als getippt
 
 
 def test_weitergegebenes_getippt_ist_betreiber_aber_nie_getippt():
@@ -240,3 +240,30 @@ def test_falsche_formen_ergeben_nie_true_und_werfen_nie():
     # weitergegeben ist False, fehlt oder ist True; alles andere ist eine falsche Form
     assert eingabe_herkunft({"art": "getippt", "weitergegeben": 0}) is None
     assert eingabe_herkunft({"art": "getippt", "weitergegeben": "nein"}) is None
+
+
+# --- Fix 1: rohe Zeichenkette zaehlt nicht, gespeicherter Rest wird nie "getippt" ---
+
+def test_rohe_zeichenkette_als_eingang_zaehlt_nicht():
+    from herkunft import herkunft_bestimmen
+    for roh in ("app", "telegram-betreiber", "unbekannt"):
+        assert herkunft_bestimmen(False, roh) == {"art": None}
+    assert herkunft_bestimmen(True, "app") == {"art": "getippt"}
+
+
+def test_gespeicherter_rest_wird_nie_getippt_aber_bleibt_betreiber():
+    from herkunft import eingabe_herkunft, ist_betreiber, weitergeben
+    gespeichert = {"art": "getippt"}  # alter Rest oder manipulierte Datei: nicht weitergegeben
+    w = weitergeben(gespeichert)
+    assert eingabe_herkunft(w) is None
+    assert ist_betreiber(w) is True
+    assert weitergeben(w) == w  # idempotent
+    assert weitergeben(weitergeben(gespeichert)) == w
+
+
+def test_weitergeben_falscher_form_ergibt_art_none():
+    from herkunft import eingabe_herkunft, ist_betreiber, weitergeben
+    for roh in (None, "kaputt", 5, [], {"art": 5}, {"art": "getippt", "weitergegeben": "ja"}):
+        w = weitergeben(roh)
+        assert w["art"] is None and w["weitergegeben"] is True, roh
+        assert eingabe_herkunft(w) is None and ist_betreiber(w) is False, roh
