@@ -222,6 +222,11 @@ def fehler_aus_ergebnis(value: Any) -> str:
         meldung = inhalt["error"]
         name = meldung.split(":", 1)[0] if isinstance(meldung, str) else ""
         if re.fullmatch(r"[a-z][a-z_]{0,40}", name):
+            # Der Ideen-Server nennt das betroffene Feld in einfachen Anfuehrungszeichen.
+            # Nur dieser Feldname kommt mit, nie ein Wert.
+            feld = re.search(r"'([a-z][a-z_]{0,40})'", meldung)
+            if feld:
+                return f"Ideen-Werkzeug meldet einen Fehler ({name}: {feld.group(1)})"
             return f"Ideen-Werkzeug meldet einen Fehler ({name})"
         return "Ideen-Werkzeug meldet einen Fehler"
     return ""

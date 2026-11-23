@@ -1076,17 +1076,44 @@ class McpExecutor(_BaseRemoteExecutor):
         if self.tool == "aenderung_zurueck":
             # Entscheidet am Inhalt, nicht am Fehlerkennzeichen (siehe dort).
             return self._pruefe_werkzeug_ergebnis(result)
-        if result.get("isError") is True:
-            raise RuntimeError("OpenFang MCP tool returned isError=true")
         if self.server == "spaces-ideas":
             from .ideen_fest_contract import ALLE_WERKZEUGE, fehler_aus_ergebnis
             if self.tool in ALLE_WERKZEUGE:
-                # Auch hier entscheidet der Inhalt: ein Fehlertext mit isError=false
-                # darf nie als gelungener Schritt gelten.
+                # Der Inhalt entscheidet, nicht das Fehlerkennzeichen: ein Fehlertext mit
+                # isError=false darf nie als gelungen gelten, und bei isError=true soll
+                # der Fehlername samt Feld durchkommen (nie Werte, nie freier Text).
                 meldung = fehler_aus_ergebnis(result)
                 if meldung:
                     raise RuntimeError(meldung)
+        if result.get("isError") is True:
+            raise RuntimeError("OpenFang MCP tool returned isError=true")
         return result
+
+    def call_with_arg(
+        self, arg: Any, arg_kwarg: Optional[str] = None,
+        extra_params: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Ein Woerterbuch IST die Argumentliste des Werkzeugs.
+
+        Die Basisklasse verpackt ein Argument ohne Namen unter ``value``, sobald
+        Zusatzangaben mitreisen. Hier reist immer der Laufzeit-Kontext mit; das
+        Werkzeug bekam dadurch ``{"value": {...}}`` und lehnte ab (gemessen 23.11.2026,
+        idea_create: invalid_arguments). Zusatzangaben sind nur die internen Felder
+        mit Unterstrich; ``_call`` nimmt sie heraus, bevor das Werkzeug sie saehe.
+        """
+        if arg_kwarg is None and isinstance(arg, dict):
+            intern = {
+                k: v for k, v in (extra_params or {}).items()
+                if isinstance(k, str) and k.startswith("_") and v not in (None, "")
+            }
+            return self.call({**arg, **intern})
+        return super().call_with_arg(arg, arg_kwarg=arg_kwarg, extra_params=extra_params)
+
+    def _compose_payload(self, args, kwargs) -> Dict[str, Any]:
+        if not kwargs and args and isinstance(args[0], dict):
+            # Unveraendert: ein leerer Text ist ein gueltiger Wert (Inhalt leeren).
+            return dict(args[0])
+        return super()._compose_payload(args, kwargs)
 
     # Schreibende Werkzeuge des Ideen-Servers, denen das Gehirn seine Plan-Kennung
     # mitgibt ("zurueck": ein Plan = eine Aenderung). Ohne idea_connect: dessen Vertrag
