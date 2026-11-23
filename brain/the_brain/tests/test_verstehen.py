@@ -68,6 +68,15 @@ def test_schwelle(cls, erwartet) -> None:
     assert v.unter_schwelle(cls) is erwartet
 
 
+def test_geeichte_vorgabe(monkeypatch) -> None:
+    monkeypatch.delenv("VERSTEHEN_MIN_COS", raising=False)
+    assert v.schwelle() == 0.68
+    # hoechster gemessener Unsinn-Satz auf einer Planer-Stufe ("lorem ipsum ..." -> hard, 0,675)
+    assert v.unter_schwelle({"level": "hard", "score": 0.675, "method": "qwen-cosine"})
+    # echter Satz ohne festen Weg, der weiter zum Planer darf ("Wie ist der Code-Status?", 0,723)
+    assert not v.unter_schwelle({"level": "medium", "score": 0.723, "method": "qwen-cosine"})
+
+
 def test_schwelle_ist_einstellbar_und_abschaltbar(monkeypatch) -> None:
     cls = {"level": "medium", "score": 0.58, "method": "qwen-cosine"}
     assert v.unter_schwelle(cls)

@@ -42,14 +42,47 @@ UNSINN = [
 ]
 
 
-def main() -> int:
-    if not os.environ.get("EMBEDDING_SERVICE_URL"):
-        print("EMBEDDING_SERVICE_URL fehlt; ohne Embedding-Dienst keine Messung.")
-        return 2
-    from core.difficulty_router import DifficultyRouter
-    from core.qdrant_kg import Embedder
+class _Datei:
+    """Vektoren aus einer JSON-Datei {text: vektor} (vorher beim Embedding-Dienst geholt)."""
 
-    router = DifficultyRouter(embedder=Embedder.get())
+    def __init__(self, pfad: str) -> None:
+        import json
+
+        self.vektoren = json.loads(Path(pfad).read_text(encoding="utf-8"))
+
+    def encode(self, text: str):
+        return self.vektoren[text]
+
+    def encode_batch(self, texte):
+        return [self.vektoren[t] for t in texte]
+
+
+def alle_texte() -> list:
+    """Alle Texte, die eingebettet werden muessen: Anker und Messsaetze."""
+    from core.difficulty_router import DEFAULT_ANCHORS
+
+    texte = [t for lvl in DEFAULT_ANCHORS.values() for t in lvl]
+    return list(dict.fromkeys(texte + ECHT + UNSINN))
+
+
+def main() -> int:
+    if "--texte" in sys.argv:
+        import json
+
+        print(json.dumps(alle_texte(), ensure_ascii=False))
+        return 0
+    from core.difficulty_router import DifficultyRouter
+
+    if "--vektoren" in sys.argv:
+        embedder = _Datei(sys.argv[sys.argv.index("--vektoren") + 1])
+    elif os.environ.get("EMBEDDING_SERVICE_URL"):
+        from core.qdrant_kg import Embedder
+
+        embedder = Embedder.get()
+    else:
+        print("EMBEDDING_SERVICE_URL oder --vektoren fehlt; ohne Vektoren keine Messung.")
+        return 2
+    router = DifficultyRouter(embedder=embedder)
     zeilen = []
     for art, saetze in (("echt", ECHT), ("unsinn", UNSINN)):
         for satz in saetze:

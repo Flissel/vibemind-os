@@ -186,12 +186,18 @@ def genannter_space(satz: Any) -> Optional[str]:
 
 # ── Schwelle ────────────────────────────────────────────────────────────────
 
+# Geeicht 23.11.2026 mit echten Vektoren (scripts/verstehen_schwelle_messen.py, 22 echte und
+# 20 Unsinn-Saetze, Standard-Anker): hoechster Unsinn-Satz auf einer Planer-Stufe lag bei
+# 0,675 ("lorem ipsum ..." -> hard). 0,68 laesst keinen Unsinn an den Planer.
+SCHWELLE_VORGABE = 0.68
+
+
 def schwelle() -> float:
     """Cosinus, unter dem ein Satz als nicht verstanden gilt (Env ``VERSTEHEN_MIN_COS``)."""
     try:
-        return float(os.environ.get("VERSTEHEN_MIN_COS", "0.6"))
+        return float(os.environ.get("VERSTEHEN_MIN_COS", str(SCHWELLE_VORGABE)))
     except ValueError:
-        return 0.6
+        return SCHWELLE_VORGABE
 
 
 def unter_schwelle(klassifikation: Any) -> bool:
