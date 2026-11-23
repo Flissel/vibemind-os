@@ -87,15 +87,33 @@ def test_bild_an_karte_sagt_ehrlich_dass_es_noch_nicht_geht(satz) -> None:
     assert abk.loese(satz, KONTEXT) == {"rueckfrage": abk.BILD_NOCH_NICHT}
 
 
-@pytest.mark.parametrize("satz", ["Recherchiere zu Bühnenplan", "Recherchiere zu dieser Bubble",
-                                  "Mach eine Recherche zu Sponsoren", "Bitte recherchiere über Stadtfest"])
-def test_recherche_zu_karte_sagt_ehrlich_dass_es_noch_nicht_geht(satz) -> None:
-    assert abk.loese(satz, KONTEXT) == {"rueckfrage": abk.RECHERCHE_NOCH_NICHT}
+@pytest.mark.parametrize("satz,thema", [
+    ("Recherchiere zu dieser Bubble", "das Thema der Bubble „Stadtfest“"),
+    ("Recherchiere zu dieser Bubble: Ticketpreise anderer Stadtfeste", "Ticketpreise anderer Stadtfeste"),
+    ("Recherchiere zu der Bubble Stadtfest: Sponsoren aus der Region", "Sponsoren aus der Region"),
+    ("Recherchiere zu Bühnentechnik für kleine Plätze", "Bühnentechnik für kleine Plätze"),
+    ("Mach eine Recherche zu Sponsoren", "Sponsoren"),
+    ("Bitte recherchiere über Stadtfest", "Stadtfest"),
+])
+def test_recherche_zu_bubble_bringt_bubble_und_thema(satz, thema) -> None:
+    # Kein Aufruf hier: Vorschau und Rueckfrage macht das Gehirn (core/recherche_bubble).
+    assert abk.loese(satz, KONTEXT) == {
+        "recherche": {"bubble_id": "b0b1e001", "bubble_titel": "Stadtfest", "thema": thema}}
+
+
+def test_recherche_ohne_offene_bubble_fragt() -> None:
+    antwort = abk.loese("Recherchiere zu dieser Bubble", {"space": "ideas", "cards": []})
+    assert "Bubble" in antwort["rueckfrage"]
+
+
+def test_recherche_zu_unbekannter_bubble_fragt() -> None:
+    antwort = abk.loese("Recherchiere zu der Bubble Laternenlauf", KONTEXT)
+    assert antwort == {"rueckfrage": "Ich finde keine Bubble mit dem Titel „Laternenlauf“."}
 
 
 def test_recherche_im_web_bleibt_beim_browser_weg() -> None:
     antwort = abk.loese("Recherchiere im Web zu Sponsoren", KONTEXT)
-    assert antwort is None or antwort.get("rueckfrage") != abk.RECHERCHE_NOCH_NICHT
+    assert antwort is None or "recherche" not in antwort
 
 
 def test_bildungsplan_ist_kein_bild() -> None:

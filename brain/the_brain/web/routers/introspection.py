@@ -2528,6 +2528,10 @@ def _try_ideen_abkuerzung(intent: str, kontext: Any):
         if treffer.get("bestaetigen"):
             # White Paper: nie direkt. Erst der Umfang als Rueckfrage, "Ja, erstellen" startet.
             return None, _white_paper_rueckfrage(treffer["argumente"]), ""
+        if isinstance(treffer.get("recherche"), dict):
+            # Recherche zu einer Bubble: erst die Vorschau (kein Lauf), "Ja, recherchieren" startet.
+            from core import recherche_bubble as _rb
+            return None, _rb.vorschau(treffer["recherche"]), ""
         if isinstance(treffer.get("lies"), dict) and isinstance(kontext, dict):
             # "Was steht bei X?": die Antwort zeigt nur diese Karte (antwort_fuer_schritt).
             kontext["_lies_karte"] = treffer["lies"]
@@ -2549,6 +2553,27 @@ def _try_ideen_abkuerzung(intent: str, kontext: Any):
     except Exception as e:  # noqa: BLE001 - nie die Anfrage daran scheitern lassen
         logger.warning(f"[ideen-abkuerzung] uebersprungen: {type(e).__name__}: {e}")
         return None, None, ""
+
+
+def _recherche_starten(pe, trace_id: str, intent: str, offen: Dict[str, Any]) -> JSONResponse:
+    """"Ja, recherchieren": Zeile anlegen, Lauf starten, als angenommen antworten (core/recherche_bubble)."""
+    from core import recherche_bubble as _rb
+
+    try:
+        from core.agent_auftraege import tabelle_aus_umgebung
+        tabelle = tabelle_aus_umgebung()
+    except Exception:  # noqa: BLE001
+        _trace_lite(pe, trace_id, intent, "recherche-fehler", _rb.TABELLE_FEHLT)
+        return JSONResponse({"ok": False, "space": "ideas", "executed": {}, "final_text": _rb.TABELLE_FEHLT,
+                             "trace_id": trace_id})
+    try:
+        felder = _rb.starten(offen, tabelle=tabelle, trace_id=trace_id)
+    except _rb.RechercheFehler as e:
+        _trace_lite(pe, trace_id, intent, "recherche-fehler", str(e))
+        return JSONResponse({"ok": False, "space": "ideas", "executed": {}, "final_text": str(e),
+                             "trace_id": trace_id})
+    _trace_lite(pe, trace_id, intent, "recherche-gestartet", felder["final_text"])
+    return JSONResponse({**felder, "trace_id": trace_id})
 
 
 def _white_paper_rueckfrage(argumente: Dict[str, Any]) -> str:
@@ -2824,6 +2849,16 @@ async def _multihop_execute(request: Request):
         # jeder andere Satz verwirft sie (core/whitepaper_bestaetigung).
         from core import whitepaper_bestaetigung as _wp
         _wp_antwort = _wp.satz_pruefen(intent)
+        # Recherche zu einer Bubble: "Ja, recherchieren" gilt nur direkt nach der Vorschau
+        # (core/recherche_bubble); jeder andere Satz verwirft sie.
+        from core import recherche_bubble as _rb
+        _rb_antwort = _rb.satz_pruefen(intent)
+        if _rb_antwort and _rb_antwort.get("satz"):
+            _trace_lite(pe, trace_id, intent, "recherche-rueckfrage", _rb_antwort["satz"])
+            return JSONResponse({"ok": False, "rueckfrage": True, "space": "ideas", "executed": {},
+                                 "final_text": _rb_antwort["satz"], "trace_id": trace_id})
+        if _rb_antwort and _rb_antwort.get("offen"):
+            return await asyncio.to_thread(_recherche_starten, pe, trace_id, intent, _rb_antwort["offen"])
         # Antwort auf die Frage nach einer von mehreren gleichnamigen Bubbles (core/verstehen);
         # jeder andere Satz laesst sie verfallen.
         _bubble_wahl = _verstehen.bubble_antwort(intent)

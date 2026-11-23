@@ -1612,6 +1612,20 @@ class PlanExecutor:
                         contract_pass=False, reward=-1.0,
                     )
                 target = deterministic_target
+            from .recherche_bubble import NUR_GEHIRN as _RECHERCHE_NUR_GEHIRN, SERVER as _RECHERCHE_SERVER
+            if event_id in _RECHERCHE_NUR_GEHIRN or (
+                    isinstance(target, str) and target.startswith("mcp:")
+                    and target.split(":", 3)[2:3] == [_RECHERCHE_SERVER]):
+                # Recherche zu einer Bubble kostet Web-Zugriffe und einen Agentenlauf: nur ueber
+                # Vorschau und "Ja, recherchieren" im Gehirn (core/recherche_bubble), nie per Plan.
+                return HopResult(
+                    step_id=hop.step_id, ok=False,
+                    error="recherche: nur über die Rückfrage im Gehirn, nie per Plan",
+                    capability=hop.capability, target=target,
+                    rendered_arg=rendered_arg, kg_hits=kg_hits,
+                    elapsed_s=time.time() - t0,
+                    contract_pass=False, reward=-1.0,
+                )
             from .idea_connect_contract import is_idea_connect_mcp_target
             if is_idea_connect_mcp_target(target) and event_id != "idea.connect":
                 return HopResult(

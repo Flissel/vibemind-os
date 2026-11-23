@@ -61,7 +61,8 @@ class Nachfasser:
     def __init__(self, tabelle: Any, *, validator: Any, router: Any, plan_executor: Any,
                  exec_log: Any = None, jetzt: Callable[[], float] = time.time,
                  rueckweg_anschluss: Optional[Callable[[dict], dict]] = None,
-                 dokument_anschluss: Optional[Callable[..., dict]] = None) -> None:
+                 dokument_anschluss: Optional[Callable[..., dict]] = None,
+                 recherche_anschluss: Optional[Callable[[], dict]] = None) -> None:
         self.tabelle = tabelle
         self._jetzt = jetzt
         self.validator = validator
@@ -72,6 +73,8 @@ class Nachfasser:
         self._rueckweg_anschluss = rueckweg_anschluss
         # Dokument-Auftraege (core/ideen_dokument); in Tests eine Attrappe.
         self._dokument_anschluss = dokument_anschluss
+        # Recherchen zu einer Bubble (core/recherche_bubble); in Tests eine Attrappe.
+        self._recherche_anschluss = recherche_anschluss
 
     def runde(self) -> Dict[str, int]:
         z = {"geprueft": 0, "bestaetigt": 0, "abgelehnt_pruefung": 0, "fortgesetzt": 0,
@@ -105,12 +108,31 @@ class Nachfasser:
             except Exception:  # noqa: BLE001
                 logger.exception("Meldung fuer Auftrag %s fehlgeschlagen", b.get("id"))
                 z["fehler"] += 1
+        self._recherchen(z)
         try:
             z["abgelaufen"] = int(self.tabelle.abgelaufene_markieren() or 0)
         except Exception:  # noqa: BLE001
             logger.exception("abgelaufene_markieren fehlgeschlagen")
             z["fehler"] += 1
         return z
+
+    def _recherchen(self, z: Dict[str, int]) -> None:
+        """Laufende Recherchen: research_status fragen, Karte am Zustand pruefen, abschliessen.
+
+        Vor ``abgelaufene_markieren``: eine Recherche, die gerade fertig wurde, wird noch
+        abgeschlossen, bevor ihre Frist sie ablaufen laesst. Wirft nie.
+        """
+        if not hasattr(self.tabelle, "recherchen_laufend"):
+            return
+        from core import recherche_bubble
+        try:
+            anschluss = (self._recherche_anschluss or recherche_bubble.anschluss)()
+        except Exception:  # noqa: BLE001
+            logger.exception("Recherche-Anschluss nicht baubar")
+            z["fehler"] += 1
+            return
+        for name, wert in recherche_bubble.runde(self.tabelle, **anschluss).items():
+            z[name] = z.get(name, 0) + wert
 
     def _plan_rest_ausstehend(self, a: dict) -> bool:
         """M1: plan_rest NULL heisst 'noch nicht geschrieben' - bis 60 s nach

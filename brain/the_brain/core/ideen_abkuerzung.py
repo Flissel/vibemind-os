@@ -664,20 +664,38 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
                           text, _I)
             and re.search(r"\b(?:karte|notiz|idee|bubble|card|note|an\s+\w+|zu\s+\w+|in\s+\w+)\b", text, _I)):
         raise _Rueckfrage(BILD_NOCH_NICHT)
-    # ── Recherche zu einer Karte oder Bubble: der Weg, der die Recherche-Karte anlegt
-    #    (spaces/research, research_start/research_status), ist an das Gehirn nicht
-    #    angebunden, und der Pruefweg research:* meldete im Betrieb "report file was never
-    #    written". Nicht binden, ehrlich sagen. "Recherchiere im Web/Netz/Internet ..."
-    #    bleibt beim Browser-Weg und wird hier nicht abgefangen.
-    if (re.match(r"(?:bitte\s+)?(?:recherchier\w*|mach(?:e)?\s+(?:eine\s+)?recherche|starte\s+(?:eine\s+)?recherche)"
-                 r"\s+(?:zu|über|ueber|für|fuer|bei|an)\b", text, _I)
-            and not re.search(r"\bim\s+(?:web|netz|internet)\b", text, _I)):
-        raise _Rueckfrage(RECHERCHE_NOCH_NICHT)
+    # ── Recherche zu einer Bubble (core/recherche_bubble): erst die Vorschau als Rueckfrage,
+    #    "Ja, recherchieren" startet den Lauf im Recherche-Server (spaces-research), der die
+    #    Recherche-Karte selbst anlegt. Der alte Pruefweg research:* bleibt aus (Container und
+    #    Agent sehen nie dieselbe Platte). "Recherchiere im Web/Netz/Internet ..." bleibt beim
+    #    Browser-Weg und wird hier nicht abgefangen.
+    m = re.match(r"(?:bitte\s+)?(?:recherchier\w*|mach(?:e)?\s+(?:eine\s+)?recherche|starte\s+(?:eine\s+)?recherche)"
+                 r"\s+(?:zu|zum|zur|über|ueber|für|fuer|bei|an)\b\s*(?P<rest>.*)", text, _I)
+    if m and not re.search(r"\bim\s+(?:web|netz|internet)\b", text, _I):
+        return {"recherche": _recherche_argumente(m.group("rest"), kontext)}
     return None
 
 
-RECHERCHE_NOCH_NICHT = ("Das kann ich noch nicht: zu einer Karte oder Bubble recherchieren und das Ergebnis "
-                        "als Karte ablegen. Geändert habe ich nichts.")
+RECHERCHE_THEMA_ZEICHEN = 500
+
+
+def _recherche_argumente(rest: str, kontext: dict) -> dict:
+    """Bubble und Thema aus "zu dieser Bubble[: Thema]", "zu der Bubble X[: Thema]" oder "zu THEMA"."""
+    rest = rest.strip()
+    thema = ""
+    m = re.fullmatch(r"(?:dieser|diese|der|die)\s+bubble(?:\s+(?P<name>[^:]+?))?\s*(?::\s*(?P<thema>.+))?", rest, _I)
+    if m:
+        name = m.group("name")
+        bubble = _bubble(name if name and _normal(name) not in ("hier",) else None, kontext)
+        thema = (m.group("thema") or "").strip()
+    else:
+        bubble = _bubble(None, kontext)
+        thema = rest
+    if not thema:
+        thema = f"das Thema der Bubble „{str(bubble.get('title') or '').strip() or 'ohne Titel'}“"
+    if len(thema) > RECHERCHE_THEMA_ZEICHEN:
+        raise _Rueckfrage(f"Das Thema ist zu lang (höchstens {RECHERCHE_THEMA_ZEICHEN} Zeichen). Fass es kürzer.")
+    return {"bubble_id": bubble["id"], "bubble_titel": str(bubble.get("title") or ""), "thema": thema}
 
 
 BILD_NOCH_NICHT = ("Das kann ich noch nicht: Bilder an Karten hängen. Im Ideen-Space gibt es dafür noch "
