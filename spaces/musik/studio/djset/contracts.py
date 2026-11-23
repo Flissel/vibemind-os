@@ -474,10 +474,18 @@ class AudioFormat(BaseModel):
     subtype: str = Field(min_length=1)
 
 
+# Nur diese drei Arten machen den Bericht rot. `length` und `seam_unmeasurable`
+# sind Hinweise: eine Laengenabweichung steht im Mixplan und ein Re-Render
+# aendert sie nicht, eine unmessbare Naht ist im Betrieb zu erwarten (siehe
+# oben). Beide werden berichtet, blockieren aber nicht.
+BLOCKING_KINDS: frozenset[str] = frozenset({"gap", "true_peak", "seam"})
+
+
 class QaReport(BaseModel):
     """Was die QA am fertigen File gemessen hat.
 
-    `ok` heisst: nichts gefunden. Ein Befund verhindert die Auslieferung nicht -
+    `ok` heisst: nichts Blockierendes gefunden (siehe BLOCKING_KINDS), Hinweise
+    duerfen da sein. Auch ein roter Bericht verhindert die Auslieferung nicht -
     laut Spec wird nach hoechstens einem korrigierten Re-Render ausgeliefert und
     der Befund vermerkt.
     """
@@ -490,5 +498,15 @@ class QaReport(BaseModel):
     findings: list[QaFinding]
 
     @property
+    def blocking(self) -> list[QaFinding]:
+        """Die Befunde, die den Bericht rot machen."""
+        return [f for f in self.findings if f.kind in BLOCKING_KINDS]
+
+    @property
+    def hints(self) -> list[QaFinding]:
+        """Die Befunde, die nur vermerkt werden."""
+        return [f for f in self.findings if f.kind not in BLOCKING_KINDS]
+
+    @property
     def ok(self) -> bool:
-        return not self.findings
+        return not self.blocking

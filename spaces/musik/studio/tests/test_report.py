@@ -112,6 +112,49 @@ def test_a_corrected_and_now_clean_report_says_so_in_the_headline(
     assert status_line != "**Status:** Keine Befunde - sauber ausgeliefert."
 
 
+def test_a_hints_only_report_says_hinweis_not_befund(profile: Profile) -> None:
+    """Hinweise (length, seam_unmeasurable) sind kein Rot: die Statuszeile sagt
+    Hinweis, nicht Befund, und die Hinweise stehen unter eigener Ueberschrift."""
+    report = _report(
+        -2.0,
+        [
+            QaFinding(kind="length", text="Laenge weicht ab"),
+            QaFinding(kind="seam_unmeasurable", text="Naht nicht messbar"),
+        ],
+    )
+
+    text = render_qa_report(report, _shortlist(), [], None, simple_plan(), profile)
+
+    lines = text.splitlines()
+    status_line = next(line for line in lines if line.startswith("**Status:**"))
+    assert "Hinweis" in status_line
+    assert "Befund" not in status_line
+    hints_at = lines.index("## Hinweise")
+    assert "- **length**: Laenge weicht ab" in lines[hints_at:]
+    assert "- **seam_unmeasurable**: Naht nicht messbar" in lines[hints_at:]
+    # Unter "Befunde der QA" steht davon nichts.
+    findings_at = lines.index("## Befunde der QA")
+    assert lines[findings_at + 2] == "- Keine."
+    assert "Laenge weicht ab" not in "\n".join(lines[findings_at:hints_at])
+
+
+def test_a_corrected_report_with_only_hints_says_so_in_the_headline(
+    profile: Profile,
+) -> None:
+    report = _report(-2.0, [QaFinding(kind="length", text="Laenge weicht ab")])
+
+    text = render_qa_report(
+        report, _shortlist(), [], None, simple_plan(), profile, corrected=True
+    )
+
+    status_line = next(
+        line for line in text.splitlines() if line.startswith("**Status:**")
+    )
+    assert "korrigiert" in status_line
+    assert "Hinweis" in status_line
+    assert "Befund" not in status_line
+
+
 def test_the_report_names_the_format_of_the_delivered_file(profile: Profile) -> None:
     """Finding 6: das Format der ausgelieferten Datei stand nirgends.
 

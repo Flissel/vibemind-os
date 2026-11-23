@@ -3,8 +3,8 @@ from pydantic import ValidationError
 
 from djset.contracts import (
     BeatGrid, Bpm, BpmRange, EnergyPoint, EqCurve, EqPoint, Key, Loudness,
-    MixEntry, MixPlan, MixRegions, Profile, Rejection, StructureRules,
-    TrackCount, TrackMeasurements, Transition, TransitionRules,
+    AudioFormat, MixEntry, MixPlan, MixRegions, Profile, QaFinding, QaReport,
+    Rejection, StructureRules, TrackCount, TrackMeasurements, Transition, TransitionRules,
 )
 
 
@@ -239,3 +239,33 @@ def test_mix_plan_rejects_duplicate_track_ids():
             entries=_entries(["a", "b", "a"]),
             transitions=[_transition("a", "b"), _transition("b", "a")],
         )
+
+
+def _qa_report(findings: list[QaFinding]) -> QaReport:
+    return QaReport(
+        length_s=3600.0,
+        target_length_s=3600.0,
+        audio_format=AudioFormat(channels=2, sample_rate=44_100, subtype="FLOAT"),
+        lufs_integrated=-9.0,
+        true_peak=-2.0,
+        findings=findings,
+    )
+
+
+def _finding(kind: str) -> QaFinding:
+    return QaFinding(kind=kind, text=f"{kind} gefunden")
+
+
+def test_hinweise_machen_den_bericht_nicht_rot():
+    report = _qa_report([_finding("length"), _finding("seam_unmeasurable")])
+    assert report.ok
+    assert [f.kind for f in report.hints] == ["length", "seam_unmeasurable"]
+    assert report.blocking == []
+
+
+@pytest.mark.parametrize("kind", ["gap", "true_peak", "seam"])
+def test_blockierende_befunde_machen_rot(kind):
+    report = _qa_report([_finding(kind)])
+    assert not report.ok
+    assert [f.kind for f in report.blocking] == [kind]
+    assert report.hints == []

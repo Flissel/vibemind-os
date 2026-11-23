@@ -121,17 +121,26 @@ def _status_line(qa: QaReport, corrected: bool) -> str:
     """Die eine Zeile, die beantwortet, ob der Lauf ohne Nachlesen brauchbar ist.
 
     `corrected` wird VOR `qa.ok` geprueft. Der normale Erfolgsfall einer
-    Korrektur ist genau der, bei dem der neu gemessene Report danach sauber
-    ist (`qa.ok` also wahr ist) - wuerde `qa.ok` zuerst geprueft, wuerde
-    dieser Fall als "Keine Befunde - sauber ausgeliefert." gemeldet und die
+    Korrektur ist genau der, bei dem der neu gemessene Report danach nicht
+    mehr rot ist (`qa.ok` also wahr ist) - wuerde `qa.ok` zuerst geprueft,
+    wuerde dieser Fall als "Keine Befunde - sauber ausgeliefert." gemeldet und die
     Korrektur damit aus der einen Zeile verschwinden, die genau dafuer da ist
     (Fund aus Fix Round 1: der Reviewer produzierte exakt diesen Fall).
     Spec Abschnitt 7 verlangt Auslieferung "mit Vermerk" - ein korrigierter,
     jetzt sauberer Lauf ist ein eigenes, meldenswertes Ergebnis, kein
     unkorrigierter sauberer Lauf.
+
+    `qa.ok` heisst "nichts Blockierendes": Hinweise (`qa.hints`) machen den
+    Lauf nicht rot, stehen aber in der Zeile, damit sie nicht in einer
+    "sauber"-Meldung untergehen.
     """
     if corrected:
         if qa.ok:
+            if qa.hints:
+                return (
+                    "Einmal mit korrigiertem Pegel neu gerendert, danach nur "
+                    "noch Hinweise (siehe unten)."
+                )
             return (
                 "Einmal mit korrigiertem Pegel neu gerendert, danach ohne "
                 "Befund."
@@ -141,6 +150,8 @@ def _status_line(qa: QaReport, corrected: bool) -> str:
             "gerendert und mit Vermerk ausgeliefert."
         )
     if qa.ok:
+        if qa.hints:
+            return "Ausgeliefert, mit Hinweisen (siehe unten)."
         return "Keine Befunde - sauber ausgeliefert."
     return "Befunde vorhanden, mit Vermerk ausgeliefert (siehe unten)."
 
@@ -159,8 +170,8 @@ def render_qa_report(
     Reihenfolge bewusst gewaehlt fuer jemanden, der die Datei nach einem
     unbeaufsichtigten Lauf zum ersten Mal aufschlaegt: zuerst die eine
     Statuszeile, die ohne Weiterlesen beantwortet, ob ausgeliefert werden
-    konnte, dann die Messwerte, dann die Befunde, die die Statuszeile
-    begruenden - danach alles, was Erfolgskriterium 7 nachvollziehbar halten
+    konnte, dann die Messwerte, dann die Befunde und Hinweise, die die
+    Statuszeile begruenden - danach alles, was Erfolgskriterium 7 nachvollziehbar halten
     muss (Aussortierungen, unlesbare Dateien, Critic-Beanstandungen ueber alle
     Runden). Jede Sektion nennt explizit "keine"/"nichts", statt bei leerem
     Inhalt zu fehlen - ein Leser soll nie raten muessen, ob eine Sektion
@@ -192,8 +203,15 @@ def render_qa_report(
     lines.append("")
 
     lines += ["## Befunde der QA", ""]
-    if qa.findings:
-        lines += [f"- **{f.kind}**: {f.text}" for f in qa.findings]
+    if qa.blocking:
+        lines += [f"- **{f.kind}**: {f.text}" for f in qa.blocking]
+    else:
+        lines.append("- Keine.")
+    lines.append("")
+
+    lines += ["## Hinweise", ""]
+    if qa.hints:
+        lines += [f"- **{f.kind}**: {f.text}" for f in qa.hints]
     else:
         lines.append("- Keine.")
     lines.append("")
