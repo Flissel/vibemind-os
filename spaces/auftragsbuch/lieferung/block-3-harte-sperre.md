@@ -63,42 +63,84 @@ Agent wirklich heißt.
 | `server_ohne_liste_verhaelt_sich_wie_bisher` | Ein Server mit leerer `allowed_agents` verhält sich unverändert. |
 | `mcp_endpunkt_lehnt_fremden_agenten_ab` | Ein `tools/call` eines fremden Agenten am Endpunkt `/mcp` wird mit dem JSON-RPC-Fehler `-32602` abgelehnt. |
 
-## Sofort wirksam, ohne Bau
+## Sofort wirksam, ohne Bau (Änderungen an den Agenten-Manifesten)
 
-Zwei Handgriffe, die schon vorher helfen:
+Beide Handgriffe stehen am Anfang der Datei, **vor** dem ersten Abschnitt in eckigen Klammern (Felder der
+obersten Ebene; unter `[capabilities]` oder `[model]` werden sie ignoriert).
 
 1. `capability-gap-filer` (`openfang/agents/capability-gap-filer/agent.toml`): Die Zeile
-   `mcp_servers = ["issue-detector"]` steht dort unter `[capabilities]` (Zeile 76) und wird ignoriert,
-   weil `mcp_servers` ein Feld der obersten Ebene ist. Die Zeile muss über den ersten Abschnitt
-   (vor `[capabilities]` und vor allen anderen Abschnitten) gesetzt werden.
-2. `abo-probe` (liegt nur im Laufzeit-Ordner, nicht im Repo): `no_mcp = true` eintragen.
+   `mcp_servers = ["issue-detector"]` steht bei Zeile 76 unter `[capabilities]` und wirkt dort nicht. Löschen
+   und stattdessen vor `[model]` (nach `tags = ...`, Zeile 7) setzen:
+   ```toml
+   mcp_servers = ["issue-detector"]
+   ```
+2. `learning-course-factory` (`openfang/agents/learning-course-factory/agent.toml`): Der Agent hat kein
+   `mcp_servers` und ein leeres `tools = []` (Zeile 26), sieht also alle Server mit allen Werkzeugen. Er liefert
+   nur ein JSON-Objekt je Anfrage und braucht (nach dem Manifest) keinen Werkzeug-Server. Vor `[model]`
+   (nach `max_history_messages = 1` / `tags = ...`, Zeile 10 bis 11) eintragen:
+   ```toml
+   no_mcp = true
+   ```
+   (Braucht der Agent doch einen Server, stattdessen `mcp_servers = ["<dieser-Server>"]` ohne `auftragsbuch`.)
+3. `abo-probe` (liegt nur im Laufzeit-Ordner, nicht im Repo): ebenfalls `no_mcp = true` am Anfang.
 
-Danach bleibt im Repo `learning-course-factory` als Agent mit offenem Zugang; ihn sperrt erst die Liste
-`allowed_agents`.
+Erst diese Manifest-Änderungen schließen die beiden offenen Repo-Agenten. `allowed_agents` in der
+Konfiguration ändert kein Manifest.
 
-## Wunsch an die Schnittstelle
+## Schnittstelle: ohne sie bleibt die Abnahme unerreichbar
 
 Die Agenten-Detailabfrage von OpenFang (`GET /api/agents/<Kennung>`) liefert heute nur: `capabilities`,
 `created_at`, `description`, `fallback_models`, `id`, `identity`, `mcp_servers`, `mcp_servers_mode`, `mode`,
 `model`, `name`, `profile`, `session_id`, `skills`, `skills_mode`, `state`, `system_prompt`, `tags`.
-Es fehlen `no_mcp` und `tool_allowlist`. Bitte beide Felder ergänzen. Dann kann unser Prüfwerkzeug
-(`werkzeuge-je-agent`) Agenten mit `no_mcp = true` oder nicht leerer `tool_allowlist` später als geschlossen
-zählen. Bis dahin zählt es sie als „offener Zugang“, auch wenn sie in Wahrheit gesperrt sind.
 
-## Abnahme im Betrieb
+Unser Werkzeug `werkzeuge-je-agent` berechnet „offener Zugang“ (Gruppe 2) allein aus diesen Feldern (leere oder
+`*`-Werkzeuge, dazu sieht der Agent den Server). Es erfährt weder `no_mcp` noch `tool_allowlist`, und die Sperre
+`allowed_agents` ist eine Eigenschaft des Servers, die die Detailabfrage nicht zeigt. Darum muss OpenFang
+zusätzlich liefern:
+
+- (a) `no_mcp` und `tool_allowlist` in der Agenten-Detailabfrage, **und** die Wirkung von `allowed_agents`:
+  entweder `allowed_agents` je Werkzeug-Server in einer Abfrage (z. B. `GET /api/mcp/servers`) oder je Agent
+  die Liste der Werkzeug-Server, die er tatsächlich sieht.
+- (b) Danach ändern **wir** `werkzeuge-je-agent` (Folgeänderung im Repo, nicht Sache der Koordination): Agenten
+  mit `no_mcp`, nicht leerer `tool_allowlist` oder ohne Sicht auf `auftragsbuch` zählen als geschlossen.
+
+## Erwartetes Zwischenergebnis (bis (a) und (b) erledigt sind)
+
+Nach dem Einbau von `allowed_agents` und den Manifest-Änderungen oben, aber ohne (a) und (b):
+
+- Gruppe 2 („offener Zugang“) listet weiter alle Agenten mit leerer oder `*`-Werkzeugliste, die laut Detailfeldern
+  den Server sehen. Das sind `abo-probe` und `learning-course-factory` (beide mit `no_mcp = true`, das die
+  Detailabfrage nicht zeigt; sie sind in Wahrheit gesperrt) sowie jeder weitere Agent mit leerer Werkzeugliste im
+  Laufzeit-Ordner. `capability-gap-filer` erscheint nicht mehr, weil sein `mcp_servers = ["issue-detector"]`
+  in der Detailabfrage steht. (Wer `learning-course-factory` schon jetzt aus Gruppe 2 haben will, trägt statt
+  `no_mcp = true` ein `mcp_servers` mit einem anderen, vorhandenen Server ein; das ist aber unnötig, wenn (a)
+  und (b) kommen.)
+- Der Exit-Code ist **1** (erwartet, kein Fehler), solange Gruppe 2 nicht leer ist. Das heißt nicht, dass die
+  Sperre fehlt; das Werkzeug kann sie nur noch nicht sehen.
+- Gruppe 1 zeigt genau `brain-sales` mit `mcp_auftragsbuch_auftrag_lesen` und `mcp_auftragsbuch_auftrag_probe`.
+- Die Sperre selbst lässt sich schon jetzt prüfen: `gegenprobe <fremder-agent> ...` muss für einen Agenten
+  außerhalb der Liste `-32602` liefern, und die Rust-Tests aus dem Abschnitt „Rust-Tests“ laufen grün.
+
+## Abnahme im Betrieb (Ziel)
+
+Nach (a), (b) und den Manifest-Änderungen:
 
 ```
 werkzeuge-je-agent auftragsbuch
 ```
 
-- Unter „offener Zugang“ steht niemand, und der Exit-Code ist 0.
-- Steht dort jemand, ist der Exit-Code 1 (neu; bisher blieb er trotz offener Agenten bei 0).
+- Unter „offener Zugang“ steht niemand, der Exit-Code ist 0. Kein fremder Agent sieht den Server `auftragsbuch`.
 - In Gruppe 1 steht genau `brain-sales` mit `mcp_auftragsbuch_auftrag_lesen` und `mcp_auftragsbuch_auftrag_probe`.
 
-Im Repo ändert sich der Test `test_nur_erlaubte_traeger_sehen_alle_werkzeuge_des_auftragsbuchs`
-(`spaces/auftragsbuch/tests/test_openfang_offene_mcp_zugaenge.py`): Er ist als `xfail` („Lieferung Block 3“)
-gesetzt und wird grün, sobald die Agenten im Repo geschlossen sind. Dann `xfail` entfernen. Die Tests, die die
-heutige Menge offener Agenten festhalten, müssen dabei mit angepasst werden.
+## Der Test im Repo (`xfail`)
+
+`test_nur_erlaubte_traeger_sehen_alle_werkzeuge_des_auftragsbuchs`
+(`spaces/auftragsbuch/tests/test_openfang_offene_mcp_zugaenge.py`) liest nur die Manifeste unter
+`openfang/agents`. Er ist als `xfail` („Lieferung Block 3“, `strict`) gesetzt und schlägt heute mit
+`capability-gap-filer` und `learning-course-factory` fehl. `allowed_agents` in der Konfiguration ändert daran
+nichts. Er kippt erst, wenn **beide** Manifeste wie oben geändert sind (Abschnitt „Sofort wirksam“): Dann
+meldet pytest XPASS, und wir entfernen den `xfail`-Marker. Gleichzeitig müssen die Tests angepasst werden,
+die die heutige Menge offener Agenten festhalten (`OFFENER_SERVERZUGANG`, `SIEHT_ALLE_WERKZEUGE`).
 
 Hinweis: Die Liste `allowed_agents` ist eine zusätzliche Sperre am Server. Sie ersetzt nicht die Freigabe je
 Auftragsart in `brain-sales`.
