@@ -205,9 +205,8 @@ def test_convert_preserves_a_mono_sources_channel_count(tmp_path: Path) -> None:
 
 
 def test_convert_preserves_an_existing_stereo_image(tmp_path: Path) -> None:
-    """Stereo bleibt erhalten - der Mono-Downmix im Renderer ist eine
-    vorlaeufige, dokumentierte Einschraenkung dort, keine Lizenz, das
-    Stereobild schon bei der Aufnahme wegzuwerfen."""
+    """Stereo bleibt erhalten - schon bei der Aufnahme wird das Stereobild
+    nicht weggeworfen, der Renderer liest es seit Task 2 als Stereo."""
     source = _tone(tmp_path / "quelle.wav", samplerate=44_100, channels=2)
     target = tmp_path / "ziel.wav"
 

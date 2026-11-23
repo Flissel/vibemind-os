@@ -150,3 +150,40 @@ def test_the_filter_minimum_matches_what_scipy_actually_demands() -> None:
     assert len(sig.sosfiltfilt(sos, np.ones(_MIN_FILTER_SAMPLES))) == (
         _MIN_FILTER_SAMPLES
     )
+
+
+def test_apply_eq_nimmt_stereo_und_filtert_jeden_kanal_fuer_sich() -> None:
+    generator = np.random.default_rng(3)
+    stereo = generator.standard_normal((SR // 2, 2)).astype(np.float32) * 0.1
+    curve = EqCurve(
+        low=[EqPoint(position=0.0, gain_db=0.0), EqPoint(position=1.0, gain_db=-12.0)],
+        mid=[EqPoint(position=0.0, gain_db=0.0), EqPoint(position=1.0, gain_db=-6.0)],
+        high=[EqPoint(position=0.0, gain_db=-3.0), EqPoint(position=1.0, gain_db=0.0)],
+    )
+
+    out = apply_eq(stereo, SR, curve)
+
+    assert out.shape == stereo.shape
+    for channel in (0, 1):
+        np.testing.assert_allclose(
+            out[:, channel], apply_eq(stereo[:, channel].copy(), SR, curve), atol=1e-6
+        )
+
+
+def test_split_bands_haelt_die_form_bei_stereo() -> None:
+    generator = np.random.default_rng(4)
+    stereo = generator.standard_normal((SR // 4, 2)).astype(np.float32) * 0.1
+
+    low, mid, high = split_bands(stereo, SR)
+
+    assert low.shape == mid.shape == high.shape == stereo.shape
+    assert np.allclose(low + mid + high, stereo, atol=1e-5)
+
+
+def test_apply_eq_kurzes_stereo_fenster_nimmt_den_breitbandrueckfall() -> None:
+    short = np.full((8, 2), 0.5, dtype=np.float32)
+
+    out = apply_eq(short, SR, _flat(-6.0))
+
+    assert out.shape == (8, 2)
+    np.testing.assert_allclose(out, short * 10 ** (-6.0 / 20.0), atol=1e-6)

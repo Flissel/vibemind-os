@@ -232,3 +232,27 @@ def graded_noise_track(
         parts.append((chunk * (10.0 ** (rms_db / 20.0))).astype(np.float32))
     sf.write(path, np.concatenate(parts), sr)
     return path
+
+
+def stereo_tone(
+    path: Path,
+    seconds: float = 2.0,
+    left_hz: float | None = 220.0,
+    right_hz: float | None = None,
+    sr: int = SR,
+) -> Path:
+    """Stereodatei mit je einem Sinuston pro Kanal; None heisst: Kanal stumm.
+
+    Standard ist Signal nur links - damit laesst sich pruefen, ob ein Pfad die
+    Kanaele getrennt haelt oder still auf Mono abmischt (ein Downmix liesse
+    rechts hoerbar Signal erscheinen).
+    """
+    t = np.arange(int(seconds * sr)) / sr
+    channels = []
+    for hz in (left_hz, right_hz):
+        if hz is None:
+            channels.append(np.zeros_like(t, dtype=np.float32))
+        else:
+            channels.append((0.4 * np.sin(2 * np.pi * hz * t)).astype(np.float32))
+    sf.write(path, np.stack(channels, axis=1), sr, subtype="FLOAT")
+    return path

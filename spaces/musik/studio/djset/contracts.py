@@ -462,10 +462,10 @@ class AudioFormat(BaseModel):
     """Kanaele, Abtastrate und Subtyp der ausgelieferten Datei.
 
     Gemessen, nicht angenommen: die Spec sagt 44,1 kHz / 24 Bit Stereo zu, der
-    Renderer liefert Mono im Float-Subtyp. Beides ist bewusst so (Mono ist eine
-    festgehaltene Auslassung, Float braucht die QA, um ueber 1.0 messen zu
-    koennen) - aber ein unbeaufsichtigter Lauf, dessen Artefakte die einzige
-    Rechenschaft sind, darf das nicht verschweigen.
+    Renderer liefert Stereo im Float-Subtyp. Die Abweichung beim Subtyp ist
+    bewusst (Float braucht die QA, um ueber 1.0 messen zu koennen) - aber ein
+    unbeaufsichtigter Lauf, dessen Artefakte die einzige Rechenschaft sind,
+    darf das nicht verschweigen.
     """
 
     channels: int = Field(ge=1)

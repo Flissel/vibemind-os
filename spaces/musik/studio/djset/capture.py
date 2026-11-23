@@ -14,11 +14,10 @@ Flagge zwingt sie auf Stereo. Eine Mono-Quelle (der Regelfall an einem
 Aux-/Leitungseingang) kommt sonst nicht einfach kanalverdoppelt heraus:
 ffmpeg mischt sie leistungserhaltend auf beide Kanaele, mit Faktor 1/sqrt(2)
 (~-3dB) je Kanal, und das Material waere leiser als es hineinging, ohne jede
-Meldung. Der Renderer mischt Quellmaterial heute ohnehin auf Mono ab
-(djset.render.engine._load_mono) - eine dokumentierte, vorlaeufige
-Einschraenkung dort. Fuer eine bereits-mono Quelle ist dieser Downmix die
-Identitaet; fuer eine Stereo-Quelle bleibt das Stereobild unangetastet, weil
-ffmpeg ohne `-ac` die native Kanalzahl uebernimmt.
+Meldung. Der Renderer liest Quellmaterial als Stereo
+(djset.render.engine._load_audio): eine Mono-Quelle wird dort ohne
+Pegelaenderung auf beide Kanaele gelegt, eine Stereo-Quelle behaelt ihr
+Stereobild, weil ffmpeg ohne `-ac` die native Kanalzahl uebernimmt.
 """
 
 import subprocess

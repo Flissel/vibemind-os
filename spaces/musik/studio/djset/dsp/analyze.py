@@ -392,8 +392,16 @@ def find_mix_regions(
 _LEVEL_FLOOR_DB = -120.0
 
 
-def measure_loudness(path: Path) -> Loudness:
-    """Integrierte Lautheit nach EBU R128 und True Peak."""
+def measure_loudness(path: Path, *, peak_per_channel: bool = False) -> Loudness:
+    """Integrierte Lautheit nach EBU R128 und True Peak.
+
+    Die Lautheit misst pyloudnorm ohnehin auf allen Kanaelen. Beim True Peak
+    gilt standardmaessig die Mono-Summe (Einzeltrack-Analyse, unveraendert).
+    Mit peak_per_channel=True wird jeder Kanal einzeln oversampelt und der
+    groessere Spitzenwert genommen - so misst die QA des fertigen Stereo-Sets:
+    ein Mittelwert beider Kanaele unterschlaege einen Spitzenwert, der nur auf
+    einer Seite liegt.
+    """
     signal, sr = sf.read(str(path))
     meter = pyloudnorm.Meter(sr)
     # pyloudnorm liefert fuer digitale Stille -inf. -inf ueberlebt den
@@ -402,12 +410,17 @@ def measure_loudness(path: Path) -> Loudness:
     # Track zerreissen. Bodenwert wie beim True Peak: -120 dB.
     lufs = max(_LEVEL_FLOOR_DB, float(meter.integrated_loudness(signal)))
 
-    mono = signal if signal.ndim == 1 else np.mean(signal, axis=1)
+    if peak_per_channel and signal.ndim == 2:
+        candidates = [signal[:, channel] for channel in range(signal.shape[1])]
+    else:
+        candidates = [signal if signal.ndim == 1 else np.mean(signal, axis=1)]
     # True Peak naeherungsweise ueber vierfaches Oversampling
-    upsampled = librosa.resample(
-        mono.astype(np.float32), orig_sr=sr, target_sr=sr * 4
+    peak = max(
+        float(np.max(np.abs(librosa.resample(
+            candidate.astype(np.float32), orig_sr=sr, target_sr=sr * 4
+        ))))
+        for candidate in candidates
     )
-    peak = float(np.max(np.abs(upsampled)))
     true_peak = 20.0 * np.log10(peak) if peak > 0 else _LEVEL_FLOOR_DB
     return Loudness(lufs_integrated=lufs, true_peak=float(true_peak))
 

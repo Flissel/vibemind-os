@@ -80,13 +80,12 @@ def correction_gain_db(report: QaReport) -> float | None:
 def _format_line(audio: AudioFormat) -> str:
     """Kanaele, Abtastrate und Bittiefe der ausgelieferten Datei.
 
-    Geliefert wird Mono im Float-Subtyp, zugesichert hat die Spec 44,1 kHz /
-    24 Bit Stereo. Beide Abweichungen sind bewusst - Mono ist eine
-    festgehaltene Auslassung, und der Float-Subtyp ist richtig, weil die QA
-    ueber 1.0 hinaus messen koennen muss, bevor sie ueber die eine erlaubte
-    Pegelkorrektur entscheidet. Aber der Bericht ist die einzige Rechenschaft
-    eines unbeaufsichtigten Laufs: was geliefert wurde, muss darin stehen, und
-    zwar neben dem, was zugesagt war.
+    Geliefert wird Stereo im Float-Subtyp, zugesichert hat die Spec 44,1 kHz /
+    24 Bit Stereo. Die Abweichung beim Subtyp ist bewusst: Float ist richtig,
+    weil die QA ueber 1.0 hinaus messen koennen muss, bevor sie ueber die eine
+    erlaubte Pegelkorrektur entscheidet. Aber der Bericht ist die einzige
+    Rechenschaft eines unbeaufsichtigten Laufs: was geliefert wurde, muss darin
+    stehen, und zwar neben dem, was zugesagt war.
     """
     channels = {1: "Mono", 2: "Stereo"}.get(
         audio.channels, f"{audio.channels} Kanaele"

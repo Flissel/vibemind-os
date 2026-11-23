@@ -83,7 +83,7 @@ def test_a_phase_break_at_the_seam_is_caught(tmp_path: Path) -> None:
     shift_samples = int(round(0.5 * beat_len_s * sr))
     seam_sample = int(round(plan.transitions[0].start_at_s * sr))
 
-    inserted = np.zeros(shift_samples, dtype=signal.dtype)
+    inserted = np.zeros((shift_samples, *signal.shape[1:]), dtype=signal.dtype)
     shifted = np.concatenate([signal[:seam_sample], inserted, signal[seam_sample:]])
     shifted = shifted[: len(signal)]
     sf.write(target, shifted, sr)
@@ -150,7 +150,7 @@ def test_a_masked_removal_break_is_still_caught(tmp_path: Path) -> None:
     seam_sample = int(round(plan.transitions[0].start_at_s * sr))
 
     shifted = np.concatenate([signal[:seam_sample], signal[seam_sample + shift_samples:]])
-    pad = np.zeros(len(signal) - len(shifted), dtype=signal.dtype)
+    pad = np.zeros((len(signal) - len(shifted), *signal.shape[1:]), dtype=signal.dtype)
     shifted = np.concatenate([shifted, pad])
     sf.write(target, shifted, sr)
 
@@ -398,3 +398,29 @@ def test_an_unmeasurable_seam_gets_its_own_kind(tmp_path: Path, monkeypatch) -> 
     kinds = [f.kind for f in report.findings]
     assert kinds == ["seam_unmeasurable", "seam_unmeasurable"]
     assert "kein Beatraster messen" in report.findings[0].text
+
+
+def test_stereo_render_wird_als_stereo_gemeldet(tmp_path: Path) -> None:
+    plan = simple_plan()
+    target = tmp_path / "set.wav"
+    render(plan, sources_for(tmp_path), target, master_gain_db=-12.0)
+
+    report = check_set(target, plan)
+
+    assert report.audio_format.channels == 2
+
+
+def test_true_peak_nimmt_den_lauteren_kanal(tmp_path: Path) -> None:
+    """Nur links laut: der Mono-Mittelwert wuerde 6 dB unterschlagen."""
+    plan = simple_plan()
+    target = tmp_path / "set.wav"
+    render(plan, sources_for(tmp_path), target, master_gain_db=-12.0)
+    signal, sr = sf.read(target, dtype="float32", always_2d=True)
+    loud_left = np.stack([signal[:, 0], np.zeros(len(signal), np.float32)], axis=1)
+    sf.write(target, loud_left, sr, subtype="FLOAT")
+    peak_left = float(20 * np.log10(np.max(np.abs(loud_left))))
+
+    report = check_set(target, plan)
+
+    # True Peak liegt bei oder knapp ueber dem Abtastspitzenwert des lauten Kanals.
+    assert report.true_peak >= peak_left - 0.1

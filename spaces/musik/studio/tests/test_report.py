@@ -21,7 +21,7 @@ def _report(
         length_s=3600.0,
         target_length_s=3600.0,
         audio_format=audio_format
-        or AudioFormat(channels=1, sample_rate=44_100, subtype="FLOAT"),
+        or AudioFormat(channels=2, sample_rate=44_100, subtype="FLOAT"),
         lufs_integrated=-9.0,
         true_peak=true_peak,
         findings=findings,
@@ -115,8 +115,8 @@ def test_a_corrected_and_now_clean_report_says_so_in_the_headline(
 def test_the_report_names_the_format_of_the_delivered_file(profile: Profile) -> None:
     """Finding 6: das Format der ausgelieferten Datei stand nirgends.
 
-    set.wav ist Mono im Float-Subtyp, die Spec sagt 44,1 kHz / 24 Bit Stereo
-    zu. Beide Abweichungen sind bewusst - aber der Bericht ist die einzige
+    set.wav ist Stereo im Float-Subtyp, die Spec sagt 44,1 kHz / 24 Bit Stereo
+    zu. Die Abweichung beim Subtyp ist bewusst - aber der Bericht ist die einzige
     Rechenschaft eines unbeaufsichtigten Laufs, und was geliefert wurde, muss
     darin stehen.
     """
@@ -125,7 +125,7 @@ def test_the_report_names_the_format_of_the_delivered_file(profile: Profile) -> 
     text = render_qa_report(report, _shortlist(), [], None, simple_plan(), profile)
 
     format_line = next(line for line in text.splitlines() if line.startswith("- Format:"))
-    assert "Mono" in format_line
+    assert "Stereo, 44100 Hz" in format_line
     assert "44100 Hz" in format_line
     assert "32 Bit Float" in format_line
     # Und die Zusage der Spec daneben, sonst faellt die Abweichung nicht auf.

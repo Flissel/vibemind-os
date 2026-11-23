@@ -31,8 +31,8 @@ def _budget() -> Budget:
 
 
 def _delivered_format() -> AudioFormat:
-    """Was der Renderer heute liefert: Mono, 44,1 kHz, Float-Subtyp."""
-    return AudioFormat(channels=1, sample_rate=44_100, subtype="FLOAT")
+    """Was der Renderer heute liefert: Stereo, 44,1 kHz, Float-Subtyp."""
+    return AudioFormat(channels=2, sample_rate=44_100, subtype="FLOAT")
 
 
 def _analyst_answer(energy: float) -> str:
@@ -294,7 +294,7 @@ def test_a_full_build_renders_the_set(tmp_path: Path, profile: Profile) -> None:
     # Korridor geklammerten Uebergaenge stehen im Bericht, nicht nur im Kopf
     # dessen, der den Code gelesen hat.
     format_line = next(line for line in bericht.splitlines() if line.startswith("- Format:"))
-    assert "Mono" in format_line and "44100 Hz" in format_line
+    assert "Stereo, 44100 Hz" in format_line
     assert "32 Bit Float" in format_line
     assert "## Verkuerzte Uebergaenge" in bericht
 

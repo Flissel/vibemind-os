@@ -7,7 +7,8 @@ import soundfile as sf
 
 from djset.contracts import EqCurve, EqPoint, MixEntry, MixPlan, Transition
 from djset.render.engine import ImpossibleMixPlan, MissingSource, bar_length_s, render
-from tests.fixtures.render import flat_curve, simple_plan, sources_for
+from tests.fixtures.make_audio import stereo_tone
+from tests.fixtures.render import flat_curve, pulsed_tone, simple_plan, sources_for
 
 
 def test_the_output_has_the_planned_length(tmp_path: Path) -> None:
@@ -225,3 +226,86 @@ def test_the_crossfade_follows_the_two_eq_curves_sample_for_sample(
     # nur t1. Ohne das koennte ein zu breites Fenster unbemerkt bleiben.
     assert mixed[int(4.0 * sr)] == pytest.approx(amplitudes["t0"], abs=1e-4)
     assert mixed[int(12.0 * sr)] == pytest.approx(amplitudes["t1"], abs=1e-4)
+
+
+# --- Stereo (Musik-Studio Plan 1, Task 2) ------------------------------------
+
+SR_TEST = 44_100
+
+
+def _rms_db(signal: np.ndarray) -> float:
+    rms = float(np.sqrt(np.mean(np.square(signal.astype(np.float64)))))
+    return 20.0 * np.log10(rms) if rms > 0 else -120.0
+
+
+def _render_single(
+    tmp_path: Path,
+    left_only: bool = False,
+    mono_source: bool = False,
+    stereo_source: tuple[float | None, float | None] | None = None,
+    ratio: float = 1.0,
+) -> Path:
+    """Rendert einen Plan mit einem Eintrag und ohne Uebergang.
+
+    MixPlan verlangt per Vertrag mindestens drei Tracks; der Renderer braucht
+    aber nur entries, transitions und target_length_s. model_construct umgeht
+    die Vertragspruefung bewusst, damit der Kanalpfad allein pruefbar ist.
+    """
+    if mono_source:
+        source = pulsed_tone(tmp_path / "quelle.wav", 2.0)
+    elif stereo_source is not None:
+        source = stereo_tone(tmp_path / "quelle.wav", 2.0, *stereo_source)
+    else:
+        assert left_only
+        source = stereo_tone(tmp_path / "quelle.wav", 2.0)
+    entry = MixEntry(track_id="t0", play_from_s=0.0, play_to_s=2.0,
+                     timestretch_ratio=ratio, gain_db=0.0)
+    plan = MixPlan.model_construct(
+        target_length_s=2.0 / ratio, target_bpm=174.0,
+        entries=[entry], transitions=[],
+    )
+    target = tmp_path / "set.wav"
+    render(plan, {"t0": source}, target)
+    return target
+
+
+def test_render_haelt_die_kanaele_getrennt(tmp_path: Path) -> None:
+    out = _render_single(tmp_path, left_only=True)
+    signal, _ = sf.read(out, always_2d=True)
+    assert signal.shape[1] == 2
+    assert _rms_db(signal[:, 0]) > -30.0
+    assert _rms_db(signal[:, 1]) < -60.0
+
+
+def test_render_legt_mono_auf_beide_kanaele(tmp_path: Path) -> None:
+    out = _render_single(tmp_path, mono_source=True)
+    signal, _ = sf.read(out, always_2d=True)
+    assert signal.shape[1] == 2
+    np.testing.assert_allclose(signal[:, 0], signal[:, 1], atol=1e-6)
+
+
+def test_gedehntes_stereo_behaelt_zwei_getrennte_kanaele(tmp_path: Path) -> None:
+    """stretch() bleibt unveraendert; ffmpeg muss die Kanaele durchreichen."""
+    out = _render_single(tmp_path, stereo_source=(220.0, 330.0), ratio=1.05)
+    signal, _ = sf.read(out, always_2d=True)
+    assert signal.shape[1] == 2
+    assert _rms_db(signal[:, 0]) > -30.0 and _rms_db(signal[:, 1]) > -30.0
+    assert not np.allclose(signal[:, 0], signal[:, 1], atol=1e-3)
+
+
+def test_load_audio_liefert_immer_n_mal_zwei(tmp_path: Path) -> None:
+    from djset.render.engine import _load_audio
+
+    mono = pulsed_tone(tmp_path / "m.wav", 0.5)
+    left = stereo_tone(tmp_path / "s.wav", 0.5)
+    three = tmp_path / "drei.wav"
+    data = np.zeros((SR_TEST // 2, 3), dtype=np.float32)
+    data[:, 0], data[:, 1], data[:, 2] = 0.1, 0.2, 0.9
+    sf.write(three, data, SR_TEST, subtype="FLOAT")
+
+    for path in (mono, left, three):
+        audio = _load_audio(path, SR_TEST)
+        assert audio.shape[1] == 2
+        assert audio.dtype == np.float32
+    # Mehr als zwei Kanaele: die ersten beiden zaehlen.
+    np.testing.assert_allclose(_load_audio(three, SR_TEST)[:, 1], 0.2, atol=1e-6)

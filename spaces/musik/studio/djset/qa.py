@@ -177,13 +177,16 @@ def _seam_drift_beats(
 def check_set(path: Path, plan: MixPlan) -> QaReport:
     """Misst das fertige Set und sammelt, was nicht stimmt."""
     signal, sr = sf.read(path, dtype="float32", always_2d=True)
+    # Luecken und Naehte werden auf der Mono-Summe gemessen (Stille und Tempo
+    # sind keine Kanalfrage); Lautheit und True Peak auf dem Stereosignal, der
+    # True Peak als Maximum beider Kanaele.
     mono = signal.mean(axis=1)
     length_s = len(mono) / sr
-    loudness = measure_loudness(path)
+    loudness = measure_loudness(path, peak_per_channel=True)
     # Das Format der ausgelieferten Datei gehoert in den Bericht, und zwar
-    # gemessen: die Spec sagt 44,1 kHz / 24 Bit Stereo zu, geliefert wird Mono
-    # im Float-Subtyp. Beides ist bewusst so, aber die Artefakte sind die
-    # einzige Rechenschaft eines unbeaufsichtigten Laufs.
+    # gemessen: die Spec sagt 44,1 kHz / 24 Bit Stereo zu, geliefert wird
+    # Stereo im Float-Subtyp. Der Subtyp ist bewusst so, und die Artefakte
+    # sind die einzige Rechenschaft eines unbeaufsichtigten Laufs.
     audio_format = AudioFormat(
         channels=signal.shape[1],
         sample_rate=sr,

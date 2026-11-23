@@ -65,9 +65,12 @@ def split_bands(
     Nullphasig gefiltert (sosfiltfilt), damit die Baender beim Summieren nicht
     gegeneinander verschoben sind. Fuer Offline-Rendering ist die Nichtkausalitaet
     ohne Belang.
+
+    Das Signal ist (n,) oder (n, kanaele); gefiltert wird entlang der
+    Zeitachse (axis=0), jeder Kanal fuer sich.
     """
-    low = sig.sosfiltfilt(_sos(LOW_CROSSOVER_HZ, sr, "lowpass"), signal)
-    high = sig.sosfiltfilt(_sos(HIGH_CROSSOVER_HZ, sr, "highpass"), signal)
+    low = sig.sosfiltfilt(_sos(LOW_CROSSOVER_HZ, sr, "lowpass"), signal, axis=0)
+    high = sig.sosfiltfilt(_sos(HIGH_CROSSOVER_HZ, sr, "highpass"), signal, axis=0)
     mid = signal - low - high
     return low.astype(np.float32), mid.astype(np.float32), high.astype(np.float32)
 
@@ -101,17 +104,21 @@ def apply_eq(signal: np.ndarray, sr: int, curve: EqCurve) -> np.ndarray:
     if signal.size == 0:
         return signal.astype(np.float32)
 
-    if signal.size < _MIN_FILTER_SAMPLES:
-        broadband = (
-            envelope(curve.low, signal.size)
-            + envelope(curve.mid, signal.size)
-            + envelope(curve.high, signal.size)
-        ) / 3.0
+    # Die Huellkurven sind eindimensional (ueber die Zeit); bei mehreren
+    # Kanaelen werden sie als Spalte vorgelegt und gelten fuer alle gleich.
+    samples = signal.shape[0]
+
+    def shaped(points: list[EqPoint]) -> np.ndarray:
+        env = envelope(points, samples)
+        return env[:, None] if signal.ndim > 1 else env
+
+    if samples < _MIN_FILTER_SAMPLES:
+        broadband = (shaped(curve.low) + shaped(curve.mid) + shaped(curve.high)) / 3.0
         return (signal * broadband).astype(np.float32)
 
     low, mid, high = split_bands(signal, sr)
     return (
-        low * envelope(curve.low, signal.size)
-        + mid * envelope(curve.mid, signal.size)
-        + high * envelope(curve.high, signal.size)
+        low * shaped(curve.low)
+        + mid * shaped(curve.mid)
+        + high * shaped(curve.high)
     ).astype(np.float32)

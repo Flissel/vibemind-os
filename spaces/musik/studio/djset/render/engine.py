@@ -62,9 +62,18 @@ def _strip_peak_timestamp(path: Path) -> None:
             handle.seek(size + (size & 1), 1)
 
 
-def _load_mono(path: Path, sr: int) -> np.ndarray:
+def _load_audio(path: Path, sr: int) -> np.ndarray:
+    """Liest eine Audiodatei als Stereo, Form (n, 2), float32.
+
+    Ein einzelner Kanal wird auf beide Seiten gelegt (ohne Pegelaenderung),
+    bei mehr als zwei Kanaelen zaehlen die ersten beiden. Ein Downmix auf Mono
+    findet nicht mehr statt - das Stereobild der Quelle bleibt erhalten.
+    """
     signal, file_sr = sf.read(path, dtype="float32", always_2d=True)
-    mono = signal.mean(axis=1)
+    if signal.shape[1] == 1:
+        signal = np.repeat(signal, 2, axis=1)
+    elif signal.shape[1] > 2:
+        signal = signal[:, :2]
     if file_sr != sr:
         # Rueckhalt, nicht die eigentliche Pruefung: die steht im Vorab-Check
         # (djset.watch.check_sample_rate) und laeuft, bevor der erste Agent
@@ -74,12 +83,12 @@ def _load_mono(path: Path, sr: int) -> np.ndarray:
         raise UnsupportedSampleRate(
             f"{path.name} liegt mit {file_sr} Hz vor, gebraucht werden {sr} Hz"
         )
-    return mono.astype(np.float32)
+    return np.ascontiguousarray(signal, dtype=np.float32)
 
 
 def _segment(source: Path, entry: MixEntry, sr: int, work: Path) -> np.ndarray:
     """Der gedehnte, verstaerkte Abschnitt eines Eintrags."""
-    signal = _load_mono(source, sr)
+    signal = _load_audio(source, sr)
     start = int(round(entry.play_from_s * sr))
     stop = min(len(signal), int(round(entry.play_to_s * sr)))
     piece = signal[start:stop]
@@ -90,6 +99,8 @@ def _segment(source: Path, entry: MixEntry, sr: int, work: Path) -> np.ndarray:
         # voller ueberfluessiger Schreibdurchlauf ueber das gesamte Material.
         cut = work / f"{entry.track_id}-cut.wav"
         out = work / f"{entry.track_id}-stretched.wav"
+        # Die Schnittdatei traegt beide Kanaele; stretch() bleibt unveraendert,
+        # ffmpeg/rubberband behalten die Kanalzahl.
         # subtype="FLOAT": sf.write faellt bei WAV sonst auf PCM_16 zurueck.
         # Jeder gedehnte Eintrag waere damit durch 16 Bit gelaufen, waehrend
         # die ungedehnten in Float bleiben - eine stille Qualitaetsstufe
@@ -97,7 +108,7 @@ def _segment(source: Path, entry: MixEntry, sr: int, work: Path) -> np.ndarray:
         # werden musste.
         sf.write(cut, piece, sr, subtype="FLOAT")
         stretch(cut, out, entry.timestretch_ratio, sr=sr)
-        piece = _load_mono(out, sr)
+        piece = _load_audio(out, sr)
 
     return piece * (10 ** (entry.gain_db / 20.0))
 
@@ -118,7 +129,7 @@ def render(
 
     starts = [0.0] + [t.start_at_s for t in plan.transitions]
     total = int(round(plan.target_length_s * sr))
-    mix = np.zeros(total, dtype=np.float32)
+    mix = np.zeros((total, 2), dtype=np.float32)
 
     with tempfile.TemporaryDirectory() as raw:
         work = Path(raw)
@@ -136,16 +147,17 @@ def render(
             # Zieltempos, waehrend Stufe 6 in Takten des Quelltracks rechnete,
             # und die Differenz landete als Fenster VOR der Naht - beim Schnitt
             # als digitale Stille, bevor der neue Track einsetzte.
+            length = block.shape[0]
             head_width = (
-                min(block.size, int(round(incoming.overlap_s * sr)))
+                min(length, int(round(incoming.overlap_s * sr)))
                 if incoming is not None else 0
             )
             tail_width = (
-                min(block.size, int(round(outgoing.overlap_s * sr)))
+                min(length, int(round(outgoing.overlap_s * sr)))
                 if outgoing is not None else 0
             )
 
-            if head_width + tail_width > block.size:
+            if head_width + tail_width > length:
                 # block[:head_width] und block[-tail_width:] wuerden sich
                 # ueberlappen: die zweite apply_eq-Anwendung laese dann
                 # bereits von der ersten veraenderte Samples, die beiden
@@ -155,7 +167,7 @@ def render(
                 raise ImpossibleMixPlan(
                     f"Eintrag {entry.track_id!r} ist kuerzer als seine beiden "
                     f"Uebergangsfenster zusammen: Kopf {head_width} + Schwanz "
-                    f"{tail_width} Samples > {block.size} Samples Blocklaenge"
+                    f"{tail_width} Samples > {length} Samples Blocklaenge"
                 )
 
             if incoming is not None and head_width > 0:
@@ -166,7 +178,7 @@ def render(
                 block[-tail_width:] = apply_eq(block[-tail_width:], sr, outgoing.eq_out)
 
             offset = int(round(starts[index] * sr))
-            end = min(total, offset + block.size)
+            end = min(total, offset + length)
             if end > offset:
                 mix[offset:end] += block[: end - offset]
 
