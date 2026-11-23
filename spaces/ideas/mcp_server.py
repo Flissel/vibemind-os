@@ -890,6 +890,21 @@ def _structured_sections(fmt: str, data: Mapping[str, Any], limit: int | None) -
     return [], None
 
 
+def _live_text(row: Mapping[str, Any]) -> str:
+    """The card's text: ``content_json.text`` when it says something, else ``content``.
+
+    Arbeitslauf 2: on formatted cards ``content_json.text`` was empty while the appended
+    text stood in ``content``; the empty field won and the card looked unchanged.
+    """
+    structured = row.get("content_json") if isinstance(row.get("content_json"), Mapping) else {}
+    title = row.get("title") if isinstance(row.get("title"), str) else ""
+    text = structured.get("text")
+    if isinstance(text, str) and text.strip() and text.strip() != title.strip():
+        return text
+    content = row.get("content")
+    return content if isinstance(content, str) else ""
+
+
 def _card_parts(row: Mapping[str, Any], limit: int | None) -> tuple[str, list[tuple[str | None, list[str]]], str | None, bool]:
     """(format, sections, count, is_text) for one card; sections hold only readable lines."""
     fmt = _card_format(row)
@@ -897,10 +912,14 @@ def _card_parts(row: Mapping[str, Any], limit: int | None) -> tuple[str, list[tu
     structured = row.get("content_json") if isinstance(row.get("content_json"), Mapping) else {}
     sections, count = _structured_sections(fmt, structured, limit)
     sections = [(head, found) for head, found in sections if found]
+    text = _live_text(row)
     if sections:
+        # Ergaenzter Text auf einer Tabelle/Kanban steht unter der Struktur, nicht unsichtbar.
+        extra = [line for _, found in _text_sections(text, title, limit) for line in found]
+        if extra and structured.get("text") == text:
+            sections = [*sections, ("Notiz", extra)]
         return fmt, sections, count, False
-    text = structured.get("text") if isinstance(structured.get("text"), str) else row.get("content")
-    sections = _text_sections(text if isinstance(text, str) else "", title, limit)
+    sections = _text_sections(text, title, limit)
     headings = sum(1 for head, _ in sections if head)
     count = f"{headings} Abschnitte" if headings > 1 else None
     return fmt, sections, count, True
@@ -948,8 +967,7 @@ def _card_read(row: Mapping[str, Any], edges: list[dict[str, Any]], titles: Mapp
                           "art": EDGE_NAMES.get((edge.get("edge_type"), starts_here), "verwandt")})
     text = None
     if is_text:
-        raw = (row.get("content_json") or {}).get("text") if isinstance(row.get("content_json"), Mapping) else None
-        raw = raw if isinstance(raw, str) else row.get("content")
+        raw = _live_text(row)
         title = row.get("title") if isinstance(row.get("title"), str) else ""
         text = raw if isinstance(raw, str) and raw.strip() and raw.strip() != title.strip() else None
     return {
@@ -1108,7 +1126,8 @@ def _with_appended_content(arguments: Mapping[str, Any]) -> dict[str, Any]:
         raise ToolError("invalid_arguments: 'content_append' must be a non-empty string")
     idea_id = _durable_id(arguments, "id")
     node = _first_row(_request(
-        "GET", "canvas_nodes", params={"select": "id,title,content", "id": f"eq.{idea_id}", "limit": "1"},
+        "GET", "canvas_nodes",
+        params={"select": "id,title,content,content_json", "id": f"eq.{idea_id}", "limit": "1"},
     ))
     if node is None:
         raise ToolError("idea_not_found")
@@ -1117,7 +1136,22 @@ def _with_appended_content(arguments: Mapping[str, Any]) -> dict[str, Any]:
     keep = old.rstrip() if old.strip() and old.strip() != title.strip() else ""
     merged = f"{keep}\n\n{append.strip()}" if keep else append.strip()
     rest = {key: value for key, value in arguments.items() if key != "content_append"}
-    return {**rest, "content": merged}
+    return {**rest, "content": merged, "_node": node}
+
+
+def _synced_structured(node: Mapping[str, Any] | None, content: str) -> dict[str, Any] | None:
+    """Formatted card: the app renders ``content_json``, the text lives in ``content``.
+
+    Arbeitslauf 2: "Ergaenze bei ..." on a table or kanban card wrote ``content``, the card
+    kept showing the old (often empty) ``content_json.text``. The text field follows the
+    stored text; structured parts (rows, columns) stay as they are.
+    """
+    structured = node.get("content_json") if isinstance(node, Mapping) else None
+    if not isinstance(structured, Mapping) or not isinstance(structured.get("type"), str):
+        return None
+    title = node.get("title") if isinstance(node.get("title"), str) else ""
+    text = content if content.strip() != title.strip() else ""
+    return {**structured, "text": text}
 
 
 def _patch_fields(
@@ -1588,18 +1622,28 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
             },
         )
     if name == "idea_update":
+        node = None
         if "content_append" in arguments:
             arguments = _with_appended_content(arguments)
+            node = arguments.pop("_node")
+        body = _patch_fields(
+            arguments,
+            {"title", "content", "node_type", "x", "y"},
+            string_fields={"title", "content", "node_type"},
+            integer_fields={"x", "y"},
+        )
+        if isinstance(body.get("content"), str):
+            if node is None:
+                node = _first_row(_request("GET", "canvas_nodes", params={
+                    "select": "id,title,content_json", "id": f"eq.{_required_string(arguments, 'id')}", "limit": "1"}))
+            synced = _synced_structured(node, body["content"])
+            if synced is not None:
+                body["content_json"] = synced
         return _request(
             "PATCH",
             "canvas_nodes",
             params={"id": f"eq.{_required_string(arguments, 'id')}"},
-            body=_patch_fields(
-                arguments,
-                {"title", "content", "node_type", "x", "y"},
-                string_fields={"title", "content", "node_type"},
-                integer_fields={"x", "y"},
-            ),
+            body=body,
         )
     if name == "idea_delete":
         idea_id = _required_string(arguments, "id")

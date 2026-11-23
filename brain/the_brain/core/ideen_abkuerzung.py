@@ -123,7 +123,57 @@ def _format_aus(wort: str) -> Optional[str]:
 
 
 class _Rueckfrage(Exception):
-    pass
+    """Rueckfrage an den Menschen. Mit ``kandidaten`` (Karten) und ``name`` (der genannte
+    Name) wird sie als offene Rueckfrage gemerkt: die naechste Antwort ("die zweite",
+    "2", ein Titel) loest dann genau diesen Namen auf und fuehrt den ersten Satz aus."""
+
+    def __init__(self, text: str, *, kandidaten: Optional[list] = None, name: Optional[str] = None) -> None:
+        super().__init__(text)
+        self.kandidaten = [k for k in (kandidaten or []) if isinstance(k, dict) and ist_kennung(k.get("id"))]
+        self.name = name
+
+
+# ── Offene Rueckfragen (Arbeitslauf 2: "die zweite" ging an den Chat und kam als
+#    Lexikontext zurueck). Gemerkt je offener Bubble im Prozess des Gehirns, kurz.
+OFFEN_GILT_S = 300.0
+_OFFEN: dict[str, dict] = {}
+_ORDNUNG = {"erste": 1, "ersten": 1, "zweite": 2, "zweiten": 2, "dritte": 3, "dritten": 3, "vierte": 4,
+            "vierten": 4, "fünfte": 5, "fuenfte": 5, "fünften": 5, "sechste": 6, "sechsten": 6, "siebte": 7,
+            "siebten": 7, "achte": 8, "achten": 8, "neunte": 9, "neunten": 9, "zehnte": 10, "zehnten": 10}
+
+
+def _offen_schluessel(kontext: dict) -> str:
+    bubble = kontext.get("bubble") if isinstance(kontext.get("bubble"), dict) else {}
+    return str(bubble.get("id")) if ist_kennung(bubble.get("id")) else "-"
+
+
+def _wahl(text: str, kandidaten: list[dict]) -> Optional[int]:
+    """Index der gewaehlten Karte, ``-1`` = sieht aus wie eine Antwort, passt aber nicht,
+    ``None`` = keine Antwort auf die Rueckfrage (ein neuer Satz)."""
+    roh = _normal(text)
+    if len(roh) > 80 or len(roh.split()) > 8:
+        return None
+    kern = re.sub(rf"^(?:(?:die|den|das|der|nimm|nehme|ich\s+meine|meine|gemeint\s+ist)\s+)+", "", roh)
+    kern = re.sub(r"\s+(?:notiz|karte)$", "", kern).strip()
+    m = re.fullmatch(r"(?:nummer|nr\.?|#)?\s*(\d{1,2})\.?", kern)
+    if m:
+        n = int(m.group(1))
+        return n - 1 if 1 <= n <= len(kandidaten) else -1
+    if kern in _ORDNUNG:
+        n = _ORDNUNG[kern]
+        return n - 1 if n <= len(kandidaten) else -1
+    if kern in ("letzte", "letzten"):
+        return len(kandidaten) - 1
+    titel = [_vergleich(k.get("title")) for k in kandidaten]
+    if kern in titel and titel.count(kern) == 1:
+        return titel.index(kern)
+    teil = [i for i, t in enumerate(titel) if kern and kern in t]
+    if len(teil) == 1:
+        return teil[0]
+    if teil:
+        return -1
+    # Kurz und ohne Frage: eher eine Antwort, die nicht passt, als ein neuer Satz.
+    return -1 if len(kern.split()) <= 3 and "?" not in text else None
 
 
 def _karten(kontext: dict) -> list[dict]:
@@ -149,6 +199,10 @@ def _karte(name: str, kontext: dict) -> dict:
     karten = _karten(kontext)
     nach_id = {k["id"]: k for k in karten}
     wort = _normal(re.sub(rf"^{_KARTE}", "", name.strip(), flags=_I))
+    gewaehlt = kontext.get("_gewaehlt")
+    if isinstance(gewaehlt, dict) and wort in gewaehlt:
+        # Antwort auf eine offene Rueckfrage: genau diese Karte fuer genau diesen Namen.
+        return gewaehlt[wort]
     if wort in ("das", "die", "sie", "es", "diese", "dies", "die letzte", "die letzte notiz", "die letzte karte",
                 "die notiz", "die karte", "diese notiz", "diese karte", "die markierte", "die auswahl",
                 "dieser notiz", "dieser karte", "der notiz", "der karte", "dem", "der", "ihr", "ihm"):
@@ -156,7 +210,10 @@ def _karte(name: str, kontext: dict) -> dict:
         if len(auswahl) == 1:
             return nach_id.get(auswahl[0], {"id": auswahl[0], "title": ""})
         if len(auswahl) > 1:
-            raise _Rueckfrage(f"Es sind {len(auswahl)} Karten markiert. Welche meinst du?")
+            markiert = [nach_id.get(i, {"id": i, "title": ""}) for i in auswahl]
+            raise _Rueckfrage(f"Es sind {len(auswahl)} Karten markiert: "
+                              f"{_aufzaehlung([k.get('title') for k in markiert])}. Welche meinst du?",
+                              kandidaten=markiert, name=wort)
         zuletzt = kontext.get("last_id")
         if ist_kennung(zuletzt):
             return nach_id.get(zuletzt, {"id": zuletzt, "title": ""})
@@ -169,7 +226,8 @@ def _karte(name: str, kontext: dict) -> dict:
     if len(treffer) == 1:
         return treffer[0]
     if len(treffer) > 1:
-        raise _Rueckfrage(f"Es gibt {len(treffer)} Notizen mit dem Titel „{genannt}“. Markiere die gemeinte.")
+        raise _Rueckfrage(f"Es gibt {len(treffer)} Notizen mit dem Titel „{genannt}“. Markiere die gemeinte "
+                          "oder sag „die erste“, „die zweite“ …", kandidaten=treffer, name=wort)
     # 2. gekuerzter Titel im Kontext (80 Zeichen + "…"): der genannte Name beginnt mit
     #    dem Anfang. Die Kennung zaehlt, nicht der ganze Titel.
     treffer = [k for k in karten if _gekuerzt(k.get("title"))
@@ -185,7 +243,8 @@ def _karte(name: str, kontext: dict) -> dict:
             return treffer[0]
         if len(treffer) > 1:
             raise _Rueckfrage(f"Zu „{genannt}“ passen {len(treffer)} Notizen: "
-                              f"{_aufzaehlung([k.get('title') for k in treffer])}. Welche meinst du?")
+                              f"{_aufzaehlung([k.get('title') for k in treffer])}. Welche meinst du?",
+                              kandidaten=treffer, name=wort)
     roh = kontext.get("cards")
     if isinstance(roh, list) and any(
             isinstance(k, dict) and not ist_kennung(k.get("id")) and _normal(k.get("title")) == wort for k in roh):
@@ -299,12 +358,69 @@ def loese(satz: Any, kontext: Any) -> Optional[dict]:
     text = re.sub(r"\s+", " ", satz).strip().rstrip(".!")
     if not text or len(text) > 4000:
         return None
+    schluessel = _offen_schluessel(kontext)
     try:
+        offen = _OFFEN.get(schluessel)
+        if offen is not None and _jetzt() - offen["zeit"] > OFFEN_GILT_S:
+            _OFFEN.pop(schluessel, None)
+            offen = None
+        if offen is not None:
+            antwort = _auf_rueckfrage(text, offen, kontext)
+            if antwort is not None:
+                return antwort
+        _OFFEN.pop(schluessel, None)
         return _loese(text, kontext)
     except _Rueckfrage as frage:
+        _merken(schluessel, text, frage)
         return {"rueckfrage": str(frage)}
     except Exception:
         return None
+
+
+def _jetzt() -> float:
+    import time
+    return time.monotonic()
+
+
+def _merken(schluessel: str, text: str, frage: _Rueckfrage) -> None:
+    if len(frage.kandidaten) >= 2 and frage.name is not None:
+        _OFFEN[schluessel] = {"satz": text, "name": frage.name, "kandidaten": frage.kandidaten,
+                              "frage": str(frage), "zeit": _jetzt()}
+    else:
+        _OFFEN.pop(schluessel, None)
+
+
+def _auf_rueckfrage(text: str, offen: dict, kontext: dict) -> Optional[dict]:
+    """Antwort auf die offene Rueckfrage: ``None`` = keine Antwort (neuer Satz, offen verfaellt)."""
+    wahl = _wahl(text, offen["kandidaten"])
+    if wahl is None:
+        return None
+    if wahl < 0:
+        # Ein fester Satz geht immer vor; sonst noch einmal fragen, mit den Kandidaten.
+        try:
+            neu = _loese(text, kontext)
+        except _Rueckfrage:
+            neu = None
+        if neu is not None:
+            _OFFEN.pop(_offen_schluessel(kontext), None)
+            return neu
+        titel = [k.get("title") for k in offen["kandidaten"]]
+        nummern = "; ".join(f"{n}. „{re.sub(chr(10), ' ', str(t or 'ohne Titel'))[:60]}“"
+                            for n, t in enumerate(titel[:9], start=1))
+        offen["zeit"] = _jetzt()
+        return {"rueckfrage": f"Das passt zu keiner. Welche meinst du? {nummern}"}
+    schluessel = _offen_schluessel(kontext)
+    _OFFEN.pop(schluessel, None)
+    gewaehlt = {**offen.get("gewaehlt", {}), offen["name"]: offen["kandidaten"][wahl]}
+    try:
+        return _loese(offen["satz"], {**kontext, "_gewaehlt": gewaehlt})
+    except _Rueckfrage as frage:
+        # Ein zweiter Name im selben Satz ist auch unklar ("Verbinde A mit B"): weiter fragen,
+        # die erste Wahl bleibt.
+        _merken(schluessel, offen["satz"], frage)
+        if schluessel in _OFFEN:
+            _OFFEN[schluessel]["gewaehlt"] = gewaehlt
+        return {"rueckfrage": str(frage)}
 
 
 def _loese(text: str, kontext: dict) -> Optional[dict]:
