@@ -38,7 +38,10 @@ def test_nicht_verstanden_nennt_beispiele_des_space() -> None:
     assert v.nicht_verstanden("swedesign").endswith("Im Bereich „SWE Design“ gibt es dafür noch keinen Weg.")
     assert v.nicht_verstanden("desktop") == (  # fester Satz seit 23.11. (core/feste_lesesaetze.py)
         "Das habe ich nicht verstanden. In Desktop kann ich z. B. „Welche Fenster sind offen?“.")
-    assert v.nicht_verstanden("flowzen") == "Das habe ich nicht verstanden."  # Weg da, nur kein fester Satz
+    # Punkt 7 (Lauf 4): nie mehr nackt; ohne festen Satz der Bereich und ein ehrlicher Satz.
+    for space, name in (("flowzen", "Blue Rose"), ("mirofish", "MiroFish"), ("sales", "Sales")):
+        assert v.nicht_verstanden(space) == (f"Das habe ich nicht verstanden. Im Bereich „{name}“ kenne ich noch "
+                                             "keinen Satz, den ich sicher ausführen kann.")
 
 
 @pytest.mark.parametrize("satz,space", [
@@ -309,6 +312,7 @@ def test_unter_schwelle_ohne_space(monkeypatch) -> None:
 
 NV = "Das habe ich nicht verstanden."
 KEIN = "Im Bereich „{}“ gibt es dafür noch keinen Weg."
+OHNE_SATZ = "Im Bereich „{}“ kenne ich noch keinen Satz, den ich sicher ausführen kann."
 
 # Die 16 Saetze aus dem Rundgang 23.11.2026 (Satz, Space der App -> erwarteter Weg). Der
 # Klassierer liefert wie gemessen einen schwachen Cosinus; der Muster-Router ist der echte.
@@ -323,9 +327,9 @@ RUNDGANG = [
     ("Welche Teams laufen gerade in der Agent Farm?", "agentfarm",
      ("kein-weg", "Im Bereich „Agent Farm“ kann ich das noch nicht")),
     ("Woran denkt das Gehirn gerade?", "thebrain", ("lauf", "thebrain_gedanken")),
-    ("Was steht in meinem Journal?", "flowzen", ("nicht-verstanden", NV)),
-    ("Welche Simulationen gibt es in MiroFish?", "mirofish", ("nicht-verstanden", NV)),
-    ("Wie viele Kontakte habe ich im Sales?", "sales", ("nicht-verstanden", NV)),
+    ("Was steht in meinem Journal?", "flowzen", ("nicht-verstanden", NV + " " + OHNE_SATZ.format("Blue Rose"))),
+    ("Welche Simulationen gibt es in MiroFish?", "mirofish", ("nicht-verstanden", NV + " " + OHNE_SATZ.format("MiroFish"))),
+    ("Wie viele Kontakte habe ich im Sales?", "sales", ("nicht-verstanden", NV + " " + OHNE_SATZ.format("Sales"))),
     ("Wie laufen meine Marketing-Kampagnen?", "marketing", ("kein-weg", "Im Bereich „Marketing“ kann ich das noch nicht")),
     ("Welche Kurse gibt es?", "learning", ("nicht-verstanden", NV + " " + KEIN.format("Lernen"))),
     ("Welche Events stehen als nächstes an?", "events", ("nicht-verstanden", NV + " " + KEIN.format("Events"))),
@@ -786,3 +790,4 @@ def test_halt_fest_ohne_bubble_im_satz_bleibt_in_der_offenen_bubble(monkeypatch,
     client, state = _client(monkeypatch, SCHWACH, ausfuehrer=ausfuehrer, muster=echter_muster_router)
     client.post("/api/multihop/execute", json={"intent": "Halt fest: Preise prüfen", "context": IDEEN})
     assert gesucht == [] and json.loads(ausfuehrer.plaene[0].hops[0].arg_template)["bubble_id"] == "b0b1e001"
+
