@@ -47,6 +47,36 @@ class KanbanTests(unittest.TestCase):
         self.assertEqual(board["doing"], [{"title": "Bühnenplan"}])
         self.assertEqual(board["done"], [{"title": "Druck"}])
 
+    def test_fertig_und_erledigt_sind_eine_spalte(self) -> None:
+        # Lauf 10 (34): "Offen, In Arbeit, Fertig, Offen, In Arbeit, Erledigt" in der App.
+        text = "Offen:\n- Logo\nTodo:\n- Sponsoren\nDoing:\n- Bühnenplan\nFertig:\n- Druck\nErledigt:\n- Plakat"
+        board = self.server._kanban_from_text(text, "")
+        self.assertEqual(_namen(board), [("Offen", ["Logo", "Sponsoren"]), ("In Arbeit", ["Bühnenplan"]),
+                                         ("Erledigt", ["Druck", "Plakat"])])
+
+    def test_nie_doppelte_spaltennamen(self) -> None:
+        texte = ["## Fertig\n- Druck\n## Erledigt\n- Plakat\n## offen\n- Logo\n## OFFEN\n- Bühne",
+                 "Done: Druck\nfertig: Plakat\nläuft: Logo\nIn Arbeit: Bühne\n- lose Zeile",
+                 "- Logo\n- [x] Druck"]
+        for text in texte:
+            namen = [s["name"].casefold() for s in self.server._kanban_from_text(text, "")["columns"]]
+            self.assertEqual(len(namen), len(set(namen)), text)
+
+    def test_zweites_umwandeln_ergibt_dasselbe_board(self) -> None:
+        # Eine Karte, die schon Kanban war: der Text bleibt, das Board entsteht neu (keine alten Spalten dazu).
+        text = "Offen: Logo\nIn Arbeit: Bühnenplan\nFertig: Druck"
+        erstes = self.server._kanban_from_text(text, "")
+        self.assertEqual(self.server._kanban_from_text(text, ""), erstes)
+        self.assertEqual([s["name"] for s in erstes["columns"]], ["Offen", "In Arbeit", "Erledigt"])
+
+    def test_gespeichertes_doppeltes_board_zeigt_jede_spalte_einmal(self) -> None:
+        board = {"columns": [{"name": "Offen", "cards": [{"title": "Logo"}]}, {"name": "In Arbeit", "cards": []},
+                             {"name": "Fertig", "cards": [{"title": "Druck"}]}, {"name": "Offen", "cards": []},
+                             {"name": "In Arbeit", "cards": []}, {"name": "Erledigt", "cards": []}]}
+        sections, count = self.server._structured_sections("kanban", board, 200)
+        self.assertEqual(sections, [("Offen", ["Logo"]), ("In Arbeit", []), ("Erledigt", ["Druck"])])
+        self.assertEqual(count, "2 Karten in 3 Spalten")
+
     def test_zeilen_ohne_statuszeile_gehen_nach_offen(self) -> None:
         # Lauf 8: die erste Zeile landete in "In Arbeit", eine Spalte "Offen" gab es nicht.
         board = self.server._kanban_from_text("Logo entwerfen\nIn Arbeit: Bühnenplan\n- [x] Druckerei", "")

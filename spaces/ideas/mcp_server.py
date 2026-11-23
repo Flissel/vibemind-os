@@ -928,11 +928,20 @@ def _structured_sections(fmt: str, data: Mapping[str, Any], limit: int | None) -
                 tasks.append(task + states.get(status, ""))
         return [("Aufgaben", tasks)], f"{done} von {len(tasks)} erledigt" if tasks else None
     if fmt == "kanban":
+        # Lauf 10 (34): Ein gespeichertes Board mit doppelten Spalten ("Offen" zweimal, "Fertig"
+        # neben "Erledigt") zeigt jede Spalte einmal; gleiche Statuswoerter werden zusammengelegt.
         sections = []
+        by_name: dict[str, list[str]] = {}
         for column in _items(data.get("columns")):
             head = _plain(_field(column, "name"), limit)
             if head:
-                sections.append((head, lines(column.get("cards") if isinstance(column, Mapping) else None, "title")))
+                head = KANBAN_NAMES.get(head.casefold(), head)
+                found = lines(column.get("cards") if isinstance(column, Mapping) else None, "title")
+                if head.casefold() in by_name:
+                    by_name[head.casefold()].extend(found)
+                else:
+                    by_name[head.casefold()] = found
+                    sections.append((head, found))
         cards = sum(len(found) for _, found in sections)
         return sections, f"{_count(cards, 'Karte', 'Karten')} in {_count(len(sections), 'Spalte', 'Spalten')}" if sections else None
     if fmt == "comparison_table":
@@ -1318,6 +1327,8 @@ def _kanban_from_text(text: str, title: str) -> dict[str, Any] | None:
 
     def column(name: str) -> dict[str, Any] | None:
         name = name.strip()[:TABLE_CELL_CHARS]
+        # Lauf 10 (34): "Fertig" und "Erledigt" sind dasselbe Statuswort; eine Spalte je Status.
+        name = KANBAN_NAMES.get(name.casefold(), name)
         key = name.casefold()
         if key not in by_name:
             if len(columns) >= KANBAN_MAX_COLUMNS:
@@ -1384,6 +1395,13 @@ def _kanban_from_text(text: str, title: str) -> dict[str, Any] | None:
         spur = KANBAN_LANES.get(col["name"].casefold(), "todo")
         board[spur].extend({"title": k["title"]} for k in col["cards"])
     return board
+
+
+# Gleichbedeutende Statuswoerter tragen einen Spaltennamen (Lauf 10: "Fertig" neben "Erledigt").
+KANBAN_NAMES = {"offen": "Offen", "todo": "Offen", "to do": "Offen", "to-do": "Offen",
+                "in arbeit": "In Arbeit", "doing": "In Arbeit", "läuft": "In Arbeit", "laeuft": "In Arbeit",
+                "erledigt": "Erledigt", "fertig": "Erledigt", "done": "Erledigt",
+                "geplant": "Geplant", "blockiert": "Blockiert", "später": "Später", "spaeter": "Später"}
 
 
 KANBAN_LANES = {"in arbeit": "doing", "doing": "doing", "läuft": "doing", "laeuft": "doing", "blockiert": "doing",
