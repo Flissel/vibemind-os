@@ -244,6 +244,36 @@ def bubble_antwort(satz: Any) -> Optional[Dict[str, Any]]:
     return {"bubble": offen["kandidaten"][wahl], "rest": offen["rest"]}
 
 
+# ── Bereichswoerter (Nachmessung 23.11.2026) ───────────────────────────────
+# "Was steht in meinem Journal?" wurde als Notizname gelesen ("Ich finde keine Karte
+# meinem Journal"), "Welche Events stehen an?" lief zu den Auftraegen. Diese Woerter sind
+# Bereiche, keine Kartentitel (Liste in core/ideen_abkuerzung.BEREICHSWOERTER): ohne Karte
+# genau dieses Namens kommt "nicht verstanden" mit dem Space des Wortes als Signal.
+_FRAGEANFANG = (r"^(?:was\s+steht\s+(?:in|im|bei|auf)|was\s+gibt\s+es\s+(?:in|im|bei)|welche|"
+                r"zeig(?:e)?(?:\s+mir)?|liste|wie\s+viele)\s+")
+
+
+def bereichsfrage(satz: Any) -> Optional[Dict[str, Optional[str]]]:
+    """Lesefrage nach einem Bereich ("Welche Events stehen an?") -> ``{"wort", "space"}``, sonst ``None``.
+
+    ``space`` ist der Space des Wortes (Events -> "events") als Signal fuer die App, sonst ``None``.
+    Nennt der Satz selbst einen Space ("Kontakte im Sales"), entscheidet dieser Name, nicht das Wort.
+    """
+    try:
+        from .ideen_abkuerzung import BEREICHSWOERTER, BESITZ
+
+        if not isinstance(satz, str) or genannter_space(satz):
+            return None
+        m = re.match(rf"{_FRAGEANFANG}(?:{BESITZ}\s+)?(?:n(?:ä|ae)chsten\s+|kommenden\s+|alle\s+)?"
+                     r"(?P<wort>[a-zäöü]+)\b", re.sub(r"\s+", " ", satz).strip(), re.IGNORECASE)
+        wort = m.group("wort").casefold() if m else ""
+        if wort not in BEREICHSWOERTER:
+            return None
+        return {"wort": wort, "space": BEREICHSWOERTER[wort]}
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def ideen_satz_von_aussen(satz: Any) -> bool:
     """Darf ein Satz aus einem anderen Reiter die festen Ideen-Saetze versuchen?
 

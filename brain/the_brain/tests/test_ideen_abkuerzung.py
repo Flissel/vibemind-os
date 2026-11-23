@@ -552,3 +552,16 @@ def test_vorlage_ueberlebt_geschweifte_klammern_im_text() -> None:
 ])
 def test_bubble_liste_sucht_nur_nach_woertern_in_anfuehrungszeichen(satz, suchwort) -> None:
     assert abk.listen_suchwort(satz) == suchwort
+
+
+# ── Fix 5: Besitzwoerter und Bereichswoerter (Nachmessung 23.11.2026) ──
+
+@pytest.mark.parametrize("satz", ["Was steht in meinem Journal?", "Was steht im Kalender?",
+                                  "Worum geht es in unseren Events?"])
+def test_bereichswort_ohne_karte_ist_keine_notiz(satz) -> None:
+    assert abk.loese(satz, KONTEXT) is None
+
+
+def test_besitzwort_vor_dem_titel_faellt_weg() -> None:
+    antwort = abk.loese("Was steht in meiner Druckerei?", KONTEXT)
+    assert antwort["lies"]["id"] == "a0000002"

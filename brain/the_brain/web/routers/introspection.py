@@ -2910,6 +2910,16 @@ async def _multihop_execute(request: Request):
                     "final_text": _ideen_antwort, "trace_id": trace_id,
                 })
             _ideen_fest = plan is not None
+        # Lesefrage nach einem Bereich ("Was steht in meinem Journal?", "Welche Events stehen
+        # an?"): kein Kartentitel und kein fremder Muster-Treffer (Nachmessung: Events liefen zu
+        # den Auftraegen), sondern ein ehrlicher Satz. Eine Karte genau dieses Namens hat oben
+        # schon gegriffen.
+        if not skip_shortcut and plan is None and not _bubble_wahl and _verstehen.regel_an():
+            _bereich = _verstehen.bereichsfrage(intent)
+            if _bereich:
+                _bereich_space = _bereich["space"] or _space
+                return _ehrlich(pe, trace_id, intent, "nicht-verstanden",
+                                _verstehen.nicht_verstanden(_bereich_space), _bereich_space)
         # Phase 11.Q2 — Capability-Router shortcut. If the router has a
         # high-confidence regex match for a single-action intent, skip
         # the LLM planner and build a 1-hop plan directly. Wrapped in

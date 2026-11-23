@@ -81,6 +81,30 @@ def _normal(text: Any) -> str:
 
 _PRAEP = r"(?:zum|zur|zu|über|ueber|von|vom|mit|für|fuer|dem|den|der|des|die|das|im|am)"
 
+# Besitzwoerter und Artikel vor einem Namen gehoeren nicht zum Titel ("meinem Journal").
+BESITZ = (r"(?:mein|meine|meinem|meinen|meiner|meines|dein|deine|deinem|deinen|deiner|deines|"
+          r"unser|unsere|unserem|unseren|unserer|unseres|der|die|das|dem|den|des)")
+
+# Bereiche, keine Kartentitel (Nachmessung 23.11.2026: "Was steht in meinem Journal?" wurde als
+# Notizname gelesen). Wort -> Space der App oder None. core/verstehen.bereichsfrage nutzt dieselbe Liste.
+BEREICHSWOERTER = {
+    "journal": None, "tagebuch": None, "kalender": None, "termine": None, "kontakte": None,
+    "events": "events", "event": "events", "veranstaltungen": "events",
+    "kurse": "learning", "kurs": "learning",
+}
+
+
+def ohne_besitzwort(name: Any) -> str:
+    """"meinem Journal" -> "Journal"."""
+    text = re.sub(r"\s+", " ", str(name or "")).strip()
+    return re.sub(rf"^(?:{BESITZ}\s+)+", "", text, flags=re.IGNORECASE).strip()
+
+
+def bereichswort(name: Any) -> Optional[str]:
+    """Das Bereichswort ("journal"), wenn ``name`` nur daraus besteht, sonst ``None``."""
+    wort = ohne_besitzwort(name).strip(" ?!.\"'„“”").casefold()
+    return wort if wort in BEREICHSWOERTER else None
+
 
 def _vergleich(text: Any) -> str:
     """Titel zum Vergleichen: klein, Unterstrich als Leerzeichen, ohne Auslassungszeichen."""
@@ -220,7 +244,9 @@ def _karte(name: str, kontext: dict) -> dict:
         raise _Rueckfrage("Welche Karte meinst du? Nenn ihren Titel oder markiere sie.")
     genannt = re.sub(rf"^{_KARTE}", "", name.strip(), flags=_I).strip().strip("\"'„“”")
     vergleich = _vergleich(genannt)
-    kerne = list(dict.fromkeys((vergleich, re.sub(rf"^(?:{_PRAEP}\s+)+", "", vergleich, flags=_I))))
+    ohne_praep = re.sub(rf"^(?:{_PRAEP}\s+)+", "", vergleich, flags=_I)
+    # "meiner Notiz Sponsoren", "unserem Bühnenplan": Besitzwoerter gehoeren nicht zum Titel.
+    kerne = list(dict.fromkeys((vergleich, ohne_praep, _vergleich(ohne_besitzwort(ohne_praep)))))
     # 1. genau der Titel (Unterstrich = Leerzeichen: "Sponsoren_Liste")
     treffer = [k for k in karten if _vergleich(k.get("title")) in kerne]
     if len(treffer) == 1:
@@ -640,6 +666,11 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
          or re.fullmatch(r"(?:lies|lese)\s+(?:mir\s+)?(?P<k>.+?)\s+vor", text, _I)
          or re.fullmatch(r"zeig(?:e)?\s+(?:mir\s+)?(?:den\s+)?(?:inhalt|text)\s+(?:von\s+)?(?P<k>.+?)", text, _I))
     if m and _normal(m.group("k")) not in ("hier", "dieser bubble", "der bubble"):
+        if bereichswort(m.group("k")) and not any(
+                _vergleich(k.get("title")) in (_vergleich(m.group("k")), _vergleich(ohne_besitzwort(m.group("k"))))
+                for k in _karten(kontext)):
+            # "Was steht in meinem Journal?": ein Bereich, keine Karte (core/verstehen.bereichsfrage).
+            return None
         karte = _karte(m.group("k"), kontext)
         treffer = _treffer("idea.list", {"bubble_id": _offene_bubble(kontext), "full": True, "limit": 100}, "")
         treffer["lies"] = {"id": karte["id"], "title": str(karte.get("title") or "")}

@@ -708,3 +708,50 @@ def test_abschalter_laesst_alten_weg(monkeypatch) -> None:
                             ausfuehrer=_Ausfuehrer({"url": "x"}), synth=_Synth("Erledigt."))
     client.post("/api/multihop/execute", json={"intent": "Irgendwas", "context": {"space": "swedesign"}})
     assert state.multihop_planner.aufrufe == 1
+
+
+# ── Fix 5: Bereichswoerter sind keine Kartentitel (Nachmessung 23.11.2026) ──
+
+@pytest.mark.parametrize("satz,erwartet", [
+    ("Was steht in meinem Journal?", {"wort": "journal", "space": None}),
+    ("Welche Events stehen an?", {"wort": "events", "space": "events"}),
+    ("Welche Events stehen als nächstes an?", {"wort": "events", "space": "events"}),
+    ("Zeig mir den Kalender", {"wort": "kalender", "space": None}),
+    ("Welche Kurse gibt es?", {"wort": "kurse", "space": "learning"}),
+    ("Was steht in Preise?", None),
+    ("Welche Notizen zum Thema Bühne habe ich schon", None),
+    ("Wie viele Kontakte habe ich im Sales?", None),              # der genannte Space entscheidet
+])
+def test_bereichsfrage(satz, erwartet) -> None:
+    assert v.bereichsfrage(satz) == erwartet
+
+
+@pytest.mark.parametrize("satz,space,text", [
+    ("Was steht in meinem Journal?", "ideas", "Das habe ich nicht verstanden. In Ideen kann ich z. B. „"),
+    ("Welche Events stehen an?", "events",
+     "Das habe ich nicht verstanden. Im Bereich „Events“ gibt es dafür noch keinen Weg."),
+])
+@pytest.mark.parametrize("cls", [SCHWACH, STARK], ids=["schwach", "stark"])
+def test_bereichswort_im_ideen_reiter_ist_keine_karte(monkeypatch, echter_muster_router, cls, satz, space,
+                                                       text) -> None:
+    client, state = _client(monkeypatch, cls, muster=echter_muster_router, ausfuehrer=_Ausfuehrer({"x": 1}))
+    body = client.post("/api/multihop/execute", json={"intent": satz, "context": IDEEN}).json()
+    assert state.multihop_planner.aufrufe == 0 and state.plan_executor.plaene == []
+    assert body["weg"] == "nicht-verstanden" and body["space"] == space
+    assert body["final_text"].startswith(text) and "Notiz" not in body["final_text"].split(".")[0]
+
+
+def test_events_gehen_nicht_mehr_zu_den_auftraegen(monkeypatch, echter_muster_router) -> None:
+    ausfuehrer = _Ausfuehrer({"success": True, "tasks": [], "count": 0})
+    client, state = _client(monkeypatch, STARK, muster=echter_muster_router, ausfuehrer=ausfuehrer)
+    body = client.post("/api/multihop/execute",
+                       json={"intent": "Welche Events stehen an?", "context": {"space": "orders"}}).json()
+    assert ausfuehrer.plaene == [] and body["space"] == "events"
+
+
+def test_karte_namens_journal_wird_gelesen(monkeypatch, echter_muster_router) -> None:
+    ausfuehrer = _Ausfuehrer({"content": [{"type": "text", "text": "[]"}]})
+    client, state = _client(monkeypatch, SCHWACH, muster=echter_muster_router, ausfuehrer=ausfuehrer)
+    kontext = {**IDEEN, "cards": [{"id": "a0000001", "title": "Journal", "format": "note"}]}
+    client.post("/api/multihop/execute", json={"intent": "Was steht in meinem Journal?", "context": kontext})
+    assert [h.capability for p in ausfuehrer.plaene for h in p.hops] == ["idea.list"]
