@@ -51,7 +51,7 @@ def test_satz_bindet_den_festen_weg(satz, space, faehigkeit) -> None:
     ("Welche Fenster sind offen?", "video"),          # ohne "Desktop" nur im eigenen Reiter
     ("Welche Agenten gibt es?", "desktop"),           # ohne "Rowboat" nur im eigenen Reiter
     ("Welche Agenten gibt es?", None),
-    ("Woran denkt das Gehirn gerade?", "ideas"),      # im Ideen-Bereich entscheidet die Ideen-Abkuerzung
+    ("Welche Fenster sind offen?", "ideas"),          # Kurzform: im Ideen-Bereich entscheidet die Ideen-Abkuerzung
     ("Schließ alle Fenster", "desktop"),              # kein Lesesatz
     ("Welche Fenster sind offen und schließ sie", "desktop"),
     ("Welche Teams laufen gerade in der Agent Farm?", "agentfarm"),
@@ -364,3 +364,87 @@ def test_bestaetigung_programm_ist_woertlich_kein_muster() -> None:
     assert muster == "^" + re.escape("(a+)+$") + "$"
     assert re.search(muster, "a" * 40 + "!") is None  # kein Rueckverfolgen
     assert re.search(auftrag({"fenster": "A", "programm": "MSEDGE.EXE"})["programm"], "msedge")
+
+
+# ── Lauf 17: Namensform aus jedem Reiter, Kontextform der App ─────────────
+
+# Kontextform der App im Ideen-Reiter: ohne offene Bubble kommt die Bubble-Liste mit
+# (sonst gilt der Reiter als unbekannt, core/verstehen.space_aus_kontext).
+IDEEN_OHNE_BUBBLE = {"space": "ideas", "bubbles": [{"id": "b0b1e001", "title": "Stadtfest"}]}
+IDEEN_MIT_BUBBLE = {"space": "ideas", "bubble": {"id": "b0b1e001", "title": "Stadtfest"},
+                    "cards": [{"id": "a0000001", "title": "Sponsoren"}]}
+
+
+def _frage_kontext(monkeypatch, ausfuehrer, satz, kontext):
+    return _client(monkeypatch, ausfuehrer).post(
+        "/api/multihop/execute", json={"intent": satz, "context": dict(kontext)}).json()
+
+
+@pytest.mark.parametrize("kontext", [IDEEN_OHNE_BUBBLE, IDEEN_MIT_BUBBLE], ids=["ohne-bubble", "mit-bubble"])
+def test_fenster_mit_namen_aus_ideen_ist_fester_lesesatz(monkeypatch, kontext) -> None:
+    satz = "2 Fenster offen: notepad „Beispiel - Editor“, ein gesperrtes Fenster."
+    ausfuehrer = _Ausfuehrer(lambda: {"success": True, "anzahl": 2, "gesperrt": 1,
+                                      "satz_id": desktop_fenster._merken(satz)})
+    body = _frage_kontext(monkeypatch, ausfuehrer, "Welche Fenster sind gerade auf dem Desktop offen?", kontext)
+    assert body["ok"] is True and body["final_text"] == satz
+    assert [h.capability for h in ausfuehrer.plaene[0].hops] == ["desktop_fenster"]
+    assert "festen Lesesatz" in ausfuehrer.plaene[0].hops[0].description
+
+
+@pytest.mark.parametrize("satz,faehigkeit", [
+    ("Welche Fenster sind gerade auf dem Desktop offen?", "desktop_fenster"),
+    ("Woran denkt das Gehirn gerade?", "thebrain_gedanken"),
+    ("Welche Agenten gibt es in Rowboat?", "rowboat_spaces"),
+    ("Bestätige: Fenster Editor ist vorn", "desktop_bestaetigen"),
+])
+def test_namensformen_gelten_auch_in_ideen(satz, faehigkeit) -> None:
+    assert v.feste_lesefrage(satz, "ideas") == {"capability": faehigkeit}
+
+
+@pytest.mark.parametrize("satz", ["Welche Fenster sind offen?", "Welche Agenten gibt es?"])
+def test_kurzformen_bleiben_im_eigenen_reiter(satz) -> None:
+    assert v.feste_lesefrage(satz, "ideas") is None
+
+
+@pytest.mark.parametrize("kontext", [IDEEN_OHNE_BUBBLE, IDEEN_MIT_BUBBLE, {"space": "roarboot"}],
+                         ids=["ideen", "ideen-bubble", "rowboat"])
+def test_rowboat_ohne_karten_kein_plan_kein_sprung(monkeypatch, tmp_path, kontext) -> None:
+    monkeypatch.setenv("VIBEMIND_SPACES_KARTEN", str(tmp_path / "fehlt"))
+    ausfuehrer = _Ausfuehrer(lambda: pytest.fail("ohne Karten kein Plan"))
+    body = _frage_kontext(monkeypatch, ausfuehrer, "Welche Agenten gibt es in Rowboat?", kontext)
+    assert ausfuehrer.plaene == []  # kein Plan -> kein plan_started -> kein Sprung
+    assert body["ok"] is False and body["executed"] == {}
+    assert body["final_text"] == ("Welche VibeMind-Spaces in Rowboat stehen, kann ich noch nicht sagen: die "
+                                  "Lese-Karten (spaces/rowboat/vibemind-spaces) fehlen auf diesem Stand.")
+    # bleibt im Reiter der App (fuer "ideas" nennt das Gehirn keinen Space, wie space_aus_kontext)
+    assert body.get("space") in (None, kontext["space"])
+    assert body.get("space") != "roarboot" or kontext["space"] == "roarboot"
+
+
+def test_rowboat_mit_karten_aus_ideen(monkeypatch, karten) -> None:
+    ausfuehrer = _Ausfuehrer(lambda: rowboat_spaces.spaces_lesen({"value": ""}))
+    body = _frage_kontext(monkeypatch, ausfuehrer, "Welche Agenten gibt es in Rowboat?", IDEEN_MIT_BUBBLE)
+    assert body["ok"] is True
+    assert body["final_text"].startswith("In Rowboat stehen 3 VibeMind-Spaces")
+
+
+def test_abkuerzung_auf_lesefaehigkeit_meldet_bei_erfolg_nie_fehlgeschlagen(monkeypatch) -> None:
+    """Ein Ein-Schritt-Plan auf desktop_fenster ueber die alte Abkuerzung bekommt dieselbe Antwort."""
+    import web.routers.introspection as intro
+    from core.plan_schema import HopSpec, Plan
+
+    def _abkuerzung(state, intent):
+        return Plan(plan_id="shortcut_1", intent=intent, rationale="test",
+                    hops=[HopSpec(step_id="s1", description="desktop_fenster via shortcut",
+                                  capability="desktop_fenster", arg_template="")],
+                    final_synthesis_prompt="", estimated_cost_usd=0.0)
+
+    monkeypatch.setattr(intro, "_try_capability_shortcut", _abkuerzung)
+    satz = "Ein Fenster offen: notepad „Beispiel - Editor“."
+    ausfuehrer = _Ausfuehrer(lambda: {"success": True, "anzahl": 1, "gesperrt": 0,
+                                      "satz_id": desktop_fenster._merken(satz)})
+    body = _frage_kontext(monkeypatch, ausfuehrer, "Zeig mir bitte die Fensterliste", {"space": "video"})
+    assert [h.description for h in ausfuehrer.plaene[0].hops] == ["desktop_fenster via shortcut"]
+    assert body["ok"] is True and body["final_text"] == satz
+    assert not body.get("nicht_lesbar")
+    assert ausfuehrer.recorder.finals == ["1 Fenster offen, davon 0 gesperrt (Titel nur in der Antwort an die App)."]

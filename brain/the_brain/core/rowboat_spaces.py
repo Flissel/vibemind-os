@@ -70,6 +70,17 @@ def fehlersatz(ergebnis: Any, fehler: Any = None) -> str:
     return "Die VibeMind-Spaces in Rowboat kann ich gerade nicht lesen. Geändert habe ich nichts."
 
 
+def vorpruefung() -> Optional[str]:
+    """Vor dem Plan: der genaue Satz, wenn keine Karten da sind; sonst ``None``. Wirft nie."""
+    try:
+        ergebnis = spaces_lesen()
+    except Exception:  # noqa: BLE001
+        return None
+    if ergebnis.get("error") in ("karten_fehlen", "keine_karten"):
+        return fehlersatz(ergebnis)
+    return None
+
+
 def antwort(ergebnis: Any) -> Optional[str]:
     """"In Rowboat stehen 14 VibeMind-Spaces: Bubbles, …. Läuft heute: Bubbles, Desktop, Ideen."."""
     try:

@@ -342,7 +342,10 @@ RUNDGANG = [
 
 
 @pytest.mark.parametrize("satz,space,erwartet", RUNDGANG, ids=[r[1] for r in RUNDGANG])
-def test_rundgang_saetze(monkeypatch, echter_muster_router, satz, space, erwartet) -> None:
+def test_rundgang_saetze(monkeypatch, tmp_path, echter_muster_router, satz, space, erwartet) -> None:
+    # Rowboat liest Karten; ohne Karten laeuft kein Plan (Vorpruefung, Lauf 17). Hier eine Karte.
+    (tmp_path / "ideen.md").write_text("---\ntitel: Ideen\nspace: ideas\nstand: läuft\n---\n", encoding="utf-8")
+    monkeypatch.setenv("VIBEMIND_SPACES_KARTEN", str(tmp_path))
     ausfuehrer = _Ausfuehrer({"success": True, "tasks": [], "count": 0})
     client, state = _client(monkeypatch, SCHWACH, ausfuehrer=ausfuehrer, muster=echter_muster_router)
     body = client.post("/api/multihop/execute", json={"intent": satz, "context": {"space": space}}).json()

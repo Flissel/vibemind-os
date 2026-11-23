@@ -2935,6 +2935,22 @@ async def _multihop_execute(request: Request):
             if _lesen and _lesen.get("antwort"):
                 return _ehrlich(pe, trace_id, intent, "noch-nicht", _lesen["antwort"], _space)
             if _lesen and _lesen.get("capability"):
+                # Geht der Weg sicher nicht (Rowboat ohne Karten), gleich der genaue Satz:
+                # kein Plan, also kein plan_started und kein Sprung in den Space (Lauf 17).
+                _vorher = _verstehen.FESTE_VORPRUEFUNGEN.get(_lesen["capability"])
+                _vorher_satz = None
+                if _vorher is not None:
+                    try:
+                        _vorher_satz = _vorher()
+                    except Exception:  # noqa: BLE001
+                        _vorher_satz = None
+                if _vorher_satz:
+                    _trace_lite(pe, trace_id, intent, "lesen-fehlt", _vorher_satz)
+                    _vorher_antwort: Dict[str, Any] = {"ok": False, "executed": {}, "final_text": _vorher_satz,
+                                                       "trace_id": trace_id, "weg": "lesen-fehlt"}
+                    if _space:
+                        _vorher_antwort["space"] = _space
+                    return JSONResponse(_vorher_antwort)
                 plan = _fester_leseplan(intent, _lesen["capability"])
                 _fest_lesen = _lesen["capability"] if plan is not None else ""
         # Ideen-Space: feste Saetze laufen ohne Planer und ohne Modell. Die App gibt
@@ -3331,6 +3347,16 @@ async def _multihop_execute(request: Request):
     # Fester Aufruf: der Antworttext steht fest, ein Modell formuliert nichts. Das gilt
     # fuer Plaene der Ideen-Abkuerzung und fuer die aelteren Ein-Schritt-Abkuerzungen
     # "zurueck" und "zeige meine Bubbles" (deren Rohtext stand sonst im Chat).
+    # Ein-Schritt-Plan auf eine Faehigkeit mit festem Lesesatz, der nicht ueber den Satz kam
+    # (alte Abkuerzung, Planer): dieselbe Antwort wie der feste Satz. Sonst stand bei success
+    # True "nicht lesbar" und der Plan auf fehlgeschlagen (Lauf 17, desktop_fenster aus Ideen).
+    if not _fest_lesen and not _ideen_fest:
+        try:
+            _hops = list(getattr(plan, "hops", None) or [])
+            if len(_hops) == 1 and _hops[0].capability in _verstehen.FESTE_ANTWORTEN:
+                _fest_lesen = _hops[0].capability
+        except Exception:  # noqa: BLE001
+            pass
     if _fest_lesen:
         _fest = _lese_antwort(plan, exec_result, _fest_lesen, intent)
     else:

@@ -422,9 +422,11 @@ _FESTE_LESEFRAGEN = (
 # Desktop, The Brain, Rowboat (23.11.2026): eigene Datei, hier nur angehaengt.
 from .feste_lesesaetze import (  # noqa: E402
     antworten as _weitere_antworten, fehlersaetze as _weitere_fehlersaetze, lesefragen as _weitere_lesefragen,
-    protokolle as _weitere_protokolle,
+    protokolle as _weitere_protokolle, vorpruefungen as _weitere_vorpruefungen,
 )
-# Die weiteren Saetze gelten nicht im Ideen-Bereich: dort entscheidet die Ideen-Abkuerzung.
+# Die weiteren Saetze gelten nicht im Ideen-Bereich (dort entscheidet die Ideen-Abkuerzung),
+# ausser denen, die den Space beim Namen nennen ("auf dem Desktop", "in Rowboat"): die gelten
+# ueberall (core/feste_lesesaetze.py, Lauf 17).
 _FESTE_LESEFRAGEN = _FESTE_LESEFRAGEN + _weitere_lesefragen(tuple(s for s in SPACES if s != "ideas") + (None,))
 
 # Saetze, deren Weg nachweislich nicht laeuft: ehrlich sagen statt Planer.
@@ -527,6 +529,8 @@ def lese_zusatz(satz: Any, capability: str) -> str:
 FESTE_PROTOKOLLE = _weitere_protokolle()
 # Genauer Satz statt FEHLERSATZ, wenn ein fester Weg sagen kann, was fehlt (Ergebnis, Fehler).
 FESTE_FEHLERSAETZE = _weitere_fehlersaetze()
+# Vor dem Plan: Satz, wenn der Weg sicher nicht geht (Rowboat ohne Karten). Kein Plan, kein Sprung.
+FESTE_VORPRUEFUNGEN = _weitere_vorpruefungen()
 
 
 # ── Space-Wache ────────────────────────────────────────────────────────────

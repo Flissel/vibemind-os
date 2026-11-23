@@ -50,13 +50,20 @@ class _Bestaetigung:
 
 
 def lesefragen(alle: Tuple[Any, ...]) -> tuple:
-    """Eintraege fuer ``_FESTE_LESEFRAGEN``: (Muster, Faehigkeit, Spaces). ``alle``: jeder Reiter."""
+    """Eintraege fuer ``_FESTE_LESEFRAGEN``: (Muster, Faehigkeit, Spaces).
+
+    Saetze, die den Space beim Namen nennen ("auf dem Desktop", "in Rowboat", "das Gehirn",
+    "Bestätige: Fenster ..."), gelten in JEDEM Reiter, auch in Ideen (Spaces ``None``; Lauf 17:
+    aus Ideen lief "... auf dem Desktop offen?" sonst ueber die alte Abkuerzung und endete
+    "nicht lesbar"). Die mehrdeutigen Kurzformen bleiben im eigenen Reiter. ``alle`` (jeder
+    Reiter ausser Ideen) bleibt Parameter des Aufrufers in core/verstehen.py.
+    """
     return (
-        (_Bestaetigung(), "desktop_bestaetigen", alle),
-        (_nur_mit_desktop(_FENSTER), "desktop_fenster", alle),
+        (_Bestaetigung(), "desktop_bestaetigen", None),
+        (_nur_mit_desktop(_FENSTER), "desktop_fenster", None),
         (_FENSTER, "desktop_fenster", ("desktop", None)),
-        (_GEDANKEN, "thebrain_gedanken", alle),
-        (_AGENTEN_IN_ROWBOAT, "rowboat_spaces", alle),
+        (_GEDANKEN, "thebrain_gedanken", None),
+        (_AGENTEN_IN_ROWBOAT, "rowboat_spaces", None),
         (_AGENTEN, "rowboat_spaces", ("roarboot",)),
     )
 
@@ -117,6 +124,16 @@ def fehlersaetze() -> Dict[str, Callable[..., Optional[str]]]:
             "thebrain_gedanken": _thebrain_gedanken_fehler}
 
 
-def protokolle() -> Dict[str, Callable[[Any], Optional[str]]]:
+def _rowboat_spaces_vorher() -> Optional[str]:
+    from .rowboat_spaces import vorpruefung
+    return vorpruefung()
+
+
+def vorpruefungen() -> Dict[str, Callable[[], Optional[str]]]:
+    """Vor dem Plan: Satz, wenn der Weg sicher nicht geht. Dann kein Plan und kein Sprung."""
+    return {"rowboat_spaces": _rowboat_spaces_vorher}
+
+
+def protokolle() ->Dict[str, Callable[[Any], Optional[str]]]:
     """Satz fuer Plan-Verlauf und Protokolle, wenn die Antwort Bildschirminhalt traegt."""
     return {"desktop_fenster": _desktop_fenster_protokoll, "desktop_bestaetigen": _desktop_bestaetigen_protokoll}
