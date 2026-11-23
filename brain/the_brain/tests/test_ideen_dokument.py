@@ -627,3 +627,57 @@ def test_plan_ausfuehrer_meldet_budget_als_satz(monkeypatch) -> None:
                                                            "antwortkanal": {"art": "api"}})
     assert ergebnis.ok is False
     assert fehlersatz(ergebnis.error, "idea_whitepaper").startswith("Das White Paper bräuchte 4 Läufe")
+
+
+# ── Punkt 9 (Lauf 5): Urteil ueber die Bubble als Auftrag ueber den Rueckweg ──
+
+def test_einschaetzung_anlegen_mit_der_frage_als_auftrag() -> None:
+    nachricht, rueckweg = dok.auftrag_vorbereiten(
+        "idea.summarize", json.dumps({"bubble_id": BUBBLE["id"], "einschaetzen": True}),
+        "Welche Risiken siehst du in dieser Bubble?", lesen=LesenAttrappe(), neue_kennung=lambda: DOK_ID)
+    assert rueckweg["vertrag"] == "zusammenfassen" and rueckweg["frage"] == "Welche Risiken siehst du in dieser Bubble?"
+    assert rueckweg["titel"] == "Einschätzung: Welche Risiken siehst du in dieser Bubble?"
+    assert "Einschätzung" in nachricht and "Welche Risiken siehst du" in nachricht and "[K1]" in nachricht
+    assert "keine Werkzeuge" in nachricht
+    with pytest.raises(RueckwegFehler):
+        dok.auftrag_vorbereiten("idea.summarize", json.dumps({"bubble_id": BUBBLE["id"], "einschaetzen": True}),
+                                "  ", lesen=LesenAttrappe(), neue_kennung=lambda: DOK_ID)
+
+
+def test_einschaetzung_steht_im_chat_und_als_karte() -> None:
+    _, rueckweg = dok.auftrag_vorbereiten(
+        "idea.summarize", json.dumps({"bubble_id": BUBBLE["id"], "einschaetzen": True}),
+        "Was fehlt noch?", lesen=LesenAttrappe(), neue_kennung=lambda: DOK_ID)
+    ideen = Ideen()
+    roh = json.dumps({"absaetze": ["Für K4 fehlt noch das Geld."], "verweise": ["K4"]})
+    p = dok.verarbeiten(_auftrag(rueckweg, roh), **_anschluss(ideen, angelegt=[])(None))
+    assert p["rueckweg"] == "geschrieben" and p["verified"] is True
+    assert p["meldung"].startswith("Für „Sponsoren“ fehlt noch das Geld.")
+    assert p["meldung"].endswith("(Steht auch als Karte „Einschätzung: Was fehlt noch?“ in der Bubble.)")
+    ((_, argumente),) = ideen.aufrufe
+    assert argumente["title"] == "Einschätzung: Was fehlt noch?" and argumente["art"] == "zusammenfassung"
+
+
+def test_plan_ausfuehrer_legt_einschaetzung_als_auftrag_an(monkeypatch) -> None:
+    from core.plan_executor import PlanExecutor
+    from core.plan_schema import HopSpec, Plan
+
+    tabelle = TabelleAttrappe()
+    monkeypatch.setattr(aa, "AGENT_AUFTRAEGE_ENABLED", True)
+    monkeypatch.setattr(aa, "tabelle_aus_umgebung", lambda: tabelle)
+    monkeypatch.setattr("core.plan_executor.PlanExecutor._capture_kg_hits", lambda *a: [])
+    monkeypatch.setattr(dok, "DatenbankLesen", LesenAttrappe)
+    _validator_attrappe(monkeypatch)
+    from core import ideen_abkuerzung as abk
+    treffer = abk.loese("Welche Risiken siehst du?", {**KONTEXT, "space": "ideas"})
+    assert treffer["ereignis"] == "idea.summarize" and treffer["argumente"]["einschaetzen"] is True
+    plan = Plan("ideen_7", "Welche Risiken siehst du?", "", [
+        HopSpec(step_id="s1", description="idea.summarize", capability=treffer["capability"],
+                arg_template=abk.arg_vorlage(treffer["argumente"]))])
+
+    ergebnis = PlanExecutor().execute(plan, antwortkanal={"art": "api"})
+
+    assert ergebnis.get("pending") is True, ergebnis
+    (a,) = tabelle.angelegt
+    assert a["capability"] == "idea_summarize" and "Welche Risiken siehst du?" in a["auftrag"]
+    assert a["uebergabe"]["rueckweg"]["frage"] == "Welche Risiken siehst du?"

@@ -94,3 +94,19 @@ def test_suche_findet_die_form_ohne_endung() -> None:
 def test_suche_sagt_ehrlich_wenn_nicht_alles_gelesen_ist() -> None:
     satz = _antwort({"art": "suche", "wort": "Feuerwerk"}, ZEILEN, gesamt=140)
     assert satz == "Keine Notiz in „Stadtfest“ erwähnt „Feuerwerk“. Durchsucht habe ich nur die ersten 3 von 140 Notizen."
+
+
+@pytest.mark.parametrize("satz", [
+    "Welche Risiken siehst du?", "Welche Schwächen siehst du in dieser Bubble?", "Was fehlt noch?",
+    "Was fehlt hier noch", "Was sind die größten Risiken?", "Siehst du hier Widersprüche?",
+    "Was hältst du von dieser Bubble?", "Schätze diese Bubble ein",
+])
+def test_urteilsfrage_wird_einschaetzung_der_bubble(satz) -> None:
+    treffer = abk.loese(satz, KONTEXT)
+    assert treffer["ereignis"] == "idea.summarize" and treffer["capability"] == "idea_summarize"
+    assert treffer["argumente"] == {"bubble_id": "b0b1e001", "einschaetzen": True}
+
+
+def test_urteil_ueber_eine_karte_bleibt_bei_der_karte() -> None:
+    treffer = abk.loese("Was hältst du von Preise?", KONTEXT)
+    assert treffer["ereignis"] == "idea.explain" and treffer["argumente"] == {"id": "a0000001"}

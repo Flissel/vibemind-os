@@ -528,6 +528,12 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
             return _treffer("idea.update", {"id": karte["id"], "title": neu},
                             f"{_titel(karte)} heißt jetzt „{neu}“.")
 
+    # ── Urteil ueber die ganze Bubble (Lauf 5: ging an den Planer mit 30 s): Auftrag ueber den
+    #    Rueckweg der Zusammenfassung, die Frage des Menschen ist der Auftrag (core/ideen_dokument).
+    if urteilsfrage(text):
+        return _treffer("idea.summarize", {"bubble_id": _offene_bubble(kontext), "einschaetzen": True},
+                        "", capability="idea_summarize")
+
     # ── Modellauftraege mit Rueckweg (core/ideen_rueckweg): Karte hier aufloesen, der
     #    Agent bekommt nur Daten, das Gehirn schreibt. Antwort ist die Quittung des Auftrags.
     m = (re.fullmatch(r"formulier(?:e)?\s+(?P<k>.+?)\s+(?:noch\s+)?aus", text, _I)
@@ -771,6 +777,29 @@ _SUCHE = (
     rf"gibt\s+es\s+(?:eine\s+|schon\s+eine\s+)?(?:karte|notiz|idee|{_K})\s+(?:zu|zum|zur|(?:ü|ue)ber|mit)\s+(?P<w>.+)",
     rf"(?:durch)?such(?:e)?\s+(?:in\s+)?(?:den|meinen|die)\s+{_K}\s+nach\s+(?P<w>.+)",
 )
+
+
+_SCHWAECHE = (r"(?:risiken|schw(?:ä|ae)chen|schwachstellen|st(?:ä|ae)rken|l(?:ü|ue)cken|probleme|chancen|"
+              r"widerspr(?:ü|ue)che)")
+_HIER = r"(?:\s+(?:hier|darin|da|noch|in\s+(?:dieser|der)\s+bubble|bei\s+(?:dieser|der)\s+bubble))*"
+_URTEIL = (
+    rf"welche\s+{_SCHWAECHE}\s+(?:siehst|erkennst|findest)\s+du{_HIER}",
+    rf"was\s+(?:sind|w(?:ä|ae)ren)\s+(?:hier\s+)?(?:die\s+)?(?:gr(?:ö|oe)(?:ß|ss)ten\s+)?{_SCHWAECHE}{_HIER}",
+    rf"(?:siehst|erkennst)\s+du\s+(?:hier\s+)?{_SCHWAECHE}{_HIER}",
+    rf"was\s+fehlt{_HIER}",
+    # "Was haeltst du davon?" bleibt beim bisherigen Weg: "davon" meint oft das Gesagte im Chat.
+    rf"was\s+h(?:ä|ae)ltst\s+du\s+von\s+(?:dieser|der)\s+bubble",
+    rf"sch(?:ä|ae)tz(?:e)?\s+(?:diese|die)\s+bubble\s+ein",
+    rf"wie\s+sch(?:ä|ae)tzt\s+du\s+(?:diese|die)\s+bubble\s+ein",
+)
+
+
+def urteilsfrage(text: Any) -> bool:
+    """Eine Frage nach einem Urteil ueber die ganze offene Bubble ("Welche Risiken siehst du?")."""
+    if not isinstance(text, str):
+        return False
+    text = re.sub(r"\s+", " ", text).strip().rstrip(".!?").strip()
+    return any(re.fullmatch(muster, text, _I) for muster in _URTEIL)
 
 
 def _stichwort(wort: str) -> str:
