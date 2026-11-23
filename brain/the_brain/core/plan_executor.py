@@ -334,7 +334,26 @@ def _space_des_ereignisses(ereignis: str) -> Optional[str]:
     return None
 
 
-def _abschluss_ereignis(plan_id: str, ok: bool, result: Dict[str, Any], executed: Dict[str, Any]) -> Dict[str, Any]:
+def _ziel_des_plans(plan: Any, ok: bool, executed: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """(33) ``ziel`` fuer einen festen Ideen-Schreibaufruf (ein Schritt), sonst ``None``. Wirft nie."""
+    try:
+        if not ok or len(executed) != 1:
+            return None
+        from core.ideen_abkuerzung import ziel_fuer_schritt
+
+        (hr,) = executed.values()
+        hop = plan.hops[0] if getattr(plan, "hops", None) else None
+        capability = getattr(hr, "capability", None) or getattr(hop, "capability", None)
+        argumente = getattr(hr, "rendered_arg", None) or getattr(hop, "arg_template", "")
+        bubble = getattr(plan, "ziel_bubble_id", "") or ""
+        return ziel_fuer_schritt(capability, bool(getattr(hr, "ok", False)), argumente,
+                                 getattr(hr, "result", None), {"bubble": {"id": bubble}} if bubble else None)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _abschluss_ereignis(plan_id: str, ok: bool, result: Dict[str, Any], executed: Dict[str, Any],
+                        ziel: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Nutzlast von ``plan_completed`` fuer die App.
 
     - Angenommener Auftrag (pending): ``status: "angenommen"`` ohne Dauer. Die Dauer der
@@ -347,6 +366,8 @@ def _abschluss_ereignis(plan_id: str, ok: bool, result: Dict[str, Any], executed
                 "fertig": False, "hop_count": len(executed)}
     nutzlast: Dict[str, Any] = {"plan_id": plan_id, "ok": ok, "elapsed_s": result.get("elapsed_s"),
                                 "hop_count": len(executed)}
+    if ok and ziel:
+        nutzlast["ziel"] = ziel
     if not ok:
         try:
             from core.ideen_abkuerzung import fehlerart
@@ -1213,7 +1234,8 @@ class PlanExecutor:
                     "authority_status": pending_hop.authority_status,
                     "invocation_id": pending_hop.invocation_id,
                 })
-            self._publish("plan_completed", _abschluss_ereignis(plan.plan_id, ok, result, executed))
+            self._publish("plan_completed", _abschluss_ereignis(plan.plan_id, ok, result, executed,
+                                                                _ziel_des_plans(plan, ok, executed)))
             self._tappend(plan, "execution", "plan-executor",
                          f"completed ok={ok} in {result['elapsed_s']}s")
 

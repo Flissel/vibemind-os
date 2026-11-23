@@ -658,6 +658,33 @@ def test_einschaetzung_steht_im_chat_und_als_karte() -> None:
     assert argumente["title"] == "Einschätzung: Was fehlt" and argumente["art"] == "zusammenfassung"
 
 
+def test_einschaetzung_meldung_traegt_nur_ein_zwei_saetze() -> None:
+    _, rueckweg = dok.auftrag_vorbereiten(
+        "idea.summarize", json.dumps({"bubble_id": BUBBLE["id"], "einschaetzen": True}),
+        "Was fehlt noch?", lesen=LesenAttrappe(), neue_kennung=lambda: DOK_ID)
+    roh = json.dumps({"absaetze": ["Für K4 fehlt das Geld. Die Bühne ist offen. Der Rest steht.",
+                                   "Ein zweiter Absatz, der nur auf der Karte steht."],
+                      "verweise": ["K4"]})
+    p = dok.verarbeiten(_auftrag(rueckweg, roh), **_anschluss(Ideen(), angelegt=[])(None))
+    assert p["meldung"] == ("Für „Sponsoren“ fehlt das Geld. Die Bühne ist offen.\n\n"
+                            "(Steht auch als Karte „Einschätzung: Was fehlt“ in der Bubble.)")
+
+
+@pytest.mark.parametrize("absaetze,erwartet", [
+    (["## Lücken\n- Das Geld fehlt.\n- Die Druckerei ist offen.\n- Mehr."],
+     "Lücken Das Geld fehlt. Die Druckerei ist offen."),
+    (["Nur ein Satz ohne Punkt"], "Nur ein Satz ohne Punkt"),
+    ([], ""),
+])
+def test_antwort_kurz(absaetze, erwartet) -> None:
+    assert dok.antwort_kurz(absaetze) == erwartet
+
+
+def test_antwort_kurz_kappt_lange_saetze() -> None:
+    kurz = dok.antwort_kurz(["Wort " * 200 + "."])
+    assert len(kurz) <= dok.ANTWORT_ZEICHEN + 2 and kurz.endswith(" …")
+
+
 @pytest.mark.parametrize("frage,titel", [
     ("Welche Risiken siehst du in dieser Bubble?", "Einschätzung: Risiken"),
     ("Was sind die größten Schwächen und Chancen?", "Einschätzung: Schwächen und Chancen"),

@@ -413,6 +413,22 @@ def nachricht_einschaetzen(bubble_titel: str, karten: list[tuple[str, str, str]]
 
 EINSCHAETZUNG_FRAGE = 300
 EINSCHAETZUNG_IM_CHAT = 1_500
+ANTWORT_SAETZE = 2
+# Die Huelle zeigt die meldung im Chat bis 200 Zeichen (14c9571): die Antwort passt ganz hinein.
+ANTWORT_ZEICHEN = 190
+
+
+def antwort_kurz(absaetze: list[str]) -> str:
+    """Lauf 9 (32): Die Meldung in /stand traegt bei Urteilsfragen die Antwort
+    in ein, zwei Saetzen; der ganze Text steht auf der Karte."""
+    zeilen = [re.sub(r"^\s*(#+|[-*•]|\d+\.)\s+", "", z) for a in absaetze if isinstance(a, str)
+              for z in a.splitlines()]
+    text = " ".join(" ".join(zeilen).split())
+    saetze = [s for s in re.split(r"(?<=[.!?…])\s+", text) if s]
+    kurz = " ".join(saetze[:ANTWORT_SAETZE])
+    if len(kurz) > ANTWORT_ZEICHEN:
+        kurz = kurz[:ANTWORT_ZEICHEN].rsplit(" ", 1)[0].rstrip(" ,;:") + " …"
+    return kurz
 
 
 def nachricht_gruppieren(bubble_titel: str, karten: list[tuple[str, str, str]], wunsch: Any,
@@ -1118,8 +1134,10 @@ def verarbeiten(auftrag: Mapping[str, Any], *, lies_karten: Callable[[list[str]]
             ersetzt = rueckweg.get("ersetzt") is True
             if rueckweg.get("frage"):
                 # Die Antwort gehoert in den Chat; die Karte haelt sie fest.
-                antwort = inhalt if len(inhalt) <= EINSCHAETZUNG_IM_CHAT else (
-                    inhalt[:EINSCHAETZUNG_IM_CHAT].rstrip() + " …")
+                titel = rueckweg["kuerzel_titel"]
+                antwort = antwort_kurz([kuerzel_ersetzen(a, titel) for a in werte["absaetze"]]) or (
+                    inhalt if len(inhalt) <= EINSCHAETZUNG_IM_CHAT
+                    else inhalt[:EINSCHAETZUNG_IM_CHAT].rstrip() + " …")
                 wo = (f"Die Karte „{rueckweg['titel']}“ ist erneuert" if ersetzt
                       else f"Steht auch als Karte „{rueckweg['titel']}“ in der Bubble")
                 return aus("geschrieben", True, reason, f"{antwort}\n\n({wo}.)",

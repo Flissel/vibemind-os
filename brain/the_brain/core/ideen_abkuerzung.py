@@ -200,7 +200,16 @@ def _wahl(text: str, kandidaten: list[dict]) -> Optional[int]:
     return -1 if len(kern.split()) <= 3 and "?" not in text else None
 
 
+def _bubble_zu(kontext: dict) -> bool:
+    """Die App sagt ausdruecklich: keine Bubble offen (``bubble: null``)."""
+    return "bubble" in kontext and kontext["bubble"] is None
+
+
 def _karten(kontext: dict) -> list[dict]:
+    if _bubble_zu(kontext):
+        # Lauf 9: Nach Rowboat -> Ideen kann die App noch die Karten der zuletzt offenen
+        # Bubble mitschicken. Ohne offene Bubble ist keine Karte zu sehen: nie damit aufrufen.
+        return []
     karten = kontext.get("cards")
     return [k for k in karten if isinstance(k, dict) and ist_kennung(k.get("id"))] if isinstance(karten, list) else []
 
@@ -230,6 +239,9 @@ def _karte(name: str, kontext: dict) -> dict:
     if wort in ("das", "die", "sie", "es", "diese", "dies", "die letzte", "die letzte notiz", "die letzte karte",
                 "die notiz", "die karte", "diese notiz", "diese karte", "die markierte", "die auswahl",
                 "dieser notiz", "dieser karte", "der notiz", "der karte", "dem", "der", "ihr", "ihm"):
+        if _bubble_zu(kontext):
+            # Auswahl und letzte Karte stammen dann aus einer Bubble, die nicht mehr offen ist.
+            raise _Rueckfrage(keine_bubble_offen(""))
         auswahl = [i for i in kontext.get("selection") or [] if ist_kennung(i)]
         if len(auswahl) == 1:
             return nach_id.get(auswahl[0], {"id": auswahl[0], "title": ""})
@@ -271,6 +283,8 @@ def _karte(name: str, kontext: dict) -> dict:
             raise _Rueckfrage(f"Zu „{genannt}“ passen {len(treffer)} Notizen: "
                               f"{_aufzaehlung([k.get('title') for k in treffer])}. Welche meinst du?",
                               kandidaten=treffer, name=wort)
+    if _bubble_zu(kontext):
+        raise _Rueckfrage(keine_bubble_offen(genannt))
     roh = kontext.get("cards")
     if isinstance(roh, list) and any(
             isinstance(k, dict) and not ist_kennung(k.get("id")) and _normal(k.get("title")) == wort for k in roh):
@@ -280,10 +294,21 @@ def _karte(name: str, kontext: dict) -> dict:
         # Lauf 7: Die App meldet eine offene Bubble, aber ohne Kennung. Dann weiss ich nicht, was
         # in ihr liegt: kein "finde ich in dieser Bubble nicht", sondern wie ohne Kontext.
         raise _Rueckfrage(_BUBBLE_UNKLAR)
+    if not isinstance(kontext.get("bubble"), dict) or not kontext.get("bubble"):
+        # Lauf 9: Nach Rowboat -> Ideen schickt die App bubble: null. Dann ist keine Bubble
+        # offen; "finde ich in dieser Bubble nicht" behauptete eine Bubble, die es nicht gibt.
+        raise _Rueckfrage(keine_bubble_offen(genannt))
     gesamt = kontext.get("cards_total")
     if isinstance(gesamt, int) and not isinstance(gesamt, bool) and gesamt > len(karten):
         raise _Rueckfrage(f"Unter den sichtbaren Notizen finde ich „{genannt}“ nicht. Markiere die Notiz.")
     raise _Rueckfrage(f"Eine Notiz „{genannt}“ finde ich in dieser Bubble nicht.")
+
+
+def keine_bubble_offen(genannt: str) -> str:
+    """Satz, wenn eine Notiz genannt ist, aber keine Bubble offen ist (``bubble`` fehlt oder null)."""
+    if not genannt:
+        return "Es ist keine Bubble offen. Öffne die Bubble mit der Notiz und sag es noch einmal."
+    return f"Es ist keine Bubble offen. Öffne die Bubble mit der Notiz „{genannt}“ und sag es noch einmal."
 
 
 def _bubble_ohne_kennung(kontext: dict) -> bool:
@@ -1103,6 +1128,44 @@ IDEA_LIST_VORGABE = 50
 
 def _mehrzahl(anzahl: int, eins: str, viele: str) -> str:
     return f"{anzahl} {eins if anzahl == 1 else viele}"
+
+
+def ziel_fuer_schritt(capability: Any, ok: bool, argumente: Any, ergebnis: Any,
+                      kontext: Any = None) -> Optional[dict]:
+    """(33) Wohin die App nach einem festen Schreibaufruf springt: ``{space, bubble_id, node_id}``.
+
+    Nur wenn der Aufruf geklappt hat, schreibt und eine Bubble kennt (aus den Argumenten oder
+    der offenen bzw. im Satz genannten Bubble des Kontexts). ``node_id`` ist die Karte, die
+    geschrieben wurde, sonst ``None``. Wirft nie.
+    """
+    try:
+        from .ideen_fest_contract import FESTE_EREIGNISSE
+
+        spec = FESTE_EREIGNISSE.get(str(capability or ""))
+        if not ok or not spec or spec.get("liest_nur"):
+            return None
+        if isinstance(argumente, str):
+            try:
+                argumente = json.loads(argumente)
+            except ValueError:
+                argumente = {}
+        argumente = argumente if isinstance(argumente, dict) else {}
+        bubble_id = argumente.get("bubble_id")
+        if str(capability).startswith("bubble.") and not ist_kennung(bubble_id):
+            bubble_id = argumente.get("id")          # bubble.rate: die Kennung ist die Bubble
+        if not ist_kennung(bubble_id) and isinstance(kontext, dict) and isinstance(kontext.get("bubble"), dict):
+            bubble_id = kontext["bubble"].get("id")
+        if not ist_kennung(bubble_id):
+            return None
+        node_id = None
+        if str(capability).startswith("idea."):
+            node_id = argumente.get("id")
+            if not ist_kennung(node_id):
+                inhalt = _mcp_json(ergebnis)
+                node_id = inhalt.get("id") if isinstance(inhalt, dict) else None
+        return {"space": "ideas", "bubble_id": bubble_id, "node_id": node_id if ist_kennung(node_id) else None}
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def antwort_fuer_schritt(capability: Any, ok: bool, ergebnis: Any, fehler: Any,

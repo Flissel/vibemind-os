@@ -108,6 +108,10 @@ class Plan:
     # Entry gesetzt (auch fuer SoM/som-team/no-plan-Zweige, die kein plan_id haben).
     trace_id: str = ""
     plan_revision: int = 1
+    # (33) Bubble, in der ein fester Ideen-Aufruf schreibt (offene oder im Satz genannte Bubble).
+    # Daraus entsteht "ziel" in plan_completed, damit die App bis ins Ergebnis springt.
+    # Nicht in to_dict serialisiert.
+    ziel_bubble_id: str = ""
     # Laufzeit-Stage-Events (PLAN/EXECUTION/...): {stage, component, ts, outcome}.
     # Nicht in to_dict serialisiert (der PlanRecorder-Snapshot zieht es separat).
     _stages: List[Dict[str, Any]] = field(default_factory=list)

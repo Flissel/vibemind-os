@@ -415,6 +415,75 @@ def test_halt_fest_aus_video_schreibt_in_die_genannte_bubble(monkeypatch, echter
     assert "Bubble Stadtfest" not in hop.arg_template
 
 
+def test_halt_fest_aus_video_nennt_das_ziel(monkeypatch, echter_muster_router) -> None:
+    # (33): Die App springt bis in die Bubble und zur neuen Karte, nicht nur auf die Ideen-Uebersicht.
+    _bubble_liste(monkeypatch, [{"id": "b0b1e001", "title": "Stadtfest"}])
+    ausfuehrer = _Ausfuehrer({"content": [{"type": "text", "text": '{"id": "a0000009"}'}]})
+    client, _ = _client(monkeypatch, SCHWACH, ausfuehrer=ausfuehrer, muster=echter_muster_router)
+    body = client.post("/api/multihop/execute", json={"intent": "Halt fest: Preise prüfen in der Bubble Stadtfest",
+                                                      "context": {"space": "video"}}).json()
+    assert body["ziel"] == {"space": "ideas", "bubble_id": "b0b1e001", "node_id": "a0000009"}
+    assert ausfuehrer.plaene[0].ziel_bubble_id == "b0b1e001"
+
+
+def test_lesen_nennt_kein_ziel(monkeypatch, echter_muster_router) -> None:
+    ausfuehrer = _Ausfuehrer({"content": [{"type": "text", "text": "[]"}]})
+    client, _ = _client(monkeypatch, SCHWACH, ausfuehrer=ausfuehrer, muster=echter_muster_router)
+    body = client.post("/api/multihop/execute", json={"intent": "Was steht bei Sponsoren?", "context": {
+        "space": "ideas", "bubble": {"id": "b0b1e001", "title": "Stadtfest"},
+        "cards": [{"id": "a0000001", "title": "Sponsoren"}]}}).json()
+    assert ausfuehrer.plaene and "ziel" not in body
+
+
+# Lauf 9 (31): So kommt der Kontext nach Rowboat -> Ideen an (isInsideBubble false, bubble null).
+# Die Karten koennen noch aus der zuletzt offenen Bubble stammen.
+NACH_ROWBOAT = [
+    {"space": "ideas", "bubble": None, "cards": [], "selection": [], "last_id": None,
+     "bubbles": [{"id": "b0b1e001", "title": "Stadtfest"}]},
+    {"space": "ideas", "bubble": None, "isInsideBubble": False,
+     "cards": [{"id": "a0000001", "title": "Sponsoren", "format": "text"}], "selection": ["a0000001"],
+     "last_id": "a0000001", "bubbles": [{"id": "b0b1e001", "title": "Stadtfest"}]},
+]
+
+
+@pytest.mark.parametrize("kontext", NACH_ROWBOAT)
+@pytest.mark.parametrize("satz", ["Was steht bei Sponsoren?", "Bewerte die Notiz Sponsoren mit 50",
+                                  "Formuliere das aus"])
+def test_nach_rowboat_ohne_bubble_am_endpunkt(monkeypatch, echter_muster_router, kontext, satz) -> None:
+    from core.ideen_abkuerzung import keine_bubble_offen
+
+    ausfuehrer = _Ausfuehrer({"x": 1})
+    client, state = _client(monkeypatch, SCHWACH, ausfuehrer=ausfuehrer, planer=_Planer("idea_list"),
+                            muster=echter_muster_router)
+    body = client.post("/api/multihop/execute", json={"intent": satz, "context": kontext}).json()
+    assert body.get("rueckfrage") is True and "in dieser Bubble" not in body["final_text"]
+    assert body["final_text"].startswith(keine_bubble_offen("")[:len("Es ist keine Bubble offen.")])
+    assert ausfuehrer.plaene == [] and state.multihop_planner.aufrufe == 0
+
+
+@pytest.mark.parametrize("kontext", NACH_ROWBOAT)
+def test_nach_rowboat_halt_fest_mit_bubble_im_satz(monkeypatch, echter_muster_router, kontext) -> None:
+    gesucht = _bubble_liste(monkeypatch, [{"id": "b0b1e001", "title": "Stadtfest"}])
+    ausfuehrer = _Ausfuehrer({"content": [{"type": "text", "text": '{"id": "a0000009"}'}]})
+    client, state = _client(monkeypatch, SCHWACH, ausfuehrer=ausfuehrer, muster=echter_muster_router)
+    client.post("/api/multihop/execute", json={"intent": "Halt fest: Preise prüfen in der Bubble Stadtfest",
+                                               "context": kontext})
+    assert gesucht == ["Stadtfest"] and state.multihop_planner.aufrufe == 0
+    hop = ausfuehrer.plaene[0].hops[0]
+    assert "b0b1e001" in hop.arg_template and "Preise prüfen" in hop.arg_template
+
+
+@pytest.mark.parametrize("kontext", NACH_ROWBOAT)
+def test_nach_rowboat_halt_fest_ohne_bubble(monkeypatch, echter_muster_router, kontext) -> None:
+    ausfuehrer = _Ausfuehrer({"x": 1})
+    client, state = _client(monkeypatch, SCHWACH, ausfuehrer=ausfuehrer, planer=_Planer("idea_create"),
+                            muster=echter_muster_router)
+    body = client.post("/api/multihop/execute", json={"intent": "Halt fest: Preise prüfen",
+                                                      "context": kontext}).json()
+    assert ausfuehrer.plaene == [] and state.multihop_planner.aufrufe == 0
+    assert body.get("rueckfrage") is True and "in dieser Bubble" not in body["final_text"]
+
+
 @pytest.mark.parametrize("zeilen,teil", [
     ([{"id": "b0b1e001", "title": "Stadtfest"}, {"id": "b0b1e003", "title": "stadtfest"}], "Es gibt 2 Bubbles"),
     ([], "Ich finde keine Bubble mit dem Titel „Stadtfest“"),
