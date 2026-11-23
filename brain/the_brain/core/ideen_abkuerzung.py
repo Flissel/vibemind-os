@@ -1161,8 +1161,21 @@ def ziel_fuer_schritt(capability: Any, ok: bool, argumente: Any, ergebnis: Any,
         if str(capability).startswith("idea."):
             node_id = argumente.get("id")
             if not ist_kennung(node_id):
-                inhalt = _mcp_json(ergebnis)
-                node_id = inhalt.get("id") if isinstance(inhalt, dict) else None
+                # Lauf 11 (37): Der Ideen-Server antwortet beim Anlegen mit der neuen Zeile als
+                # Liste ("[{...}]", PostgREST), beim schon vorhandenen Titel mit der Zeile selbst.
+                # Gelesen wie in der Nachpruefung (core/ideen_fest_contract).
+                from .ideen_fest_contract import _erste_zeile, _mcp_inhalt
+
+                inhalt, gefunden = _mcp_inhalt(ergebnis)
+                if not gefunden and isinstance(ergebnis, str):
+                    try:
+                        inhalt = json.loads(ergebnis)
+                    except ValueError:
+                        inhalt = None
+                elif not gefunden:
+                    inhalt = ergebnis
+                zeile = _erste_zeile(inhalt)
+                node_id = zeile.get("id") if zeile else None
         return {"space": "ideas", "bubble_id": bubble_id, "node_id": node_id if ist_kennung(node_id) else None}
     except Exception:  # noqa: BLE001
         return None

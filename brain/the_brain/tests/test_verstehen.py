@@ -418,7 +418,10 @@ def test_halt_fest_aus_video_schreibt_in_die_genannte_bubble(monkeypatch, echter
 def test_halt_fest_aus_video_nennt_das_ziel(monkeypatch, echter_muster_router) -> None:
     # (33): Die App springt bis in die Bubble und zur neuen Karte, nicht nur auf die Ideen-Uebersicht.
     _bubble_liste(monkeypatch, [{"id": "b0b1e001", "title": "Stadtfest"}])
-    ausfuehrer = _Ausfuehrer({"content": [{"type": "text", "text": '{"id": "a0000009"}'}]})
+    # Lauf 11 (37): So antwortet der Ideen-Server beim Anlegen: die neue Zeile als Liste.
+    ausfuehrer = _Ausfuehrer({"content": [{"type": "text", "text": '[{"id": "a0000009", "linked_idea_id": '
+                                                                    '"b0b1e001", "title": "Preise prüfen"}]'}],
+                              "isError": False})
     client, _ = _client(monkeypatch, SCHWACH, ausfuehrer=ausfuehrer, muster=echter_muster_router)
     body = client.post("/api/multihop/execute", json={"intent": "Halt fest: Preise prüfen in der Bubble Stadtfest",
                                                       "context": {"space": "video"}}).json()

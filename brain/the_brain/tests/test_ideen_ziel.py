@@ -43,6 +43,44 @@ def test_ziel_eines_schreibaufrufs(capability, argumente, ergebnis, kontext, erw
         "space": "ideas", "bubble_id": BUBBLE, "node_id": erwartet}
 
 
+# ── Lauf 11 (37): echte Ergebnisform des Ideen-Servers beim Anlegen ─────────
+
+def _server():
+    import importlib.util
+
+    pfad = Path(__file__).resolve().parents[3] / "spaces" / "ideas" / "mcp_server.py"
+    spec = importlib.util.spec_from_file_location("spaces_ideas_mcp_server_ziel", pfad)
+    modul = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(modul)
+    return modul
+
+
+@pytest.mark.parametrize("vorhanden", [False, True], ids=["neu", "titel-schon-da"])
+def test_ziel_aus_der_echten_antwort_von_idea_create(vorhanden) -> None:
+    from unittest import mock
+
+    server = _server()
+    zeile = {"id": KARTE, "title": "Preise", "content": "", "linked_idea_id": BUBBLE, "x": 0, "y": 0}
+
+    def antwort(method, path, **kwargs):
+        if method == "GET":
+            return [zeile] if vorhanden else []
+        return [{**zeile, **kwargs["body"], "id": KARTE}]      # PostgREST: Liste mit der neuen Zeile
+
+    argumente = {"bubble_id": BUBBLE, "title": "Preise", "content": "prüfen"}
+    with mock.patch.object(server, "_request", side_effect=antwort):
+        nachricht = server.handle_message({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                           "params": {"name": "idea_create", "arguments": argumente}})
+    ergebnis = nachricht["result"]
+    assert ergebnis["isError"] is False
+    assert ziel_fuer_schritt("idea.create", True, argumente, ergebnis, None) == {
+        "space": "ideas", "bubble_id": BUBBLE, "node_id": KARTE}
+    # Ebenso in plan_completed.
+    plan = _plan("idea.create", argumente)
+    executed = {"s1": HopResult(step_id="s1", ok=True, result=ergebnis, capability="idea.create")}
+    assert _ziel_des_plans(plan, True, executed)["node_id"] == KARTE
+
+
 @pytest.mark.parametrize("capability,ok,argumente,kontext", [
     ("idea.list", True, {"bubble_id": BUBBLE}, OFFEN),            # liest nur
     ("idea.create", False, {"bubble_id": BUBBLE, "title": "x"}, OFFEN),  # nicht geklappt
