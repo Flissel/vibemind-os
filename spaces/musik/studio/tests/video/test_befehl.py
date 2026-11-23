@@ -365,7 +365,11 @@ def test_leises_intro_mit_schlag_wird_uebersprungen(tmp_path, budget):
         (lauf / "videomusik.json").read_text(encoding="utf-8")
     )
     assert abs(ergebnis.lufs - (-14.0)) <= 1.0
-    assert "erreicht" not in (lauf / "bericht.md").read_text(encoding="utf-8")
+    bericht = (lauf / "bericht.md").read_text(encoding="utf-8")
+    assert "kein Ausschnitt von" not in bericht  # der Rueckfall-Hinweis gilt nur ohne tauglichen Start
+    assert f"Start auf {zuschnitt['start_s']:.2f} s verschoben" in bericht
+    assert "Hinweise" in bericht and "Ab " in bericht  # nennt den verworfenen Start und den Grund
+    assert "Luecke (Stille" in bericht or "nicht unter dem Spitzendeckel; Start" in bericht
 
 
 def test_ohne_tauglichen_ausschnitt_laeuft_der_alte_weg_mit_hinweis(tmp_path, budget):
@@ -403,3 +407,16 @@ def test_zu_kurzes_ziel_bricht_vor_dem_modell_ab_und_nennt_eine_gehende_laenge(
     nochmal = _video(daten, client, budget, aus_sekunden(float(treffer.group(1))))
     assert nochmal in (0, 2)
     assert client.aufrufe == 1
+
+
+def test_am_deckel_begrenzter_pegel_in_toleranz_ist_kein_hinweis(tmp_path, budget):
+    # Ohne Sinus-Untergrund ist der Clicktrack am Deckel; ein Ziel nahe am erreichbaren Pegel
+    # liegt trotzdem in Toleranz.
+    daten = _bestand(tmp_path, mit_sinus=False)
+
+    code = _video(daten, ZaehlenderClient([_wahl()]), budget, aus_sekunden(12), lufs_ziel=-32.0)
+
+    bericht = (_lauf(daten) / "bericht.md").read_text(encoding="utf-8")
+    assert "Der Pegel ist am True-Peak-Deckel begrenzt" not in bericht
+    assert "(am Spitzendeckel, in Toleranz)" in bericht
+    assert code in (0, 2)

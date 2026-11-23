@@ -39,7 +39,7 @@ from djset.video.laenge import (
     aus_sekunden,
     aus_video,
 )
-from djset.video.pruefung import videomusik_pruefen
+from djset.video.pruefung import LUFS_TOLERANZ, videomusik_pruefen
 from djset.video.unterlegen import ORIGINALTON_DB, unterlegen
 from djset.video.vertrag import VideomusikErgebnis, VideoWahl, laura_clip
 from djset.video.waehler import kandidaten, video_waehlen
@@ -133,6 +133,7 @@ def _bericht(
     hinweise: list[str],
     befunde: list[str],
     unterlegt: str | None,
+    am_deckel: bool = False,
 ) -> str:
     zeilen = [
         f"# Videomusik: {wunsch}",
@@ -150,7 +151,8 @@ def _bericht(
         f"({ergebnis.bpm:.1f} BPM), letzter Taktanfang bei {ergebnis.schluss_s:.2f} s im Stueck, "
         f"danach Ausklang",
         f"- Gesang: {'ja, ganzer Song' if ergebnis.gesang else 'nein, nur die Begleitung'}",
-        f"- Pegel: {ergebnis.lufs:.1f} LUFS, True Peak {ergebnis.true_peak:.1f} dBTP",
+        f"- Pegel: {ergebnis.lufs:.1f} LUFS, True Peak {ergebnis.true_peak:.1f} dBTP"
+        + (" (am Spitzendeckel, in Toleranz)" if am_deckel else ""),
         f"- Dateien: `{ergebnis.datei}`" + (f", `{ergebnis.mp3}`" if ergebnis.mp3 else ""),
     ]
     if unterlegt:
@@ -322,11 +324,28 @@ def _video(
         messung.beatgrid, messung.duration_s, ziel_s, wahl.einstieg, messung.energy, beats,
         erlaubt=erlaubt or None,
     )
+    if erlaubt:
+        # Was die Einstiegsregel ohne den Pegel- und Luecken-Filter gewaehlt haette: weicht der
+        # Start ab, sagt der Bericht, warum, sonst widerspraeche er dem Wunsch ("anfang").
+        ohne = zuschnitt_planen(
+            messung.beatgrid, messung.duration_s, ziel_s, wahl.einstieg, messung.energy, beats,
+        )
+        if abs(ohne.start_s - zuschnitt.start_s) > messung.beatgrid.bar_length_s / 2:
+            verworfen = min(fenster, key=lambda f: abs(f.start_s - ohne.start_s))
+            grund = (
+                "hat der Song vor dem Schluss eine Luecke (Stille ueber 0,5 s)"
+                if verworfen.luecke
+                else f"erreicht der Song {lufs_ziel:.1f} LUFS nicht unter dem Spitzendeckel"
+            )
+            hinweise.append(
+                f"Ab {ohne.start_s:.2f} s {grund}; Start auf {zuschnitt.start_s:.2f} s verschoben."
+            )
     run.write_text("zuschnitt.json", json.dumps(dataclasses.asdict(zuschnitt), indent=2))
 
     wav = run.path(WAV)
     pegel = videomusik_rendern(quelle, zuschnitt, samples, wav, lufs_ziel)
-    if pegel.gedeckelt:
+    am_deckel = pegel.gedeckelt and abs(pegel.lufs - lufs_ziel) <= LUFS_TOLERANZ
+    if pegel.gedeckelt and not am_deckel:
         hinweise.append(
             f"Der Pegel ist am True-Peak-Deckel begrenzt: {pegel.lufs:.1f} LUFS statt {lufs_ziel:.1f}."
         )
@@ -375,7 +394,7 @@ def _video(
 
     run.write_text(
         "bericht.md",
-        _bericht(wunsch, ergebnis, wahl, hinweise, [b.text for b in befunde], unterlegt),
+        _bericht(wunsch, ergebnis, wahl, hinweise, [b.text for b in befunde], unterlegt, am_deckel),
     )
 
     print(f"Run: {run.run_id}")
