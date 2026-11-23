@@ -1957,6 +1957,17 @@ class PlanExecutor:
         ok = bool(last.get("ok"))
         result_payload = last.get("result")
         err = None if ok else (last.get("error") or "executor returned not ok")
+        if ok:
+            # desktop.task, Schritt 3: Nach dem festen Aufruf desktop_task_start fuehrt das
+            # Gehirn die Schleife (sehen, Agent fragen, pruefen, ein Schritt). Alles Weitere
+            # steht in desktop_schleife; ohne "getippt" und ohne Tagesrest bricht sie ab.
+            from .desktop_schleife import ist_aufgabenstart, nach_aufgabenstart
+            if ist_aufgabenstart(target):
+                ok, result_payload, err = nach_aufgabenstart(
+                    result_payload,
+                    herkunft=(plan_ctx or {}).get("eingabe_herkunft"),
+                    tagesrest=(plan_ctx or {}).get("desktop_tagesrest"),
+                )
         if last.get("pending") is True:
             return HopResult(
                 step_id=hop.step_id, ok=False, result=result_payload,

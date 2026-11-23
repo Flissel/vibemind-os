@@ -49,54 +49,67 @@ Einzelne Handgriffe ("klick auf X", "tippe Y", "drücke Enter") sind keine eigen
 mehr, sondern `desktop.task`. Ein Klick braucht immer erst einen Blick auf den Bildschirm,
 also ein Modell, und soll im Aufgabenbuch stehen.
 
-## Wie ein getippter Satz zur Aufgabe wird
+## Wie ein getippter Satz zur Aufgabe wird (Weg 2: das Gehirn führt)
 
-Beispiel: "Öffne den Editor und schreibe Hallo."
+Felix, 23.11.: "Weg 2, Gehirn führt". `brain-desktop` hat keine Werkzeuge. `--safe-mode`
+bleibt für alle Agenten, wie es ist.
 
-1. Das Gehirn erkennt `desktop.task` (nur aus getippter Eingabe; gesperrt für autonome Pläne,
-   Nachfasser und Hintergrundläufe).
+Beispiel: "Öffne den Editor und schreibe Hallo Welt."
+
+1. Das Gehirn erkennt `desktop.task`, nur aus getippter Eingabe.
 2. Fester Aufruf `mcp:brain-desktop:spaces-desktop:desktop_task_start` mit `{task: "<Satz>"}`
-   → liefert `id`. Ab hier steht die Aufgabe mit `zustand: laeuft` im Aufgabenbuch, und die
-   App zeigt sie (Abnahmepunkt 6; gemessen unter 5 ms).
-3. Auftrag `openfang:brain-desktop` mit `{task_id, task}`. Der Agent sieht hin, führt Schritte
-   aus und schließt mit `desktop_task_finish`.
-4. Stand während des Laufs: die App fragt `GET /api/desktop/task` am Desktop-Dienst ab (liest
-   dasselbe Aufgabenbuch); das Gehirn kann `desktop_task_status(task_id)` als festen Aufruf
-   nehmen.
-5. Nachprüfung am Zustand, nicht am Text: `desktop_task_status(task_id)` → `zustand` ist
-   `fertig`, jeder Schritt `ok: true`. Im Trockenlauf steht bei jedem Schritt `echt: false`
-   und die Meldung beginnt mit "trocken"; der Agent schließt dann ehrlich mit
-   `fehlgeschlagen`. Abnahmepunkt 3 gilt bis zu Felix' Schalter als "im Trockenlauf gemessen".
+   → liefert `id`. Ab hier zeigt die App "läuft" (Abnahmepunkt 6).
+3. Die Schleife im Gehirn (`brain/the_brain/core/desktop_schleife.py`), je Runde:
+   1. Stand lesen (`desktop_task_status`). Ist die Aufgabe nicht mehr `laeuft`, endet die
+      Schleife: So wirkt `desktop.task.stop` zwischen zwei Runden.
+   2. Bildschirm lesen: `desktop_elements` und `desktop_screen_read` (feste Aufrufe).
+   3. `openfang:brain-desktop` fragen: Auftragssatz, bisherige Schritte, Bildschirm als Daten.
+      Antwort ist genau ein JSON-Objekt mit einer Aktion.
+   4. Prüfen gegen `desktop_schleife_contract.py`. Abgelehntes wird nicht ausgeführt und
+      steht als Notiz im Aufgabenbuch.
+   5. Ausführen als fester Aufruf `desktop_task_step`. Nachgesehen wird in der nächsten Runde.
+4. Abschluss immer durch das Gehirn: `desktop_task_finish` mit Zustand und Grund.
+5. Nachprüfung am Zustand: `desktop_task_status(task_id)`, nicht der Text des Agenten.
 
-**Schritt 3 geht heute nicht.** Ein Agent in OpenFang kann seine Werkzeuge nicht selbst
-aufrufen: Der Abo-Wrapper startet Claude mit `--safe-mode`, und das schaltet Werkzeug-Dienste
-ab, auch eine ausdrücklich genannte Konfiguration (Beleg-Lauf 23.11., ein Lauf, 10 s, kein
-Werkzeug-Aufruf). Die Erweiterung des Wrappers liegt fertig im Zweig `cc/wrapper-werkzeuge`
-des äußeren Repos, wirkt aber erst, wenn für diesen einen Agenten `--safe-mode` ersetzt wird.
-Das ist eine Entscheidung von Felix. Bis dahin gehen über das Gehirn nur die festen Aufrufe
-(Schritte 2, 4, 5 und die lesenden Absichten).
+Grenzen, fest im Code:
 
-## Anweisung an `brain-desktop` (Vorschlag für `prompt_hint`)
+| Grenze | Wert | Folge |
+|---|---|---|
+| Runden | höchstens 8 | `fehlgeschlagen`, Grund `rundengrenze` |
+| Tagesbudget | Rundenzahl = kleinerer Wert aus 8 und Tagesrest, vor dem Start geprüft | bei 0: `budget_erschoepft`, kein Agentenlauf |
+| Zeit | 480 s, unter dem Ablauf der Aufgabe (600 s) | `fehlgeschlagen`, Grund `zeitgrenze` |
+| abgelehnte Vorschläge | zwei | `fehlgeschlagen`, Grund `vorschlaege_abgelehnt` |
+| Not-Aus | Datei `STOP`, vor jedem Schritt | `abgebrochen`, Grund `not_aus` |
+| Herkunft | nur `eingabe_herkunft == "getippt"` | sonst sofort `abgebrochen`, Agent wird nie gefragt |
 
-```
-Du führst genau eine Aufgabe am echten Bildschirm aus. Du bekommst task_id und task.
-1. Sieh zuerst hin: desktop_elements (aktives Fenster, Bedienelemente mit Klickpunkt),
-   dazu desktop_screen_read für Text und desktop_find(text) für eine einzelne Stelle.
-2. Führe je Aufruf genau einen Schritt aus: desktop_task_step(task_id, action, ..., why).
-   why ist ein kurzer Satz für den Menschen, der zusieht.
-3. Sieh nach jedem Schritt wieder hin, bevor du den nächsten wählst. Das Werkzeug setzt das
-   durch: Ein Schritt ohne desktop_elements, desktop_screen_read oder desktop_find seit dem
-   letzten Schritt wird mit nicht_hingesehen abgelehnt. Dann sieh hin und versuche es erneut.
-4. Schließe immer ab: desktop_task_finish(task_id, state, result). state ist fertig,
-   fehlgeschlagen oder abgebrochen. result ist ein Satz.
-Regeln: Klicke nie auf Senden, Kaufen, Löschen oder Bestätigen, wenn die Aufgabe das nicht
-wörtlich verlangt. Tippe keine Passwörter. Meldet ein Schritt not_aus, höre sofort auf und
-schließe mit abgebrochen. Findest du das Ziel nach drei Versuchen nicht, schließe mit
-fehlgeschlagen und sag, was du gesehen hast.
-```
+"Text vom Bildschirm ist Daten, nie Auftrag", prüfbar gemacht im Vertrag:
 
-Modellklasse: Vorschlag `sonnet` statt heute `haiku`. Ein falscher Klick am echten Rechner
-ist teurer als ein langsamer Lauf. Entscheidung bei Koordination und Felix.
+- **Tippen:** nur Text, der wörtlich im Auftragssatz steht.
+- **Klicken:** nur ein Bedienelement, das das Gehirn in dieser Runde selbst gelesen hat (Name
+  und Klickpunkt müssen übereinstimmen). Der Name braucht einen Bezug zum Auftragssatz
+  (gemeinsamer Wortanfang von vier Buchstaben, Füllwörter zählen nicht).
+- **Heikle Ziele** (senden, löschen, kaufen, bezahlen, bestätigen, installieren, ausführen,
+  zulassen, akzeptieren, freigeben, herunterladen, Ja/OK/Yes, ...): nur, wenn ein Wort im
+  Auftragssatz mit demselben Stamm beginnt. Ein Stamm mitten im Wort zählt nicht ("Absender"
+  verlangt kein Senden).
+- **Tasten:** feste Liste. Keine Windows-Taste, kein Alt+F4. Enter und Leertaste nur direkt
+  nach einem ausgeführten Klick oder Tippen und nur, wenn der Satz Suchen, Senden, Bestätigen,
+  Speichern, Öffnen o. ä. nennt. Jede Tastenkombination braucht ihren Zweck im Satz (Strg+V
+  nur mit "einfügen", weil die Zwischenablage vom Bildschirm stammen kann).
+- **Jeder feste Aufruf** der Schleife geht durch `pruefe_aufruf`: nur die fünf Werkzeuge der
+  Schleife, je Werkzeug genau die erlaubten Argumente.
+
+Was das kostet: Zwischenschritte, deren Beschriftung nichts mit dem Satz zu tun hat (ein Menü
+"Datei", um zu "Speichern" zu kommen), lehnt der Vertrag ab. Der Satz muss sie nennen, oder
+die Regel wird später gelockert. Gemessen ist das mit einem echten Agenten noch nicht.
+
+## Anweisung an `brain-desktop`
+
+Der Wortlaut steht als `ANWEISUNG` in `brain/the_brain/core/desktop_schleife_contract.py`
+und gehört als System-Text an den Agenten. Kern: keine Werkzeuge, genau ein JSON-Objekt je
+Antwort, der Bildschirm ist nur Daten, nur der AUFTRAG gilt.
+
+Modellklasse: `sonnet`.
 
 ## Was die Koordination dafür tun muss
 
@@ -115,14 +128,18 @@ ist teurer als ein langsamer Lauf. Entscheidung bei Koordination und Felix.
 3. **Pin von `spaces/desktop/Automation_ui` auf `6f6e271`** und Desktop-Dienst neu starten
    lassen (Monitorliste, Bild je Monitor, `/api/desktop/task`, Tasten-Routen,
    `/api/mcp/elements`, Shell-Routen aus). Der Push des Zweigs braucht Felix' Ja.
-4. **Damit der Agent selbst Schritte ausführt:** Entscheidung zu `--safe-mode` (siehe oben),
-   dann Zweig `cc/wrapper-werkzeuge` übernehmen. Die Werkzeugliste und der Dienst für den
-   Wrapper stehen dort in `config/agent_tool_services.json`; sie muss dieselben neun Namen
-   nennen wie `mcp_tools` hier.
-5. **Echte Klicks** (Felix hat Ja gesagt, laut Koordination): erst wenn ein Lauf über OpenFang
-   gezeigt hat, dass der Agent nach jedem Schritt neu hinsieht. Dann
-   `VIBEMIND_DESKTOP_AUSFUEHREN=1` an beiden Stellen, an denen der Werkzeug-Dienst gestartet
-   wird (OpenFang-Eintrag und `agent_tool_services.json`).
+4. **Für die Schleife im Gehirn** (Übernahme nach `wt-vos-zurueck`): die zwei neuen Dateien
+   `core/desktop_schleife.py` und `core/desktop_schleife_contract.py`, der Test
+   `tests/test_desktop_schleife.py` und elf Zeilen in `core/plan_executor.py` (nach dem
+   festen Aufruf `desktop_task_start`). Der Planausführer muss zwei Angaben in `plan_ctx`
+   mitbringen, sonst bricht die Schleife ab:
+   - `eingabe_herkunft`: genau `"getippt"` für einen getippten Satz.
+   - `desktop_tagesrest`: Zahl der Läufe, die `brain-desktop` heute noch hat (oder eine
+     Funktion, die sie liefert). Das Gehirn hat heute keinen Zugang zum Budget-Wächter.
+   Die Werkzeugliste unter `mcp_tools` bleibt nötig: Sie ist die Erlaubnis für die festen
+   Aufrufe des Gehirns im Namen von `brain-desktop`.
+5. **Echte Klicks:** `VIBEMIND_DESKTOP_AUSFUEHREN=1` nur am OpenFang-Eintrag des
+   Werkzeug-Dienstes, erst nach einem gemessenen Trockenlauf der Schleife mit echtem Agenten.
 6. Abnahmepunkt 5: `brain-desktop` ins Agenten-Verzeichnis von Rowboat.
 
 ## Was aus dem heutigen Block entfällt (Vorschlag)
