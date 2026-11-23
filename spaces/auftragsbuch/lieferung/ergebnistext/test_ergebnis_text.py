@@ -84,3 +84,30 @@ def test_protokoll_fremdes_ziel_unveraendert():
 def test_protokoll_unlesbar_enthaelt_nichts():
     aus = fuers_protokoll(ZIEL, {"content": [{"text": "Anna Beispiel"}]})
     assert "Anna" not in json.dumps(aus)
+
+
+def test_beleg_vier_feste_woerter():
+    erwartet = {"entfaellt": "Beleg entf\u00e4llt", "bestaetigt": "Beleg best\u00e4tigt",
+                "nicht_bestaetigt": "Beleg nicht best\u00e4tigt", "nicht_pruefbar": "Beleg nicht pr\u00fcfbar"}
+    for wert, wort in erwartet.items():
+        a = {"auftrag_id": KENNUNG, "an": "rowboat", "art": "x", "stand": "fertig", "beleg": wert,
+             "ergebnis": {"beleg": True}}
+        assert vorschau(ZIEL, a).endswith(" \u00b7 " + wort)
+        assert fuers_protokoll(ZIEL, _mcp(a))["beleg"] == wert
+
+
+def test_beleg_oben_hat_vorrang_und_fremdes_wird_nicht_wiedergegeben():
+    a = dict(ANTWORT, beleg="nicht_bestaetigt")
+    assert vorschau(ZIEL, a).endswith("Beleg nicht best\u00e4tigt")
+    for fremd in ("Anna Beispiel", 5, ["x"], {"a": 1}, ""):
+        a = {"auftrag_id": KENNUNG, "stand": "fertig", "beleg": fremd}
+        assert vorschau(ZIEL, a) == "Auftrag 4aef2c02 \u00b7 fertig"
+        assert "beleg" not in fuers_protokoll(ZIEL, a)
+
+
+def test_stand_fehler_ohne_inhalt():
+    a = {"auftrag_id": KENNUNG, "an": "rowboat", "art": "vorschlaege_anlegen", "stand": "fehler",
+         "fehler": "Ergebnis in falscher Form", "ergebnis": None}
+    text = vorschau(ZIEL, _mcp(a))
+    assert text == "Auftrag 4aef2c02 \u00b7 rowboat/vorschlaege_anlegen \u00b7 fehler"
+    assert "falscher" not in json.dumps(fuers_protokoll(ZIEL, _mcp(a)))

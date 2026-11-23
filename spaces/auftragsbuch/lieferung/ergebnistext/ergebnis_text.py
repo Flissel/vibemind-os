@@ -41,6 +41,20 @@ def _auspacken(wert: object, tiefe: int = 0) -> dict | None:
     return _auspacken(wert["result"], tiefe + 1) if "result" in wert else None
 
 
+_BELEG = {"entfaellt": "Beleg entf\u00e4llt", "bestaetigt": "Beleg best\u00e4tigt",
+          "nicht_bestaetigt": "Beleg nicht best\u00e4tigt", "nicht_pruefbar": "Beleg nicht pr\u00fcfbar"}
+
+
+def _beleg(oben: object, ergebnis: object) -> str | None:
+    """Schluessel des Beleg-Zustands: `beleg` oben (vier feste Woerter) vor der alten Form im Ergebnis."""
+    if isinstance(oben, str) and oben in _BELEG:
+        return oben
+    alt = ergebnis.get("beleg") if isinstance(ergebnis, dict) else None
+    if alt is True or (isinstance(alt, dict) and alt.get("bestaetigt") is True):
+        return "bestaetigt"
+    return None  # alles andere: keine Angabe, der Wert wird nie wiedergegeben
+
+
 def _lesen(wert: object) -> dict | None:
     """Reduziert die Antwort auf die erlaubten Felder; None, wenn kein gueltiger Stand erkennbar ist."""
     try:
@@ -63,12 +77,7 @@ def _lesen(wert: object) -> dict | None:
             for name, inhalt in ergebnis.items():
                 if isinstance(inhalt, list) and isinstance(name, str) and _LISTENNAME.fullmatch(name):
                     aus["listen"][name] = len(inhalt)
-        beleg = ergebnis.get("beleg") if isinstance(ergebnis, dict) else None
-        if beleg is None:
-            beleg = antwort.get("beleg")
-        if beleg is not None:
-            ok = beleg is True or (isinstance(beleg, dict) and beleg.get("bestaetigt") is True)
-            aus["beleg"] = "bestaetigt" if ok else "offen"
+        aus["beleg"] = _beleg(antwort.get("beleg"), ergebnis)
         return aus
     except Exception:  # noqa: BLE001 - die Standzeile darf nie an der Antwort scheitern
         return None
@@ -93,7 +102,7 @@ def vorschau(ziel: str, ergebnis: object) -> str | None:
     teile.append(d["stand"])
     teile.extend(f"{name}: {n}" for name, n in d["listen"].items())
     if d["beleg"] is not None:
-        teile.append("Beleg best\u00e4tigt" if d["beleg"] == "bestaetigt" else "Beleg offen")
+        teile.append(_BELEG[d["beleg"]])
     return _TRENNER.join(teile)
 
 

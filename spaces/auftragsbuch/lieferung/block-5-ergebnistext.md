@@ -19,13 +19,12 @@ Ordner `spaces/auftragsbuch/lieferung/ergebnistext/`, nur Standardbibliothek:
   - `vorschau(ziel, ergebnis) -> str | None`: für Ziele der Form `mcp:<agent>:auftragsbuch:<werkzeug>` eine
     Zeile wie `Auftrag 4aef2c02 · rowboat/vorschlaege_anlegen · fertig · punkte: 3 · Beleg bestätigt`. Sie enthält
     nur die ersten 8 Zeichen der Kennung, `an/art`, den Stand, die Länge jeder Liste auf oberster Ebene von
-    `ergebnis` und den Beleg-Zustand als festes Wort (`Beleg bestätigt` oder `Beleg offen`; fehlt der Beleg,
-    fehlt die Angabe). Ist kein Stand lesbar: `Auftragsbuch: Antwort ohne lesbaren Stand`.
+    `ergebnis` und den Beleg-Zustand als festes Wort (siehe unten; fehlt der Beleg, fehlt die Angabe). Ist kein Stand lesbar: `Auftragsbuch: Antwort ohne lesbaren Stand`.
     **Jedes andere Ziel gibt `None` zurück**, dann nimmt der Aufrufer den alten Weg.
   - `fuers_protokoll(ziel, ergebnis) -> object`: für dieselben Ziele ein kleines Wörterbuch
     (`auftrag_id`, `an`, `art`, `stand`, `listen` mit Anzahlen, `beleg`), ohne jeden Inhalt; nicht lesbar:
     `{"stand": "unlesbar"}`. **Bei jedem anderen Ziel kommt die Eingabe unverändert zurück.**
-- `test_ergebnis_text.py` (10 Tests). Aufruf von der Repo-Wurzel:
+- `test_ergebnis_text.py` (13 Tests). Aufruf von der Repo-Wurzel:
   `python -m pytest spaces/auftragsbuch/lieferung/ergebnistext/test_ergebnis_text.py -q -p no:cacheprovider`.
 
 Beide Funktionen werfen nie. Werte aus der Antwort werden nur übernommen, wenn sie einem engen Muster
@@ -43,9 +42,16 @@ unverändert zurück), bei der Brücke zusätzlich eingepackt unter `result`. `v
 nehmen alle diese Formen: den JSON-Text selbst, das fertig gelesene Wörterbuch, das MCP-Ergebnis und die
 Umhüllung mit `result`.
 
-Der Beleg steht in der Antwort nicht an fester Stelle; gelesen wird `ergebnis["beleg"]`, sonst `beleg` auf
-oberster Ebene. Als bestätigt gilt `True` oder `{"bestaetigt": true}`, jeder andere Wert als offen. Bitte mit
-dem tatsächlichen Beleg-Feld der Aufträge abgleichen.
+Der Beleg steht fest als Textfeld `beleg` auf oberster Ebene der Antwort von `auftrag_lesen` (Vorgabe aus
+Aufgabe 6) mit genau einem Wert aus `entfaellt`, `bestaetigt`, `nicht_bestaetigt`, `nicht_pruefbar`. Die Vorschau
+macht daraus feste Worte: `Beleg entfällt`, `Beleg bestätigt`, `Beleg nicht bestätigt`, `Beleg nicht prüfbar`.
+Jeder andere Wert wird nie wiedergegeben, die Angabe fehlt dann. Die alte Form `ergebnis["beleg"]` als `True`
+oder `{"bestaetigt": true}` gilt nur ersatzweise (als bestätigt), wenn oben nichts Gültiges steht.
+
+Hat ein fertiges Ergebnis die falsche Form, antwortet `auftrag_lesen` mit `stand: "fehler"`,
+`fehler: "Ergebnis in falscher Form"` und `ergebnis: null`. Die Vorschau lautet dann zum Beispiel
+`Auftrag 4aef2c02 · rowboat/vorschlaege_anlegen · fehler`; der Fehlertext erscheint darin nicht (er läuft über
+Block 4).
 
 ## Wo einhängen
 
