@@ -62,13 +62,9 @@ _LEGACY_EVENT_SPACE_MAP = {
     # Ideas
     "idea.list": "ideas", "idea.create": "ideas", "idea.update": "ideas",
     "idea.delete": "ideas", "idea.find": "ideas", "idea.connect": "ideas",
-    "idea.auto_link": "ideas", "idea.add_image": "ideas", "idea.current_space": "ideas",
-    "idea.format_table": "ideas", "idea.summarize": "ideas", "idea.whitepaper": "ideas",
+    "idea.auto_link": "ideas", "idea.current_space": "ideas",
+    "idea.summarize": "ideas", "idea.whitepaper": "ideas",
     "idea.expand": "ideas", "idea.explain": "ideas", "idea.analyze_links": "ideas",
-    "idea.format_note": "ideas", "idea.format_action_list": "ideas",
-    "idea.format_pros_cons": "ideas", "idea.format_hierarchy": "ideas",
-    "idea.format_specs": "ideas", "idea.convert_format": "ideas",
-    "idea.explore.start": "ideas", "idea.explore.stop": "ideas",
     "idea.to_project": "ideas",
     # Research
     "research.web": "research", "research.scrape": "research",

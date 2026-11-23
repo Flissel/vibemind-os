@@ -650,9 +650,18 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
             or re.fullmatch(r"(?:bilde|mach(?:e)?)\s+(?:themen)?gruppen(?:\s+.*)?", text, _I)
             or re.fullmatch(r"was\s+geh(?:ö|oe)rt\s+(?:hier\s+)?zusammen\s*\??", text, _I)):
         raise _Rueckfrage(GRUPPIEREN_NOCH_NICHT)
+    # ── Bild an eine Karte: dafuer gibt es im Ideen-Space keinen Weg (das Ereignis
+    #    idea.add_image zeigte auf ein Werkzeug, das es nicht gibt). Ehrlich sagen.
+    if (re.search(r"\b(?:ein(?:e|en)?\s+|das\s+|die\s+)?(?:bild|bilder|foto|fotos|grafik|image|picture)\b", text, _I)
+            and re.search(r"\b(?:f(?:ü|ue)g\w*|h(?:ä|ae)ng\w*|setz\w*|pack\w*|lad\w*|add|attach|einf(?:ü|ue)g\w*)\b",
+                          text, _I)
+            and re.search(r"\b(?:karte|notiz|idee|bubble|card|note|an\s+\w+|zu\s+\w+|in\s+\w+)\b", text, _I)):
+        raise _Rueckfrage(BILD_NOCH_NICHT)
     return None
 
 
+BILD_NOCH_NICHT = ("Das kann ich noch nicht: Bilder an Karten hängen. Im Ideen-Space gibt es dafür noch "
+                   "keinen Weg; geändert habe ich nichts.")
 GRUPPIEREN_NOCH_NICHT = ("Das kann ich noch nicht: nach Thema gruppieren braucht ein Modell, und das gibt es "
                          "hier noch nicht. Was geht: „Ordne die Karten“, „Sortiere die Karten nach Bewertung“ "
                          "oder „Finde Verbindungen“.")

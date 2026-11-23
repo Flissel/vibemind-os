@@ -6702,65 +6702,9 @@
         "required_params": []
       },
       {
-        "event": "idea.add_image",
-        "tool_hint": "db_ideas_update",
-        "required_params": [
-          "idea_id"
-        ]
-      },
-      {
         "event": "idea.current_space",
         "tool_hint": "db_ideas_list",
         "required_params": []
-      },
-      {
-        "event": "idea.format_table",
-        "tool_hint": "db_ideas_update",
-        "required_params": [
-          "idea_id"
-        ]
-      },
-      {
-        "event": "idea.format_note",
-        "tool_hint": "db_ideas_update",
-        "required_params": [
-          "idea_id"
-        ]
-      },
-      {
-        "event": "idea.format_action_list",
-        "tool_hint": "db_ideas_update",
-        "required_params": [
-          "idea_id"
-        ]
-      },
-      {
-        "event": "idea.format_pros_cons",
-        "tool_hint": "db_ideas_update",
-        "required_params": [
-          "idea_id"
-        ]
-      },
-      {
-        "event": "idea.format_hierarchy",
-        "tool_hint": "db_ideas_update",
-        "required_params": [
-          "idea_id"
-        ]
-      },
-      {
-        "event": "idea.format_specs",
-        "tool_hint": "db_ideas_update",
-        "required_params": [
-          "idea_id"
-        ]
-      },
-      {
-        "event": "idea.convert_format",
-        "tool_hint": "db_ideas_update",
-        "required_params": [
-          "idea_id"
-        ]
       },
       {
         "event": "idea.summarize",
@@ -6796,16 +6740,6 @@
         "required_params": []
       },
       {
-        "event": "idea.explore.start",
-        "tool_hint": "db_ideas_update",
-        "required_params": []
-      },
-      {
-        "event": "idea.explore.stop",
-        "tool_hint": "db_ideas_update",
-        "required_params": []
-      },
-      {
         "event": "idea.to_project",
         "tool_hint": "db_projects_create",
         "required_params": [
@@ -6814,25 +6748,15 @@
       }
     ],
     "all_routed_events": [
-      "idea.add_image",
       "idea.analyze_links",
       "idea.auto_link",
       "idea.connect",
-      "idea.convert_format",
       "idea.create",
       "idea.current_space",
       "idea.delete",
       "idea.expand",
       "idea.explain",
-      "idea.explore.start",
-      "idea.explore.stop",
       "idea.find",
-      "idea.format_action_list",
-      "idea.format_hierarchy",
-      "idea.format_note",
-      "idea.format_pros_cons",
-      "idea.format_specs",
-      "idea.format_table",
       "idea.list",
       "idea.summarize",
       "idea.update",
