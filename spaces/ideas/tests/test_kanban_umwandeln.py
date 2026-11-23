@@ -36,6 +36,17 @@ class KanbanTests(unittest.TestCase):
                          [("Offen", ["Logo", "Sponsoren"]), ("In Arbeit", ["Bühnenplan"]),
                           ("Erledigt", ["Druckerei anfragen"])])
 
+    def test_spalten_sind_in_der_huelle_sichtbar(self) -> None:
+        # Lauf 8: ohne column.color stand der weisse Spaltenkopf auf Hellgrau.
+        board = self.server._kanban_from_text("Ideen:\n- Logo\nIn Arbeit:\n- Bühnenplan\nErledigt: Druck", "")
+        farben = [s["color"] for s in board["columns"]]
+        self.assertTrue(all(isinstance(f, str) and f.startswith("#") and f.lower() != "#e9ecef" for f in farben))
+        self.assertEqual(len(set(farben)), 3)
+        # Diagramm-Ansicht: todo/doing/done.
+        self.assertEqual(board["todo"], [{"title": "Logo"}])
+        self.assertEqual(board["doing"], [{"title": "Bühnenplan"}])
+        self.assertEqual(board["done"], [{"title": "Druck"}])
+
     def test_name_wert_zeile_ist_eine_karte_keine_spalte(self) -> None:
         board = self.server._kanban_from_text("Preis: 900 Euro", "")
         self.assertEqual(_namen(board)[0], ("Offen", ["Preis: 900 Euro"]))

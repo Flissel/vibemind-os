@@ -1360,7 +1360,32 @@ def _kanban_from_text(text: str, title: str) -> dict[str, Any] | None:
         # Zeilen vor der ersten Spalte gehen nicht verloren: in die erste Spalte.
         for _, value in loose:
             card(columns[0], value)
-    return {"columns": columns} if count else None
+    # Lauf 8: Die Huelle (rich_content_renderer.renderKanban) schreibt den Spaltenkopf weiss
+    # auf column.color, ohne Farbe auf Hellgrau: die Spalten waren nicht zu sehen.
+    for n, col in enumerate(columns):
+        col["color"] = KANBAN_COLORS.get(col["name"].casefold(), KANBAN_COLOR_CYCLE[n % len(KANBAN_COLOR_CYCLE)])
+    if not count:
+        return None
+    # Die Diagramm-Ansicht der Huelle (format-renderer._buildKanban) liest todo/doing/done.
+    board: dict[str, Any] = {"columns": columns, "todo": [], "doing": [], "done": []}
+    for col in columns:
+        spur = KANBAN_LANES.get(col["name"].casefold(), "todo")
+        board[spur].extend({"title": k["title"]} for k in col["cards"])
+    return board
+
+
+KANBAN_LANES = {"in arbeit": "doing", "doing": "doing", "läuft": "doing", "laeuft": "doing", "blockiert": "doing",
+                "erledigt": "done", "fertig": "done", "done": "done"}
+
+
+KANBAN_COLOR_CYCLE = ("#6c757d", "#0d6efd", "#198754", "#6f42c1", "#fd7e14", "#20c997", "#dc3545", "#495057")
+KANBAN_COLORS = {
+    "offen": "#6c757d", "todo": "#6c757d", "to do": "#6c757d", "to-do": "#6c757d", "geplant": "#6c757d",
+    "später": "#6c757d", "spaeter": "#6c757d",
+    "in arbeit": "#0d6efd", "doing": "#0d6efd", "läuft": "#0d6efd", "laeuft": "#0d6efd",
+    "blockiert": "#dc3545",
+    "erledigt": "#198754", "fertig": "#198754", "done": "#198754",
+}
 
 
 def _change_groups(rows: Any, limit: int) -> list[dict[str, Any]]:
