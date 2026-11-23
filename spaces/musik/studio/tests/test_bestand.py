@@ -190,3 +190,35 @@ def test_song_id_aus_titel(titel, erwartet):
 
 def test_run_slugify_bleibt_unveraendert():
     assert slugify("Über den Wolken") == "ber-den-wolken"
+
+
+# --- B4: Herkunft auch beim Zuruecklesen pruefen ----------------------------
+
+
+def test_ein_eintrag_mit_ungueltiger_herkunft_laesst_das_lesen_scheitern(bestand):
+    eintrag = {
+        "id": "fremd",
+        "titel": "Fremd",
+        "datei": "fremd.wav",
+        "herkunft": "aus dem netz",
+        "aufgenommen_am": "2026-11-23",
+        "pruefsumme": "0" * 64,
+    }
+    (bestand.songs / "fremd.json").write_text(json.dumps(eintrag), encoding="utf-8")
+
+    with pytest.raises(BestandFehler, match="fremd"):
+        bestand.alle()
+    with pytest.raises(BestandFehler, match="fremd"):
+        bestand.hole("fremd")
+
+
+def test_song_eintrag_prueft_die_herkunft_selbst():
+    with pytest.raises(ValueError):
+        SongEintrag(
+            id="x",
+            titel="X",
+            datei="x.wav",
+            herkunft="lizenz:",
+            aufgenommen_am=HEUTE,
+            pruefsumme="0" * 64,
+        )

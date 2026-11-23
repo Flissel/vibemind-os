@@ -24,7 +24,7 @@ import unicodedata
 from datetime import date
 from pathlib import Path
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
 from djset.capture import CaptureFailed, convert
 from djset.contracts import TrackMeasurements
@@ -87,6 +87,18 @@ class SongEintrag(BaseModel):
     aufgenommen_am: date
     pruefsumme: str  # sha256 der Eingangsdatei
     messung: TrackMeasurements | None = None
+
+    @field_validator("herkunft")
+    @classmethod
+    def _herkunft_gueltig(cls, herkunft: str) -> str:
+        """Die Produktregel gilt auch beim Zuruecklesen: ein von Hand
+        geaenderter Eintrag mit ungueltiger Herkunft kommt nicht ins Set.
+        Als ValueError, damit pydantic daraus eine ValidationError macht und
+        Bestand._lies den Song in der Meldung nennt."""
+        try:
+            return pruefe_herkunft(herkunft)
+        except BestandFehler as fehler:
+            raise ValueError(str(fehler)) from fehler
 
 
 def _sha256(pfad: Path) -> str:
