@@ -397,6 +397,35 @@ def test_halt_fest_aus_video_fragt_bei_unklarer_bubble(monkeypatch, echter_muste
     assert body["space"] == "ideas" and body["weg"] == "ideen" and teil in body["final_text"]
 
 
+def test_mehrere_bubbles_die_zweite_waehlt_und_fuehrt_den_satz_aus(monkeypatch, echter_muster_router) -> None:
+    v._bubble_offen.clear()
+    _bubble_liste(monkeypatch, [{"id": "b0b1e001", "title": "Stadtfest"}, {"id": "b0b1e003", "title": "stadtfest"}])
+    ausfuehrer = _Ausfuehrer({"content": [{"type": "text", "text": '{"id": "a0000009"}'}]})
+    client, state = _client(monkeypatch, SCHWACH, ausfuehrer=ausfuehrer, muster=echter_muster_router)
+    body = client.post("/api/multihop/execute", json={"intent": "Halt fest: Preise prüfen in der Bubble Stadtfest",
+                                                      "context": {"space": "video"}}).json()
+    assert "1. „Stadtfest“; 2. „stadtfest“" in body["final_text"] and "die erste" in body["final_text"]
+    client.post("/api/multihop/execute", json={"intent": "die zweite", "context": {"space": "video"}})
+    (plan,) = ausfuehrer.plaene
+    assert "b0b1e003" in plan.hops[0].arg_template and "Preise prüfen" in plan.hops[0].arg_template
+    assert state.multihop_planner.aufrufe == 0
+    # Danach ist nichts mehr offen: "die zweite" fuehrt nicht noch einmal aus.
+    client.post("/api/multihop/execute", json={"intent": "die zweite", "context": {"space": "video"}})
+    assert len(ausfuehrer.plaene) == 1
+
+
+def test_mehrere_bubbles_anderer_satz_verwirft_die_frage(monkeypatch, echter_muster_router) -> None:
+    v._bubble_offen.clear()
+    _bubble_liste(monkeypatch, [{"id": "b0b1e001", "title": "Stadtfest"}, {"id": "b0b1e003", "title": "Stadtfest"}])
+    ausfuehrer = _Ausfuehrer({"content": [{"type": "text", "text": "[]"}]})
+    client, _ = _client(monkeypatch, SCHWACH, ausfuehrer=ausfuehrer, muster=echter_muster_router)
+    client.post("/api/multihop/execute", json={"intent": "Halt fest: Preise prüfen in der Bubble Stadtfest",
+                                               "context": {"space": "video"}})
+    client.post("/api/multihop/execute", json={"intent": "Zeig mir meine Bubbles", "context": {"space": "video"}})
+    client.post("/api/multihop/execute", json={"intent": "die zweite", "context": {"space": "video"}})
+    assert [h.capability for p in ausfuehrer.plaene for h in p.hops] == ["bubble_list"]
+
+
 def test_zurueck_aus_rowboat_greift_nicht_ins_ideen_canvas(monkeypatch, echter_muster_router) -> None:
     ausfuehrer = _Ausfuehrer({"x": 1})
     client, _ = _client(monkeypatch, SCHWACH, ausfuehrer=ausfuehrer, muster=echter_muster_router)

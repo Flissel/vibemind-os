@@ -185,9 +185,47 @@ def bubble_waehlen(name: str, zeilen: Any) -> Tuple[Optional[dict], str]:
         z = next(iter(treffer.values()))
         return {"id": z["id"], "title": z.get("title") or name}, ""
     if len(treffer) > 1:
-        return None, (f"Es gibt {len(treffer)} Bubbles mit dem Titel „{name}“. "
-                      "Öffne die gemeinte im Ideen-Bereich und sag es dort noch einmal.")
+        kandidaten = [{"id": z["id"], "title": z.get("title") or name} for z in treffer.values()][:9]
+        liste = "; ".join(f"{n}. „{k['title']}“" for n, k in enumerate(kandidaten, start=1))
+        return None, (f"Es gibt {len(treffer)} Bubbles mit dem Titel „{name}“: {liste}. "
+                      "Welche meinst du? Sag z. B. „die erste“ oder „2“.")
     return None, f"Ich finde keine Bubble mit dem Titel „{name}“."
+
+
+# ── Mehrere Bubbles gleichen Titels aus einem fremden Reiter: Antwort "die zweite" ──
+BUBBLE_WAHL_GILT_S = 300.0
+_bubble_offen: Dict[str, Any] = {}       # {"rest": str, "kandidaten": [...], "bis": float}
+
+
+def bubble_frage_merken(rest: str, name: str, zeilen: Any) -> None:
+    """Nach der Rueckfrage aus ``bubble_waehlen`` (mehrere Treffer) die Kandidaten merken."""
+    import time
+
+    kandidaten = [{"id": z["id"], "title": z.get("title") or name} for z in (zeilen or [])
+                  if isinstance(z, dict) and z.get("id") and _titel_gleich(z.get("title"), name)]
+    kandidaten = list({k["id"]: k for k in kandidaten}.values())[:9]
+    _bubble_offen.clear()
+    if len(kandidaten) >= 2:
+        _bubble_offen.update({"rest": rest, "kandidaten": kandidaten, "bis": time.time() + BUBBLE_WAHL_GILT_S})
+
+
+def bubble_antwort(satz: Any) -> Optional[Dict[str, Any]]:
+    """Fuer jeden Satz zuerst aufrufen. ``None``: keine Antwort (eine offene Frage verfaellt);
+    ``{"bubble": ..., "rest": ...}``: gewaehlt; ``{"frage": ...}``: passt zu keiner."""
+    import time
+
+    from .ideen_abkuerzung import _wahl
+
+    offen = dict(_bubble_offen)
+    _bubble_offen.clear()
+    if not offen or offen.get("bis", 0) < time.time() or not isinstance(satz, str):
+        return None
+    # Nur eine eindeutige Wahl ("die zweite", "2", "die letzte") gilt; jeder andere Satz ist
+    # ein neuer Satz und laesst die Frage verfallen (nie raten, nie einen Satz verschlucken).
+    wahl = _wahl(satz.strip().rstrip(".!"), offen["kandidaten"])
+    if wahl is None or wahl < 0:
+        return None
+    return {"bubble": offen["kandidaten"][wahl], "rest": offen["rest"]}
 
 
 def ideen_satz_von_aussen(satz: Any) -> bool:
