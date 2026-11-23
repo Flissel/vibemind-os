@@ -2728,7 +2728,19 @@ async def multihop_execute(request: Request):
         if (not skip_shortcut and plan is None and _space != "ideas" and _verstehen.regel_an()
                 and _verstehen.ideen_satz_von_aussen(intent)):
             _ideen_kontext = {"space": "ideas"}
-            plan, _ideen_frage, _ideen_antwort = _try_ideen_abkuerzung(intent, _ideen_kontext)
+            _ideen_satz = intent
+            _bubble_name, _rest = _verstehen.bubble_name_im_satz(intent)
+            if _bubble_name:
+                # "in der Bubble X": vor dem Aufruf ueber die Bubble-Liste lesen (kein Modell);
+                # genau ein Titel -> diese Bubble gilt als offen, sonst Rueckfrage.
+                _gewaehlt, _frage = _verstehen.bubble_waehlen(_bubble_name, await _bubbles_suchen(_bubble_name))
+                if _gewaehlt is None:
+                    _trace_lite(pe, trace_id, intent, "ideen-rueckfrage", _frage)
+                    return JSONResponse({"ok": False, "rueckfrage": True, "space": "ideas", "executed": {},
+                                         "final_text": _frage, "trace_id": trace_id, "weg": "ideen"})
+                _ideen_kontext["bubble"] = _gewaehlt
+                _ideen_satz = _rest
+            plan, _ideen_frage, _ideen_antwort = _try_ideen_abkuerzung(_ideen_satz, _ideen_kontext)
             if _ideen_frage:
                 _trace_lite(pe, trace_id, intent, "ideen-rueckfrage", _ideen_frage)
                 return JSONResponse({"ok": False, "rueckfrage": True, "space": "ideas", "executed": {},
@@ -2764,6 +2776,7 @@ async def multihop_execute(request: Request):
             use_som = os.environ.get("SOM_AS_PLANNER", "1") not in ("0", "false", "False")
             diff_on = os.environ.get("DIFFICULTY_ROUTING", "1") not in ("0", "false", "False")
             level = None
+            cls = None
             _unverstanden = False
             if diff_on:
                 try:
@@ -2795,6 +2808,17 @@ async def multihop_execute(request: Request):
                     "ok": True, "difficulty": "meta", "executed": {}, "skipped": True,
                     "final_text": "", "trace_id": trace_id,
                 })
+
+            if level not in ("easy", "meta") and _verstehen.planer_nur_mit_weg():
+                # Regel "Planer nur im Space mit Weg" (core/verstehen): der Cosinus entscheidet
+                # nicht, solange er Sinn und Unsinn kaum trennt (Eichung 23.11.2026).
+                if not _verstehen.planer_erlaubt(_space, intent):
+                    logger.info(f"[verstehen] kein Planer: space={_space} bezug={_bezug} "
+                                f"cos={cls.get('score', 0.0) if isinstance(cls, dict) else 0.0:.2f} "
+                                f"intent={intent[:60]!r}")
+                    return _ehrlich(pe, trace_id, intent, "nicht-verstanden",
+                                    _verstehen.nicht_verstanden(_bezug), _bezug)
+                _unverstanden = False
 
             if _unverstanden:
                 # Zu weit vom naechsten Anker: nicht raten, keinen Planer und keinen Agenten
@@ -3090,6 +3114,18 @@ def _auffangnetz(out: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[auffangnetz] uebersprungen: {type(e).__name__}: {e}")
     return out
+
+
+async def _bubbles_suchen(name: str):
+    """Bubbles mit aehnlichem Titel lesen (Supabase, nur lesen); ``None`` wenn nicht lesbar."""
+    try:
+        from core.supabase_ideas_client import SupabaseIdeasClient
+
+        zeilen = await SupabaseIdeasClient().find_bubbles_like(name, limit=10)
+        return [{"id": z.get("id"), "title": z.get("title")} for z in (zeilen or []) if isinstance(z, dict)]
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[ideen-von-aussen] Bubble-Liste nicht lesbar: {type(e).__name__}")
+        return None
 
 
 def _ehrlich(pe, trace_id: str, intent: str, weg: str, satz: str, space: Optional[str]) -> JSONResponse:

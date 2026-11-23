@@ -149,6 +149,45 @@ _NACH = r"[- ]?(?:space|bereich|reiter|tab)\b"
 
 
 _BUBBLE = re.compile(r"\bbubbles?\b", re.IGNORECASE)
+_IN_BUBBLE = re.compile(
+    r"\s*\b(?:in|zu|an|bei|für|fuer)\s+(?:der|die|diese[rn]?)\s+bubble\s+[„\"']?"
+    r"(?P<name>[^„“”\"'.,!?]{1,80}?)[“”\"']?\s*(?=$|[.,!?])", re.IGNORECASE)
+
+
+def bubble_name_im_satz(satz: Any) -> Tuple[Optional[str], str]:
+    """("Stadtfest", "Halt fest: Preise prüfen") aus "Halt fest: Preise prüfen in der Bubble Stadtfest".
+
+    ``(None, satz)``, wenn der Satz keine Bubble beim Namen nennt. Wirft nie.
+    """
+    try:
+        if not isinstance(satz, str):
+            return None, ""
+        m = _IN_BUBBLE.search(satz)
+        if not m or not m.group("name").strip():
+            return None, satz
+        rest = (satz[:m.start()] + satz[m.end():]).strip()
+        return m.group("name").strip(), rest
+    except Exception:  # noqa: BLE001
+        return None, satz if isinstance(satz, str) else ""
+
+
+def _titel_gleich(a: Any, b: Any) -> bool:
+    return re.sub(r"\s+", " ", str(a or "")).strip().casefold() == re.sub(r"\s+", " ", str(b or "")).strip().casefold()
+
+
+def bubble_waehlen(name: str, zeilen: Any) -> Tuple[Optional[dict], str]:
+    """Genau eine Bubble mit diesem Titel, sonst eine Rueckfrage. ``zeilen=None``: Liste nicht lesbar."""
+    if zeilen is None:
+        return None, "Die Liste der Bubbles kann ich gerade nicht lesen. Öffne die Bubble im Ideen-Bereich."
+    treffer = {z["id"]: z for z in zeilen
+               if isinstance(z, dict) and z.get("id") and _titel_gleich(z.get("title"), name)}
+    if len(treffer) == 1:
+        z = next(iter(treffer.values()))
+        return {"id": z["id"], "title": z.get("title") or name}, ""
+    if len(treffer) > 1:
+        return None, (f"Es gibt {len(treffer)} Bubbles mit dem Titel „{name}“. "
+                      "Öffne die gemeinte im Ideen-Bereich und sag es dort noch einmal.")
+    return None, f"Ich finde keine Bubble mit dem Titel „{name}“."
 
 
 def ideen_satz_von_aussen(satz: Any) -> bool:
@@ -220,6 +259,32 @@ def unter_schwelle(klassifikation: Any) -> bool:
         return isinstance(score, (int, float)) and float(score) < schwelle()
     except Exception:  # noqa: BLE001
         return False
+
+
+# ── Regel "Planer nur im Space mit Weg" ─────────────────────────────────────
+# Eichung 23.11.2026: Der Cosinus trennt Sinn und Unsinn kaum (Umschreibung 0,62, Unsinn bis
+# 0,675). Solange das so ist, entscheidet er nicht. Ein Satz ohne festen Treffer und ohne
+# Space-Namen darf nur dort an den Planer, wo es einen laufenden Weg gibt (heute: Ideen), und
+# nur, wenn er kein Kurztext ist. Ueberall sonst: "nicht verstanden" mit Beispielen, kein
+# teurer Fehllauf. Schalter PLANER_NUR_MIT_WEG (Vorgabe an), Spaces VERSTEHEN_PLANER_SPACES.
+
+def planer_nur_mit_weg() -> bool:
+    return regel_an() and os.environ.get("PLANER_NUR_MIT_WEG", "1") not in ("0", "false", "False")
+
+
+def planer_spaces() -> frozenset:
+    roh = os.environ.get("VERSTEHEN_PLANER_SPACES", "ideas")
+    return frozenset(_ALIASE.get(s.strip().lower(), s.strip().lower()) for s in roh.split(",") if s.strip())
+
+
+def kurztext(satz: Any) -> bool:
+    """Unter drei Woertern: offensichtlicher Kurztext, kein Auftrag fuer den Planer."""
+    return not isinstance(satz, str) or len(re.findall(r"[\wäöüÄÖÜß-]+", satz)) < 3
+
+
+def planer_erlaubt(space: Optional[str], satz: Any) -> bool:
+    """Darf ein Satz ohne festen Treffer an den Planer? Nur im Space mit Weg und kein Kurztext."""
+    return space in planer_spaces() and not kurztext(satz)
 
 
 # ── Feste Lesesaetze ────────────────────────────────────────────────────────

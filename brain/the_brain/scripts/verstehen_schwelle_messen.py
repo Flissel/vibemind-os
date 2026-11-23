@@ -89,6 +89,13 @@ def main() -> int:
             cls = router._classify_base(satz)
             zeilen.append((art, satz, cls.get("level"), float(cls.get("score") or 0.0),
                            cls.get("method"), str(cls.get("anchor") or "")))
+    ohne_cos = [z for z in zeilen if z[4] not in ("qwen-cosine", "qwen-cosine-lowconf")]
+    if ohne_cos:
+        # Faellt die Einbettung aus (z. B. BRAIN_KG_SEMANTIC_DIM passt nicht zum Dienst), rechnet
+        # der Router still mit der Laengen-Heuristik weiter. Das ist keine Messung.
+        print(f"ABBRUCH: {len(ohne_cos)} Saetze ohne Cosinus (Methode {ohne_cos[0][4]!r}). "
+              "Einbettung pruefen, z. B. BRAIN_KG_SEMANTIC_DIM passend zum Dienst setzen.")
+        return 3
     zum_planer = [z for z in zeilen if z[4] in ("qwen-cosine", "qwen-cosine-lowconf")
                   and z[2] in ("medium", "hard", "insane")]
     max_unsinn = max((z[3] for z in zum_planer if z[0] == "unsinn"), default=0.0)
