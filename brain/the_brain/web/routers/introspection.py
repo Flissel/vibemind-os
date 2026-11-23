@@ -2893,7 +2893,11 @@ async def _multihop_execute(request: Request):
                 _fest_lesen = _lesen["capability"] if plan is not None else ""
         # Ideen-Space: feste Saetze laufen ohne Planer und ohne Modell. Die App gibt
         # dafuer ihren Kontext mit; Namen werden daraus aufgeloest, nie geraten.
-        if plan is None and not _bubble_wahl and not skip_shortcut and isinstance(body.get("context"), dict):
+        # "Halt fest: X in der Bubble Y": die Bubble kommt aus dem Satz, nicht aus mitgeschicktem
+        # (womoeglich altem) Kontext; der Satz laeuft unten ueber die Bubble-Liste.
+        _bubble_im_satz = _verstehen.regel_an() and _verstehen.bubble_aus_dem_satz(intent)
+        if (plan is None and not _bubble_wahl and not skip_shortcut and not _bubble_im_satz
+                and isinstance(body.get("context"), dict)):
             plan, _ideen_frage, _ideen_antwort = _try_ideen_abkuerzung(intent, body.get("context"))
             if _ideen_frage:
                 _trace_lite(pe, trace_id, intent, "ideen-rueckfrage", _ideen_frage)
@@ -2936,7 +2940,7 @@ async def _multihop_execute(request: Request):
         # Video): sie gehoeren zum Ideen-Bereich und laufen dort, mit Sprung. Nur wenn der Satz
         # eine Bubble oder den Ideen-Bereich nennt, damit "Zurück" in Rowboat nicht ins Ideen-
         # Canvas greift.
-        if not skip_shortcut and plan is None and (_bubble_wahl or (
+        if not skip_shortcut and plan is None and (_bubble_wahl or _bubble_im_satz or (
                 _space != "ideas" and _verstehen.regel_an() and _verstehen.ideen_satz_von_aussen(intent))):
             _ideen_kontext = {"space": "ideas"}
             _ideen_satz = intent

@@ -274,6 +274,26 @@ def bereichsfrage(satz: Any) -> Optional[Dict[str, Optional[str]]]:
         return None
 
 
+_FESTHALTEN = re.compile(r"^\s*(?:halt(?:e)?\s+fest|notiz|notiere|schreib(?:e)?\s+auf|merk(?:e)?\s+dir)\b",
+                         re.IGNORECASE)
+
+
+def bubble_aus_dem_satz(satz: Any) -> bool:
+    """"Halt fest: X in der Bubble Y": die Bubble kommt aus dem Satz, nie aus dem Kontext.
+
+    Nachmessung 23.11.2026: Die App schickte aus anderen Reitern alten Ideen-Kontext mit; der
+    Satz lief dann in der alten Bubble, und der Titel behielt "in der Bubble Y". Solche Saetze
+    gehen darum immer ueber die Bubble-Liste (wie aus einem fremden Reiter). Wirft nie.
+    """
+    try:
+        if not isinstance(satz, str) or not _FESTHALTEN.match(satz):
+            return False
+        name, _rest = bubble_name_im_satz(satz)
+        return bool(name)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def ideen_satz_von_aussen(satz: Any) -> bool:
     """Darf ein Satz aus einem anderen Reiter die festen Ideen-Saetze versuchen?
 

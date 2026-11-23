@@ -4,6 +4,7 @@ Alles mit Attrappen: kein Modell, kein Planer-Lauf, kein Netz. Namen erfunden.
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -755,3 +756,31 @@ def test_karte_namens_journal_wird_gelesen(monkeypatch, echter_muster_router) ->
     kontext = {**IDEEN, "cards": [{"id": "a0000001", "title": "Journal", "format": "note"}]}
     client.post("/api/multihop/execute", json={"intent": "Was steht in meinem Journal?", "context": kontext})
     assert [h.capability for p in ausfuehrer.plaene for h in p.hops] == ["idea.list"]
+
+
+# ── Fix 6: "Halt fest: X in der Bubble Y" – die Bubble kommt aus dem Satz ──
+
+@pytest.mark.parametrize("kontext", [
+    {"space": "ideas", "bubble": {"id": "b0b1e009", "title": "Laternenlauf"}, "cards": []},   # alter Kontext
+    {"space": "ideas", "bubble": {"id": "b0b1e001", "title": "Stadtfest"}, "cards": []},      # dieselbe Bubble
+    {"space": "video", "bubble": {"id": "b0b1e009", "title": "Laternenlauf"}},
+], ids=["alter-ideen-kontext", "gleiche-bubble", "fremder-reiter-mit-bubble"])
+def test_halt_fest_bubble_aus_dem_satz_nicht_aus_dem_kontext(monkeypatch, echter_muster_router, kontext) -> None:
+    gesucht = _bubble_liste(monkeypatch, [{"id": "b0b1e001", "title": "Stadtfest"}])
+    ausfuehrer = _Ausfuehrer({"content": [{"type": "text", "text": '{"id": "a0000009"}'}]})
+    client, state = _client(monkeypatch, SCHWACH, ausfuehrer=ausfuehrer, muster=echter_muster_router)
+    client.post("/api/multihop/execute", json={"intent": "Halt fest: Preise prüfen in der Bubble Stadtfest",
+                                               "context": kontext})
+    assert gesucht == ["Stadtfest"] and state.multihop_planner.aufrufe == 0
+    (plan,) = ausfuehrer.plaene
+    arg = json.loads(plan.hops[0].arg_template)
+    assert arg["bubble_id"] == "b0b1e001" and "b0b1e009" not in plan.hops[0].arg_template
+    assert arg["title"] == "Preise prüfen" and "Bubble" not in plan.hops[0].arg_template
+
+
+def test_halt_fest_ohne_bubble_im_satz_bleibt_in_der_offenen_bubble(monkeypatch, echter_muster_router) -> None:
+    gesucht = _bubble_liste(monkeypatch, [])
+    ausfuehrer = _Ausfuehrer({"content": [{"type": "text", "text": '{"id": "a0000009"}'}]})
+    client, state = _client(monkeypatch, SCHWACH, ausfuehrer=ausfuehrer, muster=echter_muster_router)
+    client.post("/api/multihop/execute", json={"intent": "Halt fest: Preise prüfen", "context": IDEEN})
+    assert gesucht == [] and json.loads(ausfuehrer.plaene[0].hops[0].arg_template)["bubble_id"] == "b0b1e001"

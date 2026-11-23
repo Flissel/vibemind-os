@@ -329,6 +329,30 @@ def test_router_vorschlag_verwerfen(monkeypatch) -> None:
     assert body["final_text"].startswith("Der Vorschlag ist verworfen")
 
 
+def test_stand_nach_vorschlag_verwerfen_sagt_verworfen(monkeypatch) -> None:
+    # Nachmessung 23.11.2026: /stand sagte nach "Vorschlag verwerfen" weiter "vorschlag".
+    zeile = _vorschlag_zeile()
+
+    class _Tabelle(_VorschlagTabelle):
+        def vorschlag_erledigen(self, z, wie):
+            ok = super().vorschlag_erledigen(z, wie)
+            z["pruefung"] = {**z["pruefung"], "vorschlag_erledigt": wie}
+            return ok
+
+        def lesen(self, i):
+            return self.zeile
+
+    tabelle = _Tabelle(zeile)
+    monkeypatch.setattr(aa, "tabelle_aus_umgebung", lambda: tabelle)
+    client, _ = _client(monkeypatch, {"ok": True})
+    assert client.get(f"/api/agent-auftraege/{A1}/stand").json()["stand"] == "vorschlag"
+    client.post("/api/multihop/execute", json={"intent": "Vorschlag verwerfen", "context": {}})
+    body = client.get(f"/api/agent-auftraege/{A1}/stand").json()
+    assert body["stand"] == "verworfen" and body["ok"] is True and body["hinweis"] is True
+    assert body["meldung"] == "Der Vorschlag ist verworfen; an der Notiz ist nichts geändert."
+    assert "saetze" not in body
+
+
 def test_nachfasser_vorschlag_ist_kein_fehlschlag() -> None:
     from core.nachfasser import Nachfasser
 
