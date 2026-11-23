@@ -33,6 +33,24 @@ def test_anlegen_schickt_service_header_und_liefert_id():
     assert a["json"]["antwortkanal"] == {"art": "telegram"}
 
 
+def test_offener_auftrag_beginnt_ohne_vorgeschichte():
+    # Lauf 8: dieselbe Agenten-Sitzung trug das Gruppier-Ergebnis in die naechste Urteilsfrage.
+    h = Attrappe([Antwort(201, [{"id": "abc"}])])
+    aa.AuftragsTabelle("http://k", "s", http=h).anlegen(
+        capability="idea.summarize", agent="brain-ideas", auftrag="Welche Risiken hat das Stadtfest?",
+        trace_id="t", plan_id="p", hop_id="s1")
+    text = h.aufrufe[0]["json"]["auftrag"]
+    assert text.startswith("NEUER AUFTRAG") and text.endswith("\n---\nWelche Risiken hat das Stadtfest?")
+    assert aa.mit_neuanfang(text) == text   # nie doppelt
+
+
+def test_auftrag_den_das_gehirn_selbst_bearbeitet_bleibt_wie_er_ist():
+    h = Attrappe([Antwort(201, [{"id": "abc"}])])
+    aa.AuftragsTabelle("http://k", "s", http=h).anlegen(
+        capability="c", agent="a", auftrag="x", trace_id="t", plan_id="p", hop_id="s1", status="laeuft")
+    assert h.aufrufe[0]["json"]["auftrag"] == "x"
+
+
 def test_zu_pruefen_filtert_fertige_ohne_pruefung():
     h = Attrappe([Antwort(200, [{"id": "1"}])])
     aa.AuftragsTabelle("http://k", "s", http=h).zu_pruefen()

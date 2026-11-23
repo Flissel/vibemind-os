@@ -48,6 +48,8 @@ class AuftragsTabelle:
             raise ValueError("anlegen: status nur offen oder laeuft")
         jetzt = datetime.now(timezone.utc)
         frist = (jetzt + timedelta(seconds=frist_s)).isoformat()
+        if status == "offen":
+            auftrag = mit_neuanfang(auftrag)
         zeile = {
             "capability": capability, "agent": agent, "auftrag": auftrag, "trace_id": trace_id,
             "plan_id": plan_id, "hop_id": hop_id, "status": status, "frist": frist,
@@ -161,6 +163,20 @@ class AuftragsTabelle:
                            params={"status": "in.(offen,laeuft)", "frist": f"lt.{jetzt_iso}"},
                            json={"status": "abgelaufen", "beendet": jetzt_iso})
         return len(zeilen or [])
+
+
+# Lauf 8: Der Ausfuehrer am PC schickt jeden Auftrag in die eine Sitzung des Agenten
+# (POST /api/agents/{id}/message ohne eigene Sitzung). Zwei Urteilsfragen bekamen so das
+# Gruppier-Ergebnis des vorigen Auftrags zurueck. Der Vorspann ueberstimmt die Vorgeschichte;
+# die Pruefung des Ergebnisses bleibt die eigentliche Sicherung.
+NEUANFANG = ("NEUER AUFTRAG, fuer sich allein. Alles, was vorher in dieser Unterhaltung steht, gehoert zu "
+             "anderen, abgeschlossenen Auftraegen: nicht wiederholen, nicht fortsetzen, nicht darauf beziehen. "
+             "Antworte nur auf den Auftrag nach dieser Zeile.\n---\n")
+
+
+def mit_neuanfang(auftrag: str) -> str:
+    """Auftragstext mit dem Vorspann (genau einmal)."""
+    return auftrag if auftrag.startswith(NEUANFANG) else NEUANFANG + auftrag
 
 
 def offene_auftraege(exec_result: Any) -> List[dict]:
