@@ -332,4 +332,5 @@ getrennt, also ohne Trennzeit:
   Felix in Lauf 4 als sauber gehört.
 - Hinweis Länge: 7,8 statt 7 Minuten, wie in Lauf 3 und 4.
 
-*offen* — Felix' Ohr: ob die Stimmen jetzt sauber wechseln.
+*gehört* — Felix 23.11. zu Lauf 5: „Klingt sauber“. Die Stimmen fressen
+sich im Übergang nicht mehr gegenseitig auf.

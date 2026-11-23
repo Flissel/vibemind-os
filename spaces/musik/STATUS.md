@@ -26,11 +26,11 @@ found are in [`docs/ABNAHME-STUDIO.md`](docs/ABNAHME-STUDIO.md).
 | Both seams of Lauf 4 sound clean | heard | Felix 2026-11-23: „Beide sauber“ |
 | Unstable beats in a mix area are named in the QA report | measured | Lauf 4 names both areas above 0.1 beats |
 | Vocals sit on their own track and switch mid-transition | measured | Lauf 5 (`...-06`), both seams 0.0 s of two voices at once, Demucs `htdemucs` on CPU |
+| The vocal switch sounds clean | heard | Felix 2026-11-23 on Lauf 5: „Klingt sauber“ |
 | `--ohne-gesang` plays only the accompaniment | static | CLI tests, Plan 1c |
 
 | Gap | Kind | Consequence |
 | --- | --- | --- |
-| Vocal switch not yet heard | open | Lauf 5 measured clean, Felix has not listened yet |
 | Only three songs in one tempo range | open | a set is about 8 minutes; 20 minutes needs more songs around 85–94 BPM |
 | QA seam check sees a short window only | measured | it flagged 0.07 beats where the full transition drifted 0.56 (Lauf 3) |
 | Set length misses the wish by 13 % | measured | 7.9 instead of 7 minutes; three songs cannot be cut shorter |
