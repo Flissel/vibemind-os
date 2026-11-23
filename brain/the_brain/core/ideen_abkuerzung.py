@@ -276,10 +276,20 @@ def _karte(name: str, kontext: dict) -> dict:
             isinstance(k, dict) and not ist_kennung(k.get("id")) and _normal(k.get("title")) == wort for k in roh):
         # Die Karte steht am Canvas, aber die App hat keine Kennung der Datenbank mitgegeben.
         raise _Rueckfrage(f"Die Notiz „{genannt}“ kann ich gerade nicht zuordnen. Öffne die Bubble noch einmal.")
+    if _bubble_ohne_kennung(kontext):
+        # Lauf 7: Die App meldet eine offene Bubble, aber ohne Kennung. Dann weiss ich nicht, was
+        # in ihr liegt: kein "finde ich in dieser Bubble nicht", sondern wie ohne Kontext.
+        raise _Rueckfrage(_BUBBLE_UNKLAR)
     gesamt = kontext.get("cards_total")
     if isinstance(gesamt, int) and not isinstance(gesamt, bool) and gesamt > len(karten):
         raise _Rueckfrage(f"Unter den sichtbaren Notizen finde ich „{genannt}“ nicht. Markiere die Notiz.")
     raise _Rueckfrage(f"Eine Notiz „{genannt}“ finde ich in dieser Bubble nicht.")
+
+
+def _bubble_ohne_kennung(kontext: dict) -> bool:
+    """Die App nennt eine offene Bubble (``bubble`` ist ein Eintrag), aber ohne Kennung der Datenbank."""
+    bubble = kontext.get("bubble")
+    return isinstance(bubble, dict) and bool(bubble) and not ist_kennung(bubble.get("id"))
 
 
 def _bubble(name: Optional[str], kontext: dict) -> dict:
