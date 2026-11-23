@@ -2884,7 +2884,9 @@ async def _multihop_execute(request: Request):
     _fest_lesen = ""        # fester Lesesatz eines Space (core/verstehen), z. B. schedule_list
     _space = None           # Space der App aus context.space, None wenn nicht gesendet
     _planer_plan = False    # Plan stammt vom LLM-Planer (nur dort gilt die Mehrdeutigkeits-Pruefung)
-    _ideen_kontext = None   # Ideen-Kontext fuer einen festen Ideen-Satz aus einem anderen Reiter
+    _planer_versucht = False  # der LLM-Planer wurde gefragt (auch wenn er keinen Plan lieferte)
+    _bezug = None
+    _ideen_kontext = None  # Ideen-Kontext fuer einen festen Ideen-Satz aus einem anderen Reiter
     if plan_dict:
         try:
             plan = _Plan.from_dict(plan_dict)
@@ -3222,8 +3224,15 @@ async def _multihop_execute(request: Request):
                     else:
                         plan = await loop.run_in_executor(None, pl.plan, intent)
                 _planer_plan = plan is not None
+                _planer_versucht = True
     else:
         return JSONResponse({"error": "intent or plan required"}, status_code=400)
+
+    # Nachmessung nach Lauf 19 (55): Unter der Regel "Planer nur im Space mit Weg" ist ein Planer
+    # ohne Plan kein Fall fuer den SoM-Planer (Budget, Telegram), sondern "nicht verstanden".
+    if plan is None and _planer_versucht and _verstehen.planer_nur_mit_weg():
+        logger.info(f"[verstehen] Planer ohne Plan: space={_bezug} intent={intent[:60]!r}")
+        return _ehrlich(pe, trace_id, intent, "nicht-verstanden", _verstehen.nicht_verstanden(_bezug), _bezug)
 
     # SoM-Dispatch: einheitlicher Pfad für (a) mehrstufige Intents (som_route)
     # und (b) Groq-Multihop-Versagen ("no plan", SOM_NOPLAN_FALLBACK=1 default).
@@ -3272,6 +3281,22 @@ async def _multihop_execute(request: Request):
                     f"{sorted(_verstehen.plan_spaces(h.capability for h in plan.hops))}, "
                     f"space={_space} intent={intent[:60]!r}")
         return _ehrlich(pe, trace_id, intent, "mehrdeutig", _verstehen.nicht_verstanden(_space), _space)
+
+    # Nachmessung nach Lauf 19 (55): Ein Planer-Plan mit einem Schritt ohne bekannte Faehigkeit
+    # ("unknown") lief 18 s, buchte eine Pruefung und endete mit dem Fehlersatz. Das ist kein
+    # Auftrag: ruhige Rueckfrage, nichts ausfuehren.
+    if _planer_plan and _verstehen.planer_nur_mit_weg():
+        _register = None
+        try:
+            _cr = getattr(state, "capability_router", None)
+            if _cr is not None:
+                _register = {c["capability"] for c in _cr.list_capabilities()}
+        except Exception:  # noqa: BLE001 - ohne Register zaehlt nur der leere Name
+            _register = None
+        if _verstehen.plan_ohne_faehigkeit([h.capability for h in (plan.hops or [])], _register):
+            logger.info(f"[verstehen] Planer-Plan ohne bekannte Faehigkeit "
+                        f"{[h.capability for h in (plan.hops or [])]}, space={_bezug} intent={intent[:60]!r}")
+            return _ehrlich(pe, trace_id, intent, "nicht-verstanden", _verstehen.nicht_verstanden(_bezug), _bezug)
 
     # Run executor in a thread so FastAPI's main loop is free to handle
     # any nested HTTP calls (brain:GET:/api/X targets recurse into us).

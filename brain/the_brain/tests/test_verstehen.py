@@ -604,6 +604,63 @@ def test_ausserhalb_der_ideen_kein_planer_auch_bei_starkem_cos(monkeypatch, echt
     assert body["weg"] == "nicht-verstanden"
 
 
+IDEEN_OHNE_BUBBLE = {"space": "ideas", "bubbles": [{"id": "b0b1e001", "title": "Stadtfest"}]}
+UNSINN = "Wie viele Zähne hat ein Regenbogen?"
+
+
+@pytest.mark.parametrize("faehigkeit", ["unknown", "", "zaehne_zaehlen"])
+def test_unsinn_mit_planer_plan_ohne_faehigkeit_ist_ruhige_rueckfrage(monkeypatch, echter_muster_router,
+                                                                      faehigkeit) -> None:
+    # Nachmessung nach Lauf 19 (55): Planer-Schritt ohne Faehigkeit lief 18 s und endete mit dem Fehlersatz.
+    ausfuehrer = _Ausfuehrer(None, ok=False)
+    client, state = _client(monkeypatch, STARK, ausfuehrer=ausfuehrer, planer=_Planer(faehigkeit),
+                            muster=echter_muster_router, synth=_Synth("Multi-hop plan: 0/1 steps succeeded"))
+    body = client.post("/api/multihop/execute", json={"intent": UNSINN, "context": IDEEN_OHNE_BUBBLE}).json()
+    assert state.multihop_planner.aufrufe == 1 and ausfuehrer.plaene == []
+    assert body["weg"] == "nicht-verstanden" and body["rueckfrage"] is True and body["verstanden"] is False
+    assert body["final_text"].startswith("Das habe ich nicht verstanden. In Ideen kann ich z. B. „")
+    assert body["final_text"] != v.FEHLERSATZ and body["space"] == "ideas"
+
+
+def test_ohne_register_zaehlt_nur_der_leere_name(monkeypatch) -> None:
+    ausfuehrer = _Ausfuehrer(None, ok=False)
+    client, _ = _client(monkeypatch, STARK, ausfuehrer=ausfuehrer, planer=_Planer("unknown"))
+    body = client.post("/api/multihop/execute", json={"intent": UNSINN, "context": IDEEN_OHNE_BUBBLE}).json()
+    assert ausfuehrer.plaene == [] and body["weg"] == "nicht-verstanden"
+    assert v.plan_ohne_faehigkeit(["idea_list"]) is False
+    assert v.plan_ohne_faehigkeit(["idea_list", "unknown"]) is True
+    assert v.plan_ohne_faehigkeit(["idea_list"], {"idea_list"}) is False
+    assert v.plan_ohne_faehigkeit(["zaehne_zaehlen"], {"idea_list"}) is True
+
+
+class _OhnePlan(_Planer):
+    async def aplan(self, intent, context=None):
+        self.aufrufe += 1
+        return None
+
+
+def test_planer_ohne_plan_ist_ruhige_rueckfrage_statt_som(monkeypatch, echter_muster_router) -> None:
+    import core.capability_targets as ct
+
+    client, state = _client(monkeypatch, STARK, planer=_OhnePlan(), muster=echter_muster_router)
+    monkeypatch.setenv("SOM_NOPLAN_FALLBACK", "1")       # Vorgabe im Betrieb
+    gebaut = []
+    monkeypatch.setattr(ct, "build_executor", lambda ziel: gebaut.append(ziel))
+    body = client.post("/api/multihop/execute", json={"intent": UNSINN, "context": IDEEN_OHNE_BUBBLE}).json()
+    assert state.multihop_planner.aufrufe == 1 and gebaut == [] and state.plan_executor.plaene == []
+    assert body["weg"] == "nicht-verstanden" and body["rueckfrage"] is True
+    assert body["final_text"].startswith("Das habe ich nicht verstanden. In Ideen kann ich z. B. „")
+
+
+def test_bekannte_faehigkeit_aus_dem_planer_laeuft_weiter(monkeypatch, echter_muster_router) -> None:
+    ausfuehrer = _Ausfuehrer({"x": 1})
+    client, state = _client(monkeypatch, STARK, ausfuehrer=ausfuehrer, planer=_Planer("idea_list"),
+                            muster=echter_muster_router, synth=_Synth("Hier sind die Notizen."))
+    body = client.post("/api/multihop/execute",
+                       json={"intent": "Welche Notizen zum Thema Bühne habe ich schon", "context": IDEEN_OHNE_BUBBLE}).json()
+    assert len(ausfuehrer.plaene) == 1 and body.get("weg") != "nicht-verstanden"
+
+
 def test_regel_abschaltbar(monkeypatch, echter_muster_router) -> None:
     monkeypatch.setenv("PLANER_NUR_MIT_WEG", "0")
     client, state = _client(monkeypatch, STARK, planer=_Planer("bubble_stats"), muster=echter_muster_router,

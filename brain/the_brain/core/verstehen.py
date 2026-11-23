@@ -409,6 +409,30 @@ def planer_erlaubt(space: Optional[str], satz: Any) -> bool:
     return space in planer_spaces() and not kurztext(satz)
 
 
+_KEINE_FAEHIGKEIT = frozenset({"", "unknown", "none", "null", "?", "unbekannt"})
+
+
+def plan_ohne_faehigkeit(faehigkeiten: Iterable[Any], bekannte: Optional[Iterable[str]] = None) -> bool:
+    """True, wenn ein Planer-Schritt keine Faehigkeit traegt, die das Gehirn kennt.
+
+    Nachmessung nach Lauf 19 (55): Ein Unsinnssatz im Ideen-Bereich bekam vom Planer einen Schritt
+    ohne Faehigkeit ("unknown"), lief 18 s, buchte eine Pruefung bei einem Agenten und endete mit dem
+    Fehlersatz. Ein solcher Plan ist kein Auftrag, sondern "nicht verstanden". ``bekannte`` sind die
+    Faehigkeiten des Registers; ohne Register zaehlt nur der leere oder "unknown"-Name.
+    """
+    try:
+        bekannt = set(bekannte) if bekannte is not None else None
+        for cap in faehigkeiten:
+            name = str(cap or "").strip()
+            if name.lower() in _KEINE_FAEHIGKEIT:
+                return True
+            if bekannt is not None and name not in bekannt:
+                return True
+        return False
+    except Exception:  # noqa: BLE001
+        return False
+
+
 # ── Feste Lesesaetze ────────────────────────────────────────────────────────
 
 _ZEIG = r"(?:zeig(?:e)?|liste|nenn(?:e)?|was sind|welche)"
