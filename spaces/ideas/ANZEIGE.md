@@ -49,6 +49,25 @@ gleicht ab. Damit das ohne Flackern geht:
 - `canvas_nodes`, `canvas_edges`, `ideas` und `projects` stehen in der Realtime-Veröffentlichung der
   Datenbank. Was ein Agent im Hintergrund ändert, kommt so ohne Nachfragen an.
 
+## Kontext, den der Space mitgeben kann
+
+Ein Satz nennt Namen („die Notiz Preise"), die Werkzeuge verlangen Kennungen. Die Auflösung macht die
+Abkürzung im Gehirn (Aufgabe der Koordination). Der Ideen-Space kann dafür je Satz mitgeben:
+
+| Feld | Inhalt | Quelle |
+|---|---|---|
+| `space` | `ideas` | fest |
+| `bubble` | Kennung und Titel der offenen Bubble, oder leer | Vorspeicher der App |
+| `karten` | je sichtbarer Karte: Kennung, Titel, Format, Bewertung | Vorspeicher der App |
+| `auswahl` | Kennungen der markierten Karten, in der Reihenfolge des Markierens | App |
+| `zuletzt` | Kennung der Karte, die zuletzt angelegt oder geändert wurde | Vorspeicher der App |
+| `bubbles` | nur ohne offene Bubble: Kennung und Titel der sichtbaren Bubbles | Vorspeicher der App |
+
+Damit lassen sich auflösen: „die Notiz Preise" (Titel in `karten`), „die beiden" (`auswahl`), „das" oder
+„die letzte" (`zuletzt`), „diese Bubble" (`bubble`). Passt ein Name auf mehrere Karten oder auf keine, fragt
+der Chat zurück und rät nicht. Eine Bubble hat höchstens 100 Karten (Grenze von `idea_arrange`); mehr gibt
+der Space nicht mit.
+
 ## Die sechs Tätigkeiten
 
 | Tätigkeit | Sofort sichtbar (fester Aufruf) | Später (Modell) |
