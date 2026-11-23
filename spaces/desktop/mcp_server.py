@@ -39,7 +39,10 @@ MAX_TEXT_ZEICHEN = 2000
 MAX_BILDSCHIRMTEXT = 6000
 MAX_WARTEN_SEKUNDEN = 5
 MAX_ELEMENTE = 60
-ARTEN = ("click", "type", "key", "hotkey", "scroll", "wait")
+ARTEN = ("click", "type", "key", "hotkey", "scroll", "wait", "note")
+# Bewegen weder Maus noch Tastatur und brauchen deshalb keinen Blick auf den Bildschirm.
+OHNE_HANDLUNG = ("wait", "note")
+MAX_NOTIZ_ZEICHEN = 120
 # Nur was der Agent wirklich zu lesen bekommt, zählt als Blick; ein gespeichertes Bild nicht.
 BLICK_WERKZEUGE = ("desktop_screen_read", "desktop_elements", "desktop_find")
 
@@ -96,7 +99,8 @@ TOOLS: list[dict[str, Any]] = [
             "Execute ONE step of a running task on the real screen and record it. "
             "Refused with nicht_hingesehen unless desktop_elements, desktop_screen_read or desktop_find "
             "was called since the previous step. "
-            "action: click (x, y), type (text), key (key), hotkey (keys), scroll (direction, amount), wait (seconds)."
+            "action: click (x, y), type (text), key (key), hotkey (keys), scroll (direction, amount), wait (seconds), "
+            "note (text: a line for the journal, nothing is done on the screen)."
         ),
         "inputSchema": {
             "type": "object",
@@ -337,6 +341,9 @@ def _schritt_auftrag(arguments: Mapping[str, Any]) -> tuple[str, dict[str, Any],
         if isinstance(sekunden, bool) or not isinstance(sekunden, (int, float)) or not 0 <= sekunden <= MAX_WARTEN_SEKUNDEN:
             raise ToolError(f"eingabe_ungueltig: seconds muss von 0 bis {MAX_WARTEN_SEKUNDEN} sein")
         return art, {"seconds": sekunden}, {}, ""
+    if art == "note":
+        _nur(arguments, {"task_id", "action", "text"})
+        return art, {"notiz": _text(arguments, "text", hoechstens=MAX_NOTIZ_ZEICHEN)}, {}, ""
     raise ToolError("eingabe_ungueltig: action muss eine von " + ", ".join(ARTEN) + " sein")
 
 
@@ -347,7 +354,7 @@ def _task_step(arguments: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(warum, str) and warum.strip():
         ins_buch = {**ins_buch, "warum": warum.strip()[:120]}
     # Not-Aus, Laufzeit und Obergrenze werden hier vor jedem einzelnen Schritt geprüft.
-    aufgabe, begonnen = aufgaben.schritt_beginnen(kennung, art=art, angaben=ins_buch, braucht_blick=art != "wait")
+    aufgabe, begonnen = aufgaben.schritt_beginnen(kennung, art=art, angaben=ins_buch, braucht_blick=art not in OHNE_HANDLUNG)
 
     start = time.monotonic()
     ok, echt, meldung = True, False, "ausgeführt"
@@ -355,6 +362,8 @@ def _task_step(arguments: Mapping[str, Any]) -> dict[str, Any]:
         if art == "wait":
             time.sleep(float(ins_buch["seconds"]))
             meldung = "gewartet"
+        elif art == "note":
+            meldung = "vermerkt"
         elif aufgabe["trocken"] or not _ausfuehren_erlaubt(os.environ):
             meldung = "trocken: gebucht, nicht ausgeführt"
         else:
