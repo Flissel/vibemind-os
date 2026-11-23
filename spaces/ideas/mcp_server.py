@@ -1078,6 +1078,49 @@ def _link_candidates(nodes: list[dict[str, Any]]) -> list[tuple[float, str, str]
     return pairs
 
 
+TABLE_MAX_ROWS = 50
+TABLE_MAX_COLUMNS = 8
+TABLE_CELL_CHARS = 200
+_TABLE_RULE = re.compile(r"^:?-{2,}:?$")
+_TABLE_PAIR = re.compile(r"^(?:[-*•]\s*)?(?P<k>[^:|;\t]{1,60}?)\s*:\s+(?P<v>\S.*)$")
+
+
+def _table_from_text(text: str, title: str) -> dict[str, Any] | None:
+    """Columns and rows from text that already has them; ``None`` if it has none.
+
+    No model: a Markdown table, lines split by tab, ";" or "|" into the same number of
+    cells (first line = header), or "Name: Wert" per line. Anything else needs a model.
+    """
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if lines and title.strip() and lines[0] == title.strip():
+        lines = lines[1:]
+    if len(lines) < 2:
+        return None
+
+    def cell(value: str) -> str:
+        return value.strip()[:TABLE_CELL_CHARS]
+
+    grid: list[list[str]] | None = None
+    if all(line.startswith("|") and line.endswith("|") and len(line) > 2 for line in lines):
+        grid = [[cell(c) for c in line[1:-1].split("|")] for line in lines]
+        grid = [row for row in grid if not all(_TABLE_RULE.fullmatch(c) for c in row if c) or not any(row)]
+    else:
+        for separator in ("\t", ";", "|"):
+            split = [[cell(c) for c in line.split(separator)] for line in lines]
+            if all(len(row) >= 2 for row in split) and len({len(row) for row in split}) == 1:
+                grid = split
+                break
+    if grid is not None and len(grid) >= 2 and len({len(row) for row in grid}) == 1 and len(grid[0]) >= 2:
+        columns = grid[0][:TABLE_MAX_COLUMNS]
+        rows = [row[:TABLE_MAX_COLUMNS] for row in grid[1:1 + TABLE_MAX_ROWS]]
+        return {"columns": columns, "rows": rows}
+    pairs = [_TABLE_PAIR.match(line) for line in lines]
+    if all(pairs):
+        return {"columns": ["Punkt", "Angabe"],
+                "rows": [[cell(m.group("k")), cell(m.group("v"))] for m in pairs[:TABLE_MAX_ROWS] if m]}
+    return None
+
+
 def _change_groups(rows: Any, limit: int) -> list[dict[str, Any]]:
     """Fold protocol rows (newest first) into the groups ideen_zurueck undoes."""
     if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
@@ -1716,9 +1759,17 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
             text = str(node.get("content") or "").strip()
             if fmt != "note" and (not text or text == str(node.get("title") or "").strip()):
                 raise ToolError("idea_format_no_content")
+            structured: dict[str, Any] = {"type": fmt, "title": node.get("title") or "", "text": node.get("content") or ""}
+            if fmt == "table":
+                # Die Huelle zeichnet eine Tabelle nur aus columns/rows (format-renderer.js).
+                # Ohne erkennbare Spalten aendert sich nichts (Arbeitslauf 2: nur die Art wechselte).
+                table = _table_from_text(_live_text(node) or "", str(node.get("title") or ""))
+                if table is None:
+                    raise ToolError("idea_format_table_no_columns")
+                structured.update(table)
             patch = {
                 "format_schema": {"type": fmt},
-                "content_json": {"type": fmt, "title": node.get("title") or "", "text": node.get("content") or ""},
+                "content_json": structured,
                 "previous_content_json": dict(current),
                 "last_formatted": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             }

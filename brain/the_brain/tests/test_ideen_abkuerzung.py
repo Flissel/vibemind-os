@@ -513,6 +513,7 @@ def test_zu_viele_karten_vom_werkzeug_wird_ein_satz_mit_zahl() -> None:
     "RuntimeError: boom",
     "Idea '' not found.",
     "Ideen-Werkzeug meldet einen Fehler (idea_format_no_content)",
+    "Ideen-Werkzeug meldet einen Fehler (idea_format_table_no_columns)",
 ])
 def test_fehlersaetze_sind_deutsch_und_ohne_rohtext(fehler) -> None:
     satz = abk.fehlersatz(fehler, "idea_expand")

@@ -688,6 +688,10 @@ def fehlersatz(fehler: Any, capability: Any = None) -> str:
         grenze = re.search(r"(?:grenze=|limit )(\d{1,6})", text)
         return grenzsatz(capability, int(anzahl.group(1)) if anzahl else None,
                          int(grenze.group(1)) if grenze else None)
+    if "idea_format_table_no_columns" in text:
+        return ("Der Text dieser Karte hat keine Spalten; geändert habe ich nichts. Aus freiem Text eine "
+                "Tabelle bauen kann ich noch nicht. Schreib je Zeile „Name: Wert“ oder trenne die Spalten "
+                "mit „;“, dann geht „Mach aus … eine Tabelle“.")
     if "idea_format_no_content" in text:
         return ("Diese Karte hat noch keinen Text, aus dem ich eine Tabelle oder Liste bauen kann. "
                 "Ergänze erst Inhalt, z. B. „Ergänze bei … : …“.")
