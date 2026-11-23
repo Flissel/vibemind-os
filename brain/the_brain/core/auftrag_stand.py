@@ -10,8 +10,9 @@ Hier steht nur die reine Abbildung Zeile -> Stand. Die Dauer gibt es erst mit de
 Abschluss (angelegt bis beendet, beim White Paper über alle Teile).
 
 Stände: ``laeuft`` (ohne Dauer), ``fertig``, ``vorschlag``, ``uebernommen``, ``verworfen``,
-``abgebrochen``, ``wartet``, ``fehler``. ``ok`` ist nur bei ``fehler`` False; ``vorschlag``, ``verworfen`` und
-``abgebrochen`` sind Hinweise (``hinweis: true``), keine Fehler.
+``abgebrochen``, ``wartet``, ``ungeprueft``, ``fehler``. ``ok`` ist nur bei ``fehler`` und ``ungeprueft``
+False; ``vorschlag``, ``verworfen``, ``abgebrochen`` und ``ungeprueft`` sind Hinweise (``hinweis: true``),
+keine Fehler. ``fertig`` gibt es ohne Rückweg nur mit bestätigter Prüfung.
 """
 from __future__ import annotations
 
@@ -108,7 +109,8 @@ def stand_einer_zeile(zeile: Mapping[str, Any]) -> dict[str, Any]:
             and pruefung.get("fortsetzung") != "fehler"):
         return {"stand": "fertig", "ok": True, "meldung": meldung or "Der Auftrag ist fertig."}
     if status == "fertig" and pruefung.get("verified") is None and pruefung.get("fortsetzung") != "fehler":
-        return {"stand": "fehler", "ok": False, "meldung": UNGEPRUEFT_SATZ}
+        # Ohne Prüfer (etwa Coding) ist ein Auftrag oft gelungen: weder grünes ✓ noch rotes ✕, sondern ein Hinweis.
+        return {"stand": "ungeprueft", "ok": False, "hinweis": True, "meldung": UNGEPRUEFT_SATZ}
     return {"stand": "fehler", "ok": False,
             "meldung": meldung or _STATUS_SATZ.get(str(status), _STATUS_SATZ["fehler"])}
 

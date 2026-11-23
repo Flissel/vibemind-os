@@ -218,20 +218,27 @@ def test_stand_einer_zeile(zeile, erwartet) -> None:
     assert st.stand(A1, lambda i: zeile) == {**erwartet, "auftrag_id": A1}
 
 
-@pytest.mark.parametrize("pruefung, ergebnis, meldung", [
+@pytest.mark.parametrize("pruefung, ergebnis", [
     # Lauf 7 (falsch gruen): Werkzeug fehlte, Pruefung UNVERIFIED (placeholder) -> stand "fertig".
     ({"verified": None, "reason": "placeholder", "kind": "UNVERIFIED", "fortsetzung": "keine"},
-     "Werkzeug bubble_evaluate nicht verfügbar", st.WERKZEUG_FEHLT_SATZ),
-    ({"verified": True, "reason": "ok", "fortsetzung": "keine"},
-     {"text": "Error: unknown tool bubble_evaluate"}, st.WERKZEUG_FEHLT_SATZ),
-    ({"verified": None, "reason": "placeholder", "kind": "UNVERIFIED", "fortsetzung": "keine"},
-     "Bewertung gesetzt.", st.UNGEPRUEFT_SATZ),
-    ({"verified": None, "reason": "kein Pruefer", "kind": None, "fortsetzung": "keine"}, None, st.UNGEPRUEFT_SATZ),
+     "Werkzeug bubble_evaluate nicht verfügbar"),
+    ({"verified": True, "reason": "ok", "fortsetzung": "keine"}, {"text": "Error: unknown tool bubble_evaluate"}),
 ])
-def test_stand_fertig_nur_mit_bestaetigter_pruefung(pruefung, ergebnis, meldung) -> None:
+def test_stand_fehlendes_werkzeug_ist_fehler(pruefung, ergebnis) -> None:
     zeile = {**_zeile("fertig", pruefung, _iso(78)), "capability": "bubble_evaluate", "ergebnis": ergebnis}
     aus = st.stand(A1, lambda i: zeile)
-    assert aus["stand"] == "fehler" and aus["ok"] is False and aus["meldung"] == meldung
+    assert aus["stand"] == "fehler" and aus["ok"] is False and aus["meldung"] == st.WERKZEUG_FEHLT_SATZ
+
+
+@pytest.mark.parametrize("pruefung, ergebnis", [
+    ({"verified": None, "reason": "placeholder", "kind": "UNVERIFIED", "fortsetzung": "keine"}, "Bewertung gesetzt."),
+    # Ohne Pruefer (etwa Coding) ist der Auftrag oft gelungen: kein rotes ✕, sondern ein Hinweis.
+    ({"verified": None, "reason": "kein Pruefer", "kind": None, "fortsetzung": "keine"}, None),
+])
+def test_stand_ohne_bestaetigung_ist_ungeprueft(pruefung, ergebnis) -> None:
+    zeile = {**_zeile("fertig", pruefung, _iso(78)), "capability": "bubble_evaluate", "ergebnis": ergebnis}
+    assert st.stand(A1, lambda i: zeile) == {"stand": "ungeprueft", "ok": False, "hinweis": True,
+                                             "meldung": st.UNGEPRUEFT_SATZ, "dauer_s": 78.0, "auftrag_id": A1}
 
 
 def test_stand_fertig_mit_bestaetigter_pruefung() -> None:
