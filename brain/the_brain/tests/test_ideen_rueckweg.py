@@ -124,6 +124,13 @@ def test_auftrag_verbietet_erfundene_offene_fragen() -> None:
     ("Bühne steht ab Freitag.", "Die Bühne steht ab Freitag. Die Details dazu sind noch in Prüfung."),
     ("Druckerei liefert Plakate.", "Die Druckerei liefert die Plakate; das prüfen wir noch."),
     ("Sponsoren: Stadtwerke", "Als Sponsor gewinnen wir die Stadtwerke. Der Betrag muss noch geklärt werden."),
+    # Lauf 14 (43): ein erfundener Zustand im zweiten Satz.
+    ("Vegane Suppe am Samstag",
+     "Für das Stadtfest planen wir am Samstag eine vegane Suppe. Wir prüfen gerade, ob sich das umsetzen lässt."),
+    ("Vegane Suppe am Samstag", "Am Samstag gibt es eine vegane Suppe; ob sich das mit dem Budget machen lässt."),
+    ("Bühne steht ab Freitag.", "Die Bühne steht ab Freitag. Der Aufbau wird gerade geprüft."),
+    ("Bühne steht ab Freitag.", "Die Bühne steht ab Freitag. Das wird geklärt."),
+    ("Druckerei liefert Plakate.", "Die Druckerei liefert die Plakate. Wir klären derzeit die Menge."),
 ])
 def test_erfundene_offene_frage_wird_abgelehnt(notiz, ergebnis) -> None:
     assert rw.ausformulierung_pruefen(notiz, ergebnis) == rw.ERFINDET_OFFENES

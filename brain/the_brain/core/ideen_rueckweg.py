@@ -471,8 +471,12 @@ _OFFEN_IM_ERGEBNIS = re.compile(
     r"\b(?:noch\s+(?:offen|unklar|ungekl(?:ä|ae)rt|nicht\s+(?:klar|entschieden|gekl(?:ä|ae)rt|festgelegt|sicher))"
     r"|(?:ist|sind|bleibt|bleiben)\s+(?:vorerst\s+|aber\s+)?offen"
     r"|(?:noch\s+)?in\s+(?:der\s+)?(?:pr(?:ü|ue)fung|kl(?:ä|ae)rung|abstimmung)"
-    r"|pr(?:ü|ue)fen\s+wir\s+noch|kl(?:ä|ae)ren\s+wir\s+noch"
-    r"|(?:wird|werden|muss|m(?:ü|ue)ssen)\s+noch\s+(?:gepr(?:ü|ue)ft|gekl(?:ä|ae)rt|entschieden|abgestimmt)"
+    r"|(?:pr(?:ü|ue)fen|kl(?:ä|ae)ren)\s+wir\s+(?:noch|gerade|derzeit|aktuell)"
+    # Lauf 14 (43): "Wir pruefen gerade, ob sich das umsetzen laesst."
+    r"|wir\s+(?:pr(?:ü|ue)fen|kl(?:ä|ae)ren)\s+(?:noch|gerade|derzeit|aktuell|zurzeit)"
+    r"|\bob\s+sich\b[^.!?\n]{0,60}?\bl(?:ä|ae)sst"
+    r"|(?:wird|werden|muss|m(?:ü|ue)ssen)\s+(?:noch\s+|gerade\s+|derzeit\s+|aktuell\s+)?"
+    r"(?:gepr(?:ü|ue)ft|gekl(?:ä|ae)rt|entschieden|abgestimmt)"
     r"|noch\s+zu\s+(?:kl(?:ä|ae)ren|pr(?:ü|ue)fen|entscheiden)"
     r"|steh(?:t|en)\s+noch\s+(?:nicht\s+fest|aus))", re.IGNORECASE)
 # Grosszuegig: was die Notiz irgendwie offen laesst, erlaubt eine offene Frage im Ergebnis.
