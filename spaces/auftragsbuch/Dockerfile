@@ -11,7 +11,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONPATH=/app \
     AUFTRAGSBUCH_VERTRAG_ORDNER=/app/spaces/_contract \
-    AUFTRAGSBUCH_HOST=0.0.0.0
+    AUFTRAGSBUCH_HOST=127.0.0.1
 
 RUN groupadd --system --gid 10002 auftragsbuch \
     && useradd --system --uid 10002 --gid auftragsbuch --no-create-home --shell /usr/sbin/nologin auftragsbuch
@@ -22,6 +22,7 @@ RUN pip install -r /tmp/requirements.txt && rm /tmp/requirements.txt
 
 COPY spaces/__init__.py /app/spaces/__init__.py
 COPY spaces/auftragsbuch/*.py /app/spaces/auftragsbuch/
+COPY spaces/auftragsbuch/rowboat/*.py /app/spaces/auftragsbuch/rowboat/
 COPY spaces/_contract/*.contract.yaml /app/spaces/_contract/
 
 USER auftragsbuch

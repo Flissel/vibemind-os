@@ -152,6 +152,67 @@ def test_main_wert_nennt_nur_die_drei_datenbank_werte(tmp_path: Path) -> None:
     assert db_zugang.main(["wert", "AUFTRAGSBUCH_DB_NAME"], _Pipe(), _Pipe(), tmp_path / "fehlt") == 2
 
 
+def test_rollen_sql_abholer_nur_rowboat_empfang() -> None:
+    verifier = db_zugang.scram_verifier(PASSWORT)
+    sql = db_zugang.rollen_sql(verifier, "abholer")
+    assert PASSWORT not in sql
+    assert "CREATE ROLE rowboat_abholer LOGIN INHERIT;" in sql
+    assert f"ALTER ROLE rowboat_abholer WITH LOGIN INHERIT PASSWORD '{verifier}';" in sql
+    assert "GRANT rowboat_empfang TO rowboat_abholer;" in sql
+    assert sql.count("GRANT ") == 1
+    assert "erst Migration 101 einspielen" in sql
+    assert "g.rolname <> 'rowboat_empfang'" in sql
+    assert "brain_app" not in sql and "auftragsbuch_dienst" not in sql
+    assert "ALTER ROLE rowboat_empfang" not in sql
+
+
+def test_unbekannter_zugang_wird_abgelehnt(tmp_path: Path) -> None:
+    verifier = db_zugang.scram_verifier(PASSWORT)
+    with pytest.raises(db_zugang.ZugangsFehler):
+        db_zugang.rollen_sql(verifier, "postgres")
+    dienst = _dienst(tmp_path)
+    assert db_zugang.main(["sql", "postgres"], _Pipe(PASSWORT + "\n"), _Pipe(), dienst) == 2
+    assert db_zugang.main(["sql", "abholer", "x"], _Pipe(PASSWORT + "\n"), _Pipe(), dienst) == 2
+
+
+def test_dsn_mit_port_aus_den_werten() -> None:
+    werte = {"AUFTRAGSBUCH_DB_HOST": "127.0.0.1", "AUFTRAGSBUCH_DB_NAME": "postgres", "AUFTRAGSBUCH_DB_PORT": "6543"}
+    assert db_zugang.dsn_bauen(werte, PASSWORT, "abholer") == (
+        f"host=127.0.0.1 port=6543 dbname=postgres user=rowboat_abholer password={PASSWORT}")
+
+
+@pytest.mark.parametrize("port", ["<DB-PORT>", "0", "65536", "54 32", "-1"])
+def test_dsn_lehnt_falschen_port_ab_ohne_wert(port: str) -> None:
+    werte = {"AUFTRAGSBUCH_DB_HOST": "h", "AUFTRAGSBUCH_DB_NAME": "d", "AUFTRAGSBUCH_DB_PORT": port}
+    with pytest.raises(db_zugang.ZugangsFehler) as e:
+        db_zugang.dsn_bauen(werte, PASSWORT)
+    assert "AUFTRAGSBUCH_DB_PORT" in str(e.value) and port not in str(e.value)
+
+
+def test_main_abholer_schreibt_eigene_dsn(tmp_path: Path) -> None:
+    dienst = _dienst(tmp_path, WERTE + "AUFTRAGSBUCH_DB_PORT=6543\n")
+    assert db_zugang.main(["dsn-schreiben", "abholer"], _Pipe(PASSWORT + "\n"), _Pipe(), dienst) == 0
+    assert sorted(p.name for p in (dienst / "laufzeit").iterdir()) == ["abholer-dsn", "werte.env"]
+    assert (dienst / "laufzeit" / "abholer-dsn").read_text(encoding="utf-8") == (
+        f"host=db-host port=6543 dbname=postgres user=rowboat_abholer password={PASSWORT}\n")
+    if os.name == "posix":
+        assert ((dienst / "laufzeit" / "abholer-dsn").stat().st_mode & 0o777) == 0o600
+
+
+def test_main_zugang_prueft_werte_und_nennt_die_rolle(tmp_path: Path) -> None:
+    dienst = _dienst(tmp_path)
+    aus = _Pipe()
+    assert db_zugang.main(["zugang", "abholer"], _Pipe(), aus, dienst) == 0
+    assert aus.getvalue() == "Rolle rowboat_abholer bereit (Mitglied von rowboat_empfang), laufzeit/abholer-dsn\n"
+    aus = _Pipe()
+    assert db_zugang.main(["zugang"], _Pipe(), aus, dienst) == 0
+    assert aus.getvalue() == "Rolle auftragsbuch_dienst bereit (Mitglied von brain_app), laufzeit/dsn\n"
+    assert db_zugang.main(["zugang", "postgres"], _Pipe(), _Pipe(), dienst) == 2
+    (tmp_path / "b").mkdir()
+    schlecht = _dienst(tmp_path / "b", WERTE + "AUFTRAGSBUCH_DB_PORT=<DB-PORT>\n")
+    assert db_zugang.main(["zugang", "abholer"], _Pipe(), _Pipe(), schlecht) == 2
+
+
 def test_cli_ueber_stdin_ohne_passwort_in_der_ausgabe() -> None:
     lauf = subprocess.run([sys.executable, str(DEPLOY / "db_zugang.py"), "sql"],
                           input=(PASSWORT + "\n").encode("ascii"), capture_output=True, timeout=60, check=False)

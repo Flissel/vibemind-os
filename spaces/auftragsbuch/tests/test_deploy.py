@@ -119,7 +119,13 @@ def test_db_zugang_erzeugt_passwort_und_gibt_es_nie_aus() -> None:
     assert "umask 077" in code
     assert "passwort=$(openssl rand -hex 24)" in code
     assert "read " not in code, "das Passwort entsteht auf dem Mini-PC, nichts kommt von aussen"
-    assert not re.search(r"\$\{?[1-9@*#]", text), "keine Argumente aus der Kommandozeile"
+    # Einziges Argument: der Name des Zugangs (dienst oder abholer), geprueft von db_zugang.py.
+    argumente = set(re.findall(r"\$\{?[1-9@*#][^\s\"]*", text))
+    assert argumente == {"${1:-dienst}", "$#"}, argumente
+    assert 'python3 deploy/db_zugang.py zugang "$zugang"' in code
+    assert 'python3 deploy/db_zugang.py sql "$zugang"' in code
+    assert 'python3 deploy/db_zugang.py dsn-schreiben "$zugang"' in code
+    assert code.index("db_zugang.py zugang") < code.index("openssl rand"), "erst pruefen, dann aendern"
     assert [z for z in _zeilen(DB_ZUGANG) if _gibt_wert_aus(z)] == []
     # Kein SQL mit Passwort auf einer Kommandozeile: das SQL kommt nur ueber stdin aus der Hilfe.
     assert "password" not in code.lower()
@@ -139,33 +145,69 @@ def compose() -> dict:
 
 def test_compose_nur_loopback_und_fester_name(compose: dict) -> None:
     assert compose["name"] == "auftragsbuch"
-    assert list(compose["services"]) == ["auftragsbuch"]
+    assert list(compose["services"]) == ["auftragsbuch", "rowboat-abholer"]
     dienst = compose["services"]["auftragsbuch"]
-    ports = dienst["ports"]
-    assert ports and all(str(p).startswith("127.0.0.1:") for p in ports)
+    # Host-Netz (Rowboat lauscht nur auf 127.0.0.1 des Mini-PC): der Dienst bindet selbst nur Loopback.
+    assert dienst["environment"]["AUFTRAGSBUCH_HOST"] == "127.0.0.1"
+    assert dienst["environment"]["AUFTRAGSBUCH_PORT"] == "8172"
     assert "${AUFTRAGSBUCH_TAG:?" in dienst["image"]
     assert dienst["restart"] == "unless-stopped"
     assert dienst["mem_limit"] == "256m"
 
 
 def test_compose_geheimnisse_nur_als_datei(compose: dict) -> None:
-    dienst = compose["services"]["auftragsbuch"]
-    env = dienst.get("environment", {})
-    for name in env:
-        if re.search(r"DSN|SCHLUESSEL|PASSWORT|TOKEN", name):
-            assert name.endswith("_FILE"), name
-    assert env["AUFTRAGSBUCH_DSN_FILE"].startswith("/run/secrets/")
-    assert env["AUFTRAGSBUCH_SCHLUESSEL_HASH_FILE"].startswith("/run/secrets/")
-    # Beide Dateien kommen schreibgeschuetzt aus ./laufzeit/.
-    mounts = [v for v in dienst["volumes"] if str(v).startswith("./laufzeit/")]
-    assert len(mounts) == 2 and all(str(v).endswith(":ro") for v in mounts)
-    assert dienst["env_file"] == ["./laufzeit/werte.env"]
+    for name, dienst in compose["services"].items():
+        env = dienst.get("environment", {})
+        for var in env:
+            if re.search(r"DSN|SCHLUESSEL|PASSWORT|TOKEN|KEY", var):
+                assert var.endswith(("_FILE", "_DATEI")), (name, var)
+                assert env[var].startswith("/run/secrets/"), (name, var)
+        mounts = [str(v) for v in dienst["volumes"]]
+        assert mounts and all(v.startswith("./laufzeit/") and v.endswith(":ro") for v in mounts), name
+        assert dienst["env_file"] == ["./laufzeit/werte.env"], name
+    env = compose["services"]["auftragsbuch"]["environment"]
+    assert env["AUFTRAGSBUCH_DSN_FILE"] == "/run/secrets/auftragsbuch-dsn"
+    assert env["AUFTRAGSBUCH_SCHLUESSEL_HASH_FILE"] == "/run/secrets/auftragsbuch-schluessel-hash"
+    assert env["AUFTRAGSBUCH_ROWBOAT_SCHLUESSEL_DATEI"] == "/run/secrets/auftragsbuch-rowboat-schluessel"
+    assert len(compose["services"]["auftragsbuch"]["volumes"]) == 3
+    abholer = compose["services"]["rowboat-abholer"]["environment"]
+    assert abholer["ABHOLER_DSN_FILE"] == "/run/secrets/abholer-dsn"
+    assert abholer["ROWBOAT_SCHLUESSEL_DATEI"] == "/run/secrets/abholer-rowboat-schluessel"
+    assert sorted(str(v) for v in compose["services"]["rowboat-abholer"]["volumes"]) == [
+        "./laufzeit/abholer-dsn:/run/secrets/abholer-dsn:ro",
+        "./laufzeit/rowboat-abholer-schluessel:/run/secrets/abholer-rowboat-schluessel:ro",
+    ]
 
 
-def test_compose_haengt_im_externen_datenbanknetz(compose: dict) -> None:
-    netz = compose["networks"]["datenbank"]
-    assert netz["external"] is True and netz["name"] == "debian_default"
-    assert compose["services"]["auftragsbuch"]["networks"] == ["datenbank"]
+def test_compose_beide_im_host_netz_ohne_ports(compose: dict) -> None:
+    assert "networks" not in compose
+    for name, dienst in compose["services"].items():
+        assert dienst["network_mode"] == "host", name
+        assert "ports" not in dienst and "networks" not in dienst, name
+    assert compose["services"]["auftragsbuch"]["environment"]["AUFTRAGSBUCH_ROWBOAT_URL"] == "http://127.0.0.1:3220"
+    assert compose["services"]["rowboat-abholer"]["environment"]["ROWBOAT_RPC_URL"] == "http://127.0.0.1:3220"
+
+
+def test_compose_abholer_aus_demselben_abbild(compose: dict) -> None:
+    dienst, abholer = compose["services"]["auftragsbuch"], compose["services"]["rowboat-abholer"]
+    assert abholer["image"] == dienst["image"] and "build" not in abholer
+    assert abholer["pull_policy"] == "never"
+    assert abholer["command"] == ["python", "-m", "spaces.auftragsbuch.rowboat.abholer"]
+    assert abholer["container_name"] == "rowboat-abholer"
+    assert abholer["restart"] == "unless-stopped" and abholer["init"] is True
+    assert abholer["user"] == dienst["user"]
+    assert abholer["healthcheck"]["test"] == ["CMD", "python", "-m", "spaces.auftragsbuch.rowboat.abholer",
+                                              "--gesund"]
+    assert "ABHOLER_ARTEN_FREI" not in abholer["environment"], "Vorgabe vorschlaege_anlegen aus dem Code"
+
+
+def test_abbild_enthaelt_rowboat_und_bindet_nur_loopback() -> None:
+    dockerfile = (DIENST / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY spaces/auftragsbuch/rowboat/*.py /app/spaces/auftragsbuch/rowboat/" in dockerfile
+    assert "0.0.0.0" not in dockerfile
+    assert "AUFTRAGSBUCH_HOST=127.0.0.1" in dockerfile
+    ignore = _zeilen(DIENST / "Dockerfile.dockerignore")
+    assert "!spaces/auftragsbuch/rowboat/*.py" in ignore
 
 
 def test_gitignore_haelt_laufzeit_und_compose_env_fern() -> None:
@@ -181,7 +223,8 @@ def test_werte_beispiel_nennt_alle_werte_mit_platzhaltern() -> None:
             name, wert = zeile.split("=", 1)
             werte[name] = wert
     assert set(werte) == {"AUFTRAGSBUCH_LADEN", "AUFTRAGSBUCH_MANDANT", "AUFTRAGSBUCH_ZUSATZ_HOSTS",
-                          "AUFTRAGSBUCH_DB_CONTAINER", "AUFTRAGSBUCH_DB_HOST", "AUFTRAGSBUCH_DB_NAME"}
+                          "AUFTRAGSBUCH_DB_CONTAINER", "AUFTRAGSBUCH_DB_HOST", "AUFTRAGSBUCH_DB_PORT",
+                          "AUFTRAGSBUCH_DB_NAME", "ABHOLER_LADEN"}
     assert all(re.fullmatch(r"<[A-Z-]+>", w) for w in werte.values()), werte
 
 
@@ -241,17 +284,17 @@ def _text() -> str:
     return _flach(RUNBOOK.read_text(encoding="utf-8"))
 
 
-def _punkte(zeilen: list[str], ab: str = "## Stufe 1") -> list[str]:
+def _punkte(zeilen: list[str], ab: str = "## Stufe 1", bis: str = "## Offene Punkte") -> list[str]:
     """Zerlegt das Runbook ab `ab` in nummerierte und Spiegelstrich-Punkte samt eingerueckter Folgezeilen.
 
-    Jeder Punkt kommt flach zurueck (siehe _flach). Schluss ist der Abschnitt `## Offene Punkte`: Er
-    beschreibt keine Handlung.
+    Jeder Punkt kommt flach zurueck (siehe _flach). Schluss ist `bis`, als Vorgabe der Abschnitt
+    `## Offene Punkte`: Er beschreibt keine Handlung.
     """
     start = next(i for i, z in enumerate(zeilen) if z.startswith(ab))
     punkte: list[str] = []
     offen = False
-    for zeile in zeilen[start:]:
-        if zeile.startswith("## Offene Punkte"):
+    for zeile in zeilen[start + 1:]:
+        if zeile.startswith(bis):
             break
         if re.match(r"\d+\. |- ", zeile):
             punkte.append(zeile)
@@ -307,8 +350,9 @@ def test_runbook_ausnahmen_stehen_nur_wo_sie_hingehoeren() -> None:
     assert "tools/call" in rauch and "rauchprobe.py" in rauch and "auftrag_probe" not in rauch
     (gedeckt,) = [p for p in punkte if _GEDECKT in p]
     assert "Sicherung" in gedeckt and "ändert nichts an der Datenbank" in gedeckt and "~/backups/" in gedeckt
-    (probe,) = [p for p in punkte if "migration_probe" in p]
-    assert _JA in probe and "ROLLBACK" in probe and "lock_timeout" in probe
+    proben = [p for p in punkte if "migration_probe" in p]
+    assert len(proben) == 2  # 100 in Stufe 1, 101 in Stufe 4
+    assert all(_JA in p and "ROLLBACK" in p and "lock_timeout" in p for p in proben)
     (bleibt,) = [p for p in punkte if _BLEIBT in p]
     assert "Normalfall" in bleibt and "CHECK" in bleibt
     # Jede Aktion des Rueckwegs von Stufe 1 hinter dem Normalfall braucht ihr eigenes Ja.
@@ -318,7 +362,7 @@ def test_runbook_ausnahmen_stehen_nur_wo_sie_hingehoeren() -> None:
 
 
 def test_runbook_abschluss_ist_eine_nummerierte_liste_mit_marker_an_der_probe() -> None:
-    punkte = _punkte(_zeilen(RUNBOOK), ab="## Abschluss")
+    punkte = _punkte(_zeilen(RUNBOOK), ab="## Abschluss", bis="## ")
     assert len(punkte) >= 8 and all(re.match(r"\d+\. ", p) for p in punkte)
     probe = next(p for p in punkte if "auftrag_probe" in p)
     assert _JA in probe
@@ -328,7 +372,7 @@ def test_runbook_abschluss_ist_eine_nummerierte_liste_mit_marker_an_der_probe() 
 def test_runbook_rueckweg_ist_eine_liste_mit_einer_aktion_je_punkt() -> None:
     zeilen = _zeilen(RUNBOOK)
     koepfe = [i for i, z in enumerate(zeilen) if z.startswith("**Rückweg")]
-    assert len(koepfe) == 3
+    assert len(koepfe) == 4
     for i in koepfe:
         assert zeilen[i] == "**Rückweg:**"
         assert zeilen[i + 1] == "" and zeilen[i + 2].startswith("- ")
@@ -449,3 +493,114 @@ def test_runbook_stufe_2_schreibt_die_ca_datei_in_die_root_env_und_nimmt_sie_zur
     assert "AUFTRAGSBUCH_\\(URL\\|SCHLUESSEL\\|CA_DATEI\\)=" in ausgang and "`3`" in ausgang
     (heben,) = [p for p in punkte if "Betriebs-Checkout heben" in p]
     assert "AUFTRAGSBUCH_CA_DATEI" in heben
+
+
+# --- Stufe 4: Rowboat als Empfaenger ---------------------------------------------------------
+
+_STUFE_4 = "## Stufe 4: Rowboat als Empfänger"
+
+
+def _stufe_4() -> list[str]:
+    return _punkte(_zeilen(RUNBOOK), ab=_STUFE_4, bis="## ")
+
+
+def _befehle(punkt: str) -> list[str]:
+    return re.findall(r"`([^`]*)`", punkt)
+
+
+def _einer(punkte: list[str], stichwort: str) -> str:
+    treffer = [p for p in punkte if stichwort in p]
+    assert len(treffer) == 1, (stichwort, [_kopf(p) for p in treffer])
+    return treffer[0]
+
+
+def test_runbook_stufe_4_steht_vor_den_offenen_punkten() -> None:
+    zeilen = _zeilen(RUNBOOK)
+    assert zeilen.index(_STUFE_4) < zeilen.index("## Offene Punkte für Stufe 2")
+    assert zeilen.index("## Abschluss (Plan-Task 11)") < zeilen.index(_STUFE_4)
+    punkte = _stufe_4()
+    assert len(punkte) >= 20
+    assert len([p for p in punkte if _JA in p]) >= 14
+
+
+def test_runbook_stufe_4_reihenfolge() -> None:
+    punkte = _stufe_4()
+    reihe = ["Sicherung", "migration_probe", "<psql> < ../marketing/db/101_auftragsbuch_empfang.sql",
+             "bash deploy/db_zugang.sh abholer", "CLI nachsehen", "scoped-key add auftragsbuch-beleg",
+             "scoped-key add gehirn-abholer", "docker compose build auftragsbuch",
+             "docker compose up -d --no-deps auftragsbuch", "docker compose up -d rowboat-abholer",
+             "abholer=start", "INSERT INTO auftrag.brain_arten"]
+    stellen = [next(i for i, p in enumerate(punkte) if s in p) for s in reihe]
+    assert stellen == sorted(stellen), list(zip(reihe, stellen))
+
+
+def test_runbook_stufe_4_migration_101_erst_probe_dann_echt() -> None:
+    punkte = _stufe_4()
+    zaehlen = _einer(punkte, "falsches Rot")
+    assert _LESEND in zaehlen and "verify_101" in zaehlen and "video" in zaehlen and "count(*)" in zaehlen
+    probe = _einer(punkte, "migration_probe")
+    assert "101_auftragsbuch_empfang.sql spaces/marketing/db/verify_101.sql" in probe and _JA in probe
+    echt = _einer(punkte, "<psql> < ../marketing/db/101_auftragsbuch_empfang.sql")
+    assert _JA in echt and "grep -c $'\\r'" in echt
+    text = "\n".join(punkte)
+    assert [b for p in punkte for b in _befehle(p) if "098" in b] == []
+    assert "098_auftragsbuch_video.sql" in text and "nicht erneut" in text
+    sicherung = _einer(punkte, "Sicherung")
+    assert _JA in sicherung and "pg_dump" in sicherung and "auftrag-vor-101-" in sicherung
+
+
+def test_runbook_stufe_4_schluessel_nie_sichtbar_und_eng() -> None:
+    punkte = _stufe_4()
+    nachsehen = _einer(punkte, "CLI nachsehen")
+    assert _LESEND in nachsehen and "scoped-key add" not in nachsehen
+    assert "`docker exec rowboat-headless-rowboat-server-1 grep -c scoped-key rowboat-server.cjs`" in nachsehen
+    assert "`docker exec rowboat-headless-rowboat-server-1 node rowboat-server.cjs scoped-key list`" in nachsehen
+    for name, kanaele, datei in [
+        ("auftragsbuch-beleg", "todo:get,todo:plannerSignals", "laufzeit/rowboat-beleg-schluessel"),
+        ("gehirn-abholer", "todo:get,todo:plannerSignals,todo:addSuggestions", "laufzeit/rowboat-abholer-schluessel"),
+    ]:
+        punkt = _einer(punkte, f"scoped-key add {name}")
+        assert _JA in punkt
+        (befehl,) = [b for b in _befehle(punkt) if "scoped-key add" in b]
+        assert befehl == (f"(umask 077 && docker exec rowboat-headless-rowboat-server-1 node rowboat-server.cjs "
+                          f"scoped-key add {name} {kanaele} > {datei})")
+        assert f"`chmod 600 {datei}`" in punkt
+    alle = [b for p in punkte for b in _befehle(p)]
+    # Der Schluessel geht nur in eine Datei, nie in eine Ausgabe, Variable oder Kommandozeile.
+    assert [b for b in alle if "scoped-key add" in b and not re.search(r"> laufzeit/rowboat-\w+-schluessel\)$", b)] == []
+    assert [b for b in alle if re.search(r"\bcat\b|\bhead\b|\btail\b|\bless\b", b) and "schluessel" in b] == []
+    pruefen = _einer(punkte, "wc -l < laufzeit/rowboat-abholer-schluessel")
+    assert _LESEND in pruefen and "stat -c %a" in pruefen and "grep -c $'\\r'" in pruefen
+    entziehen = [p for p in punkte if "scoped-key remove" in p]
+    assert len(entziehen) == 2 and all(_JA in p for p in entziehen)
+
+
+def test_runbook_stufe_4_dienste_nur_namentlich_und_host_netz() -> None:
+    punkte = _stufe_4()
+    compose = [b for p in punkte for b in _befehle(p) if "docker compose" in b]
+    for befehl in compose:
+        if re.search(r"docker compose (?:up|start|stop|rm|build)\b", befehl):
+            assert re.search(r"(?:auftragsbuch|rowboat-abholer)$", befehl), befehl
+    assert [b for p in punkte for b in _befehle(p) if "~/sales-claw" in b or "~/vibemind-os" in b] == []
+    text = "\n".join(punkte)
+    assert "AUFTRAGSBUCH_DB_HOST=127.0.0.1" in text and "AUFTRAGSBUCH_DB_PORT" in text
+    assert "`bash deploy/db_zugang.sh`" in text  # DSN des Dienstes neu, jetzt ueber das Host-Netz
+    assert "tailscale serve status" in text and "127.0.0.1:8172" in text
+    rauch = _einer(punkte, "abholer=start")
+    assert _LESEND in rauch and "healthy" in rauch and "an = 'rowboat'" in rauch
+
+
+def test_runbook_stufe_4_freischaltung_erst_nach_der_schwelle() -> None:
+    punkte = _stufe_4()
+    text = _text()
+    assert text.count("INSERT INTO auftrag.brain_arten") == 1
+    frei = _einer(punkte, "INSERT INTO auftrag.brain_arten")
+    assert _JA in frei
+    assert "INSERT INTO auftrag.brain_arten (an, art, version) VALUES ('rowboat', 'vorschlaege_anlegen', 2);" in frei
+    for stichwort in ("Sperre", "Herkunft", "Ergebnistext", "gemessen"):
+        assert stichwort in frei, stichwort
+    zurueck = _einer(punkte, "DELETE FROM auftrag.brain_arten")
+    assert _JA in zurueck
+    assert ("DELETE FROM auftrag.brain_arten WHERE an = 'rowboat' AND art = 'vorschlaege_anlegen' AND version = 2;"
+            in zurueck)
+    assert punkte.index(frei) < punkte.index(zurueck)

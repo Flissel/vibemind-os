@@ -1,10 +1,18 @@
-# Compose-Projekt `auftragsbuch`: ein Dienst, kein anderer Container wird beruehrt.
-# Laeuft auf dem Mini-PC im Ordner spaces/auftragsbuch (Anleitung: deploy/ausrollen.md):
-#   AUFTRAGSBUCH_TAG=<git-kurz-sha> docker compose up -d --build
+# Compose-Projekt `auftragsbuch`: zwei Dienste aus einem Abbild, kein anderer Container wird beruehrt.
+# Laeuft auf dem Mini-PC im Ordner spaces/auftragsbuch (Anleitung: deploy/ausrollen.md). Dienste nur
+# namentlich bauen und starten, z. B.:
+#   AUFTRAGSBUCH_TAG=<git-kurz-sha> docker compose build auftragsbuch
+#   AUFTRAGSBUCH_TAG=<git-kurz-sha> docker compose up -d --no-deps auftragsbuch
+#   AUFTRAGSBUCH_TAG=<git-kurz-sha> docker compose up -d rowboat-abholer
 #
-# Nicht hier und nicht im Repo (oeffentlich): DSN, Schluessel-Hash, private Werte. Die beiden
-# Geheimnisse kommen als Dateien aus ./laufzeit/ (von deploy/anbinden.sh per stdin geschrieben)
-# und werden nur ueber *_FILE gelesen. Die privaten Einstellungen stehen in ./laufzeit/werte.env
+# Beide Dienste laufen im Host-Netz: Rowboat (headless) lauscht nur auf 127.0.0.1 des Mini-PC, die
+# Datenbank ist dort ueber ihren veroeffentlichten Port erreichbar. Darum gibt es keine `ports:` und
+# keine `networks:`; der Dienst `auftragsbuch` bindet selbst nur 127.0.0.1 (nach aussen geht es nur
+# ueber `tailscale serve`).
+#
+# Nicht hier und nicht im Repo (oeffentlich): DSN, Schluessel, Schluessel-Hash, private Werte. Die
+# Geheimnisse kommen als Dateien aus ./laufzeit/ (Modus 0600) und werden nur ueber *_FILE bzw.
+# *_DATEI gelesen. Die privaten Einstellungen stehen in ./laufzeit/werte.env
 # (Vorlage: deploy/werte.beispiel.env).
 name: auftragsbuch
 
@@ -21,26 +29,51 @@ services:
     # Datei-Secrets aus ./laufzeit/ (Modus 0600) behalten Besitzer und Modus des Hosts; darum
     # laeuft der Dienst als Besitzer dieser Dateien (UID/GID des Benutzers, der anbinden.sh ausfuehrt).
     user: "${AUFTRAGSBUCH_UID:-1000}:${AUFTRAGSBUCH_GID:-1000}"
+    network_mode: host
     env_file:
       - ./laufzeit/werte.env
     environment:
       TZ: Europe/Berlin
-      AUFTRAGSBUCH_HOST: 0.0.0.0
+      AUFTRAGSBUCH_HOST: 127.0.0.1
       AUFTRAGSBUCH_PORT: "8172"
       AUFTRAGSBUCH_VERTRAG_ORDNER: /app/spaces/_contract
       AUFTRAGSBUCH_DSN_FILE: /run/secrets/auftragsbuch-dsn
       AUFTRAGSBUCH_SCHLUESSEL_HASH_FILE: /run/secrets/auftragsbuch-schluessel-hash
+      # Beleg beim Lesen: enger Rowboat-Schluessel `auftragsbuch-beleg` (todo:get, todo:plannerSignals).
+      AUFTRAGSBUCH_ROWBOAT_URL: http://127.0.0.1:3220
+      AUFTRAGSBUCH_ROWBOAT_SCHLUESSEL_DATEI: /run/secrets/auftragsbuch-rowboat-schluessel
     volumes:
       - ./laufzeit/dsn:/run/secrets/auftragsbuch-dsn:ro
       - ./laufzeit/schluessel-hash:/run/secrets/auftragsbuch-schluessel-hash:ro
-    # Auf dem Mini-PC nur Loopback; nach aussen geht es nur ueber `tailscale serve` (Port 8172).
-    ports:
-      - "127.0.0.1:8172:8172"
-    networks:
-      - datenbank
+      - ./laufzeit/rowboat-beleg-schluessel:/run/secrets/auftragsbuch-rowboat-schluessel:ro
 
-networks:
-  # Netz der Supabase-Datenbank auf dem Mini-PC; es gehoert nicht zu diesem Projekt.
-  datenbank:
-    name: debian_default
-    external: true
+  # Holt Auftraege `an = rowboat` (Rolle rowboat_abholer in rowboat_empfang) und stellt die Punkte in
+  # Rowboat ein (enger Schluessel `gehirn-abholer`: todo:get, todo:plannerSignals, todo:addSuggestions).
+  # Dasselbe Abbild wie `auftragsbuch`; es wird nie gezogen, nur ueber den Dienst `auftragsbuch` gebaut.
+  rowboat-abholer:
+    image: auftragsbuch/dienst:${AUFTRAGSBUCH_TAG:?AUFTRAGSBUCH_TAG fehlt, Git Kurz SHA des Images setzen}
+    pull_policy: never
+    container_name: rowboat-abholer
+    command: ["python", "-m", "spaces.auftragsbuch.rowboat.abholer"]
+    restart: unless-stopped
+    init: true
+    mem_limit: 128m
+    user: "${AUFTRAGSBUCH_UID:-1000}:${AUFTRAGSBUCH_GID:-1000}"
+    network_mode: host
+    env_file:
+      - ./laufzeit/werte.env
+    environment:
+      TZ: Europe/Berlin
+      ABHOLER_DSN_FILE: /run/secrets/abholer-dsn
+      ROWBOAT_RPC_URL: http://127.0.0.1:3220
+      ROWBOAT_SCHLUESSEL_DATEI: /run/secrets/abholer-rowboat-schluessel
+    volumes:
+      - ./laufzeit/abholer-dsn:/run/secrets/abholer-dsn:ro
+      - ./laufzeit/rowboat-abholer-schluessel:/run/secrets/abholer-rowboat-schluessel:ro
+    # Gesund, solange die Schleife die Datenbank erreicht (Herzschlag juenger als 30 s).
+    healthcheck:
+      test: ["CMD", "python", "-m", "spaces.auftragsbuch.rowboat.abholer", "--gesund"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3

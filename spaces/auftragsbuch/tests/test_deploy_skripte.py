@@ -63,7 +63,7 @@ def dienst(tmp_path: Path) -> Path:
     return ordner
 
 
-def _lauf(dienst: Path, skript: str, eingabe: bytes = b"") -> subprocess.CompletedProcess[bytes]:
+def _lauf(dienst: Path, skript: str, eingabe: bytes = b"", *argumente: str) -> subprocess.CompletedProcess[bytes]:
     assert BASH is not None
     env = dict(os.environ)
     attrappen = dienst.parent / "bin"
@@ -71,7 +71,7 @@ def _lauf(dienst: Path, skript: str, eingabe: bytes = b"") -> subprocess.Complet
     env["PATH"] = os.pathsep.join([*werkzeuge, env.get("PATH", "")])
     env["PROTOKOLL"] = str(dienst.parent / "protokoll")
     env["ECHT_PYTHON"] = Path(sys.executable).as_posix()
-    return subprocess.run([BASH, (dienst / "deploy" / skript).as_posix()], input=eingabe,
+    return subprocess.run([BASH, (dienst / "deploy" / skript).as_posix(), *argumente], input=eingabe,
                           capture_output=True, env=env, timeout=120, check=False)
 
 
@@ -110,6 +110,31 @@ def test_db_zugang_schickt_nur_den_verifier_und_schreibt_die_dsn(dienst: Path) -
     assert (dienst / "laufzeit" / "dsn").read_text(encoding="utf-8") == (
         f"host=db-host port=5432 dbname=postgres user=auftragsbuch_dienst password={PASSWORT}\n")
     assert b"laufzeit/dsn geschrieben" in lauf.stdout
+
+
+def test_db_zugang_abholer_eigene_rolle_und_dsn(dienst: Path) -> None:
+    (dienst / "laufzeit").mkdir()
+    (dienst / "laufzeit" / "werte.env").write_text(WERTE + "AUFTRAGSBUCH_DB_PORT=6543\n", encoding="utf-8")
+    lauf = _lauf(dienst, "db_zugang.sh", b"", "abholer")
+    assert lauf.returncode == 0, lauf.stderr
+    sql = _protokoll(dienst, "docker-stdin")
+    assert "ALTER ROLE rowboat_abholer WITH LOGIN INHERIT PASSWORD 'SCRAM-SHA-256$4096:" in sql
+    assert "GRANT rowboat_empfang TO rowboat_abholer;" in sql and "brain_app" not in sql
+    assert PASSWORT not in sql and PASSWORT.encode() not in lauf.stdout + lauf.stderr
+    assert sorted(p.name for p in (dienst / "laufzeit").iterdir()) == ["abholer-dsn", "werte.env"]
+    assert (dienst / "laufzeit" / "abholer-dsn").read_text(encoding="utf-8") == (
+        f"host=db-host port=6543 dbname=postgres user=rowboat_abholer password={PASSWORT}\n")
+    assert b"laufzeit/abholer-dsn geschrieben" in lauf.stdout
+
+
+@pytest.mark.parametrize("argumente", [("postgres",), ("abholer", "x")])
+def test_db_zugang_falscher_zugang_bricht_vor_der_datenbank_ab(dienst: Path, argumente: tuple[str, ...]) -> None:
+    (dienst / "laufzeit").mkdir()
+    (dienst / "laufzeit" / "werte.env").write_text(WERTE, encoding="utf-8")
+    lauf = _lauf(dienst, "db_zugang.sh", b"", *argumente)
+    assert lauf.returncode == 2
+    assert _protokoll(dienst, "docker-args") == "" and _protokoll(dienst, "openssl-args") == ""
+    assert not (dienst / "laufzeit" / "dsn").exists() and not (dienst / "laufzeit" / "abholer-dsn").exists()
 
 
 def test_anbinden_ohne_dsn_bricht_ab(dienst: Path) -> None:

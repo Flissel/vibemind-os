@@ -1,4 +1,4 @@
-# Auftragsbuch ausrollen (Plan-Tasks 8 bis 11)
+# Auftragsbuch ausrollen (Plan-Tasks 8 bis 11; Stufe 4: Rowboat als Empfänger)
 
 Schrittfolge mit Rückweg. Jeder Schritt, der auf dem Mini-PC, an der Datenbank, an OpenFang (Konfiguration,
 Agenten-Ordner, Neustart, Nachricht an einen Agenten), am Betriebs-Checkout, am Gehirn (`brain-core`) oder in der
@@ -107,7 +107,8 @@ Dienst meldet sich an der Datenbank mit der eigenen Anmelde-Rolle `auftragsbuch_
    Platzhalter in `laufzeit/werte.env` mit einem Editor ersetzen: `AUFTRAGSBUCH_LADEN`, `AUFTRAGSBUCH_MANDANT`,
    `AUFTRAGSBUCH_ZUSATZ_HOSTS=<name-des-mini-pc-im-tailnet>:8172` (diesen Host-Kopf sieht der Dienst hinter
    `tailscale serve`), `AUFTRAGSBUCH_DB_CONTAINER` (`docker ps` zeigt ihn), `AUFTRAGSBUCH_DB_HOST` (Name der
-   Datenbank im Netz `debian_default`) und `AUFTRAGSBUCH_DB_NAME`. Dazu die Datei für Compose:
+   Datenbank im Netz `debian_default`; seit Stufe 4 laufen die Dienste im Host-Netz, dann gelten Host und Port wie in
+   Stufe 4, Schritt 8) und `AUFTRAGSBUCH_DB_NAME`. Dazu die Datei für Compose:
    `printf 'AUFTRAGSBUCH_UID=%s\nAUFTRAGSBUCH_GID=%s\n' "$(id -u)" "$(id -g)" > .env` (als derselbe Benutzer, der
    die folgenden Skripte ausführt; ihm gehören die Dateien in `laufzeit/`).
 3. **Eigenes Ja des Betreibers:** Datenbank-Zugang auf dem Mini-PC: `bash deploy/db_zugang.sh`. Das Skript erzeugt
@@ -314,6 +315,161 @@ Probe und Lesen sind zwei getrennte Pläne: Das Gehirn legt die Antwort eines We
    im `<BETRIEBS-CHECKOUT>`. Dieser Schritt liest nur und ändert nichts.
 
 Danach den Claim in `002_Koordination_Live.md` schließen (Plan-Task 11, Step 5).
+
+## Stufe 4: Rowboat als Empfänger
+
+Neu sind die Migration `101` (Empfang für Aufträge des Gehirns, Rolle `rowboat_empfang`), die Anmelde-Rolle
+`rowboat_abholer`, zwei enge Rowboat-Schlüssel und der zweite Dienst `rowboat-abholer` im Compose-Projekt
+`auftragsbuch` (dasselbe Abbild). Beide Dienste laufen ab hier im Host-Netz des Mini-PC, denn Rowboat lauscht nur auf
+`127.0.0.1:3220`: Der Dienst `auftragsbuch` verlässt das Netz `debian_default`, bindet selbst nur `127.0.0.1:8172` und
+erreicht die Datenbank über ihren Port am Host; seine DSN wird darum neu geschrieben (sie steht nur in `laufzeit/dsn`).
+Die Freigabe von `tailscale serve` zeigt weiter auf `http://127.0.0.1:8172` und wird nicht angefasst. Die Checkouts
+~/vibemind-os und ~/sales-claw auf dem Mini-PC bleiben unberührt, Dienste werden nur namentlich gebaut, gestartet und
+entfernt, und es läuft kein Aufräumbefehl von Docker. Die Migration 098_auftragsbuch_video.sql wird auch hier nicht
+erneut eingespielt.
+
+Platzhalter: `<commit-2>` ist der Commit des Zweigs `cc/auftragsvertrag-stufe-2`, der in Plan-Task 10 gemergt wird,
+`<Kurz-SHA-2>` seine Kurzform (der neue Tag). `<AUSGANG-TAG>` ist der Tag des laufenden Dienstes aus Schritt 1; er
+ist zugleich der Commit, aus dem der Bau-Ordner zuletzt gefüllt wurde. `<db-port-am-host>` ist der Port, an dem die
+Datenbank auf dem Mini-PC lauscht. Die Befehle auf dem Mini-PC laufen wie oben in
+`~/auftragsbuch-build/spaces/auftragsbuch`.
+
+1. **Stand vorher notieren**, auf dem Mini-PC: `docker ps --filter name=auftragsbuch --format '{{.Image}}'`
+   (Tag notieren als `<AUSGANG-TAG>`), `tailscale serve status` (8172 zeigt auf `http://127.0.0.1:8172`, notieren) und
+   `printf '%s\n' 'SELECT an, art, version FROM auftrag.brain_arten;' | <psql>` (genau `brain | probe | 1`). Dieser
+   Schritt liest nur und ändert nichts.
+2. **Vorab zählen**, auf dem Mini-PC, gegen ein falsches Rot von `verify_101`: Die Prüfdatei läuft nur in der Probe
+   (Schritt 4) und erwartet, dass `naechster('marketing', …)` und `video_naechster` ihre eigenen Probe-Zeilen nicht
+   vergeben; wartet ein echter älterer Auftrag an Marketing (vor allem ein Video), vergibt die Probe diesen und meldet
+   `101.4` rot.
+   `printf '%s\n' "SELECT art = 'video' AS video, count(*) FROM auftrag.auftraege WHERE an = 'marketing' AND von <> 'brain' AND frist_bis > now() AND (stand = 'offen' OR (stand = 'in_arbeit' AND vergeben_bis < now())) GROUP BY 1;" | <psql>`
+   liefert erwartet `(0 rows)`. Sonst die Probe später wiederholen; läuft sie trotzdem, ist ein Fehler `101.4: …`
+   dort ein erwartetes falsches Rot (die Probe rollt zurück, kein Schaden), aber kein Grund, 101 auszurollen: Nur eine
+   Probe mit `PROBE OK (zurueckgerollt)` gilt. Dieser Schritt liest nur und ändert nichts.
+3. **Eigenes Ja des Betreibers:** Sicherung, auf dem Mini-PC: das Schema `auftrag` mit
+   `docker exec <db-container> pg_dump -U supabase_admin -d <db-name> -n auftrag > ~/backups/auftrag-vor-101-<datum>.sql`
+   und die Einstellungen mit `cp -p laufzeit/werte.env laufzeit/werte.env.vor-stufe-4`. Beides schreibt nur Dateien,
+   die Datenbank bleibt unverändert.
+4. **Eigenes Ja des Betreibers:** Probe-Lauf auf der echten Datenbank: `101` und `verify_101` in **einer**
+   Transaktion mit `ROLLBACK`, am PC in einem Checkout auf `<commit-2>` mit den `SUPABASE_*`-Werten wie bei `100`:
+   `python -m spaces.marketing.scripts.migration_probe spaces/marketing/db/101_auftragsbuch_empfang.sql spaces/marketing/db/verify_101.sql`.
+   Sie hinterlässt nichts, nimmt aber für ihre Dauer Sperren auf `auftrag.auftraege` (wer wartet, bricht nach
+   höchstens 5 Sekunden ab: `lock_timeout`). Erwartung: `PROBE OK (zurueckgerollt)`. Bei einem Fehler anhalten
+   (zu `101.4` siehe Schritt 2).
+5. **Eigenes Ja des Betreibers:** Bau-Ordner auf `<commit-2>` heben, vom PC aus (`git archive` liest nur, ssh-stdin
+   trägt nur Bytes):
+   `git -c core.autocrlf=false archive <commit-2> spaces/__init__.py spaces/auftragsbuch spaces/_contract spaces/marketing/db/101_auftragsbuch_empfang.sql | ssh <mini-pc> 'tar -x -C ~/auftragsbuch-build'`.
+   `laufzeit/` und `.env` bleiben, der laufende Dienst merkt nichts. Danach auf dem Mini-PC
+   `grep -c $'\r' deploy/db_zugang.sh deploy/db_zugang.py docker-compose.yml` liefert je Datei `0`.
+6. **Eigenes Ja des Betreibers:** `101` einspielen, auf dem Mini-PC: zuerst
+   `grep -c $'\r' ../marketing/db/101_auftragsbuch_empfang.sql` (muss `0` liefern, sonst anhalten), dann
+   `<psql> < ../marketing/db/101_auftragsbuch_empfang.sql`. Die Datei schaltet keine Auftragsart frei. Die Migration
+   098_auftragsbuch_video.sql wird nicht erneut eingespielt.
+7. **Prüfen:** `printf '%s\n' "SELECT rolname, rolcanlogin FROM pg_roles WHERE rolname = 'rowboat_empfang';" | <psql>`
+   liefert `rowboat_empfang | f`; `printf '%s\n' 'SELECT an, art, version FROM auftrag.brain_arten;' | <psql>` liefert
+   weiter genau `brain | probe | 1`. Der Sales-Bote holt weiter seine Aufträge (sein Herzschlag ist frisch). Dieser
+   Schritt liest nur und ändert nichts.
+8. **Eigenes Ja des Betreibers:** Einstellungen für das Host-Netz, auf dem Mini-PC in `laufzeit/werte.env` mit einem
+   Editor: `AUFTRAGSBUCH_DB_HOST=127.0.0.1`, neu `AUFTRAGSBUCH_DB_PORT=<db-port-am-host>` (`docker port <db-container>`
+   zeigt ihn) und neu `ABHOLER_LADEN` mit demselben Wert wie `AUFTRAGSBUCH_LADEN` (siehe `deploy/werte.beispiel.env`).
+   Der laufende Dienst liest die Datei erst bei seinem nächsten Start.
+9. **Eigenes Ja des Betreibers:** Anmelde-Rolle des Abholers, auf dem Mini-PC: `bash deploy/db_zugang.sh abholer`.
+   Das Skript prüft zuerst Zugang und Werte, erzeugt ein Passwort nur in einer Shell-Variable, legt die Rolle
+   `rowboat_abholer` an (`LOGIN`, Mitglied von `rowboat_empfang`, sonst keine Rechte) oder setzt ihr Passwort neu und
+   schreibt `laufzeit/abholer-dsn` (Modus 600). psql sieht nur den SCRAM-Verifier. Prüfen:
+   `printf '%s\n' "SELECT u.rolname, u.rolcanlogin, g.rolname FROM pg_roles u JOIN pg_auth_members m ON m.member = u.oid JOIN pg_roles g ON g.oid = m.roleid WHERE u.rolname = 'rowboat_abholer';" | <psql>`
+   liefert genau `rowboat_abholer | t | rowboat_empfang`.
+10. **CLI nachsehen**, auf dem Mini-PC: Rowboat legt enge Schlüssel mit dem Unterbefehl `scoped-key` seines
+    eigenen Server-Bündels `rowboat-server.cjs` an (Quelle `apps/x/apps/server/src/scoped-key-cli.ts`); es speichert
+    nur den sha256 in `scoped-keys.json` in seinem Arbeitsordner und liest die Datei bei jeder Anfrage, ein Widerruf
+    wirkt darum ohne Neustart. Das Anlegen gibt den Schlüssel nur auf stdout aus, sonst nirgends.
+    `docker exec rowboat-headless-rowboat-server-1 grep -c scoped-key rowboat-server.cjs` muss mindestens `1` liefern;
+    bei `0` anhalten: Ein älteres Bündel kennt den Unterbefehl nicht und startete statt dessen einen zweiten Server.
+    Dann `docker exec rowboat-headless-rowboat-server-1 node rowboat-server.cjs scoped-key list`: zeigt Namen und
+    Kanäle, nie einen Schlüssel. Stehen `auftragsbuch-beleg` oder `gehirn-abholer` schon da, anhalten und klären
+    (`add` ersetzt einen gleichnamigen Schlüssel, der alte wird sofort ungültig). Dieser Schritt liest nur und ändert
+    nichts.
+11. **Eigenes Ja des Betreibers:** enger Schlüssel für den Beleg des Dienstes, auf dem Mini-PC, nur `todo:get` und
+    `todo:plannerSignals`; der Schlüssel geht von stdout direkt in die Datei und wird nie angezeigt:
+    `(umask 077 && docker exec rowboat-headless-rowboat-server-1 node rowboat-server.cjs scoped-key add auftragsbuch-beleg todo:get,todo:plannerSignals > laufzeit/rowboat-beleg-schluessel)`,
+    dann `chmod 600 laufzeit/rowboat-beleg-schluessel`.
+12. **Eigenes Ja des Betreibers:** enger Schlüssel für den Abholer, auf dem Mini-PC, nur `todo:get`,
+    `todo:plannerSignals` und `todo:addSuggestions`, ebenso direkt in die Datei:
+    `(umask 077 && docker exec rowboat-headless-rowboat-server-1 node rowboat-server.cjs scoped-key add gehirn-abholer todo:get,todo:plannerSignals,todo:addSuggestions > laufzeit/rowboat-abholer-schluessel)`,
+    dann `chmod 600 laufzeit/rowboat-abholer-schluessel`.
+13. **Prüfen**, ohne einen Schlüssel zu zeigen: `wc -l < laufzeit/rowboat-beleg-schluessel` und
+    `wc -l < laufzeit/rowboat-abholer-schluessel` liefern je `1`;
+    `stat -c %a laufzeit/rowboat-beleg-schluessel laufzeit/rowboat-abholer-schluessel` liefert zweimal `600`;
+    `grep -c $'\r' laufzeit/rowboat-beleg-schluessel laufzeit/rowboat-abholer-schluessel` liefert je Datei `0`;
+    `docker exec rowboat-headless-rowboat-server-1 node rowboat-server.cjs scoped-key list` zeigt
+    `auftragsbuch-beleg` mit `todo:get,todo:plannerSignals` und `gehirn-abholer` mit
+    `todo:get,todo:plannerSignals,todo:addSuggestions`, sonst unverändert. Dieser Schritt liest nur und ändert nichts.
+14. **Eigenes Ja des Betreibers:** Abbild mit neuem Tag bauen, auf dem Mini-PC:
+    `AUFTRAGSBUCH_TAG=<Kurz-SHA-2> docker compose build auftragsbuch`. Der laufende Dienst läuft mit `<AUSGANG-TAG>`
+    weiter; der Abholer nutzt dasselbe Abbild und wird nie gezogen (`pull_policy: never`).
+15. **Eigenes Ja des Betreibers:** DSN des Dienstes für das Host-Netz, auf dem Mini-PC: `bash deploy/db_zugang.sh`.
+    Das Skript setzt ein neues Passwort für `auftragsbuch_dienst` und schreibt `laufzeit/dsn` mit Host und Port aus
+    Schritt 8. Offene Verbindungen des laufenden Dienstes bleiben gültig, neue scheitern bis Schritt 16; darum
+    Schritt 16 gleich danach.
+16. **Eigenes Ja des Betreibers:** Dienst `auftragsbuch` neu starten, im Host-Netz, auf dem Mini-PC:
+    `AUFTRAGSBUCH_TAG=<Kurz-SHA-2> docker compose up -d --no-deps auftragsbuch`. Voraussetzung: Die Dateien aus
+    Schritt 11 bis 13 sind da (fehlt eine eingebundene Datei, legte Docker an ihrer Stelle einen Ordner an). Prüfen:
+    die beiden `curl` aus Stufe 2, Schritt 6 liefern `200` und `401`; `ss -ltn 'sport = :8172'` zeigt nur
+    `127.0.0.1:8172` (nie `0.0.0.0` oder `*`); `tailscale serve status` zeigt 8172 unverändert wie in Schritt 1. Endet
+    der Start mit `auftragsbuch: Datenbank nicht erreichbar (<Typ>)`, anhalten und den Rückweg gehen.
+17. **Eigenes Ja des Betreibers:** `rowboat-abholer` namentlich starten, auf dem Mini-PC:
+    `AUFTRAGSBUCH_TAG=<Kurz-SHA-2> docker compose up -d rowboat-abholer`. Endet er mit
+    `rowboat-abholer: <Meldung>` (z. B. `ABHOLER_LADEN fehlt` oder `Datenbank nicht erreichbar (<Typ>)`), anhalten.
+18. **Rauchprobe** auf dem Mini-PC, ohne Auftrag: `AUFTRAGSBUCH_TAG=<Kurz-SHA-2> docker compose ps` zeigt beide
+    Dienste als `healthy` (der Abholer nach höchstens etwa einer Minute);
+    `AUFTRAGSBUCH_TAG=<Kurz-SHA-2> docker compose logs rowboat-abholer` beginnt mit genau einer Zeile
+    `abholer=start laden=<LADEN> arten=vorschlaege_anlegen:<acht Zeichen>` und nennt danach nichts (kein Titel, kein
+    Link); die acht Zeichen sind der Anfang von `art_hash` der Art im Vertrag von `<commit-2>`.
+    `printf '%s\n' "SELECT count(*) FROM auftrag.auftraege WHERE an = 'rowboat';" | <psql>` liefert `0`: Ohne Zeile in
+    `auftrag.brain_arten` lehnt die Datenbank jeden Auftrag an Rowboat ab. Dieser Schritt liest nur und ändert nichts.
+19. **Eigenes Ja des Betreibers:** Freischaltung, erst hinter der Schwelle: Die Koordination meldet harte Sperre,
+    Herkunft und Ergebnistext ohne Personendaten als im Betrieb gemessen, und eigene Messung bestätigt es
+    (die Prüfung der Werkzeuge je Agent aus Stufe 3, Schritt 9 nennt keinen offenen Zugang mehr; ein Plan ohne
+    Eingangs-Kopf mit Ziel
+    `…:rowboat_vorschlaege_anlegen` scheitert mit „Nur aus einer Eingabe des Betreibers“). Erst dann, auf dem Mini-PC:
+    `printf '%s\n' "INSERT INTO auftrag.brain_arten (an, art, version) VALUES ('rowboat', 'vorschlaege_anlegen', 2);" | <psql>`.
+    Danach liefert `printf '%s\n' 'SELECT an, art, version FROM auftrag.brain_arten ORDER BY 1;' | <psql>` genau
+    `brain | probe | 1` und `rowboat | vorschlaege_anlegen | 2`.
+
+**Rückweg:**
+
+- **Eigenes Ja des Betreibers:** Freischaltung zurücknehmen (neue Aufträge an Rowboat lehnt die Datenbank danach mit
+  `Unbekannte Auftragsart` ab):
+  `printf '%s\n' "DELETE FROM auftrag.brain_arten WHERE an = 'rowboat' AND art = 'vorschlaege_anlegen' AND version = 2;" | <psql>`.
+- **Eigenes Ja des Betreibers:** den Abholer anhalten und entfernen, nur ihn:
+  `AUFTRAGSBUCH_TAG=<Kurz-SHA-2> docker compose rm -s -f rowboat-abholer`. Ein Auftrag, den er gerade hielt, wird
+  nach der Leihdauer `fehler` oder beim Lesen `abgelaufen`.
+- **Eigenes Ja des Betreibers:** den Schlüssel des Abholers widerrufen (wirkt sofort, ohne Neustart):
+  `docker exec rowboat-headless-rowboat-server-1 node rowboat-server.cjs scoped-key remove gehirn-abholer`, danach
+  `rm laufzeit/rowboat-abholer-schluessel`.
+- **Eigenes Ja des Betreibers:** die Anmelde-Rolle des Abholers entfernen:
+  `printf '%s\n' 'DROP ROLE IF EXISTS rowboat_abholer;' | <psql>`, danach `rm laufzeit/abholer-dsn`.
+- **Eigenes Ja des Betreibers:** den Bau-Ordner zurück auf `<AUSGANG-TAG>` heben, vom PC aus:
+  `git -c core.autocrlf=false archive <AUSGANG-TAG> spaces/__init__.py spaces/auftragsbuch spaces/_contract | ssh <mini-pc> 'tar -x -C ~/auftragsbuch-build'`
+  (dann gilt wieder die Compose-Datei mit dem Netz `debian_default`).
+- **Eigenes Ja des Betreibers:** die Einstellungen zurück, auf dem Mini-PC:
+  `cp -p laufzeit/werte.env.vor-stufe-4 laufzeit/werte.env`.
+- **Eigenes Ja des Betreibers:** die DSN des Dienstes wieder für das Netz `debian_default`, auf dem Mini-PC:
+  `bash deploy/db_zugang.sh` (setzt ein neues Passwort, schreibt `laufzeit/dsn` mit den alten Werten).
+- **Eigenes Ja des Betreibers:** den Dienst mit dem Ausgangs-Abbild starten, auf dem Mini-PC:
+  `AUFTRAGSBUCH_TAG=<AUSGANG-TAG> docker compose up -d --no-deps auftragsbuch`. Prüfen wie in Stufe 2, Schritt 6.
+- **Eigenes Ja des Betreibers:** den Beleg-Schlüssel widerrufen:
+  `docker exec rowboat-headless-rowboat-server-1 node rowboat-server.cjs scoped-key remove auftragsbuch-beleg`,
+  danach `rm laufzeit/rowboat-beleg-schluessel`.
+- **Eigenes Ja des Betreibers:** die vier Hüllen für Rowboat entfernen (ihre Rechte gehen mit):
+  `printf '%s\n' 'DROP FUNCTION auftrag.rowboat_empfang_naechster(text, interval), auftrag.rowboat_empfang_abschliessen(uuid, jsonb, text), auftrag.rowboat_empfang_fehler(uuid, text, text), auftrag.rowboat_empfang_bekannt(text, text[]);' | <psql>`.
+- **Eigenes Ja des Betreibers:** zuletzt die Rolle `rowboat_empfang`:
+  `printf '%s\n' 'REVOKE USAGE ON SCHEMA auftrag FROM rowboat_empfang; DROP ROLE rowboat_empfang;' | <psql>`.
+
+Kern (`auftrag._empfang_*`), Sales-Hüllen, `auftrag._vergeben` und `auftrag.brain_lesen` aus `101` bleiben: Sales
+holt seine Aufträge dort mit demselben Verhalten wie vorher, und Aufträge des Gehirns vergibt der alte Weg nie. Ein
+Zurück auf den Stand von `100` bräuchte die Datei der Sales-Sitzung und ist hier nicht vorgesehen. Die Dateien unter
+`~/backups/` und `laufzeit/werte.env.vor-stufe-4` bleiben liegen.
 
 ## Offene Punkte für Stufe 2
 

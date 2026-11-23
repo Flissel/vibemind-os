@@ -4,5 +4,6 @@
 !spaces/__init__.py
 !spaces/auftragsbuch/requirements.txt
 !spaces/auftragsbuch/*.py
+!spaces/auftragsbuch/rowboat/*.py
 !spaces/_contract/*.contract.yaml
 **/__pycache__/
