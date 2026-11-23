@@ -101,6 +101,10 @@ effects:
   desktop_task_status: read
   desktop_screen_read: read
   desktop_screenshot: read
+  # Feste Lesesaetze 23.11.2026 (core/feste_lesesaetze.py): nur lesen.
+  desktop_fenster: read
+  thebrain_gedanken: read
+  rowboat_spaces: read
   minibook.list_projects: read
   minibook.status: read
   rose.recommend: read

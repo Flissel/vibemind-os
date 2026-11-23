@@ -243,6 +243,7 @@ spaces:
         - desktop_elements
         - desktop_task_step
         - desktop_blick
+        - desktop_fenster
     default_context: [current_space, active_window]
     events:
       # Feste Aufrufe (ohne Modell) ueber den Desktop-Server.
@@ -255,6 +256,13 @@ spaces:
       # Nur fuer die Nachpruefung truth:desktop_sicht (core/desktop_sicht.py); kein Satz fuehrt hierher.
       desktop.blick:
         tool: desktop_blick
+        required_params: []
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-desktop }
+      # Fester Lesesatz "Welche Fenster sind offen?" (core/desktop_fenster.py): Programm und Titel der
+      # sichtbaren Fenster, gesperrte nur als "ein gesperrtes Fenster". Titel nur in der Antwort an die App.
+      desktop.fenster:
+        tool: desktop_fenster
         required_params: []
         required_provenance: [approval_ref, cost_ref]
         execution: { kind: mcp, server: spaces-desktop }
@@ -406,6 +414,9 @@ spaces:
         required_params: []
         required_provenance: [approval_ref, cost_ref]
         execution: { kind: mcp, server: spaces-rowboat }
+      # Fester Lesesatz "Welche Agenten gibt es in Rowboat?" (core/rowboat_spaces.py): liest die
+      # Lese-Karten spaces/rowboat/vibemind-spaces/*.md, ohne Modell und ohne Rowboat-Agent.
+      rowboat.spaces:       { tool: "direct:core.rowboat_spaces:spaces_lesen", required_params: [] }
       rowboat.docker.start: { tool: shell_exec, required_params: [] }
       rowboat.docker.stop:  { tool: shell_exec, required_params: [] }
 
@@ -467,6 +478,21 @@ spaces:
       n8n.delete:      { tool: n8n_delete_workflow,   required_params: [name] }
       n8n.execute:     { tool: n8n_test_workflow,     required_params: [name] }
       n8n.describe:    { tool: n8n_get_workflow,      required_params: [name] }
+
+  # ─── The Brain (das Gehirn selbst) ──────────────────────────────────
+  # 23.11.2026: Reiter "The Brain" der App (Kennung thebrain). Kein Chat-Agent: der feste
+  # Lesesatz "Woran denkt das Gehirn gerade?" liest die eigene Schnittstelle des Gehirns
+  # (brain:GET:/api/cortex/thoughts, BrainSelfExecutor) und baut den Satz ohne Modell.
+  thebrain:
+    agent: null
+    generate_agent: false
+    aliases: [the_brain]
+    prefixes: [thebrain.]
+    enabled: true
+    description: "Das Gehirn selbst: Hintergrund-Gedanken ueber die eigene Schnittstelle lesen."
+    default_context: [current_space]
+    events:
+      thebrain.gedanken: { tool: "brain:GET:/api/cortex/thoughts", required_params: [] }
 
   # ─── AgentFarm (multi-agent teams) ──────────────────────────────────
   agentfarm:

@@ -53,6 +53,8 @@ BLICK_WERKZEUGE = ("desktop_screen_read", "desktop_elements", "desktop_find")
 BLICK_ELEMENTE_GEPRUEFT = 200
 BLICK_ELEMENTE = 20
 BLICK_TIMEOUT = 10
+# desktop_fenster: so viele Fenster gehen hinaus (anzahl nennt alle).
+FENSTER_HOECHSTENS = 40
 
 _AUFGABE_ID = {"type": "string", "pattern": "^" + aufgaben.ID_MUSTER.pattern + "$"}
 
@@ -68,6 +70,15 @@ TOOLS: list[dict[str, Any]] = [
             "Read-only, fast, no OCR: active program, window title, monitor and a short list of visible "
             "controls (name, type) of the active window, with a timestamp. Password managers, banking, "
             "private browser windows and login fields return only gesperrt=true."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "desktop_fenster",
+        "description": (
+            "Read-only, no OCR, no desktop service needed: the visible top-level windows (program and title), "
+            "front to back. Windows on the block list (password managers, banking, private browser windows, "
+            "login) appear only as gesperrt=true, without program or title."
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
@@ -343,6 +354,35 @@ def _blick() -> dict[str, Any]:
     }
 
 
+def _fenster() -> dict[str, Any]:
+    """Die sichtbaren Fenster, durch dieselbe Sperrliste wie der Blick (nur Programm und Titel).
+
+    Gesperrte Fenster stehen nur als ``{"gesperrt": true}`` in der Liste. Der Desktop-Dienst
+    wird nicht gefragt; gelesen wird nur ueber die Windows-Schnittstelle dieses Prozesses.
+    """
+    start = time.monotonic()
+    roh = blick.sichtbare_fenster()
+    if roh is None:
+        raise ToolError("fenster_unlesbar: die Fensterliste ist auf diesem Rechner nicht lesbar")
+    liste: list[dict[str, Any]] = []
+    for f in roh:
+        if not isinstance(f, Mapping):
+            continue
+        programm, titel = str(f.get("programm") or ""), " ".join(str(f.get("titel") or "").split())
+        if blick.gesperrt(programm, titel):
+            liste.append({"gesperrt": True})
+        else:
+            liste.append({"gesperrt": False, "programm": programm, "titel": titel[:120]})
+    return {
+        "fenster": liste[:FENSTER_HOECHSTENS],
+        "anzahl": len(liste),
+        "gesperrt": sum(1 for f in liste if f["gesperrt"]),
+        "gekuerzt": len(liste) > FENSTER_HOECHSTENS,
+        "zeitpunkt": _jetzt(),
+        "dauer_ms": int((time.monotonic() - start) * 1000),
+    }
+
+
 def _find(arguments: Mapping[str, Any]) -> dict[str, Any]:
     _nur(arguments, {"text"})
     antwort = _http(
@@ -464,6 +504,9 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         if name == "desktop_blick":
             _nur(arguments, set())
             return _blick()
+        if name == "desktop_fenster":
+            _nur(arguments, set())
+            return _fenster()
         if name in BLICK_WERKZEUGE:
             if name == "desktop_find":
                 ergebnis = _find(arguments)

@@ -82,7 +82,7 @@ class StdioRobustTests(unittest.TestCase):
         for antwort in antworten[:2]:
             self.assertTrue(antwort["result"]["isError"])
             self.assertTrue(self._inhalt(antwort)["error"].startswith("konfiguration:"))
-        self.assertEqual(len(antworten[2]["result"]["tools"]), 10)
+        self.assertEqual(len(antworten[2]["result"]["tools"]), 11)
         # Nichts wurde irgendwo unter dem Benutzerordner angelegt, weil kein Ort bekannt war.
         self.assertEqual(list(Path(self.ordner.name).iterdir()), [])
 

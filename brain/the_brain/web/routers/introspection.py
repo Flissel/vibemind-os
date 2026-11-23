@@ -3287,11 +3287,12 @@ async def _multihop_execute(request: Request):
         _fest = _feste_antwort(plan, exec_result, _ideen_fest, _ideen_antwort,
                                _ideen_kontext if _ideen_kontext is not None else body.get("context"))
     if _fest is not None:
+        _protokoll = _fest.pop("_protokoll", None)
         out.update(_fest)
         if _verstehen.schritte_ohne_antwort(out.get("executed")):
             out["ok"] = False
         try:
-            pe.recorder.attach_final(plan.plan_id, out["final_text"])
+            pe.recorder.attach_final(plan.plan_id, _protokoll or out["final_text"])
         except Exception:  # noqa: BLE001
             pass
         _abschluss_berichtigen(pe, plan, exec_result, out)
@@ -3438,6 +3439,12 @@ def _lese_antwort(plan, exec_result, capability: str) -> Dict[str, Any]:
         formatierer = _verstehen.FESTE_ANTWORTEN.get(capability)
         satz = formatierer(schritt.get("result")) if formatierer else None
     if satz:
+        # Traegt der Satz Bildschirminhalt (Fenstertitel), bekommt der Plan-Verlauf einen eigenen
+        # Satz ohne ihn (core/feste_lesesaetze.py, protokolle).
+        protokoll = _verstehen.FESTE_PROTOKOLLE.get(capability)
+        if protokoll is not None:
+            return {"final_text": satz, "ok": True,
+                    "_protokoll": protokoll(schritt.get("result")) or "Antwort nur an die App."}
         return {"final_text": satz, "ok": True}
     return {"final_text": _verstehen.FEHLERSATZ, "ok": False,
             "fehler": str(schritt.get("error") or "keine lesbare Antwort")[:2000]}

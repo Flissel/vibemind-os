@@ -152,6 +152,59 @@ def _monitor_nummer(user32: Any, hwnd: int) -> Optional[int]:
     return liste.index(int(ziel)) + 1 if int(ziel) in liste else None
 
 
+def sichtbare_fenster() -> Optional[list[dict[str, Any]]]:
+    """Alle sichtbaren Hauptfenster mit Titel, von oben nach unten: hwnd, titel, programm.
+
+    Wie die Taskleiste: sichtbar, mit Titel, ohne Besitzer, kein Werkzeugfenster und nicht von
+    Windows verborgen (DWM "cloaked", z. B. Apps auf einem anderen virtuellen Desktop).
+    ``None``, wenn nicht lesbar. Die Sperrliste prueft der Aufrufer.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.GetWindow.restype = wintypes.HWND
+        user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+        try:
+            dwmapi = ctypes.WinDLL("dwmapi")
+        except OSError:
+            dwmapi = None
+        liste: list[dict[str, Any]] = []
+        rueckruf_typ = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def sammeln(hwnd, _param):
+            try:
+                if not hwnd or not user32.IsWindowVisible(hwnd) or user32.GetWindow(hwnd, 4):  # GW_OWNER
+                    return True
+                if user32.GetWindowLongPtrW(hwnd, -20) & 0x80:  # GWL_EXSTYLE, WS_EX_TOOLWINDOW
+                    return True
+                if dwmapi is not None:
+                    verborgen = wintypes.DWORD()
+                    if dwmapi.DwmGetWindowAttribute(hwnd, 14, ctypes.byref(verborgen), 4) == 0 and verborgen.value:
+                        return True  # DWMWA_CLOAKED
+                laenge = user32.GetWindowTextLengthW(hwnd)
+                if laenge <= 0:
+                    return True
+                puffer = ctypes.create_unicode_buffer(laenge + 1)
+                user32.GetWindowTextW(hwnd, puffer, laenge + 1)
+                if not puffer.value.strip():
+                    return True
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                liste.append({"hwnd": int(hwnd), "titel": puffer.value,
+                              "programm": programm_aus_pid(int(pid.value))})
+            except Exception:  # noqa: BLE001 - ein unlesbares Fenster faellt weg, die Liste bleibt
+                pass
+            return True
+
+        user32.EnumWindows(rueckruf_typ(sammeln), 0)
+        return liste
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def vordergrund() -> Optional[dict[str, Any]]:
     """Das aktive Fenster: hwnd, titel, pid, programm, monitor. None, wenn nicht lesbar."""
     if sys.platform != "win32":

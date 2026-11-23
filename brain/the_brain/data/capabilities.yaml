@@ -2362,3 +2362,27 @@
     - "^(?!.*\\b(?:kalender\\w*|calendar|termin\\w*|meeting\\w*)\\b)(?!.*\\b(?:posts?|newsletter\\w*|kampagne\\w*|podcasts?|videos?|bild(?:er|ern|es)?|bubbles?|idee(?:n)?|leads?|crm|kurs(?:e|en|es)?|charts?|präsentation(?:en)?|praesentation(?:en)?|instagram\\w*|reels?)\\b).*(aufgabe|budget|gäste|gaeste|team|helfer).{0,40}(\\bfestival|\\bveranstaltung|\\bevent\\b|\\bwebinar|\\bhackathon|\\b(?:die|der|zur|auf\\s+der|einer?)\\s+messe\\b|\\b\\w+messe\\b|\\bweihnachtsfeier|\\bteam.?meeting|\\b(?:das|dem|vom|beim|zum|aufs?|unser\\w*|ein\\w*)\\s+fest\\b|\\b(?!manifest)\\w{3,}fest\\b)"
   execution_target: "direct:spaces.event_management.uebergabe:frage"
   arg_kwarg: text
+
+# ─── Feste Lesesaetze fuer Spaces ohne Weg (core/verstehen.py, _FESTE_LESEFRAGEN) ───
+# Ohne Modell. Den deutschen Satz baut FESTE_ANTWORTEN; der Planer sieht diese Faehigkeiten nur
+# ueber die engen Muster unten.
+- capability: desktop_fenster
+  space: desktop
+  description: "list the visible windows (program and title); blocked windows appear only as 'ein gesperrtes Fenster'. Titles go only into the answer to the app, never into plan history or logs"
+  match_patterns:
+    - "^(?:welche|was für|was fuer)\\s+fenster\\s+(?:sind|habe ich)\\b.*\\b(?:offen|geöffnet|geoeffnet)\\b"
+  execution_target: "direct:core.desktop_fenster:fenster_lesen"
+
+- capability: thebrain_gedanken
+  space: thebrain
+  description: "read the brain's latest background thoughts from its own interface (/api/cortex/thoughts)"
+  match_patterns:
+    - "^(?:woran|an was|worüber|worueber)\\s+denkt\\s+(?:das\\s+gehirn|the\\s+brain)\\b"
+  execution_target: "brain:GET:/api/cortex/thoughts"
+
+- capability: rowboat_spaces
+  space: rowboat
+  description: "list the VibeMind spaces shown in Rowboat (read cards in spaces/rowboat/vibemind-spaces) and which of them run today"
+  match_patterns:
+    - "^welche\\s+(?:agenten|spaces)\\s+(?:gibt es|stehen|sind)\\s+(?:in|im)\\s+rowboat\\b"
+  execution_target: "direct:core.rowboat_spaces:spaces_lesen"
