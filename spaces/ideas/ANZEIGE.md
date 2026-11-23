@@ -91,6 +91,31 @@ Vormerken vor dem Abschicken **[Wahl]**: Die App merkt nur vor, wenn der Satz mi
 beginnt („Notiz:", „notiere", „halt fest", „halte fest", „schreib auf", „merk dir"). Alles andere zeigt im
 Chat „arbeitet" und wartet auf die Antwort. So entsteht aus einer Frage keine falsche Karte.
 
+## Stand eines Agenten-Auftrags
+
+Die App liest den Stand eines Auftrags mit `GET /api/agent-auftraege/{id}/stand`. Die Abbildung steht in
+`brain/the_brain/core/auftrag_stand.py`; diese Liste ist vollständig.
+
+| `stand` | `ok` | `hinweis` | Bedeutung |
+|---|---|---|---|
+| `laeuft` | – | – | Der Auftrag läuft noch oder wird gerade geprüft; beim White Paper steht in `meldung`, welcher Abschnitt fertig ist. |
+| `fertig` | `true` | – | Das Ergebnis ist geschrieben und nachgeprüft; `meldung` sagt, was sich geändert hat. |
+| `vorschlag` | `true` | `true` | Die Notiz hat sich seit dem Auftrag geändert oder fehlt; nichts ist geschrieben, `saetze` nennt die Sätze zum Zeigen, Übernehmen und Verwerfen. |
+| `uebernommen` | `true` | – | Der Vorschlag wurde mit „Vorschlag übernehmen“ geschrieben. |
+| `verworfen` | `true` | `true` | Der Vorschlag wurde verworfen; an der Notiz ist nichts geändert, `meldung` nennt ihren Titel. |
+| `abgebrochen` | `true` | `true` | Das White Paper wurde abgebrochen; es kommt kein weiterer Abschnitt. |
+| `wartet` | `true` | `true` | Das Ergebnis wartet auf eine Freigabe; geändert ist noch nichts. |
+| `ungeprueft` | `false` | `true` | Der Auftrag kam zurück, aber das Ergebnis ließ sich nicht prüfen; ob sich etwas geändert hat, ist offen. |
+| `fehler` | `false` | – | Nichts geschrieben: Der Agent ist gescheitert, das Ergebnis wurde abgelehnt, oder es kam nicht rechtzeitig zurück; `meldung` nennt den Grund. |
+| `unbekannt` | `false` | – | Den Auftrag gibt es nicht, oder sein Stand ist gerade nicht lesbar. |
+
+Einen eigenen Stand `abgelehnt` gibt es nicht. Lehnt das Gehirn ein Ergebnis ab, etwa weil es die Notiz nur beschreibt
+oder eine offene Frage erfindet, heißt der Stand `fehler`, und `meldung` sagt den Grund in einem Satz.
+
+Weitere Felder: `meldung` (deutscher Satz zum Anzeigen), `auftrag_id`, `dauer_s` (Sekunden vom Anlegen bis zum Ende,
+beim White Paper über alle Abschnitte; nicht bei `laeuft`), `saetze` (nur bei `vorschlag`) und `ziel`
+(`{space, bubble_id, node_id}`, nur bei `fertig`, `vorschlag` und `uebernommen`; dorthin springt die App).
+
 ## Die sechs Tätigkeiten
 
 | Tätigkeit | Sofort sichtbar (fester Aufruf) | Später (Modell) |
