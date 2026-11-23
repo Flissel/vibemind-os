@@ -72,8 +72,11 @@ Im Dienst (`Automation_ui`, öffentliches Repo, lokaler Zweig `cc/space-desktop`
 - `GET /api/desktop/task`: die jüngste Aufgabe aus dem Aufgabenbuch, für die Anzeige.
 - `POST /api/mcp/key`, `/api/mcp/hotkey`: Taste und Tastenkombination (fehlten in der Brücke).
 - `GET /api/mcp/elements`: aktives Fenster und seine Bedienelemente mit Lage (lesend).
+- **Shell-Routen abgeschaltet:** `/api/shell/*` wird nur noch eingehängt und `/api/mcp/shell`
+  antwortet nur noch, wenn der Dienst mit `AUTOMATION_UI_ENABLE_SHELL=1` gestartet wird.
+  Aufrufer über HTTP gibt es in vibemind-os, im Dienst-Repo und in der App keine (gesucht).
 
-Tests: 19 im Space (`python -m pytest spaces/desktop/tests`), 9 im Dienst
+Tests: 19 im Space (`python -m pytest spaces/desktop/tests`), 12 im Dienst
 (`cd backend && python -m pytest tests -o addopts=""`); alle grün. Die Tests des Dienstes
 lesen den echten Bildschirm, bewegen aber nichts. Trockenprobe des Werkzeug-Dienstes gegen
 den laufenden Dienst: `desktop_task_start` unter 1 ms, `desktop_screen_read` 0,5 s.
@@ -99,15 +102,15 @@ Kein Punkt ist in der laufenden App gemessen. Das Ziel der Sitzung ist damit nic
    mit Klickpunkt, über die Bedienhilfen von Windows). Das wirkt erst nach dem Ausrollen des
    Dienstes. Programme ohne Bedienhilfen (Spiele, manche Web-Inhalte) bleiben blind; ein Bild
    bekommt der Agent nicht zu sehen.
-2. **Nicht geprüft: ob ein Agent mit dem Abo-Modell in OpenFang Werkzeuge in einer Schleife
-   aufruft** (sehen, Schritt, sehen). Davon hängt Abnahmepunkt 3 ab.
+2. **Werkzeug-Schleife: ohne OpenFang gemessen, mit OpenFang nicht.** Siehe Abschnitt 6.
 3. **Tippen überschreibt die Zwischenablage** des Nutzers (`handle_action` kopiert den Text
    und drückt Strg+V).
 4. **Programme starten:** kein Werkzeug dafür im Space. `app_launch_or_focus` mit Positivliste
    gibt es in den Werkzeug-Diensten, aber nicht an der Brücke.
-5. **Sicherheit des Dienstes:** `/api/shell/*` und `/api/mcp/shell` führen Befehle ohne
-   Anmeldung aus. Der Dienst lauscht nur am eigenen Rechner, jeder lokale Prozess erreicht
-   sie aber. Vorschlag: diese Routen in der von der App gestarteten Fassung abschalten.
+5. **Sicherheit des Dienstes:** Die Shell-Routen sind im Zweig abgeschaltet (Abschnitt 3),
+   im laufenden Dienst bis zum Ausrollen aber noch offen. Der freie Aufgabenweg
+   `/api/llm/intent` hat ein eigenes `shell_exec` und ist davon nicht berührt; er läuft ohne
+   Schlüssel nicht.
 6. **Alte Wege im Dienst:** `/api/llm/intent` (eigener Schlüssel), `/api/v1/workflow/*`
    (Attrappen), `/api/automation/*` (nie gestartet), `clawdbot`, `clawhub`. Entscheidung
    nötig: ausbauen oder stilllegen. Diese Sitzung hat sie nicht angefasst.
@@ -118,3 +121,49 @@ Kein Punkt ist in der laufenden App gemessen. Das Ziel der Sitzung ist damit nic
 9. **Die App** (voice-Repo) importiert weiter entfallene Module (`spaces.desktop.eyeterm`,
    `.messaging`, `.tools`, `.agents`). Nur `automation_ui_client` ist ersetzt. Für die Hülle.
 10. **Feste Pfade** auf den Betriebs-Checkout im Dienst (`_SKILL_LIB_ROOT`, `capture_mon*.py`).
+
+## 6. Messung: Werkzeuge in einer Schleife (Trockenlauf, 23.11.)
+
+Ein Lauf mit `claude -p --model haiku`, nur mit dem Werkzeug-Dienst `spaces-desktop`, ohne
+`VIBEMIND_DESKTOP_AUSFUEHREN`; über den Budget-Wächter auf `brain-desktop` gebucht. Aufgabe:
+zweimal scrollen, dann sagen, was oben steht. Es wurde nichts ausgeführt.
+
+| Zeit | Aufruf |
+|---|---|
+| 5,6 s | `desktop_task_start` |
+| 6,6 s | `desktop_screen_read` |
+| 9,1 s | `desktop_task_step` (scroll) |
+| 10,9 s | `desktop_task_step` (scroll) |
+| 12,6 s | `desktop_task_finish` (`fehlgeschlagen`) |
+| 18,3 s | Ende, 7 Züge |
+
+Was das zeigt:
+
+- Haiku ruft fünf Werkzeuge nacheinander in einem Lauf auf, rund 1,5 s je Aufruf.
+- Das Aufgabenbuch stimmt mit den Aufrufen überein: zwei Schritte, beide als "trocken" gebucht.
+- Der Agent hat mit `fehlgeschlagen` abgeschlossen, weil die Schritte nicht ausgeführt
+  wurden. Im Trockenlauf ist das die ehrliche Meldung; die Prüferin sollte es so erwarten.
+- Er hat zwischen den Schritten nicht wieder hingesehen, obwohl die Anweisung das verlangt.
+  Für echte Klicks ist das ein Grund mehr für die Modellklasse `sonnet`.
+- Bis zum ersten Werkzeug vergehen 5,6 s. Die 2 s aus Abnahmepunkt 6 hält nur der feste
+  Aufruf `desktop_task_start` durch das Gehirn, nicht der Agent.
+
+Nicht gemessen: derselbe Lauf über OpenFang (dort hat `brain-desktop` die Werkzeuge noch nicht).
+
+## 7. Importe der App, die ins Leere gehen
+
+`python/spaces` der App zeigt auf `spaces/` in vibemind-os. Dort fehlen diese Module
+(Stand voice `7ed50d5`; nichts davon wurde wiederhergestellt):
+
+| Modul | importiert in |
+|---|---|
+| `spaces.desktop.eyeterm.*` (app, config, headless, state, audio, cursor, routing, vision) | `electron_backend.py`, `ipc/eyeterm_handlers.py`, 9 Testdateien |
+| `spaces.desktop.messaging.*` (relevance_filter, incoming_handler, messaging_pipeline) | `ipc/voice_manager.py`, `swarm/orchestrator/tool_registry.py` |
+| `spaces.desktop.tools.desktop_tools`, `.tools.moire_tools`, `.adapted.desktop_tools` | `swarm/orchestrator/tool_orchestrator.py`, `tool_registry.py`, `tools/moire_tools.py`, Tests |
+| `spaces.desktop.agents.desktop_agent` | `swarm/backend_agents/__init__.py`, `tool_registry.py` |
+| `spaces.desktop.broadcast.desktop_broadcast_agent` | `swarm/orchestrator/intent_orchestrator.py` |
+| `spaces.desktop_space.hand_motion` | `scripts/hand_tracking_server.py`, ein Test |
+
+Vorhanden sind `spaces.desktop.automation_ui_client` (ersetzt) und
+`spaces.desktop.Automation_ui.backend.app.services.clawdbot_bridge` (im Submodul).
+Insgesamt 9 Quelldateien und 14 Testdateien der App importieren aus `spaces.desktop`.
