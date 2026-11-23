@@ -7,7 +7,7 @@ als Datei und Zeile gegen `ae9f2dfe`. Seitdem hat `origin/master` (`948f436f`) d
 beschreibt, und was die Koordination deshalb anders machen muss. Gelesen wurde ausschließlich mit
 `git show origin/master:<Pfad>` und `git diff ae9f2dfe origin/master -- <Pfad>`; nichts ausgecheckt oder gemergt.
 
-Kurz: Nr. 1 und Nr. 2 verlangen eine Entscheidung vor dem Einbau von Block 2. Nr. 3 ist eine Naht an derselben Stelle
+Kurz: Nr. 1 ist entschieden und umgesetzt, Nr. 2 verlangt eine Entscheidung vor dem Einbau von Block 2. Nr. 3 ist eine Naht an derselben Stelle
 wie Block 4. Nr. 4 bis Nr. 9 sind Hinweise ohne Eingriff in die Blöcke.
 
 ## Welche Dateien sich bewegt haben
@@ -67,21 +67,22 @@ Die Überschneidung im Einzelnen:
 6. Der Pin der Hülle (`voice`) steht jetzt auf einem Stand, dessen Commit-Text „Zeichen für getippte Sätze“ nennt. Die
    Hülle sendet also schon `X-Vibemind-Eingabe`. Den Inhalt der Hülle konnte ich hier nicht lesen.
 
-**Was die Koordination anders machen muss:**
+**Entschieden, so umgesetzt** (Koordination, Block 2 ist umgeschrieben):
 
-- Beide Parameter in der ersten Fassung **getrennt** lassen (`eingabe_herkunft` bleibt wie auf master, `herkunft`
-  kommt dazu) und die Merge-Stellen aus Punkt 1 von Hand auflösen. `eingabe_herkunft` nicht umbenennen und nicht für
-  Block 2 mitbenutzen.
-- `required_origin: betreiber` **nicht** an `desktop.task` setzen (Block 2, Abschnitt 5, Tabelle; dort jetzt
-  vermerkt). master sperrt `desktop.task` schon zweimal und strenger. Mit dem Feld bräuchte jede getippte
-  Desktop-Aufgabe zusätzlich die Kopfzeilen aus Block 2.
-- **[Wahl]** Ob ein getippter Satz mit gültigem `X-Vibemind-Eingabe` für `required_origin: betreiber` genügt. Dafür
-  spricht: ein Schlüssel, ein Satz, kein Wiederverwenden. Der Eingriff wäre klein, nämlich `erlaubt(...)` bekommt
-  `eingabe_herkunft` mit und lässt `"getippt"` zu; `telegram-betreiber` bleibt über Block 2. Dagegen: Block 2 ist
-  dann nicht mehr die einzige Quelle der Wahrheit für „Betreiber“. Entscheidung gehört der Koordination; ohne sie
-  gilt der getrennte Weg oben.
-- Test am Hop ergänzen: getippter Satz mit Zeichen, aber ohne Kopfzeilen aus Block 2, löst `rowboat.vorschlaege_anlegen`
-  **nicht** aus (solange die Wahl oben nicht getroffen ist).
+- Ein gültiges „getippt“ (Zeichen `X-Vibemind-Eingabe`, Prüfung weiter `herkunft_pruefen` von master, nicht
+  nachgebaut) zählt als Betreiber-Herkunft für `required_origin: betreiber`. Es hat Vorrang: Ist getippt gültig, wird
+  der Eingang nicht geprüft.
+- Der Eingangsschlüssel (`X-Brain-Eingang …`) gilt nur für Eingänge ohne getippten Satz, zum Beispiel den Telegram-Chat
+  des Betreibers. Über diese Eingänge gibt es keine Desktop-Aufgaben. `desktop.task` bleibt an „getippt“ gebunden und
+  bekommt **kein** `required_origin`.
+- Eine Funktion an einer Stelle: `execute()` bekommt **ein** Herkunfts-Objekt (`herkunft_bestimmen`). Daraus kommen
+  `plan_ctx["herkunft"]` (das Objekt) und `plan_ctx["eingabe_herkunft"]` (`eingabe_herkunft(h)`, `"getippt"` oder
+  `None`). Der Parameter `eingabe_herkunft` von `execute` bleibt als Kompat-Alias (Begründung in Block 2, Abschnitt 2).
+- Plan-Rest und Nachfasser tragen `weitergeben(h)` weiter: `{art, weitergegeben: True}`; zählt als Betreiber, ergibt nie
+  `"getippt"`.
+- Die Textstellen des Einbaus (`plan_executor.py` Zeile 726 bis 736, 832 bis 852, 1841 bis 1847,
+  `desktop_schleife.nach_aufgabenstart` Zeile 366, `multihop_execute` Zeile 2849 bis 2859) stehen in
+  `block-2-herkunft.md`; die Funktionen in `herkunft/herkunft.py` (28 Tests).
 
 ## Nr. 2 `desktop_task_start`: neuer Weg über das ausdrückliche Ziel (Block 2, Block 6)
 
@@ -226,9 +227,9 @@ Zeile 2388 bis 2393) speichert nur `antwortkanal`, nicht `eingabe_herkunft`. Ein
 
 **Betroffen:** Block 2, Abschnitt 2 („Plan-Rest“): Block 2 bewahrt `herkunft`, master `eingabe_herkunft` bewusst nicht.
 
-**Was die Koordination anders machen muss:** Das ist für `desktop` gewollt (autonome Pläne und Nachfasser dürfen nicht
-starten). Beim Einbau von Block 2 den Plan-Rest für `herkunft` wie beschrieben ergänzen, aber **nicht** auch
-`eingabe_herkunft` aufnehmen. Der Test „fortgesetzter Plan-Rest bewahrt die Herkunft“ gilt nur für `herkunft`.
+**Entschieden, so umgesetzt** (siehe Nr. 1): Der Plan-Rest bewahrt `herkunft` als `weitergeben(h)`, nicht
+`eingabe_herkunft`. Ein fortgesetzter Plan zählt damit weiter als Betreiber (für `required_origin`), startet aber nie
+die Desktop-Schleife. Test am Hop: fortgesetzter Plan-Rest ergibt `plan_ctx["eingabe_herkunft"] is None`.
 
 ## Nr. 9 Geprüft, keine Überschneidung
 

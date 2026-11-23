@@ -22,21 +22,55 @@ Ordner `spaces/auftragsbuch/lieferung/herkunft/`, ohne Abhängigkeiten außer de
     SHA-256 des Schlüssels (per `hmac.compare_digest`) zum Hash in der Umgebung passt, sonst `"unbekannt"`.
     Wirft nie, nennt den Schlüssel nie.
   - `braucht_betreiber(ereignis) -> bool`: wahr bei `required_origin: betreiber`.
-  - `erlaubt(herkunft, ereignis) -> bool`: falsch nur, wenn der Betreiber verlangt wird und die Herkunft keiner
-    seiner Eingänge ist.
-  - `erlaubt_werkzeug(herkunft, server, tool, ereignis_oder_None) -> bool`: das Tor für ein ausdrücklich genanntes Ziel
+  - `herkunft_bestimmen(getippt: bool, eingang) -> dict`: das **eine** Herkunfts-Objekt. `getippt` ist das Ergebnis von
+    `herkunft_pruefen(...) == "getippt"` (master, Zeichen `X-Vibemind-Eingabe`) und gewinnt immer:
+    `{"art": "getippt"}`. Sonst `{"art": "eingang:<name>"}`, wenn `eingang` ein Betreiber-Eingang ist, sonst
+    `{"art": None}`. `eingang` ist der Name aus `eingang_pruefen` oder ein Aufruf ohne Argumente, der ihn liefert;
+    dann wird der Eingang nur geprüft, wenn nicht getippt. Wirft nie.
+  - `eingabe_herkunft(h) -> "getippt" | None`: der Wert für `plan_ctx["eingabe_herkunft"]` (Desktop-Schleife, master).
+    `"getippt"` nur bei `art == "getippt"` und nicht weitergegeben; jede andere oder falsche Form ergibt `None`.
+  - `ist_betreiber(h) -> bool`: wahr bei `getippt` oder `eingang:<n>` mit `n` in `EINGAENGE_BETREIBER`, auch wenn
+    weitergegeben; bei falscher Form falsch.
+  - `weitergeben(h) -> dict`: Kopie mit `weitergegeben: True` (für Plan-Rest und Nachfasser).
+  - `erlaubt(herkunft, ereignis) -> bool`: falsch nur, wenn der Betreiber verlangt wird und `ist_betreiber(herkunft)`
+    nicht gilt. `herkunft` ist das Objekt; ein alter Eingangsname (Zeichenkette) gilt weiter wie `eingang:<name>`.
+  - `erlaubt_werkzeug(herkunft, server, tool, ereignis_oder_None) -> bool` (`herkunft` wie bei `erlaubt`): das Tor für ein ausdrücklich genanntes Ziel
     `mcp:<agent>:<server>:<werkzeug>`. Ein Werkzeug am Server `auftragsbuch`, zu dem die Suche im Verzeichnis **kein**
     Ereignis fand (`None` oder leer), wird abgelehnt, auch bei Betreiber-Herkunft; ausgenommen sind `auftrag_lesen`
     und `auftrag_probe`. Jeder andere Server verhält sich wie `erlaubt`. Wirft nie.
   - `ABLEHNUNG = "Nur aus einer Eingabe des Betreibers"`
-- `test_herkunft.py` (19 Tests). Aufruf von der Repo-Wurzel:
+- `test_herkunft.py` (28 Tests). Aufruf von der Repo-Wurzel:
   `python -m pytest spaces/auftragsbuch/lieferung/herkunft/test_herkunft.py -q -p no:cacheprovider`.
   Der Test setzt seinen eigenen Ordner selbst auf den Suchpfad, ein Paket ist nicht nötig.
 
 Beim Einbauen die Datei ins Gehirn kopieren (Vorschlag: `brain/the_brain/core/herkunft.py`) und dort
 `from .herkunft import ...` verwenden.
 
-## Schlüssel und Umgebungsvariablen
+## Die zwei Wege zur Herkunft
+
+Es gibt genau ein Herkunfts-Objekt je Anfrage (`herkunft_bestimmen`), aber zwei Wege, auf denen es „Betreiber"
+werden kann. **„getippt" hat den Vorrang:** Ist es gültig, wird der Eingang nicht einmal geprüft.
+
+1. **Getippter Satz (master).** Kopfzeile `X-Vibemind-Eingabe` mit einem Zeichen `<Zeit>.<HMAC über Zeit und Satz>`,
+   höchstens 60 Sekunden alt, nie zusammen mit einem vom Aufrufer mitgebrachten Plan. Geprüft wird das **nur** von
+   `core/desktop_tagesrest.py:herkunft_pruefen` (master); dieser Block baut die Prüfung nicht nach. Ergebnis
+   `{"art": "getippt"}`. Es zählt als Betreiber für `required_origin: betreiber` und ist der einzige Weg, der
+   `eingabe_herkunft == "getippt"` ergibt.
+2. **Eingang mit Schlüssel (dieser Block).** Kopfzeilen `X-Brain-Eingang` und `X-Brain-Eingang-Schluessel` (siehe
+   unten), nur für Eingänge **ohne** getippten Satz, zum Beispiel der Telegram-Chat des Betreibers. Ergebnis
+   `{"art": "eingang:telegram-betreiber"}`. Es zählt als Betreiber, ergibt aber **nie** `eingabe_herkunft`.
+
+**Desktop-Regel.** Über Eingänge (Weg 2) gibt es keine Desktop-Aufgaben. `desktop.task` bleibt an „getippt" gebunden
+(`plan_ctx["eingabe_herkunft"] == "getippt"`, `plan_executor.py` Zeile 1847, zweite Prüfung
+`desktop_schleife.nach_aufgabenstart` Zeile 366) und bekommt **kein** `required_origin`.
+
+**Weitergegebene Herkunft.** Plan-Rest und Nachfasser tragen die Herkunft über `weitergeben(h)` weiter:
+`{art: <ursprünglich>, weitergegeben: True}`. Sie zählt weiter als Betreiber (der fortgesetzte Plan ist die Folge eines
+Betreiber-Plans), ergibt aber nie `eingabe_herkunft == "getippt"`; die Desktop-Schleife startet daraus nie neu.
+
+Entschieden von der Koordination (`kollisionen-948f436f.md`, Nr. 1).
+
+## Schlüssel und Umgebungsvariablen (Weg 2)
 
 Für jeden Eingang des Betreibers gibt es eine Umgebungsvariable `BRAIN_EINGANG_<NAME>_SHA256`. `<NAME>` ist der
 Eingangsname in Großbuchstaben, `-` wird zu `_`:
@@ -78,45 +112,67 @@ gilt dasselbe Muster: aus der Datei lesen (`Path(...).read_text().strip()`), nie
 ### 1. Eingang: nur aus den Kopfzeilen
 
 Datei `brain/the_brain/web/routers/introspection.py`, Funktion `multihop_execute` (ab Zeile 2588). Direkt vor
-dem Aufruf von `pe.execute` (heute Zeile 2852 bis 2859; seit master schon mit dem Parameter
-`eingabe_herkunft=_herkunft_pruefen(...)`, der die Herkunft "getippt" der Desktop-Schleife trägt, siehe
-`kollisionen-948f436f.md`, Nr. 1), neben der Bildung von `antwortkanal` (Zeile 2848):
+dem Aufruf von `pe.execute` (auf master Zeile 2852 bis 2859, dort heute `eingabe_herkunft=_herkunft_pruefen(...)`),
+neben der Bildung von `antwortkanal` (Zeile 2848). Die Prüfung von master bleibt, ihr Ergebnis wird nur anders
+verwendet:
 
 ```python
-herkunft = eingang_pruefen(
-    request.headers.get("X-Brain-Eingang"),
-    request.headers.get("X-Brain-Eingang-Schluessel"),
-    os.environ,
+from core.desktop_tagesrest import KOPF_EINGABE as _KOPF_EINGABE, herkunft_pruefen as _herkunft_pruefen
+getippt = _herkunft_pruefen(
+    body.get("context"), str(body.get("intent") or body.get("message") or "").strip(),
+    request.headers.get(_KOPF_EINGABE),
+    plan_vom_aufrufer=body.get("plan") is not None,
+) == "getippt"
+herkunft = herkunft_bestimmen(
+    getippt,
+    lambda: eingang_pruefen(                 # nur, wenn nicht getippt
+        request.headers.get("X-Brain-Eingang"),
+        request.headers.get("X-Brain-Eingang-Schluessel"),
+        os.environ,
+    ),
 )
 ...
 exec_result = await _asyncio.to_thread(
-    pe.execute, plan, antwortkanal=antwortkanal,
-    eingabe_herkunft=<unverändert, wie auf master>,   # Desktop-Schleife, eigenes Zeichen
-    herkunft=herkunft,                                # dieser Block
+    pe.execute, plan, antwortkanal=antwortkanal, herkunft=herkunft,
 )
 ```
 
-Beide Parameter bleiben getrennt, solange die Koordination nichts anderes entscheidet (Begründung in
-`kollisionen-948f436f.md`, Nr. 1).
-
-Wichtig: Die Herkunft kommt **nur** aus diesen zwei Kopfzeilen. Nie aus dem Körper (`body`), nie aus
-`context`, nie aus `antwortkanal` (dort gilt weiter nur die feste Liste `api`, `telegram`, `dashboard`).
+Wichtig: Die Herkunft kommt **nur** aus diesen Kopfzeilen. Nie aus dem Körper (`body`), nie aus `antwortkanal` (dort
+gilt weiter nur die feste Liste `api`, `telegram`, `dashboard`). `context["eingabe"] == "getippt"` liest
+`herkunft_pruefen` zwar, vertraut ihm aber nur zusammen mit dem gültigen Zeichen; das ist kein Widerspruch, nur ein
+Hinweis für alle, die es für eine Lücke halten.
 
 ### 2. Durchreichen im Planausführer
 
 Datei `brain/the_brain/core/plan_executor.py`:
 
-- `execute(...)` (Zeile 726, Parameterliste bis 736): neuer Parameter `herkunft: Optional[str] = None`.
-- `plan_ctx` (Zeilen 832 bis 852, dort stehen schon `confirmed_events`, `antwortkanal` und seit master `eingabe_herkunft`): neuer Eintrag
-  `"herkunft": herkunft or "unbekannt"`.
+- `execute(...)` (master Zeile 726 bis 736, dort steht `eingabe_herkunft: Optional[str] = None` in Zeile 735): neuer
+  Parameter `herkunft: Optional[dict] = None`.
+  **[Wahl]** `eingabe_herkunft` bleibt als Kompat-Alias: Ist `herkunft` nicht gesetzt und `eingabe_herkunft == "getippt"`,
+  gilt `herkunft = {"art": "getippt"}`; sind beide gesetzt, gewinnt `herkunft`. Begründung: Auf master rufen Tests und
+  die Desktop-Schleife `execute(..., eingabe_herkunft="getippt")` auf; ein Alias hält sie lauffähig, und der Parameter
+  kann in einem eigenen Schritt entfallen, wenn kein Aufrufer ihn mehr nennt. Der Alias darf nie zusätzlich etwas
+  freischalten, was `herkunft` nicht auch ergäbe.
+- `plan_ctx` (master Zeilen 832 bis 852, `"eingabe_herkunft"` steht in Zeile 850): beide Einträge kommen aus
+  **einer** Quelle:
+  ```python
+  "herkunft": herkunft,                              # das Objekt, None = unbekannt
+  "eingabe_herkunft": eingabe_herkunft(herkunft),    # "getippt" oder None, wie die Desktop-Schleife es erwartet
+  ```
+  (die Funktion aus `herkunft.py`; sie darf nicht denselben Namen wie der Alias-Parameter verdecken, beim Einbauen
+  `from .herkunft import eingabe_herkunft as eingabe_herkunft_von` o. ä.). Die Prüfung
+  `plan_ctx.get("eingabe_herkunft") != "getippt"` (Zeile 1847) und
+  `nach_aufgabenstart(herkunft=(plan_ctx or {}).get("eingabe_herkunft"), ...)` (Zeile 2010, Prüfung in
+  `desktop_schleife.py` Zeile 366) bleiben unverändert.
 - Der Plan-Rest, der bei einem wartenden Auftrag gespeichert wird: `_auftrag_plan_rest_speichern`
   (Zeile 2325), Wörterbuch `plan_rest` (Zeilen 2388 bis 2393, dort steht schon `antwortkanal`): ergänzen um
-  `"herkunft": plan_ctx.get("herkunft")`.
+  `"herkunft": weitergeben(plan_ctx.get("herkunft"))`. `eingabe_herkunft` kommt **nicht** in den Plan-Rest.
 - Beim Wiederaufnehmen: `core/nachfasser.py` Zeile 161 (`self.plan_executor.execute(Plan.from_dict(rest["plan"]),
   start_state=state, antwortkanal=rest.get("antwortkanal"))`) bekommt zusätzlich
-  `herkunft=rest.get("herkunft")`. Ein Plan-Rest ohne das Feld (aus der Zeit vor dieser Änderung) ergibt `None`
-  und damit `"unbekannt"`: ein fortgesetzter Altbestand darf keine Betreiber-Ereignisse mehr auslösen. Das ist
-  gewollt.
+  `herkunft=rest.get("herkunft")`. Das ist schon die weitergegebene Form: Sie zählt als Betreiber, ergibt aber nie
+  `"getippt"`; die Desktop-Schleife startet aus einem fortgesetzten Plan nicht. Ein Plan-Rest ohne das Feld (aus
+  der Zeit vor dieser Änderung) ergibt `None` und damit „unbekannt": ein fortgesetzter Altbestand darf keine
+  Betreiber-Ereignisse mehr auslösen. Das ist gewollt.
 
 ### 3. Tor im Hop
 
@@ -136,7 +192,7 @@ Alternativ dasselbe Tor zusätzlich im Desktop-Zweig direkt nach Zeile 1528; zwi
 
 ```python
 ereignis = <Verzeichniseintrag zu event_id>   # siehe Abschnitt 5
-if not erlaubt(plan_ctx.get("herkunft"), ereignis):
+if not erlaubt(plan_ctx.get("herkunft"), ereignis):   # das Objekt aus herkunft_bestimmen
     return HopResult(step_id=hop.step_id, ok=False, error=ABLEHNUNG, capability=hop.capability,
                      target=target, rendered_arg=rendered_arg, kg_hits=kg_hits,
                      elapsed_s=time.time() - t0, contract_pass=False, reward=-1.0)
@@ -162,10 +218,10 @@ zweiten Prüfung an der Laufzeitgrenze (Abschnitt 4).
 ### 4. Zweite Prüfung an der Laufzeitgrenze
 
 - `core/openfang_runtime_authority.py`, `RuntimeInvocationContext` (Zeile 18, eingefrorene Datenklasse): neues
-  Feld `herkunft: str = "unbekannt"` (mit Vorgabewert, damit `brain/the_brain/deterministic_gateway.py` Zeile 57 und die
+  Feld `herkunft: Optional[dict] = None` (das Objekt; `None` ist „unbekannt", mit Vorgabewert, damit `brain/the_brain/deterministic_gateway.py` Zeile 57 und die
   Tests weiter laufen).
 - `core/plan_executor.py` Zeile 1927: beim Bauen von `RuntimeInvocationContext(...)` zusätzlich
-  `herkunft=plan_ctx.get("herkunft") or "unbekannt"`.
+  `herkunft=plan_ctx.get("herkunft")`.
 - `core/capability_targets.py`, `McpExecutor._call` (Klasse ab Zeile 855, `_call` bei Zeile 980; nicht in
   `openfang_runtime_authority.py`): direkt nach der Prüfung
   `authority.space_id != runtime_context.space_id ...` (Zeile 996) dasselbe Tor ein zweites Mal, mit dem
@@ -173,7 +229,7 @@ zweiten Prüfung an der Laufzeitgrenze (Abschnitt 4).
   werfen (wie die Nachbarprüfungen). So hält die Sperre auch, wenn jemand den Hop am Planausführer vorbei in
   den Ausführer bringt.
 - `brain/the_brain/deterministic_gateway.py` Zeile 57 baut ebenfalls einen `RuntimeInvocationContext`; mit dem Vorgabewert
-  `"unbekannt"` bleibt dieser Weg für Betreiber-Ereignisse gesperrt. Braucht er welche, muss er die Herkunft
+  `None` (unbekannt) bleibt dieser Weg für Betreiber-Ereignisse gesperrt. Braucht er welche, muss er die Herkunft
   ausdrücklich bekommen. Das ist eine eigene Entscheidung und nicht Teil dieser Lieferung.
 
 ### 5. Verzeichnis: wo `required_origin` steht
@@ -193,7 +249,7 @@ Zu setzen an:
 
 | Ereignis | Stand im Verzeichnis heute |
 | --- | --- |
-| `desktop.task` | vorhanden (Zeile 276). **Nicht blind ergänzen:** master sperrt `desktop.task` schon selbst über `eingabe_herkunft == "getippt"`, siehe `kollisionen-948f436f.md`, Nr. 1 |
+| `desktop.task` | vorhanden (Zeile 276). **Kein `required_origin`** (entschieden): master sperrt `desktop.task` schon zweimal über `eingabe_herkunft == "getippt"`, und über Eingänge gibt es keine Desktop-Aufgaben (siehe „Die zwei Wege") |
 | `rowboat.vorschlaege_anlegen` | **noch kein Ereignis.** `vorschlaege_anlegen` ist bisher nur eine Auftragsart in `spaces/_contract/rowboat.contract.yaml` (Zeile 56). Das Feld kommt an das Ereignis, sobald es eingetragen wird. |
 | `sales.kontakt_finden` | **noch kein Ereignis**, auch keine Auftragsart; gleiches Vorgehen |
 | `sales.post_pruefen` | **noch kein Ereignis.** `post_pruefen` ist bisher nur eine Auftragsart in `spaces/_contract/sales.contract.yaml` (Zeile 16) |
@@ -225,6 +281,8 @@ Ob der Lader des Verzeichnisses ein unbekanntes Feld toleriert, wurde nicht gepr
 
 - Die Herkunft ersetzt keine Anmeldung. Der Port 5000 des Gehirns lauscht auf allen Schnittstellen und hat
   keine Anmeldung. Wer die Kopfzeilen samt gültigem Schlüssel schicken kann, gilt als Betreiber.
+- Das Zeichen von master (Weg 1) gilt für genau einen Satz und 60 Sekunden; der Schlüssel von Weg 2 reist unverändert in
+  jeder Anfrage. Deshalb bekommt nur Weg 1 die Desktop-Aufgaben.
 - Der Schlüssel reist im Klartext in der Kopfzeile. Solange die Strecke nur lokal ist, ist das vertretbar;
   über ein Netz nur mit gesicherter Verbindung.
 - Schlüssel wechseln heißt: neuen Hash in die Variable, den Aufrufer neu bestücken, beides gleichzeitig.
@@ -232,4 +290,8 @@ Ob der Lader des Verzeichnisses ein unbekanntes Feld toleriert, wurde nicht gepr
   abgelehnt, mit richtigen angenommen, ausdrücklich genanntes `execution_target` ohne Kopfzeilen abgelehnt,
   `desktop_skill`- und `browser_automation`-Hop ohne Eingangs-Kopf scheitert mit `ABLEHNUNG` (belegt, dass das
   Tor nach der Überschreibung von `event_id` sitzt),
-  fortgesetzter Plan-Rest bewahrt die Herkunft.
+  fortgesetzter Plan-Rest bewahrt die Herkunft (als weitergegeben).
+  Dazu am Hop: ein getippter Satz mit gültigem Zeichen, aber ohne Eingangs-Kopfzeilen, löst
+  `rowboat.vorschlaege_anlegen` aus; derselbe Satz ohne gültiges Zeichen und ohne Eingang nicht; ein fortgesetzter
+  Plan-Rest nach „getippt" ergibt `plan_ctx["eingabe_herkunft"] is None` (Desktop startet nicht), zählt aber für
+  `required_origin: betreiber`; ein Eingang des Betreibers startet nie `desktop.task`.

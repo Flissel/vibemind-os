@@ -146,3 +146,97 @@ def test_erlaubt_werkzeug_wirft_nie():
     from herkunft import erlaubt_werkzeug
     assert erlaubt_werkzeug("app", 5, None, "kaputt") in (True, False)  # type: ignore[arg-type]
     assert erlaubt_werkzeug("app", "auftragsbuch", None, None) is False  # type: ignore[arg-type]
+
+
+# --- Herkunfts-Objekt: "getippt" (master) und Eingang (Block 2) in einem Wert ---
+
+def test_getippt_hat_vorrang_und_der_eingang_wird_nicht_geprueft():
+    from herkunft import herkunft_bestimmen
+    aufrufe = []
+
+    def eingang():
+        aufrufe.append(1)
+        return "app"
+
+    assert herkunft_bestimmen(True, eingang) == {"art": "getippt"}
+    assert aufrufe == []  # der Eingang wird nur geprueft, wenn nicht getippt
+    assert herkunft_bestimmen(True, "app") == {"art": "getippt"}
+
+
+def test_kein_getippt_plus_gueltiger_eingang():
+    from herkunft import herkunft_bestimmen
+    assert herkunft_bestimmen(False, "app") == {"art": "eingang:app"}
+    assert herkunft_bestimmen(False, lambda: "telegram-betreiber") == {"art": "eingang:telegram-betreiber"}
+
+
+def test_weder_noch_ergibt_art_none():
+    from herkunft import herkunft_bestimmen
+    for eingang in ("unbekannt", "", None, "dashboard", 5, lambda: "unbekannt", lambda: 1 / 0):
+        assert herkunft_bestimmen(False, eingang) == {"art": None}
+    assert herkunft_bestimmen("ja", "app") == {"art": "eingang:app"}  # nur echtes True zaehlt als getippt
+
+
+def test_weitergegebenes_getippt_ist_betreiber_aber_nie_getippt():
+    from herkunft import eingabe_herkunft, ist_betreiber, weitergeben
+    h = {"art": "getippt"}
+    assert eingabe_herkunft(h) == "getippt"
+    w = weitergeben(h)
+    assert w == {"art": "getippt", "weitergegeben": True}
+    assert h == {"art": "getippt"}  # Kopie, Original unveraendert
+    assert eingabe_herkunft(w) is None
+    assert ist_betreiber(w) is True
+    assert eingabe_herkunft(weitergeben(w)) is None
+
+
+def test_telegram_eingang_ist_betreiber_aber_nie_getippt():
+    from herkunft import eingabe_herkunft, ist_betreiber
+    h = {"art": "eingang:telegram-betreiber"}
+    assert ist_betreiber(h) is True
+    assert eingabe_herkunft(h) is None
+    assert ist_betreiber(None) is False and ist_betreiber({"art": None}) is False
+    assert ist_betreiber({"art": "eingang:dashboard"}) is False
+
+
+def test_erlaubt_mit_objekt():
+    ereignis = {"required_origin": "betreiber"}
+    for h in ({"art": "getippt"}, {"art": "eingang:app"}, {"art": "getippt", "weitergegeben": True}):
+        assert erlaubt(h, ereignis) is True
+    for h in ({"art": None}, {"art": "eingang:dashboard"}, None):
+        assert erlaubt(h, ereignis) is False
+        assert erlaubt(h, {}) is True
+
+
+def test_erlaubt_werkzeug_mit_objekt_am_auftragsbuch_bleibt_fail_closed():
+    from herkunft import erlaubt_werkzeug
+    betreiber = {"art": "getippt"}
+    assert erlaubt_werkzeug(betreiber, "auftragsbuch", "rowboat_vorschlaege_anlegen", None) is False
+    assert erlaubt_werkzeug(betreiber, "auftragsbuch", "rowboat_vorschlaege_anlegen", {}) is False
+    assert erlaubt_werkzeug({"art": None}, "auftragsbuch", "auftrag_lesen", None) is True
+    ereignis = {"required_origin": "betreiber"}
+    assert erlaubt_werkzeug(betreiber, "auftragsbuch", "rowboat_vorschlaege_anlegen", ereignis) is True
+    assert erlaubt_werkzeug({"art": None}, "auftragsbuch", "rowboat_vorschlaege_anlegen", ereignis) is False
+
+
+def test_alte_zeichenketten_form_bleibt_erlaubt():
+    from herkunft import erlaubt_werkzeug, ist_betreiber
+    ereignis = {"required_origin": "betreiber"}
+    assert erlaubt("app", ereignis) is True
+    assert erlaubt("unbekannt", ereignis) is False
+    assert erlaubt_werkzeug("telegram-betreiber", "auftragsbuch", "x", ereignis) is True
+    assert ist_betreiber("app") is True
+    assert ist_betreiber("getippt") is False  # kein Eingangsname
+
+
+def test_falsche_formen_ergeben_nie_true_und_werfen_nie():
+    from herkunft import eingabe_herkunft, erlaubt_werkzeug, ist_betreiber, weitergeben
+    ereignis = {"required_origin": "betreiber"}
+    for h in ([], ["getippt"], 5, 1.5, {"art": 5}, {"art": ["getippt"]}, {}, {"x": "getippt"}, object(), True):
+        assert ist_betreiber(h) is False, h
+        assert eingabe_herkunft(h) is None, h
+        assert erlaubt(h, ereignis) is False, h
+        assert erlaubt_werkzeug(h, "auftragsbuch", "rowboat_vorschlaege_anlegen", ereignis) is False, h
+        w = weitergeben(h)
+        assert eingabe_herkunft(w) is None and ist_betreiber(w) is False, h
+    # weitergegeben ist False, fehlt oder ist True; alles andere ist eine falsche Form
+    assert eingabe_herkunft({"art": "getippt", "weitergegeben": 0}) is None
+    assert eingabe_herkunft({"art": "getippt", "weitergegeben": "nein"}) is None
