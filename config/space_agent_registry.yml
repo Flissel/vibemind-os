@@ -162,8 +162,11 @@ spaces:
       idea.convert_format:      { tool: db_ideas_update, required_params: [idea_id] }
       idea.summarize:           { tool: db_ideas_update, required_params: [idea_id] }
       idea.whitepaper:          { tool: db_ideas_update, required_params: [idea_id] }
-      idea.expand:              { tool: db_ideas_update, required_params: [idea_id] }
-      idea.explain:             { tool: db_ideas_list,   required_params: [idea_id] }
+      # Modellauftraege mit Rueckweg (brain/the_brain/core/ideen_rueckweg.py): der Agent hat dafuer
+      # kein Werkzeug, er antwortet mit einem JSON-Objekt; das Gehirn schreibt ueber idea_update
+      # bzw. bewertung_begruenden mit Vertrag und Nachpruefung.
+      idea.expand:              { rueckweg: ausformulieren, required_params: [id] }
+      idea.explain:             { rueckweg: einschaetzen,   required_params: [id] }
       idea.analyze_links:       { tool: db_canvas_nodes, required_params: [] }
       idea.explore.start:       { tool: db_ideas_update, required_params: [] }
       idea.explore.stop:        { tool: db_ideas_update, required_params: [] }

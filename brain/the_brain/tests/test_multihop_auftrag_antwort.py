@@ -71,6 +71,8 @@ def test_pending_auftrag_antwortet_sofort_ohne_synthese():
                                   "agent": "rowboat-chat", "capability": "rowboat_search"}]
     assert pe.kwargs["antwortkanal"] == {"art": "telegram"}
     assert _Syn.called is False
+    # Angenommen ist nicht gescheitert: die App zeigte sonst "✕ fehlgeschlagen" (23.11.2026).
+    assert body["ok"] is True and body["pending"] is True and body["status"] == "angenommen"
 
 
 @pytest.mark.parametrize("roh", [None, "telegram", {"art": "mail"}, {"chat_id": 5},

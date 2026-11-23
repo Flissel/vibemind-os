@@ -2533,6 +2533,32 @@ def _try_ideen_abkuerzung(intent: str, kontext: Any):
         return None, None, ""
 
 
+def _planer_fehler_ideen(hops, exec_result) -> Optional[Dict[str, Any]]:
+    """Gescheiterter Planer-Plan aus Ideen-Faehigkeiten: fester deutscher Satz statt Rohtext.
+
+    Ohne das stand im Chat "Multi-hop plan: 0/1 steps succeeded ..." oder
+    "RuntimeError ... too_many_ideas" (Arbeitslauf 23.11.2026). Nur wenn alle Schritte
+    Ideen-Faehigkeiten sind und der Plan gescheitert ist; sonst ``None``. Wirft nie.
+    """
+    try:
+        from core.ideen_abkuerzung import fehlersatz, ist_ideen_faehigkeit
+
+        if not hops or exec_result.get("ok") or exec_result.get("pending"):
+            return None
+        if not all(ist_ideen_faehigkeit(getattr(h, "capability", "") or "") for h in hops):
+            return None
+        ausgefuehrt = exec_result.get("executed") or {}
+        for hop in hops:
+            schritt = ausgefuehrt.get(hop.step_id)
+            if isinstance(schritt, dict) and not schritt.get("ok"):
+                fehler = str(schritt.get("error") or "")
+                return {"final_text": fehlersatz(fehler, hop.capability), "space": "ideas", "fehler": fehler}
+        return {"final_text": "Das hat nicht geklappt.", "space": "ideas", "fehler": ""}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[planer-fehler-ideen] uebersprungen: {type(e).__name__}: {e}")
+        return None
+
+
 def _feste_antwort(plan, exec_result, ideen_fest: bool, vorgabe: str, kontext: Any) -> Optional[Dict[str, Any]]:
     """Antwortfelder fuer einen festen Ein-Schritt-Plan, oder ``None`` (dann Synthese wie bisher).
 
@@ -2544,7 +2570,7 @@ def _feste_antwort(plan, exec_result, ideen_fest: bool, vorgabe: str, kontext: A
 
         hops = getattr(plan, "hops", None) or []
         if len(hops) != 1:
-            return None
+            return _planer_fehler_ideen(hops, exec_result)
         capability = hops[0].capability or ""
         if capability.startswith("desktop_"):
             from core.desktop_antwort import antwort_fuer_desktop
@@ -2563,7 +2589,7 @@ def _feste_antwort(plan, exec_result, ideen_fest: bool, vorgabe: str, kontext: A
         alt = (str(getattr(plan, "plan_id", "")).startswith("shortcut_")
                and capability in ("aenderung_zurueck", "bubble_list"))
         if not ideen_fest and not alt:
-            return None
+            return _planer_fehler_ideen(hops, exec_result)
         schritt = (exec_result.get("executed") or {}).get(hops[0].step_id) or {}
         if not isinstance(schritt, dict):
             schritt = {}
@@ -2883,6 +2909,12 @@ async def multihop_execute(request: Request):
     if _auftraege:
         out["auftraege"] = _auftraege
         out["final_text"] = quittung(_auftraege)
+        # Angenommen ist nicht gescheitert: der Plan steht auf ok=False/pending=True, weil
+        # das Ergebnis noch aussteht. Die App las daraus "✕ fehlgeschlagen" (Arbeitslauf
+        # 23.11.2026). Nach aussen: angenommen, arbeitet.
+        out["ok"] = True
+        out["pending"] = True
+        out["status"] = "angenommen"
         try:
             pe.recorder.attach_final(plan.plan_id, out["final_text"])
         except Exception:  # noqa: BLE001

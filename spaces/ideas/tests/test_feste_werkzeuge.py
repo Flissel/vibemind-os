@@ -413,3 +413,72 @@ class IdeaCreateWithGivenIdTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Arbeitslauf20261123Tests(unittest.TestCase):
+    """Befunde aus dem Ideen-Arbeitslauf vom 23.11.2026."""
+
+    def test_format_without_text_is_refused_instead_of_an_empty_table(self) -> None:
+        server = load_server()
+        for content in ("", None, "Preise"):  # "Preise" wiederholt nur den Titel
+            node = {"id": "n1", "title": "Preise", "content": content, "node_type": "note",
+                    "content_json": None, "previous_content_json": None}
+            request = Recorder({("GET", "canvas_nodes"): [node]})
+            with mock.patch.object(server, "_request", side_effect=request):
+                with self.assertRaisesRegex(server.ToolError, "^idea_format_no_content$"):
+                    server.call_tool("idea_format", {"id": "n1", "format": "kanban"})
+            self.assertEqual(request.of("PATCH", "canvas_nodes"), [])
+        # Als Notiz darstellen geht immer.
+        node = {"id": "n1", "title": "Preise", "content": "", "node_type": "table",
+                "content_json": None, "previous_content_json": None}
+        request = Recorder({("GET", "canvas_nodes"): [node],
+                            ("PATCH", "canvas_nodes"): lambda kwargs: [{**node, **kwargs["body"]}]})
+        with mock.patch.object(server, "_request", side_effect=request):
+            server.call_tool("idea_format", {"id": "n1", "format": "note"})
+
+    def test_too_many_ideas_names_the_real_count_and_the_limit(self) -> None:
+        server = load_server()
+        many = [{"id": f"n{i}", "title": "t", "x": 0, "y": 0} for i in range(server.ARRANGE_NODE_CAP + 1)]
+        request = Recorder({("GET", "canvas_nodes"): many})
+        with mock.patch.object(server, "_request", side_effect=request):
+            with self.assertRaisesRegex(server.ToolError, r"^too_many_ideas: 101 ideas in this bubble, limit 100$"):
+                server.call_tool("idea_arrange", {"bubble_id": "bub1"})
+
+    def test_auto_link_works_beyond_100_cards_and_reads_edges_in_chunks(self) -> None:
+        server = load_server()
+        nodes = [{"id": f"n{i:03d}", "title": f"Messe Stand {i}" if i < 2 else f"Wort{i}"} for i in range(250)]
+        request = Recorder({("GET", "canvas_nodes"): nodes, ("GET", "canvas_edges"): []})
+        with mock.patch.object(server, "_request", side_effect=request):
+            result = server.call_tool("idea_auto_link", {"bubble_id": "bub1"})
+        self.assertEqual(result["anzahl"], 1)
+        self.assertEqual(request.of("GET", "canvas_nodes")[0]["params"]["limit"], str(server.AUTO_LINK_NODE_CAP + 1))
+        self.assertEqual(len(request.of("GET", "canvas_edges")), 3)  # 250 Kennungen in Teilen zu 100
+
+    def test_reason_with_cards_reads_only_the_named_cards(self) -> None:
+        server = load_server()
+        request = Recorder({
+            ("GET", "ideas"): [{"id": "bub1", "metadata": {}}],
+            ("GET", "canvas_nodes"): [{"id": "n1"}],
+            ("PATCH", "ideas"): lambda kwargs: [{"id": "bub1", **kwargs["body"]}],
+        })
+        with mock.patch.object(server, "_request", side_effect=request):
+            server.call_tool("bewertung_begruenden", {"bubble_id": "bub1", "text": "x", "idea_ids": ["n1"]})
+        (lesen,) = request.of("GET", "canvas_nodes")
+        self.assertEqual(lesen["params"]["id"], "in.(n1)")
+        self.assertEqual(lesen["params"]["linked_idea_id"], "eq.bub1")
+
+    def test_content_append_adds_to_the_stored_text(self) -> None:
+        server = load_server()
+        for stored, expected in (("Alt", "Alt\n\nNeu"), ("Preise", "Neu"), ("", "Neu")):
+            request = Recorder({
+                ("GET", "canvas_nodes"): [{"id": "n1", "title": "Preise", "content": stored}],
+                ("PATCH", "canvas_nodes"): lambda kwargs: [{"id": "n1", **kwargs["body"]}],
+            })
+            with mock.patch.object(server, "_request", side_effect=request):
+                server.call_tool("idea_update", {"id": "n1", "content_append": " Neu "})
+            (patch,) = request.of("PATCH", "canvas_nodes")
+            self.assertEqual(patch["body"], {"content": expected})
+        with mock.patch.object(server, "_request") as request:
+            with self.assertRaises(server.ToolError):
+                server.call_tool("idea_update", {"id": "n1", "content": "a", "content_append": "b"})
+            request.assert_not_called()

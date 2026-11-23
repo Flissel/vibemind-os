@@ -950,11 +950,14 @@ def test_deterministic_mcp_agent_scope_drift_fails_before_executor(
     assert built_targets == []
 
 
-def test_cognitive_idea_expand_keeps_the_openfang_chat_agent(monkeypatch):
-    """An event without execution.kind=mcp remains a cognitive agent route.
+def test_cognitive_idea_expand_runs_only_as_auftrag_with_rueckweg(monkeypatch):
+    """idea.expand braucht ein Modell, schreibt aber nur ueber den Rueckweg.
 
-    Bis 23.11.2026 stand hier idea.create; das ist seitdem ein fester Aufruf
-    (ideen_fest_contract). idea.expand braucht weiter ein Modell.
+    Bis 23.11.2026 lief idea.expand hier synchron zum OpenFang-Agenten und erwartete
+    ok/openfang:brain-ideas. Das Ergebnis kam so nie an der Karte an (der Agent sollte
+    ein Werkzeug idea_expand benutzen, das es nicht gibt). Seitdem laeuft es nur als
+    Auftrag mit Rueckweg (core/ideen_rueckweg.py); ohne Auftragsweg (kein antwortkanal)
+    wird kein Agent gestartet, sondern ein deutscher Satz gemeldet.
     """
     built_targets = []
     _disable_kg_hits(monkeypatch)
@@ -973,8 +976,9 @@ def test_cognitive_idea_expand_keeps_the_openfang_chat_agent(monkeypatch):
         plan_ctx=_handoff_bundle(),
     )
 
-    assert result.ok is True
-    assert built_targets == ["openfang:brain-ideas"]
+    assert result.ok is False
+    assert (result.error or "").startswith("ideen_rueckweg: ")
+    assert built_targets == []
 
 
 def test_unregistered_direct_hop_does_not_require_the_mcp_registry(

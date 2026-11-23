@@ -346,7 +346,15 @@ def _check_supabase_edge_ids(spec: Dict[str, Any]):
     if str(spec.get("expect", "present")).lower() != "present":
         return None, {"status": "unverified"}, "invalid durable edge expectation"
     raw_base = os.environ.get("SUPABASE_URL", "")
-    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    # Im Stack kommt der Dienstschluessel als Datei (SUPABASE_SERVICE_ROLE_KEY_FILE);
+    # nur die Umgebung zu lesen liess jede Verbindung als "ungeprueft" scheitern,
+    # obwohl die Kante gespeichert war.
+    try:
+        from core.config import get_secret
+        key = get_secret("SUPABASE_SERVICE_ROLE_KEY")
+    except Exception:
+        key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    key = (key or "").strip()
     if not raw_base.strip():
         return None, {"status": "unverified"}, "SUPABASE_URL is required"
     try:

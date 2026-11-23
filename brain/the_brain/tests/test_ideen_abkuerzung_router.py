@@ -184,6 +184,26 @@ def _hauptlauf() -> int:
     check("unlesbares Ergebnis faellt auf die Synthese zurueck",
           intro._feste_antwort(plan_mit("shortcut_4", "bubble_list"), lauf(True, {"x": 1}), False, "", None) is None)
 
+    # ── Planer-Weg (Arbeitslauf 23.11.2026): fester Satz statt "Multi-hop plan: 0/1 ..." ──
+    fest = intro._feste_antwort(
+        plan_mit("plan_10", "idea_arrange"),
+        lauf(False, None, "RuntimeError: Ideen-Werkzeug meldet einen Fehler (too_many_ideas) anzahl=101 grenze=100"),
+        False, "", None)
+    check("Planer: zu viele Karten -> Satz mit Zahl",
+          fest is not None and fest["final_text"].startswith("Ordnen geht bis 100 Notizen; hier sind es 101.")
+          and fest["space"] == "ideas")
+    fest = intro._feste_antwort(plan_mit("plan_11", "idea_explain"), lauf(False, None, "Idea '' not found."),
+                                False, "", None)
+    check("Planer: leerer Name -> Rueckfrage nach dem Titel",
+          fest is not None and fest["final_text"].startswith("Diese Notiz finde ich nicht"))
+    check("Planer: gelungener Ideen-Plan bleibt bei der Synthese",
+          intro._feste_antwort(plan_mit("plan_12", "idea_arrange"), lauf(True, {"x": 1}), False, "", None) is None)
+    check("Planer: fremde Faehigkeit bleibt bei der Synthese",
+          intro._feste_antwort(plan_mit("plan_13", "web_search"), lauf(False, None, "boom"), False, "", None) is None)
+    wartet = {**lauf(False), "pending": True}
+    check("Planer: wartender Auftrag ist kein Fehler",
+          intro._feste_antwort(plan_mit("plan_14", "idea_expand"), wartet, False, "", None) is None)
+
     print(f"{'FEHLER' if fehler else 'OK'}: {len(fehler)} fehlgeschlagen")
     return 1 if fehler else 0
 

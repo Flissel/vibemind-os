@@ -71,6 +71,42 @@ def _normal(text: Any) -> str:
     return re.sub(r"\s+", " ", text).casefold()
 
 
+_PRAEP = r"(?:zum|zur|zu|über|ueber|von|vom|mit|für|fuer|dem|den|der|des|die|das|im|am)"
+
+
+def _vergleich(text: Any) -> str:
+    """Titel zum Vergleichen: klein, Unterstrich als Leerzeichen, ohne Auslassungszeichen."""
+    text = _normal(str(text or "").replace("_", " ")).rstrip("…. ").strip()
+    return re.sub(r"\s+", " ", text)
+
+
+def _gekuerzt(titel: Any) -> bool:
+    titel = str(titel or "").rstrip()
+    return titel.endswith("…") or titel.endswith("...")
+
+
+def _wortanfaenge(gesucht: list[str], titel: Any) -> bool:
+    woerter = re.findall(r"\w+", _vergleich(titel))
+    return bool(woerter) and all(any(w.startswith(g) for w in woerter) for g in gesucht)
+
+
+def _kurztitel(text: str) -> str:
+    """Erste sinnvolle Wendung als Titel, hoechstens 60 Zeichen; der ganze Satz wird der Text.
+
+    Vorher wurde der ganze Satz zum Titel ("Halte fest: ..." mit 200 Zeichen), und die
+    Karte hatte keinen Text.
+    """
+    text = text.strip()
+    for trenner in (" – ", " - ", ": ", ". ", "; ", ", ", " — "):
+        stelle = text.find(trenner)
+        if 3 <= stelle <= 60:
+            kopf = text[:stelle]
+            break
+    else:
+        kopf = text if len(text) <= 60 else text[:61].rsplit(" ", 1)[0]
+    return kopf.strip().rstrip(".,;:–—- ") or text[:60]
+
+
 def _format_aus(wort: str) -> Optional[str]:
     for muster, name in _FORMATWORTE:
         if re.fullmatch(muster, wort.strip(), _I):
@@ -106,7 +142,8 @@ def _karte(name: str, kontext: dict) -> dict:
     nach_id = {k["id"]: k for k in karten}
     wort = _normal(re.sub(rf"^{_KARTE}", "", name.strip(), flags=_I))
     if wort in ("das", "die", "sie", "es", "diese", "dies", "die letzte", "die letzte notiz", "die letzte karte",
-                "die notiz", "die karte", "diese notiz", "diese karte", "die markierte", "die auswahl"):
+                "die notiz", "die karte", "diese notiz", "diese karte", "die markierte", "die auswahl",
+                "dieser notiz", "dieser karte", "der notiz", "der karte", "dem", "der", "ihr", "ihm"):
         auswahl = [i for i in kontext.get("selection") or [] if ist_kennung(i)]
         if len(auswahl) == 1:
             return nach_id.get(auswahl[0], {"id": auswahl[0], "title": ""})
@@ -117,11 +154,30 @@ def _karte(name: str, kontext: dict) -> dict:
             return nach_id.get(zuletzt, {"id": zuletzt, "title": ""})
         raise _Rueckfrage("Welche Karte meinst du? Nenn ihren Titel oder markiere sie.")
     genannt = re.sub(rf"^{_KARTE}", "", name.strip(), flags=_I).strip().strip("\"'„“”")
-    treffer = [k for k in karten if _normal(k.get("title")) == wort]
+    vergleich = _vergleich(genannt)
+    kerne = list(dict.fromkeys((vergleich, re.sub(rf"^(?:{_PRAEP}\s+)+", "", vergleich, flags=_I))))
+    # 1. genau der Titel (Unterstrich = Leerzeichen: "Sponsoren_Liste")
+    treffer = [k for k in karten if _vergleich(k.get("title")) in kerne]
     if len(treffer) == 1:
         return treffer[0]
     if len(treffer) > 1:
         raise _Rueckfrage(f"Es gibt {len(treffer)} Notizen mit dem Titel „{genannt}“. Markiere die gemeinte.")
+    # 2. gekuerzter Titel im Kontext (80 Zeichen + "…"): der genannte Name beginnt mit
+    #    dem Anfang. Die Kennung zaehlt, nicht der ganze Titel.
+    treffer = [k for k in karten if _gekuerzt(k.get("title"))
+               and any(kern.startswith(_vergleich(k.get("title"))) for kern in kerne)]
+    if len(treffer) == 1:
+        return treffer[0]
+    # 3. eindeutiger Teilname: jedes genannte Wort ist ein Wortanfang im Titel
+    #    ("die Notiz zu den Sponsoren" -> "Sponsoren Vertragsentwurf").
+    gesucht = re.findall(r"\w+", kerne[-1])
+    if sum(len(w) for w in gesucht) >= 3:
+        treffer = [k for k in karten if _wortanfaenge(gesucht, k.get("title"))]
+        if len(treffer) == 1:
+            return treffer[0]
+        if len(treffer) > 1:
+            raise _Rueckfrage(f"Zu „{genannt}“ passen {len(treffer)} Notizen: "
+                              f"{_aufzaehlung([k.get('title') for k in treffer])}. Welche meinst du?")
     roh = kontext.get("cards")
     if isinstance(roh, list) and any(
             isinstance(k, dict) and not ist_kennung(k.get("id")) and _normal(k.get("title")) == wort for k in roh):
@@ -154,6 +210,62 @@ def _bubble(name: Optional[str], kontext: dict) -> dict:
     if any(_normal(b.get("title")) == _normal(name) for b in alle):
         raise _Rueckfrage(_BUBBLE_UNKLAR)
     raise _Rueckfrage(f"Ich finde keine Bubble mit dem Titel „{name.strip()}“.")
+
+
+# Obergrenzen des Ideen-Servers (spaces/ideas/mcp_server.py: ARRANGE_NODE_CAP,
+# AUTO_LINK_NODE_CAP). Ordnen verschiebt jede Karte einzeln, Verbinden rechnet nur.
+GRENZEN = {"idea.arrange": 100, "idea.auto_link": 500}
+_TAETIGKEIT = {"idea.arrange": "Ordnen", "idea.auto_link": "Verbinden nach gleichen Wörtern"}
+
+
+def ist_ideen_faehigkeit(capability: Any) -> bool:
+    """Faehigkeiten des Ideen-Space, auch in der Schreibweise des Planers (idea_arrange)."""
+    name = str(capability or "")
+    return (name.startswith(("idea.", "idea_", "bubble.", "bubble_", "ideen_"))
+            or name in ("aenderung_zurueck", "bewertung_begruenden"))
+
+
+def grenzsatz(capability: Any, anzahl: Optional[int], grenze: Optional[int] = None) -> str:
+    """"Ordnen geht bis 100 Notizen; hier sind es 101. ..." - sagt, was geht."""
+    name = str(capability or "").replace("_", ".", 1)
+    grenze = grenze or GRENZEN.get(name, 100)
+    was = _TAETIGKEIT.get(name, "Das")
+    hier = f"hier sind es {anzahl}" if anzahl else "hier sind es mehr"
+    return (f"{was} geht bis {grenze} Notizen; {hier}. "
+            "Verschiebe einen Teil der Notizen in eine eigene Bubble, dann geht es dort.")
+
+
+def _grenze_pruefen(ereignis: str, kontext: dict) -> None:
+    """Schon vor dem Aufruf sagen, dass es nicht geht (die App nennt die wahre Zahl)."""
+    gesamt = kontext.get("cards_total")
+    if isinstance(gesamt, int) and not isinstance(gesamt, bool) and gesamt > GRENZEN[ereignis]:
+        raise _Rueckfrage(grenzsatz(ereignis, gesamt))
+
+
+def _karte_und_rest(text: str, kopf: str, trenner: str, kontext: dict,
+                    fuss: str = "") -> Optional[tuple[dict, str]]:
+    """``kopf KARTE trenner REST fuss``: jede Trennstelle von links probieren.
+
+    Namen koennen das Trennwort selbst enthalten ("Reise in Berlin"); genommen wird die
+    erste Stelle, an der der linke Teil genau eine Karte ergibt. Ergibt keine Stelle eine
+    Karte, kommt die erste Rueckfrage.
+    """
+    m = re.fullmatch(kopf + r"(?P<mitte>.+?)" + fuss, text, _I)
+    if not m:
+        return None
+    mitte = m.group("mitte")
+    erste: Optional[_Rueckfrage] = None
+    for stelle in re.finditer(trenner, mitte, _I):
+        name, rest = mitte[:stelle.start()].strip(), mitte[stelle.end():].strip()
+        if not name or not rest:
+            continue
+        try:
+            return _karte(name, kontext), rest
+        except _Rueckfrage as frage:
+            erste = erste or frage
+    if erste is not None:
+        raise erste
+    return None
 
 
 def _zahl(text: str) -> int:
@@ -203,19 +315,55 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
         r"(?:halt(?:e)?\s+fest|notiz|notiere|schreib(?:e)?\s+auf|merk(?:e)?\s+dir)\s*[:,]?\s*(?:dass\s+)?(?P<t>.+)",
         text, _I)
     if m:
-        titel = m.group("t").strip()
+        satz = m.group("t").strip()
+        titel = _kurztitel(satz)
         argumente = {"bubble_id": _offene_bubble(kontext), "title": titel}
+        if titel != satz:
+            argumente["content"] = satz
         if ist_kennung(kontext.get("new_id")):
             argumente["id"] = kontext["new_id"]
         return _treffer("idea.create", argumente, f"Notiz „{titel}“ festgehalten.")
 
+    # ── ergaenzen (fester Aufruf statt Agentenlauf; der Server haengt an) ──
+    for kopf, trenner in (
+        (r"(?:erg(?:ä|ae)nze|f(?:ü|ue)ge)\s+(?:bei|zu|in|an)\s+", r"\s*(?:hinzu\s*)?:\s*"),
+        (r"schreib(?:e)?\s+(?:bei|zu|in)\s+", r"\s*(?:dazu\s*)?:\s*"),
+        (r"h(?:ä|ae)nge?\s+an\s+", r"\s+an\s*:\s*"),
+        (r"erg(?:ä|ae)nze\s+", r"\s*:\s*"),
+        (r"erg(?:ä|ae)nze\s+", r"\s+um\s*:?\s*"),
+    ):
+        gefunden = _karte_und_rest(text, kopf, trenner, kontext)
+        if gefunden:
+            karte, zusatz = gefunden
+            return _treffer("idea.update", {"id": karte["id"], "content_append": zusatz},
+                            f"{_titel(karte)} ergänzt.")
+
     # ── umbenennen ──
-    m = re.fullmatch(rf"benenne\s+(?P<k>.+?)\s+in\s+(?P<neu>.+?)\s+um", text, _I)
+    for kopf, trenner, fuss in (
+        (r"(?:be)?nenne\s+", r"\s+um\s+in\s+", ""),
+        (r"(?:be)?nenne\s+", r"\s+in\s+", r"\s+um"),
+        (r"(?:ä|ae)ndere\s+den\s+(?:titel|namen)\s+(?:von\s+)?", r"\s+(?:in|zu|auf)\s+", ""),
+        (r"gib\s+", r"\s+den\s+(?:titel|namen)\s+", ""),
+    ):
+        gefunden = _karte_und_rest(text, kopf, trenner, kontext, fuss)
+        if gefunden:
+            karte, neu = gefunden
+            neu = neu.strip("\"'„“” ")
+            return _treffer("idea.update", {"id": karte["id"], "title": neu},
+                            f"{_titel(karte)} heißt jetzt „{neu}“.")
+
+    # ── Modellauftraege mit Rueckweg (core/ideen_rueckweg): Karte hier aufloesen, der
+    #    Agent bekommt nur Daten, das Gehirn schreibt. Antwort ist die Quittung des Auftrags.
+    m = (re.fullmatch(r"formulier(?:e)?\s+(?P<k>.+?)\s+(?:noch\s+)?aus", text, _I)
+         or re.fullmatch(r"schreib(?:e)?\s+(?P<k>.+?)\s+(?:noch\s+)?aus", text, _I))
     if m:
         karte = _karte(m.group("k"), kontext)
-        neu = m.group("neu").strip().strip("\"'„“")
-        return _treffer("idea.update", {"id": karte["id"], "title": neu},
-                        f"{_titel(karte)} heißt jetzt „{neu}“.")
+        return _treffer("idea.expand", {"id": karte["id"]}, "", capability="idea_expand")
+    m = (re.fullmatch(r"was\s+h(?:ä|ae)ltst\s+du\s+von\s+(?P<k>.+?)\s*\??", text, _I)
+         or re.fullmatch(r"sch(?:ä|ae)tz(?:e)?\s+(?P<k>.+?)\s+ein\s*\??", text, _I))
+    if m:
+        karte = _karte(m.group("k"), kontext)
+        return _treffer("idea.explain", {"id": karte["id"]}, "", capability="idea_explain")
 
     # ── formatieren ──
     m = (re.fullmatch(rf"mach(?:e)?\s+aus\s+(?P<k>.+?)\s+{_ARTIKEL}{_FORMAT}", text, _I)
@@ -232,16 +380,22 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
     m = re.fullmatch(r"sortiere\s+(?:die\s+)?(?:karten|notizen)\s+nach\s+(?P<o>bewertung|punkten|titel|name|namen)", text, _I)
     if m:
         order = "score" if m.group("o").casefold() in ("bewertung", "punkten") else "title"
-        return _treffer("idea.arrange", {"bubble_id": _offene_bubble(kontext), "order": order},
+        bubble_id = _offene_bubble(kontext)
+        _grenze_pruefen("idea.arrange", kontext)
+        return _treffer("idea.arrange", {"bubble_id": bubble_id, "order": order},
                         "Karten nach " + ("Bewertung" if order == "score" else "Titel") + " geordnet.")
     if (re.fullmatch(r"r(?:ä|ae)um(?:e)?\s+(?:das\s+canvas|die\s+karten|die\s+notizen|hier)\s+auf", text, _I)
             or re.fullmatch(r"ordne\s+(?:die\s+)?(?:notizen|karten)(?:\s+im\s+raster)?", text, _I)):
-        return _treffer("idea.arrange", {"bubble_id": _offene_bubble(kontext)}, "Karten ins Raster geordnet.")
+        bubble_id = _offene_bubble(kontext)
+        _grenze_pruefen("idea.arrange", kontext)
+        return _treffer("idea.arrange", {"bubble_id": bubble_id}, "Karten ins Raster geordnet.")
 
     # ── verlinken ──
     if re.fullmatch(r"(?:verlinke|verbinde|verkn(?:ü|ue)pfe)\s*,?\s+was\s+zusammen\s?geh(?:ö|oe)rt", text, _I) \
             or re.fullmatch(r"finde\s+verbindungen(?:\s+in\s+dieser\s+bubble)?", text, _I):
-        return _treffer("idea.auto_link", {"bubble_id": _offene_bubble(kontext)},
+        bubble_id = _offene_bubble(kontext)
+        _grenze_pruefen("idea.auto_link", kontext)
+        return _treffer("idea.auto_link", {"bubble_id": bubble_id},
                         "Verbindungen nach gleichen Wörtern gesucht.")
     m = re.fullmatch(
         r"(?:verlinke|verbinde|verkn(?:ü|ue)pfe)\s+die\s+(?:beiden|zwei)(?:\s+(?:notizen|karten|markierten))?", text, _I)
@@ -260,8 +414,10 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
                         f"{_titel(a)} und {_titel(b)} sind verbunden.", capability="idea_connect")
 
     # ── bewerten (nur mit genannter Zahl; ein Urteil braucht ein Modell) ──
-    m = re.fullmatch(r"bewerte\s+(?:diese\s+bubble|die\s+bubble(?:\s+(?P<b>.+?))?)\s+mit\s+(?P<z>\d{1,3})(?:\s+punkten)?",
-                     text, _I)
+    m = (re.fullmatch(r"bewerte\s+(?:diese\s+bubble|die\s+bubble(?:\s+(?P<b>.+?))?)\s+mit\s+(?P<z>\d{1,3})(?:\s+punkten)?",
+                      text, _I)
+         or re.fullmatch(r"gib\s+(?:dieser\s+bubble|der\s+bubble(?:\s+(?P<b>.+?))?)\s+(?P<z>\d{1,3})\s+punkte",
+                         text, _I))
     if m:
         bubble = _bubble(m.group("b"), kontext)
         wert = _zahl(m.group("z"))
@@ -316,13 +472,29 @@ def _feld(name: str) -> str:
     return _FELDNAMEN.get(name, f"„{name}“")
 
 
-def fehlersatz(fehler: Any) -> str:
+def fehlersatz(fehler: Any, capability: Any = None) -> str:
     """Ein deutscher Satz fuer den Chat aus dem Fehlertext eines festen Schritts.
 
     Der technische Text bleibt im Ergebnis des Schritts stehen; hier entsteht nur, was
-    der Mensch liest. Es kommen Feldnamen und Fehlernamen durch, nie Werte.
+    der Mensch liest. Es kommen Feldnamen und Fehlernamen durch, nie Werte. Gilt auch fuer
+    den Planer-Weg (``capability`` dort z. B. "idea_arrange").
     """
     text = str(fehler or "")
+    m = re.search(r"ideen_rueckweg: (?P<satz>[^\n]{1,300})", text)
+    if m:
+        # Der Rueckweg nennt schon einen deutschen Satz ohne Werte (core/ideen_rueckweg).
+        return m.group("satz").strip()
+    if "too_many_ideas" in text:
+        anzahl = re.search(r"(?:anzahl=|: )(\d{1,6})(?: ideas)?", text)
+        grenze = re.search(r"(?:grenze=|limit )(\d{1,6})", text)
+        return grenzsatz(capability, int(anzahl.group(1)) if anzahl else None,
+                         int(grenze.group(1)) if grenze else None)
+    if "idea_format_no_content" in text:
+        return ("Diese Karte hat noch keinen Text, aus dem ich eine Tabelle oder Liste bauen kann. "
+                "Ergänze erst Inhalt, z. B. „Ergänze bei … : …“.")
+    if re.search(r"Idea '[^']*' not found", text):
+        # Aelterer Planer-Weg (supabase_ideas_ops): der Name kam nicht an.
+        return "Diese Notiz finde ich nicht. Nenn ihren Titel oder markiere sie."
     if "Ideen-Dienst nicht erreichbar" in text:
         return ("Der Ideen-Dienst läuft gerade nicht. Bitte prüfe das Canvas, bevor du es wiederholst."
                 if "transport_closed" in text
@@ -393,13 +565,29 @@ def _mcp_json(ergebnis: Any) -> Any:
         return None
 
 
-def _aufzaehlung(titel: list[str], zeige: int = 3) -> str:
-    """„A“, „B“, „C“ (und 9 weitere) - nur Titel, nie Kennungen."""
+def _aufzaehlung(titel: list[str], zeige: int = 3, gesamt: Optional[int] = None,
+                 unbekannt_mehr: bool = False) -> str:
+    """„A“, „B“, „C“ (und 9 weitere) - nur Titel, nie Kennungen.
+
+    ``gesamt`` ist die wahre Zahl, wenn die Liste gekuerzt ist; ``unbekannt_mehr``: es gibt
+    mehr, aber die Zahl ist nicht bekannt.
+    """
     sauber = [re.sub(r"\s+", " ", str(t or "")).strip() for t in titel]
     sauber = [(t if len(t) <= 60 else t[:57].rstrip() + "…") or "ohne Titel" for t in sauber]
     kopf = ", ".join(f"„{t}“" for t in sauber[:zeige])
-    rest = len(sauber) - zeige
+    rest = (gesamt if gesamt is not None else len(sauber)) - min(zeige, len(sauber))
+    if unbekannt_mehr:
+        return kopf + " (und weitere)"
     return kopf + (f" (und {rest} weitere)" if rest > 0 else "")
+
+
+def _ganzzahl(wert: Any) -> Optional[int]:
+    return wert if isinstance(wert, int) and not isinstance(wert, bool) and wert >= 0 else None
+
+
+# So viele Karten liefert idea_list ohne "limit"; eine aeltere Server-Form (blosse Liste)
+# mit genau so vielen Eintraegen kann gekuerzt sein.
+IDEA_LIST_VORGABE = 50
 
 
 def _mehrzahl(anzahl: int, eins: str, viele: str) -> str:
@@ -416,10 +604,20 @@ def antwort_fuer_schritt(capability: Any, ok: bool, ergebnis: Any, fehler: Any,
     """
     try:
         if not ok:
-            return fehlersatz(fehler)
+            return fehlersatz(fehler, capability)
         if capability == "idea.list":
-            zeilen = _mcp_json(ergebnis)
-            if not isinstance(zeilen, list):
+            # Die Zahl im Satz ist die Gesamtzahl aus der Zaehlung des Ideen-Servers, nie die
+            # Laenge der gekuerzten Liste (23.11.2026: "50 Notizen" bei einer Bubble mit mehr Karten).
+            inhalt = _mcp_json(ergebnis)
+            if isinstance(inhalt, dict) and isinstance(inhalt.get("karten"), list):
+                zeilen = inhalt["karten"]
+                gekuerzt = inhalt.get("gekuerzt") is True
+                gesamt = _ganzzahl(inhalt.get("gesamt"))
+            elif isinstance(inhalt, list):  # aeltere Server-Form: blosse Liste, ohne Zaehlung
+                zeilen = inhalt
+                gekuerzt = len(zeilen) >= IDEA_LIST_VORGABE
+                gesamt = None if gekuerzt else len(zeilen)
+            else:
                 return vorgabe or None
             bubble = kontext.get("bubble") if isinstance(kontext, dict) else None
             ort = (str(bubble.get("title") or "").strip() if isinstance(bubble, dict) else "")
@@ -427,7 +625,11 @@ def antwort_fuer_schritt(capability: Any, ok: bool, ergebnis: Any, fehler: Any,
             if not zeilen:
                 return f"In {ort} gibt es noch keine Notizen."
             titel = [z.get("title") for z in zeilen if isinstance(z, dict)]
-            return f"{_mehrzahl(len(zeilen), 'Notiz', 'Notizen')} in {ort}: {_aufzaehlung(titel)}."
+            if gesamt is None or gesamt < len(titel):
+                if gekuerzt:
+                    return f"Mindestens {len(titel)} Notizen in {ort}: {_aufzaehlung(titel, unbekannt_mehr=True)}."
+                gesamt = len(titel)
+            return f"{_mehrzahl(gesamt, 'Notiz', 'Notizen')} in {ort}: {_aufzaehlung(titel, gesamt=gesamt)}."
         if capability == "idea.auto_link":
             inhalt = _mcp_json(ergebnis)
             anzahl = inhalt.get("anzahl") if isinstance(inhalt, dict) else None

@@ -1358,6 +1358,9 @@ _CANONICAL_SPACE_EVENT_IDS = {
     "idea_add": "idea.create",
     "idea_update": "idea.update",
     "idea_expand": "idea.expand",
+    # Modellauftrag mit Rueckweg (core/ideen_rueckweg). Vorher blieb idea_explain auf
+    # supabase:idea.llm und scheiterte mit "Idea '' not found" (Arbeitslauf 23.11.2026).
+    "idea_explain": "idea.explain",
     "idea_connect": "idea.connect",
     "aenderung_zurueck": "idea.aenderung_zurueck",
     # Die festen Aufrufe des Ideen-Space (ideen_fest_contract) haben hier bewusst

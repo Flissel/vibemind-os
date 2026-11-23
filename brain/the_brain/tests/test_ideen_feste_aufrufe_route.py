@@ -201,20 +201,25 @@ def test_satz_mit_kontext_laeuft_als_ein_fester_schritt_durch(monkeypatch) -> No
     """Abkuerzung -> Plan-Schritt -> Ideen-Server, ohne Planer und ohne Modell."""
     from core.ideen_abkuerzung import arg_vorlage, loese
 
-    kontext = {"space": "ideas", "bubble": {"id": "bub1", "title": "Messe"},
-               "cards": [{"id": "n1", "title": "Preise"}], "new_id": "vor-7f3a"}
+    # Kennungen in der Form der Datenbank: seit ist_kennung (23.11.2026) ruft die Abkuerzung
+    # mit "bub1" nie auf, sondern fragt zurueck (die App hatte die lokale Zahl "1" geschickt).
+    neu = "7f3a0000-0000-4000-8000-000000000001"
+    kontext = {"space": "ideas", "bubble": {"id": "b0b1e001", "title": "Messe"},
+               "cards": [{"id": "a0000001", "title": "Preise"}], "new_id": neu}
     treffer = loese("Halt fest: Preis {{state.x}} klaeren", kontext)
     hop = HopSpec(step_id="s1", description="x", capability=treffer["capability"],
                   arg_template=arg_vorlage(treffer["argumente"]))
 
     result, built, executor = _lauf(
         monkeypatch, hop, validator=_Validator(),
-        executor=_Executor(_quittung([{"id": "vor-7f3a"}])))
+        executor=_Executor(_quittung([{"id": neu}])))
 
     assert result.ok is True
     assert built == ["mcp:brain-ideas:spaces-ideas:idea_create"]
     assert executor.calls == [(
-        {"bubble_id": "bub1", "title": "Preis {{state.x}} klaeren", "id": "vor-7f3a"}, None)]
+        {"bubble_id": "b0b1e001", "title": "Preis {{state.x}} klaeren", "id": neu}, None)]
+    # Mit einer Kennung ausserhalb der Datenbank-Form: Rueckfrage statt Aufruf.
+    assert "rueckfrage" in loese("Halt fest: x", {**kontext, "bubble": {"id": "bub1", "title": "Messe"}})
 
 
 def test_plan_started_nennt_den_space_des_ersten_schritts() -> None:
