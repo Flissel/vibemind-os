@@ -185,7 +185,6 @@ spaces:
       idea.analyze_links:       { tool: db_canvas_nodes, required_params: [] }
       idea.explore.start:       { tool: db_ideas_update, required_params: [] }
       idea.explore.stop:        { tool: db_ideas_update, required_params: [] }
-      idea.generate_doc:        { tool: db_ideas_update, required_params: [idea_id] }
       idea.to_project:          { tool: db_projects_create, required_params: [name] }
 
   # ─── Coding (code gen + edits) ──────────────────────────────────────

@@ -21,7 +21,6 @@ events:
 - idea.format_pros_cons
 - idea.format_specs
 - idea.format_table
-- idea.generate_doc
 - idea.list
 - idea.summarize
 - idea.to_project
