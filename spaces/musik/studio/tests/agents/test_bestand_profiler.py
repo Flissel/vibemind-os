@@ -69,7 +69,10 @@ def test_profil_traegt_den_gemessenen_bereich(fake_client, songs, wahl, budget):
     assert profile.genre == "Sommerfest, erst ruhig"
     assert profile.bpm == wahl.bereich
     assert profile.track_count.needed <= len(wahl.drin)
-    assert profile.track_count.request == profile.track_count.needed
+    # Vertrag seit Fix-Welle B2: der Kurator darf aus allen passenden Songs
+    # waehlen. (Frueher request == needed - das galt hier nur zufaellig, weil
+    # fuer 20 Minuten alle drei Songs gebraucht werden.)
+    assert profile.track_count.request == len(wahl.drin)
 
 
 def test_die_laenge_kommt_vom_aufrufer(fake_client, songs, wahl, budget):
