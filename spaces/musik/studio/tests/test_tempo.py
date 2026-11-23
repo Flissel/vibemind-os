@@ -107,3 +107,25 @@ def test_eigenschaft_kein_feineres_ziel_nimmt_mehr_songs_auf():
             for z in raster
         )
         assert len(wahl.drin) >= bestes, (tempi, wahl)
+
+
+# --- B10: halb oder doppelt gemessen ----------------------------------------
+
+
+def test_halbes_oder_doppeltes_tempo_wird_genannt_nicht_korrigiert():
+    tempi = {"a": 124.0, "b": 126.0, "c": 128.0, "h": 63.0, "d": 252.0, "x": 90.0}
+
+    wahl = waehle_tempo(tempi)
+
+    assert sorted(wahl.drin) == ["a", "b", "c"]
+    # Keine Korrektur: beide bleiben draussen, mit ihrem gemessenen Tempo.
+    assert wahl.draussen == {"h": 63.0, "d": 252.0, "x": 90.0}
+    assert wahl.oktave == {"h": "halb", "d": "doppelt"}
+
+
+def test_ein_altes_tempo_json_ohne_oktave_bleibt_lesbar():
+    alt = (
+        '{"bereich": {"target": 126.0, "min": 124.0, "max": 128.0}, '
+        '"drin": ["a"], "draussen": {}}'
+    )
+    assert TempoWahl.model_validate_json(alt).oktave == {}

@@ -10,7 +10,9 @@ Reine Rechnung auf gemessenen Tempi, kein Modellurteil.
 
 import math
 
-from pydantic import BaseModel
+from typing import Literal
+
+from pydantic import BaseModel, Field
 
 from djset.contracts import MAX_RATIO, MIN_RATIO, BpmRange
 
@@ -21,6 +23,12 @@ class TempoWahl(BaseModel):
     bereich: BpmRange
     drin: list[str]  # Song-IDs im Bereich, in der Reihenfolge der Eingabe
     draussen: dict[str, float]  # Song-ID -> gemessenes Tempo
+    # Song-ID -> "halb"/"doppelt" fuer Songs in `draussen`, deren doppeltes
+    # bzw. halbes Tempo in den Bereich passte: vermutlich hat die Messung die
+    # Tempo-Oktave verfehlt. Nur genannt, nicht korrigiert - ob es so ist,
+    # entscheidet ein Mensch. Mit Vorgabe, damit aeltere tempo.json lesbar
+    # bleiben.
+    oktave: dict[str, Literal["halb", "doppelt"]] = Field(default_factory=dict)
 
 
 def _passt(target: float, tempo: float) -> bool:
@@ -69,6 +77,19 @@ def _kandidaten(tempi: dict[str, float]) -> list[float]:
     return sorted(kandidaten)
 
 
+def _oktave(
+    target: float, draussen: dict[str, float]
+) -> dict[str, Literal["halb", "doppelt"]]:
+    """Welche Songs draussen vermutlich halb oder doppelt gemessen wurden."""
+    vermutung: dict[str, Literal["halb", "doppelt"]] = {}
+    for song_id, tempo in draussen.items():
+        if _passt(target, tempo * 2):
+            vermutung[song_id] = "halb"
+        elif _passt(target, tempo / 2):
+            vermutung[song_id] = "doppelt"
+    return vermutung
+
+
 def waehle_tempo(tempi: dict[str, float]) -> TempoWahl:
     """Der Bereich, in den die meisten Songs passen.
 
@@ -107,6 +128,7 @@ def waehle_tempo(tempi: dict[str, float]) -> TempoWahl:
                 bereich=BpmRange(target=target, min=unten, max=oben),
                 drin=drin,
                 draussen=draussen,
+                oktave=_oktave(target, draussen),
             )
 
     # Jedes gemessene Tempo ist selbst Kandidat und nimmt mindestens seinen

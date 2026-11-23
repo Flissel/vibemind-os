@@ -553,7 +553,9 @@ def cmd_set(
         f"(Ziel {wahl.bereich.target:.1f}): {len(wahl.drin)} Songs"
     )
     for song_id, tempo in wahl.draussen.items():
-        print(f"  nicht im Bereich: {song_id} ({tempo:.1f} BPM)")
+        vermutung = wahl.oktave.get(song_id)
+        zusatz = f", vermutlich {vermutung} gemessen" if vermutung else ""
+        print(f"  nicht im Bereich: {song_id} ({tempo:.1f} BPM{zusatz})")
     messungen = {song.id: song.messung for song in im_bereich if song.messung}
     return build_run(run, files, profile, client, budget, messungen=messungen)
 

@@ -147,6 +147,13 @@ def _key_breaks(
     return lines
 
 
+def _oktave_zusatz(tempo: TempoWahl, song_id: str) -> str:
+    """Der Zusatz "vermutlich halb/doppelt gemessen", wenn tempo.oktave den
+    Song nennt - sonst nichts."""
+    vermutung = tempo.oktave.get(song_id)
+    return f" (vermutlich {vermutung} gemessen)" if vermutung else ""
+
+
 def status_line(qa: QaReport, corrected: bool) -> str:
     """Die eine Zeile, die beantwortet, ob der Lauf ohne Nachlesen brauchbar ist.
 
@@ -302,7 +309,7 @@ def render_qa_report(
         lines += ["## Nicht im Tempo-Bereich", ""]
         if tempo.draussen:
             lines += [
-                f"- `{song_id}`: {bpm:.1f} BPM"
+                f"- `{song_id}`: {bpm:.1f} BPM{_oktave_zusatz(tempo, song_id)}"
                 for song_id, bpm in tempo.draussen.items()
             ]
             lines.append("")

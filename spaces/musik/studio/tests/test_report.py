@@ -319,3 +319,22 @@ def test_ohne_bruch_sagt_der_abschnitt_keine(profile: Profile) -> None:
     )
 
     assert "Keine" in _abschnitt(text, "Tonart-Brueche")
+
+
+def test_der_bericht_nennt_vermutlich_halb_gemessene_songs(profile: Profile) -> None:
+    """B10: 63 BPM neben einem Bereich um 126 ist vermutlich halb gemessen."""
+    tempo = TempoWahl(
+        bereich=BpmRange(target=126.0, min=124.0, max=128.0),
+        drin=["a", "b", "c"],
+        draussen={"h": 63.0, "d": 252.0, "x": 90.0},
+        oktave={"h": "halb", "d": "doppelt"},
+    )
+
+    text = render_qa_report(
+        _report(-2.0, []), _shortlist(), [], None, simple_plan(), profile, tempo=tempo
+    )
+
+    abschnitt = _abschnitt(text, "Nicht im Tempo-Bereich")
+    assert "`h`: 63.0 BPM (vermutlich halb gemessen)" in abschnitt
+    assert "`d`: 252.0 BPM (vermutlich doppelt gemessen)" in abschnitt
+    assert "`x`: 90.0 BPM\n" in abschnitt
