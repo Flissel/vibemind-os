@@ -53,7 +53,7 @@ def test_eintrag_ist_neu_und_hat_pflichtfelder():
     vorhanden = [c for c in _katalog() if c["capability"] == e["capability"]]
     assert len(vorhanden) <= 1
     for c in vorhanden:
-        for feld in ("execution_target", "match_patterns", "validator"):
+        for feld in ("execution_target", "match_patterns", "validator", "agents"):
             assert c.get(feld) == e.get(feld), feld
     assert e["execution_target"] == ZIEL
     assert e["match_patterns"] and e["anchor_phrases"] and e["validator"]["on_fail"] == "block"
@@ -63,6 +63,19 @@ def test_eintrag_ist_neu_und_hat_pflichtfelder():
 def test_ziel_passt_zu_block_1():
     block1 = (HIER.parent / "block-1-rechtetraeger.md").read_text(encoding="utf-8")
     assert ZIEL in block1
+
+
+def test_eintrag_hat_keinen_agents_block():
+    """brain-rowboat ist ein Rechtetraeger ohne Modellrolle (Block 1, Regel 4).
+
+    `agents.primary` ist die Quelle der Modell-Uebergabe eines Schritts; der Traeger darf dort nie stehen,
+    sonst koennte der Router ihm eine Modell-Nachricht schicken. Das Ziel `execution_target` genuegt: Der Router
+    liest `agents` freiwillig (`entry.get("agents") or {}`), und Eintraege mit `mcp:`-Ziel ohne `agents` gibt es
+    im Katalog schon.
+    """
+    e = _eintrag()
+    assert "agents" not in e, e.get("agents")
+    assert "brain-rowboat" not in repr({k: v for k, v in e.items() if k != "execution_target"})
 
 
 def test_muster_treffen_nur_die_richtigen_saetze():

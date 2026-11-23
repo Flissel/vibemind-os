@@ -43,7 +43,7 @@ Ordner `spaces/auftragsbuch/lieferung/eingabe/`:
   `setz`, `setze`, `schreib`, `schreibe`, mit „mir" und „bitte") und „auf/in die|meine|unsere (To-do-|Aufgaben-)Liste"
   aus der Anfrage; Satzzeichen und nachgestelltes „, danke", „bitte" am Ende werden ignoriert. Passt der Satz nicht, `None`. Wirft nie.
 - `test_vorschlaege_eingabe.py` ( darunter `test_ergebnis_passt_zum_vertrag` gegen `pruefe_eingabe` und
-  den echten Vertrag; jetzt insgesamt 15 Tests) und `test_katalog_eintrag.py` (4 Tests; liest den Eintrag unten aus diesem Dokument und
+  den echten Vertrag; jetzt insgesamt 15 Tests) und `test_katalog_eintrag.py` (10 Tests; liest den Eintrag unten aus diesem Dokument und
   prüft ihn gegen den echten Katalog). Aufruf von der Repo-Wurzel, je Datei einzeln:
   `python -m pytest spaces/auftragsbuch/lieferung/eingabe/test_vorschlaege_eingabe.py -q -p no:cacheprovider`
   `python -m pytest spaces/auftragsbuch/lieferung/eingabe/test_katalog_eintrag.py -q -p no:cacheprovider`
@@ -81,9 +81,6 @@ ihn nicht. Die Datei selbst ist hier **nicht** geändert.
     # angelegt hat, prueft dessen eigene Nachpruefung (nachpruefung: beleg) und `auftrag_lesen`.
     kind: "rule:non_empty_result"
     on_fail: block
-  agents:
-    primary: [brain-rowboat]
-    supporting: []
 ```
 
 Dazu in `brain/the_brain/data/capability_effects.yaml` eine Zeile unter `# --- external ---` (Zeile 111, neben
@@ -99,8 +96,14 @@ die steht in `test_capability_effects.py` mit Obergrenze 20 genau bei 20 (`RESTL
 änderbar). `event_do` (ebenfalls `external`) ist das Vorbild. Will die Koordination eine `truth:`-Prüfung gegen das
 Auftragsbuch bauen, wird daraus `write`.
 
-Zu `agents.primary: [brain-rowboat]`: Der Katalog prüft Agentennamen beim Start gegen OpenFang; der Agent muss also
-vorher bekannt sein (Block 1, Reihenfolge Punkt 3), sonst warnt der Router.
+**Kein `agents`-Block, mit Absicht.** `brain-rowboat` ist ein Rechteträger ohne Modellrolle (Block 1, Regel 4): Er
+bearbeitet keine Nachrichten. `agents.primary` ist die Quelle der Modell-Übergabe eines Schritts; stünde der Träger
+dort, könnte der Router ihm eine Modell-Nachricht schicken. Es genügt `execution_target`. Das ist ohne Folgen: Der
+Router liest `agents` freiwillig (`capability_router.py`: `entry.get("agents") or {}`), und ein Ziel `mcp:` springt
+vor der Agentenwahl der Diskussion ab (`has_execution_target`). Im Katalog von `948f436f` haben 92 von 127 Einträgen
+keinen `agents`-Block, darunter die Einträge `aenderung_zurueck` und `idea_connect` mit Ziel `mcp:`. Die Wahl des
+Agenten steckt im Ziel selbst (`mcp:brain-rowboat:...`); damit entfällt auch die Abhängigkeit von Block 1, Punkt 3
+(Agent bei OpenFang bekannt) für den Katalog. Prüfen tut das `test_eintrag_hat_keinen_agents_block`.
 
 ## 2. Einbau in das Gehirn
 
