@@ -64,3 +64,16 @@ class FakeClient:
         if isinstance(answer, BaseException):
             raise answer
         return answer
+
+
+class ZaehlenderClient(FakeClient):
+    """FakeClient mit deutschem Namen fuer die Zahl der Aufrufe.
+
+    Fuer Tests, die zeigen muessen, dass ein Lauf VOR dem ersten
+    Modellaufruf abbricht: `aufrufe == 0`. Gezaehlt wird jeder Aufruf von
+    complete(), auch einer, der mangels Antwort scheitert.
+    """
+
+    @property
+    def aufrufe(self) -> int:
+        return self.calls

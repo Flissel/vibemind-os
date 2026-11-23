@@ -22,6 +22,7 @@ from djset.contracts import (
     UnreadableTrack,
 )
 from djset.qa import TRUE_PEAK_CEILING_DB
+from djset.tempo import TempoWahl
 
 # Was die Spec in Abschnitt 5 zusichert: "Ausgegeben wird set.wav als
 # 44,1 kHz / 24 Bit Stereo." Steht hier, damit die Format-Zeile die Zusage
@@ -164,6 +165,7 @@ def render_qa_report(
     plan: MixPlan,
     profile: Profile,
     corrected: bool = False,
+    tempo: TempoWahl | None = None,
 ) -> str:
     """Der Bericht als Markdown.
 
@@ -186,6 +188,12 @@ def render_qa_report(
     zum tatsaechlich ausgelieferten File passen - der Bericht behauptet dann
     faelschlich, was ausgeliefert wurde, sei noch der Pegel, der die
     Korrektur ausgeloest hat.
+
+    `tempo` kommt nur bei einem Set aus dem Bestand mit (tempo.json im Lauf).
+    Dann nennt "Nicht im Tempo-Bereich" jeden Song, der sich nicht in den
+    Bereich des Sets strecken liess, mit seinem gemessenen Tempo. Ohne
+    `tempo` gibt es diese Sektion nicht - ein Lauf aus watch/ hat keinen
+    Bestand, aus dem etwas haette draussen bleiben koennen.
     """
     lines = ["# QA-Bericht", "", f"**Status:** {_status_line(qa, corrected)}", ""]
 
@@ -242,6 +250,27 @@ def render_qa_report(
         lines.append("")
         lines.append(shortlist.note)
     lines.append("")
+
+    if tempo is not None:
+        bereich = tempo.bereich
+        lines += ["## Nicht im Tempo-Bereich", ""]
+        if tempo.draussen:
+            lines += [
+                f"- `{song_id}`: {bpm:.1f} BPM"
+                for song_id, bpm in tempo.draussen.items()
+            ]
+            lines.append("")
+            lines.append(
+                f"Bereich des Sets: {bereich.min:.1f} bis {bereich.max:.1f} BPM "
+                f"(Ziel {bereich.target:.1f}). Diese Songs lassen sich nicht "
+                f"innerhalb der Stretch-Grenze darauf strecken."
+            )
+        else:
+            lines.append(
+                f"- Keine - jeder Song passt in den Bereich {bereich.min:.1f} "
+                f"bis {bereich.max:.1f} BPM (Ziel {bereich.target:.1f})."
+            )
+        lines.append("")
 
     lines += ["## Nicht lesbare Dateien", ""]
     if unreadable:

@@ -1,19 +1,32 @@
-"""Einsprungpunkt mit den Unterkommandos `plan` und `build`."""
+"""Einsprungpunkt mit den Unterkommandos `plan`, `build`, `set`, `record`
+und `import`."""
 
 import argparse
+import os
 import sys
 from datetime import date
 from pathlib import Path
 
 from djset.agents.architect import arrange
 from djset.agents.base import AgentClient, AgentError, Budget
+from djset.agents.bestand_profiler import build_profile_from_bestand
 from djset.agents.curator import NotEnoughTracks, curate
 from djset.agents.designer import design
 from djset.agents.profiler import build_profile
 from djset.agents.prompt_writer import render_markdown, write_prompts
 from djset.analysis import analyse_all
+from djset.bestand import Bestand, BestandFehler, SongEintrag
 from djset.capture import CaptureFailed, import_folder, list_input_devices, record
-from djset.contracts import CritiqueLog, CritiqueRound, MixPlan, Profile, Setlist
+from djset.contracts import (
+    MAX_RATIO,
+    MIN_RATIO,
+    MIN_TRACKS,
+    CritiqueLog,
+    CritiqueRound,
+    MixPlan,
+    Profile,
+    Setlist,
+)
 from djset.critic import Critique, critique
 from djset.qa import check_set
 from djset.render.engine import ImpossibleMixPlan, render
@@ -21,9 +34,23 @@ from djset.render.stretch import RenderToolMissing, UnsupportedSampleRate
 from djset.render.tracklist import render_tracklist
 from djset.report import correction_gain_db, render_qa_report
 from djset.run import FINISHED_MARKER, Run, RunNotFound, slugify
-from djset.watch import NotEnoughMaterial, check_enough, check_sample_rate, scan
+from djset.tempo import TempoWahl, waehle_tempo
+from djset.watch import (
+    AudioFile,
+    NotEnoughMaterial,
+    check_enough,
+    check_sample_rate,
+    scan,
+)
 
 WATCH_DIRNAME = "watch"
+
+# Die Tempo-Wahl eines Laufs aus dem Bestand. Fehlt sie, kam der Lauf aus
+# watch/ und hat keinen Tempo-Bereich zu berichten.
+TEMPO_ARTIFACT = "tempo.json"
+
+# Wo `set` den Bestand findet, wenn --daten fehlt.
+DATEN_ENV = "MUSIK_DATEN"
 
 # Unter diesem Namen entsteht das Set, bis der Bericht steht. Erst dann wird
 # es zu FINISHED_MARKER - der Marke, an der Run.latest_unfinished einen
@@ -139,6 +166,24 @@ def cmd_build(
         print(f"Fehler: {error}", file=sys.stderr)
         return 1
 
+    return build_run(run, files, profile, client, budget)
+
+
+def build_run(
+    run: Run,
+    files: list[AudioFile],
+    profile: Profile,
+    client: AgentClient,
+    budget: Budget,
+) -> int:
+    """Der Kern eines build-Laufs, ab der Analyse: Stufen 3 bis 9.
+
+    Gemeinsam fuer beide Einstiege - `build` (Material aus watch/) und `set`
+    (Songs aus dem Bestand). Beide haben vorher ihre Vorab-Checks gemacht;
+    von hier an kosten die Stufen Tokens. Liegt tempo.json im Lauf (nur beim
+    Einstieg `set`), nennt der QA-Bericht die Songs ausserhalb des
+    Tempo-Bereichs.
+    """
     try:
         analyses, unreadable = analyse_all(client, files, profile, run, budget)
         shortlist = curate(client, analyses, unreadable, profile, budget)
@@ -248,6 +293,9 @@ def cmd_build(
         )
         return 1
 
+    tempo = (
+        run.read_model(TEMPO_ARTIFACT, TempoWahl) if run.has(TEMPO_ARTIFACT) else None
+    )
     run.write_text(
         "qa-report.md",
         render_qa_report(
@@ -258,6 +306,7 @@ def cmd_build(
             best,
             profile,
             correction is not None,
+            tempo=tempo,
         ),
     )
     # Jetzt ist der Lauf fertig - und erst jetzt traegt er die Marke dafuer.
@@ -282,6 +331,138 @@ def cmd_build(
     print(f"  Tracklist: {run.path('tracklist.md')}")
     print(f"  QA-Bericht: {run.path('qa-report.md')}")
     return 0
+
+
+def _songs_laden(
+    bestand: Bestand, daten: Path, songs: list[str] | None
+) -> list[SongEintrag] | None:
+    """Alle Songs oder die genannten, mit Messung. None nach einer Meldung."""
+    try:
+        if songs is None:
+            geladen = bestand.alle()
+            if not geladen:
+                print(
+                    f"Fehler: der Bestand unter {daten} ist leer. Nimm zuerst "
+                    f"Songs auf.",
+                    file=sys.stderr,
+                )
+                return None
+        else:
+            # Doppelt genannte IDs nur einmal: ein Song zweimal im Set ergaebe
+            # zwei Analysen unter derselben track_id.
+            geladen = [bestand.hole(song_id) for song_id in dict.fromkeys(songs)]
+            if not geladen:
+                print("Fehler: --songs nennt keinen Song.", file=sys.stderr)
+                return None
+
+        gemessen: list[SongEintrag] = []
+        for song in geladen:
+            if song.messung is None:
+                print(f"  messe {song.id} ...")
+                song = bestand.messen(song.id)
+            gemessen.append(song)
+        return gemessen
+    except BestandFehler as error:
+        print(f"Fehler: {error}", file=sys.stderr)
+        return None
+
+
+def cmd_set(
+    daten: Path,
+    wunsch: str,
+    length_minutes: float,
+    songs: list[str] | None,
+    client: AgentClient,
+    budget: Budget,
+    today: date,
+) -> int:
+    """Baut ein Set aus Songs, die schon im Bestand liegen.
+
+    Alles bis zum Anlegen des Laufs ist Vorab-Check und kostet kein Token:
+    Songs laden, fehlende Messungen nachholen, den Tempo-Bereich waehlen,
+    pruefen, ob genug Songs hineinpassen und ob ihre Laenge reicht. Erst dann
+    fragt der Profiler das Modell, danach laeuft dieselbe Kette wie bei build.
+    """
+    if not wunsch.strip():
+        print("Fehler: --wunsch darf nicht leer sein.", file=sys.stderr)
+        return 1
+    if length_minutes <= 0:
+        print(
+            f"Fehler: --length muss positiv sein, war {length_minutes}.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Bestand() legt eingang/ und songs/ an. Ein vertippter Pfad ergaebe sonst
+    # still einen neuen, leeren Bestand an der falschen Stelle.
+    if not daten.is_dir():
+        print(f"Fehler: {daten} ist kein Verzeichnis.", file=sys.stderr)
+        return 1
+    bestand = Bestand(daten)
+    geladen = _songs_laden(bestand, daten, songs)
+    if geladen is None:
+        return 1
+
+    # _songs_laden hat jede fehlende Messung nachgeholt.
+    tempi = {song.id: song.messung.bpm.value for song in geladen if song.messung}
+    wahl = waehle_tempo(tempi)
+
+    if len(wahl.drin) < MIN_TRACKS:
+        gemessen = ", ".join(
+            f"{song_id} {tempo:.1f} BPM" for song_id, tempo in tempi.items()
+        )
+        print(
+            f"Fehler: nur {len(wahl.drin)} Songs passen in einen gemeinsamen "
+            f"Tempo-Bereich (Streckung {MIN_RATIO:.2f} bis {MAX_RATIO:.2f}), "
+            f"gebraucht werden mindestens {MIN_TRACKS}. Gemessen: {gemessen}.",
+            file=sys.stderr,
+        )
+        return 1
+
+    nach_id = {song.id: song for song in geladen}
+    im_bereich = [nach_id[song_id] for song_id in wahl.drin]
+    vorhanden_s = sum(song.messung.duration_s for song in im_bereich if song.messung)
+    if vorhanden_s < length_minutes * 60:
+        print(
+            f"Fehler: die {len(im_bereich)} Songs im Tempo-Bereich "
+            f"{wahl.bereich.min:.1f} bis {wahl.bereich.max:.1f} BPM ergeben "
+            f"zusammen {vorhanden_s / 60:.1f} Minuten, gewuenscht sind "
+            f"{length_minutes:.1f} Minuten.",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        files = [
+            AudioFile(id=song.id, path=bestand.pfad(song.id)) for song in im_bereich
+        ]
+        # Der Bestand wandelt beim Aufnehmen in die Rate der Kette um. Eine von
+        # Hand nach songs/ gelegte Datei taete das nicht - und fiele sonst erst
+        # beim Rendern auf, nachdem jedes Token bezahlt ist.
+        check_sample_rate(files)
+    except (BestandFehler, UnsupportedSampleRate) as error:
+        print(f"Fehler: {error}", file=sys.stderr)
+        return 1
+
+    run = Run.create(daten, wunsch, today=today)
+    run.write_model(TEMPO_ARTIFACT, wahl)
+    try:
+        profile = build_profile_from_bestand(
+            client, wunsch, length_minutes, im_bereich, wahl, budget
+        )
+    except AgentError as error:
+        print(f"Fehler beim Erzeugen des Profils: {error}", file=sys.stderr)
+        return 1
+    run.write_model("profile.json", profile)
+
+    print(f"Run: {run.run_id}")
+    print(
+        f"  Tempo-Bereich {wahl.bereich.min:.1f} bis {wahl.bereich.max:.1f} BPM "
+        f"(Ziel {wahl.bereich.target:.1f}): {len(wahl.drin)} Songs"
+    )
+    for song_id, tempo in wahl.draussen.items():
+        print(f"  nicht im Bereich: {song_id} ({tempo:.1f} BPM)")
+    return build_run(run, files, profile, client, budget)
 
 
 def cmd_record(
@@ -386,6 +567,23 @@ def main(argv: list[str] | None = None) -> int:
     # dass er nur woanders gesucht hat.
     build.add_argument("--base", type=Path, default=Path("."), help="Projektwurzel")
 
+    set_parser = subparsers.add_parser("set", help="Set aus Songs im Bestand bauen")
+    set_parser.add_argument(
+        "--daten",
+        type=Path,
+        default=None,
+        help=f"Wurzel des Bestands, sonst die Umgebungsvariable {DATEN_ENV}",
+    )
+    set_parser.add_argument(
+        "--wunsch", required=True, help="frei, z.B. 'Sommerfest, erst ruhig'"
+    )
+    set_parser.add_argument(
+        "--length", type=float, required=True, help="Ziellaenge in Minuten"
+    )
+    set_parser.add_argument(
+        "--songs", default=None, help="Song-IDs mit Komma getrennt, sonst alle"
+    )
+
     record_parser = subparsers.add_parser(
         "record", help="Vom Leitungs-/Aux-Eingang in watch/ aufnehmen"
     )
@@ -438,6 +636,37 @@ def main(argv: list[str] | None = None) -> int:
                 max_tokens=BUILD_BUDGET_TOKENS,
                 max_seconds=BUILD_BUDGET_SECONDS,
             ),
+        )
+    if args.command == "set":
+        daten = args.daten
+        if daten is None and os.environ.get(DATEN_ENV, "").strip():
+            daten = Path(os.environ[DATEN_ENV].strip())
+        if daten is None:
+            print(
+                f"Fehler: --daten fehlt und {DATEN_ENV} ist nicht gesetzt.",
+                file=sys.stderr,
+            )
+            return 1
+        songs = (
+            [teil.strip() for teil in args.songs.split(",") if teil.strip()]
+            if args.songs is not None
+            else None
+        )
+        from djset.agents.client import ClaudeClient
+
+        # Dasselbe Budget wie build: der eine Profiler-Aufruf mehr faellt
+        # neben einem Aufruf je Track nicht ins Gewicht.
+        return cmd_set(
+            daten,
+            args.wunsch,
+            args.length,
+            songs,
+            ClaudeClient(),
+            Budget(
+                max_tokens=BUILD_BUDGET_TOKENS,
+                max_seconds=BUILD_BUDGET_SECONDS,
+            ),
+            date.today(),
         )
     if args.command == "record":
         return cmd_record(

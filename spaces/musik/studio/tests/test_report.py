@@ -1,5 +1,6 @@
 from djset.contracts import (
     AudioFormat,
+    BpmRange,
     MixPlan,
     Profile,
     QaFinding,
@@ -9,6 +10,7 @@ from djset.contracts import (
 )
 from djset.qa import TRUE_PEAK_CEILING_DB
 from djset.report import CORRECTION_HEADROOM_DB, correction_gain_db, render_qa_report
+from djset.tempo import TempoWahl
 from tests.fixtures.render import simple_plan
 
 
@@ -217,3 +219,45 @@ def test_an_empty_curator_note_leaves_no_stray_blank_line(profile: Profile) -> N
     )
 
     assert "\n\n\n" not in text
+
+
+def test_the_report_names_every_song_outside_the_tempo_range(profile: Profile) -> None:
+    """Ein Set aus dem Bestand hat einen Tempo-Bereich. Was nicht hineinpasst,
+    bleibt draussen - und muss im Bericht mit seinem Tempo stehen, sonst sucht
+    der Leser den Song im Set und findet ihn nicht."""
+    tempo = TempoWahl(
+        bereich=BpmRange(target=126.0, min=124.0, max=128.0),
+        drin=["a", "b", "c"],
+        draussen={"d": 174.0, "e": 90.0},
+    )
+
+    text = render_qa_report(
+        _report(-2.0, []), _shortlist(), [], None, simple_plan(), profile, tempo=tempo
+    )
+
+    abschnitt = text.split("## Nicht im Tempo-Bereich", 1)[1].split("\n## ", 1)[0]
+    assert "`d`: 174.0 BPM" in abschnitt
+    assert "`e`: 90.0 BPM" in abschnitt
+    assert "124.0" in abschnitt and "128.0" in abschnitt
+
+
+def test_the_tempo_section_says_so_when_every_song_fits(profile: Profile) -> None:
+    tempo = TempoWahl(
+        bereich=BpmRange(target=126.0, min=124.0, max=128.0),
+        drin=["a", "b", "c"],
+        draussen={},
+    )
+
+    text = render_qa_report(
+        _report(-2.0, []), _shortlist(), [], None, simple_plan(), profile, tempo=tempo
+    )
+
+    abschnitt = text.split("## Nicht im Tempo-Bereich", 1)[1].split("\n## ", 1)[0]
+    assert "Keine" in abschnitt
+
+
+def test_without_tempo_information_there_is_no_tempo_section(profile: Profile) -> None:
+    """Ein Lauf aus dem watch-Ordner hat keinen Tempo-Bereich aus dem Bestand."""
+    text = render_qa_report(_report(-2.0, []), _shortlist(), [], None, simple_plan(), profile)
+
+    assert "Tempo-Bereich" not in text
