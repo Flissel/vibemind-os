@@ -230,6 +230,7 @@ class DifficultyRouter:
             return False
         self._anchor_mat = mat
         self._anchor_levels = levels
+        self._anchor_texts = texts
         return True
 
     @staticmethod
@@ -294,8 +295,13 @@ class DifficultyRouter:
                 if score < _min_cos and level in ("hard", "insane"):
                     return {"level": "medium", "score": score, "method": "qwen-cosine-lowconf",
                             "reason": f"schwacher Match (cos={score:.2f} < {_min_cos}) → medium statt {level}"}
+                # Der Grund nennt den wirklich naechsten Anker, nicht den ersten der Stufe
+                # (sonst stand bei jedem medium-Satz "öffne example.com im browser").
+                texte = getattr(self, "_anchor_texts", None) or []
+                anker = texte[best] if best < len(texte) else self._anchors[level][0]
                 return {"level": level, "score": score, "method": "qwen-cosine",
-                        "reason": f"naechster Anker '{self._anchors[level][0][:40]}' (cos={score:.2f})"}
+                        "anchor": anker,
+                        "reason": f"naechster Anker '{anker[:40]}' (cos={score:.2f})"}
             except Exception as e:  # noqa: BLE001 — Embedding-Fehler → Heuristik
                 logger.warning(f"[difficulty] Cosine fehlgeschlagen ({e}), Heuristik")
 

@@ -1121,6 +1121,15 @@ class PlanExecutor:
             with self._lock:
                 self.stats["total_elapsed_s"] += elapsed
             ok = all(hr.ok for hr in executed.values())
+            # Kein Erfolg ohne Ergebnis (Rundgang 23.11.2026: "keine lesbare Antwort" mit ✓):
+            # ein Schritt, dessen Ziel nichts Verwertbares geantwortet hat, ist kein Erfolg.
+            if ok:
+                try:
+                    from core.verstehen import ohne_antwort
+                    ok = not any(ohne_antwort(hr.result) for hr in executed.values()
+                                 if hr.ok and not hr.pending)
+                except Exception:  # noqa: BLE001
+                    pass
             result = {
                 "ok": ok,
                 "plan": plan.to_dict(),

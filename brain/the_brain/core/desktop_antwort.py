@@ -144,6 +144,9 @@ _SAETZE = {
 }
 
 
+UNLESBAR = "Der Desktop-Dienst hat keine lesbare Antwort gegeben."
+
+
 def antwort_fuer_desktop(capability: Any, ok: bool, ergebnis: Any, fehler: Any) -> Optional[str]:
     """Der Satz fuer den Chat nach einem Desktop-Schritt; ``None`` nur fuer fremde Faehigkeiten.
 

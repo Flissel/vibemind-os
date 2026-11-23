@@ -2588,7 +2588,7 @@ def _feste_antwort(plan, exec_result, ideen_fest: bool, vorgabe: str, kontext: A
             return _planer_fehler_ideen(hops, exec_result)
         capability = hops[0].capability or ""
         if capability.startswith("desktop_"):
-            from core.desktop_antwort import antwort_fuer_desktop
+            from core.desktop_antwort import UNLESBAR as DESKTOP_UNLESBAR, antwort_fuer_desktop
             # Desktop: fester Satz aus dem Werkzeug-Ergebnis, Space "desktop", nie Rohtext.
             schritt = (exec_result.get("executed") or {}).get(hops[0].step_id) or {}
             if not isinstance(schritt, dict):
@@ -2598,6 +2598,11 @@ def _feste_antwort(plan, exec_result, ideen_fest: bool, vorgabe: str, kontext: A
             if text is None:
                 return None
             antwort_desktop: Dict[str, Any] = {"final_text": text, "space": "desktop"}
+            if ok and text == DESKTOP_UNLESBAR:
+                # Rundgang 23.11.2026: "keine lesbare Antwort" stand mit ✓ da. Ohne Ergebnis
+                # kein Erfolg.
+                ok = False
+                antwort_desktop["ok"] = False
             if not ok:
                 antwort_desktop["fehler"] = str(schritt.get("error") or "")
             return antwort_desktop
@@ -2632,6 +2637,7 @@ async def multihop_execute(request: Request):
         {plan: {...}}             execute a hand-built plan (skip planner)
     Returns the executed plan summary plus optional final synthesis."""
     import os  # modulweit nicht importiert in dieser Datei — für SoM-Merge-Routing
+    from core import verstehen as _verstehen
     state = request.app.state
     pe = getattr(state, "plan_executor", None)
     pl = getattr(state, "multihop_planner", None)
@@ -2665,6 +2671,8 @@ async def multihop_execute(request: Request):
     plan = None
     _ideen_fest = False     # Plan stammt aus der Ideen-Abkuerzung (ein fester Aufruf)
     _ideen_antwort = ""
+    _fest_lesen = ""        # fester Lesesatz eines Space (core/verstehen), z. B. schedule_list
+    _space = None           # Space der App aus context.space, None wenn nicht gesendet
     if plan_dict:
         try:
             plan = _Plan.from_dict(plan_dict)
@@ -2689,6 +2697,16 @@ async def multihop_execute(request: Request):
                     "final_text": _ideen_antwort, "trace_id": trace_id,
                 })
             _ideen_fest = plan is not None
+        # Space der App (context.space) als Signal: feste Lesesaetze je Space, ehrliche Saetze
+        # fuer Spaces ohne laufenden Weg (core/verstehen). Ein fester Satz laeuft ohne Planer.
+        _space = _verstehen.space_aus_kontext(body.get("context"))
+        if not skip_shortcut and plan is None:
+            _lesen = _verstehen.feste_lesefrage(intent, _space)
+            if _lesen and _lesen.get("antwort"):
+                return _ehrlich(pe, trace_id, intent, "noch-nicht", _lesen["antwort"], _space)
+            if _lesen and _lesen.get("capability"):
+                plan = _fester_leseplan(intent, _lesen["capability"])
+                _fest_lesen = _lesen["capability"] if plan is not None else ""
         # Phase 11.Q2 — Capability-Router shortcut. If the router has a
         # high-confidence regex match for a single-action intent, skip
         # the LLM planner and build a 1-hop plan directly. Wrapped in
@@ -2700,6 +2718,11 @@ async def multihop_execute(request: Request):
             except Exception as e:
                 logger.exception(f"[multihop] shortcut crashed for intent={intent!r}: {e}")
                 plan = None  # fall through to LLM
+
+        # Space ohne laufenden Weg: kein Planer, kein Agent, sondern ein ehrlicher Satz.
+        if (plan is None and _space is not None and not _verstehen.hat_weg(_space)
+                and _verstehen.regel_an()):
+            return _ehrlich(pe, trace_id, intent, "kein-weg", _verstehen.kein_weg(_space), _space)
 
         # Phase A (2026-06-08): SEMANTISCHES schwierigkeits-basiertes Routing.
         # Ersetzt das fragile Verb-Zählen (_looks_like_multi_action) durch einen
@@ -2714,6 +2737,7 @@ async def multihop_execute(request: Request):
             use_som = os.environ.get("SOM_AS_PLANNER", "1") not in ("0", "false", "False")
             diff_on = os.environ.get("DIFFICULTY_ROUTING", "1") not in ("0", "false", "False")
             level = None
+            _unverstanden = False
             if diff_on:
                 try:
                     from core.difficulty_router import get_router, handler_for
@@ -2726,6 +2750,7 @@ async def multihop_execute(request: Request):
                     _loop = _asyncio.get_running_loop()
                     cls = await _loop.run_in_executor(None, get_router().classify, intent)
                     level = cls.get("level")
+                    _unverstanden = _verstehen.unter_schwelle(cls)
                     handler = handler_for(level)
                     logger.info(f"[multihop] difficulty={level} handler={handler} "
                                 f"({cls.get('method')}, {cls.get('reason')}) intent={intent[:60]!r}")
@@ -2743,6 +2768,12 @@ async def multihop_execute(request: Request):
                     "ok": True, "difficulty": "meta", "executed": {}, "skipped": True,
                     "final_text": "", "trace_id": trace_id,
                 })
+
+            if _unverstanden:
+                # Zu weit vom naechsten Anker: nicht raten, keinen Planer und keinen Agenten
+                # starten (Rundgang 23.11.2026: cos 0,35-0,72 ging an den Planer).
+                return _ehrlich(pe, trace_id, intent, "nicht-verstanden",
+                                _verstehen.nicht_verstanden(_space), _space)
 
             if level == "easy":
                 # einfache Frage/Smalltalk → direkte Chat-Antwort, KEIN Planer.
@@ -2874,7 +2905,15 @@ async def multihop_execute(request: Request):
 
     if plan is None:
         _trace_lite(pe, trace_id, intent, "no-plan", "")
-        return JSONResponse({"ok": False, "error": "planner returned no plan", "trace_id": trace_id})
+        return JSONResponse({"ok": False, "error": "planner returned no plan", "trace_id": trace_id,
+                             "final_text": _verstehen.nicht_verstanden(_space)})
+
+    # Space-Wache: ein Plan, der ganz in einem anderen Space liegt als dem der App, laeuft
+    # nicht (ein Satz aus SWE Design landete im Ideen-Bereich). Mitgebrachte und feste
+    # Plaene sind ausgenommen.
+    if (not plan_dict and not _ideen_fest and not _fest_lesen and _verstehen.regel_an()
+            and _verstehen.fremder_plan([h.capability for h in (plan.hops or [])], _space)):
+        return _ehrlich(pe, trace_id, intent, "fremder-space", _verstehen.fremd_satz(_space), _space)
 
     # Run executor in a thread so FastAPI's main loop is free to handle
     # any nested HTTP calls (brain:GET:/api/X targets recurse into us).
@@ -2946,9 +2985,14 @@ async def multihop_execute(request: Request):
     # Fester Aufruf: der Antworttext steht fest, ein Modell formuliert nichts. Das gilt
     # fuer Plaene der Ideen-Abkuerzung und fuer die aelteren Ein-Schritt-Abkuerzungen
     # "zurueck" und "zeige meine Bubbles" (deren Rohtext stand sonst im Chat).
-    _fest = _feste_antwort(plan, exec_result, _ideen_fest, _ideen_antwort, body.get("context"))
+    if _fest_lesen:
+        _fest = _lese_antwort(plan, exec_result, _fest_lesen)
+    else:
+        _fest = _feste_antwort(plan, exec_result, _ideen_fest, _ideen_antwort, body.get("context"))
     if _fest is not None:
         out.update(_fest)
+        if _verstehen.schritte_ohne_antwort(out.get("executed")):
+            out["ok"] = False
         try:
             pe.recorder.attach_final(plan.plan_id, out["final_text"])
         except Exception:  # noqa: BLE001
@@ -2987,7 +3031,78 @@ async def multihop_execute(request: Request):
         except Exception as e:
             out["synthesis_error"] = f"{type(e).__name__}: {e}"
 
-    return JSONResponse(out)
+    return JSONResponse(_auffangnetz(out))
+
+
+def _auffangnetz(out: Dict[str, Any]) -> Dict[str, Any]:
+    """Kein Rohtext im Chat, kein Erfolg ohne Ergebnis - fuer jeden Space. Wirft nie.
+
+    "Multi-hop plan: ...", Python-Dicts, Zeitueberschreitungen verlassen das Gehirn nicht;
+    der technische Text bleibt in ``fehler`` fuer die Spur.
+    """
+    try:
+        from core import verstehen as _verstehen
+
+        if _verstehen.schritte_ohne_antwort(out.get("executed")):
+            out["ok"] = False
+        text = out.get("final_text")
+        if _verstehen.rohtext(text):
+            if isinstance(text, str) and text.strip():
+                out["fehler"] = text[:2000]
+            out["final_text"] = (_verstehen.FEHLERSATZ if not out.get("ok")
+                                 else _verstehen.ROH_ERFOLG_SATZ)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[auffangnetz] uebersprungen: {type(e).__name__}: {e}")
+    return out
+
+
+def _ehrlich(pe, trace_id: str, intent: str, weg: str, satz: str, space: Optional[str]) -> JSONResponse:
+    """Ehrlicher Satz statt Planer-Lauf: kein Aufruf, nichts geaendert, als Rueckfrage markiert."""
+    _trace_lite(pe, trace_id, intent, weg, satz)
+    antwort: Dict[str, Any] = {"ok": False, "rueckfrage": True, "verstanden": False, "executed": {},
+                               "final_text": satz, "trace_id": trace_id, "weg": weg}
+    if space:
+        antwort["space"] = space
+    return JSONResponse(antwort)
+
+
+def _fester_leseplan(intent: str, capability: str):
+    """Ein-Schritt-Plan fuer einen festen Lesesatz eines Space; ``None`` bei Fehler."""
+    try:
+        from core.plan_schema import Plan as _Plan, HopSpec as _HopSpec
+        return _Plan(
+            plan_id=f"lesen_{int(time.time() * 1000)}",
+            intent=intent,
+            rationale=f"fester Lesesatz: {capability}",
+            hops=[_HopSpec(step_id="s1", description=f"{capability} via festen Lesesatz",
+                           capability=capability, arg_template="")],
+            final_synthesis_prompt="",
+            estimated_cost_usd=0.0,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[fester-lesesatz] Plan nicht gebaut: {type(e).__name__}: {e}")
+        return None
+
+
+def _lese_antwort(plan, exec_result, capability: str) -> Dict[str, Any]:
+    """Deutscher Satz fuer einen festen Lesesatz; nie Rohtext, nie Erfolg ohne Ergebnis."""
+    from core import verstehen as _verstehen
+    schritt: Any = {}
+    try:
+        hops = getattr(plan, "hops", None) or []
+        schritt = (exec_result.get("executed") or {}).get(hops[0].step_id) or {} if hops else {}
+    except Exception:  # noqa: BLE001
+        schritt = {}
+    if not isinstance(schritt, dict):
+        schritt = {}
+    satz = None
+    if exec_result.get("ok") and schritt.get("ok"):
+        formatierer = _verstehen.FESTE_ANTWORTEN.get(capability)
+        satz = formatierer(schritt.get("result")) if formatierer else None
+    if satz:
+        return {"final_text": satz, "ok": True}
+    return {"final_text": _verstehen.FEHLERSATZ, "ok": False,
+            "fehler": str(schritt.get("error") or "keine lesbare Antwort")[:2000]}
 
 
 @router.get("/api/multihop/history")
