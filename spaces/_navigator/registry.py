@@ -65,6 +65,16 @@ SPACES: Dict[str, SpaceMeta] = {
         "capabilities": ["sales.auftrag_probe", "sales.auftrag_lesen"],
         "renderer_id": None,
     },
+    "recherche": {
+        "label": "Recherche-Rechte",
+        "event_prefix": "recherche.",
+        "stream": None,
+        "aliases": [],
+        "description": "Rights only: the identity the Brain uses for its fixed research calls of one bubble. No surface, no agent that reads messages.",
+        "use_when": "Never for navigation: research questions go to the research space; this entry only holds rights",
+        "capabilities": ["recherche.start", "recherche.status"],
+        "renderer_id": None,
+    },
     "brain": {
         "label": "Brain",
         "event_prefix": "brain.",

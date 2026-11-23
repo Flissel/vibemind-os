@@ -8,10 +8,13 @@ des Agenten.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import importlib.util
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -70,6 +73,8 @@ TOOLS: list[dict[str, Any]] = [
                 "language": {"type": "string", "default": "german"},
                 "confirm": {"type": "boolean", "default": False},
                 "final_brief": {"type": "string"},
+                # Einmaliges Zeichen des Gehirns: mit der Vorschau hinterlegt, beim Start vorgelegt.
+                "start_token": {"type": "string", "minLength": 32, "maxLength": 128},
             },
             "required": ["bubble_id", "brief"],
             "additionalProperties": False,
@@ -182,6 +187,65 @@ def _job_state_path(job_id: str) -> pathlib.Path:
 
 def _request_path(job_id: str) -> pathlib.Path:
     return ARTIFACT_DIR / f"research_{job_id}.request.json"
+
+
+PREVIEW_TTL_SECONDS = 600
+_START_TOKEN = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
+
+
+def _ticket_path(job_id: str) -> pathlib.Path:
+    return ARTIFACT_DIR / f"research_{job_id}.ticket.json"
+
+
+def _start_token(arguments: Mapping[str, Any]) -> str | None:
+    value = arguments.get("start_token")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not _START_TOKEN.fullmatch(value):
+        raise ToolError("invalid_arguments: 'start_token' must be 32 to 128 URL-safe characters")
+    return value
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("ascii")).hexdigest()
+
+
+def _write_ticket(job_id: str, bubble_id: str, token: str) -> None:
+    """Zur Vorschau: nur der Hash des Zeichens, die Bubble und das Ablaufdatum."""
+    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    _ticket_path(job_id).write_text(json.dumps({
+        "token_sha256": _token_hash(token), "bubble_id": bubble_id,
+        "expires_at": time.time() + PREVIEW_TTL_SECONDS,
+    }), encoding="utf-8")
+
+
+def _redeem_ticket(job_id: str, bubble_id: str, token: str | None) -> None:
+    """Start nur mit dem Zeichen der Vorschau, fuer dieselbe Bubble, rechtzeitig, genau einmal.
+
+    Ein Modell, das research_start selbst mit confirm=true ruft, hat kein Zeichen, das das
+    Gehirn zu dieser Vorschau hinterlegt hat; ein Zeichen gilt nur einmal.
+    """
+    if token is None:
+        raise ToolError("start_not_allowed: confirm needs the start_token of the preview")
+    path = _ticket_path(job_id)
+    try:
+        ticket = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ToolError("start_not_allowed: no preview for this job") from exc
+    # Erst einloesen (loeschen), dann pruefen: zwei gleichzeitige Starts bekommen nie beide den Lauf.
+    try:
+        path.unlink()
+    except OSError as exc:
+        raise ToolError("start_not_allowed: preview already used") from exc
+    if (not isinstance(ticket, dict) or ticket.get("bubble_id") != bubble_id
+            or not isinstance(ticket.get("token_sha256"), str)
+            or not hmac.compare_digest(ticket["token_sha256"], _token_hash(token))):
+        raise ToolError("start_not_allowed: start_token does not match the preview")
+    expires = ticket.get("expires_at")
+    if not isinstance(expires, (int, float)) or expires < time.time():
+        raise ToolError("start_not_allowed: preview expired")
+    if _job_state_path(job_id).exists():
+        raise ToolError("start_not_allowed: job already started")
 
 
 def _write_job_file(job_id: str, payload: dict) -> None:
@@ -453,6 +517,10 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> dict:
         if not isinstance(language, str) or not language.strip():
             raise ToolError("invalid_arguments: 'language' must be a non-empty string")
         confirm = _confirm_flag(arguments)
+        start_token = _start_token(arguments)
+        if confirm and (start_token is None or arguments.get("final_brief") is None):
+            # Ohne Zeichen und ohne den Brief der Vorschau startet nichts (24.11.2026).
+            raise ToolError("start_not_allowed: confirm needs the start_token and final_brief of the preview")
 
         bubble = _read_bubble(bubble_id)
         nodes = _read_nodes(bubble_id)
@@ -469,6 +537,8 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> dict:
         )
 
         if not confirm:
+            if start_token is not None:
+                _write_ticket(job_id, bubble_id, start_token)
             return {
                 "status": "preview",
                 "brief": brief_text,
@@ -496,6 +566,7 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> dict:
                     "ohne die Pfadzeile zu entfernen"
                 )
             job_id = from_brief
+        _redeem_ticket(job_id, bubble_id, start_token)
 
         _write_job_file(job_id, {
             "job_id": job_id,

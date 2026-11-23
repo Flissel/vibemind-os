@@ -25,6 +25,7 @@ from core.agent_auftraege import AuftragsTabelle  # noqa: E402
 
 BUBBLE = "00000000-0000-4000-8000-0000000000b1"
 JOB = "job_v1_" + "0" * 26
+ZEICHEN = "z" * 43
 ARG = {"bubble_id": BUBBLE, "bubble_titel": "Stadtfest", "thema": "Ticketpreise anderer Stadtfeste"}
 
 
@@ -79,6 +80,8 @@ def _rufe(antworten, aufrufe):
 def test_vorschau_ist_rueckfrage_ohne_lauf_und_wird_gemerkt() -> None:
     aufrufe = []
     satz = rb.vorschau(ARG, rufe=_rufe([{"status": "preview", "brief": "BRIEF research_x.md"}], aufrufe))
+    zeichen = aufrufe[0][1].pop("start_token")
+    assert isinstance(zeichen, str) and len(zeichen) >= 43       # vom Gehirn ausgestellt, je Vorschau neu
     assert aufrufe == [("research_start", {"bubble_id": BUBBLE, "brief": "Ticketpreise anderer Stadtfeste",
                                            "depth": "thorough", "language": "german"})]
     assert "confirm" not in aufrufe[0][1]
@@ -86,6 +89,7 @@ def test_vorschau_ist_rueckfrage_ohne_lauf_und_wird_gemerkt() -> None:
     assert "Web-Zugriffen" in satz and satz.endswith("Sag „Ja, recherchieren“, dann starte ich.")
     offen = rb.satz_pruefen("Ja, recherchieren")
     assert offen["offen"]["brief"] == "BRIEF research_x.md" and offen["offen"]["argumente"] == ARG
+    assert offen["offen"]["zeichen"] == zeichen
     # genau einmal
     assert rb.satz_pruefen("Ja, recherchieren") == {"satz": rb.OHNE_FRAGE}
 
@@ -122,10 +126,12 @@ def test_vorschau_dienst_weg_sagt_es_ehrlich() -> None:
 
 def test_start_legt_erst_die_zeile_an_dann_den_lauf() -> None:
     tabelle, aufrufe = _Tabelle(), []
-    felder = rb.starten({"argumente": ARG, "brief": "BRIEF"}, tabelle=tabelle, trace_id="tr_1",
+    felder = rb.starten({"argumente": ARG, "brief": "BRIEF", "zeichen": ZEICHEN}, tabelle=tabelle, trace_id="tr_1",
                         rufe=_rufe([{"status": "started", "job_id": JOB}], aufrufe))
     (zeile,) = tabelle.zeilen.values()
-    assert zeile["status"] == "laeuft" and zeile["frist_s"] == 5400 and zeile["agent"] == "brain-researcher"
+    assert zeile["status"] == "laeuft" and zeile["frist_s"] == 5400 and zeile["agent"] == "brain-recherche"
+    assert zeile["capability"] == "recherche.start"
+    assert aufrufe[0][1]["start_token"] == ZEICHEN
     assert zeile["uebergabe"] == {"recherche": {**{k: ARG[k] for k in ("bubble_id", "bubble_titel", "thema")},
                                                 "job_id": JOB}}
     assert aufrufe[0][1]["confirm"] is True and aufrufe[0][1]["final_brief"] == "BRIEF"
@@ -137,7 +143,8 @@ def test_start_legt_erst_die_zeile_an_dann_den_lauf() -> None:
 def test_ohne_tabelle_kein_start() -> None:
     aufrufe = []
     with pytest.raises(rb.RechercheFehler, match="Auftragstabelle"):
-        rb.starten({"argumente": ARG, "brief": "B"}, tabelle=_Tabelle(anlegen_geht=False), trace_id="t",
+        rb.starten({"argumente": ARG, "brief": "B", "zeichen": ZEICHEN}, tabelle=_Tabelle(anlegen_geht=False),
+                   trace_id="t",
                    rufe=_rufe([{"status": "started", "job_id": JOB}], aufrufe))
     assert aufrufe == []
 
@@ -284,13 +291,14 @@ def test_tabelle_legt_laufende_zeile_an_und_schliesst_nur_laufende() -> None:
 
 
 @pytest.mark.parametrize("faehigkeit,ziel", [
-    ("research.bubble_start", None),
-    ("research.bubble_status", None),
+    ("recherche.start", None),
+    ("recherche.status", None),
+    ("eigener_alias", "mcp:brain-recherche:spaces-research:research_start"),
     ("eigener_alias", "mcp:brain-researcher:spaces-research:research_start"),
-    ("eigener_alias", "mcp:brain-researcher: Spaces_Research :research_start"),
+    ("eigener_alias", "mcp:brain-recherche: Spaces_Research :research_start"),
     ("eigener_alias", "mcp:anderer-agent:SPACES-RESEARCH:research_status"),
-    ("eigener_alias", "mcp:brain-researcher:spaces:research_research_start"),
-    ("eigener_alias", "mcp:brain-researcher:Spaces-Res earch:research_start"),
+    ("eigener_alias", "mcp:brain-recherche:spaces:research_research_start"),
+    ("eigener_alias", "mcp:brain-recherche:Spaces-Res earch:research_start"),
 ])
 def test_plan_kann_keine_recherche_starten(monkeypatch, faehigkeit, ziel) -> None:
     from core.plan_executor import PlanExecutor
@@ -300,7 +308,7 @@ def test_plan_kann_keine_recherche_starten(monkeypatch, faehigkeit, ziel) -> Non
 
     class _Router:
         def get_capability(self, _capability):
-            return {"execution_target": ziel or "mcp:brain-researcher:spaces-research:research_start"}
+            return {"execution_target": ziel or "mcp:brain-recherche:spaces-research:research_start"}
 
     monkeypatch.setattr("core.plan_executor.PlanExecutor._capture_kg_hits", lambda *args: [])
     monkeypatch.setattr("core.capability_targets.build_executor", lambda target: gebaut.append(target))
@@ -372,7 +380,7 @@ def server_und_openfang(monkeypatch, tmp_path):
             return cls()
 
         def prepare_invocation(self, kontext):
-            assert kontext.agent_name == "brain-researcher" and kontext.space_id == "research"
+            assert kontext.agent_name == "brain-recherche" and kontext.space_id == "recherche"
             return _Bereit()
 
     angekommen = []
@@ -398,7 +406,10 @@ def test_ganzer_weg_bis_zur_karte(server_und_openfang) -> None:
     # 1. Vorschau: kein Lauf, keine Jobdatei.
     satz = rb.vorschau(ARG)
     assert satz.startswith("Ich würde zu „Stadtfest“ recherchieren"), satz
-    assert s["gestartet"] == [] and list(s["ordner"].iterdir()) == []
+    # Nur das Ticket der Vorschau liegt da: Hash des Zeichens, nie das Zeichen selbst.
+    assert s["gestartet"] == [] and [p.suffixes for p in s["ordner"].iterdir()] == [[".ticket", ".json"]]
+    zeichen = s["angekommen"][0][1].pop("start_token")
+    assert zeichen not in next(s["ordner"].iterdir()).read_text(encoding="utf-8")
     assert s["angekommen"][0] == ("research_start", {"bubble_id": BUBBLE, "brief": ARG["thema"],
                                                      "depth": "thorough", "language": "german"})
     # 2. Ja: Zeile, dann Start mit dem Brief der Vorschau; die job_id folgt dem Brief.
@@ -409,6 +420,12 @@ def test_ganzer_weg_bis_zur_karte(server_und_openfang) -> None:
     (zeile,) = tabelle.zeilen.values()
     assert zeile["uebergabe"]["recherche"]["job_id"] == job_id
     assert "Stand 900" in s["angekommen"][1][1]["final_brief"]  # Bubble-Inhalt als Hintergrund
+    assert s["angekommen"][1][1]["start_token"] == zeichen
+    assert not list(s["ordner"].glob("*.ticket.json"))           # eingeloest
+    # Ein Modell, das denselben Start noch einmal schickt, startet nichts mehr.
+    antwort = s["server"].handle_message({"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {
+        "name": "research_start", "arguments": s["angekommen"][1][1]}})
+    assert "start_not_allowed" in json.dumps(antwort) and s["gestartet"] == [job_id]
     # 3. Noch kein Bericht: laeuft weiter.
     z = rb.runde(tabelle, **rb.anschluss() | {"karte_lesen": lambda n: None})
     assert z["recherche_wartet"] == 1
@@ -504,10 +521,25 @@ def test_router_anderer_satz_verwirft_die_vorschau(server_und_openfang, monkeypa
     assert body["final_text"] == rb.OHNE_FRAGE and s["gestartet"] == [] and tabelle.zeilen == {}
 
 
-def test_registry_bindet_beide_werkzeuge_an_brain_researcher() -> None:
+def test_registry_bindet_beide_werkzeuge_nur_an_den_rechtetraeger() -> None:
     from core.capability_targets import find_registered_mcp_authority, resolve_registry_execution_target
-    assert resolve_registry_execution_target("research.bubble_start") == (
-        "mcp:brain-researcher:spaces-research:research_start")
-    assert resolve_registry_execution_target("research.bubble_status") == (
-        "mcp:brain-researcher:spaces-research:research_status")
-    assert find_registered_mcp_authority("brain-researcher", "spaces-research", "research_status").space_id == "research"
+    assert resolve_registry_execution_target("recherche.start") == (
+        "mcp:brain-recherche:spaces-research:research_start")
+    assert resolve_registry_execution_target("recherche.status") == (
+        "mcp:brain-recherche:spaces-research:research_status")
+    assert find_registered_mcp_authority("brain-recherche", "spaces-research", "research_status").space_id == "recherche"
+    # Der Modell-Agent hat die Werkzeuge nicht mehr: kein Lauf aus seiner eigenen Schleife.
+    for werkzeug in ("research_start", "research_status"):
+        assert find_registered_mcp_authority("brain-researcher", "spaces-research", werkzeug) is None
+
+
+def test_rechtetraeger_ohne_modell_schleife_im_verzeichnis() -> None:
+    import yaml
+    eintraege = yaml.safe_load((_ROOT / "config" / "space_agent_registry.yml").read_text(encoding="utf-8"))
+    spaces = eintraege.get("spaces", eintraege)
+    (recherche,) = [s for s in spaces.values() if isinstance(s, dict) and s.get("agent") == "brain-recherche"]
+    assert recherche["rights_carrier"] is True
+    assert recherche["mcp_tools"] == {"spaces-research": ["research_start", "research_status"]}
+    (forscher,) = [s for s in spaces.values() if isinstance(s, dict) and s.get("agent") == "brain-researcher"]
+    assert "spaces-research" not in (forscher.get("mcp_servers") or [])
+    assert "spaces-research" not in (forscher.get("mcp_tools") or {})

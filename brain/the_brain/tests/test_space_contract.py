@@ -72,4 +72,4 @@ def test_space_registry_health_is_exposed_as_json_response():
     assert response.status_code == 200
     payload = bytes(response.body).decode("utf-8")
     assert '"status":"ok"' in payload
-    assert '"canonical_space_count":17' in payload  # +thebrain (23.11.2026)
+    assert '"canonical_space_count":18' in payload  # +thebrain (23.11.2026), +recherche (24.11.2026)

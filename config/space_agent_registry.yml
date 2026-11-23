@@ -346,9 +346,11 @@ spaces:
     # vibemind-db-Tool, darum entfällt der Server hier ganz.
     # qdrant bleibt ohne mcp_tools-Eintrag — Server-Scope ohne abgeleitete
     # Capability, wie im Bubbles-Block bei `vibemind`.
-    # 23.11.2026: spaces-research (spaces/research/mcp_server.py) fuer "Recherchiere zu dieser
-    # Bubble": Vorschau, Start nach "Ja, recherchieren", Status im Nachfasser (core/recherche_bubble).
-    mcp_servers: [fetch, spaces-ideas, qdrant, spaces-research]
+    # 24.11.2026: spaces-research gehoert NICHT hierher. brain-researcher ist ein Agent mit
+    # Modell-Schleife; mit research_start in seinen Werkzeugen koennte das Modell selbst
+    # confirm=true schicken und die Rueckfrage umgehen. Die festen Aufrufe des Gehirns laufen
+    # ueber den Rechtetraeger brain-recherche (Block "recherche" unten).
+    mcp_servers: [fetch, spaces-ideas, qdrant]
     # M5 2026-08-07 / E10: ohne mcp_tools bekommt der Agent KEINE MCP-Tools —
     # der Generator leitet die tools-Liste nur hieraus ab, nicht aus
     # mcp_servers (fail-closed by design, sync_openfang_agents.py:86).
@@ -358,7 +360,6 @@ spaces:
     mcp_tools:
       fetch: [fetch]
       spaces-ideas: [idea_create, idea_update]
-      spaces-research: [research_start, research_status]
     # E10: Recherche-Last (ganze Seiten aus fetch, Mehrquellen-Synthese in
     # openclaw.compare) sprengt gpt-4o-mini/4096. gpt-4o ist in
     # models_pricing.yml gepflegt, bleibt provider=openai und hebt das
@@ -380,14 +381,29 @@ spaces:
         execution: { kind: mcp, server: spaces-ideas }
       openclaw.research:    { tool: fetch, required_params: [query] }
       openclaw.compare:     { tool: fetch, required_params: [queries] }
-      # Recherche zu einer Bubble: nur das Gehirn ruft diese Ereignisse (core/recherche_bubble,
-      # NUR_GEHIRN), nie ein Plan. research_start ohne confirm ist nur die Vorschau.
-      research.bubble_start:
+
+  # ─── Recherche zu einer Bubble: feste Aufrufe des Gehirns ───────────
+  # Bewusst ohne aliases und keywords: kein Satz wird hierher geroutet. Nur das Gehirn ruft
+  # diese Ereignisse (core/recherche_bubble, NUR_GEHIRN), nie ein Plan und nie ein Modell.
+  # research_start ohne confirm ist nur die Vorschau; confirm verlangt zusaetzlich das
+  # einmalige Zeichen, das das Gehirn mit der Vorschau ausgestellt hat (spaces/research).
+  recherche:
+    agent: brain-recherche
+    # Rechtetraeger: nur Ausweis und Rechte, kein Agent, der Nachrichten bearbeitet (Spec 8.3).
+    rights_carrier: true
+    prefixes: [recherche.]
+    enabled: true
+    description: "Research for one bubble: preview, start after the user's yes, status; fixed brain calls only."
+    mcp_servers: [spaces-research]
+    mcp_tools: { spaces-research: [research_start, research_status] }
+    default_context: [current_space]
+    events:
+      recherche.start:
         tool: research_start
         required_params: [bubble_id, brief]
         required_provenance: [approval_ref, cost_ref]
         execution: { kind: mcp, server: spaces-research }
-      research.bubble_status:
+      recherche.status:
         tool: research_status
         required_params: [job_id]
         required_provenance: [approval_ref, cost_ref]

@@ -196,66 +196,127 @@ class PreviewTests(unittest.TestCase):
         spawn.assert_not_called()
 
 
-class StartTests(unittest.TestCase):
-    def test_confirm_starts_a_run_and_returns_a_job_id(self) -> None:
-        server = load_server()
-        with mock.patch.object(server, "_read_bubble", return_value=BUBBLE), \
-             mock.patch.object(server, "_read_nodes", return_value=NODES), \
-             mock.patch.object(server, "_spawn_agent_call") as spawn, \
-             mock.patch.object(server, "_write_job_file") as write:
-            result = server.call_tool(
-                "research_start",
-                {"bubble_id": "bub123", "brief": "Aufgabe\nX.", "confirm": True},
-            )
+TOKEN = "t" * 40
+OTHER_TOKEN = "u" * 40
 
+
+class _StartBase(unittest.TestCase):
+    """Start nur mit dem Zeichen der Vorschau (24.11.2026). Bubble-Daten erfunden."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.server = load_server()
+        self.server.ARTIFACT_DIR = Path(self._tmp.name)
+        self._patches = [
+            mock.patch.object(self.server, "_read_bubble", return_value=BUBBLE),
+            mock.patch.object(self.server, "_read_nodes", return_value=NODES),
+        ]
+        for p in self._patches:
+            p.start()
+        self.spawn = mock.patch.object(self.server, "_spawn_agent_call").start()
+
+    def tearDown(self) -> None:
+        mock.patch.stopall()
+        self._tmp.cleanup()
+
+    def preview(self, token=TOKEN, bubble_id="bub123", **extra):
+        args = {"bubble_id": bubble_id, "brief": "Aufgabe\nX.", **extra}
+        if token is not None:
+            args["start_token"] = token
+        return self.server.call_tool("research_start", args)["brief"]
+
+    def confirm(self, brief, token=TOKEN, bubble_id="bub123", **extra):
+        args = {"bubble_id": bubble_id, "brief": "Aufgabe\nX.", "confirm": True, "final_brief": brief, **extra}
+        if token is not None:
+            args["start_token"] = token
+        return self.server.call_tool("research_start", args)
+
+
+class StartTests(_StartBase):
+    def test_confirm_starts_a_run_and_returns_the_job_of_the_preview(self) -> None:
+        brief = self.preview()
+        job_id = self.server.brief_mod.job_id_from_brief(brief)
+        result = self.confirm(brief)
         self.assertEqual(result["status"], "started")
-        self.assertRegex(result["job_id"], r"^job_v1_[0-9A-HJKMNPQRSTVWXYZ]{26}$")
-        self.assertIn(result["job_id"], result["report_path"])
-        spawn.assert_called_once()
-        write.assert_called_once()
+        self.assertEqual(result["job_id"], job_id)
+        self.assertIn(job_id, result["report_path"])
+        self.spawn.assert_called_once()
+        self.assertFalse(self.server._ticket_path(job_id).exists())     # eingeloest
 
     def test_job_file_records_the_bubble_and_the_settings(self) -> None:
-        server = load_server()
-        captured = {}
-        with mock.patch.object(server, "_read_bubble", return_value=BUBBLE), \
-             mock.patch.object(server, "_read_nodes", return_value=NODES), \
-             mock.patch.object(server, "_spawn_agent_call"), \
-             mock.patch.object(server, "_write_job_file",
-                               side_effect=lambda job_id, payload: captured.update(payload)):
-            server.call_tool(
-                "research_start",
-                {"bubble_id": "bub123", "brief": "Aufgabe\nX.", "confirm": True,
-                 "depth": "exhaustive", "output_style": "academic"},
-            )
-
+        brief = self.preview()
+        self.confirm(brief, depth="exhaustive", output_style="academic")
+        job_id = self.server.brief_mod.job_id_from_brief(brief)
+        captured = _json.loads(self.server._job_state_path(job_id).read_text(encoding="utf-8"))
         self.assertEqual(captured["bubble_id"], "bub123")
         self.assertEqual(captured["depth"], "exhaustive")
         self.assertEqual(captured["output_style"], "academic")
         self.assertIn("brief", captured)
 
-    def test_edited_brief_is_used_verbatim_when_supplied(self) -> None:
-        server = load_server()
-        # Muss einen Ausgabepfad tragen: seit der job_id-Kopplung an den
-        # bestaetigten Brief (siehe FinalBriefPathTests) ist ein final_brief
-        # ohne research_<job_id>.md-Pfad ein Fehler vor dem Start, kein
-        # gueltiger Verbatim-Fall mehr.
-        edited = (
-            "MEIN BEARBEITETER AUFTRAG\n"
-            "Schreibe nach: /tmp/research_job_v1_0000000000000000000000000A.md\n"
-        )
-        sent = {}
-        with mock.patch.object(server, "_read_bubble", return_value=BUBBLE), \
-             mock.patch.object(server, "_read_nodes", return_value=NODES), \
-             mock.patch.object(server, "_spawn_agent_call",
-                               side_effect=lambda job_id, text: sent.update(text=text)), \
-             mock.patch.object(server, "_write_job_file"):
-            server.call_tool(
-                "research_start",
-                {"bubble_id": "bub123", "brief": "ignoriert", "confirm": True,
-                 "final_brief": edited},
-            )
+    def test_edited_brief_is_used_verbatim_when_it_keeps_the_path(self) -> None:
+        brief = self.preview()
+        job_id = self.server.brief_mod.job_id_from_brief(brief)
+        edited = f"MEIN BEARBEITETER AUFTRAG\nSchreibe nach: /tmp/research_{job_id}.md\n"
+        self.confirm(edited)
+        ((_, text), _kw) = self.spawn.call_args
+        self.assertEqual(text, edited)
 
-        self.assertEqual(sent["text"], edited)
+    def test_ticket_holds_only_the_hash_of_the_token(self) -> None:
+        brief = self.preview()
+        job_id = self.server.brief_mod.job_id_from_brief(brief)
+        roh = self.server._ticket_path(job_id).read_text(encoding="utf-8")
+        self.assertNotIn(TOKEN, roh)
+        self.assertEqual(_json.loads(roh)["bubble_id"], "bub123")
+
+
+class StartTokenTests(_StartBase):
+    def _refused(self, call, grund):
+        with self.assertRaises(self.server.ToolError) as ctx:
+            call()
+        self.assertTrue(str(ctx.exception).startswith("start_not_allowed"), str(ctx.exception))
+        self.assertIn(grund, str(ctx.exception))
+        self.spawn.assert_not_called()
+
+    def test_confirm_without_token_starts_nothing(self) -> None:
+        brief = self.preview()
+        self._refused(lambda: self.confirm(brief, token=None), "start_token")
+
+    def test_confirm_without_final_brief_starts_nothing(self) -> None:
+        self.preview()
+        self._refused(lambda: self.server.call_tool("research_start", {
+            "bubble_id": "bub123", "brief": "x", "confirm": True, "start_token": TOKEN}), "final_brief")
+
+    def test_a_model_without_the_brains_preview_cannot_start(self) -> None:
+        # Vorschau ohne Zeichen hinterlegt nichts; ein selbst ausgedachtes Zeichen hilft nicht.
+        brief = self.preview(token=None)
+        self._refused(lambda: self.confirm(brief, token=OTHER_TOKEN), "no preview")
+
+    def test_wrong_token_starts_nothing(self) -> None:
+        brief = self.preview()
+        self._refused(lambda: self.confirm(brief, token=OTHER_TOKEN), "does not match")
+
+    def test_token_of_another_bubble_starts_nothing(self) -> None:
+        brief = self.preview()
+        self._refused(lambda: self.confirm(brief, bubble_id="bub999"), "does not match")
+
+    def test_token_works_once(self) -> None:
+        brief = self.preview()
+        self.confirm(brief)
+        self.spawn.reset_mock()
+        self._refused(lambda: self.confirm(brief), "no preview")
+
+    def test_expired_preview_starts_nothing(self) -> None:
+        brief = self.preview()
+        job_id = self.server.brief_mod.job_id_from_brief(brief)
+        pfad = self.server._ticket_path(job_id)
+        ticket = _json.loads(pfad.read_text(encoding="utf-8"))
+        pfad.write_text(_json.dumps({**ticket, "expires_at": 0}), encoding="utf-8")
+        self._refused(lambda: self.confirm(brief), "expired")
+
+    def test_malformed_token_is_invalid_arguments(self) -> None:
+        with self.assertRaises(self.server.ToolError) as ctx:
+            self.preview(token="kurz")
+        self.assertTrue(str(ctx.exception).startswith("invalid_arguments"))
 
 
 class SpawnAgentCallTests(unittest.TestCase):
@@ -754,58 +815,30 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(fake.nodes[1]["content"], reports["J"])
 
 
-class FinalBriefPathTests(unittest.TestCase):
+class FinalBriefPathTests(_StartBase):
     def test_confirm_with_final_brief_uses_the_job_id_from_that_brief(self) -> None:
-        server = load_server()
-        edited = (
-            "MEIN BEARBEITETER AUFTRAG\n"
-            "Schreibe nach: /tmp/research_job_v1_0000000000000000000000000A.md\n"
-        )
-        seen = {}
-        with mock.patch.object(server, "_read_bubble", return_value=BUBBLE), \
-             mock.patch.object(server, "_read_nodes", return_value=NODES), \
-             mock.patch.object(server, "_spawn_agent_call"), \
-             mock.patch.object(server, "_write_job_file",
-                               side_effect=lambda job_id, payload: seen.update(
-                                   job_id=job_id, payload=payload)):
-            result = server.call_tool("research_start", {
-                "bubble_id": "bub123", "brief": "x", "confirm": True,
-                "final_brief": edited,
-            })
+        brief = self.preview()
+        job_id = self.server.brief_mod.job_id_from_brief(brief)
+        result = self.confirm(f"MEIN BEARBEITETER AUFTRAG\nSchreibe nach: /tmp/research_{job_id}.md\n")
+        self.assertEqual(result["job_id"], job_id)
+        self.assertIn(job_id, result["report_path"])
+        payload = _json.loads(self.server._job_state_path(job_id).read_text(encoding="utf-8"))
+        self.assertIn(job_id, payload["report_path"])
 
-        self.assertEqual(result["job_id"], "job_v1_0000000000000000000000000A")
-        self.assertEqual(seen["job_id"], "job_v1_0000000000000000000000000A")
-        self.assertIn("job_v1_0000000000000000000000000A", result["report_path"])
-        self.assertIn("job_v1_0000000000000000000000000A", seen["payload"]["report_path"])
+    def test_final_brief_pointing_to_another_job_starts_nothing(self) -> None:
+        self.preview()
+        with self.assertRaises(self.server.ToolError) as ctx:
+            self.confirm("Schreibe nach: /tmp/research_job_v1_0000000000000000000000000A.md\n")
+        self.assertIn("no preview", str(ctx.exception))
+        self.spawn.assert_not_called()
 
     def test_final_brief_without_a_path_is_rejected_before_the_run(self) -> None:
-        server = load_server()
-        with mock.patch.object(server, "_read_bubble", return_value=BUBBLE), \
-             mock.patch.object(server, "_read_nodes", return_value=NODES), \
-             mock.patch.object(server, "_spawn_agent_call") as spawn, \
-             mock.patch.object(server, "_write_job_file") as write:
-            with self.assertRaises(server.ToolError) as ctx:
-                server.call_tool("research_start", {
-                    "bubble_id": "bub123", "brief": "x", "confirm": True,
-                    "final_brief": "Auftrag ohne jeden Pfad.",
-                })
-
+        self.preview()
+        with self.assertRaises(self.server.ToolError) as ctx:
+            self.confirm("Auftrag ohne jeden Pfad.")
         self.assertTrue(str(ctx.exception).startswith("invalid_arguments"))
-        spawn.assert_not_called()
-        write.assert_not_called()
-
-    def test_confirm_without_final_brief_still_uses_a_fresh_job_id(self) -> None:
-        server = load_server()
-        with mock.patch.object(server, "_read_bubble", return_value=BUBBLE), \
-             mock.patch.object(server, "_read_nodes", return_value=NODES), \
-             mock.patch.object(server, "_spawn_agent_call"), \
-             mock.patch.object(server, "_write_job_file"):
-            result = server.call_tool("research_start", {
-                "bubble_id": "bub123", "brief": "x", "confirm": True,
-            })
-
-        self.assertRegex(result["job_id"], r"^job_v1_[0-9A-HJKMNPQRSTVWXYZ]{26}$")
-        self.assertIn(result["job_id"], result["report_path"])
+        self.spawn.assert_not_called()
+        self.assertEqual(list(self.server.ARTIFACT_DIR.glob("*.job.json")), [])
 
 
 class ResearchStartSendsOpenFangKeyTests(unittest.TestCase):

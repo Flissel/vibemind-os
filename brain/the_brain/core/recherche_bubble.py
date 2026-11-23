@@ -26,16 +26,19 @@ from __future__ import annotations
 import json
 import logging
 import re
+import secrets
 import threading
 import time
 from typing import Any, Callable, Dict, Mapping, Optional
 
 logger = logging.getLogger("brain.recherche_bubble")
 
-AGENT = "brain-researcher"
+# Rechtetraeger ohne Modell-Schleife (Registry-Block "recherche"). Nie brain-researcher: der hat
+# ein Modell, und mit research_start in seinen Werkzeugen koennte es die Rueckfrage umgehen.
+AGENT = "brain-recherche"
 SERVER = "spaces-research"
-EREIGNIS_START = "research.bubble_start"    # Werkzeug research_start (Vorschau und Start)
-EREIGNIS_STATUS = "research.bubble_status"  # Werkzeug research_status
+EREIGNIS_START = "recherche.start"    # Werkzeug research_start (Vorschau und Start)
+EREIGNIS_STATUS = "recherche.status"  # Werkzeug research_status
 NUR_GEHIRN = frozenset({EREIGNIS_START, EREIGNIS_STATUS})
 
 
@@ -141,9 +144,12 @@ def vorschau(argumente: Mapping[str, Any], *, rufe: Callable[..., Dict[str, Any]
     """Vorschau holen (kein Lauf) und als Rueckfrage formulieren; merkt sie fuer "Ja, recherchieren"."""
     verwerfen()
     plan_id = f"recherche_{int(_jetzt() * 1000)}"
+    # Einmaliges Zeichen: der Server merkt sich nur seinen Hash zur Vorschau; starten kann nur,
+    # wer es vorlegt, genau einmal und nur fuer diese Bubble (spaces/research, start_token).
+    zeichen = secrets.token_urlsafe(32)
     try:
         antwort = rufe("research_start", {"bubble_id": argumente["bubble_id"], "brief": argumente["thema"],
-                                          "depth": TIEFE, "language": SPRACHE},
+                                          "depth": TIEFE, "language": SPRACHE, "start_token": zeichen},
                        plan_id=plan_id, schritt="vorschau")
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[recherche] Vorschau nicht moeglich: {type(e).__name__}")
@@ -152,7 +158,7 @@ def vorschau(argumente: Mapping[str, Any], *, rufe: Callable[..., Dict[str, Any]
     if antwort.get("status") != "preview" or not isinstance(brief, str) or not brief.strip():
         return NICHT_ERREICHBAR
     with _sperre:
-        _offen.update({"argumente": dict(argumente), "brief": brief, "bis": _jetzt() + GILT_S})
+        _offen.update({"argumente": dict(argumente), "brief": brief, "zeichen": zeichen, "bis": _jetzt() + GILT_S})
     return (f"Ich würde zu „{_titel(argumente)}“ recherchieren: {argumente['thema']}. Gründlich, mit Quellen, "
             "auf Deutsch; die Notizen der Bubble gehen als Hintergrund mit. Das kostet einen Lauf mit "
             "Web-Zugriffen und dauert einige Minuten. Sag „Ja, recherchieren“, dann starte ich.")
@@ -204,7 +210,7 @@ def starten(offen: Mapping[str, Any], *, tabelle: Any, trace_id: str,
     try:
         antwort = rufe("research_start", {"bubble_id": argumente["bubble_id"], "brief": argumente["thema"],
                                           "depth": TIEFE, "language": SPRACHE, "confirm": True,
-                                          "final_brief": offen["brief"]},
+                                          "final_brief": offen["brief"], "start_token": offen["zeichen"]},
                        plan_id=plan_id, schritt="start", korrelation=trace_id)
         job_id = antwort.get("job_id")
         if antwort.get("status") != "started" or not isinstance(job_id, str) or not _JOB.match(job_id):
