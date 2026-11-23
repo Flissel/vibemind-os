@@ -481,6 +481,15 @@ def test_abgeschriebener_satz_zu_anderem_thema_wird_zurueckgehalten() -> None:
     assert rw.ausformulierung_pruefen("Frist bis März", ABGESCHRIEBEN, titel="Sponsoren") == ""
 
 
+def test_satz_aus_der_notiz_gilt_nicht_als_abgeschrieben() -> None:
+    # Lauf 19 (53): Der Satz stand schon in der Notiz (frueher uebernommen); er gehoert jetzt zu ihr.
+    texte = ["Bühnenplan " + NACHBAR_BUEHNE["content"]]
+    notiz = "Frist bis März. Der Aufbau der Bühne beginnt am Freitag um acht Uhr."
+    ergebnis = ("Die Frist für alle Zusagen läuft bis Ende März, danach planen wir fest. "
+                "Der Aufbau der Bühne beginnt am Freitag um acht Uhr.")
+    assert rw.ausformulierung_pruefen(notiz, ergebnis, titel="Sponsoren", nachbarn=texte) == ""
+
+
 @pytest.mark.parametrize("notiz, titel, ergebnis", [
     # teilt ein Wort mit der Notiz: gehoert zum Thema, auch wenn woertlich
     ("Frist für den Aufbau", "Fristen", ABGESCHRIEBEN),

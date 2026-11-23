@@ -610,6 +610,8 @@ def ausformulierung_pruefen(notiz: Any, ergebnis: Any, *, titel: Any = None,
                 return WIEDERHOLT_SICH
     # Lauf 18 (50): Ein Satz, der fast woertlich in einer anderen Karte steht und kein
     # Inhaltswort mit der Notiz (Text oder Titel) teilt, gehoert nicht zu ihrem Thema.
+    # Lauf 19 (53): Ein Satz, der schon in der Notiz steht, teilt Woerter mit ihr und gilt darum nie
+    # als abgeschrieben. Bleibt die ganze Notiz fast gleich, greift vorher ``fast_gleich``.
     thema = notizwoerter | _inhaltswoerter(titel_als_name(titel) if titel else "")
     for satz, inhalt in zip(saetze, woerter):
         if nachbarn and not inhalt & thema and abgeschrieben(satz, nachbarn):
