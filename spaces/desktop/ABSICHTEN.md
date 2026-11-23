@@ -49,14 +49,32 @@ Einzelne Handgriffe ("klick auf X", "tippe Y", "drücke Enter") sind keine eigen
 mehr, sondern `desktop.task`. Ein Klick braucht immer erst einen Blick auf den Bildschirm,
 also ein Modell, und soll im Aufgabenbuch stehen.
 
-## `desktop.task` als Plan mit zwei Schritten
+## Wie ein getippter Satz zur Aufgabe wird
 
-1. `mcp:brain-desktop:spaces-desktop:desktop_task_start` mit `task` → liefert `id`.
-   Ab hier zeigt die App "läuft" (Abnahmepunkt 6).
-2. `openfang:brain-desktop` mit der Eingabe `{task_id, task}`. Der Agent arbeitet nur mit
-   seinen Werkzeugen und schließt mit `desktop_task_finish`.
-3. Nachprüfung am Zustand: `desktop_task_status(task_id)` → `zustand` ist `fertig`, jeder
-   Schritt `ok: true`, kein Schritt mit `meldung` "trocken". Nicht am Text der Antwort.
+Beispiel: "Öffne den Editor und schreibe Hallo."
+
+1. Das Gehirn erkennt `desktop.task` (nur aus getippter Eingabe; gesperrt für autonome Pläne,
+   Nachfasser und Hintergrundläufe).
+2. Fester Aufruf `mcp:brain-desktop:spaces-desktop:desktop_task_start` mit `{task: "<Satz>"}`
+   → liefert `id`. Ab hier steht die Aufgabe mit `zustand: laeuft` im Aufgabenbuch, und die
+   App zeigt sie (Abnahmepunkt 6; gemessen unter 5 ms).
+3. Auftrag `openfang:brain-desktop` mit `{task_id, task}`. Der Agent sieht hin, führt Schritte
+   aus und schließt mit `desktop_task_finish`.
+4. Stand während des Laufs: die App fragt `GET /api/desktop/task` am Desktop-Dienst ab (liest
+   dasselbe Aufgabenbuch); das Gehirn kann `desktop_task_status(task_id)` als festen Aufruf
+   nehmen.
+5. Nachprüfung am Zustand, nicht am Text: `desktop_task_status(task_id)` → `zustand` ist
+   `fertig`, jeder Schritt `ok: true`. Im Trockenlauf steht bei jedem Schritt `echt: false`
+   und die Meldung beginnt mit "trocken"; der Agent schließt dann ehrlich mit
+   `fehlgeschlagen`. Abnahmepunkt 3 gilt bis zu Felix' Schalter als "im Trockenlauf gemessen".
+
+**Schritt 3 geht heute nicht.** Ein Agent in OpenFang kann seine Werkzeuge nicht selbst
+aufrufen: Der Abo-Wrapper startet Claude mit `--safe-mode`, und das schaltet Werkzeug-Dienste
+ab, auch eine ausdrücklich genannte Konfiguration (Beleg-Lauf 23.11., ein Lauf, 10 s, kein
+Werkzeug-Aufruf). Die Erweiterung des Wrappers liegt fertig im Zweig `cc/wrapper-werkzeuge`
+des äußeren Repos, wirkt aber erst, wenn für diesen einen Agenten `--safe-mode` ersetzt wird.
+Das ist eine Entscheidung von Felix. Bis dahin gehen über das Gehirn nur die festen Aufrufe
+(Schritte 2, 4, 5 und die lesenden Absichten).
 
 ## Anweisung an `brain-desktop` (Vorschlag für `prompt_hint`)
 
@@ -82,20 +100,30 @@ ist teurer als ein langsamer Lauf. Entscheidung bei Koordination und Felix.
 
 ## Was die Koordination dafür tun muss
 
-1. Den Werkzeug-Dienst in OpenFang eintragen: Name `spaces-desktop`, stdio,
-   `python <vibemind-os>/spaces/desktop/mcp_server.py`. Umgebung:
-   `DESKTOP_AUTOMATION_URL=http://127.0.0.1:8007`. Heute kennt OpenFang nur `vibemind-db`,
-   `laura` und `webapp-alerts`; den im Verzeichnis genannten Server `desktop-automation`
-   gibt es dort nicht.
-2. Den Block oben ins Verzeichnis eintragen und die Agenten neu erzeugen. Heute hat
-   `brain-desktop` nur `memory_store` und `memory_recall` und kann nichts am Bildschirm tun.
-3. **Nur mit Felix' Ja:** `VIBEMIND_DESKTOP_AUSFUEHREN=1` in der Umgebung des
-   Werkzeug-Dienstes setzen. Ohne diese Angabe ist jede Aufgabe ein Trockenlauf. So lassen
-   sich die Abnahmepunkte 2, 4 und 6 messen, ohne dass etwas klickt.
-4. Den Pin von `spaces/desktop/Automation_ui` auf den Zweig `cc/space-desktop` versetzen und
-   den Desktop-Dienst neu starten (Monitorliste, Bild je Monitor, `/api/desktop/task`,
-   Tasten-Routen).
-5. Abnahmepunkt 5: `brain-desktop` ins Agenten-Verzeichnis von Rowboat.
+1. **Werkzeug-Dienst in OpenFang eintragen** (für die festen Aufrufe des Gehirns):
+   - Name: `spaces-desktop`, Transport stdio
+   - Befehl: das Python des Betriebs, Argument `<vibemind-os>/spaces/desktop/mcp_server.py`
+   - Umgebung, beide nötig, weil OpenFang Werkzeug-Dienste mit leerer Umgebung startet:
+     - `DESKTOP_AUTOMATION_URL=http://127.0.0.1:8007`
+     - `VIBEMIND_DESKTOP_AUFGABEN_DIR=<derselbe Ordner, den der Desktop-Dienst liest>`. Der
+       Desktop-Dienst nimmt `%LOCALAPPDATA%\VibeMind\desktop-aufgaben`; fehlt die Angabe,
+       antwortet jedes Aufgaben-Werkzeug mit `konfiguration: ...`.
+   - Nicht setzen: `VIBEMIND_DESKTOP_AUSFUEHREN`. Ohne sie ist jede Aufgabe ein Trockenlauf.
+2. **Block oben ins Verzeichnis** eintragen (mit `mcp_tools`) und `brain-desktop` neu
+   erzeugen, Modellklasse `sonnet`. Heute hat der Agent nur `memory_store` und
+   `memory_recall`.
+3. **Pin von `spaces/desktop/Automation_ui` auf `6f6e271`** und Desktop-Dienst neu starten
+   lassen (Monitorliste, Bild je Monitor, `/api/desktop/task`, Tasten-Routen,
+   `/api/mcp/elements`, Shell-Routen aus). Der Push des Zweigs braucht Felix' Ja.
+4. **Damit der Agent selbst Schritte ausführt:** Entscheidung zu `--safe-mode` (siehe oben),
+   dann Zweig `cc/wrapper-werkzeuge` übernehmen. Die Werkzeugliste und der Dienst für den
+   Wrapper stehen dort in `config/agent_tool_services.json`; sie muss dieselben neun Namen
+   nennen wie `mcp_tools` hier.
+5. **Echte Klicks** (Felix hat Ja gesagt, laut Koordination): erst wenn ein Lauf über OpenFang
+   gezeigt hat, dass der Agent nach jedem Schritt neu hinsieht. Dann
+   `VIBEMIND_DESKTOP_AUSFUEHREN=1` an beiden Stellen, an denen der Werkzeug-Dienst gestartet
+   wird (OpenFang-Eintrag und `agent_tool_services.json`).
+6. Abnahmepunkt 5: `brain-desktop` ins Agenten-Verzeichnis von Rowboat.
 
 ## Was aus dem heutigen Block entfällt (Vorschlag)
 
