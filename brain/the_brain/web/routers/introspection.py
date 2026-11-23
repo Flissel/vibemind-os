@@ -2535,6 +2535,9 @@ def _try_ideen_abkuerzung(intent: str, kontext: Any):
         if isinstance(treffer.get("lies"), dict) and isinstance(kontext, dict):
             # "Was steht bei X?": die Antwort zeigt nur diese Karte (antwort_fuer_schritt).
             kontext["_lies_karte"] = treffer["lies"]
+        if isinstance(treffer.get("kartenfrage"), dict) and isinstance(kontext, dict):
+            # "Wie viele Karten ...?", "Welche Karten handeln von X?": Zahl/Treffer ohne Modell.
+            kontext["_kartenfrage"] = treffer["kartenfrage"]
         plan = _Plan(
             plan_id=f"ideen_{int(time.time() * 1000)}",
             intent=intent,

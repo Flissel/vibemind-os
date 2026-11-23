@@ -177,6 +177,21 @@ def _hauptlauf() -> int:
           fest == {"final_text": "Diese Karte gibt es nicht mehr.", "space": "ideas",
                    "fehler": "RuntimeError: Ideen-Werkzeug meldet einen Fehler (idea_not_found)"})
 
+    # ── Punkt 9 (Lauf 5): Zaehl- und Suchfragen ohne Planer, Satz ohne Modell ──
+    zeilen = {"karten": [{"id": "a0000001", "title": "Preise", "content": "Stand und Druck"},
+                         {"id": "a0000002", "title": "Druckerei", "content": "Angebot für Plakate"}],
+              "gesamt": 2}
+    for satz, erwartet in (("Wie viele Karten gibt es hier?", "In „Messe“ gibt es 2 Notizen."),
+                           ("Welche Notizen handeln von Plakaten?",
+                            "1 Notiz in „Messe“ erwähnt „Plakaten“: „Druckerei“.")):
+        kontext = dict(KONTEXT)
+        plan, frage, antwort = intro._try_ideen_abkuerzung(satz, kontext)
+        check(f"{satz!r}: fester Leseplan", plan is not None and plan.hops[0].capability == "idea.list"
+              and json.loads(plan.hops[0].arg_template)["full"] is True)
+        if plan is not None:
+            fest = intro._feste_antwort(plan, lauf(True, antwort_text(zeilen)), True, antwort, kontext)
+            check(f"{satz!r}: Satz ohne Modell", (fest or {}).get("final_text") == erwartet)
+
     check("andere Abkuerzungen bleiben bei der Synthese",
           intro._feste_antwort(plan_mit("shortcut_3", "bubble_find"), lauf(True, "Found"), False, "", None) is None)
     check("Plan des Planers bleibt bei der Synthese",

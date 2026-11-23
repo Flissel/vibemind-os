@@ -674,6 +674,13 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
     if (re.fullmatch(r"zeig(?:e)?\s+(?:mir\s+)?die\s+(?:notizen|karten)(?:\s+dieser\s+bubble)?", text, _I)
             or re.fullmatch(r"was\s+steht\s+hier\??", text, _I)):
         return _treffer("idea.list", {"bubble_id": _offene_bubble(kontext)}, "")
+    # Zaehl- und Suchfragen ueber die Karten der offenen Bubble (Lauf 5: gingen an den Planer).
+    # Fester Leseweg ueber die ganze Liste; Zahl und Treffer entstehen ohne Modell.
+    frage = kartenfrage(text)
+    if frage is not None:
+        treffer = _treffer("idea.list", {"bubble_id": _offene_bubble(kontext), "full": True, "limit": 100}, "")
+        treffer["kartenfrage"] = frage
+        return treffer
     # Inhalt einer Karte (Arbeitslauf 2: ging als "nicht verstanden" oder an das Lexikon).
     # Fester Leseweg ueber die ganze Liste; der Satz zeigt nur die gefragte Karte.
     m = (re.fullmatch(r"was\s+steht\s+(?:in|bei|auf)\s+(?P<k>.+?)\s*\??", text, _I)
@@ -747,6 +754,90 @@ def _recherche_argumente(rest: str, kontext: dict) -> dict:
 BILD_NOCH_NICHT = ("Das kann ich noch nicht: Bilder an Karten hängen. Im Ideen-Space gibt es dafür noch "
                    "keinen Weg; geändert habe ich nichts.")
 LESE_ZEICHEN = 1500
+
+
+_K = r"(?:karten|notizen|ideen)"
+_ZAEHL_FUELLWORTE = frozenset(
+    "gibt es sind stehen hat habe ich haben wir hier in dieser diese der die bubble da drin darin "
+    "insgesamt gerade aktuell eigentlich noch jetzt schon".split())
+_SUCHE = (
+    rf"(?:welche|wie\s+viele)\s+{_K}\s+(?:handeln|gehen|sprechen|reden)\s+(?:von|(?:ü|ue)ber|um)\s+(?P<w>.+)",
+    rf"(?:welche|wie\s+viele)\s+{_K}\s+(?:erw(?:ä|ae)hnen|enthalten|nennen)\s+(?P<w>.+)",
+    rf"(?:welche|wie\s+viele)\s+{_K}\s+haben\s+(?:etwas\s+|was\s+)?mit\s+(?P<w>.+?)\s+zu\s+tun",
+    rf"(?:welche|wie\s+viele)\s+{_K}\s+gibt\s+es\s+(?:zu|zum|zur|(?:ü|ue)ber)\s+(?P<w>.+)",
+    rf"in\s+welche[nr]?\s+(?:karte|notiz|idee|{_K})\s+(?:steht|stehen|geht\s+es\s+um|kommt|kommen)\s+"
+    rf"(?:etwas\s+|was\s+)?(?:(?:ü|ue)ber|zu|von)?\s*(?P<w>.+?)(?:\s+vor)?",
+    r"wo\s+(?:steht|stand)\s+(?:etwas|was)\s+(?:(?:ü|ue)ber|zu|zum|zur|von)\s+(?P<w>.+)",
+    rf"gibt\s+es\s+(?:eine\s+|schon\s+eine\s+)?(?:karte|notiz|idee|{_K})\s+(?:zu|zum|zur|(?:ü|ue)ber|mit)\s+(?P<w>.+)",
+    rf"(?:durch)?such(?:e)?\s+(?:in\s+)?(?:den|meinen|die)\s+{_K}\s+nach\s+(?P<w>.+)",
+)
+
+
+def _stichwort(wort: str) -> str:
+    wort = re.sub(r"\s+", " ", wort).strip().strip("?\"'„“”‚‘’«» ")
+    return re.sub(r"^(?:dem|den|der|die|das|des|einem|einer|einen|eine|ein)\s+", "", wort, flags=_I).strip()
+
+
+def kartenfrage(text: Any) -> Optional[dict]:
+    """Zaehl- oder Suchfrage ueber die Karten der offenen Bubble, sonst ``None``.
+
+    ``{"art": "zahl"}`` oder ``{"art": "suche", "wort": "Preise"}``. Ein Urteil
+    ("Welche Risiken siehst du?") ist keine Kartenfrage.
+    """
+    if not isinstance(text, str):
+        return None
+    text = re.sub(r"\s+", " ", text).strip().rstrip(".!?").strip()
+    for muster in _SUCHE:
+        m = re.fullmatch(muster, text, _I)
+        if m:
+            wort = _stichwort(m.group("w"))
+            return {"art": "suche", "wort": wort} if len(wort) >= 2 else None
+    m = re.fullmatch(rf"wie\s+viele\s+{_K}(?P<rest>(?:\s+\w+)*)", text, _I)
+    if m and all(w.casefold() in _ZAEHL_FUELLWORTE for w in m.group("rest").split()):
+        return {"art": "zahl"}
+    return None
+
+
+def _kartentext(zeile: dict) -> str:
+    struktur = zeile.get("content_json") if isinstance(zeile.get("content_json"), dict) else {}
+    teile = [zeile.get("title"), zeile.get("content"), struktur.get("text")]
+    return " ".join(t for t in teile if isinstance(t, str))
+
+
+def _kerne(wort: str) -> list[str]:
+    """Das Stichwort und, ab fuenf Buchstaben, seine Form ohne Endung ("Preisen" findet "Preis")."""
+    wort = _normal(wort)
+    kerne = [wort]
+    for endung in ("en", "n", "e", "s"):
+        if " " not in wort and wort.endswith(endung) and len(wort) - len(endung) >= 4:
+            kerne.append(wort[: -len(endung)])
+    return kerne
+
+
+def kartenantwort(zeilen: list, frage: dict, ort: str, gesamt: Optional[int], gekuerzt: bool) -> str:
+    """Der Satz zu einer Zaehl- oder Suchfrage aus den ganzen Zeilen von idea_list (full)."""
+    karten = [z for z in zeilen if isinstance(z, dict)]
+    if frage.get("art") == "zahl":
+        if gesamt is not None and gesamt >= len(karten):
+            anzahl = gesamt
+        elif gekuerzt:
+            return f"In {ort} gibt es mindestens {_mehrzahl(len(karten), 'Notiz', 'Notizen')}."
+        else:
+            anzahl = len(karten)
+        return (f"In {ort} gibt es noch keine Notizen." if anzahl == 0
+                else f"In {ort} gibt es {_mehrzahl(anzahl, 'Notiz', 'Notizen')}.")
+    wort = str(frage.get("wort") or "")
+    kerne = _kerne(wort)
+    gefunden = [z.get("title") for z in karten if any(k in _normal(_kartentext(z)) for k in kerne)]
+    zusatz = ""
+    if (gesamt is not None and gesamt > len(karten)) or (gesamt is None and gekuerzt):
+        von = f" von {gesamt}" if gesamt is not None and gesamt > len(karten) else ""
+        zusatz = f" Durchsucht habe ich nur die ersten {len(karten)}{von} Notizen."
+    if not gefunden:
+        return f"Keine Notiz in {ort} erwähnt „{wort}“.{zusatz}"
+    verb = "erwähnt" if len(gefunden) == 1 else "erwähnen"
+    return (f"{_mehrzahl(len(gefunden), 'Notiz', 'Notizen')} in {ort} {verb} „{wort}“: "
+            f"{_aufzaehlung(gefunden, zeige=5)}.{zusatz}")
 
 
 def karteninhalt(zeilen: Any, karte: Any) -> Optional[str]:
@@ -978,6 +1069,8 @@ def antwort_fuer_schritt(capability: Any, ok: bool, ergebnis: Any, fehler: Any,
             bubble = kontext.get("bubble") if isinstance(kontext, dict) else None
             ort = (str(bubble.get("title") or "").strip() if isinstance(bubble, dict) else "")
             ort = f"„{ort}“" if ort else "dieser Bubble"
+            if isinstance(kontext, dict) and isinstance(kontext.get("_kartenfrage"), dict):
+                return kartenantwort(zeilen, kontext["_kartenfrage"], ort, gesamt, gekuerzt)
             if not zeilen:
                 return f"In {ort} gibt es noch keine Notizen."
             titel = [z.get("title") for z in zeilen if isinstance(z, dict)]
