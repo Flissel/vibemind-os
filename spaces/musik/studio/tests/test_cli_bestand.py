@@ -135,3 +135,48 @@ def test_main_bestand_reicht_daten_durch(tmp_path: Path, monkeypatch):
 
     assert cli.main(["bestand", "--daten", str(tmp_path)]) == 0
     assert gesehen == [tmp_path]
+
+
+# --- Nachzug: der erste Aufruf auf einem frischen --daten -------------------
+
+
+def test_aufnehmen_auf_frischem_bestand_nennt_den_neuen_eingang(
+    tmp_path: Path, capsys
+):
+    """Vorher: "lied.wav liegt nicht als Datei im Eingang" - den Eingang gab
+    es da noch gar nicht, er entstand erst mit diesem Aufruf."""
+    code = cmd_aufnehmen(tmp_path, "lied.wav", "Lied", "suno-eigen", None, HEUTE)
+
+    assert code == 1
+    eingang = tmp_path / "eingang"
+    assert eingang.is_dir()
+    fehler = capsys.readouterr().err
+    assert fehler.startswith("Fehler:")
+    assert "eben angelegt" in fehler
+    assert str(eingang) in fehler
+    assert "lied.wav" in fehler
+    assert "liegt nicht als Datei" not in fehler
+
+
+def test_aufnehmen_mit_vorhandenem_eingang_behaelt_die_alte_meldung(
+    tmp_path: Path, capsys
+):
+    Bestand(tmp_path)
+
+    assert cmd_aufnehmen(tmp_path, "lied.wav", "Lied", "suno-eigen", None, HEUTE) == 1
+
+    fehler = capsys.readouterr().err
+    assert "liegt nicht als Datei im Eingang" in fehler
+    assert "eben angelegt" not in fehler
+
+
+def test_bestand_auf_frischem_verzeichnis_legt_die_ordner_an_und_nennt_den_eingang(
+    tmp_path: Path, capsys
+):
+    assert cmd_bestand(tmp_path) == 0
+
+    assert (tmp_path / "eingang").is_dir()
+    assert (tmp_path / "songs").is_dir()
+    ausgabe = capsys.readouterr().out
+    assert "leer" in ausgabe
+    assert str(tmp_path / "eingang") in ausgabe

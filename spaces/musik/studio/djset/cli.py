@@ -587,7 +587,18 @@ def cmd_aufnehmen(
     if not daten.is_dir():
         print(f"Fehler: {daten} ist kein Verzeichnis.", file=sys.stderr)
         return 1
+    eingang_neu = not (daten / "eingang").is_dir()
     bestand = Bestand(daten)
+    if eingang_neu:
+        # Beim ersten Aufruf auf einem frischen --daten entsteht der Eingang
+        # erst hier - "liegt nicht als Datei im Eingang" hiesse dann nur, dass
+        # es ihn vorher nicht gab.
+        print(
+            f"Fehler: der Eingang-Ordner wurde eben angelegt: {bestand.eingang}. "
+            f"Leg {datei} dort ab und ruf aufnehmen noch einmal auf.",
+            file=sys.stderr,
+        )
+        return 1
     try:
         eintrag = bestand.aufnehmen(datei, titel, herkunft, today, suno_id=suno_id)
     except BestandFehler as error:
@@ -615,13 +626,19 @@ def cmd_bestand(daten: Path) -> int:
     if not daten.is_dir():
         print(f"Fehler: {daten} ist kein Verzeichnis.", file=sys.stderr)
         return 1
+    # Bestand() legt eingang/ und songs/ an, falls sie fehlen - auf einem
+    # frischen --daten zeigt bestand danach, wohin neue Songs gehoeren.
+    bestand = Bestand(daten)
     try:
-        songs = Bestand(daten).alle()
+        songs = bestand.alle()
     except BestandFehler as error:
         print(f"Fehler: {error}", file=sys.stderr)
         return 1
     if not songs:
-        print(f"Der Bestand unter {daten} ist leer.")
+        print(
+            f"Der Bestand unter {daten} ist leer. Neue Songs nach "
+            f"{bestand.eingang} legen und mit dj-set aufnehmen aufnehmen."
+        )
         return 0
 
     kopf = ("ID", "Titel", "Tempo", "Tonart", "Laenge", "Herkunft")
