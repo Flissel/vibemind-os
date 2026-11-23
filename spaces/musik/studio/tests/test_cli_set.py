@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from djset import cli
+from djset.agents import analyst
 from djset.agents.base import Budget
 from djset.bestand import Bestand, SongEintrag
 from djset.cli import cmd_build, cmd_set
@@ -95,9 +96,16 @@ class _BuildRunAufzeichnung:
         profile: Profile,
         client: object,
         budget: Budget,
+        messungen: dict[str, TrackMeasurements] | None = None,
     ) -> int:
         self.aufrufe.append(
-            {"run": run, "files": files, "profile": profile, "client": client}
+            {
+                "run": run,
+                "files": files,
+                "profile": profile,
+                "client": client,
+                "messungen": messungen,
+            }
         )
         return 0
 
@@ -230,7 +238,10 @@ def test_set_misst_fehlende_messungen_nach(tmp_path, budget, build_run_aufzeichn
     _lege_song_ab(bestand, "c", None)
     client = ZaehlenderClient([json.dumps(DRAFT)])
 
-    assert cmd_set(tmp_path, "Party", 20, None, client, budget, HEUTE) == 0
+    # Fix-Welle B2: die Vorpruefung zieht je Song 16 Takte Uebergang ab - aus
+    # 2 x 600 s plus dem kurzen Clicktrack werden rund 19 spielbare Minuten,
+    # deshalb 15 statt 20 gewuenschte Minuten.
+    assert cmd_set(tmp_path, "Party", 15, None, client, budget, HEUTE) == 0
 
     messung = bestand.hole("c").messung
     assert messung is not None
@@ -522,3 +533,114 @@ def test_nur_hinweise_bleiben_exit_0_und_stehen_in_der_ausgabe(
 def test_main_reicht_den_rueckgabewert_durch(monkeypatch):
     monkeypatch.setattr(cli, "cmd_build", lambda *a, **k: 2)
     assert cli.main(["build", "--run", "x"]) == 2
+
+
+def test_set_reicht_die_gespeicherten_messungen_an_build_run(
+    tmp_path, budget, build_run_aufzeichnung
+):
+    """B1: der Lauf misst nicht neu - das Tempo kann nicht von tempo.json
+    abweichen."""
+    bestand = _bestand(tmp_path, {"a": 124.0, "b": 126.0, "c": 128.0, "d": 174.0})
+    client = ZaehlenderClient([json.dumps(DRAFT)])
+
+    assert cmd_set(tmp_path, "Party", 20, None, client, budget, HEUTE) == 0
+
+    [aufruf] = build_run_aufzeichnung.aufrufe
+    messungen = aufruf["messungen"]
+    assert isinstance(messungen, dict)
+    assert sorted(messungen) == ["a", "b", "c"]
+    for song_id, messung in messungen.items():
+        assert messung == bestand.hole(song_id).messung
+
+
+def test_build_run_misst_mit_mitgegebenen_messungen_nicht_neu(
+    tmp_path, profile, monkeypatch
+):
+    run, files, flach, client = _lauf_mit_ersetztem_renderer(
+        tmp_path, profile, monkeypatch
+    )
+    monkeypatch.setattr(cli, "to_mp3", lambda quelle, ziel: ziel.write_bytes(b""))
+    monkeypatch.setattr(
+        analyst, "measure_track", lambda *a, **k: pytest.fail("neu gemessen")
+    )
+    messungen = {
+        f.id: TrackMeasurements.model_validate(
+            make_analysis(f.id, bpm=174.0).model_dump(exclude={"verdict"})
+            | {"path": str(f.path)}
+        )
+        for f in files
+    }
+
+    assert cli.build_run(run, files, flach, client, _budget(), messungen=messungen) == 0
+
+    for f in files:
+        artefakt = json.loads(run.path(f"tracks/{f.id}.json").read_text(encoding="utf-8"))
+        assert artefakt["bpm"] == messungen[f.id].bpm.model_dump()
+
+
+def test_set_rechnet_die_laengen_vorpruefung_mit_spielbarer_laenge(
+    tmp_path, zaehlender_client, budget, capsys
+):
+    """B2: drei Songs zu je sieben Minuten sind roh 21 Minuten - nach Abzug
+    von 16 Takten je Naht (bei 126 BPM 30,5 s) bleiben 19,5 Minuten, zu wenig
+    fuer 20."""
+    _bestand(tmp_path, {"a": 124.0, "b": 126.0, "c": 128.0}, dauer_s=420.0)
+
+    assert cmd_set(tmp_path, "Party", 20, None, zaehlender_client, budget, HEUTE) == 1
+
+    assert zaehlender_client.aufrufe == 0
+    err = capsys.readouterr().err
+    assert "19.5" in err
+    assert not (tmp_path / "runs").exists()
+
+
+def test_zu_wenige_brauchbare_songs_nennen_den_bestand_nicht_suno(
+    tmp_path, profile, monkeypatch, capsys
+):
+    run, files, flach, _client = _lauf_mit_ersetztem_renderer(
+        tmp_path, profile, monkeypatch
+    )
+
+    def analyst(energy: float) -> str:
+        return json.dumps(
+            {"usable": True, "notes": "Passt.", "energy_level": energy,
+             "remeasure_with_bpm": None}
+        )
+
+    client = FakeClient(
+        [analyst(e) for e in (0.2, 0.4, 0.6, 0.8)]
+        + [
+            json.dumps(
+                {
+                    "accepted": ["t0", "t1"],
+                    "rejected": [
+                        {"track_id": "t2", "reason": "Zu ruhig."},
+                        {"track_id": "t3", "reason": "Zu laut."},
+                    ],
+                    "note": "Nur zwei.",
+                }
+            )
+        ]
+    )
+
+    assert cli.build_run(run, files, flach, client, _budget()) == 1
+
+    err = capsys.readouterr().err
+    assert "Bestand" in err
+    assert "Suno" not in err and "watch" not in err
+
+
+def test_build_run_liest_tempo_json_vor_jedem_modellaufruf(
+    tmp_path, profile, monkeypatch
+):
+    """B8: ein kaputtes tempo.json fiel bisher erst nach dem Rendern auf -
+    nachdem jedes Token bezahlt war."""
+    run, files, flach, client = _lauf_mit_ersetztem_renderer(
+        tmp_path, profile, monkeypatch
+    )
+    run.write_text("tempo.json", "{kaputt")
+
+    with pytest.raises(ValueError):
+        cli.build_run(run, files, flach, client, _budget())
+
+    assert client.calls == 0

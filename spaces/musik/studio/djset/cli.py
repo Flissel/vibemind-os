@@ -9,7 +9,10 @@ from pathlib import Path
 
 from djset.agents.architect import arrange
 from djset.agents.base import AgentClient, AgentError, Budget
-from djset.agents.bestand_profiler import build_profile_from_bestand
+from djset.agents.bestand_profiler import (
+    build_profile_from_bestand,
+    spielbare_laenge_s,
+)
 from djset.agents.curator import NotEnoughTracks, curate
 from djset.agents.designer import design
 from djset.agents.profiler import build_profile
@@ -26,6 +29,7 @@ from djset.contracts import (
     MixPlan,
     Profile,
     Setlist,
+    TrackMeasurements,
 )
 from djset.critic import Critique, critique
 from djset.export import to_mp3
@@ -56,6 +60,19 @@ TEMPO_ARTIFACT = "tempo.json"
 
 # Wo `set` den Bestand findet, wenn --daten fehlt.
 DATEN_ENV = "MUSIK_DATEN"
+
+# Die Laengen-Vorpruefung in `set` laeuft VOR dem Modell, die
+# Uebergangsregeln des Profils gibt es da noch nicht. Bis dahin gilt diese
+# feste Annahme je Naht; nach dem Entwurf rechnet bestand_profiler mit dessen
+# Werten.
+VORPRUEFUNG_TAKTE_JE_NAHT = 16
+
+# Was ein Lauf aus dem Bestand dem Nutzer sagt, wenn der Kurator zu wenig
+# uebrig laesst - Suno und watch/ gibt es auf diesem Weg nicht.
+BESTAND_NACHSCHUB = (
+    "Nimm weitere Songs in den Bestand auf (dj-set aufnehmen) oder waehle "
+    "mit --songs andere aus dem Bestand."
+)
 
 # Unter diesem Namen entsteht das Set, bis der Bericht steht. Erst dann wird
 # es zu FINISHED_MARKER - der Marke, an der Run.latest_unfinished einen
@@ -181,6 +198,7 @@ def build_run(
     profile: Profile,
     client: AgentClient,
     budget: Budget,
+    messungen: dict[str, TrackMeasurements] | None = None,
 ) -> int:
     """Der Kern eines build-Laufs, ab der Analyse: Stufen 3 bis 9.
 
@@ -189,10 +207,25 @@ def build_run(
     von hier an kosten die Stufen Tokens. Liegt tempo.json im Lauf (nur beim
     Einstieg `set`), nennt der QA-Bericht die Songs ausserhalb des
     Tempo-Bereichs.
+
+    `messungen` bringt der Einstieg `set` mit: die gespeicherten Messungen
+    der Songs. Die Analyse misst dann nicht neu, damit das Tempo im Lauf
+    nicht von tempo.json abweichen kann. `build` gibt keine mit.
     """
+    # Vor dem ersten Modellaufruf: ein kaputtes tempo.json soll nicht erst
+    # nach dem Rendern auffallen, wenn jedes Token bezahlt ist. Liegt es da,
+    # kommt der Lauf aus dem Bestand.
+    tempo = (
+        run.read_model(TEMPO_ARTIFACT, TempoWahl) if run.has(TEMPO_ARTIFACT) else None
+    )
+    nachschub = BESTAND_NACHSCHUB if tempo is not None else None
     try:
-        analyses, unreadable = analyse_all(client, files, profile, run, budget)
-        shortlist = curate(client, analyses, unreadable, profile, budget)
+        analyses, unreadable = analyse_all(
+            client, files, profile, run, budget, messungen=messungen
+        )
+        shortlist = curate(
+            client, analyses, unreadable, profile, budget, nachschub=nachschub
+        )
         run.write_model("shortlist.json", shortlist)
 
         best: MixPlan | None = None
@@ -299,9 +332,6 @@ def build_run(
         )
         return 1
 
-    tempo = (
-        run.read_model(TEMPO_ARTIFACT, TempoWahl) if run.has(TEMPO_ARTIFACT) else None
-    )
     run.write_text(
         "qa-report.md",
         render_qa_report(
@@ -450,12 +480,21 @@ def cmd_set(
 
     nach_id = {song.id: song for song in geladen}
     im_bereich = [nach_id[song_id] for song_id in wahl.drin]
-    vorhanden_s = sum(song.messung.duration_s for song in im_bereich if song.messung)
-    if vorhanden_s < length_minutes * 60:
+    dauern = [song.messung.duration_s for song in im_bereich if song.messung]
+    vorhanden_s = sum(dauern)
+    # Spielbar ist ein Song nur bis auf seinen Uebergang - dieselbe Rechnung,
+    # mit der bestand_profiler danach track_count.needed setzt.
+    spielbar_s = sum(
+        spielbare_laenge_s(dauer, VORPRUEFUNG_TAKTE_JE_NAHT, wahl.bereich.target)
+        for dauer in dauern
+    )
+    if spielbar_s < length_minutes * 60:
         print(
             f"Fehler: die {len(im_bereich)} Songs im Tempo-Bereich "
             f"{wahl.bereich.min:.1f} bis {wahl.bereich.max:.1f} BPM ergeben "
-            f"zusammen {vorhanden_s / 60:.1f} Minuten, gewuenscht sind "
+            f"zusammen {vorhanden_s / 60:.1f} Minuten, nach Abzug von je "
+            f"{VORPRUEFUNG_TAKTE_JE_NAHT} Takten Uebergang spielbar "
+            f"{spielbar_s / 60:.1f} Minuten, gewuenscht sind "
             f"{length_minutes:.1f} Minuten.",
             file=sys.stderr,
         )
@@ -491,7 +530,8 @@ def cmd_set(
     )
     for song_id, tempo in wahl.draussen.items():
         print(f"  nicht im Bereich: {song_id} ({tempo:.1f} BPM)")
-    return build_run(run, files, profile, client, budget)
+    messungen = {song.id: song.messung for song in im_bereich if song.messung}
+    return build_run(run, files, profile, client, budget, messungen=messungen)
 
 
 def cmd_record(

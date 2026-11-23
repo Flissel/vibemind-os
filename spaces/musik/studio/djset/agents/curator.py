@@ -109,8 +109,14 @@ def curate(
     unreadable: list[UnreadableTrack],
     profile: Profile,
     budget: Budget,
+    nachschub: str | None = None,
 ) -> Shortlist:
-    """Waehlt aus den analysierten Tracks die aus, mit denen gebaut wird."""
+    """Waehlt aus den analysierten Tracks die aus, mit denen gebaut wird.
+
+    `nachschub` ersetzt in der Meldung von NotEnoughTracks den Rat, woher
+    mehr Material kommt - ein Lauf aus dem Bestand hat kein Suno und kein
+    watch/.
+    """
     needed = profile.track_count.needed
     known = {a.id for a in analyses}
     prompt = PROMPT.format(
@@ -144,10 +150,12 @@ def curate(
     ]
 
     if len(answer.accepted) < MIN_TRACKS:
+        rat = nachschub or (
+            "Generiere mehr Material bei Suno und lege es in watch ab."
+        )
         raise NotEnoughTracks(
             f"Nach dem Aussortieren bleiben {len(answer.accepted)} Tracks, "
-            f"mindestens {MIN_TRACKS} werden gebraucht. Generiere mehr Material "
-            f"bei Suno und lege es in watch ab."
+            f"mindestens {MIN_TRACKS} werden gebraucht. {rat}"
         )
 
     shortened = len(answer.accepted) < needed

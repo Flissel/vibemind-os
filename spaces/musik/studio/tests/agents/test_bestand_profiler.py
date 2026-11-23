@@ -5,7 +5,11 @@ import pytest
 from pydantic import ValidationError
 
 from djset.agents.base import Budget
-from djset.agents.bestand_profiler import build_profile_from_bestand
+from djset.agents.bestand_profiler import (
+    benoetigte_songs,
+    build_profile_from_bestand,
+    spielbare_laenge_s,
+)
 from djset.bestand import SongEintrag
 from djset.contracts import TrackMeasurements
 from djset.tempo import TempoWahl, waehle_tempo
@@ -73,19 +77,45 @@ def test_die_laenge_kommt_vom_aufrufer(fake_client, songs, wahl, budget):
     assert profile.length_minutes == 20
 
 
-def test_ein_kleinerer_entwurf_bleibt_stehen(songs, wahl, budget):
+def test_needed_rechnet_der_code_nicht_das_modell(songs, wahl, budget):
+    """Fix-Welle B2 (frueher test_ein_kleinerer_entwurf_bleibt_stehen: dort
+    blieb der needed-Wert des Entwurfs stehen). Jetzt rechnet der Code:
+    spielbare Laenge = Songlaenge minus ein mittlerer Uebergang (DRAFT: 16..32
+    Takte, also 24 Takte bei 126 BPM = 45,7 s). Die kuerzesten passenden Songs
+    (200, 240, 240, 260 s) ergeben 154 + 194 + 194 = 543 s nach drei und
+    757 s nach vier Songs - fuer zehn Minuten braucht es vier. request ist
+    die Zahl aller passenden Songs, damit der Kurator aus allen waehlen darf."""
     entwurf = json.loads(json.dumps(DRAFT))
     entwurf["track_count"] = {"needed": 3, "request": 5}
     many = songs + [_song("d", 125.0), _song("e", 127.0)]
     breite_wahl = waehle_tempo({s.id: s.messung.bpm.value for s in many if s.messung})
     assert len(breite_wahl.drin) == 5
+    assert breite_wahl.bereich.target == 126.0
 
     profile = build_profile_from_bestand(
-        FakeClient([json.dumps(entwurf)]), "Party", 20, many, breite_wahl, budget
+        FakeClient([json.dumps(entwurf)]), "Party", 10, many, breite_wahl, budget
     )
 
-    assert profile.track_count.needed == 3
-    assert profile.track_count.request == 3
+    assert profile.track_count.needed == 4
+    assert profile.track_count.request == 5
+
+
+def test_needed_hoechstens_alle_passenden_songs(songs, wahl, budget):
+    """Reicht selbst alles Material nicht (die Vorpruefung in cmd_set rechnet
+    mit 16 statt der 24 Takte des Entwurfs), wird es nicht mehr als alles."""
+    profile = build_profile_from_bestand(
+        FakeClient([json.dumps(DRAFT)]), "Party", 13, songs, wahl, budget
+    )
+    assert profile.track_count.needed == len(wahl.drin) == 3
+
+
+def test_benoetigte_songs_zaehlt_die_kuerzesten():
+    # 100 s Uebergang abgezogen: 100, 200, 300 spielbar.
+    dauern = [400.0, 200.0, 300.0, 1000.0]
+    assert benoetigte_songs(dauern, 250.0, 50, 120.0) == 3  # MIN_TRACKS
+    assert benoetigte_songs(dauern, 700.0, 50, 120.0) == 4
+    assert benoetigte_songs(dauern, 10_000.0, 50, 120.0) == 4
+    assert spielbare_laenge_s(400.0, 50, 120.0) == 300.0
 
 
 def test_der_prompt_traegt_wunsch_und_songtabelle(fake_client, songs, wahl, budget):
