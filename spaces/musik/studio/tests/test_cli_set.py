@@ -1,4 +1,5 @@
 import json
+import math
 from datetime import date
 from pathlib import Path
 
@@ -666,3 +667,52 @@ def test_build_run_gibt_der_qa_die_gewuenschte_laenge(tmp_path, profile, monkeyp
     cli.build_run(run, files, flach, client, _budget())
 
     assert gesehen == [flach.length_minutes * 60.0]
+
+
+@pytest.mark.parametrize("laenge", [math.nan, math.inf])
+def test_set_lehnt_nan_und_inf_ab(tmp_path, zaehlender_client, budget, capsys, laenge):
+    """B9."""
+    _bestand(tmp_path, {"a": 124.0, "b": 126.0, "c": 128.0})
+
+    assert cmd_set(tmp_path, "Party", laenge, None, zaehlender_client, budget, HEUTE) == 1
+
+    assert zaehlender_client.aufrufe == 0
+    assert capsys.readouterr().err.startswith("Fehler:")
+    assert not (tmp_path / "runs").exists()
+
+
+def test_set_kappt_den_ordnernamen_auf_40_zeichen(tmp_path, budget, build_run_aufzeichnung):
+    """B6: der ganze Wunsch im Ordnernamen sprengt unter Windows schnell die
+    Pfadlaenge."""
+    _bestand(tmp_path, {"a": 124.0, "b": 126.0, "c": 128.0})
+    wunsch = "Sommerfest am See, erst ruhig dann immer wilder bis tief in die Nacht"
+    client = ZaehlenderClient([json.dumps(DRAFT)])
+
+    assert cmd_set(tmp_path, wunsch, 20, None, client, budget, HEUTE) == 0
+
+    [aufruf] = build_run_aufzeichnung.aufrufe
+    run = aufruf["run"]
+    assert isinstance(run, Run)
+    slug = run.run_id.removeprefix("2026-11-23-").removesuffix("-01")
+    assert slug == "sommerfest-am-see-erst-ruhig-dann-immer"
+    assert len(slug) <= 40
+    # Der Wunsch selbst bleibt ungekuerzt im Profil.
+    assert aufruf["profile"].genre == wunsch
+
+
+def test_eine_kaputte_messung_wird_zur_fehlermeldung_mit_song_id(
+    tmp_path, zaehlender_client, budget, capsys, monkeypatch
+):
+    """B7: nicht nur BestandFehler - jede Ausnahme beim Messen."""
+    bestand = _bestand(tmp_path, {"a": 124.0, "b": 126.0})
+    _lege_song_ab(bestand, "c", None)
+
+    def kaputt(self, song_id):
+        raise RuntimeError("librosa ist umgefallen")
+
+    monkeypatch.setattr(Bestand, "messen", kaputt)
+
+    assert cmd_set(tmp_path, "Party", 5, None, zaehlender_client, budget, HEUTE) == 1
+
+    assert zaehlender_client.aufrufe == 0
+    assert capsys.readouterr().err == "Fehler: c: librosa ist umgefallen\n"

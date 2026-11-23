@@ -1,5 +1,8 @@
 import json
+import math
 from pathlib import Path
+
+import pytest
 
 from djset.cli import cmd_plan
 from djset.contracts import Profile
@@ -81,3 +84,14 @@ def test_plan_creates_the_watch_directory(tmp_path: Path):
     """Die Schlussmeldung schickt den Nutzer nach watch/ - der muss da sein."""
     cmd_plan(base=tmp_path, genre="liquid dnb", length_minutes=60.0, client=_client())
     assert (tmp_path / "watch").is_dir()
+
+
+# Fix-Welle B9: nan und inf sind fuer argparse gueltige floats, und
+# `nan <= 0` ist falsch - die alte Pruefung liess beide durch.
+@pytest.mark.parametrize("laenge", [math.nan, math.inf, -math.inf])
+def test_plan_lehnt_nan_und_inf_ab(tmp_path: Path, capsys, laenge: float):
+    client = FakeClient([])
+    code = cmd_plan(base=tmp_path, genre="liquid dnb", length_minutes=laenge, client=client)
+    assert code == 1
+    assert client.calls == 0
+    assert capsys.readouterr().err.startswith("Fehler:")

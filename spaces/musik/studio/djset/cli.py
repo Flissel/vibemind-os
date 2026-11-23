@@ -2,6 +2,7 @@
 und `import`."""
 
 import argparse
+import math
 import os
 import sys
 from datetime import date
@@ -61,6 +62,9 @@ TEMPO_ARTIFACT = "tempo.json"
 # Wo `set` den Bestand findet, wenn --daten fehlt.
 DATEN_ENV = "MUSIK_DATEN"
 
+# So lang darf der Teil des Lauf-Ordnernamens werden, der aus dem Wunsch kommt.
+LAUF_SLUG_MAX = 40
+
 # Die Laengen-Vorpruefung in `set` laeuft VOR dem Modell, die
 # Uebergangsregeln des Profils gibt es da noch nicht. Bis dahin gilt diese
 # feste Annahme je Naht; nach dem Entwurf rechnet bestand_profiler mit dessen
@@ -99,6 +103,19 @@ BUILD_BUDGET_SECONDS = 3600.0
 CRITIC_ROUNDS = 2
 
 
+def _laenge_gueltig(length_minutes: float) -> bool:
+    """--length muss eine endliche positive Zahl sein. argparse nimmt "nan"
+    und "inf" als float an, und `nan <= 0` ist falsch - ohne isfinite kaeme
+    beides durch. Meldet selbst, gibt nur zurueck, ob es weitergeht."""
+    if math.isfinite(length_minutes) and length_minutes > 0:
+        return True
+    print(
+        f"Fehler: --length muss eine positive Zahl sein, war {length_minutes}.",
+        file=sys.stderr,
+    )
+    return False
+
+
 def cmd_plan(
     base: Path,
     genre: str,
@@ -112,11 +129,7 @@ def cmd_plan(
     if not genre.strip():
         print("Fehler: --genre darf nicht leer sein.", file=sys.stderr)
         return 1
-    if length_minutes <= 0:
-        print(
-            f"Fehler: --length muss positiv sein, war {length_minutes}.",
-            file=sys.stderr,
-        )
+    if not _laenge_gueltig(length_minutes):
         return 1
 
     budget = Budget(
@@ -416,17 +429,25 @@ def _songs_laden(
             if not geladen:
                 print("Fehler: --songs nennt keinen Song.", file=sys.stderr)
                 return None
-
-        gemessen: list[SongEintrag] = []
-        for song in geladen:
-            if song.messung is None:
-                print(f"  messe {song.id} ...")
-                song = bestand.messen(song.id)
-            gemessen.append(song)
-        return gemessen
     except BestandFehler as error:
         print(f"Fehler: {error}", file=sys.stderr)
         return None
+
+    gemessen: list[SongEintrag] = []
+    for song in geladen:
+        if song.messung is None:
+            print(f"  messe {song.id} ...")
+            # Jede Ausnahme, nicht nur BestandFehler: librosa, soundfile und
+            # numpy werfen beim Messen eigene Fehler, und die sollen vor dem
+            # ersten Modellaufruf als Meldung mit Song-ID enden, nicht als
+            # Traceback.
+            try:
+                song = bestand.messen(song.id)
+            except Exception as error:  # noqa: BLE001 - jede Messstoerung endet gleich
+                print(f"Fehler: {song.id}: {error}", file=sys.stderr)
+                return None
+        gemessen.append(song)
+    return gemessen
 
 
 def cmd_set(
@@ -448,11 +469,7 @@ def cmd_set(
     if not wunsch.strip():
         print("Fehler: --wunsch darf nicht leer sein.", file=sys.stderr)
         return 1
-    if length_minutes <= 0:
-        print(
-            f"Fehler: --length muss positiv sein, war {length_minutes}.",
-            file=sys.stderr,
-        )
+    if not _laenge_gueltig(length_minutes):
         return 1
 
     # Bestand() legt eingang/ und songs/ an. Ein vertippter Pfad ergaebe sonst
@@ -515,7 +532,11 @@ def cmd_set(
         print(f"Fehler: {error}", file=sys.stderr)
         return 1
 
-    run = Run.create(daten, wunsch, today=today)
+    # Der Wunsch ist freier Text und kann lang sein - im Ordnernamen nur
+    # gekappt, sonst sprengt er unter Windows schnell die Pfadlaenge. Das
+    # Profil bekommt ihn weiter ganz.
+    kurz = slugify(wunsch)[:LAUF_SLUG_MAX].rstrip("-")
+    run = Run.create(daten, kurz, today=today)
     run.write_model(TEMPO_ARTIFACT, wahl)
     try:
         profile = build_profile_from_bestand(
