@@ -329,6 +329,8 @@ def _zurueck_schritt(monkeypatch, *, argument, absicht, ergebnis):
 
     monkeypatch.setattr("core.plan_executor.PlanExecutor._capture_kg_hits", lambda *args: [])
     monkeypatch.setattr("core.agent_yaml_registry.get_registry", lambda: _Agenten())
+    # Protokoll: nichts offen -> "Zurück" ohne Gruppe geht wie bisher ans Werkzeug.
+    monkeypatch.setattr("core.zurueck_vorsicht.protokoll_lesen", lambda: [])
     ausfuehrer = _Aufzeichner(ergebnis)
     ziele = []
     monkeypatch.setattr("core.capability_targets.build_executor",
@@ -347,6 +349,45 @@ def test_plan_schritt_ohne_genannte_gruppe_ruft_das_werkzeug_ohne_argument(monke
         ergebnis={"ok": True, "result": _mcp_ergebnis({"gruppe": "plan_a", "anzahl": 1, "eintraege": []})})
     assert ziele == [AENDERUNG_ZURUECK_TARGET]
     assert ausfuehrer.aufrufe == [("", "gruppe", {"_runtime_authority"})]
+
+
+def test_plan_schritt_nimmt_aeltere_aenderung_erst_nach_rueckfrage(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    alt = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    zeilen = [{"gruppe": "ideen_1", "erstellt_am": alt, "vorgang": "UPDATE", "nachher_titel": "Zelt"}]
+    monkeypatch.setattr("core.zurueck_vorsicht.protokoll_lesen", lambda: zeilen)
+    ergebnis = {"ok": True, "result": _mcp_ergebnis({"gruppe": "ideen_1", "anzahl": 1, "eintraege": []})}
+    from core.plan_executor import PlanExecutor
+    from core.plan_schema import HopSpec
+    from core import zurueck_vorsicht
+    zurueck_vorsicht._offen.clear()
+    monkeypatch.setattr("core.plan_executor.PlanExecutor._capture_kg_hits", lambda *args: [])
+    monkeypatch.setattr("core.agent_yaml_registry.get_registry", lambda: _Agenten())
+    ausfuehrer = _Aufzeichner(ergebnis)
+    monkeypatch.setattr("core.capability_targets.build_executor", lambda ziel: ausfuehrer)
+
+    def schritt(absicht):
+        hop = HopSpec(step_id="s1", description="zurueck", capability="aenderung_zurueck",
+                      execution_target=AENDERUNG_ZURUECK_TARGET, arg_kwarg="gruppe", arg_template="")
+        return PlanExecutor()._exec_hop(hop, {}, plan_ctx={
+            "plan_id": "plan-z", "plan_revision": 1, "trace_id": "t1", "plan_intent": absicht})
+
+    hr = schritt("zurück")
+    assert hr.ok is False and "„Zelt“ geändert vor 10 Minuten" in hr.error
+    assert ausfuehrer.aufrufe == []                              # nichts zurueckgenommen
+    schritt("Ja, zurück")
+    assert ausfuehrer.aufrufe == [("ideen_1", "gruppe", {"_runtime_authority"})]
+    zurueck_vorsicht._offen.clear()
+
+
+def test_bestaetigungssatz_landet_bei_zurueck():
+    from core.capability_router import CapabilityRouter
+    router = CapabilityRouter(DATA / "capabilities.yaml")
+    for satz in ("Ja, zurück", "ja zurueck", "Ja, nimm sie zurück."):
+        treffer = router.route(satz)
+        assert treffer is not None and treffer.capability == "aenderung_zurueck", satz
+    treffer = router.route("ja, zurück zur Bubble")
+    assert treffer is None or treffer.capability != "aenderung_zurueck"
 
 
 def test_plan_schritt_reicht_eine_genannte_gruppe_durch(monkeypatch):

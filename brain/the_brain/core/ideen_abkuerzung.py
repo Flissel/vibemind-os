@@ -650,6 +650,9 @@ def fehlersatz(fehler: Any, capability: Any = None) -> str:
         return ("Der Ideen-Dienst läuft gerade nicht. Bitte prüfe das Canvas, bevor du es wiederholst."
                 if "transport_closed" in text
                 else "Der Ideen-Dienst hat nicht geantwortet. Es ist unklar, ob etwas geändert wurde.")
+    if "aenderung_zurueck_frage: " in text:
+        # core/zurueck_vorsicht: nennt, was zurueckgenommen wuerde; nichts geaendert.
+        return text.split("aenderung_zurueck_frage: ", 1)[1].strip()
     if "aenderung_konflikt" in text:
         return "Das lässt sich nicht zurücknehmen: Ein Eintrag wurde danach noch einmal geändert."
     if "aenderung_unbekannt" in text:

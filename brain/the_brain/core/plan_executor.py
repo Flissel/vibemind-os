@@ -1678,7 +1678,29 @@ class PlanExecutor:
                         elapsed_s=time.time() - t0,
                         contract_pass=False, reward=-1.0,
                     )
-                rendered_arg = _gruppe
+                # Ohne genannte Gruppe waehlt das Gehirn das Ziel: nie ein abgelehnter
+                # Plan, und eine aeltere Aenderung erst nach Rueckfrage (zurueck_vorsicht).
+                from . import zurueck_vorsicht as _vorsicht
+
+                def _abgelehnt(gruppe: str) -> bool:
+                    try:
+                        snap = self.recorder.get(gruppe)
+                    except Exception:  # noqa: BLE001
+                        return False
+                    return isinstance(snap, dict) and snap.get("ok") is False
+
+                _wahl = _vorsicht.entscheiden(
+                    _gruppe, plan_ctx.get("plan_intent", ""), ist_abgelehnt=_abgelehnt)
+                if _wahl["aktion"] != "weiter":
+                    return HopResult(
+                        step_id=hop.step_id, ok=False,
+                        error=_vorsicht.FRAGE_MARKE + _wahl["satz"],
+                        capability=hop.capability, target=target,
+                        rendered_arg=rendered_arg, kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False, reward=0.0,
+                    )
+                rendered_arg = _wahl["gruppe"]
             assigned_agent = None
             try:
                 assigned_agent = get_registry().get_event_agent(event_id) if event_id else None

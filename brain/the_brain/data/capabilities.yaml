@@ -694,6 +694,8 @@
   # Eng gefasst, damit "mach das Format rueckgaengig" bei idea_format_revert bleibt.
   match_patterns:
     - "^\\s*(zur(ü|ue)ck|r(ü|ue)ckg(ä|ae)ngig|undo)\\s*[.!]?\\s*$"
+    # Bestaetigung nach der Rueckfrage aus core/zurueck_vorsicht ("Sag „Ja, zurück“").
+    - "^\\s*ja\\s*[,.!]?\\s*(nimm\\s+(sie|das|es)\\s+)?zur(ü|ue)ck\\s*[.!]?\\s*$"
     - "\\bmach(e)?\\s+(das|es|die\\s+(letzte\\s+)?(ä|ae)nderung)\\s+(bitte\\s+)?(wieder\\s+)?r(ü|ue)ckg(ä|ae)ngig\\b"
     - "\\bnimm\\s+(das|es|die\\s+(letzte\\s+)?(ä|ae)nderung|[\\w:.-]*[0-9][\\w:.-]*)\\s+(bitte\\s+)?(wieder\\s+)?zur(ü|ue)ck\\b"
     - "\\bstell(e)?\\s+die\\s+gel(ö|oe)schte\\s+(bubble|idee)\\s+wieder\\s+her\\b"
