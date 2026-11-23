@@ -6,6 +6,7 @@ Ideen-Aufrufe (``feste_argumente``): Argumente oder eine Rueckfrage der Form
 """
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import re
@@ -33,8 +34,23 @@ def _leerraum(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _kennung(titel: str) -> str:
-    return hashlib.sha256(("vorschlag:" + _leerraum(titel).lower()).encode("utf-8")).hexdigest()[:16]
+_TAG = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def _tag_gueltig(tag: Any) -> bool:
+    if not isinstance(tag, str) or not _TAG.fullmatch(tag):
+        return False
+    try:
+        datetime.date.fromisoformat(tag)
+    except ValueError:
+        return False
+    return True
+
+
+def _kennung(titel: str, tag: str) -> str:
+    """Kennung eines getippten Punkts: Derselbe Satz am selben Tag ergibt dieselbe, an einem anderen Tag eine neue."""
+    text = "vorschlag:" + tag + ":" + _leerraum(titel).lower()
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def aus_satz(satz: str) -> str | None:
@@ -119,9 +135,17 @@ def _rohtitel(roh: Any) -> tuple[list[Any] | None, str | None]:
     return None, _FORM
 
 
-def argumente(roh: str | list | dict, plan_id: str) -> tuple[dict | None, str | None]:
-    """``({"eingabe": {"punkte": [...]}, "plan_id": plan_id}, None)`` oder ``(None, Rueckfrage)``."""
+def argumente(roh: str | list | dict, plan_id: str, tag: str | None = None) -> tuple[dict | None, str | None]:
+    """``({"eingabe": {"punkte": [...]}, "plan_id": plan_id}, None)`` oder ``(None, Rueckfrage)``.
+
+    ``tag`` ist ein ISO-Datum ``JJJJ-MM-TT`` und geht in die Kennung ein; ohne ``tag`` gilt das lokale Datum des
+    Rechners. Ein ``tag`` in anderer Form ergibt eine Rueckfrage.
+    """
     try:
+        if tag is None:
+            tag = datetime.date.today().isoformat()
+        elif not _tag_gueltig(tag):
+            return None, _RUECKFRAGE + "the day must be a date like 2026-11-23"
         titel_roh, frage = _rohtitel(roh)
         if titel_roh is None:
             return None, frage
@@ -137,7 +161,7 @@ def argumente(roh: str | list | dict, plan_id: str) -> tuple[dict | None, str | 
                 return None, _RUECKFRAGE + "the item is only the name of the list; which items should go on it?"
             if len(titel) > TITEL_MAX:
                 return None, _RUECKFRAGE + f"a title is longer than {TITEL_MAX} characters"
-            kennung = _kennung(titel)
+            kennung = _kennung(titel, tag)
             if kennung in gesehen:
                 continue
             gesehen.add(kennung)

@@ -17,15 +17,21 @@ Nummern, Spiegelstriche und `;`; ein „und" trennt **nicht** (ein Titel darf �
 Ordner `spaces/auftragsbuch/lieferung/eingabe/`:
 
 - `vorschlaege_eingabe.py`, nur Standardbibliothek, mit
-  `argumente(roh: str | list | dict, plan_id: str) -> tuple[dict | None, str | None]`.
+  `argumente(roh: str | list | dict, plan_id: str, tag: str | None = None) -> tuple[dict | None, str | None]`.
   - Nimmt eine JSON-Liste von Titeln (als Text oder als Liste), ein Objekt `{"titel": [...]}` oder Text mit
     Zeilen, führender Nummerierung (`1.`, `2)`), Spiegelstrichen (`-`, `*`) oder `;` als Trenner.
   - Liefert `({"eingabe": {"punkte": [...]}, "plan_id": plan_id}, None)` oder `(None, <Rückfrage>)`. Nie eine
     Ausnahme.
   - Jeder Punkt hat genau `punkt_id`, `titel`, `frist` (immer `null`) und `link` (immer `""`).
-  - `punkt_id` sind die ersten 16 Zeichen von `sha256("vorschlag:" + Titel)`, wobei der Titel vorher
-    zusammengefasst (Leerraum zu einem Leerzeichen, Rand abgeschnitten) und kleingeschrieben wird. Das passt zu
+  - `punkt_id` sind die ersten 16 Zeichen von `sha256("vorschlag:" + Tag + ":" + Titel)`, wobei `Tag` ein ISO-Datum
+    `JJJJ-MM-TT` ist und der Titel vorher zusammengefasst (Leerraum zu einem Leerzeichen, Rand abgeschnitten) und kleingeschrieben wird. Das passt zu
     `#([a-f0-9]{16})$`, womit der Abholer die Kennung aus dem Vorschlagstext liest (`rowboat/text.py`).
+  - **Der Tag gehört zur Kennung** (von Felix am 23.11. entschieden; Abweichung von Spec 8.4 für getippte Punkte):
+    Derselbe Satz am selben Tag ergibt dieselbe Kennung und erscheint nur einmal (Schutz vor versehentlichem
+    Doppelsenden); an einem anderen Tag ergibt er eine neue, der Punkt erscheint wieder (wiederkehrende Punkte). Fehlt
+    `tag` (`None`), gilt das lokale Datum des Rechners (`datetime.date.today()`). Das Gehirn gibt kein Datum mit, der
+    Schnipsel unten ruft also ohne `tag`. Ein `tag`, das kein gültiges Datum der Form `JJJJ-MM-TT` ist, ergibt eine
+    Rückfrage. Punkte aus Mails (Stufe 4) bleiben bei „nie zweimal"; sie laufen nicht über dieses Modul.
   - Der Titel im Ergebnis ist zusammengefasst und abgeschnitten, aber in der Schreibweise des ersten Vorkommens.
     Gleiche Titel (nach der Kleinschreibung) fallen zu einem Punkt zusammen.
   - Ein Titel, der nur der Name der Liste ist („To-do-Liste", „Liste.", „Aufgabenliste", „meine Liste"), ist nie
@@ -43,7 +49,7 @@ Ordner `spaces/auftragsbuch/lieferung/eingabe/`:
   `setz`, `setze`, `schreib`, `schreibe`, mit „mir" und „bitte") und „auf/in die|meine|unsere (To-do-|Aufgaben-)Liste"
   aus der Anfrage; Satzzeichen und nachgestelltes „, danke", „bitte" am Ende werden ignoriert. Passt der Satz nicht, `None`. Wirft nie.
 - `test_vorschlaege_eingabe.py` ( darunter `test_ergebnis_passt_zum_vertrag` gegen `pruefe_eingabe` und
-  den echten Vertrag; jetzt insgesamt 15 Tests) und `test_katalog_eintrag.py` (10 Tests; liest den Eintrag unten aus diesem Dokument und
+  den echten Vertrag; jetzt insgesamt 19 Tests) und `test_katalog_eintrag.py` (10 Tests; liest den Eintrag unten aus diesem Dokument und
   prüft ihn gegen den echten Katalog). Aufruf von der Repo-Wurzel, je Datei einzeln:
   `python -m pytest spaces/auftragsbuch/lieferung/eingabe/test_vorschlaege_eingabe.py -q -p no:cacheprovider`
   `python -m pytest spaces/auftragsbuch/lieferung/eingabe/test_katalog_eintrag.py -q -p no:cacheprovider`
@@ -166,6 +172,10 @@ Die Herkunft (Block 2) prüft vorher oder in derselben Gegend; die Reihenfolge i
 Ausführer gebaut wird.
 
 ## 3. Was man wissen muss
+
+- **Bekannte Grenze des Tags.** Liegt der gestrige Punkt noch offen im Rowboat-Fach, steht derselbe Titel heute
+  zweimal dort, mit verschiedener Kennung. Das ist die Folge der Entscheidung oben und kein Fehler des Abholers.
+  Das Datum ist das lokale des Rechners, auf dem das Gehirn läuft; um Mitternacht kann ein Satz auf einen anderen Tag fallen.
 
 - **Letztes Wort als Argument (behoben).** Der Muster-Kurzweg (Kommentar bei `aenderung_zurueck`,
   `capabilities.yaml` ab Zeile 689) setzt das letzte Wort des Satzes als Argument ein, hier also „To-do-Liste".
