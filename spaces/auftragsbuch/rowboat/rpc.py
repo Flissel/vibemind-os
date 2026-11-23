@@ -14,7 +14,7 @@ import urllib.request
 from pathlib import Path
 
 GRUND_NICHT_ERREICHBAR = "Rowboat nicht erreichbar"
-GRUND_ABGELEHNT = "Rowboat: Schluessel abgelehnt"
+GRUND_ABGELEHNT = "Rowboat: Schlüssel abgelehnt"
 GRUND_UNERWARTET = "Rowboat: unerwartete Antwort"
 
 _URL = re.compile(r"http://(?:127\.0\.0\.1|localhost):(\d{1,5})")

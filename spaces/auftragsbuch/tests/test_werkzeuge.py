@@ -250,11 +250,15 @@ def test_ablehnungstexte_stehen_woertlich_in_der_sql_datei():
 PUNKT = "0123456789abcdef"
 
 
-def _fertig(buch, an, art, version, ergebnis):
+def _eingabe(*ids):
+    return {"punkte": [{"punkt_id": i, "titel": "t", "frist": None, "link": ""} for i in ids]}
+
+
+def _fertig(buch, an, art, version, ergebnis, eingabe=None):
     kennung = str(uuid.uuid4())
     buch.zeilen[kennung] = {
         "id": kennung, "an": an, "art": art, "art_version": version, "stand": "fertig",
-        "ergebnis": ergebnis, "fehler": None, "plan_id": None, "frist_bis": None, "eingabe": {},
+        "ergebnis": ergebnis, "fehler": None, "plan_id": None, "frist_bis": None, "eingabe": eingabe or {},
     }
     return kennung
 
@@ -272,30 +276,38 @@ def test_lesen_falsche_form_ohne_inhalt(buch):
     assert "geheim" not in str(r)
 
 
-def test_lesen_falsche_version_ist_falsche_form(buch):
-    kennung = _fertig(buch, "rowboat", "vorschlaege_anlegen", 1, {"punkte": []})
-    assert ausfuehren("auftrag_lesen", {"id": kennung}, buch, ARTEN)["stand"] == "fehler"
+def test_lesen_aeltere_version_bleibt_wie_gespeichert(buch):
+    kennung = _fertig(buch, "sales", "post_pruefen", 1, {"alt": 1})
+    r = ausfuehren("auftrag_lesen", {"id": kennung}, buch, ARTEN)
+    assert (r["stand"], r["ergebnis"], r["fehler"], r["beleg"]) == ("fertig", {"alt": 1}, None, "nicht_pruefbar")
+
+
+def _leser_null(todo):
+    def leser(kanal, koerper):
+        assert kanal == "todo:get" and koerper is None  # Rowboat: req ist z.null()
+        return todo
+    return leser
 
 
 def test_lesen_beleg_bestaetigt(buch):
     kennung = _fertig(buch, "rowboat", "vorschlaege_anlegen", 2,
-                      {"punkte": [{"punkt_id": PUNKT, "stand": "neu"}]})
+                      {"punkte": [{"punkt_id": PUNKT, "stand": "neu"}]}, _eingabe(PUNKT))
     r = ausfuehren("auftrag_lesen", {"id": kennung}, buch, ARTEN,
-                   lambda kanal, koerper: _todo(f"Etwas  tun #{PUNKT.upper()}"))
+                   _leser_null(_todo(f"Etwas  tun #{PUNKT.upper()}")))
     assert r["beleg"] == "bestaetigt" and r["stand"] == "fertig"
 
 
 def test_lesen_beleg_nicht_bestaetigt(buch):
     kennung = _fertig(buch, "rowboat", "vorschlaege_anlegen", 2,
-                      {"punkte": [{"punkt_id": PUNKT, "stand": "neu"}]})
+                      {"punkte": [{"punkt_id": PUNKT, "stand": "neu"}]}, _eingabe(PUNKT))
     r = ausfuehren("auftrag_lesen", {"id": kennung}, buch, ARTEN,
-                   lambda kanal, koerper: _todo("Etwas #ffffffffffffffff"))
+                   _leser_null(_todo("Etwas #ffffffffffffffff")))
     assert r["beleg"] == "nicht_bestaetigt"
 
 
 def test_lesen_beleg_nicht_pruefbar(buch):
     kennung = _fertig(buch, "rowboat", "vorschlaege_anlegen", 2,
-                      {"punkte": [{"punkt_id": PUNKT, "stand": "neu"}]})
+                      {"punkte": [{"punkt_id": PUNKT, "stand": "neu"}]}, _eingabe(PUNKT))
 
     def leser(kanal, koerper):
         raise RuntimeError("kaputt")

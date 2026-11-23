@@ -24,6 +24,8 @@ def server():
                 "pfad": self.path, "host": self.headers.get("Host"),
                 "auth": self.headers.get("Authorization"), "typ": self.headers.get("Content-Type"),
                 "body": json.loads(self.rfile.read(laenge) or b"null")})
+            if self.path == "/rpc/todo:get" and gesehen["anfragen"][-1]["body"] is not None:
+                antwort["status"] = 400  # wie Rowboat: req ist z.null()
             self.send_response(antwort["status"])
             if antwort["ort"]:
                 self.send_header("Location", antwort["ort"])
@@ -50,25 +52,25 @@ def _rpc(server, tmp_path, timeout=5):
 
 def test_rpc_setzt_host_kopf(server, tmp_path):
     s, gesehen, _ = server
-    assert _rpc(s, tmp_path).aufruf("todo:get", {}) == {"ok": True}
+    assert _rpc(s, tmp_path).aufruf("todo:get", None) == {"ok": True}
     a = gesehen["anfragen"][0]
     assert a["pfad"] == "/rpc/todo:get" and a["host"] == f"127.0.0.1:{s.server_port}"
-    assert a["auth"] == f"Bearer {SCHLUESSEL}" and a["typ"] == "application/json" and a["body"] == {}
+    assert a["auth"] == f"Bearer {SCHLUESSEL}" and a["typ"] == "application/json" and a["body"] is None
 
 
 def test_rpc_401_fester_grund(server, tmp_path):
     s, _, antwort = server
     antwort["status"] = 401
     with pytest.raises(RowboatFehler) as e:
-        _rpc(s, tmp_path).aufruf("todo:get", {})
-    assert e.value.grund == "Rowboat: Schluessel abgelehnt"
+        _rpc(s, tmp_path).aufruf("todo:get", None)
+    assert e.value.grund == "Rowboat: Schlüssel abgelehnt"
 
 
 def test_rpc_folgt_keiner_weiterleitung(server, tmp_path):
     s, gesehen, antwort = server
     antwort.update(status=302, ort=f"http://127.0.0.1:{s.server_port}/rpc/anders")
     with pytest.raises(RowboatFehler) as e:
-        _rpc(s, tmp_path).aufruf("todo:get", {})
+        _rpc(s, tmp_path).aufruf("todo:get", None)
     assert e.value.grund == "Rowboat: unerwartete Antwort"
     assert len(gesehen["anfragen"]) == 1
 
@@ -77,7 +79,7 @@ def test_rpc_kaputte_antwort(server, tmp_path):
     s, _, antwort = server
     antwort["koerper"] = b"kein json{"
     with pytest.raises(RowboatFehler) as e:
-        _rpc(s, tmp_path).aufruf("todo:get", {})
+        _rpc(s, tmp_path).aufruf("todo:get", None)
     assert e.value.grund == "Rowboat: unerwartete Antwort"
 
 
@@ -87,7 +89,7 @@ def test_rpc_nicht_erreichbar(server, tmp_path):
     s.shutdown()
     s.server_close()
     with pytest.raises(RowboatFehler) as e:
-        r.aufruf("todo:get", {})
+        r.aufruf("todo:get", None)
     assert e.value.grund == "Rowboat nicht erreichbar"
 
 
@@ -96,7 +98,7 @@ def test_rpc_schluessel_nie_im_fehler(server, tmp_path):
     antwort["status"] = 500
     r = _rpc(s, tmp_path)
     with pytest.raises(RowboatFehler) as e:
-        r.aufruf("todo:get", {})
+        r.aufruf("todo:get", None)
     assert SCHLUESSEL not in str(e.value) and SCHLUESSEL not in repr(e.value) and SCHLUESSEL not in repr(r)
     assert e.value.__cause__ is None
 

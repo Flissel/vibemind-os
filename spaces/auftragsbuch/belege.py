@@ -6,10 +6,13 @@ Lesers lautet das Ergebnis `nicht_pruefbar` (nie ein Fehler nach aussen, nie ein
 """
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable
 
 from spaces.auftragsbuch.vertrag import Auftragsart
+
+log = logging.getLogger("auftragsbuch")
 
 ENTFAELLT = "entfaellt"
 BESTAETIGT = "bestaetigt"
@@ -34,7 +37,7 @@ def _items(bloecke: list, ziel: list[str]) -> None:
 
 
 def _kennungen_in_rowboat(leser: Callable[[str, object], object]) -> set[str]:
-    todo = leser("todo:get", {})
+    todo = leser("todo:get", None)  # Rowboat: req ist z.null()
     if not isinstance(todo, dict):
         raise ValueError("unerwartete Form")
     texte: list[str] = [str(t) for t in todo.get("suggestions") or []]
@@ -42,8 +45,10 @@ def _kennungen_in_rowboat(leser: Callable[[str, object], object]) -> set[str]:
     return {k for k in map(_kennung_in, texte) if k}
 
 
-def _vorschlaege_anlegen(ergebnis: dict, leser: Callable[[str, object], object]) -> str:
+def _vorschlaege_anlegen(eingabe: dict, ergebnis: dict, leser: Callable[[str, object], object]) -> str:
     punkte = ergebnis["punkte"]
+    if sorted(p["punkt_id"] for p in punkte) != sorted(p["punkt_id"] for p in eingabe["punkte"]):
+        return NICHT_BESTAETIGT
     neu = [p["punkt_id"] for p in punkte if p["stand"] == "neu"]
     if not neu:
         return BESTAETIGT
@@ -55,13 +60,16 @@ _PRUEFER = {("rowboat", "vorschlaege_anlegen"): _vorschlaege_anlegen}
 
 
 def beleg(art: Auftragsart, eingabe: dict, ergebnis: dict,
-          leser: Callable[[str, object], object] | None) -> str:
+          leser: Callable[[str, object], object] | None, auftrag: str = "") -> str:
     if art.nachpruefung == "form":
         return ENTFAELLT
     pruefer = _PRUEFER.get((art.space, art.art))
     if leser is None or pruefer is None:
         return NICHT_PRUEFBAR
     try:
-        return pruefer(ergebnis, leser)
-    except Exception:  # noqa: BLE001 - jeder Fehler beim Lesen heisst: nicht pruefbar
+        return pruefer(eingabe, ergebnis, leser)
+    except Exception as e:  # noqa: BLE001 - jeder Fehler beim Lesen heisst: nicht pruefbar
+        grund = getattr(e, "grund", None)  # fester Text von RowboatFehler, sonst nur der Typname
+        log.info("auftrag=%s art=%s beleg=nicht_pruefbar grund=%s", auftrag[:8], art.art,
+                 grund if isinstance(grund, str) else type(e).__name__)
         return NICHT_PRUEFBAR

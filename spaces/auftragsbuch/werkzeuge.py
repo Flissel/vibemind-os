@@ -127,16 +127,17 @@ def _lesen(argumente: object, buch: Buch, arten: dict,
     if antwort["stand"] != "fertig":
         antwort["beleg"] = belege.ENTFAELLT if art.nachpruefung == "form" else belege.NICHT_PRUEFBAR
         return antwort
+    if zeile.get("art_version") != art.version:  # aelteres Ergebnis: wie gespeichert, ohne Form und Beleg
+        antwort["beleg"] = belege.NICHT_PRUEFBAR
+        return antwort
     try:
-        if zeile.get("art_version") != art.version:
-            raise FormFehler("ergebnis: andere Version")
         pruefe_ergebnis(art, antwort["ergebnis"])
     except FormFehler:
         log.info("auftrag=%s art=%s stand=falsche_form", kennung[:8], art.art)
         antwort.update(stand="fehler", fehler="Ergebnis in falscher Form", ergebnis=None,
                        beleg=belege.NICHT_PRUEFBAR)
         return antwort
-    antwort["beleg"] = belege.beleg(art, zeile.get("eingabe") or {}, antwort["ergebnis"], leser)
+    antwort["beleg"] = belege.beleg(art, zeile.get("eingabe") or {}, antwort["ergebnis"], leser, kennung)
     log.info("auftrag=%s art=%s beleg=%s", kennung[:8], art.art, antwort["beleg"])
     return antwort
 
