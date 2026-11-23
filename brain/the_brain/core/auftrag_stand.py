@@ -116,8 +116,8 @@ def _stand_einer_zeile(zeile: Mapping[str, Any]) -> dict[str, Any]:
         return {"stand": "fertig", "ok": True, "meldung": meldung}
     if rueckweg == "vorschlag" and pruefung.get("vorschlag_erledigt") == "verworfen":
         # Nachmessung 23.11.2026: nach "Vorschlag verwerfen" stand hier weiter "vorschlag".
-        return {"stand": "verworfen", "ok": True, "hinweis": True,
-                "meldung": "Der Vorschlag ist verworfen; an der Notiz ist nichts geändert."}
+        from .ideen_vorschlag import verworfen_satz
+        return {"stand": "verworfen", "ok": True, "hinweis": True, "meldung": verworfen_satz(zeile)}
     if rueckweg == "vorschlag" and pruefung.get("vorschlag_erledigt") == "uebernommen":
         # Lauf 7: nach dem Übernehmen blieb der Stand auf "vorschlag".
         return {"stand": "uebernommen", "ok": True, "meldung": UEBERNOMMEN_SATZ}

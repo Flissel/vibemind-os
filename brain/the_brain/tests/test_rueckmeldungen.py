@@ -422,7 +422,8 @@ def test_router_vorschlag_verwerfen(monkeypatch) -> None:
     client, ausfuehrer = _client(monkeypatch, {"ok": True})
     body = client.post("/api/multihop/execute", json={"intent": "Vorschlag verwerfen", "context": {}}).json()
     assert ausfuehrer.plaene == [] and tabelle.erledigt == ["verworfen"] and body["ok"] is True
-    assert body["final_text"].startswith("Der Vorschlag ist verworfen")
+    # Lauf 10 (36): der Satz nennt, welcher Vorschlag verworfen ist.
+    assert body["final_text"] == "Der Vorschlag für „Sponsoren“ ist verworfen; an der Notiz ist nichts geändert."
 
 
 class _ErledigtTabelle(_VorschlagTabelle):
@@ -477,7 +478,7 @@ def test_verwerfen_nach_verwerfen_sagt_schon_verworfen(monkeypatch) -> None:
     client, _ = _client(monkeypatch, {"ok": True})
     client.post("/api/multihop/execute", json={"intent": "Vorschlag verwerfen", "context": KONTEXT})
     body = client.post("/api/multihop/execute", json={"intent": "Vorschlag verwerfen", "context": KONTEXT}).json()
-    assert body["final_text"] == vs.SCHON_VERWORFEN
+    assert body["final_text"] == "Der Vorschlag für „Sponsoren“ ist schon verworfen; an der Notiz ist nichts geändert."
     body = client.post("/api/multihop/execute", json={"intent": "Vorschlag zeigen", "context": KONTEXT}).json()
     assert body["final_text"] == vs.KEINER
 
@@ -502,8 +503,15 @@ def test_stand_nach_vorschlag_verwerfen_sagt_verworfen(monkeypatch) -> None:
     client.post("/api/multihop/execute", json={"intent": "Vorschlag verwerfen", "context": {}})
     body = client.get(f"/api/agent-auftraege/{A1}/stand").json()
     assert body["stand"] == "verworfen" and body["ok"] is True and body["hinweis"] is True
-    assert body["meldung"] == "Der Vorschlag ist verworfen; an der Notiz ist nichts geändert."
+    assert body["meldung"] == "Der Vorschlag für „Sponsoren“ ist verworfen; an der Notiz ist nichts geändert."
     assert "saetze" not in body
+
+
+def test_verworfen_ohne_titel_bleibt_beim_alten_satz() -> None:
+    zeile = _vorschlag_zeile(titel="")
+    assert vs.verworfen_satz(zeile) == vs.VERWORFEN
+    assert vs.verworfen_satz(zeile, schon=True) == vs.SCHON_VERWORFEN
+    assert vs.verworfen_satz(None) == vs.VERWORFEN
 
 
 @pytest.mark.parametrize("kette", [False, True], ids=["einzeln", "zweiter-teil-der-kette"])

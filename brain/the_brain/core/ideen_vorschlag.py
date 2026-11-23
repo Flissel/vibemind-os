@@ -104,6 +104,20 @@ def zeigen(zeile: Optional[Mapping[str, Any]]) -> str:
 SCHON_UEBERNOMMEN = ("Der Vorschlag ist schon übernommen; verwerfen lässt er sich nicht mehr. "
                      "Mit „Zurück“ nimmst du die Änderung zurück.")
 SCHON_VERWORFEN = "Der Vorschlag ist schon verworfen; an der Notiz ist nichts geändert."
+VERWORFEN = "Der Vorschlag ist verworfen; an der Notiz ist nichts geändert."
+
+
+def verworfen_satz(zeile: Optional[Mapping[str, Any]], schon: bool = False) -> str:
+    """Lauf 10 (36): "Vorschlag verwerfen" nennt, welcher Vorschlag verworfen ist (Titel der Notiz)."""
+    try:
+        pruefung, _rueckweg = _teile(zeile or {})
+        titel = re.sub(r"\s+", " ", str(pruefung.get("titel") or "")).strip()
+    except Exception:  # noqa: BLE001
+        titel = ""
+    if not titel:
+        return SCHON_VERWORFEN if schon else VERWORFEN
+    return (f"Der Vorschlag für {_name(titel)} ist {'schon ' if schon else ''}verworfen; "
+            "an der Notiz ist nichts geändert.")
 
 
 def schon_erledigt(art: str, erledigte: Optional[Mapping[str, Any]]) -> Optional[str]:
@@ -119,7 +133,7 @@ def schon_erledigt(art: str, erledigte: Optional[Mapping[str, Any]]) -> Optional
     if wie == "uebernommen":
         return SCHON_UEBERNOMMEN
     if wie == "verworfen":
-        return SCHON_VERWORFEN
+        return verworfen_satz(erledigte, schon=True)
     return None
 
 

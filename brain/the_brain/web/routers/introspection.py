@@ -2778,7 +2778,7 @@ def _vorschlag_behandeln(art: str, intent: str, kontext: Any):
         return None, _vs.zeigen(zeile), ({} if zeile is not None else {"hinweis": True})
     if art == "verwerfen":
         if tabelle.vorschlag_erledigen(zeile, "verworfen"):
-            return None, "Der Vorschlag ist verworfen; an der Notiz ist nichts geändert.", {}
+            return None, _vs.verworfen_satz(zeile), {}
         return None, (_schon_erledigt() or _vs.KEINER), {"hinweis": True}
     aufrufe, satz = _vs.uebernehmen(zeile)
     if not aufrufe:
