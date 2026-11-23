@@ -204,15 +204,14 @@ spaces:
     # 23.11.2026: feste Werkzeuge des Desktop-Space (spaces/desktop/mcp_server.py). Ohne den Schalter
     # VIBEMIND_DESKTOP_AUSFUEHREN ist jede Aufgabe ein Trockenlauf. Die Schritte einer Aufgabe fuehrt das
     # Gehirn selbst aus (Felix 23.11.: "Weg 2, Gehirn fuehrt"); der Agent bekommt keine eigenen Haende.
+    # Freigegeben ist nur, was ein Ereignis unten bindet. desktop_task_step (der eigentliche Klick),
+    # desktop_elements und desktop_find kommen erst mit der Schleife dazu, zusammen mit ihrem Vertrag.
     mcp_tools:
       spaces-desktop:
         - desktop_status
         - desktop_screen_read
-        - desktop_elements
-        - desktop_find
         - desktop_screenshot
         - desktop_task_start
-        - desktop_task_step
         - desktop_task_finish
         - desktop_task_status
     default_context: [current_space, active_window]
