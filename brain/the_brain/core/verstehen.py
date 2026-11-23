@@ -10,7 +10,9 @@ Hier steht nur Entscheidung, kein Aufruf:
 * :func:`unter_schwelle` sagt, ob eine Klassifikation zu schwach ist, um einen Planer zu starten.
 * :func:`nicht_verstanden` / :func:`kein_weg` bauen den deutschen Satz mit Beispielen aus dem Space.
 * :func:`feste_lesefrage` bindet die haeufigste Lesefrage eines Space an einen Weg, der laeuft.
-* :func:`fremder_plan` erkennt Plaene, die ganz in einem anderen Space liegen.
+* :func:`genannter_space` erkennt einen Space beim Namen (starkes Signal vor dem Planer).
+* :func:`gemischter_plan` erkennt Planer-Plaene ohne eindeutigen Space. Der Space der App ist
+  ein Gewicht, keine Grenze: ein eindeutiger Plan in einen anderen Space laeuft (mit Sprung).
 * :func:`ohne_antwort` / :func:`rohtext` sind das Auffangnetz: kein Erfolg ohne Ergebnis,
   kein Rohtext im Chat.
 
@@ -94,15 +96,21 @@ def space_name(space: Optional[str]) -> str:
     return eintrag.name if eintrag else ""
 
 
+# Spaces ohne laufenden Weg (Rundgang 23.11.2026 und Inventur der Lesewege): kein Dienst,
+# kein Werkzeug oder kein Agent, der eine Lesefrage dort beantworten kann.
+OHNE_WEG = frozenset({"swedesign", "projects", "learning", "events", "marketing", "agentfarm", "thebrain"})
+
+
 def _beispielteil(space: Optional[str]) -> str:
     eintrag = SPACES.get(space or "")
     if eintrag is None:
         return ""
-    if not eintrag.beispiele:
-        return (f" In {eintrag.name} kann ich noch nichts für dich lesen oder ändern; "
-                "dafür gibt es noch keinen Weg.")
-    saetze = " oder ".join(f"„{b}“" for b in eintrag.beispiele[:3])
-    return f" In {eintrag.name} kann ich z. B. {saetze}."
+    if eintrag.beispiele:
+        saetze = " oder ".join(f"„{b}“" for b in eintrag.beispiele[:3])
+        return f" In {eintrag.name} kann ich z. B. {saetze}."
+    if space in OHNE_WEG:
+        return f" Im Bereich „{eintrag.name}“ gibt es dafür noch keinen Weg."
+    return ""
 
 
 def nicht_verstanden(space: Optional[str]) -> str:
@@ -110,17 +118,55 @@ def nicht_verstanden(space: Optional[str]) -> str:
     return "Das habe ich nicht verstanden." + _beispielteil(space)
 
 
-def hat_weg(space: Optional[str]) -> bool:
-    """Gibt es in diesem Space mindestens einen Satz mit nachweislich laufendem Weg?"""
-    eintrag = SPACES.get(space or "")
-    return bool(eintrag and eintrag.beispiele)
-
-
 def kein_weg(space: Optional[str]) -> str:
-    """Ehrlicher Satz fuer einen Space ohne laufenden Weg, statt eines Planer-Laufs."""
+    """Ehrlicher Satz fuer einen genannten Space ohne laufenden Weg, statt eines fremden Ergebnisses."""
     name = space_name(space) or "diesem Bereich"
-    return (f"Das kann ich in {name} noch nicht: dafür gibt es noch keinen festen Weg. "
-            "Geändert habe ich nichts.")
+    return f"Im Bereich „{name}“ kann ich das noch nicht; dafür gibt es noch keinen Weg. Geändert habe ich nichts."
+
+
+# ── Space beim Namen ───────────────────────────────────────────────────────
+# Eigene, unverwechselbare Namen gelten ueberall im Satz; Allerweltswoerter (Desktop,
+# Video, Lernen ...) nur mit "im/in/aus dem ..." davor, mit Space/Bereich/Reiter danach
+# oder als Wortteil mit Bindestrich ("Marketing-Kampagnen").
+_EIGENE_NAMEN = {
+    "swedesign": ("swe design", "swe-design", "swedesign"),
+    "roarboot": ("rowboat",),
+    "agentfarm": ("agent farm", "agent-farm", "agentfarm"),
+    "thebrain": ("the brain",),
+    "flowzen": ("blue rose", "blaue rose", "flowzen"),
+    "mirofish": ("mirofish", "miro fish"),
+    "video": ("video studio", "video-studio"),
+    "projects": ("project space", "projekt-space", "projekt space"),
+    "clawport": ("dashboard", "clawport"),
+}
+_ALLERWELTSNAMEN = {
+    "ideas": ("ideen",), "desktop": ("desktop",), "video": ("video",), "sales": ("sales",),
+    "marketing": ("marketing",), "learning": ("lernen",), "events": ("events", "event"),
+    "orders": ("aufträgen", "aufträge", "auftraege"),
+}
+_VOR = r"(?:im|in|ins|aus|zum|zur|beim|bei)\s+(?:dem\s+|der\s+|den\s+|die\s+|das\s+)?(?:bereich\s+|space\s+|reiter\s+)?"
+_NACH = r"[- ]?(?:space|bereich|reiter|tab)\b"
+
+
+def genannter_space(satz: Any) -> Optional[str]:
+    """Space, den der Satz beim Namen nennt, oder ``None``. Wirft nie."""
+    try:
+        if not isinstance(satz, str):
+            return None
+        text = " " + re.sub(r"\s+", " ", satz.lower()) + " "
+        for kennung, namen in _EIGENE_NAMEN.items():
+            for name in namen:
+                if re.search(rf"(?<![a-zäöü]){re.escape(name)}(?![a-zäöü])", text):
+                    return kennung
+        for kennung, namen in _ALLERWELTSNAMEN.items():
+            for name in namen:
+                n = re.escape(name)
+                if (re.search(rf"\b{_VOR}{n}\b", text) or re.search(rf"\b{n}{_NACH}", text)
+                        or re.search(rf"\b{n}-[a-zäöü]", text)):
+                    return kennung
+        return None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # ── Schwelle ────────────────────────────────────────────────────────────────
@@ -252,33 +298,27 @@ def faehigkeit_space(capability: Any) -> Optional[str]:
     return None
 
 
-def fremder_plan(faehigkeiten: Iterable[Any], space: Optional[str]) -> bool:
-    """True, wenn jeder Schritt sicher einem anderen Space gehoert als dem der App.
+def plan_spaces(faehigkeiten: Iterable[Any]) -> set:
+    """Die Spaces, denen die Schritte eines Plans sicher gehoeren (Aufträge = Dashboard)."""
+    spaces = set()
+    for cap in faehigkeiten:
+        heimat = faehigkeit_space(cap)
+        if heimat is not None:
+            spaces.add("orders" if heimat == "clawport" else heimat)
+    return spaces
 
-    Unbekannte Faehigkeiten (allgemein, Browser, Chat) machen einen Plan nie fremd.
-    Aufträge und Dashboard teilen sich den Schedule-Space.
+
+def gemischter_plan(faehigkeiten: Iterable[Any]) -> bool:
+    """True, wenn ein Planer-Plan mehrere Spaces etwa gleich gut trifft: keine eindeutige Zuordnung.
+
+    Der Space der App ist ein Gewicht, keine Grenze: Ein Plan, der eindeutig in einem
+    anderen Space liegt, laeuft (mit Sprung). Nur ein Plan ueber mehrere Spaces ist unsicher.
+    Allgemeine Faehigkeiten (Browser, Chat) zaehlen nicht.
     """
     try:
-        if space is None:
-            return False
-        eigene = {space}
-        if space in ("orders", "clawport"):
-            eigene |= {"orders", "clawport"}
-        liste = list(faehigkeiten)
-        if not liste:
-            return False
-        for cap in liste:
-            heimat = faehigkeit_space(cap)
-            if heimat is None or heimat in eigene:
-                return False
-        return True
+        return len(plan_spaces(faehigkeiten)) > 1
     except Exception:  # noqa: BLE001
         return False
-
-
-def fremd_satz(space: Optional[str]) -> str:
-    return ("Das gehört nicht zu " + (space_name(space) or "diesem Bereich")
-            + "; ich habe es nicht ausgeführt." + _beispielteil(space))
 
 
 # ── Auffangnetz ────────────────────────────────────────────────────────────

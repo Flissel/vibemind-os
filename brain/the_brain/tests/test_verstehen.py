@@ -34,7 +34,26 @@ def test_nicht_verstanden_nennt_beispiele_des_space() -> None:
     assert satz.startswith("Das habe ich nicht verstanden. In Ideen kann ich z. B. „")
     assert satz.count("„") == 3
     assert v.nicht_verstanden(None) == "Das habe ich nicht verstanden."
-    assert "noch keinen Weg" in v.nicht_verstanden("swedesign")
+    assert v.nicht_verstanden("swedesign").endswith("Im Bereich „SWE Design“ gibt es dafür noch keinen Weg.")
+    assert v.nicht_verstanden("desktop") == "Das habe ich nicht verstanden."  # Weg da, nur kein fester Satz
+
+
+@pytest.mark.parametrize("satz,space", [
+    ("Wie ist der Stand im SWE Design?", "swedesign"), ("Welche Teams laufen gerade in der Agent Farm?", "agentfarm"),
+    ("Welche Simulationen gibt es in MiroFish?", "mirofish"), ("Wie viele Kontakte habe ich im Sales?", "sales"),
+    ("Wie laufen meine Marketing-Kampagnen?", "marketing"), ("Was ist im Desktop offen?", "desktop"),
+    ("Welche geplanten Aufgaben gibt es im Dashboard?", "clawport"), ("Welche Agenten gibt es in Rowboat?", "roarboot"),
+    ("Was steht im Ideen-Bereich?", "ideas"),
+    ("Ich will Spanisch lernen", None), ("Welche Events stehen als nächstes an?", None), ("Zeig meine Aufträge", None),
+    ("Zeig mir meine Bubbles", None), ("Mein Video ist fertig", None),
+])
+def test_genannter_space(satz, space) -> None:
+    assert v.genannter_space(satz) == space
+
+
+def test_kein_weg_satz() -> None:
+    assert v.kein_weg("swedesign") == (
+        "Im Bereich „SWE Design“ kann ich das noch nicht; dafür gibt es noch keinen Weg. Geändert habe ich nichts.")
 
 
 @pytest.mark.parametrize("cls,erwartet", [
@@ -91,14 +110,14 @@ def test_schedule_list_satz() -> None:
     assert v.antwort_schedule_list("{'success': True}") is None
 
 
-def test_space_wache() -> None:
-    assert v.fremder_plan(["bubble_stats"], "swedesign")
-    assert v.fremder_plan(["idea_list", "bubble_list"], "video")
-    assert not v.fremder_plan(["idea_list"], "ideas")
-    assert not v.fremder_plan(["bubble_stats", "browser_open"], "swedesign")  # allgemein dabei
-    assert not v.fremder_plan(["schedule_list"], "clawport")
-    assert not v.fremder_plan(["bubble_stats"], None)
-    assert not v.fremder_plan([], "video")
+def test_mehrdeutiger_plan() -> None:
+    assert not v.gemischter_plan(["bubble_stats"])                    # eindeutig, auch fremd
+    assert not v.gemischter_plan(["idea_list", "bubble_list"])         # ein Space
+    assert not v.gemischter_plan(["bubble_stats", "browser_open"])     # allgemein zaehlt nicht
+    assert not v.gemischter_plan(["schedule_list", "schedule.cancel"])
+    assert not v.gemischter_plan([])
+    assert v.gemischter_plan(["video_team_status", "bubble_stats"])
+    assert v.gemischter_plan(["rowboat_chat", "schedule_list"])
 
 
 @pytest.mark.parametrize("text", [
@@ -210,7 +229,28 @@ class _Klassierer:
         return dict(self.cls)
 
 
-def _client(monkeypatch, cls, ausfuehrer=None, planer=None, synth=None):
+class _MehrPlaner(_Planer):
+    def __init__(self, faehigkeiten):
+        super().__init__()
+        self.faehigkeiten = faehigkeiten
+
+    async def aplan(self, intent, context=None):
+        self.aufrufe += 1
+        return Plan(plan_id="planer_2", intent=intent, rationale="", final_synthesis_prompt="",
+                    estimated_cost_usd=0.0,
+                    hops=[HopSpec(step_id=f"s{i}", description="x", capability=c, arg_template="")
+                          for i, c in enumerate(self.faehigkeiten, 1)])
+
+
+@pytest.fixture(scope="module")
+def echter_muster_router():
+    """Der echte Faehigkeiten-Router, nur Muster (kein Einbetter, kein Modell)."""
+    from core.capability_router import CapabilityRouter
+
+    return CapabilityRouter(Path(__file__).resolve().parents[1] / "data" / "capabilities.yaml")
+
+
+def _client(monkeypatch, cls, ausfuehrer=None, planer=None, synth=None, muster=None):
     import core.difficulty_router as dr
 
     monkeypatch.setattr(dr, "get_router", lambda: _Klassierer(cls))
@@ -221,6 +261,8 @@ def _client(monkeypatch, cls, ausfuehrer=None, planer=None, synth=None):
     app.state.plan_executor = ausfuehrer or _Ausfuehrer()
     app.state.multihop_planner = planer or _Planer()
     app.state.final_synthesizer = synth
+    if muster is not None:
+        app.state.capability_router = muster
     return TestClient(app), app.state
 
 
@@ -244,20 +286,88 @@ def test_unter_schwelle_ohne_space(monkeypatch) -> None:
     assert body["final_text"] == "Das habe ich nicht verstanden."
 
 
-def test_space_ohne_weg_ehrlich_ohne_klassifikation(monkeypatch) -> None:
-    client, state = _client(monkeypatch, STARK)
+NV = "Das habe ich nicht verstanden."
+KEIN = "Im Bereich „{}“ gibt es dafür noch keinen Weg."
+
+# Die 16 Saetze aus dem Rundgang 23.11.2026 (Satz, Space der App -> erwarteter Weg). Der
+# Klassierer liefert wie gemessen einen schwachen Cosinus; der Muster-Router ist der echte.
+RUNDGANG = [
+    ("Welche Bubbles gibt es?", "ideas", ("lauf", "bubble_list")),
+    ("Wie ist der Code-Status?", "projects", ("nicht-verstanden", NV + " " + KEIN.format("Project Space"))),
+    ("Welche Fenster sind gerade auf dem Desktop offen?", "desktop", ("nicht-verstanden", NV)),
+    ("Wie ist der Stand im SWE Design?", "swedesign", ("kein-weg", "Im Bereich „SWE Design“ kann ich das noch nicht")),
+    ("Welche Agenten gibt es in Rowboat?", "roarboot", ("nicht-verstanden", NV)),
+    ("Welche geplanten Aufgaben gibt es im Dashboard?", "clawport", ("lauf", "schedule_list")),
+    ("Welche Videoprojekte gibt es?", "video", ("noch-nicht", "Die Liste der Videoprojekte kann ich noch nicht")),
+    ("Welche Teams laufen gerade in der Agent Farm?", "agentfarm",
+     ("kein-weg", "Im Bereich „Agent Farm“ kann ich das noch nicht")),
+    ("Woran denkt das Gehirn gerade?", "thebrain", ("nicht-verstanden", NV + " " + KEIN.format("The Brain"))),
+    ("Was steht in meinem Journal?", "flowzen", ("nicht-verstanden", NV)),
+    ("Welche Simulationen gibt es in MiroFish?", "mirofish", ("nicht-verstanden", NV)),
+    ("Wie viele Kontakte habe ich im Sales?", "sales", ("nicht-verstanden", NV)),
+    ("Wie laufen meine Marketing-Kampagnen?", "marketing", ("kein-weg", "Im Bereich „Marketing“ kann ich das noch nicht")),
+    ("Welche Kurse gibt es?", "learning", ("nicht-verstanden", NV + " " + KEIN.format("Lernen"))),
+    ("Welche Events stehen als nächstes an?", "events", ("nicht-verstanden", NV + " " + KEIN.format("Events"))),
+    ("Zeig meine Aufträge", "orders", ("lauf", "schedule_list")),
+]
+
+
+@pytest.mark.parametrize("satz,space,erwartet", RUNDGANG, ids=[r[1] for r in RUNDGANG])
+def test_rundgang_saetze(monkeypatch, echter_muster_router, satz, space, erwartet) -> None:
+    ausfuehrer = _Ausfuehrer({"success": True, "tasks": [], "count": 0})
+    client, state = _client(monkeypatch, SCHWACH, ausfuehrer=ausfuehrer, muster=echter_muster_router)
+    body = client.post("/api/multihop/execute", json={"intent": satz, "context": {"space": space}}).json()
+    assert state.multihop_planner.aufrufe == 0, "kein Planer-Lauf bei schwachem Cosinus"
+    weg, wert = erwartet
+    if weg == "lauf":
+        assert [h.capability for p in ausfuehrer.plaene for h in p.hops] == [wert]
+        assert "Multi-hop plan" not in str(body.get("final_text"))
+    else:
+        assert ausfuehrer.plaene == [], "kein Aufruf, kein Agent"
+        assert body["weg"] == weg
+        assert body["final_text"].startswith(wert) if weg != "nicht-verstanden" else body["final_text"] == wert
+
+
+# ── Sprünge, die heute laufen, bleiben (Rückfall-Schutz) ──────────────────
+
+@pytest.mark.parametrize("space", ["roarboot", "swedesign", "video", None])
+def test_bubbles_aus_jedem_reiter_springt_weiter(monkeypatch, echter_muster_router, space) -> None:
+    ausfuehrer = _Ausfuehrer({"content": [{"type": "text", "text": "[]"}]})
+    client, state = _client(monkeypatch, SCHWACH, ausfuehrer=ausfuehrer, muster=echter_muster_router)
+    kontext = {"space": space} if space else {}
+    client.post("/api/multihop/execute", json={"intent": "Zeig mir meine Bubbles", "context": kontext})
+    assert [h.capability for p in ausfuehrer.plaene for h in p.hops] == ["bubble_list"]
+    assert state.multihop_planner.aufrufe == 0
+
+
+def test_sicherer_planer_plan_laeuft_auch_in_fremden_space(monkeypatch) -> None:
+    ausfuehrer = _Ausfuehrer({"anzahl": 3})
+    client, state = _client(monkeypatch, STARK, planer=_Planer("bubble_stats"), ausfuehrer=ausfuehrer,
+                            synth=_Synth("Die Bubble hat drei Notizen."))
     body = client.post("/api/multihop/execute",
-                       json={"intent": "Wie ist der Stand im SWE Design?", "context": {"space": "swedesign"}}).json()
-    assert state.multihop_planner.aufrufe == 0 and state.plan_executor.plaene == []
-    assert body["final_text"].startswith("Das kann ich in SWE Design noch nicht")
+                       json={"intent": "Wie viele Notizen hat die Bubble Stadtfest?",
+                             "context": {"space": "roarboot"}}).json()
+    assert [h.capability for h in ausfuehrer.plaene[0].hops] == ["bubble_stats"]
+    assert body["ok"] is True and body["final_text"] == "Die Bubble hat drei Notizen."
 
 
-def test_fremder_plan_laeuft_nicht(monkeypatch) -> None:
+def test_mehrdeutiger_planer_plan_laeuft_nicht(monkeypatch) -> None:
+    ausfuehrer = _Ausfuehrer({"x": 1})
+    client, state = _client(monkeypatch, STARK, ausfuehrer=ausfuehrer,
+                            planer=_MehrPlaner(["video_team_status", "bubble_stats"]))
+    body = client.post("/api/multihop/execute",
+                       json={"intent": "Wie läuft es bei Stadtfest?", "context": {"space": "clawport"}}).json()
+    assert state.multihop_planner.aufrufe == 1 and ausfuehrer.plaene == []
+    assert body["weg"] == "mehrdeutig"
+    assert body["final_text"].startswith("Das habe ich nicht verstanden. In Dashboard kann ich z. B.")
+
+
+def test_genannter_space_ohne_weg_schlaegt_starken_cosinus(monkeypatch) -> None:
     client, state = _client(monkeypatch, STARK, planer=_Planer("bubble_stats"))
     body = client.post("/api/multihop/execute",
-                       json={"intent": "Welche Aufgaben laufen gerade?", "context": {"space": "orders"}}).json()
-    assert state.multihop_planner.aufrufe == 1 and state.plan_executor.plaene == []
-    assert body["final_text"].startswith("Das gehört nicht zu Aufträge")
+                       json={"intent": "Wie ist der Stand im SWE Design?", "context": {"space": "ideas"}}).json()
+    assert state.multihop_planner.aufrufe == 0 and state.plan_executor.plaene == []
+    assert body["weg"] == "kein-weg"
 
 
 def test_fester_lesesatz_auftraege_deutsch_statt_dict(monkeypatch) -> None:

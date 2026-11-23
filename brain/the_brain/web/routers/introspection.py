@@ -2673,6 +2673,7 @@ async def multihop_execute(request: Request):
     _ideen_antwort = ""
     _fest_lesen = ""        # fester Lesesatz eines Space (core/verstehen), z. B. schedule_list
     _space = None           # Space der App aus context.space, None wenn nicht gesendet
+    _planer_plan = False    # Plan stammt vom LLM-Planer (nur dort gilt die Mehrdeutigkeits-Pruefung)
     if plan_dict:
         try:
             plan = _Plan.from_dict(plan_dict)
@@ -2719,10 +2720,15 @@ async def multihop_execute(request: Request):
                 logger.exception(f"[multihop] shortcut crashed for intent={intent!r}: {e}")
                 plan = None  # fall through to LLM
 
-        # Space ohne laufenden Weg: kein Planer, kein Agent, sondern ein ehrlicher Satz.
-        if (plan is None and _space is not None and not _verstehen.hat_weg(_space)
-                and _verstehen.regel_an()):
-            return _ehrlich(pe, trace_id, intent, "kein-weg", _verstehen.kein_weg(_space), _space)
+        # Space beim Namen: starkes Signal vor dem Planer (feste Saetze und Muster-Treffer haben
+        # schon gegriffen und gelten immer, mit Sprung). Nennt der Satz einen Space ohne
+        # laufenden Weg, kommt "Im Bereich ... kann ich das noch nicht" statt eines fremden
+        # Ergebnisses (Rundgang: "Wie ist der Stand im SWE Design?" -> Ideen-Statistik).
+        _genannt = _verstehen.genannter_space(intent) if plan is None else None
+        if plan is None and _genannt in _verstehen.OHNE_WEG and _verstehen.regel_an():
+            return _ehrlich(pe, trace_id, intent, "kein-weg", _verstehen.kein_weg(_genannt), _genannt)
+        # Fuer Beispiele im "nicht verstanden"-Satz: der genannte Space vor dem der App.
+        _bezug = _genannt or _space
 
         # Phase A (2026-06-08): SEMANTISCHES schwierigkeits-basiertes Routing.
         # Ersetzt das fragile Verb-Zählen (_looks_like_multi_action) durch einen
@@ -2772,8 +2778,11 @@ async def multihop_execute(request: Request):
             if _unverstanden:
                 # Zu weit vom naechsten Anker: nicht raten, keinen Planer und keinen Agenten
                 # starten (Rundgang 23.11.2026: cos 0,35-0,72 ging an den Planer).
+                logger.info(f"[verstehen] nicht verstanden: cos={cls.get('score', 0.0):.2f} "
+                            f"< {_verstehen.schwelle():.2f} anker={cls.get('anchor')!r} "
+                            f"space={_bezug} intent={intent[:60]!r}")
                 return _ehrlich(pe, trace_id, intent, "nicht-verstanden",
-                                _verstehen.nicht_verstanden(_space), _space)
+                                _verstehen.nicht_verstanden(_bezug), _bezug)
 
             if level == "easy":
                 # einfache Frage/Smalltalk → direkte Chat-Antwort, KEIN Planer.
@@ -2868,6 +2877,7 @@ async def multihop_execute(request: Request):
                         plan = await loop.run_in_executor(None, lambda: pl.plan(intent, context=_plan_ctx))
                     else:
                         plan = await loop.run_in_executor(None, pl.plan, intent)
+                _planer_plan = plan is not None
     else:
         return JSONResponse({"error": "intent or plan required"}, status_code=400)
 
@@ -2908,12 +2918,16 @@ async def multihop_execute(request: Request):
         return JSONResponse({"ok": False, "error": "planner returned no plan", "trace_id": trace_id,
                              "final_text": _verstehen.nicht_verstanden(_space)})
 
-    # Space-Wache: ein Plan, der ganz in einem anderen Space liegt als dem der App, laeuft
-    # nicht (ein Satz aus SWE Design landete im Ideen-Bereich). Mitgebrachte und feste
-    # Plaene sind ausgenommen.
-    if (not plan_dict and not _ideen_fest and not _fest_lesen and _verstehen.regel_an()
-            and _verstehen.fremder_plan([h.capability for h in (plan.hops or [])], _space)):
-        return _ehrlich(pe, trace_id, intent, "fremder-space", _verstehen.fremd_satz(_space), _space)
+    # Space der App ist ein Gewicht, keine Grenze: Ein Planer-Plan, der eindeutig in einem
+    # anderen Space liegt, laeuft (mit Sprung). Trifft er mehrere Spaces etwa gleich gut,
+    # ist die Zuordnung unsicher: dann kein Lauf, sondern der ehrliche Satz mit Beispielen
+    # aus dem aktuellen Space. Mitgebrachte, feste und Muster-Plaene sind ausgenommen.
+    if (_planer_plan and _verstehen.regel_an()
+            and _verstehen.gemischter_plan([h.capability for h in (plan.hops or [])])):
+        logger.info(f"[verstehen] Plan trifft mehrere Spaces "
+                    f"{sorted(_verstehen.plan_spaces(h.capability for h in plan.hops))}, "
+                    f"space={_space} intent={intent[:60]!r}")
+        return _ehrlich(pe, trace_id, intent, "mehrdeutig", _verstehen.nicht_verstanden(_space), _space)
 
     # Run executor in a thread so FastAPI's main loop is free to handle
     # any nested HTTP calls (brain:GET:/api/X targets recurse into us).
