@@ -2525,6 +2525,9 @@ def _try_ideen_abkuerzung(intent: str, kontext: Any):
                 return None, None, "Das Abbrechen geht gerade nicht: die Auftragstabelle ist nicht erreichbar."
             logger.info("[ideen-abkuerzung] White Paper abbrechen (lokal)")
             return None, None, abbrechen(treffer["argumente"].get("bubble_id"), tabelle=tabelle)
+        if isinstance(treffer.get("lies"), dict) and isinstance(kontext, dict):
+            # "Was steht bei X?": die Antwort zeigt nur diese Karte (antwort_fuer_schritt).
+            kontext["_lies_karte"] = treffer["lies"]
         plan = _Plan(
             plan_id=f"ideen_{int(time.time() * 1000)}",
             intent=intent,

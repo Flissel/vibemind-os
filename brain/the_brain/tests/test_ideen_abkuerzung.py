@@ -201,7 +201,8 @@ def test_unbekannte_notiz_ergibt_eine_gezielte_rueckfrage() -> None:
 # ── was die Abkuerzung bewusst NICHT nimmt ───────────────────────────────
 
 @pytest.mark.parametrize("satz", [
-    "Ordne die Notizen nach Thema",          # braucht ein Modell
+    # "Ordne die Notizen nach Thema" sagt seit Arbeitslauf 2 ehrlich "Das kann ich noch nicht"
+    # (tests/test_ideen_lesen_gruppieren.py).
     # "Was hältst du von dieser Notiz?" ist seit 23.11.2026 idea.explain mit der Karte aus
     # dem Kontext (Rueckweg, test_modellfunktionen_tragen_die_karte_aus_dem_kontext).
     # Ohne genannte Karte bleibt der Satz beim bisherigen Weg:

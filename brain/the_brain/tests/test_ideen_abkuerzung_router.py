@@ -108,7 +108,7 @@ def _hauptlauf() -> int:
 
     # ── alles andere bleibt beim bisherigen Weg ──
     for satz, kontext in (("Wie wird das Wetter?", KONTEXT), ("Bewerte Preise mit 80", None),
-                          ("Bewerte Preise mit 80", {"space": "sales"}), ("Ordne die Notizen nach Thema", KONTEXT)):
+                          ("Bewerte Preise mit 80", {"space": "sales"}), ("Wie schreibe ich einen Brief?", KONTEXT)):
         check(f"kein fester Satz: {satz!r} / {type(kontext).__name__}",
               intro._try_ideen_abkuerzung(satz, kontext) == (None, None, ""))
 

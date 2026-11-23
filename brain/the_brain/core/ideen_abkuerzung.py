@@ -593,7 +593,55 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
     if (re.fullmatch(r"zeig(?:e)?\s+(?:mir\s+)?die\s+(?:notizen|karten)(?:\s+dieser\s+bubble)?", text, _I)
             or re.fullmatch(r"was\s+steht\s+hier\??", text, _I)):
         return _treffer("idea.list", {"bubble_id": _offene_bubble(kontext)}, "")
+    # Inhalt einer Karte (Arbeitslauf 2: ging als "nicht verstanden" oder an das Lexikon).
+    # Fester Leseweg ueber die ganze Liste; der Satz zeigt nur die gefragte Karte.
+    m = (re.fullmatch(r"was\s+steht\s+(?:in|bei|auf)\s+(?P<k>.+?)\s*\??", text, _I)
+         or re.fullmatch(r"worum\s+geht\s+es\s+(?:in|bei)\s+(?P<k>.+?)\s*\??", text, _I)
+         or re.fullmatch(r"(?:lies|lese)\s+(?:mir\s+)?(?P<k>.+?)\s+vor", text, _I)
+         or re.fullmatch(r"zeig(?:e)?\s+(?:mir\s+)?(?:den\s+)?(?:inhalt|text)\s+(?:von\s+)?(?P<k>.+?)", text, _I))
+    if m and _normal(m.group("k")) not in ("hier", "dieser bubble", "der bubble"):
+        karte = _karte(m.group("k"), kontext)
+        treffer = _treffer("idea.list", {"bubble_id": _offene_bubble(kontext), "full": True, "limit": 100}, "")
+        treffer["lies"] = {"id": karte["id"], "title": str(karte.get("title") or "")}
+        return treffer
+    # ── nach Thema gruppieren: braucht ein Modell, gibt es noch nicht. Ehrlich sagen,
+    #    statt an Planer oder Chat zu fallen ("Idea '' not found", englischer Lexikontext).
+    if (re.match(r"(?:bitte\s+)?(?:gruppiere|clustere|cluster)\b", text, _I)
+            or re.fullmatch(r"(?:ordne|sortiere)\s+(?:die\s+)?(?:notizen|karten|ideen)\s+nach\s+(?:thema|themen|inhalt)",
+                            text, _I)
+            or re.fullmatch(r"(?:bilde|mach(?:e)?)\s+(?:themen)?gruppen(?:\s+.*)?", text, _I)
+            or re.fullmatch(r"was\s+geh(?:ö|oe)rt\s+(?:hier\s+)?zusammen\s*\??", text, _I)):
+        raise _Rueckfrage(GRUPPIEREN_NOCH_NICHT)
     return None
+
+
+GRUPPIEREN_NOCH_NICHT = ("Das kann ich noch nicht: nach Thema gruppieren braucht ein Modell, und das gibt es "
+                         "hier noch nicht. Was geht: „Ordne die Karten“, „Sortiere die Karten nach Bewertung“ "
+                         "oder „Finde Verbindungen“.")
+LESE_ZEICHEN = 1500
+
+
+def karteninhalt(zeilen: Any, karte: Any) -> Optional[str]:
+    """Der Satz zu "Was steht bei X?" aus den ganzen Zeilen von idea_list (full)."""
+    if not isinstance(karte, dict) or not isinstance(zeilen, list):
+        return None
+    titel = karte.get("title") or ""
+    name = f"„{titel}“" if titel else "Die Karte"
+    zeile = next((z for z in zeilen if isinstance(z, dict) and z.get("id") == karte.get("id")), None)
+    if zeile is None:
+        return f"{name} kann ich gerade nicht lesen."
+    titel = str(zeile.get("title") or titel or "")
+    name = f"„{titel}“" if titel else "Die Karte"
+    struktur = zeile.get("content_json") if isinstance(zeile.get("content_json"), dict) else {}
+    text = struktur.get("text") if isinstance(struktur.get("text"), str) else ""
+    if not text.strip() or text.strip() == titel.strip():
+        text = zeile.get("content") if isinstance(zeile.get("content"), str) else ""
+    text = text.strip()
+    if not text or text == titel.strip():
+        return f"{name} hat noch keinen Text."
+    if len(text) > LESE_ZEICHEN:
+        text = text[:LESE_ZEICHEN].rstrip() + " …"
+    return f"{name}:\n{text}"
 
 
 _FELDNAMEN = {
@@ -773,6 +821,8 @@ def antwort_fuer_schritt(capability: Any, ok: bool, ergebnis: Any, fehler: Any,
                 gesamt = None if gekuerzt else len(zeilen)
             else:
                 return vorgabe or None
+            if isinstance(kontext, dict) and isinstance(kontext.get("_lies_karte"), dict):
+                return karteninhalt(zeilen, kontext["_lies_karte"])
             bubble = kontext.get("bubble") if isinstance(kontext, dict) else None
             ort = (str(bubble.get("title") or "").strip() if isinstance(bubble, dict) else "")
             ort = f"„{ort}“" if ort else "dieser Bubble"
