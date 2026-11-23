@@ -11,12 +11,13 @@ weitere bei start_at_s seines eingehenden Uebergangs, und ein Eintrag klingt
 """
 
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 
-from djset.contracts import MixEntry, MixPlan
+from djset.contracts import MixEntry, MixPlan, Transition
 from djset.dsp.analyze import BEATS_PER_BAR
 from djset.render.eq import apply_eq
 from djset.render.stretch import SR, UnsupportedSampleRate, stretch
@@ -173,33 +174,115 @@ def _segment(source: Path, entry: MixEntry, sr: int, work: Path) -> np.ndarray:
     return piece * (10 ** (entry.gain_db / 20.0))
 
 
+# Plan 1c: Schrittweite der Stimmhuelle, die render() zurueckgibt. 50 ms
+# loesen eine Ueberlagerung von einer halben Sekunde zehnfach auf.
+STIMM_HUELLE_S = 0.05
+# Pegel eines stillen Schritts, statt minus unendlich.
+STILLE_DB = -120.0
+
+
+@dataclass(frozen=True)
+class StimmSpur:
+    """Wie laut die Stimme eines Eintrags im fertigen Set klingt (Plan 1c).
+
+    Gemessen an genau dem Signal, das der Renderer gelegt hat - nach Huelle,
+    EQ, Pegel und Master. `pegel_db[i]` ist der RMS der Mono-Summe im Schritt
+    ab start_s + i * schritt_s.
+    """
+
+    track_id: str
+    start_s: float
+    schritt_s: float
+    pegel_db: np.ndarray
+
+
+def _stimm_verlauf(
+    laenge: int,
+    entry: MixEntry,
+    start_s: float,
+    incoming: Transition | None,
+    outgoing: Transition | None,
+    sr: int,
+) -> np.ndarray:
+    """Verstaerkung der Stimme je Sample des Eintrags.
+
+    Im eingehenden Uebergang schweigt sie bis zum Stimmwechsel und blendet
+    danach ein, im ausgehenden blendet sie davor aus und schweigt danach.
+    Gesang aus heisst null ueberall.
+    """
+    verlauf = np.full(laenge, 1.0 if entry.stimme else 0.0)
+    index = np.arange(laenge)
+    if incoming is not None and incoming.stimmwechsel is not None:
+        wechsel = incoming.stimmwechsel
+        bei = wechsel.bei_s * sr
+        verlauf *= np.clip((index - bei) / (wechsel.blende_s * sr), 0.0, 1.0)
+    if outgoing is not None and outgoing.stimmwechsel is not None:
+        wechsel = outgoing.stimmwechsel
+        bei = (outgoing.start_at_s + wechsel.bei_s - start_s) * sr
+        verlauf *= np.clip((bei - index) / (wechsel.blende_s * sr), 0.0, 1.0)
+    return verlauf
+
+
+def _pegel_db(signal: np.ndarray, sr: int) -> np.ndarray:
+    schritt = int(round(STIMM_HUELLE_S * sr))
+    mono = signal.astype(np.float64).mean(axis=1)
+    anzahl = len(mono) // schritt
+    stuecke = mono[: anzahl * schritt].reshape(anzahl, schritt)
+    rms = np.sqrt(np.mean(stuecke**2, axis=1))
+    with np.errstate(divide="ignore"):
+        return np.maximum(20.0 * np.log10(rms), STILLE_DB)
+
+
 def render(
     plan: MixPlan,
     sources: dict[str, Path],
     target: Path,
     master_gain_db: float = 0.0,
     sr: int = SR,
-) -> None:
-    """Rendert den Mixplan in eine einzelne Audiodatei."""
+    stimmen: dict[str, tuple[Path, Path]] | None = None,
+) -> list[StimmSpur]:
+    """Rendert den Mixplan in eine einzelne Audiodatei.
+
+    `stimmen` ordnet einer track_id (Stimme, Begleitung) zu (Plan 1c). Ein
+    solcher Eintrag wird aus beiden Spuren gebaut, die Stimme nach
+    MixEntry.stimme und Transition.stimmwechsel geblendet. Eintraege ohne
+    getrennte Stimme klingen wie bisher aus ihrer Quelle. Zurueck kommen die
+    Huellen der gelegten Stimmen, fuer die QA.
+    """
     missing = [e.track_id for e in plan.entries if e.track_id not in sources]
     if missing:
         raise MissingSource(
             f"Zu diesen Eintraegen fehlt die Audiodatei: {', '.join(missing)}"
         )
+    stimmen = stimmen or {}
 
     starts = [0.0] + [t.start_at_s for t in plan.transitions]
     total = int(round(plan.target_length_s * sr))
     mix = np.zeros((total, 2), dtype=np.float32)
+    master = 10 ** (master_gain_db / 20.0)
+    spuren: list[StimmSpur] = []
 
     with tempfile.TemporaryDirectory() as raw:
         work = Path(raw)
         for index, entry in enumerate(plan.entries):
-            block = _segment(sources[entry.track_id], entry, sr, work)
-
             # Der eingehende Uebergang faerbt den Kopf, der ausgehende den
             # Schwanz. Dazwischen laeuft der Track flach.
             incoming = plan.transitions[index - 1] if index > 0 else None
             outgoing = plan.transitions[index] if index < len(plan.transitions) else None
+
+            paar = stimmen.get(entry.track_id)
+            if paar is None:
+                teile = [_segment(sources[entry.track_id], entry, sr, work)]
+            else:
+                gesang = _segment(paar[0], entry, sr, work)
+                begleitung = _segment(paar[1], entry, sr, work)
+                laenge = min(len(gesang), len(begleitung))
+                gesang, begleitung = gesang[:laenge], begleitung[:laenge]
+                verlauf = _stimm_verlauf(
+                    laenge, entry, starts[index], incoming, outgoing, sr
+                )
+                teile = [begleitung, (gesang * verlauf[:, None]).astype(np.float32)]
+            block = teile[0]
 
             # Die Fensterbreite steht im Plan (Transition.overlap_s) und wird
             # hier NICHT mehr aus bars und target_bpm nachgerechnet. Genau
@@ -230,19 +313,35 @@ def render(
                     f"{tail_width} Samples > {length} Samples Blocklaenge"
                 )
 
-            if incoming is not None and head_width > 0:
-                block[:head_width] = apply_eq(block[:head_width], sr, incoming.eq_in)
-            if outgoing is not None and tail_width > 0:
-                # Ohne die tail_width > 0 - Bedingung waere block[-0:] das
-                # GANZE Array, nicht das leere - eine klassische Python-Falle.
-                block[-tail_width:] = apply_eq(block[-tail_width:], sr, outgoing.eq_out)
+            # Getrennte Spuren werden jede fuer sich gefaerbt: die EQ-Kurven
+            # sind linear, die Summe ist dieselbe - aber die Stimmhuelle misst
+            # so genau das, was von der Stimme im Set ankommt.
+            for teil in teile:
+                if incoming is not None and head_width > 0:
+                    teil[:head_width] = apply_eq(teil[:head_width], sr, incoming.eq_in)
+                if outgoing is not None and tail_width > 0:
+                    # Ohne die tail_width > 0 - Bedingung waere teil[-0:] das
+                    # GANZE Array, nicht das leere - eine klassische Python-Falle.
+                    teil[-tail_width:] = apply_eq(
+                        teil[-tail_width:], sr, outgoing.eq_out
+                    )
+            block = teile[0] if len(teile) == 1 else teile[0] + teile[1]
+            if len(teile) == 2:
+                spuren.append(
+                    StimmSpur(
+                        track_id=entry.track_id,
+                        start_s=starts[index],
+                        schritt_s=STIMM_HUELLE_S,
+                        pegel_db=_pegel_db(teile[1] * master, sr),
+                    )
+                )
 
             offset = int(round(starts[index] * sr))
             end = min(total, offset + length)
             if end > offset:
                 mix[offset:end] += block[: end - offset]
 
-    mix *= 10 ** (master_gain_db / 20.0)
+    mix *= master
     target.parent.mkdir(parents=True, exist_ok=True)
     sf.write(target, mix, sr, subtype="FLOAT")
     # sf.write mit subtype="FLOAT" bleibt bewusst bestehen (nicht auf ein
@@ -252,3 +351,4 @@ def render(
     # Nachteil des Float-Formats - der PEAK-Chunk-Zeitstempel - wird separat
     # entschaerft.
     _strip_peak_timestamp(target)
+    return spuren
