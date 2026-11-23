@@ -681,3 +681,35 @@ def test_plan_ausfuehrer_legt_einschaetzung_als_auftrag_an(monkeypatch) -> None:
     (a,) = tabelle.angelegt
     assert a["capability"] == "idea_summarize" and "Welche Risiken siehst du?" in a["auftrag"]
     assert a["uebergabe"]["rueckweg"]["frage"] == "Welche Risiken siehst du?"
+
+
+# ── Punkt 12 (Lauf 5): eine zweite Zusammenfassung ersetzt die erste ──
+
+ALTE_ZUSAMMENFASSUNG = _karte("00000000-0000-4000-8000-000000000d02", "Zusammenfassung: Stadtfest", "alt", 900, 0,
+                              node_type="dokument", metadata={"art": "zusammenfassung"})
+
+
+def test_zweite_zusammenfassung_nimmt_die_kennung_der_ersten() -> None:
+    lesen = LesenAttrappe(karten=[*KARTEN, ALTE_ZUSAMMENFASSUNG])
+    _, rueckweg = _vorbereiten("idea.summarize", lesen=lesen)
+    assert rueckweg["dokument_id"] == ALTE_ZUSAMMENFASSUNG["id"] and rueckweg["ersetzt"] is True
+    ideen = Ideen()
+    roh = json.dumps({"absaetze": ["Neu."], "verweise": ["K1"]})
+    p = dok.verarbeiten(_auftrag(rueckweg, roh), **_anschluss(ideen, lesen=lesen, angelegt=[])(None))
+    assert p["rueckweg"] == "geschrieben" and p["ersetzt"] is True
+    assert "ist erneuert" in p["meldung"] and "rückgängig" in p["meldung"]
+    ((ereignis, argumente),) = ideen.aufrufe
+    assert ereignis == "idea.document" and argumente["id"] == ALTE_ZUSAMMENFASSUNG["id"]
+
+
+def test_ohne_gleichen_titel_oder_mit_anderer_art_bleibt_es_eine_neue_karte() -> None:
+    anderer_titel = {**ALTE_ZUSAMMENFASSUNG, "title": "Zusammenfassung: Laternenlauf"}
+    andere_art = {**ALTE_ZUSAMMENFASSUNG, "metadata": {"art": "white_paper"}}
+    keine_dokumentkarte = {**ALTE_ZUSAMMENFASSUNG, "node_type": "idea"}
+    for zusatz in (anderer_titel, andere_art, keine_dokumentkarte):
+        _, rueckweg = _vorbereiten("idea.summarize", lesen=LesenAttrappe(karten=[*KARTEN, zusatz]))
+        assert rueckweg["dokument_id"] == DOK_ID and "ersetzt" not in rueckweg, zusatz
+    # Die Zusammenfassung einer einzelnen Karte ersetzt nie die der Bubble.
+    _, rueckweg = _vorbereiten("idea.summarize", {"bubble_id": BUBBLE["id"], "idea_ids": ["a0000004"]},
+                               lesen=LesenAttrappe(karten=[*KARTEN, ALTE_ZUSAMMENFASSUNG]))
+    assert rueckweg["dokument_id"] == DOK_ID

@@ -640,14 +640,35 @@ def _bubble_finden(arg: Mapping[str, Any], lesen: Lesen) -> dict[str, Any]:
     return dict(treffer[0])
 
 
-def _karten_lesen(bubble_id: str, lesen: Lesen) -> list[dict[str, Any]]:
-    karten = lesen.karten_der_bubble(bubble_id)
-    if karten is None:
+def _zeilen_lesen(bubble_id: str, lesen: Lesen) -> list[dict[str, Any]]:
+    zeilen = lesen.karten_der_bubble(bubble_id)
+    if zeilen is None:
         raise RueckwegFehler("Die Karten lassen sich gerade nicht lesen. Versuch es gleich noch einmal.")
+    return [dict(k) for k in zeilen if isinstance(k, Mapping) and ist_kennung(k.get("id"))
+            and k.get("linked_idea_id") == bubble_id]
+
+
+def _nur_karten(zeilen: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # Eigene Dokumente und Ueberschriften der Gruppen gehen nicht wieder in ein Dokument ein.
-    return [dict(k) for k in karten if isinstance(k, Mapping) and ist_kennung(k.get("id"))
-            and k.get("linked_idea_id") == bubble_id and k.get("node_type") != "dokument"
-            and not ist_gruppen_kopf(k)]
+    return [k for k in zeilen if k.get("node_type") != "dokument" and not ist_gruppen_kopf(k)]
+
+
+def _karten_lesen(bubble_id: str, lesen: Lesen) -> list[dict[str, Any]]:
+    return _nur_karten(_zeilen_lesen(bubble_id, lesen))
+
+
+def vorhandene_zusammenfassung(zeilen: list[dict[str, Any]], titel: str) -> Optional[str]:
+    """Kennung der Zusammenfassung mit genau diesem Titel in der Bubble, sonst ``None``.
+
+    Eine zweite Zusammenfassung ersetzt die erste (idea_document schreibt bei gleicher Kennung
+    ueber, als eine zuruecknehmbare Aenderung), statt eine zweite Karte gleichen Titels anzulegen.
+    Gibt es schon mehrere, wird die oberste ersetzt.
+    """
+    gleich = [z for z in zeilen if z.get("node_type") == "dokument"
+              and isinstance(z.get("metadata"), Mapping) and z["metadata"].get("art") == ART["zusammenfassen"]
+              and str(z.get("title") or "").strip() == titel.strip()]
+    gleich.sort(key=_lage)
+    return str(gleich[0]["id"]) if gleich else None
 
 
 def ist_gruppen_kopf(zeile: Mapping[str, Any]) -> bool:
@@ -664,9 +685,15 @@ def auftrag_vorbereiten(event_id: str, rendered_arg: Any, wunsch: Any, *, lesen:
     arg = _argument(rendered_arg)
     bubble = _bubble_finden(arg, lesen)
     bubble_id, bubble_titel = str(bubble["id"]), titel_von(bubble)
-    karten = _karten_lesen(bubble_id, lesen)
+    zeilen = _zeilen_lesen(bubble_id, lesen)
+    karten = _nur_karten(zeilen)
     if vertrag == "zusammenfassen":
-        return _zusammenfassen_vorbereiten(event_id, arg, wunsch, bubble_id, bubble_titel, karten, neue_kennung())
+        nachricht, rueckweg = _zusammenfassen_vorbereiten(event_id, arg, wunsch, bubble_id, bubble_titel, karten,
+                                                          neue_kennung())
+        alt = vorhandene_zusammenfassung(zeilen, rueckweg["titel"])
+        if alt is not None:
+            rueckweg.update(dokument_id=alt, ersetzt=True)
+        return nachricht, rueckweg
     if vertrag == "gruppieren":
         return _gruppieren_vorbereiten(event_id, arg, wunsch, bubble_id, bubble_titel, karten)
     return _white_paper_vorbereiten(event_id, arg, wunsch, bubble_id, bubble_titel, karten, lesen, neue_kennung(),
@@ -1046,13 +1073,20 @@ def verarbeiten(auftrag: Mapping[str, Any], *, lies_karten: Callable[[list[str]]
             ok, reason, satz = _schreiben(rueckweg, inhalt, quellen, aufruf=aufruf, pruefe=pruefe)
             if ok is not True:
                 return aus("wartet" if reason == _WARTET else "fehler", ok, reason, satz, vorschlag=inhalt)
+            ersetzt = rueckweg.get("ersetzt") is True
             if rueckweg.get("frage"):
                 # Die Antwort gehoert in den Chat; die Karte haelt sie fest.
                 antwort = inhalt if len(inhalt) <= EINSCHAETZUNG_IM_CHAT else (
                     inhalt[:EINSCHAETZUNG_IM_CHAT].rstrip() + " …")
+                wo = (f"Die Karte „{rueckweg['titel']}“ ist erneuert" if ersetzt
+                      else f"Steht auch als Karte „{rueckweg['titel']}“ in der Bubble")
+                return aus("geschrieben", True, reason, f"{antwort}\n\n({wo}.)",
+                           dokument_id=rueckweg["dokument_id"], ersetzt=ersetzt)
+            if ersetzt:
                 return aus("geschrieben", True, reason,
-                           f"{antwort}\n\n(Steht auch als Karte „{rueckweg['titel']}“ in der Bubble.)",
-                           dokument_id=rueckweg["dokument_id"])
+                           f"Die Zusammenfassung „{rueckweg['titel']}“ ist erneuert; die alte Fassung ist ersetzt. "
+                           "Direkt danach holt „Mach das rückgängig“ sie zurück.",
+                           dokument_id=rueckweg["dokument_id"], ersetzt=True)
             return aus("geschrieben", True, reason,
                        f"Die Zusammenfassung steht als Karte „{rueckweg['titel']}“ in der Bubble.",
                        dokument_id=rueckweg["dokument_id"])
