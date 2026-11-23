@@ -197,6 +197,42 @@ def test_pruefer_bestaetigt_nichts_bei_fehlertext_in_der_quittung(monkeypatch) -
     assert verdict["valid"] is False and verdict["verified"] is None
 
 
+def test_satz_mit_kontext_laeuft_als_ein_fester_schritt_durch(monkeypatch) -> None:
+    """Abkuerzung -> Plan-Schritt -> Ideen-Server, ohne Planer und ohne Modell."""
+    from core.ideen_abkuerzung import arg_vorlage, loese
+
+    kontext = {"space": "ideas", "bubble": {"id": "bub1", "title": "Messe"},
+               "cards": [{"id": "n1", "title": "Preise"}], "new_id": "vor-7f3a"}
+    treffer = loese("Halt fest: Preis {{state.x}} klaeren", kontext)
+    hop = HopSpec(step_id="s1", description="x", capability=treffer["capability"],
+                  arg_template=arg_vorlage(treffer["argumente"]))
+
+    result, built, executor = _lauf(
+        monkeypatch, hop, validator=_Validator(),
+        executor=_Executor(_quittung([{"id": "vor-7f3a"}])))
+
+    assert result.ok is True
+    assert built == ["mcp:brain-ideas:spaces-ideas:idea_create"]
+    assert executor.calls == [(
+        {"bubble_id": "bub1", "title": "Preis {{state.x}} klaeren", "id": "vor-7f3a"}, None)]
+
+
+def test_plan_started_nennt_den_space_des_ersten_schritts() -> None:
+    from core.plan_executor import _space_des_plans
+    from core.plan_schema import Plan
+
+    def plan(*faehigkeiten):
+        return Plan(plan_id="p1", intent="x", rationale="x",
+                    hops=[HopSpec(step_id=f"s{i}", description=f, capability=f)
+                          for i, f in enumerate(faehigkeiten)])
+
+    assert _space_des_plans(plan("idea.rate")) == "ideas"
+    assert _space_des_plans(plan("bubble.promote")) == "bubbles"
+    assert _space_des_plans(plan("gibt_es_nicht", "idea.format")) == "ideas"
+    assert _space_des_plans(plan("gibt_es_nicht")) is None
+    assert _space_des_plans(None) is None
+
+
 def test_ausfuehrer_haengt_die_plan_kennung_an_die_neuen_schreibenden_werkzeuge() -> None:
     for werkzeug in ("idea_format", "idea_arrange", "idea_auto_link", "idea_rate", "bewertung_begruenden"):
         executor = McpExecutor(f"mcp:brain-ideas:spaces-ideas:{werkzeug}")

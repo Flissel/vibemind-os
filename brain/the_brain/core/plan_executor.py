@@ -84,6 +84,23 @@ def _canonical_space_event_agent(event_id: str) -> Optional[str]:
     return agent.strip()
 
 
+def _space_des_plans(plan: Any) -> Optional[str]:
+    """Space des ersten Schritts, der einem Space gehoert; ``None`` = allgemeine Aufgabe.
+
+    Reist schon mit ``plan_started``, damit die App in den Space springen kann, bevor
+    der erste Schritt startet. Wirft nie.
+    """
+    try:
+        for hop in getattr(plan, "hops", None) or []:
+            space = space_for_step(getattr(hop, "capability", "") or "",
+                                   getattr(hop, "execution_target", "") or "")
+            if space:
+                return space
+    except Exception:  # noqa: BLE001 - ein Ereignisfeld darf keinen Plan stoppen
+        pass
+    return None
+
+
 def _self_prior_beobachtungen(plan: Any, hop_results: List[Any]) -> List[Tuple[str, bool]]:
     """Welche (capability, success)-Paare sollen das Selbstbild aktualisieren?
 
@@ -769,7 +786,7 @@ class PlanExecutor:
         except Exception:
             de = None  # broken engine — proceed without pause
 
-        self._publish("plan_started", plan.to_dict())
+        self._publish("plan_started", {**plan.to_dict(), "space": _space_des_plans(plan)})
         self._tappend(plan, "execution", "plan-executor", f"started {len(plan.hops)} hops")
 
         # ── Phase 10 — Self-Reflective pre-execution context ─────────
