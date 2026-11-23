@@ -66,7 +66,23 @@ spaces:
     enabled: true
     description: "Idea notes inside bubbles — create, update, link, format."
     mcp_servers: [vibemind-db, spaces-ideas]
-    mcp_tools: { spaces-ideas: [idea_connect, aenderung_zurueck] }
+    # 23.11.2026: feste Werkzeuge des Ideen-Space (spaces/ideas/mcp_server.py), alle ohne Modell und ueber
+    # aenderung_id ruecknehmbar. Befoerdert werden nur ganze Bubbles; die Begruendung einer Bewertung geht
+    # ueber bewertung_begruenden an die Bubble (Felix 23.11.).
+    mcp_tools:
+      spaces-ideas:
+        - idea_connect
+        - aenderung_zurueck
+        - idea_create
+        - idea_update
+        - idea_list
+        - idea_format
+        - idea_arrange
+        - idea_auto_link
+        - idea_rate
+        - bubble_rate
+        - bubble_promote
+        - bewertung_begruenden
     default_context: [current_space, current_bubble, idea_titles]
     events:
       idea.list:                { tool: db_ideas_list,   required_params: [] }
