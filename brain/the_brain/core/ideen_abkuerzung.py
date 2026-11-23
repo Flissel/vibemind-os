@@ -295,7 +295,15 @@ def fehlersatz(fehler: Any) -> str:
         return ("Der Ideen-Dienst läuft gerade nicht. Bitte prüfe das Canvas, bevor du es wiederholst."
                 if "transport_closed" in text
                 else "Der Ideen-Dienst hat nicht geantwortet. Es ist unklar, ob etwas geändert wurde.")
-    if "keine lesbare Antwort" in text:
+    if "aenderung_konflikt" in text:
+        return "Das lässt sich nicht zurücknehmen: Ein Eintrag wurde danach noch einmal geändert."
+    if "aenderung_unbekannt" in text:
+        return "Diese Änderung kenne ich nicht."
+    if "aenderung_nicht_zuruecknehmbar" in text:
+        return "Diese Änderung lässt sich nicht zurücknehmen."
+    if "mehrere Kennungen" in text:
+        return "Du nennst mehrere Änderungen. Welche soll ich zurücknehmen?"
+    if "keine lesbare Antwort" in text or "keine gueltige Quittung" in text:
         return "Der Ideen-Dienst hat unlesbar geantwortet. Bitte prüfe das Canvas."
     m = re.search(r"Ideen-Werkzeug meldet einen Fehler(?: \((?P<name>[a-z_]+)(?:: (?P<feld>[a-z_]+))?\))?", text)
     if m:
@@ -335,6 +343,95 @@ def fehlersatz(fehler: Any) -> str:
     if "OpenFang" in text or "OPENFANG" in text:
         return "Der Agenten-Dienst ist gerade nicht erreichbar."
     return "Das hat nicht geklappt."
+
+
+def _mcp_json(ergebnis: Any) -> Any:
+    """Der JSON-Inhalt aus der Antwort eines Werkzeugs, sonst ``None``."""
+    if not isinstance(ergebnis, dict):
+        return None
+    teile = ergebnis.get("content")
+    if not isinstance(teile, list) or len(teile) != 1 or not isinstance(teile[0], dict):
+        return None
+    text = teile[0].get("text")
+    if not isinstance(text, str):
+        return None
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
+
+
+def _aufzaehlung(titel: list[str], zeige: int = 3) -> str:
+    """„A“, „B“, „C“ (und 9 weitere) - nur Titel, nie Kennungen."""
+    sauber = [re.sub(r"\s+", " ", str(t or "")).strip() for t in titel]
+    sauber = [(t if len(t) <= 60 else t[:57].rstrip() + "…") or "ohne Titel" for t in sauber]
+    kopf = ", ".join(f"„{t}“" for t in sauber[:zeige])
+    rest = len(sauber) - zeige
+    return kopf + (f" (und {rest} weitere)" if rest > 0 else "")
+
+
+def _mehrzahl(anzahl: int, eins: str, viele: str) -> str:
+    return f"{anzahl} {eins if anzahl == 1 else viele}"
+
+
+def antwort_fuer_schritt(capability: Any, ok: bool, ergebnis: Any, fehler: Any,
+                         vorgabe: str = "", kontext: Any = None) -> Optional[str]:
+    """Der deutsche Satz fuer den Chat nach einem festen Schritt.
+
+    ``vorgabe`` ist der Satz der Abkuerzung ("Notiz ... festgehalten."). Wo das Ergebnis
+    mehr sagt (Liste, Anzahl), entsteht der Satz aus dem Ergebnis. ``None`` heisst: kein
+    fester Satz moeglich, der Aufrufer nimmt seinen bisherigen Weg. Wirft nie.
+    """
+    try:
+        if not ok:
+            return fehlersatz(fehler)
+        if capability == "idea.list":
+            zeilen = _mcp_json(ergebnis)
+            if not isinstance(zeilen, list):
+                return vorgabe or None
+            bubble = kontext.get("bubble") if isinstance(kontext, dict) else None
+            ort = (str(bubble.get("title") or "").strip() if isinstance(bubble, dict) else "")
+            ort = f"„{ort}“" if ort else "dieser Bubble"
+            if not zeilen:
+                return f"In {ort} gibt es noch keine Notizen."
+            titel = [z.get("title") for z in zeilen if isinstance(z, dict)]
+            return f"{_mehrzahl(len(zeilen), 'Notiz', 'Notizen')} in {ort}: {_aufzaehlung(titel)}."
+        if capability == "idea.auto_link":
+            inhalt = _mcp_json(ergebnis)
+            anzahl = inhalt.get("anzahl") if isinstance(inhalt, dict) else None
+            if isinstance(anzahl, int) and not isinstance(anzahl, bool):
+                return ("Ich habe keine neuen Verbindungen gefunden." if anzahl == 0
+                        else f"{_mehrzahl(anzahl, 'Verbindung', 'Verbindungen')} angelegt.")
+            return vorgabe or None
+        if capability == "idea.arrange":
+            inhalt = _mcp_json(ergebnis)
+            if isinstance(inhalt, dict) and isinstance(inhalt.get("anzahl"), int):
+                if inhalt["anzahl"] == 0:
+                    return "Hier gibt es noch keine Karten zum Ordnen."
+                if inhalt.get("verschoben") == 0:
+                    return "Die Karten stehen schon so."
+            return vorgabe or None
+        if capability == "aenderung_zurueck":
+            inhalt = _mcp_json(ergebnis)
+            anzahl = inhalt.get("anzahl") if isinstance(inhalt, dict) else None
+            if not isinstance(anzahl, int) or isinstance(anzahl, bool):
+                return None
+            return ("Es gibt nichts zurückzunehmen." if anzahl == 0
+                    else f"Zurückgenommen: {_mehrzahl(anzahl, 'Änderung', 'Änderungen')}.")
+        if capability == "bubble_list":
+            # Der aeltere Leseweg liefert Text: "15 bubbles:\n- Titel (id=..., score=...)".
+            if not isinstance(ergebnis, str):
+                return None
+            if ergebnis.strip().lower().startswith("no bubbles found"):
+                return "Du hast noch keine Bubbles."
+            kopf = re.match(r"\s*(\d+) bubbles:", ergebnis)
+            titel = re.findall(r"^- (.*?) \(id=[^)\n]*\)\s*$", ergebnis, flags=re.MULTILINE)
+            if not kopf or not titel:
+                return None
+            return f"{_mehrzahl(int(kopf.group(1)), 'Bubble', 'Bubbles')}: {_aufzaehlung(titel, zeige=5)}."
+        return vorgabe or None
+    except Exception:
+        return None
 
 
 def arg_vorlage(argumente: dict) -> str:

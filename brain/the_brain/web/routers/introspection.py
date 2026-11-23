@@ -2533,6 +2533,43 @@ def _try_ideen_abkuerzung(intent: str, kontext: Any):
         return None, None, ""
 
 
+def _feste_antwort(plan, exec_result, ideen_fest: bool, vorgabe: str, kontext: Any) -> Optional[Dict[str, Any]]:
+    """Antwortfelder fuer einen festen Ein-Schritt-Plan, oder ``None`` (dann Synthese wie bisher).
+
+    Liefert ``final_text`` (deutscher Satz, ohne Kennungen), ``space`` und bei einem
+    Fehler ``fehler`` (technischer Text). Bei einem Fehler nie eine Erfolgsmeldung. Wirft nie.
+    """
+    try:
+        from core.ideen_abkuerzung import antwort_fuer_schritt
+
+        hops = getattr(plan, "hops", None) or []
+        if len(hops) != 1:
+            return None
+        capability = hops[0].capability or ""
+        alt = (str(getattr(plan, "plan_id", "")).startswith("shortcut_")
+               and capability in ("aenderung_zurueck", "bubble_list"))
+        if not ideen_fest and not alt:
+            return None
+        schritt = (exec_result.get("executed") or {}).get(hops[0].step_id) or {}
+        if not isinstance(schritt, dict):
+            schritt = {}
+        ok = bool(exec_result.get("ok"))
+        text = antwort_fuer_schritt(
+            capability, ok, schritt.get("result"), schritt.get("error"), vorgabe, kontext)
+        if text is None:
+            return None
+        antwort: Dict[str, Any] = {
+            "final_text": text,
+            "space": "bubbles" if capability == "bubble_list" else "ideas",
+        }
+        if not ok:
+            antwort["fehler"] = str(schritt.get("error") or "")
+        return antwort
+    except Exception as e:  # noqa: BLE001 - dann lieber die bisherige Synthese
+        logger.warning(f"[feste-antwort] uebersprungen: {type(e).__name__}: {e}")
+        return None
+
+
 @router.post("/api/multihop/execute")
 async def multihop_execute(request: Request):
     """Phase 6 — full intent → plan → execute → synth pipeline. Body:
@@ -2819,19 +2856,12 @@ async def multihop_execute(request: Request):
             pass
         return JSONResponse(out)
 
-    if _ideen_fest:
-        # Fester Aufruf: der Antworttext steht fest, ein Modell formuliert nichts.
-        # Bei einem Fehler nur der Fehlertext des Schritts, nie eine Erfolgsmeldung.
-        out["space"] = "ideas"
-        if exec_result.get("ok"):
-            out["final_text"] = _ideen_antwort
-        else:
-            _schritt = (exec_result.get("executed") or {}).get("s1") or {}
-            _grund = _schritt.get("error") if isinstance(_schritt, dict) else None
-            from core.ideen_abkuerzung import fehlersatz
-            # Deutscher Satz fuer den Chat; der technische Text bleibt daneben stehen.
-            out["final_text"] = fehlersatz(_grund)
-            out["fehler"] = str(_grund or "")
+    # Fester Aufruf: der Antworttext steht fest, ein Modell formuliert nichts. Das gilt
+    # fuer Plaene der Ideen-Abkuerzung und fuer die aelteren Ein-Schritt-Abkuerzungen
+    # "zurueck" und "zeige meine Bubbles" (deren Rohtext stand sonst im Chat).
+    _fest = _feste_antwort(plan, exec_result, _ideen_fest, _ideen_antwort, body.get("context"))
+    if _fest is not None:
+        out.update(_fest)
         try:
             pe.recorder.attach_final(plan.plan_id, out["final_text"])
         except Exception:  # noqa: BLE001
