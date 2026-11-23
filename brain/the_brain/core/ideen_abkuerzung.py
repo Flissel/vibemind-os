@@ -553,6 +553,21 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
             raise _Rueckfrage("Markiere mindestens zwei Karten, dann fasse ich sie zusammen.")
         return _treffer("idea.summarize", {"bubble_id": _offene_bubble(kontext), "idea_ids": auswahl[:200]},
                         "", capability="idea_summarize")
+    # Eine einzelne Karte (Lauf 5 der Pruefung: "Fasse die Notiz X zusammen" wurde als Bubble-Name
+    # gelesen). Mit "Notiz/Karte" davor immer eine Karte; ein blosser Name nur, wenn genau eine
+    # Karte so heisst und keine Bubble im Kontext.
+    m = re.fullmatch(r"fasse\s+(?:die|diese|meine|unsere)\s+(?:notiz|karte)\s+(?P<k>.+?)\s+zusammen", text, _I)
+    if m is None:
+        n = re.fullmatch(r"fasse\s+(?P<k>.+?)\s+zusammen", text, _I)
+        if n and not re.match(r"(?:die|diese)\s+bubble\b", n.group("k"), _I) and any(
+                _vergleich(k.get("title")) == _vergleich(n.group("k")) for k in _karten(kontext)) and not any(
+                isinstance(b, dict) and _vergleich(b.get("title")) == _vergleich(n.group("k"))
+                for b in (kontext.get("bubbles") or [])):
+            m = n
+    if m:
+        karte = _karte(m.group("k"), kontext)
+        return _treffer("idea.summarize", {"bubble_id": _offene_bubble(kontext), "idea_ids": [karte["id"]]},
+                        "", capability="idea_summarize")
     m = re.fullmatch(r"fasse\s+(?:(?:diese|die)\s+bubble|die\s+bubble\s+(?P<b>.+?)|(?P<n>.+?))\s+zusammen", text, _I)
     if m:
         bubble = _bubble(m.group("b") or m.group("n"), kontext)

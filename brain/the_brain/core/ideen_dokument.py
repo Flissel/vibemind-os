@@ -675,7 +675,9 @@ def _zusammenfassen_vorbereiten(event_id: str, arg: Mapping[str, Any], wunsch: A
     rueckweg = {
         "version": VERSION, "vertrag": "zusammenfassen", "ereignis": event_id,
         "bubble_id": bubble_id, "dokument_id": dokument_id,
-        "titel": _sauber(f"Zusammenfassung: {bubble_titel}", 200),
+        # Eine einzelne Karte bekommt ihren eigenen Titel, damit sie nie die Zusammenfassung
+        # der Bubble ersetzt (gleicher Titel = dieselbe Zusammenfassung).
+        "titel": _sauber(f"Zusammenfassung: {titel_von(karten[0]) if markiert is not None and len(karten) == 1 else bubble_titel}", 200),
         "kuerzel": kuerzel, "kuerzel_titel": {a: t for a, t, _ in block},
         "leer": leer[:200], "auswahl": markiert is not None,
     }

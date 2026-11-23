@@ -565,3 +565,23 @@ def test_bereichswort_ohne_karte_ist_keine_notiz(satz) -> None:
 def test_besitzwort_vor_dem_titel_faellt_weg() -> None:
     antwort = abk.loese("Was steht in meiner Druckerei?", KONTEXT)
     assert antwort["lies"]["id"] == "a0000002"
+
+
+# ── Punkt 11 (Lauf 5): "Fasse die Notiz X zusammen" ist eine Karte, keine Bubble ──
+
+@pytest.mark.parametrize("satz,kennung", [("Fasse die Notiz Preise zusammen", "a0000001"),
+                                          ("Fasse die Karte Druckerei zusammen", "a0000002"),
+                                          ("Fasse Druckerei zusammen", "a0000002")])
+def test_zusammenfassen_einer_karte(satz, kennung) -> None:
+    antwort = abk.loese(satz, KONTEXT)
+    assert antwort["ereignis"] == "idea.summarize", antwort
+    assert antwort["argumente"] == {"bubble_id": "b0b1e001", "idea_ids": [kennung]}
+
+
+def test_zusammenfassen_der_bubble_bleibt() -> None:
+    assert abk.loese("Fasse diese Bubble zusammen", KONTEXT)["argumente"] == {"bubble_id": "b0b1e001"}
+
+
+def test_zusammenfassen_unbekannte_notiz_fragt_nach_der_notiz() -> None:
+    antwort = abk.loese("Fasse die Notiz Laternen zusammen", KONTEXT)
+    assert "Notiz „Laternen“" in antwort["rueckfrage"] and "Bubble" not in antwort["rueckfrage"].split("finde")[0]
