@@ -7,8 +7,15 @@ from pathlib import Path
 import pytest
 import soundfile as sf
 
-from djset.bestand import Bestand, BestandFehler, SongEintrag, pruefe_herkunft
+from djset.bestand import (
+    Bestand,
+    BestandFehler,
+    SongEintrag,
+    pruefe_herkunft,
+    song_id_aus_titel,
+)
 from djset.render.stretch import ffmpeg_path
+from djset.run import slugify
 from tests.fixtures.make_audio import click_track
 
 HEUTE = date(2026, 11, 23)
@@ -155,3 +162,31 @@ def test_alle_ist_nach_id_sortiert(bestand, eingang_wav, eingang_wav_anders):
     bestand.aufnehmen("anders.wav", "Affe", "suno-eigen", HEUTE)
     assert [e.id for e in bestand.alle()] == ["affe", "zebra"]
     assert all(isinstance(e, SongEintrag) for e in bestand.alle())
+
+
+# --- A5: Umlaute in Song-IDs ------------------------------------------------
+
+
+def test_umlaute_werden_umschrieben_nicht_verschluckt(bestand, eingang_wav):
+    eintrag = bestand.aufnehmen("lied.wav", "Über den Wolken", "suno-eigen", HEUTE)
+    assert eintrag.id == "ueber-den-wolken"
+    assert eintrag.datei == "ueber-den-wolken.wav"
+
+
+@pytest.mark.parametrize(
+    "titel, erwartet",
+    [
+        ("Ö", "oe"),
+        ("Café", "cafe"),
+        ("Straße", "strasse"),
+        ("ÄRGER über Öl", "aerger-ueber-oel"),
+        ("Crème brûlée", "creme-brulee"),
+        ("Mein Lied", "mein-lied"),
+    ],
+)
+def test_song_id_aus_titel(titel, erwartet):
+    assert song_id_aus_titel(titel) == erwartet
+
+
+def test_run_slugify_bleibt_unveraendert():
+    assert slugify("Über den Wolken") == "ber-den-wolken"

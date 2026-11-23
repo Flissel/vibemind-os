@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import tempfile
+import unicodedata
 from datetime import date
 from pathlib import Path
 
@@ -37,6 +38,27 @@ Herkunft = str  # geprueft durch pruefe_herkunft
 _FESTE_HERKUNFT = ("suno-eigen", "eigen-aufgenommen")
 _LIZENZ_PRAEFIX = "lizenz:"
 _ID_MUSTER = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
+# Deutsche Umschrift vor dem Abstreifen der Akzente: NFKD allein machte aus
+# "Ü" ein "U" (und run.slugify ohne Vorarbeit liess es ganz fallen - "Über den
+# Wolken" wurde "ber-den-wolken").
+_UMSCHRIFT = str.maketrans(
+    {"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss",
+     "Ä": "Ae", "Ö": "Oe", "Ü": "Ue", "ẞ": "SS"}
+)
+
+
+def song_id_aus_titel(titel: str) -> str:
+    """Die Song-ID zu einem Titel: ae/oe/ue/ss umschreiben, uebrige Akzente
+    abstreifen (NFKD, ohne die kombinierenden Zeichen), dann slugify.
+    "Über den Wolken" wird "ueber-den-wolken", "Café" wird "cafe"."""
+    umschrieben = titel.translate(_UMSCHRIFT)
+    zerlegt = unicodedata.normalize("NFKD", umschrieben)
+    ohne_akzente = "".join(
+        zeichen for zeichen in zerlegt if not unicodedata.combining(zeichen)
+    )
+    return slugify(ohne_akzente)
 
 
 class BestandFehler(RuntimeError):
@@ -57,7 +79,7 @@ def pruefe_herkunft(text: str) -> str:
 
 
 class SongEintrag(BaseModel):
-    id: str  # slugify(titel), eindeutig im Bestand
+    id: str  # song_id_aus_titel(titel), eindeutig im Bestand
     titel: str
     datei: str  # Dateiname unter songs/, immer <id>.wav
     herkunft: str
@@ -135,7 +157,7 @@ class Bestand:
     ) -> SongEintrag:
         quelle = self._eingangsdatei(dateiname)
         pruefe_herkunft(herkunft)
-        song_id = slugify(titel)
+        song_id = song_id_aus_titel(titel)
         if not song_id:
             raise BestandFehler(f"aus dem Titel {titel!r} ergibt sich keine ID")
 
