@@ -1096,6 +1096,67 @@ class IdeasMcpServerContractTests(unittest.TestCase):
         self.assertEqual(calls[1][2]["body"], {"p_gruppe": "hand-41"})
         self.assertTrue(all(k.get("error_detail") is True for _m, _p, k in calls))
 
+    def test_aenderung_zurueck_names_the_kinds_of_an_updated_card(self) -> None:
+        # Lauf 18 (51): "Zurückgenommen: 1 Änderung." sagte nicht, welche.
+        server = load_server()
+        calls = []
+        answer = {"gruppe": "plan-2-r", "anzahl": 1, "eintraege": [
+            {"tabelle": "public.canvas_nodes", "vorgang": "UPDATE", "zeilen_id": "a0000001", "titel": "Sponsoren"}]}
+        rows = [{"tabelle": "public.canvas_nodes", "vorgang": "UPDATE", "vorher_content": "kurz",
+                 "nachher_content": "lang", "vorher_titel": "Sponsoren", "nachher_titel": "Sponsoren",
+                 "vorher_x": "1", "nachher_x": "1", "vorher_y": "2", "nachher_y": "2", "kopf": None}]
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs))
+            return answer if path == "rpc/ideen_zurueck" else rows
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            result = server.call_tool("aenderung_zurueck", {})
+
+        self.assertEqual(result, {**answer, "arten": {"text": 1}})
+        (_m, _p, first), (method, path, kwargs) = calls
+        self.assertEqual((method, path), ("GET", "ideen_aenderungen"))
+        self.assertEqual(kwargs["params"]["gruppe"], "eq.plan-2-r")
+        # nur einzelne Felder, nie die ganzen Zeilen
+        self.assertNotIn("vorher", kwargs["params"]["select"].split(","))
+        self.assertNotIn("nachher", kwargs["params"]["select"].split(","))
+
+    def test_change_kind_of_each_protocol_row(self) -> None:
+        server = load_server()
+        same = {"vorher_content": "a", "nachher_content": "a", "vorher_titel": "T", "nachher_titel": "T",
+                "vorher_x": "1", "nachher_x": "1", "vorher_y": "1", "nachher_y": "1", "kopf": None}
+        node = {"tabelle": "public.canvas_nodes", "vorgang": "UPDATE", **same}
+        self.assertEqual(server._change_kind({**node, "nachher_x": "5"}), "position")
+        self.assertEqual(server._change_kind({**node, "nachher_titel": "U"}), "titel")
+        self.assertEqual(server._change_kind({**node, "nachher_content": "b", "nachher_x": "5"}), "text")
+        self.assertEqual(server._change_kind({**node, "kopf": "true", "nachher_x": "5"}), "ueberschrift")
+        self.assertEqual(server._change_kind({**node, "vorgang": "INSERT"}), "karte_neu")
+        self.assertEqual(server._change_kind({**node, "vorgang": "DELETE"}), "karte_geloescht")
+        self.assertEqual(server._change_kind(node), "sonst")
+        self.assertEqual(server._change_kind({"tabelle": "public.canvas_edges", "vorgang": "INSERT"}), "verbindung")
+        self.assertEqual(server._change_kind({"tabelle": "public.ideas", "vorgang": "UPDATE"}), "bubble")
+
+    def test_aenderung_zurueck_keeps_the_answer_when_the_protocol_is_unreadable(self) -> None:
+        server = load_server()
+        answer = {"gruppe": "plan-2", "anzahl": 1, "eintraege": [
+            {"tabelle": "public.canvas_nodes", "vorgang": "UPDATE", "zeilen_id": "a0000001", "titel": "T"}]}
+
+        def request(method, path, **kwargs):
+            if path == "rpc/ideen_zurueck":
+                return answer
+            raise server.ToolError("supabase_unavailable")
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            self.assertEqual(server.call_tool("aenderung_zurueck", {}), answer)
+
+    def test_aenderung_zurueck_reads_nothing_more_without_an_updated_card(self) -> None:
+        server = load_server()
+        answer = {"gruppe": "plan-2", "anzahl": 1, "eintraege": [
+            {"tabelle": "public.canvas_nodes", "vorgang": "INSERT", "zeilen_id": "a0000001", "titel": "T"}]}
+        with mock.patch.object(server, "_request", return_value=answer) as request:
+            self.assertEqual(server.call_tool("aenderung_zurueck", {}), answer)
+        self.assertEqual(request.call_count, 1)
+
     def test_aenderung_zurueck_rejects_invalid_arguments_without_requests(self) -> None:
         server = load_server()
         with mock.patch.object(server, "_request") as request:

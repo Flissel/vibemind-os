@@ -393,6 +393,46 @@ def test_zurueck_nennt_die_zahl_der_aenderungen() -> None:
         "Das lässt sich nicht zurücknehmen: Ein Eintrag wurde danach noch einmal geändert.")
 
 
+def _karte(vorgang="UPDATE", titel="Sponsoren", tabelle="public.canvas_nodes"):
+    return {"tabelle": tabelle, "vorgang": vorgang, "zeilen_id": "a0000001", "titel": titel, "name": None}
+
+
+@pytest.mark.parametrize("quittung, satz", [
+    # Lauf 18 (51): Karte und Art statt nur der Zahl
+    ({"gruppe": "ideen_1-r", "anzahl": 1, "eintraege": [_karte()], "arten": {"text": 1}},
+     "Zurückgenommen: der ausformulierte Text von „Sponsoren“."),
+    ({"gruppe": "ideen_1", "anzahl": 1, "eintraege": [_karte()], "arten": {"text": 1}},
+     "Zurückgenommen: die Textänderung an „Sponsoren“."),
+    ({"gruppe": "ideen_1", "anzahl": 1, "eintraege": [_karte()], "arten": {"position": 1}},
+     "Zurückgenommen: die Verschiebung von „Sponsoren“."),
+    ({"gruppe": "ideen_1", "anzahl": 1, "eintraege": [_karte()], "arten": {"titel": 1}},
+     "Zurückgenommen: die Umbenennung; die Karte heißt wieder „Sponsoren“."),
+    ({"gruppe": "ideen_1", "anzahl": 1, "eintraege": [_karte()]},                 # Server ohne Arten
+     "Zurückgenommen: die Änderung an „Sponsoren“."),
+    ({"gruppe": "ideen_1", "anzahl": 1, "eintraege": [_karte("INSERT", "Druckerei")]},
+     "Zurückgenommen: die neue Karte „Druckerei“."),
+    ({"gruppe": "ideen_1", "anzahl": 1, "eintraege": [_karte("DELETE")]},
+     "Zurückgenommen: das Löschen von „Sponsoren“; die Karte ist wieder da."),
+    ({"gruppe": "ideen_1", "anzahl": 1, "eintraege": [_karte("INSERT", None, "public.canvas_edges")]},
+     "Zurückgenommen: die neue Verbindung."),
+    ({"gruppe": "ideen_1", "anzahl": 1, "eintraege": [_karte("UPDATE", "Stadtfest", "public.ideas")]},
+     "Zurückgenommen: die Änderung an der Bubble „Stadtfest“."),
+    # mehrere
+    ({"gruppe": "plan_7", "anzahl": 31, "eintraege": [_karte()] * 20, "arten": {"position": 27, "ueberschrift": 4}},
+     "Zurückgenommen: die Gruppierung (27 Positionen)."),
+    ({"gruppe": "plan_7", "anzahl": 5, "eintraege": [_karte()] * 5, "arten": {"position": 5}},
+     "Zurückgenommen: die Anordnung (5 Positionen)."),
+    ({"gruppe": "plan_7", "anzahl": 3, "eintraege": [_karte(), _karte("INSERT", "Druckerei"), _karte()],
+      "arten": {"text": 2, "karte_neu": 1}},
+     "Zurückgenommen: 3 Änderungen an „Sponsoren“, „Druckerei“."),
+    # Liste gekuerzt: nur die Zahl, keine halbe Aufzaehlung
+    ({"gruppe": "plan_7", "anzahl": 25, "eintraege": [_karte()] * 20, "arten": {"text": 25}},
+     "Zurückgenommen: 25 Änderungen."),
+])
+def test_zurueck_nennt_karte_und_art(quittung, satz) -> None:
+    assert abk.antwort_fuer_schritt("aenderung_zurueck", True, _quittung(quittung), None) == satz
+
+
 def test_bubble_liste_wird_ein_satz_ohne_kennungen() -> None:
     roh = ("15 bubbles:\n- Probe-Alpha (id=ab12cd34, score=0)\n- Messe (Herbst) (id=ef56, score=70.0)\n"
            "- Laternenlauf (id=000000b2, score=0)\n- Vier (id=4, score=0)\n- Fünf (id=5, score=0)\n- Sechs (id=6, score=0)")
