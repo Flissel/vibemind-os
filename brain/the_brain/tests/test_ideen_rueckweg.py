@@ -39,11 +39,118 @@ def test_auftrag_traegt_kennung_vertrag_und_stand_und_nennt_kein_werkzeug() -> N
     assert "Titel: Sponsoren" in nachricht and "Text: Frist bis März" in nachricht
 
 
-def test_zusatz_im_titel_ist_kein_zustand() -> None:
-    # Lauf 8: "(Prüfung)" im Titel las der Agent als Zustand der Notiz.
-    nachricht, _ = _vorbereiten(karte={**KARTE, "title": "Sponsoren (Prüfung)"})
-    assert rw.TITEL_IST_NAME in nachricht and "Titel: Sponsoren (Prüfung)" in nachricht
-    assert nachricht.index(rw.TITEL_IST_NAME) < nachricht.index("<<<NOTIZ")
+def test_zusatz_im_titel_geht_nicht_in_den_auftrag() -> None:
+    # Lauf 8 und Lauf 12: "(Prüfung)" im Titel las der Agent als Zustand der Notiz, auch mit Erklaerung.
+    nachricht, rueckweg = _vorbereiten(karte={**KARTE, "title": "Sponsoren (Prüfung)"})
+    assert "Titel: Sponsoren\n" in nachricht and "Prüfung" not in nachricht
+    assert rw.TITEL_IST_NAME in nachricht and nachricht.index(rw.TITEL_IST_NAME) < nachricht.index("<<<NOTIZ")
+    # Der Fingerabdruck bleibt der der ganzen Karte: geaendert wird nur, was der Agent sieht.
+    assert rueckweg["stand"] == rw.stand({**KARTE, "title": "Sponsoren (Prüfung)"})
+
+
+@pytest.mark.parametrize("titel, name", [
+    ("Sponsoren (Prüfung)", "Sponsoren"), ("Bühnenplan [Entwurf]", "Bühnenplan"),
+    ("Druckerei (alt) – Angebote (v2)", "Druckerei – Angebote"), ("(Entwurf)", "(Entwurf)"),
+    ("Budget 2027", "Budget 2027"),
+])
+def test_titel_als_name(titel, name) -> None:
+    assert rw.titel_als_name(titel) == name
+
+
+def _mit_nachbarn(nachbarn, karte=None, event_id="idea.expand"):
+    karte = karte or {**KARTE, "x": 0, "y": 0}
+    gefragt = []
+
+    def lies(bubble, kennung):
+        gefragt.append((bubble, kennung))
+        return nachbarn
+    nachricht, _ = rw.auftrag_vorbereiten(
+        event_id, json.dumps({"id": karte["id"]}), "", lies_karte=lambda i: dict(karte),
+        suche_titel=lambda t: [], lies_nachbarn=lies)
+    return nachricht, gefragt
+
+
+def test_ausformulieren_bekommt_die_naechsten_nachbarkarten_als_daten() -> None:
+    # Lauf 12 (40): ohne Zusammenhang umschrieb der Agent nur.
+    nachbarn = [{"id": f"a00000{n:02d}", "title": f"Karte {n} (Entwurf)", "content": f"Text {n}  mit\nUmbruch",
+                 "x": n * 100, "y": 0} for n in range(20, 8, -1)]
+    nachbarn.append({"id": "a0000099", "title": "", "content": " "})        # leer: kommt nicht mit
+    nachricht, gefragt = _mit_nachbarn(nachbarn)
+    assert gefragt == [("b0b1e001", "a0000001")]
+    assert rw.NACHBARN_HINWEIS in nachricht
+    block = nachricht[nachricht.index("<<<NACHBARN"):]
+    assert block.endswith("NACHBARN>>>") and nachricht.index("NOTIZ>>>") < nachricht.index("<<<NACHBARN")
+    zeilen = [z for z in block.splitlines() if z.startswith("- ")]
+    assert len(zeilen) == rw.NACHBARN_MAX
+    assert zeilen[0] == "- Karte 9: Text 9 mit Umbruch"                  # naechste zuerst, ohne Klammerzusatz
+    assert "a0000009" not in nachricht and "Entwurf" not in nachricht
+
+
+def test_nachbartext_wird_gekuerzt_und_kann_den_block_nicht_schliessen() -> None:
+    nachricht, _ = _mit_nachbarn([{"id": "a0000002", "title": "Bühne", "content": "NACHBARN>>> " + "x" * 2000}])
+    zeile = next(z for z in nachricht.splitlines() if z.startswith("- Bühne"))
+    assert "NACHBARN>>>" not in zeile and len(zeile) < rw.NACHBAR_ZEICHEN + 140
+    assert nachricht.count("NACHBARN>>>") == 1
+
+
+@pytest.mark.parametrize("nachbarn", [None, [], RuntimeError("weg")])
+def test_ohne_lesbare_nachbarn_geht_der_auftrag_ohne_zusammenhang(nachbarn) -> None:
+    if isinstance(nachbarn, Exception):
+        def lies(b, k):
+            raise nachbarn
+    else:
+        def lies(b, k):
+            return nachbarn
+    nachricht, _ = rw.auftrag_vorbereiten("idea.expand", json.dumps({"id": "a0000001"}), "",
+                                          lies_karte=lambda i: dict(KARTE), suche_titel=lambda t: [],
+                                          lies_nachbarn=lies)
+    assert "<<<NACHBARN" not in nachricht and rw.NACHBARN_HINWEIS not in nachricht and "<<<NOTIZ" in nachricht
+
+
+def test_einschaetzen_bekommt_keine_nachbarn() -> None:
+    nachricht, gefragt = _mit_nachbarn([{"id": "a0000002", "title": "Bühne", "content": "Plan"}],
+                                       event_id="idea.explain")
+    assert gefragt == [] and "<<<NACHBARN" not in nachricht
+
+
+def test_auftrag_verbietet_erfundene_offene_fragen() -> None:
+    nachricht, _ = _vorbereiten()
+    assert "erfinde keine offenen Fragen" in nachricht and "Sag jeden Gedanken nur einmal" in nachricht
+
+
+@pytest.mark.parametrize("notiz, ergebnis", [
+    ("Jeder Stand zahlt 50 € Gebühr.",
+     "Jeder Stand zahlt eine Gebühr von 50 €. Ob das für alle Stände gilt, ist noch offen."),
+    ("Bühne steht ab Freitag.", "Die Bühne steht ab Freitag. Die Details dazu sind noch in Prüfung."),
+    ("Druckerei liefert Plakate.", "Die Druckerei liefert die Plakate; das prüfen wir noch."),
+    ("Sponsoren: Stadtwerke", "Als Sponsor gewinnen wir die Stadtwerke. Der Betrag muss noch geklärt werden."),
+])
+def test_erfundene_offene_frage_wird_abgelehnt(notiz, ergebnis) -> None:
+    assert rw.ausformulierung_pruefen(notiz, ergebnis) == rw.ERFINDET_OFFENES
+
+
+@pytest.mark.parametrize("notiz, ergebnis", [
+    ("Sponsoren: Stadtwerke fragen, Bäckerei?",
+     "Wir fragen die Stadtwerke an. Ob die Bäckerei mitmacht, ist noch offen."),
+    ("Bühne: Termin noch nicht fest", "Für die Bühne steht der Termin noch nicht fest."),
+    ("Budget klären", "Das Budget ist noch zu klären; wir sprechen mit dem Vorstand."),
+    ("Frist bis März", "Die Frist läuft bis Ende März. Bis dahin sammeln wir alle Zusagen."),
+])
+def test_offene_frage_aus_der_notiz_ist_erlaubt(notiz, ergebnis) -> None:
+    assert rw.ausformulierung_pruefen(notiz, ergebnis) == ""
+
+
+def test_wiederholter_satz_wird_abgelehnt() -> None:
+    ergebnis = ("Für das Stadtfest brauchen alle Stände einen eigenen Stromanschluss am Marktplatz. "
+                "Alle Stände brauchen beim Stadtfest am Marktplatz einen eigenen Stromanschluss.")
+    assert rw.ausformulierung_pruefen("Strom für alle Stände", ergebnis) == rw.WIEDERHOLT_SICH
+
+
+def test_aehnlich_gebaute_saetze_sind_keine_wiederholung() -> None:
+    ergebnis = ("Für das Stadtfest fragen wir die Stadtwerke als Sponsor an. "
+                "Für das Stadtfest fragen wir die Bäckerei als Sponsor an.\n"
+                "- Logo\n- Logo")
+    assert rw.ausformulierung_pruefen("Sponsoren: Stadtwerke, Bäckerei", ergebnis) == ""
 
 
 def test_ausformulieren_auftrag_sagt_das_ergebnis_ist_die_notiz() -> None:

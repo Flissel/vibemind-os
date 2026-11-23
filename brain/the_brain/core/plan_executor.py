@@ -1865,7 +1865,8 @@ class PlanExecutor:
                     else:
                         rendered_arg, _ideen_rueckweg = _rueckweg_mod.auftrag_vorbereiten(
                             event_id, rendered_arg, plan_ctx.get("plan_intent", ""),
-                            lies_karte=_rueckweg_mod.lies_karte, suche_titel=_rueckweg_mod.suche_titel)
+                            lies_karte=_rueckweg_mod.lies_karte, suche_titel=_rueckweg_mod.suche_titel,
+                            lies_nachbarn=_rueckweg_mod.lies_nachbarn)
                 except _rueckweg_mod.RueckwegFehler as e:
                     return _rueckweg_fehler(str(e))
                 target = f"openfang:{assigned_agent}"
