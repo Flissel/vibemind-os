@@ -800,3 +800,26 @@ def test_set_misst_fehlende_tempo_abschnitte_nach(tmp_path, budget, build_run_au
 
     # Die Fixture-WAV ist ein Takt lang, also zu kurz fuer einen Abschnitt.
     assert bestand.hole("a").tempo_abschnitte == []
+
+
+def test_set_misst_fehlende_lokale_raster_nach(
+    tmp_path, budget, build_run_aufzeichnung, capsys
+):
+    """Fund 3: Messungen von vor den lokalen Rastern haben keine. set misst
+    sie vor dem ersten Modellaufruf nach und speichert sie; die gespeicherte
+    Messung bleibt sonst unveraendert."""
+    bestand = _bestand(tmp_path, {"a": 124.0, "b": 126.0, "c": 128.0})
+    vorher = bestand.hole("a").messung
+    assert vorher is not None and vorher.lokale_raster is None
+    client = ZaehlenderClient([json.dumps(DRAFT)])
+
+    assert cmd_set(tmp_path, "Party", 20, None, client, budget, HEUTE) == 0
+
+    nachher = bestand.hole("a").messung
+    assert nachher is not None and nachher.lokale_raster is not None
+    # Ein Takt Clicktrack hat in keinem Mischbereich genug Beats.
+    assert nachher.lokale_raster.intro is None
+    assert nachher.model_dump(exclude={"lokale_raster"}) == vorher.model_dump(
+        exclude={"lokale_raster"}
+    )
+    assert "messe lokale Raster von a" in capsys.readouterr().out

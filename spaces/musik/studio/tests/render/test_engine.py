@@ -293,6 +293,67 @@ def test_gedehntes_stereo_behaelt_zwei_getrennte_kanaele(tmp_path: Path) -> None
     assert not np.allclose(signal[:, 0], signal[:, 1], atol=1e-3)
 
 
+def _klicks(path: Path, zeiten: list[float], dauer: float) -> Path:
+    signal = np.zeros(int(dauer * SR_TEST), dtype=np.float32)
+    for zeit in zeiten:
+        start = int(zeit * SR_TEST)
+        n = int(0.004 * SR_TEST)
+        signal[start:start + n] = 0.8 * np.hanning(n)
+    sf.write(path, signal, SR_TEST, subtype="FLOAT")
+    return path
+
+
+def _einsaetze(signal: np.ndarray) -> list[float]:
+    """Zeiten der Klicks im Ergebnis: Anstieg der Huellkurve ueber 0.2."""
+    huelle = np.abs(signal)
+    ueber = huelle > 0.2
+    starts = np.flatnonzero(ueber[1:] & ~ueber[:-1]) + 1
+    zeiten: list[float] = []
+    for start in starts:
+        if not zeiten or start / SR_TEST - zeiten[-1] > 0.1:
+            fenster = huelle[start:start + int(0.006 * SR_TEST)]
+            zeiten.append((start + int(np.argmax(fenster))) / SR_TEST)
+    return zeiten
+
+
+def test_streckabschnitte_legen_jeden_schlag_an_seine_ausgabezeit(
+    tmp_path: Path,
+) -> None:
+    """Fund 3: Intro, Koerper und Outro werden je mit ihrem eigenen
+    Verhaeltnis gestreckt und an den Grenzen ueberblendet. Jeder Schlag muss
+    dort landen, wo MixEntry.ausgabe_s ihn hinrechnet - sonst laege die
+    Naht wieder daneben, nur aus einem anderen Grund."""
+    from djset.contracts import Streckabschnitt
+
+    quelle = [0.5 + 0.6 * k for k in range(15)]  # 0.5 .. 8.9 s
+    source = _klicks(tmp_path / "quelle.wav", quelle, 10.0)
+    entry = MixEntry(
+        track_id="t0", play_from_s=0.2, play_to_s=9.5, timestretch_ratio=1.0,
+        gain_db=0.0,
+        abschnitte=[
+            Streckabschnitt(bis_s=3.2, ratio=1.05),
+            Streckabschnitt(bis_s=6.8, ratio=1.0),
+            Streckabschnitt(bis_s=9.5, ratio=0.95),
+        ],
+    )
+    plan = MixPlan.model_construct(
+        target_length_s=entry.ausgabe_dauer_s, target_bpm=174.0,
+        entries=[entry], transitions=[],
+    )
+    target = tmp_path / "set.wav"
+
+    render(plan, {"t0": source}, target)
+
+    signal, _ = sf.read(target, always_2d=True)
+    assert abs(len(signal) - entry.ausgabe_dauer_s * SR_TEST) <= 1
+    gefunden = _einsaetze(signal[:, 0])
+    # _einsaetze findet die Spitze des 4-ms-Klicks, also 2 ms nach seinem Anfang.
+    erwartet = [entry.ausgabe_s(t + 0.002) for t in quelle]
+    assert len(gefunden) == len(erwartet), (gefunden, erwartet)
+    abweichung_ms = [abs(g - e) * 1000 for g, e in zip(gefunden, erwartet)]
+    assert max(abweichung_ms) < 3.0, abweichung_ms
+
+
 def test_load_audio_liefert_immer_n_mal_zwei(tmp_path: Path) -> None:
     from djset.render.engine import _load_audio
 

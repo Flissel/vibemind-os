@@ -28,7 +28,12 @@ from pydantic import BaseModel, ValidationError, field_validator
 
 from djset.capture import CaptureFailed, convert
 from djset.contracts import TrackMeasurements
-from djset.dsp.analyze import measure_track, tempo_abschnitte
+from djset.dsp.analyze import (
+    beat_times,
+    lokale_raster_messen,
+    measure_track,
+    tempo_abschnitte,
+)
 from djset.render.stretch import RenderToolMissing
 from djset.run import slugify
 from djset.watch import AUDIO_SUFFIXES
@@ -232,6 +237,20 @@ class Bestand:
         aktualisiert = eintrag.model_copy(
             update={"tempo_abschnitte": tempo_abschnitte(self.pfad(song_id))}
         )
+        _schreibe_atomar(self._json(song_id), aktualisiert.model_dump_json(indent=2))
+        return aktualisiert
+
+    def raster_messen(self, song_id: str) -> SongEintrag:
+        """Nur die lokalen Raster der Mischbereiche (Fund 3), fuer Messungen
+        von vorher. Der Rest der Messung bleibt unberuehrt."""
+        eintrag = self.hole(song_id)
+        if eintrag.messung is None:
+            raise ValueError(f"{song_id} ist noch nicht gemessen")
+        beats = beat_times(self.pfad(song_id))
+        messung = eintrag.messung.model_copy(
+            update={"lokale_raster": lokale_raster_messen(beats, eintrag.messung)}
+        )
+        aktualisiert = eintrag.model_copy(update={"messung": messung})
         _schreibe_atomar(self._json(song_id), aktualisiert.model_dump_json(indent=2))
         return aktualisiert
 

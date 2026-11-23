@@ -22,7 +22,16 @@ import numpy as np
 import pyloudnorm
 import soundfile as sf
 
-from djset.contracts import BeatGrid, Bpm, Key, Loudness, MixRegions, TrackMeasurements
+from djset.contracts import (
+    BeatGrid,
+    Bpm,
+    Key,
+    LokaleRaster,
+    LokalesRaster,
+    Loudness,
+    MixRegions,
+    TrackMeasurements,
+)
 
 BEATS_PER_BAR = 4
 
@@ -218,6 +227,13 @@ def detect_bpm_and_grid(
 ) -> tuple[Bpm, BeatGrid]:
     """Tempo und Taktraster. Der Hinweis lenkt librosa in die richtige Oktave."""
     beat_times_, raw_tempo_value = _detect_beats(path, hint_bpm)
+    return _bpm_und_raster(beat_times_, raw_tempo_value)
+
+
+def _bpm_und_raster(
+    beat_times_: np.ndarray, raw_tempo_value: float
+) -> tuple[Bpm, BeatGrid]:
+    """Tempo und globales Raster aus schon erkannten Beats."""
 
     # Regelmaessigkeit: wie gleichmaessig die Beatabstaende sind. Ein sauberer
     # Viervierteltakt liefert nahezu konstante Abstaende. Das ist eine Aussage
@@ -484,6 +500,65 @@ def mischbereich(track: TrackMeasurements) -> MixRegions:
     return MixRegions(intro_end_s=intro_end, outro_start_s=outro_start)
 
 
+# So viele erkannte Beats braucht ein Mischbereich mindestens fuer ein eigenes
+# Raster: vier Takte. Darunter traegt eine Ausgleichsgerade nicht.
+MINDEST_LOKALE_BEATS = 16
+
+# Unter den ersten Beats des Bereichs wird der Taktanfang gesucht. Acht
+# Schlaege sind zwei Takte, darin liegt sicher ein Taktanfang.
+_DOWNBEAT_SUCHE_SCHLAEGE = 8
+
+
+def lokales_raster(
+    beats: np.ndarray, von_s: float, bis_s: float, grid: BeatGrid
+) -> LokalesRaster | None:
+    """Eine Ausgleichsgerade nur durch die Beats zwischen von_s und bis_s.
+
+    Die Beats werden ueber ihre Abstaende durchnummeriert, nicht ueber ihre
+    Position im globalen Raster: driftet der Song im Bereich um mehr als einen
+    halben Schlag gegen das globale Raster, wuerde Runden falsch zaehlen. Ein
+    fehlender Beat (Abstand von etwa zwei Schlaegen) zaehlt als zwei.
+
+    Der Taktanfang ist der Beat unter den ersten, der dem globalen Takt nach am
+    naechsten an einem Taktanfang liegt - so zaehlt das lokale Raster seine
+    Takte wie der Rest des Songs, liegt aber auf den echten Schlaegen. Seine
+    Zeit kommt von der Geraden, nicht vom einzelnen Beat: ein verrutschter
+    Einzelbeat soll den Einsatz nicht mitnehmen.
+    """
+    zeiten = beats[(beats >= von_s) & (beats <= bis_s)]
+    if zeiten.size < MINDEST_LOKALE_BEATS:
+        return None
+    schlag = grid.bar_length_s / BEATS_PER_BAR
+    schritte = np.maximum(1, np.round(np.diff(zeiten) / schlag))
+    index = np.concatenate([[0.0], np.cumsum(schritte)])
+    steigung, achse = np.polyfit(index, zeiten, 1)
+    rest = (zeiten - (achse + steigung * index)) / steigung
+    streuung = float(np.std(rest))
+
+    kandidaten = achse + steigung * index[:_DOWNBEAT_SUCHE_SCHLAEGE]
+    position = (kandidaten - grid.first_downbeat_s) / schlag / BEATS_PER_BAR
+    abstand = np.abs(position - np.round(position))
+    downbeat = float(kandidaten[int(np.argmin(abstand))])
+
+    return LokalesRaster(
+        downbeat_s=max(0.0, downbeat),
+        bar_length_s=float(steigung) * BEATS_PER_BAR,
+        streuung_schlaege=streuung,
+        beats=int(zeiten.size),
+    )
+
+
+def lokale_raster_messen(beats: np.ndarray, track: TrackMeasurements) -> LokaleRaster:
+    """Die lokalen Raster der beiden Mischbereiche eines gemessenen Tracks."""
+    bereich = mischbereich(track)
+    return LokaleRaster(
+        intro=lokales_raster(beats, 0.0, bereich.intro_end_s, track.beatgrid),
+        outro=lokales_raster(
+            beats, bereich.outro_start_s, track.duration_s, track.beatgrid
+        ),
+    )
+
+
 # Bodenwert fuer Pegelangaben in dB. Digitale Stille waere rechnerisch -inf;
 # -inf ist aber kein gueltiger JSON-Zahlenwert und faellt beim Roundtrip
 # durch das Loudness-Schema (siehe djset.contracts.Loudness).
@@ -528,13 +603,16 @@ def measure_track(
 ) -> TrackMeasurements:
     """Alle Messungen eines Tracks in einem Aufruf."""
     duration = float(librosa.get_duration(path=str(path)))
-    bpm, grid = detect_bpm_and_grid(path, hint_bpm=hint_bpm)
+    # Die Beats einmal erkennen: aus ihnen kommen das globale und die lokalen
+    # Raster.
+    beats, raw_tempo = _detect_beats(path, hint_bpm)
+    bpm, grid = _bpm_und_raster(beats, raw_tempo)
     key = detect_key(path)
     energy = energy_curve(path, grid)
     regions = find_mix_regions(energy, grid, duration)
     loudness = measure_loudness(path)
 
-    return TrackMeasurements(
+    messung = TrackMeasurements(
         id=track_id,
         path=str(path),
         duration_s=duration,
@@ -545,3 +623,5 @@ def measure_track(
         mix_regions=regions,
         loudness=loudness,
     )
+    messung.lokale_raster = lokale_raster_messen(beats, messung)
+    return messung

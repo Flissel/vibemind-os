@@ -184,6 +184,46 @@ class Verdict(BaseModel):
     energy_level: float = Field(ge=0.0, le=1.0)
 
 
+class LokalesRaster(BaseModel):
+    """Das Taktraster eines einzelnen Mischbereichs.
+
+    Fund 3 der Abnahme (23.11.): Songs halten ihr Tempo nicht ueber die ganze
+    Laenge (farewell-kiss: Intro 93.0, Outro 95.1, im Mittel 94.06 BPM). Das
+    globale BeatGrid ist eine Gerade ueber den ganzen Song und liegt in den
+    Mischbereichen neben den echten Beats. Dieses Raster ist eine Gerade nur
+    durch die Beats des Bereichs.
+
+    `downbeat_s` ist ein echter erkannter Beat, der dem globalen Takt nach ein
+    Taktanfang ist. `streuung_schlaege` ist die Standardabweichung der Beats
+    um die Gerade, in Schlaegen: klein heisst gleichmaessig, gross heisst, dass
+    die Beat-Erkennung dort unsicher ist.
+    """
+
+    downbeat_s: float = Field(ge=0)
+    bar_length_s: float = Field(gt=0)
+    streuung_schlaege: float = Field(ge=0)
+    beats: int = Field(ge=2)
+
+    @property
+    def bpm(self) -> float:
+        return 4 * 60.0 / self.bar_length_s
+
+    def als_beatgrid(self) -> BeatGrid:
+        return BeatGrid(
+            first_downbeat_s=self.downbeat_s,
+            bar_length_s=self.bar_length_s,
+            confidence=max(0.0, min(1.0, 1.0 - 4.0 * self.streuung_schlaege)),
+        )
+
+
+class LokaleRaster(BaseModel):
+    """Die lokalen Raster an Anfang und Ende eines Tracks (je None, wenn der
+    Bereich zu wenige Beats hat)."""
+
+    intro: LokalesRaster | None = None
+    outro: LokalesRaster | None = None
+
+
 class UnreadableTrack(BaseModel):
     """Eine Datei, die sich nicht messen liess.
 
@@ -214,6 +254,9 @@ class TrackMeasurements(BaseModel):
     energy: list[float] = Field(min_length=1)
     mix_regions: MixRegions
     loudness: Loudness
+    # None bei Messungen von vor Fund 3; der Bestand misst sie nach, der
+    # Designer faellt ohne sie auf das globale Raster zurueck.
+    lokale_raster: LokaleRaster | None = None
 
     @model_validator(mode="after")
     def _regions_within_duration(self) -> "TrackMeasurements":
@@ -317,7 +360,31 @@ class CritiqueLog(BaseModel):
     chosen_round: int = Field(ge=1)
 
 
+class Streckabschnitt(BaseModel):
+    """Ein Stueck eines Eintrags mit eigenem Stretch-Verhaeltnis.
+
+    Es reicht vom Ende des vorigen Abschnitts (beim ersten: play_from_s) bis
+    `bis_s`, beides in Sekunden der QUELLE.
+    """
+
+    bis_s: float = Field(gt=0)
+    ratio: float = Field(ge=MIN_RATIO, le=MAX_RATIO)
+
+
+# Toleranz fuer "der letzte Abschnitt endet bei play_to_s" - Fliesskomma.
+_ENDE_TOLERANZ_S = 1e-6
+
+
 class MixEntry(BaseModel):
+    """Ein Track im Mixplan.
+
+    Ohne `abschnitte` wird der ganze Eintrag mit `timestretch_ratio` gestreckt.
+    Mit `abschnitte` (Fund 3 der Abnahme: Songs halten ihr Tempo nicht) hat
+    jedes Stueck sein eigenes Verhaeltnis - Intro und Outro ihr lokales, der
+    Koerper `timestretch_ratio`. Quell- und Ausgabezeit rechnen nur
+    ausgabe_s/quelle_s um, keine Stufe rechnet das selbst nach.
+    """
+
     track_id: str = Field(min_length=1)
     play_from_s: float = Field(ge=0)
     play_to_s: float = Field(gt=0)
@@ -325,12 +392,61 @@ class MixEntry(BaseModel):
     # Konstanten, die Designer und Critic benutzen.
     timestretch_ratio: float = Field(ge=MIN_RATIO, le=MAX_RATIO)
     gain_db: float
+    abschnitte: list[Streckabschnitt] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _from_before_to(self) -> "MixEntry":
         if self.play_from_s >= self.play_to_s:
             raise ValueError("play_from_s muss vor play_to_s liegen")
         return self
+
+    @model_validator(mode="after")
+    def _abschnitte_decken_den_eintrag(self) -> "MixEntry":
+        if not self.abschnitte:
+            return self
+        grenzen = [self.play_from_s] + [a.bis_s for a in self.abschnitte]
+        if any(b <= a for a, b in zip(grenzen, grenzen[1:])):
+            raise ValueError("Streckabschnitte muessen nach play_from_s aufsteigen")
+        if abs(grenzen[-1] - self.play_to_s) > _ENDE_TOLERANZ_S:
+            raise ValueError("der letzte Streckabschnitt muss bei play_to_s enden")
+        return self
+
+    def stuecke(self) -> list[tuple[float, float, float]]:
+        """(von_s, bis_s, ratio) in Quellsekunden, lueckenlos von play_from_s
+        bis play_to_s."""
+        if not self.abschnitte:
+            return [(self.play_from_s, self.play_to_s, self.timestretch_ratio)]
+        result = []
+        von = self.play_from_s
+        for abschnitt in self.abschnitte:
+            result.append((von, abschnitt.bis_s, abschnitt.ratio))
+            von = abschnitt.bis_s
+        return result
+
+    def ausgabe_s(self, quelle_s: float) -> float:
+        """Wie lange nach seinem Einsatz der Eintrag die Quellzeit erreicht."""
+        summe = 0.0
+        for von, bis, ratio in self.stuecke():
+            if quelle_s <= von:
+                break
+            summe += (min(bis, quelle_s) - von) / ratio
+        return summe
+
+    def quelle_s(self, ausgabe_s: float) -> float:
+        """Umkehrung von ausgabe_s."""
+        rest = ausgabe_s
+        stuecke = self.stuecke()
+        for von, bis, ratio in stuecke:
+            dauer = (bis - von) / ratio
+            if rest <= dauer:
+                return von + rest * ratio
+            rest -= dauer
+        von, bis, ratio = stuecke[-1]
+        return bis + rest * ratio
+
+    @property
+    def ausgabe_dauer_s(self) -> float:
+        return self.ausgabe_s(self.play_to_s)
 
 
 class EqPoint(BaseModel):

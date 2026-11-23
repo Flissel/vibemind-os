@@ -86,9 +86,69 @@ def _load_audio(path: Path, sr: int) -> np.ndarray:
     return np.ascontiguousarray(signal, dtype=np.float32)
 
 
+# Streckabschnitte (Fund 3): so viel Quellmaterial wird zu beiden Seiten eines
+# Stuecks mitgestreckt. rubberband braucht Anlauf, und die Ueberblendung an
+# einer Grenze braucht Material von beiden Stuecken ueber die Grenze hinaus.
+_KONTEXT_S = 0.25
+
+# Breite der Ueberblendung an einer Abschnittsgrenze. Beide Seiten sind
+# dasselbe Material im selben Tempo, die Grenze liegt auf einem Downbeat -
+# zehn Millisekunden reichen, damit die zwei Phasen-Vocoder-Ergebnisse nicht
+# knacken, und sind zu kurz, um zu verwischen.
+_FUGE_S = 0.010
+
+
+def _abschnittsweise(
+    signal: np.ndarray, entry: MixEntry, sr: int, work: Path
+) -> np.ndarray:
+    """Ein Eintrag mit mehreren Streckabschnitten.
+
+    Jedes Stueck wird mit etwas Kontext einzeln gestreckt und an die Stelle
+    gelegt, die MixEntry.ausgabe_s ihm zuweist. An den inneren Grenzen gehen
+    die Stuecke ueber eine kurze lineare Fuge ineinander ueber; am Anfang und
+    Ende des Eintrags wird hart geschnitten wie beim einzelnen Verhaeltnis.
+    """
+    laenge = int(round(entry.ausgabe_dauer_s * sr))
+    ergebnis = np.zeros((laenge, 2), dtype=np.float64)
+    fuge = _FUGE_S * sr
+    stuecke = entry.stuecke()
+    quelle_ende = len(signal) / sr
+
+    for nummer, (von, bis, ratio) in enumerate(stuecke):
+        a = max(0.0, von - _KONTEXT_S)
+        b = min(quelle_ende, bis + _KONTEXT_S)
+        stueck = signal[int(round(a * sr)):int(round(b * sr))]
+        if ratio != 1.0:
+            cut = work / f"{entry.track_id}-{nummer}-cut.wav"
+            out = work / f"{entry.track_id}-{nummer}-stretched.wav"
+            sf.write(cut, stueck, sr, subtype="FLOAT")
+            stretch(cut, out, ratio, sr=sr)
+            stueck = _load_audio(out, sr)
+
+        platz = int(round((entry.ausgabe_s(von) - (von - a) / ratio) * sr))
+        anfang = entry.ausgabe_s(von) * sr
+        ende = entry.ausgabe_s(bis) * sr
+        index = np.arange(len(stueck)) + platz
+        if nummer == 0:
+            gewicht = (index >= round(anfang)).astype(np.float64)
+        else:
+            gewicht = np.clip((index - (anfang - fuge / 2)) / fuge, 0.0, 1.0)
+        if nummer == len(stuecke) - 1:
+            gewicht *= index < round(ende)
+        else:
+            gewicht *= np.clip(((ende + fuge / 2) - index) / fuge, 0.0, 1.0)
+
+        drin = (index >= 0) & (index < laenge)
+        ergebnis[index[drin]] += stueck[drin] * gewicht[drin, None]
+
+    return ergebnis.astype(np.float32)
+
+
 def _segment(source: Path, entry: MixEntry, sr: int, work: Path) -> np.ndarray:
     """Der gedehnte, verstaerkte Abschnitt eines Eintrags."""
     signal = _load_audio(source, sr)
+    if entry.abschnitte:
+        return _abschnittsweise(signal, entry, sr, work) * (10 ** (entry.gain_db / 20.0))
     start = int(round(entry.play_from_s * sr))
     stop = min(len(signal), int(round(entry.play_to_s * sr)))
     piece = signal[start:stop]

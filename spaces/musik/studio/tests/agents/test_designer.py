@@ -19,7 +19,12 @@ from djset.contracts import (
     Setlist,
     TrackAnalysis,
 )
-from tests.fixtures.analyses import make_analysis, make_off_grid, many
+from tests.fixtures.analyses import (
+    make_analysis,
+    make_off_grid,
+    many,
+    mit_lokalem_raster,
+)
 from tests.fixtures.fake_client import FakeClient
 
 
@@ -284,6 +289,59 @@ def test_a_track_without_own_intro_or_outro_is_mixed_over_16_bars(
     for transition in plan.transitions:
         assert transition.bars == 16
         assert transition.overlap_s == pytest.approx(sechzehn_takte, rel=1e-6)
+
+
+def test_mischbereiche_werden_mit_ihrem_lokalen_tempo_gestreckt(
+    profile: Profile,
+) -> None:
+    """Fund 3 der Abnahme (Felix 23.11. "Stolpert hoerbar", dann
+    "Abschnittsweise strecken"). farewell-kiss lief im Intro 1,1 % langsamer
+    als im Mittel. Mit dem Gesamttempo gestreckt liefen die beiden Spuren
+    ueber 16 Takte um 0,7 Schlaege auseinander. Jetzt bekommt jeder
+    Mischbereich sein eigenes Verhaeltnis, und beide Seiten der Naht laufen im
+    Zieltempo."""
+    target = profile.bpm.target
+    a = mit_lokalem_raster(
+        make_off_grid("a", bpm=174.0, camelot="8A"), outro=(200.03, 173.0)
+    )
+    b = mit_lokalem_raster(
+        make_off_grid("b", bpm=174.0, camelot="8A"),
+        intro=(0.05, 172.0), outro=(201.0, 175.0),
+    )
+    c = make_analysis("c", bpm=175.0, camelot="8A")
+    setlist = Setlist(order=["a", "b", "c"], note="")
+
+    plan = design(FakeClient([_choices(2)]), setlist, [a, b, c], profile, _budget())
+
+    eintrag_a, eintrag_b, eintrag_c = plan.entries
+    # a: Koerper mit Gesamttempo, Outro mit lokalem Tempo.
+    assert [s[2] for s in eintrag_a.stuecke()] == pytest.approx(
+        [target / 174.0, target / 173.0]
+    )
+    # b: Intro lokal, Koerper gesamt, Outro lokal.
+    assert [s[2] for s in eintrag_b.stuecke()] == pytest.approx(
+        [target / 172.0, target / 174.0, target / 175.0]
+    )
+    # Einstieg von b und Outro-Einsatz von a liegen auf den lokalen Rastern.
+    in_bar = 4 * 60.0 / 172.0
+    takte_b = (eintrag_b.play_from_s - 0.05) / in_bar
+    assert abs(takte_b - round(takte_b)) < 1e-6
+    out_bar = 4 * 60.0 / 173.0
+    cue_a = eintrag_a.stuecke()[1][0]
+    takte_a = (cue_a - 200.03) / out_bar
+    assert abs(takte_a - round(takte_a)) < 1e-6
+    # Beide Seiten der Naht sind 16 Takte im Zieltempo lang.
+    sechzehn = 16 * 4 * 60.0 / target
+    assert plan.transitions[0].overlap_s == pytest.approx(sechzehn, rel=1e-9)
+    assert eintrag_a.ausgabe_dauer_s - eintrag_a.ausgabe_s(cue_a) == pytest.approx(
+        sechzehn, rel=1e-9
+    )
+    assert plan.transitions[0].start_at_s == pytest.approx(eintrag_a.ausgabe_s(cue_a))
+    # c hat kein lokales Raster: ein Verhaeltnis wie bisher.
+    assert eintrag_c.abschnitte == []
+    assert plan.target_length_s == pytest.approx(
+        plan.transitions[1].start_at_s + eintrag_c.ausgabe_dauer_s
+    )
 
 
 def test_bars_larger_than_the_available_outro_are_reduced(profile: Profile) -> None:

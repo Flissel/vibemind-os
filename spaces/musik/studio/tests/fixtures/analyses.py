@@ -9,6 +9,8 @@ from djset.contracts import (
     BeatGrid,
     Bpm,
     Key,
+    LokaleRaster,
+    LokalesRaster,
     Loudness,
     MixRegions,
     TrackAnalysis,
@@ -111,6 +113,26 @@ def make_off_grid(
         mix_regions=MixRegions(intro_end_s=intro_end_s, outro_start_s=outro_start_s),
         loudness=Loudness(lufs_integrated=-9.5, true_peak=-1.2),
         verdict=Verdict(usable=True, notes="Fixture-Track.", energy_level=energy),
+    )
+
+
+def mit_lokalem_raster(
+    track: TrackAnalysis,
+    intro: tuple[float, float] | None = None,
+    outro: tuple[float, float] | None = None,
+    streuung: float = 0.02,
+) -> TrackAnalysis:
+    """Der Track mit lokalen Rastern, je (downbeat_s, bpm) oder None."""
+
+    def raster(werte: tuple[float, float] | None) -> LokalesRaster | None:
+        if werte is None:
+            return None
+        downbeat, bpm = werte
+        return LokalesRaster(downbeat_s=downbeat, bar_length_s=4 * 60.0 / bpm,
+                             streuung_schlaege=streuung, beats=64)
+
+    return track.model_copy(
+        update={"lokale_raster": LokaleRaster(intro=raster(intro), outro=raster(outro))}
     )
 
 

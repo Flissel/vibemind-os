@@ -3,7 +3,12 @@ import re
 from djset.agents.designer import TransitionChoice, build_mixplan
 from djset.contracts import MixEntry, Profile, Setlist
 from djset.critic import critique
-from tests.fixtures.analyses import make_analysis, make_off_grid, many
+from tests.fixtures.analyses import (
+    make_analysis,
+    make_off_grid,
+    many,
+    mit_lokalem_raster,
+)
 
 
 def _plan(tracks, profile, bars: int = 16):
@@ -144,6 +149,46 @@ def test_a_butt_join_without_overlap_is_caught(profile: Profile) -> None:
     overlap = [c for c in verdict.complaints if c.kind == "overlap"]
     assert len(overlap) == 3
     assert "u0" in overlap[0].text and "u1" in overlap[0].text
+
+
+def test_ein_plan_mit_lokalen_rastern_besteht_die_rasterpruefungen(
+    profile: Profile,
+) -> None:
+    """Fund 3: der Designer setzt Einstieg und Outro-Einsatz auf die lokalen
+    Raster und streckt die Mischbereiche mit ihrem lokalen Tempo. Pruefte der
+    Critic weiter gegen das globale Raster, beanstandete er genau die Cues,
+    die jetzt richtig sitzen."""
+    tracks = [
+        mit_lokalem_raster(make_off_grid("a", bpm=174.0), outro=(200.03, 173.0)),
+        mit_lokalem_raster(make_off_grid("b", bpm=174.0),
+                           intro=(0.37, 172.0), outro=(201.0, 175.0)),
+        mit_lokalem_raster(make_off_grid("c", bpm=174.0), intro=(0.61, 175.5)),
+    ]
+    plan = _plan(tracks, profile, bars=16)
+
+    verdict = critique(plan, tracks, profile)
+
+    raster_klagen = {"downbeat", "phase", "overlap", "stretch"} & _kinds(verdict)
+    assert raster_klagen == set(), verdict.complaints
+
+
+def test_ein_einstieg_neben_dem_lokalen_raster_wird_beanstandet(
+    profile: Profile,
+) -> None:
+    tracks = [
+        make_off_grid("a", bpm=174.0),
+        mit_lokalem_raster(make_off_grid("b", bpm=174.0), intro=(0.37, 172.0)),
+        make_off_grid("c", bpm=174.0),
+    ]
+    plan = _plan(tracks, profile, bars=16)
+    entries = list(plan.entries)
+    # Einen halben Schlag daneben, aber auf dem globalen Raster.
+    entries[1] = entries[1].model_copy(update={"play_from_s": 0.0, "abschnitte": []})
+    plan = plan.model_copy(update={"entries": entries})
+
+    verdict = critique(plan, tracks, profile)
+
+    assert "downbeat" in _kinds(verdict)
 
 
 def test_only_reorderable_complaints_go_back_to_stage_five(profile: Profile) -> None:

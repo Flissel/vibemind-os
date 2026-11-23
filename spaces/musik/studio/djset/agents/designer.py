@@ -17,6 +17,8 @@ Bruch-Uebergang bekommt deshalb nur `cut` oder `filter_sweep`, auch wenn das
 Profil sie nicht nennt (BREAK_TECHNIQUES).
 """
 
+import math
+
 from pydantic import BaseModel, Field
 
 from djset.agents.base import (
@@ -27,6 +29,7 @@ from djset.agents.base import (
 )
 from djset.camelot import break_indices
 from djset.dsp.analyze import mischbereich
+from djset.raster import intro_raster, lokales_verhaeltnis, outro_raster
 from djset.contracts import (
     MAX_RATIO,
     MIN_RATIO,
@@ -37,6 +40,7 @@ from djset.contracts import (
     MixPlan,
     Profile,
     Setlist,
+    Streckabschnitt,
     Technique,
     TrackAnalysis,
     Transition,
@@ -198,8 +202,22 @@ def _snapped_outro(track: TrackAnalysis) -> float:
     ein Outro-Einsatz hinter dem Trackende ergaebe einen negativen Overlap und
     damit ein Loch in der Ausgabe.
     """
-    grid = track.beatgrid
-    outro = snap_to_downbeat(mischbereich(track).outro_start_s, grid)
+    grid = outro_raster(track)
+    bereich = mischbereich(track)
+    outro = snap_to_downbeat(bereich.outro_start_s, grid)
+    if grid is not track.beatgrid:
+        # Lokales Raster (Fund 3): der Mischbereich ist in Takten des
+        # globalen Rasters bemessen. Ist der lokale Takt laenger, passen
+        # dieselben Takte nicht mehr hinein - der Einsatz rueckt so weit vor,
+        # dass hinter ihm wieder genauso viele lokale Takte kommen.
+        takte = _available_bars(
+            track.duration_s - bereich.outro_start_s, track.beatgrid.bar_length_s
+        )
+        spaetestens = track.duration_s - takte * grid.bar_length_s
+        schritte = math.floor(
+            (spaetestens - grid.first_downbeat_s) / grid.bar_length_s + _BAR_EPSILON
+        )
+        outro = min(outro, grid.first_downbeat_s + schritte * grid.bar_length_s)
     if outro > track.duration_s:
         outro = max(grid.first_downbeat_s, outro - grid.bar_length_s)
     return outro
@@ -257,6 +275,49 @@ def _eq_curve(technique: Technique, outgoing: bool) -> EqCurve:
     return EqCurve(low=even, mid=even, high=even)
 
 
+def _abschnitte(
+    track: TrackAnalysis,
+    play_from: float,
+    play_to: float,
+    intro_ende: float | None,
+    outro_einsatz: float | None,
+    ratio: float,
+    target_bpm: float,
+) -> list[Streckabschnitt]:
+    """Die Streckabschnitte eines Eintrags (Fund 3 der Abnahme).
+
+    Der Kopf bis zum Intro-Ende laeuft mit dem lokalen Tempo des Intros ins
+    Zieltempo, der Schwanz ab dem Outro-Einsatz mit dem des Outros, der Koerper
+    dazwischen mit dem Verhaeltnis des ganzen Tracks. So liegen beide Seiten
+    einer Naht im Zieltempo uebereinander, auch wenn der Song sein Tempo nicht
+    haelt. Ohne lokale Raster, oder wenn der Track sich gar nicht angleichen
+    laesst (dann wird der Uebergang ohnehin ein Schnitt), bleibt es bei einem
+    Verhaeltnis - leere Liste.
+    """
+    lokal = track.lokale_raster
+    if lokal is None or _is_unstretchable(track, ratio, target_bpm):
+        return []
+
+    stuecke: list[tuple[float, float]] = []
+    von = play_from
+    if intro_ende is not None and lokal.intro is not None and von < intro_ende < play_to:
+        stuecke.append(
+            (intro_ende, lokales_verhaeltnis(lokal.intro.als_beatgrid(), target_bpm, ratio))
+        )
+        von = intro_ende
+    if outro_einsatz is not None and lokal.outro is not None and von < outro_einsatz < play_to:
+        stuecke.append((outro_einsatz, ratio))
+        stuecke.append(
+            (play_to, lokales_verhaeltnis(lokal.outro.als_beatgrid(), target_bpm, ratio))
+        )
+    else:
+        stuecke.append((play_to, ratio))
+
+    if all(r == ratio for _bis, r in stuecke):
+        return []
+    return [Streckabschnitt(bis_s=bis, ratio=r) for bis, r in stuecke]
+
+
 def build_mixplan(
     setlist: Setlist,
     analyses: list[TrackAnalysis],
@@ -275,7 +336,27 @@ def build_mixplan(
     # Wo das Intro fuer den Uebergang endet: mindestens 16 Takte, auch wenn
     # der Song kein leiseres Intro hat (Fund 2 der Abnahme, siehe
     # dsp.analyze.mischbereich).
-    intros = {tid: mischbereich(by_id[tid]).intro_end_s for tid in order}
+    #
+    # Fund 3: an beiden Enden gilt das lokale Raster, wenn es gemessen ist
+    # (djset.raster). Das Intro-Ende sitzt dann auf einem lokalen Downbeat.
+    in_grids = {tid: intro_raster(by_id[tid]) for tid in order}
+    out_grids = {tid: outro_raster(by_id[tid]) for tid in order}
+    intros = {}
+    for tid in order:
+        track = by_id[tid]
+        ende = mischbereich(track).intro_end_s
+        grid = in_grids[tid]
+        if grid is not track.beatgrid:
+            # Wie beim Outro: so viele lokale Takte, wie der Bereich in
+            # globalen Takten hat - auch wenn der lokale Takt laenger ist.
+            takte = _available_bars(
+                ende - track.beatgrid.first_downbeat_s, track.beatgrid.bar_length_s
+            )
+            ende = max(
+                snap_to_downbeat(ende, grid),
+                grid.first_downbeat_s + takte * grid.bar_length_s,
+            )
+        intros[tid] = ende
     gains = _gains(order, by_id)
     breaks = break_seams(order, by_id, profile)
 
@@ -310,11 +391,11 @@ def build_mixplan(
 
         out_bars = _available_bars(
             outgoing.duration_s - outros[outgoing.id],
-            outgoing.beatgrid.bar_length_s,
+            out_grids[outgoing.id].bar_length_s,
         )
         in_bars = _available_bars(
-            intros[incoming.id] - incoming.beatgrid.first_downbeat_s,
-            incoming.beatgrid.bar_length_s,
+            intros[incoming.id] - in_grids[incoming.id].first_downbeat_s,
+            in_grids[incoming.id].bar_length_s,
         )
         bars = max(1, min(choice.bars, out_bars, in_bars))
 
@@ -323,13 +404,13 @@ def build_mixplan(
     entries: list[MixEntry] = []
     for index, track_id in enumerate(order):
         track = by_id[track_id]
-        grid = track.beatgrid
         first = index == 0
         last = index == len(order) - 1
 
         if first:
-            play_from = grid.first_downbeat_s
+            play_from = track.beatgrid.first_downbeat_s
         else:
+            grid = in_grids[track_id]
             bars_in = effective[index - 1].bars
             raw = intros[track_id] - bars_in * grid.bar_length_s
             play_from = snap_to_downbeat(max(0.0, raw), grid)
@@ -341,7 +422,8 @@ def build_mixplan(
             # outros[track_id] sitzt schon auf dem Raster, eine ganze Taktzahl
             # dazu ebenfalls - hier ist nichts mehr zu snappen.
             play_to = min(
-                track.duration_s, outros[track_id] + bars_out * grid.bar_length_s
+                track.duration_s,
+                outros[track_id] + bars_out * out_grids[track_id].bar_length_s,
             )
 
         entries.append(
@@ -351,6 +433,15 @@ def build_mixplan(
                 play_to_s=play_to,
                 timestretch_ratio=ratios[track_id],
                 gain_db=gains[track_id],
+                abschnitte=_abschnitte(
+                    track,
+                    play_from,
+                    play_to,
+                    intros[track_id] if not first else None,
+                    outros[track_id] if not last else None,
+                    ratios[track_id],
+                    target_bpm,
+                ),
             )
         )
 
@@ -360,25 +451,21 @@ def build_mixplan(
         entry = entries[index]
         following = entries[index + 1]
         # Position in der Ausgabe, an der der Vorgaenger sein Outro erreicht.
-        # Beide Groessen sitzen auf dem Raster des Vorgaengers, die Differenz
-        # ist also eine ganze Taktzahl - und der Uebergang faellt auf einen
-        # Downbeat des Vorgaengers, auf dem der eingehende Track mit seinem
-        # eigenen Downbeat aufsetzt.
-        into_outro = outros[order[index]] - entry.play_from_s
-        start_at = out_start + into_outro / entry.timestretch_ratio
+        # Das Outro sitzt auf dem Raster des Vorgaengers (lokal, wenn
+        # gemessen) - und der Uebergang faellt auf einen Downbeat des
+        # Vorgaengers, auf dem der eingehende Track mit seinem eigenen
+        # Downbeat aufsetzt. Quell- in Ausgabezeit rechnet nur MixEntry um.
+        start_at = out_start + entry.ausgabe_s(outros[order[index]])
 
         # Die Dauer des Uebergangs, in Sekunden der AUSGABE - und ab hier die
         # einzige Quelle dafuer (Transition.overlap_s). Beide Seiten koennen
-        # verschieden viel hergeben, denn die Taktlaenge in der Ausgabe ist je
-        # Track bar_length_s / timestretch_ratio, und die faellt auseinander,
-        # sobald ein Track ausserhalb der Stretch-Grenze ungestreckt bleibt.
-        # Deshalb der Schnitt: was der Vorgaenger hinter seinem Outro noch
-        # klingt, und was der Nachfolger vor seinem Intro-Ende an Kopf
-        # mitbringt. Der Ueberschuss der laengeren Seite spielt fuer sich.
-        out_tail_s = (entry.play_to_s - outros[order[index]]) / entry.timestretch_ratio
-        in_head_s = (
-            intros[order[index + 1]] - following.play_from_s
-        ) / following.timestretch_ratio
+        # verschieden viel hergeben, sobald ein Track ausserhalb der
+        # Stretch-Grenze ungestreckt bleibt. Deshalb der Schnitt: was der
+        # Vorgaenger hinter seinem Outro noch klingt, und was der Nachfolger
+        # vor seinem Intro-Ende an Kopf mitbringt. Der Ueberschuss der
+        # laengeren Seite spielt fuer sich.
+        out_tail_s = entry.ausgabe_dauer_s - entry.ausgabe_s(outros[order[index]])
+        in_head_s = following.ausgabe_s(intros[order[index + 1]])
         # max(0.0, ...): ohne nutzbares Intro (intro_end_s == 0.0) kann der
         # Kopf rechnerisch negativ werden, wenn der erste Downbeat dahinter
         # liegt. Eine negative Dauer gibt es nicht - das ist eine Stossnaht,
@@ -399,10 +486,7 @@ def build_mixplan(
         )
         out_start = start_at
 
-    last_entry = entries[-1]
-    total = out_start + (
-        last_entry.play_to_s - last_entry.play_from_s
-    ) / last_entry.timestretch_ratio
+    total = out_start + entries[-1].ausgabe_dauer_s
 
     return MixPlan(
         target_length_s=total,

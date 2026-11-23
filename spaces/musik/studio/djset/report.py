@@ -20,6 +20,7 @@ from djset.contracts import (
     Profile,
     QaReport,
     Shortlist,
+    TrackAnalysis,
     UnreadableTrack,
 )
 from djset.qa import TRUE_PEAK_CEILING_DB
@@ -154,6 +155,36 @@ def _oktave_zusatz(tempo: TempoWahl, song_id: str) -> str:
     return f" (vermutlich {vermutung} gemessen)" if vermutung else ""
 
 
+# Ab dieser Streuung der Beats um das lokale Raster (in Schlaegen) traegt das
+# Raster eines Mischbereichs nicht sicher. Gemessen am echten Bestand: saubere
+# Bereiche 0.02 bis 0.06, unsichere 0.23 bis 0.30 (Fund 3 der Abnahme).
+UNRUHIG_AB_SCHLAEGEN = 0.1
+
+
+def _unruhige_naehte(plan: MixPlan, analysen: list[TrackAnalysis]) -> list[str]:
+    """Naehte, an denen ein Mischbereich unruhige Beats hat."""
+    by_id = {a.id: a for a in analysen}
+    zeilen = []
+    for t in plan.transitions:
+        gruende = []
+        aus, ein = by_id.get(t.from_track), by_id.get(t.to_track)
+        if aus is not None and aus.lokale_raster and aus.lokale_raster.outro:
+            streuung = aus.lokale_raster.outro.streuung_schlaege
+            if streuung > UNRUHIG_AB_SCHLAEGEN:
+                gruende.append(f"Outro von `{aus.id}`: {streuung:.2f} Schlaege")
+        if ein is not None and ein.lokale_raster and ein.lokale_raster.intro:
+            streuung = ein.lokale_raster.intro.streuung_schlaege
+            if streuung > UNRUHIG_AB_SCHLAEGEN:
+                gruende.append(f"Intro von `{ein.id}`: {streuung:.2f} Schlaege")
+        if gruende:
+            zeilen.append(
+                f"`{t.from_track}` nach `{t.to_track}` bei "
+                f"{int(t.start_at_s // 60)}:{int(t.start_at_s % 60):02d} - "
+                + ", ".join(gruende)
+            )
+    return zeilen
+
+
 def status_line(qa: QaReport, corrected: bool) -> str:
     """Die eine Zeile, die beantwortet, ob der Lauf ohne Nachlesen brauchbar ist.
 
@@ -204,6 +235,7 @@ def render_qa_report(
     tempo: TempoWahl | None = None,
     tonarten: dict[str, str] | None = None,
     aehnliche: list[tuple[str, str]] | None = None,
+    analysen: list[TrackAnalysis] | None = None,
 ) -> str:
     """Der Bericht als Markdown.
 
@@ -281,6 +313,17 @@ def render_qa_report(
             f"Takte des Profils."
         )
     lines.append("")
+
+    unruhig = _unruhige_naehte(plan, analysen) if analysen else []
+    if unruhig:
+        lines += ["## Unruhige Beats im Mischbereich", ""]
+        lines += [f"- {text}" for text in unruhig]
+        lines += [
+            "",
+            "Die Beat-Erkennung streut dort um mehr als "
+            f"{UNRUHIG_AB_SCHLAEGEN:.1f} Schlaege. Diese Naehte bitte gegenhoeren.",
+            "",
+        ]
 
     if tonarten is not None:
         lines += ["## Tonart-Brueche", ""]

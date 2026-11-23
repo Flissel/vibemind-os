@@ -21,6 +21,8 @@ ueberhaupt etwas daran aendern kann, steht in Complaint.kind.
 
 from pydantic import BaseModel
 
+from djset.raster import intro_raster, outro_raster
+
 from djset.contracts import (
     MAX_RATIO,
     MIN_RATIO,
@@ -103,16 +105,18 @@ def critique(
 
     # 2. Stretch-Grenzen
     for entry in plan.entries:
-        if not MIN_RATIO <= entry.timestretch_ratio <= MAX_RATIO:
-            complain(
-                "stretch",
-                f"{entry.track_id} braucht einen Stretch von "
-                f"{entry.timestretch_ratio:.3f}, erlaubt sind {MIN_RATIO} bis "
-                f"{MAX_RATIO}.",
-            )
+        for _von, _bis, ratio in entry.stuecke():
+            if not MIN_RATIO <= ratio <= MAX_RATIO:
+                complain(
+                    "stretch",
+                    f"{entry.track_id} braucht einen Stretch von "
+                    f"{ratio:.3f}, erlaubt sind {MIN_RATIO} bis {MAX_RATIO}.",
+                )
 
-    # 3. Cue-Punkte auf dem eigenen Raster
-    for entry in plan.entries:
+    # 3. Cue-Punkte auf dem eigenen Raster. Ab dem zweiten Track ist das das
+    # Raster seines Mischbereichs (djset.raster) - dasselbe, auf das der
+    # Designer den Einstieg gesetzt hat.
+    for position, entry in enumerate(plan.entries):
         track = by_id.get(entry.track_id)
         if track is None:
             complain(
@@ -120,7 +124,7 @@ def critique(
                 f"{entry.track_id} steht im Plan, aber es gibt keine Analyse dazu.",
             )
             continue
-        grid = track.beatgrid
+        grid = track.beatgrid if position == 0 else intro_raster(track)
         offset = (entry.play_from_s - grid.first_downbeat_s) / grid.bar_length_s
         if abs(offset - round(offset)) > DOWNBEAT_TOLERANCE_BARS:
             complain(
@@ -162,8 +166,12 @@ def critique(
             # folgende Naht gegen einen veralteten Nullpunkt.
             out_start = transition.start_at_s
             continue
-        out_bar_s = track.beatgrid.bar_length_s / entry.timestretch_ratio
-        elapsed_bars = (transition.start_at_s - out_start) / out_bar_s
+        # Der Einsatz in Quellzeit des Vorgaengers, gemessen an dessen
+        # Outro-Raster. MixEntry rechnet um, auch ueber Streckabschnitte.
+        grid = outro_raster(track)
+        out_bar_s = grid.bar_length_s / entry.stuecke()[-1][2]
+        einsatz = entry.quelle_s(transition.start_at_s - out_start)
+        elapsed_bars = (einsatz - grid.first_downbeat_s) / grid.bar_length_s
         drift = elapsed_bars - round(elapsed_bars)
         if abs(drift) > DOWNBEAT_TOLERANCE_BARS:
             complain(

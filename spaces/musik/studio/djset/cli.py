@@ -363,6 +363,7 @@ def build_run(
             aehnliche=similar_pairs(
                 best_setlist.order, {a.id: a for a in analyses}
             ),
+            analysen=analyses,
         ),
     )
     # Jetzt ist der Lauf fertig - und erst jetzt traegt er die Marke dafuer.
@@ -455,6 +456,15 @@ def _songs_laden(
             print(f"  messe Tempo-Abschnitte von {song.id} ...")
             try:
                 song = bestand.abschnitte_messen(song.id)
+            except Exception as error:  # noqa: BLE001 - jede Messstoerung endet gleich
+                print(f"Fehler: {song.id}: {error}", file=sys.stderr)
+                return None
+        if song.messung is not None and song.messung.lokale_raster is None:
+            # Messungen von vor Fund 3: die lokalen Raster der Mischbereiche
+            # nachholen, der Rest der Messung bleibt.
+            print(f"  messe lokale Raster von {song.id} ...")
+            try:
+                song = bestand.raster_messen(song.id)
             except Exception as error:  # noqa: BLE001 - jede Messstoerung endet gleich
                 print(f"Fehler: {song.id}: {error}", file=sys.stderr)
                 return None

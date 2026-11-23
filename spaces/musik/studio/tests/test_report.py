@@ -302,6 +302,42 @@ def _abschnitt(text: str, titel: str) -> str:
     return text.split(f"## {titel}", 1)[1].split("\n## ", 1)[0]
 
 
+def test_der_bericht_nennt_naehte_mit_unruhigen_beats(profile: Profile) -> None:
+    """Fund 3: streut die Beat-Erkennung in einem Mischbereich stark
+    (farewell-kiss im Outro: 0,30 Schlaege), traegt auch das lokale Raster
+    dort nicht sicher. Der Bericht sagt, welche Naht gegengehoert werden muss."""
+    from tests.fixtures.analyses import make_off_grid, mit_lokalem_raster
+
+    analysen = [
+        mit_lokalem_raster(make_off_grid("t0", bpm=174.0), outro=(200.0, 174.0),
+                           streuung=0.30),
+        mit_lokalem_raster(make_off_grid("t1", bpm=174.0), intro=(0.0, 174.0),
+                           outro=(200.0, 174.0)),
+        make_off_grid("t2", bpm=174.0),
+    ]
+
+    text = render_qa_report(
+        _report(-2.0, []), _shortlist(), [], None, simple_plan(), profile,
+        analysen=analysen,
+    )
+
+    abschnitt = _abschnitt(text, "Unruhige Beats im Mischbereich")
+    assert "`t0` nach `t1`" in abschnitt
+    assert "Outro von `t0`: 0.30 Schlaege" in abschnitt
+    assert "`t1` nach `t2`" not in abschnitt
+
+
+def test_ohne_unruhige_beats_kein_abschnitt(profile: Profile) -> None:
+    from tests.fixtures.analyses import make_off_grid
+
+    text = render_qa_report(
+        _report(-2.0, []), _shortlist(), [], None, simple_plan(), profile,
+        analysen=[make_off_grid(t, bpm=174.0) for t in ("t0", "t1", "t2")],
+    )
+
+    assert "Unruhige Beats" not in text
+
+
 def test_der_bericht_nennt_jeden_tonart_bruch(profile: Profile) -> None:
     """simple_plan: t0 -> t1 -> t2, beide Uebergaenge blend. t1 (8B) nach t2
     (2A) passt nicht - der Bericht nennt beide Songs und beide Tonarten, und
