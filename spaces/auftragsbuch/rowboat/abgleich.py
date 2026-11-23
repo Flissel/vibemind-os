@@ -9,6 +9,45 @@ NEU = "neu"
 _ABGELEHNT = {"dismissed", "taught"}
 
 
+def _item_texte(items: object, ziel: list[str], tiefe: int = 0) -> None:
+    if not isinstance(items, list) or tiefe > 2:
+        raise ValueError("unerwartete Form")
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("text"), str):
+            raise ValueError("unerwartete Form")
+        ziel.append(item["text"])
+        _item_texte(item.get("children") or [], ziel, tiefe + 1)
+
+
+def todo_texte(todo: object) -> tuple[list[str], list[str]]:
+    """(offene Vorschlaege, Listeneintraege samt Unterpunkten) aus der Antwort von `todo:get`.
+
+    Form nach Rowboat (`packages/shared/src/ipc.ts`, `todo.ts`): `suggestions: string[]`,
+    `list.blocks[]` mit `{kind: 'item', item: {text, children[]}}` oder `{kind: 'raw', ...}`.
+    Jede andere Form: ValueError (ohne Inhalt).
+    """
+    if not isinstance(todo, dict):
+        raise ValueError("unerwartete Form")
+    offen = todo.get("suggestions")
+    liste = todo.get("list")
+    if not isinstance(offen, list) or not all(isinstance(t, str) for t in offen) or not isinstance(liste, dict):
+        raise ValueError("unerwartete Form")
+    bloecke = liste.get("blocks")
+    if not isinstance(bloecke, list) or not all(isinstance(b, dict) for b in bloecke):
+        raise ValueError("unerwartete Form")
+    texte: list[str] = []
+    _item_texte([b.get("item") for b in bloecke if b.get("kind") == "item"], texte)
+    return list(offen), texte
+
+
+def signale_aus(antwort: object) -> list[dict]:
+    """`signals` aus der Antwort von `todo:plannerSignals`; jede andere Form: ValueError."""
+    signale = antwort.get("signals") if isinstance(antwort, dict) else None
+    if not isinstance(signale, list):
+        raise ValueError("unerwartete Form")
+    return signale
+
+
 def _kennungen(texte: list[str]) -> set[str]:
     return {k for k in map(kennung_in, texte) if k}
 

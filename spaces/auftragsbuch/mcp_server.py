@@ -24,13 +24,12 @@ import json
 import logging
 import os
 import re
-import sys
 import time
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any
 
 import anyio
 from mcp import types
@@ -45,6 +44,7 @@ from starlette.types import Receive, Scope, Send
 
 from spaces.auftragsbuch import werkzeuge
 from spaces.auftragsbuch.db import Abgelehnt, Buch, PgBuch
+from spaces.auftragsbuch.protokoll import log_einrichten
 from spaces.auftragsbuch.rowboat.rpc import RowboatRpc
 from spaces.auftragsbuch.vertrag import FormFehler, lade_auftragsarten
 
@@ -280,24 +280,6 @@ def rowboat_leser(k: Konfiguration) -> Callable[[str, object], object] | None:
     except ValueError as e:
         log.warning("rowboat-beleg=aus grund=%s", e)  # feste Texte ohne Werte
         return None
-
-
-def log_einrichten(strom: TextIO | None = None) -> None:
-    """Es schreibt nur noch der Logger `auftragsbuch`.
-
-    Bibliotheken (mcp, psycopg.pool, httpx ...) loggen ueber die Wurzel und koennten Argumente,
-    Host-Koepfe oder Datenbank-Adressen nennen. Darum bekommt `auftragsbuch` einen eigenen Handler
-    ohne Weitergabe, die Wurzel hat nur einen NullHandler und die Stufe CRITICAL.
-    """
-    eigener = logging.getLogger("auftragsbuch")
-    handler = logging.StreamHandler(strom if strom is not None else sys.stderr)
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
-    eigener.handlers[:] = [handler]
-    eigener.setLevel(logging.INFO)
-    eigener.propagate = False
-    wurzel = logging.getLogger()
-    wurzel.handlers[:] = [logging.NullHandler()]
-    wurzel.setLevel(logging.CRITICAL)
 
 
 def main(umgebung: Mapping[str, str] | None = None) -> None:

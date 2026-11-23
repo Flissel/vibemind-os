@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
+from spaces.auftragsbuch.rowboat.abgleich import todo_texte
 from spaces.auftragsbuch.rowboat.text import kennung_in
 from spaces.auftragsbuch.vertrag import Auftragsart
 
@@ -20,19 +21,9 @@ NICHT_BESTAETIGT = "nicht_bestaetigt"
 NICHT_PRUEFBAR = "nicht_pruefbar"
 
 
-def _items(bloecke: list, ziel: list[str]) -> None:
-    for item in bloecke:
-        ziel.append(item["text"])
-        _items(item.get("children") or [], ziel)
-
-
 def _kennungen_in_rowboat(leser: Callable[[str, object], object]) -> set[str]:
-    todo = leser("todo:get", None)  # Rowboat: req ist z.null()
-    if not isinstance(todo, dict):
-        raise ValueError("unerwartete Form")
-    texte: list[str] = [str(t) for t in todo.get("suggestions") or []]
-    _items([b["item"] for b in todo["list"]["blocks"] if b.get("kind") == "item"], texte)
-    return {k for k in map(kennung_in, texte) if k}
+    offen, liste = todo_texte(leser("todo:get", None))  # Rowboat: req ist z.null()
+    return {k for k in map(kennung_in, offen + liste) if k}
 
 
 def _vorschlaege_anlegen(eingabe: dict, ergebnis: dict, leser: Callable[[str, object], object]) -> str:
