@@ -214,6 +214,23 @@ def test_ohne_offene_bubble_nie_in_dieser_bubble(kontext, satz) -> None:
         "Eine Notiz „Gibtsnicht“")
 
 
+_ALTE_KARTE = {"id": "00000000-0000-4000-8000-000000000011", "title": "Sponsoren", "format": "text"}
+
+
+@pytest.mark.parametrize("satz", ["Bewerte die Notiz Sponsoren mit 50", "Formuliere Sponsoren aus"])
+def test_ohne_offene_bubble_gelten_alte_karten_nicht(satz) -> None:
+    # Lauf 9: bubble: null, aber noch die Karten der zuletzt offenen Bubble im Kontext.
+    kontext = {"space": "ideas", "bubble": None, "cards": [_ALTE_KARTE],
+               "bubbles": [{"id": "b0b1e001", "title": "Stadtfest"}]}
+    assert abk.loese(satz, kontext) == {"rueckfrage": abk.keine_bubble_offen("Sponsoren")}
+
+
+def test_ohne_offene_bubble_gilt_alte_auswahl_nicht() -> None:
+    kontext = {"space": "ideas", "bubble": None, "cards": [_ALTE_KARTE],
+               "selection": [_ALTE_KARTE["id"]], "last_id": _ALTE_KARTE["id"]}
+    assert abk.loese("Formuliere das aus", kontext) == {"rueckfrage": abk.keine_bubble_offen("")}
+
+
 @pytest.mark.parametrize("bubble", [{"id": None, "title": "Stadtfest"}, {"title": "Stadtfest"},
                                     {"id": "", "title": "Stadtfest"}])
 @pytest.mark.parametrize("satz", ["Bewerte die Notiz Sponsoren mit 50", "Was steht bei Sponsoren?",

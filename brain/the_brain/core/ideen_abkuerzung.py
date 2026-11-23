@@ -200,7 +200,16 @@ def _wahl(text: str, kandidaten: list[dict]) -> Optional[int]:
     return -1 if len(kern.split()) <= 3 and "?" not in text else None
 
 
+def _bubble_zu(kontext: dict) -> bool:
+    """Die App sagt ausdruecklich: keine Bubble offen (``bubble: null``)."""
+    return "bubble" in kontext and kontext["bubble"] is None
+
+
 def _karten(kontext: dict) -> list[dict]:
+    if _bubble_zu(kontext):
+        # Lauf 9: Nach Rowboat -> Ideen kann die App noch die Karten der zuletzt offenen
+        # Bubble mitschicken. Ohne offene Bubble ist keine Karte zu sehen: nie damit aufrufen.
+        return []
     karten = kontext.get("cards")
     return [k for k in karten if isinstance(k, dict) and ist_kennung(k.get("id"))] if isinstance(karten, list) else []
 
@@ -230,6 +239,9 @@ def _karte(name: str, kontext: dict) -> dict:
     if wort in ("das", "die", "sie", "es", "diese", "dies", "die letzte", "die letzte notiz", "die letzte karte",
                 "die notiz", "die karte", "diese notiz", "diese karte", "die markierte", "die auswahl",
                 "dieser notiz", "dieser karte", "der notiz", "der karte", "dem", "der", "ihr", "ihm"):
+        if _bubble_zu(kontext):
+            # Auswahl und letzte Karte stammen dann aus einer Bubble, die nicht mehr offen ist.
+            raise _Rueckfrage(keine_bubble_offen(""))
         auswahl = [i for i in kontext.get("selection") or [] if ist_kennung(i)]
         if len(auswahl) == 1:
             return nach_id.get(auswahl[0], {"id": auswahl[0], "title": ""})
@@ -271,6 +283,8 @@ def _karte(name: str, kontext: dict) -> dict:
             raise _Rueckfrage(f"Zu „{genannt}“ passen {len(treffer)} Notizen: "
                               f"{_aufzaehlung([k.get('title') for k in treffer])}. Welche meinst du?",
                               kandidaten=treffer, name=wort)
+    if _bubble_zu(kontext):
+        raise _Rueckfrage(keine_bubble_offen(genannt))
     roh = kontext.get("cards")
     if isinstance(roh, list) and any(
             isinstance(k, dict) and not ist_kennung(k.get("id")) and _normal(k.get("title")) == wort for k in roh):
@@ -292,8 +306,9 @@ def _karte(name: str, kontext: dict) -> dict:
 
 def keine_bubble_offen(genannt: str) -> str:
     """Satz, wenn eine Notiz genannt ist, aber keine Bubble offen ist (``bubble`` fehlt oder null)."""
-    name = f" „{genannt}“" if genannt else ""
-    return f"Es ist keine Bubble offen. Öffne die Bubble mit der Notiz{name} und sag es noch einmal."
+    if not genannt:
+        return "Es ist keine Bubble offen. Öffne die Bubble mit der Notiz und sag es noch einmal."
+    return f"Es ist keine Bubble offen. Öffne die Bubble mit der Notiz „{genannt}“ und sag es noch einmal."
 
 
 def _bubble_ohne_kennung(kontext: dict) -> bool:
