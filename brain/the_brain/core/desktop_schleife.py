@@ -18,7 +18,9 @@ import json
 import time
 from typing import Any, Callable, Mapping, Optional
 
-from .desktop_schleife_contract import AGENT, ANWEISUNG, AktionAbgelehnt, ZIEL_SERVER, pruefe_aktion
+from .desktop_schleife_contract import (
+    AGENT, ANWEISUNG, AktionAbgelehnt, AufrufAbgelehnt, ZIEL_SERVER, pruefe_aktion, pruefe_aufruf,
+)
 
 MAX_RUNDEN = 8
 # Die Aufgabe laeuft im Werkzeug-Dienst nach 600 s ab. Die Schleife hoert vorher auf, damit
@@ -75,10 +77,19 @@ def fuehre_aufgabe(
     WerkzeugFehler. ``agent(nachricht)`` ist EIN Lauf von brain-desktop ohne Werkzeuge.
     ``budget_rest()`` sagt, wie viele Laeufe der Agent heute noch hat.
     """
+    roh = werkzeug
+
+    def werkzeug(name: str, argumente: dict) -> Any:  # noqa: F811 - jeder feste Aufruf geht durch den Vertrag
+        try:
+            return roh(name, pruefe_aufruf(name, argumente))
+        except AufrufAbgelehnt as fehler:
+            raise WerkzeugFehler(f"vertrag: {fehler}") from None
+
     start = uhr()
     laeufe = 0
     ablehnungen = 0
     abgelehnt: Optional[str] = None
+    vorher: Optional[str] = None  # Aktion des unmittelbar vorher ausgefuehrten Schritts
 
     def abschluss(zustand: str, grund: str, text: str, *, schon_beendet: bool = False) -> dict[str, Any]:
         if not schon_beendet:
@@ -139,9 +150,10 @@ def fuehre_aufgabe(
             return abschluss("fehlgeschlagen", "agent_nicht_erreichbar", type(fehler).__name__)
 
         try:
-            aktion = pruefe_aktion(antwort, auftrag=auftrag, elemente=elemente)
+            aktion = pruefe_aktion(antwort, auftrag=auftrag, elemente=elemente, vorher=vorher)
         except AktionAbgelehnt as fehler:
             ablehnungen += 1
+            vorher = None
             abgelehnt = str(fehler)
             vermerk(f"Runde {runde}: Vorschlag abgelehnt ({fehler.code})")
             if ablehnungen >= MAX_ABLEHNUNGEN:
@@ -166,6 +178,7 @@ def fuehre_aufgabe(
         schritt = (ergebnis or {}).get("schritt") or {}
         if schritt.get("ok") is False:
             return abschluss("fehlgeschlagen", "schritt_fehlgeschlagen", str(schritt.get("meldung") or ""))
+        vorher = aktion["schritt"]["action"]
 
     return abschluss("fehlgeschlagen", "rundengrenze", f"Nach {runden} Runden nicht fertig.")
 

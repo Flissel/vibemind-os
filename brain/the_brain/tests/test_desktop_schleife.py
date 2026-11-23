@@ -43,8 +43,12 @@ def test_gueltige_aktionen_werden_zu_argumenten_des_festen_aufrufs():
         "schritt": {"action": "click", "x": 100, "y": 200, "why": "öffnen"}}  # Punkt des gelesenen Elements
     assert pruefe(j(aktion="type", text="Hallo Welt", warum="Text")) == {
         "schritt": {"action": "type", "text": "Hallo Welt", "why": "Text"}}
-    assert pruefe(j(aktion="key", key="Enter", warum="ok"))["schritt"]["key"] == "enter"
-    assert pruefe(j(aktion="hotkey", keys=["Ctrl", "S"], warum="sichern"))["schritt"]["keys"] == ["ctrl", "s"]
+    enter = pruefe_aktion(j(aktion="key", key="Enter", warum="ok"), auftrag=AUFTRAG, elemente=ELEMENTE, vorher="type")
+    assert enter["schritt"]["key"] == "enter"  # "Öffne" verlangt Ausloesen, vorher wurde getippt
+    assert pruefe(j(aktion="key", key="Tab", warum="weiter"))["schritt"]["key"] == "tab"
+    sichern = pruefe_aktion(j(aktion="hotkey", keys=["Ctrl", "S"], warum="sichern"),
+                            auftrag=AUFTRAG + " und speichere", elemente=ELEMENTE)
+    assert sichern["schritt"]["keys"] == ["ctrl", "s"]
     assert pruefe(j(aktion="scroll", direction="down", warum="weiter"))["schritt"]["amount"] == 3
     assert pruefe(j(aktion="wait", seconds=1, warum="laden"))["schritt"]["action"] == "wait"
     assert pruefe(j(aktion="fertig", ergebnis="steht da")) == {"ende": "fertig", "text": "steht da"}
@@ -86,6 +90,80 @@ def test_ein_heikles_ziel_geht_nur_wenn_der_auftrag_es_woertlich_verlangt():
     assert pruefe_aktion(klick, auftrag="Bitte mein Konto löschen", elemente=ELEMENTE)["schritt"]["action"] == "click"
     with pytest.raises(AktionAbgelehnt):
         pruefe_aktion(klick, auftrag="Zeig mir mein Konto", elemente=ELEMENTE)
+
+
+# Sicherheitsbefund 1: heikle Staemme als Wort, nicht als beliebiger Teil des Textes.
+@pytest.mark.parametrize(
+    ("ziel", "auftrag", "erwartet"),
+    [
+        ("Senden", "Antworte dem Absender mit Hallo", "send"),      # Stamm mitten im Wort zaehlt nicht
+        ("Senden", "Sende die Antwort", None),
+        ("Absenden", "Sende die Antwort ab", None),                 # Teilstamm "send" deckt "absend"
+        ("Absenden", "absenden", None),
+        ("Senden und Löschen", "Sende die Antwort", "lösch"),
+        ("Installieren", "Öffne den Installationsordner", None),     # "install" ist Wortanfang dort
+        ("Installieren", "Öffne den Editor", "install"),
+        ("Jetzt ausführen", "Öffne den Editor", "ausführ"),
+        ("Zulassen", "Öffne den Editor", "zulass"),
+        ("Allow", "open the editor", "allow"),
+        ("Akzeptieren", "Öffne den Editor", "akzept"),
+        ("Freigeben", "Öffne den Editor", "freigeb"),
+        ("Download", "Öffne den Editor", "download"),
+        ("Ja", "Öffne den Editor", "ja"),
+        ("OK", "Öffne den Editor", "ok"),
+        ("Yes", "open the editor", "yes"),
+        ("Run", "open the editor", "run"),
+        ("PayPal", "Öffne den Editor", "pay"),
+        ("Oktober", "Öffne den Kalender", None),                     # "ok" nur als ganzes Wort
+        ("Brunnen", "Öffne den Brunnen", None),                      # "run" nur als ganzes Wort
+        ("Display", "Öffne Display", None),                          # "pay" nur am Wortanfang
+        ("Endgültiglöschen", "Öffne den Editor", "lösch"),
+    ],
+)
+def test_heikle_staemme_werden_als_wort_geprueft(ziel, auftrag, erwartet):
+    from core.desktop_schleife_contract import heikler_stamm
+    assert heikler_stamm(ziel, auftrag) == erwartet
+
+
+# Sicherheitsbefund 2: Tasten umgehen die Pruefung der Klickziele nicht.
+@pytest.mark.parametrize("taste", ["enter", "space"])
+def test_ausloesetasten_nur_nach_klick_oder_tippen_und_nur_mit_absicht(taste):
+    antwort = j(aktion="key", key=taste, warum="bestaetigen")
+    for vorher in (None, "scroll", "wait", "key", "hotkey"):
+        with pytest.raises(AktionAbgelehnt) as fehler:
+            pruefe_aktion(antwort, auftrag="Suche nach Wetter", elemente=ELEMENTE, vorher=vorher)
+        assert fehler.value.code == "taste_ohne_vorlauf"
+    with pytest.raises(AktionAbgelehnt) as fehler:
+        pruefe_aktion(antwort, auftrag="Schreibe Hallo Welt", elemente=ELEMENTE, vorher="type")
+    assert fehler.value.code == "taste_nicht_verlangt"
+    for auftrag in ("Suche nach Wetter", "Sende Hallo", "Speichere die Datei", "Bestätige mit Enter"):
+        assert pruefe_aktion(antwort, auftrag=auftrag, elemente=ELEMENTE, vorher="type")["schritt"]["key"] == taste
+
+
+@pytest.mark.parametrize(
+    ("keys", "verlangt", "nicht_verlangt"),
+    [
+        (["ctrl", "v"], "Füge den Text ein", "Öffne den Editor"),     # Zwischenablage kann vom Bildschirm stammen
+        (["ctrl", "c"], "Kopiere die Zeile", "Öffne den Editor"),
+        (["ctrl", "a"], "Markiere alles", "Öffne den Editor"),
+        (["ctrl", "s"], "Speichere die Datei", "Öffne den Editor"),
+        (["ctrl", "z"], "Mach das rückgängig", "Öffne den Editor"),
+        (["ctrl", "f"], "Suche Hallo", "Öffne den Editor"),
+        (["ctrl", "n"], "Neues Dokument", "Öffne den Editor"),
+    ],
+)
+def test_tastenkombinationen_nur_wenn_der_auftrag_ihren_zweck_nennt(keys, verlangt, nicht_verlangt):
+    antwort = j(aktion="hotkey", keys=keys, warum="x")
+    assert pruefe_aktion(antwort, auftrag=verlangt, elemente=ELEMENTE)["schritt"]["keys"] == keys
+    with pytest.raises(AktionAbgelehnt) as fehler:
+        pruefe_aktion(antwort, auftrag=nicht_verlangt, elemente=ELEMENTE)
+    assert fehler.value.code == "taste_nicht_verlangt"
+
+
+def test_harmlose_tasten_brauchen_keinen_vorlauf():
+    for taste in ("tab", "escape", "backspace", "up", "down", "pagedown", "home"):
+        antwort = j(aktion="key", key=taste, warum="x")
+        assert pruefe_aktion(antwort, auftrag=AUFTRAG, elemente=ELEMENTE)["schritt"]["key"] == taste
 
 
 # ─── Schleife gegen den echten Werkzeug-Dienst ───────────────────────────────
@@ -204,6 +282,21 @@ def test_ein_verleiteter_agent_richtet_nichts_an(echt):
         ("note", "Runde 2: Vorschlag abgelehnt (text_nicht_im_auftrag)"),
     ]
     assert "NICHT AUSGEFUEHRT: ziel_heikel" in echt.fragen[1]
+
+
+def test_enter_zaehlt_nur_direkt_nach_einem_ausgefuehrten_klick_oder_tippen(echt):
+    kennung = echt.start()  # AUFTRAG enthaelt "Öffne", also eine Absicht zum Ausloesen
+    ergebnis = echt.lauf(kennung, echt.agent_mit(
+        j(aktion="key", key="enter", warum="bestaetigen"),           # Runde 1: kein Vorlauf
+        j(aktion="type", text="Hallo Welt", warum="Text"),
+        j(aktion="key", key="enter", warum="bestaetigen"),           # direkt nach Tippen: erlaubt
+        j(aktion="key", key="enter", warum="nochmal"),               # nach Enter: kein Vorlauf
+        j(aktion="fertig", ergebnis="steht da"),
+    ))
+    assert (ergebnis["zustand"], ergebnis["grund"]) == ("fehlgeschlagen", "vorschlaege_abgelehnt")
+    buch = echt.buch(kennung)
+    assert [s["art"] for s in buch["schritte"]] == ["note", "type", "key", "note"]
+    assert buch["schritte"][-1]["angaben"]["notiz"] == "Runde 4: Vorschlag abgelehnt (taste_ohne_vorlauf)"
 
 
 def test_nach_einer_ablehnung_darf_der_agent_es_richtig_machen(echt):
@@ -380,3 +473,93 @@ def test_ohne_brauchbaren_tagesrest_startet_keine_runde(echt, tagesrest):
 def test_eine_unlesbare_startantwort_ist_ein_fehler_des_hops():
     ok, _, fehler = nach_aufgabenstart("kaputt", herkunft="getippt", tagesrest=5, bindungen=lambda tagesrest: {})
     assert ok is False and "nicht lesbar" in fehler
+
+
+
+# ─── Vertrag der festen Aufrufe ───────────────────────────────────────────────
+
+from core.desktop_schleife_contract import (  # noqa: E402
+    NEU_FREIZUGEBEN, SCHLEIFEN_WERKZEUGE, AufrufAbgelehnt, pruefe_aufruf,
+)
+
+KENNUNG = "dt-20261123-120000-abcdef"
+
+
+def test_die_schleife_ruft_nur_diese_fuenf_werkzeuge_und_zwei_davon_sind_neu(echt):
+    assert SCHLEIFEN_WERKZEUGE == (
+        "desktop_task_status", "desktop_elements", "desktop_screen_read", "desktop_task_step", "desktop_task_finish")
+    assert NEU_FREIZUGEBEN == ("desktop_elements", "desktop_task_step")
+    angeboten = {w["name"] for w in echt.server.TOOLS}
+    assert set(SCHLEIFEN_WERKZEUGE) <= angeboten
+    # Ein ganzer Lauf benutzt nichts ausserhalb der Liste (der Start kommt vom Plan-Ausfuehrer).
+    kennung = echt.start()
+    echt.lauf(kennung, echt.agent_mit(
+        j(aktion="click", x=100, y=200, ziel="Editor", warum="öffnen"), "kein json",
+        j(aktion="fertig", ergebnis="ok")))
+    assert set(echt.aufrufe) - {"desktop_task_start"} <= set(SCHLEIFEN_WERKZEUGE)
+
+
+@pytest.mark.parametrize(
+    ("werkzeug", "argumente"),
+    [
+        ("desktop_task_status", {"task_id": KENNUNG}),
+        ("desktop_elements", {}),
+        ("desktop_screen_read", {}),
+        ("desktop_task_finish", {"task_id": KENNUNG, "state": "fertig", "result": "ok"}),
+        ("desktop_task_step", {"task_id": KENNUNG, "action": "click", "x": 1, "y": 2, "why": "w"}),
+        ("desktop_task_step", {"task_id": KENNUNG, "action": "type", "text": "Hallo", "why": "w"}),
+        ("desktop_task_step", {"task_id": KENNUNG, "action": "key", "key": "enter", "why": "w"}),
+        ("desktop_task_step", {"task_id": KENNUNG, "action": "hotkey", "keys": ["ctrl", "s"], "why": "w"}),
+        ("desktop_task_step", {"task_id": KENNUNG, "action": "scroll", "direction": "down", "amount": 3, "why": "w"}),
+        ("desktop_task_step", {"task_id": KENNUNG, "action": "wait", "seconds": 1, "why": "w"}),
+        ("desktop_task_step", {"task_id": KENNUNG, "action": "note", "text": "Runde 1"}),
+    ],
+)
+def test_erlaubte_aufrufe_gehen_unveraendert_durch_und_der_werkzeug_dienst_kennt_ihre_form(werkzeug, argumente, echt):
+    assert pruefe_aufruf(werkzeug, argumente) == argumente
+    schema = next(w for w in echt.server.TOOLS if w["name"] == werkzeug)["inputSchema"]
+    assert set(argumente) <= set(schema.get("properties", {}))
+
+
+@pytest.mark.parametrize(
+    ("werkzeug", "argumente"),
+    [
+        ("desktop_find", {"text": "x"}),
+        ("desktop_screenshot", {}),
+        ("desktop_task_start", {"task": "neu"}),
+        ("handoff_shell", {"command": "dir"}),
+        ("desktop_elements", {"max": 500}),
+        ("desktop_task_status", {}),
+        ("desktop_task_status", {"task_id": "../x"}),
+        ("desktop_task_status", {"task_id": KENNUNG + chr(10)}),
+        ("desktop_task_finish", {"task_id": KENNUNG, "state": "geloescht", "result": ""}),
+        ("desktop_task_finish", {"task_id": KENNUNG, "state": "fertig"}),
+        ("desktop_task_step", {"task_id": KENNUNG, "action": "shell", "command": "dir", "why": "w"}),
+        ("desktop_task_step", {"task_id": KENNUNG, "action": "click", "x": 1, "y": 2, "why": "w", "button": "right"}),
+        ("desktop_task_step", {"task_id": KENNUNG, "action": "click", "x": "1", "y": 2, "why": "w"}),
+        ("desktop_task_step", {"task_id": KENNUNG, "action": "click", "x": 1, "y": 2}),
+        ("desktop_task_step", {"task_id": KENNUNG, "action": "key", "key": "f4", "why": "w"}),
+        ("desktop_task_step", {"task_id": KENNUNG, "action": "hotkey", "keys": ["win", "r"], "why": "w"}),
+        ("desktop_task_step", {"task_id": KENNUNG, "action": "type", "text": "x" * 501, "why": "w"}),
+        ("desktop_task_step", {"task_id": KENNUNG, "action": "scroll", "direction": "left", "amount": 3, "why": "w"}),
+        ("desktop_task_step", {"task_id": KENNUNG, "action": "wait", "seconds": 60, "why": "w"}),
+        ("desktop_task_step", {"task_id": KENNUNG, "action": "note", "text": ""}),
+        ("desktop_task_step", ["task_id", KENNUNG]),
+    ],
+)
+def test_alles_andere_erreicht_den_werkzeug_dienst_nicht(werkzeug, argumente):
+    with pytest.raises(AufrufAbgelehnt):
+        pruefe_aufruf(werkzeug, argumente)
+
+
+def test_in_der_schleife_geht_jeder_feste_aufruf_durch_den_vertrag(echt, monkeypatch):
+    import core.desktop_schleife as schleife
+
+    gesehen = []
+    echter = schleife.pruefe_aufruf
+    monkeypatch.setattr(schleife, "pruefe_aufruf", lambda name, argumente: gesehen.append(name) or echter(name, argumente))
+    kennung = echt.start()
+    echt.aufrufe.clear()
+    echt.lauf(kennung, echt.agent_mit(
+        j(aktion="type", text="Hallo Welt", warum="schreiben"), j(aktion="fertig", ergebnis="ok")))
+    assert gesehen == echt.aufrufe and "desktop_task_step" in gesehen
