@@ -322,7 +322,8 @@ Neu sind die Migration `101` (Empfang für Aufträge des Gehirns, Rolle `rowboat
 `rowboat_abholer`, zwei enge Rowboat-Schlüssel und der zweite Dienst `rowboat-abholer` im Compose-Projekt
 `auftragsbuch` (dasselbe Abbild). Beide Dienste laufen ab hier im Host-Netz des Mini-PC, denn Rowboat lauscht nur auf
 `127.0.0.1:3220`: Der Dienst `auftragsbuch` verlässt das Netz `debian_default`, bindet selbst nur `127.0.0.1:8172` und
-erreicht die Datenbank über ihren Port am Host; seine DSN wird darum neu geschrieben (sie steht nur in `laufzeit/dsn`).
+erreicht die Datenbank über ihren Port am Host; in seiner DSN (`laufzeit/dsn`) ändern sich darum nur Host und Port,
+Benutzer und Passwort bleiben.
 Die Freigabe von `tailscale serve` zeigt weiter auf `http://127.0.0.1:8172` und wird nicht angefasst. Die Checkouts
 ~/vibemind-os und ~/sales-claw auf dem Mini-PC bleiben unberührt, Dienste werden nur namentlich gebaut, gestartet und
 entfernt, und es läuft kein Aufräumbefehl von Docker. Die Migration 098_auftragsbuch_video.sql wird auch hier nicht
@@ -347,9 +348,10 @@ Datenbank auf dem Mini-PC lauscht. Die Befehle auf dem Mini-PC laufen wie oben i
    dort ein erwartetes falsches Rot (die Probe rollt zurück, kein Schaden), aber kein Grund, 101 auszurollen: Nur eine
    Probe mit `PROBE OK (zurueckgerollt)` gilt. Dieser Schritt liest nur und ändert nichts.
 3. **Eigenes Ja des Betreibers:** Sicherung, auf dem Mini-PC: das Schema `auftrag` mit
-   `docker exec <db-container> pg_dump -U supabase_admin -d <db-name> -n auftrag > ~/backups/auftrag-vor-101-<datum>.sql`
-   und die Einstellungen mit `cp -p laufzeit/werte.env laufzeit/werte.env.vor-stufe-4`. Beides schreibt nur Dateien,
-   die Datenbank bleibt unverändert.
+   `docker exec <db-container> pg_dump -U supabase_admin -d <db-name> -n auftrag > ~/backups/auftrag-vor-101-<datum>.sql`,
+   die Einstellungen mit `cp -p laufzeit/werte.env laufzeit/werte.env.vor-stufe-4` und die DSN des Dienstes mit
+   `cp -p laufzeit/dsn laufzeit/dsn.vor-stufe-4` (behält Modus 600). Alles schreibt nur Dateien, die Datenbank bleibt
+   unverändert.
 4. **Eigenes Ja des Betreibers:** Probe-Lauf auf der echten Datenbank: `101` und `verify_101` in **einer**
    Transaktion mit `ROLLBACK`, am PC in einem Checkout auf `<commit-2>` mit den `SUPABASE_*`-Werten wie bei `100`:
    `python -m spaces.marketing.scripts.migration_probe spaces/marketing/db/101_auftragsbuch_empfang.sql spaces/marketing/db/verify_101.sql`.
@@ -383,9 +385,11 @@ Datenbank auf dem Mini-PC lauscht. Die Befehle auf dem Mini-PC laufen wie oben i
     eigenen Server-Bündels `rowboat-server.cjs` an (Quelle `apps/x/apps/server/src/scoped-key-cli.ts`); es speichert
     nur den sha256 in `scoped-keys.json` in seinem Arbeitsordner und liest die Datei bei jeder Anfrage, ein Widerruf
     wirkt darum ohne Neustart. Das Anlegen gibt den Schlüssel nur auf stdout aus, sonst nirgends.
-    `docker exec rowboat-headless-rowboat-server-1 grep -c scoped-key rowboat-server.cjs` muss mindestens `1` liefern;
-    bei `0` anhalten: Ein älteres Bündel kennt den Unterbefehl nicht und startete statt dessen einen zweiten Server.
-    Dann `docker exec rowboat-headless-rowboat-server-1 node rowboat-server.cjs scoped-key list`: zeigt Namen und
+    Zuerst `docker exec rowboat-headless-rowboat-server-1 grep -cF '[scoped-key] fatal:' rowboat-server.cjs`: Die
+    Zeichenkette steht nur im Zweig, der den Unterbefehl annimmt (Quelle `apps/x/apps/server/src/standalone.ts`), nicht
+    im Dateinamen `scoped-keys.json`, den auch ältere Bündel kennen. Er muss mindestens `1` liefern; bei `0` anhalten
+    und keinen `scoped-key`-Befehl aufrufen: Ein älteres Bündel kennt den Unterbefehl nicht und startete statt dessen
+    einen zweiten Rowboat-Server im laufenden Container gegen `/data`. Dann `docker exec rowboat-headless-rowboat-server-1 node rowboat-server.cjs scoped-key list`: zeigt Namen und
     Kanäle, nie einen Schlüssel. Stehen `auftragsbuch-beleg` oder `gehirn-abholer` schon da, anhalten und klären
     (`add` ersetzt einen gleichnamigen Schlüssel, der alte wird sofort ungültig). Dieser Schritt liest nur und ändert
     nichts.
@@ -407,16 +411,19 @@ Datenbank auf dem Mini-PC lauscht. Die Befehle auf dem Mini-PC laufen wie oben i
 14. **Eigenes Ja des Betreibers:** Abbild mit neuem Tag bauen, auf dem Mini-PC:
     `AUFTRAGSBUCH_TAG=<Kurz-SHA-2> docker compose build auftragsbuch`. Der laufende Dienst läuft mit `<AUSGANG-TAG>`
     weiter; der Abholer nutzt dasselbe Abbild und wird nie gezogen (`pull_policy: never`).
-15. **Eigenes Ja des Betreibers:** DSN des Dienstes für das Host-Netz, auf dem Mini-PC: `bash deploy/db_zugang.sh`.
-    Das Skript setzt ein neues Passwort für `auftragsbuch_dienst` und schreibt `laufzeit/dsn` mit Host und Port aus
-    Schritt 8. Offene Verbindungen des laufenden Dienstes bleiben gültig, neue scheitern bis Schritt 16; darum
-    Schritt 16 gleich danach.
+15. **Eigenes Ja des Betreibers:** DSN des Dienstes für das Host-Netz, auf dem Mini-PC:
+    `python3 deploy/db_zugang.py dsn-ort`. Der Befehl schreibt in `laufzeit/dsn` nur Host und Port aus Schritt 8 um,
+    in einem Zug und mit Modus 600; Benutzer, Passwort und Datenbank bleiben, die Datenbank selbst wird nicht
+    angefasst und nichts wird ausgegeben außer einer Zeile ohne Werte. Fehlt die Kopie aus Schritt 3, legt er
+    `laufzeit/dsn.vor-stufe-4` vorher an; eine vorhandene Kopie bleibt unverändert. Der laufende Dienst liest die DSN
+    erst bei seinem nächsten Start und arbeitet bis Schritt 16 unverändert weiter.
 16. **Eigenes Ja des Betreibers:** Dienst `auftragsbuch` neu starten, im Host-Netz, auf dem Mini-PC:
     `AUFTRAGSBUCH_TAG=<Kurz-SHA-2> docker compose up -d --no-deps auftragsbuch`. Voraussetzung: Die Dateien aus
     Schritt 11 bis 13 sind da (fehlt eine eingebundene Datei, legte Docker an ihrer Stelle einen Ordner an). Prüfen:
     die beiden `curl` aus Stufe 2, Schritt 6 liefern `200` und `401`; `ss -ltn 'sport = :8172'` zeigt nur
     `127.0.0.1:8172` (nie `0.0.0.0` oder `*`); `tailscale serve status` zeigt 8172 unverändert wie in Schritt 1. Endet
-    der Start mit `auftragsbuch: Datenbank nicht erreichbar (<Typ>)`, anhalten und den Rückweg gehen.
+    der Start mit `auftragsbuch: Datenbank nicht erreichbar (<Typ>)` oder scheitert eine dieser Prüfungen, anhalten
+    und den kurzen Rückweg unten gehen (nur der Dienst zurück auf den Stand von Schritt 1).
 17. **Eigenes Ja des Betreibers:** `rowboat-abholer` namentlich starten, auf dem Mini-PC:
     `AUFTRAGSBUCH_TAG=<Kurz-SHA-2> docker compose up -d rowboat-abholer`. Endet er mit
     `rowboat-abholer: <Meldung>` (z. B. `ABHOLER_LADEN fehlt` oder `Datenbank nicht erreichbar (<Typ>)`), anhalten.
@@ -436,6 +443,21 @@ Datenbank auf dem Mini-PC lauscht. Die Befehle auf dem Mini-PC laufen wie oben i
     Danach liefert `printf '%s\n' 'SELECT an, art, version FROM auftrag.brain_arten ORDER BY 1;' | <psql>` genau
     `brain | probe | 1` und `rowboat | vorschlaege_anlegen | 2`.
 
+**Kurzer Rückweg, falls Schritt 16 scheitert:**
+
+- **Eigenes Ja des Betreibers:** den Bau-Ordner zurück auf `<AUSGANG-TAG>` heben, vom PC aus:
+  `git -c core.autocrlf=false archive <AUSGANG-TAG> spaces/__init__.py spaces/auftragsbuch spaces/_contract | ssh <mini-pc> 'tar -x -C ~/auftragsbuch-build'`
+  (dann gilt wieder die Compose-Datei mit dem Netz `debian_default`).
+- **Eigenes Ja des Betreibers:** die Einstellungen zurück, auf dem Mini-PC:
+  `cp -p laufzeit/werte.env.vor-stufe-4 laufzeit/werte.env`.
+- **Eigenes Ja des Betreibers:** die DSN des Dienstes zurück, auf dem Mini-PC (dasselbe Passwort, kein Eingriff in
+  die Datenbank): `cp -p laufzeit/dsn.vor-stufe-4 laufzeit/dsn`.
+- **Eigenes Ja des Betreibers:** nur den Dienst `auftragsbuch` mit dem Ausgangs-Abbild starten, auf dem Mini-PC:
+  `AUFTRAGSBUCH_TAG=<AUSGANG-TAG> docker compose up -d --no-deps auftragsbuch`. Prüfen wie in Stufe 2, Schritt 6.
+
+Migration `101`, Rolle und DSN des Abholers und die beiden Schlüssel stören den alten Dienst nicht; sie bleiben, bis
+der Fehler geklärt ist, oder gehen mit dem ganzen Rückweg.
+
 **Rückweg:**
 
 - **Eigenes Ja des Betreibers:** Freischaltung zurücknehmen (neue Aufträge an Rowboat lehnt die Datenbank danach mit
@@ -449,15 +471,9 @@ Datenbank auf dem Mini-PC lauscht. Die Befehle auf dem Mini-PC laufen wie oben i
   `rm laufzeit/rowboat-abholer-schluessel`.
 - **Eigenes Ja des Betreibers:** die Anmelde-Rolle des Abholers entfernen:
   `printf '%s\n' 'DROP ROLE IF EXISTS rowboat_abholer;' | <psql>`, danach `rm laufzeit/abholer-dsn`.
-- **Eigenes Ja des Betreibers:** den Bau-Ordner zurück auf `<AUSGANG-TAG>` heben, vom PC aus:
-  `git -c core.autocrlf=false archive <AUSGANG-TAG> spaces/__init__.py spaces/auftragsbuch spaces/_contract | ssh <mini-pc> 'tar -x -C ~/auftragsbuch-build'`
-  (dann gilt wieder die Compose-Datei mit dem Netz `debian_default`).
-- **Eigenes Ja des Betreibers:** die Einstellungen zurück, auf dem Mini-PC:
-  `cp -p laufzeit/werte.env.vor-stufe-4 laufzeit/werte.env`.
-- **Eigenes Ja des Betreibers:** die DSN des Dienstes wieder für das Netz `debian_default`, auf dem Mini-PC:
-  `bash deploy/db_zugang.sh` (setzt ein neues Passwort, schreibt `laufzeit/dsn` mit den alten Werten).
-- **Eigenes Ja des Betreibers:** den Dienst mit dem Ausgangs-Abbild starten, auf dem Mini-PC:
-  `AUFTRAGSBUCH_TAG=<AUSGANG-TAG> docker compose up -d --no-deps auftragsbuch`. Prüfen wie in Stufe 2, Schritt 6.
+- **Eigenes Ja des Betreibers:** den Dienst `auftragsbuch` zurück auf den Stand von Schritt 1: die vier Punkte des
+  kurzen Rückwegs oben in ihrer Reihenfolge (Bau-Ordner, Einstellungen, DSN aus `laufzeit/dsn.vor-stufe-4`, Start nur
+  dieses Dienstes); entfällt, wenn der kurze Rückweg schon gegangen ist.
 - **Eigenes Ja des Betreibers:** den Beleg-Schlüssel widerrufen:
   `docker exec rowboat-headless-rowboat-server-1 node rowboat-server.cjs scoped-key remove auftragsbuch-beleg`,
   danach `rm laufzeit/rowboat-beleg-schluessel`.
@@ -469,7 +485,7 @@ Datenbank auf dem Mini-PC lauscht. Die Befehle auf dem Mini-PC laufen wie oben i
 Kern (`auftrag._empfang_*`), Sales-Hüllen, `auftrag._vergeben` und `auftrag.brain_lesen` aus `101` bleiben: Sales
 holt seine Aufträge dort mit demselben Verhalten wie vorher, und Aufträge des Gehirns vergibt der alte Weg nie. Ein
 Zurück auf den Stand von `100` bräuchte die Datei der Sales-Sitzung und ist hier nicht vorgesehen. Die Dateien unter
-`~/backups/` und `laufzeit/werte.env.vor-stufe-4` bleiben liegen.
+`~/backups/`, `laufzeit/werte.env.vor-stufe-4` und `laufzeit/dsn.vor-stufe-4` bleiben liegen.
 
 ## Offene Punkte für Stufe 2
 

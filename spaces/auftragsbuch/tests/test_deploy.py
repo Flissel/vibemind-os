@@ -9,6 +9,7 @@ haelt seine Regeln ein.
 from __future__ import annotations
 
 import re
+import shlex
 import tomllib
 from pathlib import Path
 
@@ -553,8 +554,10 @@ def test_runbook_stufe_4_schluessel_nie_sichtbar_und_eng() -> None:
     punkte = _stufe_4()
     nachsehen = _einer(punkte, "CLI nachsehen")
     assert _LESEND in nachsehen and "scoped-key add" not in nachsehen
-    assert "`docker exec rowboat-headless-rowboat-server-1 grep -c scoped-key rowboat-server.cjs`" in nachsehen
+    assert f"`{_WAECHTER}`" in nachsehen
     assert "`docker exec rowboat-headless-rowboat-server-1 node rowboat-server.cjs scoped-key list`" in nachsehen
+    # Der Waechter steht vor dem ersten Aufruf des Unterbefehls (ein altes Buendel startete sonst einen Server).
+    assert nachsehen.index(_WAECHTER) < nachsehen.index("scoped-key list")
     for name, kanaele, datei in [
         ("auftragsbuch-beleg", "todo:get,todo:plannerSignals", "laufzeit/rowboat-beleg-schluessel"),
         ("gehirn-abholer", "todo:get,todo:plannerSignals,todo:addSuggestions", "laufzeit/rowboat-abholer-schluessel"),
@@ -575,6 +578,80 @@ def test_runbook_stufe_4_schluessel_nie_sichtbar_und_eng() -> None:
     assert len(entziehen) == 2 and all(_JA in p for p in entziehen)
 
 
+_WAECHTER = "docker exec rowboat-headless-rowboat-server-1 grep -cF '[scoped-key] fatal:' rowboat-server.cjs"
+_ROWBOAT_SRC = Path(__file__).resolve().parents[2] / "rowboat" / "rowboat" / "apps" / "x"
+
+
+def _waechter_zaehlt(buendel: str) -> int:
+    """Was `grep -cF <muster> rowboat-server.cjs` im Container zaehlte: Zeilen mit dem festen Muster."""
+    argumente = shlex.split(_WAECHTER)
+    assert argumente[:4] == ["docker", "exec", "rowboat-headless-rowboat-server-1", "grep"]
+    assert argumente[4] == "-cF" and argumente[6] == "rowboat-server.cjs" and len(argumente) == 7
+    return sum(1 for zeile in buendel.splitlines() if argumente[5] in zeile)
+
+
+def test_runbook_stufe_4_waechter_laesst_altes_buendel_nicht_durch() -> None:
+    # Altes Buendel: kennt scoped-keys.json (auth.ts, protected-paths.ts), aber nicht den Unterbefehl.
+    alt = ('const SCOPED_KEYS_FILE = "scoped-keys.json";\n'
+           'const PROTECTED = ["server-key", "cipher-key", "config/mcp.json", "scoped-keys.json"];\n'
+           'main().catch((err) => { console.error("[server] fatal:", err); process.exit(1); });\n')
+    assert "scoped-key" in alt  # das alte `grep -c scoped-key` haette hier 2 gezaehlt
+    assert _waechter_zaehlt(alt) == 0
+    # Neues Buendel (esbuild behaelt Zeichenketten, Kommentare nicht): der Zweig aus standalone.ts.
+    neu = alt + ('if (process.argv[2] === "scoped-key") { runScopedKeyCli(process.argv.slice(3), WorkDir, io)'
+                 '.then((code) => process.exit(code), (err) => { console.error("[scoped-key] fatal:", err); });\n')
+    assert _waechter_zaehlt(neu) == 1
+
+
+@pytest.mark.skipif(not (_ROWBOAT_SRC / "apps" / "server" / "src" / "standalone.ts").exists(),
+                    reason="Rowboat-Quelltext nicht ausgecheckt")
+def test_runbook_stufe_4_waechter_muster_steht_nur_im_cli_zweig() -> None:
+    muster = shlex.split(_WAECHTER)[5]
+    treffer = sorted(p.relative_to(_ROWBOAT_SRC).as_posix() for p in _ROWBOAT_SRC.rglob("*.ts")
+                     if "node_modules" not in p.parts and muster in p.read_text(encoding="utf-8", errors="replace"))
+    assert treffer == ["apps/server/src/standalone.ts"]
+    zweig = (_ROWBOAT_SRC / "apps" / "server" / "src" / "standalone.ts").read_text(encoding="utf-8")
+    start = zweig.index("if (process.argv[2] === 'scoped-key')")
+    assert start < zweig.index(muster) < zweig.index("} else {", start)
+
+
+def test_runbook_stufe_4_dsn_nur_host_und_port_ohne_kennwort() -> None:
+    punkte = _stufe_4()
+    sicherung = _einer(punkte, "Sicherung")
+    assert "`cp -p laufzeit/dsn laufzeit/dsn.vor-stufe-4`" in sicherung
+    umziehen = _einer(punkte, "dsn-ort")
+    assert _JA in umziehen
+    assert _befehle(umziehen)[0] == "python3 deploy/db_zugang.py dsn-ort"
+    for verboten in ("ALTER ROLE", "db_zugang.sh", "neues Passwort", "neues Kennwort", "<psql>"):
+        assert verboten not in umziehen, verboten
+    text = "\n".join(punkte)
+    # In Stufe 4 bekommt nur der Abholer ein Passwort; die Rolle des Dienstes wird nirgends angefasst.
+    assert "`bash deploy/db_zugang.sh`" not in text
+    assert [b for p in punkte for b in _befehle(p) if "bash deploy/db_zugang.sh" in b] == [
+        "bash deploy/db_zugang.sh abholer"]
+    assert "auftragsbuch_dienst" not in " ".join(b for p in punkte for b in _befehle(p))
+    (zurueck,) = [p for p in punkte if "`cp -p laufzeit/dsn.vor-stufe-4 laufzeit/dsn`" in p]
+    assert _JA in zurueck
+
+
+def test_runbook_stufe_4_kurzer_rueckweg_wenn_der_neustart_scheitert() -> None:
+    zeilen = _zeilen(RUNBOOK)
+    kopf = "**Kurzer Rückweg, falls Schritt 16 scheitert:**"
+    assert zeilen.index(_STUFE_4) < zeilen.index(kopf) < zeilen.index("**Rückweg:**", zeilen.index(_STUFE_4))
+    kurz = _punkte(zeilen, ab=kopf, bis="**Rückweg:**")
+    assert len(kurz) == 4 and all(_JA in p for p in kurz)
+    reihe = ["git -c core.autocrlf=false archive <AUSGANG-TAG>", "cp -p laufzeit/werte.env.vor-stufe-4 laufzeit/werte.env",
+             "cp -p laufzeit/dsn.vor-stufe-4 laufzeit/dsn",
+             "AUFTRAGSBUCH_TAG=<AUSGANG-TAG> docker compose up -d --no-deps auftragsbuch"]
+    assert [next(i for i, p in enumerate(kurz) if s in p) for s in reihe] == [0, 1, 2, 3]
+    befehle = [b for p in kurz for b in _befehle(p)]
+    compose = [b for b in befehle if "docker compose" in b]
+    assert compose == ["AUFTRAGSBUCH_TAG=<AUSGANG-TAG> docker compose up -d --no-deps auftragsbuch"]
+    assert [b for b in befehle if re.search(r"prune|--remove-orphans|db_zugang|ALTER|DROP", b)] == []
+    neustart = _einer(_stufe_4(), "docker compose up -d --no-deps auftragsbuch`. Voraussetzung")
+    assert "kurzen Rückweg" in neustart
+
+
 def test_runbook_stufe_4_dienste_nur_namentlich_und_host_netz() -> None:
     punkte = _stufe_4()
     compose = [b for p in punkte for b in _befehle(p) if "docker compose" in b]
@@ -584,7 +661,7 @@ def test_runbook_stufe_4_dienste_nur_namentlich_und_host_netz() -> None:
     assert [b for p in punkte for b in _befehle(p) if "~/sales-claw" in b or "~/vibemind-os" in b] == []
     text = "\n".join(punkte)
     assert "AUFTRAGSBUCH_DB_HOST=127.0.0.1" in text and "AUFTRAGSBUCH_DB_PORT" in text
-    assert "`bash deploy/db_zugang.sh`" in text  # DSN des Dienstes neu, jetzt ueber das Host-Netz
+    assert "`python3 deploy/db_zugang.py dsn-ort`" in text  # DSN des Dienstes: nur Host und Port neu
     assert "tailscale serve status" in text and "127.0.0.1:8172" in text
     rauch = _einer(punkte, "abholer=start")
     assert _LESEND in rauch and "healthy" in rauch and "an = 'rowboat'" in rauch

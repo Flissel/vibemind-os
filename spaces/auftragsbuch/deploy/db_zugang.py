@@ -13,6 +13,10 @@ und erscheint in keiner Ausgabe:
   printf '%s\\n' "$passwort" | python3 deploy/db_zugang.py dsn-schreiben [dienst|abholer]
       schreibt die DSN-Datei des Zugangs (Modus 600, laufzeit/ mit 700) aus laufzeit/werte.env und dem
       Passwort.
+  python3 deploy/db_zugang.py dsn-ort [dienst|abholer]
+      schreibt in der vorhandenen DSN-Datei nur Host und Port aus laufzeit/werte.env neu (in einem Zug,
+      Modus 600); Benutzer, Passwort und Datenbank bleiben, die Datenbank wird nicht angefasst. Vorher
+      entsteht laufzeit/<datei>.vor-stufe-4, wenn es sie noch nicht gibt (eine vorhandene bleibt).
   python3 deploy/db_zugang.py wert AUFTRAGSBUCH_DB_CONTAINER
       nennt einen der (nicht geheimen) Datenbank-Werte aus laufzeit/werte.env.
 
@@ -196,6 +200,73 @@ def dsn_schreiben(dienst: Path, passwort: str, name: str = "dienst") -> Path:
     return ziel
 
 
+_DSN_SCHLUESSEL = ("host", "port", "dbname", "user", "password")
+KOPIE_ENDUNG = ".vor-stufe-4"
+
+
+def _dsn_lesen(datei: Path, z: Zugang) -> dict[str, str]:
+    """Die fuenf Teile einer DSN, wie dsn_bauen sie schreibt; jede andere Form ist ein Bedienfehler.
+
+    Die Meldung nennt nur die Datei, nie einen Teil der DSN.
+    """
+    name = f"laufzeit/{z.dsn_datei}"
+    try:
+        text = datei.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise ZugangsFehler(f"{name} fehlt") from None
+    except (OSError, UnicodeError):
+        raise ZugangsFehler(f"{name} nicht lesbar") from None
+    teile: dict[str, str] = {}
+    for stueck in text.split():
+        schluessel, gleich, wert = stueck.partition("=")
+        if not gleich or schluessel not in _DSN_SCHLUESSEL or schluessel in teile:
+            raise ZugangsFehler(f"{name} hat nicht die erwartete Form")
+        teile[schluessel] = wert
+    if (set(teile) != set(_DSN_SCHLUESSEL) or teile["user"] != z.rolle
+            or _PASSWORT.fullmatch(teile["password"]) is None
+            or DB_WERTE["AUFTRAGSBUCH_DB_NAME"].fullmatch(teile["dbname"]) is None):
+        raise ZugangsFehler(f"{name} hat nicht die erwartete Form")
+    return teile
+
+
+def _datei_600(ziel: Path, inhalt: bytes, *, ersetzen: bool) -> None:
+    """Schreibt mit Modus 600: ersetzen=True ueber eine .neu-Datei und os.replace (in einem Zug),
+    ersetzen=False nur, wenn das Ziel noch fehlt (O_EXCL)."""
+    pfad = ziel.with_name(ziel.name + ".neu") if ersetzen else ziel
+    # O_BINARY (nur Windows): sonst wuerde aus \n beim Schreiben \r\n und die Kopie waere nicht bytegleich.
+    art = os.O_WRONLY | os.O_CREAT | getattr(os, "O_BINARY", 0) | (os.O_TRUNC if ersetzen else os.O_EXCL)
+    fd = os.open(pfad, art, 0o600)
+    try:
+        os.write(fd, inhalt)
+    finally:
+        os.close(fd)
+    os.chmod(pfad, 0o600)
+    if ersetzen:
+        os.replace(pfad, ziel)
+
+
+def dsn_ort(dienst: Path, name: str = "dienst") -> bool:
+    """Schreibt in der DSN-Datei des Zugangs nur Host und Port neu (aus laufzeit/werte.env).
+
+    Benutzer, Passwort und Datenbank bleiben aus der vorhandenen Datei; die Datenbank wird nicht
+    angefasst. Vorher entsteht `<datei>.vor-stufe-4` (600), wenn es sie noch nicht gibt; eine
+    vorhandene Kopie bleibt unveraendert. Gibt zurueck, ob die Kopie jetzt angelegt wurde.
+    """
+    z = zugang(name)
+    host, port, _ = _ort(werte_lesen(dienst / "laufzeit" / "werte.env"))
+    ziel = dienst / "laufzeit" / z.dsn_datei
+    teile = _dsn_lesen(ziel, z)
+    kopie = ziel.with_name(ziel.name + KOPIE_ENDUNG)
+    angelegt = False
+    if not kopie.exists():
+        _datei_600(kopie, ziel.read_bytes(), ersetzen=False)
+        angelegt = True
+    neu = (f"host={host} port={port} dbname={teile['dbname']} user={teile['user']} "
+           f"password={teile['password']}\n")
+    _datei_600(ziel, neu.encode("utf-8"), ersetzen=True)
+    return angelegt
+
+
 def _passwort_von(eingabe: TextIO) -> str:
     if eingabe.isatty():
         raise ZugangsFehler("das Passwort kommt per Pipe auf stdin, nicht vom Terminal")
@@ -223,6 +294,13 @@ def main(argv: list[str], eingabe: TextIO | None = None, ausgabe: TextIO | None 
                 aus.write(rollen_sql(scram_verifier(_passwort_von(ein)), name))
             else:
                 dsn_schreiben(dienst, _passwort_von(ein), name)
+            return 0
+        if befehl == "dsn-ort" and len(rest) <= 1:
+            z = zugang(rest[0] if rest else "dienst")
+            angelegt = dsn_ort(dienst, rest[0] if rest else "dienst")
+            kopie = f"laufzeit/{z.dsn_datei}{KOPIE_ENDUNG}"
+            aus.write(f"laufzeit/{z.dsn_datei}: Host und Port neu, Kopie {kopie} "
+                      f"{'angelegt' if angelegt else 'war schon da'}\n")
             return 0
         if len(argv) == 2 and argv[0] == "wert":
             werte = werte_lesen(dienst / "laufzeit" / "werte.env")

@@ -213,6 +213,97 @@ def test_main_zugang_prueft_werte_und_nennt_die_rolle(tmp_path: Path) -> None:
     assert db_zugang.main(["zugang", "abholer"], _Pipe(), _Pipe(), schlecht) == 2
 
 
+# --- dsn-ort: nur Host und Port der vorhandenen DSN umschreiben (Stufe 4, Schritt 15) ----------
+
+ALTE_DSN = f"host=db-host port=5432 dbname=meine_db user=auftragsbuch_dienst password={PASSWORT}\n"
+HOST_NETZ = WERTE.replace("db-host", "127.0.0.1").replace("postgres", "andere_db") + "AUFTRAGSBUCH_DB_PORT=6543\n"
+
+
+def _mit_dsn(tmp_path: Path, dsn: str = ALTE_DSN, werte: str = HOST_NETZ) -> Path:
+    dienst = _dienst(tmp_path, werte)
+    (dienst / "laufzeit" / "dsn").write_text(dsn, encoding="utf-8")
+    return dienst
+
+
+def test_dsn_ort_ersetzt_nur_host_und_port(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    dienst = _mit_dsn(tmp_path)
+    aus = _Pipe()
+    assert db_zugang.main(["dsn-ort"], _Pipe(), aus, dienst) == 0
+    # Benutzer, Kennwort und Datenbank bleiben aus der alten DSN (nicht AUFTRAGSBUCH_DB_NAME aus werte.env).
+    assert (dienst / "laufzeit" / "dsn").read_text(encoding="utf-8") == (
+        f"host=127.0.0.1 port=6543 dbname=meine_db user=auftragsbuch_dienst password={PASSWORT}\n")
+    assert PASSWORT not in aus.getvalue() + capsys.readouterr().err
+    assert aus.getvalue() == "laufzeit/dsn: Host und Port neu, Kopie laufzeit/dsn.vor-stufe-4 angelegt\n"
+    assert "ALTER" not in aus.getvalue()
+    if os.name == "posix":
+        assert ((dienst / "laufzeit" / "dsn").stat().st_mode & 0o777) == 0o600
+        assert ((dienst / "laufzeit" / "dsn.vor-stufe-4").stat().st_mode & 0o777) == 0o600
+
+
+def test_dsn_ort_legt_kopie_an_und_ueberschreibt_keine_vorhandene(tmp_path: Path) -> None:
+    dienst = _mit_dsn(tmp_path)
+    assert db_zugang.main(["dsn-ort"], _Pipe(), _Pipe(), dienst) == 0
+    kopie = dienst / "laufzeit" / "dsn.vor-stufe-4"
+    assert kopie.read_text(encoding="utf-8") == ALTE_DSN
+    assert sorted(p.name for p in (dienst / "laufzeit").iterdir()) == ["dsn", "dsn.vor-stufe-4", "werte.env"]
+    # Zweiter Lauf (z. B. nach geaenderter werte.env): die Kopie bleibt die vom ersten Mal.
+    (dienst / "laufzeit" / "werte.env").write_text(HOST_NETZ.replace("6543", "7000"), encoding="utf-8")
+    aus = _Pipe()
+    assert db_zugang.main(["dsn-ort"], _Pipe(), aus, dienst) == 0
+    assert kopie.read_text(encoding="utf-8") == ALTE_DSN
+    assert "port=7000 " in (dienst / "laufzeit" / "dsn").read_text(encoding="utf-8")
+    assert aus.getvalue() == "laufzeit/dsn: Host und Port neu, Kopie laufzeit/dsn.vor-stufe-4 war schon da\n"
+
+
+def test_dsn_ort_behaelt_kopie_aus_der_sicherung(tmp_path: Path) -> None:
+    dienst = _mit_dsn(tmp_path)
+    (dienst / "laufzeit" / "dsn.vor-stufe-4").write_text("aus-schritt-3\n", encoding="utf-8")
+    assert db_zugang.main(["dsn-ort"], _Pipe(), _Pipe(), dienst) == 0
+    assert (dienst / "laufzeit" / "dsn.vor-stufe-4").read_text(encoding="utf-8") == "aus-schritt-3\n"
+
+
+@pytest.mark.parametrize("dsn", [
+    "",
+    f"host=db-host dbname=d user=auftragsbuch_dienst password={PASSWORT}\n",          # ohne Port
+    f"host=db-host port=5432 dbname=d user=rowboat_abholer password={PASSWORT}\n",    # fremde Rolle
+    f"host=db-host port=5432 dbname=d user=auftragsbuch_dienst password={PASSWORT} sslmode=x\n",
+    f"host=db-host port=5432 dbname=d user=auftragsbuch_dienst password={PASSWORT}'x\n",
+    f"host=a host=b port=5432 dbname=d user=auftragsbuch_dienst password={PASSWORT}\n",
+])
+def test_dsn_ort_lehnt_fremde_dsn_ab_ohne_wert(tmp_path: Path, dsn: str,
+                                                capsys: pytest.CaptureFixture[str]) -> None:
+    dienst = _mit_dsn(tmp_path, dsn)
+    assert db_zugang.main(["dsn-ort"], _Pipe(), _Pipe(), dienst) == 2
+    fehler = capsys.readouterr()
+    assert PASSWORT not in fehler.out + fehler.err and "laufzeit/dsn" in fehler.err
+    assert (dienst / "laufzeit" / "dsn").read_text(encoding="utf-8") == dsn
+    assert not (dienst / "laufzeit" / "dsn.vor-stufe-4").exists()
+
+
+def test_dsn_ort_bricht_bei_platzhalter_vor_jeder_aenderung_ab(tmp_path: Path,
+                                                                capsys: pytest.CaptureFixture[str]) -> None:
+    dienst = _mit_dsn(tmp_path, werte=WERTE + "AUFTRAGSBUCH_DB_PORT=<DB-PORT>\n")
+    assert db_zugang.main(["dsn-ort"], _Pipe(), _Pipe(), dienst) == 2
+    assert "AUFTRAGSBUCH_DB_PORT" in capsys.readouterr().err
+    assert (dienst / "laufzeit" / "dsn").read_text(encoding="utf-8") == ALTE_DSN
+    assert not (dienst / "laufzeit" / "dsn.vor-stufe-4").exists()
+
+
+def test_dsn_ort_ohne_dsn_bricht_ab(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    dienst = _dienst(tmp_path, HOST_NETZ)
+    assert db_zugang.main(["dsn-ort"], _Pipe(), _Pipe(), dienst) == 2
+    assert "laufzeit/dsn" in capsys.readouterr().err
+    assert sorted(p.name for p in (dienst / "laufzeit").iterdir()) == ["werte.env"]
+
+
+def test_dsn_ort_fasst_die_datenbank_nicht_an() -> None:
+    # Der Befehl ist reines Python ueber zwei Dateien: kein SQL, kein Prozess, kein Passwort von stdin.
+    quelle = (DEPLOY / "db_zugang.py").read_text(encoding="utf-8")
+    rumpf = quelle[quelle.index("def dsn_ort("):quelle.index("\ndef ", quelle.index("def dsn_ort(") + 1)]
+    for verboten in ("rollen_sql", "ALTER", "subprocess", "docker", "_passwort_von", "print(", "write("):
+        assert verboten not in rumpf.replace("os.write(", ""), verboten
+
+
 def test_cli_ueber_stdin_ohne_passwort_in_der_ausgabe() -> None:
     lauf = subprocess.run([sys.executable, str(DEPLOY / "db_zugang.py"), "sql"],
                           input=(PASSWORT + "\n").encode("ascii"), capture_output=True, timeout=60, check=False)
