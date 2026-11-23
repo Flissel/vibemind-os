@@ -791,6 +791,11 @@ _URTEIL = (
     rf"was\s+h(?:ä|ae)ltst\s+du\s+von\s+(?:dieser|der)\s+bubble",
     rf"sch(?:ä|ae)tz(?:e)?\s+(?:diese|die)\s+bubble\s+ein",
     rf"wie\s+sch(?:ä|ae)tzt\s+du\s+(?:diese|die)\s+bubble\s+ein",
+    # Lauf 7: ohne Zahl fiel "Bewerte diese Bubble" auf bubble.evaluate (Auftrag an brain-bubbles,
+    # ohne Werkzeug). Mit Zahl bleibt es der feste Satz bubble.rate.
+    rf"bewerte\s+(?:diese|die)\s+bubble",
+    rf"(?:ist|w(?:ä|ae)re)\s+(?:diese|die)\s+bubble\s+(?:schon\s+)?(?:reif|fertig|bereit)"
+    rf"(?:\s+f(?:ü|ue)r\s+(?:die\s+|das\s+|den\s+|ein\s+|eine\s+)?\w+)?",
 )
 
 

@@ -208,7 +208,8 @@ def test_unbekannte_notiz_ergibt_eine_gezielte_rueckfrage() -> None:
     # dem Kontext (Rueckweg, test_modellfunktionen_tragen_die_karte_aus_dem_kontext).
     # Ohne genannte Karte bleibt der Satz beim bisherigen Weg:
     "Was hältst du davon?",
-    "Bewerte die Bubble",                    # ohne Zahl: Urteil
+    # "Bewerte die Bubble" (ohne Zahl) ist seit Lauf 7 ein Urteil und laeuft als Einschaetzen
+    # (tests/test_bubble_evaluate_weg.py); der alte Weg war ein Auftrag ohne Werkzeug.
     "Fass die Notiz zusammen",
     "Wie wird das Wetter?",
     "",

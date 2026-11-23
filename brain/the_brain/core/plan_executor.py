@@ -301,6 +301,38 @@ _BUNDLE_SCHLUESSEL = ("channel_intent", "brain_plan", "space_execution_contracts
 # naechstaeltere Aenderung zurueck.
 _EINMAL_EREIGNISSE = frozenset({"bubble.create", "idea.aenderung_zurueck"})
 
+# Ereignisse, die nie als Agenten-Auftrag laufen: der Agent hat kein Werkzeug dafuer.
+_OHNE_AGENTENWEG = {
+    "bubble.evaluate": "bubble.evaluate: kein Agentenweg; eine Urteilsfrage zur Bubble läuft als Einschätzen",
+}
+
+
+def _ereignis_von(capability: Any) -> str:
+    """Kanonisches Ereignis einer Faehigkeit (bubble_evaluate -> bubble.evaluate). Wirft nie."""
+    try:
+        from .capability_targets import canonical_space_event_id
+        return canonical_space_event_id(str(capability or "")) or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _space_des_ereignisses(ereignis: str) -> Optional[str]:
+    """Space eines Ereignisses aus dem Verzeichnis: eigenes Ereignis, sonst Praefix. Wirft nie."""
+    if not ereignis:
+        return None
+    try:
+        from .space_contract import load_space_contract
+        vertrag = load_space_contract()
+        if ereignis in vertrag.event_space_map:
+            return vertrag.event_space_map[ereignis]
+        for space_id, meta in vertrag.spaces.items():
+            for praefix in (meta or {}).get("prefixes") or []:
+                if isinstance(praefix, str) and praefix and ereignis.startswith(praefix):
+                    return space_id
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
 
 def _abschluss_ereignis(plan_id: str, ok: bool, result: Dict[str, Any], executed: Dict[str, Any]) -> Dict[str, Any]:
     """Nutzlast von ``plan_completed`` fuer die App.
@@ -1896,6 +1928,19 @@ class PlanExecutor:
         # (autonome Pfade) bleibt alles wie vor K1: OpenFangExecutor, Gate
         # fail-closed, keine Selbstausstellung - bis K4.
         _auftrag_uebergabe: Optional[Dict[str, Any]] = None
+        if (isinstance(target, str) and target.startswith("openfang:")
+                and _ereignis_von(hop.capability) in _OHNE_AGENTENWEG):
+            # Lauf 7: eine Urteilsfrage fiel ueber den Planer auf bubble.evaluate, wurde ein
+            # Auftrag an brain-bubbles (78 s, gebucht) und scheiterte am fehlenden Werkzeug.
+            # Urteilsfragen laufen als Einschaetzen ueber den Rueckweg (core/ideen_abkuerzung).
+            return HopResult(
+                step_id=hop.step_id, ok=False,
+                error=_OHNE_AGENTENWEG[_ereignis_von(hop.capability)],
+                capability=hop.capability, target=target,
+                rendered_arg=rendered_arg, kg_hits=kg_hits,
+                elapsed_s=time.time() - t0,
+                contract_pass=False, reward=-1.0,
+            )
         _k1_auftrag = (isinstance(target, str) and target.startswith("openfang:")
                        and _auftragsweg(plan_ctx))
         if isinstance(target, str) and target.startswith("openfang:"):
@@ -1908,13 +1953,16 @@ class PlanExecutor:
                 if _k1_auftrag and not any(k in plan_ctx for k in _BUNDLE_SCHLUESSEL):
                     # K1: kein Bundle von brain_chat/cortex -> eigenes bauen
                     from core.handoff_bundle import baue_handoff_bundle
-                    _space = "agentfarm"
+                    _space = None
                     try:
                         if self.capability_router is not None and hop.capability:
                             _d = self.capability_router.get_capability(hop.capability) or {}
-                            _space = _d.get("space_id") or _d.get("space") or _space
+                            _space = _d.get("space_id") or _d.get("space") or None
                     except Exception:
                         pass
+                    # Lauf 7: ohne Space an der Faehigkeit stand "agentfarm" am Auftrag (auch an
+                    # bubble.evaluate). Erst der Space des Ereignisses aus dem Verzeichnis.
+                    _space = _space or _space_des_ereignisses(_ereignis_von(hop.capability)) or "agentfarm"
                     _auftrag_uebergabe = baue_handoff_bundle(
                         plan_id=plan_ctx.get("plan_id", ""),
                         trace_id=plan_ctx.get("trace_id", ""),
