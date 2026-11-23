@@ -2452,7 +2452,13 @@ def _try_capability_shortcut(state, intent: str):
         logger.debug(f"[shortcut] get_capability failed: {e}")
 
     arg_template = ""
-    if arg_kwarg:
+    if arg_kwarg and m.capability == "bubble_list":
+        # "Welche Bubbles habe ich im Ideenbereich?" nahm das letzte grossgeschriebene
+        # Wort als Suchwort und fand nichts. Eine Liste sucht nur nach dem, was der
+        # Mensch in Anfuehrungszeichen setzt.
+        from core.ideen_abkuerzung import listen_suchwort
+        arg_template = listen_suchwort(intent)
+    elif arg_kwarg:
         try:
             arg_template = _extract_arg_template(intent, m.capability)
         except Exception as e:
@@ -2485,6 +2491,46 @@ def _try_capability_shortcut(state, intent: str):
         f"arg={arg_template!r} (regex)"
     )
     return plan
+
+
+def _try_ideen_abkuerzung(intent: str, kontext: Any):
+    """Feste Saetze des Ideen-Space ohne Planer und ohne Modell.
+
+    ``kontext`` ist der Kontext der App aus dem Anfragekoerper (offene Bubble, sichtbare
+    Karten, Auswahl; siehe spaces/ideas/ANZEIGE.md). Rueckgabe:
+      (None, None, "")        kein fester Satz -> der bisherige Weg entscheidet
+      (None, frage, "")       Rueckfrage an den Menschen, kein Aufruf
+      (plan, None, antwort)   Plan mit genau einem festen Aufruf und fertigem Antworttext
+    Wirft nie.
+    """
+    try:
+        from core.ideen_abkuerzung import arg_vorlage, loese
+        from core.plan_schema import Plan as _Plan, HopSpec as _HopSpec
+
+        treffer = loese(intent, kontext)
+        if not treffer:
+            return None, None, ""
+        if "rueckfrage" in treffer:
+            logger.info("[ideen-abkuerzung] Rueckfrage statt Aufruf")
+            return None, str(treffer["rueckfrage"]), ""
+        plan = _Plan(
+            plan_id=f"ideen_{int(time.time() * 1000)}",
+            intent=intent,
+            rationale=f"Ideen-Abkuerzung: {treffer['ereignis']} (fester Aufruf)",
+            hops=[_HopSpec(
+                step_id="s1",
+                description=f"{treffer['ereignis']} via Ideen-Abkuerzung",
+                capability=treffer["capability"],
+                arg_template=arg_vorlage(treffer["argumente"]),
+            )],
+            final_synthesis_prompt="",
+            estimated_cost_usd=0.0,
+        )
+        logger.info(f"[ideen-abkuerzung] {treffer['ereignis']!r} (fester Aufruf)")
+        return plan, None, str(treffer.get("antwort") or "")
+    except Exception as e:  # noqa: BLE001 - nie die Anfrage daran scheitern lassen
+        logger.warning(f"[ideen-abkuerzung] uebersprungen: {type(e).__name__}: {e}")
+        return None, None, ""
 
 
 @router.post("/api/multihop/execute")
@@ -2525,18 +2571,31 @@ async def multihop_execute(request: Request):
 
     from core.plan_schema import Plan as _Plan
     plan = None
+    _ideen_fest = False     # Plan stammt aus der Ideen-Abkuerzung (ein fester Aufruf)
+    _ideen_antwort = ""
     if plan_dict:
         try:
             plan = _Plan.from_dict(plan_dict)
         except Exception as e:
             return JSONResponse({"error": f"invalid plan: {e}", "trace_id": trace_id}, status_code=400)
     elif intent:
+        # Ideen-Space: feste Saetze laufen ohne Planer und ohne Modell. Die App gibt
+        # dafuer ihren Kontext mit; Namen werden daraus aufgeloest, nie geraten.
+        if not skip_shortcut and isinstance(body.get("context"), dict):
+            plan, _ideen_frage, _ideen_antwort = _try_ideen_abkuerzung(intent, body.get("context"))
+            if _ideen_frage:
+                _trace_lite(pe, trace_id, intent, "ideen-rueckfrage", _ideen_frage)
+                return JSONResponse({
+                    "ok": False, "rueckfrage": True, "space": "ideas", "executed": {},
+                    "final_text": _ideen_frage, "trace_id": trace_id,
+                })
+            _ideen_fest = plan is not None
         # Phase 11.Q2 — Capability-Router shortcut. If the router has a
         # high-confidence regex match for a single-action intent, skip
         # the LLM planner and build a 1-hop plan directly. Wrapped in
         # try/except so any bug here falls through to the LLM path
         # instead of 500'ing the whole request.
-        if not skip_shortcut:
+        if not skip_shortcut and plan is None:
             try:
                 plan = _try_capability_shortcut(state, intent)
             except Exception as e:
@@ -2754,6 +2813,22 @@ async def multihop_execute(request: Request):
     if _auftraege:
         out["auftraege"] = _auftraege
         out["final_text"] = quittung(_auftraege)
+        try:
+            pe.recorder.attach_final(plan.plan_id, out["final_text"])
+        except Exception:  # noqa: BLE001
+            pass
+        return JSONResponse(out)
+
+    if _ideen_fest:
+        # Fester Aufruf: der Antworttext steht fest, ein Modell formuliert nichts.
+        # Bei einem Fehler nur der Fehlertext des Schritts, nie eine Erfolgsmeldung.
+        out["space"] = "ideas"
+        if exec_result.get("ok"):
+            out["final_text"] = _ideen_antwort
+        else:
+            _schritt = (exec_result.get("executed") or {}).get("s1") or {}
+            _grund = _schritt.get("error") if isinstance(_schritt, dict) else None
+            out["final_text"] = f"Das hat nicht geklappt: {_grund or 'der Schritt ist gescheitert'}"
         try:
             pe.recorder.attach_final(plan.plan_id, out["final_text"])
         except Exception:  # noqa: BLE001

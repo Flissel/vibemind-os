@@ -950,21 +950,28 @@ def test_deterministic_mcp_agent_scope_drift_fails_before_executor(
     assert built_targets == []
 
 
-def test_cognitive_idea_create_keeps_the_openfang_chat_agent(monkeypatch):
-    """An event without execution.kind=mcp remains a cognitive agent route."""
+def test_cognitive_idea_expand_keeps_the_openfang_chat_agent(monkeypatch):
+    """An event without execution.kind=mcp remains a cognitive agent route.
+
+    Bis 23.11.2026 stand hier idea.create; das ist seitdem ein fester Aufruf
+    (ideen_fest_contract). idea.expand braucht weiter ein Modell.
+    """
     built_targets = []
     _disable_kg_hits(monkeypatch)
     _install_handoff_validator(monkeypatch, lambda *_args: None)
     monkeypatch.setattr(
         "core.agent_yaml_registry.get_registry",
-        lambda: _Registry({"idea.create": "brain-ideas"}),
+        lambda: _Registry({"idea.expand": "brain-ideas"}),
     )
     monkeypatch.setattr(
         "core.capability_targets.build_executor",
         lambda target: built_targets.append(target) or _Executor({"ok": True, "result": {}}),
     )
 
-    result = PlanExecutor()._exec_hop(_idea_hop(), {}, plan_ctx=_handoff_bundle())
+    result = PlanExecutor()._exec_hop(
+        _hop(capability="idea_expand", target="supabase:idea.expand"), {},
+        plan_ctx=_handoff_bundle(),
+    )
 
     assert result.ok is True
     assert built_targets == ["openfang:brain-ideas"]

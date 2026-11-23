@@ -1078,6 +1078,14 @@ class McpExecutor(_BaseRemoteExecutor):
             return self._pruefe_werkzeug_ergebnis(result)
         if result.get("isError") is True:
             raise RuntimeError("OpenFang MCP tool returned isError=true")
+        if self.server == "spaces-ideas":
+            from .ideen_fest_contract import ALLE_WERKZEUGE, fehler_aus_ergebnis
+            if self.tool in ALLE_WERKZEUGE:
+                # Auch hier entscheidet der Inhalt: ein Fehlertext mit isError=false
+                # darf nie als gelungener Schritt gelten.
+                meldung = fehler_aus_ergebnis(result)
+                if meldung:
+                    raise RuntimeError(meldung)
         return result
 
     # Schreibende Werkzeuge des Ideen-Servers, denen das Gehirn seine Plan-Kennung
@@ -1086,6 +1094,9 @@ class McpExecutor(_BaseRemoteExecutor):
     _IDEEN_WERKZEUGE_MIT_KENNUNG = frozenset({
         "bubble_create", "bubble_update", "bubble_delete", "bubble_promote",
         "idea_create", "idea_update", "idea_delete", "idea_disconnect",
+        # feste Aufrufe des Ideen-Space (ideen_fest_contract.SCHREIBENDE_WERKZEUGE)
+        "idea_format", "idea_arrange", "idea_auto_link", "idea_rate", "bubble_rate",
+        "bewertung_begruenden",
     })
 
     def _mit_aenderung_id(self, tool_payload: Any, plan_id: Any) -> Any:
@@ -1317,6 +1328,11 @@ _CANONICAL_SPACE_EVENT_IDS = {
     "idea_expand": "idea.expand",
     "idea_connect": "idea.connect",
     "aenderung_zurueck": "idea.aenderung_zurueck",
+    # Die festen Aufrufe des Ideen-Space (ideen_fest_contract) haben hier bewusst
+    # keine Zweitnamen: ein Schritt nennt das Ereignis selbst ("idea.format",
+    # "bubble.promote"). Die aelteren Faehigkeiten gleichen Namens (bubble_promote,
+    # idea_auto_link, idea_list) arbeiten mit Namen statt Kennungen und behalten
+    # ihren bisherigen Weg.
     "idea_to_project": "idea.to_project",
     "code_generate": "code.generate",
     "code_modify": "code.modify",
