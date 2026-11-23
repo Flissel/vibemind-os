@@ -272,6 +272,12 @@ def auftrag_vorbereiten(
     return nachricht(vertrag_name, karte, wunsch), rueckweg
 
 
+# Lauf 8: Beim Ausformulieren las der Agent "(Prüfung)" im Titel als Zustand der Notiz.
+TITEL_IST_NAME = ("Der Titel ist nur der Name der Notiz. Zusaetze darin, etwa in Klammern wie „(Prüfung)“ oder "
+                  "„(Entwurf)“, gehoeren zum Namen und sagen nichts ueber ihren Zustand; schreibe nichts "
+                  "darueber, ob sie geprueft, offen oder fertig ist.")
+
+
 def nachricht(vertrag_name: str, karte: Mapping[str, Any], wunsch: Any) -> str:
     """Die Nachricht an den Agenten: Aufgabe, Antwortform, Notiz als Daten. Keine Werkzeuge."""
     vertrag = VERTRAEGE[vertrag_name]
@@ -283,6 +289,7 @@ def nachricht(vertrag_name: str, karte: Mapping[str, Any], wunsch: Any) -> str:
         "Du hast fuer diesen Auftrag keine Werkzeuge und rufst keine auf. Du schreibst nichts selbst;",
         "das Gehirn schreibt dein Ergebnis an die Notiz.",
         vertrag["aufgabe"],
+        TITEL_IST_NAME,
         "Antworte mit genau einem JSON-Objekt und sonst nichts, mit genau diesen Feldern: " + felder + ".",
         "Beispiel der Form: " + json.dumps(vertrag["beispiel"], ensure_ascii=False),
         "Kein HTML, kein Markdown-Code, keine Kennungen, keine Links auf Skripte.",

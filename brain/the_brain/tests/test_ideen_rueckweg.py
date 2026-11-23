@@ -39,6 +39,13 @@ def test_auftrag_traegt_kennung_vertrag_und_stand_und_nennt_kein_werkzeug() -> N
     assert "Titel: Sponsoren" in nachricht and "Text: Frist bis März" in nachricht
 
 
+def test_zusatz_im_titel_ist_kein_zustand() -> None:
+    # Lauf 8: "(Prüfung)" im Titel las der Agent als Zustand der Notiz.
+    nachricht, _ = _vorbereiten(karte={**KARTE, "title": "Sponsoren (Prüfung)"})
+    assert rw.TITEL_IST_NAME in nachricht and "Titel: Sponsoren (Prüfung)" in nachricht
+    assert nachricht.index(rw.TITEL_IST_NAME) < nachricht.index("<<<NOTIZ")
+
+
 def test_titel_wird_eindeutig_aufgeloest_sonst_rueckfrage() -> None:
     _, rueckweg = _vorbereiten(arg="Sponsoren", treffer=[{"id": "a0000001", "title": "Sponsoren"}])
     assert rueckweg["karte_id"] == "a0000001"
