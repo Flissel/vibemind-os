@@ -636,7 +636,7 @@ def test_einschaetzung_anlegen_mit_der_frage_als_auftrag() -> None:
         "idea.summarize", json.dumps({"bubble_id": BUBBLE["id"], "einschaetzen": True}),
         "Welche Risiken siehst du in dieser Bubble?", lesen=LesenAttrappe(), neue_kennung=lambda: DOK_ID)
     assert rueckweg["vertrag"] == "zusammenfassen" and rueckweg["frage"] == "Welche Risiken siehst du in dieser Bubble?"
-    assert rueckweg["titel"] == "Einschätzung: Welche Risiken siehst du in dieser Bubble?"
+    assert rueckweg["titel"] == "Einschätzung: Risiken"   # kurz, nicht die ganze Frage
     assert "Einschätzung" in nachricht and "Welche Risiken siehst du" in nachricht and "[K1]" in nachricht
     assert "keine Werkzeuge" in nachricht
     with pytest.raises(RueckwegFehler):
@@ -653,9 +653,21 @@ def test_einschaetzung_steht_im_chat_und_als_karte() -> None:
     p = dok.verarbeiten(_auftrag(rueckweg, roh), **_anschluss(ideen, angelegt=[])(None))
     assert p["rueckweg"] == "geschrieben" and p["verified"] is True
     assert p["meldung"].startswith("Für „Sponsoren“ fehlt noch das Geld.")
-    assert p["meldung"].endswith("(Steht auch als Karte „Einschätzung: Was fehlt noch?“ in der Bubble.)")
+    assert p["meldung"].endswith("(Steht auch als Karte „Einschätzung: Was fehlt“ in der Bubble.)")
     ((_, argumente),) = ideen.aufrufe
-    assert argumente["title"] == "Einschätzung: Was fehlt noch?" and argumente["art"] == "zusammenfassung"
+    assert argumente["title"] == "Einschätzung: Was fehlt" and argumente["art"] == "zusammenfassung"
+
+
+@pytest.mark.parametrize("frage,titel", [
+    ("Welche Risiken siehst du in dieser Bubble?", "Einschätzung: Risiken"),
+    ("Was sind die größten Schwächen und Chancen?", "Einschätzung: Schwächen und Chancen"),
+    ("Ist diese Bubble reif für die Umsetzung?", "Einschätzung: Reife"),
+    ("Bewerte diese Bubble", "Einschätzung"),
+    ("Wie passt das Stadtfest zum Budget der Druckerei im Herbst?",
+     "Einschätzung: Wie passt das Stadtfest zum Budget …"),
+])
+def test_einschaetzung_titel_ist_kurz(frage, titel) -> None:
+    assert dok.einschaetzung_titel(frage) == titel
 
 
 def test_plan_ausfuehrer_legt_einschaetzung_als_auftrag_an(monkeypatch) -> None:

@@ -738,10 +738,34 @@ def _zusammenfassen_vorbereiten(event_id: str, arg: Mapping[str, Any], wunsch: A
         frage = _sauber(re.sub(r"\s+", " ", str(wunsch or "")).strip(), EINSCHAETZUNG_FRAGE)
         if not frage:
             raise RueckwegFehler("Was soll ich einschätzen? Stell die Frage noch einmal.")
-        kurz = frage if len(frage) <= 80 else frage[:79].rstrip() + "…"
-        rueckweg.update(frage=frage, titel=_sauber(f"Einschätzung: {kurz}", 200))
+        rueckweg.update(frage=frage, titel=_sauber(einschaetzung_titel(frage), 200))
         return nachricht_einschaetzen(bubble_titel, block, frage, gekuerzt), rueckweg
     return nachricht_zusammenfassen(bubble_titel, block, wunsch, gekuerzt), rueckweg
+
+
+_EINSCHAETZUNG_THEMEN = (
+    (r"risik", "Risiken"), (r"schw(?:ä|ae)ch", "Schwächen"), (r"st(?:ä|ae)rken", "Stärken"),
+    (r"l(?:ü|ue)cken", "Lücken"), (r"probleme", "Probleme"), (r"chancen", "Chancen"),
+    (r"widerspr(?:ü|ue)ch", "Widersprüche"), (r"\bfehlt\b", "Was fehlt"), (r"\breif\b|\bbereit\b", "Reife"),
+)
+EINSCHAETZUNG_TITEL_WOERTER = 6
+
+
+def einschaetzung_titel(frage: str) -> str:
+    """Kurzer Titel der Einschätzungskarte: "Einschätzung: Risiken" statt der ganzen Frage.
+
+    Bestätigt auf 799bc1fd: die Karte hiess "Einschätzung: <ganze Frage>". Erkannte Themen
+    werden ein Stichwort; sonst die ersten Wörter der Frage, ohne Fragezeichen.
+    """
+    text = re.sub(r"\s+", " ", str(frage or "")).strip()
+    themen = [name for muster, name in _EINSCHAETZUNG_THEMEN if re.search(muster, text, re.IGNORECASE)]
+    if themen:
+        return "Einschätzung: " + " und ".join(themen[:2])
+    if re.search(r"\b(?:bewerte|sch(?:ä|ae)tz\w*|h(?:ä|ae)ltst\s+du)\b", text, re.IGNORECASE):
+        return "Einschätzung"
+    woerter = text.rstrip("?!. ").split()
+    kurz = " ".join(woerter[:EINSCHAETZUNG_TITEL_WOERTER]) + (" …" if len(woerter) > EINSCHAETZUNG_TITEL_WOERTER else "")
+    return f"Einschätzung: {kurz}" if kurz else "Einschätzung"
 
 
 def _gruppieren_vorbereiten(event_id: str, arg: Mapping[str, Any], wunsch: Any, bubble_id: str,
