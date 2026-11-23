@@ -400,13 +400,14 @@ _FESTE_LESEFRAGEN = (
     (re.compile(rf"^(?:{_ZEIG}\s+(?:mir\s+)?(?:meine|die|alle)?\s*(?:aufträge|auftraege|geplanten aufgaben)"
                 r"|welche geplanten aufgaben gibt es|was ist geplant|was steht an geplanten aufgaben)\b",
                 re.IGNORECASE),
-     "schedule_list", ("orders", "clawport", None)),
+     "schedule_list", None),
 )
 # Desktop, The Brain, Rowboat (23.11.2026): eigene Datei, hier nur angehaengt.
 from .feste_lesesaetze import (  # noqa: E402
     antworten as _weitere_antworten, lesefragen as _weitere_lesefragen, protokolle as _weitere_protokolle,
 )
-_FESTE_LESEFRAGEN = _FESTE_LESEFRAGEN + _weitere_lesefragen(tuple(SPACES) + (None,))
+# Die weiteren Saetze gelten nicht im Ideen-Bereich: dort entscheidet die Ideen-Abkuerzung.
+_FESTE_LESEFRAGEN = _FESTE_LESEFRAGEN + _weitere_lesefragen(tuple(s for s in SPACES if s != "ideas") + (None,))
 
 # Saetze, deren Weg nachweislich nicht laeuft: ehrlich sagen statt Planer.
 _NOCH_NICHT = (
@@ -431,8 +432,9 @@ def feste_lesefrage(satz: Any, space: Optional[str]) -> Optional[Dict[str, str]]
         text = re.sub(r"\s+", " ", satz).strip().rstrip("?.!").strip()
         if not text or len(text) > 200:
             return None
-        for muster, faehigkeit, _spaces in _FESTE_LESEFRAGEN:
-            if muster.search(text):
+        for muster, faehigkeit, spaces in _FESTE_LESEFRAGEN:
+            # spaces None: gilt in jedem Reiter; sonst nur in den genannten.
+            if (spaces is None or space in spaces) and muster.search(text):
                 return {"capability": faehigkeit}
         if space == "ideas":
             return None
