@@ -226,6 +226,71 @@ def test_fehler_wird_ein_deutscher_satz_ohne_werte(fehler, satz) -> None:
     assert abk.fehlersatz(fehler) == satz
 
 
+# ── feste Antwortsaetze nach dem Schritt ─────────────────────────────────
+
+def _quittung(inhalt):
+    return {"_meta": {"runtime_admission": {}}, "isError": False,
+            "content": [{"type": "text", "text": json.dumps(inhalt)}]}
+
+
+def test_liste_wird_ein_satz_mit_anzahl_und_titeln_ohne_kennungen() -> None:
+    zeilen = [{"id": f"n{i}", "title": t} for i, t in enumerate(
+        ["Preise", "Druckerei", "Stand\nauf der  Messe", "Vierte", "Fünfte"])]
+    satz = abk.antwort_fuer_schritt("idea.list", True, _quittung(zeilen), None, "", KONTEXT)
+
+    assert satz == "5 Notizen in „Messe“: „Preise“, „Druckerei“, „Stand auf der Messe“ (und 2 weitere)."
+    assert "n0" not in satz and "id" not in satz
+    assert abk.antwort_fuer_schritt("idea.list", True, _quittung(zeilen[:1]), None, "", KONTEXT) == (
+        "1 Notiz in „Messe“: „Preise“.")
+    assert abk.antwort_fuer_schritt("idea.list", True, _quittung([]), None, "", KONTEXT) == (
+        "In „Messe“ gibt es noch keine Notizen.")
+    assert abk.antwort_fuer_schritt("idea.list", True, _quittung([{"id": "n1", "title": None}]), None, "", {}) == (
+        "1 Notiz in dieser Bubble: „ohne Titel“.")
+    lang = abk.antwort_fuer_schritt("idea.list", True, _quittung([{"id": "n1", "title": "x" * 300}]), None, "", KONTEXT)
+    assert len(lang) < 120
+
+
+def test_zurueck_nennt_die_zahl_der_aenderungen() -> None:
+    f = abk.antwort_fuer_schritt
+    assert f("aenderung_zurueck", True, _quittung({"gruppe": "ideen_1", "anzahl": 1}), None) == (
+        "Zurückgenommen: 1 Änderung.")
+    assert f("aenderung_zurueck", True, _quittung({"gruppe": "plan_7", "anzahl": 4}), None) == (
+        "Zurückgenommen: 4 Änderungen.")
+    assert f("aenderung_zurueck", True, _quittung({"gruppe": None, "anzahl": 0}), None) == (
+        "Es gibt nichts zurückzunehmen.")
+    assert f("aenderung_zurueck", True, {"unlesbar": 1}, None) is None      # dann der bisherige Weg
+    assert f("aenderung_zurueck", False, None, "RuntimeError: aenderung_zurueck: aenderung_konflikt: public.canvas_nodes n1") == (
+        "Das lässt sich nicht zurücknehmen: Ein Eintrag wurde danach noch einmal geändert.")
+
+
+def test_bubble_liste_wird_ein_satz_ohne_kennungen() -> None:
+    roh = ("15 bubbles:\n- BUBBLE-V2-Alpha (id=ab12cd34, score=0)\n- Messe (Herbst) (id=ef56, score=70.0)\n"
+           "- Sheerlay (id=db424a20, score=0)\n- Vier (id=4, score=0)\n- Fünf (id=5, score=0)\n- Sechs (id=6, score=0)")
+    satz = abk.antwort_fuer_schritt("bubble_list", True, roh, None)
+
+    assert satz == ("15 Bubbles: „BUBBLE-V2-Alpha“, „Messe (Herbst)“, „Sheerlay“, „Vier“, „Fünf“ (und 1 weitere).")
+    assert "ab12cd34" not in satz and "score" not in satz
+    assert abk.antwort_fuer_schritt("bubble_list", True, "No bubbles found.", None) == "Du hast noch keine Bubbles."
+    assert abk.antwort_fuer_schritt("bubble_list", True, {"anders": 1}, None) is None
+    assert abk.antwort_fuer_schritt("bubble_list", True, "etwas anderes", None) is None
+
+
+def test_uebrige_schritte_behalten_den_satz_der_abkuerzung_fehler_nie() -> None:
+    f = abk.antwort_fuer_schritt
+    assert f("idea.rate", True, _quittung([{"id": "n1"}]), None, "„Preise“ mit 80 bewertet.") == "„Preise“ mit 80 bewertet."
+    assert f("idea.auto_link", True, _quittung({"bubble_id": "b", "anzahl": 2, "angelegt": []}), None, "x") == (
+        "2 Verbindungen angelegt.")
+    assert f("idea.auto_link", True, _quittung({"bubble_id": "b", "anzahl": 0, "angelegt": []}), None, "x") == (
+        "Ich habe keine neuen Verbindungen gefunden.")
+    assert f("idea.arrange", True, _quittung({"anzahl": 4, "verschoben": 0}), None, "x") == "Die Karten stehen schon so."
+    assert f("idea.arrange", True, _quittung({"anzahl": 4, "verschoben": 3}), None, "Karten ins Raster geordnet.") == (
+        "Karten ins Raster geordnet.")
+    # Ein gescheiterter Schritt bekommt nie den Erfolgssatz.
+    assert f("idea.rate", False, None, "validator blocked: canonical idea.rate truth unverified",
+             "„Preise“ mit 80 bewertet.").startswith("Ich konnte nicht bestätigen")
+    assert f("unbekannt", True, None, None) is None
+
+
 # ── Vorlage fuer den Plan-Schritt ────────────────────────────────────────
 
 def test_vorlage_ueberlebt_geschweifte_klammern_im_text() -> None:

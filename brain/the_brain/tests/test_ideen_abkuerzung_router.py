@@ -142,6 +142,48 @@ def _hauptlauf() -> int:
     check("bubble_find sucht weiter nach dem genannten Wort",
           plan is not None and plan.hops[0].arg_template == "Messe")
 
+    # ── feste Antwort statt Synthese durch ein Modell ──
+    def antwort_text(inhalt):
+        return {"isError": False, "content": [{"type": "text", "text": json.dumps(inhalt)}]}
+
+    def plan_mit(plan_id, capability):
+        return core.plan_schema.Plan(plan_id=plan_id, intent="x", rationale="x", hops=[
+            core.plan_schema.HopSpec(step_id="s1", description="x", capability=capability)])
+
+    def lauf(ok, result=None, error=None):
+        return {"ok": ok, "executed": {"s1": {"ok": ok, "result": result, "error": error}}}
+
+    fest = intro._feste_antwort(
+        plan_mit("ideen_1", "idea.list"), lauf(True, antwort_text([{"id": "n1", "title": "Preise"}])),
+        True, "", KONTEXT)
+    check("idea.list: Satz und Space", fest == {"final_text": "1 Notiz in „Messe“: „Preise“.", "space": "ideas"})
+
+    fest = intro._feste_antwort(
+        plan_mit("shortcut_1", "aenderung_zurueck"), lauf(True, antwort_text({"gruppe": "ideen_1", "anzahl": 1})),
+        False, "", None)
+    check("zurueck (alter Weg): fester Satz und Space ideas",
+          fest == {"final_text": "Zurückgenommen: 1 Änderung.", "space": "ideas"})
+
+    fest = intro._feste_antwort(
+        plan_mit("shortcut_2", "bubble_list"), lauf(True, "2 bubbles:\n- Messe (id=a1, score=0)\n- Urlaub (id=b2, score=0)"),
+        False, "", None)
+    check("bubble_list (alter Weg): Satz ohne Kennungen",
+          fest == {"final_text": "2 Bubbles: „Messe“, „Urlaub“.", "space": "bubbles"})
+
+    fest = intro._feste_antwort(
+        plan_mit("ideen_2", "idea.rate"), lauf(False, None, "RuntimeError: Ideen-Werkzeug meldet einen Fehler (idea_not_found)"),
+        True, "„Preise“ mit 80 bewertet.", KONTEXT)
+    check("Fehler: deutscher Satz, technischer Text daneben, kein Erfolgssatz",
+          fest == {"final_text": "Diese Karte gibt es nicht mehr.", "space": "ideas",
+                   "fehler": "RuntimeError: Ideen-Werkzeug meldet einen Fehler (idea_not_found)"})
+
+    check("andere Abkuerzungen bleiben bei der Synthese",
+          intro._feste_antwort(plan_mit("shortcut_3", "bubble_find"), lauf(True, "Found"), False, "", None) is None)
+    check("Plan des Planers bleibt bei der Synthese",
+          intro._feste_antwort(plan_mit("plan_9", "bubble_list"), lauf(True, "2 bubbles:\n- A (id=1)"), False, "", None) is None)
+    check("unlesbares Ergebnis faellt auf die Synthese zurueck",
+          intro._feste_antwort(plan_mit("shortcut_4", "bubble_list"), lauf(True, {"x": 1}), False, "", None) is None)
+
     print(f"{'FEHLER' if fehler else 'OK'}: {len(fehler)} fehlgeschlagen")
     return 1 if fehler else 0
 
