@@ -77,6 +77,17 @@ def test_bild_an_karte_sagt_ehrlich_dass_es_noch_nicht_geht(satz) -> None:
     assert abk.loese(satz, KONTEXT) == {"rueckfrage": abk.BILD_NOCH_NICHT}
 
 
+@pytest.mark.parametrize("satz", ["Recherchiere zu Bühnenplan", "Recherchiere zu dieser Bubble",
+                                  "Mach eine Recherche zu Sponsoren", "Bitte recherchiere über Stadtfest"])
+def test_recherche_zu_karte_sagt_ehrlich_dass_es_noch_nicht_geht(satz) -> None:
+    assert abk.loese(satz, KONTEXT) == {"rueckfrage": abk.RECHERCHE_NOCH_NICHT}
+
+
+def test_recherche_im_web_bleibt_beim_browser_weg() -> None:
+    antwort = abk.loese("Recherchiere im Web zu Sponsoren", KONTEXT)
+    assert antwort is None or antwort.get("rueckfrage") != abk.RECHERCHE_NOCH_NICHT
+
+
 def test_bildungsplan_ist_kein_bild() -> None:
     antwort = abk.loese("Füge Bildungsplan zu Stadtfest hinzu", KONTEXT)
     assert antwort is None or antwort.get("rueckfrage") != abk.BILD_NOCH_NICHT

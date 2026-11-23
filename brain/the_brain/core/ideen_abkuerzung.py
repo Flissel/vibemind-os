@@ -657,7 +657,20 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
                           text, _I)
             and re.search(r"\b(?:karte|notiz|idee|bubble|card|note|an\s+\w+|zu\s+\w+|in\s+\w+)\b", text, _I)):
         raise _Rueckfrage(BILD_NOCH_NICHT)
+    # ── Recherche zu einer Karte oder Bubble: der Weg, der die Recherche-Karte anlegt
+    #    (spaces/research, research_start/research_status), ist an das Gehirn nicht
+    #    angebunden, und der Pruefweg research:* meldete im Betrieb "report file was never
+    #    written". Nicht binden, ehrlich sagen. "Recherchiere im Web/Netz/Internet ..."
+    #    bleibt beim Browser-Weg und wird hier nicht abgefangen.
+    if (re.match(r"(?:bitte\s+)?(?:recherchier\w*|mach(?:e)?\s+(?:eine\s+)?recherche|starte\s+(?:eine\s+)?recherche)"
+                 r"\s+(?:zu|über|ueber|für|fuer|bei|an)\b", text, _I)
+            and not re.search(r"\bim\s+(?:web|netz|internet)\b", text, _I)):
+        raise _Rueckfrage(RECHERCHE_NOCH_NICHT)
     return None
+
+
+RECHERCHE_NOCH_NICHT = ("Das kann ich noch nicht: zu einer Karte oder Bubble recherchieren und das Ergebnis "
+                        "als Karte ablegen. Geändert habe ich nichts.")
 
 
 BILD_NOCH_NICHT = ("Das kann ich noch nicht: Bilder an Karten hängen. Im Ideen-Space gibt es dafür noch "
