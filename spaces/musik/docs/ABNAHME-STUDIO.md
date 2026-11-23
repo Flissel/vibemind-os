@@ -294,3 +294,42 @@ wegen der unruhigen Beats nichts entscheiden konnte.
 Offen bleibt die Länge. Drei Songs im Tempo-Bereich ergeben ein Set von
 knapp 8 Minuten, mehr gibt der Bestand nicht her. Für 20 Minuten braucht es
 mehr Songs um 85–94 BPM.
+
+## Lauf 5: Gesangsspur (Plan 1c)
+
+Felix 23.11. nach Lauf 4: Bei so unterschiedlichen Texten und Stilen fressen
+sich die Stimmen im Übergang gegenseitig auf. Die Stimme soll auf eine
+eigene Spur, die man an- und ausschalten kann. Entscheidung: lokal trennen.
+
+Umgesetzt in `cc/musik-gesang`:
+
+- Demucs `htdemucs` trennt jeden Song auf der CPU in Stimme und Begleitung.
+  Das dauert 54 bis 91 s je Song (*measured*), die Grafikkarte bleibt frei.
+  Das Ergebnis liegt im Bestand neben dem Song. `aufnehmen` trennt gleich
+  mit, `set` holt fehlende Trennungen vor dem ersten Modellaufruf nach.
+- Im Übergang wechselt die Stimme an der Taktgrenze nahe der Mitte. Davor
+  blendet die alte Stimme einen Takt lang aus, danach die neue einen Takt
+  lang ein. Die Begleitungen mischen wie bisher.
+- Die QA misst je Naht, wie lange beide Stimmen über −35 dBFS liegen. Mehr
+  als 0,5 s ist ein blockierender Befund (`stimmen`).
+- `--ohne-gesang` spielt nur die Begleitungen. Der Profiler setzt das
+  selbst, wenn der Wunsch Musik ohne Gesang verlangt.
+
+Mit `9825afa1`, gleicher Wunsch, `--length 7`. Die drei Songs waren schon
+getrennt, also ohne Trennzeit:
+
+- Reihenfolge `no-chicks-no-eggs` → `farewell-kiss` → `smaragd-green-eyes`,
+  Set 7:48, −15.7 LUFS, True Peak −1.3 dB.
+- Abschnitt „Stimmen“ im Bericht (*measured*):
+
+| Naht | Wechsel | gleichzeitig |
+|---|---|---|
+| 2:54 `no-chicks-no-eggs` → `farewell-kiss` | 3:09 | 0,0 s |
+| 4:25 `farewell-kiss` → `smaragd-green-eyes` | 4:47 | 0,0 s |
+
+- QA blockierend: das Intervall an der Naht bei 4:25 mit 0,09 Schlägen,
+  wieder im unruhigen Outro von `farewell-kiss` (0,30). Diese Naht hat
+  Felix in Lauf 4 als sauber gehört.
+- Hinweis Länge: 7,8 statt 7 Minuten, wie in Lauf 3 und 4.
+
+*offen* — Felix' Ohr: ob die Stimmen jetzt sauber wechseln.

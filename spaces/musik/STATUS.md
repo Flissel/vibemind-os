@@ -14,20 +14,23 @@ _Snapshot: 2026-09-03, Studio section 2026-11-23._
 `studio/` (`dj-set`) builds a finished set from a wish: analyst, curator,
 architect, designer, critic, renderer and QA in one run, headless, no shell
 or file tool for the agent. Material is Felix' own Suno songs in the
-Bestand (`MUSIK_DATEN`), each with its Herkunft. The four runs and what they
+Bestand (`MUSIK_DATEN`), each with its Herkunft. The five runs and what they
 found are in [`docs/ABNAHME-STUDIO.md`](docs/ABNAHME-STUDIO.md).
 
 | Claim | Kind | Evidence |
 | --- | --- | --- |
-| 519 studio tests + 25 planner/api tests green | static | `pytest` in `studio/`, `python -m pytest spaces/musik`, 2026-11-23 |
+| 557 studio tests + 25 planner/api tests green | static | `pytest` in `studio/`, `python -m pytest spaces/musik`, 2026-11-23 (Plan 1c) |
 | A 7-minute wish becomes a rendered set with all three in-range songs | measured | Lauf 4 (`...-05`), 7:54, −15.2 LUFS, True Peak −1.3 dB |
 | Songs without an outro are blended over their last 16 bars | measured | Lauf 3 and 4, every transition 16 bars |
 | Each mix area plays in the target tempo (section-wise stretching) | measured | Lauf 4, seam 2:37 median 0.05 beats vs 0.18–0.26 in Lauf 3 |
 | Both seams of Lauf 4 sound clean | heard | Felix 2026-11-23: „Beide sauber“ |
 | Unstable beats in a mix area are named in the QA report | measured | Lauf 4 names both areas above 0.1 beats |
+| Vocals sit on their own track and switch mid-transition | measured | Lauf 5 (`...-06`), both seams 0.0 s of two voices at once, Demucs `htdemucs` on CPU |
+| `--ohne-gesang` plays only the accompaniment | static | CLI tests, Plan 1c |
 
 | Gap | Kind | Consequence |
 | --- | --- | --- |
+| Vocal switch not yet heard | open | Lauf 5 measured clean, Felix has not listened yet |
 | Only three songs in one tempo range | open | a set is about 8 minutes; 20 minutes needs more songs around 85–94 BPM |
 | QA seam check sees a short window only | measured | it flagged 0.07 beats where the full transition drifted 0.56 (Lauf 3) |
 | Set length misses the wish by 13 % | measured | 7.9 instead of 7 minutes; three songs cannot be cut shorter |
