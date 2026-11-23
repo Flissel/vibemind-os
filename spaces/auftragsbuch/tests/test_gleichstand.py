@@ -78,7 +78,8 @@ def test_anderer_agenten_ziel_ist_erlaubt():
 
 
 def test_dienst_mit_fehlendem_oder_zusaetzlichem_werkzeug():
-    soll = ["auftrag_probe", "auftrag_lesen", "sales_post_pruefen", "rowboat_vorschlaege_anlegen"]
+    soll = ["auftrag_probe", "auftrag_lesen", "sales_post_pruefen", "sales_kontakt_finden",
+            "rowboat_vorschlaege_anlegen"]
     assert gleichstand(ARTEN, {}, [], dienst_werkzeuge=soll) == []
     assert gleichstand(ARTEN, {}, [], dienst_werkzeuge=soll[:-1]) != []
     assert gleichstand(ARTEN, {}, [], dienst_werkzeuge=soll + ["extra"]) != []

@@ -54,14 +54,15 @@ capabilities:
 # bleiben unverändert.
 auftragsarten:
   - art: vorschlaege_anlegen
-    version: 1
+    version: 2
     veraendert: true
     frist_min: 5
     nachpruefung: beleg
     beschreibung: >-
-      Der Rowboat-Agent legt die übergebenen Punkte als Vorschläge im
+      Der Rowboat-Abholer legt die übergebenen Punkte als Vorschläge im
       To-do-Tab von Rowboat an und meldet je Punkt, ob er neu angelegt wurde,
-      schon vorhanden war oder früher abgelehnt wurde. Links auf die
+      schon vorhanden war oder früher abgelehnt wurde. Der Link ist leer, ein
+      Pfad ab / oder eine https-Adresse ohne Leerzeichen. Links auf die
       Freigabe-Seite sind nicht erlaubt: Daran erkennt der Freigabe-Bote
       seine eigenen Vorschläge.
     eingabe:
@@ -90,6 +91,7 @@ auftragsarten:
               link:
                 type: string
                 maxLength: 500
+                pattern: '^(|/[^\s]*|https://[^\s]+)$'
                 not:
                   pattern: "/freigaben#fg-"
     ergebnis:

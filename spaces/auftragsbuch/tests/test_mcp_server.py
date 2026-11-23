@@ -108,7 +108,8 @@ def test_gesund_ohne_schluessel(client):
 def test_tools_list_zeigt_den_katalog(client):
     antwort = _rpc(client, SCHLUESSEL, "tools/list", {})
     assert [t["name"] for t in antwort.json()["result"]["tools"]] == [
-        "auftrag_probe", "auftrag_lesen", "rowboat_vorschlaege_anlegen", "sales_post_pruefen"]
+        "auftrag_probe", "auftrag_lesen", "rowboat_vorschlaege_anlegen", "sales_kontakt_finden",
+        "sales_post_pruefen"]
 
 
 def test_erfolg_gibt_json_text(client, buch):
@@ -116,7 +117,7 @@ def test_erfolg_gibt_json_text(client, buch):
     assert r["isError"] is False
     nutz = json.loads(r["content"][0]["text"])
     assert nutz["stand"] == "offen" and nutz["an"] == "sales"
-    assert buch.angelegt == [("sales", "post_pruefen", 1, EINGABE, "plan_1", 15)]
+    assert buch.angelegt == [("sales", "post_pruefen", 2, EINGABE, "plan_1", 15)]
 
 
 def test_form_fehler_ohne_wert(client, buch):

@@ -153,7 +153,7 @@ Dienst meldet sich an der Datenbank mit der eigenen Anmelde-Rolle `auftragsbuch_
    `"<PFAD-ZUR-VENV>/Scripts/python.exe" "<PFAD-ZUM-AEUSSEREN-REPO>/scripts/mcp_mit_env.py" --env AUFTRAGSBUCH_URL --env AUFTRAGSBUCH_SCHLUESSEL --env AUFTRAGSBUCH_CA_DATEI -- "<ZWEIG-CHECKOUT>/spaces/auftragsbuch/deploy/rauchprobe.py"`.
    Sie legt nichts an: `initialize`, `tools/list` und der `tools/call` von `sales_post_pruefen`, der mit
    `Unbekannte Auftragsart` scheitern muss, schreiben keine Zeile. Erwartung: drei Zeilen `ok …`
-   (`initialize`, `tools/list (vier Werkzeuge)`, `tools/call sales_post_pruefen (Unbekannte Auftragsart)`). Danach
+   (`initialize`, `tools/list (fuenf Werkzeuge)`, `tools/call sales_post_pruefen (Unbekannte Auftragsart)`). Danach
    auf dem Mini-PC `printf '%s\n' "SELECT count(*) FROM auftrag.auftraege WHERE von = 'brain' AND art <> 'probe';" | <psql>`
    liefert `0`, und `AUFTRAGSBUCH_TAG=<laufender Tag> docker compose logs auftragsbuch` nennt nur Werkzeugname,
    Ergebnis und Dauer.
@@ -211,7 +211,7 @@ Werkzeug-Servers `auftragsbuch` steht seit Task 7 in `openfang/openfang.vibemind
 8. **Eigenes Ja des Betreibers:** OpenFang neu starten (nicht gleichzeitig mit `brain-core`).
 9. **Prüfen** nach dem Neustart, über die OpenFang-API bzw. das Dashboard. Dieser Schritt liest nur und ändert
    nichts.
-   - `GET /api/mcp/servers` zeigt `auftragsbuch` als verbunden mit vier Werkzeugen. Wenn nicht: anhalten, die
+   - `GET /api/mcp/servers` zeigt `auftragsbuch` als verbunden mit fuenf Werkzeugen. Wenn nicht: anhalten, die
      Ursache beheben (meist fehlt ein Wert in der Root-`.env`), dann zehn Minuten lang alle zwei Minuten nachsehen
      und notieren, ob OpenFang einen stdio-Server, dessen Start fehlschlug, von selbst neu verbindet. Belegt ist
      das nicht; bis dahin braucht es einen erneuten Neustart (eigenes Ja).

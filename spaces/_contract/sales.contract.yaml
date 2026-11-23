@@ -14,7 +14,7 @@ capabilities: []
 
 auftragsarten:
   - art: post_pruefen
-    version: 1
+    version: 2
     veraendert: true
     frist_min: 15
     nachpruefung: beleg
@@ -58,11 +58,59 @@ auftragsarten:
               link:
                 type: string
                 maxLength: 500
+                pattern: '^/[^\s]*$'
               entwurf_id:
                 type: [string, "null"]
+                pattern: "^[A-Za-z0-9_-]{1,64}$"
         anzahl_gelesen:
           type: integer
           minimum: 0
         kontakte_neu:
           type: integer
           minimum: 0
+
+  - art: kontakt_finden
+    version: 1
+    veraendert: false
+    frist_min: 5
+    nachpruefung: form
+    beschreibung: >-
+      Sales sucht Kontakte, deren Name den Suchtext enthält, und meldet
+      höchstens zehn Treffer mit Kennung, Titel und Link in die
+      Sales-Oberfläche. Es wird nichts verändert. Gemeldet werden nie
+      Adressen oder Nummern.
+    eingabe:
+      type: object
+      additionalProperties: false
+      required: [suche]
+      properties:
+        suche:
+          type: string
+          minLength: 2
+          maxLength: 100
+    ergebnis:
+      type: object
+      additionalProperties: false
+      required: [treffer, anzahl]
+      properties:
+        treffer:
+          type: array
+          maxItems: 10
+          items:
+            type: object
+            additionalProperties: false
+            required: [kontakt_id, titel, link]
+            properties:
+              kontakt_id:
+                type: string
+                pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              titel:
+                type: string
+                maxLength: 200
+              link:
+                type: string
+                pattern: "^/kontakte/[0-9a-f-]{36}$"
+        anzahl:
+          type: integer
+          minimum: 0
+          maximum: 10

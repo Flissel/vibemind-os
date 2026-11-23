@@ -106,6 +106,27 @@ def _pruefe_geschlossen(name: str, schema: object, ort: str, pfad: tuple[object,
         _pruefe_geschlossen(name, teil, ort, pfad + teil_pfad)
 
 
+def _ist_array_typ(schema: dict) -> bool:
+    typ = schema.get("type")
+    return typ == "array" or (isinstance(typ, list) and "array" in typ)
+
+
+def _pruefe_arrays(name: str, schema: object, ort: str, pfad: tuple[object, ...]) -> None:
+    """Jedes Array braucht `items` als Schema mit `type`; `items: true` und Listen-Form gelten nicht."""
+    if not isinstance(schema, dict):
+        return
+    if _ist_array_typ(schema):
+        if "items" not in schema:
+            raise VertragsFehler(f"{ort}: {name} array braucht items bei '{_pfad(pfad)}'")
+        items = schema["items"]
+        if items is True:
+            raise VertragsFehler(f"{ort}: {name} items darf nicht true sein bei '{_pfad(pfad + ('items',))}'")
+        if not isinstance(items, dict) or "type" not in items:
+            raise VertragsFehler(f"{ort}: {name} items braucht type bei '{_pfad(pfad + ('items',))}'")
+    for teil_pfad, teil in _teil_schemata(schema):
+        _pruefe_arrays(name, teil, ort, pfad + teil_pfad)
+
+
 def _pruefe_schema(name: str, schema: object, ort: str) -> dict:
     if not isinstance(schema, dict):
         raise VertragsFehler(f"{ort}: {name} muss ein Objekt (JSON Schema) sein")
@@ -121,6 +142,7 @@ def _pruefe_schema(name: str, schema: object, ort: str) -> dict:
             f"(Regel '{e.validator}' bei '{_pfad(e.path)}')"
         ) from None
     _pruefe_geschlossen(name, schema, ort, ())
+    _pruefe_arrays(name, schema, ort, ())
     return schema
 
 
@@ -240,4 +262,10 @@ def vertrag_hash(arten: dict) -> str:
     """sha256 ueber die kanonische JSON-Form aller Auftragsarten."""
     kanonisch = {f"{s}/{n}": asdict(a) for (s, n), a in arten.items()}
     text = json.dumps(kanonisch, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def art_hash(art: Auftragsart) -> str:
+    """sha256 ueber die kanonische JSON-Form einer einzelnen Auftragsart."""
+    text = json.dumps(asdict(art), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()

@@ -7,6 +7,7 @@ import yaml
 from spaces.auftragsbuch.vertrag import (
     FormFehler,
     VertragsFehler,
+    art_hash,
     lade_auftragsarten,
     pruefe_eingabe,
     pruefe_ergebnis,
@@ -163,3 +164,37 @@ def test_hash_ist_stabil_und_aendert_sich_mit_der_form(tmp_path):
     assert h1 == vertrag_hash(lade_auftragsarten(tmp_path))
     schreibe(tmp_path, "demo", [{**GUELTIG, "version": 2}])
     assert vertrag_hash(lade_auftragsarten(tmp_path)) != h1
+
+
+def test_lader_lehnt_array_ohne_items_ab(tmp_path):
+    schreibe(tmp_path, "demo", [{**GUELTIG, "ergebnis": _offen({"type": "array"})}])
+    with pytest.raises(VertragsFehler, match="array braucht items") as e:
+        lade_auftragsarten(tmp_path)
+    assert "demo.contract.yaml" in str(e.value) and "'properties/faellig'" in str(e.value)
+
+
+def test_lader_lehnt_items_ohne_type_ab(tmp_path):
+    schreibe(tmp_path, "demo", [{**GUELTIG, "ergebnis": _offen({"type": "array", "items": {"enum": ["a"]}})}])
+    with pytest.raises(VertragsFehler, match="items braucht type") as e:
+        lade_auftragsarten(tmp_path)
+    assert "'properties/faellig/items'" in str(e.value)
+
+
+def test_lader_lehnt_items_true_ab(tmp_path):
+    schreibe(tmp_path, "demo", [{**GUELTIG, "ergebnis": _offen({"type": "array", "items": True})}])
+    with pytest.raises(VertragsFehler, match="items darf nicht true sein"):
+        lade_auftragsarten(tmp_path)
+
+
+def test_lader_nimmt_array_mit_getyptem_items_an(tmp_path):
+    ergebnis = _offen({"type": "array", "items": {"type": "string"}})
+    schreibe(tmp_path, "demo", [{**GUELTIG, "ergebnis": ergebnis}])
+    assert ("demo", "post_pruefen") in lade_auftragsarten(tmp_path)
+
+
+def test_art_hash_ist_stabil_und_haengt_an_der_form(tmp_path):
+    schreibe(tmp_path, "demo", [GUELTIG])
+    a = lade_auftragsarten(tmp_path)[("demo", "post_pruefen")]
+    assert art_hash(a) == art_hash(a) and len(art_hash(a)) == 64
+    schreibe(tmp_path, "demo", [{**GUELTIG, "version": 2}])
+    assert art_hash(lade_auftragsarten(tmp_path)[("demo", "post_pruefen")]) != art_hash(a)

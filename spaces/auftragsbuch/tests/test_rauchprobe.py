@@ -26,13 +26,13 @@ import rauchprobe  # noqa: E402
 RAUCHPROBE = DEPLOY / "rauchprobe.py"
 ARTEN = lade_auftragsarten(Path(__file__).resolve().parents[2] / "_contract")
 SCHLUESSEL = "rauch-GEHEIM-7"
-VIER = ["auftrag_probe", "auftrag_lesen", "rowboat_vorschlaege_anlegen", "sales_post_pruefen"]
+FUENF = ["auftrag_probe", "auftrag_lesen", "rowboat_vorschlaege_anlegen", "sales_kontakt_finden", "sales_post_pruefen"]
 
 
 class _Dienst:
     def __init__(self) -> None:
         self.port = 0
-        self.werkzeuge = list(VIER)
+        self.werkzeuge = list(FUENF)
         self.aufruf_ergebnis: dict = {"content": [{"type": "text", "text": "Unbekannte Auftragsart"}],
                                       "isError": True}
         self.aufrufe: list[dict] = []
@@ -120,7 +120,7 @@ def test_erwartungen_passen_zu_den_echten_vertraegen() -> None:
 def test_alles_gut_drei_mal_ok(dienst: _Dienst) -> None:
     lauf = _lauf({"AUFTRAGSBUCH_URL": dienst.url, "AUFTRAGSBUCH_SCHLUESSEL": SCHLUESSEL})
     assert lauf.returncode == 0, lauf.stdout + lauf.stderr
-    assert lauf.stdout.splitlines() == ["ok initialize", "ok tools/list (vier Werkzeuge)",
+    assert lauf.stdout.splitlines() == ["ok initialize", "ok tools/list (fuenf Werkzeuge)",
                                         "ok tools/call sales_post_pruefen (Unbekannte Auftragsart)"]
     assert lauf.stderr == ""
     _ohne_geheimes(lauf, dienst.port)
@@ -129,10 +129,10 @@ def test_alles_gut_drei_mal_ok(dienst: _Dienst) -> None:
 
 
 def test_falsche_werkzeugliste_ist_fehler(dienst: _Dienst) -> None:
-    dienst.werkzeuge = VIER + ["fremd"]
+    dienst.werkzeuge = FUENF + ["fremd"]
     lauf = _lauf({"AUFTRAGSBUCH_URL": dienst.url, "AUFTRAGSBUCH_SCHLUESSEL": SCHLUESSEL})
     assert lauf.returncode == 1
-    assert "FEHLER tools/list (nicht genau die vier Werkzeuge)" in lauf.stdout.splitlines()
+    assert "FEHLER tools/list (nicht genau die fuenf Werkzeuge)" in lauf.stdout.splitlines()
     assert "fremd" not in lauf.stdout
 
 
@@ -218,7 +218,7 @@ def test_gegen_den_echten_dienst_ueber_die_echte_bruecke() -> None:
         server.should_exit = True
         faden.join(timeout=30)
     assert lauf.returncode == 0, lauf.stdout + lauf.stderr
-    assert lauf.stdout.splitlines() == ["ok initialize", "ok tools/list (vier Werkzeuge)",
+    assert lauf.stdout.splitlines() == ["ok initialize", "ok tools/list (fuenf Werkzeuge)",
                                         "ok tools/call sales_post_pruefen (Unbekannte Auftragsart)"]
     _ohne_geheimes(lauf, port)
 

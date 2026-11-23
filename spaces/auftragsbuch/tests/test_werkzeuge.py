@@ -53,7 +53,8 @@ def buch() -> FalschesBuch:
 
 def test_katalog_hat_feste_und_vertragswerkzeuge():
     namen = [w["name"] for w in katalog(ARTEN)]
-    assert namen == ["auftrag_probe", "auftrag_lesen", "rowboat_vorschlaege_anlegen", "sales_post_pruefen"]
+    assert namen == ["auftrag_probe", "auftrag_lesen", "rowboat_vorschlaege_anlegen", "sales_kontakt_finden",
+                     "sales_post_pruefen"]
     assert gleichstand(ARTEN, {}, [], dienst_werkzeuge=namen) == []
 
 
@@ -69,8 +70,8 @@ def test_katalog_schema_einer_auftragsart():
 
 def test_auftragsart_legt_mit_werten_aus_dem_vertrag_an(buch):
     r = ausfuehren("sales_post_pruefen", {"eingabe": EINGABE, "plan_id": "plan_1"}, buch, ARTEN)
-    assert buch.angelegt == [("sales", "post_pruefen", 1, EINGABE, "plan_1", 15)]
-    assert r == {"auftrag_id": buch.letzte_id, "an": "sales", "art": "post_pruefen", "version": 1,
+    assert buch.angelegt == [("sales", "post_pruefen", 2, EINGABE, "plan_1", 15)]
+    assert r == {"auftrag_id": buch.letzte_id, "an": "sales", "art": "post_pruefen", "version": 2,
                  "stand": "offen"}
 
 
