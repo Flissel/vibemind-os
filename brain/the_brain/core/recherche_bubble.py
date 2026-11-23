@@ -38,6 +38,23 @@ EREIGNIS_START = "research.bubble_start"    # Werkzeug research_start (Vorschau 
 EREIGNIS_STATUS = "research.bubble_status"  # Werkzeug research_status
 NUR_GEHIRN = frozenset({EREIGNIS_START, EREIGNIS_STATUS})
 
+
+def _name_wie_openfang(wert: str) -> str:
+    # Wie McpExecutor._tool_namespace_component: OpenFang sieht "Spaces_Research" und
+    # "spaces-research" als denselben Server.
+    return wert.strip().lower().replace("-", "_")
+
+
+def ist_recherche_ziel(ziel: Any) -> bool:
+    """True fuer jedes Ziel, das beim Recherche-Server landen kann, egal in welcher Schreibweise.
+
+    Absichtlich streng: jeder Teil zwischen Doppelpunkten wird verglichen, nicht nur der dritte.
+    """
+    if not isinstance(ziel, str):
+        return False
+    server = _name_wie_openfang(SERVER)
+    return any(_name_wie_openfang(teil) == server for teil in ziel.split(":"))
+
 GILT_S = 120
 FRIST_S = 90 * 60          # wie die Zeitgrenze des Kindprozesses im Recherche-Server (5400 s)
 TIEFE = "thorough"
