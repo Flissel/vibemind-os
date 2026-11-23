@@ -179,3 +179,31 @@ Nicht gemessen: derselbe Lauf über OpenFang (dort hat `brain-desktop` die Werkz
 Vorhanden sind `spaces.desktop.automation_ui_client` (ersetzt) und
 `spaces.desktop.Automation_ui.backend.app.services.clawdbot_bridge` (im Submodul).
 Insgesamt 9 Quelldateien und 14 Testdateien der App importieren aus `spaces.desktop`.
+
+## 8. Der Agent und seine Werkzeuge über den Abo-Wrapper (23.11., nach dem Neustart)
+
+Ein Agent in OpenFang kann seine Werkzeuge nicht selbst aufrufen: Der Abo-Wrapper startet
+Claude mit `--safe-mode`, und das schaltet Werkzeug-Dienste ab. Im äußeren Repo liegt im Zweig
+`cc/wrapper-werkzeuge` eine Erweiterung (Vorgabe aus, ein Dienst für einen Agenten aus einer
+festen Beschreibung, Werkzeugliste abschließend). Zwei Läufe aus dem Arbeitsordner, beide im
+Trockenlauf, beide auf `brain-desktop` gebucht:
+
+| Lauf | Aufbau | Ergebnis |
+|---|---|---|
+| 1 | mit `--safe-mode` | 10,0 s, kein Werkzeug-Aufruf; das Modell meldet, die Werkzeuge fehlen |
+| 2 | Messschalter, ohne `--safe-mode`, Wegwerf-Verzeichnis, `--tools ""` | 12,9 s gesamt, davon 8,2 s Claude; fünf Aufrufe in sechs Zügen; Aufgabenbuch: zwei Schritte, `echt: false` |
+
+Was in Lauf 2 geladen war (Startereignis von Claude, nur Namen):
+
+- Werkzeuge: genau die neun von `spaces-desktop`, kein eingebautes.
+- Werkzeug-Dienste: nur `spaces-desktop`. Befehle: keine. Skills: keine.
+- Plugins: vier eingebaute (`cc-plugin-agents-md`, `-telemetry`, `-privacy`,
+  `-plugin-authoring`), keines der vom Nutzer installierten.
+- Agenten-Namen: sechs eingebaute; ohne Werkzeug zum Starten nicht benutzbar.
+- Hooks: kein Hook-Ereignis in der Ausgabe.
+- Nutzer-`CLAUDE.md`: nicht bewiesen. Die erste Anfrage hatte 2.868 Tokens für System-Text
+  und neun Werkzeug-Beschreibungen; die Datei allein hat rund 3 kB. Das spricht dagegen,
+  dass sie geladen wurde, ist aber eine Schätzung.
+
+Ob `--safe-mode` für diesen einen Agenten ersetzt wird, entscheidet Felix. In den Betrieb
+ist nichts davon gegangen.
