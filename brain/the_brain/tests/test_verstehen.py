@@ -357,6 +357,19 @@ def test_rundgang_saetze(monkeypatch, echter_muster_router, satz, space, erwarte
         assert body["final_text"].startswith(wert) if weg != "nicht-verstanden" else body["final_text"] == wert
 
 
+@pytest.mark.parametrize("satz,zusatz", [
+    ("Zeig meine Aufträge", True), ("Welche geplanten Aufgaben gibt es?", False),
+])
+def test_auftraege_sind_nicht_die_geplanten_aufgaben(monkeypatch, echter_muster_router, satz, zusatz) -> None:
+    # Lauf 8: "Zeig meine Aufträge" kam mit den geplanten Aufgaben, ohne das zu sagen.
+    ausfuehrer = _Ausfuehrer({"success": True, "tasks": [{"title": "Plakate drucken", "status": "active"}],
+                              "count": 1})
+    client, _ = _client(monkeypatch, SCHWACH, ausfuehrer=ausfuehrer, muster=echter_muster_router)
+    body = client.post("/api/multihop/execute", json={"intent": satz, "context": {"space": "orders"}}).json()
+    assert body["final_text"].startswith("Eine geplante Aufgabe: „Plakate drucken“ (aktiv).")
+    assert body["final_text"].endswith(v.NUR_GEPLANT) is zusatz
+
+
 # ── Sprünge, die heute laufen, bleiben (Rückfall-Schutz) ──────────────────
 
 @pytest.mark.parametrize("space", ["roarboot", "swedesign", "video", None])
@@ -570,7 +583,8 @@ def test_fester_lesesatz_auftraege_deutsch_statt_dict(monkeypatch) -> None:
                        json={"intent": "Zeig meine Aufträge", "context": {"space": "orders"}}).json()
     assert state.multihop_planner.aufrufe == 0
     assert [h.capability for h in ausfuehrer.plaene[0].hops] == ["schedule_list"]
-    assert body["final_text"] == "Es sind keine geplanten Aufgaben eingetragen."
+    # Lauf 8: Auftraege an Agenten sind etwas anderes; das sagt der Satz jetzt.
+    assert body["final_text"] == "Es sind keine geplanten Aufgaben eingetragen." + v.NUR_GEPLANT
     assert body["ok"] is True
 
 

@@ -3313,7 +3313,7 @@ async def _multihop_execute(request: Request):
     # fuer Plaene der Ideen-Abkuerzung und fuer die aelteren Ein-Schritt-Abkuerzungen
     # "zurueck" und "zeige meine Bubbles" (deren Rohtext stand sonst im Chat).
     if _fest_lesen:
-        _fest = _lese_antwort(plan, exec_result, _fest_lesen)
+        _fest = _lese_antwort(plan, exec_result, _fest_lesen, intent)
     else:
         _fest = _feste_antwort(plan, exec_result, _ideen_fest, _ideen_antwort,
                                _ideen_kontext if _ideen_kontext is not None else body.get("context"))
@@ -3454,7 +3454,7 @@ def _fester_leseplan(intent: str, capability: str):
         return None
 
 
-def _lese_antwort(plan, exec_result, capability: str) -> Dict[str, Any]:
+def _lese_antwort(plan, exec_result, capability: str, frage: str = "") -> Dict[str, Any]:
     """Deutscher Satz fuer einen festen Lesesatz; nie Rohtext, nie Erfolg ohne Ergebnis."""
     from core import verstehen as _verstehen
     schritt: Any = {}
@@ -3470,6 +3470,7 @@ def _lese_antwort(plan, exec_result, capability: str) -> Dict[str, Any]:
         formatierer = _verstehen.FESTE_ANTWORTEN.get(capability)
         satz = formatierer(schritt.get("result")) if formatierer else None
     if satz:
+        satz += _verstehen.lese_zusatz(frage, capability)
         # Traegt der Satz Bildschirminhalt (Fenstertitel), bekommt der Plan-Verlauf einen eigenen
         # Satz ohne ihn (core/feste_lesesaetze.py, protokolle).
         protokoll = _verstehen.FESTE_PROTOKOLLE.get(capability)

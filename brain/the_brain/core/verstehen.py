@@ -502,6 +502,18 @@ def antwort_schedule_list(ergebnis: Any) -> Optional[str]:
 
 
 FESTE_ANTWORTEN = {"schedule_list": antwort_schedule_list, **_weitere_antworten()}
+
+# Lauf 8: "Zeig meine Aufträge" antwortete mit den geplanten Aufgaben, ohne zu sagen, dass
+# Auftraege an Agenten etwas anderes sind und in dieser Liste fehlen.
+NUR_GEPLANT = " Aufträge an Agenten stehen nicht in dieser Liste."
+_AUFTRAEGE_WORT = re.compile(r"\bauftr(?:ä|ae)ge\b", re.IGNORECASE)
+
+
+def lese_zusatz(satz: Any, capability: str) -> str:
+    """Ehrlicher Zusatz zu einer festen Leseantwort, abhaengig vom gefragten Satz; sonst ``""``."""
+    if capability == "schedule_list" and isinstance(satz, str) and _AUFTRAEGE_WORT.search(satz):
+        return NUR_GEPLANT
+    return ""
 # Satz fuer Plan-Verlauf und Protokolle, wenn die Antwort Bildschirminhalt traegt (Fenstertitel).
 FESTE_PROTOKOLLE = _weitere_protokolle()
 
