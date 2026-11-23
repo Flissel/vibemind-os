@@ -7,9 +7,10 @@ von anderer Seite bearbeitet und die Zeilen verschieben sich.
 
 ## Das Problem in einem Satz
 
-Ein Satz wie „Leg mir Milch kaufen und Steuer machen auf die To-do-Liste" muss im Gehirn zu genau dem
+Ein Satz wie „Leg mir Milch kaufen; Steuer machen auf die To-do-Liste" muss im Gehirn zu genau dem
 Argument werden, das der Vertrag `rowboat/vorschlaege_anlegen` (Version 2) verlangt, mit Kennung je Punkt, und
-darf bei Unklarem nichts anlegen, sondern muss zurückfragen.
+darf bei Unklarem nichts anlegen, sondern muss zurückfragen. Trenner zwischen den Punkten sind Zeilen,
+Nummern, Spiegelstriche und `;`; ein „und" trennt **nicht** (ein Titel darf „und" enthalten).
 
 ## Was mitgeliefert wird
 
@@ -27,11 +28,17 @@ Ordner `spaces/auftragsbuch/lieferung/eingabe/`:
     `#([a-f0-9]{16})$`, womit der Abholer die Kennung aus dem Vorschlagstext liest (`rowboat/text.py`).
   - Der Titel im Ergebnis ist zusammengefasst und abgeschnitten, aber in der Schreibweise des ersten Vorkommens.
     Gleiche Titel (nach der Kleinschreibung) fallen zu einem Punkt zusammen.
+  - Ein Titel, der nur der Name der Liste ist („To-do-Liste", „Liste.", „Aufgabenliste", „meine Liste"), ist nie
+    ein Punkt, auch nicht neben anderen: Rückfrage. Das fängt das letzte Wort des Satzes ab, das der Muster-Kurzweg
+    als Argument weiterreicht.
   - Rückfrage, wenn nichts übrig bleibt, wenn es nach dem Zusammenfallen mehr als 50 Punkte sind, wenn ein Titel
     länger als 200 Zeichen ist (Grenze des Vertrags; es wird nie still gekürzt), bei Nicht-Text-Einträgen, bei
     einem Objekt mit anderen Schlüsseln als `titel` oder bei kaputtem JSON (Text, der mit `[` oder `{` beginnt).
-- `test_vorschlaege_eingabe.py` (7 Tests, darunter `test_ergebnis_passt_zum_vertrag` gegen `pruefe_eingabe` und
-  den echten Vertrag) und `test_katalog_eintrag.py` (4 Tests; liest den Eintrag unten aus diesem Dokument und
+- Zweite Funktion `aus_satz(satz: str) -> str | None`: schneidet den Inhalt zwischen Ankerverb (`leg`, `lege`,
+  `setz`, `setze`, `schreib`, `schreibe`, mit „mir" und „bitte") und „auf/in die|meine|unsere (To-do-|Aufgaben-)Liste"
+  aus der Anfrage, Satzzeichen am Ende ignoriert. Passt der Satz nicht, `None`. Wirft nie.
+- `test_vorschlaege_eingabe.py` ( darunter `test_ergebnis_passt_zum_vertrag` gegen `pruefe_eingabe` und
+  den echten Vertrag; ab Fix-Runde 1 insgesamt 10 Tests) und `test_katalog_eintrag.py` (4 Tests; liest den Eintrag unten aus diesem Dokument und
   prüft ihn gegen den echten Katalog). Aufruf von der Repo-Wurzel, je Datei einzeln:
   `python -m pytest spaces/auftragsbuch/lieferung/eingabe/test_vorschlaege_eingabe.py -q -p no:cacheprovider`
   `python -m pytest spaces/auftragsbuch/lieferung/eingabe/test_katalog_eintrag.py -q -p no:cacheprovider`
@@ -74,8 +81,8 @@ ihn nicht. Die Datei selbst ist hier **nicht** geändert.
     supporting: []
 ```
 
-Dazu in `brain/the_brain/data/capability_effects.yaml` eine Zeile bei den `read`/`external`-Einträgen (Zeile 98
-ff., neben `rowboat_status: read`), sonst fällt `test_jede_capability_hat_eine_klasse` (die Klasse ist Pflicht für
+Dazu in `brain/the_brain/data/capability_effects.yaml` eine Zeile unter `# --- external ---` (Zeile 110, neben
+`desktop_skill: external`; **nicht** bei `rowboat_status: read`), sonst fällt `test_jede_capability_hat_eine_klasse` (die Klasse ist Pflicht für
 jede Fähigkeit):
 
 ```yaml
@@ -112,9 +119,14 @@ heute `rowboat_status`: Dort ist das egal, hier nicht.
 
 ```python
             if event_id == "rowboat.vorschlaege_anlegen" and deterministic_target:
-                from .vorschlaege_eingabe import argumente as _vorschlaege_argumente
+                from .vorschlaege_eingabe import (
+                    argumente as _vorschlaege_argumente, aus_satz as _vorschlaege_aus_satz,
+                )
+                # Der Satz des Betreibers (plan_ctx["plan_intent"], wie bei idea.aenderung_zurueck, Zeile 1659)
+                # geht vor dem Kurzweg-Argument; passt er zu keinem Anker, bleibt das Argument des Hops.
                 strict_mcp_arguments, clarification = _vorschlaege_argumente(
-                    rendered_arg, plan_ctx.get("plan_id") or "")
+                    _vorschlaege_aus_satz(plan_ctx.get("plan_intent", "")) or rendered_arg,
+                    plan_ctx.get("plan_id") or "")
                 if strict_mcp_arguments is None:
                     return HopResult(
                         step_id=hop.step_id, ok=False, error=clarification,
@@ -139,13 +151,12 @@ Ausführer gebaut wird.
 
 ## 3. Was man wissen muss
 
-- **Letztes Wort als Argument.** Der Kommentar bei `aenderung_zurueck` (`capabilities.yaml` ab Zeile 689) hält fest:
-  Die Abkürzung über Muster setzt das letzte Wort des Satzes als Argument ein. Für diese Fähigkeit hieße das, dass
-  aus „…auf die To-do-Liste" ein einziger Punkt „To-do-Liste" werden könnte. `argumente` kann das nicht
-  erkennen (es sieht nur das Argument, nicht den Satz). Wer die Abkürzung zulässt, muss sie hier wie bei
-  `aenderung_zurueck` abfangen (`gruppe_aus_plan_argument` nimmt nur Eingaben, die wörtlich in der Anfrage stehen).
-  Das ist eine eigene Entscheidung und nicht Teil dieser Lieferung. Empfohlen: nach dem Einbauen einen Test mit
-  „Setz Oma anrufen auf meine Liste" über den ganzen Weg.
+- **Letztes Wort als Argument (behoben).** Der Muster-Kurzweg (Kommentar bei `aenderung_zurueck`,
+  `capabilities.yaml` ab Zeile 689) setzt das letzte Wort des Satzes als Argument ein, hier also „To-do-Liste".
+  Zwei Netze: `aus_satz` holt den Inhalt aus dem Satz (`plan_intent`, siehe 2.2), und `argumente` lehnt einen Titel
+  ab, der nur der Listenname ist. Bleibt die Anfrage ohne Anker (Planer hat den Satz umformuliert) und das
+  Argument ist eine echte Liste von Titeln, gilt diese Liste. Empfohlen: nach dem Einbauen einen Test mit „Setz Oma
+  anrufen auf meine Liste" über den ganzen Weg.
 - Nur der Betreiber darf das auslösen (`required_origin: betreiber`, Block 1 und 2). Ohne die Kopfzeilen aus
   Block 2 läuft der Schritt nicht.
 - `plan_id` kommt unverändert durch; das Werkzeug verlangt `^[A-Za-z0-9_-]{1,64}$`. Eine `plan_id` außerhalb davon
@@ -153,4 +164,5 @@ Ausführer gebaut wird.
 - Reihenfolge der Muster im Katalog: Der Eintrag muss nach dem Einfügen noch von den Mustern getroffen werden,
   bevor ein allgemeiner Eintrag einen Satz wie „Schreib … auf die Aufgabenliste" schluckt. Gegen die heutigen
   Muster stimmt das (kein anderer Eintrag trifft die Beispielsätze); die Probe steht in
-  `test_katalog_eintrag.py`.
+  `test_katalog_eintrag.py`. Ist der Eintrag eingebaut, vergleicht der Test gegen den eingebauten Eintrag.
+- **Gesamtordnung (gilt wörtlich auch in Block 1, Abschnitt 5, Punkt 5):** Der Verzeichnis-Block mit `required_origin: betreiber` kommt erst NACH dem Herkunft-Tor (Block 2); sonst wird `required_origin` still übergangen. Keine Zeile in `auftrag.brain_arten` außer `brain/probe/1`, bevor harte Sperre (Block 3), Herkunft (Block 2) und Ergebnistext (Block 5) im Betrieb stehen.

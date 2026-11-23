@@ -86,11 +86,23 @@ def gleichstand(
                     f"Space {space_id}: Rechtetraeger {t['agent']} schaltet Werkzeuge von {SERVER} frei, "
                     f"nennt den Server aber nicht unter mcp_servers."
                 )
-            freigeschaltet += [w for w in _traeger_werkzeuge(t) if w not in freigeschaltet]
+        # Mit Rechtetraeger (nicht rights_carrier: true) gehoeren die Werkzeuge dem Traeger, nie dem Space.
+        traeger_modus = bool(traeger_am_server) and not ganzer_space
+        traeger_tools: list[str] = []
+        for t in traeger_am_server:
+            traeger_tools += [w for w in _traeger_werkzeuge(t) if w not in traeger_tools]
+        traeger_namen = ", ".join(str(t["agent"]).strip() for t in traeger_am_server)
+        if traeger_modus:
+            for tool in freigeschaltet:
+                abweichungen.append(
+                    f"Space {space_id}: Werkzeug {tool} steht unter mcp_tools.{SERVER} des Space; "
+                    f"es gehoert an den Rechtetraeger ({traeger_namen})."
+                )
+        massgebend = traeger_tools if traeger_modus else freigeschaltet
 
         # Regel 1: Freigeschaltete Werkzeuge sind feste oder eigene Auftragsarten.
         erlaubt = set(FESTE_WERKZEUGE) | eigene.get(space_id, set())
-        for tool in freigeschaltet:
+        for tool in massgebend:
             if tool not in erlaubt:
                 abweichungen.append(
                     f"Space {space_id}: Werkzeug {tool} unter mcp_tools.{SERVER} "
@@ -107,10 +119,11 @@ def gleichstand(
                     f"Space {space_id}: Ereignis {name} ueber {SERVER} beginnt nicht mit {space_id}."
                 )
             tool = ereignis.get("tool")
-            if tool not in freigeschaltet:
+            if tool not in massgebend:
+                wo = f"beim Rechtetraeger {traeger_namen}" if traeger_modus else f"unter mcp_tools.{SERVER}"
                 abweichungen.append(
                     f"Space {space_id}: Ereignis {name} nutzt Werkzeug {tool}, "
-                    f"das nicht unter mcp_tools.{SERVER} freigeschaltet ist."
+                    f"das nicht {wo} freigeschaltet ist."
                 )
 
         # Regel 5: Die Auftragsbuch-Rechte liegen nie beim Agenten, der Nachrichten bearbeitet.

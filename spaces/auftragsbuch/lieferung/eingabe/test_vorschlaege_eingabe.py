@@ -90,3 +90,32 @@ def test_kennung_passt_zum_abholer():
     import re
     punkt = argumente(["Eine Sache"], PLAN)[0]["eingabe"]["punkte"][0]
     assert re.fullmatch(r"[a-f0-9]{16}", punkt["punkt_id"])
+
+
+# --- Fix-Runde 1: Listenname ist kein Titel, aus_satz schneidet den Inhalt aus dem Satz ---
+
+def test_listenname_allein_ergibt_rueckfrage():
+    from vorschlaege_eingabe import argumente as arg
+    for roh in ("To-do-Liste", "Liste.", "Aufgabenliste", "die To-do-Liste!", "meine Liste", "Todo Liste",
+                ["Milch", "To-do-Liste"], "Milch; Aufgabenliste", {"titel": ["Brot", "Liste."]}):
+        ergebnis = arg(roh, PLAN)
+        assert ergebnis[0] is None and ergebnis[1], roh
+    # Ein Titel, der nur mit Liste endet, bleibt gueltig.
+    assert arg(["Einkaufsliste schreiben"], PLAN)[1] is None
+
+
+def test_aus_satz_schneidet_den_inhalt_aus():
+    from vorschlaege_eingabe import aus_satz
+    assert aus_satz("Leg mir Milch kaufen auf die To-do-Liste") == "Milch kaufen"
+    assert aus_satz("Setz Brot; Eier auf meine Liste.") == "Brot; Eier"
+    assert aus_satz("Schreib bitte Zahnarzt auf die Aufgabenliste!") == "Zahnarzt"
+    assert aus_satz("Lege mir bitte 1. Brot\n2. Käse auf die Todo-Liste") == "1. Brot\n2. Käse"
+    ergebnis = argumente(aus_satz("Setz Brot; Eier auf meine Liste."), PLAN)
+    assert ergebnis[1] is None and _titel(ergebnis) == ["Brot", "Eier"]
+
+
+def test_aus_satz_ohne_anker_ist_none_und_wirft_nie():
+    from vorschlaege_eingabe import aus_satz
+    for satz in ("Schreib eine Mail an Oma", "Setz einen Timer auf 5 Minuten", "", "   ",
+                 "Leg mir auf die To-do-Liste", None, 5, ["x"]):
+        assert aus_satz(satz) is None, satz

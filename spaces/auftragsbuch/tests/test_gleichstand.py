@@ -232,3 +232,30 @@ def test_vorschlag_ohne_traeger_haelt_den_gleichstand_nicht():
     reg = _zusammenfuehren(registry_echt(), _vorschlag_aus_lieferung())
     del reg["rowboat"]["rights_carriers"]
     assert gleichstand(lade_auftragsarten(ORDNER), reg, capabilities_echt()) != []
+
+
+# --- Fix-Runde 1: Werkzeuge gehoeren an den Traeger, nicht an den Space ---
+
+def test_werkzeug_nur_am_space_statt_am_traeger_faellt_auf():
+    reg = {"rowboat": space_mit_traeger(["auftrag_lesen"])}
+    reg["rowboat"]["mcp_servers"] = ["spaces-rowboat", "auftragsbuch"]
+    reg["rowboat"]["mcp_tools"]["auftragsbuch"] = ["rowboat_vorschlaege_anlegen"]
+    meldungen = gleichstand(ARTEN, reg, [])
+    assert any("rowboat_vorschlaege_anlegen" in s and "Rechtetraeger" in s for s in meldungen)
+    # Auch ohne den Server unter mcp_servers: allein die Werkzeugliste am Space genuegt fuer die Meldung.
+    reg["rowboat"]["mcp_servers"] = ["spaces-rowboat"]
+    assert any("rowboat_vorschlaege_anlegen" in s for s in gleichstand(ARTEN, reg, []))
+
+
+def test_ereignis_werkzeug_nicht_beim_traeger_faellt_auf():
+    reg = {"rowboat": space_mit_traeger(["auftrag_lesen"],
+                                        {"rowboat.vorschlaege_anlegen": "rowboat_vorschlaege_anlegen"})}
+    # Das Werkzeug steht zwar am Space, aber nicht beim Traeger.
+    reg["rowboat"]["mcp_tools"]["auftragsbuch"] = ["rowboat_vorschlaege_anlegen"]
+    meldungen = gleichstand(ARTEN, reg, [])
+    assert any("rowboat.vorschlaege_anlegen" in s and "brain-rowboat" in s for s in meldungen)
+
+
+def test_ganzer_space_bleibt_wie_bisher():
+    reg = {"sales": space(tools=["auftrag_probe"], ereignisse={"sales.auftrag_probe": "auftrag_probe"})}
+    assert gleichstand(ARTEN, reg, []) == []

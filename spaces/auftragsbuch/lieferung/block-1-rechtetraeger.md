@@ -207,7 +207,7 @@ Tests, die `find_registered_mcp_authority` nur austauschen (`test_openfang_mcp_e
 3. Dann `sync_openfang_agents.py` laufen lassen, damit `brain-rowboat` entsteht; den Agenten auf dem Mini-PC
    bekannt machen ist Betrieb.
 4. Block 6 (Katalog-Eintrag) erst, wenn Punkt 1 und 2 stehen, denn sein Ziel wird aus dem Verzeichnis gelesen.
-5. Block 2 (`required_origin`) kann vorher oder nachher kommen; das Feld wird nur vom Tor gelesen.
+5. **Gesamtordnung:** Der Verzeichnis-Block mit `required_origin: betreiber` kommt erst NACH dem Herkunft-Tor (Block 2); sonst wird `required_origin` still übergangen. Keine Zeile in `auftrag.brain_arten` außer `brain/probe/1`, bevor harte Sperre (Block 3), Herkunft (Block 2) und Ergebnistext (Block 5) im Betrieb stehen.
 
 Offene Annahmen, bitte bestätigen:
 

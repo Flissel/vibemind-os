@@ -34,8 +34,12 @@ def _eintrag() -> dict:
     return eintraege[0][0]
 
 
-def _katalog() -> list[dict]:
+def _katalog_roh() -> list[dict]:
     return yaml.safe_load(KATALOG.read_text(encoding="utf-8"))
+
+
+def _katalog() -> list[dict]:
+    return _katalog_roh()
 
 
 def _trifft(eintrag: dict, satz: str) -> bool:
@@ -45,7 +49,12 @@ def _trifft(eintrag: dict, satz: str) -> bool:
 def test_eintrag_ist_neu_und_hat_pflichtfelder():
     e = _eintrag()
     assert e["capability"] == "rowboat_vorschlaege_anlegen"
-    assert e["capability"] not in {c["capability"] for c in _katalog()}
+    # Noch nicht eingebaut: der Name ist frei. Schon eingebaut: der Eintrag im Katalog ist der gelieferte.
+    vorhanden = [c for c in _katalog() if c["capability"] == e["capability"]]
+    assert len(vorhanden) <= 1
+    for c in vorhanden:
+        for feld in ("execution_target", "match_patterns", "validator"):
+            assert c.get(feld) == e.get(feld), feld
     assert e["execution_target"] == ZIEL
     assert e["match_patterns"] and e["anchor_phrases"] and e["validator"]["on_fail"] == "block"
     assert len(e["anchor_phrases"]) == 3
@@ -66,5 +75,33 @@ def test_muster_treffen_nur_die_richtigen_saetze():
 
 def test_kein_anderer_katalog_eintrag_trifft_die_saetze():
     for satz in TREFFER:
-        andere = [c["capability"] for c in _katalog() if _trifft(c, satz)]
+        andere = [c["capability"] for c in _katalog()
+                  if c["capability"] != "rowboat_vorschlaege_anlegen" and _trifft(c, satz)]
         assert andere == [], (satz, andere)
+
+
+# --- Fix-Runde 1: Die Tests duerfen nicht rot werden, sobald der Eintrag eingebaut ist ---
+
+def test_eingebauter_eintrag_macht_die_tests_nicht_rot(monkeypatch):
+    import sys
+    modul = sys.modules[__name__]
+    eingebaut = _katalog() + [_eintrag()]
+    monkeypatch.setattr(modul, "_katalog", lambda: eingebaut)
+    test_eintrag_ist_neu_und_hat_pflichtfelder()
+    test_kein_anderer_katalog_eintrag_trifft_die_saetze()
+
+
+def test_eingebauter_eintrag_der_abweicht_wird_gemeldet(monkeypatch):
+    import sys
+    import pytest
+    modul = sys.modules[__name__]
+    abweichend = dict(_eintrag(), execution_target="mcp:anderer:auftragsbuch:x")
+    monkeypatch.setattr(modul, "_katalog", lambda: _katalog_roh() + [abweichend])
+    with pytest.raises(AssertionError):
+        test_eintrag_ist_neu_und_hat_pflichtfelder()
+
+
+def test_schnipsel_nutzt_aus_satz_und_plan_intent():
+    text = LIEFERUNG.read_text(encoding="utf-8")
+    assert "_vorschlaege_aus_satz(plan_ctx.get(\"plan_intent\", \"\"))" in text
+    assert "```yaml\n  rowboat_vorschlaege_anlegen: external" in text
