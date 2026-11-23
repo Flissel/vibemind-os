@@ -209,11 +209,12 @@ def test_werkzeuge_je_agent_brain_sales_mit_falscher_menge_ist_exit_1(openfang: 
     (["*"], ["auftragsbuch"], "allowlist"),      # Stern, Server ausdruecklich erlaubt
     ([], ["anderer-server"], "all"),             # Modus all
 ])
-def test_werkzeuge_je_agent_nennt_offene_agenten_ohne_den_exit_zu_aendern(
+def test_offen_fuehrt_exit_1(
         openfang: _Attrappe, werkzeuge: list[str], server: list[str], modus: str) -> None:
+    """Steht ein Agent in Gruppe 2 (offener Zugang), ist der Exit 1, auch wenn Gruppe 1 stimmt (bisher 0)."""
     _setze(openfang, ("brain-sales", [PROBE, LESEN], ["auftragsbuch"], "allowlist"), ("offen", werkzeuge, server, modus))
     code, aus, fehler = _lauf(["werkzeuge-je-agent", "auftragsbuch"], openfang.umgebung)
-    assert code == 0 and fehler == ""
+    assert code == 1 and "offener Zugang" in fehler and "abweichend" not in fehler
     assert aus.splitlines() == [f"brain-sales: {LESEN}, {PROBE}", OFFEN, "offen"]
     _kein_geheimnis(openfang, aus, fehler)
 

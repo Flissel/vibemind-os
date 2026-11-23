@@ -10,9 +10,10 @@ Unterbefehle (jeder gibt nur das Genannte aus, nie Schluessel, Adresse oder eine
   werkzeuge-je-agent auftragsbuch      GET /api/agents (Liste ohne Werkzeuge), dann je Agent GET /api/agents/<Kennung>.
                                        Gruppe 1: je Agent mit `mcp_auftragsbuch_*` in `capabilities.tools` eine Zeile
                                        `<Agent>: <Werkzeuge>`; Exit 0 nur, wenn genau `brain-sales` mit genau
-                                       `mcp_auftragsbuch_auftrag_lesen` und `..._auftrag_probe` dasteht. Gruppe 2 unter
+                                       `mcp_auftragsbuch_auftrag_lesen` und `..._auftrag_probe` dasteht und Gruppe 2 leer ist. Gruppe 2 unter
                                        `offener Zugang ...:`: Agenten mit leeren oder `*`-Werkzeugen, die den Server
-                                       sehen (nur Namen; aendert den Exit nicht). Scheitert ein Detail: Exit 1.
+                                       sehen (nur Namen). Steht dort jemand, ist der Exit 1 (Meldung auf stderr).
+                                       Scheitert ein Detail: Exit 1.
   gegenprobe brain-sales sales_post_pruefen
                                        Vorab GET /api/mcp/servers: Server `auftragsbuch` muss verbunden sein und das
                                        Werkzeug fuehren (sonst `unerwartet (...)`, ohne Aufruf). Dann tools/call von
@@ -213,8 +214,10 @@ def werkzeuge_je_agent(client: OpenFang, aus: TextIO, fehler: TextIO) -> int:
         print("offener Zugang (sieht alle Werkzeuge des Servers):", file=aus)
         for name in offen:
             print(name, file=aus)
+    if offen:
+        print(f"offener Zugang: {len(offen)} Agent(en) sehen den Server ohne Sperre", file=fehler)
     if [(n, t) for _, n, t in ausdruecklich] == [(ERWARTET_AGENT, list(ERWARTETE_WERKZEUGE))]:
-        return 0
+        return 1 if offen else 0
     print(f"abweichend: erwartet genau {ERWARTET_AGENT} mit {', '.join(ERWARTETE_WERKZEUGE)}", file=fehler)
     return 1
 

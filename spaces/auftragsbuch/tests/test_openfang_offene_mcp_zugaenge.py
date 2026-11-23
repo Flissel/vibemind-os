@@ -69,3 +69,16 @@ def test_nur_brain_sales_nennt_werkzeuge_des_auftragsbuchs_ausdruecklich() -> No
     nennen = {n: w for n, w in nennen.items() if w}
     assert nennen == {"brain-sales": ["mcp_auftragsbuch_auftrag_lesen", "mcp_auftragsbuch_auftrag_probe"]}
     assert _manifeste()["brain-sales"]["mcp_servers"] == ["auftragsbuch"]
+
+
+# Traeger, die das Auftragsbuch sehen duerfen (Lieferung Block 3: `allowed_agents` am Server `auftragsbuch`).
+ERLAUBTE_TRAEGER = {"brain-sales", "brain-rowboat"}
+
+
+@pytest.mark.xfail(reason="Lieferung Block 3", strict=True)
+def test_nur_erlaubte_traeger_sehen_alle_werkzeuge_des_auftragsbuchs() -> None:
+    """Bleibt rot (xfail), bis die Koordination die harte Sperre geliefert hat und `capability-gap-filer` sowie
+    `learning-course-factory` (leere Werkzeugliste, offener Zugang) nicht mehr durchrutschen; danach `xfail` entfernen."""
+    manifeste = _manifeste()
+    sieht = {n for n, m in manifeste.items() if _offen(m) and _alle_werkzeuge(m)}
+    assert sieht <= ERLAUBTE_TRAEGER, f"sehen alle Werkzeuge, ohne Traeger zu sein: {sorted(sieht - ERLAUBTE_TRAEGER)}"
