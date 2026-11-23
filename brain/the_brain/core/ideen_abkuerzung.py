@@ -43,6 +43,14 @@ _FORMAT_NAMEN = {
 }
 _FORMAT = "(?P<format>" + "|".join(muster for muster, _ in _FORMATWORTE) + ")"
 _ARTIKEL = r"(?:eine[nrm]?\s+|als\s+)?"
+# White Paper (core/ideen_dokument). Die Knoepfe der App senden
+# "Erstelle ein White Paper aus dieser Bubble" und "Fasse diese Bubble zusammen".
+_WP = r"(?:white[\s-]?paper|whitepaper)"
+_WP_SATZ = (rf"(?:erstell(?:e)?|mach(?:e)?|schreib(?:e)?)\s+(?:mir\s+)?(?:ein|das)\s+{_WP}"
+            r"(?:\s+(?:aus|zu|über|ueber|für|fuer|von)\s+(?:(?:dieser|diese|der|die|dem)\s+bubble"
+            r"|der\s+bubble\s+(?P<b>.+?)|(?P<n>.+?)))?"
+            r"(?:\s+mit\s+bis\s+zu\s+(?P<z>\d{1,3})\s+l(?:ä|ae)ufen)?")
+_WP_ABBRUCH = rf"(?:brich|breche)\s+das\s+{_WP}\s+ab|stopp(?:e)?\s+das\s+{_WP}"
 _KARTE = r"(?:(?:die|der|das)\s+)?(?:notiz|karte|idee)\s+"
 
 
@@ -364,6 +372,33 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
     if m:
         karte = _karte(m.group("k"), kontext)
         return _treffer("idea.explain", {"id": karte["id"]}, "", capability="idea_explain")
+
+    # ── Zusammenfassung und White Paper (core/ideen_dokument): Bubble hier aufloesen,
+    #    Karten, Wurzel, Teile und Budget prueft das Gehirn beim Anlegen des Auftrags.
+    if re.fullmatch(_WP_ABBRUCH, text, _I):
+        offen = kontext.get("bubble") if isinstance(kontext.get("bubble"), dict) else None
+        bubble_id = offen.get("id") if offen and ist_kennung(offen.get("id")) else None
+        return _treffer("idea.whitepaper_abbrechen", {"bubble_id": bubble_id}, "")
+    if re.fullmatch(r"fasse\s+(?:die\s+)?markierten\s+(?:karten|notizen)\s+zusammen", text, _I):
+        auswahl = list(dict.fromkeys(i for i in kontext.get("selection") or [] if ist_kennung(i)))
+        if len(auswahl) < 2:
+            raise _Rueckfrage("Markiere mindestens zwei Karten, dann fasse ich sie zusammen.")
+        return _treffer("idea.summarize", {"bubble_id": _offene_bubble(kontext), "idea_ids": auswahl[:200]},
+                        "", capability="idea_summarize")
+    m = re.fullmatch(r"fasse\s+(?:(?:diese|die)\s+bubble|die\s+bubble\s+(?P<b>.+?)|(?P<n>.+?))\s+zusammen", text, _I)
+    if m:
+        bubble = _bubble(m.group("b") or m.group("n"), kontext)
+        return _treffer("idea.summarize", {"bubble_id": bubble["id"]}, "", capability="idea_summarize")
+    m = re.fullmatch(_WP_SATZ, text, _I)
+    if m:
+        bubble = _bubble(m.group("b") or m.group("n"), kontext)
+        argumente = {"bubble_id": bubble["id"]}
+        if m.group("z"):
+            laeufe = int(m.group("z"))
+            if not 1 <= laeufe <= 30:
+                raise _Rueckfrage("Ein White Paper darf 1 bis 30 Läufe brauchen.")
+            argumente["max_laeufe"] = laeufe
+        return _treffer("idea.whitepaper", argumente, "", capability="idea_whitepaper")
 
     # ── formatieren ──
     m = (re.fullmatch(rf"mach(?:e)?\s+aus\s+(?P<k>.+?)\s+{_ARTIKEL}{_FORMAT}", text, _I)

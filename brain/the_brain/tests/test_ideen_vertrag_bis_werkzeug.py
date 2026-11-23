@@ -200,6 +200,10 @@ def _hauptlauf() -> int:
         ("idea.arrange", abk.loese("Sortiere die Karten nach Bewertung", app)["argumente"]),
         ("bubble.rate", abk.loese("Bewerte die Bubble Messe mit 70", app)["argumente"]),
         ("bubble.promote", abk.loese("Befördere diese Bubble", app)["argumente"]),
+        # Dokument-Karte (core/ideen_dokument): das Gehirn schreibt sie am Ende eines White Papers.
+        ("idea.document", {"id": "00000000-0000-4000-8000-000000000d01", "bubble_id": "b0b1e001",
+                           "title": "White Paper: Messe", "art": "white_paper",
+                           "content": "# White Paper: Messe\n\n## Inhalt\n\n1. Preise\n", "quellen": ["a0000001"]}),
     ]
     gesehen = set()
     for event_id, argumente in faelle:

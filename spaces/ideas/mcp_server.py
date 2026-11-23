@@ -23,7 +23,7 @@ from typing import Any, Mapping
 
 
 SERVER_NAME = "spaces-ideas"
-SERVER_VERSION = "1.2.0"
+SERVER_VERSION = "1.3.0"
 PROTOCOL_VERSION = "2024-11-05"
 REQUEST_TIMEOUT_SECONDS = 15
 BUBBLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$")
@@ -337,6 +337,28 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "idea_document",
+        "description": (
+            "Write a document card (summary or white paper) into a bubble: creates it under the given id, "
+            "or replaces title, text and sources of the document card with that id. Written by the brain "
+            "after it checked the model's answer; the text is Markdown."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": _ID_SCHEMA_PATTERN},
+                "bubble_id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": _ID_SCHEMA_PATTERN},
+                "title": {"type": "string", "minLength": 1, "maxLength": 200},
+                "art": {"type": "string", "enum": ["zusammenfassung", "white_paper"]},
+                "content": {"type": "string", "minLength": 1, "maxLength": 300000},
+                "quellen": {"type": "array", "maxItems": 500,
+                            "items": {"type": "string", "pattern": _ID_SCHEMA_PATTERN}},
+            },
+            "required": ["id", "bubble_id", "title", "art", "content"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "aenderung_liste",
         "description": (
             "List the most recent recorded changes to ideas and bubbles, newest first, "
@@ -377,7 +399,7 @@ CHANGE_WRITE_TOOLS = frozenset({
     "bubble_create", "bubble_update", "bubble_delete", "bubble_promote",
     "idea_create", "idea_update", "idea_delete", "idea_connect", "idea_disconnect",
     "idea_format", "idea_arrange", "idea_auto_link", "idea_rate", "bubble_rate",
-    "bewertung_begruenden",
+    "bewertung_begruenden", "idea_document",
 })
 for _tool in TOOLS:
     if _tool["name"] in CHANGE_WRITE_TOOLS:
@@ -653,7 +675,13 @@ FORMAT_NAMES = {
     "hierarchy": "Gliederung", "technical_specs": "Anforderungen", "kanban": "Kanban", "mindmap": "Mindmap",
     "swot": "SWOT-Analyse", "user_story": "Nutzergeschichten", "flowchart": "Ablauf",
     "comparison_table": "Vergleich", "research": "Recherche",
+    "zusammenfassung": "Zusammenfassung", "white_paper": "White Paper",
 }
+# Dokument-Karten (idea_document): node_type "dokument", die Art steht in metadata.art.
+DOCUMENT_KINDS = ("zusammenfassung", "white_paper")
+DOCUMENT_NODE_TYPE = "dokument"
+DOCUMENT_MAX_CHARS = 300_000
+DOCUMENT_MAX_SOURCES = 500
 FORMAT_ALIASES = {"pros_cons_table": "pros_cons"}
 # Vorlagentext der alten Formatier-Agenten: sieht aus wie Inhalt, sagt aber nichts.
 TEMPLATE_TEXTS = frozenset({
@@ -678,6 +706,9 @@ _RESEARCH_TITLE = re.compile(r"^Research:\s*(.*?)\s*(\d{4})-(\d{2})-(\d{2})(?:\s
 
 def _card_format(row: Mapping[str, Any]) -> str:
     """The idea's format name as stored: content_json.type, else the schema's const."""
+    if row.get("node_type") == DOCUMENT_NODE_TYPE:
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), Mapping) else {}
+        return metadata.get("art") if metadata.get("art") in DOCUMENT_KINDS else "white_paper"
     structured = row.get("content_json")
     fmt = structured.get("type") if isinstance(structured, Mapping) else None
     if not isinstance(fmt, str) or not fmt:
@@ -733,6 +764,10 @@ def _card_source(row: Mapping[str, Any]) -> str | None:
         if isinstance(count, int) and not isinstance(count, bool) and count > 0:
             parts.append(_count(count, "Quelle", "Quellen"))
         return " · ".join(parts)
+    if row.get("node_type") == DOCUMENT_NODE_TYPE:
+        sources = metadata.get("quellen")
+        count = len(sources) if isinstance(sources, list) else 0
+        return f"aus {_count(count, 'Karte', 'Karten')}" if count else None
     if metadata.get("ai_generated"):
         origin = _plain(metadata.get("source_title"))
         return f"Vorschlag aus „{origin.replace('_', ' ')}“" if origin else "Vorschlag"
@@ -1275,6 +1310,49 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         _CHANGE_ID.reset(token)
 
 
+def _document_write(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    """Create or replace one document card; never touches a card of another kind or bubble."""
+    _only_arguments(arguments, {"id", "bubble_id", "title", "art", "content", "quellen"})
+    node_id = _durable_id(arguments, "id")
+    bubble_id = _durable_id(arguments, "bubble_id")
+    title = _required_string(arguments, "title")
+    if len(title) > 200:
+        raise ToolError("invalid_arguments: 'title' must be at most 200 characters")
+    art = arguments.get("art")
+    if art not in DOCUMENT_KINDS:
+        raise ToolError("invalid_arguments: 'art' must be 'zusammenfassung' or 'white_paper'")
+    content = arguments.get("content")
+    if not isinstance(content, str) or not content.strip() or len(content) > DOCUMENT_MAX_CHARS:
+        raise ToolError(f"invalid_arguments: 'content' must be a non-empty string of at most {DOCUMENT_MAX_CHARS} characters")
+    sources = arguments.get("quellen", [])
+    if (not isinstance(sources, list) or len(sources) > DOCUMENT_MAX_SOURCES
+            or not all(isinstance(s, str) and IDEA_ID_PATTERN.fullmatch(s) for s in sources)):
+        raise ToolError(f"invalid_arguments: 'quellen' must be at most {DOCUMENT_MAX_SOURCES} durable ids")
+    metadata = {"width": 320.0, "height": 220.0, "art": art, "quellen": list(dict.fromkeys(sources))}
+    existing = _first_row(_request(
+        "GET", "canvas_nodes",
+        params={"select": "id,node_type,linked_idea_id", "id": f"eq.{node_id}", "limit": "1"},
+    ))
+    if existing is not None:
+        if existing.get("node_type") != DOCUMENT_NODE_TYPE or existing.get("linked_idea_id") != bubble_id:
+            raise ToolError("idea_document_conflict")
+        updated = _first_row(_request(
+            "PATCH", "canvas_nodes", params={"id": f"eq.{node_id}"},
+            body={"title": title, "content": content, "metadata": metadata},
+        ))
+        if updated is None:
+            raise ToolError("idea_not_found")
+        return updated
+    created = _first_row(_request(
+        "POST", "canvas_nodes",
+        body={"id": node_id, "node_type": DOCUMENT_NODE_TYPE, "title": title, "content": content,
+              "x": 0, "y": -300, "linked_idea_id": bubble_id, "metadata": metadata},
+    ))
+    if created is None:
+        raise ToolError("idea_document_not_written")
+    return created
+
+
 def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
     """Dispatch to the single tool implementation (arguments without aenderung_id)."""
     if name == "bubble_list":
@@ -1471,6 +1549,8 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
                 if isinstance(row, Mapping) and isinstance(row.get("id"), str):
                     titles[row["id"]] = _card_title(row)
         return _card_read(node, edges, titles)
+    if name == "idea_document":
+        return _document_write(arguments)
     if name == "idea_create":
         node_type = arguments.get("node_type", "note")
         content = arguments.get("content", "")

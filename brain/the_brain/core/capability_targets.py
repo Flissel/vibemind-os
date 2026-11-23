@@ -1128,7 +1128,7 @@ class McpExecutor(_BaseRemoteExecutor):
         "idea_create", "idea_update", "idea_delete", "idea_disconnect",
         # feste Aufrufe des Ideen-Space (ideen_fest_contract.SCHREIBENDE_WERKZEUGE)
         "idea_format", "idea_arrange", "idea_auto_link", "idea_rate", "bubble_rate",
-        "bewertung_begruenden",
+        "bewertung_begruenden", "idea_document",
     })
 
     def _mit_aenderung_id(self, tool_payload: Any, plan_id: Any) -> Any:
@@ -1361,6 +1361,10 @@ _CANONICAL_SPACE_EVENT_IDS = {
     # Modellauftrag mit Rueckweg (core/ideen_rueckweg). Vorher blieb idea_explain auf
     # supabase:idea.llm und scheiterte mit "Idea '' not found" (Arbeitslauf 23.11.2026).
     "idea_explain": "idea.explain",
+    # Zusammenfassung und White Paper: Modellauftraege mit Rueckweg (core/ideen_dokument),
+    # geschrieben ueber den festen Aufruf idea.document.
+    "idea_summarize": "idea.summarize",
+    "idea_whitepaper": "idea.whitepaper",
     "idea_connect": "idea.connect",
     "aenderung_zurueck": "idea.aenderung_zurueck",
     # Die festen Aufrufe des Ideen-Space (ideen_fest_contract) haben hier bewusst

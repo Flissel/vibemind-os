@@ -1702,9 +1702,11 @@ class PlanExecutor:
             authoritative_target = isinstance(target, str) and target.startswith(
                 ("openfang:", "mcp:", "n8n-mcp:", "coding-engine:")
             )
+            from . import ideen_dokument as _dokument_mod
             from . import ideen_rueckweg as _rueckweg_mod
             if (assigned_agent and not authoritative_target
-                    and _rueckweg_mod.ist_modell_ereignis(event_id)):
+                    and (_rueckweg_mod.ist_modell_ereignis(event_id)
+                         or _dokument_mod.ist_dokument_ereignis(event_id))):
                 # Ideen-Modellauftrag mit Rueckweg: der Agent bekommt die Notiz als Daten und
                 # die Antwortform, kein Werkzeug und kein bevorzugtes Werkzeug. Geschrieben
                 # wird spaeter im Gehirn (Nachfasser -> ideen_rueckweg), mit Vertrag und
@@ -1721,9 +1723,16 @@ class PlanExecutor:
                     return _rueckweg_fehler(
                         "Diese Modellfunktion läuft nur als Auftrag; der Auftragsweg ist hier aus.")
                 try:
-                    rendered_arg, _ideen_rueckweg = _rueckweg_mod.auftrag_vorbereiten(
-                        event_id, rendered_arg, plan_ctx.get("plan_intent", ""),
-                        lies_karte=_rueckweg_mod.lies_karte, suche_titel=_rueckweg_mod.suche_titel)
+                    if _dokument_mod.ist_dokument_ereignis(event_id):
+                        # Zusammenfassung / White Paper: Bubble lesen, Wurzel und Teile planen,
+                        # Budget vor dem Start pruefen (core/ideen_dokument).
+                        rendered_arg, _ideen_rueckweg = _dokument_mod.auftrag_vorbereiten(
+                            event_id, rendered_arg, plan_ctx.get("plan_intent", ""),
+                            lesen=_dokument_mod.DatenbankLesen())
+                    else:
+                        rendered_arg, _ideen_rueckweg = _rueckweg_mod.auftrag_vorbereiten(
+                            event_id, rendered_arg, plan_ctx.get("plan_intent", ""),
+                            lies_karte=_rueckweg_mod.lies_karte, suche_titel=_rueckweg_mod.suche_titel)
                 except _rueckweg_mod.RueckwegFehler as e:
                     return _rueckweg_fehler(str(e))
                 target = f"openfang:{assigned_agent}"

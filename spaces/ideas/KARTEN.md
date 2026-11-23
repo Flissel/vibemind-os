@@ -219,3 +219,28 @@ Die Liste mit Namen liegt nicht in diesem Repo, sondern im privaten Repo der Koo
 
 **Ein Löschlauf bräuchte eine Kennungsliste.** Die stelle ich auf Zuruf zusammen. Gelöscht wird erst nach Felix'
 Ja, und auch nur über das Änderungsprotokoll, damit „zurück“ greift.
+
+## 5. Dokument-Karten: Zusammenfassung und White Paper
+
+**Gebaut** im Zweig `cc/ideen-whitepaper`, Ideen-Server Version 1.3.0. Brain: `core/ideen_dokument.py`.
+
+Früher gab es drei Wege für „eine Bubble als Text“ (Zusammenfassung, White Paper, Projektdoku). Die alten
+Werkzeuge waren gelöscht, die Knöpfe der Hülle liefen ins Leere. Jetzt gibt es eine Art Karte und zwei Aufträge:
+
+- **Werkzeug `idea_document`** (fester Aufruf `idea.document`): legt eine Karte mit `node_type: "dokument"` an
+  oder ersetzt sie. `metadata.art` ist `zusammenfassung` oder `white_paper`, `metadata.quellen` die Kennungen der
+  Karten, aus denen sie entstand. Text bis 300 000 Zeichen. Die Kennung legt das Gehirn beim Anlegen des Auftrags
+  fest; die Änderung liegt unter der Plan-Kennung, „zurück“ nimmt sie zurück.
+- **Kartenansicht:** Art „Zusammenfassung“ bzw. „White Paper“, Herkunft „aus 12 Karten“. Die Hülle soll Karten mit
+  `node_type: "dokument"` groß öffnen (Markdown mit Inhaltsverzeichnis).
+- **Zusammenfassung** (`idea.summarize`): ein Lauf. Der Agent bekommt die lesbaren Karten als Daten (K1, K2, …),
+  liefert `{"absaetze": [...], "verweise": ["K1", ...]}`. Titel der Karte „Zusammenfassung: Stadtfest“, am Ende
+  „Grundlage: „Bühnenplan“, „Sponsoren“.“
+- **White Paper** (`idea.whitepaper`): Wurzel, dann die Zweige in Kantenreihenfolge, ein Lauf je Teil
+  (höchstens 15 lesbare Karten oder 24 000 Zeichen), danach setzt das Gehirn das Dokument ohne Modell zusammen.
+  Unverbundene Karten kommen in den Anhang, leere Karten werden genannt, nicht erfunden; Quellen kommen aus den
+  Recherche-Karten.
+- **Wurzel:** die Karte ohne Oberpunkt (keine eingehende `parent_child`/`expanded_from`-Kante), von der aus die
+  meisten Karten erreichbar sind; ohne gerichtete Kanten die Karte mit den meisten Verbindungen (mindestens zwei);
+  ohne Kanten keine Wurzel, dann gilt die Lage auf dem Canvas, und das Dokument sagt das.
+- Eigene Dokument-Karten gehen nicht wieder in ein Dokument ein.

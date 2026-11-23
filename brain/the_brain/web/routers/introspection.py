@@ -2501,6 +2501,7 @@ def _try_ideen_abkuerzung(intent: str, kontext: Any):
       (None, None, "")        kein fester Satz -> der bisherige Weg entscheidet
       (None, frage, "")       Rueckfrage an den Menschen, kein Aufruf
       (plan, None, antwort)   Plan mit genau einem festen Aufruf und fertigem Antworttext
+      (None, None, antwort)   im Gehirn erledigt (White Paper abbrechen), nur die Antwort
     Wirft nie.
     """
     try:
@@ -2513,6 +2514,17 @@ def _try_ideen_abkuerzung(intent: str, kontext: Any):
         if "rueckfrage" in treffer:
             logger.info("[ideen-abkuerzung] Rueckfrage statt Aufruf")
             return None, str(treffer["rueckfrage"]), ""
+        if treffer.get("ereignis") == "idea.whitepaper_abbrechen":
+            # Kein Werkzeug: das Gehirn haelt die eigenen Auftraege an (core/ideen_dokument).
+            from core.agent_auftraege import tabelle_aus_umgebung
+            from core.ideen_dokument import abbrechen
+
+            try:
+                tabelle = tabelle_aus_umgebung()
+            except Exception:  # noqa: BLE001
+                return None, None, "Das Abbrechen geht gerade nicht: die Auftragstabelle ist nicht erreichbar."
+            logger.info("[ideen-abkuerzung] White Paper abbrechen (lokal)")
+            return None, None, abbrechen(treffer["argumente"].get("bubble_id"), tabelle=tabelle)
         plan = _Plan(
             plan_id=f"ideen_{int(time.time() * 1000)}",
             intent=intent,
@@ -2665,6 +2677,13 @@ async def multihop_execute(request: Request):
                 return JSONResponse({
                     "ok": False, "rueckfrage": True, "space": "ideas", "executed": {},
                     "final_text": _ideen_frage, "trace_id": trace_id,
+                })
+            if plan is None and _ideen_antwort:
+                # Im Gehirn erledigt, ohne Plan und ohne Werkzeug (White Paper abbrechen).
+                _trace_lite(pe, trace_id, intent, "ideen-lokal", _ideen_antwort)
+                return JSONResponse({
+                    "ok": True, "space": "ideas", "executed": {},
+                    "final_text": _ideen_antwort, "trace_id": trace_id,
                 })
             _ideen_fest = plan is not None
         # Phase 11.Q2 — Capability-Router shortcut. If the router has a

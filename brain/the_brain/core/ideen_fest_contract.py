@@ -86,6 +86,16 @@ FESTE_EREIGNISSE: dict[str, dict[str, Any]] = {
         "pflicht": {"bubble_id": _K},
         "wahl": {},
     },
+    # Dokument-Karte (Zusammenfassung, White Paper): geschrieben nur vom Gehirn nach dem
+    # Rueckweg eines Modellauftrags (core/ideen_dokument). Die Kennung steht beim Anlegen
+    # des Auftrags fest; ein zweiter Aufruf ersetzt dieselbe Karte.
+    "idea.document": {
+        "werkzeug": "idea_document",
+        "pflicht": {"id": _K, "bubble_id": _K, "title": ("text", 200, False),
+                    "art": ("wahl", ("zusammenfassung", "white_paper")),
+                    "content": ("text", 300_000, False)},
+        "wahl": {"quellen": ("kennungen", 500)},
+    },
 }
 
 # Schreibende Werkzeuge dieser Tabelle; der Ausfuehrer haengt ihnen die Plan-Kennung an.
@@ -285,14 +295,18 @@ def nachpruefung(event_id: str, argumente: Any, raw_result: Any) -> tuple[Option
         return None, "MCP tool reported an error"
     inhalt, _ = _mcp_inhalt(raw_result)
 
-    if event_id in ("idea.create", "idea.update", "idea.format", "idea.rate", "bubble.rate"):
+    if event_id in ("idea.create", "idea.update", "idea.format", "idea.rate", "bubble.rate", "idea.document"):
         zeile = _erste_zeile(inhalt)
         if zeile is None or not ist_kennung(zeile.get("id")):
             return None, ungueltig
         if event_id != "idea.create" and zeile["id"] != argumente["id"]:
             return None, ungueltig
         tabelle = "ideas" if event_id == "bubble.rate" else "canvas_nodes"
-        if event_id == "idea.create":
+        if event_id == "idea.document":
+            felder = {"node_type": "dokument", "linked_idea_id": argumente["bubble_id"],
+                      "title": argumente["title"], "content": argumente["content"],
+                      "metadata.art": argumente["art"]}
+        elif event_id == "idea.create":
             felder = {"linked_idea_id": argumente["bubble_id"]}
         elif event_id == "idea.update":
             felder = {name: argumente[name] for name in ("title", "content", "x", "y") if name in argumente}
