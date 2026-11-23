@@ -7,12 +7,14 @@ auf den Zielpegel gebracht, ohne den True-Peak-Deckel zu reissen.
 """
 
 import math
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 
+from djset.contracts import Loudness
 from djset.dsp.analyze import measure_loudness
 from djset.qa import TRUE_PEAK_CEILING_DB
 from djset.render.stretch import SR
@@ -36,7 +38,10 @@ class Pegel:
 
 
 def _laden(quelle: Path, sr: int) -> np.ndarray:
-    signal, rate = sf.read(str(quelle), dtype="float32", always_2d=True)
+    try:
+        signal, rate = sf.read(str(quelle), dtype="float32", always_2d=True)
+    except (sf.LibsndfileError, OSError, RuntimeError) as fehler:
+        raise VideoFehler(f"{quelle.name}: Quelle nicht lesbar ({fehler})") from fehler
     if rate != sr:
         raise VideoFehler(
             f"{quelle.name}: Samplerate {rate} Hz, erwartet {sr} Hz (kein Resampling)"
@@ -46,7 +51,7 @@ def _laden(quelle: Path, sr: int) -> np.ndarray:
     return signal[:, :2]
 
 
-def _messen(pfad: Path, quelle: Path):  # noqa: ANN202 - Loudness bleibt intern
+def _messen(pfad: Path, quelle: Path) -> Loudness:
     try:
         werte = measure_loudness(pfad, peak_per_channel=True)
     except Exception as fehler:  # noqa: BLE001 - jede Messpanne ist hier ein Quellfehler
@@ -71,6 +76,8 @@ def videomusik_rendern(
     `samples` ist massgeblich fuer die Laenge; fehlt der Quelle am Ende etwas,
     wird mit Stille aufgefuellt, damit die Ausgabe trotzdem exakt passt.
     """
+    if samples <= 0:
+        raise VideoFehler(f"{quelle.name}: samples muss positiv sein, ist {samples}")
     signal = _laden(quelle, sr)
     anfang = round(zuschnitt.start_s * sr)
     stueck = np.zeros((samples, 2), dtype=np.float64)
@@ -91,18 +98,23 @@ def videomusik_rendern(
         stueck[-1] = 0.0
 
     ziel.parent.mkdir(parents=True, exist_ok=True)
-    sf.write(str(ziel), stueck.astype(np.float32), sr, subtype="FLOAT")
-    vorher = _messen(ziel, quelle)
+    # Der ungepegelte Zwischenstand liegt in einem Temp-Ordner neben dem Ziel:
+    # schlaegt die Messung fehl, bleibt am Ziel nichts Halbfertiges zurueck.
+    with tempfile.TemporaryDirectory(dir=ziel.parent) as tmp:
+        zwischen = Path(tmp) / "zwischen.wav"
+        sf.write(str(zwischen), stueck.astype(np.float32), sr, subtype="FLOAT")
+        vorher = _messen(zwischen, quelle)
 
-    gain = lufs_ziel - vorher.lufs_integrated
-    gedeckelt = False
-    if vorher.true_peak + gain > TRUE_PEAK_CEILING_DB:
-        gain = TRUE_PEAK_CEILING_DB - vorher.true_peak
-        gedeckelt = True
-    stueck *= 10.0 ** (gain / 20.0)
-    sf.write(str(ziel), stueck.astype(np.float32), sr, subtype="FLOAT")
-
-    nachher = _messen(ziel, quelle)
+        gain = lufs_ziel - vorher.lufs_integrated
+        gedeckelt = False
+        if vorher.true_peak + gain > TRUE_PEAK_CEILING_DB:
+            gain = TRUE_PEAK_CEILING_DB - vorher.true_peak
+            gedeckelt = True
+        stueck *= 10.0 ** (gain / 20.0)
+        sf.write(str(zwischen), stueck.astype(np.float32), sr, subtype="FLOAT")
+        # Erst nach erfolgreicher Messung des Endstands an den Zielort legen.
+        nachher = _messen(zwischen, quelle)
+        zwischen.replace(ziel)
     return Pegel(
         lufs=nachher.lufs_integrated,
         true_peak=nachher.true_peak,
