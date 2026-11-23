@@ -70,7 +70,8 @@ def _mit(**aenderung):
     ("Gib der Notiz Druckerei 40 Punkte", "idea.rate", {"id": "a0000002", "score": 40}),
     ("Bewerte die Bubble Messe mit 70", "bubble.rate", {"id": "b0b1e001", "score": 70}),
     ("Begründung: Preise und Druckerei tragen die Idee", "idea.rate_reason",
-     {"bubble_id": "b0b1e001", "text": "Preise und Druckerei tragen die Idee"}),
+     # Die genannten Karten gehoeren dazu (White-Paper-Zusatz 2: im Betrieb stand karten: []).
+     {"bubble_id": "b0b1e001", "text": "Preise und Druckerei tragen die Idee", "idea_ids": ["a0000001", "a0000002"]}),
     ("Halt als Begründung fest, dass der Stand zu klein ist", "idea.rate_reason",
      {"bubble_id": "b0b1e001", "text": "der Stand zu klein ist"}),
     ("Mach aus der Bubble Messe ein Projekt", "bubble.promote", {"bubble_id": "b0b1e001"}),

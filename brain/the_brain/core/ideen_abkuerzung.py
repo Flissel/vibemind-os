@@ -342,6 +342,29 @@ def _zahl(text: str) -> int:
     return wert
 
 
+def karten_im_text(text: str, kontext: dict) -> list[str]:
+    """Kennungen der Karten, deren Titel woertlich im Satz steht (Reihenfolge im Satz).
+
+    Laengere Titel zuerst ("Sponsoren Liste" vor "Sponsoren"); ein Titel, den mehrere
+    Karten tragen, loest nichts auf (geraten wird nie). Titel unter drei Zeichen zaehlen nicht.
+    """
+    karten = [k for k in _karten(kontext) if isinstance(k.get("title"), str) and len(k["title"].strip()) >= 3]
+    zaehler: dict[str, int] = {}
+    for k in karten:
+        zaehler[_normal(k["title"])] = zaehler.get(_normal(k["title"]), 0) + 1
+    rest, gefunden = text, []
+    for k in sorted(karten, key=lambda k: -len(k["title"].strip())):
+        titel = k["title"].strip()
+        muster = re.compile(r"(?<!\w)" + re.escape(titel).replace(r"\ ", r"\s+") + r"(?!\w)", _I)
+        treffer = muster.search(rest)
+        if not treffer:
+            continue
+        rest = rest[:treffer.start()] + " " * (treffer.end() - treffer.start()) + rest[treffer.end():]
+        if zaehler[_normal(titel)] == 1:
+            gefunden.append((treffer.start(), k["id"]))
+    return [i for _, i in sorted(gefunden)]
+
+
 def _treffer(ereignis: str, argumente: dict, antwort: str, capability: Optional[str] = None) -> dict:
     return {"ereignis": ereignis, "capability": capability or ereignis, "argumente": argumente, "antwort": antwort}
 
@@ -430,6 +453,8 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
     if m:
         argumente: dict[str, Any] = {"bubble_id": _offene_bubble(kontext), "text": m.group("t").strip()}
         auswahl = [i for i in kontext.get("selection") or [] if ist_kennung(i)]
+        # Karten, die der Satz beim Titel nennt, gehoeren dazu (im Betrieb stand sonst karten: []).
+        auswahl += karten_im_text(argumente["text"], kontext)
         if auswahl:
             argumente["idea_ids"] = list(dict.fromkeys(auswahl))[:20]
         return _treffer("idea.rate_reason", argumente, "Begründung festgehalten.")
