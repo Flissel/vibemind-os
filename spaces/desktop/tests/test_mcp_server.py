@@ -59,6 +59,7 @@ class DesktopMcpServerTests(unittest.TestCase):
             [
                 "desktop_status",
                 "desktop_screen_read",
+                "desktop_elements",
                 "desktop_find",
                 "desktop_screenshot",
                 "desktop_task_start",
@@ -139,6 +140,21 @@ class DesktopMcpServerTests(unittest.TestCase):
         with self.assertRaisesRegex(self.server.ToolError, "^aufgabe_unbekannt"):
             self.server.call_tool("desktop_task_step", {"task_id": "../x", "action": "click", "x": 1, "y": 1})
 
+    def test_task_id_must_match_completely(self) -> None:
+        kennung = self.start()
+        for falsch in (kennung + chr(10), " " + kennung, kennung + "x", 7, None):
+            with self.assertRaisesRegex(self.server.ToolError, "^aufgabe_unbekannt"):
+                self.server.call_tool("desktop_task_step", {"task_id": falsch, "action": "wait", "seconds": 0})
+
+    def test_a_damaged_journal_file_is_an_error_not_a_crash(self) -> None:
+        kennung = self.start()
+        Path(self.ordner.name, f"{kennung}.json").write_text("{kaputt", encoding="utf-8")
+        with self.assertRaisesRegex(self.server.ToolError, "^aufgabenbuch_unlesbar"):
+            self.server.call_tool("desktop_task_status", {"task_id": kennung})
+        Path(self.ordner.name, f"{kennung}.json").write_text("[]", encoding="utf-8")
+        with self.assertRaisesRegex(self.server.ToolError, "^aufgabenbuch_unlesbar"):
+            self.server.call_tool("desktop_task_status", {})
+
     def test_stop_file_blocks_steps_and_new_tasks(self) -> None:
         os.environ["VIBEMIND_DESKTOP_AUSFUEHREN"] = "1"
         kennung = self.start()
@@ -196,6 +212,25 @@ class DesktopMcpServerTests(unittest.TestCase):
         self.http.start()
         self.assertEqual(Path(ergebnis["pfad"]).read_bytes(), bild)
         self.assertEqual((ergebnis["bytes"], ergebnis["breite"], ergebnis["monitor"]), (len(bild), 4, 2))
+
+    def test_elements_come_back_as_click_points(self) -> None:
+        self.http.stop()
+        antwort = {
+            "success": True,
+            "window": {"title": "Editor"},
+            "elements": [
+                {"name": "Speichern", "control_type": "ButtonControl", "is_enabled": True,
+                 "bounds": {"left": 100, "top": 40, "width": 60, "height": 20}},
+                {"name": "unsichtbar", "control_type": "ButtonControl", "bounds": {"left": 0, "top": 0, "width": 0, "height": 0}},
+            ],
+        }
+        with mock.patch.object(self.server, "_http", return_value=antwort):
+            ergebnis = self.server.call_tool("desktop_elements", {})
+        self.http.start()
+        self.assertEqual(
+            ergebnis,
+            {"fenster": "Editor", "elemente": [{"name": "Speichern", "typ": "Button", "x": 130, "y": 50, "aktiv": True}]},
+        )
 
     def test_stdio_round_trip(self) -> None:
         zeilen = [

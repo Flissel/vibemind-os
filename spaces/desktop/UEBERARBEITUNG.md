@@ -45,8 +45,8 @@ nichts geklickt und nichts getippt.
 Im Space (`vibemind-os`, Zweig `cc/space-desktop`):
 
 - **`mcp_server.py`**: neuer Werkzeug-Dienst `spaces-desktop` nach dem Muster des Ideen-Space.
-  Kein Modell, kein Schlüssel, nur Standardbibliothek. Acht Werkzeuge: `desktop_status`,
-  `desktop_screen_read`, `desktop_find`, `desktop_screenshot`, `desktop_task_start`,
+  Kein Modell, kein Schlüssel, nur Standardbibliothek. Neun Werkzeuge: `desktop_status`,
+  `desktop_screen_read`, `desktop_elements`, `desktop_find`, `desktop_screenshot`, `desktop_task_start`,
   `desktop_task_step`, `desktop_task_finish`, `desktop_task_status`.
 - **`aufgaben.py`**: das Aufgabenbuch. Eine Datei je Aufgabe mit allen Schritten. Daraus
   liest die App, was geschieht, und der Prüfer, was wirklich ausgeführt wurde.
@@ -71,8 +71,9 @@ Im Dienst (`Automation_ui`, öffentliches Repo, lokaler Zweig `cc/space-desktop`
 - `GET /api/desktop/status`: antwortet wieder. `screen-info`: echte Werte.
 - `GET /api/desktop/task`: die jüngste Aufgabe aus dem Aufgabenbuch, für die Anzeige.
 - `POST /api/mcp/key`, `/api/mcp/hotkey`: Taste und Tastenkombination (fehlten in der Brücke).
+- `GET /api/mcp/elements`: aktives Fenster und seine Bedienelemente mit Lage (lesend).
 
-Tests: 16 im Space (`python -m pytest spaces/desktop/tests`), 8 im Dienst
+Tests: 19 im Space (`python -m pytest spaces/desktop/tests`), 9 im Dienst
 (`cd backend && python -m pytest tests -o addopts=""`); alle grün. Die Tests des Dienstes
 lesen den echten Bildschirm, bewegen aber nichts. Trockenprobe des Werkzeug-Dienstes gegen
 den laufenden Dienst: `desktop_task_start` unter 1 ms, `desktop_screen_read` 0,5 s.
@@ -93,10 +94,11 @@ Kein Punkt ist in der laufenden App gemessen. Das Ziel der Sitzung ist damit nic
 
 ## 5. Was offen bleibt
 
-1. **Der Agent sieht schlecht.** `desktop_screen_read` liefert nur OCR-Text ohne Koordinaten.
-   Die Werkzeug-Dienste können mehr (Bedienelemente mit Lage: `handoff_list_actionable`,
-   `handoff_describe_screen`), das hängt aber nicht an der Brücke des Dienstes. Nächster
-   Schritt: eine lesende Route dafür und ein Werkzeug `desktop_elements`.
+1. **Wie gut der Agent sieht, ist nicht gemessen.** `desktop_screen_read` liefert nur
+   OCR-Text ohne Koordinaten. Neu ist `desktop_elements` (Bedienelemente des aktiven Fensters
+   mit Klickpunkt, über die Bedienhilfen von Windows). Das wirkt erst nach dem Ausrollen des
+   Dienstes. Programme ohne Bedienhilfen (Spiele, manche Web-Inhalte) bleiben blind; ein Bild
+   bekommt der Agent nicht zu sehen.
 2. **Nicht geprüft: ob ein Agent mit dem Abo-Modell in OpenFang Werkzeuge in einer Schleife
    aufruft** (sehen, Schritt, sehen). Davon hängt Abnahmepunkt 3 ab.
 3. **Tippen überschreibt die Zwischenablage** des Nutzers (`handle_action` kopiert den Text

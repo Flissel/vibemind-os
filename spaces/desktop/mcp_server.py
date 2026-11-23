@@ -38,9 +38,10 @@ SCHRITT_TIMEOUT = 30
 MAX_TEXT_ZEICHEN = 2000
 MAX_BILDSCHIRMTEXT = 6000
 MAX_WARTEN_SEKUNDEN = 5
+MAX_ELEMENTE = 60
 ARTEN = ("click", "type", "key", "hotkey", "scroll", "wait")
 
-_AUFGABE_ID = {"type": "string", "pattern": aufgaben.ID_MUSTER.pattern}
+_AUFGABE_ID = {"type": "string", "pattern": "^" + aufgaben.ID_MUSTER.pattern + "$"}
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -51,6 +52,14 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "desktop_screen_read",
         "description": "Read-only: text currently visible on the screen (OCR) and the monitor layout.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "desktop_elements",
+        "description": (
+            "Read-only: the active window (title) and its clickable controls, each with name, type "
+            "and the point to click (x, y). Prefer this over desktop_screen_read to choose a click target."
+        ),
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -228,6 +237,28 @@ def _screen_read() -> dict[str, Any]:
     }
 
 
+def _elements() -> dict[str, Any]:
+    antwort = _http("GET", f"/api/mcp/elements?max_elements={MAX_ELEMENTE}", timeout=LESE_TIMEOUT)
+    if not isinstance(antwort, Mapping) or antwort.get("success") is not True:
+        raise ToolError("dienst_fehler: die Bedienelemente des aktiven Fensters sind nicht lesbar")
+    elemente = []
+    for roh in antwort.get("elements") or []:
+        rand = roh.get("bounds") if isinstance(roh, Mapping) else None
+        if not isinstance(rand, Mapping) or rand.get("width", 0) <= 0 or rand.get("height", 0) <= 0:
+            continue  # ohne sichtbare Fläche gibt es nichts zu klicken
+        elemente.append(
+            {
+                "name": str(roh.get("name") or "")[:80],
+                "typ": str(roh.get("control_type") or "").removesuffix("Control"),
+                "x": int(rand["left"] + rand["width"] // 2),
+                "y": int(rand["top"] + rand["height"] // 2),
+                "aktiv": roh.get("is_enabled") is not False,
+            }
+        )
+    fenster = antwort.get("window") if isinstance(antwort.get("window"), Mapping) else {}
+    return {"fenster": str(fenster.get("title") or "")[:120], "elemente": elemente[:MAX_ELEMENTE]}
+
+
 def _find(arguments: Mapping[str, Any]) -> dict[str, Any]:
     _nur(arguments, {"text"})
     antwort = _http(
@@ -342,6 +373,9 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         if name == "desktop_screen_read":
             _nur(arguments, set())
             return _screen_read()
+        if name == "desktop_elements":
+            _nur(arguments, set())
+            return _elements()
         if name == "desktop_find":
             return _find(arguments)
         if name == "desktop_screenshot":
@@ -364,6 +398,8 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
             return aufgaben.letzte() or {"aufgabe": None}
     except aufgaben.AufgabenFehler as exc:
         raise ToolError(str(exc)) from None
+    except OSError:
+        raise ToolError("aufgabenbuch_unlesbar: der Aufgaben-Ordner ist nicht les- oder schreibbar") from None
     raise ToolError(f"werkzeug_unbekannt: {name}")
 
 
@@ -412,6 +448,7 @@ def main() -> int:
     for line in sys.stdin:
         if not line.strip():
             continue
+        message = None
         try:
             message = json.loads(line)
             if not isinstance(message, Mapping):
@@ -419,6 +456,10 @@ def main() -> int:
             response = handle_message(message)
         except (ValueError, json.JSONDecodeError):
             response = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "parse error"}}
+        except Exception as exc:  # der Dienst darf an einer einzelnen Nachricht nicht sterben
+            kennung = message.get("id") if isinstance(message, Mapping) else None
+            fehler = {"code": -32603, "message": f"internal error: {type(exc).__name__}"}
+            response = {"jsonrpc": "2.0", "id": kennung, "error": fehler}
         if response is not None:
             print(json.dumps(response, ensure_ascii=False), flush=True)
     return 0

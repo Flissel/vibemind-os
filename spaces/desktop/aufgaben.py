@@ -21,7 +21,7 @@ MAX_SCHRITTE = 40
 LAUFZEIT_SEKUNDEN = 600
 MAX_AUFGABE_ZEICHEN = 500
 MAX_ERGEBNIS_ZEICHEN = 500
-ID_MUSTER = re.compile(r"^dt-[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$")
+ID_MUSTER = re.compile(r"dt-[0-9]{8}-[0-9]{6}-[0-9a-f]{6}")  # immer mit fullmatch prüfen
 OFFEN = "laeuft"
 ENDZUSTAENDE = ("fertig", "fehlgeschlagen", "abgebrochen", "abgelaufen")
 
@@ -46,7 +46,7 @@ def _jetzt() -> float:
 
 
 def _pfad(aufgabe_id: str, env: Mapping[str, str] | None) -> Path:
-    if not isinstance(aufgabe_id, str) or not ID_MUSTER.match(aufgabe_id):
+    if not isinstance(aufgabe_id, str) or not ID_MUSTER.fullmatch(aufgabe_id):
         raise AufgabenFehler("aufgabe_unbekannt: task_id hat nicht die Form einer Aufgaben-Kennung")
     return ordner(env) / f"{aufgabe_id}.json"
 
@@ -73,6 +73,10 @@ def lesen(aufgabe_id: str, env: Mapping[str, str] | None = None) -> dict[str, An
         aufgabe = json.loads(pfad.read_text(encoding="utf-8"))
     except FileNotFoundError:
         raise AufgabenFehler("aufgabe_unbekannt: keine Aufgabe mit dieser Kennung") from None
+    except (OSError, ValueError):
+        raise AufgabenFehler("aufgabenbuch_unlesbar: die Datei der Aufgabe ist nicht lesbar") from None
+    if not isinstance(aufgabe, dict) or not isinstance(aufgabe.get("schritte"), list) or "zustand" not in aufgabe:
+        raise AufgabenFehler("aufgabenbuch_unlesbar: die Datei der Aufgabe hat nicht die erwartete Form")
     if _abgelaufen_schliessen(aufgabe):
         _schreiben(pfad, aufgabe)
     return aufgabe
@@ -83,7 +87,7 @@ def letzte(env: Mapping[str, str] | None = None) -> dict[str, Any] | None:
     verzeichnis = ordner(env)
     if not verzeichnis.is_dir():
         return None
-    namen = sorted(p.stem for p in verzeichnis.glob("dt-*.json") if ID_MUSTER.match(p.stem))
+    namen = sorted(p.stem for p in verzeichnis.glob("dt-*.json") if ID_MUSTER.fullmatch(p.stem))
     return lesen(namen[-1], env) if namen else None
 
 
