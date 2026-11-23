@@ -476,6 +476,37 @@ def test_build_run_schreibt_den_abschnitt_tonart_brueche(
     assert "Keine" in abschnitt
 
 
+def test_build_run_nennt_zu_aehnliche_nachbarn_im_bericht(
+    tmp_path, profile, monkeypatch
+):
+    """Nachzug A1: vier Clicktracks gleicher Tonart und gleichen Tempos, alle
+    mit Energie 0.5 - jede Reihenfolge hat drei zu aehnliche Nachbarn. Der
+    Lauf geht durch, und der Bericht nennt jedes Paar."""
+    run, files, flach, _client = _lauf_mit_ersetztem_renderer(
+        tmp_path, profile, monkeypatch
+    )
+    analyst = json.dumps(
+        {"usable": True, "notes": "Passt.", "energy_level": 0.5,
+         "remeasure_with_bpm": None}
+    )
+    client = FakeClient(
+        [analyst] * 4
+        + [
+            json.dumps({"accepted": ["t0", "t1", "t2", "t3"], "rejected": [], "note": "Gut."}),
+            json.dumps({"order": ["t0", "t1", "t2", "t3"], "note": "Aufbau."}),
+            json.dumps({"choices": [{"technique": "blend", "bars": 16} for _ in range(3)]}),
+        ]
+    )
+    monkeypatch.setattr(cli, "to_mp3", lambda quelle, ziel: ziel.write_bytes(b""))
+
+    assert cli.build_run(run, files, flach, client, _budget()) == 0
+
+    bericht = run.path("qa-report.md").read_text(encoding="utf-8")
+    abschnitt = bericht.split("## Zu aehnliche Nachbarn", 1)[1].split("\n## ", 1)[0]
+    for von, nach in (("t0", "t1"), ("t1", "t2"), ("t2", "t3")):
+        assert f"`{von}` nach `{nach}`" in abschnitt
+
+
 def _qa_mit(befunde: list[tuple[str, str]]):
     def fake_check_set(path: Path, plan: MixPlan, *args, **kwargs) -> QaReport:
         return QaReport(

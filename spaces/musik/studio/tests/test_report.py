@@ -338,3 +338,27 @@ def test_der_bericht_nennt_vermutlich_halb_gemessene_songs(profile: Profile) -> 
     assert "`h`: 63.0 BPM (vermutlich halb gemessen)" in abschnitt
     assert "`d`: 252.0 BPM (vermutlich doppelt gemessen)" in abschnitt
     assert "`x`: 90.0 BPM\n" in abschnitt
+
+
+def test_der_bericht_nennt_zu_aehnliche_nachbarn(profile: Profile) -> None:
+    """Nachzug A1: liess sich kein Set ohne zu aehnliche Nachbarn bauen, steht
+    jedes solche Paar im Bericht."""
+    text = render_qa_report(
+        _report(-2.0, []), _shortlist(), [], None, simple_plan(), profile,
+        tonarten={"t0": "8A", "t1": "8A", "t2": "8A"},
+        aehnliche=[("t0", "t1"), ("t1", "t2")],
+    )
+
+    abschnitt = _abschnitt(text, "Zu aehnliche Nachbarn")
+    assert "`t0` nach `t1`" in abschnitt
+    assert "`t1` nach `t2`" in abschnitt
+
+
+def test_ohne_aehnliche_nachbarn_fehlt_der_abschnitt(profile: Profile) -> None:
+    text = render_qa_report(
+        _report(-2.0, []), _shortlist(), [], None, simple_plan(), profile,
+        tonarten={"t0": "8A", "t1": "8B", "t2": "9B"},
+        aehnliche=[],
+    )
+
+    assert "Zu aehnliche Nachbarn" not in text

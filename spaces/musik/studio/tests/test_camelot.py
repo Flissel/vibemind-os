@@ -10,6 +10,7 @@ from djset.camelot import (
     break_indices,
     is_compatible,
     min_key_breaks,
+    min_path_cost,
     neighbours,
     parse,
 )
@@ -148,3 +149,35 @@ def test_ueber_zwoelf_ist_die_naeherung_nie_zu_optimistisch():
     insel_1 = ["8A", "8B", "9B", "9A", "10A", "10B", "11B"]
     insel_2 = ["2A", "2B", "3B", "3A", "4A", "4B", "5B"]
     assert min_key_breaks(insel_1 + insel_2, "strict") == 1
+
+
+# --- Nachzug A1: Wegkosten mit verbotenen (teuren) Schritten ---------------
+
+
+def _brute_force_kosten(kosten: list[list[int]]) -> int:
+    return min(
+        sum(kosten[a][b] for a, b in zip(reihe, reihe[1:]))
+        for reihe in itertools.permutations(range(len(kosten)))
+    )
+
+
+def test_min_path_cost_exakt_wie_alle_reihenfolgen():
+    zufall = random.Random(20261124)
+    for _ in range(150):
+        n = zufall.randint(1, 6)
+        kosten = [[zufall.choice((0, 0, 1, n, n + 1)) for _ in range(n)] for _ in range(n)]
+        assert min_path_cost(kosten) == _brute_force_kosten(kosten), kosten
+
+
+def test_min_path_cost_ueber_zwoelf_meidet_den_teuren_schritt():
+    """Ueber EXACT_LIMIT rechnet die gierige Naeherung. 14 Tracks in einer
+    Kette (i, i+1) zu Kosten 0, alles andere kostet 1, nur der Schritt 0-1 ist
+    teuer (n). Ein Weg ohne 0-1 kostet mindestens 1 (0 haengt nur ueber einen
+    Bruch am Rest) - und die Naeherung darf den teuren Schritt nicht nehmen."""
+    n = 14
+    kosten = [[1] * n for _ in range(n)]
+    for i in range(n - 1):
+        kosten[i][i + 1] = kosten[i + 1][i] = 0
+    kosten[0][1] = kosten[1][0] = n
+    ergebnis = min_path_cost(kosten)
+    assert 1 <= ergebnis < n

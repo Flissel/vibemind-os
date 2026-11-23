@@ -13,10 +13,17 @@ Eine Ausnahme bei der Harmonie: gibt es fuer die Tracks UEBERHAUPT keine
 Reihenfolge, in der je zwei Nachbarn zusammenpassen - bei vorhandenen Songs
 der Normalfall, nicht die Ausnahme -, wird die Regel zum Vorzug. Der Code
 rechnet vorher die kleinste erreichbare Zahl an Tonart-Bruechen
-(camelot.min_key_breaks), der Architect bekommt sie als Obergrenze genannt,
-und _check laesst hoechstens so viele Brueche durch. Jeder Bruch steht danach
-in der Setlist-Notiz. Gibt es eine vertraegliche Reihenfolge, ist die
-Obergrenze null und alles bleibt, wie es war.
+(_grenzen ueber camelot.min_path_cost), der Architect bekommt sie als
+Obergrenze genannt, und _check laesst hoechstens so viele Brueche durch.
+Jeder Bruch steht danach in der Setlist-Notiz. Gibt es eine vertraegliche
+Reihenfolge, ist die Obergrenze null und alles bleibt, wie es war.
+
+Die Rechnung kennt auch die Aehnlichkeitsregel: ein zu aehnliches Paar ist
+ein verbotener Schritt, kein kostenloser - sonst nennte sie eine Grenze, die
+keine Reihenfolge einhalten kann. Nur wenn es GAR keine Reihenfolge ohne zu
+aehnliche Nachbarn gibt (etwa lauter Songs gleicher Tonart, gleichen Tempos
+und gleicher Energie), gibt auch diese Regel nach: erlaubt ist dann die
+kleinste unvermeidbare Zahl solcher Paare, und jedes steht in der Notiz.
 """
 
 from pydantic import BaseModel, Field
@@ -27,7 +34,7 @@ from djset.agents.base import (
     StageRulesViolated,
     run_agent,
 )
-from djset.camelot import break_indices, is_compatible, min_key_breaks
+from djset.camelot import break_indices, is_compatible, min_path_cost
 from djset.contracts import Profile, Setlist, Shortlist, TrackAnalysis
 
 MAX_ROUNDS = 3
@@ -62,7 +69,7 @@ Regeln, die eingehalten werden muessen:
 3. Keine zwei zu aehnlichen Tracks nebeneinander. Zu aehnlich heisst: gleiche
    Tonart UND weniger als {similar_bpm} BPM Unterschied UND weniger als
    {similar_energy} Energieunterschied. Alle drei zusammen ergeben einen
-   bequemen Uebergang und Stillstand im Set.
+   bequemen Uebergang und Stillstand im Set.{similar_rule}
 
 {complaints}Antworte ausschliesslich mit dem geforderten JSON."""
 
@@ -85,6 +92,74 @@ def _break_rule(max_breaks: int) -> str:
         f"\n   Erlaubt sind deshalb hoechstens {max_breaks} Nachbarpaare, die"
         "\n   harmonisch nicht passen - nicht mehr. Lege einen Bruch dorthin, wo"
         "\n   ein harter Schnitt oder ein Filter-Sweep musikalisch traegt."
+    )
+
+
+def _similar_rule(max_similar: int) -> str:
+    """Der Zusatz zu Regel 3, wenn sich zu aehnliche Nachbarn nicht vermeiden
+    lassen."""
+    if max_similar == 0:
+        return ""
+    return (
+        "\n   Mit diesen Tracks gibt es keine Reihenfolge ganz ohne zu aehnliche"
+        f"\n   Nachbarn. Erlaubt sind deshalb hoechstens {max_similar} Nachbarpaare,"
+        "\n   die zu aehnlich sind - nicht mehr."
+    )
+
+
+def too_similar(first: TrackAnalysis, second: TrackAnalysis) -> bool:
+    """Gleiche Tonart UND fast gleiches Tempo UND fast gleiche Energie."""
+    return (
+        first.key.camelot == second.key.camelot
+        and abs(first.bpm.value - second.bpm.value) < SIMILAR_BPM
+        and abs(first.verdict.energy_level - second.verdict.energy_level)
+        < SIMILAR_ENERGY
+    )
+
+
+def _grenzen(tracks: list[TrackAnalysis], strictness: str) -> tuple[int, int]:
+    """(max_breaks, max_similar): die kleinste erreichbare Zahl an
+    Tonart-Bruechen und an zu aehnlichen Nachbarpaaren.
+
+    Erst die Aehnlichkeit, dann die Tonart: ein zu aehnliches Paar kostet mehr
+    als alle denkbaren Brueche zusammen (Faktor n, es gibt hoechstens n-1
+    Brueche). Laesst sich jedes solche Paar vermeiden, ist max_similar null
+    und max_breaks das Minimum unter beiden Regeln zusammen. Die Reihenfolge,
+    die das Minimum erreicht, haelt beide Grenzen zugleich ein.
+    """
+    count = len(tracks)
+    if count < 2:
+        return 0, 0
+    costs = [
+        [
+            (count if too_similar(a, b) else 0)
+            + (0 if is_compatible(a.key.camelot, b.key.camelot, strictness) else 1)
+            for b in tracks
+        ]
+        for a in tracks
+    ]
+    max_similar, max_breaks = divmod(min_path_cost(costs), count)
+    return max_breaks, max_similar
+
+
+def similar_pairs(
+    order: list[str], by_id: dict[str, TrackAnalysis]
+) -> list[tuple[str, str]]:
+    """Jedes zu aehnliche Nachbarpaar der Reihenfolge."""
+    return [
+        (first, second)
+        for first, second in zip(order, order[1:])
+        if too_similar(by_id[first], by_id[second])
+    ]
+
+
+def _similar_note(order: list[str], by_id: dict[str, TrackAnalysis]) -> str:
+    pairs = [f"{first} nach {second}" for first, second in similar_pairs(order, by_id)]
+    if not pairs:
+        return ""
+    return (
+        " Zu aehnliche Nachbarn (keine Reihenfolge ohne sie moeglich): "
+        f"{'; '.join(pairs)}."
     )
 
 
@@ -111,12 +186,13 @@ def _check(
     by_id: dict[str, TrackAnalysis],
     profile: Profile,
     max_breaks: int = 0,
+    max_similar: int = 0,
 ) -> str | None:
     """Haelt die Reihenfolge gegen die drei harten Regeln.
 
     `max_breaks` ist die kleinste erreichbare Zahl an Tonart-Bruechen. Bei
     null gilt die Harmonieregel hart wie bisher; darueber laesst sie genau so
-    viele Brueche zu.
+    viele Brueche zu. `max_similar` gilt ebenso fuer zu aehnliche Nachbarn.
     """
     used = set(order)
     unknown = used - accepted
@@ -129,6 +205,7 @@ def _check(
         return "Eine ID kommt mehrfach vor."
 
     breaks = 0
+    similar = 0
     for first_id, second_id in zip(order, order[1:]):
         first, second = by_id[first_id], by_id[second_id]
         if not is_compatible(
@@ -147,17 +224,19 @@ def _check(
                     f"das ist schon der {breaks}. Tonart-Bruch, erlaubt sind "
                     f"hoechstens {max_breaks}."
                 )
-        same_key = first.key.camelot == second.key.camelot
-        close_bpm = abs(first.bpm.value - second.bpm.value) < SIMILAR_BPM
-        close_energy = (
-            abs(first.verdict.energy_level - second.verdict.energy_level)
-            < SIMILAR_ENERGY
-        )
-        if same_key and close_bpm and close_energy:
-            return (
-                f"{first_id} und {second_id} sind zu aehnlich: gleiche Tonart, "
-                f"fast gleiches Tempo, fast gleiche Energie."
-            )
+        if too_similar(first, second):
+            similar += 1
+            if max_similar == 0:
+                return (
+                    f"{first_id} und {second_id} sind zu aehnlich: gleiche Tonart, "
+                    f"fast gleiches Tempo, fast gleiche Energie."
+                )
+            if similar > max_similar:
+                return (
+                    f"{first_id} und {second_id} sind zu aehnlich: gleiche Tonart, "
+                    f"fast gleiches Tempo, fast gleiche Energie - das ist schon das "
+                    f"{similar}. solche Paar, erlaubt sind hoechstens {max_similar}."
+                )
     return None
 
 
@@ -173,11 +252,11 @@ def arrange(
     accepted = set(shortlist.accepted)
     by_id = {a.id: a for a in analyses if a.id in accepted}
     # Vor dem ersten Modellaufruf: gibt es ueberhaupt eine Reihenfolge ohne
-    # Tonart-Bruch? Wenn nicht, ist die kleinste erreichbare Zahl die
-    # Obergrenze - sonst verlangt die Stufe drei Runden lang Unmoegliches und
-    # bricht danach ab.
-    max_breaks = min_key_breaks(
-        [track.key.camelot for track in by_id.values()], profile.harmonic_strictness
+    # Tonart-Bruch und ohne zu aehnliche Nachbarn? Wenn nicht, ist die
+    # kleinste erreichbare Zahl die Obergrenze - sonst verlangt die Stufe drei
+    # Runden lang Unmoegliches und bricht danach ab.
+    max_breaks, max_similar = _grenzen(
+        list(by_id.values()), profile.harmonic_strictness
     )
     arc = ", ".join(f"({p.position:.2f}, {p.energy:.2f})" for p in profile.energy_arc)
 
@@ -194,6 +273,7 @@ def arrange(
         arc=arc,
         table=_table(analyses, accepted),
         break_rule=_break_rule(max_breaks),
+        similar_rule=_similar_rule(max_similar),
         similar_bpm=SIMILAR_BPM,
         similar_energy=SIMILAR_ENERGY,
         complaints=complaint_block,
@@ -202,7 +282,9 @@ def arrange(
     current = prompt
     answer = run_agent(client, current, ArchitectAnswer, budget, retries=1)
     for _round in range(MAX_ROUNDS - 1):
-        problem = _check(answer.order, accepted, by_id, profile, max_breaks)
+        problem = _check(
+            answer.order, accepted, by_id, profile, max_breaks, max_similar
+        )
         if problem is None:
             break
         current = f"{prompt}\n\nDein letzter Versuch war unbrauchbar: {problem}"
@@ -212,7 +294,9 @@ def arrange(
         # harmonisch gebrochene Reihenfolge flösse sonst bis in den Renderer,
         # und dort faellt sie niemandem mehr auf - der Mixplan waere
         # schemagueltig und trotzdem unbrauchbar.
-        problem = _check(answer.order, accepted, by_id, profile, max_breaks)
+        problem = _check(
+            answer.order, accepted, by_id, profile, max_breaks, max_similar
+        )
         if problem is not None:
             raise StageRulesViolated(
                 f"Der Architect lieferte nach {MAX_ROUNDS} Versuchen keine "
@@ -221,5 +305,7 @@ def arrange(
 
     return Setlist(
         order=answer.order,
-        note=answer.note + _break_note(answer.order, by_id, profile),
+        note=answer.note
+        + _break_note(answer.order, by_id, profile)
+        + _similar_note(answer.order, by_id),
     )

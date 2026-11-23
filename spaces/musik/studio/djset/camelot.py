@@ -66,11 +66,12 @@ def break_indices(keys: list[str], strictness: Strictness) -> list[int]:
     ]
 
 
-def _exact_min_breaks(fits: list[list[bool]]) -> int:
-    """Kuerzester Weg durch alle Tracks, ein Bruch kostet eins (Held-Karp)."""
-    count = len(fits)
+def _exact_min_cost(costs: list[list[int]]) -> int:
+    """Billigster Weg durch alle Tracks (Held-Karp). costs[a][b] kostet der
+    Schritt von a nach b."""
+    count = len(costs)
     full = 1 << count
-    unreachable = count  # mehr Brueche als Naehte gibt es nicht
+    unreachable = sum(max(row) for row in costs) + 1  # teurer als jeder Weg
     best = [[unreachable] * count for _ in range(full)]
     for start in range(count):
         best[1 << start][start] = 0
@@ -80,42 +81,59 @@ def _exact_min_breaks(fits: list[list[bool]]) -> int:
             cost = row[last]
             if cost == unreachable:
                 continue
-            last_fits = fits[last]
+            last_costs = costs[last]
             for following in range(count):
                 bit = 1 << following
                 if mask & bit:
                     continue
-                total = cost if last_fits[following] else cost + 1
+                total = cost + last_costs[following]
                 target = best[mask | bit]
                 if total < target[following]:
                     target[following] = total
     return min(best[full - 1])
 
 
-def _greedy_min_breaks(fits: list[list[bool]]) -> int:
-    """Gierige Naeherung: von jedem Start aus immer zum passenden Nachbarn mit
-    den wenigsten noch freien passenden Nachbarn (Warnsdorff); gibt es keinen,
-    kostet der naechste Schritt einen Bruch. Das Ergebnis ist die Zahl einer
+def _greedy_min_cost(costs: list[list[int]]) -> int:
+    """Gierige Naeherung: von jedem Start aus immer zum billigsten naechsten
+    Schritt, bei Gleichstand zu dem Track mit den wenigsten noch freien
+    kostenlosen Nachbarn (Warnsdorff). Das Ergebnis ist der Preis einer
     tatsaechlich gefundenen Reihenfolge, also nie zu optimistisch."""
-    count = len(fits)
-    best = count
+    count = len(costs)
+    best: int | None = None
     for start in range(count):
         free = set(range(count)) - {start}
         last = start
-        breaks = 0
+        total = 0
         while free:
 
             def open_neighbours(track: int) -> int:
-                return sum(1 for other in free if other != track and fits[track][other])
+                return sum(
+                    1 for other in free if other != track and costs[track][other] == 0
+                )
 
-            fitting = [track for track in free if fits[last][track]]
-            if not fitting:
-                breaks += 1
-                fitting = list(free)
+            cheapest = min(costs[last][track] for track in free)
+            fitting = [track for track in free if costs[last][track] == cheapest]
+            total += cheapest
             last = min(fitting, key=lambda track: (open_neighbours(track), track))
             free.remove(last)
-        best = min(best, breaks)
-    return best
+        best = total if best is None else min(best, total)
+    return best if best is not None else 0
+
+
+def min_path_cost(costs: list[list[int]]) -> int:
+    """Der kleinste Preis einer Reihenfolge aller Tracks.
+
+    costs[a][b] (nicht negativ) kostet der Schritt von a nach b. Exakt bis
+    EXACT_LIMIT Tracks, darueber eine gierige Naeherung (eine obere Schranke,
+    die zu einer echten Reihenfolge gehoert). Mit 0/1-Kosten ist das die Zahl
+    der Brueche; ein verbotener Schritt bekommt einen Preis, der hoeher ist
+    als alle erlaubten zusammen.
+    """
+    if len(costs) < 2:
+        return 0
+    if len(costs) <= EXACT_LIMIT:
+        return _exact_min_cost(costs)
+    return _greedy_min_cost(costs)
 
 
 def min_key_breaks(keys: list[str], strictness: Strictness) -> int:
@@ -125,9 +143,6 @@ def min_key_breaks(keys: list[str], strictness: Strictness) -> int:
     zusammenpassen. Exakt bis EXACT_LIMIT Tracks, darueber eine gierige
     Naeherung (eine obere Schranke). Reine Rechnung, kein Modellurteil.
     """
-    if len(keys) < 2:
-        return 0
-    fits = [[is_compatible(a, b, strictness) for b in keys] for a in keys]
-    if len(keys) <= EXACT_LIMIT:
-        return _exact_min_breaks(fits)
-    return _greedy_min_breaks(fits)
+    return min_path_cost(
+        [[0 if is_compatible(a, b, strictness) else 1 for b in keys] for a in keys]
+    )

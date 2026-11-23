@@ -8,7 +8,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from djset.agents.architect import arrange
+from djset.agents.architect import arrange, similar_pairs
 from djset.agents.base import AgentClient, AgentError, Budget
 from djset.agents.bestand_profiler import (
     build_profile_from_bestand,
@@ -360,6 +360,9 @@ def build_run(
             correction is not None,
             tempo=tempo,
             tonarten={a.id: a.key.camelot for a in analyses},
+            aehnliche=similar_pairs(
+                best_setlist.order, {a.id: a for a in analyses}
+            ),
         ),
     )
     # Jetzt ist der Lauf fertig - und erst jetzt traegt er die Marke dafuer.

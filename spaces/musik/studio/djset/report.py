@@ -203,6 +203,7 @@ def render_qa_report(
     corrected: bool = False,
     tempo: TempoWahl | None = None,
     tonarten: dict[str, str] | None = None,
+    aehnliche: list[tuple[str, str]] | None = None,
 ) -> str:
     """Der Bericht als Markdown.
 
@@ -235,6 +236,11 @@ def render_qa_report(
     `tonarten` (Track-ID -> Camelot) schaltet den Abschnitt "Tonart-Brueche"
     ein: jede Naht zwischen zwei harmonisch unvertraeglichen Songs, mit beiden
     IDs, beiden Tonarten und der Technik dort.
+
+    `aehnliche` sind die zu aehnlichen Nachbarpaare, die der Architect nur
+    zulaesst, wenn es keine Reihenfolge ohne sie gibt. Der Abschnitt "Zu
+    aehnliche Nachbarn" steht nur da, wenn es solche Paare gibt - im
+    Normalfall bleibt der Bericht, wie er war.
     """
     lines = ["# QA-Bericht", "", f"**Status:** {status_line(qa, corrected)}", ""]
 
@@ -286,6 +292,15 @@ def render_qa_report(
                 f"- Keine - jedes Nachbarpaar passt harmonisch "
                 f"(Strenge {profile.harmonic_strictness})."
             )
+        lines.append("")
+
+    if aehnliche:
+        lines += ["## Zu aehnliche Nachbarn", ""]
+        lines += [
+            f"- `{von}` nach `{nach}`: gleiche Tonart, fast gleiches Tempo, fast "
+            f"gleiche Energie - es gab keine Reihenfolge ohne solche Paare."
+            for von, nach in aehnliche
+        ]
         lines.append("")
 
     lines += ["## Aussortiertes Material", ""]

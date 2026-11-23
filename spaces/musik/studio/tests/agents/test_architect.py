@@ -1,8 +1,9 @@
+import itertools
 import json
 
 import pytest
 
-from djset.agents.architect import arrange
+from djset.agents.architect import _check, _grenzen, arrange
 from djset.agents.base import Budget, StageRulesViolated
 from djset.camelot import is_compatible
 from djset.contracts import Profile, Shortlist
@@ -192,3 +193,94 @@ def test_mit_vertraeglicher_reihenfolge_bleibt_der_prompt_ohne_bruchregel(
 
     assert "Tonart-Bruch" not in client.prompts[0]
     assert setlist.note == "Fixture-Reihenfolge."
+
+
+# --- Nachzug A1: "zu aehnlich" zaehlt bei der Bruchgrenze mit --------------
+
+
+def _aehnlich_und_insel() -> list:
+    """a und b sind zu aehnlich (8A, 126.0/126.3 BPM, Energie 0.50/0.52), c
+    (2A) passt zu keinem. Nach Tonart allein reicht ein Bruch (a-b-c), aber
+    a-b ist verboten - jede erlaubte Reihenfolge hat c in der Mitte."""
+    return [
+        make_analysis("a", camelot="8A", bpm=126.0, energy=0.50),
+        make_analysis("b", camelot="8A", bpm=126.3, energy=0.52),
+        make_analysis("c", camelot="2A", bpm=126.0, energy=0.70),
+    ]
+
+
+def test_die_grenzen_lassen_eine_reihenfolge_zu_die_check_besteht(
+    profile: Profile,
+) -> None:
+    """Vorher: min_key_breaks = 1, aber keine der sechs Reihenfolgen bestand
+    _check - drei bezahlte Modellaufrufe, dann StageRulesViolated."""
+    tracks = _aehnlich_und_insel()
+    by_id = {t.id: t for t in tracks}
+    max_breaks, max_similar = _grenzen(tracks, profile.harmonic_strictness)
+
+    assert (max_breaks, max_similar) == (2, 0)
+    bestanden = [
+        list(reihe)
+        for reihe in itertools.permutations(by_id)
+        if _check(list(reihe), set(by_id), by_id, profile, max_breaks, max_similar)
+        is None
+    ]
+    assert bestanden == [["a", "c", "b"], ["b", "c", "a"]]
+
+
+def test_zu_aehnliche_nachbarn_kosten_keinen_bruch_extra(profile: Profile) -> None:
+    client = FakeClient([_answer(["a", "c", "b"])])
+
+    setlist = arrange(
+        client, _shortlist(["a", "b", "c"]), _aehnlich_und_insel(), profile, _budget()
+    )
+
+    assert client.calls == 1
+    assert "hoechstens 2" in client.prompts[0]
+    assert setlist.order == ["a", "c", "b"]
+
+
+def _alle_zu_aehnlich() -> list:
+    return [
+        make_analysis("a", camelot="8A", bpm=126.0, energy=0.5),
+        make_analysis("b", camelot="8A", bpm=126.2, energy=0.5),
+        make_analysis("c", camelot="8A", bpm=126.4, energy=0.5),
+    ]
+
+
+def test_sind_alle_zu_aehnlich_gibt_auch_diese_regel_nach(profile: Profile) -> None:
+    """Gibt es GAR keine Reihenfolge ohne zu aehnliche Nachbarn, bricht ein
+    bezahlter Lauf nicht ab: das Minimum ist erlaubt und steht in der Notiz."""
+    tracks = _alle_zu_aehnlich()
+    assert _grenzen(tracks, profile.harmonic_strictness) == (0, 2)
+    client = FakeClient([_answer(["a", "b", "c"])])
+
+    setlist = arrange(client, _shortlist(["a", "b", "c"]), tracks, profile, _budget())
+
+    assert client.calls == 1
+    assert "keine Reihenfolge ganz ohne zu aehnliche" in client.prompts[0]
+    assert "hoechstens 2 Nachbarpaare" in client.prompts[0]
+    assert setlist.order == ["a", "b", "c"]
+    assert "Zu aehnliche Nachbarn" in setlist.note
+    assert "a nach b" in setlist.note and "b nach c" in setlist.note
+
+
+def test_mehr_aehnliche_nachbarn_als_noetig_werden_neu_gefragt(
+    profile: Profile,
+) -> None:
+    """a, b, c sind untereinander zu aehnlich, d (8A, weit weg im Tempo) nicht.
+    Mindestens: d trennt ein Paar, also bleibt ein aehnliches Paar. a-b-c-d
+    hat zwei."""
+    tracks = _alle_zu_aehnlich() + [
+        make_analysis("d", camelot="8A", bpm=140.0, energy=0.5)
+    ]
+    assert _grenzen(tracks, profile.harmonic_strictness) == (0, 1)
+    client = FakeClient([_answer(["a", "b", "c", "d"]), _answer(["a", "b", "d", "c"])])
+
+    setlist = arrange(
+        client, _shortlist(["a", "b", "c", "d"]), tracks, profile, _budget()
+    )
+
+    assert client.calls == 2
+    assert "zu aehnlich" in client.prompts[1]
+    assert setlist.order == ["a", "b", "d", "c"]
