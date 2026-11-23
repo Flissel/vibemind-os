@@ -110,7 +110,8 @@ Die App liest den Stand eines Auftrags mit `GET /api/agent-auftraege/{id}/stand`
 | `unbekannt` | `false` | – | Den Auftrag gibt es nicht, oder sein Stand ist gerade nicht lesbar. |
 
 Einen eigenen Stand `abgelehnt` gibt es nicht. Lehnt das Gehirn ein Ergebnis ab, etwa weil es die Notiz nur beschreibt,
-heißt der Stand `fehler`, und `meldung` sagt den Grund in einem Satz. Erfindet ein Ausformulier-Ergebnis eine offene
+heißt der Stand `fehler`, und `meldung` sagt den Grund in einem Satz. Ebenso, wenn ein Ausformulier-Ergebnis dem
+vorhandenen Text fast gleicht: „Der Agent hat am Text nichts Wesentliches geändert; die Notiz bleibt, wie sie ist.“ Erfindet ein Ausformulier-Ergebnis eine offene
 Frage, wiederholt es sich oder schreibt es einen Satz zu einem anderen Thema aus einer anderen Karte ab, heißt der
 Stand `vorschlag`: Der Mensch kann den Text ansehen und mit
 „Vorschlag trotzdem übernehmen“ schreiben.

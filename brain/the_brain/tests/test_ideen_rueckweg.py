@@ -149,6 +149,13 @@ def test_auftrag_verbietet_empfehlungen_ohne_grundlage() -> None:
     assert nachricht.index("Keine Empfehlungen") < nachricht.index("<<<NOTIZ")
 
 
+def test_auftrag_verbietet_wiederholung_mit_anderen_worten() -> None:
+    # Lauf 19 (54): nur im Auftrag, keine Pruefung dafuer.
+    nachricht, _ = _vorbereiten()
+    assert "Kein Satz, der einen vorigen nur mit anderen Worten wiederholt" in nachricht
+    assert "„also“" in nachricht and nachricht.index("anderen Worten") < nachricht.index("<<<NOTIZ")
+
+
 def test_auftrag_bittet_um_korrektes_deutsch() -> None:
     # Lauf 16 (47): nur erbeten, keine Pruefung dafuer.
     nachricht, _ = _vorbereiten()
@@ -429,6 +436,37 @@ def test_beschreibung_bleibt_abgelehnt() -> None:
     assert pruefung["rueckweg"] == "abgelehnt" and ideen.aufrufe == []
 
 
+AUSFORMULIERT = ("Für das Stadtfest fragen wir die Stadtwerke als Hauptsponsor an. Hier zahlen sie die Bühne "
+                 "und den Strom. Die Bäckerei fragen wir, ob sie das Frühstück für die Helfer stellt.")
+
+
+def test_fast_gleiches_ergebnis_wird_nicht_geschrieben() -> None:
+    # Lauf 19 (52): schon ausformulierte Karte, Ergebnis mit einem getauschten Wort ("Hier" -> "Dort").
+    from core import auftrag_stand as st
+
+    ideen = Ideen({**KARTE, "content": AUSFORMULIERT})
+    auftrag = _fertig(json.dumps({"text": AUSFORMULIERT.replace("Hier", "Dort")}))
+    auftrag["uebergabe"]["rueckweg"]["stand"] = rw.stand(ideen.karte)
+    pruefung = rw.zurueckschreiben(auftrag, **ideen.anschluss())
+    assert ideen.aufrufe == [] and ideen.karte["content"] == AUSFORMULIERT
+    assert pruefung["rueckweg"] == "abgelehnt" and pruefung["reason"] == "result unchanged"
+    assert pruefung["meldung"] == "Der Agent hat am Text nichts Wesentliches geändert; die Notiz bleibt, wie sie ist."
+    stand = st.stand_einer_zeile({**auftrag, "pruefung": pruefung})
+    assert stand["stand"] == "fehler" and stand["meldung"] == rw.UNVERAENDERT
+
+
+@pytest.mark.parametrize("alt, neu, gleich", [
+    (AUSFORMULIERT, AUSFORMULIERT, True),
+    (AUSFORMULIERT, AUSFORMULIERT.replace("Hier", "Dort"), True),
+    (AUSFORMULIERT, AUSFORMULIERT + " Ein Zelt leihen wir beim Sportverein, falls es regnet.", False),
+    ("Frist bis März", "Die Frist läuft bis Ende März. Bis dahin sammeln wir alle Zusagen.", False),
+    ("Frist bis März", "Frist bis März.", True),
+    ("", "Neu", False),
+])
+def test_fast_gleich_misst_gleiche_woerter_in_gleicher_folge(alt, neu, gleich) -> None:
+    assert rw.fast_gleich(alt, neu) is gleich
+
+
 NACHBAR_BUEHNE = {"id": "a0000002", "title": "Bühnenplan",
                   "content": "Der Aufbau der Bühne beginnt am Freitag um acht Uhr am Marktplatz."}
 ABGESCHRIEBEN = "Die Frist läuft bis Ende März. Der Aufbau der Bühne beginnt am Freitag um acht Uhr."
@@ -448,6 +486,15 @@ def test_abgeschriebener_satz_zu_anderem_thema_wird_zurueckgehalten() -> None:
         rw.SCHREIBT_AB)
     # Ohne Nachbarn keine Pruefung darauf.
     assert rw.ausformulierung_pruefen("Frist bis März", ABGESCHRIEBEN, titel="Sponsoren") == ""
+
+
+def test_satz_aus_der_notiz_gilt_nicht_als_abgeschrieben() -> None:
+    # Lauf 19 (53): Der Satz stand schon in der Notiz (frueher uebernommen); er gehoert jetzt zu ihr.
+    texte = ["Bühnenplan " + NACHBAR_BUEHNE["content"]]
+    notiz = "Frist bis März. Der Aufbau der Bühne beginnt am Freitag um acht Uhr."
+    ergebnis = ("Die Frist für alle Zusagen läuft bis Ende März, danach planen wir fest. "
+                "Der Aufbau der Bühne beginnt am Freitag um acht Uhr.")
+    assert rw.ausformulierung_pruefen(notiz, ergebnis, titel="Sponsoren", nachbarn=texte) == ""
 
 
 @pytest.mark.parametrize("notiz, titel, ergebnis", [
