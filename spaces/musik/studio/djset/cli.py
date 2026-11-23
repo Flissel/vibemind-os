@@ -28,9 +28,14 @@ from djset.contracts import (
     Setlist,
 )
 from djset.critic import Critique, critique
+from djset.export import to_mp3
 from djset.qa import check_set
 from djset.render.engine import ImpossibleMixPlan, render
-from djset.render.stretch import RenderToolMissing, UnsupportedSampleRate
+from djset.render.stretch import (
+    RenderFailed,
+    RenderToolMissing,
+    UnsupportedSampleRate,
+)
 from djset.render.tracklist import render_tracklist
 from djset.report import correction_gain_db, render_qa_report
 from djset.run import FINISHED_MARKER, Run, RunNotFound, slugify
@@ -56,6 +61,7 @@ DATEN_ENV = "MUSIK_DATEN"
 # es zu FINISHED_MARKER - der Marke, an der Run.latest_unfinished einen
 # fertigen Lauf erkennt.
 PARTIAL_MARKER = "set.partial.wav"
+MP3_NAME = "set.mp3"
 
 PLAN_BUDGET_TOKENS = 120_000
 # Wanduhrgrenze der Plan-Phase. Sie besteht aus hoechstens acht
@@ -312,6 +318,16 @@ def build_run(
     # Jetzt ist der Lauf fertig - und erst jetzt traegt er die Marke dafuer.
     partial.replace(run.path(FINISHED_MARKER))
 
+    # Die MP3 kommt NACH der Fertig-Marke: scheitert sie, bleibt der Lauf
+    # trotzdem fertig, mit set.wav und Bericht. Der Grund steht als Zeile in
+    # der Ausgabe, nicht als Abbruch.
+    mp3_path = run.path(MP3_NAME)
+    mp3_fehler: str | None = None
+    try:
+        to_mp3(run.path(FINISHED_MARKER), mp3_path)
+    except (RenderFailed, RenderToolMissing) as error:
+        mp3_fehler = str(error)
+
     print(f"Lauf {run.run_id}")
     print(f"  {len(analyses)} Tracks analysiert, {len(unreadable)} unlesbar")
     print(f"  {len(shortlist.accepted)} im Set, {len(shortlist.rejected)} aussortiert")
@@ -328,6 +344,10 @@ def build_run(
     print(f"  Mixplan: {run.path('mixplan.json')}")
     print(f"  Beanstandungen aller Runden: {run.path('critique.json')}")
     print(f"  Set: {run.path(FINISHED_MARKER)}")
+    if mp3_fehler is None:
+        print(f"  MP3: {mp3_path}")
+    else:
+        print(f"  MP3: nicht geschrieben - {mp3_fehler}")
     print(f"  Tracklist: {run.path('tracklist.md')}")
     print(f"  QA-Bericht: {run.path('qa-report.md')}")
     return 0

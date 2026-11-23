@@ -16,6 +16,7 @@ from djset.contracts import (
     QaReport,
     TrackMeasurements,
 )
+from djset.render.stretch import RenderFailed, RenderToolMissing
 from djset.run import Run
 from djset.tempo import TempoWahl
 from djset.watch import AudioFile
@@ -312,13 +313,11 @@ def test_cmd_build_verhaelt_sich_wie_vorher(
     assert client.calls == 0
 
 
-def test_build_run_nennt_songs_ausserhalb_des_bereichs_im_bericht(
-    tmp_path, profile, monkeypatch
-):
-    """Liegt tempo.json im Lauf, steht jeder ausgelassene Song mit seinem Tempo
-    im QA-Bericht. Material und Antworten wie in
+def _lauf_mit_ersetztem_renderer(tmp_path, profile, monkeypatch):
+    """Material und Antworten wie in
     test_cli_build::test_a_length_complaint_alone_does_not_buy_another_round;
-    render und check_set sind ersetzt, geprueft wird nur die Verdrahtung."""
+    render und check_set sind ersetzt, to_mp3 bleibt Sache des Aufrufers.
+    Gibt (run, files, profil, client) zurueck."""
     run = Run.create(tmp_path, "party", HEUTE)
     flach = Profile.model_validate(
         profile.model_dump()
@@ -377,6 +376,18 @@ def test_build_run_nennt_songs_ausserhalb_des_bereichs_im_bericht(
 
     monkeypatch.setattr(cli, "render", fake_render)
     monkeypatch.setattr(cli, "check_set", fake_check_set)
+    return run, files, flach, client
+
+
+def test_build_run_nennt_songs_ausserhalb_des_bereichs_im_bericht(
+    tmp_path, profile, monkeypatch
+):
+    """Liegt tempo.json im Lauf, steht jeder ausgelassene Song mit seinem Tempo
+    im QA-Bericht."""
+    run, files, flach, client = _lauf_mit_ersetztem_renderer(
+        tmp_path, profile, monkeypatch
+    )
+    monkeypatch.setattr(cli, "to_mp3", lambda quelle, ziel: ziel.write_bytes(b""))
 
     assert cli.build_run(run, files, flach, client, _budget()) == 0
 
@@ -384,3 +395,50 @@ def test_build_run_nennt_songs_ausserhalb_des_bereichs_im_bericht(
     abschnitt = bericht.split("## Nicht im Tempo-Bereich", 1)[1].split("\n## ", 1)[0]
     assert "`langsam`: 90.0 BPM" in abschnitt
     assert "`zu-schnell`: 200.5 BPM" in abschnitt
+
+
+def test_build_run_schreibt_set_mp3_und_nennt_sie(
+    tmp_path, profile, monkeypatch, capsys
+):
+    run, files, flach, client = _lauf_mit_ersetztem_renderer(
+        tmp_path, profile, monkeypatch
+    )
+    aufrufe: list[tuple[Path, Path]] = []
+
+    def fake_to_mp3(quelle: Path, ziel: Path) -> None:
+        # Der MP3-Schritt laeuft erst, wenn set.wav schon die Fertig-Marke ist.
+        assert quelle == run.path("set.wav") and quelle.exists()
+        aufrufe.append((quelle, ziel))
+        ziel.write_bytes(b"mp3")
+
+    monkeypatch.setattr(cli, "to_mp3", fake_to_mp3)
+
+    assert cli.build_run(run, files, flach, client, _budget()) == 0
+
+    assert aufrufe == [(run.path("set.wav"), run.path("set.mp3"))]
+    assert f"  MP3: {run.path('set.mp3')}" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "fehler", [RenderFailed("ffmpeg kaputt"), RenderToolMissing("kein ffmpeg")]
+)
+def test_build_run_bleibt_fertig_wenn_die_mp3_scheitert(
+    tmp_path, profile, monkeypatch, capsys, fehler
+):
+    run, files, flach, client = _lauf_mit_ersetztem_renderer(
+        tmp_path, profile, monkeypatch
+    )
+
+    def kaputt(quelle: Path, ziel: Path) -> None:
+        raise fehler
+
+    monkeypatch.setattr(cli, "to_mp3", kaputt)
+
+    assert cli.build_run(run, files, flach, client, _budget()) == 0
+
+    assert run.has("set.wav")
+    assert run.has("qa-report.md")
+    assert not run.has("set.mp3")
+    ausgabe = capsys.readouterr().out
+    assert f"  MP3: nicht geschrieben - {fehler}" in ausgabe
+    assert f"  MP3: {run.path('set.mp3')}" not in ausgabe

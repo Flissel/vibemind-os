@@ -379,6 +379,8 @@ def test_a_true_peak_finding_triggers_exactly_one_corrective_re_render(
 
     monkeypatch.setattr(cli, "check_set", fake_check_set)
     monkeypatch.setattr(cli, "render", fake_render)
+    # set.wav ist hier eine leere Datei - kein Futter fuer ein echtes ffmpeg.
+    monkeypatch.setattr(cli, "to_mp3", lambda quelle, ziel: ziel.write_bytes(b""))
 
     code = cmd_build(tmp_path, run.run_id, client, _budget())
 
