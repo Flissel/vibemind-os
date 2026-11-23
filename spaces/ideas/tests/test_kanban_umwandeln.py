@@ -77,8 +77,8 @@ class KanbanTests(unittest.TestCase):
         self.assertEqual(sections, [("Offen", ["Logo"]), ("In Arbeit", []), ("Erledigt", ["Druck"])])
         self.assertEqual(count, "2 Karten in 3 Spalten")
 
-    def test_zurueckgeschriebenes_board_zaehlt_karten_nicht_doppelt(self) -> None:
-        # Lauf 11: "2 Karten in 6 Spalten", zwei "Offen"-Spalten mit demselben Text.
+    def test_gleichnamige_spalten_zaehlen_karten_nicht_doppelt(self) -> None:
+        # Absicherung: stehen dieselben Karten in zwei gleichnamigen gespeicherten Spalten, zaehlen sie einmal.
         offen = [{"title": "Logo"}, {"title": "Bühne mieten"}]
         board = {"columns": [{"name": "Offen", "cards": offen}, {"name": "In Arbeit", "cards": []},
                              {"name": "Erledigt", "cards": []}, {"name": "Offen", "cards": offen},
