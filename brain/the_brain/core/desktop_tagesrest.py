@@ -68,8 +68,50 @@ def tagesrest(
         return 0
 
 
-def herkunft_aus_kontext(kontext: object) -> Optional[str]:
-    """Nur die App setzt context.eingabe = "getippt". Alles andere ist keine getippte Eingabe."""
-    if isinstance(kontext, dict) and kontext.get("eingabe") == "getippt":
-        return "getippt"
-    return None
+KOPF_EINGABE = "X-Vibemind-Eingabe"
+SCHLUESSEL_NAME = "VIBEMIND_EINGABE_SCHLUESSEL"
+SCHLUESSEL_MINDESTLAENGE = 32
+ZEICHEN_FENSTER_S = 60
+
+
+def eingabe_zeichen(schluessel: str, satz: str, zeit: int) -> str:
+    """Zeichen der App fuer genau diesen Satz zu genau dieser Zeit: "<zeit>.<hmac-sha256>"."""
+    import hashlib
+    import hmac
+
+    stoff = f"{int(zeit)}\n{satz}".encode("utf-8")
+    return f"{int(zeit)}." + hmac.new(schluessel.encode("utf-8"), stoff, hashlib.sha256).hexdigest()
+
+
+def herkunft_pruefen(
+    kontext: object,
+    satz: str,
+    zeichen: object,
+    *,
+    plan_vom_aufrufer: bool,
+    umgebung: Optional[Mapping[str, str]] = None,
+    jetzt_ts: Optional[float] = None,
+) -> Optional[str]:
+    """"getippt" nur, wenn die App es fuer genau diesen Satz mit dem gemeinsamen Schluessel belegt.
+
+    Das Feld im Kontext allein genuegt nicht: Das koennte jeder Prozess am Rechner behaupten.
+    Ein mitgebrachter Plan gilt nie als getippt, auch nicht mit gueltigem Zeichen.
+    """
+    import hmac
+    import time
+
+    if plan_vom_aufrufer or not isinstance(kontext, dict) or kontext.get("eingabe") != "getippt":
+        return None
+    u = os.environ if umgebung is None else umgebung
+    schluessel = u.get(SCHLUESSEL_NAME) or ""
+    if len(schluessel) < SCHLUESSEL_MINDESTLAENGE or not isinstance(zeichen, str) or not satz:
+        return None
+    zeit_text, _, _ = zeichen.partition(".")
+    if not zeit_text.isdigit() or len(zeit_text) > 12:
+        return None
+    jetzt = time.time() if jetzt_ts is None else jetzt_ts
+    if abs(jetzt - int(zeit_text)) > ZEICHEN_FENSTER_S:
+        return None
+    if not hmac.compare_digest(zeichen, eingabe_zeichen(schluessel, satz, int(zeit_text))):
+        return None
+    return "getippt"

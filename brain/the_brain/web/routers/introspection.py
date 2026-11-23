@@ -2832,10 +2832,16 @@ async def multihop_execute(request: Request):
     _kanal_roh = body.get("antwortkanal")
     _art = _kanal_roh.get("art") if isinstance(_kanal_roh, dict) else None
     antwortkanal = {"art": _art if isinstance(_art, str) and _art in ("api", "telegram", "dashboard") else "api"}
-    from core.desktop_tagesrest import herkunft_aus_kontext as _herkunft_aus_kontext
+    # "getippt" behauptet nicht der Aufrufer: Die App belegt es je Satz mit einem Zeichen aus dem
+    # gemeinsamen Schluessel. Ein mitgebrachter Plan gilt nie als getippt.
+    from core.desktop_tagesrest import KOPF_EINGABE as _KOPF_EINGABE, herkunft_pruefen as _herkunft_pruefen
     exec_result = await _asyncio.to_thread(
         pe.execute, plan, antwortkanal=antwortkanal,
-        eingabe_herkunft=_herkunft_aus_kontext(body.get("context")),
+        eingabe_herkunft=_herkunft_pruefen(
+            body.get("context"), str(body.get("intent") or body.get("message") or "").strip(),
+            request.headers.get(_KOPF_EINGABE),
+            plan_vom_aufrufer=body.get("plan") is not None,
+        ),
     )
     # MH-5a (Phase 0) — top-level plan_id: the reward-capable correlate.
     # POST /api/multihop/plan/{plan_id}/reward and /api/decisions/reward both

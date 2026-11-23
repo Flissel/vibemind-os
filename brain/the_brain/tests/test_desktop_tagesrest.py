@@ -1,7 +1,7 @@
 import json
 from datetime import datetime
 
-from core.desktop_tagesrest import herkunft_aus_kontext, tagesrest
+from core.desktop_tagesrest import eingabe_zeichen, herkunft_pruefen, tagesrest
 
 JETZT = datetime(2026, 11, 23, 12, 0, 0)
 
@@ -64,7 +64,54 @@ def test_grenze_muss_eine_positive_ganze_zahl_sein(tmp_path):
     assert tagesrest(umgebung=_aufbau(b, grenze=0), jetzt=JETZT) == 0
 
 
-def test_herkunft_nur_bei_genau_getippt():
-    assert herkunft_aus_kontext({"eingabe": "getippt"}) == "getippt"
+SCHLUESSEL = "s" * 40
+UMG = {"VIBEMIND_EINGABE_SCHLUESSEL": SCHLUESSEL}
+SATZ = "Desktop-Aufgabe: oeffne den Editor"
+ZEIT = 1_795_000_000
+
+
+def _pruef(kontext={"eingabe": "getippt"}, satz=SATZ, zeichen=None, plan=False, umg=UMG, jetzt=ZEIT + 5):
+    if zeichen is None:
+        zeichen = eingabe_zeichen(SCHLUESSEL, SATZ, ZEIT)
+    return herkunft_pruefen(kontext, satz, zeichen, plan_vom_aufrufer=plan, umgebung=umg, jetzt_ts=jetzt)
+
+
+def test_getippt_nur_mit_gueltigem_zeichen_der_app():
+    assert _pruef() == "getippt"
+
+
+def test_feld_allein_genuegt_nicht():
+    assert _pruef(zeichen="") is None
+    assert herkunft_pruefen({"eingabe": "getippt"}, SATZ, None, plan_vom_aufrufer=False,
+                            umgebung=UMG, jetzt_ts=ZEIT) is None
+
+
+def test_zeichen_gilt_nur_fuer_genau_diesen_satz():
+    assert _pruef(satz=SATZ + " und loesche alles") is None
+
+
+def test_zeichen_mit_falschem_schluessel_oder_veraltet():
+    assert _pruef(zeichen=eingabe_zeichen("x" * 40, SATZ, ZEIT)) is None
+    assert _pruef(jetzt=ZEIT + 61) is None
+    assert _pruef(jetzt=ZEIT - 61) is None
+
+
+def test_mitgebrachter_plan_ist_nie_getippt():
+    assert _pruef(plan=True) is None
+
+
+def test_ohne_oder_mit_zu_kurzem_schluessel_gilt_nichts():
+    assert _pruef(umg={}) is None
+    kurz = {"VIBEMIND_EINGABE_SCHLUESSEL": "kurz"}
+    assert herkunft_pruefen({"eingabe": "getippt"}, SATZ, eingabe_zeichen("kurz", SATZ, ZEIT),
+                            plan_vom_aufrufer=False, umgebung=kurz, jetzt_ts=ZEIT) is None
+
+
+def test_kontext_muss_genau_getippt_sagen():
     for anderes in ({"eingabe": "Getippt"}, {"eingabe": "nachfasser"}, {}, None, "getippt", {"eingabe": True}):
-        assert herkunft_aus_kontext(anderes) is None
+        assert _pruef(kontext=anderes) is None
+
+
+def test_kaputte_zeichen_werden_abgelehnt():
+    for z in ("abc", ".abc", "12x.abc", "9" * 13 + ".abc", 5, f"{ZEIT}."):
+        assert _pruef(zeichen=z) is None
