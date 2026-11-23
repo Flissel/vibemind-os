@@ -2832,7 +2832,11 @@ async def multihop_execute(request: Request):
     _kanal_roh = body.get("antwortkanal")
     _art = _kanal_roh.get("art") if isinstance(_kanal_roh, dict) else None
     antwortkanal = {"art": _art if isinstance(_art, str) and _art in ("api", "telegram", "dashboard") else "api"}
-    exec_result = await _asyncio.to_thread(pe.execute, plan, antwortkanal=antwortkanal)
+    from core.desktop_tagesrest import herkunft_aus_kontext as _herkunft_aus_kontext
+    exec_result = await _asyncio.to_thread(
+        pe.execute, plan, antwortkanal=antwortkanal,
+        eingabe_herkunft=_herkunft_aus_kontext(body.get("context")),
+    )
     # MH-5a (Phase 0) — top-level plan_id: the reward-capable correlate.
     # POST /api/multihop/plan/{plan_id}/reward and /api/decisions/reward both
     # key on plan_id; the voice bridge reads data.get("plan_id") — nested-only

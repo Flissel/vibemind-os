@@ -302,6 +302,11 @@ _BUNDLE_SCHLUESSEL = ("channel_intent", "brain_plan", "space_execution_contracts
 _EINMAL_EREIGNISSE = frozenset({"bubble.create", "idea.aenderung_zurueck"})
 
 
+def _desktop_tagesrest() -> int:
+    from .desktop_tagesrest import tagesrest
+    return tagesrest()
+
+
 def _aenderung_id_fuer(target: Any, plan_ctx: Optional[Dict[str, Any]]) -> str:
     """Plan-Kennung, unter der die Supabase die Schreibvorgaenge eines Plans gruppiert.
 
@@ -727,6 +732,7 @@ class PlanExecutor:
         openfang_handoff_bundle: Optional[Dict[str, Any]] = None,
         start_state: Optional[Dict[str, Any]] = None,
         antwortkanal: Optional[Dict[str, Any]] = None,
+        eingabe_herkunft: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Walk the DAG. Returns a dict with `executed` (step_id → HopResult),
         `state`, `plan`, `ok`, `elapsed_s`, `replans`.
@@ -839,6 +845,10 @@ class PlanExecutor:
             "trace_id": getattr(plan, "trace_id", "") or "",
             "confirmed_events": set(confirmed_events or ()),
             "antwortkanal": antwortkanal,
+            # Desktop-Schleife: nur der Aufrufer weiss, ob der Satz getippt wurde. Der Tagesrest
+            # wird erst gelesen, wenn die Schleife ihn braucht.
+            "eingabe_herkunft": eingabe_herkunft,
+            "desktop_tagesrest": _desktop_tagesrest,
         }
         if isinstance(openfang_handoff_bundle, dict):
             for key in (
