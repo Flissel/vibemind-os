@@ -107,6 +107,30 @@ def test_ohne_lesbare_nachbarn_geht_der_auftrag_ohne_zusammenhang(nachbarn) -> N
     assert "<<<NACHBARN" not in nachricht and rw.NACHBARN_HINWEIS not in nachricht and "<<<NOTIZ" in nachricht
 
 
+def test_zusatz_steht_nirgends_im_auftrag() -> None:
+    # Lauf 14 (44): Titel ohne Zusatz, aber 14-mal "pruef" im Auftrag: 10-mal aus dem Text der
+    # Nachbarn (der beim Festhalten mit dem Titel beginnt), 1-mal aus dem Text der Notiz, dazu der Satz
+    # des Menschen und zwei Woerter der Vorgabe selbst.
+    import re
+
+    karte = {**KARTE, "title": "Sponsoren (Prüfung)", "content": "Sponsoren (Prüfung) – Stadtwerke fragen",
+             "x": 0, "y": 0}
+    nachbarn = [{"id": f"a000001{n}", "title": f"Bühne {n} (Prüfung)",
+                 "content": f"Bühne {n} (Prüfung) – Aufbau ab Freitag", "x": n, "y": 0} for n in range(3)]
+    nachricht, _ = rw.auftrag_vorbereiten(
+        "idea.expand", json.dumps({"id": karte["id"]}), "Formuliere Sponsoren (Prüfung) aus",
+        lies_karte=lambda i: dict(karte), suche_titel=lambda t: [], lies_nachbarn=lambda b, k: nachbarn)
+    assert re.search(r"pr(?:ü|ue)f", nachricht, re.IGNORECASE) is None
+    assert "Text: Sponsoren – Stadtwerke fragen" in nachricht and "- Bühne 0: Bühne 0 – Aufbau ab Freitag" in nachricht
+    assert "Formuliere Sponsoren aus" in nachricht
+
+
+def test_andere_klammern_im_text_bleiben() -> None:
+    assert rw.ohne_titelzusatz("Budget (vorläufig) 2.000 €", "Sponsoren (Entwurf)") == "Budget (vorläufig) 2.000 €"
+    assert rw.ohne_titelzusatz("Sponsoren (Entwurf): Stadtwerke", "Sponsoren (Entwurf)") == "Sponsoren: Stadtwerke"
+    assert rw.ohne_titelzusatz("Sponsoren", "Sponsoren") == "Sponsoren"
+
+
 def test_einschaetzen_bekommt_keine_nachbarn() -> None:
     nachricht, gefragt = _mit_nachbarn([{"id": "a0000002", "title": "Bühne", "content": "Plan"}],
                                        event_id="idea.explain")
@@ -124,6 +148,13 @@ def test_auftrag_verbietet_erfundene_offene_fragen() -> None:
     ("Bühne steht ab Freitag.", "Die Bühne steht ab Freitag. Die Details dazu sind noch in Prüfung."),
     ("Druckerei liefert Plakate.", "Die Druckerei liefert die Plakate; das prüfen wir noch."),
     ("Sponsoren: Stadtwerke", "Als Sponsor gewinnen wir die Stadtwerke. Der Betrag muss noch geklärt werden."),
+    # Lauf 14 (43): ein erfundener Zustand im zweiten Satz.
+    ("Vegane Suppe am Samstag",
+     "Für das Stadtfest planen wir am Samstag eine vegane Suppe. Wir prüfen gerade, ob sich das umsetzen lässt."),
+    ("Vegane Suppe am Samstag", "Am Samstag gibt es eine vegane Suppe; ob sich das mit dem Budget machen lässt."),
+    ("Bühne steht ab Freitag.", "Die Bühne steht ab Freitag. Der Aufbau wird gerade geprüft."),
+    ("Bühne steht ab Freitag.", "Die Bühne steht ab Freitag. Das wird geklärt."),
+    ("Druckerei liefert Plakate.", "Die Druckerei liefert die Plakate. Wir klären derzeit die Menge."),
 ])
 def test_erfundene_offene_frage_wird_abgelehnt(notiz, ergebnis) -> None:
     assert rw.ausformulierung_pruefen(notiz, ergebnis) == rw.ERFINDET_OFFENES
