@@ -312,7 +312,7 @@ def _abschluss_ereignis(plan_id: str, ok: bool, result: Dict[str, Any], executed
     """
     if result.get("pending"):
         return {"plan_id": plan_id, "ok": True, "pending": True, "status": "angenommen",
-                "hop_count": len(executed)}
+                "fertig": False, "hop_count": len(executed)}
     nutzlast: Dict[str, Any] = {"plan_id": plan_id, "ok": ok, "elapsed_s": result.get("elapsed_s"),
                                 "hop_count": len(executed)}
     if not ok:
@@ -1612,6 +1612,19 @@ class PlanExecutor:
                         contract_pass=False, reward=-1.0,
                     )
                 target = deterministic_target
+            from .recherche_bubble import NUR_GEHIRN as _RECHERCHE_NUR_GEHIRN, ist_recherche_ziel
+            if (event_id in _RECHERCHE_NUR_GEHIRN or ist_recherche_ziel(target)
+                    or ist_recherche_ziel(getattr(hop, "execution_target", None))):
+                # Recherche zu einer Bubble kostet Web-Zugriffe und einen Agentenlauf: nur ueber
+                # Vorschau und "Ja, recherchieren" im Gehirn (core/recherche_bubble), nie per Plan.
+                return HopResult(
+                    step_id=hop.step_id, ok=False,
+                    error="recherche: nur über die Rückfrage im Gehirn, nie per Plan",
+                    capability=hop.capability, target=target,
+                    rendered_arg=rendered_arg, kg_hits=kg_hits,
+                    elapsed_s=time.time() - t0,
+                    contract_pass=False, reward=-1.0,
+                )
             from .idea_connect_contract import is_idea_connect_mcp_target
             if is_idea_connect_mcp_target(target) and event_id != "idea.connect":
                 return HopResult(
@@ -1964,6 +1977,19 @@ class PlanExecutor:
             rendered_arg = _desktop_auftrag
             hop.arg_kwarg = "task"
             single_plan_attempt = True
+
+        from .recherche_bubble import ist_recherche_ziel as _ist_recherche_ziel
+        if _ist_recherche_ziel(target):
+            # Zweite Wache direkt vor dem Bau: auch ein spaeter umgeschriebenes Ziel erreicht
+            # den Recherche-Server nie per Plan (core/recherche_bubble).
+            return HopResult(
+                step_id=hop.step_id, ok=False,
+                error="recherche: nur über die Rückfrage im Gehirn, nie per Plan",
+                capability=hop.capability, target=target,
+                rendered_arg=rendered_arg, kg_hits=kg_hits,
+                elapsed_s=time.time() - t0,
+                contract_pass=False, reward=-1.0,
+            )
 
         # Build the right executor for the target prefix (Phase 4)
         try:

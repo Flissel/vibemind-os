@@ -9,9 +9,9 @@ Deshalb liest die App den Stand selbst: ``GET /api/agent-auftraege/{id}/stand`` 
 Hier steht nur die reine Abbildung Zeile -> Stand. Die Dauer gibt es erst mit dem
 Abschluss (angelegt bis beendet, beim White Paper über alle Teile).
 
-Stände: ``laeuft`` (ohne Dauer), ``fertig``, ``vorschlag``, ``abgebrochen``, ``wartet``,
-``fehler``. ``ok`` ist nur bei ``fehler`` False; ``vorschlag`` und ``abgebrochen`` sind
-Hinweise (``hinweis: true``), keine Fehler.
+Stände: ``laeuft`` (ohne Dauer), ``fertig``, ``vorschlag``, ``verworfen``, ``abgebrochen``,
+``wartet``, ``fehler``. ``ok`` ist nur bei ``fehler`` False; ``vorschlag``, ``verworfen`` und
+``abgebrochen`` sind Hinweise (``hinweis: true``), keine Fehler.
 """
 from __future__ import annotations
 
@@ -63,6 +63,10 @@ def stand_einer_zeile(zeile: Mapping[str, Any]) -> dict[str, Any]:
         return {"stand": "laeuft", "meldung": meldung, "weiter": pruefung.get("naechster_auftrag")}
     if rueckweg == "geschrieben":
         return {"stand": "fertig", "ok": True, "meldung": meldung}
+    if rueckweg == "vorschlag" and pruefung.get("vorschlag_erledigt") == "verworfen":
+        # Nachmessung 23.11.2026: nach "Vorschlag verwerfen" stand hier weiter "vorschlag".
+        return {"stand": "verworfen", "ok": True, "hinweis": True,
+                "meldung": "Der Vorschlag ist verworfen; an der Notiz ist nichts geändert."}
     if rueckweg == "vorschlag":
         return {"stand": "vorschlag", "ok": True, "hinweis": True, "meldung": meldung,
                 "saetze": ["Vorschlag zeigen", "Vorschlag übernehmen", "Vorschlag verwerfen"]}

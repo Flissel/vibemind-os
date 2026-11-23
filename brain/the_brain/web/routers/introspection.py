@@ -2528,6 +2528,10 @@ def _try_ideen_abkuerzung(intent: str, kontext: Any):
         if treffer.get("bestaetigen"):
             # White Paper: nie direkt. Erst der Umfang als Rueckfrage, "Ja, erstellen" startet.
             return None, _white_paper_rueckfrage(treffer["argumente"]), ""
+        if isinstance(treffer.get("recherche"), dict):
+            # Recherche zu einer Bubble: erst die Vorschau (kein Lauf), "Ja, recherchieren" startet.
+            from core import recherche_bubble as _rb
+            return None, _rb.vorschau(treffer["recherche"]), ""
         if isinstance(treffer.get("lies"), dict) and isinstance(kontext, dict):
             # "Was steht bei X?": die Antwort zeigt nur diese Karte (antwort_fuer_schritt).
             kontext["_lies_karte"] = treffer["lies"]
@@ -2549,6 +2553,27 @@ def _try_ideen_abkuerzung(intent: str, kontext: Any):
     except Exception as e:  # noqa: BLE001 - nie die Anfrage daran scheitern lassen
         logger.warning(f"[ideen-abkuerzung] uebersprungen: {type(e).__name__}: {e}")
         return None, None, ""
+
+
+def _recherche_starten(pe, trace_id: str, intent: str, offen: Dict[str, Any]) -> JSONResponse:
+    """"Ja, recherchieren": Zeile anlegen, Lauf starten, als angenommen antworten (core/recherche_bubble)."""
+    from core import recherche_bubble as _rb
+
+    try:
+        from core.agent_auftraege import tabelle_aus_umgebung
+        tabelle = tabelle_aus_umgebung()
+    except Exception:  # noqa: BLE001
+        _trace_lite(pe, trace_id, intent, "recherche-fehler", _rb.TABELLE_FEHLT)
+        return JSONResponse({"ok": False, "space": "ideas", "executed": {}, "final_text": _rb.TABELLE_FEHLT,
+                             "trace_id": trace_id})
+    try:
+        felder = _rb.starten(offen, tabelle=tabelle, trace_id=trace_id)
+    except _rb.RechercheFehler as e:
+        _trace_lite(pe, trace_id, intent, "recherche-fehler", str(e))
+        return JSONResponse({"ok": False, "space": "ideas", "executed": {}, "final_text": str(e),
+                             "trace_id": trace_id})
+    _trace_lite(pe, trace_id, intent, "recherche-gestartet", felder["final_text"])
+    return JSONResponse({**felder, "trace_id": trace_id})
 
 
 def _white_paper_rueckfrage(argumente: Dict[str, Any]) -> str:
@@ -2824,6 +2849,19 @@ async def _multihop_execute(request: Request):
         # jeder andere Satz verwirft sie (core/whitepaper_bestaetigung).
         from core import whitepaper_bestaetigung as _wp
         _wp_antwort = _wp.satz_pruefen(intent)
+        # Recherche zu einer Bubble: "Ja, recherchieren" gilt nur direkt nach der Vorschau
+        # (core/recherche_bubble); jeder andere Satz verwirft sie.
+        from core import recherche_bubble as _rb
+        _rb_antwort = _rb.satz_pruefen(intent)
+        if _rb_antwort and _rb_antwort.get("satz"):
+            _trace_lite(pe, trace_id, intent, "recherche-rueckfrage", _rb_antwort["satz"])
+            return JSONResponse({"ok": False, "rueckfrage": True, "space": "ideas", "executed": {},
+                                 "final_text": _rb_antwort["satz"], "trace_id": trace_id})
+        if _rb_antwort and _rb_antwort.get("offen"):
+            return await asyncio.to_thread(_recherche_starten, pe, trace_id, intent, _rb_antwort["offen"])
+        # Antwort auf die Frage nach einer von mehreren gleichnamigen Bubbles (core/verstehen);
+        # jeder andere Satz laesst sie verfallen.
+        _bubble_wahl = _verstehen.bubble_antwort(intent)
         if _wp_antwort and _wp_antwort.get("satz"):
             _trace_lite(pe, trace_id, intent, "ideen-rueckfrage", _wp_antwort["satz"])
             return JSONResponse({"ok": False, "rueckfrage": True, "space": "ideas", "executed": {},
@@ -2842,9 +2880,24 @@ async def _multihop_execute(request: Request):
                 return JSONResponse({"ok": not _vs_felder.get("hinweis"), "space": "ideas", "executed": {},
                                      "final_text": _ideen_antwort, "trace_id": trace_id, **_vs_felder})
             _ideen_fest = True
+        # Space der App (context.space) als Signal: feste Lesesaetze aller Spaces zuerst, egal
+        # welcher Reiter (core/verstehen); ehrliche Saetze fuer Spaces ohne laufenden Weg.
+        # Ein fester Satz laeuft ohne Planer.
+        _space = _verstehen.space_aus_kontext(body.get("context"))
+        if not skip_shortcut and plan is None and not _bubble_wahl:
+            _lesen = _verstehen.feste_lesefrage(intent, _space)
+            if _lesen and _lesen.get("antwort"):
+                return _ehrlich(pe, trace_id, intent, "noch-nicht", _lesen["antwort"], _space)
+            if _lesen and _lesen.get("capability"):
+                plan = _fester_leseplan(intent, _lesen["capability"])
+                _fest_lesen = _lesen["capability"] if plan is not None else ""
         # Ideen-Space: feste Saetze laufen ohne Planer und ohne Modell. Die App gibt
         # dafuer ihren Kontext mit; Namen werden daraus aufgeloest, nie geraten.
-        if plan is None and not skip_shortcut and isinstance(body.get("context"), dict):
+        # "Halt fest: X in der Bubble Y": die Bubble kommt aus dem Satz, nicht aus mitgeschicktem
+        # (womoeglich altem) Kontext; der Satz laeuft unten ueber die Bubble-Liste.
+        _bubble_im_satz = _verstehen.regel_an() and _verstehen.bubble_aus_dem_satz(intent)
+        if (plan is None and not _bubble_wahl and not skip_shortcut and not _bubble_im_satz
+                and isinstance(body.get("context"), dict)):
             plan, _ideen_frage, _ideen_antwort = _try_ideen_abkuerzung(intent, body.get("context"))
             if _ideen_frage:
                 _trace_lite(pe, trace_id, intent, "ideen-rueckfrage", _ideen_frage)
@@ -2861,16 +2914,16 @@ async def _multihop_execute(request: Request):
                     "final_text": _ideen_antwort, "trace_id": trace_id,
                 })
             _ideen_fest = plan is not None
-        # Space der App (context.space) als Signal: feste Lesesaetze je Space, ehrliche Saetze
-        # fuer Spaces ohne laufenden Weg (core/verstehen). Ein fester Satz laeuft ohne Planer.
-        _space = _verstehen.space_aus_kontext(body.get("context"))
-        if not skip_shortcut and plan is None:
-            _lesen = _verstehen.feste_lesefrage(intent, _space)
-            if _lesen and _lesen.get("antwort"):
-                return _ehrlich(pe, trace_id, intent, "noch-nicht", _lesen["antwort"], _space)
-            if _lesen and _lesen.get("capability"):
-                plan = _fester_leseplan(intent, _lesen["capability"])
-                _fest_lesen = _lesen["capability"] if plan is not None else ""
+        # Lesefrage nach einem Bereich ("Was steht in meinem Journal?", "Welche Events stehen
+        # an?"): kein Kartentitel und kein fremder Muster-Treffer (Nachmessung: Events liefen zu
+        # den Auftraegen), sondern ein ehrlicher Satz. Eine Karte genau dieses Namens hat oben
+        # schon gegriffen.
+        if not skip_shortcut and plan is None and not _bubble_wahl and _verstehen.regel_an():
+            _bereich = _verstehen.bereichsfrage(intent)
+            if _bereich:
+                _bereich_space = _bereich["space"] or _space
+                return _ehrlich(pe, trace_id, intent, "nicht-verstanden",
+                                _verstehen.nicht_verstanden(_bereich_space), _bereich_space)
         # Phase 11.Q2 — Capability-Router shortcut. If the router has a
         # high-confidence regex match for a single-action intent, skip
         # the LLM planner and build a 1-hop plan directly. Wrapped in
@@ -2887,16 +2940,23 @@ async def _multihop_execute(request: Request):
         # Video): sie gehoeren zum Ideen-Bereich und laufen dort, mit Sprung. Nur wenn der Satz
         # eine Bubble oder den Ideen-Bereich nennt, damit "Zurück" in Rowboat nicht ins Ideen-
         # Canvas greift.
-        if (not skip_shortcut and plan is None and _space != "ideas" and _verstehen.regel_an()
-                and _verstehen.ideen_satz_von_aussen(intent)):
+        if not skip_shortcut and plan is None and (_bubble_wahl or _bubble_im_satz or (
+                _space != "ideas" and _verstehen.regel_an() and _verstehen.ideen_satz_von_aussen(intent))):
             _ideen_kontext = {"space": "ideas"}
             _ideen_satz = intent
-            _bubble_name, _rest = _verstehen.bubble_name_im_satz(intent)
-            if _bubble_name:
+            _bubble_name, _rest = (None, intent) if _bubble_wahl else _verstehen.bubble_name_im_satz(intent)
+            if _bubble_wahl:
+                # Antwort auf "Es gibt 2 Bubbles mit dem Titel ...": der gemerkte Satz laeuft
+                # in der gewaehlten Bubble.
+                _ideen_kontext["bubble"] = _bubble_wahl["bubble"]
+                _ideen_satz = _bubble_wahl["rest"]
+            elif _bubble_name:
                 # "in der Bubble X": vor dem Aufruf ueber die Bubble-Liste lesen (kein Modell);
                 # genau ein Titel -> diese Bubble gilt als offen, sonst Rueckfrage.
-                _gewaehlt, _frage = _verstehen.bubble_waehlen(_bubble_name, await _bubbles_suchen(_bubble_name))
+                _zeilen = await _bubbles_suchen(_bubble_name)
+                _gewaehlt, _frage = _verstehen.bubble_waehlen(_bubble_name, _zeilen)
                 if _gewaehlt is None:
+                    _verstehen.bubble_frage_merken(_rest, _bubble_name, _zeilen)
                     _trace_lite(pe, trace_id, intent, "ideen-rueckfrage", _frage)
                     return JSONResponse({"ok": False, "rueckfrage": True, "space": "ideas", "executed": {},
                                          "final_text": _frage, "trace_id": trace_id, "weg": "ideen"})
@@ -2991,6 +3051,12 @@ async def _multihop_execute(request: Request):
                 return _ehrlich(pe, trace_id, intent, "nicht-verstanden",
                                 _verstehen.nicht_verstanden(_bezug), _bezug)
 
+            if level == "easy" and _verstehen.regel_an() and _verstehen.kurztext(intent):
+                # Kurztext ("hmm") ist keine Frage: nicht an den Chat-Handler, dessen
+                # Auffangtext englisch zurueckkam (Nachmessung 23.11.2026).
+                return _ehrlich(pe, trace_id, intent, "nicht-verstanden",
+                                _verstehen.nicht_verstanden(_bezug), _bezug)
+
             if level == "easy":
                 # einfache Frage/Smalltalk → direkte Chat-Antwort, KEIN Planer.
                 # brain_chat.send(msg) -> BrainChatResponse (.to_dict()), sync →
@@ -3010,6 +3076,11 @@ async def _multihop_execute(request: Request):
                     except Exception as e:  # noqa: BLE001
                         logger.warning(f"[multihop] easy-chat failed ({e})")
                 _final = (reply.strip() if isinstance(reply, str) and reply.strip() else "Alles klar.")
+                if _verstehen.regel_an() and (_verstehen.englisch(_final) or _verstehen.rohtext(_final)):
+                    # Englische oder rohe Auffangtexte des Chat-Handlers verlassen das Gehirn nie.
+                    logger.info(f"[verstehen] Chat-Antwort nicht deutsch/roh verworfen: {_final[:80]!r}")
+                    return _ehrlich(pe, trace_id, intent, "nicht-verstanden",
+                                    _verstehen.nicht_verstanden(_bezug), _bezug)
                 _trace_lite(pe, trace_id, intent, "easy-chat", _final)
                 return JSONResponse({
                     "ok": True, "difficulty": "easy", "executed": {},
@@ -3197,6 +3268,8 @@ async def _multihop_execute(request: Request):
         out["ok"] = True
         out["pending"] = True
         out["status"] = "angenommen"
+        # Angenommen ist auch nicht fertig: kein "✓ fertig", bis der Abschluss kommt.
+        out["fertig"] = False
         # Die Dauer bis zur Annahme ist nicht die des Laufs; sie kommt mit dem Abschluss.
         out.pop("elapsed_s", None)
         try:
@@ -3221,6 +3294,7 @@ async def _multihop_execute(request: Request):
             pe.recorder.attach_final(plan.plan_id, out["final_text"])
         except Exception:  # noqa: BLE001
             pass
+        _abschluss_berichtigen(pe, plan, exec_result, out)
         return JSONResponse(out)
 
     # Optional final synthesis — Phase 11.T.4 uses asynthesize() so the
@@ -3255,7 +3329,28 @@ async def _multihop_execute(request: Request):
         except Exception as e:
             out["synthesis_error"] = f"{type(e).__name__}: {e}"
 
-    return JSONResponse(_auffangnetz(out))
+    out = _auffangnetz(out)
+    _abschluss_berichtigen(pe, plan, exec_result, out)
+    return JSONResponse(out)
+
+
+def _abschluss_berichtigen(pe, plan, exec_result: Dict[str, Any], out: Dict[str, Any]) -> None:
+    """Hat das Gehirn nach dem Lauf auf ok=False gestellt (keine Antwort, nicht lesbar), steht im
+    Strom noch ``plan_completed`` mit ok=True. Dann ein zweites ``plan_completed`` mit ok=False
+    und ``berichtigt``, damit die Standzeile keinen Haken zeigt. Wirft nie."""
+    try:
+        if not exec_result.get("ok") or out.get("ok") or exec_result.get("pending"):
+            return
+        veroeffentlichen = getattr(pe, "_publish", None)
+        if not callable(veroeffentlichen):
+            return
+        nutzlast: Dict[str, Any] = {"plan_id": plan.plan_id, "ok": False, "berichtigt": True,
+                                    "hop_count": len(exec_result.get("executed") or {})}
+        if out.get("nicht_lesbar"):
+            nutzlast["nicht_lesbar"] = True
+        veroeffentlichen("plan_completed", nutzlast)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[auffangnetz] Abschluss nicht berichtigt: {type(e).__name__}")
 
 
 def _auffangnetz(out: Dict[str, Any]) -> Dict[str, Any]:
@@ -3270,11 +3365,18 @@ def _auffangnetz(out: Dict[str, Any]) -> Dict[str, Any]:
         if _verstehen.schritte_ohne_antwort(out.get("executed")):
             out["ok"] = False
         text = out.get("final_text")
-        if _verstehen.rohtext(text):
+        if _verstehen.rohtext(text) or _verstehen.englisch(text):
             if isinstance(text, str) and text.strip():
                 out["fehler"] = text[:2000]
             out["final_text"] = (_verstehen.FEHLERSATZ if not out.get("ok")
                                  else _verstehen.ROH_ERFOLG_SATZ)
+            # "Nicht lesbar" ist kein Erfolg: kein Haken in der App (Nachmessung 23.11.2026).
+            # Ohne Text und ohne Synthese (mitgebrachter Plan, der Aufrufer liest executed)
+            # bleibt ok, wie es ist.
+            lesbar_versucht = (isinstance(text, str) and text.strip()) or out.get("synthesis_error")
+            if lesbar_versucht and out.get("ok"):
+                out["nicht_lesbar"] = True
+                out["ok"] = False
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[auffangnetz] uebersprungen: {type(e).__name__}: {e}")
     return out

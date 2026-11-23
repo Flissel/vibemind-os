@@ -41,15 +41,42 @@ class AuftragsTabelle:
 
     def anlegen(self, *, capability: str, agent: str, auftrag: str, trace_id: str, plan_id: str,
                 hop_id: str, uebergabe: Optional[dict] = None, antwortkanal: Optional[dict] = None,
-                frist_s: int = 600) -> str:
-        frist = (datetime.now(timezone.utc) + timedelta(seconds=frist_s)).isoformat()
-        zeilen = self._req("POST", rueckgabe=True, json={
+                frist_s: int = 600, status: str = "offen") -> str:
+        """``status="laeuft"``: das Gehirn arbeitet selbst (Recherche); der Ausfuehrer am PC nimmt
+        nur ``offen``."""
+        if status not in ("offen", "laeuft"):
+            raise ValueError("anlegen: status nur offen oder laeuft")
+        jetzt = datetime.now(timezone.utc)
+        frist = (jetzt + timedelta(seconds=frist_s)).isoformat()
+        zeile = {
             "capability": capability, "agent": agent, "auftrag": auftrag, "trace_id": trace_id,
-            "plan_id": plan_id, "hop_id": hop_id, "status": "offen", "frist": frist,
-            "uebergabe": uebergabe, "antwortkanal": antwortkanal})
+            "plan_id": plan_id, "hop_id": hop_id, "status": status, "frist": frist,
+            "uebergabe": uebergabe, "antwortkanal": antwortkanal}
+        if status == "laeuft":
+            zeile["begonnen"] = jetzt.isoformat()
+        zeilen = self._req("POST", rueckgabe=True, json=zeile)
         if not isinstance(zeilen, list) or not zeilen or not isinstance(zeilen[0], dict) or "id" not in zeilen[0]:
             raise RuntimeError("brain_agent_auftraege: Anlegen lieferte keine id")
         return str(zeilen[0]["id"])
+
+    def uebergabe_setzen(self, auftrag_id: str, uebergabe: dict) -> None:
+        self._req("PATCH", params={"id": f"eq.{auftrag_id}"}, json={"uebergabe": uebergabe})
+
+    def recherchen_laufend(self, limit: int = 20) -> List[dict]:
+        """Laufende Recherchen des Gehirns (core/recherche_bubble)."""
+        return self._req("GET", params={"status": "eq.laeuft", "uebergabe->recherche": "not.is.null",
+                                        "order": "angelegt.asc", "limit": str(limit),
+                                        "select": "id,trace_id,plan_id,angelegt,uebergabe"})
+
+    def recherche_abschliessen(self, auftrag_id: str, status: str, pruefung: dict,
+                               jetzt_iso: Optional[str] = None) -> bool:
+        """Laufende Recherche auf fertig/fehler setzen; False, wenn sie nicht mehr laeuft."""
+        if status not in ("fertig", "fehler"):
+            raise ValueError("recherche_abschliessen: status nur fertig oder fehler")
+        jetzt_iso = jetzt_iso or datetime.now(timezone.utc).isoformat()
+        zeilen = self._req("PATCH", rueckgabe=True, params={"id": f"eq.{auftrag_id}", "status": "eq.laeuft"},
+                           json={"status": status, "beendet": jetzt_iso, "pruefung": pruefung})
+        return bool(zeilen)
 
     def plan_rest_setzen(self, auftrag_id: str, plan_rest: dict) -> None:
         self._req("PATCH", params={"id": f"eq.{auftrag_id}"}, json={"plan_rest": plan_rest})

@@ -11,6 +11,7 @@ Hier entstehen stattdessen deutsche Sätze. Die Rohtexte bleiben im Plan-Schnapp
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Optional
 
 _NAMEN = {
@@ -22,6 +23,7 @@ _NAMEN = {
     "idea.aenderung_zurueck": "Zurücknehmen", "idea.expand": "Ausformulieren", "idea.explain": "Einschätzen",
     "idea.summarize": "Zusammenfassen", "idea.whitepaper": "White Paper", "idea.document": "Dokument schreiben",
     "bubble_list": "Bubbles zeigen", "bubble.list": "Bubbles zeigen", "idea.root": "Wurzel festlegen",
+    "idea.group": "Nach Thema gruppieren", "idea.group_layout": "Gruppen anordnen",
 }
 
 
@@ -59,12 +61,45 @@ def ergebnistext(capability: Any, ok: bool, ergebnis: Any) -> str:
     return satz or "erledigt"
 
 
+_NICHT_ERREICHBAR = re.compile(r"ConnectionError|HTTPConnectionPool|Max retries|Connection refused|"
+                               r"Name or service not known|getaddrinfo|unreachable|nicht erreichbar",
+                               re.IGNORECASE)
+_ZEIT = re.compile(r"timeout|timed out|Zeitüberschreitung", re.IGNORECASE)
+
+
+def allgemeiner_fehlertext(fehler: Any) -> Optional[str]:
+    """Deutscher Satz fuer den Fehler eines Schritts ausserhalb des Ideen-Space (nie Rohtext)."""
+    if not fehler:
+        return None
+    text = str(fehler)
+    if _NICHT_ERREICHBAR.search(text):
+        return "Der Dienst ist gerade nicht erreichbar; geändert habe ich nichts."
+    if _ZEIT.search(text):
+        return "Der Dienst hat nicht rechtzeitig geantwortet."
+    return "Der Schritt hat nicht geklappt."
+
+
+def _allgemein(ereignis: Dict[str, Any]) -> Dict[str, Any]:
+    """Schritt eines anderen Space: Fehler als deutscher Satz, kein Rohtext im Strom.
+
+    Nachmessung 23.11.2026: In der Standzeile stand "ConnectionError: HTTPConnectionPool(...)".
+    Der Rohtext bleibt im Plan-Schnappschuss (Recorder, Trace).
+    """
+    if not ereignis.get("error"):
+        return ereignis
+    neu = dict(ereignis)
+    neu["error"] = allgemeiner_fehlertext(neu.get("error"))
+    if not neu.get("ok") and "result_preview" in neu:
+        neu["result_preview"] = ""
+    return neu
+
+
 def fuer_app(ereignis: Dict[str, Any], *, ergebnis: Any = None) -> Dict[str, Any]:
-    """Ereignis eines Ideen-Schritts mit deutschen Saetzen statt Rohtext (Kopie)."""
+    """Ereignis eines Schritts mit deutschen Saetzen statt Rohtext (Kopie)."""
     try:
         capability, space = ereignis.get("capability"), ereignis.get("space")
         if not ist_ideen_schritt(capability, space):
-            return ereignis
+            return _allgemein(ereignis)
         neu = dict(ereignis)
         neu["description"] = schrittname(capability)
         if neu.get("pending"):

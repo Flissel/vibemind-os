@@ -244,3 +244,21 @@ Werkzeuge waren gelöscht, die Knöpfe der Hülle liefen ins Leere. Jetzt gibt e
   meisten Karten erreichbar sind; ohne gerichtete Kanten die Karte mit den meisten Verbindungen (mindestens zwei);
   ohne Kanten keine Wurzel, dann gilt die Lage auf dem Canvas, und das Dokument sagt das.
 - Eigene Dokument-Karten gehen nicht wieder in ein Dokument ein.
+
+## Nach Thema gruppieren
+
+**Gebaut** im Zweig `cc/ideen-gruppen`. Sätze: „Ordne die Notizen nach Thema“, „Was gehört zusammen?“, „Gruppiere
+die Notizen“ (mit „… und verbinde sie“ auch Verbindungen). Brain: `core/ideen_dokument.py` (Vertrag `gruppieren`).
+
+- **Auftrag** `idea.group` (ein Lauf): Der Agent bekommt nur die lesbaren Karten (K1, K2, …, je bis 600 Zeichen) und
+  liefert `{"gruppen": [{"name": "Technik", "karten": ["K1", "K3"]}, …]}`: 1 bis 12 Gruppen, Namen bis 60 Zeichen,
+  jede Karte höchstens einmal. Karten, die er auslässt, setzt das Gehirn unter „Weitere Karten“ und sagt das.
+- **Werkzeug `idea_group`** (fester Aufruf `idea.group_layout`): je Gruppe eine Spalte, oben eine Überschrift-Karte
+  (`metadata.gruppen_kopf: true`, Titel = Gruppenname, ohne Text), darunter die Karten (bis 10 untereinander, dann
+  eine weitere Spalte). Lage, Überschriften und Verbindungen (Überschrift → Karte, `related`) sind **eine** Änderung;
+  „zurück“ nimmt alles zusammen zurück. Überschriften einer früheren Gruppierung werden wiederverwendet oder entfernt.
+- **Karten ohne Inhalt** bleiben, wo sie sind. Liegt eine davon im neuen Block, beginnt der Block darunter.
+- **Grenze:** 100 Karten (wie Ordnen). Darüber kommt ein Satz mit der echten Zahl, und es ändert sich nichts.
+- **Kartenansicht:** Die Überschrift ist eine gewöhnliche Karte in normaler Größe. Ein Rahmen um die Gruppe
+  bräuchte eine eigene Art in der Hülle; die gibt es nicht. Wer die Überschriften anders zeigen will, erkennt sie an
+  `metadata.gruppen_kopf`. Zusammenfassung und White Paper lassen sie aus.

@@ -109,7 +109,7 @@ def test_plan_completed_hinweis_und_angenommen_ohne_dauer() -> None:
     wartet = {"s1": HopResult(step_id="s1", ok=False, pending=True)}
     angenommen = _abschluss_ereignis("ideen_3", False, {"elapsed_s": 2.0, "pending": True}, wartet)
     assert angenommen == {"plan_id": "ideen_3", "ok": True, "pending": True, "status": "angenommen",
-                          "hop_count": 1}
+                          "fertig": False, "hop_count": 1}
 
 
 # ── Router: Felder in der Antwort, Ausgang fuer "Zurück", Annahme ohne Dauer ──
@@ -327,6 +327,30 @@ def test_router_vorschlag_verwerfen(monkeypatch) -> None:
     body = client.post("/api/multihop/execute", json={"intent": "Vorschlag verwerfen", "context": {}}).json()
     assert ausfuehrer.plaene == [] and tabelle.erledigt == ["verworfen"] and body["ok"] is True
     assert body["final_text"].startswith("Der Vorschlag ist verworfen")
+
+
+def test_stand_nach_vorschlag_verwerfen_sagt_verworfen(monkeypatch) -> None:
+    # Nachmessung 23.11.2026: /stand sagte nach "Vorschlag verwerfen" weiter "vorschlag".
+    zeile = _vorschlag_zeile()
+
+    class _Tabelle(_VorschlagTabelle):
+        def vorschlag_erledigen(self, z, wie):
+            ok = super().vorschlag_erledigen(z, wie)
+            z["pruefung"] = {**z["pruefung"], "vorschlag_erledigt": wie}
+            return ok
+
+        def lesen(self, i):
+            return self.zeile
+
+    tabelle = _Tabelle(zeile)
+    monkeypatch.setattr(aa, "tabelle_aus_umgebung", lambda: tabelle)
+    client, _ = _client(monkeypatch, {"ok": True})
+    assert client.get(f"/api/agent-auftraege/{A1}/stand").json()["stand"] == "vorschlag"
+    client.post("/api/multihop/execute", json={"intent": "Vorschlag verwerfen", "context": {}})
+    body = client.get(f"/api/agent-auftraege/{A1}/stand").json()
+    assert body["stand"] == "verworfen" and body["ok"] is True and body["hinweis"] is True
+    assert body["meldung"] == "Der Vorschlag ist verworfen; an der Notiz ist nichts geändert."
+    assert "saetze" not in body
 
 
 def test_nachfasser_vorschlag_ist_kein_fehlschlag() -> None:

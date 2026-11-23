@@ -86,7 +86,23 @@ def space_aus_kontext(kontext: Any) -> Optional[str]:
             return None
         kennung = roh.strip().lower()
         kennung = _ALIASE.get(kennung, kennung)
+        if kennung == "ideas" and not ideen_kontext_belegt(kontext):
+            # Verteidigung gegen falschen Kontext (Nachmessung 23.11.2026: die App schickte aus
+            # jedem Reiter 'ideas'). Im Ideen-Bereich schickt sie immer bubble, cards oder bubbles
+            # mit; fehlt alles, gilt der Bereich als unbekannt und der Planer bleibt zu.
+            return None
         return kennung if kennung in SPACES else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+_IDEEN_BELEGE = ("bubble", "cards", "bubbles")
+
+
+def ideen_kontext_belegt(kontext: Any) -> bool:
+    """True, wenn der Kontext bubble, cards oder bubbles mitbringt (nicht None)."""
+    try:
+        return isinstance(kontext, dict) and any(kontext.get(k) is not None for k in _IDEEN_BELEGE)
     except Exception:  # noqa: BLE001
         return None
 
@@ -185,9 +201,97 @@ def bubble_waehlen(name: str, zeilen: Any) -> Tuple[Optional[dict], str]:
         z = next(iter(treffer.values()))
         return {"id": z["id"], "title": z.get("title") or name}, ""
     if len(treffer) > 1:
-        return None, (f"Es gibt {len(treffer)} Bubbles mit dem Titel „{name}“. "
-                      "Öffne die gemeinte im Ideen-Bereich und sag es dort noch einmal.")
+        kandidaten = [{"id": z["id"], "title": z.get("title") or name} for z in treffer.values()][:9]
+        liste = "; ".join(f"{n}. „{k['title']}“" for n, k in enumerate(kandidaten, start=1))
+        return None, (f"Es gibt {len(treffer)} Bubbles mit dem Titel „{name}“: {liste}. "
+                      "Welche meinst du? Sag z. B. „die erste“ oder „2“.")
     return None, f"Ich finde keine Bubble mit dem Titel „{name}“."
+
+
+# ── Mehrere Bubbles gleichen Titels aus einem fremden Reiter: Antwort "die zweite" ──
+BUBBLE_WAHL_GILT_S = 300.0
+_bubble_offen: Dict[str, Any] = {}       # {"rest": str, "kandidaten": [...], "bis": float}
+
+
+def bubble_frage_merken(rest: str, name: str, zeilen: Any) -> None:
+    """Nach der Rueckfrage aus ``bubble_waehlen`` (mehrere Treffer) die Kandidaten merken."""
+    import time
+
+    kandidaten = [{"id": z["id"], "title": z.get("title") or name} for z in (zeilen or [])
+                  if isinstance(z, dict) and z.get("id") and _titel_gleich(z.get("title"), name)]
+    kandidaten = list({k["id"]: k for k in kandidaten}.values())[:9]
+    _bubble_offen.clear()
+    if len(kandidaten) >= 2:
+        _bubble_offen.update({"rest": rest, "kandidaten": kandidaten, "bis": time.time() + BUBBLE_WAHL_GILT_S})
+
+
+def bubble_antwort(satz: Any) -> Optional[Dict[str, Any]]:
+    """Fuer jeden Satz zuerst aufrufen. ``None``: keine Antwort (eine offene Frage verfaellt);
+    ``{"bubble": ..., "rest": ...}``: gewaehlt; ``{"frage": ...}``: passt zu keiner."""
+    import time
+
+    from .ideen_abkuerzung import _wahl
+
+    offen = dict(_bubble_offen)
+    _bubble_offen.clear()
+    if not offen or offen.get("bis", 0) < time.time() or not isinstance(satz, str):
+        return None
+    # Nur eine eindeutige Wahl ("die zweite", "2", "die letzte") gilt; jeder andere Satz ist
+    # ein neuer Satz und laesst die Frage verfallen (nie raten, nie einen Satz verschlucken).
+    wahl = _wahl(satz.strip().rstrip(".!"), offen["kandidaten"])
+    if wahl is None or wahl < 0:
+        return None
+    return {"bubble": offen["kandidaten"][wahl], "rest": offen["rest"]}
+
+
+# ── Bereichswoerter (Nachmessung 23.11.2026) ───────────────────────────────
+# "Was steht in meinem Journal?" wurde als Notizname gelesen ("Ich finde keine Karte
+# meinem Journal"), "Welche Events stehen an?" lief zu den Auftraegen. Diese Woerter sind
+# Bereiche, keine Kartentitel (Liste in core/ideen_abkuerzung.BEREICHSWOERTER): ohne Karte
+# genau dieses Namens kommt "nicht verstanden" mit dem Space des Wortes als Signal.
+_FRAGEANFANG = (r"^(?:was\s+steht\s+(?:in|im|bei|auf)|was\s+gibt\s+es\s+(?:in|im|bei)|welche|"
+                r"zeig(?:e)?(?:\s+mir)?|liste|wie\s+viele)\s+")
+
+
+def bereichsfrage(satz: Any) -> Optional[Dict[str, Optional[str]]]:
+    """Lesefrage nach einem Bereich ("Welche Events stehen an?") -> ``{"wort", "space"}``, sonst ``None``.
+
+    ``space`` ist der Space des Wortes (Events -> "events") als Signal fuer die App, sonst ``None``.
+    Nennt der Satz selbst einen Space ("Kontakte im Sales"), entscheidet dieser Name, nicht das Wort.
+    """
+    try:
+        from .ideen_abkuerzung import BEREICHSWOERTER, BESITZ
+
+        if not isinstance(satz, str) or genannter_space(satz):
+            return None
+        m = re.match(rf"{_FRAGEANFANG}(?:{BESITZ}\s+)?(?:n(?:ä|ae)chsten\s+|kommenden\s+|alle\s+)?"
+                     r"(?P<wort>[a-zäöü]+)\b", re.sub(r"\s+", " ", satz).strip(), re.IGNORECASE)
+        wort = m.group("wort").casefold() if m else ""
+        if wort not in BEREICHSWOERTER:
+            return None
+        return {"wort": wort, "space": BEREICHSWOERTER[wort]}
+    except Exception:  # noqa: BLE001
+        return None
+
+
+_FESTHALTEN = re.compile(r"^\s*(?:halt(?:e)?\s+fest|notiz|notiere|schreib(?:e)?\s+auf|merk(?:e)?\s+dir)\b",
+                         re.IGNORECASE)
+
+
+def bubble_aus_dem_satz(satz: Any) -> bool:
+    """"Halt fest: X in der Bubble Y": die Bubble kommt aus dem Satz, nie aus dem Kontext.
+
+    Nachmessung 23.11.2026: Die App schickte aus anderen Reitern alten Ideen-Kontext mit; der
+    Satz lief dann in der alten Bubble, und der Titel behielt "in der Bubble Y". Solche Saetze
+    gehen darum immer ueber die Bubble-Liste (wie aus einem fremden Reiter). Wirft nie.
+    """
+    try:
+        if not isinstance(satz, str) or not _FESTHALTEN.match(satz):
+            return False
+        name, _rest = bubble_name_im_satz(satz)
+        return bool(name)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def ideen_satz_von_aussen(satz: Any) -> bool:
@@ -309,18 +413,23 @@ _NOCH_NICHT = (
 def feste_lesefrage(satz: Any, space: Optional[str]) -> Optional[Dict[str, str]]:
     """Haeufigste Lesefrage eines Space: ``{"capability": ...}`` oder ``{"antwort": ...}``.
 
-    ``None``: kein fester Satz. Ein Satz aus dem Ideen-Space wird hier nie gebunden (dort
-    entscheidet die Ideen-Abkuerzung).
+    ``None``: kein fester Satz. Feste Lesesaetze gelten in jedem Reiter, unabhaengig von
+    ``context.space`` (Nachmessung 23.11.2026: die App schickte aus jedem Reiter 'ideas', und
+    "Welche geplanten Aufgaben gibt es?" lief ueber den Planer). Sie sind am Satzanfang
+    verankert und treffen keinen Ideen-Satz. Die ehrlichen "noch nicht"-Saetze suchen dagegen
+    irgendwo im Text und gelten nur in ihrem Space (nie im Ideen-Space, "Halt fest: ...").
     """
     try:
-        if not isinstance(satz, str) or space == "ideas":
+        if not isinstance(satz, str):
             return None
         text = re.sub(r"\s+", " ", satz).strip().rstrip("?.!").strip()
         if not text or len(text) > 200:
             return None
-        for muster, faehigkeit, spaces in _FESTE_LESEFRAGEN:
-            if space in spaces and muster.search(text):
+        for muster, faehigkeit, _spaces in _FESTE_LESEFRAGEN:
+            if muster.search(text):
                 return {"capability": faehigkeit}
+        if space == "ideas":
+            return None
         for muster, spaces, antwort in _NOCH_NICHT:
             if space in spaces and muster.search(text):
                 return {"antwort": antwort}
@@ -423,6 +532,28 @@ def rohtext(text: Any) -> bool:
     if not t:
         return True
     return bool(_ROH.search(t))
+
+
+# Englische Auffangtexte (Chat-Handler, Synthese) verlassen das Gehirn nie (Nachmessung
+# 23.11.2026: "hmm" -> "I'm not entirely sure, but the user asks about: hmm ..."). Erkannt an
+# Funktionswoertern, nicht an Fachbegriffen: "Die Seite ist offen" bleibt deutsch.
+_EN_WOERTER = frozenset(
+    "the and is are was were you your i i'm it's not but what which this that with about "
+    "for from have has can could would should will there here sure user asks sorry".split())
+_DE_WOERTER = frozenset(
+    "der die das den dem des und ist sind war nicht ich du sie es ein eine einen einem "
+    "zu mit was wie im in auf für von hat habe kann gibt noch schon".split())
+
+
+def englisch(text: Any) -> bool:
+    """True, wenn ein Text ueberwiegend englisch ist (mindestens zwei englische Funktionswoerter
+    und mehr englische als deutsche)."""
+    if not isinstance(text, str):
+        return False
+    woerter = re.findall(r"[a-zäöüß']+", text.lower())
+    en = sum(1 for w in woerter if w in _EN_WOERTER)
+    de = sum(1 for w in woerter if w in _DE_WOERTER)
+    return en >= 2 and en > de
 
 
 _KEINE_ANTWORT = re.compile(r"timeout|timed out|unavailable|not reachable|nicht erreichbar|"

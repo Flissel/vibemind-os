@@ -94,6 +94,7 @@ spaces:
         - bewertung_begruenden
         - idea_document
         - bubble_wurzel
+        - idea_group
     default_context: [current_space, current_bubble, idea_titles]
     events:
       # Feste Aufrufe (ohne Modell) ueber den Ideen-Server, nur mit Kennungen;
@@ -171,6 +172,14 @@ spaces:
       # brain/the_brain/core/ideen_dokument.py; geschrieben wird ueber idea.document.
       idea.summarize:           { rueckweg: zusammenfassen, required_params: [bubble_id] }
       idea.whitepaper:          { rueckweg: abschnitt,      required_params: [bubble_id] }
+      # Nach Thema gruppieren (ein Lauf, Rueckweg "gruppieren"): der Agent nennt Gruppen mit Kuerzeln,
+      # das Gehirn setzt Lage, Ueberschrift-Karten und auf Wunsch Verbindungen ueber idea.group_layout.
+      idea.group:               { rueckweg: gruppieren,     required_params: [bubble_id] }
+      idea.group_layout:
+        tool: idea_group
+        required_params: [bubble_id, gruppen]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
       idea.document:
         tool: idea_document
         required_params: [id, bubble_id, title, art, content]
@@ -329,7 +338,9 @@ spaces:
     # vibemind-db-Tool, darum entfällt der Server hier ganz.
     # qdrant bleibt ohne mcp_tools-Eintrag — Server-Scope ohne abgeleitete
     # Capability, wie im Bubbles-Block bei `vibemind`.
-    mcp_servers: [fetch, spaces-ideas, qdrant]
+    # 23.11.2026: spaces-research (spaces/research/mcp_server.py) fuer "Recherchiere zu dieser
+    # Bubble": Vorschau, Start nach "Ja, recherchieren", Status im Nachfasser (core/recherche_bubble).
+    mcp_servers: [fetch, spaces-ideas, qdrant, spaces-research]
     # M5 2026-08-07 / E10: ohne mcp_tools bekommt der Agent KEINE MCP-Tools —
     # der Generator leitet die tools-Liste nur hieraus ab, nicht aus
     # mcp_servers (fail-closed by design, sync_openfang_agents.py:86).
@@ -339,6 +350,7 @@ spaces:
     mcp_tools:
       fetch: [fetch]
       spaces-ideas: [idea_create, idea_update]
+      spaces-research: [research_start, research_status]
     # E10: Recherche-Last (ganze Seiten aus fetch, Mehrquellen-Synthese in
     # openclaw.compare) sprengt gpt-4o-mini/4096. gpt-4o ist in
     # models_pricing.yml gepflegt, bleibt provider=openai und hebt das
@@ -360,6 +372,18 @@ spaces:
         execution: { kind: mcp, server: spaces-ideas }
       openclaw.research:    { tool: fetch, required_params: [query] }
       openclaw.compare:     { tool: fetch, required_params: [queries] }
+      # Recherche zu einer Bubble: nur das Gehirn ruft diese Ereignisse (core/recherche_bubble,
+      # NUR_GEHIRN), nie ein Plan. research_start ohne confirm ist nur die Vorschau.
+      research.bubble_start:
+        tool: research_start
+        required_params: [bubble_id, brief]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-research }
+      research.bubble_status:
+        tool: research_status
+        required_params: [job_id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-research }
 
   # ─── Rowboat (Knowledge Graph) ──────────────────────────────────────
   rowboat:
