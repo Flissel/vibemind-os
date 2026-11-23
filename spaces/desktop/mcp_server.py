@@ -48,7 +48,9 @@ MAX_NOTIZ_ZEICHEN = 120
 # desktop_blick zählt nicht: Er zeigt keine Klickpunkte und ist für das Mitsehen gedacht.
 BLICK_WERKZEUGE = ("desktop_screen_read", "desktop_elements", "desktop_find")
 # desktop_blick: so viele Elemente werden auf Anmeldefelder geprüft, so viele gehen hinaus.
-BLICK_ELEMENTE_GEPRUEFT = 60
+# 200 ist die Obergrenze des Dienstes. Gemessen in Edge: bei 60 nur Symbolleiste, das
+# Passwortfeld der Seite erst bei 200 (rund 260 ms statt 210 ms).
+BLICK_ELEMENTE_GEPRUEFT = 200
 BLICK_ELEMENTE = 20
 BLICK_TIMEOUT = 10
 

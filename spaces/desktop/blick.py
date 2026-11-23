@@ -52,9 +52,11 @@ GESPERRTE_TITELTEILE = (
 # In Namen oder Kennungen von Bedienelementen: ein Anmeldefeld. Kurze Wörter nur als ganzes Wort.
 GESPERRTE_ELEMENTTEILE = (
     "passwort", "password", "kennwort", "passphrase", "sicherheitscode", "einmalcode", "one-time",
-    "bestätigungscode", "verification code", "geheimzahl", "kreditkarte", "card number", "kartennummer",
-    "iban", "prüfziffer", "cvc", "cvv",
+    "bestätigungscode", "verification code", "geheimzahl",
 )
+# Zahlungsfelder nur an Eingabefeldern: Edge hat in jeder Symbolleiste einen Knopf
+# "Anzeigen Ihrer virtuellen Kartennummer", der sonst jedes Edge-Fenster sperrte (gemessen).
+GESPERRTE_EINGABETEILE = ("kreditkarte", "card number", "kartennummer", "iban", "prüfziffer", "cvc", "cvv")
 GESPERRTE_ELEMENTWOERTER = ("pin", "tan", "otp", "pwd", "passwd")
 
 _WORT = re.compile(r"[a-z0-9äöüß]+")
@@ -82,6 +84,8 @@ def element_gesperrt(element: Mapping[str, Any]) -> bool:
         if not text:
             continue
         if any(teil in text for teil in GESPERRTE_ELEMENTTEILE):
+            return True
+        if eingabe and any(teil in text for teil in GESPERRTE_EINGABETEILE):
             return True
         if eingabe and set(_WORT.findall(text)) & set(GESPERRTE_ELEMENTWOERTER):
             return True

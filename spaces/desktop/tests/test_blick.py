@@ -72,7 +72,7 @@ class BlickTests(unittest.TestCase):
                                              {"name": "Text-Editor", "art": "Edit"}])
         self.assertRegex(stand["zeitpunkt"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         self.assertIsInstance(stand["dauer_ms"], int)
-        self.assertEqual(self.aufrufe, ["/api/mcp/elements?max_elements=60"])  # kein read-screen
+        self.assertEqual(self.aufrufe, ["/api/mcp/elements?max_elements=200"])  # kein read-screen
 
     def test_ist_gedeckelt_und_zaehlt_nicht_als_blick_fuer_einen_schritt(self) -> None:
         self.elemente = [element(f"Eintrag {i}", "ListItem") for i in range(50)]
@@ -120,6 +120,20 @@ class BlickTests(unittest.TestCase):
         # Kurze Wörter zählen nur an Eingabefeldern.
         self.elemente = [element("Pin to Quick access"), element("Anheften")]
         self.assertIs(self.blick()["gesperrt"], False)
+
+    def test_edge_symbolleiste_sperrt_nicht_aber_ein_kartenfeld_der_seite(self) -> None:
+        # So in Edge gemessen: Knöpfe der Symbolleiste, an jedem Edge-Fenster.
+        leiste = [element("Anzeigen Ihrer virtuellen Kartennummer", class_name="EdgeTokenizationIconView"),
+                  element("Melden Sie sich an, Profil von Persönlich.", class_name="EdgeAvatarToolbarButton"),
+                  element("Adresse speichern?", class_name="EdgeAutofillAiIconView"),
+                  element("Kaufen Sie jetzt, bezahlen Sie später", class_name="EdgeBNPLIconView"),
+                  element("Adress- und Suchleiste", "Edit", class_name="OmniboxViewViews")]
+        self.elemente = leiste
+        self.assertIs(self.blick()["gesperrt"], False)
+        for feld in (element("Kartennummer", "Edit"), element("", "ComboBox", automation_id="cc-number-cvc")):
+            with self.subTest(feld=feld):
+                self.elemente = leiste + [feld]
+                self.assertIs(self.blick()["gesperrt"], True)
 
     def test_wechselt_das_fenster_zwischendurch_gilt_das_gelesene_und_wird_neu_geprueft(self) -> None:
         self.fenster = {"hwnd": 99, "title": "Online-Banking", "pid": 5}
