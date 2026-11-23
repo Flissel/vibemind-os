@@ -203,4 +203,88 @@ Song driftet, liegen die Cue-Punkte daneben (`smaragd-green-eyes` am Ende
 fast einen halben Schlag). Songs mit stabilem Tempo (`love-s-just-a-game`,
 das Outro von `no-chicks-no-eggs`) sind sauber.
 
-Fix offen, Felix entscheidet.
+Felix 23.11.: „Abschnittsweise strecken“.
+
+Behoben in `4f627593` (Test zuerst, 516 + 25 grün):
+
+- `dsp.analyze.lokale_raster_messen` legt je Mischbereich eine eigene
+  Ausgleichsgerade durch die Beats (Tempo, Downbeat, Streuung) und
+  speichert sie in der Messung. Ältere Songs im Bestand misst `dj-set set`
+  beim ersten Lauf nach.
+- Der Designer setzt Cue-Punkte auf das lokale Raster und teilt jeden
+  Eintrag in Streckabschnitte. Das Intro wird mit dem Verhältnis aus dem
+  lokalen Intro-Tempo gestreckt, der Mittelteil mit dem Gesamttempo, das
+  Outro mit dem lokalen Outro-Tempo. So läuft jeder Mischbereich genau im
+  Ziel-Tempo.
+- Der Renderer streckt die Abschnitte einzeln und fügt sie mit 10 ms
+  Überblendung zusammen. Ein Klick-Test zeigt: die Schläge liegen auf
+  3 ms genau dort, wo der Plan sie erwartet.
+- Die Phasenprüfung des Kritikers rechnet mit dem lokalen Raster.
+- Der QA-Report bekommt den Abschnitt „Unruhige Beats im Mischbereich“, wenn
+  eine Streuung über 0,1 Schlägen liegt. Das betrifft heute das Outro von
+  `farewell-kiss` (0,30), das Intro von `mind-makers` (0,23) und das Outro
+  von `smaragd-green-eyes` (0,11). Dort kann die Kette das Tempo nicht
+  genauer treffen, als der Song es selbst hält.
+
+### Lauf 4 — erster Versuch, exit 1
+
+Mit `4f627593`, gleicher Wunsch, `--length 7`. Die lokalen Raster wurden für
+alle acht Songs nachgemessen. Danach:
+`Fehler: Nach dem Aussortieren bleiben 1 Tracks, mindestens 3 werden gebraucht.`
+
+**Fund 4: der Analyst sortierte aus, was er nicht aussortieren sollte.**
+
+- `farewell-kiss`: „BPM 94.1 liegt knapp ueber der Obergrenze 94.06“. Das
+  Tempo ist 94.0619 und damit genau die Grenze. Der Prompt zeigte es auf
+  eine Stelle gerundet neben der ungerundeten Grenze.
+- `no-chicks-no-eggs`: abgelehnt wegen der Tonart 7A unter dem strengen
+  Profil. Ob zwei Tonarten passen, hängt aber vom Nachbarn ab. Das prüft die
+  Reihenfolge-Stufe an jeder Naht, und in Lauf 3 hat der Übergang 7A→3A
+  mit `filter_sweep` funktioniert.
+
+Behoben in `de82c71d` (Test zuerst, 519 + 25 grün). Analyst und Curator
+zeigen Tempo und Grenzen mit zwei Stellen. Der Analyst bekommt die
+nachgerechnete Zeile „Tempo im Korridor: ja/nein“. Eine Tonart allein ist
+kein Aussortiergrund mehr.
+
+### Lauf 4 — `...-05`, exit 2
+
+Mit `de82c71d`, gleicher Wunsch, `--length 7`, 3,5 Minuten Laufzeit.
+
+- Alle drei Songs im Set, keiner aussortiert. Reihenfolge diesmal
+  `no-chicks-no-eggs` → `smaragd-green-eyes` → `farewell-kiss`.
+- Beide Übergänge mit 16 Takten, Set 7:54, −15.2 LUFS, True Peak −1.3 dB.
+- QA blockierend: wieder ein Intervall an der Naht bei 4:20
+  (`farewell-kiss` → `no-chicks-no-eggs`) mit 0,07 Schlägen. Der neue
+  Abschnitt „Unruhige Beats“ nennt genau diese Naht (Outro `farewell-kiss`
+  0,30, Intro `no-chicks-no-eggs` 0,25) und die bei 2:37 (Outro
+  `smaragd-green-eyes` 0,11).
+- Hinweis Länge wie in Lauf 3: 7,9 statt 7 Minuten. Mit drei Songs geht es
+  nicht kürzer.
+
+Versatz der erkannten Beats beider Spuren über den ganzen Übergang, in
+Schlägen bei 91 BPM (*measured*, `scratchpad/naht_versatz.py`):
+
+| Lauf | Naht | Median | Max |
+|---|---|---|---|
+| 3 | 2:54 `no-chicks-no-eggs` → `farewell-kiss` | 0,26 | 0,56 |
+| 3 | 4:39 `farewell-kiss` → `smaragd-green-eyes` | 0,18 | 0,44 |
+| 4 | 2:37 `smaragd-green-eyes` → `farewell-kiss` | **0,05** | 0,38 * |
+| 4 | 4:20 `farewell-kiss` → `no-chicks-no-eggs` | 0,30 | 0,50 |
+
+\* Ohne den letzten Schlag, der nach dem letzten erkannten Beat von
+`smaragd-green-eyes` liegt (dort 1,28, Messartefakt). Die 0,38 gelten für
+die letzten vier Schläge, in denen `smaragd-green-eyes` schon fast
+ausgeblendet ist.
+
+Zwei Befunde:
+
+- Wo der Song sein Tempo hält, wirkt das abschnittsweise Strecken: die
+  Naht bei 2:37 liegt im Median bei 0,05 Schlägen (rund 30 ms). In Lauf 3
+  waren es 0,18 bis 0,26.
+- Die Naht bei 4:20 liegt in den beiden unruhigsten Bereichen des Bestands.
+  Dort streut schon die Beat-Erkennung um 0,25 bis 0,30 Schläge. Die
+  Messung kann dort also nicht unterscheiden, ob die Spuren auseinanderlaufen
+  oder nur die Erkennung wackelt. Entscheiden muss das Ohr.
+
+*gehört* — offen, Felix hört beide Nähte.
