@@ -287,4 +287,10 @@ Zwei Befunde:
   Messung kann dort also nicht unterscheiden, ob die Spuren auseinanderlaufen
   oder nur die Erkennung wackelt. Entscheiden muss das Ohr.
 
-*gehört* — offen, Felix hört beide Nähte.
+*gehört* — Felix 23.11. zu den Nähten bei 2:37 und 4:20: „Beide sauber“.
+Fund 3 ist damit am echten Bestand behoben, auch dort, wo die Messung
+wegen der unruhigen Beats nichts entscheiden konnte.
+
+Offen bleibt die Länge. Drei Songs im Tempo-Bereich ergeben ein Set von
+knapp 8 Minuten, mehr gibt der Bestand nicht her. Für 20 Minuten braucht es
+mehr Songs um 85–94 BPM.
