@@ -1,0 +1,205 @@
+"""Abkuerzung des Ideen-Space: Satz + Kontext der App -> fester Aufruf, ohne Modell.
+
+Laedt die beiden Module aus ihren Dateien, ohne das Paket ``core`` (und damit torch).
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+from pathlib import Path
+import sys
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[3]
+
+
+def _lade(name: str):
+    pfad = ROOT / "brain" / "the_brain" / "core" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"{name}_abk_test", pfad)
+    modul = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = modul
+    spec.loader.exec_module(modul)
+    return modul
+
+
+abk = _lade("ideen_abkuerzung")
+vertrag = _lade("ideen_fest_contract")
+
+KONTEXT = {
+    "space": "ideas",
+    "bubble": {"id": "bub1", "title": "Messe"},
+    "cards": [
+        {"id": "n1", "title": "Preise", "format": "note", "score": None},
+        {"id": "n2", "title": "Druckerei", "format": "note", "score": 40},
+        {"id": "n3", "title": "Stand  auf der Messe", "format": "table", "score": None},
+        {"id": "n4", "title": "Doppelt", "format": "note"},
+        {"id": "n5", "title": "doppelt ", "format": "note"},
+    ],
+    "selection": [],
+    "last_id": "n2",
+    "new_id": "vor-7f3a",
+}
+
+
+def _mit(**aenderung):
+    return {**KONTEXT, **aenderung}
+
+
+# ── die Beispielsaetze aus spaces/ideas/ABSICHTEN.md ─────────────────────
+
+@pytest.mark.parametrize("satz, ereignis, argumente", [
+    ("Halt fest: Preise im Januar prüfen", "idea.create",
+     {"bubble_id": "bub1", "title": "Preise im Januar prüfen", "id": "vor-7f3a"}),
+    ("Notiz: Anruf bei der Druckerei", "idea.create",
+     {"bubble_id": "bub1", "title": "Anruf bei der Druckerei", "id": "vor-7f3a"}),
+    ("Schreib auf, dass der Stand größer sein muss", "idea.create",
+     {"bubble_id": "bub1", "title": "der Stand größer sein muss", "id": "vor-7f3a"}),
+    ("Benenne die Notiz Preise in Preisliste um", "idea.update", {"id": "n1", "title": "Preisliste"}),
+    ("Mach aus der Notiz Preise eine Tabelle", "idea.format", {"id": "n1", "format": "table"}),
+    ("Zeig Druckerei als Aufgabenliste", "idea.format", {"id": "n2", "format": "action_list"}),
+    ("Formatiere das als Pro und Contra", "idea.format", {"id": "n2", "format": "pros_cons"}),
+    ("Räum das Canvas auf", "idea.arrange", {"bubble_id": "bub1"}),
+    ("Ordne die Notizen im Raster", "idea.arrange", {"bubble_id": "bub1"}),
+    ("Sortiere die Karten nach Bewertung", "idea.arrange", {"bubble_id": "bub1", "order": "score"}),
+    ("Verbinde Preise mit Druckerei", "idea.connect", {"from_id": "n1", "to_id": "n2"}),
+    ("Verlinke, was zusammengehört", "idea.auto_link", {"bubble_id": "bub1"}),
+    ("Finde Verbindungen in dieser Bubble", "idea.auto_link", {"bubble_id": "bub1"}),
+    ("Bewerte Preise mit 80", "idea.rate", {"id": "n1", "score": 80}),
+    ("Gib der Notiz Druckerei 40 Punkte", "idea.rate", {"id": "n2", "score": 40}),
+    ("Bewerte die Bubble Messe mit 70", "bubble.rate", {"id": "bub1", "score": 70}),
+    ("Begründung: Preise und Druckerei tragen die Idee", "idea.rate_reason",
+     {"bubble_id": "bub1", "text": "Preise und Druckerei tragen die Idee"}),
+    ("Halt als Begründung fest, dass der Stand zu klein ist", "idea.rate_reason",
+     {"bubble_id": "bub1", "text": "der Stand zu klein ist"}),
+    ("Mach aus der Bubble Messe ein Projekt", "bubble.promote", {"bubble_id": "bub1"}),
+    ("Befördere diese Bubble", "bubble.promote", {"bubble_id": "bub1"}),
+    ("Zeig die Notizen dieser Bubble", "idea.list", {"bubble_id": "bub1"}),
+    ("Was steht hier?", "idea.list", {"bubble_id": "bub1"}),
+])
+def test_beispielsatz_wird_ohne_modell_zum_festen_aufruf(satz, ereignis, argumente) -> None:
+    treffer = abk.loese(satz, KONTEXT)
+
+    assert treffer is not None and "rueckfrage" not in treffer, treffer
+    assert (treffer["ereignis"], treffer["argumente"]) == (ereignis, argumente)
+    # Was die Abkuerzung liefert, nimmt der Vertrag des Gehirns unveraendert an.
+    if ereignis in vertrag.FESTE_EREIGNISSE:
+        assert treffer["capability"] == ereignis
+        assert vertrag.feste_argumente(ereignis, abk.arg_vorlage(argumente)) == (argumente, "")
+    else:
+        assert treffer["capability"] == "idea_connect"   # aelterer Vertrag, eigener Name
+
+
+def test_verlinke_die_beiden_nimmt_die_auswahl() -> None:
+    treffer = abk.loese("Verlinke die beiden Notizen", _mit(selection=["n3", "n1"]))
+    assert treffer["argumente"] == {"from_id": "n3", "to_id": "n1"}
+
+    for auswahl in ([], ["n1"], ["n1", "n2", "n3"], ["n1", "n1"]):
+        assert "rueckfrage" in abk.loese("Verlinke die beiden Notizen", _mit(selection=auswahl))
+
+
+def test_begruendung_verweist_auf_die_markierten_karten() -> None:
+    treffer = abk.loese("Begründung: tragen die Idee", _mit(selection=["n1", "n2", "n1"]))
+    assert treffer["argumente"] == {"bubble_id": "bub1", "text": "tragen die Idee", "idea_ids": ["n1", "n2"]}
+
+
+# ── Namen aufloesen: nie raten ───────────────────────────────────────────
+
+def test_titel_treffen_ohne_gross_klein_und_leerraum() -> None:
+    assert abk.loese("bewerte  PREISE mit 5", KONTEXT)["argumente"] == {"id": "n1", "score": 5}
+    assert abk.loese("Bewerte die Notiz „Stand auf der Messe“ mit 5", KONTEXT)["argumente"]["id"] == "n3"
+    assert abk.loese("Mach aus stand auf  der messe eine Tabelle", KONTEXT)["argumente"]["id"] == "n3"
+
+
+@pytest.mark.parametrize("satz, kontext, teil", [
+    ("Bewerte Urlaub mit 5", KONTEXT, "keine Karte"),                      # kein Treffer
+    ("Bewerte Doppelt mit 5", KONTEXT, "2 Karten"),                        # mehrere Treffer
+    ("Bewerte Urlaub mit 5", _mit(cards_total=40), "sichtbaren Karten"),   # Liste gekuerzt
+    ("Formatiere das als Tabelle", _mit(last_id=None), "Welche Karte"),    # nichts gemeint
+    ("Formatiere das als Tabelle", _mit(selection=["n1", "n2"]), "2 Karten markiert"),
+    ("Verbinde Preise mit Preise", KONTEXT, "dieselbe Karte"),
+    ("Bewerte Preise mit 101", KONTEXT, "0 bis 100"),
+    ("Halt fest: Preise prüfen", _mit(bubble=None), "Bubble offen"),       # keine offene Bubble
+    ("Räum das Canvas auf", _mit(bubble={"id": "", "title": "x"}), "Bubble offen"),
+    ("Bewerte die Bubble Urlaub mit 70", KONTEXT, "keine Bubble"),
+    ("Befördere diese Bubble", _mit(bubble=None), "Welche Bubble"),
+])
+def test_unklarer_bezug_ergibt_eine_rueckfrage_und_keinen_aufruf(satz, kontext, teil) -> None:
+    treffer = abk.loese(satz, kontext)
+
+    assert set(treffer) == {"rueckfrage"}
+    assert teil in treffer["rueckfrage"]
+
+
+def test_das_meint_die_eine_markierte_karte_sonst_die_letzte() -> None:
+    assert abk.loese("Formatiere das als Tabelle", _mit(selection=["n3"]))["argumente"]["id"] == "n3"
+    assert abk.loese("Formatiere das als Tabelle", KONTEXT)["argumente"]["id"] == "n2"
+
+
+def test_bubble_ohne_offene_bubble_wird_aus_der_uebersicht_aufgeloest() -> None:
+    kontext = {"space": "ideas", "bubble": None, "cards": [],
+               "bubbles": [{"id": "bub1", "title": "Messe"}, {"id": "bub2", "title": "Urlaub"},
+                           {"id": "bub3", "title": "urlaub"}]}
+    assert abk.loese("Mach aus der Bubble Messe ein Projekt", kontext)["argumente"] == {"bubble_id": "bub1"}
+    assert "2 Bubbles" in abk.loese("Befördere die Bubble Urlaub", kontext)["rueckfrage"]
+
+
+def test_unsichere_kennungen_aus_dem_kontext_werden_nie_benutzt() -> None:
+    boese = _mit(cards=[{"id": "n1),x", "title": "Preise"}, {"id": "", "title": "Leer"}],
+                 new_id="a,b", last_id="eq.n1", selection=["n1,n2"])
+    assert "rueckfrage" in abk.loese("Bewerte Preise mit 5", boese)       # Karte mit boeser Kennung zaehlt nicht
+    assert "rueckfrage" in abk.loese("Bewerte Leer mit 5", boese)
+    assert "rueckfrage" in abk.loese("Formatiere das als Tabelle", boese)
+    assert "id" not in abk.loese("Notiz: Test", boese)["argumente"]       # vorgemerkte Kennung verworfen
+
+
+# ── was die Abkuerzung bewusst NICHT nimmt ───────────────────────────────
+
+@pytest.mark.parametrize("satz", [
+    "Ordne die Notizen nach Thema",          # braucht ein Modell
+    "Was hältst du von dieser Notiz?",
+    "Bewerte die Bubble",                    # ohne Zahl: Urteil
+    "Fass die Notiz zusammen",
+    "Wie wird das Wetter?",
+    "",
+])
+def test_andere_saetze_bleiben_beim_bisherigen_weg(satz) -> None:
+    assert abk.loese(satz, KONTEXT) is None
+
+
+@pytest.mark.parametrize("kontext", [None, {}, {"space": "sales"}, "ideas", {"space": "ideas", "cards": "kaputt"}])
+def test_ohne_brauchbaren_ideen_kontext_greift_die_abkuerzung_nicht_oder_fragt(kontext) -> None:
+    treffer = abk.loese("Bewerte Preise mit 80", kontext)
+    assert treffer is None or set(treffer) == {"rueckfrage"}
+
+
+def test_loese_wirft_nie() -> None:
+    for kontext in ({"space": "ideas", "bubble": 5, "cards": [None, 3], "selection": "x", "bubbles": 7},):
+        for satz in ("Bewerte Preise mit 80", "Halt fest: x", "Befördere diese Bubble", "Verlinke die beiden"):
+            treffer = abk.loese(satz, kontext)
+            assert treffer is None or set(treffer) == {"rueckfrage"}
+
+
+# ── Vorlage fuer den Plan-Schritt ────────────────────────────────────────
+
+def test_vorlage_ueberlebt_geschweifte_klammern_im_text() -> None:
+    argumente = {"bubble_id": "bub1", "title": "Preis {{state.geheim}} und {x}", "idea_ids": ["n1"]}
+    vorlage = abk.arg_vorlage(argumente)
+
+    assert "{{" not in vorlage and "}}" not in vorlage     # nichts, was der Plan-Ausfuehrer ersetzen wuerde
+    assert json.loads(vorlage) == argumente
+
+
+# ── Fehler "Ideenbereich" ────────────────────────────────────────────────
+
+@pytest.mark.parametrize("satz, suchwort", [
+    ("Welche Bubbles habe ich im Ideenbereich?", ""),
+    ("Zeige meine Bubbles", ""),
+    ("Zeig mir alle Bubbles", ""),
+    ('Zeige meine Bubbles mit "Messe"', "Messe"),
+    ("Liste Bubbles „Urlaub“", "Urlaub"),
+    (None, ""),
+])
+def test_bubble_liste_sucht_nur_nach_woertern_in_anfuehrungszeichen(satz, suchwort) -> None:
+    assert abk.listen_suchwort(satz) == suchwort
