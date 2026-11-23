@@ -186,12 +186,17 @@ def quellen_aus(zeile: Mapping[str, Any]) -> list[str]:
 
 # ── Wurzel und Zweige (rein) ─────────────────────────────────────────────
 
-def struktur(karten: list[Mapping[str, Any]], kanten: list[Mapping[str, Any]]) -> dict[str, Any]:
+def struktur(karten: list[Mapping[str, Any]], kanten: list[Mapping[str, Any]],
+             wurzel_gesetzt: Optional[str] = None) -> dict[str, Any]:
     """Wurzel, Zweige (Listen von Kennungen in Kantenreihenfolge) und Anhang.
+
+    ``wurzel_gesetzt``: die Karte, die der Mensch als Wurzel festgelegt hat
+    ("Mach X zur Wurzel", metadata.wurzel der Bubble). Sie geht der berechneten vor,
+    solange sie in der Bubble liegt.
 
     Rueckgabe: ``wurzel`` (Kennung oder None), ``zweige`` (Liste von Listen),
     ``anhang`` (Kennungen ohne Weg zur Wurzel), ``regel`` (deutscher Satz, wie die
-    Reihenfolge entstand).
+    Reihenfolge entstand), ``art`` ("gesetzt", "berechnet" oder "keine").
     """
     nach_id = {str(k["id"]): k for k in karten}
     ids = sorted(nach_id, key=lambda i: _lage(nach_id[i]))
@@ -223,8 +228,17 @@ def struktur(karten: list[Mapping[str, Any]], kanten: list[Mapping[str, Any]]) -
         return len(gesehen)
 
     wurzel: Optional[str] = None
+    art = "berechnet"
     gerichtete = [i for i in ids if vorwaerts[i] and eingehend[i] == 0]
-    if gerichtete:
+    if wurzel_gesetzt is not None and str(wurzel_gesetzt) in nach_id:
+        wurzel, art = str(wurzel_gesetzt), "gesetzt"
+        regel = "Die Reihenfolge folgt den Verbindungen von dieser Karte aus."
+        if not nachbarn[wurzel]:
+            rest = [i for i in ids if i != wurzel]
+            return {"wurzel": wurzel, "zweige": [rest] if rest else [], "anhang": [], "art": art,
+                    "regel": "Sie hat keine Verbindungen; die übrigen Karten folgen ihrer Lage auf dem Canvas "
+                             "(oben vor unten, links vor rechts)."}
+    elif gerichtete:
         # ids ist oben-links sortiert; max() behaelt bei Gleichstand die erste.
         wurzel = max(gerichtete, key=erreichbar)
         regel = "Wurzel ist die Karte ohne Oberpunkt, von der aus die meisten Karten erreichbar sind."
@@ -234,7 +248,7 @@ def struktur(karten: list[Mapping[str, Any]], kanten: list[Mapping[str, Any]]) -
             wurzel = max(kandidaten, key=lambda i: verwandt[i])
             regel = "Wurzel ist die Karte mit den meisten Verbindungen (es gibt keine Ober- und Unterpunkte)."
     if wurzel is None:
-        return {"wurzel": None, "zweige": [ids] if ids else [], "anhang": [],
+        return {"wurzel": None, "zweige": [ids] if ids else [], "anhang": [], "art": "keine",
                 "regel": "Die Karten sind nicht verbunden; die Reihenfolge folgt ihrer Lage auf dem Canvas "
                          "(oben vor unten, links vor rechts)."}
 
@@ -253,7 +267,26 @@ def struktur(karten: list[Mapping[str, Any]], kanten: list[Mapping[str, Any]]) -
                     offen.append(n)
         zweige.append(zweig)
     anhang = [i for i in ids if i not in zugeteilt]
-    return {"wurzel": wurzel, "zweige": zweige, "anhang": anhang, "regel": regel}
+    return {"wurzel": wurzel, "zweige": zweige, "anhang": anhang, "regel": regel, "art": art}
+
+
+def gesetzte_wurzel(bubble: Mapping[str, Any]) -> Optional[str]:
+    """metadata.wurzel der Bubble (Kennung), sonst None."""
+    metadata = bubble.get("metadata") if isinstance(bubble.get("metadata"), Mapping) else {}
+    wert = metadata.get("wurzel")
+    return wert if ist_db_kennung(wert) else None
+
+
+def wurzel_satz(rueckweg: Mapping[str, Any]) -> str:
+    """Ein Satz für den Vorspann: von welcher Karte aus, festgelegt oder berechnet."""
+    titel = rueckweg.get("wurzel_titel")
+    if not rueckweg.get("wurzel_id"):
+        return ""
+    name = f"„{titel}“" if titel else "ohne Titel"
+    if rueckweg.get("wurzel_art") == "gesetzt":
+        return f"Es beginnt bei der Karte {name}, die du als Wurzel festgelegt hast."
+    vorher = (" Die festgelegte Wurzel liegt nicht mehr in der Bubble." if rueckweg.get("wurzel_fehlt") else "")
+    return f"Es beginnt bei der Karte {name}, die ich berechnet habe.{vorher}"
 
 
 def teile_bilden(zweige: list[list[str]], laenge: Mapping[str, int], *,
@@ -512,7 +545,8 @@ def auftrag_vorbereiten(event_id: str, rendered_arg: Any, wunsch: Any, *, lesen:
     karten = _karten_lesen(bubble_id, lesen)
     if vertrag == "zusammenfassen":
         return _zusammenfassen_vorbereiten(event_id, arg, wunsch, bubble_id, bubble_titel, karten, neue_kennung())
-    return _white_paper_vorbereiten(event_id, arg, wunsch, bubble_id, bubble_titel, karten, lesen, neue_kennung())
+    return _white_paper_vorbereiten(event_id, arg, wunsch, bubble_id, bubble_titel, karten, lesen, neue_kennung(),
+                                    gesetzt=gesetzte_wurzel(bubble))
 
 
 def _zusammenfassen_vorbereiten(event_id: str, arg: Mapping[str, Any], wunsch: Any, bubble_id: str,
@@ -550,14 +584,15 @@ def _zusammenfassen_vorbereiten(event_id: str, arg: Mapping[str, Any], wunsch: A
 
 
 def _white_paper_vorbereiten(event_id: str, arg: Mapping[str, Any], wunsch: Any, bubble_id: str,
-                             bubble_titel: str, karten: list[dict[str, Any]], lesen: Lesen, dokument_id: str):
+                             bubble_titel: str, karten: list[dict[str, Any]], lesen: Lesen, dokument_id: str,
+                             gesetzt: Optional[str] = None):
     if not karten:
         raise RueckwegFehler("Diese Bubble hat keine Karten; es gibt kein White Paper zu schreiben.")
     kanten = lesen.kanten([k["id"] for k in karten])
     if kanten is None:
         raise RueckwegFehler("Die Verbindungen lassen sich gerade nicht lesen. Versuch es gleich noch einmal.")
     nach_id = {k["id"]: k for k in karten}
-    bau = struktur(karten, [k for k in kanten if isinstance(k, Mapping)])
+    bau = struktur(karten, [k for k in kanten if isinstance(k, Mapping)], wurzel_gesetzt=gesetzt)
     texte = {i: lesbarer_text(k) for i, k in nach_id.items()}
     wurzel = bau["wurzel"]
     laenge = {i: min(len(t), KARTE_GRENZE) + len(titel_von(nach_id[i])) + 8
@@ -592,6 +627,7 @@ def _white_paper_vorbereiten(event_id: str, arg: Mapping[str, Any], wunsch: Any,
         "titel": _sauber(f"White Paper: {bubble_titel}", 200), "bubble_titel": bubble_titel,
         "teile": [{"karten": teil} for teil in teile], "index": 0, "fertig": [],
         "wurzel_id": wurzel, "wurzel_titel": titel_von(nach_id[wurzel]) if wurzel else None,
+        "wurzel_art": bau.get("art"), "wurzel_fehlt": bool(gesetzt) and bau.get("art") != "gesetzt",
         "einleitung": einleitung, "regel": bau["regel"], "anhang": anhang[:500], "leer": leer[:500],
         "quellen": quellen, "budget": grenze, "wunsch": _sauber(wunsch, 500),
         "ohne_anhang_karten": len(bau["anhang"]) - len(anhang),
@@ -667,9 +703,10 @@ def white_paper_bauen(rueckweg: Mapping[str, Any], jetzt: Optional[datetime] = N
     """Das ganze Dokument aus den geprueften Abschnitten; deterministisch, ohne Modell."""
     jetzt = jetzt or datetime.now(timezone.utc)
     kapitel = rueckweg["fertig"]
+    vorspann = " ".join(t for t in (wurzel_satz(rueckweg), rueckweg.get("regel") or "") if t)
     zeilen = [f"# {rueckweg['titel']}", "",
               f"*Erstellt am {jetzt.strftime('%d.%m.%Y')} aus der Bubble „{rueckweg.get('bubble_titel') or ''}“. "
-              f"{rueckweg.get('regel') or ''}*", "", "## Inhalt", ""]
+              f"{vorspann}*", "", "## Inhalt", ""]
     eintraege = []
     if rueckweg.get("einleitung"):
         eintraege.append("Einleitung")
@@ -832,14 +869,15 @@ class DatenbankLesen(Lesen):
         return _lesen(tabelle, params)
 
     def bubble(self, kennung: str) -> Optional[Mapping[str, Any]]:
-        zeilen = self._lesen("ideas", {"select": "id,title", "id": f"eq.{kennung}", "parent_id": "is.null", "limit": "2"})
+        zeilen = self._lesen("ideas", {"select": "id,title,metadata", "id": f"eq.{kennung}",
+                                       "parent_id": "is.null", "limit": "2"})
         return zeilen[0] if zeilen and len(zeilen) == 1 and isinstance(zeilen[0], dict) else None
 
     def bubbles_mit_titel(self, titel: str) -> Optional[list]:
         if not titel or len(titel) > 200:
             return []
         muster = re.sub(r"([\\%_*])", r"\\\1", titel)
-        return self._lesen("ideas", {"select": "id,title", "title": f"ilike.{muster}", "parent_id": "is.null",
+        return self._lesen("ideas", {"select": "id,title,metadata", "title": f"ilike.{muster}", "parent_id": "is.null",
                                      "limit": "5"})
 
     def karten_der_bubble(self, kennung: str) -> Optional[list]:

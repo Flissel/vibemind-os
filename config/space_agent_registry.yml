@@ -93,6 +93,7 @@ spaces:
         - idea_rate
         - bewertung_begruenden
         - idea_document
+        - bubble_wurzel
     default_context: [current_space, current_bubble, idea_titles]
     events:
       # Feste Aufrufe (ohne Modell) ueber den Ideen-Server, nur mit Kennungen;
@@ -173,6 +174,12 @@ spaces:
       idea.document:
         tool: idea_document
         required_params: [id, bubble_id, title, art, content]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
+      # "Mach X zur Wurzel": festgelegte Wurzel der Bubble fuer das White Paper (metadata.wurzel).
+      idea.root:
+        tool: bubble_wurzel
+        required_params: [bubble_id]
         required_provenance: [approval_ref, cost_ref]
         execution: { kind: mcp, server: spaces-ideas }
       idea.analyze_links:       { tool: db_canvas_nodes, required_params: [] }

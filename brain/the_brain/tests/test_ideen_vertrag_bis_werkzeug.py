@@ -199,6 +199,9 @@ def _hauptlauf() -> int:
         ("idea.auto_link", {"bubble_id": "b0b1e001"}),
         ("idea.arrange", abk.loese("Sortiere die Karten nach Bewertung", app)["argumente"]),
         ("bubble.rate", abk.loese("Bewerte die Bubble Messe mit 70", app)["argumente"]),
+        # Wurzel festlegen und wieder loeschen (metadata.wurzel der Bubble).
+        ("idea.root", abk.loese("Mach Preise Druckerei zur Wurzel", app)["argumente"]),
+        ("idea.root", abk.loese("Lösche die festgelegte Wurzel", app)["argumente"]),
         ("bubble.promote", abk.loese("Befördere diese Bubble", app)["argumente"]),
         # Dokument-Karte (core/ideen_dokument): das Gehirn schreibt sie am Ende eines White Papers.
         ("idea.document", {"id": "00000000-0000-4000-8000-000000000d01", "bubble_id": "b0b1e001",

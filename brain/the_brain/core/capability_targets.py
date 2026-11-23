@@ -1128,7 +1128,7 @@ class McpExecutor(_BaseRemoteExecutor):
         "idea_create", "idea_update", "idea_delete", "idea_disconnect",
         # feste Aufrufe des Ideen-Space (ideen_fest_contract.SCHREIBENDE_WERKZEUGE)
         "idea_format", "idea_arrange", "idea_auto_link", "idea_rate", "bubble_rate",
-        "bewertung_begruenden", "idea_document",
+        "bewertung_begruenden", "idea_document", "bubble_wurzel",
     })
 
     def _mit_aenderung_id(self, tool_payload: Any, plan_id: Any) -> Any:

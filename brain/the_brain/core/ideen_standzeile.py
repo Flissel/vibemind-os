@@ -21,7 +21,7 @@ _NAMEN = {
     "bubble.promote": "Bubble befördern", "aenderung_zurueck": "Zurücknehmen",
     "idea.aenderung_zurueck": "Zurücknehmen", "idea.expand": "Ausformulieren", "idea.explain": "Einschätzen",
     "idea.summarize": "Zusammenfassen", "idea.whitepaper": "White Paper", "idea.document": "Dokument schreiben",
-    "bubble_list": "Bubbles zeigen", "bubble.list": "Bubbles zeigen",
+    "bubble_list": "Bubbles zeigen", "bubble.list": "Bubbles zeigen", "idea.root": "Wurzel festlegen",
 }
 
 

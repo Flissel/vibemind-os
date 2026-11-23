@@ -516,6 +516,19 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
             argumente["max_laeufe"] = laeufe
         return _treffer("idea.whitepaper", argumente, "", capability="idea_whitepaper")
 
+    # ── Wurzel der Bubble festlegen (fuer das White Paper, geht der berechneten vor) ──
+    if re.fullmatch(r"(?:l(?:ö|oe)sch(?:e)?|entfern(?:e)?)\s+die\s+(?:feste|festgelegte|gesetzte)?\s*wurzel"
+                    r"(?:\s+(?:dieser|der)\s+bubble)?|keine\s+feste\s+wurzel(?:\s+mehr)?", text, _I):
+        return _treffer("idea.root", {"bubble_id": _offene_bubble(kontext)},
+                        "Die festgelegte Wurzel ist weg; das White Paper berechnet sie wieder selbst.")
+    m = (re.fullmatch(r"mach(?:e)?\s+(?P<k>.+?)\s+zur\s+wurzel(?:\s+(?:dieser|der)\s+bubble)?", text, _I)
+         or re.fullmatch(r"setz(?:e)?\s+(?P<k>.+?)\s+als\s+wurzel(?:\s+(?:dieser|der)\s+bubble)?(?:\s+fest)?",
+                         text, _I))
+    if m:
+        karte = _karte(m.group("k"), kontext)
+        return _treffer("idea.root", {"bubble_id": _offene_bubble(kontext), "id": karte["id"]},
+                        f"{_titel(karte)} ist jetzt die Wurzel dieser Bubble; das White Paper beginnt dort.")
+
     # ── formatieren ──
     m = (re.fullmatch(rf"mach(?:e)?\s+aus\s+(?P<k>.+?)\s+{_ARTIKEL}{_FORMAT}", text, _I)
          or re.fullmatch(rf"zeig(?:e)?\s+(?P<k>.+?)\s+als\s+{_ARTIKEL}{_FORMAT}", text, _I)

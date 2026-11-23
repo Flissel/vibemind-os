@@ -76,6 +76,13 @@ FESTE_EREIGNISSE: dict[str, dict[str, Any]] = {
         "pflicht": {"bubble_id": _K, "text": ("text", 2000, False)},
         "wahl": {"idea_ids": ("kennungen", 20), "score": _WERT},
     },
+    # "Mach X zur Wurzel": metadata.wurzel der Bubble, geht beim White Paper der
+    # berechneten Wurzel vor (core/ideen_dokument). Ohne id: festgelegte Wurzel loeschen.
+    "idea.root": {
+        "werkzeug": "bubble_wurzel",
+        "pflicht": {"bubble_id": _K},
+        "wahl": {"id": _K},
+    },
     "bubble.rate": {
         "werkzeug": "bubble_rate",
         "pflicht": {"id": _K, "score": _WERT},
@@ -332,6 +339,12 @@ def nachpruefung(event_id: str, argumente: Any, raw_result: Any) -> tuple[Option
 
     if not isinstance(inhalt, dict):
         return None, ungueltig
+    if event_id == "idea.root":
+        soll = argumente.get("id")
+        if inhalt.get("bubble_id") != argumente["bubble_id"] or inhalt.get("wurzel") != soll:
+            return None, ungueltig
+        return {"art": "zeile", "tabelle": "ideas", "id": argumente["bubble_id"],
+                "felder": {"metadata.wurzel": soll}}, ""
     if event_id == "idea.rate_reason":
         eintrag = inhalt.get("bewertung")
         if (inhalt.get("bubble_id") != argumente["bubble_id"] or not isinstance(eintrag, dict)

@@ -359,6 +359,22 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "bubble_wurzel",
+        "description": (
+            "Set or clear the root card of a bubble (metadata.wurzel). A set root takes precedence over "
+            "the computed one when a white paper is built. Without 'id': clear it. Undoable."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "bubble_id": {"type": "string", "pattern": _ID_SCHEMA_PATTERN},
+                "id": {"type": "string", "pattern": _ID_SCHEMA_PATTERN},
+            },
+            "required": ["bubble_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "aenderung_liste",
         "description": (
             "List the most recent recorded changes to ideas and bubbles, newest first, "
@@ -399,7 +415,7 @@ CHANGE_WRITE_TOOLS = frozenset({
     "bubble_create", "bubble_update", "bubble_delete", "bubble_promote",
     "idea_create", "idea_update", "idea_delete", "idea_connect", "idea_disconnect",
     "idea_format", "idea_arrange", "idea_auto_link", "idea_rate", "bubble_rate",
-    "bewertung_begruenden", "idea_document",
+    "bewertung_begruenden", "idea_document", "bubble_wurzel",
 })
 for _tool in TOOLS:
     if _tool["name"] in CHANGE_WRITE_TOOLS:
@@ -1918,6 +1934,40 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         if updated is None:
             raise ToolError("bewertung_unverified")
         return {"bubble_id": bubble_id, "bewertung": entry}
+    if name == "bubble_wurzel":
+        _only_arguments(arguments, {"bubble_id", "id"})
+        bubble_id = _durable_id(arguments, "bubble_id")
+        root_id = _durable_id(arguments, "id") if "id" in arguments else None
+        bubble = _first_row(_request(
+            "GET",
+            "ideas",
+            params={"select": "id,metadata", "id": f"eq.{bubble_id}", "parent_id": "is.null", "limit": "1"},
+        ))
+        if bubble is None:
+            raise ToolError("bubble_not_found")
+        if root_id is not None:
+            card = _first_row(_request(
+                "GET",
+                "canvas_nodes",
+                params={"select": "id", "id": f"eq.{root_id}", "linked_idea_id": f"eq.{bubble_id}", "limit": "1"},
+            ))
+            if card is None:
+                raise ToolError(f"idea_not_in_bubble: {root_id}")
+        metadata = bubble.get("metadata")
+        metadata = dict(metadata) if isinstance(metadata, Mapping) else {}
+        if root_id is None:
+            metadata.pop("wurzel", None)
+        else:
+            metadata["wurzel"] = root_id
+        updated = _first_row(_request(
+            "PATCH",
+            "ideas",
+            params={"id": f"eq.{bubble_id}", "parent_id": "is.null"},
+            body={"metadata": metadata},
+        ))
+        if updated is None:
+            raise ToolError("bubble_wurzel_unverified")
+        return {"bubble_id": bubble_id, "wurzel": root_id}
     if name == "bubble_rate":
         _only_arguments(arguments, {"id", "score"})
         bubble_id = _durable_id(arguments, "id")
