@@ -100,10 +100,36 @@ def stand_einer_zeile(zeile: Mapping[str, Any]) -> dict[str, Any]:
     if rueckweg in ("abgelehnt", "fehler"):
         return {"stand": "fehler", "ok": False, "meldung": meldung or _STATUS_SATZ["fehler"]}
     # Auftrag ohne Rückweg (andere Spaces): Status und Prüfung.
-    if status == "fertig" and pruefung.get("verified") is not False and pruefung.get("fortsetzung") != "fehler":
+    # Lauf 7 (falsch grün): bubble_evaluate endete mit "Werkzeug ... nicht verfügbar", Prüfung
+    # UNVERIFIED, und hier stand "fertig". "fertig" gilt nur, wenn die Prüfung das Ergebnis bestätigt.
+    if _werkzeug_fehlt(zeile.get("ergebnis")):
+        return {"stand": "fehler", "ok": False, "meldung": WERKZEUG_FEHLT_SATZ}
+    if (status == "fertig" and pruefung.get("verified") is True
+            and pruefung.get("fortsetzung") != "fehler"):
         return {"stand": "fertig", "ok": True, "meldung": meldung or "Der Auftrag ist fertig."}
+    if status == "fertig" and pruefung.get("verified") is None and pruefung.get("fortsetzung") != "fehler":
+        return {"stand": "fehler", "ok": False, "meldung": UNGEPRUEFT_SATZ}
     return {"stand": "fehler", "ok": False,
             "meldung": meldung or _STATUS_SATZ.get(str(status), _STATUS_SATZ["fehler"])}
+
+
+WERKZEUG_FEHLT_SATZ = "Das hat nicht geklappt: dem Agenten fehlt das Werkzeug. Geändert habe ich nichts."
+UNGEPRUEFT_SATZ = ("Der Auftrag kam zurück, aber ich konnte das Ergebnis nicht prüfen. "
+                   "Ob sich etwas geändert hat, weiß ich nicht.")
+_WERKZEUG_FEHLT = re.compile(
+    r"(?:werkzeug|tool)\b[^\n]{0,80}?\b(?:nicht\s+(?:verf(?:ü|ue)gbar|vorhanden|gefunden|freigeschaltet)|"
+    r"fehlt|unbekannt|not\s+(?:available|found|allowed|permitted)|unavailable|unknown)"
+    r"|(?:unknown|unbekanntes)\s+(?:tool|werkzeug)|no\s+such\s+tool", re.IGNORECASE)
+
+
+def _werkzeug_fehlt(ergebnis: Any) -> bool:
+    """Meldet das Ergebnis des Agenten ein fehlendes Werkzeug? (Text oder {"text"/"result"/"error": ...})"""
+    if isinstance(ergebnis, Mapping):
+        teile = [ergebnis.get(k) for k in ("text", "result", "error", "meldung", "antwort")]
+        return any(_werkzeug_fehlt(t) for t in teile if t is not None)
+    if not isinstance(ergebnis, str) or not ergebnis.strip():
+        return False
+    return bool(_WERKZEUG_FEHLT.search(ergebnis[:4000]))
 
 
 def stand(auftrag_id: str, lesen: Callable[[str], Optional[Mapping[str, Any]]]) -> dict[str, Any]:

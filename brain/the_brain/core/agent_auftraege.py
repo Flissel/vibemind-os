@@ -123,7 +123,8 @@ class AuftragsTabelle:
     def lesen(self, auftrag_id: str) -> Optional[dict]:
         """Eine Zeile fuer den Stand (core/auftrag_stand); ``None``, wenn es sie nicht gibt."""
         zeilen = self._req("GET", params={"id": f"eq.{auftrag_id}", "limit": "1",
-                                          "select": "id,capability,status,angelegt,beendet,pruefung,uebergabe"})
+                                          "select": "id,capability,status,angelegt,beendet,pruefung,uebergabe,"
+                                                    "ergebnis"})
         return zeilen[0] if isinstance(zeilen, list) and zeilen and isinstance(zeilen[0], dict) else None
 
     def letzter_vorschlag(self, seit_iso: str, bubble_id: Optional[str] = None) -> Optional[dict]:

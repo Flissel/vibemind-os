@@ -218,6 +218,38 @@ def test_stand_einer_zeile(zeile, erwartet) -> None:
     assert st.stand(A1, lambda i: zeile) == {**erwartet, "auftrag_id": A1}
 
 
+@pytest.mark.parametrize("pruefung, ergebnis, meldung", [
+    # Lauf 7 (falsch gruen): Werkzeug fehlte, Pruefung UNVERIFIED (placeholder) -> stand "fertig".
+    ({"verified": None, "reason": "placeholder", "kind": "UNVERIFIED", "fortsetzung": "keine"},
+     "Werkzeug bubble_evaluate nicht verfügbar", st.WERKZEUG_FEHLT_SATZ),
+    ({"verified": True, "reason": "ok", "fortsetzung": "keine"},
+     {"text": "Error: unknown tool bubble_evaluate"}, st.WERKZEUG_FEHLT_SATZ),
+    ({"verified": None, "reason": "placeholder", "kind": "UNVERIFIED", "fortsetzung": "keine"},
+     "Bewertung gesetzt.", st.UNGEPRUEFT_SATZ),
+    ({"verified": None, "reason": "kein Pruefer", "kind": None, "fortsetzung": "keine"}, None, st.UNGEPRUEFT_SATZ),
+])
+def test_stand_fertig_nur_mit_bestaetigter_pruefung(pruefung, ergebnis, meldung) -> None:
+    zeile = {**_zeile("fertig", pruefung, _iso(78)), "capability": "bubble_evaluate", "ergebnis": ergebnis}
+    aus = st.stand(A1, lambda i: zeile)
+    assert aus["stand"] == "fehler" and aus["ok"] is False and aus["meldung"] == meldung
+
+
+def test_stand_fertig_mit_bestaetigter_pruefung() -> None:
+    zeile = {**_zeile("fertig", {"verified": True, "reason": "ok", "fortsetzung": "keine"}, _iso(12)),
+             "ergebnis": "Bewertung gesetzt."}
+    assert st.stand(A1, lambda i: zeile) == {"stand": "fertig", "ok": True, "meldung": "Der Auftrag ist fertig.",
+                                             "dauer_s": 12.0, "auftrag_id": A1}
+
+
+def test_tabelle_liest_das_ergebnis_fuer_den_stand(monkeypatch) -> None:
+    gesendet = []
+    tabelle = aa.AuftragsTabelle.__new__(aa.AuftragsTabelle)
+    monkeypatch.setattr(tabelle, "_req", lambda methode, params=None, **kw: gesendet.append(params) or [],
+                        raising=False)
+    tabelle.lesen(A1)
+    assert "ergebnis" in gesendet[0]["select"].split(",")
+
+
 def test_stand_vorschlag_nennt_die_saetze() -> None:
     zeile = _zeile("fertig", {"rueckweg": "vorschlag", "fortsetzung": "fertig",
                               "meldung": vs.meldung_geaendert("Sponsoren")}, _iso(43))
