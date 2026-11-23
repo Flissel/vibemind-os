@@ -2,11 +2,14 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 import soundfile as sf
 
+from djset.agents import analyst
 from djset.agents.analyst import SNAP_CONFIDENCE_PENALTY, analyse_track
 from djset.agents.base import Budget
-from djset.contracts import Profile, TrackAnalysis, UnreadableTrack
+from djset.contracts import Profile, TrackAnalysis, TrackMeasurements, UnreadableTrack
+from tests.fixtures.analyses import make_analysis
 from tests.fixtures.fake_client import FakeClient
 from tests.fixtures.make_audio import click_track, click_track_with_weak_offbeats
 
@@ -191,3 +194,38 @@ def test_a_model_requested_remeasure_is_checked_against_the_corridor(
     assert result.bpm.confidence <= SNAP_CONFIDENCE_PENALTY
     # Und das Modell sieht in der zweiten Runde den Korridorwert, nicht 87.
     assert "174" in client.prompts[1]
+
+
+# --- B1: gespeicherte Messung wiederverwenden -------------------------------
+
+
+def _gespeichert(track_id: str, bpm: float) -> TrackMeasurements:
+    return TrackMeasurements.model_validate(
+        make_analysis(track_id, bpm=bpm).model_dump(exclude={"verdict"})
+    )
+
+
+def test_eine_gespeicherte_messung_wird_nicht_neu_gemessen(
+    tmp_path: Path, profile: Profile, monkeypatch
+) -> None:
+    """Fuer Laeufe aus dem Bestand: das Tempo im Lauf darf nicht von
+    tempo.json abweichen. Auch der Korridor-Snap misst nicht nach - 120 BPM
+    liegen weit unter dem Profil (168..176) und bleiben trotzdem 120."""
+    monkeypatch.setattr(
+        analyst, "measure_track", lambda *a, **k: pytest.fail("neu gemessen")
+    )
+    messung = _gespeichert("t", 120.0)
+    antwort = dict(ANSWER, remeasure_with_bpm=174.0)
+    client = FakeClient([json.dumps(antwort)])
+
+    result = analyse_track(
+        client, tmp_path / "gibtsnicht.wav", "t", profile, _budget(), messung=messung
+    )
+
+    assert isinstance(result, TrackAnalysis)
+    assert result.bpm == messung.bpm
+    assert result.model_dump(exclude={"verdict"}) == messung.model_dump()
+    # Die verlangte Neumessung wird nicht ausgefuehrt, das Urteil bleibt.
+    assert client.calls == 1
+    assert result.verdict.usable is True
+    assert result.verdict.energy_level == 0.62

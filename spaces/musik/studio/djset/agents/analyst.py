@@ -193,8 +193,20 @@ def analyse_track(
     profile: Profile,
     budget: Budget,
     max_rounds: int = MAX_ROUNDS,
+    messung: TrackMeasurements | None = None,
 ) -> TrackAnalysis | UnreadableTrack:
-    """Misst einen Track und holt das Urteil des Analysten dazu."""
+    """Misst einen Track und holt das Urteil des Analysten dazu.
+
+    Mit `messung` (Laeufe aus dem Bestand) wird nicht gemessen: die
+    gespeicherte Messung geht so, wie sie ist, an das Modell - ohne
+    Korridor-Snap und ohne die vom Modell verlangte Neumessung. Sonst koennte
+    das Tempo im Lauf von tempo.json abweichen, nach dem der Bereich gewaehlt
+    wurde. Das Urteil des Analysten ueber die Brauchbarkeit bleibt.
+    """
+    if messung is not None:
+        answer = run_agent(client, _prompt(messung, profile), AnalystAnswer, budget)
+        return _with_verdict(messung, answer)
+
     try:
         measurements = _measure_in_corridor(path, track_id, profile)
     except Exception as error:  # noqa: BLE001 - jede Messstoerung endet gleich
@@ -219,6 +231,12 @@ def analyse_track(
             return UnreadableTrack(id=track_id, path=str(path), error=str(error))
         answer = run_agent(client, _prompt(measurements, profile), AnalystAnswer, budget)
 
+    return _with_verdict(measurements, answer)
+
+
+def _with_verdict(
+    measurements: TrackMeasurements, answer: AnalystAnswer
+) -> TrackAnalysis:
     return TrackAnalysis(
         **measurements.model_dump(),
         verdict=Verdict(

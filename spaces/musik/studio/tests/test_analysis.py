@@ -2,11 +2,13 @@ import json
 from datetime import date
 from pathlib import Path
 
+from djset.agents import analyst
 from djset.agents.base import Budget
 from djset.analysis import analyse_all, artifact_name
-from djset.contracts import Profile, TrackAnalysis
+from djset.contracts import Profile, TrackAnalysis, TrackMeasurements
 from djset.run import Run
 from djset.watch import AudioFile
+from tests.fixtures.analyses import make_analysis
 from tests.fixtures.fake_client import FakeClient
 from tests.fixtures.make_audio import click_track
 
@@ -176,3 +178,28 @@ def test_responses_can_be_keyed_by_prompt(tmp_path: Path, profile: Profile) -> N
 
     energies = {a.id: a.verdict.energy_level for a in analyses}
     assert energies == {"t0": 0.2, "t1": 0.5, "t2": 0.8}
+
+
+def test_mitgegebene_messungen_ersetzen_die_messung(
+    tmp_path: Path, profile: Profile, monkeypatch
+) -> None:
+    """B1: Laeufe aus dem Bestand reichen ihre gespeicherten Messungen durch."""
+    def nie(*args: object, **kwargs: object) -> None:
+        raise AssertionError("neu gemessen")
+
+    monkeypatch.setattr(analyst, "measure_track", nie)
+    run = _run(tmp_path)
+    files = [AudioFile(id=f"t{i}", path=tmp_path / f"t{i}.wav") for i in range(2)]
+    messungen = {
+        f"t{i}": TrackMeasurements.model_validate(
+            make_analysis(f"t{i}", bpm=126.0 + i).model_dump(exclude={"verdict"})
+        )
+        for i in range(2)
+    }
+
+    analyses, unreadable = analyse_all(
+        FakeClient([ANSWER] * 2), files, profile, run, _budget(), messungen=messungen
+    )
+
+    assert unreadable == []
+    assert {a.id: a.bpm.value for a in analyses} == {"t0": 126.0, "t1": 127.0}

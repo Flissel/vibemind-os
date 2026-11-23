@@ -14,7 +14,12 @@ from pydantic import ValidationError
 
 from djset.agents.analyst import analyse_track
 from djset.agents.base import AgentClient, Budget
-from djset.contracts import Profile, TrackAnalysis, UnreadableTrack
+from djset.contracts import (
+    Profile,
+    TrackAnalysis,
+    TrackMeasurements,
+    UnreadableTrack,
+)
 from djset.run import Run
 from djset.watch import AudioFile
 
@@ -63,6 +68,7 @@ def analyse_all(
     run: Run,
     budget: Budget,
     workers: int = DEFAULT_WORKERS,
+    messungen: dict[str, TrackMeasurements] | None = None,
 ) -> tuple[list[TrackAnalysis], list[UnreadableTrack]]:
     """Analysiert alle Dateien und schreibt je ein Artefakt.
 
@@ -80,13 +86,25 @@ def analyse_all(
     `--run <id>` waehlt einen bestimmten. Das Wiederaufnehmen ist damit das
     Normalverhalten und kein eigener Schalter - wer frisch analysieren will,
     loescht die Artefakte oder legt mit `dj-set plan` einen neuen Lauf an.
+
+    `messungen` (Track-ID -> gespeicherte Messung) kommt nur bei Laeufen aus
+    dem Bestand mit. Fuer diese Tracks wird nicht gemessen, sondern die
+    Messung aus dem Bestand benutzt - siehe agents/analyst.py::analyse_track.
     """
+    vorhanden = messungen or {}
 
     def one(file: AudioFile) -> TrackAnalysis | UnreadableTrack:
         existing = _read_existing(run, file.id)
         if existing is not None:
             return existing
-        result = analyse_track(client, Path(file.path), file.id, profile, budget)
+        result = analyse_track(
+            client,
+            Path(file.path),
+            file.id,
+            profile,
+            budget,
+            messung=vorhanden.get(file.id),
+        )
         run.write_model(artifact_name(file.id), result)
         return result
 
