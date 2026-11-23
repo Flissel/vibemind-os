@@ -51,6 +51,11 @@ class IdeasMcpServerContractTests(unittest.TestCase):
                 "idea_delete",
                 "idea_connect",
                 "idea_disconnect",
+                "idea_format",
+                "idea_arrange",
+                "idea_auto_link",
+                "idea_rate",
+                "bubble_rate",
                 "aenderung_liste",
                 "aenderung_zurueck",
             ],
@@ -1257,6 +1262,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
         self.assertEqual(with_id, {
             "bubble_create", "bubble_update", "bubble_delete", "bubble_promote",
             "idea_create", "idea_update", "idea_delete", "idea_connect", "idea_disconnect",
+            "idea_format", "idea_arrange", "idea_auto_link", "idea_rate", "bubble_rate",
         })
 
     def test_stdio_process_serves_initialize_and_tools_list(self) -> None:

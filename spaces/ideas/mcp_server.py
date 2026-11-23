@@ -9,7 +9,9 @@ environment.
 from __future__ import annotations
 
 import contextvars
+import datetime
 import json
+import math
 import os
 import re
 import sys
@@ -35,6 +37,17 @@ CHANGE_ERROR_PATTERN = re.compile(
 )
 CHANGE_LIST_ROW_CAP = 500
 CHANGE_LIST_ENTRY_CAP = 20
+_ID_SCHEMA_PATTERN = "^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$"
+# Dieselben Formate wie in brain/the_brain/core/supabase_ideas_ops.py (_FORMAT_MAP).
+IDEA_FORMATS = (
+    "note", "table", "action_list", "pros_cons", "hierarchy", "technical_specs",
+    "kanban", "mindmap", "swot", "user_story", "flowchart",
+)
+ARRANGE_ORDERS = ("position", "title", "score")
+ARRANGE_NODE_CAP = 100
+ARRANGE_CELL_WIDTH = 240   # Karte 200 breit + 40 Abstand
+ARRANGE_CELL_HEIGHT = 140  # Karte 100 hoch + 40 Abstand
+AUTO_LINK_THRESHOLD = 0.30  # wie auto_link_op im Gehirn
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -127,6 +140,9 @@ TOOLS: list[dict[str, Any]] = [
                 "node_type": {"type": "string", "default": "note"},
                 "x": {"type": "integer", "default": 0},
                 "y": {"type": "integer", "default": 0},
+                # Vorspeicher: die App darf die Kennung vorgeben, damit die vorgemerkte
+                # Karte und die gespeicherte Zeile dieselbe Kennung tragen.
+                "id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": _ID_SCHEMA_PATTERN},
             },
             "required": ["bubble_id", "title"],
         },
@@ -188,6 +204,82 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {"type": "object", "properties": {"edge_id": {"type": "string", "minLength": 1}}, "required": ["edge_id"]},
     },
     {
+        "name": "idea_format",
+        "description": (
+            "Switch how one canvas idea is displayed (table, action_list, pros_cons, ...). "
+            "The text is kept; 'revert' restores the format before the last switch."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": _ID_SCHEMA_PATTERN},
+                "format": {"type": "string", "enum": [*IDEA_FORMATS, "revert"]},
+            },
+            "required": ["id", "format"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "idea_arrange",
+        "description": (
+            "Arrange all canvas ideas of one bubble in a grid. 'order' picks the sequence: "
+            "position (keep the rough current order), title, or score (highest first)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "bubble_id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": _ID_SCHEMA_PATTERN},
+                "order": {"type": "string", "enum": list(ARRANGE_ORDERS), "default": "position"},
+                "columns": {"type": "integer", "minimum": 1, "maximum": 20},
+            },
+            "required": ["bubble_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "idea_auto_link",
+        "description": (
+            "Connect canvas ideas of one bubble whose titles share enough words "
+            "(word overlap, no model). Existing connections are kept."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "bubble_id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": _ID_SCHEMA_PATTERN},
+                "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 50},
+            },
+            "required": ["bubble_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "idea_rate",
+        "description": "Store a rating from 0 to 100 on one canvas idea, optionally with a short reason.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": _ID_SCHEMA_PATTERN},
+                "score": {"type": "integer", "minimum": 0, "maximum": 100},
+                "begruendung": {"type": "string", "maxLength": 2000},
+            },
+            "required": ["id", "score"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "bubble_rate",
+        "description": "Store a rating from 0 to 100 on one top-level bubble.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": _ID_SCHEMA_PATTERN},
+                "score": {"type": "integer", "minimum": 0, "maximum": 100},
+            },
+            "required": ["id", "score"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "aenderung_liste",
         "description": (
             "List the most recent recorded changes to ideas and bubbles, newest first, "
@@ -227,6 +319,7 @@ TOOLS: list[dict[str, Any]] = [
 CHANGE_WRITE_TOOLS = frozenset({
     "bubble_create", "bubble_update", "bubble_delete", "bubble_promote",
     "idea_create", "idea_update", "idea_delete", "idea_connect", "idea_disconnect",
+    "idea_format", "idea_arrange", "idea_auto_link", "idea_rate", "bubble_rate",
 })
 for _tool in TOOLS:
     if _tool["name"] in CHANGE_WRITE_TOOLS:
@@ -467,6 +560,94 @@ def _only_arguments(arguments: Mapping[str, Any], allowed: set[str]) -> None:
     unknown = sorted(set(arguments) - allowed)
     if unknown:
         raise ToolError(f"invalid_arguments: unknown argument '{unknown[0]}'")
+
+
+def _durable_id(arguments: Mapping[str, Any], name: str) -> str:
+    """Require a stored id verbatim; it is safe to place into a PostgREST filter."""
+    value = arguments.get(name)
+    if not isinstance(value, str) or IDEA_ID_PATTERN.fullmatch(value) is None:
+        raise ToolError(f"invalid_arguments: '{name}' must be a canonical durable id")
+    return value
+
+
+def _score(arguments: Mapping[str, Any]) -> int:
+    value = arguments.get("score")
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 100:
+        raise ToolError("invalid_arguments: 'score' must be an integer from 0 to 100")
+    return value
+
+
+def _number(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return float(value)
+
+
+def _bubble_nodes(bubble_id: str, select: str) -> list[dict[str, Any]]:
+    """Read the canvas ideas of one bubble; refuse to act on a cut-off list."""
+    rows = _request(
+        "GET",
+        "canvas_nodes",
+        params={
+            "select": select,
+            "linked_idea_id": f"eq.{bubble_id}",
+            "order": "id.asc",
+            "limit": str(ARRANGE_NODE_CAP + 1),
+        },
+    )
+    if not isinstance(rows, list) or not all(
+        isinstance(row, dict) and isinstance(row.get("id"), str) and IDEA_ID_PATTERN.fullmatch(row["id"])
+        for row in rows
+    ):
+        raise ToolError("supabase_invalid_response")
+    if len(rows) > ARRANGE_NODE_CAP:
+        raise ToolError(f"too_many_ideas: more than {ARRANGE_NODE_CAP} in this bubble")
+    return rows
+
+
+def _grid_positions(nodes: list[dict[str, Any]], order: str, columns: int | None) -> list[tuple[int, int]]:
+    """Sort ``nodes`` in place and return one grid cell per node, anchored top left."""
+    if order == "title":
+        nodes.sort(key=lambda node: (str(node.get("title") or "").casefold(), node["id"]))
+    elif order == "score":
+        def rating(node: Mapping[str, Any]) -> float:
+            metadata = node.get("metadata")
+            value = metadata.get("bewertung") if isinstance(metadata, Mapping) else None
+            return _number(value.get("wert")) if isinstance(value, Mapping) else -1.0
+        nodes.sort(key=lambda node: (-rating(node), node["id"]))
+    else:
+        # Zeilenweise lesen: erst nach Rasterzeile, dann von links nach rechts.
+        nodes.sort(key=lambda node: (
+            round(_number(node.get("y")) / ARRANGE_CELL_HEIGHT), _number(node.get("x")), node["id"],
+        ))
+    if columns is None:
+        columns = max(1, math.ceil(math.sqrt(len(nodes))))
+    origin_x = round(min(_number(node.get("x")) for node in nodes))
+    origin_y = round(min(_number(node.get("y")) for node in nodes))
+    return [
+        (origin_x + (index % columns) * ARRANGE_CELL_WIDTH, origin_y + (index // columns) * ARRANGE_CELL_HEIGHT)
+        for index in range(len(nodes))
+    ]
+
+
+def _title_words(title: Any) -> frozenset[str]:
+    return frozenset(word for word in re.findall(r"\w+", str(title or "").casefold()) if len(word) > 2)
+
+
+def _link_candidates(nodes: list[dict[str, Any]]) -> list[tuple[float, str, str]]:
+    """Pairs whose titles overlap enough (Jaccard on words), strongest first."""
+    words = [(node["id"], _title_words(node.get("title"))) for node in nodes]
+    pairs: list[tuple[float, str, str]] = []
+    for index, (first_id, first_words) in enumerate(words):
+        for second_id, second_words in words[index + 1:]:
+            union = first_words | second_words
+            if not union:
+                continue
+            overlap = len(first_words & second_words) / len(union)
+            if overlap >= AUTO_LINK_THRESHOLD:
+                pairs.append((overlap, first_id, second_id))
+    pairs.sort(key=lambda pair: (-pair[0], pair[1], pair[2]))
+    return pairs
 
 
 def _change_groups(rows: Any, limit: int) -> list[dict[str, Any]]:
@@ -842,6 +1023,7 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
             _required_string(arguments, "title"), content,
         )
         bubble_id = _required_string(arguments, "bubble_id")
+        node_id = _durable_id(arguments, "id") if "id" in arguments else uuid.uuid4().hex[:8]
         existing = _first_row(_request(
             "GET",
             "canvas_nodes",
@@ -853,7 +1035,7 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
             "POST",
             "canvas_nodes",
             body={
-                "id": uuid.uuid4().hex[:8],
+                "id": node_id,
                 "node_type": node_type.strip(),
                 "title": title,
                 "content": content,
@@ -911,6 +1093,142 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         )
     if name == "idea_disconnect":
         return _request("DELETE", "canvas_edges", params={"id": f"eq.{_required_string(arguments, 'edge_id')}"})
+    if name == "idea_format":
+        _only_arguments(arguments, {"id", "format"})
+        idea_id = _durable_id(arguments, "id")
+        fmt = arguments.get("format")
+        if fmt != "revert" and fmt not in IDEA_FORMATS:
+            raise ToolError("invalid_arguments: 'format' must be one of " + ", ".join(IDEA_FORMATS) + " or revert")
+        node = _first_row(_request(
+            "GET",
+            "canvas_nodes",
+            params={
+                "select": "id,title,content,node_type,content_json,previous_content_json",
+                "id": f"eq.{idea_id}",
+                "limit": "1",
+            },
+        ))
+        if node is None:
+            raise ToolError("idea_not_found")
+        current = node.get("content_json")
+        if not isinstance(current, Mapping):
+            current = {"type": node.get("node_type") or "note", "text": node.get("content") or ""}
+        if fmt == "revert":
+            previous = node.get("previous_content_json")
+            if not isinstance(previous, Mapping):
+                raise ToolError("idea_format_nothing_to_revert")
+            previous_type = previous.get("type")
+            patch = {
+                "format_schema": {"type": previous_type if previous_type in IDEA_FORMATS else "note"},
+                "content_json": dict(previous),
+            }
+        else:
+            patch = {
+                "format_schema": {"type": fmt},
+                "content_json": {"type": fmt, "title": node.get("title") or "", "text": node.get("content") or ""},
+                "previous_content_json": dict(current),
+                "last_formatted": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }
+        updated = _first_row(_request("PATCH", "canvas_nodes", params={"id": f"eq.{idea_id}"}, body=patch))
+        if updated is None:
+            raise ToolError("idea_format_unverified")
+        return updated
+    if name == "idea_arrange":
+        _only_arguments(arguments, {"bubble_id", "order", "columns"})
+        bubble_id = _durable_id(arguments, "bubble_id")
+        order = arguments.get("order", "position")
+        if order not in ARRANGE_ORDERS:
+            raise ToolError("invalid_arguments: 'order' must be position, title or score")
+        columns = arguments.get("columns")
+        if columns is not None and (isinstance(columns, bool) or not isinstance(columns, int) or not 1 <= columns <= 20):
+            raise ToolError("invalid_arguments: 'columns' must be an integer from 1 to 20")
+        nodes = _bubble_nodes(bubble_id, "id,title,x,y,metadata")
+        if not nodes:
+            return {"bubble_id": bubble_id, "anzahl": 0, "verschoben": 0, "positionen": []}
+        targets = _grid_positions(nodes, order, columns)
+        moved = 0
+        for node, (x, y) in zip(nodes, targets):
+            if _number(node.get("x")) == x and _number(node.get("y")) == y:
+                continue
+            _request("PATCH", "canvas_nodes", params={"id": f"eq.{node['id']}"}, body={"x": x, "y": y})
+            moved += 1
+        return {
+            "bubble_id": bubble_id,
+            "anzahl": len(nodes),
+            "verschoben": moved,
+            "positionen": [{"id": node["id"], "x": x, "y": y} for node, (x, y) in zip(nodes, targets)],
+        }
+    if name == "idea_auto_link":
+        _only_arguments(arguments, {"bubble_id", "limit"})
+        bubble_id = _durable_id(arguments, "bubble_id")
+        limit = arguments.get("limit", 20)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
+            raise ToolError("invalid_arguments: 'limit' must be an integer from 1 to 50")
+        nodes = _bubble_nodes(bubble_id, "id,title")
+        candidates = _link_candidates(nodes)
+        created: list[dict[str, Any]] = []
+        if candidates:
+            # Die Kennungen sind gegen IDEA_ID_PATTERN geprueft: kein Komma, keine Klammer.
+            id_list = "(" + ",".join(node["id"] for node in nodes) + ")"
+            edges = _request(
+                "GET",
+                "canvas_edges",
+                params={"select": "from_node_id,to_node_id", "from_node_id": f"in.{id_list}", "limit": "1000"},
+            )
+            if not isinstance(edges, list):
+                raise ToolError("supabase_invalid_response")
+            linked = {
+                frozenset((edge.get("from_node_id"), edge.get("to_node_id")))
+                for edge in edges if isinstance(edge, Mapping)
+            }
+            for overlap, from_id, to_id in candidates:
+                if len(created) >= limit:
+                    break
+                if frozenset((from_id, to_id)) in linked:
+                    continue
+                _request(
+                    "POST",
+                    "canvas_edges",
+                    body={"id": uuid.uuid4().hex, "from_node_id": from_id, "to_node_id": to_id, "edge_type": "related"},
+                )
+                created.append({"from_id": from_id, "to_id": to_id, "ueberlappung": round(overlap, 2)})
+        return {"bubble_id": bubble_id, "anzahl": len(created), "angelegt": created}
+    if name == "idea_rate":
+        _only_arguments(arguments, {"id", "score", "begruendung"})
+        idea_id = _durable_id(arguments, "id")
+        rating: dict[str, Any] = {"wert": _score(arguments)}
+        if "begruendung" in arguments:
+            reason = arguments["begruendung"]
+            if not isinstance(reason, str) or len(reason) > 2000:
+                raise ToolError("invalid_arguments: 'begruendung' must be a string of at most 2000 characters")
+            if reason.strip():
+                rating["begruendung"] = reason.strip()
+        node = _first_row(_request(
+            "GET", "canvas_nodes", params={"select": "id,metadata", "id": f"eq.{idea_id}", "limit": "1"},
+        ))
+        if node is None:
+            raise ToolError("idea_not_found")
+        metadata = node.get("metadata")
+        metadata = dict(metadata) if isinstance(metadata, Mapping) else {}
+        metadata["bewertung"] = rating
+        updated = _first_row(_request(
+            "PATCH", "canvas_nodes", params={"id": f"eq.{idea_id}"}, body={"metadata": metadata},
+        ))
+        if updated is None:
+            raise ToolError("idea_rate_unverified")
+        return updated
+    if name == "bubble_rate":
+        _only_arguments(arguments, {"id", "score"})
+        bubble_id = _durable_id(arguments, "id")
+        updated = _first_row(_request(
+            "PATCH",
+            "ideas",
+            params={"id": f"eq.{bubble_id}", "parent_id": "is.null"},
+            body={"score": _score(arguments)},
+        ))
+        if updated is None:
+            raise ToolError("bubble_not_found")
+        return updated
     if name == "aenderung_liste":
         _only_arguments(arguments, {"limit", "quelle"})
         limit = arguments.get("limit", 10)
