@@ -43,7 +43,15 @@ from djset.video.pruefung import videomusik_pruefen
 from djset.video.unterlegen import ORIGINALTON_DB, unterlegen
 from djset.video.vertrag import VideomusikErgebnis, VideoWahl, laura_clip
 from djset.video.waehler import kandidaten, video_waehlen
-from djset.video.zuschnitt import schlusstakte, taktstarts, traegt_s, zuschnitt_planen
+from djset.video.zuschnitt import (
+    AUSKLANG_MIN_S,
+    abrunden,
+    aufrunden,
+    schlusstakte,
+    taktstarts,
+    traegt_s,
+    zuschnitt_planen,
+)
 
 WAV = "videomusik.wav"
 MP3 = "videomusik.mp3"
@@ -94,14 +102,27 @@ def _kein_kandidat(geladen: list[SongEintrag], ziel_s: float) -> str:
             "kein Song mit sicherem Tempo: "
             + (", ".join(f"{i} (Tempo unsicher)" for i in unsicher) or "kein Song gemessen")
         )
-    laengster = max(
-        sicher,
-        key=lambda s: traegt_s(s.messung.beatgrid, s.messung.duration_s) if s.messung else 0.0,
-    )
-    tragbar = traegt_s(laengster.messung.beatgrid, laengster.messung.duration_s) if laengster.messung else 0.0
+    # Mindestwerte aufrunden, tragbare Laengen abrunden (je auf 0,1 s): der genannte
+    # Wert geht beim Wiederholen wirklich.
+    def tragbar(s: SongEintrag) -> float:
+        return traegt_s(s.messung.beatgrid, s.messung.duration_s) if s.messung else 0.0
+
+    def mindest(s: SongEintrag) -> float:
+        return aufrunden(s.messung.beatgrid.bar_length_s + AUSKLANG_MIN_S) if s.messung else math.inf
+
+    lang_genug = [s for s in sicher if tragbar(s) >= ziel_s]
+    if lang_genug:  # es liegt am Ziel, das kuerzer ist als ein Takt plus Ausklang
+        # Nur Songs, die den genannten Wert auch tragen, sonst ginge er beim Wiederholen nicht.
+        geht = [s for s in lang_genug if tragbar(s) >= mindest(s)] or lang_genug
+        kuerzester = min(geht, key=mindest)
+        return (
+            f"das Ziel von {ziel_s:.2f} s ist zu kurz: ein Takt plus Ausklang braucht "
+            f"mindestens {mindest(kuerzester):.1f} s (Song {kuerzester.id})"
+        )
+    laengster = max(sicher, key=tragbar)
     return (
         f"kein Song traegt {ziel_s:.1f} s Musik; der laengste tragbare Song "
-        f"({laengster.id}) traegt {tragbar:.1f} s"
+        f"({laengster.id}) traegt {abrunden(tragbar(laengster)):.1f} s"
     )
 
 

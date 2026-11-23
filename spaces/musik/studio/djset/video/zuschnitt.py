@@ -23,6 +23,16 @@ _EPS = 1e-9
 # Abgleich erlaubter Starts mit dem Raster: dieselbe Zeit, nur anders gerundet.
 _ERLAUBT_TOL_S = 1e-6
 
+def aufrunden(x: float) -> float:
+    """Auf 0,1 s nach oben: ein genannter Mindestwert geht beim Wiederholen wirklich."""
+    return math.ceil(round(x * 10.0, 6)) / 10.0
+
+
+def abrunden(x: float) -> float:
+    """Auf 0,1 s nach unten: eine genannte tragbare Laenge geht beim Wiederholen wirklich."""
+    return math.floor(round(x * 10.0, 6)) / 10.0
+
+
 Einstieg = Literal["anfang", "hoehepunkt"]
 
 
@@ -101,11 +111,11 @@ def zuschnitt_planen(
         raise VideoFehler(f"Ungueltiges Ziel: {ziel_s}")
     mindest_s = takt + AUSKLANG_MIN_S
     if ziel_s < mindest_s - _EPS:
-        raise VideoFehler(f"Das Ziel von {ziel_s:.1f} s ist zu kurz: mindestens {mindest_s:.1f} s")
+        raise VideoFehler(f"Das Ziel von {ziel_s:.1f} s ist zu kurz: mindestens {aufrunden(mindest_s):.1f} s")
     tragbar = traegt_s(grid, dauer_s)
     if ziel_s > tragbar + _EPS:
         raise VideoFehler(
-            f"Das Ziel von {ziel_s:.1f} s ist laenger als der Song traegt ({tragbar:.1f} s)"
+            f"Das Ziel von {ziel_s:.1f} s ist laenger als der Song traegt ({abrunden(tragbar):.1f} s)"
         )
 
     starts = taktstarts(grid, dauer_s, ziel_s)
@@ -118,7 +128,7 @@ def zuschnitt_planen(
 
     if not starts:  # Gleitkomma-Rauschen an der Grenze: wie "zu lang" behandeln
         raise VideoFehler(
-            f"Das Ziel von {ziel_s:.1f} s ist laenger als der Song traegt ({tragbar:.1f} s)"
+            f"Das Ziel von {ziel_s:.1f} s ist laenger als der Song traegt ({abrunden(tragbar):.1f} s)"
         )
 
     start = starts[0]
@@ -145,5 +155,5 @@ def zuschnitt_planen(
         if takte == 1:  # gueltiges Ziel nicht an einem verspaeteten Beat scheitern lassen
             return Zuschnitt(start_s=start, schluss_s=start + takt, ende_s=ende, takte=1)
         takte -= 1
-    raise VideoFehler(f"Das Ziel von {ziel_s:.1f} s ist zu kurz: mindestens {mindest_s:.1f} s")
+    raise VideoFehler(f"Das Ziel von {ziel_s:.1f} s ist zu kurz: mindestens {aufrunden(mindest_s):.1f} s")
 

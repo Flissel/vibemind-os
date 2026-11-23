@@ -378,3 +378,28 @@ def test_ohne_tauglichen_ausschnitt_laeuft_der_alte_weg_mit_hinweis(tmp_path, bu
     bericht = (_lauf(daten) / "bericht.md").read_text(encoding="utf-8")
     assert "kein Ausschnitt von a erreicht -14.0 LUFS unter dem Spitzendeckel" in bericht
     assert "bester erreichbarer Pegel" in bericht
+
+
+@pytest.mark.parametrize("zu_kurz_s", [2.0, 0.3])
+def test_zu_kurzes_ziel_bricht_vor_dem_modell_ab_und_nennt_eine_gehende_laenge(
+    tmp_path, budget, capsys, zu_kurz_s
+):
+    import re
+
+    daten = _bestand(tmp_path)
+    client = ZaehlenderClient([_wahl()])
+
+    code = _video(daten, client, budget, aus_sekunden(zu_kurz_s))
+
+    assert code == 1
+    assert client.aufrufe == 0
+    assert not (daten / "runs").exists()
+    err = capsys.readouterr().err
+    treffer = re.search(r"mindestens (\d+\.\d) s", err)
+    assert treffer is not None, err
+    assert "Traceback" not in err
+
+    # Der genannte Wert geht beim Wiederholen wirklich.
+    nochmal = _video(daten, client, budget, aus_sekunden(float(treffer.group(1))))
+    assert nochmal in (0, 2)
+    assert client.aufrufe == 1

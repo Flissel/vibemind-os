@@ -9,7 +9,7 @@ from djset.bestand import SongEintrag
 from djset.tempo import tempo_unsicher
 from djset.video.laenge import VideoFehler
 from djset.video.vertrag import VideoWahl
-from djset.video.zuschnitt import traegt_s
+from djset.video.zuschnitt import AUSKLANG_MIN_S, traegt_s
 
 PROMPT = """Du waehlst die Musik fuer ein Video.
 
@@ -64,6 +64,9 @@ def kandidaten(
 ) -> list[SongEintrag]:
     """Songs mit Messung, sicherem Tempo und genug Laenge; in Eingabereihenfolge.
 
+    Genug Laenge heisst auch: ein Takt plus der kurze Ausklang passt ins Ziel.
+    Das faellt sonst erst nach dem Modellaufruf auf.
+
     Braucht es Gesang oder Begleitung einzeln, kommen nur getrennte Songs in
     Frage."""
     gemessen = [s for s in songs if s.messung is not None]
@@ -77,6 +80,8 @@ def kandidaten(
         if messung is None or song.id in unsicher:
             continue
         if traegt_s(messung.beatgrid, messung.duration_s) < ziel_s:
+            continue
+        if messung.beatgrid.bar_length_s + AUSKLANG_MIN_S > ziel_s:
             continue
         if gesang_noetig_getrennt and song.stimmen is None:
             continue
