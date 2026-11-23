@@ -42,6 +42,9 @@ ALLE = [s for s in v.SPACES if s != "ideas"]
     ("Woran denkt das Gehirn gerade? (Skript 1)", "thebrain", "thebrain_gedanken"),
     ("Woran denkt das Gehirn gerade (Test) [2]", "thebrain", "thebrain_gedanken"),
     ("Welche Fenster sind offen? [Probe]", "desktop", "desktop_fenster"),
+    # Lauf 17: die Form mit Namen gilt in jedem Reiter, auch in Ideen, auch mit Zusatz.
+    ("Woran denkt das Gehirn gerade? (Skript 1)", "ideas", "thebrain_gedanken"),
+    ("Welche Fenster sind gerade auf dem Desktop offen? (Probe)", "ideas", "desktop_fenster"),
 ])
 def test_satz_bindet_den_festen_weg(satz, space, faehigkeit) -> None:
     assert v.feste_lesefrage(satz, space) == {"capability": faehigkeit}
@@ -56,7 +59,7 @@ def test_satz_bindet_den_festen_weg(satz, space, faehigkeit) -> None:
     ("Welche Fenster sind offen und schließ sie", "desktop"),
     ("Welche Teams laufen gerade in der Agent Farm?", "agentfarm"),
     ("Woran denkt das Gehirn gerade? (Skript 1) und warum", "thebrain"),   # nur ein Zusatz am Ende zaehlt nicht
-    ("Woran denkt das Gehirn gerade? (Skript 1)", "ideas"),
+    ("Welche Fenster sind offen? (Skript 1)", "ideas"),   # Kurzform bleibt auch mit Zusatz im eigenen Reiter
 ])
 def test_kein_fester_weg(satz, space) -> None:
     assert v.feste_lesefrage(satz, space) is None
