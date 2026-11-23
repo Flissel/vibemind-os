@@ -15,6 +15,10 @@ from pathlib import Path
 from djset.render.stretch import ffprobe_path
 
 
+# Wie in unterlegen.py: ein haengendes ffprobe darf den Befehl nicht aufhalten.
+_FFPROBE_TIMEOUT_S = 60
+
+
 class VideoFehler(RuntimeError):
     """Alle erwartbaren Fehler des Videopakets (fehlende oder unlesbare Datei, falsche Angabe)."""
 
@@ -59,15 +63,21 @@ def aus_frames(frames: int, fps: str) -> Ziellaenge:
 
 
 def aus_video(pfad: Path) -> Ziellaenge:
-    """Laenge der ersten Videospur: gezaehlte Pakete mal Bildrate."""
+    """Laenge der ersten Videospur: gezaehlte Pakete mal Bildrate.\n\n    `V:0` (gross) schliesst angehaengte Bilder aus: das Cover einer MP3 ist kein Video.\n    """
     pfad = Path(pfad)
     if not pfad.is_file():
         raise VideoFehler(f"Video nicht gefunden: {pfad.name}")
     cmd = [
-        ffprobe_path(), "-v", "error", "-select_streams", "v:0", "-count_packets",
+        ffprobe_path(), "-v", "error", "-select_streams", "V:0", "-count_packets",
         "-show_entries", "stream=nb_read_packets,r_frame_rate", "-of", "json", str(pfad),
     ]
-    lauf = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    try:
+        lauf = subprocess.run(
+            cmd, capture_output=True, encoding="utf-8", errors="replace",
+            check=False, timeout=_FFPROBE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        raise VideoFehler(f"{pfad.name}: ffprobe hat die Videospur nicht in {_FFPROBE_TIMEOUT_S} s gelesen") from None
     if lauf.returncode != 0:
         detail = lauf.stderr.strip().splitlines()[-1:] or ["unbekannter Fehler"]
         raise VideoFehler(f"{pfad.name} ist nicht lesbar: {detail[0]}")

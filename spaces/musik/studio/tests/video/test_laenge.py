@@ -87,3 +87,38 @@ def test_ffprobe_fehlt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("djset.render.stretch.shutil.which", lambda _n: None)
     with pytest.raises(RenderToolMissing):
         aus_video(datei)
+
+
+def test_audiodatei_mit_cover_ist_kein_video(tmp_path: Path) -> None:
+    import subprocess
+
+    from djset.render.stretch import ffmpeg_path
+
+    mp3 = tmp_path / "mit_cover.mp3"
+    subprocess.run(
+        [
+            ffmpeg_path(), "-v", "error", "-y",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+            "-f", "lavfi", "-i", "color=c=red:size=64x64:rate=1:duration=1",
+            "-map", "0:a", "-map", "1:v", "-frames:v", "1", "-c:a", "libmp3lame",
+            "-c:v", "mjpeg", "-disposition:v", "attached_pic", str(mp3),
+        ],
+        check=True, capture_output=True,
+    )
+    with pytest.raises(VideoFehler) as e:
+        aus_video(mp3)
+    assert "keine Videospur" in str(e.value)
+
+
+def test_haengendes_ffprobe_ist_ein_videofehler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    datei = tmp_path / "v.mp4"
+    datei.write_bytes(b"x")
+
+    def haengt(*_a: object, **_k: object) -> None:
+        raise subprocess.TimeoutExpired("ffprobe", 60)
+
+    monkeypatch.setattr("djset.video.laenge.subprocess.run", haengt)
+    with pytest.raises(VideoFehler, match="v.mp4"):
+        aus_video(datei)
