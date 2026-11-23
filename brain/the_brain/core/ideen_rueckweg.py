@@ -433,7 +433,8 @@ def zurueckschreiben(auftrag: Mapping[str, Any], *, lies_karte: Callable[[str], 
         if stand(karte) != rueckweg["stand"]:
             titel = karte.get("title") if isinstance(karte.get("title"), str) else ""
             return aus("vorschlag", None, "card changed since order",
-                       meldung_geaendert(titel, uebernehmbar=len(schreibplan(rueckweg, werte)) == 1),
+                       meldung_geaendert(titel, uebernehmbar=len(schreibplan(rueckweg, werte)) == 1,
+                                         ueberschreibt=rueckweg["vertrag"] == "ausformulieren"),
                        vorschlag=vorschlag, werte=werte, titel=titel[:200])
         geschrieben: list[str] = []
         for ereignis, roh_argumente in schreibplan(rueckweg, werte):

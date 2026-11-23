@@ -271,6 +271,8 @@ def _vorschlag_zeile(vertrag="ausformulieren", **pruefung):
 
 @pytest.mark.parametrize("satz, art", [("Vorschlag zeigen", "zeigen"), ("Zeig mir den Vorschlag", "zeigen"),
                                        ("Vorschlag übernehmen", "uebernehmen"), ("Übernimm den Vorschlag", "uebernehmen"),
+                                       ("Vorschlag trotzdem übernehmen", "trotzdem"),
+                                       ("Übernimm den Vorschlag trotzdem", "trotzdem"),
                                        ("Vorschlag verwerfen", "verwerfen"), ("Zeig die Notizen", None)])
 def test_vorschlag_saetze(satz, art) -> None:
     assert vs.satz_art(satz) == art
@@ -278,7 +280,14 @@ def test_vorschlag_saetze(satz, art) -> None:
 
 def test_vorschlag_zeigen_und_uebernehmen_rein() -> None:
     zeile = _vorschlag_zeile()
-    assert vs.zeigen(zeile).startswith("Vorschlag für „Sponsoren“: Drei Zusagen, Frist bis März. Sag „Vorschlag übernehmen“")
+    # Ausformulieren ersetzt den Text der Notiz: das sagt schon das Zeigen, mit dem Satz zum Ersetzen.
+    assert vs.zeigen(zeile).startswith("Vorschlag für „Sponsoren“: Drei Zusagen, Frist bis März. Er würde den "
+                                       "jetzigen Text der Notiz ersetzen, auch deine Änderung. "
+                                       "Sag „Vorschlag trotzdem übernehmen“")
+    assert vs.zeigen(_vorschlag_zeile("einschaetzen")).endswith(
+        "Sag „Vorschlag übernehmen“, dann schreibe ich ihn an die Notiz, oder „Vorschlag verwerfen“.")
+    assert "ersetzen" in vs.meldung_geaendert("Sponsoren", ueberschreibt=True)
+    assert "ersetzen" not in vs.meldung_geaendert("Sponsoren")
     aufrufe, satz = vs.uebernehmen(zeile)
     assert aufrufe == [("idea.update", {"id": KARTE_ID, "content": "Drei Zusagen, Frist bis März."})]
     assert satz == "Der Vorschlag steht jetzt in „Sponsoren“."
@@ -310,14 +319,31 @@ def test_router_vorschlag_uebernehmen_ein_fester_aufruf(monkeypatch) -> None:
     client, ausfuehrer = _client(monkeypatch, {"ok": True, "result": {"content": [{"type": "text", "text": "{}"}]}})
     body = client.post("/api/multihop/execute", json={"intent": "Vorschlag zeigen", "context": KONTEXT}).json()
     assert ausfuehrer.plaene == [] and body["final_text"].startswith("Vorschlag für „Sponsoren“")
+    # Lauf 5: "Vorschlag übernehmen" warnt zuerst und schreibt nichts (die Notiz wurde geändert).
     body = client.post("/api/multihop/execute", json={"intent": "Vorschlag übernehmen", "context": KONTEXT}).json()
+    assert ausfuehrer.plaene == [] and tabelle.erledigt == [] and body["hinweis"] is True
+    assert body["final_text"].startswith("Achtung: Der Vorschlag ersetzt den jetzigen Text der Notiz „Sponsoren“")
+    assert "Geändert habe ich nichts." in body["final_text"]
+    body = client.post("/api/multihop/execute",
+                       json={"intent": "Vorschlag trotzdem übernehmen", "context": KONTEXT}).json()
     (plan,) = ausfuehrer.plaene
     assert plan.hops[0].capability == "idea.update"
     assert json.loads(plan.hops[0].arg_template) == {"id": KARTE_ID, "content": "Drei Zusagen, Frist bis März."}
     assert tabelle.erledigt == ["uebernommen"] and body["final_text"] == "Der Vorschlag steht jetzt in „Sponsoren“."
     # Zweites Uebernehmen: nichts mehr offen, kein zweiter Aufruf.
-    body = client.post("/api/multihop/execute", json={"intent": "Vorschlag übernehmen", "context": KONTEXT}).json()
+    body = client.post("/api/multihop/execute",
+                       json={"intent": "Vorschlag trotzdem übernehmen", "context": KONTEXT}).json()
     assert len(ausfuehrer.plaene) == 1 and body["final_text"] == vs.KEINER and body["hinweis"] is True
+
+
+def test_router_vorschlag_einschaetzen_schreibt_ohne_warnung(monkeypatch) -> None:
+    # Die Einschaetzung geht an die Bubble, die Notiz bleibt: kein Ueberschreiben, keine Warnung.
+    tabelle = _VorschlagTabelle(_vorschlag_zeile("einschaetzen"))
+    monkeypatch.setattr(aa, "tabelle_aus_umgebung", lambda: tabelle)
+    client, ausfuehrer = _client(monkeypatch, {"ok": True, "result": {"content": [{"type": "text", "text": "{}"}]}})
+    body = client.post("/api/multihop/execute", json={"intent": "Vorschlag übernehmen", "context": KONTEXT}).json()
+    (plan,) = ausfuehrer.plaene
+    assert plan.hops[0].capability == "idea.rate_reason" and tabelle.erledigt == ["uebernommen"]
 
 
 def test_router_vorschlag_verwerfen(monkeypatch) -> None:

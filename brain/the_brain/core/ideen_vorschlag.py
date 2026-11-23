@@ -27,16 +27,22 @@ _ZEIGEN = re.compile(r"^\s*(?:vorschlag\s+zeigen|zeig(?:e)?\s+(?:mir\s+)?(?:den\
 _UEBERNEHMEN = re.compile(r"^\s*(?:vorschlag\s+(?:übernehmen|uebernehmen)|(?:übernimm|uebernimm)\s+den\s+vorschlag)"
                           r"\s*[.!]?\s*$", _I)
 _VERWERFEN = re.compile(r"^\s*(?:vorschlag\s+verwerfen|verwirf\s+den\s+vorschlag)\s*[.!]?\s*$", _I)
+# Lauf 5: "Vorschlag übernehmen" ersetzte den Text der Notiz samt der Änderung des Menschen,
+# ohne Warnung. Wo der Vorschlag die Notiz überschreibt, warnt der erste Satz; erst dieser schreibt.
+_TROTZDEM = re.compile(r"^\s*(?:vorschlag\s+trotzdem\s+(?:übernehmen|uebernehmen)|"
+                       r"(?:übernimm|uebernimm)\s+den\s+vorschlag\s+trotzdem)\s*[.!]?\s*$", _I)
+TROTZDEM_SATZ = "Vorschlag trotzdem übernehmen"
 
 KEINER = "Es liegt gerade kein offener Vorschlag vor."
 NICHT_LESBAR = "Die Vorschläge lassen sich gerade nicht lesen. Versuch es gleich noch einmal."
 
 
 def satz_art(satz: Any) -> Optional[str]:
-    """``"zeigen"``, ``"uebernehmen"``, ``"verwerfen"`` oder ``None``."""
+    """``"zeigen"``, ``"uebernehmen"``, ``"trotzdem"``, ``"verwerfen"`` oder ``None``."""
     if not isinstance(satz, str):
         return None
-    for art, muster in (("zeigen", _ZEIGEN), ("uebernehmen", _UEBERNEHMEN), ("verwerfen", _VERWERFEN)):
+    for art, muster in (("zeigen", _ZEIGEN), ("uebernehmen", _UEBERNEHMEN), ("trotzdem", _TROTZDEM),
+                        ("verwerfen", _VERWERFEN)):
         if muster.match(satz):
             return art
     return None
@@ -47,11 +53,14 @@ def _name(titel: Any) -> str:
     return f"„{titel}“" if titel else "ohne Titel"
 
 
-def meldung_geaendert(titel: Any, uebernehmbar: bool = True) -> str:
+def meldung_geaendert(titel: Any, uebernehmbar: bool = True, ueberschreibt: bool = False) -> str:
     """Die Meldung, wenn die Notiz inzwischen geändert wurde (für Chat und Standzeile)."""
     satz = f"Die Notiz {_name(titel)} wurde inzwischen geändert; mein Text liegt als Vorschlag vor. " \
            "Sag „Vorschlag zeigen“, dann zeige ich ihn"
-    if uebernehmbar:
+    if uebernehmbar and ueberschreibt:
+        satz += (", oder „Vorschlag übernehmen“; das würde deinen jetzigen Text ersetzen, darum frage ich "
+                 "vorher noch einmal nach")
+    elif uebernehmbar:
         satz += ", oder „Vorschlag übernehmen“, dann schreibe ich ihn an die Notiz"
     return satz + "."
 
@@ -82,9 +91,31 @@ def zeigen(zeile: Optional[Mapping[str, Any]]) -> str:
         return KEINER
     if len(text) > ZEIGEN_GRENZE:
         text = text[:ZEIGEN_GRENZE - 1].rstrip() + "…"
-    nachsatz = (" Sag „Vorschlag übernehmen“, dann schreibe ich ihn an die Notiz, oder „Vorschlag verwerfen“."
-                if uebernehmen(zeile)[0] else " Sag „Vorschlag verwerfen“, wenn du ihn nicht brauchst.")
+    if not uebernehmen(zeile)[0]:
+        nachsatz = " Sag „Vorschlag verwerfen“, wenn du ihn nicht brauchst."
+    elif ueberschreibt(zeile):
+        nachsatz = (f" Er würde den jetzigen Text der Notiz ersetzen, auch deine Änderung. Sag „{TROTZDEM_SATZ}“, "
+                    "dann ersetze ich ihn, oder „Vorschlag verwerfen“.")
+    else:
+        nachsatz = " Sag „Vorschlag übernehmen“, dann schreibe ich ihn an die Notiz, oder „Vorschlag verwerfen“."
     return f"Vorschlag für {_name(pruefung.get('titel'))}: {text}{nachsatz}"
+
+
+def ueberschreibt(zeile: Optional[Mapping[str, Any]]) -> bool:
+    """Ersetzt das Übernehmen den Text der Notiz (Ausformulieren)? Dann warnt der erste Satz."""
+    if not zeile:
+        return False
+    _pruefung, rueckweg = _teile(zeile)
+    return rueckweg.get("vertrag") == "ausformulieren"
+
+
+def warnung(zeile: Optional[Mapping[str, Any]]) -> str:
+    """Der Satz auf "Vorschlag übernehmen", wenn das Übernehmen die Notiz überschreibt."""
+    pruefung, _rueckweg = _teile(zeile or {})
+    return (f"Achtung: Der Vorschlag ersetzt den jetzigen Text der Notiz {_name(pruefung.get('titel'))}, "
+            f"auch deine Änderung von vorhin. Sag „{TROTZDEM_SATZ}“, dann ersetze ich ihn "
+            "(direkt danach holt „Mach das rückgängig“ den alten Text zurück), oder „Vorschlag zeigen“ "
+            "bzw. „Vorschlag verwerfen“. Geändert habe ich nichts.")
 
 
 def uebernehmen(zeile: Optional[Mapping[str, Any]]) -> tuple[list[tuple[str, dict[str, Any]]], str]:

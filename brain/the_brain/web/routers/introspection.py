@@ -2743,6 +2743,9 @@ def _vorschlag_behandeln(art: str, intent: str, kontext: Any):
     aufrufe, satz = _vs.uebernehmen(zeile)
     if not aufrufe:
         return None, satz, {"hinweis": True}
+    if art == "uebernehmen" and _vs.ueberschreibt(zeile):
+        # Lauf 5: ueberschrieb die Aenderung des Menschen ohne Warnung. Erst warnen, nichts schreiben.
+        return None, _vs.warnung(zeile), {"hinweis": True}
     # Erst als erledigt markieren (kein doppeltes Uebernehmen), dann der feste Aufruf.
     if not tabelle.vorschlag_erledigen(zeile, "uebernommen"):
         return None, _vs.KEINER, {"hinweis": True}
