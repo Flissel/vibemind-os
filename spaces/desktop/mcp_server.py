@@ -27,6 +27,7 @@ from typing import Any, Mapping
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import aufgaben  # noqa: E402  (Geschwisterdatei; der Dienst wird als Skript gestartet)
+import blick  # noqa: E402
 
 SERVER_NAME = "spaces-desktop"
 SERVER_VERSION = "1.0.0"
@@ -44,7 +45,12 @@ ARTEN = ("click", "type", "key", "hotkey", "scroll", "wait", "note")
 OHNE_HANDLUNG = ("wait", "note")
 MAX_NOTIZ_ZEICHEN = 120
 # Nur was der Agent wirklich zu lesen bekommt, zählt als Blick; ein gespeichertes Bild nicht.
+# desktop_blick zählt nicht: Er zeigt keine Klickpunkte und ist für das Mitsehen gedacht.
 BLICK_WERKZEUGE = ("desktop_screen_read", "desktop_elements", "desktop_find")
+# desktop_blick: so viele Elemente werden auf Anmeldefelder geprüft, so viele gehen hinaus.
+BLICK_ELEMENTE_GEPRUEFT = 60
+BLICK_ELEMENTE = 20
+BLICK_TIMEOUT = 10
 
 _AUFGABE_ID = {"type": "string", "pattern": "^" + aufgaben.ID_MUSTER.pattern + "$"}
 
@@ -52,6 +58,15 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "desktop_status",
         "description": "Read-only: is the desktop service reachable, which monitors exist, which task is running.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "desktop_blick",
+        "description": (
+            "Read-only, fast, no OCR: active program, window title, monitor and a short list of visible "
+            "controls (name, type) of the active window, with a timestamp. Password managers, banking, "
+            "private browser windows and login fields return only gesperrt=true."
+        ),
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -267,6 +282,63 @@ def _elements() -> dict[str, Any]:
     return {"fenster": str(fenster.get("title") or "")[:120], "elemente": elemente[:MAX_ELEMENTE]}
 
 
+def _jetzt() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _blick() -> dict[str, Any]:
+    """Programm, Fenstertitel, Monitor, Bedienelemente des aktiven Fensters; ohne OCR.
+
+    Gesperrte Fenster (blick.gesperrt) liefern nur ``gesperrt`` und den Zeitpunkt. Ist das
+    Fenster schon am Titel oder Programm gesperrt, wird der Desktop-Dienst gar nicht gefragt.
+    """
+    start = time.monotonic()
+    zeitpunkt = _jetzt()
+
+    def gesperrt() -> dict[str, Any]:
+        return {"gesperrt": True, "zeitpunkt": zeitpunkt, "dauer_ms": int((time.monotonic() - start) * 1000)}
+
+    vorn = blick.vordergrund()
+    if vorn is not None and blick.gesperrt(vorn.get("programm"), vorn.get("titel")):
+        return gesperrt()
+    antwort = _http("GET", f"/api/mcp/elements?max_elements={BLICK_ELEMENTE_GEPRUEFT}", timeout=BLICK_TIMEOUT)
+    if not isinstance(antwort, Mapping):
+        raise ToolError("dienst_fehler: unlesbare Antwort bei /api/mcp/elements")
+    fenster = antwort.get("window") if isinstance(antwort.get("window"), Mapping) else {}
+    titel = str(fenster.get("title") or "")
+    # Hat das Fenster inzwischen gewechselt, gilt das Fenster, das der Dienst gelesen hat.
+    if vorn is None or fenster.get("hwnd") != vorn.get("hwnd"):
+        programm, monitor = blick.programm_aus_pid(fenster.get("pid")), None
+    else:
+        programm, monitor = str(vorn.get("programm") or ""), vorn.get("monitor")
+    # Ohne UI-Automation im Desktop-Dienst (success false) gibt es keine Elemente; dann prüft die
+    # Sperrliste nur Programm und Titel, und elemente_lesbar sagt es dem Aufrufer.
+    lesbar = antwort.get("success") is True
+    roh = [e for e in (antwort.get("elements") or []) if isinstance(e, Mapping)] if lesbar else []
+    if blick.gesperrt(programm, titel, roh):
+        return gesperrt()
+    elemente: list[dict[str, str]] = []
+    for e in roh:
+        rand = e.get("bounds")
+        if not isinstance(rand, Mapping) or rand.get("width", 0) <= 0 or rand.get("height", 0) <= 0:
+            continue
+        eintrag = {"name": " ".join(str(e.get("name") or "").split())[:60],
+                   "art": str(e.get("control_type") or "").removesuffix("Control")}
+        if eintrag["name"] and eintrag not in elemente:
+            elemente.append(eintrag)
+    return {
+        "gesperrt": False,
+        "programm": programm,
+        "fenstertitel": titel[:120],
+        "monitor": monitor if isinstance(monitor, int) and not isinstance(monitor, bool) else None,
+        "elemente": elemente[:BLICK_ELEMENTE],
+        "elemente_gekuerzt": len(elemente) > BLICK_ELEMENTE,
+        "elemente_lesbar": lesbar,
+        "zeitpunkt": zeitpunkt,
+        "dauer_ms": int((time.monotonic() - start) * 1000),
+    }
+
+
 def _find(arguments: Mapping[str, Any]) -> dict[str, Any]:
     _nur(arguments, {"text"})
     antwort = _http(
@@ -385,6 +457,9 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         if name == "desktop_status":
             _nur(arguments, set())
             return _status()
+        if name == "desktop_blick":
+            _nur(arguments, set())
+            return _blick()
         if name in BLICK_WERKZEUGE:
             if name == "desktop_find":
                 ergebnis = _find(arguments)

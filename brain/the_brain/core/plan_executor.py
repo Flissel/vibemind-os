@@ -2041,8 +2041,13 @@ class PlanExecutor:
         verdict = None
         if ok and hop.validator and self.validator is not None:
             try:
+                _validator_cfg = hop.validator
+                if isinstance(_validator_cfg, dict) and _validator_cfg.get("kind") == "truth:desktop_sicht":
+                    # Der Blick braucht einen eigenen Laufzeit-Kontext; dafuer die Plan-Angaben.
+                    from .desktop_sicht import laufzeit_aus_plan
+                    _validator_cfg = {**_validator_cfg, "_laufzeit": laufzeit_aus_plan(plan_ctx, hop.step_id)}
                 verdict = self.validator.validate(
-                    hop.validator,
+                    _validator_cfg,
                     intent=hop.description,
                     arg=rendered_arg,
                     raw_result=result_payload,
