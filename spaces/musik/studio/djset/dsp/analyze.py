@@ -136,6 +136,18 @@ def _detect_beats(
     uebrigbleiben - siehe detect_bpm_and_grid).
     """
     signal, sr = _load_audio(path)
+    times, raw_tempo_value = _beats_aus_signal(signal, sr, hint_bpm)
+    if times.size == 0:
+        raise ValueError(f"keine Beats erkennbar in {path}")
+    return times, raw_tempo_value
+
+
+def _beats_aus_signal(
+    signal: np.ndarray, sr: int, hint_bpm: float | None = None
+) -> tuple[np.ndarray, float]:
+    """Beat-Zeitpunkte und rohe Tempo-Schaetzung eines Signals. Leeres Array,
+    wenn librosa keinen Beat findet - der Aufrufer entscheidet, ob das ein
+    Fehler ist."""
     onset = librosa.onset.onset_strength(y=signal, sr=sr)
 
     kwargs: dict[str, float] = {}
@@ -154,9 +166,45 @@ def _detect_beats(
 
     times = librosa.frames_to_time(beat_frames, sr=sr)
     if times.size == 0:
-        raise ValueError(f"keine Beats erkennbar in {path}")
+        return times, raw_tempo_value
     times = _drop_unsupported_edge_beats(times, signal, sr)
     return times, raw_tempo_value
+
+
+# Laenge eines Abschnitts fuer tempo_abschnitte. 30 s sind bei 85-150 BPM
+# 40-75 Schlaege: genug fuer ein stabiles Tempo, kurz genug, dass ein Song von
+# drei Minuten sechs Stichproben liefert.
+ABSCHNITT_S = 30.0
+
+
+def tempo_abschnitte(path: Path) -> list[float]:
+    """Das Tempo je ABSCHNITT_S-Abschnitt, in Sekundenfolge.
+
+    Der Gesamtwert aus detect_bpm_and_grid misst ueber den ganzen Song. Springt
+    die Beat-Erkennung zwischen zwei Ebenen (erster echter Lauf: Abschnitte bei
+    88 und 119 BPM im selben Song), ergibt er eine Zahl, die zu keinem
+    Abschnitt sicher passt. Diese Funktion urteilt nicht - sie liefert die
+    Stichproben, das Urteil faellt djset.tempo.tempo_unsicher.
+
+    Ein Rest unter einem halben Abschnitt zaehlt nicht, ebenso ein Abschnitt
+    ohne wenigstens zwei erkannte Beats. Ein Song unter einem halben
+    Abschnitt hat deshalb gar keine Abschnitte.
+    """
+    signal, sr = _load_audio(path)
+    laenge = int(ABSCHNITT_S * sr)
+    mindestens = laenge // 2
+    tempi: list[float] = []
+    for anfang in range(0, len(signal), laenge):
+        stueck = signal[anfang : anfang + laenge]
+        if len(stueck) < mindestens:
+            continue
+        times, _raw = _beats_aus_signal(stueck, sr)
+        if times.size < 2:
+            continue
+        # Dieselbe Rechnung wie detect_bpm_and_grid: lange Messstrecke statt
+        # Median der Einzelabstaende (siehe dort).
+        tempi.append(60.0 / float(np.mean(np.diff(times))))
+    return tempi
 
 
 def beat_times(path: Path, hint_bpm: float | None = None) -> np.ndarray:

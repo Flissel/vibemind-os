@@ -747,3 +747,56 @@ def test_eine_kaputte_messung_wird_zur_fehlermeldung_mit_song_id(
 
     assert zaehlender_client.aufrufe == 0
     assert capsys.readouterr().err == "Fehler: c: librosa ist umgefallen\n"
+
+
+def _setze_abschnitte(bestand: Bestand, song_id: str, abschnitte: list[float]) -> None:
+    eintrag = bestand.hole(song_id).model_copy(update={"tempo_abschnitte": abschnitte})
+    (bestand.songs / f"{song_id}.json").write_text(
+        eintrag.model_dump_json(indent=2), encoding="utf-8"
+    )
+
+
+def test_set_laesst_songs_mit_springendem_tempo_draussen(
+    tmp_path, budget, build_run_aufzeichnung, capsys
+):
+    """Erster echter Lauf: ein Song, dessen Abschnitte zwischen 88 und 119 BPM
+    springen, kam ueber seinen Gesamtwert in den 120er-Bereich."""
+    bestand = _bestand(tmp_path, {"a": 124.0, "b": 126.0, "c": 128.0, "v": 125.0})
+    _setze_abschnitte(bestand, "v", [125.0, 93.0, 93.0, 125.0])
+    client = ZaehlenderClient([json.dumps(DRAFT)])
+
+    assert cmd_set(tmp_path, "Sommerfest", 20, None, client, budget, HEUTE) == 0
+
+    [aufruf] = build_run_aufzeichnung.aufrufe
+    assert [f.id for f in aufruf["files"]] == ["a", "b", "c"]
+    wahl = aufruf["run"].read_model("tempo.json", TempoWahl)
+    assert wahl.unsicher == {"v": [125.0, 93.0, 93.0, 125.0]}
+    assert "v" not in wahl.drin and "v" not in wahl.draussen
+    out = capsys.readouterr().out
+    assert "Tempo unsicher: v (125.0 BPM, Abschnitte 93 bis 125 BPM)" in out
+
+
+def test_set_nennt_unsichere_songs_wenn_zu_wenige_bleiben(
+    tmp_path, zaehlender_client, budget, capsys
+):
+    bestand = _bestand(tmp_path, {"a": 124.0, "b": 126.0, "v": 125.0})
+    _setze_abschnitte(bestand, "v", [125.0, 93.0, 93.0, 125.0])
+
+    assert cmd_set(tmp_path, "Party", 5, None, zaehlender_client, budget, HEUTE) == 1
+
+    assert zaehlender_client.aufrufe == 0
+    err = capsys.readouterr().err
+    assert "Tempo unsicher: v" in err
+
+
+def test_set_misst_fehlende_tempo_abschnitte_nach(tmp_path, budget, build_run_aufzeichnung):
+    """Eintraege von vor dieser Pruefung haben keine Abschnitte - set holt sie
+    vor dem ersten Modellaufruf nach und speichert sie."""
+    bestand = _bestand(tmp_path, {"a": 124.0, "b": 126.0, "c": 128.0})
+    assert bestand.hole("a").tempo_abschnitte is None
+    client = ZaehlenderClient([json.dumps(DRAFT)])
+
+    assert cmd_set(tmp_path, "Party", 20, None, client, budget, HEUTE) == 0
+
+    # Die Fixture-WAV ist ein Takt lang, also zu kurz fuer einen Abschnitt.
+    assert bestand.hole("a").tempo_abschnitte == []

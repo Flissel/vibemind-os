@@ -44,7 +44,7 @@ from djset.render.stretch import (
 from djset.render.tracklist import render_tracklist
 from djset.report import correction_gain_db, render_qa_report, status_line
 from djset.run import FINISHED_MARKER, Run, RunNotFound, slugify
-from djset.tempo import TempoWahl, waehle_tempo
+from djset.tempo import TempoWahl, tempo_unsicher, waehle_tempo
 from djset.watch import (
     AudioFile,
     NotEnoughMaterial,
@@ -449,8 +449,24 @@ def _songs_laden(
             except Exception as error:  # noqa: BLE001 - jede Messstoerung endet gleich
                 print(f"Fehler: {song.id}: {error}", file=sys.stderr)
                 return None
+        elif song.tempo_abschnitte is None:
+            # Eintraege von vor der Abschnittspruefung: nur die Abschnitte
+            # nachholen, die gespeicherte Messung bleibt.
+            print(f"  messe Tempo-Abschnitte von {song.id} ...")
+            try:
+                song = bestand.abschnitte_messen(song.id)
+            except Exception as error:  # noqa: BLE001 - jede Messstoerung endet gleich
+                print(f"Fehler: {song.id}: {error}", file=sys.stderr)
+                return None
         gemessen.append(song)
     return gemessen
+
+
+def _unsicher_zeile(song_id: str, tempo: float, abschnitte: list[float]) -> str:
+    return (
+        f"  Tempo unsicher: {song_id} ({tempo:.1f} BPM, Abschnitte "
+        f"{min(abschnitte):.0f} bis {max(abschnitte):.0f} BPM), bitte gegenhoeren"
+    )
 
 
 def cmd_set(
@@ -487,18 +503,31 @@ def cmd_set(
 
     # _songs_laden hat jede fehlende Messung nachgeholt.
     tempi = {song.id: song.messung.bpm.value for song in geladen if song.messung}
-    wahl = waehle_tempo(tempi)
+    # Songs, deren Tempo-Erkennung zwischen Abschnitten springt, haben kein
+    # verlaessliches Gesamttempo und kommen gar nicht erst in die Wahl.
+    unsicher = tempo_unsicher(
+        tempi, {song.id: song.tempo_abschnitte or [] for song in geladen}
+    )
+    sicher = {song_id: t for song_id, t in tempi.items() if song_id not in unsicher}
+    wahl = (
+        waehle_tempo(sicher).model_copy(update={"unsicher": unsicher})
+        if sicher
+        else None
+    )
 
-    if len(wahl.drin) < MIN_TRACKS:
+    if wahl is None or len(wahl.drin) < MIN_TRACKS:
         gemessen = ", ".join(
             f"{song_id} {tempo:.1f} BPM" for song_id, tempo in tempi.items()
         )
         print(
-            f"Fehler: nur {len(wahl.drin)} Songs passen in einen gemeinsamen "
-            f"Tempo-Bereich (Streckung {MIN_RATIO:.2f} bis {MAX_RATIO:.2f}), "
-            f"gebraucht werden mindestens {MIN_TRACKS}. Gemessen: {gemessen}.",
+            f"Fehler: nur {0 if wahl is None else len(wahl.drin)} Songs passen in "
+            f"einen gemeinsamen Tempo-Bereich (Streckung {MIN_RATIO:.2f} bis "
+            f"{MAX_RATIO:.2f}), gebraucht werden mindestens {MIN_TRACKS}. "
+            f"Gemessen: {gemessen}.",
             file=sys.stderr,
         )
+        for song_id, abschnitte in unsicher.items():
+            print(_unsicher_zeile(song_id, tempi[song_id], abschnitte), file=sys.stderr)
         return 1
 
     nach_id = {song.id: song for song in geladen}
@@ -559,6 +588,8 @@ def cmd_set(
         vermutung = wahl.oktave.get(song_id)
         zusatz = f", vermutlich {vermutung} gemessen" if vermutung else ""
         print(f"  nicht im Bereich: {song_id} ({tempo:.1f} BPM{zusatz})")
+    for song_id, abschnitte in wahl.unsicher.items():
+        print(_unsicher_zeile(song_id, tempi[song_id], abschnitte))
     messungen = {song.id: song.messung for song in im_bereich if song.messung}
     return build_run(run, files, profile, client, budget, messungen=messungen)
 
@@ -618,6 +649,13 @@ def cmd_aufnehmen(
     print(f"  Tempo:  {messung.bpm.value:.1f} BPM")
     print(f"  Tonart: {messung.key.camelot}")
     print(f"  Laenge: {_mm_ss(messung.duration_s)}")
+    unsicher = tempo_unsicher(
+        {eintrag.id: messung.bpm.value}, {eintrag.id: eintrag.tempo_abschnitte or []}
+    )
+    for song_id, abschnitte in unsicher.items():
+        # Aufgenommen bleibt er - aber set laesst ihn draussen, und das soll
+        # hier schon sichtbar sein, nicht erst beim Set.
+        print(_unsicher_zeile(song_id, messung.bpm.value, abschnitte))
     return 0
 
 

@@ -339,6 +339,22 @@ def render_qa_report(
                 f"bis {bereich.max:.1f} BPM (Ziel {bereich.target:.1f})."
             )
         lines.append("")
+        # Nur wenn es solche Songs gibt: ihr Gesamttempo ist keine
+        # verlaessliche Zahl, deshalb stehen sie weder im Set noch oben.
+        if tempo.unsicher:
+            lines += ["## Tempo unsicher", ""]
+            lines += [
+                f"- `{song_id}`: Abschnitte "
+                f"{', '.join(f'{t:.0f}' for t in abschnitte)} BPM"
+                for song_id, abschnitte in tempo.unsicher.items()
+            ]
+            lines.append("")
+            lines.append(
+                "Die Tempo-Erkennung springt in diesen Songs zwischen "
+                "verschiedenen Werten. Sie bleiben draussen, bis jemand "
+                "gegengehoert hat, welches Tempo stimmt."
+            )
+            lines.append("")
 
     lines += ["## Nicht lesbare Dateien", ""]
     if unreadable:

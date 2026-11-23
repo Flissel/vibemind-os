@@ -32,6 +32,24 @@ def test_aufnehmen_nimmt_auf_misst_und_nennt_das_ergebnis(tmp_path: Path, capsys
     assert eintrag.messung.key.camelot in ausgabe
     sekunden = round(eintrag.messung.duration_s)
     assert f"{sekunden // 60}:{sekunden % 60:02d}" in ausgabe
+    # 32 s Clicktrack: ein Abschnitt, gespeichert.
+    assert eintrag.tempo_abschnitte is not None
+    assert len(eintrag.tempo_abschnitte) == 1
+    assert "Tempo unsicher" not in ausgabe
+
+
+def test_aufnehmen_warnt_bei_springendem_tempo(tmp_path: Path, capsys, monkeypatch):
+    bestand = Bestand(tmp_path)
+    click_track(bestand.eingang / "lied.wav", bpm=120.0, bars=16)
+    monkeypatch.setattr(
+        "djset.bestand.tempo_abschnitte", lambda pfad: [120.0, 88.0, 88.0, 120.0]
+    )
+
+    assert cmd_aufnehmen(tmp_path, "lied.wav", "Lied", "suno-eigen", None, HEUTE) == 0
+
+    ausgabe = capsys.readouterr().out
+    assert "Tempo unsicher: lied" in ausgabe
+    assert "Abschnitte 88 bis 120 BPM" in ausgabe
 
 
 def test_aufnehmen_mit_ungueltiger_herkunft(tmp_path: Path, capsys):

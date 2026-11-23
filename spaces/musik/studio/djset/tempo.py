@@ -29,6 +29,42 @@ class TempoWahl(BaseModel):
     # entscheidet ein Mensch. Mit Vorgabe, damit aeltere tempo.json lesbar
     # bleiben.
     oktave: dict[str, Literal["halb", "doppelt"]] = Field(default_factory=dict)
+    # Song-ID -> Tempo je Abschnitt fuer Songs, die tempo_unsicher aussortiert
+    # hat, bevor ein Bereich gewaehlt wurde. Weder in `drin` noch in
+    # `draussen`: ihr Gesamttempo ist keine verlaessliche Zahl. Mit Vorgabe,
+    # damit aeltere tempo.json lesbar bleiben.
+    unsicher: dict[str, list[float]] = Field(default_factory=dict)
+
+
+# Wie viele Abschnitte eines Songs mindestens im Streckbereich um sein
+# Gesamttempo liegen muessen. Gemessen am ersten echten Lauf (2026-11-23):
+# der Song mit springender Erkennung hatte 4 von 7 (57 %), der Song mit einem
+# abweichenden Intro 6 von 7 (86 %), alle uebrigen 7 von 7 bzw. 4 von 4.
+# Drei Viertel liegt dazwischen und laesst ein einzelnes Intro in anderem
+# Feel zu.
+TEMPO_SICHER_ANTEIL = 0.75
+
+
+def tempo_unsicher(
+    tempi: dict[str, float], abschnitte: dict[str, list[float]]
+) -> dict[str, list[float]]:
+    """Die Songs, deren Gesamttempo nicht fuer den Song steht.
+
+    Ein Song ist unsicher, wenn weniger als TEMPO_SICHER_ANTEIL seiner
+    Abschnitte sich auf sein Gesamttempo strecken liessen (dieselbe Division
+    wie _passt). Ohne Abschnitte - zu kurz oder nicht gemessen - gibt es kein
+    Urteil, der Song bleibt sicher: ein Ausschluss ohne Messung waere ein
+    stilles Weglassen.
+    """
+    unsicher: dict[str, list[float]] = {}
+    for song_id, tempo in tempi.items():
+        stichproben = abschnitte.get(song_id) or []
+        if not stichproben:
+            continue
+        passend = sum(1 for t in stichproben if _passt(tempo, t))
+        if passend < TEMPO_SICHER_ANTEIL * len(stichproben):
+            unsicher[song_id] = stichproben
+    return unsicher
 
 
 def _passt(target: float, tempo: float) -> bool:

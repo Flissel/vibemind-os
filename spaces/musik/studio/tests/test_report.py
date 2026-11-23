@@ -241,6 +241,38 @@ def test_the_report_names_every_song_outside_the_tempo_range(profile: Profile) -
     assert "124.0" in abschnitt and "128.0" in abschnitt
 
 
+def test_the_report_names_songs_with_an_unsteady_tempo(profile: Profile) -> None:
+    """Ein Song, den tempo_unsicher aussortiert hat, steht weder im Set noch
+    unter "Nicht im Tempo-Bereich" - ohne eigenen Abschnitt fehlte er spurlos."""
+    tempo = TempoWahl(
+        bereich=BpmRange(target=126.0, min=124.0, max=128.0),
+        drin=["a", "b", "c"],
+        draussen={},
+        unsicher={"v": [119.0, 88.0, 89.0, 119.0]},
+    )
+
+    text = render_qa_report(
+        _report(-2.0, []), _shortlist(), [], None, simple_plan(), profile, tempo=tempo
+    )
+
+    abschnitt = text.split("## Tempo unsicher", 1)[1].split("\n## ", 1)[0]
+    assert "`v`: Abschnitte 119, 88, 89, 119 BPM" in abschnitt
+
+
+def test_the_report_has_no_unsteady_section_without_such_songs(profile: Profile) -> None:
+    tempo = TempoWahl(
+        bereich=BpmRange(target=126.0, min=124.0, max=128.0),
+        drin=["a", "b", "c"],
+        draussen={},
+    )
+
+    text = render_qa_report(
+        _report(-2.0, []), _shortlist(), [], None, simple_plan(), profile, tempo=tempo
+    )
+
+    assert "## Tempo unsicher" not in text
+
+
 def test_the_tempo_section_says_so_when_every_song_fits(profile: Profile) -> None:
     tempo = TempoWahl(
         bereich=BpmRange(target=126.0, min=124.0, max=128.0),

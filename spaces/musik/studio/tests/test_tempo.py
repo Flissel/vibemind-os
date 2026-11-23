@@ -3,7 +3,38 @@ import random
 import pytest
 
 from djset.contracts import MAX_RATIO, MIN_RATIO
-from djset.tempo import TempoWahl, waehle_tempo
+from djset.tempo import TEMPO_SICHER_ANTEIL, TempoWahl, tempo_unsicher, waehle_tempo
+
+
+# Die gemessenen Werte aus dem ersten echten Lauf (2026-11-23), gerundet.
+VARIANTE_2 = (119.6, [119.0, 88.0, 89.0, 119.0, 119.0, 119.0, 88.0])
+ORIGINAL = (85.9, [120.0, 87.0, 87.0, 87.0, 87.0, 86.0, 87.0])
+
+
+def test_ein_song_mit_springendem_tempo_ist_unsicher():
+    tempo, abschnitte = VARIANTE_2
+    assert tempo_unsicher({"v2": tempo}, {"v2": abschnitte}) == {"v2": abschnitte}
+
+
+def test_ein_einzelner_abweichender_abschnitt_macht_nicht_unsicher():
+    # Ein Intro in anderem Feel ist kein springendes Tempo: 6 von 7 passen.
+    tempo, abschnitte = ORIGINAL
+    assert tempo_unsicher({"o": tempo}, {"o": abschnitte}) == {}
+
+
+def test_die_grenze_ist_der_anteil_im_streckbereich():
+    # Genau TEMPO_SICHER_ANTEIL der Abschnitte im Bereich: noch sicher.
+    passend = int(TEMPO_SICHER_ANTEIL * 4)
+    abschnitte = [120.0] * passend + [88.0] * (4 - passend)
+    assert tempo_unsicher({"a": 120.0}, {"a": abschnitte}) == {}
+    abschnitte = [120.0] * (passend - 1) + [88.0] * (4 - passend + 1)
+    assert tempo_unsicher({"a": 120.0}, {"a": abschnitte}) == {"a": abschnitte}
+
+
+def test_ohne_abschnitte_bleibt_ein_song_sicher():
+    # Zu kurz fuer einen Abschnitt, oder (alter Eintrag) nicht gemessen:
+    # kein Befund, nicht stillschweigend ein Ausschluss.
+    assert tempo_unsicher({"a": 120.0, "b": 90.0}, {"a": []}) == {}
 
 
 def test_waehle_tempo_nimmt_die_groesste_gruppe():

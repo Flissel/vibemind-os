@@ -28,7 +28,7 @@ from pydantic import BaseModel, ValidationError, field_validator
 
 from djset.capture import CaptureFailed, convert
 from djset.contracts import TrackMeasurements
-from djset.dsp.analyze import measure_track
+from djset.dsp.analyze import measure_track, tempo_abschnitte
 from djset.render.stretch import RenderToolMissing
 from djset.run import slugify
 from djset.watch import AUDIO_SUFFIXES
@@ -87,6 +87,9 @@ class SongEintrag(BaseModel):
     aufgenommen_am: date
     pruefsumme: str  # sha256 der Eingangsdatei
     messung: TrackMeasurements | None = None
+    # Tempo je Abschnitt (dsp.analyze.tempo_abschnitte). None: noch nicht
+    # gemessen - Eintraege von vor dieser Pruefung; set holt es nach.
+    tempo_abschnitte: list[float] | None = None
 
     @field_validator("herkunft")
     @classmethod
@@ -214,8 +217,21 @@ class Bestand:
 
     def messen(self, song_id: str) -> SongEintrag:
         eintrag = self.hole(song_id)
-        messung = measure_track(self.pfad(song_id), song_id)
-        aktualisiert = eintrag.model_copy(update={"messung": messung})
+        pfad = self.pfad(song_id)
+        messung = measure_track(pfad, song_id)
+        aktualisiert = eintrag.model_copy(
+            update={"messung": messung, "tempo_abschnitte": tempo_abschnitte(pfad)}
+        )
+        _schreibe_atomar(self._json(song_id), aktualisiert.model_dump_json(indent=2))
+        return aktualisiert
+
+    def abschnitte_messen(self, song_id: str) -> SongEintrag:
+        """Nur die Tempo-Abschnitte, fuer Eintraege, die schon eine Messung
+        haben - die bleibt unberuehrt."""
+        eintrag = self.hole(song_id)
+        aktualisiert = eintrag.model_copy(
+            update={"tempo_abschnitte": tempo_abschnitte(self.pfad(song_id))}
+        )
         _schreibe_atomar(self._json(song_id), aktualisiert.model_dump_json(indent=2))
         return aktualisiert
 
