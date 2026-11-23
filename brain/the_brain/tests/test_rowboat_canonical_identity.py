@@ -45,6 +45,7 @@ def test_rowboat_is_the_only_canonical_child_space_id() -> None:
     assert "rowboat" in SPACES
     assert SPACES["rowboat"]["event_prefix"] == "rowboat."
     assert SPACES["rowboat"]["stream"] == "events:tasks:rowboat"
-    assert SPACES["rowboat"]["capabilities"] == ["rowboat.query"]
+    # rowboat.spaces: fester Lesesatz "Welche Agenten gibt es in Rowboat?" (core/rowboat_spaces.py)
+    assert SPACES["rowboat"]["capabilities"] == ["rowboat.query", "rowboat.spaces"]
     assert resolve_alias("roarboot") == "rowboat"
     assert get_renderer_id("rowboat") == "roarboot"

@@ -16,14 +16,30 @@ from typing import Any, Mapping, Optional
 
 import yaml
 
-WURZEL = Path(__file__).resolve().parents[3]
-ORDNER = WURZEL / "spaces" / "rowboat" / "vibemind-spaces"
+TEILPFAD = Path("spaces") / "rowboat" / "vibemind-spaces"
 LAEUFT = "läuft"
 IM_SATZ = 20
 
 
-def _ordner() -> Path:
-    return Path(os.environ.get("VIBEMIND_SPACES_KARTEN", "") or ORDNER)
+def _ordner() -> Optional[Path]:
+    """Kartenordner: ``VIBEMIND_SPACES_KARTEN`` oder der erste ``spaces/rowboat/vibemind-spaces``
+    ueber dieser Datei. ``None``, wenn es keinen gibt.
+
+    Keine feste Tiefe: Im Container liegt das Modul unter /app/core, im Arbeitsbaum unter
+    brain/the_brain/core. ``parents[3]`` warf dort beim Import ``IndexError: 3`` (Betrieb
+    23.11.2026), und statt des genauen Satzes kam "Das hat nicht geklappt".
+    """
+    eigener = os.environ.get("VIBEMIND_SPACES_KARTEN", "")
+    if eigener:
+        return Path(eigener)
+    try:
+        for ebene in Path(__file__).resolve().parents:
+            kandidat = ebene / TEILPFAD
+            if kandidat.is_dir():
+                return kandidat
+    except OSError:
+        return None
+    return None
 
 
 def _kopf(text: str) -> Optional[dict]:
@@ -39,7 +55,11 @@ def _kopf(text: str) -> Optional[dict]:
 def spaces_lesen(value: Any = None, **_: Any) -> dict:
     """Ziel ``direct:core.rowboat_spaces:spaces_lesen``: Titel und Stand je Karte, nach Titel."""
     ordner = _ordner()
-    if not ordner.is_dir():
+    try:
+        vorhanden = ordner is not None and ordner.is_dir()
+    except OSError:
+        vorhanden = False
+    if not vorhanden:
         return {"success": False, "error": "karten_fehlen"}
     spaces = []
     for datei in sorted(ordner.glob("*.md")):

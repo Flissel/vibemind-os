@@ -424,6 +424,56 @@ def test_rowboat_ohne_karten_kein_plan_kein_sprung(monkeypatch, tmp_path, kontex
     assert body.get("space") != "roarboot" or kontext["space"] == "roarboot"
 
 
+def _modul_in_containertiefe(tmp_path, *, wie_im_container: bool = True):
+    """core/rowboat_spaces.py wie im Container laden.
+
+    ``wie_im_container``: ``__file__`` ist <Laufwerk>/app/core/rowboat_spaces.py, genau die Tiefe
+    von /app/core (drei Ebenen; muss nicht existieren). Sonst eine Kopie unter <tmp>/app/core/,
+    damit daneben echte Karten liegen koennen.
+    """
+    import shutil
+    import types
+
+    quelle = Path(rowboat_spaces.__file__).read_text(encoding="utf-8")
+    if wie_im_container:
+        datei = Path(tmp_path.anchor) / "app" / "core" / "rowboat_spaces.py"
+    else:
+        datei = tmp_path / "app" / "core" / "rowboat_spaces.py"
+        datei.parent.mkdir(parents=True)
+        shutil.copy(Path(rowboat_spaces.__file__), datei)
+    modul = types.ModuleType("core.rowboat_spaces")
+    modul.__file__ = str(datei)
+    exec(compile(quelle, str(datei), "exec"), modul.__dict__)  # mit parents[3]: IndexError: 3
+    return modul
+
+
+RowboatOhneKarten = ("Welche VibeMind-Spaces in Rowboat stehen, kann ich noch nicht sagen: die "
+                     "Lese-Karten (spaces/rowboat/vibemind-spaces) fehlen auf diesem Stand.")
+
+
+def test_rowboat_in_containertiefe_ohne_karten_genauer_satz(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("VIBEMIND_SPACES_KARTEN", raising=False)
+    modul = _modul_in_containertiefe(tmp_path)
+    assert modul.spaces_lesen({"value": ""}) == {"success": False, "error": "karten_fehlen"}
+    assert modul.vorpruefung() == RowboatOhneKarten
+    # Ende zu Ende ueber den Router, mit dem Modul in Containertiefe: kein Plan, genauer Satz.
+    monkeypatch.setitem(sys.modules, "core.rowboat_spaces", modul)
+    ausfuehrer = _Ausfuehrer(lambda: pytest.fail("ohne Karten kein Plan"))
+    body = _frage(monkeypatch, ausfuehrer, "Welche Agenten gibt es in Rowboat?", "roarboot")
+    assert ausfuehrer.plaene == []
+    assert (body["ok"], body["final_text"]) == (False, RowboatOhneKarten)
+
+
+def test_rowboat_in_containertiefe_findet_karten_neben_app(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("VIBEMIND_SPACES_KARTEN", raising=False)
+    karten_ordner = tmp_path / "app" / "spaces" / "rowboat" / "vibemind-spaces"
+    karten_ordner.mkdir(parents=True)
+    (karten_ordner / "ideen.md").write_text("---\ntitel: Ideen\nspace: ideas\nstand: läuft\n---\n", encoding="utf-8")
+    modul = _modul_in_containertiefe(tmp_path, wie_im_container=False)
+    assert modul.spaces_lesen()["anzahl"] == 1
+    assert modul.vorpruefung() is None
+
+
 def test_rowboat_mit_karten_aus_ideen(monkeypatch, karten) -> None:
     ausfuehrer = _Ausfuehrer(lambda: rowboat_spaces.spaces_lesen({"value": ""}))
     body = _frage_kontext(monkeypatch, ausfuehrer, "Welche Agenten gibt es in Rowboat?", IDEEN_MIT_BUBBLE)
