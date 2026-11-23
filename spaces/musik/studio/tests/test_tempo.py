@@ -1,3 +1,5 @@
+import random
+
 import pytest
 
 from djset.contracts import MAX_RATIO, MIN_RATIO
@@ -63,3 +65,45 @@ def test_ohne_tempi_gibt_es_keine_wahl():
 def test_die_wahl_uebersteht_den_json_weg():
     wahl = waehle_tempo({"a": 124.0, "b": 126.0, "c": 174.0})
     assert TempoWahl.model_validate_json(wahl.model_dump_json()) == wahl
+
+
+# --- A2: Grenzkandidaten und Rundungsfalle ----------------------------------
+
+
+def test_100_und_112_5_passen_gemeinsam():
+    """Gemeinsam geht es nur zwischen 105,75 (= 112,5 * 0,94) und 106
+    (= 100 * 1,06) - weder ein gemessenes Tempo noch die Mitte 106,25 liegt
+    dort. Erst die Grenzkandidaten finden den Bereich."""
+    tempi = {"a": 100.0, "b": 112.5}
+
+    wahl = waehle_tempo(tempi)
+
+    assert sorted(wahl.drin) == ["a", "b"]
+    for tempo in tempi.values():
+        assert MIN_RATIO <= wahl.bereich.target / tempo <= MAX_RATIO
+
+
+def test_eigenschaft_kein_feineres_ziel_nimmt_mehr_songs_auf():
+    zufall = random.Random(20261123)
+    for _ in range(60):
+        anzahl = zufall.randint(1, 9)
+        tempi = {
+            f"s{i}": round(zufall.uniform(80.0, 180.0), zufall.choice((0, 1, 2)))
+            for i in range(anzahl)
+        }
+        wahl = waehle_tempo(tempi)
+        ziel = wahl.bereich.target
+        # Jeder Song in `drin` besteht die Division exakt - ohne Toleranz.
+        for song_id in wahl.drin:
+            assert MIN_RATIO <= ziel / tempi[song_id] <= MAX_RATIO, (tempi, ziel)
+        for song_id in wahl.draussen:
+            assert not MIN_RATIO <= ziel / tempi[song_id] <= MAX_RATIO
+        # Kein Ziel aus einem feinen Raster nimmt mehr Songs auf.
+        unten = int(min(tempi.values()) * 0.93 * 100)
+        oben = int(max(tempi.values()) * 1.07 * 100) + 1
+        raster = [schritt / 100 for schritt in range(unten, oben)]
+        bestes = max(
+            sum(1 for t in tempi.values() if MIN_RATIO <= z / t <= MAX_RATIO)
+            for z in raster
+        )
+        assert len(wahl.drin) >= bestes, (tempi, wahl)
