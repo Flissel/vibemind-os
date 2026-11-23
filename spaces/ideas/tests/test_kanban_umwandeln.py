@@ -47,6 +47,19 @@ class KanbanTests(unittest.TestCase):
         self.assertEqual(board["doing"], [{"title": "Bühnenplan"}])
         self.assertEqual(board["done"], [{"title": "Druck"}])
 
+    def test_zeilen_ohne_statuszeile_gehen_nach_offen(self) -> None:
+        # Lauf 8: die erste Zeile landete in "In Arbeit", eine Spalte "Offen" gab es nicht.
+        board = self.server._kanban_from_text("Logo entwerfen\nIn Arbeit: Bühnenplan\n- [x] Druckerei", "")
+        self.assertEqual(_namen(board), [("Offen", ["Logo entwerfen"]), ("In Arbeit", ["Bühnenplan", "Druckerei"])])
+
+    def test_beliebige_ueberschrift_ist_keine_spalte(self) -> None:
+        board = self.server._kanban_from_text("Aufgaben fürs Stadtfest:\n- Logo\n- Sponsoren", "")
+        self.assertEqual(_namen(board), [("Offen", ["Logo", "Sponsoren"]), ("In Arbeit", []), ("Erledigt", [])])
+
+    def test_offen_steht_immer_vorn(self) -> None:
+        board = self.server._kanban_from_text("Erledigt: Druck\nIn Arbeit: Bühne", "")
+        self.assertEqual(_namen(board), [("Offen", []), ("Erledigt", ["Druck"]), ("In Arbeit", ["Bühne"])])
+
     def test_name_wert_zeile_ist_eine_karte_keine_spalte(self) -> None:
         board = self.server._kanban_from_text("Preis: 900 Euro", "")
         self.assertEqual(_namen(board)[0], ("Offen", ["Preis: 900 Euro"]))

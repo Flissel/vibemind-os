@@ -1338,11 +1338,16 @@ def _kanban_from_text(text: str, title: str) -> dict[str, Any] | None:
     for line in lines:
         status = _KANBAN_STATUS.match(line)
         head = _KANBAN_HEAD.match(line)
+        kopf = (head.group("h") or head.group("c") or "").strip() if head else ""
         if status:
             current = column(status.group("k")[:1].upper() + status.group("k")[1:])
             card(current, status.group("v"))
+        elif head and _KANBAN_STATUS.match(kopf + ":"):
+            # Lauf 8: nur ein Statuswort ("## Offen", "In Arbeit:") beginnt eine Spalte. Eine
+            # beliebige Ueberschrift ("Aufgaben:") ist keine Spalte; ihre Zeilen gehen nach "Offen".
+            current = column(kopf[:1].upper() + kopf[1:])
         elif head:
-            current = column(head.group("h") or head.group("c"))
+            current = None
         else:
             item = _KANBAN_ITEM.match(line)
             done = bool(item and item.group("x") in ("x", "X"))
@@ -1357,9 +1362,16 @@ def _kanban_from_text(text: str, title: str) -> dict[str, Any] | None:
         for done, value in loose:
             card(by_name["erledigt" if done else "offen"], value)
     elif loose:
-        # Zeilen vor der ersten Spalte gehen nicht verloren: in die erste Spalte.
-        for _, value in loose:
-            card(columns[0], value)
+        # Lauf 8: Zeilen ohne Statuszeile gingen in die erste Spalte, also etwa nach "In Arbeit".
+        # Sie gehoeren nach "Offen" ("[x]" nach "Erledigt"); beide Spalten entstehen bei Bedarf.
+        for done, value in loose:
+            ziel = "Erledigt" if done else "Offen"
+            spalte = by_name.get(ziel.casefold()) or column(ziel)
+            card(spalte, value)
+    if columns and "offen" not in by_name and len(columns) < KANBAN_MAX_COLUMNS:
+        column("Offen")
+    # "Offen" steht immer vorn.
+    columns.sort(key=lambda s: 0 if s["name"].casefold() == "offen" else 1)
     # Lauf 8: Die Huelle (rich_content_renderer.renderKanban) schreibt den Spaltenkopf weiss
     # auf column.color, ohne Farbe auf Hellgrau: die Spalten waren nicht zu sehen.
     for n, col in enumerate(columns):
