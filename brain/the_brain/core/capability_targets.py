@@ -463,6 +463,10 @@ class CodingEngineExecutor(_BaseRemoteExecutor):
 
 
 
+class WerkzeugaufrufImLauf(RuntimeError):
+    """Ein Agent, der nur Text liefern darf, hat im Stream ein Werkzeug angesetzt."""
+
+
 class OpenFangExecutor(_BaseRemoteExecutor):
     """Single-agent dispatch via OpenFang.
 
@@ -470,10 +474,14 @@ class OpenFangExecutor(_BaseRemoteExecutor):
     OPENFANG_URL/api/agents/<id>/message after resolving id by name.
     """
 
-    def __init__(self, target: str) -> None:
+    def __init__(self, target: str, *, nur_text: bool = False) -> None:
         super().__init__(target)
         name = target.split(":", 1)[1] if target.startswith("openfang:") else target
         self.agent_name = name.strip()
+        # nur_text: fuer Agenten, die keine Werkzeuge benutzen duerfen (brain-desktop in der
+        # Schleife). Nur ueber den Stream, ohne Rueckfall auf /message (dort sind Werkzeugaufrufe
+        # unsichtbar), und Abbruch beim ersten tool_use-Ereignis.
+        self.nur_text = nur_text
         self.base = os.environ.get("OPENFANG_URL", "http://127.0.0.1:4200").rstrip("/")
         self._headers = {"Authorization": f"Bearer {os.environ.get('OPENFANG_API_KEY', '')}"}
         self._agent_id: Optional[str] = None
@@ -582,6 +590,9 @@ class OpenFangExecutor(_BaseRemoteExecutor):
             # or env opts out.  Streaming swallows its own errors and
             # falls through to blocking; blocking raises, so a stale-id
             # 404 always surfaces from the blocking POST below.
+            if self.nur_text:
+                # Kein Rueckfall: Fehler des Streams gelten, ein Werkzeugaufruf bricht ab.
+                return self._call_streaming(agent_id, message, timeout, abbruch_bei_werkzeug=True)
             use_stream = os.environ.get("OPENFANG_STREAM", "1") not in (
                 "0", "false", "False",
             )
@@ -714,7 +725,7 @@ class OpenFangExecutor(_BaseRemoteExecutor):
             return _send(fresh)
 
     def _call_streaming(
-        self, agent_id: str, message: str, timeout: float,
+        self, agent_id: str, message: str, timeout: float, abbruch_bei_werkzeug: bool = False,
     ) -> Dict[str, Any]:
         """Phase 9.0 — Use OpenFang's SSE streaming endpoint to capture
         tool_use events. Returns {response, tool_calls: [...], usage}.
@@ -762,6 +773,14 @@ class OpenFangExecutor(_BaseRemoteExecutor):
                 except Exception:
                     continue
                 kind = current_event or "chunk"
+                if abbruch_bei_werkzeug and kind in ("tool_use", "tool_result"):
+                    # Frueheste Stelle im Gehirn. Ausgefuehrt wird in OpenFang (tool_runner.rs,
+                    # execute_tool); ob das Werkzeug dort schon lief, sieht das Gehirn nicht.
+                    # Abbrechen heisst hier: keine Antwort verwenden, die Schleife endet.
+                    resp.close()
+                    raise WerkzeugaufrufImLauf(
+                        f"agent '{self.agent_name}' hat ein Werkzeug benutzt: {data.get('tool') or '?'}"
+                    )
                 if kind == "chunk":
                     if data.get("content"):
                         response_text_parts.append(str(data["content"]))
