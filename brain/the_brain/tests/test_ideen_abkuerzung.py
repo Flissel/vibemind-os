@@ -29,17 +29,17 @@ vertrag = _lade("ideen_fest_contract")
 
 KONTEXT = {
     "space": "ideas",
-    "bubble": {"id": "bub1", "title": "Messe"},
+    "bubble": {"id": "b0b1e001", "title": "Messe"},
     "cards": [
-        {"id": "n1", "title": "Preise", "format": "note", "score": None},
-        {"id": "n2", "title": "Druckerei", "format": "note", "score": 40},
-        {"id": "n3", "title": "Stand  auf der Messe", "format": "table", "score": None},
-        {"id": "n4", "title": "Doppelt", "format": "note"},
-        {"id": "n5", "title": "doppelt ", "format": "note"},
+        {"id": "a0000001", "title": "Preise", "format": "note", "score": None},
+        {"id": "a0000002", "title": "Druckerei", "format": "note", "score": 40},
+        {"id": "a0000003", "title": "Stand  auf der Messe", "format": "table", "score": None},
+        {"id": "a0000004", "title": "Doppelt", "format": "note"},
+        {"id": "a0000005", "title": "doppelt ", "format": "note"},
     ],
     "selection": [],
-    "last_id": "n2",
-    "new_id": "vor-7f3a",
+    "last_id": "a0000002",
+    "new_id": "7f3a0000-0000-4000-8000-000000000001",
 }
 
 
@@ -51,32 +51,32 @@ def _mit(**aenderung):
 
 @pytest.mark.parametrize("satz, ereignis, argumente", [
     ("Halt fest: Preise im Januar prüfen", "idea.create",
-     {"bubble_id": "bub1", "title": "Preise im Januar prüfen", "id": "vor-7f3a"}),
+     {"bubble_id": "b0b1e001", "title": "Preise im Januar prüfen", "id": "7f3a0000-0000-4000-8000-000000000001"}),
     ("Notiz: Anruf bei der Druckerei", "idea.create",
-     {"bubble_id": "bub1", "title": "Anruf bei der Druckerei", "id": "vor-7f3a"}),
+     {"bubble_id": "b0b1e001", "title": "Anruf bei der Druckerei", "id": "7f3a0000-0000-4000-8000-000000000001"}),
     ("Schreib auf, dass der Stand größer sein muss", "idea.create",
-     {"bubble_id": "bub1", "title": "der Stand größer sein muss", "id": "vor-7f3a"}),
-    ("Benenne die Notiz Preise in Preisliste um", "idea.update", {"id": "n1", "title": "Preisliste"}),
-    ("Mach aus der Notiz Preise eine Tabelle", "idea.format", {"id": "n1", "format": "table"}),
-    ("Zeig Druckerei als Aufgabenliste", "idea.format", {"id": "n2", "format": "action_list"}),
-    ("Formatiere das als Pro und Contra", "idea.format", {"id": "n2", "format": "pros_cons"}),
-    ("Räum das Canvas auf", "idea.arrange", {"bubble_id": "bub1"}),
-    ("Ordne die Notizen im Raster", "idea.arrange", {"bubble_id": "bub1"}),
-    ("Sortiere die Karten nach Bewertung", "idea.arrange", {"bubble_id": "bub1", "order": "score"}),
-    ("Verbinde Preise mit Druckerei", "idea.connect", {"from_id": "n1", "to_id": "n2"}),
-    ("Verlinke, was zusammengehört", "idea.auto_link", {"bubble_id": "bub1"}),
-    ("Finde Verbindungen in dieser Bubble", "idea.auto_link", {"bubble_id": "bub1"}),
-    ("Bewerte Preise mit 80", "idea.rate", {"id": "n1", "score": 80}),
-    ("Gib der Notiz Druckerei 40 Punkte", "idea.rate", {"id": "n2", "score": 40}),
-    ("Bewerte die Bubble Messe mit 70", "bubble.rate", {"id": "bub1", "score": 70}),
+     {"bubble_id": "b0b1e001", "title": "der Stand größer sein muss", "id": "7f3a0000-0000-4000-8000-000000000001"}),
+    ("Benenne die Notiz Preise in Preisliste um", "idea.update", {"id": "a0000001", "title": "Preisliste"}),
+    ("Mach aus der Notiz Preise eine Tabelle", "idea.format", {"id": "a0000001", "format": "table"}),
+    ("Zeig Druckerei als Aufgabenliste", "idea.format", {"id": "a0000002", "format": "action_list"}),
+    ("Formatiere das als Pro und Contra", "idea.format", {"id": "a0000002", "format": "pros_cons"}),
+    ("Räum das Canvas auf", "idea.arrange", {"bubble_id": "b0b1e001"}),
+    ("Ordne die Notizen im Raster", "idea.arrange", {"bubble_id": "b0b1e001"}),
+    ("Sortiere die Karten nach Bewertung", "idea.arrange", {"bubble_id": "b0b1e001", "order": "score"}),
+    ("Verbinde Preise mit Druckerei", "idea.connect", {"from_id": "a0000001", "to_id": "a0000002"}),
+    ("Verlinke, was zusammengehört", "idea.auto_link", {"bubble_id": "b0b1e001"}),
+    ("Finde Verbindungen in dieser Bubble", "idea.auto_link", {"bubble_id": "b0b1e001"}),
+    ("Bewerte Preise mit 80", "idea.rate", {"id": "a0000001", "score": 80}),
+    ("Gib der Notiz Druckerei 40 Punkte", "idea.rate", {"id": "a0000002", "score": 40}),
+    ("Bewerte die Bubble Messe mit 70", "bubble.rate", {"id": "b0b1e001", "score": 70}),
     ("Begründung: Preise und Druckerei tragen die Idee", "idea.rate_reason",
-     {"bubble_id": "bub1", "text": "Preise und Druckerei tragen die Idee"}),
+     {"bubble_id": "b0b1e001", "text": "Preise und Druckerei tragen die Idee"}),
     ("Halt als Begründung fest, dass der Stand zu klein ist", "idea.rate_reason",
-     {"bubble_id": "bub1", "text": "der Stand zu klein ist"}),
-    ("Mach aus der Bubble Messe ein Projekt", "bubble.promote", {"bubble_id": "bub1"}),
-    ("Befördere diese Bubble", "bubble.promote", {"bubble_id": "bub1"}),
-    ("Zeig die Notizen dieser Bubble", "idea.list", {"bubble_id": "bub1"}),
-    ("Was steht hier?", "idea.list", {"bubble_id": "bub1"}),
+     {"bubble_id": "b0b1e001", "text": "der Stand zu klein ist"}),
+    ("Mach aus der Bubble Messe ein Projekt", "bubble.promote", {"bubble_id": "b0b1e001"}),
+    ("Befördere diese Bubble", "bubble.promote", {"bubble_id": "b0b1e001"}),
+    ("Zeig die Notizen dieser Bubble", "idea.list", {"bubble_id": "b0b1e001"}),
+    ("Was steht hier?", "idea.list", {"bubble_id": "b0b1e001"}),
 ])
 def test_beispielsatz_wird_ohne_modell_zum_festen_aufruf(satz, ereignis, argumente) -> None:
     treffer = abk.loese(satz, KONTEXT)
@@ -92,36 +92,36 @@ def test_beispielsatz_wird_ohne_modell_zum_festen_aufruf(satz, ereignis, argumen
 
 
 def test_verlinke_die_beiden_nimmt_die_auswahl() -> None:
-    treffer = abk.loese("Verlinke die beiden Notizen", _mit(selection=["n3", "n1"]))
-    assert treffer["argumente"] == {"from_id": "n3", "to_id": "n1"}
+    treffer = abk.loese("Verlinke die beiden Notizen", _mit(selection=["a0000003", "a0000001"]))
+    assert treffer["argumente"] == {"from_id": "a0000003", "to_id": "a0000001"}
 
-    for auswahl in ([], ["n1"], ["n1", "n2", "n3"], ["n1", "n1"]):
+    for auswahl in ([], ["a0000001"], ["a0000001", "a0000002", "a0000003"], ["a0000001", "a0000001"]):
         assert "rueckfrage" in abk.loese("Verlinke die beiden Notizen", _mit(selection=auswahl))
 
 
 def test_begruendung_verweist_auf_die_markierten_karten() -> None:
-    treffer = abk.loese("Begründung: tragen die Idee", _mit(selection=["n1", "n2", "n1"]))
-    assert treffer["argumente"] == {"bubble_id": "bub1", "text": "tragen die Idee", "idea_ids": ["n1", "n2"]}
+    treffer = abk.loese("Begründung: tragen die Idee", _mit(selection=["a0000001", "a0000002", "a0000001"]))
+    assert treffer["argumente"] == {"bubble_id": "b0b1e001", "text": "tragen die Idee", "idea_ids": ["a0000001", "a0000002"]}
 
 
 # ── Namen aufloesen: nie raten ───────────────────────────────────────────
 
 def test_titel_treffen_ohne_gross_klein_und_leerraum() -> None:
-    assert abk.loese("bewerte  PREISE mit 5", KONTEXT)["argumente"] == {"id": "n1", "score": 5}
-    assert abk.loese("Bewerte die Notiz „Stand auf der Messe“ mit 5", KONTEXT)["argumente"]["id"] == "n3"
-    assert abk.loese("Mach aus stand auf  der messe eine Tabelle", KONTEXT)["argumente"]["id"] == "n3"
+    assert abk.loese("bewerte  PREISE mit 5", KONTEXT)["argumente"] == {"id": "a0000001", "score": 5}
+    assert abk.loese("Bewerte die Notiz „Stand auf der Messe“ mit 5", KONTEXT)["argumente"]["id"] == "a0000003"
+    assert abk.loese("Mach aus stand auf  der messe eine Tabelle", KONTEXT)["argumente"]["id"] == "a0000003"
 
 
 @pytest.mark.parametrize("satz, kontext, teil", [
-    ("Bewerte Urlaub mit 5", KONTEXT, "keine Karte"),                      # kein Treffer
-    ("Bewerte Doppelt mit 5", KONTEXT, "2 Karten"),                        # mehrere Treffer
-    ("Bewerte Urlaub mit 5", _mit(cards_total=40), "sichtbaren Karten"),   # Liste gekuerzt
+    ("Bewerte Urlaub mit 5", KONTEXT, "finde ich in dieser Bubble nicht"),                      # kein Treffer
+    ("Bewerte Doppelt mit 5", KONTEXT, "2 Notizen"),                        # mehrere Treffer
+    ("Bewerte Urlaub mit 5", _mit(cards_total=40), "sichtbaren Notizen"),   # Liste gekuerzt
     ("Formatiere das als Tabelle", _mit(last_id=None), "Welche Karte"),    # nichts gemeint
-    ("Formatiere das als Tabelle", _mit(selection=["n1", "n2"]), "2 Karten markiert"),
+    ("Formatiere das als Tabelle", _mit(selection=["a0000001", "a0000002"]), "2 Karten markiert"),
     ("Verbinde Preise mit Preise", KONTEXT, "dieselbe Karte"),
     ("Bewerte Preise mit 101", KONTEXT, "0 bis 100"),
     ("Halt fest: Preise prüfen", _mit(bubble=None), "Bubble offen"),       # keine offene Bubble
-    ("Räum das Canvas auf", _mit(bubble={"id": "", "title": "x"}), "Bubble offen"),
+    ("Räum das Canvas auf", _mit(bubble={"id": "", "title": "x"}), "welche Bubble offen ist"),
     ("Bewerte die Bubble Urlaub mit 70", KONTEXT, "keine Bubble"),
     ("Befördere diese Bubble", _mit(bubble=None), "Welche Bubble"),
 ])
@@ -133,15 +133,15 @@ def test_unklarer_bezug_ergibt_eine_rueckfrage_und_keinen_aufruf(satz, kontext, 
 
 
 def test_das_meint_die_eine_markierte_karte_sonst_die_letzte() -> None:
-    assert abk.loese("Formatiere das als Tabelle", _mit(selection=["n3"]))["argumente"]["id"] == "n3"
-    assert abk.loese("Formatiere das als Tabelle", KONTEXT)["argumente"]["id"] == "n2"
+    assert abk.loese("Formatiere das als Tabelle", _mit(selection=["a0000003"]))["argumente"]["id"] == "a0000003"
+    assert abk.loese("Formatiere das als Tabelle", KONTEXT)["argumente"]["id"] == "a0000002"
 
 
 def test_bubble_ohne_offene_bubble_wird_aus_der_uebersicht_aufgeloest() -> None:
     kontext = {"space": "ideas", "bubble": None, "cards": [],
-               "bubbles": [{"id": "bub1", "title": "Messe"}, {"id": "bub2", "title": "Urlaub"},
-                           {"id": "bub3", "title": "urlaub"}]}
-    assert abk.loese("Mach aus der Bubble Messe ein Projekt", kontext)["argumente"] == {"bubble_id": "bub1"}
+               "bubbles": [{"id": "b0b1e001", "title": "Messe"}, {"id": "b0b1e002", "title": "Urlaub"},
+                           {"id": "b0b1e003", "title": "urlaub"}]}
+    assert abk.loese("Mach aus der Bubble Messe ein Projekt", kontext)["argumente"] == {"bubble_id": "b0b1e001"}
     assert "2 Bubbles" in abk.loese("Befördere die Bubble Urlaub", kontext)["rueckfrage"]
 
 
@@ -152,6 +152,50 @@ def test_unsichere_kennungen_aus_dem_kontext_werden_nie_benutzt() -> None:
     assert "rueckfrage" in abk.loese("Bewerte Leer mit 5", boese)
     assert "rueckfrage" in abk.loese("Formatiere das als Tabelle", boese)
     assert "id" not in abk.loese("Notiz: Test", boese)["argumente"]       # vorgemerkte Kennung verworfen
+
+
+# ── Kennungen aus dem Kontext: nur in der Form der Datenbank ─────────────
+
+@pytest.mark.parametrize("kennung, gilt", [
+    ("db424a20", True),                                   # 8 Hex-Zeichen (Bubbles, Karten)
+    ("0123456789abcdef0123456789abcdef", True),           # 32 Hex-Zeichen (Verbindungen)
+    ("550e8400-e29b-41d4-a716-446655440000", True),       # UUID
+    ("550E8400-E29B-41D4-A716-446655440000", True),
+    ("1", False), ("42", False), ("bub1", False), ("n1", False), ("bubble:1", False),
+    ("db424a2", False), ("db424a20x", False), ("", False), (None, False), (1, False),
+    ("550e8400e29b41d4a716-446655440000", False),
+])
+def test_nur_kennungen_in_datenbank_form_gelten(kennung, gilt) -> None:
+    assert abk.ist_kennung(kennung) is gilt
+
+
+def test_lokale_zahl_als_bubble_kennung_fuehrt_nie_zu_einem_aufruf() -> None:
+    """Gemessen 23.11.2026: die App schickte context.bubble.id = "1"."""
+    lokal = _mit(bubble={"id": "1", "title": "Sheerlay"})
+    for satz in ("Halt fest: Zeitmessung", "Zeig die Notizen dieser Bubble", "Räum das Canvas auf",
+                 "Befördere diese Bubble", "Bewerte die Bubble Sheerlay mit 70", "Begründung: traegt",
+                 "Verlinke, was zusammengehört"):
+        treffer = abk.loese(satz, lokal)
+        assert set(treffer) == {"rueckfrage"}, satz
+        assert treffer["rueckfrage"].startswith("Ich weiß nicht, welche Bubble offen ist."), satz
+
+
+def test_karte_mit_lokaler_kennung_wird_nicht_benutzt_sondern_erklaert() -> None:
+    lokal = _mit(cards=[{"id": "7", "title": "Preise"}], last_id="7", selection=["7"])
+    assert abk.loese("Bewerte Preise mit 80", lokal) == {
+        "rueckfrage": "Die Notiz „Preise“ kann ich gerade nicht zuordnen. Öffne die Bubble noch einmal."}
+    assert "rueckfrage" in abk.loese("Formatiere das als Tabelle", lokal)
+
+
+def test_unbekannte_notiz_ergibt_eine_gezielte_rueckfrage() -> None:
+    """In der App kam dafuer nur "Ich habe dich nicht ganz verstanden"."""
+    assert abk.loese("Bewerte die Notiz Gibtsnicht mit 50", KONTEXT) == {
+        "rueckfrage": "Eine Notiz „Gibtsnicht“ finde ich in dieser Bubble nicht."}
+    # auch ohne Karten im Kontext und ohne offene Bubble: Rueckfrage, nie Schweigen
+    assert abk.loese("Bewerte die Notiz Gibtsnicht mit 50", {"space": "ideas"}) == {
+        "rueckfrage": "Eine Notiz „Gibtsnicht“ finde ich in dieser Bubble nicht."}
+    assert abk.loese("Mach aus der Notiz Gibtsnicht eine Tabelle", KONTEXT)["rueckfrage"].startswith(
+        "Eine Notiz „Gibtsnicht“")
 
 
 # ── was die Abkuerzung bewusst NICHT nimmt ───────────────────────────────
@@ -192,7 +236,7 @@ def test_loese_wirft_nie() -> None:
      "Das Werkzeug hat die Angaben abgelehnt."),
     ("RuntimeError: Ideen-Werkzeug meldet einen Fehler (idea_not_found)", "Diese Karte gibt es nicht mehr."),
     ("RuntimeError: Ideen-Werkzeug meldet einen Fehler (supabase_http_error)",
-     "Die Datenbank hat die Anfrage abgelehnt."),
+     "Die Datenbank hat die Änderung abgelehnt."),
     ("RuntimeError: Ideen-Werkzeug meldet einen Fehler (neuer_fehler)",
      "Das Werkzeug meldet einen Fehler (neuer_fehler)."),
     ("RuntimeError: Ideen-Werkzeug meldet einen Fehler", "Das Werkzeug meldet einen Fehler."),
@@ -244,9 +288,9 @@ def test_liste_wird_ein_satz_mit_anzahl_und_titeln_ohne_kennungen() -> None:
         "1 Notiz in „Messe“: „Preise“.")
     assert abk.antwort_fuer_schritt("idea.list", True, _quittung([]), None, "", KONTEXT) == (
         "In „Messe“ gibt es noch keine Notizen.")
-    assert abk.antwort_fuer_schritt("idea.list", True, _quittung([{"id": "n1", "title": None}]), None, "", {}) == (
+    assert abk.antwort_fuer_schritt("idea.list", True, _quittung([{"id": "a0000001", "title": None}]), None, "", {}) == (
         "1 Notiz in dieser Bubble: „ohne Titel“.")
-    lang = abk.antwort_fuer_schritt("idea.list", True, _quittung([{"id": "n1", "title": "x" * 300}]), None, "", KONTEXT)
+    lang = abk.antwort_fuer_schritt("idea.list", True, _quittung([{"id": "a0000001", "title": "x" * 300}]), None, "", KONTEXT)
     assert len(lang) < 120
 
 
@@ -277,7 +321,7 @@ def test_bubble_liste_wird_ein_satz_ohne_kennungen() -> None:
 
 def test_uebrige_schritte_behalten_den_satz_der_abkuerzung_fehler_nie() -> None:
     f = abk.antwort_fuer_schritt
-    assert f("idea.rate", True, _quittung([{"id": "n1"}]), None, "„Preise“ mit 80 bewertet.") == "„Preise“ mit 80 bewertet."
+    assert f("idea.rate", True, _quittung([{"id": "a0000001"}]), None, "„Preise“ mit 80 bewertet.") == "„Preise“ mit 80 bewertet."
     assert f("idea.auto_link", True, _quittung({"bubble_id": "b", "anzahl": 2, "angelegt": []}), None, "x") == (
         "2 Verbindungen angelegt.")
     assert f("idea.auto_link", True, _quittung({"bubble_id": "b", "anzahl": 0, "angelegt": []}), None, "x") == (
@@ -294,7 +338,7 @@ def test_uebrige_schritte_behalten_den_satz_der_abkuerzung_fehler_nie() -> None:
 # ── Vorlage fuer den Plan-Schritt ────────────────────────────────────────
 
 def test_vorlage_ueberlebt_geschweifte_klammern_im_text() -> None:
-    argumente = {"bubble_id": "bub1", "title": "Preis {{state.geheim}} und {x}", "idea_ids": ["n1"]}
+    argumente = {"bubble_id": "b0b1e001", "title": "Preis {{state.geheim}} und {x}", "idea_ids": ["a0000001"]}
     vorlage = abk.arg_vorlage(argumente)
 
     assert "{{" not in vorlage and "}}" not in vorlage     # nichts, was der Plan-Ausfuehrer ersetzen wuerde
