@@ -47,6 +47,24 @@ def _dauer(von: Any, bis: Any) -> Optional[float]:
     return round(max(0.0, b - a), 1) if a is not None and b is not None else None
 
 
+def _vorschlag_saetze(zeile: Mapping[str, Any]) -> list[str]:
+    """Die festen Sätze zum Vorschlag; genannt wird nur der Satz, der wirklich schreibt.
+
+    Ersetzt das Übernehmen den Text der Notiz, schreibt erst „Vorschlag trotzdem übernehmen“
+    (das schlichte „Vorschlag übernehmen“ warnt dort nur). Lässt sich der Vorschlag gar nicht
+    mit einem festen Aufruf übernehmen, fehlt der Satz zum Übernehmen.
+    """
+    from . import ideen_vorschlag as vs
+
+    try:
+        if not vs.uebernehmen(zeile)[0]:
+            return ["Vorschlag zeigen", "Vorschlag verwerfen"]
+        schreibt = vs.TROTZDEM_SATZ if vs.ueberschreibt(zeile) else "Vorschlag übernehmen"
+    except Exception:  # noqa: BLE001 - der Stand wirft nie; im Zweifel nur zeigen und verwerfen
+        return ["Vorschlag zeigen", "Vorschlag verwerfen"]
+    return ["Vorschlag zeigen", schreibt, "Vorschlag verwerfen"]
+
+
 def stand_einer_zeile(zeile: Mapping[str, Any]) -> dict[str, Any]:
     """Der Stand genau dieser Zeile (ohne Kette, ohne Dauer)."""
     status = zeile.get("status")
@@ -69,7 +87,7 @@ def stand_einer_zeile(zeile: Mapping[str, Any]) -> dict[str, Any]:
                 "meldung": "Der Vorschlag ist verworfen; an der Notiz ist nichts geändert."}
     if rueckweg == "vorschlag":
         return {"stand": "vorschlag", "ok": True, "hinweis": True, "meldung": meldung,
-                "saetze": ["Vorschlag zeigen", "Vorschlag übernehmen", "Vorschlag verwerfen"]}
+                "saetze": _vorschlag_saetze(zeile)}
     if rueckweg == "abgebrochen":
         return {"stand": "abgebrochen", "ok": True, "hinweis": True,
                 "meldung": meldung or "Das White Paper wurde abgebrochen."}

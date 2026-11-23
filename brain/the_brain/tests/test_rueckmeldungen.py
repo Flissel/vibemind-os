@@ -224,7 +224,23 @@ def test_stand_vorschlag_nennt_die_saetze() -> None:
     aus = st.stand(A1, lambda i: zeile)
     assert aus["stand"] == "vorschlag" and aus["hinweis"] is True and aus["dauer_s"] == 43.0
     assert aus["meldung"].startswith("Die Notiz „Sponsoren“ wurde inzwischen geändert")
-    assert aus["saetze"][:2] == ["Vorschlag zeigen", "Vorschlag übernehmen"]
+    # Ohne Rueckweg in der Zeile laesst sich nichts uebernehmen: kein Satz, der nur so tut.
+    assert aus["saetze"] == ["Vorschlag zeigen", "Vorschlag verwerfen"]
+
+
+@pytest.mark.parametrize("vertrag, werte, schreibt", [
+    ("ausformulieren", None, "Vorschlag trotzdem übernehmen"),   # ersetzt die Notiz: nur dieser Satz schreibt
+    ("einschaetzen", None, "Vorschlag übernehmen"),               # geht an die Bubble, ohne Warnrunde
+    ("bewerten", {"score": 70, "begruendung": "Trägt."}, None),   # zwei Aufrufe: nicht uebernehmbar
+])
+def test_stand_vorschlag_nennt_den_satz_der_wirklich_schreibt(vertrag, werte, schreibt) -> None:
+    mehr = {"werte": werte} if werte else {}
+    zeile = {**_vorschlag_zeile(vertrag, **mehr), "status": "fertig", "angelegt": _iso(0)}
+    zeile["pruefung"] = {**zeile["pruefung"], "fortsetzung": "fertig"}
+    aus = st.stand(A1, lambda i: zeile)
+    erwartet = ["Vorschlag zeigen", schreibt, "Vorschlag verwerfen"] if schreibt else [
+        "Vorschlag zeigen", "Vorschlag verwerfen"]
+    assert aus["stand"] == "vorschlag" and aus["saetze"] == erwartet
 
 
 def test_stand_folgt_der_kette_des_white_papers() -> None:
@@ -334,6 +350,21 @@ def test_router_vorschlag_uebernehmen_ein_fester_aufruf(monkeypatch) -> None:
     body = client.post("/api/multihop/execute",
                        json={"intent": "Vorschlag trotzdem übernehmen", "context": KONTEXT}).json()
     assert len(ausfuehrer.plaene) == 1 and body["final_text"] == vs.KEINER and body["hinweis"] is True
+
+
+@pytest.mark.parametrize("vertrag, ereignis", [("ausformulieren", "idea.update"),
+                                               ("einschaetzen", "idea.rate_reason")])
+def test_router_trotzdem_schreibt_direkt_ohne_warnrunde(monkeypatch, vertrag, ereignis) -> None:
+    # Abgleich mit der Huelle: Sie zeigt die Warnung selbst und sendet beim zweiten Klick gleich
+    # "Vorschlag trotzdem übernehmen". Das gilt sofort, ohne vorheriges "Vorschlag übernehmen".
+    tabelle = _VorschlagTabelle(_vorschlag_zeile(vertrag))
+    monkeypatch.setattr(aa, "tabelle_aus_umgebung", lambda: tabelle)
+    client, ausfuehrer = _client(monkeypatch, {"ok": True, "result": {"content": [{"type": "text", "text": "{}"}]}})
+    body = client.post("/api/multihop/execute",
+                       json={"intent": "Vorschlag trotzdem übernehmen", "context": KONTEXT}).json()
+    (plan,) = ausfuehrer.plaene
+    assert plan.hops[0].capability == ereignis and tabelle.erledigt == ["uebernommen"]
+    assert body.get("hinweis") is not True and not body["final_text"].startswith("Achtung")
 
 
 def test_router_vorschlag_einschaetzen_schreibt_ohne_warnung(monkeypatch) -> None:
