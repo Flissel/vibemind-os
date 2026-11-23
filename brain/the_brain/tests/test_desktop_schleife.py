@@ -1374,7 +1374,7 @@ def test_bestaetigung_aus_dem_satz_ueber_den_echten_executor(sicht, openfang):
 
 
 def test_bestaetigung_mit_feldern_fuer_andere_spaces(sicht, openfang):
-    ergebnis = _bestaetigen(fenster="Start", zeigt="Drucken", programm="^notepad$")["result"]
+    ergebnis = _bestaetigen(fenster="Start", zeigt="Drucken", programm="Notepad.exe")["result"]
     assert ergebnis["bestaetigt"] is False
     assert ergebnis["signal"] == {"gesperrt": False, "programm": True, "fenstertitel": True, "element": False}
     from core import desktop_augen
@@ -1405,7 +1405,7 @@ def test_bestaetigung_ohne_freigabe_ist_nicht_pruefbar(sicht, openfang):
 
 
 @pytest.mark.parametrize("argumente", [{}, {"value": "Öffne den Editor"}, {"fenster": "   "},
-                                       {"fenster": "Start", "programm": "(["}, {"fenster": "x" * 300}])
+                                       {"fenster": "Start", "programm": "x" * 250}, {"fenster": "x" * 300}])
 def test_bestaetigung_ohne_klaren_auftrag_liest_nichts(sicht, openfang, argumente):
     ergebnis = _bestaetigen(**argumente)["result"]
     assert (ergebnis["success"], ergebnis["error"]) == (False, "auftrag_unklar")

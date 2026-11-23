@@ -75,7 +75,9 @@ def auftrag(value: Any) -> Optional[dict]:
         postcondition["element_enthaelt"] = zeigt
     programm = _text(daten.get("programm"))
     if programm:
-        postcondition["programm"] = programm
+        # Woertlich, nie als Muster: das Argument kommt aus Plaenen anderer Spaces (kein ReDoS).
+        name = programm.lower().removesuffix(".exe")
+        postcondition["programm"] = "^" + re.escape(name) + "$"
     return postcondition
 
 

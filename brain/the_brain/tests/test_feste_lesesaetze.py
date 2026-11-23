@@ -301,7 +301,7 @@ def test_bestaetigung_aus_jedem_reiter(space) -> None:
 def test_bestaetigung_auftrag_aus_feldern_oder_absicht() -> None:
     from core.desktop_augen import auftrag
     assert auftrag({"fenster": "Editor", "zeigt": "Speichern", "programm": "notepad"}) == {
-        "fenstertitel_enthaelt": "Editor", "element_enthaelt": "Speichern", "programm": "notepad"}
+        "fenstertitel_enthaelt": "Editor", "element_enthaelt": "Speichern", "programm": "^notepad$"}
     assert auftrag({"value": "", "_intent": "Bestätige: Fenster Editor ist vorn"}) == {
         "fenstertitel_enthaelt": "Editor"}
     assert auftrag("Fenster Editor ist vorn und zeigt Datei") == {
@@ -318,3 +318,12 @@ def test_bestaetigung_ende_zu_ende_titel_nie_im_verlauf(monkeypatch) -> None:
     assert [h.capability for h in ausfuehrer.plaene[0].hops] == ["desktop_bestaetigen"]
     assert (body["ok"], body["final_text"]) == (True, satz)
     assert ausfuehrer.recorder.finals == ["Bestätigung am Bildschirm: ja (Titel nur in der Antwort an die App)."]
+
+
+def test_bestaetigung_programm_ist_woertlich_kein_muster() -> None:
+    import re
+    from core.desktop_augen import auftrag
+    muster = auftrag({"fenster": "A", "programm": "(a+)+$"})["programm"]
+    assert muster == "^" + re.escape("(a+)+$") + "$"
+    assert re.search(muster, "a" * 40 + "!") is None  # kein Rueckverfolgen
+    assert re.search(auftrag({"fenster": "A", "programm": "MSEDGE.EXE"})["programm"], "msedge")
