@@ -66,11 +66,14 @@ def test_werkzeug_aufruf_als_text_faellt(roh) -> None:
     "I can't help with that request.",
     "Mir liegen keine Informationen zu dieser Notiz vor.",
     "Gerne. Ich habe keinen Zugriff auf den Inhalt der Karte.",
+    "Das Werkzeug idea_update steht mir nicht zur Verfügung.",
+    "Um das zu tun, bräuchte ich ein Werkzeug, das hier nicht verfügbar ist.",
+    "The tool idea_update is not available to me.",
 ])
 def test_absage_ist_kein_inhalt(roh) -> None:
     assert rw.ist_verweigerung(roh)
     werte, satz = rw.ergebnis_pruefen("ausformulieren", roh)
-    assert werte is None and "abgelehnt" in satz
+    assert werte is None and satz == rw.VERWEIGERT
 
 
 @pytest.mark.parametrize("roh", ["Hier ist die ausformulierte Notiz: Die Sponsoren zahlen.",
@@ -80,10 +83,37 @@ def test_vorrede_landet_nicht_in_der_karte(roh) -> None:
     assert werte is None and "Vorrede" in satz
 
 
+@pytest.mark.parametrize("roh", [
+    'Hier meine Bewertung:\n```json\n{"score": 70, "begruendung": "Trägt."}\n```\nViel Erfolg!',
+    'Ergebnis: {"score": 70, "begruendung": "Trägt."} – fertig.',
+])
+def test_mehrere_felder_schneiden_genau_ein_objekt_heraus(roh) -> None:
+    assert rw.ergebnis_pruefen("bewerten", roh) == ({"score": 70, "begruendung": "Trägt."}, "")
+
+
+def test_zwei_objekte_oder_absage_ohne_objekt_bleiben_abgelehnt() -> None:
+    werte, satz = rw.ergebnis_pruefen("bewerten", '{"score": 1, "begruendung": "a"} {"score": 2, "begruendung": "b"}')
+    assert werte is None and "vereinbarten Form" in satz
+    werte, satz = rw.ergebnis_pruefen("bewerten", "Das Werkzeug steht mir nicht zur Verfügung.")
+    assert werte is None and satz == rw.VERWEIGERT
+
+
+def test_ein_textfeld_nimmt_eingebettetes_objekt() -> None:
+    assert rw.ergebnis_pruefen("ausformulieren", 'Ergebnis: {"text": "Neu."}') == ({"text": "Neu."}, "")
+
+
+def test_dokument_schneidet_ein_objekt_heraus() -> None:
+    roh = 'So:\n```json\n{"ueberschrift": "Bühne", "text": "Steht.", "verweise": ["K1"]}\n```'
+    werte, satz = dok.ergebnis_pruefen("abschnitt", roh, ["K1"])
+    assert satz == "" and werte["text"] == "Steht."
+    assert dok.ergebnis_pruefen("abschnitt", "Ich kann aus diesen Notizen keinen Abschnitt schreiben.", ["K1"])[1] \
+        == rw.VERWEIGERT
+
+
 def test_absage_im_json_feld_faellt_auch() -> None:
     werte, satz = rw.ergebnis_pruefen("bewerten", json.dumps(
         {"score": 50, "begruendung": "Ich kann die Notiz nicht bewerten, es fehlt Inhalt."}))
-    assert werte is None and "abgelehnt" in satz
+    assert werte is None and satz == rw.VERWEIGERT
 
 
 @pytest.mark.parametrize("roh", [

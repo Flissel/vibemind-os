@@ -85,7 +85,11 @@ _VERWEIGERUNG_HART = re.compile(
     r"^\s*(?:es\s+tut\s+mir\s+leid|tut\s+mir\s+leid|entschuldig\w*|sorry\b"
     r"|als\s+(?:ki|k\.\s*i\.|sprachmodell|ki-\w+)\b"
     r"|i\s*(?:can'?t|cannot|am\s+unable|'m\s+unable|'m\s+sorry|am\s+sorry|won'?t|apologi[sz]e)\b"
-    r"|as\s+an\s+ai\b|unfortunately\b)", re.IGNORECASE)
+    r"|as\s+an\s+ai\b|unfortunately\b)"
+    # "Das Werkzeug idea_update steht mir nicht zur Verfuegung" (irgendwo im Satz)
+    r"|\b(?:werkzeug|tool|funktion|zugriff)\w*\b[^\n]{0,100}?\bnicht\s+"
+    r"(?:zur\s+verf(?:ü|ue)gung|verf(?:ü|ue)gbar|erlaubt|freigegeben)"
+    r"|\b(?:is|are)\s+not\s+available\s+to\s+me\b|\bno\s+access\s+to\b", re.IGNORECASE)
 _VERWEIGERUNG_WEICH = re.compile(
     r"^\s*(?:leider\s*,?\s*)?(?:ich\s+(?:kann|könnte|koennte|darf|werde|bin|habe|sehe)\b"
     r"|(?:kann|darf|werde)\s+ich\b|mir\s+(?:fehl|lieg)\w*\b|dazu\s+(?:kann|habe)\s+ich\b"
@@ -100,6 +104,29 @@ _AUFGABE = re.compile(
     r"notiz|karte|\btext|anfrage|aufgabe|auftrag|ausformulier|umformulier|einsch(?:ä|ae)tz|bewert"
     r"|helfen|zugriff|informationen|inhalt|werkzeug|json|format|bearbeiten|erledigen|erf(?:ü|ue)llen"
     r"|vorgegeben|vorliegend", re.IGNORECASE)
+
+
+VERWEIGERT = "Der Agent konnte das nicht; es wurde nichts geändert."
+
+
+def ein_json_objekt(text: str) -> Optional[dict[str, Any]]:
+    """Genau ein JSON-Objekt aus Codeblock oder Vor-/Nachtext; bei keinem oder mehreren ``None``."""
+    decoder = json.JSONDecoder()
+    gefunden: list[dict[str, Any]] = []
+    i = 0
+    while True:
+        start = text.find("{", i)
+        if start < 0:
+            break
+        try:
+            wert, ende = decoder.raw_decode(text, start)
+        except ValueError:
+            i = start + 1
+            continue
+        if isinstance(wert, dict):
+            gefunden.append(wert)
+        i = ende
+    return gefunden[0] if len(gefunden) == 1 else None
 
 
 def ist_verweigerung(text: Any) -> bool:
@@ -128,7 +155,7 @@ def text_satz(wert: Any, grenze: int) -> str:
     if _HTML.search(wert):
         return "Der Text des Agenten enthält HTML oder Skript; es wurde nichts geändert."
     if ist_verweigerung(wert):
-        return "Der Agent hat den Auftrag abgelehnt statt ihn zu erledigen; es wurde nichts geändert."
+        return VERWEIGERT
     if _VORREDE.search(wert):
         return "Der Agent hat eine Vorrede statt nur des Ergebnisses geliefert; es wurde nichts geändert."
     return ""
@@ -295,9 +322,23 @@ def ergebnis_pruefen(vertrag_name: str, roh: Any) -> tuple[Optional[dict[str, An
     try:
         werte = json.loads(text)
     except ValueError:
-        if set(vertrag["felder"]) != {"text"} or text[:1] in ("{", "["):
-            return None, "Der Agent hat nicht in der vereinbarten Form geantwortet; es wurde nichts geändert."
-        werte = {"text": text}
+        if set(vertrag["felder"]) == {"text"}:
+            # Ein Textfeld: ein eingebettetes {"text": ...} gilt, sonst reiner Text;
+            # was wie JSON beginnt, muss JSON sein.
+            eingebettet = ein_json_objekt(text)
+            if isinstance(eingebettet, dict) and set(eingebettet) == {"text"}:
+                werte = eingebettet
+            elif text[:1] in ("{", "["):
+                return None, "Der Agent hat nicht in der vereinbarten Form geantwortet; es wurde nichts geändert."
+            else:
+                werte = {"text": text}
+        else:
+            # Mehrere Felder: genau ein Objekt darf aus Vor-/Nachtext oder Codeblock kommen.
+            werte = ein_json_objekt(text)
+            if werte is None:
+                if ist_verweigerung(text):
+                    return None, VERWEIGERT
+                return None, "Der Agent hat nicht in der vereinbarten Form geantwortet; es wurde nichts geändert."
     if not isinstance(werte, dict) or set(werte) != set(vertrag["felder"]):
         return None, "Der Agent hat nicht in der vereinbarten Form geantwortet; es wurde nichts geändert."
     sauber: dict[str, Any] = {}

@@ -44,8 +44,8 @@ from typing import Any, Callable, Iterable, Mapping, Optional
 from .ideen_abkuerzung import ist_kennung as ist_db_kennung
 from .ideen_fest_contract import feste_argumente, ist_kennung
 from .ideen_rueckweg import (
-    _HTML, _STEUER, _VORREDE, _WERKZEUG, _ZAUN, _ZAUNZEICHEN, FreigabeAusstehend, RueckwegFehler, _sauber, _zaun_ersatz,
-    ist_verweigerung,
+    _HTML, _STEUER, _VORREDE, _WERKZEUG, _ZAUN, _ZAUNZEICHEN, VERWEIGERT, FreigabeAusstehend, RueckwegFehler, _sauber,
+    _zaun_ersatz, ein_json_objekt, ist_verweigerung,
 )
 
 _WARTET = "idea.document: approval pending"
@@ -421,7 +421,7 @@ def _text_ok(wert: Any, grenze: int, was: str) -> tuple[Optional[str], str]:
     if _HTML.search(wert):
         return None, "Der Text des Agenten enthält HTML oder Skript; es wurde nichts geändert."
     if ist_verweigerung(wert):
-        return None, "Der Agent hat den Auftrag abgelehnt statt ihn zu erledigen; es wurde nichts geändert."
+        return None, VERWEIGERT
     if _VORREDE.search(wert):
         return None, "Der Agent hat eine Vorrede statt nur des Ergebnisses geliefert; es wurde nichts geändert."
     return wert.strip(), ""
@@ -439,7 +439,10 @@ def ergebnis_pruefen(vertrag: str, roh: Any, kuerzel: Iterable[str]) -> tuple[Op
     try:
         werte = json.loads(text)
     except ValueError:
-        return None, _FORM
+        # Genau ein Objekt darf aus Vor-/Nachtext oder Codeblock kommen; sonst streng.
+        werte = ein_json_objekt(text)
+        if werte is None:
+            return None, VERWEIGERT if ist_verweigerung(text) else _FORM
     felder = {"zusammenfassen": {"absaetze", "verweise"}, "abschnitt": {"ueberschrift", "text", "verweise"}}.get(vertrag)
     if felder is None:
         return None, "Der Auftrag nennt einen unbekannten Vertrag."

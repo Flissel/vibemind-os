@@ -297,7 +297,7 @@ def test_nachfasser_meldet_abgelehntes_ergebnis_als_deutschen_satz() -> None:
                rueckweg_anschluss=ideen.anschluss).runde()
     ((_, abschluss),) = tab.ergaenzt
     assert abschluss["fortsetzung"] == "fehler" and abschluss["verified"] is False
-    assert abschluss["fortsetzung_fehler"].startswith("Der Agent hat den Auftrag abgelehnt")
+    assert abschluss["fortsetzung_fehler"].startswith("Der Agent konnte das nicht")
     assert ideen.aufrufe == []
 
 
