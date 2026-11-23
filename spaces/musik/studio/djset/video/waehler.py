@@ -38,16 +38,21 @@ def _laenge(sekunden: float) -> str:
     return f"{gesamt // 60}:{gesamt % 60:02d}"
 
 
+def _zelle(text: str) -> str:
+    """Nutzerdaten in eine Markdown-Zelle: | und Zeilenumbrueche wuerden die Tabelle sprengen."""
+    return " ".join(text.replace("|", "/").split())
+
+
 def _tabelle(songs: list[SongEintrag]) -> str:
     zeilen = []
     for song in songs:
         messung = song.messung
         if messung is None:
             raise VideoFehler(f"Song {song.id!r} hat keine Messung")
-        energie = sum(messung.energy) / len(messung.energy)
+        energie = sum(messung.energy) / len(messung.energy) if messung.energy else 0.0
         getrennt = "ja" if song.stimmen is not None else "nein"
         zeilen.append(
-            f"| {song.id} | {song.titel} | {messung.bpm.value:.1f} | "
+            f"| {song.id} | {_zelle(song.titel)} | {messung.bpm.value:.1f} | "
             f"{messung.key.camelot} | {_laenge(messung.duration_s)} | "
             f"{energie:.2f} | {getrennt} |"
         )
@@ -105,3 +110,4 @@ def video_waehlen(
             f"Das Modell nannte {wahl.song_id!r}, erlaubt sind: {', '.join(erlaubt)}"
         )
     return wahl
+

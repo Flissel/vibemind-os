@@ -92,3 +92,33 @@ def test_ohne_kandidaten_kein_modellaufruf(budget):
         video_waehlen(client, "x", 30.0, [], budget)
     assert client.aufrufe == 0
 
+
+
+def test_leere_energie_zaehlt_als_null(budget):
+    song = _song("a")
+    assert song.messung is not None
+    song = song.model_copy(
+        update={"messung": song.messung.model_copy(update={"energy": []})}
+    )
+    client = FakeClient([_antwort("a")])
+    video_waehlen(client, "x", 30.0, [song], budget)
+    zeile = next(z for z in client.prompts[0].splitlines() if z.startswith("| a |"))
+    assert "0.00" in zeile
+
+
+def test_titel_sprengt_die_tabelle_nicht(budget):
+    song = _song("a").model_copy(update={"titel": "Ein|Titel\nzweite Zeile"})
+    client = FakeClient([_antwort("a")])
+    video_waehlen(client, "x", 30.0, [song], budget)
+    zeile = next(z for z in client.prompts[0].splitlines() if z.startswith("| a |"))
+    assert zeile.count("|") == 8
+    assert "zweite Zeile" in zeile
+
+
+def test_der_prompt_traegt_gesangs_und_einstiegsregel(budget):
+    client = FakeClient([_antwort("a")])
+    video_waehlen(client, "x", 30.0, [_song("a")], budget)
+    prompt = client.prompts[0]
+    assert "gesang: nur true, wenn der Wunsch ausdruecklich Gesang verlangt" in prompt
+    assert '"hoehepunkt", wenn der Wunsch Energie oder einen Hoehepunkt' in prompt
+    assert 'sonst "anfang"' in prompt
