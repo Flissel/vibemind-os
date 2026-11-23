@@ -23,6 +23,7 @@ Alle festen Aufrufe laufen als `execution: { kind: mcp, server: spaces-ideas }` 
 | `idea.auto_link` (verlinken, Vorschlag) | „Verlinke, was zusammengehört" / „Finde Verbindungen in dieser Bubble" | `idea_auto_link` | `bubble_id` |
 | `idea.rate` (bewerten, Zahl) | „Bewerte Preise mit 80" / „Gib der Notiz Druckerei 40 Punkte" | `idea_rate` | `id`, `score` |
 | `bubble.rate` (bewerten, Zahl) | „Bewerte die Bubble Messe mit 70" | `bubble_rate` | `id`, `score` |
+| `idea.rate_reason` (Begründung festhalten) | „Begründung: Preise und Druckerei tragen die Idee" / „Halt als Begründung fest, dass der Stand zu klein ist" | `bewertung_begruenden` | `bubble_id`, `text` |
 | `bubble.promote` (befördern) | „Mach aus der Bubble Messe ein Projekt" / „Befördere diese Bubble" | `bubble_promote` | `bubble_id` |
 | `idea.list` (lesen) | „Zeig die Notizen dieser Bubble" / „Was steht hier?" | `idea_list` | keine (`bubble_id` empfohlen) |
 | `idea.aenderung_zurueck` | „Zurück" / „Nimm das zurück" | `aenderung_zurueck` | keine |
@@ -36,7 +37,11 @@ aufgelöst: aus dem Vorspeicher der App oder über `idea_list`. Das ist ein Lese
 |---|---|---|---|
 | `idea.rewrite` | „Formuliere die Notiz aus" / „Fass die Notiz zusammen" / „Bau aus dem Text eine echte Tabelle" | den neuen Text | `idea_update`, `idea_format` |
 | `idea.group` | „Ordne die Notizen nach Thema" / „Was gehört zusammen?" | die Gruppen | `idea_update` (Lage), `idea_connect` |
-| `idea.evaluate` | „Was hältst du von dieser Notiz?" / „Bewerte die Bubble" (ohne Zahl) | Urteil und Begründung | `idea_rate`, `bubble_rate` |
+| `idea.evaluate` | „Was hältst du von dieser Notiz?" / „Bewerte die Bubble" (ohne Zahl) | Urteil und Begründung | `idea_rate`, `bubble_rate`, `bewertung_begruenden` |
+
+Von Felix entschieden (23.11.): Befördert werden nur ganze Bubbles; eine Absicht „Notiz befördern" gibt es
+nicht. Die Begründung einer Bewertung steht nicht an der Karte: `idea_rate` nimmt nur die Zahl, der Text geht
+über `bewertung_begruenden` an die Bubble, mit Verweisen auf die Karten (`idea_ids`).
 
 Für diese drei gilt die 2-Sekunden-Grenze für die erste Reaktion: Die App zeigt sofort „arbeitet"; das
 Ergebnis kommt später über die Datenbank an.
@@ -44,11 +49,11 @@ Ergebnis kommt später über die Datenbank an.
 ## Was dafür im Verzeichnis zu ändern ist
 
 1. `ideas.mcp_tools.spaces-ideas` erweitern um: `idea_create`, `idea_update`, `idea_list`, `idea_format`,
-   `idea_arrange`, `idea_auto_link`, `idea_rate`, `bubble_rate`, `bubble_promote`.
+   `idea_arrange`, `idea_auto_link`, `idea_rate`, `bubble_rate`, `bubble_promote`, `bewertung_begruenden`.
 2. Die Ereignisse `idea.create`, `idea.update`, `idea.list`, `idea.auto_link` und die `idea.format_*` vom
    breiten Datenbank-Server auf `spaces-ideas` umbinden; `idea.format`, `idea.arrange`, `idea.rate`,
-   `bubble.rate` neu eintragen.
+   `bubble.rate`, `idea.rate_reason` neu eintragen.
 3. Den Agenten `brain-ideas` in OpenFang mit derselben Werkzeugliste neu erzeugen.
 
-Die neuen Werkzeuge `idea_format`, `idea_arrange`, `idea_auto_link`, `idea_rate`, `bubble_rate` baut die
-Ideen-Sitzung in `spaces/ideas/mcp_server.py`.
+Die neuen Werkzeuge `idea_format`, `idea_arrange`, `idea_auto_link`, `idea_rate`, `bubble_rate` und
+`bewertung_begruenden` stehen in `spaces/ideas/mcp_server.py` und sind getestet.

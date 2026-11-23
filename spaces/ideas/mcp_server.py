@@ -48,6 +48,7 @@ ARRANGE_NODE_CAP = 100
 ARRANGE_CELL_WIDTH = 240   # Karte 200 breit + 40 Abstand
 ARRANGE_CELL_HEIGHT = 140  # Karte 100 hoch + 40 Abstand
 AUTO_LINK_THRESHOLD = 0.30  # wie auto_link_op im Gehirn
+REASON_ENTRY_CAP = 50  # so viele Begruendungen haelt eine Bubble, die aeltesten fallen weg
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -254,15 +255,41 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "idea_rate",
-        "description": "Store a rating from 0 to 100 on one canvas idea, optionally with a short reason.",
+        "description": (
+            "Store a rating from 0 to 100 on one canvas idea. The card shows the number only; "
+            "a reason goes to bewertung_begruenden."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": _ID_SCHEMA_PATTERN},
                 "score": {"type": "integer", "minimum": 0, "maximum": 100},
-                "begruendung": {"type": "string", "maxLength": 2000},
             },
             "required": ["id", "score"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "bewertung_begruenden",
+        "description": (
+            "Store the reason for a rating apart from the cards: one entry on the bubble with the text "
+            "and links to the canvas ideas it refers to. The ideas must belong to that bubble."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "bubble_id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": _ID_SCHEMA_PATTERN},
+                "text": {"type": "string", "minLength": 1, "maxLength": 2000},
+                "idea_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": _ID_SCHEMA_PATTERN},
+                    "maxItems": 20,
+                    "uniqueItems": True,
+                    "default": [],
+                },
+                "score": {"type": "integer", "minimum": 0, "maximum": 100},
+            },
+            "required": ["bubble_id", "text"],
             "additionalProperties": False,
         },
     },
@@ -320,6 +347,7 @@ CHANGE_WRITE_TOOLS = frozenset({
     "bubble_create", "bubble_update", "bubble_delete", "bubble_promote",
     "idea_create", "idea_update", "idea_delete", "idea_connect", "idea_disconnect",
     "idea_format", "idea_arrange", "idea_auto_link", "idea_rate", "bubble_rate",
+    "bewertung_begruenden",
 })
 for _tool in TOOLS:
     if _tool["name"] in CHANGE_WRITE_TOOLS:
@@ -1194,15 +1222,9 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
                 created.append({"from_id": from_id, "to_id": to_id, "ueberlappung": round(overlap, 2)})
         return {"bubble_id": bubble_id, "anzahl": len(created), "angelegt": created}
     if name == "idea_rate":
-        _only_arguments(arguments, {"id", "score", "begruendung"})
+        _only_arguments(arguments, {"id", "score"})
         idea_id = _durable_id(arguments, "id")
         rating: dict[str, Any] = {"wert": _score(arguments)}
-        if "begruendung" in arguments:
-            reason = arguments["begruendung"]
-            if not isinstance(reason, str) or len(reason) > 2000:
-                raise ToolError("invalid_arguments: 'begruendung' must be a string of at most 2000 characters")
-            if reason.strip():
-                rating["begruendung"] = reason.strip()
         node = _first_row(_request(
             "GET", "canvas_nodes", params={"select": "id,metadata", "id": f"eq.{idea_id}", "limit": "1"},
         ))
@@ -1217,6 +1239,51 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         if updated is None:
             raise ToolError("idea_rate_unverified")
         return updated
+    if name == "bewertung_begruenden":
+        _only_arguments(arguments, {"bubble_id", "text", "idea_ids", "score"})
+        bubble_id = _durable_id(arguments, "bubble_id")
+        text = arguments.get("text")
+        if not isinstance(text, str) or not text.strip() or len(text) > 2000:
+            raise ToolError("invalid_arguments: 'text' must be a non-empty string of at most 2000 characters")
+        idea_ids = arguments.get("idea_ids", [])
+        if not isinstance(idea_ids, list) or len(idea_ids) > 20:
+            raise ToolError("invalid_arguments: 'idea_ids' must be an array of at most 20 ids")
+        for idea_id in idea_ids:
+            if not isinstance(idea_id, str) or IDEA_ID_PATTERN.fullmatch(idea_id) is None:
+                raise ToolError("invalid_arguments: 'idea_ids' must contain canonical durable ids")
+        if len(set(idea_ids)) != len(idea_ids):
+            raise ToolError("invalid_arguments: 'idea_ids' must not repeat an id")
+        entry: dict[str, Any] = {"id": uuid.uuid4().hex[:8], "text": text.strip(), "karten": list(idea_ids)}
+        if "score" in arguments:
+            entry["wert"] = _score(arguments)
+        bubble = _first_row(_request(
+            "GET",
+            "ideas",
+            params={"select": "id,metadata", "id": f"eq.{bubble_id}", "parent_id": "is.null", "limit": "1"},
+        ))
+        if bubble is None:
+            raise ToolError("bubble_not_found")
+        if idea_ids:
+            # Ein Verweis darf nie ins Leere oder in eine fremde Bubble zeigen.
+            known = {node["id"] for node in _bubble_nodes(bubble_id, "id")}
+            missing = [idea_id for idea_id in idea_ids if idea_id not in known]
+            if missing:
+                raise ToolError(f"idea_not_in_bubble: {missing[0]}")
+        metadata = bubble.get("metadata")
+        metadata = dict(metadata) if isinstance(metadata, Mapping) else {}
+        entries = metadata.get("bewertungen")
+        entries = [item for item in entries if isinstance(item, Mapping)] if isinstance(entries, list) else []
+        entry["erstellt_am"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        metadata["bewertungen"] = [*entries, entry][-REASON_ENTRY_CAP:]
+        updated = _first_row(_request(
+            "PATCH",
+            "ideas",
+            params={"id": f"eq.{bubble_id}", "parent_id": "is.null"},
+            body={"metadata": metadata},
+        ))
+        if updated is None:
+            raise ToolError("bewertung_unverified")
+        return {"bubble_id": bubble_id, "bewertung": entry}
     if name == "bubble_rate":
         _only_arguments(arguments, {"id", "score"})
         bubble_id = _durable_id(arguments, "id")

@@ -1,6 +1,7 @@
 # Ideen-Space: was er zeigt
 
-Stand 23.11.2026, Entwurf der Ideen-Sitzung. Noch nicht von Felix bestätigt.
+Stand 23.11.2026, Entwurf der Ideen-Sitzung. Felix hat drei Fragen dazu beantwortet (siehe unten); der Rest
+ist noch nicht von ihm bestätigt.
 Der Ist-Stand der App wurde hierfür nicht geprüft; das ist die Soll-Beschreibung für die Hülle.
 
 ## Aufbau
@@ -98,14 +99,38 @@ Chat „arbeitet" und wartet auf die Antwort. So entsteht aus einer Frage keine 
 | formatieren | Karte wechselt die Darstellung | Inhalt passend umschreiben, zum Beispiel Fließtext zu Tabelle |
 | ordnen | Karten rücken ins Raster | nach Thema gruppieren |
 | verlinken | Linie zwischen zwei genannten Karten; Vorschlag nach gleichen Wörtern | Verbindungen nach Sinn |
-| bewerten | genannte Zahl an der Karte oder Bubble | Urteil der KI mit Begründung |
-| befördern | Bubble wird Projekt, Zustand „promoted", Verweis auf das Projekt | nichts |
+| bewerten | genannte Zahl an der Karte oder Bubble | Urteil der KI; die Begründung steht extra (siehe „Begründungen") |
+| befördern | Bubble wird Projekt, Zustand „promoted", Verweis auf das Projekt; nur ganze Bubbles | nichts |
 
 Dazu „zurück": nimmt die letzte Änderung des Agenten als Ganzes zurück.
 
-## Offene Fragen an Felix
+## Begründungen
 
-1. „Befördern" heißt hier: eine Bubble wird ein Projekt. Soll auch eine einzelne Notiz befördert werden
-   können (Notiz wird eigene Bubble)?
-2. Bewertung als Zahl 0 bis 100 an der Karte: reicht das, oder soll die Karte auch die Begründung zeigen?
-3. Soll der Chat seinen Verlauf je Bubble behalten oder je Sitzung neu beginnen?
+Die Begründung einer Bewertung steht nicht an der Karte. **[Felix, 23.11.]** Sie steht in einer eigenen Liste
+zur offenen Bubble, zum Beispiel als Abschnitt im Chat-Bereich.
+
+| Feld | Quelle | Anzeige |
+|---|---|---|
+| Text | `ideas.metadata.bewertungen[].text` | der Begründungstext |
+| Karten | `ideas.metadata.bewertungen[].karten` (Kennungen aus `canvas_nodes`) | je Karte ein Link mit ihrem Titel; ein Klick springt zur Karte und hebt sie hervor |
+| Zahl | `ideas.metadata.bewertungen[].wert` (0 bis 100, kann fehlen) | neben dem Text |
+| Zeitpunkt | `ideas.metadata.bewertungen[].erstellt_am` | klein, neueste zuerst |
+
+Geschrieben wird der Eintrag mit `bewertung_begruenden`. Das Werkzeug nimmt nur Karten der eigenen Bubble an.
+Eine Bubble hält die 50 neuesten Begründungen. Wird eine verlinkte Karte später gelöscht, zeigt der Link
+„Karte gelöscht" und springt nicht.
+
+## Chat-Verlauf
+
+Der Chat hat je Bubble einen eigenen Verlauf. **[Felix, 23.11.]** Wechselt Felix die Bubble, wechselt der
+Verlauf mit. Ohne offene Bubble gibt es einen Verlauf für die Übersicht.
+
+Wo der Verlauf gespeichert wird und ob er einen Neustart der App übersteht, ist noch nicht festgelegt; das
+klären Hülle und Koordination. Für einen dauerhaft offenen Agenten heißt das: Er braucht je Bubble einen
+eigenen Gesprächsfaden, oder der Verlauf der Bubble reist mit dem Satz mit.
+
+## Entschieden von Felix (23.11.)
+
+1. Befördert werden nur ganze Bubbles, keine einzelnen Notizen.
+2. Die Begründung einer Bewertung steht nicht an der Karte, sondern extra, mit Links zu den Karten.
+3. Der Chat hat je Bubble einen eigenen Verlauf.

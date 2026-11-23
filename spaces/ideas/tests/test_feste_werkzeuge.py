@@ -257,14 +257,18 @@ class RateTests(unittest.TestCase):
             ("PATCH", "canvas_nodes"): lambda kwargs: [{"id": "n1", **kwargs["body"]}],
         })
         with mock.patch.object(server, "_request", side_effect=request):
-            result = server.call_tool("idea_rate", {"id": "n1", "score": 80, "begruendung": " klarer Nutzen "})
+            result = server.call_tool("idea_rate", {"id": "n1", "score": 80})
 
-        self.assertEqual(result["metadata"], {
-            "width": 200.0,
-            "bewertung": {"wert": 80, "begruendung": "klarer Nutzen"},
-        })
+        self.assertEqual(result["metadata"], {"width": 200.0, "bewertung": {"wert": 80}})
         (patch,) = request.of("PATCH", "canvas_nodes")
         self.assertEqual(patch["params"], {"id": "eq.n1"})
+
+    def test_idea_rate_takes_no_reason_the_card_shows_the_number_only(self) -> None:
+        server = load_server()
+        with mock.patch.object(server, "_request") as request:
+            with self.assertRaisesRegex(server.ToolError, "^invalid_arguments"):
+                server.call_tool("idea_rate", {"id": "n1", "score": 80, "begruendung": "x"})
+        request.assert_not_called()
 
     def test_idea_rate_fails_for_a_missing_idea_without_writing(self) -> None:
         server = load_server()
@@ -295,6 +299,85 @@ class RateTests(unittest.TestCase):
                 for score in (-1, 101, 7.5, "80", True, None):
                     with self.assertRaisesRegex(server.ToolError, "^invalid_arguments"):
                         server.call_tool(name, {"id": "x1", "score": score})
+        request.assert_not_called()
+
+
+class ReasonTests(unittest.TestCase):
+    """Die Begruendung steht nicht an der Karte, sondern an der Bubble, mit Verweisen."""
+
+    def _answers(self, metadata):
+        return {
+            ("GET", "ideas"): [{"id": "bub1", "metadata": metadata}],
+            ("GET", "canvas_nodes"): [{"id": "n1"}, {"id": "n2"}, {"id": "n3"}],
+            ("PATCH", "ideas"): lambda kwargs: [{"id": "bub1", **kwargs["body"]}],
+        }
+
+    def test_reason_is_appended_to_the_bubble_with_links_to_its_cards(self) -> None:
+        server = load_server()
+        old = {"id": "alt1", "text": "frueher", "karten": []}
+        request = Recorder(self._answers({"farbe": "blau", "bewertungen": [old]}))
+        with mock.patch.object(server, "_request", side_effect=request):
+            result = server.call_tool("bewertung_begruenden", {
+                "bubble_id": "bub1", "text": " Preise und Druckerei tragen die Idee. ",
+                "idea_ids": ["n1", "n3"], "score": 70,
+            })
+
+        entry = result["bewertung"]
+        self.assertEqual(
+            {k: entry[k] for k in ("text", "karten", "wert")},
+            {"text": "Preise und Druckerei tragen die Idee.", "karten": ["n1", "n3"], "wert": 70},
+        )
+        self.assertRegex(entry["id"], r"^[0-9a-f]{8}$")
+        self.assertIn("erstellt_am", entry)
+        (patch,) = request.of("PATCH", "ideas")
+        self.assertEqual(patch["params"], {"id": "eq.bub1", "parent_id": "is.null"})
+        self.assertEqual(patch["body"], {"metadata": {"farbe": "blau", "bewertungen": [old, entry]}})
+        self.assertEqual(request.of("PATCH", "canvas_nodes"), [])
+
+    def test_reason_without_cards_reads_no_cards_and_keeps_only_the_newest_entries(self) -> None:
+        server = load_server()
+        full = [{"id": f"e{i}", "text": "t", "karten": []} for i in range(server.REASON_ENTRY_CAP)]
+        request = Recorder(self._answers({"bewertungen": full}))
+        with mock.patch.object(server, "_request", side_effect=request):
+            result = server.call_tool("bewertung_begruenden", {"bubble_id": "bub1", "text": "Gesamturteil"})
+
+        self.assertNotIn("wert", result["bewertung"])
+        self.assertEqual(request.of("GET", "canvas_nodes"), [])
+        stored = request.of("PATCH", "ideas")[0]["body"]["metadata"]["bewertungen"]
+        self.assertEqual(len(stored), server.REASON_ENTRY_CAP)
+        self.assertEqual(stored[0]["id"], "e1")
+        self.assertEqual(stored[-1], result["bewertung"])
+
+    def test_link_to_a_card_outside_the_bubble_or_a_missing_bubble_writes_nothing(self) -> None:
+        server = load_server()
+        request = Recorder(self._answers({}))
+        with mock.patch.object(server, "_request", side_effect=request):
+            with self.assertRaisesRegex(server.ToolError, "^idea_not_in_bubble: fremd$"):
+                server.call_tool("bewertung_begruenden", {"bubble_id": "bub1", "text": "x", "idea_ids": ["n1", "fremd"]})
+        self.assertEqual(request.of("PATCH", "ideas"), [])
+
+        request = Recorder({})
+        with mock.patch.object(server, "_request", side_effect=request):
+            with self.assertRaisesRegex(server.ToolError, "^bubble_not_found$"):
+                server.call_tool("bewertung_begruenden", {"bubble_id": "bub1", "text": "x"})
+        self.assertEqual(request.of("PATCH", "ideas"), [])
+
+    def test_invalid_arguments_issue_no_request(self) -> None:
+        server = load_server()
+        with mock.patch.object(server, "_request") as request:
+            for arguments in (
+                {"bubble_id": "bub1"},
+                {"bubble_id": "bub1", "text": "   "},
+                {"bubble_id": "bub1", "text": "x" * 2001},
+                {"bubble_id": "bub1", "text": "x", "idea_ids": "n1"},
+                {"bubble_id": "bub1", "text": "x", "idea_ids": ["n1", "n1"]},
+                {"bubble_id": "bub1", "text": "x", "idea_ids": ["n1,n2"]},
+                {"bubble_id": "bub1", "text": "x", "idea_ids": [f"n{i}" for i in range(21)]},
+                {"bubble_id": "bub1", "text": "x", "score": 101},
+                {"bubble_id": "bub1", "text": "x", "id": "n1"},
+            ):
+                with self.assertRaisesRegex(server.ToolError, "^invalid_arguments"):
+                    server.call_tool("bewertung_begruenden", arguments)
         request.assert_not_called()
 
 
