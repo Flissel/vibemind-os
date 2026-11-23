@@ -2828,7 +2828,10 @@ async def multihop_execute(request: Request):
         else:
             _schritt = (exec_result.get("executed") or {}).get("s1") or {}
             _grund = _schritt.get("error") if isinstance(_schritt, dict) else None
-            out["final_text"] = f"Das hat nicht geklappt: {_grund or 'der Schritt ist gescheitert'}"
+            from core.ideen_abkuerzung import fehlersatz
+            # Deutscher Satz fuer den Chat; der technische Text bleibt daneben stehen.
+            out["final_text"] = fehlersatz(_grund)
+            out["fehler"] = str(_grund or "")
         try:
             pe.recorder.attach_final(plan.plan_id, out["final_text"])
         except Exception:  # noqa: BLE001

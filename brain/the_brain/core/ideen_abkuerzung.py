@@ -257,6 +257,80 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
     return None
 
 
+_FELDNAMEN = {
+    "bubble_id": "die Bubble", "id": "die Karte", "from_id": "die erste Karte", "to_id": "die zweite Karte",
+    "title": "der Titel", "content": "der Inhalt", "text": "der Text", "score": "die Zahl",
+    "format": "das Format", "idea_ids": "die verlinkten Karten", "order": "die Reihenfolge",
+    "columns": "die Spaltenzahl", "limit": "die Anzahl", "aenderung_id": "die Kennung der Änderung",
+}
+_WERKZEUGFEHLER = {
+    "idea_not_found": "Diese Karte gibt es nicht mehr.",
+    "bubble_not_found": "Diese Bubble gibt es nicht mehr.",
+    "idea_not_in_bubble": "Eine der Karten gehört nicht zu dieser Bubble.",
+    "too_many_ideas": "In dieser Bubble liegen mehr als 100 Karten. Das geht nur bis 100.",
+    "idea_format_nothing_to_revert": "Für diese Karte gibt es kein früheres Format.",
+    "idea_connect_node_unverified": "Eine der beiden Karten gibt es nicht mehr.",
+    "supabase_unreachable": "Die Datenbank ist gerade nicht erreichbar.",
+    "supabase_http_error": "Die Datenbank hat die Anfrage abgelehnt.",
+    "supabase_invalid_response": "Die Datenbank hat unlesbar geantwortet.",
+    "configuration_error": "Dem Ideen-Dienst fehlt der Zugang zur Datenbank.",
+    "bubble_promotion_create_failed": "Das Befördern ist gescheitert. Es wurde kein Projekt angelegt.",
+    "bubble_promotion_link_failed": "Das Befördern ist gescheitert. Die Bubble ist unverändert.",
+    "bubble_promotion_create_unverified": "Das Befördern ließ sich nicht bestätigen. Bitte prüfe die Projekte.",
+}
+
+
+def _feld(name: str) -> str:
+    return _FELDNAMEN.get(name, f"„{name}“")
+
+
+def fehlersatz(fehler: Any) -> str:
+    """Ein deutscher Satz fuer den Chat aus dem Fehlertext eines festen Schritts.
+
+    Der technische Text bleibt im Ergebnis des Schritts stehen; hier entsteht nur, was
+    der Mensch liest. Es kommen Feldnamen und Fehlernamen durch, nie Werte.
+    """
+    text = str(fehler or "")
+    m = re.search(r"Ideen-Werkzeug meldet einen Fehler(?: \((?P<name>[a-z_]+)(?:: (?P<feld>[a-z_]+))?\))?", text)
+    if m:
+        name, feld = m.group("name"), m.group("feld")
+        if name == "invalid_arguments":
+            return (f"Das Werkzeug hat eine Angabe abgelehnt: {_feld(feld)}." if feld
+                    else "Das Werkzeug hat die Angaben abgelehnt.")
+        if name in _WERKZEUGFEHLER:
+            return _WERKZEUGFEHLER[name]
+        return f"Das Werkzeug meldet einen Fehler ({name})." if name else "Das Werkzeug meldet einen Fehler."
+    m = re.search(r"clarification required: (?:unknown field (?P<fremd>[a-z_]+)|(?P<feld>[a-z_]+) is invalid"
+                  r"|one of (?P<eins>[a-z_, ]+)|(?P<pflicht>[a-z_, ]+))", text)
+    if m:
+        if m.group("fremd"):
+            return f"Diese Angabe kennt das Werkzeug nicht: {_feld(m.group('fremd'))}."
+        if m.group("feld"):
+            return f"Diese Angabe ist ungültig: {_feld(m.group('feld'))}."
+        namen = [n.strip() for n in (m.group("eins") or m.group("pflicht") or "").split(",") if n.strip()]
+        bekannt = [_feld(n) for n in namen if re.fullmatch(r"[a-z_]+", n)]
+        if bekannt:
+            return "Mir fehlt eine Angabe: " + (", ".join(bekannt[:-1]) + " oder " + bekannt[-1]
+                                                if m.group("eins") and len(bekannt) > 1
+                                                else ", ".join(bekannt)) + "."
+        return "Mir fehlt eine Angabe."
+    if "truth unverified" in text:
+        return "Ich konnte nicht bestätigen, dass die Änderung gespeichert ist. Bitte prüfe das Canvas."
+    if "validator error" in text or "validator unavailable" in text:
+        return "Die Nachprüfung war nicht möglich. Die Änderung ist nicht bestätigt."
+    if "approval pending" in text or "pending_approval" in text:
+        return "Das wartet auf eine Freigabe."
+    if "outcome_unknown" in text or "in_progress" in text:
+        return "Es ist unklar, ob die Änderung angekommen ist. Bitte prüfe das Canvas, bevor du es wiederholst."
+    if "isError=true" in text:
+        return "Das Werkzeug hat den Aufruf abgelehnt."
+    if "not registered" in text or "execution denied" in text or "PermissionError" in text:
+        return "Der Agent darf dieses Werkzeug nicht benutzen."
+    if "OpenFang" in text or "OPENFANG" in text:
+        return "Der Agenten-Dienst ist gerade nicht erreichbar."
+    return "Das hat nicht geklappt."
+
+
 def arg_vorlage(argumente: dict) -> str:
     """Die Argumente als Text fuer ``HopSpec.arg_template``.
 

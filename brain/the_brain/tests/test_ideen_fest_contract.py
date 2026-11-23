@@ -155,6 +155,12 @@ def test_lesen_hat_keine_nachpruefung_schreiben_immer() -> None:
 def test_fehlertext_zaehlt_auch_ohne_fehlerkennzeichen() -> None:
     assert vertrag.fehler_aus_ergebnis(_quittung({"error": "idea_not_found"})) == (
         "Ideen-Werkzeug meldet einen Fehler (idea_not_found)")
+    # Das Feld kommt mit, der Wert nie; auch bei gesetztem Fehlerkennzeichen.
+    assert vertrag.fehler_aus_ergebnis(
+        _quittung({"error": "invalid_arguments: 'bubble_id' must be a non-empty string"}, is_error=True)
+    ) == "Ideen-Werkzeug meldet einen Fehler (invalid_arguments: bubble_id)"
+    assert vertrag.fehler_aus_ergebnis(_quittung({"error": "idea_not_in_bubble: n-4711"})) == (
+        "Ideen-Werkzeug meldet einen Fehler (idea_not_in_bubble)")
     # freier Werkzeugtext wird nie durchgereicht
     meldung = vertrag.fehler_aus_ergebnis(_quittung({"error": "supabase_http_error: status=500 key=geheim"}))
     assert meldung == "Ideen-Werkzeug meldet einen Fehler (supabase_http_error)"

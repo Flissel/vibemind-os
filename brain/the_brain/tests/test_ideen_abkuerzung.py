@@ -181,6 +181,45 @@ def test_loese_wirft_nie() -> None:
             assert treffer is None or set(treffer) == {"rueckfrage"}
 
 
+# ── deutsche Saetze fuer Fehler ──────────────────────────────────────────
+
+@pytest.mark.parametrize("fehler, satz", [
+    ("RuntimeError: Ideen-Werkzeug meldet einen Fehler (invalid_arguments: bubble_id)",
+     "Das Werkzeug hat eine Angabe abgelehnt: die Bubble."),
+    ("RuntimeError: Ideen-Werkzeug meldet einen Fehler (invalid_arguments: geheim)",
+     "Das Werkzeug hat eine Angabe abgelehnt: „geheim“."),
+    ("RuntimeError: Ideen-Werkzeug meldet einen Fehler (invalid_arguments)",
+     "Das Werkzeug hat die Angaben abgelehnt."),
+    ("RuntimeError: Ideen-Werkzeug meldet einen Fehler (idea_not_found)", "Diese Karte gibt es nicht mehr."),
+    ("RuntimeError: Ideen-Werkzeug meldet einen Fehler (supabase_http_error)",
+     "Die Datenbank hat die Anfrage abgelehnt."),
+    ("RuntimeError: Ideen-Werkzeug meldet einen Fehler (neuer_fehler)",
+     "Das Werkzeug meldet einen Fehler (neuer_fehler)."),
+    ("RuntimeError: Ideen-Werkzeug meldet einen Fehler", "Das Werkzeug meldet einen Fehler."),
+    ("clarification required: bubble_id, title", "Mir fehlt eine Angabe: die Bubble, der Titel."),
+    ("clarification required: score is invalid", "Diese Angabe ist ungültig: die Zahl."),
+    ("clarification required: unknown field bubble_name", "Diese Angabe kennt das Werkzeug nicht: „bubble_name“."),
+    ("clarification required: one of title, content, x, y",
+     "Mir fehlt eine Angabe: der Titel, der Inhalt, „x“ oder „y“."),
+    ("validator blocked: canonical idea.rate truth unverified",
+     "Ich konnte nicht bestätigen, dass die Änderung gespeichert ist. Bitte prüfe das Canvas."),
+    ("validator blocked: canonical idea.rate validator error",
+     "Die Nachprüfung war nicht möglich. Die Änderung ist nicht bestätigt."),
+    ("runtime authority approval pending", "Das wartet auf eine Freigabe."),
+    ("RuntimeError: outcome_unknown",
+     "Es ist unklar, ob die Änderung angekommen ist. Bitte prüfe das Canvas, bevor du es wiederholst."),
+    ("RuntimeError: OpenFang MCP tool returned isError=true", "Das Werkzeug hat den Aufruf abgelehnt."),
+    ("PermissionError: MCP agent/server/tool tuple is not registered; execution denied",
+     "Der Agent darf dieses Werkzeug nicht benutzen."),
+    ("OpenFangUnavailable: OpenFang unavailable at http://x/mcp after 1 attempt(s)",
+     "Der Agenten-Dienst ist gerade nicht erreichbar."),
+    ("etwas voellig anderes mit key=geheim", "Das hat nicht geklappt."),
+    (None, "Das hat nicht geklappt."),
+])
+def test_fehler_wird_ein_deutscher_satz_ohne_werte(fehler, satz) -> None:
+    assert abk.fehlersatz(fehler) == satz
+
+
 # ── Vorlage fuer den Plan-Schritt ────────────────────────────────────────
 
 def test_vorlage_ueberlebt_geschweifte_klammern_im_text() -> None:
