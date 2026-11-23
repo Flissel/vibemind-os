@@ -410,6 +410,12 @@ def test_auswahl_zaehlt_selbst_nach_und_klickt_den_punkt_des_gelesenen_eintrags(
     ("Wähle den ersten Eintrag", "Datei", "ziel_nicht_gelesen"),              # MenuItem ist keine Auswahl-Art
     ("Wähle den ersten Eintrag", "Speichern", "ziel_nicht_gelesen"),
     ("Zeig mir den ersten Eintrag", "Angebot.txt", "auswahl_nicht_verlangt"),
+    ("Öffne den ersten Eintrag", "Angebot.txt", "auswahl_nicht_verlangt"),     # Oeffnen fuehrt aus
+    # Die Art kommt aus dem Satz, nicht vom Agenten:
+    ("Wähle den ersten Eintrag", "Start", "auswahl_passt_nicht"),             # Reiter statt Eintrag
+    ("Wähle den ersten", "Angebot.txt", "auswahl_unklar"),                     # Stelle ohne Art
+    ("Lies Kapitel 2. und wähle dann etwas", "Notizen.txt", "auswahl_unklar"),  # Zahl ohne Nomen dahinter
+    ("Wähle in der ersten Tabelle etwas", "Angebot.txt", "auswahl_unklar"),    # "Tabelle" ist kein Tab
 ])
 def test_auswahl_lehnt_ab_was_nicht_eindeutig_oder_nicht_verlangt_ist(auftrag, ziel, code):
     with pytest.raises(AktionAbgelehnt) as fehler:
@@ -418,9 +424,12 @@ def test_auswahl_lehnt_ab_was_nicht_eindeutig_oder_nicht_verlangt_ist(auftrag, z
 
 
 def test_auswahl_ordnungswort_und_lesereihenfolge():
-    from core.desktop_schleife_contract import auswahl_reihe, ordnungszahl
-    assert [ordnungszahl(s) for s in ("den ersten", "die 2. Zeile", "das letzte!", "den Eintrag", "1. und 2.")] == [
-        1, 2, -1, None, None]
+    from core.desktop_schleife_contract import auswahl_gemeint, auswahl_reihe
+    liste, reiter = frozenset({"listitem", "treeitem", "dataitem"}), frozenset({"tabitem"})
+    assert [auswahl_gemeint(s) for s in (
+        "den ersten Eintrag", "die 2. Zeile", "die letzte markierte Datei!", "den dritten Tab", "the last tab",
+        "den Eintrag", "den ersten", "1. und 2. Eintrag", "den achten Reitern", "die erste Tabelle",
+    )] == [(1, liste), (2, liste), (-1, liste), (3, reiter), (-1, reiter), None, None, None, (8, reiter), None]
     assert [e["name"] for e in auswahl_reihe(LISTE, "listitem")] == [
         "Angebot.txt", "Notizen.txt", "Bericht.txt", "Rechnungen löschen"]
 
@@ -467,6 +476,20 @@ def test_auswahl_in_der_schleife_wird_in_der_naechsten_runde_nachgeprueft(echt, 
     notizen = [s["angaben"]["notiz"] for s in echt.buch(kennung)["schritte"] if s["art"] == "note"]
     assert notizen == ([notiz] if notiz else [])
     assert ergebnis["agentenlaeufe"] == (2 if notiz else 1)  # widerlegt: der Agent wird nicht mehr gefragt
+
+
+def test_eine_auswahl_ist_kein_vorlauf_fuer_enter(echt):
+    kennung = echt.start()
+    echt.eintraege = [_roher_eintrag("Angebot.txt", 100, 300, False), _roher_eintrag("Notizen.txt", 100, 340, True)]
+    ergebnis = fuehre_aufgabe(
+        kennung, "Wähle den zweiten Eintrag und bestätige", werkzeug=echt.werkzeug, budget_rest=lambda: 30,
+        uhr=lambda: echt.zeit, agent=echt.agent_mit(j(aktion="auswahl", ziel="Notizen.txt", warum="zweiter"),
+                                                    j(aktion="key", key="enter", warum="öffnen"),
+                                                    j(aktion="abbruch", grund="Enter abgelehnt")))
+    assert ergebnis["zustand"] == "abgebrochen"
+    assert echt.dienst_aufrufe == [("/api/mcp/click", {"x": 100, "y": 340})]  # kein Enter
+    notizen = [s["angaben"]["notiz"] for s in echt.buch(kennung)["schritte"] if s["art"] == "note"]
+    assert notizen == ["Runde 2: Auswahl bestaetigt", "Runde 2: Vorschlag abgelehnt (taste_ohne_vorlauf)"]
 
 
 def test_der_dienst_liefert_den_auswahlzustand_nur_wo_er_ihn_kennt(echt):

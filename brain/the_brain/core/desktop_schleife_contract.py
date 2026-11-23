@@ -30,7 +30,16 @@ AKTIONEN = ("click", "auswahl", "type", "key", "hotkey", "scroll", "wait")
 # Auswahl: das n-te Element dieser Arten, n aus dem Auftragssatz. Bewusst ohne MenuItem (ein
 # Menueeintrag fuehrt einen Befehl aus) und ohne Button.
 AUSWAHL_ARTEN = frozenset({"listitem", "treeitem", "tabitem", "dataitem"})
-AUSWAHL_ABSICHT = ("wähl", "waehl", "auswähl", "auswaehl", "markier", "select", "klick", "nimm", "öffne", "oeffne")
+# Ohne "öffne": Oeffnen fuehrt aus, Auswaehlen nicht.
+AUSWAHL_ABSICHT = ("wähl", "waehl", "auswähl", "auswaehl", "markier", "select", "klick", "nimm")
+# Welche Art gemeint ist, sagt der Satz mit einem Nomen kurz hinter dem Ordnungswort
+# ("den zweiten Eintrag", "den letzten Reiter"), nicht der Agent.
+AUSWAHL_NOMEN: dict[str, frozenset[str]] = {
+    "reiter": frozenset({"tabitem"}), "tab": frozenset({"tabitem"}),
+    **{n: frozenset({"listitem", "treeitem", "dataitem"}) for n in (
+        "eintrag", "datei", "ordner", "zeile", "element", "item", "entry", "file", "folder", "row")},
+}
+AUSWAHL_NAEHE = 3  # so viele Woerter nach dem Ordnungswort darf das Nomen stehen
 ORDNUNGSWOERTER: dict[str, int] = {
     "erste": 1, "zweite": 2, "dritte": 3, "vierte": 4, "fünfte": 5, "fuenfte": 5, "sechste": 6,
     "siebte": 7, "siebente": 7, "achte": 8, "neunte": 9, "zehnte": 10, "letzte": -1,
@@ -172,15 +181,32 @@ def heikler_stamm(ziel: str, auftrag: str) -> Optional[str]:
     return None
 
 
-def ordnungszahl(auftrag: str) -> Optional[int]:
-    """Die Stelle, die der Auftragssatz nennt: 1..10, "2." usw., -1 fuer "letzte". None, wenn
-    keine oder zwei verschiedene genannt sind (dann ist unklar, welches Element gemeint ist)."""
+def _nomen_art(wort: str) -> Optional[frozenset[str]]:
+    if wort in ("tab", "tabs"):  # "tab" nur so, sonst zaehlte "Tabelle" mit
+        return AUSWAHL_NOMEN["tab"]
+    for nomen, arten in AUSWAHL_NOMEN.items():
+        # Nomen mit kurzer Endung ("Eintrags", "Dateien", "Reitern").
+        if nomen != "tab" and wort.startswith(nomen) and len(wort) - len(nomen) <= 3:
+            return arten
+    return None
+
+
+def auswahl_gemeint(auftrag: str) -> Optional[tuple[int, frozenset[str]]]:
+    """Stelle und erlaubte Arten, die der Auftragssatz nennt: Ordnungswort (1..10, "2.",
+    -1 fuer "letzte") mit einem Nomen hoechstens AUSWAHL_NAEHE Woerter dahinter. None, wenn
+    keine oder mehrere verschiedene Angaben im Satz stehen: Dann wird nachgefragt."""
+    woerter = [w.strip(",;:!?()\"'") for w in _norm(auftrag).split()]
     gefunden = set()
-    for wort in _norm(auftrag).split():
-        treffer = _ORDNUNG.match(wort.strip(",;:!?()\"'"))
-        if treffer:
-            gefunden.add(int(treffer.group(1)) if treffer.group(1) else ORDNUNGSWOERTER[treffer.group(2)])
-    gefunden.discard(0)
+    for i, wort in enumerate(woerter):
+        treffer = _ORDNUNG.match(wort)
+        if not treffer:
+            continue
+        stelle = int(treffer.group(1)) if treffer.group(1) else ORDNUNGSWOERTER[treffer.group(2)]
+        for folgend in woerter[i + 1:i + 1 + AUSWAHL_NAEHE]:
+            arten = _nomen_art(folgend.rstrip("."))
+            if arten is not None and stelle != 0:
+                gefunden.add((stelle, arten))
+                break
     return gefunden.pop() if len(gefunden) == 1 else None
 
 
@@ -206,28 +232,32 @@ def _auswahl(wert: Mapping[str, Any], auftrag: str, elemente: Sequence[Mapping[s
     ziel = _text(wert["ziel"], "ziel", 80)
     if not verlangt(auftrag, AUSWAHL_ABSICHT):
         raise AktionAbgelehnt("auswahl_nicht_verlangt", "der Auftragssatz verlangt kein Auswaehlen")
-    stelle = ordnungszahl(auftrag)
-    if stelle is None:
-        raise AktionAbgelehnt("auswahl_unklar", "der Auftragssatz nennt keine oder mehrere Stellen (ersten, zweiten, letzten, 3.)")
+    gemeint = auswahl_gemeint(auftrag)
+    if gemeint is None:
+        raise AktionAbgelehnt("auswahl_unklar", "der Auftragssatz nennt keine oder mehrere Stellen mit Art "
+                                                "(den zweiten Eintrag, den letzten Reiter)")
+    stelle, erlaubt = gemeint
     arten = {_norm(e.get("typ", "")) for e in elemente
              if _norm(e.get("name", "")) == _norm(ziel) and _norm(e.get("typ", "")) in AUSWAHL_ARTEN}
     if not arten:
         raise AktionAbgelehnt("ziel_nicht_gelesen", "kein Listen-, Baum-, Reiter- oder Tabelleneintrag mit diesem Namen gelesen")
+    if not arten <= erlaubt:
+        raise AktionAbgelehnt("auswahl_passt_nicht", "der Eintrag ist nicht von der Art, die der Auftragssatz nennt")
     if len(arten) > 1:
         raise AktionAbgelehnt("auswahl_unklar", "der Name steht in mehreren Arten von Eintraegen")
     art = arten.pop()
     reihe = auswahl_reihe(elemente, art)
     if not reihe or abs(stelle) > len(reihe):
         raise AktionAbgelehnt("auswahl_unklar", f"so viele bedienbare Eintraege sind nicht zu sehen ({len(reihe)})")
-    gemeint = reihe[stelle - 1] if stelle > 0 else reihe[-1]
-    if _norm(gemeint.get("name", "")) != _norm(ziel):
+    eintrag = reihe[stelle - 1] if stelle > 0 else reihe[-1]
+    if _norm(eintrag.get("name", "")) != _norm(ziel):
         raise AktionAbgelehnt("auswahl_passt_nicht", "an der genannten Stelle steht ein anderer Eintrag")
     stamm = heikler_stamm(ziel, auftrag)
     if stamm:
         raise AktionAbgelehnt("ziel_heikel", f"der Auftragssatz verlangt nichts mit '{stamm}'")
     return {
-        "schritt": {"action": "click", "x": gemeint["x"], "y": gemeint["y"], "why": warum},
-        "auswahl": {"name": str(gemeint.get("name", "")), "typ": art, "stelle": stelle},
+        "schritt": {"action": "click", "x": eintrag["x"], "y": eintrag["y"], "why": warum},
+        "auswahl": {"name": str(eintrag.get("name", "")), "typ": art, "stelle": stelle},
     }
 
 

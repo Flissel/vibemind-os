@@ -204,7 +204,10 @@ def fuehre_aufgabe(
             schritt = (ergebnis or {}).get("schritt") or {}
             if schritt.get("ok") is False:
                 return abschluss("fehlgeschlagen", "schritt_fehlgeschlagen", str(schritt.get("meldung") or ""))
-            vorher, vorher_fenster = aktion["schritt"]["action"], fenster
+            # Eine Auswahl ist kein Vorlauf fuer Enter/Leertaste: sonst oeffnete Enter, was nur
+            # ausgewaehlt werden sollte, ohne dass der Satz ein Ausloesen pruefbar verlangt.
+            vorher = "auswahl" if aktion.get("auswahl") else aktion["schritt"]["action"]
+            vorher_fenster = fenster
             offene_auswahl = aktion.get("auswahl")
 
         return abschluss("fehlgeschlagen", "rundengrenze", f"Nach {runden} Runden nicht fertig.")

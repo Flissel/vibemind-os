@@ -255,13 +255,37 @@ Schritt der Schleife.
 **Messung am laufenden Dienst (23.11., Trockenlauf, sechs Läufe):** 4 bis 23 ms je Blick.
 Nur das Fenster lokal: 0,2 bis 0,9 ms. Zum Vergleich: `desktop_screen_read` 2,3 s.
 
-**Befund:** Der laufende Desktop-Dienst antwortet auf `/api/mcp/elements` mit
-`success: false, error: "uiautomation unavailable"`. Ihm fehlt das Paket `uiautomation`. Damit
-liefert er gerade keine Bedienelemente, auch nicht für `desktop_elements` der Schleife (dort
-ist es ein Fehler, die Schleife sieht also nur OCR-Text). Der Blick meldet das als
-`elemente_lesbar: false`; die Nachprüfung sagt dann UNVERIFIED statt REFUTED. Die schnelle
-Messung oben gilt deshalb ohne Elementabfrage. Mit `uiautomation` geht der Dienst durch bis
-zu 2.000 Knoten des Fensters; die Dauer ist dann neu zu messen.
+**Befund damals:** Dem Dienst fehlte `uiautomation`, er lieferte keine Elemente. Seit dem
+23.11. abends ist `uiautomation` 2.0.29 im Betriebs-venv.
+
+**Messung mit Bedienelementen (23.11. abends, Trockenlauf, Dienst selbst gestartet und wieder
+beendet, nur eigene Testfenster).** Dauer je Aufruf in ms, drei Läufe je Fenster; Zahl der
+Elemente; ob gesperrt. Fenstertitel stehen hier bewusst nicht.
+
+| Fenster | `desktop_blick` | `desktop_elements` | Elemente (mit Namen) | gesperrt |
+|---|---|---|---|---|
+| Editor, eigene Datei | 597 / 79 / 64 (erster Lauf kalt) | 60 bis 62 | 34 (34) | nein |
+| Explorer, eigener Ordner | 115 bis 197 | 118 bis 172 | 52 (41) | nein |
+| Edge, eigene neutrale Seite (Wegwerf-Profil) | 102 bis 136 | 115 bis 126 | 21 | ja, fälschlich (s. u.) |
+| Edge, Seite mit Titel "Anmelden" | 0 (am Titel, vor jeder Anfrage) | nicht gefragt | – | ja |
+| Edge, Seite mit beschriftetem Passwortfeld | – | – | – | ja |
+| Edge, InPrivate | – | – | – | ja (Kennzeichen im Titel) |
+| VibeMind-App | rund 40 | 23 | 1 (0) | nein |
+
+- **Qualität der Namen:** Editor und Explorer: brauchbar (Menü, Reiter, Listeneinträge).
+  Edge: bei 60 Elementen nur Symbolleiste (55 von 60 sind Knöpfe), die Seite selbst erst ab
+  rund 100 (bei 200 erlaubten: 102 Elemente, 301 Knoten, 263 ms statt 212 ms). Deshalb prüft
+  der Blick jetzt 200 Elemente auf die Sperrliste (Obergrenze des Dienstes); hinaus gehen
+  weiter höchstens 20, und das sind in Edge Symbolleistenknöpfe.
+- **Die VibeMind-App** (Electron) zeigt der Bedienhilfe kein Innenleben: ein Element, ohne
+  Namen. Ein Space-Wechsel ist über Elemente nicht zu sehen; der Fenstertitel ist immer
+  derselbe. Sichtbar wird er nur über Texterkennung oder über die App selbst.
+- **Fehlsperre in Edge, behoben (0ab9de9b):** Jede Edge-Symbolleiste hat einen Knopf mit
+  "Kartennummer" im Namen. Zahlungswörter (Kartennummer, IBAN, CVC, Kreditkarte, Prüfziffer)
+  zählen seitdem nur an Eingabefeldern. Nach der Reparatur NICHT neu gemessen (Speicher
+  reichte nicht); belegt nur über die gespeicherten Elementlisten der Messung und einen Test
+  mit den gemessenen Namen: neutrale Seite nicht gesperrt, beschriftetes Passwortfeld
+  gesperrt (es steht bei 200 Elementen drin, bei 60 nicht).
 
 **Sperrliste** (fest in `blick.py`, getestet in `tests/test_blick.py`). Ein gesperrtes
 Fenster liefert nur `gesperrt: true`, `zeitpunkt` und `dauer_ms`: kein Titel, kein Programm,
@@ -279,8 +303,9 @@ keine Elemente, auch kein Grund. Erkannt wird an drei Stellen:
    Kontostand, pushTAN, SEPA), Anmeldung (Anmelden, Login, Sign in, Zwei-Faktor,
    Bestätigungscode, Windows-Sicherheit).
 3. **Bedienelemente** (Name, Automation-Id, Klasse): Passwort, Kennwort, Passphrase,
-   Sicherheits- und Einmalcode, Kartennummer, IBAN, CVC; an Eingabefeldern zusätzlich die
-   Wörter PIN, TAN, OTP, PWD. Ein solches Element sperrt das ganze Fenster.
+   Sicherheits- und Einmalcode an jedem Element; an Eingabefeldern (Edit, ComboBox)
+   zusätzlich Kartennummer, IBAN, CVC und die Wörter PIN, TAN, OTP, PWD. Ein solches Element
+   sperrt das ganze Fenster.
 
 Geprüft wird am Fenster, BEVOR der Desktop-Dienst nach Elementen gefragt wird, und noch
 einmal an dem Fenster, das der Dienst tatsächlich gelesen hat (falls es inzwischen
@@ -292,12 +317,14 @@ Was durchrutschen kann:
   Inkognito-Fenster mit einer Seite ohne verräterischen Titel wird gezeigt. Abhilfe nur über
   die Bedienhilfen des Fensters oder den Fensterstil; nicht gebaut.
 - **Webseiten mit neutralem Titel:** Banken oder Kennwortseiten, deren Titel keinen der
-  Teile enthält, erkennt nur die Elementprüfung. Solange der Dienst keine Elemente liefert
-  (Befund oben), gibt es diese zweite Prüfung nicht.
+  Teile enthält, erkennt nur die Elementprüfung, und die erreicht die Seite in Edge erst
+  hinter rund 100 Symbolleisten-Elementen (gemessen).
 - **Unbenannte Anmeldefelder:** Ein Kennwortfeld ohne Namen und ohne passende Kennung wird
   nicht erkannt; das Merkmal "Kennwortfeld" der Bedienhilfen reicht der Dienst nicht durch.
-- **Nur die ersten 60 Elemente** werden geprüft; ein Anmeldefeld weiter hinten im Baum
-  rutscht durch.
+  An der eigenen Testseite mit unbeschriftetem Passwortfeld kam das Feld mit leerem Namen
+  an; ob die Seite nach der Reparatur gesperrt wird: nicht gemessen, erwartet nein.
+- **Nur die ersten 200 Elemente** werden geprüft (Obergrenze des Dienstes); ein Anmeldefeld
+  weiter hinten im Baum rutscht durch.
 - **Unbekannte Programme:** nur die genannten Passwort-Manager und Banking-Programme.
 - **Andere sichtbare Fenster:** Der Blick zeigt nur das aktive Fenster; was daneben offen
   ist, prüft er nicht, zeigt es aber auch nicht.
@@ -325,6 +352,26 @@ Signal enthält nur Wahrheitswerte. Gelesen wird über `desktop_blick` mit eigen
 Laufzeit-Kontext (Ereignis `desktop.blick` im Verzeichnis, eingetragen); die Plan-Angaben
 reicht der Plan-Ausführer unter `_laufzeit` an den Validator weiter, die Fähigkeit selbst
 bleibt unverändert. Noch benutzt keine Fähigkeit den Prüfer.
+
+**Erster Nutzer: kein geeigneter gefunden (23.11. abends).** Gesucht: eine Fähigkeit eines
+anderen Space, deren Wirkung am Bildschirm sichtbar ist und die heute läuft. Der beste
+Kandidat ist `browser_automation` (`openfang:openclaw-visible`, steuert ein sichtbares
+Chrome). Sie läuft heute nicht: Der openclaw-Gateway (Port 18793) lauscht nicht. Und auch wenn
+er läuft, liest der Blick das Vordergrundfenster: Arbeitet Felix daneben in einem anderen
+Programm, wäre "nicht Chrome" eine falsche Widerlegung. Die VibeMind-App selbst (Space-Wechsel)
+zeigt keine Bedienelemente und immer denselben Titel. Vorschlag für den ersten Nutzer, sobald
+openclaw-visible läuft: an `browser_automation`
+
+```yaml
+validator:
+  kind: truth:desktop_sicht
+  on_fail: report
+  postcondition:
+    programm: "^chrome$"
+```
+
+und erst danach entscheiden, ob "nicht im Vordergrund" ein eigener Ausgang (UNVERIFIED statt
+REFUTED) werden soll.
 
 ### Vorschlag, noch nicht gebaut
 
@@ -357,7 +404,27 @@ Nutzers. Empfehlung: kein Takt und kein Dauerstrom. Erst wenn die Standzeile das
 Programm zeigen soll, ein Ereignis im Dienst, mit derselben Sperrliste und ohne Verlauf (nur
 der letzte Stand).
 
-**(c) "Wähl den zweiten Eintrag aus"**, ohne Modell:
+**(c) "Wähl den zweiten Eintrag aus": gebaut (a4c7081a), nur mit Attrappen geprüft.**
+Abweichend vom Vorschlag unten: MenuItem gehört NICHT zu den Auswahl-Arten (ein Menüeintrag
+führt einen Befehl aus). Der Agent nennt den Eintrag (`{"aktion":"auswahl","ziel":...}`), das
+Gehirn zählt in Lesereihenfolge nach (Zeile für Zeile, Zeile = unter 8 Pixel
+Höhenunterschied, darin von links); passt der Name nicht zur Stelle, wird abgelehnt.
+Ordnungswörter: erste bis zehnte, "2.", letzte, englisch first bis fifth und last. Die Art
+nennt der Satz, nicht der Agent: ein Nomen höchstens drei Wörter hinter dem Ordnungswort
+(Eintrag, Datei, Ordner, Zeile, Element: Liste/Baum/Tabelle; Reiter, Tab: Reiter). Keine oder
+zwei verschiedene Angaben heißt nachfragen (abgelehnt, `auswahl_unklar`). Der Satz muss ein
+Auswählen verlangen (wählen, markieren, klicken, nehmen, select; NICHT öffnen). Eine Auswahl
+ist kein Vorlauf für Enter oder Leertaste (Befund der Sicherheitsprüfung). Nachprüfung in der
+nächsten Runde, bevor der Agent wieder gefragt wird: `ausgewaehlt` falsch heißt Abbruch
+(`auswahl_nicht_bestaetigt`), fehlt der Zustand, wird "nicht prüfbar" vermerkt. Den Zustand
+liefert `desktop_elements` nur, wenn der Dienst `is_selected` schickt. Diese Zeile im Dienst
+(`screen_description.py`, SelectionItemPattern) liegt im Submodul `Automation_ui` und ist
+NICHT eingetragen; der Patch liegt bei der Koordination. Bis dahin endet jede echte Auswahl
+mit "nicht prüfbar". Grenzen: gezählt wird nur unter den höchstens 40 Elementen, die die
+Schleife sieht ("letzte" heißt: der letzte davon); "achten" als Verb wird als achte Stelle
+gelesen.
+
+Der ursprüngliche Vorschlag:
 
 1. Blick mit Klickpunkten (nur intern im Gehirn, nicht in der Antwort): die Elemente der
    Arten ListItem, TreeItem, TabItem, MenuItem, DataItem.
