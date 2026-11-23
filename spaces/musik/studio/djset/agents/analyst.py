@@ -54,13 +54,14 @@ class AnalystAnswer(BaseModel):
 
 PROMPT = """Du bist ein DJ und beurteilst, ob ein Track in ein Set passt.
 
-Das Set: {genre}, Ziel-BPM {bpm_target}, erlaubt {bpm_min} bis {bpm_max},
-harmonische Strenge {strictness}. Der Energiebogen des Sets laeuft ueber diese
-Stuetzpunkte aus Position und Zielenergie: {arc}.
+Das Set: {genre}, Ziel-BPM {bpm_target:.2f}, erlaubt {bpm_min:.2f} bis
+{bpm_max:.2f}, harmonische Strenge {strictness}. Der Energiebogen des Sets
+laeuft ueber diese Stuetzpunkte aus Position und Zielenergie: {arc}.
 
 Gemessen wurde (Track {track_id}):
 - Dauer: {duration:.1f} Sekunden
-- BPM: {bpm_value:.1f}, Rastersicherheit {bpm_conf:.2f}
+- BPM: {bpm_value:.2f}, Rastersicherheit {bpm_conf:.2f}
+- Tempo im Korridor: {im_korridor}
 - Taktraster: erster Downbeat bei {downbeat:.2f} s, Taktlaenge {bar:.3f} s
 - Tonart: {camelot}, Sicherheit {key_conf:.2f}
 - Energiekurve in 4-Takt-Schritten: {energy}
@@ -76,8 +77,10 @@ Outro ist deshalb kein Grund, den Track auszusortieren.
 Beurteile:
 
 1. usable - passt der Track ins Set? Achte darauf, ob das Tempo im Korridor
-   liegt, ob das Raster stabil genug fuer Cue-Punkte ist und ob die Tonart
-   aufs Camelot-Rad passt.
+   liegt (die Zeile oben sagt es, sie ist nachgerechnet) und ob das Raster
+   stabil genug fuer Cue-Punkte ist. Sortiere einen Track nicht wegen seiner
+   Tonart allein aus: ob zwei Tonarten zusammenpassen, haengt vom Nachbarn ab,
+   und das prueft die Reihenfolge-Stufe an jeder Naht.
 2. notes - eine knappe Begruendung in einem Satz. Bei usable false muss dort
    stehen, woran es liegt.
 3. energy_level - wo dieser Track auf der Energieskala des Bogens steht,
@@ -170,7 +173,17 @@ def _prompt(measurements: TrackMeasurements, profile: Profile) -> str:
     arc = ", ".join(f"({p.position:.2f}, {p.energy:.2f})" for p in profile.energy_arc)
     energy = ", ".join(f"{value:.2f}" for value in measurements.energy)
     gemischt = mischbereich(measurements)
+    # Nachgerechnet statt dem Modell ueberlassen (Fund 4): eine Grenze, die
+    # genau auf dem Tempo eines Songs liegt, sah gerundet wie ueberschritten
+    # aus. Die Toleranz faengt nur Fliesskomma ab.
+    bpm = measurements.bpm.value
+    im_korridor = (
+        "ja"
+        if profile.bpm.min - 1e-6 <= bpm <= profile.bpm.max + 1e-6
+        else "nein"
+    )
     return PROMPT.format(
+        im_korridor=im_korridor,
         mix_from=measurements.beatgrid.first_downbeat_s,
         mix_intro=gemischt.intro_end_s,
         mix_outro=gemischt.outro_start_s,

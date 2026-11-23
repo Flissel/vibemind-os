@@ -44,7 +44,7 @@ class CuratorAnswer(BaseModel):
 PROMPT = """Du stellst das Material fuer ein DJ-Set zusammen und sortierst aus,
 was nicht passt.
 
-Das Set: {genre}, Ziel-BPM {bpm_target}, erlaubt {bpm_min} bis {bpm_max},
+Das Set: {genre}, Ziel-BPM {bpm_target:.2f}, erlaubt {bpm_min:.2f} bis {bpm_max:.2f},
 harmonische Strenge {strictness}. Gebraucht werden {needed} Tracks; es liegen
 mehr vor, damit du waehlerisch sein kannst.
 
@@ -73,7 +73,7 @@ def _table(analyses: list[TrackAnalysis]) -> str:
     for a in analyses:
         gemischt = mischbereich(a)
         lines.append(
-            f"- {a.id}: {a.bpm.value:.1f} BPM (Raster {a.beatgrid.confidence:.2f}), "
+            f"- {a.id}: {a.bpm.value:.2f} BPM (Raster {a.beatgrid.confidence:.2f}), "
             f"{a.key.camelot}, Energie {a.verdict.energy_level:.2f}, "
             f"{a.duration_s:.0f} s, gemischt bis {gemischt.intro_end_s:.0f} s "
             f"und ab {gemischt.outro_start_s:.0f} s, "

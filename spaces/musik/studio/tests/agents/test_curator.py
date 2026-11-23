@@ -52,8 +52,22 @@ def test_ein_song_ohne_outro_gilt_dem_curator_nicht_als_defekt(
 
     prompt = " ".join(client.prompts[0].split())
     assert "kein brauchbares Intro oder Outro" not in prompt
-    assert "laut: 120.0 BPM" in prompt
+    assert "laut: 120.00 BPM" in prompt
     assert "gemischt bis 32 s und ab 200 s" in prompt
+
+
+def test_tempo_und_korridor_stehen_gleich_genau_im_curator_prompt(
+    profile: Profile,
+) -> None:
+    """Fund 4: gerundetes Tempo neben ungerundeter Grenze sah aus wie
+    ausserhalb des Korridors."""
+    tracks = many(3)
+    client = FakeClient([_answer([t.id for t in tracks], [])])
+
+    curate(client, tracks, [], profile, _budget())
+
+    prompt = " ".join(client.prompts[0].split())
+    assert f"erlaubt {profile.bpm.min:.2f} bis {profile.bpm.max:.2f}" in prompt
 
 
 def test_unreadable_files_are_rejected_without_asking_the_model(

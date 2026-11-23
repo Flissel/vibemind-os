@@ -231,6 +231,44 @@ def test_eine_gespeicherte_messung_wird_nicht_neu_gemessen(
     assert result.verdict.energy_level == 0.62
 
 
+def test_ein_tempo_auf_der_korridorgrenze_steht_als_im_korridor_im_prompt(
+    tmp_path: Path, profile: Profile
+) -> None:
+    """Fund 4 der Abnahme (Lauf 4): der Bereich endete genau beim Tempo von
+    farewell-kiss (94.0619). Der Prompt zeigte das Tempo gerundet ("94.1")
+    und die Grenze ungerundet ("94.06188066251416"), das Modell verwarf den
+    Song als "knapp ueber der Obergrenze". Ob ein Tempo im Korridor liegt, ist
+    Arithmetik - der Code sagt es, und beide Zahlen stehen gleich genau da."""
+    grenze = profile.bpm.max
+    messung = TrackMeasurements.model_validate(
+        make_analysis("rand", bpm=grenze).model_dump(exclude={"verdict"})
+    )
+    client = FakeClient([json.dumps(ANSWER)])
+
+    analyse_track(client, tmp_path / "x.wav", "rand", profile, _budget(), messung=messung)
+
+    prompt = " ".join(client.prompts[0].split())
+    assert f"erlaubt {profile.bpm.min:.2f} bis {grenze:.2f}" in prompt
+    assert f"BPM: {grenze:.2f}" in prompt
+    assert "Tempo im Korridor: ja" in prompt
+
+
+def test_der_analyst_sortiert_nicht_wegen_der_tonart_allein_aus(
+    tmp_path: Path, profile: Profile
+) -> None:
+    """Fund 4: bei strenger Harmonik verwarf der Analyst zwei von drei Songs
+    wegen ihrer Tonart. Ob zwei Tonarten zusammenpassen, ist eine Frage der
+    Nachbarschaft - die beantwortet die Reihenfolge-Stufe an jeder Naht."""
+    client = FakeClient([json.dumps(ANSWER)])
+
+    analyse_track(client, tmp_path / "x.wav", "t", profile, _budget(),
+                  messung=_gespeichert("t", 172.0))
+
+    prompt = " ".join(client.prompts[0].split())
+    assert "Camelot-Rad passt" not in prompt
+    assert "nicht wegen seiner Tonart" in prompt
+
+
 def test_ein_song_ohne_outro_wird_dem_analysten_nicht_als_mangel_vorgelegt(
     tmp_path: Path, profile: Profile
 ) -> None:
