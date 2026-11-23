@@ -421,17 +421,20 @@ def zurueckschreiben(auftrag: Mapping[str, Any], *, lies_karte: Callable[[str], 
             return aus("abgelehnt", False, "result rejected", satz)
         vorschlag = werte.get("text") or werte.get("begruendung") or ""
         karte = lies_karte(rueckweg["karte_id"])
+        # Vorschlag: Text, Werte und Titel bleiben in der Pruefung; "Vorschlag zeigen" und
+        # "Vorschlag übernehmen" lesen sie dort (core/ideen_vorschlag).
+        from .ideen_vorschlag import meldung_fehlt, meldung_geaendert
         if karte is None:
-            return aus("vorschlag", None, "card missing",
-                       "Die Notiz gibt es nicht mehr. Das Ergebnis steht hier als Vorschlag.",
-                       vorschlag=vorschlag)
+            return aus("vorschlag", None, "card missing", meldung_fehlt(),
+                       vorschlag=vorschlag, werte=werte)
         if not isinstance(karte, Mapping) or karte.get("id") != rueckweg["karte_id"]:
             return aus("fehler", None, "card read-back malformed",
                        "Die Notiz ließ sich nicht sicher lesen; es wurde nichts geändert.", vorschlag=vorschlag)
         if stand(karte) != rueckweg["stand"]:
+            titel = karte.get("title") if isinstance(karte.get("title"), str) else ""
             return aus("vorschlag", None, "card changed since order",
-                       "Die Notiz wurde inzwischen geändert. Ich überschreibe sie nicht; "
-                       "das Ergebnis steht hier als Vorschlag.", vorschlag=vorschlag)
+                       meldung_geaendert(titel, uebernehmbar=len(schreibplan(rueckweg, werte)) == 1),
+                       vorschlag=vorschlag, werte=werte, titel=titel[:200])
         geschrieben: list[str] = []
         for ereignis, roh_argumente in schreibplan(rueckweg, werte):
             argumente, grund = feste_argumente(ereignis, roh_argumente)

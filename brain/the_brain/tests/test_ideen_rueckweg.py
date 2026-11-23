@@ -177,6 +177,11 @@ def test_geaenderte_karte_wird_nicht_ueberschrieben_sondern_vorschlag() -> None:
     pruefung = rw.zurueckschreiben(auftrag, **ideen.anschluss())
     assert pruefung["rueckweg"] == "vorschlag" and pruefung["vorschlag"] == "Neu"
     assert ideen.aufrufe == [] and "geändert" in pruefung["meldung"]
+    # Dritter Lauf: die Meldung nennt die Notiz und die festen Saetze; Werte und Titel bleiben
+    # fuer "Vorschlag übernehmen" in der Pruefung (core/ideen_vorschlag).
+    assert pruefung["meldung"].startswith(f"Die Notiz „{KARTE['title']}“ wurde inzwischen geändert")
+    assert "„Vorschlag zeigen“" in pruefung["meldung"] and "„Vorschlag übernehmen“" in pruefung["meldung"]
+    assert pruefung["werte"] == {"text": "Neu"} and pruefung["titel"] == KARTE["title"]
     # Auch ein neuer Titel zaehlt als Aenderung; Lage oder Format nicht.
     ideen = Ideen()
     ideen.karte["title"] = "Anders"

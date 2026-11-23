@@ -539,7 +539,8 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
             if not 1 <= laeufe <= 30:
                 raise _Rueckfrage("Ein White Paper darf 1 bis 30 Läufe brauchen.")
             argumente["max_laeufe"] = laeufe
-        return _treffer("idea.whitepaper", argumente, "", capability="idea_whitepaper")
+        # Nie direkt starten: der Router fragt zuerst mit dem Umfang (core/whitepaper_bestaetigung).
+        return {**_treffer("idea.whitepaper", argumente, "", capability="idea_whitepaper"), "bestaetigen": True}
 
     # ── Wurzel der Bubble festlegen (fuer das White Paper, geht der berechneten vor) ──
     if re.fullmatch(r"(?:l(?:ö|oe)sch(?:e)?|entfern(?:e)?)\s+die\s+(?:feste|festgelegte|gesetzte)?\s*wurzel"
@@ -729,6 +730,23 @@ _WERKZEUGFEHLER = {
 
 def _feld(name: str) -> str:
     return _FELDNAMEN.get(name, f"„{name}“")
+
+
+# Fehlertexte, bei denen nichts schiefging: das Gehirn hat bewusst nichts geaendert und
+# sagt warum (Hinweis) oder fragt nach (Rueckfrage). Die App zeigt das ruhig, nicht als ✕.
+_HINWEISE = ("idea_format_table_no_columns", "idea_format_no_content", "Läufe; die Grenze ist",
+             "mehr als 30 starte ich nicht", "starte ich nur nach Rückfrage")
+_RUECKFRAGEN = ("aenderung_zurueck_frage: ", "mehrere Kennungen")
+
+
+def fehlerart(fehler: Any) -> Optional[str]:
+    """``"hinweis"``, ``"rueckfrage"`` oder ``None`` (ein echter Fehler)."""
+    text = str(fehler or "")
+    if any(m in text for m in _RUECKFRAGEN):
+        return "rueckfrage"
+    if any(m in text for m in _HINWEISE):
+        return "hinweis"
+    return None
 
 
 def fehlersatz(fehler: Any, capability: Any = None) -> str:

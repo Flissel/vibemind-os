@@ -13,6 +13,12 @@ Deshalb wählt das Gehirn das Ziel selbst und reicht es als Gruppe weiter:
 - sonst wird nichts geändert; der Satz nennt, WAS zurückgenommen würde, und wie alt
   es ist. "Ja, zurück" binnen ``BESTAETIGUNG_GILT_S`` nimmt genau diese Gruppe zurück.
 Ist das Protokoll nicht lesbar, wird nichts zurückgenommen (lieber fragen als raten).
+
+Dritter Lauf (23.11.2026): Ein abgelehnter Tabellen-Satz schrieb keine Zeile, hatte also
+keine Gruppe im Protokoll. Die jüngste Gruppe war eine echte Begründung, keine zwei
+Minuten alt, nichts davor abgelehnt -> sofort zurückgenommen. Deshalb zählt zusätzlich
+der unmittelbar vorige Satz des Menschen (``satz_merken``, vom Router je Antwort): War er
+abgelehnt, nur ein Hinweis oder eine Rückfrage, fragt "Zurück" immer erst nach.
 """
 from __future__ import annotations
 
@@ -35,10 +41,39 @@ _VORGANG = {"INSERT": "angelegt", "UPDATE": "geändert", "DELETE": "gelöscht"}
 
 _sperre = threading.Lock()
 _offen: Dict[str, Any] = {}          # {"gruppe": str, "bis": float}
+_voriger: Dict[str, Any] = {}        # {"art": "erfolg"|"angenommen"|"abgelehnt"|"hinweis"|"rueckfrage"}
+
+UNSICHER = frozenset({"abgelehnt", "hinweis", "rueckfrage"})
+_ARTEN = UNSICHER | {"erfolg", "angenommen"}
 
 
 def _jetzt() -> float:
     return time.time()
+
+
+def satz_merken(art: str) -> None:
+    """Wie der letzte Satz des Menschen ausging; der Router ruft das nach jeder Antwort."""
+    with _sperre:
+        _voriger.clear()
+        if art in _ARTEN:
+            _voriger["art"] = art
+
+
+def art_der_antwort(antwort: Mapping[str, Any]) -> str:
+    """Die Art einer Antwort des Routers (Felder ok, pending, rueckfrage, hinweis)."""
+    if antwort.get("rueckfrage"):
+        return "rueckfrage"
+    if antwort.get("hinweis"):
+        return "hinweis"
+    if antwort.get("pending") or antwort.get("status") == "angenommen":
+        return "angenommen"
+    return "erfolg" if antwort.get("ok") else "abgelehnt"
+
+
+def _voriger_unsicher() -> Optional[str]:
+    with _sperre:
+        art = _voriger.get("art")
+    return art if art in UNSICHER else None
 
 
 def protokoll_lesen() -> Optional[List[Dict[str, Any]]]:
@@ -166,13 +201,21 @@ def entscheiden(gruppe: str, absicht: Any, *, ist_abgelehnt: Callable[[str], boo
     if bestaetigt and bestaetigt == ziel["gruppe"]:
         return {"aktion": "weiter", "gruppe": ziel["gruppe"]}
     alter = None if ziel["juengste"] is None else max(0.0, jetzt - ziel["juengste"])
-    if not abgelehnt_davor and alter is not None and alter <= FRISCH_S:
+    voriger = _voriger_unsicher()
+    if not abgelehnt_davor and voriger is None and alter is not None and alter <= FRISCH_S:
         return {"aktion": "weiter", "gruppe": ziel["gruppe"]}
-    vorne = "Der letzte Schritt wurde abgelehnt; den nehme ich nicht zurück. " if abgelehnt_davor else ""
     wann = f" vor {_dauer(alter)}" if alter is not None else ""
     with _sperre:
         _offen.clear()
         _offen.update({"gruppe": ziel["gruppe"], "bis": jetzt + BESTAETIGUNG_GILT_S})
+    if voriger is not None and not abgelehnt_davor:
+        vorher = {"abgelehnt": "Dein letzter Satz wurde nicht ausgeführt",
+                  "hinweis": "Auf deinen letzten Satz kam nur ein Hinweis",
+                  "rueckfrage": "Auf deinen letzten Satz kam eine Rückfrage"}[voriger]
+        return {"aktion": "fragen", "satz": (
+            f"{vorher}; dabei wurde nichts geändert. Die letzte Änderung davor ist: {beschreibung(ziel)}{wann}. "
+            "Meinst du die? Sag „Ja, zurück“, wenn ich genau das zurücknehmen soll.")}
+    vorne = "Der letzte Schritt wurde abgelehnt; den nehme ich nicht zurück. " if abgelehnt_davor else ""
     return {"aktion": "fragen", "satz": (
         f"{vorne}Die letzte Änderung, die ich zurücknehmen kann, ist älter: {beschreibung(ziel)}{wann}. "
         "Sag „Ja, zurück“, wenn ich genau das zurücknehmen soll.")}

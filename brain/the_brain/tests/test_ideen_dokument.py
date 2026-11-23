@@ -549,6 +549,14 @@ def _validator_attrappe(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "vibemind_shared.contracts", contracts)
 
 
+def _bestaetigt(argumente: dict) -> dict:
+    """Argumente mit Schluessel, wie nach "Ja, erstellen" (core/whitepaper_bestaetigung)."""
+    from core import whitepaper_bestaetigung as wp
+
+    wp.fragen(argumente)
+    return wp.satz_pruefen("Ja, erstellen")["argumente"]
+
+
 class TabelleAttrappe:
     def __init__(self):
         self.angelegt, self.plan_rest = [], {}
@@ -571,9 +579,9 @@ def test_plan_ausfuehrer_legt_white_paper_auftrag_an(monkeypatch) -> None:
     monkeypatch.setattr("core.plan_executor.PlanExecutor._capture_kg_hits", lambda *a: [])
     monkeypatch.setattr(dok, "DatenbankLesen", LesenAttrappe)
     _validator_attrappe(monkeypatch)
-    plan = Plan("ideen_8", "Erstelle ein White Paper aus dieser Bubble", "", [
+    plan = Plan("ideen_8", "Ja, erstellen", "", [
         HopSpec(step_id="s1", description="idea.whitepaper", capability="idea_whitepaper",
-                arg_template=json.dumps({"bubble_id": BUBBLE["id"]}))])
+                arg_template=json.dumps(_bestaetigt({"bubble_id": BUBBLE["id"]})))])
 
     ergebnis = PlanExecutor().execute(plan, antwortkanal={"art": "api"})
 
@@ -608,7 +616,7 @@ def test_plan_ausfuehrer_meldet_budget_als_satz(monkeypatch) -> None:
     monkeypatch.setattr(dok, "KARTEN_JE_TEIL", 1)
     monkeypatch.setenv("IDEEN_WHITEPAPER_MAX_LAEUFE", "2")
     hop = HopSpec(step_id="s1", description="x", capability="idea_whitepaper",
-                  arg_template=json.dumps({"bubble_id": BUBBLE["id"]}))
+                  arg_template=json.dumps(_bestaetigt({"bubble_id": BUBBLE["id"]})))
     ergebnis = PlanExecutor()._exec_hop(hop, {}, plan_ctx={"plan_id": "p", "plan_intent": "x",
                                                            "antwortkanal": {"art": "api"}})
     assert ergebnis.ok is False

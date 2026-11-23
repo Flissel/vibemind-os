@@ -2525,6 +2525,9 @@ def _try_ideen_abkuerzung(intent: str, kontext: Any):
                 return None, None, "Das Abbrechen geht gerade nicht: die Auftragstabelle ist nicht erreichbar."
             logger.info("[ideen-abkuerzung] White Paper abbrechen (lokal)")
             return None, None, abbrechen(treffer["argumente"].get("bubble_id"), tabelle=tabelle)
+        if treffer.get("bestaetigen"):
+            # White Paper: nie direkt. Erst der Umfang als Rueckfrage, "Ja, erstellen" startet.
+            return None, _white_paper_rueckfrage(treffer["argumente"]), ""
         if isinstance(treffer.get("lies"), dict) and isinstance(kontext, dict):
             # "Was steht bei X?": die Antwort zeigt nur diese Karte (antwort_fuer_schritt).
             kontext["_lies_karte"] = treffer["lies"]
@@ -2546,6 +2549,40 @@ def _try_ideen_abkuerzung(intent: str, kontext: Any):
     except Exception as e:  # noqa: BLE001 - nie die Anfrage daran scheitern lassen
         logger.warning(f"[ideen-abkuerzung] uebersprungen: {type(e).__name__}: {e}")
         return None, None, ""
+
+
+def _white_paper_rueckfrage(argumente: Dict[str, Any]) -> str:
+    """Umfang des White Papers als Rueckfrage (nur lesen); merkt sie fuer "Ja, erstellen"."""
+    from core import whitepaper_bestaetigung as _wp
+    from core.ideen_dokument import DatenbankLesen, white_paper_frage
+    from core.ideen_rueckweg import RueckwegFehler
+
+    try:
+        satz, bestaetigbar = white_paper_frage(argumente, lesen=DatenbankLesen())
+    except RueckwegFehler as e:
+        _wp.verwerfen()
+        return str(e)
+    if bestaetigbar:
+        _wp.fragen(argumente)
+    else:
+        _wp.verwerfen()
+    return satz
+
+
+def _white_paper_plan(intent: str, argumente: Dict[str, Any]):
+    """Der bestaetigte White-Paper-Plan: ein fester Aufruf mit Schluessel."""
+    from core.ideen_abkuerzung import arg_vorlage
+    from core.plan_schema import Plan as _Plan, HopSpec as _HopSpec
+
+    return _Plan(
+        plan_id=f"ideen_{int(time.time() * 1000)}",
+        intent=intent,
+        rationale="Ideen-Abkuerzung: idea.whitepaper (bestaetigt)",
+        hops=[_HopSpec(step_id="s1", description="idea.whitepaper via Bestaetigung",
+                       capability="idea_whitepaper", arg_template=arg_vorlage(argumente))],
+        final_synthesis_prompt="",
+        estimated_cost_usd=0.0,
+    )
 
 
 def _planer_fehler_ideen(hops, exec_result) -> Optional[Dict[str, Any]]:
@@ -2630,8 +2667,110 @@ def _feste_antwort(plan, exec_result, ideen_fest: bool, vorgabe: str, kontext: A
         return None
 
 
+@router.get("/api/agent-auftraege/{auftrag_id}/stand")
+async def agent_auftrag_stand(auftrag_id: str):
+    """Stand eines angenommenen Auftrags fuer die App (core/auftrag_stand), nur lesen.
+
+    Die App fragt das fuer jede Auftrags-Nr. aus ``auftraege`` ab, solange die Standzeile
+    "arbeitet ..." zeigt: ``stand`` (laeuft | fertig | vorschlag | abgebrochen | wartet |
+    fehler | unbekannt), ``meldung`` (deutscher Satz), ``dauer_s`` erst beim Abschluss,
+    ``hinweis`` bei Vorschlag/Abbruch, ``saetze`` (feste Saetze zum Weitermachen).
+    """
+    from core.auftrag_stand import stand
+
+    try:
+        from core.agent_auftraege import tabelle_aus_umgebung
+        tabelle = tabelle_aus_umgebung()
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"stand": "unbekannt", "ok": False, "auftrag_id": auftrag_id,
+                             "meldung": "Die Auftragstabelle ist nicht erreichbar."})
+    return JSONResponse(await asyncio.to_thread(stand, auftrag_id, tabelle.lesen))
+
+
+def _vorschlag_behandeln(art: str, intent: str, kontext: Any):
+    """"Vorschlag zeigen/übernehmen/verwerfen" (core/ideen_vorschlag).
+
+    Rueckgabe (plan, antwort, felder): ``plan`` mit genau einem festen Aufruf beim
+    Uebernehmen, sonst ``None`` und ``antwort`` als fertiger Satz. Wirft nie.
+    """
+    from core import ideen_vorschlag as _vs
+
+    try:
+        from core.agent_auftraege import tabelle_aus_umgebung
+        tabelle = tabelle_aus_umgebung()
+        bubble = kontext.get("bubble") if isinstance(kontext, dict) and isinstance(kontext.get("bubble"), dict) else {}
+        bubble_id = bubble.get("id") if isinstance(bubble.get("id"), str) else None
+        zeile = tabelle.letzter_vorschlag(_vs.seit_iso(), bubble_id)
+        if zeile is None and bubble_id is not None:
+            zeile = tabelle.letzter_vorschlag(_vs.seit_iso())
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[vorschlag] nicht lesbar: {type(e).__name__}")
+        return None, _vs.NICHT_LESBAR, {"hinweis": True}
+    if art == "zeigen" or zeile is None:
+        return None, _vs.zeigen(zeile), ({} if zeile is not None else {"hinweis": True})
+    if art == "verwerfen":
+        erledigt = tabelle.vorschlag_erledigen(zeile, "verworfen")
+        return None, ("Der Vorschlag ist verworfen; an der Notiz ist nichts geändert." if erledigt
+                      else _vs.KEINER), {}
+    aufrufe, satz = _vs.uebernehmen(zeile)
+    if not aufrufe:
+        return None, satz, {"hinweis": True}
+    # Erst als erledigt markieren (kein doppeltes Uebernehmen), dann der feste Aufruf.
+    if not tabelle.vorschlag_erledigen(zeile, "uebernommen"):
+        return None, _vs.KEINER, {"hinweis": True}
+    from core.ideen_abkuerzung import arg_vorlage
+    from core.plan_schema import Plan as _Plan, HopSpec as _HopSpec
+
+    ereignis, argumente = aufrufe[0]
+    plan = _Plan(plan_id=f"ideen_{int(time.time() * 1000)}", intent=intent,
+                 rationale=f"Vorschlag uebernehmen: {ereignis} (fester Aufruf)",
+                 hops=[_HopSpec(step_id="s1", description=f"{ereignis} via Vorschlag", capability=ereignis,
+                                arg_template=arg_vorlage(argumente))],
+                 final_synthesis_prompt="", estimated_cost_usd=0.0)
+    return plan, satz, {}
+
+
 @router.post("/api/multihop/execute")
 async def multihop_execute(request: Request):
+    """Siehe ``_multihop_execute``. Danach: Hinweise und Rueckfragen tragen ein eigenes Feld
+    (``hinweis``/``rueckfrage``), und der Ausgang des Satzes zaehlt fuer "Zurück"
+    (core/zurueck_vorsicht.satz_merken)."""
+    antwort = await _multihop_execute(request)
+    return _nachbereiten(antwort)
+
+
+def _nachbereiten(antwort):
+    """Antwort eines Satzes kennzeichnen und merken. Wirft nie; im Zweifel unveraendert."""
+    try:
+        if getattr(antwort, "status_code", 200) >= 400 or not isinstance(getattr(antwort, "body", None), bytes):
+            return antwort
+        daten = json.loads(antwort.body)
+        if not isinstance(daten, dict) or "final_text" not in daten:
+            return antwort
+        from core import zurueck_vorsicht as _vorsicht
+        from core.ideen_abkuerzung import fehlerart
+
+        if daten.get("ok") is False and not daten.get("pending") and not daten.get("rueckfrage"):
+            art = fehlerart(daten.get("fehler") or _erster_fehler(daten.get("executed")))
+            if art:
+                daten[art] = True
+        _vorsicht.satz_merken(_vorsicht.art_der_antwort(daten))
+        return JSONResponse(daten, status_code=antwort.status_code)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[nachbereiten] uebersprungen: {type(e).__name__}: {e}")
+        return antwort
+
+
+def _erster_fehler(executed: Any) -> str:
+    if not isinstance(executed, dict):
+        return ""
+    for schritt in executed.values():
+        if isinstance(schritt, dict) and not schritt.get("ok") and schritt.get("error"):
+            return str(schritt["error"])
+    return ""
+
+
+async def _multihop_execute(request: Request):
     """Phase 6 — full intent → plan → execute → synth pipeline. Body:
         {intent}                  produce plan + execute
         {plan: {...}}             execute a hand-built plan (skip planner)
@@ -2681,9 +2820,31 @@ async def multihop_execute(request: Request):
         except Exception as e:
             return JSONResponse({"error": f"invalid plan: {e}", "trace_id": trace_id}, status_code=400)
     elif intent:
+        # White Paper: "Ja, erstellen" gilt nur direkt nach der Rueckfrage mit dem Umfang;
+        # jeder andere Satz verwirft sie (core/whitepaper_bestaetigung).
+        from core import whitepaper_bestaetigung as _wp
+        _wp_antwort = _wp.satz_pruefen(intent)
+        if _wp_antwort and _wp_antwort.get("satz"):
+            _trace_lite(pe, trace_id, intent, "ideen-rueckfrage", _wp_antwort["satz"])
+            return JSONResponse({"ok": False, "rueckfrage": True, "space": "ideas", "executed": {},
+                                 "final_text": _wp_antwort["satz"], "trace_id": trace_id})
+        if _wp_antwort and _wp_antwort.get("argumente"):
+            plan = _white_paper_plan(intent, _wp_antwort["argumente"])
+            _ideen_fest = True
+        # Vorschlag bei geaenderter Karte: zeigen, uebernehmen, verwerfen (aus jedem Reiter).
+        from core.ideen_vorschlag import satz_art as _vorschlag_art
+        _vs_art = _vorschlag_art(intent) if plan is None and not skip_shortcut else None
+        if _vs_art:
+            plan, _ideen_antwort, _vs_felder = await asyncio.to_thread(
+                _vorschlag_behandeln, _vs_art, intent, body.get("context"))
+            if plan is None:
+                _trace_lite(pe, trace_id, intent, "ideen-vorschlag", _ideen_antwort)
+                return JSONResponse({"ok": not _vs_felder.get("hinweis"), "space": "ideas", "executed": {},
+                                     "final_text": _ideen_antwort, "trace_id": trace_id, **_vs_felder})
+            _ideen_fest = True
         # Ideen-Space: feste Saetze laufen ohne Planer und ohne Modell. Die App gibt
         # dafuer ihren Kontext mit; Namen werden daraus aufgeloest, nie geraten.
-        if not skip_shortcut and isinstance(body.get("context"), dict):
+        if plan is None and not skip_shortcut and isinstance(body.get("context"), dict):
             plan, _ideen_frage, _ideen_antwort = _try_ideen_abkuerzung(intent, body.get("context"))
             if _ideen_frage:
                 _trace_lite(pe, trace_id, intent, "ideen-rueckfrage", _ideen_frage)
@@ -2693,9 +2854,10 @@ async def multihop_execute(request: Request):
                 })
             if plan is None and _ideen_antwort:
                 # Im Gehirn erledigt, ohne Plan und ohne Werkzeug (White Paper abbrechen).
+                # "status: abgebrochen" sagt der App: die Standzeile "arbeitet ..." ist zu Ende.
                 _trace_lite(pe, trace_id, intent, "ideen-lokal", _ideen_antwort)
                 return JSONResponse({
-                    "ok": True, "space": "ideas", "executed": {},
+                    "ok": True, "space": "ideas", "executed": {}, "status": "abgebrochen",
                     "final_text": _ideen_antwort, "trace_id": trace_id,
                 })
             _ideen_fest = plan is not None
@@ -2747,7 +2909,7 @@ async def multihop_execute(request: Request):
                                      "final_text": _ideen_frage, "trace_id": trace_id, "weg": "ideen"})
             if plan is None and _ideen_antwort:
                 _trace_lite(pe, trace_id, intent, "ideen-lokal", _ideen_antwort)
-                return JSONResponse({"ok": True, "space": "ideas", "executed": {},
+                return JSONResponse({"ok": True, "space": "ideas", "executed": {}, "status": "abgebrochen",
                                      "final_text": _ideen_antwort, "trace_id": trace_id})
             _ideen_fest = plan is not None
             if not _ideen_fest:
@@ -3035,6 +3197,8 @@ async def multihop_execute(request: Request):
         out["ok"] = True
         out["pending"] = True
         out["status"] = "angenommen"
+        # Die Dauer bis zur Annahme ist nicht die des Laufs; sie kommt mit dem Abschluss.
+        out.pop("elapsed_s", None)
         try:
             pe.recorder.attach_final(plan.plan_id, out["final_text"])
         except Exception:  # noqa: BLE001
