@@ -149,6 +149,13 @@ def test_auftrag_verbietet_empfehlungen_ohne_grundlage() -> None:
     assert nachricht.index("Keine Empfehlungen") < nachricht.index("<<<NOTIZ")
 
 
+def test_auftrag_verbietet_wiederholung_mit_anderen_worten() -> None:
+    # Lauf 19 (54): nur im Auftrag, keine Pruefung dafuer.
+    nachricht, _ = _vorbereiten()
+    assert "Kein Satz, der einen vorigen nur mit anderen Worten wiederholt" in nachricht
+    assert "„also“" in nachricht and nachricht.index("anderen Worten") < nachricht.index("<<<NOTIZ")
+
+
 def test_auftrag_bittet_um_korrektes_deutsch() -> None:
     # Lauf 16 (47): nur erbeten, keine Pruefung dafuer.
     nachricht, _ = _vorbereiten()

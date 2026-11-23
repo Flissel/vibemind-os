@@ -48,6 +48,10 @@ VERTRAEGE: dict[str, dict[str, Any]] = {
             "in der Sprache und Form der Notiz (Ich-/Wir-Form, Stichpunkte bleiben Liste, Ueberschriften "
             "bleiben), aus Stichworten werden vollstaendige Saetze, jeder Punkt der Notiz kommt vor und "
             "wird konkret ausgebaut. Sag jeden Gedanken nur einmal; jeder Satz bringt etwas Neues. "
+            # Lauf 19 (54): ein Satz sagte den vorigen mit anderen Worten ("haengen also an ..."); das
+            # ist am Ergebnis nicht sicher pruefbar, darum nur hier.
+            "Kein Satz, der einen vorigen nur mit anderen Worten wiederholt (kein „also“ oder „das heisst“ "
+            "als Wiederholung). "
             # Lauf 12 (40): angehaengte Vorbehalte (eine erfundene offene Frage), die der Notiz
             # widersprachen, und Saetze, die dasselbe noch einmal sagten.
             "Als offen benennst du nur, was die Notiz selbst offen laesst (etwa mit einem Fragezeichen); "
