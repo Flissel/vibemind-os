@@ -12,6 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from core.auftrag_stand import stand_einer_zeile  # noqa: E402
 from core.ideen_abkuerzung import ziel_fuer_schritt  # noqa: E402
 from core.plan_executor import _abschluss_ereignis, _ziel_des_plans  # noqa: E402
 from core.plan_schema import HopResult, HopSpec, Plan  # noqa: E402
@@ -72,6 +73,53 @@ def test_plan_completed_nimmt_die_bubble_des_satzes() -> None:
     plan = _plan("idea.rate", {"id": KARTE, "score": 50}, bubble=BUBBLE)
     executed = {"s1": HopResult(step_id="s1", ok=True, result=_mcp({"ok": True}), capability="idea.rate")}
     assert _ziel_des_plans(plan, True, executed) == {"space": "ideas", "bubble_id": BUBBLE, "node_id": KARTE}
+
+
+# ── /stand: der Rueckweg nennt das Ziel ─────────────────────────────────────
+
+DOKUMENT = "a0000010"
+
+
+def _zeile(rueckweg: dict, pruefung: dict, status: str = "fertig") -> dict:
+    return {"id": "00000000-0000-4000-8000-000000000021", "status": status,
+            "uebergabe": {"rueckweg": rueckweg}, "pruefung": pruefung}
+
+
+def test_stand_fertig_nennt_die_dokumentkarte() -> None:
+    zeile = _zeile({"vertrag": "zusammenfassen", "bubble_id": BUBBLE, "dokument_id": DOKUMENT},
+                   {"rueckweg": "geschrieben", "verified": True, "meldung": "x", "dokument_id": DOKUMENT})
+    stand = stand_einer_zeile(zeile)
+    assert stand["stand"] == "fertig"
+    assert stand["ziel"] == {"space": "ideas", "bubble_id": BUBBLE, "node_id": DOKUMENT}
+
+
+def test_stand_vorschlag_und_uebernommen_nennen_die_karte() -> None:
+    rueckweg = {"vertrag": "ausformulieren", "bubble_id": BUBBLE, "karte_id": KARTE}
+    vorschlag = stand_einer_zeile(_zeile(rueckweg, {"rueckweg": "vorschlag", "meldung": "x"}))
+    uebernommen = stand_einer_zeile(_zeile(rueckweg, {"rueckweg": "vorschlag", "vorschlag_erledigt": "uebernommen"}))
+    ziel = {"space": "ideas", "bubble_id": BUBBLE, "node_id": KARTE}
+    assert (vorschlag["stand"], vorschlag["ziel"]) == ("vorschlag", ziel)
+    assert (uebernommen["stand"], uebernommen["ziel"]) == ("uebernommen", ziel)
+
+
+def test_stand_gruppieren_nennt_nur_die_bubble() -> None:
+    zeile = _zeile({"vertrag": "gruppieren", "bubble_id": BUBBLE}, {"rueckweg": "geschrieben", "meldung": "x"})
+    assert stand_einer_zeile(zeile)["ziel"] == {"space": "ideas", "bubble_id": BUBBLE, "node_id": None}
+
+
+@pytest.mark.parametrize("zeile", [
+    _zeile({"vertrag": "zusammenfassen", "bubble_id": BUBBLE, "dokument_id": DOKUMENT},
+           {"rueckweg": "fehler", "meldung": "x"}),                                   # kein Erfolg
+    _zeile({"vertrag": "zusammenfassen", "bubble_id": BUBBLE, "dokument_id": DOKUMENT},
+           {"rueckweg": "vorschlag", "vorschlag_erledigt": "verworfen"}),             # verworfen
+    _zeile({"vertrag": "ausformulieren", "bubble_id": None, "karte_id": KARTE},
+           {"rueckweg": "geschrieben", "meldung": "x"}),                              # Bubble unbekannt
+    {"id": "00000000-0000-4000-8000-000000000022", "status": "fertig", "uebergabe": {},
+     "pruefung": {"verified": True, "meldung": "x"}},                                 # kein Rueckweg
+    _zeile({"vertrag": "zusammenfassen"}, {"rueckweg": "geschrieben"}, status="laeuft"),  # laeuft noch
+])
+def test_stand_ohne_ziel(zeile) -> None:
+    assert "ziel" not in stand_einer_zeile(zeile)
 
 
 def test_plan_completed_ohne_ziel_bei_fehler_und_fremden_plaenen() -> None:

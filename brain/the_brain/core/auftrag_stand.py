@@ -67,8 +67,39 @@ def _vorschlag_saetze(zeile: Mapping[str, Any]) -> list[str]:
     return ["Vorschlag zeigen", schreibt, "Vorschlag verwerfen"]
 
 
+def ziel_der_zeile(zeile: Mapping[str, Any]) -> Optional[dict[str, Any]]:
+    """(33) Wohin die App springt: ``{space, bubble_id, node_id}`` aus dem Rückweg der Zeile.
+
+    ``node_id`` ist die Dokument- oder Einschätzungskarte (``dokument_id``) bzw. die betroffene
+    Karte (``karte_id``), beim Gruppieren ``None``. Ohne Bubble kein Ziel. Wirft nie.
+    """
+    try:
+        # Kennungen wie im Rückweg selbst geprüft (core/ideen_rueckweg, core/ideen_dokument).
+        from .ideen_abkuerzung import ist_kennung as ist_db_kennung
+
+        uebergabe = zeile.get("uebergabe")
+        rueckweg = uebergabe.get("rueckweg") if isinstance(uebergabe, Mapping) else None
+        if not isinstance(rueckweg, Mapping) or not ist_db_kennung(rueckweg.get("bubble_id")):
+            return None
+        pruefung = zeile.get("pruefung") if isinstance(zeile.get("pruefung"), Mapping) else {}
+        node_id = next((k for k in (pruefung.get("dokument_id"), rueckweg.get("dokument_id"),
+                                    rueckweg.get("karte_id")) if ist_db_kennung(k)), None)
+        return {"space": "ideas", "bubble_id": rueckweg["bubble_id"], "node_id": node_id}
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def stand_einer_zeile(zeile: Mapping[str, Any]) -> dict[str, Any]:
     """Der Stand genau dieser Zeile (ohne Kette, ohne Dauer)."""
+    ergebnis = _stand_einer_zeile(zeile)
+    if ergebnis.get("stand") in ("fertig", "vorschlag", "uebernommen"):
+        ziel = ziel_der_zeile(zeile)
+        if ziel:
+            ergebnis["ziel"] = ziel
+    return ergebnis
+
+
+def _stand_einer_zeile(zeile: Mapping[str, Any]) -> dict[str, Any]:
     status = zeile.get("status")
     pruefung = zeile.get("pruefung") if isinstance(zeile.get("pruefung"), Mapping) else None
     if status in ("offen", "laeuft") and not (pruefung and pruefung.get("rueckweg") == "abgebrochen"):

@@ -414,7 +414,8 @@ def nachricht_einschaetzen(bubble_titel: str, karten: list[tuple[str, str, str]]
 EINSCHAETZUNG_FRAGE = 300
 EINSCHAETZUNG_IM_CHAT = 1_500
 ANTWORT_SAETZE = 2
-ANTWORT_ZEICHEN = 400
+# Die Huelle zeigt die meldung im Chat bis 200 Zeichen (14c9571): die Antwort passt ganz hinein.
+ANTWORT_ZEICHEN = 190
 
 
 def antwort_kurz(absaetze: list[str]) -> str:
