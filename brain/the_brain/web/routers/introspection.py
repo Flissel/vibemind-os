@@ -3376,7 +3376,8 @@ def _abschluss_berichtigen(pe, plan, exec_result: Dict[str, Any], out: Dict[str,
         veroeffentlichen = getattr(pe, "_publish", None)
         if not callable(veroeffentlichen):
             return
-        nutzlast: Dict[str, Any] = {"plan_id": plan.plan_id, "ok": False, "berichtigt": True,
+        nutzlast: Dict[str, Any] = {"plan_id": plan.plan_id, "trace_id": getattr(plan, "trace_id", "") or "",
+                                    "ok": False, "berichtigt": True,
                                     "hop_count": len(exec_result.get("executed") or {})}
         if out.get("nicht_lesbar"):
             nutzlast["nicht_lesbar"] = True

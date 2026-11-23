@@ -423,6 +423,10 @@ class PlanExecutor:
         self._schritt_waechter = schritt_waechter
         self._subscribers: "weakref.WeakSet[asyncio.Queue]" = weakref.WeakSet()
         self._publish_loop: Optional[asyncio.AbstractEventLoop] = None
+        # Lauf 8 (Punkt 29): Jedes Ereignis traegt plan_id und trace_id SEINES Laufs. Jeder Satz
+        # laeuft in einem eigenen Thread (asyncio.to_thread); hop_started/hop_completed hatten
+        # gar keine plan_id, und die App ordnete Ereignisse ueberlappender Saetze nach Reihenfolge zu.
+        self._lauf = threading.local()
         self._lock = threading.RLock()
         # Phase 11.U.A — multi-plan execution. Replaces the single-plan
         # mutex from Phase 6.14.1 with a bounded semaphore (N concurrent
@@ -752,6 +756,10 @@ class PlanExecutor:
     def _publish(self, kind: str, payload: Dict[str, Any]) -> None:
         if not self._subscribers:
             return
+        ids = getattr(getattr(self, "_lauf", None), "ids", None)
+        if ids and isinstance(payload, dict):
+            # Nie ueberschreiben: ein Ereignis, das seine Kennung selbst nennt, behaelt sie.
+            payload = {**{k: v for k, v in ids.items() if v}, **payload}
         event = {"kind": kind, "payload": payload, "ts": time.time()}
         loop = self._publish_loop
         for q in list(self._subscribers):
@@ -834,6 +842,7 @@ class PlanExecutor:
             self._active_plan_started_at = t0
         with self._lock:
             self.stats["plans_executed"] += 1
+        self._lauf.ids = {"plan_id": plan.plan_id, "trace_id": getattr(plan, "trace_id", "") or ""}
 
         # Phase 11.U.A — pause discourse only when *first* concurrent plan
         # arrives. Last-out resumes. With multi-plan execution we can't
@@ -1424,6 +1433,7 @@ class PlanExecutor:
                     de.resume()
             except Exception:
                 pass
+            self._lauf.ids = None
 
             try:
                 self._exec_semaphore.release()
