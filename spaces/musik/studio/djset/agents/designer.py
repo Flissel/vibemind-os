@@ -26,6 +26,7 @@ from djset.agents.base import (
     run_agent,
 )
 from djset.camelot import break_indices
+from djset.dsp.analyze import mischbereich
 from djset.contracts import (
     MAX_RATIO,
     MIN_RATIO,
@@ -198,7 +199,7 @@ def _snapped_outro(track: TrackAnalysis) -> float:
     damit ein Loch in der Ausgabe.
     """
     grid = track.beatgrid
-    outro = snap_to_downbeat(track.mix_regions.outro_start_s, grid)
+    outro = snap_to_downbeat(mischbereich(track).outro_start_s, grid)
     if outro > track.duration_s:
         outro = max(grid.first_downbeat_s, outro - grid.bar_length_s)
     return outro
@@ -271,6 +272,10 @@ def build_mixplan(
     # Einmal je Track gesnappt, danach ist dieser Wert das Outro - fuer die
     # Materialrechnung, fuer play_to_s und fuer die Position des Uebergangs.
     outros = {tid: _snapped_outro(by_id[tid]) for tid in order}
+    # Wo das Intro fuer den Uebergang endet: mindestens 16 Takte, auch wenn
+    # der Song kein leiseres Intro hat (Fund 2 der Abnahme, siehe
+    # dsp.analyze.mischbereich).
+    intros = {tid: mischbereich(by_id[tid]).intro_end_s for tid in order}
     gains = _gains(order, by_id)
     breaks = break_seams(order, by_id, profile)
 
@@ -284,9 +289,9 @@ def build_mixplan(
     # die Technikliste des Profils hinweg.
     #
     # Taktzahl: ein Uebergang kann nicht laenger sein als das Material, das
-    # beide Seiten hergeben. Ein Track ohne erkennbares Intro liefert null
-    # Takte - dann wird der Uebergang zum Stoss auf dem Downbeat, statt
-    # Sekunden zu deklarieren, die niemand fuellt.
+    # beide Seiten hergeben. Seit dem Mindest-Mischbereich sind das an jedem
+    # Ende mindestens 16 Takte (bei sehr kurzen Tracks ein Drittel); laengere
+    # gemessene Intros und Outros geben mehr her.
     effective: list[TransitionChoice] = []
     for index, choice in enumerate(choices):
         outgoing = by_id[order[index]]
@@ -308,7 +313,7 @@ def build_mixplan(
             outgoing.beatgrid.bar_length_s,
         )
         in_bars = _available_bars(
-            incoming.mix_regions.intro_end_s - incoming.beatgrid.first_downbeat_s,
+            intros[incoming.id] - incoming.beatgrid.first_downbeat_s,
             incoming.beatgrid.bar_length_s,
         )
         bars = max(1, min(choice.bars, out_bars, in_bars))
@@ -326,7 +331,7 @@ def build_mixplan(
             play_from = grid.first_downbeat_s
         else:
             bars_in = effective[index - 1].bars
-            raw = track.mix_regions.intro_end_s - bars_in * grid.bar_length_s
+            raw = intros[track_id] - bars_in * grid.bar_length_s
             play_from = snap_to_downbeat(max(0.0, raw), grid)
 
         if last:
@@ -372,7 +377,7 @@ def build_mixplan(
         # mitbringt. Der Ueberschuss der laengeren Seite spielt fuer sich.
         out_tail_s = (entry.play_to_s - outros[order[index]]) / entry.timestretch_ratio
         in_head_s = (
-            by_id[order[index + 1]].mix_regions.intro_end_s - following.play_from_s
+            intros[order[index + 1]] - following.play_from_s
         ) / following.timestretch_ratio
         # max(0.0, ...): ohne nutzbares Intro (intro_end_s == 0.0) kann der
         # Kopf rechnerisch negativ werden, wenn der erste Downbeat dahinter

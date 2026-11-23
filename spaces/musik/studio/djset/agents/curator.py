@@ -13,6 +13,7 @@ from djset.agents.base import (
     StageRulesViolated,
     run_agent,
 )
+from djset.dsp.analyze import mischbereich
 from djset.contracts import (
     MIN_TRACKS,
     Profile,
@@ -51,9 +52,11 @@ Die analysierten Tracks:
 
 {table}
 
-Sortiere aus, was nicht taugt: falsche BPM-Familie, defekte Struktur (kein
-brauchbares Intro oder Outro), zu kurz fuer einen Uebergang, am Genre vorbei,
-oder ein Urteil des Analysten, das dagegen spricht.
+Sortiere aus, was nicht taugt: falsche BPM-Familie, zu kurz fuer einen
+Uebergang, am Genre vorbei, oder ein Urteil des Analysten, das dagegen spricht.
+Ein Song ohne leises Intro oder Outro ist kein Defekt: die Kette blendet ihn
+wie ein DJ ueber die ersten und letzten 16 Takte, die Tabelle nennt diese
+Bereiche.
 
 Regeln:
 - Jede track_id kommt genau einmal vor, entweder in accepted oder in rejected.
@@ -68,11 +71,12 @@ Antworte ausschliesslich mit dem geforderten JSON."""
 def _table(analyses: list[TrackAnalysis]) -> str:
     lines = []
     for a in analyses:
+        gemischt = mischbereich(a)
         lines.append(
             f"- {a.id}: {a.bpm.value:.1f} BPM (Raster {a.beatgrid.confidence:.2f}), "
             f"{a.key.camelot}, Energie {a.verdict.energy_level:.2f}, "
-            f"{a.duration_s:.0f} s, Intro bis {a.mix_regions.intro_end_s:.0f} s, "
-            f"Outro ab {a.mix_regions.outro_start_s:.0f} s, "
+            f"{a.duration_s:.0f} s, gemischt bis {gemischt.intro_end_s:.0f} s "
+            f"und ab {gemischt.outro_start_s:.0f} s, "
             f"brauchbar {a.verdict.usable}, Analyst: {a.verdict.notes}"
         )
     return "\n".join(lines)

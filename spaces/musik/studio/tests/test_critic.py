@@ -114,17 +114,15 @@ def test_a_transition_off_the_predecessors_downbeat_is_caught(
 
 
 def test_a_butt_join_without_overlap_is_caught(profile: Profile) -> None:
-    """Finding 3: gleichfoermig lautes Material liefert kein Outro.
+    """Finding 3: ein Uebergang ohne Ueberlappung ist eine Stossnaht.
 
-    find_mix_regions dokumentiert das ausdruecklich - ohne erkennbaren Auf- und
-    Abbau endet das Intro bei 0.0 und das Outro beginnt am Trackende. Der Plan
-    deklariert dann 1 Takt Uebergang, tatsaechlich liegt nichts uebereinander.
-    Ohne Beanstandung meldet die QA aus Plan 3 an jeder Naht einen Beatbruch,
-    ohne dass jemand sagen kann, woran es lag.
+    Frueher entstand sie aus gleichfoermig lautem Material (kein gemessenes
+    Outro). Seit dem Mindest-Mischbereich (Fund 2 der Abnahme, 23.11.) baut
+    der Designer daraus 16 Takte. Der Critic behaelt die Pruefung als
+    Waechter: ein Plan mit overlap_s == 0 muss weiter auffallen, sonst meldet
+    die QA an jeder Naht einen Beatbruch, ohne dass jemand sagen kann, woran
+    es lag.
     """
-    # Die Laenge ist bewusst kein glattes Vielfaches der Taktlaenge - so faellt
-    # eine echte Datei aus, und nur so ist der Rest hinter dem letzten Downbeat
-    # das, was er im Betrieb ist: ein Bruchteil eines Takts.
     tracks = [
         make_off_grid(
             f"u{index}", bpm=174.0, duration_s=241.7, intro_end_s=0.0, outro_start_s=241.7
@@ -132,6 +130,13 @@ def test_a_butt_join_without_overlap_is_caught(profile: Profile) -> None:
         for index in range(4)
     ]
     plan = _plan(tracks, profile, bars=16)
+    plan = plan.model_copy(
+        update={
+            "transitions": [
+                t.model_copy(update={"overlap_s": 0.0}) for t in plan.transitions
+            ]
+        }
+    )
 
     verdict = critique(plan, tracks, profile)
 

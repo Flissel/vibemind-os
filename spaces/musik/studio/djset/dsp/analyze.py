@@ -434,6 +434,56 @@ def find_mix_regions(
     return MixRegions(intro_end_s=intro_end, outro_start_s=outro_start)
 
 
+# So viele Takte bekommt jeder Uebergang mindestens, auch wenn der Track
+# selbst kein leiseres Intro oder Outro hat. Fund 2 der Abnahme (23.11.):
+# fertige Songs bleiben bis zum Schluss laut, find_mix_regions legt ihr Outro
+# deshalb auf das Trackende, und der Uebergang schrumpfte auf einen Takt.
+# Ein DJ blendet bei solchen Songs ueber die letzten 16 Takte. Felix 23.11.:
+# "Ja, so bauen".
+MINDEST_MISCH_TAKTE = 16
+
+# Hoechstens dieser Anteil des Tracks (ab dem ersten Downbeat) geht an jedes
+# Ende. Bei sehr kurzen Tracks blieben sonst Intro- und Outro-Bereich ohne
+# Mitte dazwischen.
+_HOECHSTENS_ANTEIL_JE_ENDE = 1.0 / 3.0
+
+
+def mischbereich(track: TrackMeasurements) -> MixRegions:
+    """Wo die Kette tatsaechlich mischt.
+
+    Die Messung (track.mix_regions) bleibt, was sie ist: wo der Track leiser
+    wird. Gemischt wird mindestens ueber MINDEST_MISCH_TAKTE Takte an jedem
+    Ende - ein laengeres gemessenes Intro oder Outro bleibt so, wie es ist.
+
+    Das Outro beginnt auf dem letzten Downbeat, hinter dem noch die volle
+    Taktzahl Musik kommt. Abgerundet, nicht gerundet: der Designer zaehlt die
+    Takte zwischen Outro und Trackende ab, und ein aufgerundeter Einsatz
+    liesse dort einen Takt weniger uebrig.
+    """
+    grid = track.beatgrid
+    gemessen = track.mix_regions
+    spielbar = track.duration_s - grid.first_downbeat_s
+    takte = min(
+        MINDEST_MISCH_TAKTE,
+        int(spielbar * _HOECHSTENS_ANTEIL_JE_ENDE / grid.bar_length_s),
+    )
+    if takte < 1:
+        return gemessen
+
+    intro_end = max(
+        gemessen.intro_end_s, grid.first_downbeat_s + takte * grid.bar_length_s
+    )
+    letzter = math.floor(
+        (spielbar - takte * grid.bar_length_s) / grid.bar_length_s + 1e-9
+    )
+    outro_start = min(
+        gemessen.outro_start_s, grid.first_downbeat_s + letzter * grid.bar_length_s
+    )
+    if intro_end >= outro_start:
+        return gemessen
+    return MixRegions(intro_end_s=intro_end, outro_start_s=outro_start)
+
+
 # Bodenwert fuer Pegelangaben in dB. Digitale Stille waere rechnerisch -inf;
 # -inf ist aber kein gueltiger JSON-Zahlenwert und faellt beim Roundtrip
 # durch das Loudness-Schema (siehe djset.contracts.Loudness).

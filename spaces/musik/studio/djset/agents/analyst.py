@@ -25,7 +25,7 @@ from djset.contracts import (
     UnreadableTrack,
     Verdict,
 )
-from djset.dsp.analyze import measure_track, snap_to_range
+from djset.dsp.analyze import measure_track, mischbereich, snap_to_range
 
 # Wurde die Oktave korrigiert, stammt der Wert nicht mehr aus der Messung
 # allein - die Konfidenz muss das abbilden.
@@ -64,14 +64,20 @@ Gemessen wurde (Track {track_id}):
 - Taktraster: erster Downbeat bei {downbeat:.2f} s, Taktlaenge {bar:.3f} s
 - Tonart: {camelot}, Sicherheit {key_conf:.2f}
 - Energiekurve in 4-Takt-Schritten: {energy}
-- Intro endet bei {intro:.1f} s, Outro beginnt bei {outro:.1f} s
+- Leiser als der Kern: Intro endet bei {intro:.1f} s, Outro beginnt bei {outro:.1f} s
+- Gemischt wird von {mix_from:.1f} bis {mix_intro:.1f} s und ab {mix_outro:.1f} s
 - Lautheit: {lufs:.1f} LUFS, True Peak {peak:.1f} dB
+
+Zu Intro und Outro: Viele fertige Songs bleiben bis zum Schluss laut, dann
+liegt das gemessene Outro auf dem Trackende. Die Kette blendet solche Songs wie
+ein DJ ueber die letzten und ersten 16 Takte. Ein fehlendes leises Intro oder
+Outro ist deshalb kein Grund, den Track auszusortieren.
 
 Beurteile:
 
 1. usable - passt der Track ins Set? Achte darauf, ob das Tempo im Korridor
-   liegt, ob das Raster stabil genug fuer Cue-Punkte ist, ob es ueberhaupt ein
-   Intro und ein Outro zum Mixen gibt und ob die Tonart aufs Camelot-Rad passt.
+   liegt, ob das Raster stabil genug fuer Cue-Punkte ist und ob die Tonart
+   aufs Camelot-Rad passt.
 2. notes - eine knappe Begruendung in einem Satz. Bei usable false muss dort
    stehen, woran es liegt.
 3. energy_level - wo dieser Track auf der Energieskala des Bogens steht,
@@ -163,7 +169,11 @@ def _measure_in_corridor(
 def _prompt(measurements: TrackMeasurements, profile: Profile) -> str:
     arc = ", ".join(f"({p.position:.2f}, {p.energy:.2f})" for p in profile.energy_arc)
     energy = ", ".join(f"{value:.2f}" for value in measurements.energy)
+    gemischt = mischbereich(measurements)
     return PROMPT.format(
+        mix_from=measurements.beatgrid.first_downbeat_s,
+        mix_intro=gemischt.intro_end_s,
+        mix_outro=gemischt.outro_start_s,
         track_id=measurements.id,
         genre=profile.genre,
         bpm_target=profile.bpm.target,

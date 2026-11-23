@@ -265,14 +265,14 @@ def test_a_technique_outside_the_profile_is_re_asked(profile: Profile) -> None:
     assert "double_drop" in client.prompts[1]
 
 
-def test_a_track_with_no_intro_or_outro_material_gets_a_one_bar_transition(
+def test_a_track_without_own_intro_or_outro_is_mixed_over_16_bars(
     profile: Profile,
 ) -> None:
-    """Finding 2: ein Uebergang darf nicht mehr Takte deklarieren, als das
-    Material hergibt. Eine gleichfoermig laute Spur liefert 0 Takte Intro und
-    0 Takte Outro (find_mix_regions: intro_end_s == 0.0, outro_start_s ==
-    duration_s) - dann wird der Uebergang zum Stoss auf dem Downbeat (1 Takt),
-    nicht zu 16 Sekunden erfundenen Materials."""
+    """Fund 2 der Abnahme (Felix 23.11. "Ja, so bauen"). Eine gleichfoermig
+    laute Spur - ein fertiger Song - liefert laut find_mix_regions 0 Takte
+    Intro und 0 Takte Outro. Frueher wurde der Uebergang dann zum Stoss auf
+    einem Takt. Jetzt blendet die Kette wie ein DJ ueber die letzten 16 Takte
+    des einen und die ersten 16 Takte des anderen Songs."""
     a = make_analysis("a", bpm=173.0, camelot="8A")
     b = make_off_grid("b", bpm=174.0, intro_end_s=0.0, outro_start_s=240.0, camelot="8A")
     c = make_analysis("c", bpm=175.0, camelot="8A")
@@ -280,17 +280,17 @@ def test_a_track_with_no_intro_or_outro_material_gets_a_one_bar_transition(
 
     plan = design(FakeClient([_choices(2)]), setlist, [a, b, c], profile, _budget())
 
-    assert plan.transitions[0].bars == 1
-    assert plan.transitions[1].bars == 1
+    sechzehn_takte = 16 * 4 * 60.0 / plan.target_bpm
+    for transition in plan.transitions:
+        assert transition.bars == 16
+        assert transition.overlap_s == pytest.approx(sechzehn_takte, rel=1e-6)
 
 
 def test_bars_larger_than_the_available_outro_are_reduced(profile: Profile) -> None:
-    """Finding 2: 32 Takte (im Profilkorridor erlaubt) gegen einen Track, der
-    nur 8 Takte Outro hat, muss auf die verfuegbaren 8 Takte gekuerzt werden."""
-    bar_length = 4 * 60.0 / 174.0
-    x = make_off_grid(
-        "x", bpm=174.0, outro_start_s=240.0 - 8 * bar_length, camelot="8A"
-    )
+    """Finding 2: 32 Takte (im Profilkorridor erlaubt) gegen einen Track ohne
+    eigenes Outro. Der Mischbereich gibt 16 Takte her, also wird auf 16
+    gekuerzt - nicht auf das gemessene Nichts und nicht auf erfundene 32."""
+    x = make_off_grid("x", bpm=174.0, intro_end_s=0.0, outro_start_s=240.0, camelot="8A")
     y = make_analysis("y", bpm=173.0, camelot="8A")
     z = make_analysis("z", bpm=175.0, camelot="8A")
     setlist = Setlist(order=["x", "y", "z"], note="")
@@ -299,7 +299,7 @@ def test_bars_larger_than_the_available_outro_are_reduced(profile: Profile) -> N
         FakeClient([_choices(2, bars=32)]), setlist, [x, y, z], profile, _budget()
     )
 
-    assert plan.transitions[0].bars == 8
+    assert plan.transitions[0].bars == 16
 
 
 def test_an_unstretchable_middle_track_forces_the_cut_on_both_sides(

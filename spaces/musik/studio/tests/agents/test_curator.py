@@ -5,7 +5,7 @@ import pytest
 from djset.agents.base import Budget, StageRulesViolated
 from djset.agents.curator import NotEnoughTracks, curate
 from djset.contracts import MIN_TRACKS, Profile, UnreadableTrack
-from tests.fixtures.analyses import many
+from tests.fixtures.analyses import make_off_grid, many
 from tests.fixtures.fake_client import FakeClient
 
 
@@ -33,6 +33,27 @@ def test_the_curator_keeps_what_it_accepts(profile: Profile) -> None:
     assert shortlist.accepted == ids[:13]
     assert [r.track_id for r in shortlist.rejected] == [ids[13]]
     assert shortlist.shortened is False
+
+
+def test_ein_song_ohne_outro_gilt_dem_curator_nicht_als_defekt(
+    profile: Profile,
+) -> None:
+    """Fund 2 der Abnahme: der Prompt nannte "kein brauchbares Intro oder
+    Outro" als Aussortiergrund und zeigte das gemessene Outro auf dem
+    Trackende. Jetzt zeigt er den Bereich, in dem die Kette mischt."""
+    tracks = many(3) + [
+        make_off_grid("laut", bpm=120.0, duration_s=232.9,
+                      intro_end_s=0.0, outro_start_s=232.9)
+    ]
+    ids = [t.id for t in tracks]
+    client = FakeClient([_answer(ids, [])])
+
+    curate(client, tracks, [], profile, _budget())
+
+    prompt = " ".join(client.prompts[0].split())
+    assert "kein brauchbares Intro oder Outro" not in prompt
+    assert "laut: 120.0 BPM" in prompt
+    assert "gemischt bis 32 s und ab 200 s" in prompt
 
 
 def test_unreadable_files_are_rejected_without_asking_the_model(

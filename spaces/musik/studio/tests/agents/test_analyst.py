@@ -9,7 +9,7 @@ from djset.agents import analyst
 from djset.agents.analyst import SNAP_CONFIDENCE_PENALTY, analyse_track
 from djset.agents.base import Budget
 from djset.contracts import Profile, TrackAnalysis, TrackMeasurements, UnreadableTrack
-from tests.fixtures.analyses import make_analysis
+from tests.fixtures.analyses import make_analysis, make_off_grid
 from tests.fixtures.fake_client import FakeClient
 from tests.fixtures.make_audio import click_track, click_track_with_weak_offbeats
 
@@ -229,3 +229,28 @@ def test_eine_gespeicherte_messung_wird_nicht_neu_gemessen(
     assert client.calls == 1
     assert result.verdict.usable is True
     assert result.verdict.energy_level == 0.62
+
+
+def test_ein_song_ohne_outro_wird_dem_analysten_nicht_als_mangel_vorgelegt(
+    tmp_path: Path, profile: Profile
+) -> None:
+    """Fund 2 der Abnahme: der Analyst verwarf `no-chicks-no-eggs`, weil der
+    Outro-Start auf der Trackdauer lag. Der Prompt fragte ausdruecklich, ob
+    es ueberhaupt ein Outro zum Mixen gibt. Jetzt nennt er den Bereich, in
+    dem die Kette tatsaechlich mischt, und sagt, dass ein fehlendes Outro
+    kein Grund zum Aussortieren ist."""
+    laut = make_off_grid("laut", bpm=120.0, duration_s=232.9,
+                         intro_end_s=0.0, outro_start_s=232.9)
+    messung = TrackMeasurements.model_validate(laut.model_dump(exclude={"verdict"}))
+    client = FakeClient([json.dumps(ANSWER)])
+
+    analyse_track(client, tmp_path / "x.wav", "laut", profile, _budget(), messung=messung)
+
+    # Zeilenumbrueche im Prompt zu Leerzeichen, sonst ginge die
+    # Negativpruefung an einem Umbruch vorbei.
+    prompt = " ".join(client.prompts[0].split())
+    assert "Intro und ein Outro zum Mixen" not in prompt
+    # Gemessen bleibt sichtbar, gemischt wird in den letzten 16 Takten.
+    assert "Outro beginnt bei 232.9 s" in prompt
+    assert "Gemischt wird von 0.0 bis 32.0 s und ab 200.0 s" in prompt
+    assert "kein Grund" in prompt
