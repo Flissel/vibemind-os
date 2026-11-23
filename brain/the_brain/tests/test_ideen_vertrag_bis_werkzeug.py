@@ -41,14 +41,14 @@ class Datenbank:
 
     def __init__(self) -> None:
         self.tabellen = {
-            "ideas": [{"id": "bub1", "title": "Messe", "description": "", "parent_id": None, "score": 0,
+            "ideas": [{"id": "b0b1e001", "title": "Messe", "description": "", "parent_id": None, "score": 0,
                        "status": "active", "promoted_to_project_id": None, "metadata": {}}],
             "canvas_nodes": [
-                {"id": "n1", "title": "Preise Druckerei", "content": "A 1", "node_type": "note", "x": 500, "y": 90,
-                 "linked_idea_id": "bub1", "metadata": {}, "format_schema": None, "content_json": None,
+                {"id": "a0000001", "title": "Preise Druckerei", "content": "A 1", "node_type": "note", "x": 500, "y": 90,
+                 "linked_idea_id": "b0b1e001", "metadata": {}, "format_schema": None, "content_json": None,
                  "previous_content_json": None},
-                {"id": "n2", "title": "Druckerei Preise", "content": "", "node_type": "note", "x": 10, "y": 400,
-                 "linked_idea_id": "bub1", "metadata": {}, "format_schema": None, "content_json": None,
+                {"id": "a0000002", "title": "Druckerei Preise", "content": "", "node_type": "note", "x": 10, "y": 400,
+                 "linked_idea_id": "b0b1e001", "metadata": {}, "format_schema": None, "content_json": None,
                  "previous_content_json": None},
             ],
             "canvas_edges": [],
@@ -181,20 +181,20 @@ def _hauptlauf() -> int:
         return db.request("GET", tabelle, params=params)
 
     # Argumente je Ereignis: wo es einen Beispielsatz gibt, aus der Abkuerzung.
-    app = {"space": "ideas", "bubble": {"id": "bub1", "title": "Messe"},
-           "cards": [{"id": "n1", "title": "Preise Druckerei"}, {"id": "n2", "title": "Druckerei Preise"}],
-           "selection": ["n1"], "last_id": "n1", "new_id": "vor-7f3a"}
+    app = {"space": "ideas", "bubble": {"id": "b0b1e001", "title": "Messe"},
+           "cards": [{"id": "a0000001", "title": "Preise Druckerei"}, {"id": "a0000002", "title": "Druckerei Preise"}],
+           "selection": ["a0000001"], "last_id": "a0000001", "new_id": "7f3a0000-0000-4000-8000-000000000001"}
     faelle = [
         ("idea.create", abk.loese("Halt fest: Zeitmessung bitte wieder loeschen", app)["argumente"]),
         ("idea.update", abk.loese("Benenne die Notiz Druckerei Preise in Preisliste um", app)["argumente"]),
-        ("idea.update", {"id": "n1", "content": ""}),                       # Inhalt leeren
+        ("idea.update", {"id": "a0000001", "content": ""}),                       # Inhalt leeren
         ("idea.list", abk.loese("Zeig die Notizen dieser Bubble", app)["argumente"]),
         ("idea.list", {}),
         ("idea.format", abk.loese("Mach aus der Notiz Preise Druckerei eine Tabelle", app)["argumente"]),
-        ("idea.format", {"id": "n1", "format": "revert"}),
+        ("idea.format", {"id": "a0000001", "format": "revert"}),
         ("idea.rate", abk.loese("Bewerte Preise Druckerei mit 80", app)["argumente"]),
         ("idea.rate_reason", abk.loese("Begründung: traegt die Idee {wirklich}", app)["argumente"]),
-        ("idea.auto_link", {"bubble_id": "bub1"}),
+        ("idea.auto_link", {"bubble_id": "b0b1e001"}),
         ("idea.arrange", abk.loese("Sortiere die Karten nach Bewertung", app)["argumente"]),
         ("bubble.rate", abk.loese("Bewerte die Bubble Messe mit 70", app)["argumente"]),
         ("bubble.promote", abk.loese("Befördere diese Bubble", app)["argumente"]),
@@ -230,8 +230,8 @@ def _hauptlauf() -> int:
 
     # Der aeltere Weg profitiert von derselben Korrektur.
     treffer = abk.loese("Verbinde Preisliste mit Zeitmessung bitte wieder loeschen",
-                        {**app, "cards": [{"id": "n2", "title": "Preisliste"},
-                                          {"id": "vor-7f3a", "title": "Zeitmessung bitte wieder loeschen"}]})
+                        {**app, "cards": [{"id": "a0000002", "title": "Preisliste"},
+                                          {"id": "7f3a0000-0000-4000-8000-000000000001", "title": "Zeitmessung bitte wieder loeschen"}]})
     streng, _ = connect.canonical_idea_connect_arguments(treffer["argumente"])
     antwort = rufe("idea.connect", streng)
     check("idea.connect: Werkzeug nimmt die Argumente an", antwort.get("ok") is True, str(antwort.get("error")))
@@ -248,7 +248,7 @@ def _hauptlauf() -> int:
         correlation_id="tr_2", plan_id="ideen_2", plan_revision=1, step_id="s1",
         space_id=instanz.space_id, agent_name=instanz.agent,
         invocation_id=authority.runtime_invocation_id("ideen_2", 1, "s1"))
-    antwort = kaputt.call_with_arg({"id": "n1", "score": 999, "geheim": "wert-4711"},
+    antwort = kaputt.call_with_arg({"id": "a0000001", "score": 999, "geheim": "wert-4711"},
                                    extra_params={"_runtime_authority": kontext})
     meldung = str(antwort.get("error"))
     check("Fehler nennt Fehlername und Feld", antwort.get("ok") is False

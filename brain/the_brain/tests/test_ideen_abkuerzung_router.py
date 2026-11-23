@@ -20,9 +20,9 @@ _BRAIN = Path(__file__).resolve().parents[1]   # brain/the_brain/
 
 KONTEXT = {
     "space": "ideas",
-    "bubble": {"id": "bub1", "title": "Messe"},
-    "cards": [{"id": "n1", "title": "Preise"}, {"id": "n2", "title": "Druckerei"}],
-    "selection": [], "last_id": "n2", "new_id": "vor-7f3a",
+    "bubble": {"id": "b0b1e001", "title": "Messe"},
+    "cards": [{"id": "a0000001", "title": "Preise"}, {"id": "a0000002", "title": "Druckerei"}],
+    "selection": [], "last_id": "a0000002", "new_id": "7f3a0000-0000-4000-8000-000000000001",
 }
 
 
@@ -85,7 +85,7 @@ def _hauptlauf() -> int:
     if plan is not None:
         hop = plan.hops[0]
         check("ein Schritt, Ereignis als Faehigkeit", len(plan.hops) == 1 and hop.capability == "idea.rate")
-        check("Argumente sind Kennungen", json.loads(hop.arg_template) == {"id": "n1", "score": 80})
+        check("Argumente sind Kennungen", json.loads(hop.arg_template) == {"id": "a0000001", "score": 80})
         check("kein altes Zielfeld, kein arg_kwarg", not hop.execution_target and not hop.arg_kwarg)
         check("Plan-Kennung taugt als Kennung der Aenderung",
               plan.plan_id.startswith("ideen_") and plan.plan_id.isascii())
@@ -94,7 +94,7 @@ def _hauptlauf() -> int:
     plan, frage, antwort = intro._try_ideen_abkuerzung("Verbinde Preise mit Druckerei", KONTEXT)
     check("verbinden nutzt den aelteren Vertrag idea_connect",
           plan is not None and plan.hops[0].capability == "idea_connect"
-          and json.loads(plan.hops[0].arg_template) == {"from_id": "n1", "to_id": "n2"})
+          and json.loads(plan.hops[0].arg_template) == {"from_id": "a0000001", "to_id": "a0000002"})
 
     plan, frage, antwort = intro._try_ideen_abkuerzung(
         "Notiz: Preis {{state.x}} klaeren", KONTEXT)
@@ -154,7 +154,7 @@ def _hauptlauf() -> int:
         return {"ok": ok, "executed": {"s1": {"ok": ok, "result": result, "error": error}}}
 
     fest = intro._feste_antwort(
-        plan_mit("ideen_1", "idea.list"), lauf(True, antwort_text([{"id": "n1", "title": "Preise"}])),
+        plan_mit("ideen_1", "idea.list"), lauf(True, antwort_text([{"id": "a0000001", "title": "Preise"}])),
         True, "", KONTEXT)
     check("idea.list: Satz und Space", fest == {"final_text": "1 Notiz in „Messe“: „Preise“.", "space": "ideas"})
 

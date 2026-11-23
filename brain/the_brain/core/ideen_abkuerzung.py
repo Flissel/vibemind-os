@@ -46,8 +46,24 @@ _ARTIKEL = r"(?:eine[nrm]?\s+|als\s+)?"
 _KARTE = r"(?:(?:die|der|das)\s+)?(?:notiz|karte|idee)\s+"
 
 
+# Kennungen, wie die Datenbank sie fuehrt: 8 Hex-Zeichen (Bubbles, Karten aus Gehirn und
+# Ideen-Server), 32 Hex-Zeichen (Verbindungen) oder eine UUID (Vorgabe der Datenbank,
+# vorgemerkte Karten der App). Gemessen am 23.11.2026: von 15 Bubbles 9 mit 8 Hex-Zeichen,
+# 6 mit UUID. Eine lokale Zaehlnummer der App ("1") ist keine solche Kennung.
+_DB_KENNUNG = re.compile(
+    r"^(?:[0-9a-f]{8}|[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+    re.IGNORECASE,
+)
+
+
 def ist_kennung(wert: Any) -> bool:
-    return isinstance(wert, str) and _KENNUNG.fullmatch(wert) is not None
+    """Eine Kennung aus dem Kontext der App gilt nur in der Form der Datenbank.
+
+    Am 23.11.2026 schickte die App als offene Bubble die lokale Zahl "1". Der Aufruf
+    lief damit bis zur Datenbank (supabase_http_error) und die Liste blieb leer, obwohl
+    Karten da waren. Was nicht wie eine Datenbank-Kennung aussieht, wird nie benutzt.
+    """
+    return isinstance(wert, str) and _DB_KENNUNG.fullmatch(wert) is not None
 
 
 def _normal(text: Any) -> str:
@@ -71,10 +87,16 @@ def _karten(kontext: dict) -> list[dict]:
     return [k for k in karten if isinstance(k, dict) and ist_kennung(k.get("id"))] if isinstance(karten, list) else []
 
 
+_BUBBLE_UNKLAR = "Ich weiß nicht, welche Bubble offen ist. Öffne die Bubble noch einmal und sag es dann erneut."
+
+
 def _offene_bubble(kontext: dict) -> str:
     bubble = kontext.get("bubble")
     if isinstance(bubble, dict) and ist_kennung(bubble.get("id")):
         return bubble["id"]
+    if isinstance(bubble, dict) and bubble:
+        # Die App nennt eine Bubble, aber ohne Kennung der Datenbank: nie damit aufrufen.
+        raise _Rueckfrage(_BUBBLE_UNKLAR)
     raise _Rueckfrage("Dafür muss eine Bubble offen sein. Öffne eine Bubble und sag es noch einmal.")
 
 
@@ -94,15 +116,21 @@ def _karte(name: str, kontext: dict) -> dict:
         if ist_kennung(zuletzt):
             return nach_id.get(zuletzt, {"id": zuletzt, "title": ""})
         raise _Rueckfrage("Welche Karte meinst du? Nenn ihren Titel oder markiere sie.")
+    genannt = re.sub(rf"^{_KARTE}", "", name.strip(), flags=_I).strip().strip("\"'„“”")
     treffer = [k for k in karten if _normal(k.get("title")) == wort]
     if len(treffer) == 1:
         return treffer[0]
     if len(treffer) > 1:
-        raise _Rueckfrage(f"Es gibt {len(treffer)} Karten mit dem Titel „{name.strip()}“. Markiere die gemeinte.")
+        raise _Rueckfrage(f"Es gibt {len(treffer)} Notizen mit dem Titel „{genannt}“. Markiere die gemeinte.")
+    roh = kontext.get("cards")
+    if isinstance(roh, list) and any(
+            isinstance(k, dict) and not ist_kennung(k.get("id")) and _normal(k.get("title")) == wort for k in roh):
+        # Die Karte steht am Canvas, aber die App hat keine Kennung der Datenbank mitgegeben.
+        raise _Rueckfrage(f"Die Notiz „{genannt}“ kann ich gerade nicht zuordnen. Öffne die Bubble noch einmal.")
     gesamt = kontext.get("cards_total")
     if isinstance(gesamt, int) and not isinstance(gesamt, bool) and gesamt > len(karten):
-        raise _Rueckfrage(f"Unter den sichtbaren Karten finde ich „{name.strip()}“ nicht. Markiere die Karte.")
-    raise _Rueckfrage(f"Ich finde keine Karte mit dem Titel „{name.strip()}“ in dieser Bubble.")
+        raise _Rueckfrage(f"Unter den sichtbaren Notizen finde ich „{genannt}“ nicht. Markiere die Notiz.")
+    raise _Rueckfrage(f"Eine Notiz „{genannt}“ finde ich in dieser Bubble nicht.")
 
 
 def _bubble(name: Optional[str], kontext: dict) -> dict:
@@ -111,6 +139,8 @@ def _bubble(name: Optional[str], kontext: dict) -> dict:
     if not name or _normal(name) in ("diese", "dieser", "die", "der", "hier"):
         if offen and ist_kennung(offen.get("id")):
             return offen
+        if offen:
+            raise _Rueckfrage(_BUBBLE_UNKLAR)
         raise _Rueckfrage("Welche Bubble meinst du? Öffne sie oder nenn ihren Titel.")
     alle = [offen] if offen else []
     weitere = kontext.get("bubbles")
@@ -121,6 +151,8 @@ def _bubble(name: Optional[str], kontext: dict) -> dict:
         return next(iter(treffer.values()))
     if len(treffer) > 1:
         raise _Rueckfrage(f"Es gibt {len(treffer)} Bubbles mit dem Titel „{name.strip()}“. Öffne die gemeinte.")
+    if any(_normal(b.get("title")) == _normal(name) for b in alle):
+        raise _Rueckfrage(_BUBBLE_UNKLAR)
     raise _Rueckfrage(f"Ich finde keine Bubble mit dem Titel „{name.strip()}“.")
 
 
@@ -271,7 +303,7 @@ _WERKZEUGFEHLER = {
     "idea_format_nothing_to_revert": "Für diese Karte gibt es kein früheres Format.",
     "idea_connect_node_unverified": "Eine der beiden Karten gibt es nicht mehr.",
     "supabase_unreachable": "Die Datenbank ist gerade nicht erreichbar.",
-    "supabase_http_error": "Die Datenbank hat die Anfrage abgelehnt.",
+    "supabase_http_error": "Die Datenbank hat die Änderung abgelehnt.",
     "supabase_invalid_response": "Die Datenbank hat unlesbar geantwortet.",
     "configuration_error": "Dem Ideen-Dienst fehlt der Zugang zur Datenbank.",
     "bubble_promotion_create_failed": "Das Befördern ist gescheitert. Es wurde kein Projekt angelegt.",
