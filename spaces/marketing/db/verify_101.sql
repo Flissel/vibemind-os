@@ -14,7 +14,8 @@ BEGIN
                                  vergeben_bis, ergebnis)
   VALUES (v_id, p_von, p_an, p_laden, 'probe', p_art, v_id, p_stand,
           CASE WHEN p_stand = 'in_arbeit' THEN 1 ELSE 0 END,
-          now() + p_frist, now() + p_vergeben, p_ergebnis);
+          now() + p_frist,
+          CASE WHEN p_stand = 'in_arbeit' THEN now() + p_vergeben END, coalesce(p_ergebnis, '{}'::jsonb));
   RETURN v_id;
 END $f$;
 
@@ -198,7 +199,7 @@ END $$;
 
 -- 4: Trennung der Empfaenger, des Absenders und der alten Vergabe (_vergeben)
 DO $$
-DECLARE a uuid; b uuid; s uuid; m uuid; j jsonb; v_ok boolean;
+DECLARE a uuid; b uuid; s uuid; m uuid; v uuid; j jsonb; v_ok boolean;
 BEGIN
   -- Auftrag an Rowboat: Sales sieht ihn nicht, auch nicht im selben Laden; Rowboat-Huelle fasst keine Sales-Zeile an
   a := pg_temp.s101('brain', 'rowboat', 'p101d', 'probe101', 'offen', interval '1 hour', interval '0');
@@ -226,8 +227,12 @@ BEGIN
   m := pg_temp.s101('brain', 'marketing', 'p101f', 'probe101', 'offen', interval '1 hour', interval '0');
   IF auftrag.naechster('marketing', interval '5 minutes') IS NOT NULL THEN
     RAISE EXCEPTION '101.4: naechster(marketing) vergibt Auftrag des Gehirns'; END IF;
+  -- video_naechster: erst mit art = 'video' wird die Ausschlussklausel in _vergeben wirklich geprueft
+  v := pg_temp.s101('brain', 'marketing', 'p101f', 'video', 'offen', interval '1 hour', interval '0');
   IF auftrag.video_naechster(interval '5 minutes') IS NOT NULL THEN
     RAISE EXCEPTION '101.4: video_naechster vergibt Auftrag des Gehirns'; END IF;
+  IF (SELECT stand || versuche FROM auftrag.auftraege WHERE id = v) <> 'offen0' THEN
+    RAISE EXCEPTION '101.4: video_naechster fasst die Video-Zeile des Gehirns an'; END IF;
   IF (SELECT stand || versuche FROM auftrag.auftraege WHERE id = m) <> 'offen0' THEN RAISE EXCEPTION '101.4: naechster(marketing) fasst die Zeile an'; END IF;
   -- und ein normaler Auftrag an Marketing wird weiter vergeben (Altbestand heil)
   m := auftrag.anlegen('sales', 'marketing', 'p101g', 'probe', 'reel', '{}');
@@ -275,7 +280,7 @@ DO $$
 DECLARE r text[];
 BEGIN
   PERFORM pg_temp.s101('brain', 'rowboat', 'p101i', 'vorschlaege_anlegen', 'fertig', interval '1 hour', interval '0',
-          '{"punkte":[{"punkt_id":"aaaaaaaaaaaaaaaa","stand":"angelegt"},{"punkt_id":"bbbbbbbbbbbbbbbb","stand":"schon_vorhanden"},"x",7]}');
+          '{"punkte":[{"punkt_id":"aaaaaaaaaaaaaaaa","stand":"neu"},{"punkt_id":"bbbbbbbbbbbbbbbb","stand":"schon_vorhanden"},"x",7]}');
   PERFORM pg_temp.s101('brain', 'rowboat', 'p101i', 'vorschlaege_anlegen', 'fehler', interval '1 hour', interval '0',
           '{"punkte":[{"punkt_id":"cccccccccccccccc"}]}');
   PERFORM pg_temp.s101('brain', 'rowboat', 'p101j', 'vorschlaege_anlegen', 'fertig', interval '1 hour', interval '0',
@@ -286,7 +291,7 @@ BEGIN
           '{"punkte":[{"punkt_id":"ffffffffffffffff"}]}');
   PERFORM pg_temp.s101('brain', 'rowboat', 'p101i', 'vorschlaege_anlegen', 'fertig', interval '1 hour', interval '0',
           '{"punkte":"kein array"}');
-  PERFORM pg_temp.s101('brain', 'rowboat', 'p101i', 'vorschlaege_anlegen', 'fertig', interval '1 hour', interval '0', NULL);
+  PERFORM pg_temp.s101('brain', 'rowboat', 'p101i', 'vorschlaege_anlegen', 'fertig', interval '1 hour', interval '0', '[]'::jsonb);
 
   r := auftrag.rowboat_empfang_bekannt('p101i', ARRAY['aaaaaaaaaaaaaaaa', 'bbbbbbbbbbbbbbbb', 'cccccccccccccccc',
         'dddddddddddddddd', 'eeeeeeeeeeeeeeee', 'ffffffffffffffff', '0000000000000000', 'aaaaaaaaaaaaaaaa']);

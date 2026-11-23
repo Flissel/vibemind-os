@@ -205,3 +205,24 @@ def test_verify_101_inhalt():
     assert "has_function_privilege('public'" in v
     assert "rolcanlogin" in v
     assert "FROM pg_proc" in v and "nspname = 'auftrag'" in v
+
+
+def test_verify_hilfsfunktion_schreibt_kein_nullbares_ergebnis():
+    # 096: ergebnis ist NOT NULL DEFAULT '{}'. Ein explizit eingefuegtes NULL faellt nicht auf den Default zurueck,
+    # darum darf der Parameter (DEFAULT NULL) nur ueber coalesce in die Spalte gelangen.
+    v = VERIFY.read_text(encoding="utf-8")
+    kopf = v.split("$f$", 1)[0]
+    assert "ergebnis jsonb DEFAULT NULL" in kopf
+    werte = re.search(r"VALUES\s*\((.*?)\);\s*RETURN", v, flags=re.DOTALL).group(1)
+    treffer = [m.start() for m in re.finditer(r"p_ergebnis", werte)]
+    assert treffer
+    for pos in treffer:
+        assert re.search(r"coalesce\(\s*$", werte[:pos]), werte
+    # kein Aufruf der Hilfsfunktion reicht ein nacktes NULL als Ergebnis durch (letztes Argument)
+    assert not re.search(r"pg_temp\.s101\([^;]*,\s*NULL\)\s*;", v)
+
+
+def test_verify_video_zeile_des_gehirns_pruft_vergeben():
+    v = VERIFY.read_text(encoding="utf-8")
+    assert re.search(r"pg_temp\.s101\('brain', 'marketing', '\w+', 'video', 'offen'", v)
+    assert '"stand":"angelegt"' not in v
