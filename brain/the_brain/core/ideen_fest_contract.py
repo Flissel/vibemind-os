@@ -37,8 +37,11 @@ FESTE_EREIGNISSE: dict[str, dict[str, Any]] = {
     "idea.update": {
         "werkzeug": "idea_update",
         "pflicht": {"id": _K},
-        "wahl": {"title": ("text", 500, False), "content": ("text", 20000, True), "x": _LAGE, "y": _LAGE},
-        "mindestens_eins": ("title", "content", "x", "y"),
+        # content_append: "Ergaenze bei X: ..." - der Ideen-Server haengt an den gespeicherten Text an.
+        "wahl": {"title": ("text", 500, False), "content": ("text", 20000, True),
+                 "content_append": ("text", 20000, False), "x": _LAGE, "y": _LAGE},
+        "mindestens_eins": ("title", "content", "content_append", "x", "y"),
+        "schliessen_aus": ("content", "content_append"),
     },
     "idea.list": {
         "werkzeug": "idea_list",
@@ -175,6 +178,9 @@ def feste_argumente(event_id: str, wert: Any) -> tuple[Optional[dict[str, Any]],
     eins = spec.get("mindestens_eins")
     if eins and not any(name in kandidat for name in eins):
         return None, "clarification required: one of " + ", ".join(eins)
+    aus = spec.get("schliessen_aus")
+    if aus and all(name in kandidat for name in aus):
+        return None, f"clarification required: {aus[1]} is invalid"
     return dict(kandidat), ""
 
 
@@ -235,6 +241,14 @@ def fehler_aus_ergebnis(value: Any) -> str:
     if isinstance(inhalt, dict) and "error" in inhalt:
         meldung = inhalt["error"]
         name = meldung.split(":", 1)[0] if isinstance(meldung, str) else ""
+        if name == "too_many_ideas":
+            # Anzahl und Grenze sind Zahlen, kein freier Text: sie kommen mit, damit der
+            # Satz im Chat sagt, was geht ("Ordnen geht bis 100 Notizen; hier sind es 101").
+            anzahl = re.search(r"(\d{1,6}) ideas", meldung)
+            grenze = re.search(r"limit (\d{1,6})", meldung)
+            zusatz = "".join((f" anzahl={anzahl.group(1)}" if anzahl else "",
+                              f" grenze={grenze.group(1)}" if grenze else ""))
+            return f"Ideen-Werkzeug meldet einen Fehler (too_many_ideas){zusatz}"
         if re.fullmatch(r"[a-z][a-z_]{0,40}", name):
             # Der Ideen-Server nennt das betroffene Feld in einfachen Anfuehrungszeichen.
             # Nur dieser Feldname kommt mit, nie ein Wert.
@@ -282,6 +296,12 @@ def nachpruefung(event_id: str, argumente: Any, raw_result: Any) -> tuple[Option
             felder = {"linked_idea_id": argumente["bubble_id"]}
         elif event_id == "idea.update":
             felder = {name: argumente[name] for name in ("title", "content", "x", "y") if name in argumente}
+            if "content_append" in argumente:
+                # Der ganze neue Text steht nur in der Quittung; er muss mit dem Angehaengten enden.
+                gespeichert = zeile.get("content")
+                if not isinstance(gespeichert, str) or not gespeichert.endswith(argumente["content_append"].strip()):
+                    return None, ungueltig
+                felder["content"] = gespeichert
         elif event_id == "idea.format":
             fmt = argumente["format"]
             if fmt == "revert":

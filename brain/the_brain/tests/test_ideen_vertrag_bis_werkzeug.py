@@ -187,11 +187,13 @@ def _hauptlauf() -> int:
     faelle = [
         ("idea.create", abk.loese("Halt fest: Zeitmessung bitte wieder loeschen", app)["argumente"]),
         ("idea.update", abk.loese("Benenne die Notiz Druckerei Preise in Preisliste um", app)["argumente"]),
-        ("idea.update", {"id": "a0000001", "content": ""}),                       # Inhalt leeren
+        ("idea.update", abk.loese("Ergänze bei Preise Druckerei: B 2", app)["argumente"]),
         ("idea.list", abk.loese("Zeig die Notizen dieser Bubble", app)["argumente"]),
         ("idea.list", {}),
+        # Formatieren braucht Text (leere Karte: idea_format_no_content), darum vor dem Leeren.
         ("idea.format", abk.loese("Mach aus der Notiz Preise Druckerei eine Tabelle", app)["argumente"]),
         ("idea.format", {"id": "a0000001", "format": "revert"}),
+        ("idea.update", {"id": "a0000001", "content": ""}),                       # Inhalt leeren
         ("idea.rate", abk.loese("Bewerte Preise Druckerei mit 80", app)["argumente"]),
         ("idea.rate_reason", abk.loese("Begründung: traegt die Idee {wirklich}", app)["argumente"]),
         ("idea.auto_link", {"bubble_id": "b0b1e001"}),
@@ -217,6 +219,11 @@ def _hauptlauf() -> int:
             erwartet["aenderung_id"] = "ideen_1795000000000"
         check(f"{event_id}: beim Werkzeug kommen genau die Argumente an (kein 'value', keine Herkunft)",
               werkzeug == spec["werkzeug"] and beim_werkzeug == erwartet, json.dumps(beim_werkzeug)[:200])
+        if event_id == "idea.list" and antwort.get("ok") is True:
+            # Die Form der Liste (Karten plus gezaehlte Gesamtzahl) muss beim festen Satz ankommen.
+            satz = abk.antwort_fuer_schritt(event_id, True, antwort["result"], None, "", app)
+            check("idea.list: echte Antwort ergibt den festen Satz mit Zahl",
+                  isinstance(satz, str) and (satz[:1].isdigit() or satz.startswith("In „Messe“")), str(satz))
         if antwort.get("ok") is not True or spec.get("liest_nur"):
             continue
         # Die Quittung des echten Werkzeugs muss zur Nachpruefung des Gehirns passen.

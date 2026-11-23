@@ -59,13 +59,16 @@ def _zeitstempel(wert: Any) -> Optional[float]:
 
 class Nachfasser:
     def __init__(self, tabelle: Any, *, validator: Any, router: Any, plan_executor: Any,
-                 exec_log: Any = None, jetzt: Callable[[], float] = time.time) -> None:
+                 exec_log: Any = None, jetzt: Callable[[], float] = time.time,
+                 rueckweg_anschluss: Optional[Callable[[dict], dict]] = None) -> None:
         self.tabelle = tabelle
         self._jetzt = jetzt
         self.validator = validator
         self.router = router
         self.plan_executor = plan_executor
         self.exec_log = exec_log
+        # Rueckweg der Ideen-Modellauftraege (core/ideen_rueckweg); in Tests eine Attrappe.
+        self._rueckweg_anschluss = rueckweg_anschluss
 
     def runde(self) -> Dict[str, int]:
         z = {"geprueft": 0, "bestaetigt": 0, "abgelehnt_pruefung": 0, "fortgesetzt": 0,
@@ -116,7 +119,45 @@ class Nachfasser:
             return False
         return self._jetzt() - beendet < PLAN_REST_WARTEN_S
 
+    def _rueckweg(self, a: dict, z: Dict[str, int]) -> None:
+        """Ideen-Modellauftrag: das Gehirn schreibt das Ergebnis ueber feste Aufrufe.
+
+        Erst die Pruefung beanspruchen (``fortsetzung: laeuft`` haelt die Zustellung an),
+        dann schreiben, dann abschliessen. Wer die Pruefung nicht setzen konnte, schreibt
+        nicht: so wird ein Ergebnis nie zweimal geschrieben.
+        """
+        from core import ideen_rueckweg
+
+        if not self.tabelle.pruefung_setzen(a["id"], {"verified": None, "reason": "rueckweg laeuft",
+                                                       "kind": "ideen_rueckweg", "fortsetzung": "laeuft"}):
+            return
+        z["geprueft"] += 1
+        try:
+            anschluss = (self._rueckweg_anschluss or ideen_rueckweg.anschluss)(a)
+            pruefung = ideen_rueckweg.zurueckschreiben(a, **anschluss)
+        except Exception as e:  # noqa: BLE001 - Anschluss nicht baubar: sichtbar, nichts geschrieben
+            pruefung = {"verified": None, "reason": f"anschluss: {type(e).__name__}", "kind": "ideen_rueckweg",
+                        "rueckweg": "fehler", "meldung": "Der Rückweg ist gerade nicht verfügbar; es wurde nichts geändert."}
+        verified = pruefung.get("verified")
+        if verified is True:
+            z["bestaetigt"] += 1
+        elif verified is False:
+            z["abgelehnt_pruefung"] += 1
+        self._protokollieren(a, a.get("capability") or "", verified, pruefung.get("reason"))
+        abschluss = {**pruefung, "fortsetzung": "fertig" if pruefung.get("rueckweg") == "geschrieben" else "fehler"}
+        if abschluss["fortsetzung"] == "fehler":
+            # Der Ausfuehrer haengt das an seine Meldung an; ein deutscher Satz, kein Rohtext.
+            abschluss["fortsetzung_fehler"] = pruefung.get("meldung") or "Rückweg gescheitert"
+        try:
+            self.tabelle.pruefung_ergaenzen(a["id"], abschluss)
+        except Exception:  # noqa: BLE001
+            logger.exception("pruefung_ergaenzen fuer Auftrag %s fehlgeschlagen", a.get("id"))
+
     def _pruefen(self, a: dict, z: Dict[str, int]) -> None:
+        uebergabe = a.get("uebergabe")
+        if isinstance(uebergabe, dict) and "rueckweg" in uebergabe:
+            self._rueckweg(a, z)
+            return
         cap = a.get("capability") or ""
         ergebnis = a.get("ergebnis")
         cfg = (self.router.get_capability(cap) or {}).get("validator")

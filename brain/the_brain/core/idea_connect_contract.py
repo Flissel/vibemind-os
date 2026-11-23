@@ -77,7 +77,10 @@ def canonical_idea_connect_arguments(value: Any) -> tuple[Optional[dict[str, str
 
 def extract_idea_connect_mcp_receipt(value: Any) -> tuple[Optional[dict[str, str]], str]:
     """Read the exact JSON text receipt returned by the canonical MCP tool."""
-    if not isinstance(value, dict) or value.get("isError") is not False:
+    # OpenFang reicht ``isError`` nicht verlaesslich durch (siehe ideen_fest_contract):
+    # fehlt das Kennzeichen, entscheidet die Quittung selbst. Ein Fehlertext hat nie
+    # genau die vier Quittungsfelder und faellt unten durch.
+    if not isinstance(value, dict) or value.get("isError") not in (False, None):
         return None, "MCP result envelope is missing or failed"
     content = value.get("content")
     if not isinstance(content, list) or len(content) != 1:
