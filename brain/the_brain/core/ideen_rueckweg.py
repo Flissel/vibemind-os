@@ -54,6 +54,10 @@ VERTRAEGE: dict[str, dict[str, Any]] = {
             "erfinde keine offenen Fragen, Vorbehalte oder Zwischenstaende. Haenge nichts an, was einer Aussage "
             "der Notiz widerspricht oder sie einschraenkt. Keine Zahlen, Namen oder Termine, die weder in der "
             "Notiz noch in den anderen Karten der Bubble stehen. "
+            # Lauf 16 (45): zwei Schluesse ueber die Notiz hinaus (eine Empfehlung, eine Wertung).
+            "Keine Empfehlungen, Ratschlaege oder Wertungen, die weder die Notiz noch die anderen Karten tragen. "
+            # Lauf 16 (47): ein Fall- und Geschlechtsfehler im Ergebnis; nur erbeten, nicht geprueft.
+            "Schreibe korrektes Deutsch: Artikel, Fall und Geschlecht muessen stimmen. "
             "Sprich NIE ueber die Notiz („Die Notiz beschreibt …“, „Der Text behandelt …“, „Es geht um …“); "
             "das wird abgelehnt.\n"
             "Beispiel. Notiz: „Sponsoren: Stadtwerke fragen, Bäckerei? Budget 2.000 €“.\n"
@@ -607,7 +611,12 @@ def zurueckschreiben(auftrag: Mapping[str, Any], *, lies_karte: Callable[[str], 
             # Erst hier: die Notiz ist unveraendert, also genau die, die der Agent gelesen hat.
             satz = ausformulierung_pruefen(karte.get("content"), werte["text"])
             if satz:
-                return aus("abgelehnt", False, "result rejected", satz)
+                # Lauf 16 (46): abgelehnt war der Text fuer den Menschen unsichtbar. Jetzt Vorschlag
+                # mit dem Grund; geschrieben wird nur mit "Vorschlag trotzdem übernehmen".
+                from .ideen_vorschlag import FRAGWUERDIG, meldung_fragwuerdig
+                titel = karte.get("title") if isinstance(karte.get("title"), str) else ""
+                return aus("vorschlag", None, FRAGWUERDIG, meldung_fragwuerdig(satz),
+                           vorschlag=vorschlag, werte=werte, titel=titel[:200])
         geschrieben: list[str] = []
         for ereignis, roh_argumente in schreibplan(rueckweg, werte):
             argumente, grund = feste_argumente(ereignis, roh_argumente)

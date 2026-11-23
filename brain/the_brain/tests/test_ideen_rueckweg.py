@@ -142,6 +142,19 @@ def test_auftrag_verbietet_erfundene_offene_fragen() -> None:
     assert "erfinde keine offenen Fragen" in nachricht and "Sag jeden Gedanken nur einmal" in nachricht
 
 
+def test_auftrag_verbietet_empfehlungen_ohne_grundlage() -> None:
+    # Lauf 16 (45): zwei Schluesse ueber Notiz und Nachbarn hinaus.
+    nachricht, _ = _vorbereiten()
+    assert "Keine Empfehlungen, Ratschlaege oder Wertungen" in nachricht
+    assert nachricht.index("Keine Empfehlungen") < nachricht.index("<<<NOTIZ")
+
+
+def test_auftrag_bittet_um_korrektes_deutsch() -> None:
+    # Lauf 16 (47): nur erbeten, keine Pruefung dafuer.
+    nachricht, _ = _vorbereiten()
+    assert "Schreibe korrektes Deutsch" in nachricht and nachricht.index("korrektes Deutsch") < nachricht.index("<<<NOTIZ")
+
+
 @pytest.mark.parametrize("notiz, ergebnis", [
     ("Jeder Stand zahlt 50 € Gebühr.",
      "Jeder Stand zahlt eine Gebühr von 50 €. Ob das für alle Stände gilt, ist noch offen."),
@@ -348,6 +361,41 @@ def test_einschaetzen_schreibt_an_die_bubble_mit_verweis() -> None:
     assert pruefung["rueckweg"] == "geschrieben"
     assert ideen.aufrufe == [("idea.rate_reason", {"bubble_id": "b0b1e001", "text": "Trägt, aber teuer.",
                                                    "idea_ids": ["a0000001"]})]
+
+
+def test_zurueckgehaltenes_ergebnis_wird_vorschlag_mit_grund() -> None:
+    # Lauf 16 (46): Ein abgelehntes Ergebnis war fuer den Menschen unsichtbar. Jetzt Vorschlag mit dem
+    # Grund; geschrieben wird nur mit "Vorschlag trotzdem übernehmen".
+    from core import auftrag_stand as st
+    from core import ideen_vorschlag as vs
+
+    ideen = Ideen()
+    text = "Die Frist läuft bis Ende März. Ob das für alle Stände gilt, ist noch offen."
+    auftrag = _fertig(json.dumps({"text": text}))
+    pruefung = rw.zurueckschreiben(auftrag, **ideen.anschluss())
+    assert ideen.aufrufe == [] and ideen.karte["content"] == KARTE["content"]
+    assert pruefung["rueckweg"] == "vorschlag" and pruefung["reason"] == vs.FRAGWUERDIG
+    assert pruefung["vorschlag"] == text and pruefung["werte"] == {"text": text}
+    assert pruefung["titel"] == KARTE["title"]
+    assert pruefung["meldung"] == ("Der Agent hat eine offene Frage oder einen Vorbehalt angehängt, der in der "
+                                   "Notiz nicht steht. Geändert habe ich nichts. Du kannst den Text trotzdem "
+                                   "ansehen: Sag „Vorschlag zeigen“.")
+    zeile = {**auftrag, "pruefung": pruefung}
+    stand = st.stand_einer_zeile(zeile)
+    assert stand["stand"] == "vorschlag" and stand["ok"] is True and stand["hinweis"] is True
+    assert stand["saetze"] == ["Vorschlag zeigen", vs.TROTZDEM_SATZ, "Vorschlag verwerfen"]
+    # Kein Mensch hat die Notiz geaendert: Zeigen und Warnen sprechen nicht von "deiner Änderung".
+    assert text in vs.zeigen(zeile) and "deine Änderung" not in vs.zeigen(zeile)
+    assert vs.warnung(zeile).startswith(f"Achtung: Der Vorschlag ersetzt den jetzigen Text der Notiz „{KARTE['title']}“.")
+    assert "deine Änderung" not in vs.warnung(zeile)
+    assert vs.uebernehmen(zeile)[0] == [("idea.update", {"id": "a0000001", "content": text})]
+
+
+def test_beschreibung_bleibt_abgelehnt() -> None:
+    # Eine Beschreibung ist nie der Text der Notiz: kein Vorschlag.
+    ideen = Ideen()
+    pruefung = rw.zurueckschreiben(_fertig('{"text": "Die Notiz beschreibt die Frist."}'), **ideen.anschluss())
+    assert pruefung["rueckweg"] == "abgelehnt" and ideen.aufrufe == []
 
 
 def test_geaenderte_karte_wird_nicht_ueberschrieben_sondern_vorschlag() -> None:

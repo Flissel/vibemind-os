@@ -435,6 +435,9 @@ _NOCH_NICHT = (
 )
 
 
+_ZUSATZ_AM_ENDE = re.compile(r"(?:\s*[\(\[][^()\[\]]{0,60}[\)\]])+\s*$")
+
+
 def feste_lesefrage(satz: Any, space: Optional[str]) -> Optional[Dict[str, str]]:
     """Haeufigste Lesefrage eines Space: ``{"capability": ...}`` oder ``{"antwort": ...}``.
 
@@ -450,10 +453,15 @@ def feste_lesefrage(satz: Any, space: Optional[str]) -> Optional[Dict[str, str]]
         text = re.sub(r"\s+", " ", satz).strip().rstrip("?.!").strip()
         if not text or len(text) > 200:
             return None
-        for muster, faehigkeit, spaces in _FESTE_LESEFRAGEN:
-            # spaces None: gilt in jedem Reiter; sonst nur in den genannten.
-            if (spaces is None or space in spaces) and muster.search(text):
-                return {"capability": faehigkeit}
+        # Lauf 16 (48): "Woran denkt das Gehirn gerade? (Skript 1)" lief ueber den Planer, weil die
+        # Muster am Satzende verankert sind. Erst der Satz wie getippt (eine Klammer kann Inhalt sein,
+        # etwa beim Bestaetigen), dann ohne Zusatz in Klammern am Ende.
+        ohne = _ZUSATZ_AM_ENDE.sub("", text).rstrip("?.!").strip()
+        for kandidat in dict.fromkeys(k for k in (text, ohne) if k):
+            for muster, faehigkeit, spaces in _FESTE_LESEFRAGEN:
+                # spaces None: gilt in jedem Reiter; sonst nur in den genannten.
+                if (spaces is None or space in spaces) and muster.search(kandidat):
+                    return {"capability": faehigkeit}
         if space == "ideas":
             return None
         for muster, spaces, antwort in _NOCH_NICHT:
