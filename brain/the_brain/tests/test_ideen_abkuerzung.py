@@ -193,8 +193,23 @@ def test_unbekannte_notiz_ergibt_eine_gezielte_rueckfrage() -> None:
     assert abk.loese("Bewerte die Notiz Gibtsnicht mit 50", KONTEXT) == {
         "rueckfrage": "Eine Notiz „Gibtsnicht“ finde ich in dieser Bubble nicht."}
     # auch ohne Karten im Kontext und ohne offene Bubble: Rueckfrage, nie Schweigen
+    # (Lauf 9: ohne offene Bubble nicht mehr "in dieser Bubble").
     assert abk.loese("Bewerte die Notiz Gibtsnicht mit 50", {"space": "ideas"}) == {
-        "rueckfrage": "Eine Notiz „Gibtsnicht“ finde ich in dieser Bubble nicht."}
+        "rueckfrage": "Es ist keine Bubble offen. Öffne die Bubble mit der Notiz „Gibtsnicht“ und sag es noch einmal."}
+
+
+@pytest.mark.parametrize("kontext", [
+    # Lauf 9: so schickt die App den Kontext nach Rowboat -> Ideen (bubble: null).
+    {"space": "ideas", "bubble": None, "cards": [], "bubbles": [{"id": "b0b1e001", "title": "Stadtfest"}]},
+    {"space": "ideas", "bubble": None, "bubbles": [{"id": "b0b1e001", "title": "Stadtfest"}]},
+    {"space": "ideas", "bubble": None, "cards": None, "bubbles": []},
+])
+@pytest.mark.parametrize("satz", ["Bewerte die Notiz Sponsoren mit 50", "Was steht bei Sponsoren?",
+                                  "Formuliere Sponsoren aus"])
+def test_ohne_offene_bubble_nie_in_dieser_bubble(kontext, satz) -> None:
+    antwort = abk.loese(satz, kontext)
+    assert antwort == {"rueckfrage": abk.keine_bubble_offen("Sponsoren")}
+    assert "in dieser Bubble" not in antwort["rueckfrage"]
     assert abk.loese("Mach aus der Notiz Gibtsnicht eine Tabelle", KONTEXT)["rueckfrage"].startswith(
         "Eine Notiz „Gibtsnicht“")
 

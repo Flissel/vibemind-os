@@ -280,10 +280,20 @@ def _karte(name: str, kontext: dict) -> dict:
         # Lauf 7: Die App meldet eine offene Bubble, aber ohne Kennung. Dann weiss ich nicht, was
         # in ihr liegt: kein "finde ich in dieser Bubble nicht", sondern wie ohne Kontext.
         raise _Rueckfrage(_BUBBLE_UNKLAR)
+    if not isinstance(kontext.get("bubble"), dict) or not kontext.get("bubble"):
+        # Lauf 9: Nach Rowboat -> Ideen schickt die App bubble: null. Dann ist keine Bubble
+        # offen; "finde ich in dieser Bubble nicht" behauptete eine Bubble, die es nicht gibt.
+        raise _Rueckfrage(keine_bubble_offen(genannt))
     gesamt = kontext.get("cards_total")
     if isinstance(gesamt, int) and not isinstance(gesamt, bool) and gesamt > len(karten):
         raise _Rueckfrage(f"Unter den sichtbaren Notizen finde ich „{genannt}“ nicht. Markiere die Notiz.")
     raise _Rueckfrage(f"Eine Notiz „{genannt}“ finde ich in dieser Bubble nicht.")
+
+
+def keine_bubble_offen(genannt: str) -> str:
+    """Satz, wenn eine Notiz genannt ist, aber keine Bubble offen ist (``bubble`` fehlt oder null)."""
+    name = f" „{genannt}“" if genannt else ""
+    return f"Es ist keine Bubble offen. Öffne die Bubble mit der Notiz{name} und sag es noch einmal."
 
 
 def _bubble_ohne_kennung(kontext: dict) -> bool:
