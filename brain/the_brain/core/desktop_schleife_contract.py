@@ -139,17 +139,23 @@ def verlangt(auftrag: str, staemme: Sequence[str]) -> Optional[str]:
     return None
 
 
+def ist_tippbar(text: str) -> bool:
+    """Nur druckbare Zeichen und das einfache Leerzeichen: Ein "\\n" im Tipptext waere ein Enter
+    am Vertrag vorbei (die Pruefung gegen den Auftragssatz vergleicht normalisierte Leerzeichen)."""
+    return all(c == " " or (c.isprintable() and not c.isspace()) for c in text)
+
+
 def heikler_stamm(ziel: str, auftrag: str) -> Optional[str]:
     """Der erste heikle Wortstamm im Ziel, den der Auftragssatz nicht verlangt, sonst None.
 
-    Je Wort des Ziels: Jeder heikle Stamm darin muss verlangt sein, oder ein verlangter Stamm
-    im selben Wort enthaelt ihn bzw. ist in ihm enthalten ("Absenden" ist mit "Sende ... ab"
-    verlangt, "Senden-und-Löschen" mit "Sende" nicht).
+    Je Wort des Ziels: Jeder heikle Stamm darin muss verlangt sein, oder ein verlangter,
+    LAENGERER Stamm im selben Wort enthaelt ihn ("absenden" deckt "send" in "Absenden").
+    Nie umgekehrt: "installiere" deckt kein "Deinstallieren", "Sende ... ab" kein "Absenden".
     """
     for token in _tokens(ziel):
         gefunden = [s for s in HEIKLE_STAEMME if _im_ziel(s, [token])]
         gedeckt = [s for s in gefunden if verlangt(auftrag, (s,))]
-        offen = [s for s in gefunden if not any(s in v or v in s for v in gedeckt)]
+        offen = [s for s in gefunden if not any(s in v for v in gedeckt)]
         if offen:
             return offen[0]
     return None
@@ -239,6 +245,8 @@ def pruefe_aktion(
     if aktion == "type":
         _nur(wert, ("aktion", "text", "warum"))
         text = _text(wert["text"], "text", MAX_TIPPTEXT)
+        if not ist_tippbar(text):
+            raise AktionAbgelehnt("text_nicht_im_auftrag", "getippt wird kein Zeilenumbruch, Tab oder Steuerzeichen")
         if _norm(text) not in _norm(auftrag):
             raise AktionAbgelehnt("text_nicht_im_auftrag", "getippt wird nur, was woertlich im Auftragssatz steht")
         return {"schritt": {"action": "type", "text": text, "why": warum}}
@@ -363,8 +371,9 @@ def pruefe_aufruf(werkzeug: Any, argumente: Any) -> dict[str, Any]:
             if isinstance(wert, bool) or not isinstance(wert, int) or not -20000 <= wert <= 20000:
                 raise AufrufAbgelehnt(f"{achse} muss eine ganze Zahl sein")
     elif aktion == "type":
-        if not isinstance(argumente["text"], str) or not 0 < len(argumente["text"]) <= MAX_TIPPTEXT:
-            raise AufrufAbgelehnt("text muss 1 bis 500 Zeichen haben")
+        if not isinstance(argumente["text"], str) or not 0 < len(argumente["text"]) <= MAX_TIPPTEXT \
+                or not ist_tippbar(argumente["text"]):
+            raise AufrufAbgelehnt("text muss 1 bis 500 Zeichen ohne Steuerzeichen haben")
     elif aktion == "key":
         if argumente["key"] not in TASTEN:
             raise AufrufAbgelehnt("key steht nicht in der festen Liste")

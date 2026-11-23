@@ -90,6 +90,7 @@ def fuehre_aufgabe(
     ablehnungen = 0
     abgelehnt: Optional[str] = None
     vorher: Optional[str] = None  # Aktion des unmittelbar vorher ausgefuehrten Schritts
+    vorher_fenster = ""  # Fenster, in dem dieser Schritt geprueft wurde
 
     def abschluss(zustand: str, grund: str, text: str, *, schon_beendet: bool = False) -> dict[str, Any]:
         if not schon_beendet:
@@ -150,7 +151,10 @@ def fuehre_aufgabe(
             return abschluss("fehlgeschlagen", "agent_nicht_erreichbar", type(fehler).__name__)
 
         try:
-            aktion = pruefe_aktion(antwort, auftrag=auftrag, elemente=elemente, vorher=vorher)
+            # Hat sich das Fenster seit dem letzten Schritt geaendert (ein Dialog ist aufgegangen),
+            # gilt der Vorlauf nicht mehr: Enter traefe dann etwas, das niemand geprueft hat.
+            vorlauf = vorher if fenster and fenster == vorher_fenster else None
+            aktion = pruefe_aktion(antwort, auftrag=auftrag, elemente=elemente, vorher=vorlauf)
         except AktionAbgelehnt as fehler:
             ablehnungen += 1
             vorher = None
@@ -178,7 +182,7 @@ def fuehre_aufgabe(
         schritt = (ergebnis or {}).get("schritt") or {}
         if schritt.get("ok") is False:
             return abschluss("fehlgeschlagen", "schritt_fehlgeschlagen", str(schritt.get("meldung") or ""))
-        vorher = aktion["schritt"]["action"]
+        vorher, vorher_fenster = aktion["schritt"]["action"], fenster
 
     return abschluss("fehlgeschlagen", "rundengrenze", f"Nach {runden} Runden nicht fertig.")
 

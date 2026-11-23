@@ -98,8 +98,10 @@ def test_ein_heikles_ziel_geht_nur_wenn_der_auftrag_es_woertlich_verlangt():
     [
         ("Senden", "Antworte dem Absender mit Hallo", "send"),      # Stamm mitten im Wort zaehlt nicht
         ("Senden", "Sende die Antwort", None),
-        ("Absenden", "Sende die Antwort ab", None),                 # Teilstamm "send" deckt "absend"
-        ("Absenden", "absenden", None),
+        ("Absenden", "Sende die Antwort ab", "absend"),             # kuerzerer Stamm deckt keinen laengeren
+        ("Absenden", "absenden", None),                             # laengerer Stamm deckt "send"
+        ("Deinstallieren", "Installiere das Programm", "deinstall"),
+        ("Uninstall", "install the program", "uninstall"),
         ("Senden und Löschen", "Sende die Antwort", "lösch"),
         ("Installieren", "Öffne den Installationsordner", None),     # "install" ist Wortanfang dort
         ("Installieren", "Öffne den Editor", "install"),
@@ -160,6 +162,19 @@ def test_tastenkombinationen_nur_wenn_der_auftrag_ihren_zweck_nennt(keys, verlan
     assert fehler.value.code == "taste_nicht_verlangt"
 
 
+@pytest.mark.parametrize("text", ["Hallo\nWelt", "Hallo\rWelt", "Hallo\tWelt", "Hallo Welt", "Hallo\x1bWelt",
+                                  "Hallo Welt"])
+def test_tipptext_ohne_umbruch_und_steuerzeichen(text):
+    # Sonst waere "\n" ein Enter am Vertrag vorbei: der Vergleich mit dem Satz normalisiert Leerraum.
+    with pytest.raises(AktionAbgelehnt) as fehler:
+        pruefe_aktion(j(aktion="type", text=text, warum="x"), auftrag=AUFTRAG, elemente=ELEMENTE)
+    assert fehler.value.code == "text_nicht_im_auftrag"
+    from core.desktop_schleife_contract import AufrufAbgelehnt, pruefe_aufruf
+    with pytest.raises(AufrufAbgelehnt):
+        pruefe_aufruf("desktop_task_step", {"task_id": "dt-20261123-120000-abcdef", "action": "type",
+                                            "text": text, "why": "x"})
+
+
 def test_harmlose_tasten_brauchen_keinen_vorlauf():
     for taste in ("tab", "escape", "backspace", "up", "down", "pagedown", "home"):
         antwort = j(aktion="key", key=taste, warum="x")
@@ -185,13 +200,14 @@ class Aufbau:
         self.aufrufe: list = []
         self.fragen: list = []
         self.zeit = 0.0
+        self.fenster_titel = "Start"
 
         def dienst(method, pfad, body=None, *, timeout):
             if method == "POST":
                 self.dienst_aufrufe.append((pfad, body))
                 return {"success": True}
             if pfad.startswith("/api/mcp/elements"):
-                return {"success": True, "window": {"title": "Start"}, "elements": [
+                return {"success": True, "window": {"title": self.fenster_titel}, "elements": [
                     {"name": e["name"], "control_type": "ButtonControl", "is_enabled": e["aktiv"],
                      "bounds": {"left": e["x"] - 10, "top": e["y"] - 10, "width": 20, "height": 20}}
                     for e in ELEMENTE]}
@@ -297,6 +313,24 @@ def test_enter_zaehlt_nur_direkt_nach_einem_ausgefuehrten_klick_oder_tippen(echt
     buch = echt.buch(kennung)
     assert [s["art"] for s in buch["schritte"]] == ["note", "type", "key", "note"]
     assert buch["schritte"][-1]["angaben"]["notiz"] == "Runde 4: Vorschlag abgelehnt (taste_ohne_vorlauf)"
+
+
+def test_enter_verliert_den_vorlauf_wenn_ein_neues_fenster_aufgeht(echt):
+    kennung = echt.start()
+    antworten = [j(aktion="type", text="Hallo Welt", warum="Text"),
+                 j(aktion="key", key="enter", warum="bestaetigen"),
+                 j(aktion="abbruch", grund="Dialog")]
+
+    def agent(nachricht):
+        echt.fragen.append(nachricht)
+        if len(echt.fragen) == 1:
+            echt.fenster_titel = "Wirklich alles löschen?"  # nach dem Tippen geht ein Dialog auf
+        return antworten.pop(0)
+
+    echt.lauf(kennung, agent)
+    buch = echt.buch(kennung)
+    assert [s["art"] for s in buch["schritte"]] == ["type", "note"]
+    assert buch["schritte"][-1]["angaben"]["notiz"] == "Runde 2: Vorschlag abgelehnt (taste_ohne_vorlauf)"
 
 
 def test_nach_einer_ablehnung_darf_der_agent_es_richtig_machen(echt):
