@@ -183,8 +183,16 @@ def _seam_drift_beats(
     return float(np.max(np.abs(beats - np.round(beats))))
 
 
-def check_set(path: Path, plan: MixPlan) -> QaReport:
-    """Misst das fertige Set und sammelt, was nicht stimmt."""
+def check_set(
+    path: Path, plan: MixPlan, wunsch_laenge_s: float | None = None
+) -> QaReport:
+    """Misst das fertige Set und sammelt, was nicht stimmt.
+
+    `wunsch_laenge_s` ist die gewuenschte Laenge (profile.length_minutes *
+    60). Mit ihr misst der Laengen-Hinweis gegen das, was bestellt war; ohne
+    sie, wie bisher, gegen plan.target_length_s - die Laenge, die der Plan
+    aus dem Material errechnet hat und die er deshalb fast immer trifft.
+    """
     signal, sr = sf.read(path, dtype="float32", always_2d=True)
     # Luecken und Naehte werden auf der Mono-Summe gemessen (Stille und Tempo
     # sind keine Kanalfrage); Lautheit und True Peak auf dem Stereosignal, der
@@ -203,14 +211,16 @@ def check_set(path: Path, plan: MixPlan) -> QaReport:
     )
     findings: list[QaFinding] = []
 
-    low = plan.target_length_s * (1.0 - LENGTH_TOLERANCE)
-    high = plan.target_length_s * (1.0 + LENGTH_TOLERANCE)
+    soll_s = plan.target_length_s if wunsch_laenge_s is None else wunsch_laenge_s
+    soll_wort = "geplant" if wunsch_laenge_s is None else "gewuenscht"
+    low = soll_s * (1.0 - LENGTH_TOLERANCE)
+    high = soll_s * (1.0 + LENGTH_TOLERANCE)
     if not low <= length_s <= high:
         findings.append(
             QaFinding(
                 kind="length",
-                text=f"Das Set ist {length_s / 60:.1f} Minuten lang, geplant waren "
-                f"{plan.target_length_s / 60:.1f} plus/minus "
+                text=f"Das Set ist {length_s / 60:.1f} Minuten lang, {soll_wort} "
+                f"waren {soll_s / 60:.1f} plus/minus "
                 f"{LENGTH_TOLERANCE * 100:.0f} Prozent.",
             )
         )

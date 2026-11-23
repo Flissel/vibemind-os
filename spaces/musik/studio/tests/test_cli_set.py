@@ -376,7 +376,9 @@ def _lauf_mit_ersetztem_renderer(tmp_path, profile, monkeypatch):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"")
 
-    def fake_check_set(path: Path, plan: MixPlan) -> QaReport:
+    def fake_check_set(
+        path: Path, plan: MixPlan, wunsch_laenge_s: float | None = None
+    ) -> QaReport:
         return QaReport(
             length_s=110.0,
             target_length_s=110.0,
@@ -644,3 +646,23 @@ def test_build_run_liest_tempo_json_vor_jedem_modellaufruf(
         cli.build_run(run, files, flach, client, _budget())
 
     assert client.calls == 0
+
+
+def test_build_run_gibt_der_qa_die_gewuenschte_laenge(tmp_path, profile, monkeypatch):
+    """B3: die QA vergleicht mit profile.length_minutes, nicht mit dem Plan."""
+    run, files, flach, client = _lauf_mit_ersetztem_renderer(
+        tmp_path, profile, monkeypatch
+    )
+    gesehen: list[float | None] = []
+    fake = _qa_mit([])
+
+    def merkt_sich(path: Path, plan: MixPlan, wunsch_laenge_s=None) -> QaReport:
+        gesehen.append(wunsch_laenge_s)
+        return fake(path, plan)
+
+    monkeypatch.setattr(cli, "check_set", merkt_sich)
+    monkeypatch.setattr(cli, "to_mp3", lambda quelle, ziel: ziel.write_bytes(b""))
+
+    cli.build_run(run, files, flach, client, _budget())
+
+    assert gesehen == [flach.length_minutes * 60.0]

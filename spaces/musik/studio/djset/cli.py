@@ -312,7 +312,10 @@ def build_run(
         )
 
         # Stufe 9: nachmessen, und hoechstens einmal den Pegel korrigieren.
-        qa = check_set(partial, best)
+        # Der Laengen-Hinweis misst gegen die gewuenschte Laenge, nicht gegen
+        # die des Plans - die stimmt fast immer mit sich selbst ueberein.
+        wunsch_laenge_s = profile.length_minutes * 60.0
+        qa = check_set(partial, best, wunsch_laenge_s=wunsch_laenge_s)
         correction = correction_gain_db(qa)
         # Auf `correction is not None` verzweigt, nicht auf ein danebenstehendes
         # bool: sonst kann der f-String unten ein None bekommen, sobald die
@@ -320,7 +323,7 @@ def build_run(
         if correction is not None:
             print(f"  QA: Pegel um {correction:.1f} dB korrigiert, rendere neu")
             render(best, sources, partial, master_gain_db=correction)
-            qa = check_set(partial, best)
+            qa = check_set(partial, best, wunsch_laenge_s=wunsch_laenge_s)
     except RenderToolMissing as error:
         print(f"Fehler: {error}", file=sys.stderr)
         return 1

@@ -464,3 +464,41 @@ def test_stille_mitten_im_set_bleibt_eine_luecke_auch_mit_stillen_raendern(
     # aus, deshalb beginnt sie knapp vor Sekunde 5).
     assert len(gaps) == 1
     assert "0:04" in gaps[0].text or "0:05" in gaps[0].text
+
+
+# --- B3: Laengen-Hinweis gegen die gewuenschte Laenge -----------------------
+
+
+def test_der_laengen_hinweis_misst_gegen_die_gewuenschte_laenge(tmp_path: Path) -> None:
+    """Der Plan rechnet seine Laenge aus dem Material - gegen sich selbst
+    gemessen ist sie immer richtig. Gefragt ist, ob das Set so lang ist, wie
+    es gewuenscht war."""
+    plan = simple_plan()
+    target = tmp_path / "set.wav"
+    render(plan, sources_for(tmp_path), target, master_gain_db=-12.0)
+
+    zu_kurz = check_set(target, plan, wunsch_laenge_s=plan.target_length_s * 2)
+    passend = check_set(target, plan, wunsch_laenge_s=plan.target_length_s)
+    ohne = check_set(target, plan)
+
+    laenge = [f for f in zu_kurz.findings if f.kind == "length"]
+    assert len(laenge) == 1 and "gewuenscht" in laenge[0].text
+    assert not [f for f in passend.findings if f.kind == "length"]
+    assert not [f for f in ohne.findings if f.kind == "length"]
+
+
+def test_mit_wunschlaenge_zaehlt_die_laenge_des_plans_nicht(
+    tmp_path: Path,
+) -> None:
+    """Ohne Wunschlaenge haette der doppelt so lange Plan einen Hinweis
+    ausgeloest (test_a_length_deviation_is_caught) - mit ihr nicht mehr."""
+    plan = simple_plan()
+    target = tmp_path / "set.wav"
+    render(plan, sources_for(tmp_path), target, master_gain_db=-12.0)
+    gestreckt = MixPlan.model_validate(
+        plan.model_dump() | {"target_length_s": plan.target_length_s * 2}
+    )
+
+    mit_wunsch = check_set(target, gestreckt, wunsch_laenge_s=plan.target_length_s)
+
+    assert not [f for f in mit_wunsch.findings if f.kind == "length"]

@@ -357,7 +357,9 @@ def test_a_true_peak_finding_triggers_exactly_one_corrective_re_render(
     ]
     qa_calls: list[Path] = []
 
-    def fake_check_set(path: Path, plan: MixPlan) -> QaReport:
+    def fake_check_set(
+        path: Path, plan: MixPlan, wunsch_laenge_s: float | None = None
+    ) -> QaReport:
         qa_calls.append(path)
         return reports[len(qa_calls) - 1]
 
@@ -441,7 +443,9 @@ def test_a_crash_in_stage_nine_leaves_the_run_unfinished(
     """
     run = _prepared_with_mixable_tracks(tmp_path, profile, 4)
 
-    def exploding_check_set(path: Path, plan: MixPlan) -> QaReport:
+    def exploding_check_set(
+        path: Path, plan: MixPlan, wunsch_laenge_s: float | None = None
+    ) -> QaReport:
         raise RuntimeError("Stufe 9 abgestuerzt")
 
     monkeypatch.setattr(cli, "check_set", exploding_check_set)
