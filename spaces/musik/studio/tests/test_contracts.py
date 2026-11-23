@@ -4,7 +4,8 @@ from pydantic import ValidationError
 from djset.contracts import (
     BeatGrid, Bpm, BpmRange, EnergyPoint, EqCurve, EqPoint, Key, Loudness,
     AudioFormat, MixEntry, MixPlan, MixRegions, Profile, QaFinding, QaReport,
-    Rejection, StructureRules, TrackCount, TrackMeasurements, Transition, TransitionRules,
+    Rejection, Stimmwechsel, StructureRules, TrackCount, TrackMeasurements, Transition,
+    TransitionRules,
 )
 
 
@@ -269,3 +270,41 @@ def test_blockierende_befunde_machen_rot(kind):
     assert not report.ok
     assert [f.kind for f in report.blocking] == [kind]
     assert report.hints == []
+
+
+# --- Plan 1c: Gesangsspur ----------------------------------------------------
+
+
+def _flach() -> EqCurve:
+    punkte = [EqPoint(position=0.0, gain_db=0.0), EqPoint(position=1.0, gain_db=0.0)]
+    return EqCurve(low=punkte, mid=punkte, high=punkte)
+
+
+def _uebergang(**stimmwechsel) -> Transition:
+    return Transition(
+        from_track="a", to_track="b", start_at_s=100.0, overlap_s=40.0, bars=16,
+        technique="blend", eq_out=_flach(), eq_in=_flach(),
+        stimmwechsel=Stimmwechsel(**stimmwechsel) if stimmwechsel else None,
+    )
+
+
+def test_ein_stimmwechsel_liegt_im_uebergang():
+    assert _uebergang(bei_s=20.0, blende_s=2.5).stimmwechsel.bei_s == 20.0
+
+
+@pytest.mark.parametrize(
+    "bei_s, blende_s",
+    [(41.0, 1.0), (1.0, 2.0), (39.0, 2.0)],
+)
+def test_ein_stimmwechsel_mit_blenden_ausserhalb_des_uebergangs_ist_ungueltig(
+    bei_s, blende_s
+):
+    with pytest.raises(ValidationError, match="Stimmwechsel"):
+        _uebergang(bei_s=bei_s, blende_s=blende_s)
+
+
+def test_gesang_ist_ohne_angabe_an():
+    assert Profile(**_profile()).gesang is True
+    entry = MixEntry(track_id="a", play_from_s=0.0, play_to_s=60.0,
+                     timestretch_ratio=1.0, gain_db=0.0)
+    assert entry.stimme is True

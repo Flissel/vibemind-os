@@ -291,6 +291,59 @@ def test_a_track_without_own_intro_or_outro_is_mixed_over_16_bars(
         assert transition.overlap_s == pytest.approx(sechzehn_takte, rel=1e-6)
 
 
+def test_im_uebergang_wechselt_die_stimme_auf_einer_taktgrenze_in_der_mitte(
+    profile: Profile,
+) -> None:
+    """Plan 1c (Felix 23.11.: "die Texte essen sich gegenseitig auf"). Die
+    Stimme des ausgehenden Songs blendet im Takt vor dem Wechsel aus, die des
+    eingehenden im Takt danach ein. Der Wechsel liegt auf einer Taktgrenze nahe
+    der Mitte des Uebergangs."""
+    a = make_analysis("a", bpm=173.0, camelot="8A")
+    b = make_off_grid("b", bpm=174.0, intro_end_s=0.0, outro_start_s=240.0, camelot="8A")
+    c = make_analysis("c", bpm=175.0, camelot="8A")
+    setlist = Setlist(order=["a", "b", "c"], note="")
+
+    plan = design(FakeClient([_choices(2)]), setlist, [a, b, c], profile, _budget())
+
+    takt = 4 * 60.0 / plan.target_bpm
+    for transition in plan.transitions:
+        wechsel = transition.stimmwechsel
+        assert wechsel is not None
+        assert wechsel.bei_s == pytest.approx(8 * takt, rel=1e-6)
+        assert wechsel.blende_s == pytest.approx(takt, rel=1e-6)
+    assert all(entry.stimme for entry in plan.entries)
+
+
+def test_ohne_gesang_singt_kein_eintrag(profile: Profile) -> None:
+    tracks = many(3)
+    setlist = Setlist(order=[t.id for t in tracks], note="")
+    ohne = profile.model_copy(update={"gesang": False})
+
+    plan = design(FakeClient([_choices(2)]), setlist, tracks, ohne, _budget())
+
+    assert not any(entry.stimme for entry in plan.entries)
+
+
+def test_ein_kurzer_uebergang_wechselt_die_stimme_in_seiner_mitte(
+    profile: Profile,
+) -> None:
+    """Ein Uebergang von einem Takt hat keine Taktgrenze in der Mitte: der
+    Wechsel liegt dann genau in der Mitte, die Blenden teilen sich den Takt."""
+    tracks = many(3)
+    setlist = Setlist(order=[t.id for t in tracks], note="")
+    kurz = profile.model_copy(
+        update={"transition": profile.transition.model_copy(update={"bars_min": 1})}
+    )
+
+    plan = design(FakeClient([_choices(2, bars=1)]), setlist, tracks, kurz, _budget())
+
+    for transition in plan.transitions:
+        wechsel = transition.stimmwechsel
+        assert wechsel is not None
+        assert wechsel.bei_s == pytest.approx(transition.overlap_s / 2, rel=1e-6)
+        assert wechsel.blende_s == pytest.approx(transition.overlap_s / 2, rel=1e-6)
+
+
 def test_mischbereiche_werden_mit_ihrem_lokalen_tempo_gestreckt(
     profile: Profile,
 ) -> None:

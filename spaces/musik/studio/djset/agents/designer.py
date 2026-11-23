@@ -40,11 +40,13 @@ from djset.contracts import (
     MixPlan,
     Profile,
     Setlist,
+    Stimmwechsel,
     Streckabschnitt,
     Technique,
     TrackAnalysis,
     Transition,
 )
+from djset.dsp.analyze import BEATS_PER_BAR
 
 MAX_ROUNDS = 3
 
@@ -318,6 +320,29 @@ def _abschnitte(
     return [Streckabschnitt(bis_s=bis, ratio=r) for bis, r in stuecke]
 
 
+def stimmwechsel(overlap_s: float, target_bpm: float) -> Stimmwechsel | None:
+    """Wo im Uebergang die Stimme wechselt (Plan 1c).
+
+    Der Uebergang beginnt auf einem Downbeat, und beide Seiten laufen dort im
+    Zieltempo (Fund 3). Ganze Takte ab dem Anfang sind also Taktgrenzen. Der
+    Wechsel liegt auf der Taktgrenze naechst der Mitte, die Blenden dauern je
+    einen Takt. Passen zwei ganze Takte nicht hinein, liegt er genau in der
+    Mitte und die Blenden teilen sich den Uebergang.
+    """
+    if overlap_s <= 0:
+        return None
+    takt = BEATS_PER_BAR * 60.0 / target_bpm
+    takte = overlap_s / takt
+    if takte < 2.0 - 1e-6:
+        mitte = overlap_s / 2
+        return Stimmwechsel(bei_s=mitte, blende_s=mitte)
+    # Zwischen dem ersten und dem vorletzten ganzen Takt, damit beide Blenden
+    # in den Uebergang passen.
+    hinten = math.floor(takte + 1e-6) - 1
+    bei = min(max(1, round(takte / 2)), hinten)
+    return Stimmwechsel(bei_s=bei * takt, blende_s=takt)
+
+
 def build_mixplan(
     setlist: Setlist,
     analyses: list[TrackAnalysis],
@@ -442,6 +467,7 @@ def build_mixplan(
                     ratios[track_id],
                     target_bpm,
                 ),
+                stimme=profile.gesang,
             )
         )
 
@@ -482,6 +508,7 @@ def build_mixplan(
                 technique=choice.technique,
                 eq_out=_eq_curve(choice.technique, outgoing=True),
                 eq_in=_eq_curve(choice.technique, outgoing=False),
+                stimmwechsel=stimmwechsel(overlap_s, target_bpm),
             )
         )
         out_start = start_at

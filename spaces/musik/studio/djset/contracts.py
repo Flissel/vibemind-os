@@ -85,6 +85,9 @@ class Profile(BaseModel):
     track_count: TrackCount
     style_vocab: list[str] = Field(min_length=1)
     structure: StructureRules
+    # Gesang an oder aus fuer das ganze Set (Plan 1c). Aus heisst: nur die
+    # Begleitung jedes Songs, etwa fuer Musik unter einem Video.
+    gesang: bool = True
 
     @model_validator(mode="after")
     def _arc_sorted(self) -> "Profile":
@@ -393,6 +396,9 @@ class MixEntry(BaseModel):
     timestretch_ratio: float = Field(ge=MIN_RATIO, le=MAX_RATIO)
     gain_db: float
     abschnitte: list[Streckabschnitt] = Field(default_factory=list)
+    # Gesang an oder aus (Plan 1c). Aus heisst: nur die Begleitung. Wirkt nur,
+    # wenn der Song getrennt ist - set prueft das vor dem ersten Modellaufruf.
+    stimme: bool = True
 
     @model_validator(mode="after")
     def _from_before_to(self) -> "MixEntry":
@@ -460,6 +466,19 @@ class EqCurve(BaseModel):
     high: list[EqPoint] = Field(min_length=2)
 
 
+class Stimmwechsel(BaseModel):
+    """Wo im Uebergang die Stimme vom einen Song zum anderen wechselt (Plan 1c).
+
+    `bei_s` zaehlt ab Transition.start_at_s, in Sekunden der Ausgabe. Die
+    Stimme des ausgehenden Songs blendet in `blende_s` VOR diesem Punkt aus,
+    die des eingehenden in `blende_s` DANACH ein. Die Begleitung blendet davon
+    unberuehrt wie bisher ueber den ganzen Uebergang.
+    """
+
+    bei_s: float = Field(gt=0)
+    blende_s: float = Field(gt=0)
+
+
 class Transition(BaseModel):
     """Ein Uebergang zwischen zwei Tracks.
 
@@ -501,6 +520,25 @@ class Transition(BaseModel):
     technique: Technique
     eq_out: EqCurve
     eq_in: EqCurve
+    # None: kein Wechsel geplant (Stossnaht ohne Ueberlappung, oder ein Plan
+    # von vor Plan 1c). Der Renderer legt die Stimmen dann wie den Song.
+    stimmwechsel: Stimmwechsel | None = None
+
+    @model_validator(mode="after")
+    def _stimmwechsel_im_uebergang(self) -> "Transition":
+        wechsel = self.stimmwechsel
+        if wechsel is None:
+            return self
+        toleranz = 1e-6
+        if (
+            wechsel.blende_s > wechsel.bei_s + toleranz
+            or wechsel.bei_s + wechsel.blende_s > self.overlap_s + toleranz
+        ):
+            raise ValueError(
+                f"Stimmwechsel bei {wechsel.bei_s:.3f} s mit {wechsel.blende_s:.3f} s "
+                f"Blende passt nicht in den Uebergang von {self.overlap_s:.3f} s"
+            )
+        return self
 
 
 class MixPlan(BaseModel):
