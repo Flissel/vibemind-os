@@ -786,7 +786,13 @@ _SUCHE = (
     r"wo\s+(?:steht|stand)\s+(?:etwas|was)\s+(?:(?:ü|ue)ber|zu|zum|zur|von)\s+(?P<w>.+)",
     rf"gibt\s+es\s+(?:eine\s+|schon\s+eine\s+)?(?:karte|notiz|idee|{_K})\s+(?:zu|zum|zur|(?:ü|ue)ber|mit)\s+(?P<w>.+)",
     rf"(?:durch)?such(?:e)?\s+(?:in\s+)?(?:den|meinen|die)\s+{_K}\s+nach\s+(?P<w>.+)",
+    # Lauf 8: "Suche Marketing" / "Finde Marketing" gingen nicht in die Kartensuche.
+    rf"(?:such(?:e)?|finde?)\s+(?:nach\s+)?(?:(?:die|alle)\s+)?(?:(?:{_K}|karte|notiz|idee)\s+(?:zu|zum|zur|mit|(?:ü|ue)ber)\s+)?"
+    rf"(?P<w>(?!heraus\b|im\s|in\s+(?:web|netz|internet)\b|(?:dir|mir|mal|bitte|uns)\b)[^\s].*?)"
+    rf"(?:\s+(?:hier|in\s+(?:dieser|der)\s+bubble|in\s+den\s+{_K}))?",
+    rf"zeig(?:e)?\s+(?:mir\s+)?(?:alle\s+)?{_K}\s+(?:mit|zu|zum|zur|(?:ü|ue)ber)\s+(?P<w>.+)",
 )
+_SUCHWORT_WOERTER = 4
 
 
 _SCHWAECHE = (r"(?:risiken|schw(?:ä|ae)chen|schwachstellen|st(?:ä|ae)rken|l(?:ü|ue)cken|probleme|chancen|"
@@ -835,6 +841,8 @@ def kartenfrage(text: Any) -> Optional[dict]:
         m = re.fullmatch(muster, text, _I)
         if m:
             wort = _stichwort(m.group("w"))
+            if len(wort.split()) > _SUCHWORT_WOERTER or re.search(r"\b(?:web|netz|internet|google)\b", wort, _I):
+                return None
             return {"art": "suche", "wort": wort} if len(wort) >= 2 else None
     m = re.fullmatch(rf"wie\s+viele\s+{_K}(?P<rest>(?:\s+\w+)*)", text, _I)
     if m and all(w.casefold() in _ZAEHL_FUELLWORTE for w in m.group("rest").split()):
@@ -848,14 +856,28 @@ def _kartentext(zeile: dict) -> str:
     return " ".join(t for t in teile if isinstance(t, str))
 
 
+def _falte(text: Any) -> str:
+    """Zum Suchen: klein, Umlaute ausgeschrieben, ß als ss, ohne Binde- und Unterstrich."""
+    text = _normal(text)
+    for a, b in (("ä", "ae"), ("ö", "oe"), ("ü", "ue"), ("ß", "ss"), ("-", ""), ("_", " ")):
+        text = text.replace(a, b)
+    return text
+
+
 def _kerne(wort: str) -> list[str]:
-    """Das Stichwort und, ab fuenf Buchstaben, seine Form ohne Endung ("Preisen" findet "Preis")."""
-    wort = _normal(wort)
+    """Das Stichwort und, ab fuenf Buchstaben, seine Form ohne Endung ("Preisen" findet "Preis",
+    "Planungen" findet "Planung"). Gross/klein und Umlaut-Schreibung zaehlen nicht."""
+    wort = _falte(wort)
     kerne = [wort]
-    for endung in ("en", "n", "e", "s"):
+    for endung in ("ungen", "ern", "en", "er", "es", "n", "e", "s"):
         if " " not in wort and wort.endswith(endung) and len(wort) - len(endung) >= 4:
-            kerne.append(wort[: -len(endung)])
+            kern = wort[: -len(endung)] + ("ung" if endung == "ungen" else "")
+            if kern not in kerne:
+                kerne.append(kern)
     return kerne
+
+
+WOERTLICH = "Gesucht habe ich nach dem Wort und seinen Formen, nicht nach der Bedeutung."
 
 
 def kartenantwort(zeilen: list, frage: dict, ort: str, gesamt: Optional[int], gekuerzt: bool) -> str:
@@ -872,13 +894,13 @@ def kartenantwort(zeilen: list, frage: dict, ort: str, gesamt: Optional[int], ge
                 else f"In {ort} gibt es {_mehrzahl(anzahl, 'Notiz', 'Notizen')}.")
     wort = str(frage.get("wort") or "")
     kerne = _kerne(wort)
-    gefunden = [z.get("title") for z in karten if any(k in _normal(_kartentext(z)) for k in kerne)]
+    gefunden = [z.get("title") for z in karten if any(k in _falte(_kartentext(z)) for k in kerne)]
     zusatz = ""
     if (gesamt is not None and gesamt > len(karten)) or (gesamt is None and gekuerzt):
         von = f" von {gesamt}" if gesamt is not None and gesamt > len(karten) else ""
         zusatz = f" Durchsucht habe ich nur die ersten {len(karten)}{von} Notizen."
     if not gefunden:
-        return f"Keine Notiz in {ort} erwähnt „{wort}“.{zusatz}"
+        return f"Keine Notiz in {ort} erwähnt „{wort}“. {WOERTLICH}{zusatz}"
     verb = "erwähnt" if len(gefunden) == 1 else "erwähnen"
     return (f"{_mehrzahl(len(gefunden), 'Notiz', 'Notizen')} in {ort} {verb} „{wort}“: "
             f"{_aufzaehlung(gefunden, zeige=5)}.{zusatz}")

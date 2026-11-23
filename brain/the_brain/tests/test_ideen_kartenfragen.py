@@ -83,7 +83,8 @@ def test_suche_liest_titel_text_und_tabelle() -> None:
     assert _antwort({"art": "suche", "wort": "Sponsoren"}) == (
         "2 Notizen in „Stadtfest“ erwähnen „Sponsoren“: „Bühnenplan“, „Sponsoren“.")
     assert _antwort({"art": "suche", "wort": "druck"}) == "1 Notiz in „Stadtfest“ erwähnt „druck“: „Preise“."
-    assert _antwort({"art": "suche", "wort": "Feuerwerk"}) == "Keine Notiz in „Stadtfest“ erwähnt „Feuerwerk“."
+    assert _antwort({"art": "suche", "wort": "Feuerwerk"}) == (
+        "Keine Notiz in „Stadtfest“ erwähnt „Feuerwerk“. " + abk.WOERTLICH)
 
 
 def test_suche_findet_die_form_ohne_endung() -> None:
@@ -91,9 +92,37 @@ def test_suche_findet_die_form_ohne_endung() -> None:
     assert _antwort({"art": "suche", "wort": "Preisen"}).endswith("„Preise“.")
 
 
+def test_suche_ohne_gross_klein_umlaut_und_wortstamm() -> None:
+    # Lauf 8: "Marketing" fand 0 Treffer. Namen erfunden.
+    zeilen = [{"id": "a0000001", "title": "Werbeplan", "content": "MARKETING-Budget fuer das Stadtfest"},
+              {"id": "a0000002", "title": "Buehnenplanungen", "content": "Zeitplan"},
+              {"id": "a0000003", "title": "Druckerei", "content": "Angebote der Druckereien"}]
+    assert _antwort({"art": "suche", "wort": "marketing"}, zeilen).endswith("„Werbeplan“.")
+    assert _antwort({"art": "suche", "wort": "Bühnenplanung"}, zeilen).endswith("„Buehnenplanungen“.")
+    assert _antwort({"art": "suche", "wort": "Druckereien"}, zeilen).endswith("„Druckerei“.")
+
+
+@pytest.mark.parametrize("satz,wort", [
+    ("Suche Marketing", "Marketing"), ("Suche nach Sponsoren", "Sponsoren"), ("Finde Druck", "Druck"),
+    ("Finde alle Notizen zu Sponsoren", "Sponsoren"), ("Zeig mir alle Karten mit Preise", "Preise"),
+    ("Suche Marketing in dieser Bubble", "Marketing"),
+])
+def test_kurze_suchsaetze_sind_kartensuche(satz, wort) -> None:
+    assert abk.kartenfrage(satz) == {"art": "suche", "wort": wort}
+
+
+@pytest.mark.parametrize("satz", [
+    "Suche im Web nach Sponsoren", "Finde heraus, wer die Bühne baut", "Suche dir eine Karte aus",
+    "Suche nach einem guten Weg, die Sponsoren für das Fest zu gewinnen",
+])
+def test_andere_suchsaetze_bleiben_wo_sie_sind(satz) -> None:
+    assert abk.kartenfrage(satz) is None
+
+
 def test_suche_sagt_ehrlich_wenn_nicht_alles_gelesen_ist() -> None:
     satz = _antwort({"art": "suche", "wort": "Feuerwerk"}, ZEILEN, gesamt=140)
-    assert satz == "Keine Notiz in „Stadtfest“ erwähnt „Feuerwerk“. Durchsucht habe ich nur die ersten 3 von 140 Notizen."
+    assert satz == ("Keine Notiz in „Stadtfest“ erwähnt „Feuerwerk“. " + abk.WOERTLICH
+                    + " Durchsucht habe ich nur die ersten 3 von 140 Notizen.")
 
 
 @pytest.mark.parametrize("satz", [
