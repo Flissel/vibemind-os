@@ -1,5 +1,5 @@
-"""Einsprungpunkt mit den Unterkommandos `plan`, `build`, `set`, `record`
-und `import`."""
+"""Einsprungpunkt mit den Unterkommandos `plan`, `build`, `set`, `record`,
+`import`, `aufnehmen` und `bestand`."""
 
 import argparse
 import math
@@ -560,6 +560,92 @@ def cmd_set(
     return build_run(run, files, profile, client, budget, messungen=messungen)
 
 
+def _mm_ss(sekunden: float) -> str:
+    gesamt = round(sekunden)
+    return f"{gesamt // 60}:{gesamt % 60:02d}"
+
+
+def cmd_aufnehmen(
+    daten: Path,
+    datei: str,
+    titel: str,
+    herkunft: str,
+    suno_id: str | None,
+    today: date,
+) -> int:
+    """Nimmt eine Datei aus eingang/ in den Bestand auf und misst sie gleich.
+
+    Scheitert erst das Messen, bleibt der Song aufgenommen (ohne Messung) -
+    `set` holt die Messung spaeter nach. Exit 1 trotzdem, damit der Fehler
+    nicht untergeht.
+    """
+    # Wie bei set: Bestand() legt eingang/ und songs/ an, ein vertippter Pfad
+    # ergaebe sonst still einen neuen, leeren Bestand.
+    if not daten.is_dir():
+        print(f"Fehler: {daten} ist kein Verzeichnis.", file=sys.stderr)
+        return 1
+    bestand = Bestand(daten)
+    try:
+        eintrag = bestand.aufnehmen(datei, titel, herkunft, today, suno_id=suno_id)
+    except BestandFehler as error:
+        print(f"Fehler: {error}", file=sys.stderr)
+        return 1
+    try:
+        eintrag = bestand.messen(eintrag.id)
+    except Exception as error:  # noqa: BLE001 - jede Messstoerung endet gleich
+        print(f"Fehler: {eintrag.id}: {error}", file=sys.stderr)
+        return 1
+
+    messung = eintrag.messung
+    if messung is None:  # messen() traegt sie immer ein
+        print(f"Fehler: {eintrag.id}: keine Messung erhalten.", file=sys.stderr)
+        return 1
+    print(f"Aufgenommen: {eintrag.id}")
+    print(f"  Tempo:  {messung.bpm.value:.1f} BPM")
+    print(f"  Tonart: {messung.key.camelot}")
+    print(f"  Laenge: {_mm_ss(messung.duration_s)}")
+    return 0
+
+
+def cmd_bestand(daten: Path) -> int:
+    """Listet den Bestand: ID, Titel, Tempo, Tonart, Laenge, Herkunft."""
+    if not daten.is_dir():
+        print(f"Fehler: {daten} ist kein Verzeichnis.", file=sys.stderr)
+        return 1
+    try:
+        songs = Bestand(daten).alle()
+    except BestandFehler as error:
+        print(f"Fehler: {error}", file=sys.stderr)
+        return 1
+    if not songs:
+        print(f"Der Bestand unter {daten} ist leer.")
+        return 0
+
+    kopf = ("ID", "Titel", "Tempo", "Tonart", "Laenge", "Herkunft")
+    zeilen = [
+        (
+            song.id,
+            song.titel,
+            f"{song.messung.bpm.value:.1f}" if song.messung else "-",
+            song.messung.key.camelot if song.messung else "-",
+            _mm_ss(song.messung.duration_s) if song.messung else "-",
+            song.herkunft,
+        )
+        for song in songs
+    ]
+    breiten = [
+        max(len(zeile[spalte]) for zeile in [kopf, *zeilen])
+        for spalte in range(len(kopf))
+    ]
+    for zeile in [kopf, *zeilen]:
+        print(
+            "  ".join(
+                feld.ljust(breite) for feld, breite in zip(zeile, breiten)
+            ).rstrip()
+        )
+    return 0
+
+
 def cmd_record(
     base: Path,
     device: str | None,
@@ -710,6 +796,34 @@ def main(argv: list[str] | None = None) -> int:
         "--base", type=Path, default=Path("."), help="Projektwurzel"
     )
 
+    aufnehmen_parser = subparsers.add_parser(
+        "aufnehmen", help="Eine Datei aus eingang/ in den Bestand aufnehmen"
+    )
+    aufnehmen_parser.add_argument(
+        "--daten",
+        type=Path,
+        default=None,
+        help=f"Wurzel des Bestands, sonst die Umgebungsvariable {DATEN_ENV}",
+    )
+    aufnehmen_parser.add_argument(
+        "--datei", required=True, help="Dateiname in eingang/, ohne Pfad"
+    )
+    aufnehmen_parser.add_argument("--titel", required=True, help="Titel des Songs")
+    aufnehmen_parser.add_argument(
+        "--herkunft",
+        required=True,
+        help="suno-eigen, eigen-aufgenommen oder lizenz:<Angabe>",
+    )
+    aufnehmen_parser.add_argument("--suno-id", default=None, help="ID bei Suno")
+
+    bestand_parser = subparsers.add_parser("bestand", help="Den Bestand auflisten")
+    bestand_parser.add_argument(
+        "--daten",
+        type=Path,
+        default=None,
+        help=f"Wurzel des Bestands, sonst die Umgebungsvariable {DATEN_ENV}",
+    )
+
     args = parser.parse_args(argv)
     if args.command == "plan":
         from djset.agents.client import ClaudeClient
@@ -733,14 +847,8 @@ def main(argv: list[str] | None = None) -> int:
             ),
         )
     if args.command == "set":
-        daten = args.daten
-        if daten is None and os.environ.get(DATEN_ENV, "").strip():
-            daten = Path(os.environ[DATEN_ENV].strip())
+        daten = _daten(args.daten)
         if daten is None:
-            print(
-                f"Fehler: --daten fehlt und {DATEN_ENV} ist nicht gesetzt.",
-                file=sys.stderr,
-            )
             return 1
         songs = (
             [teil.strip() for teil in args.songs.split(",") if teil.strip()]
@@ -773,7 +881,33 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "import":
         return cmd_import(base=args.base, source=args.source)
+    if args.command == "aufnehmen":
+        daten = _daten(args.daten)
+        if daten is None:
+            return 1
+        return cmd_aufnehmen(
+            daten, args.datei, args.titel, args.herkunft, args.suno_id, date.today()
+        )
+    if args.command == "bestand":
+        daten = _daten(args.daten)
+        if daten is None:
+            return 1
+        return cmd_bestand(daten)
     return 1
+
+
+def _daten(angegeben: Path | None) -> Path | None:
+    """--daten, sonst die Umgebungsvariable DATEN_ENV. None nach einer Meldung."""
+    if angegeben is not None:
+        return angegeben
+    aus_umgebung = os.environ.get(DATEN_ENV, "").strip()
+    if aus_umgebung:
+        return Path(aus_umgebung)
+    print(
+        f"Fehler: --daten fehlt und {DATEN_ENV} ist nicht gesetzt.",
+        file=sys.stderr,
+    )
+    return None
 
 
 if __name__ == "__main__":
