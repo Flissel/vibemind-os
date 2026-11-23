@@ -40,9 +40,24 @@ VERSION = 1
 VERTRAEGE: dict[str, dict[str, Any]] = {
     "ausformulieren": {
         "felder": {"text": ("text", 20000)},
-        "aufgabe": ("Formuliere den Text der Notiz aus: vollstaendige Saetze, gleiche Sprache, "
-                    "nichts erfinden, was der Notiz widerspricht. Der neue Text ersetzt den alten."),
-        "beispiel": {"text": "..."},
+        # Lauf 10 (35): Zwei Laeufe "beschreibt nur" / "kaum ausgebaut": der Agent schrieb ueber die
+        # Notiz statt die Notiz. Jetzt mit Soll und Nicht-Soll; ergebnis_pruefen lehnt Beschreibungen ab.
+        "aufgabe": (
+            "Formuliere die Notiz aus. Dein Ergebnis IST der neue Text der Notiz und ersetzt den alten "
+            "vollstaendig. Schreibe ihn so, wie die Verfasserin der Notiz ihn selbst schreiben wuerde: "
+            "in der Sprache und Form der Notiz (Ich-/Wir-Form, Stichpunkte bleiben Liste, Ueberschriften "
+            "bleiben), aus Stichworten werden vollstaendige Saetze, jeder Punkt der Notiz kommt vor und "
+            "wird konkret ausgebaut, Offenes wird als offene Frage benannt. Nichts erfinden, was der Notiz "
+            "widerspricht; keine neuen Zahlen, Namen oder Termine. "
+            "Sprich NIE ueber die Notiz („Die Notiz beschreibt …“, „Der Text behandelt …“, „Es geht um …“); "
+            "das wird abgelehnt.\n"
+            "Beispiel. Notiz: „Sponsoren: Stadtwerke fragen, Bäckerei? Budget 2.000 €“.\n"
+            "So (richtig): „Für das Stadtfest suchen wir Sponsoren. Als Erstes fragen wir die Stadtwerke an. "
+            "Ob die Bäckerei mitmacht, ist noch offen – wir sprechen sie an. Insgesamt planen wir mit einem "
+            "Sponsoring-Budget von 2.000 €.“\n"
+            "Nicht so (falsch): „Die Notiz beschreibt die Suche nach Sponsoren für das Stadtfest und nennt "
+            "die Stadtwerke, eine Bäckerei und ein Budget.“"),
+        "beispiel": {"text": "Für das Stadtfest suchen wir Sponsoren. …"},
         "braucht_bubble": False,
     },
     "einschaetzen": {
@@ -360,7 +375,31 @@ def ergebnis_pruefen(vertrag_name: str, roh: Any) -> tuple[Optional[dict[str, An
         if satz:
             return None, satz
         sauber[name] = wert.strip()
+    if vertrag_name == "ausformulieren" and spricht_ueber_die_notiz(sauber["text"]):
+        return None, BESCHREIBT_NUR
     return sauber, ""
+
+
+BESCHREIBT_NUR = ("Der Agent hat die Notiz nur beschrieben statt sie auszuformulieren; "
+                  "es wurde nichts geändert.")
+# Lauf 10 (35): "Die Notiz beschreibt ...", "Der Text behandelt ...", "In dieser Notiz geht es um ...".
+_UEBER_DIE_NOTIZ = re.compile(
+    r"^\s*(?:(?:die|diese|deine|eure|unsere|vorliegende)\s+(?:vorliegende\s+)?(?:notiz|karte|idee)"
+    r"|(?:der|dieser|vorliegende)\s+(?:vorliegende\s+)?(?:text|eintrag|inhalt))\b[^.!?\n]{0,60}?\b"
+    r"(?:beschreibt|behandelt|enth(?:ä|ae)lt|nennt|listet|zeigt|thematisiert|skizziert|umrei(?:ß|ss)t"
+    r"|fasst|geht\s+(?:es\s+)?um|handelt|befasst|besch(?:ä|ae)ftigt|dreht\s+sich|stellt\b[^.!?\n]{0,40}\bdar"
+    r"|gibt\b[^.!?\n]{0,40}\b(?:wieder|(?:ü|ue)berblick)|bezieht\s+sich|sammelt|h(?:ä|ae)lt\s+fest)"
+    r"|^\s*(?:in|bei)\s+(?:der|dieser|deiner|eurer|unserer)\s+(?:notiz|karte)\b[^.!?\n]{0,40}?\b"
+    r"(?:geht\s+es|wird|werden|steht|stehen|finde[nt]?\s+sich|sind|ist)\b"
+    r"|^\s*thema\s+(?:der|dieser)\s+notiz\b", re.IGNORECASE)
+
+
+def spricht_ueber_die_notiz(text: Any) -> bool:
+    """Ob ein Ausformulier-Ergebnis über die Notiz redet statt sie zu sein (erste zwei Sätze)."""
+    if not isinstance(text, str):
+        return False
+    saetze = re.split(r"(?<=[.!?])\s+|\n+", text.strip(), maxsplit=2)[:2]
+    return any(_UEBER_DIE_NOTIZ.search(re.sub(r"^\s*(?:#+|[-*•])\s*", "", s)) for s in saetze)
 
 
 # ── 3. Schreiben ─────────────────────────────────────────────────────────

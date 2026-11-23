@@ -46,6 +46,41 @@ def test_zusatz_im_titel_ist_kein_zustand() -> None:
     assert nachricht.index(rw.TITEL_IST_NAME) < nachricht.index("<<<NOTIZ")
 
 
+def test_ausformulieren_auftrag_sagt_das_ergebnis_ist_die_notiz() -> None:
+    # Lauf 10 (35): "kaum ausgebaut", "beschreibt nur".
+    nachricht, _ = _vorbereiten()
+    assert "IST der neue Text der Notiz" in nachricht
+    assert "So (richtig)" in nachricht and "Nicht so (falsch)" in nachricht
+    assert nachricht.index("Nicht so (falsch)") < nachricht.index("<<<NOTIZ")
+
+
+@pytest.mark.parametrize("text", [
+    "Die Notiz beschreibt die Suche nach Sponsoren für das Stadtfest.",
+    "Diese Notiz behandelt den Bühnenplan und nennt drei offene Punkte.",
+    "Der Text listet die Aufgaben der Druckerei auf.",
+    "In dieser Notiz geht es um die Sponsoren.",
+    "Die vorliegende Notiz gibt einen Überblick über das Budget.",
+    "## Sponsoren\nDie Notiz fasst zusammen, wer angefragt wird.",
+    '{"text": "Die Karte enthält eine Liste von Sponsoren."}',
+])
+def test_ausformulieren_lehnt_beschreibung_ab(text) -> None:
+    assert rw.ergebnis_pruefen("ausformulieren", text) == (None, rw.BESCHREIBT_NUR)
+
+
+@pytest.mark.parametrize("text", [
+    "Für das Stadtfest suchen wir Sponsoren. Als Erstes fragen wir die Stadtwerke an.",
+    "Die Bühne steht ab Freitag. Der Text für das Plakat kommt von der Druckerei.",
+    "- Die Notizen vom Treffen schicke ich am Montag herum.\n- Budget: 2.000 €",
+    "Es geht um drei Dinge: Bühne, Strom und Sponsoren.",
+])
+def test_ausformulieren_laesst_echten_text_durch(text) -> None:
+    assert rw.ergebnis_pruefen("ausformulieren", text) == ({"text": text}, "")
+
+
+def test_beschreibung_wird_nur_beim_ausformulieren_abgelehnt() -> None:
+    assert rw.ergebnis_pruefen("einschaetzen", "Die Notiz beschreibt die Sponsoren gut.")[1] == ""
+
+
 def test_titel_wird_eindeutig_aufgeloest_sonst_rueckfrage() -> None:
     _, rueckweg = _vorbereiten(arg="Sponsoren", treffer=[{"id": "a0000001", "title": "Sponsoren"}])
     assert rueckweg["karte_id"] == "a0000001"
