@@ -17,7 +17,8 @@ Public API:
   }
 
 Defaults are tuned for cheap latency: groq_subagent + max 320 tokens.
-The whole pass adds ~600-1500ms to a plan and is bypassable via env.
+Off by default (PLAN_CRITIC_ENABLED=1 switches it on); the model comes from the
+OpenFang role configuration, never from here.
 """
 
 from __future__ import annotations
@@ -129,8 +130,14 @@ def critique(
     On any LLM failure: returns a passthrough verdict (recommend='proceed',
     score=0, risks=[]) so plan execution is never blocked by critic outage.
     """
-    bypass = os.environ.get("PLAN_CRITIC_DISABLED", "0") in ("1", "true", "True")
-    if bypass or dispatcher is None:
+    # Lauf 5 der Pruefung (23.11.2026): bei jedem Planer-Satz "[critic] LLM call failed: direct
+    # provider/model overrides are not permitted". Ursache: der Kritiker schickte immer ``model=``
+    # mit, der SubagentDispatcher lehnt jede Modellvorgabe ab (die Rollen-Konfiguration in
+    # OpenFang entscheidet). Er lief also nie, und sein Urteil steuert ohnehin nichts (nur das
+    # Ereignis plan_context). Darum aus, bis ihn jemand bewusst einschaltet: PLAN_CRITIC_ENABLED=1.
+    an = (os.environ.get("PLAN_CRITIC_ENABLED", "0") in ("1", "true", "True")
+          and os.environ.get("PLAN_CRITIC_DISABLED", "0") not in ("1", "true", "True"))
+    if not an or dispatcher is None:
         return {
             "risks": [],
             "score": 0.0,
@@ -153,10 +160,6 @@ def critique(
     )
 
     tool = os.environ.get("PLAN_CRITIC_TOOL", "groq_subagent")
-    model = os.environ.get(
-        "PLAN_CRITIC_MODEL",
-        "groq::llama-3.3-70b-versatile" if tool == "groq_subagent" else "anthropic/claude-haiku-4.5",
-    )
     temperature = float(os.environ.get("PLAN_CRITIC_TEMPERATURE", "1.1"))
     max_tokens = int(os.environ.get("PLAN_CRITIC_MAX_TOKENS", "320"))
 
@@ -166,7 +169,7 @@ def critique(
             tool,
             prompt=prompt,
             system=_CRITIC_SYSTEM,
-            model=model,
+            # Kein model/provider: der Dispatcher lehnt Vorgaben ab, OpenFang waehlt das Modell.
             temperature=temperature,
             max_tokens=max_tokens,
         )
@@ -231,7 +234,7 @@ def critique(
         "recommend": rec,
         "raw": raw,
         "latency_ms": latency_ms,
-        "model": model,
+        "model": result.get("model"),
         "tool": tool,
     }
 
