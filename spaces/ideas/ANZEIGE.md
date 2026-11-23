@@ -54,19 +54,41 @@ gleicht ab. Damit das ohne Flackern geht:
 Ein Satz nennt Namen („die Notiz Preise"), die Werkzeuge verlangen Kennungen. Die Auflösung macht die
 Abkürzung im Gehirn (Aufgabe der Koordination). Der Ideen-Space kann dafür je Satz mitgeben:
 
+Die Feldnamen sind mit der Hülle abgestimmt (23.11., Entwurf). Sie reisen als `context` an der
+Chat-Nachricht der App mit.
+
 | Feld | Inhalt | Quelle |
 |---|---|---|
 | `space` | `ideas` | fest |
-| `bubble` | Kennung und Titel der offenen Bubble, oder leer | Vorspeicher der App |
-| `karten` | je sichtbarer Karte: Kennung, Titel, Format, Bewertung | Vorspeicher der App |
-| `auswahl` | Kennungen der markierten Karten, in der Reihenfolge des Markierens | App |
-| `zuletzt` | Kennung der Karte, die zuletzt angelegt oder geändert wurde | Vorspeicher der App |
-| `bubbles` | nur ohne offene Bubble: Kennung und Titel der sichtbaren Bubbles | Vorspeicher der App |
+| `bubble` | `{id, title}` der offenen Bubble, oder `null` | Vorspeicher der App |
+| `cards` | je sichtbarer Karte `{id, title, format, score}`, höchstens 100 | Vorspeicher der App |
+| `cards_total` | Zahl aller Karten der Bubble, falls `cards` gekürzt ist | Vorspeicher der App |
+| `selection` | Kennungen der markierten Karten, in der Reihenfolge des Markierens | App |
+| `last_id` | Kennung der Karte, die zuletzt angelegt oder geändert wurde | Vorspeicher der App |
+| `bubbles` | nur ohne offene Bubble: `{id, title}` der sichtbaren Bubbles | Vorspeicher der App |
+| `new_id` | von der App vergebene Kennung für eine neue Karte (`idea_create` mit `id`) | App |
 
-Damit lassen sich auflösen: „die Notiz Preise" (Titel in `karten`), „die beiden" (`auswahl`), „das" oder
-„die letzte" (`zuletzt`), „diese Bubble" (`bubble`). Passt ein Name auf mehrere Karten oder auf keine, fragt
-der Chat zurück und rät nicht. Eine Bubble hat höchstens 100 Karten (Grenze von `idea_arrange`); mehr gibt
-der Space nicht mit.
+Damit lassen sich auflösen: „die Notiz Preise" (Titel in `cards`), „die beiden" (`selection`), „das" oder
+„die letzte" (`last_id`), „diese Bubble" (`bubble`). Passt ein Name auf mehrere Karten oder auf keine, fragt
+der Chat zurück und rät nicht.
+
+Die Antwort an die App nennt die gespeicherten Zeilen, damit sie abgleichen kann:
+
+| Feld | Inhalt |
+|---|---|
+| `changes` | je Änderung `{op, id, row}`; `op` ist `create`, `update`, `delete`, `link` oder `promote` |
+| `changes[].pending_id` | bei `create`: das `new_id`, das diese Zeile einlöst |
+| `change_id` | Kennung der Änderung (`aenderung_id`); dieselbe nimmt „zurück" entgegen |
+| `working` | `true`, wenn ein Modell noch weiterarbeitet |
+| `targets` | bei `working`: Kennungen der Karten oder der Bubble, an denen gearbeitet wird |
+
+`idea_create` legt keinen zweiten Eintrag mit gleichem Titel in derselben Bubble an, sondern gibt die
+vorhandene Zeile zurück. Dann ist `id` ungleich `pending_id`: Die App entfernt die vorgemerkte Karte und
+hebt die vorhandene hervor.
+
+Vormerken vor dem Abschicken **[Wahl]**: Die App merkt nur vor, wenn der Satz mit einem klaren Auftakt
+beginnt („Notiz:", „notiere", „halt fest", „halte fest", „schreib auf", „merk dir"). Alles andere zeigt im
+Chat „arbeitet" und wartet auf die Antwort. So entsteht aus einer Frage keine falsche Karte.
 
 ## Die sechs Tätigkeiten
 
