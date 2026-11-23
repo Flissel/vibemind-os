@@ -353,6 +353,58 @@ def test_stand_nach_vorschlag_verwerfen_sagt_verworfen(monkeypatch) -> None:
     assert "saetze" not in body
 
 
+@pytest.mark.parametrize("kette", [False, True], ids=["einzeln", "zweiter-teil-der-kette"])
+def test_stand_abgelehnter_dokument_auftrag_ist_fehler_mit_satz(monkeypatch, kette) -> None:
+    # Lauf 5 der Pruefung: der Agent schrieb statt der Zusammenfassung etwas anderes, die Pruefung
+    # lehnte ab. /stand muss "fehler" mit dem deutschen Satz liefern, sonst haengt "arbeitet ...".
+    from core import ideen_dokument
+    from core.nachfasser import Nachfasser
+
+    zeile = _zeile("fertig", None, _iso(83))
+    zeile["uebergabe"] = {"rueckweg": {"vertrag": "zusammenfassen", "bubble_id": BUBBLE_ID}}
+    zeilen = {A1: {**zeile, "id": A1}}
+
+    class _Tabelle:
+        def zu_pruefen(self):
+            return [z for z in zeilen.values() if z["pruefung"] is None]
+
+        def beendete_ohne_meldung(self):
+            return []
+
+        def abgelaufene_markieren(self):
+            return 0
+
+        def pruefung_setzen(self, i, p):
+            zeilen[i]["pruefung"] = dict(p)
+            return True
+
+        def pruefung_ergaenzen(self, i, p):
+            zeilen[i]["pruefung"] = {**zeilen[i]["pruefung"], **p}
+
+        def lesen(self, i):
+            return zeilen.get(i)
+
+        def anlegen(self, **kw):
+            raise AssertionError("kein naechster Teil nach einer Ablehnung")
+
+    monkeypatch.setattr(ideen_dokument, "verarbeiten", lambda a, **kw: {
+        "verified": False, "reason": "result rejected", "kind": "ideen_dokument", "rueckweg": "abgelehnt",
+        "meldung": ideen_dokument._FORM})
+    tabelle = _Tabelle()
+    Nachfasser(tabelle, validator=None, router=None, plan_executor=None,
+               dokument_anschluss=lambda a, anlegen: {}).runde()
+    erste = A1
+    if kette:
+        erste = A2
+        zeilen[A2] = {**_zeile("fertig", {"rueckweg": "weiter", "naechster_auftrag": A1, "fortsetzung": "fertig",
+                                          "meldung": "Abschnitt 1 von 2 fertig."}, _iso(40)), "id": A2}
+    monkeypatch.setattr(aa, "tabelle_aus_umgebung", lambda: tabelle)
+    client, _ = _client(monkeypatch, {"ok": True})
+    body = client.get(f"/api/agent-auftraege/{erste}/stand").json()
+    assert body["stand"] == "fehler" and body["ok"] is False
+    assert body["meldung"] == "Der Agent hat nicht in der vereinbarten Form geantwortet; es wurde nichts geändert."
+
+
 def test_nachfasser_vorschlag_ist_kein_fehlschlag() -> None:
     from core.nachfasser import Nachfasser
 
