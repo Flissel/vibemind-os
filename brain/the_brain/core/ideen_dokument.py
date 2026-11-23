@@ -43,7 +43,12 @@ from typing import Any, Callable, Iterable, Mapping, Optional
 
 from .ideen_abkuerzung import ist_kennung as ist_db_kennung
 from .ideen_fest_contract import feste_argumente, ist_kennung
-from .ideen_rueckweg import _HTML, _STEUER, _ZAUN, _ZAUNZEICHEN, RueckwegFehler, _sauber, _zaun_ersatz
+from .ideen_rueckweg import (
+    _HTML, _STEUER, _VORREDE, _WERKZEUG, _ZAUN, _ZAUNZEICHEN, FreigabeAusstehend, RueckwegFehler, _sauber, _zaun_ersatz,
+    ist_verweigerung,
+)
+
+_WARTET = "idea.document: approval pending"
 
 VERSION = 1
 
@@ -411,8 +416,14 @@ def _text_ok(wert: Any, grenze: int, was: str) -> tuple[Optional[str], str]:
         return None, f"{was[0].upper() + was[1:]} des Agenten ist länger als {grenze} Zeichen; es wurde nichts geändert."
     if _STEUER.search(wert):
         return None, "Der Text des Agenten enthält Steuerzeichen; es wurde nichts geändert."
+    if _WERKZEUG.search(wert):
+        return None, "Der Agent hat ein Werkzeug aufrufen wollen statt Text zu liefern; es wurde nichts geändert."
     if _HTML.search(wert):
         return None, "Der Text des Agenten enthält HTML oder Skript; es wurde nichts geändert."
+    if ist_verweigerung(wert):
+        return None, "Der Agent hat den Auftrag abgelehnt statt ihn zu erledigen; es wurde nichts geändert."
+    if _VORREDE.search(wert):
+        return None, "Der Agent hat eine Vorrede statt nur des Ergebnisses geliefert; es wurde nichts geändert."
     return wert.strip(), ""
 
 
@@ -762,6 +773,8 @@ def _schreiben(rueckweg: Mapping[str, Any], inhalt: str, quellen_ids: list[str],
         return False, f"contract: {grund}", "Das Dokument passt nicht zum Vertrag; es wurde nichts geändert."
     try:
         quittung = aufruf("idea.document", argumente)
+    except FreigabeAusstehend:
+        return None, _WARTET, "Das Dokument wartet auf Freigabe; geändert ist noch nichts."
     except Exception as e:  # noqa: BLE001
         return None, f"idea.document: {type(e).__name__}: {str(e)[:200]}", \
             "Das Schreiben des Dokuments ist gescheitert. Bitte prüfe das Canvas."
@@ -797,7 +810,7 @@ def verarbeiten(auftrag: Mapping[str, Any], *, lies_karten: Callable[[list[str]]
             quellen = [rueckweg["kuerzel"][v] for v in werte["verweise"] if v in rueckweg["kuerzel"]]
             ok, reason, satz = _schreiben(rueckweg, inhalt, quellen, aufruf=aufruf, pruefe=pruefe)
             if ok is not True:
-                return aus("fehler", ok, reason, satz, vorschlag=inhalt)
+                return aus("wartet" if reason == _WARTET else "fehler", ok, reason, satz, vorschlag=inhalt)
             return aus("geschrieben", True, reason,
                        f"Die Zusammenfassung steht als Karte „{rueckweg['titel']}“ in der Bubble.",
                        dokument_id=rueckweg["dokument_id"])
@@ -846,7 +859,7 @@ def verarbeiten(auftrag: Mapping[str, Any], *, lies_karten: Callable[[list[str]]
             quellen.insert(0, rueckweg["wurzel_id"])
         ok, reason, satz = _schreiben(rueckweg, inhalt, quellen, aufruf=aufruf, pruefe=pruefe)
         if ok is not True:
-            return aus("fehler", ok, reason, satz)
+            return aus("wartet" if reason == _WARTET else "fehler", ok, reason, satz)
         leer = len(rueckweg.get("leer") or [])
         zusatz = f", {leer} {'Karte' if leer == 1 else 'Karten'} ohne Inhalt genannt" if leer else ""
         return aus("geschrieben", True, reason,

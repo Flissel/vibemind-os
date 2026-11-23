@@ -593,7 +593,7 @@ def test_laufzeit_kontext_findet_idea_document_im_verzeichnis() -> None:
     autoritaet = find_registered_mcp_authority("brain-ideas", "spaces-ideas", "idea_document")
     assert autoritaet is not None and autoritaet.event_id == "idea.document"
     kontext = laufzeit_kontext("idea_document", "idea.document", {"plan_id": "ideen_9", "hop_id": "s1/teil2"}, 1)
-    assert kontext.plan_id == "ideen_9" and kontext.step_id == "s1/teil2/rueckweg/01/idea_document"
+    assert kontext.plan_id == "ideen_9-r" and kontext.step_id == "s1/teil2/rueckweg/01/idea_document"
 
 
 def test_plan_ausfuehrer_meldet_budget_als_satz(monkeypatch) -> None:
