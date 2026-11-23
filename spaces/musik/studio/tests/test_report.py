@@ -7,6 +7,7 @@ from djset.contracts import (
     QaReport,
     Rejection,
     Shortlist,
+    StimmNaht,
 )
 from djset.qa import TRUE_PEAK_CEILING_DB
 from djset.report import CORRECTION_HEADROOM_DB, correction_gain_db, render_qa_report
@@ -44,6 +45,44 @@ def _long_transitions(plan: MixPlan, bars: int) -> MixPlan:
             ]
         }
     )
+
+
+def test_der_bericht_nennt_jeden_stimmwechsel(profile: Profile) -> None:
+    plan = simple_plan(bars=4)
+    qa = _report(-2.0, []).model_copy(
+        update={
+            "stimmen": [
+                StimmNaht(from_track="t0", to_track="t1", start_at_s=65.0,
+                          wechsel_s=70.5, gleichzeitig_s=0.0),
+                StimmNaht(from_track="t1", to_track="t2", start_at_s=130.0,
+                          wechsel_s=135.0, gleichzeitig_s=None),
+            ]
+        }
+    )
+
+    text = render_qa_report(qa, _shortlist(), [], None, plan, profile)
+
+    assert "## Stimmen" in text
+    assert "`t0` nach `t1` bei 1:05: Wechsel bei 1:10, gleichzeitig 0.0 s" in text
+    assert "`t1` nach `t2` bei 2:10: nicht gemessen" in text
+
+
+def test_ohne_gesang_sagt_der_bericht_das(profile: Profile) -> None:
+    plan = simple_plan(bars=4)
+    ohne = profile.model_copy(update={"gesang": False})
+
+    text = render_qa_report(_report(-2.0, []), _shortlist(), [], None, plan, ohne)
+
+    assert "## Stimmen" in text
+    assert "Gesang aus" in text
+
+
+def test_ohne_stimmen_messung_kein_abschnitt(profile: Profile) -> None:
+    text = render_qa_report(
+        _report(-2.0, []), _shortlist(), [], None, simple_plan(), profile
+    )
+
+    assert "## Stimmen" not in text
 
 
 def test_a_clean_report_needs_no_correction() -> None:

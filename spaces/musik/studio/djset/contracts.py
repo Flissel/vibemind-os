@@ -604,7 +604,15 @@ class MixPlan(BaseModel):
 # Teil beider Tracks, waehrend die Toleranz an einem durchgehenden Impulszug
 # kalibriert wurde - eine unmessbare Naht ist im Betrieb also zu erwarten und
 # darf nicht wie ein Bruch aussehen, wenn jemand die Befunde nach kind filtert.
-QaKind = Literal["length", "true_peak", "seam", "seam_unmeasurable", "gap"]
+#
+# `stimmen` (Plan 1c): im Uebergang singen zwei Stimmen laenger als erlaubt
+# gleichzeitig - gemessen an den Stimmen, die der Renderer gelegt hat.
+# `stimmen_ungetrennt`: ein Song im Set hat keine getrennte Stimme, an seinen
+# Naehten bleibt die Frage offen.
+QaKind = Literal[
+    "length", "true_peak", "seam", "seam_unmeasurable", "gap",
+    "stimmen", "stimmen_ungetrennt",
+]
 
 
 class QaFinding(BaseModel):
@@ -632,7 +640,22 @@ class AudioFormat(BaseModel):
 # sind Hinweise: eine Laengenabweichung steht im Mixplan und ein Re-Render
 # aendert sie nicht, eine unmessbare Naht ist im Betrieb zu erwarten (siehe
 # oben). Beide werden berichtet, blockieren aber nicht.
-BLOCKING_KINDS: frozenset[str] = frozenset({"gap", "true_peak", "seam"})
+BLOCKING_KINDS: frozenset[str] = frozenset({"gap", "true_peak", "seam", "stimmen"})
+
+
+class StimmNaht(BaseModel):
+    """Was die QA an einem Uebergang ueber die Stimmen gemessen hat (Plan 1c).
+
+    `wechsel_s` ist die Setzeit des Stimmwechsels, None ohne geplanten
+    Wechsel. `gleichzeitig_s` sind die Sekunden im Uebergang, in denen beide
+    Stimmen ueber der Schwelle liegen; None, wenn eine Seite ungetrennt ist.
+    """
+
+    from_track: str = Field(min_length=1)
+    to_track: str = Field(min_length=1)
+    start_at_s: float = Field(ge=0)
+    wechsel_s: float | None = None
+    gleichzeitig_s: float | None = None
 
 
 class QaReport(BaseModel):
@@ -650,6 +673,8 @@ class QaReport(BaseModel):
     lufs_integrated: float = Field(allow_inf_nan=False)
     true_peak: float = Field(allow_inf_nan=False)
     findings: list[QaFinding]
+    # Leer, wenn ohne getrennte Stimmen gerendert wurde (Plan 1c).
+    stimmen: list[StimmNaht] = Field(default_factory=list)
 
     @property
     def blocking(self) -> list[QaFinding]:

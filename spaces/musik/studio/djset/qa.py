@@ -11,9 +11,9 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from djset.contracts import AudioFormat, MixPlan, QaFinding, QaReport
+from djset.contracts import AudioFormat, MixPlan, QaFinding, QaReport, StimmNaht
 from djset.dsp.analyze import beat_times, detect_bpm_and_grid, measure_loudness
-from djset.render.engine import bar_length_s
+from djset.render.engine import StimmSpur, bar_length_s
 from djset.render.tracklist import timestamp
 
 # Erfolgskriterium 3: Ziellaenge plus/minus 5 Prozent.
@@ -183,8 +183,80 @@ def _seam_drift_beats(
     return float(np.max(np.abs(beats - np.round(beats))))
 
 
+# Plan 1c. Ab diesem Pegel (RMS je 50 ms) zaehlt eine Stimmspur als Gesang.
+# Demucs laesst in der Stimme Reste der Begleitung stehen; gesungene Stellen
+# liegen bei Felix' Songs um -20 dBFS, das Uebersprechen weit darunter.
+STIMME_AKTIV_DB = -35.0
+# So lange duerfen zwei Stimmen im Uebergang gleichzeitig klingen, ohne dass
+# es ein Befund ist - ein Atemzug, ein Nachhall.
+STIMMEN_ERLAUBT_S = 0.5
+
+
+def _pegel_bei(spur: StimmSpur, zeiten: np.ndarray) -> np.ndarray:
+    index = np.floor((zeiten - spur.start_s) / spur.schritt_s + 1e-9).astype(int)
+    drin = (index >= 0) & (index < len(spur.pegel_db))
+    pegel = np.full(len(zeiten), -np.inf)
+    pegel[drin] = spur.pegel_db[index[drin]]
+    return pegel
+
+
+def stimmen_messen(
+    spuren: list[StimmSpur], plan: MixPlan, ungetrennt: list[str]
+) -> tuple[list[StimmNaht], list[QaFinding]]:
+    """Wie lange in jedem Uebergang beide Stimmen gleichzeitig singen."""
+    nach_id = {spur.track_id: spur for spur in spuren}
+    naehte: list[StimmNaht] = []
+    befunde: list[QaFinding] = []
+    for transition in plan.transitions:
+        wechsel = transition.stimmwechsel
+        naht = StimmNaht(
+            from_track=transition.from_track,
+            to_track=transition.to_track,
+            start_at_s=transition.start_at_s,
+            wechsel_s=(
+                transition.start_at_s + wechsel.bei_s if wechsel is not None else None
+            ),
+        )
+        aus, ein = nach_id.get(transition.from_track), nach_id.get(transition.to_track)
+        if aus is not None and ein is not None:
+            schritt = min(aus.schritt_s, ein.schritt_s)
+            zeiten = transition.start_at_s + np.arange(
+                int(round(transition.overlap_s / schritt))
+            ) * schritt
+            beide = (_pegel_bei(aus, zeiten) > STIMME_AKTIV_DB) & (
+                _pegel_bei(ein, zeiten) > STIMME_AKTIV_DB
+            )
+            gleichzeitig = float(np.count_nonzero(beide) * schritt)
+            naht = naht.model_copy(update={"gleichzeitig_s": gleichzeitig})
+            if gleichzeitig > STIMMEN_ERLAUBT_S:
+                befunde.append(
+                    QaFinding(
+                        kind="stimmen",
+                        text=f"Im Uebergang von {transition.from_track} nach "
+                        f"{transition.to_track} bei "
+                        f"{timestamp(transition.start_at_s)} singen beide Stimmen "
+                        f"{gleichzeitig:.1f} s gleichzeitig, erlaubt sind "
+                        f"{STIMMEN_ERLAUBT_S:.1f} s.",
+                    )
+                )
+        naehte.append(naht)
+    if ungetrennt:
+        befunde.append(
+            QaFinding(
+                kind="stimmen_ungetrennt",
+                text=f"Ohne getrennte Stimme: {', '.join(ungetrennt)}. An ihren "
+                "Uebergaengen koennen sich zwei Stimmen ueberlagern.",
+            )
+        )
+    return naehte, befunde
+
+
 def check_set(
-    path: Path, plan: MixPlan, wunsch_laenge_s: float | None = None
+    path: Path,
+    plan: MixPlan,
+    wunsch_laenge_s: float | None = None,
+    stimmspuren: list[StimmSpur] | None = None,
+    ungetrennt: list[str] | None = None,
 ) -> QaReport:
     """Misst das fertige Set und sammelt, was nicht stimmt.
 
@@ -325,6 +397,13 @@ def check_set(
                     )
                 )
 
+    # Plan 1c: nur wenn der Renderer Stimmen gelegt hat oder Songs ungetrennt
+    # blieben - ein Lauf ohne Trennung bekommt keinen Stimmen-Abschnitt.
+    naehte: list[StimmNaht] = []
+    if stimmspuren is not None:
+        naehte, befunde = stimmen_messen(stimmspuren, plan, ungetrennt or [])
+        findings += befunde
+
     return QaReport(
         length_s=length_s,
         target_length_s=plan.target_length_s,
@@ -332,4 +411,5 @@ def check_set(
         lufs_integrated=loudness.lufs_integrated,
         true_peak=loudness.true_peak,
         findings=findings,
+        stimmen=naehte,
     )

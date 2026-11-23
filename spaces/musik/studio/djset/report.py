@@ -24,6 +24,7 @@ from djset.contracts import (
     UnreadableTrack,
 )
 from djset.qa import TRUE_PEAK_CEILING_DB
+from djset.render.tracklist import timestamp
 from djset.tempo import TempoWahl
 
 # Was die Spec in Abschnitt 5 zusichert: "Ausgegeben wird set.wav als
@@ -313,6 +314,27 @@ def render_qa_report(
             f"Takte des Profils."
         )
     lines.append("")
+
+    if qa.stimmen or not profile.gesang:
+        lines += ["## Stimmen", ""]
+        if not profile.gesang:
+            lines.append("- Gesang aus: in jedem Song klingt nur die Begleitung.")
+        for naht in qa.stimmen:
+            wo = (
+                f"`{naht.from_track}` nach `{naht.to_track}` bei "
+                f"{timestamp(naht.start_at_s)}"
+            )
+            if naht.gleichzeitig_s is None:
+                lines.append(f"- {wo}: nicht gemessen, ein Song ist nicht getrennt")
+            else:
+                wechsel = (
+                    f"Wechsel bei {timestamp(naht.wechsel_s)}"
+                    if naht.wechsel_s is not None else "kein Wechsel geplant"
+                )
+                lines.append(
+                    f"- {wo}: {wechsel}, gleichzeitig {naht.gleichzeitig_s:.1f} s"
+                )
+        lines.append("")
 
     unruhig = _unruhige_naehte(plan, analysen) if analysen else []
     if unruhig:
