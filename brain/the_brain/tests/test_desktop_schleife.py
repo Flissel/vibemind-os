@@ -859,6 +859,8 @@ def test_der_plan_ausfuehrer_nimmt_den_satz_aus_der_absicht_und_startet_einmal()
     quelle = (ROOT / "brain/the_brain/core/plan_executor.py").read_text(encoding="utf-8")
     abschnitt = quelle[quelle.index("if _ist_desktop_start(target):"):quelle.index("# Build the right executor")]
     assert "auftrag_aus_absicht(plan_ctx.get(\"plan_intent\"" in abschnitt
+    # Die Herkunft wird vor allem anderen geprueft, auch vor dem Bau des Executors.
+    assert abschnitt.index('plan_ctx.get("eingabe_herkunft") != "getippt"') < abschnitt.index("auftrag_aus_absicht(")
     assert "rendered_arg = _desktop_auftrag" in abschnitt and "single_plan_attempt = True" in abschnitt
     aufruf = quelle[quelle.index("ok, result_payload, err = nach_aufgabenstart("):]
     assert "hintergrund=True" in aufruf[:900] and "laufzeit=" in aufruf[:900]
@@ -889,3 +891,115 @@ def test_der_pruefer_liest_das_aufgabenbuch_ueber_den_echten_executor(echt, open
     assert openfang.werkzeuge == ["desktop_task_status"]
     urteil = CapabilityValidator().validate(cfg, intent="x", arg="Lösche alles", raw_result=ergebnis)
     assert urteil["valid"] is False and urteil["verified"] is None  # Satz weicht vom Argument ab
+
+
+# ─── Antwort im Chat, Space, Herkunft vor dem Start ───────────────────────────
+
+
+def _umschlag(aufbau, werkzeug, argumente=None):
+    """Was der echte Werkzeug-Dienst liefert, mit dem _meta, das OpenFang anhaengt."""
+    antwort = aufbau.server.handle_message({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                            "params": {"name": werkzeug, "arguments": argumente or {}}})
+    return {"_meta": {"runtime_admission": {"approval_ref": "zulassung-geheim"}}, **antwort["result"]}
+
+
+def _ohne_interna(satz):
+    for verboten in ("_meta", "zulassung-geheim", "runtime", "{", "content", "Multi-hop", "\\", ":/", "C:", "plan-desk"):
+        assert verboten not in satz, (verboten, satz)
+
+
+def test_status_und_aufgabe_als_fester_satz(echt):
+    from core.desktop_antwort import antwort_fuer_desktop
+    echt.server._http = lambda *a, **k: {"success": True, "monitors": [{"id": 1}, {"id": 2}]}
+    satz = antwort_fuer_desktop("desktop_status", True, _umschlag(echt, "desktop_status"), None)
+    assert satz.startswith("Desktop-Dienst läuft, 2 Monitore, ") and satz.endswith("Noch keine Aufgabe."), satz
+    _ohne_interna(satz)
+    kennung = echt.start()
+    echt.werkzeug("desktop_task_finish", {"task_id": kennung, "state": "abgebrochen", "result": "x"})
+    satz = antwort_fuer_desktop("desktop_status", True, _umschlag(echt, "desktop_status"), None)
+    assert satz.endswith("Letzte Aufgabe: abgebrochen."), satz
+    satz = antwort_fuer_desktop("desktop_task_status", True, _umschlag(echt, "desktop_task_status", {"task_id": kennung}), None)
+    assert satz == f"Aufgabe „{AUFTRAG}“ ist abgebrochen, 0 Schritte."
+    _ohne_interna(satz)
+
+
+def test_bildschirm_lesen_gekuerzt_und_foto_ohne_pfad():
+    from core.desktop_antwort import MAX_BILDSCHIRM_ZITAT, antwort_fuer_desktop
+    text = "Datei  Bearbeiten\n\nHallo Welt\n" + "x" * 2000
+
+    def umschlag(inhalt):
+        return {"_meta": {"x": 1}, "content": [{"type": "text", "text": json.dumps(inhalt)}], "isError": False}
+
+    satz = antwort_fuer_desktop("desktop_screen_read", True, umschlag({"text": text, "gekuerzt": False}), None)
+    assert satz.startswith("Auf dem Bildschirm steht: „Datei Bearbeiten · Hallo Welt · xxx")
+    assert satz.endswith(f"“ ({len(text)} Zeichen gelesen).") and len(satz) < MAX_BILDSCHIRM_ZITAT + 80
+    assert antwort_fuer_desktop("desktop_screen_read", True, umschlag({"text": " \n "}), None) == \
+        "Auf dem Bildschirm ist kein Text zu lesen."
+    foto = {"pfad": r"C:\Users\jemand\bild.png", "bytes": 1, "sha256": "ab" * 32, "breite": 1920, "hoehe": 1080,
+            "monitor": 1}
+    satz = antwort_fuer_desktop("desktop_screenshot", True, umschlag(foto), None)
+    assert satz == "Bildschirmfoto gemacht (1920×1080)."
+    assert antwort_fuer_desktop("desktop_screenshot", True, umschlag({**foto, "monitor": 2}), None) == \
+        "Bildschirmfoto von Monitor 2 gemacht (1920×1080)."
+
+
+@pytest.mark.parametrize(("fehler", "satz"), [
+    ("desktop.task: nur aus getippter Eingabe", "Das geht nur aus getippter Eingabe."),
+    ("RuntimeError: dienst_nicht_erreichbar", "Der Desktop-Dienst läuft gerade nicht."),
+    ("runtime authority approval pending: zulassung-geheim", "Das wartet noch auf eine Freigabe."),
+    ("desktop.task: es laeuft schon eine Desktop-Aufgabe", "Es läuft schon eine Desktop-Aufgabe. Warte, bis sie fertig ist, oder halte sie an."),
+    (r"not_aus: C:\geheim", "Der Not-Aus ist gesetzt, deshalb wird nichts ausgeführt."),
+    ("{'_meta': 1}", "Das hat am Desktop nicht geklappt."),
+])
+def test_fehler_werden_zu_einem_satz_ohne_rohtext(fehler, satz):
+    from core.desktop_antwort import antwort_fuer_desktop
+    for faehigkeit in ("desktop_status", "desktop_task_start"):
+        assert antwort_fuer_desktop(faehigkeit, False, None, fehler) == satz
+
+
+def test_start_satz_traegt_nur_die_aufgaben_kennung_und_unlesbares_wird_nie_rohtext():
+    from core.desktop_antwort import antwort_fuer_desktop
+    ergebnis = {"task_id": "dt-20261123-120000-abcdef", "zustand": "laeuft", "auftrag": AUFTRAG,
+                "text": "Aufgabe laeuft", "nachweis": LAUFZEIT}
+    satz = antwort_fuer_desktop("desktop_task_start", True, ergebnis, None)
+    assert satz == f"Aufgabe „{AUFTRAG}“ läuft (Kennung dt-20261123-120000-abcdef)."
+    _ohne_interna(satz)
+    roh = {"_meta": {"runtime_admission": 1}, "content": [{"type": "text", "text": "kein json"}]}
+    assert antwort_fuer_desktop("desktop_status", True, roh, None) == "Der Desktop-Dienst hat keine lesbare Antwort gegeben."
+    assert antwort_fuer_desktop("idea.list", True, roh, None) is None
+
+
+def test_die_antwort_des_routers_traegt_space_desktop():
+    from core.plan_executor import _space_des_plans
+    from core.plan_schema import HopSpec, Plan
+    from web.routers import introspection
+
+    for faehigkeit in ("desktop_status", "desktop_task_status", "desktop_screen_read", "desktop_screenshot",
+                       "desktop_task_start"):
+        plan = Plan(plan_id="shortcut_1", intent="x", rationale="x",
+                    hops=[HopSpec(step_id="s1", description="x", capability=faehigkeit)])
+        assert _space_des_plans(plan) == "desktop"  # plan_started
+        lauf = {"ok": False, "executed": {"s1": {"ok": False, "result": None,
+                                                 "error": "RuntimeError: dienst_nicht_erreichbar"}}}
+        fest = introspection._feste_antwort(plan, lauf, False, "", None)
+        assert fest == {"final_text": "Der Desktop-Dienst läuft gerade nicht.", "space": "desktop",
+                        "fehler": "RuntimeError: dienst_nicht_erreichbar"}, faehigkeit
+
+
+def _start_hop():
+    from core.plan_schema import HopSpec
+    return HopSpec(step_id="s1", description="x", capability="desktop_task_start", arg_template="egal",
+                   execution_target="mcp:brain-desktop:spaces-desktop:desktop_task_start")
+
+
+@pytest.mark.parametrize("herkunft", [None, "", "autonom", "gesprochen", "Getippt"])
+def test_ohne_getippte_herkunft_ruft_der_plan_ausfuehrer_den_dienst_gar_nicht(echt, openfang, monkeypatch, herkunft):
+    from core.plan_executor import PlanExecutor
+    monkeypatch.setattr("core.plan_executor.PlanExecutor._capture_kg_hits", lambda *args: [])
+    plan_ctx = {"plan_intent": f"Desktop-Aufgabe: {AUFTRAG}", "plan_id": "plan-desk-1", "trace_id": "trace-1"}
+    if herkunft is not None:
+        plan_ctx["eingabe_herkunft"] = herkunft
+    ergebnis = PlanExecutor()._exec_hop(_start_hop(), {}, plan_ctx)
+    assert (ergebnis.ok, ergebnis.error) == (False, "desktop.task: nur aus getippter Eingabe")
+    assert openfang.zulassungen == [] and openfang.reservierungen == [] and openfang.werkzeuge == []
+    assert list(echt.ordner.glob("*.json")) == []  # kein Eintrag im Aufgabenbuch

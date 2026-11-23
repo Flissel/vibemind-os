@@ -1842,6 +1842,17 @@ class PlanExecutor:
         # ohne den Vorsatz, nie aus dem gerenderten Argument. Eine Aufgabe wird nie doppelt gestartet.
         from .desktop_schleife import ist_aufgabenstart as _ist_desktop_start
         if _ist_desktop_start(target):
+            # Herkunft VOR dem Start: ohne "getippt" kein Aufruf am Werkzeug-Dienst und damit
+            # auch kein Eintrag im Aufgabenbuch.
+            if plan_ctx.get("eingabe_herkunft") != "getippt":
+                return HopResult(
+                    step_id=hop.step_id, ok=False,
+                    error="desktop.task: nur aus getippter Eingabe",
+                    capability=hop.capability, target=target,
+                    rendered_arg=rendered_arg, kg_hits=kg_hits,
+                    elapsed_s=time.time() - t0,
+                    contract_pass=False, reward=-1.0,
+                )
             from .desktop_schleife_contract import auftrag_aus_absicht
             _desktop_auftrag = auftrag_aus_absicht(plan_ctx.get("plan_intent", ""))
             if _desktop_auftrag is None:
