@@ -429,6 +429,37 @@ def test_beschreibung_bleibt_abgelehnt() -> None:
     assert pruefung["rueckweg"] == "abgelehnt" and ideen.aufrufe == []
 
 
+AUSFORMULIERT = ("Für das Stadtfest fragen wir die Stadtwerke als Hauptsponsor an. Hier zahlen sie die Bühne "
+                 "und den Strom. Die Bäckerei fragen wir, ob sie das Frühstück für die Helfer stellt.")
+
+
+def test_fast_gleiches_ergebnis_wird_nicht_geschrieben() -> None:
+    # Lauf 19 (52): schon ausformulierte Karte, Ergebnis mit einem getauschten Wort ("Hier" -> "Dort").
+    from core import auftrag_stand as st
+
+    ideen = Ideen({**KARTE, "content": AUSFORMULIERT})
+    auftrag = _fertig(json.dumps({"text": AUSFORMULIERT.replace("Hier", "Dort")}))
+    auftrag["uebergabe"]["rueckweg"]["stand"] = rw.stand(ideen.karte)
+    pruefung = rw.zurueckschreiben(auftrag, **ideen.anschluss())
+    assert ideen.aufrufe == [] and ideen.karte["content"] == AUSFORMULIERT
+    assert pruefung["rueckweg"] == "abgelehnt" and pruefung["reason"] == "result unchanged"
+    assert pruefung["meldung"] == "Der Agent hat am Text nichts Wesentliches geändert; die Notiz bleibt, wie sie ist."
+    stand = st.stand_einer_zeile({**auftrag, "pruefung": pruefung})
+    assert stand["stand"] == "fehler" and stand["meldung"] == rw.UNVERAENDERT
+
+
+@pytest.mark.parametrize("alt, neu, gleich", [
+    (AUSFORMULIERT, AUSFORMULIERT, True),
+    (AUSFORMULIERT, AUSFORMULIERT.replace("Hier", "Dort"), True),
+    (AUSFORMULIERT, AUSFORMULIERT + " Ein Zelt leihen wir beim Sportverein, falls es regnet.", False),
+    ("Frist bis März", "Die Frist läuft bis Ende März. Bis dahin sammeln wir alle Zusagen.", False),
+    ("Frist bis März", "Frist bis März.", True),
+    ("", "Neu", False),
+])
+def test_fast_gleich_misst_gleiche_woerter_in_gleicher_folge(alt, neu, gleich) -> None:
+    assert rw.fast_gleich(alt, neu) is gleich
+
+
 NACHBAR_BUEHNE = {"id": "a0000002", "title": "Bühnenplan",
                   "content": "Der Aufbau der Bühne beginnt am Freitag um acht Uhr am Marktplatz."}
 ABGESCHRIEBEN = "Die Frist läuft bis Ende März. Der Aufbau der Bühne beginnt am Freitag um acht Uhr."

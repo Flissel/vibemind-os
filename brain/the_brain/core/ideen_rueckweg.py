@@ -560,6 +560,21 @@ def _woerter(text: str) -> list[str]:
     return re.findall(r"\w+", text.casefold())
 
 
+UNVERAENDERT = "Der Agent hat am Text nichts Wesentliches geändert; die Notiz bleibt, wie sie ist."
+GLEICH_ANTEIL = 0.9  # so viel des laengeren Textes (Woerter in Folge) ist gleich: nichts Wesentliches geaendert
+
+
+def fast_gleich(alt: Any, neu: Any) -> bool:
+    """Ob das Ergebnis dem vorhandenen Text fast gleicht (``GLEICH_ANTEIL`` gleiche Woerter in gleicher Folge)."""
+    from difflib import SequenceMatcher
+
+    a, b = _woerter(str(alt or "")), _woerter(str(neu or ""))
+    if not a or not b:
+        return False
+    gleich = sum(block.size for block in SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks())
+    return gleich >= GLEICH_ANTEIL * max(len(a), len(b))
+
+
 def abgeschrieben(satz: str, nachbarn: list[str]) -> bool:
     """Ob der Satz zu ``ABSCHRIFT_ANTEIL`` woertlich (gleiche Woerter in gleicher Folge) in einem Nachbartext steht."""
     from difflib import SequenceMatcher
@@ -709,6 +724,10 @@ def zurueckschreiben(auftrag: Mapping[str, Any], *, lies_karte: Callable[[str], 
                        vorschlag=vorschlag, werte=werte, titel=titel[:200])
         if rueckweg["vertrag"] == "ausformulieren":
             # Erst hier: die Notiz ist unveraendert, also genau die, die der Agent gelesen hat.
+            if fast_gleich(karte.get("content"), werte["text"]):
+                # Lauf 19 (52): eine schon ausformulierte Karte kam mit einem getauschten Wort zurueck,
+                # und die App meldete "ausformuliert".
+                return aus("abgelehnt", False, "result unchanged", UNVERAENDERT)
             satz = ausformulierung_pruefen(karte.get("content"), werte["text"], titel=karte.get("title"),
                                            nachbarn=nachbartexte(rueckweg, lies_nachbarn))
             if satz:
