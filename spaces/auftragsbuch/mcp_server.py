@@ -26,7 +26,7 @@ import os
 import re
 import sys
 import time
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,6 +45,7 @@ from starlette.types import Receive, Scope, Send
 
 from spaces.auftragsbuch import werkzeuge
 from spaces.auftragsbuch.db import Abgelehnt, Buch, PgBuch
+from spaces.auftragsbuch.rowboat.rpc import RowboatRpc
 from spaces.auftragsbuch.vertrag import FormFehler, lade_auftragsarten
 
 log = logging.getLogger("auftragsbuch")
@@ -125,7 +126,8 @@ class _AsgiRoute:
         await self._ziel(scope, receive, send)
 
 
-def app_bauen(buch: Buch, arten: dict, schluessel_hash: str, zusatz_hosts: Sequence[str]) -> Starlette:
+def app_bauen(buch: Buch, arten: dict, schluessel_hash: str, zusatz_hosts: Sequence[str],
+              leser: Callable[[str, object], object] | None = None) -> Starlette:
     """Baut die App. `schluessel_hash` ist der sha256-Hex des erlaubten Bearer-Schluessels."""
     soll_hash = schluessel_hash.strip().lower()
     if _HASH.fullmatch(soll_hash) is None:
@@ -136,7 +138,7 @@ def app_bauen(buch: Buch, arten: dict, schluessel_hash: str, zusatz_hosts: Seque
     server: Server[Any, Any] = Server("auftragsbuch")
 
     def ausfuehren(name: str, argumente: dict) -> str:
-        return json.dumps(werkzeuge.ausfuehren(name, argumente, buch, arten),
+        return json.dumps(werkzeuge.ausfuehren(name, argumente, buch, arten, leser),
                           ensure_ascii=False, default=str)
 
     async def tools_list(_anfrage: types.ListToolsRequest) -> types.ServerResult:
@@ -217,6 +219,8 @@ class Konfiguration:
     host: str
     port: int
     zusatz_hosts: tuple[str, ...] = ()
+    rowboat_url: str = ""
+    rowboat_schluessel_datei: str = ""
 
     def __repr__(self) -> str:  # DSN und Hash nie ausgeben
         return (f"Konfiguration(laden={self.laden!r}, mandant={self.mandant!r},"
@@ -260,7 +264,22 @@ def konfiguration(umgebung: Mapping[str, str] | None = None) -> Konfiguration:
     host = env.get("AUFTRAGSBUCH_HOST", "").strip() or HOST_VORGABE
     zusatz_roh = env.get("AUFTRAGSBUCH_ZUSATZ_HOSTS", "").strip()
     zusatz = zusatz_hosts_pruefen(zusatz_roh.split(",")) if zusatz_roh else ()
-    return Konfiguration(dsn, hash_wert, laden, mandant, ordner, host, port, zusatz)
+    return Konfiguration(dsn, hash_wert, laden, mandant, ordner, host, port, zusatz,
+                         env.get("AUFTRAGSBUCH_ROWBOAT_URL", "").strip(),
+                         env.get("AUFTRAGSBUCH_ROWBOAT_SCHLUESSEL_DATEI", "").strip())
+
+
+def rowboat_leser(k: Konfiguration) -> Callable[[str, object], object] | None:
+    """Leser fuer den Beleg; ohne oder mit ungueltiger Einstellung `None` (dann nicht_pruefbar)."""
+    if not k.rowboat_url or not k.rowboat_schluessel_datei:
+        if k.rowboat_url or k.rowboat_schluessel_datei:
+            log.warning("rowboat-beleg=aus grund=unvollstaendig")
+        return None
+    try:
+        return RowboatRpc(k.rowboat_url, Path(k.rowboat_schluessel_datei)).aufruf
+    except ValueError as e:
+        log.warning("rowboat-beleg=aus grund=%s", e)  # feste Texte ohne Werte
+        return None
 
 
 def log_einrichten(strom: TextIO | None = None) -> None:
@@ -303,7 +322,8 @@ def main(umgebung: Mapping[str, str] | None = None) -> None:
     except Exception as e:  # noqa: BLE001 - die Meldung der Bibliothek kann die DSN nennen
         raise SystemExit(f"auftragsbuch: Datenbank nicht erreichbar ({type(e).__name__})") from None
     try:
-        app = app_bauen(PgBuch(pool, k.laden, k.mandant), arten, k.schluessel_hash, k.zusatz_hosts)
+        app = app_bauen(PgBuch(pool, k.laden, k.mandant), arten, k.schluessel_hash, k.zusatz_hosts,
+                        rowboat_leser(k))
     except ValueError as e:
         raise SystemExit(f"auftragsbuch: {e}") from None
     import uvicorn

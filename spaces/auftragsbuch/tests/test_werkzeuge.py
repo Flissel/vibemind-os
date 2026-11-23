@@ -118,14 +118,14 @@ def test_probe_nicht_erledigt_ist_interner_fehler(buch):
 def test_lesen_gibt_die_felder_des_vertrags(buch):
     kennung = str(uuid.uuid4())
     buch.zeilen[kennung] = {
-        "id": kennung, "an": "sales", "art": "post_pruefen", "art_version": 1, "stand": "fertig",
+        "id": kennung, "an": "sales", "art": "kontakt_finden", "art_version": 1, "stand": "offen",
         "ergebnis": {"a": 1}, "fehler": None, "plan_id": "p", "frist_bis": "2026-11-22T10:00:00+00:00",
         "eingabe": {"geheim": 1}, "von": "brain",
     }
     r = ausfuehren("auftrag_lesen", {"id": kennung.upper()}, buch, ARTEN)
-    assert r == {"auftrag_id": kennung, "an": "sales", "art": "post_pruefen", "version": 1,
-                 "stand": "fertig", "ergebnis": {"a": 1}, "fehler": None, "plan_id": "p",
-                 "frist_bis": "2026-11-22T10:00:00+00:00"}
+    assert r == {"auftrag_id": kennung, "an": "sales", "art": "kontakt_finden", "version": 1,
+                 "stand": "offen", "ergebnis": {"a": 1}, "fehler": None, "plan_id": "p",
+                 "frist_bis": "2026-11-22T10:00:00+00:00", "beleg": "entfaellt"}
 
 
 def test_lesen_fremd_und_unbekannt_sind_gleich(buch):
@@ -243,3 +243,67 @@ def test_ablehnungstexte_stehen_woertlich_in_der_sql_datei():
     assert len(db.ABLEHNUNGSTEXTE) == 6
     for text in db.ABLEHNUNGSTEXTE:
         assert f"RAISE EXCEPTION '{text}'" in sql
+
+
+# --- Lesen: Form und Beleg ------------------------------------------------------------
+
+PUNKT = "0123456789abcdef"
+
+
+def _fertig(buch, an, art, version, ergebnis):
+    kennung = str(uuid.uuid4())
+    buch.zeilen[kennung] = {
+        "id": kennung, "an": an, "art": art, "art_version": version, "stand": "fertig",
+        "ergebnis": ergebnis, "fehler": None, "plan_id": None, "frist_bis": None, "eingabe": {},
+    }
+    return kennung
+
+
+def _todo(*texte):
+    return {"list": {"blocks": [{"kind": "item", "item": {"key": "k", "text": t, "checked": False}}
+                                for t in texte]}, "suggestions": []}
+
+
+def test_lesen_falsche_form_ohne_inhalt(buch):
+    kennung = _fertig(buch, "rowboat", "vorschlaege_anlegen", 2,
+                      {"punkte": [{"punkt_id": "x", "stand": "neu", "titel": "geheim"}]})
+    r = ausfuehren("auftrag_lesen", {"id": kennung}, buch, ARTEN)
+    assert (r["stand"], r["fehler"], r["ergebnis"]) == ("fehler", "Ergebnis in falscher Form", None)
+    assert "geheim" not in str(r)
+
+
+def test_lesen_falsche_version_ist_falsche_form(buch):
+    kennung = _fertig(buch, "rowboat", "vorschlaege_anlegen", 1, {"punkte": []})
+    assert ausfuehren("auftrag_lesen", {"id": kennung}, buch, ARTEN)["stand"] == "fehler"
+
+
+def test_lesen_beleg_bestaetigt(buch):
+    kennung = _fertig(buch, "rowboat", "vorschlaege_anlegen", 2,
+                      {"punkte": [{"punkt_id": PUNKT, "stand": "neu"}]})
+    r = ausfuehren("auftrag_lesen", {"id": kennung}, buch, ARTEN,
+                   lambda kanal, koerper: _todo(f"Etwas  tun #{PUNKT.upper()}"))
+    assert r["beleg"] == "bestaetigt" and r["stand"] == "fertig"
+
+
+def test_lesen_beleg_nicht_bestaetigt(buch):
+    kennung = _fertig(buch, "rowboat", "vorschlaege_anlegen", 2,
+                      {"punkte": [{"punkt_id": PUNKT, "stand": "neu"}]})
+    r = ausfuehren("auftrag_lesen", {"id": kennung}, buch, ARTEN,
+                   lambda kanal, koerper: _todo("Etwas #ffffffffffffffff"))
+    assert r["beleg"] == "nicht_bestaetigt"
+
+
+def test_lesen_beleg_nicht_pruefbar(buch):
+    kennung = _fertig(buch, "rowboat", "vorschlaege_anlegen", 2,
+                      {"punkte": [{"punkt_id": PUNKT, "stand": "neu"}]})
+
+    def leser(kanal, koerper):
+        raise RuntimeError("kaputt")
+
+    assert ausfuehren("auftrag_lesen", {"id": kennung}, buch, ARTEN, leser)["beleg"] == "nicht_pruefbar"
+    assert ausfuehren("auftrag_lesen", {"id": kennung}, buch, ARTEN)["beleg"] == "nicht_pruefbar"
+
+
+def test_beleg_entfaellt_bei_form():
+    from spaces.auftragsbuch.belege import beleg
+    assert beleg(ARTEN[("sales", "kontakt_finden")], {}, {}, None) == "entfaellt"

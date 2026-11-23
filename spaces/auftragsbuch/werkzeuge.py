@@ -5,12 +5,17 @@ Fehler tragen nie Werte aus der Anfrage (nur Regel und Feldpfad).
 """
 from __future__ import annotations
 
+import logging
 import re
 import uuid
+from collections.abc import Callable
 
+from spaces.auftragsbuch import belege
 from spaces.auftragsbuch.db import Buch
 from spaces.auftragsbuch.gleichstand import FESTE_WERKZEUGE
-from spaces.auftragsbuch.vertrag import FormFehler, pruefe_eingabe, vertrag_hash, werkzeugname
+from spaces.auftragsbuch.vertrag import FormFehler, pruefe_eingabe, pruefe_ergebnis, vertrag_hash, werkzeugname
+
+log = logging.getLogger("auftragsbuch")
 
 _PLAN_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _PLAN_ID_SCHEMA = {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"}
@@ -96,7 +101,8 @@ def _probe(argumente: object, buch: Buch, arten: dict) -> dict:
     return {"auftrag_id": auftrag_id, "stand": "fertig", "vertrag_hash": vertrag_hash(arten)}
 
 
-def _lesen(argumente: object, buch: Buch) -> dict:
+def _lesen(argumente: object, buch: Buch, arten: dict,
+           leser: Callable[[str, object], object] | None) -> dict:
     daten = _argumente_pruefen(argumente, {"id"}, {"id"})
     roh = daten["id"]
     if not isinstance(roh, str):
@@ -108,20 +114,40 @@ def _lesen(argumente: object, buch: Buch) -> dict:
     zeile = buch.lesen(kennung)
     if zeile is None:
         raise NichtGefunden()
-    return {
+    antwort = {
         "auftrag_id": zeile.get("id"), "an": zeile.get("an"), "art": zeile.get("art"),
         "version": zeile.get("art_version"), "stand": zeile.get("stand"),
         "ergebnis": zeile.get("ergebnis"), "fehler": zeile.get("fehler"),
         "plan_id": zeile.get("plan_id"), "frist_bis": zeile.get("frist_bis"),
     }
+    art = arten.get((zeile.get("an"), zeile.get("art")))
+    if art is None:
+        antwort["beleg"] = belege.ENTFAELLT
+        return antwort
+    if antwort["stand"] != "fertig":
+        antwort["beleg"] = belege.ENTFAELLT if art.nachpruefung == "form" else belege.NICHT_PRUEFBAR
+        return antwort
+    try:
+        if zeile.get("art_version") != art.version:
+            raise FormFehler("ergebnis: andere Version")
+        pruefe_ergebnis(art, antwort["ergebnis"])
+    except FormFehler:
+        log.info("auftrag=%s art=%s stand=falsche_form", kennung[:8], art.art)
+        antwort.update(stand="fehler", fehler="Ergebnis in falscher Form", ergebnis=None,
+                       beleg=belege.NICHT_PRUEFBAR)
+        return antwort
+    antwort["beleg"] = belege.beleg(art, zeile.get("eingabe") or {}, antwort["ergebnis"], leser)
+    log.info("auftrag=%s art=%s beleg=%s", kennung[:8], art.art, antwort["beleg"])
+    return antwort
 
 
-def ausfuehren(name: str, argumente: dict, buch: Buch, arten: dict) -> dict:
+def ausfuehren(name: str, argumente: dict, buch: Buch, arten: dict,
+               leser: Callable[[str, object], object] | None = None) -> dict:
     """Fuehrt ein Werkzeug aus. NichtGefunden, FormFehler und db.Abgelehnt gehen an den Aufrufer."""
     if name == "auftrag_probe":
         return _probe(argumente, buch, arten)
     if name == "auftrag_lesen":
-        return _lesen(argumente, buch)
+        return _lesen(argumente, buch, arten, leser)
     art = next((a for a in arten.values() if werkzeugname(a) == name), None)
     if art is None:
         raise NichtGefunden()
