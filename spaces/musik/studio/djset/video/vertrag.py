@@ -13,6 +13,10 @@ from djset.video.laenge import VideoFehler
 from djset.video.zuschnitt import Einstieg
 
 
+# Lauras Obergrenze fuer das Label eines audio-clips.
+LABEL_MAX = 200
+
+
 class VideoWahl(BaseModel):
     song_id: str = Field(min_length=1)
     einstieg: Einstieg
@@ -29,7 +33,7 @@ class LauraClip(BaseModel):
     fade_out_frames: int = Field(default=0, ge=0)
     mix_mode: Literal["mix", "replace_original", "mute_original"] = "mix"
     ducking_percent: int = Field(default=100, ge=0, le=100)
-    label: str
+    label: str = Field(max_length=LABEL_MAX)
 
     @model_validator(mode="after")
     def _ende_nach_anfang(self) -> "LauraClip":
@@ -85,5 +89,6 @@ def laura_clip(frames: int, fps_num: int, fps_den: int, label: str) -> LauraClip
         raise VideoFehler(f"Ungueltige Framezahl {frames}")
     if fps_num <= 0 or fps_den <= 0:
         raise VideoFehler(f"Ungueltige Bildrate {fps_num}/{fps_den}")
-    return LauraClip(seq_out_frame_exclusive=frames, label=label)
+    # Ein langer Songtitel darf den Lauf nicht mit Exit 1 abbrechen: auf Lauras Grenze kuerzen.
+    return LauraClip(seq_out_frame_exclusive=frames, label=label[:LABEL_MAX])
 

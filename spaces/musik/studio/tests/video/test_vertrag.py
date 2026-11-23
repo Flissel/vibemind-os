@@ -72,3 +72,10 @@ def test_laura_clip_lehnt_nichtpositive_frames_mit_videofehler_ab(frames):
     with pytest.raises(VideoFehler) as fehler:
         laura_clip(frames, 30, 1, "x")
     assert str(frames) in str(fehler.value)
+
+
+def test_langer_titel_wird_auf_laura_grenze_gekuerzt():
+    clip = laura_clip(900, 30, 1, "T" * 250)
+    assert len(clip.label) == 200
+    with pytest.raises(ValidationError):
+        LauraClip(seq_out_frame_exclusive=10, label="T" * 201)
