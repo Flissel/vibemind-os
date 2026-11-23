@@ -6764,30 +6764,30 @@
       },
       {
         "event": "idea.summarize",
-        "tool_hint": "db_ideas_update",
+        "tool_hint": null,
         "required_params": [
-          "idea_id"
+          "bubble_id"
         ]
       },
       {
         "event": "idea.whitepaper",
-        "tool_hint": "db_ideas_update",
+        "tool_hint": null,
         "required_params": [
-          "idea_id"
+          "bubble_id"
         ]
       },
       {
         "event": "idea.expand",
-        "tool_hint": "db_ideas_update",
+        "tool_hint": null,
         "required_params": [
-          "idea_id"
+          "id"
         ]
       },
       {
         "event": "idea.explain",
-        "tool_hint": "db_ideas_list",
+        "tool_hint": null,
         "required_params": [
-          "idea_id"
+          "id"
         ]
       },
       {
@@ -6804,13 +6804,6 @@
         "event": "idea.explore.stop",
         "tool_hint": "db_ideas_update",
         "required_params": []
-      },
-      {
-        "event": "idea.generate_doc",
-        "tool_hint": "db_ideas_update",
-        "required_params": [
-          "idea_id"
-        ]
       },
       {
         "event": "idea.to_project",
@@ -6840,7 +6833,6 @@
       "idea.format_pros_cons",
       "idea.format_specs",
       "idea.format_table",
-      "idea.generate_doc",
       "idea.list",
       "idea.summarize",
       "idea.update",

@@ -38,7 +38,7 @@ class Recorder:
 class IdeaFormatTests(unittest.TestCase):
     def test_format_keeps_text_and_remembers_the_previous_format(self) -> None:
         server = load_server()
-        node = {"id": "n1", "title": "Preise", "content": "A 1\nB 2", "node_type": "note",
+        node = {"id": "n1", "title": "Preise", "content": "A;1\nB;2", "node_type": "note",
                 "content_json": None, "previous_content_json": None}
         request = Recorder({
             ("GET", "canvas_nodes"): [node],
@@ -50,8 +50,9 @@ class IdeaFormatTests(unittest.TestCase):
         (patch,) = request.of("PATCH", "canvas_nodes")
         self.assertEqual(patch["params"], {"id": "eq.n1"})
         self.assertEqual(patch["body"]["format_schema"], {"type": "table"})
-        self.assertEqual(patch["body"]["content_json"], {"type": "table", "title": "Preise", "text": "A 1\nB 2"})
-        self.assertEqual(patch["body"]["previous_content_json"], {"type": "note", "text": "A 1\nB 2"})
+        self.assertEqual(patch["body"]["content_json"], {"type": "table", "title": "Preise", "text": "A;1\nB;2",
+                                                               "columns": ["A", "1"], "rows": [["B", "2"]]})
+        self.assertEqual(patch["body"]["previous_content_json"], {"type": "note", "text": "A;1\nB;2"})
         self.assertIn("last_formatted", patch["body"])
         self.assertNotIn("content", patch["body"])
         self.assertEqual(result["format_schema"], {"type": "table"})

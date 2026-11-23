@@ -70,7 +70,8 @@ def _mit(**aenderung):
     ("Gib der Notiz Druckerei 40 Punkte", "idea.rate", {"id": "a0000002", "score": 40}),
     ("Bewerte die Bubble Messe mit 70", "bubble.rate", {"id": "b0b1e001", "score": 70}),
     ("Begründung: Preise und Druckerei tragen die Idee", "idea.rate_reason",
-     {"bubble_id": "b0b1e001", "text": "Preise und Druckerei tragen die Idee"}),
+     # Die genannten Karten gehoeren dazu (White-Paper-Zusatz 2: im Betrieb stand karten: []).
+     {"bubble_id": "b0b1e001", "text": "Preise und Druckerei tragen die Idee", "idea_ids": ["a0000001", "a0000002"]}),
     ("Halt als Begründung fest, dass der Stand zu klein ist", "idea.rate_reason",
      {"bubble_id": "b0b1e001", "text": "der Stand zu klein ist"}),
     ("Mach aus der Bubble Messe ein Projekt", "bubble.promote", {"bubble_id": "b0b1e001"}),
@@ -201,7 +202,8 @@ def test_unbekannte_notiz_ergibt_eine_gezielte_rueckfrage() -> None:
 # ── was die Abkuerzung bewusst NICHT nimmt ───────────────────────────────
 
 @pytest.mark.parametrize("satz", [
-    "Ordne die Notizen nach Thema",          # braucht ein Modell
+    # "Ordne die Notizen nach Thema" sagt seit Arbeitslauf 2 ehrlich "Das kann ich noch nicht"
+    # (tests/test_ideen_lesen_gruppieren.py).
     # "Was hältst du von dieser Notiz?" ist seit 23.11.2026 idea.explain mit der Karte aus
     # dem Kontext (Rueckweg, test_modellfunktionen_tragen_die_karte_aus_dem_kontext).
     # Ohne genannte Karte bleibt der Satz beim bisherigen Weg:
@@ -512,6 +514,7 @@ def test_zu_viele_karten_vom_werkzeug_wird_ein_satz_mit_zahl() -> None:
     "RuntimeError: boom",
     "Idea '' not found.",
     "Ideen-Werkzeug meldet einen Fehler (idea_format_no_content)",
+    "Ideen-Werkzeug meldet einen Fehler (idea_format_table_no_columns)",
 ])
 def test_fehlersaetze_sind_deutsch_und_ohne_rohtext(fehler) -> None:
     satz = abk.fehlersatz(fehler, "idea_expand")

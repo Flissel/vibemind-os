@@ -43,6 +43,14 @@ _FORMAT_NAMEN = {
 }
 _FORMAT = "(?P<format>" + "|".join(muster for muster, _ in _FORMATWORTE) + ")"
 _ARTIKEL = r"(?:eine[nrm]?\s+|als\s+)?"
+# White Paper (core/ideen_dokument). Die Knoepfe der App senden
+# "Erstelle ein White Paper aus dieser Bubble" und "Fasse diese Bubble zusammen".
+_WP = r"(?:white[\s-]?paper|whitepaper)"
+_WP_SATZ = (rf"(?:erstell(?:e)?|mach(?:e)?|schreib(?:e)?)\s+(?:mir\s+)?(?:ein|das)\s+{_WP}"
+            r"(?:\s+(?:aus|zu|über|ueber|für|fuer|von)\s+(?:(?:dieser|diese|der|die|dem)\s+bubble"
+            r"|der\s+bubble\s+(?P<b>.+?)|(?P<n>.+?)))?"
+            r"(?:\s+mit\s+bis\s+zu\s+(?P<z>\d{1,3})\s+l(?:ä|ae)ufen)?")
+_WP_ABBRUCH = rf"(?:brich|breche)\s+das\s+{_WP}\s+ab|stopp(?:e)?\s+das\s+{_WP}"
 _KARTE = r"(?:(?:die|der|das)\s+)?(?:notiz|karte|idee)\s+"
 
 
@@ -115,7 +123,57 @@ def _format_aus(wort: str) -> Optional[str]:
 
 
 class _Rueckfrage(Exception):
-    pass
+    """Rueckfrage an den Menschen. Mit ``kandidaten`` (Karten) und ``name`` (der genannte
+    Name) wird sie als offene Rueckfrage gemerkt: die naechste Antwort ("die zweite",
+    "2", ein Titel) loest dann genau diesen Namen auf und fuehrt den ersten Satz aus."""
+
+    def __init__(self, text: str, *, kandidaten: Optional[list] = None, name: Optional[str] = None) -> None:
+        super().__init__(text)
+        self.kandidaten = [k for k in (kandidaten or []) if isinstance(k, dict) and ist_kennung(k.get("id"))]
+        self.name = name
+
+
+# ── Offene Rueckfragen (Arbeitslauf 2: "die zweite" ging an den Chat und kam als
+#    Lexikontext zurueck). Gemerkt je offener Bubble im Prozess des Gehirns, kurz.
+OFFEN_GILT_S = 300.0
+_OFFEN: dict[str, dict] = {}
+_ORDNUNG = {"erste": 1, "ersten": 1, "zweite": 2, "zweiten": 2, "dritte": 3, "dritten": 3, "vierte": 4,
+            "vierten": 4, "fünfte": 5, "fuenfte": 5, "fünften": 5, "sechste": 6, "sechsten": 6, "siebte": 7,
+            "siebten": 7, "achte": 8, "achten": 8, "neunte": 9, "neunten": 9, "zehnte": 10, "zehnten": 10}
+
+
+def _offen_schluessel(kontext: dict) -> str:
+    bubble = kontext.get("bubble") if isinstance(kontext.get("bubble"), dict) else {}
+    return str(bubble.get("id")) if ist_kennung(bubble.get("id")) else "-"
+
+
+def _wahl(text: str, kandidaten: list[dict]) -> Optional[int]:
+    """Index der gewaehlten Karte, ``-1`` = sieht aus wie eine Antwort, passt aber nicht,
+    ``None`` = keine Antwort auf die Rueckfrage (ein neuer Satz)."""
+    roh = _normal(text)
+    if len(roh) > 80 or len(roh.split()) > 8:
+        return None
+    kern = re.sub(rf"^(?:(?:die|den|das|der|nimm|nehme|ich\s+meine|meine|gemeint\s+ist)\s+)+", "", roh)
+    kern = re.sub(r"\s+(?:notiz|karte)$", "", kern).strip()
+    m = re.fullmatch(r"(?:nummer|nr\.?|#)?\s*(\d{1,2})\.?", kern)
+    if m:
+        n = int(m.group(1))
+        return n - 1 if 1 <= n <= len(kandidaten) else -1
+    if kern in _ORDNUNG:
+        n = _ORDNUNG[kern]
+        return n - 1 if n <= len(kandidaten) else -1
+    if kern in ("letzte", "letzten"):
+        return len(kandidaten) - 1
+    titel = [_vergleich(k.get("title")) for k in kandidaten]
+    if kern in titel and titel.count(kern) == 1:
+        return titel.index(kern)
+    teil = [i for i, t in enumerate(titel) if kern and kern in t]
+    if len(teil) == 1:
+        return teil[0]
+    if teil:
+        return -1
+    # Kurz und ohne Frage: eher eine Antwort, die nicht passt, als ein neuer Satz.
+    return -1 if len(kern.split()) <= 3 and "?" not in text else None
 
 
 def _karten(kontext: dict) -> list[dict]:
@@ -141,6 +199,10 @@ def _karte(name: str, kontext: dict) -> dict:
     karten = _karten(kontext)
     nach_id = {k["id"]: k for k in karten}
     wort = _normal(re.sub(rf"^{_KARTE}", "", name.strip(), flags=_I))
+    gewaehlt = kontext.get("_gewaehlt")
+    if isinstance(gewaehlt, dict) and wort in gewaehlt:
+        # Antwort auf eine offene Rueckfrage: genau diese Karte fuer genau diesen Namen.
+        return gewaehlt[wort]
     if wort in ("das", "die", "sie", "es", "diese", "dies", "die letzte", "die letzte notiz", "die letzte karte",
                 "die notiz", "die karte", "diese notiz", "diese karte", "die markierte", "die auswahl",
                 "dieser notiz", "dieser karte", "der notiz", "der karte", "dem", "der", "ihr", "ihm"):
@@ -148,7 +210,10 @@ def _karte(name: str, kontext: dict) -> dict:
         if len(auswahl) == 1:
             return nach_id.get(auswahl[0], {"id": auswahl[0], "title": ""})
         if len(auswahl) > 1:
-            raise _Rueckfrage(f"Es sind {len(auswahl)} Karten markiert. Welche meinst du?")
+            markiert = [nach_id.get(i, {"id": i, "title": ""}) for i in auswahl]
+            raise _Rueckfrage(f"Es sind {len(auswahl)} Karten markiert: "
+                              f"{_aufzaehlung([k.get('title') for k in markiert])}. Welche meinst du?",
+                              kandidaten=markiert, name=wort)
         zuletzt = kontext.get("last_id")
         if ist_kennung(zuletzt):
             return nach_id.get(zuletzt, {"id": zuletzt, "title": ""})
@@ -161,7 +226,8 @@ def _karte(name: str, kontext: dict) -> dict:
     if len(treffer) == 1:
         return treffer[0]
     if len(treffer) > 1:
-        raise _Rueckfrage(f"Es gibt {len(treffer)} Notizen mit dem Titel „{genannt}“. Markiere die gemeinte.")
+        raise _Rueckfrage(f"Es gibt {len(treffer)} Notizen mit dem Titel „{genannt}“. Markiere die gemeinte "
+                          "oder sag „die erste“, „die zweite“ …", kandidaten=treffer, name=wort)
     # 2. gekuerzter Titel im Kontext (80 Zeichen + "…"): der genannte Name beginnt mit
     #    dem Anfang. Die Kennung zaehlt, nicht der ganze Titel.
     treffer = [k for k in karten if _gekuerzt(k.get("title"))
@@ -177,7 +243,8 @@ def _karte(name: str, kontext: dict) -> dict:
             return treffer[0]
         if len(treffer) > 1:
             raise _Rueckfrage(f"Zu „{genannt}“ passen {len(treffer)} Notizen: "
-                              f"{_aufzaehlung([k.get('title') for k in treffer])}. Welche meinst du?")
+                              f"{_aufzaehlung([k.get('title') for k in treffer])}. Welche meinst du?",
+                              kandidaten=treffer, name=wort)
     roh = kontext.get("cards")
     if isinstance(roh, list) and any(
             isinstance(k, dict) and not ist_kennung(k.get("id")) and _normal(k.get("title")) == wort for k in roh):
@@ -275,6 +342,29 @@ def _zahl(text: str) -> int:
     return wert
 
 
+def karten_im_text(text: str, kontext: dict) -> list[str]:
+    """Kennungen der Karten, deren Titel woertlich im Satz steht (Reihenfolge im Satz).
+
+    Laengere Titel zuerst ("Sponsoren Liste" vor "Sponsoren"); ein Titel, den mehrere
+    Karten tragen, loest nichts auf (geraten wird nie). Titel unter drei Zeichen zaehlen nicht.
+    """
+    karten = [k for k in _karten(kontext) if isinstance(k.get("title"), str) and len(k["title"].strip()) >= 3]
+    zaehler: dict[str, int] = {}
+    for k in karten:
+        zaehler[_normal(k["title"])] = zaehler.get(_normal(k["title"]), 0) + 1
+    rest, gefunden = text, []
+    for k in sorted(karten, key=lambda k: -len(k["title"].strip())):
+        titel = k["title"].strip()
+        muster = re.compile(r"(?<!\w)" + re.escape(titel).replace(r"\ ", r"\s+") + r"(?!\w)", _I)
+        treffer = muster.search(rest)
+        if not treffer:
+            continue
+        rest = rest[:treffer.start()] + " " * (treffer.end() - treffer.start()) + rest[treffer.end():]
+        if zaehler[_normal(titel)] == 1:
+            gefunden.append((treffer.start(), k["id"]))
+    return [i for _, i in sorted(gefunden)]
+
+
 def _treffer(ereignis: str, argumente: dict, antwort: str, capability: Optional[str] = None) -> dict:
     return {"ereignis": ereignis, "capability": capability or ereignis, "argumente": argumente, "antwort": antwort}
 
@@ -291,12 +381,69 @@ def loese(satz: Any, kontext: Any) -> Optional[dict]:
     text = re.sub(r"\s+", " ", satz).strip().rstrip(".!")
     if not text or len(text) > 4000:
         return None
+    schluessel = _offen_schluessel(kontext)
     try:
+        offen = _OFFEN.get(schluessel)
+        if offen is not None and _jetzt() - offen["zeit"] > OFFEN_GILT_S:
+            _OFFEN.pop(schluessel, None)
+            offen = None
+        if offen is not None:
+            antwort = _auf_rueckfrage(text, offen, kontext)
+            if antwort is not None:
+                return antwort
+        _OFFEN.pop(schluessel, None)
         return _loese(text, kontext)
     except _Rueckfrage as frage:
+        _merken(schluessel, text, frage)
         return {"rueckfrage": str(frage)}
     except Exception:
         return None
+
+
+def _jetzt() -> float:
+    import time
+    return time.monotonic()
+
+
+def _merken(schluessel: str, text: str, frage: _Rueckfrage) -> None:
+    if len(frage.kandidaten) >= 2 and frage.name is not None:
+        _OFFEN[schluessel] = {"satz": text, "name": frage.name, "kandidaten": frage.kandidaten,
+                              "frage": str(frage), "zeit": _jetzt()}
+    else:
+        _OFFEN.pop(schluessel, None)
+
+
+def _auf_rueckfrage(text: str, offen: dict, kontext: dict) -> Optional[dict]:
+    """Antwort auf die offene Rueckfrage: ``None`` = keine Antwort (neuer Satz, offen verfaellt)."""
+    wahl = _wahl(text, offen["kandidaten"])
+    if wahl is None:
+        return None
+    if wahl < 0:
+        # Ein fester Satz geht immer vor; sonst noch einmal fragen, mit den Kandidaten.
+        try:
+            neu = _loese(text, kontext)
+        except _Rueckfrage:
+            neu = None
+        if neu is not None:
+            _OFFEN.pop(_offen_schluessel(kontext), None)
+            return neu
+        titel = [k.get("title") for k in offen["kandidaten"]]
+        nummern = "; ".join(f"{n}. „{re.sub(chr(10), ' ', str(t or 'ohne Titel'))[:60]}“"
+                            for n, t in enumerate(titel[:9], start=1))
+        offen["zeit"] = _jetzt()
+        return {"rueckfrage": f"Das passt zu keiner. Welche meinst du? {nummern}"}
+    schluessel = _offen_schluessel(kontext)
+    _OFFEN.pop(schluessel, None)
+    gewaehlt = {**offen.get("gewaehlt", {}), offen["name"]: offen["kandidaten"][wahl]}
+    try:
+        return _loese(offen["satz"], {**kontext, "_gewaehlt": gewaehlt})
+    except _Rueckfrage as frage:
+        # Ein zweiter Name im selben Satz ist auch unklar ("Verbinde A mit B"): weiter fragen,
+        # die erste Wahl bleibt.
+        _merken(schluessel, offen["satz"], frage)
+        if schluessel in _OFFEN:
+            _OFFEN[schluessel]["gewaehlt"] = gewaehlt
+        return {"rueckfrage": str(frage)}
 
 
 def _loese(text: str, kontext: dict) -> Optional[dict]:
@@ -306,6 +453,8 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
     if m:
         argumente: dict[str, Any] = {"bubble_id": _offene_bubble(kontext), "text": m.group("t").strip()}
         auswahl = [i for i in kontext.get("selection") or [] if ist_kennung(i)]
+        # Karten, die der Satz beim Titel nennt, gehoeren dazu (im Betrieb stand sonst karten: []).
+        auswahl += karten_im_text(argumente["text"], kontext)
         if auswahl:
             argumente["idea_ids"] = list(dict.fromkeys(auswahl))[:20]
         return _treffer("idea.rate_reason", argumente, "Begründung festgehalten.")
@@ -364,6 +513,46 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
     if m:
         karte = _karte(m.group("k"), kontext)
         return _treffer("idea.explain", {"id": karte["id"]}, "", capability="idea_explain")
+
+    # ── Zusammenfassung und White Paper (core/ideen_dokument): Bubble hier aufloesen,
+    #    Karten, Wurzel, Teile und Budget prueft das Gehirn beim Anlegen des Auftrags.
+    if re.fullmatch(_WP_ABBRUCH, text, _I):
+        offen = kontext.get("bubble") if isinstance(kontext.get("bubble"), dict) else None
+        bubble_id = offen.get("id") if offen and ist_kennung(offen.get("id")) else None
+        return _treffer("idea.whitepaper_abbrechen", {"bubble_id": bubble_id}, "")
+    if re.fullmatch(r"fasse\s+(?:die\s+)?markierten\s+(?:karten|notizen)\s+zusammen", text, _I):
+        auswahl = list(dict.fromkeys(i for i in kontext.get("selection") or [] if ist_kennung(i)))
+        if len(auswahl) < 2:
+            raise _Rueckfrage("Markiere mindestens zwei Karten, dann fasse ich sie zusammen.")
+        return _treffer("idea.summarize", {"bubble_id": _offene_bubble(kontext), "idea_ids": auswahl[:200]},
+                        "", capability="idea_summarize")
+    m = re.fullmatch(r"fasse\s+(?:(?:diese|die)\s+bubble|die\s+bubble\s+(?P<b>.+?)|(?P<n>.+?))\s+zusammen", text, _I)
+    if m:
+        bubble = _bubble(m.group("b") or m.group("n"), kontext)
+        return _treffer("idea.summarize", {"bubble_id": bubble["id"]}, "", capability="idea_summarize")
+    m = re.fullmatch(_WP_SATZ, text, _I)
+    if m:
+        bubble = _bubble(m.group("b") or m.group("n"), kontext)
+        argumente = {"bubble_id": bubble["id"]}
+        if m.group("z"):
+            laeufe = int(m.group("z"))
+            if not 1 <= laeufe <= 30:
+                raise _Rueckfrage("Ein White Paper darf 1 bis 30 Läufe brauchen.")
+            argumente["max_laeufe"] = laeufe
+        return _treffer("idea.whitepaper", argumente, "", capability="idea_whitepaper")
+
+    # ── Wurzel der Bubble festlegen (fuer das White Paper, geht der berechneten vor) ──
+    if re.fullmatch(r"(?:l(?:ö|oe)sch(?:e)?|entfern(?:e)?)\s+die\s+(?:feste|festgelegte|gesetzte)?\s*wurzel"
+                    r"(?:\s+(?:dieser|der)\s+bubble)?|keine\s+feste\s+wurzel(?:\s+mehr)?", text, _I):
+        return _treffer("idea.root", {"bubble_id": _offene_bubble(kontext)},
+                        "Die festgelegte Wurzel ist weg; das White Paper berechnet sie wieder selbst.")
+    m = (re.fullmatch(r"mach(?:e)?\s+(?P<k>.+?)\s+zur\s+wurzel(?:\s+(?:dieser|der)\s+bubble)?", text, _I)
+         or re.fullmatch(r"setz(?:e)?\s+(?P<k>.+?)\s+als\s+wurzel(?:\s+(?:dieser|der)\s+bubble)?(?:\s+fest)?",
+                         text, _I))
+    if m:
+        karte = _karte(m.group("k"), kontext)
+        return _treffer("idea.root", {"bubble_id": _offene_bubble(kontext), "id": karte["id"]},
+                        f"{_titel(karte)} ist jetzt die Wurzel dieser Bubble; das White Paper beginnt dort.")
 
     # ── formatieren ──
     m = (re.fullmatch(rf"mach(?:e)?\s+aus\s+(?P<k>.+?)\s+{_ARTIKEL}{_FORMAT}", text, _I)
@@ -442,7 +631,55 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
     if (re.fullmatch(r"zeig(?:e)?\s+(?:mir\s+)?die\s+(?:notizen|karten)(?:\s+dieser\s+bubble)?", text, _I)
             or re.fullmatch(r"was\s+steht\s+hier\??", text, _I)):
         return _treffer("idea.list", {"bubble_id": _offene_bubble(kontext)}, "")
+    # Inhalt einer Karte (Arbeitslauf 2: ging als "nicht verstanden" oder an das Lexikon).
+    # Fester Leseweg ueber die ganze Liste; der Satz zeigt nur die gefragte Karte.
+    m = (re.fullmatch(r"was\s+steht\s+(?:in|bei|auf)\s+(?P<k>.+?)\s*\??", text, _I)
+         or re.fullmatch(r"worum\s+geht\s+es\s+(?:in|bei)\s+(?P<k>.+?)\s*\??", text, _I)
+         or re.fullmatch(r"(?:lies|lese)\s+(?:mir\s+)?(?P<k>.+?)\s+vor", text, _I)
+         or re.fullmatch(r"zeig(?:e)?\s+(?:mir\s+)?(?:den\s+)?(?:inhalt|text)\s+(?:von\s+)?(?P<k>.+?)", text, _I))
+    if m and _normal(m.group("k")) not in ("hier", "dieser bubble", "der bubble"):
+        karte = _karte(m.group("k"), kontext)
+        treffer = _treffer("idea.list", {"bubble_id": _offene_bubble(kontext), "full": True, "limit": 100}, "")
+        treffer["lies"] = {"id": karte["id"], "title": str(karte.get("title") or "")}
+        return treffer
+    # ── nach Thema gruppieren: braucht ein Modell, gibt es noch nicht. Ehrlich sagen,
+    #    statt an Planer oder Chat zu fallen ("Idea '' not found", englischer Lexikontext).
+    if (re.match(r"(?:bitte\s+)?(?:gruppiere|clustere|cluster)\b", text, _I)
+            or re.fullmatch(r"(?:ordne|sortiere)\s+(?:die\s+)?(?:notizen|karten|ideen)\s+nach\s+(?:thema|themen|inhalt)",
+                            text, _I)
+            or re.fullmatch(r"(?:bilde|mach(?:e)?)\s+(?:themen)?gruppen(?:\s+.*)?", text, _I)
+            or re.fullmatch(r"was\s+geh(?:ö|oe)rt\s+(?:hier\s+)?zusammen\s*\??", text, _I)):
+        raise _Rueckfrage(GRUPPIEREN_NOCH_NICHT)
     return None
+
+
+GRUPPIEREN_NOCH_NICHT = ("Das kann ich noch nicht: nach Thema gruppieren braucht ein Modell, und das gibt es "
+                         "hier noch nicht. Was geht: „Ordne die Karten“, „Sortiere die Karten nach Bewertung“ "
+                         "oder „Finde Verbindungen“.")
+LESE_ZEICHEN = 1500
+
+
+def karteninhalt(zeilen: Any, karte: Any) -> Optional[str]:
+    """Der Satz zu "Was steht bei X?" aus den ganzen Zeilen von idea_list (full)."""
+    if not isinstance(karte, dict) or not isinstance(zeilen, list):
+        return None
+    titel = karte.get("title") or ""
+    name = f"„{titel}“" if titel else "Die Karte"
+    zeile = next((z for z in zeilen if isinstance(z, dict) and z.get("id") == karte.get("id")), None)
+    if zeile is None:
+        return f"{name} kann ich gerade nicht lesen."
+    titel = str(zeile.get("title") or titel or "")
+    name = f"„{titel}“" if titel else "Die Karte"
+    struktur = zeile.get("content_json") if isinstance(zeile.get("content_json"), dict) else {}
+    text = struktur.get("text") if isinstance(struktur.get("text"), str) else ""
+    if not text.strip() or text.strip() == titel.strip():
+        text = zeile.get("content") if isinstance(zeile.get("content"), str) else ""
+    text = text.strip()
+    if not text or text == titel.strip():
+        return f"{name} hat noch keinen Text."
+    if len(text) > LESE_ZEICHEN:
+        text = text[:LESE_ZEICHEN].rstrip() + " …"
+    return f"{name}:\n{text}"
 
 
 _FELDNAMEN = {
@@ -489,6 +726,10 @@ def fehlersatz(fehler: Any, capability: Any = None) -> str:
         grenze = re.search(r"(?:grenze=|limit )(\d{1,6})", text)
         return grenzsatz(capability, int(anzahl.group(1)) if anzahl else None,
                          int(grenze.group(1)) if grenze else None)
+    if "idea_format_table_no_columns" in text:
+        return ("Der Text dieser Karte hat keine Spalten; geändert habe ich nichts. Aus freiem Text eine "
+                "Tabelle bauen kann ich noch nicht. Schreib je Zeile „Name: Wert“ oder trenne die Spalten "
+                "mit „;“, dann geht „Mach aus … eine Tabelle“.")
     if "idea_format_no_content" in text:
         return ("Diese Karte hat noch keinen Text, aus dem ich eine Tabelle oder Liste bauen kann. "
                 "Ergänze erst Inhalt, z. B. „Ergänze bei … : …“.")
@@ -499,6 +740,9 @@ def fehlersatz(fehler: Any, capability: Any = None) -> str:
         return ("Der Ideen-Dienst läuft gerade nicht. Bitte prüfe das Canvas, bevor du es wiederholst."
                 if "transport_closed" in text
                 else "Der Ideen-Dienst hat nicht geantwortet. Es ist unklar, ob etwas geändert wurde.")
+    if "aenderung_zurueck_frage: " in text:
+        # core/zurueck_vorsicht: nennt, was zurueckgenommen wuerde; nichts geaendert.
+        return text.split("aenderung_zurueck_frage: ", 1)[1].strip()
     if "aenderung_konflikt" in text:
         return "Das lässt sich nicht zurücknehmen: Ein Eintrag wurde danach noch einmal geändert."
     if "aenderung_unbekannt" in text:
@@ -538,6 +782,9 @@ def fehlersatz(fehler: Any, capability: Any = None) -> str:
         return "Die Nachprüfung war nicht möglich. Die Änderung ist nicht bestätigt."
     if "approval pending" in text or "pending_approval" in text:
         return "Das wartet auf eine Freigabe."
+    if re.search(r"time[\s_-]?out|timed out|Zeitüberschreitung|Zeitueberschreitung", text, re.IGNORECASE):
+        return ("Der Dienst hat nicht rechtzeitig geantwortet. Es ist unklar, ob etwas geändert wurde; "
+                "bitte prüfe das Canvas, bevor du es wiederholst.")
     if "outcome_unknown" in text or "in_progress" in text:
         return "Es ist unklar, ob die Änderung angekommen ist. Bitte prüfe das Canvas, bevor du es wiederholst."
     if "isError=true" in text:
@@ -619,6 +866,8 @@ def antwort_fuer_schritt(capability: Any, ok: bool, ergebnis: Any, fehler: Any,
                 gesamt = None if gekuerzt else len(zeilen)
             else:
                 return vorgabe or None
+            if isinstance(kontext, dict) and isinstance(kontext.get("_lies_karte"), dict):
+                return karteninhalt(zeilen, kontext["_lies_karte"])
             bubble = kontext.get("bubble") if isinstance(kontext, dict) else None
             ort = (str(bubble.get("title") or "").strip() if isinstance(bubble, dict) else "")
             ort = f"„{ort}“" if ort else "dieser Bubble"

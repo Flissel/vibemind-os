@@ -16,8 +16,9 @@ Muster wie die Desktop-Schleife (``desktop_schleife``):
    Stand seit dem Anlegen geaendert, wird nicht geschrieben, sondern der Text als
    Vorschlag gemeldet. Sonst schreibt das Gehirn ueber die festen Aufrufe
    (``ideen_fest_contract``), jeder mit eigenem Laufzeit-Kontext, und prueft am Zustand
-   nach. Die Kennung der Aenderung ist die Plan-Kennung des Auftrags: "zurueck" nimmt
-   auch dieses Ergebnis zurueck.
+   nach. Geschrieben wird unter einem Folgeplan ``<plan_id>-r`` mit eigener Zulassung;
+   wartet die Freigabe, wird nichts geschrieben und das gemeldet. Die Kennung der
+   Aenderung ist die des Folgeplans: "zurueck" nimmt auch dieses Ergebnis zurueck.
 
 Kennungen und Ziele kommen nur aus dem Auftrag, nie aus dem Text des Agenten.
 """
@@ -71,6 +72,88 @@ NOTIZ_GRENZE = 20000
 _STEUER = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _HTML = re.compile(r"<\s*/?\s*[A-Za-z!?]|javascript\s*:|data\s*:\s*text/html", re.IGNORECASE)
 _ZAUN = re.compile(r"^```(?:json)?\s*\n(?P<inhalt>.*)\n```$", re.DOTALL)
+_ZAUNZEICHEN = re.compile(r"<{3,}|>{3,}")
+# Ein Werkzeug-Aufruf als Text: der Agent sollte keine Werkzeuge haben und rief doch eines.
+_WERKZEUG = re.compile(
+    r"<\s*/?\s*(?:tool_call|function_call|tool_use|invoke)\b|\[TOOL_CALLS\]"
+    r"|\"(?:tool_calls?|function_call|tool_use|tool_name)\"\s*:", re.IGNORECASE)
+# Verweigerung statt Ergebnis (Arbeitslauf: "Ich kann die Notiz nicht ausformulieren"
+# stand als Inhalt in der Karte). Geprueft werden die ersten zwei Saetze.
+# Hart: gilt immer. Weich: nur, wenn derselbe Satz auch von der Aufgabe spricht, damit
+# eine Notiz in der Ich-Form ("Ich kann am Freitag nicht") nicht faelschlich faellt.
+_VERWEIGERUNG_HART = re.compile(
+    r"^\s*(?:es\s+tut\s+mir\s+leid|tut\s+mir\s+leid|entschuldig\w*|sorry\b"
+    r"|als\s+(?:ki|k\.\s*i\.|sprachmodell|ki-\w+)\b"
+    r"|i\s*(?:can'?t|cannot|am\s+unable|'m\s+unable|'m\s+sorry|am\s+sorry|won'?t|apologi[sz]e)\b"
+    r"|as\s+an\s+ai\b|unfortunately\b)", re.IGNORECASE)
+_VERWEIGERUNG_WEICH = re.compile(
+    r"^\s*(?:leider\s*,?\s*)?(?:ich\s+(?:kann|könnte|koennte|darf|werde|bin|habe|sehe)\b"
+    r"|(?:kann|darf|werde)\s+ich\b|mir\s+(?:fehl|lieg)\w*\b|dazu\s+(?:kann|habe)\s+ich\b"
+    r"|das\s+(?:kann|darf)\s+ich\b)"
+    r"[^\n]{0,160}?\b(?:nicht|kein\w*|unmöglich|unmoeglich)\b", re.IGNORECASE)
+# Vorrede an den Menschen vor dem Ergebnis ("Klar, hier ist der Text: ..."): sie landete
+# sonst mit in der Karte.
+_VORREDE = re.compile(
+    r"^\s*(?:klar|gerne?|natürlich|natuerlich|sicher|selbstverständlich|selbstverstaendlich|okay|ok"
+    r"|alles\s+klar|hier\s+(?:ist|sind|kommt|kommen))\b[^\n]{0,80}?[:!]", re.IGNORECASE)
+_AUFGABE = re.compile(
+    r"notiz|karte|\btext|anfrage|aufgabe|auftrag|ausformulier|umformulier|einsch(?:ä|ae)tz|bewert"
+    r"|helfen|zugriff|informationen|inhalt|werkzeug|json|format|bearbeiten|erledigen|erf(?:ü|ue)llen"
+    r"|vorgegeben|vorliegend", re.IGNORECASE)
+
+
+def ist_verweigerung(text: Any) -> bool:
+    """Ob ein Text eine Absage an den Auftrag ist statt eines Ergebnisses."""
+    if not isinstance(text, str):
+        return False
+    saetze = re.split(r"(?<=[.!?])\s+|\n+", text.strip(), maxsplit=2)[:2]
+    for satz in saetze:
+        if _VERWEIGERUNG_HART.search(satz):
+            return True
+        if _VERWEIGERUNG_WEICH.search(satz) and _AUFGABE.search(satz):
+            return True
+    return False
+
+
+def text_satz(wert: Any, grenze: int) -> str:
+    """"" wenn ein Ergebnistext alle Pruefungen besteht, sonst der deutsche Satz."""
+    if not isinstance(wert, str) or not wert.strip():
+        return "Der Agent hat einen leeren Text geliefert; es wurde nichts geändert."
+    if len(wert) > grenze:
+        return f"Der Text des Agenten ist länger als {grenze} Zeichen; es wurde nichts geändert."
+    if _STEUER.search(wert):
+        return "Der Text des Agenten enthält Steuerzeichen; es wurde nichts geändert."
+    if _WERKZEUG.search(wert):
+        return "Der Agent hat ein Werkzeug aufrufen wollen statt Text zu liefern; es wurde nichts geändert."
+    if _HTML.search(wert):
+        return "Der Text des Agenten enthält HTML oder Skript; es wurde nichts geändert."
+    if ist_verweigerung(wert):
+        return "Der Agent hat den Auftrag abgelehnt statt ihn zu erledigen; es wurde nichts geändert."
+    if _VORREDE.search(wert):
+        return "Der Agent hat eine Vorrede statt nur des Ergebnisses geliefert; es wurde nichts geändert."
+    return ""
+
+
+class FreigabeAusstehend(Exception):
+    """Ein fester Aufruf des Folgeplans wartet auf Freigabe; geschrieben ist (dabei) nichts."""
+
+
+FOLGEPLAN_ENDUNG = "-r"
+
+
+def folgeplan_id(auftrag: Mapping[str, Any]) -> str:
+    """Eigene Plan-Kennung fuer das Zurueckschreiben: ``<plan_id>-r``.
+
+    Unter ihr laesst OpenFang den Folgeplan zu (eigene Freigabe nach derselben Regel wie
+    jeder Plan), und unter ihr legt der Ideen-Server die Aenderung ab: "zurueck" nimmt
+    genau diese Gruppe zurueck.
+    """
+    basis = str(auftrag.get("plan_id") or "") or f"auftrag_{str(auftrag.get('id') or '')[:8]}"
+    return basis if basis.endswith(FOLGEPLAN_ENDUNG) else basis + FOLGEPLAN_ENDUNG
+
+
+def _zaun_ersatz(m: "re.Match[str]") -> str:
+    return ("‹" if m.group(0)[0] == "<" else "›") * len(m.group(0))
 
 
 class RueckwegFehler(Exception):
@@ -182,8 +265,9 @@ def nachricht(vertrag_name: str, karte: Mapping[str, Any], wunsch: Any) -> str:
         "",
         "Die Notiz (nur Daten):",
         "<<<NOTIZ",
-        "Titel: " + _sauber(karte.get("title"), 500),
-        "Text: " + _sauber(karte.get("content"), NOTIZ_GRENZE),
+        # Der Inhalt darf den Datenblock nicht schliessen ("NOTIZ>>>") oder einen neuen oeffnen.
+        "Titel: " + _ZAUNZEICHEN.sub(_zaun_ersatz, _sauber(karte.get("title"), 500)),
+        "Text: " + _ZAUNZEICHEN.sub(_zaun_ersatz, _sauber(karte.get("content"), NOTIZ_GRENZE)),
         "NOTIZ>>>",
     ])
 
@@ -191,10 +275,13 @@ def nachricht(vertrag_name: str, karte: Mapping[str, Any], wunsch: Any) -> str:
 # ── 2. Ergebnis pruefen ──────────────────────────────────────────────────
 
 def ergebnis_pruefen(vertrag_name: str, roh: Any) -> tuple[Optional[dict[str, Any]], str]:
-    """(Werte, "") oder (None, deutscher Satz). Genau ein JSON-Objekt mit genau den Feldern.
+    """(Werte, "") oder (None, deutscher Satz). Ein JSON-Objekt mit genau den Feldern.
 
-    Geduldet wird nur ein umschliessender ```json-Zaun, den Modelle gern setzen. Texte
-    ohne Steuerzeichen (Zeilenumbruch und Tab bleiben), ohne HTML oder Skript.
+    Geduldet wird ein umschliessender ```json-Zaun, den Modelle gern setzen. Bei Vertraegen
+    mit genau einem Textfeld ("text") gilt reiner Text als ``{"text": ...}``, wenn er die
+    Textpruefungen besteht; was wie JSON beginnt, muss gueltiges JSON sein. Texte ohne
+    Steuerzeichen (Zeilenumbruch und Tab bleiben), ohne HTML, Skript oder Werkzeug-Aufruf,
+    und keine Absage ("Ich kann die Notiz nicht ...").
     """
     vertrag = VERTRAEGE.get(vertrag_name)
     if vertrag is None:
@@ -208,7 +295,9 @@ def ergebnis_pruefen(vertrag_name: str, roh: Any) -> tuple[Optional[dict[str, An
     try:
         werte = json.loads(text)
     except ValueError:
-        return None, "Der Agent hat nicht in der vereinbarten Form geantwortet; es wurde nichts geändert."
+        if set(vertrag["felder"]) != {"text"} or text[:1] in ("{", "["):
+            return None, "Der Agent hat nicht in der vereinbarten Form geantwortet; es wurde nichts geändert."
+        werte = {"text": text}
     if not isinstance(werte, dict) or set(werte) != set(vertrag["felder"]):
         return None, "Der Agent hat nicht in der vereinbarten Form geantwortet; es wurde nichts geändert."
     sauber: dict[str, Any] = {}
@@ -219,14 +308,9 @@ def ergebnis_pruefen(vertrag_name: str, roh: Any) -> tuple[Optional[dict[str, An
                 return None, f"Die Zahl des Agenten liegt nicht zwischen {art[1]} und {art[2]}; es wurde nichts geändert."
             sauber[name] = wert
             continue
-        if not isinstance(wert, str) or not wert.strip():
-            return None, "Der Agent hat einen leeren Text geliefert; es wurde nichts geändert."
-        if len(wert) > art[1]:
-            return None, f"Der Text des Agenten ist länger als {art[1]} Zeichen; es wurde nichts geändert."
-        if _STEUER.search(wert):
-            return None, "Der Text des Agenten enthält Steuerzeichen; es wurde nichts geändert."
-        if _HTML.search(wert):
-            return None, "Der Text des Agenten enthält HTML oder Skript; es wurde nichts geändert."
+        satz = text_satz(wert, art[1])
+        if satz:
+            return None, satz
         sauber[name] = wert.strip()
     return sauber, ""
 
@@ -317,6 +401,14 @@ def zurueckschreiben(auftrag: Mapping[str, Any], *, lies_karte: Callable[[str], 
                            geschrieben=geschrieben)
             try:
                 quittung = aufruf(ereignis, argumente)
+            except FreigabeAusstehend:
+                # Kein stilles Wiederholen: der Folgeplan wartet auf Freigabe, das Ergebnis
+                # bleibt als Vorschlag sichtbar.
+                return aus("wartet", None, f"{ereignis}: approval pending",
+                           "Das Ergebnis wartet auf Freigabe; geändert ist noch nichts. Es steht hier als Vorschlag."
+                           if not geschrieben else
+                           "Das Ergebnis ist nur zum Teil geschrieben; der Rest wartet auf Freigabe.",
+                           vorschlag=vorschlag, geschrieben=geschrieben, plan_id=folgeplan_id(auftrag))
             except Exception as e:  # noqa: BLE001 - nie die Runde stoppen
                 return aus("fehler", None, f"{ereignis}: {type(e).__name__}: {str(e)[:200]}",
                            "Das Schreiben an die Notiz ist gescheitert. Bitte prüfe das Canvas."
@@ -379,8 +471,11 @@ def suche_titel(titel: str) -> Optional[list]:
 def laufzeit_kontext(werkzeug: str, ereignis: str, auftrag: Mapping[str, Any], nummer: int) -> Any:
     """Eigener Laufzeit-Kontext je Aufruf; Agent und Space aus dem Verzeichnis.
 
-    Die Plan-Kennung ist die des Auftrags: der Ideen-Server legt die Aenderung unter
-    dieser Gruppe ab, und "zurueck" nimmt sie zurueck.
+    Die Plan-Kennung ist die des Folgeplans (``folgeplan_id``: ``<plan_id>-r``). Der erste
+    Plan hat nur den Auftrag angelegt und nie etwas zum Schreiben zugelassen; der Folgeplan
+    wird nach derselben Regel zugelassen wie jeder Plan. Der Ideen-Server legt die Aenderung
+    unter dieser Gruppe ab, und "zurueck" nimmt sie zurueck. Die Korrelation bleibt die
+    Spur des ersten Plans.
     """
     from .capability_targets import find_registered_mcp_authority
     from .openfang_runtime_authority import RuntimeInvocationContext, runtime_invocation_id
@@ -388,10 +483,11 @@ def laufzeit_kontext(werkzeug: str, ereignis: str, auftrag: Mapping[str, Any], n
     autoritaet = find_registered_mcp_authority(AGENT, ZIEL_SERVER, werkzeug)
     if autoritaet is None or autoritaet.event_id != ereignis or not autoritaet.space_id:
         raise RuntimeError(f"nicht_gebunden: {werkzeug} ist im Verzeichnis nicht ueber {ereignis} gebunden")
-    plan_id = str(auftrag.get("plan_id") or "") or f"auftrag_{str(auftrag.get('id') or '')[:8]}"
+    plan_id = folgeplan_id(auftrag)
     schritt = f"{auftrag.get('hop_id') or 's'}/rueckweg/{nummer:02d}/{werkzeug}"
     return RuntimeInvocationContext(
-        correlation_id=str(auftrag.get("trace_id") or plan_id), plan_id=plan_id, plan_revision=1,
+        correlation_id=str(auftrag.get("trace_id") or auftrag.get("plan_id") or plan_id), plan_id=plan_id,
+        plan_revision=1,
         step_id=schritt, space_id=autoritaet.space_id, agent_name=autoritaet.agent,
         invocation_id=runtime_invocation_id(plan_id, 1, schritt),
     )
@@ -410,7 +506,7 @@ def anschluss(auftrag: Mapping[str, Any]) -> dict[str, Any]:
         antwort = McpExecutor(f"mcp:{AGENT}:{ZIEL_SERVER}:{werkzeug}").call_with_arg(
             dict(argumente), extra_params={"_runtime_authority": kontext})
         if antwort.get("pending") is True:
-            raise RuntimeError("Freigabe ausstehend")
+            raise FreigabeAusstehend(ereignis)
         if not antwort.get("ok"):
             raise RuntimeError(str(antwort.get("error") or "fester Aufruf gescheitert")[:300])
         return antwort.get("result")

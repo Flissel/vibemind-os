@@ -74,7 +74,8 @@ def test_gueltige_antworten(roh, erwartet) -> None:
 
 
 @pytest.mark.parametrize("roh, satz", [
-    ("Klar, hier ist der Text: Das Abo ...", "vereinbarten Form"),
+    ("Klar, hier ist der Text: Das Abo ...", "Vorrede"),        # reiner Text gilt, die Vorrede nicht
+    ('{"text": "Das Abo ...', "vereinbarten Form"),             # wie JSON begonnen: muss JSON sein
     ('{"text": "a"} {"text": "b"}', "vereinbarten Form"),
     ('{"text": "a", "id": "a0000002"}', "vereinbarten Form"),   # Agent darf keine Ziele bestimmen
     ('[{"text": "a"}]', "vereinbarten Form"),
@@ -291,12 +292,12 @@ def test_nachfasser_ohne_beanspruchung_schreibt_nicht() -> None:
 
 def test_nachfasser_meldet_abgelehntes_ergebnis_als_deutschen_satz() -> None:
     ideen = Ideen()
-    tab = Tab([_fertig("kein JSON")])
+    tab = Tab([_fertig("Ich kann die Notiz nicht ausformulieren.")])
     Nachfasser(tab, validator=_KeinValidator(), router=None, plan_executor=None,
                rueckweg_anschluss=ideen.anschluss).runde()
     ((_, abschluss),) = tab.ergaenzt
     assert abschluss["fortsetzung"] == "fehler" and abschluss["verified"] is False
-    assert abschluss["fortsetzung_fehler"].startswith("Der Agent hat nicht in der vereinbarten Form")
+    assert abschluss["fortsetzung_fehler"].startswith("Der Agent hat den Auftrag abgelehnt")
     assert ideen.aufrufe == []
 
 

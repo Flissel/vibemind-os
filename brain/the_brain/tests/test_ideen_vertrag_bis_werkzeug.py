@@ -44,7 +44,7 @@ class Datenbank:
             "ideas": [{"id": "b0b1e001", "title": "Messe", "description": "", "parent_id": None, "score": 0,
                        "status": "active", "promoted_to_project_id": None, "metadata": {}}],
             "canvas_nodes": [
-                {"id": "a0000001", "title": "Preise Druckerei", "content": "A 1", "node_type": "note", "x": 500, "y": 90,
+                {"id": "a0000001", "title": "Preise Druckerei", "content": "A: 1", "node_type": "note", "x": 500, "y": 90,
                  "linked_idea_id": "b0b1e001", "metadata": {}, "format_schema": None, "content_json": None,
                  "previous_content_json": None},
                 {"id": "a0000002", "title": "Druckerei Preise", "content": "", "node_type": "note", "x": 10, "y": 400,
@@ -187,7 +187,7 @@ def _hauptlauf() -> int:
     faelle = [
         ("idea.create", abk.loese("Halt fest: Zeitmessung bitte wieder loeschen", app)["argumente"]),
         ("idea.update", abk.loese("Benenne die Notiz Druckerei Preise in Preisliste um", app)["argumente"]),
-        ("idea.update", abk.loese("Ergänze bei Preise Druckerei: B 2", app)["argumente"]),
+        ("idea.update", abk.loese("Ergänze bei Preise Druckerei: B: 2", app)["argumente"]),
         ("idea.list", abk.loese("Zeig die Notizen dieser Bubble", app)["argumente"]),
         ("idea.list", {}),
         # Formatieren braucht Text (leere Karte: idea_format_no_content), darum vor dem Leeren.
@@ -199,7 +199,14 @@ def _hauptlauf() -> int:
         ("idea.auto_link", {"bubble_id": "b0b1e001"}),
         ("idea.arrange", abk.loese("Sortiere die Karten nach Bewertung", app)["argumente"]),
         ("bubble.rate", abk.loese("Bewerte die Bubble Messe mit 70", app)["argumente"]),
+        # Wurzel festlegen und wieder loeschen (metadata.wurzel der Bubble).
+        ("idea.root", abk.loese("Mach Preise Druckerei zur Wurzel", app)["argumente"]),
+        ("idea.root", abk.loese("Lösche die festgelegte Wurzel", app)["argumente"]),
         ("bubble.promote", abk.loese("Befördere diese Bubble", app)["argumente"]),
+        # Dokument-Karte (core/ideen_dokument): das Gehirn schreibt sie am Ende eines White Papers.
+        ("idea.document", {"id": "00000000-0000-4000-8000-000000000d01", "bubble_id": "b0b1e001",
+                           "title": "White Paper: Messe", "art": "white_paper",
+                           "content": "# White Paper: Messe\n\n## Inhalt\n\n1. Preise\n", "quellen": ["a0000001"]}),
     ]
     gesehen = set()
     for event_id, argumente in faelle:

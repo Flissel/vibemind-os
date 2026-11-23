@@ -73,6 +73,26 @@ class AuftragsTabelle:
         """Schreibt die volle Pruefung neu (PATCH nur nach id, ohne is.null-Schutz)."""
         self._req("PATCH", params={"id": f"eq.{auftrag_id}"}, json={"pruefung": pruefung})
 
+    def dokument_abbrechen(self, bubble_id: Optional[str], jetzt_iso: Optional[str] = None) -> int:
+        """White Paper anhalten (core/ideen_dokument): Zahl der angehaltenen Auftraege.
+
+        Offene Teile werden 'abgelehnt' (mit Pruefung, damit nichts mehr gemeldet oder
+        fortgesetzt wird); laufende Teile bekommen die Pruefung vorab (is.null-Schutz), so
+        nimmt der Nachfasser ihr Ergebnis nicht mehr auf und legt keinen weiteren Teil an.
+        """
+        jetzt_iso = jetzt_iso or datetime.now(timezone.utc).isoformat()
+        filter_ = {"uebergabe->rueckweg->>vertrag": "eq.abschnitt"}
+        if bubble_id is not None:
+            filter_["uebergabe->rueckweg->>bubble_id"] = f"eq.{bubble_id}"
+        pruefung = {"verified": None, "reason": "abgebrochen", "kind": "ideen_dokument", "rueckweg": "abgebrochen",
+                    "fortsetzung": "keine", "meldung": "Das White Paper wurde abgebrochen."}
+        offen = self._req("PATCH", rueckgabe=True, params={**filter_, "status": "eq.offen"},
+                          json={"status": "abgelehnt", "beendet": jetzt_iso, "pruefung": pruefung})
+        laufend = self._req("PATCH", rueckgabe=True,
+                            params={**filter_, "status": "in.(laeuft,fertig)", "pruefung": "is.null"},
+                            json={"pruefung": pruefung})
+        return len(offen or []) + len(laufend or [])
+
     def abgelaufene_markieren(self, jetzt_iso: Optional[str] = None) -> int:
         jetzt_iso = jetzt_iso or datetime.now(timezone.utc).isoformat()
         zeilen = self._req("PATCH", rueckgabe=True,

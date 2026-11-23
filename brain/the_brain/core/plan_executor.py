@@ -1678,7 +1678,29 @@ class PlanExecutor:
                         elapsed_s=time.time() - t0,
                         contract_pass=False, reward=-1.0,
                     )
-                rendered_arg = _gruppe
+                # Ohne genannte Gruppe waehlt das Gehirn das Ziel: nie ein abgelehnter
+                # Plan, und eine aeltere Aenderung erst nach Rueckfrage (zurueck_vorsicht).
+                from . import zurueck_vorsicht as _vorsicht
+
+                def _abgelehnt(gruppe: str) -> bool:
+                    try:
+                        snap = self.recorder.get(gruppe)
+                    except Exception:  # noqa: BLE001
+                        return False
+                    return isinstance(snap, dict) and snap.get("ok") is False
+
+                _wahl = _vorsicht.entscheiden(
+                    _gruppe, plan_ctx.get("plan_intent", ""), ist_abgelehnt=_abgelehnt)
+                if _wahl["aktion"] != "weiter":
+                    return HopResult(
+                        step_id=hop.step_id, ok=False,
+                        error=_vorsicht.FRAGE_MARKE + _wahl["satz"],
+                        capability=hop.capability, target=target,
+                        rendered_arg=rendered_arg, kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False, reward=0.0,
+                    )
+                rendered_arg = _wahl["gruppe"]
             assigned_agent = None
             try:
                 assigned_agent = get_registry().get_event_agent(event_id) if event_id else None
@@ -1702,9 +1724,11 @@ class PlanExecutor:
             authoritative_target = isinstance(target, str) and target.startswith(
                 ("openfang:", "mcp:", "n8n-mcp:", "coding-engine:")
             )
+            from . import ideen_dokument as _dokument_mod
             from . import ideen_rueckweg as _rueckweg_mod
             if (assigned_agent and not authoritative_target
-                    and _rueckweg_mod.ist_modell_ereignis(event_id)):
+                    and (_rueckweg_mod.ist_modell_ereignis(event_id)
+                         or _dokument_mod.ist_dokument_ereignis(event_id))):
                 # Ideen-Modellauftrag mit Rueckweg: der Agent bekommt die Notiz als Daten und
                 # die Antwortform, kein Werkzeug und kein bevorzugtes Werkzeug. Geschrieben
                 # wird spaeter im Gehirn (Nachfasser -> ideen_rueckweg), mit Vertrag und
@@ -1721,9 +1745,16 @@ class PlanExecutor:
                     return _rueckweg_fehler(
                         "Diese Modellfunktion läuft nur als Auftrag; der Auftragsweg ist hier aus.")
                 try:
-                    rendered_arg, _ideen_rueckweg = _rueckweg_mod.auftrag_vorbereiten(
-                        event_id, rendered_arg, plan_ctx.get("plan_intent", ""),
-                        lies_karte=_rueckweg_mod.lies_karte, suche_titel=_rueckweg_mod.suche_titel)
+                    if _dokument_mod.ist_dokument_ereignis(event_id):
+                        # Zusammenfassung / White Paper: Bubble lesen, Wurzel und Teile planen,
+                        # Budget vor dem Start pruefen (core/ideen_dokument).
+                        rendered_arg, _ideen_rueckweg = _dokument_mod.auftrag_vorbereiten(
+                            event_id, rendered_arg, plan_ctx.get("plan_intent", ""),
+                            lesen=_dokument_mod.DatenbankLesen())
+                    else:
+                        rendered_arg, _ideen_rueckweg = _rueckweg_mod.auftrag_vorbereiten(
+                            event_id, rendered_arg, plan_ctx.get("plan_intent", ""),
+                            lies_karte=_rueckweg_mod.lies_karte, suche_titel=_rueckweg_mod.suche_titel)
                 except _rueckweg_mod.RueckwegFehler as e:
                     return _rueckweg_fehler(str(e))
                 target = f"openfang:{assigned_agent}"
@@ -2050,12 +2081,15 @@ class PlanExecutor:
                     hintergrund=True,
                 )
         if last.get("pending") is True:
+            # Ein angenommener Auftrag (K1) wartet auf den Agenten, nicht auf eine Freigabe:
+            # kein Fehlertext, eigener Status. Nur ohne Auftrag ist es eine offene Freigabe.
+            _angenommen = isinstance(result_payload, dict) and bool(result_payload.get("auftrag_id"))
             return HopResult(
                 step_id=hop.step_id, ok=False, result=result_payload,
-                error="runtime authority approval pending",
+                error=None if _angenommen else "runtime authority approval pending",
                 elapsed_s=round(time.time() - t0, 2), capability=hop.capability,
                 target=target, rendered_arg=rendered_arg, kg_hits=kg_hits,
-                authority_status="pending_approval",
+                authority_status="auftrag_angenommen" if _angenommen else "pending_approval",
                 invocation_id=last.get("invocation_id"), pending=True,
                 contract_pass=None, reward=0.0,
             )
@@ -2436,8 +2470,9 @@ class PlanExecutor:
                 auftrag_id, type(e).__name__, e)
 
     def _publish_started(self, hops: List[HopSpec], state: Dict[str, Any]) -> None:
+        from .ideen_standzeile import fuer_app
         for h in hops:
-            self._publish("hop_started", {
+            self._publish("hop_started", fuer_app({
                 "step_id": h.step_id,
                 "description": h.description,
                 "capability": h.capability,
@@ -2449,7 +2484,7 @@ class PlanExecutor:
                     h.arg_template, state,
                     repeat_ctx=getattr(h, "_repeat_ctx", None),
                 ),
-            })
+            }))
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
@@ -2562,13 +2597,14 @@ def _hop_event(h: HopSpec, hr: HopResult) -> Dict[str, Any]:
         result_preview = repr(res)[:500]
     except Exception:
         result_preview = "<unrepr>"
-    return {
+    ereignis = {
         "step_id": hr.step_id,
         "description": h.description,
         "capability": hr.capability,
         "target": hr.target,
         "space": space_for_step(hr.capability, hr.target or h.execution_target),
         "ok": hr.ok,
+        "pending": bool(getattr(hr, "pending", False)),
         "error": hr.error,
         "elapsed_s": hr.elapsed_s,
         "validator": hr.validator_verdict,
@@ -2578,3 +2614,6 @@ def _hop_event(h: HopSpec, hr: HopResult) -> Dict[str, Any]:
         "retried": hr.retried,
         "bridges": hr.bridges,
     }
+    # Standzeile der App: fuer Ideen-Schritte deutsche Saetze statt Rohtext (Arbeitslauf 2).
+    from .ideen_standzeile import fuer_app
+    return fuer_app(ereignis, ergebnis=res)

@@ -69,7 +69,7 @@ _LEGACY_EVENT_SPACE_MAP = {
     "idea.format_pros_cons": "ideas", "idea.format_hierarchy": "ideas",
     "idea.format_specs": "ideas", "idea.convert_format": "ideas",
     "idea.explore.start": "ideas", "idea.explore.stop": "ideas",
-    "idea.generate_doc": "ideas", "idea.to_project": "ideas",
+    "idea.to_project": "ideas",
     # Research
     "research.web": "research", "research.scrape": "research",
     "research.summarize": "research", "research.to_idea": "research",

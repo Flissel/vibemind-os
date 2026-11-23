@@ -633,6 +633,26 @@ def test_pending_executor_result_does_not_replay_within_hop(monkeypatch):
     assert result.contract_pass is None
     assert result.reward == 0.0
     assert executor.calls == 1
+    assert result.authority_status == "pending_approval"
+    assert result.error == "runtime authority approval pending"
+
+
+def test_angenommener_auftrag_ist_kein_fehler_und_keine_offene_freigabe(monkeypatch):
+    _disable_kg_hits(monkeypatch)
+    executor = _Executor({
+        "ok": False, "pending": True, "invocation_id": "00000000-0000-4000-8000-000000000001",
+        "result": {"auftrag_id": "00000000-0000-4000-8000-000000000001",
+                   "agent": "brain-ideas", "status": "offen"},
+    })
+    monkeypatch.setattr("core.capability_targets.build_executor", lambda _target: executor)
+    hop = HopSpec("step-1", "auftrag", execution_target="direct:test:run", retries=3)
+
+    result = PlanExecutor()._exec_hop(hop, {})
+
+    assert result.pending is True
+    assert result.error is None
+    assert result.authority_status == "auftrag_angenommen"
+    assert executor.calls == 1
 
 
 @pytest.mark.parametrize("plan_revision", [0, False, 1.5])

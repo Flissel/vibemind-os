@@ -23,7 +23,7 @@ from typing import Any, Mapping
 
 
 SERVER_NAME = "spaces-ideas"
-SERVER_VERSION = "1.2.0"
+SERVER_VERSION = "1.3.0"
 PROTOCOL_VERSION = "2024-11-05"
 REQUEST_TIMEOUT_SECONDS = 15
 BUBBLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$")
@@ -337,6 +337,44 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "idea_document",
+        "description": (
+            "Write a document card (summary or white paper) into a bubble: creates it under the given id, "
+            "or replaces title, text and sources of the document card with that id. Written by the brain "
+            "after it checked the model's answer; the text is Markdown."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": _ID_SCHEMA_PATTERN},
+                "bubble_id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": _ID_SCHEMA_PATTERN},
+                "title": {"type": "string", "minLength": 1, "maxLength": 200},
+                "art": {"type": "string", "enum": ["zusammenfassung", "white_paper"]},
+                "content": {"type": "string", "minLength": 1, "maxLength": 300000},
+                "quellen": {"type": "array", "maxItems": 500,
+                            "items": {"type": "string", "pattern": _ID_SCHEMA_PATTERN}},
+            },
+            "required": ["id", "bubble_id", "title", "art", "content"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "bubble_wurzel",
+        "description": (
+            "Set or clear the root card of a bubble (metadata.wurzel). A set root takes precedence over "
+            "the computed one when a white paper is built. Without 'id': clear it. Undoable."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "bubble_id": {"type": "string", "pattern": _ID_SCHEMA_PATTERN},
+                "id": {"type": "string", "pattern": _ID_SCHEMA_PATTERN},
+            },
+            "required": ["bubble_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "aenderung_liste",
         "description": (
             "List the most recent recorded changes to ideas and bubbles, newest first, "
@@ -377,7 +415,7 @@ CHANGE_WRITE_TOOLS = frozenset({
     "bubble_create", "bubble_update", "bubble_delete", "bubble_promote",
     "idea_create", "idea_update", "idea_delete", "idea_connect", "idea_disconnect",
     "idea_format", "idea_arrange", "idea_auto_link", "idea_rate", "bubble_rate",
-    "bewertung_begruenden",
+    "bewertung_begruenden", "idea_document", "bubble_wurzel",
 })
 for _tool in TOOLS:
     if _tool["name"] in CHANGE_WRITE_TOOLS:
@@ -653,7 +691,13 @@ FORMAT_NAMES = {
     "hierarchy": "Gliederung", "technical_specs": "Anforderungen", "kanban": "Kanban", "mindmap": "Mindmap",
     "swot": "SWOT-Analyse", "user_story": "Nutzergeschichten", "flowchart": "Ablauf",
     "comparison_table": "Vergleich", "research": "Recherche",
+    "zusammenfassung": "Zusammenfassung", "white_paper": "White Paper",
 }
+# Dokument-Karten (idea_document): node_type "dokument", die Art steht in metadata.art.
+DOCUMENT_KINDS = ("zusammenfassung", "white_paper")
+DOCUMENT_NODE_TYPE = "dokument"
+DOCUMENT_MAX_CHARS = 300_000
+DOCUMENT_MAX_SOURCES = 500
 FORMAT_ALIASES = {"pros_cons_table": "pros_cons"}
 # Vorlagentext der alten Formatier-Agenten: sieht aus wie Inhalt, sagt aber nichts.
 TEMPLATE_TEXTS = frozenset({
@@ -678,6 +722,9 @@ _RESEARCH_TITLE = re.compile(r"^Research:\s*(.*?)\s*(\d{4})-(\d{2})-(\d{2})(?:\s
 
 def _card_format(row: Mapping[str, Any]) -> str:
     """The idea's format name as stored: content_json.type, else the schema's const."""
+    if row.get("node_type") == DOCUMENT_NODE_TYPE:
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), Mapping) else {}
+        return metadata.get("art") if metadata.get("art") in DOCUMENT_KINDS else "white_paper"
     structured = row.get("content_json")
     fmt = structured.get("type") if isinstance(structured, Mapping) else None
     if not isinstance(fmt, str) or not fmt:
@@ -733,6 +780,10 @@ def _card_source(row: Mapping[str, Any]) -> str | None:
         if isinstance(count, int) and not isinstance(count, bool) and count > 0:
             parts.append(_count(count, "Quelle", "Quellen"))
         return " · ".join(parts)
+    if row.get("node_type") == DOCUMENT_NODE_TYPE:
+        sources = metadata.get("quellen")
+        count = len(sources) if isinstance(sources, list) else 0
+        return f"aus {_count(count, 'Karte', 'Karten')}" if count else None
     if metadata.get("ai_generated"):
         origin = _plain(metadata.get("source_title"))
         return f"Vorschlag aus „{origin.replace('_', ' ')}“" if origin else "Vorschlag"
@@ -855,6 +906,21 @@ def _structured_sections(fmt: str, data: Mapping[str, Any], limit: int | None) -
     return [], None
 
 
+def _live_text(row: Mapping[str, Any]) -> str:
+    """The card's text: ``content_json.text`` when it says something, else ``content``.
+
+    Arbeitslauf 2: on formatted cards ``content_json.text`` was empty while the appended
+    text stood in ``content``; the empty field won and the card looked unchanged.
+    """
+    structured = row.get("content_json") if isinstance(row.get("content_json"), Mapping) else {}
+    title = row.get("title") if isinstance(row.get("title"), str) else ""
+    text = structured.get("text")
+    if isinstance(text, str) and text.strip() and text.strip() != title.strip():
+        return text
+    content = row.get("content")
+    return content if isinstance(content, str) else ""
+
+
 def _card_parts(row: Mapping[str, Any], limit: int | None) -> tuple[str, list[tuple[str | None, list[str]]], str | None, bool]:
     """(format, sections, count, is_text) for one card; sections hold only readable lines."""
     fmt = _card_format(row)
@@ -862,10 +928,14 @@ def _card_parts(row: Mapping[str, Any], limit: int | None) -> tuple[str, list[tu
     structured = row.get("content_json") if isinstance(row.get("content_json"), Mapping) else {}
     sections, count = _structured_sections(fmt, structured, limit)
     sections = [(head, found) for head, found in sections if found]
+    text = _live_text(row)
     if sections:
+        # Ergaenzter Text auf einer Tabelle/Kanban steht unter der Struktur, nicht unsichtbar.
+        extra = [line for _, found in _text_sections(text, title, limit) for line in found]
+        if extra and structured.get("text") == text:
+            sections = [*sections, ("Notiz", extra)]
         return fmt, sections, count, False
-    text = structured.get("text") if isinstance(structured.get("text"), str) else row.get("content")
-    sections = _text_sections(text if isinstance(text, str) else "", title, limit)
+    sections = _text_sections(text, title, limit)
     headings = sum(1 for head, _ in sections if head)
     count = f"{headings} Abschnitte" if headings > 1 else None
     return fmt, sections, count, True
@@ -913,8 +983,7 @@ def _card_read(row: Mapping[str, Any], edges: list[dict[str, Any]], titles: Mapp
                           "art": EDGE_NAMES.get((edge.get("edge_type"), starts_here), "verwandt")})
     text = None
     if is_text:
-        raw = (row.get("content_json") or {}).get("text") if isinstance(row.get("content_json"), Mapping) else None
-        raw = raw if isinstance(raw, str) else row.get("content")
+        raw = _live_text(row)
         title = row.get("title") if isinstance(row.get("title"), str) else ""
         text = raw if isinstance(raw, str) and raw.strip() and raw.strip() != title.strip() else None
     return {
@@ -1025,6 +1094,49 @@ def _link_candidates(nodes: list[dict[str, Any]]) -> list[tuple[float, str, str]
     return pairs
 
 
+TABLE_MAX_ROWS = 50
+TABLE_MAX_COLUMNS = 8
+TABLE_CELL_CHARS = 200
+_TABLE_RULE = re.compile(r"^:?-{2,}:?$")
+_TABLE_PAIR = re.compile(r"^(?:[-*•]\s*)?(?P<k>[^:|;\t]{1,60}?)\s*:\s+(?P<v>\S.*)$")
+
+
+def _table_from_text(text: str, title: str) -> dict[str, Any] | None:
+    """Columns and rows from text that already has them; ``None`` if it has none.
+
+    No model: a Markdown table, lines split by tab, ";" or "|" into the same number of
+    cells (first line = header), or "Name: Wert" per line. Anything else needs a model.
+    """
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if lines and title.strip() and lines[0] == title.strip():
+        lines = lines[1:]
+    if len(lines) < 2:
+        return None
+
+    def cell(value: str) -> str:
+        return value.strip()[:TABLE_CELL_CHARS]
+
+    grid: list[list[str]] | None = None
+    if all(line.startswith("|") and line.endswith("|") and len(line) > 2 for line in lines):
+        grid = [[cell(c) for c in line[1:-1].split("|")] for line in lines]
+        grid = [row for row in grid if not all(_TABLE_RULE.fullmatch(c) for c in row if c) or not any(row)]
+    else:
+        for separator in ("\t", ";", "|"):
+            split = [[cell(c) for c in line.split(separator)] for line in lines]
+            if all(len(row) >= 2 for row in split) and len({len(row) for row in split}) == 1:
+                grid = split
+                break
+    if grid is not None and len(grid) >= 2 and len({len(row) for row in grid}) == 1 and len(grid[0]) >= 2:
+        columns = grid[0][:TABLE_MAX_COLUMNS]
+        rows = [row[:TABLE_MAX_COLUMNS] for row in grid[1:1 + TABLE_MAX_ROWS]]
+        return {"columns": columns, "rows": rows}
+    pairs = [_TABLE_PAIR.match(line) for line in lines]
+    if all(pairs):
+        return {"columns": ["Punkt", "Angabe"],
+                "rows": [[cell(m.group("k")), cell(m.group("v"))] for m in pairs[:TABLE_MAX_ROWS] if m]}
+    return None
+
+
 def _change_groups(rows: Any, limit: int) -> list[dict[str, Any]]:
     """Fold protocol rows (newest first) into the groups ideen_zurueck undoes."""
     if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
@@ -1073,7 +1185,8 @@ def _with_appended_content(arguments: Mapping[str, Any]) -> dict[str, Any]:
         raise ToolError("invalid_arguments: 'content_append' must be a non-empty string")
     idea_id = _durable_id(arguments, "id")
     node = _first_row(_request(
-        "GET", "canvas_nodes", params={"select": "id,title,content", "id": f"eq.{idea_id}", "limit": "1"},
+        "GET", "canvas_nodes",
+        params={"select": "id,title,content,content_json", "id": f"eq.{idea_id}", "limit": "1"},
     ))
     if node is None:
         raise ToolError("idea_not_found")
@@ -1082,7 +1195,22 @@ def _with_appended_content(arguments: Mapping[str, Any]) -> dict[str, Any]:
     keep = old.rstrip() if old.strip() and old.strip() != title.strip() else ""
     merged = f"{keep}\n\n{append.strip()}" if keep else append.strip()
     rest = {key: value for key, value in arguments.items() if key != "content_append"}
-    return {**rest, "content": merged}
+    return {**rest, "content": merged, "_node": node}
+
+
+def _synced_structured(node: Mapping[str, Any] | None, content: str) -> dict[str, Any] | None:
+    """Formatted card: the app renders ``content_json``, the text lives in ``content``.
+
+    Arbeitslauf 2: "Ergaenze bei ..." on a table or kanban card wrote ``content``, the card
+    kept showing the old (often empty) ``content_json.text``. The text field follows the
+    stored text; structured parts (rows, columns) stay as they are.
+    """
+    structured = node.get("content_json") if isinstance(node, Mapping) else None
+    if not isinstance(structured, Mapping) or not isinstance(structured.get("type"), str):
+        return None
+    title = node.get("title") if isinstance(node.get("title"), str) else ""
+    text = content if content.strip() != title.strip() else ""
+    return {**structured, "text": text}
 
 
 def _patch_fields(
@@ -1273,6 +1401,49 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         return _call_tool(name, {k: v for k, v in arguments.items() if k != "aenderung_id"})
     finally:
         _CHANGE_ID.reset(token)
+
+
+def _document_write(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    """Create or replace one document card; never touches a card of another kind or bubble."""
+    _only_arguments(arguments, {"id", "bubble_id", "title", "art", "content", "quellen"})
+    node_id = _durable_id(arguments, "id")
+    bubble_id = _durable_id(arguments, "bubble_id")
+    title = _required_string(arguments, "title")
+    if len(title) > 200:
+        raise ToolError("invalid_arguments: 'title' must be at most 200 characters")
+    art = arguments.get("art")
+    if art not in DOCUMENT_KINDS:
+        raise ToolError("invalid_arguments: 'art' must be 'zusammenfassung' or 'white_paper'")
+    content = arguments.get("content")
+    if not isinstance(content, str) or not content.strip() or len(content) > DOCUMENT_MAX_CHARS:
+        raise ToolError(f"invalid_arguments: 'content' must be a non-empty string of at most {DOCUMENT_MAX_CHARS} characters")
+    sources = arguments.get("quellen", [])
+    if (not isinstance(sources, list) or len(sources) > DOCUMENT_MAX_SOURCES
+            or not all(isinstance(s, str) and IDEA_ID_PATTERN.fullmatch(s) for s in sources)):
+        raise ToolError(f"invalid_arguments: 'quellen' must be at most {DOCUMENT_MAX_SOURCES} durable ids")
+    metadata = {"width": 320.0, "height": 220.0, "art": art, "quellen": list(dict.fromkeys(sources))}
+    existing = _first_row(_request(
+        "GET", "canvas_nodes",
+        params={"select": "id,node_type,linked_idea_id", "id": f"eq.{node_id}", "limit": "1"},
+    ))
+    if existing is not None:
+        if existing.get("node_type") != DOCUMENT_NODE_TYPE or existing.get("linked_idea_id") != bubble_id:
+            raise ToolError("idea_document_conflict")
+        updated = _first_row(_request(
+            "PATCH", "canvas_nodes", params={"id": f"eq.{node_id}"},
+            body={"title": title, "content": content, "metadata": metadata},
+        ))
+        if updated is None:
+            raise ToolError("idea_not_found")
+        return updated
+    created = _first_row(_request(
+        "POST", "canvas_nodes",
+        body={"id": node_id, "node_type": DOCUMENT_NODE_TYPE, "title": title, "content": content,
+              "x": 0, "y": -300, "linked_idea_id": bubble_id, "metadata": metadata},
+    ))
+    if created is None:
+        raise ToolError("idea_document_not_written")
+    return created
 
 
 def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
@@ -1471,6 +1642,8 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
                 if isinstance(row, Mapping) and isinstance(row.get("id"), str):
                     titles[row["id"]] = _card_title(row)
         return _card_read(node, edges, titles)
+    if name == "idea_document":
+        return _document_write(arguments)
     if name == "idea_create":
         node_type = arguments.get("node_type", "note")
         content = arguments.get("content", "")
@@ -1508,18 +1681,28 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
             },
         )
     if name == "idea_update":
+        node = None
         if "content_append" in arguments:
             arguments = _with_appended_content(arguments)
+            node = arguments.pop("_node")
+        body = _patch_fields(
+            arguments,
+            {"title", "content", "node_type", "x", "y"},
+            string_fields={"title", "content", "node_type"},
+            integer_fields={"x", "y"},
+        )
+        if isinstance(body.get("content"), str):
+            if node is None:
+                node = _first_row(_request("GET", "canvas_nodes", params={
+                    "select": "id,title,content_json", "id": f"eq.{_required_string(arguments, 'id')}", "limit": "1"}))
+            synced = _synced_structured(node, body["content"])
+            if synced is not None:
+                body["content_json"] = synced
         return _request(
             "PATCH",
             "canvas_nodes",
             params={"id": f"eq.{_required_string(arguments, 'id')}"},
-            body=_patch_fields(
-                arguments,
-                {"title", "content", "node_type", "x", "y"},
-                string_fields={"title", "content", "node_type"},
-                integer_fields={"x", "y"},
-            ),
+            body=body,
         )
     if name == "idea_delete":
         idea_id = _required_string(arguments, "id")
@@ -1592,9 +1775,17 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
             text = str(node.get("content") or "").strip()
             if fmt != "note" and (not text or text == str(node.get("title") or "").strip()):
                 raise ToolError("idea_format_no_content")
+            structured: dict[str, Any] = {"type": fmt, "title": node.get("title") or "", "text": node.get("content") or ""}
+            if fmt == "table":
+                # Die Huelle zeichnet eine Tabelle nur aus columns/rows (format-renderer.js).
+                # Ohne erkennbare Spalten aendert sich nichts (Arbeitslauf 2: nur die Art wechselte).
+                table = _table_from_text(_live_text(node) or "", str(node.get("title") or ""))
+                if table is None:
+                    raise ToolError("idea_format_table_no_columns")
+                structured.update(table)
             patch = {
                 "format_schema": {"type": fmt},
-                "content_json": {"type": fmt, "title": node.get("title") or "", "text": node.get("content") or ""},
+                "content_json": structured,
                 "previous_content_json": dict(current),
                 "last_formatted": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             }
@@ -1743,6 +1934,40 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         if updated is None:
             raise ToolError("bewertung_unverified")
         return {"bubble_id": bubble_id, "bewertung": entry}
+    if name == "bubble_wurzel":
+        _only_arguments(arguments, {"bubble_id", "id"})
+        bubble_id = _durable_id(arguments, "bubble_id")
+        root_id = _durable_id(arguments, "id") if "id" in arguments else None
+        bubble = _first_row(_request(
+            "GET",
+            "ideas",
+            params={"select": "id,metadata", "id": f"eq.{bubble_id}", "parent_id": "is.null", "limit": "1"},
+        ))
+        if bubble is None:
+            raise ToolError("bubble_not_found")
+        if root_id is not None:
+            card = _first_row(_request(
+                "GET",
+                "canvas_nodes",
+                params={"select": "id", "id": f"eq.{root_id}", "linked_idea_id": f"eq.{bubble_id}", "limit": "1"},
+            ))
+            if card is None:
+                raise ToolError(f"idea_not_in_bubble: {root_id}")
+        metadata = bubble.get("metadata")
+        metadata = dict(metadata) if isinstance(metadata, Mapping) else {}
+        if root_id is None:
+            metadata.pop("wurzel", None)
+        else:
+            metadata["wurzel"] = root_id
+        updated = _first_row(_request(
+            "PATCH",
+            "ideas",
+            params={"id": f"eq.{bubble_id}", "parent_id": "is.null"},
+            body={"metadata": metadata},
+        ))
+        if updated is None:
+            raise ToolError("bubble_wurzel_unverified")
+        return {"bubble_id": bubble_id, "wurzel": root_id}
     if name == "bubble_rate":
         _only_arguments(arguments, {"id", "score"})
         bubble_id = _durable_id(arguments, "id")

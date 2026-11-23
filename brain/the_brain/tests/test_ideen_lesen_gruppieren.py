@@ -1,0 +1,76 @@
+"""Inhaltsfrage und Gruppieren (Arbeitslauf 2, Punkt 3). Ohne Netz; Namen erfunden."""
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from core import ideen_abkuerzung as abk  # noqa: E402
+from core.ideen_fest_contract import feste_argumente  # noqa: E402
+
+KONTEXT = {"space": "ideas", "bubble": {"id": "b0b1e001", "title": "Stadtfest"},
+           "cards": [{"id": "a0000001", "title": "Preise"}, {"id": "a0000002", "title": "Bühnenplan"}]}
+
+
+@pytest.fixture(autouse=True)
+def _leer():
+    abk._OFFEN.clear()
+    yield
+    abk._OFFEN.clear()
+
+
+@pytest.mark.parametrize("satz", [
+    "Was steht in der Notiz Preise?", "Was steht bei Preise", "Worum geht es bei Preise?",
+    "Lies mir Preise vor", "Zeig mir den Inhalt von Preise",
+])
+def test_inhaltsfrage_liest_fest_und_merkt_die_karte(satz) -> None:
+    treffer = abk.loese(satz, KONTEXT)
+    assert treffer["ereignis"] == "idea.list" and treffer["lies"] == {"id": "a0000001", "title": "Preise"}
+    assert treffer["argumente"] == {"bubble_id": "b0b1e001", "full": True, "limit": 100}
+    argumente, frage = feste_argumente("idea.list", json.dumps(treffer["argumente"]))
+    assert argumente is not None, frage
+
+
+def test_was_steht_hier_bleibt_die_liste() -> None:
+    treffer = abk.loese("Was steht hier?", KONTEXT)
+    assert treffer["ereignis"] == "idea.list" and "lies" not in treffer
+
+
+def _ergebnis(zeilen):
+    return {"content": [{"type": "text", "text": json.dumps({"karten": zeilen, "gesamt": len(zeilen)})}],
+            "isError": False}
+
+
+def test_antwort_zeigt_nur_die_gefragte_karte_und_den_lebenden_text() -> None:
+    zeilen = [{"id": "a0000001", "title": "Preise", "content": "Preise",
+               "content_json": {"type": "table", "text": "Stand 900\nDruck 120"}},
+              {"id": "a0000002", "title": "Bühnenplan", "content": "Zwei Bühnen"}]
+    kontext = {**KONTEXT, "_lies_karte": {"id": "a0000001", "title": "Preise"}}
+    assert abk.antwort_fuer_schritt("idea.list", True, _ergebnis(zeilen), None, "", kontext) == (
+        "„Preise“:\nStand 900\nDruck 120")
+    leer = [{"id": "a0000001", "title": "Preise", "content": "Preise"}]
+    assert abk.antwort_fuer_schritt("idea.list", True, _ergebnis(leer), None, "", kontext) == (
+        "„Preise“ hat noch keinen Text.")
+    assert abk.antwort_fuer_schritt("idea.list", True, _ergebnis([]), None, "", kontext) == (
+        "„Preise“ kann ich gerade nicht lesen.")
+    lang = [{"id": "a0000001", "title": "Preise", "content": "x" * 3000}]
+    assert abk.antwort_fuer_schritt("idea.list", True, _ergebnis(lang), None, "", kontext).endswith(" …")
+
+
+@pytest.mark.parametrize("satz", [
+    "Gruppiere die Notizen", "gruppiere nach Thema", "Ordne die Karten nach Thema", "Was gehört zusammen?",
+    "Bilde Themengruppen", "Cluster die Ideen",
+])
+def test_gruppieren_sagt_ehrlich_dass_es_noch_nicht_geht(satz) -> None:
+    antwort = abk.loese(satz, KONTEXT)
+    assert antwort == {"rueckfrage": abk.GRUPPIEREN_NOCH_NICHT}
+    assert antwort["rueckfrage"].startswith("Das kann ich noch nicht")
+
+
+def test_ordnen_und_verbinden_bleiben_wie_sie_sind() -> None:
+    assert abk.loese("Ordne die Karten", KONTEXT)["ereignis"] == "idea.arrange"
+    assert abk.loese("Verbinde, was zusammengehört", KONTEXT)["ereignis"] == "idea.auto_link"

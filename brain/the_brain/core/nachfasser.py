@@ -60,7 +60,8 @@ def _zeitstempel(wert: Any) -> Optional[float]:
 class Nachfasser:
     def __init__(self, tabelle: Any, *, validator: Any, router: Any, plan_executor: Any,
                  exec_log: Any = None, jetzt: Callable[[], float] = time.time,
-                 rueckweg_anschluss: Optional[Callable[[dict], dict]] = None) -> None:
+                 rueckweg_anschluss: Optional[Callable[[dict], dict]] = None,
+                 dokument_anschluss: Optional[Callable[..., dict]] = None) -> None:
         self.tabelle = tabelle
         self._jetzt = jetzt
         self.validator = validator
@@ -69,6 +70,8 @@ class Nachfasser:
         self.exec_log = exec_log
         # Rueckweg der Ideen-Modellauftraege (core/ideen_rueckweg); in Tests eine Attrappe.
         self._rueckweg_anschluss = rueckweg_anschluss
+        # Dokument-Auftraege (core/ideen_dokument); in Tests eine Attrappe.
+        self._dokument_anschluss = dokument_anschluss
 
     def runde(self) -> Dict[str, int]:
         z = {"geprueft": 0, "bestaetigt": 0, "abgelehnt_pruefung": 0, "fortgesetzt": 0,
@@ -126,15 +129,23 @@ class Nachfasser:
         dann schreiben, dann abschliessen. Wer die Pruefung nicht setzen konnte, schreibt
         nicht: so wird ein Ergebnis nie zweimal geschrieben.
         """
-        from core import ideen_rueckweg
+        from core import ideen_dokument, ideen_rueckweg
 
+        # Zusammenfassung und White Paper (core/ideen_dokument) gehen denselben Weg,
+        # nur mit eigener Verarbeitung: Teil pruefen, naechsten Teil anlegen oder schreiben.
+        dokument = ideen_dokument.rueckweg_aus(a) is not None
         if not self.tabelle.pruefung_setzen(a["id"], {"verified": None, "reason": "rueckweg laeuft",
-                                                       "kind": "ideen_rueckweg", "fortsetzung": "laeuft"}):
+                                                       "kind": "ideen_dokument" if dokument else "ideen_rueckweg",
+                                                       "fortsetzung": "laeuft"}):
             return
         z["geprueft"] += 1
         try:
-            anschluss = (self._rueckweg_anschluss or ideen_rueckweg.anschluss)(a)
-            pruefung = ideen_rueckweg.zurueckschreiben(a, **anschluss)
+            if dokument:
+                anschluss = (self._dokument_anschluss or ideen_dokument.anschluss)(a, anlegen=self.tabelle.anlegen)
+                pruefung = ideen_dokument.verarbeiten(a, **anschluss)
+            else:
+                anschluss = (self._rueckweg_anschluss or ideen_rueckweg.anschluss)(a)
+                pruefung = ideen_rueckweg.zurueckschreiben(a, **anschluss)
         except Exception as e:  # noqa: BLE001 - Anschluss nicht baubar: sichtbar, nichts geschrieben
             pruefung = {"verified": None, "reason": f"anschluss: {type(e).__name__}", "kind": "ideen_rueckweg",
                         "rueckweg": "fehler", "meldung": "Der Rückweg ist gerade nicht verfügbar; es wurde nichts geändert."}
@@ -144,7 +155,8 @@ class Nachfasser:
         elif verified is False:
             z["abgelehnt_pruefung"] += 1
         self._protokollieren(a, a.get("capability") or "", verified, pruefung.get("reason"))
-        abschluss = {**pruefung, "fortsetzung": "fertig" if pruefung.get("rueckweg") == "geschrieben" else "fehler"}
+        abschluss = {**pruefung, "fortsetzung": "fertig" if pruefung.get("rueckweg") in ("geschrieben", "weiter")
+                     else "fehler"}
         if abschluss["fortsetzung"] == "fehler":
             # Der Ausfuehrer haengt das an seine Meldung an; ein deutscher Satz, kein Rohtext.
             abschluss["fortsetzung_fehler"] = pruefung.get("meldung") or "Rückweg gescheitert"
