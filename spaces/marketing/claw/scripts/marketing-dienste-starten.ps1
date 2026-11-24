@@ -37,9 +37,12 @@
 
 .PARAMETER Nur
     Nur diese Dienste (Namen, kommagetrennt) betrachten. Der Waechter startet damit gezielt.
+
+.PARAMETER MitBedarf
+    Auch die Dienste aus logs\marketing\bei_bedarf.txt betrachten (sonst bleiben sie aus).
 #>
 [CmdletBinding()]
-param([switch]$Pruefen, [switch]$Liste, [string[]]$Nur)
+param([switch]$Pruefen, [switch]$Liste, [string[]]$Nur, [switch]$MitBedarf)
 
 $ErrorActionPreference = 'Stop'
 
@@ -258,6 +261,15 @@ function Initialize-Markenwissen {
     } finally {
         Pop-Location
     }
+}
+
+# Dienste nur bei Bedarf (24.11.2026): Namen in logs\marketing\bei_bedarf.txt (eine Zeile je Name, # = Kommentar)
+# starten weder beim Anmelden noch ueber den Waechter. Sie belegen zusammen mehrere GB (Sprech-Dienst allein
+# rund 7 GB) und der PC lief damit ans Commit-Limit. Gestartet werden sie mit -Nur <Namen> oder -MitBedarf.
+$BedarfDatei = Join-Path $LogDir 'bei_bedarf.txt'
+if (-not $Nur -and -not $MitBedarf -and (Test-Path $BedarfDatei)) {
+    $beiBedarf = @(Get-Content $BedarfDatei | ForEach-Object { ($_ -replace '#.*$', '').Trim() } | Where-Object { $_ })
+    $Dienste = @($Dienste | Where-Object { $_.Name -notin $beiBedarf })
 }
 
 if ($Liste) {
