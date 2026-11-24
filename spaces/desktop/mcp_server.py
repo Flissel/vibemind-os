@@ -27,6 +27,7 @@ from typing import Any, Mapping
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import aufgaben  # noqa: E402  (Geschwisterdatei; der Dienst wird als Skript gestartet)
+import app_start  # noqa: E402
 import blick  # noqa: E402
 
 SERVER_NAME = "spaces-desktop"
@@ -81,6 +82,24 @@ TOOLS: list[dict[str, Any]] = [
             "login) appear only as gesperrt=true, without program or title."
         ),
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "desktop_app",
+        "description": (
+            "Start a program or bring its window to the front. Only a fixed list: editor (Notepad), "
+            "chrome, explorer; started without arguments. modus oeffnen: bring an open window to the "
+            "front, else start it; vorholen: only bring to the front. Blocked windows are never brought "
+            "to the front. Every call is booked as a task in the task book; without "
+            "VIBEMIND_DESKTOP_AUSFUEHREN=1 it is booked but not done."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "programm": {"type": "string", "enum": list(app_start.PROGRAMME)},
+                "modus": {"type": "string", "enum": list(app_start.MODI)},
+            },
+            "required": ["programm", "modus"],
+        },
     },
     {
         "name": "desktop_screen_read",
@@ -383,6 +402,54 @@ def _fenster() -> dict[str, Any]:
     }
 
 
+def _app(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    """Programm starten oder vorholen, gebucht als eigene kurze Aufgabe im Aufgabenbuch.
+
+    Das Buch ist die Spur, die App und Pruefer lesen: Aufgabe, ein Schritt "app" mit Programm und
+    Modus, Ausgang. Not-Aus (STOP) und eine laufende Aufgabe lehnen ab, bevor etwas geschieht.
+    Ohne VIBEMIND_DESKTOP_AUSFUEHREN=1 wird nur gebucht. Fenstertitel stehen nirgends.
+    """
+    _nur(arguments, {"programm", "modus"})
+    schluessel, modus = arguments.get("programm"), arguments.get("modus")
+    if schluessel not in app_start.PROGRAMME:
+        raise ToolError("eingabe_ungueltig: programm muss eines von " + ", ".join(app_start.PROGRAMME) + " sein")
+    if modus not in app_start.MODI:
+        raise ToolError("eingabe_ungueltig: modus muss oeffnen oder vorholen sein")
+    name = app_start.PROGRAMME[schluessel]["name"]
+    trocken = not _ausfuehren_erlaubt(os.environ)
+    text = f"App: {name} " + ("öffnen" if modus == "oeffnen" else "nach vorn holen")
+    aufgabe = aufgaben.beginnen(text, trocken=trocken)
+    kennung = aufgabe["id"]
+    start = time.monotonic()
+    ok, echt, ergebnis = False, False, {"getan": "trocken", "fenster_da": None, "gesperrt_uebersprungen": 0}
+    try:
+        _, schritt = aufgaben.schritt_beginnen(
+            kennung, art="app", angaben={"programm": schluessel, "modus": modus}, braucht_blick=False)
+        try:
+            if trocken:
+                ok, meldung = True, "trocken: gebucht, nicht ausgeführt"
+            else:
+                echt = True  # ab hier kann Windows gehandelt haben
+                ergebnis = app_start.ausfuehren(schluessel, modus)
+                ok = ergebnis["getan"] in ("vorgeholt", "gestartet")
+                meldung = ergebnis["getan"] + ("" if ergebnis.get("fenster_da") is not False else ", kein Fenster erschienen")
+        except app_start.AppFehler as exc:
+            meldung = str(exc)
+        except OSError:
+            meldung = "start_fehlgeschlagen: Windows hat das Programm nicht gestartet"
+        aufgaben.schritt_abschliessen(kennung, schritt["nr"], ok=ok, echt=echt, meldung=meldung,
+                                      dauer_ms=int((time.monotonic() - start) * 1000))
+    except aufgaben.AufgabenFehler as exc:
+        meldung = str(exc)
+    aufgaben.beenden(kennung, zustand="fertig" if ok else "fehlgeschlagen", ergebnis=f"{text}: {meldung}")
+    return {
+        "task_id": kennung, "programm": schluessel, "modus": modus, "trocken": trocken, "ok": ok, "echt": echt,
+        "getan": ergebnis["getan"], "fenster_da": ergebnis.get("fenster_da"),
+        "gesperrt_uebersprungen": int(ergebnis.get("gesperrt_uebersprungen") or 0),
+        "meldung": meldung[:200], "dauer_ms": int((time.monotonic() - start) * 1000),
+    }
+
+
 def _find(arguments: Mapping[str, Any]) -> dict[str, Any]:
     _nur(arguments, {"text"})
     antwort = _http(
@@ -507,6 +574,8 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         if name == "desktop_fenster":
             _nur(arguments, set())
             return _fenster()
+        if name == "desktop_app":
+            return _app(arguments)
         if name in BLICK_WERKZEUGE:
             if name == "desktop_find":
                 ergebnis = _find(arguments)

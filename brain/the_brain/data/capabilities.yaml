@@ -2432,6 +2432,16 @@
     - "^(?:welche|was für|was fuer)\\s+fenster\\s+(?:sind|habe ich)\\b.*\\b(?:offen|geöffnet|geoeffnet)\\b"
   execution_target: "direct:core.desktop_fenster:fenster_lesen"
 
+# Fester Satz mit Handlung (24.11.2026, core/desktop_app.py): Programm starten oder nach vorn holen.
+# Nur editor, chrome, explorer; aus dem Satz geht nur der feste Schluessel an den Werkzeug-Dienst.
+- capability: desktop_app
+  space: desktop
+  description: "open (start) or bring to the front one of a fixed list of programs on the user's Windows desktop: Editor/Notepad, Chrome, Explorer. Started without arguments; blocked windows are never brought to the front. Booked in the desktop task book."
+  match_patterns:
+    - "^(?:bitte\\s+)?(?:öffne|oeffne|starte)\\s+(?:den\\s+|die\\s+|das\\s+)?(?:editor|notepad|chrome|explorer|datei-explorer)\\b"
+    - "^(?:bitte\\s+)?(?:hol|hole|bring|bringe)\\s+(?:den\\s+|die\\s+|das\\s+)?(?:editor|notepad|chrome|explorer)\\S*\\s+(?:nach\\s+vorn|in\\s+den\\s+vordergrund)"
+  execution_target: "direct:core.desktop_app:app"
+
 - capability: thebrain_gedanken
   space: thebrain
   description: "read the brain's latest background thoughts from its own interface (/api/cortex/thoughts)"

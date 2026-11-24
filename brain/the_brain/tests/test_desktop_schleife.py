@@ -1376,6 +1376,82 @@ def test_fensterliste_ohne_freigabe_sagt_nichts(echt, openfang, monkeypatch):
     assert openfang.werkzeuge == []  # ohne Zulassung erreicht nichts den Werkzeug-Dienst
 
 
+# ─── "Öffne den Editor" / "Hol Chrome nach vorn" (core/desktop_app.py) ─────────────
+
+
+def _app_windows(echt, monkeypatch, fenster):
+    """Ersetzt nur Windows: Fensterliste, Vorholen, Starten. Gibt die Liste der Handlungen zurueck."""
+    app_start = echt.server.app_start
+    handlungen: list = []
+    monkeypatch.setattr(echt.server.blick, "sichtbare_fenster", lambda: list(fenster))
+    monkeypatch.setattr(app_start, "fensterklasse", lambda hwnd: "")
+    monkeypatch.setattr(app_start, "vordergrund_hwnd", lambda: 0)
+    monkeypatch.setattr(app_start, "programmdatei", lambda s: Path(f"C:/fest/{app_start.PROGRAMME[s]['programm']}.exe"))
+    monkeypatch.setattr(app_start.time, "sleep", lambda s: None)
+
+    def nach_vorn(hwnd):
+        handlungen.append(("vorn", hwnd))
+        return True
+
+    def starten(pfad):
+        handlungen.append(("start", Path(pfad).name))
+        fenster.insert(0, {"hwnd": 50, "titel": "Unbenannt - Editor", "programm": Path(pfad).stem})
+        return 1
+
+    monkeypatch.setattr(app_start, "nach_vorn", nach_vorn)
+    monkeypatch.setattr(app_start, "starten", starten)
+    return handlungen
+
+
+def test_oeffne_den_editor_ueber_den_echten_executor_mit_spur_und_buch(echt, openfang, monkeypatch):
+    from core.capability_targets import DirectExecutor, find_registered_mcp_authority
+    from core import desktop_app
+    handlungen = _app_windows(echt, monkeypatch, [{"hwnd": 2, "titel": "Tresor - KeePass", "programm": "keepass"}])
+    antwort = DirectExecutor("direct:core.desktop_app:app").call_with_arg(
+        "", extra_params={"_intent": "Öffne den Editor", "_step_id": "s1"})
+    assert antwort["ok"] is True, antwort
+    ergebnis = antwort["result"]
+    assert (ergebnis["success"], ergebnis["programm"], ergebnis["getan"], ergebnis["fenster_da"]) == (
+        True, "editor", "gestartet", True)
+    assert handlungen == [("start", "notepad.exe"), ("vorn", 50)]
+    # Spur: genau ein fester Aufruf mit eigener Zulassung im Raum des Verzeichnisses, nur feste Werte.
+    assert openfang.werkzeuge == ["desktop_app"] and len(openfang.zulassungen) == 1
+    raum = find_registered_mcp_authority("brain-desktop", "spaces-desktop", "desktop_app")
+    assert raum.event_id == "desktop.app" and openfang.zulassungen[0]["space_id"] == raum.space_id
+    assert openfang.zulassungen[0]["plan_id"] == ergebnis["plan_id"]
+    # Protokoll: eigene Aufgabe im Aufgabenbuch, ohne Fenstertitel.
+    buch = echt.buch(ergebnis["task_id"])
+    assert (buch["aufgabe"], buch["zustand"]) == ("App: Editor öffnen", "fertig")
+    assert [(s["art"], s["angaben"], s["echt"]) for s in buch["schritte"]] == [
+        ("app", {"programm": "editor", "modus": "oeffnen"}, True)]
+    for geheim in ("KeePass", "Unbenannt"):
+        assert geheim not in json.dumps(buch) and geheim not in json.dumps(antwort)
+    assert echt.dienst_aufrufe == []  # der Desktop-Dienst (8007) wird nicht gebraucht
+    assert desktop_app.antwort(ergebnis) == "Ich habe den Editor geöffnet."
+
+
+def test_hol_chrome_nach_vorn_ohne_offenes_fenster_startet_nichts(echt, openfang, monkeypatch):
+    from core.capability_targets import DirectExecutor
+    from core import desktop_app
+    handlungen = _app_windows(echt, monkeypatch, [])
+    antwort = DirectExecutor("direct:core.desktop_app:app").call_with_arg(
+        "", extra_params={"_intent": "Hol Chrome nach vorn", "_step_id": "s1"})
+    ergebnis = antwort["result"]
+    assert (ergebnis["success"], ergebnis["getan"], ergebnis["error"]) == (False, "nicht_offen", "nicht_offen")
+    assert handlungen == []
+    assert echt.buch(ergebnis["task_id"])["zustand"] == "fehlgeschlagen"
+    assert desktop_app.fehlersatz(ergebnis).startswith("Chrome ist nicht offen")
+
+
+def test_app_ohne_freigabe_erreicht_nichts(echt, openfang, monkeypatch):
+    from core import desktop_app
+    openfang.freigabe = "pending"
+    handlungen = _app_windows(echt, monkeypatch, [])
+    ergebnis = desktop_app.app("", _intent="Öffne den Explorer")
+    assert (ergebnis["success"], ergebnis["error"]) == (False, "freigabe_ausstehend")
+    assert openfang.werkzeuge == [] and handlungen == [] and not list(echt.ordner.glob("*.json"))
+
+
 # ─── Augen: "Bestätige: Fenster X ist vorn und zeigt Y" (core/desktop_augen.py) ─────
 
 

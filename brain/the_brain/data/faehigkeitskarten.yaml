@@ -219,6 +219,12 @@ bereiche:
           - Welche Fenster sind offen?
           - Was ist gerade auf dem Desktop offen?
           - Zeig mir die offenen Fenster
+      - id: desktop_app
+        beschreibung: Editor, Chrome oder Explorer öffnen oder nach vorn holen
+        beispiele:
+          - Öffne den Editor
+          - Starte Chrome
+          - Hol den Explorer nach vorn
       - id: desktop_screen_read
         beschreibung: sichtbaren Text vom Bildschirm lesen
         beispiele:
