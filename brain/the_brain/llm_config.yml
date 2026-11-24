@@ -39,5 +39,7 @@ roles:
   brain_supermemory:             { provider: openfang, model: "openfang:brain-knowledge",  temperature: 0.5 }
   brain_data_collector:          { provider: openfang, model: "openfang:brain-researcher", temperature: 0.7 }
   brain_data_collector_anthropic: { provider: openfang, model: "openfang:brain-researcher", temperature: 0.7 }
+  # Hintergrund-Denken (MicroAgentPool ohne wartenden Menschen), eigener Agent ohne Werkzeuge.
+  brain_denken:                  { provider: openfang, model: "openfang:brain-denken",     temperature: 0.7 }
 
 overrides: {}
