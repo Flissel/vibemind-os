@@ -53,18 +53,17 @@ def frage_karte(titel: str) -> str:
 def frage_bubble(titel: str, karten: Optional[int]) -> str:
     """Rückfrage vor dem Löschen der offenen Bubble, mit der Zahl ihrer Karten.
 
-    Die Datenbank löscht nur die Bubble; ihre Karten bleiben gespeichert, gehören dann aber zu
-    keiner Bubble mehr (canvas_nodes.linked_idea_id: ON DELETE SET NULL). "Zurück" hängt sie
-    wieder an (Änderungsbuch, supabase/tests/zurueck).
+    Die Karten gehen mit (bubble_delete mit mit_karten), ihre Verbindungen auch; alles unter
+    einer Kennung der Änderung, "Zurück" holt es wieder (Änderungsbuch, supabase/tests/zurueck).
     """
     name = f"die Bubble „{titel}“" if titel else "diese Bubble"
     if karten is None:
-        inhalt = "Wie viele Karten sie hat, weiß ich gerade nicht. "
+        inhalt = "Ihre Karten gehen mit; wie viele es sind, weiß ich gerade nicht. "
     elif karten == 0:
         inhalt = "Sie hat keine Karten. "
     else:
         zahl = "eine Karte" if karten == 1 else f"{karten} Karten"
-        inhalt = (f"Sie hat {zahl}; die bleiben gespeichert, gehören dann aber zu keiner Bubble mehr. ")
+        inhalt = f"Sie hat {zahl}; die werden mit gelöscht, ihre Verbindungen auch. "
     return (f"Soll ich {name} löschen? {inhalt}Mit „Zurück“ holst du alles wieder. "
             "Sag „Ja, löschen“.")
 

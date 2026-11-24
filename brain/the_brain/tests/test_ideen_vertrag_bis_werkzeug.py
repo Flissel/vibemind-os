@@ -228,7 +228,7 @@ def _hauptlauf() -> int:
         ("idea.delete", abk.loese("Lösche die Karte White Paper: Messe",
                                   {**app, "cards": [{"id": "00000000-0000-4000-8000-000000000d01",
                                                      "title": "White Paper: Messe"}]})["argumente"]),
-        # Bubble loeschen (nach "Ja, löschen"): nur die offene; ihre Karte bleibt, ohne Bubble.
+        # Bubble loeschen (nach "Ja, löschen"): nur die offene, ihre Karte geht mit.
         ("bubble.delete", abk.loese("Lösche diese Bubble",
                                     {"space": "ideas", "bubble": {"id": "b0b1e002", "title": "Alte Messe"},
                                      "cards": [{"id": "a0000009", "title": "Standplan"}],
@@ -267,6 +267,8 @@ def _hauptlauf() -> int:
         if erwartung is not None:
             ok, _signal, warum = vertrag.pruefe_zustand(erwartung, lies)
             check(f"{event_id}: Zustand bestaetigt", ok is True, warum)
+    check("bubble.delete: die Karte der Bubble ist mit geloescht",
+          not [k for k in db.tabellen["canvas_nodes"] if k["id"] == "a0000009"])
     check("alle zehn Ereignisse geprueft", gesehen == set(vertrag.FESTE_EREIGNISSE),
           str(set(vertrag.FESTE_EREIGNISSE) - gesehen))
 

@@ -101,12 +101,12 @@ FESTE_EREIGNISSE: dict[str, dict[str, Any]] = {
         "wahl": {},
     },
     # "Lösche diese Bubble": nur die offene, nur nach Rückfrage mit der Zahl der Karten und "Ja,
-    # löschen" (Schlüssel wie oben). Die Datenbank löst die Karten nur von der Bubble
-    # (linked_idea_id: ON DELETE SET NULL); "Zurück" stellt Bubble und Zuordnung wieder her.
+    # löschen" (Schlüssel wie oben). mit_karten: die Karten (und ihre Verbindungen) gehen mit,
+    # alles unter einer Kennung der Änderung; "Zurück" holt Bubble, Karten und Verbindungen.
     "bubble.delete": {
         "werkzeug": "bubble_delete",
         "pflicht": {"id": _K},
-        "wahl": {},
+        "wahl": {"mit_karten": ("ja_nein",)},
     },
     "bubble.rate": {
         "werkzeug": "bubble_rate",

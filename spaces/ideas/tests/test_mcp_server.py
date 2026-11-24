@@ -196,6 +196,31 @@ class IdeasMcpServerContractTests(unittest.TestCase):
             ["is.null", "is.null", "is.null"],
         )
 
+    def test_bubble_delete_mit_karten_deletes_its_cards_then_the_bubble(self) -> None:
+        server = load_server()
+        calls = []
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs["params"]))
+            return [{"id": "bubble-1"}] if path == "ideas" else []
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            result = server.call_tool("bubble_delete", {"id": "bubble-1", "mit_karten": True})
+        self.assertEqual(result, [{"id": "bubble-1"}])
+        self.assertEqual(calls, [
+            ("GET", "ideas", {"select": "id", "id": "eq.bubble-1", "parent_id": "is.null", "limit": "1"}),
+            ("DELETE", "canvas_nodes", {"linked_idea_id": "eq.bubble-1"}),
+            ("DELETE", "ideas", {"id": "eq.bubble-1", "parent_id": "is.null"}),
+        ])
+
+        calls.clear()
+        with mock.patch.object(server, "_request", side_effect=lambda method, path, **kw: (
+                calls.append((method, path)), [])[1]):
+            self.assertEqual(server.call_tool("bubble_delete", {"id": "fremd", "mit_karten": True}), [])
+        self.assertEqual(calls, [("GET", "ideas")])                     # keine Bubble: keine Karte geloescht
+        with self.assertRaisesRegex(server.ToolError, "^invalid_arguments"):
+            server.call_tool("bubble_delete", {"id": "bubble-1", "mit_karten": "ja"})
+
     def test_bubble_promote_reads_top_level_bubble_creates_project_then_links_it(self) -> None:
         server = load_server()
         calls = []

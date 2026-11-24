@@ -592,8 +592,8 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
             roh = kontext.get("cards")
             gesamt = len(roh) if isinstance(roh, list) else None
         name = f"Die Bubble „{titel}“" if titel else "Die Bubble"
-        return {**_treffer("bubble.delete", {"id": bubble_id},
-                           f"{name} ist gelöscht. Mit „Zurück“ holst du sie wieder, mit allen Karten."),
+        return {**_treffer("bubble.delete", {"id": bubble_id, "mit_karten": True},
+                           f"{name} ist gelöscht, mit ihren Karten. Mit „Zurück“ holst du alles wieder."),
                 "loeschen": {"art": "bubble", "titel": titel, "bubble_id": bubble_id, "karten": gesamt}}
 
     # ── festhalten ──

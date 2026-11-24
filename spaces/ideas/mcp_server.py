@@ -102,8 +102,15 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "bubble_delete",
-        "description": "Delete one top-level bubble by durable id.",
-        "inputSchema": {"type": "object", "properties": {"id": {"type": "string", "minLength": 1}}, "required": ["id"]},
+        "description": (
+            "Delete one top-level bubble by durable id. With 'mit_karten' its canvas ideas (and their "
+            "connections) are deleted too, in the same change."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string", "minLength": 1}, "mit_karten": {"type": "boolean"}},
+            "required": ["id"],
+        },
     },
     {
         "name": "bubble_promote",
@@ -1858,7 +1865,18 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
             ),
         )
     if name == "bubble_delete":
-        return _request("DELETE", "ideas", params={"id": f"eq.{_required_string(arguments, 'id')}", "parent_id": "is.null"})
+        bubble_id = _required_string(arguments, "id")
+        mit_karten = arguments.get("mit_karten", False)
+        if not isinstance(mit_karten, bool):
+            raise ToolError("invalid_arguments: 'mit_karten' must be a boolean")
+        if mit_karten:
+            # Nur wenn es die Bubble gibt; die Verbindungen der Karten gehen per ON DELETE CASCADE mit.
+            # Alles unter derselben aenderung_id: "Zurueck" holt Bubble, Karten und Verbindungen.
+            if _first_row(_request("GET", "ideas", params={
+                    "select": "id", "id": f"eq.{bubble_id}", "parent_id": "is.null", "limit": "1"})) is None:
+                return []
+            _request("DELETE", "canvas_nodes", params={"linked_idea_id": f"eq.{bubble_id}"})
+        return _request("DELETE", "ideas", params={"id": f"eq.{bubble_id}", "parent_id": "is.null"})
     if name == "bubble_promote":
         bubble_id = _canonical_bubble_id(arguments)
         bubble = _first_row(_request(

@@ -158,8 +158,8 @@ def test_router_unbekannte_karte_ist_rueckfrage(monkeypatch) -> None:
 
 # ── L2: offene Bubble löschen, Rückfrage mit der Zahl der Karten ─────────
 
-BUBBLE_FRAGE = ("Soll ich die Bubble „Stadtfest“ löschen? Sie hat 4 Karten; die bleiben gespeichert, gehören "
-                "dann aber zu keiner Bubble mehr. Mit „Zurück“ holst du alles wieder. Sag „Ja, löschen“.")
+BUBBLE_FRAGE = ("Soll ich die Bubble „Stadtfest“ löschen? Sie hat 4 Karten; die werden mit gelöscht, ihre "
+                "Verbindungen auch. Mit „Zurück“ holst du alles wieder. Sag „Ja, löschen“.")
 
 
 @pytest.mark.parametrize("satz", ["Lösche diese Bubble", "Lösche die Bubble", "lösche die Bubble Stadtfest",
@@ -172,9 +172,10 @@ def test_router_bubble_erst_frage_mit_kartenzahl_dann_ja(monkeypatch, satz) -> N
     (plan,) = ausfuehrer.plaene
     assert [h.capability for h in plan.hops] == ["bubble.delete"]
     arg = json.loads(plan.hops[0].arg_template)
-    assert arg["id"] == BUBBLE["id"] and lb.einloesen(arg["bestaetigung"], "bubble.delete", BUBBLE["id"])
-    assert body["final_text"] == ("Die Bubble „Stadtfest“ ist gelöscht. Mit „Zurück“ holst du sie wieder, "
-                                  "mit allen Karten.")
+    assert arg["id"] == BUBBLE["id"] and arg["mit_karten"] is True
+    assert lb.einloesen(arg["bestaetigung"], "bubble.delete", BUBBLE["id"])
+    assert body["final_text"] == ("Die Bubble „Stadtfest“ ist gelöscht, mit ihren Karten. "
+                                  "Mit „Zurück“ holst du alles wieder.")
     assert body.get("ziel") is None                                           # kein Sprung in die geloeschte
 
 
@@ -189,9 +190,9 @@ def test_router_bubble_nur_die_offene(monkeypatch) -> None:
 
 
 def test_bubble_frage_ohne_zahl_und_mit_einer_karte() -> None:
-    assert "Sie hat eine Karte;" in lb.frage_bubble("Stadtfest", 1)
+    assert "Sie hat eine Karte; die werden mit gelöscht" in lb.frage_bubble("Stadtfest", 1)
     assert "Sie hat keine Karten." in lb.frage_bubble("Stadtfest", 0)
-    assert "Wie viele Karten sie hat, weiß ich gerade nicht." in lb.frage_bubble("Stadtfest", None)
+    assert "Ihre Karten gehen mit; wie viele es sind, weiß ich gerade nicht." in lb.frage_bubble("Stadtfest", None)
 
 
 def test_bubble_schluessel_gilt_nicht_fuer_eine_karte() -> None:
