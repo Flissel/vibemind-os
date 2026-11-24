@@ -27,12 +27,14 @@ Nur Standardbibliothek: der Prozess laeuft ohne Paketpfad.
 from __future__ import annotations
 
 import html.parser
+import http.client
 import importlib.util
 import ipaddress
 import json
 import os
 import re
 import socket
+import ssl
 import sys
 import time
 import urllib.error
@@ -151,11 +153,33 @@ def url_erlaubt(url: str, aufloesen: Callable[..., Any] = socket.getaddrinfo) ->
     return _adresse_erlaubt(teile.hostname or "", aufloesen)
 
 
+URL_MAX_ZEICHEN = 200
+
+
+def url_bereinigen(roh: str) -> str | None:
+    """Adresse des Modells als nicht vertrauenswuerdig behandeln: ohne Query und Fragment, kurz.
+
+    Der Auftrag enthaelt die Notizen der Bubble. Eine frei gewaehlte Adresse koennte Teile davon
+    in Query oder Pfad an einen fremden Server tragen (Sicherheitspruefung 24.11.2026). Darum:
+    Query und Fragment fallen weg, Adressen ueber ``URL_MAX_ZEICHEN`` Zeichen werden verworfen.
+    """
+    try:
+        teile = urllib.parse.urlsplit(roh)
+    except ValueError:
+        return None
+    if teile.scheme not in ("http", "https") or not teile.hostname:
+        return None
+    url = urllib.parse.urlunsplit((teile.scheme, teile.netloc, teile.path or "/", "", ""))
+    return url if len(url) <= URL_MAX_ZEICHEN else None
+
+
 def quellen_aus_antwort(text: Any, grenze: int = MAX_SEITEN) -> list[str]:
     """Hoechstens ``grenze`` verschiedene http(s)-Adressen in der Reihenfolge der Antwort."""
     gefunden: list[str] = []
     for roh in _URL_RE.findall(text if isinstance(text, str) else ""):
-        url = roh.rstrip(".,;:!?*_")
+        url = url_bereinigen(roh.rstrip(".,;:!?*_"))
+        if url is None:
+            continue
         if url not in gefunden:
             gefunden.append(url)
         if len(gefunden) >= grenze:
@@ -206,12 +230,59 @@ class _Umleitung(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+def gegenstelle_pruefen(sock: Any) -> None:
+    """Nach dem Verbinden: die tatsaechliche Gegenstelle muss oeffentlich sein.
+
+    Die Pruefung vor dem Holen loest den Namen einmal auf; die Verbindung loest ihn erneut auf.
+    Ein Name, der dazwischen auf eine interne Adresse wechselt (DNS-Rebinding), faellt hier auf.
+    Gilt fuer jede Verbindung, also auch fuer jeden Umleitungsschritt.
+    """
+    try:
+        ip = ipaddress.ip_address(str(sock.getpeername()[0]).split("%", 1)[0])
+    except (OSError, ValueError, IndexError, TypeError) as exc:
+        raise OSError("gegenstelle_unbekannt") from exc
+    if not ip.is_global or ip.is_multicast:
+        sock.close()
+        raise OSError("gegenstelle_nicht_oeffentlich")
+
+
+class _GepruefteHTTPVerbindung(http.client.HTTPConnection):
+    def connect(self) -> None:
+        super().connect()
+        gegenstelle_pruefen(self.sock)
+
+
+class _GepruefteHTTPSVerbindung(http.client.HTTPSConnection):
+    def connect(self) -> None:
+        # Erst TCP verbinden und pruefen, dann TLS (SNI und Host bleiben der Name).
+        http.client.HTTPConnection.connect(self)
+        gegenstelle_pruefen(self.sock)
+        kontext = getattr(self, "_context", None) or ssl.create_default_context()
+        self.sock = kontext.wrap_socket(self.sock, server_hostname=self.host)
+
+
+class _GeprueftHTTP(urllib.request.HTTPHandler):
+    def http_open(self, req):  # noqa: ANN001
+        return self.do_open(_GepruefteHTTPVerbindung, req)
+
+
+class _GeprueftHTTPS(urllib.request.HTTPSHandler):
+    def https_open(self, req):  # noqa: ANN001
+        return self.do_open(_GepruefteHTTPSVerbindung, req)
+
+
+def _oeffner(aufloesen: Callable[..., Any]) -> Any:
+    """Ohne Umgebungs-Proxy, mit Pruefung der Gegenstelle bei jeder Verbindung."""
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _GeprueftHTTP(),
+                                       _GeprueftHTTPS(), _Umleitung(aufloesen))
+
+
 def seite_holen(url: str, *, aufloesen: Callable[..., Any] = socket.getaddrinfo,
                 oeffner: Any = None) -> str | None:
     """Text einer oeffentlichen Seite (gekuerzt) oder ``None``. Wirft nie."""
     if not url_erlaubt(url, aufloesen):
         return None
-    oeffner = oeffner or urllib.request.build_opener(_Umleitung(aufloesen))
+    oeffner = oeffner or _oeffner(aufloesen)
     anfrage = urllib.request.Request(url, headers={"User-Agent": "vibemind-recherche/1.0",
                                                    "Accept": "text/html,text/plain"})
     try:

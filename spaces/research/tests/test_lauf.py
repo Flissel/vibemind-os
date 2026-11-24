@@ -168,6 +168,48 @@ class AdressTests(unittest.TestCase):
         self.assertEqual(lauf.quellen_aus_antwort(text), [SEITE_A, SEITE_B])
         self.assertEqual(lauf.quellen_aus_antwort(None), [])
 
+    def test_model_urls_lose_query_and_fragment_and_long_ones_are_dropped(self) -> None:
+        # Sicherheitspruefung 24.11.2026: keine Notizen per Query an fremde Server.
+        text = (f"{SEITE_A}?notiz=Sponsoren+zahlen+spaeter#teil\n"
+                f"https://lang.example/{'x' * 300}\n{SEITE_B}")
+        self.assertEqual(lauf.quellen_aus_antwort(text), [SEITE_A, SEITE_B])
+        self.assertIsNone(lauf.url_bereinigen("javascript:alert(1)"))
+
+    def test_peer_address_is_checked_after_connect(self) -> None:
+        # DNS-Rebinding: der Name loeste oeffentlich auf, die Verbindung landet intern.
+        for intern in ("127.0.0.1", "::1", "169.254.169.254"):
+            sock = mock.Mock()
+            sock.getpeername.return_value = (intern, 80)
+            with self.assertRaises(OSError):
+                lauf.gegenstelle_pruefen(sock)
+            sock.close.assert_called_once()
+        sock = mock.Mock()
+        sock.getpeername.return_value = ("93.184.216.34", 443)
+        lauf.gegenstelle_pruefen(sock)
+        sock.close.assert_not_called()
+
+    def test_opener_ignores_environment_proxies(self) -> None:
+        # ProxyHandler({}) ersetzt den Standard-Proxy aus der Umgebung und meldet sich selbst nicht an.
+        with mock.patch.dict("os.environ", {"HTTP_PROXY": "http://proxy.example:3128",
+                                            "HTTPS_PROXY": "http://proxy.example:3128"}):
+            oeffner = lauf._oeffner(socket.getaddrinfo)
+        proxies = [h for h in oeffner.handlers if isinstance(h, lauf.urllib.request.ProxyHandler)]
+        self.assertTrue(all(not h.proxies for h in proxies))
+        self.assertTrue(any(isinstance(h, lauf._GeprueftHTTPS) for h in oeffner.handlers))
+
+    def test_real_connection_to_loopback_is_refused_after_connect(self) -> None:
+        import http.server
+        import threading
+        httpd = http.server.HTTPServer(("127.0.0.1", 0), http.server.BaseHTTPRequestHandler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            # Vorpruefung getaeuscht (oeffentlich), echte Verbindung geht an 127.0.0.1.
+            text = lauf.seite_holen(f"http://localhost:{httpd.server_port}/",
+                                    aufloesen=_aufloesen("93.184.216.34"))
+            self.assertIsNone(text)
+        finally:
+            httpd.shutdown()
+
     def test_html_becomes_text_without_scripts(self) -> None:
         roh = "<html><head><title>x</title><script>boese()</script></head><body><p>Bühnenplan</p></body></html>"
         self.assertEqual(lauf.text_aus_html(roh), "Bühnenplan")
