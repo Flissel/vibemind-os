@@ -35,6 +35,8 @@ Was du baust, ist ein **Entwurf**: Es geht erst hinaus, wenn ein Mensch es freig
     `musik` leer. Antwortet `reel_bauen` mit `musik_auftrag`, folgt **immer** `reel_fertigstellen(timeline_id,
     musik_auftrag)` mit genau diesen Werten – erst das rendert. Dessen `export_id` ist die `EXPORT:`-Zeile. Scheitert
     die Musik, rendert `reel_fertigstellen` trotzdem; die Warnung „ohne Musik: …“ gehört in eine `notiz`.
+    Kommt statt `musik_auftrag` direkt eine `export_id` zurück, ist das Reel schon gerendert, ohne Musik (siehe
+    `warnungen`). Das ist die `EXPORT:`-Zeile, kein `reel_fertigstellen`.
 
 ## So wirkt ein Reel (Viral-Video-Guideline)
 

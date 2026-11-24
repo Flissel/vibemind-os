@@ -16,6 +16,8 @@ import urllib.request
 
 FEHLER_MAXLAENGE = 300
 ZEITLIMIT_S = 330        # in-laura darf im Dienst bis 300 s dauern
+POLL_ZEITLIMIT_S = 15    # eine Statusabfrage; haengt der Dienst, soll das Warten nicht mitziehen
+MAX_POLL_FEHLER = 2      # so viele Abfragen in Folge duerfen scheitern, die dritte beendet das Warten
 KANAL = "video-claw"
 FERTIG = ("fertig", "fertig_mit_befund")
 ENDE_OHNE_MUSIK = ("gescheitert", "abgebrochen")
@@ -30,23 +32,24 @@ def _fehler(text: str) -> dict:
     return {"ok": False, "fehler": str(text)[:FEHLER_MAXLAENGE]}
 
 
-def _roh(methode: str, url: str, daten: bytes | None, kopf: dict) -> tuple[int, bytes]:
+def _roh(methode: str, url: str, daten: bytes | None, kopf: dict,
+         zeitlimit_s: float = ZEITLIMIT_S) -> tuple[int, bytes]:
     """Der einzige echte Netzgriff - Tests ersetzen genau diese Funktion."""
     req = urllib.request.Request(url, data=daten, method=methode, headers=kopf)
     try:
-        with urllib.request.urlopen(req, timeout=ZEITLIMIT_S) as r:
+        with urllib.request.urlopen(req, timeout=zeitlimit_s) as r:
             return r.status, r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()
 
 
-def anfrage(methode: str, pfad: str, daten: dict | None = None) -> dict:
+def anfrage(methode: str, pfad: str, daten: dict | None = None, zeitlimit_s: float = ZEITLIMIT_S) -> dict:
     """Ruft den Musik-Dienst. Gibt dessen JSON zurueck (sonst {"ok": False, "fehler"}); jeder Status
-    ausserhalb 2xx und jeder Netzfehler wird zu einem Fehler."""
+    ausserhalb 2xx und jeder Netzfehler wird zu einem Fehler. zeitlimit_s: Frist dieses einen Aufrufs."""
     kopf = {"Content-Type": "application/json"}
     roh = json.dumps(daten).encode("utf-8") if daten is not None else (b"{}" if methode == "POST" else None)
     try:
-        status, rumpf = _roh(methode, _basis() + pfad, roh, kopf)
+        status, rumpf = _roh(methode, _basis() + pfad, roh, kopf, zeitlimit_s=zeitlimit_s)
     except Exception as e:  # noqa: BLE001 - fail-soft
         return _fehler(f"Musik-Dienst nicht erreichbar: {type(e).__name__}: {e}")
     text = rumpf.decode("utf-8", "replace")
@@ -78,16 +81,26 @@ def bestellen(timeline_id: str, wunsch: str) -> dict:
     return {"ok": True, "auftrag": r["auftrag"]}
 
 
-def warten(auftrag: str, max_s: float = 600, takt_s: float = 5.0, schlafen=time.sleep,
-           uhr=time.monotonic) -> dict:
-    """Warten, bis die Musik da ist (fertig oder fertig_mit_befund). {"ok": True, "zustand"} sonst Fehler."""
+def warten(auftrag: str, max_s: float = 600, takt_s: float = 5.0, schlafen=None, uhr=None) -> dict:
+    """Warten, bis die Musik da ist (fertig oder fertig_mit_befund). {"ok": True, "zustand"} sonst Fehler.
+    Jede Abfrage hat hoechstens POLL_ZEITLIMIT_S und nie mehr als die Restzeit; bis zu MAX_POLL_FEHLER
+    Abfragen in Folge duerfen scheitern (ein Aussetzer beendet das Warten nicht)."""
     if not isinstance(auftrag, str) or not _ID.fullmatch(auftrag):
         return _fehler("musik_auftrag ungueltig")
+    schlafen = schlafen or time.sleep
+    uhr = uhr or time.monotonic
     ende = uhr() + max_s
+    fehlversuche = 0
     while True:
-        r = anfrage("GET", f"/auftraege/{auftrag}")
+        rest = ende - uhr()
+        r = anfrage("GET", f"/auftraege/{auftrag}", zeitlimit_s=max(1.0, min(POLL_ZEITLIMIT_S, rest)))
         if not r.get("ok"):
-            return r
+            fehlversuche += 1
+            if fehlversuche > MAX_POLL_FEHLER or uhr() >= ende:
+                return r
+            schlafen(takt_s)
+            continue
+        fehlversuche = 0
         zustand = r.get("zustand")
         if zustand in FERTIG:
             return {"ok": True, "zustand": zustand}
@@ -98,11 +111,11 @@ def warten(auftrag: str, max_s: float = 600, takt_s: float = 5.0, schlafen=time.
         schlafen(takt_s)
 
 
-def einlegen(auftrag: str, timeline_id: str, gain_percent: int) -> dict:
+def einlegen(auftrag: str, timeline_id: str, gain_percent: int, zeitlimit_s: float = ZEITLIMIT_S) -> dict:
     """Die fertige Musik in die Laura-Zeitleiste legen. {"ok", "clip_id", "asset_id"}."""
     if not isinstance(auftrag, str) or not _ID.fullmatch(auftrag):
         return _fehler("musik_auftrag ungueltig")
     if not isinstance(timeline_id, str) or not _ID.fullmatch(timeline_id):
         return _fehler("timeline_id ungueltig")
     return anfrage("POST", f"/auftraege/{auftrag}/in-laura",
-                   {"timeline_id": timeline_id, "gain_percent": gain_percent})
+                   {"timeline_id": timeline_id, "gain_percent": gain_percent}, zeitlimit_s=zeitlimit_s)

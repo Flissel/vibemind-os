@@ -21,7 +21,8 @@ class Rekorder:
     def __init__(self, name, log, antworten):
         self.name, self.log, self.antworten, self.aufrufe = name, log, antworten, []
 
-    def __call__(self, methode, url, daten, kopf):
+    def __call__(self, methode, url, daten, kopf, zeitlimit_s=None):
+        self.limits = getattr(self, "limits", []) + [zeitlimit_s]
         pfad = "/" + url.split("//", 1)[1].split("/", 1)[1] if url.count("/") > 2 else "/"
         körper = json.loads(daten) if daten else None
         self.aufrufe.append((methode, pfad, körper, kopf))
@@ -158,7 +159,7 @@ def test_fertigstellen_musik_gescheitert_rendert_ohne(welt):
 def test_fertigstellen_musik_dienst_ok_false_rendert_ohne(welt):
     _gebaut(welt)
     welt.setze_laura([_render_antwort()])
-    welt.setze_musik([(200, {"ok": False, "fehler": "unbekannter Auftrag"})])
+    welt.setze_musik([(200, {"ok": False, "fehler": "unbekannter Auftrag"})] * 3)
     r = w.reel_fertigstellen("tl1", MA)
     assert r["ok"] and r["warnungen"][0].startswith("ohne Musik:")
 
@@ -176,7 +177,7 @@ def test_fertigstellen_einlegen_scheitert_rendert_ohne(welt):
 def test_fertigstellen_musikdienst_aus(welt):
     _gebaut(welt)
     welt.setze_laura([_render_antwort()])
-    welt.setze_musik([ConnectionRefusedError("nein")])
+    welt.setze_musik([ConnectionRefusedError("nein")] * 3)
     r = w.reel_fertigstellen("tl1", MA)
     assert r["ok"] and r["export_id"] == "e1e1e1e1e1"
     assert r["warnungen"][0].startswith("ohne Musik: Musik-Dienst nicht erreichbar")
@@ -253,6 +254,70 @@ def test_warten_tackt_alle_5_s_und_gibt_auf(welt):
     r = musik_studio.warten(MA, max_s=12, schlafen=schlafen, uhr=lambda: jetzt[0])
     assert r["ok"] is False and "noch nicht fertig" in r["fehler"]
     assert schlaf == [5.0, 5.0, 5.0]
+
+
+def test_warten_poll_mit_kurzem_zeitlimit(welt):
+    welt.setze_musik([(200, {"ok": True, "zustand": "laeuft"})] * 2 + [(200, {"ok": True, "zustand": "fertig"})])
+    jetzt = [0.0]
+
+    def schlafen(s):
+        jetzt[0] += s
+    assert musik_studio.warten(MA, max_s=480, schlafen=schlafen, uhr=lambda: jetzt[0])["ok"]
+    assert all(0 < g <= 15 for g in welt.musik.limits) and len(welt.musik.limits) == 3
+
+
+def test_warten_poll_limit_nie_ueber_restzeit(welt):
+    welt.setze_musik([(200, {"ok": True, "zustand": "laeuft"})] * 3)
+    jetzt = [0.0]
+
+    def schlafen(s):
+        jetzt[0] += s
+    r = musik_studio.warten(MA, max_s=7, schlafen=schlafen, uhr=lambda: jetzt[0])
+    assert not r["ok"] and welt.musik.limits[0] == 7 and welt.musik.limits[1] == 2
+
+
+def test_warten_zwei_aussetzer_in_folge_sind_ok(welt):
+    aus = ConnectionRefusedError("nein")
+    welt.setze_musik([aus, aus, (200, {"ok": True, "zustand": "fertig"})])
+    assert musik_studio.warten(MA, schlafen=lambda s: None)["ok"]
+
+
+def test_warten_dritter_aussetzer_in_folge_beendet(welt):
+    aus = ConnectionRefusedError("nein")
+    welt.setze_musik([aus, aus, aus, (200, {"ok": True, "zustand": "fertig"})])
+    r = musik_studio.warten(MA, schlafen=lambda s: None)
+    assert not r["ok"] and "nicht erreichbar" in r["fehler"] and len(welt.musik.aufrufe) == 3
+
+
+def test_warten_erfolg_setzt_aussetzer_zurueck(welt):
+    aus = ConnectionRefusedError("nein")
+    lauf = (200, {"ok": True, "zustand": "laeuft"})
+    welt.setze_musik([aus, aus, lauf, aus, aus, (200, {"ok": True, "zustand": "fertig"})])
+    assert musik_studio.warten(MA, schlafen=lambda s: None)["ok"]
+
+
+@pytest.mark.parametrize("vergangen, erwartet", [(100, 330), (600, 180), (749, 31)])
+def test_fertigstellen_einlegen_bekommt_restbudget(welt, monkeypatch, vergangen, erwartet):
+    _gebaut(welt)
+    welt.setze_laura([_render_antwort()])
+    welt.setze_musik([(200, {"ok": True, "clip_id": "c1", "asset_id": "a1"})])
+    zeiten = iter([1000.0, 1000.0 + vergangen])
+    monkeypatch.setattr(w, "_uhr", lambda: next(zeiten))
+    monkeypatch.setattr(musik_studio, "warten", lambda auftrag, max_s=600, **k: {"ok": True, "zustand": "fertig"})
+    r = w.reel_fertigstellen("tl1", MA)
+    assert r["warnungen"] == [] and welt.musik.limits == [erwartet]
+
+
+def test_fertigstellen_zu_wenig_restzeit_ueberspringt_einlegen(welt, monkeypatch):
+    _gebaut(welt)
+    welt.setze_laura([_render_antwort()])
+    welt.setze_musik([])
+    zeiten = iter([1000.0, 1000.0 + 760])
+    monkeypatch.setattr(w, "_uhr", lambda: next(zeiten))
+    monkeypatch.setattr(musik_studio, "warten", lambda auftrag, max_s=600, **k: {"ok": True, "zustand": "fertig"})
+    r = w.reel_fertigstellen("tl1", MA)
+    assert r["ok"] and r["export_id"] == "e1e1e1e1e1" and r["warnungen"] == ["ohne Musik: keine Zeit mehr"]
+    assert welt.musik.aufrufe == []
 
 
 def test_anfrage_nutzt_vorgabe_adresse_und_umgebung(welt, monkeypatch):

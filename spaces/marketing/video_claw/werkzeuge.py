@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -332,7 +333,8 @@ def reel_bauen(auftrag: str, projekt_id: str, beats: list, stimme: str = "standa
     musik: ein Satz zu Ton und Marke aus dem Briefing, ohne Gesang (z. B. "ruhig, warm, Klavier"); bestellt passende
     Hintergrundmusik. Dann rendert reel_bauen NICHT, sondern liefert timeline_id und musik_auftrag - danach IMMER
     reel_fertigstellen(timeline_id, musik_auftrag) aufrufen, das die Musik einlegt und rendert. Leer oder "aus" =
-    keine Musik, das Reel wird wie bisher gleich gerendert und liefert export_id.
+    keine Musik, das Reel wird wie bisher gleich gerendert und liefert export_id. Kommt statt musik_auftrag direkt
+    eine export_id zurueck, ist das Reel schon gerendert, ohne Musik (siehe warnungen) - dann kein reel_fertigstellen.
     Die Lautstaerke wird immer angeglichen. Dauert einige Minuten (die Stimme wird je Satz erzeugt) - nicht abbrechen
     und NICHT ein zweites Mal aufrufen."""
     if not _id(auftrag, "auftrag") or not _id(projekt_id, "projekt_id"):
@@ -417,6 +419,10 @@ def reel_bauen(auftrag: str, projekt_id: str, beats: list, stimme: str = "standa
 _TIMELINE_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 MUSIK_GAIN_PERCENT = 25        # jedes Reel hat Sprache: Satz oder Originalton - die Musik liegt darunter
 MUSIK_WARTEN_S = 480           # MCP_TOOL_TIMEOUT 900 s; in-laura (bis 300 s) und Render-Start folgen danach
+MUSIK_GESAMT_S = 780           # warten + einlegen zusammen; danach bleiben >= 120 s fuer den Render-Start
+MUSIK_EINLEGEN_MIN_S = 30      # weniger Restzeit: gar nicht erst einlegen
+MUSIK_EINLEGEN_MAX_S = 330     # so lange darf in-laura im Dienst dauern (300 s) plus Antwort
+_uhr = time.monotonic          # Tests ersetzen die Uhr
 MUSIK_WUNSCH_MAX = 500
 
 
@@ -478,7 +484,6 @@ def _musik_bestellen(timeline, wunsch: str, reel: dict) -> dict:
             _optionen_datei(timeline).unlink(missing_ok=True)       # nur die eigene Merkdatei, nie etwas in Laura
         except OSError:
             pass
-        return b
     return b
 
 
@@ -494,9 +499,15 @@ def reel_fertigstellen(timeline_id: str, musik_auftrag: str) -> dict:
     if not isinstance(musik_auftrag, str) or not _TIMELINE_ID.fullmatch(musik_auftrag):
         return _fehler("musik_auftrag ungueltig")
     warnungen: list[str] = []
+    start = _uhr()
     fertig = musik_studio.warten(musik_auftrag, max_s=MUSIK_WARTEN_S)
     if fertig.get("ok"):
-        fertig = musik_studio.einlegen(musik_auftrag, timeline_id, MUSIK_GAIN_PERCENT)
+        rest = MUSIK_GESAMT_S - (_uhr() - start)        # ein Budget fuer warten + einlegen
+        if rest < MUSIK_EINLEGEN_MIN_S:
+            fertig = _fehler("keine Zeit mehr")
+        else:
+            fertig = musik_studio.einlegen(musik_auftrag, timeline_id, MUSIK_GAIN_PERCENT,
+                                           zeitlimit_s=min(MUSIK_EINLEGEN_MAX_S, rest))
     if not fertig.get("ok"):
         warnungen.append(f"ohne Musik: {fertig.get('fehler')}")
     e = laura_api.anfrage("POST", f"/timelines/{timeline_id}/render-reel", optionen)
