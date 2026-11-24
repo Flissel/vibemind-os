@@ -4,15 +4,19 @@ Bisher kamen nur Saetze in den Graphen, die einen Plan ausfuehrten (Plan/Hop am 
 ``PlanExecutor.execute``). Feste Wege, Rueckfragen, Absagen und Hoeflichkeit hinterliessen
 nichts. Hier bekommt jeder Satz von ``/api/multihop/execute``:
 
-    (:Satz {id=trace_id, ts, reiter, laenge})            -- nie der Satztext
+    (:Satz {id=trace_id, ts, reiter, laenge, text})       -- text: Satzanfang, hoechstens 300 Zeichen
       -[:ENTSCHIEDEN_DURCH]->
-    (:Entscheidung {id, weg, stufe, ok, dauer_ms, bereich_quelle, ts})
+    (:Entscheidung {id, weg, stufe, faehigkeit, schritte, ok, dauer_ms, bereich_quelle, ts})
       -[:WAEHLT]-> (:Bereich {id})
       -[:FUEHRT_ZU]-> (:Plan {id})                         -- nur wenn ein Plan lief
     (:Satz)-[:IM_REITER]->(:Bereich)                       -- nur wenn die App einen Reiter schickt
 
 ``weg`` ist der Wert der Spur (scripts/brain_lage.py), ``stufe`` trennt darin die festen
 Muster vom echten Planer (Vorsilbe der plan_id: shortcut_, ideen_, lesen_ ...).
+
+Der Satztext steht wie Plan.intent im Graphen (gleiche Kuerzung): Die Datenbank liegt lokal
+beim Betreiber, und die Ansicht soll ihm zeigen, wie SEIN Satz entschieden wurde. Die Antwort
+steht nie darin. Satztexte verlassen den Rechner nicht (Repos, Tests, Notizen, Meldungen).
 
 Schreiben darf den Satz nie aufhalten: ``melden`` legt den Eintrag nur in eine begrenzte
 Warteschlange; ein eigener Faden schreibt mit Zeitgrenze. Volle Warteschlange, Fehler und
@@ -140,9 +144,36 @@ def _weg_der_antwort(daten: Mapping[str, Any], status_code: int, routed_via: Any
             else "ohne-weg")
 
 
-def eintrag_bauen(daten: Any, *, reiter: Any = None, laenge: Any = None, dauer_ms: Any = None,
-                  routed_via: Any = None, status_code: int = 200) -> Optional[Dict[str, Any]]:
-    """Der Eintrag fuer einen Satz, oder ``None`` (keine trace_id). Ohne Satz- oder Antworttext."""
+TEXT_MAX = 300  # wie Plan.intent im Graphen (DecisionGraph.upsert_plan)
+
+
+def _schritte(executed: Any) -> Tuple[Optional[str], int]:
+    """(erste Faehigkeit, Anzahl Schritte) der ausgefuehrten Schritte."""
+    if not isinstance(executed, Mapping):
+        return None, 0
+    erste = None
+    for schritt in executed.values():
+        if isinstance(schritt, Mapping) and isinstance(schritt.get("capability"), str) and schritt["capability"]:
+            erste = schritt["capability"][:60]
+            break
+    return erste, len(executed)
+
+
+def beschriftung(stufe: Any, faehigkeit: Any, schritte: Any) -> str:
+    """Kurzname einer Entscheidung fuer die Ansicht: "abkuerzung-regex: bubble_list",
+    "planer: 3 Schritte" oder nur die Stufe."""
+    stufe = str(stufe or "?")
+    if isinstance(schritte, int) and schritte > 1:
+        return f"{stufe}: {schritte} Schritte"
+    if isinstance(faehigkeit, str) and faehigkeit:
+        return f"{stufe}: {faehigkeit}"
+    return stufe
+
+
+def eintrag_bauen(daten: Any, *, satz: Any = None, reiter: Any = None, laenge: Any = None,
+                  dauer_ms: Any = None, routed_via: Any = None,
+                  status_code: int = 200) -> Optional[Dict[str, Any]]:
+    """Der Eintrag fuer einen Satz, oder ``None`` (keine trace_id). Satzanfang ja, Antwort nie."""
     try:
         if not isinstance(daten, Mapping):
             return None
@@ -154,6 +185,7 @@ def eintrag_bauen(daten: Any, *, reiter: Any = None, laenge: Any = None, dauer_m
         plan_id = daten.get("plan_id") if isinstance(daten.get("plan_id"), str) and daten.get("plan_id") else None
         bereich, quelle = bereich_bestimmen(daten, reiter_kennung)
         ok = daten.get("ok")
+        faehigkeit, schritte = _schritte(daten.get("executed"))
         return {
             "trace_id": trace_id,
             "ts": time.time(),
@@ -166,6 +198,9 @@ def eintrag_bauen(daten: Any, *, reiter: Any = None, laenge: Any = None, dauer_m
             "bereich": bereich,
             "bereich_quelle": quelle,
             "plan_id": plan_id,
+            "text": satz[:TEXT_MAX] if isinstance(satz, str) and satz.strip() else None,
+            "faehigkeit": faehigkeit,
+            "schritte": schritte,
         }
     except Exception as e:  # noqa: BLE001
         logger.debug(f"[entscheidung] Eintrag nicht gebaut: {type(e).__name__}: {e}")

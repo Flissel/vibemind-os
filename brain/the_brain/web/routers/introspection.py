@@ -2936,7 +2936,8 @@ async def _entscheidung_melden(request: Request, antwort: Any, kontext_space: Op
                                dauer_ms: float) -> None:
     """Jeder Satz als Entscheidung in den Neo4j-Graphen (core/entscheidung_graph.py).
 
-    Nur Kennung, Reiter, Laenge, Weg, Stufe, ok, Dauer, Bereich und Plan; nie Satz oder Antwort.
+    Kennung, Satzanfang (wie Plan.intent), Reiter, Laenge, Weg, Stufe, ok, Dauer, Bereich und
+    Plan; nie die Antwort.
     Legt den Eintrag nur in eine Warteschlange; der Satz wartet nie auf Neo4j. Wirft nie.
     """
     try:
@@ -2949,6 +2950,7 @@ async def _entscheidung_melden(request: Request, antwort: Any, kontext_space: Op
         if not isinstance(daten, dict):
             return
         laenge = None
+        intent = None
         try:
             body = await request.json()
             intent = body.get("intent") if isinstance(body, dict) else None
@@ -2961,8 +2963,8 @@ async def _entscheidung_melden(request: Request, antwort: Any, kontext_space: Op
         if recorder is not None and isinstance(daten.get("trace_id"), str):
             snap = recorder.get_by_trace(daten["trace_id"])
             routed_via = snap.get("routed_via") if isinstance(snap, dict) else None
-        eintrag = _eg.eintrag_bauen(daten, reiter=kontext_space, laenge=laenge, dauer_ms=dauer_ms,
-                                    routed_via=routed_via,
+        eintrag = _eg.eintrag_bauen(daten, satz=intent, reiter=kontext_space, laenge=laenge,
+                                    dauer_ms=dauer_ms, routed_via=routed_via,
                                     status_code=getattr(antwort, "status_code", 200))
         _eg.melden(dg, eintrag)
     except Exception as e:  # noqa: BLE001
