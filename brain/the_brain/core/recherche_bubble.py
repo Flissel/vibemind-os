@@ -73,7 +73,8 @@ _JOB = re.compile(r"^job_v1_[0-9A-HJKMNPQRSTVWXYZ]{26}$")
 OHNE_FRAGE = ("Es ist gerade keine Recherche zur Bestätigung offen. Sag „Recherchiere zu dieser Bubble“, "
               "dann zeige ich zuerst, was ich suchen würde.")
 NICHT_ERREICHBAR = "Der Recherche-Dienst ist gerade nicht erreichbar; gestartet habe ich nichts."
-TABELLE_FEHLT = "Die Auftragstabelle ist nicht erreichbar; ohne sie starte ich keine Recherche."
+OHNE_GRENZE = "Der Recherche-Dienst nennt keine Kostengrenze; gestartet habe ich nichts."
+TABELLE_FEHLT ="Die Auftragstabelle ist nicht erreichbar; ohne sie starte ich keine Recherche."
 
 _sperre = threading.Lock()
 _offen: Dict[str, Any] = {}
@@ -157,11 +158,30 @@ def vorschau(argumente: Mapping[str, Any], *, rufe: Callable[..., Dict[str, Any]
     brief = antwort.get("brief")
     if antwort.get("status") != "preview" or not isinstance(brief, str) or not brief.strip():
         return NICHT_ERREICHBAR
+    grenze = _grenzen(antwort.get("grenzen"))
+    if grenze is None:
+        # Ohne genannte Kostengrenze keine Rueckfrage, die zum Start fuehren koennte (24.11.2026).
+        return OHNE_GRENZE
+    seiten, laeufe = grenze
     with _sperre:
         _offen.update({"argumente": dict(argumente), "brief": brief, "zeichen": zeichen, "bis": _jetzt() + GILT_S})
     return (f"Ich würde zu „{_titel(argumente)}“ recherchieren: {argumente['thema']}. Gründlich, mit Quellen, "
-            "auf Deutsch; die Notizen der Bubble gehen als Hintergrund mit. Das kostet einen Lauf mit "
-            "Web-Zugriffen und dauert einige Minuten. Sag „Ja, recherchieren“, dann starte ich.")
+            "auf Deutsch; die Notizen der Bubble gehen als Hintergrund mit. Das kostet höchstens "
+            f"{laeufe} Modell-Läufe über das Claude-Abo und höchstens {seiten} geholte Seiten und dauert "
+            "einige Minuten. Sag „Ja, recherchieren“, dann starte ich.")
+
+
+def _grenzen(roh: Any) -> Optional[tuple]:
+    """(Seiten, Modell-Laeufe) aus der Vorschau des Servers; ``None``, wenn nicht sauber genannt."""
+    if not isinstance(roh, Mapping):
+        return None
+    seiten, laeufe = roh.get("seiten"), roh.get("modell_laeufe")
+    for wert in (seiten, laeufe):
+        if isinstance(wert, bool) or not isinstance(wert, int) or wert < 1:
+            return None
+    if roh.get("budget_waechter") is not True:
+        return None
+    return seiten, laeufe
 
 
 def verwerfen() -> None:

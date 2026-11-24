@@ -214,6 +214,8 @@ class _StartBase(unittest.TestCase):
         for p in self._patches:
             p.start()
         self.spawn = mock.patch.object(self.server, "_spawn_agent_call").start()
+        # Start nur mit Budget-Waechter (24.11.2026); der Lauf selbst ist hier ersetzt.
+        mock.patch.dict("os.environ", {"VIBEMIND_BUDGET_MODUL": "nur_im_test_budget.py"}).start()
 
     def tearDown(self) -> None:
         mock.patch.stopall()
@@ -267,6 +269,33 @@ class StartTests(_StartBase):
         roh = self.server._ticket_path(job_id).read_text(encoding="utf-8")
         self.assertNotIn(TOKEN, roh)
         self.assertEqual(_json.loads(roh)["bubble_id"], "bub123")
+
+
+class BudgetAndLimitTests(_StartBase):
+    """(R4) 24.11.2026: Kostengrenze je Recherche in der Vorschau, Start nur mit Budget-Waechter."""
+
+    def test_preview_names_the_limits_the_run_enforces(self) -> None:
+        result = self.server.call_tool("research_start", {"bubble_id": "bub123", "brief": "x"})
+        self.assertEqual(result["grenzen"], {"seiten": self.server.lauf_mod.MAX_SEITEN,
+                                             "modell_laeufe": self.server.lauf_mod.MAX_MODELL_LAEUFE,
+                                             "modell": "Claude-Abo", "budget_waechter": True})
+        self.assertEqual((result["grenzen"]["seiten"], result["grenzen"]["modell_laeufe"]), (5, 2))
+
+    def test_confirm_without_budget_guard_starts_nothing(self) -> None:
+        brief = self.preview()
+        with mock.patch.dict("os.environ", {"VIBEMIND_BUDGET_MODUL": "  "}):
+            with self.assertRaises(self.server.ToolError) as ctx:
+                self.confirm(brief)
+        self.assertIn("budget guard missing", str(ctx.exception))
+        self.spawn.assert_not_called()
+        self.assertEqual(list(self.server.ARTIFACT_DIR.glob("*.job.json")), [])
+
+    def test_no_fixed_agent_id_is_left_in_the_server(self) -> None:
+        import re
+        text = SERVER_PATH.read_text(encoding="utf-8")
+        self.assertNotIn("RESEARCHER_AGENT_ID", text)
+        self.assertIsNone(re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}", text))
+        self.assertEqual(self.server.RESEARCHER_AGENT_NAME, "brain-researcher")
 
 
 class StartTokenTests(_StartBase):
@@ -857,7 +886,16 @@ class ResearchStartSendsOpenFangKeyTests(unittest.TestCase):
         seen: dict = {}
 
         class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                # Seit 24.11.2026 loest der Lauf den Agenten ueber den Namen auf.
+                seen["auth_liste"] = self.headers.get("Authorization")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'[{"id": "a0000001", "name": "brain-researcher"}]')
+
             def do_POST(self) -> None:  # noqa: N802
+                seen["pfad"] = self.path
                 seen["auth"] = self.headers.get("Authorization")
                 self.rfile.read(int(self.headers.get("Content-Length", "0")))
                 self.send_response(200)
@@ -873,9 +911,15 @@ class ResearchStartSendsOpenFangKeyTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as raw:
                 server = load_server()
                 server.ARTIFACT_DIR = Path(raw)
+                budget = Path(raw) / "budget_nur_im_test.py"
+                budget.write_text(
+                    "from types import SimpleNamespace\n"
+                    "def pruefen(agent):\n    return SimpleNamespace(erlaubt=True, grund='ok')\n"
+                    "def buchen(agent, ergebnis, dauer_s):\n    pass\n", encoding="utf-8")
                 env = {
                     "OPENFANG_URL": f"http://127.0.0.1:{httpd.server_port}",
                     "OPENFANG_API_KEY": "test-schluessel-123",
+                    "VIBEMIND_BUDGET_MODUL": str(budget),
                 }
                 real_popen = server.subprocess.Popen
                 argv_seen: list = []
@@ -892,6 +936,8 @@ class ResearchStartSendsOpenFangKeyTests(unittest.TestCase):
                         time.sleep(0.1)
 
             self.assertEqual(seen.get("auth"), "Bearer test-schluessel-123")
+            self.assertEqual(seen.get("auth_liste"), "Bearer test-schluessel-123")
+            self.assertEqual(seen.get("pfad"), "/api/agents/a0000001/message")
             self.assertFalse(any("test-schluessel-123" in str(a) for a in argv_seen))
         finally:
             httpd.shutdown()

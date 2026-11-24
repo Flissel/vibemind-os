@@ -27,6 +27,7 @@ BUBBLE = "00000000-0000-4000-8000-0000000000b1"
 JOB = "job_v1_" + "0" * 26
 ZEICHEN = "z" * 43
 ARG = {"bubble_id": BUBBLE, "bubble_titel": "Stadtfest", "thema": "Ticketpreise anderer Stadtfeste"}
+GRENZEN = {"seiten": 5, "modell_laeufe": 2, "modell": "Claude-Abo", "budget_waechter": True}
 
 
 @pytest.fixture(autouse=True)
@@ -79,14 +80,15 @@ def _rufe(antworten, aufrufe):
 
 def test_vorschau_ist_rueckfrage_ohne_lauf_und_wird_gemerkt() -> None:
     aufrufe = []
-    satz = rb.vorschau(ARG, rufe=_rufe([{"status": "preview", "brief": "BRIEF research_x.md"}], aufrufe))
+    satz = rb.vorschau(ARG, rufe=_rufe([{"status": "preview", "brief": "BRIEF research_x.md", "grenzen": GRENZEN}], aufrufe))
     zeichen = aufrufe[0][1].pop("start_token")
     assert isinstance(zeichen, str) and len(zeichen) >= 43       # vom Gehirn ausgestellt, je Vorschau neu
     assert aufrufe == [("research_start", {"bubble_id": BUBBLE, "brief": "Ticketpreise anderer Stadtfeste",
                                            "depth": "thorough", "language": "german"})]
     assert "confirm" not in aufrufe[0][1]
     assert satz.startswith("Ich würde zu „Stadtfest“ recherchieren: Ticketpreise anderer Stadtfeste.")
-    assert "Web-Zugriffen" in satz and satz.endswith("Sag „Ja, recherchieren“, dann starte ich.")
+    assert "höchstens 2 Modell-Läufe über das Claude-Abo und höchstens 5 geholte Seiten" in satz
+    assert satz.endswith("Sag „Ja, recherchieren“, dann starte ich.")
     offen = rb.satz_pruefen("Ja, recherchieren")
     assert offen["offen"]["brief"] == "BRIEF research_x.md" and offen["offen"]["argumente"] == ARG
     assert offen["offen"]["zeichen"] == zeichen
@@ -94,8 +96,20 @@ def test_vorschau_ist_rueckfrage_ohne_lauf_und_wird_gemerkt() -> None:
     assert rb.satz_pruefen("Ja, recherchieren") == {"satz": rb.OHNE_FRAGE}
 
 
+@pytest.mark.parametrize("grenzen", [None, {}, {"seiten": 5}, {"seiten": 5, "modell_laeufe": 0},
+                                     {"seiten": True, "modell_laeufe": 2, "budget_waechter": True},
+                                     {"seiten": 5, "modell_laeufe": 2, "budget_waechter": False}])
+def test_ohne_kostengrenze_keine_rueckfrage(grenzen) -> None:
+    # (R4) 24.11.2026: Die Vorschau nennt die Grenze je Recherche; ohne sie gibt es nichts zu bestaetigen.
+    antwort = {"status": "preview", "brief": "B"}
+    if grenzen is not None:
+        antwort["grenzen"] = grenzen
+    assert rb.vorschau(ARG, rufe=_rufe([antwort], [])) == rb.OHNE_GRENZE
+    assert rb.satz_pruefen("Ja, recherchieren") == {"satz": rb.OHNE_FRAGE}
+
+
 def test_anderer_satz_verwirft_die_vorschau() -> None:
-    rb.vorschau(ARG, rufe=_rufe([{"status": "preview", "brief": "B"}], []))
+    rb.vorschau(ARG, rufe=_rufe([{"status": "preview", "brief": "B", "grenzen": GRENZEN}], []))
     assert rb.satz_pruefen("Zeig die Notizen dieser Bubble") is None
     assert rb.satz_pruefen("Ja, recherchieren") == {"satz": rb.OHNE_FRAGE}
 
@@ -103,7 +117,7 @@ def test_anderer_satz_verwirft_die_vorschau() -> None:
 def test_vorschau_verfaellt_nach_120_s(monkeypatch) -> None:
     jetzt = [1000.0]
     monkeypatch.setattr(rb, "_jetzt", lambda: jetzt[0])
-    rb.vorschau(ARG, rufe=_rufe([{"status": "preview", "brief": "B"}], []))
+    rb.vorschau(ARG, rufe=_rufe([{"status": "preview", "brief": "B", "grenzen": GRENZEN}], []))
     jetzt[0] += 121
     assert rb.satz_pruefen("ja, recherchiere") == {"satz": rb.OHNE_FRAGE}
 
@@ -367,6 +381,8 @@ def server_und_openfang(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "ARTIFACT_DIR", tmp_path)
     gestartet = []
     monkeypatch.setattr(server, "_spawn_agent_call", lambda job_id, brief: gestartet.append(job_id))
+    # Der Server startet nur mit Budget-Waechter; der Lauf selbst ist hier ersetzt.
+    monkeypatch.setenv("VIBEMIND_BUDGET_MODUL", str(tmp_path / "nur_im_test_budget.py"))
 
     class _Bereit:
         agent_id = "agent-test"

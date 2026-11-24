@@ -29,7 +29,10 @@ SERVER_VERSION = "1.0.0"
 PROTOCOL_VERSION = "2024-11-05"
 REQUEST_TIMEOUT_SECONDS = 15
 
-RESEARCHER_AGENT_ID = "52a6d4df-6eb0-5c55-a200-b984514886ab"
+# Den Recherche-Agenten loest der Lauf ueber seinen Namen auf (GET /api/agents), nie ueber
+# eine feste Kennung: ein neu erzeugter Agent bekommt eine neue (24.11.2026).
+RESEARCHER_AGENT_NAME = "brain-researcher"
+LAUF = pathlib.Path(__file__).resolve().parent / "lauf.py"
 OPENFANG_URL = os.environ.get("OPENFANG_URL", "http://127.0.0.1:4200")
 ARTIFACT_DIR = pathlib.Path.home() / ".openfang" / "research-artifacts"
 
@@ -53,6 +56,24 @@ def _load_brief_module():
 
 
 brief_mod = _load_brief_module()
+
+
+def _load_lauf_module():
+    spec = importlib.util.spec_from_file_location("spaces_research_lauf", LAUF)
+    if spec is None or spec.loader is None:
+        raise ToolError("configuration_error: lauf.py missing")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+lauf_mod = _load_lauf_module()
+
+
+def grenzen() -> dict:
+    """Kostengrenze je Recherche, wie sie der Lauf durchsetzt; die Vorschau nennt sie."""
+    return {"seiten": lauf_mod.MAX_SEITEN, "modell_laeufe": lauf_mod.MAX_MODELL_LAEUFE,
+            "modell": "Claude-Abo", "budget_waechter": True}
 
 
 TOOLS: list[dict[str, Any]] = [
@@ -305,26 +326,12 @@ def _spawn_agent_call(job_id: str, brief_text: str) -> None:
     das Schreiben dieser Logdatei (z.B. weil schon das Anlegen des
     Verzeichnisses gescheitert ist), bleibt der ToolError das einzige
     Signal - eine zweite Exception darf dabei nicht nach aussen dringen.
-    """
-    base = (os.environ.get("OPENFANG_URL") or "http://127.0.0.1:4200").rstrip("/")
-    url = f"{base}/api/agents/{RESEARCHER_AGENT_ID}/message"
-    payload = json.dumps({"message": brief_text}, ensure_ascii=False)
 
-    # D1 Stufe 2: :4200 verlangt den Bearer-Key (seit OpenFang 0.6.9 auch
-    # von Loopback). Der Key geht ueber die Umgebung ans Kind, nie in argv —
-    # die Kommandozeile ist in der Prozessliste fuer jeden lesbar.
-    script = (
-        "import os,sys,urllib.request\n"
-        "with open(sys.argv[2],'r',encoding='utf-8') as fh:\n"
-        "    body=fh.read()\n"
-        "headers={'Content-Type':'application/json'}\n"
-        "key=os.environ.get('OPENFANG_API_KEY','').strip()\n"
-        "if key:\n"
-        "    headers['Authorization']='Bearer '+key\n"
-        "req=urllib.request.Request(sys.argv[1],"
-        "data=body.encode('utf-8'),method='POST',headers=headers)\n"
-        "urllib.request.urlopen(req,timeout=5400).read()\n"
-    )
+    Das Kind ist ``lauf.py`` (24.11.2026, Rueckweg-Muster): es fragt den Budget-Waechter, loest
+    den Agenten ueber seinen Namen auf, holt die Seiten selbst und schreibt den Bericht. Der
+    OpenFang-Schluessel geht ueber die Umgebung ans Kind, nie in argv.
+    """
+    payload = json.dumps({"message": brief_text}, ensure_ascii=False)
     child_env = dict(os.environ)
     api_key = _openfang_api_key()
     if api_key:
@@ -338,7 +345,7 @@ def _spawn_agent_call(job_id: str, brief_text: str) -> None:
         log = open(ARTIFACT_DIR / f"research_{job_id}.spawn.log", "wb")
         try:
             subprocess.Popen(
-                [sys.executable, "-c", script, url, str(request_path)],
+                [sys.executable, str(LAUF), str(_job_path(job_id)), str(request_path)],
                 stdout=log, stderr=log, stdin=subprocess.DEVNULL, env=child_env,
             )
         finally:
@@ -521,6 +528,9 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> dict:
         if confirm and (start_token is None or arguments.get("final_brief") is None):
             # Ohne Zeichen und ohne den Brief der Vorschau startet nichts (24.11.2026).
             raise ToolError("start_not_allowed: confirm needs the start_token and final_brief of the preview")
+        if confirm and not os.environ.get("VIBEMIND_BUDGET_MODUL", "").strip():
+            # Ohne Budget-Waechter kein Lauf (Vorgabe: nur das Claude-Abo, ueber den Waechter).
+            raise ToolError("start_not_allowed: budget guard missing (VIBEMIND_BUDGET_MODUL)")
 
         bubble = _read_bubble(bubble_id)
         nodes = _read_nodes(bubble_id)
@@ -542,6 +552,7 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> dict:
             return {
                 "status": "preview",
                 "brief": brief_text,
+                "grenzen": grenzen(),
                 "note": (
                     "Kein Lauf gestartet. Brief pruefen, bei Bedarf bearbeiten, "
                     "dann mit confirm=true erneut aufrufen."
