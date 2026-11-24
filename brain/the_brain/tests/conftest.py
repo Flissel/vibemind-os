@@ -80,3 +80,11 @@ def _denken_messung_im_tmp(tmp_path, monkeypatch):
     monkeypatch.setenv("BRAIN_DENKEN_MESSUNG", str(tmp_path / "denken_messung.jsonl"))
     monkeypatch.delenv("BRAIN_DENKEN", raising=False)
     monkeypatch.delenv("BRAIN_DENKEN_BIS", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _weiche_schatten_aus(monkeypatch):
+    """Die Weiche (core/weiche.py) lüde sonst bei jedem Satz durch /api/multihop/execute das
+    echte Einbettungsmodell in einem Hintergrundfaden. Tests der Weiche schalten sie selbst an
+    und geben eine Attrappe mit."""
+    monkeypatch.setenv("WEICHE_SCHATTEN", "0")

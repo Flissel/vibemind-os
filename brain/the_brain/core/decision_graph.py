@@ -82,6 +82,8 @@ class DecisionGraph:
         self._mem_used_tool: List[Dict[str, Any]] = []       # hop→toolcall edges
         # Routing-Papier 24.11.2026: jeder Satz als Entscheidung (begrenzt, neueste zuletzt).
         self._mem_entscheidungen: Deque[Dict[str, Any]] = deque(maxlen=200)
+        # Schritt 2: Vorschlaege der Weiche im Schattenbetrieb (begrenzt).
+        self._mem_weiche: Deque[Dict[str, Any]] = deque(maxlen=200)
         self.stats_counters: Dict[str, int] = {
             "writes_clusters": 0,
             "writes_thoughts": 0,
@@ -91,6 +93,7 @@ class DecisionGraph:
             "writes_co_activations": 0,
             "writes_tool_calls": 0,
             "writes_entscheidungen": 0,
+            "writes_weiche": 0,
             "errors": 0,
         }
         self._connect()
@@ -129,6 +132,7 @@ class DecisionGraph:
                     ("Satz", "id"),
                     ("Entscheidung", "id"),
                     ("Bereich", "id"),
+                    ("Weichenvorschlag", "id"),
                 ]:
                     s.run(
                         f"CREATE CONSTRAINT IF NOT EXISTS "
@@ -565,6 +569,64 @@ class DecisionGraph:
             with self._driver.session() as s:
                 s.run(Query(self._ENTSCHEIDUNG_CYPHER, timeout=float(timeout_s)), **werte).consume()
             return True
+        except Exception:
+            self.stats_counters["errors"] += 1
+            raise
+
+    # Routing-Papier Schritt 2: der Vorschlag der Weiche im Schattenbetrieb (core/weiche.py).
+    # Die Entscheidung kann noch fehlen (eigener Faden) - MERGE legt sie dann leer an, ihr
+    # Schreiber fuellt sie nach.
+    _WEICHE_CYPHER = """
+        MERGE (e:Entscheidung {id: $eid})
+        ON CREATE SET e.ts = $ts
+        MERGE (w:Weichenvorschlag {id: $wid})
+        SET w.ts = $ts, w.ergebnis = $ergebnis, w.regel = $regel, w.bereich = $bereich,
+            w.faehigkeit = $faehigkeit, w.punkte = $punkte, w.abstand = $abstand,
+            w.dauer_ms = $dauer_ms, w.gleich_wie_heute = $gleich_wie_heute,
+            w.kandidaten = $kandidaten, w.kandidaten_punkte = $kandidaten_punkte
+        MERGE (e)-[:SCHATTEN]->(w)
+        FOREACH (k IN $bereiche |
+            MERGE (b:Bereich {id: k.bereich})
+            MERGE (w)-[r:KANDIDAT]->(b)
+            SET r.rang = k.rang, r.punkte = k.punkte, r.verworfen = k.verworfen)
+        """
+
+    def upsert_weichenvorschlag(self, vorschlag: Dict[str, Any], timeout_s: float = 2.0) -> None:
+        """Vorschlag der Weiche zu einem Satz. Ohne Satztext; wirft bei Neo4j-Fehlern."""
+        trace_id = str(vorschlag.get("trace_id") or "")
+        if not trace_id:
+            return
+        kandidaten = [k for k in (vorschlag.get("kandidaten") or []) if isinstance(k, dict)]
+        bereiche = [
+            {"bereich": str(b.get("bereich")), "rang": int(b.get("rang") or 0),
+             "punkte": float(b.get("punkte") or 0.0), "verworfen": bool(b.get("verworfen"))}
+            for b in (vorschlag.get("bereiche") or []) if isinstance(b, dict) and b.get("bereich")
+        ]
+        werte = {
+            "eid": f"ent_{trace_id}",
+            "wid": f"wei_{trace_id}",
+            "ts": float(vorschlag.get("ts") or time.time()),
+            "ergebnis": str(vorschlag.get("ergebnis") or ""),
+            "regel": str(vorschlag.get("regel") or ""),
+            "bereich": vorschlag.get("bereich"),
+            "faehigkeit": vorschlag.get("faehigkeit"),
+            "punkte": vorschlag.get("punkte"),
+            "abstand": vorschlag.get("abstand"),
+            "dauer_ms": vorschlag.get("dauer_ms"),
+            "gleich_wie_heute": vorschlag.get("gleich_wie_heute"),
+            "kandidaten": [str(k.get("faehigkeit")) for k in kandidaten],
+            "kandidaten_punkte": [float(k.get("punkte") or 0.0) for k in kandidaten],
+            "bereiche": bereiche,
+        }
+        self._mem_weiche.append(dict(werte, trace_id=trace_id))
+        self.stats_counters["writes_weiche"] += 1
+        if not self._connected:
+            return
+        try:
+            from neo4j import Query
+
+            with self._driver.session() as s:
+                s.run(Query(self._WEICHE_CYPHER, timeout=float(timeout_s)), **werte).consume()
         except Exception:
             self.stats_counters["errors"] += 1
             raise
@@ -1093,7 +1155,8 @@ class DecisionGraph:
         try:
             with self._driver.session() as s:
                 # Bereich-Knoten bleiben: es gibt nur eine Handvoll, und sie tragen keine Zeit.
-                for label in ("Dispatch", "Plan", "Hop", "Thought", "Satz", "Entscheidung"):
+                for label in ("Dispatch", "Plan", "Hop", "Thought", "Satz", "Entscheidung",
+                              "Weichenvorschlag"):
                     rec = s.run(
                         f"MATCH (n:{label}) WHERE n.ts < $cutoff "
                         f"WITH n LIMIT 500 DETACH DELETE n RETURN count(n) AS n",
