@@ -246,6 +246,30 @@ class PlanRecorder:
             except Exception as e:  # noqa: BLE001
                 logger.debug(f"[plan-recorder] attach_final persist failed: {e}")
 
+    def record_spur(self, trace_id: str, weg: str, ok: Any) -> bool:
+        """Spur-Eintrag fuer einen Satz, der noch keinen hat (feste Wege ohne ``record_lite``).
+
+        Ohne Satztext und ohne Antwort: nur trace_id, Weg, ok und Zeit (Lage-Abfrage
+        scripts/brain_lage.py). Kein Training (anders als ``record``). True = geschrieben.
+        """
+        import time as _t
+        if not trace_id:
+            return False
+        with self._lock:
+            if trace_id in self._by_trace:
+                return False
+            snap = {"trace_id": trace_id, "intent": "", "routed_via": weg or "ohne-weg",
+                    "ok": ok if isinstance(ok, bool) else None, "ts": _t.time(), "stages": [], "spur": True}
+            self._recent.append(snap)
+            self._by_trace[trace_id] = snap
+            try:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                with self.path.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(snap, ensure_ascii=False) + "\n")
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[plan-recorder] spur persist failed: {e}")
+            return True
+
     def record_lite(self, trace_id: str, intent: str, routed_via: str,
                     final_text: str = "") -> None:
         """Mini-Snapshot fuer plan-lose Zweige (SoM/som-team/meta/easy/no-plan),

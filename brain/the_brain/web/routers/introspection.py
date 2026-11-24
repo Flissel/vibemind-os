@@ -2850,7 +2850,33 @@ async def multihop_execute(request: Request):
     (``hinweis``/``rueckfrage``), und der Ausgang des Satzes zaehlt fuer "Zurück"
     (core/zurueck_vorsicht.satz_merken)."""
     antwort = await _multihop_execute(request)
+    _spur_je_satz(request, antwort)
     return _nachbereiten(antwort)
+
+
+def _spur_je_satz(request: Request, antwort: Any) -> None:
+    """Jeder Satz hinterlaesst einen Spur-Eintrag (GET /api/trace, scripts/brain_lage.py).
+
+    Feste Wege ohne ``_trace_lite`` (Hoeflichkeit, Bestaetigungen, Rueckfragen ...) standen
+    bisher nirgends; Lage-Abfrage 24.11.2026. Nur trace_id, Weg, ok und Zeit, nie der Satz
+    oder die Antwort. Hat der Satz schon einen Eintrag, bleibt der. Wirft nie.
+    """
+    try:
+        daten = json.loads(antwort.body) if isinstance(getattr(antwort, "body", None), bytes) else None
+        if not isinstance(daten, dict) or not isinstance(daten.get("trace_id"), str):
+            return
+        pe = getattr(request.app.state, "plan_executor", None)
+        recorder = getattr(pe, "recorder", None)
+        if recorder is None or not hasattr(recorder, "record_spur"):
+            return
+        weg = daten.get("weg")
+        if not isinstance(weg, str) or not weg:
+            weg = ("rueckfrage" if daten.get("rueckfrage") else "hinweis" if daten.get("hinweis")
+                   else "angenommen" if daten.get("pending") else "fehler" if getattr(antwort, "status_code", 200) >= 400
+                   else "ohne-weg")
+        recorder.record_spur(daten["trace_id"], weg[:60], daten.get("ok"))
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[spur] uebersprungen: {type(e).__name__}: {e}")
 
 
 def _nachbereiten(antwort):
