@@ -2591,6 +2591,66 @@ def _try_ideen_abkuerzung(intent: str, kontext: Any):
         return None, None, ""
 
 
+def _try_sales_abkuerzung(intent: str, kontext: Any):
+    """Feste Lesesaetze des Sales-Space (core/sales_saetze), ohne Planer und ohne Modell.
+
+    Rueckgabe: (None, None) kein fester Satz, (None, frage) Rueckfrage ohne Aufruf,
+    (plan, None) Plan mit genau einem festen Aufruf ``sales.<art>``. Wirft nie.
+    """
+    try:
+        from core.ideen_abkuerzung import arg_vorlage
+        from core.plan_schema import HopSpec as _HopSpec, Plan as _Plan
+        from core.sales_saetze import loese
+
+        treffer = loese(intent, kontext)
+        if not treffer:
+            return None, None
+        if "rueckfrage" in treffer:
+            logger.info("[sales-saetze] Rueckfrage statt Aufruf")
+            return None, str(treffer["rueckfrage"])
+        plan = _Plan(
+            plan_id=f"sales_{int(time.time() * 1000)}",
+            intent=intent,
+            rationale=f"Sales-Satz: {treffer['ereignis']} (fester Aufruf)",
+            hops=[_HopSpec(
+                step_id="s1",
+                description=f"{treffer['ereignis']} via festen Sales-Satz",
+                capability=treffer["capability"],
+                arg_template=arg_vorlage(treffer["argumente"]),
+            )],
+            final_synthesis_prompt="",
+            estimated_cost_usd=0.0,
+        )
+        # Nur die Art ins Protokoll, nie die Eingabe (Suchtext).
+        logger.info(f"[sales-saetze] {treffer['ereignis']!r} (fester Aufruf)")
+        return plan, None
+    except Exception as e:  # noqa: BLE001 - nie die Anfrage daran scheitern lassen
+        logger.warning(f"[sales-saetze] uebersprungen: {type(e).__name__}")
+        return None, None
+
+
+def _sales_antwort(plan, exec_result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Antwortfelder nach einem festen Sales-Aufruf (core/sales_antwort); nie Rohtext. Wirft nie."""
+    try:
+        from core.sales_antwort import antwort_fuer_aufruf
+
+        hops = getattr(plan, "hops", None) or []
+        if len(hops) != 1:
+            return None
+        schritt = (exec_result.get("executed") or {}).get(hops[0].step_id) or {}
+        if not isinstance(schritt, dict):
+            schritt = {}
+        ok = bool(exec_result.get("ok")) and bool(schritt.get("ok", True))
+        felder = antwort_fuer_aufruf(hops[0].capability or "", ok, schritt.get("result"), schritt.get("error"))
+        if not felder.get("ok"):
+            # Der Werkzeugtext bleibt im Plan-Schnappschuss, nicht in der Antwort.
+            felder["fehler"] = "sales_auftrag_nicht_angelegt"
+        return felder
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[sales-antwort] uebersprungen: {type(e).__name__}")
+        return None
+
+
 def _recherche_starten(pe, trace_id: str, intent: str, offen: Dict[str, Any]) -> JSONResponse:
     """"Ja, recherchieren": Zeile anlegen, Lauf starten, als angenommen antworten (core/recherche_bubble)."""
     from core import recherche_bubble as _rb
@@ -2973,6 +3033,7 @@ async def _multihop_execute(request: Request):
     from core.plan_schema import Plan as _Plan
     plan = None
     _ideen_fest = False     # Plan stammt aus der Ideen-Abkuerzung (ein fester Aufruf)
+    _sales_fest = False     # Plan stammt aus den festen Sales-Saetzen (core/sales_saetze)
     _ideen_antwort = ""
     _fest_lesen = ""        # fester Lesesatz eines Space (core/verstehen), z. B. schedule_list
     _space = None           # Space der App aus context.space, None wenn nicht gesendet
@@ -3051,6 +3112,15 @@ async def _multihop_execute(request: Request):
         # welcher Reiter (core/verstehen); ehrliche Saetze fuer Spaces ohne laufenden Weg.
         # Ein fester Satz laeuft ohne Planer.
         _space = _verstehen.space_aus_kontext(body.get("context"))
+        # Sales-Space: feste Lesesaetze als Auftrag ins Auftragsbuch (core/sales_saetze), ohne
+        # Planer und ohne Modell. Nur lesende Arten; freigegeben und versendet wird nur bei Sales.
+        if not skip_shortcut and plan is None and not _bubble_wahl and _space == "sales":
+            plan, _sales_frage = _try_sales_abkuerzung(intent, body.get("context"))
+            if _sales_frage:
+                _trace_lite(pe, trace_id, intent, "sales-rueckfrage", _sales_frage)
+                return JSONResponse({"ok": False, "rueckfrage": True, "space": "sales", "executed": {},
+                                     "final_text": _sales_frage, "trace_id": trace_id, "weg": "sales"})
+            _sales_fest = plan is not None
         if not skip_shortcut and plan is None and not _bubble_wahl:
             _lesen = _verstehen.feste_lesefrage(intent, _space)
             if _lesen and _lesen.get("antwort"):
@@ -3505,7 +3575,9 @@ async def _multihop_execute(request: Request):
                 _fest_lesen = _hops[0].capability
         except Exception:  # noqa: BLE001
             pass
-    if _fest_lesen:
+    if _sales_fest:
+        _fest = _sales_antwort(plan, exec_result)
+    elif _fest_lesen:
         _fest = _lese_antwort(plan, exec_result, _fest_lesen, intent)
     else:
         _fest = _feste_antwort(plan, exec_result, _ideen_fest, _ideen_antwort,
