@@ -76,7 +76,7 @@ class _Planer:
         raise AssertionError("kein Planer")
 
 
-def _client(monkeypatch):
+def _client(monkeypatch, muster=None, planer=None):
     import core.difficulty_router as dr
 
     class _K:
@@ -89,8 +89,10 @@ def _client(monkeypatch):
     app = FastAPI()
     app.include_router(router)
     app.state.plan_executor = _Ausfuehrer()
-    app.state.multihop_planner = _Planer()
+    app.state.multihop_planner = planer or _Planer()
     app.state.final_synthesizer = None
+    if muster is not None:
+        app.state.capability_router = muster
     return TestClient(app), app.state.plan_executor
 
 
@@ -152,6 +154,55 @@ def test_router_unbekannte_karte_ist_rueckfrage(monkeypatch) -> None:
     body = _satz(client, "Lösche die Karte Kassenbuch")
     assert body["final_text"] == "Eine Notiz „Kassenbuch“ finde ich in dieser Bubble nicht."
     assert ausfuehrer.plaene == []
+
+
+# ── L4: offene Bubble zählt als genannt, nie an den Planer ───────────────
+
+@pytest.fixture(scope="module")
+def muster_router():
+    """Der echte Faehigkeiten-Router, nur Muster (kein Einbetter, kein Modell)."""
+    from core.capability_router import CapabilityRouter
+
+    return CapabilityRouter(Path(__file__).resolve().parents[1] / "data" / "capabilities.yaml")
+
+
+class _ZaehlPlaner:
+    def __init__(self):
+        self.aufrufe = 0
+
+    async def aplan(self, intent, context=None):
+        self.aufrufe += 1
+        raise RuntimeError("Planer im Test")
+
+
+@pytest.mark.parametrize("satz, faehigkeit", [
+    ("Erkläre die Idee Sponsoren", "idea_explain"),
+    ("Erweitere die Idee Sponsoren", "idea_expand"),
+    ("Klassifiziere die Idee Sponsoren", "idea_classify"),
+    ("remove the idea Sponsoren", "idea_delete"),
+    ("delete idea Sponsoren", "idea_delete"),
+])
+def test_zustandsabhaengig_bei_offener_bubble_ruhiger_satz_statt_planer(monkeypatch, muster_router,
+                                                                       satz, faehigkeit) -> None:
+    assert muster_router.route(satz).capability == faehigkeit                  # Vorbedingung: Muster greift
+    planer = _ZaehlPlaner()
+    client, ausfuehrer = _client(monkeypatch, muster=muster_router, planer=planer)
+    body = _satz(client, satz)
+    assert planer.aufrufe == 0 and ausfuehrer.plaene == []
+    assert body["ok"] is False and body["rueckfrage"] is True and body["space"] == "ideas"
+    assert body["final_text"].startswith("Das habe ich nicht verstanden. In Ideen")
+
+
+def test_ohne_offene_bubble_bleibt_der_alte_weg(monkeypatch, muster_router) -> None:
+    import web.routers.introspection as intro
+
+    gesehen = []
+    echt = intro._try_capability_shortcut
+    monkeypatch.setattr(intro, "_try_capability_shortcut",
+                        lambda *a, **k: (gesehen.append(echt(*a, **k)), gesehen[-1])[1])
+    client, _ = _client(monkeypatch, muster=muster_router, planer=_ZaehlPlaner())
+    _satz(client, "Erkläre die Idee Sponsoren", {"space": "ideas", "bubble": None})
+    assert gesehen == [None]                                    # wie bisher: Abkuerzung gibt ab
 
 
 # ── Bestätigung ───────────────────────────────────────────────────────────

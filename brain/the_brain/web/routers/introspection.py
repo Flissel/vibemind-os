@@ -2327,7 +2327,10 @@ def _extract_arg_template(intent: str, capability: str) -> str:
     return tokens[-1]
 
 
-def _try_capability_shortcut(state, intent: str):
+OFFENE_BUBBLE_OHNE_WEG = object()  # Marke: zustandsabhaengig, Bubble offen, kein fester Weg
+
+
+def _try_capability_shortcut(state, intent: str, kontext: Any = None):
     """Phase 11.Q2 — try to short-circuit the LLM planner for trivial
     single-action intents.
 
@@ -2424,6 +2427,16 @@ def _try_capability_shortcut(state, intent: str):
         or any(kw in intent_lower for kw in ("die idee ", "the idea ", "idea "))
     )
     if m.capability in _STATE_DEPENDENT_CAPS and (mentions_bubble or has_named_idea):
+        if _ziel_bubble(kontext):
+            # Prueflauf 24.11.2026: "Loesche die Karte X" bei offener Bubble lief als
+            # "bubble=False ... deferring to LLM" an den Planer und scheiterte nach 15 s.
+            # Die offene Bubble zaehlt als genannt; was die festen Wege davor nicht kennen,
+            # bekommt einen ruhigen Satz statt eines Planer-Laufs.
+            logger.info(
+                f"[shortcut] {m.capability!r} is state-dependent, bubble open in app context — "
+                "no planner, honest answer"
+            )
+            return OFFENE_BUBBLE_OHNE_WEG
         logger.info(
             f"[shortcut] {m.capability!r} is state-dependent and intent mentions "
             f"bubble={mentions_bubble} named_idea={has_named_idea} — deferring to LLM"
@@ -3036,10 +3049,14 @@ async def _multihop_execute(request: Request):
         # instead of 500'ing the whole request.
         if not skip_shortcut and plan is None:
             try:
-                plan = _try_capability_shortcut(state, intent)
+                plan = _try_capability_shortcut(state, intent,
+                                                None if _bubble_im_satz else body.get("context"))
             except Exception as e:
                 logger.exception(f"[multihop] shortcut crashed for intent={intent!r}: {e}")
                 plan = None  # fall through to LLM
+            if plan is OFFENE_BUBBLE_OHNE_WEG:
+                return _ehrlich(pe, trace_id, intent, "nicht-verstanden",
+                                _verstehen.nicht_verstanden("ideas"), "ideas")
 
         # Feste Ideen-Saetze aus einem anderen Reiter (z. B. "Halt fest: ... in der Bubble X" aus
         # Video): sie gehoeren zum Ideen-Bereich und laufen dort, mit Sprung. Nur wenn der Satz
