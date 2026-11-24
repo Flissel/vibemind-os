@@ -981,7 +981,7 @@
                 <span class="seed-icon">&#128260;</span>
                 <span>Routing</span>
             </div>
-            <span><span class="status-dot" id="sseDot"></span><span id="sseLabel">connecting...</span></span>
+            <span><span class="status-dot" id="sseDot"></span><span id="sseLabel">Ereignisstrom verbindet …</span></span>
             <span id="hzDisplay">0 Hz</span>
             <span class="badge" id="agentBadge">--</span>
             <span class="badge" id="freqBadge">--</span>
@@ -1160,7 +1160,7 @@
         <div class="chat-section">
             <div class="chat-header">
                 <span class="panel-title" style="margin:0;">&#128488; Brain Chat</span>
-                <span class="chat-status" id="wsStatus">disconnected</span>
+                <span class="chat-status" id="wsStatus">Chat getrennt</span>
             </div>
             <div class="chat-messages" id="chatMessages">
                 <div class="chat-msg brain" style="opacity:0.5;font-style:italic;">Talk to the brain...</div>
@@ -1254,7 +1254,7 @@
     <!-- Decisions pane: live Neo4j graph + history list side by side -->
     <div class="ws-pane" id="wsPaneDecisions" data-pane="decisions">
         <div class="ws-pane-header">
-            <h2>&#127914; Decision Theatre <span style="font-size:11px; color:#78909c; font-weight:400; margin-left:8px;" id="wsDtConn">— live Neo4j</span></h2>
+            <h2>&#127914; Decision Theatre <span style="font-size:11px; color:#78909c; font-weight:400; margin-left:8px;" id="wsDtConn">— Graph: wird geprüft</span></h2>
             <div class="ws-pane-actions">
                 <span class="badge" id="wsDtCounts">--</span>
                 <input type="text" id="wsDecisionsQuery" placeholder="filter past plans..."
@@ -1289,11 +1289,18 @@
                     <span><span style="color:#ab47bc;">▲</span> plan</span>
                     <span><span style="color:#66bb6a;">◆</span> hop</span>
                     <span><span style="color:#ffca28;">★</span> dispatch</span>
+                    <span><span style="color:#b0bec5;">■</span> Satz</span>
+                    <span><span style="color:#26c6da;">⬢</span> Entscheidung</span>
+                    <span><span style="color:#ff8a65;">◆</span> Bereich</span>
                 </div>
             </div>
-            <!-- Right: History list -->
+            <!-- Right: neueste Saetze (aus der Graph-Abfrage), darunter alte Plaene -->
             <div id="wsDecisionsList" style="overflow-y:auto; padding:18px 18px 18px 0; min-height:0;">
-                <div class="ws-empty">No plans yet.</div>
+                <div id="wsSatzListe"><div class="ws-empty">Noch keine Sätze.</div></div>
+                <details id="wsAltePlaene" style="margin-top:14px;">
+                    <summary style="cursor:pointer; color:#78909c; font-size:11px;">Ältere Pläne (Gedächtnis)</summary>
+                    <div id="wsAltePlaeneListe"><div class="ws-empty">Keine.</div></div>
+                </details>
             </div>
         </div>
     </div>
@@ -1422,7 +1429,7 @@
            placeholder="Ask the brain... (Enter to send)"
            onkeydown="if(event.key==='Enter') wsChatBarSend()">
     <button class="cb-send" id="wsChatBarSend" onclick="wsChatBarSend()">Send</button>
-    <span class="cb-status" id="wsChatBarStatus">disconnected</span>
+    <span class="cb-status" id="wsChatBarStatus" title="Die Leiste schickt jede Frage einzeln (HTTP), sie haelt keine Verbindung.">bereit</span>
 </div>
 
 <!-- ── Phase 6: Routing Panel ───────────────────────────────────── -->
@@ -1908,7 +1915,7 @@ function connectChat() {
     chatWs = new WebSocket(`${proto}//${location.host}/ws/chat`);
 
     chatWs.onopen = () => {
-        wsStatusEl.textContent = 'connected';
+        wsStatusEl.textContent = 'Chat verbunden';
         wsStatusEl.className = 'chat-status ws-ok';
         chatSendBtn.disabled = false;
         chatInput.disabled = false;
@@ -1967,14 +1974,14 @@ function connectChat() {
     };
 
     chatWs.onclose = () => {
-        wsStatusEl.textContent = 'disconnected';
+        wsStatusEl.textContent = 'Chat getrennt';
         wsStatusEl.className = 'chat-status';
         chatSendBtn.disabled = true;
         chatReconnectTimer = setTimeout(connectChat, 3000);
     };
 
     chatWs.onerror = () => {
-        wsStatusEl.textContent = 'error';
+        wsStatusEl.textContent = 'Chat: Fehler';
         wsStatusEl.className = 'chat-status';
     };
 }
@@ -2029,7 +2036,7 @@ function connectSSE() {
 
     source.onopen = () => {
         dot.className = 'status-dot ok';
-        label.textContent = 'SSE connected';
+        label.textContent = 'Ereignisstrom verbunden';
     };
 
     source.onmessage = (e) => {
@@ -2071,7 +2078,7 @@ function connectSSE() {
 
     source.onerror = () => {
         dot.className = 'status-dot err';
-        label.textContent = 'SSE disconnected';
+        label.textContent = 'Ereignisstrom getrennt';
         setTimeout(connectSSE, 3000);
     };
 }
@@ -2848,6 +2855,130 @@ const _ENTSCHEIDUNG_STILE = [
       }},
 ];
 
+// Ein ehrlicher Zustand des Entscheidungsgraphen fuer Kopfzeile und Galaxy-Zaehler.
+// Nur neo4j_connected === true heisst "Neo4j verbunden"; alles andere sagt, was fehlt.
+function _graphZustand(data) {
+    if (!data || !data.connected) return { text: 'Graph: nicht erreichbar', farbe: '#ef5350' };
+    if (data.abfrage_fehler) return { text: 'Graph: Neo4j verbunden, Abfrage fehlgeschlagen', farbe: '#ffa726' };
+    if (data.neo4j_connected === true) return { text: 'Graph: Neo4j verbunden', farbe: '#66bb6a' };
+    return { text: 'Graph: nur Zwischenspeicher (Neo4j nicht verbunden)', farbe: '#ffa726' };
+}
+
+function _dauerText(ms) {
+    if (typeof ms !== 'number') return '–';
+    return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1).replace('.', ',')} s`;
+}
+
+function _alterText(ts) {
+    if (!ts) return '';
+    const s = Math.max(0, Math.round(Date.now() / 1000 - ts));
+    if (s < 60) return `vor ${s} s`;
+    if (s < 3600) return `vor ${Math.floor(s / 60)} min`;
+    if (s < 86400) return `vor ${Math.floor(s / 3600)} h`;
+    return `vor ${Math.floor(s / 86400)} T`;
+}
+
+// Satz, Bereich und Plan je Entscheidung aus der Antwort von /api/decision_graph/query.
+function _entscheidungsZeilen(data) {
+    const byId = {};
+    (data.nodes || []).forEach(n => { if (n && n.data) byId[n.data.id] = n.data; });
+    const satzZu = {}, bereichZu = {}, planZu = {};
+    (data.edges || []).forEach(e => {
+        const d = (e && e.data) || {};
+        if (d.type === 'entschieden_durch') satzZu[d.target] = d.source;
+        else if (d.type === 'waehlt') bereichZu[d.source] = d.target;
+        else if (d.type === 'fuehrt_zu') planZu[d.source] = d.target;
+    });
+    return Object.values(byId)
+        .filter(d => d.type === 'entscheidung')
+        .sort((a, b) => (b.ts || 0) - (a.ts || 0))
+        .map(ent => ({
+            ent,
+            satz: byId[satzZu[ent.id]] || null,
+            bereich: byId[bereichZu[ent.id]] || null,
+            plan: byId[planZu[ent.id]] || null,
+        }));
+}
+
+// Liste rechts in der Decisions-Ansicht: die neuesten Saetze, neueste oben.
+function _wsSatzListe(data) {
+    const box = document.getElementById('wsSatzListe');
+    if (!box) return;
+    const zeilen = _entscheidungsZeilen(data);
+    if (!zeilen.length) {
+        box.innerHTML = '<div class="ws-empty">Noch keine Sätze.</div>';
+        return;
+    }
+    const ohneText = !!data.text_ausgeblendet;
+    box.innerHTML = (ohneText
+        ? '<div class="ws-empty" style="padding:4px 0 10px;">Satztext ausgeblendet.</div>' : '')
+        + zeilen.map(({ ent, satz, bereich, plan }) => {
+            const ok = ent.ok === true ? '✓' : ent.ok === false ? '✗' : '–';
+            const cls = ent.ok === true ? 'success' : ent.ok === false ? 'failure' : 'partial';
+            const text = satz ? (satz.intent || satz.label || 'Satz') : 'Satz';
+            return `<div class="decision-card ${cls}" style="cursor:pointer"
+                         onclick="_wsZeigeKnoten('${_wsEsc(ent.id)}')">
+                <div class="dc-intent">${_wsEsc(text)}</div>
+                <div class="dc-meta">
+                    <span><b>${_wsEsc(ent.label || ent.stufe || '?')}</b></span>
+                    <span>Bereich: ${_wsEsc(bereich ? (bereich.label || bereich.id) : '–')}</span>
+                    <span>ok: ${ok}</span>
+                    <span>${_dauerText(ent.dauer_ms)}</span>
+                    <span>${_alterText(ent.ts)}</span>
+                    ${plan ? '<span>mit Plan</span>' : ''}
+                </div>
+            </div>`;
+        }).join('');
+}
+
+function _wsZeigeKnoten(id) {
+    if (!_wsCy) return;
+    const n = _wsCy.getElementById(id);
+    if (!n || !n.length) return;
+    _wsCy.elements().unselect();
+    n.select();
+    _wsCy.animate({ center: { eles: n }, zoom: Math.max(_wsCy.zoom(), 1.4) }, { duration: 300 });
+}
+
+// Hinweis beim Ueberfahren von Satz, Entscheidung und Bereich (beide Ansichten).
+function _knotenHinweis(cy) {
+    let tip = document.getElementById('knotenHinweis');
+    if (!tip) {
+        tip = document.createElement('div');
+        tip.id = 'knotenHinweis';
+        tip.style.cssText = 'position:fixed; z-index:9999; pointer-events:none; display:none;'
+            + 'max-width:320px; padding:6px 9px; border-radius:6px; font-size:11px; line-height:1.4;'
+            + 'background:#0d1420; color:#e8f0fe; border:1px solid #2a3f54; box-shadow:0 4px 14px #0008;';
+        document.body.appendChild(tip);
+    }
+    const sel = 'node[type="satz"], node[type="entscheidung"], node[type="bereich"]';
+    cy.on('mouseover', sel, evt => {
+        const n = evt.target, d = n.data();
+        let html = '';
+        if (d.type === 'satz') {
+            html = `<b>Satz</b><br>${_wsEsc(d.intent || d.label || '')}`
+                + (d.reiter ? `<br><span style="color:#78909c">Reiter: ${_wsEsc(d.reiter)}</span>` : '');
+        } else if (d.type === 'entscheidung') {
+            const ok = d.ok === true ? '✓ ok' : d.ok === false ? '✗ Fehler' : '– ohne Angabe';
+            html = `<b>Entscheidung</b><br>${_wsEsc(d.label || '')}<br>`
+                + `<span style="color:#78909c">${ok} · ${_dauerText(d.dauer_ms)}`
+                + (d.weg ? ` · Weg: ${_wsEsc(d.weg)}` : '') + '</span>';
+        } else {
+            const zahl = n.incomers('edge[type="waehlt"]').length;
+            html = `<b>Bereich</b><br>${_wsEsc(d.label || d.id)}<br>`
+                + `<span style="color:#78909c">${zahl} Entscheidung${zahl === 1 ? '' : 'en'} im Bild</span>`;
+        }
+        tip.innerHTML = html;
+        const r = cy.container().getBoundingClientRect();
+        const p = n.renderedPosition();
+        tip.style.left = Math.round(r.left + p.x + 14) + 'px';
+        tip.style.top = Math.round(r.top + p.y + 14) + 'px';
+        tip.style.display = 'block';
+    });
+    cy.on('mouseout', sel, () => { tip.style.display = 'none'; });
+    cy.on('pan zoom', () => { tip.style.display = 'none'; });
+}
+
 function _computePositions(nodes, edges, cy) {
     const pos = new Map();
     if (!nodes || !nodes.length) return pos;
@@ -3323,6 +3454,7 @@ function _initCytoscape() {
             _addAction('ok', `bump ${cid} → act=${(d.activation || 0).toFixed(2)}`)
         ).catch(err => _addAction('fail', `bump failed: ${err}`));
     });
+    _knotenHinweis(_cy);
     return _cy;
 }
 
@@ -3352,6 +3484,8 @@ function _esc(s) {
 
 function _openToolCallModal(d) {
     const m = document.getElementById('dtModal');
+    // Das Fenster liegt im rechten Brain-Teil, der in den Arbeitsreitern unsichtbar ist.
+    if (m.parentElement !== document.body) document.body.appendChild(m);
     document.getElementById('dtModalTitle').innerHTML =
         `🔧 ${_esc(d.tool || d.label)} <span style="color:#78909c;font-size:10px;">[${_esc(d.kind||'')}]</span>`;
     let body = '';
@@ -3380,6 +3514,8 @@ function _openToolCallModal(d) {
 
 function _openNodeModal(d) {
     const m = document.getElementById('dtModal');
+    // Das Fenster liegt im rechten Brain-Teil, der in den Arbeitsreitern unsichtbar ist.
+    if (m.parentElement !== document.body) document.body.appendChild(m);
     const titleByType = {
         cluster: '🔵 Cluster',
         plan: '🔺 Plan',
@@ -3401,7 +3537,7 @@ function _openNodeModal(d) {
     for (const k of ['activation','reward_score','elapsed_s','hop_count','member_count','fire_count',
                      'schritte','dauer_ms','laenge']) {
         if (d[k] !== undefined && d[k] !== null) {
-            body += `<div class="dt-row"><span class="dt-label">${k}</span>${typeof d[k]==='number' ? d[k].toFixed(2) : d[k]}</div>`;
+            body += `<div class="dt-row"><span class="dt-label">${k}</span>${typeof d[k]==='number' && !Number.isInteger(d[k]) ? d[k].toFixed(2) : d[k]}</div>`;
         }
     }
     if (typeof d.ok === 'boolean') {
@@ -3454,7 +3590,10 @@ function _galaxyTick() {
             if (empty) empty.style.display = totalNodes === 0 ? 'block' : 'none';
             document.getElementById('galaxyClusterCount').textContent =
                 `${stats.clusters || 0}c/${stats.plans || 0}p/${stats.dispatches || 0}d/${stats.entscheidungen || 0}e`
-                + (data.neo4j_connected === false ? ' ⚡' : '');
+                + (data.neo4j_connected === true ? '' : ' ⚡');
+            document.getElementById('galaxyClusterCount').title = _graphZustand(data).text;
+            const decBadge = document.getElementById('wsBadgeDec');
+            if (decBadge) decBadge.textContent = stats.entscheidungen || 0;
             // Always show when nodes are present, hide only when truly empty
             const sec = document.getElementById('galaxySection');
             if (sec) {
@@ -3852,7 +3991,8 @@ function _wsDtInit() {
                 'background-color': '#ab47bc', 'shape': 'triangle',
                 'label': 'data(label)', 'color': '#e8f0fe', 'font-size': 9,
                 'width': 26, 'height': 26, 'text-valign': 'top', 'text-margin-y': -6,
-                'text-wrap': 'ellipsis', 'text-max-width': '180px',
+                // Schmal genug fuer den Spaltenabstand: lange Satztexte ueberlappten sich.
+                'text-wrap': 'ellipsis', 'text-max-width': '110px',
             }},
             // COMPOUND PLAN BOXES — soft purple containers for routing-packets
             { selector: 'node[type="plan"]:parent', style: {
@@ -3909,6 +4049,12 @@ function _wsDtInit() {
         layout: _pickLayout(true),
         minZoom: 0.2, maxZoom: 3, wheelSensitivity: 0.2,
     });
+    // Klick oeffnet dieselbe Detailansicht wie im Galaxy; Ueberfahren zeigt einen Hinweis.
+    _wsCy.on('tap', 'node', evt => {
+        const d = evt.target.data();
+        if (d.type === 'toolcall') _openToolCallModal(d); else _openNodeModal(d);
+    });
+    _knotenHinweis(_wsCy);
 }
 
 async function wsDtPoll() {
@@ -3920,16 +4066,22 @@ async function wsDtPoll() {
         const empty = document.getElementById('wsDtEmpty');
         const conn = document.getElementById('wsDtConn');
         const counts = document.getElementById('wsDtCounts');
+        const zustand = _graphZustand(data);
+        if (conn) { conn.textContent = '— ' + zustand.text; conn.style.color = zustand.farbe; }
         if (!data.connected) {
             if (empty) { empty.style.display = 'block'; empty.textContent = 'Decision-graph backend offline.'; }
-            if (conn) conn.textContent = '— offline';
             return;
         }
         const stats = data.stats || {};
-        if (counts) counts.textContent =
-            `${stats.clusters||0}c / ${stats.plans||0}p / ${stats.hops||0}h / ${stats.dispatches||0}d / ${stats.entscheidungen||0}e`;
-        if (conn) conn.textContent = data.neo4j_connected === false
-            ? '— in-memory mirror (Neo4j down)' : '— live Neo4j';
+        if (counts) {
+            counts.textContent =
+                `${stats.clusters||0}c / ${stats.plans||0}p / ${stats.hops||0}h / ${stats.dispatches||0}d / ${stats.entscheidungen||0}e`;
+            counts.title = 'Cluster / Pläne / Hops / Dispatches / Entscheidungen (Sätze)';
+        }
+        // Reiter-Abzeichen = dieselbe Zahl wie "…e" im Zaehler.
+        const badge = document.getElementById('wsBadgeDec');
+        if (badge) badge.textContent = stats.entscheidungen || 0;
+        _wsSatzListe(data);
         const rawNodes = data.nodes || [];
         const rawEdges = data.edges || [];
         if (empty) empty.style.display = rawNodes.length === 0 ? 'block' : 'none';
@@ -3975,7 +4127,11 @@ function _wsDtPollStop() {
 // ── Decisions ──────────────────────────────────────────────────────
 async function wsLoadDecisions() {
     const q = (document.getElementById('wsDecisionsQuery').value || '').trim();
-    const box = document.getElementById('wsDecisionsList') || document.getElementById('wsDecisionsBody');
+    // Die neuesten Saetze fuellt wsDtPoll (_wsSatzListe); hier nur die alten Plaene aus dem
+    // Gedaechtnis bzw. die Treffer der Suche, im aufklappbaren Teil darunter.
+    const box = document.getElementById('wsAltePlaeneListe');
+    const auf = document.getElementById('wsAltePlaene');
+    if (q && auf) auf.open = true;
     try {
         // If no query, scroll the brain-decisions collection by recent
         let hits = [];
@@ -4000,9 +4156,8 @@ async function wsLoadDecisions() {
                 };
             });
         }
-        document.getElementById('wsBadgeDec').textContent = hits.length;
         if (!hits.length) {
-            box.innerHTML = '<div class="ws-empty">No decisions yet. Run a Routing plan to populate.</div>';
+            box.innerHTML = '<div class="ws-empty">Keine.</div>';
             return;
         }
         box.innerHTML = hits.map(h => {
@@ -4157,7 +4312,7 @@ async function wsChatBarSend() {
     if (!msg) return;
     inp.value = '';
     const status = document.getElementById('wsChatBarStatus');
-    status.textContent = 'thinking...'; status.className = 'cb-status';
+    status.textContent = 'denkt …'; status.className = 'cb-status';
     // Append user message
     _wsAppendChat('user', msg);
     try {
@@ -4168,10 +4323,10 @@ async function wsChatBarSend() {
         const d = await r.json();
         const reply = d.response || d.message || d.reply || '(no response)';
         _wsAppendChat('brain', reply);
-        status.textContent = 'connected'; status.classList.add('ok');
+        status.textContent = 'Antwort da'; status.classList.add('ok');
     } catch (e) {
         _wsAppendChat('error', String(e));
-        status.textContent = 'error'; status.className = 'cb-status';
+        status.textContent = 'Fehler'; status.className = 'cb-status';
     }
 }
 function _wsAppendChat(who, text) {

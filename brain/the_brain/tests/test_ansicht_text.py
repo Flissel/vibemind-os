@@ -110,6 +110,14 @@ def test_unbekannte_knotenart_und_neue_felder_fallen_weg():
     assert sauber["nodes"][1]["data"] == {"id": "p1", "type": "plan", "ok": True, "label": "Plan"}
 
 
+def test_zustand_bleibt_ohne_text_erhalten():
+    """Die Ansicht braucht neo4j_connected und abfrage_fehler fuer ihre Zustandszeile."""
+    sauber = intro._ohne_text({"connected": True, "neo4j_connected": True, "abfrage_fehler": True,
+                               "error": "Druckerei", "nodes": [], "edges": []})
+    assert sauber["neo4j_connected"] is True and sauber["abfrage_fehler"] is True
+    assert "error" not in sauber
+
+
 def test_schalter_immer_und_nie(dg, monkeypatch):
     monkeypatch.setenv("DECISION_GRAPH_TEXT", "immer")
     assert SATZ in _abfrage(_client(dg, "boese.example")).text

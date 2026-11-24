@@ -2205,7 +2205,7 @@ def _ohne_text(out: Any) -> Any:
     for e in out.get("edges") or []:
         roh = e.get("data") if isinstance(e, dict) and isinstance(e.get("data"), dict) else {}
         kanten.append({"data": {k: roh[k] for k in _SICHERE_KANTENFELDER if k in roh}})
-    erlaubt = {k: out[k] for k in ("connected", "neo4j_connected", "stats") if k in out}
+    erlaubt = {k: out[k] for k in ("connected", "neo4j_connected", "abfrage_fehler", "stats") if k in out}
     return {**erlaubt, "nodes": knoten, "edges": kanten, "text_ausgeblendet": True}
 
 @router.get("/api/decision_graph/stats")
