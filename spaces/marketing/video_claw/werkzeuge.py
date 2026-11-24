@@ -14,9 +14,10 @@ import os
 import re
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 from spaces.marketing.claw import laura as laura_lesen
-from spaces.marketing.video_claw import laura_api
+from spaces.marketing.video_claw import laura_api, musik_studio
 from spaces.marketing.workers.bild_worker import tls_kontext
 
 REEL_MAX_BYTES = 15_000_000
@@ -311,7 +312,7 @@ def _beats_pruefen(beats) -> list[dict] | str:
 
 def reel_bauen(auftrag: str, projekt_id: str, beats: list, stimme: str = "standard", hook: str = "",
                logo_asset_id: str = "", logo_position: str = "oben_rechts", rahmung: str = "zuschnitt",
-               untertitel_ersetzen: dict | None = None, format: str = "") -> dict:
+               untertitel_ersetzen: dict | None = None, format: str = "", musik: str = "") -> dict:
     """Das Reel bauen: je Beat ein gesprochener Satz ueber einem Clip, deutsche Stimme, Untertitel,
     im Format aus dem Briefing, KI-Hinweis nach Inhalt, hoechstens 15 MB. Startet den Render und liefert
     export_id - nenne sie am Ende als 'EXPORT: <export_id>'. Der Render selbst laeuft danach weiter.
@@ -328,6 +329,10 @@ def reel_bauen(auftrag: str, projekt_id: str, beats: list, stimme: str = "standa
     je Eintrag EIN Wort, hoechstens 30; nur offensichtliche Hoerfehler, nichts umformulieren.
     format: reel (9:16) | quadrat (1:1) | quer (16:9); leer = Format des Auftrags (muss dazu passen). Alle
     Karten und Standbilder muessen im selben Format entstanden sein.
+    musik: ein Satz zu Ton und Marke aus dem Briefing, ohne Gesang (z. B. "ruhig, warm, Klavier"); bestellt passende
+    Hintergrundmusik. Dann rendert reel_bauen NICHT, sondern liefert timeline_id und musik_auftrag - danach IMMER
+    reel_fertigstellen(timeline_id, musik_auftrag) aufrufen, das die Musik einlegt und rendert. Leer oder "aus" =
+    keine Musik, das Reel wird wie bisher gleich gerendert und liefert export_id.
     Die Lautstaerke wird immer angeglichen. Dauert einige Minuten (die Stimme wird je Satz erzeugt) - nicht abbrechen
     und NICHT ein zweites Mal aufrufen."""
     if not _id(auftrag, "auftrag") or not _id(projekt_id, "projekt_id"):
@@ -352,6 +357,9 @@ def reel_bauen(auftrag: str, projekt_id: str, beats: list, stimme: str = "standa
         return _fehler("untertitel_ersetzen: hoechstens 30 Eintraege, je ein Wort -> Ersatz (1-40 Zeichen)")
     if not _format_gueltig(format):
         return _fehler(FORMAT_FEHLER)
+    if not isinstance(musik, str) or len(musik) > MUSIK_WUNSCH_MAX:
+        return _fehler(f"musik: ein Satz, hoechstens {MUSIK_WUNSCH_MAX} Zeichen (leer oder 'aus' = keine Musik)")
+    musik_wunsch = "" if musik.strip().lower() == "aus" else musik.strip()
     marke = _marke(auftrag)            # vor dem Bau: das Format des Auftrags muss vorher feststehen
     fmt = _format_waehlen(format, marke, streng=False)
     if isinstance(fmt, dict):
@@ -391,10 +399,110 @@ def reel_bauen(auftrag: str, projekt_id: str, beats: list, stimme: str = "standa
         reel["hook_text"] = hook.strip()
     if logo_asset_id:
         reel.update(logo_asset_id=logo_asset_id, logo_position=logo_position)
+    if musik_wunsch:
+        bestellt = _musik_bestellen(timeline, musik_wunsch, reel)
+        if bestellt["ok"]:
+            return {"ok": True, "timeline_id": timeline, "musik_auftrag": bestellt["auftrag"], "reel": reel,
+                    "warnungen": warnungen[:10]}
+        warnungen.append(f"ohne Musik: {bestellt['fehler']}")      # Reel entsteht trotzdem, gleich gerendert
     e = laura_api.anfrage("POST", f"/timelines/{timeline}/render-reel", reel)
     if not e["ok"]:
         return e
     return {"ok": True, "export_id": e["daten"].get("export_id"), "timeline_id": timeline,
+            "warnungen": warnungen[:10]}
+
+
+# --- Musik unter dem Reel (Plan 3 Task 7) -----------------------------------------------------------
+
+_TIMELINE_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+MUSIK_GAIN_PERCENT = 25        # jedes Reel hat Sprache: Satz oder Originalton - die Musik liegt darunter
+MUSIK_WARTEN_S = 480           # MCP_TOOL_TIMEOUT 900 s; in-laura (bis 300 s) und Render-Start folgen danach
+MUSIK_WUNSCH_MAX = 500
+
+
+def _optionen_ordner() -> Path:
+    """Wo die Reel-Optionen gemerkt werden (Tests ersetzen diese Funktion; der Musik-Dienst liest dieselben
+    Dateien fuer neue Renders)."""
+    return Path.home() / ".vibemind" / "video-claw"
+
+
+def _optionen_datei(timeline_id) -> Path | None:
+    if not isinstance(timeline_id, str) or not _TIMELINE_ID.fullmatch(timeline_id):
+        return None
+    return _optionen_ordner() / f"reel-{timeline_id}.json"
+
+
+def _optionen_merken(timeline_id, reel: dict) -> str | None:
+    """Schreibt die render-reel-Optionen atomar (Temp-Datei + os.replace). None = ok, sonst der Grund."""
+    ziel = _optionen_datei(timeline_id)
+    if ziel is None:
+        return "timeline_id ungueltig"
+    tmp = ziel.with_name(ziel.name + f".{os.getpid()}.tmp")
+    try:
+        ziel.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(reel, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, ziel)
+    except OSError as e:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return f"Reel-Optionen nicht gemerkt: {type(e).__name__}"
+    return None
+
+
+def _optionen_lesen(timeline_id) -> dict | str:
+    """Die gemerkten Optionen oder der Fehlertext."""
+    ziel = _optionen_datei(timeline_id)
+    if ziel is None:
+        return "timeline_id ungueltig"
+    try:
+        daten = json.loads(ziel.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return "keine gemerkten Reel-Optionen fuer diese Zeitleiste - erst reel_bauen mit musik"
+    except (OSError, ValueError):
+        return "gemerkte Reel-Optionen nicht lesbar"
+    if not isinstance(daten, dict) or not daten:
+        return "gemerkte Reel-Optionen ungueltig"
+    return daten
+
+
+def _musik_bestellen(timeline, wunsch: str, reel: dict) -> dict:
+    """Merkt die Optionen und bestellt die Musik. {"ok", "auftrag"} oder {"ok": False, "fehler"}."""
+    grund = _optionen_merken(timeline, reel)
+    if grund:
+        return _fehler(grund)
+    b = musik_studio.bestellen(timeline, wunsch)
+    if not b.get("ok"):
+        try:
+            _optionen_datei(timeline).unlink(missing_ok=True)       # nur die eigene Merkdatei, nie etwas in Laura
+        except OSError:
+            pass
+        return b
+    return b
+
+
+def reel_fertigstellen(timeline_id: str, musik_auftrag: str) -> dict:
+    """Nach reel_bauen mit musik: wartet auf die Musik, legt sie unter die Stimme (leise, 25 %) und startet den
+    Render mit den Optionen von reel_bauen. Liefert export_id - nenne sie am Ende als 'EXPORT: <export_id>'.
+    timeline_id und musik_auftrag: genau die Werte aus der Antwort von reel_bauen. Scheitert die Musik, wird das
+    Reel trotzdem gerendert und die Warnung beginnt mit 'ohne Musik:'. Wartet bis zu 8 Minuten - nicht
+    abbrechen und NICHT ein zweites Mal aufrufen."""
+    optionen = _optionen_lesen(timeline_id)
+    if isinstance(optionen, str):
+        return _fehler(optionen)
+    if not isinstance(musik_auftrag, str) or not _TIMELINE_ID.fullmatch(musik_auftrag):
+        return _fehler("musik_auftrag ungueltig")
+    warnungen: list[str] = []
+    fertig = musik_studio.warten(musik_auftrag, max_s=MUSIK_WARTEN_S)
+    if fertig.get("ok"):
+        fertig = musik_studio.einlegen(musik_auftrag, timeline_id, MUSIK_GAIN_PERCENT)
+    if not fertig.get("ok"):
+        warnungen.append(f"ohne Musik: {fertig.get('fehler')}")
+    e = laura_api.anfrage("POST", f"/timelines/{timeline_id}/render-reel", optionen)
+    if not e["ok"]:
+        return e
+    return {"ok": True, "export_id": e["daten"].get("export_id"), "timeline_id": timeline_id,
             "warnungen": warnungen[:10]}
 
 
@@ -410,4 +518,4 @@ def reel_status(export_id: str) -> dict:
 
 
 WERKZEUGE = (notiz, material_suchen, transkript, projekt_anlegen, material_uebernehmen, bild_importieren,
-             standbild, titelkarte, reel_bauen, reel_status)
+             standbild, titelkarte, reel_bauen, reel_fertigstellen, reel_status)

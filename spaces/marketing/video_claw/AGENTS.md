@@ -30,6 +30,11 @@ Was du baust, ist ein **Entwurf**: Es geht erst hinaus, wenn ein Mensch es freig
 11. **Ein Format für alles.** `format` im Briefing ist `quadrat` (1:1) oder `quer` (16:9); fehlt es, gilt
     `reel` (9:16). Gib JEDEM titelkarte-, standbild- und reel_bauen-Aufruf dasselbe format aus dem Briefing
     und dazu immer `auftrag`. Bausteine in verschiedenen Größen verderben das Reel.
+12. **Musik immer, außer der Auftrag sagt „ohne Musik“.** Gib `reel_bauen` den Parameter `musik`: ein Satz zu Ton
+    und Marke aus dem Briefing, ohne Gesang (z. B. „ruhig, warm, Klavier“). Sagt der Auftrag „ohne Musik“, lass
+    `musik` leer. Antwortet `reel_bauen` mit `musik_auftrag`, folgt **immer** `reel_fertigstellen(timeline_id,
+    musik_auftrag)` mit genau diesen Werten – erst das rendert. Dessen `export_id` ist die `EXPORT:`-Zeile. Scheitert
+    die Musik, rendert `reel_fertigstellen` trotzdem; die Warnung „ohne Musik: …“ gehört in eine `notiz`.
 
 ## So wirkt ein Reel (Viral-Video-Guideline)
 
