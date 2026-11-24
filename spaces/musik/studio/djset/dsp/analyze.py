@@ -576,6 +576,16 @@ def measure_loudness(path: Path, *, peak_per_channel: bool = False) -> Loudness:
     einer Seite liegt.
     """
     signal, sr = sf.read(str(path))
+    return measure_loudness_array(signal, sr, peak_per_channel=peak_per_channel)
+
+
+def measure_loudness_array(
+    signal: np.ndarray, sr: int, *, peak_per_channel: bool = False
+) -> Loudness:
+    """Wie `measure_loudness`, aber auf einem schon gelesenen Signal.
+
+    So misst man viele Ausschnitte einer Datei, ohne sie jedes Mal zu lesen.
+    """
     meter = pyloudnorm.Meter(sr)
     # pyloudnorm liefert fuer digitale Stille -inf. -inf ueberlebt den
     # JSON-Roundtrip nicht (dump schreibt null, validate lehnt null ab) und

@@ -1,0 +1,159 @@
+"""Zuschnitt der Videomusik: Start und Schluss auf Taktanfaengen, Laenge exakt.
+
+Die Musik soll nicht mitten im Takt abreissen. Deshalb liegt der letzte
+Taktanfang (`schluss_s`) so, dass danach noch ein kurzer Ausklang bis zum
+Videoende bleibt; die Gesamtlaenge `ende_s - start_s` ist exakt das Ziel.
+"""
+
+import math
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Literal
+
+import numpy as np
+
+from djset.contracts import BeatGrid
+from djset.video.laenge import VideoFehler
+
+AUSKLANG_MIN_S = 0.5
+# Hoechstens so viele Schlaege (Viertel eines Takts) wird ein Taktanfang auf
+# einen erkannten Beat geschoben; weiter weg traut man dem Beat nicht mehr.
+EINRASTEN_SCHLAEGE = 0.25
+_EPS = 1e-9
+# Abgleich erlaubter Starts mit dem Raster: dieselbe Zeit, nur anders gerundet.
+_ERLAUBT_TOL_S = 1e-6
+
+def aufrunden(x: float) -> float:
+    """Auf 0,1 s nach oben: ein genannter Mindestwert geht beim Wiederholen wirklich."""
+    return math.ceil(round(x * 10.0, 6)) / 10.0
+
+
+def abrunden(x: float) -> float:
+    """Auf 0,1 s nach unten: eine genannte tragbare Laenge geht beim Wiederholen wirklich."""
+    return math.floor(round(x * 10.0, 6)) / 10.0
+
+
+Einstieg = Literal["anfang", "hoehepunkt"]
+
+
+@dataclass(frozen=True)
+class Zuschnitt:
+    start_s: float
+    schluss_s: float
+    ende_s: float
+    takte: int
+
+
+def traegt_s(grid: BeatGrid, dauer_s: float) -> float:
+    """Die laengste Videomusik, die der Song ab dem ersten Taktanfang traegt."""
+    return max(0.0, dauer_s - grid.first_downbeat_s)
+
+
+def _einrasten(t: float, beats: np.ndarray | None, toleranz_s: float) -> float:
+    if beats is None or len(beats) == 0:
+        return t
+    abstaende = np.abs(beats - t)
+    i = int(np.argmin(abstaende))
+    return float(beats[i]) if abstaende[i] < toleranz_s else t
+
+
+def _fenster_energie(energie: list[float], schritt_s: float, start: float, laenge: float) -> float:
+    """Zeitgewichtete mittlere Energie von [start, start+laenge)."""
+    ende = start + laenge
+    summe = 0.0
+    for i, wert in enumerate(energie):
+        von = max(start, i * schritt_s)
+        bis = min(ende, (i + 1) * schritt_s)
+        if bis > von:
+            summe += wert * (bis - von)
+    return summe / laenge
+
+
+def taktstarts(grid: BeatGrid, dauer_s: float, ziel_s: float) -> list[float]:
+    """Alle Taktanfaenge, ab denen ziel_s Musik noch in den Song passt."""
+    takt = grid.bar_length_s
+    if not math.isfinite(takt) or takt <= 0:  # sonst endlos
+        raise VideoFehler(f"Ungueltige Taktlaenge im Raster: {takt}")
+    if not math.isfinite(ziel_s) or not math.isfinite(dauer_s):
+        raise VideoFehler(f"Ungueltige Laenge: Song {dauer_s}, Ziel {ziel_s}")
+    starts: list[float] = []
+    k = 0
+    while grid.first_downbeat_s + k * takt + ziel_s <= dauer_s + _EPS:
+        starts.append(grid.first_downbeat_s + k * takt)
+        k += 1
+    return starts
+
+
+def schlusstakte(takt_s: float, ziel_s: float) -> int:
+    """Wie viele ganze Takte vor dem Ausklang passen (ungerastet)."""
+    return math.floor((ziel_s - AUSKLANG_MIN_S) / takt_s + _EPS)
+
+
+def zuschnitt_planen(
+    grid: BeatGrid,
+    dauer_s: float,
+    ziel_s: float,
+    einstieg: Einstieg,
+    energie: list[float],
+    beats: np.ndarray | None = None,
+    erlaubt: Sequence[float] | None = None,
+) -> Zuschnitt:
+    """Plant den Zuschnitt.
+
+    `erlaubt`: nur diese Taktanfaenge kommen als Start in Frage (z. B. die, deren
+    Fenster den Zielpegel erreichen). Leer ist ein Fehler; den Rueckfall auf alle
+    Starts entscheidet der Aufrufer.
+    """
+    takt = grid.bar_length_s
+    if not math.isfinite(takt) or takt <= 0:
+        raise VideoFehler(f"Ungueltige Taktlaenge im Raster: {takt}")
+    if not math.isfinite(ziel_s) or ziel_s <= 0:
+        raise VideoFehler(f"Ungueltiges Ziel: {ziel_s}")
+    mindest_s = takt + AUSKLANG_MIN_S
+    if ziel_s < mindest_s - _EPS:
+        raise VideoFehler(f"Das Ziel von {ziel_s:.1f} s ist zu kurz: mindestens {aufrunden(mindest_s):.1f} s")
+    tragbar = traegt_s(grid, dauer_s)
+    if ziel_s > tragbar + _EPS:
+        raise VideoFehler(
+            f"Das Ziel von {ziel_s:.1f} s ist laenger als der Song traegt ({abrunden(tragbar):.1f} s)"
+        )
+
+    starts = taktstarts(grid, dauer_s, ziel_s)
+    if erlaubt is not None:
+        if len(erlaubt) == 0:
+            raise VideoFehler("Kein erlaubter Start fuer den Zuschnitt")
+        starts = [s for s in starts if any(abs(s - e) <= _ERLAUBT_TOL_S for e in erlaubt)]
+        if not starts:
+            raise VideoFehler("Kein erlaubter Start liegt auf einem tragfaehigen Taktanfang")
+
+    if not starts:  # Gleitkomma-Rauschen an der Grenze: wie "zu lang" behandeln
+        raise VideoFehler(
+            f"Das Ziel von {ziel_s:.1f} s ist laenger als der Song traegt ({abrunden(tragbar):.1f} s)"
+        )
+
+    start = starts[0]
+    if einstieg == "hoehepunkt":
+        # Ein spaeterer Start gewinnt nur bei klar hoeherer Energie; Rundungsrauschen
+        # (~1e-16) darf einen Gleichstand nicht entscheiden, der fruehere bleibt.
+        beste = _fenster_energie(energie, 4 * takt, start, ziel_s)
+        for kandidat in starts[1:]:
+            wert = _fenster_energie(energie, 4 * takt, kandidat, ziel_s)
+            if wert > beste + _EPS:
+                start, beste = kandidat, wert
+
+    toleranz_s = EINRASTEN_SCHLAEGE * takt / 4
+    eingerastet = _einrasten(start, beats, toleranz_s)
+    if eingerastet + ziel_s <= dauer_s + _EPS:  # nie ueber das Songende hinaus
+        start = eingerastet
+    ende = start + ziel_s
+
+    takte = schlusstakte(takt, ziel_s)
+    while takte >= 1:
+        schluss = _einrasten(start + takte * takt, beats, toleranz_s)
+        if ende - schluss >= AUSKLANG_MIN_S - _EPS:
+            return Zuschnitt(start_s=start, schluss_s=schluss, ende_s=ende, takte=takte)
+        if takte == 1:  # gueltiges Ziel nicht an einem verspaeteten Beat scheitern lassen
+            return Zuschnitt(start_s=start, schluss_s=start + takt, ende_s=ende, takte=1)
+        takte -= 1
+    raise VideoFehler(f"Das Ziel von {ziel_s:.1f} s ist zu kurz: mindestens {aufrunden(mindest_s):.1f} s")
+

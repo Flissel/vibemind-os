@@ -28,13 +28,20 @@ found are in [`docs/ABNAHME-STUDIO.md`](docs/ABNAHME-STUDIO.md).
 | Vocals sit on their own track and switch mid-transition | measured | Lauf 5 (`...-06`), both seams 0.0 s of two voices at once, Demucs `htdemucs` on CPU |
 | The vocal switch sounds clean | heard | Felix 2026-11-23 on Lauf 5: „Klingt sauber“ |
 | `--ohne-gesang` plays only the accompaniment | static | CLI tests, Plan 1c |
+| 680 studio tests green (Plan 2 video music) | static | `pytest` in `studio/`, 2026-11-23, `846a97aa` |
+| `dj-set video` cuts a piece of exact length from one song, ending on a fade-out | measured | Lauf 6 (`...-produktv-04`), 900 frames at 30 fps = 1 323 000 samples, −14.7 LUFS, no finding |
+| Only cuts that can reach −14 LUFS under the peak ceiling are chosen | measured | Lauf 6 first attempt −23.9 LUFS (empty intro of the accompaniment), after the fix −14.7 |
+| Video music lies under a video without touching the original | measured | Lauf 7 (`...-hoehepunkt-03`), h264+AAC 20.000 s each, original SHA-256 unchanged |
+| Both video music pieces sound clean | heard | Felix 2026-11-24 on Lauf 6 and 7: „Klingt sauber“ |
+| `videomusik.json` carries a clip body matching Laura's `audio-clips` model | static | `vertrag.py` mirrors Laura's bounds, [`docs/LAURA-VERTRAG.md`](docs/LAURA-VERTRAG.md) |
 
 | Gap | Kind | Consequence |
 | --- | --- | --- |
 | Only three songs in one tempo range | open | a set is about 8 minutes; 20 minutes needs more songs around 85–94 BPM |
 | QA seam check sees a short window only | measured | it flagged 0.07 beats where the full transition drifted 0.56 (Lauf 3) |
 | Set length misses the wish by 13 % | measured | 7.9 instead of 7 minutes; three songs cannot be cut shorter |
-| Video music (Plan 2), tool service + Musik-Claw (Plan 3) | open | the agent cannot order a set over MCP yet |
+| Tool service + Musik-Claw, music into Laura automatically (Plan 3) | open | the agent cannot order a set or video music over MCP yet; Laura gets the file by hand |
+| Video music from several songs for long videos | open | Plan 2 serves only what one song carries |
 
 ## Phase
 

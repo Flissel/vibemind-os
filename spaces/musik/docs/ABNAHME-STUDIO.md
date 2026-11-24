@@ -334,3 +334,44 @@ getrennt, also ohne Trennzeit:
 
 *gehört* — Felix 23.11. zu Lauf 5: „Klingt sauber“. Die Stimmen fressen
 sich im Übergang nicht mehr gegenseitig auf.
+## Lauf 6 und 7: Videomusik (Plan 2)
+
+Felix 23.11.: „Plan 2: Videomusik“. Laura, der Video-Space, soll damit
+später automatisch Musik unterlegen. Entscheidung: Laura-fertig liefern,
+also Datei und Vertrag; das Unterlegen in Laura kommt mit Plan 3.
+
+Umgesetzt in `cc/musik-video` (`dj-set video`):
+
+- Die Länge kommt aus Sekunden, aus Frames mit Bildrate (`ziel = frames ·
+  fps_den / fps_num`, ungerundet) oder aus der Bildspur eines Videos. Die
+  Datei hat genau `round(ziel · 44100)` Proben.
+- Ein Song, Anfang und Schluss auf Taktanfängen, kein Strecken. Ab dem
+  letzten Taktanfang klingt das Stück bis zur letzten Probe auf null aus.
+- Gesang ist unter Video aus; es klingt die Begleitung aus der lokalen
+  Trennung. `--mit-gesang` und `--ohne-gesang` gehen vor dem Modell.
+- Es kommen nur Ausschnitte in Frage, die −14 LUFS unter dem Spitzendeckel
+  von −1 dBTP erreichen können und vor dem Schluss keine Lücke haben. Der
+  Bericht sagt, wenn der Start deshalb verschoben wurde.
+- `videomusik.json` trägt den Clip für Lauras `audio-clips`
+  ([`LAURA-VERTRAG.md`](LAURA-VERTRAG.md)). `--unterlegen` legt die Musik
+  per ffmpeg unter das Video, in eine neue Datei; das Original bleibt.
+
+Was echtes Material gezeigt hat (*measured*, Lauf 6 erster Versuch):
+`no-chicks-no-eggs` ab 1,42 s nahm die fast leere Begleitung des Intros
+(−40 bis −60 dB RMS), der letzte Takt fiel auf einen lauten Schlag. Nur
+mit Verstärkung kam das Stück auf −23,9 LUFS, die Prüfung hielt es an
+(Exit 2). Danach die Auswahl nach Pegel; ein zweiter Versuch von Lauf 7
+lag mit −15,1 LUFS knapp daneben, weil die Schätzung den Ausklang nicht
+mitgemessen hatte. Beides behoben.
+
+Auf dem Endstand (`846a97aa`):
+
+| Lauf | Wunsch | Länge | Song, Ausschnitt | Pegel | Prüfung |
+|---|---|---|---|---|---|
+| 6 (`...-produktv-04`) | ruhiger Hintergrund unter einem Produktvideo | 900 Frames bei 30 fps = 30,000 s | `smaragd-green-eyes` ab 20,69 s, 11 Takte, ohne Gesang | −14,7 LUFS, −1,0 dBTP | ohne Befund |
+| 7 (`...-hoehepunkt-03`) | energiegeladen, Höhepunkt (`--video`, `--unterlegen`) | 20-s-Testbild, 600 Frames = 20,000 s | `so-and-so` ab 113,30 s, Einstieg Höhepunkt, 11 Takte, ohne Gesang | −14,8 LUFS, −1,0 dBTP | ohne Befund |
+
+- `video-mit-musik.mp4` aus Lauf 7: h264 und AAC, je 20,000 s; die
+  SHA-256 des Originals ist vorher und nachher gleich.
+
+*gehört* — Felix 24.11. zu Lauf 6 und 7: „Klingt sauber“

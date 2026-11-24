@@ -67,6 +67,16 @@ def ffmpeg_path() -> str:
     return found
 
 
+def ffprobe_path() -> str:
+    """Der Pfad zu ffprobe (kommt mit ffmpeg), oder ein klarer Fehler."""
+    found = shutil.which("ffprobe")
+    if found is None:
+        raise RenderToolMissing(
+            "ffprobe wurde nicht gefunden. Es gehoert zu ffmpeg; installiere "
+            "ffmpeg vollstaendig und lege es auf den Pfad."
+        )
+    return found
+
 def stretch(source: Path, target: Path, ratio: float, sr: int = SR) -> None:
     """Zieht eine Audiodatei auf ein anderes Tempo, ohne die Tonhoehe zu aendern.
 

@@ -102,7 +102,7 @@ GAP_SECONDS = 0.5
 _GAP_FLOOR = 10 ** (-60.0 / 20.0)
 
 
-def _gaps(signal: np.ndarray, sr: int) -> list[float]:
+def luecken(signal: np.ndarray, sr: int) -> list[float]:
     """Anfaenge aller Stillen im Set, die laenger als GAP_SECONDS dauern.
 
     Eine Stille am Rand zaehlt nicht: der letzte Song darf ausklingen und der
@@ -125,6 +125,10 @@ def _gaps(signal: np.ndarray, sr: int) -> list[float]:
         for start, stop in zip(starts, stops)
         if stop - start >= needed and start > 0 and stop < len(quiet)
     ]
+
+
+# Alter Name, damit bestehende Aufrufer unveraendert weiterlaufen.
+_gaps = luecken
 
 
 def _seam_drift_beats(
