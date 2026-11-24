@@ -9,6 +9,8 @@ from spaces.auftragsbuch.vertrag import werkzeugname
 
 FESTE_WERKZEUGE = ("auftrag_probe", "auftrag_lesen")
 SERVER = "auftragsbuch"
+# Regel 6: Diese Werkzeuge schaltet kein Space frei, unter keinem Server (siehe sales.contract.yaml).
+VERBOTENE_WERKZEUGE = ("antwort_entwerfen", "kontakt_autonomie_setzen", "mail_einstufen")
 
 
 def _werkzeuge_je_space(arten: dict) -> dict[str, set[str]]:
@@ -125,6 +127,18 @@ def gleichstand(
                     f"Space {space_id}: Ereignis {name} nutzt Werkzeug {tool}, "
                     f"das nicht {wo} freigeschaltet ist."
                 )
+
+        # Regel 6: Verbotene Werkzeuge stehen unter keinem Server, weder am Space noch an einem Traeger.
+        for quelle, tools in [("des Space", eintrag.get("mcp_tools"))] + [
+            (f"des Rechtetraegers {t.get('agent')}", t.get("mcp_tools")) for t in traeger
+        ]:
+            for server, namen in (tools.items() if isinstance(tools, dict) else []):
+                for tool in (namen if isinstance(namen, list) else []):
+                    if tool in VERBOTENE_WERKZEUGE:
+                        abweichungen.append(
+                            f"Space {space_id}: Werkzeug {tool} unter mcp_tools.{server} {quelle} "
+                            f"ist verboten; kein Space schaltet es frei."
+                        )
 
         # Regel 5: Die Auftragsbuch-Rechte liegen nie beim Agenten, der Nachrichten bearbeitet.
         # Entweder ist der ganze Space ein Rechtetraeger (rights_carrier: true), oder ein Eintrag

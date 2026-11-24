@@ -108,8 +108,8 @@ def test_gesund_ohne_schluessel(client):
 def test_tools_list_zeigt_den_katalog(client):
     antwort = _rpc(client, SCHLUESSEL, "tools/list", {})
     assert [t["name"] for t in antwort.json()["result"]["tools"]] == [
-        "auftrag_probe", "auftrag_lesen", "rowboat_vorschlaege_anlegen", "sales_kontakt_finden",
-        "sales_post_pruefen"]
+        "auftrag_probe", "auftrag_lesen", "rowboat_vorschlaege_anlegen", "sales_freigaben_zaehlen",
+        "sales_kontakt_finden", "sales_post_offen", "sales_post_pruefen", "sales_termine_heute"]
 
 
 def test_erfolg_gibt_json_text(client, buch):

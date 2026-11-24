@@ -681,3 +681,39 @@ def test_runbook_stufe_4_freischaltung_erst_nach_der_schwelle() -> None:
     assert ("DELETE FROM auftrag.brain_arten WHERE an = 'rowboat' AND art = 'vorschlaege_anlegen' AND version = 2;"
             in zurueck)
     assert punkte.index(frei) < punkte.index(zurueck)
+
+
+def test_runbook_stufe_4_laden_vergleich_liest_nur_und_gibt_keine_werte_aus() -> None:
+    punkte = _stufe_4()
+    vergleich = _einer(punkte, "verschieden")
+    assert _LESEND in vergleich and "`gleich`" in vergleich and "`verschieden`" in vergleich
+    # Nichts, was Werte zeigen koennte: kein echo, cat, printenv, diff, grep, kein set -x.
+    verboten = re.compile(r"\b(?:echo|cat|printenv|diff|grep)\b|set -x")
+    assert not verboten.search(vergleich)
+    # Folge: Der Rowboat-Abholer startet bei Abweichung nicht (Schritt 17 faengt das ab); Schritt 19 bestaetigt nur frueh.
+    assert "startet" in vergleich and "Schritt 17" in vergleich and "frühe Bestätigung" in vergleich
+    assert "LADEN_PRAEFIX" in vergleich and "Sales" in vergleich
+    assert "AUFTRAGSBUCH_LADEN" in vergleich and "ABHOLER_LADEN" in vergleich
+    # Sales ab 7403df3: AUFTRAGSBUCH_LADEN ist Pflicht in der Umgebung von Sales; fehlt er oder weicht er ab,
+    # bleibt der Sales-Abholer stehen. Die Startzeile sagt bei Gleichheit auftragsbuch_laden=gleich.
+    sales = vergleich[vergleich.index("Sales"):]
+    assert "Umgebung von Sales" in sales and "AUFTRAGSBUCH_LADEN" in sales and "bleibt stehen" in sales
+    assert "`auftragsbuch_laden=gleich`" in sales
+    assert "7403df3" in sales and "still ab" in sales   # ältere Sales-Stände: Aufträge laufen still ab
+    assert _ausnahmen(vergleich) == [_LESEND] and not _BEFEHL.search("\n".join(_befehle(vergleich)))
+    # Vor der Freischaltung (INSERT) und nach der Rauchprobe des Abholers.
+    stellen = [next(i for i, p in enumerate(punkte) if s in p) for s in ("abholer=start", "verschieden",
+                                                                          "INSERT INTO auftrag.brain_arten")]
+    assert stellen == sorted(stellen) and len(set(stellen)) == 3
+
+
+def test_runbook_post_pruefen_bleibt_gesperrt_bis_die_herkunft_im_auftrag_steht() -> None:
+    text = _flach(RUNBOOK.read_text(encoding="utf-8"))
+    regel = "**post_pruefen bleibt gesperrt (keine Zeile in brain_arten), bis die Herkunft im Auftrag steht.**"
+    assert text.count(regel) == 1
+    assert "100_auftragsbuch_brain.sql" in text and "von='brain'" in text and "51 bis 53" in text
+    freischalten = next(p for p in _stufe_4() if "INSERT INTO auftrag.brain_arten" in p)
+    assert "post_pruefen" in freischalten and "gesperrt" in freischalten
+    zeilen = _zeilen(RUNBOOK)
+    stelle = next(i for i, z in enumerate(zeilen) if regel in z)
+    assert zeilen.index(_STUFE_4) < stelle < zeilen.index("## Offene Punkte für Stufe 2")

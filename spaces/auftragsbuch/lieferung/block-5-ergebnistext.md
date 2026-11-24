@@ -19,13 +19,14 @@ Ordner `spaces/auftragsbuch/lieferung/ergebnistext/`, nur Standardbibliothek:
 - `ergebnis_text.py` mit
   - `vorschau(ziel, ergebnis) -> str | None`: für Ziele der Form `mcp:<agent>:auftragsbuch:<werkzeug>` eine
     Zeile wie `Auftrag 4aef2c02 · rowboat/vorschlaege_anlegen · fertig · punkte: 3 · Beleg bestätigt`. Sie enthält
-    nur die ersten 8 Zeichen der Kennung, `an/art`, den Stand, die Länge jeder Liste auf oberster Ebene von
-    `ergebnis` und den Beleg-Zustand als festes Wort (siehe unten; fehlt der Beleg, fehlt die Angabe). Ist kein Stand lesbar: `Auftragsbuch: Antwort ohne lesbaren Stand`.
+    nur die ersten 8 Zeichen der Kennung, `an/art`, den Stand, die Länge jeder Liste und jede ganze Zahl ab 0 auf oberster Ebene von
+    `ergebnis` (`name: n`, nicht bei `bool`, Gleitkommazahlen, negativen oder verschachtelten Zahlen), bei Stand `fehler` den Grund
+    (`Grund: …`, siehe unten) und den Beleg-Zustand als festes Wort (siehe unten; fehlt der Beleg, fehlt die Angabe). Ist kein Stand lesbar: `Auftragsbuch: Antwort ohne lesbaren Stand`.
     **Jedes andere Ziel gibt `None` zurück**, dann nimmt der Aufrufer den alten Weg.
   - `fuers_protokoll(ziel, ergebnis) -> object`: für dieselben Ziele ein kleines Wörterbuch
-    (`auftrag_id`, `an`, `art`, `stand`, `listen` mit Anzahlen, `beleg`), ohne jeden Inhalt; nicht lesbar:
+    (`auftrag_id`, `an`, `art`, `stand`, `grund` bei `fehler`, `listen` mit Anzahlen, `zahlen`, `beleg`), ohne jeden Inhalt; nicht lesbar:
     `{"stand": "unlesbar"}`. **Bei jedem anderen Ziel kommt die Eingabe unverändert zurück.**
-- `test_ergebnis_text.py` (13 Tests). Aufruf von der Repo-Wurzel:
+- `test_ergebnis_text.py` (93 Tests, darunter die Fälle zu Fehlergrund und Zahlenfeldern). Aufruf von der Repo-Wurzel:
   `python -m pytest spaces/auftragsbuch/lieferung/ergebnistext/test_ergebnis_text.py -q -p no:cacheprovider`.
 
 Beide Funktionen werfen nie. Werte aus der Antwort werden nur übernommen, wenn sie einem engen Muster
@@ -51,8 +52,32 @@ oder `{"bestaetigt": true}` gilt nur ersatzweise (als bestätigt), wenn oben nic
 
 Hat ein fertiges Ergebnis die falsche Form, antwortet `auftrag_lesen` mit `stand: "fehler"`,
 `fehler: "Ergebnis in falscher Form"` und `ergebnis: null`. Die Vorschau lautet dann zum Beispiel
-`Auftrag 4aef2c02 · rowboat/vorschlaege_anlegen · fehler`; der Fehlertext erscheint darin nicht (er läuft über
-Block 4).
+`Auftrag 4aef2c02 · rowboat/vorschlaege_anlegen · fehler · Grund: Ergebnis in falscher Form`.
+
+### Fehlergrund (Abgleich mit Sales)
+
+`auftrag_lesen` liefert `fehler` als Feld eines erfolgreichen Aufrufs. Ist der Stand `fehler`, prüft der Ergebnistext
+den Text gegen eine feste Positivliste (`GRUENDE` in `ergebnis_text.py`, mit Quellen kommentiert): Rowboat-Abholer
+(`rowboat/abholer.py`, `rowboat/rpc.py`), Migration 101 (`Bearbeitung bei Sales/Rowboat abgebrochen`,
+`Fehler ohne Angabe`), `Zwei Versuche ohne Ergebnis` (fester Text der Datenbank bei zwei erfolglosen Versuchen:
+`096_auftragsbuch.sql:120`, `098_auftragsbuch_video.sql:97`, `101_auftragsbuch_empfang.sql:194` und `197`), die sieben `GRUND_*` aus `sales-mcp/auftrag_abholer.py` (Sales, Commit 5223472) und
+`Ergebnis in falscher Form` aus `werkzeuge.py`. Verglichen wird ohne Rücksicht auf Groß-/Kleinschreibung: Zuerst muss der
+ganze getrimmte Text (oder der Text vor einem Zusatz, der mit `:` beginnt) auf der Liste stehen; so bleiben Sätze mit
+eigenem `:` (`Abholer: interner Fehler`, `Rowboat: Schlüssel abgelehnt`) heil. Gezeigt wird immer die Schreibweise der
+Liste. Alles andere, ein leerer oder fehlender Grund eingeschlossen, ergibt `Grund nicht anzeigbar`; der Rohtext
+erscheint nie, weder in der Zeile noch im Protokoll. Ein Zusatz nach dem `:` wird verworfen.
+Bekannte Lücke: `Ausfuehrung bei Sales gescheitert (<Typ>)` trägt seinen Zusatz in Klammern und nicht nach `:`; er
+ergibt deshalb `Grund nicht anzeigbar`. Das ist gewollt vorsichtig; Sales kann den Zusatz nach `:` setzen, wenn der
+Grund sichtbar sein soll.
+
+### Zahlenfelder (Abgleich mit Sales)
+
+Ganze Zahlen von 0 bis 10^9 auf oberster Ebene von `ergebnis` kommen als `zahlen` ins Protokoll und als `name: n` in die Zeile,
+etwa `Auftrag 4aef2c02 · sales/termine_heute · fertig · anzahl: 3 · anzahl_kunden: 1 · quellen_stumm: 0`. Es gilt dasselbe
+Namensmuster wie bei Listen (klein, höchstens 24 Zeichen, Ziffern und `_`); `bool`, Gleitkommazahlen, negative und
+verschachtelte Zahlen fehlen, ebenso Zahlen über 10^9 (so rutscht keine Telefonnummer oder PLZ durch). Das Format folgt dem der Listen (`name: n`) und ist das Einfachste, aus dem Sales die
+Sätze der `ANTWORTSAETZE.md` (Zweig `cc/space-sales`) bauen kann. Die Sätze selbst gehören nicht zu diesem Block; sie
+brauchen die Zahlen je Feldname, und die stehen jetzt in `zahlen`.
 
 ## Wo einhängen
 
