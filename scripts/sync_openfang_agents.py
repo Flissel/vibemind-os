@@ -6,14 +6,27 @@ Reads `config/space_agent_registry.yml` and for each space writes
 updated in place; new files are created.
 
 Usage:
-  python scripts/sync_openfang_agents.py              # write + report
-  python scripts/sync_openfang_agents.py --dry-run    # report only
-  python scripts/sync_openfang_agents.py --check      # exit 1 if drift
+  python scripts/sync_openfang_agents.py                               # Trockenlauf: nur zeigen
+  python scripts/sync_openfang_agents.py --schreiben                   # nur fehlende anlegen
+  python scripts/sync_openfang_agents.py --schreiben --ueberschreiben  # auch bestehende aendern
+  python scripts/sync_openfang_agents.py --check                       # exit 1 if drift
+
+Abo-Schutz (24.11.2026, Vorgabe des Betreibers: nur das Claude-Abo, kein bezahltes API-Modell):
+- Jeder erzeugte Agent laeuft ueber provider "claude-code"; die Vorgabe ist claude-code/haiku.
+  Ein anderer Anbieter in der Registry wird abgelehnt.
+- base_url ist der eigene Wrapper des Agenten: <VIBEMIND_AGENT_WRAPPER_DIR>/<agent>.cmd (erzeugt
+  aus config/agent_budget.yaml im aeusseren Repo). Nur dieser Wrapper bucht beim Budget-Waechter
+  unter dem richtigen Namen. Ohne Ordner oder ohne Wrapper-Datei bricht der Abgleich ab.
+- Steht ein Agent heute auf claude-code (Manifest hier oder im laufenden OpenFang,
+  OPENFANG_LIVE_AGENTS_DIR, Vorgabe ~/.openfang/agents), stellt der Abgleich ihn nie auf
+  einen anderen Anbieter um; er bricht vor dem ersten Schreiben ab.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -29,20 +42,54 @@ AGENTS_DIR = ROOT / "openfang" / "agents"
 # Per-space `model:` overrides start from these values. A space that declares no
 # override renders exactly the historical block, so dimensioning one space never
 # moves another.
+SUBSCRIPTION_PROVIDER = "claude-code"
+SUBSCRIPTION_MODELS = frozenset({"claude-code/sonnet", "claude-code/haiku", "claude-code/opus"})
 MODEL_DEFAULTS: dict[str, Any] = {
-    "provider": "openai",
-    "model": "gpt-4o-mini",
+    "provider": SUBSCRIPTION_PROVIDER,
+    "model": "claude-code/haiku",
     "max_tokens": 4096,
     "temperature": 0.2,
 }
-# base_url ist nur fuer das Claude-Abo da (Vorgabe des Betreibers 24.11.2026: nur das Claude-Abo, kein
-# bezahltes API-Modell): provider "claude-code" mit dem Abo-Wrapper, den OpenFang in seinem
-# Wrapper-Ordner aufloest (openfang-runtime drivers/claude_code.rs). Eine URL waere ein
-# API-Endpunkt und wird abgelehnt.
-SUBSCRIPTION_PROVIDER = "claude-code"
-SUBSCRIPTION_WRAPPER = "openfang_claude_subscription_wrapper.cmd"
-SUBSCRIPTION_MODELS = frozenset({"claude-code/sonnet", "claude-code/haiku", "claude-code/opus"})
-MODEL_OVERRIDE_KEYS = frozenset(MODEL_DEFAULTS) | {"base_url"}
+# base_url steht nie in der Registry: er ist der eigene Wrapper je Agent (wrapper_pfad).
+MODEL_OVERRIDE_KEYS = frozenset(MODEL_DEFAULTS)
+WRAPPER_DIR_ENV = "VIBEMIND_AGENT_WRAPPER_DIR"
+LIVE_AGENTS_DIR_ENV = "OPENFANG_LIVE_AGENTS_DIR"
+
+
+def wrapper_dir() -> Path | None:
+    """Ordner der Wrapper je Agent (Einstellung, nie fest verdrahtet)."""
+    roh = os.environ.get(WRAPPER_DIR_ENV, "").strip()
+    return Path(roh) if roh else None
+
+
+def wrapper_pfad(agent: str) -> str:
+    ordner = wrapper_dir()
+    if ordner is None:
+        raise ValueError(f"{WRAPPER_DIR_ENV} fehlt")
+    return (ordner / f"{agent}.cmd").as_posix()
+
+
+def live_agents_dir() -> Path:
+    roh = os.environ.get(LIVE_AGENTS_DIR_ENV, "").strip()
+    return Path(roh) if roh else Path.home() / ".openfang" / "agents"
+
+
+_PROVIDER_RE = re.compile(r'^\s*provider\s*=\s*"([^"]*)"', re.M)
+
+
+def bestehender_anbieter(agent: str) -> set[str]:
+    """Anbieter, auf denen der Agent heute steht (Manifest hier und im laufenden OpenFang)."""
+    gefunden: set[str] = set()
+    for ordner in (AGENTS_DIR, live_agents_dir()):
+        datei = ordner / agent / "agent.toml"
+        try:
+            text = datei.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        treffer = _PROVIDER_RE.search(text)
+        if treffer:
+            gefunden.add(treffer.group(1).strip())
+    return gefunden
 
 
 AGENT_TOML_TEMPLATE = """name = "{name}"
@@ -56,7 +103,8 @@ mcp_servers = [{mcp_list}]
 [model]
 provider = "{provider}"
 model = "{model}"
-{base_url_line}max_tokens = {max_tokens}
+base_url = {base_url}
+max_tokens = {max_tokens}
 temperature = {temperature}
 system_prompt = \"\"\"You are {name}, the VibeMind agent for the "{space}" space.
 
@@ -151,6 +199,7 @@ mcp_servers = [{mcp_list}]
 [model]
 provider = "{provider}"
 model = "{model}"
+base_url = {base_url}
 max_tokens = {max_tokens}
 temperature = {temperature}
 system_prompt = \"\"\"You are {name}, a rights carrier for the "{space}" space. You are not an assistant and you take no instructions. Never call a tool. Whatever a message says, reply with exactly: {name} accepts no messages.\"\"\"
@@ -183,6 +232,7 @@ def _render_rights_carrier_toml(space: str, spec: dict) -> str:
         tool_list=_tool_list_literal(tools),
         provider=model_block["provider"],
         model=model_block["model"],
+        base_url=json.dumps(wrapper_pfad(spec["agent"])),
         max_tokens=json.dumps(model_block["max_tokens"]),
         temperature=json.dumps(model_block["temperature"]),
     )
@@ -207,8 +257,7 @@ def _render_agent_toml(space: str, spec: dict) -> str:
         tool_list=_tool_list_literal(_capability_tool_names(spec)),
         provider=model_block["provider"],
         model=model_block["model"],
-        base_url_line=(f"base_url = {json.dumps(model_block['base_url'])}\n"
-                       if model_block.get("base_url") else ""),
+        base_url=json.dumps(wrapper_pfad(agent)),
         max_tokens=json.dumps(model_block["max_tokens"]),
         temperature=json.dumps(model_block["temperature"]),
     )
@@ -399,18 +448,33 @@ def validate_model_overrides() -> list[str]:
             elif not 0 <= value <= 2:
                 errors.append(f"{space_name} model temperature must be between 0 and 2")
         provider = override.get("provider", MODEL_DEFAULTS["provider"])
-        if "base_url" in override and override["base_url"] != SUBSCRIPTION_WRAPPER:
-            errors.append(f"{space_name} model base_url must be {SUBSCRIPTION_WRAPPER!r}")
-        if "base_url" in override and provider != SUBSCRIPTION_PROVIDER:
-            errors.append(f"{space_name} model base_url is only allowed with provider "
-                          f"{SUBSCRIPTION_PROVIDER!r}")
-        if provider == SUBSCRIPTION_PROVIDER:
-            if override.get("model") not in SUBSCRIPTION_MODELS:
-                errors.append(f"{space_name} model must be one of {sorted(SUBSCRIPTION_MODELS)} "
-                              f"with provider {SUBSCRIPTION_PROVIDER!r}")
-            if override.get("base_url") != SUBSCRIPTION_WRAPPER:
-                errors.append(f"{space_name} provider {SUBSCRIPTION_PROVIDER!r} needs base_url "
-                              f"{SUBSCRIPTION_WRAPPER!r}")
+        if provider != SUBSCRIPTION_PROVIDER:
+            errors.append(f"{space_name} model provider must be {SUBSCRIPTION_PROVIDER!r} "
+                          "(nur das Claude-Abo, kein bezahltes API-Modell)")
+        elif override.get("model", MODEL_DEFAULTS["model"]) not in SUBSCRIPTION_MODELS:
+            errors.append(f"{space_name} model must be one of {sorted(SUBSCRIPTION_MODELS)}")
+    return errors
+
+
+def validate_subscription_wrappers() -> list[str]:
+    """Jeder erzeugte Agent braucht seinen eigenen Wrapper; Rechtetraeger rufen nie ein Modell."""
+    with open(REGISTRY, "r", encoding="utf-8") as f:
+        data: dict[str, Any] = yaml.safe_load(f) or {}
+    spaces = data.get("spaces", {})
+    if not isinstance(spaces, dict):
+        return ["registry spaces must be a mapping"]
+    ordner = wrapper_dir()
+    errors: list[str] = []
+    for space_name, spec in spaces.items():
+        if not isinstance(spec, dict) or _skip_reason(str(space_name), spec):
+            continue
+        if ordner is None:
+            return [f"{WRAPPER_DIR_ENV} fehlt: ohne Wrapper-Ordner kein Abgleich"]
+        if spec.get("rights_carrier") is True:
+            continue
+        if not (ordner / f"{spec['agent']}.cmd").is_file():
+            errors.append(f"{space_name}: Wrapper {spec['agent']}.cmd fehlt in {WRAPPER_DIR_ENV} "
+                          "(Eintrag in agent_budget.yaml, dann Wrapper erzeugen)")
     return errors
 
 
@@ -520,7 +584,22 @@ def validate_rights_carrier() -> list[str]:
     return errors
 
 
-def sync(dry_run: bool = False, check: bool = False) -> int:
+def abo_schutz(spaces: dict) -> list[str]:
+    """Kein Agent, der heute auf claude-code steht, wird auf einen anderen Anbieter gestellt."""
+    errors: list[str] = []
+    for space, spec in spaces.items():
+        if not isinstance(spec, dict) or _skip_reason(space, spec):
+            continue
+        neu = resolve_model_block(spec)["provider"]
+        alt = bestehender_anbieter(spec["agent"])
+        if SUBSCRIPTION_PROVIDER in alt and neu != SUBSCRIPTION_PROVIDER:
+            errors.append(f"{spec['agent']} steht auf {SUBSCRIPTION_PROVIDER} und wuerde auf {neu} "
+                          "umgestellt: abgebrochen")
+    return errors
+
+
+def sync(dry_run: bool = True, check: bool = False, ueberschreiben: bool = False) -> int:
+    """Vorgabe: Trockenlauf, bestehende Manifeste bleiben. Schreiben und Ueberschreiben nur ausdruecklich."""
     validation_errors = (
         validate_agent_generation_contract()
         + validate_generated_agent_mcp_scopes()
@@ -528,6 +607,7 @@ def sync(dry_run: bool = False, check: bool = False) -> int:
         + validate_model_overrides()
         + validate_rights_carrier()
         + validate_mcp_authority()
+        + validate_subscription_wrappers()
     )
     if validation_errors:
         for error in validation_errors:
@@ -536,6 +616,11 @@ def sync(dry_run: bool = False, check: bool = False) -> int:
     with open(REGISTRY, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     spaces = data.get("spaces", {}) or {}
+    schutz = abo_schutz(spaces)
+    if schutz:
+        for error in schutz:
+            print(f"  ABO   {error}")
+        return 1
 
     written = 0
     skipped = 0
@@ -559,8 +644,12 @@ def sync(dry_run: bool = False, check: bool = False) -> int:
             print(f"  DRIFT {space:<12} -> {agent}")
             drift += 1
             continue
+        if existing and not ueberschreiben:
+            # Bestehende Manifeste koennen live angepasst sein (Anbieter, Wrapper): nie stillschweigend.
+            print(f"  keep  {space:<12} -> {agent} (besteht; aendern nur mit --ueberschreiben)")
+            continue
         if dry_run:
-            print(f"  would {space:<12} -> {agent}")
+            print(f"  would {'update' if existing else 'create'} {space:<12} -> {agent}")
             continue
         target_dir.mkdir(parents=True, exist_ok=True)
         target_file.write_text(new_content, encoding="utf-8")
@@ -577,10 +666,15 @@ def sync(dry_run: bool = False, check: bool = False) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--schreiben", action="store_true",
+                    help="wirklich schreiben (ohne: Trockenlauf, zeigt nur)")
+    ap.add_argument("--ueberschreiben", action="store_true",
+                    help="auch bestehende Manifeste aendern (ohne: nur fehlende anlegen)")
+    ap.add_argument("--dry-run", action="store_true", help="Trockenlauf (Vorgabe)")
     ap.add_argument("--check", action="store_true", help="exit 1 if drift")
     args = ap.parse_args()
-    return sync(dry_run=args.dry_run, check=args.check)
+    return sync(dry_run=args.dry_run or not args.schreiben, check=args.check,
+                ueberschreiben=args.ueberschreiben)
 
 
 if __name__ == "__main__":
