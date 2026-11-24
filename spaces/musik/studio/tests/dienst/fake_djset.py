@@ -13,7 +13,10 @@ lauf = "fake-lauf-01"
 ordner = Path(os.environ["MUSIK_DATEN"]) / "runs" / lauf
 ordner.mkdir(parents=True, exist_ok=True)
 (ordner / "argv.json").write_text(json.dumps(sys.argv[1:]), encoding="utf-8")
-print(f"Run: {lauf}", flush=True)
+if not os.environ.get("FAKE_OHNE_RUN"):
+    print(f"Run: {lauf}", flush=True)
+else:
+    print("usage: dj-set ...: error", file=sys.stderr, flush=True)
 code = int(os.environ.get("FAKE_EXIT", "0"))
 if code == 1:
     print("Fehler: zuerst etwas Warnung", file=sys.stderr, flush=True)

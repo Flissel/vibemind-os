@@ -202,9 +202,9 @@ def test_argumente_ohne_pfade(tmp_path):
     laeufer.ein_schritt()
     argv = json.loads((tmp_path / "runs" / "fake-lauf-01" / "argv.json").read_text("utf-8"))
     text = " ".join(argv)
-    assert "--frames 900 --fps 30000/1001" in text
-    assert "--video" not in argv
-    assert argv[0] == "video" and "--songs" in argv and argv[argv.index("--songs") + 1] == "a,b"
+    assert "--frames=900 --fps=30000/1001" in text
+    assert "--video" not in text
+    assert argv[0] == "video" and "--songs=a,b" in argv
     assert ablage.hole(a.id).zustand == "fertig"
 
 
@@ -213,7 +213,7 @@ def test_set_und_aufnehmen_argumente(tmp_path):
     ablage.anlegen("set", {"wunsch": "house", "length": 30, "ohne_gesang": True}, "mcp")
     laeufer.ein_schritt()
     argv = json.loads((tmp_path / "runs" / "fake-lauf-01" / "argv.json").read_text("utf-8"))
-    assert argv == ["set", "--wunsch", "house", "--length", "30", "--ohne-gesang"]
+    assert argv == ["set", "--wunsch=house", "--length=30", "--ohne-gesang"]
     ablage.anlegen(
         "aufnehmen",
         {"datei": "a.wav", "titel": "T", "herkunft": "eigen", "suno_id": "s1"},
@@ -221,8 +221,65 @@ def test_set_und_aufnehmen_argumente(tmp_path):
     )
     laeufer.ein_schritt()
     argv = json.loads((tmp_path / "runs" / "fake-lauf-01" / "argv.json").read_text("utf-8"))
-    assert argv == ["aufnehmen", "--datei", "a.wav", "--titel", "T", "--herkunft", "eigen",
-                    "--suno-id", "s1"]
+    assert argv == ["aufnehmen", "--datei=a.wav", "--titel=T", "--herkunft=eigen",
+                    "--suno-id=s1"]
+
+
+def test_wunsch_mit_bindestrich_ist_wert(tmp_path):
+    ablage, laeufer, _ = _bauen(tmp_path)
+    ablage.anlegen("video", {"wunsch": "--ruhig", "sekunden": 10}, "mcp")
+    laeufer.ein_schritt()
+    argv = json.loads((tmp_path / "runs" / "fake-lauf-01" / "argv.json").read_text("utf-8"))
+    assert "--wunsch=--ruhig" in argv
+
+
+def test_exit_2_ohne_run_zeile_ist_gescheitert(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_EXIT", "2")
+    monkeypatch.setenv("FAKE_OHNE_RUN", "1")
+    ablage, laeufer, spur = _bauen(tmp_path)
+    a = ablage.anlegen("set", {"wunsch": "w", "length": 10}, "mcp")
+    laeufer.ein_schritt()
+    fertig = ablage.hole(a.id)
+    assert fertig.zustand == "gescheitert" and fertig.lauf is None
+    assert spur.gebucht == []
+
+
+@pytest.mark.parametrize("songs", ["abc", [1, 2], ["a", 3], {"a": 1}])
+def test_songs_muss_liste_von_texten_sein(tmp_path, songs):
+    ablage, laeufer, spur = _bauen(tmp_path)
+    a = ablage.anlegen("set", {"wunsch": "w", "length": 10, "songs": songs}, "mcp")
+    laeufer.ein_schritt()
+    fertig = ablage.hole(a.id)
+    assert fertig.zustand == "gescheitert" and "songs" in fertig.grund
+    assert fertig.pid is None and not (tmp_path / "runs").exists()
+
+
+@pytest.mark.parametrize(
+    "datei", ["../x.wav", "a/b.wav", "a\\b.wav", "C:x.wav", "..", "a..b.wav", "", 5]
+)
+def test_aufnehmen_datei_mit_pfad_abgelehnt(tmp_path, datei):
+    ablage, laeufer, _ = _bauen(tmp_path)
+    a = ablage.anlegen("aufnehmen", {"datei": datei, "titel": "T", "herkunft": "h"}, "mcp")
+    laeufer.ein_schritt()
+    fertig = ablage.hole(a.id)
+    assert fertig.zustand == "gescheitert" and fertig.grund == "ungueltiger Dateiname"
+    assert fertig.pid is None and not (tmp_path / "runs").exists()
+
+
+def test_abbrechen_laura_render_laufend_false(tmp_path):
+    ablage, laeufer, _ = _bauen(tmp_path)
+    a = ablage.anlegen("laura_render", {}, "mcp")
+    ergebnis = {}
+
+    def render(auftrag):
+        ergebnis["abbruch"] = laeufer.abbrechen(auftrag.id)
+        return {"ok": True}
+
+    laeufer.laura_render = render
+    laeufer.ein_schritt()
+    assert ergebnis["abbruch"] is False
+    assert laeufer._abbruch == set()
+    assert ablage.hole(a.id).zustand == "fertig"
 
 
 def test_budget_aus_umgebung_ohne_modul_erlaubt_alles(monkeypatch):

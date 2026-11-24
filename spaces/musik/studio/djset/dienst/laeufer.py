@@ -170,33 +170,53 @@ def _argumente(auftrag: Auftrag) -> list[str]:
     """Argumentliste fuer dj-set. Nur Werte aus der Eingabe, nie ein Dateipfad."""
     e = auftrag.eingabe
     art = auftrag.art
+
+    def opt(name: str, wert: object) -> str:
+        # `--name=wert`: ein Wert mit fuehrendem Bindestrich bleibt ein Wert.
+        return f"--{name}={wert}"
+
+    def songs_opt() -> list[str]:
+        songs = e.get("songs")
+        if not songs:
+            return []
+        if not isinstance(songs, list) or not all(isinstance(s, str) and s for s in songs):
+            raise ValueError("songs muss eine Liste von Texten sein")
+        return [opt("songs", ",".join(songs))]
+
     if art == "video":
-        arg = ["video", "--wunsch", str(e["wunsch"])]
+        arg = ["video", opt("wunsch", e["wunsch"])]
         if e.get("frames") is not None:
-            arg += ["--frames", str(e["frames"]), "--fps", str(e["fps"])]
+            arg += [opt("frames", e["frames"]), opt("fps", e["fps"])]
         else:
-            arg += ["--sekunden", str(e["sekunden"])]
-        if e.get("songs"):
-            arg += ["--songs", ",".join(e["songs"])]
+            arg.append(opt("sekunden", e["sekunden"]))
+        arg += songs_opt()
         if e.get("mit_gesang") is True and not e.get("ohne_gesang"):
             arg.append("--mit-gesang")
         elif e.get("ohne_gesang") or e.get("mit_gesang") is False:
             arg.append("--ohne-gesang")
         return arg
     if art == "set":
-        arg = ["set", "--wunsch", str(e["wunsch"]), "--length", str(e["length"])]
-        if e.get("songs"):
-            arg += ["--songs", ",".join(e["songs"])]
+        arg = ["set", opt("wunsch", e["wunsch"]), opt("length", e["length"])]
+        arg += songs_opt()
         if e.get("ohne_gesang"):
             arg.append("--ohne-gesang")
         return arg
     if art == "aufnehmen":
+        datei = e["datei"]
+        if (
+            not isinstance(datei, str)
+            or not datei
+            or any(z in datei for z in ("/", "\\", ":"))
+            or ".." in datei
+            or datei != Path(datei).name
+        ):
+            raise ValueError("ungueltiger Dateiname")
         arg = [
-            "aufnehmen", "--datei", str(e["datei"]), "--titel", str(e["titel"]),
-            "--herkunft", str(e["herkunft"]),
+            "aufnehmen", opt("datei", datei), opt("titel", e["titel"]),
+            opt("herkunft", e["herkunft"]),
         ]
         if e.get("suno_id"):
-            arg += ["--suno-id", str(e["suno_id"])]
+            arg.append(opt("suno-id", e["suno_id"]))
         return arg
     raise ValueError(f"keine dj-set-Art: {art}")
 
@@ -257,6 +277,8 @@ class Laeufer:
                 self._beenden(auftrag, "abgebrochen", "abgebrochen")
                 return True
             if auftrag.zustand == "laeuft":
+                if auftrag.art == "laura_render":
+                    return False  # laeuft in der injizierten Funktion, nicht unterbrechbar
                 self._abbruch.add(auftrag_id)
                 if self._aktiv and self._aktiv[0] == auftrag_id:
                     _prozess_beenden(self._aktiv[1].pid)
@@ -292,8 +314,21 @@ class Laeufer:
         if auftrag.art == "laura_render":
             self._laura_ausfuehren(auftrag)
         else:
-            self._unterprozess_abwarten(auftrag)
+            try:
+                self._unterprozess_abwarten(auftrag)
+            finally:
+                with self._sperre:
+                    self._abbruch.discard(auftrag.id)
         return True
+
+    def _abschliessen(self, auftrag: Auftrag, zustand: str, grund: str = "") -> str:
+        """Schreibt den Endzustand unter der Sperre; ein vorgemerkter Abbruch gewinnt."""
+        with self._sperre:
+            if auftrag.id in self._abbruch:
+                zustand, grund = "abgebrochen", "abgebrochen"
+            self._abbruch.discard(auftrag.id)
+            self._beenden(auftrag, zustand, grund)
+        return zustand
 
     def _starten(self, auftrag: Auftrag) -> None:
         auftrag.zustand = "laeuft"
@@ -324,8 +359,11 @@ class Laeufer:
         start = self.uhr()
         try:
             argumente = _argumente(auftrag)
-        except (KeyError, ValueError, TypeError) as problem:
-            self._beenden(auftrag, "gescheitert", _kuerzen(f"Eingabe unvollstaendig: {problem}"))
+        except ValueError as problem:
+            self._abschliessen(auftrag, "gescheitert", _kuerzen(str(problem)))
+            return
+        except (KeyError, TypeError) as problem:
+            self._abschliessen(auftrag, "gescheitert", _kuerzen(f"Eingabe unvollstaendig: {problem}"))
             return
         umgebung = dict(os.environ)
         umgebung.setdefault("MUSIK_DATEN", str(self.ablage.daten))
@@ -352,7 +390,7 @@ class Laeufer:
                     except subprocess.TimeoutExpired:
                         continue
         except OSError as problem:
-            self._beenden(auftrag, "gescheitert", _kuerzen(f"Start fehlgeschlagen: {problem}"))
+            self._abschliessen(auftrag, "gescheitert", _kuerzen(f"Start fehlgeschlagen: {problem}"))
             return
         finally:
             with self._sperre:
@@ -362,20 +400,21 @@ class Laeufer:
         treffer = _RUN_ZEILE.findall(text)
         if treffer:
             auftrag.lauf = treffer[-1]
-        with self._sperre:
-            abgebrochen = auftrag.id in self._abbruch
-            self._abbruch.discard(auftrag.id)
-        if abgebrochen:
-            zustand, grund = "abgebrochen", "abgebrochen"
-        elif gerissen:
+        buchen = True
+        if gerissen:
             zustand, grund = "gescheitert", f"Zeitlimit von {zeitlimit:.0f} s erreicht"
+        elif prozess.returncode == 2 and not treffer:
+            # argparse-Fehler (Exit 2) ohne Lauf ist kein Befund.
+            zustand = "gescheitert"
+            grund = _kuerzen(f"Aufruf abgelehnt: {self._letzte_zeile(fehler, ausgabe)}")
+            buchen = False
         elif prozess.returncode in _ENDE_ZUSTAND:
             zustand, grund = _ENDE_ZUSTAND[prozess.returncode], ""
         else:
             zustand = "gescheitert"
             grund = _kuerzen(f"Exit {prozess.returncode}: {self._letzte_zeile(fehler, ausgabe)}")
-        self._beenden(auftrag, zustand, grund)
-        if auftrag.art in _BUCHEN_ARTEN:
+        zustand = self._abschliessen(auftrag, zustand, grund)
+        if buchen and auftrag.art in _BUCHEN_ARTEN:
             try:
                 self.buchen(BUDGET_AGENT, zustand, dauer)
             except Exception as problem:  # noqa: BLE001 - Buchung darf nichts kippen
