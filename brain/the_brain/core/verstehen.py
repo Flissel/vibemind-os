@@ -51,7 +51,9 @@ SPACES: Dict[str, Space] = {
     "desktop": Space("Desktop", ("Welche Fenster sind offen?",), ("desktop_", "desktop.")),
     "swedesign": Space("SWE Design"),
     "roarboot": Space("Rowboat", ("Welche Agenten gibt es in Rowboat?",), ("rowboat_", "rowboat.")),
-    "clawport": Space("Dashboard", ("Welche geplanten Aufgaben gibt es?",), ("schedule_", "schedule.")),
+    # Die schedule-Faehigkeiten gehoeren nur den Auftraegen (orders): eine Vorsilbe, ein Bereich
+    # (Routing-Papier 24.11.2026; vorher stand sie bei beiden, und der erste Treffer gewann).
+    "clawport": Space("Dashboard", ("Welche geplanten Aufgaben gibt es?",)),
     "video": Space("Video Studio", (), ("video_", "video.")),
     "agentfarm": Space("Agent Farm", (), ("agentfarm_", "agentfarm.")),
     "thebrain": Space("The Brain", ("Woran denkt das Gehirn gerade?",), ("thebrain_", "thebrain.")),
@@ -584,12 +586,12 @@ def faehigkeit_space(capability: Any) -> Optional[str]:
 
 
 def plan_spaces(faehigkeiten: Iterable[Any]) -> set:
-    """Die Spaces, denen die Schritte eines Plans sicher gehoeren (Aufträge = Dashboard)."""
+    """Die Spaces, denen die Schritte eines Plans sicher gehoeren (schedule_ gehoert den Auftraegen)."""
     spaces = set()
     for cap in faehigkeiten:
         heimat = faehigkeit_space(cap)
         if heimat is not None:
-            spaces.add("orders" if heimat == "clawport" else heimat)
+            spaces.add(heimat)
     return spaces
 
 

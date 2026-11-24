@@ -12,14 +12,26 @@ Schema:
   (:Hop {id, plan_id, step_id, capability, target, ok, elapsed_s})
   (:Dispatch {id, ts, capability, target, ok, summary})
 
+  (:Satz {id=trace_id, ts, reiter, laenge})                 -- nie der Satztext
+  (:Entscheidung {id, weg, stufe, ok, dauer_ms, bereich_quelle, ts})
+  (:Bereich {id})
+
 Relationships:
   (Cluster)-[:CO_ACTIVATED {weight, ts}]->(Cluster)
   (Cluster)-[:CONTAINS]->(Thought)
   (Cluster)-[:FIRED]->(Dispatch)
   (Plan)-[:HAS_HOP]->(Hop)
-  (Plan)-[:GENERATED]->(Thought)
-  (Hop)-[:HOP_OF_TARGET]->(Dispatch)            (when capability == OpenFang dispatch)
-  (Dispatch)-[:PRODUCED]->(Thought)             (loop-back result thought)
+  (Satz)-[:ENTSCHIEDEN_DURCH]->(Entscheidung)    (core/entscheidung_graph.py, jeder Satz)
+  (Satz)-[:IM_REITER]->(Bereich)
+  (Entscheidung)-[:WAEHLT]->(Bereich)
+  (Entscheidung)-[:FUEHRT_ZU]->(Plan)
+
+Stand 24.11.2026 (Routing-Papier): ``upsert_thought`` hat keinen Aufrufer, es gibt also
+keine Thought-Knoten und kein CONTAINS. Die frueher hier genannten Kanten GENERATED
+(Plan->Thought), HOP_OF_TARGET (Hop->Dispatch) und PRODUCED (Dispatch->Thought) wurden nie
+geschrieben, und die Daten dafuer fehlen: Gedanken entstehen im Prozess brain-loops ohne
+Plan-Kennung, Dispatch-Knoten nur beim Selbststeuern ohne Plan. Sie stehen deshalb nicht
+mehr im Schema.
 
 Public API:
   upsert_cluster(state)
@@ -39,7 +51,8 @@ import logging
 import os
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from collections import deque
+from typing import Any, Deque, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +80,8 @@ class DecisionGraph:
         self._mem_co_pairs: Dict[tuple, float] = {}          # (a,b) -> weight
         self._mem_fired: List[Dict[str, Any]] = []           # cluster→dispatch edges
         self._mem_used_tool: List[Dict[str, Any]] = []       # hop→toolcall edges
+        # Routing-Papier 24.11.2026: jeder Satz als Entscheidung (begrenzt, neueste zuletzt).
+        self._mem_entscheidungen: Deque[Dict[str, Any]] = deque(maxlen=200)
         self.stats_counters: Dict[str, int] = {
             "writes_clusters": 0,
             "writes_thoughts": 0,
@@ -75,6 +90,7 @@ class DecisionGraph:
             "writes_dispatches": 0,
             "writes_co_activations": 0,
             "writes_tool_calls": 0,
+            "writes_entscheidungen": 0,
             "errors": 0,
         }
         self._connect()
@@ -110,6 +126,9 @@ class DecisionGraph:
                     ("Hop", "id"),
                     ("Dispatch", "id"),
                     ("ToolCall", "id"),
+                    ("Satz", "id"),
+                    ("Entscheidung", "id"),
+                    ("Bereich", "id"),
                 ]:
                     s.run(
                         f"CREATE CONSTRAINT IF NOT EXISTS "
@@ -488,6 +507,61 @@ class DecisionGraph:
             logger.debug(f"[decision-graph] upsert_dispatch failed: {e}")
             return dispatch_id  # mem mirror still has it
 
+    _ENTSCHEIDUNG_CYPHER = """
+        MERGE (s:Satz {id: $trace_id})
+        SET s.ts = coalesce(s.ts, $ts), s.reiter = $reiter, s.laenge = $laenge
+        MERGE (e:Entscheidung {id: $eid})
+        SET e.weg = $weg, e.stufe = $stufe, e.ok = $ok, e.dauer_ms = $dauer_ms,
+            e.bereich_quelle = $bereich_quelle, e.ts = coalesce(e.ts, $ts)
+        MERGE (s)-[:ENTSCHIEDEN_DURCH]->(e)
+        FOREACH (_ IN CASE WHEN $bereich IS NULL THEN [] ELSE [1] END |
+            MERGE (b:Bereich {id: $bereich})
+            MERGE (e)-[:WAEHLT]->(b))
+        FOREACH (_ IN CASE WHEN $reiter IS NULL THEN [] ELSE [1] END |
+            MERGE (r:Bereich {id: $reiter})
+            MERGE (s)-[:IM_REITER]->(r))
+        FOREACH (_ IN CASE WHEN $plan_id IS NULL THEN [] ELSE [1] END |
+            MERGE (p:Plan {id: $plan_id})
+            ON CREATE SET p.ts = $ts
+            MERGE (e)-[:FUEHRT_ZU]->(p))
+        """
+
+    def upsert_entscheidung(self, eintrag: Dict[str, Any], timeout_s: float = 2.0) -> None:
+        """Ein Satz und seine Entscheidung (core/entscheidung_graph.py). Ohne Satztext.
+
+        Wirft bei einem Neo4j-Fehler, damit der Schreiber zaehlen kann; der Spiegel im
+        Speicher ist dann schon geschrieben. Zeitgrenze je Transaktion: ``timeout_s``.
+        """
+        trace_id = str(eintrag.get("trace_id") or "")
+        if not trace_id:
+            return
+        werte = {
+            "trace_id": trace_id,
+            "eid": f"ent_{trace_id}",
+            "ts": float(eintrag.get("ts") or time.time()),
+            "reiter": eintrag.get("reiter"),
+            "laenge": eintrag.get("laenge"),
+            "weg": str(eintrag.get("weg") or ""),
+            "stufe": str(eintrag.get("stufe") or ""),
+            "ok": eintrag.get("ok"),
+            "dauer_ms": eintrag.get("dauer_ms"),
+            "bereich": eintrag.get("bereich"),
+            "bereich_quelle": str(eintrag.get("bereich_quelle") or ""),
+            "plan_id": eintrag.get("plan_id"),
+        }
+        self._mem_entscheidungen.append(dict(werte))
+        self.stats_counters["writes_entscheidungen"] += 1
+        if not self._connected:
+            return
+        try:
+            from neo4j import Query
+
+            with self._driver.session() as s:
+                s.run(Query(self._ENTSCHEIDUNG_CYPHER, timeout=float(timeout_s)), **werte).consume()
+        except Exception:
+            self.stats_counters["errors"] += 1
+            raise
+
     def upsert_co_activation(self, a_id: str, b_id: str, weight: float) -> None:
         # Mem mirror
         if a_id and b_id:
@@ -512,6 +586,48 @@ class DecisionGraph:
             logger.debug(f"[decision-graph] upsert_co_activation failed: {e}")
 
     # ── Query ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _entscheidung_teil(
+        zeilen: List[Dict[str, Any]],
+        nodes: List[Dict[str, Any]],
+        edges: List[Dict[str, Any]],
+    ) -> int:
+        """Haengt Entscheidungen, ihre Bereiche und Kanten an (Cytoscape-Form). Kanten zu
+        einem Plan nur, wenn der Plan schon im Bild ist (sonst zeigt die Kante ins Leere).
+        Satz-Knoten bleiben draussen: sie tragen nichts Sichtbares. Gibt die Anzahl zurueck."""
+        vorhanden = {n["data"]["id"] for n in nodes}
+        bereiche = set()
+        for z in zeilen:
+            eid = z.get("eid") or z.get("id")
+            if not eid or eid in vorhanden:
+                continue
+            nodes.append({"data": {
+                "id": eid,
+                "label": (z.get("stufe") or z.get("weg") or "?")[:24],
+                "type": "entscheidung",
+                "ok": z.get("ok") if isinstance(z.get("ok"), bool) else None,
+                "weg": z.get("weg") or "",
+                "stufe": z.get("stufe") or "",
+                "reiter": z.get("reiter") or "",
+                "bereich_quelle": z.get("bereich_quelle") or "",
+                "dauer_ms": z.get("dauer_ms"),
+                "ts": z.get("ts") or 0,
+            }})
+            vorhanden.add(eid)
+            bereich = z.get("bereich")
+            if bereich:
+                bid = f"bereich:{bereich}"
+                if bid not in vorhanden and bid not in bereiche:
+                    nodes.append({"data": {"id": bid, "label": str(bereich)[:24], "type": "bereich"}})
+                    bereiche.add(bid)
+                edges.append({"data": {"id": f"waehlt_{eid}", "source": eid, "target": bid,
+                                       "type": "waehlt"}})
+            plan_id = z.get("plan_id")
+            if plan_id and plan_id in vorhanden:
+                edges.append({"data": {"id": f"fuehrtzu_{eid}", "source": eid, "target": plan_id,
+                                       "type": "fuehrt_zu"}})
+        return len(zeilen)
 
     def _query_subgraph_mem(self, limit: int, min_activation: float) -> Dict[str, Any]:
         """Phase 9 — in-memory subgraph for when Neo4j is offline.
@@ -627,6 +743,7 @@ class DecisionGraph:
                     "seq": int(ut.get("seq") or 0),
                 }
             })
+        entscheidungen = self._entscheidung_teil(list(self._mem_entscheidungen)[-50:], nodes, edges)
         return {
             "connected": True,
             "neo4j_connected": False,  # Hint that this is mem-only
@@ -638,6 +755,7 @@ class DecisionGraph:
                 "plans": len(self._mem_plans),
                 "hops": len(self._mem_hops),
                 "tool_calls": len(self._mem_tool_calls),
+                "entscheidungen": entscheidungen,
             },
         }
 
@@ -764,6 +882,19 @@ class DecisionGraph:
                     LIMIT 300
                     """, cutoff=float(cutoff),
                 ).data()
+                # Routing-Papier 24.11.2026: die Entscheidungen je Satz.
+                entscheidung_zeilen = s.run(
+                    """
+                    MATCH (s:Satz)-[:ENTSCHIEDEN_DURCH]->(e:Entscheidung)
+                    WHERE e.ts >= $cutoff
+                    OPTIONAL MATCH (e)-[:WAEHLT]->(b:Bereich)
+                    OPTIONAL MATCH (e)-[:FUEHRT_ZU]->(p:Plan)
+                    RETURN e.id AS eid, e.weg AS weg, e.stufe AS stufe, e.ok AS ok,
+                           e.dauer_ms AS dauer_ms, e.bereich_quelle AS bereich_quelle,
+                           e.ts AS ts, s.reiter AS reiter, b.id AS bereich, p.id AS plan_id
+                    ORDER BY e.ts DESC LIMIT 50
+                    """, cutoff=float(cutoff),
+                ).data()
 
             # Cytoscape format
             nodes: List[Dict[str, Any]] = []
@@ -869,6 +1000,7 @@ class DecisionGraph:
                         "seq": int(ut.get("seq") or 0),
                     }
                 })
+            entscheidungen = self._entscheidung_teil(entscheidung_zeilen, nodes, edges)
 
             return {
                 "connected": True,
@@ -879,6 +1011,7 @@ class DecisionGraph:
                     "dispatches": len(dispatches),
                     "plans": len(plans),
                     "hops": len(hops),
+                    "entscheidungen": entscheidungen,
                 },
             }
         except Exception as e:
@@ -926,7 +1059,8 @@ class DecisionGraph:
         pruned = 0
         try:
             with self._driver.session() as s:
-                for label in ("Dispatch", "Plan", "Hop", "Thought"):
+                # Bereich-Knoten bleiben: es gibt nur eine Handvoll, und sie tragen keine Zeit.
+                for label in ("Dispatch", "Plan", "Hop", "Thought", "Satz", "Entscheidung"):
                     rec = s.run(
                         f"MATCH (n:{label}) WHERE n.ts < $cutoff "
                         f"WITH n LIMIT 500 DETACH DELETE n RETURN count(n) AS n",

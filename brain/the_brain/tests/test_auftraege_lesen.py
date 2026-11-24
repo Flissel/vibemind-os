@@ -53,7 +53,11 @@ def test_springt_in_den_reiter_auftraege() -> None:
     from core.beispielsaetze import saetze_fuer
     from core.step_space import space_for_step
 
-    assert v.plan_spaces(["schedule_auftraege"]) == {"orders"}  # Dashboard/clawport zaehlt als Aufträge
+    assert v.plan_spaces(["schedule_auftraege"]) == {"orders"}  # schedule_ gehoert nur den Auftraegen
+    # Routing-Papier 24.11.2026: die Vorsilbe stand auch beim Dashboard, und der erste Treffer gewann.
+    assert v.faehigkeit_space("schedule_auftraege") == "orders"
+    assert v.faehigkeit_space("schedule_list") == "orders"
+    assert v.SPACES["clawport"].faehigkeiten == ()
     assert space_for_step("schedule_auftraege", "direct:core.auftraege_lesen:auftraege_lesen") == "schedule"
     assert "Welche Aufträge laufen gerade?" in saetze_fuer("orders")
 
