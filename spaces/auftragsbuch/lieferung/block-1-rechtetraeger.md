@@ -70,7 +70,8 @@ spaces:
         required_provenance: [approval_ref, cost_ref]
         execution: { kind: mcp, server: auftragsbuch }
   sales:
-    mcp_tools: { auftragsbuch: [auftrag_probe, auftrag_lesen, sales_kontakt_finden] }
+    mcp_tools: { auftragsbuch: [auftrag_probe, auftrag_lesen, sales_kontakt_finden, sales_termine_heute,
+                                sales_freigaben_zaehlen, sales_post_offen] }
     events:
       sales.kontakt_finden:
         tool: sales_kontakt_finden
