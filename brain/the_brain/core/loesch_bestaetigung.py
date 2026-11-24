@@ -1,6 +1,7 @@
-"""Löschen im Ideen-Space nie direkt (Prüflauf 25.11.2026: "Lösche die Karte X" fiel an den Planer).
+"""Löschen im Ideen-Space nie direkt (Prüflauf 24.11.2026: "Lösche die Karte X" fiel an den Planer).
 
-Der Satz "Lösche die Karte X" antwortet zuerst mit einer Rückfrage, die die Karte nennt.
+Der Satz "Lösche die Karte X" (oder "Lösche diese Bubble") antwortet zuerst mit einer Rückfrage,
+die die Karte nennt (bzw. die Bubble und die Zahl ihrer Karten).
 Erst "Ja, löschen" löst den festen Aufruf aus, und nur:
 - binnen ``GILT_S`` Sekunden nach genau dieser Rückfrage,
 - wenn dazwischen kein anderer Satz kam (jeder andere Satz verwirft sie).
@@ -20,15 +21,15 @@ from typing import Any, Dict, Optional
 
 GILT_S = 120
 SCHLUESSEL_GILT_S = 120
-EREIGNISSE = frozenset({"idea.delete"})
+EREIGNISSE = frozenset({"idea.delete", "bubble.delete"})
 
 _JA_LOESCHEN = re.compile(
-    r"^\s*ja\s*[,!.]?\s*(?:bitte\s+)?l(?:ö|oe)sch(?:e|en)?(?:\s+(?:sie|es|die\s+karte))?\s*[.!]?\s*$",
+    r"^\s*ja\s*[,!.]?\s*(?:bitte\s+)?l(?:ö|oe)sch(?:e|en)?(?:\s+(?:sie|es|die\s+karte|die\s+bubble))?\s*[.!]?\s*$",
     re.IGNORECASE)
 OHNE_FRAGE = ("Es ist gerade kein Löschen zur Bestätigung offen. "
-              "Sag „Lösche die Karte …“, dann frage ich zuerst nach.")
+              "Sag „Lösche die Karte …“ oder „Lösche diese Bubble“, dann frage ich zuerst nach.")
 OHNE_SCHLUESSEL = ("Gelöscht wird nur nach Rückfrage. "
-                   "Sag „Lösche die Karte …“, dann frage ich zuerst nach.")
+                   "Sag „Lösche die Karte …“ oder „Lösche diese Bubble“, dann frage ich zuerst nach.")
 
 _sperre = threading.Lock()
 _offen: Dict[str, Any] = {}                  # {"ereignis", "argumente", "antwort", "bubble_id", "bis"}
@@ -46,6 +47,25 @@ def ist_bestaetigung(satz: Any) -> bool:
 def frage_karte(titel: str) -> str:
     name = f"die Karte „{titel}“" if titel else "diese Karte"
     return (f"Soll ich {name} löschen? Ihre Verbindungen gehen mit. Mit „Zurück“ holst du sie wieder. "
+            "Sag „Ja, löschen“.")
+
+
+def frage_bubble(titel: str, karten: Optional[int]) -> str:
+    """Rückfrage vor dem Löschen der offenen Bubble, mit der Zahl ihrer Karten.
+
+    Die Datenbank löscht nur die Bubble; ihre Karten bleiben gespeichert, gehören dann aber zu
+    keiner Bubble mehr (canvas_nodes.linked_idea_id: ON DELETE SET NULL). "Zurück" hängt sie
+    wieder an (Änderungsbuch, supabase/tests/zurueck).
+    """
+    name = f"die Bubble „{titel}“" if titel else "diese Bubble"
+    if karten is None:
+        inhalt = "Wie viele Karten sie hat, weiß ich gerade nicht. "
+    elif karten == 0:
+        inhalt = "Sie hat keine Karten. "
+    else:
+        zahl = "eine Karte" if karten == 1 else f"{karten} Karten"
+        inhalt = (f"Sie hat {zahl}; die bleiben gespeichert, gehören dann aber zu keiner Bubble mehr. ")
+    return (f"Soll ich {name} löschen? {inhalt}Mit „Zurück“ holst du alles wieder. "
             "Sag „Ja, löschen“.")
 
 

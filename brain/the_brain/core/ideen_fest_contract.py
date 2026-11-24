@@ -93,6 +93,14 @@ FESTE_EREIGNISSE: dict[str, dict[str, Any]] = {
         "pflicht": {"id": _K},
         "wahl": {},
     },
+    # "Lösche diese Bubble": nur die offene, nur nach Rückfrage mit der Zahl der Karten und "Ja,
+    # löschen" (Schlüssel wie oben). Die Datenbank löst die Karten nur von der Bubble
+    # (linked_idea_id: ON DELETE SET NULL); "Zurück" stellt Bubble und Zuordnung wieder her.
+    "bubble.delete": {
+        "werkzeug": "bubble_delete",
+        "pflicht": {"id": _K},
+        "wahl": {},
+    },
     "bubble.rate": {
         "werkzeug": "bubble_rate",
         "pflicht": {"id": _K, "score": _WERT},
@@ -376,6 +384,11 @@ def nachpruefung(event_id: str, argumente: Any, raw_result: Any) -> tuple[Option
         if zeile is None or zeile.get("id") != argumente["id"]:
             return None, ungueltig
         return {"art": "geloescht", "id": argumente["id"]}, ""
+    if event_id == "bubble.delete":
+        zeile = _erste_zeile(inhalt)
+        if zeile is None or zeile.get("id") != argumente["id"]:
+            return None, ungueltig
+        return {"art": "bubble_geloescht", "id": argumente["id"]}, ""
     if not isinstance(inhalt, dict):
         return None, ungueltig
     if event_id == "idea.root":
@@ -524,6 +537,19 @@ def pruefe_zustand(erwartet: Any, lies: Lesen) -> tuple[Optional[bool], dict[str
         if karte or von or zu:
             return False, {"id": kennung}, "card or connection still present"
         return True, {"id": kennung, "rows_found": 0}, "card and connections deleted"
+
+    if art == "bubble_geloescht":
+        # Weg ist die Bubble; keine Karte zeigt mehr auf sie (die Datenbank setzt die Zuordnung leer).
+        kennung = erwartet.get("id")
+        if not ist_kennung(kennung):
+            return None, offen, "invalid expectation"
+        bubble = lies("ideas", {"select": "id", "id": f"eq.{kennung}", "limit": "1"})
+        karten = lies("canvas_nodes", {"select": "id", "linked_idea_id": f"eq.{kennung}", "limit": "1"})
+        if bubble is None or karten is None:
+            return None, offen, "read-back unavailable"
+        if bubble or karten:
+            return False, {"id": kennung}, "bubble or card link still present"
+        return True, {"id": kennung, "rows_found": 0}, "bubble deleted"
 
     if art == "eintrag":
         zeile, gefunden, grund = eine_zeile("ideas", erwartet.get("bubble_id"), "id,metadata")

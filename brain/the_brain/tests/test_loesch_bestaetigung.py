@@ -156,6 +156,68 @@ def test_router_unbekannte_karte_ist_rueckfrage(monkeypatch) -> None:
     assert ausfuehrer.plaene == []
 
 
+# ── L2: offene Bubble löschen, Rückfrage mit der Zahl der Karten ─────────
+
+BUBBLE_FRAGE = ("Soll ich die Bubble „Stadtfest“ löschen? Sie hat 4 Karten; die bleiben gespeichert, gehören "
+                "dann aber zu keiner Bubble mehr. Mit „Zurück“ holst du alles wieder. Sag „Ja, löschen“.")
+
+
+@pytest.mark.parametrize("satz", ["Lösche diese Bubble", "Lösche die Bubble", "lösche die Bubble Stadtfest",
+                                  "Entferne die Bubble „Stadtfest“."])
+def test_router_bubble_erst_frage_mit_kartenzahl_dann_ja(monkeypatch, satz) -> None:
+    client, ausfuehrer = _client(monkeypatch)
+    body = _satz(client, satz)
+    assert ausfuehrer.plaene == [] and body["rueckfrage"] is True and body["final_text"] == BUBBLE_FRAGE
+    body = _satz(client, "Ja, löschen")
+    (plan,) = ausfuehrer.plaene
+    assert [h.capability for h in plan.hops] == ["bubble.delete"]
+    arg = json.loads(plan.hops[0].arg_template)
+    assert arg["id"] == BUBBLE["id"] and lb.einloesen(arg["bestaetigung"], "bubble.delete", BUBBLE["id"])
+    assert body["final_text"] == ("Die Bubble „Stadtfest“ ist gelöscht. Mit „Zurück“ holst du sie wieder, "
+                                  "mit allen Karten.")
+    assert body.get("ziel") is None                                           # kein Sprung in die geloeschte
+
+
+def test_router_bubble_nur_die_offene(monkeypatch) -> None:
+    client, ausfuehrer = _client(monkeypatch)
+    body = _satz(client, "Lösche die Bubble Sommerfest")
+    assert body["final_text"] == ("Gelöscht wird nur die offene Bubble. Öffne „Sommerfest“ und sag dort "
+                                  "„Lösche diese Bubble“.")
+    assert _satz(client, "Ja, löschen")["final_text"] == lb.OHNE_FRAGE and ausfuehrer.plaene == []
+    body = _satz(client, "Lösche diese Bubble", {"space": "ideas", "bubble": None})
+    assert body["rueckfrage"] is True and ausfuehrer.plaene == []
+
+
+def test_bubble_frage_ohne_zahl_und_mit_einer_karte() -> None:
+    assert "Sie hat eine Karte;" in lb.frage_bubble("Stadtfest", 1)
+    assert "Sie hat keine Karten." in lb.frage_bubble("Stadtfest", 0)
+    assert "Wie viele Karten sie hat, weiß ich gerade nicht." in lb.frage_bubble("Stadtfest", None)
+
+
+def test_bubble_schluessel_gilt_nicht_fuer_eine_karte() -> None:
+    lb.fragen("bubble.delete", {"id": BUBBLE["id"]}, "x")
+    schluessel = lb.satz_pruefen("Ja, lösche die Bubble")["argumente"]["bestaetigung"]
+    assert lb.einloesen(schluessel, "idea.delete", BUBBLE["id"]) is False
+
+
+def test_nachpruefung_bubble_weg_und_keine_karte_zeigt_auf_sie() -> None:
+    erwartet, _ = fest.nachpruefung("bubble.delete", {"id": BUBBLE["id"]}, _quittung([{"id": BUBBLE["id"]}]))
+    assert erwartet == {"art": "bubble_geloescht", "id": BUBBLE["id"]}
+    assert fest.pruefe_zustand(erwartet, lambda tabelle, filter: [])[0] is True
+    karte_haengt = lambda tabelle, filter: [{"id": "a0000001"}] if tabelle == "canvas_nodes" else []
+    assert fest.pruefe_zustand(erwartet, karte_haengt)[0] is False
+
+
+def test_registry_bindet_bubble_delete_fest_an_den_ideen_server() -> None:
+    import yaml
+    registry = yaml.safe_load((Path(__file__).resolve().parents[3] / "config" / "space_agent_registry.yml")
+                              .read_text(encoding="utf-8"))
+    bubbles = registry["spaces"]["bubbles"]
+    assert bubbles["events"]["bubble.delete"]["tool"] == "bubble_delete"
+    assert bubbles["events"]["bubble.delete"]["execution"] == {"kind": "mcp", "server": "spaces-ideas"}
+    assert "bubble_delete" in bubbles["mcp_tools"]["spaces-ideas"]
+
+
 # ── L4: offene Bubble zählt als genannt, nie an den Planer ───────────────
 
 @pytest.fixture(scope="module")

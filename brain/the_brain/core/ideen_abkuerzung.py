@@ -558,6 +558,25 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
                            f"{name} ist gelöscht, mit ihren Verbindungen. Mit „Zurück“ holst du sie wieder."),
                 "loeschen": {"titel": titel, "bubble_id": _offene_bubble(kontext)}}
 
+    # ── Bubble loeschen: nur die offene, nie direkt; die Rueckfrage nennt die Zahl der Karten ──
+    m = re.fullmatch(r"(?:l(?:ö|oe)sch(?:e)?|entfern(?:e)?)\s+(?:diese|die)\s+bubble(?:\s+(?P<n>.+))?", text, _I)
+    if m:
+        bubble_id = _offene_bubble(kontext)
+        bubble = kontext["bubble"]
+        titel = str(bubble.get("title") or "").strip()
+        genannt = (m.group("n") or "").strip().strip("\"'„“”")
+        if genannt and _normal(genannt) != _normal(titel):
+            raise _Rueckfrage(f"Gelöscht wird nur die offene Bubble. Öffne „{genannt}“ und sag dort "
+                              "„Lösche diese Bubble“.")
+        gesamt = kontext.get("cards_total")
+        if not (isinstance(gesamt, int) and not isinstance(gesamt, bool) and gesamt >= 0):
+            roh = kontext.get("cards")
+            gesamt = len(roh) if isinstance(roh, list) else None
+        name = f"Die Bubble „{titel}“" if titel else "Die Bubble"
+        return {**_treffer("bubble.delete", {"id": bubble_id},
+                           f"{name} ist gelöscht. Mit „Zurück“ holst du sie wieder, mit allen Karten."),
+                "loeschen": {"art": "bubble", "titel": titel, "bubble_id": bubble_id, "karten": gesamt}}
+
     # ── festhalten ──
     m = re.fullmatch(
         r"(?:halt(?:e)?\s+fest|notiz|notiere|schreib(?:e)?\s+auf|merk(?:e)?\s+dir)\s*[:,]?\s*(?:dass\s+)?(?P<t>.+)",
@@ -1254,6 +1273,9 @@ def ziel_fuer_schritt(capability: Any, ok: bool, argumente: Any, ergebnis: Any,
         if not ist_kennung(bubble_id):
             return None
         node_id = None
+        if str(capability) == "bubble.delete":
+            # Die Bubble ist weg: kein Sprung hinein (die App verlaesst sie selbst).
+            return None
         if str(capability) == "idea.delete":
             # Die Karte ist weg: in die Bubble springen, nie auf die Kennung der geloeschten Karte.
             return {"space": "ideas", "bubble_id": bubble_id, "node_id": None}

@@ -42,6 +42,8 @@ class Datenbank:
     def __init__(self) -> None:
         self.tabellen = {
             "ideas": [{"id": "b0b1e001", "title": "Messe", "description": "", "parent_id": None, "score": 0,
+                       "status": "active", "promoted_to_project_id": None, "metadata": {}},
+                      {"id": "b0b1e002", "title": "Alte Messe", "description": "", "parent_id": None, "score": 0,
                        "status": "active", "promoted_to_project_id": None, "metadata": {}}],
             "canvas_nodes": [
                 {"id": "a0000001", "title": "Preise Druckerei", "content": "A: 1", "node_type": "note", "x": 500, "y": 90,
@@ -49,6 +51,9 @@ class Datenbank:
                  "previous_content_json": None},
                 {"id": "a0000002", "title": "Druckerei Preise", "content": "", "node_type": "note", "x": 10, "y": 400,
                  "linked_idea_id": "b0b1e001", "metadata": {}, "format_schema": None, "content_json": None,
+                 "previous_content_json": None},
+                {"id": "a0000009", "title": "Standplan", "content": "", "node_type": "note", "x": 0, "y": 0,
+                 "linked_idea_id": "b0b1e002", "metadata": {}, "format_schema": None, "content_json": None,
                  "previous_content_json": None},
             ],
             "canvas_edges": [],
@@ -100,6 +105,11 @@ class Datenbank:
             # Wie PostgREST mit "Prefer: return=representation": die geloeschten Zeilen.
             weg = [copy.deepcopy(z) for z in zeilen if self._passt(z, params)]
             self.tabellen[path] = [z for z in zeilen if not self._passt(z, params)]
+            if path == "ideas":
+                # canvas_nodes.linked_idea_id: ON DELETE SET NULL
+                for karte in self.tabellen["canvas_nodes"]:
+                    if karte.get("linked_idea_id") in {z["id"] for z in weg}:
+                        karte["linked_idea_id"] = None
             return weg
         raise AssertionError(method)
 
@@ -216,6 +226,11 @@ def _hauptlauf() -> int:
         ("idea.delete", abk.loese("Lösche die Karte White Paper: Messe",
                                   {**app, "cards": [{"id": "00000000-0000-4000-8000-000000000d01",
                                                      "title": "White Paper: Messe"}]})["argumente"]),
+        # Bubble loeschen (nach "Ja, löschen"): nur die offene; ihre Karte bleibt, ohne Bubble.
+        ("bubble.delete", abk.loese("Lösche diese Bubble",
+                                    {"space": "ideas", "bubble": {"id": "b0b1e002", "title": "Alte Messe"},
+                                     "cards": [{"id": "a0000009", "title": "Standplan"}],
+                                     "cards_total": 1})["argumente"]),
     ]
     db.tabellen["canvas_edges"].append({"id": "e0000001", "from_node_id": "00000000-0000-4000-8000-000000000d01",
                                         "to_node_id": "a0000001", "edge_type": "related"})

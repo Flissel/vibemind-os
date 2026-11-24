@@ -2556,6 +2556,10 @@ def _try_ideen_abkuerzung(intent: str, kontext: Any):
             _lb.fragen(treffer["ereignis"], treffer["argumente"], str(treffer.get("antwort") or ""),
                        str(loeschen.get("bubble_id") or ""))
             logger.info(f"[ideen-abkuerzung] {treffer['ereignis']!r}: Rueckfrage vor dem Loeschen")
+            if loeschen.get("art") == "bubble":
+                karten = loeschen.get("karten")
+                return None, _lb.frage_bubble(str(loeschen.get("titel") or ""),
+                                              karten if isinstance(karten, int) else None), ""
             return None, _lb.frage_karte(str(loeschen.get("titel") or "")), ""
         if isinstance(treffer.get("recherche"), dict):
             # Recherche zu einer Bubble: erst die Vorschau (kein Lauf), "Ja, recherchieren" startet.
