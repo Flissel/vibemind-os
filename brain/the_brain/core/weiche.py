@@ -263,7 +263,8 @@ class Schatten:
         self.pfad = Path(pfad or SCHATTEN_PFAD)
         self._schlange: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=maxsize)
         self.zaehler = {"gemeldet": 0, "bewertet": 0, "verworfen": 0, "veraltet": 0,
-                        "zeit": 0, "fehler": 0, "graph_fehler": 0}
+                        "zeit": 0, "fehler": 0, "graph_geschrieben": 0, "graph_nur_spiegel": 0,
+                        "graph_fehler": 0}
         self._faden: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self._datei_lock = threading.Lock()
@@ -350,7 +351,8 @@ class Schatten:
             if graph is not None and hasattr(graph, "upsert_weichenvorschlag"):
                 from core.entscheidung_graph import zeitgrenze_s as graph_zeit
 
-                graph.upsert_weichenvorschlag(vorschlag, timeout_s=graph_zeit())
+                bestaetigt = graph.upsert_weichenvorschlag(vorschlag, timeout_s=graph_zeit())
+                self.zaehler["graph_geschrieben" if bestaetigt is True else "graph_nur_spiegel"] += 1
         except Exception as e:  # noqa: BLE001
             self.zaehler["graph_fehler"] += 1
             logger.debug(f"[weiche] Graph übersprungen: {type(e).__name__}: {e}")

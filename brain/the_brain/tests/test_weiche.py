@@ -84,6 +84,7 @@ class GraphAttrappe:
         if self.fehler:
             raise RuntimeError("neo4j weg")
         self.vorschlaege.append(vorschlag)
+        return True
 
     def upsert_entscheidung(self, eintrag, timeout_s=2.0):
         self.entscheidungen.append(eintrag)
@@ -256,10 +257,12 @@ def test_schatten_schreibt_spur_datei_und_graph(tmp_path):
     assert snap["weiche"]["heute"] == {"weg": "plan-executor", "stufe": "planer", "bereich": "ideas", "ok": True}
     zeilen = (tmp_path / "schatten.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(zeilen) == 1 and json.loads(zeilen[0])["trace_id"] == "t-a0000001"
-    assert "termine" not in zeilen[0]
+    # Kein Satztext; Fähigkeits-ids wie "sales.termine_heute" sind Kennungen und erlaubt.
+    assert "welche termine habe ich heute" not in zeilen[0]
     assert graph.vorschlaege[0]["ergebnis"] == "waehlt"
     assert graph.zeitgrenzen == [eg.zeitgrenze_s()]
     assert schatten.zaehler["bewertet"] == 1
+    assert (schatten.zaehler["graph_geschrieben"], schatten.zaehler["graph_nur_spiegel"]) == (1, 0)
     # Die Spur auf Platte bleibt unverändert: keine Patch-Zeile.
     assert "weiche" not in (tmp_path / "spur.jsonl").read_text(encoding="utf-8")
 
@@ -324,6 +327,18 @@ def test_graph_fehler_wird_gezaehlt(tmp_path):
                              "graph": GraphAttrappe(fehler=True), "eingang": time.monotonic()})
     assert schatten.zaehler["graph_fehler"] == 1
     assert (tmp_path / "schatten.jsonl").exists()
+
+
+def test_graph_ohne_verbindung_zaehlt_nur_spiegel(tmp_path, monkeypatch):
+    from core import decision_graph as dgmod
+
+    monkeypatch.setattr(dgmod, "ENABLED", False)
+    graph = dgmod.DecisionGraph()
+    schatten = _schatten(tmp_path)
+    schatten.einen_bewerten({"satz": "welche bubbles gibt es", "eintrag": _eintrag(),
+                             "graph": graph, "eingang": time.monotonic()})
+    assert (schatten.zaehler["graph_geschrieben"], schatten.zaehler["graph_nur_spiegel"]) == (0, 1)
+    assert len(graph._mem_weiche) == 1
 
 
 def test_schalter_aus(tmp_path, monkeypatch):
@@ -433,4 +448,4 @@ def test_vergleich_endpunkt(tmp_path, monkeypatch):
     d = r.json()
     assert d["saetze"] == 1 and d["vergleich"] == {"anders": 1}
     assert d["zaehler"]["gemeldet"] == 1
-    assert "termine" not in r.text
+    assert "welche termine habe ich heute" not in r.text

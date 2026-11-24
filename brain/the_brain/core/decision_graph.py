@@ -591,11 +591,12 @@ class DecisionGraph:
             SET r.rang = k.rang, r.punkte = k.punkte, r.verworfen = k.verworfen)
         """
 
-    def upsert_weichenvorschlag(self, vorschlag: Dict[str, Any], timeout_s: float = 2.0) -> None:
-        """Vorschlag der Weiche zu einem Satz. Ohne Satztext; wirft bei Neo4j-Fehlern."""
+    def upsert_weichenvorschlag(self, vorschlag: Dict[str, Any], timeout_s: float = 2.0) -> bool:
+        """Vorschlag der Weiche zu einem Satz. Ohne Satztext; wirft bei Neo4j-Fehlern.
+        True = Neo4j hat bestaetigt; False = nur im Spiegel (nicht verbunden)."""
         trace_id = str(vorschlag.get("trace_id") or "")
         if not trace_id:
-            return
+            return False
         kandidaten = [k for k in (vorschlag.get("kandidaten") or []) if isinstance(k, dict)]
         bereiche = [
             {"bereich": str(b.get("bereich")), "rang": int(b.get("rang") or 0),
@@ -621,12 +622,13 @@ class DecisionGraph:
         self._mem_weiche.append(dict(werte, trace_id=trace_id))
         self.stats_counters["writes_weiche"] += 1
         if not self._connected:
-            return
+            return False
         try:
             from neo4j import Query
 
             with self._driver.session() as s:
                 s.run(Query(self._WEICHE_CYPHER, timeout=float(timeout_s)), **werte).consume()
+            return True
         except Exception:
             self.stats_counters["errors"] += 1
             raise
