@@ -486,7 +486,7 @@ def test_abkuerzung_auf_lesefaehigkeit_meldet_bei_erfolg_nie_fehlgeschlagen(monk
     import web.routers.introspection as intro
     from core.plan_schema import HopSpec, Plan
 
-    def _abkuerzung(state, intent):
+    def _abkuerzung(state, intent, kontext=None):
         return Plan(plan_id="shortcut_1", intent=intent, rationale="test",
                     hops=[HopSpec(step_id="s1", description="desktop_fenster via shortcut",
                                   capability="desktop_fenster", arg_template="")],
