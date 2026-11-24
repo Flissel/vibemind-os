@@ -2793,7 +2793,8 @@ function _computePositions(nodes, edges, cy) {
     const padY = Math.max(30, Math.min(60, h * 0.05));
 
     // Group by type
-    const byType = { cluster: [], plan: [], hop: [], dispatch: [], toolcall: [], other: [] };
+    const byType = { cluster: [], plan: [], hop: [], dispatch: [], toolcall: [],
+                     satz: [], entscheidung: [], bereich: [], other: [] };
     for (const n of nodes) {
         const t = (n.data && n.data.type) || 'other';
         if (byType[t]) byType[t].push(n); else byType.other.push(n);
@@ -2956,6 +2957,43 @@ function _computePositions(nodes, edges, cy) {
             pos.set(tc.data.id, { x: tcOrphanX, y: rowDispatchY });
             tcOrphanX += 36;
         }
+    });
+
+    // ── Layer 5b: Satz -> Entscheidung -> Bereich (Routing-Papier 24.11.2026) ──
+    // Je Satz eine Spalte, neueste links: Satz oben, Entscheidung darunter, Bereiche in
+    // einer Zeile darunter, jeweils unter dem Mittel ihrer Entscheidungen.
+    const entSatz = {};      // entscheidung_id -> satz_id
+    const entBereich = {};   // entscheidung_id -> bereich_id
+    for (const e of (edges || [])) {
+        const ed = e.data || {};
+        if (ed.type === 'entschieden_durch') entSatz[ed.target] = ed.source;
+        else if (ed.type === 'waehlt') entBereich[ed.source] = ed.target;
+    }
+    const rowSatzY = padY + Math.max(300, h * 0.64);
+    const rowEntY = rowSatzY + 34;
+    const rowBereichY = rowEntY + 50;
+    const ents = byType.entscheidung.slice().sort((a, b) =>
+        ((b.data && b.data.ts) || 0) - ((a.data && a.data.ts) || 0));
+    const entStep = ents.length > 1 ? Math.max(70, (w - 2 * padX - 60) / (ents.length - 1)) : 0;
+    const bereichXs = {};
+    ents.forEach((en, i) => {
+        const x = padX + 30 + i * entStep;
+        pos.set(en.data.id, { x, y: rowEntY });
+        const sid = entSatz[en.data.id];
+        if (sid) pos.set(sid, { x, y: rowSatzY + (i % 2) * 8 });
+        const bid = entBereich[en.data.id];
+        if (bid) (bereichXs[bid] = bereichXs[bid] || []).push(x);
+    });
+    const bereichPlatz = [];
+    byType.bereich.forEach((b, i) => {
+        const xs = bereichXs[b.data.id] || [];
+        let x = xs.length ? xs.reduce((s, v) => s + v, 0) / xs.length : padX + 40 + i * 90;
+        bereichPlatz.forEach(px => { while (Math.abs(x - px) < 70) x += 70; });
+        bereichPlatz.push(x);
+        pos.set(b.data.id, { x, y: rowBereichY });
+    });
+    byType.satz.forEach(s => {
+        if (!pos.has(s.data.id)) pos.set(s.data.id, { x: padX + 20, y: rowSatzY });
     });
 
     // ── Layer 6: Other (orphans) — far bottom ──
@@ -3127,6 +3165,54 @@ function _initCytoscape() {
                   'background-color': '#37474f',
                   'border-color': '#ef5350', 'border-width': 1,
               }},
+            // Routing-Papier 24.11.2026: Satz -> Entscheidung -> Bereich
+            { selector: 'node[type="satz"]',
+              style: {
+                  'background-color': '#b0bec5', 'shape': 'round-rectangle',
+                  'width': 10, 'height': 10, 'border-width': 0,
+                  'label': 'data(label)', 'font-size': 7, 'color': '#eceff1',
+                  'text-valign': 'top', 'text-margin-y': -3,
+                  'text-wrap': 'ellipsis', 'text-max-width': '120px',
+                  'text-events': 'no',
+              }},
+            { selector: 'node[type="entscheidung"]',
+              style: {
+                  'background-color': '#26c6da', 'shape': 'hexagon',
+                  'width': 16, 'height': 16, 'border-width': 1, 'border-color': '#80deea',
+                  'label': 'data(label)', 'font-size': 7, 'color': '#e0f7fa',
+                  'text-valign': 'bottom', 'text-margin-y': 3,
+                  'text-wrap': 'ellipsis', 'text-max-width': '110px',
+                  'text-events': 'no',
+              }},
+            { selector: 'node[type="entscheidung"][?ok]',
+              style: { 'border-color': '#66bb6a', 'border-width': 2 }},
+            { selector: 'node[type="entscheidung"][ok = false]',
+              style: { 'border-color': '#ef5350', 'border-width': 2 }},
+            { selector: 'node[type="bereich"]',
+              style: {
+                  'background-color': '#ff8a65', 'shape': 'round-tag',
+                  'width': 24, 'height': 18, 'border-width': 1, 'border-color': '#ffccbc',
+                  'label': 'data(label)', 'font-size': 9, 'font-weight': 600,
+                  'color': '#fbe9e7', 'text-valign': 'bottom', 'text-margin-y': 4,
+              }},
+            { selector: 'edge[type="entschieden_durch"]',
+              style: {
+                  'width': 1, 'line-color': '#b0bec5', 'opacity': 0.7,
+                  'curve-style': 'bezier', 'target-arrow-shape': 'triangle',
+                  'target-arrow-color': '#b0bec5',
+              }},
+            { selector: 'edge[type="waehlt"]',
+              style: {
+                  'width': 1.2, 'line-color': '#ff8a65', 'opacity': 0.6,
+                  'curve-style': 'bezier', 'target-arrow-shape': 'triangle',
+                  'target-arrow-color': '#ff8a65',
+              }},
+            { selector: 'edge[type="fuehrt_zu"]',
+              style: {
+                  'width': 1.2, 'line-color': '#ab47bc', 'opacity': 0.6,
+                  'line-style': 'dashed', 'curve-style': 'bezier',
+                  'target-arrow-shape': 'triangle', 'target-arrow-color': '#ab47bc',
+              }},
             // EDGES
             { selector: 'edge[type="co_activated"]',
               style: {
@@ -3248,15 +3334,20 @@ function _openNodeModal(d) {
         hop: '🔶 Hop',
         dispatch: '⭐ Dispatch',
         toolcall: '🔧 ToolCall',
+        satz: '💬 Satz',
+        entscheidung: '⬡ Entscheidung',
+        bereich: '🏷 Bereich',
     };
     document.getElementById('dtModalTitle').innerHTML =
         `${titleByType[d.type] || 'Node'}: ${_esc(d.label || d.id)}`;
     let body = '';
     body += `<div class="dt-row"><span class="dt-label">id</span><code>${_esc(d.id)}</code></div>`;
-    for (const k of ['intent','target','capability','topic','summary','dominant_topic']) {
+    for (const k of ['intent','target','capability','topic','summary','dominant_topic',
+                     'weg','stufe','faehigkeit','reiter','bereich_quelle','trace_id']) {
         if (d[k]) body += `<div class="dt-row"><span class="dt-label">${k}</span>${_esc(String(d[k]).substring(0,500))}</div>`;
     }
-    for (const k of ['activation','reward_score','elapsed_s','hop_count','member_count','fire_count']) {
+    for (const k of ['activation','reward_score','elapsed_s','hop_count','member_count','fire_count',
+                     'schritte','dauer_ms','laenge']) {
         if (d[k] !== undefined && d[k] !== null) {
             body += `<div class="dt-row"><span class="dt-label">${k}</span>${typeof d[k]==='number' ? d[k].toFixed(2) : d[k]}</div>`;
         }
@@ -3310,7 +3401,7 @@ function _galaxyTick() {
             const empty = document.getElementById('galaxyEmpty');
             if (empty) empty.style.display = totalNodes === 0 ? 'block' : 'none';
             document.getElementById('galaxyClusterCount').textContent =
-                `${stats.clusters || 0}c/${stats.plans || 0}p/${stats.dispatches || 0}d`
+                `${stats.clusters || 0}c/${stats.plans || 0}p/${stats.dispatches || 0}d/${stats.entscheidungen || 0}e`
                 + (data.neo4j_connected === false ? ' ⚡' : '');
             // Always show when nodes are present, hide only when truly empty
             const sec = document.getElementById('galaxySection');

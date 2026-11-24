@@ -2122,7 +2122,22 @@ async def decision_graph_stats(request: Request):
     from core.entscheidung_graph import zaehler as _entscheidung_zaehler
 
     out["entscheidung_schreiber"] = _entscheidung_zaehler(dg)
+    from core import weiche as _weiche
+
+    out["weiche_schatten"] = dict(_weiche._SCHATTEN.zaehler) if _weiche._SCHATTEN is not None else {}
     return JSONResponse(out)
+
+
+@router.get("/api/weiche/vergleich")
+async def weiche_vergleich(seit_h: Optional[float] = None, beispiele: int = 10):
+    """Routing-Papier Schritt 2: Wo weicht die Weiche (Schattenbetrieb) vom heutigen Weg ab?
+
+    Liest data/weiche_schatten.jsonl. Nur Zaehlungen, Kennungen und Punkte, kein Satztext.
+    """
+    from core import weiche as _weiche
+
+    seit_ts = time.time() - float(seit_h) * 3600 if seit_h and seit_h > 0 else None
+    return JSONResponse(_weiche.bericht(seit_ts=seit_ts, beispiele=max(0, min(int(beispiele), 100))))
 
 
 # ── Phase 9.0.4: Approval-Gate endpoints ──────────────────────────
@@ -2936,19 +2951,27 @@ async def _entscheidung_melden(request: Request, antwort: Any, kontext_space: Op
                                dauer_ms: float) -> None:
     """Jeder Satz als Entscheidung in den Neo4j-Graphen (core/entscheidung_graph.py).
 
-    Nur Kennung, Reiter, Laenge, Weg, Stufe, ok, Dauer, Bereich und Plan; nie Satz oder Antwort.
+    Kennung, Satzanfang (wie Plan.intent), Reiter, Laenge, Weg, Stufe, ok, Dauer, Bereich und
+    Plan; nie die Antwort.
     Legt den Eintrag nur in eine Warteschlange; der Satz wartet nie auf Neo4j. Wirft nie.
+
+    Schritt 2: Derselbe Eintrag geht mit dem Satz an die Weiche im Schattenbetrieb
+    (core/weiche.py). Sie bewertet nach der Antwort in eigenem Faden und entscheidet nichts.
     """
     try:
         from core import entscheidung_graph as _eg
+        from core import weiche as _weiche
 
         dg = getattr(request.app.state, "decision_graph", None)
-        if dg is None or not _eg.an():
+        graph_an = dg is not None and _eg.an()
+        weiche_an = _weiche.an()
+        if not graph_an and not weiche_an:
             return
         daten = json.loads(antwort.body) if isinstance(getattr(antwort, "body", None), bytes) else None
         if not isinstance(daten, dict):
             return
         laenge = None
+        intent = None
         try:
             body = await request.json()
             intent = body.get("intent") if isinstance(body, dict) else None
@@ -2961,10 +2984,13 @@ async def _entscheidung_melden(request: Request, antwort: Any, kontext_space: Op
         if recorder is not None and isinstance(daten.get("trace_id"), str):
             snap = recorder.get_by_trace(daten["trace_id"])
             routed_via = snap.get("routed_via") if isinstance(snap, dict) else None
-        eintrag = _eg.eintrag_bauen(daten, reiter=kontext_space, laenge=laenge, dauer_ms=dauer_ms,
-                                    routed_via=routed_via,
+        eintrag = _eg.eintrag_bauen(daten, satz=intent, reiter=kontext_space, laenge=laenge,
+                                    dauer_ms=dauer_ms, routed_via=routed_via,
                                     status_code=getattr(antwort, "status_code", 200))
-        _eg.melden(dg, eintrag)
+        if graph_an:
+            _eg.melden(dg, eintrag)
+        if weiche_an:
+            _weiche.melden(intent, eintrag, graph=dg if graph_an else None, recorder=recorder)
     except Exception as e:  # noqa: BLE001
         logger.debug(f"[entscheidung] uebersprungen: {type(e).__name__}: {e}")
 

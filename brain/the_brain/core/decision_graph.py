@@ -12,8 +12,8 @@ Schema:
   (:Hop {id, plan_id, step_id, capability, target, ok, elapsed_s})
   (:Dispatch {id, ts, capability, target, ok, summary})
 
-  (:Satz {id=trace_id, ts, reiter, laenge})                 -- nie der Satztext
-  (:Entscheidung {id, weg, stufe, ok, dauer_ms, bereich_quelle, ts})
+  (:Satz {id=trace_id, ts, reiter, laenge, text})           -- text wie Plan.intent, max 300
+  (:Entscheidung {id, weg, stufe, faehigkeit, schritte, ok, dauer_ms, bereich_quelle, ts})
   (:Bereich {id})
 
 Relationships:
@@ -82,6 +82,8 @@ class DecisionGraph:
         self._mem_used_tool: List[Dict[str, Any]] = []       # hop→toolcall edges
         # Routing-Papier 24.11.2026: jeder Satz als Entscheidung (begrenzt, neueste zuletzt).
         self._mem_entscheidungen: Deque[Dict[str, Any]] = deque(maxlen=200)
+        # Schritt 2: Vorschlaege der Weiche im Schattenbetrieb (begrenzt).
+        self._mem_weiche: Deque[Dict[str, Any]] = deque(maxlen=200)
         self.stats_counters: Dict[str, int] = {
             "writes_clusters": 0,
             "writes_thoughts": 0,
@@ -91,6 +93,7 @@ class DecisionGraph:
             "writes_co_activations": 0,
             "writes_tool_calls": 0,
             "writes_entscheidungen": 0,
+            "writes_weiche": 0,
             "errors": 0,
         }
         self._connect()
@@ -129,6 +132,7 @@ class DecisionGraph:
                     ("Satz", "id"),
                     ("Entscheidung", "id"),
                     ("Bereich", "id"),
+                    ("Weichenvorschlag", "id"),
                 ]:
                     s.run(
                         f"CREATE CONSTRAINT IF NOT EXISTS "
@@ -509,10 +513,11 @@ class DecisionGraph:
 
     _ENTSCHEIDUNG_CYPHER = """
         MERGE (s:Satz {id: $trace_id})
-        SET s.ts = coalesce(s.ts, $ts), s.reiter = $reiter, s.laenge = $laenge
+        SET s.ts = coalesce(s.ts, $ts), s.reiter = $reiter, s.laenge = $laenge, s.text = $text
         MERGE (e:Entscheidung {id: $eid})
         SET e.weg = $weg, e.stufe = $stufe, e.ok = $ok, e.dauer_ms = $dauer_ms,
-            e.bereich_quelle = $bereich_quelle, e.ts = coalesce(e.ts, $ts)
+            e.bereich_quelle = $bereich_quelle, e.ts = coalesce(e.ts, $ts),
+            e.faehigkeit = $faehigkeit, e.schritte = $schritte
         MERGE (s)-[:ENTSCHIEDEN_DURCH]->(e)
         FOREACH (_ IN CASE WHEN $bereich IS NULL THEN [] ELSE [1] END |
             MERGE (b:Bereich {id: $bereich})
@@ -526,15 +531,17 @@ class DecisionGraph:
             MERGE (e)-[:FUEHRT_ZU]->(p))
         """
 
-    def upsert_entscheidung(self, eintrag: Dict[str, Any], timeout_s: float = 2.0) -> None:
-        """Ein Satz und seine Entscheidung (core/entscheidung_graph.py). Ohne Satztext.
+    def upsert_entscheidung(self, eintrag: Dict[str, Any], timeout_s: float = 2.0) -> bool:
+        """Ein Satz und seine Entscheidung (core/entscheidung_graph.py). Satzanfang wie
+        Plan.intent (hoechstens 300 Zeichen), nie die Antwort.
 
         Wirft bei einem Neo4j-Fehler, damit der Schreiber zaehlen kann; der Spiegel im
         Speicher ist dann schon geschrieben. Zeitgrenze je Transaktion: ``timeout_s``.
+        True = Neo4j hat die Transaktion bestaetigt; False = nur im Spiegel (nicht verbunden).
         """
         trace_id = str(eintrag.get("trace_id") or "")
         if not trace_id:
-            return
+            return False
         werte = {
             "trace_id": trace_id,
             "eid": f"ent_{trace_id}",
@@ -548,16 +555,80 @@ class DecisionGraph:
             "bereich": eintrag.get("bereich"),
             "bereich_quelle": str(eintrag.get("bereich_quelle") or ""),
             "plan_id": eintrag.get("plan_id"),
+            "text": eintrag.get("text") if isinstance(eintrag.get("text"), str) else None,
+            "faehigkeit": eintrag.get("faehigkeit"),
+            "schritte": eintrag.get("schritte"),
         }
         self._mem_entscheidungen.append(dict(werte))
         self.stats_counters["writes_entscheidungen"] += 1
         if not self._connected:
-            return
+            return False
         try:
             from neo4j import Query
 
             with self._driver.session() as s:
                 s.run(Query(self._ENTSCHEIDUNG_CYPHER, timeout=float(timeout_s)), **werte).consume()
+            return True
+        except Exception:
+            self.stats_counters["errors"] += 1
+            raise
+
+    # Routing-Papier Schritt 2: der Vorschlag der Weiche im Schattenbetrieb (core/weiche.py).
+    # Die Entscheidung kann noch fehlen (eigener Faden) - MERGE legt sie dann leer an, ihr
+    # Schreiber fuellt sie nach.
+    _WEICHE_CYPHER = """
+        MERGE (e:Entscheidung {id: $eid})
+        ON CREATE SET e.ts = $ts
+        MERGE (w:Weichenvorschlag {id: $wid})
+        SET w.ts = $ts, w.ergebnis = $ergebnis, w.regel = $regel, w.bereich = $bereich,
+            w.faehigkeit = $faehigkeit, w.punkte = $punkte, w.abstand = $abstand,
+            w.dauer_ms = $dauer_ms, w.gleich_wie_heute = $gleich_wie_heute,
+            w.kandidaten = $kandidaten, w.kandidaten_punkte = $kandidaten_punkte
+        MERGE (e)-[:SCHATTEN]->(w)
+        FOREACH (k IN $bereiche |
+            MERGE (b:Bereich {id: k.bereich})
+            MERGE (w)-[r:KANDIDAT]->(b)
+            SET r.rang = k.rang, r.punkte = k.punkte, r.verworfen = k.verworfen)
+        """
+
+    def upsert_weichenvorschlag(self, vorschlag: Dict[str, Any], timeout_s: float = 2.0) -> bool:
+        """Vorschlag der Weiche zu einem Satz. Ohne Satztext; wirft bei Neo4j-Fehlern.
+        True = Neo4j hat bestaetigt; False = nur im Spiegel (nicht verbunden)."""
+        trace_id = str(vorschlag.get("trace_id") or "")
+        if not trace_id:
+            return False
+        kandidaten = [k for k in (vorschlag.get("kandidaten") or []) if isinstance(k, dict)]
+        bereiche = [
+            {"bereich": str(b.get("bereich")), "rang": int(b.get("rang") or 0),
+             "punkte": float(b.get("punkte") or 0.0), "verworfen": bool(b.get("verworfen"))}
+            for b in (vorschlag.get("bereiche") or []) if isinstance(b, dict) and b.get("bereich")
+        ]
+        werte = {
+            "eid": f"ent_{trace_id}",
+            "wid": f"wei_{trace_id}",
+            "ts": float(vorschlag.get("ts") or time.time()),
+            "ergebnis": str(vorschlag.get("ergebnis") or ""),
+            "regel": str(vorschlag.get("regel") or ""),
+            "bereich": vorschlag.get("bereich"),
+            "faehigkeit": vorschlag.get("faehigkeit"),
+            "punkte": vorschlag.get("punkte"),
+            "abstand": vorschlag.get("abstand"),
+            "dauer_ms": vorschlag.get("dauer_ms"),
+            "gleich_wie_heute": vorschlag.get("gleich_wie_heute"),
+            "kandidaten": [str(k.get("faehigkeit")) for k in kandidaten],
+            "kandidaten_punkte": [float(k.get("punkte") or 0.0) for k in kandidaten],
+            "bereiche": bereiche,
+        }
+        self._mem_weiche.append(dict(werte, trace_id=trace_id))
+        self.stats_counters["writes_weiche"] += 1
+        if not self._connected:
+            return False
+        try:
+            from neo4j import Query
+
+            with self._driver.session() as s:
+                s.run(Query(self._WEICHE_CYPHER, timeout=float(timeout_s)), **werte).consume()
+            return True
         except Exception:
             self.stats_counters["errors"] += 1
             raise
@@ -593,19 +664,43 @@ class DecisionGraph:
         nodes: List[Dict[str, Any]],
         edges: List[Dict[str, Any]],
     ) -> int:
-        """Haengt Entscheidungen, ihre Bereiche und Kanten an (Cytoscape-Form). Kanten zu
-        einem Plan nur, wenn der Plan schon im Bild ist (sonst zeigt die Kante ins Leere).
-        Satz-Knoten bleiben draussen: sie tragen nichts Sichtbares. Gibt die Anzahl zurueck."""
+        """Haengt Satz, Entscheidung, Bereich und ihre Kanten an (Cytoscape-Form):
+        Satz -entschieden_durch-> Entscheidung -waehlt-> Bereich, Entscheidung -fuehrt_zu->
+        Plan. Die Kante zum Plan nur, wenn der Plan schon im Bild ist (sonst zeigt sie ins
+        Leere). Gibt die Anzahl der Entscheidungen zurueck."""
+        from core.entscheidung_graph import beschriftung
+
         vorhanden = {n["data"]["id"] for n in nodes}
         bereiche = set()
         for z in zeilen:
             eid = z.get("eid") or z.get("id")
             if not eid or eid in vorhanden:
                 continue
+            trace_id = z.get("trace_id") or (eid[4:] if str(eid).startswith("ent_") else None)
+            if trace_id:
+                sid = f"satz:{trace_id}"
+                text = z.get("text") if isinstance(z.get("text"), str) else ""
+                if sid not in vorhanden:
+                    nodes.append({"data": {
+                        "id": sid,
+                        "label": (text[:36] or "Satz"),
+                        "type": "satz",
+                        "intent": text,
+                        "trace_id": trace_id,
+                        "reiter": z.get("reiter") or "",
+                        "laenge": z.get("laenge"),
+                        "ts": z.get("ts") or 0,
+                    }})
+                    vorhanden.add(sid)
+                edges.append({"data": {"id": f"entschieden_{eid}", "source": sid, "target": eid,
+                                       "type": "entschieden_durch"}})
             nodes.append({"data": {
                 "id": eid,
-                "label": (z.get("stufe") or z.get("weg") or "?")[:24],
+                "label": beschriftung(z.get("stufe") or z.get("weg"), z.get("faehigkeit"),
+                                      z.get("schritte"))[:48],
                 "type": "entscheidung",
+                "faehigkeit": z.get("faehigkeit") or "",
+                "schritte": z.get("schritte"),
                 "ok": z.get("ok") if isinstance(z.get("ok"), bool) else None,
                 "weg": z.get("weg") or "",
                 "stufe": z.get("stufe") or "",
@@ -891,7 +986,9 @@ class DecisionGraph:
                     OPTIONAL MATCH (e)-[:FUEHRT_ZU]->(p:Plan)
                     RETURN e.id AS eid, e.weg AS weg, e.stufe AS stufe, e.ok AS ok,
                            e.dauer_ms AS dauer_ms, e.bereich_quelle AS bereich_quelle,
-                           e.ts AS ts, s.reiter AS reiter, b.id AS bereich, p.id AS plan_id
+                           e.ts AS ts, s.reiter AS reiter, b.id AS bereich, p.id AS plan_id,
+                           s.id AS trace_id, s.text AS text, s.laenge AS laenge,
+                           e.faehigkeit AS faehigkeit, e.schritte AS schritte
                     ORDER BY e.ts DESC LIMIT 50
                     """, cutoff=float(cutoff),
                 ).data()
@@ -1060,7 +1157,8 @@ class DecisionGraph:
         try:
             with self._driver.session() as s:
                 # Bereich-Knoten bleiben: es gibt nur eine Handvoll, und sie tragen keine Zeit.
-                for label in ("Dispatch", "Plan", "Hop", "Thought", "Satz", "Entscheidung"):
+                for label in ("Dispatch", "Plan", "Hop", "Thought", "Satz", "Entscheidung",
+                              "Weichenvorschlag"):
                     rec = s.run(
                         f"MATCH (n:{label}) WHERE n.ts < $cutoff "
                         f"WITH n LIMIT 500 DETACH DELETE n RETURN count(n) AS n",

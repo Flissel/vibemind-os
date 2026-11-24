@@ -26,7 +26,7 @@ from web.routers import introspection as intro  # noqa: E402
 
 SATZ = "Plane den Bühnenplan fürs Stadtfest mit der Druckerei"
 ERLAUBT = {"trace_id", "ts", "reiter", "laenge", "weg", "stufe", "ok", "dauer_ms", "bereich",
-           "bereich_quelle", "plan_id"}
+           "bereich_quelle", "plan_id", "text", "faehigkeit", "schritte"}
 
 
 class Attrappe:
@@ -45,6 +45,7 @@ class Attrappe:
         if self.fehler:
             raise RuntimeError("neo4j weg")
         self.eintraege.append(eintrag)
+        return True
 
 
 @pytest.fixture(autouse=True)
@@ -109,14 +110,35 @@ def test_bereich_aus_den_schritten_auch_wenn_sie_misslangen() -> None:
     assert (e["bereich"], e["bereich_quelle"]) == ("orders", "schritte")
 
 
-def test_eintrag_ohne_satz_und_ohne_antwort() -> None:
-    daten = {"trace_id": "t", "ok": True, "final_text": "Antwort zum Stadtfest", "intent": SATZ,
+def test_eintrag_mit_satzanfang_aber_ohne_antwort() -> None:
+    daten = {"trace_id": "t", "ok": True, "final_text": "Antwort zur Druckerei", "intent": SATZ,
              "weg": "ideen", "executed": {"s1": {"ok": True, "result": {"text": "Sponsoren"}}}}
-    e = eg.eintrag_bauen(daten, reiter="ideas", laenge=len(SATZ), dauer_ms=12.7)
+    e = eg.eintrag_bauen(daten, satz=SATZ, reiter="ideas", laenge=len(SATZ), dauer_ms=12.7)
     assert set(e) == ERLAUBT
+    assert e["text"] == SATZ
     text = json.dumps(e, ensure_ascii=False)
-    assert "Stadtfest" not in text and "Sponsoren" not in text
+    assert "Antwort zur" not in text and "Sponsoren" not in text
     assert (e["laenge"], e["dauer_ms"]) == (len(SATZ), 12)
+
+
+def test_satztext_gekuerzt_wie_plan_intent() -> None:
+    e = eg.eintrag_bauen({"trace_id": "t"}, satz="x" * 1000)
+    assert len(e["text"]) == eg.TEXT_MAX == 300
+    assert eg.eintrag_bauen({"trace_id": "t"}, satz="   ")["text"] is None
+    assert eg.eintrag_bauen({"trace_id": "t"})["text"] is None
+
+
+@pytest.mark.parametrize("executed, faehigkeit, schritte, beschriftung", [
+    ({"s1": {"capability": "bubble_list"}}, "bubble_list", 1, "abkuerzung-regex: bubble_list"),
+    ({"s1": {"capability": "idea_add"}, "s2": {"capability": "idea_connect"},
+      "s3": {"capability": "idea_list"}}, "idea_add", 3, "abkuerzung-regex: 3 Schritte"),
+    ({}, None, 0, "abkuerzung-regex"),
+    (None, None, 0, "abkuerzung-regex"),
+])
+def test_erste_faehigkeit_und_beschriftung(executed, faehigkeit, schritte, beschriftung) -> None:
+    e = eg.eintrag_bauen({"trace_id": "t", "plan_id": "shortcut_1", "executed": executed})
+    assert (e["faehigkeit"], e["schritte"]) == (faehigkeit, schritte)
+    assert eg.beschriftung(e["stufe"], e["faehigkeit"], e["schritte"]) == beschriftung
 
 
 @pytest.mark.parametrize("daten", [None, "x", {}, {"trace_id": ""}, {"trace_id": 5}])
@@ -174,7 +196,7 @@ def test_schalter_aus(monkeypatch) -> None:
     monkeypatch.setenv("ENTSCHEIDUNG_GRAPH", "0")
     graph = Attrappe()
     assert eg.melden(graph, {"trace_id": "t"}) is False
-    assert graph.eintraege == [] and eg.zaehler(graph) == {}
+    assert graph.eintraege == [] and "gemeldet" not in eg.zaehler(graph)
 
 
 def test_melden_ohne_graph_oder_eintrag() -> None:
@@ -194,13 +216,21 @@ def test_spiegel_zeigt_entscheidung_und_bereich(monkeypatch) -> None:
     dg = _graph_offline(monkeypatch)
     dg.upsert_plan("ideen_1", "", ok=True, hop_count=1)
     dg.upsert_entscheidung({"trace_id": "t1", "weg": "plan-executor", "stufe": "ideen-fest", "ok": True,
-                            "bereich": "ideas", "bereich_quelle": "ziel", "plan_id": "ideen_1"})
+                            "bereich": "ideas", "bereich_quelle": "ziel", "plan_id": "ideen_1",
+                            "text": SATZ, "faehigkeit": "idea_summarize", "schritte": 1})
     dg.upsert_entscheidung({"trace_id": "t2", "weg": "nicht-verstanden", "stufe": "nicht-verstanden",
                             "ok": False, "bereich": "ideas", "bereich_quelle": "reiter", "plan_id": None})
     bild = dg.query_subgraph()
     typen = [n["data"]["type"] for n in bild["nodes"]]
     assert typen.count("entscheidung") == 2 and typen.count("bereich") == 1
+    assert typen.count("satz") == 2
+    knoten = {n["data"]["id"]: n["data"] for n in bild["nodes"]}
+    assert knoten["satz:t1"]["label"] == SATZ[:36] and knoten["satz:t1"]["intent"] == SATZ
+    assert knoten["satz:t2"]["label"] == "Satz"
+    assert knoten["ent_t1"]["label"] == "ideen-fest: idea_summarize"
     kanten = {(e["data"]["type"], e["data"]["source"], e["data"]["target"]) for e in bild["edges"]}
+    assert ("entschieden_durch", "satz:t1", "ent_t1") in kanten
+    assert ("entschieden_durch", "satz:t2", "ent_t2") in kanten
     assert ("waehlt", "ent_t1", "bereich:ideas") in kanten and ("waehlt", "ent_t2", "bereich:ideas") in kanten
     assert ("fuehrt_zu", "ent_t1", "ideen_1") in kanten
     assert bild["stats"]["entscheidungen"] == 2
@@ -238,18 +268,22 @@ class _Sitzung:
         return SimpleNamespace(consume=lambda: None)
 
 
-def test_cypher_mit_zeitgrenze_und_ohne_text(monkeypatch) -> None:
+def test_cypher_mit_zeitgrenze_satzanfang_ohne_antwort(monkeypatch) -> None:
     neo4j = pytest.importorskip("neo4j")
     dg = _graph_offline(monkeypatch)
     aufrufe: list = []
     dg._connected = True
     dg._driver = SimpleNamespace(session=lambda: _Sitzung(aufrufe))
     dg.upsert_entscheidung({"trace_id": "t1", "weg": "ideen", "stufe": "ideen-fest", "ok": True,
-                            "reiter": "ideas", "laenge": 40, "bereich": "ideas", "plan_id": "ideen_1"},
+                            "reiter": "ideas", "laenge": 40, "bereich": "ideas", "plan_id": "ideen_1",
+                            "text": SATZ, "faehigkeit": "idea_list", "schritte": 2,
+                            "final_text": "Antwort"},
                            timeout_s=0.7)
     ((query, werte),) = aufrufe
     assert isinstance(query, neo4j.Query) and query.timeout == 0.7
     assert "intent" not in werte and "final_text" not in werte
+    assert (werte["text"], werte["faehigkeit"], werte["schritte"]) == (SATZ, "idea_list", 2)
+    assert "s.text = $text" in query.text and "e.faehigkeit = $faehigkeit" in query.text
     for teil in ("ENTSCHIEDEN_DURCH", "WAEHLT", "IM_REITER", "FUEHRT_ZU"):
         assert teil in query.text
     assert werte["eid"] == "ent_t1"
@@ -300,7 +334,8 @@ def test_jeder_satz_wird_gemeldet(monkeypatch, tmp_path, antwort, weg) -> None:
     (e,) = graph.eintraege
     assert e["trace_id"] == "tr_e1" and e["weg"] == weg and e["reiter"] == "desktop"
     assert e["laenge"] == len(SATZ) and isinstance(e["dauer_ms"], int)
-    assert "Stadtfest" not in json.dumps(e, ensure_ascii=False)
+    assert e["text"] == SATZ
+    assert daten["final_text"] not in json.dumps(e, ensure_ascii=False)
 
 
 def test_plan_weg_bekommt_stufe_und_plan(monkeypatch, tmp_path) -> None:
@@ -315,6 +350,7 @@ def test_plan_weg_bekommt_stufe_und_plan(monkeypatch, tmp_path) -> None:
     (e,) = graph.eintraege
     assert (e["weg"], e["stufe"], e["plan_id"]) == ("plan-executor", "abkuerzung-regex", "shortcut_1")
     assert e["bereich"] == "desktop"
+    assert (e["faehigkeit"], e["schritte"]) == ("desktop_fenster", 1)
 
 
 def test_kaputter_graph_haelt_den_satz_nicht_auf(monkeypatch, tmp_path) -> None:
@@ -339,4 +375,21 @@ def test_stats_nennt_die_zaehler(monkeypatch, tmp_path) -> None:
     client.post("/api/multihop/execute", json={"intent": SATZ})
     assert eg.schreiber_fuer(dg).warten(2.0)
     zaehler = client.get("/api/decision_graph/stats").json()["entscheidung_schreiber"]
-    assert zaehler["gemeldet"] == 1 and zaehler["geschrieben"] == 1
+    # Ohne Neo4j ist nichts geschrieben: nur der Spiegel hat den Eintrag (Befund aus dem Betrieb).
+    assert zaehler["gemeldet"] == 1 and zaehler["geschrieben"] == 0 and zaehler["nur_spiegel"] == 1
+    assert zaehler["zustand"] == "nicht_verbunden" and zaehler["grund"]
+
+
+def test_geschrieben_zaehlt_nur_was_neo4j_bestaetigt(monkeypatch) -> None:
+    pytest.importorskip("neo4j")
+    dg = _graph_offline(monkeypatch)
+    assert dg.upsert_entscheidung({"trace_id": "t0"}) is False
+    dg._connected = True
+    dg._driver = SimpleNamespace(session=lambda: _Sitzung([]))
+    assert dg.upsert_entscheidung({"trace_id": "t1"}) is True
+    schreiber = eg.schreiber_fuer(dg)
+    assert schreiber.einen_schreiben({"trace_id": "t2"}) is True
+    dg._connected = False
+    assert schreiber.einen_schreiben({"trace_id": "t3"}) is False
+    assert (schreiber.zaehler["geschrieben"], schreiber.zaehler["nur_spiegel"]) == (1, 1)
+    assert eg.zaehler(dg)["zustand"] == "nicht_verbunden"

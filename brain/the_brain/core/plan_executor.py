@@ -270,6 +270,22 @@ class PlanRecorder:
                 logger.debug(f"[plan-recorder] spur persist failed: {e}")
             return True
 
+    def attach_weiche(self, trace_id: str, vorschlag: Dict[str, Any]) -> bool:
+        """Haengt den Vorschlag der Weiche (Schattenbetrieb, core/weiche.py) an die Spur.
+
+        Nur im Speicher: dauerhaft steht der Vorschlag in data/weiche_schatten.jsonl. Keine
+        Patch-Zeile hier, denn ``_load`` naehme eine Zeile mit trace_id als ganzen Snapshot.
+        True = an einen vorhandenen Snapshot gehaengt.
+        """
+        if not trace_id or not isinstance(vorschlag, dict):
+            return False
+        with self._lock:
+            snap = self._by_trace.get(trace_id)
+            if snap is None:
+                return False
+            snap["weiche"] = {k: v for k, v in vorschlag.items() if k != "trace_id"}
+            return True
+
     def record_lite(self, trace_id: str, intent: str, routed_via: str,
                     final_text: str = "") -> None:
         """Mini-Snapshot fuer plan-lose Zweige (SoM/som-team/meta/easy/no-plan),
