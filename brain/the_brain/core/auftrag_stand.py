@@ -114,6 +114,9 @@ def _stand_einer_zeile(zeile: Mapping[str, Any]) -> dict[str, Any]:
         return {"stand": "laeuft", "meldung": meldung, "weiter": pruefung.get("naechster_auftrag")}
     if rueckweg == "geschrieben":
         return {"stand": "fertig", "ok": True, "meldung": meldung}
+    if rueckweg == "abgenommen" and status == "fertig" and pruefung.get("verified") is True:
+        # Bau im Project Space (core/coding_auftrag): die unabhängige Abnahme des Dienstes ist grün.
+        return {"stand": "fertig", "ok": True, "meldung": meldung or "Der Bau ist fertig und abgenommen."}
     if rueckweg == "vorschlag" and pruefung.get("vorschlag_erledigt") == "verworfen":
         # Nachmessung 23.11.2026: nach "Vorschlag verwerfen" stand hier weiter "vorschlag".
         from .ideen_vorschlag import verworfen_satz

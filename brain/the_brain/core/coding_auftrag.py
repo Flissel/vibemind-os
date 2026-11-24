@@ -234,9 +234,14 @@ def starten(offen: Mapping[str, Any], *, tabelle: Any, trace_id: str,
 
 def _schliessen(tabelle: Any, auftrag_id: str, status: str, verified: Optional[bool], meldung: str,
                 grund: str, **mehr: Any) -> bool:
-    """``fertig`` heisst hier: der Dienst meldet fertig. Ohne unabhaengige Pruefung ist das ``ungeprueft``."""
+    """Drei Staende wie im Dienst: ``fertig`` nur mit gruener Abnahme (verified True, Rueckweg
+    ``abgenommen``), gebaut ohne Pruefer der Aufgabe ``ungeprueft``, sonst ``fehler``."""
+    if status == "fertig":
+        rueckweg = "abgenommen" if verified is True else "ungeprueft"
+    else:
+        rueckweg = "fehler"
     pruefung = {"verified": verified, "reason": grund, "kind": "coding",
-                "rueckweg": "ungeprueft" if status == "fertig" else "fehler", "meldung": meldung,
+                "rueckweg": rueckweg, "meldung": meldung,
                 "fortsetzung": "fertig" if status == "fertig" else "fehler", **mehr}
     if status != "fertig":
         pruefung["fortsetzung_fehler"] = meldung
@@ -250,18 +255,21 @@ def _schliessen(tabelle: Any, auftrag_id: str, status: str, verified: Optional[b
 # ── 3. Nachfassen ──────────────────────────────────────────────────────────
 
 def _fertig_satz(sicht: Mapping[str, Any], ergebnis: Optional[Mapping[str, Any]]) -> str:
+    """Satz zu einem gebauten Lauf; ``fertig`` (Abnahme gruen) oder ``ungeprueft`` (ohne Pruefer der Aufgabe)."""
     titel = str(sicht.get("titel") or "ohne Titel").strip()[:120]
+    abnahme = sicht.get("abnahme") if isinstance(sicht.get("abnahme"), Mapping) else {}
+    if sicht.get("zustand") == "fertig":
+        kopf = f"„{titel}“ ist fertig: die unabhängige Abnahme ist bestanden (Tests und Prüfer der Aufgabe grün)."
+    else:
+        warum = "; ".join(str(g) for g in abnahme.get("gruende") or []) or "es gibt keinen Prüfer für diese Aufgabe"
+        kopf = (f"„{titel}“ ist gebaut, aber ungeprüft: {warum[:300]}. "
+                "Allgemein geprüft ist nur, dass die Tests laufen und grün sind.")
     if not isinstance(ergebnis, Mapping):
-        return (f"Der Project Space meldet „{titel}“ als fertig, das Ergebnis konnte ich aber nicht lesen. "
-                "Geprüft habe ich nichts.")
+        return kopf
     dateien = ergebnis.get("dateien") if isinstance(ergebnis.get("dateien"), list) else []
-    pruefung = ergebnis.get("pruefung") if isinstance(ergebnis.get("pruefung"), Mapping) else {}
-    tests = ("meldet ihre Tests als bestanden" if pruefung.get("bestanden") is True
-             else "meldet ihre Tests nicht als bestanden")
     start = ergebnis.get("start")
     start_satz = f" Start mit „{start}“ im Ordner der App." if isinstance(start, str) and start else ""
-    return (f"Der Project Space ist fertig mit „{titel}“: {len(dateien)} Datei(en). Die Engine {tests}; "
-            f"unabhängig geprüft habe ich das nicht.{start_satz}")
+    return f"{kopf} {len(dateien)} Datei(en).{start_satz}"
 
 
 def nachfassen(zeile: Mapping[str, Any], *,
@@ -294,11 +302,14 @@ def nachfassen(zeile: Mapping[str, Any], *,
         fehler = str(sicht.get("fehler") or "").strip()
         satz = f"Der Bau ist gescheitert: {fehler[:300]}" if fehler else "Der Bau ist gescheitert."
         return ("fehler", False, satz, "fehlgeschlagen", {"coding_auftrag": kennung})
-    if zustand != "fertig":
+    if zustand not in ("fertig", "ungeprueft"):
         raise RuntimeError("Project Space: Zustand unbekannt")
+    # Die Selbstauskunft der Engine zaehlt nicht: "fertig" setzt im Dienst nur die gruene Abnahme.
     e_status, e_daten = (ergebnis or ergebnis_abfragen)(kennung)
-    return ("fertig", None, _fertig_satz(sicht, e_daten if e_status == 200 else None), "selbstauskunft",
-            {"coding_auftrag": kennung})
+    satz = _fertig_satz(sicht, e_daten if e_status == 200 else None)
+    if zustand == "fertig":
+        return ("fertig", True, satz, "abnahme", {"coding_auftrag": kennung})
+    return ("fertig", None, satz, "ungeprueft", {"coding_auftrag": kennung})
 
 
 def runde(tabelle: Any, *, stand: Optional[Callable[[str], Tuple[int, Optional[Dict[str, Any]]]]] = None,

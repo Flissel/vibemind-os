@@ -215,30 +215,67 @@ def test_runde_laesst_laufenden_bau_weiterlaufen() -> None:
     assert z["coding_wartet"] == 1 and tabelle.zeilen[auftrag_id]["status"] == "laeuft"
 
 
-def test_runde_fertig_ist_ungeprueft_mit_ehrlichem_satz() -> None:
+ERGEBNIS = {"dateien": ["src/schaltjahr.js", "test/schaltjahr.test.js"], "pruefung": {"bestanden": True},
+            "start": None}
+
+
+def test_runde_fertig_heisst_abnahme_gruen_und_ist_fertig() -> None:
     from core.auftrag_stand import stand_einer_zeile
     tabelle = _Tabelle()
     auftrag_id = _laufend(tabelle)
-    ergebnis = {"dateien": ["src/schaltjahr.js", "test/schaltjahr.test.js"], "pruefung": {"bestanden": True},
-                "start": None}
-    z = ca.runde(tabelle, stand=lambda k: (200, {"zustand": "fertig", "titel": "Schaltjahr"}),
-                 ergebnis=lambda k: (200, ergebnis))
+    z = ca.runde(tabelle, stand=lambda k: (200, {"zustand": "fertig", "titel": "Schaltjahr",
+                                                 "abnahme": {"zustand": "fertig"}}),
+                 ergebnis=lambda k: (200, ERGEBNIS))
     zeile = tabelle.zeilen[auftrag_id]
     assert z["coding_fertig"] == 1 and zeile["status"] == "fertig"
-    assert zeile["pruefung"]["verified"] is None and zeile["pruefung"]["coding_auftrag"] == KENNUNG
+    assert zeile["pruefung"]["verified"] is True and zeile["pruefung"]["rueckweg"] == "abgenommen"
+    stand = stand_einer_zeile(zeile)
+    assert stand["stand"] == "fertig" and stand["ok"] is True
+    assert "Abnahme ist bestanden" in stand["meldung"] and "2 Datei(en)" in stand["meldung"]
+
+
+def test_runde_ungeprueft_nennt_was_fehlt() -> None:
+    from core.auftrag_stand import stand_einer_zeile
+    tabelle = _Tabelle()
+    auftrag_id = _laufend(tabelle)
+    sicht = {"zustand": "ungeprueft", "titel": "Schaltjahr",
+             "abnahme": {"zustand": "ungeprueft", "gruende": ["Für diese Aufgabe ist kein Prüfer genannt"]}}
+    z = ca.runde(tabelle, stand=lambda k: (200, sicht), ergebnis=lambda k: (200, ERGEBNIS))
+    zeile = tabelle.zeilen[auftrag_id]
+    assert z["coding_fertig"] == 1 and zeile["pruefung"]["verified"] is None
     stand = stand_einer_zeile(zeile)
     assert stand["stand"] == "ungeprueft" and stand["hinweis"] is True and stand["ok"] is False
-    assert "2 Datei(en)" in stand["meldung"] and "unabhängig geprüft habe ich das nicht" in stand["meldung"]
+    assert "ungeprüft: Für diese Aufgabe ist kein Prüfer genannt" in stand["meldung"]
+
+
+def test_unmoegliche_aufgabe_engine_sagt_erfolg_abnahme_rot_ist_fehler() -> None:
+    # Aufgabe 14: die Engine meldet Erfolg, der Dienst sagt nach der Abnahme "fehlgeschlagen".
+    from core.auftrag_stand import stand_einer_zeile
+    tabelle = _Tabelle()
+    auftrag_id = _laufend(tabelle)
+    sicht = {"zustand": "fehlgeschlagen", "titel": "Primfaktoren",
+             "notiz_engine": "Selbstauskunft der Engine: alle Pakete gebaut, ihre eigenen Prüfungen bestanden.",
+             "fehler": "Die Abnahme ist nicht bestanden: Prüfer der Aufgabe: 300 Stellen dauern über 20 s."}
+    ca.runde(tabelle, stand=lambda k: (200, sicht), ergebnis=lambda k: pytest.fail("kein Ergebnis"))
+    stand = stand_einer_zeile(tabelle.zeilen[auftrag_id])
+    assert stand["stand"] == "fehler" and stand["ok"] is False
+    assert "300 Stellen" in stand["meldung"] and "Selbstauskunft" not in stand["meldung"]
+
+
+def test_abgenommen_ohne_bestaetigung_ist_nie_fertig() -> None:
+    from core.auftrag_stand import stand_einer_zeile
+    zeile = {"status": "fertig", "pruefung": {"rueckweg": "abgenommen", "verified": None, "meldung": "x"}}
+    assert stand_einer_zeile(zeile)["stand"] != "fertig"
 
 
 def test_runde_mit_startbefehl_nennt_ihn() -> None:
     tabelle = _Tabelle()
     auftrag_id = _laufend(tabelle)
-    ca.runde(tabelle, stand=lambda k: (200, {"zustand": "fertig", "titel": "Notizen"}),
+    ca.runde(tabelle, stand=lambda k: (200, {"zustand": "ungeprueft", "titel": "Notizen"}),
              ergebnis=lambda k: (200, {"dateien": ["src/server.js"], "pruefung": {"bestanden": False},
                                        "start": "npm start"}))
     meldung = tabelle.zeilen[auftrag_id]["pruefung"]["meldung"]
-    assert "„npm start“" in meldung and "nicht als bestanden" in meldung
+    assert "„npm start“" in meldung and "ungeprüft" in meldung
 
 
 @pytest.mark.parametrize("sicht,teil", [
