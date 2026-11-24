@@ -351,7 +351,7 @@ def ist_ideen_faehigkeit(capability: Any) -> bool:
     """Faehigkeiten des Ideen-Space, auch in der Schreibweise des Planers (idea_arrange)."""
     name = str(capability or "")
     return (name.startswith(("idea.", "idea_", "bubble.", "bubble_", "ideen_"))
-            or name in ("aenderung_zurueck", "bewertung_begruenden"))
+            or name in ("aenderung_zurueck", "bewertung_begruenden", "bewertung_entfernen"))
 
 
 def grenzsatz(capability: Any, anzahl: Optional[int], grenze: Optional[int] = None) -> str:
