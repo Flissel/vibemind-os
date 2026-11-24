@@ -132,7 +132,64 @@ def bauen(werkzeuge: Werkzeuge) -> MCPServer:
     return server
 
 
+# ---------------------------------------------------------------- Schutz vor Browsern
+
+
+class NurLokal:
+    """Reines ASGI-Zwischenglied fuer `/mcp` und alle JSON-Routen (gegen CSRF und DNS-Rebinding).
+
+    - Host muss genau `127.0.0.1:<port>` oder `localhost:<port>` sein, sonst 403.
+    - Ein `Origin`-Kopf (Browser) gibt 403; Video-Claw, Telegram-Bot und MCP-Client senden keinen.
+    - POST auf die JSON-Routen braucht `Content-Type: application/json` (auch mit `; charset=`),
+      sonst 415. `/mcp` prueft sein Format selbst.
+    - `GET /health` bleibt fuer den Waechter offen, aber nur mit gueltigem Host und ohne Origin.
+    """
+
+    def __init__(self, app: Any, port: int) -> None:
+        self.app = app
+        self.erlaubte_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        kopf = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
+        status: int | None = None
+        if kopf.get("host") not in self.erlaubte_hosts:
+            status = 403
+        elif "origin" in kopf:
+            status = 403
+        elif (scope["method"] == "POST" and scope["path"] != "/mcp"
+              and kopf.get("content-type", "").split(";")[0].strip().lower() != "application/json"):
+            status = 415
+        if status is None:
+            await self.app(scope, receive, send)
+            return
+        grund = "nur lokale Aufrufe" if status == 403 else "Content-Type application/json erforderlich"
+        await JSONResponse({"ok": False, "fehler": grund}, status_code=status)(scope, receive, send)
+
+
+def app_bauen(server: MCPServer, port: int) -> Any:
+    """Die ASGI-App des Servers (`/mcp` + Routen) mit dem Schutz davor. `port` ist der echte."""
+    app = server.streamable_http_app(host=HOST)
+    app.add_middleware(NurLokal, port=port)
+    return app
+
+
 # ---------------------------------------------------------------- JSON-Routen
+
+
+class _KeinBool(Exception):
+    pass
+
+
+def _bool_oder_none(wert: object, name: str, vorgabe: bool | None) -> bool | None:
+    """Nur echte JSON-Booleans; sonst `_KeinBool` (kein Umdeuten von "false")."""
+    if wert is None:
+        return vorgabe
+    if isinstance(wert, bool):
+        return wert
+    raise _KeinBool(name)
 
 
 def _antwort(daten: dict, status: int = 200) -> JSONResponse:
@@ -173,9 +230,13 @@ def routen_anmelden(server: MCPServer, w: Werkzeuge) -> None:
         b = await _koerper(request)
         if b is None:
             return _schlecht("Koerper muss ein JSON-Objekt sein")
+        try:
+            gesang = _bool_oder_none(b.get("gesang"), "gesang", None)
+        except _KeinBool:
+            return _schlecht("gesang muss true/false sein")
         return _antwort(await thread(
             w.videomusik_bestellen, b.get("wunsch"), b.get("sekunden"), b.get("frames"),
-            b.get("fps"), b.get("laura_timeline_id"), b.get("songs"), b.get("gesang"),
+            b.get("fps"), b.get("laura_timeline_id"), b.get("songs"), gesang,
             kanal=kanal_waehlen(b.get("kanal"))))
 
     @server.custom_route("/auftraege/set", methods=["POST"])
@@ -183,9 +244,13 @@ def routen_anmelden(server: MCPServer, w: Werkzeuge) -> None:
         b = await _koerper(request)
         if b is None:
             return _schlecht("Koerper muss ein JSON-Objekt sein")
+        try:
+            ohne_gesang = _bool_oder_none(b.get("ohne_gesang"), "ohne_gesang", False)
+        except _KeinBool:
+            return _schlecht("ohne_gesang muss true/false sein")
         return _antwort(await thread(
             w.set_bestellen, b.get("wunsch"), b.get("minuten"), b.get("songs"),
-            bool(b.get("ohne_gesang", False)), kanal=kanal_waehlen(b.get("kanal"))))
+            ohne_gesang, kanal=kanal_waehlen(b.get("kanal"))))
 
     @server.custom_route("/auftraege/{id}", methods=["GET"])
     async def auftrag(request: Request) -> JSONResponse:
@@ -322,7 +387,16 @@ def main(argv: list[str] | None = None) -> int:
     arbeiter = threading.Thread(target=laeufer.schleife, args=(stopp,), name="musik-laeufer", daemon=True)
     arbeiter.start()
     try:
-        bauen(werkzeuge).run("streamable-http", host=HOST, port=port)
+        import socket
+
+        import uvicorn
+
+        # Der Host-Schutz braucht den echten Port; bei Port 0 binden wir selbst und lesen ihn ab.
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind((HOST, port))
+        echter_port = sock.getsockname()[1]
+        app = app_bauen(bauen(werkzeuge), echter_port)
+        uvicorn.Server(uvicorn.Config(app, log_level="warning")).run(sockets=[sock])
     except KeyboardInterrupt:
         pass
     finally:

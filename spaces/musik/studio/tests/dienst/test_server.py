@@ -8,7 +8,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from djset.dienst import server as dienst_server
-from djset.dienst.server import bauen, dj_set_befehl, env_nachladen, kanal_aus_kopf
+from djset.dienst.server import app_bauen, bauen, dj_set_befehl, env_nachladen, kanal_aus_kopf
 
 GUELTIG = "20261124-101500-video-ab12"
 ERWARTET = {
@@ -47,8 +47,7 @@ def fake():
 
 @pytest.fixture
 def client(fake):
-    server = bauen(fake)
-    app = server.streamable_http_app(host="127.0.0.1")
+    app = app_bauen(bauen(fake), 8148)
     with TestClient(app, base_url="http://127.0.0.1:8148") as c:
         yield c
 
@@ -151,7 +150,7 @@ def test_json_routen_rest(client, fake):
     client.get("/auftraege?kanal=quatsch&offen=1")
     assert fake.aufrufe[-1][1] == ("mcp",)
 
-    assert client.post(f"/auftraege/{GUELTIG}/gemeldet").json()["wer"] == "gemeldet"
+    assert client.post(f"/auftraege/{GUELTIG}/gemeldet", json={}).json()["wer"] == "gemeldet"
     assert fake.aufrufe[-1][1] == (GUELTIG,)
 
     r = client.post(f"/auftraege/{GUELTIG}/in-laura", json={"timeline_id": "t1", "gain_percent": 80})
@@ -170,8 +169,7 @@ def test_health_antwortet_waehrend_werkzeug_laeuft(fake):
     import threading
 
     fake.schlaf_s = 2.0
-    server = bauen(fake)
-    app = server.streamable_http_app(host="127.0.0.1")
+    app = app_bauen(bauen(fake), 8148)
     with TestClient(app, base_url="http://127.0.0.1:8148") as c:
         langsam = threading.Thread(target=lambda: c.get(f"/auftraege/{GUELTIG}"))
         langsam.start()
@@ -185,6 +183,91 @@ def test_health_antwortet_waehrend_werkzeug_laeuft(fake):
     assert fake.namen() == ["auftrag_zeigen"]  # das lange Werkzeug lief wirklich
 
 
+def test_health_antwortet_waehrend_mcp_werkzeug_laeuft(fake):
+    """Das lange Werkzeug laeuft ueber MCP (huelle.im_thread), nicht ueber eine Route."""
+    import threading
+
+    fake.schlaf_s = 2.0
+    app = app_bauen(bauen(fake), 8148)
+    with TestClient(app, base_url="http://127.0.0.1:8148") as c:
+        ergebnis = {}
+        langsam = threading.Thread(target=lambda: ergebnis.update(
+            r=_werkzeug_rufen(c, "set_bestellen", {"wunsch": "x", "minuten": 5})))
+        langsam.start()
+        deadline = time.monotonic() + 3
+        while "set_bestellen" not in fake.namen() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert "set_bestellen" in fake.namen()  # Werkzeug laeuft und schlaeft
+        t0 = time.monotonic()
+        antwort = c.get("/health")
+        dauer = time.monotonic() - t0
+        langsam.join()
+    assert antwort.status_code == 200 and dauer < 0.5
+    assert ergebnis["r"]["result"]["isError"] is False
+
+
+def test_fremder_host_403(client, fake):
+    antwort = client.get(f"/auftraege/{GUELTIG}", headers={"Host": "evil.example:8148"})
+    assert antwort.status_code == 403
+    assert fake.aufrufe == []
+    for host in ("127.0.0.1", "127.0.0.1:81480", "127.0.0.1:8148.evil.example", "localhost:9"):
+        assert client.get(f"/auftraege/{GUELTIG}", headers={"Host": host}).status_code == 403
+    assert client.get("/health", headers={"Host": "evil.example:8148"}).status_code == 403
+    assert fake.aufrufe == []
+    # localhost mit dem richtigen Port ist erlaubt
+    assert client.get(f"/auftraege/{GUELTIG}", headers={"Host": "localhost:8148"}).status_code == 200
+
+
+def test_origin_header_403(client, fake):
+    r = client.post("/auftraege/set", json={"wunsch": "x", "minuten": 5},
+                    headers={"Origin": "http://evil.example"})
+    assert r.status_code == 403
+    assert client.get(f"/auftraege/{GUELTIG}", headers={"Origin": "http://127.0.0.1:8148"}).status_code == 403
+    assert fake.aufrufe == []
+
+
+def test_post_ohne_json_415(client, fake):
+    r = client.post("/auftraege/set", content=b'{"wunsch":"x","minuten":5}',
+                    headers={"Content-Type": "text/plain"})
+    assert r.status_code == 415
+    r = client.post("/auftraege/set", content=b'{"wunsch":"x","minuten":5}')
+    assert r.status_code == 415
+    assert client.post(f"/auftraege/{GUELTIG}/gemeldet", headers={"Content-Type": "text/plain"}).status_code == 415
+    assert fake.aufrufe == []
+    ok = client.post("/auftraege/set", content=b'{"wunsch":"x","minuten":5}',
+                     headers={"Content-Type": "application/json; charset=utf-8"})
+    assert ok.status_code == 200 and fake.namen() == ["set_bestellen"]
+
+
+def test_mcp_fremder_host_403(client, fake):
+    antwort = client.post(
+        "/mcp", headers={**MCP_KOPF, "Host": "evil.example:8148"},
+        json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "t", "version": "0"}}})
+    assert antwort.status_code == 403
+    antwort = client.post("/mcp", headers={**MCP_KOPF, "Origin": "http://evil.example"}, json={})
+    assert antwort.status_code == 403
+    assert fake.aufrufe == []
+
+
+@pytest.mark.parametrize("wert", ["false", "true", 0, 1, "ja", []])
+def test_ohne_gesang_nur_echte_bools(client, fake, wert):
+    r = client.post("/auftraege/set", json={"wunsch": "x", "minuten": 5, "ohne_gesang": wert})
+    assert r.status_code == 400
+    assert r.json() == {"ok": False, "fehler": "ohne_gesang muss true/false sein"}
+    assert fake.aufrufe == []
+
+
+def test_gesang_nur_echte_bools_und_bool_geht_durch(client, fake):
+    r = client.post("/auftraege/video", json={"wunsch": "x", "sekunden": 5, "gesang": "false"})
+    assert r.status_code == 400 and fake.aufrufe == []
+    client.post("/auftraege/video", json={"wunsch": "x", "sekunden": 5, "gesang": False})
+    assert fake.aufrufe[-1][1][6] is False
+    client.post("/auftraege/set", json={"wunsch": "x", "minuten": 5, "ohne_gesang": True})
+    assert fake.aufrufe[-1][1][3] is True
+
+
 @pytest.mark.parametrize("pfad", [
     "/auftraege/..%5Cx", "/auftraege/%2e%2e", "/auftraege/..%2fx", "/auftraege/abc",
     f"/auftraege/{GUELTIG}x", f"/auftraege/{GUELTIG}%0a",
@@ -196,7 +279,7 @@ def test_json_route_boese_id_404(client, fake, pfad):
 
 
 def test_boese_id_404_auch_fuer_post_routen(client, fake):
-    assert client.post("/auftraege/..%5Cx/gemeldet").status_code == 404
+    assert client.post("/auftraege/..%5Cx/gemeldet", json={}).status_code == 404
     assert client.post("/auftraege/%2e%2e/in-laura", json={"timeline_id": "t"}).status_code == 404
     assert fake.aufrufe == []
 
