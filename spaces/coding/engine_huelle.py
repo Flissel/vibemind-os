@@ -26,8 +26,8 @@ from typing import Any, Dict, List, Optional
 
 from spaces.coding import engine_aufgaben
 from spaces.coding.pipeline import (
-    ABGEBROCHEN, AGENT, FEHLGESCHLAGEN, FERTIG, LAEUFT, SPACE, STUFEN, WARTET, PipelineFehler, _unter_wurzel,
-    arbeitswurzel,
+    ABGEBROCHEN, AGENT, FEHLGESCHLAGEN, FERTIG, LAEUFT, SPACE, STUFEN, UNGEPRUEFT, WARTET, PipelineFehler,
+    _unter_wurzel, arbeitswurzel,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ LAUF_DATEI = ".generation_running"
 def auftrag_anlegen(
     entwurf: Dict[str, Any], auftrag_id: str, titel: Optional[str] = None,
     arbeitspaket: Optional[str] = None, ohne_npm: bool = True, herkunft: str = "entwurf",
-    projektordner: Optional[Path] = None, bestehend: Optional[Path] = None,
+    projektordner: Optional[Path] = None, bestehend: Optional[Path] = None, pruefer: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Schreibt die Aufgabendateien unter die Arbeitswurzel und liefert den Auftrag (noch nicht gespeichert).
 
@@ -96,6 +96,10 @@ def auftrag_anlegen(
         "modellaufrufe_erwartet": engine_aufgaben.modellaufrufe_mindestens(dateien),
         "modellaufrufe_hoechstens": engine_aufgaben.modellaufrufe_hoechstens(dateien),
         "startbefehl": engine_aufgaben.START_BEFEHL if mit_app else None,
+        # Name des Pruefers der Aufgabe (siehe abnahme.py); ohne ihn endet ein Bau hoechstens "ungeprueft".
+        "pruefer": pruefer,
+        # "fertig" meldet nie die Engine selbst, sondern erst die Abnahme nach ihrem Abschluss.
+        "abnahme_noetig": True,
         "hinweise": [f"Der Entwurf hat {offen} offene Frage(n)"] if isinstance(offen, int) and offen > 0 else [],
         "angestossen": False,
         "stufe": "plan",
@@ -239,6 +243,23 @@ def fehlersatz(pakete: List[Dict[str, Any]]) -> Optional[str]:
     return satz
 
 
+NOTIZ_FERTIG = ("Selbstauskunft der Engine: alle Pakete gebaut, ihre eigenen Prüfungen bestanden. "
+                "Das ist kein Stand; den setzt die Abnahme.")
+NOTIZ_GESCHEITERT = "Selbstauskunft der Engine: nicht alles gebaut oder ihre eigenen Prüfungen nicht bestanden."
+ALT_SATZ = "Der Auftrag stammt aus der Zeit vor der Abnahme; geprüft hat nur die Engine selbst"
+ABNAHME_LAEUFT = "Die Engine ist fertig; die unabhängige Abnahme läuft."
+
+
+def _abnahme_sicht(auftrag: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    abnahme = auftrag.get("_abnahme")
+    if auftrag.get("_abnahme_offen"):
+        return {"zustand": LAEUFT, "satz": ABNAHME_LAEUFT, "gruende": [], "pruefer": auftrag.get("pruefer")}
+    if not abnahme:
+        return None
+    return {k: abnahme.get(k) for k in ("zustand", "satz", "gruende", "pruefer", "allgemein", "pruefer_ausgang",
+                                         "dauer_s")}
+
+
 def auffrischen(auftrag: Dict[str, Any]) -> Dict[str, Any]:
     """Setzt ``zustand``, ``stufe`` und ``fehler`` des Auftrags aus den Dateien der Engine (ohne zu speichern)."""
     ziel = Path(auftrag["zielordner"])
@@ -250,15 +271,32 @@ def auffrischen(auftrag: Dict[str, Any]) -> Dict[str, Any]:
     pruefung = _zusammen([p["pruefung"] for p in begonnen])
 
     if isinstance(schluss, dict):
-        abschluss = FERTIG if schluss.get("status") == "completed" and bau == pruefung == FERTIG else FEHLGESCHLAGEN
+        engine_fertig = schluss.get("status") == "completed" and bau == pruefung == FERTIG
+        abschluss = FERTIG if engine_fertig else FEHLGESCHLAGEN
     else:
         abschluss = WARTET
+
+    # Die Selbstauskunft der Engine ist nur eine Notiz. Den Stand setzt die Abnahme.
+    abnahme = auftrag.get("abnahme") if isinstance(auftrag.get("abnahme"), dict) else None
+    notiz = None
+    abnahme_offen = False
+    if abschluss == FERTIG:
+        notiz = NOTIZ_FERTIG
+        if abnahme and abnahme.get("zustand") in (FERTIG, UNGEPRUEFT, FEHLGESCHLAGEN):
+            abschluss = abnahme["zustand"]
+        elif auftrag.get("abnahme_noetig"):
+            abschluss, abnahme_offen = LAEUFT, True
+        else:
+            abschluss = UNGEPRUEFT  # Auftrag aus der Zeit vor der Abnahme
+            abnahme = {"zustand": UNGEPRUEFT, "satz": ALT_SATZ + ".", "gruende": [ALT_SATZ]}
+    elif abschluss == FEHLGESCHLAGEN:
+        notiz = NOTIZ_GESCHEITERT
     stufen = {"annahme": FERTIG, "plan": FERTIG if pakete else WARTET, "bau": bau, "pruefung": pruefung,
               "abschluss": abschluss}
 
     if auftrag.get("zustand") == ABGEBROCHEN:
         zustand = ABGEBROCHEN
-    elif abschluss in (FERTIG, FEHLGESCHLAGEN):
+    elif isinstance(schluss, dict):
         zustand = abschluss
     elif (ziel / LAUF_DATEI).exists() or LAEUFT in (bau, pruefung) or FERTIG in (bau, pruefung):
         # Auch ein gescheitertes Paket laesst den Auftrag laufen, bis der Erzeuger seinen Abschluss schreibt.
@@ -280,8 +318,14 @@ def auffrischen(auftrag: Dict[str, Any]) -> Dict[str, Any]:
         auftrag["fehler"] = auftrag["fehler_grund"] = None
     elif unterbrochen:
         auftrag["fehler"], auftrag["fehler_grund"] = unterbrochen, None
+    elif abnahme and abnahme.get("zustand") == FEHLGESCHLAGEN and abschluss == FEHLGESCHLAGEN:
+        auftrag["fehler"] = abnahme.get("satz")
+        auftrag["fehler_grund"] = "; ".join(abnahme.get("gruende") or []) or None
     else:
         auftrag["fehler"], auftrag["fehler_grund"] = fehlersatz(pakete), grund
+    auftrag["_abnahme"] = abnahme
+    auftrag["_abnahme_offen"] = abnahme_offen and zustand == LAEUFT
+    auftrag["_notiz_engine"] = notiz
     auftrag["_stufen"] = stufen
     auftrag["_pakete"] = pakete
     auftrag["_dauer_s"] = schluss.get("elapsed_seconds") if isinstance(schluss, dict) else None
@@ -307,6 +351,11 @@ def sicht(auftrag: Dict[str, Any]) -> Dict[str, Any]:
         # Die Meldung der Engine zum Fehler, unuebersetzt; ``fehler`` ist der Satz fuer Menschen.
         "fehler_grund": auftrag.get("fehler_grund"),
         "hinweise": auftrag.get("hinweise") or [],
+        # Das Urteil der Abnahme (fertig, ungeprueft, fehlgeschlagen; laeuft, solange sie prueft).
+        "abnahme": _abnahme_sicht(auftrag),
+        # Was die Engine ueber sich selbst sagt; nie der Stand.
+        "notiz_engine": auftrag.get("_notiz_engine"),
+        "pruefer": auftrag.get("pruefer"),
         "run_id": auftrag.get("run_id") or None,
         "arbeitspaket": auftrag.get("arbeitspaket"),
         "aktuelles_paket": next((p["paket"] for p in pakete if p["zustand"] != FERTIG), None),
@@ -342,15 +391,22 @@ def ergebnis(auftrag: Dict[str, Any]) -> Dict[str, Any]:
         raise PipelineFehler(f"Gemeldete Datei fehlt auf der Platte: {fehlend[0]}")
     pruefungen = [x for p in pakete for x in p["pruefungen"]]
     schluss = _json(ziel / STATUS_DATEI) or {}
+    abnahme = _abnahme_sicht(auftrag) or {}
     return {
         "auftrag": auftrag["id"],
         "titel": auftrag["titel"],
         "zielordner": str(ziel),
         "dateien": dateien,
+        # Bestanden heisst: die Abnahme ist gruen, samt Pruefer der Aufgabe. Die eigenen
+        # Pruefungen der Engine stehen nur in der Notiz.
         "pruefung": {
-            "bestanden": bool(pruefungen) and all(x["bestanden"] for x in pruefungen),
+            "bestanden": abnahme.get("zustand") == FERTIG,
+            "zustand": abnahme.get("zustand"),
+            "satz": abnahme.get("satz"),
             "befehl": pruefungen[-1]["befehl"] if pruefungen else "",
         },
+        "abnahme": abnahme or None,
+        "notiz_engine": auftrag.get("_notiz_engine"),
         # Mit diesem Befehl startet die App im Zielordner (None: kein ganzer Entwurf, keine App).
         "start": auftrag.get("startbefehl"),
         "pakete": [{k: p[k] for k in ("paket", "titel", "zustand", "dateien", "pruefungen")} for p in pakete],

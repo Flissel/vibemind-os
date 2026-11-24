@@ -39,8 +39,9 @@ LESEN: Dict[str, Dict[str, Any]] = {
 }
 
 STUFE = {"annahme": "Annahme", "plan": "Plan", "bau": "Bau", "pruefung": "Prüfung", "abschluss": "Abschluss"}
-ZUSTAND = {"wartet": "wartet", "laeuft": "läuft", "fertig": "fertig", "fehlgeschlagen": "gescheitert",
-           "abgebrochen": "abgebrochen"}
+ZUSTAND = {"wartet": "wartet", "laeuft": "läuft", "fertig": "fertig", "ungeprueft": "ungeprüft",
+           "fehlgeschlagen": "gescheitert", "abgebrochen": "abgebrochen"}
+GEBAUT = ("fertig", "ungeprueft")
 
 NICHT_ERREICHBAR = "Der Dienst des Project Space antwortet nicht."
 KEIN_LAUF = "Im Project Space gibt es noch keinen Lauf."
@@ -78,8 +79,14 @@ def stand_satz(stand: Dict[str, Any]) -> str:
     """Ein Satz ueber einen Lauf, aus der Antwort von ``/api/stand``."""
     zustand = stand.get("zustand")
     titel = _titel(stand)
+    abnahme = stand.get("abnahme") or {}
+    if zustand == "laeuft" and abnahme.get("zustand") == "laeuft":
+        return f"{titel} ist gebaut; die unabhängige Abnahme läuft."
     if zustand == "laeuft":
         return f"{titel} läuft gerade: {_wo(stand)}."
+    if zustand == "ungeprueft":
+        warum = "; ".join(abnahme.get("gruende") or []) or "es gibt keinen Prüfer für diese Aufgabe"
+        return f"{titel} ist gebaut, aber ungeprüft: {warum}."
     if zustand == "wartet":
         return f"{titel} ist angelegt und wartet auf den Start."
     if zustand == "fertig":
@@ -109,15 +116,16 @@ def liste_satz(liste: Dict[str, Any]) -> str:
 def ergebnis_satz(stand: Dict[str, Any], ergebnis: Optional[Dict[str, Any]]) -> str:
     """Satz zum letzten Lauf; bei einem fertigen Lauf mit Paketen, Pruefung und Startbefehl."""
     satz = stand_satz(stand)
-    if stand.get("zustand") != "fertig" or not ergebnis:
+    if stand.get("zustand") not in GEBAUT or not ergebnis:
         return satz
     pakete = len(ergebnis.get("pakete") or [])
     dateien = len(ergebnis.get("dateien") or [])
     teile = [satz, f"Gebaut wurden {pakete} {'Paket' if pakete == 1 else 'Pakete'} mit "
                    f"{dateien} {'Datei' if dateien == 1 else 'Dateien'}."]
     pruefung = ergebnis.get("pruefung") or {}
-    teile.append("Alle Prüfungen sind bestanden." if pruefung.get("bestanden")
-                 else "Die Prüfung ist nicht bestanden.")
+    if stand.get("zustand") == "fertig":
+        teile.append("Die unabhängige Abnahme ist bestanden." if pruefung.get("bestanden")
+                     else "Die Abnahme ist nicht bestanden.")
     if ergebnis.get("start"):
         teile.append(f"Gestartet wird die App mit „{ergebnis['start']}“ in ihrem Ordner.")
     return " ".join(teile)

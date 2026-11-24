@@ -2,8 +2,9 @@
 // Liest nur. Alle Inhalte kommen als Text in die Seite (textContent), nie als HTML.
 
 const STUFE = { annahme: "Annahme", plan: "Plan", bau: "Bau", pruefung: "Prüfung", abschluss: "Abschluss" };
-const ZUSTAND = { wartet: "wartet", laeuft: "läuft", fertig: "fertig", fehlgeschlagen: "gescheitert",
-                  abgebrochen: "abgebrochen" };
+const ZUSTAND = { wartet: "wartet", laeuft: "läuft", fertig: "fertig", ungeprueft: "ungeprüft",
+                  fehlgeschlagen: "gescheitert", abgebrochen: "abgebrochen" };
+const GEBAUT = ["fertig", "ungeprueft"];
 const APP_NAME = "Die App starten und prüfen";
 let gewaehlt = null;
 
@@ -92,9 +93,11 @@ function satz(stand, ergebnis) {
   const k = stand.kurz || {};
   if (stand.zustand === "fertig") {
     const zeit = dauer(stand.dauer_s || (ergebnis && ergebnis.dauer_s));
-    const geprueft = ergebnis && ergebnis.pruefung && ergebnis.pruefung.bestanden ? " Alle Prüfungen bestanden." : "";
+    const geprueft = ergebnis && ergebnis.pruefung && ergebnis.pruefung.bestanden ? " Die Abnahme ist bestanden." : "";
     return `Fertig${zeit ? ` in ${zeit}` : ""}.${geprueft}`;
   }
+  if (stand.zustand === "ungeprueft") return (stand.abnahme && stand.abnahme.satz) || "Gebaut, aber ungeprüft.";
+  if (stand.zustand === "laeuft" && stand.abnahme && stand.abnahme.zustand === "laeuft") return stand.abnahme.satz;
   if (stand.zustand === "fehlgeschlagen") return stand.fehler || "Der Lauf ist gescheitert.";
   if (stand.zustand === "abgebrochen") return "Der Lauf wurde abgebrochen.";
   if (stand.zustand === "laeuft") {
@@ -161,7 +164,7 @@ function zeigeStand(stand, ergebnis) {
       : "Die Prüfung des Starts ist nicht bestanden.";
   }
 
-  document.getElementById("pakete-titel").textContent = stand.zustand === "fertig" ? "Was gebaut wurde"
+  document.getElementById("pakete-titel").textContent = GEBAUT.includes(stand.zustand) ? "Was gebaut wurde"
     : stand.zustand === "laeuft" || stand.zustand === "wartet" ? "Was gebaut wird" : "Die Pakete";
   const pakete = document.getElementById("pakete");
   leeren(pakete);
@@ -217,7 +220,7 @@ async function laden() {
     const stand = await holen(`/api/stand${frage}`);
     if (stand.ok) {
       gewaehlt = gewaehlt || stand.daten.auftrag;
-      const ergebnis = stand.daten.zustand === "fertig"
+      const ergebnis = GEBAUT.includes(stand.daten.zustand)
         ? await holen(`/api/ergebnis?auftrag=${encodeURIComponent(stand.daten.auftrag)}`) : null;
       zeigeStand(stand.daten, ergebnis && ergebnis.ok ? ergebnis.daten : null);
       if (liste.ok) zeigeListe(liste.daten);

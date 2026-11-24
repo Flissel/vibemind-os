@@ -86,7 +86,17 @@ def test_saetze_fuer_laufend_fertig_und_gescheitert() -> None:
                 "start": "npm start"}
     assert absichten.antwort("code.show", [fertig, ergebnis]) == (
         "„Leseliste“ ist fertig nach 12 Minuten. Gebaut wurden 7 Pakete mit 3 Dateien. "
-        "Alle Prüfungen sind bestanden. Gestartet wird die App mit „npm start“ in ihrem Ordner.")
+        "Die unabhängige Abnahme ist bestanden. Gestartet wird die App mit „npm start“ in ihrem Ordner.")
+
+
+def test_saetze_fuer_ungeprueft_und_laufende_abnahme() -> None:
+    ungeprueft = {"titel": "Primfaktoren", "zustand": "ungeprueft",
+                  "abnahme": {"zustand": "ungeprueft", "gruende": ["Für diese Aufgabe ist kein Prüfer genannt"]}}
+    assert absichten.antwort("code.status", [ungeprueft]) == (
+        "„Primfaktoren“ ist gebaut, aber ungeprüft: Für diese Aufgabe ist kein Prüfer genannt.")
+    pruefend = {"titel": "Primfaktoren", "zustand": "laeuft", "abnahme": {"zustand": "laeuft"}}
+    assert absichten.antwort("code.status", [pruefend]) == (
+        "„Primfaktoren“ ist gebaut; die unabhängige Abnahme läuft.")
 
 
 def test_angenommener_auftrag_wird_ein_satz() -> None:

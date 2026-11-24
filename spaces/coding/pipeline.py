@@ -38,7 +38,9 @@ LAEUFT = "laeuft"
 FERTIG = "fertig"
 FEHLGESCHLAGEN = "fehlgeschlagen"
 ABGEBROCHEN = "abgebrochen"
-ENDZUSTAENDE: tuple[str, ...] = (FERTIG, FEHLGESCHLAGEN, ABGEBROCHEN)
+# Gebaut und allgemein abgenommen, aber ohne Pruefer der Aufgabe: nie "fertig".
+UNGEPRUEFT = "ungeprueft"
+ENDZUSTAENDE: tuple[str, ...] = (FERTIG, UNGEPRUEFT, FEHLGESCHLAGEN, ABGEBROCHEN)
 
 AgentAufruf = Callable[[str, str], str]
 Melder = Callable[[Dict[str, Any]], None]
@@ -507,6 +509,7 @@ def auftrag_starten(
     arbeitspaket: Optional[str] = None,
     ohne_npm: bool = True,
     bestehend: Optional[str] = None,
+    pruefer: Optional[str] = None,
     *,
     anstoss: Optional[Callable[[Dict[str, Any]], bool]] = None,
     agent: Optional[AgentAufruf] = None,
@@ -519,6 +522,8 @@ def auftrag_starten(
     laeuft kein Agent. Mit ``agent`` laufen die uebrigen Stufen.
     """
     auftrag_id = f"c-{time.strftime('%Y%m%d')}-{uuid.uuid4().hex[:8]}"
+    if pruefer is not None and not re.fullmatch(r"[A-Za-z0-9_.-]{1,40}", str(pruefer)):
+        raise PipelineFehler("Der Name des Pruefers ist ungueltig")
     quelle = _bestehender_ordner(bestehend)
     roh = _als_entwurf(entwurf)
     herkunft = "entwurf"
@@ -546,7 +551,7 @@ def auftrag_starten(
         neu = engine_huelle.auftrag_anlegen(roh, auftrag_id, titel=titel, arbeitspaket=arbeitspaket,
                                             ohne_npm=ohne_npm, herkunft=herkunft,
                                             projektordner=_zielordner(zielordner, auftrag_id),
-                                            bestehend=quelle)
+                                            bestehend=quelle, pruefer=pruefer)
         _speichern(neu)
         _melde(melder, neu, "annahme", FERTIG)
         neu["angestossen"] = bool(anstoss(dict(neu))) if anstoss else False
@@ -591,9 +596,9 @@ def stand(auftrag: Optional[str] = None) -> Dict[str, Any]:
 
 
 def ergebnis(auftrag: Optional[str] = None) -> Dict[str, Any]:
-    """Ergebnis des genannten, sonst des neuesten abgeschlossenen Auftrags."""
-    gewaehlt = _waehle(auftrag, nur=(FERTIG,) if not auftrag else None)
-    if gewaehlt["zustand"] != FERTIG:
+    """Ergebnis des genannten, sonst des neuesten gebauten Auftrags (fertig oder ungeprueft)."""
+    gewaehlt = _waehle(auftrag, nur=(FERTIG, UNGEPRUEFT) if not auftrag else None)
+    if gewaehlt["zustand"] not in (FERTIG, UNGEPRUEFT):
         raise PipelineFehler(f"Auftrag {gewaehlt['id']} ist {gewaehlt['zustand']}, es gibt noch kein Ergebnis")
     if gewaehlt.get("art") == "engine":
         from spaces.coding import engine_huelle
@@ -642,6 +647,15 @@ def als_unterbrochen_markieren(auftrag_id: str, grund: str) -> Dict[str, Any]:
     with _SPERRE:
         auftrag = _laden(auftrag_id)
         auftrag["unterbrochen"] = f"unterbrochen: {grund}"
+        _speichern(auftrag)
+    return _sicht(_auffrischen(auftrag))
+
+
+def abnahme_eintragen(auftrag_id: str, abnahme: Dict[str, Any]) -> Dict[str, Any]:
+    """Haelt den Ausgang der Abnahme fest (siehe ``abnahme.py``); nur die Aufsicht ruft das auf."""
+    with _SPERRE:
+        auftrag = _laden(auftrag_id)
+        auftrag["abnahme"] = abnahme
         _speichern(auftrag)
     return _sicht(_auffrischen(auftrag))
 

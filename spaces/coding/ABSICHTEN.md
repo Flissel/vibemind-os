@@ -44,7 +44,7 @@ JSON-Antworten; die Tests stehen in `spaces/coding/tests/test_absichten.py`. Die
 |---|---|---|---|
 | `code.status` | „Wie ist der Code-Status?“ / „Was macht der Project Space gerade?“ / „Läuft noch ein Bau?“ | `http:GET:http://127.0.0.1:8163/api/stand` | „„Leseliste“ läuft gerade: Bau, Paket 3 von 7.“ / „„Leseliste“ ist gescheitert. Prüfung: Paket 1 von 7 „Bücher eintragen“ ist gescheitert. …“ |
 | `code.list` | „Welche Läufe gibt es?“ / „Zeig mir die letzten Läufe.“ / „Was wurde zuletzt gebaut?“ | `http:GET:http://127.0.0.1:8163/api/liste` mit `grenze=5` | „Es gibt 9 Läufe, die neuesten: „A“ (fertig), „B“ (läuft).“ |
-| `code.show` | „Zeig den letzten Lauf.“ / „Wie ist der letzte Lauf ausgegangen?“ / „Wie starte ich die App?“ | `http:GET:http://127.0.0.1:8163/api/stand`, bei `fertig` danach `http:GET:http://127.0.0.1:8163/api/ergebnis` | „„Leseliste“ ist fertig nach 12 Minuten. Gebaut wurden 7 Pakete mit 3 Dateien. Alle Prüfungen sind bestanden. Gestartet wird die App mit „npm start“ in ihrem Ordner.“ |
+| `code.show` | „Zeig den letzten Lauf.“ / „Wie ist der letzte Lauf ausgegangen?“ / „Wie starte ich die App?“ | `http:GET:http://127.0.0.1:8163/api/stand`, bei `fertig` danach `http:GET:http://127.0.0.1:8163/api/ergebnis` | „„Leseliste“ ist fertig nach 12 Minuten. Gebaut wurden 7 Pakete mit 3 Dateien. Die unabhängige Abnahme ist bestanden. Gestartet wird die App mit „npm start“ in ihrem Ordner.“ |
 | `code.dienst` | „Läuft der Coding-Dienst?“ / „Ist der Project Space erreichbar?“ | `http:GET:http://127.0.0.1:8163/health` | „Der Coding-Dienst läuft und zeigt nur an und nimmt keine Aufträge an.“ |
 
 Gemeinsam für alle vier:

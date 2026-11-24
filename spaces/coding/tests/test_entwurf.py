@@ -125,6 +125,12 @@ def test_stand_zeigt_stufe_paket_und_dateien_aus_den_dateien_der_engine(tmp_path
         "ausgefuehrt": False}
 
 
+def _gruen_abnehmen(kennung: str) -> None:
+    """Wie die Aufsicht nach einer gruenen Abnahme (allgemeine Regeln und Pruefer der Aufgabe)."""
+    from spaces.coding import abnahme
+    pipeline.abnahme_eintragen(kennung, abnahme.urteil([], "gruen", [], "x"))
+
+
 def test_fertig_erst_mit_abschluss_der_engine_und_ergebnis_von_der_platte(tmp_path: Path) -> None:
     sicht = pipeline.auftrag_starten(entwurf=_entwurf())
     projekt = _projekt(tmp_path, sicht)
@@ -138,6 +144,14 @@ def test_fertig_erst_mit_abschluss_der_engine_und_ergebnis_von_der_platte(tmp_pa
         pipeline.ergebnis(sicht["auftrag"])
 
     _abschluss(projekt, "completed")
+    # Die Engine meldet fertig: das ist nur ihre Selbstauskunft. Bis zur Abnahme laeuft der Auftrag.
+    gemeldet = pipeline.stand(sicht["auftrag"])
+    assert gemeldet["zustand"] == pipeline.LAEUFT and gemeldet["abnahme"]["zustand"] == pipeline.LAEUFT
+    assert gemeldet["notiz_engine"].startswith("Selbstauskunft der Engine")
+    with pytest.raises(pipeline.PipelineFehler, match="noch kein Ergebnis"):
+        pipeline.ergebnis(sicht["auftrag"])
+
+    _gruen_abnehmen(sicht["auftrag"])
     fertig = pipeline.stand(sicht["auftrag"])
     assert fertig["zustand"] == pipeline.FERTIG
     assert [s["zustand"] for s in fertig["stufen"]] == ["fertig"] * 5
@@ -145,8 +159,8 @@ def test_fertig_erst_mit_abschluss_der_engine_und_ergebnis_von_der_platte(tmp_pa
     ergebnis = pipeline.ergebnis()
     assert ergebnis["dateien"] == ["src/aufgabenliste.js", "src/server.js", "test/ap-01.test.js",
                                    "test/ap-02.test.js", "test/ap-03.test.js", "test/app.test.js"]
-    # Die letzte Pruefung ist der Start der App.
-    assert ergebnis["pruefung"] == {"bestanden": True, "befehl": "npm start"}
+    # Bestanden heisst: die Abnahme ist gruen. Die letzte Pruefung der Engine ist der Start der App.
+    assert ergebnis["pruefung"]["bestanden"] is True and ergebnis["pruefung"]["befehl"] == "npm start"
     assert ergebnis["start"] == "npm start"
     assert ergebnis["zielordner"] == str(projekt / "out") and ergebnis["dauer_s"] == 81.6
     assert [p["paket"] for p in ergebnis["pakete"]] == ["AP-01", "AP-02", "AP-03", "APP"]
@@ -226,6 +240,7 @@ def test_gemeldete_datei_die_auf_der_platte_fehlt_gibt_kein_ergebnis(tmp_path: P
     _engine(projekt, 3, ALLES, schreibe=False)
     _engine(projekt, 4, ALLES)
     _abschluss(projekt, "completed")
+    _gruen_abnehmen(sicht["auftrag"])
 
     with pytest.raises(pipeline.PipelineFehler, match="fehlt auf der Platte: test/ap-03.test.js"):
         pipeline.ergebnis(sicht["auftrag"])
@@ -243,6 +258,7 @@ def test_gemeldeter_pfad_ausserhalb_des_zielordners_wird_nie_nachgesehen(tmp_pat
     inhalt = json.loads(datei.read_text(encoding="utf-8"))
     inhalt["tasks"][0]["output_files"] = ["../../../geheim.txt", str(draussen)]
     datei.write_text(json.dumps(inhalt), encoding="utf-8")
+    _gruen_abnehmen(sicht["auftrag"])
 
     # Beide Pfade liegen auf der Platte, aber ausserhalb: sie erscheinen nicht, und es gibt kein Ergebnis.
     gezeigt = pipeline.stand(sicht["auftrag"])["pakete"][0]["dateien"]

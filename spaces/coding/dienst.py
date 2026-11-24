@@ -34,6 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
+from spaces.coding import abnahme as abnahme_modul
 from spaces.coding import engine_huelle, pipeline
 
 logger = logging.getLogger(__name__)
@@ -125,7 +126,13 @@ class Aufsicht:
         bereit: Optional[Callable[[], bool]] = None,
         warten_s: Optional[float] = None,
         uhr: Callable[[], float] = time.time,
+        abnahme: Callable[[Dict[str, Any]], Dict[str, Any]] = abnahme_modul.abnehmen,
     ) -> None:
+        # Nach dem Abschluss der Engine: die unabhaengige Abnahme (siehe abnahme.py). Sie laeuft
+        # in einem eigenen Faden, einer zugleich; solange startet kein neuer Erzeuger.
+        self._abnahme = abnahme
+        self._abnahme_reihe: Deque[str] = collections.deque()
+        self._abnahme_faden: Optional[Tuple[str, threading.Thread]] = None
         self._befehl = befehl
         self._arbeitsordner = arbeitsordner or engine_ordner
         self.zeitgrenze_s = float(zeitgrenze_s if zeitgrenze_s is not None else _zahl("CODING_DIENST_ZEITGRENZE_S", 1800))
@@ -151,7 +158,11 @@ class Aufsicht:
 
     def lage(self) -> Dict[str, Any]:
         with self._sperre:
-            return {"laeuft": self._laufend[0] if self._laufend else None, "reihe": list(self._reihe)}
+            lage: Dict[str, Any] = {"laeuft": self._laufend[0] if self._laufend else None, "reihe": list(self._reihe)}
+            if self._abnahme_faden or self._abnahme_reihe:
+                lage["abnahme"] = self._abnahme_faden[0] if self._abnahme_faden else None
+                lage["abnahme_reihe"] = list(self._abnahme_reihe)
+            return lage
 
     # ── Lebenslauf ─────────────────────────────────────────────────────────
 
@@ -187,6 +198,14 @@ class Aufsicht:
                 else:
                     self._abschliessen(auftrag_id, f"der Erzeuger endete ohne Abschluss (Code {prozess.returncode})")
                 self._laufend = None
+                self._abnahme_vormerken(auftrag_id)
+            if self._abnahme_faden is not None:
+                if self._abnahme_faden[1].is_alive():
+                    return
+                self._abnahme_faden = None
+            if self._laufend is None and self._abnahme_reihe:
+                self._abnahme_starten(self._abnahme_reihe.popleft())
+                return
             while self._laufend is None and self._reihe:
                 if not self._modell_da():
                     return
@@ -215,6 +234,37 @@ class Aufsicht:
             self._wartet_seit = None
             self._naechste_probe = 0.0
         return False
+
+    def _abnahme_vormerken(self, auftrag_id: str) -> None:
+        try:
+            offen = bool(pipeline._laden(auftrag_id).get("_abnahme_offen"))
+        except pipeline.PipelineFehler:
+            return
+        if offen and auftrag_id not in self._abnahme_reihe:
+            self._abnahme_reihe.append(auftrag_id)
+
+    def _abnahme_starten(self, auftrag_id: str) -> None:
+        faden = threading.Thread(target=self._abnehmen, args=(auftrag_id,), name=f"abnahme-{auftrag_id}",
+                                 daemon=True)
+        self._abnahme_faden = (auftrag_id, faden)
+        faden.start()
+
+    def _abnehmen(self, auftrag_id: str) -> None:
+        """Fuehrt die Abnahme aus und haelt ihr Urteil fest. Wirft nie."""
+        try:
+            auftrag = pipeline._laden(auftrag_id)
+            if not auftrag.get("_abnahme_offen"):
+                return  # abgebrochen oder schon abgenommen
+            logger.info("Abnahme beginnt fuer Auftrag %s", auftrag_id)
+            urteil = self._abnahme(auftrag)
+        except Exception as fehler:  # noqa: BLE001 - ohne Urteil nie "fertig"
+            logger.exception("Abnahme von Auftrag %s gescheitert", auftrag_id)
+            urteil = abnahme_modul.urteil([], "kaputt", [f"Die Abnahme ließ sich nicht ausführen ({fehler})"], None)
+        try:
+            pipeline.abnahme_eintragen(auftrag_id, urteil)
+            logger.info("Abnahme fuer Auftrag %s: %s", auftrag_id, urteil.get("zustand"))
+        except Exception:  # noqa: BLE001
+            logger.exception("Urteil der Abnahme fuer Auftrag %s nicht gespeichert", auftrag_id)
 
     def _abschliessen(self, auftrag_id: str, grund: str) -> None:
         auftrag = pipeline._laden(auftrag_id)
@@ -255,6 +305,11 @@ class Aufsicht:
         """Beim Start des Dienstes: was noch auf ``laeuft`` steht, hat keinen Prozess mehr."""
         geschlossen: List[str] = []
         for auftrag in pipeline._alle():
+            if auftrag.get("art") == "engine" and auftrag.get("_abnahme_offen"):
+                # Die Engine war fertig, die Abnahme nicht: sie wird nachgeholt.
+                with self._sperre:
+                    self._abnahme_reihe.append(auftrag["id"])
+                continue
             if auftrag.get("art") == "engine" and auftrag["zustand"] == pipeline.LAEUFT:
                 (Path(auftrag["zielordner"]) / engine_huelle.LAUF_DATEI).unlink(missing_ok=True)
                 pipeline.als_unterbrochen_markieren(auftrag["id"], "der Dienst wurde waehrend des Laufs neu gestartet")
@@ -334,7 +389,7 @@ def schreiben(pfad: str, koerper: bytes, schluessel: Optional[str], aufsicht: Au
             return _json(200, pipeline.auftrag_starten(
                 aufgabe=angaben.get("aufgabe"), entwurf=angaben.get("entwurf"), titel=angaben.get("titel"),
                 arbeitspaket=angaben.get("arbeitspaket"), ohne_npm=angaben.get("ohne_npm", True) is not False,
-                bestehend=angaben.get("bestehend"),
+                bestehend=angaben.get("bestehend"), pruefer=angaben.get("pruefer"),
                 anstoss=aufsicht.anstoss))
         if weg == "/api/abbrechen":
             return _json(200, aufsicht.abbrechen(angaben.get("auftrag")))
