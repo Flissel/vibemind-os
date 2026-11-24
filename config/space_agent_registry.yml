@@ -753,6 +753,40 @@ spaces:
         required_provenance: [approval_ref, cost_ref]
         execution: { kind: mcp, server: spaces-learning }
 
+  # ─── Musik (Musik-Studio: Sets und Videomusik) ──────────────────────
+  musik:
+    agent: brain-musik
+    prefixes: [musik.]
+    enabled: true
+    description: "Musik-Studio: DJ-Sets und Videomusik aus den eigenen Songs bestellen, Auftraege zeigen, Musik in Laura unterlegen."
+    mcp_servers: [musik-studio]
+    # Fail-closed wie bei bubbles: nur diese Werkzeuge des Musik-Dienstes (spaces/musik/claw/musik-mcp.json).
+    mcp_tools:
+      musik-studio: [bestand_zeigen, set_bestellen, videomusik_bestellen, auftrag_zeigen, in_laura_legen, laura_videos_suchen]
+    system_prompt_hint: "You order DJ sets and video music from the Musik-Studio and show order status. Tools take order IDs and file names, never file paths."
+    default_context: [current_space]
+    events:
+      musik.set.bestellen:
+        tool: set_bestellen
+        required_params: []
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: musik-studio }
+      musik.video.bestellen:
+        tool: videomusik_bestellen
+        required_params: []
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: musik-studio }
+      musik.auftrag.zeigen:
+        tool: auftrag_zeigen
+        required_params: []
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: musik-studio }
+      musik.laura.unterlegen:
+        tool: in_laura_legen
+        required_params: []
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: musik-studio }
+
   # ─── Video (generation + vision) ────────────────────────────────────
   video:
     agent: brain-video
