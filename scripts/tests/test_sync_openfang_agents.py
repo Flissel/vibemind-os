@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import tomllib
+import pytest
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,6 +24,15 @@ def _configure_registry(module, tmp_path, monkeypatch, contents: str) -> Path:
     registry.write_text(contents, encoding="utf-8")
     monkeypatch.setattr(module, "REGISTRY", registry)
     monkeypatch.setattr(module, "AGENTS_DIR", tmp_path / "agents")
+    # Wrapper je Agent und laufendes OpenFang liegen im Test unter tmp, nie auf dem Rechner.
+    wrapper = tmp_path / "wrapper"
+    wrapper.mkdir(exist_ok=True)
+    monkeypatch.setenv(module.WRAPPER_DIR_ENV, str(wrapper))
+    monkeypatch.setenv(module.LIVE_AGENTS_DIR_ENV, str(tmp_path / "live"))
+    daten = yaml.safe_load(contents) or {}
+    for spec in (daten.get("spaces") or {}).values():
+        if isinstance(spec, dict) and isinstance(spec.get("agent"), str) and spec["agent"]:
+            (wrapper / f"{spec['agent']}.cmd").write_text("@echo off\n", encoding="utf-8")
     return registry
 
 
@@ -60,7 +71,7 @@ spaces:
     events: {}
 """)
 
-    assert module.sync() == 0
+    assert module.sync(dry_run=False) == 0
     document = tomllib.loads(
         (tmp_path / "agents" / "brain-ideas" / "agent.toml").read_text(
             encoding="utf-8"
@@ -83,7 +94,7 @@ spaces:
     events: {}
 """)
 
-    assert module.sync() == 0
+    assert module.sync(dry_run=False) == 0
     document = tomllib.loads(
         (tmp_path / "agents" / "brain-ideas" / "agent.toml").read_text(
             encoding="utf-8"
@@ -124,7 +135,7 @@ spaces:
     events: {}
 """)
 
-    assert module.sync() == 1
+    assert module.sync(dry_run=False) == 1
     output = capsys.readouterr().out
     assert "normalization collision" in output
     assert "idea-connect" in output
@@ -148,7 +159,7 @@ spaces:
     events: {}
 """)
 
-    assert module.sync() == 1
+    assert module.sync(dry_run=False) == 1
     output = capsys.readouterr().out
     assert "normalization collision" in output
     assert "spaces-ideas" in output
@@ -168,7 +179,7 @@ spaces:
     events: {}
 """)
 
-    assert module.sync() == 1
+    assert module.sync(dry_run=False) == 1
 
 
 def test_sync_fails_closed_for_empty_mcp_tool_name(tmp_path, monkeypatch):
@@ -183,7 +194,7 @@ spaces:
     events: {}
 """)
 
-    assert module.sync() == 1
+    assert module.sync(dry_run=False) == 1
 
 
 def test_external_runtime_may_explicitly_disable_agent_generation(tmp_path, monkeypatch):
@@ -304,7 +315,7 @@ spaces:
 """)
 
     assert module.validate_generated_agent_mcp_scopes() == []
-    assert module.sync() == 0
+    assert module.sync(dry_run=False) == 0
     document = tomllib.loads(
         (tmp_path / "agents" / "brain-archive" / "agent.toml").read_text(
             encoding="utf-8"
@@ -324,7 +335,7 @@ spaces:
     events: {}
 """)
 
-    assert module.sync() == 0
+    assert module.sync(dry_run=False) == 0
     document = tomllib.loads(
         (tmp_path / "agents" / "brain-ideas" / "agent.toml").read_text(
             encoding="utf-8"
@@ -332,8 +343,9 @@ spaces:
     )
 
     model = document["model"]
-    assert model["provider"] == "openai"
-    assert model["model"] == "gpt-4o-mini"
+    assert model["provider"] == "claude-code"
+    assert model["model"] == "claude-code/haiku"
+    assert model["base_url"] == (tmp_path / "wrapper" / "brain-ideas.cmd").as_posix()
     assert model["max_tokens"] == 4096
     assert model["temperature"] == 0.2
 
@@ -346,11 +358,11 @@ spaces:
     agent: brain-researcher
     enabled: true
     mcp_servers: [fetch]
-    model: { model: gpt-4o, max_tokens: 16384 }
+    model: { model: claude-code/sonnet, max_tokens: 16384 }
     events: {}
 """)
 
-    assert module.sync() == 0
+    assert module.sync(dry_run=False) == 0
     document = tomllib.loads(
         (tmp_path / "agents" / "brain-researcher" / "agent.toml").read_text(
             encoding="utf-8"
@@ -358,10 +370,116 @@ spaces:
     )
 
     model = document["model"]
-    assert model["provider"] == "openai"
-    assert model["model"] == "gpt-4o"
+    assert model["provider"] == "claude-code"
+    assert model["model"] == "claude-code/sonnet"
+    assert model["base_url"] == (tmp_path / "wrapper" / "brain-researcher.cmd").as_posix()
     assert model["max_tokens"] == 16384
     assert model["temperature"] == 0.2
+
+
+ABO = """version: 1
+spaces:
+  research:
+    agent: brain-researcher
+    enabled: true
+    mcp_servers: [fetch]
+    model: {modell}
+    events: {{}}
+"""
+
+
+def _manifest(tmp_path, agent="brain-researcher"):
+    return tmp_path / "agents" / agent / "agent.toml"
+
+
+@pytest.mark.parametrize("modell", [
+    # Ein anderer Anbieter ist ausgeschlossen, auch mit Abo-Wrapper-Namen
+    "{ provider: openai, model: gpt-4o }",
+    "{ provider: openrouter, model: claude-code/haiku }",
+    # Abo-Treiber nur mit einem Abo-Modell
+    "{ provider: claude-code, model: gpt-4o }",
+    # base_url steht nie in der Registry, er ist der Wrapper je Agent
+    "{ provider: claude-code, model: claude-code/haiku, base_url: 'https://api.example.com/v1' }",
+])
+def test_nur_das_abo_sonst_kein_abgleich(tmp_path, monkeypatch, modell):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, ABO.format(modell=modell))
+    assert module.sync(dry_run=False) == 1
+    assert not _manifest(tmp_path).exists()
+
+
+def test_ohne_wrapper_ordner_kein_abgleich(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, ABO.format(modell="{ max_tokens: 16384 }"))
+    monkeypatch.delenv(module.WRAPPER_DIR_ENV)
+    assert module.sync(dry_run=False) == 1
+    assert not _manifest(tmp_path).exists()
+
+
+def test_ohne_wrapper_des_agenten_kein_abgleich(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, ABO.format(modell="{ max_tokens: 16384 }"))
+    (tmp_path / "wrapper" / "brain-researcher.cmd").unlink()
+    assert module.sync(dry_run=False) == 1
+    assert not _manifest(tmp_path).exists()
+
+
+def test_abo_schutz_stellt_einen_laufenden_abo_agenten_nie_um(tmp_path, monkeypatch):
+    """Zweite Sperre hinter der Pruefung: selbst wenn ein anderer Anbieter durchkaeme."""
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, ABO.format(modell="{ max_tokens: 16384 }"))
+    live = tmp_path / "live" / "brain-researcher"
+    live.mkdir(parents=True)
+    (live / "agent.toml").write_text('[model]\nprovider = "claude-code"\n', encoding="utf-8")
+    echt = module.resolve_model_block
+    monkeypatch.setattr(module, "resolve_model_block",
+                        lambda spec: {**echt(spec), "provider": "openai"})
+
+    assert module.bestehender_anbieter("brain-researcher") == {"claude-code"}
+    assert module.sync(dry_run=False, ueberschreiben=True) == 1
+    assert not _manifest(tmp_path).exists()
+
+
+def test_vorgabe_ist_trockenlauf(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, ABO.format(modell="{ max_tokens: 16384 }"))
+    assert module.sync() == 0
+    assert not _manifest(tmp_path).exists()
+    monkeypatch.setattr("sys.argv", ["sync_openfang_agents.py"])
+    assert module.main() == 0
+    assert not _manifest(tmp_path).exists()
+
+
+def test_bestehendes_manifest_bleibt_ohne_ausdruecklichen_schalter(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, ABO.format(modell="{ max_tokens: 16384 }"))
+    _manifest(tmp_path).parent.mkdir(parents=True)
+    _manifest(tmp_path).write_text("# von Hand\n", encoding="utf-8")
+
+    monkeypatch.setattr("sys.argv", ["sync_openfang_agents.py", "--schreiben"])
+    assert module.main() == 0
+    assert _manifest(tmp_path).read_text(encoding="utf-8") == "# von Hand\n"
+
+    monkeypatch.setattr("sys.argv", ["sync_openfang_agents.py", "--schreiben", "--ueberschreiben"])
+    assert module.main() == 0
+    assert tomllib.loads(_manifest(tmp_path).read_text(encoding="utf-8"))["model"]["provider"] == "claude-code"
+
+
+def test_schreiben_legt_nur_fehlende_an(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, ABO.format(modell="{ max_tokens: 16384 }"))
+    monkeypatch.setattr("sys.argv", ["sync_openfang_agents.py", "--schreiben"])
+    assert module.main() == 0
+    assert _manifest(tmp_path).exists()
+
+
+def test_echte_registry_stellt_den_rechercheagenten_aufs_abo():
+    module = _load_sync_module()
+    registry = yaml.safe_load(module.REGISTRY.read_text(encoding="utf-8"))
+    model = registry["spaces"]["research"]["model"]
+    assert model["provider"] == "claude-code" and model["model"] == "claude-code/haiku"
+    assert "base_url" not in model
+    assert module.validate_model_overrides() == []
 
 
 def test_sync_fails_closed_for_unknown_model_override_key(tmp_path, monkeypatch):
@@ -372,11 +490,11 @@ spaces:
     agent: brain-researcher
     enabled: true
     mcp_servers: [fetch]
-    model: { model: gpt-4o, top_p: 0.9 }
+    model: { model: claude-code/haiku, top_p: 0.9 }
     events: {}
 """)
 
-    assert module.sync() == 1
+    assert module.sync(dry_run=False) == 1
 
 
 def test_sync_fails_closed_for_non_positive_max_tokens(tmp_path, monkeypatch):
@@ -391,7 +509,7 @@ spaces:
     events: {}
 """)
 
-    assert module.sync() == 1
+    assert module.sync(dry_run=False) == 1
 
 
 def test_sync_fails_closed_for_empty_model_name(tmp_path, monkeypatch):
@@ -406,7 +524,7 @@ spaces:
     events: {}
 """)
 
-    assert module.sync() == 1
+    assert module.sync(dry_run=False) == 1
 
 
 TRAEGER = """version: 1
@@ -429,7 +547,7 @@ def test_rights_carrier_manifest_has_no_agent_rights(tmp_path, monkeypatch):
     module = _load_sync_module()
     _configure_registry(module, tmp_path, monkeypatch, TRAEGER)
 
-    assert module.sync() == 0
+    assert module.sync(dry_run=False) == 0
     text = (tmp_path / "agents" / "brain-sales" / "agent.toml").read_text(encoding="utf-8")
     document = tomllib.loads(text)
 
@@ -460,7 +578,7 @@ def test_rights_carrier_must_be_boolean(tmp_path, monkeypatch):
     _configure_registry(module, tmp_path, monkeypatch,
                         _traeger_mit("rights_carrier: true", 'rights_carrier: "ja"'))
     assert any("rights_carrier" in e for e in module.validate_rights_carrier())
-    assert module.sync() == 1
+    assert module.sync(dry_run=False) == 1
 
 
 def test_rights_carrier_requires_mcp_tools(tmp_path, monkeypatch):

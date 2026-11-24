@@ -360,11 +360,17 @@ spaces:
     mcp_tools:
       fetch: [fetch]
       spaces-ideas: [idea_create, idea_update]
-    # E10: Recherche-Last (ganze Seiten aus fetch, Mehrquellen-Synthese in
-    # openclaw.compare) sprengt gpt-4o-mini/4096. gpt-4o ist in
-    # models_pricing.yml gepflegt, bleibt provider=openai und hebt das
-    # Ausgabelimit auf sein Maximum.
-    model: { model: gpt-4o, max_tokens: 16384 }
+    # 24.11.2026 (Vorgabe des Betreibers: nur das Claude-Abo, kein bezahltes API-Modell): Claude Code
+    # statt gpt-4o, wie im Betrieb: haiku ueber den eigenen Wrapper scripts/agents/<agent>.cmd
+    # (base_url setzt der Abgleich, nicht diese Datei). Ein Wechsel auf sonnet ist eine
+    # Budget-Entscheidung des Betreibers: modell und wrapper in agent_budget.yaml, Wrapper neu
+    # erzeugen, dann hier nachziehen. Der claude-code-Treiber reicht keine MCP-Werkzeuge an
+    # das Modell (tool_calls immer leer): research.web/scrape ueber fetch laufen damit nicht.
+    # Die Recherche zu einer Bubble holt die Seiten darum selbst (spaces/research, Rueckweg).
+    model:
+      provider: claude-code
+      model: claude-code/haiku
+      max_tokens: 16384
     default_context: [current_space, current_bubble]
     events:
       research.web:         { tool: fetch, required_params: [query] }

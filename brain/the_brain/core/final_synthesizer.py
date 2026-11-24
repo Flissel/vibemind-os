@@ -88,6 +88,7 @@ class FinalSynthesizer:
         )
 
         # Try primary, then fallback model on 429/5xx, then deterministic fallback
+        _rollen: set = set()
         for model_to_try in (self.model, self.fallback_model):
             if not model_to_try:
                 continue
@@ -102,12 +103,16 @@ class FinalSynthesizer:
                 tool_name = "claude_subagent"
             else:
                 tool_name = "groq_subagent"
+            if tool_name in _rollen:
+                continue  # gleiche OpenFang-Rolle, ein zweiter Versuch waere derselbe Aufruf
+            _rollen.add(tool_name)
             try:
+                # Kein model/provider: der Dispatcher lehnt Vorgaben ab, OpenFang waehlt das Modell.
+                # Der Modellname waehlt nur die Rolle.
                 resp = self.dispatcher.dispatch(
                     tool_name,
                     prompt=prompt,
                     system="You synthesise multi-step execution results into a single concise answer.",
-                    model=model_to_try,
                     max_tokens=self.max_tokens,
                     temperature=self.temperature,
                 )
@@ -161,6 +166,7 @@ class FinalSynthesizer:
             step_block=step_block,
         )
 
+        _rollen: set = set()
         for model_to_try in (self.model, self.fallback_model):
             if not model_to_try:
                 continue
@@ -173,7 +179,12 @@ class FinalSynthesizer:
                 tool_name = "claude_subagent"
             else:
                 tool_name = "groq_subagent"
+            if tool_name in _rollen:
+                continue  # gleiche OpenFang-Rolle, ein zweiter Versuch waere derselbe Aufruf
+            _rollen.add(tool_name)
 
+            # Kein model/provider an den Dispatcher (er lehnt Vorgaben ab, OpenFang waehlt das
+            # Modell); der Modellname waehlt nur die Rolle.
             # Dispatcher may not yet have adispatch (older instance) — fallback
             adispatch = getattr(self.dispatcher, "adispatch", None)
             if adispatch is None:
@@ -185,7 +196,6 @@ class FinalSynthesizer:
                         self.dispatcher.dispatch, tool_name,
                         prompt=prompt,
                         system="You synthesise multi-step execution results into a single concise answer.",
-                        model=model_to_try,
                         max_tokens=self.max_tokens,
                         temperature=self.temperature,
                     )
@@ -198,7 +208,6 @@ class FinalSynthesizer:
                         tool_name,
                         prompt=prompt,
                         system="You synthesise multi-step execution results into a single concise answer.",
-                        model=model_to_try,
                         max_tokens=self.max_tokens,
                         temperature=self.temperature,
                     )

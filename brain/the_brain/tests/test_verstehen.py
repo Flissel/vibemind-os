@@ -661,6 +661,59 @@ def test_bekannte_faehigkeit_aus_dem_planer_laeuft_weiter(monkeypatch, echter_mu
     assert len(ausfuehrer.plaene) == 1 and body.get("weg") != "nicht-verstanden"
 
 
+# Cosinus aus dem Betrieb (Messung 23.11.2026): Sinn und Unsinn liegen beide um 0,38-0,42.
+BETRIEB = {"level": "medium", "score": 0.38, "method": "qwen-cosine", "reason": "x"}
+
+
+class _ZaehlSynth(_Synth):
+    def __init__(self, text):
+        super().__init__(text)
+        self.aufrufe = 0
+
+    async def asynthesize(self, **kw):
+        self.aufrufe += 1
+        return self.text
+
+
+def test_planer_plan_ohne_gelungenen_schritt_ist_ruhige_rueckfrage(monkeypatch, echter_muster_router) -> None:
+    # Nachmessung (55), 24.11.2026: bekannte Faehigkeit ausserhalb der Ideen, Schritt scheitert,
+    # zweimal gesperrte Synthese, Antwort war der Fehlersatz.
+    ausfuehrer = _Ausfuehrer(None, ok=False)
+    synth = _ZaehlSynth("Multi-hop plan: 0/1 steps succeeded")
+    client, state = _client(monkeypatch, BETRIEB, ausfuehrer=ausfuehrer, planer=_Planer("browser_open"),
+                            synth=synth)
+    body = client.post("/api/multihop/execute", json={"intent": UNSINN, "context": IDEEN_OHNE_BUBBLE}).json()
+    assert state.multihop_planner.aufrufe == 1 and len(ausfuehrer.plaene) == 1 and synth.aufrufe == 0
+    assert body["weg"] == "nicht-verstanden" and body["rueckfrage"] is True and body["verstanden"] is False
+    assert body["final_text"].startswith("Das habe ich nicht verstanden. In Ideen kann ich z. B. „")
+    assert body["final_text"] != v.FEHLERSATZ and body["space"] == "ideas"
+
+
+def test_planer_plan_mit_gelungenem_schritt_bleibt_antwort(monkeypatch, echter_muster_router) -> None:
+    ausfuehrer = _Ausfuehrer({"x": 1})
+    client, _ = _client(monkeypatch, BETRIEB, ausfuehrer=ausfuehrer, planer=_Planer("idea_list"),
+                        muster=echter_muster_router, synth=_Synth("Hier sind die Notizen."))
+    body = client.post("/api/multihop/execute",
+                       json={"intent": "Welche Notizen zum Thema Bühne habe ich schon",
+                             "context": IDEEN_OHNE_BUBBLE}).json()
+    assert body.get("weg") != "nicht-verstanden" and body.get("rueckfrage") is not True
+
+
+def test_gescheiterter_planer_plan_ausserhalb_der_regel_bleibt_fehlersatz(monkeypatch) -> None:
+    monkeypatch.setenv("PLANER_NUR_MIT_WEG", "0")
+    client, _ = _client(monkeypatch, STARK, ausfuehrer=_Ausfuehrer(None, ok=False), planer=_Planer("browser_open"),
+                        synth=_Synth("Multi-hop plan: 0/1 steps succeeded"))
+    body = client.post("/api/multihop/execute", json={"intent": UNSINN, "context": IDEEN_OHNE_BUBBLE}).json()
+    assert body.get("weg") != "nicht-verstanden" and body["final_text"] == v.FEHLERSATZ
+
+
+def test_kein_schritt_gelungen() -> None:
+    assert v.kein_schritt_gelungen({"s1": {"ok": False, "error": "boom"}})
+    assert v.kein_schritt_gelungen({})
+    assert not v.kein_schritt_gelungen({"s1": {"ok": False}, "s2": {"ok": True, "result": 1}})
+    assert not v.kein_schritt_gelungen({"s1": {"ok": False, "pending": True}})
+
+
 def test_regel_abschaltbar(monkeypatch, echter_muster_router) -> None:
     monkeypatch.setenv("PLANER_NUR_MIT_WEG", "0")
     client, state = _client(monkeypatch, STARK, planer=_Planer("bubble_stats"), muster=echter_muster_router,

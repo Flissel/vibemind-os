@@ -116,11 +116,11 @@ def compose_brief(
 - Sprache: {language}
 
 [Pflicht]
-1. Schreibe den vollstaendigen Report mit file_write unter EXAKT diesem
-   absoluten Pfad: {output_path}
-2. Der Report muss mindestens eine echte Quelle mit URL enthalten.
-   Erfinde nichts. Fehlende Information wird als fehlend benannt.
-3. Antworte am Ende mit genau diesem Pfad.
+1. Der Recherche-Server holt die Seiten und legt den Report unter diesem
+   Pfad ab: {output_path}
+   Du hast keine Werkzeuge und schreibst keine Datei; antworte mit dem Report selbst.
+2. Stuetze dich nur auf die mitgelieferten Seiten und nenne jede verwendete mit
+   ihrer URL. Erfinde nichts. Fehlende Information wird als fehlend benannt.
 """
 
 
