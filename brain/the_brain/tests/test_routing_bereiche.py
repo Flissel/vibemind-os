@@ -20,6 +20,7 @@ sys.path.insert(0, str(BRAIN))
 
 from core import beispielsaetze as bs  # noqa: E402
 from core import ideen_abkuerzung as abk  # noqa: E402
+from core import sales_saetze  # noqa: E402
 from core import verstehen as v  # noqa: E402
 from core import zurueck_vorsicht as zv  # noqa: E402
 from core.antwort_ziel import bereich_der_schritte, ziel_ergaenzen  # noqa: E402
@@ -125,6 +126,11 @@ def test_jeder_beispielsatz_nimmt_den_festen_weg_ohne_modell(space, satz) -> Non
     if space == "ideas":
         treffer = abk.loese(satz, KONTEXT_BUBBLE)
         assert treffer is not None and "rueckfrage" not in treffer and treffer.get("ereignis"), treffer
+    elif space == "sales":
+        # Sales hat eigene feste Saetze (core/sales_saetze): Auftrag fester Art ans Auftragsbuch.
+        treffer = sales_saetze.loese(satz, {"space": "sales"})
+        assert treffer is not None and "rueckfrage" not in treffer, (satz, treffer)
+        assert sales_saetze.ist_sales_faehigkeit(treffer["capability"]), treffer
     else:
         treffer = v.feste_lesefrage(satz, space)
         assert treffer and treffer.get("capability") in v.FESTE_ANTWORTEN, (space, satz, treffer)

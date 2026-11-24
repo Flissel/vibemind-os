@@ -57,7 +57,11 @@ SPACES: Dict[str, Space] = {
     "thebrain": Space("The Brain", ("Woran denkt das Gehirn gerade?",), ("thebrain_", "thebrain.")),
     "flowzen": Space("Blue Rose", (), ("rose.", "rose_", "flowzen")),
     "mirofish": Space("MiroFish", (), ("mirofish.", "mirofish_")),
-    "sales": Space("Sales", (), ("sales.", "sales_")),
+    "sales": Space("Sales", (
+        "Welche Termine habe ich heute?",
+        "Was liegt in den Freigaben?",
+        "Hab ich neue Nachrichten?",
+    ), ("sales.", "sales_")),
     "marketing": Space("Marketing", (), ("marketing.", "marketing_")),
     "learning": Space("Lernen", (), ("learning.", "learning_")),
     "events": Space("Events", (), ("event.", "event_")),
