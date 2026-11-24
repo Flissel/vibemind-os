@@ -76,6 +76,23 @@ def hat_bewertung(bewertung: Any) -> bool:
     return True
 
 
+def bewertung_der_bubble(bubble: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The rating of a bubble row (``ideas``), or None when it has none (F2b, 24.11.2026).
+
+    ``ideas.score`` defaults to 0.0, so a bare 0 without any reason cannot be told from
+    "never rated": rated means a score other than 0, or at least one reason in
+    ``metadata.bewertungen``.
+    """
+    meta = _meta(bubble)
+    gruende = meta.get("bewertungen") if isinstance(meta.get("bewertungen"), list) else []
+    score = bubble.get("score")
+    if isinstance(score, bool) or not isinstance(score, (int, float)):
+        score = None
+    if (score is None or score == 0) and not gruende:
+        return None
+    return {"score": score, "begruendungen": len(gruende)}
+
+
 def white_paper_abdeckung(karten: Sequence[Mapping[str, Any]]) -> float | None:
     """Share of note cards the newest white paper names as source; None without white paper or notes."""
     papiere = [k for k in karten if ist_white_paper(k)]

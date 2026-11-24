@@ -117,7 +117,11 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "bubble_promote",
-        "description": "Promote one canonical top-level bubble into a project.",
+        "description": (
+            "Promote one canonical top-level bubble into a project. Only a bubble that passes the "
+            "promotion gate (no empty or loose cards, a rating, a white paper) is promoted; the project "
+            "keeps a fixed hand-over of white paper, cards and connections in metadata.uebergabe."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1631,6 +1635,141 @@ def _normalize_idea_title_content(title: str, content: str) -> tuple[str, str]:
     return title, content
 
 
+# ── Befoerdern mit Uebergabe (befoerdern-uebergabe.md, Freigabe des Betreibers 24.11.2026) ──
+# Das Projekt bekommt einen festen Stand der Bubble: White Paper, Karten, Verbindungen, Bewertung.
+# Befoerdert wird nur, was die gemeinsame Sinnpruefung besteht (spaces/_contract/kartenregeln.py,
+# dieselbe Datei liest die Software-Design-Ansicht). Alles unter der aenderung_id des Plans:
+# "Zurueck" nimmt Projekt und Verknuepfung zusammen zurueck.
+UEBERGABE_VERSION = 1
+UEBERGABE_MAX_ZEICHEN = 600_000
+UEBERGABE_MAX_KARTEN = 1000
+_KARTENREGELN: Any = None
+
+
+def _kartenregeln() -> Any:
+    """The shared card rules, loaded by path (spaces/_contract/kartenregeln.py)."""
+    global _KARTENREGELN
+    if _KARTENREGELN is None:
+        import importlib.util
+        pfad = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "_contract", "kartenregeln.py")
+        spec = importlib.util.spec_from_file_location("vibemind_kartenregeln", pfad)
+        if spec is None or spec.loader is None or not os.path.isfile(pfad):
+            raise ToolError("kartenregeln_missing")
+        modul = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(modul)
+        _KARTENREGELN = modul
+    return _KARTENREGELN
+
+
+def _bewertung(bubble: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The bubble's rating, or None (rule F2b in the shared card rules)."""
+    return _kartenregeln().bewertung_der_bubble(bubble)
+
+
+def _bubble_kanten(ids: list[str]) -> list[dict[str, Any]]:
+    """All edges that start at a card of the bubble (read in chunks of 100 ids)."""
+    kanten: list[dict[str, Any]] = []
+    for start in range(0, len(ids), 100):
+        teil = ids[start:start + 100]
+        zeilen = _request("GET", "canvas_edges", params={
+            "select": "from_node_id,to_node_id,edge_type", "from_node_id": f"in.({','.join(teil)})"})
+        if not isinstance(zeilen, list):
+            raise ToolError("supabase_invalid_response")
+        kanten += [z for z in zeilen if isinstance(z, dict)]
+    return kanten
+
+
+def _pruefsumme(stand: Mapping[str, Any]) -> str:
+    import hashlib
+    kern = {k: v for k, v in stand.items() if k not in ("am", "pruefsumme")}
+    text = json.dumps(kern, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _art(regeln: Any, karte: Mapping[str, Any]) -> str:
+    if regeln.ist_gruppenkopf(karte):
+        return "gruppe"
+    if regeln.ist_white_paper(karte):
+        return "white_paper"
+    return "dokument" if regeln.ist_dokument(karte) else "notiz"
+
+
+def _uebergabe_bauen(bubble: Mapping[str, Any], bubble_id: str) -> dict[str, Any]:
+    """Read the bubble's cards and edges, run the promotion gate, build the fixed hand-over.
+
+    Raises ``befoerdern_nicht_bereit: <gruende>`` when the gate fails (nothing is written) and
+    ``befoerdern_zu_gross`` above UEBERGABE_MAX_ZEICHEN.
+    """
+    regeln = _kartenregeln()
+    zeilen = _bubble_nodes(bubble_id, "id,node_type,title,content,content_json,metadata,updated_at",
+                           UEBERGABE_MAX_KARTEN)
+    # Die Regeln lesen "content"; formatierte Karten tragen ihren Text in content_json.
+    karten = [{**z, "content": _live_text(z)} for z in zeilen]
+    ids = [k["id"] for k in karten]
+    kanten = [k for k in _bubble_kanten(ids) if k.get("to_node_id") in set(ids)] if ids else []
+    bewertung = _bewertung(bubble)
+    pruefung = regeln.sinnpruefung(karten, kanten, bewertung)
+    if not pruefung.get("bestanden"):
+        ids_text = ";".join(f"{feld}={','.join(map(str, pruefung.get(feld) or []))}"
+                            for feld in ("leer", "lose") if pruefung.get(feld))
+        raise ToolError("befoerdern_nicht_bereit: " + ",".join(pruefung.get("gruende") or [])
+                        + (f" ({ids_text})" if ids_text else ""))
+
+    papiere = sorted((k for k in karten if regeln.ist_white_paper(k)),
+                     key=lambda k: str(k.get("updated_at") or ""))
+    papier = papiere[-1] if papiere else None
+    koepfe = {k["id"]: str(k.get("title") or "") for k in karten if regeln.ist_gruppenkopf(k)}
+    gruppe_von: dict[str, str] = {}
+    for kante in kanten:
+        if kante.get("from_node_id") in koepfe and kante.get("to_node_id") not in koepfe:
+            gruppe_von.setdefault(str(kante["to_node_id"]), koepfe[kante["from_node_id"]])
+
+    white_paper = None
+    if papier is not None:
+        meta = papier.get("metadata") if isinstance(papier.get("metadata"), Mapping) else {}
+        white_paper = {
+            "node_id": papier["id"], "titel": str(papier.get("title") or ""), "text": papier["content"],
+            "zeichen": len(papier["content"]), "quellen": list(meta.get("quellen") or []),
+            "geaendert_am": papier.get("updated_at"),
+        }
+    stand: dict[str, Any] = {
+        "version": UEBERGABE_VERSION,
+        "bubble_id": bubble_id,
+        "titel": str(bubble.get("title") or "").strip(),
+        "am": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "bewertung": bewertung,
+        "white_paper": white_paper,
+        # Ueberschrift-Karten stehen mit art "gruppe" drin, damit ihre Kanten die Karten verbinden
+        # (die Ansicht rechnet die Sinnpruefung aus karten/kanten nach).
+        "karten": [{"id": k["id"], "titel": str(k.get("title") or ""), "text": k["content"],
+                    "art": _art(regeln, k), "gruppe": gruppe_von.get(k["id"])}
+                   for k in karten if papier is None or k["id"] != papier["id"]],
+        "kanten": [{"von": k["from_node_id"], "nach": k["to_node_id"], "art": k.get("edge_type") or "related"}
+                   for k in kanten],
+        "pruefung": pruefung,
+    }
+    stand["pruefsumme"] = _pruefsumme(stand)
+    groesse = len(json.dumps(stand, ensure_ascii=False))
+    if groesse > UEBERGABE_MAX_ZEICHEN:
+        raise ToolError(f"befoerdern_zu_gross: {groesse} characters, limit {UEBERGABE_MAX_ZEICHEN}")
+    return stand
+
+
+def _befoerdert(project: Mapping[str, Any], stand: Mapping[str, Any]) -> dict[str, Any]:
+    """Short receipt: the project without the bulky hand-over, plus where the app goes next."""
+    metadata = project.get("metadata") if isinstance(project.get("metadata"), Mapping) else {}
+    papier = stand.get("white_paper") if isinstance(stand.get("white_paper"), Mapping) else None
+    karten = stand.get("karten") if isinstance(stand.get("karten"), list) else []
+    return {
+        **{k: v for k, v in project.items() if k != "metadata"},
+        "metadata": {k: v for k, v in metadata.items() if k != "uebergabe"},
+        "ziel": {"space": "swedesign", "projekt_id": project.get("id")},
+        "karten": sum(1 for k in karten if isinstance(k, Mapping) and k.get("art") != "gruppe"),
+        "white_paper_vom": papier.get("geaendert_am") if papier else None,
+        "pruefsumme": stand.get("pruefsumme"),
+    }
+
+
 def _compensate_project(project_id: str, error: str) -> None:
     """Remove an unlinked project and never turn an uncertain promotion into success."""
     try:
@@ -1914,6 +2053,10 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         title = bubble.get("title")
         if not isinstance(title, str) or not title.strip():
             raise ToolError("bubble_invalid: title must be a non-empty string")
+        if bubble.get("promoted_to_project_id"):
+            raise ToolError("bubble_already_promoted")
+        # Erst pruefen und den Stand bauen, dann schreiben: faellt die Pruefung durch, entsteht nichts.
+        stand = _uebergabe_bauen(bubble, bubble_id)
         project_id = uuid.uuid4().hex[:8]
         promotion_attempt_id = uuid.uuid4().hex
         project_row = {
@@ -1927,6 +2070,7 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
                 "source_bubble_id": bubble_id,
                 "source_score": bubble.get("score", 0),
                 "promotion_attempt_id": promotion_attempt_id,
+                "uebergabe": stand,
             },
         }
         try:
@@ -1975,7 +2119,7 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
             link_error = str(exc)
         if link_error is not None:
             _compensate_project(project_id, f"bubble_promotion_link_failed: {link_error}")
-        return project
+        return _befoerdert(project, stand)
     if name == "idea_list":
         bubble_id = arguments.get("bubble_id")
         full = arguments.get("full", False)

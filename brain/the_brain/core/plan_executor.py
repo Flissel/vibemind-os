@@ -1813,6 +1813,22 @@ class PlanExecutor:
                     if not _lb.einloesen(_lb_arg.pop("bestaetigung", None), event_id, _lb_arg.get("id")):
                         return _ideen_fehler(_lb.OHNE_SCHLUESSEL)
                     rendered_arg = _lb_arg
+                from . import befoerdern_bestaetigung as _bf
+                if event_id == _bf.EREIGNIS:
+                    # Befoerdern nur mit dem Schluessel aus "Ja" nach der Rueckfrage, genau einmal und
+                    # nur fuer die Bubble der Rueckfrage; der Schluessel geht nicht an das Werkzeug.
+                    _bf_arg = rendered_arg
+                    if isinstance(_bf_arg, str):
+                        try:
+                            _bf_arg = json.loads(_bf_arg)
+                        except ValueError:
+                            _bf_arg = None
+                    if not isinstance(_bf_arg, dict):
+                        return _ideen_fehler(_bf.OHNE_SCHLUESSEL)
+                    _bf_arg = dict(_bf_arg)
+                    if not _bf.einloesen(_bf_arg.pop("bestaetigung", None), _bf_arg.get("bubble_id")):
+                        return _ideen_fehler(_bf.OHNE_SCHLUESSEL)
+                    rendered_arg = _bf_arg
                 strict_mcp_arguments, clarification = feste_argumente(event_id, rendered_arg)
                 if strict_mcp_arguments is None:
                     return _ideen_fehler(clarification)

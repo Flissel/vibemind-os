@@ -497,22 +497,12 @@
       expect: present
 
 - capability: bubble_promote
-  description: "promote a bubble to a queryable Supabase project and link the canonical bubble to it"
+  description: "promote a bubble to a queryable Supabase project and link the canonical bubble to it - NOT IMPLEMENTED on this path (direct project write without check, confirmation or change id), retired 2026-11-24: promoting goes only through the fixed route Befoerdere diese Bubble (core/befoerdern_bestaetigung, ideen_fest_contract bubble.promote)."
   match_patterns:
     - "promote\\s+(?:the\\s+|this\\s+|my\\s+)?(?:bubble|idea)\\s+\\w+"
     - "befördere\\s+(?:die\\s+|diese\\s+)?(?:bubble|idee)"
     - "(?:bubble|idea)\\s+\\w+\\s+to\\s+project"
-  execution_target: "supabase:bubble.promote"
-  result_arg_extractor: 'regex:promote\s+(?:the\s+|this\s+|my\s+)?(?:bubble|idea)\s+([^\n]+)'
-  arg_kwarg: bubble_name
-  validator:
-    kind: truth:supabase_row
-    on_fail: report
-    postcondition:
-      check: supabase_row
-      table: projects
-      match: "id=eq.{result_id}"
-      expect: present
+  # execution_target removed 2026-11-24 (was supabase:bubble.promote): no project without the promotion gate.
 
 - capability: bubble_score
   description: "score or rate a bubble across impact feasibility novelty urgency dimensions, how mature/ready/reif is a bubble, give me the score, wie reif"
@@ -570,7 +560,7 @@
       expect: present
 
 - capability: idea_to_project
-  description: "promote an existing idea bubble to a real project, convert an idea into a project"
+  description: "promote an existing idea bubble to a real project, convert an idea into a project - NOT IMPLEMENTED on this path (direct project write without check, confirmation or change id), retired 2026-11-24: promoting goes only through the fixed route Befoerdere diese Bubble (core/befoerdern_bestaetigung, ideen_fest_contract bubble.promote)."
   anchor_phrases:
     - "turn this idea into a project"
     - "promote the idea to a project"
@@ -578,17 +568,7 @@
   match_patterns:
     - "(?:turn|convert|promote)\\s+.*(?:idea|bubble)\\s+(?:into|to)\\s+(?:a\\s+)?project"
     - "(?:idee|bubble)\\s+.*(?:in|zu)\\s+(?:ein(?:em)?\\s+)?projekt"
-  execution_target: "supabase:idea.to_project"
-  arg_kwarg: name
-  validator:
-    kind: truth:supabase_row
-    on_fail: block
-    require_verified: true
-    postcondition:
-      check: supabase_row
-      table: projects
-      match: "id=eq.{result_id}"
-      expect: present
+  # execution_target removed 2026-11-24 (was supabase:idea.to_project): no project without the promotion gate.
 
 # ─── Phase 11.W2 — verified component-note write ───────────────────────
 # Dedicated write capability for the E-Ticketing component-fill workflow

@@ -1766,14 +1766,15 @@ class SupabaseExecutor(_BaseRemoteExecutor):
 
     OPERATIONS = {
         "idea.connect", "idea.disconnect", "idea.auto_link",
-        "idea.create", "idea.update", "bubble.evaluate", "bubble.promote",
+        "idea.create", "idea.update", "bubble.evaluate",
+        # bubble.promote und idea.to_project fehlen bewusst (24.11.2026): befoerdert wird nur ueber
+        # den festen Weg mit Pruefung, Rueckfrage und Aenderungs-Kennung (core/befoerdern_bestaetigung).
         "bubble.enter",
         # Phase 11.U.H — full-cap migration ops
         "bubble.create", "bubble.list", "bubble.find", "bubble.update",
         "bubble.delete", "bubble.stats", "bubble.score", "bubble.noop",
         "idea.list", "idea.count", "idea.find", "idea.delete", "idea.move",
         "idea.format", "idea.llm",
-        "idea.to_project",
         # Phase 11.W2 Stage B — component-spec lookup (reuses SupabaseExecutor
         # because it needs the same Supabase client to read the bubble's IST-state)
         "component.requirements",
@@ -1810,7 +1811,6 @@ class SupabaseExecutor(_BaseRemoteExecutor):
             "idea.create": _ops.create_op,
             "idea.update": _ops.update_op,
             "bubble.evaluate": _ops.evaluate_op,
-            "bubble.promote": _ops.bubble_promote_op,
             "bubble.enter": _ops.enter_op,
             "bubble.create": _ops.bubble_create_op,
             "bubble.list": _ops.bubble_list_op,
@@ -1827,7 +1827,6 @@ class SupabaseExecutor(_BaseRemoteExecutor):
             "idea.move": _ops.idea_move_op,
             "idea.format": _ops.idea_format_op,
             "idea.llm": _ops.idea_llm_op,
-            "idea.to_project": _ops.idea_to_project_op,
         }
         # Phase 11.W2 Stage B — component_specs lookup (separate module so
         # the YAML cache is contained; reuses the same Supabase client to

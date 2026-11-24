@@ -53,3 +53,14 @@ def test_duenn_ist_nur_hinweis() -> None:
     karten = [_karte("a", "Tarif", "Normalpreis 58 Euro im Monat"), _karte("b", "Ziel", "Ein Ticket fuer die ganze Region."), PAPIER]
     s = regeln.sinnpruefung(karten, [{"from_node_id": "a", "to_node_id": "b"}], {"score": 3})
     assert s["bestanden"] and s["duenn"] == ["a", "b"] and s["hinweise"] == ["duenne_karten:2"]
+
+
+def test_bewertung_der_bubble_f2b() -> None:
+    """ideas.score ist ab Werk 0.0: eine 0 ohne Begruendung ist keine Bewertung, mit Begruendung schon."""
+    assert regeln.bewertung_der_bubble({"score": 0.0, "metadata": {}}) is None
+    assert regeln.bewertung_der_bubble({"score": None}) is None
+    assert regeln.bewertung_der_bubble({"score": True}) is None
+    assert regeln.bewertung_der_bubble({"score": 0, "metadata": {"bewertungen": [{"id": "x"}]}}) == {
+        "score": 0, "begruendungen": 1}
+    assert regeln.bewertung_der_bubble({"score": 55}) == {"score": 55, "begruendungen": 0}
+    assert not regeln.hat_bewertung(regeln.bewertung_der_bubble({"score": 0.0}))
