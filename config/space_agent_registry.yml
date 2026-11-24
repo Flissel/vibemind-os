@@ -50,7 +50,7 @@ spaces:
       bubble.back:              { tool: vibemind_bubble_exit,   required_params: [] }
       # "Lösche diese Bubble" (24.11.2026): nur die offene Bubble, nur nach Rückfrage mit der Zahl der
       # Karten und "Ja, löschen" (Schlüssel, brain/the_brain/core/loesch_bestaetigung.py). Die Karten
-      # bleiben gespeichert, ohne Bubble; "Zurück" stellt Bubble und Zuordnung wieder her.
+      # gehen mit (mit_karten, höchstens 200), ihre Verbindungen auch; "Zurück" stellt alles wieder her.
       bubble.delete:
         tool: bubble_delete
         required_params: [id]
