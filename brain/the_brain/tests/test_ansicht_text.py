@@ -20,6 +20,8 @@ from web.routers import introspection as intro  # noqa: E402
 
 SATZ = "Plane den Bühnenplan fürs Stadtfest mit der Druckerei"
 ANSICHT = {"Sec-Fetch-Site": "same-origin"}
+SPUR = "a0000001"  # trace_id in der Form hex/Ziffern
+THEMA = "topic:Druckerei Stadtfest"  # Cluster-Kennung mit Klartext
 
 
 @pytest.fixture
@@ -29,11 +31,11 @@ def dg(monkeypatch):
     monkeypatch.setattr(dgmod, "ENABLED", False)
     dg = dgmod.DecisionGraph()
     dg.upsert_plan("plan_b0b1e001", SATZ, ok=True, hop_count=1)
-    dg.upsert_entscheidung({"trace_id": "t1", "weg": "plan-executor", "stufe": "planer", "ok": True,
+    dg.upsert_entscheidung({"trace_id": SPUR, "weg": "plan-executor", "stufe": "planer", "ok": True,
                             "bereich": "ideas", "plan_id": "plan_b0b1e001", "text": SATZ,
                             "faehigkeit": "idea_add", "schritte": 1, "laenge": len(SATZ)})
     # Ein Cluster, dessen Beschriftung und Thema aus Inhalt stammen.
-    dg._mem_clusters["c1"] = {"id": "c1", "label": "Sponsoren Druckerei", "topic": "Druckerei Stadtfest",
+    dg._mem_clusters[THEMA] = {"id": THEMA, "label": "Sponsoren Druckerei", "topic": "Druckerei Stadtfest",
                               "activation": 0.9, "member_count": 3}
     return dg
 
@@ -57,7 +59,7 @@ def test_ansicht_vom_selben_ursprung_sieht_den_satz(dg, host):
     r = _abfrage(_client(dg), Host=host, **ANSICHT)
     assert SATZ in r.text
     knoten = {n["data"]["id"]: n["data"] for n in r.json()["nodes"]}
-    assert knoten["satz:t1"]["label"] == SATZ[:36]
+    assert knoten[f"satz:{SPUR}"]["label"] == SATZ[:36]
     assert "text_ausgeblendet" not in r.json()
 
 
@@ -74,15 +76,17 @@ def test_ohne_ansicht_nur_erlaubte_felder(dg, koepfe):
     d = r.json()
     assert d["text_ausgeblendet"] is True
     knoten = {n["data"]["id"]: n["data"] for n in d["nodes"]}
-    assert knoten["satz:t1"] == {"id": "satz:t1", "type": "satz", "trace_id": "t1", "reiter": "",
-                                 "laenge": len(SATZ), "ts": knoten["satz:t1"]["ts"], "label": "Satz"}
+    satz = knoten[f"satz:{SPUR}"]
+    assert satz == {"id": f"satz:{SPUR}", "type": "satz", "trace_id": SPUR, "reiter": "",
+                    "laenge": len(SATZ), "ts": satz["ts"], "label": "Satz"}
     assert knoten["plan_b0b1e001"]["label"] == "Plan" and "intent" not in knoten["plan_b0b1e001"]
-    assert knoten["c1"]["label"] == "Cluster" and "topic" not in knoten["c1"]
-    assert knoten["c1"]["activation"] == 0.9
-    assert knoten["ent_t1"]["label"] == "planer: idea_add"
+    cluster = [k for k in knoten.values() if k["type"] == "cluster"][0]
+    assert cluster["label"] == "Cluster" and "topic" not in cluster and cluster["activation"] == 0.9
+    assert cluster["id"].startswith("k") and "topic" not in r.text
+    assert knoten[f"ent_{SPUR}"]["label"] == "planer: idea_add"
     assert knoten["bereich:ideas"]["label"] == "ideas"
     kanten = {(e["data"]["type"], e["data"]["source"], e["data"]["target"]) for e in d["edges"]}
-    assert ("entschieden_durch", "satz:t1", "ent_t1") in kanten
+    assert ("entschieden_durch", f"satz:{SPUR}", f"ent_{SPUR}") in kanten
 
 
 @pytest.mark.parametrize("host", ["boese.example:5000", "boese.example", "localhost.boese.example:5000",
@@ -106,8 +110,54 @@ def test_unbekannte_knotenart_und_neue_felder_fallen_weg():
     text = json.dumps(sauber, ensure_ascii=False)
     for wort in ("Stadtfest", "Druckerei", "Sponsoren", "geheim"):
         assert wort not in text, wort
-    assert sauber["nodes"][0]["data"] == {"id": "x1", "type": "neu", "label": "?"}
-    assert sauber["nodes"][1]["data"] == {"id": "p1", "type": "plan", "ok": True, "label": "Plan"}
+    x1, p1 = (n["data"] for n in sauber["nodes"])
+    assert {k: v for k, v in x1.items() if k != "id"} == {"type": "neu", "label": "?"}
+    assert {k: v for k, v in p1.items() if k != "id"} == {"type": "plan", "ok": True, "label": "Plan"}
+
+
+def test_kennung_mit_klartext_wird_undurchsichtig_kanten_folgen():
+    """Sicherheitsbefund: Kennungen koennen Inhalt tragen (topic:<Thema>)."""
+    out = {"connected": True, "nodes": [
+        {"data": {"id": "topic:Sponsoren Druckerei", "type": "cluster", "activation": 0.5}},
+        {"data": {"id": "plan_b0b1e001", "type": "plan", "ok": True}},
+        {"data": {"id": "plan_b0b1e001:Stadtfest-Schritt", "type": "hop", "capability": "idea_add"}},
+        {"data": {"id": "bereich:Bühnenplan Druckerei", "type": "bereich"}},
+        {"data": {"id": "satz:Stadtfest", "type": "satz", "trace_id": "Stadtfest"}},
+    ], "edges": [
+        {"data": {"id": "fired_topic:Sponsoren Druckerei_plan_b0b1e001", "type": "fired",
+                  "source": "topic:Sponsoren Druckerei", "target": "plan_b0b1e001"}},
+        {"data": {"id": "hashop_x", "type": "has_hop", "source": "plan_b0b1e001",
+                  "target": "plan_b0b1e001:Stadtfest-Schritt"}},
+    ]}
+    sauber = intro._ohne_text(out)
+    text = json.dumps(sauber, ensure_ascii=False)
+    for wort in ("Sponsoren", "Druckerei", "Stadtfest", "Bühnenplan", "topic"):
+        assert wort not in text, wort
+    ids = [n["data"]["id"] for n in sauber["nodes"]]
+    assert ids[1] == "plan_b0b1e001"                      # inhaltsfreie Form bleibt lesbar
+    assert all(i.startswith("k") and len(i) == 17 for i in ids[:1] + ids[2:])
+    assert sauber["nodes"][3]["data"]["label"] == "Bereich"
+    fired, hashop = (e["data"] for e in sauber["edges"])
+    assert (fired["source"], fired["target"]) == (ids[0], ids[1])   # Kanten zeigen weiter richtig
+    assert (hashop["source"], hashop["target"]) == (ids[1], ids[2])
+    assert fired["id"].startswith("e") and fired["id"] != hashop["id"]
+    # Stabil zwischen Abfragen (die Ansicht erkennt Knoten wieder).
+    assert [n["data"]["id"] for n in intro._ohne_text(out)["nodes"]] == ids
+
+
+@pytest.mark.parametrize("kennung", ["plan_b0b1e001", "ideen_1795540008614", "fenster-1795540008614-0007",
+                                     "disp_0123456789", "satz:a0000001", "ent_a0000001-0b",
+                                     "bereich:ideas"])
+def test_inhaltsfreie_kennungen_bleiben(kennung):
+    assert intro._undurchsichtig(kennung) == kennung
+
+
+def test_zustand_bleibt_ohne_text_erhalten():
+    """Die Ansicht braucht neo4j_connected und abfrage_fehler fuer ihre Zustandszeile."""
+    sauber = intro._ohne_text({"connected": True, "neo4j_connected": True, "abfrage_fehler": True,
+                               "error": "Druckerei", "nodes": [], "edges": []})
+    assert sauber["neo4j_connected"] is True and sauber["abfrage_fehler"] is True
+    assert "error" not in sauber
 
 
 def test_schalter_immer_und_nie(dg, monkeypatch):

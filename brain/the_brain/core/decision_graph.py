@@ -1101,6 +1101,7 @@ class DecisionGraph:
 
             return {
                 "connected": True,
+                "neo4j_connected": True,  # die Ansicht zeigt "Neo4j verbunden" nur hierauf
                 "nodes": nodes,
                 "edges": edges,
                 "stats": {
@@ -1113,7 +1114,8 @@ class DecisionGraph:
             }
         except Exception as e:
             logger.warning(f"[decision-graph] query_subgraph failed: {e}")
-            return {"connected": True, "nodes": [], "edges": [], "error": str(e)}
+            return {"connected": True, "neo4j_connected": True, "abfrage_fehler": True,
+                    "nodes": [], "edges": [], "error": str(e)}
 
     def stats(self) -> Dict[str, Any]:
         out = {
