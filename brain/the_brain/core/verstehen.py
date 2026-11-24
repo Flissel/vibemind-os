@@ -385,7 +385,9 @@ def unter_schwelle(klassifikation: Any) -> bool:
 
 # ── Regel "Planer nur im Space mit Weg" ─────────────────────────────────────
 # Eichung 23.11.2026: Der Cosinus trennt Sinn und Unsinn kaum (Umschreibung 0,62, Unsinn bis
-# 0,675). Solange das so ist, entscheidet er nicht. Ein Satz ohne festen Treffer und ohne
+# 0,675). Im Betrieb (Embedding-Dienst des Stacks, gleiche Messung) liegen echte Saetze bei
+# 0,378-0,423 und Unsinn bei 0,353-0,420; auch eine untere Schranke (etwa 0,45) wiese dort jeden
+# Satz ab und bleibt darum aus (55c, 24.11.2026). Solange das so ist, entscheidet er nicht. Ein Satz ohne festen Treffer und ohne
 # Space-Namen darf nur dort an den Planer, wo es einen laufenden Weg gibt (heute: Ideen), und
 # nur, wenn er kein Kurztext ist. Ueberall sonst: "nicht verstanden" mit Beispielen, kein
 # teurer Fehllauf. Schalter PLANER_NUR_MIT_WEG (Vorgabe an), Spaces VERSTEHEN_PLANER_SPACES.
@@ -661,6 +663,24 @@ def ohne_antwort(ergebnis: Any) -> bool:
             if set(ergebnis) <= {"error", "message", "status"} and ergebnis.get("error"):
                 return True
         return False
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def kein_schritt_gelungen(executed: Any) -> bool:
+    """True, wenn ein Lauf keinen einzigen gelungenen oder angenommenen Schritt hat.
+
+    Nachmessung (55), 24.11.2026: Ein Unsinnssatz im Ideen-Bereich bekam vom Planer einen
+    Schritt auf eine bekannte Faehigkeit, der scheiterte; die Antwort war der Fehlersatz.
+    Ohne jeden gelungenen Schritt hat der Planer den Satz nicht verstanden.
+    """
+    try:
+        if not isinstance(executed, dict):
+            return True
+        for s in executed.values():
+            if isinstance(s, dict) and (s.get("ok") or s.get("pending")):
+                return False
+        return True
     except Exception:  # noqa: BLE001
         return False
 

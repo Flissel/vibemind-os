@@ -3399,6 +3399,24 @@ async def _multihop_execute(request: Request):
         _abschluss_berichtigen(pe, plan, exec_result, out)
         return JSONResponse(out)
 
+    # Nachmessung (55), 24.11.2026: Ein Planer-Plan (kein fester Satz, keine Bubble im Satz), von
+    # dem kein Schritt gelingt, ist unter der Regel "Planer nur im Space mit Weg" kein Fehlschlag
+    # eines Auftrags, sondern ein nicht verstandener Satz: ruhige Rueckfrage statt Fehlersatz,
+    # keine Synthese. Der technische Grund bleibt im Plan-Schnappschuss. Nur ohne offene Bubble:
+    # Mit offener Bubble hat der Satz einen Gegenstand, ein Scheitern bleibt ein Fehler.
+    _kontext_roh = body.get("context")
+    _ohne_bubble = not (isinstance(_kontext_roh, dict) and _kontext_roh.get("bubble"))
+    if (_planer_plan and _ohne_bubble and _verstehen.planer_nur_mit_weg() and not exec_result.get("ok")
+            and _verstehen.kein_schritt_gelungen(exec_result.get("executed"))):
+        logger.info(f"[verstehen] Planer-Plan ohne gelungenen Schritt "
+                    f"{[h.capability for h in (plan.hops or [])]}, space={_bezug} intent={intent[:60]!r}")
+        _satz = _verstehen.nicht_verstanden(_bezug)
+        try:
+            pe.recorder.attach_final(plan.plan_id, _satz)
+        except Exception:  # noqa: BLE001
+            pass
+        return _ehrlich(pe, trace_id, intent, "nicht-verstanden", _satz, _bezug)
+
     # Optional final synthesis — Phase 11.T.4 uses asynthesize() so the
     # synth LLM call doesn't burn a threadpool worker.
     if syn is not None and (intent or plan.intent):
