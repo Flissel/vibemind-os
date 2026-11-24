@@ -1,7 +1,8 @@
 """Schalter und Messprotokoll für das Hintergrund-Denken (24.11.2026).
 
 Frage des Betreibers: Was kostet eine Stunde Hintergrund-Denken auf einem kleinen Modell?
-Dafür schreibt jeder Aufruf eines Mikro-Agenten ohne wartenden Menschen genau eine Zeile:
+Dafür schreibt jeder Aufruf eines Mikro-Agenten ohne wartenden Menschen (und jede Deutung
+des Kurators, Agent "kurator") genau eine Zeile:
 Zeit, Mikro-Agent, Dauer, Ergebnis, Zeichen rein/raus und, falls OpenFang sie liefert,
 Tokens rein/raus. Nie Inhalte (kein Prompt, keine Antwort, kein Fehlertext).
 
