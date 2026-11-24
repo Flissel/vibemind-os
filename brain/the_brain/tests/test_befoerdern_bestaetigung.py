@@ -135,3 +135,34 @@ def test_hoeflichkeit_sieht_die_offene_rueckfrage():
     from core import hoeflichkeit
     bf.fragen({"bubble_id": "b0b1e001"}, "")
     assert hoeflichkeit.etwas_offen() is True
+
+
+# Pruefung 25.11.2026: "nein" lief ins Chat-Ereignis ("keine offene Frage"), ein spaetes "Ja"
+# bekam "Alles klar.". Beides fest und ehrlich.
+
+@pytest.mark.parametrize("satz", ["nein", "Nein.", "nee", "lieber nicht"])
+def test_nein_schliesst_die_rueckfrage_fest(satz):
+    from core import hoeflichkeit as hf
+
+    bf.fragen({"bubble_id": "b0b1e001"}, "")
+    assert bf.satz_pruefen(satz) == {"satz": bf.ABGELEHNT, "abgelehnt": True}
+    assert bf.ABGELEHNT == "Gut, ich befördere nichts."
+    assert bf._offen == {} and hf.etwas_offen() is False
+    assert bf.satz_pruefen("Ja") is None                       # die Frage ist zu
+
+
+def test_nein_ohne_rueckfrage_gehoert_der_hoeflichkeit():
+    from core import hoeflichkeit as hf
+
+    assert bf.satz_pruefen("nein") is None
+    assert hf.antwort("nein", offen=False) == hf.NEIN_OHNE_FRAGE
+
+
+def test_spaetes_ja_klingt_nie_nach_bestaetigung():
+    from core import hoeflichkeit as hf
+
+    bf.fragen({"bubble_id": "b0b1e001"}, "")
+    assert bf.satz_pruefen("Zeig die Notizen dieser Bubble") is None   # anderer Satz verwirft
+    assert bf.satz_pruefen("Ja") is None
+    satz = hf.antwort("Ja", offen=hf.etwas_offen())
+    assert satz == hf.JA_OHNE_FRAGE and "Alles klar" not in satz and "nichts" in satz

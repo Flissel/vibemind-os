@@ -1607,6 +1607,51 @@ def _patch_fields(
     return fields
 
 
+PROMOTION_SHUTTLE_SOURCE = "befoerdertes_projekt"  # metadata.quelle, gesetzt vom SWE-Design-Wizard
+
+
+def _promotion_shuttles_free(group: Any) -> bool:
+    """Remove the wizard shuttles of projects this change created; True when one went.
+
+    Only shuttles the Software-Design wizard made for a promoted project
+    (``metadata.quelle`` = PROMOTION_SHUTTLE_SOURCE) and only for projects the change
+    itself inserted. Without a group name: the youngest open agent change, as
+    ``ideen_zurueck`` picks it. Never raises; a failed step means no retry.
+    """
+    try:
+        if not isinstance(group, str):
+            newest = _first_row(_request("GET", "ideen_aenderungen", params={
+                "select": "gruppe", "quelle": "eq.agent", "zurueckgenommen_am": "is.null",
+                "order": "id.desc", "limit": "1",
+            }))
+            group = newest.get("gruppe") if newest else None
+            if not isinstance(group, str) or not group:
+                return False
+        rows = _request("GET", "ideen_aenderungen", params={
+            "select": "zeilen_id", "gruppe": f"eq.{group}", "tabelle": "eq.public.projects",
+            "vorgang": "eq.INSERT", "zurueckgenommen_am": "is.null", "limit": "10",
+        })
+        projects = [r.get("zeilen_id") for r in rows if isinstance(r, Mapping)] if isinstance(rows, list) else []
+        removed = False
+        for project_id in projects:
+            if not isinstance(project_id, str) or not IDEA_ID_PATTERN.fullmatch(project_id):
+                continue
+            shuttles = _request("GET", "shuttles", params={
+                "select": "id,project_id,metadata", "project_id": f"eq.{project_id}", "limit": "20",
+            })
+            for shuttle in shuttles if isinstance(shuttles, list) else []:
+                meta = shuttle.get("metadata") if isinstance(shuttle, Mapping) else None
+                if not isinstance(meta, Mapping) or meta.get("quelle") != PROMOTION_SHUTTLE_SOURCE:
+                    continue
+                _request("DELETE", "shuttles", params={
+                    "id": f"eq.{shuttle.get('id')}", "project_id": f"eq.{project_id}",
+                })
+                removed = True
+        return removed
+    except Exception:  # noqa: BLE001 - then the honest conflict stands
+        return False
+
+
 def _first_row(value: Any) -> dict[str, Any] | None:
     if isinstance(value, list) and value and isinstance(value[0], dict):
         return value[0]
@@ -2591,7 +2636,16 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
             ):
                 raise ToolError("invalid_arguments: 'gruppe' must be a group name from aenderung_liste")
             body["p_gruppe"] = group
-        result = _request("POST", "rpc/ideen_zurueck", body=body, error_detail=True)
+        try:
+            result = _request("POST", "rpc/ideen_zurueck", body=body, error_detail=True)
+        except ToolError as exc:
+            # Befoerdern zuruecknehmen: Software-Design legt beim Oeffnen des Projekts einen
+            # Wizard-Shuttle mit Verweis aufs Projekt an. Loeschen des Projekts setzte dessen
+            # project_id leer (ausserhalb der Aenderung) -> aenderung_konflikt. Solche Shuttles
+            # gehoeren zum Projekt; sie gehen vorher, dann ein zweiter Versuch.
+            if not str(exc).startswith("aenderung_konflikt:") or not _promotion_shuttles_free(body.get("p_gruppe")):
+                raise
+            result = _request("POST", "rpc/ideen_zurueck", body=body, error_detail=True)
         if not isinstance(result, Mapping) or "anzahl" not in result:
             raise ToolError("supabase_invalid_response")
         kinds = _change_kinds(result)

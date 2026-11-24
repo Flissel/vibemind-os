@@ -3357,6 +3357,10 @@ async def _multihop_execute(request: Request):
         # jeder andere Satz verwirft sie (core/befoerdern_bestaetigung).
         from core import befoerdern_bestaetigung as _bf
         _bf_antwort = _bf.satz_pruefen(intent)
+        if _bf_antwort and _bf_antwort.get("abgelehnt"):
+            _trace_lite(pe, trace_id, intent, "abgelehnt", _bf_antwort["satz"])
+            return JSONResponse({"ok": True, "executed": {}, "space": "ideas", "weg": "abgelehnt",
+                                 "final_text": _bf_antwort["satz"], "trace_id": trace_id})
         if _bf_antwort and _bf_antwort.get("satz"):
             _trace_lite(pe, trace_id, intent, "ideen-rueckfrage", _bf_antwort["satz"])
             return JSONResponse({"ok": False, "rueckfrage": True, "space": "ideas", "executed": {},

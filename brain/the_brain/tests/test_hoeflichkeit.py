@@ -81,7 +81,8 @@ def _satz(client, text, kontext=KONTEXT):
 @pytest.mark.parametrize("satz, antwort", [
     ("Hallo", hf.GRUSS), ("hallo!", hf.GRUSS), ("Guten Morgen", hf.GRUSS), ("Hi Claude", hf.GRUSS),
     ("Danke", hf.DANK), ("Danke schön!", hf.DANK), ("Vielen Dank.", hf.DANK), ("thanks", hf.DANK),
-    ("ok", hf.ZUSTIMMUNG), ("Ja", hf.ZUSTIMMUNG), ("Alles klar!", hf.ZUSTIMMUNG), ("okay", hf.ZUSTIMMUNG),
+    ("ok", hf.JA_OHNE_FRAGE), ("Ja", hf.JA_OHNE_FRAGE), ("Alles klar!", hf.ZUSTIMMUNG), ("okay", hf.JA_OHNE_FRAGE),
+    ("nein", hf.NEIN_OHNE_FRAGE), ("Nee.", hf.NEIN_OHNE_FRAGE), ("lieber nicht", hf.NEIN_OHNE_FRAGE),
 ])
 def test_router_feste_hoeflichkeit_ohne_modell(monkeypatch, satz, antwort) -> None:
     client, state = _client(monkeypatch)
@@ -120,3 +121,31 @@ def test_offen_liest_nur() -> None:
     assert hf.etwas_offen() is True                                           # nichts verworfen
     lb.verwerfen()
     assert hf.etwas_offen() is False
+
+
+def test_nein_bei_offener_loeschfrage_schliesst_sie_fest(monkeypatch) -> None:
+    client, state = _client(monkeypatch)
+    assert _satz(client, "Lösche die Karte Sponsoren")["rueckfrage"] is True
+    body = _satz(client, "nein")
+    assert body["final_text"] == hf.NEIN_OFFEN and body.get("weg") == "hoeflichkeit"
+    assert _satz(client, "Ja, löschen")["final_text"] == lb.OHNE_FRAGE
+    assert state.plan_executor.plaene == []
+
+
+def test_nein_bei_offenem_befoerdern_sagt_es_genau(monkeypatch) -> None:
+    from core import befoerdern_bestaetigung as bf
+
+    client, state = _client(monkeypatch)
+    bf.fragen({"bubble_id": "b0b1e001"}, "")
+    try:
+        body = _satz(client, "Nein")
+    finally:
+        bf.verwerfen()
+    assert body["ok"] is True and body["weg"] == "abgelehnt" and body["final_text"] == bf.ABGELEHNT
+    assert body["executed"] == {} and state.plan_executor.plaene == []
+    assert _satz(client, "Ja")["final_text"] == hf.JA_OHNE_FRAGE
+
+
+@pytest.mark.parametrize("satz", ["Gut", "passt", "super"])
+def test_lob_bleibt_alles_klar(satz) -> None:
+    assert hf.antwort(satz, offen=False) == hf.ZUSTIMMUNG
