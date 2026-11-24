@@ -6,6 +6,12 @@
 `spaces/musik/docs/LAURA-VERTRAG.md`)
 **Nächster Schritt:** Umsetzungsplan (writing-plans)
 
+> **Ist-Stand nach Umsetzung (2026-11-24):** Die Ports sind 8148 Musik-Dienst, 8152 Musik-Shim,
+> 8142 Telegram-Bot und 8146 Datei-Link (statt der vorgeschlagenen 8139/8141). `in_laura_legen`
+> setzt `gain_percent` ohne Wunsch selbst: 25, wenn unter der Musik Sprache liegt (der Video-Claw
+> hat ein Reel für die Zeitleiste abgelegt, oder dort liegt schon ein Audio-Clip ohne `musik:` im
+> Label), sonst 100; ein Wunsch wird auf 0–400 begrenzt. Der Rest dieses Entwurfs bleibt unverändert.
+
 ## 1. Wozu
 
 Felix am 23.11.: Laura, der Video-Space, soll einbezogen werden, „damit wir automatisch Musik

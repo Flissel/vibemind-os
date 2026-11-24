@@ -165,6 +165,25 @@ def test_json_routen_rest(client, fake):
     assert fake.aufrufe[-1][1] == ("reel",)
 
 
+def test_route_abbrechen(client, fake):
+    """I4(c): POST /auftraege/{id}/abbrechen mit `{}` ruft auftrag_abbrechen."""
+    r = client.post(f"/auftraege/{GUELTIG}/abbrechen", json={})
+    assert r.status_code == 200 and r.json()["wer"] == "auftrag_abbrechen"
+    assert fake.aufrufe[-1][1] == (GUELTIG,)
+    assert client.post("/auftraege/..%5Cx/abbrechen", json={}).status_code == 404
+    assert client.post(f"/auftraege/{GUELTIG}/abbrechen", content=b"{}",
+                       headers={"Content-Type": "text/plain"}).status_code == 415
+    assert client.post(f"/auftraege/{GUELTIG}/abbrechen", json={},
+                       headers={"Origin": "http://evil.example"}).status_code == 403
+    assert len(fake.aufrufe) == 1
+
+
+def test_in_laura_route_ohne_gain_ist_automatik(client, fake):
+    """I2: ohne gain_percent entscheidet der Dienst (None), nicht fest 100."""
+    client.post(f"/auftraege/{GUELTIG}/in-laura", json={"timeline_id": "t1"})
+    assert fake.aufrufe[-1][1] == (GUELTIG, "t1", None)
+
+
 def test_health_antwortet_waehrend_werkzeug_laeuft(fake):
     import threading
 

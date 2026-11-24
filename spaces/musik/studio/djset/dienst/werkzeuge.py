@@ -34,6 +34,13 @@ FEHLER_MAXLAENGE = 300
 MAX_EXPORT_BYTES = 500 * 1024 * 1024  # der Download liegt im Speicher (laura.herunterladen)
 BERICHT_ZEILEN = 40
 EXPORT_DATEI = "laura-export.mp4"
+# Bericht je Art: `dj-set video` schreibt bericht.md, `dj-set set` qa-report.md und tracklist.md.
+BERICHT_DATEIEN = {"set": ("qa-report.md", "tracklist.md")}
+BERICHT_VORGABE = ("bericht.md",)
+GAIN_MIN, GAIN_MAX = 0, 400       # so weit laesst Laura gain_percent zu (models.py, Migration 0018)
+GAIN_UNTER_SPRACHE = 25          # Musik unter Sprecher/Originalton
+GAIN_ALLEIN = 100                # Musik ohne andere Tonspur
+MUSIK_MARKE = "musik:"           # Labelteil, an dem die eigenen Musik-Clips erkennbar sind
 
 _LAURA_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _LAUF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
@@ -281,10 +288,13 @@ class Werkzeuge:
         ordner = self._laufordner(a)
         if ordner is not None:
             dateien = sorted(p.name for p in ordner.iterdir() if p.is_file())
-            try:
-                zeilen = (ordner / "bericht.md").read_text(encoding="utf-8", errors="replace").splitlines()
-            except OSError:
-                zeilen = []
+            zeilen: list[str] = []
+            for name in BERICHT_DATEIEN.get(a.art, BERICHT_VORGABE):
+                try:
+                    zeilen = (ordner / name).read_text(encoding="utf-8", errors="replace").splitlines()
+                    break
+                except OSError:
+                    continue
             zeilen = [_ohne_pfade(z, self.daten) for z in zeilen]
             bericht = "\n".join(zeilen[:BERICHT_ZEILEN])
             befunde = self._befunde(zeilen)
@@ -349,11 +359,35 @@ class Werkzeuge:
 
     # ------------------------------------------------------------ Laura
 
+    def _ohne_link(self, text: str, url: str = "") -> str:
+        """Signierten Link und Link-Basis aus einem Laura-Fehlertext nehmen (geht an Agenten)."""
+        if url:
+            text = text.replace(url, "<link>")
+        if self.link_basis:
+            text = re.sub(re.escape(self.link_basis) + r"[^\s\"'<>)]*", "<link>", text)
+        return text
+
+    def _gain(self, timeline_id: str, clips: list, wunsch: int | None) -> int:
+        """Lautstaerke des Musik-Clips. Ein ausdruecklicher Wert bleibt (auf Lauras 0-400 geklemmt).
+        Ohne Wert: 25, wenn unter der Musik Sprache liegt - der Video-Claw hat fuer die Zeitleiste
+        ein Reel abgelegt, oder es gibt schon einen Audio-Clip, der nicht von hier stammt -, sonst 100."""
+        if wunsch is not None:
+            return max(GAIN_MIN, min(GAIN_MAX, wunsch))
+        if (self.reel_ordner / f"reel-{timeline_id}.json").is_file():
+            return GAIN_UNTER_SPRACHE
+        for clip in clips:
+            if isinstance(clip, dict) and MUSIK_MARKE not in str(clip.get("label") or ""):
+                return GAIN_UNTER_SPRACHE
+        return GAIN_ALLEIN
+
     @_weich
-    def in_laura_legen(self, auftrag: str, timeline_id: str, gain_percent: int = 100) -> dict:
+    def in_laura_legen(self, auftrag: str, timeline_id: str, gain_percent: int | None = None) -> dict:
         a = self._hole(auftrag)
         if a.art != "video" or a.zustand not in _FERTIG:
             return _fehler(f"Auftrag ist kein fertiges Video (Art {a.art}, Zustand {a.zustand})")
+        bestellt_fuer = a.eingabe.get("laura_timeline_id")
+        if bestellt_fuer and bestellt_fuer != timeline_id:
+            return _fehler("Musik-Auftrag gehoert zu einer anderen Zeitleiste")
         ordner = self._laufordner(a)
         if ordner is None:
             return _fehler("Lauf des Auftrags nicht gefunden")
@@ -368,8 +402,8 @@ class Werkzeuge:
             return _fehler("videomusik.wav fehlt im Lauf")
         if not self.link_basis or not self.link_schluessel:
             return _fehler("Datei-Link ist aus (MUSIK_LINK_HOST/MUSIK_LINK_SCHLUESSEL fehlen)")
-        if isinstance(gain_percent, bool) or not isinstance(gain_percent, int) or not 0 <= gain_percent <= 400:
-            return _fehler("gain_percent muss eine ganze Zahl von 0 bis 400 sein")
+        if gain_percent is not None and (isinstance(gain_percent, bool) or not isinstance(gain_percent, int)):
+            return _fehler("gain_percent muss eine ganze Zahl sein (0-400) oder fehlen")
         if not isinstance(timeline_id, str) or not _LAURA_ID.fullmatch(timeline_id):
             return _fehler("ungueltige Zeitleisten-ID")
 
@@ -388,19 +422,9 @@ class Werkzeuge:
         # Ein Clip darf nie ueber das Ende der Zeitleiste ragen (Laura kappt nicht).
         frames = min(frames, soll)
 
-        marke = f"musik:{a.id}"
+        marke = f"{MUSIK_MARKE}{a.id}"
         suffix = f" · {marke}"
         label = erg.titel[: max(0, LABEL_MAX - len(suffix))] + suffix
-        try:
-            clip = LauraClip(**{
-                **erg.laura.model_dump(),
-                "seq_out_frame_exclusive": frames,
-                "gain_percent": gain_percent,
-                "ducking_percent": 100,
-                "label": label,
-            })
-        except ValidationError as problem:
-            return _fehler(f"Clip ungueltig: {problem.errors()[0].get('msg', '')}")
 
         # Pruefen, importieren, warten und anlegen als ein Schritt je (Auftrag, Zeitleiste):
         # ein zweiter Aufrufer wartet hier und findet danach den Clip des ersten.
@@ -408,22 +432,33 @@ class Werkzeuge:
             vorhanden = self.laura.audio_clips(timeline_id)
             if not vorhanden.get("ok"):
                 return _fehler(str(vorhanden.get("fehler", "Clips nicht lesbar")))
-            for vorher in vorhanden.get("clips") or []:
+            clips = vorhanden.get("clips") or []
+            for vorher in clips:
                 if marke in str(vorher.get("label") or ""):
                     return {"ok": True, "clip_id": vorher.get("id"), "asset_id": vorher.get("asset_id")}
+            try:
+                clip = LauraClip(**{
+                    **erg.laura.model_dump(),
+                    "seq_out_frame_exclusive": frames,
+                    "gain_percent": self._gain(timeline_id, clips, gain_percent),
+                    "ducking_percent": 100,
+                    "label": label,
+                })
+            except ValidationError as problem:
+                return _fehler(f"Clip ungueltig: {problem.errors()[0].get('msg', '')}")
 
             url = datei_link.link(self.link_basis, self.link_schluessel, a.id, erg.datei, self.uhr())
             name = f"{song_id_aus_titel(erg.titel) or 'videomusik'}.wav"
             imp = self.laura.importieren(str(z["project_id"]), url, name)
             if not imp.get("ok"):
-                return _fehler(str(imp.get("fehler", "Import fehlgeschlagen")))
+                return _fehler(self._ohne_link(str(imp.get("fehler", "Import fehlgeschlagen")), url))
             asset_id = imp["asset_id"]
             warten = self.laura.asset_warten(asset_id)
             if not warten.get("ok"):
-                return _fehler(str(warten.get("fehler", "Asset nicht bereit")))
+                return _fehler(self._ohne_link(str(warten.get("fehler", "Asset nicht bereit")), url))
             angelegt = self.laura.clip_anlegen(timeline_id, {**clip.model_dump(), "asset_id": asset_id})
             if not angelegt.get("ok"):
-                return _fehler(str(angelegt.get("fehler", "Clip nicht angelegt")))
+                return _fehler(self._ohne_link(str(angelegt.get("fehler", "Clip nicht angelegt")), url))
             return {"ok": True, "clip_id": (angelegt.get("clip") or {}).get("id"), "asset_id": asset_id}
 
     @_weich
@@ -439,7 +474,12 @@ class Werkzeuge:
             return _fehler("ungueltige Zeitleisten-ID")
         eingabe: dict = {"timeline_id": timeline_id}
         if musik_auftrag:
-            self._hole(musik_auftrag)  # unbekannt -> _UnbekannterAuftrag
+            m = self._hole(musik_auftrag)  # unbekannt -> _UnbekannterAuftrag
+            if m.art != "video":
+                return _fehler(f"musik_auftrag muss Videomusik sein (Art {m.art})")
+            bestellt_fuer = m.eingabe.get("laura_timeline_id")
+            if bestellt_fuer and bestellt_fuer != timeline_id:
+                return _fehler("Musik-Auftrag gehoert zu einer anderen Zeitleiste")
             eingabe["musik_auftrag"] = musik_auftrag
         auftrag = self.ablage.anlegen("laura_render", eingabe, kanal)
         return {"ok": True, "auftrag": auftrag.id}
@@ -457,10 +497,27 @@ class Werkzeuge:
 
     @_weich
     def render_ausfuehren(self, a: Auftrag) -> dict:
-        """Wird vom Laeufer fuer `laura_render` gerufen (spaet gebunden, siehe Server)."""
+        """Wird vom Laeufer fuer `laura_render` gerufen (spaet gebunden, siehe Server).
+
+        Mit `musik_auftrag` legt er zuerst diese Musik ein (`in_laura_legen`, Lautstaerke
+        automatisch, ueber die Marke im Label wiederholbar) und rendert erst dann. Ist die
+        Musik gescheitert oder abgebrochen oder laesst sie sich nicht einlegen, scheitert der
+        Render: ein Video ohne die bestellte Musik waere das falsche Ergebnis."""
         timeline_id = a.eingabe.get("timeline_id")
         if not isinstance(timeline_id, str) or not _LAURA_ID.fullmatch(timeline_id):
             return _fehler("ungueltige Zeitleisten-ID")
+        musik = a.eingabe.get("musik_auftrag")
+        if musik:
+            try:
+                m = self.ablage.hole(str(musik))
+            except KeyError:
+                return _fehler(f"Musik-Auftrag {musik} nicht gefunden")
+            if m.zustand not in _FERTIG:
+                grund = _ohne_pfade(m.grund, self.daten) or "ohne Grund"
+                return _fehler(f"Musik-Auftrag {m.id} {m.zustand}: {grund}")
+            gelegt = self.in_laura_legen(m.id, timeline_id)
+            if not gelegt.get("ok"):
+                return _fehler(f"Musik-Auftrag {m.id} nicht eingelegt: {gelegt.get('fehler', 'unbekannt')}")
         optionen = self._reel_optionen(timeline_id)
         if optionen is not None:
             start = self.laura.rendern(timeline_id, reel_optionen=optionen)

@@ -20,12 +20,24 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from djset.dienst.auftraege import Ablage, Auftrag
+from djset.dienst.auftraege import Ablage, Auftrag, musik_offen
 
 LOG = logging.getLogger("djset.dienst.laeufer")
 
 FEHLER_MAXLAENGE = 300
 MIN_FREI_GB = 8.0
+SPEICHER_PAUSE_S = 60.0   # nach "zu wenig Speicher" so lange nicht neu messen (jede Messung startet PowerShell)
+SPEICHER_GRUND = "zu wenig Arbeitsspeicher frei"   # der Video-Claw erkennt daran das Warten auf Speicher
+# Wie lange ein Auftrag hoechstens wartet, gemessen ab `erstellt`; danach `gescheitert`.
+WARTEGRENZEN_S: dict[str, float] = {
+    "video": 30 * 60.0,
+    "set": 3 * 3600.0,
+    "aufnehmen": 3 * 3600.0,
+    "laura_render": 2 * 3600.0,
+}
+# Was dj-set nicht braucht und darum nicht erbt (geprueft per grep: dj-set liest nur MUSIK_DATEN).
+_KIND_OHNE = ("LAURA_TOKEN", "MUSIK_LINK_SCHLUESSEL", "MUSIK_TELEGRAM_TOKEN")
+_KIND_OHNE_PRAEFIX = ("TELEGRAM_BOT_TOKEN",)
 BUDGET_AGENT = "musik-kette"
 ZEITLIMITS_S: dict[str, float] = {
     "video": 600.0,
@@ -45,6 +57,16 @@ def _jetzt() -> datetime:
 
 def _kuerzen(text: str) -> str:
     return text[:FEHLER_MAXLAENGE]
+
+
+def kind_umgebung(daten: Path) -> dict[str, str]:
+    """Umgebung fuer dj-set: alles ausser den Schluesseln fuer Laura, Datei-Link und Telegram."""
+    umgebung = {
+        k: v for k, v in os.environ.items()
+        if k.upper() not in _KIND_OHNE and not k.upper().startswith(_KIND_OHNE_PRAEFIX)
+    }
+    umgebung.setdefault("MUSIK_DATEN", str(daten))
+    return umgebung
 
 
 # ---------------------------------------------------------------- Prozess-Helfer
@@ -233,6 +255,9 @@ class Laeufer:
         uhr: Callable[[], float] = time.monotonic,
         *,
         zeitlimits: dict[str, float] | None = None,
+        wartegrenzen: dict[str, float] | None = None,
+        speicher_pause_s: float = SPEICHER_PAUSE_S,
+        wanduhr: Callable[[], datetime] = _jetzt,
     ) -> None:
         self.ablage = ablage
         self.befehl = list(befehl)
@@ -243,6 +268,10 @@ class Laeufer:
         self.laura_render = laura_render
         self.uhr = uhr
         self.zeitlimits = {**ZEITLIMITS_S, **(zeitlimits or {})}
+        self.wartegrenzen = {**WARTEGRENZEN_S, **(wartegrenzen or {})}
+        self.speicher_pause_s = speicher_pause_s
+        self.wanduhr = wanduhr
+        self._speicher_pause_bis: float | None = None
         self._sperre = threading.RLock()
         self._aktiv: tuple[str, subprocess.Popen[bytes]] | None = None
         self._abbruch: set[str] = set()
@@ -287,24 +316,59 @@ class Laeufer:
 
     # -- ein Schritt
 
+    def _zu_lange_wartende(self) -> bool:
+        """Wartende Auftraege ueber ihrer Wartegrenze (ab `erstellt`) enden als `gescheitert`,
+        mit dem letzten Grund. Unter der Sperre rufen. -> ob einer beendet wurde."""
+        jetzt = self.wanduhr()
+        alle = self.ablage.alle()
+        zustaende = {a.id: a.zustand for a in alle}
+        beendet = False
+        for a in alle:
+            grenze = self.wartegrenzen.get(a.art)
+            if a.zustand != "wartet" or grenze is None:
+                continue
+            if (jetzt - a.erstellt).total_seconds() <= grenze:
+                continue
+            musik = musik_offen(a, zustaende)
+            letzter = a.grund or (f"wartete auf Musik-Auftrag {musik}" if musik else "kein Grund vermerkt")
+            self._beenden(a, "gescheitert", _kuerzen(f"Wartete zu lange ({grenze / 60:.0f} min) – {letzter}"))
+            beendet = True
+        return beendet
+
     def ein_schritt(self) -> bool:
         with self._sperre:
+            beendet = self._zu_lange_wartende()
             auftrag = self.ablage.naechster()
             if auftrag is None:
-                return False
+                return beendet
             if auftrag.art == "laura_render":
                 self._starten(auftrag)
-            else:
+            elif self._speicher_pause_bis is not None and self.uhr() < self._speicher_pause_bis:
+                return beendet  # zuletzt zu wenig Speicher: erst nach der Pause neu messen
+        if auftrag.art != "laura_render":
+            # Gemessen wird ausserhalb der Sperre (PowerShell braucht Sekunden); danach wird
+            # der Auftrag neu gelesen, denn er kann inzwischen abgebrochen worden sein.
+            try:
+                frei = float(self.speicher_frei_gb())
+            except Exception:  # noqa: BLE001 - unklarer Speicher heisst warten
+                frei = 0.0
+            with self._sperre:
                 try:
-                    frei = float(self.speicher_frei_gb())
-                except Exception:  # noqa: BLE001 - unklarer Speicher heisst warten
-                    frei = 0.0
+                    aktuell = self.ablage.hole(auftrag.id)
+                except KeyError:
+                    return True
                 if frei < MIN_FREI_GB:
-                    grund = f"Speicher: {frei:.1f} GB frei, mindestens {MIN_FREI_GB:.0f} GB noetig"
-                    if auftrag.grund != grund:
-                        auftrag.grund = grund
-                        self.ablage.speichern(auftrag)
-                    return False
+                    self._speicher_pause_bis = self.uhr() + self.speicher_pause_s
+                    grund = (f"Speicher: {SPEICHER_GRUND} ({frei:.1f} GB frei, "
+                             f"mindestens {MIN_FREI_GB:.0f} GB noetig)")
+                    if aktuell.zustand == "wartet" and aktuell.grund != grund:
+                        aktuell.grund = grund
+                        self.ablage.speichern(aktuell)
+                    return beendet
+                self._speicher_pause_bis = None
+                if aktuell.zustand != "wartet":
+                    return True  # inzwischen abgebrochen (o. ae.): nichts starten
+                auftrag = aktuell
                 if auftrag.art in _BUCHEN_ARTEN:
                     erlaubt, grund = self.budget(BUDGET_AGENT)
                     if not erlaubt:
@@ -354,6 +418,8 @@ class Laeufer:
             self._beenden(auftrag, "gescheitert", _kuerzen(str(fehler) or type(fehler).__name__))
 
     def _unterprozess_abwarten(self, auftrag: Auftrag) -> None:
+        """Startet dj-set, wartet (Zeitlimit, Abbruch) und schreibt den Endzustand. Jede Ausnahme
+        nach dem Start beendet den Prozessbaum und endet als `gescheitert` (nie haengt `laeuft`)."""
         ordner = self.ablage.ordner(auftrag.id)
         ausgabe, fehler = ordner / "ausgabe.log", ordner / "fehler.log"
         start = self.uhr()
@@ -365,8 +431,8 @@ class Laeufer:
         except (KeyError, TypeError) as problem:
             self._abschliessen(auftrag, "gescheitert", _kuerzen(f"Eingabe unvollstaendig: {problem}"))
             return
-        umgebung = dict(os.environ)
-        umgebung.setdefault("MUSIK_DATEN", str(self.ablage.daten))
+        umgebung = kind_umgebung(self.ablage.daten)
+        prozess: subprocess.Popen[bytes] | None = None
         try:
             with ausgabe.open("wb") as aus, fehler.open("wb") as err:
                 prozess = subprocess.Popen(
@@ -389,12 +455,36 @@ class Laeufer:
                         prozess.wait(timeout=_PAUSE_S)
                     except subprocess.TimeoutExpired:
                         continue
-        except OSError as problem:
-            self._abschliessen(auftrag, "gescheitert", _kuerzen(f"Start fehlgeschlagen: {problem}"))
-            return
+            with self._sperre:
+                self._aktiv = None  # der Prozess ist zu Ende: abbrechen() darf ihn nicht mehr treffen
+            self._auswerten(auftrag, prozess, start, gerissen, zeitlimit, ausgabe, fehler)
+        except Exception as problem:  # noqa: BLE001 - kein Auftrag bleibt `laeuft`
+            self._nach_fehler(auftrag, prozess, problem)
         finally:
             with self._sperre:
                 self._aktiv = None
+
+    def _nach_fehler(self, auftrag: Auftrag, prozess: subprocess.Popen[bytes] | None,
+                     problem: Exception) -> None:
+        """Jede Ausnahme ab dem Start: Prozessbaum beenden, Auftrag `gescheitert`."""
+        if prozess is None:
+            grund = f"Start fehlgeschlagen: {problem}"
+        else:
+            if prozess.poll() is None:
+                _prozess_beenden(prozess.pid)
+                try:
+                    prozess.wait(timeout=20)
+                except subprocess.TimeoutExpired:
+                    LOG.warning("Prozess %s lebt nach dem Beenden noch", prozess.pid)
+            grund = f"Laeufer-Fehler: {type(problem).__name__}: {problem}"
+            LOG.warning("Auftrag %s: %s", auftrag.id, grund)
+        try:
+            self._abschliessen(auftrag, "gescheitert", _kuerzen(grund))
+        except Exception:  # noqa: BLE001 - bleibt die Datei unschreibbar, raeumt beim_start auf
+            LOG.exception("Auftrag %s liess sich nicht als gescheitert speichern", auftrag.id)
+
+    def _auswerten(self, auftrag: Auftrag, prozess: subprocess.Popen[bytes], start: float,
+                   gerissen: bool, zeitlimit: float, ausgabe: Path, fehler: Path) -> None:
         dauer = self.uhr() - start
         text = ausgabe.read_text(encoding="utf-8", errors="replace")
         treffer = _RUN_ZEILE.findall(text)

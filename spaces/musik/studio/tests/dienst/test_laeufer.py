@@ -112,6 +112,137 @@ def test_wenig_speicher_bleibt_wartet(tmp_path):
     assert teil.zustand == "wartet" and "Speicher" in teil.grund
 
 
+def test_speicherprobe_hoechstens_einmal_je_pause(tmp_path):
+    """I3: nach "zu wenig Speicher" misst der Laeufer erst nach der Pause wieder (Uhr und Probe injiziert)."""
+    jetzt = [1000.0]
+    proben = []
+
+    def probe():
+        proben.append(jetzt[0])
+        return 2.0
+
+    ablage = Ablage(tmp_path)
+    laeufer = Laeufer(ablage, [sys.executable, FAKE], probe, lambda a: (True, "ok"),
+                      lambda *a: None, lambda a: {"ok": True}, uhr=lambda: jetzt[0],
+                      speicher_pause_s=60.0)
+    a = ablage.anlegen("set", {"wunsch": "w", "length": 10}, "mcp")
+    for _ in range(20):                       # 20 Schritte in derselben Sekunde
+        assert laeufer.ein_schritt() is False
+    jetzt[0] += 59.0
+    assert laeufer.ein_schritt() is False
+    assert proben == [1000.0]                  # einmal je Pausenfenster
+    jetzt[0] += 2.0
+    assert laeufer.ein_schritt() is False
+    assert proben == [1000.0, 1061.0]
+    teil = ablage.hole(a.id)
+    assert teil.zustand == "wartet" and "Arbeitsspeicher" in teil.grund   # I4(b)
+
+
+def test_speicherprobe_ohne_sperre_und_abbruch_waehrenddessen(tmp_path):
+    """I3: gemessen wird ausserhalb der Sperre; wer waehrenddessen abbricht, gewinnt."""
+    ablage = Ablage(tmp_path)
+    laeufer = None
+    a = ablage.anlegen("set", {"wunsch": "w", "length": 10}, "mcp")
+    beobachtet = {}
+
+    def probe():
+        # eine zweite Stimme (anderer Faden) bekommt die Sperre und bricht ab
+        ergebnis = {}
+        t = threading.Thread(target=lambda: ergebnis.update(ok=laeufer.abbrechen(a.id)))
+        t.start()
+        t.join(5)
+        beobachtet["abgebrochen"] = ergebnis.get("ok")
+        return 32.0
+
+    laeufer = Laeufer(ablage, [sys.executable, FAKE], probe, lambda a: (True, "ok"),
+                      lambda *a: None, lambda a: {"ok": True})
+    laeufer.ein_schritt()
+    assert beobachtet["abgebrochen"] is True
+    fertig = ablage.hole(a.id)
+    assert fertig.zustand == "abgebrochen" and fertig.pid is None
+    assert not (tmp_path / "runs").exists()
+
+
+def test_wartet_zu_lange_wird_gescheitert(tmp_path):
+    """I4(a): Wartegrenzen ab `erstellt`; der letzte Grund steht in der Meldung."""
+    from datetime import timedelta
+
+    ablage = Ablage(tmp_path)
+    jetzt = [None]
+    laeufer = Laeufer(ablage, [sys.executable, FAKE], lambda: 2.0, lambda a: (True, "ok"),
+                      lambda *a: None, lambda a: {"ok": True}, wanduhr=lambda: jetzt[0])
+    v = ablage.anlegen("video", {"wunsch": "w", "sekunden": 10}, "mcp")
+    s = ablage.anlegen("set", {"wunsch": "w", "length": 10}, "mcp")
+    jetzt[0] = v.erstellt + timedelta(minutes=29)
+    laeufer.ein_schritt()
+    assert ablage.hole(v.id).zustand == "wartet"
+    assert "Arbeitsspeicher" in ablage.hole(v.id).grund
+    jetzt[0] = v.erstellt + timedelta(minutes=31)
+    laeufer.ein_schritt()
+    fertig = ablage.hole(v.id)
+    assert fertig.zustand == "gescheitert"
+    assert fertig.grund.startswith("Wartete zu lange (30 min) – ")
+    assert "Arbeitsspeicher" in fertig.grund
+    assert ablage.hole(s.id).zustand == "wartet"          # Set darf 3 h warten
+    jetzt[0] = s.erstellt + timedelta(hours=3, minutes=1)
+    laeufer.ein_schritt()
+    assert ablage.hole(s.id).grund.startswith("Wartete zu lange (180 min)")
+
+
+def test_render_wartet_zu_lange_auf_musik(tmp_path):
+    from datetime import timedelta
+
+    ablage = Ablage(tmp_path)
+    jetzt = [None]
+    laeufer = Laeufer(ablage, [sys.executable, FAKE], lambda: 2.0, lambda a: (True, "ok"),
+                      lambda *a: None, lambda a: {"ok": True}, wanduhr=lambda: jetzt[0])
+    m = ablage.anlegen("video", {"wunsch": "w", "sekunden": 10}, "mcp")
+    m.zustand = "laeuft"
+    ablage.speichern(m)
+    r = ablage.anlegen("laura_render", {"timeline_id": "t", "musik_auftrag": m.id}, "mcp")
+    jetzt[0] = r.erstellt + timedelta(minutes=121)
+    laeufer.ein_schritt()
+    fertig = ablage.hole(r.id)
+    assert fertig.zustand == "gescheitert" and fertig.grund.startswith("Wartete zu lange (120 min)")
+    assert m.id in fertig.grund
+
+
+def test_kind_bekommt_keine_geheimnisse(tmp_path, monkeypatch):
+    """M4: dj-set braucht weder Laura-, Link- noch Telegram-Schluessel."""
+    for name in ("LAURA_TOKEN", "MUSIK_LINK_SCHLUESSEL", "MUSIK_TELEGRAM_TOKEN", "TELEGRAM_BOT_TOKEN",
+                 "TELEGRAM_BOT_TOKEN_MARKETING"):
+        monkeypatch.setenv(name, "geheim")
+    monkeypatch.setenv("FAKE_UMGEBUNG", "1")
+    ablage, laeufer, _ = _bauen(tmp_path)
+    ablage.anlegen("video", {"wunsch": "w", "sekunden": 10}, "mcp")
+    laeufer.ein_schritt()
+    namen = set(json.loads((tmp_path / "runs" / "fake-lauf-01" / "env.json").read_text("utf-8")))
+    assert not {"LAURA_TOKEN", "MUSIK_LINK_SCHLUESSEL", "MUSIK_TELEGRAM_TOKEN", "TELEGRAM_BOT_TOKEN",
+                "TELEGRAM_BOT_TOKEN_MARKETING"} & namen
+    assert "MUSIK_DATEN" in namen and "FAKE_UMGEBUNG" in namen
+
+
+def test_fehler_nach_popen_beendet_kind_und_scheitert(tmp_path, monkeypatch):
+    """M6: jede Ausnahme nach Popen beendet den Prozessbaum; nichts bleibt in `laeuft`."""
+    monkeypatch.setenv("FAKE_SCHLAF", "30")
+    ablage = Ablage(tmp_path)
+    aufrufe = [0]
+
+    def uhr():
+        aufrufe[0] += 1
+        if aufrufe[0] > 1:                      # der erste Aufruf ist der Start, danach kracht es
+            raise RuntimeError("Uhr kaputt")
+        return 0.0
+
+    laeufer = Laeufer(ablage, [sys.executable, FAKE], lambda: 32.0, lambda a: (True, "ok"),
+                      lambda *a: None, lambda a: {"ok": True}, uhr=uhr)
+    a = ablage.anlegen("video", {"wunsch": "w", "sekunden": 10}, "mcp")
+    laeufer.ein_schritt()
+    fertig = ablage.hole(a.id)
+    assert fertig.zustand == "gescheitert" and "Uhr kaputt" in fertig.grund
+    assert fertig.pid is not None and not _lebt(fertig.pid)
+
+
 def test_laura_render_braucht_keinen_speicher(tmp_path):
     ablage, laeufer, spur = _bauen(tmp_path, speicher=1.0)
     a = ablage.anlegen("laura_render", {"x": 1}, "mcp")

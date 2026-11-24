@@ -351,6 +351,28 @@ def test_telegram_fehlerklassen(monkeypatch):
         tg.senden("x")
 
 
+def test_telegram_401_ist_vorlaeufig(monkeypatch):
+    """T8: ein kaputter Token (401) verwirft keine Berichte; es gilt das 6-h-Fenster. 403 bleibt endgueltig."""
+    def urlopen(*_a, **_k):
+        raise urllib.error.HTTPError("u", 401, "Unauthorized", {}, None)
+
+    tg = bot.TelegramApi(TOKEN, CHAT)
+    monkeypatch.setattr(bot.urllib.request, "urlopen", urlopen)
+    with pytest.raises(bot.TelegramVorlaeufig):
+        tg.senden("x")
+    with pytest.raises(bot.TelegramVorlaeufig):
+        tg.datei_senden("audio", "a.mp3", b"x", "t")
+    monkeypatch.setattr(bot, "_post_json", lambda *a: {"ok": False, "error_code": 401,
+                                                        "description": "Unauthorized"})
+    with pytest.raises(bot.TelegramVorlaeufig):
+        tg.senden("x")
+
+
+def test_llm_zeitlimit_mindestens_shim_timeout():
+    """M7: die Shim laeuft mit --timeout 1800; der Bot darf nicht frueher aufgeben."""
+    assert bot.LLM_ZEITLIMIT_S >= 1800
+
+
 def test_dienst_nicht_erreichbar_gibt_null(api, dienst):
     dienst.add("video")
     dienst.tot = True
@@ -467,7 +489,7 @@ def test_antwort_holen_nutzt_shim_url_modell_und_system(monkeypatch):
     antwort = bot.antwort_holen("Was gibt es?", [{"role": "user", "content": "a"}], "SYS")
     assert antwort == "Hallo Felix"
     assert gesehen["url"] == "http://127.0.0.1:8152/v1/chat/completions"
-    assert gesehen["zeitlimit"] == 900
+    assert gesehen["zeitlimit"] == 1800          # M7: wie --timeout 1800 der Shim
     assert gesehen["koerper"]["model"] == "claude-code-sonnet"
     assert gesehen["koerper"]["messages"][0] == {"role": "system", "content": "SYS"}
     assert gesehen["koerper"]["messages"][-1] == {"role": "user", "content": "Was gibt es?"}
@@ -651,6 +673,14 @@ def test_systemprompt_liegt_am_paketort_und_nicht_am_arbeitsordner(tmp_path, mon
                      "laura_rendern", "auftrag_zeigen"):
         assert werkzeug in text
     assert "Pfad" in text
+
+
+def test_systemprompt_musik_unter_video_in_einem_zug():
+    """I1(c): bestellen und sofort mit musik_auftrag rendern; nie getrennt einlegen."""
+    text = bot.systemprompt()
+    assert "laura_rendern(timeline_id, musik_auftrag=" in text
+    assert "Nie `in_laura_legen` getrennt vor `laura_rendern`" in text
+    assert "gain_percent" in text
 
 
 def test_musik_mcp_json_wie_vereinbart():

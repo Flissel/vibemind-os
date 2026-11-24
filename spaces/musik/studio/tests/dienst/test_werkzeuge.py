@@ -283,7 +283,8 @@ def test_in_laura_ducking_immer_100_und_label_mit_auftrag(w, laura, ablage, tmp_
 
 def test_in_laura_gain_ausserhalb_und_nicht_fertig(w, laura, ablage, tmp_path):
     a = _fertiges_video(ablage, tmp_path)
-    assert w.in_laura_legen(a.id, "tl1", gain_percent=500)["ok"] is False
+    assert w.in_laura_legen(a.id, "tl1", gain_percent="laut")["ok"] is False
+    assert w.in_laura_legen(a.id, "tl1", gain_percent=True)["ok"] is False
     b = _fertiges_video(ablage, tmp_path, zustand="gescheitert")
     assert w.in_laura_legen(b.id, "tl1")["ok"] is False
     c = _fertiges_video(ablage, tmp_path, mit_laura=False)
@@ -404,6 +405,129 @@ def test_render_ausfuehren_ohne_groesse_kein_download(w, ablage, laura):
         r = w.render_ausfuehren(a)
         assert r["ok"] is False and "unbekannt" in r["fehler"]
     assert "herunterladen" not in laura.namen()
+
+
+def test_render_legt_musik_ein_dann_rendert(w, ablage, laura, tmp_path):
+    """I1(b): mit musik_auftrag legt der Render die Musik zuerst ein, dann rendert er."""
+    m = _fertiges_video(ablage, tmp_path)
+    m.eingabe = {"wunsch": "x", "laura_timeline_id": "tl1"}
+    ablage.speichern(m)
+    a = ablage.anlegen("laura_render", {"timeline_id": "tl1", "musik_auftrag": m.id}, "telegram")
+    r = w.render_ausfuehren(a)
+    assert r["ok"] is True, r
+    wichtig = [n for n in laura.namen() if n in ("importieren", "clip_anlegen", "rendern")]
+    assert wichtig == ["importieren", "clip_anlegen", "rendern"]
+    # ein zweiter Lauf (z. B. nach Neustart) legt dank der Marke nichts doppelt an
+    laura.aufrufe.clear()
+    assert w.render_ausfuehren(a)["ok"] is True
+    assert "importieren" not in laura.namen() and "clip_anlegen" not in laura.namen()
+
+
+@pytest.mark.parametrize("zustand", ["gescheitert", "abgebrochen"])
+def test_render_scheitert_wenn_musik_scheitert(w, ablage, laura, tmp_path, zustand):
+    """I1(b): gescheiterte/abgebrochene Musik -> kein Render ohne Musik."""
+    m = _fertiges_video(ablage, tmp_path, zustand=zustand)
+    m.grund = "kein Song passt"
+    ablage.speichern(m)
+    a = ablage.anlegen("laura_render", {"timeline_id": "tl1", "musik_auftrag": m.id}, "telegram")
+    r = w.render_ausfuehren(a)
+    assert r["ok"] is False
+    assert r["fehler"].startswith(f"Musik-Auftrag {m.id} {zustand}")
+    assert "kein Song passt" in r["fehler"]
+    assert "rendern" not in laura.namen()
+
+
+def test_render_scheitert_wenn_einlegen_scheitert(w, ablage, laura, tmp_path):
+    m = _fertiges_video(ablage, tmp_path)
+    laura.zeit.update(frames=1200)          # Musik passt nicht
+    a = ablage.anlegen("laura_render", {"timeline_id": "tl1", "musik_auftrag": m.id}, "telegram")
+    r = w.render_ausfuehren(a)
+    assert r["ok"] is False and r["fehler"].startswith(f"Musik-Auftrag {m.id}")
+    assert "passt nicht" in r["fehler"]
+    assert "rendern" not in laura.namen()
+
+
+# ---------------------------------------------------------------- Lautstaerke (I2)
+
+
+def _gain(laura):
+    return [x for x in laura.aufrufe if x[0] == "clip_anlegen"][0][2]["gain_percent"]
+
+
+def test_gain_25_bei_sprache(w, ablage, laura, tmp_path):
+    a = _fertiges_video(ablage, tmp_path)
+    laura.clips = [{"id": "v1", "label": "Sprecher"}]          # Audio, das keine Musik ist
+    assert w.in_laura_legen(a.id, "tl1")["ok"] is True
+    assert _gain(laura) == 25
+    # Reel-Datei des Video-Claws reicht auch ohne Audio-Clip
+    laura.aufrufe.clear()
+    laura.clips = []
+    (tmp_path / "reels").mkdir()
+    (tmp_path / "reels" / "reel-tl2.json").write_text("{}", encoding="utf-8")
+    assert w.in_laura_legen(a.id, "tl2")["ok"] is True
+    assert _gain(laura) == 25
+
+
+def test_gain_100_ohne_audio(w, ablage, laura, tmp_path):
+    a = _fertiges_video(ablage, tmp_path)
+    laura.clips = [{"id": "m0", "label": "Alt · musik:20261101-101010-video-abcd"}]  # nur Musik
+    assert w.in_laura_legen(a.id, "tl1")["ok"] is True
+    assert _gain(laura) == 100
+
+
+@pytest.mark.parametrize("wunsch, erwartet", [(80, 80), (0, 0), (500, 400), (-5, 0)])
+def test_gain_explizit_bleibt(w, ablage, laura, tmp_path, wunsch, erwartet):
+    a = _fertiges_video(ablage, tmp_path)
+    laura.clips = [{"id": "v1", "label": "Sprecher"}]
+    assert w.in_laura_legen(a.id, "tl1", gain_percent=wunsch)["ok"] is True
+    assert _gain(laura) == erwartet          # Laura erlaubt 0-400; geklemmt, nicht ersetzt
+
+
+# ---------------------------------------------------------------- Zeitleiste der Musik (I5)
+
+
+def test_in_laura_fremde_zeitleiste_ohne_laura_aufruf(w, ablage, laura, tmp_path):
+    a = _fertiges_video(ablage, tmp_path)
+    a.eingabe = {"wunsch": "x", "laura_timeline_id": "tlA"}
+    ablage.speichern(a)
+    r = w.in_laura_legen(a.id, "tlB")
+    assert r == {"ok": False, "fehler": "Musik-Auftrag gehoert zu einer anderen Zeitleiste"}
+    assert laura.namen() == []
+    # derselbe Fehler schon beim Bestellen des Renders, nicht erst im Laeufer
+    assert w.laura_rendern("tlB", musik_auftrag=a.id)["fehler"] == r["fehler"]
+    assert w.laura_rendern("tlA", musik_auftrag=a.id)["ok"] is True
+    assert w.in_laura_legen(a.id, "tlA")["ok"] is True
+
+
+# ---------------------------------------------------------------- Kleinkram (M1, M3)
+
+
+def test_auftrag_zeigen_set_zeigt_qa_bericht(w, ablage, tmp_path):
+    lauf = tmp_path / "runs" / "set-lauf-01"
+    lauf.mkdir(parents=True)
+    (lauf / "qa-report.md").write_text(
+        "# QA\n" + "\n".join(f"zeile {i} {tmp_path}" for i in range(60)), encoding="utf-8")
+    (lauf / "tracklist.md").write_text("# Tracklist\n", encoding="utf-8")
+    a = ablage.anlegen("set", {"wunsch": "x", "length": 5}, "mcp")
+    a.zustand, a.lauf = "fertig", "set-lauf-01"
+    ablage.speichern(a)
+    r = w.auftrag_zeigen(a.id)
+    assert r["bericht"].startswith("# QA")
+    assert len(r["bericht"].splitlines()) == 40
+    assert str(tmp_path) not in r["bericht"]
+    (lauf / "qa-report.md").unlink()
+    assert w.auftrag_zeigen(a.id)["bericht"] == "# Tracklist"
+
+
+def test_laura_fehler_ohne_link(w, ablage, laura, tmp_path, monkeypatch):
+    a = _fertiges_video(ablage, tmp_path)
+
+    def import_kaputt(project_id, url, name):
+        return {"ok": False, "fehler": f"Laura HTTP 400: kann {url} nicht laden (Basis {BASIS})"}
+    monkeypatch.setattr(laura, "importieren", import_kaputt)
+    r = w.in_laura_legen(a.id, "tl1")
+    assert r["ok"] is False and "<link>" in r["fehler"]
+    assert BASIS not in r["fehler"] and "ablauf=" not in r["fehler"] and "link.test" not in r["fehler"]
 
 
 def test_render_ausfuehren_zu_gross_kein_download(w, ablage, laura):

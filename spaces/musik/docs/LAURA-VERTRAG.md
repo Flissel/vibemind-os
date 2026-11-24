@@ -82,8 +82,13 @@ das Musik-Studio am PC. Ein PC-Pfad nützt Laura also nichts. Das Werkzeug
    Der Dienst wartet, bis das Asset bereit ist (Asset-Probe bis 300 s).
 4. **Anlegen:** `POST /timelines/{timeline_id}/audio-clips` mit dem `laura`-Block plus
    `asset_id`. Der Dienst setzt `seq_out_frame_exclusive` auf die geprüfte Länge,
-   `gain_percent` auf den Wunsch (Vorgabe 100; Reel mit Sprecher 25), `ducking_percent`
-   immer auf 100 und hängt `musik:<auftrag>` an das Label.
+   `gain_percent` auf den Wunsch (auf Lauras 0–400 begrenzt), `ducking_percent` immer auf
+   100 und hängt `musik:<auftrag>` an das Label. Ohne Wunsch gilt: 25, wenn unter der
+   Musik Sprache liegt – der Video-Claw hat für die Zeitleiste ein Reel abgelegt
+   (`reel-<timeline_id>.json`), oder sie hat schon einen Audio-Clip, dessen Label kein
+   `musik:` trägt –, sonst 100.
+   Wurde die Musik für eine bestimmte Zeitleiste bestellt (`laura_timeline_id`), legt der
+   Dienst sie nur dort ein; eine andere Zeitleiste ist ein Fehler, noch vor jedem Laura-Aufruf.
 
    ```json
    {
@@ -107,11 +112,16 @@ das Musik-Studio am PC. Ein PC-Pfad nützt Laura also nichts. Das Werkzeug
 ### Rendern und Herunterladen
 
 `laura_rendern(timeline_id, musik_auftrag)` legt einen Auftrag der Art `laura_render`
-an (Zeitlimit 900 s). Der Dienst startet den Render in Laura (mit den Reel-Optionen des
+an (Zeitlimit 900 s). Mit `musik_auftrag` kommt der Render erst dran, wenn diese Musik
+nicht mehr wartet oder läuft; dann legt er sie selbst ein (`in_laura_legen`, Lautstärke
+wie oben) und rendert danach. Ist die Musik gescheitert oder abgebrochen oder lässt sie
+sich nicht einlegen, scheitert der Render mit diesem Grund – es gibt kein Video ohne die
+bestellte Musik. Der Dienst startet den Render in Laura (mit den Reel-Optionen des
 Video-Claws, falls für die Zeitleiste welche abgelegt sind), wartet auf den Export und
 lädt das fertige Video in den Auftragsordner (`laura-export.mp4`). Ein Export über 500 MB
 wird nicht geladen; der Fehler nennt dann die Größe. Fertige Aufträge meldet der
-Telegram-Bot samt Datei (bis 50 MB, größer nur Bericht und Link).
+Telegram-Bot samt Datei (bis 50 MB); ist die Datei größer, schickt er nur den Bericht
+mit der Auftragsnummer, ohne Link.
 
 ## Wer wofür zuständig ist
 

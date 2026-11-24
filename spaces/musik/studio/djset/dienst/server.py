@@ -116,8 +116,11 @@ def bauen(werkzeuge: Werkzeuge) -> MCPServer:
         """Wartenden oder laufenden Auftrag abbrechen."""
         return werkzeuge.auftrag_abbrechen(auftrag)
 
-    def in_laura_legen(auftrag: str, timeline_id: str, gain_percent: int = 100) -> dict:
-        """Fertige Videomusik als Audio-Clip auf eine Laura-Zeitleiste legen."""
+    def in_laura_legen(auftrag: str, timeline_id: str, gain_percent: int | None = None) -> dict:
+        """Fertige Videomusik als Audio-Clip auf eine Laura-Zeitleiste legen. Fuer "Musik unter
+        Video X" nicht noetig: das macht laura_rendern(timeline_id, musik_auftrag) selbst.
+        gain_percent weglassen: dann 25, wenn auf der Zeitleiste schon Sprache/Ton liegt (oder der
+        Video-Claw dort ein Reel gebaut hat), sonst 100. Ein Wert wird auf 0-400 begrenzt."""
         return werkzeuge.in_laura_legen(auftrag, timeline_id, gain_percent)
 
     def laura_videos_suchen(suchwort: str) -> dict:
@@ -125,7 +128,9 @@ def bauen(werkzeuge: Werkzeuge) -> MCPServer:
         return werkzeuge.laura_videos_suchen(suchwort)
 
     def laura_rendern(timeline_id: str, musik_auftrag: str = "", ctx: Context | None = None) -> dict:
-        """Laura-Zeitleiste rendern lassen (bestellt einen Auftrag)."""
+        """Laura-Zeitleiste rendern lassen (bestellt einen Auftrag). Mit musik_auftrag (eine
+        Videomusik fuer genau diese Zeitleiste) wartet der Render, bis die Musik fertig ist, legt sie
+        ein und rendert dann; scheitert die Musik, scheitert auch der Render (kein Video ohne Musik)."""
         return werkzeuge.laura_rendern(timeline_id, kanal=_kanal(ctx), musik_auftrag=musik_auftrag)
 
     for fn in (bestand_zeigen, song_aufnehmen, set_bestellen, videomusik_bestellen, auftrag_zeigen,
@@ -321,7 +326,16 @@ def routen_anmelden(server: MCPServer, w: Werkzeuge) -> None:
         if b is None:
             return _schlecht("Koerper muss ein JSON-Objekt sein")
         return _antwort(await thread(
-            w.in_laura_legen, auftrag_id, b.get("timeline_id"), b.get("gain_percent", 100)))
+            w.in_laura_legen, auftrag_id, b.get("timeline_id"), b.get("gain_percent")))
+
+    @server.custom_route("/auftraege/{id}/abbrechen", methods=["POST"])
+    async def abbrechen(request: Request) -> JSONResponse:
+        auftrag_id = id_ok(request)
+        if auftrag_id is None:
+            return nicht_gefunden()
+        if await _koerper(request) is None:
+            return _schlecht("Koerper muss ein JSON-Objekt sein")
+        return _antwort(await thread(w.auftrag_abbrechen, auftrag_id))
 
     @server.custom_route("/laura/rendern", methods=["POST"])
     async def rendern(request: Request) -> JSONResponse:

@@ -58,7 +58,7 @@ class Ablage:
 
     def ordner(self, auftrag_id: str) -> Path:
         """Ordner eines Auftrags; wirft KeyError bei einer ID, die nicht der Form entspricht."""
-        if not isinstance(auftrag_id, str) or not _ID.match(auftrag_id):
+        if not isinstance(auftrag_id, str) or not _ID.fullmatch(auftrag_id):
             raise KeyError(auftrag_id)
         return self.wurzel / auftrag_id
 
@@ -116,7 +116,7 @@ class Ablage:
     def alle(self) -> list[Auftrag]:
         gefunden: list[Auftrag] = []
         for ordner in sorted(self.wurzel.iterdir()):
-            if not ordner.is_dir() or not _ID.match(ordner.name):
+            if not ordner.is_dir() or not _ID.fullmatch(ordner.name):
                 continue
             try:
                 gefunden.append(self.hole(ordner.name))
@@ -125,7 +125,22 @@ class Ablage:
         return gefunden
 
     def naechster(self) -> Auftrag | None:
-        wartende = [a for a in self.alle() if a.zustand == "wartet"]
+        """Der naechste wartende Auftrag. Ein `laura_render` mit `musik_auftrag` wird
+        uebersprungen, solange diese Musik noch wartet oder laeuft: sonst kaeme das Video
+        vor seiner Musik dran."""
+        alle = self.alle()
+        zustaende = {a.id: a.zustand for a in alle}
+        wartende = [a for a in alle if a.zustand == "wartet" and not musik_offen(a, zustaende)]
         if not wartende:
             return None
         return min(wartende, key=reihenfolge)
+
+
+def musik_offen(auftrag: Auftrag, zustaende: dict[str, str]) -> str | None:
+    """Die ID des Musik-Auftrags, auf den dieser Render noch warten muss, sonst None."""
+    if auftrag.art != "laura_render":
+        return None
+    musik = auftrag.eingabe.get("musik_auftrag")
+    if isinstance(musik, str) and zustaende.get(musik) in ("wartet", "laeuft"):
+        return musik
+    return None

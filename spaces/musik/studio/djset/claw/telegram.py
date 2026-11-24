@@ -37,13 +37,14 @@ STANDARD_PORT = 8142
 STANDARD_LLM_URL = "http://127.0.0.1:8152/v1"
 STANDARD_DIENST_URL = "http://127.0.0.1:8148"
 MODELL = "claude-code-sonnet"
-LLM_ZEITLIMIT_S = 900          # Werkzeug-Laeufe (Bestellen, Laura) brauchen Minuten
+LLM_ZEITLIMIT_S = 1800         # wie `--timeout 1800` der Musik-Shim: der Bot gibt nie vor ihr auf
 TELEGRAM_MAX = 4000            # Grenze 4096; etwas Luft
 CAPTION_MAX = 1000             # Grenze 1024
 VERLAUF_WECHSEL = 10           # Frage+Antwort-Paare je Chat
 POLL_S = 50
 MELDE_TAKT_S = 30              # spaetestens alle 30 s nach fertigen Auftraegen sehen
-ABGELEHNT_VERSUCHE = 3         # endgueltige Absagen von Telegram (4xx), dann gibt der Bot auf
+ABGELEHNT_VERSUCHE = 3         # endgueltige Absagen von Telegram (4xx ausser 401/429), dann gibt der Bot auf
+VORLAEUFIG_CODES = (401, 429)  # 401: Token kaputt/getauscht - reparierbar, also nicht endgueltig
 VORLAEUFIG_MAX_S = 6 * 3600    # so lange wird bei Telegram-Pannen (Netz, 5xx) weiter versucht
 POST_VERSUCHE = 10             # so oft darf `gemeldet` scheitern
 DATEI_MAX = 50 * 1024 * 1024   # Telegram: Bots senden bis 50 MB
@@ -72,11 +73,11 @@ class AntwortFehler(Exception):
 
 
 class TelegramVorlaeufig(RuntimeError):
-    """Telegram war nicht erreichbar oder antwortete mit 5xx/429: spaeter nochmal versuchen."""
+    """Telegram war nicht erreichbar oder antwortete mit 5xx/429/401: spaeter nochmal versuchen."""
 
 
 class TelegramAbgelehnt(RuntimeError):
-    """Telegram hat die Anfrage endgueltig abgelehnt (4xx oder ok:false)."""
+    """Telegram hat die Anfrage endgueltig abgelehnt (4xx ausser 401/429, oder ok:false; 403 = Bot blockiert)."""
 
 
 # ---------------------------------------------------------------- Umgebung, Pfade, Token
@@ -304,8 +305,9 @@ class TelegramApi:
         return klasse(ohne_token(f"Telegram {methode}: {grund}", self.token))
 
     def _transport(self, methode: str, e: Exception) -> RuntimeError:
-        """4xx (ausser 429) ist eine endgueltige Absage; alles andere (Netz, Zeitlimit, 5xx, 429) vorlaeufig."""
-        if isinstance(e, urllib.error.HTTPError) and 400 <= e.code < 500 and e.code != 429:
+        """4xx (ausser 401/429) ist eine endgueltige Absage; alles andere (Netz, Zeitlimit, 5xx, 429, 401)
+        vorlaeufig. 401 heisst: der Token stimmt nicht - das wird repariert, die Berichte sollen nicht verfallen."""
+        if isinstance(e, urllib.error.HTTPError) and 400 <= e.code < 500 and e.code not in VORLAEUFIG_CODES:
             return self._fehler(methode, f"HTTP {e.code}", TelegramAbgelehnt)
         return self._fehler(methode, e)
 
@@ -316,7 +318,9 @@ class TelegramApi:
             raise self._fehler(methode, "keine JSON-Antwort") from None
         if not isinstance(antwort, dict) or not antwort.get("ok"):
             beschreibung = antwort.get("description") if isinstance(antwort, dict) else None
-            raise self._fehler(methode, beschreibung, TelegramAbgelehnt)
+            code = antwort.get("error_code") if isinstance(antwort, dict) else None
+            klasse = TelegramVorlaeufig if code in VORLAEUFIG_CODES else TelegramAbgelehnt
+            raise self._fehler(methode, beschreibung, klasse)
         return antwort
 
     def _rufen(self, methode: str, daten: dict, zeitlimit: float = 30) -> dict:
@@ -485,9 +489,10 @@ def melden(api: Any, dienst_anfrage: Dienstanfrage, chat_id: int, stand: Meldest
 
     - Was einmal an Telegram ging, wird nie erneut gesendet; hakt nur das Markieren, wird nur das
       `gemeldet`-POST wiederholt (hoechstens POST_VERSUCHE Mal, dann ein Fehler im Log).
-    - Telegram vorlaeufig weg (Netz, Zeitlimit, 5xx, 429): weiter versuchen, bis VORLAEUFIG_MAX_S seit der
-      ersten Panne dieses Auftrags vergangen sind; erst dann wird er aufgegeben und markiert.
-    - Telegram sagt endgueltig nein (4xx, ok:false): nach ABGELEHNT_VERSUCHE Versuchen aufgeben und markieren."""
+    - Telegram vorlaeufig weg (Netz, Zeitlimit, 5xx, 429, 401 = Token kaputt): weiter versuchen, bis
+      VORLAEUFIG_MAX_S seit der ersten Panne dieses Auftrags vergangen sind; erst dann aufgegeben und markiert.
+    - Telegram sagt endgueltig nein (sonstige 4xx wie 403 = Bot blockiert, ok:false): nach ABGELEHNT_VERSUCHE
+      Versuchen aufgeben und markieren."""
     liste = _json_holen(dienst_anfrage, "GET", "/auftraege?kanal=telegram&offen=1")
     if not liste or not liste.get("ok"):
         return 0
