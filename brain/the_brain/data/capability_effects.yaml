@@ -105,6 +105,9 @@ effects:
   desktop_fenster: read
   thebrain_gedanken: read
   rowboat_spaces: read
+  coding_stand: read
+  coding_laeufe: read
+  coding_ergebnis: read
   desktop_bestaetigen: read
   minibook.list_projects: read
   minibook.status: read

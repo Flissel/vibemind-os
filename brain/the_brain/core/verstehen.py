@@ -43,7 +43,11 @@ SPACES: Dict[str, Space] = {
         "Ordne die Notizen im Raster",
     ), ("idea.", "idea_", "ideen_", "bubble.", "bubble_", "aenderung_zurueck", "bewertung_begruenden",
         "bewertung_entfernen")),
-    "projects": Space("Project Space", (), ("code_", "coding_")),
+    "projects": Space("Project Space", (
+        "Wie ist der Stand im Project Space?",
+        "Zeig mir die letzten Läufe",
+        "Zeig mir das Ergebnis des letzten Laufs",
+    ), ("code_", "coding_")),
     "desktop": Space("Desktop", ("Welche Fenster sind offen?",), ("desktop_", "desktop.")),
     "swedesign": Space("SWE Design"),
     "roarboot": Space("Rowboat", ("Welche Agenten gibt es in Rowboat?",), ("rowboat_", "rowboat.")),
