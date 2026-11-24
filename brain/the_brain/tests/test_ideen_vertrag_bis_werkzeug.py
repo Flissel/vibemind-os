@@ -200,6 +200,23 @@ def _hauptlauf() -> int:
     def lies(tabelle, params):
         return db.request("GET", tabelle, params=params)
 
+    # Befoerdern (24.11.2026): nur eine Bubble, die die Sinnpruefung besteht (gemeinsame Kartenregeln):
+    # zwei verbundene Karten mit Inhalt, eine Bewertung, ein White Paper.
+    db.tabellen["ideas"].append({"id": "b0b1e004", "title": "Stadtfest", "description": "", "parent_id": None,
+                                 "score": 70, "status": "active", "promoted_to_project_id": None, "metadata": {}})
+    for kennung, titel, inhalt, art in (
+            ("a0000041", "Bühnenplan", "Der Bühnenplan steht für Samstag fest.", "note"),
+            ("a0000042", "Sponsoren", "Zwei Sponsoren zahlen die Bühne.", "note"),
+            ("a0000043", "White Paper: Stadtfest", "# White Paper\n\nDas Stadtfest braucht einen Bühnenplan.",
+             "dokument")):
+        db.tabellen["canvas_nodes"].append({
+            "id": kennung, "title": titel, "content": inhalt, "node_type": art, "x": 0, "y": 0,
+            "linked_idea_id": "b0b1e004", "format_schema": None, "content_json": None,
+            "previous_content_json": None, "updated_at": "2026-11-22T08:30:00+00:00",
+            "metadata": {"art": "white_paper", "quellen": ["a0000041", "a0000042"]} if art == "dokument" else {}})
+    db.tabellen["canvas_edges"].append({"id": "e0000041", "from_node_id": "a0000041",
+                                        "to_node_id": "a0000042", "edge_type": "related"})
+
     # Argumente je Ereignis: wo es einen Beispielsatz gibt, aus der Abkuerzung.
     app = {"space": "ideas", "bubble": {"id": "b0b1e001", "title": "Messe"},
            "cards": [{"id": "a0000001", "title": "Preise Druckerei"}, {"id": "a0000002", "title": "Druckerei Preise"}],
@@ -227,7 +244,8 @@ def _hauptlauf() -> int:
         # Wurzel festlegen und wieder loeschen (metadata.wurzel der Bubble).
         ("idea.root", abk.loese("Mach Preise Druckerei zur Wurzel", app)["argumente"]),
         ("idea.root", abk.loese("Lösche die festgelegte Wurzel", app)["argumente"]),
-        ("bubble.promote", abk.loese("Befördere diese Bubble", app)["argumente"]),
+        ("bubble.promote", abk.loese("Befördere diese Bubble",
+                                     {**app, "bubble": {"id": "b0b1e004", "title": "Stadtfest"}})["argumente"]),
         # Dokument-Karte (core/ideen_dokument): das Gehirn schreibt sie am Ende eines White Papers.
         ("idea.document", {"id": "00000000-0000-4000-8000-000000000d01", "bubble_id": "b0b1e001",
                            "title": "White Paper: Messe", "art": "white_paper",
@@ -317,6 +335,12 @@ def _hauptlauf() -> int:
     check("Grenze: der Satz im Chat ist ehrlich",
           "gelöscht ist nichts" in abk.fehlersatz(antwort.get("error"), "bubble.delete"),
           abk.fehlersatz(antwort.get("error"), "bubble.delete"))
+    projekt = next((p for p in db.tabellen["projects"] if p.get("from_idea_id") == "b0b1e004"), {})
+    stand = (projekt.get("metadata") or {}).get("uebergabe") or {}
+    check("bubble.promote: das Projekt traegt den festen Stand (White Paper, Karten, Verbindung, Pruefsumme)",
+          (stand.get("version"), (stand.get("white_paper") or {}).get("node_id"), len(stand.get("karten") or []),
+           len(stand.get("kanten") or []), str(stand.get("pruefsumme", "")).startswith("sha256:"))
+          == (1, "a0000043", 2, 1, True), json.dumps(stand, ensure_ascii=False)[:300])
     check("alle zehn Ereignisse geprueft", gesehen == set(vertrag.FESTE_EREIGNISSE),
           str(set(vertrag.FESTE_EREIGNISSE) - gesehen))
 

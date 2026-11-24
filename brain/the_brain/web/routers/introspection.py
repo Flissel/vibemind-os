@@ -2678,6 +2678,17 @@ def _try_ideen_abkuerzung(intent: str, kontext: Any):
                 return None, _lb.frage_bubble(str(loeschen.get("titel") or ""),
                                               karten if isinstance(karten, int) else None), ""
             return None, _lb.frage_karte(str(loeschen.get("titel") or "")), ""
+        if treffer.get("befoerdern") is True:
+            # Befoerdern: nie direkt. Erst pruefen (gemeinsame Kartenregeln), dann die Rueckfrage
+            # mit Kartenzahl und White Paper; "Ja" loest aus (core/befoerdern_bestaetigung).
+            from core import befoerdern_bestaetigung as _bf
+            geprueft = _bf.lesen_und_pruefen(str(treffer["argumente"].get("bubble_id") or ""))
+            if geprueft.get("bestaetigbar"):
+                _bf.fragen(treffer["argumente"], str(treffer.get("antwort") or ""))
+            else:
+                _bf.verwerfen()
+            logger.info("[ideen-abkuerzung] bubble.promote: Rueckfrage vor dem Befoerdern")
+            return None, str(geprueft.get("satz") or _bf.NICHT_LESBAR), ""
         if isinstance(treffer.get("recherche"), dict):
             # Recherche zu einer Bubble: erst die Vorschau (kein Lauf), "Ja, recherchieren" startet.
             from core import recherche_bubble as _rb
@@ -3257,6 +3268,19 @@ async def _multihop_execute(request: Request):
             plan.ziel_bubble_id = str(_lb_antwort.get("bubble_id") or "")
             _ideen_fest = True
             _ideen_antwort = str(_lb_antwort.get("antwort") or "")
+        # Befoerdern: "Ja" gilt nur direkt nach der Rueckfrage mit Kartenzahl und White Paper;
+        # jeder andere Satz verwirft sie (core/befoerdern_bestaetigung).
+        from core import befoerdern_bestaetigung as _bf
+        _bf_antwort = _bf.satz_pruefen(intent)
+        if _bf_antwort and _bf_antwort.get("satz"):
+            _trace_lite(pe, trace_id, intent, "ideen-rueckfrage", _bf_antwort["satz"])
+            return JSONResponse({"ok": False, "rueckfrage": True, "space": "ideas", "executed": {},
+                                 "final_text": _bf_antwort["satz"], "trace_id": trace_id})
+        if _bf_antwort and _bf_antwort.get("argumente") and plan is None:
+            plan = _loesch_plan(intent, _bf_antwort)      # derselbe feste Ein-Schritt-Plan
+            plan.ziel_bubble_id = str(_bf_antwort.get("bubble_id") or "")
+            _ideen_fest = True
+            _ideen_antwort = str(_bf_antwort.get("antwort") or "")
         if _hf_satz and plan is None:
             # Lauf 22: sonst "Das habe ich nicht verstanden. ..." auf "Danke", "ok", "Hallo".
             _trace_lite(pe, trace_id, intent, "hoeflichkeit", _hf_satz)

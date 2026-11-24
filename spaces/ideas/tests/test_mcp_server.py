@@ -26,6 +26,17 @@ def load_server():
     return module
 
 
+# Ein fester Stand als Attrappe: die Tests der Projekt-Anlage pruefen Anlegen, Verknuepfen und Ausgleich;
+# Pruefung und Stand selbst pruefen die Tests in test_befoerdern_uebergabe.py.
+STAND_ATTRAPPE = {"version": 1, "karten": [{"id": "a0000001", "art": "notiz"}], "white_paper": None,
+                  "pruefsumme": "sha256:attrappe"}
+
+
+def _befoerdere(server, argumente):
+    with mock.patch.object(server, "_uebergabe_bauen", return_value=dict(STAND_ATTRAPPE)):
+        return server.call_tool("bubble_promote", argumente)
+
+
 class IdeasMcpServerContractTests(unittest.TestCase):
     def test_tools_list_has_stable_deterministic_ideas_and_bubbles_surface(self) -> None:
         server = load_server()
@@ -261,9 +272,14 @@ class IdeasMcpServerContractTests(unittest.TestCase):
             self.fail(f"unexpected request: {method} {path}")
 
         with mock.patch.object(server, "_request", side_effect=request):
-            result = server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+            result = _befoerdere(server, {"bubble_id": "bubble-1"})
 
-        self.assertEqual(result, project)
+        # Die Quittung: Projekt ohne den grossen Stand, dazu das Ziel fuer die App (Software-Design).
+        self.assertEqual(result["id"], project["id"])
+        self.assertEqual(result["ziel"], {"space": "swedesign", "projekt_id": project["id"]})
+        self.assertEqual((result["karten"], result["white_paper_vom"], result["pruefsumme"]),
+                         (1, None, "sha256:attrappe"))
+        self.assertNotIn("uebergabe", result["metadata"])
         self.assertEqual([(method, path) for method, path, _kwargs in calls], [
             ("GET", "ideas"),
             ("POST", "projects"),
@@ -286,6 +302,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
                 "source_bubble_id": "bubble-1",
                 "source_score": 82,
                 "promotion_attempt_id": mock.ANY,
+                "uebergabe": STAND_ATTRAPPE,
             },
         })
         self.assertRegex(
@@ -316,7 +333,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
             self.fail(f"unexpected request: {method} {path}")
 
         with mock.patch.object(server, "_request", side_effect=request):
-            server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+            _befoerdere(server, {"bubble_id": "bubble-1"})
 
         self.assertEqual(observed["project"]["description"], "")
 
@@ -335,7 +352,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
             self.fail(f"unexpected request: {method} {path}")
 
         with mock.patch.object(server, "_request", side_effect=request):
-            server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+            _befoerdere(server, {"bubble_id": "bubble-1"})
 
         self.assertEqual(observed["project"]["description"], "42")
 
@@ -354,15 +371,15 @@ class IdeasMcpServerContractTests(unittest.TestCase):
                         durable_id,
                     )
             with self.assertRaisesRegex(server.ToolError, "'bubble_id' must be a canonical non-empty string"):
-                server.call_tool("bubble_promote", {})
+                _befoerdere(server, {})
             with self.assertRaisesRegex(server.ToolError, "'bubble_id' must be a canonical non-empty string"):
-                server.call_tool("bubble_promote", {"bubble_id": " bubble-1 "})
+                _befoerdere(server, {"bubble_id": " bubble-1 "})
             with self.assertRaisesRegex(server.ToolError, "only accepts 'bubble_id'"):
-                server.call_tool("bubble_promote", {"bubble_id": "bubble-1", "title": "Launch"})
+                _befoerdere(server, {"bubble_id": "bubble-1", "title": "Launch"})
             for unsafe_id in ("bubble-1,other", "eq.bubble-1", "bubble-1)", "bubble/1"):
                 with self.subTest(unsafe_id=unsafe_id):
                     with self.assertRaisesRegex(server.ToolError, "canonical durable id"):
-                        server.call_tool("bubble_promote", {"bubble_id": unsafe_id})
+                        _befoerdere(server, {"bubble_id": unsafe_id})
 
         request.assert_not_called()
 
@@ -371,7 +388,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
 
         with mock.patch.object(server, "_request", return_value=[]) as request:
             with self.assertRaisesRegex(server.ToolError, "bubble_not_found"):
-                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+                _befoerdere(server, {"bubble_id": "bubble-1"})
 
         request.assert_called_once_with(
             "GET",
@@ -402,7 +419,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
 
         with mock.patch.object(server, "_request", side_effect=request):
             with self.assertRaisesRegex(server.ToolError, "bubble_promotion_link_failed"):
-                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+                _befoerdere(server, {"bubble_id": "bubble-1"})
 
         self.assertEqual([(method, path) for method, path, _kwargs in calls], [
             ("GET", "ideas"),
@@ -443,9 +460,9 @@ class IdeasMcpServerContractTests(unittest.TestCase):
             "uuid4",
             side_effect=[server.uuid.UUID(value) for value in project_uuids],
         ):
-            winner = server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+            winner = _befoerdere(server, {"bubble_id": "bubble-1"})
             with self.assertRaisesRegex(server.ToolError, "bubble_promotion_link_failed: link_returned_no_row"):
-                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+                _befoerdere(server, {"bubble_id": "bubble-1"})
 
         self.assertEqual(winner["id"], winner_id)
         patch_calls = [call for call in calls if call[0] == "PATCH"]
@@ -481,7 +498,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
 
         with mock.patch.object(server, "_request", side_effect=request):
             with self.assertRaisesRegex(server.ToolError, "bubble_promotion_link_failed: link_mismatch"):
-                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+                _befoerdere(server, {"bubble_id": "bubble-1"})
 
         self.assertEqual(calls[-1], ("DELETE", "projects", {"params": {"id": f"eq.{calls[1][2]['body']['id']}"}}))
 
@@ -514,7 +531,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
             server.uuid, "uuid4", return_value=server.uuid.UUID(fixed_uuid),
         ):
             with self.assertRaisesRegex(server.ToolError, "bubble_promotion_create_unverified"):
-                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+                _befoerdere(server, {"bubble_id": "bubble-1"})
 
         self.assertEqual([(method, path) for method, path, _kwargs in calls], [
             ("GET", "ideas"),
@@ -538,7 +555,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
 
         with mock.patch.object(server, "_request", side_effect=request):
             with self.assertRaisesRegex(server.ToolError, "^bubble_promotion_create_unverified$"):
-                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+                _befoerdere(server, {"bubble_id": "bubble-1"})
 
         self.assertEqual([(method, path) for method, path, _kwargs in calls], [
             ("GET", "ideas"),
@@ -564,7 +581,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
                 server.ToolError,
                 "^bubble_promotion_create_unverified: ownership_mismatch$",
             ):
-                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+                _befoerdere(server, {"bubble_id": "bubble-1"})
 
         self.assertEqual([(method, path) for method, path, _kwargs in calls], [
             ("GET", "ideas"),
@@ -591,7 +608,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
                 server.ToolError,
                 "^bubble_promotion_create_unverified: not_found$",
             ):
-                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+                _befoerdere(server, {"bubble_id": "bubble-1"})
 
         self.assertEqual([(method, path) for method, path, _kwargs in calls], [
             ("GET", "ideas"),
@@ -618,7 +635,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
                 server.ToolError,
                 "^bubble_promotion_create_unverified: readback_failed: supabase_unreachable$",
             ):
-                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+                _befoerdere(server, {"bubble_id": "bubble-1"})
 
         self.assertEqual([(method, path) for method, path, _kwargs in calls], [
             ("GET", "ideas"),
@@ -643,7 +660,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
                 server.ToolError,
                 "^bubble_promotion_create_failed: supabase_http_error: status=409$",
             ):
-                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+                _befoerdere(server, {"bubble_id": "bubble-1"})
 
         self.assertEqual([(method, path) for method, path, _kwargs in calls], [
             ("GET", "ideas"),
@@ -682,7 +699,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
             side_effect=[server.uuid.UUID(project_uuid), server.uuid.UUID(attempt_uuid)],
         ):
             with self.assertRaisesRegex(server.ToolError, "^bubble_promotion_create_failed: supabase_unreachable$"):
-                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+                _befoerdere(server, {"bubble_id": "bubble-1"})
 
         self.assertEqual([(method, path) for method, path, _kwargs in calls], [
             ("GET", "ideas"),
@@ -720,7 +737,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
                 server.ToolError,
                 "^bubble_promotion_create_failed: supabase_invalid_response; cleanup_skipped_unverified: ownership_mismatch$",
             ):
-                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+                _befoerdere(server, {"bubble_id": "bubble-1"})
 
         self.assertEqual([(method, path) for method, path, _kwargs in calls], [
             ("GET", "ideas"),
@@ -747,7 +764,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
                 server.ToolError,
                 "^bubble_promotion_create_failed: supabase_http_error: status=500$",
             ):
-                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+                _befoerdere(server, {"bubble_id": "bubble-1"})
 
         self.assertEqual([(method, path) for method, path, _kwargs in calls], [
             ("GET", "ideas"),
@@ -774,7 +791,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
                 server.ToolError,
                 "^bubble_promotion_create_failed: supabase_http_error: status=503; cleanup_skipped_unverified: supabase_unreachable$",
             ):
-                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+                _befoerdere(server, {"bubble_id": "bubble-1"})
 
         self.assertEqual([(method, path) for method, path, _kwargs in calls], [
             ("GET", "ideas"),
@@ -801,7 +818,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
                 server.ToolError,
                 "bubble_promotion_link_failed: link_returned_no_row; compensation_failed: supabase_unreachable",
             ):
-                server.call_tool("bubble_promote", {"bubble_id": "bubble-1"})
+                _befoerdere(server, {"bubble_id": "bubble-1"})
 
     def test_update_fields_are_type_checked_without_schema_enforcement(self) -> None:
         server = load_server()
@@ -1334,13 +1351,13 @@ class IdeasMcpServerContractTests(unittest.TestCase):
         # bubble_promote verlangt genau das Argument bubble_id; die Kennung darf dort nie ankommen.
         with mock.patch.object(server, "_request", side_effect=request):
             try:
-                server.call_tool("bubble_promote", {"bubble_id": "bubble-1", "aenderung_id": "plan_1"})
+                _befoerdere(server, {"bubble_id": "bubble-1", "aenderung_id": "plan_1"})
             except server.ToolError as exc:
                 self.assertFalse(str(exc).startswith("invalid_arguments"), str(exc))
         self.assertEqual(calls[0], ("GET", "ideas"))
         with mock.patch.object(server, "_request") as request_mock:
             with self.assertRaises(server.ToolError) as raised:
-                server.call_tool("bubble_promote", {"bubble_id": "bubble-1", "fremd": "x"})
+                _befoerdere(server, {"bubble_id": "bubble-1", "fremd": "x"})
         self.assertTrue(str(raised.exception).startswith("invalid_arguments"))
         request_mock.assert_not_called()
 

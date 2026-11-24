@@ -793,8 +793,12 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
          or re.fullmatch(r"bef(?:ö|oe)rdere\s+(?:diese\s+bubble|die\s+bubble(?:\s+(?P<b>.+?))?)", text, _I))
     if m:
         bubble = _bubble(m.group("b"), kontext)
-        return _treffer("bubble.promote", {"bubble_id": bubble["id"]},
-                        f"Bubble {_titel(bubble, 'ohne Titel')} ist jetzt ein Projekt.")
+        # Nie direkt: der Router prueft die Bubble und fragt mit Kartenzahl und Datum des
+        # White Papers (core/befoerdern_bestaetigung); erst "Ja" befoerdert.
+        return {**_treffer("bubble.promote", {"bubble_id": bubble["id"]},
+                           f"Bubble {_titel(bubble, 'ohne Titel')} ist jetzt ein Projekt. "
+                           "Ich öffne es in Software-Design. Mit „Zurück“ nimmst du das Befördern zurück."),
+                "befoerdern": True}
 
     # ── lesen ──
     if (re.fullmatch(r"zeig(?:e)?\s+(?:mir\s+)?die\s+(?:notizen|karten)(?:\s+dieser\s+bubble)?", text, _I)
@@ -1052,6 +1056,12 @@ _WERKZEUGFEHLER = {
     "too_many_cards": (f"Diese Bubble hat mehr als {BUBBLE_LOESCHEN_MAX_KARTEN} Karten. So viele lösche ich "
                        "nicht in einem Zug; gelöscht ist nichts."),
     "idea_not_in_bubble": "Eine der Karten gehört nicht zu dieser Bubble.",
+    # Befoerdern (spaces/ideas/mcp_server._uebergabe_bauen): das Werkzeug prueft beim Schreiben noch einmal.
+    "befoerdern_nicht_bereit": ("Die Bubble hat sich seit der Rückfrage geändert und besteht die Prüfung nicht "
+                                "mehr; befördert ist nichts. Sag noch einmal „Befördere diese Bubble“."),
+    "befoerdern_zu_gross": "Diese Bubble ist zu groß für einen festen Stand im Projekt; befördert ist nichts.",
+    "bubble_already_promoted": "Diese Bubble ist schon ein Projekt.",
+    "kartenregeln_missing": "Die Prüfregeln fürs Befördern fehlen im Ideen-Dienst; befördert ist nichts.",
     "too_many_ideas": "In dieser Bubble liegen mehr als 100 Karten. Das geht nur bis 100.",
     "idea_format_nothing_to_revert": "Für diese Karte gibt es kein früheres Format.",
     "idea_connect_node_unverified": "Eine der beiden Karten gibt es nicht mehr.",
@@ -1073,7 +1083,8 @@ def _feld(name: str) -> str:
 # sagt warum (Hinweis) oder fragt nach (Rueckfrage). Die App zeigt das ruhig, nicht als ✕.
 _HINWEISE = ("idea_format_table_no_columns", "idea_format_no_content", "Läufe; die Grenze ist",
              "mehr als 30 starte ich nicht", "starte ich nur nach Rückfrage",
-             "Gelöscht wird nur nach Rückfrage")
+             "Gelöscht wird nur nach Rückfrage", "Befördert wird nur nach Rückfrage",
+             "befoerdern_nicht_bereit", "bubble_already_promoted")
 _RUECKFRAGEN = ("aenderung_zurueck_frage: ", "mehrere Kennungen")
 
 
@@ -1102,6 +1113,10 @@ def fehlersatz(fehler: Any, capability: Any = None) -> str:
     m = re.search(r"Gelöscht wird nur nach Rückfrage\.[^\n]{0,200}", text)
     if m:
         # core/loesch_bestaetigung: ohne "Ja, löschen" direkt nach der Rueckfrage wird nichts geloescht.
+        return m.group(0).strip()
+    m = re.search(r"Befördert wird nur nach Rückfrage\.[^\n]{0,200}", text)
+    if m:
+        # core/befoerdern_bestaetigung: ohne "Ja" direkt nach der Rueckfrage wird nichts befoerdert.
         return m.group(0).strip()
     if "too_many_ideas" in text:
         anzahl = re.search(r"(?:anzahl=|: )(\d{1,6})(?: ideas)?", text)
@@ -1304,6 +1319,18 @@ def ziel_fuer_schritt(capability: Any, ok: bool, argumente: Any, ergebnis: Any,
         if not ist_kennung(bubble_id):
             return None
         node_id = None
+        if str(capability) == "bubble.promote":
+            # Befoerdert: die App springt nach Software-Design und zeigt das neue Projekt.
+            from .ideen_fest_contract import _erste_zeile, _mcp_inhalt
+
+            inhalt, gefunden = _mcp_inhalt(ergebnis)
+            if not gefunden:
+                inhalt = json.loads(ergebnis) if isinstance(ergebnis, str) else ergebnis
+            zeile = _erste_zeile(inhalt)
+            projekt_id = zeile.get("id") if zeile else None
+            if not ist_kennung(projekt_id):
+                return None
+            return {"space": "swedesign", "projekt_id": projekt_id, "bubble_id": bubble_id, "node_id": None}
         if str(capability) == "bubble.delete":
             # Die Bubble ist weg: kein Sprung hinein (die App verlaesst sie selbst).
             return None

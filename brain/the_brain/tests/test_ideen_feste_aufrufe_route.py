@@ -110,14 +110,48 @@ def test_schreibender_schritt_schickt_nur_kennungen_und_wird_nachgeprueft(monkey
     }, argumente)]
 
 
+def _befoerdern_bestaetigt(bubble_id: str) -> dict:
+    """Wie nach "Befördere diese Bubble" und "Ja": Argumente mit dem Schluessel der Rueckfrage."""
+    from core import befoerdern_bestaetigung as bf
+    bf.fragen({"bubble_id": bubble_id}, "")
+    return bf.satz_pruefen("Ja")["argumente"]
+
+
 def test_bubble_ereignis_laeuft_im_namen_des_bubble_agenten(monkeypatch) -> None:
     result, built, executor = _lauf(
-        monkeypatch, _hop("bubble.promote", {"bubble_id": "bub1"}), validator=_Validator(),
+        monkeypatch, _hop("bubble.promote", _befoerdern_bestaetigt("bub1")), validator=_Validator(),
         executor=_Executor(_quittung({"id": "p1", "from_idea_id": "bub1"})))
 
     assert result.ok is True
     assert built == ["mcp:brain-bubbles:spaces-ideas:bubble_promote"]
-    assert executor.calls == [({"bubble_id": "bub1"}, None)]
+    assert executor.calls == [({"bubble_id": "bub1"}, None)]      # der Schluessel geht nicht ans Werkzeug
+
+
+@pytest.mark.parametrize("argumente", [
+    {"bubble_id": "bub1"},                                   # Planer ohne Rueckfrage
+    {"bubble_id": "bub1", "bestaetigung": "0123456789abcdef"},  # erfundener Schluessel
+    "",
+])
+def test_befoerdern_ohne_schluessel_laeuft_nicht(monkeypatch, argumente) -> None:
+    from core import befoerdern_bestaetigung as bf
+    result, built, executor = _lauf(monkeypatch, _hop("bubble.promote", argumente), validator=_Validator())
+
+    assert result.ok is False and bf.OHNE_SCHLUESSEL in result.error
+    assert executor.calls == []
+
+
+def test_befoerdern_schluessel_gilt_nur_fuer_seine_bubble_und_nur_einmal(monkeypatch) -> None:
+    from core import befoerdern_bestaetigung as bf
+    fremd = {**_befoerdern_bestaetigt("bub1"), "bubble_id": "bub2"}
+    result, _built, executor = _lauf(monkeypatch, _hop("bubble.promote", fremd), validator=_Validator())
+    assert result.ok is False and executor.calls == []
+
+    argumente = _befoerdern_bestaetigt("bub1")
+    erst, _b, _e = _lauf(monkeypatch, _hop("bubble.promote", argumente), validator=_Validator(),
+                         executor=_Executor(_quittung({"id": "p1", "from_idea_id": "bub1"})))
+    noch_mal, _b, executor = _lauf(monkeypatch, _hop("bubble.promote", argumente), validator=_Validator())
+    assert erst.ok is True
+    assert noch_mal.ok is False and bf.OHNE_SCHLUESSEL in noch_mal.error and executor.calls == []
 
 
 @pytest.mark.parametrize("event_id, argumente", [
@@ -125,7 +159,6 @@ def test_bubble_ereignis_laeuft_im_namen_des_bubble_agenten(monkeypatch) -> None
     ("idea.rate", {"id": "", "score": 80}),                    # leere Kennung
     ("idea.rate", {"idea_name": "Preise", "score": 80}),
     ("idea.format", {"id": "n1"}),
-    ("bubble.promote", ""),
     ("idea.create", {"title": "Preise"}),
 ])
 def test_ohne_kennung_gibt_es_eine_rueckfrage_und_keinen_aufruf(monkeypatch, event_id, argumente) -> None:

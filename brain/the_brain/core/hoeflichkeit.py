@@ -48,13 +48,14 @@ def etwas_offen() -> bool:
     """Wartet irgendeine Rueckfrage auf eine Antwort? Nur lesen, nichts verwerfen. Wirft nie."""
     try:
         jetzt_wand, jetzt_mono = time.time(), time.monotonic()
+        from . import befoerdern_bestaetigung as bf
         from . import loesch_bestaetigung as lb
         from . import recherche_bubble as rb
         from . import verstehen
         from . import whitepaper_bestaetigung as wp
         from . import ideen_abkuerzung as ab
 
-        for offen in (lb._offen, wp._offen, rb._offen, verstehen._bubble_offen):
+        for offen in (lb._offen, wp._offen, rb._offen, bf._offen, verstehen._bubble_offen):
             if offen and float(offen.get("bis", jetzt_wand + 1) or 0) >= jetzt_wand:
                 return True
         return any(jetzt_mono - float(eintrag.get("zeit", 0)) <= ab.OFFEN_GILT_S
