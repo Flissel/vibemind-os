@@ -375,3 +375,34 @@ Auf dem Endstand (`846a97aa`):
   SHA-256 des Originals ist vorher und nachher gleich.
 
 *gehört* — Felix 24.11. zu Lauf 6 und 7: „Klingt sauber“
+
+## Plan 3, Probe 1: WAV über signierten Link in Laura
+
+Plan 3 legt die Videomusik selbst in Laura. Laura hat keinen Upload und
+holt Dateien nur über `source_url`. Die Probe klärt, ob dieser Weg für
+WAV trägt, bevor die Werkzeuge darauf bauen.
+
+Aufbau (24.11.):
+
+- Der Datei-Link `djset.dienst.link` auf dem PC, Port 8146. Die Firewall
+  lässt nur die Adresse des Mini-PC herein.
+- Ein eigenes Laura-Testprojekt „Musik-Probe“. In Laura wurde nichts
+  anderes angelegt, geändert oder gelöscht.
+- Quelle ist die `videomusik.wav` aus Lauf 6 (`...-produktv-04`). Sie
+  steckt in einem fertigen Auftrag in einem eigenen Probe-Datenordner.
+
+Ergebnis (*measured*):
+
+| Prüfung | Ergebnis |
+|---|---|
+| Import über einen gültigen Link | Asset nach 2,1 s geprobt, Typ `audio`, `codec_audio` `pcm_f32le` |
+| Inhalt | `sha256` in Laura gleich der SHA-256 der Quelldatei (`1a04e269…4f6986`) |
+| Import über einen abgelaufenen Link | Laura meldet den Import als fehlgeschlagen, `DownloadError: unexpected status 403` |
+| Link lokal über die LAN-Adresse | 200, 10 584 088 Bytes, gleich der Quelle |
+
+**Bestanden.** Der Importweg über `source_url` und `asset_warten` gilt
+für Plan 3 unverändert.
+
+Laura meldete für das Asset `duration_ms`, `sample_rate` und `channels`
+als leer. Die Werkzeuge rechnen die Cliplänge deshalb aus
+`videomusik.json` und nicht aus Lauras Asset-Daten.

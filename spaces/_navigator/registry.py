@@ -65,6 +65,16 @@ SPACES: Dict[str, SpaceMeta] = {
         "capabilities": ["sales.auftrag_probe", "sales.auftrag_lesen"],
         "renderer_id": None,
     },
+    "musik": {
+        "label": "Musik",
+        "event_prefix": "musik.",
+        "stream": None,
+        "aliases": [],
+        "description": "Music studio: the Brain orders DJ sets and video music from the user's own songs and shows order status. No surface to navigate to yet.",
+        "use_when": "Never for navigation: no user-facing Musik surface exists yet; the Brain only orders music and reads orders",
+        "capabilities": ["musik.set.bestellen", "musik.video.bestellen", "musik.auftrag.zeigen", "musik.laura.unterlegen"],
+        "renderer_id": None,
+    },
     "recherche": {
         "label": "Recherche-Rechte",
         "event_prefix": "recherche.",

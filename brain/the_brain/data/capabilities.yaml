@@ -2233,6 +2233,74 @@
   agents:
     primary: [som-resume]
 
+# Musik-Studio (Plan 3, Task 9): App-Chat -> brain-musik -> Musik-Dienst (MCP).
+# match_patterns sind Pflicht, sonst verwirft der Router den Eintrag. Die Nachpruefung
+# liest die Adresse aus MUSIK_STUDIO_URL (nie fest im Katalog) und fragt /health ab.
+# Reihenfolge: Der erste Regex-Treffer gewinnt; diese Eintraege muessen VOR som_execute
+# stehen, dessen Muster "mach ... aus" sonst "mach mir ein Set aus meinen Songs" abfaengt.
+- capability: musik_set_bestellen
+  space: musik
+  description: "order a DJ set from the user's own songs in the Musik-Studio, mix a set, DJ set bestellen"
+  anchor_phrases:
+    - "mach mir ein Set aus meinen Songs"
+    - "make me a DJ set"
+  # Nur mit Musikbezug: "DJ-Set", oder "Set" plus musik/songs/lieder/music/tracks/mix im selben
+  # Satz (in beliebiger Reihenfolge). "ein Set Karteikarten" / "a set of flashcards" gehoeren nicht her.
+  match_patterns:
+    - "\\bdj[- ]?set\\b"
+    - "\\bset\\b[^.!?]*\\b(musik|songs?|lieder|music|tracks?|mix)\\b"
+    - "\\b(musik|songs?|lieder|music|tracks?|mix)\\b[^.!?]*\\bset\\b"
+  execution_target: "mcp:brain-musik:musik-studio:set_bestellen"
+  validator:
+    kind: "truth:http_ok"
+    on_fail: report
+    postcondition: {check: http_ok, url_env: MUSIK_STUDIO_URL, path: "/health"}
+
+- capability: musik_video_bestellen
+  space: musik
+  description: "order video music of a given length in seconds, e.g. 30 seconds of calm music, Videomusik bestellen"
+  anchor_phrases:
+    - "mach mir 30 Sekunden ruhige Musik"
+    - "make me 45 seconds of calm music"
+  match_patterns:
+    - "\\b\\d+\\s*(sekunden|sek|seconds?|secs?|s)\\s+(\\w+\\s+){0,3}musik\\b"
+    - "\\b\\d+\\s*(sekunden|sek|seconds?|secs?|s)\\s+(of\\s+)?(\\w+\\s+){0,3}music\\b"
+  execution_target: "mcp:brain-musik:musik-studio:videomusik_bestellen"
+  validator:
+    kind: "truth:http_ok"
+    on_fail: report
+    postcondition: {check: http_ok, url_env: MUSIK_STUDIO_URL, path: "/health"}
+
+- capability: musik_auftrag_zeigen
+  space: musik
+  description: "show the status of a Musik-Studio order, how far is my music order"
+  anchor_phrases:
+    - "wie weit ist mein Musik-Auftrag"
+    - "how far is my music order"
+  match_patterns:
+    - "\\bwie\\s+weit\\s+ist\\s+(der|mein)\\s+musik[- ]?auftrag\\b"
+    - "\\bhow\\s+far\\s+is\\s+(the|my)\\s+music\\s+order\\b"
+  execution_target: "mcp:brain-musik:musik-studio:auftrag_zeigen"
+  validator:
+    kind: "truth:http_ok"
+    on_fail: report
+    postcondition: {check: http_ok, url_env: MUSIK_STUDIO_URL, path: "/health"}
+
+- capability: musik_laura_unterlegen
+  space: musik
+  description: "put finished video music under a video in Laura, leg Musik unter das Video"
+  anchor_phrases:
+    - "leg Musik unter das Reel"
+    - "put music under the video"
+  match_patterns:
+    - "\\bleg(e)?\\s+(die\\s+)?musik\\s+unter\\b"
+    - "\\b(put|lay)\\s+(the\\s+)?music\\s+under\\b"
+  execution_target: "mcp:brain-musik:musik-studio:in_laura_legen"
+  validator:
+    kind: "truth:http_ok"
+    on_fail: report
+    postcondition: {check: http_ok, url_env: MUSIK_STUDIO_URL, path: "/health"}
+
 - capability: som_execute
   description: "Führt einen fertigen (ready) SoM-Plan tatsächlich aus — Schritt für Schritt über die zuständigen Agenten, mit Approval-Gates die vor sensiblen Aktionen (Speichern/Versand) anhalten. Für 'führe den Plan aus', 'los, mach das', 'starte die Ausführung'. Nimmt den jüngsten ready-Plan."
   anchor_phrases:

@@ -16,6 +16,7 @@
     "mcp__video__standbild",
     "mcp__video__titelkarte",
     "mcp__video__reel_bauen",
+    "mcp__video__reel_fertigstellen",
     "mcp__video__reel_status"
   ]
 }

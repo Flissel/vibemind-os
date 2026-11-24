@@ -1,8 +1,8 @@
 # Laura-Vertrag der Videomusik
 
-Stand 2026-11-23 (Plan 2). Diese Datei sagt, was `dj-set video` an Laura übergibt
-und wie Plan 3 es dort hinlegt. Plan 2 liefert nur die Datei und den Vertrag; Laura
-selbst wird in Plan 2 nicht angefasst.
+Stand 2026-11-24 (Plan 3). Diese Datei sagt, was `dj-set video` an Laura übergibt
+und wie der Musik-Dienst es dort hinlegt. `dj-set` liefert nur die Datei und den
+Vertrag; Laura selbst spricht allein der Musik-Dienst an (nur über ihre API).
 
 ## Was ein Lauf liefert
 
@@ -59,23 +59,40 @@ ungültiger Clip schon beim Musik-Studio scheitert und nicht erst als HTTP 422 b
 
 `asset_id` fehlt im Block mit Absicht: die vergibt Laura erst beim Import.
 
-## Wie Plan 3 die Musik in Laura bringt
+## So legt der Musik-Dienst die Musik in Laura
 
-Laura läuft auf dem Mini-PC (`LAURA_API_URL`), das Musik-Studio am PC. Ein PC-Pfad
-nützt Laura also nichts.
+Laura läuft auf dem Mini-PC (`LAURA_API_URL`, Header `X-Laura-Token` aus `LAURA_TOKEN`),
+das Musik-Studio am PC. Ein PC-Pfad nützt Laura also nichts. Das Werkzeug
+`in_laura_legen(auftrag, timeline_id, gain_percent)` des Musik-Dienstes geht so vor:
 
-1. **Datei erreichbar machen:** die WAV unter einem Link anbieten, den der Mini-PC
-   abrufen kann (Musik-Dienst in Plan 3), statt eines Pfads auf dem PC.
-2. **Importieren:** `POST /projects/{project_id}/assets/import` mit
-   `{"source_url": "<link zur videomusik.wav>", "display_name": "<titel>"}` → `asset_id`.
-   Laura holt URL-Quellen über ihren Abruf-Job (`ingest.fetch`); dass ein direkter
-   WAV-Link dort sauber als Ton ankommt, prüft Plan 3 als Erstes.
-3. **Anlegen:** `POST /timelines/{timeline_id}/audio-clips` mit dem `laura`-Block plus
-   `asset_id`:
+1. **Prüfen:** Der Auftrag muss ein fertiges Video sein (`fertig` oder
+   `fertig_mit_befund`) und `videomusik.json` mit `laura`-Block, `frames` und Bildrate
+   haben (nach Sekunden bestellte Musik hat keinen Block: Fehler). Die Zeitleiste wird
+   bei Laura gelesen. Passt die Länge nicht (mehr als 1 Frame Abweichung), meldet das
+   Werkzeug es, statt zu schneiden. Weicht die Bildrate der Zeitleiste ab, rechnet es
+   über `sekunden` neu; ein Clip ragt nie über das Ende der Zeitleiste.
+2. **Datei erreichbar machen:** Der Musik-Dienst reicht die fertige `videomusik.wav`
+   über einen kleinen eigenen Link-Server aus (Vorgabe-Port 8146; Umgebung
+   `MUSIK_LINK_HOST`, `MUSIK_LINK_PORT`, `MUSIK_LINK_SCHLUESSEL`). Der Link ist signiert
+   (HMAC-SHA256), 900 s gültig und gilt nur für `videomusik.wav` und `videomusik.mp3`
+   fertiger Aufträge; es gibt keine Verzeichnisliste und keinen freien Pfad. Fehlen
+   Host oder Schlüssel, ist der Link aus und `in_laura_legen` meldet das.
+3. **Importieren:** `POST /projects/{project_id}/assets/import` mit
+   `{"source_url": "<signierter Link>", "display_name": "<songname>.wav"}` → `asset_id`.
+   Der Dienst wartet, bis das Asset bereit ist (Asset-Probe bis 300 s).
+4. **Anlegen:** `POST /timelines/{timeline_id}/audio-clips` mit dem `laura`-Block plus
+   `asset_id`. Der Dienst setzt `seq_out_frame_exclusive` auf die geprüfte Länge,
+   `gain_percent` auf den Wunsch (auf Lauras 0–400 begrenzt), `ducking_percent` immer auf
+   100 und hängt `musik:<auftrag>` an das Label. Ohne Wunsch gilt: 25, wenn unter der
+   Musik Sprache liegt – der Video-Claw hat für die Zeitleiste ein Reel abgelegt
+   (`reel-<timeline_id>.json`), oder sie hat schon einen Audio-Clip, dessen Label kein
+   `musik:` trägt –, sonst 100.
+   Wurde die Musik für eine bestimmte Zeitleiste bestellt (`laura_timeline_id`), legt der
+   Dienst sie nur dort ein; eine andere Zeitleiste ist ein Fehler, noch vor jedem Laura-Aufruf.
 
    ```json
    {
-     "asset_id": "<aus Schritt 2>",
+     "asset_id": "<aus Schritt 3>",
      "seq_in_frame": 0,
      "seq_out_frame_exclusive": 900,
      "asset_in_frame": 0,
@@ -84,13 +101,27 @@ nützt Laura also nichts.
      "fade_out_frames": 0,
      "mix_mode": "mix",
      "ducking_percent": 100,
-     "label": "..."
+     "label": "... · musik:<auftrag>"
    }
    ```
 
-   Die Frames zählen in der Bildrate der Sequence; `fps_num`/`fps_den` im Vertrag
-   sagen, in welcher Rate die Musik gemessen wurde. Weicht die Sequence ab, rechnet
-   Plan 3 über `sekunden` neu, statt die Frames blind zu übernehmen.
+   Prüfen, Importieren und Anlegen laufen als ein Schritt je (Auftrag, Zeitleiste). Ein
+   zweiter Aufruf findet den Clip über die Marke `musik:<auftrag>` im Label und legt
+   keinen zweiten an. Der Dienst löscht in Laura nichts und ändert keinen vorhandenen Clip.
+
+### Rendern und Herunterladen
+
+`laura_rendern(timeline_id, musik_auftrag)` legt einen Auftrag der Art `laura_render`
+an (Zeitlimit 900 s). Mit `musik_auftrag` kommt der Render erst dran, wenn diese Musik
+nicht mehr wartet oder läuft; dann legt er sie selbst ein (`in_laura_legen`, Lautstärke
+wie oben) und rendert danach. Ist die Musik gescheitert oder abgebrochen oder lässt sie
+sich nicht einlegen, scheitert der Render mit diesem Grund – es gibt kein Video ohne die
+bestellte Musik. Der Dienst startet den Render in Laura (mit den Reel-Optionen des
+Video-Claws, falls für die Zeitleiste welche abgelegt sind), wartet auf den Export und
+lädt das fertige Video in den Auftragsordner (`laura-export.mp4`). Ein Export über 500 MB
+wird nicht geladen; der Fehler nennt dann die Größe. Fertige Aufträge meldet der
+Telegram-Bot samt Datei (bis 50 MB); ist die Datei größer, schickt er nur den Bericht
+mit der Auftragsnummer, ohne Link.
 
 ## Wer wofür zuständig ist
 
@@ -105,7 +136,7 @@ nützt Laura also nichts.
   `video-mit-musik.mp4` und fließen **nicht** in den `laura`-Block; dort stehen
   immer `gain_percent` 100 und `mix_mode` `mix`, und Laura entscheidet.
 
-## Nicht in Plan 2
+## Nicht umgesetzt
 
-Mehrere Songs für lange Videos, Zeitpunkte im Video (Höhepunkt auf Sekunde X) und
-automatisches Unterlegen in Laura. Das automatische Unterlegen kommt in Plan 3.
+Mehrere Songs für lange Videos und Zeitpunkte im Video (Höhepunkt auf Sekunde X).
+Das Unterlegen in Laura selbst ist umgesetzt (`in_laura_legen`, siehe oben).

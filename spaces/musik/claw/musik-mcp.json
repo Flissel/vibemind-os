@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "musik": {
+      "type": "http",
+      "url": "http://127.0.0.1:8148/mcp",
+      "headers": {
+        "X-Musik-Kanal": "telegram"
+      },
+      "timeout": 1200000
+    }
+  },
+  "allowedTools": [
+    "mcp__musik__bestand_zeigen",
+    "mcp__musik__song_aufnehmen",
+    "mcp__musik__set_bestellen",
+    "mcp__musik__videomusik_bestellen",
+    "mcp__musik__auftrag_zeigen",
+    "mcp__musik__auftrag_abbrechen",
+    "mcp__musik__in_laura_legen",
+    "mcp__musik__laura_videos_suchen",
+    "mcp__musik__laura_rendern"
+  ]
+}

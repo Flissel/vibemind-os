@@ -15,6 +15,9 @@ dependencies = [
     # faengt das, weil der echte Client absichtlich nirgends getestet wird.
     # <0.3, weil die naechste Hauptversion dieselbe Frage neu stellt.
     "claude-agent-sdk>=0.2,<0.3",
+    # Musik-Dienst (djset/dienst/server.py): MCPServer und custom_route sind 2.x-Oberflaeche
+    # (aus FastMCP wurde MCPServer). <3, weil die naechste Hauptversion sie wieder aendern kann.
+    "mcp>=2.3,<3",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +30,8 @@ gesang = ["torch==2.5.1", "torchaudio==2.5.1", "demucs==4.0.1"]
 
 [project.scripts]
 dj-set = "djset.cli:main"
+musik-dienst = "djset.dienst.server:main"
+musik-telegram = "djset.claw.telegram:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

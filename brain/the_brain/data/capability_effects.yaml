@@ -117,7 +117,13 @@ effects:
   video_status: read
   video_team_status: read
   event_ask: read
+  musik_auftrag_zeigen: read
   # --- external ---
+  # Musik-Dienst (Plan 3): Bestellungen und Unterlegen wirken im Dienst bzw. in Laura,
+  # nicht in einem Speicher des Brains. Die Nachpruefung ist nur der /health-Test.
+  musik_set_bestellen: external
+  musik_video_bestellen: external
+  musik_laura_unterlegen: external
   desktop_skill: external
   browser_automation: external
   som_resume: external
