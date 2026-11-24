@@ -97,6 +97,8 @@ VORLAGEN = frozenset({
 _OHNE_INHALT = frozenset({"type", "id", "color", "colour", "status", "priority", "icon", "x", "y", "style",
                           "shape", "source", "target", "from", "to", "url", "href", "created_at", "updated_at"})
 _KUERZEL = re.compile(r"\bK(\d{1,3})\b")
+# "[K3]" (so bittet der Abschnitt-Auftrag um Verweise) oder "K3".
+_KUERZEL_KLAMMER = re.compile(r"\[(K\d{1,3})\]|\b(K\d{1,3})\b")
 _UEBERSCHRIFT = re.compile(r"^(#{1,6})[ \t]+", re.MULTILINE)
 _LINK = re.compile(r"https?://[^\s<>()\"'\]]+")
 _RECHERCHE_TITEL = re.compile(r"^Research:\s*(.*?)\s*\d{4}-\d{2}-\d{2}(?:\s+[\d:]+)?\s*$")
@@ -478,6 +480,7 @@ def nachricht_abschnitt(bubble_titel: str, nummer: int, gesamt: int, einleitung:
         f"Du schreibst Abschnitt {nummer} von {gesamt} eines White Papers zur Bubble "
         f"„{_sauber(bubble_titel, 200)}“. Fasse die Karten dieses Abschnitts zu einem zusammenhaengenden "
         "Kapitel: ausfuehrlich, sachlich, in der Sprache der Karten, in der Reihenfolge der Karten.",
+        "Nenne im Text die Karte, auf die du dich stuetzt, in eckigen Klammern, z. B. [K3].",
         f'Felder: "ueberschrift" (Text bis {UEBERSCHRIFT_GRENZE} Zeichen, eine Zeile), "text" (Markdown bis '
         f'{ABSCHNITT_GRENZE} Zeichen; Unterueberschriften mit ###), "verweise" (Liste der Kuerzel, hoechstens '
         f'{VERWEISE_MAX}).',
@@ -517,8 +520,45 @@ def _text_ok(wert: Any, grenze: int, was: str) -> tuple[Optional[str], str]:
     return wert.strip(), ""
 
 
-def ergebnis_pruefen(vertrag: str, roh: Any, kuerzel: Iterable[str]) -> tuple[Optional[dict[str, Any]], str]:
-    """(Werte, "") oder (None, deutscher Satz). Genau ein JSON-Objekt mit genau den Feldern."""
+_KOPFZEILE = re.compile(r"^\s*#{1,6}[ \t]+(?P<kopf>[^\n]+?)\s*#*\s*$")
+_KURZE_KOPFZEILE = re.compile(r"^\s*(?:\*\*)?(?P<kopf>[^\n.!?:;]{2,%d}?)(?:\*\*)?\s*$" % UEBERSCHRIFT_GRENZE)
+
+
+def _abschnitt_aus_fliesstext(text: str, erlaubt: set[str],
+                              titel_teil: str) -> tuple[Optional[dict[str, Any]], str]:
+    """Ein Abschnitt IST Prosa; die JSON-Huelle ist nur Transport (White-Paper-Lauf 24.11.2026:
+    der Agent schrieb zweimal reinen Text). Ueberschrift: erste Zeile, wenn sie wie eine
+    Ueberschrift aussieht (Markdown-Kopf, oder kurze Zeile ohne Satzzeichen vor einer Leerzeile),
+    sonst der Titel des Teils. Verweise: die Kuerzel im Text, nur Karten dieses Teils. Alle
+    Textpruefungen (Laenge, Steuerzeichen, HTML, Werkzeug, Absage, Vorrede) bleiben."""
+    zeilen = text.split("\n")
+    kopf, rest = None, text
+    erste = _KOPFZEILE.match(zeilen[0]) or (
+        _KURZE_KOPFZEILE.match(zeilen[0]) if len(zeilen) > 2 and not zeilen[1].strip() else None)
+    if erste and not _KUERZEL.search(erste.group("kopf")):
+        kopf, rest = erste.group("kopf").strip(), "\n".join(zeilen[1:]).strip()
+    if kopf is None:
+        kopf = _sauber(titel_teil, UEBERSCHRIFT_GRENZE) or "Abschnitt"
+    verweise = list(dict.fromkeys(m.group(0) for m in _KUERZEL.finditer(rest)))
+    if any(v not in erlaubt for v in verweise):
+        return None, "Der Agent verweist auf Karten, die er nicht bekommen hat; es wurde nichts geändert."
+    ueberschrift, satz = _text_ok(kopf, UEBERSCHRIFT_GRENZE, "die Überschrift")
+    if ueberschrift is None:
+        return None, satz
+    abschnitt, satz = _text_ok(rest, ABSCHNITT_GRENZE, "den Text")
+    if abschnitt is None:
+        return None, satz
+    return {"ueberschrift": ueberschrift.lstrip("# ").strip() or "Abschnitt",
+            "text": _UEBERSCHRIFT.sub(lambda m: "#" * min(6, max(3, len(m.group(1)))) + " ", abschnitt),
+            "verweise": verweise[:VERWEISE_MAX], "form": "fliesstext"}, ""
+
+
+def ergebnis_pruefen(vertrag: str, roh: Any, kuerzel: Iterable[str],
+                     titel_teil: str = "") -> tuple[Optional[dict[str, Any]], str]:
+    """(Werte, "") oder (None, deutscher Satz). Genau ein JSON-Objekt mit genau den Feldern.
+
+    Ausnahme "abschnitt": kommt gar kein JSON-Objekt (kein "{" im Text), gilt der Text als
+    Abschnitt in Fliesstext (siehe :func:`_abschnitt_aus_fliesstext`)."""
     erlaubt = set(kuerzel)
     if not isinstance(roh, str) or not roh.strip():
         return None, "Der Agent hat nichts geliefert."
@@ -534,7 +574,11 @@ def ergebnis_pruefen(vertrag: str, roh: Any, kuerzel: Iterable[str]) -> tuple[Op
         # Genau ein Objekt darf aus Vor-/Nachtext oder Codeblock kommen; sonst streng.
         werte = ein_json_objekt(text, streng=False)
         if werte is None:
-            return None, VERWEIGERT if ist_verweigerung(text) else _FORM
+            if ist_verweigerung(text):
+                return None, VERWEIGERT
+            if vertrag == "abschnitt" and "{" not in text:
+                return _abschnitt_aus_fliesstext(text, erlaubt, titel_teil)
+            return None, _FORM
     felder = {"zusammenfassen": {"absaetze", "verweise"}, "abschnitt": {"ueberschrift", "text", "verweise"},
               "gruppieren": {"gruppen"}}.get(vertrag)
     if felder is None:
@@ -695,8 +739,11 @@ def gruppen_bauen(rueckweg: Mapping[str, Any], werte: Mapping[str, Any]) -> tupl
 
 
 def kuerzel_ersetzen(text: str, titel: Mapping[str, str]) -> str:
-    """K3 im Text des Agenten -> „Titel“; unbekannte Kuerzel bleiben stehen."""
-    return _KUERZEL.sub(lambda m: f"„{titel[m.group(0)]}“" if m.group(0) in titel else m.group(0), text)
+    """K3 (auch [K3]) im Text des Agenten -> „Titel“; unbekannte Kuerzel bleiben stehen."""
+    def ersetzen(m: "re.Match[str]") -> str:
+        k = m.group(1) or m.group(2)
+        return f"„{titel[k]}“" if k in titel else m.group(0)
+    return _KUERZEL_KLAMMER.sub(ersetzen, text)
 
 
 # ── Anlegen ──────────────────────────────────────────────────────────────
@@ -1252,8 +1299,10 @@ def verarbeiten(auftrag: Mapping[str, Any], *, lies_karten: Callable[[list[str]]
 
         index, teile = rueckweg["index"], rueckweg["teile"]
         kuerzel_titel = dict(teile[index]["kuerzel_titel"])
-        werte, satz = ergebnis_pruefen("abschnitt", auftrag.get("ergebnis"), kuerzel_titel)
-        hop = re.sub(r"/teil\d+(?:/neu)?$", "", str(auftrag.get("hop_id") or "s"))
+        # Ohne eigene Ueberschrift im Fliesstext: der Titel der ersten Karte des Teils.
+        titel_teil = next((kuerzel_titel[k] for k in sorted(kuerzel_titel, key=lambda k: int(k[1:]))), "")
+        werte, satz = ergebnis_pruefen("abschnitt", auftrag.get("ergebnis"), kuerzel_titel, titel_teil)
+        hop =re.sub(r"/teil\d+(?:/neu)?$", "", str(auftrag.get("hop_id") or "s"))
         if werte is None:
             befund = form_befund("abschnitt", auftrag.get("ergebnis"), satz)
             hinweis = form_hinweis(befund)
@@ -1285,6 +1334,7 @@ def verarbeiten(auftrag: Mapping[str, Any], *, lies_karten: Callable[[list[str]]
             "ueberschrift": kuerzel_ersetzen(werte["ueberschrift"], kuerzel_titel),
             "text": kuerzel_ersetzen(werte["text"], kuerzel_titel),
             "grundlage": [kuerzel_titel[v] for v in werte["verweise"] if v in kuerzel_titel],
+            **({"form": "fliesstext"} if werte.get("form") == "fliesstext" else {}),
         }]
         if index + 1 < len(teile):
             weiter = {**rueckweg, "index": index + 1, "fertig": fertig,

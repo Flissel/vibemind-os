@@ -237,7 +237,7 @@ def test_karteninhalt_kann_den_datenblock_nicht_schliessen() -> None:
 # ── Ergebnis pruefen ─────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("roh, satz", [
-    ("kein JSON", "vereinbarten Form"),
+    ('{"ueberschrift": "Bühne", "text": "abgebrochen', "vereinbarten Form"),
     ('{"ueberschrift": "Bühne", "text": "x"}', "vereinbarten Form"),
     ('{"ueberschrift": "Bühne", "text": "x", "verweise": ["K9"]}', "nicht bekommen"),
     ('{"ueberschrift": "Bühne", "text": "<script>x</script>", "verweise": []}', "HTML"),
@@ -337,24 +337,26 @@ def test_white_paper_kette_legt_teil_fuer_teil_an_und_schreibt_am_ende_einmal(mo
 def test_ungueltiger_teil_haelt_das_white_paper_nach_dem_zweiten_versuch_an() -> None:
     _, rueckweg = _vorbereiten()
     ideen, angelegt = Ideen(), []
-    p = dok.verarbeiten(_auftrag(rueckweg, "Hier ist dein Kapitel!"), **_anschluss(ideen, angelegt=angelegt)(None))
+    # Reiner Text gilt seit 24.11.2026 als Abschnitt; hier ein abgebrochenes JSON-Objekt.
+    abgebrochen = '{"ueberschrift": "Teil 1", "text": "bricht ab'
+    p = dok.verarbeiten(_auftrag(rueckweg, abgebrochen), **_anschluss(ideen, angelegt=angelegt)(None))
     # Erst ein zweiter Lauf desselben Abschnitts, mit Hinweis zur Form (White-Paper-Lauf 24.11.2026).
     assert p["rueckweg"] == "weiter" and p["verified"] is None
     assert p["meldung"] == ("White Paper: Abschnitt 1 von 1 kam nicht in der vereinbarten Form; "
                             "ich versuche ihn einmal neu.")
-    assert p["befund"]["form"] == "kein_json"
+    assert p["befund"]["form"] == "abgeschnitten"
     (neu,) = angelegt
     assert neu["hop_id"] == "s1/teil1/neu" and neu["plan_id"] == "ideen_9" and neu["agent"] == "brain-ideas"
-    assert "Zweiter Versuch" in neu["auftrag"] and "kein JSON-Objekt" in neu["auftrag"]
+    assert "Zweiter Versuch" in neu["auftrag"] and "brach mitten im JSON-Objekt ab" in neu["auftrag"]
     assert "Abschnitt 1 von 1" in neu["auftrag"] and "[K1] " in neu["auftrag"]
     nochmal = neu["uebergabe"]["rueckweg"]
     assert nochmal["index"] == 0 and nochmal["fertig"] == [] and nochmal["neuversuche"] == 1
     # Scheitert auch der zweite Lauf, haelt das White Paper an; kein dritter Lauf.
-    p = dok.verarbeiten(_auftrag(nochmal, "Wieder nur Text.", "f0000002", "s1/teil1/neu"),
+    p = dok.verarbeiten(_auftrag(nochmal, abgebrochen, "f0000002", "s1/teil1/neu"),
                         **_anschluss(ideen, angelegt=angelegt)(None))
     assert p["rueckweg"] == "abgelehnt" and p["verified"] is False
     assert p["meldung"].startswith("White Paper angehalten bei Abschnitt 1 von 1:")
-    assert p["befund"]["form"] == "kein_json"
+    assert p["befund"]["form"] == "abgeschnitten"
     assert len(angelegt) == 1 and ideen.aufrufe == []
 
 
@@ -374,7 +376,7 @@ def test_zweiter_lauf_gelingt_und_die_kette_geht_normal_weiter(monkeypatch) -> N
     assert zweiter["hop_id"] == "s1/teil2" and "Zweiter Versuch" not in zweiter["auftrag"]
     # Der zweite Versuch ist je Dokument einmal da: Teil 2 bekommt keinen mehr.
     assert zweiter["uebergabe"]["rueckweg"]["neuversuche"] == 1
-    p = dok.verarbeiten(_auftrag(zweiter["uebergabe"]["rueckweg"], "kein JSON", "f0000003", "s1/teil2"),
+    p = dok.verarbeiten(_auftrag(zweiter["uebergabe"]["rueckweg"], '{"kaputt', "f0000003", "s1/teil2"),
                         **bauen(None))
     assert p["rueckweg"] == "abgelehnt" and len(angelegt) == 2
 
@@ -846,3 +848,72 @@ def test_ohne_gleichen_titel_oder_mit_anderer_art_bleibt_es_eine_neue_karte() ->
     _, rueckweg = _vorbereiten("idea.summarize", {"bubble_id": BUBBLE["id"], "idea_ids": ["a0000004"]},
                                lesen=LesenAttrappe(karten=[*KARTEN, ALTE_ZUSAMMENFASSUNG]))
     assert rueckweg["dokument_id"] == DOK_ID
+
+
+# ── Abschnitt in Fliesstext (24.11.2026) ──────────────────────────────────
+# Lauf im Betrieb: der Agent schrieb zweimal reinen Text ohne JSON-Objekt. Ein Abschnitt IST
+# Prosa; die JSON-Huelle ist nur Transport. Alle Textpruefungen bleiben.
+
+def test_fliesstext_mit_kopfzeile_und_kuerzeln() -> None:
+    roh = "## Bühne und Programm\n\nZwei Bühnen [K1], das Programm beginnt am Nachmittag [K2].\n\n# Technik\nLicht vom Verein."
+    werte, satz = dok.ergebnis_pruefen("abschnitt", roh, ["K1", "K2"], "Bühnenplan")
+    assert satz == "" and werte["form"] == "fliesstext"
+    assert werte["ueberschrift"] == "Bühne und Programm" and werte["verweise"] == ["K1", "K2"]
+    assert werte["text"].startswith("Zwei Bühnen [K1]") and "### Technik" in werte["text"]
+
+
+def test_fliesstext_kurze_erste_zeile_vor_leerzeile_ist_ueberschrift() -> None:
+    werte, _ = dok.ergebnis_pruefen("abschnitt", "Finanzierung\n\nDie Sponsoren zahlen bis März [K1].", ["K1"], "X")
+    assert werte["ueberschrift"] == "Finanzierung" and werte["text"] == "Die Sponsoren zahlen bis März [K1]."
+
+
+def test_fliesstext_ohne_kopfzeile_nimmt_den_titel_des_teils() -> None:
+    roh = "Das Fest hat zwei Bühnen [K1]. Das Programm beginnt am Nachmittag."
+    werte, _ = dok.ergebnis_pruefen("abschnitt", roh, ["K1"], "Bühnenplan")
+    assert werte["ueberschrift"] == "Bühnenplan" and werte["text"] == roh and werte["verweise"] == ["K1"]
+
+
+@pytest.mark.parametrize("roh, satz", [
+    ("Das Fest hat zwei Bühnen [K9].", "nicht bekommen"),
+    ("Das Fest hat <script>x</script> zwei Bühnen.", "HTML"),
+    ("Hier ist dein Kapitel: Das Fest hat zwei Bühnen.", "Vorrede"),
+    ("Das Fest hat zwei\x01 Bühnen.", "Steuerzeichen"),
+    ("x" * 9001, "länger als 9000"),
+])
+def test_fliesstext_bleibt_streng(roh, satz) -> None:
+    werte, grund = dok.ergebnis_pruefen("abschnitt", roh, ["K1"], "Bühnenplan")
+    assert werte is None and satz in grund
+
+
+def test_fliesstext_absage_bleibt_absage() -> None:
+    assert dok.ergebnis_pruefen("abschnitt", "Ich kann aus diesen Notizen keinen Abschnitt schreiben.",
+                                ["K1"], "Bühnenplan")[1] == dok.VERWEIGERT
+
+
+def test_fliesstext_nur_fuer_abschnitte() -> None:
+    assert dok.ergebnis_pruefen("zusammenfassen", "Das Fest hat zwei Bühnen.", ["K1"])[0] is None
+    assert dok.ergebnis_pruefen("gruppieren", "Das Fest hat zwei Bühnen.", ["K1"])[0] is None
+
+
+def test_kuerzel_in_klammern_werden_zu_titeln() -> None:
+    titel = {"K1": "Bühnenplan", "K2": "Sponsoren"}
+    assert dok.kuerzel_ersetzen("Zwei Bühnen [K1], Geld K2, unbekannt [K7].", titel) == \
+        "Zwei Bühnen „Bühnenplan“, Geld „Sponsoren“, unbekannt [K7]."
+
+
+def test_auftrag_bittet_um_kuerzel_in_klammern() -> None:
+    nachricht = dok.nachricht_abschnitt("Stadtfest", 1, 1, "Worum es geht", [("K1", "Bühnenplan", "x")], "y")
+    assert "in eckigen Klammern, z. B. [K3]" in nachricht
+
+
+def test_white_paper_aus_fliesstext_wird_geschrieben_ohne_zweiten_lauf() -> None:
+    _, rueckweg = _vorbereiten()
+    ideen, angelegt = Ideen(), []
+    roh = "Das Fest hat zwei Bühnen [K1]. Die Sponsoren haben zugesagt."
+    p = dok.verarbeiten(_auftrag(rueckweg, roh), **_anschluss(ideen, angelegt=angelegt)(None))
+    assert p["rueckweg"] == "geschrieben" and p["verified"] is True and angelegt == []
+    ((_, argumente),) = ideen.aufrufe
+    text = argumente["content"]
+    erste = rueckweg["teile"][0]["kuerzel_titel"]["K1"]
+    assert f"## {erste}" in text and f"Das Fest hat zwei Bühnen „{erste}“." in text
+    assert "[K1]" not in text and f"*Grundlage: „{erste}“.*" in text
