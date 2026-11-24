@@ -322,7 +322,8 @@ OHNE_SATZ = "Im Bereich „{}“ kenne ich noch keinen Satz, den ich sicher ausf
 # Klassierer liefert wie gemessen einen schwachen Cosinus; der Muster-Router ist der echte.
 RUNDGANG = [
     ("Welche Bubbles gibt es?", "ideas", ("lauf", "bubble_list")),
-    ("Wie ist der Code-Status?", "projects", ("nicht-verstanden", NV + " " + KEIN.format("Project Space"))),
+    # Seit 24.11. fester Lesesatz des Project Space (core/coding_stand.py).
+    ("Wie ist der Code-Status?", "projects", ("lauf", "coding_stand")),
     ("Welche Fenster sind gerade auf dem Desktop offen?", "desktop", ("lauf", "desktop_fenster")),
     ("Wie ist der Stand im SWE Design?", "swedesign", ("kein-weg", "Im Bereich „SWE Design“ kann ich das noch nicht")),
     ("Welche Agenten gibt es in Rowboat?", "roarboot", ("lauf", "rowboat_spaces")),

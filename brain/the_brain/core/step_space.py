@@ -19,6 +19,8 @@ from .space_contract import SpaceContract, load_space_contract, normalize_space_
 # Geordnet: der erste passende Anfang gewinnt.
 _ZIEL_HINWEISE = (
     ("coding-engine:", "coding"),
+    # Feste Lesesaetze des Project Space (core/coding_stand.py, 24.11.2026).
+    ("direct:core.coding_stand:", "coding"),
     ("openfang:brain-coder", "coding"),
     ("openfang:openclaw", "desktop"),
     ("openfang:skill-coordinator", "desktop"),

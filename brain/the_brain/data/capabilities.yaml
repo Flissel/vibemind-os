@@ -2393,3 +2393,26 @@
   match_patterns:
     - "^\\s*(?:bitte\\s+)?(?:bestätige|bestaetige)\\s*:?\\s*(?:das\\s+)?fenster\\s+.+\\s+ist\\s+vorne?\\b"
   execution_target: "direct:core.desktop_augen:bestaetigen"
+
+# Project Space (Coding), 24.11.2026: liest nur den eigenen Dienst des Project Space (Port 8163,
+# CODING_DIENST_URL, Vorgabe host.docker.internal:8163). Die Saetze stehen in core/feste_lesesaetze.py.
+- capability: coding_stand
+  space: projects
+  description: "read the newest Project Space run (stage, package, state, reason of failure) from the Project Space service; read only"
+  match_patterns:
+    - "^wie\\s+ist\\s+der\\s+stand\\s+(?:im|vom)\\s+(?:project[- ]?space|projekt[- ]?space|coding)\\b"
+  execution_target: "direct:core.coding_stand:stand_lesen"
+
+- capability: coding_laeufe
+  space: projects
+  description: "list the newest Project Space runs with their state from the Project Space service; read only"
+  match_patterns:
+    - "^welche\\s+(?:läufe|laeufe)\\s+gibt\\s+es\\b"
+  execution_target: "direct:core.coding_stand:laeufe_lesen"
+
+- capability: coding_ergebnis
+  space: projects
+  description: "show the result of the newest Project Space run (packages, checks, start command) from the Project Space service; read only"
+  match_patterns:
+    - "^zeig(?:e)?\\s+(?:mir\\s+)?das\\s+ergebnis\\s+des\\s+letzten\\s+laufs?\\b"
+  execution_target: "direct:core.coding_stand:ergebnis_lesen"
