@@ -25,6 +25,8 @@ PRUEFUNG = "supabase_ideen_fest"
 # Feldarten: ("kennung",) ("text", hoechstens, leer_erlaubt) ("zahl", von, bis)
 # ("wahl", werte) ("kennungen", hoechstens) ("gruppen", hoechstens Gruppen, Namenslaenge, Karten)
 _K = ("kennung",)
+# Grenze der mitgelöschten Karten (BUBBLE_DELETE_MAX_KARTEN im Ideen-Server).
+_BUBBLE_KARTEN_MAX = 200
 _WERT = ("zahl", 0, 100)
 _LAGE = ("zahl", -1_000_000, 1_000_000)
 GRUPPEN_MAX = 12          # wie GROUP_MAX im Ideen-Server
@@ -395,7 +397,15 @@ def nachpruefung(event_id: str, argumente: Any, raw_result: Any) -> tuple[Option
         zeile = _erste_zeile(inhalt)
         if zeile is None or zeile.get("id") != argumente["id"]:
             return None, ungueltig
-        return {"art": "bubble_geloescht", "id": argumente["id"]}, ""
+        erwartet = {"art": "bubble_geloescht", "id": argumente["id"]}
+        if argumente.get("mit_karten") is True:
+            # Der Server nennt die mitgelöschten Karten; die Nachprüfung liest genau sie zurück.
+            karten = zeile.get("karten_geloescht")
+            if (not isinstance(karten, list) or len(karten) > _BUBBLE_KARTEN_MAX
+                    or not all(ist_kennung(k) for k in karten)):
+                return None, ungueltig
+            erwartet["karten"] = list(karten)
+        return erwartet, ""
     if not isinstance(inhalt, dict):
         return None, ungueltig
     if event_id == "idea.root":
@@ -554,9 +564,13 @@ def pruefe_zustand(erwartet: Any, lies: Lesen) -> tuple[Optional[bool], dict[str
         return True, {"id": kennung, "rows_found": 0}, "card and connections deleted"
 
     if art == "bubble_geloescht":
-        # Weg ist die Bubble; keine Karte zeigt mehr auf sie (die Datenbank setzt die Zuordnung leer).
+        # Weg ist die Bubble; keine Karte zeigt mehr auf sie. Mit "karten": genau diese Karten sind
+        # weg (nicht nur losgelöst) und keine Verbindung von oder zu ihnen steht noch.
         kennung = erwartet.get("id")
-        if not ist_kennung(kennung):
+        karten_ids = erwartet.get("karten")
+        if not ist_kennung(kennung) or (karten_ids is not None and (
+                not isinstance(karten_ids, list) or len(karten_ids) > _BUBBLE_KARTEN_MAX
+                or not all(ist_kennung(k) for k in karten_ids))):
             return None, offen, "invalid expectation"
         bubble = lies("ideas", {"select": "id", "id": f"eq.{kennung}", "limit": "1"})
         karten = lies("canvas_nodes", {"select": "id", "linked_idea_id": f"eq.{kennung}", "limit": "1"})
@@ -564,6 +578,17 @@ def pruefe_zustand(erwartet: Any, lies: Lesen) -> tuple[Optional[bool], dict[str
             return None, offen, "read-back unavailable"
         if bubble or karten:
             return False, {"id": kennung}, "bubble or card link still present"
+        if karten_ids:
+            liste = f"in.({','.join(karten_ids)})"
+            reste = lies("canvas_nodes", {"select": "id", "id": liste, "limit": "1"})
+            von = lies("canvas_edges", {"select": "id", "from_node_id": liste, "limit": "1"})
+            zu = lies("canvas_edges", {"select": "id", "to_node_id": liste, "limit": "1"})
+            if reste is None or von is None or zu is None:
+                return None, offen, "read-back unavailable"
+            if reste or von or zu:
+                return False, {"id": kennung}, "card or connection of the bubble still present"
+            return (True, {"id": kennung, "rows_found": 0, "karten_geloescht": len(karten_ids)},
+                    "bubble, cards and connections deleted")
         return True, {"id": kennung, "rows_found": 0}, "bubble deleted"
 
     if art == "eintrag":

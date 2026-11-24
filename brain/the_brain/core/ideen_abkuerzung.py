@@ -146,6 +146,11 @@ def _format_aus(wort: str) -> Optional[str]:
     return None
 
 
+# "Lösche diese Bubble": die Karten gehen mit (Entscheidung des Betreibers, 24.11.2026). Mehr Karten
+# löscht der Weg nicht in einem Zug; gleiche Grenze wie BUBBLE_DELETE_MAX_KARTEN im Ideen-Server.
+BUBBLE_LOESCHEN_MAX_KARTEN = 200
+
+
 class _Rueckfrage(Exception):
     """Rueckfrage an den Menschen. Mit ``kandidaten`` (Karten) und ``name`` (der genannte
     Name) wird sie als offene Rueckfrage gemerkt: die naechste Antwort ("die zweite",
@@ -592,6 +597,10 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
             roh = kontext.get("cards")
             gesamt = len(roh) if isinstance(roh, list) else None
         name = f"Die Bubble „{titel}“" if titel else "Die Bubble"
+        if gesamt is not None and gesamt > BUBBLE_LOESCHEN_MAX_KARTEN:
+            # Ehrlich statt Teil-Löschen; der Server prüft dieselbe Grenze noch einmal (too_many_cards).
+            raise _Rueckfrage(f"{name} hat {gesamt} Karten. Mehr als {BUBBLE_LOESCHEN_MAX_KARTEN} lösche "
+                              "ich nicht in einem Zug; gelöscht ist nichts.")
         return {**_treffer("bubble.delete", {"id": bubble_id, "mit_karten": True},
                            f"{name} ist gelöscht, mit ihren Karten. Mit „Zurück“ holst du alles wieder."),
                 "loeschen": {"art": "bubble", "titel": titel, "bubble_id": bubble_id, "karten": gesamt}}
@@ -1040,6 +1049,8 @@ _WERKZEUGFEHLER = {
     "idea_not_found": "Diese Karte gibt es nicht mehr.",
     "bewertung_not_found": "Eine Begründung mit dieser Nummer gibt es hier nicht. Gezählt wird die neueste zuerst.",
     "bubble_not_found": "Diese Bubble gibt es nicht mehr.",
+    "too_many_cards": (f"Diese Bubble hat mehr als {BUBBLE_LOESCHEN_MAX_KARTEN} Karten. So viele lösche ich "
+                       "nicht in einem Zug; gelöscht ist nichts."),
     "idea_not_in_bubble": "Eine der Karten gehört nicht zu dieser Bubble.",
     "too_many_ideas": "In dieser Bubble liegen mehr als 100 Karten. Das geht nur bis 100.",
     "idea_format_nothing_to_revert": "Für diese Karte gibt es kein früheres Format.",

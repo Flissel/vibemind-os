@@ -209,6 +209,53 @@ def test_nachpruefung_bubble_weg_und_keine_karte_zeigt_auf_sie() -> None:
     assert fest.pruefe_zustand(erwartet, karte_haengt)[0] is False
 
 
+def test_nachpruefung_mit_karten_liest_genau_die_mitgeloeschten_karten_zurueck() -> None:
+    argumente = {"id": BUBBLE["id"], "mit_karten": True}
+    erwartet, _ = fest.nachpruefung("bubble.delete", argumente,
+                                    _quittung([{"id": BUBBLE["id"], "karten_geloescht": ["a0000001", "a0000002"]}]))
+    assert erwartet == {"art": "bubble_geloescht", "id": BUBBLE["id"], "karten": ["a0000001", "a0000002"]}
+    gelesen = []
+
+    def leer(tabelle, filter):
+        gelesen.append((tabelle, dict(filter)))
+        return []
+    ok, signal, _ = fest.pruefe_zustand(erwartet, leer)
+    assert ok is True and signal["karten_geloescht"] == 2
+    assert ("canvas_nodes", {"select": "id", "id": "in.(a0000001,a0000002)", "limit": "1"}) in gelesen
+    assert ("canvas_edges", {"select": "id", "from_node_id": "in.(a0000001,a0000002)", "limit": "1"}) in gelesen
+    assert ("canvas_edges", {"select": "id", "to_node_id": "in.(a0000001,a0000002)", "limit": "1"}) in gelesen
+    # Nur losgeloest statt geloescht: faellt auf.
+    liegt_noch = lambda tabelle, filter: ([{"id": "a0000002"}] if tabelle == "canvas_nodes"
+                                          and filter.get("id", "").startswith("in.") else [])
+    assert fest.pruefe_zustand(erwartet, liegt_noch)[0] is False
+    # Eine Verbindung steht noch: faellt auf.
+    kante = lambda tabelle, filter: [{"id": "e1"}] if tabelle == "canvas_edges" and "to_node_id" in filter else []
+    assert fest.pruefe_zustand(erwartet, kante)[0] is False
+    # Ohne Liste der Karten keine Erwartung (die Quittung passt nicht zum Aufruf mit Karten).
+    assert fest.nachpruefung("bubble.delete", argumente, _quittung([{"id": BUBBLE["id"]}]))[0] is None
+    zu_viele = [f"a{i:07d}" for i in range(201)]
+    assert fest.nachpruefung("bubble.delete", argumente,
+                             _quittung([{"id": BUBBLE["id"], "karten_geloescht": zu_viele}]))[0] is None
+
+
+def test_ueber_200_karten_ehrlicher_satz_statt_rueckfrage(monkeypatch) -> None:
+    client, ausfuehrer = _client(monkeypatch)
+    kontext = {"space": "ideas", "bubble": BUBBLE, "cards": [], "cards_total": 201}
+    body = _satz(client, "Lösche diese Bubble", kontext)
+    assert body["final_text"] == ("Die Bubble „Stadtfest“ hat 201 Karten. Mehr als 200 lösche ich nicht in "
+                                  "einem Zug; gelöscht ist nichts.")
+    assert _satz(client, "Ja, löschen")["final_text"] == lb.OHNE_FRAGE and ausfuehrer.plaene == []
+    # Genau 200 geht noch: Rückfrage mit der Zahl.
+    body = _satz(client, "Lösche diese Bubble", {**kontext, "cards_total": 200})
+    assert "Sie hat 200 Karten; die werden mit gelöscht" in body["final_text"]
+
+
+def test_zu_viele_karten_vom_server_ergibt_ehrlichen_satz() -> None:
+    from core import ideen_abkuerzung as abk
+    satz = abk.fehlersatz("Ideen-Werkzeug meldet einen Fehler (too_many_cards)", "bubble.delete")
+    assert satz == "Diese Bubble hat mehr als 200 Karten. So viele lösche ich nicht in einem Zug; gelöscht ist nichts."
+
+
 def test_registry_bindet_bubble_delete_fest_an_den_ideen_server() -> None:
     import yaml
     registry = yaml.safe_load((Path(__file__).resolve().parents[3] / "config" / "space_agent_registry.yml")

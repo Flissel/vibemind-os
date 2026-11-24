@@ -30,6 +30,8 @@ BUBBLE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$")
 IDEA_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$")
 EDGE_TYPE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,63}$")
 CHANGE_SOURCES = ("agent", "hand", "zurueck")
+# Ab hier loescht bubble_delete mit_karten nicht in einem Zug (das Gehirn sagt es ehrlich).
+BUBBLE_DELETE_MAX_KARTEN = 200
 CHANGE_ERROR_CODES = ("aenderung_konflikt", "aenderung_unbekannt", "aenderung_nicht_zuruecknehmbar")
 # Nur diese Meldungen von ideen_zurueck duerfen woertlich an den Aufrufer zurueck.
 CHANGE_ERROR_PATTERN = re.compile(
@@ -104,7 +106,8 @@ TOOLS: list[dict[str, Any]] = [
         "name": "bubble_delete",
         "description": (
             "Delete one top-level bubble by durable id. With 'mit_karten' its canvas ideas (and their "
-            "connections) are deleted too, in the same change."
+            "connections) are deleted too, in the same change; more than 200 cards: nothing is deleted "
+            "(too_many_cards)."
         ),
         "inputSchema": {
             "type": "object",
@@ -1870,12 +1873,28 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         if not isinstance(mit_karten, bool):
             raise ToolError("invalid_arguments: 'mit_karten' must be a boolean")
         if mit_karten:
-            # Nur wenn es die Bubble gibt; die Verbindungen der Karten gehen per ON DELETE CASCADE mit.
-            # Alles unter derselben aenderung_id: "Zurueck" holt Bubble, Karten und Verbindungen.
+            # Entscheidung des Betreibers (24.11.2026): die Karten gehen mit. Nur wenn es die Bubble
+            # gibt; die Verbindungen der Karten gehen per ON DELETE CASCADE mit, die Begruendungen
+            # stehen in der Bubble selbst. Alles unter derselben aenderung_id: "Zurueck" holt Bubble,
+            # Karten und Verbindungen. Mehr als BUBBLE_DELETE_MAX_KARTEN: nichts loeschen.
             if _first_row(_request("GET", "ideas", params={
                     "select": "id", "id": f"eq.{bubble_id}", "parent_id": "is.null", "limit": "1"})) is None:
                 return []
-            _request("DELETE", "canvas_nodes", params={"linked_idea_id": f"eq.{bubble_id}"})
+            karten = _request("GET", "canvas_nodes", params={
+                "select": "id", "linked_idea_id": f"eq.{bubble_id}", "limit": str(BUBBLE_DELETE_MAX_KARTEN + 1)})
+            if not isinstance(karten, list):
+                raise ToolError("supabase_invalid_response")
+            if len(karten) > BUBBLE_DELETE_MAX_KARTEN:
+                raise ToolError(f"too_many_cards: more than {BUBBLE_DELETE_MAX_KARTEN} cards, nothing deleted")
+            geloescht = _request("DELETE", "canvas_nodes", params={"linked_idea_id": f"eq.{bubble_id}"})
+            if not isinstance(geloescht, list):
+                raise ToolError("supabase_invalid_response")
+            kennungen = [str(k["id"]) for k in geloescht if isinstance(k, Mapping) and k.get("id")]
+            zeilen = _request("DELETE", "ideas", params={"id": f"eq.{bubble_id}", "parent_id": "is.null"})
+            if not isinstance(zeilen, list):
+                raise ToolError("supabase_invalid_response")
+            # Die Nachpruefung liest genau diese Karten zurueck (weg, nicht nur losgeloest).
+            return [{**z, "karten_geloescht": kennungen} if isinstance(z, Mapping) else z for z in zeilen]
         return _request("DELETE", "ideas", params={"id": f"eq.{bubble_id}", "parent_id": "is.null"})
     if name == "bubble_promote":
         bubble_id = _canonical_bubble_id(arguments)
