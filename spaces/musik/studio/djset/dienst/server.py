@@ -21,8 +21,9 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.mcpserver import Context, MCPServer
+from pydantic import ValidationError
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import FileResponse, JSONResponse, Response
 
 from djset.dienst import laeufer as laeufer_modul
 from djset.dienst import laura as laura_modul
@@ -30,7 +31,7 @@ from djset.dienst import link as datei_link
 from djset.dienst.auftraege import _ID as _AUFTRAG_ID  # eine Quelle fuer die ID-Form
 from djset.dienst.auftraege import Ablage
 from djset.dienst.huelle import gesundheit_anmelden, im_thread
-from djset.dienst.werkzeuge import Werkzeuge
+from djset.dienst.werkzeuge import EXPORT_DATEI, Werkzeuge
 
 LOG = logging.getLogger("djset.dienst.server")
 
@@ -46,6 +47,9 @@ ENV_SCHLUESSEL = (
     "MUSIK_LINK_HOST", "MUSIK_LINK_PORT", "MUSIK_LINK_SCHLUESSEL",
 )
 ABSCHALT_WARTE_S = 10.0
+FERTIG_ZUSTAENDE = ("fertig", "fertig_mit_befund")
+# Dateien, die der Telegram-Bot abholen darf (Name -> Inhaltstyp); sonst nichts, nie ein freier Pfad.
+DATEI_TYPEN = {"videomusik.mp3": "audio/mpeg", "set.mp3": "audio/mpeg", EXPORT_DATEI: "video/mp4"}
 
 
 # ---------------------------------------------------------------- Kanal
@@ -210,6 +214,30 @@ async def _koerper(request: Request) -> dict | None:
     return wert if isinstance(wert, dict) else None
 
 
+def auftragsdatei(ablage: Ablage, auftrag_id: str, name: str) -> Path | None:
+    """Die Datei `name` eines fertigen Auftrags, nur aus `DATEI_TYPEN`, sonst None.
+    `videomusik.mp3` und `set.mp3` liegen im Lauf-Ordner (Pruefung wie beim Datei-Link),
+    `laura-export.mp4` im Auftragsordner."""
+    if name not in DATEI_TYPEN:
+        return None
+    try:
+        auftrag = ablage.hole(auftrag_id)
+    except (KeyError, ValidationError, ValueError, OSError):
+        return None
+    if auftrag.zustand not in FERTIG_ZUSTAENDE:
+        return None
+    if name != EXPORT_DATEI:
+        return datei_link.lauf_datei(ablage, auftrag, name)
+    try:
+        wurzel = ablage.wurzel.resolve()
+        datei = ablage.ordner(auftrag.id) / name
+        if not datei.resolve().is_relative_to(wurzel) or not datei.is_file():
+            return None
+    except (KeyError, OSError, ValueError):
+        return None
+    return datei
+
+
 def routen_anmelden(server: MCPServer, w: Werkzeuge) -> None:
     """Alle JSON-Routen an einer Stelle. Antwort ist das dict der Werkzeuge; eine boese
     Auftrags-ID kommt nie bis zu den Werkzeugen (404)."""
@@ -265,6 +293,17 @@ def routen_anmelden(server: MCPServer, w: Werkzeuge) -> None:
             return _schlecht("nur offen=1 wird unterstuetzt")
         return _antwort(await thread(
             w.auftraege_offen, kanal_waehlen(request.query_params.get("kanal"))))
+
+    @server.custom_route("/auftraege/{id}/datei/{name}", methods=["GET"])
+    async def datei(request: Request) -> Response:
+        auftrag_id = id_ok(request)
+        name = request.path_params.get("name", "")
+        if auftrag_id is None or name not in DATEI_TYPEN:
+            return nicht_gefunden()
+        pfad = await anyio.to_thread.run_sync(auftragsdatei, w.ablage, auftrag_id, name)
+        if pfad is None:
+            return nicht_gefunden()
+        return FileResponse(pfad, media_type=DATEI_TYPEN[name])
 
     @server.custom_route("/auftraege/{id}/gemeldet", methods=["POST"])
     async def gemeldet(request: Request) -> JSONResponse:

@@ -284,6 +284,86 @@ def test_boese_id_404_auch_fuer_post_routen(client, fake):
     assert fake.aufrufe == []
 
 
+# ---------------------------------------------------------------- Datei-Route
+
+LAUF = "lauf-1"
+
+
+@pytest.fixture
+def datei_client(fake, tmp_path):
+    """Client mit echter Ablage hinter dem Ersatz: ein fertiges Video, ein fertiger Render."""
+    from djset.dienst.auftraege import Ablage
+
+    ablage = Ablage(tmp_path)
+    fake.ablage = ablage
+    fake.daten = tmp_path
+    video = ablage.anlegen("video", {}, "telegram")
+    video.zustand, video.lauf = "fertig", LAUF
+    ablage.speichern(video)
+    lauf = tmp_path / "runs" / LAUF
+    lauf.mkdir(parents=True)
+    (lauf / "videomusik.mp3").write_bytes(b"MP3-DATEN")
+    (lauf / "set.mp3").write_bytes(b"SET-DATEN")
+    (lauf / "bericht.md").write_text("geheim", encoding="utf-8")
+    render = ablage.anlegen("laura_render", {}, "telegram")
+    render.zustand = "fertig"
+    ablage.speichern(render)
+    (ablage.ordner(render.id) / "laura-export.mp4").write_bytes(b"MP4-DATEN")
+    app = app_bauen(bauen(fake), 8148)
+    with TestClient(app, base_url="http://127.0.0.1:8148") as c:
+        yield c, ablage, video, render
+
+
+def test_datei_route_liefert_erlaubte_namen(datei_client):
+    c, _, video, render = datei_client
+    r = c.get(f"/auftraege/{video.id}/datei/videomusik.mp3")
+    assert r.status_code == 200 and r.content == b"MP3-DATEN"
+    assert r.headers["content-type"].startswith("audio/mpeg")
+    assert c.get(f"/auftraege/{video.id}/datei/set.mp3").content == b"SET-DATEN"
+    r = c.get(f"/auftraege/{render.id}/datei/laura-export.mp4")
+    assert r.status_code == 200 and r.content == b"MP4-DATEN"
+    assert r.headers["content-type"].startswith("video/mp4")
+
+
+@pytest.mark.parametrize("name", ["bericht.md", "../x", "..%2fx", "videomusik.wav", "auftrag.json", "%2e%2e"])
+def test_datei_route_fremder_name_404(datei_client, name):
+    c, _, video, _ = datei_client
+    assert c.get(f"/auftraege/{video.id}/datei/{name}").status_code == 404
+
+
+def test_datei_route_boese_id_404(datei_client):
+    c, *_ = datei_client
+    assert c.get("/auftraege/..%5Cx/datei/set.mp3").status_code == 404
+    assert c.get("/auftraege/abc/datei/set.mp3").status_code == 404
+
+
+def test_datei_route_nur_fertige_auftraege(datei_client):
+    c, ablage, video, render = datei_client
+    video.zustand = "laeuft"
+    ablage.speichern(video)
+    assert c.get(f"/auftraege/{video.id}/datei/videomusik.mp3").status_code == 404
+    video.zustand = "fertig_mit_befund"
+    ablage.speichern(video)
+    assert c.get(f"/auftraege/{video.id}/datei/videomusik.mp3").status_code == 200
+    # der Export liegt nicht im Lauf, das Video hat keinen
+    assert c.get(f"/auftraege/{video.id}/datei/laura-export.mp4").status_code == 404
+    # und der Render hat keinen Lauf-Ordner
+    assert c.get(f"/auftraege/{render.id}/datei/set.mp3").status_code == 404
+
+
+def test_datei_route_lauf_darf_nicht_ausbrechen(datei_client, tmp_path):
+    c, ablage, video, _ = datei_client
+    video.lauf = ".."
+    ablage.speichern(video)
+    assert c.get(f"/auftraege/{video.id}/datei/set.mp3").status_code == 404
+
+
+def test_datei_route_fremder_host_403(datei_client):
+    c, _, video, _ = datei_client
+    r = c.get(f"/auftraege/{video.id}/datei/set.mp3", headers={"Host": "evil.example:8148"})
+    assert r.status_code == 403
+
+
 def test_env_nachladen_nur_fehlende(tmp_path, monkeypatch):
     datei = tmp_path / ".env"
     datei.write_text('MUSIK_LINK_HOST="10.0.0.1"\nMUSIK_LINK_PORT=9\nANDERES=1\n', encoding="utf-8")

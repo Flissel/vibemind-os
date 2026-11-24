@@ -31,6 +31,7 @@ gesang = ["torch==2.5.1", "torchaudio==2.5.1", "demucs==4.0.1"]
 [project.scripts]
 dj-set = "djset.cli:main"
 musik-dienst = "djset.dienst.server:main"
+musik-telegram = "djset.claw.telegram:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -82,19 +82,29 @@ def aufloesen(
         auftrag = ablage.hole(auftrag_id)
     except (KeyError, ValidationError, ValueError, OSError):
         return 404, None
+    datei = lauf_datei(ablage, auftrag, name)
+    return (200, datei) if datei is not None else (404, None)
+
+
+def lauf_datei(ablage, auftrag, name: str) -> Path | None:
+    """Die Datei `name` im Lauf-Ordner eines fertigen Auftrags, sonst None.
+
+    Pruefung von Zustand, Lauf-Name (Allow-List) und Ordnergrenze (`is_relative_to`); die
+    Namensliste prueft der Aufrufer. Gemeinsam genutzt vom signierten Link und von der
+    Datei-Route des Telegram-Bots."""
     if auftrag.zustand not in _FERTIG or not auftrag.lauf:
-        return 404, None
+        return None
     lauf = auftrag.lauf
     if not _LAUF.fullmatch(lauf) or lauf.endswith("."):
-        return 404, None
+        return None
     try:
         runs = (Path(ablage.daten) / "runs").resolve()
         datei = runs / lauf / name
         if not datei.resolve().is_relative_to(runs) or not datei.is_file():
-            return 404, None
+            return None
     except (OSError, ValueError):
-        return 404, None
-    return 200, datei
+        return None
+    return datei
 
 
 def _handler(ablage, schluessel: bytes):
