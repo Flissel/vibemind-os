@@ -160,12 +160,39 @@ def test_weiterleitung_gleicher_host_behaelt_token():
     assert neu.get_header("X-laura-token") == "geheim123"
 
 
-def test_rendern_nimmt_plain_render(monkeypatch):
-    aufrufe = []
-    _router(monkeypatch, {("POST", "/timelines/t1/render"): _antwort({"export_id": "e2", "job_id": "j2"}, 202)},
-            aufrufe)
-    r = laura.rendern("t1")
-    assert r == {"ok": True, "export_id": "e2", "job_id": "j2"}
+def test_id_mit_pfadzeichen_ohne_netz(monkeypatch):
+    def roh(*a):
+        raise AssertionError("Netz darf nicht beruehrt werden")
+    monkeypatch.setattr(laura, "_roh", roh)
+    schlecht = "t1/../.."
+    erwartet = {"ok": False, "fehler": "ungueltige ID"}
+    for r in (laura.rendern(schlecht), laura.rendern(schlecht, reel_optionen={}), laura.zeitleiste(schlecht),
+              laura.importieren(schlecht, "http://x", "n"), laura.asset_warten(schlecht),
+              laura.audio_clips(schlecht), laura.clip_anlegen(schlecht, {}), laura.export_warten(schlecht),
+              laura.rendern("")):
+        assert r == erwartet
+
+
+def test_nicht_serialisierbarer_koerper_ist_fail_soft(monkeypatch):
+    monkeypatch.setattr(laura, "_roh", lambda *a: (200, b"{}"))
+    r = laura.anfrage("POST", "/x", {"a": object()})
+    assert r["ok"] is False and "fehler" in r
+
+
+def test_roh_installiert_den_weiterleitungs_handler(monkeypatch):
+    gesehen = []
+
+    class Opener:
+        def open(self, req, timeout=None):
+            raise OSError("kein Netz")
+
+    def bauen(*handler):
+        gesehen.extend(handler)
+        return Opener()
+    monkeypatch.setattr(laura.urllib.request, "build_opener", bauen)
+    with pytest.raises(OSError):
+        laura._roh("GET", "http://laura.test:8765/x", None, {})
+    assert any(isinstance(h, laura._WeiterleitungOhneToken) for h in gesehen)
 
 
 def test_export_warten_wiederholt_bis_link_da(monkeypatch):

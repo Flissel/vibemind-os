@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -13,6 +14,7 @@ import urllib.request
 from pathlib import Path
 
 FEHLER_MAXLAENGE = 300
+_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 ZEITLIMIT_S = 30
 
 
@@ -27,6 +29,15 @@ def _token() -> str:
 def _ohne_token(text: str) -> str:
     wert = _token()
     return text.replace(wert, "<token>") if wert else text
+
+
+def _id_ok(*ids: object) -> bool:
+    """Jede ID, die in einen URL-Pfad kommt, muss durch diese Pruefung."""
+    return all(isinstance(i, str) and _ID.fullmatch(i) for i in ids)
+
+
+def _ungueltig() -> dict:
+    return {"ok": False, "fehler": "ungueltige ID"}
 
 
 def _fehler(text: str) -> dict:
@@ -54,7 +65,7 @@ class _WeiterleitungOhneToken(urllib.request.HTTPRedirectHandler):
 def _roh(methode: str, url: str, daten: bytes | None, kopf: dict) -> tuple[int, bytes]:
     """Der einzige echte Netzgriff - Tests ersetzen genau diese Funktion."""
     req = urllib.request.Request(url, data=daten, method=methode, headers=kopf)
-    opener = urllib.request.build_opener(_WeiterleitungOhneToken)
+    opener = urllib.request.build_opener(_WeiterleitungOhneToken())
     try:
         with opener.open(req, timeout=ZEITLIMIT_S) as r:
             return r.status, r.read()
@@ -66,8 +77,8 @@ def anfrage(methode: str, pfad: str, daten: dict | None = None) -> dict:
     kopf = {"Content-Type": "application/json"}
     if _token():
         kopf["X-Laura-Token"] = _token()
-    roh = json.dumps(daten).encode("utf-8") if daten is not None else (b"{}" if methode == "POST" else None)
     try:
+        roh = json.dumps(daten).encode("utf-8") if daten is not None else (b"{}" if methode == "POST" else None)
         status, rumpf = _roh(methode, _basis() + pfad, roh, kopf)
     except Exception as e:  # noqa: BLE001 - fail-soft
         return _fehler(f"Laura nicht erreichbar: {type(e).__name__}: {e}")
@@ -93,10 +104,14 @@ def _frames(zeitleiste_daten: dict) -> int:
 
 def zeitleiste(timeline_id: str) -> dict:
     """Laenge (Frames des spaetesten Videoclips) und Bildrate der Projekt-Sequenz."""
+    if not _id_ok(timeline_id):
+        return _ungueltig()
     t = anfrage("GET", f"/timelines/{timeline_id}")
     if not t["ok"]:
         return t
     tl = t["daten"] or {}
+    if not _id_ok(tl.get("project_id")):
+        return _ungueltig()
     p = anfrage("GET", f"/projects/{tl.get('project_id')}")
     if not p["ok"]:
         return p
@@ -106,6 +121,8 @@ def zeitleiste(timeline_id: str) -> dict:
 
 
 def _letzter_export(project_id: str, timeline_id: str) -> dict | None:
+    if not _id_ok(project_id, timeline_id):
+        return None
     r = anfrage("GET", f"/projects/{project_id}/exports")  # neueste zuerst
     if not r["ok"]:
         return None
@@ -129,6 +146,8 @@ def videos_suchen(suchwort: str, hoechstens: int = 10) -> dict:
     for projekt in p["daten"] or []:
         if len(treffer) >= hoechstens:
             break
+        if not _id_ok(projekt.get("id")):
+            continue
         projekt_passt = wort in str(projekt.get("name") or "").lower()
         t = anfrage("GET", f"/projects/{projekt.get('id')}/timelines")
         if not t["ok"]:
@@ -149,6 +168,8 @@ def videos_suchen(suchwort: str, hoechstens: int = 10) -> dict:
 
 
 def importieren(project_id: str, url: str, display_name: str) -> dict:
+    if not _id_ok(project_id):
+        return _ungueltig()
     r = anfrage("POST", f"/projects/{project_id}/assets/import",
                 {"source_url": url, "display_name": display_name})
     if not r["ok"]:
@@ -160,6 +181,8 @@ def importieren(project_id: str, url: str, display_name: str) -> dict:
 def asset_warten(asset_id: str, max_s: float = 300, takt_s: float = 2.0, schlafen=time.sleep,
                  uhr=time.monotonic) -> dict:
     """Warten, bis das Asset geprobt ist (sha256) UND Ton hat (type audio oder codec_audio)."""
+    if not _id_ok(asset_id):
+        return _ungueltig()
     ende = uhr() + max_s
     while True:
         r = anfrage("GET", f"/assets/{asset_id}")
@@ -180,11 +203,15 @@ def asset_warten(asset_id: str, max_s: float = 300, takt_s: float = 2.0, schlafe
 
 
 def audio_clips(timeline_id: str) -> dict:
+    if not _id_ok(timeline_id):
+        return _ungueltig()
     r = anfrage("GET", f"/timelines/{timeline_id}/audio-clips")
     return {"ok": True, "clips": r["daten"] or []} if r["ok"] else r
 
 
 def clip_anlegen(timeline_id: str, koerper: dict) -> dict:
+    if not _id_ok(timeline_id):
+        return _ungueltig()
     r = anfrage("POST", f"/timelines/{timeline_id}/audio-clips", koerper)
     return {"ok": True, "clip": r["daten"]} if r["ok"] else r
 
@@ -193,6 +220,8 @@ def rendern(timeline_id: str, reel_optionen: dict | None = None) -> dict:
     """Export anstossen. Ohne `reel_optionen`: einfacher Render (POST /timelines/{id}/render,
     Standardoptionen). Mit `reel_optionen`: POST /timelines/{id}/render-reel mit genau diesem
     Dict als Body. Fruehere Exporte werden nicht erkannt (Lauras API zeigt keine Optionen)."""
+    if not _id_ok(timeline_id):
+        return _ungueltig()
     if reel_optionen is not None:
         r = anfrage("POST", f"/timelines/{timeline_id}/render-reel", reel_optionen)
     else:
@@ -209,6 +238,8 @@ def export_warten(export_id: str, max_s: float = 900, takt_s: float = 5.0, schla
                   uhr=time.monotonic) -> dict:
     """Warten, bis der Export fertig ist und sein Download-Link da ist (status 'ready' heisst
     noch nicht, dass die Kopie im Speicher liegt - der Link wird dann erneut angefragt)."""
+    if not _id_ok(export_id):
+        return _ungueltig()
     ende = uhr() + max_s
     letzter = "Export noch nicht fertig"
     while True:
