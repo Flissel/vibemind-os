@@ -79,7 +79,8 @@ $Dienste = @(
         Args   = @()
         Cwd    = $StudioDir
         Env    = $EnvDienst
-        Marke  = @('musik-dienst')
+        Python = $false
+        Muster = @()
         Was    = 'Musik-Dienst (MCP /mcp und JSON-Routen, arbeitet Bestellungen ab)'
     },
     @{
@@ -90,7 +91,9 @@ $Dienste = @(
         Args   = @('-u', $ShimSkript, '--host', '127.0.0.1', '--port', '8152', '--timeout', '1800')
         Cwd    = $(if (Test-Path -LiteralPath $Outer) { $Outer } else { $OsRoot })
         Env    = $EnvShim
-        Marke  = @('marketing_shim.py', '8152')
+        Python = $true
+        # Eigene Woerter, keine Teilstrings: sonst traefe jede Zahl mit 8152 oder jeder Editor.
+        Muster = @('marketing_shim\.py(\s|"|$)', '(^|\s)--port\s+8152(\s|$)')
         Was    = 'Musik-Shim (Modell-Tuer der Musik-Claw, Claude Code als LLM, Budget musik-claw)'
     },
     @{
@@ -101,7 +104,8 @@ $Dienste = @(
         Args   = @()
         Cwd    = $StudioDir
         Env    = $EnvTelegram
-        Marke  = @('musik-telegram')
+        Python = $false
+        Muster = @()
         Was    = 'Musik-Telegram-Bot (nur der eigene Chat, fragt ueber die Musik-Shim)'
     }
 )
@@ -134,13 +138,28 @@ function Test-Gesund($d) {
     } catch { return $false }
 }
 
+# Passt dieser Prozess zum Dienst? Gleicht das Programm ab, nicht die Kommandozeile allein: ein Teilstring wie
+# "musik-dienst" steckt auch im Namen dieses Skripts und in jedem Wrapper, Editor oder Wachhund, der es nennt.
+function Test-ProzessPasst($d, [string]$exePfad, [string]$befehl, [int]$prozessId) {
+    if ($prozessId -eq $PID -or -not $exePfad -or -not $befehl) { return $false }
+    $name = [IO.Path]::GetFileName($exePfad)
+    if ($name -match '^(powershell|pwsh)(\.exe)?$') { return $false }
+    if ($d.Python) {
+        if ($name -notmatch '^pythonw?(\d[\d.]*)?\.exe$') { return $false }
+        foreach ($m in $d.Muster) { if ($befehl -notmatch $m) { return $false } }
+        return $true
+    }
+    try {
+        return [string]::Equals([IO.Path]::GetFullPath($exePfad), [IO.Path]::GetFullPath($d.Datei),
+                                [StringComparison]::OrdinalIgnoreCase)
+    } catch { return $false }
+}
+
 # Lebt schon ein Prozess (laedt noch, /health noch zu), wird kein zweiter gestartet.
 function Test-Kopie($d) {
     try {
         foreach ($p in Get-CimInstance Win32_Process -ErrorAction Stop) {
-            if (-not $p.CommandLine) { continue }
-            $fehlt = @($d.Marke | Where-Object { $p.CommandLine -notlike "*$_*" })
-            if ($fehlt.Count -eq 0 -and $p.ProcessId -ne $PID) { return $true }
+            if (Test-ProzessPasst $d $p.ExecutablePath $p.CommandLine $p.ProcessId) { return $true }
         }
     } catch { }
     return $false
@@ -177,13 +196,13 @@ foreach ($d in $Dienste) {
 
     # Umgebung nur fuer dieses Kind: alten Stand merken, setzen, nach Start-Process zurueckrollen.
     $vorher = @{}
-    foreach ($k in $d.Env.Keys) {
-        $vorher[$k] = [Environment]::GetEnvironmentVariable($k, 'Process')
-        [Environment]::SetEnvironmentVariable($k, [string]$d.Env[$k], 'Process')
-    }
     $vorherU = [Environment]::GetEnvironmentVariable('PYTHONUNBUFFERED', 'Process')
-    [Environment]::SetEnvironmentVariable('PYTHONUNBUFFERED', '1', 'Process')
     try {
+        foreach ($k in $d.Env.Keys) {
+            $vorher[$k] = [Environment]::GetEnvironmentVariable($k, 'Process')
+            [Environment]::SetEnvironmentVariable($k, [string]$d.Env[$k], 'Process')
+        }
+        [Environment]::SetEnvironmentVariable('PYTHONUNBUFFERED', '1', 'Process')
         $start = @{
             FilePath               = $d.Datei
             WorkingDirectory       = $d.Cwd
@@ -195,7 +214,7 @@ foreach ($d in $Dienste) {
         if ($d.Args.Count -gt 0) { $start.ArgumentList = @($d.Args | ForEach-Object { ConvertTo-Argument $_ }) }
         $p = Start-Process @start
     } finally {
-        foreach ($k in $d.Env.Keys) { [Environment]::SetEnvironmentVariable($k, $vorher[$k], 'Process') }
+        foreach ($k in $vorher.Keys) { [Environment]::SetEnvironmentVariable($k, $vorher[$k], 'Process') }
         [Environment]::SetEnvironmentVariable('PYTHONUNBUFFERED', $vorherU, 'Process')
     }
     Write-Output ("  gestartet :{0,-5} PID {1,-6} {2}" -f $d.Port, $p.Id, $d.Name)

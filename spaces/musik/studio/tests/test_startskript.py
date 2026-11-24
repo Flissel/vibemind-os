@@ -43,3 +43,27 @@ def test_startskript_liest_keine_geheimnisse():
     for geheim in ("TOKEN", "SCHLUESSEL", "TELEGRAM_CHAT_ID"):
         assert not re.search(rf"\$env:\w*{geheim}", t)
         assert f"'{geheim}" not in t
+
+
+def test_startskript_erkennt_laufende_dienste_am_programmpfad():
+    t = _text()
+    assert "ExecutablePath" in t
+    assert "OrdinalIgnoreCase" in t and "GetFullPath" in t
+    assert re.search(r"--port\\s\+8152", t)
+    assert "powershell|pwsh" in t
+    assert "$prozessId -eq $PID" in t
+    # kein Teilstring-Abgleich mehr ueber die Kommandozeile allein
+    assert "-notlike" not in t
+    assert "Marke" not in t
+
+
+def test_startskript_setzt_umgebung_erst_im_try_und_rollt_in_finally_zurueck():
+    t = _text()
+    start = t.index("Start-Process @start")
+    versuch = t.rindex("try {", 0, start)
+    setzen = t.index("SetEnvironmentVariable($k, [string]$d.Env[$k], 'Process')")
+    assert versuch < setzen < start
+    assert "} finally {" in t
+    ende = t.index("} finally {", start)
+    zurueck = t.index("SetEnvironmentVariable($k, $vorher[$k], 'Process')", ende)
+    assert zurueck > ende
