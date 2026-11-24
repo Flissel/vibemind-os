@@ -211,7 +211,7 @@ SPACES: Dict[str, SpaceMeta] = {
         "aliases": ["cron", "tasks", "timer", "reminder", "scheduled"],
         "description": "Scheduled tasks, cron jobs, timers, reminders, APScheduler.",
         "use_when": "User wants to schedule a task or set a recurring reminder",
-        "capabilities": ["schedule.create", "schedule.list"],
+        "capabilities": ["schedule.create", "schedule.list", "schedule.auftraege"],
         "renderer_id": None,
     },
     "bubbles": {

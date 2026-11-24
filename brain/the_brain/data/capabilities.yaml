@@ -135,6 +135,17 @@
   match_patterns:
     - "(list|show|zeige).*(scheduled|schedule|reminders|termine|erinnerungen)"
   execution_target: "direct:spaces.schedule.execution:list_tasks"
+
+# Aufträge an Agenten (24.11.2026): fester Lesesatz "Welche Aufträge laufen gerade?" liest die
+# Tabelle brain_agent_auftraege (nur Faehigkeit, Agent, Stand, Zeiten), ohne Modell.
+- capability: schedule_auftraege
+  space: schedule
+  description: "list the brain's running and recently finished jobs for its agents (brain_agent_auftraege): capability, agent, state and times, never the job text"
+  match_patterns:
+    - "^welche\\s+(?:aufträge|auftraege)\\s+(?:an\\s+(?:die\\s+)?agenten\\s+)?(?:laufen|warten)\\b"
+    - "^(?:was\\s+machen|woran\\s+arbeiten)\\s+(?:die|meine)\\s+agenten\\b"
+  execution_target: "direct:core.auftraege_lesen:auftraege_lesen"
+
 - capability: mirofish.simulate
   description: "start an existing MiroFish simulation as a durable job"
   match_patterns: ["\\bmirofish\\b.*\\b(simulate|simulation starten|simulieren)\\b"]

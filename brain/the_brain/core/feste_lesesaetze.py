@@ -8,6 +8,7 @@ Ergaenzt die Tabelle in core/verstehen.py (``_FESTE_LESEFRAGEN``, ``FESTE_ANTWOR
 * Augen      "Bestätige: Fenster X ist vorn und zeigt Y" -> desktop_bestaetigen (core/desktop_augen.py)
 * Project Space "Wie ist der Stand im Project Space?" -> coding_stand, "Zeig mir die letzten Läufe"
   -> coding_laeufe, "Zeig mir das Ergebnis des letzten Laufs" -> coding_ergebnis (core/coding_stand.py)
+* Aufträge   "Welche Aufträge laufen gerade?"      -> schedule_auftraege (core/auftraege_lesen.py)
 
 Agent Farm bekommt keinen Satz: hinter agentfarm_list_teams laeuft kein Dienst (siehe
 docs im Bericht an die Koordination), der Satz bleibt "noch kein Weg".
@@ -34,6 +35,16 @@ _AGENTEN = re.compile(r"^welche\s+(?:agenten|spaces|vibemind-spaces)\s+(?:gibt e
 _AGENTEN_IN_ROWBOAT = re.compile(
     r"^welche\s+(?:agenten|spaces|vibemind-spaces)\s+(?:gibt es|stehen|sind)\s+(?:in|im)\s+(?:rowboat|roarboot)$",
     re.IGNORECASE)
+# Aufträge an Agenten (24.11.2026). Nennen "Aufträge" bzw. "Agenten" und gelten in jedem Reiter.
+_JETZT = r"(?:\s+(?:gerade|jetzt|noch|im moment|gerade jetzt))?"
+_AUFTRAEGE_LAUFEN = re.compile(
+    rf"^(?:welche|was für|was fuer)\s+(?:aufträge|auftraege)\s+(?:an\s+(?:die\s+)?agenten\s+)?"
+    rf"(?:laufen|warten|sind\s+(?:offen|in arbeit|unterwegs)){_JETZT}$"
+    rf"|^(?:läuft|laeuft|laufen){_JETZT}\s+(?:ein\s+auftrag|aufträge|auftraege){_JETZT}$"
+    r"|^(?:zeig(?:e)?|liste|nenn(?:e)?)\s+(?:mir\s+)?(?:meine\s+|die\s+|alle\s+)?(?:aufträge|auftraege)"
+    r"\s+an\s+(?:die\s+|meine\s+)?agenten$", re.IGNORECASE)
+_AGENTEN_TUN = re.compile(
+    rf"^(?:was\s+machen|was\s+tun|woran\s+arbeiten)\s+(?:die|meine)\s+agenten{_JETZT}$", re.IGNORECASE)
 
 
 # Project Space (Coding), 24.11.2026: Stand, letzte Laeufe, Ergebnis (core/coding_stand.py).
@@ -108,6 +119,8 @@ def lesefragen(alle: Tuple[Any, ...]) -> tuple:
         (_CODING_ERGEBNIS, "coding_ergebnis", ("projects", None)),
         (_CODING_PROJEKTE, "coding_laeufe", ("projects",)),
         (_CODING_STAND_KURZ, "coding_stand", ("projects",)),
+        (_AUFTRAEGE_LAUFEN, "schedule_auftraege", None),
+        (_AGENTEN_TUN, "schedule_auftraege", None),
     )
 
 
@@ -148,12 +161,18 @@ def _coding(name: str) -> Callable[..., Optional[str]]:
     return aufruf
 
 
+def _schedule_auftraege(ergebnis: Any) -> Optional[str]:
+    from .auftraege_lesen import antwort
+    return antwort(ergebnis)
+
+
 def antworten() -> Dict[str, Callable[[Any], Optional[str]]]:
     """Eintraege fuer ``FESTE_ANTWORTEN``."""
     return {"desktop_fenster": _desktop_fenster, "thebrain_gedanken": _thebrain_gedanken,
             "rowboat_spaces": _rowboat_spaces, "desktop_bestaetigen": _desktop_bestaetigen,
             "coding_stand": _coding("antwort_stand"), "coding_laeufe": _coding("antwort_laeufe"),
-            "coding_ergebnis": _coding("antwort_ergebnis")}
+            "coding_ergebnis": _coding("antwort_ergebnis"),
+            "schedule_auftraege": _schedule_auftraege}
 
 
 def _desktop_fenster_fehler(ergebnis: Any, fehler: Any = None) -> Optional[str]:
@@ -170,11 +189,17 @@ def _thebrain_gedanken_fehler(ergebnis: Any, fehler: Any = None) -> Optional[str
     return "Die Gedanken des Gehirns kann ich gerade nicht lesen: seine eigene Schnittstelle antwortet nicht."
 
 
+def _schedule_auftraege_fehler(ergebnis: Any, fehler: Any = None) -> Optional[str]:
+    from .auftraege_lesen import fehlersatz
+    return fehlersatz(ergebnis, fehler)
+
+
 def fehlersaetze() -> Dict[str, Callable[..., Optional[str]]]:
     """Genauer Satz statt des allgemeinen Fehlersatzes, wenn klar ist, was fehlt."""
     return {"desktop_fenster": _desktop_fenster_fehler, "rowboat_spaces": _rowboat_spaces_fehler,
             "thebrain_gedanken": _thebrain_gedanken_fehler, "coding_stand": _coding("fehlersatz"),
-            "coding_laeufe": _coding("fehlersatz"), "coding_ergebnis": _coding("fehlersatz")}
+            "coding_laeufe": _coding("fehlersatz"), "coding_ergebnis": _coding("fehlersatz"),
+            "thebrain_gedanken": _thebrain_gedanken_fehler, "schedule_auftraege": _schedule_auftraege_fehler}
 
 
 def _rowboat_spaces_vorher() -> Optional[str]:

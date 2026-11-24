@@ -498,6 +498,9 @@ spaces:
     default_context: [current_space, now]
     events:
       schedule.create:  { tool: schedule_create,        required_params: [title, action_text, trigger_config] }
+      # Fester Lesesatz "Welche Aufträge laufen gerade?" (core/auftraege_lesen.py): liest
+      # brain_agent_auftraege ohne Modell und ohne Agent; nur Faehigkeit, Agent, Stand, Zeiten.
+      schedule.auftraege: { tool: "direct:core.auftraege_lesen:auftraege_lesen", required_params: [] }
       schedule.list:    { tool: schedule_list,          required_params: [] }
       schedule.cancel:  { tool: schedule_cancel,        required_params: [task_id] }
       schedule.modify:  { tool: schedule_modify,        required_params: [task_id] }
