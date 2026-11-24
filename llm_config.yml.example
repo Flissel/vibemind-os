@@ -58,6 +58,8 @@ roles:
   brain_data_collector:    { provider: openfang, model: "openfang:brain-researcher", temperature: 0.7 }
   # Compatibility role name; execution no longer selects Anthropic directly.
   brain_data_collector_anthropic: { provider: openfang, model: "openfang:brain-researcher", temperature: 0.7 }
+  # Hintergrund-Denken (MicroAgentPool ohne wartenden Menschen), eigener Agent ohne Werkzeuge.
+  brain_denken:            { provider: openfang, model: "openfang:brain-denken",     temperature: 0.7 }
 
   # Coding Space
   coding_planner:          { provider: openfang, model: "openfang:brain-coder", temperature: 0.7 }

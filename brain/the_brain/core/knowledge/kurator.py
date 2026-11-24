@@ -88,13 +88,47 @@ Belege:
 """
 
 
+class DenkenAus(RuntimeError):
+    """Das Hintergrund-Denken ist abgeschaltet (BRAIN_DENKEN, Stoppdatei, BRAIN_DENKEN_BIS)."""
+
+
 def llm_deuten(dok: Dokument) -> str:
+    """Deutung über die Denk-Rolle brain_denken, nie über den Planer (24.11.2026).
+
+    Gleiche Regeln wie die Mikro-Agenten (core/denken_messung): abgeschaltet heißt kein
+    Aufruf und keine Zeile; sonst je Versuch eine Messzeile ohne Inhalte (Agent "kurator").
+    Fehler und fehlender eigener Agent werfen weiter - der Kurator schaltet die Deutung dann
+    für den Rest des Laufs ab, statt jedes Dokument neu anzufragen.
+    """
+    from core import denken_messung
+    from core.denken_messung import DENKEN_ROLLE, DenkenNichtEingerichtet
+
+    if not denken_messung.denken_an():
+        raise DenkenAus("Hintergrund-Denken ist aus")
     from core.multi_llm_router import MultiLLMRouter
+
     belege = "\n".join(f"[B{b.nr}] {f.schluessel} = {f.wert}"
                        for f in dok.fakten for b in dok.belege if b.nr == f.beleg)
-    return MultiLLMRouter()._complete_sync(
-        "brain_planning", _DEUTEN_PROMPT.format(titel=dok.titel, typ=dok.typ, belege=belege),
-        300, 0.2).strip()
+    prompt = _DEUTEN_PROMPT.format(titel=dok.titel, typ=dok.typ, belege=belege)
+    nutzung: Dict[str, Any] = {}
+    beginn = time.monotonic()
+    text, ergebnis, fehler = "", "leer", ""
+    try:
+        antwort = MultiLLMRouter()._call_openrouter(
+            model="", prompt=prompt, max_tokens=300, temperature=0.2,
+            role=DENKEN_ROLLE, nutzung=nutzung)
+        text = (antwort if isinstance(antwort, str) else "").strip()
+        ergebnis = "ok" if text else "leer"
+        return text
+    except DenkenNichtEingerichtet:
+        ergebnis = "nicht_eingerichtet"
+        raise
+    except Exception as e:
+        ergebnis, fehler = "fehler", type(e).__name__
+        raise
+    finally:
+        denken_messung.schreiben(denken_messung.zeile(
+            "kurator", time.monotonic() - beginn, ergebnis, len(prompt), len(text), nutzung, fehler))
 
 
 def bereiche_fuer(kind: str, payload: Optional[Dict[str, Any]]) -> Tuple[str, ...]:

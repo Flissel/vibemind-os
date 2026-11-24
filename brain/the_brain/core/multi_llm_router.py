@@ -9,6 +9,10 @@ import time
 
 from vibemind_shared import OpenFangUnavailable, get_client, get_client_sync, get_model
 
+# Hintergrund-Denken (MicroAgentPool ohne Mensch, der wartet) läuft über eine eigene Rolle mit
+# eigenem Agenten (24.11.2026). brain_planning bleibt für Sätze von Menschen.
+from .denken_messung import DENKEN_ROLLE, DenkenNichtEingerichtet  # noqa: E402
+
 logger = logging.getLogger(__name__)
 
 def get_llm_concurrency_stats() -> Dict[str, Any]:
@@ -184,11 +188,64 @@ class MultiLLMRouter:
         model: str,
         prompt: str,
         max_tokens: int,
-        temperature: float
+        temperature: float,
+        *,
+        role: Optional[str] = None,
+        nutzung: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Compatibility shim for legacy private callers, routed via OpenFang."""
-        self._warn_legacy_model(model, "brain_planning")
-        return self._complete_sync("brain_planning", prompt, max_tokens, temperature)
+        """Compatibility shim for legacy private callers, routed via OpenFang.
+
+        Ohne ``role`` wie bisher brain_planning. Mit ``role=DENKEN_ROLLE`` (Hintergrund-Denken)
+        nur, wenn die Rolle einen eigenen Agenten hat; sonst DenkenNichtEingerichtet, ohne Aufruf.
+        ``nutzung`` (falls gegeben) bekommt tokens_rein/tokens_raus/kosten_usd aus der Antwort,
+        soweit OpenFang sie liefert, sonst None.
+        """
+        role = role or "brain_planning"
+        if role == DENKEN_ROLLE:
+            self._denken_pruefen()
+        else:
+            self._warn_legacy_model(model, role)
+        response = get_client_sync(role).chat.completions.create(
+            model=self._openfang_model(role),
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        if nutzung is not None:
+            nutzung.update(self._nutzung(response))
+        return self._response_text(response)
+
+    @staticmethod
+    def _denken_pruefen() -> None:
+        """Die Denk-Rolle muss auf einen eigenen Agenten zeigen, nie auf Planer oder Vorgabe."""
+        model = str(get_model(DENKEN_ROLLE))
+        verboten = {str(get_model("default")), str(get_model("brain_planning"))}
+        if not model.startswith("openfang:") or model in verboten:
+            raise DenkenNichtEingerichtet(
+                f"role {DENKEN_ROLLE!r} has no own OpenFang agent (resolves to {model!r})"
+            )
+
+    @staticmethod
+    def _nutzung(response: Any) -> Dict[str, Any]:
+        """Token-Zahlen aus einer OpenAI-förmigen Antwort, falls vorhanden; sonst None."""
+        usage = getattr(response, "usage", None)
+        if usage is None and isinstance(response, dict):
+            usage = response.get("usage")
+
+        def feld(*namen: str) -> Optional[float]:
+            for name in namen:
+                wert = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
+                if isinstance(wert, (int, float)) and not isinstance(wert, bool):
+                    return wert
+            return None
+
+        if usage is None:
+            return {"tokens_rein": None, "tokens_raus": None, "kosten_usd": None}
+        return {
+            "tokens_rein": feld("prompt_tokens", "input_tokens"),
+            "tokens_raus": feld("completion_tokens", "output_tokens"),
+            "kosten_usd": feld("cost_usd", "cost"),
+        }
 
     async def aroute(
         self,

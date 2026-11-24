@@ -72,3 +72,11 @@ def sample_gates(seed):
     np.random.seed(seed + 3)
     gates = np.random.rand(6)
     return gates / np.sum(gates)
+
+
+@pytest.fixture(autouse=True)
+def _denken_messung_im_tmp(tmp_path, monkeypatch):
+    """Hintergrund-Denken schreibt je Aufruf eine Messzeile; in Tests nie ins echte data/."""
+    monkeypatch.setenv("BRAIN_DENKEN_MESSUNG", str(tmp_path / "denken_messung.jsonl"))
+    monkeypatch.delenv("BRAIN_DENKEN", raising=False)
+    monkeypatch.delenv("BRAIN_DENKEN_BIS", raising=False)

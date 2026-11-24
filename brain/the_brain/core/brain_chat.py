@@ -1677,23 +1677,64 @@ class MicroAgentPool:
         # Build prompt with system context
         prompt = f"[System: {agent.system_prompt}]\n\n{user_prompt}"
 
+        if force:
+            # Ein Mensch wartet (Responder im Chat): wie bisher über brain_planning.
+            try:
+                response = self._router._call_openrouter(
+                    model=agent.model,
+                    prompt=prompt,
+                    max_tokens=agent.max_tokens,
+                    temperature=agent.temperature
+                )
+                text = (response or "").strip()
+                if text:
+                    self._record_run(agent_name)
+                    return text
+                return None
+            except Exception as e:
+                self._total_failures += 1
+                logger.debug("MicroAgent %s failed: %s", agent_name, e)
+                return None
+
+        return self._denken(agent_name, agent, prompt)
+
+    def _denken(self, agent_name: str, agent: "MicroAgentConfig", prompt: str) -> Optional[str]:
+        """Hintergrund-Aufruf über die eigene Denk-Rolle, gemessen (24.11.2026).
+
+        Jeder Versuch zählt als Lauf (Abkühlzeit und Stundengrenze), auch leer oder abgelehnt,
+        damit nicht jeder Takt sofort neu ruft. Je Versuch eine Messzeile ohne Inhalte.
+        """
+        from core import denken_messung
+        from core.denken_messung import DENKEN_ROLLE, DenkenNichtEingerichtet
+
+        if not denken_messung.denken_an():
+            return None
+        nutzung: Dict[str, Any] = {}
+        beginn = time.monotonic()
+        text = ""
+        ergebnis, fehler = "leer", ""
         try:
             response = self._router._call_openrouter(
                 model=agent.model,
                 prompt=prompt,
                 max_tokens=agent.max_tokens,
-                temperature=agent.temperature
+                temperature=agent.temperature,
+                role=DENKEN_ROLLE,
+                nutzung=nutzung,
             )
-            text = (response or "").strip()
-            if text:
-                self._record_run(agent_name)
-                return text
-            # Empty response — don't burn cooldown
-            return None
+            text = (response if isinstance(response, str) else "").strip()
+            ergebnis = "ok" if text else "leer"
+        except DenkenNichtEingerichtet:
+            ergebnis = "nicht_eingerichtet"
+            logger.warning("MicroAgent %s: role %s has no own agent; not called", agent_name, DENKEN_ROLLE)
         except Exception as e:
+            ergebnis, fehler = "fehler", type(e).__name__
             self._total_failures += 1
-            logger.debug("MicroAgent %s failed: %s", agent_name, e)
-            return None
+            logger.debug("MicroAgent %s failed: %s", agent_name, type(e).__name__)
+        self._record_run(agent_name)
+        denken_messung.schreiben(denken_messung.zeile(
+            agent_name, time.monotonic() - beginn, ergebnis, len(prompt), len(text), nutzung, fehler))
+        return text or None
 
     def _call_agent_with_tools(
         self, agent_name: str, user_prompt: str
@@ -1718,28 +1759,10 @@ class MicroAgentPool:
             # Fallback to regular call if no tools defined
             return self._call_agent(agent_name, user_prompt)
 
-        messages = [
-            {"role": "system", "content": agent.system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
-
-        try:
-            content, rounds = self._router._call_openrouter_with_tools(
-                model=agent.model,
-                messages=messages,
-                tools=agent.tools,
-                tool_executors=_TOOL_EXECUTORS,
-                max_tokens=agent.max_tokens,
-                temperature=agent.temperature,
-                max_rounds=3,
-            )
-            self._record_run(agent_name)
-            self._total_tool_rounds += rounds
-            return content.strip() if content else None
-        except Exception as e:
-            self._total_failures += 1
-            logger.debug(f"MicroAgent {agent_name} tool-use failed: {e}")
-            return None
+        # Seit 24.11.2026 läuft das Hintergrund-Denken über einen eigenen Agenten ohne Werkzeuge.
+        # Der Forscher mit Werkzeugen lief über brain_planning (den Planer für Sätze von
+        # Menschen) und ruft deshalb nicht mehr: kein Aufruf, keine Kosten.
+        return None
 
     # ── Public Agent Methods ────────────────────────────────────────
 
