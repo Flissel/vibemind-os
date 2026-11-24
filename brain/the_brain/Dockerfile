@@ -81,6 +81,10 @@ COPY brain/the_brain/ /app/
 COPY config/space_agent_registry.yml /app/config/space_agent_registry.yml
 ENV SPACE_AGENT_REGISTRY_PATH=/app/config/space_agent_registry.yml
 
+# 4b2. Faehigkeitskarten der Weiche (core/weiche.py) ausserhalb von /app/data: im Betrieb
+#      verdeckt das Daten-Volume /app/data die Datei aus dem Abbild.
+COPY brain/the_brain/data/faehigkeitskarten.yaml /app/karten/faehigkeitskarten.yaml
+
 # 4c. Die Spaces. capabilities.yaml fuehrt `direct:spaces.<x>`-Targets (minibook,
 #     schedule, video, research) und die Registry-Pruefung importiert
 #     spaces._navigator - ohne dieses COPY warf jeder dieser Pfade im Container
