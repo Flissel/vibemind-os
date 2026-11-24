@@ -1,6 +1,7 @@
 # Laufartefakte und Audio - gehoert nicht ins Repo
 runs/
 watch/
+logs/
 *.wav
 *.mp3
 *.flac
