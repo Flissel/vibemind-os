@@ -1262,11 +1262,18 @@
                               border:1px solid #1e2d3d; color:#e8f0fe;
                               border-radius:4px; font-size:12px; font-family:inherit;"
                        onkeydown="if(event.key==='Enter') wsLoadDecisions()">
-                <button onclick="wsLoadDecisions(); wsDtPoll();"
+                <button onclick="_wsDtAnsicht = 'neueste'; _wsDtZoomNoetig = true; wsLoadDecisions(); wsDtPoll();"
                         style="padding:6px 14px; background:#1e2d3d; color:#4fc3f7;
                                border:1px solid #2a3f54; border-radius:4px;
                                cursor:pointer; font-size:12px; font-family:inherit;">
                     Refresh
+                </button>
+                <button id="wsDtAllesKnopf" onclick="_wsDtUmschalten()"
+                        title="Zwischen den neuesten Sätzen und dem ganzen Graphen wechseln"
+                        style="padding:6px 14px; background:#1e2d3d; color:#4fc3f7;
+                               border:1px solid #2a3f54; border-radius:4px;
+                               cursor:pointer; font-size:12px; font-family:inherit;">
+                    Alles zeigen
                 </button>
             </div>
         </div>
@@ -1291,7 +1298,8 @@
                     <span><span style="color:#ffca28;">★</span> dispatch</span>
                     <span><span style="color:#b0bec5;">■</span> Satz</span>
                     <span><span style="color:#26c6da;">⬢</span> Entscheidung</span>
-                    <span><span style="color:#ff8a65;">◆</span> Bereich</span>
+                    <span><span style="color:#ff8a65;">◆</span> Ziel-Bereich (gestrichelt: nur Reiter)</span>
+                    <span>⌂ Reiter des Satzes</span>
                 </div>
             </div>
             <!-- Right: neueste Saetze (aus der Graph-Abfrage), darunter alte Plaene -->
@@ -2798,9 +2806,15 @@ const _ENTSCHEIDUNG_STILE = [
       style: {
           'background-color': '#b0bec5', 'shape': 'round-rectangle',
           'width': 10, 'height': 10, 'border-width': 0,
-          'label': 'data(label)', 'font-size': 7, 'color': '#eceff1',
+          // Satzanfang, darunter als kleine Marke der Reiter, aus dem der Satz kam (IM_REITER).
+          // Der Bereichsknoten darunter ist dagegen das ZIEL der Entscheidung (WAEHLT).
+          'label': ele => {
+              const d = ele.data();
+              return (d.label || 'Satz') + (d.reiter ? `\n⌂ ${d.reiter}` : '');
+          },
+          'font-size': 8, 'color': '#eceff1',
           'text-valign': 'top', 'text-margin-y': -3,
-          'text-wrap': 'ellipsis', 'text-max-width': '100px',
+          'text-wrap': 'wrap', 'text-max-width': '110px',
           'text-events': 'no',
       }},
     { selector: 'node[type="entscheidung"]',
@@ -2812,7 +2826,7 @@ const _ENTSCHEIDUNG_STILE = [
           'border-width': ele => (typeof ele.data('ok') === 'boolean' ? 2.5 : 1),
           'border-color': ele => (ele.data('ok') === true ? '#66bb6a'
                                   : ele.data('ok') === false ? '#ef5350' : '#80deea'),
-          'label': 'data(label)', 'font-size': 7, 'color': '#e0f7fa',
+          'label': 'data(label)', 'font-size': 8, 'color': '#e0f7fa',
           'text-valign': 'bottom', 'text-margin-y': 3,
           'text-wrap': 'ellipsis', 'text-max-width': '100px',
           'text-events': 'no',
@@ -2837,13 +2851,18 @@ const _ENTSCHEIDUNG_STILE = [
     // Stern, und je Bereich auf eigener Hoehe abgeknickt, damit die Zuordnung lesbar bleibt.
     { selector: 'edge[type="waehlt"]',
       style: {
-          'width': 1.2, 'line-color': '#ff8a65', 'opacity': 0.55,
+          'width': 1.2, 'opacity': 0.55,
+          // Gestrichelt und grau: die Antwort nannte kein Ziel, der Bereich ist nur der Reiter
+          // (bereich_quelle "reiter", siehe entscheidung_graph.bereich_bestimmen).
+          'line-color': ele => (_nurReiter(ele.source()) ? '#90a4ae' : '#ff8a65'),
+          'target-arrow-color': ele => (_nurReiter(ele.source()) ? '#90a4ae' : '#ff8a65'),
+          'line-style': ele => (_nurReiter(ele.source()) ? 'dashed' : 'solid'),
           'curve-style': 'taxi', 'taxi-direction': 'downward',
           'taxi-turn': ele => {
               const ids = ele.cy().nodes('[type="bereich"]').map(n => n.id()).sort();
               return 30 + 10 * (Math.max(0, ids.indexOf(ele.target().id())) % 8);
           },
-          'target-arrow-shape': 'triangle', 'target-arrow-color': '#ff8a65',
+          'target-arrow-shape': 'triangle',
           'arrow-scale': 0.6,
       }},
     { selector: 'edge[type="fuehrt_zu"]',
@@ -2854,6 +2873,17 @@ const _ENTSCHEIDUNG_STILE = [
           'arrow-scale': 0.6,
       }},
 ];
+
+// Entscheidung, deren Bereich nur der Reiter ist (die Antwort nannte kein Ziel).
+function _nurReiter(ent) {
+    const q = ent && ent.data ? ent.data('bereich_quelle') : '';
+    return q === 'reiter' || q === 'keiner';
+}
+
+const _QUELLE_TEXT = {
+    ziel: 'aus dem Ziel der Antwort', antwort: 'aus der Antwort', schritte: 'aus den Schritten',
+    reiter: 'nur der Reiter, die Antwort nannte kein Ziel', keiner: 'unbekannt',
+};
 
 // Ein ehrlicher Zustand des Entscheidungsgraphen fuer Kopfzeile und Galaxy-Zaehler.
 // Nur neo4j_connected === true heisst "Neo4j verbunden"; alles andere sagt, was fehlt.
@@ -2919,9 +2949,11 @@ function _wsSatzListe(data) {
             return `<div class="decision-card ${cls}" style="cursor:pointer"
                          onclick="_wsZeigeKnoten('${_wsEsc(ent.id)}')">
                 <div class="dc-intent">${_wsEsc(text)}</div>
-                <div class="dc-meta">
+                <div class="dc-meta" style="flex-wrap:wrap; row-gap:2px;">
                     <span><b>${_wsEsc(ent.label || ent.stufe || '?')}</b></span>
-                    <span>Bereich: ${_wsEsc(bereich ? (bereich.label || bereich.id) : '–')}</span>
+                    <span title="${_wsEsc(_QUELLE_TEXT[ent.bereich_quelle] || '')}">Ziel: ${_wsEsc(bereich ? (bereich.label || bereich.id) : '–')}${
+                        (ent.bereich_quelle === 'reiter') ? ' (nur Reiter)' : ''}</span>
+                    ${satz && satz.reiter ? `<span>⌂ ${_wsEsc(satz.reiter)}</span>` : ''}
                     <span>ok: ${ok}</span>
                     <span>${_dauerText(ent.dauer_ms)}</span>
                     <span>${_alterText(ent.ts)}</span>
@@ -2929,6 +2961,42 @@ function _wsSatzListe(data) {
                 </div>
             </div>`;
         }).join('');
+}
+
+// Ausschnitt der grossen Ansicht: die neuesten etwa fuenf Satz-Spalten so gross, dass Satz und
+// Entscheidung ohne Zoomen lesbar sind (aeltere liegen rechts, erreichbar durch Ziehen), oder
+// der ganze Graph ("Alles zeigen").
+const _WS_NEUESTE_SPALTEN = 5;
+function _wsDtAusschnitt() {
+    if (!_wsCy) return;
+    _wsCy.resize();
+    const knopf = document.getElementById('wsDtAllesKnopf');
+    if (knopf) knopf.textContent = _wsDtAnsicht === 'alles' ? 'Neueste zeigen' : 'Alles zeigen';
+    const ents = _wsCy.nodes('[type="entscheidung"]').toArray()
+        .sort((a, b) => (b.data('ts') || 0) - (a.data('ts') || 0));
+    if (_wsDtAnsicht === 'alles' || !ents.length) { _wsCy.fit(undefined, 30); return; }
+    let auswahl = _wsCy.collection();
+    ents.slice(0, _WS_NEUESTE_SPALTEN).forEach(en => {
+        auswahl = auswahl.union(en)
+            .union(en.incomers('edge[type="entschieden_durch"]').sources())
+            .union(en.outgoers('edge[type="fuehrt_zu"]').targets());
+    });
+    // Plaene als Kasten: ihre Hops gehoeren in den Ausschnitt.
+    auswahl = auswahl.union(auswahl.filter('node[type="plan"]').children());
+    _wsCy.fit(auswahl, 40);
+    // Nicht kleiner als lesbar und nicht riesig, wenn es nur ein, zwei Saetze gibt.
+    const zoom = Math.min(2.2, Math.max(1.1, _wsCy.zoom()));
+    if (zoom !== _wsCy.zoom()) {
+        _wsCy.zoom(zoom);
+        const bb = auswahl.boundingBox();
+        // Linker Rand des Ausschnitts (die neueste Spalte) bleibt sichtbar.
+        _wsCy.pan({ x: 40 - bb.x1 * zoom, y: _wsCy.height() / 2 - ((bb.y1 + bb.y2) / 2) * zoom });
+    }
+}
+
+function _wsDtUmschalten() {
+    _wsDtAnsicht = _wsDtAnsicht === 'alles' ? 'neueste' : 'alles';
+    _wsDtAusschnitt();
 }
 
 function _wsZeigeKnoten(id) {
@@ -2960,13 +3028,19 @@ function _knotenHinweis(cy) {
                 + (d.reiter ? `<br><span style="color:#78909c">Reiter: ${_wsEsc(d.reiter)}</span>` : '');
         } else if (d.type === 'entscheidung') {
             const ok = d.ok === true ? '✓ ok' : d.ok === false ? '✗ Fehler' : '– ohne Angabe';
+            const ziel = n.outgoers('edge[type="waehlt"]').targets();
             html = `<b>Entscheidung</b><br>${_wsEsc(d.label || '')}<br>`
                 + `<span style="color:#78909c">${ok} · ${_dauerText(d.dauer_ms)}`
-                + (d.weg ? ` · Weg: ${_wsEsc(d.weg)}` : '') + '</span>';
+                + (d.weg ? ` · Weg: ${_wsEsc(d.weg)}` : '') + '</span>'
+                + (ziel.length ? `<br>Ziel: ${_wsEsc(ziel.data('label') || ziel.id())}`
+                    + ` <span style="color:#78909c">(${_wsEsc(_QUELLE_TEXT[d.bereich_quelle] || d.bereich_quelle || '?')})</span>` : '')
+                + (d.reiter ? `<br><span style="color:#78909c">Reiter des Satzes: ${_wsEsc(d.reiter)}</span>` : '');
         } else {
-            const zahl = n.incomers('edge[type="waehlt"]').length;
-            html = `<b>Bereich</b><br>${_wsEsc(d.label || d.id)}<br>`
-                + `<span style="color:#78909c">${zahl} Entscheidung${zahl === 1 ? '' : 'en'} im Bild</span>`;
+            const rein = n.incomers('edge[type="waehlt"]');
+            const nurReiter = rein.sources().filter(s => _nurReiter(s)).length;
+            html = `<b>Ziel-Bereich</b><br>${_wsEsc(d.label || d.id)}<br>`
+                + `<span style="color:#78909c">${rein.length} Entscheidung${rein.length === 1 ? '' : 'en'} im Bild`
+                + (nurReiter ? `, davon ${nurReiter} nur aus dem Reiter (gestrichelt)` : '') + '</span>';
         }
         tip.innerHTML = html;
         const r = cy.container().getBoundingClientRect();
@@ -3890,7 +3964,12 @@ function wsSwitchTab(name) {
     try {
         if (name === 'routing')   wsMountRouting();
         if (name === 'kg')        wsKgInit();
-        if (name === 'decisions') { wsLoadDecisions(); _wsDtPollStart(); }
+        if (name === 'decisions') {
+            wsLoadDecisions();
+            // Beim Oeffnen auf die neuesten Saetze heranzoomen (Freigabe 24.11.2026).
+            _wsDtAnsicht = 'neueste'; _wsDtZoomNoetig = true;
+            if (_wsDtPollHandle) wsDtPoll(); else _wsDtPollStart();
+        }
         if (name === 'self')      wsLoadSelf();
         if (name === 'events')    { wsLoadEvents(); _wsLiveStartSse(); }
         if (name === 'thoughts')  wsLoadThoughts();
@@ -3970,6 +4049,8 @@ async function wsKgSearch() {
 // ── Decision-Theatre Cytoscape (workspace pane) ─────────────────
 let _wsCy = null;
 let _wsDtPollHandle = null;
+let _wsDtAnsicht = 'neueste';   // 'neueste' = auf die letzten Saetze gezoomt, 'alles' = ganzer Graph
+let _wsDtZoomNoetig = true;
 
 function _wsDtInit() {
     if (_wsCy) return;
@@ -4102,14 +4183,15 @@ async function wsDtPoll() {
         edges.forEach(e => {
             if (!_wsCy.getElementById(e.data.id).length) { _wsCy.add(e); dirty = true; }
         });
-        if (dirty && nodes.length > 0) {
+        if ((dirty || _wsDtZoomNoetig) && nodes.length > 0) {
             try {
                 const positions = _computePositions(nodes, edges, _wsCy);
                 positions.forEach((p, id) => {
                     const n = _wsCy.getElementById(id);
                     if (n && n.length) n.position(p);
                 });
-                _wsCy.fit(undefined, 30);
+                _wsDtAusschnitt();
+                _wsDtZoomNoetig = false;
             } catch (e) { console.warn('[ws-dt] layout failed:', e); }
         }
     } catch (e) { /* network blip — silent */ }

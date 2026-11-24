@@ -24,10 +24,13 @@ no HTTP proxying to localhost:5003.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import os
 import re
+import secrets
 import time
 import tomllib
 from pathlib import Path
@@ -2187,8 +2190,44 @@ def _ansicht_darf_text(request: Request) -> bool:
             and request.headers.get("sec-fetch-site", "").lower() == "same-origin")
 
 
+# Kennungen, deren Form im Code nachweislich inhaltsfrei ist (Sicherheitsbefund 24.11.2026,
+# Kennungen koennen Inhalt tragen, etwa Cluster "topic:<Thema>"). Nur diese gehen ausserhalb der
+# Ansicht unveraendert hinaus; alle anderen werden durch undurchsichtige ersetzt.
+#   Plan:     plan_<hex> (action_systems), shortcut_/ideen_/lesen_/sales_/recherche_<ms>
+#             (introspection, recherche_bubble), fenster-/augen-<ms>-<nr> (desktop_*);
+#             recherche_<job_id> nur, wenn job_id selbst hex/Ziffern ist.
+#   Dispatch: disp_<hex10> (DecisionGraph.upsert_dispatch)
+#   Satz/Entscheidung: satz:<trace_id>, ent_<trace_id> (DecisionGraph._entscheidung_teil),
+#             nur wenn trace_id aus hex, Ziffern und Bindestrichen besteht
+#   Bereich:  bereich:<App-Kennung> (entscheidung_graph._kennung, Registry-Kennungen)
+# Cluster, Hops (<plan>:<step_id>), Werkzeugaufrufe (<hop>::<seq>::<tool>) und alle
+# Kanten-Kennungen werden immer ersetzt.
+_SPUR = r"[0-9a-f][0-9a-f-]{5,63}"
+_INHALTSFREIE_KENNUNG = re.compile(
+    r"^(?:"
+    r"plan_[0-9a-f]{8,32}"
+    r"|(?:shortcut_|ideen_|lesen_|sales_|recherche_)[0-9]{6,16}"
+    r"|(?:fenster|augen)-[0-9]{1,16}-[0-9]{1,6}"
+    r"|disp_[0-9a-f]{10}"
+    r"|satz:" + _SPUR + r"|ent_" + _SPUR +
+    r"|bereich:[a-z][a-z0-9_-]{0,31}"
+    r")$"
+)
+_KENNUNG_SCHLUESSEL = secrets.token_bytes(16)  # je Prozess: stabil zwischen Abfragen
+
+
+def _undurchsichtig(kennung: Any) -> str:
+    """Kennung unveraendert, wenn ihre Form inhaltsfrei ist, sonst ein kurzer HMAC (stabil
+    innerhalb des Prozesses, damit die Ansicht Knoten ueber Abfragen hinweg wiedererkennt)."""
+    text = str(kennung if kennung is not None else "")
+    if _INHALTSFREIE_KENNUNG.match(text):
+        return text
+    return "k" + hmac.new(_KENNUNG_SCHLUESSEL, text.encode("utf-8"), hashlib.sha256).hexdigest()[:16]
+
+
 def _ohne_text(out: Any) -> Any:
-    """Die Antwort nur mit erlaubten Feldern je Knotenart; Beschriftungen neu gebaut."""
+    """Die Antwort nur mit erlaubten Feldern je Knotenart; Beschriftungen neu gebaut;
+    Kennungen mit moeglichem Inhalt durch undurchsichtige ersetzt (Kanten entsprechend)."""
     if not isinstance(out, dict):
         return {"connected": False, "nodes": [], "edges": [], "text_ausgeblendet": True}
     knoten = []
@@ -2200,11 +2239,24 @@ def _ohne_text(out: Any) -> Any:
             if feld in roh:
                 daten[feld] = roh[feld]
         daten["label"] = _sichere_beschriftung(typ, daten)
+        neu = _undurchsichtig(daten["id"])
+        if neu != daten["id"] and typ == "bereich":
+            daten["label"] = "Bereich"
+        daten["id"] = neu
+        if "trace_id" in daten:
+            spur = str(daten["trace_id"])
+            daten["trace_id"] = spur if re.fullmatch(_SPUR, spur) else _undurchsichtig(spur)
         knoten.append({"data": daten})
     kanten = []
     for e in out.get("edges") or []:
         roh = e.get("data") if isinstance(e, dict) and isinstance(e.get("data"), dict) else {}
-        kanten.append({"data": {k: roh[k] for k in _SICHERE_KANTENFELDER if k in roh}})
+        kante = {k: roh[k] for k in _SICHERE_KANTENFELDER if k in roh}
+        if "id" in kante:
+            kante["id"] = "e" + _undurchsichtig("kante\x00" + str(kante["id"]))[1:]
+        for seite in ("source", "target"):
+            if seite in kante:
+                kante[seite] = _undurchsichtig(kante[seite])
+        kanten.append({"data": kante})
     erlaubt = {k: out[k] for k in ("connected", "neo4j_connected", "abfrage_fehler", "stats") if k in out}
     return {**erlaubt, "nodes": knoten, "edges": kanten, "text_ausgeblendet": True}
 
