@@ -446,6 +446,7 @@ _ZEIG = r"(?:zeig(?:e)?|liste|nenn(?:e)?|was sind|welche)"
 _FESTE_LESEFRAGEN = (
     # Aufträge / Dashboard: geplante Aufgaben aus dem Schedule-Space (direct, laeuft).
     (re.compile(rf"^(?:{_ZEIG}\s+(?:mir\s+)?(?:meine|die|alle)?\s*(?:aufträge|auftraege|geplanten aufgaben)"
+                r"(?!\s+(?:an\s+(?:die\s+)?agenten|laufen|warten|sind\s+(?:offen|in arbeit|unterwegs)))"
                 r"|welche geplanten aufgaben gibt es|was ist geplant|was steht an geplanten aufgaben)\b",
                 re.IGNORECASE),
      "schedule_list", None),
@@ -547,7 +548,7 @@ FESTE_ANTWORTEN = {"schedule_list": antwort_schedule_list, **_weitere_antworten(
 
 # Lauf 8: "Zeig meine Aufträge" antwortete mit den geplanten Aufgaben, ohne zu sagen, dass
 # Auftraege an Agenten etwas anderes sind und in dieser Liste fehlen.
-NUR_GEPLANT = " Aufträge an Agenten stehen nicht in dieser Liste."
+NUR_GEPLANT = " Aufträge an Agenten stehen nicht in dieser Liste; die zeigt „Welche Aufträge laufen gerade?“."
 _AUFTRAEGE_WORT = re.compile(r"\bauftr(?:ä|ae)ge\b", re.IGNORECASE)
 
 
