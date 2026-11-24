@@ -76,7 +76,7 @@ class _Planer:
         raise AssertionError("kein Planer")
 
 
-def _client(monkeypatch):
+def _client(monkeypatch, muster=None, planer=None):
     import core.difficulty_router as dr
 
     class _K:
@@ -89,8 +89,10 @@ def _client(monkeypatch):
     app = FastAPI()
     app.include_router(router)
     app.state.plan_executor = _Ausfuehrer()
-    app.state.multihop_planner = _Planer()
+    app.state.multihop_planner = planer or _Planer()
     app.state.final_synthesizer = None
+    if muster is not None:
+        app.state.capability_router = muster
     return TestClient(app), app.state.plan_executor
 
 
@@ -152,6 +154,205 @@ def test_router_unbekannte_karte_ist_rueckfrage(monkeypatch) -> None:
     body = _satz(client, "Lösche die Karte Kassenbuch")
     assert body["final_text"] == "Eine Notiz „Kassenbuch“ finde ich in dieser Bubble nicht."
     assert ausfuehrer.plaene == []
+
+
+# ── L2: offene Bubble löschen, Rückfrage mit der Zahl der Karten ─────────
+
+BUBBLE_FRAGE = ("Soll ich die Bubble „Stadtfest“ löschen? Sie hat 4 Karten; die werden mit gelöscht, ihre "
+                "Verbindungen auch. Mit „Zurück“ holst du alles wieder. Sag „Ja, löschen“.")
+
+
+@pytest.mark.parametrize("satz", ["Lösche diese Bubble", "Lösche die Bubble", "lösche die Bubble Stadtfest",
+                                  "Entferne die Bubble „Stadtfest“."])
+def test_router_bubble_erst_frage_mit_kartenzahl_dann_ja(monkeypatch, satz) -> None:
+    client, ausfuehrer = _client(monkeypatch)
+    body = _satz(client, satz)
+    assert ausfuehrer.plaene == [] and body["rueckfrage"] is True and body["final_text"] == BUBBLE_FRAGE
+    body = _satz(client, "Ja, löschen")
+    (plan,) = ausfuehrer.plaene
+    assert [h.capability for h in plan.hops] == ["bubble.delete"]
+    arg = json.loads(plan.hops[0].arg_template)
+    assert arg["id"] == BUBBLE["id"] and arg["mit_karten"] is True
+    assert lb.einloesen(arg["bestaetigung"], "bubble.delete", BUBBLE["id"])
+    assert body["final_text"] == ("Die Bubble „Stadtfest“ ist gelöscht, mit ihren Karten. "
+                                  "Mit „Zurück“ holst du alles wieder.")
+    assert body.get("ziel") is None                                           # kein Sprung in die geloeschte
+
+
+def test_router_bubble_nur_die_offene(monkeypatch) -> None:
+    client, ausfuehrer = _client(monkeypatch)
+    body = _satz(client, "Lösche die Bubble Sommerfest")
+    assert body["final_text"] == ("Gelöscht wird nur die offene Bubble. Öffne „Sommerfest“ und sag dort "
+                                  "„Lösche diese Bubble“.")
+    assert _satz(client, "Ja, löschen")["final_text"] == lb.OHNE_FRAGE and ausfuehrer.plaene == []
+    body = _satz(client, "Lösche diese Bubble", {"space": "ideas", "bubble": None})
+    assert body["rueckfrage"] is True and ausfuehrer.plaene == []
+
+
+def test_bubble_frage_ohne_zahl_und_mit_einer_karte() -> None:
+    assert "Sie hat eine Karte; die werden mit gelöscht" in lb.frage_bubble("Stadtfest", 1)
+    assert "Sie hat keine Karten." in lb.frage_bubble("Stadtfest", 0)
+    assert "Ihre Karten gehen mit; wie viele es sind, weiß ich gerade nicht." in lb.frage_bubble("Stadtfest", None)
+
+
+def test_bubble_schluessel_gilt_nicht_fuer_eine_karte() -> None:
+    lb.fragen("bubble.delete", {"id": BUBBLE["id"]}, "x")
+    schluessel = lb.satz_pruefen("Ja, lösche die Bubble")["argumente"]["bestaetigung"]
+    assert lb.einloesen(schluessel, "idea.delete", BUBBLE["id"]) is False
+
+
+def test_nachpruefung_bubble_weg_und_keine_karte_zeigt_auf_sie() -> None:
+    erwartet, _ = fest.nachpruefung("bubble.delete", {"id": BUBBLE["id"]}, _quittung([{"id": BUBBLE["id"]}]))
+    assert erwartet == {"art": "bubble_geloescht", "id": BUBBLE["id"]}
+    assert fest.pruefe_zustand(erwartet, lambda tabelle, filter: [])[0] is True
+    karte_haengt = lambda tabelle, filter: [{"id": "a0000001"}] if tabelle == "canvas_nodes" else []
+    assert fest.pruefe_zustand(erwartet, karte_haengt)[0] is False
+
+
+def test_nachpruefung_mit_karten_liest_genau_die_mitgeloeschten_karten_zurueck() -> None:
+    argumente = {"id": BUBBLE["id"], "mit_karten": True}
+    erwartet, _ = fest.nachpruefung("bubble.delete", argumente,
+                                    _quittung([{"id": BUBBLE["id"], "karten_geloescht": ["a0000001", "a0000002"]}]))
+    assert erwartet == {"art": "bubble_geloescht", "id": BUBBLE["id"], "karten": ["a0000001", "a0000002"]}
+    gelesen = []
+
+    def leer(tabelle, filter):
+        gelesen.append((tabelle, dict(filter)))
+        return []
+    ok, signal, _ = fest.pruefe_zustand(erwartet, leer)
+    assert ok is True and signal["karten_geloescht"] == 2
+    assert ("canvas_nodes", {"select": "id", "id": "in.(a0000001,a0000002)", "limit": "1"}) in gelesen
+    assert ("canvas_edges", {"select": "id", "from_node_id": "in.(a0000001,a0000002)", "limit": "1"}) in gelesen
+    assert ("canvas_edges", {"select": "id", "to_node_id": "in.(a0000001,a0000002)", "limit": "1"}) in gelesen
+    # Nur losgeloest statt geloescht: faellt auf.
+    liegt_noch = lambda tabelle, filter: ([{"id": "a0000002"}] if tabelle == "canvas_nodes"
+                                          and filter.get("id", "").startswith("in.") else [])
+    assert fest.pruefe_zustand(erwartet, liegt_noch)[0] is False
+    # Eine Verbindung steht noch: faellt auf.
+    kante = lambda tabelle, filter: [{"id": "e1"}] if tabelle == "canvas_edges" and "to_node_id" in filter else []
+    assert fest.pruefe_zustand(erwartet, kante)[0] is False
+    # Ohne Liste der Karten keine Erwartung (die Quittung passt nicht zum Aufruf mit Karten).
+    assert fest.nachpruefung("bubble.delete", argumente, _quittung([{"id": BUBBLE["id"]}]))[0] is None
+    zu_viele = [f"a{i:07d}" for i in range(201)]
+    assert fest.nachpruefung("bubble.delete", argumente,
+                             _quittung([{"id": BUBBLE["id"], "karten_geloescht": zu_viele}]))[0] is None
+
+
+def test_ueber_200_karten_ehrlicher_satz_statt_rueckfrage(monkeypatch) -> None:
+    client, ausfuehrer = _client(monkeypatch)
+    kontext = {"space": "ideas", "bubble": BUBBLE, "cards": [], "cards_total": 201}
+    body = _satz(client, "Lösche diese Bubble", kontext)
+    assert body["final_text"] == ("Die Bubble „Stadtfest“ hat 201 Karten. Mehr als 200 lösche ich nicht in "
+                                  "einem Zug; gelöscht ist nichts.")
+    assert _satz(client, "Ja, löschen")["final_text"] == lb.OHNE_FRAGE and ausfuehrer.plaene == []
+    # Genau 200 geht noch: Rückfrage mit der Zahl.
+    body = _satz(client, "Lösche diese Bubble", {**kontext, "cards_total": 200})
+    assert "Sie hat 200 Karten; die werden mit gelöscht" in body["final_text"]
+
+
+def test_zu_viele_karten_vom_server_ergibt_ehrlichen_satz() -> None:
+    from core import ideen_abkuerzung as abk
+    satz = abk.fehlersatz("Ideen-Werkzeug meldet einen Fehler (too_many_cards)", "bubble.delete")
+    assert satz == "Diese Bubble hat mehr als 200 Karten. So viele lösche ich nicht in einem Zug; gelöscht ist nichts."
+
+
+def test_registry_bindet_bubble_delete_fest_an_den_ideen_server() -> None:
+    import yaml
+    registry = yaml.safe_load((Path(__file__).resolve().parents[3] / "config" / "space_agent_registry.yml")
+                              .read_text(encoding="utf-8"))
+    bubbles = registry["spaces"]["bubbles"]
+    assert bubbles["events"]["bubble.delete"]["tool"] == "bubble_delete"
+    assert bubbles["events"]["bubble.delete"]["execution"] == {"kind": "mcp", "server": "spaces-ideas"}
+    assert "bubble_delete" in bubbles["mcp_tools"]["spaces-ideas"]
+
+
+# ── L3: eine Begründung löschen (rücknehmbar, ohne Rückfrage) ────────────
+
+@pytest.mark.parametrize("satz, argumente, antwort", [
+    ("Lösche die Begründung 2", {"bubble_id": BUBBLE["id"], "nummer": 2},
+     "Begründung 2 ist gelöscht. Mit „Zurück“ holst du sie wieder."),
+    ("Lösche Begründung Nr. 1 von dieser Bubble", {"bubble_id": BUBBLE["id"], "nummer": 1},
+     "Begründung 1 ist gelöscht. Mit „Zurück“ holst du sie wieder."),
+    ("Lösche die Begründung 1 von der Bubble Stadtfest", {"bubble_id": BUBBLE["id"], "nummer": 1},
+     "Begründung 1 ist gelöscht. Mit „Zurück“ holst du sie wieder."),
+    ("Entferne die Begründung 3 zu Sponsoren", {"bubble_id": BUBBLE["id"], "nummer": 3, "idea_id": "a0000002"},
+     "Begründung 3 zu „Sponsoren“ ist gelöscht. Mit „Zurück“ holst du sie wieder."),
+])
+def test_router_begruendung_loeschen_fest(monkeypatch, satz, argumente, antwort) -> None:
+    client, ausfuehrer = _client(monkeypatch)
+    body = _satz(client, satz)
+    (plan,) = ausfuehrer.plaene
+    assert [h.capability for h in plan.hops] == ["idea.rate_reason_delete"]
+    assert json.loads(plan.hops[0].arg_template) == argumente
+    assert body["final_text"] == antwort
+
+
+def test_begruendung_nummer_ausserhalb_ist_rueckfrage(monkeypatch) -> None:
+    client, ausfuehrer = _client(monkeypatch)
+    body = _satz(client, "Lösche die Begründung 0")
+    assert ausfuehrer.plaene == [] and body["final_text"] == "Begründungen zähle ich von 1 bis 50, die neueste zuerst."
+
+
+def test_nachpruefung_begruendung_weg() -> None:
+    argumente = {"bubble_id": BUBBLE["id"], "nummer": 1}
+    quittung = _quittung({"bubble_id": BUBBLE["id"], "entfernt": {"id": "e0000001", "text": "x", "karten": []}})
+    erwartet, _ = fest.nachpruefung("idea.rate_reason_delete", argumente, quittung)
+    assert erwartet == {"art": "eintrag_weg", "bubble_id": BUBBLE["id"], "eintrag_id": "e0000001"}
+    bleibt = lambda tabelle, filter: [{"id": BUBBLE["id"], "metadata": {"bewertungen": [{"id": "e0000001"}]}}]
+    weg = lambda tabelle, filter: [{"id": BUBBLE["id"], "metadata": {"bewertungen": [{"id": "e0000002"}]}}]
+    assert fest.pruefe_zustand(erwartet, bleibt)[0] is False
+    assert fest.pruefe_zustand(erwartet, weg)[0] is True
+    # Mit Karte: der entfernte Eintrag muss auf sie zeigen, sonst ist die Quittung ungueltig.
+    assert fest.nachpruefung("idea.rate_reason_delete", {**argumente, "idea_id": "a0000002"}, quittung)[0] is None
+
+
+# ── L4: offene Bubble zählt als genannt, nie an den Planer ───────────────
+
+@pytest.fixture(scope="module")
+def muster_router():
+    """Der echte Faehigkeiten-Router, nur Muster (kein Einbetter, kein Modell)."""
+    from core.capability_router import CapabilityRouter
+
+    return CapabilityRouter(Path(__file__).resolve().parents[1] / "data" / "capabilities.yaml")
+
+
+class _ZaehlPlaner:
+    def __init__(self):
+        self.aufrufe = 0
+
+    async def aplan(self, intent, context=None):
+        self.aufrufe += 1
+        raise RuntimeError("Planer im Test")
+
+
+@pytest.mark.parametrize("satz, faehigkeit", [
+    ("Erkläre die Idee Sponsoren", "idea_explain"),
+    ("Erweitere die Idee Sponsoren", "idea_expand"),
+    ("Klassifiziere die Idee Sponsoren", "idea_classify"),
+    ("remove the idea Sponsoren", "idea_delete"),
+    ("delete idea Sponsoren", "idea_delete"),
+])
+def test_zustandsabhaengig_bei_offener_bubble_ruhiger_satz_statt_planer(monkeypatch, muster_router,
+                                                                       satz, faehigkeit) -> None:
+    assert muster_router.route(satz).capability == faehigkeit                  # Vorbedingung: Muster greift
+    planer = _ZaehlPlaner()
+    client, ausfuehrer = _client(monkeypatch, muster=muster_router, planer=planer)
+    body = _satz(client, satz)
+    assert planer.aufrufe == 0 and ausfuehrer.plaene == []
+    assert body["ok"] is False and body["rueckfrage"] is True and body["space"] == "ideas"
+    assert body["final_text"].startswith("Das habe ich nicht verstanden. In Ideen")
+
+
+def test_ohne_offene_bubble_bleibt_der_alte_weg(monkeypatch, muster_router) -> None:
+    import web.routers.introspection as intro
+
+    gesehen = []
+    echt = intro._try_capability_shortcut
+    monkeypatch.setattr(intro, "_try_capability_shortcut",
+                        lambda *a, **k: (gesehen.append(echt(*a, **k)), gesehen[-1])[1])
+    client, _ = _client(monkeypatch, muster=muster_router, planer=_ZaehlPlaner())
+    _satz(client, "Erkläre die Idee Sponsoren", {"space": "ideas", "bubble": None})
+    assert gesehen == [None]                                    # wie bisher: Abkuerzung gibt ab
 
 
 # ── Bestätigung ───────────────────────────────────────────────────────────

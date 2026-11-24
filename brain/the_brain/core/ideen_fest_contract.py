@@ -25,6 +25,8 @@ PRUEFUNG = "supabase_ideen_fest"
 # Feldarten: ("kennung",) ("text", hoechstens, leer_erlaubt) ("zahl", von, bis)
 # ("wahl", werte) ("kennungen", hoechstens) ("gruppen", hoechstens Gruppen, Namenslaenge, Karten)
 _K = ("kennung",)
+# Grenze der mitgelöschten Karten (BUBBLE_DELETE_MAX_KARTEN im Ideen-Server).
+_BUBBLE_KARTEN_MAX = 200
 _WERT = ("zahl", 0, 100)
 _LAGE = ("zahl", -1_000_000, 1_000_000)
 GRUPPEN_MAX = 12          # wie GROUP_MAX im Ideen-Server
@@ -78,6 +80,13 @@ FESTE_EREIGNISSE: dict[str, dict[str, Any]] = {
         "pflicht": {"bubble_id": _K, "text": ("text", 2000, False)},
         "wahl": {"idea_ids": ("kennungen", 20), "score": _WERT},
     },
+    # "Lösche die Begründung 2 [von X]": eine Begründung aus metadata.bewertungen der Bubble, gezählt
+    # wie angezeigt (neueste zuerst), mit idea_id nur die zu dieser Karte. "Zurück" holt sie wieder.
+    "idea.rate_reason_delete": {
+        "werkzeug": "bewertung_entfernen",
+        "pflicht": {"bubble_id": _K, "nummer": ("zahl", 1, 50)},
+        "wahl": {"idea_id": _K},
+    },
     # "Mach X zur Wurzel": metadata.wurzel der Bubble, geht beim White Paper der
     # berechneten Wurzel vor (core/ideen_dokument). Ohne id: festgelegte Wurzel loeschen.
     "idea.root": {
@@ -92,6 +101,14 @@ FESTE_EREIGNISSE: dict[str, dict[str, Any]] = {
         "werkzeug": "idea_delete",
         "pflicht": {"id": _K},
         "wahl": {},
+    },
+    # "Lösche diese Bubble": nur die offene, nur nach Rückfrage mit der Zahl der Karten und "Ja,
+    # löschen" (Schlüssel wie oben). mit_karten: die Karten (und ihre Verbindungen) gehen mit,
+    # alles unter einer Kennung der Änderung; "Zurück" holt Bubble, Karten und Verbindungen.
+    "bubble.delete": {
+        "werkzeug": "bubble_delete",
+        "pflicht": {"id": _K},
+        "wahl": {"mit_karten": ("ja_nein",)},
     },
     "bubble.rate": {
         "werkzeug": "bubble_rate",
@@ -128,7 +145,7 @@ SCHREIBENDE_WERKZEUGE = frozenset(
 )
 ALLE_WERKZEUGE = frozenset(spec["werkzeug"] for spec in FESTE_EREIGNISSE.values())
 # Ein zweiter Versuch waere eine zweite Aenderung (neuer Eintrag, neues Projekt).
-EINMAL_EREIGNISSE = frozenset({"idea.rate_reason", "bubble.promote"})
+EINMAL_EREIGNISSE = frozenset({"idea.rate_reason", "idea.rate_reason_delete", "bubble.promote"})
 
 
 def ist_festes_ereignis(event_id: Any) -> bool:
@@ -376,6 +393,19 @@ def nachpruefung(event_id: str, argumente: Any, raw_result: Any) -> tuple[Option
         if zeile is None or zeile.get("id") != argumente["id"]:
             return None, ungueltig
         return {"art": "geloescht", "id": argumente["id"]}, ""
+    if event_id == "bubble.delete":
+        zeile = _erste_zeile(inhalt)
+        if zeile is None or zeile.get("id") != argumente["id"]:
+            return None, ungueltig
+        erwartet = {"art": "bubble_geloescht", "id": argumente["id"]}
+        if argumente.get("mit_karten") is True:
+            # Der Server nennt die mitgelöschten Karten; die Nachprüfung liest genau sie zurück.
+            karten = zeile.get("karten_geloescht")
+            if (not isinstance(karten, list) or len(karten) > _BUBBLE_KARTEN_MAX
+                    or not all(ist_kennung(k) for k in karten)):
+                return None, ungueltig
+            erwartet["karten"] = list(karten)
+        return erwartet, ""
     if not isinstance(inhalt, dict):
         return None, ungueltig
     if event_id == "idea.root":
@@ -391,6 +421,14 @@ def nachpruefung(event_id: str, argumente: Any, raw_result: Any) -> tuple[Option
             return None, ungueltig
         return {"art": "eintrag", "bubble_id": argumente["bubble_id"], "eintrag_id": eintrag["id"],
                 "text": argumente["text"].strip(), "karten": list(argumente.get("idea_ids", []))}, ""
+    if event_id == "idea.rate_reason_delete":
+        eintrag = inhalt.get("entfernt")
+        if (inhalt.get("bubble_id") != argumente["bubble_id"] or not isinstance(eintrag, dict)
+                or not ist_kennung(eintrag.get("id"))):
+            return None, ungueltig
+        if "idea_id" in argumente and argumente["idea_id"] not in (eintrag.get("karten") or []):
+            return None, ungueltig
+        return {"art": "eintrag_weg", "bubble_id": argumente["bubble_id"], "eintrag_id": eintrag["id"]}, ""
     if event_id == "idea.arrange":
         lagen = inhalt.get("positionen")
         if inhalt.get("bubble_id") != argumente["bubble_id"] or not isinstance(lagen, list):
@@ -525,6 +563,34 @@ def pruefe_zustand(erwartet: Any, lies: Lesen) -> tuple[Optional[bool], dict[str
             return False, {"id": kennung}, "card or connection still present"
         return True, {"id": kennung, "rows_found": 0}, "card and connections deleted"
 
+    if art == "bubble_geloescht":
+        # Weg ist die Bubble; keine Karte zeigt mehr auf sie. Mit "karten": genau diese Karten sind
+        # weg (nicht nur losgelöst) und keine Verbindung von oder zu ihnen steht noch.
+        kennung = erwartet.get("id")
+        karten_ids = erwartet.get("karten")
+        if not ist_kennung(kennung) or (karten_ids is not None and (
+                not isinstance(karten_ids, list) or len(karten_ids) > _BUBBLE_KARTEN_MAX
+                or not all(ist_kennung(k) for k in karten_ids))):
+            return None, offen, "invalid expectation"
+        bubble = lies("ideas", {"select": "id", "id": f"eq.{kennung}", "limit": "1"})
+        karten = lies("canvas_nodes", {"select": "id", "linked_idea_id": f"eq.{kennung}", "limit": "1"})
+        if bubble is None or karten is None:
+            return None, offen, "read-back unavailable"
+        if bubble or karten:
+            return False, {"id": kennung}, "bubble or card link still present"
+        if karten_ids:
+            liste = f"in.({','.join(karten_ids)})"
+            reste = lies("canvas_nodes", {"select": "id", "id": liste, "limit": "1"})
+            von = lies("canvas_edges", {"select": "id", "from_node_id": liste, "limit": "1"})
+            zu = lies("canvas_edges", {"select": "id", "to_node_id": liste, "limit": "1"})
+            if reste is None or von is None or zu is None:
+                return None, offen, "read-back unavailable"
+            if reste or von or zu:
+                return False, {"id": kennung}, "card or connection of the bubble still present"
+            return (True, {"id": kennung, "rows_found": 0, "karten_geloescht": len(karten_ids)},
+                    "bubble, cards and connections deleted")
+        return True, {"id": kennung, "rows_found": 0}, "bubble deleted"
+
     if art == "eintrag":
         zeile, gefunden, grund = eine_zeile("ideas", erwartet.get("bubble_id"), "id,metadata")
         if zeile is None:
@@ -536,6 +602,16 @@ def pruefe_zustand(erwartet: Any, lies: Lesen) -> tuple[Optional[bool], dict[str
                     return True, {"eintrag_id": eintrag["id"]}, "reason entry verified"
                 return False, {"eintrag_id": eintrag["id"]}, "reason entry differs"
         return False, {"eintrag_id": erwartet.get("eintrag_id")}, "reason entry not found"
+
+    if art == "eintrag_weg":
+        zeile, gefunden, grund = eine_zeile("ideas", erwartet.get("bubble_id"), "id,metadata")
+        if zeile is None:
+            return gefunden, offen if gefunden is None else {"rows_found": 0}, grund
+        eintraege = _pfad(zeile, "metadata.bewertungen")
+        if any(isinstance(e, dict) and e.get("id") == erwartet.get("eintrag_id")
+               for e in (eintraege if isinstance(eintraege, list) else [])):
+            return False, {"eintrag_id": erwartet.get("eintrag_id")}, "reason entry still present"
+        return True, {"eintrag_id": erwartet.get("eintrag_id")}, "reason entry removed"
 
     if art == "lagen":
         lagen = erwartet.get("lagen")

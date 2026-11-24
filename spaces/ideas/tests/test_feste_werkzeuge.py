@@ -363,6 +363,38 @@ class ReasonTests(unittest.TestCase):
                 server.call_tool("bewertung_begruenden", {"bubble_id": "bub1", "text": "x"})
         self.assertEqual(request.of("PATCH", "ideas"), [])
 
+    def test_remove_counts_newest_first_and_keeps_the_rest(self) -> None:
+        server = load_server()
+        alt = [{"id": "e1", "text": "eins", "karten": ["n1"]}, {"id": "e2", "text": "zwei", "karten": []},
+               {"id": "e3", "text": "drei", "karten": ["n1"]}]
+        request = Recorder(self._answers({"farbe": "blau", "bewertungen": alt}))
+        with mock.patch.object(server, "_request", side_effect=request):
+            result = server.call_tool("bewertung_entfernen", {"bubble_id": "bub1", "nummer": 2})
+        self.assertEqual(result, {"bubble_id": "bub1", "entfernt": alt[1]})
+        (patch,) = request.of("PATCH", "ideas")
+        self.assertEqual(patch["params"], {"id": "eq.bub1", "parent_id": "is.null"})
+        self.assertEqual(patch["body"], {"metadata": {"farbe": "blau", "bewertungen": [alt[0], alt[2]]}})
+
+        request = Recorder(self._answers({"bewertungen": alt}))
+        with mock.patch.object(server, "_request", side_effect=request):
+            result = server.call_tool("bewertung_entfernen", {"bubble_id": "bub1", "nummer": 2, "idea_id": "n1"})
+        self.assertEqual(result["entfernt"]["id"], "e1")                       # zweite zu n1, neueste zuerst
+
+    def test_remove_missing_number_writes_nothing(self) -> None:
+        server = load_server()
+        request = Recorder(self._answers({"bewertungen": [{"id": "e1", "text": "eins", "karten": []}]}))
+        with mock.patch.object(server, "_request", side_effect=request):
+            with self.assertRaisesRegex(server.ToolError, "^bewertung_not_found$"):
+                server.call_tool("bewertung_entfernen", {"bubble_id": "bub1", "nummer": 2})
+        self.assertEqual(request.of("PATCH", "ideas"), [])
+        with mock.patch.object(server, "_request") as request:
+            for arguments in ({"bubble_id": "bub1"}, {"bubble_id": "bub1", "nummer": 0},
+                              {"bubble_id": "bub1", "nummer": True}, {"bubble_id": "bub1", "nummer": "1"},
+                              {"bubble_id": "bub1", "nummer": 1, "text": "x"}):
+                with self.assertRaisesRegex(server.ToolError, "^invalid_arguments"):
+                    server.call_tool("bewertung_entfernen", arguments)
+        request.assert_not_called()
+
     def test_invalid_arguments_issue_no_request(self) -> None:
         server = load_server()
         with mock.patch.object(server, "_request") as request:
