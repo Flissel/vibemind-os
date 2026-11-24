@@ -17,6 +17,11 @@ from typing import Any, Optional
 GRUSS = "Hallo! Wie kann ich dir helfen?"
 DANK = "Gern geschehen!"
 ZUSTIMMUNG = "Alles klar."
+# Pruefung 25.11.2026: ein blosses "Ja" ohne offene Rueckfrage bekam "Alles klar." und klang
+# wie eine Bestaetigung, obwohl nichts geschah; "nein" lief ins Chat-Ereignis.
+JA_OHNE_FRAGE = "Gerade ist nichts zu bestätigen; geändert habe ich nichts."
+NEIN_OFFEN = "Gut, dann lasse ich es. Geändert habe ich nichts."
+NEIN_OHNE_FRAGE = "Gerade ist keine Frage offen; geändert habe ich nichts."
 
 _ENDE = r"\s*[.!:)]*\s*$"
 _ARTEN = (
@@ -27,9 +32,12 @@ _ARTEN = (
     ("dank", re.compile(
         r"^\s*(?:danke(?:\s*(?:schön|schoen|sehr|dir|vielmals))*|dankeschön|dankeschoen|vielen\s+dank|"
         r"besten\s+dank|merci|thanks?(?:\s+you)?|thank\s+you|thx)" + _ENDE, re.IGNORECASE)),
+    ("ja", re.compile(r"^\s*(?:ja|jo|jep|jawohl|ok|okay|okey|oki)" + _ENDE, re.IGNORECASE)),
     ("zustimmung", re.compile(
-        r"^\s*(?:ja|jo|jep|ok|okay|okey|oki|alles\s+klar|gut|super|passt|prima|verstanden)" + _ENDE,
-        re.IGNORECASE)),
+        r"^\s*(?:alles\s+klar|gut|super|passt|prima|verstanden)" + _ENDE, re.IGNORECASE)),
+    ("nein", re.compile(
+        r"^\s*(?:nein(?:\s*,?\s*danke)?|nee|ne|nö|noe|lieber\s+nicht|doch\s+nicht|abbrechen|"
+        r"lass\s+es|stopp?)" + _ENDE, re.IGNORECASE)),
 )
 _ANTWORT = {"gruss": GRUSS, "dank": DANK, "zustimmung": ZUSTIMMUNG}
 
@@ -68,6 +76,14 @@ def etwas_offen() -> bool:
 def antwort(satz: Any, offen: bool) -> Optional[str]:
     """Der feste Satz, oder ``None`` (dann der bisherige Weg)."""
     gefunden = art(satz)
-    if gefunden is None or (gefunden == "zustimmung" and offen):
+    if gefunden is None:
         return None
+    if gefunden == "nein":
+        # Schliesst jede offene Rueckfrage (die Bestaetigungen verwerfen sie bei jedem anderen
+        # Satz); immer ein fester Satz, nie der Chat.
+        return NEIN_OFFEN if offen else NEIN_OHNE_FRAGE
+    if gefunden in ("ja", "zustimmung") and offen:
+        return None
+    if gefunden == "ja":
+        return JA_OHNE_FRAGE
     return _ANTWORT[gefunden]

@@ -34,6 +34,7 @@ OHNE_FRAGE = ("Es ist gerade kein Befördern zur Bestätigung offen. "
               "Sag „Befördere diese Bubble“, dann prüfe ich sie und frage zuerst nach.")
 OHNE_SCHLUESSEL = ("Befördert wird nur nach Rückfrage. "
                    "Sag „Befördere diese Bubble“, dann prüfe ich sie und frage zuerst nach.")
+ABGELEHNT = "Gut, ich befördere nichts."
 NICHT_LESBAR = "Ich kann die Bubble gerade nicht lesen; befördert ist nichts."
 REGELN_FEHLEN = "Die Prüfregeln fürs Befördern fehlen hier; befördert ist nichts."
 
@@ -49,6 +50,14 @@ def _jetzt() -> float:
 
 def ist_bestaetigung(satz: Any) -> bool:
     return isinstance(satz, str) and bool(_JA.match(satz))
+
+
+def _ist_nein(satz: Any) -> bool:
+    try:
+        from . import hoeflichkeit
+        return hoeflichkeit.art(satz) == "nein"
+    except Exception:  # noqa: BLE001
+        return False
 
 
 # ── die gemeinsamen Kartenregeln ─────────────────────────────────────────────
@@ -210,6 +219,9 @@ def satz_pruefen(satz: Any) -> Optional[Dict[str, Any]]:
         offen = dict(_offen)
         _offen.clear()
         if not ist_bestaetigung(satz):
+            # "nein" auf die offene Rueckfrage schliesst sie mit einem festen Satz (Pruefung 25.11.).
+            if offen and offen.get("bis", 0) >= jetzt and _ist_nein(satz):
+                return {"satz": ABGELEHNT, "abgelehnt": True}
             return None
         if not offen or offen.get("bis", 0) < jetzt:
             if re.search(r"bef(?:ö|oe)rder", str(satz), re.IGNORECASE):
