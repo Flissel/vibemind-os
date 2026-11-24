@@ -208,6 +208,8 @@ def _hauptlauf() -> int:
         ("idea.update", {"id": "a0000001", "content": ""}),                       # Inhalt leeren
         ("idea.rate", abk.loese("Bewerte Preise Druckerei mit 80", app)["argumente"]),
         ("idea.rate_reason", abk.loese("Begründung: traegt die Idee {wirklich}", app)["argumente"]),
+        # ... und wieder weg: die neueste Begruendung (Nummer 1), wie angezeigt gezaehlt.
+        ("idea.rate_reason_delete", abk.loese("Lösche die Begründung 1", app)["argumente"]),
         ("idea.auto_link", {"bubble_id": "b0b1e001"}),
         ("idea.arrange", abk.loese("Sortiere die Karten nach Bewertung", app)["argumente"]),
         ("bubble.rate", abk.loese("Bewerte die Bubble Messe mit 70", app)["argumente"]),

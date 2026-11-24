@@ -100,6 +100,7 @@ spaces:
         - idea_auto_link
         - idea_rate
         - bewertung_begruenden
+        - bewertung_entfernen
         - idea_document
         - bubble_wurzel
         - idea_group
@@ -142,7 +143,14 @@ spaces:
         required_params: [bubble_id, text]
         required_provenance: [approval_ref, cost_ref]
         execution: { kind: mcp, server: spaces-ideas }
-      # "Lösche die Karte X" (25.11.2026): nur nach Rückfrage und "Ja, löschen", fester Aufruf mit
+      # "Lösche die Begründung 2 [von X]" (24.11.2026): eine Begründung aus metadata.bewertungen,
+      # gezählt wie angezeigt (neueste zuerst); "Zurück" holt sie wieder.
+      idea.rate_reason_delete:
+        tool: bewertung_entfernen
+        required_params: [bubble_id, nummer]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
+      # "Lösche die Karte X" (24.11.2026): nur nach Rückfrage und "Ja, löschen", fester Aufruf mit
       # Schlüssel (brain/the_brain/core/loesch_bestaetigung.py); die Verbindungen gehen mit, "Zurück"
       # holt Karte und Verbindungen wieder. Vorher zeigte das Ereignis auf db_ideas_delete, das
       # brain-ideas nicht hat: der Planer scheiterte (cap unbekannt).

@@ -78,6 +78,13 @@ FESTE_EREIGNISSE: dict[str, dict[str, Any]] = {
         "pflicht": {"bubble_id": _K, "text": ("text", 2000, False)},
         "wahl": {"idea_ids": ("kennungen", 20), "score": _WERT},
     },
+    # "Lösche die Begründung 2 [von X]": eine Begründung aus metadata.bewertungen der Bubble, gezählt
+    # wie angezeigt (neueste zuerst), mit idea_id nur die zu dieser Karte. "Zurück" holt sie wieder.
+    "idea.rate_reason_delete": {
+        "werkzeug": "bewertung_entfernen",
+        "pflicht": {"bubble_id": _K, "nummer": ("zahl", 1, 50)},
+        "wahl": {"idea_id": _K},
+    },
     # "Mach X zur Wurzel": metadata.wurzel der Bubble, geht beim White Paper der
     # berechneten Wurzel vor (core/ideen_dokument). Ohne id: festgelegte Wurzel loeschen.
     "idea.root": {
@@ -136,7 +143,7 @@ SCHREIBENDE_WERKZEUGE = frozenset(
 )
 ALLE_WERKZEUGE = frozenset(spec["werkzeug"] for spec in FESTE_EREIGNISSE.values())
 # Ein zweiter Versuch waere eine zweite Aenderung (neuer Eintrag, neues Projekt).
-EINMAL_EREIGNISSE = frozenset({"idea.rate_reason", "bubble.promote"})
+EINMAL_EREIGNISSE = frozenset({"idea.rate_reason", "idea.rate_reason_delete", "bubble.promote"})
 
 
 def ist_festes_ereignis(event_id: Any) -> bool:
@@ -404,6 +411,14 @@ def nachpruefung(event_id: str, argumente: Any, raw_result: Any) -> tuple[Option
             return None, ungueltig
         return {"art": "eintrag", "bubble_id": argumente["bubble_id"], "eintrag_id": eintrag["id"],
                 "text": argumente["text"].strip(), "karten": list(argumente.get("idea_ids", []))}, ""
+    if event_id == "idea.rate_reason_delete":
+        eintrag = inhalt.get("entfernt")
+        if (inhalt.get("bubble_id") != argumente["bubble_id"] or not isinstance(eintrag, dict)
+                or not ist_kennung(eintrag.get("id"))):
+            return None, ungueltig
+        if "idea_id" in argumente and argumente["idea_id"] not in (eintrag.get("karten") or []):
+            return None, ungueltig
+        return {"art": "eintrag_weg", "bubble_id": argumente["bubble_id"], "eintrag_id": eintrag["id"]}, ""
     if event_id == "idea.arrange":
         lagen = inhalt.get("positionen")
         if inhalt.get("bubble_id") != argumente["bubble_id"] or not isinstance(lagen, list):
@@ -562,6 +577,16 @@ def pruefe_zustand(erwartet: Any, lies: Lesen) -> tuple[Optional[bool], dict[str
                     return True, {"eintrag_id": eintrag["id"]}, "reason entry verified"
                 return False, {"eintrag_id": eintrag["id"]}, "reason entry differs"
         return False, {"eintrag_id": erwartet.get("eintrag_id")}, "reason entry not found"
+
+    if art == "eintrag_weg":
+        zeile, gefunden, grund = eine_zeile("ideas", erwartet.get("bubble_id"), "id,metadata")
+        if zeile is None:
+            return gefunden, offen if gefunden is None else {"rows_found": 0}, grund
+        eintraege = _pfad(zeile, "metadata.bewertungen")
+        if any(isinstance(e, dict) and e.get("id") == erwartet.get("eintrag_id")
+               for e in (eintraege if isinstance(eintraege, list) else [])):
+            return False, {"eintrag_id": erwartet.get("eintrag_id")}, "reason entry still present"
+        return True, {"eintrag_id": erwartet.get("eintrag_id")}, "reason entry removed"
 
     if art == "lagen":
         lagen = erwartet.get("lagen")

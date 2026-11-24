@@ -218,6 +218,46 @@ def test_registry_bindet_bubble_delete_fest_an_den_ideen_server() -> None:
     assert "bubble_delete" in bubbles["mcp_tools"]["spaces-ideas"]
 
 
+# ── L3: eine Begründung löschen (rücknehmbar, ohne Rückfrage) ────────────
+
+@pytest.mark.parametrize("satz, argumente, antwort", [
+    ("Lösche die Begründung 2", {"bubble_id": BUBBLE["id"], "nummer": 2},
+     "Begründung 2 ist gelöscht. Mit „Zurück“ holst du sie wieder."),
+    ("Lösche Begründung Nr. 1 von dieser Bubble", {"bubble_id": BUBBLE["id"], "nummer": 1},
+     "Begründung 1 ist gelöscht. Mit „Zurück“ holst du sie wieder."),
+    ("Lösche die Begründung 1 von der Bubble Stadtfest", {"bubble_id": BUBBLE["id"], "nummer": 1},
+     "Begründung 1 ist gelöscht. Mit „Zurück“ holst du sie wieder."),
+    ("Entferne die Begründung 3 zu Sponsoren", {"bubble_id": BUBBLE["id"], "nummer": 3, "idea_id": "a0000002"},
+     "Begründung 3 zu „Sponsoren“ ist gelöscht. Mit „Zurück“ holst du sie wieder."),
+])
+def test_router_begruendung_loeschen_fest(monkeypatch, satz, argumente, antwort) -> None:
+    client, ausfuehrer = _client(monkeypatch)
+    body = _satz(client, satz)
+    (plan,) = ausfuehrer.plaene
+    assert [h.capability for h in plan.hops] == ["idea.rate_reason_delete"]
+    assert json.loads(plan.hops[0].arg_template) == argumente
+    assert body["final_text"] == antwort
+
+
+def test_begruendung_nummer_ausserhalb_ist_rueckfrage(monkeypatch) -> None:
+    client, ausfuehrer = _client(monkeypatch)
+    body = _satz(client, "Lösche die Begründung 0")
+    assert ausfuehrer.plaene == [] and body["final_text"] == "Begründungen zähle ich von 1 bis 50, die neueste zuerst."
+
+
+def test_nachpruefung_begruendung_weg() -> None:
+    argumente = {"bubble_id": BUBBLE["id"], "nummer": 1}
+    quittung = _quittung({"bubble_id": BUBBLE["id"], "entfernt": {"id": "e0000001", "text": "x", "karten": []}})
+    erwartet, _ = fest.nachpruefung("idea.rate_reason_delete", argumente, quittung)
+    assert erwartet == {"art": "eintrag_weg", "bubble_id": BUBBLE["id"], "eintrag_id": "e0000001"}
+    bleibt = lambda tabelle, filter: [{"id": BUBBLE["id"], "metadata": {"bewertungen": [{"id": "e0000001"}]}}]
+    weg = lambda tabelle, filter: [{"id": BUBBLE["id"], "metadata": {"bewertungen": [{"id": "e0000002"}]}}]
+    assert fest.pruefe_zustand(erwartet, bleibt)[0] is False
+    assert fest.pruefe_zustand(erwartet, weg)[0] is True
+    # Mit Karte: der entfernte Eintrag muss auf sie zeigen, sonst ist die Quittung ungueltig.
+    assert fest.nachpruefung("idea.rate_reason_delete", {**argumente, "idea_id": "a0000002"}, quittung)[0] is None
+
+
 # ── L4: offene Bubble zählt als genannt, nie an den Planer ───────────────
 
 @pytest.fixture(scope="module")

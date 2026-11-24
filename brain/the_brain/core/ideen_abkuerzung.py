@@ -548,6 +548,25 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
             argumente["idea_ids"] = list(dict.fromkeys(auswahl))[:20]
         return _treffer("idea.rate_reason", argumente, "Begründung festgehalten.")
 
+    # ── eine Begruendung loeschen: "Lösche die Begründung 2 [von X]" (gezaehlt wie angezeigt,
+    #    neueste zuerst); ruecknehmbar ueber "Zurück", darum ohne Rueckfrage ──
+    m = re.fullmatch(r"(?:l(?:ö|oe)sch(?:e)?|entfern(?:e)?)\s+(?:die\s+)?begr(?:ü|ue)ndung\s+"
+                     r"(?:nr\.?\s*|nummer\s+)?(?P<n>\d{1,2})(?:\s+(?:von|zu|bei|an)\s+(?P<k>.+))?", text, _I)
+    if m:
+        argumente = {"bubble_id": _offene_bubble(kontext), "nummer": int(m.group("n"))}
+        if not 1 <= argumente["nummer"] <= 50:
+            raise _Rueckfrage("Begründungen zähle ich von 1 bis 50, die neueste zuerst.")
+        bezug = (m.group("k") or "").strip().strip("\"'„“”")
+        offen_titel = str((kontext.get("bubble") or {}).get("title") or "")
+        zu = ""
+        if bezug and _normal(bezug) not in ("dieser bubble", "der bubble", "diese bubble", "die bubble") \
+                and _normal(re.sub(r"^(?:der|die|dieser)\s+bubble\s+", "", bezug, flags=_I)) != _normal(offen_titel):
+            karte = _karte(bezug, kontext)
+            argumente["idea_id"] = karte["id"]
+            zu = f" zu {_titel(karte)}"
+        return _treffer("idea.rate_reason_delete", argumente,
+                        f"Begründung {argumente['nummer']}{zu} ist gelöscht. Mit „Zurück“ holst du sie wieder.")
+
     # ── Karte loeschen: nie direkt, zuerst die Rueckfrage (core/loesch_bestaetigung) ──
     m = re.fullmatch(rf"(?:l(?:ö|oe)sch(?:e)?|entfern(?:e)?)\s+(?P<k>{_KARTE}.+)", text, _I)
     if m:
@@ -1019,6 +1038,7 @@ _FELDNAMEN = {
 }
 _WERKZEUGFEHLER = {
     "idea_not_found": "Diese Karte gibt es nicht mehr.",
+    "bewertung_not_found": "Eine Begründung mit dieser Nummer gibt es hier nicht. Gezählt wird die neueste zuerst.",
     "bubble_not_found": "Diese Bubble gibt es nicht mehr.",
     "idea_not_in_bubble": "Eine der Karten gehört nicht zu dieser Bubble.",
     "too_many_ideas": "In dieser Bubble liegen mehr als 100 Karten. Das geht nur bis 100.",
@@ -1276,8 +1296,8 @@ def ziel_fuer_schritt(capability: Any, ok: bool, argumente: Any, ergebnis: Any,
         if str(capability) == "bubble.delete":
             # Die Bubble ist weg: kein Sprung hinein (die App verlaesst sie selbst).
             return None
-        if str(capability) == "idea.delete":
-            # Die Karte ist weg: in die Bubble springen, nie auf die Kennung der geloeschten Karte.
+        if str(capability) in ("idea.delete", "idea.rate_reason_delete"):
+            # Die Karte (bzw. die Begruendung) ist weg: in die Bubble springen, nie auf die Kennung der geloeschten Karte.
             return {"space": "ideas", "bubble_id": bubble_id, "node_id": None}
         if str(capability).startswith("idea."):
             node_id = argumente.get("id")
