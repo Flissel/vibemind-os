@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Project Space</title>
+<link rel="stylesheet" href="/seite.css">
+</head>
+<body>
+<header class="kopf">
+  <p class="marke">VibeMind</p>
+  <h1>Project Space</h1>
+  <p id="verbindung" class="verbindung" role="status"></p>
+</header>
+<main>
+  <nav aria-label="Läufe">
+    <h2>Läufe</h2>
+    <ul id="liste" class="liste"></ul>
+    <p id="leer" class="leer" hidden>Noch kein Lauf. Aufträge kommen aus dem Chat.</p>
+  </nav>
+  <section aria-label="Lauf" id="lauf" hidden>
+    <article class="karte zusammenfassung">
+      <div class="zeile">
+        <h2 id="titel" class="titel"></h2>
+        <span id="zustand" class="pille"></span>
+      </div>
+      <p id="satz" class="satz"></p>
+      <details id="grund" class="grund" hidden>
+        <summary>Meldung der Engine</summary>
+        <pre id="grund-text"></pre>
+      </details>
+      <p id="meta" class="meta"></p>
+      <ul id="hinweise" class="hinweise"></ul>
+    </article>
+
+    <ol id="stufen" class="stufen" aria-label="Stufen"></ol>
+
+    <article id="start" class="karte start" hidden>
+      <h3>So startest du die App</h3>
+      <p class="befehl"><code id="start-befehl"></code></p>
+      <details class="leise ordner">
+        <summary>im Ordner der App</summary>
+        <code id="start-ordner"></code>
+      </details>
+      <p id="start-pruefung" class="pruefung"></p>
+    </article>
+
+    <h2 id="pakete-titel">Was gebaut wird</h2>
+    <ol id="pakete" class="pakete"></ol>
+  </section>
+</main>
+<script src="/seite.js"></script>
+</body>
+</html>
