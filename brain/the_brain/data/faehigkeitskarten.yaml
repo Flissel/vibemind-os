@@ -1,0 +1,422 @@
+# Fähigkeitskarten: EINE Quelle für "was gehört wohin" (Routing-Papier 24.11.2026, Schritt 2).
+#
+# Die Weiche (core/weiche.py) bettet jeden Beispielsatz einmal ein und vergleicht einen neuen
+# Satz mit allen Beispielen aller Bereiche. Punkte einer Fähigkeit = höchster Kosinus über ihre
+# Beispiele; Punkte eines Bereichs = beste Fähigkeit darin. Im Schattenbetrieb entscheidet die
+# Weiche nichts, sie schreibt nur auf, was sie gewählt hätte.
+#
+# Format:
+#   bereiche:
+#     <Kennung der App>:              # wie core/verstehen.SPACES (ideas, desktop, roarboot ...)
+#       name: <Anzeigename>
+#       beschreibung: <ein Satz, wofür der Bereich da ist>
+#       faehigkeiten:
+#         - id: <Fähigkeit wie im Plan>   # Registry-Name (data/capabilities.yaml) oder festes Ereignis
+#           beschreibung: <kurz, deutsch>
+#           beispiele: [<3–6 Sätze, wie ein Mensch sie tippt>]
+#   nirgends: [<Sätze, die in keinen Bereich gehören>]   # nur zum Kalibrieren und für den Bericht
+#
+# Regeln für Beispiele:
+#   - erfunden (Stadtfest, Bühnenplan, Sponsoren, Druckerei), nie echte Bubbles, Karten oder Namen;
+#   - abgeleitet aus den festen Mustern (capabilities.yaml, ideen_abkuerzung, feste_lesesaetze,
+#     sales_saetze) und den Beispielsätzen in verstehen.SPACES;
+#   - jedes Muster, das heute einen Satz fest einordnet, soll hier mindestens ein Beispiel haben.
+#     Später werden daraus Prüfbeispiele: Die Weiche muss sie dorthin schicken, wo das Muster
+#     sie heute hinschickt.
+#
+# Erst sechs Bereiche: ideas, desktop, roarboot, orders, projects, sales. Die übrigen folgen.
+
+version: 1
+
+bereiche:
+
+  ideas:
+    name: Ideen
+    beschreibung: Bubbles und Notizkarten sammeln, ordnen, verbinden, formatieren und auswerten.
+    faehigkeiten:
+      - id: bubble_list
+        beschreibung: alle Bubbles auflisten
+        beispiele:
+          - Welche Bubbles gibt es?
+          - Zeig mir alle meine Bubbles
+          - Welche Bubbles habe ich?
+      - id: bubble_find
+        beschreibung: eine Bubble nach Namen suchen
+        beispiele:
+          - Wo ist die Bubble Stadtfest?
+          - Such die Bubble zum Bühnenplan
+          - Gibt es eine Bubble namens Sponsoren?
+      - id: bubble_create
+        beschreibung: eine neue Bubble anlegen
+        beispiele:
+          - Leg eine neue Bubble Stadtfest an
+          - Erstelle eine Bubble für die Sponsoren
+          - Neue Bubble zum Thema Bühnenplan
+      - id: bubble_update
+        beschreibung: eine Bubble umbenennen oder ändern
+        beispiele:
+          - Benenne die Bubble in Stadtfest Planung um
+          - Ändere den Titel dieser Bubble
+      - id: bubble_delete
+        beschreibung: eine Bubble samt Karten löschen
+        beispiele:
+          - Lösche diese Bubble
+          - Entferne die Bubble Bühnenplan
+          - Lösch die Bubble Sponsoren
+      - id: bubble_enter
+        beschreibung: in eine Bubble gehen
+        beispiele:
+          - Geh in die Bubble Stadtfest
+          - Öffne die Bubble Sponsoren
+      - id: bubble_exit
+        beschreibung: die Bubble verlassen
+        beispiele:
+          - Raus aus der Bubble
+          - Zurück zur Übersicht der Bubbles
+      - id: bubble_stats
+        beschreibung: Kennzahlen einer Bubble
+        beispiele:
+          - Wie viele Notizen sind in dieser Bubble?
+          - Statistik der Bubble Stadtfest
+      - id: bubble_score
+        beschreibung: Reife einer Bubble bewerten
+        beispiele:
+          - Wie reif ist diese Bubble?
+          - Bewerte die Bubble Stadtfest
+          - Gib der Bubble eine Punktzahl
+      - id: bubble_evaluate
+        beschreibung: prüfen, ob eine Idee reif für ein Projekt ist
+        beispiele:
+          - Ist die Idee reif zum Bauen?
+          - Prüfe, ob die Bubble projektreif ist
+      - id: idea_add
+        beschreibung: eine Notiz in die Bubble schreiben
+        beispiele:
+          - "Halt fest: Preise im Januar prüfen"
+          - "Notiere: Druckerei bis Freitag anrufen"
+          - Schreib eine Notiz zu den Sponsoren
+          - Füge die Idee Getränkestand hinzu
+      - id: idea_create_batch
+        beschreibung: mehrere Notizen auf einmal anlegen
+        beispiele:
+          - Leg drei Notizen an: Bühne, Strom, Toiletten
+          - Erstelle Karten für Anfahrt, Parken und Shuttle
+      - id: idea_list
+        beschreibung: Notizen einer Bubble zeigen
+        beispiele:
+          - Zeig die Notizen dieser Bubble
+          - Welche Karten liegen in der Bubble?
+          - Liste alle Ideen auf
+      - id: idea_count
+        beschreibung: Notizen zählen
+        beispiele:
+          - Wie viele Ideen habe ich?
+          - Zähl die Karten in dieser Bubble
+      - id: idea_find
+        beschreibung: eine Notiz suchen
+        beispiele:
+          - Wo ist die Notiz zur Druckerei?
+          - Such die Karte Bühnenplan
+      - id: idea_update
+        beschreibung: eine Notiz ändern
+        beispiele:
+          - Ändere die Notiz Bühnenplan
+          - Schreib in die Karte Sponsoren, dass zwei zugesagt haben
+      - id: idea_delete
+        beschreibung: eine Notiz löschen
+        beispiele:
+          - Lösche die Notiz zur Druckerei
+          - Entferne diese Karte
+      - id: idea_connect
+        beschreibung: zwei Notizen verbinden
+        beispiele:
+          - Verbinde Bühnenplan mit Stromversorgung
+          - Zieh eine Verbindung zwischen Sponsoren und Budget
+      - id: idea_disconnect
+        beschreibung: eine Verbindung lösen
+        beispiele:
+          - Trenne Bühnenplan von Stromversorgung
+          - Lös die Verbindung zwischen den beiden Karten
+      - id: idea_move
+        beschreibung: eine Notiz in eine andere Bubble verschieben
+        beispiele:
+          - Verschieb die Notiz Druckerei in die Bubble Stadtfest
+      - id: idea_auto_link
+        beschreibung: passende Notizen automatisch verbinden
+        beispiele:
+          - Verbinde die Notizen automatisch
+          - Finde Zusammenhänge zwischen den Karten
+      - id: idea_analyze_links
+        beschreibung: Verbindungen prüfen und Lücken vorschlagen
+        beispiele:
+          - Welche Verbindungen fehlen noch?
+          - Analysiere die Verbindungen in dieser Bubble
+      - id: idea_expand
+        beschreibung: eine Idee in Unterideen auffächern
+        beispiele:
+          - Fächere die Idee Bühnenplan in Unterpunkte auf
+          - Brainstorme Unterideen zu den Sponsoren
+      - id: idea_explain
+        beschreibung: eine Notiz erklären
+        beispiele:
+          - Erklär mir die Notiz Bühnenplan
+          - Was bedeutet diese Karte?
+      - id: idea_classify
+        beschreibung: eine Notiz einordnen
+        beispiele:
+          - Ordne die Notiz einer Kategorie zu
+          - Welche Kategorie hat diese Idee?
+      - id: idea_arrange
+        beschreibung: Notizen im Raster anordnen (fester Weg der Ideen-Abkürzung)
+        beispiele:
+          - Ordne die Notizen im Raster
+          - Räum die Karten auf
+      - id: idea_summarize
+        beschreibung: die Notizen einer Bubble zusammenfassen (fester Weg der Ideen-Abkürzung)
+        beispiele:
+          - Fass die Bubble zusammen
+          - Gib mir eine Zusammenfassung der Notizen
+      - id: idea_group
+        beschreibung: Notizen zu Gruppen bündeln
+        beispiele:
+          - Gruppiere die Notizen nach Thema
+          - Bündel die Karten in Gruppen
+      - id: idea_convert_format
+        beschreibung: eine Notiz in ein anderes Format bringen
+        beispiele:
+          - Mach aus der Notiz eine Tabelle
+          - Wandle die Idee in eine Mindmap um
+          - Mach eine Pro-und-Contra-Liste daraus
+          - Formatiere die Karte als Aufgabenliste
+      - id: idea_format_revert
+        beschreibung: letzte Formatänderung zurücknehmen
+        beispiele:
+          - Nimm das Format wieder zurück
+      - id: aenderung_zurueck
+        beschreibung: die letzte Änderung an Ideen und Bubbles zurücknehmen
+        beispiele:
+          - zurück
+          - Mach das rückgängig
+          - Stell die gelöschte Bubble wieder her
+      - id: idea_whitepaper
+        beschreibung: aus den Notizen einer Bubble ein White Paper schreiben (feste Kette)
+        beispiele:
+          - Schreib ein White Paper aus dieser Bubble
+          - Mach aus den Notizen ein Dokument
+      - id: recherche_bubble
+        beschreibung: zu einer Bubble recherchieren lassen
+        beispiele:
+          - Recherchiere zum Thema Stadtfest
+          - Lass zu den Sponsoren recherchieren
+
+  desktop:
+    name: Desktop
+    beschreibung: den Windows-Desktop lesen und bedienen.
+    faehigkeiten:
+      - id: desktop_fenster
+        beschreibung: offene Fenster auflisten
+        beispiele:
+          - Welche Fenster sind offen?
+          - Was ist gerade auf dem Desktop offen?
+          - Zeig mir die offenen Fenster
+      - id: desktop_screen_read
+        beschreibung: sichtbaren Text vom Bildschirm lesen
+        beispiele:
+          - Was steht gerade auf dem Bildschirm?
+          - Lies mir den Bildschirm vor
+      - id: desktop_screenshot
+        beschreibung: ein Bildschirmfoto machen
+        beispiele:
+          - Mach einen Screenshot
+          - Nimm ein Bildschirmfoto vom zweiten Monitor auf
+      - id: desktop_status
+        beschreibung: Zustand der Desktop-Steuerung
+        beispiele:
+          - Läuft die Desktop-Steuerung?
+          - Wie viele Monitore sind angeschlossen?
+      - id: desktop_task_start
+        beschreibung: eine Aufgabe auf dem Desktop ausführen lassen
+        beispiele:
+          - "Desktop-Aufgabe: öffne den Editor und schreib Stadtfest"
+          - Klick im Browser auf Speichern
+          - Öffne Excel und trag die Sponsoren ein
+      - id: desktop_task_status
+        beschreibung: Stand der laufenden Desktop-Aufgabe
+        beispiele:
+          - Wie weit ist die Desktop-Aufgabe?
+          - Was hat der Desktop zuletzt gemacht?
+      - id: desktop_bestaetigen
+        beschreibung: einen angefragten Desktop-Schritt bestätigen
+        beispiele:
+          - Ja, klick das
+          - Bestätige den Desktop-Schritt
+
+  roarboot:
+    name: Rowboat
+    beschreibung: die Wissensbasis in Rowboat befragen und daraus Texte bauen.
+    faehigkeiten:
+      - id: rowboat_spaces
+        beschreibung: Agenten und Bereiche in Rowboat auflisten
+        beispiele:
+          - Welche Agenten gibt es in Rowboat?
+          - Zeig mir die Rowboat-Agenten
+      - id: rowboat_chat
+        beschreibung: Rowboat im Gespräch etwas fragen
+        beispiele:
+          - Frag Rowboat, was wir über die Sponsoren wissen
+          - Was weiß Rowboat über das Stadtfest?
+      - id: rowboat_search
+        beschreibung: in der Rowboat-Wissensbasis suchen
+        beispiele:
+          - Such in Rowboat nach Druckerei
+          - Durchsuche die Wissensbasis nach dem Bühnenplan
+      - id: rowboat_query
+        beschreibung: Rowboat zu einer Person, einem Projekt oder Thema befragen
+        beispiele:
+          - Was wissen wir über das Projekt Stadtfest?
+      - id: rowboat_email_draft
+        beschreibung: eine E-Mail mit Wissen aus Rowboat entwerfen
+        beispiele:
+          - Entwirf eine Mail an die Druckerei mit dem Stand aus Rowboat
+      - id: rowboat_meeting_brief
+        beschreibung: ein Besprechungs-Briefing vorbereiten
+        beispiele:
+          - Bereite ein Briefing für das Treffen mit den Sponsoren vor
+      - id: rowboat_deck
+        beschreibung: eine Präsentation aus der Wissensbasis bauen
+        beispiele:
+          - Bau eine Präsentation zum Stadtfest aus Rowboat
+      - id: rowboat_status
+        beschreibung: Zustand von Rowboat
+        beispiele:
+          - Läuft Rowboat?
+
+  orders:
+    name: Aufträge
+    beschreibung: geplante Aufgaben, Erinnerungen und Aufträge an Agenten.
+    faehigkeiten:
+      - id: schedule_list
+        beschreibung: geplante Aufgaben auflisten
+        beispiele:
+          - Welche geplanten Aufgaben gibt es?
+          - Zeig meine Aufträge
+          - Was ist geplant?
+          - Zeig mir meine Erinnerungen
+      - id: schedule_auftraege
+        beschreibung: laufende Aufträge an Agenten
+        beispiele:
+          - Welche Aufträge laufen gerade?
+          - Woran arbeiten die Agenten?
+          - Was machen meine Agenten?
+      - id: schedule_create
+        beschreibung: Aufgabe, Erinnerung oder Termin anlegen
+        beispiele:
+          - Erinnere mich morgen an die Druckerei
+          - Stell einen Timer auf zehn Minuten
+          - Plane eine Erinnerung für Freitag
+      - id: schedule_cancel
+        beschreibung: eine geplante Aufgabe absagen
+        beispiele:
+          - Storniere die Erinnerung zur Druckerei
+          - Lösche den Termin am Freitag
+      - id: schedule_modify
+        beschreibung: eine geplante Aufgabe verschieben oder ändern
+        beispiele:
+          - Verschieb die Erinnerung auf Montag
+          - Ändere den Termin mit den Sponsoren
+      - id: schedule_snooze
+        beschreibung: eine Erinnerung später wieder zeigen
+        beispiele:
+          - Erinnere mich später nochmal
+          - Schlummer die Erinnerung
+      - id: schedule_status
+        beschreibung: Zustand des Planers
+        beispiele:
+          - Wie ist der Status des Schedulers?
+
+  projects:
+    name: Project Space
+    beschreibung: Programmier-Läufe der Coding-Engine starten und verfolgen.
+    faehigkeiten:
+      - id: coding_stand
+        beschreibung: Stand der Coding-Engine
+        beispiele:
+          - Wie ist der Stand im Project Space?
+          - Läuft gerade ein Coding-Lauf?
+      - id: coding_laeufe
+        beschreibung: die letzten Läufe zeigen
+        beispiele:
+          - Zeig mir die letzten Läufe
+          - Welche Coding-Läufe gab es heute?
+      - id: coding_ergebnis
+        beschreibung: Ergebnis des letzten Laufs
+        beispiele:
+          - Zeig mir das Ergebnis des letzten Laufs
+          - Was ist beim letzten Lauf herausgekommen?
+      - id: coding_task
+        beschreibung: eine Programmieraufgabe ausführen lassen
+        beispiele:
+          - Schreib ein Skript, das die Sponsorenliste sortiert
+          - Programmier eine kleine Webseite für das Stadtfest
+      - id: code_generate
+        beschreibung: Code erzeugen
+        beispiele:
+          - Generiere Code für einen Anmeldeformular-Prototyp
+          - Erstelle ein Projekt für den Bühnenplan
+      - id: code_modify
+        beschreibung: bestehenden Code ändern
+        beispiele:
+          - Ändere die Datei so, dass sie Fehler abfängt
+      - id: code_search
+        beschreibung: im Code suchen
+        beispiele:
+          - Wo ist die Funktion, die Termine lädt?
+          - Such im Code nach der Anmeldung
+      - id: code_review
+        beschreibung: Code prüfen
+        beispiele:
+          - Prüf den letzten Diff auf Fehler
+      - id: code_cancel
+        beschreibung: den laufenden Coding-Lauf abbrechen
+        beispiele:
+          - Brich den Coding-Lauf ab
+
+  sales:
+    name: Sales
+    beschreibung: Termine, Freigaben, Post und Kontakte im Auftragsbuch lesen (nur lesend).
+    faehigkeiten:
+      - id: sales.termine_heute
+        beschreibung: Termine von heute
+        beispiele:
+          - Welche Termine habe ich heute?
+          - Was steht heute im Kalender an?
+          - Wie voll ist mein Tag?
+      - id: sales.freigaben_zaehlen
+        beschreibung: offene Freigaben
+        beispiele:
+          - Was liegt in den Freigaben?
+          - Muss ich noch etwas freigeben?
+          - Wie viele Entwürfe warten auf Freigabe?
+      - id: sales.post_offen
+        beschreibung: offene Nachrichten
+        beispiele:
+          - Hab ich neue Nachrichten?
+          - Hat mir heute jemand geschrieben?
+          - Wie viele ungelesene Mails habe ich?
+      - id: sales.kontakt_finden
+        beschreibung: einen Kontakt suchen
+        beispiele:
+          - Zeig mir den Kontakt Druckerei Müller
+          - Wen haben wir bei der Druckerei?
+          - Gibt es einen Kontakt zu den Sponsoren?
+
+# Sätze, die in keinen Bereich gehören (zum Kalibrieren der Schwelle und für den Bericht).
+nirgends:
+  - Wie wird das Wetter morgen?
+  - Erzähl mir einen Witz
+  - Was ist die Hauptstadt von Frankreich?
+  - Wie spät ist es?
+  - Asdf jklö
+  - Danke dir
+  - Wer hat die Fußball-WM gewonnen?
+  - Rechne 17 mal 23
