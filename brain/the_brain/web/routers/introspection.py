@@ -2936,6 +2936,10 @@ async def _multihop_execute(request: Request):
         except Exception as e:
             return JSONResponse({"error": f"invalid plan: {e}", "trace_id": trace_id}, status_code=400)
     elif intent:
+        # Gruss, Dank, blosses ja/ok (core/hoeflichkeit): ob eine Rueckfrage offen war, vor dem
+        # Verwerfen unten ablesen; die Antwort kommt nach den Bestaetigungen.
+        from core import hoeflichkeit as _hf
+        _hf_satz = _hf.antwort(intent, offen=_hf.etwas_offen()) if not skip_shortcut else None
         # White Paper: "Ja, erstellen" gilt nur direkt nach der Rueckfrage mit dem Umfang;
         # jeder andere Satz verwirft sie (core/whitepaper_bestaetigung).
         from core import whitepaper_bestaetigung as _wp
@@ -2973,6 +2977,15 @@ async def _multihop_execute(request: Request):
             plan.ziel_bubble_id = str(_lb_antwort.get("bubble_id") or "")
             _ideen_fest = True
             _ideen_antwort = str(_lb_antwort.get("antwort") or "")
+        if _hf_satz and plan is None:
+            # Lauf 22: sonst "Das habe ich nicht verstanden. ..." auf "Danke", "ok", "Hallo".
+            _trace_lite(pe, trace_id, intent, "hoeflichkeit", _hf_satz)
+            _hf_antwort: Dict[str, Any] = {"ok": True, "executed": {}, "final_text": _hf_satz,
+                                           "trace_id": trace_id, "weg": "hoeflichkeit"}
+            _hf_space = _verstehen.space_aus_kontext(body.get("context"))
+            if _hf_space:
+                _hf_antwort["space"] = _hf_space
+            return JSONResponse(_hf_antwort)
         # Vorschlag bei geaenderter Karte: zeigen, uebernehmen, verwerfen (aus jedem Reiter).
         from core.ideen_vorschlag import satz_art as _vorschlag_art
         _vs_art = _vorschlag_art(intent) if plan is None and not skip_shortcut else None
