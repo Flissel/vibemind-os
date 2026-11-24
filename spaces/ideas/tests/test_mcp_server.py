@@ -57,6 +57,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
                 "idea_auto_link",
                 "idea_rate",
                 "bewertung_begruenden",
+                "bewertung_entfernen",
                 "bubble_rate",
                 "idea_document",
                 "bubble_wurzel",
@@ -194,6 +195,44 @@ class IdeasMcpServerContractTests(unittest.TestCase):
             [params.get("parent_id") for _method, _path, params in calls],
             ["is.null", "is.null", "is.null"],
         )
+
+    def test_bubble_delete_mit_karten_deletes_its_cards_then_the_bubble(self) -> None:
+        server = load_server()
+        calls = []
+
+        def request(method, path, **kwargs):
+            calls.append((method, path, kwargs["params"]))
+            if path == "ideas":
+                return [{"id": "bubble-1"}]
+            return [{"id": "karte-1"}, {"id": "karte-2"}]
+
+        with mock.patch.object(server, "_request", side_effect=request):
+            result = server.call_tool("bubble_delete", {"id": "bubble-1", "mit_karten": True})
+        # Die Quittung nennt die mitgeloeschten Karten; die Nachpruefung liest genau sie zurueck.
+        self.assertEqual(result, [{"id": "bubble-1", "karten_geloescht": ["karte-1", "karte-2"]}])
+        self.assertEqual(calls, [
+            ("GET", "ideas", {"select": "id", "id": "eq.bubble-1", "parent_id": "is.null", "limit": "1"}),
+            ("GET", "canvas_nodes", {"select": "id", "linked_idea_id": "eq.bubble-1", "limit": "201"}),
+            ("DELETE", "canvas_nodes", {"linked_idea_id": "eq.bubble-1"}),
+            ("DELETE", "ideas", {"id": "eq.bubble-1", "parent_id": "is.null"}),
+        ])
+
+        # Mehr als 200 Karten: ehrlich ablehnen, nichts loeschen (auch nicht teilweise).
+        calls.clear()
+        zu_viele = [{"id": f"karte-{i}"} for i in range(201)]
+        with mock.patch.object(server, "_request", side_effect=lambda method, path, **kw: (
+                calls.append((method, path)), [{"id": "bubble-1"}] if path == "ideas" else zu_viele)[1]):
+            with self.assertRaisesRegex(server.ToolError, "^too_many_cards"):
+                server.call_tool("bubble_delete", {"id": "bubble-1", "mit_karten": True})
+        self.assertEqual(calls, [("GET", "ideas"), ("GET", "canvas_nodes")])
+
+        calls.clear()
+        with mock.patch.object(server, "_request", side_effect=lambda method, path, **kw: (
+                calls.append((method, path)), [])[1]):
+            self.assertEqual(server.call_tool("bubble_delete", {"id": "fremd", "mit_karten": True}), [])
+        self.assertEqual(calls, [("GET", "ideas")])                     # keine Bubble: keine Karte geloescht
+        with self.assertRaisesRegex(server.ToolError, "^invalid_arguments"):
+            server.call_tool("bubble_delete", {"id": "bubble-1", "mit_karten": "ja"})
 
     def test_bubble_promote_reads_top_level_bubble_creates_project_then_links_it(self) -> None:
         server = load_server()
@@ -1329,7 +1368,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
             "bubble_create", "bubble_update", "bubble_delete", "bubble_promote",
             "idea_create", "idea_update", "idea_delete", "idea_connect", "idea_disconnect",
             "idea_format", "idea_arrange", "idea_auto_link", "idea_rate", "bubble_rate",
-            "bewertung_begruenden", "idea_document", "bubble_wurzel", "idea_group",
+            "bewertung_begruenden", "bewertung_entfernen", "idea_document", "bubble_wurzel", "idea_group",
         })
 
     def test_stdio_process_serves_initialize_and_tools_list(self) -> None:

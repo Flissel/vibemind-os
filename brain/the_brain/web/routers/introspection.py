@@ -2327,7 +2327,10 @@ def _extract_arg_template(intent: str, capability: str) -> str:
     return tokens[-1]
 
 
-def _try_capability_shortcut(state, intent: str):
+OFFENE_BUBBLE_OHNE_WEG = object()  # Marke: zustandsabhaengig, Bubble offen, kein fester Weg
+
+
+def _try_capability_shortcut(state, intent: str, kontext: Any = None):
     """Phase 11.Q2 — try to short-circuit the LLM planner for trivial
     single-action intents.
 
@@ -2424,6 +2427,16 @@ def _try_capability_shortcut(state, intent: str):
         or any(kw in intent_lower for kw in ("die idee ", "the idea ", "idea "))
     )
     if m.capability in _STATE_DEPENDENT_CAPS and (mentions_bubble or has_named_idea):
+        if _ziel_bubble(kontext):
+            # Prueflauf 24.11.2026: "Loesche die Karte X" bei offener Bubble lief als
+            # "bubble=False ... deferring to LLM" an den Planer und scheiterte nach 15 s.
+            # Die offene Bubble zaehlt als genannt; was die festen Wege davor nicht kennen,
+            # bekommt einen ruhigen Satz statt eines Planer-Laufs.
+            logger.info(
+                f"[shortcut] {m.capability!r} is state-dependent, bubble open in app context — "
+                "no planner, honest answer"
+            )
+            return OFFENE_BUBBLE_OHNE_WEG
         logger.info(
             f"[shortcut] {m.capability!r} is state-dependent and intent mentions "
             f"bubble={mentions_bubble} named_idea={has_named_idea} — deferring to LLM"
@@ -2543,6 +2556,10 @@ def _try_ideen_abkuerzung(intent: str, kontext: Any):
             _lb.fragen(treffer["ereignis"], treffer["argumente"], str(treffer.get("antwort") or ""),
                        str(loeschen.get("bubble_id") or ""))
             logger.info(f"[ideen-abkuerzung] {treffer['ereignis']!r}: Rueckfrage vor dem Loeschen")
+            if loeschen.get("art") == "bubble":
+                karten = loeschen.get("karten")
+                return None, _lb.frage_bubble(str(loeschen.get("titel") or ""),
+                                              karten if isinstance(karten, int) else None), ""
             return None, _lb.frage_karte(str(loeschen.get("titel") or "")), ""
         if isinstance(treffer.get("recherche"), dict):
             # Recherche zu einer Bubble: erst die Vorschau (kein Lauf), "Ja, recherchieren" startet.
@@ -2919,6 +2936,10 @@ async def _multihop_execute(request: Request):
         except Exception as e:
             return JSONResponse({"error": f"invalid plan: {e}", "trace_id": trace_id}, status_code=400)
     elif intent:
+        # Gruss, Dank, blosses ja/ok (core/hoeflichkeit): ob eine Rueckfrage offen war, vor dem
+        # Verwerfen unten ablesen; die Antwort kommt nach den Bestaetigungen.
+        from core import hoeflichkeit as _hf
+        _hf_satz = _hf.antwort(intent, offen=_hf.etwas_offen()) if not skip_shortcut else None
         # White Paper: "Ja, erstellen" gilt nur direkt nach der Rueckfrage mit dem Umfang;
         # jeder andere Satz verwirft sie (core/whitepaper_bestaetigung).
         from core import whitepaper_bestaetigung as _wp
@@ -2956,6 +2977,15 @@ async def _multihop_execute(request: Request):
             plan.ziel_bubble_id = str(_lb_antwort.get("bubble_id") or "")
             _ideen_fest = True
             _ideen_antwort = str(_lb_antwort.get("antwort") or "")
+        if _hf_satz and plan is None:
+            # Lauf 22: sonst "Das habe ich nicht verstanden. ..." auf "Danke", "ok", "Hallo".
+            _trace_lite(pe, trace_id, intent, "hoeflichkeit", _hf_satz)
+            _hf_antwort: Dict[str, Any] = {"ok": True, "executed": {}, "final_text": _hf_satz,
+                                           "trace_id": trace_id, "weg": "hoeflichkeit"}
+            _hf_space = _verstehen.space_aus_kontext(body.get("context"))
+            if _hf_space:
+                _hf_antwort["space"] = _hf_space
+            return JSONResponse(_hf_antwort)
         # Vorschlag bei geaenderter Karte: zeigen, uebernehmen, verwerfen (aus jedem Reiter).
         from core.ideen_vorschlag import satz_art as _vorschlag_art
         _vs_art = _vorschlag_art(intent) if plan is None and not skip_shortcut else None
@@ -3036,10 +3066,14 @@ async def _multihop_execute(request: Request):
         # instead of 500'ing the whole request.
         if not skip_shortcut and plan is None:
             try:
-                plan = _try_capability_shortcut(state, intent)
+                plan = _try_capability_shortcut(state, intent,
+                                                None if _bubble_im_satz else body.get("context"))
             except Exception as e:
                 logger.exception(f"[multihop] shortcut crashed for intent={intent!r}: {e}")
                 plan = None  # fall through to LLM
+            if plan is OFFENE_BUBBLE_OHNE_WEG:
+                return _ehrlich(pe, trace_id, intent, "nicht-verstanden",
+                                _verstehen.nicht_verstanden("ideas"), "ideas")
 
         # Feste Ideen-Saetze aus einem anderen Reiter (z. B. "Halt fest: ... in der Bubble X" aus
         # Video): sie gehoeren zum Ideen-Bereich und laufen dort, mit Sprung. Nur wenn der Satz

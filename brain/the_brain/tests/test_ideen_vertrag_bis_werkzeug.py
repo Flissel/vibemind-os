@@ -42,6 +42,8 @@ class Datenbank:
     def __init__(self) -> None:
         self.tabellen = {
             "ideas": [{"id": "b0b1e001", "title": "Messe", "description": "", "parent_id": None, "score": 0,
+                       "status": "active", "promoted_to_project_id": None, "metadata": {}},
+                      {"id": "b0b1e002", "title": "Alte Messe", "description": "", "parent_id": None, "score": 0,
                        "status": "active", "promoted_to_project_id": None, "metadata": {}}],
             "canvas_nodes": [
                 {"id": "a0000001", "title": "Preise Druckerei", "content": "A: 1", "node_type": "note", "x": 500, "y": 90,
@@ -49,6 +51,12 @@ class Datenbank:
                  "previous_content_json": None},
                 {"id": "a0000002", "title": "Druckerei Preise", "content": "", "node_type": "note", "x": 10, "y": 400,
                  "linked_idea_id": "b0b1e001", "metadata": {}, "format_schema": None, "content_json": None,
+                 "previous_content_json": None},
+                {"id": "a0000009", "title": "Standplan", "content": "", "node_type": "note", "x": 0, "y": 0,
+                 "linked_idea_id": "b0b1e002", "metadata": {}, "format_schema": None, "content_json": None,
+                 "previous_content_json": None},
+                {"id": "a000000a", "title": "Zeltplan", "content": "", "node_type": "note", "x": 0, "y": 0,
+                 "linked_idea_id": "b0b1e002", "metadata": {}, "format_schema": None, "content_json": None,
                  "previous_content_json": None},
             ],
             "canvas_edges": [],
@@ -100,6 +108,16 @@ class Datenbank:
             # Wie PostgREST mit "Prefer: return=representation": die geloeschten Zeilen.
             weg = [copy.deepcopy(z) for z in zeilen if self._passt(z, params)]
             self.tabellen[path] = [z for z in zeilen if not self._passt(z, params)]
+            if path == "canvas_nodes":
+                # canvas_edges.from_node_id/to_node_id: ON DELETE CASCADE
+                ids = {z["id"] for z in weg}
+                self.tabellen["canvas_edges"] = [k for k in self.tabellen["canvas_edges"]
+                                                 if k["from_node_id"] not in ids and k["to_node_id"] not in ids]
+            if path == "ideas":
+                # canvas_nodes.linked_idea_id: ON DELETE SET NULL
+                for karte in self.tabellen["canvas_nodes"]:
+                    if karte.get("linked_idea_id") in {z["id"] for z in weg}:
+                        karte["linked_idea_id"] = None
             return weg
         raise AssertionError(method)
 
@@ -198,6 +216,8 @@ def _hauptlauf() -> int:
         ("idea.update", {"id": "a0000001", "content": ""}),                       # Inhalt leeren
         ("idea.rate", abk.loese("Bewerte Preise Druckerei mit 80", app)["argumente"]),
         ("idea.rate_reason", abk.loese("Begründung: traegt die Idee {wirklich}", app)["argumente"]),
+        # ... und wieder weg: die neueste Begruendung (Nummer 1), wie angezeigt gezaehlt.
+        ("idea.rate_reason_delete", abk.loese("Lösche die Begründung 1", app)["argumente"]),
         ("idea.auto_link", {"bubble_id": "b0b1e001"}),
         ("idea.arrange", abk.loese("Sortiere die Karten nach Bewertung", app)["argumente"]),
         ("bubble.rate", abk.loese("Bewerte die Bubble Messe mit 70", app)["argumente"]),
@@ -216,9 +236,21 @@ def _hauptlauf() -> int:
         ("idea.delete", abk.loese("Lösche die Karte White Paper: Messe",
                                   {**app, "cards": [{"id": "00000000-0000-4000-8000-000000000d01",
                                                      "title": "White Paper: Messe"}]})["argumente"]),
+        # Bubble loeschen (nach "Ja, löschen"): nur die offene, ihre Karten und Verbindungen gehen mit.
+        ("bubble.delete", abk.loese("Lösche diese Bubble",
+                                    {"space": "ideas", "bubble": {"id": "b0b1e002", "title": "Alte Messe"},
+                                     "cards": [{"id": "a0000009", "title": "Standplan"},
+                                               {"id": "a000000a", "title": "Zeltplan"}],
+                                     "cards_total": 2})["argumente"]),
     ]
     db.tabellen["canvas_edges"].append({"id": "e0000001", "from_node_id": "00000000-0000-4000-8000-000000000d01",
                                         "to_node_id": "a0000001", "edge_type": "related"})
+    # Verbindungen der Karten von "Alte Messe": untereinander und hinueber zu "Messe".
+    db.tabellen["canvas_edges"].append({"id": "e0000002", "from_node_id": "a0000009",
+                                        "to_node_id": "a000000a", "edge_type": "related"})
+    db.tabellen["canvas_edges"].append({"id": "e0000003", "from_node_id": "a0000002",
+                                        "to_node_id": "a000000a", "edge_type": "related"})
+    erwartungen: dict = {}
     gesehen = set()
     for event_id, argumente in faelle:
         gesehen.add(event_id)
@@ -248,8 +280,43 @@ def _hauptlauf() -> int:
         erwartung, grund = vertrag.nachpruefung(event_id, beim_werkzeug, antwort["result"])
         check(f"{event_id}: Quittung ergibt eine Erwartung", erwartung is not None, grund)
         if erwartung is not None:
+            erwartungen[event_id] = erwartung
             ok, _signal, warum = vertrag.pruefe_zustand(erwartung, lies)
             check(f"{event_id}: Zustand bestaetigt", ok is True, warum)
+    check("bubble.delete: die Karten der Bubble sind mit geloescht",
+          not [k for k in db.tabellen["canvas_nodes"] if k["id"] in ("a0000009", "a000000a")])
+    check("bubble.delete: ihre Verbindungen sind weg, auch die hinueber zu einer anderen Bubble",
+          not [k for k in db.tabellen["canvas_edges"] if k["id"] in ("e0000002", "e0000003")])
+    check("bubble.delete: die Nachpruefung liest genau die mitgeloeschten Karten zurueck",
+          sorted(erwartungen.get("bubble.delete", {}).get("karten") or []) == ["a0000009", "a000000a"],
+          json.dumps(erwartungen.get("bubble.delete")))
+    # Die Nachpruefung merkt es, wenn eine der Karten doch noch da ist (nur losgeloest).
+    db.tabellen["canvas_nodes"].append({"id": "a000000a", "title": "Zeltplan", "linked_idea_id": None})
+    ok, _signal, warum = vertrag.pruefe_zustand(erwartungen.get("bubble.delete") or {}, lies)
+    check("bubble.delete: eine liegengebliebene Karte faellt in der Nachpruefung auf", ok is False, warum)
+    db.tabellen["canvas_nodes"] = [k for k in db.tabellen["canvas_nodes"] if k["id"] != "a000000a"]
+
+    # Grenze: mehr als 200 Karten loescht der Weg nicht in einem Zug, auch nicht teilweise.
+    db.tabellen["ideas"].append({"id": "b0b1e003", "title": "Grosse Messe", "description": "", "parent_id": None,
+                                 "score": 0, "status": "active", "promoted_to_project_id": None, "metadata": {}})
+    for i in range(201):
+        db.tabellen["canvas_nodes"].append({"id": f"c{i:07d}", "title": f"Karte {i}", "linked_idea_id": "b0b1e003"})
+    gross = {"space": "ideas", "bubble": {"id": "b0b1e003", "title": "Grosse Messe"}, "cards": [], "cards_total": 201}
+    treffer = abk.loese("Lösche diese Bubble", gross)
+    check("Grenze: ueber 200 Karten kommt ein ehrlicher Satz statt der Rueckfrage",
+          "loeschen" not in (treffer or {}) and "201 Karten" in str((treffer or {}).get("rueckfrage"))
+          and "gelöscht ist nichts" in str((treffer or {}).get("rueckfrage")), json.dumps(treffer, ensure_ascii=False))
+    # Der Server prueft selbst noch einmal (die App kann zu wenig gezaehlt haben).
+    antwort = rufe("bubble.delete", {"id": "b0b1e003", "mit_karten": True}, plan_id="ideen_1795000000001")
+    check("Grenze: der Server loescht nichts und nennt too_many_cards",
+          antwort.get("ok") is False and str(antwort.get("error")).endswith("(too_many_cards)"),
+          str(antwort.get("error")))
+    check("Grenze: Bubble und alle 201 Karten stehen noch",
+          [b for b in db.tabellen["ideas"] if b["id"] == "b0b1e003"] != []
+          and len([k for k in db.tabellen["canvas_nodes"] if k.get("linked_idea_id") == "b0b1e003"]) == 201)
+    check("Grenze: der Satz im Chat ist ehrlich",
+          "gelöscht ist nichts" in abk.fehlersatz(antwort.get("error"), "bubble.delete"),
+          abk.fehlersatz(antwort.get("error"), "bubble.delete"))
     check("alle zehn Ereignisse geprueft", gesehen == set(vertrag.FESTE_EREIGNISSE),
           str(set(vertrag.FESTE_EREIGNISSE) - gesehen))
 
