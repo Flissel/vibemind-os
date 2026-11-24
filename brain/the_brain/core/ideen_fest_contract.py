@@ -85,6 +85,14 @@ FESTE_EREIGNISSE: dict[str, dict[str, Any]] = {
         "pflicht": {"bubble_id": _K},
         "wahl": {"id": _K},
     },
+    # "Lösche die Karte X": nur nach Rückfrage und "Ja, löschen" (core/loesch_bestaetigung; der
+    # Schlüssel wird im Plan-Ausführer eingelöst und abgelegt). Der Server nimmt die Verbindungen
+    # der Karte mit, alles unter der Kennung der Änderung; "Zurück" holt beides wieder.
+    "idea.delete": {
+        "werkzeug": "idea_delete",
+        "pflicht": {"id": _K},
+        "wahl": {},
+    },
     "bubble.rate": {
         "werkzeug": "bubble_rate",
         "pflicht": {"id": _K, "score": _WERT},
@@ -361,6 +369,13 @@ def nachpruefung(event_id: str, argumente: Any, raw_result: Any) -> tuple[Option
             felder = {"score": argumente["score"]}
         return {"art": "zeile", "tabelle": tabelle, "id": zeile["id"], "felder": felder}, ""
 
+    if event_id == "idea.delete":
+        # Quittung: die geloeschte Zeile (PostgREST, return=representation). Leer heisst: es gab
+        # die Karte nicht (mehr), dann ist nichts geloescht und nichts zu melden.
+        zeile = _erste_zeile(inhalt)
+        if zeile is None or zeile.get("id") != argumente["id"]:
+            return None, ungueltig
+        return {"art": "geloescht", "id": argumente["id"]}, ""
     if not isinstance(inhalt, dict):
         return None, ungueltig
     if event_id == "idea.root":
@@ -495,6 +510,20 @@ def pruefe_zustand(erwartet: Any, lies: Lesen) -> tuple[Optional[bool], dict[str
         if abweichend:
             return False, {"id": zeile.get("id"), "abweichend": abweichend}, "stored row differs: " + ", ".join(abweichend)
         return True, {"id": zeile.get("id"), "rows_found": 1}, "stored row verified"
+
+    if art == "geloescht":
+        # Weg ist die Karte und jede Verbindung von ihr oder zu ihr.
+        kennung = erwartet.get("id")
+        if not ist_kennung(kennung):
+            return None, offen, "invalid expectation"
+        karte = lies("canvas_nodes", {"select": "id", "id": f"eq.{kennung}", "limit": "1"})
+        von = lies("canvas_edges", {"select": "id", "from_node_id": f"eq.{kennung}", "limit": "1"})
+        zu = lies("canvas_edges", {"select": "id", "to_node_id": f"eq.{kennung}", "limit": "1"})
+        if karte is None or von is None or zu is None:
+            return None, offen, "read-back unavailable"
+        if karte or von or zu:
+            return False, {"id": kennung}, "card or connection still present"
+        return True, {"id": kennung, "rows_found": 0}, "card and connections deleted"
 
     if art == "eintrag":
         zeile, gefunden, grund = eine_zeile("ideas", erwartet.get("bubble_id"), "id,metadata")

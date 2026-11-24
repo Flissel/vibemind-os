@@ -1743,6 +1743,22 @@ class PlanExecutor:
                         elapsed_s=time.time() - t0,
                         contract_pass=False, reward=-1.0,
                     )
+                from . import loesch_bestaetigung as _lb
+                if event_id in _lb.EREIGNISSE:
+                    # Loeschen nur mit dem Schluessel aus "Ja, loeschen", genau einmal und nur fuer
+                    # die Kennung der Rueckfrage; der Schluessel geht nicht an das Werkzeug.
+                    _lb_arg = rendered_arg
+                    if isinstance(_lb_arg, str):
+                        try:
+                            _lb_arg = json.loads(_lb_arg)
+                        except ValueError:
+                            _lb_arg = None
+                    if not isinstance(_lb_arg, dict):
+                        return _ideen_fehler(_lb.OHNE_SCHLUESSEL)
+                    _lb_arg = dict(_lb_arg)
+                    if not _lb.einloesen(_lb_arg.pop("bestaetigung", None), event_id, _lb_arg.get("id")):
+                        return _ideen_fehler(_lb.OHNE_SCHLUESSEL)
+                    rendered_arg = _lb_arg
                 strict_mcp_arguments, clarification = feste_argumente(event_id, rendered_arg)
                 if strict_mcp_arguments is None:
                     return _ideen_fehler(clarification)

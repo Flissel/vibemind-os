@@ -548,6 +548,16 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
             argumente["idea_ids"] = list(dict.fromkeys(auswahl))[:20]
         return _treffer("idea.rate_reason", argumente, "Begründung festgehalten.")
 
+    # ── Karte loeschen: nie direkt, zuerst die Rueckfrage (core/loesch_bestaetigung) ──
+    m = re.fullmatch(rf"(?:l(?:ö|oe)sch(?:e)?|entfern(?:e)?)\s+(?P<k>{_KARTE}.+)", text, _I)
+    if m:
+        karte = _karte(m.group("k"), kontext)
+        titel = str(karte.get("title") or "").strip()
+        name = f"Die Karte „{titel}“" if titel else "Die Karte"
+        return {**_treffer("idea.delete", {"id": karte["id"]},
+                           f"{name} ist gelöscht, mit ihren Verbindungen. Mit „Zurück“ holst du sie wieder."),
+                "loeschen": {"titel": titel, "bubble_id": _offene_bubble(kontext)}}
+
     # ── festhalten ──
     m = re.fullmatch(
         r"(?:halt(?:e)?\s+fest|notiz|notiere|schreib(?:e)?\s+auf|merk(?:e)?\s+dir)\s*[:,]?\s*(?:dass\s+)?(?P<t>.+)",
@@ -1012,7 +1022,8 @@ def _feld(name: str) -> str:
 # Fehlertexte, bei denen nichts schiefging: das Gehirn hat bewusst nichts geaendert und
 # sagt warum (Hinweis) oder fragt nach (Rueckfrage). Die App zeigt das ruhig, nicht als ✕.
 _HINWEISE = ("idea_format_table_no_columns", "idea_format_no_content", "Läufe; die Grenze ist",
-             "mehr als 30 starte ich nicht", "starte ich nur nach Rückfrage")
+             "mehr als 30 starte ich nicht", "starte ich nur nach Rückfrage",
+             "Gelöscht wird nur nach Rückfrage")
 _RUECKFRAGEN = ("aenderung_zurueck_frage: ", "mehrere Kennungen")
 
 
@@ -1038,6 +1049,10 @@ def fehlersatz(fehler: Any, capability: Any = None) -> str:
     if m:
         # Der Rueckweg nennt schon einen deutschen Satz ohne Werte (core/ideen_rueckweg).
         return m.group("satz").strip()
+    m = re.search(r"Gelöscht wird nur nach Rückfrage\.[^\n]{0,200}", text)
+    if m:
+        # core/loesch_bestaetigung: ohne "Ja, löschen" direkt nach der Rueckfrage wird nichts geloescht.
+        return m.group(0).strip()
     if "too_many_ideas" in text:
         anzahl = re.search(r"(?:anzahl=|: )(\d{1,6})(?: ideas)?", text)
         grenze = re.search(r"(?:grenze=|limit )(\d{1,6})", text)
@@ -1239,6 +1254,9 @@ def ziel_fuer_schritt(capability: Any, ok: bool, argumente: Any, ergebnis: Any,
         if not ist_kennung(bubble_id):
             return None
         node_id = None
+        if str(capability) == "idea.delete":
+            # Die Karte ist weg: in die Bubble springen, nie auf die Kennung der geloeschten Karte.
+            return {"space": "ideas", "bubble_id": bubble_id, "node_id": None}
         if str(capability).startswith("idea."):
             node_id = argumente.get("id")
             if not ist_kennung(node_id):

@@ -2535,6 +2535,15 @@ def _try_ideen_abkuerzung(intent: str, kontext: Any):
         if treffer.get("bestaetigen"):
             # White Paper: nie direkt. Erst der Umfang als Rueckfrage, "Ja, erstellen" startet.
             return None, _white_paper_rueckfrage(treffer["argumente"]), ""
+        if isinstance(treffer.get("loeschen"), dict):
+            # Loeschen: nie direkt. Erst die Rueckfrage mit dem Titel, "Ja, loeschen" loest aus
+            # (core/loesch_bestaetigung).
+            from core import loesch_bestaetigung as _lb
+            loeschen = treffer["loeschen"]
+            _lb.fragen(treffer["ereignis"], treffer["argumente"], str(treffer.get("antwort") or ""),
+                       str(loeschen.get("bubble_id") or ""))
+            logger.info(f"[ideen-abkuerzung] {treffer['ereignis']!r}: Rueckfrage vor dem Loeschen")
+            return None, _lb.frage_karte(str(loeschen.get("titel") or "")), ""
         if isinstance(treffer.get("recherche"), dict):
             # Recherche zu einer Bubble: erst die Vorschau (kein Lauf), "Ja, recherchieren" startet.
             from core import recherche_bubble as _rb
@@ -2602,6 +2611,23 @@ def _white_paper_rueckfrage(argumente: Dict[str, Any]) -> str:
     else:
         _wp.verwerfen()
     return satz
+
+
+def _loesch_plan(intent: str, bestaetigt: Dict[str, Any]):
+    """Der bestaetigte Loesch-Plan: ein fester Aufruf mit Schluessel (core/loesch_bestaetigung)."""
+    from core.ideen_abkuerzung import arg_vorlage
+    from core.plan_schema import Plan as _Plan, HopSpec as _HopSpec
+
+    ereignis = bestaetigt["ereignis"]
+    return _Plan(
+        plan_id=f"ideen_{int(time.time() * 1000)}",
+        intent=intent,
+        rationale=f"Ideen-Abkuerzung: {ereignis} (bestaetigt)",
+        hops=[_HopSpec(step_id="s1", description=f"{ereignis} via Bestaetigung",
+                       capability=ereignis, arg_template=arg_vorlage(bestaetigt["argumente"]))],
+        final_synthesis_prompt="",
+        estimated_cost_usd=0.0,
+    )
 
 
 def _white_paper_plan(intent: str, argumente: Dict[str, Any]):
@@ -2917,6 +2943,19 @@ async def _multihop_execute(request: Request):
         if _wp_antwort and _wp_antwort.get("argumente"):
             plan = _white_paper_plan(intent, _wp_antwort["argumente"])
             _ideen_fest = True
+        # Loeschen: "Ja, loeschen" gilt nur direkt nach der Rueckfrage mit dem Titel; jeder andere
+        # Satz verwirft sie (core/loesch_bestaetigung).
+        from core import loesch_bestaetigung as _lb
+        _lb_antwort = _lb.satz_pruefen(intent)
+        if _lb_antwort and _lb_antwort.get("satz"):
+            _trace_lite(pe, trace_id, intent, "ideen-rueckfrage", _lb_antwort["satz"])
+            return JSONResponse({"ok": False, "rueckfrage": True, "space": "ideas", "executed": {},
+                                 "final_text": _lb_antwort["satz"], "trace_id": trace_id})
+        if _lb_antwort and _lb_antwort.get("argumente") and plan is None:
+            plan = _loesch_plan(intent, _lb_antwort)
+            plan.ziel_bubble_id = str(_lb_antwort.get("bubble_id") or "")
+            _ideen_fest = True
+            _ideen_antwort = str(_lb_antwort.get("antwort") or "")
         # Vorschlag bei geaenderter Karte: zeigen, uebernehmen, verwerfen (aus jedem Reiter).
         from core.ideen_vorschlag import satz_art as _vorschlag_art
         _vs_art = _vorschlag_art(intent) if plan is None and not skip_shortcut else None

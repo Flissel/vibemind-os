@@ -129,7 +129,8 @@ def test_gueltige_argumente_gehen_unveraendert_durch(event_id, argumente) -> Non
     ("bubble.promote", "Messe"),
     ("bubble.promote", ""),
     ("idea.list", {"query": "Preise"}),
-    ("idea.delete", {"id": "n1"}),                                   # kein festes Ereignis
+    ("idea.delete", {"title": "Sponsoren"}),                         # nur ueber die Kennung
+    ("bubble.delete", {"id": "n1"}),                                 # kein festes Ereignis
 ])
 def test_ungueltige_argumente_ergeben_eine_rueckfrage_und_keinen_aufruf(event_id, argumente) -> None:
     ergebnis, rueckfrage = vertrag.feste_argumente(event_id, argumente)

@@ -97,8 +97,10 @@ class Datenbank:
                     geaendert.append(copy.deepcopy(zeile))
             return geaendert
         if method == "DELETE":
+            # Wie PostgREST mit "Prefer: return=representation": die geloeschten Zeilen.
+            weg = [copy.deepcopy(z) for z in zeilen if self._passt(z, params)]
             self.tabellen[path] = [z for z in zeilen if not self._passt(z, params)]
-            return []
+            return weg
         raise AssertionError(method)
 
 
@@ -210,7 +212,13 @@ def _hauptlauf() -> int:
         ("idea.document", {"id": "00000000-0000-4000-8000-000000000d01", "bubble_id": "b0b1e001",
                            "title": "White Paper: Messe", "art": "white_paper",
                            "content": "# White Paper: Messe\n\n## Inhalt\n\n1. Preise\n", "quellen": ["a0000001"]}),
+        # Karte loeschen (nach "Ja, löschen"): Karte und ihre Verbindungen gehen, eine Aenderung.
+        ("idea.delete", abk.loese("Lösche die Karte White Paper: Messe",
+                                  {**app, "cards": [{"id": "00000000-0000-4000-8000-000000000d01",
+                                                     "title": "White Paper: Messe"}]})["argumente"]),
     ]
+    db.tabellen["canvas_edges"].append({"id": "e0000001", "from_node_id": "00000000-0000-4000-8000-000000000d01",
+                                        "to_node_id": "a0000001", "edge_type": "related"})
     gesehen = set()
     for event_id, argumente in faelle:
         gesehen.add(event_id)
