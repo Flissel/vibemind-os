@@ -165,7 +165,23 @@ def _werkzeug_fehlt(ergebnis: Any) -> bool:
     return bool(_WERKZEUG_FEHLT.search(ergebnis[:4000]))
 
 
-def stand(auftrag_id: str, lesen: Callable[[str], Optional[Mapping[str, Any]]]) -> dict[str, Any]:
+def _white_paper_teil(zeile: Mapping[str, Any]) -> str:
+    """"White Paper: Abschnitt 2 von 3 läuft." aus dem Rückweg der Zeile, sonst leer. Wirft nie."""
+    try:
+        uebergabe = zeile.get("uebergabe")
+        rueckweg = uebergabe.get("rueckweg") if isinstance(uebergabe, Mapping) else None
+        if not isinstance(rueckweg, Mapping) or rueckweg.get("vertrag") != "abschnitt":
+            return ""
+        teile, index = rueckweg.get("teile"), rueckweg.get("index")
+        if not isinstance(teile, list) or not isinstance(index, int) or isinstance(index, bool) \
+                or not 0 <= index < len(teile):
+            return ""
+        return f"White Paper: Abschnitt {index + 1} von {len(teile)} läuft."
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def stand(auftrag_id: str, lesen:Callable[[str], Optional[Mapping[str, Any]]]) -> dict[str, Any]:
     """Stand eines Auftrags, beim White Paper über die Kette der Teile. Wirft nie.
 
     ``lesen(id)`` liefert die Zeile oder ``None``; eine Ausnahme heißt: nicht lesbar.
@@ -188,6 +204,14 @@ def stand(auftrag_id: str, lesen: Callable[[str], Optional[Mapping[str, Any]]]) 
                 aktuell = weiter
                 continue
             ergebnis["auftrag_id"] = auftrag_id
+            if ergebnis["stand"] == "laeuft":
+                # Lauf 28: die Standzeile zeigte bis zum Ende die Nummer des ersten Auftrags.
+                # Jetzt: der laufende Auftrag der Kette und beim White Paper "Abschnitt n von m".
+                if aktuell != auftrag_id:
+                    ergebnis["laufender_auftrag"] = aktuell
+                teil = _white_paper_teil(zeile)
+                if teil:
+                    ergebnis["meldung"] = teil
             if ergebnis["stand"] not in ("laeuft",):
                 dauer = _dauer(erste.get("angelegt"), zeile.get("beendet"))
                 if dauer is not None:

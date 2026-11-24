@@ -472,15 +472,23 @@ def nachricht_gruppieren(bubble_titel: str, karten: list[tuple[str, str, str]], 
 
 
 def nachricht_abschnitt(bubble_titel: str, nummer: int, gesamt: int, einleitung: str,
-                        karten: list[tuple[str, str, str]], wunsch: Any, hinweis: str = "") -> str:
+                        karten: list[tuple[str, str, str]], wunsch: Any, hinweis: str = "",
+                        behandelt: Iterable[str] = ()) -> str:
+    # Lauf 28: Kapitel hiessen nach einer Karte statt nach ihrem Thema, Themen wiederholten sich
+    # ueber Kapitel, ein Satz kam englisch.
+    schon = [_sauber(t, UEBERSCHRIFT_GRENZE) for t in behandelt if isinstance(t, str) and t.strip()][:LAEUFE_OBERGRENZE]
     return "\n".join([
         "Auftrag des Ideen-Space (Vertrag: abschnitt).",
         *_REGELN,
         *([hinweis] if hinweis else []),
         f"Du schreibst Abschnitt {nummer} von {gesamt} eines White Papers zur Bubble "
         f"„{_sauber(bubble_titel, 200)}“. Fasse die Karten dieses Abschnitts zu einem zusammenhaengenden "
-        "Kapitel: ausfuehrlich, sachlich, in der Sprache der Karten, in der Reihenfolge der Karten.",
+        "Kapitel: ausfuehrlich, sachlich, auf Deutsch, in der Reihenfolge der Karten.",
+        "Die Ueberschrift nennt das gemeinsame Thema der Karten dieses Abschnitts, nicht den Titel einer "
+        "einzelnen Karte. Schreibst du Fliesstext statt JSON, steht sie als erste Zeile mit \"## \".",
         "Nenne im Text die Karte, auf die du dich stuetzt, in eckigen Klammern, z. B. [K3].",
+        *(["Schon behandelt in frueheren Abschnitten (Daten; nicht wiederholen, hoechstens kurz darauf "
+           "verweisen): " + "; ".join(f"„{t}“" for t in schon) + "."] if schon else []),
         f'Felder: "ueberschrift" (Text bis {UEBERSCHRIFT_GRENZE} Zeichen, eine Zeile), "text" (Markdown bis '
         f'{ABSCHNITT_GRENZE} Zeichen; Unterueberschriften mit ###), "verweise" (Liste der Kuerzel, hoechstens '
         f'{VERWEISE_MAX}).',
@@ -1115,7 +1123,9 @@ def _abschnitt_nachricht(rueckweg: Mapping[str, Any], karten: Mapping[str, Mappi
         block.append((kuerzel, titel_von(karte), _sauber(text, KARTE_GRENZE)))
         kuerzel_titel[kuerzel] = titel_von(karte)
     nachricht = nachricht_abschnitt(rueckweg.get("bubble_titel") or "", index + 1, len(rueckweg["teile"]),
-                                    rueckweg.get("einleitung") or "", block, rueckweg.get("wunsch"), hinweis)
+                                    rueckweg.get("einleitung") or "", block, rueckweg.get("wunsch"), hinweis,
+                                    [k.get("ueberschrift") for k in rueckweg.get("fertig") or []
+                                     if isinstance(k, Mapping)])
     return nachricht, kuerzel_titel
 
 
@@ -1182,8 +1192,10 @@ def white_paper_bauen(rueckweg: Mapping[str, Any], jetzt: Optional[datetime] = N
                      ("Quellen", rueckweg.get("quellen"))):
         if da:
             eintraege.append(name)
+    # Lauf 28: "[Name](#anker)" stand in der Leseansicht als roher Text; ihre Leiste zeigt die
+    # Gliederung ohnehin. Darum eine schlichte Liste, die ueberall lesbar ist.
     for n, eintrag in enumerate(eintraege, start=1):
-        zeilen.append(f"{n}. [{eintrag}](#{_anker(eintrag)})")
+        zeilen.append(f"{n}. {eintrag}")
     zeilen.append("")
     if rueckweg.get("einleitung"):
         zeilen += ["## Einleitung", ""]
