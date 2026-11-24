@@ -3248,6 +3248,8 @@ async def _multihop_execute(request: Request):
     plan_dict = body.get("plan")
     intent = (body.get("intent") or body.get("message") or "").strip()
     skip_shortcut = bool(body.get("force_planner"))
+    from core import chat_ereignis as _chat_ereignis
+    _chat_ereignis.kontext_setzen(body.get("context"))
 
     # E2E-Trace (2026-06-09): EINE durchgaengige Correlation-ID am Eingang. Faedelt
     # durch ALLE Zweige (auch SoM/som-team/no-plan, die kein plan_id haben) - sie
@@ -3369,7 +3371,7 @@ async def _multihop_execute(request: Request):
         if not skip_shortcut and plan is None and not _bubble_wahl:
             _lesen = _verstehen.feste_lesefrage(intent, _space)
             if _lesen and _lesen.get("antwort"):
-                return _ehrlich(pe, trace_id, intent, "noch-nicht", _lesen["antwort"], _space)
+                return await _ehrlich(pe, trace_id, intent, "noch-nicht", _lesen["antwort"], _space)
             if _lesen and _lesen.get("capability"):
                 # Geht der Weg sicher nicht (Rowboat ohne Karten), gleich der genaue Satz:
                 # kein Plan, also kein plan_started und kein Sprung in den Space (Lauf 17).
@@ -3422,7 +3424,7 @@ async def _multihop_execute(request: Request):
             _bereich = _verstehen.bereichsfrage(intent)
             if _bereich:
                 _bereich_space = _bereich["space"] or _space
-                return _ehrlich(pe, trace_id, intent, "nicht-verstanden",
+                return await _ehrlich(pe, trace_id, intent, "nicht-verstanden",
                                 _verstehen.nicht_verstanden(_bereich_space), _bereich_space)
         # Phase 11.Q2 — Capability-Router shortcut. If the router has a
         # high-confidence regex match for a single-action intent, skip
@@ -3437,7 +3439,7 @@ async def _multihop_execute(request: Request):
                 logger.exception(f"[multihop] shortcut crashed for intent={intent!r}: {e}")
                 plan = None  # fall through to LLM
             if plan is OFFENE_BUBBLE_OHNE_WEG:
-                return _ehrlich(pe, trace_id, intent, "nicht-verstanden",
+                return await _ehrlich(pe, trace_id, intent, "nicht-verstanden",
                                 _verstehen.nicht_verstanden("ideas"), "ideas")
 
         # Feste Ideen-Saetze aus einem anderen Reiter (z. B. "Halt fest: ... in der Bubble X" aus
@@ -3487,7 +3489,7 @@ async def _multihop_execute(request: Request):
         # Ergebnisses (Rundgang: "Wie ist der Stand im SWE Design?" -> Ideen-Statistik).
         _genannt = _verstehen.genannter_space(intent) if plan is None else None
         if plan is None and _genannt in _verstehen.OHNE_WEG and _verstehen.regel_an():
-            return _ehrlich(pe, trace_id, intent, "kein-weg", _verstehen.kein_weg(_genannt), _genannt)
+            return await _ehrlich(pe, trace_id, intent, "kein-weg", _verstehen.kein_weg(_genannt), _genannt)
         # Fuer Beispiele im "nicht verstanden"-Satz: der genannte Space vor dem der App.
         _bezug = _genannt or _space
 
@@ -3544,7 +3546,7 @@ async def _multihop_execute(request: Request):
                     logger.info(f"[verstehen] kein Planer: space={_space} bezug={_bezug} "
                                 f"cos={cls.get('score', 0.0) if isinstance(cls, dict) else 0.0:.2f} "
                                 f"intent={intent[:60]!r}")
-                    return _ehrlich(pe, trace_id, intent, "nicht-verstanden",
+                    return await _ehrlich(pe, trace_id, intent, "nicht-verstanden",
                                     _verstehen.nicht_verstanden(_bezug), _bezug)
                 _unverstanden = False
 
@@ -3554,13 +3556,13 @@ async def _multihop_execute(request: Request):
                 logger.info(f"[verstehen] nicht verstanden: cos={cls.get('score', 0.0):.2f} "
                             f"< {_verstehen.schwelle():.2f} anker={cls.get('anchor')!r} "
                             f"space={_bezug} intent={intent[:60]!r}")
-                return _ehrlich(pe, trace_id, intent, "nicht-verstanden",
+                return await _ehrlich(pe, trace_id, intent, "nicht-verstanden",
                                 _verstehen.nicht_verstanden(_bezug), _bezug)
 
             if level == "easy" and _verstehen.regel_an() and _verstehen.kurztext(intent):
                 # Kurztext ("hmm") ist keine Frage: nicht an den Chat-Handler, dessen
                 # Auffangtext englisch zurueckkam (Nachmessung 23.11.2026).
-                return _ehrlich(pe, trace_id, intent, "nicht-verstanden",
+                return await _ehrlich(pe, trace_id, intent, "nicht-verstanden",
                                 _verstehen.nicht_verstanden(_bezug), _bezug)
 
             if level == "easy":
@@ -3585,8 +3587,8 @@ async def _multihop_execute(request: Request):
                 if _verstehen.regel_an() and (_verstehen.englisch(_final) or _verstehen.rohtext(_final)):
                     # Englische oder rohe Auffangtexte des Chat-Handlers verlassen das Gehirn nie.
                     logger.info(f"[verstehen] Chat-Antwort nicht deutsch/roh verworfen: {_final[:80]!r}")
-                    return _ehrlich(pe, trace_id, intent, "nicht-verstanden",
-                                    _verstehen.nicht_verstanden(_bezug), _bezug)
+                    return await _ehrlich(pe, trace_id, intent, "nicht-verstanden",
+                                    _verstehen.nicht_verstanden(_bezug), _bezug, chat=False)
                 _trace_lite(pe, trace_id, intent, "easy-chat", _final)
                 return JSONResponse({
                     "ok": True, "difficulty": "easy", "executed": {},
@@ -3670,7 +3672,7 @@ async def _multihop_execute(request: Request):
     # ohne Plan kein Fall fuer den SoM-Planer (Budget, Telegram), sondern "nicht verstanden".
     if plan is None and _planer_versucht and _verstehen.planer_nur_mit_weg():
         logger.info(f"[verstehen] Planer ohne Plan: space={_bezug} intent={intent[:60]!r}")
-        return _ehrlich(pe, trace_id, intent, "nicht-verstanden", _verstehen.nicht_verstanden(_bezug), _bezug)
+        return await _ehrlich(pe, trace_id, intent, "nicht-verstanden", _verstehen.nicht_verstanden(_bezug), _bezug)
 
     # SoM-Dispatch: einheitlicher Pfad für (a) mehrstufige Intents (som_route)
     # und (b) Groq-Multihop-Versagen ("no plan", SOM_NOPLAN_FALLBACK=1 default).
@@ -3718,7 +3720,7 @@ async def _multihop_execute(request: Request):
         logger.info(f"[verstehen] Plan trifft mehrere Spaces "
                     f"{sorted(_verstehen.plan_spaces(h.capability for h in plan.hops))}, "
                     f"space={_space} intent={intent[:60]!r}")
-        return _ehrlich(pe, trace_id, intent, "mehrdeutig", _verstehen.nicht_verstanden(_space), _space)
+        return await _ehrlich(pe, trace_id, intent, "mehrdeutig", _verstehen.nicht_verstanden(_space), _space)
 
     # Nachmessung nach Lauf 19 (55): Ein Planer-Plan mit einem Schritt ohne bekannte Faehigkeit
     # ("unknown") lief 18 s, buchte eine Pruefung und endete mit dem Fehlersatz. Das ist kein
@@ -3734,7 +3736,7 @@ async def _multihop_execute(request: Request):
         if _verstehen.plan_ohne_faehigkeit([h.capability for h in (plan.hops or [])], _register):
             logger.info(f"[verstehen] Planer-Plan ohne bekannte Faehigkeit "
                         f"{[h.capability for h in (plan.hops or [])]}, space={_bezug} intent={intent[:60]!r}")
-            return _ehrlich(pe, trace_id, intent, "nicht-verstanden", _verstehen.nicht_verstanden(_bezug), _bezug)
+            return await _ehrlich(pe, trace_id, intent, "nicht-verstanden", _verstehen.nicht_verstanden(_bezug), _bezug)
 
     # Run executor in a thread so FastAPI's main loop is free to handle
     # any nested HTTP calls (brain:GET:/api/X targets recurse into us).
@@ -3855,7 +3857,7 @@ async def _multihop_execute(request: Request):
             pe.recorder.attach_final(plan.plan_id, _satz)
         except Exception:  # noqa: BLE001
             pass
-        return _ehrlich(pe, trace_id, intent, "nicht-verstanden", _satz, _bezug)
+        return await _ehrlich(pe, trace_id, intent, "nicht-verstanden", _satz, _bezug, chat=False)  # Plan lief schon: fest
 
     # Optional final synthesis — Phase 11.T.4 uses asynthesize() so the
     # synth LLM call doesn't burn a threadpool worker.
@@ -3955,8 +3957,22 @@ async def _bubbles_suchen(name: str):
         return None
 
 
-def _ehrlich(pe, trace_id: str, intent: str, weg: str, satz: str, space: Optional[str]) -> JSONResponse:
-    """Ehrlicher Satz statt Planer-Lauf: kein Aufruf, nichts geaendert, als Rueckfrage markiert."""
+async def _ehrlich(pe, trace_id: str, intent: str, weg: str, satz: str, space: Optional[str],
+                   *, chat: bool = True) -> JSONResponse:
+    """Ehrlicher Satz statt Planer-Lauf: kein Aufruf, nichts geaendert, als Rueckfrage markiert.
+
+    Einzige Umschaltung aufs Ereignis "Chat" (core/chat_ereignis.py, Schalter CHAT_STATT_ABSAGE,
+    Vorgabe aus): Wege "nicht-verstanden"/"mehrdeutig" bekommen eine Antwort des Chat-Modells
+    ohne Werkzeuge. ``chat=False`` an Ausgaengen, an denen schon etwas lief.
+    """
+    if chat:
+        from core import chat_ereignis as _chat
+
+        _antwort = await _chat.antwort(intent, weg, space)
+        if _antwort is not None:
+            _trace_lite(pe, trace_id, intent, "chat", _antwort["final_text"])
+            _antwort["trace_id"] = trace_id
+            return JSONResponse(_antwort)
     _trace_lite(pe, trace_id, intent, weg, satz)
     antwort: Dict[str, Any] = {"ok": False, "rueckfrage": True, "verstanden": False, "executed": {},
                                "final_text": satz, "trace_id": trace_id, "weg": weg}
