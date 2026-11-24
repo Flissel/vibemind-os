@@ -111,17 +111,24 @@ def _beschreibung(entwurf: Dict[str, Any], paket: Dict[str, Any]) -> str:
     return "\n\n".join(t for t in teile if t)
 
 
+# Lauf 1b (24.11.): Der Weg ueber den Modelldienst entfernt Text der Form [[...]] aus der Antwort;
+# aus "for (const argv of [['0','/','0'], ...])" wurde "for (const argv of )". Bis das dort behoben
+# ist, schreibt das Modell verschachtelte Klammern mit Leerzeichen.
+KLAMMER_REGEL = ("Schreibe nie zwei oeffnende oder zwei schliessende eckige Klammern direkt hintereinander: "
+                 "statt [[1, 2], [3]] schreibe [ [1, 2], [3] ] (mit Leerzeichen), sonst geht der Inhalt "
+                 "auf dem Uebertragungsweg verloren.")
+
 OHNE_NPM_REGEL = (
     "Technik fuer dieses Projekt: reines JavaScript (CommonJS, require/module.exports), "
     "nur Bordmittel von Node.js. Es gibt ein package.json; trage dort keine dependencies ein und "
-    "aendere es nicht. Kein TypeScript, kein Bau-Schritt."
+    "aendere es nicht. Kein TypeScript, kein Bau-Schritt. " + KLAMMER_REGEL
 )
 
 MIT_PAKETEN_REGEL = (
     "Technik fuer dieses Projekt: JavaScript (CommonJS, require/module.exports) auf Node.js, kein "
     "TypeScript, kein Bau-Schritt. Ein Paket aus npm ist erlaubt, wenn es wirklich noetig ist: dann gib "
     "package.json vollstaendig mit zurueck und trage das Paket unter dependencies mit fester Version ein "
-    "(ohne ^ oder ~). Die scripts in package.json bleiben, wie sie sind."
+    "(ohne ^ oder ~). Die scripts in package.json bleiben, wie sie sind. " + KLAMMER_REGEL
 )
 
 
@@ -276,7 +283,7 @@ def aufgabendateien(entwurf: Dict[str, Any], ohne_npm: bool = False, mit_app: bo
                  "Alle genannten Pakete sind installiert")
         # Alle bisherigen Testdateien einzeln genannt: ``node --test test/``
         # behandelt den Ordner in Node 24 als eine Datei und scheitert.
-        dazu("verify_unit", "VERIFY-unit", f"Die Tests belegen dieses Arbeitspaket.\n\n{text}",
+        dazu("verify_unit", "VERIFY-unit", f"Die Tests belegen dieses Arbeitspaket.\n\n{text}\n\n{regel}",
              "verification", "Alle Tests bestehen", command="node --test " + " ".join(testdateien))
         epic_datei(epic, f"{paket_id} {titel}", aufgaben)
 

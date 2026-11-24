@@ -308,3 +308,13 @@ def test_arten_stehen_in_der_zuordnung_der_engine() -> None:
         assert zuordnung[art] == ausfuehrer
     for art in engine_aufgaben.ARTEN_MIT_MODELL:
         assert art in zuordnung and zuordnung[art] not in set(engine_aufgaben.ARTEN_OHNE_MODELL.values())
+
+
+@pytest.mark.parametrize("ohne_npm", [True, False])
+def test_jede_modellaufgabe_und_jede_pruefung_nennt_die_klammer_regel(ohne_npm: bool) -> None:
+    # Lauf 1b: [[...]] ging auf dem Weg ueber den Modelldienst verloren; Reparaturen lesen die Pruefung.
+    dateien = engine_aufgaben.aufgabendateien(_entwurf(), ohne_npm=ohne_npm)
+    for datei in dateien.values():
+        for aufgabe in datei["tasks"]:
+            if aufgabe["type"] in ("api_service", "test_unit", "verify_unit"):
+                assert engine_aufgaben.KLAMMER_REGEL in aufgabe["description"], aufgabe["id"]
