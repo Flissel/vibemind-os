@@ -64,6 +64,11 @@ class AuftragsTabelle:
     def uebergabe_setzen(self, auftrag_id: str, uebergabe: dict) -> None:
         self._req("PATCH", params={"id": f"eq.{auftrag_id}"}, json={"uebergabe": uebergabe})
 
+    def zuletzt(self, limit: int = 20) -> List[dict]:
+        """Die neuesten Auftraege, nur Faehigkeit, Agent, Stand und Zeiten (core/auftraege_lesen)."""
+        return self._req("GET", params={"order": "angelegt.desc", "limit": str(limit),
+                                        "select": "capability,agent,status,angelegt,begonnen,beendet"})
+
     def recherchen_laufend(self, limit: int = 20) -> List[dict]:
         """Laufende Recherchen des Gehirns (core/recherche_bubble)."""
         return self._req("GET", params={"status": "eq.laeuft", "uebergabe->recherche": "not.is.null",

@@ -1782,15 +1782,16 @@ class TestResearcherToolExecution:
         assert agent.tools is not None
         assert len(agent.tools) == 2
 
-    def test_call_agent_with_tools_calls_router(self):
-        """_call_agent_with_tools routes through _call_openrouter_with_tools."""
+    def test_call_agent_with_tools_no_longer_calls_planner(self):
+        """Seit 24.11.2026: der Forscher mit Werkzeugen ruft nicht mehr (lief über brain_planning)."""
         mock_router = MagicMock()
         mock_router._call_openrouter_with_tools.return_value = ("Research result", 2)
         pool = MicroAgentPool(llm_router=mock_router)
 
         result = pool._call_agent_with_tools('researcher', "Research topic X")
-        assert result == "Research result"
-        mock_router._call_openrouter_with_tools.assert_called_once()
+        assert result is None
+        mock_router._call_openrouter_with_tools.assert_not_called()
+        mock_router._call_openrouter.assert_not_called()
 
     def test_call_agent_with_tools_respects_rate_limit(self):
         """_call_agent_with_tools returns None when rate-limited."""
@@ -1808,18 +1809,14 @@ class TestResearcherToolExecution:
         result = pool._call_agent_with_tools('researcher', "test")
         assert result is None
 
-    def test_research_method_returns_refined_knowledge(self):
-        """research() returns RefinedKnowledge with type='research'."""
+    def test_research_method_returns_none_without_tools_agent(self):
+        """research() ruft nicht mehr; das Hintergrund-Denken hat keinen Agenten mit Werkzeugen."""
         mock_router = MagicMock()
         mock_router._call_openrouter_with_tools.return_value = ("New insight about X", 1)
         pool = MicroAgentPool(llm_router=mock_router)
 
-        result = pool.research("Quantum gravity is complex", "physics")
-        assert result is not None
-        assert isinstance(result, RefinedKnowledge)
-        assert result.agent == 'researcher'
-        assert result.refinement_type == 'research'
-        assert "New insight" in result.refined
+        assert pool.research("Quantum gravity is complex", "physics") is None
+        mock_router._call_openrouter_with_tools.assert_not_called()
 
     def test_research_method_returns_none_on_failure(self):
         """research() returns None when tool-use call fails."""
@@ -1830,19 +1827,19 @@ class TestResearcherToolExecution:
         assert result is None
 
     def test_researcher_stats_include_tool_rounds(self):
-        """get_stats() includes total_tool_rounds counter."""
+        """get_stats() includes total_tool_rounds counter (bleibt 0, der Forscher ruft nicht)."""
         mock_router = MagicMock()
         mock_router._call_openrouter_with_tools.return_value = ("result", 2)
         pool = MicroAgentPool(llm_router=mock_router)
         pool.research("test", "topic")
         stats = pool.get_stats()
         assert 'total_tool_rounds' in stats
-        assert stats['total_tool_rounds'] >= 2
+        assert stats['total_tool_rounds'] == 0
 
     # ── CTE Integration (Task 4) ──
 
     def test_researcher_in_background_cycle(self):
-        """run_background_cycle can select and run the researcher agent."""
+        """run_background_cycle mit dem Forscher ruft nichts und liefert nichts."""
         mock_router = MagicMock()
         mock_router._call_openrouter_with_tools.return_value = ("Web insight", 1)
         pool = MicroAgentPool(llm_router=mock_router)
@@ -1850,9 +1847,8 @@ class TestResearcherToolExecution:
         entries = ["Knowledge A about physics", "Knowledge B about math"]
         with patch('random.choice', return_value='researcher'):
             result = pool.run_background_cycle(entries)
-        assert result is not None
-        assert result.agent == 'researcher'
-        assert result.refinement_type == 'research'
+        assert result is None
+        mock_router._call_openrouter_with_tools.assert_not_called()
 
     def test_think_tick_research_category(self):
         """CTE._think_tick can produce 'refine' thoughts from researcher."""

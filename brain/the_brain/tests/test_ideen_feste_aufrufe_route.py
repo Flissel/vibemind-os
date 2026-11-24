@@ -76,7 +76,10 @@ def _lauf(monkeypatch, hop, *, executor=None, validator=None):
     ("idea.auto_link", "brain-ideas", "idea_auto_link"),
     ("idea.rate", "brain-ideas", "idea_rate"),
     ("idea.rate_reason", "brain-ideas", "bewertung_begruenden"),
+    ("idea.rate_reason_delete", "brain-ideas", "bewertung_entfernen"),
+    ("idea.delete", "brain-ideas", "idea_delete"),
     ("bubble.rate", "brain-bubbles", "bubble_rate"),
+    ("bubble.delete", "brain-bubbles", "bubble_delete"),
     ("bubble.promote", "brain-bubbles", "bubble_promote"),
 ])
 def test_verzeichnis_bindet_jedes_ereignis_an_den_ideen_server(event_id, agent, werkzeug) -> None:

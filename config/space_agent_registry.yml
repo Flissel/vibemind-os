@@ -34,7 +34,7 @@ spaces:
     # Bewusst minimal: genau die drei Operationen, die bubble_promote
     # braucht (Idee lesen, Projekt anlegen, Idee als promoted markieren).
     mcp_tools:
-      spaces-ideas: [bubble_create, bubble_rate, bubble_promote]
+      spaces-ideas: [bubble_create, bubble_rate, bubble_promote, bubble_delete]
       vibemind-db: [db_ideas_get, db_ideas_update, db_projects_create]
     system_prompt_hint: "You manage bubbles (idea clusters) on the VibeMind canvas. Use the preferred_tool hint in the intent envelope; only call other tools if the hint fails."
     default_context: [current_space, current_bubble, idea_count]
@@ -48,7 +48,14 @@ spaces:
       bubble.enter:             { tool: vibemind_bubble_enter,  required_params: [bubble_name] }
       bubble.exit:              { tool: vibemind_bubble_exit,   required_params: [] }
       bubble.back:              { tool: vibemind_bubble_exit,   required_params: [] }
-      bubble.delete:            { tool: db_ideas_delete,        required_params: [bubble_name] }
+      # "Lösche diese Bubble" (24.11.2026): nur die offene Bubble, nur nach Rückfrage mit der Zahl der
+      # Karten und "Ja, löschen" (Schlüssel, brain/the_brain/core/loesch_bestaetigung.py). Die Karten
+      # gehen mit (mit_karten, höchstens 200), ihre Verbindungen auch; "Zurück" stellt alles wieder her.
+      bubble.delete:
+        tool: bubble_delete
+        required_params: [id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
       bubble.delete_all_except: { tool: db_ideas_delete,        required_params: [keep_name] }
       bubble.update:            { tool: vibemind_bubble_update, required_params: [bubble_id] }
       bubble.find:              { tool: vibemind_bubbles,       required_params: [query] }
@@ -86,12 +93,14 @@ spaces:
         - aenderung_zurueck
         - idea_create
         - idea_update
+        - idea_delete
         - idea_list
         - idea_format
         - idea_arrange
         - idea_auto_link
         - idea_rate
         - bewertung_begruenden
+        - bewertung_entfernen
         - idea_document
         - bubble_wurzel
         - idea_group
@@ -134,7 +143,22 @@ spaces:
         required_params: [bubble_id, text]
         required_provenance: [approval_ref, cost_ref]
         execution: { kind: mcp, server: spaces-ideas }
-      idea.delete:              { tool: db_ideas_delete, required_params: [idea_id] }
+      # "Lösche die Begründung 2 [von X]" (24.11.2026): eine Begründung aus metadata.bewertungen,
+      # gezählt wie angezeigt (neueste zuerst); "Zurück" holt sie wieder.
+      idea.rate_reason_delete:
+        tool: bewertung_entfernen
+        required_params: [bubble_id, nummer]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
+      # "Lösche die Karte X" (24.11.2026): nur nach Rückfrage und "Ja, löschen", fester Aufruf mit
+      # Schlüssel (brain/the_brain/core/loesch_bestaetigung.py); die Verbindungen gehen mit, "Zurück"
+      # holt Karte und Verbindungen wieder. Vorher zeigte das Ereignis auf db_ideas_delete, das
+      # brain-ideas nicht hat: der Planer scheiterte (cap unbekannt).
+      idea.delete:
+        tool: idea_delete
+        required_params: [id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
       idea.find:                { tool: db_ideas_list,   required_params: [query] }
       idea.connect:
         tool: idea_connect
@@ -474,6 +498,9 @@ spaces:
     default_context: [current_space, now]
     events:
       schedule.create:  { tool: schedule_create,        required_params: [title, action_text, trigger_config] }
+      # Fester Lesesatz "Welche Aufträge laufen gerade?" (core/auftraege_lesen.py): liest
+      # brain_agent_auftraege ohne Modell und ohne Agent; nur Faehigkeit, Agent, Stand, Zeiten.
+      schedule.auftraege: { tool: "direct:core.auftraege_lesen:auftraege_lesen", required_params: [] }
       schedule.list:    { tool: schedule_list,          required_params: [] }
       schedule.cancel:  { tool: schedule_cancel,        required_params: [task_id] }
       schedule.modify:  { tool: schedule_modify,        required_params: [task_id] }
@@ -584,9 +611,33 @@ spaces:
     enabled: true
     description: "Sales (sales-claw): the Brain places orders of a fixed kind in the order book; the Sales agent takes them."
     mcp_servers: [auftragsbuch]
-    mcp_tools: { auftragsbuch: [auftrag_probe, auftrag_lesen] }
+    mcp_tools:
+      auftragsbuch: [auftrag_probe, auftrag_lesen, sales_kontakt_finden, sales_termine_heute,
+                     sales_freigaben_zaehlen, sales_post_offen]
     default_context: [current_space]
     events:
+      # Feste Lesesaetze (core/sales_saetze.py): je Art ein Auftrag fester Art. Ohne Zeile in
+      # auftrag.brain_arten lehnt das Auftragsbuch ab, das Gehirn zeigt dann den Satz "noch nicht freigeschaltet".
+      sales.kontakt_finden:
+        tool: sales_kontakt_finden
+        required_params: [eingabe]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: auftragsbuch }
+      sales.termine_heute:
+        tool: sales_termine_heute
+        required_params: [eingabe]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: auftragsbuch }
+      sales.freigaben_zaehlen:
+        tool: sales_freigaben_zaehlen
+        required_params: [eingabe]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: auftragsbuch }
+      sales.post_offen:
+        tool: sales_post_offen
+        required_params: [eingabe]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: auftragsbuch }
       sales.auftrag_probe:
         tool: auftrag_probe
         required_params: []

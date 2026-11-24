@@ -2327,7 +2327,10 @@ def _extract_arg_template(intent: str, capability: str) -> str:
     return tokens[-1]
 
 
-def _try_capability_shortcut(state, intent: str):
+OFFENE_BUBBLE_OHNE_WEG = object()  # Marke: zustandsabhaengig, Bubble offen, kein fester Weg
+
+
+def _try_capability_shortcut(state, intent: str, kontext: Any = None):
     """Phase 11.Q2 — try to short-circuit the LLM planner for trivial
     single-action intents.
 
@@ -2424,6 +2427,16 @@ def _try_capability_shortcut(state, intent: str):
         or any(kw in intent_lower for kw in ("die idee ", "the idea ", "idea "))
     )
     if m.capability in _STATE_DEPENDENT_CAPS and (mentions_bubble or has_named_idea):
+        if _ziel_bubble(kontext):
+            # Prueflauf 24.11.2026: "Loesche die Karte X" bei offener Bubble lief als
+            # "bubble=False ... deferring to LLM" an den Planer und scheiterte nach 15 s.
+            # Die offene Bubble zaehlt als genannt; was die festen Wege davor nicht kennen,
+            # bekommt einen ruhigen Satz statt eines Planer-Laufs.
+            logger.info(
+                f"[shortcut] {m.capability!r} is state-dependent, bubble open in app context — "
+                "no planner, honest answer"
+            )
+            return OFFENE_BUBBLE_OHNE_WEG
         logger.info(
             f"[shortcut] {m.capability!r} is state-dependent and intent mentions "
             f"bubble={mentions_bubble} named_idea={has_named_idea} — deferring to LLM"
@@ -2535,6 +2548,19 @@ def _try_ideen_abkuerzung(intent: str, kontext: Any):
         if treffer.get("bestaetigen"):
             # White Paper: nie direkt. Erst der Umfang als Rueckfrage, "Ja, erstellen" startet.
             return None, _white_paper_rueckfrage(treffer["argumente"]), ""
+        if isinstance(treffer.get("loeschen"), dict):
+            # Loeschen: nie direkt. Erst die Rueckfrage mit dem Titel, "Ja, loeschen" loest aus
+            # (core/loesch_bestaetigung).
+            from core import loesch_bestaetigung as _lb
+            loeschen = treffer["loeschen"]
+            _lb.fragen(treffer["ereignis"], treffer["argumente"], str(treffer.get("antwort") or ""),
+                       str(loeschen.get("bubble_id") or ""))
+            logger.info(f"[ideen-abkuerzung] {treffer['ereignis']!r}: Rueckfrage vor dem Loeschen")
+            if loeschen.get("art") == "bubble":
+                karten = loeschen.get("karten")
+                return None, _lb.frage_bubble(str(loeschen.get("titel") or ""),
+                                              karten if isinstance(karten, int) else None), ""
+            return None, _lb.frage_karte(str(loeschen.get("titel") or "")), ""
         if isinstance(treffer.get("recherche"), dict):
             # Recherche zu einer Bubble: erst die Vorschau (kein Lauf), "Ja, recherchieren" startet.
             from core import recherche_bubble as _rb
@@ -2563,6 +2589,66 @@ def _try_ideen_abkuerzung(intent: str, kontext: Any):
     except Exception as e:  # noqa: BLE001 - nie die Anfrage daran scheitern lassen
         logger.warning(f"[ideen-abkuerzung] uebersprungen: {type(e).__name__}: {e}")
         return None, None, ""
+
+
+def _try_sales_abkuerzung(intent: str, kontext: Any):
+    """Feste Lesesaetze des Sales-Space (core/sales_saetze), ohne Planer und ohne Modell.
+
+    Rueckgabe: (None, None) kein fester Satz, (None, frage) Rueckfrage ohne Aufruf,
+    (plan, None) Plan mit genau einem festen Aufruf ``sales.<art>``. Wirft nie.
+    """
+    try:
+        from core.ideen_abkuerzung import arg_vorlage
+        from core.plan_schema import HopSpec as _HopSpec, Plan as _Plan
+        from core.sales_saetze import loese
+
+        treffer = loese(intent, kontext)
+        if not treffer:
+            return None, None
+        if "rueckfrage" in treffer:
+            logger.info("[sales-saetze] Rueckfrage statt Aufruf")
+            return None, str(treffer["rueckfrage"])
+        plan = _Plan(
+            plan_id=f"sales_{int(time.time() * 1000)}",
+            intent=intent,
+            rationale=f"Sales-Satz: {treffer['ereignis']} (fester Aufruf)",
+            hops=[_HopSpec(
+                step_id="s1",
+                description=f"{treffer['ereignis']} via festen Sales-Satz",
+                capability=treffer["capability"],
+                arg_template=arg_vorlage(treffer["argumente"]),
+            )],
+            final_synthesis_prompt="",
+            estimated_cost_usd=0.0,
+        )
+        # Nur die Art ins Protokoll, nie die Eingabe (Suchtext).
+        logger.info(f"[sales-saetze] {treffer['ereignis']!r} (fester Aufruf)")
+        return plan, None
+    except Exception as e:  # noqa: BLE001 - nie die Anfrage daran scheitern lassen
+        logger.warning(f"[sales-saetze] uebersprungen: {type(e).__name__}")
+        return None, None
+
+
+def _sales_antwort(plan, exec_result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Antwortfelder nach einem festen Sales-Aufruf (core/sales_antwort); nie Rohtext. Wirft nie."""
+    try:
+        from core.sales_antwort import antwort_fuer_aufruf
+
+        hops = getattr(plan, "hops", None) or []
+        if len(hops) != 1:
+            return None
+        schritt = (exec_result.get("executed") or {}).get(hops[0].step_id) or {}
+        if not isinstance(schritt, dict):
+            schritt = {}
+        ok = bool(exec_result.get("ok")) and bool(schritt.get("ok", True))
+        felder = antwort_fuer_aufruf(hops[0].capability or "", ok, schritt.get("result"), schritt.get("error"))
+        if not felder.get("ok"):
+            # Der Werkzeugtext bleibt im Plan-Schnappschuss, nicht in der Antwort.
+            felder["fehler"] = "sales_auftrag_nicht_angelegt"
+        return felder
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[sales-antwort] uebersprungen: {type(e).__name__}")
+        return None
 
 
 def _recherche_starten(pe, trace_id: str, intent: str, offen: Dict[str, Any]) -> JSONResponse:
@@ -2602,6 +2688,23 @@ def _white_paper_rueckfrage(argumente: Dict[str, Any]) -> str:
     else:
         _wp.verwerfen()
     return satz
+
+
+def _loesch_plan(intent: str, bestaetigt: Dict[str, Any]):
+    """Der bestaetigte Loesch-Plan: ein fester Aufruf mit Schluessel (core/loesch_bestaetigung)."""
+    from core.ideen_abkuerzung import arg_vorlage
+    from core.plan_schema import Plan as _Plan, HopSpec as _HopSpec
+
+    ereignis = bestaetigt["ereignis"]
+    return _Plan(
+        plan_id=f"ideen_{int(time.time() * 1000)}",
+        intent=intent,
+        rationale=f"Ideen-Abkuerzung: {ereignis} (bestaetigt)",
+        hops=[_HopSpec(step_id="s1", description=f"{ereignis} via Bestaetigung",
+                       capability=ereignis, arg_template=arg_vorlage(bestaetigt["argumente"]))],
+        final_synthesis_prompt="",
+        estimated_cost_usd=0.0,
+    )
 
 
 def _white_paper_plan(intent: str, argumente: Dict[str, Any]):
@@ -2721,6 +2824,15 @@ def _feste_antwort(plan, exec_result, ideen_fest: bool, vorgabe: str, kontext: A
         return None
 
 
+@router.get("/api/beispielsaetze")
+async def beispielsaetze(space: str = ""):
+    """Beispielsätze für das „?“ eines Bereichs (core/beispielsaetze): höchstens fünf, nur
+    Sätze mit festem Weg (ohne Modell), belegt durch tests/test_beispielsaetze.py."""
+    from core.beispielsaetze import antwort as _beispiel_antwort
+
+    return JSONResponse(_beispiel_antwort(space))
+
+
 @router.get("/api/agent-auftraege/{auftrag_id}/stand")
 async def agent_auftrag_stand(auftrag_id: str):
     """Stand eines angenommenen Auftrags fuer die App (core/auftrag_stand), nur lesen.
@@ -2807,10 +2919,47 @@ async def multihop_execute(request: Request):
     (``hinweis``/``rueckfrage``), und der Ausgang des Satzes zaehlt fuer "Zurück"
     (core/zurueck_vorsicht.satz_merken)."""
     antwort = await _multihop_execute(request)
-    return _nachbereiten(antwort)
+    _spur_je_satz(request, antwort)
+    return _nachbereiten(antwort, await _kontext_space(request))
 
 
-def _nachbereiten(antwort):
+async def _kontext_space(request: Request) -> Optional[str]:
+    """``context.space`` des Satzes (der Body ist schon gelesen und zwischengespeichert)."""
+    try:
+        body = await request.json()
+        kontext = body.get("context") if isinstance(body, dict) else None
+        space = kontext.get("space") if isinstance(kontext, dict) else None
+        return space if isinstance(space, str) and space.strip() else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _spur_je_satz(request: Request, antwort: Any) -> None:
+    """Jeder Satz hinterlaesst einen Spur-Eintrag (GET /api/trace, scripts/brain_lage.py).
+
+    Feste Wege ohne ``_trace_lite`` (Hoeflichkeit, Bestaetigungen, Rueckfragen ...) standen
+    bisher nirgends; Lage-Abfrage 24.11.2026. Nur trace_id, Weg, ok und Zeit, nie der Satz
+    oder die Antwort. Hat der Satz schon einen Eintrag, bleibt der. Wirft nie.
+    """
+    try:
+        daten = json.loads(antwort.body) if isinstance(getattr(antwort, "body", None), bytes) else None
+        if not isinstance(daten, dict) or not isinstance(daten.get("trace_id"), str):
+            return
+        pe = getattr(request.app.state, "plan_executor", None)
+        recorder = getattr(pe, "recorder", None)
+        if recorder is None or not hasattr(recorder, "record_spur"):
+            return
+        weg = daten.get("weg")
+        if not isinstance(weg, str) or not weg:
+            weg = ("rueckfrage" if daten.get("rueckfrage") else "hinweis" if daten.get("hinweis")
+                   else "angenommen" if daten.get("pending") else "fehler" if getattr(antwort, "status_code", 200) >= 400
+                   else "ohne-weg")
+        recorder.record_spur(daten["trace_id"], weg[:60], daten.get("ok"))
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[spur] uebersprungen: {type(e).__name__}: {e}")
+
+
+def _nachbereiten(antwort, kontext_space: Optional[str] = None):
     """Antwort eines Satzes kennzeichnen und merken. Wirft nie; im Zweifel unveraendert."""
     try:
         if getattr(antwort, "status_code", 200) >= 400 or not isinstance(getattr(antwort, "body", None), bytes):
@@ -2826,6 +2975,10 @@ def _nachbereiten(antwort):
             if art:
                 daten[art] = True
         _vorsicht.satz_merken(_vorsicht.art_der_antwort(daten))
+        # Routing 24.11.2026: jede gelungene Antwort aus einem anderen Bereich bekommt ziel {space}.
+        from core.antwort_ziel import ziel_ergaenzen
+
+        ziel_ergaenzen(daten, kontext_space=kontext_space)
         return JSONResponse(daten, status_code=antwort.status_code)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[nachbereiten] uebersprungen: {type(e).__name__}: {e}")
@@ -2880,6 +3033,7 @@ async def _multihop_execute(request: Request):
     from core.plan_schema import Plan as _Plan
     plan = None
     _ideen_fest = False     # Plan stammt aus der Ideen-Abkuerzung (ein fester Aufruf)
+    _sales_fest = False     # Plan stammt aus den festen Sales-Saetzen (core/sales_saetze)
     _ideen_antwort = ""
     _fest_lesen = ""        # fester Lesesatz eines Space (core/verstehen), z. B. schedule_list
     _space = None           # Space der App aus context.space, None wenn nicht gesendet
@@ -2893,6 +3047,10 @@ async def _multihop_execute(request: Request):
         except Exception as e:
             return JSONResponse({"error": f"invalid plan: {e}", "trace_id": trace_id}, status_code=400)
     elif intent:
+        # Gruss, Dank, blosses ja/ok (core/hoeflichkeit): ob eine Rueckfrage offen war, vor dem
+        # Verwerfen unten ablesen; die Antwort kommt nach den Bestaetigungen.
+        from core import hoeflichkeit as _hf
+        _hf_satz = _hf.antwort(intent, offen=_hf.etwas_offen()) if not skip_shortcut else None
         # White Paper: "Ja, erstellen" gilt nur direkt nach der Rueckfrage mit dem Umfang;
         # jeder andere Satz verwirft sie (core/whitepaper_bestaetigung).
         from core import whitepaper_bestaetigung as _wp
@@ -2917,6 +3075,28 @@ async def _multihop_execute(request: Request):
         if _wp_antwort and _wp_antwort.get("argumente"):
             plan = _white_paper_plan(intent, _wp_antwort["argumente"])
             _ideen_fest = True
+        # Loeschen: "Ja, loeschen" gilt nur direkt nach der Rueckfrage mit dem Titel; jeder andere
+        # Satz verwirft sie (core/loesch_bestaetigung).
+        from core import loesch_bestaetigung as _lb
+        _lb_antwort = _lb.satz_pruefen(intent)
+        if _lb_antwort and _lb_antwort.get("satz"):
+            _trace_lite(pe, trace_id, intent, "ideen-rueckfrage", _lb_antwort["satz"])
+            return JSONResponse({"ok": False, "rueckfrage": True, "space": "ideas", "executed": {},
+                                 "final_text": _lb_antwort["satz"], "trace_id": trace_id})
+        if _lb_antwort and _lb_antwort.get("argumente") and plan is None:
+            plan = _loesch_plan(intent, _lb_antwort)
+            plan.ziel_bubble_id = str(_lb_antwort.get("bubble_id") or "")
+            _ideen_fest = True
+            _ideen_antwort = str(_lb_antwort.get("antwort") or "")
+        if _hf_satz and plan is None:
+            # Lauf 22: sonst "Das habe ich nicht verstanden. ..." auf "Danke", "ok", "Hallo".
+            _trace_lite(pe, trace_id, intent, "hoeflichkeit", _hf_satz)
+            _hf_antwort: Dict[str, Any] = {"ok": True, "executed": {}, "final_text": _hf_satz,
+                                           "trace_id": trace_id, "weg": "hoeflichkeit"}
+            _hf_space = _verstehen.space_aus_kontext(body.get("context"))
+            if _hf_space:
+                _hf_antwort["space"] = _hf_space
+            return JSONResponse(_hf_antwort)
         # Vorschlag bei geaenderter Karte: zeigen, uebernehmen, verwerfen (aus jedem Reiter).
         from core.ideen_vorschlag import satz_art as _vorschlag_art
         _vs_art = _vorschlag_art(intent) if plan is None and not skip_shortcut else None
@@ -2932,6 +3112,15 @@ async def _multihop_execute(request: Request):
         # welcher Reiter (core/verstehen); ehrliche Saetze fuer Spaces ohne laufenden Weg.
         # Ein fester Satz laeuft ohne Planer.
         _space = _verstehen.space_aus_kontext(body.get("context"))
+        # Sales-Space: feste Lesesaetze als Auftrag ins Auftragsbuch (core/sales_saetze), ohne
+        # Planer und ohne Modell. Nur lesende Arten; freigegeben und versendet wird nur bei Sales.
+        if not skip_shortcut and plan is None and not _bubble_wahl and _space == "sales":
+            plan, _sales_frage = _try_sales_abkuerzung(intent, body.get("context"))
+            if _sales_frage:
+                _trace_lite(pe, trace_id, intent, "sales-rueckfrage", _sales_frage)
+                return JSONResponse({"ok": False, "rueckfrage": True, "space": "sales", "executed": {},
+                                     "final_text": _sales_frage, "trace_id": trace_id, "weg": "sales"})
+            _sales_fest = plan is not None
         if not skip_shortcut and plan is None and not _bubble_wahl:
             _lesen = _verstehen.feste_lesefrage(intent, _space)
             if _lesen and _lesen.get("antwort"):
@@ -2997,10 +3186,14 @@ async def _multihop_execute(request: Request):
         # instead of 500'ing the whole request.
         if not skip_shortcut and plan is None:
             try:
-                plan = _try_capability_shortcut(state, intent)
+                plan = _try_capability_shortcut(state, intent,
+                                                None if _bubble_im_satz else body.get("context"))
             except Exception as e:
                 logger.exception(f"[multihop] shortcut crashed for intent={intent!r}: {e}")
                 plan = None  # fall through to LLM
+            if plan is OFFENE_BUBBLE_OHNE_WEG:
+                return _ehrlich(pe, trace_id, intent, "nicht-verstanden",
+                                _verstehen.nicht_verstanden("ideas"), "ideas")
 
         # Feste Ideen-Saetze aus einem anderen Reiter (z. B. "Halt fest: ... in der Bubble X" aus
         # Video): sie gehoeren zum Ideen-Bereich und laufen dort, mit Sprung. Nur wenn der Satz
@@ -3382,7 +3575,9 @@ async def _multihop_execute(request: Request):
                 _fest_lesen = _hops[0].capability
         except Exception:  # noqa: BLE001
             pass
-    if _fest_lesen:
+    if _sales_fest:
+        _fest = _sales_antwort(plan, exec_result)
+    elif _fest_lesen:
         _fest = _lese_antwort(plan, exec_result, _fest_lesen, intent)
     else:
         _fest = _feste_antwort(plan, exec_result, _ideen_fest, _ideen_antwort,

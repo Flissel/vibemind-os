@@ -1110,6 +1110,11 @@ class McpExecutor(_BaseRemoteExecutor):
                 # nur der Code kommt durch, nie freier Text (er kann Bildschirmtext sein).
                 from .desktop_schleife_contract import fehlercode_aus_ergebnis
                 raise RuntimeError(fehlercode_aus_ergebnis(result))
+            if self.server == "auftragsbuch":
+                # Feste Ablehnungstexte (z. B. "Unbekannte Auftragsart" = Art nicht freigeschaltet)
+                # kommen durch, damit der Sales-Satz sie unterscheiden kann; freier Text nie.
+                from .sales_antwort import ablehnung_aus_ergebnis
+                raise RuntimeError(ablehnung_aus_ergebnis(result))
             raise RuntimeError("OpenFang MCP tool returned isError=true")
         return result
 
@@ -1147,7 +1152,7 @@ class McpExecutor(_BaseRemoteExecutor):
         "idea_create", "idea_update", "idea_delete", "idea_disconnect",
         # feste Aufrufe des Ideen-Space (ideen_fest_contract.SCHREIBENDE_WERKZEUGE)
         "idea_format", "idea_arrange", "idea_auto_link", "idea_rate", "bubble_rate",
-        "bewertung_begruenden", "idea_document", "bubble_wurzel", "idea_group",
+        "bewertung_begruenden", "bewertung_entfernen", "idea_document", "bubble_wurzel", "idea_group",
     })
 
     def _mit_aenderung_id(self, tool_payload: Any, plan_id: Any) -> Any:

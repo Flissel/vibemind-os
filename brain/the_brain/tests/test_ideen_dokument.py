@@ -334,13 +334,107 @@ def test_white_paper_kette_legt_teil_fuer_teil_an_und_schreibt_am_ende_einmal(mo
     assert len(angelegt) == 1                                                 # kein dritter Auftrag
 
 
-def test_ungueltiger_teil_haelt_das_white_paper_an() -> None:
+def test_ungueltiger_teil_haelt_das_white_paper_nach_dem_zweiten_versuch_an() -> None:
     _, rueckweg = _vorbereiten()
     ideen, angelegt = Ideen(), []
     p = dok.verarbeiten(_auftrag(rueckweg, "Hier ist dein Kapitel!"), **_anschluss(ideen, angelegt=angelegt)(None))
+    # Erst ein zweiter Lauf desselben Abschnitts, mit Hinweis zur Form (White-Paper-Lauf 24.11.2026).
+    assert p["rueckweg"] == "weiter" and p["verified"] is None
+    assert p["meldung"] == ("White Paper: Abschnitt 1 von 1 kam nicht in der vereinbarten Form; "
+                            "ich versuche ihn einmal neu.")
+    assert p["befund"]["form"] == "kein_json"
+    (neu,) = angelegt
+    assert neu["hop_id"] == "s1/teil1/neu" and neu["plan_id"] == "ideen_9" and neu["agent"] == "brain-ideas"
+    assert "Zweiter Versuch" in neu["auftrag"] and "kein JSON-Objekt" in neu["auftrag"]
+    assert "Abschnitt 1 von 1" in neu["auftrag"] and "[K1] " in neu["auftrag"]
+    nochmal = neu["uebergabe"]["rueckweg"]
+    assert nochmal["index"] == 0 and nochmal["fertig"] == [] and nochmal["neuversuche"] == 1
+    # Scheitert auch der zweite Lauf, haelt das White Paper an; kein dritter Lauf.
+    p = dok.verarbeiten(_auftrag(nochmal, "Wieder nur Text.", "f0000002", "s1/teil1/neu"),
+                        **_anschluss(ideen, angelegt=angelegt)(None))
     assert p["rueckweg"] == "abgelehnt" and p["verified"] is False
     assert p["meldung"].startswith("White Paper angehalten bei Abschnitt 1 von 1:")
-    assert angelegt == [] and ideen.aufrufe == []
+    assert p["befund"]["form"] == "kein_json"
+    assert len(angelegt) == 1 and ideen.aufrufe == []
+
+
+def test_zweiter_lauf_gelingt_und_die_kette_geht_normal_weiter(monkeypatch) -> None:
+    monkeypatch.setattr(dok, "KARTEN_JE_TEIL", 2)
+    _, rueckweg = _vorbereiten()
+    ideen, angelegt = Ideen(), []
+    bauen = _anschluss(ideen, angelegt=angelegt)
+    abgeschnitten = '{"ueberschrift": "Teil 1", "text": "Der Text bricht hier ab'
+    p = dok.verarbeiten(_auftrag(rueckweg, abgeschnitten), **bauen(None))
+    assert p["rueckweg"] == "weiter" and p["befund"]["form"] == "abgeschnitten"
+    assert "brach mitten im JSON-Objekt ab" in angelegt[0]["auftrag"]
+    nochmal = angelegt[0]["uebergabe"]["rueckweg"]
+    p = dok.verarbeiten(_auftrag(nochmal, _abschnitt(1), "f0000002", "s1/teil1/neu"), **bauen(None))
+    assert p["rueckweg"] == "weiter" and p["meldung"] == "White Paper: Abschnitt 1 von 2 fertig."
+    zweiter = angelegt[1]
+    assert zweiter["hop_id"] == "s1/teil2" and "Zweiter Versuch" not in zweiter["auftrag"]
+    # Der zweite Versuch ist je Dokument einmal da: Teil 2 bekommt keinen mehr.
+    assert zweiter["uebergabe"]["rueckweg"]["neuversuche"] == 1
+    p = dok.verarbeiten(_auftrag(zweiter["uebergabe"]["rueckweg"], "kein JSON", "f0000003", "s1/teil2"),
+                        **bauen(None))
+    assert p["rueckweg"] == "abgelehnt" and len(angelegt) == 2
+
+
+def test_die_form_steht_auch_am_ende_nach_den_karten() -> None:
+    # White-Paper-Lauf 24.11.2026: nach 15 Karten schrieb das Modell reinen Text (kein JSON).
+    karten = [(f"K{i}", f"Karte {i}", "Text " * 200) for i in range(1, 16)]
+    for nachricht, felder in (
+            (dok.nachricht_abschnitt("Stadtfest", 1, 3, "Worum es geht", karten, "x"),
+             '"ueberschrift", "text", "verweise"'),
+            (dok.nachricht_zusammenfassen("Stadtfest", karten, "x", False), '"absaetze", "verweise"'),
+            (dok.nachricht_gruppieren("Stadtfest", karten, "x", False), '"gruppen"')):
+        schluss = nachricht.rsplit("KARTEN>>>", 1)[1]
+        assert "nur mit genau einem JSON-Objekt" in schluss and felder in schluss
+        assert nachricht.count("KARTEN>>>") == 1
+
+
+def test_rohe_zeilenumbrueche_im_text_sind_keine_formfrage() -> None:
+    _, rueckweg = _vorbereiten()
+    ideen, angelegt = Ideen(), []
+    # So schreiben Modelle mehrzeiliges Markdown oft: Zeilenumbrueche roh in der JSON-Zeichenkette.
+    roh = '{"ueberschrift": "Teil 1", "text": "Erste Zeile zu K1.\n\n### Unterpunkt\nZweite Zeile.", "verweise": ["K1"]}'
+    with pytest.raises(ValueError):
+        json.loads(roh)                                                       # streng waere es kaputt
+    p = dok.verarbeiten(_auftrag(rueckweg, roh), **_anschluss(ideen, angelegt=angelegt)(None))
+    assert p["rueckweg"] == "geschrieben" and angelegt == []
+    ((_, argumente),) = ideen.aufrufe
+    assert "### Unterpunkt\nZweite Zeile." in argumente["content"]
+
+
+def test_steuerzeichen_bleiben_verboten_und_html_bekommt_keinen_zweiten_lauf() -> None:
+    werte, satz = dok.ergebnis_pruefen("abschnitt", '{"ueberschrift": "A", "text": "x\x01y", "verweise": []}',
+                                       {"K1": "Sponsoren"})
+    assert werte is None and "Steuerzeichen" in satz
+    _, rueckweg = _vorbereiten()
+    angelegt = []
+    roh = json.dumps({"ueberschrift": "A", "text": "<script>x</script>", "verweise": ["K1"]})
+    p = dok.verarbeiten(_auftrag(rueckweg, roh), **_anschluss(Ideen(), angelegt=angelegt)(None))
+    assert p["rueckweg"] == "abgelehnt" and angelegt == [] and p["befund"]["form"] == "anderes"
+
+
+@pytest.mark.parametrize("roh, form", [
+    ("", "kein_json"),
+    ("Hier ist dein Kapitel!", "kein_json"),
+    ('{"ueberschrift": "A", "text": "abgebrochen', "abgeschnitten"),
+    ('{"ueberschrift": "A"} und {"text": "B"}', "mehrere_objekte"),
+    ('{"ueberschrift": "A", "text": "B" "verweise": []}', "json_kaputt"),
+    ('{"titel": "A", "text": "B", "verweise": []}', "felder"),
+    ('{"ueberschrift": "A\\nB", "text": "B", "verweise": []}', "ueberschrift_mehrzeilig"),
+])
+def test_form_befund_nennt_nur_die_form(roh, form) -> None:
+    befund = dok.form_befund("abschnitt", roh)
+    assert befund["form"] == form and befund["laenge"] == len(roh)
+
+
+def test_form_befund_traegt_keinen_inhalt_hinaus() -> None:
+    roh = json.dumps({"Geheimer Inhalt der Karte": "Sponsoren zahlen erst spaet", "text": "x", "verweise": []})
+    befund = dok.form_befund("abschnitt", roh)
+    assert befund["form"] == "felder" and befund["fehlt"] == ["ueberschrift"] and befund["zuviel"] == ["?"]
+    assert "Sponsoren" not in json.dumps(befund) and "Geheimer" not in json.dumps(befund)
 
 
 def test_nicht_bestaetigtes_schreiben_wird_gemeldet() -> None:

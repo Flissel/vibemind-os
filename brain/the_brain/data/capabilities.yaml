@@ -135,6 +135,17 @@
   match_patterns:
     - "(list|show|zeige).*(scheduled|schedule|reminders|termine|erinnerungen)"
   execution_target: "direct:spaces.schedule.execution:list_tasks"
+
+# Aufträge an Agenten (24.11.2026): fester Lesesatz "Welche Aufträge laufen gerade?" liest die
+# Tabelle brain_agent_auftraege (nur Faehigkeit, Agent, Stand, Zeiten), ohne Modell.
+- capability: schedule_auftraege
+  space: schedule
+  description: "list the brain's running and recently finished jobs for its agents (brain_agent_auftraege): capability, agent, state and times, never the job text"
+  match_patterns:
+    - "^welche\\s+(?:aufträge|auftraege)\\s+(?:an\\s+(?:die\\s+)?agenten\\s+)?(?:laufen|warten)\\b"
+    - "^(?:was\\s+machen|woran\\s+arbeiten)\\s+(?:die|meine)\\s+agenten\\b"
+  execution_target: "direct:core.auftraege_lesen:auftraege_lesen"
+
 - capability: mirofish.simulate
   description: "start an existing MiroFish simulation as a durable job"
   match_patterns: ["\\bmirofish\\b.*\\b(simulate|simulation starten|simulieren)\\b"]
@@ -2461,3 +2472,26 @@
   match_patterns:
     - "^\\s*(?:bitte\\s+)?(?:bestätige|bestaetige)\\s*:?\\s*(?:das\\s+)?fenster\\s+.+\\s+ist\\s+vorne?\\b"
   execution_target: "direct:core.desktop_augen:bestaetigen"
+
+# Project Space (Coding), 24.11.2026: liest nur den eigenen Dienst des Project Space (Port 8163,
+# CODING_DIENST_URL, Vorgabe host.docker.internal:8163). Die Saetze stehen in core/feste_lesesaetze.py.
+- capability: coding_stand
+  space: projects
+  description: "read the newest Project Space run (stage, package, state, reason of failure) from the Project Space service; read only"
+  match_patterns:
+    - "^wie\\s+ist\\s+der\\s+stand\\s+(?:im|vom)\\s+(?:project[- ]?space|projekt[- ]?space|coding)\\b"
+  execution_target: "direct:core.coding_stand:stand_lesen"
+
+- capability: coding_laeufe
+  space: projects
+  description: "list the newest Project Space runs with their state from the Project Space service; read only"
+  match_patterns:
+    - "^welche\\s+(?:läufe|laeufe)\\s+gibt\\s+es\\b"
+  execution_target: "direct:core.coding_stand:laeufe_lesen"
+
+- capability: coding_ergebnis
+  space: projects
+  description: "show the result of the newest Project Space run (packages, checks, start command) from the Project Space service; read only"
+  match_patterns:
+    - "^zeig(?:e)?\\s+(?:mir\\s+)?das\\s+ergebnis\\s+des\\s+letzten\\s+laufs?\\b"
+  execution_target: "direct:core.coding_stand:ergebnis_lesen"

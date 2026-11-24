@@ -246,6 +246,30 @@ class PlanRecorder:
             except Exception as e:  # noqa: BLE001
                 logger.debug(f"[plan-recorder] attach_final persist failed: {e}")
 
+    def record_spur(self, trace_id: str, weg: str, ok: Any) -> bool:
+        """Spur-Eintrag fuer einen Satz, der noch keinen hat (feste Wege ohne ``record_lite``).
+
+        Ohne Satztext und ohne Antwort: nur trace_id, Weg, ok und Zeit (Lage-Abfrage
+        scripts/brain_lage.py). Kein Training (anders als ``record``). True = geschrieben.
+        """
+        import time as _t
+        if not trace_id:
+            return False
+        with self._lock:
+            if trace_id in self._by_trace:
+                return False
+            snap = {"trace_id": trace_id, "intent": "", "routed_via": weg or "ohne-weg",
+                    "ok": ok if isinstance(ok, bool) else None, "ts": _t.time(), "stages": [], "spur": True}
+            self._recent.append(snap)
+            self._by_trace[trace_id] = snap
+            try:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                with self.path.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(snap, ensure_ascii=False) + "\n")
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[plan-recorder] spur persist failed: {e}")
+            return True
+
     def record_lite(self, trace_id: str, intent: str, routed_via: str,
                     final_text: str = "") -> None:
         """Mini-Snapshot fuer plan-lose Zweige (SoM/som-team/meta/easy/no-plan),
@@ -1621,7 +1645,9 @@ class PlanExecutor:
                 )
                 event_id = desktop_route.event_id
                 confirmed = event_id in plan_ctx.get("confirmed_events", set())
-                if desktop_route.requires_confirmation and not confirmed:
+                from .desktop_freigabe import bestaetigung_noetig
+                if bestaetigung_noetig(desktop_route.requires_confirmation, confirmed,
+                                       plan_ctx.get("eingabe_herkunft")):
                     return HopResult(
                         step_id=hop.step_id,
                         ok=False,
@@ -1743,6 +1769,22 @@ class PlanExecutor:
                         elapsed_s=time.time() - t0,
                         contract_pass=False, reward=-1.0,
                     )
+                from . import loesch_bestaetigung as _lb
+                if event_id in _lb.EREIGNISSE:
+                    # Loeschen nur mit dem Schluessel aus "Ja, loeschen", genau einmal und nur fuer
+                    # die Kennung der Rueckfrage; der Schluessel geht nicht an das Werkzeug.
+                    _lb_arg = rendered_arg
+                    if isinstance(_lb_arg, str):
+                        try:
+                            _lb_arg = json.loads(_lb_arg)
+                        except ValueError:
+                            _lb_arg = None
+                    if not isinstance(_lb_arg, dict):
+                        return _ideen_fehler(_lb.OHNE_SCHLUESSEL)
+                    _lb_arg = dict(_lb_arg)
+                    if not _lb.einloesen(_lb_arg.pop("bestaetigung", None), event_id, _lb_arg.get("id")):
+                        return _ideen_fehler(_lb.OHNE_SCHLUESSEL)
+                    rendered_arg = _lb_arg
                 strict_mcp_arguments, clarification = feste_argumente(event_id, rendered_arg)
                 if strict_mcp_arguments is None:
                     return _ideen_fehler(clarification)
@@ -2035,7 +2077,8 @@ class PlanExecutor:
         if _ist_desktop_start(target):
             # Herkunft VOR dem Start: ohne "getippt" kein Aufruf am Werkzeug-Dienst und damit
             # auch kein Eintrag im Aufgabenbuch.
-            if plan_ctx.get("eingabe_herkunft") != "getippt":
+            from .desktop_freigabe import desktop_herkunft
+            if desktop_herkunft(plan_ctx.get("eingabe_herkunft")) != "getippt":
                 return HopResult(
                     step_id=hop.step_id, ok=False,
                     error="desktop.task: nur aus getippter Eingabe",
@@ -2205,13 +2248,14 @@ class PlanExecutor:
             # desktop.task, Schritt 3: Nach dem festen Aufruf desktop_task_start fuehrt das
             # Gehirn die Schleife (sehen, Agent fragen, pruefen, ein Schritt). Alles Weitere
             # steht in desktop_schleife; ohne "getippt" und ohne Tagesrest bricht sie ab.
+            from .desktop_freigabe import desktop_herkunft
             from .desktop_schleife import ist_aufgabenstart, nach_aufgabenstart
             if ist_aufgabenstart(target):
                 # Der Hop antwortet sofort ("Aufgabe laeuft, Kennung ..."); die Schleife laeuft
                 # im Hintergrund weiter, jeder ihrer festen Aufrufe mit eigenem Laufzeit-Kontext.
                 ok, result_payload, err = nach_aufgabenstart(
                     result_payload,
-                    herkunft=(plan_ctx or {}).get("eingabe_herkunft"),
+                    herkunft=desktop_herkunft((plan_ctx or {}).get("eingabe_herkunft")),
                     tagesrest=(plan_ctx or {}).get("desktop_tagesrest"),
                     laufzeit={
                         "plan_id": plan_ctx.get("plan_id", "standalone-plan"),

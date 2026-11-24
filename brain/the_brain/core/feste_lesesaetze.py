@@ -6,6 +6,9 @@ Ergaenzt die Tabelle in core/verstehen.py (``_FESTE_LESEFRAGEN``, ``FESTE_ANTWOR
 * The Brain  "Woran denkt das Gehirn gerade?"       -> thebrain_gedanken  (core/thebrain_gedanken.py)
 * Rowboat    "Welche Agenten gibt es in Rowboat?"   -> rowboat_spaces  (core/rowboat_spaces.py)
 * Augen      "Bestätige: Fenster X ist vorn und zeigt Y" -> desktop_bestaetigen (core/desktop_augen.py)
+* Project Space "Wie ist der Stand im Project Space?" -> coding_stand, "Zeig mir die letzten Läufe"
+  -> coding_laeufe, "Zeig mir das Ergebnis des letzten Laufs" -> coding_ergebnis (core/coding_stand.py)
+* Aufträge   "Welche Aufträge laufen gerade?"      -> schedule_auftraege (core/auftraege_lesen.py)
 
 Agent Farm bekommt keinen Satz: hinter agentfarm_list_teams laeuft kein Dienst (siehe
 docs im Bericht an die Koordination), der Satz bleibt "noch kein Weg".
@@ -31,6 +34,48 @@ _AGENTEN = re.compile(r"^welche\s+(?:agenten|spaces|vibemind-spaces)\s+(?:gibt e
                       re.IGNORECASE)
 _AGENTEN_IN_ROWBOAT = re.compile(
     r"^welche\s+(?:agenten|spaces|vibemind-spaces)\s+(?:gibt es|stehen|sind)\s+(?:in|im)\s+(?:rowboat|roarboot)$",
+    re.IGNORECASE)
+# Aufträge an Agenten (24.11.2026). Nennen "Aufträge" bzw. "Agenten" und gelten in jedem Reiter.
+_JETZT = r"(?:\s+(?:gerade|jetzt|noch|im moment|gerade jetzt))?"
+_AUFTRAEGE_LAUFEN = re.compile(
+    rf"^(?:welche|was für|was fuer)\s+(?:aufträge|auftraege)\s+(?:an\s+(?:die\s+)?agenten\s+)?"
+    rf"(?:laufen|warten|sind\s+(?:offen|in arbeit|unterwegs)){_JETZT}$"
+    rf"|^(?:läuft|laeuft|laufen){_JETZT}\s+(?:ein\s+auftrag|aufträge|auftraege){_JETZT}$"
+    r"|^(?:zeig(?:e)?|liste|nenn(?:e)?)\s+(?:mir\s+)?(?:meine\s+|die\s+|alle\s+)?(?:aufträge|auftraege)"
+    r"\s+an\s+(?:die\s+|meine\s+)?agenten$", re.IGNORECASE)
+_AGENTEN_TUN = re.compile(
+    rf"^(?:was\s+machen|was\s+tun|woran\s+arbeiten)\s+(?:die|meine)\s+agenten{_JETZT}$", re.IGNORECASE)
+
+
+# Project Space (Coding), 24.11.2026: Stand, letzte Laeufe, Ergebnis (core/coding_stand.py).
+_PS = r"(?:(?:im|vom|in dem|im bereich)\s+)?(?:project[- ]?space|projekt[- ]?space|coding(?:[- ]?space)?)"
+_LETZTE = r"(?:der|des|den|dem)\s+(?:letzten?|neuesten?|aktuellen?)\s+(?:lauf|laufs|bau|baus)"
+_CODING_STAND_BENANNT = re.compile(
+    rf"^(?:wie\s+ist\s+der\s+stand\s+{_PS}"
+    rf"|was\s+(?:baut|macht|tut)\s+(?:der\s+)?(?:project[- ]?space|projekt[- ]?space|coding)(?:\s+(?:gerade|jetzt|im moment))?"
+    r"|wie\s+ist\s+der\s+(?:code|coding)[- ]?status"
+    r"|(?:code|coding)[- ]?(?:status|stand))$", re.IGNORECASE)
+_CODING_STAND = re.compile(
+    rf"^(?:(?:ist|läuft|laeuft)\s+{_LETZTE.replace('(?:der|des|den|dem)', 'der')}\s+(?:fertig|noch|durch)"
+    r"|(?:läuft|laeuft)\s+(?:gerade\s+)?(?:noch\s+)?ein\s+(?:bau|lauf)"
+    rf"|wie\s+lange\s+(?:hat|dauerte)\s+{_LETZTE.replace('(?:der|des|den|dem)', 'der')}(?:\s+gedauert)?)$",
+    re.IGNORECASE)
+_CODING_STAND_KURZ = re.compile(r"^(?:wie\s+ist\s+der\s+stand|was\s+läuft\s+gerade|was\s+laeuft\s+gerade)$",
+                                re.IGNORECASE)
+_CODING_LAEUFE = re.compile(
+    r"^(?:(?:zeig(?:e)?|liste|nenn(?:e)?)\s+(?:mir\s+)?(?:die\s+|alle\s+)?(?:letzten\s+|neuesten\s+)?läufe"
+    r"|(?:zeig(?:e)?|liste|nenn(?:e)?)\s+(?:mir\s+)?(?:die\s+|alle\s+)?(?:letzten\s+|neuesten\s+)?laeufe"
+    r"|welche\s+(?:läufe|laeufe)\s+gibt\s+es"
+    r"|was\s+wurde\s+zuletzt\s+gebaut)$", re.IGNORECASE)
+_CODING_LAEUFE_BENANNT = re.compile(
+    rf"^(?:welche\s+(?:läufe|laeufe|projekte|apps)\s+gibt\s+es\s+{_PS}"
+    rf"|(?:zeig(?:e)?|liste)\s+(?:mir\s+)?(?:die\s+)?(?:läufe|laeufe|projekte)\s+{_PS})$", re.IGNORECASE)
+_CODING_PROJEKTE = re.compile(r"^welche\s+projekte\s+gibt\s+es$", re.IGNORECASE)
+_CODING_ERGEBNIS = re.compile(
+    rf"^(?:zeig(?:e)?\s+(?:mir\s+)?(?:das\s+ergebnis\s+{_LETZTE}|{_LETZTE.replace('(?:der|des|den|dem)', 'den')})"
+    rf"|wie\s+ist\s+{_LETZTE.replace('(?:der|des|den|dem)', 'der')}\s+ausgegangen"
+    rf"|warum\s+ist\s+{_LETZTE.replace('(?:der|des|den|dem)', 'der')}\s+(?:gescheitert|fehlgeschlagen)"
+    r"|wie\s+(?:starte|startet)\s+(?:ich|man)\s+die\s+(?:zuletzt\s+gebaute\s+|neue\s+|gebaute\s+)?app)$",
     re.IGNORECASE)
 
 
@@ -65,6 +110,17 @@ def lesefragen(alle: Tuple[Any, ...]) -> tuple:
         (_GEDANKEN, "thebrain_gedanken", None),
         (_AGENTEN_IN_ROWBOAT, "rowboat_spaces", None),
         (_AGENTEN, "rowboat_spaces", ("roarboot",)),
+        # Project Space: mit Namen ueberall, die kurzen Lauf-Saetze im eigenen Reiter oder ohne
+        # Reiter ("Lauf" sagt nur der Project Space), "Welche Projekte gibt es?" nur im eigenen.
+        (_CODING_STAND_BENANNT, "coding_stand", None),
+        (_CODING_LAEUFE_BENANNT, "coding_laeufe", None),
+        (_CODING_STAND, "coding_stand", ("projects", None)),
+        (_CODING_LAEUFE, "coding_laeufe", ("projects", None)),
+        (_CODING_ERGEBNIS, "coding_ergebnis", ("projects", None)),
+        (_CODING_PROJEKTE, "coding_laeufe", ("projects",)),
+        (_CODING_STAND_KURZ, "coding_stand", ("projects",)),
+        (_AUFTRAEGE_LAUFEN, "schedule_auftraege", None),
+        (_AGENTEN_TUN, "schedule_auftraege", None),
     )
 
 
@@ -98,10 +154,25 @@ def _rowboat_spaces(ergebnis: Any) -> Optional[str]:
     return antwort(ergebnis)
 
 
+def _coding(name: str) -> Callable[..., Optional[str]]:
+    def aufruf(*args: Any) -> Optional[str]:
+        from . import coding_stand
+        return getattr(coding_stand, name)(*args)
+    return aufruf
+
+
+def _schedule_auftraege(ergebnis: Any) -> Optional[str]:
+    from .auftraege_lesen import antwort
+    return antwort(ergebnis)
+
+
 def antworten() -> Dict[str, Callable[[Any], Optional[str]]]:
     """Eintraege fuer ``FESTE_ANTWORTEN``."""
     return {"desktop_fenster": _desktop_fenster, "thebrain_gedanken": _thebrain_gedanken,
-            "rowboat_spaces": _rowboat_spaces, "desktop_bestaetigen": _desktop_bestaetigen}
+            "rowboat_spaces": _rowboat_spaces, "desktop_bestaetigen": _desktop_bestaetigen,
+            "coding_stand": _coding("antwort_stand"), "coding_laeufe": _coding("antwort_laeufe"),
+            "coding_ergebnis": _coding("antwort_ergebnis"),
+            "schedule_auftraege": _schedule_auftraege}
 
 
 def _desktop_fenster_fehler(ergebnis: Any, fehler: Any = None) -> Optional[str]:
@@ -118,10 +189,17 @@ def _thebrain_gedanken_fehler(ergebnis: Any, fehler: Any = None) -> Optional[str
     return "Die Gedanken des Gehirns kann ich gerade nicht lesen: seine eigene Schnittstelle antwortet nicht."
 
 
+def _schedule_auftraege_fehler(ergebnis: Any, fehler: Any = None) -> Optional[str]:
+    from .auftraege_lesen import fehlersatz
+    return fehlersatz(ergebnis, fehler)
+
+
 def fehlersaetze() -> Dict[str, Callable[..., Optional[str]]]:
     """Genauer Satz statt des allgemeinen Fehlersatzes, wenn klar ist, was fehlt."""
     return {"desktop_fenster": _desktop_fenster_fehler, "rowboat_spaces": _rowboat_spaces_fehler,
-            "thebrain_gedanken": _thebrain_gedanken_fehler}
+            "thebrain_gedanken": _thebrain_gedanken_fehler, "coding_stand": _coding("fehlersatz"),
+            "coding_laeufe": _coding("fehlersatz"), "coding_ergebnis": _coding("fehlersatz"),
+            "thebrain_gedanken": _thebrain_gedanken_fehler, "schedule_auftraege": _schedule_auftraege_fehler}
 
 
 def _rowboat_spaces_vorher() -> Optional[str]:

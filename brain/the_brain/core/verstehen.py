@@ -41,8 +41,13 @@ SPACES: Dict[str, Space] = {
         "Zeig die Notizen dieser Bubble",
         "Halt fest: Preise im Januar prüfen",
         "Ordne die Notizen im Raster",
-    ), ("idea.", "idea_", "ideen_", "bubble.", "bubble_", "aenderung_zurueck", "bewertung_begruenden")),
-    "projects": Space("Project Space", (), ("code_", "coding_")),
+    ), ("idea.", "idea_", "ideen_", "bubble.", "bubble_", "aenderung_zurueck", "bewertung_begruenden",
+        "bewertung_entfernen")),
+    "projects": Space("Project Space", (
+        "Wie ist der Stand im Project Space?",
+        "Zeig mir die letzten Läufe",
+        "Zeig mir das Ergebnis des letzten Laufs",
+    ), ("code_", "coding_")),
     "desktop": Space("Desktop", ("Welche Fenster sind offen?",), ("desktop_", "desktop.")),
     "swedesign": Space("SWE Design"),
     "roarboot": Space("Rowboat", ("Welche Agenten gibt es in Rowboat?",), ("rowboat_", "rowboat.")),
@@ -52,11 +57,15 @@ SPACES: Dict[str, Space] = {
     "thebrain": Space("The Brain", ("Woran denkt das Gehirn gerade?",), ("thebrain_", "thebrain.")),
     "flowzen": Space("Blue Rose", (), ("rose.", "rose_", "flowzen")),
     "mirofish": Space("MiroFish", (), ("mirofish.", "mirofish_")),
-    "sales": Space("Sales", (), ("sales.", "sales_")),
+    "sales": Space("Sales", (
+        "Welche Termine habe ich heute?",
+        "Was liegt in den Freigaben?",
+        "Hab ich neue Nachrichten?",
+    ), ("sales.", "sales_")),
     "marketing": Space("Marketing", (), ("marketing.", "marketing_")),
     "learning": Space("Lernen", (), ("learning.", "learning_")),
     "events": Space("Events", (), ("event.", "event_")),
-    "orders": Space("Aufträge", ("Zeig meine Aufträge",), ("schedule_", "schedule.")),
+    "orders": Space("Aufträge", ("Zeig meine Aufträge", "Welche Aufträge laufen gerade?"), ("schedule_", "schedule.")),
 }
 
 # Andere Schreibweisen (Verzeichnis, aeltere App-Staende) auf die Kennung der App.
@@ -441,6 +450,7 @@ _ZEIG = r"(?:zeig(?:e)?|liste|nenn(?:e)?|was sind|welche)"
 _FESTE_LESEFRAGEN = (
     # Aufträge / Dashboard: geplante Aufgaben aus dem Schedule-Space (direct, laeuft).
     (re.compile(rf"^(?:{_ZEIG}\s+(?:mir\s+)?(?:meine|die|alle)?\s*(?:aufträge|auftraege|geplanten aufgaben)"
+                r"(?!\s+(?:an\s+(?:die\s+)?agenten|laufen|warten|sind\s+(?:offen|in arbeit|unterwegs)))"
                 r"|welche geplanten aufgaben gibt es|was ist geplant|was steht an geplanten aufgaben)\b",
                 re.IGNORECASE),
      "schedule_list", None),
@@ -542,7 +552,7 @@ FESTE_ANTWORTEN = {"schedule_list": antwort_schedule_list, **_weitere_antworten(
 
 # Lauf 8: "Zeig meine Aufträge" antwortete mit den geplanten Aufgaben, ohne zu sagen, dass
 # Auftraege an Agenten etwas anderes sind und in dieser Liste fehlen.
-NUR_GEPLANT = " Aufträge an Agenten stehen nicht in dieser Liste."
+NUR_GEPLANT = " Aufträge an Agenten stehen nicht in dieser Liste; die zeigt „Welche Aufträge laufen gerade?“."
 _AUFTRAEGE_WORT = re.compile(r"\bauftr(?:ä|ae)ge\b", re.IGNORECASE)
 
 
