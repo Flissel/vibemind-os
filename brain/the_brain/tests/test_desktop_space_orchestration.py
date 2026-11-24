@@ -67,7 +67,9 @@ def test_capability_intent_resolves_to_specific_safety_contract():
     assert orchestration.resolve_capability("browser_automation", "fill the login form").event_id == "openclaw.fill_form"
 
 
-def test_plan_executor_blocks_mutating_desktop_hop_before_live_dispatch():
+def test_plan_executor_blocks_mutating_desktop_hop_before_live_dispatch(monkeypatch):
+    # Vorgabe ist frei (core/desktop_freigabe.py); nur der Hauptschalter holt die Pflicht zurueck.
+    monkeypatch.setenv("VIBEMIND_DESKTOP_RUECKFRAGE", "1")
     plan = Plan(
         plan_id="desktop-confirmation-test",
         intent="click the OK button",

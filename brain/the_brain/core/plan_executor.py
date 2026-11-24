@@ -798,6 +798,17 @@ class PlanExecutor:
         except Exception:  # noqa: BLE001
             pass
 
+    def _desktop_spur(self, plan_ctx: Optional[Dict[str, Any]]) -> Optional[Callable[[str], None]]:
+        """Je Desktop-Aktion eine Stufe ``desktop`` in der Spur des Satzes (GET /api/trace/{id})."""
+        trace_id = str((plan_ctx or {}).get("trace_id") or "")
+        recorder = getattr(self, "recorder", None)
+        if not trace_id or recorder is None or not hasattr(recorder, "append_stage"):
+            return None
+
+        def spur(zeile: str) -> None:
+            recorder.append_stage(trace_id, "desktop", "brain-desktop/desktop_task_step", zeile)
+        return spur
+
     def _publish(self, kind: str, payload: Dict[str, Any]) -> None:
         if not self._subscribers:
             return
@@ -1647,7 +1658,8 @@ class PlanExecutor:
                 confirmed = event_id in plan_ctx.get("confirmed_events", set())
                 from .desktop_freigabe import bestaetigung_noetig
                 if bestaetigung_noetig(desktop_route.requires_confirmation, confirmed,
-                                       plan_ctx.get("eingabe_herkunft")):
+                                       plan_ctx.get("eingabe_herkunft"),
+                                       kanal=plan_ctx.get("antwortkanal")):
                     return HopResult(
                         step_id=hop.step_id,
                         ok=False,
@@ -2075,10 +2087,12 @@ class PlanExecutor:
         # ohne den Vorsatz, nie aus dem gerenderten Argument. Eine Aufgabe wird nie doppelt gestartet.
         from .desktop_schleife import ist_aufgabenstart as _ist_desktop_start
         if _ist_desktop_start(target):
-            # Herkunft VOR dem Start: ohne "getippt" kein Aufruf am Werkzeug-Dienst und damit
-            # auch kein Eintrag im Aufgabenbuch.
+            # Herkunft VOR dem Start: Nur mit eingeschaltetem Hauptschalter
+            # (VIBEMIND_DESKTOP_RUECKFRAGE=1) braucht es "getippt"; sonst kein Aufruf am
+            # Werkzeug-Dienst und damit auch kein Eintrag im Aufgabenbuch.
             from .desktop_freigabe import desktop_herkunft
-            if desktop_herkunft(plan_ctx.get("eingabe_herkunft")) != "getippt":
+            if desktop_herkunft(plan_ctx.get("eingabe_herkunft"),
+                                kanal=plan_ctx.get("antwortkanal")) is None:
                 return HopResult(
                     step_id=hop.step_id, ok=False,
                     error="desktop.task: nur aus getippter Eingabe",
@@ -2087,8 +2101,13 @@ class PlanExecutor:
                     elapsed_s=time.time() - t0,
                     contract_pass=False, reward=-1.0,
                 )
-            from .desktop_schleife_contract import auftrag_aus_absicht
+            from .desktop_schleife_contract import auftrag_aus_absicht, auftrag_aus_satz
             _desktop_auftrag = auftrag_aus_absicht(plan_ctx.get("plan_intent", ""))
+            if _desktop_auftrag is None and hop.capability == "desktop_skill":
+                # Ueber desktop_skill ("Öffne Chrome") ist der ganze Satz der Auftrag; der Vorsatz
+                # "Desktop-Aufgabe:" gilt nur fuer die Faehigkeit desktop_task_start. Nur der
+                # eingegangene Satz, nie die Beschreibung, die ein Planer dem Hop gegeben hat.
+                _desktop_auftrag = auftrag_aus_satz(plan_ctx.get("plan_intent", ""))
             if _desktop_auftrag is None:
                 return HopResult(
                     step_id=hop.step_id, ok=False,
@@ -2255,7 +2274,8 @@ class PlanExecutor:
                 # im Hintergrund weiter, jeder ihrer festen Aufrufe mit eigenem Laufzeit-Kontext.
                 ok, result_payload, err = nach_aufgabenstart(
                     result_payload,
-                    herkunft=desktop_herkunft((plan_ctx or {}).get("eingabe_herkunft")),
+                    herkunft=desktop_herkunft((plan_ctx or {}).get("eingabe_herkunft"),
+                                              kanal=(plan_ctx or {}).get("antwortkanal")),
                     tagesrest=(plan_ctx or {}).get("desktop_tagesrest"),
                     laufzeit={
                         "plan_id": plan_ctx.get("plan_id", "standalone-plan"),
@@ -2264,6 +2284,7 @@ class PlanExecutor:
                         "step_id": hop.step_id,
                     },
                     hintergrund=True,
+                    spur=self._desktop_spur(plan_ctx),
                 )
         if last.get("pending") is True:
             # Ein angenommener Auftrag (K1) wartet auf den Agenten, nicht auf eine Freigabe:

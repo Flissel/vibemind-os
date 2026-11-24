@@ -502,6 +502,38 @@ def auftrag_aus_absicht(absicht: Any) -> Optional[str]:
     return auftrag if 0 < len(auftrag) <= 500 else None
 
 
+def auftrag_aus_satz(satz: Any) -> Optional[str]:
+    """Der ganze Satz als Auftrag (Weg ueber desktop_skill, ohne Vorsatz); None, wenn leer oder zu lang."""
+    if not isinstance(satz, str):
+        return None
+    vorsatz = auftrag_aus_absicht(satz)
+    if vorsatz is not None:
+        return vorsatz
+    auftrag = " ".join(satz.split())
+    return auftrag if 0 < len(auftrag) <= 500 else None
+
+
+def protokoll_ziel(schritt: Mapping[str, Any], ziel: Any = None) -> str:
+    """Ziel eines Schritts fuer Protokoll und Spur, ohne getippten Text und ohne Bildschirmtext.
+
+    Klick: der Name des gelesenen Elements (hoechstens 40 Zeichen) und der Punkt. Tippen: nur
+    die Laenge. Tasten: die Taste. Rollen: Richtung und Menge.
+    """
+    art = str(schritt.get("action") or "")
+    if art == "click":
+        name = " ".join(str(ziel or "").split())[:40]
+        return f"click {name!r} @{schritt.get('x')},{schritt.get('y')}"
+    if art == "type":
+        return f"type ({len(str(schritt.get('text') or ''))} Zeichen)"
+    if art == "key":
+        return f"key {schritt.get('key')}"
+    if art == "hotkey":
+        return "hotkey " + "+".join(str(k) for k in schritt.get("keys") or [])
+    if art == "scroll":
+        return f"scroll {schritt.get('direction')} {schritt.get('amount')}"
+    return art or "unbekannt"
+
+
 def fehlercode_aus_ergebnis(ergebnis: Any) -> str:
     """Nur der Code einer Fehlerantwort des Werkzeug-Dienstes ("not_aus", "aufgabe_beendet").
 
