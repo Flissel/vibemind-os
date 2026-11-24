@@ -60,6 +60,10 @@ def _frage(auftrag: str, runde: int, runden: int, schritte: list, text: str, ele
         for s in schritte
     ]
     teile = [
+        # Die Anweisung reist mit jeder Frage: Der in OpenFang angelegte Agent traegt sie nicht als
+        # System-Text (gemessen 24.11.2026: eigenes JSON-Format, Vertrag lehnte jeden Vorschlag ab).
+        ANWEISUNG,
+        "",
         f"AUFTRAG (von einem Menschen getippt): {auftrag}",
         f"RUNDE {runde} von {runden}.",
         "BISHERIGE SCHRITTE: " + json.dumps(bisher, ensure_ascii=False),
@@ -71,7 +75,7 @@ def _frage(auftrag: str, runde: int, runden: int, schritte: list, text: str, ele
         f"FENSTER: {json.dumps(fenster, ensure_ascii=False)}",
         "ELEMENTE: " + json.dumps(elemente, ensure_ascii=False),
         "TEXT: " + json.dumps(text, ensure_ascii=False),
-        "Antworte mit genau einem JSON-Objekt nach deiner Anweisung.",
+        "Antworte mit genau einem JSON-Objekt nach der Anweisung oben, in einer Zeile, ohne Codeblock.",
     ]
     return "\n".join(teile)
 
