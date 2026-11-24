@@ -491,8 +491,11 @@ def reel_fertigstellen(timeline_id: str, musik_auftrag: str) -> dict:
     """Nach reel_bauen mit musik: wartet auf die Musik, legt sie unter die Stimme (leise, 25 %) und startet den
     Render mit den Optionen von reel_bauen. Liefert export_id - nenne sie am Ende als 'EXPORT: <export_id>'.
     timeline_id und musik_auftrag: genau die Werte aus der Antwort von reel_bauen. Scheitert die Musik, wird das
-    Reel trotzdem gerendert und die Warnung beginnt mit 'ohne Musik:'. Wartet bis zu 8 Minuten - nicht
-    abbrechen und NICHT ein zweites Mal aufrufen."""
+    Reel trotzdem gerendert und die Warnung beginnt mit 'ohne Musik:'. Wartet bis zu 8 Minuten (wartet die
+    Musik nur auf Arbeitsspeicher, hoechstens 1 Minute) - nicht abbrechen und NICHT ein zweites Mal aufrufen.
+    Gibt das Warten auf, wird der Musik-Auftrag im Musik-Dienst abgebrochen. Laeuft das Einlegen in die
+    Frist, kann der Clip spaeter noch in der Zeitleiste landen; die Warnung sagt dann 'Musik moeglicherweise
+    verspaetet eingelegt'."""
     optionen = _optionen_lesen(timeline_id)
     if isinstance(optionen, str):
         return _fehler(optionen)
@@ -501,15 +504,22 @@ def reel_fertigstellen(timeline_id: str, musik_auftrag: str) -> dict:
     warnungen: list[str] = []
     start = _uhr()
     fertig = musik_studio.warten(musik_auftrag, max_s=MUSIK_WARTEN_S)
+    if fertig.get("aufgegeben"):
+        musik_studio.abbrechen(musik_auftrag)            # fail-soft; das Reel wartet nicht mehr darauf
+    eingelegt_versucht = False
     if fertig.get("ok"):
         rest = MUSIK_GESAMT_S - (_uhr() - start)        # ein Budget fuer warten + einlegen
         if rest < MUSIK_EINLEGEN_MIN_S:
             fertig = _fehler("keine Zeit mehr")
         else:
+            eingelegt_versucht = True
             fertig = musik_studio.einlegen(musik_auftrag, timeline_id, MUSIK_GAIN_PERCENT,
                                            zeitlimit_s=min(MUSIK_EINLEGEN_MAX_S, rest))
     if not fertig.get("ok"):
-        warnungen.append(f"ohne Musik: {fertig.get('fehler')}")
+        warnung = f"ohne Musik: {fertig.get('fehler')}"
+        if eingelegt_versucht and fertig.get("zeitlimit"):
+            warnung += " – Musik moeglicherweise verspaetet eingelegt"
+        warnungen.append(warnung)
     e = laura_api.anfrage("POST", f"/timelines/{timeline_id}/render-reel", optionen)
     if not e["ok"]:
         return e

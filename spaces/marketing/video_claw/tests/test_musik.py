@@ -320,6 +320,92 @@ def test_fertigstellen_zu_wenig_restzeit_ueberspringt_einlegen(welt, monkeypatch
     assert welt.musik.aufrufe == []
 
 
+# --- I4(d): frueh aufgeben bei Speicher, Musik-Auftrag abbrechen; M9: Zeitlimit beim Einlegen ----------
+
+SPEICHER = "Speicher: zu wenig Arbeitsspeicher frei (3.0 GB frei, mindestens 8 GB noetig)"
+
+
+def test_warten_gibt_bei_speicher_nach_60_s_auf(welt):
+    welt.setze_musik([(200, {"ok": True, "zustand": "wartet", "grund": SPEICHER})] * 40)
+    jetzt = [0.0]
+
+    def schlafen(s):
+        jetzt[0] += s
+    r = musik_studio.warten(MA, max_s=480, schlafen=schlafen, uhr=lambda: jetzt[0])
+    assert r["ok"] is False and r.get("aufgegeben") is True
+    assert "Arbeitsspeicher" in r["fehler"]
+    assert jetzt[0] <= 60                                      # hoechstens 60 s statt 480 s
+
+
+def test_warten_speichergrund_weg_zaehlt_neu(welt):
+    speicher = (200, {"ok": True, "zustand": "wartet", "grund": SPEICHER})
+    welt.setze_musik([speicher] * 10 + [(200, {"ok": True, "zustand": "laeuft", "grund": ""})]
+                     + [speicher] * 10 + [(200, {"ok": True, "zustand": "fertig"})])
+    jetzt = [0.0]
+
+    def schlafen(s):
+        jetzt[0] += s
+    assert musik_studio.warten(MA, max_s=480, schlafen=schlafen, uhr=lambda: jetzt[0])["ok"]
+
+
+def test_warten_zeitende_ist_aufgegeben(welt):
+    welt.setze_musik([(200, {"ok": True, "zustand": "laeuft"})] * 10)
+    jetzt = [0.0]
+
+    def schlafen(s):
+        jetzt[0] += s
+    r = musik_studio.warten(MA, max_s=12, schlafen=schlafen, uhr=lambda: jetzt[0])
+    assert r["ok"] is False and r.get("aufgegeben") is True
+
+
+def test_warten_musik_gescheitert_ist_nicht_aufgegeben(welt):
+    welt.setze_musik([(200, {"ok": True, "zustand": "gescheitert", "grund": "x"})])
+    r = musik_studio.warten(MA, schlafen=lambda s: None)
+    assert r["ok"] is False and not r.get("aufgegeben")
+
+
+def test_abbrechen_ruft_die_route(welt):
+    welt.setze_musik([(200, {"ok": True, "zustand": "abgebrochen"})])
+    assert musik_studio.abbrechen(MA)["ok"] is True
+    m, pfad, body, kopf = welt.musik.aufrufe[0]
+    assert (m, pfad, body) == ("POST", f"/auftraege/{MA}/abbrechen", {})
+    assert kopf["Content-Type"] == "application/json" and "Origin" not in kopf
+    assert welt.musik.limits[0] <= musik_studio.POLL_ZEITLIMIT_S
+    assert musik_studio.abbrechen("../x")["ok"] is False and len(welt.musik.aufrufe) == 1
+
+
+def test_fertigstellen_bricht_musik_ab_wenn_warten_aufgibt(welt, monkeypatch):
+    _gebaut(welt)
+    welt.log.clear()
+    welt.setze_laura([_render_antwort()])
+    welt.setze_musik([(200, {"ok": True, "zustand": "abgebrochen"})])
+    monkeypatch.setattr(musik_studio, "warten", lambda auftrag, max_s=600, **k: {
+        "ok": False, "fehler": f"Musik wartet auf Arbeitsspeicher: {SPEICHER}", "aufgegeben": True})
+    r = w.reel_fertigstellen("tl1", MA)
+    assert r["ok"] and r["export_id"] == "e1e1e1e1e1"
+    assert r["warnungen"] == [f"ohne Musik: Musik wartet auf Arbeitsspeicher: {SPEICHER}"]
+    assert welt.log == [("musik", "POST", f"/auftraege/{MA}/abbrechen"),
+                        ("laura", "POST", "/timelines/tl1/render-reel")]
+
+
+def test_fertigstellen_einlegen_zeitlimit_warnt_verspaetet(welt):
+    _gebaut(welt)
+    welt.setze_laura([_render_antwort()])
+    welt.setze_musik([(200, {"ok": True, "zustand": "fertig"}), TimeoutError("timed out")])
+    r = w.reel_fertigstellen("tl1", MA)
+    assert r["ok"] and len(r["warnungen"]) == 1
+    assert r["warnungen"][0].startswith("ohne Musik:")
+    assert "Musik moeglicherweise verspaetet eingelegt" in r["warnungen"][0]
+
+
+def test_fertigstellen_anderer_einlegefehler_ohne_verspaetet(welt):
+    _gebaut(welt)
+    welt.setze_laura([_render_antwort()])
+    welt.setze_musik([(200, {"ok": True, "zustand": "fertig"}), ConnectionRefusedError("nein")])
+    r = w.reel_fertigstellen("tl1", MA)
+    assert "verspaetet" not in r["warnungen"][0]
+
+
 def test_anfrage_nutzt_vorgabe_adresse_und_umgebung(welt, monkeypatch):
     welt.setze_musik([(200, {"ok": True}), (200, {"ok": True})])
     musik_studio.anfrage("GET", "/x")
