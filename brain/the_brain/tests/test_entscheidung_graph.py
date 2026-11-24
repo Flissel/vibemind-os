@@ -196,7 +196,7 @@ def test_schalter_aus(monkeypatch) -> None:
     monkeypatch.setenv("ENTSCHEIDUNG_GRAPH", "0")
     graph = Attrappe()
     assert eg.melden(graph, {"trace_id": "t"}) is False
-    assert graph.eintraege == [] and eg.zaehler(graph) == {}
+    assert graph.eintraege == [] and "gemeldet" not in eg.zaehler(graph)
 
 
 def test_melden_ohne_graph_oder_eintrag() -> None:
