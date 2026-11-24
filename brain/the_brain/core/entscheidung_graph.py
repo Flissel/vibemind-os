@@ -115,7 +115,13 @@ def _bereich_aller_schritte(executed: Any) -> Optional[str]:
 
 
 def bereich_bestimmen(daten: Mapping[str, Any], reiter: Optional[str]) -> Tuple[Optional[str], str]:
-    """(Bereich, Quelle). Reihenfolge: ziel der Antwort, space der Antwort, Schritte, Reiter."""
+    """(Bereich, Quelle). Reihenfolge: ziel der Antwort, space der Antwort, Schritte, Reiter.
+
+    Ereignis "Chat" (core/chat_ereignis.py): der Bereich ist der Reiter, aus dem der Satz kam.
+    """
+    if daten.get("weg") == "chat":
+        kennung = reiter or _kennung(daten.get("space"))
+        return (kennung, "reiter") if kennung else (None, "keiner")
     ziel = daten.get("ziel")
     if isinstance(ziel, Mapping):
         kennung = _kennung(ziel.get("space"))
