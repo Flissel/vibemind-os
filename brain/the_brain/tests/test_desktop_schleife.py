@@ -1128,7 +1128,8 @@ def test_der_plan_ausfuehrer_nimmt_den_satz_aus_der_absicht_und_startet_einmal()
     abschnitt = quelle[quelle.index("if _ist_desktop_start(target):"):quelle.index("# Build the right executor")]
     assert "auftrag_aus_absicht(plan_ctx.get(\"plan_intent\"" in abschnitt
     # Die Herkunft wird vor allem anderen geprueft, auch vor dem Bau des Executors.
-    assert abschnitt.index('plan_ctx.get("eingabe_herkunft") != "getippt"') < abschnitt.index("auftrag_aus_absicht(")
+    assert abschnitt.index('desktop_herkunft(plan_ctx.get("eingabe_herkunft")) != "getippt"') < abschnitt.index(
+        "auftrag_aus_absicht(")
     assert "rendered_arg = _desktop_auftrag" in abschnitt and "single_plan_attempt = True" in abschnitt
     aufruf = quelle[quelle.index("ok, result_payload, err = nach_aufgabenstart("):]
     assert "hintergrund=True" in aufruf[:900] and "laufzeit=" in aufruf[:900]

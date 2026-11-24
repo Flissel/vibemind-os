@@ -1645,7 +1645,9 @@ class PlanExecutor:
                 )
                 event_id = desktop_route.event_id
                 confirmed = event_id in plan_ctx.get("confirmed_events", set())
-                if desktop_route.requires_confirmation and not confirmed:
+                from .desktop_freigabe import bestaetigung_noetig
+                if bestaetigung_noetig(desktop_route.requires_confirmation, confirmed,
+                                       plan_ctx.get("eingabe_herkunft")):
                     return HopResult(
                         step_id=hop.step_id,
                         ok=False,
@@ -2075,7 +2077,8 @@ class PlanExecutor:
         if _ist_desktop_start(target):
             # Herkunft VOR dem Start: ohne "getippt" kein Aufruf am Werkzeug-Dienst und damit
             # auch kein Eintrag im Aufgabenbuch.
-            if plan_ctx.get("eingabe_herkunft") != "getippt":
+            from .desktop_freigabe import desktop_herkunft
+            if desktop_herkunft(plan_ctx.get("eingabe_herkunft")) != "getippt":
                 return HopResult(
                     step_id=hop.step_id, ok=False,
                     error="desktop.task: nur aus getippter Eingabe",
@@ -2245,13 +2248,14 @@ class PlanExecutor:
             # desktop.task, Schritt 3: Nach dem festen Aufruf desktop_task_start fuehrt das
             # Gehirn die Schleife (sehen, Agent fragen, pruefen, ein Schritt). Alles Weitere
             # steht in desktop_schleife; ohne "getippt" und ohne Tagesrest bricht sie ab.
+            from .desktop_freigabe import desktop_herkunft
             from .desktop_schleife import ist_aufgabenstart, nach_aufgabenstart
             if ist_aufgabenstart(target):
                 # Der Hop antwortet sofort ("Aufgabe laeuft, Kennung ..."); die Schleife laeuft
                 # im Hintergrund weiter, jeder ihrer festen Aufrufe mit eigenem Laufzeit-Kontext.
                 ok, result_payload, err = nach_aufgabenstart(
                     result_payload,
-                    herkunft=(plan_ctx or {}).get("eingabe_herkunft"),
+                    herkunft=desktop_herkunft((plan_ctx or {}).get("eingabe_herkunft")),
                     tagesrest=(plan_ctx or {}).get("desktop_tagesrest"),
                     laufzeit={
                         "plan_id": plan_ctx.get("plan_id", "standalone-plan"),
