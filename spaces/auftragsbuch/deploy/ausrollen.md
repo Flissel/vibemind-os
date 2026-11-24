@@ -154,7 +154,7 @@ Dienst meldet sich an der Datenbank mit der eigenen Anmelde-Rolle `auftragsbuch_
    `"<PFAD-ZUR-VENV>/Scripts/python.exe" "<PFAD-ZUM-AEUSSEREN-REPO>/scripts/mcp_mit_env.py" --env AUFTRAGSBUCH_URL --env AUFTRAGSBUCH_SCHLUESSEL --env AUFTRAGSBUCH_CA_DATEI -- "<ZWEIG-CHECKOUT>/spaces/auftragsbuch/deploy/rauchprobe.py"`.
    Sie legt nichts an: `initialize`, `tools/list` und der `tools/call` von `sales_post_pruefen`, der mit
    `Unbekannte Auftragsart` scheitern muss, schreiben keine Zeile. Erwartung: drei Zeilen `ok …`
-   (`initialize`, `tools/list (fuenf Werkzeuge)`, `tools/call sales_post_pruefen (Unbekannte Auftragsart)`). Danach
+   (`initialize`, `tools/list (acht Werkzeuge)`, `tools/call sales_post_pruefen (Unbekannte Auftragsart)`). Danach
    auf dem Mini-PC `printf '%s\n' "SELECT count(*) FROM auftrag.auftraege WHERE von = 'brain' AND art <> 'probe';" | <psql>`
    liefert `0`, und `AUFTRAGSBUCH_TAG=<laufender Tag> docker compose logs auftragsbuch` nennt nur Werkzeugname,
    Ergebnis und Dauer.
@@ -212,7 +212,7 @@ Werkzeug-Servers `auftragsbuch` steht seit Task 7 in `openfang/openfang.vibemind
 8. **Eigenes Ja des Betreibers:** OpenFang neu starten (nicht gleichzeitig mit `brain-core`).
 9. **Prüfen** nach dem Neustart, über die OpenFang-API bzw. das Dashboard. Dieser Schritt liest nur und ändert
    nichts.
-   - `GET /api/mcp/servers` zeigt `auftragsbuch` als verbunden mit fuenf Werkzeugen. Wenn nicht: anhalten, die
+   - `GET /api/mcp/servers` zeigt `auftragsbuch` als verbunden mit acht Werkzeugen. Wenn nicht: anhalten, die
      Ursache beheben (meist fehlt ein Wert in der Root-`.env`), dann zehn Minuten lang alle zwei Minuten nachsehen
      und notieren, ob OpenFang einen stdio-Server, dessen Start fehlschlug, von selbst neu verbindet. Belegt ist
      das nicht; bis dahin braucht es einen erneuten Neustart (eigenes Ja).
@@ -434,14 +434,32 @@ Datenbank auf dem Mini-PC lauscht. Die Befehle auf dem Mini-PC laufen wie oben i
     Link); die acht Zeichen sind der Anfang von `art_hash` der Art im Vertrag von `<commit-2>`.
     `printf '%s\n' "SELECT count(*) FROM auftrag.auftraege WHERE an = 'rowboat';" | <psql>` liefert `0`: Ohne Zeile in
     `auftrag.brain_arten` lehnt die Datenbank jeden Auftrag an Rowboat ab. Dieser Schritt liest nur und ändert nichts.
-19. **Eigenes Ja des Betreibers:** Freischaltung, erst hinter der Schwelle: Die Koordination meldet harte Sperre,
+19. **Laden vergleichen:** Der Laden des Dienstes (`AUFTRAGSBUCH_LADEN`) und der des Rowboat-Abholers (`ABHOLER_LADEN`)
+    stehen in derselben `werte.env` und müssen gleich sein. Bei Abweichung startet der Abholer nicht
+    (`ABHOLER_LADEN weicht von AUFTRAGSBUCH_LADEN ab`), und Schritt 17 fängt das ab; dieser Schritt ist nur eine frühe
+    Bestätigung ohne Werte. Auf dem Mini-PC, nur die Namen vergleichen, kein Wert wird ausgegeben, nur das Wort `gleich`
+    oder `verschieden`:
+    `awk -F= '$1=="AUFTRAGSBUCH_LADEN"{a=$2} $1=="ABHOLER_LADEN"{b=$2} END{print (a!="" && a==b) ? "gleich" : "verschieden"}' laufzeit/werte.env`.
+    Bei `verschieden` anhalten und nicht freischalten. Dieser Schritt liest nur und ändert nichts.
+    Sales braucht ab Stand 7403df3 `AUFTRAGSBUCH_LADEN` in der Umgebung von Sales (Pflicht), mit demselben Wert wie
+    hier. Fehlt der Wert oder weicht er von `LADEN_PRAEFIX` ab, fasst der Sales-Abholer keinen Auftrag an und bleibt
+    stehen (ohne Neustartschleife); bei Gleichheit sagt seine Startzeile `auftragsbuch_laden=gleich`. Ob der dort
+    eingetragene Wert wirklich der des Gehirns ist, kann der Sales-Abholer nicht prüfen: Den Wert also beim Eintragen
+    von hier übernehmen (dort Schritt 4 der Sales-Anleitung zum Auftragsempfang). Ältere Sales-Stände vergleichen
+    `LADEN_PRAEFIX` nur mit dem Schema; bei Abweichung laufen Aufträge an Sales dort still ab.
+20. **Eigenes Ja des Betreibers:** Freischaltung, erst hinter der Schwelle: Die Koordination meldet harte Sperre,
     Herkunft und Ergebnistext ohne Personendaten als im Betrieb gemessen, und eigene Messung bestätigt es
     (die Prüfung der Werkzeuge je Agent aus Stufe 3, Schritt 9 nennt keinen offenen Zugang mehr; ein Plan ohne
     Eingangs-Kopf mit Ziel
     `…:rowboat_vorschlaege_anlegen` scheitert mit „Nur aus einer Eingabe des Betreibers“). Erst dann, auf dem Mini-PC:
     `printf '%s\n' "INSERT INTO auftrag.brain_arten (an, art, version) VALUES ('rowboat', 'vorschlaege_anlegen', 2);" | <psql>`.
     Danach liefert `printf '%s\n' 'SELECT an, art, version FROM auftrag.brain_arten ORDER BY 1;' | <psql>` genau
-    `brain | probe | 1` und `rowboat | vorschlaege_anlegen | 2`.
+    `brain | probe | 1` und `rowboat | vorschlaege_anlegen | 2`. Die Art `post_pruefen` bleibt dabei gesperrt (siehe die
+    Regel unten); sie bekommt keine Zeile.
+
+**post_pruefen bleibt gesperrt (keine Zeile in brain_arten), bis die Herkunft im Auftrag steht.** Der Auftrag hat
+kein Herkunftsfeld (`100_auftragsbuch_brain.sql`, Zeilen 51 bis 53), und Sales vertraut jedem Auftrag mit
+`von='brain'`. Für lesende Arten ist das tragbar, für Entwürfe nicht. Die Herkunft kommt mit einer späteren Migration.
 
 **Kurzer Rückweg, falls Schritt 16 scheitert:**
 

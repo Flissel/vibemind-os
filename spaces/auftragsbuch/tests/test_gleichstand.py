@@ -79,7 +79,7 @@ def test_anderer_agenten_ziel_ist_erlaubt():
 
 def test_dienst_mit_fehlendem_oder_zusaetzlichem_werkzeug():
     soll = ["auftrag_probe", "auftrag_lesen", "sales_post_pruefen", "sales_kontakt_finden",
-            "rowboat_vorschlaege_anlegen"]
+            "rowboat_vorschlaege_anlegen", "sales_termine_heute", "sales_freigaben_zaehlen", "sales_post_offen"]
     assert gleichstand(ARTEN, {}, [], dienst_werkzeuge=soll) == []
     assert gleichstand(ARTEN, {}, [], dienst_werkzeuge=soll[:-1]) != []
     assert gleichstand(ARTEN, {}, [], dienst_werkzeuge=soll + ["extra"]) != []
@@ -258,4 +258,34 @@ def test_ereignis_werkzeug_nicht_beim_traeger_faellt_auf():
 
 def test_ganzer_space_bleibt_wie_bisher():
     reg = {"sales": space(tools=["auftrag_probe"], ereignisse={"sales.auftrag_probe": "auftrag_probe"})}
+    assert gleichstand(ARTEN, reg, []) == []
+
+
+# --- Regel 6: Verbotene Werkzeuge (Sales-Zaehlarten, Kopfkommentar von sales.contract.yaml) ---
+
+VERBOTEN = ("antwort_entwerfen", "kontakt_autonomie_setzen", "mail_einstufen")
+
+
+def test_verbotene_werkzeuge_im_verzeichnis_fallen_auf():
+    for tool in VERBOTEN:
+        reg = {"sales": space(tools=["auftrag_lesen"])}
+        reg["sales"]["mcp_tools"]["sales-mcp"] = [tool]
+        assert any(tool in s for s in gleichstand(ARTEN, reg, [])), tool
+
+
+def test_verbotene_werkzeuge_beim_traeger_fallen_auf():
+    reg = {"rowboat": space_mit_traeger(["auftrag_lesen"])}
+    reg["rowboat"]["rights_carriers"][0]["mcp_tools"]["anderer-server"] = ["mail_einstufen"]
+    assert any("mail_einstufen" in s for s in gleichstand(ARTEN, reg, []))
+
+
+def test_echtes_verzeichnis_schaltet_keines_der_verbotenen_werkzeuge_frei():
+    assert not any(
+        any(tool in s for tool in VERBOTEN) for s in gleichstand(ARTEN, registry_echt(), capabilities_echt())
+    )
+
+
+def test_harmloses_werkzeug_unter_anderem_server_ist_gleichstand():
+    reg = {"sales": space(tools=["auftrag_lesen"])}
+    reg["sales"]["mcp_tools"]["sales-mcp"] = ["harmlos"]
     assert gleichstand(ARTEN, reg, []) == []

@@ -31,9 +31,10 @@ EINGABE_PUNKT = {
 }
 
 
-def test_genau_die_drei_auftragsarten():
+def test_genau_die_sechs_auftragsarten():
     assert set(lade_auftragsarten(ORDNER)) == {
-        ("sales", "post_pruefen"), ("sales", "kontakt_finden"), ("rowboat", "vorschlaege_anlegen")}
+        ("sales", "post_pruefen"), ("sales", "kontakt_finden"), ("rowboat", "vorschlaege_anlegen"),
+        ("sales", "termine_heute"), ("sales", "freigaben_zaehlen"), ("sales", "post_offen")}
 
 
 def test_werte_aus_dem_entwurf():
@@ -184,5 +185,5 @@ def test_kontakt_finden_form():
 
 def test_werkzeuge_aus_den_echten_arten_feste_und_je_art():
     namen = [w["name"] for w in katalog(lade_auftragsarten(ORDNER))]
-    assert namen == ["auftrag_probe", "auftrag_lesen",
-                     "rowboat_vorschlaege_anlegen", "sales_kontakt_finden", "sales_post_pruefen"]
+    assert namen == ["auftrag_probe", "auftrag_lesen", "rowboat_vorschlaege_anlegen", "sales_freigaben_zaehlen",
+                     "sales_kontakt_finden", "sales_post_offen", "sales_post_pruefen", "sales_termine_heute"]

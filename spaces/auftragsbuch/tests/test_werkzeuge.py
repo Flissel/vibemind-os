@@ -53,8 +53,8 @@ def buch() -> FalschesBuch:
 
 def test_katalog_hat_feste_und_vertragswerkzeuge():
     namen = [w["name"] for w in katalog(ARTEN)]
-    assert namen == ["auftrag_probe", "auftrag_lesen", "rowboat_vorschlaege_anlegen", "sales_kontakt_finden",
-                     "sales_post_pruefen"]
+    assert namen == ["auftrag_probe", "auftrag_lesen", "rowboat_vorschlaege_anlegen", "sales_freigaben_zaehlen",
+                     "sales_kontakt_finden", "sales_post_offen", "sales_post_pruefen", "sales_termine_heute"]
     assert gleichstand(ARTEN, {}, [], dienst_werkzeuge=namen) == []
 
 

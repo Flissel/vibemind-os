@@ -11,7 +11,7 @@ Umgebung an die Bruecke; die Rauchprobe liest sie nicht selbst.
 
 Startet bruecke.py als Unterprozess (wie OpenFang) und prueft:
   1. initialize antwortet,
-  2. tools/list zeigt genau die fuenf Werkzeuge,
+  2. tools/list zeigt genau die acht Werkzeuge,
   3. tools/call sales_post_pruefen mit gueltiger Eingabe endet mit `Unbekannte Auftragsart`
      (in Stufe 1 hat brain_arten keine Zeile fuer sales; die Datenbank legt nichts an).
 Ausgabe je Pruefung nur `ok ...` oder `FEHLER ... (<fester Grund>)`, nie Adresse, Schluessel oder
@@ -29,7 +29,10 @@ from collections.abc import Mapping
 from pathlib import Path
 
 BRUECKE = Path(__file__).resolve().parents[1] / "bruecke.py"
-ERWARTETE_WERKZEUGE = ("auftrag_lesen", "auftrag_probe", "rowboat_vorschlaege_anlegen", "sales_kontakt_finden", "sales_post_pruefen")
+ERWARTETE_WERKZEUGE = (
+    "auftrag_lesen", "auftrag_probe", "rowboat_vorschlaege_anlegen", "sales_freigaben_zaehlen",
+    "sales_kontakt_finden", "sales_post_offen", "sales_post_pruefen", "sales_termine_heute",
+)
 GUELTIGE_EINGABE = {"zeitraum": "heute", "entwuerfe_anlegen": False}
 ABLEHNUNG = "Unbekannte Auftragsart"
 ZEITLIMIT_S = 150
@@ -77,8 +80,8 @@ def _pruefe_tools_list(ergebnis: dict) -> tuple[bool, str]:
     werkzeuge = ergebnis.get("tools")
     namen = sorted(w.get("name") for w in werkzeuge if isinstance(w, dict)) if isinstance(werkzeuge, list) else []
     if namen == sorted(ERWARTETE_WERKZEUGE):
-        return True, "fuenf Werkzeuge"
-    return False, "nicht genau die fuenf Werkzeuge"
+        return True, "acht Werkzeuge"
+    return False, "nicht genau die acht Werkzeuge"
 
 
 def _pruefe_tools_call(ergebnis: dict) -> tuple[bool, str]:
