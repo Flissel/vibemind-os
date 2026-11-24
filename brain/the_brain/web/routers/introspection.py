@@ -2764,6 +2764,15 @@ def _feste_antwort(plan, exec_result, ideen_fest: bool, vorgabe: str, kontext: A
         return None
 
 
+@router.get("/api/beispielsaetze")
+async def beispielsaetze(space: str = ""):
+    """Beispielsätze für das „?“ eines Bereichs (core/beispielsaetze): höchstens fünf, nur
+    Sätze mit festem Weg (ohne Modell), belegt durch tests/test_beispielsaetze.py."""
+    from core.beispielsaetze import antwort as _beispiel_antwort
+
+    return JSONResponse(_beispiel_antwort(space))
+
+
 @router.get("/api/agent-auftraege/{auftrag_id}/stand")
 async def agent_auftrag_stand(auftrag_id: str):
     """Stand eines angenommenen Auftrags fuer die App (core/auftrag_stand), nur lesen.
@@ -2851,7 +2860,18 @@ async def multihop_execute(request: Request):
     (core/zurueck_vorsicht.satz_merken)."""
     antwort = await _multihop_execute(request)
     _spur_je_satz(request, antwort)
-    return _nachbereiten(antwort)
+    return _nachbereiten(antwort, await _kontext_space(request))
+
+
+async def _kontext_space(request: Request) -> Optional[str]:
+    """``context.space`` des Satzes (der Body ist schon gelesen und zwischengespeichert)."""
+    try:
+        body = await request.json()
+        kontext = body.get("context") if isinstance(body, dict) else None
+        space = kontext.get("space") if isinstance(kontext, dict) else None
+        return space if isinstance(space, str) and space.strip() else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _spur_je_satz(request: Request, antwort: Any) -> None:
@@ -2879,7 +2899,7 @@ def _spur_je_satz(request: Request, antwort: Any) -> None:
         logger.debug(f"[spur] uebersprungen: {type(e).__name__}: {e}")
 
 
-def _nachbereiten(antwort):
+def _nachbereiten(antwort, kontext_space: Optional[str] = None):
     """Antwort eines Satzes kennzeichnen und merken. Wirft nie; im Zweifel unveraendert."""
     try:
         if getattr(antwort, "status_code", 200) >= 400 or not isinstance(getattr(antwort, "body", None), bytes):
@@ -2895,6 +2915,10 @@ def _nachbereiten(antwort):
             if art:
                 daten[art] = True
         _vorsicht.satz_merken(_vorsicht.art_der_antwort(daten))
+        # Routing 24.11.2026: jede gelungene Antwort aus einem anderen Bereich bekommt ziel {space}.
+        from core.antwort_ziel import ziel_ergaenzen
+
+        ziel_ergaenzen(daten, kontext_space=kontext_space)
         return JSONResponse(daten, status_code=antwort.status_code)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[nachbereiten] uebersprungen: {type(e).__name__}: {e}")

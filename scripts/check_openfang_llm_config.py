@@ -49,6 +49,7 @@ BRAIN_RUNTIME_ROLES = {
     "brain_supermemory",
     "brain_data_collector",
     "brain_data_collector_anthropic",
+    "brain_denken",
 }
 REQUIRED_SPACE_ROLES = {
     "bubbles": "space_bubbles",
@@ -182,6 +183,7 @@ def main() -> int:
     known_agents.update(
         {
             "assistant",
+            "brain-denken",
             "brain-fallback",
             "brain-knowledge",
             "brain-orchestrator",
