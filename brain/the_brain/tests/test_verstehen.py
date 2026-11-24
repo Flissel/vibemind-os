@@ -19,6 +19,8 @@ from core import verstehen as v  # noqa: E402
 from core.plan_schema import HopSpec, Plan  # noqa: E402
 from web.routers.introspection import router  # noqa: E402
 
+SALES_NV = ("Das habe ich nicht verstanden. In Sales kann ich z. B. „Welche Termine habe ich heute?“ oder "
+            "„Was liegt in den Freigaben?“ oder „Hab ich neue Nachrichten?“.")
 
 # ── Bausteine ──────────────────────────────────────────────────────────────
 
@@ -37,13 +39,14 @@ def test_nicht_verstanden_nennt_beispiele_des_space() -> None:
     assert v.nicht_verstanden(None) == "Das habe ich nicht verstanden."
     assert v.nicht_verstanden("swedesign").endswith("Im Bereich „SWE Design“ gibt es dafür noch keinen Weg."
                                                     + v.AUSWEG)
-    # Lauf 8: Sales und MiroFish nennen den Bereich und einen Satz, der ueberall geht.
-    for space in ("sales", "mirofish"):
-        assert v.nicht_verstanden(space).endswith("Was überall geht: „Welche Bubbles gibt es?“")
+    # Lauf 8: MiroFish nennt den Bereich und einen Satz, der ueberall geht.
+    assert v.nicht_verstanden("mirofish").endswith("Was überall geht: „Welche Bubbles gibt es?“")
     assert v.nicht_verstanden("desktop") == (  # fester Satz seit 23.11. (core/feste_lesesaetze.py)
         "Das habe ich nicht verstanden. In Desktop kann ich z. B. „Welche Fenster sind offen?“.")
+    # Seit 24.11. feste Lesesaetze im Sales-Reiter (core/sales_saetze.py).
+    assert v.nicht_verstanden("sales") == SALES_NV
     # Punkt 7 (Lauf 4): nie mehr nackt; ohne festen Satz der Bereich und ein ehrlicher Satz.
-    for space, name in (("flowzen", "Blue Rose"), ("mirofish", "MiroFish"), ("sales", "Sales")):
+    for space, name in (("flowzen", "Blue Rose"), ("mirofish", "MiroFish")):
         assert v.nicht_verstanden(space) == (f"Das habe ich nicht verstanden. Im Bereich „{name}“ kenne ich noch "
                                              "keinen Satz, den ich sicher ausführen kann." + v.AUSWEG)
 
@@ -334,7 +337,7 @@ RUNDGANG = [
     ("Woran denkt das Gehirn gerade?", "thebrain", ("lauf", "thebrain_gedanken")),
     ("Was steht in meinem Journal?", "flowzen", ("nicht-verstanden", NV + " " + OHNE_SATZ.format("Blue Rose"))),
     ("Welche Simulationen gibt es in MiroFish?", "mirofish", ("nicht-verstanden", NV + " " + OHNE_SATZ.format("MiroFish"))),
-    ("Wie viele Kontakte habe ich im Sales?", "sales", ("nicht-verstanden", NV + " " + OHNE_SATZ.format("Sales"))),
+    ("Wie viele Kontakte habe ich im Sales?", "sales", ("nicht-verstanden", SALES_NV)),
     ("Wie laufen meine Marketing-Kampagnen?", "marketing", ("kein-weg", "Im Bereich „Marketing“ kann ich das noch nicht")),
     ("Welche Kurse gibt es?", "learning", ("nicht-verstanden", NV + " " + KEIN.format("Lernen"))),
     ("Welche Events stehen als nächstes an?", "events", ("nicht-verstanden", NV + " " + KEIN.format("Events"))),
