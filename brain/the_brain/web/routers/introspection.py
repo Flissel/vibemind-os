@@ -2108,7 +2108,50 @@ async def decision_graph_query(request: Request, limit: int = 200, min_activatio
     out = await loop.run_in_executor(
         None, dg.query_subgraph, int(limit), float(min_activation),
     )
+    if not _ansicht_darf_text(request):
+        out = _ohne_text(out)
     return JSONResponse(out)
+
+
+# Felder mit Inhalt aus Saetzen, Antworten oder Werkzeugen. Ausserhalb der Ansicht bleiben
+# nur Kennung, Typ, Laenge und Zahlen.
+_TEXT_FELDER = ("intent", "summary", "input_preview", "result_preview", "topic")
+_TEXT_LABEL = {"satz": "Satz", "plan": "Plan"}
+
+
+def _ansicht_darf_text(request: Request) -> bool:
+    """Satztexte nur fuer die Brain-Ansicht selbst (Sicherheitsbefund 24.11.2026).
+
+    Die Ansicht (/brain) laedt ihre Daten vom selben Ursprung; Browser und Electron schicken
+    dann ``Sec-Fetch-Site: same-origin``. Fremde Webseiten im Browser des Betreibers koennten
+    wegen ``allow_origins=["*"]`` sonst mitlesen; sie bekommen ``cross-site``. Programme ohne
+    den Kopf (curl, andere Dienste) bekommen keinen Text. Die Herkunftsadresse taugt nicht:
+    im Container kommt alles von der Docker-Bruecke, nie von 127.0.0.1.
+    ``DECISION_GRAPH_TEXT=immer`` schaltet die Pruefung ab, ``nie`` blendet immer aus.
+    """
+    modus = os.environ.get("DECISION_GRAPH_TEXT", "ansicht").strip().lower()
+    if modus == "immer":
+        return True
+    if modus == "nie":
+        return False
+    return request.headers.get("sec-fetch-site", "").lower() == "same-origin"
+
+
+def _ohne_text(out: Any) -> Any:
+    """Die Antwort ohne Satz-, Antwort- und Werkzeugtexte. Labels aus Text werden ersetzt."""
+    if not isinstance(out, dict):
+        return out
+    knoten = []
+    for n in out.get("nodes") or []:
+        daten = dict(n.get("data") or {}) if isinstance(n, dict) else {}
+        typ = daten.get("type")
+        for feld in _TEXT_FELDER:
+            if feld in daten:
+                daten[feld] = ""
+        if typ in ("satz", "plan"):
+            daten["label"] = _TEXT_LABEL[typ]
+        knoten.append({**n, "data": daten})
+    return {**out, "nodes": knoten, "text_ausgeblendet": True}
 
 
 @router.get("/api/decision_graph/stats")
