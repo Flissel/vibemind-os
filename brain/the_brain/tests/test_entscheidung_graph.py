@@ -45,6 +45,7 @@ class Attrappe:
         if self.fehler:
             raise RuntimeError("neo4j weg")
         self.eintraege.append(eintrag)
+        return True
 
 
 @pytest.fixture(autouse=True)
@@ -117,6 +118,7 @@ def test_eintrag_mit_satzanfang_aber_ohne_antwort() -> None:
     assert e["text"] == SATZ
     text = json.dumps(e, ensure_ascii=False)
     assert "Antwort zur" not in text and "Sponsoren" not in text
+    assert (e["laenge"], e["dauer_ms"]) == (len(SATZ), 12)
 
 
 def test_satztext_gekuerzt_wie_plan_intent() -> None:
@@ -137,7 +139,6 @@ def test_erste_faehigkeit_und_beschriftung(executed, faehigkeit, schritte, besch
     e = eg.eintrag_bauen({"trace_id": "t", "plan_id": "shortcut_1", "executed": executed})
     assert (e["faehigkeit"], e["schritte"]) == (faehigkeit, schritte)
     assert eg.beschriftung(e["stufe"], e["faehigkeit"], e["schritte"]) == beschriftung
-    assert (e["laenge"], e["dauer_ms"]) == (len(SATZ), 12)
 
 
 @pytest.mark.parametrize("daten", [None, "x", {}, {"trace_id": ""}, {"trace_id": 5}])
@@ -374,4 +375,21 @@ def test_stats_nennt_die_zaehler(monkeypatch, tmp_path) -> None:
     client.post("/api/multihop/execute", json={"intent": SATZ})
     assert eg.schreiber_fuer(dg).warten(2.0)
     zaehler = client.get("/api/decision_graph/stats").json()["entscheidung_schreiber"]
-    assert zaehler["gemeldet"] == 1 and zaehler["geschrieben"] == 1
+    # Ohne Neo4j ist nichts geschrieben: nur der Spiegel hat den Eintrag (Befund aus dem Betrieb).
+    assert zaehler["gemeldet"] == 1 and zaehler["geschrieben"] == 0 and zaehler["nur_spiegel"] == 1
+    assert zaehler["zustand"] == "nicht_verbunden" and zaehler["grund"]
+
+
+def test_geschrieben_zaehlt_nur_was_neo4j_bestaetigt(monkeypatch) -> None:
+    pytest.importorskip("neo4j")
+    dg = _graph_offline(monkeypatch)
+    assert dg.upsert_entscheidung({"trace_id": "t0"}) is False
+    dg._connected = True
+    dg._driver = SimpleNamespace(session=lambda: _Sitzung([]))
+    assert dg.upsert_entscheidung({"trace_id": "t1"}) is True
+    schreiber = eg.schreiber_fuer(dg)
+    assert schreiber.einen_schreiben({"trace_id": "t2"}) is True
+    dg._connected = False
+    assert schreiber.einen_schreiben({"trace_id": "t3"}) is False
+    assert (schreiber.zaehler["geschrieben"], schreiber.zaehler["nur_spiegel"]) == (1, 1)
+    assert eg.zaehler(dg)["zustand"] == "nicht_verbunden"

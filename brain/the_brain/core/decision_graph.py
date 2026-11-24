@@ -527,16 +527,17 @@ class DecisionGraph:
             MERGE (e)-[:FUEHRT_ZU]->(p))
         """
 
-    def upsert_entscheidung(self, eintrag: Dict[str, Any], timeout_s: float = 2.0) -> None:
+    def upsert_entscheidung(self, eintrag: Dict[str, Any], timeout_s: float = 2.0) -> bool:
         """Ein Satz und seine Entscheidung (core/entscheidung_graph.py). Satzanfang wie
         Plan.intent (hoechstens 300 Zeichen), nie die Antwort.
 
         Wirft bei einem Neo4j-Fehler, damit der Schreiber zaehlen kann; der Spiegel im
         Speicher ist dann schon geschrieben. Zeitgrenze je Transaktion: ``timeout_s``.
+        True = Neo4j hat die Transaktion bestaetigt; False = nur im Spiegel (nicht verbunden).
         """
         trace_id = str(eintrag.get("trace_id") or "")
         if not trace_id:
-            return
+            return False
         werte = {
             "trace_id": trace_id,
             "eid": f"ent_{trace_id}",
@@ -557,12 +558,13 @@ class DecisionGraph:
         self._mem_entscheidungen.append(dict(werte))
         self.stats_counters["writes_entscheidungen"] += 1
         if not self._connected:
-            return
+            return False
         try:
             from neo4j import Query
 
             with self._driver.session() as s:
                 s.run(Query(self._ENTSCHEIDUNG_CYPHER, timeout=float(timeout_s)), **werte).consume()
+            return True
         except Exception:
             self.stats_counters["errors"] += 1
             raise

@@ -213,7 +213,10 @@ class Schreiber:
     def __init__(self, graph: Any, maxsize: int = WARTESCHLANGE_MAX) -> None:
         self._graph = graph
         self._schlange: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=maxsize)
-        self.zaehler = {"gemeldet": 0, "geschrieben": 0, "verworfen": 0, "fehler": 0}
+        # geschrieben = von Neo4j bestaetigt; nur_spiegel = Neo4j nicht verbunden, der Eintrag
+        # steht nur im Speicher-Spiegel des Gehirns (geht beim Neustart verloren).
+        self.zaehler = {"gemeldet": 0, "geschrieben": 0, "nur_spiegel": 0, "verworfen": 0,
+                        "fehler": 0}
         self._faden: Optional[threading.Thread] = None
         self._lock = threading.Lock()
 
@@ -236,9 +239,12 @@ class Schreiber:
 
     def einen_schreiben(self, eintrag: Dict[str, Any]) -> bool:
         try:
-            self._graph.upsert_entscheidung(eintrag, timeout_s=zeitgrenze_s())
-            self.zaehler["geschrieben"] += 1
-            return True
+            bestaetigt = self._graph.upsert_entscheidung(eintrag, timeout_s=zeitgrenze_s())
+            if bestaetigt is True:
+                self.zaehler["geschrieben"] += 1
+                return True
+            self.zaehler["nur_spiegel"] += 1
+            return False
         except Exception as e:  # noqa: BLE001
             self.zaehler["fehler"] += 1
             logger.debug(f"[entscheidung] Schreiben fehlgeschlagen: {type(e).__name__}: {e}")
@@ -286,11 +292,19 @@ def melden(graph: Any, eintrag: Optional[Dict[str, Any]]) -> bool:
         return False
 
 
-def zaehler(graph: Any) -> Dict[str, int]:
-    """Zaehler des Schreibers (fuer /api/decision_graph/stats)."""
+def zaehler(graph: Any) -> Dict[str, Any]:
+    """Zaehler des Schreibers und Zustand der Datenbank (fuer /api/decision_graph/stats).
+
+    ``zustand``: "verbunden" (Neo4j bestaetigt jeden Eintrag) oder "nicht_verbunden" (nur der
+    Speicher-Spiegel; ``grund`` nennt den Verbindungsfehler)."""
     try:
         with _SCHREIBER_LOCK:
             schreiber = _SCHREIBER.get(id(graph))
-        return dict(schreiber.zaehler) if schreiber is not None else {}
+        out: Dict[str, Any] = dict(schreiber.zaehler) if schreiber is not None else {}
+        verbunden = bool(getattr(graph, "_connected", False))
+        out["zustand"] = "verbunden" if verbunden else "nicht_verbunden"
+        if not verbunden:
+            out["grund"] = getattr(graph, "_connect_error", None) or "nicht eingeschaltet"
+        return out
     except Exception:  # noqa: BLE001
         return {}
