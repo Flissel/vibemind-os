@@ -62,7 +62,8 @@ class Nachfasser:
                  exec_log: Any = None, jetzt: Callable[[], float] = time.time,
                  rueckweg_anschluss: Optional[Callable[[dict], dict]] = None,
                  dokument_anschluss: Optional[Callable[..., dict]] = None,
-                 recherche_anschluss: Optional[Callable[[], dict]] = None) -> None:
+                 recherche_anschluss: Optional[Callable[[], dict]] = None,
+                 coding_anschluss: Optional[Callable[[], dict]] = None) -> None:
         self.tabelle = tabelle
         self._jetzt = jetzt
         self.validator = validator
@@ -75,6 +76,8 @@ class Nachfasser:
         self._dokument_anschluss = dokument_anschluss
         # Recherchen zu einer Bubble (core/recherche_bubble); in Tests eine Attrappe.
         self._recherche_anschluss = recherche_anschluss
+        # Bauauftraege an den Project Space (core/coding_auftrag); in Tests eine Attrappe.
+        self._coding_anschluss = coding_anschluss
 
     def runde(self) -> Dict[str, int]:
         z = {"geprueft": 0, "bestaetigt": 0, "abgelehnt_pruefung": 0, "fortgesetzt": 0,
@@ -109,6 +112,7 @@ class Nachfasser:
                 logger.exception("Meldung fuer Auftrag %s fehlgeschlagen", b.get("id"))
                 z["fehler"] += 1
         self._recherchen(z)
+        self._coding(z)
         try:
             z["abgelaufen"] = int(self.tabelle.abgelaufene_markieren() or 0)
         except Exception:  # noqa: BLE001
@@ -132,6 +136,23 @@ class Nachfasser:
             z["fehler"] += 1
             return
         for name, wert in recherche_bubble.runde(self.tabelle, **anschluss).items():
+            z[name] = z.get(name, 0) + wert
+
+    def _coding(self, z: Dict[str, int]) -> None:
+        """Laufende Bauauftraege: Stand beim Project Space fragen, abschliessen. Wirft nie.
+
+        Wie ``_recherchen`` vor ``abgelaufene_markieren``.
+        """
+        if not hasattr(self.tabelle, "coding_laufend"):
+            return
+        from core import coding_auftrag
+        try:
+            anschluss = self._coding_anschluss() if self._coding_anschluss else {}
+        except Exception:  # noqa: BLE001
+            logger.exception("Coding-Anschluss nicht baubar")
+            z["fehler"] += 1
+            return
+        for name, wert in coding_auftrag.runde(self.tabelle, **anschluss).items():
             z[name] = z.get(name, 0) + wert
 
     def _plan_rest_ausstehend(self, a: dict) -> bool:

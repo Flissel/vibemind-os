@@ -2677,6 +2677,27 @@ def _recherche_starten(pe, trace_id: str, intent: str, offen: Dict[str, Any]) ->
     return JSONResponse({**felder, "trace_id": trace_id})
 
 
+def _coding_starten(pe, trace_id: str, intent: str, offen: Dict[str, Any]) -> JSONResponse:
+    """"Ja, bauen": Zeile anlegen, Bau beim Project Space starten, als angenommen antworten."""
+    from core import coding_auftrag as _ca
+
+    try:
+        from core.agent_auftraege import tabelle_aus_umgebung
+        tabelle = tabelle_aus_umgebung()
+    except Exception:  # noqa: BLE001
+        _trace_lite(pe, trace_id, intent, "coding-fehler", _ca.TABELLE_FEHLT)
+        return JSONResponse({"ok": False, "space": _ca.SPACE, "executed": {}, "final_text": _ca.TABELLE_FEHLT,
+                             "trace_id": trace_id})
+    try:
+        felder = _ca.starten(offen, tabelle=tabelle, trace_id=trace_id)
+    except _ca.CodingFehler as e:
+        _trace_lite(pe, trace_id, intent, "coding-fehler", str(e))
+        return JSONResponse({"ok": False, "space": _ca.SPACE, "executed": {}, "final_text": str(e),
+                             "trace_id": trace_id})
+    _trace_lite(pe, trace_id, intent, "coding-gestartet", felder["final_text"])
+    return JSONResponse({**felder, "trace_id": trace_id})
+
+
 def _white_paper_rueckfrage(argumente: Dict[str, Any]) -> str:
     """Umfang des White Papers als Rueckfrage (nur lesen); merkt sie fuer "Ja, erstellen"."""
     from core import whitepaper_bestaetigung as _wp
@@ -3111,6 +3132,16 @@ async def _multihop_execute(request: Request):
                                  "final_text": _rb_antwort["satz"], "trace_id": trace_id})
         if _rb_antwort and _rb_antwort.get("offen"):
             return await asyncio.to_thread(_recherche_starten, pe, trace_id, intent, _rb_antwort["offen"])
+        # Bau im Project Space: "Ja, bauen" gilt nur direkt nach der Rueckfrage
+        # (core/coding_auftrag); jeder andere Satz verwirft sie.
+        from core import coding_auftrag as _ca
+        _ca_antwort = _ca.satz_pruefen(intent)
+        if _ca_antwort and _ca_antwort.get("satz"):
+            _trace_lite(pe, trace_id, intent, "coding-rueckfrage", _ca_antwort["satz"])
+            return JSONResponse({"ok": False, "rueckfrage": True, "space": _ca.SPACE, "executed": {},
+                                 "final_text": _ca_antwort["satz"], "trace_id": trace_id})
+        if _ca_antwort and _ca_antwort.get("offen"):
+            return await asyncio.to_thread(_coding_starten, pe, trace_id, intent, _ca_antwort["offen"])
         # Antwort auf die Frage nach einer von mehreren gleichnamigen Bubbles (core/verstehen);
         # jeder andere Satz laesst sie verfallen.
         _bubble_wahl = _verstehen.bubble_antwort(intent)
@@ -3167,6 +3198,12 @@ async def _multihop_execute(request: Request):
                 return JSONResponse({"ok": False, "rueckfrage": True, "space": "sales", "executed": {},
                                      "final_text": _sales_frage, "trace_id": trace_id, "weg": "sales"})
             _sales_fest = plan is not None
+        # "Bau mir ...": erst die Rueckfrage, gebaut wird erst nach "Ja, bauen" (core/coding_auftrag).
+        if not skip_shortcut and plan is None and not _bubble_wahl and _ca.ist_bauauftrag(intent, _space):
+            _ca_frage = await asyncio.to_thread(_ca.vorschau, intent)
+            _trace_lite(pe, trace_id, intent, "coding-rueckfrage", _ca_frage)
+            return JSONResponse({"ok": False, "rueckfrage": True, "space": _ca.SPACE, "executed": {},
+                                 "final_text": _ca_frage, "trace_id": trace_id, "weg": "coding"})
         if not skip_shortcut and plan is None and not _bubble_wahl:
             _lesen = _verstehen.feste_lesefrage(intent, _space)
             if _lesen and _lesen.get("antwort"):

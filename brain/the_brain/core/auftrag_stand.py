@@ -127,6 +127,9 @@ def _stand_einer_zeile(zeile: Mapping[str, Any]) -> dict[str, Any]:
     if rueckweg == "abgebrochen":
         return {"stand": "abgebrochen", "ok": True, "hinweis": True,
                 "meldung": meldung or "Das White Paper wurde abgebrochen."}
+    if rueckweg == "ungeprueft":
+        # Bau im Project Space (core/coding_auftrag): fertig laut Dienst, ohne unabhängige Prüfung.
+        return {"stand": "ungeprueft", "ok": False, "hinweis": True, "meldung": meldung or UNGEPRUEFT_SATZ}
     if rueckweg == "wartet":
         return {"stand": "wartet", "ok": True, "hinweis": True, "meldung": meldung}
     if rueckweg in ("abgelehnt", "fehler"):
