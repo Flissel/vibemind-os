@@ -34,7 +34,7 @@ LEASE_SZENE = "20 minutes"
 RENDERFRIST_MIN = 1440                      # Entscheidung 21: der Werkbank-Auftrag bekommt einen Tag Renderfrist
 SZENEN_MIN, SZENEN_MAX = 8, 15
 BILDARTEN = ("slide", "avatar_gross", "avatar_slide", "clip")
-UEBERGAENGE = ("schnitt", "blende")
+UEBERGAENGE = ("schnitt", "blende", "higgsfield")
 SCHRITTE_MIN, SCHRITTE_MAX = 2, 5
 SPRECHTEXT_MAX, GRUND_MAX, SATZ_MAX, WUNSCH_MAX = 4000, 300, 300, 2000
 TITEL_MAX, BESCHREIBUNG_MAX, MESSNOTIZ_MAX = 100, 5000, 1500
@@ -46,6 +46,24 @@ NAME_MUSTER = re.compile(r"wb-([0-9a-f]{8})-(s([0-9]{2,3})|video)-f([0-9]{1,3})\
 KENNUNG_MUSTER = re.compile(r"wb-[a-z2-7]{10}")
 SHA_MUSTER = re.compile(r"[0-9a-f]{64}")
 HINWEIS_KEY_MUSTER = re.compile(r"[a-z0-9_]{1,60}")
+# Higgsfield-Uebergaenge (Migration 102). Der Clip heisst wb-<aid8>-h<NN>-f<versuch>.mp4 (NN = Nummer der Szene, IN
+# die der Uebergang fuehrt); die Standbilder gehoeren zum Szenen-Clip: wb-<aid8>-s<NN>-f<variante>-a.jpg (erstes
+# Bild) und -z.jpg (letztes Bild).
+HF_NAME_MUSTER = re.compile(r"wb-([0-9a-f]{8})-(h([0-9]{2,3}))-f([0-9]{1,3})\.mp4")
+HF_BILD_MUSTER = re.compile(r"wb-([0-9a-f]{8})-s([0-9]{2,3})-f([0-9]{1,3})-([az])\.jpg")
+HF_NUMMER_MUSTER = re.compile(r"[A-Za-z0-9_-]{6,80}")
+HF_MODELLE = ("kling3_0",)
+HF_DAUER = (3, 5)
+HF_PROMPT_MAX = 1000
+HF_PREIS_MAX = 100                           # Credits je Clip; mehr ist ein Fehler, kein Auftrag
+HF_BILD_MAX = 2 * 1024 * 1024
+LEASE_HF = "15 minutes"
+HF_GRUENDE = {"weg": "Diese Freigabe geht nur auf der Sales-Seite.",
+              "stand": "Der Clip ist nicht mehr in diesem Stand.",
+              "ueberholt": "Eine der beiden Szenen hat sich geändert. Der Übergang wird neu vorgeschlagen.",
+              "preis": "Der Preis hat sich geändert. Bitte die Seite neu laden und noch einmal prüfen.",
+              "prompt": "Der Auftragstext ist leer, zu lang oder enthält Steuerzeichen.",
+              "auftrag": "Das Video ist nicht mehr in Arbeit."}
 
 
 # ─── Gemeinsames ─────────────────────────────────────────────────────────
@@ -189,7 +207,7 @@ def _auswahl(wert, erlaubt: tuple, feld: str) -> str:
 
 def _name_pruefen(aid: str, name: str, fremd: int = 422) -> re.Match:
     """Name nach dem Muster und zu aid passend (erste 8 Hex-Zeichen); sonst 422 (Fremdname: `fremd`)."""
-    m = NAME_MUSTER.fullmatch(name)
+    m = NAME_MUSTER.fullmatch(name) or HF_NAME_MUSTER.fullmatch(name)   # gleiche Gruppen: aid8, sNN|video|hNN, NN, f
     if not m:
         raise HTTPException(422, "Ungültiger Dateiname")
     if m.group(1) != aid.replace("-", "")[:8]:
@@ -618,6 +636,232 @@ def upload_abschliessen(aid: str, name: str, payload: dict = Body(...), x_bild_k
     return {"ok": True, "datei": name, "bytes": angemeldet}
 
 
+# ─── Higgsfield-Uebergaenge: Arbeiter (102) ──────────────────────────────
+# Der Higgsfield-Arbeiter am PC schlaegt vor (Standbilder, Auftragstext, Preis) und bestellt erst, wenn ein Mensch
+# den Clip auf der Sales-Seite freigegeben hat. Die Geldregeln stehen in den SQL-Funktionen marketing.video_hf_*.
+
+
+def _hf_prompt(wert) -> str:
+    """Auftragstext: Zeilenumbrueche und Tabulatoren werden Leerzeichen, andere Steuerzeichen sind verboten;
+    1 bis 1000 Zeichen. Er geht spaeter als EIN Argument an das Programm, nie durch eine Shell."""
+    if not isinstance(wert, str):
+        raise HTTPException(422, "prompt muss Text sein")
+    text = " ".join(wert.replace("\r", " ").replace("\n", " ").replace("\t", " ").split())
+    if not text or len(text) > HF_PROMPT_MAX or any(ord(c) < 32 or ord(c) == 127 for c in text):
+        raise HTTPException(422, f"prompt: 1 bis {HF_PROMPT_MAX} Zeichen, keine Steuerzeichen")
+    return text
+
+
+def _hf_dauer(wert) -> int:
+    if _ganz(wert, "dauer_s", 1, 15) not in HF_DAUER:
+        raise HTTPException(422, "dauer_s muss 3 oder 5 sein")
+    return wert
+
+
+def _hf_preis(wert, feld: str = "preis") -> float:
+    return _zahl(wert, feld, 0, HF_PREIS_MAX)
+
+
+def _hf_clip(hid: str, mandant: str | None = None) -> dict:
+    """{id, auftrag, stand, versuch, nach_nr, mandant} eines Higgsfield-Clips, wenn sein Auftrag ein
+    Marketing-Videoauftrag ist (und zum Mandanten gehoert); sonst 404."""
+    z = _lesen_einer(lambda:
+        f"SELECT h.id, h.auftrag, h.stand, h.versuch, n.nr AS nach_nr, a.mandant FROM marketing.video_hf_clips h "
+        f"JOIN auftrag.auftraege a ON a.id = h.auftrag JOIN marketing.video_szenen n ON n.id = h.nach_szene "
+        f"WHERE h.id = {lit(hid)}::uuid AND a.an = {lit(AN)} AND a.art = {lit(ART)}")
+    if not z or (mandant is not None and z.get("mandant") != mandant):
+        raise HTTPException(404, "Unbekannter Clip")
+    return z
+
+
+def _hf_bild_name(aid: str, name: str) -> re.Match:
+    m = HF_BILD_MUSTER.fullmatch(name)
+    if not m or m.group(1) != aid.replace("-", "")[:8]:
+        raise HTTPException(404, "Unbekanntes Bild")
+    return m
+
+
+@arbeiter_router.post("/hf/abgleich")
+def hf_abgleich(x_bild_key: str | None = Header(None)):
+    """Je Werk in Arbeit: ueberholte Clips schliessen und die Stellen nennen, an denen ein Vorschlag fehlt
+    ({werke: [{auftrag, mandant, titel, thema, fehlend: [...]}]}; nur Werke mit fehlenden Stellen)."""
+    _bild_schluessel(x_bild_key)
+    zeilen = _lesen(lambda:
+        "SELECT w.auftrag, w.mandant, w.gliederung->>'titel' AS titel, a.eingabe->>'thema' AS thema "
+        "FROM marketing.video_werke w JOIN auftrag.auftraege a ON a.id = w.auftrag "
+        f"WHERE a.an = {lit(AN)} AND a.art = {lit(ART)} AND a.stand = 'werkbank' "
+        "AND EXISTS (SELECT 1 FROM marketing.video_szenen s WHERE s.auftrag = w.auftrag AND s.uebergang = 'higgsfield') "
+        "ORDER BY a.angelegt")
+    werke = []
+    for z in zeilen:
+        a = _uuid_oder_404(str(z["auftrag"]))
+        erg = _schreiben(lambda a=a: f"SELECT marketing.video_hf_abgleichen({lit(a)}::uuid) AS e").get("e")
+        fehlend = erg.get("fehlend") if isinstance(erg, dict) else None
+        if fehlend:
+            werke.append({"auftrag": a, "mandant": z.get("mandant"), "titel": z.get("titel"),
+                          "thema": z.get("thema"), "fehlend": fehlend})
+    return {"werke": werke}
+
+
+@arbeiter_router.put("/{aid}/bild/{name}")
+async def hf_bild_ablegen(aid: str, name: str, request: Request, x_bild_key: str | None = Header(None)):
+    """Ein Standbild (JPEG, bis 2 MB, roher Koerper) eines Szenen-Clips ablegen."""
+    _bild_schluessel(x_bild_key)
+    a = _uuid_oder_404(aid)
+    _hf_bild_name(a, name)
+    werk = await run_in_threadpool(_werk, a)
+    kopf = request.headers.get("content-length", "")
+    if kopf.isdigit() and int(kopf) > HF_BILD_MAX:
+        raise HTTPException(413, "Das Bild ist zu gross")
+    daten = bytearray()
+    async for stueck in request.stream():
+        daten += stueck
+        if len(daten) > HF_BILD_MAX:
+            raise HTTPException(413, "Das Bild ist zu gross")
+    if len(daten) < 100 or bytes(daten[:3]) != b"\xff\xd8\xff":
+        raise HTTPException(422, "Das ist kein JPEG-Bild")
+    await run_in_threadpool(_hf_bild_speichern, name, bytes(daten), werk["mandant"])
+    return {"ok": True, "datei": name, "bytes": len(daten)}
+
+
+def _hf_bild_speichern(name: str, daten: bytes, mandant: str) -> None:
+    ziel = os.path.join(_ordner(), name)
+    teil = ziel + ".teil"
+    try:
+        try:
+            with open(teil, "wb") as f:
+                f.write(daten)
+            medien_mandant.zuordnen([name], mandant)           # Mandant aus der Auftragszeile
+            os.chmod(teil, 0o644)
+            os.replace(teil, ziel)
+        except OSError:
+            raise HTTPException(503, "Das Bild konnte nicht abgelegt werden")
+    except BaseException:
+        _teil_loeschen(teil)
+        raise
+
+
+@arbeiter_router.get("/{aid}/bild/{name}")
+def hf_bild_holen(aid: str, name: str, x_bild_key: str | None = Header(None)):
+    _bild_schluessel(x_bild_key)
+    a = _uuid_oder_404(aid)
+    _hf_bild_name(a, name)
+    _werk(a)
+    pfad = os.path.join(_ordner(), name)
+    if not os.path.isfile(pfad):
+        raise HTTPException(404, "Bild fehlt")
+    return FileResponse(pfad, media_type="image/jpeg")
+
+
+@arbeiter_router.post("/{aid}/hf/vorschlag")
+def hf_vorschlag(aid: str, payload: dict = Body(...), x_bild_key: str | None = Header(None)):
+    """Vorschlag fuer den Uebergang IN die Szene `nach_nr` anlegen. Bestellt wird nichts."""
+    _bild_schluessel(x_bild_key)
+    a = _uuid_oder_404(aid)
+    _werk(a)
+    nach_nr = _ganz(payload.get("nach_nr"), "nach_nr", 2, 999)
+    von_variante = _ganz(payload.get("von_variante"), "von_variante", 0, 1000)
+    nach_variante = _ganz(payload.get("nach_variante"), "nach_variante", 0, 1000)
+    teil = {"prompt": _hf_prompt(payload.get("prompt")),
+            "dauer_s": _hf_dauer(payload.get("dauer_s")),
+            "preis": _hf_preis(payload.get("preis")),
+            "modell": _auswahl(payload.get("modell"), HF_MODELLE, "modell"),
+            "von_variante": von_variante, "nach_variante": nach_variante}
+    aid8 = a.replace("-", "")[:8]
+    for feld, nr, variante, seite in (("start_bild", nach_nr - 1, von_variante, "z"), ("end_bild", nach_nr, nach_variante, "a")):
+        name = _text(payload.get(feld), feld, 100)
+        m = HF_BILD_MUSTER.fullmatch(name)
+        if not m or m.group(1) != aid8 or int(m.group(2)) != nr or int(m.group(3)) != variante or m.group(4) != seite:
+            raise HTTPException(409, "Das Bild passt nicht zu Auftrag, Szene und Variante")
+        if not os.path.isfile(os.path.join(_ordner(), name)):
+            raise HTTPException(409, "Das Bild liegt nicht im Ordner")
+        teil[feld] = name
+    sid = _szene_id(a, nach_nr)
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.video_hf_vorschlagen({lit(a)}::uuid, {lit(sid)}::uuid, {_json(teil)}) AS id")
+    if not zeile.get("id"):
+        raise HTTPException(409, "An dieser Stelle wird gerade kein Vorschlag gebraucht")
+    return {"id": str(zeile["id"])}
+
+
+@arbeiter_router.post("/hf/nehmen")
+def hf_nehmen(x_bild_key: str | None = Header(None)):
+    """Naechsten freigegebenen Clip zum Bestellen vergeben ({clip} oder null). Ein Clip mit `hf_auftrag` ist schon
+    bestellt: dort wird nur weiter gewartet, nie neu bestellt."""
+    _bild_schluessel(x_bild_key)
+    zeile = _schreiben(lambda: f"SELECT marketing.video_hf_nehmen({lit(LEASE_HF)}::interval) AS c")
+    c = zeile.get("c")
+    return {"clip": c if isinstance(c, dict) and c.get("id") else None}
+
+
+@arbeiter_router.post("/hf/{hid}/preis")
+def hf_preis(hid: str, payload: dict = Body(...), x_bild_key: str | None = Header(None)):
+    """Preis unmittelbar vor dem Bestellen. ok false = NICHT bestellen (der Clip wartet wieder auf einen Klick)."""
+    _bild_schluessel(x_bild_key)
+    h = _uuid_oder_404(hid)
+    preis = _hf_preis(payload.get("preis"))
+    _hf_clip(h)
+    zeile = _schreiben(lambda: f"SELECT marketing.video_hf_preis_pruefen({lit(h)}::uuid, {preis}::numeric) AS ok")
+    return {"ok": _bool(zeile)}
+
+
+@arbeiter_router.post("/hf/{hid}/auftrag")
+def hf_auftrag(hid: str, payload: dict = Body(...), x_bild_key: str | None = Header(None)):
+    """Higgsfields Auftragsnummer vermerken, gleich nach dem Bestellen."""
+    _bild_schluessel(x_bild_key)
+    h = _uuid_oder_404(hid)
+    nummer = payload.get("hf_auftrag")
+    if not isinstance(nummer, str) or not HF_NUMMER_MUSTER.fullmatch(nummer):
+        raise HTTPException(422, "hf_auftrag: 6 bis 80 Zeichen aus Buchstaben, Ziffern, - und _")
+    preis = _hf_preis(payload.get("preis"))
+    _hf_clip(h)
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.video_hf_auftrag_merken({lit(h)}::uuid, {lit(nummer)}, {preis}::numeric) AS ok")
+    if not _bool(zeile):
+        raise HTTPException(409, "Der Clip nimmt gerade keine Auftragsnummer an")
+    return {"ok": True}
+
+
+@arbeiter_router.post("/hf/{hid}/weiter")
+def hf_weiter(hid: str, x_bild_key: str | None = Header(None)):
+    """Leihe verlaengern, solange auf Higgsfield gewartet wird; ok false = aufhoeren."""
+    _bild_schluessel(x_bild_key)
+    h = _uuid_oder_404(hid)
+    _hf_clip(h)
+    zeile = _schreiben(lambda: f"SELECT marketing.video_hf_weiter({lit(h)}::uuid, {lit(LEASE_HF)}::interval) AS ok")
+    return {"ok": _bool(zeile)}
+
+
+@arbeiter_router.post("/hf/{hid}/fertig")
+def hf_fertig(hid: str, payload: dict = Body(...), x_bild_key: str | None = Header(None)):
+    _bild_schluessel(x_bild_key)
+    h = _uuid_oder_404(hid)
+    z = _hf_clip(h)
+    datei = _text(payload.get("datei"), "datei", 100)
+    dauer = _zahl(payload.get("dauer_s"), "dauer_s", 0.2, 30)
+    m = HF_NAME_MUSTER.fullmatch(datei)
+    if not m or m.group(1) != str(z["auftrag"]).replace("-", "")[:8] or int(m.group(3)) != z["nach_nr"] \
+            or int(m.group(4)) != z["versuch"]:
+        raise HTTPException(409, "Der Dateiname passt nicht zu Auftrag, Stelle und Versuch")
+    if not os.path.isfile(os.path.join(_ordner(), datei)):
+        raise HTTPException(409, "Die Datei liegt nicht im Ordner")
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.video_hf_fertig({lit(h)}::uuid, {lit(datei)}, {dauer}::numeric) AS ok")
+    if not _bool(zeile):
+        raise HTTPException(409, "Der Clip nimmt gerade keine Fertigmeldung an")
+    return {"ok": True}
+
+
+@arbeiter_router.post("/hf/{hid}/fehler")
+def hf_fehler(hid: str, payload: dict = Body(...), x_bild_key: str | None = Header(None)):
+    _bild_schluessel(x_bild_key)
+    h = _uuid_oder_404(hid)
+    grund = _grund(payload)
+    _hf_clip(h)
+    zeile = _schreiben(lambda: f"SELECT marketing.video_hf_fehler({lit(h)}::uuid, {lit(grund)}) AS ok")
+    return {"ok": _bool(zeile)}
+
+
 # ─── Pult: Szenenseite der Sales-UI ──────────────────────────────────────
 
 
@@ -785,4 +1029,71 @@ def pult_oeffnen(aid: str, nr: int, payload: dict = Body(...), x_pult_key: str |
     zeile = _schreiben(lambda: f"SELECT marketing.video_szene_oeffnen({lit(sid)}::uuid, {lit(wunsch)}) AS ok")
     if not _bool(zeile):
         raise HTTPException(409, "Die Szene kann gerade nicht geöffnet werden")
+    return {"ok": True}
+
+
+# ─── Pult: Higgsfield-Uebergaenge (102) ──────────────────────────────────
+# Freigabe je Clip, nur hier: der Weg ist fest 'seite' (Rowboat kann kein aenderbares Feld zeigen; die Datenbank
+# lehnt jeden anderen Weg ab). Der Mensch sieht Bilder, Preis und Auftragstext und kann den Text aendern.
+
+
+@pult_router.get("/{aid}/hf")
+def pult_hf(aid: str, mandant: str = Query(...), x_pult_key: str | None = Header(None)):
+    """{clips: [...], credits, bestellt, vorbereitung: [nach_nr, ...]} fuer die Szenenseite."""
+    _schluessel(x_pult_key)
+    a = _uuid_oder_404(aid)
+    _pult_werk(a, mandant)
+    zeile = _lesen_einer(lambda: f"SELECT marketing.video_hf_liste({lit(a)}::uuid) AS l")
+    liste = zeile.get("l") if zeile else None
+    return liste if isinstance(liste, dict) else {"clips": [], "credits": 0, "bestellt": 0, "vorbereitung": []}
+
+
+@pult_router.post("/hf/{hid}/urteil")
+def pult_hf_urteil(hid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    """{mandant, von, urteil: erzeugen|verwerfen, prompt, preis_gesehen}. `erzeugen` braucht den Auftragstext (so,
+    wie er an Higgsfield gehen soll) und den Preis, den der Mensch gesehen hat."""
+    _schluessel(x_pult_key)
+    h = _uuid_oder_404(hid)
+    mandant = _kopf(payload)
+    von = _text(payload.get("von"), "von", 60)
+    urteil = _auswahl(payload.get("urteil"), ("erzeugen", "verwerfen"), "urteil")
+    prompt, preis = "NULL", "NULL"
+    if urteil == "erzeugen":
+        prompt = lit(_hf_prompt(payload.get("prompt")))
+        preis = f"{_hf_preis(payload.get('preis_gesehen'), 'preis_gesehen')}::numeric"
+    _hf_clip(h, mandant)
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.video_hf_entscheiden({lit(h)}::uuid, {lit(urteil)}, {prompt}, {preis}, {lit(von)}, 'seite') AS e")
+    erg = zeile.get("e")
+    if not isinstance(erg, dict) or erg.get("ok") is not True:
+        grund = erg.get("grund") if isinstance(erg, dict) else None
+        raise HTTPException(409, HF_GRUENDE.get(grund, HF_GRUENDE["stand"]))
+    return erg
+
+
+@pult_router.post("/hf/{hid}/nochmal")
+def pult_hf_nochmal(hid: str, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    """"Nochmal mit Änderung": ein neuer Vorschlag mit dem neuen Text. Bestellt wird erst nach einem neuen Klick."""
+    _schluessel(x_pult_key)
+    h = _uuid_oder_404(hid)
+    mandant = _kopf(payload)
+    von = _text(payload.get("von"), "von", 60)
+    prompt = _hf_prompt(payload.get("prompt"))
+    _hf_clip(h, mandant)
+    zeile = _schreiben(lambda:
+        f"SELECT marketing.video_hf_nochmal({lit(h)}::uuid, {lit(prompt)}, {lit(von)}, 'seite') AS id")
+    if not zeile.get("id"):
+        raise HTTPException(409, "An dieser Stelle kann gerade kein neuer Vorschlag entstehen")
+    return {"id": str(zeile["id"])}
+
+
+@pult_router.post("/{aid}/hf/{nr}/ohne")
+def pult_hf_ohne(aid: str, nr: int, payload: dict = Body(...), x_pult_key: str | None = Header(None)):
+    """"Ohne Übergang weiter" fuer eine Stelle, an der noch kein Vorschlag steht: dort bleibt ein normaler Schnitt."""
+    _schluessel(x_pult_key)
+    a = _uuid_oder_404(aid)
+    _pult_werk(a, _kopf(payload))
+    zeile = _schreiben(lambda: f"SELECT marketing.video_hf_ohne({lit(a)}::uuid, {int(nr)}, 'seite') AS ok")
+    if not _bool(zeile):
+        raise HTTPException(409, "An dieser Stelle gibt es gerade nichts zu überspringen")
     return {"ok": True}
