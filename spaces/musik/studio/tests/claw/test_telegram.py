@@ -24,18 +24,23 @@ class FakeApi:
         self.ablauf = ablauf
         self.texte: list[str] = []
         self.dateien: list[tuple] = []
+        # False oder eine Ausnahmeklasse (TelegramAbgelehnt / TelegramVorlaeufig)
         self.datei_fehler = False
         self.text_fehler = False
+        self.versuche_text = 0
+        self.versuche_datei = 0
 
     def senden(self, text, chat_id=None):
+        self.versuche_text += 1
         if self.text_fehler:
-            raise RuntimeError("Telegram sendMessage: weg")
+            raise self.text_fehler("Telegram sendMessage: weg")
         self.texte.append(text)
         self.ablauf.append(("senden", text))
 
     def datei_senden(self, art, name, daten, text, chat_id=None):
+        self.versuche_datei += 1
         if self.datei_fehler:
-            raise RuntimeError("Telegram sendAudio: zu gross")
+            raise self.datei_fehler("Telegram sendAudio: zu gross")
         self.dateien.append((art, name, daten, text))
         self.ablauf.append(("datei", art, name))
 
@@ -54,6 +59,8 @@ class FakeDienst:
         self.gemeldet: set[str] = set()
         self.aufrufe: list[tuple] = []
         self.tot = False
+        self.posts = 0
+        self.gemeldet_antwort: dict | None = None
 
     def add(self, art="video", zustand="fertig", **felder):
         nr = len(self.auftraege) + 1
@@ -90,6 +97,9 @@ class FakeDienst:
             return 200, daten, self.gesamt.get(schluessel, len(daten))
         if methode == "POST" and len(teile) == 4 and teile[3] == "gemeldet":
             assert koerper == {}, "POST braucht einen JSON-Koerper ({}), sonst 415"
+            self.posts += 1
+            if self.gemeldet_antwort is not None:       # Dienst antwortet 200, aber {"ok": false}
+                return self._json(self.gemeldet_antwort)
             self.gemeldet.add(teile[2])
             self.ablauf.append(("gemeldet", teile[2]))
             return self._json({"ok": True})
@@ -225,21 +235,120 @@ def test_datei_fehlt_bericht_geht_trotzdem_und_wird_markiert(api, dienst):
 def test_telegram_lehnt_datei_ab_dann_text_und_markiert(api, dienst):
     i = dienst.add("video")
     dienst.dateien[(i, "videomusik.mp3")] = b"x"
-    api.datei_fehler = True
+    api.datei_fehler = bot.TelegramAbgelehnt          # 4xx: die Datei geht nicht, der Text schon
     assert bot.melden(api, dienst, CHAT) == 1
     assert len(api.texte) == 1 and i in dienst.gemeldet
 
 
-def test_telegram_aus_nicht_markieren_aber_irgendwann_aufgeben(api, dienst):
+class Uhr:
+    def __init__(self):
+        self.jetzt = 1_000_000.0
+
+    def __call__(self):
+        return self.jetzt
+
+
+def _stand():
+    # Vor der Korrektur gab es keinen Meldestand: dann reicht ein dict (das Verhalten ist das Thema).
+    return getattr(bot, "Meldestand", dict)()
+
+
+def test_gemeldet_ok_false_schickt_nicht_erneut(api, dienst, caplog):
     i = dienst.add("video")
     dienst.dateien[(i, "videomusik.mp3")] = b"x"
-    api.text_fehler = api.datei_fehler = True
-    versuche: dict = {}
-    for _ in range(bot.MELDE_VERSUCHE - 1):
-        assert bot.melden(api, dienst, CHAT, versuche) == 0
-        assert i not in dienst.gemeldet                # Telegram war weg: spaeter nochmal
-    assert bot.melden(api, dienst, CHAT, versuche) == 0
-    assert i in dienst.gemeldet                        # nach MELDE_VERSUCHE gibt der Bot auf
+    dienst.gemeldet_antwort = {"ok": False, "fehler": "OSError"}      # HTTP 200, aber nicht gespeichert
+    stand = _stand()
+    with caplog.at_level(logging.WARNING, logger="djset.claw.telegram"):
+        gesendet = [bot.melden(api, dienst, CHAT, stand) for _ in range(3)]
+    assert gesendet == [1, 0, 0]
+    assert len(api.dateien) == 1 and api.texte == []        # Telegram bekam genau einen Bericht
+    assert dienst.posts == 3                                # gemeldet wurde dreimal versucht
+    assert i not in dienst.gemeldet
+    # sobald der Dienst wieder speichert, wird markiert, ohne nochmal zu senden
+    dienst.gemeldet_antwort = None
+    assert bot.melden(api, dienst, CHAT, stand) == 0
+    assert i in dienst.gemeldet and len(api.dateien) == 1
+
+
+def test_gemeldet_gibt_nach_10_fehlschlaegen_auf_und_sendet_nie_neu(api, dienst, caplog):
+    i = dienst.add("video")
+    dienst.dateien[(i, "videomusik.mp3")] = b"x"
+    dienst.gemeldet_antwort = {"ok": False}
+    stand = _stand()
+    with caplog.at_level(logging.WARNING, logger="djset.claw.telegram"):
+        for _ in range(15):
+            bot.melden(api, dienst, CHAT, stand)
+    assert len(api.dateien) == 1 and dienst.posts == 10
+    fehler = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(fehler) == 1 and i in fehler[0].getMessage()
+
+
+def test_kurzer_telegram_ausfall_verliert_keine_meldung(api, dienst):
+    i = dienst.add("video")
+    dienst.dateien[(i, "videomusik.mp3")] = b"x"
+    api.text_fehler = api.datei_fehler = bot.TelegramVorlaeufig
+    uhr, stand = Uhr(), _stand()
+    for _ in range(10):                                   # 10 Runden in 270 s: Telegram nicht erreichbar
+        assert bot.melden(api, dienst, CHAT, stand, uhr=uhr) == 0
+        assert i not in dienst.gemeldet and dienst.posts == 0
+        uhr.jetzt += 30
+    api.text_fehler = api.datei_fehler = False            # Telegram ist wieder da
+    assert bot.melden(api, dienst, CHAT, stand, uhr=uhr) == 1
+    assert len(api.dateien) == 1 and i in dienst.gemeldet
+
+
+def test_langer_telegram_ausfall_gibt_nach_6_stunden_auf(api, dienst, caplog):
+    i = dienst.add("video")
+    api.text_fehler = api.datei_fehler = bot.TelegramVorlaeufig
+    uhr, stand = Uhr(), _stand()
+    assert bot.melden(api, dienst, CHAT, stand, uhr=uhr) == 0
+    uhr.jetzt += 6 * 3600 - 1
+    assert bot.melden(api, dienst, CHAT, stand, uhr=uhr) == 0 and i not in dienst.gemeldet
+    uhr.jetzt += 2
+    with caplog.at_level(logging.WARNING, logger="djset.claw.telegram"):
+        bot.melden(api, dienst, CHAT, stand, uhr=uhr)
+    assert i in dienst.gemeldet
+    assert any(i in r.getMessage() for r in caplog.records)
+
+
+def test_telegram_4xx_gibt_nach_3_versuchen_auf(api, dienst, caplog):
+    i = dienst.add("video")
+    dienst.dateien[(i, "videomusik.mp3")] = b"x"
+    api.text_fehler = api.datei_fehler = bot.TelegramAbgelehnt
+    stand = _stand()
+    for _ in range(2):
+        assert bot.melden(api, dienst, CHAT, stand) == 0
+        assert i not in dienst.gemeldet
+    with caplog.at_level(logging.WARNING, logger="djset.claw.telegram"):
+        assert bot.melden(api, dienst, CHAT, stand) == 0
+    assert i in dienst.gemeldet
+    assert any(i in r.getMessage() for r in caplog.records)
+
+
+def test_telegram_fehlerklassen(monkeypatch):
+    def http(code):
+        def urlopen(*_a, **_k):
+            raise urllib.error.HTTPError("u", code, "x", {}, None)
+        return urlopen
+
+    tg = bot.TelegramApi(TOKEN, CHAT)
+    for code, klasse in ((400, bot.TelegramAbgelehnt), (403, bot.TelegramAbgelehnt),
+                         (429, bot.TelegramVorlaeufig), (502, bot.TelegramVorlaeufig)):
+        monkeypatch.setattr(bot.urllib.request, "urlopen", http(code))
+        with pytest.raises(klasse):
+            tg.senden("x")
+        with pytest.raises(klasse):
+            tg.datei_senden("audio", "a.mp3", b"x", "t")
+
+    def aus(*_a, **_k):
+        raise urllib.error.URLError("refused")
+
+    monkeypatch.setattr(bot.urllib.request, "urlopen", aus)
+    with pytest.raises(bot.TelegramVorlaeufig):
+        tg.senden("x")
+    monkeypatch.setattr(bot, "_post_json", lambda *a: {"ok": False, "description": "chat not found"})
+    with pytest.raises(bot.TelegramAbgelehnt):
+        tg.senden("x")
 
 
 def test_dienst_nicht_erreichbar_gibt_null(api, dienst):
@@ -421,7 +530,7 @@ def test_bot_token_in_keinem_log(monkeypatch, caplog):
         raise RuntimeError(f"Telegram sendAudio: {TOKEN}")
 
     api.datei_senden = senden_mit_token
-    api.text_fehler = True
+    api.text_fehler = bot.TelegramVorlaeufig
     logging.getLogger("djset.claw.telegram").addFilter(bot.TokenFilter(TOKEN))
     with caplog.at_level(logging.DEBUG, logger="djset.claw.telegram"):
         bot.melden(api, dienst, CHAT, token=TOKEN)

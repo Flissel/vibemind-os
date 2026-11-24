@@ -43,7 +43,9 @@ CAPTION_MAX = 1000             # Grenze 1024
 VERLAUF_WECHSEL = 10           # Frage+Antwort-Paare je Chat
 POLL_S = 50
 MELDE_TAKT_S = 30              # spaetestens alle 30 s nach fertigen Auftraegen sehen
-MELDE_VERSUCHE = 5             # so oft darf Telegram bei einem Auftrag scheitern, dann gibt der Bot auf
+ABGELEHNT_VERSUCHE = 3         # endgueltige Absagen von Telegram (4xx), dann gibt der Bot auf
+VORLAEUFIG_MAX_S = 6 * 3600    # so lange wird bei Telegram-Pannen (Netz, 5xx) weiter versucht
+POST_VERSUCHE = 10             # so oft darf `gemeldet` scheitern
 DATEI_MAX = 50 * 1024 * 1024   # Telegram: Bots senden bis 50 MB
 DIENST_ZEITLIMIT_S = 120
 ART_NAME = {"video": "Videomusik", "set": "DJ-Set", "aufnehmen": "Aufnahme", "laura_render": "Laura-Video"}
@@ -67,6 +69,14 @@ Dienstanfrage = Callable[..., tuple[int, bytes, "int | None"]]
 
 class AntwortFehler(Exception):
     """Die Antwort des Assistenten ist ausgefallen; der Text ist fuer den Chat gedacht."""
+
+
+class TelegramVorlaeufig(RuntimeError):
+    """Telegram war nicht erreichbar oder antwortete mit 5xx/429: spaeter nochmal versuchen."""
+
+
+class TelegramAbgelehnt(RuntimeError):
+    """Telegram hat die Anfrage endgueltig abgelehnt (4xx oder ok:false)."""
 
 
 # ---------------------------------------------------------------- Umgebung, Pfade, Token
@@ -290,8 +300,14 @@ class TelegramApi:
         self.chat_id = chat_id
         self.basis = f"https://api.telegram.org/bot{token}/"
 
-    def _fehler(self, methode: str, grund: object) -> RuntimeError:
-        return RuntimeError(ohne_token(f"Telegram {methode}: {grund}", self.token))
+    def _fehler(self, methode: str, grund: object, klasse: type[RuntimeError] = TelegramVorlaeufig) -> RuntimeError:
+        return klasse(ohne_token(f"Telegram {methode}: {grund}", self.token))
+
+    def _transport(self, methode: str, e: Exception) -> RuntimeError:
+        """4xx (ausser 429) ist eine endgueltige Absage; alles andere (Netz, Zeitlimit, 5xx, 429) vorlaeufig."""
+        if isinstance(e, urllib.error.HTTPError) and 400 <= e.code < 500 and e.code != 429:
+            return self._fehler(methode, f"HTTP {e.code}", TelegramAbgelehnt)
+        return self._fehler(methode, e)
 
     def _auswerten(self, methode: str, roh: bytes) -> dict:
         try:
@@ -300,14 +316,14 @@ class TelegramApi:
             raise self._fehler(methode, "keine JSON-Antwort") from None
         if not isinstance(antwort, dict) or not antwort.get("ok"):
             beschreibung = antwort.get("description") if isinstance(antwort, dict) else None
-            raise self._fehler(methode, beschreibung)
+            raise self._fehler(methode, beschreibung, TelegramAbgelehnt)
         return antwort
 
     def _rufen(self, methode: str, daten: dict, zeitlimit: float = 30) -> dict:
         try:
             antwort = _post_json(self.basis + methode, daten, zeitlimit)
         except Exception as e:  # noqa: BLE001 - die Meldung kann den Token tragen, siehe ohne_token
-            raise self._fehler(methode, e) from None
+            raise self._transport(methode, e) from None
         return self._auswerten(methode, json.dumps(antwort).encode("utf-8"))
 
     def updates(self, versatz: int) -> list[dict]:
@@ -331,7 +347,7 @@ class TelegramApi:
             with urllib.request.urlopen(req, timeout=300) as r:
                 roh = r.read()
         except Exception as e:  # noqa: BLE001 - siehe oben
-            raise self._fehler(methode, e) from None
+            raise self._transport(methode, e) from None
         self._auswerten(methode, roh)
 
     def tippt(self, chat_id: int | None = None) -> None:
@@ -400,8 +416,10 @@ def _datei_holen(anfrage: Dienstanfrage, auftrag_id: str, name: str) -> tuple[by
     return body, groesse
 
 
-def _eine_meldung(api: Any, anfrage: Dienstanfrage, eintrag: dict, chat_id: int, token: str) -> bool:
-    """Bericht (und Datei) eines beendeten Auftrags an Telegram. False, wenn Telegram gar nichts annahm."""
+def _eine_meldung(api: Any, anfrage: Dienstanfrage, eintrag: dict, chat_id: int, token: str) -> str:
+    """Bericht (und Datei) eines beendeten Auftrags an Telegram.
+    -> "ok", "abgelehnt" (Telegram sagt endgueltig nein) oder "vorlaeufig" (Telegram gerade nicht erreichbar).
+    Scheitert die Datei nur vorlaeufig, wird nichts gesendet: sonst kaeme der Bericht doppelt."""
     auftrag_id = eintrag["id"]
     a = _json_holen(anfrage, "GET", f"/auftraege/{auftrag_id}")
     if not a or not a.get("ok"):
@@ -415,9 +433,11 @@ def _eine_meldung(api: Any, anfrage: Dienstanfrage, eintrag: dict, chat_id: int,
         if daten is not None:
             try:
                 api.datei_senden(art, name, daten, text, chat_id=chat_id)
-                return True
+                return "ok"
             except RuntimeError as e:
                 LOG.warning("Datei an Telegram gescheitert: %s", ohne_token(str(e), token))
+                if not isinstance(e, TelegramAbgelehnt):
+                    return "vorlaeufig"
                 hinweis = "\n(Die Datei konnte ich nicht senden.)"
         elif groesse > DATEI_MAX:
             hinweis = f"\nDatei zu groß für Telegram ({groesse / (1024 * 1024):.0f} MB), liegt im Auftrag {auftrag_id}"
@@ -427,36 +447,73 @@ def _eine_meldung(api: Any, anfrage: Dienstanfrage, eintrag: dict, chat_id: int,
         api.senden(text + hinweis, chat_id=chat_id)
     except RuntimeError as e:
         LOG.warning("Meldung an Telegram gescheitert: %s", ohne_token(str(e), token))
-        return False
-    return True
+        return "abgelehnt" if isinstance(e, TelegramAbgelehnt) else "vorlaeufig"
+    return "ok"
 
 
-def melden(api: Any, dienst_anfrage: Dienstanfrage, chat_id: int, versuche: dict[str, int] | None = None,
-           token: str = "") -> int:
+class Meldestand:
+    """Merkt sich im Speicher, wie weit jeder Auftrag ist (ueberlebt keinen Neustart: dann darf einmal
+    doppelt gesendet werden, ein Duplikat ist besser als ein verlorener Bericht)."""
+
+    def __init__(self) -> None:
+        self.gesendet: set[str] = set()          # an Telegram gegangen (oder aufgegeben), noch nicht markiert
+        self.post_versuche: dict[str, int] = {}  # fehlgeschlagene gemeldet-POSTs
+        self.abgelehnt: dict[str, int] = {}      # endgueltige Absagen von Telegram
+        self.erster_fehler: dict[str, float] = {}  # Zeitpunkt der ersten vorlaeufigen Panne
+
+
+def _markieren(anfrage: Dienstanfrage, auftrag_id: str, stand: Meldestand) -> None:
+    """`POST gemeldet`, hoechstens POST_VERSUCHE Mal. Der Dienst antwortet immer 200; erst `ok: true` zaehlt."""
+    if stand.post_versuche.get(auftrag_id, 0) >= POST_VERSUCHE:
+        return
+    antwort = _json_holen(anfrage, "POST", f"/auftraege/{auftrag_id}/gemeldet", {})
+    if antwort is not None and antwort.get("ok") is True:
+        for tabelle in (stand.post_versuche, stand.abgelehnt, stand.erster_fehler):
+            tabelle.pop(auftrag_id, None)
+        stand.gesendet.discard(auftrag_id)
+        return
+    n = stand.post_versuche[auftrag_id] = stand.post_versuche.get(auftrag_id, 0) + 1
+    if n >= POST_VERSUCHE:
+        LOG.error("Auftrag %s liess sich nach %d Versuchen nicht als gemeldet markieren; "
+                  "er wird nicht noch einmal gesendet", auftrag_id, POST_VERSUCHE)
+
+
+def melden(api: Any, dienst_anfrage: Dienstanfrage, chat_id: int, stand: Meldestand | None = None,
+           token: str = "", uhr: Callable[[], float] = time.time) -> int:
     """Holt die beendeten, noch nicht gemeldeten Telegram-Auftraege, schickt je Bericht und Datei und
     markiert sie als gemeldet. -> Zahl der gesendeten Meldungen.
 
-    Nimmt Telegram eine Meldung gar nicht an, bleibt der Auftrag offen (naechste Runde), hoechstens
-    MELDE_VERSUCHE Mal; danach wird er trotzdem markiert, damit nie eine Endlosschleife entsteht."""
+    - Was einmal an Telegram ging, wird nie erneut gesendet; hakt nur das Markieren, wird nur das
+      `gemeldet`-POST wiederholt (hoechstens POST_VERSUCHE Mal, dann ein Fehler im Log).
+    - Telegram vorlaeufig weg (Netz, Zeitlimit, 5xx, 429): weiter versuchen, bis VORLAEUFIG_MAX_S seit der
+      ersten Panne dieses Auftrags vergangen sind; erst dann wird er aufgegeben und markiert.
+    - Telegram sagt endgueltig nein (4xx, ok:false): nach ABGELEHNT_VERSUCHE Versuchen aufgeben und markieren."""
     liste = _json_holen(dienst_anfrage, "GET", "/auftraege?kanal=telegram&offen=1")
     if not liste or not liste.get("ok"):
         return 0
-    versuche = versuche if versuche is not None else {}
+    stand = stand if stand is not None else Meldestand()
     gesendet = 0
     for eintrag in liste.get("auftraege") or []:
         auftrag_id = eintrag.get("id") if isinstance(eintrag, dict) else None
         if not isinstance(auftrag_id, str) or not _AUFTRAG_ID.fullmatch(auftrag_id):
             continue
-        if _eine_meldung(api, dienst_anfrage, eintrag, chat_id, token):
-            gesendet += 1
-        else:
-            versuche[auftrag_id] = versuche.get(auftrag_id, 0) + 1
-            if versuche[auftrag_id] < MELDE_VERSUCHE:
-                continue
-            LOG.warning("Auftrag %s nach %d Versuchen aufgegeben", auftrag_id, MELDE_VERSUCHE)
-        versuche.pop(auftrag_id, None)
-        if _json_holen(dienst_anfrage, "POST", f"/auftraege/{auftrag_id}/gemeldet", {}) is None:
-            LOG.warning("Auftrag %s liess sich nicht als gemeldet markieren", auftrag_id)
+        if auftrag_id not in stand.gesendet:
+            ergebnis = _eine_meldung(api, dienst_anfrage, eintrag, chat_id, token)
+            if ergebnis == "ok":
+                gesendet += 1
+            elif ergebnis == "abgelehnt":
+                n = stand.abgelehnt[auftrag_id] = stand.abgelehnt.get(auftrag_id, 0) + 1
+                if n < ABGELEHNT_VERSUCHE:
+                    continue
+                LOG.warning("Auftrag %s: Telegram lehnt die Meldung %d Mal ab, aufgegeben", auftrag_id, n)
+            else:
+                seit = stand.erster_fehler.setdefault(auftrag_id, uhr())
+                if uhr() - seit < VORLAEUFIG_MAX_S:
+                    continue
+                LOG.warning("Auftrag %s: Telegram seit %d h nicht erreichbar, aufgegeben",
+                            auftrag_id, VORLAEUFIG_MAX_S // 3600)
+            stand.gesendet.add(auftrag_id)
+        _markieren(dienst_anfrage, auftrag_id, stand)
     if gesendet:
         STAND["letzte_meldung"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     return gesendet
@@ -539,12 +596,12 @@ def main() -> None:
     zustand = zustand_ordner()
     telegram, verlauf = TelegramApi(token, chat_id), Verlauf(zustand / "verlauf.json")
     versatz = versatz_lesen(zustand)
-    sperre, versuche = threading.Lock(), {}
+    sperre, stand = threading.Lock(), Meldestand()
 
     def meldungen() -> None:
         with sperre:                    # Takt-Faden und Hauptschleife melden nie gleichzeitig
             try:
-                melden(telegram, dienst_anfrage, chat_id, versuche, token)
+                melden(telegram, dienst_anfrage, chat_id, stand, token)
             except Exception as e:  # noqa: BLE001 - die Meldungsrunde darf den Bot nie beenden
                 LOG.warning("Meldungsrunde: %s", ohne_token(f"{type(e).__name__}: {e}", token))
 
