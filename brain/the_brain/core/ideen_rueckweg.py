@@ -139,9 +139,13 @@ _AUFGABE = re.compile(
 VERWEIGERT = "Der Agent konnte das nicht; es wurde nichts geändert."
 
 
-def ein_json_objekt(text: str) -> Optional[dict[str, Any]]:
-    """Genau ein JSON-Objekt aus Codeblock oder Vor-/Nachtext; bei keinem oder mehreren ``None``."""
-    decoder = json.JSONDecoder()
+def ein_json_objekt(text: str, *, streng: bool = True) -> Optional[dict[str, Any]]:
+    """Genau ein JSON-Objekt aus Codeblock oder Vor-/Nachtext; bei keinem oder mehreren ``None``.
+
+    ``streng=False`` nimmt Zeilenumbrueche und Tabs roh in Zeichenketten an (Modelle schreiben
+    mehrzeiligen Text oft so); der Aufrufer prueft die Texte danach selbst auf Steuerzeichen.
+    """
+    decoder = json.JSONDecoder(strict=streng)
     gefunden: list[dict[str, Any]] = []
     i = 0
     while True:

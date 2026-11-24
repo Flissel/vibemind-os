@@ -76,6 +76,9 @@ EINLEITUNG_GRENZE = 6_000
 DOKUMENT_GRENZE = 300_000
 LAEUFE_STANDARD = 12
 LAEUFE_OBERGRENZE = 30
+# White Paper: ein Abschnitt, der nicht in der Form kam, bekommt einmal je Dokument einen
+# zweiten Lauf mit einem Hinweis zur Form (White-Paper-Lauf 24.11.2026: Halt bei Abschnitt 1).
+NEUVERSUCHE_MAX = 1
 QUELLEN_MAX = 200
 GRUPPEN_KARTEN_MAX = 100          # wie ARRANGE_NODE_CAP im Ideen-Server
 GRUPPEN_ZEICHEN = 40_000          # Summe aller Karten beim Gruppieren
@@ -457,10 +460,11 @@ def nachricht_gruppieren(bubble_titel: str, karten: list[tuple[str, str, str]], 
 
 
 def nachricht_abschnitt(bubble_titel: str, nummer: int, gesamt: int, einleitung: str,
-                        karten: list[tuple[str, str, str]], wunsch: Any) -> str:
+                        karten: list[tuple[str, str, str]], wunsch: Any, hinweis: str = "") -> str:
     return "\n".join([
         "Auftrag des Ideen-Space (Vertrag: abschnitt).",
         *_REGELN,
+        *([hinweis] if hinweis else []),
         f"Du schreibst Abschnitt {nummer} von {gesamt} eines White Papers zur Bubble "
         f"„{_sauber(bubble_titel, 200)}“. Fasse die Karten dieses Abschnitts zu einem zusammenhaengenden "
         "Kapitel: ausfuehrlich, sachlich, in der Sprache der Karten, in der Reihenfolge der Karten.",
@@ -512,10 +516,12 @@ def ergebnis_pruefen(vertrag: str, roh: Any, kuerzel: Iterable[str]) -> tuple[Op
     if zaun:
         text = zaun.group("inhalt").strip()
     try:
-        werte = json.loads(text)
+        # strict=False: rohe Zeilenumbrueche im Text (mehrzeiliges Markdown) sind keine Formfrage;
+        # andere Steuerzeichen faengt _text_ok danach ab.
+        werte = json.loads(text, strict=False)
     except ValueError:
         # Genau ein Objekt darf aus Vor-/Nachtext oder Codeblock kommen; sonst streng.
-        werte = ein_json_objekt(text)
+        werte = ein_json_objekt(text, streng=False)
         if werte is None:
             return None, VERWEIGERT if ist_verweigerung(text) else _FORM
     felder = {"zusammenfassen": {"absaetze", "verweise"}, "abschnitt": {"ueberschrift", "text", "verweise"},
@@ -554,6 +560,87 @@ def ergebnis_pruefen(vertrag: str, roh: Any, kuerzel: Iterable[str]) -> tuple[Op
     # Ueberschriften im Kapitel eine Ebene unter dem Kapitel (## Kapitel, ### Unterpunkt).
     sauber["text"] = _UEBERSCHRIFT.sub(lambda m: "#" * min(6, max(3, len(m.group(1)))) + " ", abschnitt)
     return sauber, ""
+
+
+_FELDNAME = re.compile(r"^[a-z_]{1,30}$")
+
+# Was am Abschnitt nicht passte -> Hinweis fuer den zweiten Lauf. Fehlt ein Eintrag (Absage,
+# HTML, Werkzeugaufruf), gibt es keinen zweiten Lauf.
+FORM_HINWEISE = {
+    "kein_json": "die Antwort enthielt kein JSON-Objekt",
+    "abgeschnitten": "die Antwort brach mitten im JSON-Objekt ab; schreibe kuerzer",
+    "json_kaputt": "das JSON-Objekt war nicht lesbar (Anfuehrungszeichen im Text als \\\" schreiben)",
+    "mehrere_objekte": "die Antwort enthielt mehr als ein JSON-Objekt",
+    "felder": "die Felder stimmten nicht; genau ueberschrift, text und verweise",
+    "ueberschrift_mehrzeilig": "die Ueberschrift hatte mehr als eine Zeile",
+    "leer": "ein Feld war leer",
+    "zu_lang": f"der Text war laenger als {ABSCHNITT_GRENZE} Zeichen",
+    "vorrede": "vor dem Ergebnis stand eine Vorrede",
+    "verweise": "die Verweise nannten Kuerzel, die es in diesem Abschnitt nicht gibt",
+}
+
+
+def form_befund(vertrag: str, roh: Any, satz: str = "") -> dict[str, Any]:
+    """Woran die Form scheiterte, nur der Form nach (nie Inhalt): ``{"form": Code, ...}``.
+
+    Fuer die Pruefung des Auftrags (sichtbar ueber /stand und in der Tabelle) und fuer den
+    Hinweis im zweiten Lauf. Feldnamen des Agenten kommen nur mit, wenn sie wie Feldnamen
+    aussehen.
+    """
+    befund: dict[str, Any] = {"laenge": len(roh) if isinstance(roh, str) else 0}
+    if not isinstance(roh, str) or not roh.strip():
+        return {**befund, "form": "kein_json"}
+    if satz and satz != _FORM:
+        for code, merkmal in (("leer", "leer gelassen"), ("zu_lang", "länger als"), ("vorrede", "Vorrede"),
+                              ("verweise", "verweist auf Karten")):
+            if merkmal in satz:
+                return {**befund, "form": code}
+        return {**befund, "form": "anderes"}
+    text = roh.strip()
+    zaun = _ZAUN.fullmatch(text)
+    befund["zaun"] = bool(zaun)
+    if zaun:
+        text = zaun.group("inhalt").strip()
+    if "{" not in text:
+        return {**befund, "form": "kein_json"}
+    try:
+        werte = json.loads(text, strict=False)
+    except ValueError:
+        werte = ein_json_objekt(text, streng=False)
+        if werte is None:
+            decoder, i, zahl = json.JSONDecoder(strict=False), 0, 0
+            while (start := text.find("{", i)) >= 0:
+                try:
+                    _wert, i = decoder.raw_decode(text, start)
+                    zahl += 1
+                except ValueError:
+                    i = start + 1
+            if zahl > 1:
+                return {**befund, "form": "mehrere_objekte"}
+            tiefe = text.count("{") - text.count("}")
+            return {**befund, "form": "abgeschnitten" if tiefe > 0 and not text.rstrip().endswith("}")
+                    else "json_kaputt"}
+    if not isinstance(werte, dict):
+        return {**befund, "form": "felder"}
+    erwartet = {"zusammenfassen": {"absaetze", "verweise"}, "abschnitt": {"ueberschrift", "text", "verweise"},
+                "gruppieren": {"gruppen"}}.get(vertrag, set())
+    if set(werte) != erwartet:
+        namen = [k if isinstance(k, str) and _FELDNAME.match(k) else "?" for k in werte]
+        return {**befund, "form": "felder", "fehlt": sorted(erwartet - set(werte)),
+                "zuviel": sorted(set(namen) - erwartet)[:5]}
+    if vertrag == "abschnitt" and isinstance(werte.get("ueberschrift"), str) and "\n" in werte["ueberschrift"]:
+        return {**befund, "form": "ueberschrift_mehrzeilig"}
+    return {**befund, "form": "anderes"}
+
+
+def form_hinweis(befund: Mapping[str, Any]) -> str:
+    """Satz fuer den zweiten Lauf; leer, wenn es keinen zweiten Lauf geben soll."""
+    grund = FORM_HINWEISE.get(str(befund.get("form")))
+    if not grund:
+        return ""
+    return ("Zweiter Versuch: Deine erste Antwort passte nicht zur vereinbarten Form (" + grund + "). "
+            "Antworte jetzt nur mit genau einem JSON-Objekt mit den Feldern ueberschrift, text und verweise; "
+            "Zeilenumbrueche im Text als \\n, nichts davor und nichts danach.")
 
 
 def _gruppen_pruefen(gruppen: Any, erlaubt: set[str]) -> tuple[Optional[dict[str, Any]], str]:
@@ -956,7 +1043,8 @@ def _white_paper_vorbereiten(event_id: str, arg: Mapping[str, Any], wunsch: Any,
     return nachricht, rueckweg
 
 
-def _abschnitt_nachricht(rueckweg: Mapping[str, Any], karten: Mapping[str, Mapping[str, Any]]) -> tuple[str, dict[str, str]]:
+def _abschnitt_nachricht(rueckweg: Mapping[str, Any], karten: Mapping[str, Mapping[str, Any]],
+                         hinweis: str = "") -> tuple[str, dict[str, str]]:
     """Nachricht fuer Teil ``index``; Karten, die es nicht mehr gibt, fehlen (und werden gezaehlt)."""
     index = rueckweg["index"]
     block, kuerzel_titel = [], {}
@@ -969,7 +1057,7 @@ def _abschnitt_nachricht(rueckweg: Mapping[str, Any], karten: Mapping[str, Mappi
         block.append((kuerzel, titel_von(karte), _sauber(text, KARTE_GRENZE)))
         kuerzel_titel[kuerzel] = titel_von(karte)
     nachricht = nachricht_abschnitt(rueckweg.get("bubble_titel") or "", index + 1, len(rueckweg["teile"]),
-                                    rueckweg.get("einleitung") or "", block, rueckweg.get("wunsch"))
+                                    rueckweg.get("einleitung") or "", block, rueckweg.get("wunsch"), hinweis)
     return nachricht, kuerzel_titel
 
 
@@ -1154,9 +1242,34 @@ def verarbeiten(auftrag: Mapping[str, Any], *, lies_karten: Callable[[list[str]]
         index, teile = rueckweg["index"], rueckweg["teile"]
         kuerzel_titel = dict(teile[index]["kuerzel_titel"])
         werte, satz = ergebnis_pruefen("abschnitt", auftrag.get("ergebnis"), kuerzel_titel)
+        hop = re.sub(r"/teil\d+(?:/neu)?$", "", str(auftrag.get("hop_id") or "s"))
         if werte is None:
+            befund = form_befund("abschnitt", auftrag.get("ergebnis"), satz)
+            hinweis = form_hinweis(befund)
+            versuche = rueckweg.get("neuversuche")
+            versuche = versuche if isinstance(versuche, int) and not isinstance(versuche, bool) else 0
+            if hinweis and versuche < NEUVERSUCHE_MAX:
+                # Einmal je Dokument: derselbe Abschnitt noch einmal, mit dem Hinweis zur Form.
+                gelesen = lies_karten(list(teile[index]["karten"]))
+                if gelesen is not None:
+                    nochmal = {**rueckweg, "neuversuche": versuche + 1, "teile": [dict(t) for t in teile]}
+                    karten = {k["id"]: k for k in gelesen if isinstance(k, Mapping)
+                              and k.get("id") in teile[index]["karten"]
+                              and k.get("linked_idea_id") == rueckweg["bubble_id"]}
+                    nachricht, neue_titel = _abschnitt_nachricht(nochmal, karten, hinweis)
+                    if neue_titel:
+                        nochmal["teile"][index]["kuerzel_titel"] = neue_titel
+                        neu = anlegen(capability=str(auftrag.get("capability") or ""),
+                                      agent=str(auftrag.get("agent") or ""), auftrag=nachricht,
+                                      trace_id=str(auftrag.get("trace_id") or ""),
+                                      plan_id=str(auftrag.get("plan_id") or ""), hop_id=f"{hop}/teil{index + 1}/neu",
+                                      uebergabe={"rueckweg": nochmal}, antwortkanal=auftrag.get("antwortkanal"))
+                        return aus("weiter", None, "part rejected for form, one retry ordered",
+                                   f"White Paper: Abschnitt {index + 1} von {len(teile)} kam nicht in der "
+                                   "vereinbarten Form; ich versuche ihn einmal neu.",
+                                   naechster_auftrag=str(neu), befund=befund)
             return aus("abgelehnt", False, "result rejected",
-                       f"White Paper angehalten bei Abschnitt {index + 1} von {len(teile)}: {satz}")
+                       f"White Paper angehalten bei Abschnitt {index + 1} von {len(teile)}: {satz}", befund=befund)
         fertig = [*rueckweg["fertig"], {
             "ueberschrift": kuerzel_ersetzen(werte["ueberschrift"], kuerzel_titel),
             "text": kuerzel_ersetzen(werte["text"], kuerzel_titel),
@@ -1181,7 +1294,6 @@ def verarbeiten(auftrag: Mapping[str, Any], *, lies_karten: Callable[[list[str]]
                 return aus("fehler", None, "next part empty",
                            f"White Paper angehalten nach Abschnitt {index + 1} von {len(teile)}: "
                            "die Karten des nächsten Abschnitts sind inzwischen leer oder gelöscht.")
-            hop = re.sub(r"/teil\d+$", "", str(auftrag.get("hop_id") or "s"))
             neu = anlegen(capability=str(auftrag.get("capability") or ""), agent=str(auftrag.get("agent") or ""),
                           auftrag=nachricht, trace_id=str(auftrag.get("trace_id") or ""),
                           plan_id=str(auftrag.get("plan_id") or ""), hop_id=f"{hop}/teil{index + 2}",
