@@ -2113,20 +2113,69 @@ async def decision_graph_query(request: Request, limit: int = 200, min_activatio
     return JSONResponse(out)
 
 
-# Felder mit Inhalt aus Saetzen, Antworten oder Werkzeugen. Ausserhalb der Ansicht bleiben
-# nur Kennung, Typ, Laenge und Zahlen.
-_TEXT_FELDER = ("intent", "summary", "input_preview", "result_preview", "topic")
-_TEXT_LABEL = {"satz": "Satz", "plan": "Plan"}
+# Erlaubnisliste je Knotenart: ausserhalb der Ansicht gehen NUR diese Felder hinaus
+# (Kennungen, Zahlen, Faehigkeits- und Werkzeugnamen). Alles andere faellt weg, auch Felder,
+# die spaeter dazukommen. Die Beschriftung wird aus erlaubten Feldern neu gebaut.
+_SICHERE_FELDER: Dict[str, tuple] = {
+    "cluster": ("activation", "size", "fire_count"),
+    "dispatch": ("ok", "capability", "target", "ts"),
+    "plan": ("ok", "hop_count", "reward_score", "ts"),
+    "hop": ("ok", "capability", "target", "elapsed_s"),
+    "toolcall": ("tool", "kind", "mcp_server", "elapsed_ms", "approval_status", "risk_level",
+                 "incomplete"),
+    "satz": ("trace_id", "reiter", "laenge", "ts"),
+    "entscheidung": ("ok", "weg", "stufe", "faehigkeit", "schritte", "reiter", "bereich_quelle",
+                     "dauer_ms", "ts"),
+    "bereich": (),
+}
+_SICHERE_KANTENFELDER = ("id", "source", "target", "type", "weight", "seq")
+_ERLAUBTE_HOSTS = ("localhost", "127.0.0.1", "[::1]")
+
+
+def _sichere_beschriftung(typ: Any, daten: Dict[str, Any]) -> str:
+    """Beschriftung nur aus erlaubten Feldern, nie aus Inhalt."""
+    if typ in ("dispatch", "hop"):
+        return str(daten.get("capability") or "?")[:24]
+    if typ == "toolcall":
+        return str(daten.get("tool") or "?")[:14]
+    if typ == "entscheidung":
+        from core.entscheidung_graph import beschriftung
+
+        return beschriftung(daten.get("stufe") or daten.get("weg"), daten.get("faehigkeit"),
+                            daten.get("schritte"))[:48]
+    if typ == "bereich":
+        return str(daten.get("id") or "").replace("bereich:", "", 1)[:24]
+    return {"cluster": "Cluster", "plan": "Plan", "satz": "Satz"}.get(str(typ), "?")
+
+
+def _host_ist_lokal(request: Request) -> bool:
+    """Host-Kopf zeigt auf diesen Rechner (gegen DNS-Rebinding: eine fremde Seite, deren Name
+    auf 127.0.0.1 zeigt, schickt ihren eigenen Namen im Host-Kopf).
+
+    Die Huelle laedt /brain ueber ``http://localhost:${BRAIN_PORT}/brain`` (Vorgabe 5000,
+    voice/electron-app/brain-manager.js), die Ereignisbruecke nutzt 127.0.0.1. Der Port wird
+    nicht geprueft: BRAIN_PORT ist einstellbar, und fuer Rebinding zaehlt nur der Name.
+    Weitere Namen: DECISION_GRAPH_HOSTS (kommagetrennt)."""
+    host = request.headers.get("host", "").strip().lower()
+    if host.startswith("["):
+        name = host.split("]", 1)[0] + "]"
+    else:
+        name = host.rsplit(":", 1)[0] if ":" in host else host
+    weitere = tuple(h.strip().lower() for h in os.environ.get("DECISION_GRAPH_HOSTS", "").split(",")
+                    if h.strip())
+    return bool(name) and name in _ERLAUBTE_HOSTS + weitere
 
 
 def _ansicht_darf_text(request: Request) -> bool:
-    """Satztexte nur fuer die Brain-Ansicht selbst (Sicherheitsbefund 24.11.2026).
+    """Satztexte nur fuer die Brain-Ansicht selbst (Sicherheitsbefunde 24.11.2026).
 
-    Die Ansicht (/brain) laedt ihre Daten vom selben Ursprung; Browser und Electron schicken
-    dann ``Sec-Fetch-Site: same-origin``. Fremde Webseiten im Browser des Betreibers koennten
-    wegen ``allow_origins=["*"]`` sonst mitlesen; sie bekommen ``cross-site``. Programme ohne
-    den Kopf (curl, andere Dienste) bekommen keinen Text. Die Herkunftsadresse taugt nicht:
-    im Container kommt alles von der Docker-Bruecke, nie von 127.0.0.1.
+    Zwei Bedingungen, beide noetig:
+      1. Host-Kopf ist localhost / 127.0.0.1 / [::1] (``_host_ist_lokal``);
+      2. ``Sec-Fetch-Site: same-origin``: die Ansicht laedt ihre Daten mit relativem Pfad vom
+         selben Ursprung. Fremde Webseiten (wegen ``allow_origins=["*"]`` sonst lesend)
+         bekommen ``cross-site``; Programme ohne den Kopf bekommen keinen Text.
+    Keine der beiden ist allein ein Zugriffsschutz; die Ursache (CORS fuer jeden Ursprung) ist
+    offen. Die Herkunftsadresse taugt nicht: im Container kommt alles von der Docker-Bruecke.
     ``DECISION_GRAPH_TEXT=immer`` schaltet die Pruefung ab, ``nie`` blendet immer aus.
     """
     modus = os.environ.get("DECISION_GRAPH_TEXT", "ansicht").strip().lower()
@@ -2134,25 +2183,30 @@ def _ansicht_darf_text(request: Request) -> bool:
         return True
     if modus == "nie":
         return False
-    return request.headers.get("sec-fetch-site", "").lower() == "same-origin"
+    return (_host_ist_lokal(request)
+            and request.headers.get("sec-fetch-site", "").lower() == "same-origin")
 
 
 def _ohne_text(out: Any) -> Any:
-    """Die Antwort ohne Satz-, Antwort- und Werkzeugtexte. Labels aus Text werden ersetzt."""
+    """Die Antwort nur mit erlaubten Feldern je Knotenart; Beschriftungen neu gebaut."""
     if not isinstance(out, dict):
-        return out
+        return {"connected": False, "nodes": [], "edges": [], "text_ausgeblendet": True}
     knoten = []
     for n in out.get("nodes") or []:
-        daten = dict(n.get("data") or {}) if isinstance(n, dict) else {}
-        typ = daten.get("type")
-        for feld in _TEXT_FELDER:
-            if feld in daten:
-                daten[feld] = ""
-        if typ in ("satz", "plan"):
-            daten["label"] = _TEXT_LABEL[typ]
-        knoten.append({**n, "data": daten})
-    return {**out, "nodes": knoten, "text_ausgeblendet": True}
-
+        roh = n.get("data") if isinstance(n, dict) and isinstance(n.get("data"), dict) else {}
+        typ = roh.get("type")
+        daten: Dict[str, Any] = {"id": roh.get("id"), "type": typ}
+        for feld in _SICHERE_FELDER.get(str(typ), ()):
+            if feld in roh:
+                daten[feld] = roh[feld]
+        daten["label"] = _sichere_beschriftung(typ, daten)
+        knoten.append({"data": daten})
+    kanten = []
+    for e in out.get("edges") or []:
+        roh = e.get("data") if isinstance(e, dict) and isinstance(e.get("data"), dict) else {}
+        kanten.append({"data": {k: roh[k] for k in _SICHERE_KANTENFELDER if k in roh}})
+    erlaubt = {k: out[k] for k in ("connected", "neo4j_connected", "stats") if k in out}
+    return {**erlaubt, "nodes": knoten, "edges": kanten, "text_ausgeblendet": True}
 
 @router.get("/api/decision_graph/stats")
 async def decision_graph_stats(request: Request):
