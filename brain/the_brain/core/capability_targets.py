@@ -1110,6 +1110,11 @@ class McpExecutor(_BaseRemoteExecutor):
                 # nur der Code kommt durch, nie freier Text (er kann Bildschirmtext sein).
                 from .desktop_schleife_contract import fehlercode_aus_ergebnis
                 raise RuntimeError(fehlercode_aus_ergebnis(result))
+            if self.server == "auftragsbuch":
+                # Feste Ablehnungstexte (z. B. "Unbekannte Auftragsart" = Art nicht freigeschaltet)
+                # kommen durch, damit der Sales-Satz sie unterscheiden kann; freier Text nie.
+                from .sales_antwort import ablehnung_aus_ergebnis
+                raise RuntimeError(ablehnung_aus_ergebnis(result))
             raise RuntimeError("OpenFang MCP tool returned isError=true")
         return result
 
