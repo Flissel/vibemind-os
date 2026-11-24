@@ -100,6 +100,43 @@ def test_hoechstens_ein_erzeuger_zugleich_der_zweite_wartet_in_der_reihe() -> No
     assert aufsicht.lage() == {"laeuft": None, "reihe": []}
 
 
+def test_ohne_modelldienst_wartet_der_auftrag_und_startet_wenn_er_antwortet() -> None:
+    zeit, bereit = [1000.0], [False]
+    aufsicht = dienst.Aufsicht(
+        befehl=lambda auftrag: [sys.executable, "-c", HAENGT], arbeitsordner=lambda: Path(sys.executable).parent,
+        bereit=lambda: bereit[0], warten_s=300, uhr=lambda: zeit[0])
+    sicht = pipeline.auftrag_starten(aufgabe="x", anstoss=aufsicht.anstoss)
+    assert aufsicht.lage() == {"laeuft": None, "reihe": [sicht["auftrag"]]}
+    zeit[0] += 5
+    bereit[0] = True
+    aufsicht.pruefen()                                   # vor Ablauf der 10 s wird nicht erneut gefragt
+    assert aufsicht.lage()["laeuft"] is None
+    zeit[0] += 10
+    aufsicht.pruefen()
+    assert aufsicht.lage() == {"laeuft": sicht["auftrag"], "reihe": []}
+    aufsicht.abbrechen(sicht["auftrag"])
+
+
+def test_modelldienst_bleibt_weg_dann_scheitert_der_auftrag_ehrlich() -> None:
+    zeit = [1000.0]
+    aufsicht = dienst.Aufsicht(
+        befehl=lambda auftrag: pytest.fail("ohne Modelldienst startet nichts"),
+        arbeitsordner=lambda: Path(sys.executable).parent, bereit=lambda: False, warten_s=300, uhr=lambda: zeit[0])
+    sicht = pipeline.auftrag_starten(aufgabe="x", anstoss=aufsicht.anstoss)
+    for _ in range(31):
+        zeit[0] += 10
+        aufsicht.pruefen()
+    assert aufsicht.lage() == {"laeuft": None, "reihe": []}
+    ende = pipeline.stand(sicht["auftrag"])
+    assert ende["zustand"] == pipeline.FEHLGESCHLAGEN
+    assert "Modelldienst (OpenFang) war 5 min nicht erreichbar" in ende["fehler"]
+
+
+def test_modelldienst_probe_ohne_dienst_ist_nein(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENFANG_URL", "http://127.0.0.1:9")
+    assert dienst.modelldienst_bereit() is False
+
+
 def test_abbrechen_haelt_den_erzeuger_wirklich_an() -> None:
     aufsicht = _aufsicht(HAENGT)
     sicht = pipeline.auftrag_starten(aufgabe="x", anstoss=aufsicht.anstoss)

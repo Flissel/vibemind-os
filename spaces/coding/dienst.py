@@ -97,6 +97,18 @@ def erzeuger_befehl(auftrag: Dict[str, Any]) -> List[str]:
     ]
 
 
+def modelldienst_bereit() -> bool:
+    """Antwortet OpenFang? (GET /api/health, kurz). Wirft nie."""
+    import urllib.request
+
+    basis = os.environ.get("OPENFANG_URL", "http://127.0.0.1:4200").rstrip("/")
+    try:
+        with urllib.request.urlopen(basis + "/api/health", timeout=3) as antwort:  # noqa: S310 - feste lokale Adresse
+            return 200 <= antwort.status < 300
+    except Exception:  # noqa: BLE001 - Verbindung, Zeit, HTTP-Fehler
+        return False
+
+
 def engine_ordner() -> Path:
     roh = os.environ.get("CODING_ENGINE_PATH")
     return Path(roh) if roh else ORDNER.parents[1] / "coding-engine"
@@ -110,10 +122,20 @@ class Aufsicht:
         befehl: Callable[[Dict[str, Any]], List[str]] = erzeuger_befehl,
         arbeitsordner: Optional[Callable[[], Path]] = None,
         zeitgrenze_s: Optional[float] = None,
+        bereit: Optional[Callable[[], bool]] = None,
+        warten_s: Optional[float] = None,
+        uhr: Callable[[], float] = time.time,
     ) -> None:
         self._befehl = befehl
         self._arbeitsordner = arbeitsordner or engine_ordner
         self.zeitgrenze_s = float(zeitgrenze_s if zeitgrenze_s is not None else _zahl("CODING_DIENST_ZEITGRENZE_S", 1800))
+        # Vor dem Start: antwortet der Modelldienst? Sonst wartet der Auftrag (statt nach zwei
+        # Fehlversuchen der Engine zu scheitern) und scheitert erst nach ``warten_s`` ehrlich.
+        self._bereit = bereit
+        self.warten_s = float(warten_s if warten_s is not None else _zahl("CODING_DIENST_MODELL_WARTEN_S", 300))
+        self._uhr = uhr
+        self._wartet_seit: Optional[float] = None
+        self._naechste_probe = 0.0
         self._sperre = threading.RLock()
         self._reihe: Deque[str] = collections.deque()
         self._laufend: Optional[Tuple[str, subprocess.Popen, float]] = None
@@ -166,7 +188,33 @@ class Aufsicht:
                     self._abschliessen(auftrag_id, f"der Erzeuger endete ohne Abschluss (Code {prozess.returncode})")
                 self._laufend = None
             while self._laufend is None and self._reihe:
+                if not self._modell_da():
+                    return
                 self._starten(self._reihe.popleft())
+
+    def _modell_da(self) -> bool:
+        """Ohne Probe immer ja. Sonst: hoechstens alle 10 s fragen; nach ``warten_s`` scheitert der vorderste Auftrag."""
+        if self._bereit is None:
+            return True
+        jetzt = self._uhr()
+        if jetzt < self._naechste_probe:
+            return False
+        if self._bereit():
+            self._wartet_seit = None
+            self._naechste_probe = 0.0
+            return True
+        self._naechste_probe = jetzt + 10
+        if self._wartet_seit is None:
+            self._wartet_seit = jetzt
+            logger.warning("Modelldienst antwortet nicht; Auftrag %s wartet", self._reihe[0])
+        if jetzt - self._wartet_seit >= self.warten_s:
+            auftrag_id = self._reihe.popleft()
+            pipeline.als_unterbrochen_markieren(
+                auftrag_id, f"der Modelldienst (OpenFang) war {int(self.warten_s // 60)} min nicht erreichbar; "
+                            "gebaut wurde nichts")
+            self._wartet_seit = None
+            self._naechste_probe = 0.0
+        return False
 
     def _abschliessen(self, auftrag_id: str, grund: str) -> None:
         auftrag = pipeline._laden(auftrag_id)
@@ -359,7 +407,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--port", type=int, default=_zahl("CODING_DIENST_PORT", DEFAULT_PORT))
     port = parser.parse_args(argv).port
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    aufsicht = Aufsicht()
+    aufsicht = Aufsicht(bereit=modelldienst_bereit)
     verwaist = aufsicht.verwaiste_schliessen()
     if verwaist:
         logger.info("Beim Start als unterbrochen markiert: %s", ", ".join(verwaist))
