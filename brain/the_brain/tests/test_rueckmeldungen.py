@@ -286,8 +286,12 @@ def test_stand_folgt_der_kette_des_white_papers() -> None:
     zeilen = {A1: _zeile("fertig", {"rueckweg": "weiter", "naechster_auftrag": A2,
                                     "meldung": "White Paper: Abschnitt 1 von 2 fertig."}, _iso(60)),
               A2: {**_zeile("laeuft"), "id": A2}}
-    assert st.stand(A1, zeilen.get) == {"stand": "laeuft", "auftrag_id": A1}
-    zeilen[A2] = {**_zeile("fertig", {"rueckweg": "geschrieben", "meldung": "Das White Paper steht.",
+    assert st.stand(A1, zeilen.get) == {"stand": "laeuft", "auftrag_id": A1, "laufender_auftrag": A2}
+    # Lauf 28: der laufende Folgeauftrag mit seinem Teil, nicht die Nummer des ersten.
+    zeilen[A2]["uebergabe"] = {"rueckweg": {"vertrag": "abschnitt", "index": 1, "teile": [{}, {}, {}]}}
+    assert st.stand(A1, zeilen.get) == {"stand": "laeuft", "auftrag_id": A1, "laufender_auftrag": A2,
+                                        "meldung": "White Paper: Abschnitt 2 von 3 läuft."}
+    zeilen[A2] ={**_zeile("fertig", {"rueckweg": "geschrieben", "meldung": "Das White Paper steht.",
                                       "fortsetzung": "fertig"}, _iso(150)), "id": A2}
     assert st.stand(A1, zeilen.get) == {"stand": "fertig", "ok": True, "meldung": "Das White Paper steht.",
                                         "dauer_s": 150.0, "auftrag_id": A1}

@@ -98,7 +98,7 @@ Die App liest den Stand eines Auftrags mit `GET /api/agent-auftraege/{id}/stand`
 
 | `stand` | `ok` | `hinweis` | Bedeutung |
 |---|---|---|---|
-| `laeuft` | – | – | Der Auftrag läuft noch oder wird gerade geprüft; beim White Paper steht in `meldung`, welcher Abschnitt fertig ist. |
+| `laeuft` | – | – | Der Auftrag läuft noch oder wird gerade geprüft; beim White Paper steht in `meldung`, welcher Abschnitt gerade läuft („White Paper: Abschnitt 2 von 3 läuft.“). |
 | `fertig` | `true` | – | Das Ergebnis ist geschrieben und nachgeprüft; `meldung` sagt, was sich geändert hat. |
 | `vorschlag` | `true` | `true` | Die Notiz hat sich seit dem Auftrag geändert oder fehlt, oder die Prüfung hält ein Ausformulier-Ergebnis zurück (Grund in `meldung`); nichts ist geschrieben, `saetze` nennt die Sätze zum Zeigen, Übernehmen und Verwerfen. |
 | `uebernommen` | `true` | – | Der Vorschlag wurde mit „Vorschlag übernehmen“ geschrieben. |
@@ -116,7 +116,9 @@ Frage, wiederholt es sich oder schreibt es einen Satz zu einem anderen Thema aus
 Stand `vorschlag`: Der Mensch kann den Text ansehen und mit
 „Vorschlag trotzdem übernehmen“ schreiben.
 
-Weitere Felder: `meldung` (deutscher Satz zum Anzeigen), `auftrag_id`, `dauer_s` (Sekunden vom Anlegen bis zum Ende,
+Weitere Felder: `meldung` (deutscher Satz zum Anzeigen), `auftrag_id` (der gefragte, erste Auftrag),
+`laufender_auftrag` (nur bei `laeuft`, wenn schon ein Folgeauftrag der Kette läuft; diese Nummer zeigt die
+Standzeile), `dauer_s` (Sekunden vom Anlegen bis zum Ende,
 beim White Paper über alle Abschnitte; nicht bei `laeuft`), `saetze` (nur bei `vorschlag`) und `ziel`
 (`{space, bubble_id, node_id}`, nur bei `fertig`, `vorschlag` und `uebernommen`; dorthin springt die App).
 

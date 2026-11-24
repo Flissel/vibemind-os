@@ -325,7 +325,7 @@ def test_white_paper_kette_legt_teil_fuer_teil_an_und_schreibt_am_ende_einmal(mo
     assert ereignis == "idea.document" and argumente["id"] == DOK_ID and argumente["art"] == "white_paper"
     assert argumente["quellen"][0] == "a0000001"
     text = argumente["content"]
-    for teil in ("# White Paper: Stadtfest", "## Inhalt", "1. [Einleitung](#einleitung)", "## Einleitung",
+    for teil in ("# White Paper: Stadtfest", "## Inhalt", "1. Einleitung\n2. Teil 1\n", "## Einleitung",
                  "## Teil 1", "## Teil 2", "*Grundlage: „Sponsoren“.*", "## Anhang", "**Helferliste**",
                  "## Karten ohne Inhalt", "- „Strom Anschluss“", "## Quellen",
                  "1. Stadtanzeiger – https://example.org/fest", "Erstellt am 23.11.2026"):
@@ -917,3 +917,25 @@ def test_white_paper_aus_fliesstext_wird_geschrieben_ohne_zweiten_lauf() -> None
     erste = rueckweg["teile"][0]["kuerzel_titel"]["K1"]
     assert f"## {erste}" in text and f"Das Fest hat zwei Bühnen „{erste}“." in text
     assert "[K1]" not in text and f"*Grundlage: „{erste}“.*" in text
+
+# ── Lauf 28: Kapitel nach Thema, nichts doppelt, Deutsch, schlichtes Verzeichnis ──
+
+def test_auftrag_bittet_um_thema_deutsch_und_nennt_schon_behandeltes(monkeypatch) -> None:
+    erste = dok.nachricht_abschnitt("Stadtfest", 1, 2, "x", [("K1", "Bühnenplan", "y")], "z")
+    assert "auf Deutsch" in erste and "gemeinsame Thema" in erste and 'erste Zeile mit "## "' in erste
+    assert "Schon behandelt" not in erste
+    monkeypatch.setattr(dok, "KARTEN_JE_TEIL", 2)
+    _, rueckweg = _vorbereiten()
+    ideen, angelegt = Ideen(), []
+    dok.verarbeiten(_auftrag(rueckweg, _abschnitt(1)), **_anschluss(ideen, angelegt=angelegt)(None))
+    (zweiter,) = angelegt
+    assert "Schon behandelt in frueheren Abschnitten" in zweiter["auftrag"]
+    assert "„Teil 1“" in zweiter["auftrag"]
+
+
+def test_inhaltsverzeichnis_ohne_anker_links() -> None:
+    _, rueckweg = _vorbereiten()
+    ideen = Ideen()
+    dok.verarbeiten(_auftrag(rueckweg, _abschnitt(1)), **_anschluss(ideen, angelegt=[])(None))
+    ((_, argumente),) = ideen.aufrufe
+    assert "](#" not in argumente["content"] and "1. Einleitung" in argumente["content"]
