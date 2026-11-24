@@ -51,7 +51,7 @@ def test_beispielsaetze_treffen_die_richtige_faehigkeit():
         "mach mir 30 Sekunden ruhige Musik": "musik_video_bestellen",
         "make me 45 seconds of calm music": "musik_video_bestellen",
         "mach mir ein Set aus meinen Songs": "musik_set_bestellen",
-        "mach mir einen Set fuer Samstag": "musik_set_bestellen",
+        "mach mir einen DJ-Set fuer Samstag": "musik_set_bestellen",
         "leg Musik unter das Reel": "musik_laura_unterlegen",
         "wie weit ist mein Musik-Auftrag": "musik_auftrag_zeigen",
         "wie weit ist der Musik-Auftrag": "musik_auftrag_zeigen",
@@ -60,6 +60,30 @@ def test_beispielsaetze_treffen_die_richtige_faehigkeit():
         treffer = router.route(satz)
         assert treffer is not None, satz
         assert treffer.capability == faehigkeit, (satz, treffer.capability)
+
+
+def test_set_braucht_musikbezug():
+    """I6: "Set" allein ist kein DJ-Set (Karteikarten, flashcards)."""
+    router = _router()
+    for satz in ("mach mir ein Set Karteikarten", "make me a set of flashcards"):
+        treffer = router.route(satz)
+        assert treffer is None or treffer.capability != "musik_set_bestellen", (satz, treffer.capability)
+    erwartet = {
+        "mach mir ein DJ-Set": "musik_set_bestellen",
+        "mach mir ein Set aus meinen Songs": "musik_set_bestellen",
+        "make me a DJ set": "musik_set_bestellen",
+        "leg die Musik unter das Video": "musik_laura_unterlegen",
+    }
+    for satz, faehigkeit in erwartet.items():
+        treffer = router.route(satz)
+        assert treffer is not None and treffer.capability == faehigkeit, (satz, treffer)
+
+
+def test_musik_vor_som_execute():
+    namen = [c["capability"] for c in _katalog()]
+    som = namen.index("som_execute")
+    for name in FAEHIGKEITEN:
+        assert namen.index(name) < som, name
 
 
 def test_validator_nutzt_url_env_und_health():

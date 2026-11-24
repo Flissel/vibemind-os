@@ -2233,9 +2233,12 @@
   anchor_phrases:
     - "mach mir ein Set aus meinen Songs"
     - "make me a DJ set"
+  # Nur mit Musikbezug: "DJ-Set", oder "Set" plus musik/songs/lieder/music/tracks/mix im selben
+  # Satz (in beliebiger Reihenfolge). "ein Set Karteikarten" / "a set of flashcards" gehoeren nicht her.
   match_patterns:
-    - "\\bmach(e)?\\s+mir\\s+(ein|einen)\\s+(dj[- ]?)?set\\b"
-    - "\\bmake\\s+me\\s+a\\s+(dj[- ]?)?set\\b"
+    - "\\bdj[- ]?set\\b"
+    - "\\bset\\b[^.!?]*\\b(musik|songs?|lieder|music|tracks?|mix)\\b"
+    - "\\b(musik|songs?|lieder|music|tracks?|mix)\\b[^.!?]*\\bset\\b"
   execution_target: "mcp:brain-musik:musik-studio:set_bestellen"
   validator:
     kind: "truth:http_ok"
