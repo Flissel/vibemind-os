@@ -2117,7 +2117,12 @@ async def decision_graph_stats(request: Request):
     dg = getattr(request.app.state, "decision_graph", None)
     if dg is None:
         return JSONResponse({"connected": False})
-    return JSONResponse(dg.stats())
+    out = dg.stats()
+    # Routing-Papier 24.11.2026: Schreiber je Satz (gemeldet/geschrieben/verworfen/fehler).
+    from core.entscheidung_graph import zaehler as _entscheidung_zaehler
+
+    out["entscheidung_schreiber"] = _entscheidung_zaehler(dg)
+    return JSONResponse(out)
 
 
 # ── Phase 9.0.4: Approval-Gate endpoints ──────────────────────────
@@ -2918,9 +2923,50 @@ async def multihop_execute(request: Request):
     """Siehe ``_multihop_execute``. Danach: Hinweise und Rueckfragen tragen ein eigenes Feld
     (``hinweis``/``rueckfrage``), und der Ausgang des Satzes zaehlt fuer "Zurück"
     (core/zurueck_vorsicht.satz_merken)."""
+    beginn = time.monotonic()
     antwort = await _multihop_execute(request)
     _spur_je_satz(request, antwort)
-    return _nachbereiten(antwort, await _kontext_space(request))
+    kontext_space = await _kontext_space(request)
+    fertig = _nachbereiten(antwort, kontext_space)
+    await _entscheidung_melden(request, fertig, kontext_space, (time.monotonic() - beginn) * 1000)
+    return fertig
+
+
+async def _entscheidung_melden(request: Request, antwort: Any, kontext_space: Optional[str],
+                               dauer_ms: float) -> None:
+    """Jeder Satz als Entscheidung in den Neo4j-Graphen (core/entscheidung_graph.py).
+
+    Nur Kennung, Reiter, Laenge, Weg, Stufe, ok, Dauer, Bereich und Plan; nie Satz oder Antwort.
+    Legt den Eintrag nur in eine Warteschlange; der Satz wartet nie auf Neo4j. Wirft nie.
+    """
+    try:
+        from core import entscheidung_graph as _eg
+
+        dg = getattr(request.app.state, "decision_graph", None)
+        if dg is None or not _eg.an():
+            return
+        daten = json.loads(antwort.body) if isinstance(getattr(antwort, "body", None), bytes) else None
+        if not isinstance(daten, dict):
+            return
+        laenge = None
+        try:
+            body = await request.json()
+            intent = body.get("intent") if isinstance(body, dict) else None
+            laenge = len(intent) if isinstance(intent, str) else None
+        except Exception:  # noqa: BLE001
+            laenge = None
+        routed_via = None
+        pe = getattr(request.app.state, "plan_executor", None)
+        recorder = getattr(pe, "recorder", None)
+        if recorder is not None and isinstance(daten.get("trace_id"), str):
+            snap = recorder.get_by_trace(daten["trace_id"])
+            routed_via = snap.get("routed_via") if isinstance(snap, dict) else None
+        eintrag = _eg.eintrag_bauen(daten, reiter=kontext_space, laenge=laenge, dauer_ms=dauer_ms,
+                                    routed_via=routed_via,
+                                    status_code=getattr(antwort, "status_code", 200))
+        _eg.melden(dg, eintrag)
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[entscheidung] uebersprungen: {type(e).__name__}: {e}")
 
 
 async def _kontext_space(request: Request) -> Optional[str]:
