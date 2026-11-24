@@ -1,7 +1,11 @@
 -- verify_102: Higgsfield-Uebergaenge der Werkbank. LAEUFT NUR in der zurueckgerollten migration_probe
--- (102 + verify_102): der erste Block stellt fremde offene Auftraege beiseite und legt Probezeilen an - nie gegen
--- die echte Datenbank ausfuehren. now() steht in einer Transaktion still, darum werden Leihzeiten per UPDATE in die
--- Vergangenheit gelegt. Zwei Auftraege: o1 = Zustandsmaschine und Geldregeln, o2 = Grenze von 6 Stellen.
+-- (102 + verify_102): der erste Block legt zwei Probe-Auftraege an - nie gegen die echte Datenbank ausfuehren.
+-- Fremde Zeilen werden nicht angefasst: die Probe-Auftraege werden direkt auf in_arbeit gesetzt (nicht ueber
+-- video_naechster, das den aeltesten offenen Auftrag naehme), und vergeben wird im Test nur ueber Funktionen, die
+-- nach der eigenen id oder dem eigenen Auftrag fragen. Ausnahme: video_hf_nehmen ist global; deshalb prueft der Test
+-- dort nur Clips der Probe-Auftraege (ein echter freigegebener Clip wuerde die Probe abbrechen, nichts aendern).
+-- now() steht in einer Transaktion still, darum werden Leihzeiten per UPDATE in die Vergangenheit gelegt.
+-- Zwei Auftraege: o1 = Zustandsmaschine und Geldregeln, o2 = Grenze von 6 Stellen.
 
 CREATE TEMP TABLE t102 (k text PRIMARY KEY, v uuid);
 
@@ -34,13 +38,11 @@ $$;
 DO $$
 DECLARE a uuid; b uuid; r jsonb; k text;
 BEGIN
-  UPDATE auftrag.auftraege SET stand = 'abgebrochen' WHERE stand IN ('offen', 'in_arbeit');
+  IF EXISTS (SELECT 1 FROM marketing.video_hf_clips WHERE stand IN ('freigegeben', 'bestellt')) THEN
+    RAISE EXCEPTION '102.0: es gibt echte freigegebene oder bestellte Clips - die Probe laeuft nur ohne sie'; END IF;
   a := auftrag.anlegen('sales', 'marketing', 'p102a', 'probe', 'video', '{"thema":"Probe eins"}');
-  r := auftrag.video_naechster(interval '10 min');
-  IF (r->>'id')::uuid <> a THEN RAISE EXCEPTION '102.0: o1 nicht uebernommen'; END IF;
   b := auftrag.anlegen('sales', 'marketing', 'p102b', 'probe', 'video', '{"thema":"Probe zwei"}');
-  r := auftrag.video_naechster(interval '10 min');
-  IF (r->>'id')::uuid <> b THEN RAISE EXCEPTION '102.0: o2 nicht uebernommen'; END IF;
+  UPDATE auftrag.auftraege SET stand = 'in_arbeit', vergeben_bis = now() + interval '10 min' WHERE id IN (a, b);
   INSERT INTO t102 VALUES ('o1', a), ('o2', b);
   PERFORM marketing.video_werk_beginnen(a);
   PERFORM marketing.video_werk_beginnen(b);
