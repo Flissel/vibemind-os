@@ -37,53 +37,61 @@ Usage:
     workers = create_roarboot_workers()
 """
 
-# Configuration
-from .config import RoarbootConfig, get_config
-
-# Backend Agent (Redis integration)
-from .agents import (
-    RoarbootBackendAgent,
-    get_roarboot_agent,
-)
-
-# Broadcast Agent (fan-out)
-from .broadcast import (
-    RoarbootBroadcastAgent,
-    get_roarboot_broadcast_agent,
-)
-
-# Workers (background monitoring) — depends on swarm.workers which may not exist
+# Die alten Bausteine (.config, .agents, .broadcast) fehlen in diesem Stand. Frueher brach darum
+# jeder Import von `spaces.rowboat` ab, auch der seiner Unterpakete (scripts, tests, geschaeftsdaten).
+# Jetzt laedt das Paket; wer einen der alten Namen holt, bekommt weiter einen ImportError mit dem
+# urspruenglichen Grund (siehe __getattr__ unten). Am Verhalten im Betrieb aendert sich nichts.
+_ALTLAST_FEHLER: "ImportError | None" = None
 try:
-    from .workers import (
-        HealthCheckWorker,
-        create_roarboot_workers,
+    # Configuration
+    from .config import RoarbootConfig, get_config
+
+    # Backend Agent (Redis integration)
+    from .agents import (
+        RoarbootBackendAgent,
+        get_roarboot_agent,
     )
-except ImportError:
-    HealthCheckWorker = None
-    create_roarboot_workers = None
 
-# Knowledge & Content Tools
-from .tools import (
-    search_knowledge,
-    query_knowledge,
-    draft_email,
-    generate_meeting_brief,
-    generate_deck,
-    process_voice_note,
-    get_status,
-    open_webview,
-    reset_conversation,
-    RoarbootClient,
-    get_roarboot_client,
-)
+    # Broadcast Agent (fan-out)
+    from .broadcast import (
+        RoarbootBroadcastAgent,
+        get_roarboot_broadcast_agent,
+    )
 
-# Docker Tools
-from .tools import (
-    start_docker,
-    stop_docker,
-    restart_docker,
-    docker_status,
-)
+    # Workers (background monitoring) — depends on swarm.workers which may not exist
+    try:
+        from .workers import (
+            HealthCheckWorker,
+            create_roarboot_workers,
+        )
+    except ImportError:
+        HealthCheckWorker = None
+        create_roarboot_workers = None
+
+    # Knowledge & Content Tools
+    from .tools import (
+        search_knowledge,
+        query_knowledge,
+        draft_email,
+        generate_meeting_brief,
+        generate_deck,
+        process_voice_note,
+        get_status,
+        open_webview,
+        reset_conversation,
+        RoarbootClient,
+        get_roarboot_client,
+    )
+
+    # Docker Tools
+    from .tools import (
+        start_docker,
+        stop_docker,
+        restart_docker,
+        docker_status,
+    )
+except ImportError as _fehler:  # noqa: F841 - fuer __getattr__ aufbewahrt
+    _ALTLAST_FEHLER = _fehler
 
 __all__ = [
     # Config
@@ -119,3 +127,9 @@ __all__ = [
     "RoarbootClient",
     "get_roarboot_client",
 ]
+
+
+def __getattr__(name: str):
+    if _ALTLAST_FEHLER is not None and name in __all__:
+        raise ImportError(f"spaces.rowboat.{name} ist nicht verfuegbar: {_ALTLAST_FEHLER}") from _ALTLAST_FEHLER
+    raise AttributeError(f"module 'spaces.rowboat' has no attribute {name!r}")
