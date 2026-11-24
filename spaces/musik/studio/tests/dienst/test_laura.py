@@ -117,6 +117,49 @@ def test_clip_anlegen_und_liste(monkeypatch):
     assert laura.audio_clips("t1") == {"ok": True, "clips": [{"id": "c1"}]}
 
 
+def test_rendern_mit_reel_optionen_nimmt_render_reel(monkeypatch):
+    aufrufe = []
+    _router(monkeypatch, {("POST", "/timelines/t1/render-reel"): _antwort({"export_id": "e3", "job_id": "j3"}, 202)},
+            aufrufe)
+    opt = {"vertical": True, "hook_text": "Hallo", "captions": False}
+    r = laura.rendern("t1", reel_optionen=opt)
+    assert r == {"ok": True, "export_id": "e3", "job_id": "j3"}
+    assert aufrufe[0][1] == "/timelines/t1/render-reel"
+    assert json.loads(aufrufe[0][2]) == opt
+
+
+def test_rendern_ohne_optionen_einfacher_render(monkeypatch):
+    aufrufe = []
+    _router(monkeypatch, {("POST", "/timelines/t1/render"): _antwort({"export_id": "e2", "job_id": "j2"}, 202)},
+            aufrufe)
+    assert laura.rendern("t1")["ok"] is True
+    assert aufrufe[0][1] == "/timelines/t1/render"
+
+
+def _weiterleiten(ziel):
+    import urllib.request
+    req = urllib.request.Request("http://laura.test:8765/exports/e1/download-url",
+                                 headers={"X-Laura-Token": "geheim123"})
+    h = laura._WeiterleitungOhneToken()
+    return h.redirect_request(req, None, 302, "Found", {}, ziel)
+
+
+def test_weiterleitung_fremder_host_ohne_token():
+    neu = _weiterleiten("http://speicher.test/x")
+    assert neu is not None
+    assert "x-laura-token" not in {k.lower() for k in neu.headers} | {k.lower() for k in neu.unredirected_hdrs}
+
+
+def test_weiterleitung_anderes_schema_ohne_token():
+    neu = _weiterleiten("https://laura.test:8765/x")
+    assert "x-laura-token" not in {k.lower() for k in neu.headers} | {k.lower() for k in neu.unredirected_hdrs}
+
+
+def test_weiterleitung_gleicher_host_behaelt_token():
+    neu = _weiterleiten("http://laura.test:8765/andere")
+    assert neu.get_header("X-laura-token") == "geheim123"
+
+
 def test_rendern_nimmt_plain_render(monkeypatch):
     aufrufe = []
     _router(monkeypatch, {("POST", "/timelines/t1/render"): _antwort({"export_id": "e2", "job_id": "j2"}, 202)},

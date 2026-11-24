@@ -33,11 +33,30 @@ def _fehler(text: str) -> dict:
     return {"ok": False, "fehler": _ohne_token(text)[:FEHLER_MAXLAENGE]}
 
 
+def _gleicher_host(url: str, basis: str) -> bool:
+    a, b = urllib.parse.urlsplit(url), urllib.parse.urlsplit(basis)
+    return (a.scheme, a.netloc) == (b.scheme, b.netloc)
+
+
+class _WeiterleitungOhneToken(urllib.request.HTTPRedirectHandler):
+    """Folgt Weiterleitungen, laesst den Token aber an fremden Zielen weg."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        neu = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if neu is not None and not _gleicher_host(newurl, _basis()):
+            for name in list(neu.headers) + list(neu.unredirected_hdrs):
+                if name.lower() == "x-laura-token":
+                    neu.headers.pop(name, None)
+                    neu.unredirected_hdrs.pop(name, None)
+        return neu
+
+
 def _roh(methode: str, url: str, daten: bytes | None, kopf: dict) -> tuple[int, bytes]:
     """Der einzige echte Netzgriff - Tests ersetzen genau diese Funktion."""
     req = urllib.request.Request(url, data=daten, method=methode, headers=kopf)
+    opener = urllib.request.build_opener(_WeiterleitungOhneToken)
     try:
-        with urllib.request.urlopen(req, timeout=ZEITLIMIT_S) as r:
+        with opener.open(req, timeout=ZEITLIMIT_S) as r:
             return r.status, r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()
@@ -98,7 +117,8 @@ def _letzter_export(project_id: str, timeline_id: str) -> dict | None:
 
 
 def videos_suchen(suchwort: str, hoechstens: int = 10) -> dict:
-    """Zeitleisten, deren Projekt- oder Zeitleistenname das Suchwort enthaelt (ohne Gross/Klein)."""
+    """Zeitleisten, deren Projekt- oder Zeitleistenname das Suchwort enthaelt (ohne Gross/Klein).
+    Sieht nur die ersten 200 Projekte (Seitengrenze von Lauras /projects)."""
     wort = (suchwort or "").strip().lower()
     if not wort:
         return {"ok": False, "fehler": "Suchwort fehlt"}
@@ -169,11 +189,14 @@ def clip_anlegen(timeline_id: str, koerper: dict) -> dict:
     return {"ok": True, "clip": r["daten"]} if r["ok"] else r
 
 
-def rendern(timeline_id: str) -> dict:
-    """Export anstossen. Lauras API zeigt die Optionen frueherer Exporte nicht
-    (RenderExportOut hat kein `options`), also ist weder Reel-Art noch Optionsuebernahme
-    erkennbar: immer einfacher Render (POST /timelines/{id}/render, Standardoptionen)."""
-    r = anfrage("POST", f"/timelines/{timeline_id}/render", {})
+def rendern(timeline_id: str, reel_optionen: dict | None = None) -> dict:
+    """Export anstossen. Ohne `reel_optionen`: einfacher Render (POST /timelines/{id}/render,
+    Standardoptionen). Mit `reel_optionen`: POST /timelines/{id}/render-reel mit genau diesem
+    Dict als Body. Fruehere Exporte werden nicht erkannt (Lauras API zeigt keine Optionen)."""
+    if reel_optionen is not None:
+        r = anfrage("POST", f"/timelines/{timeline_id}/render-reel", reel_optionen)
+    else:
+        r = anfrage("POST", f"/timelines/{timeline_id}/render", {})
     if not r["ok"]:
         return r
     d = r["daten"] or {}
@@ -213,7 +236,7 @@ def herunterladen(url: str, ziel: Path) -> dict:
     basis = _basis()
     voll = urllib.parse.urljoin(basis + "/", url)
     kopf: dict = {}
-    if _token() and urllib.parse.urlsplit(voll).netloc == urllib.parse.urlsplit(basis).netloc:
+    if _token() and _gleicher_host(voll, basis):
         kopf["X-Laura-Token"] = _token()
     tmp = ziel.with_name(ziel.name + ".teil")
     try:
