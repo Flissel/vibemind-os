@@ -938,6 +938,52 @@ def main(argv: list[str] | None = None) -> int:
         help="nur die Begleitung jedes Songs spielen, die Stimmen bleiben aus",
     )
 
+    video_parser = subparsers.add_parser(
+        "video", help="Musik in exakter Videolaenge aus einem Song bauen"
+    )
+    video_parser.add_argument(
+        "--daten",
+        type=Path,
+        default=None,
+        help=f"Wurzel des Bestands, sonst die Umgebungsvariable {DATEN_ENV}",
+    )
+    video_parser.add_argument(
+        "--wunsch", required=True, help="frei, z.B. 'ruhig, Produktvideo'"
+    )
+    laenge = video_parser.add_mutually_exclusive_group(required=True)
+    laenge.add_argument("--sekunden", type=float, help="Laenge in Sekunden")
+    laenge.add_argument("--frames", type=int, help="Laenge in Bildern (mit --fps)")
+    laenge.add_argument("--video", type=Path, help="Laenge aus der Bildspur dieses Videos")
+    video_parser.add_argument(
+        "--fps", default=None, help="Bildrate zu --frames, z.B. 30 oder 30000/1001"
+    )
+    video_parser.add_argument(
+        "--songs", default=None, help="Song-IDs mit Komma getrennt, sonst alle"
+    )
+    gesang_gruppe = video_parser.add_mutually_exclusive_group()
+    gesang_gruppe.add_argument(
+        "--mit-gesang", action="store_true", help="den ganzen Song spielen"
+    )
+    gesang_gruppe.add_argument(
+        "--ohne-gesang", action="store_true", help="nur die getrennte Begleitung"
+    )
+    video_parser.add_argument(
+        "--lufs", type=float, default=-14.0, help="Ziellautheit, Vorgabe -14"
+    )
+    video_parser.add_argument(
+        "--unterlegen",
+        action="store_true",
+        help="die Musik unter --video legen (neue Datei im Lauf, das Original bleibt)",
+    )
+    video_parser.add_argument(
+        "--musik-db", type=float, default=None, help="Musik gegen den Originalton, Vorgabe -6"
+    )
+    video_parser.add_argument(
+        "--original-ersetzen",
+        action="store_true",
+        help="den Originalton beim Unterlegen weglassen",
+    )
+
     record_parser = subparsers.add_parser(
         "record", help="Vom Leitungs-/Aux-Eingang in watch/ aufnehmen"
     )
@@ -1044,6 +1090,55 @@ def main(argv: list[str] | None = None) -> int:
             ),
             date.today(),
             ohne_gesang=args.ohne_gesang,
+        )
+    if args.command == "video":
+        # Traege, weil befehl.py seinerseits cli importiert (Kreisimport).
+        from djset.video.befehl import cmd_video, ziel_bestimmen
+        from djset.video.unterlegen import ORIGINALTON_DB
+
+        daten = _daten(args.daten)
+        if daten is None:
+            return 1
+        if not args.unterlegen and (
+            args.musik_db is not None or args.original_ersetzen
+        ):
+            print(
+                "Fehler: --musik-db und --original-ersetzen gelten nur mit --unterlegen.",
+                file=sys.stderr,
+            )
+            return 1
+        ziel = ziel_bestimmen(args.sekunden, args.frames, args.fps, args.video)
+        if ziel is None:
+            return 1
+        songs = (
+            [teil.strip() for teil in args.songs.split(",") if teil.strip()]
+            if args.songs is not None
+            else None
+        )
+        gesang = True if args.mit_gesang else False if args.ohne_gesang else None
+        unterlegen_db = (
+            (ORIGINALTON_DB if args.musik_db is None else args.musik_db)
+            if args.unterlegen
+            else None
+        )
+        from djset.agents.client import ClaudeClient
+
+        return cmd_video(
+            daten,
+            args.wunsch,
+            ziel,
+            songs,
+            gesang,
+            args.lufs,
+            args.video,
+            unterlegen_db,
+            args.original_ersetzen,
+            ClaudeClient(),
+            Budget(
+                max_tokens=BUILD_BUDGET_TOKENS,
+                max_seconds=BUILD_BUDGET_SECONDS,
+            ),
+            date.today(),
         )
     if args.command == "record":
         return cmd_record(

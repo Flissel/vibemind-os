@@ -7,7 +7,7 @@ dependencies = [
     "librosa>=0.10.2",
     "numpy>=1.26",
     "soundfile>=0.12",
-    "pyloudnorm>=0.1.1",
+    "pyloudnorm>=0.1.1,<0.3",
     "scipy>=1.17",
     # >=0.2: djset/agents/client.py benutzt ClaudeAgentOptions,
     # AssistantMessage, TextBlock und ein asynchrones query() - alles
