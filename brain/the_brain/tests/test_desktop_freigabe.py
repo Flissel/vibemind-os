@@ -174,3 +174,13 @@ def test_die_spur_des_plan_ausfuehrers_haengt_an_der_trace_id():
     assert pe._desktop_spur({}) is None
     pe._desktop_spur({"trace_id": "t-7"})("zeile")
     assert pe.recorder.stufen == [("t-7", "desktop", "brain-desktop/desktop_task_step", "zeile")]
+
+
+def test_die_anweisung_reist_mit_jeder_frage():
+    # Gemessen 24.11.2026: Der Agent in OpenFang kannte den Vertrag nicht und erfand ein eigenes Format.
+    from core.desktop_schleife import _frage
+    from core.desktop_schleife_contract import ANWEISUNG
+    frage = _frage("Öffne Chrome", 1, 8, [], "", [], "eval-a.txt", None)
+    assert frage.startswith(ANWEISUNG)
+    assert "in EINER Zeile, ohne Codeblock" in ANWEISUNG
+    assert frage.rstrip().endswith("in einer Zeile, ohne Codeblock.")
