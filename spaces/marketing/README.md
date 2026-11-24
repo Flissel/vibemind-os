@@ -70,12 +70,21 @@ Zustandswechsel ist eine SQL-Funktion `marketing.video_*`.
 |---|---|---|---|
 | Werkbank-Shim (Modell-Tuer) | PC | 8154 | `claw/shim/marketing_shim.py` |
 | Werkbank-Arbeiter | PC | 8155 (`/healthz`) | `workers/werkbank_arbeiter.py` |
+| Higgsfield-Arbeiter (Uebergaenge, seit Migration 102) | PC | 8156 (`/healthz`) | `workers/werkbank_hf.py` |
 | Stimme (Satz zu WAV) | PC | 8138 (`/satz`) | `claw/ton_dienst.py` |
 | Werkbank-Bote (Vorschlaege nach Rowboat) | VM, systemd `marketing-werkbank-bote` | - | `workers/werkbank_bote.py` |
 | Arbeiter- und Pult-Routen | VM, marketing-api | 5510 | `api/werkbank.py` |
 
 - Folien: HyperFrames in `video_werkbank/` (sechs Vorlagen, 1920x1080, 30 Bilder/s). Einmalig
   `npm ci` in diesem Ordner.
+- Higgsfield-Uebergaenge (`db/102_video_hf_clips.sql`, Tabelle `marketing.video_hf_clips`): zwischen zwei
+  fertigen Szenen kann ein Clip von Higgsfield stehen. Der Higgsfield-Arbeiter schlaegt ihn nur vor (Standbilder,
+  Auftragstext, Preis in Credits). Bestellt wird erst nach einem Klick auf der Sales-Seite, je Clip, mit
+  aenderbarem Auftragstext; Rowboat kann diese Freigabe nicht geben. Solange ein Uebergang offen ist, wird das
+  Video nicht zusammengefuegt. Vorgesehen werden die Stellen mit `WERKBANK_HF_UEBERGAENGE=stufen` am
+  Werkbank-Arbeiter (erste Szene jeder weiteren Stufe, hoechstens 6 je Video); ohne die Einstellung keine.
+  Das Programm `higgsfield` muss am PC angemeldet sein. Jede Bestellung steht in
+  `%LOCALAPPDATA%\VibeMind\werkbank\hf-bestellungen.jsonl`.
 - Ablauf: Gliederung, dann je Szene Text und Clip. Jedes Stueck segnet der Betreiber ab (Rowboat
   oder Sales-Seite `/marketing/werkbank`). Sind alle Clips abgenommen, fuegt der Arbeiter das
   Video zusammen (-14 LUFS) und Sales legt es in `/freigaben`.

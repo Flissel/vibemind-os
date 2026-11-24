@@ -112,6 +112,57 @@ class WerkbankApi:
     def fertig(self, aid: str, teil: dict) -> bool:
         return bool(self._anfrage("POST", f"/{aid}/fertig", teil).get("ok"))
 
+    # --- Higgsfield-Uebergaenge (Migration 102) ---
+
+    def hf_abgleich(self) -> list[dict]:
+        """Werke mit Stellen, an denen ein Vorschlag fehlt: [{auftrag, mandant, titel, thema, fehlend: [...]}]."""
+        return self._anfrage("POST", "/hf/abgleich").get("werke") or []
+
+    def hf_vorschlag(self, aid: str, teil: dict) -> str:
+        return str(self._anfrage("POST", f"/{aid}/hf/vorschlag", teil).get("id") or "")
+
+    def hf_nehmen(self) -> dict | None:
+        return self._anfrage("POST", "/hf/nehmen").get("clip")
+
+    def hf_preis(self, hid: str, preis: float) -> bool:
+        """True nur, wenn der Preis dem freigegebenen gleicht. False = NICHT bestellen."""
+        return self._anfrage("POST", f"/hf/{hid}/preis", {"preis": preis}).get("ok") is True
+
+    def hf_auftrag(self, hid: str, nummer: str, preis: float) -> bool:
+        return bool(self._anfrage("POST", f"/hf/{hid}/auftrag", {"hf_auftrag": nummer, "preis": preis}).get("ok"))
+
+    def hf_weiter(self, hid: str) -> bool:
+        return bool(self._anfrage("POST", f"/hf/{hid}/weiter").get("ok"))
+
+    def hf_fertig(self, hid: str, datei: str, dauer_s: float) -> bool:
+        return bool(self._anfrage("POST", f"/hf/{hid}/fertig", {"datei": datei, "dauer_s": dauer_s}).get("ok"))
+
+    def hf_fehler(self, hid: str, grund: str) -> bool:
+        return bool(self._anfrage("POST", f"/hf/{hid}/fehler", {"grund": grund}).get("ok"))
+
+    def bild_ablegen(self, aid: str, name: str, pfad: Path) -> None:
+        """Ein Standbild (JPEG, hoechstens 2 MB) ablegen."""
+        status, antwort = self._senden("PUT", f"/{aid}/bild/{name}", Path(pfad).read_bytes(), "image/jpeg")
+        if status >= 400:
+            raise ApiFehler(status, str(antwort.get("detail", ""))[:300])
+
+    def bild_holen(self, aid: str, name: str, ziel: Path) -> int:
+        """Ein Standbild des Auftrags in `ziel` laden (ueber eine .teil-Datei). Rueckgabe: Bytes."""
+        ziel = Path(ziel)
+        teil = ziel.with_name(ziel.name + ".teil")
+        try:
+            with self._oeffnen(f"/{aid}/bild/{name}", 60) as r, teil.open("wb") as f:
+                shutil.copyfileobj(r, f, 1024 * 1024)
+            geladen = teil.stat().st_size
+            teil.replace(ziel)
+        except urllib.error.HTTPError as e:
+            teil.unlink(missing_ok=True)
+            raise ApiFehler(e.code, "Das Bild ließ sich nicht abrufen.") from None
+        except BaseException:
+            teil.unlink(missing_ok=True)
+            raise
+        return geladen
+
     def _oeffnen(self, pfad: str, zeit: int = 300):
         """GET als Datenstrom (Antwortobjekt); HTTP-Fehler und Netzfehler kommen als Ausnahme."""
         req = urllib.request.Request(self.basis + self.PRAEFIX + pfad, method="GET")

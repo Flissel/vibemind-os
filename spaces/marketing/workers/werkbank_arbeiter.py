@@ -107,6 +107,7 @@ class _Lauf:
         self.fertigstellen, self.warte, self.marke, self.ordner = fertigstellen, warte, marke, ordner
         self.brief, self.jetzt, self.heute = brief, jetzt, heute
         self.gedaechtnis = _gedaechtnis(api)
+        self.hf_stellen: set[int] = set()         # je Werk in _texte gesetzt
         self.budget = jetzt() < self.gedaechtnis.get("budget_bis", 0.0)
 
     def gezaehlt(self, aid: str) -> None:
@@ -388,6 +389,16 @@ def _bewerten(zeile: dict, szene: dict | None, auftrag: str, ktx, konzept: str =
     return video_texte.szene_pruefen(szene, auftrag, ktx, konzept)
 
 
+def hf_stellen(szenen: list[dict]) -> set[int]:
+    """Nummern der Szenen, IN die ein Higgsfield-Uebergang fuehren soll. Nur mit WERKBANK_HF_UEBERGAENGE=stufen:
+    dann die erste Szene jeder Stufe ausser der allerersten (die Datenbank laesst hoechstens 6 Stellen je Video
+    zu). Ohne die Einstellung leer - dann bleibt alles, wie es das Modell geschrieben hat."""
+    if os.environ.get("WERKBANK_HF_UEBERGAENGE", "").strip().lower() != "stufen":
+        return set()
+    reihe = sorted((s for s in szenen if isinstance(s, dict) and isinstance(s.get("nr"), int)), key=lambda s: s["nr"])
+    return {s["nr"] for vor, s in zip(reihe, reihe[1:]) if s.get("stufe") and s.get("stufe") != vor.get("stufe")}
+
+
 def _abgeben(c: _Lauf, zeile: dict, szene: dict) -> bool | list[str]:
     """Eine bestandene Szene an ihr Tor geben. True = angenommen; False = die API nahm sie nicht (Stand hat sich
     geaendert). Eine Liste = 422: die API nimmt diese Form nie an. Das zaehlt wie eine durchgefallene Pruefung
@@ -397,8 +408,9 @@ def _abgeben(c: _Lauf, zeile: dict, szene: dict) -> bool | list[str]:
         if zeile.get("rueckgabe_von") == "clip" and szene.get("aendert_text") is False:
             c.api.szene_bild(sid, szene["bildart"], szene["bild"], _belegquellen(szene), _belege(szene))
         else:
+            uebergang = "higgsfield" if zeile.get("nr") in c.hf_stellen else szene["uebergang"]
             c.api.szene_text(sid, {"sprechtext": szene["sprechtext"], "bildart": szene["bildart"], "bild": szene["bild"],
-                                   "uebergang": szene["uebergang"], "quellen": _belegquellen(szene),
+                                   "uebergang": uebergang, "quellen": _belegquellen(szene),
                                    "belege": _belege(szene)})
     except ApiFehler as e:
         LOG.warning("Szene abgelehnt: API %s", e.code)
@@ -462,6 +474,7 @@ def _texte(c: _Lauf, werk: dict) -> str | None:
         _budget_melden(c, werk)
         return "budget"
     c.lease(aid)
+    c.hf_stellen = hf_stellen(werk.get("szenen") or [])
     auftrag = video_texte.auftragstext(werk.get("eingabe") or {})
     konzept = video_texte.konzepttext(werk.get("eingabe") or {})
     abgegeben = 0
@@ -625,6 +638,8 @@ def _schritt(werk: dict, schritt, c: _Lauf) -> str | None:
 def _fertig(c: _Lauf, werk: dict) -> str | None:
     if c.fertigstellen is None or not werk.get("alle_fertig"):
         return None
+    if werk.get("hf_blockiert"):      # ein Higgsfield-Uebergang wartet auf Vorschlag, Freigabe oder Clip (Migration 102)
+        return None
     if int(werk.get("video_fassung") or 0) != 0 and not werk.get("video_veraltet"):
         return None
     # Ein Video, das nicht zusammenging, wird nicht alle 30 s neu versucht. Der Grund steht am Server (video_fehler,
@@ -635,7 +650,8 @@ def _fertig(c: _Lauf, werk: dict) -> str | None:
         return None
     schluessel = ("video", str(werk["auftrag"]), int(werk.get("video_fassung") or 0), int(werk.get("video_versuch") or 0),
                   tuple((str(s.get("id")), s.get("variante"), s.get("clip_datei"), s.get("fassung"))
-                        for s in werk.get("szenen") or []))
+                        for s in werk.get("szenen") or []),
+                  tuple(str(u.get("datei")) for u in werk.get("hf_uebergaenge") or [] if isinstance(u, dict)))
     if schluessel in c.gedaechtnis["aufgegeben"]:
         return None
     try:

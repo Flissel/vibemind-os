@@ -1196,3 +1196,64 @@ def test_wunsch_ohne_bisherige_gliederung_bekommt_nicht_das_konzept_als_unveraen
     f = Fragen()
     ein_durchlauf(api, fragen=f, **F)
     assert "bleiben wie dort" not in f.nachrichten[0] and wa.video_texte.RANGFOLGE_WUNSCH_OHNE_BISHER in f.nachrichten[0]
+
+
+# --- Higgsfield-Uebergaenge (Migration 102) ---------------------------------------------------
+
+def test_offener_higgsfield_uebergang_haelt_das_video_auf(F):
+    gerufen = []
+    hook = lambda api, w: gerufen.append(w["auftrag"]) or "video"    # noqa: E731
+    api = FakeApi([werk(AID_A, "text_ok", alle_fertig=True, hf_blockiert=True)])
+    assert ein_durchlauf(api, fertigstellen=hook, **F) == "wartet" and gerufen == []
+    api.werke = [werk(AID_A, "text_ok", alle_fertig=True, hf_blockiert=False)]
+    assert ein_durchlauf(api, fertigstellen=hook, **F) == "video" and gerufen == [AID_A]
+
+
+def test_neuer_uebergang_hebt_das_parken_eines_gescheiterten_videos_auf(F):
+    gerufen = []
+
+    def hook(api, w):
+        gerufen.append(1)
+        return "fehler"
+    szenen = [_fertige_szene(1), _fertige_szene(2)]
+    api = FakeApi([werk(AID_A, "text_ok", alle_fertig=True, szenen=szenen)])
+    ein_durchlauf(api, fertigstellen=hook, **F)
+    ein_durchlauf(api, fertigstellen=hook, **F)
+    assert len(gerufen) == 1
+    api.werke = [werk(AID_A, "text_ok", alle_fertig=True, szenen=szenen,
+                      hf_uebergaenge=[{"nach_nr": 2, "datei": "wb-0123abcd-h02-f1.mp4", "dauer_s": 2.0}])]
+    ein_durchlauf(api, fertigstellen=hook, **F)
+    assert len(gerufen) == 2
+
+
+def _zwei_stufen():
+    return [zeile(n, stufe="Einstieg" if n <= 3 else "Schluss") for n in range(1, 7)]
+
+
+def test_ohne_einstellung_bleibt_der_uebergang_wie_geschrieben(F, monkeypatch):
+    monkeypatch.delenv("WERKBANK_HF_UEBERGAENGE", raising=False)
+    api = FakeApi([werk(stand="text_ok", gliederung=GLIEDERUNG, szenen=_zwei_stufen())])
+    ein_durchlauf(api, fragen=Fragen(), **F)
+    texte = api.rufe("szene_text")
+    assert len(texte) == 6 and {t["uebergang"] for t in texte} == {"schnitt"}
+
+
+def test_mit_einstellung_bekommt_die_erste_szene_jeder_weiteren_stufe_higgsfield(F, monkeypatch):
+    monkeypatch.setenv("WERKBANK_HF_UEBERGAENGE", "stufen")
+    api = FakeApi([werk(stand="text_ok", gliederung=GLIEDERUNG, szenen=_zwei_stufen())])
+    ein_durchlauf(api, fragen=Fragen(), **F)
+    texte = api.rufe("szene_text")
+    assert len(texte) == 6 and [t["uebergang"] for t in texte].count("higgsfield") == 1
+    assert [t["uebergang"] for t in texte][3] == "higgsfield"       # Szene 4 beginnt die zweite Stufe
+
+
+def test_hf_stellen(monkeypatch):
+    from spaces.marketing.workers.werkbank_arbeiter import hf_stellen
+    szenen = [{"nr": 3, "stufe": "B"}, {"nr": 1, "stufe": "A"}, {"nr": 2, "stufe": "A"}, {"nr": 4, "stufe": "B"},
+              {"nr": 5, "stufe": "C"}, {"nr": 6, "stufe": None}]
+    monkeypatch.delenv("WERKBANK_HF_UEBERGAENGE", raising=False)
+    assert hf_stellen(szenen) == set()
+    monkeypatch.setenv("WERKBANK_HF_UEBERGAENGE", "Stufen")
+    assert hf_stellen(szenen) == {3, 5}
+    monkeypatch.setenv("WERKBANK_HF_UEBERGAENGE", "alle")
+    assert hf_stellen(szenen) == set()

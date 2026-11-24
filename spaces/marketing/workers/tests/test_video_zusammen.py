@@ -306,3 +306,77 @@ def test_drei_echte_clips_ergeben_ein_video_mit_minus_14_lufs(tmp_path):
     assert abs(w["dauer_s"] - 12) < 0.5 and -15.0 <= w["lufs"] <= -13.0
     assert abs(p["dauer_s"] - summe) < 0.2
     assert sorted(x.name for x in tmp_path.iterdir() if x.name.endswith((".txt", ".roh.mp4", ".log"))) == []
+
+
+# --- Higgsfield-Uebergaenge (Migration 102) ---------------------------------------------------
+
+HF = [{"nach_nr": 5, "datei": "wb-0123abcd-h05-f2.mp4", "dauer_s": 2.0}]
+
+
+def test_uebergang_steht_zwischen_seinen_szenen_und_verschiebt_die_marke(tmp_path, ff):
+    api = FakeApi()
+    assert fertigstellen(api, werk_alle_fertig(hf_uebergaenge=HF), tmp_path) == "video"
+    namen = [f"wb-0123abcd-s{i:02d}-f0.mp4" for i in range(1, 9)]
+    assert ff["clips"] == namen[:4] + ["wb-0123abcd-h05-f2.mp4"] + namen[4:]
+    assert "wb-0123abcd-h05-f2.mp4" in api.rufe("holen")
+    f = api.rufe("fertig")[0]
+    assert f["zeitmarken"][0]["zeit"] == "0:00" and f["zeitmarken"][1]["zeit"] == "2:02"   # 4 x 30 s + 2 s Uebergang
+    assert "Sprechtempo" in f["messnotiz"]
+    assert list(tmp_path.iterdir()) == []                       # auch der Uebergang ist wieder weg
+
+
+def test_ohne_uebergaenge_bleibt_alles_wie_bisher(tmp_path, ff):
+    api = FakeApi()
+    fertigstellen(api, werk_alle_fertig(hf_uebergaenge=[]), tmp_path)
+    assert len(ff["clips"]) == 8 and api.rufe("fertig")[0]["zeitmarken"][1]["zeit"] == "2:00"
+
+
+@pytest.mark.parametrize("eintrag", [
+    {"nach_nr": 5, "datei": "wb-99999999-h05-f2.mp4", "dauer_s": 2.0},      # anderer Auftrag
+    {"nach_nr": 5, "datei": "wb-0123abcd-h06-f2.mp4", "dauer_s": 2.0},      # Name und Stelle widersprechen sich
+    {"nach_nr": 5, "datei": "../wb-0123abcd-h05-f2.mp4", "dauer_s": 2.0},
+    {"nach_nr": 1, "datei": "wb-0123abcd-h01-f1.mp4", "dauer_s": 2.0},      # vor der ersten Szene gibt es nichts
+    {"nach_nr": 99, "datei": "wb-0123abcd-h99-f1.mp4", "dauer_s": 2.0}, "kein objekt"])
+def test_unpassender_uebergang_faellt_weg(tmp_path, ff, eintrag):
+    api = FakeApi()
+    assert fertigstellen(api, werk_alle_fertig(hf_uebergaenge=[eintrag]), tmp_path) == "video"
+    assert len(ff["clips"]) == 8 and all("-h" not in n for n in api.rufe("holen"))
+
+
+def test_fehler_nennt_den_uebergang(tmp_path, monkeypatch):
+    def pruefen(p):
+        gut = {"breite": 1920, "hoehe": 1080, "fps": 30, "dauer_s": 4.0, "ton": True}
+        return {**gut, "ton": False} if "-h02-" in Path(p).name else gut
+    monkeypatch.setattr(vz, "pruefen", pruefen)
+    clips = [tmp_path / "wb-0123abcd-s01-f0.mp4", tmp_path / "wb-0123abcd-h02-f1.mp4", tmp_path / "wb-0123abcd-s02-f0.mp4"]
+    with pytest.raises(ZusammenFehler) as e:
+        zusammenfuegen(clips, tmp_path / "v.mp4")
+    assert e.value.grund == "Der Übergang vor Szene 2 hat keinen Ton."
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg fehlt")
+def test_echter_uebergang_laesst_sich_ohne_neukodierung_einfuegen(tmp_path):
+    """Ein Clip, wie Higgsfield ihn liefert (anderes Format, kein Ton), wird angeglichen und zwischen zwei
+    Szenen-Clips gesetzt: gleiche Stromwerte, das Video ist so lang wie die Summe."""
+    from spaces.marketing.workers import werkbank_hf
+    s1, s2 = tmp_path / "wb-0123abcd-s01-f0.mp4", tmp_path / "wb-0123abcd-s02-f0.mp4"
+    _clip(s1, "red", -12)
+    _clip(s2, "blue", -12)
+    roh = tmp_path / "hf.roh.mp4"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+                    "-i", "testsrc=s=1280x720:d=3:r=24", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(roh)],
+                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=120)
+    h = tmp_path / "wb-0123abcd-h02-f1.mp4"
+    dauer = werkbank_hf.angleichen(werkbank_hf.ffmpeg, roh, h)
+    p = vz.pruefen(h)
+    assert (p["breite"], p["hoehe"], p["fps"], p["ton"]) == (1920, 1080, 30, True) and abs(dauer - 2.0) < 0.15
+    ziel = tmp_path / "video.mp4"
+    zusammenfuegen([s1, h, s2], ziel)
+    gesamt = vz.pruefen(ziel)
+    assert abs(gesamt["dauer_s"] - (4 + dauer + 4)) < 0.25 and gesamt["ton"]
+    # Standbilder: erstes Bild von s2 und letztes Bild von s1, beide JPEG und unter 2 MB
+    a, z = tmp_path / "a.jpg", tmp_path / "z.jpg"
+    werkbank_hf.standbild(werkbank_hf.ffmpeg, s2, a, "a")
+    werkbank_hf.standbild(werkbank_hf.ffmpeg, s1, z, "z")
+    assert a.read_bytes()[:3] == b"\xff\xd8\xff" and z.read_bytes()[:3] == b"\xff\xd8\xff"
+    assert 0 < a.stat().st_size < 2 * 1024 ** 2 and 0 < z.stat().st_size < 2 * 1024 ** 2

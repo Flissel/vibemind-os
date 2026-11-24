@@ -86,6 +86,9 @@ REGELN: dict[str, Regel] = {
     "marketing_telegram_bot": Regel("/health", True, True),
     "marketing_werkbank_shim": Regel("/health", True, True),
     "marketing_werkbank_arbeiter": Regel("/", True, True),
+    # 24.11.2026: der Higgsfield-Arbeiter wird NIE wegen Stille beendet - mitten im Bestellen abgebrochen, bliebe
+    # ein Auftrag ohne vermerkte Nummer zurueck (die Datenbank setzt ihn dann auf Fehler, ein Mensch muss nachsehen).
+    "marketing_werkbank_hf": Regel("/", False, True),
 }
 # Ein neuer Dienst im Startskript wird gestartet, wenn er fehlt, aber nie wegen Stille beendet.
 STANDARD = Regel(None, False, True)

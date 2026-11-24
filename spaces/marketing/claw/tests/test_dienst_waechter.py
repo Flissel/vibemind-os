@@ -308,3 +308,15 @@ def test_werkbank_dienste_stehen_im_startskript_und_in_den_regeln():
     assert len(re.findall(r"Port = (\d+)", skript)) == len(set(re.findall(r"Port = (\d+)", skript)))
     assert w.REGELN["marketing_werkbank_shim"] == w.Regel("/health", True, True)
     assert w.REGELN["marketing_werkbank_arbeiter"] == w.Regel("/", True, True)
+
+
+def test_higgsfield_arbeiter_steht_im_startskript_und_wird_nie_wegen_stille_beendet():
+    """24.11.2026: eigener Dienst :8156. Der Waechter darf ihn starten, aber nicht beenden (Abbruch mitten im Bestellen)."""
+    import re
+    from pathlib import Path
+    skript = (Path(w.__file__).parent / "scripts" / "marketing-dienste-starten.ps1").read_text(encoding="utf-8")
+    hf = re.search(r"Name = 'marketing_werkbank_hf'.*?Was\s+=", skript, re.S).group(0)
+    assert "Port = 8156" in hf and "workers.werkbank_hf" in hf
+    assert len(re.findall(r"Port = (\d+)", skript)) == len(set(re.findall(r"Port = (\d+)", skript)))
+    assert w.REGELN["marketing_werkbank_hf"] == w.Regel("/", False, True)
+    assert "WERKBANK_HF_UEBERGAENGE = ''" in skript          # aus, bis der Betreiber es einschaltet

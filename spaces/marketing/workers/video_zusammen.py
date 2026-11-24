@@ -31,6 +31,8 @@ PLATZ_FAKTOR = 3                 # frei sein muss: Summe der Clip-Groessen x 3 (
 PLATZ_START_BYTES = 512 * 1024 ** 2   # vor dem ersten Clip, dessen Groesse noch niemand kennt
 SATZ_VIDEO = "Das Video ließ sich nicht zusammenfügen."
 _CLIP_NR = re.compile(r"-s(\d{2,3})-f\d+\.mp4$")
+_HF_NR = re.compile(r"-h(\d{2,3})-f\d+\.mp4$")
+HF_NAME = re.compile(r"wb-([0-9a-f]{8})-h([0-9]{2,3})-f([0-9]{1,3})\.mp4")   # Higgsfield-Uebergang IN die Szene NN
 
 
 class ZusammenFehler(Exception):
@@ -105,6 +107,35 @@ def _nr(clip: Path, stelle: int) -> int:
     return int(m.group(1)) if m else stelle
 
 
+def _was(clip: Path, stelle: int) -> str:
+    """Wie der Clip dem Betreiber genannt wird: "Szene 3" oder "Der Übergang vor Szene 3"."""
+    m = _HF_NR.search(clip.name)
+    return f"Der Übergang vor Szene {int(m.group(1))}" if m else f"Szene {_nr(clip, stelle)}"
+
+
+def mit_uebergaengen(szenen: list[dict], uebergaenge, aid8: str) -> tuple[list[tuple[str, bool]], list[dict]]:
+    """Reihenfolge der Dateien mit den fertigen Higgsfield-Uebergaengen ([(datei, ist_uebergang)]) und die Szenen
+    fuer die Kapitelmarken: die Dauer eines Uebergangs zaehlt zur Szene DAVOR, damit die Marke der naechsten Stufe
+    auf deren erstem Bild liegt. Eintraege, die nicht zum Auftrag oder zu keiner Szene passen, fallen weg."""
+    je_nr: dict[int, dict] = {}
+    for u in uebergaenge if isinstance(uebergaenge, list) else []:
+        m = HF_NAME.fullmatch(str(u.get("datei") or "")) if isinstance(u, dict) else None
+        if m and m.group(1) == aid8 and isinstance(u.get("nach_nr"), int) and int(m.group(2)) == u["nach_nr"]:
+            je_nr[u["nach_nr"]] = u
+    folge: list[tuple[str, bool]] = []
+    marken = [dict(s) for s in szenen]
+    for i, s in enumerate(szenen):
+        u = je_nr.get(int(s["nr"]))
+        if u and i > 0:
+            folge.append((str(u["datei"]), True))
+            dauer = u.get("dauer_s")
+            if isinstance(dauer, (int, float)) and not isinstance(dauer, bool) \
+                    and isinstance(marken[i - 1].get("dauer_s"), (int, float)):
+                marken[i - 1]["dauer_s"] = marken[i - 1]["dauer_s"] + dauer
+        folge.append((str(s["clip_datei"]), False))
+    return folge, marken
+
+
 def _ffmpeg(args: list[str], zeitlimit_s: float, schritt: str, protokoll: Path | None = None) -> None:
     try:
         code = _lauf(args, zeitlimit_s, None, dict(os.environ), protokoll)
@@ -142,17 +173,19 @@ def zusammenfuegen(clips: list[Path], ziel: Path, musik: Path | None = None, zei
     if not clips:
         raise ZusammenFehler("Es gibt keine Clips zum Zusammenfügen.")
     for i, clip in enumerate(clips, 1):
-        nr = _nr(clip, i)
+        nr, was = _nr(clip, i), _was(clip, i)
         try:
             p = pruefen(clip)
         except RenderFehler:
+            if was.startswith("Der"):
+                raise ZusammenFehler(f"{was} ließ sich nicht prüfen.") from None
             raise ZusammenFehler(f"Der Clip der Szene {nr} ließ sich nicht prüfen.") from None
         if (p["breite"], p["hoehe"]) != (1920, 1080):
-            raise ZusammenFehler(f"Szene {nr} hat {p['breite']}x{p['hoehe']} statt 1920x1080.")
+            raise ZusammenFehler(f"{was} hat {p['breite']}x{p['hoehe']} statt 1920x1080.")
         if p["fps"] != 30:
-            raise ZusammenFehler(f"Szene {nr} hat {p['fps']} statt 30 Bilder pro Sekunde.")
+            raise ZusammenFehler(f"{was} hat {p['fps']} statt 30 Bilder pro Sekunde.")
         if not p["ton"]:
-            raise ZusammenFehler(f"Szene {nr} hat keinen Ton.")
+            raise ZusammenFehler(f"{was} hat keinen Ton.")
     ziel.parent.mkdir(parents=True, exist_ok=True)
     liste = ziel.with_name(ziel.stem + ".liste.txt")
     roh = ziel.with_name(ziel.stem + ".roh.mp4")
@@ -267,13 +300,15 @@ def fertigstellen(api, werk: dict, ordner: Path | None = None) -> str:
         if not szenen or any(not s.get("clip_datei") for s in szenen):
             raise ZusammenFehler("Ein Szenen-Clip fehlt.")
         ordner.mkdir(parents=True, exist_ok=True)
+        # Fertige Higgsfield-Uebergaenge (Migration 102) kommen zwischen ihre Szenen; die Marken verschieben sich mit.
+        folge, marken_szenen = mit_uebergaengen(szenen, werk.get("hf_uebergaenge"), aid8)
         clips, geladen = [], 0
-        for i, s in enumerate(szenen):
-            ziel = ordner / str(s["clip_datei"])
+        for i, (datei, _uebergang) in enumerate(folge):
+            ziel = ordner / datei
             if i == 0:
                 benoetigt = PLATZ_START_BYTES
             else:               # die Groesse der restlichen Clips folgt aus den bisherigen (gleiches Format)
-                benoetigt = geladen / i * len(szenen) * PLATZ_FAKTOR - geladen
+                benoetigt = geladen / i * len(folge) * PLATZ_FAKTOR - geladen
             if _frei(ordner) < benoetigt:
                 raise ZusammenFehler("Auf dem PC ist nicht genug Platz für das Video frei.")
             angelegt.append(ziel.name)
@@ -282,14 +317,14 @@ def fertigstellen(api, werk: dict, ordner: Path | None = None) -> str:
         angelegt.append(name)
         video = ordner / name
         musik = musik_datei(str(werk.get("mandant") or ""))
-        dauer = sum(float(s["dauer_s"]) for s in szenen if isinstance(s.get("dauer_s"), (int, float)))
+        dauer = sum(float(s["dauer_s"]) for s in marken_szenen if isinstance(s.get("dauer_s"), (int, float)))
         zusammenfuegen(clips, video, musik, zeitlimit_s=max(1800.0, 2 * dauer))
         gesamt = pruefen(video)["dauer_s"]
         log = video_claw.video_messen(str(video), zeitlimit_s=max(120, 2 * gesamt),
                                       melden=lambda g: LOG.warning("Messung: %s", g))
         werte = video_claw.messwerte(log) if log else None
         notiz, warnungen = messnotiz(werte, szenen, int(werk.get("aufrufe") or 0))
-        kopf = video_texte.kopf(werk.get("gliederung") or {}, szenen)
+        kopf = video_texte.kopf(werk.get("gliederung") or {}, marken_szenen)
         api.hochladen(aid, name, video)
         api.fertig(aid, {"datei": name, "bytes": video.stat().st_size, "dauer_s": round(gesamt, 2),
                          "titel": kopf["titel"], "beschreibung": kopf["beschreibung"],

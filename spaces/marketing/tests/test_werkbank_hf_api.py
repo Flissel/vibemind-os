@@ -200,7 +200,8 @@ def test_auftrag_merken(db, c):
     assert c.post(f"{A}/hf/{HID}/auftrag", json={"hf_auftrag": nummer, "preis": 5.25}, headers=B).status_code == 409
 
 
-@pytest.mark.parametrize("nummer", ["kurz", "mit leer zeichen", "x'; DROP TABLE y; --", "a" * 81, None, 123456])
+@pytest.mark.parametrize("nummer", ["kurz", "mit leer zeichen", "x'; DROP TABLE y; --", "a" * 81, None, 123456,
+                                    "--help", "-job-123456"])
 def test_auftrag_merken_falsche_nummer_422(db, c, nummer):
     r = c.post(f"{A}/hf/{HID}/auftrag", json={"hf_auftrag": nummer, "preis": 5.25}, headers=B)
     assert r.status_code == 422 and db.sql == []

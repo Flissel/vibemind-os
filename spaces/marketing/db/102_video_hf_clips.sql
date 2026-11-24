@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS marketing.video_hf_clips (
     stand           text NOT NULL DEFAULT 'vorgeschlagen'
                     CONSTRAINT video_hf_clips_stand_chk CHECK (stand IN
                         ('vorgeschlagen', 'freigegeben', 'bestellt', 'fertig', 'verworfen', 'fehler', 'ueberholt')),
-    hf_auftrag      text CONSTRAINT video_hf_clips_nummer_chk CHECK (hf_auftrag ~ '^[A-Za-z0-9_-]{6,80}$'),
+    hf_auftrag      text CONSTRAINT video_hf_clips_nummer_chk CHECK (hf_auftrag ~ '^[A-Za-z0-9][A-Za-z0-9_-]{5,79}$'),
     vergeben_bis    timestamptz,
     datei           text,
     clip_dauer_s    numeric,
@@ -424,7 +424,7 @@ RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE v_auftrag uuid;
 BEGIN
-    IF p_hf_auftrag IS NULL OR p_hf_auftrag !~ '^[A-Za-z0-9_-]{6,80}$' THEN RETURN false; END IF;
+    IF p_hf_auftrag IS NULL OR p_hf_auftrag !~ '^[A-Za-z0-9][A-Za-z0-9_-]{5,79}$' THEN RETURN false; END IF;
     UPDATE marketing.video_hf_clips
        SET hf_auftrag = p_hf_auftrag, preis_bestellt = coalesce(p_preis, preis), geaendert = now()
      WHERE id = p_id AND stand = 'bestellt' AND hf_auftrag IS NULL

@@ -201,7 +201,8 @@ BEGIN
   IF r->>'ok' <> 'true' THEN RAISE EXCEPTION '102.5: Freigabe h3 %', r; END IF;
   j := marketing.video_hf_nehmen(interval '10 min');
   IF (j->>'id')::uuid <> h3 OR NOT marketing.video_hf_preis_pruefen(h3, 8.75) THEN RAISE EXCEPTION '102.5: h3'; END IF;
-  IF marketing.video_hf_auftrag_merken(h3, 'zu kurz', 8.75) OR marketing.video_hf_auftrag_merken(h3, NULL, 8.75) THEN
+  IF marketing.video_hf_auftrag_merken(h3, 'zu kurz', 8.75) OR marketing.video_hf_auftrag_merken(h3, NULL, 8.75)
+     OR marketing.video_hf_auftrag_merken(h3, '--help', 8.75) THEN
     RAISE EXCEPTION '102.5: ungueltige Nummer angenommen'; END IF;
   IF NOT marketing.video_hf_auftrag_merken(h3, '8323a0b9-2ef6-4665-89a2-2d20ee770dfb', 8.75) THEN
     RAISE EXCEPTION '102.5: Nummer nicht vermerkt'; END IF;

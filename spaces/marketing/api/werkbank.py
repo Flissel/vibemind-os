@@ -51,7 +51,7 @@ HINWEIS_KEY_MUSTER = re.compile(r"[a-z0-9_]{1,60}")
 # Bild) und -z.jpg (letztes Bild).
 HF_NAME_MUSTER = re.compile(r"wb-([0-9a-f]{8})-(h([0-9]{2,3}))-f([0-9]{1,3})\.mp4")
 HF_BILD_MUSTER = re.compile(r"wb-([0-9a-f]{8})-s([0-9]{2,3})-f([0-9]{1,3})-([az])\.jpg")
-HF_NUMMER_MUSTER = re.compile(r"[A-Za-z0-9_-]{6,80}")
+HF_NUMMER_MUSTER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{5,79}")
 HF_MODELLE = ("kling3_0",)
 HF_DAUER = (3, 5)
 HF_PROMPT_MAX = 1000

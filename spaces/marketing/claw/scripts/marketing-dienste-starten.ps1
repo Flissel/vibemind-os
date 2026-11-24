@@ -239,8 +239,20 @@ $Dienste = @(
         Args = @('-u', '-m', 'spaces.marketing.workers.werkbank_arbeiter')
         Cwd  = $OsRoot
         # WERKBANK_ROWBOAT_QUELLEN: Namen der Rowboat-Wissensquellen, die Videos nutzen duerfen (kommagetrennt, leer = keine)
-        Env  = @{ TON_STIMMEN_ORDNER = 'E:\marketing-stimmen'; WERKBANK_ROWBOAT_QUELLEN = '' }
+        # WERKBANK_HF_UEBERGAENGE: 'stufen' = an jeder Stufen-Grenze einen Higgsfield-Uebergang vorsehen (leer = keine)
+        Env  = @{ TON_STIMMEN_ORDNER = 'E:\marketing-stimmen'; WERKBANK_ROWBOAT_QUELLEN = ''; WERKBANK_HF_UEBERGAENGE = '' }
         Was  = 'Werkbank-Arbeiter (Video-Auftraege: schreibt, spricht, rendert, laedt Clips hoch; fragt ueber :8154)'
+    },
+    # Higgsfield-Uebergaenge der Werkbank (24.11.2026, Migration 102): schlaegt je Stelle einen Uebergang vor
+    # (Standbilder, Auftragstext, Preis) und bestellt erst, wenn ein Mensch den Clip auf der Sales-Seite freigegeben
+    # hat. Nutzt das am PC angemeldete Programm `higgsfield` (Abo); ohne Anmeldung meldet er das und bestellt nichts.
+    @{
+        Name = 'marketing_werkbank_hf'
+        Port = 8156
+        Args = @('-u', '-m', 'spaces.marketing.workers.werkbank_hf')
+        Cwd  = $OsRoot
+        Env  = @{}
+        Was  = 'Higgsfield-Arbeiter der Werkbank (schlaegt Uebergaenge vor, bestellt nur nach Freigabe je Clip)'
     }
 )
 
