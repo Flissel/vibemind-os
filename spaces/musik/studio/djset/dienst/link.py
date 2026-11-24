@@ -10,6 +10,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import os
+import re
 import shutil
 import threading
 import time
@@ -23,6 +25,7 @@ ERLAUBT = ("videomusik.wav", "videomusik.mp3")
 GUELTIG_S = 900
 _TYP = {"videomusik.wav": "audio/wav", "videomusik.mp3": "audio/mpeg"}
 _FERTIG = ("fertig", "fertig_mit_befund")
+_LAUF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 log = logging.getLogger(__name__)
 
@@ -77,15 +80,19 @@ def aufloesen(
         return 404, None
     try:
         auftrag = ablage.hole(auftrag_id)
-    except (KeyError, ValidationError, ValueError):
+    except (KeyError, ValidationError, ValueError, OSError):
         return 404, None
     if auftrag.zustand not in _FERTIG or not auftrag.lauf:
         return 404, None
     lauf = auftrag.lauf
-    if lauf in (".", "..") or "/" in lauf or "\\" in lauf or ":" in lauf:
+    if not _LAUF.fullmatch(lauf) or lauf.endswith("."):
         return 404, None
-    datei = Path(ablage.daten) / "runs" / lauf / name
-    if not datei.is_file():
+    try:
+        runs = (Path(ablage.daten) / "runs").resolve()
+        datei = runs / lauf / name
+        if not datei.resolve().is_relative_to(runs) or not datei.is_file():
+            return 404, None
+    except (OSError, ValueError):
         return 404, None
     return 200, datei
 
@@ -93,6 +100,7 @@ def aufloesen(
 def _handler(ablage, schluessel: bytes):
     class Handler(BaseHTTPRequestHandler):
         server_version = "musik-link"
+        timeout = 30  # ein haengender Client haelt keinen Thread ewig
 
         def log_message(self, format: str, *args) -> None:  # noqa: A002
             log.debug("%s", format % args)
@@ -109,7 +117,7 @@ def _handler(ablage, schluessel: bytes):
                 return
             try:
                 with datei.open("rb") as strom:
-                    groesse = datei.stat().st_size
+                    groesse = os.fstat(strom.fileno()).st_size
                     self.send_response(200)
                     self.send_header("Content-Type", _TYP[datei.name])
                     self.send_header("Content-Length", str(groesse))
@@ -127,8 +135,14 @@ def _handler(ablage, schluessel: bytes):
     return Handler
 
 
+class _Server(ThreadingHTTPServer):
+    def handle_error(self, request, client_address) -> None:
+        # Standard waere ein Traceback auf stderr; hier nur Debug-Log.
+        log.debug("Verbindungsfehler von %s", client_address, exc_info=True)
+
+
 def starten(host: str, port: int, ablage, schluessel: bytes) -> ThreadingHTTPServer:
-    server = ThreadingHTTPServer((host, port), _handler(ablage, schluessel))
+    server = _Server((host, port), _handler(ablage, schluessel))
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, name="musik-link", daemon=True).start()
     return server

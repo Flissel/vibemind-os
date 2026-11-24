@@ -159,6 +159,54 @@ def test_kaputter_auftrag_404(ablage):
     assert aufloesen(ablage, SCHLUESSEL, _pfad(url), JETZT) == (404, None)
 
 
+@pytest.mark.parametrize("lauf", ["...", "NUL", "a*b", "x.", "..", "a b", "a?b", "-x", "a/b", "a\\b"])
+def test_feindliche_lauf_id_404(ablage, lauf):
+    auftrag = _fertig(ablage)
+    auftrag.lauf = lauf
+    ablage.speichern(auftrag)
+    url = link(BASIS, SCHLUESSEL, auftrag.id, "videomusik.wav", JETZT)
+    assert aufloesen(ablage, SCHLUESSEL, _pfad(url), JETZT) == (404, None)
+
+
+def test_oserror_in_hole_ist_404_und_still(ablage, monkeypatch, capfd):
+    auftrag = _fertig(ablage)
+
+    def kaputt(_id):
+        raise PermissionError("Zugriffsverletzung")
+
+    monkeypatch.setattr(ablage, "hole", kaputt)
+    url = link(BASIS, SCHLUESSEL, auftrag.id, "videomusik.wav", JETZT)
+    assert aufloesen(ablage, SCHLUESSEL, _pfad(url), JETZT) == (404, None)
+
+    server = starten("127.0.0.1", 0, ablage, SCHLUESSEL)
+    try:
+        port = server.server_address[1]
+        import time
+
+        echt = link(f"http://127.0.0.1:{port}", SCHLUESSEL, auftrag.id, "videomusik.wav", time.time())
+        with pytest.raises(urllib.error.HTTPError) as fehler:
+            urllib.request.urlopen(echt, timeout=10)
+        assert fehler.value.code == 404
+        fehler.value.close()
+        try:
+            raise ConnectionResetError("weg")
+        except ConnectionResetError:
+            server.handle_error(None, ("127.0.0.1", 1))
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert capfd.readouterr().err == ""
+
+
+def test_handler_hat_zeitlimit(ablage):
+    server = starten("127.0.0.1", 0, ablage, SCHLUESSEL)
+    try:
+        assert server.RequestHandlerClass.timeout == 30
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_server_liefert_bytes(ablage):
     auftrag = _fertig(ablage)
     server = starten("127.0.0.1", 0, ablage, SCHLUESSEL)
@@ -189,7 +237,7 @@ def test_server_liefert_bytes(ablage):
         anfrage = urllib.request.Request(url, data=b"x", method="POST")
         with pytest.raises(urllib.error.HTTPError) as fehler:
             urllib.request.urlopen(anfrage, timeout=10)
-        assert fehler.value.code in (404, 501)
+        assert fehler.value.code == 404
         fehler.value.close()
     finally:
         server.shutdown()
