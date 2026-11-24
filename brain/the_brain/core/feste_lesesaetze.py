@@ -9,6 +9,8 @@ Ergaenzt die Tabelle in core/verstehen.py (``_FESTE_LESEFRAGEN``, ``FESTE_ANTWOR
 * Project Space "Wie ist der Stand im Project Space?" -> coding_stand, "Zeig mir die letzten Läufe"
   -> coding_laeufe, "Zeig mir das Ergebnis des letzten Laufs" -> coding_ergebnis (core/coding_stand.py)
 * Aufträge   "Welche Aufträge laufen gerade?"      -> schedule_auftraege (core/auftraege_lesen.py)
+* Desktop    "Öffne den Editor", "Hol Chrome nach vorn" -> desktop_app (core/desktop_app.py; Handlung,
+  Wirkklasse external, nur Editor, Chrome, Explorer)
 
 Agent Farm bekommt keinen Satz: hinter agentfarm_list_teams laeuft kein Dienst (siehe
 docs im Bericht an die Koordination), der Satz bleibt "noch kein Weg".
@@ -94,6 +96,14 @@ class _Bestaetigung:
         return auftrag_aus_satz(text)
 
 
+class _AppSatz:
+    """Muster-Ersatz: "Öffne <Programm>" / "Hol <Programm> nach vorn" (core/desktop_app.py)."""
+
+    def search(self, text: str):
+        from .desktop_app import auftrag_aus_satz
+        return auftrag_aus_satz(text)
+
+
 def lesefragen(alle: Tuple[Any, ...]) -> tuple:
     """Eintraege fuer ``_FESTE_LESEFRAGEN``: (Muster, Faehigkeit, Spaces).
 
@@ -105,6 +115,10 @@ def lesefragen(alle: Tuple[Any, ...]) -> tuple:
     """
     return (
         (_Bestaetigung(), "desktop_bestaetigen", None),
+        # App starten / nach vorn (24.11.2026): nennt der Satz den Desktop, gilt er ueberall, sonst
+        # nur im Desktop-Reiter oder ohne Reiter ("Öffne den Editor" kann im Video Studio etwas anderes sein).
+        (_nur_mit_desktop(_AppSatz()), "desktop_app", None),
+        (_AppSatz(), "desktop_app", ("desktop", None)),
         (_nur_mit_desktop(_FENSTER), "desktop_fenster", None),
         (_FENSTER, "desktop_fenster", ("desktop", None)),
         (_GEDANKEN, "thebrain_gedanken", None),
@@ -166,13 +180,20 @@ def _schedule_auftraege(ergebnis: Any) -> Optional[str]:
     return antwort(ergebnis)
 
 
+def _desktop_app(name: str) -> Callable[..., Optional[str]]:
+    def aufruf(*args: Any) -> Optional[str]:
+        from . import desktop_app
+        return getattr(desktop_app, name)(*args)
+    return aufruf
+
+
 def antworten() -> Dict[str, Callable[[Any], Optional[str]]]:
     """Eintraege fuer ``FESTE_ANTWORTEN``."""
     return {"desktop_fenster": _desktop_fenster, "thebrain_gedanken": _thebrain_gedanken,
             "rowboat_spaces": _rowboat_spaces, "desktop_bestaetigen": _desktop_bestaetigen,
             "coding_stand": _coding("antwort_stand"), "coding_laeufe": _coding("antwort_laeufe"),
             "coding_ergebnis": _coding("antwort_ergebnis"),
-            "schedule_auftraege": _schedule_auftraege}
+            "schedule_auftraege": _schedule_auftraege, "desktop_app": _desktop_app("antwort")}
 
 
 def _desktop_fenster_fehler(ergebnis: Any, fehler: Any = None) -> Optional[str]:
@@ -199,7 +220,8 @@ def fehlersaetze() -> Dict[str, Callable[..., Optional[str]]]:
     return {"desktop_fenster": _desktop_fenster_fehler, "rowboat_spaces": _rowboat_spaces_fehler,
             "thebrain_gedanken": _thebrain_gedanken_fehler, "coding_stand": _coding("fehlersatz"),
             "coding_laeufe": _coding("fehlersatz"), "coding_ergebnis": _coding("fehlersatz"),
-            "thebrain_gedanken": _thebrain_gedanken_fehler, "schedule_auftraege": _schedule_auftraege_fehler}
+            "thebrain_gedanken": _thebrain_gedanken_fehler, "schedule_auftraege": _schedule_auftraege_fehler,
+            "desktop_app": _desktop_app("fehlersatz")}
 
 
 def _rowboat_spaces_vorher() -> Optional[str]:
@@ -213,5 +235,7 @@ def vorpruefungen() -> Dict[str, Callable[[], Optional[str]]]:
 
 
 def protokolle() ->Dict[str, Callable[[Any], Optional[str]]]:
-    """Satz fuer Plan-Verlauf und Protokolle, wenn die Antwort Bildschirminhalt traegt."""
-    return {"desktop_fenster": _desktop_fenster_protokoll, "desktop_bestaetigen": _desktop_bestaetigen_protokoll}
+    """Satz fuer Plan-Verlauf und Protokolle, wenn die Antwort Bildschirminhalt traegt (oder, bei
+    desktop_app, eine Handlung am Bildschirm war: Programm, Modus, Ausgang, Kennung im Aufgabenbuch)."""
+    return {"desktop_fenster": _desktop_fenster_protokoll, "desktop_bestaetigen": _desktop_bestaetigen_protokoll,
+            "desktop_app": _desktop_app("protokoll")}

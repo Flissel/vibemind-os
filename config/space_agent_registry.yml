@@ -268,6 +268,7 @@ spaces:
         - desktop_task_step
         - desktop_blick
         - desktop_fenster
+        - desktop_app
     default_context: [current_space, active_window]
     events:
       # Feste Aufrufe (ohne Modell) ueber den Desktop-Server.
@@ -288,6 +289,13 @@ spaces:
       desktop.fenster:
         tool: desktop_fenster
         required_params: []
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-desktop }
+      # Fester Satz mit Handlung "Öffne den Editor" / "Hol Chrome nach vorn" (core/desktop_app.py):
+      # nur editor, chrome, explorer, ohne Argumente; jede Ausfuehrung als Aufgabe im Aufgabenbuch.
+      desktop.app:
+        tool: desktop_app
+        required_params: [programm, modus]
         required_provenance: [approval_ref, cost_ref]
         execution: { kind: mcp, server: spaces-desktop }
       desktop.read:

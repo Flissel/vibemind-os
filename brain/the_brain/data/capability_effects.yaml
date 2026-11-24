@@ -125,6 +125,8 @@ effects:
   musik_video_bestellen: external
   musik_laura_unterlegen: external
   desktop_skill: external
+  # Programm starten / nach vorn (core/desktop_app.py): Spur im Aufgabenbuch des Desktop-Space.
+  desktop_app: external
   browser_automation: external
   som_resume: external
   event_do: external
