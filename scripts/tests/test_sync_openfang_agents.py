@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import tomllib
+import pytest
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -362,6 +364,64 @@ spaces:
     assert model["model"] == "gpt-4o"
     assert model["max_tokens"] == 16384
     assert model["temperature"] == 0.2
+
+
+ABO = """version: 1
+spaces:
+  research:
+    agent: brain-researcher
+    enabled: true
+    mcp_servers: [fetch]
+    model: {modell}
+    events: {{}}
+"""
+
+
+def test_abo_modell_traegt_den_wrapper_ins_manifest(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, ABO.format(modell=(
+        "{ provider: claude-code, model: claude-code/sonnet, "
+        "base_url: openfang_claude_subscription_wrapper.cmd }")))
+
+    assert module.sync() == 0
+    raw = (tmp_path / "agents" / "brain-researcher" / "agent.toml").read_text(encoding="utf-8")
+    model = tomllib.loads(raw)["model"]
+    assert model["provider"] == "claude-code" and model["model"] == "claude-code/sonnet"
+    assert model["base_url"] == "openfang_claude_subscription_wrapper.cmd"
+    assert "api_key_env" not in model and "openai" not in raw.lower() and "openrouter" not in raw.lower()
+
+
+def test_ohne_base_url_kein_wrapper_im_manifest(tmp_path, monkeypatch):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, ABO.format(modell="{ model: gpt-4o }"))
+    assert module.sync() == 0
+    raw = (tmp_path / "agents" / "brain-researcher" / "agent.toml").read_text(encoding="utf-8")
+    assert "base_url" not in raw
+
+
+@pytest.mark.parametrize("modell", [
+    # base_url ist kein API-Endpunkt
+    "{ provider: claude-code, model: claude-code/sonnet, base_url: 'https://api.example.com/v1' }",
+    # base_url nur mit dem Abo-Treiber
+    "{ provider: openai, model: gpt-4o, base_url: openfang_claude_subscription_wrapper.cmd }",
+    # Abo-Treiber nur mit dem Abo-Wrapper
+    "{ provider: claude-code, model: claude-code/sonnet }",
+    # Abo-Treiber nur mit einem Abo-Modell
+    "{ provider: claude-code, model: gpt-4o, base_url: openfang_claude_subscription_wrapper.cmd }",
+])
+def test_abo_vorgaben_fail_closed(tmp_path, monkeypatch, modell):
+    module = _load_sync_module()
+    _configure_registry(module, tmp_path, monkeypatch, ABO.format(modell=modell))
+    assert module.sync() == 1
+
+
+def test_echte_registry_stellt_den_rechercheagenten_aufs_abo():
+    module = _load_sync_module()
+    registry = yaml.safe_load(module.REGISTRY.read_text(encoding="utf-8"))
+    model = registry["spaces"]["research"]["model"]
+    assert model["provider"] == "claude-code" and model["model"] == "claude-code/sonnet"
+    assert model["base_url"] == "openfang_claude_subscription_wrapper.cmd"
+    assert module.validate_model_overrides() == []
 
 
 def test_sync_fails_closed_for_unknown_model_override_key(tmp_path, monkeypatch):

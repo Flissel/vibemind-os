@@ -35,7 +35,14 @@ MODEL_DEFAULTS: dict[str, Any] = {
     "max_tokens": 4096,
     "temperature": 0.2,
 }
-MODEL_OVERRIDE_KEYS = frozenset(MODEL_DEFAULTS)
+# base_url ist nur fuer das Claude-Abo da (Vorgabe des Betreibers 24.11.2026: nur das Claude-Abo, kein
+# bezahltes API-Modell): provider "claude-code" mit dem Abo-Wrapper, den OpenFang in seinem
+# Wrapper-Ordner aufloest (openfang-runtime drivers/claude_code.rs). Eine URL waere ein
+# API-Endpunkt und wird abgelehnt.
+SUBSCRIPTION_PROVIDER = "claude-code"
+SUBSCRIPTION_WRAPPER = "openfang_claude_subscription_wrapper.cmd"
+SUBSCRIPTION_MODELS = frozenset({"claude-code/sonnet", "claude-code/haiku", "claude-code/opus"})
+MODEL_OVERRIDE_KEYS = frozenset(MODEL_DEFAULTS) | {"base_url"}
 
 
 AGENT_TOML_TEMPLATE = """name = "{name}"
@@ -49,7 +56,7 @@ mcp_servers = [{mcp_list}]
 [model]
 provider = "{provider}"
 model = "{model}"
-max_tokens = {max_tokens}
+{base_url_line}max_tokens = {max_tokens}
 temperature = {temperature}
 system_prompt = \"\"\"You are {name}, the VibeMind agent for the "{space}" space.
 
@@ -200,6 +207,8 @@ def _render_agent_toml(space: str, spec: dict) -> str:
         tool_list=_tool_list_literal(_capability_tool_names(spec)),
         provider=model_block["provider"],
         model=model_block["model"],
+        base_url_line=(f"base_url = {json.dumps(model_block['base_url'])}\n"
+                       if model_block.get("base_url") else ""),
         max_tokens=json.dumps(model_block["max_tokens"]),
         temperature=json.dumps(model_block["temperature"]),
     )
@@ -389,6 +398,19 @@ def validate_model_overrides() -> list[str]:
                 errors.append(f"{space_name} model temperature must be a number")
             elif not 0 <= value <= 2:
                 errors.append(f"{space_name} model temperature must be between 0 and 2")
+        provider = override.get("provider", MODEL_DEFAULTS["provider"])
+        if "base_url" in override and override["base_url"] != SUBSCRIPTION_WRAPPER:
+            errors.append(f"{space_name} model base_url must be {SUBSCRIPTION_WRAPPER!r}")
+        if "base_url" in override and provider != SUBSCRIPTION_PROVIDER:
+            errors.append(f"{space_name} model base_url is only allowed with provider "
+                          f"{SUBSCRIPTION_PROVIDER!r}")
+        if provider == SUBSCRIPTION_PROVIDER:
+            if override.get("model") not in SUBSCRIPTION_MODELS:
+                errors.append(f"{space_name} model must be one of {sorted(SUBSCRIPTION_MODELS)} "
+                              f"with provider {SUBSCRIPTION_PROVIDER!r}")
+            if override.get("base_url") != SUBSCRIPTION_WRAPPER:
+                errors.append(f"{space_name} provider {SUBSCRIPTION_PROVIDER!r} needs base_url "
+                              f"{SUBSCRIPTION_WRAPPER!r}")
     return errors
 
 
