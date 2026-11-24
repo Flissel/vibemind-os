@@ -93,7 +93,7 @@ class GraphAttrappe:
 @pytest.fixture(autouse=True)
 def _schalter(monkeypatch):
     monkeypatch.setenv("WEICHE_SCHATTEN", "1")
-    for name in ("WEICHE_SCHWELLE", "WEICHE_MARGE", "WEICHE_BONUS", "WEICHE_ZEIT_S"):
+    for name in ("WEICHE_SCHWELLE", "WEICHE_MARGE", "WEICHE_BONUS", "WEICHE_ZEIT_S", "WEICHE_KARTEN"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(w, "_SCHATTEN", None)
     eg._SCHREIBER.clear()
@@ -139,6 +139,33 @@ def test_echte_karten_ohne_abgeschaltete_faehigkeiten():
     aus = {c["capability"] for c in registry if c.get("enabled") is False}
     ids = {f for _, f in w.Karten.laden().faehigkeiten()}
     assert not (ids & aus), ids & aus
+
+
+def test_kartenpfad_env_dann_data_dann_karten(tmp_path, monkeypatch):
+    data = tmp_path / "data" / "faehigkeitskarten.yaml"
+    karten = tmp_path / "karten" / "faehigkeitskarten.yaml"
+    monkeypatch.setattr(w, "KARTEN_PFAD", data)
+    monkeypatch.setattr(w, "KARTEN_RUECKFALL", karten)
+    assert w.karten_pfad() == data  # keine Datei: der data/-Pfad (Fehler beim Laden)
+    karten.parent.mkdir()
+    karten.write_text("version: 1\n", encoding="utf-8")
+    assert w.karten_pfad() == karten  # data/ verdeckt (Volume): Rueckfall
+    data.parent.mkdir()
+    data.write_text("version: 1\n", encoding="utf-8")
+    assert w.karten_pfad() == data
+    eigen = tmp_path / "eigen.yaml"
+    monkeypatch.setenv("WEICHE_KARTEN", str(eigen))
+    assert w.karten_pfad() == eigen  # gesetzt gilt, auch wenn die Datei fehlt
+
+
+def test_karten_laden_nutzt_den_rueckfall(tmp_path, monkeypatch):
+    import yaml
+
+    karten = tmp_path / "karten.yaml"
+    karten.write_text(yaml.safe_dump(KARTEN, allow_unicode=True), encoding="utf-8")
+    monkeypatch.setattr(w, "KARTEN_PFAD", tmp_path / "fehlt.yaml")
+    monkeypatch.setattr(w, "KARTEN_RUECKFALL", karten)
+    assert {b for b, _ in w.Karten.laden().zuordnung} == {"ideas", "sales", "orders", w.NIRGENDS}
 
 
 def test_karten_ohne_bereiche_werden_abgelehnt():

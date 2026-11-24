@@ -26,6 +26,7 @@ Schalter (Umgebung):
   WEICHE_MARGE           Mindestabstand zum zweitbesten Bereich (Vorgabe 0.04)
   WEICHE_BONUS           Aufschlag für den Bereich des Reiters (Vorgabe 0.05)
   WEICHE_ZEIT_S          Zeitgrenze je Satz (Vorgabe 1.0 s)
+  WEICHE_KARTEN          Pfad der Karten (Vorgabe: data/, sonst karten/faehigkeitskarten.yaml)
 """
 from __future__ import annotations
 
@@ -43,6 +44,24 @@ logger = logging.getLogger("brain.weiche")
 
 _WURZEL = Path(__file__).resolve().parent.parent
 KARTEN_PFAD = _WURZEL / "data" / "faehigkeitskarten.yaml"
+# Im Betrieb verdeckt das Volume /app/data die Datei aus dem Abbild; das Abbild legt sie
+# deshalb auch nach /app/karten/ (Dockerfile).
+KARTEN_RUECKFALL = _WURZEL / "karten" / "faehigkeitskarten.yaml"
+
+
+def karten_pfad() -> Path:
+    """WEICHE_KARTEN, sonst data/faehigkeitskarten.yaml, sonst karten/faehigkeitskarten.yaml.
+
+    Ein gesetztes WEICHE_KARTEN gilt auch, wenn die Datei fehlt (Fehler statt stiller
+    Ersatz). Ohne Variable: die erste vorhandene Datei, sonst der data/-Pfad.
+    """
+    eigen = os.environ.get("WEICHE_KARTEN", "").strip()
+    if eigen:
+        return Path(eigen)
+    for pfad in (KARTEN_PFAD, KARTEN_RUECKFALL):
+        if pfad.is_file():
+            return pfad
+    return KARTEN_PFAD
 SCHATTEN_PFAD = _WURZEL / "data" / "weiche_schatten.jsonl"
 
 WARTESCHLANGE_MAX = 100
@@ -115,7 +134,7 @@ class Karten:
     def laden(cls, pfad: Optional[Path] = None) -> "Karten":
         import yaml
 
-        with Path(pfad or KARTEN_PFAD).open("r", encoding="utf-8") as f:
+        with Path(pfad or karten_pfad()).open("r", encoding="utf-8") as f:
             return cls(yaml.safe_load(f) or {})
 
     def faehigkeiten(self) -> List[Tuple[str, str]]:
