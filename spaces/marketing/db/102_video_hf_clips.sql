@@ -88,8 +88,9 @@ LANGUAGE sql STABLE AS $$
        AND n.stand = 'fertig' AND v.stand = 'fertig' AND n.clip_datei IS NOT NULL AND v.clip_datei IS NOT NULL
        AND NOT EXISTS (SELECT 1 FROM marketing.video_hf_clips h
                         WHERE h.auftrag = n.auftrag AND h.nach_szene = n.id
-                          AND h.stand IN ('vorgeschlagen', 'freigegeben', 'bestellt', 'fertig', 'fehler', 'verworfen')
-                          AND h.nach_variante = n.variante AND h.von_szene = v.id AND h.von_variante = v.variante);
+                          AND (h.stand IN ('vorgeschlagen', 'freigegeben', 'bestellt', 'fertig', 'fehler')
+                               OR (h.stand = 'verworfen' AND h.nach_variante = n.variante
+                                   AND h.von_szene = v.id AND h.von_variante = v.variante)));
 $$;
 
 -- Darf das Video noch nicht gebaut werden? Ja, solange ein Clip auf den Menschen oder auf Higgsfield wartet, ein
@@ -222,7 +223,10 @@ BEGIN
     RETURN v_k;
 END $$;
 
--- Fertiges Video melden (wie 099). Neu: nicht, solange ein Higgsfield-Uebergang offen ist.
+-- Fertiges Video melden (wie 099). Neu: nicht, solange ein Higgsfield-Uebergang offen ist, und nur, wenn das Video
+-- mit genau den Uebergaengen gebaut wurde, die jetzt gelten (p_teil.hf_dateien = Dateinamen der eingebauten
+-- Uebergaenge; fehlt der Schluessel, gilt die leere Liste). Wurde waehrend des Baus einer verworfen oder ersetzt,
+-- wird das Video nicht angenommen.
 CREATE OR REPLACE FUNCTION marketing.video_fertig_setzen(p_auftrag uuid, p_teil jsonb) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -239,6 +243,12 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM auftrag.auftraege WHERE id = p_auftrag AND stand = 'werkbank' AND art = 'video') THEN
         RETURN false; END IF;
     IF marketing._video_hf_blockiert(p_auftrag) THEN RETURN false; END IF;
+    IF (SELECT coalesce(array_agg(x ORDER BY x), '{}') FROM jsonb_array_elements_text(
+            CASE WHEN jsonb_typeof(v_teil->'hf_dateien') = 'array' THEN v_teil->'hf_dateien' ELSE '[]'::jsonb END) x)
+       IS DISTINCT FROM
+       (SELECT coalesce(array_agg(u->>'datei' ORDER BY u->>'datei'), '{}')
+          FROM jsonb_array_elements(marketing._video_hf_fertige(p_auftrag)) u) THEN
+        RETURN false; END IF;
     v_f := v_w.video_fassung + 1;
     UPDATE marketing.video_werke
        SET video_fassung = v_f, video_veraltet = false, video_fehler = NULL,
@@ -313,7 +323,10 @@ END $$;
 -- Urteil des Menschen: erzeugen | verwerfen, ausschliesslich ueber den Weg 'seite'.
 --   erzeugen:  nur aus vorgeschlagen, Auftrag in werkbank, Clip noch aktuell, p_preis_gesehen = preis, Text gueltig.
 --              Der (geaenderte) Text wird gespeichert, der Clip geht auf freigegeben.
---   verwerfen: aus vorgeschlagen, fertig oder fehler -> verworfen (an der Stelle bleibt ein normaler Schnitt).
+--   verwerfen: aus vorgeschlagen, freigegeben (Freigabe zurueckziehen, noch nichts bestellt), fehler, fertig (nur
+--              solange der Auftrag in werkbank steht: danach ist das Video gebaut) oder bestellt MIT Nummer
+--              (aufgeben, wenn Higgsfield nicht liefert) -> verworfen; an der Stelle bleibt ein normaler Schnitt.
+--              Eine Bestellung OHNE Nummer laeuft gerade: sie kann nicht verworfen werden (nach 15 Minuten: fehler).
 -- Rueckgabe {"ok": true, "stand": ...} oder {"ok": false, "grund": weg|stand|ueberholt|preis|prompt|auftrag}.
 CREATE OR REPLACE FUNCTION marketing.video_hf_entscheiden(p_id uuid, p_urteil text, p_prompt text,
     p_preis_gesehen numeric, p_von text, p_weg text) RETURNS jsonb
@@ -329,11 +342,17 @@ BEGIN
     IF v_h.id IS NULL THEN RETURN jsonb_build_object('ok', false, 'grund', 'stand'); END IF;
 
     IF p_urteil = 'verwerfen' THEN
-        IF v_h.stand NOT IN ('vorgeschlagen', 'fertig', 'fehler') THEN
+        IF NOT (v_h.stand IN ('vorgeschlagen', 'freigegeben', 'fertig', 'fehler')
+                OR (v_h.stand = 'bestellt' AND v_h.hf_auftrag IS NOT NULL)) THEN
             RETURN jsonb_build_object('ok', false, 'grund', 'stand'); END IF;
+        IF v_h.stand = 'fertig' AND NOT EXISTS (SELECT 1 FROM auftrag.auftraege
+                WHERE id = v_h.auftrag AND art = 'video' AND stand = 'werkbank') THEN
+            RETURN jsonb_build_object('ok', false, 'grund', 'auftrag'); END IF;
         UPDATE marketing.video_hf_clips
            SET stand = 'verworfen', vergeben_bis = NULL, entschieden_von = v_von, entschieden_am = now(), geaendert = now()
          WHERE id = p_id;
+        UPDATE marketing.video_werke SET video_fehler = NULL, geaendert = now()
+         WHERE auftrag = v_h.auftrag AND video_fehler IS NOT NULL;
         PERFORM marketing._video_zaehlen(v_h.auftrag);
         RETURN jsonb_build_object('ok', true, 'stand', 'verworfen');
     END IF;
@@ -380,8 +399,16 @@ BEGIN
             'Ein Higgsfield-Übergang wurde beim Bestellen unterbrochen und wartet auf eine Entscheidung.');
         PERFORM marketing._video_zaehlen(v_alt.auftrag);
     END LOOP;
+    -- Freigegebene Clips, deren Szenen sich seit der Freigabe geaendert haben, werden ueberholt statt bestellt.
+    FOR v_alt IN
+        UPDATE marketing.video_hf_clips h SET stand = 'ueberholt', vergeben_bis = NULL, geaendert = now()
+         WHERE h.stand = 'freigegeben' AND NOT marketing._video_hf_aktuell(h)
+        RETURNING h.id, h.auftrag, h.versuch, h.nach_szene
+    LOOP
+        PERFORM marketing._video_zaehlen(v_alt.auftrag);
+    END LOOP;
     SELECT h.* INTO v_h FROM marketing.video_hf_clips h
-     WHERE (h.stand = 'freigegeben'
+     WHERE (h.stand = 'freigegeben' AND marketing._video_hf_aktuell(h)
             AND EXISTS (SELECT 1 FROM auftrag.auftraege a WHERE a.id = h.auftrag AND a.art = 'video' AND a.stand = 'werkbank'))
         OR (h.stand = 'bestellt' AND h.hf_auftrag IS NOT NULL AND h.vergeben_bis < now())
      ORDER BY (h.stand = 'bestellt') DESC, h.entschieden_am, h.angelegt
@@ -400,7 +427,8 @@ BEGIN
 END $$;
 
 -- Preis unmittelbar vor dem Bestellen: gleich dem freigegebenen -> true. Sonst geht der Clip mit dem neuen Preis
--- zurueck auf vorgeschlagen (der Mensch muss neu klicken) -> false. Nur fuer bestellt ohne Nummer.
+-- zurueck auf vorgeschlagen (der Mensch muss neu klicken) -> false. Nur fuer bestellt ohne Nummer. Passt der Clip
+-- in diesem Augenblick nicht mehr zu seinen Szenen, wird er ueberholt -> false (es wird nicht bestellt).
 CREATE OR REPLACE FUNCTION marketing.video_hf_preis_pruefen(p_id uuid, p_preis numeric) RETURNS boolean
 LANGUAGE plpgsql AS $$
 DECLARE v_h marketing.video_hf_clips;
@@ -408,6 +436,11 @@ BEGIN
     SELECT * INTO v_h FROM marketing.video_hf_clips WHERE id = p_id FOR UPDATE;
     IF v_h.id IS NULL OR v_h.stand <> 'bestellt' OR v_h.hf_auftrag IS NOT NULL OR p_preis IS NULL OR p_preis < 0 THEN
         RETURN false; END IF;
+    IF NOT marketing._video_hf_aktuell(v_h) THEN
+        UPDATE marketing.video_hf_clips SET stand = 'ueberholt', vergeben_bis = NULL, geaendert = now() WHERE id = p_id;
+        PERFORM marketing._video_zaehlen(v_h.auftrag);
+        RETURN false;
+    END IF;
     IF p_preis = v_h.preis THEN RETURN true; END IF;
     UPDATE marketing.video_hf_clips
        SET stand = 'vorgeschlagen', vergeben_bis = NULL, bestellt_am = NULL, entschieden_von = NULL, entschieden_am = NULL,
@@ -418,7 +451,9 @@ BEGIN
     RETURN false;
 END $$;
 
--- Higgsfields Auftragsnummer vermerken (gleich nach dem Bestellen, vor dem Warten). Nur einmal.
+-- Higgsfields Auftragsnummer vermerken (gleich nach dem Bestellen, vor dem Warten). Nur einmal. Sie laesst sich
+-- auch NACHTRAGEN, wenn die Meldung zunaechst nicht durchkam und der Clip deshalb als unterbrochen auf fehler ging
+-- (bestellt_am gesetzt, keine Nummer): er steht dann wieder auf bestellt und wird abgeholt statt neu bezahlt.
 CREATE OR REPLACE FUNCTION marketing.video_hf_auftrag_merken(p_id uuid, p_hf_auftrag text, p_preis numeric)
 RETURNS boolean
 LANGUAGE plpgsql AS $$
@@ -429,6 +464,13 @@ BEGIN
        SET hf_auftrag = p_hf_auftrag, preis_bestellt = coalesce(p_preis, preis), geaendert = now()
      WHERE id = p_id AND stand = 'bestellt' AND hf_auftrag IS NULL
     RETURNING auftrag INTO v_auftrag;
+    IF v_auftrag IS NULL THEN
+        UPDATE marketing.video_hf_clips
+           SET stand = 'bestellt', hf_auftrag = p_hf_auftrag, preis_bestellt = coalesce(p_preis, preis), fehler = NULL,
+               vergeben_bis = now() - interval '1 second', geaendert = now()
+         WHERE id = p_id AND stand = 'fehler' AND hf_auftrag IS NULL AND bestellt_am IS NOT NULL
+        RETURNING auftrag INTO v_auftrag;
+    END IF;
     IF v_auftrag IS NULL THEN RETURN false; END IF;
     PERFORM marketing._video_zaehlen(v_auftrag);
     RETURN true;
@@ -456,6 +498,8 @@ BEGIN
      WHERE id = p_id AND stand = 'bestellt' AND hf_auftrag IS NOT NULL
     RETURNING auftrag INTO v_auftrag;
     IF v_auftrag IS NULL THEN RETURN false; END IF;
+    UPDATE marketing.video_werke SET video_fehler = NULL, geaendert = now()
+     WHERE auftrag = v_auftrag AND video_fehler IS NOT NULL;
     PERFORM marketing._video_zaehlen(v_auftrag);
     RETURN true;
 END $$;

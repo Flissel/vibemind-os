@@ -321,7 +321,7 @@ def test_uebergang_steht_zwischen_seinen_szenen_und_verschiebt_die_marke(tmp_pat
     assert "wb-0123abcd-h05-f2.mp4" in api.rufe("holen")
     f = api.rufe("fertig")[0]
     assert f["zeitmarken"][0]["zeit"] == "0:00" and f["zeitmarken"][1]["zeit"] == "2:02"   # 4 x 30 s + 2 s Uebergang
-    assert "Sprechtempo" in f["messnotiz"]
+    assert "Sprechtempo" in f["messnotiz"] and f["hf_dateien"] == ["wb-0123abcd-h05-f2.mp4"]
     assert list(tmp_path.iterdir()) == []                       # auch der Uebergang ist wieder weg
 
 
@@ -329,6 +329,7 @@ def test_ohne_uebergaenge_bleibt_alles_wie_bisher(tmp_path, ff):
     api = FakeApi()
     fertigstellen(api, werk_alle_fertig(hf_uebergaenge=[]), tmp_path)
     assert len(ff["clips"]) == 8 and api.rufe("fertig")[0]["zeitmarken"][1]["zeit"] == "2:00"
+    assert api.rufe("fertig")[0]["hf_dateien"] == []
 
 
 @pytest.mark.parametrize("eintrag", [

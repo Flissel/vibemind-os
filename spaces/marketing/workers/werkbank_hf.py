@@ -49,6 +49,8 @@ LEIHE_S = 60                     # so oft wird die Leihe beim Warten verlaengert
 PARK_S = 600                     # eine Stelle, deren Vorschlag scheiterte, ruht so lange
 LADE_VERSUCHE = 3                # so oft wird ein fertiger Clip geholt, bevor er auf Fehler geht
 MELDE_VERSUCHE = 5
+LIEFERFRIST_S = 60 * 60          # liefert Higgsfield so lange nach dem Bestellen nicht, geht der Clip auf Fehler
+RAND_S = 0.4                     # Standbilder so weit vom Rand der Szene (eine Blende laesst den Rand leer)
 LADEN_MAX = 200 * 1024 ** 2
 BILD_MAX = 2 * 1024 ** 2
 HOSTS = (".cloudfront.net", ".higgsfield.ai")
@@ -57,6 +59,8 @@ STANDBILD = re.compile(r"wb-([0-9a-f]{8})-s([0-9]{2,3})-f([0-9]{1,3})-([az])\.jp
 SATZ_UNKLAR = "Die Bestellung ist unklar. Bitte bei Higgsfield nachsehen, ob der Clip dort entstanden ist."
 SATZ_HF_GESCHEITERT = "Higgsfield konnte den Clip nicht erzeugen."
 SATZ_LADEN = "Der Clip ist bei Higgsfield fertig, ließ sich aber nicht laden oder umwandeln."
+SATZ_LIEFERFRIST = ("Higgsfield hat den bestellten Clip nach einer Stunde nicht geliefert. Die Auftragsnummer ist "
+                    "vermerkt; bitte bei Higgsfield nachsehen, bevor du neu bestellst.")
 SATZ_ANMELDUNG = "Higgsfield-Übergänge warten: Das Programm am PC nennt keinen Preis. Bitte die Anmeldung prüfen."
 STAND: dict = {"dienst": "werkbank_hf", "letztes_ergebnis": None, "letzter_lauf": None}
 GEDAECHTNIS: dict = {"geparkt": {}, "versuche": {}}
@@ -69,6 +73,29 @@ def wurzel() -> Path:
 def arbeitsordner(aid8: str) -> Path:
     """%LOCALAPPDATA%\\VibeMind\\werkbank\\<aid8>\\hf"""
     return wurzel() / aid8 / "hf"
+
+
+def _offen_datei() -> Path:
+    return wurzel() / "hf-offen.json"
+
+
+def offen_lesen() -> dict:
+    """Bestellungen, deren Nummer die API noch nicht angenommen hat: {clip: {nummer, preis}}. Ueberlebt einen Neustart."""
+    try:
+        daten = json.loads(_offen_datei().read_text(encoding="utf-8"))
+        return daten if isinstance(daten, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def offen_schreiben(offen: dict) -> None:
+    try:
+        wurzel().mkdir(parents=True, exist_ok=True)
+        teil = _offen_datei().with_suffix(".json.teil")
+        teil.write_text(json.dumps(offen), encoding="utf-8")
+        os.replace(teil, _offen_datei())
+    except OSError as e:
+        LOG.warning("Offene Meldungen ließen sich nicht schreiben (%s)", type(e).__name__)
 
 
 def tagebuch(clip: str, auftrag8: str, nummer: str, preis: float) -> None:
@@ -86,10 +113,10 @@ def tagebuch(clip: str, auftrag8: str, nummer: str, preis: float) -> None:
 # --- ffmpeg ------------------------------------------------------------------------------------
 
 def standbild_argumente(clip: Path, ziel: Path, seite: str, guete: int = 2) -> list[str]:
-    """Erstes (`a`) oder letztes (`z`) Bild eines Clips als JPEG."""
-    if seite == "a":
-        return ["ffmpeg", "-y", "-loglevel", "error", "-i", str(clip), "-frames:v", "1", "-q:v", str(guete), str(ziel)]
-    return ["ffmpeg", "-y", "-loglevel", "error", "-sseof", "-0.5", "-i", str(clip), "-update", "1",
+    """Bild vom Anfang (`a`) oder Ende (`z`) eines Clips als JPEG, je 0,4 s vom Rand: eine Szene mit Blende ist in
+    ihren ersten und letzten 0,2 s nur Hintergrund."""
+    stelle = ["-ss", str(RAND_S)] if seite == "a" else ["-sseof", f"-{RAND_S}"]
+    return ["ffmpeg", "-y", "-loglevel", "error", *stelle, "-i", str(clip), "-frames:v", "1", "-update", "1",
             "-q:v", str(guete), str(ziel)]
 
 
@@ -280,20 +307,48 @@ def _bilder(c: _Lauf, clip: dict, aid: str, aid8: str) -> tuple[Path, Path]:
     return pfade[0], pfade[1]
 
 
+def _nummer_senden(c: _Lauf, hid: str, nummer: str, preis: float) -> bool | None:
+    """True = vermerkt. False = die API lehnt sie endgueltig ab (der Clip nimmt keine Nummer mehr an). None = nicht
+    durchgekommen (Netz, Serverfehler, unlesbare Antwort): spaeter noch einmal."""
+    try:
+        return bool(c.api.hf_auftrag(hid, nummer, preis))
+    except ApiFehler as e:
+        LOG.warning("Auftragsnummer nicht angenommen: API %s", e.code)
+        return False if 400 <= e.code < 500 else None
+    except Exception as e:  # noqa: BLE001 - jede andere Stoerung ist voruebergehend; die Nummer bleibt vorgemerkt
+        LOG.warning("Auftragsnummer nicht gemeldet: %s", type(e).__name__)
+        return None
+
+
 def _nummer_melden(c: _Lauf, hid: str, nummer: str, preis: float) -> bool:
-    """Die Nummer vermerken; Netzfehler werden wiederholt. False: die API nahm sie nicht (der Clip steht nicht mehr
-    auf bestellt) - die Nummer steht dann nur im Tagebuch."""
+    """Die Nummer vermerken. Sie steht vorher schon in hf-offen.json: kommt die Meldung jetzt nicht durch, traegt
+    `_nachmelden` sie in den naechsten Durchlaeufen nach (die Datenbank nimmt sie auch noch an, wenn der Clip
+    inzwischen als unterbrochen auf Fehler steht). So wird ein bezahlter Clip nicht verwaist."""
+    offen = offen_lesen()
+    offen[hid] = {"nummer": nummer, "preis": preis}
+    offen_schreiben(offen)
     for i in range(MELDE_VERSUCHE):
-        try:
-            return c.api.hf_auftrag(hid, nummer, preis)
-        except ApiFehler as e:
-            LOG.warning("Auftragsnummer nicht angenommen: API %s", e.code)
-            if e.code < 500:
-                return False
-        except OSError as e:
-            LOG.warning("Auftragsnummer nicht gemeldet: %s", type(e).__name__)
+        ergebnis = _nummer_senden(c, hid, nummer, preis)
+        if ergebnis is not None:
+            offen = offen_lesen()
+            offen.pop(hid, None)
+            offen_schreiben(offen)
+            return ergebnis
         c.warte(min(30, 2 * (i + 1)))
     return False
+
+
+def _nachmelden(c: _Lauf) -> None:
+    """Vorgemerkte Nummern nachtragen (nach Netzausfall oder Neustart)."""
+    offen = offen_lesen()
+    for hid, e in list(offen.items()):
+        if not isinstance(e, dict) or not isinstance(e.get("nummer"), str):
+            offen.pop(hid, None)
+            continue
+        if _nummer_senden(c, hid, e["nummer"], e.get("preis")) is not None:
+            offen.pop(hid, None)
+    if offen != offen_lesen():
+        offen_schreiben(offen)
 
 
 def _bestellen(c: _Lauf, clip: dict) -> str:
@@ -328,6 +383,17 @@ def _bestellen(c: _Lauf, clip: dict) -> str:
     return _abholen(c, clip, hid, aid, aid8, str(nummer))
 
 
+def _zu_alt(clip: dict) -> bool:
+    """Ist die Bestellung aelter als die Lieferfrist?"""
+    try:
+        bestellt = datetime.fromisoformat(str(clip.get("bestellt_am")).replace("Z", "+00:00"))
+        if bestellt.tzinfo is None:
+            bestellt = bestellt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    return (datetime.now(timezone.utc) - bestellt).total_seconds() > LIEFERFRIST_S
+
+
 def _abholen(c: _Lauf, clip: dict, hid: str, aid: str, aid8: str, nummer: str) -> str:
     ende = c.jetzt() + WARTEN_S
     leihe = c.jetzt() + LEIHE_S
@@ -342,6 +408,8 @@ def _abholen(c: _Lauf, clip: dict, hid: str, aid: str, aid8: str, nummer: str) -
             break
         if z["zustand"] == "gescheitert":
             return _fehler_melden(c, hid, SATZ_HF_GESCHEITERT)
+        if _zu_alt(clip):                            # kein Dauerwarten: der Mensch entscheidet (Nummer bleibt vermerkt)
+            return _fehler_melden(c, hid, SATZ_LIEFERFRIST)
         if c.jetzt() >= ende:
             return "wartet"                          # der Clip bleibt bestellt; spaeter wird nach der Nummer gefragt
         c.warte(ABFRAGE_S)
@@ -382,6 +450,7 @@ def ein_durchlauf(api, cli=higgsfield_cli, *, lauf=ffmpeg, laden=url_laden, wart
     vorschlag, clip, preis, wartet, spaeter, abgegeben oder fehler."""
     c = _Lauf(api, cli, lauf, laden, warte, jetzt, ordner, GEDAECHTNIS if gedaechtnis is None else gedaechtnis)
     ergebnis = "leer"
+    _nachmelden(c)
     try:
         ergebnis = _alle_vorschlagen(c) or ergebnis
     except Exception as e:  # noqa: BLE001 - das Bestellen freigegebener Clips haengt nicht am Vorschlagen

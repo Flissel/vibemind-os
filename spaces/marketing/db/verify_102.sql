@@ -136,8 +136,6 @@ BEGIN
     RAISE EXCEPTION '102.3: Text oder Name nicht gespeichert'; END IF;
   r := marketing.video_hf_entscheiden(h, 'erzeugen', 'Geaenderter Text', 5.25, 'felix', 'seite');
   IF r->>'ok' <> 'false' OR r->>'grund' <> 'stand' THEN RAISE EXCEPTION '102.3: zweiter Klick %', r; END IF;
-  r := marketing.video_hf_entscheiden(h, 'verwerfen', NULL, NULL, 'felix', 'seite');
-  IF r->>'ok' <> 'false' THEN RAISE EXCEPTION '102.3: freigegebener Clip verworfen %', r; END IF;
   IF NOT marketing._video_hf_blockiert(a) THEN RAISE EXCEPTION '102.3: freigegeben blockiert nicht'; END IF;
 END $$;
 
@@ -150,6 +148,8 @@ BEGIN
      OR j->>'mandant' <> 'probe' OR j->>'prompt' <> 'Geaenderter Text' OR j->>'hf_auftrag' IS NOT NULL THEN
     RAISE EXCEPTION '102.4: nehmen %', j; END IF;
   IF marketing.video_hf_nehmen(interval '10 min') IS NOT NULL THEN RAISE EXCEPTION '102.4: doppelt vergeben'; END IF;
+  r := marketing.video_hf_entscheiden(h, 'verwerfen', NULL, NULL, 'felix', 'seite');
+  IF r->>'ok' <> 'false' THEN RAISE EXCEPTION '102.4: laufende Bestellung ohne Nummer verworfen %', r; END IF;
   IF marketing.video_hf_fertig(h, 'x.mp4', 3) THEN RAISE EXCEPTION '102.4: fertig ohne Nummer'; END IF;
   -- Preis hat sich geaendert: zurueck auf vorgeschlagen, neuer Preis, neu klicken
   IF marketing.video_hf_preis_pruefen(h, 8.75) THEN RAISE EXCEPTION '102.4: anderer Preis angenommen'; END IF;
@@ -198,6 +198,16 @@ BEGIN
   IF (SELECT stand FROM marketing.video_hf_clips WHERE id = h2) <> 'fehler'
      OR (SELECT fehler FROM marketing.video_hf_clips WHERE id = h2) NOT LIKE '%unterbrochen%' THEN
     RAISE EXCEPTION '102.5: unterbrochene Bestellung nicht auf fehler'; END IF;
+  -- die Nummer kommt doch noch (die Meldung war nur nicht durchgekommen): nachtragen statt neu bezahlen
+  IF NOT marketing.video_hf_auftrag_merken(h2, 'nachgetragen-0001', 8.75) THEN RAISE EXCEPTION '102.5: Nachtragen'; END IF;
+  IF (SELECT stand || ':' || hf_auftrag || ':' || (fehler IS NULL) FROM marketing.video_hf_clips WHERE id = h2)
+       <> 'bestellt:nachgetragen-0001:true' THEN RAISE EXCEPTION '102.5: nachgetragener Clip nicht bestellt'; END IF;
+  j := marketing.video_hf_nehmen(interval '10 min');
+  IF (j->>'id')::uuid <> h2 OR j->>'hf_auftrag' <> 'nachgetragen-0001' THEN RAISE EXCEPTION '102.5: nachgetragener Clip nicht abgeholt'; END IF;
+  -- Higgsfield liefert nicht: der Mensch gibt den bestellten Clip (mit Nummer) auf
+  r := marketing.video_hf_entscheiden(h2, 'verwerfen', NULL, NULL, 'felix', 'seite');
+  IF r->>'stand' <> 'verworfen' THEN RAISE EXCEPTION '102.5: bestellten Clip mit Nummer aufgeben %', r; END IF;
+  IF marketing.video_hf_auftrag_merken(h2, 'nachgetragen-0002', 8.75) THEN RAISE EXCEPTION '102.5: Nachtragen an verworfenem Clip'; END IF;
   h3 := marketing.video_hf_nochmal(h2, 'Dritter Text', 'felix', 'seite');
   r := marketing.video_hf_entscheiden(h3, 'erzeugen', 'Dritter Text', 8.75, 'felix', 'seite');
   IF r->>'ok' <> 'true' THEN RAISE EXCEPTION '102.5: Freigabe h3 %', r; END IF;
@@ -211,7 +221,7 @@ BEGIN
   IF marketing.video_hf_auftrag_merken(h3, 'andere-nummer-1', 8.75) THEN RAISE EXCEPTION '102.5: Nummer ueberschrieben'; END IF;
   IF marketing.video_hf_preis_pruefen(h3, 8.75) THEN RAISE EXCEPTION '102.5: Preispruefung nach der Bestellung'; END IF;
   IF (SELECT preis_bestellt FROM marketing.video_hf_clips WHERE id = h3) <> 8.75
-     OR (SELECT ergebnis->'werkbank'->>'hf_credits' FROM auftrag.auftraege WHERE id = a) <> '8.75' THEN
+     OR (SELECT (ergebnis->'werkbank'->>'hf_credits')::numeric FROM auftrag.auftraege WHERE id = a) <> 17.5 THEN
     RAISE EXCEPTION '102.5: bestellter Preis'; END IF;
   IF NOT marketing.video_hf_weiter(h3, interval '10 min') THEN RAISE EXCEPTION '102.5: Leihe verlaengern'; END IF;
   UPDATE marketing.video_hf_clips SET vergeben_bis = now() - interval '1 min' WHERE id = h3;
@@ -239,7 +249,7 @@ BEGIN
   IF marketing.video_fertig_setzen(a, '{"datei":"v.mp4"}') THEN RAISE EXCEPTION '102.6: Video trotz offener Stelle'; END IF;
   l := marketing.video_hf_liste(a);
   IF l->'vorbereitung' <> '[3]'::jsonb OR jsonb_array_length(l->'clips') <> 1 OR l->'clips'->0->>'stand' <> 'fertig'
-     OR (l->>'credits')::numeric <> 8.75 OR (l->>'bestellt')::int <> 1 OR l->'clips'->0->>'aktuell' <> 'true' THEN
+     OR (l->>'credits')::numeric <> 17.5 OR (l->>'bestellt')::int <> 2 OR l->'clips'->0->>'aktuell' <> 'true' THEN
     RAISE EXCEPTION '102.6: Liste %', l; END IF;
   IF marketing.video_hf_ohne(a, 3, 'rowboat') OR marketing.video_hf_ohne(a, 4, 'seite') OR marketing.video_hf_ohne(a, 2, 'seite') THEN
     RAISE EXCEPTION '102.6: ohne Uebergang falsch angenommen'; END IF;
@@ -251,7 +261,7 @@ END $$;
 -- 7: neue Variante einer Szene macht den Clip ueberholt; es wird neu VORGESCHLAGEN, nie von selbst bestellt
 DO $$
 DECLARE a uuid := (SELECT v FROM t102 WHERE k = 'o1'); s2 uuid := (SELECT v FROM t102 WHERE k = 's2');
-        h3 uuid := (SELECT v FROM t102 WHERE k = 'h3'); f jsonb; h4 uuid; r jsonb;
+        h3 uuid := (SELECT v FROM t102 WHERE k = 'h3'); f jsonb; h4 uuid; h5 uuid; r jsonb;
 BEGIN
   IF NOT marketing.video_szene_oeffnen(s2, NULL) THEN RAISE EXCEPTION '102.7: oeffnen'; END IF;
   IF (marketing._video_werk_json(a))->'hf_uebergaenge' <> '[]'::jsonb THEN RAISE EXCEPTION '102.7: alter Clip noch im Video'; END IF;
@@ -270,19 +280,42 @@ BEGIN
   h4 := marketing.video_hf_vorschlagen(a, s2, pg_temp.teil(0, 1, 'Vierter Text', 5.25));
   IF h4 IS NULL OR (SELECT versuch FROM marketing.video_hf_clips WHERE id = h4) <> 4 THEN RAISE EXCEPTION '102.7: neuer Vorschlag'; END IF;
   IF marketing.video_fertig_setzen(a, '{"datei":"v.mp4"}') THEN RAISE EXCEPTION '102.7: Video trotz offenem Vorschlag'; END IF;
+  -- freigegeben, dann aendert sich eine Szene: der Clip wird beim Vergeben ueberholt, nicht bestellt
+  r := marketing.video_hf_entscheiden(h4, 'erzeugen', 'Vierter Text', 5.25, 'felix', 'seite');
+  IF r->>'ok' <> 'true' THEN RAISE EXCEPTION '102.7: Freigabe h4 %', r; END IF;
+  UPDATE marketing.video_szenen SET variante = variante + 1 WHERE id = s2;
+  IF marketing.video_hf_nehmen(interval '10 min') IS NOT NULL THEN RAISE EXCEPTION '102.7: veraltete Freigabe wurde vergeben'; END IF;
+  IF (SELECT stand FROM marketing.video_hf_clips WHERE id = h4) <> 'ueberholt' THEN   -- eigene Anweisung: neuer Blick
+    RAISE EXCEPTION '102.7: veraltete Freigabe nicht ueberholt'; END IF;
+  -- dasselbe im letzten Augenblick vor dem Bestellen (Preispruefung)
+  h5 := marketing.video_hf_vorschlagen(a, s2, pg_temp.teil(0, 2, 'Fuenfter Text', 5.25));
+  r := marketing.video_hf_entscheiden(h5, 'erzeugen', 'Fuenfter Text', 5.25, 'felix', 'seite');
+  IF h5 IS NULL OR (marketing.video_hf_nehmen(interval '10 min'))->>'id' <> h5::text THEN RAISE EXCEPTION '102.7: h5 nicht vergeben'; END IF;
+  UPDATE marketing.video_szenen SET variante = variante + 1 WHERE id = s2;
+  IF marketing.video_hf_preis_pruefen(h5, 5.25) THEN RAISE EXCEPTION '102.7: veralteter Clip kam durch die Preispruefung'; END IF;
+  IF (SELECT stand FROM marketing.video_hf_clips WHERE id = h5) <> 'ueberholt' THEN
+    RAISE EXCEPTION '102.7: veralteter Clip nach der Preispruefung nicht ueberholt'; END IF;
+  -- neuer Vorschlag, Freigabe, dann zieht der Mensch die Freigabe zurueck (noch nichts bestellt)
+  h4 := marketing.video_hf_vorschlagen(a, s2, pg_temp.teil(0, 3, 'Sechster Text', 5.25));
+  IF h4 IS NULL OR (SELECT versuch FROM marketing.video_hf_clips WHERE id = h4) <> 6 THEN RAISE EXCEPTION '102.7: sechster Vorschlag'; END IF;
+  r := marketing.video_hf_entscheiden(h4, 'erzeugen', 'Sechster Text', 5.25, 'felix', 'seite');
   r := marketing.video_hf_entscheiden(h4, 'verwerfen', NULL, NULL, 'felix', 'rowboat');
   IF r->>'grund' <> 'weg' THEN RAISE EXCEPTION '102.7: verwerfen ueber rowboat %', r; END IF;
   r := marketing.video_hf_entscheiden(h4, 'verwerfen', NULL, NULL, 'felix', 'seite');
-  IF r->>'stand' <> 'verworfen' THEN RAISE EXCEPTION '102.7: verwerfen %', r; END IF;
+  IF r->>'stand' <> 'verworfen' THEN RAISE EXCEPTION '102.7: Freigabe zurueckziehen %', r; END IF;
+  IF marketing.video_hf_nehmen(interval '10 min') IS NOT NULL THEN RAISE EXCEPTION '102.7: zurueckgezogene Freigabe vergeben'; END IF;
   -- verworfen = normaler Schnitt: nichts fehlt mehr, das Video darf gebaut werden
   IF marketing._video_hf_blockiert(a) OR jsonb_array_length((marketing.video_hf_abgleichen(a))->'fehlend') <> 0 THEN
     RAISE EXCEPTION '102.7: verworfener Clip blockiert'; END IF;
-  IF NOT marketing.video_fertig_setzen(a, '{"datei":"v.mp4"}') THEN RAISE EXCEPTION '102.7: Video nicht gemeldet'; END IF;
+  -- das Video muss mit genau den geltenden Uebergaengen gebaut sein (hier: keinem)
+  IF marketing.video_fertig_setzen(a, '{"datei":"v.mp4","hf_dateien":["wb-00000000-h02-f3.mp4"]}') THEN
+    RAISE EXCEPTION '102.7: Video mit verworfenem Uebergang angenommen'; END IF;
+  IF NOT marketing.video_fertig_setzen(a, '{"datei":"v.mp4","hf_dateien":[]}') THEN RAISE EXCEPTION '102.7: Video nicht gemeldet'; END IF;
   -- nach dem Bau: kein Vorschlag, keine Freigabe mehr
   IF jsonb_array_length((marketing.video_hf_abgleichen(a))->'fehlend') <> 0
      OR marketing.video_hf_nochmal(h4, 'x', 'felix', 'seite') IS NOT NULL THEN
     RAISE EXCEPTION '102.7: Arbeit nach dem Bau'; END IF;
-  IF (SELECT ergebnis->'werkbank'->>'hf_credits' FROM auftrag.auftraege WHERE id = a) <> '8.75' THEN
+  IF (SELECT (ergebnis->'werkbank'->>'hf_credits')::numeric FROM auftrag.auftraege WHERE id = a) <> 17.5 THEN
     RAISE EXCEPTION '102.7: Summe der Credits'; END IF;
 END $$;
 

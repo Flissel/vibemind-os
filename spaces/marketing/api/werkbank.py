@@ -455,7 +455,11 @@ def fertig(aid: str, payload: dict = Body(...), x_bild_key: str | None = Header(
             "beschreibung": _text(payload.get("beschreibung"), "beschreibung", BESCHREIBUNG_MAX),
             "messnotiz": _text(payload.get("messnotiz"), "messnotiz", MESSNOTIZ_MAX, pflicht=False) or "",
             "zeitmarken": _zeitmarken(payload.get("zeitmarken")),
-            "warnungen": _warnungen(payload.get("warnungen"))}
+            "warnungen": _warnungen(payload.get("warnungen")),
+            # die eingebauten Higgsfield-Uebergaenge: die Datenbank nimmt das Video nur an, wenn sie noch gelten (102)
+            "hf_dateien": _liste(payload.get("hf_dateien"), "hf_dateien", 6,
+                                 lambda x: isinstance(x, str) and bool(HF_NAME_MUSTER.fullmatch(x))
+                                 and x[3:11] == a.replace("-", "")[:8])}
     if not os.path.isfile(os.path.join(_ordner(), datei)):
         raise HTTPException(409, "Die Datei liegt nicht im Ordner")
     zeile = _schreiben(lambda: f"SELECT marketing.video_fertig_setzen({lit(a)}::uuid, {_json(teil)}) AS ok")
@@ -695,7 +699,10 @@ def hf_abgleich(x_bild_key: str | None = Header(None)):
     werke = []
     for z in zeilen:
         a = _uuid_oder_404(str(z["auftrag"]))
-        erg = _schreiben(lambda a=a: f"SELECT marketing.video_hf_abgleichen({lit(a)}::uuid) AS e").get("e")
+        try:                 # ein Werk, dessen Abgleich scheitert, haelt die anderen nicht auf
+            erg = _schreiben(lambda a=a: f"SELECT marketing.video_hf_abgleichen({lit(a)}::uuid) AS e").get("e")
+        except HTTPException:
+            continue
         fehlend = erg.get("fehlend") if isinstance(erg, dict) else None
         if fehlend:
             werke.append({"auftrag": a, "mandant": z.get("mandant"), "titel": z.get("titel"),

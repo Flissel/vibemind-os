@@ -157,8 +157,9 @@ def bestellen(prompt: str, start_bild: Path, end_bild: Path | None, dauer_s: int
 
 
 def nummer_suchen(prompt: str, seit_iso: str, modell: str = MODELL) -> str | None:
-    """Sucht in Higgsfields Auftragsliste den juengsten Auftrag mit genau diesem Auftragstext und Modell, der nicht
-    vor `seit_iso` (UTC, ISO 8601) angelegt wurde. None, wenn keiner da ist oder die Liste nicht lesbar war."""
+    """Sucht in Higgsfields Auftragsliste den EINEN Auftrag mit genau diesem Auftragstext und Modell, der nicht vor
+    `seit_iso` (UTC, ISO 8601) angelegt wurde. None, wenn keiner oder mehr als einer da ist (die Sammlung der
+    Auftragstexte liefert fuer zwei Stellen eines Videos denselben Text) oder die Liste nicht lesbar war."""
     try:
         code, text = _lauf(["generate", "list", "--json"], ZEIT_KURZ_S)
     except HfFehler:
@@ -171,9 +172,9 @@ def nummer_suchen(prompt: str, seit_iso: str, modell: str = MODELL) -> str | Non
                and isinstance(j.get("params"), dict) and j["params"].get("prompt") == prompt
                and isinstance(j.get("created_at"), str) and j["created_at"][:19] >= seit_iso[:19]
                and isinstance(j.get("id"), str) and NUMMER.fullmatch(j["id"])]
-    if not treffer:
+    if len(treffer) != 1:      # keiner oder mehrere (gleicher Text an zwei Stellen): nicht raten
         return None
-    return max(treffer, key=lambda j: j["created_at"])["id"]
+    return treffer[0]["id"]
 
 
 def stand(nummer: str) -> dict:

@@ -328,7 +328,8 @@ def fertigstellen(api, werk: dict, ordner: Path | None = None) -> str:
         api.hochladen(aid, name, video)
         api.fertig(aid, {"datei": name, "bytes": video.stat().st_size, "dauer_s": round(gesamt, 2),
                          "titel": kopf["titel"], "beschreibung": kopf["beschreibung"],
-                         "zeitmarken": kopf["zeitmarken"], "messnotiz": notiz, "warnungen": warnungen})
+                         "zeitmarken": kopf["zeitmarken"], "messnotiz": notiz, "warnungen": warnungen,
+                         "hf_dateien": [datei for datei, ist_uebergang in folge if ist_uebergang]})
     except ZusammenFehler as e:
         LOG.warning("Video %s: %s", aid8, e.grund)
         _scheitern(api, aid, key, versuch, f"{SATZ_VIDEO} {e.grund}")

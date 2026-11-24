@@ -286,6 +286,35 @@ def test_nummer_meldung_wird_bei_netzfehlern_wiederholt(umgebung):
     assert api.namen().count("auftrag") == 3 and len(cli.bestellt()) == 1
 
 
+def test_nummer_kommt_nicht_durch_wird_spaeter_nachgetragen(umgebung):
+    """Die API ist nach dem Bestellen laenger weg: nichts wird neu bestellt, die Nummer bleibt vorgemerkt (auch ueber
+    einen Neustart) und wird im naechsten Durchlauf nachgetragen."""
+    api, cli = Api(nehmen=clip()), Cli()
+    api.auftrag_fehler = [OSError("netz"), ValueError("kein json"), ApiFehler(503, "x"), OSError("netz"), OSError("netz")]
+    assert durchlauf(api, cli, umgebung) == "fehler"
+    offen = umgebung["tmp"] / "VibeMind" / "werkbank" / "hf-offen.json"
+    assert json.loads(offen.read_text(encoding="utf-8")) == {HID: {"nummer": NUMMER, "preis": 5.25}}
+    assert len(cli.bestellt()) == 1 and "fehler" not in api.namen()
+    api2 = Api()                                              # neuer Durchlauf (wie nach einem Neustart)
+    assert durchlauf(api2, cli, umgebung) == "leer"
+    assert api2.rufe[0] == ("auftrag", HID, NUMMER, 5.25) and json.loads(offen.read_text(encoding="utf-8")) == {}
+    assert len(cli.bestellt()) == 1
+
+
+def test_nachtragen_endgueltig_abgelehnt_wird_nicht_ewig_versucht(umgebung):
+    werkbank_hf.offen_schreiben({HID: {"nummer": NUMMER, "preis": 5.25}})
+    api = Api()
+    api.auftrag_fehler = [ApiFehler(409, "nimmt nicht")]
+    durchlauf(api, Cli(), umgebung)
+    assert werkbank_hf.offen_lesen() == {} and api.namen().count("auftrag") == 1
+
+
+def test_bestellung_aelter_als_eine_stunde_geht_auf_fehler(umgebung):
+    api, cli = Api(nehmen=clip(hf_auftrag=NUMMER, bestellt_am="2026-01-01T00:00:00+00:00")), Cli(staende=[{"zustand": "laeuft", "url": None}])
+    assert durchlauf(api, cli, umgebung) == "fehler"
+    assert api.rufe[-1] == ("fehler", HID, werkbank_hf.SATZ_LIEFERFRIST) and cli.bestellt() == []
+
+
 def test_nummer_nicht_angenommen_hoert_auf_und_steht_im_tagebuch(umgebung):
     api, cli = Api(nehmen=clip()), Cli()
     api.auftrag_fehler = [ApiFehler(409, "nimmt nicht")]
@@ -351,9 +380,10 @@ def test_angleichen_beschleunigt_statt_abzuschneiden(umgebung):
 
 
 def test_standbild_argumente():
-    assert "-frames:v" in werkbank_hf.standbild_argumente(Path("c.mp4"), Path("a.jpg"), "a")
+    a = werkbank_hf.standbild_argumente(Path("c.mp4"), Path("a.jpg"), "a")
+    assert a[a.index("-ss") + 1] == "0.4" and a.index("-ss") < a.index("-i") and a[a.index("-frames:v") + 1] == "1"
     z = werkbank_hf.standbild_argumente(Path("c.mp4"), Path("z.jpg"), "z")
-    assert z[z.index("-sseof") + 1] == "-0.5" and "-update" in z and z.index("-sseof") < z.index("-i")
+    assert z[z.index("-sseof") + 1] == "-0.4" and z.index("-sseof") < z.index("-i") and z[z.index("-frames:v") + 1] == "1"
 
 
 @pytest.mark.parametrize("url", ["http://d8j0.cloudfront.net/x.mp4", "https://example.com/x.mp4", "file:///c:/x.mp4",
@@ -440,7 +470,8 @@ def test_nummer_suchen_nimmt_nur_den_passenden_juengsten_auftrag(lauf):
         job("alt-00000001", "Text", "2026-11-24T09:00:00.1Z"), job("neu-00000002", "Text", "2026-11-24T10:00:05.5Z"),
         job("neu-00000003", "Text", "2026-11-24T10:00:01.0Z"), job("anders-00004", "Anderer Text", "2026-11-24T10:00:09Z"),
         job("bild-0000005", "Text", "2026-11-24T10:00:08Z", "nano_banana_pro")])
-    assert higgsfield_cli.nummer_suchen("Text", "2026-11-24T10:00:00") == "neu-00000002"
+    assert higgsfield_cli.nummer_suchen("Text", "2026-11-24T10:00:00") is None        # zwei Treffer: nicht raten
+    assert higgsfield_cli.nummer_suchen("Text", "2026-11-24T10:00:03") == "neu-00000002"
     assert higgsfield_cli.nummer_suchen("Text", "2026-11-24T11:00:00") is None
     lauf[1]["text"] = "kaputt"
     assert higgsfield_cli.nummer_suchen("Text", "2026-11-24T10:00:00") is None

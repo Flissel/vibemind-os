@@ -254,6 +254,29 @@ def test_uebergangsclip_laesst_sich_hochladen_und_holen(db, c):
     assert r.status_code == 409 and not any("video_fertig_setzen" in s for s in db.sql)
 
 
+def test_fertiges_video_nennt_seine_uebergaenge(db, c):
+    video = "wb-0123abcd-video-f1.mp4"
+    (db.ordner / video).write_bytes(b"x")
+    koerper = {"datei": video, "bytes": 1, "dauer_s": 1, "titel": "T", "beschreibung": "B"}
+    db.antworten = [[KOPF_OK], [{"ok": True}]]
+    r = c.post(f"{A}/{AID}/fertig", headers=B, json={**koerper, "hf_dateien": ["wb-0123abcd-h03-f2.mp4"]})
+    assert r.status_code == 200 and '"hf_dateien": ["wb-0123abcd-h03-f2.mp4"]' in db.sql[1]
+    db.antworten = [[KOPF_OK], [{"ok": True}]]
+    assert c.post(f"{A}/{AID}/fertig", headers=B, json=koerper).status_code == 200 and '"hf_dateien": []' in db.sql[-1]
+    for falsch in (["wb-99999999-h03-f2.mp4"], ["../x.mp4"], ["wb-0123abcd-s03-f2.mp4"], "kein", [5]):
+        db.antworten = [[KOPF_OK]]
+        assert c.post(f"{A}/{AID}/fertig", headers=B, json={**koerper, "hf_dateien": falsch}).status_code == 422
+
+
+def test_abgleich_ueberspringt_ein_werk_dessen_abgleich_scheitert(db, c):
+    andere = "0123abcd-5555-5555-5555-555555555555"
+    db.antworten = [[{"auftrag": AID, "mandant": "a", "titel": None, "thema": None},
+                     {"auftrag": andere, "mandant": "b", "titel": None, "thema": None}], [{"e": {"fehlend": [{"nach_nr": 2}]}}]]
+    db.fehler = [None, RuntimeError("psql failed"), None]
+    r = c.post(f"{A}/hf/abgleich", headers=B)
+    assert r.status_code == 200 and [w["auftrag"] for w in r.json()["werke"]] == [andere]
+
+
 def test_szenentext_nimmt_higgsfield_als_uebergang(db, c):
     db.antworten = [[{"auftrag": AID, "nr": 3, "mandant": "fin2gether"}], [{"k": "wb-abcdefghij"}]]
     bild = {"schritte": [{"vorlage": "titel"}, {"vorlage": "titel"}]}
