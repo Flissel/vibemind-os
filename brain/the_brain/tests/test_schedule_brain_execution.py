@@ -91,8 +91,12 @@ def test_registry_routes_every_schedule_operation_to_real_targets():
         "schedule.status",
         "schedule.snooze",
         "openclaw.cron",
+        "schedule.auftraege",
     }
     assert set(events) == expected
+    # schedule.auftraege liest die Auftraege an Agenten direkt im Gehirn (core/auftraege_lesen.py).
+    lesen = events.pop("schedule.auftraege")
+    assert lesen["tool"] == "direct:core.auftraege_lesen:auftraege_lesen"
     assert all(event["tool"].startswith("schedule_") for event in events.values())
 
 

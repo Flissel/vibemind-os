@@ -50,7 +50,12 @@ def test_kein_fester_weg(satz) -> None:
 
 
 def test_springt_in_den_reiter_auftraege() -> None:
-    assert v.faehigkeit_space("schedule_auftraege") == "orders"
+    from core.beispielsaetze import saetze_fuer
+    from core.step_space import space_for_step
+
+    assert v.plan_spaces(["schedule_auftraege"]) == {"orders"}  # Dashboard/clawport zaehlt als Aufträge
+    assert space_for_step("schedule_auftraege", "direct:core.auftraege_lesen:auftraege_lesen") == "schedule"
+    assert "Welche Aufträge laufen gerade?" in saetze_fuer("orders")
 
 
 def test_faehigkeit_steht_im_katalog_im_verzeichnis_und_im_navigator() -> None:

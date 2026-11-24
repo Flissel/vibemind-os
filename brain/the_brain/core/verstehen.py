@@ -61,7 +61,7 @@ SPACES: Dict[str, Space] = {
     "marketing": Space("Marketing", (), ("marketing.", "marketing_")),
     "learning": Space("Lernen", (), ("learning.", "learning_")),
     "events": Space("Events", (), ("event.", "event_")),
-    "orders": Space("Aufträge", ("Zeig meine Aufträge",), ("schedule_", "schedule.")),
+    "orders": Space("Aufträge", ("Zeig meine Aufträge", "Welche Aufträge laufen gerade?"), ("schedule_", "schedule.")),
 }
 
 # Andere Schreibweisen (Verzeichnis, aeltere App-Staende) auf die Kennung der App.
