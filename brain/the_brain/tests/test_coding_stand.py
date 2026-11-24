@@ -92,6 +92,25 @@ def test_schritte_melden_den_coding_space() -> None:
             normalize_space_id("coding", vertrag)
 
 
+def test_antwort_bekommt_das_sprungziel_project_space() -> None:
+    """Aus einem anderen Reiter springt die App nach einem gelungenen Lesesatz in den Project Space."""
+    from core.antwort_ziel import app_bereich, ziel_ergaenzen
+
+    daten = {"ok": True, "final_text": "x", "executed": {
+        "s1": {"ok": True, "capability": "coding_stand", "target": "direct:core.coding_stand:stand_lesen"}}}
+    ziel = ziel_ergaenzen(daten, kontext_space="ideas")["ziel"]
+    # Name der Registry; die App setzt ihn mit ihrer Tabelle auf ihren Reiter um.
+    assert ziel == {"space": "coding"} and app_bereich(ziel["space"]) == "projects"
+
+
+def test_beispielsaetze_des_project_space() -> None:
+    from core.beispielsaetze import saetze_fuer
+
+    erwartet = ["Wie ist der Stand im Project Space?", "Zeig mir die letzten Läufe",
+                "Zeig mir das Ergebnis des letzten Laufs"]
+    assert saetze_fuer("coding") == erwartet and saetze_fuer("projects") == erwartet
+
+
 def test_faehigkeiten_stehen_im_katalog_und_lesen_nur() -> None:
     import yaml
     daten = Path(__file__).resolve().parents[1] / "data"
