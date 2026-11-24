@@ -3521,6 +3521,8 @@ app.include_router(_werkbank.arbeiter_router) # Werkbank-Arbeiter (X-Bild-Key, /
 app.include_router(_werkbank.pult_router)     # Szenenseite der Sales-UI (X-Pult-Key, /api/pult/ ohne X-API-Key)
 from spaces.marketing.api import fakten as _fakten  # noqa: E402
 app.include_router(_fakten.router)
+from spaces.marketing.api import oberflaeche as _oberflaeche  # noqa: E402
+app.include_router(_oberflaeche.router)       # eigene Marketing-Oberflaeche (Bearer MARKETING_UI_KEY, /oberflaeche/)
 
 
 # ─── Static-serve of the mockup ───────────────────────────────────────
