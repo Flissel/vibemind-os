@@ -75,6 +75,12 @@ class AuftragsTabelle:
                                         "order": "angelegt.asc", "limit": str(limit),
                                         "select": "id,trace_id,plan_id,angelegt,uebergabe"})
 
+    def coding_laufend(self, limit: int = 20) -> List[dict]:
+        """Laufende Bauauftraege an den Project Space (core/coding_auftrag)."""
+        return self._req("GET", params={"status": "eq.laeuft", "uebergabe->coding": "not.is.null",
+                                        "order": "angelegt.asc", "limit": str(limit),
+                                        "select": "id,trace_id,plan_id,angelegt,uebergabe"})
+
     def recherche_abschliessen(self, auftrag_id: str, status: str, pruefung: dict,
                                jetzt_iso: Optional[str] = None) -> bool:
         """Laufende Recherche auf fertig/fehler setzen; False, wenn sie nicht mehr laeuft."""

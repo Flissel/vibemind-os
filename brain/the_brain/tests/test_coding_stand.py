@@ -134,6 +134,10 @@ def test_stand_saetze() -> None:
         "„X“ ist gescheitert. Paket 2: Test rot.")
     assert cs.stand_satz({"titel": "", "zustand": "wartet"}) == "„Ohne Titel“ ist angelegt und wartet auf den Start."
     assert cs.stand_satz({"titel": "X", "zustand": "abgebrochen"}) == "„X“ wurde abgebrochen."
+    assert cs.stand_satz({"titel": "X", "zustand": "ungeprueft", "abnahme": {"gruende": ["kein Prüfer"]}}) == (
+        "„X“ ist gebaut, aber ungeprüft: kein Prüfer.")
+    assert cs.stand_satz({"titel": "X", "zustand": "laeuft", "abnahme": {"zustand": "laeuft"}}) == (
+        "„X“ ist gebaut; die unabhängige Abnahme läuft.")
 
 
 def test_liste_satz() -> None:
@@ -147,7 +151,7 @@ def test_liste_satz() -> None:
 def test_ergebnis_satz() -> None:
     assert cs.ergebnis_satz(FERTIG, ERGEBNIS) == (
         "„Leseliste“ ist fertig nach 2 Minuten. Gebaut wurden 3 Pakete mit 4 Dateien. "
-        "Alle Prüfungen sind bestanden. Gestartet wird die App mit „npm start“ in ihrem Ordner.")
+        "Die unabhängige Abnahme ist bestanden. Gestartet wird die App mit „npm start“ in ihrem Ordner.")
     assert cs.ergebnis_satz(LAUFEND, ERGEBNIS) == cs.stand_satz(LAUFEND)
     assert cs.ergebnis_satz(FERTIG, None) == cs.stand_satz(FERTIG)
 
@@ -298,7 +302,7 @@ def test_router_ergebnis(monkeypatch) -> None:
     ausfuehrer = _Ausfuehrer({"success": True, "daten": FERTIG, "ergebnis": ERGEBNIS})
     body = _frage(monkeypatch, ausfuehrer, "Zeig mir das Ergebnis des letzten Laufs", "coding")
     assert [h.capability for h in ausfuehrer.plaene[0].hops] == ["coding_ergebnis"]
-    assert body["ok"] is True and "Alle Prüfungen sind bestanden." in body["final_text"]
+    assert body["ok"] is True and "Die unabhängige Abnahme ist bestanden." in body["final_text"]
 
 
 def test_router_dienst_aus_sagt_genau_das(monkeypatch) -> None:
