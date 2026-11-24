@@ -1,0 +1,131 @@
+/* VibeMind: Schwarz und Violett, Orange fuer das, was gerade laeuft. */
+:root {
+  --grund: #0a0a0f; --grund-hell: #12121a; --flaeche: rgba(24, 22, 40, .82); --flaeche-hover: rgba(34, 30, 56, .92);
+  --rand: rgba(255, 255, 255, .09); --rand-violett: rgba(168, 85, 247, .38);
+  --text: #f4f1fb; --leise: #a39cb8; --sehr-leise: #6e6888;
+  --violett: #a855f7; --violett-dunkel: #7c3aed; --orange: #fb923c; --orange-dunkel: #ea580c;
+  --fertig: #a855f7; --laeuft: #fb923c; --fehler: #f87171; --wartet: #5d5874; --abbruch: #8b85a3;
+  --glow: 0 0 18px rgba(168, 85, 247, .28); --glow-orange: 0 0 16px rgba(251, 146, 60, .35);
+}
+* { box-sizing: border-box; }
+html { background: var(--grund); }
+body {
+  margin: 0; min-height: 100vh; color: var(--text); font: 15px/1.5 "Inter", system-ui, "Segoe UI", sans-serif;
+  background: radial-gradient(1200px 600px at 85% -10%, rgba(124, 58, 237, .22), transparent 60%),
+              radial-gradient(900px 500px at -10% 110%, rgba(234, 88, 12, .10), transparent 60%), var(--grund);
+}
+code, pre { font: 13px/1.45 ui-monospace, "Cascadia Code", Consolas, monospace; }
+h1, h2, h3, p { margin: 0; }
+
+.kopf { padding: 18px 24px 6px; }
+.marke { font-size: 12px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+  background: linear-gradient(90deg, var(--violett), var(--orange)); -webkit-background-clip: text;
+  background-clip: text; color: transparent; }
+.kopf h1 { font-size: 22px; font-weight: 650; }
+.verbindung { margin-top: 6px; color: var(--orange); }
+.verbindung:empty { display: none; }
+
+main { display: grid; grid-template-columns: minmax(230px, 300px) 1fr; gap: 20px; padding: 10px 24px 32px; }
+@media (max-width: 760px) { main { grid-template-columns: 1fr; padding: 8px 16px 24px; } .kopf { padding: 16px 16px 4px; } }
+nav > h2, section > h2 { margin: 6px 0 10px; font-size: 12px; font-weight: 600; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--leise); }
+section > h2 { margin-top: 22px; }
+ul, ol { list-style: none; margin: 0; padding: 0; }
+
+.karte { background: var(--flaeche); border: 1px solid var(--rand); border-radius: 14px; padding: 16px 18px;
+  backdrop-filter: blur(10px); box-shadow: 0 8px 28px rgba(0, 0, 0, .35); }
+
+/* Liste der Laeufe */
+.liste li + li { margin-top: 8px; }
+.liste button { display: block; width: 100%; text-align: left; cursor: pointer; font: inherit; color: inherit;
+  background: var(--flaeche); border: 1px solid var(--rand); border-radius: 12px; padding: 10px 12px;
+  transition: border-color .2s, box-shadow .2s, background .2s; }
+.liste button:hover { background: var(--flaeche-hover); border-color: var(--rand-violett); }
+.liste button:focus-visible { outline: 2px solid var(--violett); outline-offset: 2px; }
+.liste button[aria-current="true"] { border-color: var(--violett); box-shadow: var(--glow); }
+.liste .name { display: block; font-weight: 600; }
+.liste .zeile { display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+.liste small { color: var(--leise); }
+.leer { color: var(--leise); }
+
+/* Zustand als Pille */
+.pille { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; white-space: nowrap; border: 1px solid; }
+.pille::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.pille[data-zustand="fertig"] { color: #d8b4fe; background: rgba(168, 85, 247, .14); border-color: rgba(168, 85, 247, .35); }
+.pille[data-zustand="laeuft"] { color: var(--orange); background: rgba(251, 146, 60, .12); border-color: rgba(251, 146, 60, .4); }
+.pille[data-zustand="laeuft"]::before { animation: puls 1.4s ease-in-out infinite; }
+.pille[data-zustand="fehlgeschlagen"] { color: var(--fehler); background: rgba(248, 113, 113, .12); border-color: rgba(248, 113, 113, .38); }
+.pille[data-zustand="wartet"], .pille[data-zustand="abgebrochen"] { color: var(--leise); background: rgba(255, 255, 255, .04); border-color: var(--rand); }
+@keyframes puls { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .pille::before { animation: none !important; } }
+
+/* Zusammenfassung */
+.zusammenfassung .zeile { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.titel { font-size: 20px; font-weight: 650; }
+.satz { margin-top: 10px; font-size: 17px; }
+.zusammenfassung[data-zustand="fehlgeschlagen"] { border-color: rgba(248, 113, 113, .35); }
+.zusammenfassung[data-zustand="fehlgeschlagen"] .satz { color: #fecaca; }
+.zusammenfassung[data-zustand="laeuft"] { border-color: rgba(251, 146, 60, .35); }
+.zusammenfassung[data-zustand="fertig"] { border-color: var(--rand-violett); box-shadow: var(--glow); }
+.meta { margin-top: 8px; color: var(--leise); font-size: 13px; }
+.grund { margin-top: 10px; color: var(--leise); }
+.grund summary { cursor: pointer; font-size: 13px; }
+.grund pre { margin: 8px 0 0; padding: 10px 12px; max-height: 220px; overflow: auto; white-space: pre-wrap;
+  overflow-wrap: anywhere; background: rgba(0, 0, 0, .35); border-radius: 8px; color: var(--leise); }
+.hinweise li { margin-top: 6px; color: var(--orange); font-size: 14px; }
+
+/* Stufen als Weg */
+.stufen { display: grid; grid-template-columns: repeat(5, 1fr); margin: 18px 0 4px; counter-reset: stufe; }
+.stufen li { position: relative; text-align: center; padding-top: 38px; font-size: 13px; color: var(--leise); }
+.stufen li::before { content: counter(stufe); counter-increment: stufe; position: absolute; top: 0; left: 50%;
+  transform: translateX(-50%); width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 12px; font-weight: 700; background: var(--grund-hell); border: 2px solid var(--wartet); color: var(--leise); z-index: 1; }
+.stufen li::after { content: ""; position: absolute; top: 13px; left: calc(-50% + 16px); right: calc(50% + 16px);
+  height: 2px; background: var(--wartet); }
+.stufen li:first-child::after { display: none; }
+.stufen li .name { display: block; color: var(--text); font-weight: 600; }
+.stufen li[data-zustand="fertig"]::before { content: "✓"; background: var(--violett-dunkel); border-color: var(--violett); color: #fff; box-shadow: var(--glow); }
+.stufen li[data-zustand="fertig"]::after, .stufen li[data-zustand="laeuft"]::after,
+.stufen li[data-zustand="fehlgeschlagen"]::after { background: var(--violett); }
+.stufen li[data-zustand="laeuft"]::before { border-color: var(--orange); color: var(--orange); box-shadow: var(--glow-orange); }
+.stufen li[data-zustand="fehlgeschlagen"]::before { content: "✕"; border-color: var(--fehler); color: var(--fehler); }
+.stufen li[data-zustand="abgebrochen"]::before { border-style: dashed; }
+@media (max-width: 520px) { .stufen li { font-size: 11px; } }
+
+/* Start der App */
+.start { margin-top: 18px; border-color: rgba(251, 146, 60, .45); box-shadow: var(--glow-orange); }
+.start h3 { font-size: 15px; color: var(--orange); }
+.befehl { margin: 10px 0 6px; }
+.befehl code { display: inline-block; font-size: 18px; padding: 6px 14px; border-radius: 8px;
+  background: rgba(0, 0, 0, .45); border: 1px solid rgba(251, 146, 60, .35); color: #fff; user-select: all; }
+.leise { color: var(--leise); font-size: 13px; overflow-wrap: anywhere; }
+.leise code { color: var(--leise); user-select: all; }
+.pruefung { margin-top: 8px; font-size: 14px; }
+
+/* Pakete */
+.pakete li { display: grid; grid-template-columns: 34px 1fr; gap: 4px 12px; padding: 12px 14px;
+  background: var(--flaeche); border: 1px solid var(--rand); border-radius: 12px; }
+.pakete li + li { margin-top: 8px; }
+.pakete .nr { grid-row: span 3; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 13px; font-weight: 700; border: 2px solid var(--wartet); color: var(--leise); }
+.pakete li[data-zustand="fertig"] .nr { border-color: var(--violett); color: #e9d5ff; background: rgba(124, 58, 237, .25); }
+.pakete li[data-zustand="laeuft"] { border-color: rgba(251, 146, 60, .4); }
+.pakete li[data-zustand="laeuft"] .nr { border-color: var(--orange); color: var(--orange); }
+.pakete li[data-zustand="fehlgeschlagen"] { border-color: rgba(248, 113, 113, .38); }
+.pakete li[data-zustand="fehlgeschlagen"] .nr { border-color: var(--fehler); color: var(--fehler); }
+.pakete li[data-zustand="abgebrochen"] { opacity: .62; }
+.pakete .kopfzeile { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.pakete h3 { font-size: 15px; font-weight: 600; }
+.ordner summary { cursor: pointer; }
+.ordner summary:hover { color: var(--orange); }
+.ordner code { display: block; margin-top: 4px; }
+.pakete .text { color: var(--leise); font-size: 14px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips code { padding: 1px 8px; border-radius: 6px; background: rgba(168, 85, 247, .12); border: 1px solid rgba(168, 85, 247, .25);
+  color: #e9d5ff; font-size: 12px; }
+.pruefzeile { font-size: 14px; }
+.pruefzeile[data-ok="true"] { color: #d8b4fe; }
+.pruefzeile[data-ok="false"] { color: var(--fehler); }
+.pruefzeile[data-ok="offen"] { color: var(--leise); }
+.pruefzeile code { color: var(--sehr-leise); font-size: 12px; margin-left: 6px; }

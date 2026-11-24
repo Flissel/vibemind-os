@@ -1,0 +1,122 @@
+{
+  "format": "vibemind.entwurf/1",
+  "run_id": "beispiel-aufgabenliste",
+  "titel": "Aufgabenliste im Speicher",
+  "aufgabe": "Bau mir eine kleine Aufgabenliste: Aufgaben anlegen, auflisten und als erledigt markieren.",
+  "erstellt_am": "2026-11-23T08:45:00+00:00",
+  "kontext": {
+    "zusammenfassung": "Eine Aufgabenliste als Baustein ohne Oberflaeche. Sie haelt die Aufgaben im Speicher des Prozesses.",
+    "zielnutzer": ["Entwickler, die den Baustein in ein Programm einbinden"],
+    "annahmen": ["Die Aufgaben muessen einen Neustart nicht ueberleben."],
+    "nicht_ziele": ["Keine Oberflaeche", "Keine Datenbank", "Keine Benutzerverwaltung"],
+    "offene_fragen": []
+  },
+  "anforderungen": [
+    {
+      "id": "REQ-001",
+      "art": "funktional",
+      "titel": "Aufgabe anlegen",
+      "beschreibung": "Eine Aufgabe wird mit einem Titel angelegt. Sie bekommt eine fortlaufende Nummer als id, beginnend bei 1, und ist anfangs nicht erledigt.",
+      "prioritaet": "muss",
+      "annahmekriterien": [
+        "anlegen('Milch kaufen') gibt { id: 1, titel: 'Milch kaufen', erledigt: false } zurueck.",
+        "Die zweite angelegte Aufgabe bekommt die id 2.",
+        "Ein leerer Titel oder ein Titel, der kein Text ist, wirft einen TypeError."
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "art": "funktional",
+      "titel": "Aufgaben auflisten",
+      "beschreibung": "Alle Aufgaben werden in der Reihenfolge des Anlegens geliefert. Wahlweise nur die offenen.",
+      "prioritaet": "muss",
+      "annahmekriterien": [
+        "auflisten() liefert alle Aufgaben in der Reihenfolge des Anlegens.",
+        "auflisten({ nurOffene: true }) liefert nur Aufgaben, die nicht erledigt sind.",
+        "Aendert der Aufrufer die gelieferte Liste, bleibt die Aufgabenliste unveraendert."
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "art": "funktional",
+      "titel": "Aufgabe erledigen",
+      "beschreibung": "Eine Aufgabe wird ueber ihre id als erledigt markiert.",
+      "prioritaet": "muss",
+      "annahmekriterien": [
+        "erledigen(1) setzt erledigt der Aufgabe 1 auf true und gibt die Aufgabe zurueck.",
+        "erledigen mit einer unbekannten id wirft einen RangeError."
+      ]
+    }
+  ],
+  "annahmekriterien": [
+    {"id": "AK-001", "anforderung": "REQ-001", "text": "anlegen('Milch kaufen') gibt { id: 1, titel: 'Milch kaufen', erledigt: false } zurueck."},
+    {"id": "AK-002", "anforderung": "REQ-001", "text": "Die zweite angelegte Aufgabe bekommt die id 2."},
+    {"id": "AK-003", "anforderung": "REQ-001", "text": "Ein leerer Titel oder ein Titel, der kein Text ist, wirft einen TypeError."},
+    {"id": "AK-004", "anforderung": "REQ-002", "text": "auflisten() liefert alle Aufgaben in der Reihenfolge des Anlegens."},
+    {"id": "AK-005", "anforderung": "REQ-002", "text": "auflisten({ nurOffene: true }) liefert nur Aufgaben, die nicht erledigt sind."},
+    {"id": "AK-006", "anforderung": "REQ-002", "text": "Aendert der Aufrufer die gelieferte Liste, bleibt die Aufgabenliste unveraendert."},
+    {"id": "AK-007", "anforderung": "REQ-003", "text": "erledigen(1) setzt erledigt der Aufgabe 1 auf true und gibt die Aufgabe zurueck."},
+    {"id": "AK-008", "anforderung": "REQ-003", "text": "erledigen mit einer unbekannten id wirft einen RangeError."}
+  ],
+  "architektur": {
+    "tech_stack": [
+      {"bereich": "Sprache", "wahl": "JavaScript (CommonJS) auf Node.js", "grund": "laeuft ohne Bau und ohne Abhaengigkeiten"},
+      {"bereich": "Tests", "wahl": "node:test und node:assert", "grund": "Bordmittel von Node.js"}
+    ],
+    "bausteine": [
+      {"id": "BST-01", "name": "Aufgabenliste", "aufgabe": "Klasse in src/aufgabenliste.js, exportiert als { Aufgabenliste }; haelt die Aufgaben einer Instanz im Speicher"}
+    ],
+    "datenmodell": [
+      {"name": "Aufgabe", "felder": [{"name": "id", "typ": "number"}, {"name": "titel", "typ": "string"}, {"name": "erledigt", "typ": "boolean"}]}
+    ],
+    "schnittstellen": [
+      {"name": "Aufgabenliste", "art": "Klasse", "beschreibung": "Methoden anlegen(titel), auflisten(optionen), erledigen(id)"}
+    ]
+  },
+  "arbeitspakete": [
+    {
+      "id": "AP-01",
+      "titel": "Aufgaben anlegen",
+      "beschreibung": "Lege die Klasse Aufgabenliste in src/aufgabenliste.js an, mit der Methode anlegen(titel). Jede Instanz zaehlt ihre ids selbst.",
+      "anforderungen": ["REQ-001"],
+      "bausteine": ["BST-01"],
+      "haengt_ab_von": [],
+      "annahmekriterien": [
+        "anlegen('Milch kaufen') gibt { id: 1, titel: 'Milch kaufen', erledigt: false } zurueck.",
+        "Die zweite angelegte Aufgabe bekommt die id 2.",
+        "Ein leerer Titel oder ein Titel, der kein Text ist, wirft einen TypeError."
+      ]
+    },
+    {
+      "id": "AP-02",
+      "titel": "Aufgaben auflisten",
+      "beschreibung": "Ergaenze die vorhandene Klasse Aufgabenliste in src/aufgabenliste.js um die Methode auflisten(optionen). Gib die ganze Datei zurueck; anlegen bleibt unveraendert.",
+      "anforderungen": ["REQ-002"],
+      "bausteine": ["BST-01"],
+      "haengt_ab_von": ["AP-01"],
+      "annahmekriterien": [
+        "auflisten() liefert alle Aufgaben in der Reihenfolge des Anlegens.",
+        "auflisten({ nurOffene: true }) liefert nur Aufgaben, die nicht erledigt sind.",
+        "Aendert der Aufrufer die gelieferte Liste, bleibt die Aufgabenliste unveraendert."
+      ]
+    },
+    {
+      "id": "AP-03",
+      "titel": "Aufgaben erledigen",
+      "beschreibung": "Ergaenze die vorhandene Klasse Aufgabenliste in src/aufgabenliste.js um die Methode erledigen(id). Gib die ganze Datei zurueck; anlegen und auflisten bleiben unveraendert.",
+      "anforderungen": ["REQ-003"],
+      "bausteine": ["BST-01"],
+      "haengt_ab_von": ["AP-02"],
+      "annahmekriterien": [
+        "erledigen(1) setzt erledigt der Aufgabe 1 auf true und gibt die Aufgabe zurueck.",
+        "erledigen mit einer unbekannten id wirft einen RangeError."
+      ]
+    }
+  ],
+  "pruefung": {
+    "muss_gedeckt": true,
+    "anforderungen_ohne_paket": [],
+    "bausteine_ohne_paket": [],
+    "offene_fragen": 0
+  }
+}

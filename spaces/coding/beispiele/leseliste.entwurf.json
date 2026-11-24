@@ -1,0 +1,179 @@
+{
+  "format": "vibemind.entwurf/1",
+  "run_id": "beispiel-leseliste",
+  "titel": "Leseliste mit Seite",
+  "aufgabe": "Bau mir eine Leseliste: Bücher eintragen, auflisten, den Lesestand setzen, gelesene Bücher bewerten, suchen und eine kleine Statistik sehen – mit einer Seite im Browser.",
+  "erstellt_am": "2026-11-23T16:10:00+01:00",
+  "kontext": {
+    "zusammenfassung": "Eine Leseliste im Speicher des Prozesses, als JSON-Schnittstelle und mit einer einfachen Seite.",
+    "zielnutzer": ["Eine Person, die ihre Bücher im Blick behalten will"],
+    "annahmen": ["Die Bücher müssen einen Neustart nicht überleben."],
+    "nicht_ziele": ["Keine Datenbank", "Keine Benutzerverwaltung", "Kein Bau-Schritt für die Seite"],
+    "offene_fragen": []
+  },
+  "anforderungen": [
+    {
+      "id": "REQ-001", "art": "funktional", "titel": "Buch eintragen", "prioritaet": "muss",
+      "beschreibung": "Ein Buch wird mit Titel und Autor eingetragen. Es bekommt eine fortlaufende id ab 1, den Status 'ungelesen' und noch keine Bewertung.",
+      "annahmekriterien": [
+        "hinzufuegen({ titel: 'Momo', autor: 'Michael Ende' }) gibt { id: 1, titel: 'Momo', autor: 'Michael Ende', status: 'ungelesen', bewertung: null } zurueck.",
+        "Das zweite Buch bekommt die id 2.",
+        "Ein leerer Titel, ein leerer Autor oder ein Wert, der kein Text ist, wirft einen TypeError."
+      ]
+    },
+    {
+      "id": "REQ-002", "art": "funktional", "titel": "Bücher auflisten", "prioritaet": "muss",
+      "beschreibung": "Alle Bücher in der Reihenfolge des Eintragens, wahlweise nur mit einem Status.",
+      "annahmekriterien": [
+        "auflisten() liefert alle Bücher in der Reihenfolge des Eintragens.",
+        "auflisten({ status: 'gelesen' }) liefert nur Bücher mit diesem Status.",
+        "Ein unbekannter Status in auflisten wirft einen RangeError.",
+        "Aendert der Aufrufer die gelieferte Liste oder ein Buch darin, bleibt die Leseliste unveraendert."
+      ]
+    },
+    {
+      "id": "REQ-003", "art": "funktional", "titel": "Lesestand setzen", "prioritaet": "muss",
+      "beschreibung": "Der Status eines Buchs wird über seine id gesetzt: 'ungelesen', 'lese' oder 'gelesen'.",
+      "annahmekriterien": [
+        "statusSetzen(1, 'lese') setzt den Status von Buch 1 auf 'lese' und gibt das Buch zurueck.",
+        "Eine unbekannte id wirft einen RangeError.",
+        "Ein anderer Status als 'ungelesen', 'lese' oder 'gelesen' wirft einen RangeError."
+      ]
+    },
+    {
+      "id": "REQ-004", "art": "funktional", "titel": "Buch bewerten", "prioritaet": "muss",
+      "beschreibung": "Ein gelesenes Buch bekommt 1 bis 5 Sterne.",
+      "annahmekriterien": [
+        "bewerten(1, 4) setzt bei einem gelesenen Buch 1 die Bewertung auf 4 und gibt das Buch zurueck.",
+        "Sterne, die keine ganze Zahl von 1 bis 5 sind, werfen einen RangeError.",
+        "Ein Buch, das nicht gelesen ist, zu bewerten wirft einen Error, dessen Meldung 'gelesen' enthaelt.",
+        "Eine unbekannte id wirft einen RangeError."
+      ]
+    },
+    {
+      "id": "REQ-005", "art": "funktional", "titel": "Suchen", "prioritaet": "soll",
+      "beschreibung": "Bücher werden über einen Text in Titel oder Autor gefunden, ohne Rücksicht auf Gross- und Kleinschreibung.",
+      "annahmekriterien": [
+        "suchen(liste, 'ende') findet das Buch von 'Michael Ende'.",
+        "suchen(liste, 'MOMO') findet das Buch 'Momo'.",
+        "suchen(liste, '') liefert alle Bücher; ohne Treffer liefert suchen eine leere Liste."
+      ]
+    },
+    {
+      "id": "REQ-006", "art": "funktional", "titel": "Statistik", "prioritaet": "soll",
+      "beschreibung": "Wie viele Bücher es je Status gibt und wie gut die gelesenen im Schnitt bewertet sind.",
+      "annahmekriterien": [
+        "statistik(liste) liefert { gesamt, ungelesen, lese, gelesen, durchschnitt }.",
+        "durchschnitt ist der Mittelwert aller Bewertungen, auf eine Nachkommastelle gerundet, oder null, wenn kein Buch bewertet ist.",
+        "Fuer eine leere Leseliste liefert statistik { gesamt: 0, ungelesen: 0, lese: 0, gelesen: 0, durchschnitt: null }."
+      ]
+    }
+  ],
+  "annahmekriterien": [
+    {"id": "AK-001", "anforderung": "REQ-001", "text": "hinzufuegen({ titel: 'Momo', autor: 'Michael Ende' }) gibt { id: 1, titel: 'Momo', autor: 'Michael Ende', status: 'ungelesen', bewertung: null } zurueck."},
+    {"id": "AK-002", "anforderung": "REQ-001", "text": "Das zweite Buch bekommt die id 2."},
+    {"id": "AK-003", "anforderung": "REQ-001", "text": "Ein leerer Titel, ein leerer Autor oder ein Wert, der kein Text ist, wirft einen TypeError."},
+    {"id": "AK-004", "anforderung": "REQ-002", "text": "auflisten() liefert alle Bücher in der Reihenfolge des Eintragens."},
+    {"id": "AK-005", "anforderung": "REQ-002", "text": "auflisten({ status: 'gelesen' }) liefert nur Bücher mit diesem Status."},
+    {"id": "AK-006", "anforderung": "REQ-002", "text": "Ein unbekannter Status in auflisten wirft einen RangeError."},
+    {"id": "AK-007", "anforderung": "REQ-002", "text": "Aendert der Aufrufer die gelieferte Liste oder ein Buch darin, bleibt die Leseliste unveraendert."},
+    {"id": "AK-008", "anforderung": "REQ-003", "text": "statusSetzen(1, 'lese') setzt den Status von Buch 1 auf 'lese' und gibt das Buch zurueck."},
+    {"id": "AK-009", "anforderung": "REQ-003", "text": "Eine unbekannte id wirft einen RangeError."},
+    {"id": "AK-010", "anforderung": "REQ-003", "text": "Ein anderer Status als 'ungelesen', 'lese' oder 'gelesen' wirft einen RangeError."},
+    {"id": "AK-011", "anforderung": "REQ-004", "text": "bewerten(1, 4) setzt bei einem gelesenen Buch 1 die Bewertung auf 4 und gibt das Buch zurueck."},
+    {"id": "AK-012", "anforderung": "REQ-004", "text": "Sterne, die keine ganze Zahl von 1 bis 5 sind, werfen einen RangeError."},
+    {"id": "AK-013", "anforderung": "REQ-004", "text": "Ein Buch, das nicht gelesen ist, zu bewerten wirft einen Error, dessen Meldung 'gelesen' enthaelt."},
+    {"id": "AK-014", "anforderung": "REQ-005", "text": "suchen(liste, 'ende') findet das Buch von 'Michael Ende'; suchen(liste, 'MOMO') findet 'Momo'."},
+    {"id": "AK-015", "anforderung": "REQ-005", "text": "suchen(liste, '') liefert alle Bücher; ohne Treffer liefert suchen eine leere Liste."},
+    {"id": "AK-016", "anforderung": "REQ-006", "text": "statistik(liste) liefert { gesamt, ungelesen, lese, gelesen, durchschnitt }; durchschnitt ist auf eine Nachkommastelle gerundet oder null."},
+    {"id": "AK-017", "anforderung": "REQ-006", "text": "Fuer eine leere Leseliste liefert statistik { gesamt: 0, ungelesen: 0, lese: 0, gelesen: 0, durchschnitt: null }."}
+  ],
+  "architektur": {
+    "tech_stack": [
+      {"bereich": "Sprache", "wahl": "JavaScript (CommonJS) auf Node.js", "grund": "laeuft ohne Bau"},
+      {"bereich": "Tests", "wahl": "node:test und node:assert", "grund": "Bordmittel von Node.js"},
+      {"bereich": "Oberfläche", "wahl": "eine HTML-Seite public/index.html, die die Schnittstelle mit fetch benutzt", "grund": "kein Bau-Schritt"}
+    ],
+    "bausteine": [
+      {"id": "BST-01", "name": "Leseliste", "aufgabe": "Klasse in src/leseliste.js, exportiert als { Leseliste }; haelt die Bücher einer Instanz im Speicher"},
+      {"id": "BST-02", "name": "Suche", "aufgabe": "Funktion suchen(leseliste, text) in src/suche.js, exportiert als { suchen }; benutzt leseliste.auflisten()"},
+      {"id": "BST-03", "name": "Statistik", "aufgabe": "Funktion statistik(leseliste) in src/statistik.js, exportiert als { statistik }; benutzt leseliste.auflisten()"}
+    ],
+    "datenmodell": [
+      {"name": "Buch", "felder": [
+        {"name": "id", "typ": "number"}, {"name": "titel", "typ": "string"}, {"name": "autor", "typ": "string"},
+        {"name": "status", "typ": "'ungelesen' | 'lese' | 'gelesen'"}, {"name": "bewertung", "typ": "number | null"}
+      ]}
+    ],
+    "schnittstellen": [
+      {"name": "Leseliste", "art": "Klasse", "beschreibung": "Methoden hinzufuegen(buch), auflisten(optionen), statusSetzen(id, status), bewerten(id, sterne)"},
+      {"name": "suchen", "art": "Funktion", "beschreibung": "suchen(leseliste, text) -> Bücher"},
+      {"name": "statistik", "art": "Funktion", "beschreibung": "statistik(leseliste) -> Zahlen"}
+    ]
+  },
+  "arbeitspakete": [
+    {
+      "id": "AP-01", "titel": "Bücher eintragen",
+      "beschreibung": "Lege die Klasse Leseliste in src/leseliste.js an, mit der Methode hinzufuegen(buch). Exportiere sie als { Leseliste }.",
+      "anforderungen": ["REQ-001"], "bausteine": ["BST-01"], "haengt_ab_von": [],
+      "annahmekriterien": [
+        "hinzufuegen({ titel: 'Momo', autor: 'Michael Ende' }) gibt { id: 1, titel: 'Momo', autor: 'Michael Ende', status: 'ungelesen', bewertung: null } zurueck.",
+        "Das zweite Buch bekommt die id 2.",
+        "Ein leerer Titel, ein leerer Autor oder ein Wert, der kein Text ist, wirft einen TypeError."
+      ]
+    },
+    {
+      "id": "AP-02", "titel": "Bücher auflisten",
+      "beschreibung": "Ergaenze die vorhandene Klasse Leseliste in src/leseliste.js um die Methode auflisten(optionen). Gib die ganze Datei zurueck; hinzufuegen bleibt unveraendert.",
+      "anforderungen": ["REQ-002"], "bausteine": ["BST-01"], "haengt_ab_von": ["AP-01"],
+      "annahmekriterien": [
+        "auflisten() liefert alle Bücher in der Reihenfolge des Eintragens.",
+        "auflisten({ status: 'gelesen' }) liefert nur Bücher mit diesem Status.",
+        "Ein unbekannter Status in auflisten wirft einen RangeError.",
+        "Aendert der Aufrufer die gelieferte Liste oder ein Buch darin, bleibt die Leseliste unveraendert."
+      ]
+    },
+    {
+      "id": "AP-03", "titel": "Lesestand setzen",
+      "beschreibung": "Ergaenze die vorhandene Klasse Leseliste in src/leseliste.js um die Methode statusSetzen(id, status). Gib die ganze Datei zurueck; die vorhandenen Methoden bleiben unveraendert.",
+      "anforderungen": ["REQ-003"], "bausteine": ["BST-01"], "haengt_ab_von": ["AP-02"],
+      "annahmekriterien": [
+        "statusSetzen(1, 'lese') setzt den Status von Buch 1 auf 'lese' und gibt das Buch zurueck.",
+        "Eine unbekannte id wirft einen RangeError.",
+        "Ein anderer Status als 'ungelesen', 'lese' oder 'gelesen' wirft einen RangeError."
+      ]
+    },
+    {
+      "id": "AP-04", "titel": "Bücher bewerten",
+      "beschreibung": "Ergaenze die vorhandene Klasse Leseliste in src/leseliste.js um die Methode bewerten(id, sterne). Gib die ganze Datei zurueck; die vorhandenen Methoden bleiben unveraendert.",
+      "anforderungen": ["REQ-004"], "bausteine": ["BST-01"], "haengt_ab_von": ["AP-03"],
+      "annahmekriterien": [
+        "bewerten(1, 4) setzt bei einem gelesenen Buch 1 die Bewertung auf 4 und gibt das Buch zurueck.",
+        "Sterne, die keine ganze Zahl von 1 bis 5 sind, werfen einen RangeError.",
+        "Ein Buch, das nicht gelesen ist, zu bewerten wirft einen Error, dessen Meldung 'gelesen' enthaelt.",
+        "Eine unbekannte id wirft einen RangeError."
+      ]
+    },
+    {
+      "id": "AP-05", "titel": "Suchen",
+      "beschreibung": "Lege src/suche.js an mit der Funktion suchen(leseliste, text), exportiert als { suchen }. Sie benutzt leseliste.auflisten() und aendert src/leseliste.js nicht.",
+      "anforderungen": ["REQ-005"], "bausteine": ["BST-02"], "haengt_ab_von": ["AP-02"],
+      "annahmekriterien": [
+        "suchen(liste, 'ende') findet das Buch von 'Michael Ende'.",
+        "suchen(liste, 'MOMO') findet das Buch 'Momo'.",
+        "suchen(liste, '') liefert alle Bücher; ohne Treffer liefert suchen eine leere Liste."
+      ]
+    },
+    {
+      "id": "AP-06", "titel": "Statistik",
+      "beschreibung": "Lege src/statistik.js an mit der Funktion statistik(leseliste), exportiert als { statistik }. Sie benutzt leseliste.auflisten() und aendert src/leseliste.js nicht.",
+      "anforderungen": ["REQ-006"], "bausteine": ["BST-03"], "haengt_ab_von": ["AP-04"],
+      "annahmekriterien": [
+        "statistik(liste) liefert { gesamt, ungelesen, lese, gelesen, durchschnitt }.",
+        "durchschnitt ist der Mittelwert aller Bewertungen, auf eine Nachkommastelle gerundet, oder null, wenn kein Buch bewertet ist.",
+        "Fuer eine leere Leseliste liefert statistik { gesamt: 0, ungelesen: 0, lese: 0, gelesen: 0, durchschnitt: null }."
+      ]
+    }
+  ],
+  "pruefung": {"muss_gedeckt": true, "anforderungen_ohne_paket": [], "bausteine_ohne_paket": [], "offene_fragen": 0}
+}
