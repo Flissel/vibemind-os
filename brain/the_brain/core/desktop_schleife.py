@@ -22,8 +22,8 @@ import time
 from typing import Any, Callable, Mapping, Optional
 
 from .desktop_schleife_contract import (
-    AGENT, ANWEISUNG, EREIGNISSE, AktionAbgelehnt, AufrufAbgelehnt, ZIEL_SERVER, auswahl_bestaetigt, pruefe_aktion,
-    pruefe_aufruf,
+    AGENT, ANWEISUNG, EREIGNISSE, AktionAbgelehnt, AufrufAbgelehnt, ZIEL_SERVER, auswahl_bestaetigt, protokoll_ziel,
+    pruefe_aktion, pruefe_aufruf,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,12 +85,15 @@ def fuehre_aufgabe(
     budget_rest: Callable[[], int],
     uhr: Callable[[], float] = time.monotonic,
     max_runden: int = MAX_RUNDEN,
+    spur: Optional[Callable[[str], None]] = None,
+    herkunft: str = "",
 ) -> dict[str, Any]:
     """Fuehrt eine bereits gestartete Aufgabe zu Ende. Liefert immer einen Abschluss.
 
     ``werkzeug(name, argumente)`` ist ein fester Aufruf am Werkzeug-Dienst und wirft
     WerkzeugFehler. ``agent(nachricht)`` ist EIN Lauf von brain-desktop ohne Werkzeuge.
-    ``budget_rest()`` sagt, wie viele Laeufe der Agent heute noch hat.
+    ``budget_rest()`` sagt, wie viele Laeufe der Agent heute noch hat. ``spur(text)`` bekommt
+    je ausgefuehrter Aktion eine Zeile (Zeit, Agent, Werkzeug, Ziel); dieselbe Zeile geht ins Log.
     """
     roh = werkzeug
 
@@ -209,6 +212,7 @@ def fuehre_aufgabe(
                     return abschluss("abgebrochen", "von_aussen_beendet", meldung, schon_beendet=True)
                 return abschluss("fehlgeschlagen", "schritt_abgelehnt", meldung)
             schritt = (ergebnis or {}).get("schritt") or {}
+            _protokolliere(task_id, aktion["schritt"], elemente, schritt.get("ok"), spur, herkunft)
             if schritt.get("ok") is False:
                 return abschluss("fehlgeschlagen", "schritt_fehlgeschlagen", str(schritt.get("meldung") or ""))
             # Eine Auswahl ist kein Vorlauf fuer Enter/Leertaste: sonst oeffnete Enter, was nur
@@ -223,6 +227,29 @@ def fuehre_aufgabe(
         # selbst noch durchgeht, ist offen; sonst laeuft die Aufgabe nach 600 s ab.
         return abschluss("abgebrochen", "freigabe_ausstehend",
                          "Ein fester Aufruf wartet auf Freigabe; die Aufgabe wurde angehalten.")
+
+
+def _protokolliere(task_id: str, schritt: Mapping[str, Any], elemente: list, ok: Any,
+                   spur: Optional[Callable[[str], None]], herkunft: str) -> str:
+    """Eine Zeile je ausgefuehrter Desktop-Aktion: Zeit, Agent, Werkzeug, Ziel, Ergebnis.
+
+    Ins Log des Gehirns und, wenn angeschlossen, in die Spur des Satzes. Das Ziel eines Klicks
+    ist der Name des gelesenen Elements an genau diesem Punkt, nie Text des Agenten.
+    """
+    name = None
+    if schritt.get("action") == "click":
+        name = next((e.get("name") for e in elemente if isinstance(e, Mapping)
+                     and e.get("x") == schritt.get("x") and e.get("y") == schritt.get("y")), None)
+    zeile = (f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} agent={AGENT} werkzeug=desktop_task_step "
+             f"aufgabe={task_id} ziel={protokoll_ziel(schritt, name)} "
+             f"ok={'ja' if ok is True else 'nein' if ok is False else 'offen'} herkunft={herkunft or '?'}")
+    logger.info("[desktop] aktion %s", zeile)
+    if spur is not None:
+        try:
+            spur(zeile)
+        except Exception:  # noqa: BLE001 - die Spur darf die Aufgabe nie stoeren
+            pass
+    return zeile
 
 
 def _laufzeit_pruefen(laufzeit: Any) -> dict[str, Any]:
@@ -352,13 +379,15 @@ def nach_aufgabenstart(
     laufzeit: Optional[Mapping[str, Any]] = None,
     hintergrund: bool = False,
     bindungen: Optional[Callable[..., dict]] = None,
+    spur: Optional[Callable[[str], None]] = None,
 ) -> tuple[bool, Any, Optional[str]]:
     """Der Eingriff im Plan-Ausfuehrer: nach gelungenem ``desktop_task_start`` die Schleife fahren.
 
     Liefert ``(ok, ergebnis, fehler)`` fuer den Hop. Geschlossen bei Zweifel:
-    - ``herkunft`` muss genau "getippt" sein. Autonome Plaene, Nachfasser und
-      Hintergrundlaeufe bringen diese Angabe nicht mit; ihre Aufgabe wird sofort
-      abgebrochen, ohne dass der Agent gefragt wird.
+    - ``herkunft`` muss "getippt" oder "frei" sein (``desktop_freigabe.desktop_herkunft``).
+      "frei" ist die Vorgabe; nur mit ``VIBEMIND_DESKTOP_RUECKFRAGE=1`` kommt None, und die
+      Aufgabe wird sofort abgebrochen, ohne dass der Agent gefragt wird.
+    - ``spur(text)`` bekommt je ausgefuehrter Aktion eine Zeile fuer die Spur des Satzes.
     - ``tagesrest`` ist die Zahl der Laeufe, die brain-desktop heute noch hat (Zahl oder
       Funktion). Fehlt sie, gilt 0.
     - ``laufzeit``: plan_id, plan_revision, correlation_id, step_id des Plans; daraus
@@ -391,9 +420,11 @@ def nach_aufgabenstart(
             pass
         return False, {"task_id": task_id, "zustand": "abgebrochen", "grund": grund}, fehler
 
-    if herkunft != HERKUNFT_GETIPPT:
+    from .desktop_freigabe import ZUGELASSEN
+    if herkunft not in ZUGELASSEN:
         return abbrechen("herkunft", "Nicht aus getippter Eingabe: die Aufgabe wird nicht ausgefuehrt.",
                          "desktop.task: nur aus getippter Eingabe")
+    gebunden = {**gebunden, "spur": spur, "herkunft": str(herkunft)}
     nachweis = {k: (laufzeit or {}).get(k) for k in ("plan_id", "plan_revision", "correlation_id", "step_id")}
     if not hintergrund:
         ergebnis = {**fuehre_aufgabe(task_id, auftrag, **gebunden), "auftrag": auftrag, "nachweis": nachweis}

@@ -1128,7 +1128,7 @@ def test_der_plan_ausfuehrer_nimmt_den_satz_aus_der_absicht_und_startet_einmal()
     abschnitt = quelle[quelle.index("if _ist_desktop_start(target):"):quelle.index("# Build the right executor")]
     assert "auftrag_aus_absicht(plan_ctx.get(\"plan_intent\"" in abschnitt
     # Die Herkunft wird vor allem anderen geprueft, auch vor dem Bau des Executors.
-    assert abschnitt.index('desktop_herkunft(plan_ctx.get("eingabe_herkunft")) != "getippt"') < abschnitt.index(
+    assert abschnitt.index('kanal=plan_ctx.get("antwortkanal")) is None') < abschnitt.index(
         "auftrag_aus_absicht(")
     assert "rendered_arg = _desktop_auftrag" in abschnitt and "single_plan_attempt = True" in abschnitt
     aufruf = quelle[quelle.index("ok, result_payload, err = nach_aufgabenstart("):]
@@ -1262,8 +1262,10 @@ def _start_hop():
 
 
 @pytest.mark.parametrize("herkunft", [None, "", "autonom", "gesprochen", "Getippt"])
-def test_ohne_getippte_herkunft_ruft_der_plan_ausfuehrer_den_dienst_gar_nicht(echt, openfang, monkeypatch, herkunft):
+def test_mit_hauptschalter_ruft_der_plan_ausfuehrer_ohne_getippt_den_dienst_gar_nicht(echt, openfang, monkeypatch,
+                                                                                      herkunft):
     from core.plan_executor import PlanExecutor
+    monkeypatch.setenv("VIBEMIND_DESKTOP_RUECKFRAGE", "1")
     monkeypatch.setattr("core.plan_executor.PlanExecutor._capture_kg_hits", lambda *args: [])
     plan_ctx = {"plan_intent": f"Desktop-Aufgabe: {AUFTRAG}", "plan_id": "plan-desk-1", "trace_id": "trace-1"}
     if herkunft is not None:
@@ -1272,6 +1274,31 @@ def test_ohne_getippte_herkunft_ruft_der_plan_ausfuehrer_den_dienst_gar_nicht(ec
     assert (ergebnis.ok, ergebnis.error) == (False, "desktop.task: nur aus getippter Eingabe")
     assert openfang.zulassungen == [] and openfang.reservierungen == [] and openfang.werkzeuge == []
     assert list(echt.ordner.glob("*.json")) == []  # kein Eintrag im Aufgabenbuch
+
+
+def test_frei_startet_oeffne_chrome_ueber_desktop_skill_ohne_bestaetigung(echt, openfang, monkeypatch):
+    """Fall des Betreibers 24.11.:"Öffne Chrome" (desktop_skill) ohne Herkunft, ohne Hauptschalter."""
+    import core.desktop_schleife as schleife
+    from core.plan_executor import PlanExecutor
+    from core.plan_schema import HopSpec
+    monkeypatch.delenv("VIBEMIND_DESKTOP_RUECKFRAGE", raising=False)
+    monkeypatch.setattr("core.plan_executor.PlanExecutor._capture_kg_hits", lambda *args: [])
+    gesehen = {}
+
+    def nach_start(start_ergebnis, **angaben):  # die Schleife selbst ist oben getestet
+        gesehen.update(angaben, aufgabe=werkzeug_inhalt(start_ergebnis))
+        return True, {"task_id": gesehen["aufgabe"]["id"], "zustand": "laeuft"}, None
+
+    monkeypatch.setattr(schleife, "nach_aufgabenstart", nach_start)
+    hop = HopSpec(step_id="s1", description="Öffne Chrome", capability="desktop_skill",
+                  execution_target="openfang:skill-coordinator")
+    plan_ctx = {"plan_intent": "Öffne Chrome", "plan_id": "plan-chrome-1", "trace_id": "trace-chrome"}
+    ergebnis = PlanExecutor()._exec_hop(hop, {}, plan_ctx)
+    assert "confirmation required" not in str(ergebnis.error or "")
+    assert ergebnis.target == "mcp:brain-desktop:spaces-desktop:desktop_task_start"
+    assert (gesehen["aufgabe"]["aufgabe"], gesehen["herkunft"]) == ("Öffne Chrome", "frei")
+    assert callable(gesehen["spur"])
+    assert [p.name for p in echt.ordner.glob("*.json")]  # Eintrag im Aufgabenbuch
 
 
 # ─── Augen fuer andere Spaces: desktop_blick und truth:desktop_sicht ──────────
