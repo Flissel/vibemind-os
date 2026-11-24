@@ -45,6 +45,11 @@ class Auftrag(BaseModel):
     ergebnis: dict = Field(default_factory=dict)
 
 
+def reihenfolge(auftrag: Auftrag) -> tuple:
+    """Sortierschluessel, in dem wartende Auftraege drankommen (kleinster zuerst)."""
+    return (_VORRANG.get(auftrag.art, 2), auftrag.erstellt, auftrag.id)
+
+
 class Ablage:
     def __init__(self, daten: Path) -> None:
         self.daten = Path(daten)
@@ -123,4 +128,4 @@ class Ablage:
         wartende = [a for a in self.alle() if a.zustand == "wartet"]
         if not wartende:
             return None
-        return min(wartende, key=lambda a: (_VORRANG.get(a.art, 2), a.erstellt, a.id))
+        return min(wartende, key=reihenfolge)

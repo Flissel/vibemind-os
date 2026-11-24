@@ -13,6 +13,7 @@ import json
 import logging
 import math
 import re
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -22,7 +23,7 @@ from pydantic import ValidationError
 
 from djset.bestand import Bestand, BestandFehler, pruefe_herkunft, song_id_aus_titel
 from djset.dienst import link as datei_link
-from djset.dienst.auftraege import _VORRANG, Ablage, Auftrag
+from djset.dienst.auftraege import Ablage, Auftrag, reihenfolge
 from djset.video.laenge import VideoFehler, aus_frames, aus_sekunden
 from djset.video.vertrag import LABEL_MAX, LauraClip, VideomusikErgebnis
 from djset.watch import AUDIO_SUFFIXES
@@ -40,8 +41,27 @@ _BEENDET = ("fertig", "fertig_mit_befund", "gescheitert", "abgebrochen")
 _FERTIG = ("fertig", "fertig_mit_befund")
 
 
+_PFAD = re.compile(
+    r"[A-Za-z]:[\\/][^\s\"']*"  # Laufwerkspfad
+    r"|\\\\[^\s\"']+"  # UNC
+    r"|/(?:home|Users|tmp|var|opt|etc|usr|mnt|root)/[^\s\"']*"  # POSIX
+)
+
+
+class _UnbekannterAuftrag(Exception):
+    pass
+
+
 def _fehler(text: str) -> dict:
     return {"ok": False, "fehler": text[:FEHLER_MAXLAENGE]}
+
+
+def _ohne_pfade(text: str, daten: Path | None = None) -> str:
+    """Absolute Pfade (und den Datenordner) aus Text fuer Agenten entfernen."""
+    if daten is not None:
+        for geheim in (str(daten), str(daten).replace("\\", "/")):
+            text = text.replace(geheim, "<daten>")
+    return _PFAD.sub("<pfad>", text)
 
 
 def _weich(methode: Callable[..., dict]) -> Callable[..., dict]:
@@ -51,14 +71,11 @@ def _weich(methode: Callable[..., dict]) -> Callable[..., dict]:
     def huelle(self: "Werkzeuge", *args: Any, **kwargs: Any) -> dict:
         try:
             return methode(self, *args, **kwargs)
-        except KeyError:
+        except _UnbekannterAuftrag:
             return _fehler("unbekannter Auftrag")
         except Exception as problem:  # noqa: BLE001 - Dienstgrenze
             LOG.warning("%s gescheitert: %s", methode.__name__, problem)
-            text = f"{type(problem).__name__}: {problem}"
-            for geheim in (str(self.daten), str(self.daten).replace("\\", "/")):
-                text = text.replace(geheim, "<daten>")
-            return _fehler(text)
+            return _fehler(_ohne_pfade(f"{type(problem).__name__}: {problem}", self.daten))
 
     return huelle
 
@@ -102,21 +119,31 @@ class Werkzeuge:
             else Path.home() / ".vibemind" / "video-claw"
         )
         self.bestand = Bestand(self.daten)
+        self._sperren: dict[tuple[str, str], threading.Lock] = {}
+        self._sperren_lock = threading.Lock()
 
     # ------------------------------------------------------------ Helfer
+
+    def _hole(self, auftrag_id: str) -> Auftrag:
+        try:
+            return self.ablage.hole(auftrag_id)
+        except KeyError:
+            raise _UnbekannterAuftrag(auftrag_id) from None
+
+    def _sperre(self, auftrag_id: str, timeline_id: str) -> threading.Lock:
+        with self._sperren_lock:
+            return self._sperren.setdefault((auftrag_id, timeline_id), threading.Lock())
 
     def _position(self, auftrag: Auftrag) -> int:
         """Wie viele Auftraege vor diesem drankommen: die wartenden, die `Ablage.naechster`
         vor ihm starten wuerde (gleiche Reihenfolge), plus 1, wenn gerade etwas laeuft.
         0 heisst: kommt als Naechster dran. Ein Richtwert, keine Zusage."""
 
-        def schluessel(a: Auftrag) -> tuple:
-            return (_VORRANG.get(a.art, 2), a.erstellt, a.id)
-
         alle = self.ablage.alle()
         davor = sum(
             1 for a in alle
-            if a.zustand == "wartet" and a.id != auftrag.id and schluessel(a) < schluessel(auftrag)
+            if a.zustand == "wartet" and a.id != auftrag.id
+            and reihenfolge(a) < reihenfolge(auftrag)
         )
         return davor + (1 if any(a.zustand == "laeuft" for a in alle) else 0)
 
@@ -245,7 +272,7 @@ class Werkzeuge:
 
     @_weich
     def auftrag_zeigen(self, auftrag: str) -> dict:
-        a = self.ablage.hole(auftrag)
+        a = self._hole(auftrag)
         dateien: list[str] = []
         bericht = ""
         befunde: list[str] = []
@@ -258,6 +285,7 @@ class Werkzeuge:
                 zeilen = (ordner / "bericht.md").read_text(encoding="utf-8", errors="replace").splitlines()
             except OSError:
                 zeilen = []
+            zeilen = [_ohne_pfade(z, self.daten) for z in zeilen]
             bericht = "\n".join(zeilen[:BERICHT_ZEILEN])
             befunde = self._befunde(zeilen)
             try:
@@ -271,8 +299,8 @@ class Werkzeuge:
         if (self.ablage.ordner(a.id) / EXPORT_DATEI).is_file():
             dateien.append(EXPORT_DATEI)
         return {
-            "ok": True, "id": a.id, "art": a.art, "zustand": a.zustand, "grund": a.grund,
-            "kanal": a.kanal, "eingabe": dict(a.eingabe), "dateien": dateien,
+            "ok": True, "id": a.id, "art": a.art, "zustand": a.zustand,
+            "grund": _ohne_pfade(a.grund, self.daten), "kanal": a.kanal, "eingabe": dict(a.eingabe), "dateien": dateien,
             "bericht": bericht, "befunde": befunde, "laenge_s": laenge_s, "titel": titel,
         }
 
@@ -293,8 +321,8 @@ class Werkzeuge:
     @_weich
     def auftraege_offen(self, kanal: str) -> dict:
         offen = [
-            {"id": a.id, "art": a.art, "zustand": a.zustand, "grund": a.grund,
-             "beendet": a.beendet.isoformat() if a.beendet else None}
+            {"id": a.id, "art": a.art, "zustand": a.zustand,
+             "grund": _ohne_pfade(a.grund, self.daten), "beendet": a.beendet.isoformat() if a.beendet else None}
             for a in self.ablage.alle()
             if a.kanal == kanal and a.zustand in _BEENDET and not a.gemeldet
         ]
@@ -302,7 +330,7 @@ class Werkzeuge:
 
     @_weich
     def gemeldet(self, auftrag: str) -> dict:
-        a = self.ablage.hole(auftrag)
+        a = self._hole(auftrag)
         if a.zustand not in _BEENDET:
             return _fehler(f"Auftrag ist noch nicht beendet (Zustand: {a.zustand})")
         if not a.gemeldet:
@@ -312,9 +340,9 @@ class Werkzeuge:
 
     @_weich
     def auftrag_abbrechen(self, auftrag: str) -> dict:
-        self.ablage.hole(auftrag)  # unbekannt -> KeyError
+        self._hole(auftrag)  # unbekannt -> _UnbekannterAuftrag
         ging = bool(self.laeufer.abbrechen(auftrag))
-        zustand = self.ablage.hole(auftrag).zustand
+        zustand = self._hole(auftrag).zustand
         if ging:
             return {"ok": True, "zustand": zustand}
         return _fehler(f"Auftrag laesst sich nicht abbrechen (Zustand: {zustand})")
@@ -323,7 +351,7 @@ class Werkzeuge:
 
     @_weich
     def in_laura_legen(self, auftrag: str, timeline_id: str, gain_percent: int = 100) -> dict:
-        a = self.ablage.hole(auftrag)
+        a = self._hole(auftrag)
         if a.art != "video" or a.zustand not in _FERTIG:
             return _fehler(f"Auftrag ist kein fertiges Video (Art {a.art}, Zustand {a.zustand})")
         ordner = self._laufordner(a)
@@ -357,14 +385,10 @@ class Werkzeuge:
         if frames < 1 or abs(frames - soll) > 1:
             return _fehler(f"Musik passt nicht zur Zeitleiste ({frames} statt {soll} Frames)")
 
-        marke = f"musik:{a.id}"
-        vorhanden = self.laura.audio_clips(timeline_id)
-        if not vorhanden.get("ok"):
-            return _fehler(str(vorhanden.get("fehler", "Clips nicht lesbar")))
-        for clip in vorhanden.get("clips") or []:
-            if marke in str(clip.get("label") or ""):
-                return {"ok": True, "clip_id": clip.get("id"), "asset_id": clip.get("asset_id")}
+        # Ein Clip darf nie ueber das Ende der Zeitleiste ragen (Laura kappt nicht).
+        frames = min(frames, soll)
 
+        marke = f"musik:{a.id}"
         suffix = f" · {marke}"
         label = erg.titel[: max(0, LABEL_MAX - len(suffix))] + suffix
         try:
@@ -378,19 +402,29 @@ class Werkzeuge:
         except ValidationError as problem:
             return _fehler(f"Clip ungueltig: {problem.errors()[0].get('msg', '')}")
 
-        url = datei_link.link(self.link_basis, self.link_schluessel, a.id, erg.datei, self.uhr())
-        name = f"{song_id_aus_titel(erg.titel) or 'videomusik'}.wav"
-        imp = self.laura.importieren(str(z["project_id"]), url, name)
-        if not imp.get("ok"):
-            return _fehler(str(imp.get("fehler", "Import fehlgeschlagen")))
-        asset_id = imp["asset_id"]
-        warten = self.laura.asset_warten(asset_id)
-        if not warten.get("ok"):
-            return _fehler(str(warten.get("fehler", "Asset nicht bereit")))
-        angelegt = self.laura.clip_anlegen(timeline_id, {**clip.model_dump(), "asset_id": asset_id})
-        if not angelegt.get("ok"):
-            return _fehler(str(angelegt.get("fehler", "Clip nicht angelegt")))
-        return {"ok": True, "clip_id": (angelegt.get("clip") or {}).get("id"), "asset_id": asset_id}
+        # Pruefen, importieren, warten und anlegen als ein Schritt je (Auftrag, Zeitleiste):
+        # ein zweiter Aufrufer wartet hier und findet danach den Clip des ersten.
+        with self._sperre(a.id, timeline_id):
+            vorhanden = self.laura.audio_clips(timeline_id)
+            if not vorhanden.get("ok"):
+                return _fehler(str(vorhanden.get("fehler", "Clips nicht lesbar")))
+            for vorher in vorhanden.get("clips") or []:
+                if marke in str(vorher.get("label") or ""):
+                    return {"ok": True, "clip_id": vorher.get("id"), "asset_id": vorher.get("asset_id")}
+
+            url = datei_link.link(self.link_basis, self.link_schluessel, a.id, erg.datei, self.uhr())
+            name = f"{song_id_aus_titel(erg.titel) or 'videomusik'}.wav"
+            imp = self.laura.importieren(str(z["project_id"]), url, name)
+            if not imp.get("ok"):
+                return _fehler(str(imp.get("fehler", "Import fehlgeschlagen")))
+            asset_id = imp["asset_id"]
+            warten = self.laura.asset_warten(asset_id)
+            if not warten.get("ok"):
+                return _fehler(str(warten.get("fehler", "Asset nicht bereit")))
+            angelegt = self.laura.clip_anlegen(timeline_id, {**clip.model_dump(), "asset_id": asset_id})
+            if not angelegt.get("ok"):
+                return _fehler(str(angelegt.get("fehler", "Clip nicht angelegt")))
+            return {"ok": True, "clip_id": (angelegt.get("clip") or {}).get("id"), "asset_id": asset_id}
 
     @_weich
     def laura_videos_suchen(self, suchwort: str) -> dict:
@@ -405,7 +439,7 @@ class Werkzeuge:
             return _fehler("ungueltige Zeitleisten-ID")
         eingabe: dict = {"timeline_id": timeline_id}
         if musik_auftrag:
-            self.ablage.hole(musik_auftrag)  # unbekannt -> KeyError
+            self._hole(musik_auftrag)  # unbekannt -> _UnbekannterAuftrag
             eingabe["musik_auftrag"] = musik_auftrag
         auftrag = self.ablage.anlegen("laura_render", eingabe, kanal)
         return {"ok": True, "auftrag": auftrag.id}
@@ -439,7 +473,11 @@ class Werkzeuge:
         if not bereit.get("ok"):
             return _fehler(str(bereit.get("fehler", "Export nicht fertig")))
         groesse = bereit.get("size_bytes")
-        if isinstance(groesse, (int, float)) and groesse > MAX_EXPORT_BYTES:
+        if isinstance(groesse, bool) or not isinstance(groesse, (int, float)):
+            return _fehler(
+                f"Groesse des Exports unbekannt; kein Download (Grenze {MAX_EXPORT_BYTES // 1024 ** 2} MB)"
+            )
+        if groesse > MAX_EXPORT_BYTES:
             return _fehler(
                 f"Export ist {groesse / 1024 ** 2:.0f} MB gross, ueber der Grenze von "
                 f"{MAX_EXPORT_BYTES // 1024 ** 2} MB; kein Download"

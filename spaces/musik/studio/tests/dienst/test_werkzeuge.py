@@ -1,6 +1,8 @@
 """Werkzeuge des Musik-Dienstes: Bestellen, Anzeigen, Laura-Anschluss. Kein Netzgriff:
 Laura ist ein aufzeichnendes Ersatzmodul, der Laeufer ein Ersatz."""
 import json
+import threading
+import time
 
 import pytest
 
@@ -24,6 +26,8 @@ class FakeLaura:
                      "fps_num": 30, "fps_den": 1}
         self.clips: list[dict] = []
         self.export = {"ok": True, "url": "/exports/e1/download", "size_bytes": 1234}
+        self.bremse: threading.Event | None = None
+        self.drin = threading.Event()
 
     def _s(self, *a):
         self.aufrufe.append(a)
@@ -45,6 +49,9 @@ class FakeLaura:
 
     def asset_warten(self, asset_id, **kw):
         self._s("asset_warten", asset_id)
+        if self.bremse is not None:
+            self.drin.set()
+            self.bremse.wait(5)
         return {"ok": True, "asset": {}}
 
     def audio_clips(self, timeline_id):
@@ -53,7 +60,9 @@ class FakeLaura:
 
     def clip_anlegen(self, timeline_id, koerper):
         self._s("clip_anlegen", timeline_id, koerper)
-        return {"ok": True, "clip": {"id": "clip1", **koerper}}
+        clip = {"id": "clip1", **koerper}
+        self.clips.append(clip)
+        return {"ok": True, "clip": clip}
 
     def rendern(self, timeline_id, reel_optionen=None):
         self._s("rendern", timeline_id, reel_optionen)
@@ -226,6 +235,39 @@ def test_in_laura_zweimal_legt_einmal_an(w, laura, ablage, tmp_path):
     assert laura.namen().count("clip_anlegen") == 1
 
 
+def test_in_laura_gleichzeitig_legt_einmal_an(w, laura, ablage, tmp_path):
+    a = _fertiges_video(ablage, tmp_path)
+    laura.bremse = threading.Event()
+    ergebnisse: list[dict] = []
+    t1 = threading.Thread(target=lambda: ergebnisse.append(w.in_laura_legen(a.id, "tl1")))
+    t2 = threading.Thread(target=lambda: ergebnisse.append(w.in_laura_legen(a.id, "tl1")))
+    t1.start()
+    assert laura.drin.wait(5)  # t1 steckt im asset_warten
+    t2.start()
+    time.sleep(0.3)  # t2 muss an der Sperre stehen, nicht im Import
+    laura.bremse.set()
+    t1.join(10)
+    t2.join(10)
+    assert len(ergebnisse) == 2 and all(r["ok"] for r in ergebnisse), ergebnisse
+    assert laura.namen().count("importieren") == 1
+    assert laura.namen().count("clip_anlegen") == 1
+    assert {r["clip_id"] for r in ergebnisse} == {"clip1"}
+
+
+def test_in_laura_ein_frame_zu_lang_wird_gekappt(w, laura, ablage, tmp_path):
+    a = _fertiges_video(ablage, tmp_path, frames=900)
+    laura.zeit.update(frames=899)  # Musik 1 Frame zu lang
+    assert w.in_laura_legen(a.id, "tl1")["ok"] is True
+    koerper = [x for x in laura.aufrufe if x[0] == "clip_anlegen"][0][2]
+    assert koerper["seq_out_frame_exclusive"] == 899
+    laura.aufrufe.clear()
+    laura.clips.clear()
+    laura.zeit.update(frames=901)  # 1 Frame zu kurz bleibt
+    assert w.in_laura_legen(a.id, "tl1")["ok"] is True
+    koerper = [x for x in laura.aufrufe if x[0] == "clip_anlegen"][0][2]
+    assert koerper["seq_out_frame_exclusive"] == 900
+
+
 def test_in_laura_ducking_immer_100_und_label_mit_auftrag(w, laura, ablage, tmp_path):
     a = _fertiges_video(ablage, tmp_path, titel="T" * 250)
     r = w.in_laura_legen(a.id, "tl1", gain_percent=25)
@@ -276,6 +318,20 @@ def test_auftrag_zeigen_ohne_pfade(w, ablage, tmp_path):
     text = json.dumps(r, ensure_ascii=False)
     assert ":\\\\" not in text and ":\\" not in text and "/runs/" not in text
     assert str(tmp_path) not in text and str(tmp_path).replace("\\", "/") not in text
+
+
+def test_auftrag_zeigen_grund_ohne_pfade(w, ablage, tmp_path):
+    a = _fertiges_video(ablage, tmp_path, zustand="gescheitert")
+    a.grund = 'File "C:\\Users\\x\\djset\\cli.py", line 3'
+    ablage.speichern(a)
+    (tmp_path / "runs" / LAUF / "bericht.md").write_text(
+        "- Quelle \\\\server\\share\\x.wav\n- siehe /home/u/lauf/a.wav und /tmp/x\n- ok\n",
+        encoding="utf-8")
+    text = json.dumps(w.auftrag_zeigen(a.id), ensure_ascii=False)
+    for roh in ("C:\\\\Users", "cli.py", "\\\\\\\\server", "/home/u", "/tmp/x"):
+        assert roh not in text, roh
+    assert "<pfad>" in text
+    assert "<pfad>" in w.auftraege_offen("mcp")["auftraege"][0]["grund"]
 
 
 def test_auftrag_zeigen_ohne_lauf_und_unbekannt(w, ablage):
@@ -339,6 +395,15 @@ def test_render_ausfuehren_ungueltige_zeitleiste(w, ablage, laura):
     a = ablage.anlegen("laura_render", {"timeline_id": "../x"}, "mcp")
     assert w.render_ausfuehren(a)["ok"] is False
     assert laura.namen() == []
+
+
+def test_render_ausfuehren_ohne_groesse_kein_download(w, ablage, laura):
+    for export in ({"ok": True, "url": "/u"}, {"ok": True, "url": "/u", "size_bytes": None}):
+        laura.export = export
+        a = ablage.anlegen("laura_render", {"timeline_id": "tl1"}, "mcp")
+        r = w.render_ausfuehren(a)
+        assert r["ok"] is False and "unbekannt" in r["fehler"]
+    assert "herunterladen" not in laura.namen()
 
 
 def test_render_ausfuehren_zu_gross_kein_download(w, ablage, laura):
