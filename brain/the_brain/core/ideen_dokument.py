@@ -361,6 +361,13 @@ _REGELN = [
 ]
 
 
+def _schluss(felder: str) -> list[str]:
+    """Die Form noch einmal am Ende, nach den Karten (White-Paper-Lauf 24.11.2026: nach 15 Karten
+    schrieb das Modell reinen Text; die Vorgabe stand nur oben vor dem langen Datenblock)."""
+    return ["", f"Zum Schluss, wichtig: Antworte jetzt nur mit genau einem JSON-Objekt mit den Feldern {felder}. "
+            "Kein Text davor oder danach, keine Einleitung, kein Fliesstext ausserhalb des JSON."]
+
+
 def _ohne_zaun(text: str) -> str:
     """Karteninhalt darf den Datenblock nicht schliessen ("KARTEN>>>") oder einen neuen oeffnen."""
     return _ZAUNZEICHEN.sub(_zaun_ersatz, text)
@@ -390,6 +397,7 @@ def nachricht_zusammenfassen(bubble_titel: str, karten: list[tuple[str, str, str
         _sauber(wunsch, 500),
         "",
         *_kartenblock(karten),
+        *_schluss('"absaetze", "verweise"'),
     ])
 
 
@@ -411,6 +419,7 @@ def nachricht_einschaetzen(bubble_titel: str, karten: list[tuple[str, str, str]]
         _ohne_zaun(frage),
         "",
         *_kartenblock(karten),
+        *_schluss('"absaetze", "verweise"'),
     ])
 
 
@@ -456,6 +465,7 @@ def nachricht_gruppieren(bubble_titel: str, karten: list[tuple[str, str, str]], 
         _sauber(wunsch, 500),
         "",
         *_kartenblock(karten),
+        *_schluss('"gruppen"'),
     ])
 
 
@@ -480,6 +490,7 @@ def nachricht_abschnitt(bubble_titel: str, nummer: int, gesamt: int, einleitung:
         _ohne_zaun(_sauber(einleitung, 1_500)) or "(keine Wurzelkarte)",
         "",
         *_kartenblock(karten),
+        *_schluss('"ueberschrift", "text", "verweise"'),
     ])
 
 

@@ -379,6 +379,19 @@ def test_zweiter_lauf_gelingt_und_die_kette_geht_normal_weiter(monkeypatch) -> N
     assert p["rueckweg"] == "abgelehnt" and len(angelegt) == 2
 
 
+def test_die_form_steht_auch_am_ende_nach_den_karten() -> None:
+    # White-Paper-Lauf 24.11.2026: nach 15 Karten schrieb das Modell reinen Text (kein JSON).
+    karten = [(f"K{i}", f"Karte {i}", "Text " * 200) for i in range(1, 16)]
+    for nachricht, felder in (
+            (dok.nachricht_abschnitt("Stadtfest", 1, 3, "Worum es geht", karten, "x"),
+             '"ueberschrift", "text", "verweise"'),
+            (dok.nachricht_zusammenfassen("Stadtfest", karten, "x", False), '"absaetze", "verweise"'),
+            (dok.nachricht_gruppieren("Stadtfest", karten, "x", False), '"gruppen"')):
+        schluss = nachricht.rsplit("KARTEN>>>", 1)[1]
+        assert "nur mit genau einem JSON-Objekt" in schluss and felder in schluss
+        assert nachricht.count("KARTEN>>>") == 1
+
+
 def test_rohe_zeilenumbrueche_im_text_sind_keine_formfrage() -> None:
     _, rueckweg = _vorbereiten()
     ideen, angelegt = Ideen(), []
