@@ -28,6 +28,63 @@ WIZARD_STEPS = {
 }
 
 
+_STAND = None
+
+
+def _stand_modul():
+    """spaces/shuttles/stand.py, loaded by path (works with and without the spaces package)."""
+    global _STAND
+    if _STAND is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "spaces_shuttles_stand", os.path.join(os.path.dirname(os.path.abspath(__file__)), "stand.py"))
+        if spec is None or spec.loader is None:
+            raise RuntimeError("stand.py fehlt")
+        modul = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(modul)
+        _STAND = modul
+    return _STAND
+
+
+_GRUND_TEXT = {
+    "keine_karten": "keine Karten",
+    "leere_karten": "leere Karten",
+    "lose_karten": "lose Karten",
+    "keine_bewertung": "keine Bewertung",
+    "kein_white_paper": "kein White Paper",
+}
+
+
+def _kopfzeile(gelesen: Dict[str, Any]) -> Dict[str, Any]:
+    """Data for the wizard's header line: the recomputed gate check of the snapshot."""
+    p = gelesen["pruefung"]
+    zahlen = p.get("zahlen", {})
+    anteil = zahlen.get("anteil_im_white_paper")
+    teile = ["Sinnprüfung bestanden" if p["bestanden"] else "Sinnprüfung nicht bestanden",
+             f"{zahlen.get('notizen', 0)} Karten"]
+    if gelesen.get("white_paper"):
+        teile.append("White Paper deckt " + ("–" if anteil is None else f"{round(anteil * 100)} %"))
+    else:
+        teile.append("kein White Paper")
+    gruende = []
+    for code in p.get("gruende", []):
+        name, _, zahl = code.partition(":")
+        gruende.append(_GRUND_TEXT.get(name, name) + (f": {zahl}" if zahl else ""))
+    return {
+        "bestanden": p["bestanden"],
+        "gruende": p.get("gruende", []),
+        "hinweise": p.get("hinweise", []),
+        "karten": zahlen.get("notizen", 0),
+        "white_paper_anteil": anteil,
+        "leer": p.get("leer", []),
+        "lose": p.get("lose", []),
+        "pruefsumme": gelesen.get("pruefsumme"),
+        "stand_am": gelesen.get("am"),
+        "text": " · ".join(teile),
+        "gruende_text": ", ".join(gruende),
+    }
+
+
 def _load_wizard_config() -> Dict[str, Any]:
     """Load wizard config from SWE Design's re_config.yaml."""
     try:
@@ -501,6 +558,101 @@ class ShuttleWizardHandler:
     # ------------------------------------------------------------------
     # Persistence helpers
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Initialize wizard from a promoted project (fixed snapshot, no model)
+    # ------------------------------------------------------------------
+
+    def init_from_project(self, shuttle_id: Optional[str], projekt_id: str) -> Dict[str, Any]:
+        """Pre-populate the wizard from ``projects.metadata["uebergabe"]`` of a promoted project.
+
+        No model, no MiroFish: name and description from the project, one requirement
+        *candidate* per note card (group as category), the white paper in full under
+        ``context.white_paper`` and the recomputed gate check under ``context.sinnpruefung``.
+        A project that fails the gate check still opens; the reasons travel in the context.
+
+        One shuttle per project: an existing shuttle linked to the project is reused and its
+        saved wizard state is kept (``wiederaufgenommen``); otherwise one is created.
+        """
+        if not isinstance(projekt_id, str) or not projekt_id.strip():
+            return {"success": False, "error": "invalid_arguments: projekt_id"}
+        try:
+            from data import ProjectsRepository, ShuttlesRepository
+
+            project = ProjectsRepository().get(projekt_id)
+            if project is None:
+                return {"success": False, "error": "projekt_unbekannt", "projekt_id": projekt_id}
+            gelesen = _stand_modul().stand_lesen(project.metadata)
+            if not gelesen["ok"]:
+                return {"success": False, "error": gelesen["fehler"], "projekt_id": projekt_id}
+
+            shuttles = ShuttlesRepository()
+            shuttle = shuttles.get_by_project_id(projekt_id)
+            if shuttle is not None:
+                shuttle_id = shuttle.shuttle_id
+                saved = (shuttle.stage_data or {}).get("wizard_state")
+                if isinstance(saved, dict) and saved.get("requirements"):
+                    self._states[shuttle_id] = saved
+                    return self._project_answer(shuttle_id, projekt_id, saved, gelesen, wiederaufgenommen=True)
+            else:
+                shuttle_id = shuttle_id or f"shuttle-projekt-{projekt_id}"
+                shuttles.create(
+                    shuttle_id=shuttle_id,
+                    bubble_id=project.from_idea_id or gelesen.get("bubble_id") or "",
+                    bubble_name=project.name or gelesen.get("titel") or "",
+                    total_count=len(gelesen["notizen"]),
+                    project_id=projekt_id,
+                    metadata={"quelle": "befoerdertes_projekt"},
+                )
+
+            self._states.pop(shuttle_id, None)
+            state = self._get_state(shuttle_id)
+            state["project_id"] = projekt_id
+            state["bubble_id"] = project.from_idea_id or gelesen.get("bubble_id")
+            state["project"] = {
+                "name": project.name or gelesen.get("titel") or "",
+                "description": project.description or "",
+                "domain": "",
+                "target_users": "",
+            }
+            state["requirements"] = [
+                {
+                    "id": f"REQ-{i:03d}",
+                    "title": karte["titel"],
+                    "description": karte["text"],
+                    "acceptance_criteria": [],
+                    "user_stories": [],
+                    "priority": "medium",
+                    "status": "kandidat",
+                    "category": karte["gruppe"],
+                    "source_card_id": karte["id"],
+                }
+                for i, karte in enumerate(gelesen["notizen"], start=1)
+            ]
+            state["context"] = {
+                "white_paper": gelesen["white_paper"],
+                "sinnpruefung": _kopfzeile(gelesen),
+                "uebergabe": {"projekt_id": projekt_id, "bubble_id": state["bubble_id"], "am": gelesen["am"],
+                              "pruefsumme": gelesen["pruefsumme"], "bewertung": gelesen["bewertung"]},
+            }
+            self._persist_state(shuttle_id, state)
+            return self._project_answer(shuttle_id, projekt_id, state, gelesen, wiederaufgenommen=False)
+        except Exception as e:
+            logger.error(f"[WizardHandler] init_from_project failed: {e}")
+            return {"success": False, "error": "lesen_fehlgeschlagen", "projekt_id": projekt_id}
+
+    @staticmethod
+    def _project_answer(shuttle_id: str, projekt_id: str, state: Dict[str, Any], gelesen: Dict[str, Any],
+                        *, wiederaufgenommen: bool) -> Dict[str, Any]:
+        return {
+            "success": True,
+            "shuttle_id": shuttle_id,
+            "projekt_id": projekt_id,
+            "wiederaufgenommen": wiederaufgenommen,
+            "project": state["project"],
+            "requirements_count": len(state["requirements"]),
+            "kopfzeile": _kopfzeile(gelesen),
+        }
 
     def _persist_state(self, shuttle_id: str, state: Dict[str, Any]):
         """Write wizard state to shuttle's stage_data in SQLite."""
