@@ -66,3 +66,5 @@ ddgs>=6.0.0
 # Neural Manifold visualization
 umap-learn==0.5.11
 pynndescent==0.6.0
+# Entscheidungs-Graph (core/decision_graph.py); fehlte bis 24.11.2026, deshalb schrieb das Gehirn nie nach Neo4j
+neo4j>=5.18,<6
