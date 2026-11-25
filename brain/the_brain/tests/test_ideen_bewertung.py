@@ -441,3 +441,19 @@ def test_mit_beleg_nur_wo_der_server_ihn_verlangt() -> None:
     assert agent["beleg"].startswith("v1.1300.") and len(agent["beleg"]) == len("v1.1300.") + 64
     with pytest.raises(RuntimeError, match="schluessel_fehlt"):
         rw.mit_beleg("bubble_bewertung", {"bubble_id": "b0b1e001"}, "p1-r", schluessel=" \r\n")
+
+
+def test_gehirn_liest_nur_den_namen_mit_secret(monkeypatch) -> None:
+    # Endung _SECRET: der Claude-Code-Treiber von OpenFang vererbt solche Namen nicht an Agenten.
+    from core import config
+    from core import ideen_rueckweg as rw
+    assert bf.regeln().BELEG_EINSTELLUNG == "VIBEMIND_RUECKWEG_SECRET"
+    monkeypatch.setattr(config, "_load_env_file", lambda *a, **k: None)
+    monkeypatch.setattr(config, "_SECRETS_DIR", str(Path(__file__).parent / "gibt_es_nicht"))
+    for name in ("VIBEMIND_RUECKWEG_SECRET", "VIBEMIND_RUECKWEG_SECRET_FILE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("VIBEMIND_RUECKWEG_" + "SCHLUESSEL", "testschluessel-stadtfest")
+    with pytest.raises(RuntimeError, match="schluessel_fehlt"):
+        rw.mit_beleg("bubble_bewertung", {"bubble_id": "b0b1e001"}, "p1-r")
+    monkeypatch.setenv("VIBEMIND_RUECKWEG_SECRET", "testschluessel-stadtfest\r\n")
+    assert rw.mit_beleg("bubble_bewertung", {"bubble_id": "b0b1e001"}, "p1-r")["beleg"].startswith("v1.")
