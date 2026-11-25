@@ -191,6 +191,10 @@ TOOLS: list[dict[str, Any]] = [
                 # Vorspeicher: die App darf die Kennung vorgeben, damit die vorgemerkte
                 # Karte und die gespeicherte Zeile dieselbe Kennung tragen.
                 "id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": _ID_SCHEMA_PATTERN},
+                # Stufe 1: Verbindungen (related) von dieser Karte zu Karten derselben Bubble, unter
+                # derselben aenderung_id wie die Karte; "Zurueck" nimmt sie mit.
+                "verbinden_mit": {"type": "array", "maxItems": 10, "uniqueItems": True,
+                                  "items": {"type": "string", "pattern": _ID_SCHEMA_PATTERN}},
             },
             "required": ["bubble_id", "title"],
         },
@@ -215,6 +219,10 @@ TOOLS: list[dict[str, Any]] = [
                 "node_type": {"type": "string"},
                 "x": {"type": "integer"},
                 "y": {"type": "integer"},
+                # Stufe 1: Verbindungen (related) von dieser Karte zu Karten derselben Bubble, unter
+                # derselben aenderung_id wie die Karte; "Zurueck" nimmt sie mit.
+                "verbinden_mit": {"type": "array", "maxItems": 10, "uniqueItems": True,
+                                  "items": {"type": "string", "pattern": _ID_SCHEMA_PATTERN}},
             },
             "required": ["id"],
         },
@@ -417,6 +425,38 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "bubble_bewertung",
+        "description": (
+            "Store one evaluation run on a top-level bubble: five views of 0-25 points with to-dos, the sum "
+            "as the bubble's score, an entry in eval_history. Refuses when the cards changed since they were "
+            "read (kartenstand). Moves an old 'MiroFish Evaluation' block out of the description. Undoable."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "bubble_id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": _ID_SCHEMA_PATTERN},
+                "lauf": {"type": "object"},
+                "kartenstand": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            },
+            "required": ["bubble_id", "lauf", "kartenstand"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "bewertung_todo",
+        "description": "Mark one to-do of the bubble's latest evaluation run as done (by hand or by the agent). Undoable.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "bubble_id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": _ID_SCHEMA_PATTERN},
+                "nr": {"type": "integer", "minimum": 1, "maximum": 25},
+                "durch": {"type": "string", "enum": ["hand", "agent"]},
+            },
+            "required": ["bubble_id", "nr", "durch"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "idea_group",
         "description": (
             "Lay out the cards of one bubble in groups: one column per group with a heading card on top "
@@ -489,6 +529,7 @@ CHANGE_WRITE_TOOLS = frozenset({
     "idea_create", "idea_update", "idea_delete", "idea_connect", "idea_disconnect",
     "idea_format", "idea_arrange", "idea_auto_link", "idea_rate", "bubble_rate",
     "bewertung_begruenden", "bewertung_entfernen", "idea_document", "bubble_wurzel", "idea_group",
+    "bubble_bewertung", "bewertung_todo",
 })
 for _tool in TOOLS:
     if _tool["name"] in CHANGE_WRITE_TOOLS:
@@ -1778,6 +1819,161 @@ def _art(regeln: Any, karte: Mapping[str, Any]) -> str:
     return "dokument" if regeln.ist_dokument(karte) else "notiz"
 
 
+# ── Verbindungen beim Anlegen/Aendern einer Karte (Stufe 1, "Erledige To-do") ──
+VERBINDEN_MAX = 10
+
+
+def _verbinden_ziele(arguments: Mapping[str, Any]) -> list[str]:
+    ziele = arguments.get("verbinden_mit")
+    if (not isinstance(ziele, list) or not 1 <= len(ziele) <= VERBINDEN_MAX
+            or not all(isinstance(z, str) and IDEA_ID_PATTERN.fullmatch(z) for z in ziele)
+            or len(set(ziele)) != len(ziele)):
+        raise ToolError(f"invalid_arguments: 'verbinden_mit' must be 1 to {VERBINDEN_MAX} distinct durable ids")
+    return list(ziele)
+
+
+def _mit_verbindungen(karte: Any, ziele: list[str]) -> Any:
+    """Verbindungen (related) von der Karte zu jedem Ziel derselben Bubble; vorhandene bleiben.
+
+    Die Quittung ist die Karte mit ``verbunden`` (die Ziele, mit oder ohne neue Kante).
+    """
+    zeile = _first_row(karte)
+    if zeile is None or not isinstance(zeile.get("id"), str):
+        raise ToolError("idea_not_found")
+    von, bubble_id = zeile["id"], zeile.get("linked_idea_id")
+    if von in ziele:
+        raise ToolError("invalid_arguments: 'verbinden_mit' must not name the card itself")
+    gefunden = _request("GET", "canvas_nodes", params={
+        "select": "id,linked_idea_id", "id": f"in.({','.join(ziele)})", "limit": str(len(ziele))})
+    in_bubble = {z.get("id") for z in gefunden or [] if isinstance(z, dict) and z.get("linked_idea_id") == bubble_id}
+    fremd = [z for z in ziele if z not in in_bubble]
+    if fremd or not bubble_id:
+        raise ToolError(f"idea_not_in_bubble: {fremd[0] if fremd else von}")
+    for ziel in ziele:
+        if any(_request("GET", "canvas_edges", params={
+                "select": "id", "from_node_id": f"eq.{a}", "to_node_id": f"eq.{b}", "limit": "1"})
+               for a, b in ((von, ziel), (ziel, von))):
+            continue
+        _request("POST", "canvas_edges", body={"id": uuid.uuid4().hex, "from_node_id": von, "to_node_id": ziel,
+                                               "edge_type": "related"})
+    return {**zeile, "verbunden": list(ziele)}
+
+
+# ── Bewertungslauf (Stufe 1, 25.11.2026) ─────────────────────────────────
+# Ein Lauf: fuenf Sichten zu 0-25 Punkten mit To-dos (spaces/_contract/kartenregeln.py), die Summe
+# ist ideas.score. Alles in einem PATCH unter der aenderung_id: "Zurueck" holt den vorigen Stand.
+# Der alte Block "MiroFish Evaluation: Offene Punkte" wandert aus der Beschreibung in lauf.alt.
+EVAL_HISTORY_MAX = 50
+ALT_BLOCK = "--- MiroFish Evaluation: Offene Punkte ---"
+ALT_ZEICHEN = 20_000
+_KARTENSTAND = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def _jetzt_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _verlauf_anhaengen(verlauf: Any, eintrag: dict[str, Any]) -> list[Any]:
+    liste = [e for e in verlauf if isinstance(e, Mapping)] if isinstance(verlauf, list) else []
+    return [*liste, eintrag][-EVAL_HISTORY_MAX:]
+
+
+def _bubble_mit_stand(bubble_id: str, select: str) -> tuple[dict[str, Any], str, set[str]]:
+    """(Bubble-Zeile, aktueller kartenstand, Kennungen der Karten)."""
+    bubble = _first_row(_request("GET", "ideas", params={
+        "select": select, "id": f"eq.{bubble_id}", "parent_id": "is.null", "limit": "1"}))
+    if bubble is None:
+        raise ToolError("bubble_not_found")
+    zeilen = _bubble_nodes(bubble_id, "id,node_type,title,content,summary,content_json", UEBERGABE_MAX_KARTEN)
+    ids = [str(z["id"]) for z in zeilen]
+    return bubble, _kartenregeln().kartenstand(zeilen, _bubble_kanten(ids)), set(ids)
+
+
+def _bewertung_speichern(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    _only_arguments(arguments, {"bubble_id", "lauf", "kartenstand"})
+    bubble_id = _durable_id(arguments, "bubble_id")
+    regeln = _kartenregeln()
+    lauf = arguments.get("lauf")
+    fehler = regeln.lauf_fehler(lauf)
+    if fehler:
+        raise ToolError(f"invalid_arguments: 'lauf' ({fehler})")
+    gelesen = arguments.get("kartenstand")
+    if not isinstance(gelesen, str) or _KARTENSTAND.fullmatch(gelesen) is None:
+        raise ToolError("invalid_arguments: 'kartenstand' must be sha256:<64 hex>")
+    bubble, stand, ids = _bubble_mit_stand(bubble_id, "id,description,metadata")
+    if stand != gelesen:
+        # Seit dem Lesen hat sich an Karten oder Verbindungen etwas geaendert: die Bewertung
+        # gilt fuer einen Stand, den es nicht mehr gibt.
+        raise ToolError("kartenstand_changed")
+    fremd = sorted({k for t in lauf["todos"] for k in t["karten"]} - ids)
+    if fremd:
+        raise ToolError(f"idea_not_in_bubble: {fremd[0]}")
+    metadata = bubble.get("metadata")
+    metadata = dict(metadata) if isinstance(metadata, Mapping) else {}
+    vorher = metadata.get("bewertung_lauf") if isinstance(metadata.get("bewertung_lauf"), Mapping) else {}
+    zeit = _jetzt_iso()
+    score = regeln.lauf_score(lauf)
+    neu: dict[str, Any] = {
+        "version": 1, "zeit": zeit, "score": score,
+        "sichten": {name: dict(lauf["sichten"][name]) for name in regeln.SICHTEN},
+        "todos": [{"nr": nr, **dict(todo), "erledigt": False}
+                  for nr, todo in enumerate(lauf["todos"], start=1)],
+        "kartenstand": stand, "gekuerzt": lauf.get("gekuerzt") is True,
+    }
+    body: dict[str, Any] = {"score": score}
+    beschreibung = bubble.get("description")
+    verschoben = isinstance(beschreibung, str) and ALT_BLOCK in beschreibung
+    if verschoben:
+        stelle = beschreibung.index(ALT_BLOCK)
+        neu["alt"] = beschreibung[stelle:].strip()[:ALT_ZEICHEN]
+        body["description"] = beschreibung[:stelle].rstrip()
+    elif isinstance(vorher.get("alt"), str):
+        neu["alt"] = vorher["alt"]
+    metadata["bewertung_lauf"] = neu
+    metadata["eval_history"] = _verlauf_anhaengen(metadata.get("eval_history"), {
+        "zeit": zeit, "score": score, "art": "lauf",
+        "sichten": {name: lauf["sichten"][name]["punkte"] for name in regeln.SICHTEN}})
+    body["metadata"] = metadata
+    updated = _first_row(_request("PATCH", "ideas", params={"id": f"eq.{bubble_id}", "parent_id": "is.null"},
+                                  body=body))
+    if updated is None:
+        raise ToolError("bubble_bewertung_unverified")
+    return {"bubble_id": bubble_id, "score": score, "zeit": zeit, "kartenstand": stand,
+            "todos": len(neu["todos"]), "alt_verschoben": verschoben}
+
+
+def _todo_abhaken(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    _only_arguments(arguments, {"bubble_id", "nr", "durch"})
+    bubble_id = _durable_id(arguments, "bubble_id")
+    nr, durch = arguments.get("nr"), arguments.get("durch")
+    if isinstance(nr, bool) or not isinstance(nr, int) or not 1 <= nr <= 25:
+        raise ToolError("invalid_arguments: 'nr' must be an integer from 1 to 25")
+    if durch not in ("hand", "agent"):
+        raise ToolError("invalid_arguments: 'durch' must be hand or agent")
+    bubble = _first_row(_request("GET", "ideas", params={
+        "select": "id,metadata", "id": f"eq.{bubble_id}", "parent_id": "is.null", "limit": "1"}))
+    if bubble is None:
+        raise ToolError("bubble_not_found")
+    metadata = bubble.get("metadata")
+    metadata = dict(metadata) if isinstance(metadata, Mapping) else {}
+    lauf = metadata.get("bewertung_lauf")
+    if not isinstance(lauf, Mapping) or not isinstance(lauf.get("todos"), list):
+        raise ToolError("bewertung_not_found")
+    todos = [dict(t) if isinstance(t, Mapping) else t for t in lauf["todos"]]
+    treffer = [t for t in todos if isinstance(t, dict) and t.get("nr") == nr]
+    if not treffer:
+        raise ToolError("todo_not_found")
+    zeit = _jetzt_iso()
+    treffer[0].update(erledigt=True, erledigt_zeit=zeit, erledigt_durch=durch)
+    metadata["bewertung_lauf"] = {**dict(lauf), "todos": todos}
+    updated = _first_row(_request("PATCH", "ideas", params={"id": f"eq.{bubble_id}", "parent_id": "is.null"},
+                                  body={"metadata": metadata}))
+    if updated is None:
+        raise ToolError("bewertung_todo_unverified")
+    return {"bubble_id": bubble_id, "nr": nr, "erledigt": True, "durch": durch, "zeit": zeit}
+
+
 def _uebergabe_bauen(bubble: Mapping[str, Any], bubble_id: str) -> dict[str, Any]:
     """Read the bubble's cards and edges, run the promotion gate, build the fixed hand-over.
 
@@ -2285,6 +2481,10 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
     if name == "idea_document":
         return _document_write(arguments)
     if name == "idea_create":
+        if "verbinden_mit" in arguments:
+            ziele = _verbinden_ziele(arguments)
+            karte = _call_tool(name, {k: v for k, v in arguments.items() if k != "verbinden_mit"})
+            return _mit_verbindungen(karte, ziele)
         node_type = arguments.get("node_type", "note")
         content = arguments.get("content", "")
         x, y = arguments.get("x", 0), arguments.get("y", 0)
@@ -2321,6 +2521,15 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
             },
         )
     if name == "idea_update":
+        if "verbinden_mit" in arguments:
+            ziele = _verbinden_ziele(arguments)
+            rest = {k: v for k, v in arguments.items() if k != "verbinden_mit"}
+            if set(rest) == {"id"}:
+                karte = _request("GET", "canvas_nodes", params={
+                    "select": "*", "id": f"eq.{_durable_id(rest, 'id')}", "limit": "1"})
+            else:
+                karte = _call_tool(name, rest)
+            return _mit_verbindungen(karte, ziele)
         node = None
         if "content_append" in arguments:
             arguments = _with_appended_content(arguments)
@@ -2654,17 +2863,35 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
     if name == "idea_group":
         return _group(arguments)
     if name == "bubble_rate":
+        # "Bewerte diese Bubble mit N" (Stufe 1): ein Handwert. Er steht als score und als
+        # metadata.handwert, mit Eintrag art "hand" in eval_history; fuers Befoerdern zaehlt nur
+        # der Bewertungslauf (metadata.bewertung_lauf).
         _only_arguments(arguments, {"id", "score"})
         bubble_id = _durable_id(arguments, "id")
+        score = _score(arguments)
+        bubble = _first_row(_request("GET", "ideas", params={
+            "select": "id,metadata", "id": f"eq.{bubble_id}", "parent_id": "is.null", "limit": "1"}))
+        if bubble is None:
+            raise ToolError("bubble_not_found")
+        metadata = bubble.get("metadata")
+        metadata = dict(metadata) if isinstance(metadata, Mapping) else {}
+        zeit = _jetzt_iso()
+        metadata["handwert"] = {"score": score, "zeit": zeit}
+        metadata["eval_history"] = _verlauf_anhaengen(metadata.get("eval_history"),
+                                                      {"zeit": zeit, "score": score, "art": "hand"})
         updated = _first_row(_request(
             "PATCH",
             "ideas",
             params={"id": f"eq.{bubble_id}", "parent_id": "is.null"},
-            body={"score": _score(arguments)},
+            body={"score": score, "metadata": metadata},
         ))
         if updated is None:
             raise ToolError("bubble_not_found")
         return updated
+    if name == "bubble_bewertung":
+        return _bewertung_speichern(arguments)
+    if name == "bewertung_todo":
+        return _todo_abhaken(arguments)
     if name == "aenderung_liste":
         _only_arguments(arguments, {"limit", "quelle"})
         limit = arguments.get("limit", 10)

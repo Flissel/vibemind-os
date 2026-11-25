@@ -25,6 +25,7 @@ PRUEFUNG = "supabase_ideen_fest"
 # Feldarten: ("kennung",) ("text", hoechstens, leer_erlaubt) ("zahl", von, bis)
 # ("wahl", werte) ("kennungen", hoechstens) ("gruppen", hoechstens Gruppen, Namenslaenge, Karten)
 _K = ("kennung",)
+_KARTENSTAND = re.compile(r"^sha256:[0-9a-f]{64}$")
 # Grenze der mitgelöschten Karten (BUBBLE_DELETE_MAX_KARTEN im Ideen-Server).
 _BUBBLE_KARTEN_MAX = 200
 _WERT = ("zahl", 0, 100)
@@ -36,7 +37,10 @@ FESTE_EREIGNISSE: dict[str, dict[str, Any]] = {
     "idea.create": {
         "werkzeug": "idea_create",
         "pflicht": {"bubble_id": _K, "title": ("text", 500, False)},
-        "wahl": {"content": ("text", 20000, True), "id": _K, "x": _LAGE, "y": _LAGE},
+        # verbinden_mit (Stufe 1, "Erledige To-do"): Verbindungen zu Karten derselben Bubble,
+        # unter derselben Aenderung wie die Karte.
+        "wahl": {"content": ("text", 20000, True), "id": _K, "x": _LAGE, "y": _LAGE,
+                 "verbinden_mit": ("kennungen", 10)},
     },
     "idea.update": {
         "werkzeug": "idea_update",
@@ -47,8 +51,10 @@ FESTE_EREIGNISSE: dict[str, dict[str, Any]] = {
         "wahl": {"title": ("text", 500, False), "content": ("text", 20000, True),
                  "content_append": ("text", 20000, False),
                  "content_replace_old": ("text", 20000, False),
-                 "content_replace_new": ("text", 20000, True), "x": _LAGE, "y": _LAGE},
-        "mindestens_eins": ("title", "content", "content_append", "content_replace_old", "x", "y"),
+                 "content_replace_new": ("text", 20000, True), "x": _LAGE, "y": _LAGE,
+                 "verbinden_mit": ("kennungen", 10)},
+        "mindestens_eins": ("title", "content", "content_append", "content_replace_old", "x", "y",
+                            "verbinden_mit"),
         "schliessen_aus": ("content", "content_append"),
         "hoechstens_eins": ("content", "content_append", "content_replace_old"),
         "nur_zusammen": ("content_replace_old", "content_replace_new"),
@@ -145,6 +151,20 @@ FESTE_EREIGNISSE: dict[str, dict[str, Any]] = {
                     "content": ("text", 300_000, False)},
         "wahl": {"quellen": ("kennungen", 500)},
     },
+    # Bewertungslauf (Stufe 1): geschrieben nur vom Gehirn nach dem Rueckweg "bewerten"
+    # (core/ideen_bewertung). Fuenf Sichten mit To-dos, die Summe wird ideas.score; der Server
+    # schreibt nicht, wenn sich die Karten seit dem Lesen geaendert haben (kartenstand).
+    "idea.bewertung_speichern": {
+        "werkzeug": "bubble_bewertung",
+        "pflicht": {"bubble_id": _K, "lauf": ("bewertung_lauf",), "kartenstand": ("kartenstand",)},
+        "wahl": {},
+    },
+    # "To-do 3 erledigt" (Hand) oder nach "Erledige To-do 3" (Agent): Haken am To-do des Laufs.
+    "idea.todo_abhaken": {
+        "werkzeug": "bewertung_todo",
+        "pflicht": {"bubble_id": _K, "nr": ("zahl", 1, 25), "durch": ("wahl", ("hand", "agent"))},
+        "wahl": {},
+    },
 }
 
 # Schreibende Werkzeuge dieser Tabelle; der Ausfuehrer haengt ihnen die Plan-Kennung an.
@@ -212,6 +232,13 @@ def _feld_gueltig(art: tuple, wert: Any) -> bool:
                 return False
             alle += ids
         return len(set(alle)) == len(alle) <= art[3]
+    if art[0] == "kartenstand":
+        return isinstance(wert, str) and _KARTENSTAND.fullmatch(wert) is not None
+    if art[0] == "bewertung_lauf":
+        # Dieselbe Formpruefung wie der Ideen-Server (spaces/_contract/kartenregeln.py).
+        from .befoerdern_bestaetigung import regeln
+        modul = regeln()
+        return modul is not None and modul.lauf_fehler(wert) == ""
     if art[0] == "kennungen":
         return (isinstance(wert, list) and len(wert) <= art[1]
                 and all(ist_kennung(item) for item in wert)
@@ -405,7 +432,13 @@ def nachpruefung(event_id: str, argumente: Any, raw_result: Any) -> tuple[Option
             felder = {"metadata.bewertung.wert": argumente["score"]}
         else:
             felder = {"score": argumente["score"]}
-        return {"art": "zeile", "tabelle": tabelle, "id": zeile["id"], "felder": felder}, ""
+        erwartet = {"art": "zeile", "tabelle": tabelle, "id": zeile["id"], "felder": felder}
+        if argumente.get("verbinden_mit"):
+            # Die Quittung nennt die Ziele; die Nachpruefung liest jede Verbindung zurueck.
+            if zeile.get("verbunden") != argumente["verbinden_mit"]:
+                return None, ungueltig
+            erwartet["verbunden"] = list(argumente["verbinden_mit"])
+        return erwartet, ""
 
     if event_id == "idea.delete":
         # Quittung: die geloeschte Zeile (PostgREST, return=representation). Leer heisst: es gab
@@ -503,6 +536,24 @@ def nachpruefung(event_id: str, argumente: Any, raw_result: Any) -> tuple[Option
             return None, ungueltig
         return {"art": "gruppen", "bubble_id": argumente["bubble_id"], "lagen": sauber, "koepfe": koepfe,
                 "kanten": kanten}, ""
+    if event_id == "idea.bewertung_speichern":
+        # Quittung: Score, Zeit und kartenstand des gespeicherten Laufs; der Score ist die Summe
+        # der Sichten aus den Argumenten, der kartenstand der beim Lesen gemerkte.
+        soll = sum(argumente["lauf"]["sichten"][name]["punkte"] for name in argumente["lauf"]["sichten"])
+        zeit = inhalt.get("zeit")
+        if (inhalt.get("bubble_id") != argumente["bubble_id"] or inhalt.get("score") != soll
+                or inhalt.get("kartenstand") != argumente["kartenstand"] or not isinstance(zeit, str) or not zeit):
+            return None, ungueltig
+        return {"art": "zeile", "tabelle": "ideas", "id": argumente["bubble_id"],
+                "felder": {"score": soll, "metadata.bewertung_lauf.score": soll,
+                           "metadata.bewertung_lauf.zeit": zeit,
+                           "metadata.bewertung_lauf.kartenstand": argumente["kartenstand"]}}, ""
+    if event_id == "idea.todo_abhaken":
+        if (inhalt.get("bubble_id") != argumente["bubble_id"] or inhalt.get("nr") != argumente["nr"]
+                or inhalt.get("erledigt") is not True):
+            return None, ungueltig
+        return {"art": "todo", "bubble_id": argumente["bubble_id"], "nr": argumente["nr"],
+                "durch": argumente["durch"]}, ""
     if event_id == "bubble.promote":
         if not ist_kennung(inhalt.get("id")) or inhalt.get("from_idea_id") != argumente["bubble_id"]:
             return None, ungueltig
@@ -560,7 +611,11 @@ def pruefe_zustand(erwartet: Any, lies: Lesen) -> tuple[Optional[bool], dict[str
 
     if art == "zeile":
         tabelle, felder = erwartet.get("tabelle"), erwartet.get("felder")
-        if tabelle not in ("canvas_nodes", "ideas") or not isinstance(felder, dict) or not felder:
+        verbunden = erwartet.get("verbunden")
+        if (tabelle not in ("canvas_nodes", "ideas") or not isinstance(felder, dict)
+                or not (felder or verbunden)
+                or (verbunden is not None and (not isinstance(verbunden, list)
+                                               or not all(ist_kennung(v) for v in verbunden)))):
             return None, offen, "invalid expectation"
         zeile, gefunden, grund = eine_zeile(tabelle, erwartet.get("id"), "*")
         if zeile is None:
@@ -568,6 +623,15 @@ def pruefe_zustand(erwartet: Any, lies: Lesen) -> tuple[Optional[bool], dict[str
         abweichend = sorted(name for name, soll in felder.items() if not _gleich(_pfad(zeile, name), soll))
         if abweichend:
             return False, {"id": zeile.get("id"), "abweichend": abweichend}, "stored row differs: " + ", ".join(abweichend)
+        for ziel in verbunden or []:
+            hin = lies("canvas_edges", {"select": "id", "from_node_id": f"eq.{zeile.get('id')}",
+                                        "to_node_id": f"eq.{ziel}", "limit": "1"})
+            her = lies("canvas_edges", {"select": "id", "from_node_id": f"eq.{ziel}",
+                                        "to_node_id": f"eq.{zeile.get('id')}", "limit": "1"})
+            if hin is None or her is None:
+                return None, offen, "read-back unavailable"
+            if not hin and not her:
+                return False, {"id": zeile.get("id")}, "connection not found"
         return True, {"id": zeile.get("id"), "rows_found": 1}, "stored row verified"
 
     if art == "geloescht":
@@ -633,6 +697,18 @@ def pruefe_zustand(erwartet: Any, lies: Lesen) -> tuple[Optional[bool], dict[str
                for e in (eintraege if isinstance(eintraege, list) else [])):
             return False, {"eintrag_id": erwartet.get("eintrag_id")}, "reason entry still present"
         return True, {"eintrag_id": erwartet.get("eintrag_id")}, "reason entry removed"
+
+    if art == "todo":
+        zeile, gefunden, grund = eine_zeile("ideas", erwartet.get("bubble_id"), "id,metadata")
+        if zeile is None:
+            return gefunden, offen if gefunden is None else {"rows_found": 0}, grund
+        todos = _pfad(zeile, "metadata.bewertung_lauf.todos")
+        for todo in todos if isinstance(todos, list) else []:
+            if isinstance(todo, dict) and todo.get("nr") == erwartet.get("nr"):
+                if todo.get("erledigt") is True and todo.get("erledigt_durch") == erwartet.get("durch"):
+                    return True, {"nr": todo["nr"]}, "to-do marked done"
+                return False, {"nr": todo["nr"]}, "to-do not marked done"
+        return False, {"nr": erwartet.get("nr")}, "to-do not found"
 
     if art == "lagen":
         lagen = erwartet.get("lagen")

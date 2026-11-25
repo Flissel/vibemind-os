@@ -21,7 +21,7 @@ KONTEXT = {"space": "ideas", "bubble": {"id": "b0b1e001", "title": "Stadtfest"},
            "cards": [{"id": "a0000001", "title": "Sponsoren"}]}
 
 
-@pytest.mark.parametrize("satz", ["Bewerte diese Bubble", "Bewerte die Bubble", "Ist diese Bubble reif?",
+@pytest.mark.parametrize("satz", ["Ist diese Bubble reif?",
                                   "Ist die Bubble schon reif für die Umsetzung?", "Was fehlt noch?",
                                   "Welche Risiken siehst du hier?", "Was hältst du von dieser Bubble?"])
 def test_urteilsfragen_laufen_als_einschaetzen(satz) -> None:
@@ -29,6 +29,12 @@ def test_urteilsfragen_laufen_als_einschaetzen(satz) -> None:
     treffer = loese(satz, KONTEXT)
     assert treffer["ereignis"] == "idea.summarize" and treffer["argumente"] == {
         "bubble_id": "b0b1e001", "einschaetzen": True}
+
+
+@pytest.mark.parametrize("satz", ["Bewerte diese Bubble", "Bewerte die Bubble"])
+def test_bewerten_ist_seit_stufe_1_der_feste_bewertungslauf(satz) -> None:
+    treffer = loese(satz, KONTEXT)
+    assert treffer["ereignis"] == "idea.bewerten" and treffer["argumente"] == {"bubble_id": "b0b1e001"}
 
 
 def test_bewerten_mit_zahl_bleibt_der_feste_satz() -> None:

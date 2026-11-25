@@ -34,6 +34,13 @@ KANTEN = [{"from_node_id": "a0000001", "to_node_id": "a0000002"},
           {"from_node_id": "a0000002", "to_node_id": "a0000003"}]
 
 
+def _mit_lauf(bubble, karten, kanten, score=96):
+    """Stufe 1: Befördern braucht einen echten Bewertungslauf ab der Schwelle auf dem jetzigen Kartenstand."""
+    lauf = {"version": 1, "zeit": "2026-11-23T09:00:00+00:00", "score": score, "sichten": {},
+            "todos": [], "kartenstand": bf.regeln().kartenstand(list(karten), list(kanten))}
+    return {**bubble, "metadata": {**bubble.get("metadata", {}), "bewertung_lauf": lauf}}
+
+
 @pytest.fixture(autouse=True)
 def _leer():
     bf.verwerfen()
@@ -46,7 +53,7 @@ def test_regeln_aus_der_gemeinsamen_datei():
 
 
 def test_gute_bubble_bekommt_die_rueckfrage_mit_zahl_und_datum():
-    geprueft = bf.pruefen(BUBBLE, GUT, KANTEN)
+    geprueft = bf.pruefen(_mit_lauf(BUBBLE, GUT, KANTEN), GUT, KANTEN)
     assert geprueft["bestaetigbar"] is True
     assert geprueft["satz"] == ("Daraus wird ein Projekt mit 2 Karten und dem White Paper vom 22.11.2026. "
                                 "Befördern? Sag „Ja“.")
@@ -57,7 +64,8 @@ def test_durchgefallen_sagt_was_fehlt():
     geprueft = bf.pruefen({**BUBBLE, "score": 0.0}, karten, [])
     assert geprueft["bestaetigbar"] is False
     assert geprueft["satz"] == ("fehlt: eine leere Karte, 2 lose Karten, keine Bewertung, kein White Paper. "
-                                "Befördert ist nichts.")
+                                "Es gibt noch keine Bewertung (Befördern ab 95 Punkten). "
+                                "Sag „Bewerte diese Bubble“. Befördert ist nichts.")
 
 
 def test_bewertung_null_mit_begruendung_zaehlt():
@@ -77,7 +85,7 @@ def test_lesen_und_pruefen_liest_nur_und_nimmt_den_lebenden_text():
     def lesen(tabelle, params):
         gelesen.append(tabelle)
         if tabelle == "ideas":
-            return [BUBBLE]
+            return [_mit_lauf(BUBBLE, [GUT[0], GUT[1], formatiert, GUT[3]], KANTEN)]
         if tabelle == "canvas_nodes":
             return [GUT[0], GUT[1], formatiert, GUT[3]]
         return [k for k in KANTEN if k["from_node_id"] in params["from_node_id"][4:-1].split(",")]

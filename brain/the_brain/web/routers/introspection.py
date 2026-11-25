@@ -2717,6 +2717,10 @@ def _try_ideen_abkuerzung(intent: str, kontext: Any):
         if treffer.get("bestaetigen"):
             # White Paper: nie direkt. Erst der Umfang als Rueckfrage, "Ja, erstellen" startet.
             return None, _white_paper_rueckfrage(treffer["argumente"]), ""
+        if treffer.get("todo_bestaetigen"):
+            # To-do der Bewertung: nie direkt. Erst das To-do als Rueckfrage, "Ja, erledigen" startet.
+            from core import todo_bestaetigung as _td
+            return None, _td.rueckfrage(treffer["argumente"]), ""
         if isinstance(treffer.get("loeschen"), dict):
             # Loeschen: nie direkt. Erst die Rueckfrage mit dem Titel, "Ja, loeschen" loest aus
             # (core/loesch_bestaetigung).
@@ -2903,6 +2907,22 @@ def _loesch_plan(intent: str, bestaetigt: Dict[str, Any]):
         rationale=f"Ideen-Abkuerzung: {ereignis} (bestaetigt)",
         hops=[_HopSpec(step_id="s1", description=f"{ereignis} via Bestaetigung",
                        capability=ereignis, arg_template=arg_vorlage(bestaetigt["argumente"]))],
+        final_synthesis_prompt="",
+        estimated_cost_usd=0.0,
+    )
+
+
+def _todo_plan(intent: str, argumente: Dict[str, Any]):
+    """Der bestaetigte To-do-Plan: ein Modellauftrag mit Schluessel (core/todo_bestaetigung)."""
+    from core.ideen_abkuerzung import arg_vorlage
+    from core.plan_schema import Plan as _Plan, HopSpec as _HopSpec
+
+    return _Plan(
+        plan_id=f"ideen_{int(time.time() * 1000)}",
+        intent=intent,
+        rationale="Ideen-Abkuerzung: idea.todo_erledigen (bestaetigt)",
+        hops=[_HopSpec(step_id="s1", description="idea.todo_erledigen via Bestaetigung",
+                       capability="idea.todo_erledigen", arg_template=arg_vorlage(argumente))],
         final_synthesis_prompt="",
         estimated_cost_usd=0.0,
     )
@@ -3310,6 +3330,10 @@ async def _multihop_execute(request: Request):
         # jeder andere Satz verwirft sie (core/whitepaper_bestaetigung).
         from core import whitepaper_bestaetigung as _wp
         _wp_antwort = _wp.satz_pruefen(intent)
+        # To-do der Bewertung: "Ja, erledigen" gilt nur direkt nach der Rueckfrage mit dem To-do
+        # (core/todo_bestaetigung); jeder andere Satz verwirft sie.
+        from core import todo_bestaetigung as _td
+        _td_antwort = _td.satz_pruefen(intent)
         # Recherche zu einer Bubble: "Ja, recherchieren" gilt nur direkt nach der Vorschau
         # (core/recherche_bubble); jeder andere Satz verwirft sie.
         from core import recherche_bubble as _rb
@@ -3339,6 +3363,13 @@ async def _multihop_execute(request: Request):
                                  "final_text": _wp_antwort["satz"], "trace_id": trace_id})
         if _wp_antwort and _wp_antwort.get("argumente"):
             plan = _white_paper_plan(intent, _wp_antwort["argumente"])
+            _ideen_fest = True
+        if _td_antwort and _td_antwort.get("satz"):
+            _trace_lite(pe, trace_id, intent, "ideen-rueckfrage", _td_antwort["satz"])
+            return JSONResponse({"ok": False, "rueckfrage": True, "space": "ideas", "executed": {},
+                                 "final_text": _td_antwort["satz"], "trace_id": trace_id})
+        if _td_antwort and _td_antwort.get("argumente") and plan is None:
+            plan = _todo_plan(intent, _td_antwort["argumente"])
             _ideen_fest = True
         # Loeschen: "Ja, loeschen" gilt nur direkt nach der Rueckfrage mit dem Titel; jeder andere
         # Satz verwirft sie (core/loesch_bestaetigung).

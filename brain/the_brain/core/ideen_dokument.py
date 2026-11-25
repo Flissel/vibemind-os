@@ -58,7 +58,11 @@ EREIGNISSE: dict[str, str] = {
     "idea.summarize": "zusammenfassen",
     "idea.whitepaper": "abschnitt",
     "idea.group": "gruppieren",
+    # Stufe 1 (core/ideen_bewertung): Bewertungslauf und ein To-do daraus abarbeiten.
+    "idea.bewerten": "bewerten",
+    "idea.todo_erledigen": "todo",
 }
+BEWERTUNG_VERTRAEGE = ("bewerten", "todo")
 ART = {"zusammenfassen": "zusammenfassung", "abschnitt": "white_paper"}
 VERTRAEGE = frozenset(EREIGNISSE.values())
 
@@ -840,6 +844,20 @@ def vorhandene_zusammenfassung(zeilen: list[dict[str, Any]], titel: str) -> Opti
     return str(gleich[0]["id"]) if gleich else None
 
 
+def vorhandene_white_paper(zeilen: list[dict[str, Any]]) -> tuple[Optional[str], list[str]]:
+    """(Kennung des neuesten White Papers der Bubble, Kennungen der aelteren Doppel).
+
+    Stufe 1: genau ein White Paper je Bubble. Ein neues ersetzt das neueste unter dessen
+    Kennung (idea_document schreibt ueber), die aelteren werden beim Abschluss geloescht.
+    """
+    papiere = [z for z in zeilen if z.get("node_type") == "dokument" and ist_kennung(z.get("id"))
+               and isinstance(z.get("metadata"), Mapping) and z["metadata"].get("art") == ART["abschnitt"]]
+    if not papiere:
+        return None, []
+    papiere.sort(key=lambda z: (str(z.get("updated_at") or ""), str(z.get("id"))), reverse=True)
+    return str(papiere[0]["id"]), [str(z["id"]) for z in papiere[1:]][:20]
+
+
 def ist_gruppen_kopf(zeile: Mapping[str, Any]) -> bool:
     metadata = zeile.get("metadata")
     return isinstance(metadata, Mapping) and metadata.get(GRUPPEN_KOPF) is True
@@ -853,6 +871,11 @@ def auftrag_vorbereiten(event_id: str, rendered_arg: Any, wunsch: Any, *, lesen:
         raise RueckwegFehler("Dafür gibt es keinen Rückweg.")
     arg = _argument(rendered_arg)
     bubble = _bubble_finden(arg, lesen)
+    if vertrag in BEWERTUNG_VERTRAEGE:
+        from . import ideen_bewertung
+        if vertrag == "bewerten":
+            return ideen_bewertung.bewerten_vorbereiten(event_id, bubble, lesen)
+        return ideen_bewertung.todo_vorbereiten(event_id, bubble, arg.get("nr"), lesen)
     bubble_id, bubble_titel = str(bubble["id"]), titel_von(bubble)
     zeilen = _zeilen_lesen(bubble_id, lesen)
     karten = _nur_karten(zeilen)
@@ -865,8 +888,12 @@ def auftrag_vorbereiten(event_id: str, rendered_arg: Any, wunsch: Any, *, lesen:
         return nachricht, rueckweg
     if vertrag == "gruppieren":
         return _gruppieren_vorbereiten(event_id, arg, wunsch, bubble_id, bubble_titel, karten)
-    return _white_paper_vorbereiten(event_id, arg, wunsch, bubble_id, bubble_titel, karten, lesen, neue_kennung(),
-                                    gesetzt=gesetzte_wurzel(bubble))
+    nachricht, rueckweg = _white_paper_vorbereiten(event_id, arg, wunsch, bubble_id, bubble_titel, karten, lesen,
+                                                   neue_kennung(), gesetzt=gesetzte_wurzel(bubble))
+    neuestes, doppel = vorhandene_white_paper(zeilen)
+    if neuestes is not None:
+        rueckweg.update(dokument_id=neuestes, ersetzt=True, doppel=doppel)
+    return nachricht, rueckweg
 
 
 def _zusammenfassen_vorbereiten(event_id: str, arg: Mapping[str, Any], wunsch: Any, bubble_id: str,
@@ -1069,7 +1096,13 @@ def white_paper_frage(rendered_arg: Any, *, lesen: Lesen) -> tuple[str, bool]:
                  ", 1 Karte ohne Inhalt wird nur genannt" if leer == 1 else
                  f", {leer} Karten ohne Inhalt werden nur genannt")
     titel = _sauber(titel_von(bubble), 80) or "diese Bubble"
-    return (f"Das White Paper für „{titel}“ braucht {laeufe} ({karten_satz} in {abschnitte}{leer_satz}). "
+    neuestes, doppel = vorhandene_white_paper(_zeilen_lesen(str(bubble["id"]), lesen))
+    ersetzt = ""
+    if neuestes is not None:
+        ersetzt = (" Es ersetzt das vorhandene White Paper" if not doppel else
+                   f" Es ersetzt das vorhandene White Paper; {len(doppel)} ältere "
+                   f"{'Fassung wird' if len(doppel) == 1 else 'Fassungen werden'} gelöscht") + " („Zurück“ holt es wieder)."
+    return (f"Das White Paper für „{titel}“ braucht {laeufe} ({karten_satz} in {abschnitte}{leer_satz}).{ersetzt} "
             "Sag „Ja, erstellen“, dann beginne ich."), True
 
 
@@ -1140,7 +1173,7 @@ def rueckweg_aus(auftrag: Mapping[str, Any]) -> Optional[dict[str, Any]]:
     vertrag = rueckweg["vertrag"]
     gut = (rueckweg.get("version") == VERSION and EREIGNISSE.get(rueckweg.get("ereignis")) == vertrag
            and ist_kennung(rueckweg.get("bubble_id"))
-           and (vertrag == "gruppieren" or ist_kennung(rueckweg.get("dokument_id")))
+           and (vertrag in ("gruppieren", *BEWERTUNG_VERTRAEGE) or ist_kennung(rueckweg.get("dokument_id")))
            and isinstance(rueckweg.get("titel"), str) and rueckweg["titel"].strip())
     if gut and vertrag in ("zusammenfassen", "gruppieren"):
         k = rueckweg.get("kuerzel")
@@ -1148,6 +1181,12 @@ def rueckweg_aus(auftrag: Mapping[str, Any]) -> Optional[dict[str, Any]]:
         gut = (isinstance(k, Mapping) and bool(k) and all(ist_kennung(v) for v in k.values())
                and isinstance(kt, Mapping) and set(kt) == set(k)
                and (rueckweg.get("frage") is None or isinstance(rueckweg["frage"], str)))
+    if gut and vertrag in BEWERTUNG_VERTRAEGE:
+        from . import ideen_bewertung
+        gut = ideen_bewertung.rueckweg_gueltig(rueckweg)
+    if gut and vertrag == "abschnitt":
+        doppel = rueckweg.get("doppel", [])
+        gut = isinstance(doppel, list) and all(ist_kennung(i) for i in doppel)
     if gut and vertrag == "abschnitt":
         teile, index = rueckweg.get("teile"), rueckweg.get("index")
         gut = (isinstance(teile, list) and 0 < len(teile) <= LAEUFE_OBERGRENZE
@@ -1253,6 +1292,23 @@ def _schreiben(rueckweg: Mapping[str, Any], inhalt: str, quellen_ids: list[str],
     return True, "written and verified", ""
 
 
+def _doppel_loeschen(doppel: list[str], *, aufruf: Aufruf, pruefe: Pruefe) -> tuple[int, int]:
+    """Aeltere White Papers loeschen (je ein fester Aufruf ``idea.delete`` mit Nachpruefung)."""
+    geloescht = offen = 0
+    for kennung in doppel:
+        argumente, _grund = feste_argumente("idea.delete", {"id": kennung})
+        try:
+            quittung = aufruf("idea.delete", argumente) if argumente is not None else None
+            ok, _grund = pruefe("idea.delete", argumente, quittung) if argumente is not None else (False, "")
+        except Exception:  # noqa: BLE001 - die anderen trotzdem versuchen; der Satz nennt die Zahl
+            ok = False
+        if ok is True:
+            geloescht += 1
+        else:
+            offen += 1
+    return geloescht, offen
+
+
 def verarbeiten(auftrag: Mapping[str, Any], *, lies_karten: Callable[[list[str]], Optional[list]],
                 anlegen: Callable[..., str], aufruf: Aufruf, pruefe: Pruefe,
                 jetzt: Optional[datetime] = None) -> dict[str, Any]:
@@ -1270,6 +1326,11 @@ def verarbeiten(auftrag: Mapping[str, Any], *, lies_karten: Callable[[list[str]]
         if rueckweg is None or rueckweg.get("ungueltig"):
             return aus("abgelehnt", False, "rueckweg invalid",
                        "Der Auftrag trägt keinen gültigen Rückweg; es wurde nichts geändert.")
+        if rueckweg["vertrag"] in BEWERTUNG_VERTRAEGE:
+            from . import ideen_bewertung
+            status, verified, reason, meldung, mehr = ideen_bewertung.verarbeiten(
+                auftrag, rueckweg, lies_karten=lies_karten, aufruf=aufruf, pruefe=pruefe)
+            return aus(status, verified, reason, meldung, **mehr)
         if rueckweg["vertrag"] == "gruppieren":
             werte, satz = ergebnis_pruefen("gruppieren", auftrag.get("ergebnis"), rueckweg["kuerzel_titel"])
             if werte is None:
@@ -1383,9 +1444,18 @@ def verarbeiten(auftrag: Mapping[str, Any], *, lies_karten: Callable[[list[str]]
             return aus("wartet" if reason == _WARTET else "fehler", ok, reason, satz)
         leer = len(rueckweg.get("leer") or [])
         zusatz = f", {leer} {'Karte' if leer == 1 else 'Karten'} ohne Inhalt genannt" if leer else ""
+        geloescht, offen = _doppel_loeschen(rueckweg.get("doppel") or [], aufruf=aufruf, pruefe=pruefe)
+        wo = ("ersetzt das vorhandene" if rueckweg.get("ersetzt") is True else "steht als Karte in der Bubble")
+        doppel_satz = ""
+        if geloescht:
+            doppel_satz += f" {geloescht} ältere {'Fassung ist' if geloescht == 1 else 'Fassungen sind'} gelöscht."
+        if offen:
+            doppel_satz += f" {offen} ältere {'Fassung ließ' if offen == 1 else 'Fassungen ließen'} sich nicht löschen."
+        if rueckweg.get("ersetzt") is True:
+            doppel_satz += " „Zurück“ holt die alte Fassung wieder."
         return aus("geschrieben", True, reason,
-                   f"Das White Paper „{rueckweg['titel']}“ steht als Karte in der Bubble "
-                   f"({len(teile)} Abschnitte{zusatz}).", dokument_id=rueckweg["dokument_id"])
+                   f"Das White Paper „{rueckweg['titel']}“ {wo} ({len(teile)} Abschnitte{zusatz}).{doppel_satz}",
+                   dokument_id=rueckweg["dokument_id"], ersetzt=rueckweg.get("ersetzt") is True)
     except Exception as e:  # noqa: BLE001
         return aus("fehler", None, f"{type(e).__name__}", "Beim Dokument ist ein Fehler aufgetreten.")
 
@@ -1395,7 +1465,8 @@ def verarbeiten(auftrag: Mapping[str, Any], *, lies_karten: Callable[[list[str]]
 class DatenbankLesen(Lesen):
     """Lesen ueber PostgREST mit dem Dienstschluessel (wie ``ideen_rueckweg._lesen``)."""
 
-    _FELDER = "id,title,content,content_json,node_type,x,y,linked_idea_id,metadata"
+    # summary und updated_at: kartenstand (Bewertung) und das neueste White Paper.
+    _FELDER = "id,title,content,summary,content_json,node_type,x,y,linked_idea_id,metadata,updated_at"
 
     @staticmethod
     def _lesen(tabelle: str, params: dict[str, str]) -> Optional[list]:

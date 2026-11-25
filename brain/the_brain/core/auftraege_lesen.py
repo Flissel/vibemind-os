@@ -24,7 +24,8 @@ _STAND = {"offen": "wartet", "laeuft": "läuft", "fertig": "fertig", "fehler": "
           "abgelehnt": "abgelehnt", "abgelaufen": "abgelaufen"}
 
 # Faehigkeiten, die heute als Auftrag an einen Agenten gehen, in Worten. Unbekannte bleiben beim Namen.
-_TAETIGKEIT = {"idea_expand": "Idee ausbauen", "idea_group": "Ideen ordnen", "idea_whitepaper": "White Paper"}
+_TAETIGKEIT = {"idea_expand": "Idee ausbauen", "idea_group": "Ideen ordnen", "idea_whitepaper": "White Paper",
+               "idea.bewerten": "Bewertung", "idea.todo_erledigen": "To-do erledigen"}
 
 
 def _zeit(wert: Any) -> Optional[datetime]:

@@ -281,13 +281,23 @@ class RateTests(unittest.TestCase):
 
     def test_bubble_rate_is_scoped_to_top_level_rows(self) -> None:
         server = load_server()
-        request = Recorder({("PATCH", "ideas"): lambda kwargs: [{"id": "bub1", **kwargs["body"]}]})
+        request = Recorder({("GET", "ideas"): [{"id": "bub1", "metadata": {"art": "x"}}],
+                            ("PATCH", "ideas"): lambda kwargs: [{"id": "bub1", **kwargs["body"]}]})
         with mock.patch.object(server, "_request", side_effect=request):
             result = server.call_tool("bubble_rate", {"id": "bub1", "score": 70})
 
-        self.assertEqual(result, {"id": "bub1", "score": 70})
+        self.assertEqual(result["score"], 70)
+        (get,) = request.of("GET", "ideas")
+        self.assertEqual(get["params"]["parent_id"], "is.null")
         (patch,) = request.of("PATCH", "ideas")
         self.assertEqual(patch["params"], {"id": "eq.bub1", "parent_id": "is.null"})
+        # Stufe 1: der Handwert steht auch in metadata.handwert und als art "hand" im Verlauf;
+        # andere Metadaten bleiben, ein Bewertungslauf entsteht nicht.
+        metadata = patch["body"]["metadata"]
+        self.assertEqual(metadata["art"], "x")
+        self.assertEqual(metadata["handwert"]["score"], 70)
+        self.assertEqual([(e["score"], e["art"]) for e in metadata["eval_history"]], [(70, "hand")])
+        self.assertNotIn("bewertung_lauf", metadata)
 
         with mock.patch.object(server, "_request", side_effect=Recorder({})):
             with self.assertRaisesRegex(server.ToolError, "^bubble_not_found$"):
