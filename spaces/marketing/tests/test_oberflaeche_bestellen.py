@@ -305,3 +305,8 @@ def test_daten_folge_und_fehler(monkeypatch):
     with pytest.raises(daten.DatenFehler) as f:
         daten.folge_bestellen("alpha", "T", "de", [])
     assert f.value.art == "abgelehnt" and "12000" in f.value.grund
+
+
+def test_aus_sagt_nichts_ueber_bilder(c, a):
+    r = c.get("/oberflaeche/reels", headers=H, cookies={"mk_firma": "alpha"})
+    assert "noch keine Bilder" not in r.text and "nicht lesbar" not in r.text

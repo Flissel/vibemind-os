@@ -166,7 +166,7 @@ def reel_formular(k: Kontext, namen: list[str] | None) -> str:
             f'<div class="zeile"><label>{e(k.t(TEXTE, "dauer", von=DAUER_MIN, bis=DAUER_MAX))} '
             f'<input type="number" name="dauer_s" min="{DAUER_MIN}" max="{DAUER_MAX}" value="{DAUER_VORGABE}"></label>'
             f'<label>{e(k.t(TEXTE, "format"))} <select name="format">{formate}</select></label></div>'
-            f'{_bildwahl(k, namen)}'
+            f'{_bildwahl(k, namen) if an() else ""}'
             f'<p><button type="submit">{e(k.t(TEXTE, "bestellen"))}</button></p></fieldset></form></details>')
 
 

@@ -510,7 +510,7 @@ dl.angaben dt { font-weight: 600; margin-top: 6px; } dl.angaben dd { margin: 0; 
 pre { white-space: pre-wrap; font: inherit; margin: 6px 0; }
 .editor { display: flex; flex-direction: column; gap: 10px; max-width: 720px; margin: 8px 0 16px; }
 .editor label { display: flex; flex-direction: column; gap: 4px; font-weight: 600; }
-.editor input[type=text], .editor input[type=url], .editor textarea { font: inherit; font-weight: 400;
+.editor input[type=text], .editor input[type=url], .editor input[type=number], .editor textarea { font: inherit; font-weight: 400;
   padding: 6px 10px; border: 1px solid var(--linie); border-radius: 10px; background: var(--flaeche2); color: var(--text); }
 .editor textarea { resize: vertical; min-height: 6rem; }
 .editor fieldset.block { border: 1px solid var(--linie); border-radius: 14px; background: var(--flaeche);
