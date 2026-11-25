@@ -357,18 +357,25 @@ def offene_todos(lauf: Mapping[str, Any], anzahl: int | None = None) -> list[dic
 
 
 def schwelle_pruefen(bubble: Mapping[str, Any], karten: Sequence[Mapping[str, Any]],
-                     kanten: Sequence[Mapping[str, Any]], schwelle: int = BEFOERDERN_SCHWELLE) -> dict[str, Any]:
-    """Befoerdern nur ab der Schwelle: letzter echter Lauf, nicht veraltet. Ein Handwert zaehlt nicht.
+                     kanten: Sequence[Mapping[str, Any]], schwelle: int = BEFOERDERN_SCHWELLE,
+                     gekuerzt_erlaubt: bool = False) -> dict[str, Any]:
+    """Befoerdern nur ab der Schwelle: letzter echter Lauf, nicht veraltet, nicht gekuerzt.
 
-    Rueckgabe: bestanden, grund (kein_lauf | unter_schwelle | veraltet | ""), score, schwelle, top (3 To-dos).
+    Ein Handwert zaehlt nicht. Ein gekuerzter Lauf (der Agent sah nicht alles) schaltet die Schwelle
+    nicht frei, solange der Betreiber das nicht anders entscheidet (``gekuerzt_erlaubt``).
+    Rueckgabe: bestanden, grund (kein_lauf | veraltet | unter_schwelle | gekuerzt | ""), score,
+    schwelle, gekuerzt, top (3 To-dos).
     """
     lauf = bewertung_lauf(bubble)
     if lauf is None:
-        return {"bestanden": False, "grund": "kein_lauf", "score": None, "schwelle": schwelle, "top": []}
+        return {"bestanden": False, "grund": "kein_lauf", "score": None, "schwelle": schwelle, "gekuerzt": False,
+                "top": []}
     top = offene_todos(lauf, 3)
-    aus = {"score": lauf["score"], "schwelle": schwelle, "top": top}
+    aus = {"score": lauf["score"], "schwelle": schwelle, "gekuerzt": lauf.get("gekuerzt") is True, "top": top}
     if lauf["kartenstand"] != kartenstand(karten, kanten):
         return {"bestanden": False, "grund": "veraltet", **aus}
     if lauf["score"] < schwelle:
         return {"bestanden": False, "grund": "unter_schwelle", **aus}
+    if aus["gekuerzt"] and not gekuerzt_erlaubt:
+        return {"bestanden": False, "grund": "gekuerzt", **aus}
     return {"bestanden": True, "grund": "", **aus}

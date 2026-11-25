@@ -292,3 +292,130 @@ def test_anderer_faehigkeitsname_mit_passendem_ziel_rutscht_nicht_durch(monkeypa
         assert gebaut == []
     else:
         assert "nie per Plan" not in fehler and "nur von Hand" not in fehler
+
+
+# ── Groesse: OpenFang nimmt hoechstens 64 KB je Nachricht (413 darueber) ──
+
+GRENZE_OPENFANG = 64 * 1024
+SATZ = "Für das Stadtfest prüfen wir Bühnenplan, Sponsoren und Druckerei; Größe und Maße folgen. "
+
+
+def _grosse_bubble(anzahl, zeichen_je_karte, papier_zeichen=0, kanten_je_karte=0):
+    karten = [{"id": f"a{n:07x}", "title": f"Stadtfest Punkt {n} – Bühne", "node_type": "note",
+               "content": (SATZ * (zeichen_je_karte // len(SATZ) + 1))[:zeichen_je_karte],
+               "x": n % 10 * 300, "y": n // 10 * 200, "linked_idea_id": BUBBLE["id"]} for n in range(1, anzahl + 1)]
+    if papier_zeichen:
+        karten.append({**_papier("a1000001", "2026-11-24"), "content": (SATZ * (papier_zeichen // len(SATZ) + 1))
+                       [:papier_zeichen]})
+    kanten = [{"from_node_id": f"a{n:07x}", "to_node_id": f"a{(n + d - 1) % anzahl + 1:07x}", "edge_type": "related"}
+              for n in range(1, anzahl + 1) for d in range(1, kanten_je_karte + 1)]
+
+    class Lesen:
+        def karten_der_bubble(self, kennung):
+            return [dict(k) for k in karten]
+
+        def kanten(self, kennungen):
+            return [dict(k) for k in kanten]
+
+    return Lesen()
+
+
+def test_kleine_bubble_geht_ungekuerzt_hinaus() -> None:
+    nachricht, rueckweg = bew.bewerten_vorbereiten("idea.bewerten", BUBBLE, _grosse_bubble(5, 400, 2000, 1))
+    k = rueckweg["kuerzung"]
+    assert rueckweg["gekuerzt"] is False and k["gekuerzt"] is False and k["karten_gekuerzt"] == 0
+    assert k["kanten_weggelassen"] == 0 and k["white_paper_gekuerzt"] is False
+    assert "gekürzt" not in nachricht and bew.groesse(nachricht) == k["bytes"] < GRENZE_OPENFANG
+
+
+def test_grosse_bubble_bleibt_unter_64_kb_und_zaehlt_ehrlich_was_fehlt() -> None:
+    # 120 Karten zu je 3000 Zeichen mit Umlauten, ein langes White Paper, je Karte zwei Verbindungen.
+    nachricht, rueckweg = bew.bewerten_vorbereiten("idea.bewerten", BUBBLE, _grosse_bubble(120, 3000, 30000, 2))
+    k = rueckweg["kuerzung"]
+    assert bew.groesse(nachricht) <= bew.NACHRICHT_BYTES < GRENZE_OPENFANG
+    assert rueckweg["gekuerzt"] is True and k["white_paper_gekuerzt"] is True
+    assert k["karten"] == 120 and k["karten_gekuerzt"] == 120 and bew.KARTE_MIN <= k["karte_zeichen"] < 3000
+    assert k["kanten"] == 240 and 0 <= k["kanten_weggelassen"] < 240
+    assert "Die Bubble ist gekürzt" in nachricht and len(rueckweg["kuerzel"]) == 120   # keine Karte fehlt ganz
+    satz = bew.kuerzung_satz(k)
+    assert satz.startswith(f"Gekürzt bewertet: bei 120 von 120 Karten nur der Anfang (je bis {k['karte_zeichen']} "
+                           "Zeichen), ")
+    assert "das White Paper nur gekürzt." in satz
+    assert (f"{k['kanten_weggelassen']} von 240 Verbindungen fehlen" in satz) == (k["kanten_weggelassen"] > 0)
+
+
+def test_mittlere_bubble_kuerzt_nur_karten_und_laesst_alle_verbindungen() -> None:
+    nachricht, rueckweg = bew.bewerten_vorbereiten("idea.bewerten", BUBBLE, _grosse_bubble(60, 3000, 0, 1))
+    k = rueckweg["kuerzung"]
+    assert bew.groesse(nachricht) <= bew.NACHRICHT_BYTES
+    assert k["karten_gekuerzt"] == 60 and k["karte_zeichen"] > bew.KARTE_MIN and k["kanten_weggelassen"] == 0
+    assert k["white_paper_gekuerzt"] is False
+    assert bew.kuerzung_satz(k).endswith("Fürs Befördern zählt nur eine ungekürzte Bewertung.")
+
+
+def test_reicht_die_kuerzung_der_karten_nicht_fehlen_verbindungen_und_werden_gezaehlt() -> None:
+    nachricht, rueckweg = bew.bewerten_vorbereiten("idea.bewerten", BUBBLE, _grosse_bubble(100, 2000, 0, 12))
+    k = rueckweg["kuerzung"]
+    assert bew.groesse(nachricht) <= bew.NACHRICHT_BYTES
+    assert k["karte_zeichen"] == bew.KARTE_MIN and 0 < k["kanten_weggelassen"] < k["kanten"] == 1200
+    assert f"{k['kanten_weggelassen']} von 1200 Verbindungen fehlen" in bew.kuerzung_satz(k)
+
+
+def test_zu_gross_auch_gekuerzt_legt_keinen_auftrag_an() -> None:
+    with pytest.raises(RueckwegFehler, match="zu groß, auch gekürzt"):
+        bew.bewerten_vorbereiten("idea.bewerten", BUBBLE, _grosse_bubble(400, 2000))
+
+
+def test_meldung_und_ergebnis_tragen_die_kuerzung() -> None:
+    lauf, _ = bew.bewertung_pruefen(_antwort(), KURZ, TITEL, gekuerzt=True)
+    kuerzung = {"gekuerzt": True, "karten": 120, "karten_gekuerzt": 80, "karte_zeichen": 420, "kanten": 300,
+                "kanten_weggelassen": 0, "white_paper_gekuerzt": False}
+    meldung = bew.bewertung_meldung(lauf, 100, kuerzung)
+    assert "Gekürzt bewertet: bei 80 von 120 Karten nur der Anfang (je bis 420 Zeichen)." in meldung
+    assert lauf["gekuerzt"] is True
+    rueckweg = {"vertrag": "bewerten", "bubble_id": BUBBLE["id"], "kuerzel": KURZ, "kuerzel_titel": TITEL,
+                "kartenstand": "sha256:" + "2" * 64, "gekuerzt": True, "kuerzung": kuerzung}
+    status, ok, _, meldung, mehr = bew.verarbeiten({"ergebnis": _antwort()}, rueckweg, lies_karten=lambda i: [],
+                                                   aufruf=lambda e, a: {}, pruefe=lambda e, a, q: (True, ""))
+    assert status == "geschrieben" and "Gekürzt bewertet" in meldung and mehr["kuerzung"]["karten_gekuerzt"] == 80
+
+
+def test_gekuerzte_bewertung_schaltet_befoerdern_nicht_frei(monkeypatch) -> None:
+    monkeypatch.delenv(bf.SCHWELLE_EINSTELLUNG, raising=False)
+    bubble = _bubble(100)
+    bubble["metadata"]["bewertung_lauf"]["gekuerzt"] = True
+    geprueft = bf.pruefen(bubble, KARTEN, KANTEN)
+    assert geprueft["bestaetigbar"] is False and geprueft["pruefung"]["schwelle"]["grund"] == "gekuerzt"
+    assert "ist aber gekürzt" in geprueft["satz"] and "ungekürzten Bewertung" in geprueft["satz"]
+    darunter = _bubble(70)
+    darunter["metadata"]["bewertung_lauf"]["gekuerzt"] = True
+    assert "Sie ist außerdem gekürzt" in bf.pruefen(darunter, KARTEN, KANTEN)["satz"]
+    # Nur der Betreiber kann das anders entscheiden (Schalter in den Kartenregeln, Vorgabe aus).
+    erlaubt = bf.regeln().schwelle_pruefen(bubble, KARTEN, KANTEN, 95, gekuerzt_erlaubt=True)
+    assert erlaubt["bestanden"] is True
+
+
+def test_todo_nachricht_bleibt_unter_64_kb() -> None:
+    lesen = _grosse_bubble(200, 3000)
+    todo = {"nr": 1, "titel": "Bühne füllen", "fehlt": "Zu dünn.", "punkte": 4, "art": "karte_ergaenzen",
+            "karten": [f"a{n:07x}" for n in range(1, 21)]}
+    bubble = {**BUBBLE, "metadata": {"bewertung_lauf": {"score": 60, "kartenstand": "x", "todos": [todo]}}}
+    nachricht, rueckweg = bew.todo_vorbereiten("idea.todo_erledigen", bubble, 1, lesen)
+    assert bew.groesse(nachricht) <= bew.NACHRICHT_BYTES
+    assert set(rueckweg["kuerzel"].values()) >= set(todo["karten"])          # betroffene Karten bleiben
+    assert set(rueckweg["stand"]) == set(rueckweg["kuerzel"].values())
+
+
+def test_413_des_agenten_wird_als_zu_gross_gemeldet() -> None:
+    from core import auftrag_stand
+    zeile = {"status": "fehler", "pruefung": {"verified": None, "reason": "fehler"},
+             "ergebnis": {"error": "HTTP 413: Message too large (max 64KB)"}}
+    assert auftrag_stand._stand_einer_zeile(zeile) == {"stand": "fehler", "ok": False,
+                                                       "meldung": auftrag_stand.ZU_GROSS_SATZ}
+
+
+def test_fertiges_ergebnis_mit_zu_gross_im_text_bleibt_fertig() -> None:
+    from core import auftrag_stand
+    zeile = {"status": "fertig", "pruefung": {"verified": True, "reason": "ok"},
+             "ergebnis": "Die Bühne ist zu groß für den Platz."}
+    assert auftrag_stand._stand_einer_zeile(zeile)["stand"] == "fertig"

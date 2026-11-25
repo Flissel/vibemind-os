@@ -142,6 +142,8 @@ def _stand_einer_zeile(zeile: Mapping[str, Any]) -> dict[str, Any]:
     # UNVERIFIED, und hier stand "fertig". "fertig" gilt nur, wenn die Prüfung das Ergebnis bestätigt.
     if _werkzeug_fehlt(zeile.get("ergebnis")):
         return {"stand": "fehler", "ok": False, "meldung": WERKZEUG_FEHLT_SATZ}
+    if status != "fertig" and _zu_gross(zeile.get("ergebnis")):   # nur ein gescheiterter Auftrag
+        return {"stand": "fehler", "ok": False, "meldung": ZU_GROSS_SATZ}
     if (status == "fertig" and pruefung.get("verified") is True
             and pruefung.get("fortsetzung") != "fehler"):
         return {"stand": "fertig", "ok": True, "meldung": meldung or "Der Auftrag ist fertig."}
@@ -159,6 +161,20 @@ _WERKZEUG_FEHLT = re.compile(
     r"(?:werkzeug|tool)\b[^\n]{0,80}?\b(?:nicht\s+(?:verf(?:ü|ue)gbar|vorhanden|gefunden|freigeschaltet)|"
     r"fehlt|unbekannt|not\s+(?:available|found|allowed|permitted)|unavailable|unknown)"
     r"|(?:unknown|unbekanntes)\s+(?:tool|werkzeug)|no\s+such\s+tool", re.IGNORECASE)
+
+
+ZU_GROSS_SATZ = ("Der Auftrag war für den Agenten zu groß (mehr als 64 KB); es wurde nichts geändert. "
+                 "Fasse Karten zusammen oder teile die Bubble.")
+# OpenFang antwortet ueber 64 KB mit 413 "Message too large (max 64KB)" (openfang-api routes.rs).
+_ZU_GROSS = re.compile(r"\b413\b|message too large|payload too large|zu gro(?:ß|ss)", re.IGNORECASE)
+
+
+def _zu_gross(ergebnis: Any) -> bool:
+    """Meldet das Ergebnis, dass die Nachricht an den Agenten zu gross war? Wirft nie."""
+    if isinstance(ergebnis, Mapping):
+        return any(_zu_gross(ergebnis.get(k)) for k in ("text", "result", "error", "meldung", "antwort")
+                   if ergebnis.get(k) is not None)
+    return isinstance(ergebnis, str) and bool(_ZU_GROSS.search(ergebnis[:4000]))
 
 
 def _werkzeug_fehlt(ergebnis: Any) -> bool:

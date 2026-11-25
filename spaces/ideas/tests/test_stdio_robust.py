@@ -155,7 +155,8 @@ class IdeaListKurzTests(unittest.TestCase):
             antwort = server.call_tool("idea_list", {"bubble_id": "bub1"})
 
         result = antwort.pop("karten")
-        self.assertEqual(antwort, {"gezeigt": 2, "gesamt": 2, "gekuerzt": False})
+        # Seit dem Blaettern (Kartentext fuer alle Leser): versatz 0, keine weitere Seite.
+        self.assertEqual(antwort, {"gezeigt": 2, "gesamt": 2, "gekuerzt": False, "versatz": 0, "weiter_ab": None})
         self.assertEqual(request.call_count, 1)  # nicht voll: keine zweite Abfrage zum Zaehlen
         karten = [eintrag.pop("karte") for eintrag in result]
         self.assertEqual([(k["titel"], k["art"], k["leer"]) for k in karten],
