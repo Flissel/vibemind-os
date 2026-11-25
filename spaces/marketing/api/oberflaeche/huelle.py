@@ -42,12 +42,15 @@ COOKIE_JAHR = 365 * 24 * 3600
 FORM_MAX = 4096
 CSP = ("default-src 'none'; style-src 'self'; img-src 'self' data:; form-action 'self'; "
        "frame-ancestors 'none'; base-uri 'none'")
+# Nur Seiten mit Vorschau (vorlagen.py): der Rahmen laedt eine Vorschau-Adresse dieser Oberflaeche, sonst nichts
+CSP_RAHMEN = CSP + "; frame-src 'self'"
 _CSRF_ZWECK = b"marketing-oberflaeche/csrf/v1"
 _FARBE = re.compile(r"^#[0-9A-Fa-f]{6}$")
 _AKTIV = ' class="aktiv"'
 
 # (Pfad unter PFAD, Textschluessel) in der Reihenfolge des Menues
-MENUE = (("/newsletter", "menue_newsletter"), ("/plan", "menue_plan"), ("/marke", "menue_marke"),
+MENUE = (("/newsletter", "menue_newsletter"), ("/entwuerfe", "menue_entwuerfe"), ("/vorlagen", "menue_vorlagen"),
+         ("/plan", "menue_plan"), ("/marke", "menue_marke"),
          ("/reels", "menue_reels"), ("/podcast", "menue_podcast"))
 
 TEXTE = {
@@ -55,6 +58,8 @@ TEXTE = {
         "space": "Marketing",
         "menue": "Bereiche",
         "menue_newsletter": "Newsletter",
+        "menue_entwuerfe": "Entwürfe",
+        "menue_vorlagen": "Vorlagen",
         "menue_plan": "Kampagnenplan",
         "menue_marke": "Marke",
         "menue_reels": "Reels",
@@ -90,6 +95,8 @@ TEXTE = {
         "space": "Marketing",
         "menue": "Sections",
         "menue_newsletter": "Newsletters",
+        "menue_entwuerfe": "Drafts",
+        "menue_vorlagen": "Templates",
         "menue_plan": "Campaign plan",
         "menue_marke": "Brand",
         "menue_reels": "Reels",
@@ -236,6 +243,9 @@ class Kontext:
     sprache: str
     firmen: list[dict] = field(default_factory=list)
     firma: str | None = None
+    # Stufe B: eine Seite mit Vorschau-Rahmen erlaubt frame-src 'self' (nur fuer sie); hinweis ersetzt "nur Ansicht"
+    rahmen: bool = False
+    hinweis: str | None = None
 
     def t(self, texte: dict, schluessel: str, **werte) -> str:
         return _sprache.text(texte, self.sprache, schluessel, **werte)
@@ -249,8 +259,8 @@ class Kontext:
         return url.path + (f"?{url.query}" if url.query else "")
 
 
-def _koepfe(antwort: Response, sprache: str) -> Response:
-    antwort.headers["Content-Security-Policy"] = CSP
+def _koepfe(antwort: Response, sprache: str, csp: str = CSP) -> Response:
+    antwort.headers["Content-Security-Policy"] = csp
     antwort.headers["X-Frame-Options"] = "DENY"
     antwort.headers["X-Content-Type-Options"] = "nosniff"
     antwort.headers["Referrer-Policy"] = "no-referrer"
@@ -264,7 +274,12 @@ def _dokument(sprache: str, titel: str, kopf: str, rumpf: str) -> str:
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
             f'<title>{e(t(sprache, "space"))} – {e(titel)}</title>'
             f'<link rel="stylesheet" href="{PFAD}/stil.css"></head>'
-            f'<body>{kopf}<main>{rumpf}</main></body></html>')
+            f'<body><div class="rahmen">{kopf}<main>{rumpf}</main></div></body></html>')
+
+
+def _marke(sprache: str) -> str:
+    return (f'<div class="marke"><span class="punkt" aria-hidden="true"></span>'
+            f'<span class="marke-name">{e(t(sprache, "space"))}</span></div>')
 
 
 def _sprach_umschalter(sprache: str, zurueck: str) -> str:
@@ -296,17 +311,18 @@ def seite(k: Kontext, aktiv: str, titel: str, rumpf: str) -> Response:
     menue = "".join(
         f'<a href="{PFAD}{p}"' + (' class="aktiv" aria-current="page"' if p == aktiv else "")
         + f'>{e(t(s, schluessel))}</a>' for p, schluessel in MENUE)
-    kopf = (f'<header class="kopf"><span class="marke-name">{e(t(s, "space"))}</span>'
-            f'<nav class="menue" aria-label="{e(t(s, "menue"))}">{menue}</nav>'
-            f'{_sprach_umschalter(s, k.hier)}</header>')
+    # Aufbau wie die Sales-Oberflaeche (Seitenleiste links, Inhalt rechts), Farben aus VibeMind (STIL)
+    kopf = (f'<nav class="seite" aria-label="{e(t(s, "menue"))}">{_marke(s)}'
+            f'<div class="gruppe menue">{menue}</div>'
+            f'<div class="unten">{_sprach_umschalter(s, k.hier)}</div></nav>')
     inhalt = (f'<h1>{e(titel)}</h1>{_firmen_umschalter(k)}'
-              f'<p class="hinweis">{e(t(s, "nur_ansicht"))}</p>{rumpf}')
-    return _koepfe(HTMLResponse(_dokument(s, titel, kopf, inhalt)), s)
+              f'<p class="hinweis">{e(k.hinweis if k.hinweis is not None else t(s, "nur_ansicht"))}</p>{rumpf}')
+    return _koepfe(HTMLResponse(_dokument(s, titel, kopf, inhalt)), s, CSP_RAHMEN if k.rahmen else CSP)
 
 
 def fehlerseite(sprache: str, status: int, titel: str, text: str, mit_zurueck: bool = True) -> Response:
     zurueck = f'<p><a href="{PFAD}/newsletter">{e(t(sprache, "zurueck"))}</a></p>' if mit_zurueck else ""
-    kopf = f'<header class="kopf"><span class="marke-name">{e(t(sprache, "space"))}</span></header>'
+    kopf = f'<nav class="seite" aria-label="{e(t(sprache, "menue"))}">{_marke(sprache)}</nav>'
     rumpf = f'<h1>{e(titel)}</h1><p class="fehler">{e(text)}</p>{zurueck}'
     return _koepfe(HTMLResponse(_dokument(sprache, titel, kopf, rumpf), status_code=status), sprache)
 
@@ -360,15 +376,16 @@ def seiten_route(aktiv: str, bauen: Bauer):
     return endpunkt
 
 
-async def _formular(request: Request) -> tuple[Response | None, str, dict]:
-    """Gemeinsamer Anfang jedes POST: Schluessel, Sprache, Formular, CSRF."""
+async def _formular(request: Request, grenze: int = FORM_MAX) -> tuple[Response | None, str, dict]:
+    """Gemeinsamer Anfang jedes POST: Schluessel, Sprache, Formular, CSRF. grenze: hoechste Formulargroesse
+    in Bytes (der Block-Editor braucht mehr als die Umschalter)."""
     fehler = zugang_fehler(request)
     s = sprache_von(request)
     if fehler is not None:
         return fehler, s, {}
     # Kleine urlencodierte Formulare selbst lesen: kein python-multipart auf der VM noetig
     roh = await request.body()
-    form = {} if len(roh) > FORM_MAX else {
+    form = {} if len(roh) > grenze else {
         k: v[0] for k, v in urllib.parse.parse_qs(roh.decode("utf-8", errors="replace"),
                                                   keep_blank_values=True).items()}
     if not csrf_ok(request, form):
@@ -409,37 +426,54 @@ async def firma_setzen(request: Request) -> Response:
     return antwort
 
 
+# Aufbau wie die Sales-Oberflaeche (Seitenleiste 15rem, Karten mit Radius, Reiter, Statusmarken), Farben aus
+# dem VibeMind-Renderer (renderer/styles/base.css) mit dem Akzent des Marketing-Space (0xff7eb6). Immer dunkel
+# wie die App. Unter 768 px wird die Seitenleiste zur Zeile oben.
 STIL = """
-:root { color-scheme: light dark; --grund: #f7f7f5; --flaeche: #ffffff; --text: #1d1d1f; --leise: #66666b;
-  --linie: #d9d9de; --akzent: #c2185b; --gut: #2e7d32; --warn: #b26a00; --schlecht: #c62828; }
-@media (prefers-color-scheme: dark) { :root { --grund: #15161a; --flaeche: #1f2026; --text: #ececf1;
-  --leise: #a0a0aa; --linie: #33343c; --akzent: #ff7eb6; --gut: #81c784; --warn: #ffb74d; --schlecht: #ef9a9a; } }
+:root { color-scheme: dark;
+  --grund: #0a0812; --grund2: #12101e; --balken: #12101e; --flaeche: rgba(24,28,46,.92);
+  --flaeche2: rgba(30,27,48,.88); --text: #f0e8ff; --leise: rgba(230,220,245,.65); --still: rgba(200,190,220,.40);
+  --akzent-rgb: 255,126,182; --akzent: rgb(var(--akzent-rgb)); --akzent-auf: #0a0812;
+  --linie: rgba(var(--akzent-rgb), .22); --linie-leise: rgba(240,232,255,.10);
+  --gut: #5eff8a; --warn: #ffc145; --schlecht: #ff5a6e; --info: #6eb8ff; }
 * { box-sizing: border-box; }
-body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--grund);
-  color: var(--text); }
-main { max-width: 1100px; margin: 0 auto; padding: 16px 20px 48px; }
-h1 { font-size: 1.5rem; margin: 8px 0 12px; } h2 { font-size: 1.15rem; margin: 24px 0 8px; }
+html, body { overflow-x: hidden; }
+body { margin: 0; font: 16px/1.5 "Segoe UI", Tahoma, system-ui, sans-serif; color: var(--text);
+  background: linear-gradient(180deg, var(--grund2), var(--grund)) fixed; overflow-wrap: anywhere; }
+.rahmen { display: flex; align-items: flex-start; min-height: 100vh; }
+nav.seite { width: 15rem; flex: none; background: var(--balken); border-right: 1px solid var(--linie);
+  display: flex; flex-direction: column; gap: 1.1rem; padding: 1rem .75rem; position: sticky; top: 0;
+  height: 100vh; overflow-y: auto; }
+nav.seite .marke { display: flex; align-items: center; gap: .6rem; padding: 0 .5rem; font-weight: 700; }
+nav.seite .punkt { width: 1.1rem; height: 1.1rem; border-radius: 50%; background: var(--akzent);
+  box-shadow: 0 0 12px rgba(var(--akzent-rgb), .55); }
+.gruppe { display: flex; flex-direction: column; gap: .15rem; }
+nav.seite a { color: var(--text); text-decoration: none; font-weight: 600; display: flex; align-items: center;
+  min-height: 44px; padding: .5rem .7rem; border-radius: 10px; }
+nav.seite a:hover { background: rgba(var(--akzent-rgb), .10); }
+nav.seite a.aktiv { background: var(--akzent); color: var(--akzent-auf); }
+nav.seite .unten { margin-top: auto; padding: 0 .5rem; }
+main { flex: 1 1 auto; min-width: 0; max-width: 80rem; padding: 1.2rem 2rem 4rem; }
+h1 { font-size: 1.5rem; margin: .2rem 0 .8rem; } h2 { font-size: 1.1rem; margin: 2rem 0 .6rem; }
 h3 { font-size: 1rem; margin: 0 0 6px; }
 a { color: var(--akzent); }
-.kopf { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; padding: 10px 20px;
-  background: var(--flaeche); border-bottom: 1px solid var(--linie); }
-.marke-name { font-weight: 700; }
-.menue { display: flex; flex-wrap: wrap; gap: 4px 14px; flex: 1; }
-.menue a, .reiter a { text-decoration: none; color: var(--text); padding: 2px 0; }
-.menue a.aktiv, .reiter a.aktiv { color: var(--akzent); border-bottom: 2px solid var(--akzent); font-weight: 600; }
 .umschalter { display: inline-flex; gap: 4px; margin: 0; }
-.umschalter button { font: inherit; padding: 2px 10px; border: 1px solid var(--linie); border-radius: 999px;
-  background: transparent; color: var(--text); cursor: pointer; }
-.umschalter button.aktiv { background: var(--akzent); border-color: var(--akzent); color: #fff; }
+.umschalter button { font: inherit; font-size: 12px; padding: 3px 10px; border: 1px solid var(--linie);
+  border-radius: 999px; background: transparent; color: var(--text); cursor: pointer; }
+.umschalter button.aktiv { background: var(--akzent); border-color: var(--akzent); color: var(--akzent-auf); }
 .firmen { margin: 0 0 8px; flex-wrap: wrap; }
-.hinweis { color: var(--leise); font-size: .9rem; margin: 4px 0 16px; }
+.hinweis { color: var(--leise); font-size: .9rem; margin: 4px 0 16px; padding: .6rem .9rem;
+  border-left: 3px solid var(--akzent); background: var(--flaeche2); border-radius: 0 10px 10px 0; }
 .fehler { color: var(--schlecht); } .leer, .meta { color: var(--leise); }
 .reiter { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 8px 0 16px; border-bottom: 1px solid var(--linie); }
-.karten { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
-.karte { background: var(--flaeche); border: 1px solid var(--linie); border-radius: 10px; padding: 12px 14px; }
-.karte p { margin: 4px 0; } .karte .titel { font-weight: 600; }
-.chip { display: inline-block; font-size: .8rem; padding: 1px 8px; border-radius: 999px;
-  border: 1px solid var(--linie); color: var(--leise); }
+.reiter a { text-decoration: none; color: var(--leise); padding: 4px 0; font-weight: 600; }
+.reiter a.aktiv { color: var(--akzent); border-bottom: 2px solid var(--akzent); }
+.karten { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: .9rem; }
+.karte { background: var(--flaeche); border: 1px solid var(--linie); border-radius: 14px; padding: 12px 14px; }
+.karte p { margin: 4px 0; } .karte .titel { font-weight: 600; } .karte .titel a { color: var(--text); }
+.karte.gewaehlt { border-color: var(--akzent); box-shadow: 0 0 0 1px var(--akzent); }
+.chip { display: inline-block; font-size: .8rem; font-weight: 700; padding: 1px 10px; border-radius: 999px;
+  border: 1px solid var(--linie-leise); color: var(--leise); }
 .chip.gut { color: var(--gut); border-color: var(--gut); } .chip.warn { color: var(--warn); border-color: var(--warn); }
 .chip.schlecht { color: var(--schlecht); border-color: var(--schlecht); }
 .chip.akzent { color: var(--akzent); border-color: var(--akzent); }
@@ -448,11 +482,42 @@ a { color: var(--akzent); }
 .farben { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
 .farbe { display: inline-flex; gap: 6px; align-items: center; }
 .logos { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
-.logos div { padding: 12px; border-radius: 8px; border: 1px solid var(--linie); background: #fff; }
+.logos div { padding: 12px; border-radius: 10px; border: 1px solid var(--linie); background: #fff; }
 .logos div.dunkel { background: #1a1a1a; }
 .logos img { max-height: 64px; max-width: 220px; display: block; }
 dl.angaben dt { font-weight: 600; margin-top: 6px; } dl.angaben dd { margin: 0; white-space: pre-wrap; }
 pre { white-space: pre-wrap; font: inherit; margin: 6px 0; }
+.editor { display: flex; flex-direction: column; gap: 10px; max-width: 720px; margin: 8px 0 16px; }
+.editor label { display: flex; flex-direction: column; gap: 4px; font-weight: 600; }
+.editor input[type=text], .editor input[type=url], .editor textarea { font: inherit; font-weight: 400;
+  padding: 6px 10px; border: 1px solid var(--linie); border-radius: 10px; background: var(--flaeche2); color: var(--text); }
+.editor textarea { resize: vertical; min-height: 6rem; }
+.editor fieldset.block { border: 1px solid var(--linie); border-radius: 14px; background: var(--flaeche);
+  padding: 10px 14px 12px; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.editor legend { color: var(--leise); font-size: .85rem; font-weight: 700; padding: 0 6px; }
+.editor button, .anlegen button { font: inherit; font-weight: 600; padding: 6px 16px; min-height: 40px;
+  border-radius: 10px; border: 1px solid var(--akzent); background: var(--akzent); color: var(--akzent-auf); cursor: pointer; }
+.erfolg { color: var(--gut); font-weight: 600; }
+.rueckmeldungen ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.rueckmeldungen li { border-left: 3px solid var(--warn); background: var(--flaeche2); padding: 8px 12px;
+  border-radius: 0 10px 10px 0; } .rueckmeldungen li p { margin: 2px 0; }
+.vorschau { margin: 8px 0 24px; } .vorschau .reiter { margin-top: 0; }
+.vorschau iframe { display: block; width: 100%; max-width: 680px; height: 860px; border: 1px solid var(--linie);
+  border-radius: 14px; background: #fff; }
+.vorschau iframe.handy { max-width: 400px; height: 760px; }
+.anlegen { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; }
+.anlegen input[type=text] { font: inherit; padding: 6px 10px; min-width: 260px; border: 1px solid var(--linie);
+  border-radius: 10px; background: var(--flaeche2); color: var(--text); }
+.anlegen button { font: inherit; font-weight: 600; padding: 6px 16px; min-height: 40px; border-radius: 10px;
+  border: 1px solid var(--akzent); background: var(--akzent); color: var(--akzent-auf); cursor: pointer; }
+@media (max-width: 767px) {
+  .rahmen { display: block; }
+  nav.seite { width: auto; height: auto; position: static; flex-direction: row; flex-wrap: wrap; align-items: center;
+    gap: .4rem .8rem; border-right: 0; border-bottom: 1px solid var(--linie); }
+  nav.seite .gruppe { flex-direction: row; flex-wrap: wrap; }
+  nav.seite .unten { margin-top: 0; }
+  main { padding: 1rem 16px 3rem; }
+}
 """
 
 
