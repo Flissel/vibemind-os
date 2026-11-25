@@ -143,3 +143,4 @@ ul, ol { list-style: none; margin: 0; padding: 0; }
 .fremd iframe { display: block; width: 100%; height: calc(100vh - 150px); min-height: 420px; border: 1px solid var(--rand);
   border-radius: 14px; background: #000; }
 @media (max-width: 760px) { .fremd { padding: 8px 16px 16px; } }
+[hidden] { display: none !important; }
