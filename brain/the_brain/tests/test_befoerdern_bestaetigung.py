@@ -166,3 +166,49 @@ def test_spaetes_ja_klingt_nie_nach_bestaetigung():
     assert bf.satz_pruefen("Ja") is None
     satz = hf.antwort("Ja", offen=hf.etwas_offen())
     assert satz == hf.JA_OHNE_FRAGE and "Alles klar" not in satz and "nichts" in satz
+
+
+def test_formatierte_karte_zaehlt_mit_ihrem_strukturierten_inhalt():
+    """Wie im Werkzeug: die Regeln lesen kartentext (content, summary, content_json)."""
+    specs = {"type": "technical_specs", "component": "Druckerei",
+             "specifications": [{"requirement": "Plakate liegen drei Tage vor dem Fest im Rathaus."}]}
+    karten = [dict(k) for k in GUT]
+    karten[1] = {**karten[1], "content": "a0000002", "content_json": specs}
+
+    def lesen(tabelle, params):
+        if tabelle == "ideas":
+            return [BUBBLE]
+        if tabelle == "canvas_nodes":
+            assert "summary" in params["select"] and "content_json" in params["select"]
+            return karten
+        von = params["from_node_id"][len("in.("):-1].split(",")
+        return [k for k in KANTEN if k["from_node_id"] in von]
+
+    ergebnis = bf.lesen_und_pruefen("b0b1e001", lesen)
+    assert ergebnis["pruefung"]["leer"] == [], ergebnis
+    karten[1] = {**karten[1], "content_json": {"type": "technical_specs", "specifications": [],
+                                               "extraction_notes": "Keine technischen Anforderungen gefunden."}}
+    assert bf.lesen_und_pruefen("b0b1e001", lesen)["pruefung"]["leer"] == ["a0000002"]
+
+
+def test_lesesatz_blaettert_und_liest_verbindungen():
+    kontext = {"space": "ideas", "bubble": {"id": "b0b1e001", "title": "Stadtfest"}, "cards": []}
+    ab = abk.loese("Zeig die Karten ab 101", kontext)
+    assert ab["capability"] == "idea.list" and ab["argumente"]["offset"] == 100 and "kanten" not in ab["argumente"]
+    kanten = abk.loese("Zeig die Verbindungen dieser Bubble", kontext)
+    assert kanten["argumente"]["kanten"] is True and "offset" not in kanten["argumente"]
+
+    zeilen = [{"id": "a0000002", "title": "Druckerei"}, {"id": "a0000003", "title": "Bühnenplan"}]
+    inhalt = {"karten": zeilen, "gezeigt": 2, "gesamt": 2, "gekuerzt": False, "versatz": 0, "weiter_ab": None,
+              "kanten": [{"from_node_id": "a0000002", "to_node_id": "a0000003", "edge_type": "related"},
+                         {"from_node_id": "a0000003", "to_node_id": "a0000099", "edge_type": "related"}]}
+    ergebnis = {"content": [{"type": "text", "text": json.dumps(inhalt)}]}
+    satz = abk.antwort_fuer_schritt("idea.list", True, ergebnis, None, "", {"bubble": {"title": "Stadtfest"}})
+    assert satz.startswith("2 Verbindungen in „Stadtfest“: „Druckerei“ – „Bühnenplan“"), satz
+    assert "a0000" not in satz and "weiter hinten" in satz
+
+    seite = {**inhalt, "versatz": 100, "gesamt": 150, "weiter_ab": 102}
+    seite.pop("kanten")
+    satz = abk.antwort_fuer_schritt("idea.list", True, {"content": [{"type": "text", "text": json.dumps(seite)}]},
+                                    None, "", {"bubble": {"title": "Stadtfest"}})
+    assert satz.startswith("Notizen 101 bis 102 von 150 in „Stadtfest“") and "ab 103" in satz, satz

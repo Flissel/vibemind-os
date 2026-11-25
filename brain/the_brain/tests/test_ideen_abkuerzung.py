@@ -698,3 +698,56 @@ def test_zusammenfassen_der_bubble_bleibt() -> None:
 def test_zusammenfassen_unbekannte_notiz_fragt_nach_der_notiz() -> None:
     antwort = abk.loese("Fasse die Notiz Laternen zusammen", KONTEXT)
     assert "Notiz „Laternen“" in antwort["rueckfrage"] and "Bubble" not in antwort["rueckfrage"].split("finde")[0]
+
+
+# ── Ersetzen und Format zuruecksetzen (Saetze fuer das Nacharbeiten einer Bubble) ──
+
+@pytest.mark.parametrize("satz, karte, alt, neu", [
+    ("Ersetze in Preise: Januar durch Februar", "a0000001", "Januar", "Februar"),
+    ("Ersetze in der Notiz Druckerei: „Zelt“ durch „Pavillon“", "a0000002", "Zelt", "Pavillon"),
+    ("Ersetze bei Preise: „durch die Stadt“ durch „über den Markt“", "a0000001", "durch die Stadt", "über den Markt"),
+    ("Ersetze in Preise: „alt“ durch „“", "a0000001", "alt", ""),
+    # Der Name enthaelt ein Trennwort, der Text einen Doppelpunkt.
+    ("Ersetze in Stand auf der Messe: Ort: Halle 2 durch Ort: Halle 3", "a0000003", "Ort: Halle 2", "Ort: Halle 3"),
+])
+def test_ersetzen_ist_ein_fester_aufruf(satz, karte, alt, neu) -> None:
+    treffer = abk.loese(satz, KONTEXT)
+    assert treffer["ereignis"] == "idea.update"
+    assert treffer["argumente"] == {"id": karte, "content_replace_old": alt, "content_replace_new": neu}
+    assert "Zurück" in treffer["antwort"]
+    argumente, grund = vertrag.feste_argumente("idea.update", treffer["argumente"])
+    assert grund == "" and argumente == treffer["argumente"]
+
+
+@pytest.mark.parametrize("satz", [
+    "Ersetze in Preise: Weg durch Wald durch Feld",   # zweimal "durch": nicht raten
+    "Ersetze in Preise: Januar",                      # kein "durch"
+])
+def test_ersetzen_fragt_statt_zu_raten(satz) -> None:
+    treffer = abk.loese(satz, KONTEXT)
+    assert "Anführungszeichen" in treffer["rueckfrage"]
+
+
+def test_ersetzen_bei_unbekannter_karte_fragt() -> None:
+    assert "rueckfrage" in abk.loese("Ersetze in Gibtsnicht: A durch B", KONTEXT)
+
+
+@pytest.mark.parametrize("satz, karte", [
+    ("Setze das Format von Preise zurück", "a0000001"),
+    ("Setz das Format von Stand auf der Messe zurueck", "a0000003"),
+    ("Stelle das alte Format von Druckerei wieder her", "a0000002"),
+])
+def test_format_zuruecksetzen_ist_ein_fester_aufruf(satz, karte) -> None:
+    treffer = abk.loese(satz, KONTEXT)
+    assert treffer["ereignis"] == "idea.format"
+    assert treffer["argumente"] == {"id": karte, "format": "revert"}
+    argumente, grund = vertrag.feste_argumente("idea.format", treffer["argumente"])
+    assert grund == "" and argumente == treffer["argumente"]
+
+
+def test_ersetzen_scheitert_ehrlich_mit_deutschem_satz() -> None:
+    for name, teil in (("text_not_found", "finde ich"), ("text_ambiguous", "mehrmals")):
+        fehler = f"Ideen-Werkzeug meldet einen Fehler ({name}: content_replace_old)"
+        assert teil in abk.fehlersatz(fehler, "idea.update")
+        assert "geändert ist nichts" in abk.fehlersatz(fehler, "idea.update")
+        assert abk.fehlerart(fehler) == "hinweis"

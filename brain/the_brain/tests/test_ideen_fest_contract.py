@@ -308,3 +308,37 @@ def test_eintrag_lagen_kanten_und_befoerderung() -> None:
     nicht = {**zustand, "ideas": [{"id": "bub1", "status": "active", "promoted_to_project_id": None}]}
     assert vertrag.pruefe_zustand(befoerdert, _lies(nicht))[0] is False
     assert vertrag.pruefe_zustand({"art": "unbekannt"}, _lies(zustand))[0] is None
+
+
+# ── "Ersetze in X: A durch B" ──
+
+def test_ersetzen_braucht_beide_teile_und_schliesst_andere_texte_aus() -> None:
+    gut = {"id": "a0000001", "content_replace_old": "Samstag", "content_replace_new": "Sonntag"}
+    assert vertrag.feste_argumente("idea.update", gut) == (gut, "")
+    assert vertrag.feste_argumente("idea.update", {**gut, "content_replace_new": ""})[1] == ""
+    _, grund = vertrag.feste_argumente("idea.update", {"id": "a0000001", "content_replace_old": "Samstag"})
+    assert grund == "clarification required: content_replace_new"
+    _, grund = vertrag.feste_argumente("idea.update", {"id": "a0000001", "content_replace_new": "Sonntag"})
+    assert grund.startswith("clarification required")
+    _, grund = vertrag.feste_argumente("idea.update", {**gut, "content_append": "mehr"})
+    assert grund == "clarification required: content_replace_old is invalid"
+    _, grund = vertrag.feste_argumente("idea.update", {**gut, "content_replace_old": " "})
+    assert grund == "clarification required: content_replace_old is invalid"
+
+
+def test_ersetzen_nachpruefung_liest_den_ganzen_text_aus_der_quittung() -> None:
+    argumente = {"id": "a0000001", "content_replace_old": "Samstag", "content_replace_new": "Sonntag"}
+    zeile = {"id": "a0000001", "content": "Bühne am Sonntag"}
+    erwartung, grund = vertrag.nachpruefung("idea.update", argumente, _quittung([zeile]))
+    assert grund == ""
+    assert erwartung == {"art": "zeile", "tabelle": "canvas_nodes", "id": "a0000001",
+                         "felder": {"content": "Bühne am Sonntag"}}
+    _, grund = vertrag.nachpruefung("idea.update", argumente,
+                                    _quittung([{"id": "a0000001", "content": "Bühne am Samstag"}]))
+    assert grund == "MCP result receipt is invalid"
+
+
+def test_ersetzen_fehler_nennt_nur_den_fehlernamen() -> None:
+    meldung = vertrag.fehler_aus_ergebnis(_quittung(
+        {"error": "text_not_found: 'content_replace_old' does not occur in the stored text"}))
+    assert meldung == "Ideen-Werkzeug meldet einen Fehler (text_not_found: content_replace_old)"

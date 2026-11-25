@@ -47,6 +47,15 @@ def _stand_modul():
     return _STAND
 
 
+def _knoten_text(node: Any) -> str:
+    """Text of a canvas node as the promotion gate reads it (kartenregeln.kartentext)."""
+    zeile = {name: getattr(node, name, None) for name in ("title", "content", "summary", "content_json")}
+    try:
+        return _stand_modul().regeln.kartentext(zeile)
+    except Exception:  # noqa: BLE001 - the rules file is missing: fall back to the plain text
+        return zeile["content"] if isinstance(zeile["content"], str) else ""
+
+
 _GRUND_TEXT = {
     "keine_karten": "keine Karten",
     "leere_karten": "leere Karten",
@@ -512,20 +521,21 @@ class ShuttleWizardHandler:
                 all_nodes = canvas_repo.list_nodes(limit=2000)
                 bubble_nodes = [n for n in all_nodes if n.linked_idea_id == bubble_id]
                 for node in bubble_nodes:
+                    text = _knoten_text(node)
                     if node.title:
                         req_index += 1
                         state["requirements"].append({
                             "id": f"REQ-{req_index:03d}",
                             "title": node.title,
-                            "description": node.content or "",
+                            "description": text,
                             "acceptance_criteria": [],
                             "user_stories": [],
                             "priority": "medium",
                             "status": "pending",
                         })
                         content_texts.append(node.title)
-                        if node.content:
-                            content_texts.append(node.content)
+                        if text:
+                            content_texts.append(text)
                     if node.node_type:
                         all_node_types.add(node.node_type)
             except Exception:

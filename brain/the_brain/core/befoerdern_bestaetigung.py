@@ -148,17 +148,6 @@ def pruefen(bubble: Mapping[str, Any], karten: Sequence[Mapping[str, Any]],
 MAX_KARTEN = 1000  # wie UEBERGABE_MAX_KARTEN im Werkzeug
 
 
-def _lebender_text(zeile: Mapping[str, Any]) -> str:
-    """Wie ``_live_text`` im Werkzeug: ``content_json.text``, wenn es etwas sagt, sonst ``content``."""
-    struktur = zeile.get("content_json") if isinstance(zeile.get("content_json"), Mapping) else {}
-    titel = zeile.get("title") if isinstance(zeile.get("title"), str) else ""
-    text = struktur.get("text")
-    if isinstance(text, str) and text.strip() and text.strip() != titel.strip():
-        return text
-    inhalt = zeile.get("content")
-    return inhalt if isinstance(inhalt, str) else ""
-
-
 def lesen_und_pruefen(bubble_id: str, lesen: Optional[Callable[[str, dict], Optional[list]]] = None) -> Dict[str, Any]:
     """Bubble, Karten und Verbindungen lesen (nur GET) und ``pruefen``. Wirft nie."""
     try:
@@ -168,7 +157,9 @@ def lesen_und_pruefen(bubble_id: str, lesen: Optional[Callable[[str, dict], Opti
                                  "id": f"eq.{bubble_id}", "parent_id": "is.null", "limit": "1"})
         if not zeilen or not isinstance(zeilen[0], dict):
             return {"bestaetigbar": False, "satz": NICHT_LESBAR, "pruefung": None}
-        karten = lesen("canvas_nodes", {"select": "id,node_type,title,content,content_json,metadata,updated_at",
+        # Den Text der Karte liest sinnpruefung selbst (kartentext: content, summary, content_json),
+        # genau wie das Werkzeug beim Befördern.
+        karten = lesen("canvas_nodes", {"select": "id,node_type,title,content,summary,content_json,metadata,updated_at",
                                         "linked_idea_id": f"eq.{bubble_id}", "order": "id.asc",
                                         "limit": str(MAX_KARTEN + 1)})
         if not isinstance(karten, list):
@@ -176,7 +167,7 @@ def lesen_und_pruefen(bubble_id: str, lesen: Optional[Callable[[str, dict], Opti
         if len(karten) > MAX_KARTEN:
             return {"bestaetigbar": False, "pruefung": None,
                     "satz": f"Befördern geht bis {MAX_KARTEN} Karten; diese Bubble hat mehr. Befördert ist nichts."}
-        karten = [{**k, "content": _lebender_text(k)} for k in karten if isinstance(k, dict)]
+        karten = [k for k in karten if isinstance(k, dict)]
         ids = [str(k.get("id")) for k in karten if k.get("id")]
         kanten: list = []
         for start in range(0, len(ids), 100):
