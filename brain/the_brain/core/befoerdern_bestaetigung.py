@@ -135,6 +135,17 @@ def schwelle_einstellung() -> int:
     return int(wert) if wert.isdigit() and 0 <= int(wert) <= 100 else SCHWELLE_VORGABE
 
 
+# Nur fuer Tests: "1" laesst auch einen Lauf von brain-ideas befoerdern. Vorgabe aus; im Betrieb
+# nicht setzen (Entscheidung des Betreibers: befoerdert wird erst mit MiroFish).
+JEDE_QUELLE_EINSTELLUNG = "VIBEMIND_TEST_BEFOERDERN_JEDE_QUELLE"
+QUELLE_SATZ = "Befördert wird erst, wenn MiroFish bewertet hat; die jetzige Bewertung dient dem Ausbauen."
+
+
+def jede_quelle_einstellung() -> bool:
+    import os
+    return str(os.environ.get(JEDE_QUELLE_EINSTELLUNG, "")).strip() == "1"
+
+
 def schwelle_satz(schwelle: Mapping[str, Any], modul: Any = None) -> str:
     """Deutscher Satz zur Schwelle: Score, Schwelle und die drei To-dos mit dem größten Gewinn."""
     grenze = schwelle.get("schwelle")
@@ -147,13 +158,17 @@ def schwelle_satz(schwelle: Mapping[str, Any], modul: Any = None) -> str:
         return (f"Die Bewertung steht bei {score} von 100 Punkten, ist aber gekürzt: der Agent sah nicht die ganze "
                 "Bubble. Befördert wird nur mit einer ungekürzten Bewertung; für einen Auftrag ist die Bubble "
                 "zu groß. Fasse Karten zusammen und sag dann „Bewerte diese Bubble“.")
-    if grund == "veraltet":
+    if grund == "quelle":
+        satz = f"Die Bewertung steht bei {score} von 100 Punkten. {QUELLE_SATZ}"
+    elif grund == "veraltet":
         satz = (f"Die letzte Bewertung ({score} Punkte) ist veraltet, die Karten haben sich seitdem geändert. "
                 "Sag „Bewerte diese Bubble“.")
     else:
         satz = f"Die Bewertung steht bei {score} von 100 Punkten, befördert wird ab {grenze}."
     if schwelle.get("gekuerzt"):
         satz += " Sie ist außerdem gekürzt; fürs Befördern zählt nur eine ungekürzte Bewertung."
+    if grund != "quelle" and schwelle.get("quelle") not in (None, "mirofish"):
+        satz += " " + QUELLE_SATZ
     top = [t for t in schwelle.get("top") or [] if isinstance(t, Mapping)]
     if top:
         satz += " Am meisten bringen: " + "; ".join(
@@ -172,7 +187,8 @@ def pruefen(bubble: Mapping[str, Any], karten: Sequence[Mapping[str, Any]],
     pruefung = modul.sinnpruefung(list(karten), list(kanten), bewertung(bubble))
     # Stufe 1 (25.11.2026): nur ab der Schwelle des letzten echten Bewertungslaufs, und nur wenn
     # sich die Karten seitdem nicht geändert haben. Ein Handwert ("mit N") zählt nicht.
-    schwelle = modul.schwelle_pruefen(bubble, list(karten), list(kanten), schwelle_einstellung())
+    schwelle = modul.schwelle_pruefen(bubble, list(karten), list(kanten), schwelle_einstellung(),
+                                      jede_quelle=jede_quelle_einstellung())
     pruefung["schwelle"] = schwelle
     if not pruefung.get("bestanden") or not schwelle.get("bestanden"):
         teile = []

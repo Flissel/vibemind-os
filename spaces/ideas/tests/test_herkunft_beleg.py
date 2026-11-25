@@ -139,6 +139,20 @@ class HerkunftTests(unittest.TestCase):
             grund, request = self._grund("bubble_bewertung", {**probe, "beleg": beleg})
         self.assertEqual(grund, "herkunft_unbelegt: schluessel_fehlt")
         self.assertEqual(request.calls, [])
+    def test_quelle_steht_im_beleg_und_wird_gespeichert(self) -> None:
+        probe = {"bubble_id": "b0b1e001", "lauf": {**_lauf(), "quelle": "agent"},
+                 "kartenstand": "sha256:" + "1" * 64}
+        gut = self._beleg("bubble_bewertung", probe)
+        verfaelscht = {**probe, "lauf": {**probe["lauf"], "quelle": "mirofish"}, "beleg": gut}
+        grund, request = self._grund("bubble_bewertung", verfaelscht)
+        self.assertEqual(grund, "herkunft_unbelegt: beleg_falsch")
+        self.assertEqual(request.calls, [])
+        ohne = {**probe, "lauf": _lauf(), "beleg": gut}
+        self.assertEqual(self._grund("bubble_bewertung", ohne)[0], "herkunft_unbelegt: beleg_falsch")
+        fremd = {**probe, "lauf": {**_lauf(), "quelle": "hand"}}
+        grund, request = self._grund("bubble_bewertung", {**fremd, "beleg": self._beleg("bubble_bewertung", fremd)})
+        self.assertEqual(grund, "invalid_arguments: 'lauf' (quelle)")
+        self.assertEqual(request.calls, [])
 
 
 if __name__ == "__main__":

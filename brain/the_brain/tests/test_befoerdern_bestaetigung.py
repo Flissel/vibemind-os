@@ -34,10 +34,13 @@ KANTEN = [{"from_node_id": "a0000001", "to_node_id": "a0000002"},
           {"from_node_id": "a0000002", "to_node_id": "a0000003"}]
 
 
-def _mit_lauf(bubble, karten, kanten, score=96):
-    """Stufe 1: Befördern braucht einen echten Bewertungslauf ab der Schwelle auf dem jetzigen Kartenstand."""
+def _mit_lauf(bubble, karten, kanten, score=96, quelle="mirofish", **mehr):
+    """Stufe 1: Befördern braucht einen echten Bewertungslauf ab der Schwelle auf dem jetzigen Kartenstand,
+    und zwar von MiroFish (Entscheidung des Betreibers, 25.11.2026)."""
     lauf = {"version": 1, "zeit": "2026-11-23T09:00:00+00:00", "score": score, "sichten": {},
-            "todos": [], "kartenstand": bf.regeln().kartenstand(list(karten), list(kanten))}
+            "todos": [], "kartenstand": bf.regeln().kartenstand(list(karten), list(kanten)), **mehr}
+    if quelle is not None:
+        lauf["quelle"] = quelle
     return {**bubble, "metadata": {**bubble.get("metadata", {}), "bewertung_lauf": lauf}}
 
 
@@ -220,3 +223,52 @@ def test_lesesatz_blaettert_und_liest_verbindungen():
     satz = abk.antwort_fuer_schritt("idea.list", True, {"content": [{"type": "text", "text": json.dumps(seite)}]},
                                     None, "", {"bubble": {"title": "Stadtfest"}})
     assert satz.startswith("Notizen 101 bis 102 von 150 in „Stadtfest“") and "ab 103" in satz, satz
+
+
+# ── Herkunft des Laufs: befoerdert wird erst mit MiroFish (25.11.2026) ──
+
+def test_bewertung_von_brain_ideas_mit_100_punkten_ist_nicht_befoerderbar(monkeypatch):
+    monkeypatch.delenv(bf.JEDE_QUELLE_EINSTELLUNG, raising=False)
+    geprueft = bf.pruefen(_mit_lauf(BUBBLE, GUT, KANTEN, score=100, quelle="agent"), GUT, KANTEN)
+    assert geprueft["bestaetigbar"] is False
+    assert geprueft["pruefung"]["schwelle"]["grund"] == "quelle"
+    assert geprueft["pruefung"]["schwelle"]["quelle"] == "agent"
+    assert geprueft["satz"] == ("Die Bewertung steht bei 100 von 100 Punkten. Befördert wird erst, wenn MiroFish "
+                                "bewertet hat; die jetzige Bewertung dient dem Ausbauen. Befördert ist nichts.")
+
+
+def test_alter_lauf_ohne_quelle_gilt_als_brain_ideas(monkeypatch):
+    monkeypatch.delenv(bf.JEDE_QUELLE_EINSTELLUNG, raising=False)
+    geprueft = bf.pruefen(_mit_lauf(BUBBLE, GUT, KANTEN, score=100, quelle=None), GUT, KANTEN)
+    assert geprueft["bestaetigbar"] is False and geprueft["pruefung"]["schwelle"]["grund"] == "quelle"
+    fremd = bf.pruefen(_mit_lauf(BUBBLE, GUT, KANTEN, score=100, quelle="MiroFish "), GUT, KANTEN)
+    assert fremd["bestaetigbar"] is False and fremd["pruefung"]["schwelle"]["quelle"] == "agent"
+
+
+def test_mirofish_ab_schwelle_ungekuerzt_und_aktuell_ist_befoerderbar(monkeypatch):
+    monkeypatch.delenv(bf.JEDE_QUELLE_EINSTELLUNG, raising=False)
+    monkeypatch.delenv(bf.SCHWELLE_EINSTELLUNG, raising=False)
+    assert bf.pruefen(_mit_lauf(BUBBLE, GUT, KANTEN, score=95), GUT, KANTEN)["bestaetigbar"] is True
+    unter = bf.pruefen(_mit_lauf(BUBBLE, GUT, KANTEN, score=94), GUT, KANTEN)
+    assert unter["pruefung"]["schwelle"]["grund"] == "unter_schwelle" and "MiroFish" not in unter["satz"]
+    gekuerzt = bf.pruefen(_mit_lauf(BUBBLE, GUT, KANTEN, score=99, gekuerzt=True), GUT, KANTEN)
+    assert gekuerzt["pruefung"]["schwelle"]["grund"] == "gekuerzt"
+    alt = _mit_lauf(BUBBLE, GUT, KANTEN, score=99)
+    alt["metadata"]["bewertung_lauf"]["kartenstand"] = "sha256:" + "0" * 64
+    assert bf.pruefen(alt, GUT, KANTEN)["pruefung"]["schwelle"]["grund"] == "veraltet"
+
+
+def test_unter_der_schwelle_sagt_der_satz_auch_dass_erst_mirofish_befoerdert(monkeypatch):
+    monkeypatch.delenv(bf.JEDE_QUELLE_EINSTELLUNG, raising=False)
+    geprueft = bf.pruefen(_mit_lauf(BUBBLE, GUT, KANTEN, score=40, quelle="agent"), GUT, KANTEN)
+    assert geprueft["pruefung"]["schwelle"]["grund"] == "unter_schwelle"
+    assert bf.QUELLE_SATZ in geprueft["satz"]
+
+
+def test_nur_die_test_einstellung_laesst_brain_ideas_befoerdern(monkeypatch):
+    for wert in ("", "0", "ja", "true", " 1x"):
+        monkeypatch.setenv(bf.JEDE_QUELLE_EINSTELLUNG, wert)
+        assert bf.pruefen(_mit_lauf(BUBBLE, GUT, KANTEN, score=100, quelle="agent"), GUT, KANTEN)[
+            "bestaetigbar"] is False, wert
+    monkeypatch.setenv(bf.JEDE_QUELLE_EINSTELLUNG, "1")
+    assert bf.pruefen(_mit_lauf(BUBBLE, GUT, KANTEN, score=100, quelle="agent"), GUT, KANTEN)["bestaetigbar"] is True

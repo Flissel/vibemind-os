@@ -300,12 +300,30 @@ def _text(wert: Any, grenze: int, leer: bool = False) -> bool:
             and not any(ord(c) < 32 and c not in "\n\t" for c in wert))
 
 
+# Herkunft eines Bewertungslaufs (25.11.2026). Heute bewertet brain-ideas ("agent"); das ist ein
+# Zwischenstand zum Ausbauen. Befoerdert wird erst mit einem Lauf von MiroFish ("mirofish"),
+# Entscheidung des Betreibers. Die Quelle setzt der feste Rueckweg im Gehirn, nie das Modell; sie
+# steht im Lauf und ist damit vom Herkunftsbeleg mit unterschrieben. Ein Lauf ohne Quelle gilt als "agent".
+QUELLE_AGENT = "agent"
+QUELLE_MIROFISH = "mirofish"
+QUELLEN = (QUELLE_AGENT, QUELLE_MIROFISH)
+BEFOERDERN_QUELLE = QUELLE_MIROFISH
+
+
+def lauf_quelle(lauf: Mapping[str, Any]) -> str:
+    """Die Quelle eines Laufs; fehlt sie oder ist sie unbekannt, "agent" (schaltet nichts frei)."""
+    quelle = lauf.get("quelle")
+    return quelle if quelle in QUELLEN else QUELLE_AGENT
+
+
 def lauf_fehler(lauf: Any) -> str:
     """"" wenn ``lauf`` die Form eines neuen Bewertungslaufs hat (ohne zeit/kartenstand), sonst der Grund."""
     if not isinstance(lauf, Mapping):
         return "lauf"
-    if set(lauf) - {"sichten", "todos", "gekuerzt"}:
+    if set(lauf) - {"sichten", "todos", "gekuerzt", "quelle"}:
         return "lauf"
+    if "quelle" in lauf and lauf["quelle"] not in QUELLEN:
+        return "quelle"
     sichten = lauf.get("sichten")
     if not isinstance(sichten, Mapping) or set(sichten) != set(SICHTEN):
         return "sichten"
@@ -358,26 +376,31 @@ def offene_todos(lauf: Mapping[str, Any], anzahl: int | None = None) -> list[dic
 
 def schwelle_pruefen(bubble: Mapping[str, Any], karten: Sequence[Mapping[str, Any]],
                      kanten: Sequence[Mapping[str, Any]], schwelle: int = BEFOERDERN_SCHWELLE,
-                     gekuerzt_erlaubt: bool = False) -> dict[str, Any]:
-    """Befoerdern nur ab der Schwelle: letzter echter Lauf, nicht veraltet, nicht gekuerzt.
+                     gekuerzt_erlaubt: bool = False, jede_quelle: bool = False) -> dict[str, Any]:
+    """Befoerdern nur ab der Schwelle: letzter echter Lauf von MiroFish, nicht veraltet, nicht gekuerzt.
 
     Ein Handwert zaehlt nicht. Ein gekuerzter Lauf (der Agent sah nicht alles) schaltet die Schwelle
-    nicht frei, solange der Betreiber das nicht anders entscheidet (``gekuerzt_erlaubt``).
-    Rueckgabe: bestanden, grund (kein_lauf | veraltet | unter_schwelle | gekuerzt | ""), score,
-    schwelle, gekuerzt, top (3 To-dos).
+    nicht frei, solange der Betreiber das nicht anders entscheidet (``gekuerzt_erlaubt``). Ein Lauf
+    von brain-ideas (Quelle "agent") schaltet nie frei; ``jede_quelle`` ist nur fuer Tests (das Gehirn
+    liest es aus einer Test-Einstellung, Vorgabe aus).
+    Rueckgabe: bestanden, grund (kein_lauf | veraltet | unter_schwelle | gekuerzt | quelle | ""), score,
+    schwelle, gekuerzt, quelle, top (3 To-dos).
     """
     lauf = bewertung_lauf(bubble)
     if lauf is None:
         return {"bestanden": False, "grund": "kein_lauf", "score": None, "schwelle": schwelle, "gekuerzt": False,
-                "top": []}
+                "quelle": None, "top": []}
     top = offene_todos(lauf, 3)
-    aus = {"score": lauf["score"], "schwelle": schwelle, "gekuerzt": lauf.get("gekuerzt") is True, "top": top}
+    aus = {"score": lauf["score"], "schwelle": schwelle, "gekuerzt": lauf.get("gekuerzt") is True,
+           "quelle": lauf_quelle(lauf), "top": top}
     if lauf["kartenstand"] != kartenstand(karten, kanten):
         return {"bestanden": False, "grund": "veraltet", **aus}
     if lauf["score"] < schwelle:
         return {"bestanden": False, "grund": "unter_schwelle", **aus}
     if aus["gekuerzt"] and not gekuerzt_erlaubt:
         return {"bestanden": False, "grund": "gekuerzt", **aus}
+    if aus["quelle"] != BEFOERDERN_QUELLE and not jede_quelle:
+        return {"bestanden": False, "grund": "quelle", **aus}
     return {"bestanden": True, "grund": "", **aus}
 
 
