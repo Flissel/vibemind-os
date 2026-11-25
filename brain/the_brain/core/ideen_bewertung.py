@@ -76,6 +76,8 @@ SICHT_PRUEFT = {
 }
 
 _FORM = "Der Agent hat nicht in der vereinbarten Form geantwortet; es wurde nichts geändert."
+HERKUNFT_SATZ = ("Die Bewertung ist nicht gespeichert: der Rückweg-Schlüssel fehlt oder passt nicht "
+                 "(Einrichtung von Gehirn und Ideen-Server). Geändert ist nichts.")
 _KUERZEL = re.compile(r"^\[?(K\d{1,4})\]?$")
 
 
@@ -570,6 +572,8 @@ def verarbeiten(auftrag: Mapping[str, Any], rueckweg: Mapping[str, Any], *,
             if grund == "wartet":
                 return "wartet", None, "idea.bewertung_speichern: approval pending", \
                     "Die Bewertung wartet auf Freigabe; gespeichert ist noch nichts.", {}
+            if "herkunft_unbelegt" in grund:
+                return "fehler", False, grund, HERKUNFT_SATZ, {}
             if "kartenstand_changed" in grund:
                 return "fehler", False, grund, ("Während der Bewertung haben sich Karten geändert; gespeichert habe "
                                                 "ich nichts. Sag noch einmal „Bewerte diese Bubble“."), {}
@@ -627,7 +631,9 @@ def _todo_verarbeiten(auftrag: Mapping[str, Any], rueckweg: Mapping[str, Any], *
             return "fehler", ok, grund, f"To-do {nr} ist nicht ganz erledigt: {text} ging nicht.{schon}", {}
         erledigt.append(text)
     ok, grund = _fest("idea.todo_abhaken", {"bubble_id": bubble_id, "nr": nr, "durch": "agent"}, aufruf, pruefe)
-    haken = "" if ok is True else f" Abhaken ging nicht ({grund[:80]}); sag „To-do {nr} erledigt“."
+    haken = "" if ok is True else (
+        " Abhaken ging nicht (Rückweg-Schlüssel fehlt oder passt nicht); sag „To-do {nr} erledigt“.".format(nr=nr)
+        if "herkunft_unbelegt" in grund else f" Abhaken ging nicht ({grund[:80]}); sag „To-do {nr} erledigt“.")
     return ("geschrieben", True if ok is True else ok, "written and verified" if ok is True else grund,
             f"To-do {nr} erledigt: {', '.join(erledigt)}.{haken} „Zurück“ nimmt das zurück. Die Bewertung ist "
             "damit veraltet; sag „Bewerte diese Bubble“ für einen neuen Stand.", {})

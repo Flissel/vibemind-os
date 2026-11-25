@@ -858,6 +858,41 @@ def laufzeit_kontext(werkzeug: str, ereignis: str, auftrag: Mapping[str, Any], n
     )
 
 
+HERKUNFT_OHNE_SCHLUESSEL = "herkunft_unbelegt: schluessel_fehlt"
+
+
+def mit_beleg(werkzeug: str, argumente: dict[str, Any], plan_id: Any, *, jetzt: Optional[float] = None,
+              schluessel: Optional[str] = None) -> dict[str, Any]:
+    """Haengt den Herkunftsbeleg an, wo der Ideen-Server ihn verlangt (kartenregeln.beleg_noetig).
+
+    Der Schluessel kommt aus ``VIBEMIND_RUECKWEG_SCHLUESSEL`` (get_secret, Wert gestrippt); fehlt er,
+    wird nicht geschrieben (RuntimeError ``herkunft_unbelegt: schluessel_fehlt``). Die aenderung_id
+    ist dieselbe, die der McpExecutor aus der Plan-Kennung anhaengt.
+    """
+    import time
+
+    from .befoerdern_bestaetigung import regeln
+    from .supabase_ideas_client import SupabaseIdeasClient
+
+    modul = regeln()
+    if modul is None or not hasattr(modul, "beleg_noetig"):
+        raise RuntimeError("herkunft_unbelegt: kartenregeln_fehlen")
+    if not modul.beleg_noetig(werkzeug, argumente):
+        return argumente
+    if schluessel is None:
+        from .config import get_secret
+        schluessel = get_secret(modul.BELEG_EINSTELLUNG) or ""
+    schluessel = str(schluessel).strip()
+    if not schluessel:
+        raise RuntimeError(HERKUNFT_OHNE_SCHLUESSEL)
+    aenderung_id = SupabaseIdeasClient._aenderung_id_sauber(plan_id)
+    if not aenderung_id:
+        raise RuntimeError("herkunft_unbelegt: aenderung_id_fehlt")
+    ablauf = int((time.time() if jetzt is None else jetzt) + modul.BELEG_GILT_S)
+    ohne = {k: v for k, v in argumente.items() if k != "beleg"}
+    return {**ohne, "beleg": modul.beleg_bauen(schluessel, werkzeug, ohne, aenderung_id, ablauf)}
+
+
 def anschluss(auftrag: Mapping[str, Any]) -> dict[str, Any]:
     """Die echten Bindungen fuer ``zurueckschreiben``: Lesen, feste Aufrufe, Nachpruefung."""
     from .capability_targets import McpExecutor
@@ -868,6 +903,7 @@ def anschluss(auftrag: Mapping[str, Any]) -> dict[str, Any]:
     def aufruf(ereignis: str, argumente: dict[str, Any]) -> Any:
         werkzeug = FESTE_EREIGNISSE[ereignis]["werkzeug"]
         kontext = laufzeit_kontext(werkzeug, ereignis, auftrag, next(zaehler))
+        argumente = mit_beleg(werkzeug, dict(argumente), folgeplan_id(auftrag))   # = kontext.plan_id
         antwort = McpExecutor(f"mcp:{AGENT}:{ZIEL_SERVER}:{werkzeug}").call_with_arg(
             dict(argumente), extra_params={"_runtime_authority": kontext})
         if antwort.get("pending") is True:

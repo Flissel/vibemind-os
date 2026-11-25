@@ -15,6 +15,7 @@ import math
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -437,6 +438,7 @@ TOOLS: list[dict[str, Any]] = [
                 "bubble_id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": _ID_SCHEMA_PATTERN},
                 "lauf": {"type": "object"},
                 "kartenstand": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+                "beleg": {"type": "string", "maxLength": 120},
             },
             "required": ["bubble_id", "lauf", "kartenstand"],
             "additionalProperties": False,
@@ -451,6 +453,7 @@ TOOLS: list[dict[str, Any]] = [
                 "bubble_id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": _ID_SCHEMA_PATTERN},
                 "nr": {"type": "integer", "minimum": 1, "maximum": 25},
                 "durch": {"type": "string", "enum": ["hand", "agent"]},
+                "beleg": {"type": "string", "maxLength": 120},
             },
             "required": ["bubble_id", "nr", "durch"],
             "additionalProperties": False,
@@ -1890,8 +1893,37 @@ def _bubble_mit_stand(bubble_id: str, select: str) -> tuple[dict[str, Any], str,
     return bubble, _kartenregeln().kartenstand(zeilen, _bubble_kanten(ids)), set(ids)
 
 
+def _rueckweg_schluessel() -> str:
+    """Der Schluessel fuer den Herkunftsbeleg (kartenregeln.BELEG_EINSTELLUNG), gestrippt; "" wenn keiner.
+
+    Auch als <NAME>_FILE (Datei mit dem Wert). Der Wert wird nie ausgegeben.
+    """
+    name = _kartenregeln().BELEG_EINSTELLUNG
+    datei = os.environ.get(f"{name}_FILE", "").strip()
+    if datei:
+        try:
+            with open(datei, encoding="utf-8") as f:
+                wert = f.read().strip()
+            if wert:
+                return wert
+        except OSError:
+            pass
+    return os.environ.get(name, "").strip()
+
+
+def _herkunft_pruefen(werkzeug: str, arguments: Mapping[str, Any]) -> None:
+    """Ohne gueltigen Beleg vom festen Rueckweg kein Schreiben: ``herkunft_unbelegt: <grund>``."""
+    regeln = _kartenregeln()
+    if not regeln.beleg_noetig(werkzeug, arguments):
+        return
+    grund = regeln.beleg_pruefen(_rueckweg_schluessel(), arguments.get("beleg"), werkzeug, arguments,
+                                 _CHANGE_ID.get(), time.time())
+    if grund:
+        raise ToolError(f"herkunft_unbelegt: {grund}")
+
+
 def _bewertung_speichern(arguments: Mapping[str, Any]) -> dict[str, Any]:
-    _only_arguments(arguments, {"bubble_id", "lauf", "kartenstand"})
+    _only_arguments(arguments, {"bubble_id", "lauf", "kartenstand", "beleg"})
     bubble_id = _durable_id(arguments, "bubble_id")
     regeln = _kartenregeln()
     lauf = arguments.get("lauf")
@@ -1901,6 +1933,7 @@ def _bewertung_speichern(arguments: Mapping[str, Any]) -> dict[str, Any]:
     gelesen = arguments.get("kartenstand")
     if not isinstance(gelesen, str) or _KARTENSTAND.fullmatch(gelesen) is None:
         raise ToolError("invalid_arguments: 'kartenstand' must be sha256:<64 hex>")
+    _herkunft_pruefen("bubble_bewertung", arguments)   # vor jedem Lesen und Schreiben
     bubble, stand, ids = _bubble_mit_stand(bubble_id, "id,description,metadata")
     if stand != gelesen:
         # Seit dem Lesen hat sich an Karten oder Verbindungen etwas geaendert: die Bewertung
@@ -1944,13 +1977,14 @@ def _bewertung_speichern(arguments: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _todo_abhaken(arguments: Mapping[str, Any]) -> dict[str, Any]:
-    _only_arguments(arguments, {"bubble_id", "nr", "durch"})
+    _only_arguments(arguments, {"bubble_id", "nr", "durch", "beleg"})
     bubble_id = _durable_id(arguments, "bubble_id")
     nr, durch = arguments.get("nr"), arguments.get("durch")
     if isinstance(nr, bool) or not isinstance(nr, int) or not 1 <= nr <= 25:
         raise ToolError("invalid_arguments: 'nr' must be an integer from 1 to 25")
     if durch not in ("hand", "agent"):
         raise ToolError("invalid_arguments: 'durch' must be hand or agent")
+    _herkunft_pruefen("bewertung_todo", arguments)     # "durch agent" nur mit Beleg; von Hand ohne
     bubble = _first_row(_request("GET", "ideas", params={
         "select": "id,metadata", "id": f"eq.{bubble_id}", "parent_id": "is.null", "limit": "1"}))
     if bubble is None:
