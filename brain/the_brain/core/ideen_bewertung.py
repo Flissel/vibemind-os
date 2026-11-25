@@ -76,6 +76,7 @@ SICHT_PRUEFT = {
 }
 
 _FORM = "Der Agent hat nicht in der vereinbarten Form geantwortet; es wurde nichts geändert."
+AUSBAU_SATZ = "Diese Bewertung dient dem Ausbauen; befördert wird erst, wenn MiroFish bewertet hat."
 HERKUNFT_SATZ = ("Die Bewertung ist nicht gespeichert: der Rückweg-Schlüssel fehlt oder passt nicht "
                  "(Einrichtung von Gehirn und Ideen-Server). Geändert ist nichts.")
 _KUERZEL = re.compile(r"^\[?(K\d{1,4})\]?$")
@@ -322,7 +323,8 @@ def bewertung_pruefen(roh: Any, kuerzel: Mapping[str, str], kuerzel_titel: Mappi
             if geprueft is None:
                 return None, satz
             todos.append(geprueft)
-    lauf = {"sichten": aus_sichten, "todos": todos, "gekuerzt": bool(gekuerzt)}
+    # Die Quelle setzt der feste Rueckweg, nicht das Modell (was es selbst dazu schreibt, zaehlt nicht).
+    lauf = {"sichten": aus_sichten, "todos": todos, "gekuerzt": bool(gekuerzt), "quelle": modul.QUELLE_AGENT}
     fehler = modul.lauf_fehler(lauf)
     if fehler:
         return None, _FORM
@@ -363,6 +365,8 @@ def bewertung_meldung(lauf: Mapping[str, Any], score: int, kuerzung: Optional[Ma
         satz += " " + gekuerzt
     elif lauf.get("gekuerzt"):
         satz += " Gekürzt bewertet. Fürs Befördern zählt nur eine ungekürzte Bewertung."
+    if lauf.get("quelle", modul.QUELLE_AGENT) != modul.BEFOERDERN_QUELLE:
+        satz += " " + AUSBAU_SATZ
     todos = [{"nr": nr, **t} for nr, t in enumerate(lauf["todos"], start=1)]
     if not todos:
         return satz + " Offene To-dos nennt der Agent keine."

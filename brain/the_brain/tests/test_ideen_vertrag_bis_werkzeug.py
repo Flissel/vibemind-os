@@ -296,6 +296,10 @@ def stufe1(check, db, server, rufe, lies, abk, vertrag, gesehen) -> None:
           [(e.get("art"), e.get("score"), (e.get("sichten") or {}).get("rowboat"))
            for e in bubble["metadata"].get("eval_history") or []] == [("lauf", 69, 14)],
           json.dumps(bubble["metadata"].get("eval_history")))
+    check("Bewerten: der Lauf traegt die Quelle agent (Lauf und eval_history), das Gehirn setzt sie",
+          gespeichert.get("quelle") == "agent"
+          and [e.get("quelle") for e in bubble["metadata"].get("eval_history") or []] == ["agent"],
+          json.dumps(gespeichert.get("quelle")))
 
     def befoerdern_satz():
         karten = [k for k in db.tabellen["canvas_nodes"] if k.get("linked_idea_id") == "b0b1e006"]

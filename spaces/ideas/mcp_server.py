@@ -1952,7 +1952,7 @@ def _bewertung_speichern(arguments: Mapping[str, Any]) -> dict[str, Any]:
         "sichten": {name: dict(lauf["sichten"][name]) for name in regeln.SICHTEN},
         "todos": [{"nr": nr, **dict(todo), "erledigt": False}
                   for nr, todo in enumerate(lauf["todos"], start=1)],
-        "kartenstand": stand, "gekuerzt": lauf.get("gekuerzt") is True,
+        "kartenstand": stand, "gekuerzt": lauf.get("gekuerzt") is True, "quelle": regeln.lauf_quelle(lauf),
     }
     body: dict[str, Any] = {"score": score}
     beschreibung = bubble.get("description")
@@ -1965,7 +1965,7 @@ def _bewertung_speichern(arguments: Mapping[str, Any]) -> dict[str, Any]:
         neu["alt"] = vorher["alt"]
     metadata["bewertung_lauf"] = neu
     metadata["eval_history"] = _verlauf_anhaengen(metadata.get("eval_history"), {
-        "zeit": zeit, "score": score, "art": "lauf",
+        "zeit": zeit, "score": score, "art": "lauf", "quelle": regeln.lauf_quelle(lauf),
         "sichten": {name: lauf["sichten"][name]["punkte"] for name in regeln.SICHTEN}})
     body["metadata"] = metadata
     updated = _first_row(_request("PATCH", "ideas", params={"id": f"eq.{bubble_id}", "parent_id": "is.null"},

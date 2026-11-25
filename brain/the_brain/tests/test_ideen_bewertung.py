@@ -94,9 +94,12 @@ KANTEN = [{"from_node_id": "a0000001", "to_node_id": "a0000002", "edge_type": "r
           {"from_node_id": "a0000002", "to_node_id": "b0000099", "edge_type": "related"}]   # in eine andere Bubble
 
 
-def _bubble(score, stand=None, **meta):
+def _bubble(score, stand=None, quelle="mirofish", **meta):
+    # Befördert wird nur mit einem Lauf von MiroFish; die Tests zur Herkunft stehen in
+    # test_befoerdern_bestaetigung.py.
     regeln = bf.regeln()
     lauf = {"score": score, "kartenstand": stand or regeln.kartenstand(KARTEN, KANTEN), "zeit": "2026-11-25T09:00:00",
+            "quelle": quelle,
             "todos": [{"nr": 1, "titel": "Quellen", "punkte": 3, "erledigt": False},
                       {"nr": 2, "titel": "Wettbewerb", "punkte": 6, "erledigt": False},
                       {"nr": 3, "titel": "Erledigt", "punkte": 9, "erledigt": True}]}
@@ -457,3 +460,14 @@ def test_gehirn_liest_nur_den_namen_mit_secret(monkeypatch) -> None:
         rw.mit_beleg("bubble_bewertung", {"bubble_id": "b0b1e001"}, "p1-r")
     monkeypatch.setenv("VIBEMIND_RUECKWEG_SECRET", "testschluessel-stadtfest\r\n")
     assert rw.mit_beleg("bubble_bewertung", {"bubble_id": "b0b1e001"}, "p1-r")["beleg"].startswith("v1.")
+
+
+def test_quelle_setzt_der_rueckweg_nicht_das_modell() -> None:
+    antwort = json.loads(_antwort())
+    antwort["quelle"] = "mirofish"
+    for sicht in antwort["sichten"].values():
+        sicht["quelle"] = "mirofish"
+    lauf, _ = bew.bewertung_pruefen(json.dumps(antwort, ensure_ascii=False), KURZ, TITEL)
+    assert lauf is not None and lauf["quelle"] == "agent"
+    meldung = bew.bewertung_meldung(lauf, 100)
+    assert bew.AUSBAU_SATZ in meldung
