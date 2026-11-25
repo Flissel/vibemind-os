@@ -656,6 +656,26 @@ def _szene_id(aid: str, nr: int) -> str:
     return str(z["id"])
 
 
+LISTE_MAX = 100
+
+
+@pult_router.get("")
+def pult_liste(mandant: str = Query(...), limit: int = Query(50, ge=1, le=LISTE_MAX),
+               x_pult_key: str | None = Header(None)):
+    """Lange Videos (Werkbank-Auftraege) EINER Firma, neueste zuerst; nur lesend (Marketing-Oberflaeche).
+    Aus dem Ergebnis nur das, was die Seiten zeigen: Werkbank-Zaehlung und das fertige Video."""
+    _schluessel(x_pult_key)
+    m = _text(mandant, "mandant", 80)
+    zeilen = _lesen(lambda:
+        f"SELECT id, stand, eingabe->>'thema' AS thema, eingabe->>'titel' AS titel, angelegt, "
+        f"ergebnis->'werkbank' AS werkbank, ergebnis->>'datei' AS datei, ergebnis->'dauer_s' AS dauer_s, "
+        f"ergebnis->>'titel' AS video_titel, ergebnis->>'beschreibung' AS beschreibung, "
+        f"ergebnis->'zeitmarken' AS zeitmarken FROM auftrag.auftraege "
+        f"WHERE an = {lit(AN)} AND art = {lit(ART)} AND mandant = {lit(m)} "
+        f"ORDER BY angelegt DESC LIMIT {int(limit)}")
+    return {"werke": [z for z in zeilen if isinstance(z, dict)]}
+
+
 @pult_router.get("/v/{kennung}")
 def pult_vorschlag(kennung: str, x_pult_key: str | None = Header(None)):
     _schluessel(x_pult_key)

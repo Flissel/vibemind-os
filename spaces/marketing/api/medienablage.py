@@ -13,7 +13,7 @@ Reels (MP4), ihre Vorschaubilder (JPG) und Podcast-Folgen (MP3) lagen bisher nur
 - **Lesen:** `finden(firma, name)` nimmt die eigene Ablage, sonst (bis zum Herueberholen) die der Laeden.
   Wer darf, entscheidet der Aufrufer (die Oberflaeche signiert Firma und Name).
 
-Erlaubt sind nur die Namen, die die Arbeiter selbst vergeben (vid-/pod-), nie Pfade.
+Erlaubt sind nur die Namen, die die Arbeiter selbst vergeben (vid-/pod-, wb- der Werkbank), nie Pfade.
 
 Eigener Umgebungsname: MARKETING_MEDIEN_ORDNER ist schon der flache Medienordner (pult, bilder, gestaltung,
 video lesen ihn ohne Firmenordner). Diese Ablage darf nie dorthin zeigen."""
@@ -29,7 +29,9 @@ log = logging.getLogger(__name__)
 
 ENV = "MARKETING_FIRMEN_ABLAGE"
 LAEDEN_ENV = "MARKETING_BILD_ORDNER"
-_NAME = re.compile(r"^(?:vid-[0-9a-f]{8}-[a-z0-9-]{1,40}\.(?:mp4|jpg)|pod-[0-9a-f]{8}-[a-z0-9-]{1,60}\.mp3)$")
+# vid-/pod-: Reels, Vorschaubilder, Folgen; wb-: Clips und Video der Werkbank (werkbank.NAME_MUSTER, Punkt 3)
+_NAME = re.compile(r"^(?:vid-[0-9a-f]{8}-[a-z0-9-]{1,40}\.(?:mp4|jpg)|pod-[0-9a-f]{8}-[a-z0-9-]{1,60}\.mp3"
+                   r"|wb-[0-9a-f]{8}-(?:s[0-9]{2,3}|video)-f[0-9]{1,3}\.mp4)$")
 _FIRMA = re.compile(r"^[a-z][a-z0-9_-]{0,40}$")
 TYPEN = {".mp4": "video/mp4", ".mp3": "audio/mpeg", ".jpg": "image/jpeg"}
 

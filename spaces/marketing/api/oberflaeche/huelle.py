@@ -52,7 +52,7 @@ _AKTIV = ' class="aktiv"'
 # (Pfad unter PFAD, Textschluessel) in der Reihenfolge des Menues
 MENUE = (("/newsletter", "menue_newsletter"), ("/entwuerfe", "menue_entwuerfe"), ("/vorlagen", "menue_vorlagen"),
          ("/plan", "menue_plan"), ("/marke", "menue_marke"),
-         ("/reels", "menue_reels"), ("/podcast", "menue_podcast"))
+         ("/reels", "menue_reels"), ("/podcast", "menue_podcast"), ("/werkbank", "menue_werkbank"))
 
 TEXTE = {
     "de": {
@@ -65,6 +65,7 @@ TEXTE = {
         "menue_marke": "Marke",
         "menue_reels": "Reels",
         "menue_podcast": "Podcast",
+        "menue_werkbank": "Lange Videos",
         "sprache": "Sprache",
         "firma": "Firma",
         "nur_ansicht": "Nur Ansicht. Bearbeiten, Bestellen und Einreichen gehen vorerst noch in der Sales-Oberfläche. "
@@ -102,6 +103,7 @@ TEXTE = {
         "menue_marke": "Brand",
         "menue_reels": "Reels",
         "menue_podcast": "Podcast",
+        "menue_werkbank": "Long videos",
         "sprache": "Language",
         "firma": "Company",
         "nur_ansicht": "View only. Editing, ordering and submitting still happen in the Sales interface for now. "
@@ -510,7 +512,7 @@ dl.angaben dt { font-weight: 600; margin-top: 6px; } dl.angaben dd { margin: 0; 
 pre { white-space: pre-wrap; font: inherit; margin: 6px 0; }
 .editor { display: flex; flex-direction: column; gap: 10px; max-width: 720px; margin: 8px 0 16px; }
 .editor label { display: flex; flex-direction: column; gap: 4px; font-weight: 600; }
-.editor input[type=text], .editor input[type=url], .editor textarea { font: inherit; font-weight: 400;
+.editor input[type=text], .editor input[type=url], .editor input[type=number], .editor textarea { font: inherit; font-weight: 400;
   padding: 6px 10px; border: 1px solid var(--linie); border-radius: 10px; background: var(--flaeche2); color: var(--text); }
 .editor textarea { resize: vertical; min-height: 6rem; }
 .editor fieldset.block { border: 1px solid var(--linie); border-radius: 14px; background: var(--flaeche);
@@ -553,6 +555,19 @@ img.bildchen { display: block; max-width: 160px; max-height: 120px; object-fit: 
 .galerie figure { margin: 0; display: flex; flex-direction: column; gap: 4px; }
 .galerie figcaption { font-size: .8rem; color: var(--leise); overflow-wrap: anywhere; }
 .galerie img.bildchen { max-width: 100%; }
+.bildwahl { display: flex; flex-direction: column; gap: 4px; font-weight: 400; font-size: .8rem; color: var(--leise);
+  overflow-wrap: anywhere; cursor: pointer; } .bildwahl input { align-self: flex-start; }
+.bestellen fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
+.bestellen fieldset[disabled] { opacity: .55; }
+.werkbank fieldset.still { border: 0; padding: 0; margin: 0; } .werkbank fieldset[disabled], .werkbank button[disabled] { opacity: .55; }
+.werkbank .knoepfe { align-items: center; } .werkbank ol.szenen li { margin: 6px 0; }
+.werkbank .lesetext { white-space: pre-wrap; max-width: 72ch; }
+.werkbank .kopierfeld { display: flex; flex-direction: column; gap: 4px; font-weight: 600; max-width: 720px; margin: 8px 0; }
+.werkbank .kopierfeld textarea, .werkbank > textarea { font: inherit; font-weight: 400; }
+.assistent { max-width: 720px; margin: 16px 0 24px; }
+ol.verlauf { list-style: none; padding: 0; margin: 8px 0; display: flex; flex-direction: column; gap: 8px; }
+ol.verlauf li { border-left: 3px solid var(--akzent); background: var(--flaeche2); padding: 8px 12px;
+  border-radius: 0 10px 10px 0; } ol.verlauf li p { margin: 2px 0; } ol.verlauf .frage { font-weight: 600; }
 @media (max-width: 767px) {
   .rahmen { display: block; }
   nav.seite { width: auto; height: auto; position: static; flex-direction: row; flex-wrap: wrap; align-items: center;

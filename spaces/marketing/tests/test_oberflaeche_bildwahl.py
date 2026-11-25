@@ -137,11 +137,12 @@ def test_bildblock_platzhalter_und_altes_bild_ausserhalb_der_liste(c, a):
     assert a.gespeichert[-1][4]["bild"]["data"]["props"]["url"] == "medien:ast.jpg"
 
 
-def test_gestaltete_flaeche_tauscht_nicht(c, a):
+def test_gestaltete_flaeche_ohne_bildebene_tauscht_nichts(c, a):
+    # Seit Tag 6 tauschen Flaechen die Bilder ihrer Bildebenen (test_oberflaeche_tag6); ohne Bildebene nichts
     props = a.entwurf["fassungen"][0]["bloecke"]["bild"]["data"]["props"]
     props.update({"url": "medien:gs-0123456789ab.jpg", "gestaltung": {"format": "quer", "ebenen": []}})
     r = c.get(EDITOR, headers=H)
-    assert "b:bild" not in auswahl(r.text) and "Gestaltete Fläche (gs-0123456789ab.jpg)" in r.text
+    assert "b:bild" not in auswahl(r.text) and "keine Bilder" in r.text
     werte = alles(r.text)
     werte["b:bild"] = "ast.jpg"
     assert _post(c, werte).headers["location"] == f"{EDITOR}?unveraendert=1"

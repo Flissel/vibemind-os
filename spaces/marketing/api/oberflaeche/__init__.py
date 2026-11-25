@@ -1,7 +1,8 @@
 """Eigene Oberflaeche des Marketing-Space (Stufe A, 24.11.2026): lesende Seiten unter /oberflaeche/;
 seit Stufe B (25.11.) schreibend: Entwuerfe (vorlagen.py, entwuerfe.py), Plan und Kampagnen (plan.py),
 Markenprofil ueber den Assistenten (marke.py); Reels und Folgen abspielen (medien.py, Tag 4); Bilder zuordnen
-und Collagen bearbeiten (entwuerfe.py, Tag 5).
+und Collagen bearbeiten (entwuerfe.py, Tag 5); Reels und Folgen bestellen hinter dem Kosten-Schalter
+(bestellen.py, Punkt 2); lange Videos in der Werkbank abnehmen (werkbank.py, Punkt 3).
 
 Die App zeigt sie im Marketing-Reiter (MARKETING_UI_URL) und haengt den Schluessel aus der Umgebung
 als Bearer an (bearerEnv). Die API prueft ihn gegen MARKETING_UI_KEY. Gesendet wird hier nichts:
@@ -11,13 +12,13 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi.responses import RedirectResponse
 
-from spaces.marketing.api.oberflaeche import (entwuerfe, huelle, marke, medien, newsletter, plan, podcast, reels,
-                                              vorlagen)
+from spaces.marketing.api.oberflaeche import (assistent, bestellen, entwuerfe, huelle, marke, medien, newsletter,
+                                              plan, podcast, reels, vorlagen, werkbank)
 
 SEITEN = (("/newsletter", newsletter), ("/entwuerfe", entwuerfe), ("/vorlagen", vorlagen), ("/plan", plan), ("/marke", marke), ("/reels", reels),
-          ("/podcast", podcast))
+          ("/podcast", podcast), ("/werkbank", werkbank))
 # Module mit eigenem Woerterbuch (der Sprachtest prueft jedes)
-MODULE_MIT_TEXTEN = (huelle,) + tuple(m for _, m in SEITEN)
+MODULE_MIT_TEXTEN = (huelle, assistent, bestellen) + tuple(m for _, m in SEITEN)
 
 router = APIRouter(prefix=huelle.PFAD, include_in_schema=False)
 
@@ -55,3 +56,25 @@ router.add_api_route("/marke/vorschlag", marke.vorschlag, methods=["POST"])
 router.add_api_route("/medien/{name}", medien.abrufen, methods=["GET"])
 # Stufe B, Tag 5: Bilder der Firma im Editor (signierte Adressen wie bei den Medien)
 router.add_api_route("/bild/{name}", medien.bild_abrufen, methods=["GET"])
+# Stufe B, Tag 6: Assistent zum Entwurf, Feld-Newsletter umwandeln, neue Collage (versendet nichts)
+router.add_api_route("/entwuerfe/neu-collage", entwuerfe.collage_anlegen, methods=["POST"])
+router.add_api_route("/entwuerfe/{iid}/umwandeln", entwuerfe.umwandeln, methods=["POST"])
+router.add_api_route("/entwuerfe/{iid}/assistent", assistent.senden, methods=["POST"])
+router.add_api_route("/entwuerfe/{iid}/assistent/stopp", assistent.stoppen, methods=["POST"])
+router.add_api_route("/entwuerfe/{iid}/assistent/rueckgaengig", assistent.rueckgaengig, methods=["POST"])
+# Stufe B, Punkt 2: Reels und Folgen bestellen (nur mit MARKETING_BESTELLEN=an), abbrechen (immer)
+router.add_api_route("/reels/bestellen", bestellen.reel_bestellen, methods=["POST"])
+router.add_api_route("/reels/{aid}/nochmal", bestellen.reel_nochmal, methods=["POST"])
+router.add_api_route("/reels/{aid}/abbrechen", bestellen.reel_abbrechen, methods=["POST"])
+router.add_api_route("/podcast/bestellen", bestellen.folge_bestellen, methods=["POST"])
+router.add_api_route("/podcast/{aid}/abbrechen", bestellen.folge_abbrechen, methods=["POST"])
+# Stufe B, Punkt 3: Werkbank (lesen immer; Abnahme hinter dem Kosten-Schalter, Wunsch speichern immer)
+router.add_api_route("/werkbank/{aid}", huelle.seiten_route("/werkbank", werkbank.werk_bauen), methods=["GET"])
+router.add_api_route("/werkbank/{aid}/szene/{nr}", huelle.seiten_route("/werkbank", werkbank.szene_bauen),
+                     methods=["GET"])
+router.add_api_route("/werkbank/{aid}/urteil", werkbank.urteil, methods=["POST"])
+router.add_api_route("/werkbank/{aid}/wunsch", werkbank.wunsch_speichern, methods=["POST"])
+router.add_api_route("/werkbank/{aid}/szene/{nr}/nochmal", werkbank.szene_nochmal, methods=["POST"])
+router.add_api_route("/werkbank/{aid}/szene/{nr}/oeffnen", werkbank.szene_oeffnen, methods=["POST"])
+router.add_api_route("/werkbank/{aid}/neu-schreiben", werkbank.neu_schreiben, methods=["POST"])
+router.add_api_route("/werkbank/{aid}/neu-bauen", werkbank.neu_bauen, methods=["POST"])

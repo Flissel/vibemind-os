@@ -56,7 +56,11 @@ class Attrappe:
                                {"text": "erledigt", "von": "x", "am": "2026-11-20", "erledigt": True}]}
         self.gespeichert: list[tuple] = []
         # Bilderliste hier nicht lesbar: der Editor zeigt dann nur den Dateinamen (Bildwahl: test_oberflaeche_bildwahl)
-        self.fehler: dict[str, daten.DatenFehler] = {"bilder": daten.DatenFehler("nicht_erreichbar")}
+        self.fehler: dict[str, daten.DatenFehler] = {"bilder": daten.DatenFehler("nicht_erreichbar"),
+                                                     "chat_stand": daten.DatenFehler("nicht_erreichbar")}
+        self.chat = {"laeuft": False, "verlauf": [], "neueste_fassung": 2}
+        self.gerechnet: list[tuple] = []
+        self.angelegt: list[tuple] = []
         self.bilder: list[str] = []
 
     def einsetzen(self, monkeypatch):
@@ -75,6 +79,18 @@ class Attrappe:
         mach("zurueckziehen", lambda i, von: None)
         mach("bilder", lambda m: self.bilder)
         mach("seite_speichern", lambda i, b, be, v, d: self._speichern(i, b, be, v, d))
+        # Tag 6: Assistent, Flaechen, Umwandeln, neue Collage
+        mach("chat_stand", lambda i: self.chat)
+        mach("chat_senden", lambda i, n: {"auftrag": "a1", "status": "offen"})
+        mach("chat_stoppen", lambda i, art, auftrag: None)
+        mach("chat_rueckgaengig", lambda i, auftrag: 4)
+        mach("gestaltung_rechnen", lambda i, g: self._rechnen(i, g))
+        mach("in_bloecke", lambda i, von: 3)
+        mach("collage_anlegen", lambda m, ti, be: "77777777-2222-4333-8444-555555555555")
+
+    def _rechnen(self, i, g):
+        self.gerechnet.append((i, g))
+        return {"url": "medien:gs-abcdefabcdef.jpg", "width": 600, "height": 400, "hinweise": []}
 
     def _speichern(self, i, b, be, v, d):
         self.gespeichert.append((i, b, be, v, d))
@@ -175,7 +191,7 @@ def test_editor_eingereicht_zeigt_nur_zurueckziehen(c, a):
 def test_editor_felder_und_kaputte_collage_nur_hinweis(c, a):
     a.entwurf["fassungen"][0] = {"fassung": 2, "format": "felder", "felder": {"betreff": "x"}}
     r = c.get(EDITOR, headers=H)
-    assert "nicht bearbeiten" in r.text and f'action="{SPEICHERN}"' not in r.text
+    assert f'action="{EDITOR}/umwandeln"' in r.text and f'action="{SPEICHERN}"' not in r.text   # seit Tag 6
     a.entwurf["fassungen"][0] = {"fassung": 2, "format": "seite", "seite": {}}      # Collage ohne Ebenen
     r = c.get(EDITOR, headers=H)
     assert "nicht bearbeiten" in r.text and f'action="{SPEICHERN}"' not in r.text and "<iframe" not in r.text
