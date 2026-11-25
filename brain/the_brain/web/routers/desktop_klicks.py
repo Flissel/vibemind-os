@@ -9,6 +9,10 @@ und **nicht aus einer Webseite**. Das Gehirn antwortet CORS fuer jeden Ursprung
 ``Sec-Fetch-Site`` und bei POST immer ``Origin``. Den Klick nimmt das Gehirn nur ohne beide Koepfe
 an, also vom Hauptprozess der App (Node-HTTP), nie direkt aus dem Renderer. Die Marken liest
 ausserdem eine Seite vom selben Ursprung (``Sec-Fetch-Site: same-origin``).
+
+Der Klick braucht zusaetzlich das Zeichen der App im Kopf ``X-Vibemind-Eingabe``:
+``eingabe_zeichen(VIBEMIND_EINGABE_SCHLUESSEL, "hand-klick <x> <y>", <unix-sekunden>)``, 60 s gueltig,
+jedes Zeichen einmal (core/desktop_hand.beleg_pruefen). Ohne Schluessel im Gehirn: nie (403 ``nicht_belegt``).
 """
 from __future__ import annotations
 
@@ -64,7 +68,14 @@ async def desktop_hand_klick(request: Request) -> JSONResponse:
     if not isinstance(daten, dict) or set(daten) != {"x", "y"}:
         return JSONResponse({"ok": False, "grund": "eingabe_ungueltig"}, status_code=400)
     from starlette.concurrency import run_in_threadpool
-    from core.desktop_hand import klicken
+    from core.desktop_hand import beleg_pruefen, klicken
+    from core.desktop_tagesrest import KOPF_EINGABE
+    # Entscheidend ist das Zeichen der App (gemeinsamer Schluessel), nicht Host-Kopf oder Absender:
+    # die lassen sich vortaeuschen, sobald der Port des Gehirns von aussen erreichbar ist.
+    if not beleg_pruefen(daten.get("x"), daten.get("y"), request.headers.get(KOPF_EINGABE)):
+        if not all(isinstance(daten.get(k), int) and not isinstance(daten.get(k), bool) for k in ("x", "y")):
+            return JSONResponse({"ok": False, "grund": "eingabe_ungueltig"}, status_code=400)
+        return JSONResponse({"ok": False, "success": False, "grund": "nicht_belegt"}, status_code=403)
     ergebnis = await run_in_threadpool(klicken, daten.get("x"), daten.get("y"))
     status = 400 if ergebnis.get("grund") == "eingabe_ungueltig" else 200
     return JSONResponse(ergebnis, status_code=status)

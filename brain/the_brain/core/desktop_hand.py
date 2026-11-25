@@ -8,9 +8,11 @@ Hier wird nur der Punkt geprueft und die Antwort auf Codes beschraenkt.
 from __future__ import annotations
 
 import itertools
+import os
+import threading
 import logging
 import time
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional
 
 from .desktop_schleife import FreigabeAusstehend, WerkzeugFehler, fester_aufruf
 from .desktop_schleife_contract import AGENT, ZIEL_SERVER
@@ -61,6 +63,53 @@ def _code(text: str) -> str:
     if any(t in meldung for t in ("connection", "refused", "unreachable", "timed out", "timeout", "not connected")):
         return "werkzeug_aus"
     return "werkzeug_fehler"
+
+
+_VERBRAUCHT: dict[str, float] = {}
+_VERBRAUCHT_SPERRE = threading.Lock()
+
+
+def beleg_satz(x: int, y: int) -> str:
+    """Was die App fuer einen Hand-Klick zeichnet (``desktop_tagesrest.eingabe_zeichen``)."""
+    return f"hand-klick {int(x)} {int(y)}"
+
+
+def beleg_pruefen(x: Any, y: Any, zeichen: Any, *, umgebung: Optional[Mapping[str, str]] = None,
+                  jetzt_ts: Optional[float] = None) -> bool:
+    """Nur ein Klick, den die App (Hauptprozess) mit dem gemeinsamen Schluessel gezeichnet hat.
+
+    Host-Kopf und fehlendes Origin kann jeder im Netz vortaeuschen, wenn der Port des Gehirns von
+    aussen erreichbar ist. Darum zaehlt allein das Zeichen ueber genau diesen Punkt (Schluessel
+    ``VIBEMIND_EINGABE_SCHLUESSEL``, derselbe wie fuer getippte Saetze, Fenster 60 s). Jedes
+    Zeichen gilt nur einmal. Ohne Schluessel: nie (fail-closed).
+    """
+    import hmac
+    import time
+
+    from .desktop_tagesrest import (
+        SCHLUESSEL_MINDESTLAENGE, SCHLUESSEL_NAME, ZEICHEN_FENSTER_S, eingabe_zeichen,
+    )
+
+    px, py = _ganz(x), _ganz(y)
+    u = os.environ if umgebung is None else umgebung
+    schluessel = u.get(SCHLUESSEL_NAME) or ""
+    if px is None or py is None or len(schluessel) < SCHLUESSEL_MINDESTLAENGE or not isinstance(zeichen, str):
+        return False
+    zeit_text, _, _ = zeichen.partition(".")
+    if not zeit_text.isdigit() or len(zeit_text) > 12:
+        return False
+    jetzt = time.time() if jetzt_ts is None else jetzt_ts
+    if abs(jetzt - int(zeit_text)) > ZEICHEN_FENSTER_S:
+        return False
+    if not hmac.compare_digest(zeichen, eingabe_zeichen(schluessel, beleg_satz(px, py), int(zeit_text))):
+        return False
+    with _VERBRAUCHT_SPERRE:
+        for alt in [z for z, t in _VERBRAUCHT.items() if jetzt - t > 2 * ZEICHEN_FENSTER_S]:
+            del _VERBRAUCHT[alt]
+        if zeichen in _VERBRAUCHT:
+            return False
+        _VERBRAUCHT[zeichen] = jetzt
+    return True
 
 
 def klicken(x: Any, y: Any) -> dict:

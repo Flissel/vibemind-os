@@ -88,6 +88,14 @@ def test_ohne_ordner_ehrlich(monkeypatch):
 
 # ─── Routen ──────────────────────────────────────────────────────────────────
 
+SCHLUESSEL = "beispiel-schluessel-nur-fuer-tests-0123456789"
+
+
+def gezeichnet(x, y, *, zeit=None, schluessel=SCHLUESSEL):
+    import time
+    from core.desktop_tagesrest import eingabe_zeichen
+    return {"X-Vibemind-Eingabe": eingabe_zeichen(schluessel, f"hand-klick {x} {y}", int(time.time() if zeit is None else zeit))}
+
 
 @pytest.fixture
 def client(buch, monkeypatch):
@@ -101,6 +109,8 @@ def client(buch, monkeypatch):
 
     import core.desktop_hand as hand
     monkeypatch.setattr(hand, "klicken", klicken)
+    monkeypatch.setenv("VIBEMIND_EINGABE_SCHLUESSEL", SCHLUESSEL)
+    monkeypatch.setattr(hand, "_VERBRAUCHT", {})
     c = TestClient(app, base_url="http://127.0.0.1:5000")
     c.aufrufe = aufrufe
     return c
@@ -122,7 +132,7 @@ def test_marken_nicht_fuer_fremde_seiten(client, koepfe):
 
 
 def test_hand_klick_vom_hauptprozess(client):
-    antwort = client.post("/api/desktop/hand-klick", json={"x": 100, "y": -20})
+    antwort = client.post("/api/desktop/hand-klick", json={"x": 100, "y": -20}, headers=gezeichnet(100, -20))
     assert antwort.status_code == 200 and antwort.json()["ok"] is True
     assert client.aufrufe == [(100, -20)]
 
@@ -131,14 +141,31 @@ def test_hand_klick_vom_hauptprozess(client):
     {"Sec-Fetch-Site": "same-origin"}, {"Sec-Fetch-Site": "cross-site"}, {"Origin": "null"},
     {"Origin": "http://127.0.0.1:5000"}, {"Host": "boese.example"}])
 def test_hand_klick_nie_aus_einer_webseite(client, koepfe):
-    antwort = client.post("/api/desktop/hand-klick", json={"x": 1, "y": 2}, headers=koepfe)
+    antwort = client.post("/api/desktop/hand-klick", json={"x": 1, "y": 2}, headers={**gezeichnet(1, 2), **koepfe})
     assert antwort.status_code == 403 and client.aufrufe == []
 
 
 @pytest.mark.parametrize("body", [{"x": 1}, {"x": 1, "y": 2, "taste": "rechts"}, [1, 2], "x"])
 def test_hand_klick_nur_x_und_y(client, body):
-    antwort = client.post("/api/desktop/hand-klick", json=body)
+    antwort = client.post("/api/desktop/hand-klick", json=body, headers=gezeichnet(1, 2))
     assert antwort.status_code == 400 and client.aufrufe == []
+
+
+def test_hand_klick_nur_mit_dem_zeichen_der_app(client, monkeypatch):
+    import time
+    def post(koepfe):
+        return client.post("/api/desktop/hand-klick", json={"x": 5, "y": 6}, headers=koepfe)
+    # Host-Kopf und fehlendes Origin allein genuegen nicht (das kann jeder im Netz vortaeuschen).
+    for koepfe in ({}, {"X-Vibemind-Eingabe": "kaputt"}, gezeichnet(5, 7), gezeichnet(5, 6, schluessel="x" * 40),
+                   gezeichnet(5, 6, zeit=time.time() - 120)):
+        antwort = post(koepfe)
+        assert (antwort.status_code, antwort.json()["grund"]) == (403, "nicht_belegt")
+    zeichen = gezeichnet(5, 6)
+    assert post(zeichen).status_code == 200
+    assert post(zeichen).json()["grund"] == "nicht_belegt"  # jedes Zeichen nur einmal
+    monkeypatch.delenv("VIBEMIND_EINGABE_SCHLUESSEL")
+    assert post(gezeichnet(5, 6)).status_code == 403  # ohne Schluessel im Gehirn nie
+    assert client.aufrufe == [(5, 6)]
 
 
 def test_klicken_prueft_den_punkt_vor_jedem_aufruf(monkeypatch):
