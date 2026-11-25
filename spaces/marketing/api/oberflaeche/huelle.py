@@ -553,6 +553,10 @@ img.bildchen { display: block; max-width: 160px; max-height: 120px; object-fit: 
 .galerie figure { margin: 0; display: flex; flex-direction: column; gap: 4px; }
 .galerie figcaption { font-size: .8rem; color: var(--leise); overflow-wrap: anywhere; }
 .galerie img.bildchen { max-width: 100%; }
+.assistent { max-width: 720px; margin: 16px 0 24px; }
+ol.verlauf { list-style: none; padding: 0; margin: 8px 0; display: flex; flex-direction: column; gap: 8px; }
+ol.verlauf li { border-left: 3px solid var(--akzent); background: var(--flaeche2); padding: 8px 12px;
+  border-radius: 0 10px 10px 0; } ol.verlauf li p { margin: 2px 0; } ol.verlauf .frage { font-weight: 600; }
 @media (max-width: 767px) {
   .rahmen { display: block; }
   nav.seite { width: auto; height: auto; position: static; flex-direction: row; flex-wrap: wrap; align-items: center;

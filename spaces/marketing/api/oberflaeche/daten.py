@@ -244,3 +244,60 @@ def seite_speichern(iid: str, basis: int, betreff: str, vorschautext: str, seite
     if not isinstance(n, int) or isinstance(n, bool):
         raise DatenFehler("nicht_erreichbar")
     return n
+
+
+# --- Stufe B, Tag 6: Assistent, Flaechen, Feld-Newsletter umwandeln, neue Collage (versendet nichts) ---
+
+def _fassung(antwort, feld: str = "fassung") -> int:
+    n = antwort.get(feld) if isinstance(antwort, dict) else None
+    if not isinstance(n, int) or isinstance(n, bool):
+        raise DatenFehler("nicht_erreichbar")
+    return n
+
+
+def chat_senden(iid: str, nachricht: str) -> dict:
+    """Bitte an den Gestaltungs-Assistenten: dieselbe Chat-Runde wie im Editor von Sales (Abo, Arbeiter am PC)."""
+    from spaces.marketing.api import chat
+    antwort = _rufen(chat.chat_anlegen, iid=iid, payload={"nachricht": nachricht, "kontext": {}})
+    return antwort if isinstance(antwort, dict) else {}
+
+
+def chat_stand(iid: str) -> dict:
+    from spaces.marketing.api import chat
+    antwort = _rufen(chat.chat_stand, iid=iid)
+    return antwort if isinstance(antwort, dict) else {}
+
+
+def chat_stoppen(iid: str, art: str, auftrag: str) -> None:
+    from spaces.marketing.api import chat
+    _rufen(chat.chat_stoppen, iid=iid, payload={"art": art, "auftrag": auftrag})
+
+
+def chat_rueckgaengig(iid: str, auftrag: str) -> int:
+    from spaces.marketing.api import chat
+    return _fassung(_rufen(chat.chat_rueckgaengig, iid=iid, payload={"auftrag": auftrag}))
+
+
+def gestaltung_rechnen(iid: str, gestaltung: dict) -> dict:
+    """Flaeche neu rechnen (wie der Editor in Sales): {url, width, height, hinweise}."""
+    from spaces.marketing.api import gestaltung as gestaltung_api
+    antwort = _rufen(gestaltung_api.pult_gestaltung, iid=iid, payload={"gestaltung": gestaltung})
+    if not isinstance(antwort, dict) or not isinstance(antwort.get("url"), str):
+        raise DatenFehler("nicht_erreichbar")
+    return antwort
+
+
+def in_bloecke(iid: str, von: str) -> int:
+    """Feld-Newsletter in Bloecke uebernehmen: neue Block-Fassung (die DB lehnt alles andere ab)."""
+    from spaces.marketing.api import pult
+    return _fassung(_rufen(pult.in_bloecke, iid=iid, payload={"von": von}))
+
+
+def collage_anlegen(mandant: str, titel: str, betreff: str) -> str:
+    """Neuer Collage-Newsletter mit der Startseite in den Farben der Marke; gibt die Inhalts-ID zurueck."""
+    from spaces.marketing.api import pult
+    antwort = _rufen(pult.collage_anlegen, payload={"mandant": mandant, "titel": titel, "betreff": betreff})
+    iid = antwort.get("inhalt") if isinstance(antwort, dict) else None
+    if not isinstance(iid, str) or not iid:
+        raise DatenFehler("nicht_erreichbar")
+    return iid

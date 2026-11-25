@@ -11,13 +11,13 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi.responses import RedirectResponse
 
-from spaces.marketing.api.oberflaeche import (entwuerfe, huelle, marke, medien, newsletter, plan, podcast, reels,
-                                              vorlagen)
+from spaces.marketing.api.oberflaeche import (assistent, entwuerfe, huelle, marke, medien, newsletter, plan, podcast,
+                                              reels, vorlagen)
 
 SEITEN = (("/newsletter", newsletter), ("/entwuerfe", entwuerfe), ("/vorlagen", vorlagen), ("/plan", plan), ("/marke", marke), ("/reels", reels),
           ("/podcast", podcast))
 # Module mit eigenem Woerterbuch (der Sprachtest prueft jedes)
-MODULE_MIT_TEXTEN = (huelle,) + tuple(m for _, m in SEITEN)
+MODULE_MIT_TEXTEN = (huelle, assistent) + tuple(m for _, m in SEITEN)
 
 router = APIRouter(prefix=huelle.PFAD, include_in_schema=False)
 
@@ -55,3 +55,9 @@ router.add_api_route("/marke/vorschlag", marke.vorschlag, methods=["POST"])
 router.add_api_route("/medien/{name}", medien.abrufen, methods=["GET"])
 # Stufe B, Tag 5: Bilder der Firma im Editor (signierte Adressen wie bei den Medien)
 router.add_api_route("/bild/{name}", medien.bild_abrufen, methods=["GET"])
+# Stufe B, Tag 6: Assistent zum Entwurf, Feld-Newsletter umwandeln, neue Collage (versendet nichts)
+router.add_api_route("/entwuerfe/neu-collage", entwuerfe.collage_anlegen, methods=["POST"])
+router.add_api_route("/entwuerfe/{iid}/umwandeln", entwuerfe.umwandeln, methods=["POST"])
+router.add_api_route("/entwuerfe/{iid}/assistent", assistent.senden, methods=["POST"])
+router.add_api_route("/entwuerfe/{iid}/assistent/stopp", assistent.stoppen, methods=["POST"])
+router.add_api_route("/entwuerfe/{iid}/assistent/rueckgaengig", assistent.rueckgaengig, methods=["POST"])

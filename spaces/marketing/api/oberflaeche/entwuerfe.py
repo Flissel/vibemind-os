@@ -5,12 +5,14 @@ Freigaben von Sales einreichen (oder zurueckziehen).
 - Einreichen setzt nur den Status 'eingereicht' (freigabe.einreichen). Versendet wird hier nichts;
   freigeben und senden bleiben in Sales.
 - Block-Format: Ueberschrift, Text, Knopf (Text und https-Ziel), Bild (Datei und Alternativtext). Aufbau und
-  Farben bleiben, wie sie sind. Gestaltete Flaechen (Bild mit Gestaltung) tauschen ihr Bild hier noch nicht.
+  Farben bleiben, wie sie sind. Gestaltete Flaechen tauschen die Bilder ihrer Bildebenen; beim Speichern rechnet
+  die Flaeche neu (gestaltung.pult_gestaltung, wie der Editor in Sales). Tag 6.
+- Tag 6 dazu: Assistent zum Entwurf (assistent.py), Feld-Newsletter in Bloecke uebernehmen, neue Collage.
 - Collagen (Tag 5): Texte, Knoepfe (Text und Ziel), Bildebenen und Hintergrundbild. Lage, Groesse und Farben
   bleiben; jede Fassung laeuft vor dem Speichern durch seite.pruefen (die Pult-Funktion prueft noch einmal).
 - Bilder waehlt man nur aus den Bildern der Firma (daten.bilder: eigene und gemeinsame, nie fremde). Ein
   Bild, das schon im Entwurf steht, bleibt waehlbar, auch wenn es nicht in der Liste ist.
-- Feld-Newsletter zeigen hier nur die Vorschau.
+- Feld-Newsletter zeigen die Vorschau und lassen sich in Bloecke uebernehmen (pult.in_bloecke).
 - Gespeichert wird immer auf der Fassung, die das Formular gezeigt hat (basis_fassung); hat inzwischen
   jemand anders gespeichert, lehnt die Datenbank ab und die Seite sagt das.
 - Jeder Schritt prueft die Firma (Cookie wie ueberall) gegen den Inhalt."""
@@ -24,7 +26,7 @@ from fastapi import Request
 from fastapi.responses import RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from spaces.marketing.api.oberflaeche import daten, huelle, medien, newsletter
+from spaces.marketing.api.oberflaeche import assistent, daten, huelle, medien, newsletter
 from spaces.marketing.api.oberflaeche.huelle import PFAD, Kontext, e
 from spaces.marketing.api.oberflaeche.vorlagen import _format_wahl, _fmt, _rahmen, vorschau_adresse
 from spaces.marketing.claw import bildplaetze
@@ -79,7 +81,22 @@ TEXTE = {
         "nur_vorschau": "Diesen Entwurf (Feld-Newsletter) kannst du hier noch nicht bearbeiten, nur ansehen.",
         "bild_wahl": "Bild",
         "bild_keins": "– noch kein Bild –",
-        "bild_flaeche": "Gestaltete Fläche ({name}). Das Bild darin lässt sich hier noch nicht tauschen.",
+        "flaeche_hinweis": "Gestaltete Fläche. Tauschst du ein Bild darin, wird die Fläche beim Speichern neu "
+                           "gerechnet.",
+        "flaeche_bild": "Bild {n} der Fläche",
+        "flaeche_ohne_bild": "Diese Fläche hat keine Bilder, nur Text und Formen.",
+        "umwandeln": "In Blöcke übernehmen",
+        "umwandeln_hinweis": "Ein Feld-Newsletter lässt sich hier bearbeiten, sobald er in Blöcke übernommen ist. "
+                             "Das legt eine neue Fassung an.",
+        "umgewandelt": "In Blöcke übernommen.",
+        "neu_collage": "Neue Collage",
+        "neu_titel": "Titel",
+        "neu_betreff": "Betreff (kann leer bleiben)",
+        "neu_anlegen": "Collage anlegen",
+        "angelegt": "Collage angelegt. Du kannst sie jetzt bearbeiten.",
+        "gefragt": "Bitte gesendet. Lade die Seite neu, um den Stand zu sehen.",
+        "gestoppt": "Gestoppt.",
+        "f_titel": "Der Titel fehlt oder ist länger als 200 Zeichen.",
         "bilder_fehlen": "Die Bilderliste ist gerade nicht lesbar. Die Bilder bleiben, wie sie sind.",
         "galerie": "Bilder dieser Firma ({n})",
         "galerie_leer": "Für diese Firma liegen noch keine Bilder bereit.",
@@ -146,7 +163,21 @@ TEXTE = {
         "nur_vorschau": "This draft (field newsletter) cannot be edited here yet, only viewed.",
         "bild_wahl": "Image",
         "bild_keins": "– no image yet –",
-        "bild_flaeche": "Designed area ({name}). Its image cannot be swapped here yet.",
+        "flaeche_hinweis": "Designed area. If you swap an image in it, the area is recomputed when saving.",
+        "flaeche_bild": "Image {n} of the area",
+        "flaeche_ohne_bild": "This area has no images, only text and shapes.",
+        "umwandeln": "Convert to blocks",
+        "umwandeln_hinweis": "A field newsletter can be edited here once it is converted to blocks. This creates a "
+                             "new version.",
+        "umgewandelt": "Converted to blocks.",
+        "neu_collage": "New collage",
+        "neu_titel": "Title",
+        "neu_betreff": "Subject (may stay empty)",
+        "neu_anlegen": "Create collage",
+        "angelegt": "Collage created. You can edit it now.",
+        "gefragt": "Request sent. Reload the page to see the progress.",
+        "gestoppt": "Stopped.",
+        "f_titel": "The title is missing or longer than 200 characters.",
         "bilder_fehlen": "The image list cannot be read right now. Images stay as they are.",
         "galerie": "Images of this company ({n})",
         "galerie_leer": "No images are ready for this company yet.",
@@ -376,14 +407,23 @@ def karte(k: Kontext, i: dict) -> str:
             f'{e(str(i.get("titel") or ""))}</a></p><p class="meta">{e(" · ".join(teile))}</p>{rueck}</article>')
 
 
+def neu_formular(k: Kontext) -> str:
+    return (f'<details class="aufklapp"><summary>{e(k.t(TEXTE, "neu_collage"))}</summary>'
+            f'<form method="post" action="{SEITE}/neu-collage" class="editor">{_formular_csrf()}'
+            f'<label>{e(k.t(TEXTE, "neu_titel"))} <input type="text" name="titel" maxlength="200" required></label>'
+            f'<label>{e(k.t(TEXTE, "neu_betreff"))} <input type="text" name="betreff" '
+            f'maxlength="{GRENZEN["betreff"]}"></label>'
+            f'<p><button type="submit">{e(k.t(TEXTE, "neu_anlegen"))}</button></p></form></details>')
+
+
 async def bauen(k: Kontext) -> tuple[str, str]:
     k.hinweis = k.t(TEXTE, "hinweis")
     alle = [i for i in await run_in_threadpool(daten.newsletter, k.firma)
             if i.get("art", "newsletter") == "newsletter" and _gueltige_id(i.get("id"))]
     gruppen = {g: [i for i in alle if newsletter.reiter_von(i) == g] for g in ZEIGEN}
     if not any(gruppen.values()):
-        return k.t(TEXTE, "titel"), f'<p class="leer">{e(k.t(TEXTE, "leer"))}</p>'
-    teile = []
+        return k.t(TEXTE, "titel"), neu_formular(k) + f'<p class="leer">{e(k.t(TEXTE, "leer"))}</p>'
+    teile = [neu_formular(k)]
     for g in ZEIGEN:
         if gruppen[g]:
             karten = "".join(karte(k, i) for i in gruppen[g])
@@ -439,20 +479,56 @@ def _block_feld(k: Kontext, bid: str, b: dict, namen: list[str] | None = None) -
                   f'<label>{e(k.t(TEXTE, "knopf_ziel"))} <input type="url" name="u:{e(bid)}" '
                   f'value="{e(_wert(p, "url"))}" maxlength="{GRENZEN["url"]}"></label>')
     else:
-        inhalt = (_bild_feld(k, f"b:{bid}", _wert(p, "url"), namen, flaeche=ist_flaeche(p))
+        inhalt = ((_flaeche_feld(k, bid, p, namen) if ist_flaeche(p) else _bild_feld(k, f"b:{bid}", _wert(p, "url"), namen))
                   + f'<label>{e(k.t(TEXTE, "bild_alt"))} <input type="text" name="a:{e(bid)}" '
                   f'value="{e(_wert(p, "alt"))}" maxlength="{GRENZEN["alt"]}"></label>')
     return f'<fieldset class="block"><legend>{name}</legend>{inhalt}</fieldset>'
 
 
-def _bild_feld(k: Kontext, feld: str, url, namen: list[str] | None, *, flaeche: bool = False,
+def flaechen_bilder(p: dict) -> list[dict]:
+    """Bildebenen einer gestalteten Flaeche (gueltige ID), in ihrer Reihenfolge."""
+    g = p.get("gestaltung") if isinstance(p.get("gestaltung"), dict) else {}
+    return [x for x in (g.get("ebenen") if isinstance(g.get("ebenen"), list) else [])
+            if isinstance(x, dict) and x.get("art") == "bild" and isinstance(x.get("id"), str)
+            and _EBENE_ID.fullmatch(x["id"])]
+
+
+def _flaeche_feld(k: Kontext, bid: str, p: dict, namen: list[str] | None) -> str:
+    bilder = flaechen_bilder(p)
+    if not bilder:
+        return f'<p class="meta">{e(k.t(TEXTE, "flaeche_ohne_bild"))}</p>'
+    teile = [f'<p class="meta">{e(k.t(TEXTE, "flaeche_hinweis"))}</p>']
+    for nr, x in enumerate(bilder, 1):
+        teile.append(f'<p class="meta">{e(k.t(TEXTE, "flaeche_bild", n=nr))}</p>'
+                     + _bild_feld(k, f"fb:{bid}:{x['id']}", x.get("quelle"), namen))
+    return "".join(teile)
+
+
+def flaechen_aenderungen(dok: dict, form: dict, s: str, namen: set[str] | None) -> dict[str, dict]:
+    """Block-ID -> neue Gestaltung fuer jede Flaeche, in der ein Bild getauscht wurde."""
+    aus: dict[str, dict] = {}
+    for bid, b in bearbeitbare(dok):
+        p = _props(b)
+        if b.get("type") != "Image" or not ist_flaeche(p):
+            continue
+        g = copy.deepcopy(p["gestaltung"])
+        geaendert = False
+        for x in flaechen_bilder({"gestaltung": g}):
+            wahl = _bildwahl(form, f"fb:{bid}:{x['id']}", _name_aus(x.get("quelle")), namen, s)
+            if wahl:
+                x["quelle"] = "medien:" + wahl
+                geaendert = True
+        if geaendert:
+            aus[bid] = g
+    return aus
+
+
+def _bild_feld(k: Kontext, feld: str, url, namen: list[str] | None, *,
                leer_schluessel: str = "bild_keins", leer_waehlbar: bool = False) -> str:
     """Vorschaubild und Auswahl aus den Bildern der Firma (ohne Liste: nur der Dateiname)."""
     aktuell = _name_aus(url)
     roh = url[len("medien:"):] if isinstance(url, str) and url.startswith("medien:") else ""
     bild = medien.bild_html(str(k.firma), aktuell, aktuell) if aktuell else ""
-    if flaeche:
-        return f'{bild}<p class="meta">{e(k.t(TEXTE, "bild_flaeche", name=roh or "?"))}</p>'
     if namen is None:
         return f'{bild}<p class="meta">{e(k.t(TEXTE, "bild_datei", name=roh or "?"))}</p>'
     optionen = []
@@ -522,7 +598,8 @@ def _meldung(k: Kontext) -> str:
     q = k.request.query_params
     if q.get("gespeichert", "").isdigit():
         return f'<p class="erfolg">{e(k.t(TEXTE, "gespeichert", n=int(q["gespeichert"])))}</p>'
-    for schluessel in ("unveraendert", "eingereicht", "zurueckgezogen"):
+    for schluessel in ("unveraendert", "eingereicht", "zurueckgezogen", "umgewandelt", "angelegt", "gefragt",
+                       "gestoppt"):
         if q.get(schluessel) == "1":
             return f'<p class="erfolg">{e(k.t(TEXTE, schluessel))}</p>'
     return ""
@@ -568,8 +645,14 @@ async def editor_bauen(k: Kontext) -> tuple[str, str]:
     elif status == "eingereicht":
         rumpf += (f'<form method="post" action="{e(hier)}/zurueckziehen" class="anlegen">{_formular_csrf()}'
                   f'<button type="submit">{e(k.t(TEXTE, "zurueckziehen"))}</button></form>')
+    elif status == "entwurf" and hat_fassung and fmt_inhalt == "felder":
+        rumpf += (f'<form method="post" action="{e(hier)}/umwandeln" class="anlegen">{_formular_csrf()}'
+                  f'<button type="submit">{e(k.t(TEXTE, "umwandeln"))}</button>'
+                  f'<span class="meta">{e(k.t(TEXTE, "umwandeln_hinweis"))}</span></form>')
     elif status == "entwurf" and hat_fassung:
         rumpf += f'<p class="meta">{e(k.t(TEXTE, "nur_vorschau"))}</p>'
+    if status == "entwurf" and hat_fassung and (ist_bloecke or ist_collage(neueste)):
+        rumpf += await assistent.abschnitt(k, iid, hier)
     if hat_fassung and fmt_inhalt != "seite":
         fmt = _fmt(k)
         rumpf += ('<section class="vorschau">'
@@ -623,7 +706,7 @@ async def speichern(request: Request) -> Response:
         betreff = _feld(form, "betreff", alt_betreff, GRENZEN["betreff"], s, tx(s, "betreff"), True)
         vorschau = _feld(form, "vorschautext", alt_vorschau, GRENZEN["vorschautext"], s, tx(s, "vorschautext"), True)
         namen = None
-        if any(n.startswith(("b:", "q:")) or n == "hg" for n in form):
+        if any(n.startswith(("b:", "q:", "fb:")) or n == "hg" for n in form):
             namen = await _bilder_oder_nichts(kopf.get("mandant"))   # = gewaehlte Firma (_laden_pruefen)
         namen_menge = set(namen) if namen is not None else None
         alt_dok = neueste["seite"] if collage else neueste["bloecke"]
@@ -633,6 +716,14 @@ async def speichern(request: Request) -> Response:
                 neu_dok = seite_modell.pruefen(neu_dok)
             except seite_modell.SeiteFehler as f:
                 raise Abgelehnt(tx(s, "f_seite", grund=str(f)))
+        flaechen = {} if collage else flaechen_aenderungen(alt_dok, form, s, namen_menge)
+        for bid, g in flaechen.items():
+            erg = await run_in_threadpool(daten.gestaltung_rechnen, iid, g)
+            p = neu_dok[bid].setdefault("data", {}).setdefault("props", {})
+            p.update({"gestaltung": g, "url": erg["url"]})
+            for mass in ("width", "height"):
+                if isinstance(erg.get(mass), int) and not isinstance(erg.get(mass), bool):
+                    p[mass] = erg[mass]
     except Abgelehnt as f:
         return _abgelehnt(s, str(f))
     except daten.DatenFehler as f:
@@ -672,3 +763,39 @@ async def zurueckziehen(request: Request) -> Response:
     except daten.DatenFehler as f:
         return huelle.daten_fehlerseite(s, f)
     return RedirectResponse(f"{SEITE}/{iid}?zurueckgezogen=1", status_code=303)
+
+
+# --- Tag 6: Feld-Newsletter umwandeln, neue Collage -------------------------------------------------
+
+async def umwandeln(request: Request) -> Response:
+    fehler, s, _, iid, _, kopf, neueste = await _vorbereiten(request)
+    if fehler is not None:
+        return fehler
+    if kopf.get("status") != "entwurf":
+        return _abgelehnt(s, tx(s, "f_status"))
+    if not neueste or neueste.get("format") != "felder":
+        return _abgelehnt(s, tx(s, "f_format"))
+    try:
+        await run_in_threadpool(daten.in_bloecke, iid, VON)
+    except daten.DatenFehler as f:
+        return huelle.daten_fehlerseite(s, f)
+    return RedirectResponse(f"{SEITE}/{iid}?umgewandelt=1", status_code=303)
+
+
+async def collage_anlegen(request: Request) -> Response:
+    fehler, s, form, firma = await huelle.formular_mit_firma(request)
+    if fehler is not None:
+        return fehler
+    titel = " ".join(str(form.get("titel") or "").split())
+    if not titel or len(titel) > 200:
+        return _abgelehnt(s, tx(s, "f_titel"))
+    try:
+        betreff = _feld(form, "betreff", "", GRENZEN["betreff"], s, tx(s, "betreff"), True).strip()
+        iid = await run_in_threadpool(daten.collage_anlegen, firma, titel, betreff)
+    except Abgelehnt as f:
+        return _abgelehnt(s, str(f))
+    except daten.DatenFehler as f:
+        return huelle.daten_fehlerseite(s, f)
+    if not _gueltige_id(iid):
+        return huelle.daten_fehlerseite(s, daten.DatenFehler("nicht_erreichbar"))
+    return RedirectResponse(f"{SEITE}/{iid}?angelegt=1", status_code=303)
