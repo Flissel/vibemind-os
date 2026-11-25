@@ -266,3 +266,29 @@ def test_plan_schritt_speichert_keinen_lauf_und_hakt_nicht_als_agent_ab(monkeypa
         assert gebaut == []
     else:
         assert not (ergebnis.error or "").startswith("idea.todo_abhaken: per Plan")
+
+
+@pytest.mark.parametrize("ziel,argument,gesperrt", [
+    ("mcp:Brain-Ideas:Spaces-Ideas:Bubble-Bewertung", {"bubble_id": "b0b1e001"}, True),
+    ("mcp:brain-ideas:spaces_ideas:bubble_bewertung", {"bubble_id": "b0b1e001"}, True),
+    ("mcp:brain-ideas:spaces-ideas:bewertung-todo", {"bubble_id": "b0b1e001", "nr": 1, "durch": "agent"}, True),
+    ("mcp:brain-ideas:spaces-ideas:bewertung_todo", {"bubble_id": "b0b1e001", "nr": 1, "durch": "hand"}, False),
+])
+def test_anderer_faehigkeitsname_mit_passendem_ziel_rutscht_nicht_durch(monkeypatch, ziel, argument, gesperrt):
+    """Gesperrt wird nach Ereignis UND nach Ziel des Schritts, in jeder Schreibweise des Ziels."""
+    from core import plan_executor as pe
+    from core.plan_schema import HopSpec
+
+    gebaut = []
+    monkeypatch.setattr("core.plan_executor.PlanExecutor._capture_kg_hits", lambda *args: [])
+    monkeypatch.setattr("core.capability_targets.build_executor", lambda target: gebaut.append(target))
+    hop = HopSpec(step_id="s1", description="per Plan", capability="stadtfest.sonstwas",
+                  execution_target=ziel, arg_template=json.dumps(argument))
+    ergebnis = pe.PlanExecutor(capability_router=None)._exec_hop(
+        hop, {}, plan_ctx={"antwortkanal": {"art": "api"}, "plan_id": "p1", "trace_id": "t1"})
+    fehler = ergebnis.error or ""
+    if gesperrt:
+        assert ergebnis.ok is False and ("nie per Plan" in fehler or "nur von Hand" in fehler), fehler
+        assert gebaut == []
+    else:
+        assert "nie per Plan" not in fehler and "nur von Hand" not in fehler

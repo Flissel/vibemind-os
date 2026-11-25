@@ -347,16 +347,29 @@ _OHNE_AGENTENWEG = {
 }
 
 
-# Ereignisse, die nur der Rueckweg im Gehirn ruft (core/ideen_bewertung), nie ein Plan-Schritt.
+# Ereignisse und Werkzeuge, die nur der Rueckweg im Gehirn ruft (core/ideen_bewertung, direkt
+# ueber den McpExecutor), nie ein Plan-Schritt. Geprueft wird das Ereignis UND jedes Ziel des
+# Schritts, damit kein anderer Faehigkeitsname mit einem passenden Ziel durchrutscht.
 NUR_RUECKWEG = frozenset({"idea.bewertung_speichern"})
+NUR_RUECKWEG_WERKZEUGE = frozenset({"bubble_bewertung"})
+ABHAKEN_WERKZEUG = "bewertung_todo"
 
 
-def _nur_ueber_rueckweg(event_id: Any, rendered_arg: Any) -> str:
-    """Fehlertext, wenn ein Plan-Schritt ein Ereignis des Bewertungs-Rueckwegs ruft, sonst "". Wirft nie."""
+def _werkzeug_des_ziels(ziel: Any) -> str:
+    """Werkzeugname eines MCP-Ziels in jeder Schreibweise, die der McpExecutor annimmt, sonst ""."""
+    if not isinstance(ziel, str) or not ziel.strip().lower().startswith("mcp:"):
+        return ""
+    teile = [t.strip() for t in ziel.strip().split(":", 1)[1].split(":", 2)]
+    return teile[-1].lower().replace("-", "_") if len(teile) == 3 else ""
+
+
+def _nur_ueber_rueckweg(event_id: Any, rendered_arg: Any, *ziele: Any) -> str:
+    """Fehlertext, wenn ein Plan-Schritt den Bewertungs-Rueckweg umgehen wuerde, sonst "". Wirft nie."""
     try:
-        if event_id in NUR_RUECKWEG:
-            return f"{event_id}: nur über „Bewerte diese Bubble“, nie per Plan"
-        if event_id == "idea.todo_abhaken":
+        werkzeuge = {_werkzeug_des_ziels(z) for z in ziele} - {""}
+        if event_id in NUR_RUECKWEG or werkzeuge & NUR_RUECKWEG_WERKZEUGE:
+            return f"{event_id or 'bubble_bewertung'}: nur über „Bewerte diese Bubble“, nie per Plan"
+        if event_id == "idea.todo_abhaken" or ABHAKEN_WERKZEUG in werkzeuge:
             from . import ideen_dokument as _dm
             if _dm._argument(rendered_arg).get("durch") != "hand":
                 return "idea.todo_abhaken: per Plan nur von Hand („To-do N erledigt“)"
@@ -1751,7 +1764,8 @@ class PlanExecutor:
                         contract_pass=False, reward=-1.0,
                     )
                 target = deterministic_target
-            _nur_rueckweg = _nur_ueber_rueckweg(event_id, rendered_arg)
+            _nur_rueckweg = _nur_ueber_rueckweg(event_id, rendered_arg, target,
+                                                getattr(hop, "execution_target", None))
             if _nur_rueckweg:
                 # Stufe 1: einen Bewertungslauf speichert nur der Rueckweg nach "Bewerte diese Bubble",
                 # ein To-do "durch agent" hakt nur der Rueckweg nach "Ja, erledigen" ab
