@@ -403,3 +403,19 @@ def werk_neu_schreiben(mandant: str, aid: str, nr: int | None, wunsch: str) -> b
 def werk_neu_bauen(mandant: str, aid: str) -> bool:
     from spaces.marketing.api import werkbank
     return _ok(_rufen(werkbank.pult_neu_bauen, aid=aid, payload={"mandant": mandant, "von": VON}))
+
+
+# --- Stufe C, Punkt 5: Teilen als Versandauftrag (hinter dem Kosten-Schalter in teilen.py; versendet nichts) ---
+
+def teilen(mandant: str, art: str, aid: str, kanal: str, empfaenger: str, betreff: str, nachricht: str) -> dict:
+    """{ok, id, wiederholung, grund}: eine Absage der DB-Funktion ist ok=False mit Grund."""
+    from spaces.marketing.api import teilen as _teilen
+    antwort = _rufen(_teilen.pult_teilen, payload={"mandant": mandant, "art": art, "id": aid, "kanal": kanal,
+                                                    "empfaenger": empfaenger, "betreff": betreff,
+                                                    "nachricht": nachricht})
+    return antwort if isinstance(antwort, dict) else {"ok": False, "grund": ""}
+
+
+def geteilt(mandant: str, art: str) -> list[dict]:
+    from spaces.marketing.api import teilen as _teilen
+    return _liste(_rufen(_teilen.pult_stand, mandant=mandant, art=art), "auftraege")

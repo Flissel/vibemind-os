@@ -2,7 +2,8 @@
 seit Stufe B (25.11.) schreibend: Entwuerfe (vorlagen.py, entwuerfe.py), Plan und Kampagnen (plan.py),
 Markenprofil ueber den Assistenten (marke.py); Reels und Folgen abspielen (medien.py, Tag 4); Bilder zuordnen
 und Collagen bearbeiten (entwuerfe.py, Tag 5); Reels und Folgen bestellen hinter dem Kosten-Schalter
-(bestellen.py, Punkt 2); lange Videos in der Werkbank abnehmen (werkbank.py, Punkt 3).
+(bestellen.py, Punkt 2); lange Videos in der Werkbank abnehmen (werkbank.py, Punkt 3); fertige Reels und
+Folgen als Versandauftrag an Sales teilen (teilen.py, Punkt 5; gesendet wird erst nach der Freigabe in Sales).
 
 Die App zeigt sie im Marketing-Reiter (MARKETING_UI_URL) und haengt den Schluessel aus der Umgebung
 als Bearer an (bearerEnv). Die API prueft ihn gegen MARKETING_UI_KEY. Gesendet wird hier nichts:
@@ -13,12 +14,12 @@ from fastapi import APIRouter
 from fastapi.responses import RedirectResponse
 
 from spaces.marketing.api.oberflaeche import (assistent, bestellen, entwuerfe, huelle, marke, medien, newsletter,
-                                              plan, podcast, reels, vorlagen, werkbank)
+                                              plan, podcast, reels, teilen, vorlagen, werkbank)
 
 SEITEN = (("/newsletter", newsletter), ("/entwuerfe", entwuerfe), ("/vorlagen", vorlagen), ("/plan", plan), ("/marke", marke), ("/reels", reels),
           ("/podcast", podcast), ("/werkbank", werkbank))
 # Module mit eigenem Woerterbuch (der Sprachtest prueft jedes)
-MODULE_MIT_TEXTEN = (huelle, assistent, bestellen) + tuple(m for _, m in SEITEN)
+MODULE_MIT_TEXTEN = (huelle, assistent, bestellen, teilen) + tuple(m for _, m in SEITEN)
 
 router = APIRouter(prefix=huelle.PFAD, include_in_schema=False)
 
@@ -78,3 +79,6 @@ router.add_api_route("/werkbank/{aid}/szene/{nr}/nochmal", werkbank.szene_nochma
 router.add_api_route("/werkbank/{aid}/szene/{nr}/oeffnen", werkbank.szene_oeffnen, methods=["POST"])
 router.add_api_route("/werkbank/{aid}/neu-schreiben", werkbank.neu_schreiben, methods=["POST"])
 router.add_api_route("/werkbank/{aid}/neu-bauen", werkbank.neu_bauen, methods=["POST"])
+# Stufe C, Punkt 5: Teilen als Versandauftrag an Sales (nur mit MARKETING_BESTELLEN=an; versendet nichts)
+router.add_api_route("/reels/{aid}/teilen", teilen.reel_teilen, methods=["POST"])
+router.add_api_route("/podcast/{aid}/teilen", teilen.folge_teilen, methods=["POST"])

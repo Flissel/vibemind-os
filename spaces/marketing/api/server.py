@@ -3502,6 +3502,8 @@ app.include_router(_medien_mandant.router)
 from spaces.marketing.api import ton as _ton  # noqa: E402
 app.include_router(_ton.router)
 app.include_router(_ton.pult_router)
+from spaces.marketing.api import teilen as _teilen  # noqa: E402
+app.include_router(_teilen.pult_router)
 from spaces.marketing.api import plan as _plan  # noqa: E402
 app.include_router(_plan.pult_router)
 app.include_router(_plan.agent_router)

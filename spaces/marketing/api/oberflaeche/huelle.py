@@ -559,6 +559,7 @@ img.bildchen { display: block; max-width: 160px; max-height: 120px; object-fit: 
   overflow-wrap: anywhere; cursor: pointer; } .bildwahl input { align-self: flex-start; }
 .bestellen fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
 .bestellen fieldset[disabled] { opacity: .55; }
+ul.geteilt { margin: 4px 0 8px; padding-left: 18px; } ul.geteilt li { margin: 2px 0; }
 .werkbank fieldset.still { border: 0; padding: 0; margin: 0; } .werkbank fieldset[disabled], .werkbank button[disabled] { opacity: .55; }
 .werkbank .knoepfe { align-items: center; } .werkbank ol.szenen li { margin: 6px 0; }
 .werkbank .lesetext { white-space: pre-wrap; max-width: 72ch; }

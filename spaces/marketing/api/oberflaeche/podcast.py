@@ -2,13 +2,13 @@
 
 Je Folge Status, Titel, Datum, Inhaltssprache, Sprecher, Laenge, Befund und das Skript zum
 Aufklappen. Seit Stufe B, Tag 4 spielen fertige Folgen direkt in der Karte (medien.py, eigene
-Medienablage je Firma); seit Punkt 2 bestellen und abbrechen (bestellen.py, Kosten-Schalter); der
-Freigabestand kommt mit Stufe C. Daten: GET /api/pult/ton."""
+Medienablage je Firma); seit Punkt 2 bestellen und abbrechen (bestellen.py, Kosten-Schalter); seit Punkt 5
+teilen als Versandauftrag an Sales mit Stand je Folge (teilen.py, derselbe Schalter). Daten: GET /api/pult/ton."""
 from __future__ import annotations
 
 from starlette.concurrency import run_in_threadpool
 
-from spaces.marketing.api.oberflaeche import bestellen, daten, medien
+from spaces.marketing.api.oberflaeche import bestellen, daten, medien, teilen
 from spaces.marketing.api.oberflaeche.huelle import Kontext, e
 
 STATUS = ("offen", "in_arbeit", "fertig", "fehler", "abgebrochen")
@@ -27,7 +27,7 @@ TEXTE = {
         "laenge": "{zeit} min",
         "skript": "Skript",
         "leer": "Noch keine Folgen.",
-        "anhoeren": "Fertige Folgen spielen direkt hier. Versenden geht vorerst in der Sales-Oberfläche.",
+        "anhoeren": "Fertige Folgen spielen direkt hier. Teilen legt einen Versandauftrag an Sales an.",
         "hinweis": "Podcast-Folgen der Firma anhören und bestellen. Versendet wird hier nichts.",
     },
     "en": {
@@ -42,7 +42,7 @@ TEXTE = {
         "laenge": "{zeit} min",
         "skript": "Script",
         "leer": "No episodes yet.",
-        "anhoeren": "Finished episodes play right here. Sending still happens in the Sales interface for now.",
+        "anhoeren": "Finished episodes play right here. Sharing creates a sending request for Sales.",
         "hinweis": "Listen to and order the company's podcast episodes. Nothing is sent from here.",
     },
 }
@@ -58,7 +58,7 @@ def laenge(sekunden) -> str:
     return f"{s // 60}:{s % 60:02d}" if s > 0 else ""
 
 
-def karte(k: Kontext, a: dict) -> str:
+def karte(k: Kontext, a: dict, stand: dict | None = None) -> str:
     st = str(a.get("status") or "")
     skript = [x for x in a.get("skript") or [] if isinstance(x, dict)] if isinstance(a.get("skript"), list) else []
     sprecher = list(dict.fromkeys(str(x.get("sprecher") or "").strip() for x in skript if x.get("sprecher")))
@@ -82,14 +82,21 @@ def karte(k: Kontext, a: dict) -> str:
             + (f'<p class="fehler">{e(befund)}</p>' if befund else "")
             + (f'<details><summary>{e(k.t(TEXTE, "skript"))}</summary><pre>{e(text)}</pre></details>' if text else "")
             + bestellen.folge_knoepfe(k, a)
+            + teilen.formular(k, "folge", a, stand)
             + '</article>')
 
 
 async def bauen(k: Kontext) -> tuple[str, str]:
     k.hinweis = k.t(TEXTE, "hinweis")
     folgen = await run_in_threadpool(daten.podcast, k.firma)
-    karten = "".join(karte(k, a) for a in folgen)
+    stand = None
+    if any(a.get("status") == "fertig" for a in folgen):
+        try:
+            stand = teilen.je_auftrag(await run_in_threadpool(daten.geteilt, str(k.firma), "folge"))
+        except daten.DatenFehler:
+            stand = None
+    karten = "".join(karte(k, a, stand) for a in folgen)
     inhalt = f'<div class="karten">{karten}</div>' if karten else f'<p class="leer">{e(k.t(TEXTE, "leer"))}</p>'
-    return k.t(TEXTE, "titel"), (bestellen.meldung(k) + bestellen.folge_formular(k)
+    return k.t(TEXTE, "titel"), (bestellen.meldung(k) + teilen.meldung(k) + bestellen.folge_formular(k)
                                  + f'<p class="meta">{e(k.t(TEXTE, "anhoeren"))}</p>'
                                  f'<h2>{e(k.t(TEXTE, "folgen"))}</h2>{inhalt}')
