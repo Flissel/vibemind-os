@@ -1,6 +1,6 @@
 # OpenFang-Agent "hermes-desktop" (Vorlage, 25.11.2026). Im Betrieb: ~/.openfang/agents/hermes-desktop/agent.toml.
 #
-# Denkt fuer die Desktop-Schleife, wenn VIBEMIND_DESKTOP_AGENT=hermes (core/desktop_schleife.py,
+# Denkt fuer die Desktop-Schleife, wenn VIBEMIND_DESKTOP_AGENT=hermes (core/desktop_denker.py,
 # denkender_agent). Er hat KEINE Werkzeuge: Die Schleife fragt ihn nach genau einem Schritt und fuehrt
 # ihn selbst ueber brain-desktop/spaces-desktop aus, mit Freigabe je Aufruf.
 #
