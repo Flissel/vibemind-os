@@ -68,7 +68,7 @@ TEXTE = {
         "status_anders": "Fassung {n} · Status: {status}",
         "keine_fassung": "Dieser Entwurf hat noch keine Fassung.",
         "collage_vorschau": "Collage-Entwürfe zeigt die Vorschau hier noch nicht.",
-        "weiter": "Bearbeiten und Einreichen kommen im nächsten Schritt in diesen Reiter.",
+        "weiter": "Bearbeiten und einreichen",
         "zu_newslettern": "Zu den Newslettern",
         "andere_vorlage": "Andere Vorlage wählen",
         "f_fremd": "Dieser Entwurf gehört zu einer anderen Firma.",
@@ -104,7 +104,7 @@ TEXTE = {
         "status_anders": "Version {n} · Status: {status}",
         "keine_fassung": "This draft has no version yet.",
         "collage_vorschau": "Collage drafts are not previewed here yet.",
-        "weiter": "Editing and submitting come to this tab in the next step.",
+        "weiter": "Edit and submit",
         "zu_newslettern": "Go to newsletters",
         "andere_vorlage": "Choose another template",
         "f_fremd": "This draft belongs to another company.",
@@ -249,7 +249,7 @@ async def anlegen(request: Request) -> Response:
         iid = str(uuid.UUID(iid))
     except ValueError:
         return huelle.daten_fehlerseite(s, daten.DatenFehler("nicht_erreichbar"))
-    return RedirectResponse(f"{SEITE}/entwurf/{iid}", status_code=303)
+    return RedirectResponse(f"{PFAD}/entwuerfe/{iid}", status_code=303)       # gleich in den Editor
 
 
 # --- Seite: angelegter Entwurf ------------------------------------------------------------------
@@ -277,7 +277,7 @@ async def entwurf_bauen(k: Kontext) -> tuple[str, str]:
     status = str(kopf.get("status") or "")
     zeile = (k.t(TEXTE, "fassung", n=n) if status == "entwurf"
              else k.t(TEXTE, "status_anders", n=n, status=status))
-    rumpf += f'<p class="meta">{e(zeile)}</p><p>{e(k.t(TEXTE, "weiter"))}</p>' + links
+    rumpf += f'<p class="meta">{e(zeile)}</p><p><a href="{PFAD}/entwuerfe/{iid}">{e(k.t(TEXTE, "weiter"))}</a></p>' + links
     if neueste.get("format") == "seite":
         return k.t(TEXTE, "entwurf_titel"), rumpf + f'<p class="meta">{e(k.t(TEXTE, "collage_vorschau"))}</p>'
     fmt = _fmt(k)

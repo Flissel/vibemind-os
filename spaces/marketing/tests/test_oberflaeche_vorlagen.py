@@ -159,7 +159,7 @@ def test_vorlagen_ohne_schluessel(c, a):
 def test_anlegen_legt_entwurf_an_und_leitet_weiter(c, a):
     r = anlegen(c, titel="  Mein Entwurf  ")
     assert r.status_code == 303
-    assert r.headers["location"] == f"/oberflaeche/vorlagen/entwurf/{IID}"
+    assert r.headers["location"] == f"/oberflaeche/entwuerfe/{IID}"
     assert ("aus_vorlage", "alpha", "fruehling", "Mein Entwurf") in a.aufrufe
 
 

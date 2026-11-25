@@ -49,7 +49,8 @@ _FARBE = re.compile(r"^#[0-9A-Fa-f]{6}$")
 _AKTIV = ' class="aktiv"'
 
 # (Pfad unter PFAD, Textschluessel) in der Reihenfolge des Menues
-MENUE = (("/newsletter", "menue_newsletter"), ("/vorlagen", "menue_vorlagen"), ("/plan", "menue_plan"), ("/marke", "menue_marke"),
+MENUE = (("/newsletter", "menue_newsletter"), ("/entwuerfe", "menue_entwuerfe"), ("/vorlagen", "menue_vorlagen"),
+         ("/plan", "menue_plan"), ("/marke", "menue_marke"),
          ("/reels", "menue_reels"), ("/podcast", "menue_podcast"))
 
 TEXTE = {
@@ -57,6 +58,7 @@ TEXTE = {
         "space": "Marketing",
         "menue": "Bereiche",
         "menue_newsletter": "Newsletter",
+        "menue_entwuerfe": "Entwürfe",
         "menue_vorlagen": "Vorlagen",
         "menue_plan": "Kampagnenplan",
         "menue_marke": "Marke",
@@ -93,6 +95,7 @@ TEXTE = {
         "space": "Marketing",
         "menue": "Sections",
         "menue_newsletter": "Newsletters",
+        "menue_entwuerfe": "Drafts",
         "menue_vorlagen": "Templates",
         "menue_plan": "Campaign plan",
         "menue_marke": "Brand",
@@ -373,15 +376,16 @@ def seiten_route(aktiv: str, bauen: Bauer):
     return endpunkt
 
 
-async def _formular(request: Request) -> tuple[Response | None, str, dict]:
-    """Gemeinsamer Anfang jedes POST: Schluessel, Sprache, Formular, CSRF."""
+async def _formular(request: Request, grenze: int = FORM_MAX) -> tuple[Response | None, str, dict]:
+    """Gemeinsamer Anfang jedes POST: Schluessel, Sprache, Formular, CSRF. grenze: hoechste Formulargroesse
+    in Bytes (der Block-Editor braucht mehr als die Umschalter)."""
     fehler = zugang_fehler(request)
     s = sprache_von(request)
     if fehler is not None:
         return fehler, s, {}
     # Kleine urlencodierte Formulare selbst lesen: kein python-multipart auf der VM noetig
     roh = await request.body()
-    form = {} if len(roh) > FORM_MAX else {
+    form = {} if len(roh) > grenze else {
         k: v[0] for k, v in urllib.parse.parse_qs(roh.decode("utf-8", errors="replace"),
                                                   keep_blank_values=True).items()}
     if not csrf_ok(request, form):
@@ -483,6 +487,20 @@ a { color: var(--akzent); }
 .logos img { max-height: 64px; max-width: 220px; display: block; }
 dl.angaben dt { font-weight: 600; margin-top: 6px; } dl.angaben dd { margin: 0; white-space: pre-wrap; }
 pre { white-space: pre-wrap; font: inherit; margin: 6px 0; }
+.editor { display: flex; flex-direction: column; gap: 10px; max-width: 720px; margin: 8px 0 16px; }
+.editor label { display: flex; flex-direction: column; gap: 4px; font-weight: 600; }
+.editor input[type=text], .editor input[type=url], .editor textarea { font: inherit; font-weight: 400;
+  padding: 6px 10px; border: 1px solid var(--linie); border-radius: 10px; background: var(--flaeche2); color: var(--text); }
+.editor textarea { resize: vertical; min-height: 6rem; }
+.editor fieldset.block { border: 1px solid var(--linie); border-radius: 14px; background: var(--flaeche);
+  padding: 10px 14px 12px; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.editor legend { color: var(--leise); font-size: .85rem; font-weight: 700; padding: 0 6px; }
+.editor button, .anlegen button { font: inherit; font-weight: 600; padding: 6px 16px; min-height: 40px;
+  border-radius: 10px; border: 1px solid var(--akzent); background: var(--akzent); color: var(--akzent-auf); cursor: pointer; }
+.erfolg { color: var(--gut); font-weight: 600; }
+.rueckmeldungen ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.rueckmeldungen li { border-left: 3px solid var(--warn); background: var(--flaeche2); padding: 8px 12px;
+  border-radius: 0 10px 10px 0; } .rueckmeldungen li p { margin: 2px 0; }
 .vorschau { margin: 8px 0 24px; } .vorschau .reiter { margin-top: 0; }
 .vorschau iframe { display: block; width: 100%; max-width: 680px; height: 860px; border: 1px solid var(--linie);
   border-radius: 14px; background: #fff; }

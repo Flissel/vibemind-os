@@ -9,9 +9,9 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi.responses import RedirectResponse
 
-from spaces.marketing.api.oberflaeche import huelle, marke, newsletter, plan, podcast, reels, vorlagen
+from spaces.marketing.api.oberflaeche import entwuerfe, huelle, marke, newsletter, plan, podcast, reels, vorlagen
 
-SEITEN = (("/newsletter", newsletter), ("/vorlagen", vorlagen), ("/plan", plan), ("/marke", marke), ("/reels", reels),
+SEITEN = (("/newsletter", newsletter), ("/entwuerfe", entwuerfe), ("/vorlagen", vorlagen), ("/plan", plan), ("/marke", marke), ("/reels", reels),
           ("/podcast", podcast))
 # Module mit eigenem Woerterbuch (der Sprachtest prueft jedes)
 MODULE_MIT_TEXTEN = (huelle,) + tuple(m for _, m in SEITEN)
@@ -34,5 +34,10 @@ for _pfad, _modul in SEITEN:
 router.add_api_route("/vorlagen/anlegen", vorlagen.anlegen, methods=["POST"])
 router.add_api_route("/vorlagen/entwurf/{iid}", huelle.seiten_route("/vorlagen", vorlagen.entwurf_bauen),
                      methods=["GET"])
+# Stufe B, Tag 2: Entwurf bearbeiten, speichern, einreichen, zurueckziehen (Einreichen versendet nichts)
+router.add_api_route("/entwuerfe/{iid}", huelle.seiten_route("/entwuerfe", entwuerfe.editor_bauen), methods=["GET"])
+router.add_api_route("/entwuerfe/{iid}/speichern", entwuerfe.speichern, methods=["POST"])
+router.add_api_route("/entwuerfe/{iid}/einreichen", entwuerfe.einreichen, methods=["POST"])
+router.add_api_route("/entwuerfe/{iid}/zurueckziehen", entwuerfe.zurueckziehen, methods=["POST"])
 router.add_api_route("/vorschau/vorlage/{ref}", vorlagen.vorschau_vorlage, methods=["GET"])
 router.add_api_route("/vorschau/entwurf/{ref}", vorlagen.vorschau_entwurf, methods=["GET"])

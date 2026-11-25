@@ -133,3 +133,28 @@ def entwurf(iid: str) -> dict:
 def entwurf_vorschau(iid: str, fassung: int, fmt: str) -> str:
     from spaces.marketing.api import pult
     return _html(_rufen(pult.vorschau, iid=iid, fassung=fassung, format=fmt, bild_basis=""))
+
+
+# --- Stufe B, Tag 2: Entwuerfe bearbeiten und einreichen (Einreichen = Status, versendet nichts) --
+
+def bloecke_speichern(iid: str, basis: int, betreff: str, vorschautext: str, bloecke: dict) -> int:
+    """Neue Fassung (Urheber betreiber); die DB prueft, dass basis die neueste ist. Gibt ihre Nummer zurueck."""
+    from spaces.marketing.api import pult
+    antwort = _rufen(pult.bloecke_speichern, iid=iid, payload={
+        "basis_fassung": basis, "betreff": betreff, "vorschautext": vorschautext, "bloecke": bloecke,
+        "urheber": "betreiber"})
+    n = antwort.get("fassung") if isinstance(antwort, dict) else None
+    if not isinstance(n, int) or isinstance(n, bool):
+        raise DatenFehler("nicht_erreichbar")
+    return n
+
+
+def einreichen(iid: str, von: str) -> None:
+    """Legt den Entwurf in die Freigaben von Sales (Status 'eingereicht'). Versendet nichts."""
+    from spaces.marketing.api import freigabe
+    _rufen(freigabe.einreichen, iid=iid, payload={"von": von})
+
+
+def zurueckziehen(iid: str, von: str) -> None:
+    from spaces.marketing.api import freigabe
+    _rufen(freigabe.zurueckziehen, iid=iid, payload={"von": von})
