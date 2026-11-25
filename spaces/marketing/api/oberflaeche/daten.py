@@ -2,7 +2,8 @@
 Prozess auf (keine neue Tabelle, kein eigenes SQL). Die Pult-Funktionen pruefen weiter ihren
 eigenen Schluessel (MARKETING_PULT_KEY); den reicht dieses Modul aus der Umgebung durch.
 
-Stufe A liest nur. Fehler werden zu DatenFehler mit einer Art, die die Seite in Worte fasst:
+Stufe A liest nur; Stufe B schreibt ueber dieselben Pult-Funktionen (nie eigenes SQL).
+Fehler werden zu DatenFehler mit einer Art, die die Seite in Worte fasst:
 - nicht_verbunden: Pult-Schluessel fehlt oder passt nicht
 - nicht_erreichbar: Datenbank oder Dienst antwortet nicht (Rohtext wird nie gezeigt)
 - abgelehnt: die API lehnt die Anfrage mit Grund ab (z. B. unbekannte Firma)
@@ -158,3 +159,60 @@ def einreichen(iid: str, von: str) -> None:
 def zurueckziehen(iid: str, von: str) -> None:
     from spaces.marketing.api import freigabe
     _rufen(freigabe.zurueckziehen, iid=iid, payload={"von": von})
+
+
+# --- Stufe B, Tag 3: Plan, Kampagnen und Marke bearbeiten (planen und vorschlagen, versendet nichts) --
+
+def plan_anlegen(mandant: str, datum: str, art: str, titel: str, notiz: str) -> str:
+    """Neuer Planeintrag als Betreiber (Status 'geplant'). Ein Planeintrag versendet nichts."""
+    from spaces.marketing.api import plan as _plan
+    antwort = _rufen(_plan.pult_anlegen, payload={"mandant": mandant, "datum": datum, "art": art,
+                                                   "titel": titel, "notiz": notiz})
+    pid = antwort.get("id") if isinstance(antwort, dict) else None
+    if not isinstance(pid, str) or not pid:
+        raise DatenFehler("nicht_erreichbar")
+    return pid
+
+
+def plan_aendern(pid: str, aenderung: dict) -> str:
+    """Nur die genannten Felder (status, datum, titel, notiz). Ein neues Datum ohne Status macht aus
+    'geplant' 'verschoben' (DB); ein Vorschlag bleibt Vorschlag, bis jemand ihn bestaetigt."""
+    from spaces.marketing.api import plan as _plan
+    erlaubt = {k: v for k, v in aenderung.items() if k in ("status", "datum", "titel", "notiz") and v is not None}
+    antwort = _rufen(_plan.pult_aendern, pid=pid, payload=erlaubt)
+    return str(antwort.get("status") or "") if isinstance(antwort, dict) else ""
+
+
+def kampagne_anlegen(mandant: str, name: str, ziel: str, zielgruppe: str, von: str, bis: str, wer: str) -> str:
+    """Neue Kampagne ('in_planung'): der Kampagnen-Arbeiter schlaegt danach Beitraege vor (immer 'vorschlag')."""
+    from spaces.marketing.api import kampagnen as _kampagnen
+    antwort = _rufen(_kampagnen.pult_anlegen, payload={
+        "mandant": mandant, "name": name, "ziel": ziel, "zielgruppe": zielgruppe, "filter": {},
+        "von": von, "bis": bis, "von_wer": wer})
+    kid = antwort.get("id") if isinstance(antwort, dict) else None
+    if not isinstance(kid, str) or not kid:
+        raise DatenFehler("nicht_erreichbar")
+    return kid
+
+
+def kampagne_status(kid: str, status: str) -> None:
+    from spaces.marketing.api import kampagnen as _kampagnen
+    _rufen(_kampagnen.pult_status, kid=kid, payload={"status": status})
+
+
+def marke_bearbeiten(mandant: str, formular: dict) -> str:
+    """Legt nur einen Bearbeitungs-Auftrag an: der Marken-Assistent macht daraus einen Vorschlag, den der
+    Betreiber uebernimmt oder verwirft. Direkt gespeichert wird nichts."""
+    from spaces.marketing.api import marke as _marke
+    antwort = _rufen(_marke.marke_bearbeiten, payload={"mandant": mandant, "formular": formular})
+    return str(antwort.get("auftrag") or "") if isinstance(antwort, dict) else ""
+
+
+def marke_uebernehmen(mandant: str, vid: str, von: str) -> None:
+    from spaces.marketing.api import marke as _marke
+    _rufen(_marke.marke_uebernehmen, vid=vid, payload={"von": von, "mandant": mandant})
+
+
+def marke_verwerfen(mandant: str, vid: str, von: str) -> None:
+    from spaces.marketing.api import marke as _marke
+    _rufen(_marke.marke_verwerfen, vid=vid, payload={"von": von, "mandant": mandant})

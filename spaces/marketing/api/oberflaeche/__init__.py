@@ -1,5 +1,6 @@
 """Eigene Oberflaeche des Marketing-Space (Stufe A, 24.11.2026): lesende Seiten unter /oberflaeche/;
-seit Stufe B (25.11.) legt /vorlagen auch einen Entwurf an (vorlagen.py).
+seit Stufe B (25.11.) schreibend: Entwuerfe (vorlagen.py, entwuerfe.py), Plan und Kampagnen (plan.py),
+Markenprofil ueber den Assistenten (marke.py).
 
 Die App zeigt sie im Marketing-Reiter (MARKETING_UI_URL) und haengt den Schluessel aus der Umgebung
 als Bearer an (bearerEnv). Die API prueft ihn gegen MARKETING_UI_KEY. Gesendet wird hier nichts:
@@ -41,3 +42,10 @@ router.add_api_route("/entwuerfe/{iid}/einreichen", entwuerfe.einreichen, method
 router.add_api_route("/entwuerfe/{iid}/zurueckziehen", entwuerfe.zurueckziehen, methods=["POST"])
 router.add_api_route("/vorschau/vorlage/{ref}", vorlagen.vorschau_vorlage, methods=["GET"])
 router.add_api_route("/vorschau/entwurf/{ref}", vorlagen.vorschau_entwurf, methods=["GET"])
+# Stufe B, Tag 3: Plan und Kampagnen planen, Markenprofil ueber den Assistenten bearbeiten (versendet nichts)
+router.add_api_route("/plan/anlegen", plan.anlegen, methods=["POST"])
+router.add_api_route("/plan/aendern", plan.aendern, methods=["POST"])
+router.add_api_route("/plan/kampagne", plan.kampagne_anlegen, methods=["POST"])
+router.add_api_route("/plan/kampagne/status", plan.kampagne_status, methods=["POST"])
+router.add_api_route("/marke/bearbeiten", marke.bearbeiten, methods=["POST"])
+router.add_api_route("/marke/vorschlag", marke.vorschlag, methods=["POST"])
