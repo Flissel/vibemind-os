@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 from spaces.coding import abnahme as abnahme_modul
+from spaces.coding import vorschau as vorschau_modul
 from spaces.coding import engine_huelle, oberflaechen, pipeline
 
 logger = logging.getLogger(__name__)
@@ -127,7 +128,10 @@ class Aufsicht:
         warten_s: Optional[float] = None,
         uhr: Callable[[], float] = time.time,
         abnahme: Callable[[Dict[str, Any]], Dict[str, Any]] = abnahme_modul.abnehmen,
+        vorschau: Callable[[str, Dict[str, Any]], None] = vorschau_modul.nach_abnahme,
     ) -> None:
+        # Nach gruener Abnahme: Live-Vorschau auf den Auftrag setzen (Schalter, Vorgabe aus).
+        self._vorschau = vorschau
         # Nach dem Abschluss der Engine: die unabhaengige Abnahme (siehe abnahme.py). Sie laeuft
         # in einem eigenen Faden, einer zugleich; solange startet kein neuer Erzeuger.
         self._abnahme = abnahme
@@ -265,6 +269,11 @@ class Aufsicht:
             logger.info("Abnahme fuer Auftrag %s: %s", auftrag_id, urteil.get("zustand"))
         except Exception:  # noqa: BLE001
             logger.exception("Urteil der Abnahme fuer Auftrag %s nicht gespeichert", auftrag_id)
+            return
+        try:
+            self._vorschau(auftrag_id, urteil)
+        except Exception:  # noqa: BLE001 - die Vorschau darf die Abnahme nie stoeren
+            logger.exception("Vorschau fuer Auftrag %s gescheitert", auftrag_id)
 
     def _abschliessen(self, auftrag_id: str, grund: str) -> None:
         auftrag = pipeline._laden(auftrag_id)
