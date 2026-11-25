@@ -197,12 +197,41 @@ def quittung(ergebnis: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
+def gelesen(roh: Any) -> Optional[Dict[str, Any]]:
+    """Fester Satz und Sprungziel aus der rohen Antwort von ``auftrag_lesen`` eines Sales-Auftrags.
+
+    Laeuft im MCP-Ausfuehrer, bevor die Antwort gekuerzt wird (``capability_targets``); danach sind
+    die Treffer nur noch eine Anzahl. ``None`` fuer andere Empfaenger oder Arten. Wirft nie.
+    """
+    try:
+        inhalt, _ = _text_aus(roh)
+        if not isinstance(inhalt, dict) or inhalt.get("an") != "sales":
+            return None
+        art = inhalt.get("art")
+        if not isinstance(art, str) or art not in _ZAHLEN:
+            return None
+        stand = inhalt.get("stand")
+        return {"satz": satz(art, stand if isinstance(stand, str) else "", inhalt.get("auftrag_id"),
+                             inhalt.get("ergebnis")),
+                "ziel": ziel(art, None)}
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def antwort_fuer_aufruf(capability: str, ok: bool, ergebnis: Any, fehler: Any) -> Dict[str, Any]:
     """Antwortfelder nach dem festen Aufruf: ``final_text``, ``space``, ``ok`` und ``ziel``/``auftrag``.
 
     Ein Fehler des Auftragsbuchs nennt nur einen festen Satz, nie den Werkzeugtext.
     """
     art = art_von(capability)
+    if art == "auftrag_lesen":
+        # Der Ausfuehrer hat die Antwort schon gekuerzt und den festen Satz angehaengt (gelesen).
+        inhalt, _ = _text_aus(ergebnis) if ok else (None, "")
+        if isinstance(inhalt, dict) and isinstance(inhalt.get("satz"), str):
+            z = inhalt.get("ziel")
+            return {"ok": True, "space": "sales", "final_text": inhalt["satz"],
+                    "ziel": z if isinstance(z, dict) else {"space": "sales", "pfad": "/"}}
+        return {"ok": False, "space": "sales", "final_text": NICHT_ERREICHBAR}
     q = quittung(ergebnis) if ok else None
     if q is not None and q.get("art") == art:
         return {"ok": True, "space": "sales", "final_text": satz(art, str(q.get("stand") or "offen"),

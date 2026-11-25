@@ -3863,6 +3863,14 @@ async def _multihop_execute(request: Request):
                 _fest_lesen = _hops[0].capability
         except Exception:  # noqa: BLE001
             pass
+    if not _sales_fest:
+        # Ein Ein-Schritt-Plan auf sales.auftrag_lesen (Planer) antwortet mit dem festen Satz,
+        # nie mit einer Synthese (core/sales_antwort, Ergebnis schon im Ausfuehrer gekuerzt).
+        try:
+            _sh = list(getattr(plan, "hops", None) or [])
+            _sales_fest = len(_sh) == 1 and _sh[0].capability == "sales.auftrag_lesen"
+        except Exception:  # noqa: BLE001
+            _sales_fest = False
     if _sales_fest:
         _fest = _sales_antwort(plan, exec_result)
     elif _fest_lesen:
