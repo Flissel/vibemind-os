@@ -553,6 +553,10 @@ img.bildchen { display: block; max-width: 160px; max-height: 120px; object-fit: 
 .galerie figure { margin: 0; display: flex; flex-direction: column; gap: 4px; }
 .galerie figcaption { font-size: .8rem; color: var(--leise); overflow-wrap: anywhere; }
 .galerie img.bildchen { max-width: 100%; }
+.bildwahl { display: flex; flex-direction: column; gap: 4px; font-weight: 400; font-size: .8rem; color: var(--leise);
+  overflow-wrap: anywhere; cursor: pointer; } .bildwahl input { align-self: flex-start; }
+.bestellen fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
+.bestellen fieldset[disabled] { opacity: .55; }
 .assistent { max-width: 720px; margin: 16px 0 24px; }
 ol.verlauf { list-style: none; padding: 0; margin: 8px 0; display: flex; flex-direction: column; gap: 8px; }
 ol.verlauf li { border-left: 3px solid var(--akzent); background: var(--flaeche2); padding: 8px 12px;

@@ -1,7 +1,8 @@
 """Eigene Oberflaeche des Marketing-Space (Stufe A, 24.11.2026): lesende Seiten unter /oberflaeche/;
 seit Stufe B (25.11.) schreibend: Entwuerfe (vorlagen.py, entwuerfe.py), Plan und Kampagnen (plan.py),
 Markenprofil ueber den Assistenten (marke.py); Reels und Folgen abspielen (medien.py, Tag 4); Bilder zuordnen
-und Collagen bearbeiten (entwuerfe.py, Tag 5).
+und Collagen bearbeiten (entwuerfe.py, Tag 5); Reels und Folgen bestellen hinter dem Kosten-Schalter
+(bestellen.py, Punkt 2).
 
 Die App zeigt sie im Marketing-Reiter (MARKETING_UI_URL) und haengt den Schluessel aus der Umgebung
 als Bearer an (bearerEnv). Die API prueft ihn gegen MARKETING_UI_KEY. Gesendet wird hier nichts:
@@ -11,13 +12,13 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi.responses import RedirectResponse
 
-from spaces.marketing.api.oberflaeche import (assistent, entwuerfe, huelle, marke, medien, newsletter, plan, podcast,
-                                              reels, vorlagen)
+from spaces.marketing.api.oberflaeche import (assistent, bestellen, entwuerfe, huelle, marke, medien, newsletter,
+                                              plan, podcast, reels, vorlagen)
 
 SEITEN = (("/newsletter", newsletter), ("/entwuerfe", entwuerfe), ("/vorlagen", vorlagen), ("/plan", plan), ("/marke", marke), ("/reels", reels),
           ("/podcast", podcast))
 # Module mit eigenem Woerterbuch (der Sprachtest prueft jedes)
-MODULE_MIT_TEXTEN = (huelle, assistent) + tuple(m for _, m in SEITEN)
+MODULE_MIT_TEXTEN = (huelle, assistent, bestellen) + tuple(m for _, m in SEITEN)
 
 router = APIRouter(prefix=huelle.PFAD, include_in_schema=False)
 
@@ -61,3 +62,9 @@ router.add_api_route("/entwuerfe/{iid}/umwandeln", entwuerfe.umwandeln, methods=
 router.add_api_route("/entwuerfe/{iid}/assistent", assistent.senden, methods=["POST"])
 router.add_api_route("/entwuerfe/{iid}/assistent/stopp", assistent.stoppen, methods=["POST"])
 router.add_api_route("/entwuerfe/{iid}/assistent/rueckgaengig", assistent.rueckgaengig, methods=["POST"])
+# Stufe B, Punkt 2: Reels und Folgen bestellen (nur mit MARKETING_BESTELLEN=an), abbrechen (immer)
+router.add_api_route("/reels/bestellen", bestellen.reel_bestellen, methods=["POST"])
+router.add_api_route("/reels/{aid}/nochmal", bestellen.reel_nochmal, methods=["POST"])
+router.add_api_route("/reels/{aid}/abbrechen", bestellen.reel_abbrechen, methods=["POST"])
+router.add_api_route("/podcast/bestellen", bestellen.folge_bestellen, methods=["POST"])
+router.add_api_route("/podcast/{aid}/abbrechen", bestellen.folge_abbrechen, methods=["POST"])

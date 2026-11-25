@@ -301,3 +301,42 @@ def collage_anlegen(mandant: str, titel: str, betreff: str) -> str:
     if not isinstance(iid, str) or not iid:
         raise DatenFehler("nicht_erreichbar")
     return iid
+
+
+# --- Stufe B, Punkt 2: Bestellen (hinter dem Kosten-Schalter in bestellen.py; versendet nichts) -------
+
+def _auftrag_id(antwort) -> str:
+    aid = antwort.get("auftrag") if isinstance(antwort, dict) else None
+    if not isinstance(aid, str) or not aid or aid == "None":
+        raise DatenFehler("nicht_erreichbar")
+    return aid
+
+
+def reel_bestellen(mandant: str, titel: str, briefing: dict) -> str:
+    """Neues Reel aus Bildern (art bilder) als Betreiber; die Markenstimme setzt video.py selbst ein."""
+    from spaces.marketing.api import video
+    return _auftrag_id(_rufen(video.pult_anlegen, payload={"mandant": mandant, "art": "bilder", "titel": titel,
+                                                             "briefing": briefing}))
+
+
+def reel_nochmal(mandant: str, aid: str, wunsch: str) -> str:
+    from spaces.marketing.api import video
+    return _auftrag_id(_rufen(video.pult_nochmal, aid=aid, payload={"mandant": mandant, "wunsch": wunsch}))
+
+
+def reel_abbrechen(mandant: str, aid: str) -> None:
+    """Mit mandant im Koerper prueft video.py, dass der Auftrag dieser Firma gehoert (sonst 404)."""
+    from spaces.marketing.api import video
+    _rufen(video.pult_abbrechen, aid=aid, payload={"mandant": mandant})
+
+
+def folge_bestellen(mandant: str, titel: str, sprache: str, skript: list[dict]) -> str:
+    from spaces.marketing.api import ton
+    return _auftrag_id(_rufen(ton.pult_anlegen, payload={"mandant": mandant, "titel": titel, "sprache": sprache,
+                                                           "skript": skript}))
+
+
+def folge_abbrechen(aid: str) -> None:
+    """ton.pult_abbrechen prueft die Firma nicht: das tut bestellen.folge_abbrechen vorher."""
+    from spaces.marketing.api import ton
+    _rufen(ton.pult_abbrechen, aid=aid)

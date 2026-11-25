@@ -2,13 +2,14 @@
 
 Reiter Fertig, In Arbeit, Fehlgeschlagen, Archiv mit Karten (Titel, Status, Art, Format, Dauer,
 Datum). Seit Stufe B, Tag 4 spielen fertige Reels direkt in der Karte (medien.py, eigene Medienablage
-je Firma). Bestellen folgt in Stufe B, Teilen mit dem Versandauftrag (Stufe C).
+je Firma). Seit Punkt 2 bestellen, neu bauen und abbrechen (bestellen.py, Kosten-Schalter); Teilen folgt
+mit dem Versandauftrag (Stufe C).
 Daten: GET /api/pult/video."""
 from __future__ import annotations
 
 from starlette.concurrency import run_in_threadpool
 
-from spaces.marketing.api.oberflaeche import daten, medien
+from spaces.marketing.api.oberflaeche import bestellen, daten, medien
 from spaces.marketing.api.oberflaeche.huelle import PFAD, Kontext, e, reiter
 
 SEITE = f"{PFAD}/reels"
@@ -33,8 +34,8 @@ TEXTE = {
         "fm_reel": "Hochformat 9:16", "fm_quadrat": "Quadrat 1:1", "fm_quer": "Querformat 16:9",
         "sekunden": "{n} s",
         "leer": "Noch keine Reels in diesem Bereich.",
-        "abspielen": "Fertige Reels spielen direkt hier. Bestellen und Teilen gehen vorerst in der Sales-Oberfläche.",
-        "hinweis": "Reels der Firma ansehen. Versendet wird hier nichts.",
+        "abspielen": "Fertige Reels spielen direkt hier. Teilen geht vorerst in der Sales-Oberfläche.",
+        "hinweis": "Reels der Firma ansehen und bestellen. Versendet wird hier nichts.",
         "aenderung": "Änderungswunsch: {text}",
     },
     "en": {
@@ -49,8 +50,8 @@ TEXTE = {
         "fm_reel": "Portrait 9:16", "fm_quadrat": "Square 1:1", "fm_quer": "Landscape 16:9",
         "sekunden": "{n} s",
         "leer": "No reels in this section yet.",
-        "abspielen": "Finished reels play right here. Ordering and sharing still happen in the Sales interface for now.",
-        "hinweis": "Watch the company's reels. Nothing is sent from here.",
+        "abspielen": "Finished reels play right here. Sharing still happens in the Sales interface for now.",
+        "hinweis": "Watch and order the company's reels. Nothing is sent from here.",
         "aenderung": "Change request: {text}",
     },
 }
@@ -100,6 +101,7 @@ def karte(k: Kontext, a: dict) -> str:
             + f'<p class="meta">{e(" · ".join(meta))}</p>'
             + (f'<p class="fehler">{e(befund)}</p>' if befund else "")
             + (f'<p class="meta">{e(k.t(TEXTE, "aenderung", text=wunsch))}</p>' if wunsch else "")
+            + bestellen.reel_knoepfe(k, a)
             + '</article>')
 
 
@@ -116,4 +118,9 @@ async def bauen(k: Kontext) -> tuple[str, str]:
                  lambda s: f"{SEITE}?reiter={s}", k.t(TEXTE, "bereich"))
     karten = "".join(karte(k, a) for a in je[gewaehlt])
     inhalt = f'<div class="karten">{karten}</div>' if karten else f'<p class="leer">{e(k.t(TEXTE, "leer"))}</p>'
-    return k.t(TEXTE, "titel"), nav + f'<p class="meta">{e(k.t(TEXTE, "abspielen"))}</p>' + inhalt
+    try:
+        namen = await run_in_threadpool(daten.bilder, str(k.firma)) if bestellen.an() else []
+    except daten.DatenFehler:
+        namen = None
+    return k.t(TEXTE, "titel"), (bestellen.meldung(k) + bestellen.reel_formular(k, namen) + nav
+                                 + f'<p class="meta">{e(k.t(TEXTE, "abspielen"))}</p>' + inhalt)

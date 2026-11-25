@@ -2,12 +2,13 @@
 
 Je Folge Status, Titel, Datum, Inhaltssprache, Sprecher, Laenge, Befund und das Skript zum
 Aufklappen. Seit Stufe B, Tag 4 spielen fertige Folgen direkt in der Karte (medien.py, eigene
-Medienablage je Firma); der Freigabestand kommt mit Stufe C. Daten: GET /api/pult/ton."""
+Medienablage je Firma); seit Punkt 2 bestellen und abbrechen (bestellen.py, Kosten-Schalter); der
+Freigabestand kommt mit Stufe C. Daten: GET /api/pult/ton."""
 from __future__ import annotations
 
 from starlette.concurrency import run_in_threadpool
 
-from spaces.marketing.api.oberflaeche import daten, medien
+from spaces.marketing.api.oberflaeche import bestellen, daten, medien
 from spaces.marketing.api.oberflaeche.huelle import Kontext, e
 
 STATUS = ("offen", "in_arbeit", "fertig", "fehler", "abgebrochen")
@@ -26,8 +27,8 @@ TEXTE = {
         "laenge": "{zeit} min",
         "skript": "Skript",
         "leer": "Noch keine Folgen.",
-        "anhoeren": "Fertige Folgen spielen direkt hier. Bestellen und Versenden gehen vorerst in der Sales-Oberfläche.",
-        "hinweis": "Podcast-Folgen der Firma anhören. Versendet wird hier nichts.",
+        "anhoeren": "Fertige Folgen spielen direkt hier. Versenden geht vorerst in der Sales-Oberfläche.",
+        "hinweis": "Podcast-Folgen der Firma anhören und bestellen. Versendet wird hier nichts.",
     },
     "en": {
         "titel": "Podcast",
@@ -41,8 +42,8 @@ TEXTE = {
         "laenge": "{zeit} min",
         "skript": "Script",
         "leer": "No episodes yet.",
-        "anhoeren": "Finished episodes play right here. Ordering and sending still happen in the Sales interface for now.",
-        "hinweis": "Listen to the company's podcast episodes. Nothing is sent from here.",
+        "anhoeren": "Finished episodes play right here. Sending still happens in the Sales interface for now.",
+        "hinweis": "Listen to and order the company's podcast episodes. Nothing is sent from here.",
     },
 }
 
@@ -80,6 +81,7 @@ def karte(k: Kontext, a: dict) -> str:
             + f'<p class="meta">{e(" · ".join(x for x in meta if x))}</p>'
             + (f'<p class="fehler">{e(befund)}</p>' if befund else "")
             + (f'<details><summary>{e(k.t(TEXTE, "skript"))}</summary><pre>{e(text)}</pre></details>' if text else "")
+            + bestellen.folge_knoepfe(k, a)
             + '</article>')
 
 
@@ -88,5 +90,6 @@ async def bauen(k: Kontext) -> tuple[str, str]:
     folgen = await run_in_threadpool(daten.podcast, k.firma)
     karten = "".join(karte(k, a) for a in folgen)
     inhalt = f'<div class="karten">{karten}</div>' if karten else f'<p class="leer">{e(k.t(TEXTE, "leer"))}</p>'
-    return k.t(TEXTE, "titel"), (f'<p class="meta">{e(k.t(TEXTE, "anhoeren"))}</p>'
+    return k.t(TEXTE, "titel"), (bestellen.meldung(k) + bestellen.folge_formular(k)
+                                 + f'<p class="meta">{e(k.t(TEXTE, "anhoeren"))}</p>'
                                  f'<h2>{e(k.t(TEXTE, "folgen"))}</h2>{inhalt}')
