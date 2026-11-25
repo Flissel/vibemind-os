@@ -60,8 +60,12 @@ _ANDERE_SPRACHE = re.compile(r"\b(?:python|java(?!script)|c\+\+|c#|rust|golang|g
 _ANDERER_SPACE = re.compile(r"\b(?:idee\w*|bubble\w*|karte\w*|white\s*-?paper|dokument\w*|text\w*|e?-?mail\w*|"
                             r"brief\w*|post\w*|beitrag\w*|angebot\w*|rechnung\w*)\b", re.IGNORECASE)
 
-_JA = re.compile(r"^\s*ja\s*[,!.]?\s*(?:bitte\s+)?(?:bau(?:e|en)?(?:\s+es)?|starte?\s+den\s+bau)\s*[.!]?\s*$",
-                 re.IGNORECASE)
+# Pruefung 25.11.2026: kopiert als  Ja, erledigen“.  ging die feste Form nicht und lief 16 s ins
+# Modell. Bestaetigungen gelten auch mit umgebenden Anfuehrungszeichen und Satzzeichen.
+_RAND_VORN = r"""^[\s"'„“”‚‘’«»]*"""
+_RAND_HINTEN = r"""[\s.!?…"'„“”‚‘’«»]*$"""
+_JA = re.compile(_RAND_VORN + r"ja\s*[,!.]?\s*(?:bitte\s+)?(?:bau(?:e|en)?(?:\s+es)?|starte?\s+den\s+bau)"
+                 + _RAND_HINTEN, re.IGNORECASE)
 
 OHNE_FRAGE = ("Es ist gerade kein Bauauftrag zur Bestätigung offen. Sag zum Beispiel „Bau mir eine Funktion …“, "
               "dann frage ich zuerst nach.")

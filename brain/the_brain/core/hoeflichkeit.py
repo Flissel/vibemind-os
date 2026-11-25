@@ -23,20 +23,24 @@ JA_OHNE_FRAGE = "Gerade ist nichts zu bestätigen; geändert habe ich nichts."
 NEIN_OFFEN = "Gut, dann lasse ich es. Geändert habe ich nichts."
 NEIN_OHNE_FRAGE = "Gerade ist keine Frage offen; geändert habe ich nichts."
 
-_ENDE = r"\s*[.!:)]*\s*$"
+# Pruefung 25.11.2026: kopiert als  Ja, erledigen“.  ging die feste Form nicht und lief 16 s ins
+# Modell. Bestaetigungen gelten auch mit umgebenden Anfuehrungszeichen und Satzzeichen.
+_RAND_VORN = r"""^[\s"'„“”‚‘’«»]*"""
+_RAND_HINTEN = r"""[\s.!?…"'„“”‚‘’«»]*$"""
+_ENDE = r"""[\s.!?:)…"'„“”‚‘’«»]*$"""
 _ARTEN = (
     ("gruss", re.compile(
-        r"^\s*(?:hallo|hallöchen|hi|hey|moin(?:\s+moin)?|servus|grüß\s+(?:dich|gott)|gruess\s+dich|"
+        _RAND_VORN + r"(?:hallo|hallöchen|hi|hey|moin(?:\s+moin)?|servus|grüß\s+(?:dich|gott)|gruess\s+dich|"
         r"guten\s+(?:morgen|tag|abend)|hello|good\s+(?:morning|evening))"
         r"(?:\s*,?\s*(?:zusammen|du|claude|gehirn))?" + _ENDE, re.IGNORECASE)),
     ("dank", re.compile(
-        r"^\s*(?:danke(?:\s*(?:schön|schoen|sehr|dir|vielmals))*|dankeschön|dankeschoen|vielen\s+dank|"
+        _RAND_VORN + r"(?:danke(?:\s*(?:schön|schoen|sehr|dir|vielmals))*|dankeschön|dankeschoen|vielen\s+dank|"
         r"besten\s+dank|merci|thanks?(?:\s+you)?|thank\s+you|thx)" + _ENDE, re.IGNORECASE)),
-    ("ja", re.compile(r"^\s*(?:ja|jo|jep|jawohl|ok|okay|okey|oki)" + _ENDE, re.IGNORECASE)),
+    ("ja", re.compile(_RAND_VORN + r"(?:ja|jo|jep|jawohl|ok|okay|okey|oki)" + _ENDE, re.IGNORECASE)),
     ("zustimmung", re.compile(
-        r"^\s*(?:alles\s+klar|gut|super|passt|prima|verstanden)" + _ENDE, re.IGNORECASE)),
+        _RAND_VORN + r"(?:alles\s+klar|gut|super|passt|prima|verstanden)" + _ENDE, re.IGNORECASE)),
     ("nein", re.compile(
-        r"^\s*(?:nein(?:\s*,?\s*danke)?|nee|ne|nö|noe|lieber\s+nicht|doch\s+nicht|abbrechen|"
+        _RAND_VORN + r"(?:nein(?:\s*,?\s*danke)?|nee|ne|nö|noe|lieber\s+nicht|doch\s+nicht|abbrechen|"
         r"lass\s+es|stopp?)" + _ENDE, re.IGNORECASE)),
 )
 _ANTWORT = {"gruss": GRUSS, "dank": DANK, "zustimmung": ZUSTIMMUNG}

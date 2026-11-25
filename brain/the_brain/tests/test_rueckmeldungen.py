@@ -91,9 +91,66 @@ def test_art_der_antwort() -> None:
     ("ideen_rueckweg: Ein White Paper starte ich nur nach Rückfrage. Sag ...", "hinweis"),
     ("Ideen-Werkzeug meldet einen Fehler (idea_not_found)", None),
     ("timeout", None),
+    # Fehlende Angabe ("Mir fehlt eine Angabe: ...") ist eine Rueckfrage, falsche Angaben nicht.
+    ("validator blocked: clarification required: title", "rueckfrage"),
+    ("clarification required: id, title", "rueckfrage"),
+    ("clarification required: one of title, content, content_append", "rueckfrage"),
+    ("clarification required: from_id and to_id", "rueckfrage"),
+    ("RuntimeError(clarification required: id)", "rueckfrage"),
+    ("clarification required: unknown field farbe", None),
+    ("clarification required: score is invalid", None),
+    ("clarification required: from_id and to_id must differ", None),
+    ("clarification required: only from_id, to_id, and edge_type are accepted", None),
+    ("clarification required: idea.unbekannt is not a fixed Ideas event", None),
 ])
 def test_fehlerart(fehler, art) -> None:
     assert fehlerart(fehler) == art
+
+
+def test_fehlende_angabe_bleibt_satz_und_wird_rueckfrage() -> None:
+    from core.ideen_abkuerzung import fehlersatz
+    fehler = "validator blocked: clarification required: title"
+    assert fehlersatz(fehler).startswith("Mir fehlt eine Angabe")
+    assert fehlerart(fehler) == "rueckfrage"
+
+
+@pytest.mark.parametrize("modul, satz", [
+    ("todo_bestaetigung", "Ja, erledigen“."),
+    ("todo_bestaetigung", "„Ja, erledigen“"),
+    ("todo_bestaetigung", '"Ja, erledigen."'),
+    ("todo_bestaetigung", "»ja erledigen!«"),
+    ("loesch_bestaetigung", "„Ja, löschen“."),
+    ("loesch_bestaetigung", "'Ja, loeschen'"),
+    ("whitepaper_bestaetigung", "Ja, erstellen“."),
+    ("befoerdern_bestaetigung", "„Ja“."),
+    ("befoerdern_bestaetigung", "„Ja, befördern“"),
+    ("coding_auftrag", "‚Ja, bauen‘."),
+    ("recherche_bubble", "Ja, recherchieren“…"),
+])
+def test_bestaetigung_mit_anfuehrungszeichen_und_satzzeichen(modul, satz) -> None:
+    import importlib
+    assert importlib.import_module(f"core.{modul}").ist_bestaetigung(satz) is True
+
+
+@pytest.mark.parametrize("modul, satz", [
+    ("todo_bestaetigung", "Ja, erledigen und mehr"),
+    ("todo_bestaetigung", "„Nein, erledigen“"),
+    ("todo_bestaetigung", "Ja, „erledigen“ ist gemeint?"),
+    ("loesch_bestaetigung", "„Ja“"),
+    ("befoerdern_bestaetigung", "„Ja, löschen“"),
+])
+def test_fremde_saetze_bleiben_keine_bestaetigung(modul, satz) -> None:
+    import importlib
+    assert importlib.import_module(f"core.{modul}").ist_bestaetigung(satz) is False
+
+
+def test_ja_nein_und_zurueck_mit_anfuehrungszeichen() -> None:
+    from core import hoeflichkeit
+    assert hoeflichkeit.art("„Nein“.") == "nein"
+    assert hoeflichkeit.art("Ja“.") == "ja"
+    assert hoeflichkeit.art("„Danke!“") == "dank"
+    assert hoeflichkeit.art("„Ja, aber anders“") is None
+    assert zv._JA.match("„Ja, zurück“.")
 
 
 def test_plan_completed_hinweis_und_angenommen_ohne_dauer() -> None:

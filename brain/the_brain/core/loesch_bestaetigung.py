@@ -23,9 +23,13 @@ GILT_S = 120
 SCHLUESSEL_GILT_S = 120
 EREIGNISSE = frozenset({"idea.delete", "bubble.delete"})
 
+# Pruefung 25.11.2026: kopiert als  Ja, erledigen“.  ging die feste Form nicht und lief 16 s ins
+# Modell. Bestaetigungen gelten auch mit umgebenden Anfuehrungszeichen und Satzzeichen.
+_RAND_VORN = r"""^[\s"'„“”‚‘’«»]*"""
+_RAND_HINTEN = r"""[\s.!?…"'„“”‚‘’«»]*$"""
 _JA_LOESCHEN = re.compile(
-    r"^\s*ja\s*[,!.]?\s*(?:bitte\s+)?l(?:ö|oe)sch(?:e|en)?(?:\s+(?:sie|es|die\s+karte|die\s+bubble))?\s*[.!]?\s*$",
-    re.IGNORECASE)
+    _RAND_VORN + r"ja\s*[,!.]?\s*(?:bitte\s+)?l(?:ö|oe)sch(?:e|en)?(?:\s+(?:sie|es|die\s+karte|die\s+bubble))?"
+    + _RAND_HINTEN, re.IGNORECASE)
 OHNE_FRAGE = ("Es ist gerade kein Löschen zur Bestätigung offen. "
               "Sag „Lösche die Karte …“ oder „Lösche diese Bubble“, dann frage ich zuerst nach.")
 OHNE_SCHLUESSEL = ("Gelöscht wird nur nach Rückfrage. "

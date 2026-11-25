@@ -66,8 +66,12 @@ FRIST_S = 90 * 60          # wie die Zeitgrenze des Kindprozesses im Recherche-S
 TIEFE = "thorough"
 SPRACHE = "german"
 
-_JA = re.compile(r"^\s*ja\s*[,!.]?\s*(?:bitte\s+)?(?:recherchier(?:e|en)?|starte?\s+die\s+recherche)"
-                 r"(?:\s+es)?\s*[.!]?\s*$", re.IGNORECASE)
+# Pruefung 25.11.2026: kopiert als  Ja, erledigen“.  ging die feste Form nicht und lief 16 s ins
+# Modell. Bestaetigungen gelten auch mit umgebenden Anfuehrungszeichen und Satzzeichen.
+_RAND_VORN = r"""^[\s"'„“”‚‘’«»]*"""
+_RAND_HINTEN = r"""[\s.!?…"'„“”‚‘’«»]*$"""
+_JA = re.compile(_RAND_VORN + r"ja\s*[,!.]?\s*(?:bitte\s+)?(?:recherchier(?:e|en)?|starte?\s+die\s+recherche)"
+                 r"(?:\s+es)?" + _RAND_HINTEN, re.IGNORECASE)
 _JOB = re.compile(r"^job_v1_[0-9A-HJKMNPQRSTVWXYZ]{26}$")
 
 OHNE_FRAGE = ("Es ist gerade keine Recherche zur Bestätigung offen. Sag „Recherchiere zu dieser Bubble“, "

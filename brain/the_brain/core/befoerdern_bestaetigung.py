@@ -28,8 +28,12 @@ GILT_S = 120
 SCHLUESSEL_GILT_S = 120
 EREIGNIS = "bubble.promote"
 
-_JA = re.compile(r"^\s*ja\s*[,!.]?\s*(?:bitte\s*)?(?:bef(?:ö|oe)rder(?:e|n)?(?:\s+(?:sie|es|die\s+bubble))?)?"
-                 r"\s*(?:bitte)?\s*[.!]?\s*$", re.IGNORECASE)
+# Pruefung 25.11.2026: kopiert als  Ja, erledigen“.  ging die feste Form nicht und lief 16 s ins
+# Modell. Bestaetigungen gelten auch mit umgebenden Anfuehrungszeichen und Satzzeichen.
+_RAND_VORN = r"""^[\s"'„“”‚‘’«»]*"""
+_RAND_HINTEN = r"""[\s.!?…"'„“”‚‘’«»]*$"""
+_JA = re.compile(_RAND_VORN + r"ja\s*[,!.]?\s*(?:bitte\s*)?(?:bef(?:ö|oe)rder(?:e|n)?(?:\s+(?:sie|es|die\s+bubble))?)?"
+                 r"\s*(?:bitte)?" + _RAND_HINTEN, re.IGNORECASE)
 OHNE_FRAGE = ("Es ist gerade kein Befördern zur Bestätigung offen. "
               "Sag „Befördere diese Bubble“, dann prüfe ich sie und frage zuerst nach.")
 OHNE_SCHLUESSEL = ("Befördert wird nur nach Rückfrage. "

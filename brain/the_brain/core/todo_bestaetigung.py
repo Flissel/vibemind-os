@@ -20,8 +20,12 @@ from typing import Any, Dict, Optional
 GILT_S = 120
 SCHLUESSEL_GILT_S = 120
 
-_JA_ERLEDIGEN = re.compile(r"^\s*ja\s*[,!.]?\s*(?:bitte\s+)?erledig(?:e|en)?(?:\s+(?:es|das))?\s*[.!]?\s*$",
-                           re.IGNORECASE)
+# Pruefung 25.11.2026: kopiert als  Ja, erledigen“.  ging die feste Form nicht und lief 16 s ins
+# Modell. Bestaetigungen gelten auch mit umgebenden Anfuehrungszeichen und Satzzeichen.
+_RAND_VORN = r"""^[\s"'„“”‚‘’«»]*"""
+_RAND_HINTEN = r"""[\s.!?…"'„“”‚‘’«»]*$"""
+_JA_ERLEDIGEN = re.compile(_RAND_VORN + r"ja\s*[,!.]?\s*(?:bitte\s+)?erledig(?:e|en)?(?:\s+(?:es|das))?"
+                           + _RAND_HINTEN, re.IGNORECASE)
 OHNE_FRAGE = ("Es ist gerade kein To-do zur Bestätigung offen. "
               "Sag „Erledige To-do N“, dann nenne ich zuerst, was passiert.")
 OHNE_SCHLUESSEL = ("Ein To-do gebe ich nur nach Rückfrage an den Agenten. "
