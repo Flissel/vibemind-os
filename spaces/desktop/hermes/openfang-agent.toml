@@ -1,0 +1,37 @@
+# OpenFang-Agent "hermes-desktop" (Vorlage, 25.11.2026). Im Betrieb: ~/.openfang/agents/hermes-desktop/agent.toml.
+#
+# Denkt fuer die Desktop-Schleife, wenn VIBEMIND_DESKTOP_AGENT=hermes (core/desktop_schleife.py,
+# denkender_agent). Er hat KEINE Werkzeuge: Die Schleife fragt ihn nach genau einem Schritt und fuehrt
+# ihn selbst ueber brain-desktop/spaces-desktop aus, mit Freigabe je Aufruf.
+#
+# Modellweg: OpenFang behandelt einen unbekannten Anbieter mit eigener base_url als OpenAI-kompatibel
+# (openfang-runtime/src/drivers/mod.rs, letzter Zweig) und nimmt den Schluessel aus HERMES_API_KEY
+# (Konvention {ANBIETER}_API_KEY). Dahinter: Hermes-API-Dienst mit Profil "desktop" (nur 127.0.0.1),
+# dessen Modell der Claude-Code-Shim ist -> nur Abo, kein API-Budget.
+# HERMES_API_KEY in OpenFangs Umgebung = API_SERVER_KEY des Hermes-Dienstes. Nie hier eintragen.
+#
+# system_prompt: dieselbe ANWEISUNG wie brain-desktop (core/desktop_schleife_contract.py, ANWEISUNG);
+# das Gehirn schickt sie ausserdem mit jeder Frage.
+name = "hermes-desktop"
+version = "0.1.0"
+description = "Desktop-Space: Hermes schlaegt je Runde genau einen Schritt vor; ohne Werkzeuge."
+author = "vibemind"
+module = "builtin:chat"
+tags = ["vibemind", "brain-routed", "space:desktop", "hermes"]
+mcp_servers = []
+
+[model]
+provider = "hermes"
+model = "hermes-agent"
+base_url = "http://127.0.0.1:8642/v1"
+temperature = 0.2
+system_prompt = '''<ANWEISUNG aus core/desktop_schleife_contract.py einsetzen>'''
+
+[resources]
+max_concurrent_tools = 0
+
+[capabilities]
+tools = []
+network = []
+memory_read = []
+memory_write = []

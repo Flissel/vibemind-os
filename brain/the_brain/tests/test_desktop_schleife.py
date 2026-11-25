@@ -1673,3 +1673,56 @@ def _ohne_anweisung(frage):
     assert frage.startswith(ANWEISUNG + "\n\n")
     return frage[len(ANWEISUNG) + 2:]
 
+
+# ─── Wer denkt: VIBEMIND_DESKTOP_AGENT=hermes|brain ─────────────────────────────────────
+
+
+@pytest.mark.parametrize("wert, erwartet", [
+    (None, "brain-desktop"), ("", "brain-desktop"), ("brain", "brain-desktop"), ("irgendwas", "brain-desktop"),
+    ("hermes", "hermes-desktop"), (" Hermes ", "hermes-desktop"),
+])
+def test_der_schalter_waehlt_nur_den_denkenden_agenten(wert, erwartet):
+    from core.desktop_denker import denkender_agent
+
+    assert denkender_agent({} if wert is None else {"VIBEMIND_DESKTOP_AGENT": wert}) == erwartet
+
+
+def test_mit_hermes_fragt_die_schleife_hermes_die_festen_aufrufe_bleiben_bei_brain_desktop(monkeypatch):
+    import core.capability_targets as ziele
+    from core.desktop_schleife import anschluss, laufzeit_kontext
+
+    monkeypatch.setenv("VIBEMIND_DESKTOP_AGENT", "hermes")
+    gefragt = []
+
+    def antwort(self, nachricht):
+        gefragt.append(self.agent_name)
+        return {"ok": True, "result": {"response": '{"aktion":"fertig","ergebnis":"x"}', "tool_calls": [],
+                                       "stream": True}}
+
+    monkeypatch.setattr(ziele.OpenFangExecutor, "call_with_arg", antwort)
+    assert anschluss(tagesrest=lambda: 1, laufzeit=None)["agent"]("frage") == '{"aktion":"fertig","ergebnis":"x"}'
+    assert gefragt == ["hermes-desktop"]
+    kontext = laufzeit_kontext("desktop_task_step", {**LAUFZEIT, "task_id": "dt-20261123-120000-abcdef"}, "001")
+    assert kontext.agent_name == "brain-desktop"
+
+
+def test_die_tagesgrenze_gilt_fuer_den_denkenden_agenten(monkeypatch):
+    import core.desktop_tagesrest as rest
+    from core.plan_executor import _desktop_tagesrest
+
+    gezaehlt = []
+    monkeypatch.setattr(rest, "tagesrest", lambda agent: gezaehlt.append(agent) or 7)
+    monkeypatch.delenv("VIBEMIND_DESKTOP_AGENT", raising=False)
+    assert _desktop_tagesrest() == 7
+    monkeypatch.setenv("VIBEMIND_DESKTOP_AGENT", "hermes")
+    assert _desktop_tagesrest() == 7
+    assert gezaehlt == ["brain-desktop", "hermes-desktop"]
+
+
+def test_ohne_budgeteintrag_fuer_hermes_bleibt_der_rest_null(tmp_path):
+    from core.desktop_tagesrest import tagesrest
+
+    (tmp_path / "budget.yaml").write_text("agenten:\n  brain-desktop:\n    tagesgrenze: 150\n", encoding="utf-8")
+    umgebung = {"VIBEMIND_BUDGET_CONFIG": str(tmp_path / "budget.yaml"), "VIBEMIND_BUDGET_DIR": str(tmp_path)}
+    assert tagesrest("brain-desktop", umgebung=umgebung) == 150
+    assert tagesrest("hermes-desktop", umgebung=umgebung) == 0

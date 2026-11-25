@@ -421,8 +421,11 @@ def _abschluss_ereignis(plan_id: str, ok: bool, result: Dict[str, Any], executed
 
 
 def _desktop_tagesrest() -> int:
+    # Die Tagesgrenze gilt fuer den Agenten, der denkt (VIBEMIND_DESKTOP_AGENT); ohne Eintrag
+    # in agent_budget.yaml ist der Rest 0 und die Schleife startet nicht.
+    from .desktop_denker import denkender_agent
     from .desktop_tagesrest import tagesrest
-    return tagesrest()
+    return tagesrest(denkender_agent())
 
 
 def _aenderung_id_fuer(target: Any, plan_ctx: Optional[Dict[str, Any]]) -> str:
