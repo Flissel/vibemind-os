@@ -55,7 +55,9 @@ class Attrappe:
                                 "erledigt": False},
                                {"text": "erledigt", "von": "x", "am": "2026-11-20", "erledigt": True}]}
         self.gespeichert: list[tuple] = []
-        self.fehler: dict[str, daten.DatenFehler] = {}
+        # Bilderliste hier nicht lesbar: der Editor zeigt dann nur den Dateinamen (Bildwahl: test_oberflaeche_bildwahl)
+        self.fehler: dict[str, daten.DatenFehler] = {"bilder": daten.DatenFehler("nicht_erreichbar")}
+        self.bilder: list[str] = []
 
     def einsetzen(self, monkeypatch):
         def mach(name, holen):
@@ -71,6 +73,8 @@ class Attrappe:
         mach("bloecke_speichern", lambda i, b, be, v, d: self._speichern(i, b, be, v, d))
         mach("einreichen", lambda i, von: None)
         mach("zurueckziehen", lambda i, von: None)
+        mach("bilder", lambda m: self.bilder)
+        mach("seite_speichern", lambda i, b, be, v, d: self._speichern(i, b, be, v, d))
 
     def _speichern(self, i, b, be, v, d):
         self.gespeichert.append((i, b, be, v, d))
@@ -168,8 +172,11 @@ def test_editor_eingereicht_zeigt_nur_zurueckziehen(c, a):
     assert "liegt zur Freigabe in Sales" in r.text
 
 
-def test_editor_collage_nur_hinweis(c, a):
-    a.entwurf["fassungen"][0] = {"fassung": 2, "format": "seite", "seite": {}}
+def test_editor_felder_und_kaputte_collage_nur_hinweis(c, a):
+    a.entwurf["fassungen"][0] = {"fassung": 2, "format": "felder", "felder": {"betreff": "x"}}
+    r = c.get(EDITOR, headers=H)
+    assert "nicht bearbeiten" in r.text and f'action="{SPEICHERN}"' not in r.text
+    a.entwurf["fassungen"][0] = {"fassung": 2, "format": "seite", "seite": {}}      # Collage ohne Ebenen
     r = c.get(EDITOR, headers=H)
     assert "nicht bearbeiten" in r.text and f'action="{SPEICHERN}"' not in r.text and "<iframe" not in r.text
 

@@ -547,6 +547,12 @@ table.aenderungen th { color: var(--leise); font-size: .85rem; }
 .abspielen video.quadrat { max-width: 360px; aspect-ratio: 1 / 1; }
 .abspielen video.quer { max-width: 100%; aspect-ratio: 16 / 9; }
 .abspielen audio { display: block; width: 100%; max-width: 480px; }
+img.bildchen { display: block; max-width: 160px; max-height: 120px; object-fit: contain; border-radius: 8px;
+  border: 1px solid var(--linie); background: var(--flaeche2); }
+.galerie { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; margin: 6px 0 16px; }
+.galerie figure { margin: 0; display: flex; flex-direction: column; gap: 4px; }
+.galerie figcaption { font-size: .8rem; color: var(--leise); overflow-wrap: anywhere; }
+.galerie img.bildchen { max-width: 100%; }
 @media (max-width: 767px) {
   .rahmen { display: block; }
   nav.seite { width: auto; height: auto; position: static; flex-direction: row; flex-wrap: wrap; align-items: center;
