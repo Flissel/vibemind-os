@@ -40,13 +40,24 @@ from .ideen_rueckweg import (
 )
 
 VERSION = 1
-BEWERTUNG_ZEICHEN = 160_000   # Summe aller Karten in einer Bewertung; darueber wird je Karte gekuerzt
+# Groesse (25.11.2026): OpenFang nimmt je Nachricht hoechstens 64 KB (Bytes, nicht Zeichen;
+# openfang-api routes.rs MAX_MESSAGE_SIZE) und antwortet darueber mit 413. Eine echte Bewertung mit
+# 120 Karten scheiterte so. Jetzt wird die ganze Nachricht in UTF-8-Bytes gemessen und vor dem
+# Senden gekuerzt: erst das White Paper, dann gleichmaessig der Text langer Karten (je Karte bis
+# KARTE_MIN), zuletzt Verbindungen. Passt es dann noch nicht, geht kein Auftrag hinaus.
+NACHRICHT_BYTES = 56 * 1024   # Reserve fuer den Rahmen, den der Ausfuehrer um die Nachricht legt
 KARTE_MIN = 300
 WHITE_PAPER_ZEICHEN = 40_000
+WHITE_PAPER_GEKUERZT = 8_000
 KANTEN_MAX = 3_000
+ZU_GROSS = ("Diese Bubble ist für einen Bewertungsauftrag zu groß, auch gekürzt; es wurde nichts angelegt. "
+            "Fasse Karten zusammen oder teile die Bubble.")
 TODO_KARTE_ZEICHEN = 6_000      # betroffene Karten eines To-dos, voller Text bis hier
 TODO_NACHBAR_ZEICHEN = 160      # andere Karten: Titel und Anfang
 TODO_NACHBARN_MAX = 200
+TODO_KARTE_MIN = 600
+TODO_ZU_GROSS = ("Das To-do ist für einen Auftrag zu groß, auch gekürzt; es wurde nichts angelegt. "
+                 "Erledige es von Hand und sag dann „To-do N erledigt“.")
 AENDERUNGEN_MAX = 5
 AENDERUNG_TEXT = 20_000
 NEUE_KARTE_TITEL = 200
@@ -97,6 +108,40 @@ def _inhalt_stand(karte: Mapping[str, Any]) -> str:
     return hashlib.sha256(roh.encode("utf-8")).hexdigest()[:16]
 
 
+def groesse(nachricht: str) -> int:
+    """Groesse einer Nachricht so, wie OpenFang sie misst: UTF-8-Bytes."""
+    return len(nachricht.encode("utf-8"))
+
+
+def _groesste_grenze(passt: Callable[[int], bool], unten: int, oben: int) -> Optional[int]:
+    """Groesste Grenze in [unten, oben], bei der ``passt`` gilt (``passt`` waechst nicht mit der Grenze)."""
+    if not passt(unten):
+        return None
+    while unten < oben:
+        mitte = (unten + oben + 1) // 2
+        if passt(mitte):
+            unten = mitte
+        else:
+            oben = mitte - 1
+    return unten
+
+
+def kuerzung_satz(kuerzung: Optional[Mapping[str, Any]]) -> str:
+    """Ehrlicher Satz, wie viel der Bewertung fehlte; leer, wenn nichts gekuerzt wurde."""
+    if not isinstance(kuerzung, Mapping) or not kuerzung.get("gekuerzt"):
+        return ""
+    teile = []
+    if kuerzung.get("karten_gekuerzt"):
+        teile.append(f"bei {kuerzung['karten_gekuerzt']} von {kuerzung.get('karten')} Karten nur der Anfang "
+                     f"(je bis {kuerzung.get('karte_zeichen')} Zeichen)")
+    if kuerzung.get("kanten_weggelassen"):
+        teile.append(f"{kuerzung['kanten_weggelassen']} von {kuerzung.get('kanten')} Verbindungen fehlen")
+    if kuerzung.get("white_paper_gekuerzt"):
+        teile.append("das White Paper nur gekürzt")
+    return ("Gekürzt bewertet: " + ", ".join(teile) + ". Fürs Befördern zählt nur eine ungekürzte Bewertung."
+            if teile else "")
+
+
 def _alle_zeilen(bubble_id: str, lesen: Lesen) -> list[dict[str, Any]]:
     zeilen = lesen.karten_der_bubble(bubble_id)
     if zeilen is None:
@@ -124,32 +169,87 @@ def bewerten_vorbereiten(event_id: str, bubble: Mapping[str, Any], lesen: Lesen)
     notizen = sorted((z for z in zeilen if modul.ist_notiz(z)), key=_lage)
     if not notizen:
         raise RueckwegFehler("In dieser Bubble gibt es keine Karten; es gibt nichts zu bewerten.")
-    texte = [(z, modul.kartentext(z)) for z in notizen]
-    gesamt = sum(len(t) for _, t in texte)
-    je_karte = max(KARTE_MIN, BEWERTUNG_ZEICHEN // len(texte)) if gesamt > BEWERTUNG_ZEICHEN else None
-    gekuerzt = False
-    block, kuerzel, kuerzel_titel = [], {}, {}
-    for n, (karte, text) in enumerate(texte, start=1):
+    texte, kuerzel, kuerzel_titel = [], {}, {}
+    for n, karte in enumerate(notizen, start=1):
         k = f"K{n}"
-        if je_karte is not None and len(text) > je_karte:
-            gekuerzt = True
-            text = _sauber(text, je_karte)
-        block.append((k, titel_von(karte), text or "(leer)"))
+        texte.append((k, titel_von(karte), modul.kartentext(karte)))
         kuerzel[k], kuerzel_titel[k] = karte["id"], titel_von(karte)
     nach_id = {i: k for k, i in kuerzel.items()}
-    verbindungen = sorted({f"{nach_id[e['from_node_id']]} -> {nach_id[e['to_node_id']]} ({e.get('edge_type') or 'related'})"
-                           for e in kanten if e.get("from_node_id") in nach_id and e.get("to_node_id") in nach_id})
+    alle_kanten = sorted({f"{nach_id[e['from_node_id']]} -> {nach_id[e['to_node_id']]} ({e.get('edge_type') or 'related'})"
+                          for e in kanten if e.get("from_node_id") in nach_id and e.get("to_node_id") in nach_id})
     papiere = sorted((z for z in zeilen if modul.ist_white_paper(z)), key=lambda z: str(z.get("updated_at") or ""))
-    papier = modul.kartentext(papiere[-1]) if papiere else ""
-    if len(papier) > WHITE_PAPER_ZEICHEN:
-        gekuerzt = True
-        papier = _sauber(papier, WHITE_PAPER_ZEICHEN)
+    papier_voll = modul.kartentext(papiere[-1]) if papiere else ""
+    nachricht, kuerzung = bewerten_einpassen(bubble_titel, texte, alle_kanten, papier_voll)
     rueckweg = {
         "version": VERSION, "vertrag": "bewerten", "ereignis": event_id, "bubble_id": bubble_id,
         "titel": _sauber(f"Bewertung: {bubble_titel}", 200), "kuerzel": kuerzel, "kuerzel_titel": kuerzel_titel,
-        "kartenstand": stand, "gekuerzt": gekuerzt,
+        "kartenstand": stand, "gekuerzt": kuerzung["gekuerzt"], "kuerzung": kuerzung,
     }
-    return nachricht_bewerten(bubble_titel, block, verbindungen[:KANTEN_MAX], papier, gekuerzt), rueckweg
+    return nachricht, rueckweg
+
+
+def bewerten_einpassen(bubble_titel: str, texte: list[tuple[str, str, str]], alle_kanten: list[str],
+                       papier_voll: str, grenze: int = NACHRICHT_BYTES) -> tuple[str, dict[str, Any]]:
+    """(Nachricht unter ``grenze`` Bytes, Kuerzung) oder ``RueckwegFehler(ZU_GROSS)``.
+
+    Reihenfolge: alles voll; sonst White Paper auf ``WHITE_PAPER_GEKUERZT``; sonst die groesste
+    gemeinsame Grenze je Karte (mindestens ``KARTE_MIN``); sonst zusaetzlich so wenige Verbindungen
+    weglassen wie noetig. Die Kuerzung zaehlt ehrlich mit, was fehlt.
+    """
+    kanten = alle_kanten[:KANTEN_MAX]
+    papier = _sauber(papier_voll, WHITE_PAPER_ZEICHEN) if len(papier_voll) > WHITE_PAPER_ZEICHEN else papier_voll
+    laengste = max((len(t) for _, _, t in texte), default=0)
+
+    def block(je_karte: Optional[int]) -> list[tuple[str, str, str]]:
+        return [(k, titel, (_sauber(t, je_karte) if je_karte is not None and len(t) > je_karte else t) or "(leer)")
+                for k, titel, t in texte]
+
+    def bauen(je_karte: Optional[int], papier_jetzt: str, anzahl_kanten: int) -> str:
+        gekuerzt = (je_karte is not None and je_karte < laengste) or papier_jetzt != papier_voll \
+            or anzahl_kanten < len(alle_kanten)
+        return nachricht_bewerten(bubble_titel, block(je_karte), kanten[:anzahl_kanten], papier_jetzt, gekuerzt)
+
+    je_karte: Optional[int] = None
+    anzahl = len(kanten)
+    nachricht = bauen(None, papier, anzahl)
+    if groesse(nachricht) > grenze and len(papier) > WHITE_PAPER_GEKUERZT:
+        papier = _sauber(papier, WHITE_PAPER_GEKUERZT)
+        nachricht = bauen(None, papier, anzahl)
+    if groesse(nachricht) > grenze:
+        je_karte = _groesste_grenze(lambda c: groesse(bauen(c, papier, anzahl)) <= grenze, KARTE_MIN,
+                                    max(KARTE_MIN, laengste))
+        if je_karte is None:
+            je_karte = KARTE_MIN
+            weg = _wenigste_weglassen(lambda n: groesse(bauen(KARTE_MIN, papier, len(kanten) - n)) <= grenze,
+                                      len(kanten))
+            if weg is None:
+                raise RueckwegFehler(ZU_GROSS)
+            anzahl = len(kanten) - weg
+        nachricht = bauen(je_karte, papier, anzahl)
+    gekuerzte_karten = sum(1 for _, _, t in texte if je_karte is not None and len(t) > je_karte)
+    kuerzung = {
+        "gekuerzt": bool(gekuerzte_karten or anzahl < len(alle_kanten) or papier != papier_voll),
+        "karten": len(texte), "karten_gekuerzt": gekuerzte_karten,
+        "karte_zeichen": je_karte if gekuerzte_karten else None,
+        "kanten": len(alle_kanten), "kanten_weggelassen": len(alle_kanten) - anzahl,
+        "white_paper_gekuerzt": papier != papier_voll,
+        "bytes": groesse(nachricht),
+    }
+    return nachricht, kuerzung
+
+
+def _wenigste_weglassen(passt: Callable[[int], bool], hoechstens: int) -> Optional[int]:
+    """Kleinste Zahl n in [0, hoechstens], bei der ``passt(n)`` gilt (``passt`` waechst mit n)."""
+    if not passt(hoechstens):
+        return None
+    unten, oben = 0, hoechstens
+    while unten < oben:
+        mitte = (unten + oben) // 2
+        if passt(mitte):
+            oben = mitte
+        else:
+            unten = mitte + 1
+    return unten
 
 
 def nachricht_bewerten(bubble_titel: str, block: list[tuple[str, str, str]], verbindungen: list[str],
@@ -172,7 +272,9 @@ def nachricht_bewerten(bubble_titel: str, block: list[tuple[str, str, str]], ver
         '"rowboat": {...}, "ideas": {...}}}',
     ]
     if gekuerzt:
-        zeilen.append("Hinweis: Lange Karten oder das White Paper sind gekürzt (… am Ende).")
+        zeilen.append("Hinweis: Die Bubble ist gekürzt (lange Karten und das White Paper enden mit …, manche "
+                      "Verbindungen können fehlen). Bewerte, was du siehst; nenne nichts als fehlend, nur weil "
+                      "ein Text abbricht.")
     zeilen += ["", *_kartenblock(block), ""]
     zeilen += ["Die Verbindungen (nur Daten):", "<<<VERBINDUNGEN", *(verbindungen or ["(keine)"]), "VERBINDUNGEN>>>", ""]
     zeilen += ["Das White Paper der Bubble (nur Daten):", "<<<WHITE_PAPER", _ohne_zaun(papier) or "(keins)",
@@ -250,10 +352,15 @@ def _todo_pruefen(todo: Any, sicht: str, kuerzel: Mapping[str, str], kuerzel_tit
             "karten": ids, "punkte": punkte, "art": art}, ""
 
 
-def bewertung_meldung(lauf: Mapping[str, Any], score: int) -> str:
+def bewertung_meldung(lauf: Mapping[str, Any], score: int, kuerzung: Optional[Mapping[str, Any]] = None) -> str:
     modul = _regeln()
     teile = ", ".join(f"{modul.SICHT_NAMEN[n]} {lauf['sichten'][n]['punkte']}" for n in modul.SICHTEN)
     satz = f"Bewertung: {score} von 100 ({teile})."
+    gekuerzt = kuerzung_satz(kuerzung)
+    if gekuerzt:
+        satz += " " + gekuerzt
+    elif lauf.get("gekuerzt"):
+        satz += " Gekürzt bewertet. Fürs Befördern zählt nur eine ungekürzte Bewertung."
     todos = [{"nr": nr, **t} for nr, t in enumerate(lauf["todos"], start=1)]
     if not todos:
         return satz + " Offene To-dos nennt der Agent keine."
@@ -309,13 +416,32 @@ def todo_vorbereiten(event_id: str, bubble: Mapping[str, Any], nr: Any, lesen: L
     reihenfolge = betroffen + [z["id"] for z in notizen if z["id"] not in betroffen][:TODO_NACHBARN_MAX]
     kuerzel = {f"K{n}": i for n, i in enumerate(reihenfolge, start=1)}
     kuerzel_titel = {k: titel_von(nach_id[i]) for k, i in kuerzel.items()}
-    voll, rest = [], []
-    for k, i in kuerzel.items():
-        text = modul.kartentext(nach_id[i])
-        if i in betroffen:
-            voll.append((k, kuerzel_titel[k], _sauber(text, TODO_KARTE_ZEICHEN) or "(leer)"))
-        else:
-            rest.append((k, kuerzel_titel[k], _sauber(" ".join(text.split()), TODO_NACHBAR_ZEICHEN) or "(leer)"))
+    texte = {k: modul.kartentext(nach_id[i]) for k, i in kuerzel.items()}
+    betroffen_k = [k for k, i in kuerzel.items() if i in betroffen]
+    nachbarn_k = [k for k in kuerzel if k not in betroffen_k]
+
+    def bauen(je_karte: int, anzahl_nachbarn: int) -> str:
+        voll = [(k, kuerzel_titel[k], _sauber(texte[k], je_karte) or "(leer)") for k in betroffen_k]
+        rest = [(k, kuerzel_titel[k], _sauber(" ".join(texte[k].split()), TODO_NACHBAR_ZEICHEN) or "(leer)")
+                for k in nachbarn_k[:anzahl_nachbarn]]
+        return nachricht_todo(bubble_titel, todo, voll, rest)
+
+    # Erst die betroffenen Karten kuerzen (bis TODO_KARTE_MIN), dann Nachbarn weglassen.
+    je_karte = _groesste_grenze(lambda c: groesse(bauen(c, len(nachbarn_k))) <= NACHRICHT_BYTES,
+                                min(TODO_KARTE_MIN, TODO_KARTE_ZEICHEN), TODO_KARTE_ZEICHEN)
+    anzahl = len(nachbarn_k)
+    if je_karte is None:
+        je_karte = min(TODO_KARTE_MIN, TODO_KARTE_ZEICHEN)
+        weg = _wenigste_weglassen(lambda n: groesse(bauen(je_karte, len(nachbarn_k) - n)) <= NACHRICHT_BYTES,
+                                  len(nachbarn_k))
+        if weg is None:
+            raise RueckwegFehler(TODO_ZU_GROSS.replace("To-do N", f"To-do {nr}"))
+        anzahl = len(nachbarn_k) - weg
+    # Nur Karten, die der Agent auch sieht, koennen Ziel einer Aenderung sein.
+    for k in nachbarn_k[anzahl:]:
+        kuerzel.pop(k, None)
+        kuerzel_titel.pop(k, None)
+    nachricht = bauen(je_karte, anzahl)
     rueckweg = {
         "version": VERSION, "vertrag": "todo", "ereignis": event_id, "bubble_id": bubble_id,
         "titel": _sauber(f"To-do {nr}: {todo.get('titel')}", 200), "nr": nr, "art": todo.get("art"),
@@ -323,7 +449,7 @@ def todo_vorbereiten(event_id: str, bubble: Mapping[str, Any], nr: Any, lesen: L
         "stand": {i: _inhalt_stand(nach_id[i]) for i in kuerzel.values()},
         "lage": {i: [nach_id[i].get("x") or 0, nach_id[i].get("y") or 0] for i in kuerzel.values()},
     }
-    return nachricht_todo(bubble_titel, todo, voll, rest), rueckweg
+    return nachricht, rueckweg
 
 
 def nachricht_todo(bubble_titel: str, todo: Mapping[str, Any], voll: list[tuple[str, str, str]],
@@ -449,7 +575,9 @@ def verarbeiten(auftrag: Mapping[str, Any], rueckweg: Mapping[str, Any], *,
                                                 "ich nichts. Sag noch einmal „Bewerte diese Bubble“."), {}
             return "fehler", ok, grund, "Die Bewertung ließ sich nicht speichern. Bitte prüfe die Bubble.", {}
         score = _regeln().lauf_score(lauf)
-        return "geschrieben", True, "written and verified", bewertung_meldung(lauf, score), {"score": score}
+        kuerzung = rueckweg.get("kuerzung") if isinstance(rueckweg.get("kuerzung"), Mapping) else None
+        return "geschrieben", True, "written and verified", bewertung_meldung(lauf, score, kuerzung), \
+            {"score": score, **({"kuerzung": dict(kuerzung)} if kuerzung else {})}
     return _todo_verarbeiten(auftrag, rueckweg, lies_karten=lies_karten, aufruf=aufruf, pruefe=pruefe)
 
 

@@ -143,11 +143,17 @@ def schwelle_satz(schwelle: Mapping[str, Any], modul: Any = None) -> str:
         return (f"Es gibt noch keine Bewertung (Befördern ab {grenze} Punkten). "
                 "Sag „Bewerte diese Bubble“.")
     score = schwelle.get("score")
+    if grund == "gekuerzt":
+        return (f"Die Bewertung steht bei {score} von 100 Punkten, ist aber gekürzt: der Agent sah nicht die ganze "
+                "Bubble. Befördert wird nur mit einer ungekürzten Bewertung; für einen Auftrag ist die Bubble "
+                "zu groß. Fasse Karten zusammen und sag dann „Bewerte diese Bubble“.")
     if grund == "veraltet":
         satz = (f"Die letzte Bewertung ({score} Punkte) ist veraltet, die Karten haben sich seitdem geändert. "
                 "Sag „Bewerte diese Bubble“.")
     else:
         satz = f"Die Bewertung steht bei {score} von 100 Punkten, befördert wird ab {grenze}."
+    if schwelle.get("gekuerzt"):
+        satz += " Sie ist außerdem gekürzt; fürs Befördern zählt nur eine ungekürzte Bewertung."
     top = [t for t in schwelle.get("top") or [] if isinstance(t, Mapping)]
     if top:
         satz += " Am meisten bringen: " + "; ".join(
