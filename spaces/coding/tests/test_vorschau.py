@@ -30,8 +30,20 @@ def wurzel(tmp_path: Path, monkeypatch) -> Path:
     return ordner
 
 
-def test_aus_ist_vorgabe(monkeypatch, wurzel: Path) -> None:
+def test_schalterdatei_schaltet_ein(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("CODING_VORSCHAU_AUTOSTART", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    assert vorschau.an() is False
+    vorschau.schalterdatei().parent.mkdir(parents=True)
+    vorschau.schalterdatei().touch()
+    assert vorschau.an() is True
+    monkeypatch.setenv("CODING_VORSCHAU_AUTOSTART", "0")
+    assert vorschau.an() is False
+
+
+def test_aus_ist_vorgabe(monkeypatch, tmp_path: Path, wurzel: Path) -> None:
     monkeypatch.delenv("CODING_VORSCHAU_AUTOSTART")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "leer"))
     docker = _Docker()
     assert vorschau.starten({"zielordner": str(wurzel)}, ausfuehren=docker) == {"gestartet": False, "grund": "aus"}
     assert docker.aufrufe == []

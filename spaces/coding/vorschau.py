@@ -1,6 +1,7 @@
 """Live-Vorschau: nach gruener Abnahme die Sandbox auf den Ordner des Auftrags setzen.
 
-Hinter dem Schalter ``CODING_VORSCHAU_AUTOSTART`` (Vorgabe aus). Es laeuft
+Hinter einem Schalter (Vorgabe aus): Umgebung ``CODING_VORSCHAU_AUTOSTART`` oder
+die Datei ``%LOCALAPPDATA%\\VibeMind\\coding-dienst\\vorschau.an``. Es laeuft
 immer hoechstens eine Vorschau-Sandbox (fester Name); ein neuer Auftrag
 ersetzt den alten. Eingehaengt wird nur der Ordner ``out`` eines Auftrags
 unterhalb der Arbeitswurzel, die Ports haengen nur an 127.0.0.1. Ist zu wenig
@@ -26,8 +27,17 @@ IMAGE = "coding-engine/sandbox:latest"
 SPEICHER_GRENZE_GB = 3.3
 
 
+def schalterdatei() -> Path:
+    """Leere Datei neben der Schluesseldatei des Dienstes; ihr Dasein schaltet den Autostart ein."""
+    basis = os.environ.get("LOCALAPPDATA") or str(Path.home())
+    return Path(basis) / "VibeMind" / "coding-dienst" / "vorschau.an"
+
+
 def an() -> bool:
-    return os.environ.get("CODING_VORSCHAU_AUTOSTART", "").strip().lower() in {"1", "true", "ja", "an"}
+    wert = os.environ.get("CODING_VORSCHAU_AUTOSTART", "").strip().lower()
+    if wert in {"0", "false", "nein", "aus"}:
+        return False
+    return wert in {"1", "true", "ja", "an"} or schalterdatei().is_file()
 
 
 def _port(variable: str, vorgabe: int) -> int:
