@@ -347,6 +347,24 @@ _OHNE_AGENTENWEG = {
 }
 
 
+# Ereignisse, die nur der Rueckweg im Gehirn ruft (core/ideen_bewertung), nie ein Plan-Schritt.
+NUR_RUECKWEG = frozenset({"idea.bewertung_speichern"})
+
+
+def _nur_ueber_rueckweg(event_id: Any, rendered_arg: Any) -> str:
+    """Fehlertext, wenn ein Plan-Schritt ein Ereignis des Bewertungs-Rueckwegs ruft, sonst "". Wirft nie."""
+    try:
+        if event_id in NUR_RUECKWEG:
+            return f"{event_id}: nur über „Bewerte diese Bubble“, nie per Plan"
+        if event_id == "idea.todo_abhaken":
+            from . import ideen_dokument as _dm
+            if _dm._argument(rendered_arg).get("durch") != "hand":
+                return "idea.todo_abhaken: per Plan nur von Hand („To-do N erledigt“)"
+    except Exception:  # noqa: BLE001
+        return f"{event_id}: Argumente nicht lesbar, nicht ausgeführt"
+    return ""
+
+
 def _ereignis_von(capability: Any) -> str:
     """Kanonisches Ereignis einer Faehigkeit (bubble_evaluate -> bubble.evaluate). Wirft nie."""
     try:
@@ -1733,6 +1751,19 @@ class PlanExecutor:
                         contract_pass=False, reward=-1.0,
                     )
                 target = deterministic_target
+            _nur_rueckweg = _nur_ueber_rueckweg(event_id, rendered_arg)
+            if _nur_rueckweg:
+                # Stufe 1: einen Bewertungslauf speichert nur der Rueckweg nach "Bewerte diese Bubble",
+                # ein To-do "durch agent" hakt nur der Rueckweg nach "Ja, erledigen" ab
+                # (core/ideen_bewertung, direkt ueber McpExecutor). Ein Plan-Schritt koennte sonst
+                # einen erfundenen Score ueber die Befoerdern-Schwelle schreiben.
+                return HopResult(
+                    step_id=hop.step_id, ok=False, error=_nur_rueckweg,
+                    capability=hop.capability, target=target,
+                    rendered_arg=rendered_arg, kg_hits=kg_hits,
+                    elapsed_s=time.time() - t0,
+                    contract_pass=False, reward=-1.0,
+                )
             from .recherche_bubble import NUR_GEHIRN as _RECHERCHE_NUR_GEHIRN, ist_recherche_ziel
             if (event_id in _RECHERCHE_NUR_GEHIRN or ist_recherche_ziel(target)
                     or ist_recherche_ziel(getattr(hop, "execution_target", None))):
