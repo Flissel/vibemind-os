@@ -865,7 +865,7 @@ def mit_beleg(werkzeug: str, argumente: dict[str, Any], plan_id: Any, *, jetzt: 
               schluessel: Optional[str] = None) -> dict[str, Any]:
     """Haengt den Herkunftsbeleg an, wo der Ideen-Server ihn verlangt (kartenregeln.beleg_noetig).
 
-    Der Schluessel kommt aus ``VIBEMIND_RUECKWEG_SCHLUESSEL`` (get_secret, Wert gestrippt); fehlt er,
+    Der Schluessel kommt aus ``VIBEMIND_RUECKWEG_SECRET`` (get_secret, Wert gestrippt); fehlt er,
     wird nicht geschrieben (RuntimeError ``herkunft_unbelegt: schluessel_fehlt``). Die aenderung_id
     ist dieselbe, die der McpExecutor aus der Plan-Kennung anhaengt.
     """

@@ -122,6 +122,24 @@ class HerkunftTests(unittest.TestCase):
         self.assertNotIn("herkunft_unbelegt", grund)
         self.assertEqual(len(request.writes()), 1)
 
+    def test_name_des_schluessels_endet_auf_secret(self) -> None:
+        # Der Claude-Code-Treiber von OpenFang vererbt seine Umgebung an die Agenten-Prozesse und
+        # filtert nur Namen mit den Endungen _SECRET, _TOKEN, _PASSWORD (und feste Anbieter-Schluessel).
+        # Endet der Name anders, koennte ein Agent mit Shell den Wert aus seiner Umgebung lesen und
+        # sich selbst einen Beleg bauen. Darum: nicht zurueckbenennen.
+        self.assertEqual(self.regeln.BELEG_EINSTELLUNG, "VIBEMIND_RUECKWEG_SECRET")
+        self.assertTrue(self.regeln.BELEG_EINSTELLUNG.endswith("_SECRET"))
+
+    def test_der_alte_name_gilt_nicht_mehr(self) -> None:
+        probe = {"bubble_id": "b0b1e001", "lauf": _lauf(), "kartenstand": "sha256:" + "1" * 64}
+        beleg = self._beleg("bubble_bewertung", probe)
+        alt = "VIBEMIND_RUECKWEG_" + "SCHLUESSEL"
+        with mock.patch.dict(os.environ, {self.regeln.BELEG_EINSTELLUNG: "", alt: SCHLUESSEL,
+                                          alt + "_FILE": str(ROOT / "mcp_server.py")}):
+            grund, request = self._grund("bubble_bewertung", {**probe, "beleg": beleg})
+        self.assertEqual(grund, "herkunft_unbelegt: schluessel_fehlt")
+        self.assertEqual(request.calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

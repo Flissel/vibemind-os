@@ -386,9 +386,10 @@ def schwelle_pruefen(bubble: Mapping[str, Any], karten: Sequence[Mapping[str, An
 # durch "agent") schreibt nur der feste Rueckweg im Gehirn. Das Gehirn haengt dafuer einen Beleg an:
 # HMAC-SHA256 mit einem Geheimnis, das nur Gehirn und Ideen-Server kennen (nie OpenFang, nie das
 # Modell), ueber Werkzeug, alle Argumente, die aenderung_id und den Ablauf. Der Server schreibt ohne
-# gueltigen Beleg nicht. Beide lesen den Schluessel aus BELEG_EINSTELLUNG (Wert mit strip()).
+# gueltigen Beleg nicht. Beide lesen den Schluessel aus BELEG_EINSTELLUNG (Wert mit strip()). Der Name endet auf
+# _SECRET, weil der Claude-Code-Treiber von OpenFang solche Namen nicht an Agenten-Prozesse vererbt.
 
-BELEG_EINSTELLUNG = "VIBEMIND_RUECKWEG_SCHLUESSEL"
+BELEG_EINSTELLUNG = "VIBEMIND_RUECKWEG_SECRET"
 BELEG_GILT_S = 300
 BELEG_SPIEL_S = 60
 BELEG_MUSTER = re.compile(r"^v1\.(\d{1,12})\.([0-9a-f]{64})$")
