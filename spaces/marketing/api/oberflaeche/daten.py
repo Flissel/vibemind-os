@@ -88,3 +88,48 @@ def reels(mandant: str, archiv: bool) -> list[dict]:
 def podcast(mandant: str) -> list[dict]:
     from spaces.marketing.api import ton
     return _liste(_rufen(ton.pult_liste, mandant=mandant, limit=PODCAST_MAX), "auftraege")
+
+
+# --- Stufe B, Tag 1: Vorlagen und Vorschau (schreibt nur einen Entwurf, versendet nichts) --------
+
+def _html(antwort) -> str:
+    """Body einer HTMLResponse der Pult-Vorschau; alles andere (z. B. PDF) ist hier ein Fehler."""
+    roh = getattr(antwort, "body", None)
+    art = str(getattr(antwort, "media_type", "") or "")
+    if not isinstance(roh, (bytes, bytearray)) or not art.startswith("text/html"):
+        raise DatenFehler("nicht_erreichbar")
+    return bytes(roh).decode("utf-8", errors="replace")
+
+
+def vorlagen(mandant: str) -> list[dict]:
+    """Freigegebene Vorlagen dieser Firma (eigene und fuer alle)."""
+    from spaces.marketing.api import pult
+    return [v for v in _liste(_rufen(pult.vorlagen, mandant=mandant, status="freigegeben"), "vorlagen")
+            if isinstance(v.get("name"), str)]
+
+
+def vorlage_vorschau(mandant: str, name: str, fmt: str) -> str:
+    """Vorschau einer Vorlage, gefuellt fuer diese Firma. Ohne Bildbasis: Bilder stehen als [Bild: name]."""
+    from spaces.marketing.api import pult
+    return _html(_rufen(pult.vorlage_vorschau, name=name, format=fmt, bild_basis="", mandant=mandant))
+
+
+def aus_vorlage(mandant: str, vorlage: str, titel: str) -> str:
+    """Neuer Newsletter-Entwurf aus einer Vorlage; gibt seine id zurueck. Status bleibt 'entwurf'."""
+    from spaces.marketing.api import pult
+    antwort = _rufen(pult.inhalt_aus_vorlage, payload={"vorlage": vorlage, "titel": titel, "mandant": mandant})
+    iid = antwort.get("id") if isinstance(antwort, dict) else None
+    if not isinstance(iid, str) or not iid:
+        raise DatenFehler("nicht_erreichbar")
+    return iid
+
+
+def entwurf(iid: str) -> dict:
+    from spaces.marketing.api import pult
+    antwort = _rufen(pult.inhalt, iid=iid)
+    return antwort if isinstance(antwort, dict) else {}
+
+
+def entwurf_vorschau(iid: str, fassung: int, fmt: str) -> str:
+    from spaces.marketing.api import pult
+    return _html(_rufen(pult.vorschau, iid=iid, fassung=fassung, format=fmt, bild_basis=""))
