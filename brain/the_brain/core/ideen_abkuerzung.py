@@ -156,10 +156,13 @@ class _Rueckfrage(Exception):
     Name) wird sie als offene Rueckfrage gemerkt: die naechste Antwort ("die zweite",
     "2", ein Titel) loest dann genau diesen Namen auf und fuehrt den ersten Satz aus."""
 
-    def __init__(self, text: str, *, kandidaten: Optional[list] = None, name: Optional[str] = None) -> None:
+    def __init__(self, text: str, *, kandidaten: Optional[list] = None, name: Optional[str] = None,
+                 wahl: Optional[dict] = None) -> None:
         super().__init__(text)
         self.kandidaten = [k for k in (kandidaten or []) if isinstance(k, dict) and ist_kennung(k.get("id"))]
         self.name = name
+        # Zwei fertige Aufrufe, zwischen denen die Antwort waehlt ({"ersetzen": treffer, "ergaenzen": treffer}).
+        self.wahl = wahl
 
 
 # ── Offene Rueckfragen (Arbeitslauf 2: "die zweite" ging an den Chat und kam als
@@ -470,6 +473,15 @@ def _treffer(ereignis: str, argumente: dict, antwort: str, capability: Optional[
     return {"ereignis": ereignis, "capability": capability or ereignis, "argumente": argumente, "antwort": antwort}
 
 
+def _ergaenzen(karte: dict, zusatz: str) -> dict:
+    return _treffer("idea.update", {"id": karte["id"], "content_append": zusatz}, f"{_titel(karte)} ergänzt.")
+
+
+def _ganz_ersetzen(karte: dict, neu: str) -> dict:
+    return _treffer("idea.update", {"id": karte["id"], "content": neu},
+                    f"{_titel(karte)} hat jetzt den neuen Text. Mit „Zurück“ holst du den alten wieder.")
+
+
 def _titel(karte: dict, ersatz: str = "die Karte") -> str:
     titel = str(karte.get("title") or "").strip()
     return f"„{titel}“" if titel else ersatz
@@ -534,15 +546,40 @@ def _jetzt() -> float:
 
 
 def _merken(schluessel: str, text: str, frage: _Rueckfrage, zeilen: Optional[str] = None) -> None:
-    if len(frage.kandidaten) >= 2 and frage.name is not None:
+    if frage.wahl:
+        _OFFEN[schluessel] = {"satz": text, "wahl": frage.wahl, "frage": str(frage), "zeit": _jetzt()}
+    elif len(frage.kandidaten) >= 2 and frage.name is not None:
         _OFFEN[schluessel] = {"satz": text, "name": frage.name, "kandidaten": frage.kandidaten,
                               "frage": str(frage), "zeit": _jetzt(), "zeilen": zeilen}
     else:
         _OFFEN.pop(schluessel, None)
 
 
+_WAHL_WOERTER = {
+    "ersetzen": ("ersetzen", "ersetze", "ersetz", "überschreiben", "ueberschreiben", "überschreibe",
+                 "ueberschreibe", "neu", "ersetzen bitte"),
+    "ergaenzen": ("ergänzen", "ergaenzen", "ergänze", "ergaenze", "anhängen", "anhaengen", "hänge an",
+                  "haenge an", "häng an", "haeng an", "dazu", "ergänzen bitte", "ergaenzen bitte"),
+}
+
+
+def _auf_wahl(text: str, offen: dict, kontext: dict) -> Optional[dict]:
+    """Antwort auf "Ersetzen oder ergaenzen?": den gemerkten Aufruf; ``None`` = ein neuer Satz."""
+    kern = re.sub(r"^(?:bitte\s+|lieber\s+|nein,?\s+)+", "", _normal(text)).strip()
+    for art, woerter in _WAHL_WOERTER.items():
+        if kern in woerter:
+            _OFFEN.pop(_offen_schluessel(kontext), None)
+            return dict(offen["wahl"][art])
+    if len(kern.split()) <= 2 and "?" not in text:
+        offen["zeit"] = _jetzt()
+        return {"rueckfrage": "Sag „Ersetzen“ oder „Ergänzen“."}
+    return None
+
+
 def _auf_rueckfrage(text: str, offen: dict, kontext: dict) -> Optional[dict]:
     """Antwort auf die offene Rueckfrage: ``None`` = keine Antwort (neuer Satz, offen verfaellt)."""
+    if offen.get("wahl"):
+        return _auf_wahl(text, offen, kontext)
     wahl = _wahl(text, offen["kandidaten"])
     if wahl is None:
         return None
@@ -653,6 +690,13 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
             argumente["id"] = kontext["new_id"]
         return _treffer("idea.create", argumente, f"Notiz „{titel}“ festgehalten.")
 
+    # ── ganzen Text ersetzen: "Ersetze den Text von X durch: ..." (ueberschreibt; "Zurück" holt ihn wieder) ──
+    gefunden = _karte_und_rest(text, r"ersetz(?:e)?\s+den\s+(?:ganzen\s+)?(?:text|inhalt)\s+(?:von|bei|in)\s+",
+                               r"\s+durch\s*:?\s*", kontext)
+    if gefunden:
+        karte, neu = gefunden
+        return _ganz_ersetzen(karte, _mit_zeilen(neu, kontext))
+
     # ── ersetzen: "Ersetze in X: A durch B" (der Server ersetzt genau eine Stelle oder scheitert) ──
     gefunden = _karte_und_rest(text, r"ersetz(?:e)?\s+(?:in|bei)\s+", r"\s*:\s*", kontext)
     if gefunden:
@@ -672,19 +716,38 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
                         f"{_titel(karte)} hat wieder ihr voriges Format. Mit „Zurück“ nimmst du das zurück.")
 
     # ── ergaenzen (fester Aufruf statt Agentenlauf; der Server haengt an) ──
+    # Lauf 34: "Ergänze die Notiz „X“ um: ..." nahm „X“ um als Namen. Ein " um" vor dem Doppelpunkt
+    # gehoert zum Satz, nicht zum Namen; und findet ein Muster keine Karte, kommt erst das naechste
+    # dran (die erste Rueckfrage nur, wenn keines passt; bei mehreren Kandidaten sofort).
+    erste: Optional[_Rueckfrage] = None
     for kopf, trenner in (
         (r"(?:erg(?:ä|ae)nze|f(?:ü|ue)ge)\s+(?:bei|zu|in|an)\s+", r"\s*(?:hinzu\s*)?:\s*"),
         (r"schreib(?:e)?\s+(?:bei|zu|in)\s+", r"\s*(?:dazu\s*)?:\s*"),
         (r"h(?:ä|ae)nge?\s+an\s+", r"\s+an\s*:\s*"),
-        (r"erg(?:ä|ae)nze\s+", r"\s*:\s*"),
+        (r"erg(?:ä|ae)nze\s+", r"(?:\s+um)?\s*:\s*"),
         (r"erg(?:ä|ae)nze\s+", r"\s+um\s*:?\s*"),
     ):
-        gefunden = _karte_und_rest(text, kopf, trenner, kontext)
+        try:
+            gefunden = _karte_und_rest(text, kopf, trenner, kontext)
+        except _Rueckfrage as frage:
+            if frage.kandidaten:
+                raise
+            erste = erste or frage
+            continue
         if gefunden:
             karte, zusatz = gefunden
-            zusatz = _mit_zeilen(zusatz, kontext)
-            return _treffer("idea.update", {"id": karte["id"], "content_append": zusatz},
-                            f"{_titel(karte)} ergänzt.")
+            return _ergaenzen(karte, _mit_zeilen(zusatz, kontext))
+    if erste is not None:
+        raise erste
+
+    # ── aendern ohne Art: "Ändere die Notiz X: ..." (ersetzen oder ergaenzen? geraten wird nie) ──
+    gefunden = _karte_und_rest(text, r"(?:ä|ae)ndere\s+(?!den\s+(?:titel|namen)\b)", r"\s*:\s*", kontext)
+    if gefunden:
+        karte, neu = gefunden
+        neu = _mit_zeilen(neu, kontext)
+        raise _Rueckfrage(f"Ersetzen oder ergänzen? „Ersetzen“ überschreibt den Text von {_titel(karte)} "
+                          "(mit „Zurück“ holst du ihn wieder), „Ergänzen“ hängt deinen Text an.",
+                          wahl={"ersetzen": _ganz_ersetzen(karte, neu), "ergaenzen": _ergaenzen(karte, neu)})
 
     # ── umbenennen ──
     for kopf, trenner, fuss in (
