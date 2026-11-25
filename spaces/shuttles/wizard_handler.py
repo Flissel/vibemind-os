@@ -56,6 +56,9 @@ def _knoten_text(node: Any) -> str:
         return zeile["content"] if isinstance(zeile["content"], str) else ""
 
 
+STATUS_AKTIV = "pending"
+STATUS_GESTRICHEN = "gestrichen"
+
 _GRUND_TEXT = {
     "keine_karten": "keine Karten",
     "leere_karten": "leere Karten",
@@ -416,12 +419,14 @@ class ShuttleWizardHandler:
         can consume via its getWizardRequirements() format.
         """
         state = self._get_state(shuttle_id)
+        aktiv = [r for r in state["requirements"] if r.get("status") != STATUS_GESTRICHEN]
 
         work_package = {
             "project": state["project"],
             "context": state["context"],
             "stakeholders": state["stakeholders"],
-            "requirements": state["requirements"],
+            "requirements": aktiv,
+            "requirements_gestrichen": [r for r in state["requirements"] if r.get("status") == STATUS_GESTRICHEN],
             "constraints": state["constraints"],
             "work_division": state.get("work_division", "per_feature"),
             "source_shuttle_id": shuttle_id,
@@ -440,6 +445,38 @@ class ShuttleWizardHandler:
             "success": True,
             "work_package": work_package,
             "message": "Shuttle finalized and published to Rowboat",
+        }
+
+    # ------------------------------------------------------------------
+    # Strike / restore one requirement (greyed out, never deleted)
+    # ------------------------------------------------------------------
+
+    def set_requirement_status(self, shuttle_id: str, req_id: str, status: str) -> Dict[str, Any]:
+        """Strike a requirement (``gestrichen``) or restore it (``pending``); saved at once.
+
+        Nothing is deleted: a struck requirement stays in the state, greyed out in the
+        wizard, and finalize leaves it out of the work package.
+        """
+        if status not in (STATUS_AKTIV, STATUS_GESTRICHEN):
+            return {"success": False, "error": "invalid_arguments: status", "shuttle_id": shuttle_id}
+        if not shuttle_id or not req_id:
+            return {"success": False, "error": "invalid_arguments: shuttle_id/req_id", "shuttle_id": shuttle_id}
+        if shuttle_id not in self._states:
+            self.load_state_from_shuttle(shuttle_id)
+        state = self._get_state(shuttle_id)
+        treffer = next((r for r in state["requirements"] if isinstance(r, dict) and r.get("id") == req_id), None)
+        if treffer is None:
+            return {"success": False, "error": "requirement_unbekannt", "shuttle_id": shuttle_id, "req_id": req_id}
+        treffer["status"] = status
+        self._persist_state(shuttle_id, state)
+        gestrichen = sum(1 for r in state["requirements"] if r.get("status") == STATUS_GESTRICHEN)
+        return {
+            "success": True,
+            "shuttle_id": shuttle_id,
+            "req_id": req_id,
+            "status": status,
+            "aktiv": len(state["requirements"]) - gestrichen,
+            "gestrichen": gestrichen,
         }
 
     # ------------------------------------------------------------------
@@ -645,7 +682,13 @@ class ShuttleWizardHandler:
                 shuttle_id = shuttle.shuttle_id
                 saved = (shuttle.stage_data or {}).get("wizard_state")
                 if isinstance(saved, dict) and saved.get("requirements"):
+                    # Cards used to start as candidates; they are finished requirements now (D5).
+                    alte = [r for r in saved["requirements"] if isinstance(r, dict) and r.get("status") == "kandidat"]
+                    for r in alte:
+                        r["status"] = "pending"
                     self._states[shuttle_id] = saved
+                    if alte:
+                        self._persist_state(shuttle_id, saved)
                     return self._project_answer(shuttle_id, projekt_id, saved, gelesen, wiederaufgenommen=True)
             else:
                 shuttle_id = shuttle_id or f"shuttle-projekt-{projekt_id}"
@@ -677,7 +720,7 @@ class ShuttleWizardHandler:
                     "acceptance_criteria": [],
                     "user_stories": [],
                     "priority": "medium",
-                    "status": "kandidat",
+                    "status": "pending",
                     "category": karte["gruppe"],
                     "source_card_id": karte["id"],
                 }
@@ -743,7 +786,7 @@ class ShuttleWizardHandler:
             repo = ShuttlesRepository()
             shuttle = repo.get_by_shuttle_id(shuttle_id)
             if shuttle:
-                reqs = state.get("requirements", [])
+                reqs = [r for r in state.get("requirements", []) if r.get("status") != STATUS_GESTRICHEN]
                 repo.complete(
                     shuttle_db_id=shuttle.id,
                     final_score=1.0,
