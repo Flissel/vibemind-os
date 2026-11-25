@@ -117,7 +117,9 @@ def stand_lesen(metadata: Any) -> dict[str, Any]:
         "bewertung": stand.get("bewertung"),
         "white_paper": {"node_id": wp.get("node_id"), "titel": _text(wp.get("titel")), "text": _text(wp.get("text"))}
         if wp else None,
-        "notizen": [{"id": k["id"], "titel": k["title"], "text": k["content"], "gruppe": k["gruppe"]} for k in notizen],
+        # Derselbe Kartentext wie in der Sinnpruefung (kartenregeln.kartentext).
+        "notizen": [{"id": k["id"], "titel": k["title"], "text": regeln.kartentext(k), "gruppe": k["gruppe"]}
+                    for k in notizen],
         "kanten": kanten,
         "pruefung": regeln.sinnpruefung(karten, kanten, stand.get("bewertung")),
     }

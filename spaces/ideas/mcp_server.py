@@ -142,14 +142,17 @@ TOOLS: list[dict[str, Any]] = [
             "List canvas ideas, optionally scoped to a bubble id, top left first. Short by default: an "
             "object {karten, gezeigt, gesamt, gekuerzt}; each card has id, title, format, score, position, "
             "the first characters of the text and a readable 'karte'. 'gesamt' is the true number of ideas, "
-            "counted even when the list is cut at 'limit'. 'full': true returns whole rows as a plain list; "
-            "for the whole text of one idea use idea_read or idea_get."
+            "counted even when the list is cut at 'limit'; 'offset' reads the next page ('weiter_ab' says "
+            "where it starts). 'kanten': true adds the connections between the listed cards. 'full': true "
+            "returns whole rows as a plain list; for the whole text of one idea use idea_read or idea_get."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "bubble_id": {"type": "string"},
                 "limit": {"type": "integer", "default": 50, "minimum": 1, "maximum": 100},
+                "offset": {"type": "integer", "default": 0, "minimum": 0, "maximum": IDEA_COUNT_CAP},
+                "kanten": {"type": "boolean", "default": False},
                 "full": {"type": "boolean", "default": False},
             },
         },
@@ -196,7 +199,9 @@ TOOLS: list[dict[str, Any]] = [
         "name": "idea_update",
         "description": (
             "Update a canvas idea by durable id. 'content_append' adds text after the stored text "
-            "(a text that only repeats the title counts as empty); it excludes 'content'."
+            "(a text that only repeats the title counts as empty); it excludes 'content'. "
+            "'content_replace_old' with 'content_replace_new' replaces exactly one occurrence in the "
+            "stored text and fails when the old text is missing or occurs more than once."
         ),
         "inputSchema": {
             "type": "object",
@@ -205,6 +210,8 @@ TOOLS: list[dict[str, Any]] = [
                 "title": {"type": "string"},
                 "content": {"type": "string"},
                 "content_append": {"type": "string", "minLength": 1, "maxLength": 20000},
+                "content_replace_old": {"type": "string", "minLength": 1, "maxLength": 20000},
+                "content_replace_new": {"type": "string", "maxLength": 20000},
                 "node_type": {"type": "string"},
                 "x": {"type": "integer"},
                 "y": {"type": "integer"},
@@ -1567,6 +1574,38 @@ def _with_appended_content(arguments: Mapping[str, Any]) -> dict[str, Any]:
     return {**rest, "content": merged, "_node": node}
 
 
+def _with_replaced_content(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    """"Ersetze in X: A durch B" without the old text in the request: replace in what is stored.
+
+    Exactly one occurrence, or an honest error: missing (text_not_found) or more than
+    once (text_ambiguous). Nothing is guessed, nothing is written in those cases.
+    """
+    old_part = arguments.get("content_replace_old")
+    new_part = arguments.get("content_replace_new")
+    if "content" in arguments or "content_append" in arguments:
+        raise ToolError("invalid_arguments: 'content_replace_old' excludes 'content' and 'content_append'")
+    if not isinstance(old_part, str) or not old_part.strip():
+        raise ToolError("invalid_arguments: 'content_replace_old' must be a non-empty string")
+    if not isinstance(new_part, str):
+        raise ToolError("invalid_arguments: 'content_replace_new' must be a string")
+    idea_id = _durable_id(arguments, "id")
+    node = _first_row(_request(
+        "GET", "canvas_nodes",
+        params={"select": "id,title,content,content_json", "id": f"eq.{idea_id}", "limit": "1"},
+    ))
+    if node is None:
+        raise ToolError("idea_not_found")
+    old = node.get("content") if isinstance(node.get("content"), str) else ""
+    count = old.count(old_part)
+    if count == 0:
+        raise ToolError("text_not_found: 'content_replace_old' does not occur in the stored text")
+    if count > 1:
+        raise ToolError("text_ambiguous: 'content_replace_old' occurs more than once")
+    rest = {key: value for key, value in arguments.items()
+            if key not in ("content_replace_old", "content_replace_new")}
+    return {**rest, "content": old.replace(old_part, new_part, 1), "_node": node}
+
+
 def _synced_structured(node: Mapping[str, Any] | None, content: str) -> dict[str, Any] | None:
     """Formatted card: the app renders ``content_json``, the text lives in ``content``.
 
@@ -1746,10 +1785,11 @@ def _uebergabe_bauen(bubble: Mapping[str, Any], bubble_id: str) -> dict[str, Any
     ``befoerdern_zu_gross`` above UEBERGABE_MAX_ZEICHEN.
     """
     regeln = _kartenregeln()
-    zeilen = _bubble_nodes(bubble_id, "id,node_type,title,content,content_json,metadata,updated_at",
+    zeilen = _bubble_nodes(bubble_id, "id,node_type,title,content,summary,content_json,metadata,updated_at",
                            UEBERGABE_MAX_KARTEN)
-    # Die Regeln lesen "content"; formatierte Karten tragen ihren Text in content_json.
-    karten = [{**z, "content": _live_text(z)} for z in zeilen]
+    # Die Regeln lesen den Text der Karte selbst (kartentext: content, sonst summary, sonst
+    # content_json); in den Stand kommt derselbe Text, damit SWE-Design dasselbe sieht.
+    karten = [{**z, "content": z.get("content") if isinstance(z.get("content"), str) else ""} for z in zeilen]
     ids = [k["id"] for k in karten]
     kanten = [k for k in _bubble_kanten(ids) if k.get("to_node_id") in set(ids)] if ids else []
     bewertung = _bewertung(bubble)
@@ -1786,7 +1826,8 @@ def _uebergabe_bauen(bubble: Mapping[str, Any], bubble_id: str) -> dict[str, Any
         "white_paper": white_paper,
         # Ueberschrift-Karten stehen mit art "gruppe" drin, damit ihre Kanten die Karten verbinden
         # (die Ansicht rechnet die Sinnpruefung aus karten/kanten nach).
-        "karten": [{"id": k["id"], "titel": str(k.get("title") or ""), "text": k["content"],
+        "karten": [{"id": k["id"], "titel": str(k.get("title") or ""),
+                    "text": regeln.kartentext(k) if regeln.ist_notiz(k) else k["content"],
                     "art": _art(regeln, k), "gruppe": gruppe_von.get(k["id"])}
                    for k in karten if papier is None or k["id"] != papier["id"]],
         "kanten": [{"von": k["from_node_id"], "nach": k["to_node_id"], "art": k.get("edge_type") or "related"}
@@ -2171,12 +2212,21 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         if not isinstance(full, bool):
             raise ToolError("invalid_arguments: 'full' must be true or false")
         limit = _bounded_limit(arguments, 50)
+        offset = arguments.get("offset", 0)
+        if isinstance(offset, bool) or not isinstance(offset, int) or not 0 <= offset <= IDEA_COUNT_CAP:
+            raise ToolError(f"invalid_arguments: 'offset' must be an integer from 0 to {IDEA_COUNT_CAP}")
+        mit_kanten = arguments.get("kanten", False)
+        if not isinstance(mit_kanten, bool):
+            raise ToolError("invalid_arguments: 'kanten' must be true or false")
         params = {
             "select": "*" if full else IDEA_LIST_SHORT_SELECT,
             # Lesereihenfolge am Canvas: oben links zuerst; "die ersten" heisst damit etwas.
+            # id als letzter Schluessel haelt die Seiten stabil (kein Doppel, keine Luecke).
             "order": "y.asc,x.asc,id.asc",
             "limit": str(limit),
         }
+        if offset:
+            params["offset"] = str(offset)
         if bubble_id is not None:
             if not isinstance(bubble_id, str) or not bubble_id.strip():
                 raise ToolError("invalid_arguments: 'bubble_id' must be a non-empty string")
@@ -2185,15 +2235,24 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         if full or not isinstance(rows, list):
             return rows
         cards = [_short_idea(row) for row in rows if isinstance(row, Mapping)]
-        total: int | None = len(cards)
-        if len(rows) >= limit:
+        total: int | None = offset + len(cards)
+        if len(rows) >= limit or offset:
             total = _count_ideas(params.get("linked_idea_id"))
-        return {
+        bis = offset + len(cards)
+        antwort: dict[str, Any] = {
             "karten": cards,
             "gezeigt": len(cards),
             "gesamt": total,  # None: Zaehlung nicht moeglich, mindestens "gezeigt"
             "gekuerzt": total is None or total > len(cards),
+            "versatz": offset,
+            # Naechste Seite: offset = weiter_ab; None, wenn nichts mehr kommt.
+            "weiter_ab": bis if (len(rows) >= limit and (total is None or total > bis)) else None,
         }
+        if mit_kanten:
+            # Jede Kante steht genau einmal: auf der Seite ihrer Ausgangskarte.
+            antwort["kanten"] = _bubble_kanten([row["id"] for row in rows
+                                                if isinstance(row, Mapping) and isinstance(row.get("id"), str)])
+        return antwort
     if name == "idea_get":
         return _request("GET", "canvas_nodes", params={"select": "*", "id": f"eq.{_required_string(arguments, 'id')}", "limit": "1"})
     if name == "idea_read":
@@ -2265,6 +2324,9 @@ def _call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
         node = None
         if "content_append" in arguments:
             arguments = _with_appended_content(arguments)
+            node = arguments.pop("_node")
+        elif "content_replace_old" in arguments or "content_replace_new" in arguments:
+            arguments = _with_replaced_content(arguments)
             node = arguments.pop("_node")
         body = _patch_fields(
             arguments,

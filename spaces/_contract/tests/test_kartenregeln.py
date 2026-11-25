@@ -64,3 +64,78 @@ def test_bewertung_der_bubble_f2b() -> None:
         "score": 0, "begruendungen": 1}
     assert regeln.bewertung_der_bubble({"score": 55}) == {"score": 55, "begruendungen": 0}
     assert not regeln.hat_bewertung(regeln.bewertung_der_bubble({"score": 0.0}))
+
+
+# ── kartentext: content, sonst summary, sonst content_json (formatierte Karten) ──
+
+def _formatiert(kennung, titel, struktur, text=None, **mehr):
+    karte = _karte(kennung, titel, titel if text is None else text)
+    karte["content_json"] = struktur
+    karte.update(mehr)
+    return karte
+
+
+SPECS = {"type": "technical_specs", "title": "Technische Spezifikation", "component": "Buehnenplan",
+         "metadata": {"formatted_by": "SpecsAgent"},
+         "specifications": [{"category": "Performance", "priority": "must_have",
+                             "requirement": "Der Plan laedt auf dem Handy in unter zwei Sekunden.",
+                             "acceptance_criteria": "Messung mit zehn Aufrufen am Festplatz."}]}
+
+
+def test_kartentext_liest_strukturierten_inhalt() -> None:
+    karte = _formatiert("k1", "Buehnenplan", SPECS)
+    text = regeln.kartentext(karte)
+    assert "unter zwei Sekunden" in text and "Messung mit zehn Aufrufen" in text
+    assert "Performance" not in text and "must_have" not in text and "SpecsAgent" not in text
+    assert not regeln.ist_leer(karte) and not regeln.ist_duenn(karte)
+
+
+def test_kartentext_content_geht_vor_und_bleibt_unveraendert() -> None:
+    karte = _formatiert("k1", "Buehnenplan", SPECS, text="Zwei Buehnen am Markt, eine am Hafen.")
+    assert regeln.kartentext(karte) == "Zwei Buehnen am Markt, eine am Hafen."
+
+
+def test_kartentext_summary_vor_content_json() -> None:
+    karte = _formatiert("k1", "Sponsoren", SPECS, summary="Drei Sponsoren tragen die Bühnenkosten.")
+    assert regeln.kartentext(karte) == "Drei Sponsoren tragen die Bühnenkosten."
+
+
+def test_absagen_und_vorlagen_sind_leer() -> None:
+    absage = _formatiert("k1", "Druckerei", {
+        "type": "technical_specs", "component": "Druckerei", "specifications": [],
+        "extraction_notes": "Keine technischen Anforderungen im bereitgestellten Inhalt gefunden.",
+        "recommendation": "Bitte stellen Sie den vollständigen Inhalt bereit."})
+    vorlage = _formatiert("k2", "Sponsoren", {
+        "type": "technical_specs", "title": "Technische Spezifikation", "component": "Betroffene Komponente",
+        "specifications": [{"category": "Security", "requirement": "Konkrete Anforderung für Sicherheit",
+                            "acceptance_criteria": "Wie wird es getestet?"}],
+        "implementation_notes": "Hinweise zur Implementierung"})
+    swot = _formatiert("k3", "Helferliste", {"type": "swot", "subject": "Was analysiert wird",
+                                             "summary": {"key_actions": ["Aktion 1", "Aktion 2"]}})
+    titel_nur = _karte("k4", "Getraenkestand Nord", "Getraenkestand_Nord")
+    for karte in (absage, vorlage, swot, titel_nur):
+        assert regeln.kartentext(karte) == "", karte["id"]
+        assert regeln.ist_leer(karte), karte["id"]
+
+
+def test_sinnpruefung_mit_formatierten_karten() -> None:
+    gut = _formatiert("k1", "Buehnenplan", SPECS)
+    leer = _formatiert("k2", "Druckerei", {"type": "note", "text": "", "title": "Notiz-Titel"})
+    s = regeln.sinnpruefung([gut, leer, PAPIER], [{"from_node_id": "k1", "to_node_id": "k2"}], {"score": 4})
+    assert s["leer"] == ["k2"] and s["gruende"] == ["leere_karten:1"]
+
+
+def test_content_json_als_zeichenkette() -> None:
+    import json
+    karte = _formatiert("k1", "Buehnenplan", json.dumps(SPECS))
+    assert "unter zwei Sekunden" in regeln.kartentext(karte)
+
+
+def test_ergaenzte_formatierte_karte_zaehlt_den_text_einmal():
+    # "Ergänze bei X" auf einer formatierten Karte: der Server setzt content und content_json.text
+    # gleich. kartentext nimmt den Inhalt, die Karte ist nicht leer und nichts steht doppelt.
+    kurz = "Drei Bühnen, Aufbau am Freitag ab acht Uhr."
+    karte = _formatiert("a0000009", "Buehnenplan", {**SPECS, "text": kurz}, text=kurz)
+    text = regeln.kartentext(karte)
+    assert text == kurz
+    assert not regeln.ist_leer(karte) and not regeln.ist_duenn(karte)

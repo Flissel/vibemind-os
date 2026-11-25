@@ -164,3 +164,84 @@ class BefoerdernTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FormatierteKartenTests(unittest.TestCase):
+    """Formatierte Karten: der Inhalt steht in content_json, content wiederholt nur den Titel."""
+
+    def test_strukturierter_inhalt_zaehlt_und_steht_im_stand(self):
+        specs = {"type": "technical_specs", "component": "Druckerei",
+                 "specifications": [{"category": "Performance",
+                                     "requirement": "Plakate liegen drei Tage vor dem Fest im Rathaus.",
+                                     "acceptance_criteria": "Abholschein der Druckerei liegt vor."}]}
+        karten = [dict(k) for k in GUTE_KARTEN]
+        karten[1] = {**karten[1], "content": "Druckerei", "content_json": specs}
+        db = Datenbank(karten, GUTE_KANTEN)
+        server = load_server()
+        with mock.patch.object(server, "_request", side_effect=db):
+            server.call_tool("bubble_promote", {"bubble_id": BUBBLE})
+        stand = db.projekt["metadata"]["uebergabe"]
+        text = {k["id"]: k["text"] for k in stand["karten"]}["a0000002"]
+        self.assertIn("drei Tage vor dem Fest", text)
+        self.assertNotIn("Performance", text)
+        self.assertTrue(stand["pruefung"]["bestanden"])
+
+    def test_absage_der_formatierer_ist_leer(self):
+        absage = {"type": "technical_specs", "specifications": [],
+                  "extraction_notes": "Keine technischen Anforderungen im bereitgestellten Inhalt gefunden."}
+        karten = [dict(k) for k in GUTE_KARTEN]
+        karten[1] = {**karten[1], "content": "Druckerei", "content_json": absage}
+        db = Datenbank(karten, GUTE_KANTEN)
+        server = load_server()
+        with mock.patch.object(server, "_request", side_effect=db):
+            with self.assertRaises(server.ToolError) as fehler:
+                server.call_tool("bubble_promote", {"bubble_id": BUBBLE})
+        self.assertIn("leere_karten:1", str(fehler.exception))
+        self.assertIn("leer=a0000002", str(fehler.exception))
+
+
+class IdeaListSeitenTests(unittest.TestCase):
+    """idea_list blaettert mit offset und liefert auf Wunsch die Verbindungen mit."""
+
+    def _liste(self, argumente, karten, kanten=(), gesamt=None):
+        aufrufe = []
+
+        def db(method, path, **kwargs):
+            params = dict(kwargs.get("params") or {})
+            aufrufe.append((method, path, params))
+            if path == "canvas_nodes" and params.get("select") == "id":
+                return [{"id": f"x{i}"} for i in range(gesamt)]
+            if path == "canvas_nodes":
+                start = int(params.get("offset", 0))
+                return karten[start:start + int(params["limit"])]
+            if path == "canvas_edges":
+                von = params["from_node_id"][len("in.("):-1].split(",")
+                return [k for k in kanten if k["from_node_id"] in von]
+            raise AssertionError(f"unerwartet: {method} {path}")
+
+        server = load_server()
+        with mock.patch.object(server, "_request", side_effect=db):
+            return server.call_tool("idea_list", {"bubble_id": BUBBLE, **argumente}), aufrufe
+
+    def test_zweite_seite_mit_versatz(self):
+        karten = [_karte(f"a{i:07d}", f"Stand {i}", "") for i in range(1, 6)]
+        antwort, aufrufe = self._liste({"limit": 2, "offset": 2}, karten, gesamt=5)
+        self.assertEqual([k["id"] for k in antwort["karten"]], ["a0000003", "a0000004"])
+        self.assertEqual((antwort["versatz"], antwort["weiter_ab"], antwort["gesamt"]), (2, 4, 5))
+        self.assertEqual(aufrufe[0][2]["offset"], "2")
+        letzte, _ = self._liste({"limit": 2, "offset": 4}, karten, gesamt=5)
+        self.assertEqual(([k["id"] for k in letzte["karten"]], letzte["weiter_ab"]), (["a0000005"], None))
+
+    def test_kanten_nur_auf_wunsch(self):
+        karten = [_karte("a0000001", "Druckerei", ""), _karte("a0000002", "Bühnenplan", "")]
+        ohne, aufrufe = self._liste({}, karten, GUTE_KANTEN, gesamt=2)
+        self.assertNotIn("kanten", ohne)
+        self.assertFalse(any(path == "canvas_edges" for _m, path, _p in aufrufe))
+        mit, _ = self._liste({"kanten": True}, karten, GUTE_KANTEN, gesamt=2)
+        self.assertEqual(mit["kanten"], GUTE_KANTEN)
+
+    def test_falscher_versatz_wird_abgelehnt(self):
+        server = load_server()
+        for falsch in (-1, True, "2"):
+            with self.assertRaises(server.ToolError):
+                server.call_tool("idea_list", {"bubble_id": BUBBLE, "offset": falsch})

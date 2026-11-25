@@ -67,3 +67,44 @@ class ErgaenzenTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ErsetzenTests(unittest.TestCase):
+    """"Ersetze in X: A durch B": genau eine Stelle, sonst ehrlicher Fehler ohne Schreiben."""
+
+    def _aufrufe(self, server, karte, argumente):
+        aufrufe = []
+
+        def antwort(method, path, **kwargs):
+            aufrufe.append((method, kwargs))
+            if method == "GET":
+                return [dict(karte)]
+            return [{**karte, **kwargs["body"]}]
+        with mock.patch.object(server, "_request", side_effect=antwort):
+            server.call_tool("idea_update", argumente)
+        return aufrufe
+
+    def test_genau_eine_stelle_wird_ersetzt_und_der_strukturtext_folgt(self) -> None:
+        server = load_server()
+        karte = {**TABELLE_LEER, "content": "Bühne am Samstag, Aufbau ab 8"}
+        aufrufe = self._aufrufe(server, karte, {"id": "a0000001", "content_replace_old": "Samstag",
+                                                "content_replace_new": "Sonntag"})
+        body = [k for m, k in aufrufe if m == "PATCH"][0]["body"]
+        self.assertEqual(body["content"], "Bühne am Sonntag, Aufbau ab 8")
+        self.assertEqual(body["content_json"]["text"], "Bühne am Sonntag, Aufbau ab 8")
+        self.assertNotIn("content_replace_old", body)
+
+    def test_fehlt_oder_mehrfach_dann_wird_nichts_geschrieben(self) -> None:
+        server = load_server()
+        karte = {"id": "a0000003", "title": "Helfer", "content": "Schicht A, Schicht B", "content_json": None}
+        for alt, fehler in (("Schicht C", "text_not_found"), ("Schicht", "text_ambiguous")):
+            with self.assertRaises(server.ToolError) as fall:
+                self._aufrufe(server, karte, {"id": "a0000003", "content_replace_old": alt,
+                                              "content_replace_new": "x"})
+            self.assertTrue(str(fall.exception).startswith(fehler))
+
+    def test_ersetzen_schliesst_ganzen_text_aus(self) -> None:
+        server = load_server()
+        with self.assertRaises(server.ToolError):
+            self._aufrufe(server, TABELLE_LEER, {"id": "a0000001", "content": "neu",
+                                                 "content_replace_old": "a", "content_replace_new": "b"})

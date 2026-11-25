@@ -47,13 +47,120 @@ def ist_notiz(karte: Mapping[str, Any]) -> bool:
     return not ist_dokument(karte) and not ist_gruppenkopf(karte)
 
 
+# ── Text der Karte ───────────────────────────────────────────────────────
+# Formatierte Karten tragen ihren Inhalt in ``content_json`` (Specs, SWOT, Pro/Contra,
+# User Stories ...); ``content`` wiederholt dort oft nur den Titel. Die alten
+# Formatier-Agenten haben ausserdem Vorlagen und Absagen hinterlassen, die wie Inhalt
+# aussehen, aber nichts sagen. Beides steht hier einmal fuer Ideen, Gehirn und SWE-Design.
+
+# Vorlagentext: ganze Zeichenketten, die nichts sagen (Vergleich ohne Gross-/Kleinschreibung).
+VORLAGEN = frozenset(t.lower() for t in {
+    "Konkrete Anforderung", "Betroffene Komponente", "Was analysiert wird", "Technische Spezifikation",
+    "Gesamtbewertung der aktuellen Situation", "Gesamtbewertung", "SWOT Analyse", "SWOT-Analyse", "Mind Map",
+    "User Stories", "Gliederung", "Notiz-Titel", "Nicht angegeben", "Pro-Contra Analyse", "Empfehlung",
+    "Loesungsansatz", "Lösungsansatz", "Aktion 1", "Aktion 2", "Risiko", "Absicherung", "Staerke", "Stärke",
+    "Begruendung", "Begründung", "Schwaeche", "Schwäche", "Gegenmaassnahme", "Gegenmaßnahme", "Chance",
+    "Naechster Schritt", "Nächster Schritt", "Performance", "Security", "Scalability", "Usability",
+    "Compliance", "must_have", "should_have", "nice_to_have", "high", "medium", "low",
+    "Wie wird es getestet?", "Wie wird es sichergestellt?", "Wie wird die Sicherheit gewährleistet?",
+    "Wie skaliert das System?", "Wie skaliert es?", "Wie wird es skaliert?", "Wie wird es benutzt?",
+    "Wie benutzerfreundlich ist es?", "Wie benutzerfreundlich ist das System?", "Wie benutzerfreundlich ist?",
+    "Hinweise zur Implementierung", "Implementierungshinweise",
+})
+# Vorlagen mit wechselndem Ende, z. B. "Konkrete Anforderung für Sicherheit".
+VORLAGE_MUSTER = re.compile(r"konkrete anforderung(?: f(?:ü|ue)r [\w-]+)?", re.IGNORECASE)
+# Absagen der Formatier-Agenten: ganze Saetze, die nur sagen, dass nichts da ist.
+ABSAGE = re.compile(
+    r"\bkeine?\b[^.!?]{0,90}\b(anforderungen|spezifikationen|details|implementierungshinweise|angaben)\b"
+    r"[^.!?]{0,160}\b(gefunden|enthalten|vorhanden|identifiziert|angegeben|extrahier\w*|verfügbar)"
+    r"|\b(inhalt|quellinhalt)\b[^.!?]{0,40}\bnicht ausreichend"
+    r"|\bbitte (stellen|ergänzen) sie\b"
+    r"|\b(lediglich|ausschließlich|nur) den (titel|komponentennamen)\b"
+    r"|\bbeschränkt sich auf (den|die wiederholung des) (titel|titels|komponentennamen)\b"
+    r"|\benthält keine\b[^.!?]{0,40}\b(spezifikationen|anforderungen|details)\b"
+    r"|\bes liegen keine\b[^.!?]{0,120}\bvor\b"
+    r"|\b(weitere|zusätzliche) (informationen|details|angaben)\b[^.!?]{0,120}\b(erforderlich|nötig|notwendig|benötigt)\b"
+    r"|\bfür eine (vollständige|detaillierte) (extraktion|spezifikation)\b"
+    r"|\bmüssen aus\b[^.!?]{0,60}\bextrahiert werden\b"
+    r"|\bkein extrahierbarer inhalt\b",
+    re.IGNORECASE)
+# Feldnamen in content_json, deren Werte nichts zum Lesen beitragen.
+OHNE_INHALT = frozenset({
+    "type", "id", "color", "colour", "status", "priority", "icon", "x", "y", "style", "shape", "source",
+    "target", "from", "to", "url", "href", "created_at", "updated_at", "metadata", "category", "weight",
+    "likelihood", "impact", "story_points", "formatted_by", "original_format",
+})
+_SATZ = re.compile(r"(?<=[.!?])\s+")
+_NAME = re.compile(r"[\s_\-–]+")
+
+
+def _gleich_titel(text: str, titel: str) -> bool:
+    return bool(titel) and _NAME.sub("", text).lower() == _NAME.sub("", titel).lower()
+
+
+def _sagt_etwas(text: str, titel: str) -> bool:
+    """True when ``text`` has a sentence that is neither the title, a template nor a refusal."""
+    for satz in _SATZ.split(" ".join(text.split())):
+        satz = satz.strip()
+        if (satz and not _gleich_titel(satz, titel) and satz.lower() not in VORLAGEN
+                and not VORLAGE_MUSTER.fullmatch(satz) and not ABSAGE.search(satz)):
+            return True
+    return False
+
+
+def _flach(wert: Any, aus: list[str], titel: str, tiefe: int = 0) -> None:
+    if tiefe > 8 or len(aus) > 400:
+        return
+    if isinstance(wert, str):
+        text = " ".join(wert.split())
+        if text and _sagt_etwas(text, titel):
+            aus.append(text)
+    elif isinstance(wert, Mapping):
+        for name, teil in wert.items():
+            if name not in OHNE_INHALT:
+                _flach(teil, aus, titel, tiefe + 1)
+    elif isinstance(wert, list):
+        for teil in wert:
+            _flach(teil, aus, titel, tiefe + 1)
+
+
+def _struktur(wert: Any) -> Any:
+    if isinstance(wert, str) and wert.strip()[:1] in ("{", "["):
+        try:
+            import json
+            return json.loads(wert)
+        except ValueError:
+            return None
+    return wert
+
+
+def kartentext(karte: Mapping[str, Any]) -> str:
+    """What a card says: ``content``, else ``summary``, else the text values of ``content_json``.
+
+    A text that only repeats the title, is template text or a refusal of the old formatting
+    agents says nothing; then the next source is tried.  ``content`` and ``summary`` come back
+    unchanged when they say something; from ``content_json`` only the telling values, one per
+    line.  Empty string when the card says nothing.
+    """
+    titel = str(karte.get("title") or "").strip()
+    for feld in ("content", "summary"):
+        wert = karte.get(feld)
+        if isinstance(wert, str) and _sagt_etwas(wert, titel):
+            return wert.strip()
+    teile: list[str] = []
+    _flach(_struktur(karte.get("content_json")), teile, titel)
+    if not teile and not isinstance(karte.get("summary"), str):
+        _flach(_struktur(karte.get("summary")), teile, titel)
+    return "\n".join(dict.fromkeys(teile))
+
+
 def ist_leer(karte: Mapping[str, Any]) -> bool:
-    """Content under LEER_UNTER_WOERTERN words; the title does not count."""
-    return len(woerter(karte.get("content"))) < LEER_UNTER_WOERTERN
+    """Card text (``kartentext``) under LEER_UNTER_WOERTERN words; the title does not count."""
+    return len(woerter(kartentext(karte))) < LEER_UNTER_WOERTERN
 
 
 def ist_duenn(karte: Mapping[str, Any]) -> bool:
-    return len(" ".join(str(karte.get("content") or "").split())) < DUENN_UNTER_ZEICHEN
+    return len(" ".join(kartentext(karte).split())) < DUENN_UNTER_ZEICHEN
 
 
 def lose_karten(karten: Sequence[Mapping[str, Any]], kanten: Sequence[Mapping[str, Any]]) -> list:

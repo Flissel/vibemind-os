@@ -42,17 +42,25 @@ FESTE_EREIGNISSE: dict[str, dict[str, Any]] = {
         "werkzeug": "idea_update",
         "pflicht": {"id": _K},
         # content_append: "Ergaenze bei X: ..." - der Ideen-Server haengt an den gespeicherten Text an.
+        # content_replace_old/_new: "Ersetze in X: A durch B" - der Server ersetzt genau eine
+        # Stelle im gespeicherten Text und scheitert, wenn A fehlt oder mehrfach vorkommt.
         "wahl": {"title": ("text", 500, False), "content": ("text", 20000, True),
-                 "content_append": ("text", 20000, False), "x": _LAGE, "y": _LAGE},
-        "mindestens_eins": ("title", "content", "content_append", "x", "y"),
+                 "content_append": ("text", 20000, False),
+                 "content_replace_old": ("text", 20000, False),
+                 "content_replace_new": ("text", 20000, True), "x": _LAGE, "y": _LAGE},
+        "mindestens_eins": ("title", "content", "content_append", "content_replace_old", "x", "y"),
         "schliessen_aus": ("content", "content_append"),
+        "hoechstens_eins": ("content", "content_append", "content_replace_old"),
+        "nur_zusammen": ("content_replace_old", "content_replace_new"),
     },
     "idea.list": {
         "werkzeug": "idea_list",
         "pflicht": {},
         # Vorgabe kurz (Kennung, Titel, Format, Bewertung, Anfang des Texts). "full" gibt
         # ganze Zeilen; den ganzen Text einer Karte liefert sonst idea_get.
-        "wahl": {"bubble_id": _K, "limit": ("zahl", 1, 100), "full": ("ja_nein",)},
+        # offset blaettert (weiter_ab der Antwort), kanten: true liefert die Verbindungen mit.
+        "wahl": {"bubble_id": _K, "limit": ("zahl", 1, 100), "offset": ("zahl", 0, 5000),
+                 "kanten": ("ja_nein",), "full": ("ja_nein",)},
         "liest_nur": True,
     },
     "idea.format": {
@@ -247,6 +255,13 @@ def feste_argumente(event_id: str, wert: Any) -> tuple[Optional[dict[str, Any]],
     aus = spec.get("schliessen_aus")
     if aus and all(name in kandidat for name in aus):
         return None, f"clarification required: {aus[1]} is invalid"
+    einzeln = [name for name in spec.get("hoechstens_eins", ()) if name in kandidat]
+    if len(einzeln) > 1:
+        return None, f"clarification required: {einzeln[1]} is invalid"
+    paar = spec.get("nur_zusammen")
+    if paar and any(name in kandidat for name in paar) and not all(name in kandidat for name in paar):
+        fehlt = next(name for name in paar if name not in kandidat)
+        return None, f"clarification required: {fehlt}"
     return dict(kandidat), ""
 
 
@@ -370,6 +385,12 @@ def nachpruefung(event_id: str, argumente: Any, raw_result: Any) -> tuple[Option
                 # Der ganze neue Text steht nur in der Quittung; er muss mit dem Angehaengten enden.
                 gespeichert = zeile.get("content")
                 if not isinstance(gespeichert, str) or not gespeichert.endswith(argumente["content_append"].strip()):
+                    return None, ungueltig
+                felder["content"] = gespeichert
+            if "content_replace_old" in argumente:
+                # Auch hier steht der ganze Text nur in der Quittung; der neue Teil muss darin stehen.
+                gespeichert = zeile.get("content")
+                if not isinstance(gespeichert, str) or argumente["content_replace_new"] not in gespeichert:
                     return None, ungueltig
                 felder["content"] = gespeichert
         elif event_id == "idea.format":

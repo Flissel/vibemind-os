@@ -402,6 +402,27 @@ def _karte_und_rest(text: str, kopf: str, trenner: str, kontext: dict,
     return None
 
 
+_ANF = "\"'„“”‚‘’»«"
+
+
+def _alt_und_neu(rest: str) -> tuple[str, str]:
+    """"A durch B" aus dem Rest von "Ersetze in X: ...". Mit Anfuehrungszeichen genau,
+    sonst nur bei genau einem " durch " (sonst Rueckfrage, geraten wird nie)."""
+    m = re.fullmatch(rf"[{_ANF}](?P<a>[^{_ANF}]+)[{_ANF}]\s+durch\s+[{_ANF}](?P<b>[^{_ANF}]*)[{_ANF}]", rest, _I)
+    if m:
+        alt, neu = m.group("a"), m.group("b")
+    else:
+        stellen = list(re.finditer(r"\s+durch\s+", rest, _I))
+        if len(stellen) != 1:
+            raise _Rueckfrage("Was soll wodurch ersetzt werden? Setz beide Texte in Anführungszeichen, "
+                              "z. B. „Ersetze in Bühnenplan: „Samstag“ durch „Sonntag““.")
+        alt, neu = rest[:stellen[0].start()], rest[stellen[0].end():]
+        alt, neu = alt.strip().strip(_ANF), neu.strip().strip(_ANF)
+    if not alt.strip():
+        raise _Rueckfrage("Welcher Text soll ersetzt werden?")
+    return alt, neu
+
+
 def _zahl(text: str) -> int:
     wert = int(text)
     if not 0 <= wert <= 100:
@@ -619,6 +640,24 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
             argumente["id"] = kontext["new_id"]
         return _treffer("idea.create", argumente, f"Notiz „{titel}“ festgehalten.")
 
+    # ── ersetzen: "Ersetze in X: A durch B" (der Server ersetzt genau eine Stelle oder scheitert) ──
+    gefunden = _karte_und_rest(text, r"ersetz(?:e)?\s+(?:in|bei)\s+", r"\s*:\s*", kontext)
+    if gefunden:
+        karte, rest = gefunden
+        alt, neu = _alt_und_neu(rest)
+        return _treffer("idea.update", {"id": karte["id"], "content_replace_old": alt,
+                                        "content_replace_new": neu},
+                        f"In {_titel(karte)} ersetzt. Mit „Zurück“ nimmst du das zurück.")
+
+    # ── Format zuruecksetzen: idea_format mit revert (der Server stellt das vorige Format her) ──
+    m = (re.fullmatch(r"setz(?:e)?\s+das\s+format\s+(?:von|der\s+karte|bei)\s+(?P<k>.+?)\s+zur(?:ü|ue)ck", text, _I)
+         or re.fullmatch(r"stell(?:e)?\s+das\s+(?:alte|vorige|fr(?:ü|ue)here)\s+format\s+(?:von|bei)\s+(?P<k>.+?)"
+                         r"\s+wieder\s+her", text, _I))
+    if m:
+        karte = _karte(m.group("k"), kontext)
+        return _treffer("idea.format", {"id": karte["id"], "format": "revert"},
+                        f"{_titel(karte)} hat wieder ihr voriges Format. Mit „Zurück“ nimmst du das zurück.")
+
     # ── ergaenzen (fester Aufruf statt Agentenlauf; der Server haengt an) ──
     for kopf, trenner in (
         (r"(?:erg(?:ä|ae)nze|f(?:ü|ue)ge)\s+(?:bei|zu|in|an)\s+", r"\s*(?:hinzu\s*)?:\s*"),
@@ -804,6 +843,17 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
     if (re.fullmatch(r"zeig(?:e)?\s+(?:mir\s+)?die\s+(?:notizen|karten)(?:\s+dieser\s+bubble)?", text, _I)
             or re.fullmatch(r"was\s+steht\s+hier\??", text, _I)):
         return _treffer("idea.list", {"bubble_id": _offene_bubble(kontext)}, "")
+    # Weiterblaettern ("Zeig die Karten ab 101") und Verbindungen lesen: grosse Bubbles
+    # (ueber 100 Karten) und ihre Kanten sind sonst ueber das Gehirn nicht ganz lesbar.
+    m = re.fullmatch(r"zeig(?:e)?\s+(?:mir\s+)?die\s+(?P<was>notizen|karten|verbindungen|kanten)"
+                     r"(?:\s+dieser\s+bubble)?(?:\s+ab\s+(?:nummer\s+|karte\s+)?(?P<ab>\d{1,4}))?", text, _I)
+    if m and (m.group("ab") or m.group("was").lower() in ("verbindungen", "kanten")):
+        argumente: dict = {"bubble_id": _offene_bubble(kontext), "limit": 100}
+        if m.group("ab"):
+            argumente["offset"] = min(max(int(m.group("ab")) - 1, 0), 5000)
+        if m.group("was").lower() in ("verbindungen", "kanten"):
+            argumente["kanten"] = True
+        return _treffer("idea.list", argumente, "")
     # Zaehl- und Suchfragen ueber die Karten der offenen Bubble (Lauf 5: gingen an den Planer).
     # Fester Leseweg ueber die ganze Liste; Zahl und Treffer entstehen ohne Modell.
     frage = kartenfrage(text)
@@ -1051,6 +1101,10 @@ _FELDNAMEN = {
 }
 _WERKZEUGFEHLER = {
     "idea_not_found": "Diese Karte gibt es nicht mehr.",
+    # "Ersetze in X: A durch B": der Server ersetzt nur genau eine Stelle.
+    "text_not_found": "Den Text, den ich ersetzen soll, finde ich in dieser Karte nicht; geändert ist nichts.",
+    "text_ambiguous": ("Den Text, den ich ersetzen soll, gibt es in dieser Karte mehrmals; geändert ist nichts. "
+                       "Nenn ein längeres Stück, das nur einmal vorkommt."),
     "bewertung_not_found": "Eine Begründung mit dieser Nummer gibt es hier nicht. Gezählt wird die neueste zuerst.",
     "bubble_not_found": "Diese Bubble gibt es nicht mehr.",
     "too_many_cards": (f"Diese Bubble hat mehr als {BUBBLE_LOESCHEN_MAX_KARTEN} Karten. So viele lösche ich "
@@ -1082,6 +1136,7 @@ def _feld(name: str) -> str:
 # Fehlertexte, bei denen nichts schiefging: das Gehirn hat bewusst nichts geaendert und
 # sagt warum (Hinweis) oder fragt nach (Rueckfrage). Die App zeigt das ruhig, nicht als ✕.
 _HINWEISE = ("idea_format_table_no_columns", "idea_format_no_content", "Läufe; die Grenze ist",
+             "(text_not_found", "(text_ambiguous",
              "mehr als 30 starte ich nicht", "starte ich nur nach Rückfrage",
              "Gelöscht wird nur nach Rückfrage", "Befördert wird nur nach Rückfrage",
              "befoerdern_nicht_bereit", "bubble_already_promoted")
@@ -1238,6 +1293,27 @@ def _mehrzahl(anzahl: int, eins: str, viele: str) -> str:
     return f"{anzahl} {eins if anzahl == 1 else viele}"
 
 
+def kantensatz(zeilen: list, inhalt: dict, ort: str) -> str:
+    """Verbindungen der gelesenen Karten als Satz: Titel statt Kennungen, hoechstens drei gezeigt.
+
+    Eine Kante steht auf der Seite ihrer Ausgangskarte; liegt die Zielkarte auf einer anderen
+    Seite, heisst sie "eine Karte weiter hinten".
+    """
+    namen = {z.get("id"): re.sub(r"\s+", " ", str(z.get("title") or "")).strip() or "ohne Titel"
+             for z in zeilen if isinstance(z, dict)}
+    kanten = [k for k in inhalt.get("kanten") or [] if isinstance(k, dict)]
+    if not kanten:
+        return f"Zwischen diesen Karten in {ort} gibt es keine Verbindungen."
+    paare = [f"„{namen.get(k.get('from_node_id'), 'eine Karte weiter hinten')}“ – "
+             f"„{namen.get(k.get('to_node_id'), 'eine Karte weiter hinten')}“" for k in kanten[:3]]
+    rest = len(kanten) - len(paare)
+    weiter = ""
+    if inhalt.get("weiter_ab") is not None:
+        weiter = f" Weiter mit „Zeig die Verbindungen ab {inhalt['weiter_ab'] + 1}“."
+    return (f"{_mehrzahl(len(kanten), 'Verbindung', 'Verbindungen')} in {ort}: {', '.join(paare)}"
+            + (f" (und {rest} weitere)" if rest > 0 else "") + "." + weiter)
+
+
 def zurueck_was(inhalt: dict, anzahl: int) -> str:
     """Lauf 18 (51): was "zurück" zurückgenommen hat, mit Karte und Art statt nur der Zahl.
 
@@ -1392,6 +1468,16 @@ def antwort_fuer_schritt(capability: Any, ok: bool, ergebnis: Any, fehler: Any,
             ort = f"„{ort}“" if ort else "dieser Bubble"
             if isinstance(kontext, dict) and isinstance(kontext.get("_kartenfrage"), dict):
                 return kartenantwort(zeilen, kontext["_kartenfrage"], ort, gesamt, gekuerzt)
+            if isinstance(inhalt, dict) and isinstance(inhalt.get("kanten"), list):
+                return kantensatz(zeilen, inhalt, ort)
+            versatz = _ganzzahl(inhalt.get("versatz")) if isinstance(inhalt, dict) else None
+            if versatz and zeilen:
+                titel = [z.get("title") for z in zeilen if isinstance(z, dict)]
+                bis = versatz + len(titel)
+                von = f" von {gesamt}" if gesamt is not None else ""
+                weiter = (f" Weiter mit „Zeig die Karten ab {bis + 1}“."
+                          if isinstance(inhalt, dict) and inhalt.get("weiter_ab") is not None else "")
+                return f"Notizen {versatz + 1} bis {bis}{von} in {ort}: {_aufzaehlung(titel, gesamt=len(titel))}.{weiter}"
             if not zeilen:
                 return f"In {ort} gibt es noch keine Notizen."
             titel = [z.get("title") for z in zeilen if isinstance(z, dict)]
