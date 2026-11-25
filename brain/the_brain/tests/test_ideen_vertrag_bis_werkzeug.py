@@ -207,11 +207,69 @@ def stufe1(check, db, server, rufe, lies, abk, vertrag, gesehen) -> None:
     check("Bewerten: eine erfundene Karte wird abgelehnt", bew.bewertung_pruefen(
         kaputt, rw["kuerzel"], rw["kuerzel_titel"])[0] is None)
 
+    # Herkunftsbeleg: Gehirn und Ideen-Server teilen einen Schluessel (hier ein erfundener Testwert).
+    import os
+    from core import ideen_rueckweg as rueckweg_mod
+    name = bf.regeln().BELEG_EINSTELLUNG
+    vorher_schluessel = os.environ.get(name)
+    os.environ[name] = "testschluessel-stadtfest\r\n"            # CRLF-Falle: der Wert wird gestrippt
+
+    def mit_beleg(ereignis, argumente, plan_id):
+        werkzeug = vertrag.FESTE_EREIGNISSE[ereignis]["werkzeug"]
+        return rueckweg_mod.mit_beleg(werkzeug, dict(argumente), plan_id + "-r",
+                                      schluessel="testschluessel-stadtfest")
+
     def aufruf(ereignis, argumente, plan_id="ideen_1795000000010"):
-        antwort = rufe(ereignis, argumente, plan_id=plan_id)
+        antwort = rufe(ereignis, mit_beleg(ereignis, argumente, plan_id), plan_id=plan_id + "-r")
         if not antwort.get("ok"):
             raise RuntimeError(str(antwort.get("error")))
         return antwort["result"]
+
+    # Ohne, mit falschem oder abgelaufenem Beleg, fuer einen anderen Lauf, eine andere Bubble oder ein
+    # anderes Werkzeug: herkunft_unbelegt und kein Schreibzugriff.
+    vorher_db = json.dumps(db.tabellen["ideas"], sort_keys=True, default=str)
+    probe = {"bubble_id": "b0b1e006", "lauf": lauf, "kartenstand": rw["kartenstand"]}
+    gut = mit_beleg("idea.bewertung_speichern", probe, "ideen_1795000000019")
+    anderer_lauf = {**probe, "lauf": {**lauf, "gekuerzt": True}}
+    abgelaufen = rueckweg_mod.mit_beleg("bubble_bewertung", dict(probe), "ideen_1795000000019-r",
+                                        schluessel="testschluessel-stadtfest", jetzt=1_000_000_000)
+    falle = {
+        "ohne Beleg": (probe, "ideen_1795000000019-r"),
+        "falscher Schluessel": (rueckweg_mod.mit_beleg("bubble_bewertung", dict(probe), "ideen_1795000000019-r",
+                                                       schluessel="anderer-schluessel"), "ideen_1795000000019-r"),
+        "abgelaufen": (abgelaufen, "ideen_1795000000019-r"),
+        "anderer Lauf": ({**anderer_lauf, "beleg": gut["beleg"]}, "ideen_1795000000019-r"),
+        "andere Bubble": ({**probe, "bubble_id": "b0b1e004", "beleg": gut["beleg"]}, "ideen_1795000000019-r"),
+        "andere aenderung_id": (gut, "ideen_1795000000020-r"),
+    }
+    for name_fall, (argumente, plan) in falle.items():
+        antwort = rufe("idea.bewertung_speichern", argumente, plan_id=plan)
+        check(f"Beleg: {name_fall} -> herkunft_unbelegt", antwort.get("ok") is False
+              and "herkunft_unbelegt" in str(antwort.get("error")), str(antwort.get("error")))
+    todo_beleg = mit_beleg("idea.todo_abhaken", {"bubble_id": "b0b1e006", "nr": 1, "durch": "agent"},
+                           "ideen_1795000000019")
+    antwort = rufe("idea.todo_abhaken", {"bubble_id": "b0b1e006", "nr": 1, "durch": "agent",
+                                         "beleg": gut["beleg"]}, plan_id="ideen_1795000000019-r")
+    check("Beleg: ein Beleg fuer bubble_bewertung gilt nicht fuer bewertung_todo",
+          antwort.get("ok") is False and "herkunft_unbelegt" in str(antwort.get("error")), str(antwort.get("error")))
+    antwort = rufe("idea.todo_abhaken", {"bubble_id": "b0b1e006", "nr": 1, "durch": "agent"},
+                   plan_id="ideen_1795000000019-r")
+    check("Beleg: Abhaken durch den Agenten ohne Beleg -> herkunft_unbelegt",
+          antwort.get("ok") is False and "herkunft_unbelegt" in str(antwort.get("error")), str(antwort.get("error")))
+    check("Beleg: abgelehnte Aufrufe haben nichts geschrieben",
+          json.dumps(db.tabellen["ideas"], sort_keys=True, default=str) == vorher_db and bool(todo_beleg["beleg"]))
+    os.environ[name] = "   "
+    antwort = rufe("idea.bewertung_speichern", gut, plan_id="ideen_1795000000019-r")
+    check("Beleg: ohne Schluessel im Server -> herkunft_unbelegt (schluessel_fehlt)",
+          antwort.get("ok") is False and "herkunft_unbelegt" in str(antwort.get("error")), str(antwort.get("error")))
+    try:
+        rueckweg_mod.mit_beleg("bubble_bewertung", dict(probe), "ideen_1795000000019-r", schluessel=" \r\n")
+        ohne = ""
+    except RuntimeError as e:
+        ohne = str(e)
+    check("Beleg: ohne Schluessel im Gehirn geht kein Aufruf hinaus", ohne == rueckweg_mod.HERKUNFT_OHNE_SCHLUESSEL,
+          ohne)
+    os.environ[name] = "testschluessel-stadtfest\r\n"
 
     def pruefe(ereignis, argumente, quittung):
         erwartung, grund = vertrag.nachpruefung(ereignis, argumente, quittung)
@@ -294,10 +352,15 @@ def stufe1(check, db, server, rufe, lies, abk, vertrag, gesehen) -> None:
     check("To-do 1 erledigt: von Hand abgehakt und nachgeprueft",
           antwort.get("ok") is True and erwartung is not None and vertrag.pruefe_zustand(erwartung, lies)[0] is True,
           str(antwort.get("error")) + grund)
-    antwort = rufe("idea.bewertung_speichern", {"bubble_id": "b0b1e006", "lauf": lauf,
-                                                 "kartenstand": rw["kartenstand"]}, plan_id="ideen_1795000000013")
+    antwort = rufe("idea.bewertung_speichern", mit_beleg("idea.bewertung_speichern", {
+        "bubble_id": "b0b1e006", "lauf": lauf, "kartenstand": rw["kartenstand"]}, "ideen_1795000000013"),
+        plan_id="ideen_1795000000013-r")
     check("Bewerten: ein veralteter kartenstand wird nicht gespeichert",
           antwort.get("ok") is False and "kartenstand_changed" in str(antwort.get("error")), str(antwort.get("error")))
+    if vorher_schluessel is None:
+        os.environ.pop(name, None)
+    else:
+        os.environ[name] = vorher_schluessel
 
 
 def _hauptlauf() -> int:

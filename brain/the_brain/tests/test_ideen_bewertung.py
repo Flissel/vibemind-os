@@ -419,3 +419,25 @@ def test_fertiges_ergebnis_mit_zu_gross_im_text_bleibt_fertig() -> None:
     zeile = {"status": "fertig", "pruefung": {"verified": True, "reason": "ok"},
              "ergebnis": "Die Bühne ist zu groß für den Platz."}
     assert auftrag_stand._stand_einer_zeile(zeile)["stand"] == "fertig"
+
+def test_fehlt_der_herkunftsbeleg_sagt_die_meldung_das_klar() -> None:
+    rueckweg = {"vertrag": "bewerten", "bubble_id": BUBBLE["id"], "kuerzel": KURZ, "kuerzel_titel": TITEL,
+                "kartenstand": "sha256:" + "2" * 64, "gekuerzt": False}
+
+    def aufruf(ereignis, argumente):
+        raise RuntimeError("Ideen-Werkzeug meldet einen Fehler (herkunft_unbelegt)")
+
+    status, ok, grund, meldung, _ = bew.verarbeiten({"ergebnis": _antwort()}, rueckweg, lies_karten=lambda i: [],
+                                                    aufruf=aufruf, pruefe=lambda e, a, q: (True, ""))
+    assert status == "fehler" and meldung == bew.HERKUNFT_SATZ and "herkunft_unbelegt" in grund
+
+
+def test_mit_beleg_nur_wo_der_server_ihn_verlangt() -> None:
+    from core import ideen_rueckweg as rw
+    hand = {"bubble_id": "b0b1e001", "nr": 1, "durch": "hand"}
+    assert rw.mit_beleg("bewertung_todo", dict(hand), "p1-r", schluessel="") == hand
+    assert rw.mit_beleg("idea_update", {"id": "a0000001"}, "p1-r", schluessel="") == {"id": "a0000001"}
+    agent = rw.mit_beleg("bewertung_todo", {**hand, "durch": "agent"}, "p1-r", schluessel="t\r\n", jetzt=1000)
+    assert agent["beleg"].startswith("v1.1300.") and len(agent["beleg"]) == len("v1.1300.") + 64
+    with pytest.raises(RuntimeError, match="schluessel_fehlt"):
+        rw.mit_beleg("bubble_bewertung", {"bubble_id": "b0b1e001"}, "p1-r", schluessel=" \r\n")

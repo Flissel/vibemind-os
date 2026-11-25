@@ -379,3 +379,64 @@ def schwelle_pruefen(bubble: Mapping[str, Any], karten: Sequence[Mapping[str, An
     if aus["gekuerzt"] and not gekuerzt_erlaubt:
         return {"bestanden": False, "grund": "gekuerzt", **aus}
     return {"bestanden": True, "grund": "", **aus}
+
+
+# ── Herkunftsbeleg des Bewertungs-Rueckwegs (25.11.2026) ────────────────
+# Den Bewertungslauf (bubble_bewertung) und das Abhaken durch den Agenten (bewertung_todo,
+# durch "agent") schreibt nur der feste Rueckweg im Gehirn. Das Gehirn haengt dafuer einen Beleg an:
+# HMAC-SHA256 mit einem Geheimnis, das nur Gehirn und Ideen-Server kennen (nie OpenFang, nie das
+# Modell), ueber Werkzeug, alle Argumente, die aenderung_id und den Ablauf. Der Server schreibt ohne
+# gueltigen Beleg nicht. Beide lesen den Schluessel aus BELEG_EINSTELLUNG (Wert mit strip()).
+
+BELEG_EINSTELLUNG = "VIBEMIND_RUECKWEG_SCHLUESSEL"
+BELEG_GILT_S = 300
+BELEG_SPIEL_S = 60
+BELEG_MUSTER = re.compile(r"^v1\.(\d{1,12})\.([0-9a-f]{64})$")
+BELEG_WERKZEUGE = ("bubble_bewertung", "bewertung_todo")
+
+
+def beleg_noetig(werkzeug: str, argumente: Mapping[str, Any]) -> bool:
+    """Braucht dieser Aufruf einen Beleg? Der Lauf immer, das Abhaken nur durch den Agenten."""
+    if werkzeug == "bubble_bewertung":
+        return True
+    return werkzeug == "bewertung_todo" and argumente.get("durch") != "hand"
+
+
+def _beleg_inhalt(werkzeug: str, argumente: Mapping[str, Any], aenderung_id: str, ablauf: int) -> bytes:
+    import json
+    daten = {k: v for k, v in argumente.items() if k not in ("beleg", "aenderung_id")}
+    return json.dumps({"w": werkzeug, "a": daten, "c": aenderung_id, "t": int(ablauf)}, sort_keys=True,
+                      ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def beleg_bauen(schluessel: str, werkzeug: str, argumente: Mapping[str, Any], aenderung_id: str,
+                ablauf: int) -> str:
+    """``v1.<ablauf>.<hmac>``; ``schluessel`` ist der gestrippte Wert aus BELEG_EINSTELLUNG."""
+    import hashlib
+    import hmac
+    if not isinstance(schluessel, str) or not schluessel.strip():
+        raise ValueError("schluessel_fehlt")
+    zeichen = hmac.new(schluessel.strip().encode("utf-8"), _beleg_inhalt(werkzeug, argumente, aenderung_id, ablauf),
+                       hashlib.sha256).hexdigest()
+    return f"v1.{int(ablauf)}.{zeichen}"
+
+
+def beleg_pruefen(schluessel: Any, beleg: Any, werkzeug: str, argumente: Mapping[str, Any], aenderung_id: Any,
+                  jetzt: float) -> str:
+    """"" wenn der Beleg gilt, sonst der Grund: schluessel_fehlt | beleg_fehlt | beleg_form |
+    beleg_abgelaufen | beleg_falsch. Wirft nie."""
+    import hashlib
+    import hmac
+    if not isinstance(schluessel, str) or not schluessel.strip():
+        return "schluessel_fehlt"
+    if beleg is None or beleg == "":
+        return "beleg_fehlt"
+    treffer = BELEG_MUSTER.match(beleg) if isinstance(beleg, str) else None
+    if treffer is None or not isinstance(aenderung_id, str) or not aenderung_id:
+        return "beleg_form"
+    ablauf = int(treffer.group(1))
+    if ablauf < jetzt or ablauf > jetzt + BELEG_GILT_S + BELEG_SPIEL_S:
+        return "beleg_abgelaufen"
+    soll = hmac.new(schluessel.strip().encode("utf-8"), _beleg_inhalt(werkzeug, argumente, aenderung_id, ablauf),
+                    hashlib.sha256).hexdigest()
+    return "" if hmac.compare_digest(soll, treffer.group(2)) else "beleg_falsch"
