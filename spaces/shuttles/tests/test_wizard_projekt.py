@@ -98,7 +98,7 @@ def test_befuellt_ohne_modell_und_legt_shuttle_an(welt) -> None:
     state = h.get_state("shuttle-projekt-p-hof")
     reqs = state["requirements"]
     assert [r["id"] for r in reqs] == ["REQ-001", "REQ-002", "REQ-003"]
-    assert {r["status"] for r in reqs} == {"kandidat"}
+    assert {r["status"] for r in reqs} == {"pending"}  # cards are finished requirements (D5)
     assert reqs[0]["category"] == "Laden" and reqs[0]["source_card_id"] == "a" and reqs[2]["category"] is None
     assert state["context"]["white_paper"]["text"] == "# Ziel\nRegional einkaufen."
     assert state["context"]["sinnpruefung"]["bestanden"]
@@ -177,6 +177,51 @@ def test_absatz_ueberspringt_ueberschriften_und_kuerzt_am_satz(welt) -> None:
     k2 = absatz(ohne_punkt)
     assert len(k2) <= 602 and k2.endswith(" …")
     assert absatz(None) == "" and absatz("# nur Ueberschrift\n\n") == ""
+
+
+def test_streichen_graut_aus_und_ist_wiederherstellbar(welt) -> None:
+    store, h = welt
+    sid = h.init_from_project(None, "p-hof")["shuttle_id"]
+    a = h.set_requirement_status(sid, "REQ-002", "gestrichen")
+    assert a == {"success": True, "shuttle_id": sid, "req_id": "REQ-002", "status": "gestrichen", "aktiv": 2, "gestrichen": 1}
+    gespeichert = store.shuttles[0].stage_data["wizard_state"]["requirements"]
+    assert [r["status"] for r in gespeichert] == ["pending", "gestrichen", "pending"] and len(gespeichert) == 3
+
+    # after a restart: the state comes back from the shuttle, restoring works
+    h2 = type(h)()
+    b = h2.set_requirement_status(sid, "REQ-002", "pending")
+    assert b["success"] and (b["aktiv"], b["gestrichen"]) == (3, 0)
+    assert store.shuttles[0].stage_data["wizard_state"]["requirements"][1]["status"] == "pending"
+
+
+def test_streichen_fehler(welt) -> None:
+    store, h = welt
+    sid = h.init_from_project(None, "p-hof")["shuttle_id"]
+    assert h.set_requirement_status(sid, "REQ-002", "geloescht")["error"] == "invalid_arguments: status"
+    assert h.set_requirement_status(sid, "REQ-999", "gestrichen")["error"] == "requirement_unbekannt"
+    assert h.set_requirement_status("", "REQ-001", "gestrichen")["error"].startswith("invalid_arguments")
+
+
+def test_paket_ohne_gestrichene(welt) -> None:
+    store, h = welt
+    sid = h.init_from_project(None, "p-hof")["shuttle_id"]
+    h.set_requirement_status(sid, "REQ-001", "gestrichen")
+    with mock.patch.object(h, "_publish_to_rowboat"), mock.patch.object(h, "_complete_shuttle"):
+        paket = h.finalize(sid)["work_package"]
+    assert [r["id"] for r in paket["requirements"]] == ["REQ-002", "REQ-003"]
+    assert [r["id"] for r in paket["requirements_gestrichen"]] == ["REQ-001"]
+
+
+def test_alter_kandidaten_stand_wird_fertig(welt) -> None:
+    store, h = welt
+    h.init_from_project(None, "p-hof")
+    for r in store.shuttles[0].stage_data["wizard_state"]["requirements"]:
+        r["status"] = "kandidat"
+    store.shuttles[0].stage_data["wizard_state"]["requirements"][2]["status"] = "gestrichen"
+    a = type(h)().init_from_project(None, "p-hof")
+    assert a["wiederaufgenommen"]
+    assert [r["status"] for r in store.shuttles[0].stage_data["wizard_state"]["requirements"]] == \
+        ["pending", "pending", "gestrichen"]
 
 
 def test_fehler(welt) -> None:
