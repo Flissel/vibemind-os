@@ -101,6 +101,7 @@ def karte(k: Kontext, a: dict, stand: dict | None = None) -> str:
             + f'<p class="meta">{e(" · ".join(meta))}</p>'
             + (f'<p class="fehler">{e(befund)}</p>' if befund else "")
             + (f'<p class="meta">{e(k.t(TEXTE, "aenderung", text=wunsch))}</p>' if wunsch else "")
+            + bestellen.ki_pruefen(k, a)
             + bestellen.reel_knoepfe(k, a)
             + teilen.formular(k, "reel", a, stand)
             + '</article>')
@@ -129,5 +130,10 @@ async def bauen(k: Kontext) -> tuple[str, str]:
         namen = await run_in_threadpool(daten.bilder, str(k.firma)) if bestellen.an() else []
     except daten.DatenFehler:
         namen = None
-    return k.t(TEXTE, "titel"), (bestellen.meldung(k) + teilen.meldung(k) + bestellen.reel_formular(k, namen) + nav
+    try:
+        material = await run_in_threadpool(daten.material) if bestellen.an() else None
+    except daten.DatenFehler:
+        material = None
+    return k.t(TEXTE, "titel"), (bestellen.meldung(k) + teilen.meldung(k) + bestellen.reel_formular(k, namen)
+                                 + bestellen.weitere_formulare(k, material) + nav
                                  + f'<p class="meta">{e(k.t(TEXTE, "abspielen"))}</p>' + inhalt)

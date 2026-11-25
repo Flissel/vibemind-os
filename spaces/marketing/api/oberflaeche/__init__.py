@@ -3,7 +3,8 @@ seit Stufe B (25.11.) schreibend: Entwuerfe (vorlagen.py, entwuerfe.py), Plan un
 Markenprofil ueber den Assistenten (marke.py); Reels und Folgen abspielen (medien.py, Tag 4); Bilder zuordnen
 und Collagen bearbeiten (entwuerfe.py, Tag 5); Reels und Folgen bestellen hinter dem Kosten-Schalter
 (bestellen.py, Punkt 2); lange Videos in der Werkbank abnehmen (werkbank.py, Punkt 3); fertige Reels und
-Folgen als Versandauftrag an Sales teilen (teilen.py, Punkt 5; gesendet wird erst nach der Freigabe in Sales).
+Folgen als Versandauftrag an Sales teilen (teilen.py, Punkt 5; gesendet wird erst nach der Freigabe in Sales);
+Reels aus Videomaterial, Kurzfassungen und KI-Reels mit Bildpruefung bestellen (bestellen.py, F5).
 
 Die App zeigt sie im Marketing-Reiter (MARKETING_UI_URL) und haengt den Schluessel aus der Umgebung
 als Bearer an (bearerEnv). Die API prueft ihn gegen MARKETING_UI_KEY. Gesendet wird hier nichts:
@@ -82,3 +83,6 @@ router.add_api_route("/werkbank/{aid}/neu-bauen", werkbank.neu_bauen, methods=["
 # Stufe C, Punkt 5: Teilen als Versandauftrag an Sales (nur mit MARKETING_BESTELLEN=an; versendet nichts)
 router.add_api_route("/reels/{aid}/teilen", teilen.reel_teilen, methods=["POST"])
 router.add_api_route("/podcast/{aid}/teilen", teilen.folge_teilen, methods=["POST"])
+# F5: KI-Bilder eines Reels pruefen (neu erzeugen, freigeben; beides hinter dem Kosten-Schalter)
+router.add_api_route("/reels/{aid}/ki/{bild}/neu", bestellen.reel_ki_neu, methods=["POST"])
+router.add_api_route("/reels/{aid}/ki/freigeben", bestellen.reel_ki_freigeben, methods=["POST"])
