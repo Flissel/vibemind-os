@@ -132,6 +132,53 @@ def test_nicht_bestanden_oeffnet_trotzdem_mit_gruenden(welt) -> None:
     assert k["text"].startswith("Sinnprüfung nicht bestanden · 4 Karten")
 
 
+def test_eigene_beschreibung_hat_vorrang(welt) -> None:
+    store, h = welt
+    a = h.init_from_project(None, "p-hof")
+    assert a["project"]["description"] == "Selbstbedienung im Dorf" and a["beschreibung_quelle"] == "projekt"
+    assert h.get_state(a["shuttle_id"])["context"]["beschreibung_quelle"] == "projekt"
+
+
+def test_leere_beschreibung_aus_white_paper(welt) -> None:
+    store, h = welt
+    store.projects["p-hof"].description = "  "
+    a = h.init_from_project(None, "p-hof")
+    assert a["project"]["description"] == "Regional einkaufen." and a["beschreibung_quelle"] == "white_paper"
+    assert h.get_state(a["shuttle_id"])["project"]["description"] == "Regional einkaufen."
+
+
+def test_ohne_white_paper_bleibt_leer(welt) -> None:
+    store, h = welt
+    store.projects["p-hof"].description = ""
+    store.projects["p-hof"].metadata["uebergabe"] = {**STAND, "white_paper": None}
+    a = h.init_from_project(None, "p-hof")
+    assert a["project"]["description"] == "" and a["beschreibung_quelle"] == "leer"
+
+
+def test_vorhandener_stand_wird_nicht_ueberschrieben(welt) -> None:
+    store, h = welt
+    a = h.init_from_project(None, "p-hof")
+    ws = store.shuttles[0].stage_data["wizard_state"]
+    ws["project"]["description"] = "von Hand"
+    store.projects["p-hof"].description = ""
+    b = type(h)().init_from_project(None, "p-hof")
+    assert b["wiederaufgenommen"] and b["project"]["description"] == "von Hand"
+
+
+def test_absatz_ueberspringt_ueberschriften_und_kuerzt_am_satz(welt) -> None:
+    store, h = welt
+    absatz = type(h).init_from_project.__globals__["_absatz_aus_white_paper"]
+    assert absatz("# Titel\n\n## Ziel\n---\n\nErste Zeile\nzweite Zeile.\n\nZweiter Absatz.") == \
+        "Erste Zeile zweite Zeile."
+    lang = "Ein Satz mit etwas Inhalt. " * 40
+    kurz = absatz(lang)
+    assert 200 <= len(kurz) <= 600 and kurz.endswith("Inhalt.")
+    ohne_punkt = "wort " * 200
+    k2 = absatz(ohne_punkt)
+    assert len(k2) <= 602 and k2.endswith(" …")
+    assert absatz(None) == "" and absatz("# nur Ueberschrift\n\n") == ""
+
+
 def test_fehler(welt) -> None:
     store, h = welt
     assert h.init_from_project(None, "")["error"].startswith("invalid_arguments")
