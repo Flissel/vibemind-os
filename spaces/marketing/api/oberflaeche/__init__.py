@@ -10,7 +10,8 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi.responses import RedirectResponse
 
-from spaces.marketing.api.oberflaeche import entwuerfe, huelle, marke, newsletter, plan, podcast, reels, vorlagen
+from spaces.marketing.api.oberflaeche import (entwuerfe, huelle, marke, medien, newsletter, plan, podcast, reels,
+                                              vorlagen)
 
 SEITEN = (("/newsletter", newsletter), ("/entwuerfe", entwuerfe), ("/vorlagen", vorlagen), ("/plan", plan), ("/marke", marke), ("/reels", reels),
           ("/podcast", podcast))
@@ -49,3 +50,5 @@ router.add_api_route("/plan/kampagne", plan.kampagne_anlegen, methods=["POST"])
 router.add_api_route("/plan/kampagne/status", plan.kampagne_status, methods=["POST"])
 router.add_api_route("/marke/bearbeiten", marke.bearbeiten, methods=["POST"])
 router.add_api_route("/marke/vorschlag", marke.vorschlag, methods=["POST"])
+# Stufe B, Tag 4: Reels und Folgen abspielen (signierte Adressen, ohne Bearer, Range fuers Spulen)
+router.add_api_route("/medien/{name}", medien.abrufen, methods=["GET"])

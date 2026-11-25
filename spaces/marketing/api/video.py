@@ -30,7 +30,7 @@ from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
 
-from spaces.marketing.api import medien_mandant
+from spaces.marketing.api import medien_mandant, medienablage
 from spaces.marketing.api.bilder import _agent_schluessel, _auftrag_id, _bild_schluessel, _ordner
 from spaces.marketing.api.pult import _lesen, _lesen_einer, _schluessel, _schreiben, _uuid_oder_404, lit
 from spaces.marketing.api.chat import _markenlogos
@@ -655,6 +655,7 @@ def _speichern(a: str, roh: bytes) -> dict:
     name = f"{_stamm(a, auftrag.get('titel'))}.mp4"
     medien_mandant.zuordnen([name], str(auftrag.get("mandant")))
     _ablegen(ordner, name, roh, "MP4 konnte nicht abgelegt werden")
+    medienablage.ablegen(str(auftrag.get("mandant")), name, roh)   # eigene Ablage je Firma (Tag 4), nie fatal
     return {"name": name, "bytes": len(roh), "dauer_s": mp4_dauer(roh)}
 
 
@@ -741,6 +742,7 @@ def _poster_speichern(a: str, roh: bytes) -> dict:
         name = f"{_stamm(a, auftrag.get('titel'))}.jpg"
     medien_mandant.zuordnen([name], str(auftrag.get("mandant")))
     _ablegen(ordner, name, roh, "Vorschaubild konnte nicht abgelegt werden")
+    medienablage.ablegen(str(auftrag.get("mandant")), name, roh)
     # Verwaistes Vorschaubild: lehnt video_poster danach ab (false/Ausnahme, z. B. der Auftrag wurde inzwischen
     # abgebrochen), bleibt die Datei ohne Verweis liegen. Das ist gewollt harmlos: sie ist der Firma des
     # Auftrags zugeordnet, steht in keiner Bildauswahl (vid-*.jpg faellt aus /bilder) und ein spaeterer
