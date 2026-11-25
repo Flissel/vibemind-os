@@ -111,6 +111,39 @@ class BefoerdernTests(unittest.TestCase):
         self.assertEqual(db.aufrufe, [("GET", "ideas"), ("GET", "canvas_nodes"), ("GET", "canvas_edges"),
                                       ("POST", "projects"), ("PATCH", "ideas")])
 
+    def _bubble_mit_lauf(self, stand=None):
+        regeln = load_server()._kartenregeln()
+        sichten = {name: {"punkte": 19, "urteil": f"Urteil {name}: Bühnenplan und Sponsoren sind belegt."}
+                   for name in regeln.SICHTEN}
+        lauf = {"version": 1, "zeit": "2026-11-25T09:00:00+00:00", "score": 95, "sichten": sichten,
+                "todos": [{"nr": 1, "titel": "Druckerei", "punkte": 2, "erledigt": False}],
+                "kartenstand": stand or regeln.kartenstand(GUTE_KARTEN, GUTE_KANTEN), "gekuerzt": False}
+        return {"id": BUBBLE, "title": "Stadtfest", "description": "", "score": 95,
+                "metadata": {"bewertung_lauf": lauf}}
+
+    def test_begruendungen_des_gueltigen_laufs_gehen_mit(self):
+        db = Datenbank(GUTE_KARTEN, GUTE_KANTEN, bubble=self._bubble_mit_lauf())
+        self._befoerdern(db)
+        stand = db.projekt["metadata"]["uebergabe"]
+        begruendung = stand["bewertung_begruendung"]
+        self.assertEqual((begruendung["score"], begruendung["zeit"], begruendung["gekuerzt"]),
+                         (95, "2026-11-25T09:00:00+00:00", False))
+        self.assertEqual(list(begruendung["sichten"]),
+                         ["coding", "swe_design", "research", "rowboat", "ideas"])
+        self.assertEqual(begruendung["sichten"]["research"],
+                         {"name": "Research", "punkte": 19,
+                          "urteil": "Urteil research: Bühnenplan und Sponsoren sind belegt."})
+        self.assertNotIn("todos", begruendung)
+        # Die Begruendung steht in der Pruefsumme.
+        kern = {k: v for k, v in stand.items() if k not in ("am", "pruefsumme")}
+        self.assertIn("bewertung_begruendung", kern)
+
+    def test_veralteter_oder_fehlender_lauf_gibt_keine_begruendung_mit(self):
+        for bubble in (self._bubble_mit_lauf(stand="sha256:" + "0" * 64), None):
+            db = Datenbank(GUTE_KARTEN, GUTE_KANTEN, bubble=bubble)
+            self._befoerdern(db)
+            self.assertIsNone(db.projekt["metadata"]["uebergabe"]["bewertung_begruendung"])
+
     def test_durchgefallen_nennt_die_gruende_und_schreibt_nichts(self):
         karten = [
             _karte("a0000002", "Druckerei", "Plakate"),                          # leer, lose

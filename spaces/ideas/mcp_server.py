@@ -20,7 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 
 SERVER_NAME = "spaces-ideas"
@@ -2008,6 +2008,31 @@ def _todo_abhaken(arguments: Mapping[str, Any]) -> dict[str, Any]:
     return {"bubble_id": bubble_id, "nr": nr, "erledigt": True, "durch": durch, "zeit": zeit}
 
 
+def _bewertung_begruendung(regeln: Any, bubble: Mapping[str, Any], zeilen: Sequence[Mapping[str, Any]],
+                           kanten: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """Die Begruendungen der fuenf Sichten des gueltigen Bewertungslaufs, fuer die Uebergabe.
+
+    Freigabe des Betreibers (I4, 25.11.2026). Gueltig ist der letzte Lauf, wenn er auf dem jetzigen
+    Kartenstand steht; sonst None (dann geht keine Begruendung mit, statt einer veralteten).
+    """
+    lauf = regeln.bewertung_lauf(bubble)
+    if lauf is None or lauf.get("kartenstand") != regeln.kartenstand(list(zeilen), list(kanten)):
+        return None
+    sichten = lauf.get("sichten") if isinstance(lauf.get("sichten"), Mapping) else {}
+    aus: dict[str, Any] = {}
+    for name in regeln.SICHTEN:
+        sicht = sichten.get(name)
+        if not isinstance(sicht, Mapping):
+            return None
+        aus[name] = {"name": regeln.SICHT_NAMEN.get(name, name), "punkte": sicht.get("punkte"),
+                     "urteil": str(sicht.get("urteil") or "")}
+    begruendung: dict[str, Any] = {"score": lauf["score"], "zeit": lauf.get("zeit"),
+                                   "gekuerzt": lauf.get("gekuerzt") is True, "sichten": aus}
+    if isinstance(lauf.get("quelle"), str):
+        begruendung["quelle"] = lauf["quelle"]
+    return begruendung
+
+
 def _uebergabe_bauen(bubble: Mapping[str, Any], bubble_id: str) -> dict[str, Any]:
     """Read the bubble's cards and edges, run the promotion gate, build the fixed hand-over.
 
@@ -2053,6 +2078,8 @@ def _uebergabe_bauen(bubble: Mapping[str, Any], bubble_id: str) -> dict[str, Any
         "titel": str(bubble.get("title") or "").strip(),
         "am": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "bewertung": bewertung,
+        # Die Begruendungen der fuenf Sichten des gueltigen Laufs (Anhang; None ohne gueltigen Lauf).
+        "bewertung_begruendung": _bewertung_begruendung(regeln, bubble, zeilen, kanten),
         "white_paper": white_paper,
         # Ueberschrift-Karten stehen mit art "gruppe" drin, damit ihre Kanten die Karten verbinden
         # (die Ansicht rechnet die Sinnpruefung aus karten/kanten nach).
