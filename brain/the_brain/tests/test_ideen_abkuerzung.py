@@ -751,3 +751,76 @@ def test_ersetzen_scheitert_ehrlich_mit_deutschem_satz() -> None:
         assert teil in abk.fehlersatz(fehler, "idea.update")
         assert "geändert ist nichts" in abk.fehlersatz(fehler, "idea.update")
         assert abk.fehlerart(fehler) == "hinweis"
+
+
+# ── Lauf 34: "Ergänze die Notiz „X“ um: ..." und "Ändere die Notiz X: ..." ──────────
+
+@pytest.mark.parametrize("satz, karte, zusatz", [
+    ("Ergänze die Notiz „Preise“ um: Rabatt fragen", "a0000001", "Rabatt fragen"),
+    ("Ergänze die Notiz Preise um: Rabatt fragen", "a0000001", "Rabatt fragen"),
+    ("Ergaenze die Karte \"Druckerei\" um: Angebot bis Freitag", "a0000002", "Angebot bis Freitag"),
+    ("Ergänze die Karte Druckerei um Angebot bis Freitag", "a0000002", "Angebot bis Freitag"),
+    ("Ergänze der Notiz „Preise“ um: Rabatt: 10 %", "a0000001", "Rabatt: 10 %"),
+    ("Ergänze die Notiz „Stand auf der Messe“ um: Halle 2", "a0000003", "Halle 2"),
+    # " um" im Zusatz gehoert nicht zum Namen
+    ("Ergänze Preise: Rabatt um 10 % erhöhen", "a0000001", "Rabatt um 10 % erhöhen"),
+    ("Ergänze Preise um Rabatt: 10 %", "a0000001", "Rabatt: 10 %"),
+])
+def test_ergaenze_die_notiz_um(satz, karte, zusatz) -> None:
+    abk._OFFEN.clear()
+    treffer = abk.loese(satz, KONTEXT)
+    assert treffer.get("ereignis") == "idea.update", treffer
+    assert treffer["argumente"] == {"id": karte, "content_append": zusatz}
+
+
+def test_ergaenze_eine_unbekannte_notiz_fragt_mit_dem_reinen_namen() -> None:
+    abk._OFFEN.clear()
+    antwort = abk.loese("Ergänze die Notiz „Bühnenplan“ um: Samstag", KONTEXT)
+    assert "„Bühnenplan“" in antwort["rueckfrage"] and "um“" not in antwort["rueckfrage"]
+
+
+def test_aendere_die_notiz_fragt_ersetzen_oder_ergaenzen_und_fuehrt_die_antwort_aus() -> None:
+    abk._OFFEN.clear()
+    frage = abk.loese("Ändere die Notiz Preise: Preise ab Februar", KONTEXT)
+    assert frage["rueckfrage"].startswith("Ersetzen oder ergänzen?")
+    assert "„Zurück“" in frage["rueckfrage"]
+    ersetzt = abk.loese("Ersetzen", KONTEXT)
+    assert ersetzt["ereignis"] == "idea.update"
+    assert ersetzt["argumente"] == {"id": "a0000001", "content": "Preise ab Februar"}
+    assert "„Zurück“" in ersetzt["antwort"]
+    argumente, grund = vertrag.feste_argumente("idea.update", ersetzt["argumente"])
+    assert grund == "" and argumente == ersetzt["argumente"]
+    # Die Frage ist beantwortet: ein zweites "Ersetzen" fuehrt nichts mehr aus.
+    nochmal = abk.loese("Ersetzen", KONTEXT)
+    assert not (isinstance(nochmal, dict) and nochmal.get("ereignis") == "idea.update")
+
+    abk.loese("Aendere die Karte „Druckerei“: Angebot bis Freitag", KONTEXT)
+    ergaenzt = abk.loese("ergänzen", KONTEXT)
+    assert ergaenzt["argumente"] == {"id": "a0000002", "content_append": "Angebot bis Freitag"}
+
+
+def test_aendere_auf_unklare_antwort_wird_nachgefragt_ein_neuer_satz_gilt() -> None:
+    abk._OFFEN.clear()
+    abk.loese("Ändere die Notiz Preise: Preise ab Februar", KONTEXT)
+    assert abk.loese("vielleicht", KONTEXT) == {"rueckfrage": "Sag „Ersetzen“ oder „Ergänzen“."}
+    neu = abk.loese("Verbinde Preise mit Druckerei", KONTEXT)
+    assert neu["ereignis"] == "idea.connect"
+    assert abk._OFFEN == {}
+
+
+def test_aendere_den_titel_bleibt_umbenennen() -> None:
+    abk._OFFEN.clear()
+    treffer = abk.loese("Ändere den Titel von Druckerei in Druckerei Nord", KONTEXT)
+    assert treffer["argumente"] == {"id": "a0000002", "title": "Druckerei Nord"}
+
+
+@pytest.mark.parametrize("satz", [
+    "Ersetze den Text von Preise durch: Preise ab Februar",
+    "Ersetze den ganzen Text der Notiz Preise durch Preise ab Februar".replace(" der Notiz", " von der Notiz"),
+    "Ersetze den Inhalt von Preise durch: Preise ab Februar",
+])
+def test_ganzen_text_ersetzen_ist_ein_fester_aufruf(satz) -> None:
+    abk._OFFEN.clear()
+    treffer = abk.loese(satz, KONTEXT)
+    assert treffer["argumente"] == {"id": "a0000001", "content": "Preise ab Februar"}
+
