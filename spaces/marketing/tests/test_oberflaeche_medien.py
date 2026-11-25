@@ -34,6 +34,7 @@ def ordner(tmp_path, monkeypatch):
     eigen.mkdir()
     monkeypatch.setenv(medienablage.LAEDEN_ENV, str(laeden))
     monkeypatch.setenv(medienablage.ENV, str(eigen))
+    monkeypatch.delenv("MARKETING_MEDIEN_ORDNER", raising=False)
     return laeden, eigen
 
 
@@ -113,6 +114,17 @@ def test_ablegen_ohne_ablage_tut_nichts(monkeypatch, tmp_path):
     assert medienablage.ablegen("alpha", REEL, MP4) is False
     monkeypatch.setenv(medienablage.ENV, str(tmp_path / "gibt-es-nicht"))
     assert medienablage.ablegen("alpha", REEL, MP4) is False and not (tmp_path / "gibt-es-nicht").exists()
+
+
+def test_eigener_name_nie_ein_flacher_medienordner(ordner, monkeypatch):
+    laeden, eigen = ordner
+    assert medienablage.ENV != "MARKETING_MEDIEN_ORDNER"
+    monkeypatch.setenv("MARKETING_MEDIEN_ORDNER", str(eigen))
+    assert medienablage.wurzel() is None
+    assert medienablage.ablegen("alpha", REEL, MP4) is False and not (eigen / "alpha").exists()
+    monkeypatch.delenv("MARKETING_MEDIEN_ORDNER")
+    monkeypatch.setenv(medienablage.ENV, str(laeden))
+    assert medienablage.wurzel() is None
 
 
 def test_uebernehmen_probe_und_ausfuehren(ordner):

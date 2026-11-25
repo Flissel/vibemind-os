@@ -3,17 +3,20 @@
 Reels (MP4), ihre Vorschaubilder (JPG) und Podcast-Folgen (MP3) lagen bisher nur in der Ablage der Laeden
 (MARKETING_BILD_ORDNER, die Medien von Sales). Marketing bekommt eine eigene Ablage mit einem Ordner je Firma:
 
-    MARKETING_MEDIEN_ORDNER/<firma>/<datei>
+    MARKETING_FIRMEN_ABLAGE/<firma>/<datei>
 
 - **Ablegen:** Video- und Ton-Arbeiter schreiben wie bisher in die Ablage der Laeden (Sales braucht die Datei
   fuer Freigabe und Versand, bis der Versandauftrag sie mitnimmt, Stufe C) und legen sie zusaetzlich hier ab.
-  Ohne MARKETING_MEDIEN_ORDNER passiert hier nichts; ein Fehler hier bricht den Arbeiter nie ab.
+  Ohne MARKETING_FIRMEN_ABLAGE passiert hier nichts; ein Fehler hier bricht den Arbeiter nie ab.
 - **Herueberholen:** `python -m spaces.marketing.api.medienablage` zaehlt, was einmal kopiert wuerde;
   mit `--ausfuehren` kopiert es. Nur Dateien fertiger Auftraege, nur in den Ordner ihrer Firma.
 - **Lesen:** `finden(firma, name)` nimmt die eigene Ablage, sonst (bis zum Herueberholen) die der Laeden.
   Wer darf, entscheidet der Aufrufer (die Oberflaeche signiert Firma und Name).
 
-Erlaubt sind nur die Namen, die die Arbeiter selbst vergeben (vid-/pod-), nie Pfade."""
+Erlaubt sind nur die Namen, die die Arbeiter selbst vergeben (vid-/pod-), nie Pfade.
+
+Eigener Umgebungsname: MARKETING_MEDIEN_ORDNER ist schon der flache Medienordner (pult, bilder, gestaltung,
+video lesen ihn ohne Firmenordner). Diese Ablage darf nie dorthin zeigen."""
 from __future__ import annotations
 
 import logging
@@ -24,7 +27,7 @@ import sys
 
 log = logging.getLogger(__name__)
 
-ENV = "MARKETING_MEDIEN_ORDNER"
+ENV = "MARKETING_FIRMEN_ABLAGE"
 LAEDEN_ENV = "MARKETING_BILD_ORDNER"
 _NAME = re.compile(r"^(?:vid-[0-9a-f]{8}-[a-z0-9-]{1,40}\.(?:mp4|jpg)|pod-[0-9a-f]{8}-[a-z0-9-]{1,60}\.mp3)$")
 _FIRMA = re.compile(r"^[a-z][a-z0-9_-]{0,40}$")
@@ -48,9 +51,17 @@ def _ordner_aus(env: str) -> str | None:
     return o if o and os.path.isdir(o) else None
 
 
+FLACHE_ENVS = ("MARKETING_MEDIEN_ORDNER", LAEDEN_ENV)
+
+
 def wurzel() -> str | None:
-    """Die eigene Ablage, wenn eingerichtet (Ordner existiert); sonst None."""
-    return _ordner_aus(ENV)
+    """Die eigene Ablage, wenn eingerichtet (Ordner existiert); sonst None. Zeigt sie auf einen der flachen
+    Medienordner, gilt sie als nicht eingerichtet (sonst laegen Firmenordner zwischen den Mediendateien)."""
+    eigen = _ordner_aus(ENV)
+    if eigen is None:
+        return None
+    flach = {os.path.realpath(o) for o in (os.environ.get(n, "").strip() for n in FLACHE_ENVS) if o}
+    return None if os.path.realpath(eigen) in flach else eigen
 
 
 def _datei(ordner: str, name: str) -> str | None:
