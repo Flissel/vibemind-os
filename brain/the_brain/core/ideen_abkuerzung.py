@@ -1238,12 +1238,17 @@ _HINWEISE = ("idea_format_table_no_columns", "idea_format_no_content", "Läufe; 
              "Gelöscht wird nur nach Rückfrage", "Befördert wird nur nach Rückfrage",
              "befoerdern_nicht_bereit", "bubble_already_promoted")
 _RUECKFRAGEN = ("aenderung_zurueck_frage: ", "mehrere Kennungen")
+# Eine fehlende Angabe ("Mir fehlt eine Angabe: der Titel") ist eine Rueckfrage, kein Fehler
+# (Befund der Huelle 25.11.2026); geaendert ist trotzdem nichts (ok bleibt false). Eine falsche
+# oder unbekannte Angabe ("is invalid", "unknown field") bleibt ein Fehler.
+_FEHLENDE_ANGABE = re.compile(r"clarification required: (?:one of )?[a-z_]+(?:(?:, | and |,)[a-z_]+)*"
+                              r"(?=\s*(?:$|[)\]\n;]))")
 
 
 def fehlerart(fehler: Any) -> Optional[str]:
     """``"hinweis"``, ``"rueckfrage"`` oder ``None`` (ein echter Fehler)."""
     text = str(fehler or "")
-    if any(m in text for m in _RUECKFRAGEN):
+    if any(m in text for m in _RUECKFRAGEN) or _FEHLENDE_ANGABE.search(text):
         return "rueckfrage"
     if any(m in text for m in _HINWEISE):
         return "hinweis"

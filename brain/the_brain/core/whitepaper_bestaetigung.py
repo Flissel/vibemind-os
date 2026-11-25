@@ -20,7 +20,12 @@ from typing import Any, Dict, Optional
 GILT_S = 120
 SCHLUESSEL_GILT_S = 120
 
-_JA_ERSTELLEN = re.compile(r"^\s*ja\s*[,!.]?\s*(?:bitte\s+)?erstell(?:e|en)?(?:\s+es)?\s*[.!]?\s*$", re.IGNORECASE)
+# Pruefung 25.11.2026: kopiert als  Ja, erledigen“.  ging die feste Form nicht und lief 16 s ins
+# Modell. Bestaetigungen gelten auch mit umgebenden Anfuehrungszeichen und Satzzeichen.
+_RAND_VORN = r"""^[\s"'„“”‚‘’«»]*"""
+_RAND_HINTEN = r"""[\s.!?…"'„“”‚‘’«»]*$"""
+_JA_ERSTELLEN = re.compile(_RAND_VORN + r"ja\s*[,!.]?\s*(?:bitte\s+)?erstell(?:e|en)?(?:\s+es)?" + _RAND_HINTEN,
+                           re.IGNORECASE)
 OHNE_FRAGE = ("Es ist gerade kein White Paper zur Bestätigung offen. "
               "Sag „Erstelle ein White Paper aus dieser Bubble“, dann nenne ich zuerst den Umfang.")
 OHNE_SCHLUESSEL = ("Ein White Paper starte ich nur nach Rückfrage. "

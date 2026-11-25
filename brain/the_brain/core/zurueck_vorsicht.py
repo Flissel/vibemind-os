@@ -36,7 +36,11 @@ ZEILEN = 200
 
 FRAGE_MARKE = "aenderung_zurueck_frage: "
 
-_JA = re.compile(r"^\s*ja\b", re.IGNORECASE)
+# Pruefung 25.11.2026: kopiert als  Ja, erledigen“.  ging die feste Form nicht und lief 16 s ins
+# Modell. Bestaetigungen gelten auch mit umgebenden Anfuehrungszeichen und Satzzeichen.
+_RAND_VORN = r"""^[\s"'„“”‚‘’«»]*"""
+_RAND_HINTEN = r"""[\s.!?…"'„“”‚‘’«»]*$"""
+_JA = re.compile(_RAND_VORN + r"ja\b", re.IGNORECASE)
 _VORGANG = {"INSERT": "angelegt", "UPDATE": "geändert", "DELETE": "gelöscht"}
 
 _sperre = threading.Lock()
