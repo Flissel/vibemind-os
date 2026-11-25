@@ -393,6 +393,26 @@ async def _formular(request: Request, grenze: int = FORM_MAX) -> tuple[Response 
     return None, s, form
 
 
+async def formular_mit_firma(request: Request, grenze: int = FORM_MAX
+                             ) -> tuple[Response | None, str, dict, str | None]:
+    """Wie _formular, dazu die gewaehlte Firma (Cookie gegen die aktiven Firmen). Ohne Firma: Fehlerseite."""
+    fehler, s, form = await _formular(request, grenze)
+    if fehler is not None:
+        return fehler, s, form, None
+    try:
+        firmen = await run_in_threadpool(daten.firmen)
+    except daten.DatenFehler as f:
+        return daten_fehlerseite(s, f), s, form, None
+    firma = firma_waehlen(request.cookies.get(COOKIE_FIRMA), firmen)
+    if firma is None:
+        return fehlerseite(s, 422, t(s, "f_eingabe_titel"), t(s, "keine_firma")), s, form, None
+    return None, s, form, firma
+
+
+def abgelehnt(s: str, text: str) -> Response:
+    return fehlerseite(s, 422, t(s, "f_eingabe_titel"), text)
+
+
 def _zurueck(form: dict) -> str:
     ziel = form.get("zurueck")
     return ziel if ziel_ok(ziel) else f"{PFAD}/newsletter"
@@ -510,6 +530,17 @@ pre { white-space: pre-wrap; font: inherit; margin: 6px 0; }
   border-radius: 10px; background: var(--flaeche2); color: var(--text); }
 .anlegen button { font: inherit; font-weight: 600; padding: 6px 16px; min-height: 40px; border-radius: 10px;
   border: 1px solid var(--akzent); background: var(--akzent); color: var(--akzent-auf); cursor: pointer; }
+.editor select, .editor input[type=date], .anlegen select { font: inherit; font-weight: 400; padding: 6px 10px;
+  border: 1px solid var(--linie); border-radius: 10px; background: var(--flaeche2); color: var(--text); }
+.editor .zeile { display: flex; flex-wrap: wrap; gap: 10px; } .editor .zeile label { flex: 1 1 10rem; }
+details.aufklapp { margin: 8px 0; } details.aufklapp > summary { cursor: pointer; color: var(--akzent);
+  font-weight: 600; padding: 4px 0; } details.aufklapp[open] > summary { margin-bottom: 4px; }
+.karte .editor { margin: 4px 0 0; } .karte .anlegen { margin: 6px 0 0; }
+.anlegen button.leise, .editor button.leise { background: transparent; color: var(--text); border-color: var(--linie); }
+table.aenderungen { border-collapse: collapse; width: 100%; max-width: 900px; margin: 6px 0 10px; }
+table.aenderungen th, table.aenderungen td { text-align: left; vertical-align: top; padding: 6px 8px;
+  border-bottom: 1px solid var(--linie); white-space: pre-wrap; }
+table.aenderungen th { color: var(--leise); font-size: .85rem; }
 @media (max-width: 767px) {
   .rahmen { display: block; }
   nav.seite { width: auto; height: auto; position: static; flex-direction: row; flex-wrap: wrap; align-items: center;
