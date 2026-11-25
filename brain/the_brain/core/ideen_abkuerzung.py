@@ -423,6 +423,19 @@ def _alt_und_neu(rest: str) -> tuple[str, str]:
     return alt, neu
 
 
+_TODO = r"to[\s-]?do\s+(?:nr\.?\s*|nummer\s+)?(?P<n>\d{1,2})"
+_TODO_ERLEDIGEN = rf"(?:erledige|bearbeite|mach(?:e)?)\s+(?:das\s+)?{_TODO}(?:\s+f(?:ü|ue)r\s+mich)?"
+_TODO_ABHAKEN = (rf"{_TODO}\s+(?:ist\s+)?(?:erledigt|fertig|gemacht)",
+                 rf"hak(?:e)?\s+(?:das\s+)?{_TODO}\s+ab")
+
+
+def _todo_nr(m: "re.Match[str]") -> int:
+    nr = int(m.group("n"))
+    if not 1 <= nr <= 25:
+        raise _Rueckfrage("To-dos sind von 1 bis 25 nummeriert.")
+    return nr
+
+
 def _zahl(text: str) -> int:
     wert = int(text)
     if not 0 <= wert <= 100:
@@ -687,6 +700,27 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
             return _treffer("idea.update", {"id": karte["id"], "title": neu},
                             f"{_titel(karte)} heißt jetzt „{neu}“.")
 
+    # ── Bewertung als fester Weg (Stufe 1, core/ideen_bewertung): ein Lauf mit fuenf Sichten und
+    #    To-dos. Mit Zahl ("... mit 70") bleibt es der Handwert (bubble.rate, weiter unten).
+    if not re.search(r"\bmit\s+\d", text, _I):
+        m = (re.fullmatch(r"bewerte\s+(?:(?:diese|die)\s+bubble|die\s+bubble\s+(?P<b>.+?))(?:\s+neu)?", text, _I)
+             or re.fullmatch(r"(?:bewerte\s+(?:sie\s+|es\s+)?neu|neu\s+bewerten|(?:diese|die)\s+bubble\s+neu\s+bewerten)",
+                             text, _I))
+        if m:
+            name = m.groupdict().get("b")
+            bubble = _bubble(name, kontext)
+            return _treffer("idea.bewerten", {"bubble_id": bubble["id"]}, "", capability="idea.bewerten")
+    m = (re.fullmatch(_TODO_ERLEDIGEN, text, _I))
+    if m:
+        # Nie direkt: der Router fragt zuerst mit dem To-do (core/todo_bestaetigung), "Ja, erledigen" startet.
+        return {**_treffer("idea.todo_erledigen", {"bubble_id": _offene_bubble(kontext), "nr": _todo_nr(m)}, "",
+                           capability="idea.todo_erledigen"), "todo_bestaetigen": True}
+    m = next((t for t in (re.fullmatch(muster, text, _I) for muster in _TODO_ABHAKEN) if t), None)
+    if m:
+        nr = _todo_nr(m)
+        return _treffer("idea.todo_abhaken", {"bubble_id": _offene_bubble(kontext), "nr": nr, "durch": "hand"},
+                        f"To-do {nr} ist abgehakt. Sag „Bewerte diese Bubble“ für einen neuen Stand.")
+
     # ── Urteil ueber die ganze Bubble (Lauf 5: ging an den Planer mit 30 s): Auftrag ueber den
     #    Rueckweg der Zusammenfassung, die Frage des Menschen ist der Auftrag (core/ideen_dokument).
     if urteilsfrage(text):
@@ -819,7 +853,8 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
         bubble = _bubble(m.group("b"), kontext)
         wert = _zahl(m.group("z"))
         return _treffer("bubble.rate", {"id": bubble["id"], "score": wert},
-                        f"Bubble {_titel(bubble, 'ohne Titel')} mit {wert} bewertet.")
+                        f"Bubble {_titel(bubble, 'ohne Titel')} mit {wert} bewertet (Handwert; fürs Befördern "
+                        "zählt nur „Bewerte diese Bubble“).")
     m = (re.fullmatch(r"bewerte\s+(?P<k>.+?)\s+mit\s+(?P<z>\d{1,3})(?:\s+punkten)?", text, _I)
          or re.fullmatch(r"gib\s+(?P<k>.+?)\s+(?P<z>\d{1,3})\s+punkte", text, _I))
     if m:
@@ -971,9 +1006,8 @@ _URTEIL = (
     rf"was\s+h(?:ä|ae)ltst\s+du\s+von\s+(?:dieser|der)\s+bubble",
     rf"sch(?:ä|ae)tz(?:e)?\s+(?:diese|die)\s+bubble\s+ein",
     rf"wie\s+sch(?:ä|ae)tzt\s+du\s+(?:diese|die)\s+bubble\s+ein",
-    # Lauf 7: ohne Zahl fiel "Bewerte diese Bubble" auf bubble.evaluate (Auftrag an brain-bubbles,
-    # ohne Werkzeug). Mit Zahl bleibt es der feste Satz bubble.rate.
-    rf"bewerte\s+(?:diese|die)\s+bubble",
+    # "Bewerte diese Bubble" ist seit Stufe 1 (25.11.2026) der Bewertungslauf (idea.bewerten), kein
+    # Einschaetzen mehr; mit Zahl bleibt es der feste Satz bubble.rate.
     rf"(?:ist|w(?:ä|ae)re)\s+(?:diese|die)\s+bubble\s+(?:schon\s+)?(?:reif|fertig|bereit)"
     rf"(?:\s+f(?:ü|ue)r\s+(?:die\s+|das\s+|den\s+|ein\s+|eine\s+)?\w+)?",
 )

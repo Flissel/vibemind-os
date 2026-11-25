@@ -1944,6 +1944,11 @@ class PlanExecutor:
                     from . import whitepaper_bestaetigung as _wp
                     if not _wp.einloesen(_dokument_mod._argument(rendered_arg).get("bestaetigung")):
                         return _rueckweg_fehler(_wp.OHNE_SCHLUESSEL)
+                if event_id == "idea.todo_erledigen":
+                    # Nie direkt: nur mit dem Schluessel aus "Ja, erledigen" (einmal einloesbar).
+                    from . import todo_bestaetigung as _td
+                    if not _td.einloesen(_dokument_mod._argument(rendered_arg).get("bestaetigung")):
+                        return _rueckweg_fehler(_td.OHNE_SCHLUESSEL)
                 try:
                     if _dokument_mod.ist_dokument_ereignis(event_id):
                         # Zusammenfassung / White Paper: Bubble lesen, Wurzel und Teile planen,

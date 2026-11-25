@@ -124,6 +124,37 @@ def _datum(wert: Any) -> str:
     return f"{int(m.group(3))}.{int(m.group(2))}.{m.group(1)}" if m else "unbekanntem Datum"
 
 
+SCHWELLE_VORGABE = 95
+SCHWELLE_EINSTELLUNG = "VIBEMIND_BEFOERDERN_SCHWELLE"
+
+
+def schwelle_einstellung() -> int:
+    """Die Schwelle fürs Befördern (Einstellung, 0 bis 100), sonst die Vorgabe 95."""
+    import os
+    wert = str(os.environ.get(SCHWELLE_EINSTELLUNG, "")).strip()
+    return int(wert) if wert.isdigit() and 0 <= int(wert) <= 100 else SCHWELLE_VORGABE
+
+
+def schwelle_satz(schwelle: Mapping[str, Any], modul: Any = None) -> str:
+    """Deutscher Satz zur Schwelle: Score, Schwelle und die drei To-dos mit dem größten Gewinn."""
+    grenze = schwelle.get("schwelle")
+    grund = schwelle.get("grund")
+    if grund == "kein_lauf":
+        return (f"Es gibt noch keine Bewertung (Befördern ab {grenze} Punkten). "
+                "Sag „Bewerte diese Bubble“.")
+    score = schwelle.get("score")
+    if grund == "veraltet":
+        satz = (f"Die letzte Bewertung ({score} Punkte) ist veraltet, die Karten haben sich seitdem geändert. "
+                "Sag „Bewerte diese Bubble“.")
+    else:
+        satz = f"Die Bewertung steht bei {score} von 100 Punkten, befördert wird ab {grenze}."
+    top = [t for t in schwelle.get("top") or [] if isinstance(t, Mapping)]
+    if top:
+        satz += " Am meisten bringen: " + "; ".join(
+            f"To-do {t.get('nr')} „{t.get('titel')}“ (+{t.get('punkte')})" for t in top) + "."
+    return satz
+
+
 def pruefen(bubble: Mapping[str, Any], karten: Sequence[Mapping[str, Any]],
             kanten: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
     """``{"bestaetigbar": bool, "satz": str, "pruefung": {...}}``; wirft nicht bei fehlenden Regeln."""
@@ -133,9 +164,17 @@ def pruefen(bubble: Mapping[str, Any], karten: Sequence[Mapping[str, Any]],
     if bubble.get("promoted_to_project_id"):
         return {"bestaetigbar": False, "satz": "Diese Bubble ist schon ein Projekt.", "pruefung": None}
     pruefung = modul.sinnpruefung(list(karten), list(kanten), bewertung(bubble))
-    if not pruefung.get("bestanden"):
-        return {"bestaetigbar": False, "satz": fehlt_satz(pruefung.get("gruende") or []) + ". Befördert ist nichts.",
-                "pruefung": pruefung}
+    # Stufe 1 (25.11.2026): nur ab der Schwelle des letzten echten Bewertungslaufs, und nur wenn
+    # sich die Karten seitdem nicht geändert haben. Ein Handwert ("mit N") zählt nicht.
+    schwelle = modul.schwelle_pruefen(bubble, list(karten), list(kanten), schwelle_einstellung())
+    pruefung["schwelle"] = schwelle
+    if not pruefung.get("bestanden") or not schwelle.get("bestanden"):
+        teile = []
+        if not pruefung.get("bestanden"):
+            teile.append(fehlt_satz(pruefung.get("gruende") or []) + ".")
+        if not schwelle.get("bestanden"):
+            teile.append(schwelle_satz(schwelle, modul))
+        return {"bestaetigbar": False, "satz": " ".join(teile) + " Befördert ist nichts.", "pruefung": pruefung}
     anzahl = sum(1 for k in karten if modul.ist_notiz(k))
     papiere = sorted((k for k in karten if modul.ist_white_paper(k)), key=lambda k: str(k.get("updated_at") or ""))
     papier = (f"dem White Paper vom {_datum(papiere[-1].get('updated_at'))}" if papiere

@@ -104,6 +104,8 @@ spaces:
         - idea_document
         - bubble_wurzel
         - idea_group
+        - bubble_bewertung
+        - bewertung_todo
     default_context: [current_space, current_bubble, idea_titles]
     events:
       # Feste Aufrufe (ohne Modell) ueber den Ideen-Server, nur mit Kennungen;
@@ -213,6 +215,22 @@ spaces:
       idea.root:
         tool: bubble_wurzel
         required_params: [bubble_id]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
+      # Bewertungslauf (Stufe 1, 25.11.2026): "Bewerte diese Bubble" ist ein Lauf mit fuenf Sichten
+      # (Rueckweg "bewerten", brain/the_brain/core/ideen_bewertung.py), gespeichert ueber
+      # idea.bewertung_speichern. "Erledige To-do N" (Rueckweg "todo") schreibt Karten ueber die
+      # festen Aufrufe und hakt ab; "To-do N erledigt" hakt von Hand ab.
+      idea.bewerten:            { rueckweg: bewerten,       required_params: [bubble_id] }
+      idea.todo_erledigen:      { rueckweg: todo,           required_params: [bubble_id, nr] }
+      idea.bewertung_speichern:
+        tool: bubble_bewertung
+        required_params: [bubble_id, lauf, kartenstand]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-ideas }
+      idea.todo_abhaken:
+        tool: bewertung_todo
+        required_params: [bubble_id, nr, durch]
         required_provenance: [approval_ref, cost_ref]
         execution: { kind: mcp, server: spaces-ideas }
       idea.analyze_links:       { tool: db_canvas_nodes, required_params: [] }

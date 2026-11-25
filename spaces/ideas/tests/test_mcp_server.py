@@ -72,6 +72,8 @@ class IdeasMcpServerContractTests(unittest.TestCase):
                 "bubble_rate",
                 "idea_document",
                 "bubble_wurzel",
+                "bubble_bewertung",
+                "bewertung_todo",
                 "idea_group",
                 "aenderung_liste",
                 "aenderung_zurueck",
@@ -1386,6 +1388,7 @@ class IdeasMcpServerContractTests(unittest.TestCase):
             "idea_create", "idea_update", "idea_delete", "idea_connect", "idea_disconnect",
             "idea_format", "idea_arrange", "idea_auto_link", "idea_rate", "bubble_rate",
             "bewertung_begruenden", "bewertung_entfernen", "idea_document", "bubble_wurzel", "idea_group",
+            "bubble_bewertung", "bewertung_todo",
         })
 
     def test_stdio_process_serves_initialize_and_tools_list(self) -> None:

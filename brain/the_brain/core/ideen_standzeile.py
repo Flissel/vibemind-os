@@ -24,6 +24,8 @@ _NAMEN = {
     "idea.summarize": "Zusammenfassen", "idea.whitepaper": "White Paper", "idea.document": "Dokument schreiben",
     "bubble_list": "Bubbles zeigen", "bubble.list": "Bubbles zeigen", "idea.root": "Wurzel festlegen",
     "idea.group": "Nach Thema gruppieren", "idea.group_layout": "Gruppen anordnen",
+    "idea.bewerten": "Bubble bewerten", "idea.bewertung_speichern": "Bewertung speichern",
+    "idea.todo_erledigen": "To-do erledigen", "idea.todo_abhaken": "To-do abhaken",
 }
 
 

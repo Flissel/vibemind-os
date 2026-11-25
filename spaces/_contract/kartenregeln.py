@@ -248,3 +248,127 @@ def sinnpruefung(karten: Sequence[Mapping[str, Any]], kanten: Sequence[Mapping[s
         "lose": lose,
         "duenn": duenn,
     }
+
+
+# ── Bewertungslauf (Stufe 1, 25.11.2026) ─────────────────────────────────
+# Ein Lauf bewertet die Bubble aus fuenf Sichten zu je 0-25 Punkten; die Summe ist der Score.
+# Gespeichert in ``ideas.metadata.bewertung_lauf`` (Werkzeug bubble_bewertung des Ideen-Servers),
+# gelesen vom Gehirn (Befoerdern) und vom Panel. "rowboat" heisst seit Stufe 1 "Wissenslage":
+# Vorwissen, Doku, vorhandene Muster, Wiederverwendbares, belegte Annahmen und Begriffe.
+
+SICHTEN = ("coding", "swe_design", "research", "rowboat", "ideas")
+SICHT_NAMEN = {"coding": "Coding", "swe_design": "SWE Design", "research": "Research",
+               "rowboat": "Wissenslage", "ideas": "Ideas"}
+SICHT_MAX = 25
+TODO_ARTEN = ("karte_ergaenzen", "karte_fuellen", "verbindung", "white_paper", "entscheidung")
+TODOS_JE_SICHT = 5
+TODO_TITEL_ZEICHEN = 120
+TODO_FEHLT_ZEICHEN = 400
+TODO_KARTEN_MAX = 20
+URTEIL_ZEICHEN = 600
+BEFOERDERN_SCHWELLE = 95   # Vorgabe; das Gehirn liest die Einstellung VIBEMIND_BEFOERDERN_SCHWELLE
+
+
+def kartenstand(karten: Sequence[Mapping[str, Any]], kanten: Sequence[Mapping[str, Any]]) -> str:
+    """Pruefsumme ueber Inhalt der Karten und die Verbindungen der Bubble.
+
+    Zaehlt: Kennung, Art, Titel, ``content``, ``summary``, ``content_json`` jeder Karte und
+    (von, nach, Art) jeder Verbindung zwischen zwei Karten der Bubble. Lage und Zeitstempel
+    zaehlen nicht: Verschieben macht eine Bewertung nicht veraltet.
+    """
+    import hashlib
+    import json
+
+    ids = {k.get("id") for k in karten}
+    kanten = [e for e in kanten if e.get("to_node_id") in ids]
+    teile = sorted(json.dumps([k.get("id"), k.get("node_type"), k.get("title"), k.get("content"),
+                               k.get("summary"), k.get("content_json")],
+                              sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
+                   for k in karten)
+    verbindungen = sorted({(str(e.get("from_node_id")), str(e.get("to_node_id")), str(e.get("edge_type") or ""))
+                           for e in kanten if e.get("from_node_id") in ids})
+    text = "\n".join(teile) + "\n--\n" + "\n".join("|".join(v) for v in verbindungen)
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _ganz(wert: Any, von: int, bis: int) -> bool:
+    return isinstance(wert, int) and not isinstance(wert, bool) and von <= wert <= bis
+
+
+def _text(wert: Any, grenze: int, leer: bool = False) -> bool:
+    return (isinstance(wert, str) and len(wert) <= grenze and (leer or bool(wert.strip()))
+            and not any(ord(c) < 32 and c not in "\n\t" for c in wert))
+
+
+def lauf_fehler(lauf: Any) -> str:
+    """"" wenn ``lauf`` die Form eines neuen Bewertungslaufs hat (ohne zeit/kartenstand), sonst der Grund."""
+    if not isinstance(lauf, Mapping):
+        return "lauf"
+    if set(lauf) - {"sichten", "todos", "gekuerzt"}:
+        return "lauf"
+    sichten = lauf.get("sichten")
+    if not isinstance(sichten, Mapping) or set(sichten) != set(SICHTEN):
+        return "sichten"
+    for name in SICHTEN:
+        sicht = sichten[name]
+        if (not isinstance(sicht, Mapping) or set(sicht) != {"punkte", "urteil"}
+                or not _ganz(sicht["punkte"], 0, SICHT_MAX) or not _text(sicht["urteil"], URTEIL_ZEICHEN, True)):
+            return f"sichten.{name}"
+    todos = lauf.get("todos")
+    if not isinstance(todos, list) or len(todos) > TODOS_JE_SICHT * len(SICHTEN):
+        return "todos"
+    je_sicht: dict[str, int] = {}
+    for todo in todos:
+        if (not isinstance(todo, Mapping)
+                or set(todo) != {"sicht", "titel", "fehlt", "karten", "punkte", "art"}
+                or todo["sicht"] not in SICHTEN or todo["art"] not in TODO_ARTEN
+                or not _text(todo["titel"], TODO_TITEL_ZEICHEN) or not _text(todo["fehlt"], TODO_FEHLT_ZEICHEN)
+                or not _ganz(todo["punkte"], 1, SICHT_MAX)
+                or not isinstance(todo["karten"], list) or len(todo["karten"]) > TODO_KARTEN_MAX
+                or not all(isinstance(k, str) and 0 < len(k) <= 128 for k in todo["karten"])):
+            return "todos"
+        je_sicht[todo["sicht"]] = je_sicht.get(todo["sicht"], 0) + 1
+        if je_sicht[todo["sicht"]] > TODOS_JE_SICHT:
+            return "todos"
+    if "gekuerzt" in lauf and not isinstance(lauf["gekuerzt"], bool):
+        return "gekuerzt"
+    return ""
+
+
+def lauf_score(lauf: Mapping[str, Any]) -> int:
+    """Summe der fuenf Sichten (0-100)."""
+    return sum(int(lauf["sichten"][name]["punkte"]) for name in SICHTEN)
+
+
+def bewertung_lauf(bubble: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Der letzte gespeicherte Lauf der Bubble, oder None (auch bei kaputter Form)."""
+    lauf = _meta(bubble).get("bewertung_lauf")
+    if (not isinstance(lauf, Mapping) or not _ganz(lauf.get("score"), 0, 100)
+            or not isinstance(lauf.get("kartenstand"), str) or not isinstance(lauf.get("todos"), list)):
+        return None
+    return dict(lauf)
+
+
+def offene_todos(lauf: Mapping[str, Any], anzahl: int | None = None) -> list[dict[str, Any]]:
+    """Offene To-dos, die mit dem groessten Punktgewinn zuerst (bei Gleichstand nach Nummer)."""
+    offen = [dict(t) for t in lauf.get("todos") or [] if isinstance(t, Mapping) and not t.get("erledigt")]
+    offen.sort(key=lambda t: (-int(t.get("punkte") or 0), int(t.get("nr") or 0)))
+    return offen[:anzahl] if anzahl is not None else offen
+
+
+def schwelle_pruefen(bubble: Mapping[str, Any], karten: Sequence[Mapping[str, Any]],
+                     kanten: Sequence[Mapping[str, Any]], schwelle: int = BEFOERDERN_SCHWELLE) -> dict[str, Any]:
+    """Befoerdern nur ab der Schwelle: letzter echter Lauf, nicht veraltet. Ein Handwert zaehlt nicht.
+
+    Rueckgabe: bestanden, grund (kein_lauf | unter_schwelle | veraltet | ""), score, schwelle, top (3 To-dos).
+    """
+    lauf = bewertung_lauf(bubble)
+    if lauf is None:
+        return {"bestanden": False, "grund": "kein_lauf", "score": None, "schwelle": schwelle, "top": []}
+    top = offene_todos(lauf, 3)
+    aus = {"score": lauf["score"], "schwelle": schwelle, "top": top}
+    if lauf["kartenstand"] != kartenstand(karten, kanten):
+        return {"bestanden": False, "grund": "veraltet", **aus}
+    if lauf["score"] < schwelle:
+        return {"bestanden": False, "grund": "unter_schwelle", **aus}
+    return {"bestanden": True, "grund": "", **aus}
