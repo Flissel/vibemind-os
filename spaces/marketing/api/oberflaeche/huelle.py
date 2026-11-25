@@ -40,7 +40,8 @@ COOKIE_FIRMA = "mk_firma"
 VORGABE_FIRMA = "vibemind"
 COOKIE_JAHR = 365 * 24 * 3600
 FORM_MAX = 4096
-CSP = ("default-src 'none'; style-src 'self'; img-src 'self' data:; form-action 'self'; "
+# media-src 'self' seit Stufe B, Tag 4: Reels und Folgen spielen ueber signierte Adressen dieser Oberflaeche
+CSP = ("default-src 'none'; style-src 'self'; img-src 'self' data:; media-src 'self'; form-action 'self'; "
        "frame-ancestors 'none'; base-uri 'none'")
 # Nur Seiten mit Vorschau (vorlagen.py): der Rahmen laedt eine Vorschau-Adresse dieser Oberflaeche, sonst nichts
 CSP_RAHMEN = CSP + "; frame-src 'self'"
@@ -541,6 +542,11 @@ table.aenderungen { border-collapse: collapse; width: 100%; max-width: 900px; ma
 table.aenderungen th, table.aenderungen td { text-align: left; vertical-align: top; padding: 6px 8px;
   border-bottom: 1px solid var(--linie); white-space: pre-wrap; }
 table.aenderungen th { color: var(--leise); font-size: .85rem; }
+.abspielen { margin: 8px 0 4px; } .abspielen video { display: block; width: 100%; max-width: 270px;
+  aspect-ratio: 9 / 16; border-radius: 12px; background: #000; border: 1px solid var(--linie); }
+.abspielen video.quadrat { max-width: 360px; aspect-ratio: 1 / 1; }
+.abspielen video.quer { max-width: 100%; aspect-ratio: 16 / 9; }
+.abspielen audio { display: block; width: 100%; max-width: 480px; }
 @media (max-width: 767px) {
   .rahmen { display: block; }
   nav.seite { width: auto; height: auto; position: static; flex-direction: row; flex-wrap: wrap; align-items: center;

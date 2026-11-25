@@ -13,7 +13,7 @@ import unicodedata
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
 
-from spaces.marketing.api import medien_mandant
+from spaces.marketing.api import medien_mandant, medienablage
 from spaces.marketing.api.bilder import _agent_schluessel, _auftrag_id, _bild_schluessel, _ordner
 from spaces.marketing.api.pult import _lesen, _lesen_einer, _NAME, _schluessel, _schreiben, _uuid_oder_404, lit
 
@@ -138,6 +138,7 @@ async def arbeiter_datei(aid: str, request: Request, x_bild_key: str | None = He
         except OSError:
             pass
         raise HTTPException(503, "MP3 konnte nicht abgelegt werden")
+    medienablage.ablegen(str(auftrag.get("mandant")), name, bytes(roh))   # eigene Ablage je Firma, nie fatal
     return {"name": name}
 
 
