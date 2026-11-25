@@ -2226,8 +2226,9 @@ class PlanExecutor:
                 # einem getippten Satz des Betreibers. Hier ist das Ziel endgueltig, fuer
                 # Faehigkeit und ausdruecklich genanntes Ziel gleich; nichts geht an OpenFang.
                 from .herkunft import ABLEHNUNG, tor_mcp
-                if not tor_mcp(plan_ctx.get("eingabe_herkunft"), mcp_authority.server,
-                               mcp_authority.tool, mcp_authority.required_origin):
+                _ziel_teile = target.split(":", 3)
+                if not tor_mcp(plan_ctx.get("eingabe_herkunft"), _ziel_teile[2], _ziel_teile[3],
+                               getattr(mcp_authority, "required_origin", "")):
                     return HopResult(
                         step_id=hop.step_id, ok=False, error=ABLEHNUNG,
                         capability=hop.capability, target=target,

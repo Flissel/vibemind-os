@@ -1018,7 +1018,7 @@ class McpExecutor(_BaseRemoteExecutor):
         # Aufruf am Planausfuehrer vorbei hierher kommt. Vor jeder Anfrage an OpenFang.
         from .herkunft import ABLEHNUNG, tor_mcp
         if not tor_mcp(runtime_context.eingabe_herkunft, self.server, self.tool,
-                       authority.required_origin):
+                       getattr(authority, "required_origin", "")):
             raise PermissionError(ABLEHNUNG)
         prepared = RuntimeAuthorityClient.from_environment().prepare_invocation(runtime_context)
         if isinstance(prepared, RuntimeAuthorityPending):

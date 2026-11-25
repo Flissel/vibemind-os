@@ -59,7 +59,9 @@ def openfang(monkeypatch):
 
     def _anfrage(self, method, url, *, headers, payload=None, retry_transient=False, timeout_cap_s=None):
         return {"jsonrpc": "2.0", "id": payload["id"],
-                "result": {"content": [{"type": "text", "text": json.dumps(antwort["inhalt"])}],
+                # Fehler schickt das Auftragsbuch als reinen Text, Antworten als JSON-Text.
+                "result": {"content": [{"type": "text", "text": antwort["inhalt"] if isinstance(
+                               antwort["inhalt"], str) else json.dumps(antwort["inhalt"])}],
                            "isError": antwort.get("fehler", False)}}
 
     monkeypatch.setattr(ct, "RuntimeAuthorityClient", _Freigabe)
