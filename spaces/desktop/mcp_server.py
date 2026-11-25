@@ -102,6 +102,24 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "desktop_hand_klick",
+        "description": (
+            "Forward ONE left click that the person made in the desktop view to the real screen. Refused "
+            "when the STOP file exists, a task is running, or the window under the point is on the block "
+            "list (password managers, banking, private browser windows, login). Every forwarded or refused "
+            "click is booked as its own task 'Hand: Klick'; without VIBEMIND_DESKTOP_AUSFUEHREN=1 it is "
+            "booked but not clicked. Not for agents."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer", "minimum": -20000, "maximum": 20000},
+                "y": {"type": "integer", "minimum": -20000, "maximum": 20000},
+            },
+            "required": ["x", "y"],
+        },
+    },
+    {
         "name": "desktop_screen_read",
         "description": "Read-only: text currently visible on the screen (OCR) and the monitor layout.",
         "inputSchema": {"type": "object", "properties": {}},
@@ -450,6 +468,59 @@ def _app(arguments: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _hand_klick(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    """Einen Klick aus der Ansicht durchreichen, gebucht als kurze Aufgabe "Hand: Klick".
+
+    Abgelehnt wird mit einem Grund-Code, nie mit einem Fenstertitel:
+    ``not_aus`` (STOP), ``aufgabe_laeuft`` (Agent arbeitet), ``gesperrt`` (Fenster unter dem
+    Punkt steht auf der Sperrliste), ``fenster_unlesbar`` (im Zweifel nicht klicken).
+    Not-Aus und laufende Aufgabe lassen sich nicht buchen (das Buch lehnt dann selbst ab);
+    sie kommen nur in der Antwort zurueck. Gesperrte Fenster werden mit Punkt gebucht.
+    """
+    _nur(arguments, {"x", "y"})
+    punkt = {"x": _ganzzahl(arguments, "x", lo=-20000, hi=20000), "y": _ganzzahl(arguments, "y", lo=-20000, hi=20000)}
+    trocken = not _ausfuehren_erlaubt(os.environ)
+    antwort = {**punkt, "trocken": trocken, "ok": False, "echt": False, "task_id": None, "grund": None}
+    if aufgaben.not_aus():
+        return {**antwort, "grund": "not_aus"}
+    offene = aufgaben.letzte()
+    if offene and offene["zustand"] == aufgaben.OFFEN:
+        return {**antwort, "grund": "aufgabe_laeuft"}
+    try:
+        aufgabe = aufgaben.beginnen("Hand: Klick", trocken=trocken)
+    except aufgaben.AufgabenFehler as exc:
+        return {**antwort, "grund": str(exc).split(":", 1)[0]}
+    kennung = aufgabe["id"]
+    start = time.monotonic()
+    ok, echt, grund, meldung = False, False, None, ""
+    try:
+        _, schritt = aufgaben.schritt_beginnen(
+            kennung, art="click", angaben={**punkt, "quelle": "hand"}, braucht_blick=False)
+        unter = blick.fenster_unter_punkt(punkt["x"], punkt["y"])
+        if unter is None:
+            grund, meldung = "fenster_unlesbar", "fenster_unlesbar: das Fenster unter dem Punkt ist nicht lesbar"
+        elif blick.gesperrt(unter.get("programm"), unter.get("titel")):
+            grund, meldung = "gesperrt", "gesperrt: das Fenster unter dem Punkt steht auf der Sperrliste"
+        elif trocken:
+            ok, meldung = True, "trocken: gebucht, nicht ausgeführt"
+        else:
+            echt = True  # ab hier kann der Dienst geklickt haben
+            try:
+                ergebnis = _http("POST", "/api/mcp/click", punkt, timeout=SCHRITT_TIMEOUT)
+                ok = isinstance(ergebnis, Mapping) and ergebnis.get("success") is True
+                meldung = "ausgeführt" if ok else "dienst_fehler: der Desktop-Dienst meldet keinen Erfolg"
+                grund = None if ok else "dienst_fehler"
+            except ToolError as exc:
+                meldung, grund = str(exc), str(exc).split(":", 1)[0]
+        aufgaben.schritt_abschliessen(kennung, schritt["nr"], ok=ok, echt=echt, meldung=meldung,
+                                      dauer_ms=int((time.monotonic() - start) * 1000))
+    except aufgaben.AufgabenFehler as exc:
+        grund, meldung = str(exc).split(":", 1)[0], str(exc)
+    aufgaben.beenden(kennung, zustand="fertig" if ok else "fehlgeschlagen",
+                     ergebnis="Hand: Klick " + ("durchgereicht" if ok and echt else ("gebucht" if ok else f"abgelehnt ({grund})")))
+    return {**antwort, "ok": ok, "echt": echt, "task_id": kennung, "grund": grund}
+
+
 def _find(arguments: Mapping[str, Any]) -> dict[str, Any]:
     _nur(arguments, {"text"})
     antwort = _http(
@@ -576,6 +647,8 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> Any:
             return _fenster()
         if name == "desktop_app":
             return _app(arguments)
+        if name == "desktop_hand_klick":
+            return _hand_klick(arguments)
         if name in BLICK_WERKZEUGE:
             if name == "desktop_find":
                 ergebnis = _find(arguments)

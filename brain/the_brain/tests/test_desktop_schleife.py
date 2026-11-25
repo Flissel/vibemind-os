@@ -1452,6 +1452,43 @@ def test_app_ohne_freigabe_erreicht_nichts(echt, openfang, monkeypatch):
     assert openfang.werkzeuge == [] and handlungen == [] and not list(echt.ordner.glob("*.json"))
 
 
+# ─── Klick aus der Ansicht durchreichen (core/desktop_hand.py) und Marken (core/desktop_klicks.py) ───
+
+
+def test_hand_klick_ueber_den_echten_executor_wird_gebucht_und_als_marke_gelesen(echt, openfang, monkeypatch):
+    from core import desktop_hand, desktop_klicks
+    from core.capability_targets import find_registered_mcp_authority
+    monkeypatch.setattr(echt.server.blick, "fenster_unter_punkt",
+                        lambda x, y: {"hwnd": 1, "titel": "Unbenannt - Editor", "programm": "notepad"})
+    ergebnis = desktop_hand.klicken(300, 400)
+    assert (ergebnis["ok"], ergebnis["echt"], ergebnis["grund"]) == (True, True, None), ergebnis
+    assert echt.dienst_aufrufe == [("/api/mcp/click", {"x": 300, "y": 400})]
+    assert openfang.werkzeuge == ["desktop_hand_klick"] and len(openfang.zulassungen) == 1
+    raum = find_registered_mcp_authority("brain-desktop", "spaces-desktop", "desktop_hand_klick")
+    assert raum.event_id == "desktop.hand" and openfang.zulassungen[0]["plan_id"] == ergebnis["plan_id"]
+    marken = desktop_klicks.klicks(0)["klicks"]
+    assert [(m["x"], m["y"], m["quelle"], m["ok"]) for m in marken] == [(300, 400, "hand", True)]
+    assert "Unbenannt" not in json.dumps(marken) + json.dumps(ergebnis)
+
+
+def test_hand_klick_auf_gesperrtes_fenster_wird_abgelehnt_mit_grund(echt, openfang, monkeypatch):
+    from core import desktop_hand, desktop_klicks
+    monkeypatch.setattr(echt.server.blick, "fenster_unter_punkt",
+                        lambda x, y: {"hwnd": 2, "titel": "Tresor - KeePass", "programm": "keepass"})
+    ergebnis = desktop_hand.klicken(10, 20)
+    assert (ergebnis["ok"], ergebnis["grund"]) == (False, "gesperrt")
+    assert echt.dienst_aufrufe == []
+    marken = desktop_klicks.klicks(0)["klicks"]
+    assert [(m["quelle"], m["ok"], m.get("grund")) for m in marken] == [("hand", False, "gesperrt")]
+
+
+def test_hand_klick_ohne_freigabe_erreicht_nichts(echt, openfang):
+    from core import desktop_hand
+    openfang.freigabe = "pending"
+    assert desktop_hand.klicken(1, 2)["grund"] == "freigabe_ausstehend"
+    assert openfang.werkzeuge == [] and echt.dienst_aufrufe == []
+
+
 # ─── Augen: "Bestätige: Fenster X ist vorn und zeigt Y" (core/desktop_augen.py) ─────
 
 
@@ -1635,3 +1672,57 @@ def _ohne_anweisung(frage):
     from core.desktop_schleife_contract import ANWEISUNG
     assert frage.startswith(ANWEISUNG + "\n\n")
     return frage[len(ANWEISUNG) + 2:]
+
+
+# ─── Wer denkt: VIBEMIND_DESKTOP_AGENT=hermes|brain ─────────────────────────────────────
+
+
+@pytest.mark.parametrize("wert, erwartet", [
+    (None, "brain-desktop"), ("", "brain-desktop"), ("brain", "brain-desktop"), ("irgendwas", "brain-desktop"),
+    ("hermes", "hermes-desktop"), (" Hermes ", "hermes-desktop"),
+])
+def test_der_schalter_waehlt_nur_den_denkenden_agenten(wert, erwartet):
+    from core.desktop_denker import denkender_agent
+
+    assert denkender_agent({} if wert is None else {"VIBEMIND_DESKTOP_AGENT": wert}) == erwartet
+
+
+def test_mit_hermes_fragt_die_schleife_hermes_die_festen_aufrufe_bleiben_bei_brain_desktop(monkeypatch):
+    import core.capability_targets as ziele
+    from core.desktop_schleife import anschluss, laufzeit_kontext
+
+    monkeypatch.setenv("VIBEMIND_DESKTOP_AGENT", "hermes")
+    gefragt = []
+
+    def antwort(self, nachricht):
+        gefragt.append(self.agent_name)
+        return {"ok": True, "result": {"response": '{"aktion":"fertig","ergebnis":"x"}', "tool_calls": [],
+                                       "stream": True}}
+
+    monkeypatch.setattr(ziele.OpenFangExecutor, "call_with_arg", antwort)
+    assert anschluss(tagesrest=lambda: 1, laufzeit=None)["agent"]("frage") == '{"aktion":"fertig","ergebnis":"x"}'
+    assert gefragt == ["hermes-desktop"]
+    kontext = laufzeit_kontext("desktop_task_step", {**LAUFZEIT, "task_id": "dt-20261123-120000-abcdef"}, "001")
+    assert kontext.agent_name == "brain-desktop"
+
+
+def test_die_tagesgrenze_gilt_fuer_den_denkenden_agenten(monkeypatch):
+    import core.desktop_tagesrest as rest
+    from core.plan_executor import _desktop_tagesrest
+
+    gezaehlt = []
+    monkeypatch.setattr(rest, "tagesrest", lambda agent: gezaehlt.append(agent) or 7)
+    monkeypatch.delenv("VIBEMIND_DESKTOP_AGENT", raising=False)
+    assert _desktop_tagesrest() == 7
+    monkeypatch.setenv("VIBEMIND_DESKTOP_AGENT", "hermes")
+    assert _desktop_tagesrest() == 7
+    assert gezaehlt == ["brain-desktop", "hermes-desktop"]
+
+
+def test_ohne_budgeteintrag_fuer_hermes_bleibt_der_rest_null(tmp_path):
+    from core.desktop_tagesrest import tagesrest
+
+    (tmp_path / "budget.yaml").write_text("agenten:\n  brain-desktop:\n    tagesgrenze: 150\n", encoding="utf-8")
+    umgebung = {"VIBEMIND_BUDGET_CONFIG": str(tmp_path / "budget.yaml"), "VIBEMIND_BUDGET_DIR": str(tmp_path)}
+    assert tagesrest("brain-desktop", umgebung=umgebung) == 150
+    assert tagesrest("hermes-desktop", umgebung=umgebung) == 0

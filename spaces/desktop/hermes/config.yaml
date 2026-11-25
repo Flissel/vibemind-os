@@ -1,0 +1,28 @@
+# Hermes-Profil "desktop" (Desktop-Space, 25.11.2026). Liegt im Betrieb unter
+# %LOCALAPPDATA%\hermes\profiles\desktop\config.yaml; die globale Hermes-Konfiguration bleibt unberuehrt.
+#
+# Hermes denkt nur: Er bekommt vom Gehirn den Auftrag und das Gelesene vom Bildschirm und
+# antwortet mit EINER Aktion als JSON (core/desktop_schleife_contract.py). Ausgefuehrt wird im
+# Gehirn ueber spaces-desktop, mit Freigabe je Aufruf in OpenFang. Darum hier keine Werkzeuge:
+# kein Terminal, keine Dateien, kein Browser, kein Web, kein computer_use, keine MCP-Server.
+model:
+  default: claude-code
+  provider: custom
+  base_url: http://127.0.0.1:8114/v1   # Claude-Code-Shim: nur Abo, kein API-Budget
+platform_toolsets:
+  api_server: []
+  cli: []
+mcp_servers: {}
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+  nudge_interval: 0
+  flush_min_turns: 0
+skills:
+  creation_nudge_interval: 0
+  external_dirs: []
+plugins:
+  enabled: []
+agent:
+  max_turns: 3          # ohne Werkzeuge reicht eine Antwort; die Runden zaehlt das Gehirn
+  verify_on_stop: false

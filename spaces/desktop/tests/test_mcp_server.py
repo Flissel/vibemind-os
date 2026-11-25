@@ -95,6 +95,7 @@ class DesktopMcpServerTests(unittest.TestCase):
                 "desktop_blick",
                 "desktop_fenster",
                 "desktop_app",
+                "desktop_hand_klick",
                 "desktop_screen_read",
                 "desktop_elements",
                 "desktop_find",

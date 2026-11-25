@@ -331,10 +331,14 @@ def anschluss(*, tagesrest: Callable[[], int], laufzeit: Optional[Mapping[str, A
             nummer = f"{next(zaehler):03d}"
         return fester_aufruf(name, argumente, laufzeit_kontext(name, laufzeit or {}, nummer))
 
+    from .desktop_denker import denkender_agent
+
+    denker = denkender_agent()
+
     def agent(nachricht: str) -> str:
         # nur_text: nur ueber den Stream (sonst sind Werkzeugaufrufe unsichtbar) und Abbruch beim
         # ersten tool_use. Die Stelle VOR der Ausfuehrung liegt in OpenFang, nicht hier.
-        antwort = OpenFangExecutor(f"openfang:{AGENT}", nur_text=True).call_with_arg(nachricht)
+        antwort = OpenFangExecutor(f"openfang:{denker}", nur_text=True).call_with_arg(nachricht)
         if not antwort.get("ok"):
             fehler = str(antwort.get("error") or "Agent nicht erreichbar")
             if fehler.startswith("WerkzeugaufrufImLauf"):
@@ -345,12 +349,12 @@ def anschluss(*, tagesrest: Callable[[], int], laufzeit: Optional[Mapping[str, A
         # der Text ist die Antwort des Agenten.
         if isinstance(ergebnis, Mapping):
             if ergebnis.get("tool_calls"):
-                raise AgentBenutzteWerkzeug("brain-desktop hat Werkzeuge benutzt")
+                raise AgentBenutzteWerkzeug(f"{denker} hat Werkzeuge benutzt")
             if ergebnis.get("stream") is not True:
                 raise RuntimeError("ohne Stream sind Werkzeugaufrufe des Agenten nicht sichtbar")
             ergebnis = ergebnis.get("response")
         if not isinstance(ergebnis, str):
-            raise RuntimeError("brain-desktop lieferte keinen Text")
+            raise RuntimeError(f"{denker} lieferte keinen Text")
         return ergebnis
 
     return {"werkzeug": werkzeug, "agent": agent, "budget_rest": tagesrest}
