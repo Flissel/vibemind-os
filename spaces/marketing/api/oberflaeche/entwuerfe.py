@@ -4,9 +4,13 @@ Freigaben von Sales einreichen (oder zurueckziehen).
 
 - Einreichen setzt nur den Status 'eingereicht' (freigabe.einreichen). Versendet wird hier nichts;
   freigeben und senden bleiben in Sales.
-- Bearbeitet werden nur Bloecke im Block-Format: Ueberschrift, Text, Knopf (Text und https-Ziel) und der
-  Alternativtext von Bildern. Aufbau, Farben und Bilder selbst bleiben, wie sie sind (Bilder zuordnen kommt
-  mit der eigenen Medienablage). Collagen und Feld-Newsletter zeigen hier nur die Vorschau.
+- Block-Format: Ueberschrift, Text, Knopf (Text und https-Ziel), Bild (Datei und Alternativtext). Aufbau und
+  Farben bleiben, wie sie sind. Gestaltete Flaechen (Bild mit Gestaltung) tauschen ihr Bild hier noch nicht.
+- Collagen (Tag 5): Texte, Knoepfe (Text und Ziel), Bildebenen und Hintergrundbild. Lage, Groesse und Farben
+  bleiben; jede Fassung laeuft vor dem Speichern durch seite.pruefen (die Pult-Funktion prueft noch einmal).
+- Bilder waehlt man nur aus den Bildern der Firma (daten.bilder: eigene und gemeinsame, nie fremde). Ein
+  Bild, das schon im Entwurf steht, bleibt waehlbar, auch wenn es nicht in der Liste ist.
+- Feld-Newsletter zeigen hier nur die Vorschau.
 - Gespeichert wird immer auf der Fassung, die das Formular gezeigt hat (basis_fassung); hat inzwischen
   jemand anders gespeichert, lehnt die Datenbank ab und die Seite sagt das.
 - Jeder Schritt prueft die Firma (Cookie wie ueberall) gegen den Inhalt."""
@@ -20,17 +24,22 @@ from fastapi import Request
 from fastapi.responses import RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from spaces.marketing.api.oberflaeche import daten, huelle, newsletter
+from spaces.marketing.api.oberflaeche import daten, huelle, medien, newsletter
 from spaces.marketing.api.oberflaeche.huelle import PFAD, Kontext, e
 from spaces.marketing.api.oberflaeche.vorlagen import _format_wahl, _fmt, _rahmen, vorschau_adresse
+from spaces.marketing.claw import bildplaetze
+from spaces.marketing.claw import seite as seite_modell
 
 SEITE = f"{PFAD}/entwuerfe"
 VON = "Betreiber (Marketing-Reiter)"
-FORM_GRENZE = 256 * 1024
+FORM_GRENZE = 512 * 1024       # eine Collage darf bis 256 KB haben; als Formular (urlencodiert) mehr
 GRENZEN = {"betreff": 200, "vorschautext": 300, "Heading": 300, "Text": 10000, "Button": 100,
-           "url": 2000, "alt": 300}
+           "url": 2000, "alt": 300, "ebene_text": seite_modell.MAX_TEXT, "ebene_knopf": 60}
 ARTEN = ("Heading", "Text", "Button", "Image")
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+_EBENE_ID = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+EBENEN_ARTEN = ("text", "knopf", "bild")
+ROLLEN = ("ANZEIGE", "TEXT", "HAND")
 ZEIGEN = ("entwurf", "zurueckgegeben", "eingereicht")
 
 TEXTE = {
@@ -67,7 +76,25 @@ TEXTE = {
         "unveraendert": "Nichts geändert, keine neue Fassung.",
         "eingereicht": "Eingereicht. Der Entwurf liegt jetzt in den Freigaben von Sales.",
         "zurueckgezogen": "Zurückgezogen. Der Entwurf ist wieder in Arbeit.",
-        "nur_vorschau": "Diesen Entwurf (Collage oder Felder) kannst du hier noch nicht bearbeiten, nur ansehen.",
+        "nur_vorschau": "Diesen Entwurf (Feld-Newsletter) kannst du hier noch nicht bearbeiten, nur ansehen.",
+        "bild_wahl": "Bild",
+        "bild_keins": "– noch kein Bild –",
+        "bild_flaeche": "Gestaltete Fläche ({name}). Das Bild darin lässt sich hier noch nicht tauschen.",
+        "bilder_fehlen": "Die Bilderliste ist gerade nicht lesbar. Die Bilder bleiben, wie sie sind.",
+        "galerie": "Bilder dieser Firma ({n})",
+        "galerie_leer": "Für diese Firma liegen noch keine Bilder bereit.",
+        "collage_hinweis": "Collage: Texte, Knöpfe und Bilder änderst du hier. Lage, Größe und Farben bleiben.",
+        "ebene_text": "Text: {rolle}",
+        "ebene_knopf": "Knopf",
+        "ebene_bild": "Bild",
+        "rolle_ANZEIGE": "Überschrift",
+        "rolle_TEXT": "Fließtext",
+        "rolle_HAND": "Handschrift",
+        "rolle_anders": "Text",
+        "hintergrund_bild": "Hintergrundbild",
+        "hg_keins": "– kein Hintergrundbild –",
+        "f_bild": "Dieses Bild gibt es für diese Firma nicht.",
+        "f_seite": "Die Collage passt so nicht: {grund}",
         "keine_bloecke": "Dieser Entwurf hat keine bearbeitbaren Blöcke.",
         "rm_titel": "Rückmeldungen aus Sales",
         "rm_von": "{von}, {datum}",
@@ -116,7 +143,25 @@ TEXTE = {
         "unveraendert": "Nothing changed, no new version.",
         "eingereicht": "Submitted. The draft is now in the Sales approvals.",
         "zurueckgezogen": "Withdrawn. The draft is in progress again.",
-        "nur_vorschau": "This draft (collage or fields) cannot be edited here yet, only viewed.",
+        "nur_vorschau": "This draft (field newsletter) cannot be edited here yet, only viewed.",
+        "bild_wahl": "Image",
+        "bild_keins": "– no image yet –",
+        "bild_flaeche": "Designed area ({name}). Its image cannot be swapped here yet.",
+        "bilder_fehlen": "The image list cannot be read right now. Images stay as they are.",
+        "galerie": "Images of this company ({n})",
+        "galerie_leer": "No images are ready for this company yet.",
+        "collage_hinweis": "Collage: edit texts, buttons and images here. Position, size and colours stay.",
+        "ebene_text": "Text: {rolle}",
+        "ebene_knopf": "Button",
+        "ebene_bild": "Image",
+        "rolle_ANZEIGE": "Heading",
+        "rolle_TEXT": "Body text",
+        "rolle_HAND": "Handwriting",
+        "rolle_anders": "Text",
+        "hintergrund_bild": "Background image",
+        "hg_keins": "– no background image –",
+        "f_bild": "This image does not exist for this company.",
+        "f_seite": "The collage does not fit like this: {grund}",
         "keine_bloecke": "This draft has no editable blocks.",
         "rm_titel": "Feedback from Sales",
         "rm_von": "{von}, {datum}",
@@ -195,8 +240,37 @@ def _feld(form: dict, name: str, alt: str, grenze: int, s: str, beschriftung: st
     return text
 
 
-def anwenden(dok: dict, form: dict, s: str) -> dict:
-    """Neues Dokument mit den Formularwerten; nur bekannte Felder bekannter Bloecke werden gesetzt."""
+def _name_aus(url) -> str:
+    """Dateiname aus medien:<name>; leer fuer Platzhalter, leere oder andere Werte."""
+    if not isinstance(url, str) or bildplaetze.ist_leer(url) or not url.startswith("medien:"):
+        return ""
+    return url[len("medien:"):]
+
+
+def _bildwahl(form: dict, feld: str, aktuell: str, namen: set[str] | None, s: str) -> str | None:
+    """Neuer Bildname aus dem Formular, None = unveraendert. "" bleibt "" (nur das Hintergrundbild darf leer)."""
+    roh = form.get(feld)
+    if roh is None:
+        return None
+    wahl = str(roh).strip()
+    if wahl == aktuell:
+        return None
+    if wahl == "":
+        return ""
+    if namen is None:
+        raise Abgelehnt(tx(s, "bilder_fehlen"))
+    if wahl not in namen or not medien.bild_name_ok(wahl):
+        raise Abgelehnt(tx(s, "f_bild"))
+    return wahl
+
+
+def ist_flaeche(p: dict) -> bool:
+    return isinstance(p.get("gestaltung"), dict)
+
+
+def anwenden(dok: dict, form: dict, s: str, namen: set[str] | None = None) -> dict:
+    """Neues Dokument mit den Formularwerten; nur bekannte Felder bekannter Bloecke werden gesetzt.
+    namen: Bilder der Firma (None = Liste nicht lesbar; dann darf sich kein Bild aendern)."""
     neu = copy.deepcopy(dok)
     for bid, b in bearbeitbare(neu):
         p = _props(b)
@@ -218,6 +292,67 @@ def anwenden(dok: dict, form: dict, s: str) -> dict:
             alt = _feld(form, f"a:{bid}", _wert(p, "alt"), GRENZEN["alt"], s, name, True)
             if alt != _wert(p, "alt"):
                 p["alt"] = alt
+            if not ist_flaeche(p):
+                wahl = _bildwahl(form, f"b:{bid}", _name_aus(p.get("url")), namen, s)
+                if wahl:                       # "" = kein Bild gewaehlt: ein Block behaelt, was er hat
+                    p["url"] = "medien:" + wahl
+    return neu
+
+
+# --- Collage ------------------------------------------------------------------------------------
+
+def _zahl_oder_0(w) -> float:
+    return float(w) if isinstance(w, (int, float)) and not isinstance(w, bool) else 0.0
+
+
+def ebenen_folge(dok: dict) -> list[dict]:
+    """Bearbeitbare Ebenen (Text, Knopf, Bild) in Lesereihenfolge: von oben nach unten, dann von links."""
+    eb = [x for x in (dok.get("ebenen") if isinstance(dok.get("ebenen"), list) else [])
+          if isinstance(x, dict) and x.get("art") in EBENEN_ARTEN
+          and isinstance(x.get("id"), str) and _EBENE_ID.fullmatch(x["id"])]
+    return sorted(eb, key=lambda x: (_zahl_oder_0(x.get("y")), _zahl_oder_0(x.get("x"))))
+
+
+def ist_collage(f: dict | None) -> bool:
+    return (isinstance(f, dict) and f.get("format") == "seite" and isinstance(f.get("seite"), dict)
+            and isinstance(f["seite"].get("ebenen"), list))
+
+
+def _ebene_name(s: str, x: dict) -> str:
+    if x.get("art") == "text":
+        rolle = x.get("rolle")
+        return tx(s, "ebene_text", rolle=tx(s, f"rolle_{rolle}" if rolle in ROLLEN else "rolle_anders"))
+    return tx(s, "ebene_knopf" if x.get("art") == "knopf" else "ebene_bild")
+
+
+def seite_anwenden(dok: dict, form: dict, s: str, namen: set[str] | None = None) -> dict:
+    """Neue Seite mit den Formularwerten: Text der Text- und Knopfebenen, Ziel der Knoepfe, Quelle der
+    Bildebenen, Hintergrundbild. Alles andere (Lage, Groesse, Farben, Schriften) bleibt."""
+    neu = copy.deepcopy(dok)
+    for x in ebenen_folge(neu):
+        eid, art, name = x["id"], x["art"], _ebene_name(s, x)
+        if art in ("text", "knopf"):
+            alt = x.get("text") if isinstance(x.get("text"), str) else ""
+            grenze = GRENZEN["ebene_text" if art == "text" else "ebene_knopf"]
+            wert = _feld(form, f"t:{eid}", alt, grenze, s, name, art == "knopf")
+            if wert != alt:
+                x["text"] = wert
+        if art == "knopf":
+            alt = x.get("link") if isinstance(x.get("link"), str) else ""
+            ziel = _feld(form, f"u:{eid}", alt, GRENZEN["url"], s, name, True)
+            if ziel != alt:
+                if not ziel.startswith("https://") or any(c.isspace() or c in "\"'<>" for c in ziel):
+                    raise Abgelehnt(tx(s, "f_url"))
+                x["link"] = ziel
+        if art == "bild":
+            wahl = _bildwahl(form, f"q:{eid}", _name_aus(x.get("quelle")), namen, s)
+            if wahl:
+                x["quelle"] = "medien:" + wahl
+    hg = neu.get("hintergrund")
+    if isinstance(hg, dict):
+        wahl = _bildwahl(form, "hg", _name_aus(hg.get("bild")), namen, s)
+        if wahl is not None:
+            hg["bild"] = ("medien:" + wahl) if wahl else None
     return neu
 
 
@@ -288,7 +423,7 @@ def _formular_csrf() -> str:
     return f'<input type="hidden" name="csrf" value="{e(huelle.csrf_marke())}">'
 
 
-def _block_feld(k: Kontext, bid: str, b: dict) -> str:
+def _block_feld(k: Kontext, bid: str, b: dict, namen: list[str] | None = None) -> str:
     art = b.get("type")
     p = _props(b)
     name = e(k.t(TEXTE, f"art_{art}"))
@@ -304,12 +439,73 @@ def _block_feld(k: Kontext, bid: str, b: dict) -> str:
                   f'<label>{e(k.t(TEXTE, "knopf_ziel"))} <input type="url" name="u:{e(bid)}" '
                   f'value="{e(_wert(p, "url"))}" maxlength="{GRENZEN["url"]}"></label>')
     else:
-        datei = _wert(p, "url")
-        datei = datei[len("medien:"):] if datei.startswith("medien:") else datei
-        inhalt = (f'<p class="meta">{e(k.t(TEXTE, "bild_datei", name=datei or "?"))}</p>'
-                  f'<label>{e(k.t(TEXTE, "bild_alt"))} <input type="text" name="a:{e(bid)}" '
+        inhalt = (_bild_feld(k, f"b:{bid}", _wert(p, "url"), namen, flaeche=ist_flaeche(p))
+                  + f'<label>{e(k.t(TEXTE, "bild_alt"))} <input type="text" name="a:{e(bid)}" '
                   f'value="{e(_wert(p, "alt"))}" maxlength="{GRENZEN["alt"]}"></label>')
     return f'<fieldset class="block"><legend>{name}</legend>{inhalt}</fieldset>'
+
+
+def _bild_feld(k: Kontext, feld: str, url, namen: list[str] | None, *, flaeche: bool = False,
+               leer_schluessel: str = "bild_keins", leer_waehlbar: bool = False) -> str:
+    """Vorschaubild und Auswahl aus den Bildern der Firma (ohne Liste: nur der Dateiname)."""
+    aktuell = _name_aus(url)
+    roh = url[len("medien:"):] if isinstance(url, str) and url.startswith("medien:") else ""
+    bild = medien.bild_html(str(k.firma), aktuell, aktuell) if aktuell else ""
+    if flaeche:
+        return f'{bild}<p class="meta">{e(k.t(TEXTE, "bild_flaeche", name=roh or "?"))}</p>'
+    if namen is None:
+        return f'{bild}<p class="meta">{e(k.t(TEXTE, "bild_datei", name=roh or "?"))}</p>'
+    optionen = []
+    if not aktuell or leer_waehlbar:
+        optionen.append(f'<option value=""{"" if aktuell else " selected"}>{e(k.t(TEXTE, leer_schluessel))}</option>')
+    if aktuell and aktuell not in namen:
+        optionen.append(f'<option value="{e(aktuell)}" selected>{e(aktuell)}</option>')
+    optionen += [f'<option value="{e(n)}"{" selected" if n == aktuell else ""}>{e(n)}</option>' for n in namen]
+    return (f'{bild}<label>{e(k.t(TEXTE, "bild_wahl"))} <select name="{e(feld)}">{"".join(optionen)}</select>'
+            '</label>')
+
+
+def _ebene_feld(k: Kontext, x: dict, namen: list[str] | None) -> str:
+    eid, art = x["id"], x["art"]
+    if art == "text":
+        zeilen = 2 if x.get("rolle") == "ANZEIGE" else 5
+        inhalt = (f'<textarea name="t:{e(eid)}" rows="{zeilen}" maxlength="{GRENZEN["ebene_text"]}">'
+                  f'{e(str(x.get("text") or ""))}</textarea>')
+    elif art == "knopf":
+        inhalt = (f'<input type="text" name="t:{e(eid)}" value="{e(str(x.get("text") or ""))}" '
+                  f'maxlength="{GRENZEN["ebene_knopf"]}">'
+                  f'<label>{e(k.t(TEXTE, "knopf_ziel"))} <input type="url" name="u:{e(eid)}" '
+                  f'value="{e(str(x.get("link") or ""))}" maxlength="{GRENZEN["url"]}"></label>')
+    else:
+        inhalt = _bild_feld(k, f"q:{eid}", x.get("quelle"), namen)
+    return f'<fieldset class="block"><legend>{e(_ebene_name(k.sprache, x))}</legend>{inhalt}</fieldset>'
+
+
+def collage_felder(k: Kontext, dok: dict, namen: list[str] | None) -> str:
+    hg = dok.get("hintergrund") if isinstance(dok.get("hintergrund"), dict) else {}
+    hintergrund = (f'<fieldset class="block"><legend>{e(k.t(TEXTE, "hintergrund_bild"))}</legend>'
+                   + _bild_feld(k, "hg", hg.get("bild"), namen, leer_schluessel="hg_keins", leer_waehlbar=True)
+                   + "</fieldset>")
+    return (f'<p class="meta">{e(k.t(TEXTE, "collage_hinweis"))}</p>' + hintergrund
+            + "".join(_ebene_feld(k, x, namen) for x in ebenen_folge(dok)))
+
+
+def galerie(k: Kontext, namen: list[str] | None) -> str:
+    if namen is None:
+        return f'<p class="meta">{e(k.t(TEXTE, "bilder_fehlen"))}</p>'
+    if not namen:
+        return f'<p class="meta">{e(k.t(TEXTE, "galerie_leer"))}</p>'
+    bilder = "".join(f'<figure>{medien.bild_html(str(k.firma), n, n)}<figcaption>{e(n)}</figcaption></figure>'
+                     for n in namen)
+    return (f'<details class="aufklapp"><summary>{e(k.t(TEXTE, "galerie", n=len(namen)))}</summary>'
+            f'<div class="galerie">{bilder}</div></details>')
+
+
+async def _bilder_oder_nichts(firma) -> list[str] | None:
+    try:
+        return await run_in_threadpool(daten.bilder, str(firma))
+    except daten.DatenFehler:
+        return None
 
 
 def _rueckmeldungen(k: Kontext, antwort: dict) -> str:
@@ -349,11 +545,15 @@ async def editor_bauen(k: Kontext) -> tuple[str, str]:
     n = neueste.get("fassung") if neueste else None
     hat_fassung = isinstance(n, int) and not isinstance(n, bool) and n >= 1
     fmt_inhalt = neueste.get("format") if neueste else None
-    if status == "entwurf" and hat_fassung and fmt_inhalt == "bloecke" and isinstance(neueste.get("bloecke"), dict):
+    ist_bloecke = fmt_inhalt == "bloecke" and isinstance(neueste.get("bloecke"), dict)
+    if status == "entwurf" and hat_fassung and (ist_bloecke or ist_collage(neueste)):
         felder = neueste.get("felder") if isinstance(neueste.get("felder"), dict) else {}
-        bloecke = bearbeitbare(neueste["bloecke"])
-        felder_html = "".join(_block_feld(k, bid, b) for bid, b in bloecke) or (
-            f'<p class="meta">{e(k.t(TEXTE, "keine_bloecke"))}</p>')
+        namen = await _bilder_oder_nichts(k.firma)
+        if ist_bloecke:
+            felder_html = "".join(_block_feld(k, bid, b, namen) for bid, b in bearbeitbare(neueste["bloecke"])) or (
+                f'<p class="meta">{e(k.t(TEXTE, "keine_bloecke"))}</p>')
+        else:
+            felder_html = collage_felder(k, neueste["seite"], namen)
         rumpf += (f'<form method="post" action="{e(hier)}/speichern" class="editor">{_formular_csrf()}'
                   f'<input type="hidden" name="basis" value="{n}">'
                   f'<label>{e(k.t(TEXTE, "betreff"))} <input type="text" name="betreff" '
@@ -363,7 +563,8 @@ async def editor_bauen(k: Kontext) -> tuple[str, str]:
                   f'{felder_html}<p><button type="submit">{e(k.t(TEXTE, "speichern"))}</button></p></form>'
                   f'<form method="post" action="{e(hier)}/einreichen" class="anlegen">{_formular_csrf()}'
                   f'<button type="submit">{e(k.t(TEXTE, "einreichen"))}</button>'
-                  f'<span class="meta">{e(k.t(TEXTE, "einreichen_hinweis"))}</span></form>')
+                  f'<span class="meta">{e(k.t(TEXTE, "einreichen_hinweis"))}</span></form>'
+                  + galerie(k, namen))
     elif status == "eingereicht":
         rumpf += (f'<form method="post" action="{e(hier)}/zurueckziehen" class="anlegen">{_formular_csrf()}'
                   f'<button type="submit">{e(k.t(TEXTE, "zurueckziehen"))}</button></form>')
@@ -407,7 +608,9 @@ async def speichern(request: Request) -> Response:
         return fehler
     if kopf.get("status") != "entwurf":
         return _abgelehnt(s, tx(s, "f_status"))
-    if not neueste or neueste.get("format") != "bloecke" or not isinstance(neueste.get("bloecke"), dict):
+    collage = ist_collage(neueste)
+    if not collage and (not neueste or neueste.get("format") != "bloecke"
+                        or not isinstance(neueste.get("bloecke"), dict)):
         return _abgelehnt(s, tx(s, "f_format"))
     basis = str(form.get("basis") or "")
     if not basis.isdigit():
@@ -419,14 +622,27 @@ async def speichern(request: Request) -> Response:
         alt_betreff, alt_vorschau = str(felder.get("betreff") or ""), str(felder.get("vorschautext") or "")
         betreff = _feld(form, "betreff", alt_betreff, GRENZEN["betreff"], s, tx(s, "betreff"), True)
         vorschau = _feld(form, "vorschautext", alt_vorschau, GRENZEN["vorschautext"], s, tx(s, "vorschautext"), True)
-        bloecke = anwenden(neueste["bloecke"], form, s)
+        namen = None
+        if any(n.startswith(("b:", "q:")) or n == "hg" for n in form):
+            namen = await _bilder_oder_nichts(kopf.get("mandant"))   # = gewaehlte Firma (_laden_pruefen)
+        namen_menge = set(namen) if namen is not None else None
+        alt_dok = neueste["seite"] if collage else neueste["bloecke"]
+        neu_dok = (seite_anwenden if collage else anwenden)(alt_dok, form, s, namen_menge)
+        if collage and neu_dok != alt_dok:
+            try:
+                neu_dok = seite_modell.pruefen(neu_dok)
+            except seite_modell.SeiteFehler as f:
+                raise Abgelehnt(tx(s, "f_seite", grund=str(f)))
     except Abgelehnt as f:
         return _abgelehnt(s, str(f))
+    except daten.DatenFehler as f:
+        return huelle.daten_fehlerseite(s, f)
     hier = f"{SEITE}/{iid}"
-    if bloecke == neueste["bloecke"] and betreff == alt_betreff and vorschau == alt_vorschau:
+    if neu_dok == alt_dok and betreff == alt_betreff and vorschau == alt_vorschau:
         return RedirectResponse(f"{hier}?unveraendert=1", status_code=303)
+    speichern_mit = daten.seite_speichern if collage else daten.bloecke_speichern
     try:
-        n = await run_in_threadpool(daten.bloecke_speichern, iid, int(basis), betreff, vorschau, bloecke)
+        n = await run_in_threadpool(speichern_mit, iid, int(basis), betreff, vorschau, neu_dok)
     except daten.DatenFehler as f:
         return huelle.daten_fehlerseite(s, f)
     return RedirectResponse(f"{hier}?gespeichert={n}", status_code=303)

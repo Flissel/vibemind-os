@@ -1,6 +1,7 @@
 """Eigene Oberflaeche des Marketing-Space (Stufe A, 24.11.2026): lesende Seiten unter /oberflaeche/;
 seit Stufe B (25.11.) schreibend: Entwuerfe (vorlagen.py, entwuerfe.py), Plan und Kampagnen (plan.py),
-Markenprofil ueber den Assistenten (marke.py).
+Markenprofil ueber den Assistenten (marke.py); Reels und Folgen abspielen (medien.py, Tag 4); Bilder zuordnen
+und Collagen bearbeiten (entwuerfe.py, Tag 5).
 
 Die App zeigt sie im Marketing-Reiter (MARKETING_UI_URL) und haengt den Schluessel aus der Umgebung
 als Bearer an (bearerEnv). Die API prueft ihn gegen MARKETING_UI_KEY. Gesendet wird hier nichts:
@@ -52,3 +53,5 @@ router.add_api_route("/marke/bearbeiten", marke.bearbeiten, methods=["POST"])
 router.add_api_route("/marke/vorschlag", marke.vorschlag, methods=["POST"])
 # Stufe B, Tag 4: Reels und Folgen abspielen (signierte Adressen, ohne Bearer, Range fuers Spulen)
 router.add_api_route("/medien/{name}", medien.abrufen, methods=["GET"])
+# Stufe B, Tag 5: Bilder der Firma im Editor (signierte Adressen wie bei den Medien)
+router.add_api_route("/bild/{name}", medien.bild_abrufen, methods=["GET"])

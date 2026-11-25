@@ -216,3 +216,31 @@ def marke_uebernehmen(mandant: str, vid: str, von: str) -> None:
 def marke_verwerfen(mandant: str, vid: str, von: str) -> None:
     from spaces.marketing.api import marke as _marke
     _rufen(_marke.marke_verwerfen, vid=vid, payload={"von": von, "mandant": mandant})
+
+
+# --- Stufe B, Tag 5: Bilder zuordnen und Collagen bearbeiten (speichert Fassungen, versendet nichts) --
+
+def _bilder_lesen(mandant: str, x_pult_key: str | None) -> list[str]:
+    from spaces.marketing.api import chat, medien_mandant, pult
+    pult._schluessel(x_pult_key)
+    s = medien_mandant.sicht(mandant)
+    return chat._medien(lambda n: not medien_mandant.ist_fremd(n, mandant, s))
+
+
+def bilder(mandant: str) -> list[str]:
+    """Bilder, die diese Firma nutzen darf (eigene und gemeinsame, nie fremde), sortiert, hoechstens 500:
+    dieselbe Regel wie fuer den Assistenten (chat._medien mit medien_mandant.ist_fremd)."""
+    roh = _rufen(_bilder_lesen, mandant=mandant)
+    return [n for n in roh if isinstance(n, str)] if isinstance(roh, list) else []
+
+
+def seite_speichern(iid: str, basis: int, betreff: str, vorschautext: str, seite: dict) -> int:
+    """Neue Collage-Fassung (Urheber betreiber); die DB prueft Entwurf und Basis = neueste."""
+    from spaces.marketing.api import pult
+    antwort = _rufen(pult.seite_speichern, iid=iid, payload={
+        "basis_fassung": basis, "betreff": betreff, "vorschautext": vorschautext, "seite": seite,
+        "urheber": "betreiber"})
+    n = antwort.get("fassung") if isinstance(antwort, dict) else None
+    if not isinstance(n, int) or isinstance(n, bool):
+        raise DatenFehler("nicht_erreichbar")
+    return n
