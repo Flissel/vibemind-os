@@ -233,5 +233,67 @@ async function laden() {
   }
 }
 
+// Vier Knoepfe: "auftraege" ist diese Seite, die anderen sind Rahmen auf lokale Adressen,
+// die der Dienst unter /api/oberflaechen nennt. Der Knopf steht im Anker (#vorschau),
+// damit die App einen Knopf direkt oeffnen kann.
+let oberflaechen = {};
+let ansicht = "auftraege";
+
+function zeigeAnsicht(name) {
+  ansicht = oberflaechen[name] || name === "auftraege" ? name : "auftraege";
+  for (const knopf of document.querySelectorAll(".knoepfe button")) {
+    knopf.setAttribute("aria-pressed", String(knopf.dataset.ansicht === ansicht));
+  }
+  const fremd = document.getElementById("fremd");
+  const rahmen = document.getElementById("fremd-rahmen");
+  const satz = document.getElementById("fremd-satz");
+  document.getElementById("auftraege").hidden = ansicht !== "auftraege";
+  fremd.hidden = ansicht === "auftraege";
+  if (ansicht === "auftraege") {
+    if (rahmen.src) rahmen.removeAttribute("src");
+    rahmen.hidden = true;
+    return;
+  }
+  const eintrag = oberflaechen[ansicht];
+  rahmen.title = eintrag.titel;
+  if (eintrag.laeuft) {
+    satz.hidden = true;
+    if (rahmen.getAttribute("src") !== eintrag.url) rahmen.src = eintrag.url;
+    rahmen.hidden = false;
+  } else {
+    rahmen.hidden = true;
+    if (rahmen.src) rahmen.removeAttribute("src");
+    satz.textContent = eintrag.satz_aus;
+    satz.hidden = false;
+  }
+}
+
+async function ladeOberflaechen() {
+  try {
+    const antwort = await holen("/api/oberflaechen");
+    if (!antwort.ok) return;
+    oberflaechen = {};
+    for (const eintrag of antwort.daten) oberflaechen[eintrag.name] = eintrag;
+    for (const knopf of document.querySelectorAll(".knoepfe button")) {
+      const eintrag = oberflaechen[knopf.dataset.ansicht];
+      if (eintrag) knopf.dataset.laeuft = String(eintrag.laeuft);
+    }
+    zeigeAnsicht(ansicht);
+  } catch (fehler) {
+    // Die Verbindungszeile von laden() sagt schon, wenn der Dienst fehlt.
+  }
+}
+
+for (const knopf of document.querySelectorAll(".knoepfe button")) {
+  knopf.addEventListener("click", () => {
+    history.replaceState(null, "", knopf.dataset.ansicht === "auftraege" ? "#" : `#${knopf.dataset.ansicht}`);
+    zeigeAnsicht(knopf.dataset.ansicht);
+  });
+}
+window.addEventListener("hashchange", () => zeigeAnsicht(location.hash.slice(1) || "auftraege"));
+ansicht = location.hash.slice(1) || "auftraege";
+
 laden();
+ladeOberflaechen();
 setInterval(laden, 2000);
+setInterval(ladeOberflaechen, 5000);

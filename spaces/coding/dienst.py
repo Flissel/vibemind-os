@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 from spaces.coding import abnahme as abnahme_modul
-from spaces.coding import engine_huelle, pipeline
+from spaces.coding import engine_huelle, oberflaechen, pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -364,6 +364,8 @@ def lesen(pfad: str) -> Tuple[int, str, bytes]:
             return _json(200, pipeline.stand(frage.get("auftrag")))
         if weg == "/api/ergebnis":
             return _json(200, pipeline.ergebnis(frage.get("auftrag")))
+        if weg == "/api/oberflaechen":
+            return _json(200, oberflaechen.stand())
     except pipeline.PipelineFehler as fehler:
         return _fehler(fehler)
     except ValueError:
@@ -409,7 +411,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Content-Security-Policy", CSP)
+        self.send_header("Content-Security-Policy", f"{CSP}; frame-src {oberflaechen.rahmen_quellen()}")
         self.end_headers()
         self.wfile.write(koerper)
 
