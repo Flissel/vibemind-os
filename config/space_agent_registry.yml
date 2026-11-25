@@ -627,25 +627,31 @@ spaces:
     events:
       # Feste Lesesaetze (core/sales_saetze.py): je Art ein Auftrag fester Art. Ohne Zeile in
       # auftrag.brain_arten lehnt das Auftragsbuch ab, das Gehirn zeigt dann den Satz "noch nicht freigeschaltet".
+      # required_origin: betreiber (Spec 8.3): nur aus einem getippten Satz des Betreibers (core/herkunft);
+      # auftrag_probe und auftrag_lesen bewusst ohne, sie sind Vor- und Nachpruefung.
       sales.kontakt_finden:
         tool: sales_kontakt_finden
         required_params: [eingabe]
         required_provenance: [approval_ref, cost_ref]
+        required_origin: betreiber
         execution: { kind: mcp, server: auftragsbuch }
       sales.termine_heute:
         tool: sales_termine_heute
         required_params: [eingabe]
         required_provenance: [approval_ref, cost_ref]
+        required_origin: betreiber
         execution: { kind: mcp, server: auftragsbuch }
       sales.freigaben_zaehlen:
         tool: sales_freigaben_zaehlen
         required_params: [eingabe]
         required_provenance: [approval_ref, cost_ref]
+        required_origin: betreiber
         execution: { kind: mcp, server: auftragsbuch }
       sales.post_offen:
         tool: sales_post_offen
         required_params: [eingabe]
         required_provenance: [approval_ref, cost_ref]
+        required_origin: betreiber
         execution: { kind: mcp, server: auftragsbuch }
       sales.auftrag_probe:
         tool: auftrag_probe

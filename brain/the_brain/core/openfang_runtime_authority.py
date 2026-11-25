@@ -7,7 +7,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 import requests
 
@@ -23,6 +23,9 @@ class RuntimeInvocationContext:
     space_id: str
     agent_name: str
     invocation_id: str
+    # "getippt" nur aus einem Satz, den die App mit Zeichen belegt (plan_ctx["eingabe_herkunft"]);
+    # None heisst unbekannt. Geprueft in McpExecutor._call (core/herkunft.tor_mcp).
+    eingabe_herkunft: Optional[str] = None
 
 
 @dataclass(frozen=True, repr=False)

@@ -2222,6 +2222,19 @@ class PlanExecutor:
                 )
                 if mcp_authority is None or not mcp_authority.space_id:
                     raise RuntimeError("registered MCP authority metadata unavailable")
+                # Herkunft (Spec 8.3): ein Ereignis mit required_origin: betreiber laeuft nur aus
+                # einem getippten Satz des Betreibers. Hier ist das Ziel endgueltig, fuer
+                # Faehigkeit und ausdruecklich genanntes Ziel gleich; nichts geht an OpenFang.
+                from .herkunft import ABLEHNUNG, tor_mcp
+                if not tor_mcp(plan_ctx.get("eingabe_herkunft"), mcp_authority.server,
+                               mcp_authority.tool, mcp_authority.required_origin):
+                    return HopResult(
+                        step_id=hop.step_id, ok=False, error=ABLEHNUNG,
+                        capability=hop.capability, target=target,
+                        rendered_arg=rendered_arg, kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False, reward=-1.0,
+                    )
                 _extra = {"_runtime_authority": RuntimeInvocationContext(
                     correlation_id=plan_ctx.get("trace_id") or plan_ctx.get("plan_id", "standalone-plan"),
                     plan_id=plan_ctx.get("plan_id", "standalone-plan"),
@@ -2233,6 +2246,7 @@ class PlanExecutor:
                         plan_ctx.get("plan_id", "standalone-plan"),
                         plan_ctx.get("plan_revision", 1), hop.step_id,
                     ),
+                    eingabe_herkunft=plan_ctx.get("eingabe_herkunft"),
                 )}
             except Exception as e:
                 return HopResult(

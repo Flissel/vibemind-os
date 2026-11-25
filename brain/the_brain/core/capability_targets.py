@@ -1014,6 +1014,12 @@ class McpExecutor(_BaseRemoteExecutor):
             raise PermissionError("MCP invocation requires runtime authority context")
         if authority.space_id != runtime_context.space_id or authority.agent != runtime_context.agent_name:
             raise PermissionError("MCP runtime authority context does not match registered scope")
+        # Zweite Pruefung der Herkunft (die erste sitzt im Planausfuehrer): haelt auch, wenn ein
+        # Aufruf am Planausfuehrer vorbei hierher kommt. Vor jeder Anfrage an OpenFang.
+        from .herkunft import ABLEHNUNG, tor_mcp
+        if not tor_mcp(runtime_context.eingabe_herkunft, self.server, self.tool,
+                       authority.required_origin):
+            raise PermissionError(ABLEHNUNG)
         prepared = RuntimeAuthorityClient.from_environment().prepare_invocation(runtime_context)
         if isinstance(prepared, RuntimeAuthorityPending):
             return {
@@ -1116,6 +1122,21 @@ class McpExecutor(_BaseRemoteExecutor):
                 from .sales_antwort import ablehnung_aus_ergebnis
                 raise RuntimeError(ablehnung_aus_ergebnis(result))
             raise RuntimeError("OpenFang MCP tool returned isError=true")
+        if self.server == "auftragsbuch":
+            # Inhalte von Auftraegen (Namen, Titel, Links) verlassen den Ausfuehrer nie: nur
+            # Kennung, Art, Stand, Anzahlen und Zahlen (core/ergebnis_text), bei auftrag_lesen dazu
+            # der feste Satz und das Sprungziel (core/sales_antwort). So stehen sie weder im
+            # Schrittergebnis noch in Spur, Protokoll, Synthese oder final_text.
+            from .ergebnis_text import fuers_protokoll
+            knapp = fuers_protokoll(self.target, result)
+            if not isinstance(knapp, dict):
+                knapp = {"stand": "unlesbar"}
+            if self.tool == "auftrag_lesen":
+                from .sales_antwort import gelesen
+                satz = gelesen(result)
+                if satz is not None:
+                    knapp = {**knapp, **satz}
+            return knapp
         return result
 
     def call_with_arg(
@@ -1223,6 +1244,8 @@ class McpAuthority:
     tool: str
     space_id: str = ""
     event_id: str = ""
+    # "betreiber": nur aus einer Eingabe des Betreibers (core/herkunft.tor_mcp), sonst leer.
+    required_origin: str = ""
 
     @property
     def target(self) -> str:
@@ -1266,6 +1289,12 @@ def _mcp_authority(
             f"deterministic MCP event '{event_id}' requires closed "
             "required_provenance [approval_ref, cost_ref]"
         )
+    required_origin = spec.get("required_origin")
+    if required_origin not in (None, "betreiber"):
+        # Unbekannter Wert: geschlossen scheitern, nie still als "ohne Herkunft" lesen.
+        raise RuntimeError(
+            f"deterministic MCP event '{event_id}' has unknown required_origin"
+        )
     allowed_servers = space.get("mcp_servers")
     if not isinstance(allowed_servers, list) or values["server"].strip() not in {
         item.strip() for item in allowed_servers
@@ -1292,6 +1321,7 @@ def _mcp_authority(
         **{name: value.strip() for name, value in values.items()},
         space_id=space_id,
         event_id=event_id,
+        required_origin=required_origin or "",
     )
 
 
