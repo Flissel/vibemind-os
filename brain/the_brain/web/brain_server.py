@@ -1692,6 +1692,10 @@ def create_app(testing: bool = False) -> FastAPI:
     from web.routers.classification import router as classification_router
     app.include_router(classification_router)
 
+    # Desktop-Ansicht: Klickmarken aus dem Aufgabenbuch, Klick durchreichen (nur lokal, nie aus Webseiten)
+    from web.routers.desktop_klicks import router as desktop_klicks_router
+    app.include_router(desktop_klicks_router)
+
     @app.get("/radial", response_class=HTMLResponse)
     async def radial_dashboard(request: Request):
         return templates.TemplateResponse(request, "radial_dashboard.html")

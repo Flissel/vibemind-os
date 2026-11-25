@@ -205,6 +205,35 @@ def sichtbare_fenster() -> Optional[list[dict[str, Any]]]:
         return None
 
 
+def fenster_unter_punkt(x: int, y: int) -> Optional[dict[str, Any]]:
+    """Das Hauptfenster unter einem Bildschirmpunkt: hwnd, titel, programm. None, wenn nicht lesbar.
+
+    Fuer die Sperrliste vor einem durchgereichten Klick: geprueft wird das Fenster, das den Klick
+    bekaeme, nicht das gerade aktive.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.WindowFromPoint.restype = wintypes.HWND
+        user32.WindowFromPoint.argtypes = [wintypes.POINT]
+        user32.GetAncestor.restype = wintypes.HWND
+        hwnd = user32.WindowFromPoint(wintypes.POINT(int(x), int(y)))
+        if not hwnd:
+            return None
+        hwnd = user32.GetAncestor(hwnd, 2) or hwnd  # GA_ROOT
+        laenge = user32.GetWindowTextLengthW(hwnd)
+        puffer = ctypes.create_unicode_buffer(max(laenge, 0) + 1)
+        user32.GetWindowTextW(hwnd, puffer, laenge + 1)
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return {"hwnd": int(hwnd), "titel": puffer.value, "programm": programm_aus_pid(int(pid.value))}
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def vordergrund() -> Optional[dict[str, Any]]:
     """Das aktive Fenster: hwnd, titel, pid, programm, monitor. None, wenn nicht lesbar."""
     if sys.platform != "win32":

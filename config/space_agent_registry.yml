@@ -270,6 +270,7 @@ spaces:
         - desktop_blick
         - desktop_fenster
         - desktop_app
+        - desktop_hand_klick
     default_context: [current_space, active_window]
     events:
       # Feste Aufrufe (ohne Modell) ueber den Desktop-Server.
@@ -297,6 +298,14 @@ spaces:
       desktop.app:
         tool: desktop_app
         required_params: [programm, modus]
+        required_provenance: [approval_ref, cost_ref]
+        execution: { kind: mcp, server: spaces-desktop }
+      # Klick aus der Desktop-Ansicht durchreichen (core/desktop_hand.py, POST /api/desktop/hand-klick):
+      # STOP, laufende Aufgabe und Sperrliste fuer das Fenster unter dem Punkt prueft das Werkzeug;
+      # jeder Klick als kurze Aufgabe "Hand: Klick" im Aufgabenbuch (Marken: GET /api/desktop/klicks).
+      desktop.hand:
+        tool: desktop_hand_klick
+        required_params: [x, y]
         required_provenance: [approval_ref, cost_ref]
         execution: { kind: mcp, server: spaces-desktop }
       desktop.read:
