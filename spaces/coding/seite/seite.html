@@ -11,8 +11,18 @@
   <p class="marke">VibeMind</p>
   <h1>Project Space</h1>
   <p id="verbindung" class="verbindung" role="status"></p>
+  <nav class="knoepfe" aria-label="Oberflächen">
+    <button type="button" data-ansicht="auftraege" aria-pressed="true">Aufträge</button>
+    <button type="button" data-ansicht="vorschau" aria-pressed="false">Live-Vorschau</button>
+    <button type="button" data-ansicht="vibe" aria-pressed="false">Vibe-Coder</button>
+    <button type="button" data-ansicht="engine" aria-pressed="false">Engine</button>
+  </nav>
 </header>
-<main>
+<section id="fremd" class="fremd" aria-live="polite" hidden>
+  <p id="fremd-satz" class="fremd-satz" hidden></p>
+  <iframe id="fremd-rahmen" title="Oberfläche" hidden></iframe>
+</section>
+<main id="auftraege">
   <nav aria-label="Läufe">
     <h2>Läufe</h2>
     <ul id="liste" class="liste"></ul>

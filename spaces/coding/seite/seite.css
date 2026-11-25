@@ -129,3 +129,18 @@ ul, ol { list-style: none; margin: 0; padding: 0; }
 .pruefzeile[data-ok="false"] { color: var(--fehler); }
 .pruefzeile[data-ok="offen"] { color: var(--leise); }
 .pruefzeile code { color: var(--sehr-leise); font-size: 12px; margin-left: 6px; }
+
+/* Vier Knoepfe oben: Auftraege ist die Seite, die anderen sind Rahmen. */
+.knoepfe { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.knoepfe button { font: inherit; font-size: 14px; color: var(--leise); cursor: pointer; padding: 6px 14px;
+  border-radius: 999px; border: 1px solid var(--rand); background: var(--flaeche); }
+.knoepfe button:hover { color: var(--text); border-color: var(--rand-violett); }
+.knoepfe button:focus-visible { outline: 2px solid var(--violett); outline-offset: 2px; }
+.knoepfe button[aria-pressed="true"] { color: var(--text); border-color: var(--violett); box-shadow: var(--glow); }
+.knoepfe button[data-laeuft="false"]::after { content: " ·"; color: var(--sehr-leise); }
+.fremd { padding: 10px 24px 24px; }
+.fremd-satz { color: var(--leise); padding: 28px 0; font-size: 16px; }
+.fremd iframe { display: block; width: 100%; height: calc(100vh - 150px); min-height: 420px; border: 1px solid var(--rand);
+  border-radius: 14px; background: #000; }
+@media (max-width: 760px) { .fremd { padding: 8px 16px 16px; } }
+[hidden] { display: none !important; }
