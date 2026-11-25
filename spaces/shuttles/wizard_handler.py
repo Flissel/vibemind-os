@@ -12,6 +12,7 @@ Each shuttle checkpoint maps to a wizard step:
 import asyncio
 import logging
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -83,6 +84,48 @@ def _kopfzeile(gelesen: Dict[str, Any]) -> Dict[str, Any]:
         "text": " · ".join(teile),
         "gruende_text": ", ".join(gruende),
     }
+
+
+_SATZENDE = re.compile(r"[.!?…](?=[\"'»“)\]]*(\s|$))")
+
+
+def _absatz_aus_white_paper(text: Any, grenze: int = 600) -> str:
+    """First content paragraph of a white paper, cut at a sentence boundary near ``grenze``.
+
+    Headings (``#``), rules (``---``) and blank lines are skipped; lines of one paragraph are
+    joined with spaces. No model.
+    """
+    if not isinstance(text, str):
+        return ""
+    absatz: list[str] = []
+    for zeile in text.splitlines():
+        z = zeile.strip()
+        if not z or z.startswith("#") or set(z) <= set("-*_="):
+            if absatz:
+                break
+            continue
+        absatz.append(z)
+    satz = " ".join(absatz)
+    if len(satz) <= grenze:
+        return satz
+    ende = 0
+    for treffer in _SATZENDE.finditer(satz, 0, grenze + 1):
+        ende = treffer.end()
+    if ende >= grenze // 3:
+        return satz[:ende].rstrip()
+    schnitt = satz.rfind(" ", 0, grenze)
+    return satz[:schnitt if schnitt > 0 else grenze].rstrip() + " …"
+
+
+def _beschreibung(project: Any, gelesen: Dict[str, Any]) -> tuple[str, str]:
+    """(description, source): the project's own description, else the white paper's first paragraph."""
+    eigene = project.description.strip() if isinstance(project.description, str) else ""
+    if eigene:
+        return eigene, "projekt"
+    aus_wp = _absatz_aus_white_paper((gelesen.get("white_paper") or {}).get("text"))
+    if aus_wp:
+        return aus_wp, "white_paper"
+    return "", "leer"
 
 
 def _load_wizard_config() -> Dict[str, Any]:
@@ -609,9 +652,10 @@ class ShuttleWizardHandler:
             state = self._get_state(shuttle_id)
             state["project_id"] = projekt_id
             state["bubble_id"] = project.from_idea_id or gelesen.get("bubble_id")
+            beschreibung, beschreibung_quelle = _beschreibung(project, gelesen)
             state["project"] = {
                 "name": project.name or gelesen.get("titel") or "",
-                "description": project.description or "",
+                "description": beschreibung,
                 "domain": "",
                 "target_users": "",
             }
@@ -631,6 +675,7 @@ class ShuttleWizardHandler:
             ]
             state["context"] = {
                 "white_paper": gelesen["white_paper"],
+                "beschreibung_quelle": beschreibung_quelle,
                 "sinnpruefung": _kopfzeile(gelesen),
                 "uebergabe": {"projekt_id": projekt_id, "bubble_id": state["bubble_id"], "am": gelesen["am"],
                               "pruefsumme": gelesen["pruefsumme"], "bewertung": gelesen["bewertung"]},
@@ -650,6 +695,7 @@ class ShuttleWizardHandler:
             "projekt_id": projekt_id,
             "wiederaufgenommen": wiederaufgenommen,
             "project": state["project"],
+            "beschreibung_quelle": (state.get("context") or {}).get("beschreibung_quelle"),
             "requirements_count": len(state["requirements"]),
             "kopfzeile": _kopfzeile(gelesen),
         }
