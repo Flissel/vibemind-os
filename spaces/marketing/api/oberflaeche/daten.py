@@ -340,3 +340,66 @@ def folge_abbrechen(aid: str) -> None:
     """ton.pult_abbrechen prueft die Firma nicht: das tut bestellen.folge_abbrechen vorher."""
     from spaces.marketing.api import ton
     _rufen(ton.pult_abbrechen, aid=aid)
+
+
+# --- Stufe B, Punkt 3: Werkbank (lange Videos abnehmen; Arbeit ausloesen nur hinter dem Kosten-Schalter) ---
+
+VON = "marketing-oberflaeche"     # wer entschieden hat (Pult-Feld von)
+
+
+def _ok(antwort) -> bool:
+    return not (isinstance(antwort, dict) and antwort.get("ok") is False)
+
+
+def werke(mandant: str) -> list[dict]:
+    from spaces.marketing.api import werkbank
+    return _liste(_rufen(werkbank.pult_liste, mandant=mandant, limit=werkbank.LISTE_MAX), "werke")
+
+
+def werk(mandant: str, aid: str) -> dict:
+    """{werk, stand, werkbank, gliederung_kennung}; fremder oder unbekannter Auftrag -> abgelehnt (404)."""
+    from spaces.marketing.api import werkbank
+    antwort = _rufen(werkbank.pult_werk, aid=aid, mandant=mandant)
+    return antwort if isinstance(antwort, dict) else {}
+
+
+def werk_szene(mandant: str, aid: str, nr: int) -> dict:
+    from spaces.marketing.api import werkbank
+    antwort = _rufen(werkbank.pult_szene, aid=aid, nr=nr, mandant=mandant)
+    return antwort if isinstance(antwort, dict) else {}
+
+
+def werk_wunsch(mandant: str, kennung: str, wunsch: str) -> bool:
+    from spaces.marketing.api import werkbank
+    return _ok(_rufen(werkbank.pult_wunsch, kennung=kennung,
+                      payload={"mandant": mandant, "von": VON, "wunsch": wunsch}))
+
+
+def werk_urteil(mandant: str, kennung: str, urteil: str, wunsch: str) -> bool:
+    from spaces.marketing.api import werkbank
+    return _ok(_rufen(werkbank.pult_urteil, kennung=kennung,
+                      payload={"mandant": mandant, "von": VON, "urteil": urteil, "wunsch": wunsch or None}))
+
+
+def werk_szene_nochmal(mandant: str, aid: str, nr: int) -> bool:
+    from spaces.marketing.api import werkbank
+    return _ok(_rufen(werkbank.pult_nochmal, aid=aid, nr=nr, payload={"mandant": mandant, "von": VON}))
+
+
+def werk_szene_oeffnen(mandant: str, aid: str, nr: int, wunsch: str) -> bool:
+    from spaces.marketing.api import werkbank
+    return _ok(_rufen(werkbank.pult_oeffnen, aid=aid, nr=nr,
+                      payload={"mandant": mandant, "von": VON, "wunsch": wunsch}))
+
+
+def werk_neu_schreiben(mandant: str, aid: str, nr: int | None, wunsch: str) -> bool:
+    from spaces.marketing.api import werkbank
+    payload = {"mandant": mandant, "von": VON, "wunsch": wunsch}
+    if nr is None:
+        return _ok(_rufen(werkbank.pult_gliederung_wunsch, aid=aid, payload=payload))
+    return _ok(_rufen(werkbank.pult_szene_wunsch, aid=aid, nr=nr, payload=payload))
+
+
+def werk_neu_bauen(mandant: str, aid: str) -> bool:
+    from spaces.marketing.api import werkbank
+    return _ok(_rufen(werkbank.pult_neu_bauen, aid=aid, payload={"mandant": mandant, "von": VON}))

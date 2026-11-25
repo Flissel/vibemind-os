@@ -2,7 +2,7 @@
 seit Stufe B (25.11.) schreibend: Entwuerfe (vorlagen.py, entwuerfe.py), Plan und Kampagnen (plan.py),
 Markenprofil ueber den Assistenten (marke.py); Reels und Folgen abspielen (medien.py, Tag 4); Bilder zuordnen
 und Collagen bearbeiten (entwuerfe.py, Tag 5); Reels und Folgen bestellen hinter dem Kosten-Schalter
-(bestellen.py, Punkt 2).
+(bestellen.py, Punkt 2); lange Videos in der Werkbank abnehmen (werkbank.py, Punkt 3).
 
 Die App zeigt sie im Marketing-Reiter (MARKETING_UI_URL) und haengt den Schluessel aus der Umgebung
 als Bearer an (bearerEnv). Die API prueft ihn gegen MARKETING_UI_KEY. Gesendet wird hier nichts:
@@ -13,10 +13,10 @@ from fastapi import APIRouter
 from fastapi.responses import RedirectResponse
 
 from spaces.marketing.api.oberflaeche import (assistent, bestellen, entwuerfe, huelle, marke, medien, newsletter,
-                                              plan, podcast, reels, vorlagen)
+                                              plan, podcast, reels, vorlagen, werkbank)
 
 SEITEN = (("/newsletter", newsletter), ("/entwuerfe", entwuerfe), ("/vorlagen", vorlagen), ("/plan", plan), ("/marke", marke), ("/reels", reels),
-          ("/podcast", podcast))
+          ("/podcast", podcast), ("/werkbank", werkbank))
 # Module mit eigenem Woerterbuch (der Sprachtest prueft jedes)
 MODULE_MIT_TEXTEN = (huelle, assistent, bestellen) + tuple(m for _, m in SEITEN)
 
@@ -68,3 +68,13 @@ router.add_api_route("/reels/{aid}/nochmal", bestellen.reel_nochmal, methods=["P
 router.add_api_route("/reels/{aid}/abbrechen", bestellen.reel_abbrechen, methods=["POST"])
 router.add_api_route("/podcast/bestellen", bestellen.folge_bestellen, methods=["POST"])
 router.add_api_route("/podcast/{aid}/abbrechen", bestellen.folge_abbrechen, methods=["POST"])
+# Stufe B, Punkt 3: Werkbank (lesen immer; Abnahme hinter dem Kosten-Schalter, Wunsch speichern immer)
+router.add_api_route("/werkbank/{aid}", huelle.seiten_route("/werkbank", werkbank.werk_bauen), methods=["GET"])
+router.add_api_route("/werkbank/{aid}/szene/{nr}", huelle.seiten_route("/werkbank", werkbank.szene_bauen),
+                     methods=["GET"])
+router.add_api_route("/werkbank/{aid}/urteil", werkbank.urteil, methods=["POST"])
+router.add_api_route("/werkbank/{aid}/wunsch", werkbank.wunsch_speichern, methods=["POST"])
+router.add_api_route("/werkbank/{aid}/szene/{nr}/nochmal", werkbank.szene_nochmal, methods=["POST"])
+router.add_api_route("/werkbank/{aid}/szene/{nr}/oeffnen", werkbank.szene_oeffnen, methods=["POST"])
+router.add_api_route("/werkbank/{aid}/neu-schreiben", werkbank.neu_schreiben, methods=["POST"])
+router.add_api_route("/werkbank/{aid}/neu-bauen", werkbank.neu_bauen, methods=["POST"])
