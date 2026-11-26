@@ -235,8 +235,34 @@ def _offene_bubble(kontext: dict) -> str:
     raise _Rueckfrage("Dafür muss eine Bubble offen sein. Öffne eine Bubble und sag es noch einmal.")
 
 
-def _karte(name: str, kontext: dict) -> dict:
-    """Genau eine Karte zu einem Namen, einem Fuerwort oder der Auswahl; sonst Rueckfrage."""
+# "die Notiz" ohne Namen (Lauf 35): bei Saetzen, die Text schreiben oder loeschen, nicht still die
+# zuletzt bearbeitete Karte nehmen, sondern fragen (sie steht als Vorschlag vorn).
+_OHNE_NAMEN = ("notiz", "karte", "idee", "die notiz", "die karte", "die idee", "diese notiz", "diese karte",
+               "dieser notiz", "dieser karte", "der notiz", "der karte")
+
+
+def _welche_notiz(kontext: dict, wort: str) -> _Rueckfrage:
+    """Rueckfrage "Welche Notiz?" mit den Karten der Bubble, die zuletzt bearbeitete zuerst."""
+    if _bubble_zu(kontext):
+        return _Rueckfrage(keine_bubble_offen(""))
+    karten = _karten(kontext)
+    if not karten:
+        return _Rueckfrage("Welche Notiz? Nenn ihren Titel oder markiere sie.")
+    zuletzt = kontext.get("last_id")
+    kandidaten = [k for k in karten if k["id"] == zuletzt] + [k for k in karten if k["id"] != zuletzt]
+    zeilen = [f"{n}. „{re.sub(chr(10), ' ', str(k.get('title') or 'ohne Titel'))[:60]}“"
+              + (" (zuletzt bearbeitet)" if k["id"] == zuletzt else "")
+              for n, k in enumerate(kandidaten[:9], start=1)]
+    mehr = f" (und {len(kandidaten) - 9} weitere)" if len(kandidaten) > 9 else ""
+    return _Rueckfrage(f"Welche Notiz? {'; '.join(zeilen)}{mehr}. Sag die Nummer oder den Titel; "
+                       "geändert habe ich noch nichts.", kandidaten=kandidaten, name=wort)
+
+
+def _karte(name: str, kontext: dict, nachfragen: bool = False) -> dict:
+    """Genau eine Karte zu einem Namen, einem Fuerwort oder der Auswahl; sonst Rueckfrage.
+
+    ``nachfragen``: "die Notiz" ohne Namen nimmt nur eine einzelne Auswahl, sonst Rueckfrage.
+    """
     karten = _karten(kontext)
     nach_id = {k["id"]: k for k in karten}
     wort = _normal(re.sub(rf"^{_KARTE}", "", name.strip(), flags=_I))
@@ -244,6 +270,11 @@ def _karte(name: str, kontext: dict) -> dict:
     if isinstance(gewaehlt, dict) and wort in gewaehlt:
         # Antwort auf eine offene Rueckfrage: genau diese Karte fuer genau diesen Namen.
         return gewaehlt[wort]
+    if nachfragen and wort in _OHNE_NAMEN:
+        auswahl = [i for i in kontext.get("selection") or [] if ist_kennung(i)]
+        if len(auswahl) == 1 and not _bubble_zu(kontext):
+            return nach_id.get(auswahl[0], {"id": auswahl[0], "title": ""})
+        raise _welche_notiz(kontext, wort)
     if wort in ("das", "die", "sie", "es", "diese", "dies", "die letzte", "die letzte notiz", "die letzte karte",
                 "die notiz", "die karte", "diese notiz", "diese karte", "die markierte", "die auswahl",
                 "dieser notiz", "dieser karte", "der notiz", "der karte", "dem", "der", "ihr", "ihm"):
@@ -380,7 +411,7 @@ def _grenze_pruefen(ereignis: str, kontext: dict) -> None:
 
 
 def _karte_und_rest(text: str, kopf: str, trenner: str, kontext: dict,
-                    fuss: str = "") -> Optional[tuple[dict, str]]:
+                    fuss: str = "", nachfragen: bool = False) -> Optional[tuple[dict, str]]:
     """``kopf KARTE trenner REST fuss``: jede Trennstelle von links probieren.
 
     Namen koennen das Trennwort selbst enthalten ("Reise in Berlin"); genommen wird die
@@ -397,7 +428,7 @@ def _karte_und_rest(text: str, kopf: str, trenner: str, kontext: dict,
         if not name or not rest:
             continue
         try:
-            return _karte(name, kontext), rest
+            return _karte(name, kontext, nachfragen), rest
         except _Rueckfrage as frage:
             erste = erste or frage
     if erste is not None:
@@ -548,7 +579,7 @@ def _jetzt() -> float:
 def _merken(schluessel: str, text: str, frage: _Rueckfrage, zeilen: Optional[str] = None) -> None:
     if frage.wahl:
         _OFFEN[schluessel] = {"satz": text, "wahl": frage.wahl, "frage": str(frage), "zeit": _jetzt()}
-    elif len(frage.kandidaten) >= 2 and frage.name is not None:
+    elif len(frage.kandidaten) >= 1 and frage.name is not None:
         _OFFEN[schluessel] = {"satz": text, "name": frage.name, "kandidaten": frage.kandidaten,
                               "frage": str(frage), "zeit": _jetzt(), "zeilen": zeilen}
     else:
@@ -644,9 +675,10 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
                         f"Begründung {argumente['nummer']}{zu} ist gelöscht. Mit „Zurück“ holst du sie wieder.")
 
     # ── Karte loeschen: nie direkt, zuerst die Rueckfrage (core/loesch_bestaetigung) ──
-    m = re.fullmatch(rf"(?:l(?:ö|oe)sch(?:e)?|entfern(?:e)?)\s+(?P<k>{_KARTE}.+)", text, _I)
+    m = re.fullmatch(rf"(?:l(?:ö|oe)sch(?:e)?|entfern(?:e)?)\s+(?P<k>{_KARTE}.+|(?:(?:die|diese|der)\s+)?"
+                     r"(?:notiz|karte))", text, _I)
     if m:
-        karte = _karte(m.group("k"), kontext)
+        karte = _karte(m.group("k"), kontext, nachfragen=True)
         titel = str(karte.get("title") or "").strip()
         name = f"Die Karte „{titel}“" if titel else "Die Karte"
         return {**_treffer("idea.delete", {"id": karte["id"]},
@@ -692,13 +724,19 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
 
     # ── ganzen Text ersetzen: "Ersetze den Text von X durch: ..." (ueberschreibt; "Zurück" holt ihn wieder) ──
     gefunden = _karte_und_rest(text, r"ersetz(?:e)?\s+den\s+(?:ganzen\s+)?(?:text|inhalt)\s+(?:von|bei|in)\s+",
-                               r"\s+durch\s*:?\s*", kontext)
+                               r"\s+durch\s*:?\s*", kontext, nachfragen=True)
     if gefunden:
         karte, neu = gefunden
         return _ganz_ersetzen(karte, _mit_zeilen(neu, kontext))
 
+    m = re.fullmatch(r"ersetz(?:e)?\s+den\s+(?:ganzen\s+)?(?:text|inhalt)"
+                     r"(?:\s+(?P<k>(?:der|dieser)\s+(?:notiz|karte)))?\s*:\s*(?P<t>.+)", text, _I)
+    if m:
+        karte = _karte(m.group("k") or "die notiz", kontext, nachfragen=True)
+        return _ganz_ersetzen(karte, _mit_zeilen(m.group("t").strip(), kontext))
+
     # ── ersetzen: "Ersetze in X: A durch B" (der Server ersetzt genau eine Stelle oder scheitert) ──
-    gefunden = _karte_und_rest(text, r"ersetz(?:e)?\s+(?:in|bei)\s+", r"\s*:\s*", kontext)
+    gefunden = _karte_und_rest(text, r"ersetz(?:e)?\s+(?:in|bei)\s+", r"\s*:\s*", kontext, nachfragen=True)
     if gefunden:
         karte, rest = gefunden
         alt, neu = _alt_und_neu(rest)
@@ -728,7 +766,7 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
         (r"erg(?:ä|ae)nze\s+", r"\s+um\s*:?\s*"),
     ):
         try:
-            gefunden = _karte_und_rest(text, kopf, trenner, kontext)
+            gefunden = _karte_und_rest(text, kopf, trenner, kontext, nachfragen=True)
         except _Rueckfrage as frage:
             if frage.kandidaten:
                 raise
@@ -741,7 +779,8 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
         raise erste
 
     # ── aendern ohne Art: "Ändere die Notiz X: ..." (ersetzen oder ergaenzen? geraten wird nie) ──
-    gefunden = _karte_und_rest(text, r"(?:ä|ae)ndere\s+(?!den\s+(?:titel|namen)\b)", r"\s*:\s*", kontext)
+    gefunden = _karte_und_rest(text, r"(?:ä|ae)ndere\s+(?!den\s+(?:titel|namen)\b)", r"\s*:\s*", kontext,
+                               nachfragen=True)
     if gefunden:
         karte, neu = gefunden
         neu = _mit_zeilen(neu, kontext)
