@@ -486,8 +486,22 @@ def _bildregeln() -> str:
         f"- zitat: zitat (höchstens {p}), von (höchstens {z})\n"
         f"- vergleich: links und rechts, je {{\"titel\": höchstens {z} Zeichen, \"punkte\": 1 bis 4 Texte, je höchstens {p}}}\n"
         f"- agenda: punkte (genau 3 Texte, je höchstens {p}), aktiv (1, 2 oder 3: welcher Punkt gerade dran ist)\n"
+        + _coderegel(z) +
         "Alle Felder sind Pflicht und nicht leer. Beispiel: "
         "{\"vorlage\": \"zahl\", \"ab_satz\": 2, \"zahl\": \"40\", \"einheit\": \"%\", \"erklaerung\": \"…\"}")
+
+
+def _coderegel(z: int) -> str:
+    """Die Vorlage `code` nur, wenn am PC Code-Ordner erlaubt sind (WERKBANK_CODE_WURZELN)."""
+    from spaces.marketing.claw import video_code     # erst hier: video_code importiert video_slides
+    if not video_code.erlaubt():
+        return ""
+    ordner = ", ".join(sorted(video_code.wurzeln()))
+    return (f"- code: ueberschrift (höchstens {z}), quelle {{\"datei\": Pfad in einem Code-Ordner, \"von\": Zeile, "
+            f"\"bis\": Zeile}} ({video_slides.CODE_ZEILEN_MIN} bis {video_slides.CODE_ZEILEN_MAX} Zeilen), optional "
+            f"markiert (Liste von Positionen ab 0). Nur wenn die Notiz aus dem Konzept eine Code-Stelle mit Datei und "
+            f"Zeilen nennt. Schreibe keinen Code: die Zeilen liest die Werkbank selbst aus der Datei. "
+            f"Code-Ordner: {ordner}.\n")
 
 
 SZENEN_FORM = """{"szenen": [{"nr": 1, "sprechtext": "2 bis 8 Sätze, 35 bis 110 Wörter",
@@ -597,7 +611,13 @@ def _bild_texte(bild: object) -> list[str]:
     if not isinstance(schritte, list):
         return []
     return [t for st in schritte if isinstance(st, dict)
-            for k, v in st.items() if k != "vorlage" for t in _texte(v)]
+            for k, v in st.items() if k != "vorlage" and not (st.get("vorlage") == "code" and k in _CODE_FELDER)
+            for t in _texte(v)]
+
+
+# Auf einer Code-Folie kommen Zeilen, Dateiname und Zeilennummern aus der Datei selbst (claw/video_code.py liest sie
+# am PC): sie sind ihr eigener Beleg. Die Ueberschrift der Folie wird wie jeder andere Text geprueft.
+_CODE_FELDER = ("zeilen", "datei", "quelle", "ab_zeile", "markiert")
 
 
 def _kurz(wert: object) -> str:
