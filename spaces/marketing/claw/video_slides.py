@@ -387,7 +387,7 @@ def _inhalt(p: Schritt) -> str:
         bei = f.get("zurueck_bei") if isinstance(f.get("zurueck_bei"), str) else ""
         karten = "".join(
             f'<section class="ausgang {name} rein" style="--d:{z:.2f}s"><p class="richtung"><span class="pfeil">{pfeil}</span>'
-            f'{_e(wort)}</p><h3 class="ziel" style="--s:{_skala(f.get(name), 34, 0.6, 16)}">{_e(f.get(name))}</h3>'
+            f'{_e(wort)}</p><h3 class="ziel" style="--s:{_skala(f.get(name), 30, 0.6, 12)}">{_e(f.get(name))}</h3>'
             + (f'<p class="bei">ab {_e(bei)}</p>' if name == "zurueck" and bei else "") + "</section>"
             for (name, wort, pfeil), z in zip(AUSGAENGE, zeiten))
         return _fuellen(_baustein("ausgaenge.html"), {
