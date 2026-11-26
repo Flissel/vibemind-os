@@ -374,3 +374,45 @@ def test_todos_einer_sicht_bringen_hoechstens_das_fehlende():
     lauf, _ = mf.ergebnis_pruefen(ergebnis, rueckweg)
     coding = [t["punkte"] for t in lauf["todos"] if t["sicht"] == "coding"]
     assert coding == [5, 3, 3, 3, 2] and sum(coding) == 25 - 9
+
+
+# ── Ablehnung mit genauem Grund (erster Lauf im Betrieb, 26.11.2026) ─────────
+
+@pytest.mark.parametrize("anders, grund", [
+    (lambda e: e.pop("aufrufe"), "aufrufe fehlt"),
+    (lambda e: e["sichten"].pop("ideas"), "fehlen: ideas"),
+    (lambda e: e["sichten"]["coding"]["kriterien"].pop(), "raster unvollstaendig in Sicht coding (kriterien: 4"),
+    (lambda e: e["sichten"]["research"]["kriterien"][1].update(punkte=9),
+     "kriterium 2 in Sicht research: punkte (0-5) ungueltig"),
+    (lambda e: e["sichten"]["rowboat"].update(punkte=3), "punkte der Sicht rowboat (3) ungleich Summe des Rasters (15)"),
+    (lambda e: e["sichten"]["ideas"].update(urteil=""), "urteil in Sicht ideas"),
+    (lambda e: e["sichten"]["swe_design"]["todos"][0].update(punkte=40),
+     "todo 1 in Sicht swe_design ungueltig: punkte 40 ausserhalb 1-25"),
+    (lambda e: e["sichten"]["coding"]["todos"][0].update(karten=["K99"]),
+     "todo 1 in Sicht coding ungueltig: unbekannte Kuerzel K99"),
+])
+def test_ablehnung_nennt_den_genauen_grund(anders, grund):
+    _, rueckweg = _vorbereitet()
+    ergebnis = _ergebnis(rueckweg)
+    anders(ergebnis)
+    lauf, satz, ablehnung = mf.ergebnis_grund(ergebnis, rueckweg)
+    assert lauf is None and satz and grund in ablehnung
+    assert mf.ergebnis_pruefen(ergebnis, rueckweg) == (None, satz)
+
+
+def test_abgelehntes_ergebnis_steht_mit_grund_in_pruefung_und_protokoll(caplog):
+    _, rueckweg = _vorbereitet()
+    ergebnis = _ergebnis(rueckweg)
+    ergebnis["sichten"]["coding"]["kriterien"].pop()
+    tabelle = _Tabelle([_zeile(rueckweg)])
+    schreiber = _Rueckweg()
+    with caplog.at_level("WARNING", logger=mf.logger.name):
+        mf.runde(tabelle, stand=_stand(200, {"status": "completed", "aufrufe": 5, "result": ergebnis}),
+                 anschluss=schreiber)
+    assert schreiber.aufrufe == []
+    (_, status, pruefung), = tabelle.geschlossen
+    assert status == "fehler"
+    assert pruefung["reason"].startswith("result rejected: raster unvollstaendig in Sicht coding")
+    assert pruefung["ablehnung"].startswith("raster unvollstaendig in Sicht coding")
+    assert any("raster unvollstaendig in Sicht coding" in r.getMessage() for r in caplog.records)
+
