@@ -84,6 +84,11 @@ Zustandswechsel ist eine SQL-Funktion `marketing.video_*`.
 - Code-Folien (Vorlage `code`): das Modell nennt nur die Stelle (`quelle: {datei, von, bis}`), die Zeilen liest der
   Arbeiter selbst aus der Datei (`claw/video_code.py`). Erlaubt sind nur die Ordner aus `WERKBANK_CODE_WURZELN`
   (`name=pfad;...`, leer = keine Code-Folien). Zahlen im Code brauchen keinen Beleg, die Ueberschrift schon.
+- Verlinkung der Videos (Vorlage `ausgaenge`, Zusatzfeld `mehr`): die letzte Folie zeigt drei Ausgaenge (`tiefer` =
+  Beispiel, `seitlich` = naechster Baustein, `zurueck` = Hauptvideo, auf Wunsch `zurueck_bei` als Zeitmarke wie
+  `4:10`); an jedem anderen Schritt zeigt `mehr` die Karte „Mehr dazu im Video: <Titel>". Das Modell erfaehrt davon
+  nur bei Auftraegen mit Konzept. Die Folien zeigen nur die Titel; die anklickbaren Karten und den Abspann legt man
+  beim Hochladen in YouTube an.
 - Ablauf: Gliederung, dann je Szene Text und Clip. Jedes Stueck segnet der Betreiber ab (Rowboat
   oder Sales-Seite `/marketing/werkbank`). Sind alle Clips abgenommen, fuegt der Arbeiter das
   Video zusammen (-14 LUFS) und Sales legt es in `/freigaben`.
