@@ -2,14 +2,14 @@
 
 Reiter Fertig, In Arbeit, Fehlgeschlagen, Archiv mit Karten (Titel, Status, Art, Format, Dauer,
 Datum). Seit Stufe B, Tag 4 spielen fertige Reels direkt in der Karte (medien.py, eigene Medienablage
-je Firma). Seit Punkt 2 bestellen, neu bauen und abbrechen (bestellen.py, Kosten-Schalter); Teilen folgt
-mit dem Versandauftrag (Stufe C).
+je Firma). Seit Punkt 2 bestellen, neu bauen und abbrechen (bestellen.py, Kosten-Schalter); seit Punkt 5
+teilen als Versandauftrag an Sales (teilen.py, derselbe Schalter).
 Daten: GET /api/pult/video."""
 from __future__ import annotations
 
 from starlette.concurrency import run_in_threadpool
 
-from spaces.marketing.api.oberflaeche import bestellen, daten, medien
+from spaces.marketing.api.oberflaeche import bestellen, daten, medien, teilen
 from spaces.marketing.api.oberflaeche.huelle import PFAD, Kontext, e, reiter
 
 SEITE = f"{PFAD}/reels"
@@ -34,7 +34,7 @@ TEXTE = {
         "fm_reel": "Hochformat 9:16", "fm_quadrat": "Quadrat 1:1", "fm_quer": "Querformat 16:9",
         "sekunden": "{n} s",
         "leer": "Noch keine Reels in diesem Bereich.",
-        "abspielen": "Fertige Reels spielen direkt hier. Teilen geht vorerst in der Sales-Oberfläche.",
+        "abspielen": "Fertige Reels spielen direkt hier. Teilen legt einen Versandauftrag an Sales an.",
         "hinweis": "Reels der Firma ansehen und bestellen. Versendet wird hier nichts.",
         "aenderung": "Änderungswunsch: {text}",
     },
@@ -50,7 +50,7 @@ TEXTE = {
         "fm_reel": "Portrait 9:16", "fm_quadrat": "Square 1:1", "fm_quer": "Landscape 16:9",
         "sekunden": "{n} s",
         "leer": "No reels in this section yet.",
-        "abspielen": "Finished reels play right here. Sharing still happens in the Sales interface for now.",
+        "abspielen": "Finished reels play right here. Sharing creates a sending request for Sales.",
         "hinweis": "Watch and order the company's reels. Nothing is sent from here.",
         "aenderung": "Change request: {text}",
     },
@@ -84,7 +84,7 @@ def dauer(k: Kontext, sekunden) -> str:
     return k.t(TEXTE, "sekunden", n=text)
 
 
-def karte(k: Kontext, a: dict) -> str:
+def karte(k: Kontext, a: dict, stand: dict | None = None) -> str:
     st = str(a.get("status") or "")
     chip = (f'<span class="chip {CHIP.get(st, "warn")}">{e(k.t(TEXTE, "st_" + st))}</span>' if st in STATUS else "")
     art = art_von(a)
@@ -101,7 +101,9 @@ def karte(k: Kontext, a: dict) -> str:
             + f'<p class="meta">{e(" · ".join(meta))}</p>'
             + (f'<p class="fehler">{e(befund)}</p>' if befund else "")
             + (f'<p class="meta">{e(k.t(TEXTE, "aenderung", text=wunsch))}</p>' if wunsch else "")
+            + bestellen.ki_pruefen(k, a)
             + bestellen.reel_knoepfe(k, a)
+            + teilen.formular(k, "reel", a, stand)
             + '</article>')
 
 
@@ -116,11 +118,22 @@ async def bauen(k: Kontext) -> tuple[str, str]:
     gewaehlt = gewaehlt if gewaehlt in je else vorgabe
     nav = reiter([(s, k.t(TEXTE, "r_" + s), len(je[s])) for s, _ in REITER], gewaehlt,
                  lambda s: f"{SEITE}?reiter={s}", k.t(TEXTE, "bereich"))
-    karten = "".join(karte(k, a) for a in je[gewaehlt])
+    stand = None
+    if any(a.get("status") == "fertig" for a in je[gewaehlt]):
+        try:
+            stand = teilen.je_auftrag(await run_in_threadpool(daten.geteilt, str(k.firma), "reel"))
+        except daten.DatenFehler:
+            stand = None
+    karten = "".join(karte(k, a, stand) for a in je[gewaehlt])
     inhalt = f'<div class="karten">{karten}</div>' if karten else f'<p class="leer">{e(k.t(TEXTE, "leer"))}</p>'
     try:
         namen = await run_in_threadpool(daten.bilder, str(k.firma)) if bestellen.an() else []
     except daten.DatenFehler:
         namen = None
-    return k.t(TEXTE, "titel"), (bestellen.meldung(k) + bestellen.reel_formular(k, namen) + nav
+    try:
+        material = await run_in_threadpool(daten.material) if bestellen.an() else None
+    except daten.DatenFehler:
+        material = None
+    return k.t(TEXTE, "titel"), (bestellen.meldung(k) + teilen.meldung(k) + bestellen.reel_formular(k, namen)
+                                 + bestellen.weitere_formulare(k, material) + nav
                                  + f'<p class="meta">{e(k.t(TEXTE, "abspielen"))}</p>' + inhalt)
