@@ -202,3 +202,18 @@ def test_todos_begrenzen_laesst_nullen_weg() -> None:
     assert regeln.todos_begrenzen(todos, 23) == [{"titel": "A", "punkte": 2}]
     assert regeln.todos_begrenzen(todos, 25) == []
     assert regeln.todos_begrenzen(todos, 5) == todos
+
+
+# ── Score in Prozent (Entscheid des Betreibers, Variante A, 26.11.2026) ──
+
+def test_score_ist_prozent_der_125_punkte() -> None:
+    assert [regeln.score_prozent(s) for s in (0, 1, 40, 75, 118, 119, 124, 125)] == [0, 1, 32, 60, 94, 95, 99, 100]
+    assert regeln.score_prozent(2) == 2                 # 1,6 -> 2
+    assert regeln.score_prozent(130) == 100 and regeln.score_prozent(-3) == 0
+
+
+def test_lauf_score_rechnet_die_summe_in_prozent() -> None:
+    lauf = {"sichten": {n: {"punkte": 25} for n in regeln.SICHTEN}}
+    assert regeln.lauf_summe(lauf) == 125 and regeln.lauf_score(lauf) == 100
+    lauf["sichten"]["coding"]["punkte"] = 19          # 119 von 125: genau an der Schwelle 95
+    assert regeln.lauf_score(lauf) == 95 == regeln.BEFOERDERN_SCHWELLE

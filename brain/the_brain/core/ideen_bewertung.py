@@ -362,7 +362,9 @@ def _todo_pruefen(todo: Any, sicht: str, kuerzel: Mapping[str, str], kuerzel_tit
 def bewertung_meldung(lauf: Mapping[str, Any], score: int, kuerzung: Optional[Mapping[str, Any]] = None) -> str:
     modul = _regeln()
     teile = ", ".join(f"{modul.SICHT_NAMEN[n]} {lauf['sichten'][n]['punkte']}" for n in modul.SICHTEN)
-    satz = f"Bewertung: {score} von 100 ({teile})."
+    # Score in Prozent (Variante A); die rohe Summe steht dabei, damit die Sichten zu je 25 aufgehen.
+    satz = f"Bewertung: {score} von 100 ({modul.lauf_summe(lauf)} von {modul.SICHT_MAX * len(modul.SICHTEN)} " \
+           f"Punkten: {teile})."
     if isinstance(lauf.get("aufrufe"), int) and not isinstance(lauf.get("aufrufe"), bool):
         n = lauf["aufrufe"]
         satz += f" Bewertet von MiroFish mit fünf Rollen, {n} Abo-Aufruf{'' if n == 1 else 'e'}."

@@ -247,7 +247,7 @@ def test_fuenf_gute_rollen_ergeben_ein_ergebnis():
     assert stand["status"] == "completed" and stand["error"] is None
     ergebnis = stand["result"]
     assert set(ergebnis["sichten"]) == set(bb.SICHTEN)
-    assert ergebnis["score"] == 5 * 15 and ergebnis["aufrufe"] == 5 and stand["aufrufe"] == 5
+    assert ergebnis["score"] == 60 and ergebnis["aufrufe"] == 5 and stand["aufrufe"] == 5
     assert ergebnis["kartenstand"] == STAND and ergebnis["graph"]["lose"] == ["K3", "K4"]
 
 
@@ -309,7 +309,7 @@ def test_route_schaetzen_starten_abfragen(monkeypatch):
     daten = antwort.get_json()["data"]
     assert "graph" not in daten and daten["aufrufe_hoechstens"] == 10
     stand = client.get(f"/api/bubble/evaluate/{daten['task_id']}").get_json()["data"]
-    assert stand["status"] == "completed" and stand["result"]["score"] == 75
+    assert stand["status"] == "completed" and stand["result"]["score"] == 60
 
 
 def test_route_falsche_anfrage_und_unbekannte_aufgabe():
@@ -343,3 +343,10 @@ def test_prompt_nennt_die_grenze_der_todos():
     anfrage = bb.anfrage_pruefen(_anfrage())
     system, _ = bb.rollen_nachrichten("coding", anfrage, bb.strukturgraph(anfrage))
     assert "höchstens das, was der Sicht fehlt" in system["content"]
+
+
+@pytest.mark.skipif(not KARTENREGELN.exists(), reason="Kartenregeln nur im Repo, nicht im Abbild")
+def test_score_prozent_wie_in_den_kartenregeln():
+    regeln = _laden("kartenregeln_prozent", KARTENREGELN)
+    for summe in range(-2, 130):
+        assert bb.score_prozent(summe) == regeln.score_prozent(summe), summe

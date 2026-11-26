@@ -46,7 +46,7 @@ def test_gueltige_antwort_ergibt_den_lauf_mit_kennungen() -> None:
     assert satz == "" and lauf["todos"] == [{"sicht": "research", "titel": "Sponsoren füllen",
                                              "fehlt": "„Sponsoren“ ist leer.", "karten": ["a0000002"],
                                              "punkte": 4, "art": "karte_fuellen"}]
-    assert bew._regeln().lauf_score(lauf) == 92
+    assert bew._regeln().lauf_summe(lauf) == 92 and bew._regeln().lauf_score(lauf) == 74   # 73,6 %
 
 
 @pytest.mark.parametrize("anders, teil", [
@@ -77,8 +77,9 @@ def test_meldung_nennt_score_sichten_und_top_drei() -> None:
     lauf, _ = bew.bewertung_pruefen(_antwort(
         research=_sicht(10, [_todo(punkte=2, titel="Quellen"), _todo(punkte=7, titel="Wettbewerb")]),
         ideas=_sicht(15, [_todo(punkte=5, titel="Tiefe"), _todo(punkte=1, titel="Klein")])), KURZ, TITEL)
-    meldung = bew.bewertung_meldung(lauf, 85)
-    assert meldung.startswith("Bewertung: 85 von 100 (Coding 20, SWE Design 20, Research 10, Wissenslage 20, Ideas 15).")
+    meldung = bew.bewertung_meldung(lauf, bew._regeln().lauf_score(lauf))
+    assert meldung.startswith("Bewertung: 68 von 100 (85 von 125 Punkten: Coding 20, SWE Design 20, Research 10, "
+                              "Wissenslage 20, Ideas 15).")
     assert "4 To-dos; am meisten bringen: 2. Wettbewerb (+7, Karte füllen); 3. Tiefe (+5" in meldung
     assert "„Erledige To-do N“" in meldung and "„To-do N erledigt“" in meldung
 

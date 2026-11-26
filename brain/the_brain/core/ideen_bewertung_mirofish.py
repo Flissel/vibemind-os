@@ -242,20 +242,36 @@ def executor_bauen(rendered_arg: Any, *, lesen: Lesen, trace_id: str, plan_id: s
 
 def ergebnis_pruefen(ergebnis: Any, rueckweg: Mapping[str, Any]) -> tuple[Optional[dict[str, Any]], str]:
     """(Lauf fuer ``idea.bewertung_speichern`` mit Quelle mirofish, "") oder (None, Satz). Wirft nie."""
+    lauf, satz, _ = ergebnis_grund(ergebnis, rueckweg)
+    return lauf, satz
+
+
+def ergebnis_grund(ergebnis: Any, rueckweg: Mapping[str, Any]) -> tuple[Optional[dict[str, Any]], str, str]:
+    """Wie ``ergebnis_pruefen``, dazu der genaue Grund einer Ablehnung (fuer ``pruefung`` und Protokoll).
+
+    Erster Lauf im Betrieb (26.11.2026): die Ablehnung sagte nur "nicht in der vereinbarten Form",
+    der Grund stand nirgends. Der Grund nennt Sicht und Feld, nie Karteninhalte.
+    """
     from .ideen_bewertung import _ganz, _text, _todo_pruefen
     from .ideen_dokument import kuerzel_ersetzen
 
     modul = _regeln()
     if not isinstance(ergebnis, Mapping):
-        return None, _FORM
+        return None, _FORM, "ergebnis ist kein Objekt"
     if ergebnis.get("kartenstand") != rueckweg["kartenstand"]:
-        return None, "MiroFish hat einen anderen Kartenstand bewertet; gespeichert ist nichts."
+        return None, "MiroFish hat einen anderen Kartenstand bewertet; gespeichert ist nichts.", \
+            "kartenstand anders als beim Start"
     sichten = ergebnis.get("sichten")
-    if not isinstance(sichten, Mapping) or set(sichten) != set(modul.SICHTEN):
-        return None, _FORM
+    if not isinstance(sichten, Mapping):
+        return None, _FORM, "sichten fehlen"
+    if set(sichten) != set(modul.SICHTEN):
+        fehlt = sorted(set(modul.SICHTEN) - set(sichten))
+        fremd = sorted(str(n)[:30] for n in set(sichten) - set(modul.SICHTEN))
+        return None, _FORM, f"sichten passen nicht (fehlen: {', '.join(fehlt) or '-'}; " \
+                            f"unbekannt: {', '.join(fremd) or '-'})"
     aufrufe = _ganz(ergebnis.get("aufrufe"), 0, modul.AUFRUFE_MAX)
     if aufrufe is None:
-        return None, _FORM
+        return None, _FORM, f"aufrufe fehlt oder ausserhalb 0-{modul.AUFRUFE_MAX}"
     kuerzel, titel = rueckweg["kuerzel"], rueckweg["kuerzel_titel"]
     aus: dict[str, dict[str, Any]] = {}
     todos: list[dict[str, Any]] = []
@@ -263,43 +279,69 @@ def ergebnis_pruefen(ergebnis: Any, rueckweg: Mapping[str, Any]) -> tuple[Option
         sicht = sichten[name]
         liste = sicht.get("kriterien") if isinstance(sicht, Mapping) else None
         if not isinstance(liste, list) or len(liste) != modul.KRITERIEN_JE_SICHT:
+            anzahl = len(liste) if isinstance(liste, list) else "keine Liste"
             return None, f"MiroFish hat für {modul.SICHT_NAMEN[name]} kein vollständiges Raster geliefert; " \
-                         "gespeichert ist nichts."
+                         "gespeichert ist nichts.", \
+                f"raster unvollstaendig in Sicht {name} (kriterien: {anzahl}, erwartet {modul.KRITERIEN_JE_SICHT})"
         kriterien = []
-        for k in liste:
+        for nr, k in enumerate(liste, start=1):
             if not isinstance(k, Mapping):
-                return None, _FORM
+                return None, _FORM, f"kriterium {nr} in Sicht {name} ist kein Objekt"
             kname = _text(k.get("name"), modul.KRITERIUM_NAME_ZEICHEN)
             punkte = _ganz(k.get("punkte"), 0, modul.KRITERIUM_MAX)
             grund = k.get("begruendung")
             grund = "" if grund in (None, "") else _text(grund, modul.KRITERIUM_GRUND_ZEICHEN)
             if kname is None or punkte is None or grund is None:
-                return None, _FORM
+                feld = "name" if kname is None else "punkte (0-%d)" % modul.KRITERIUM_MAX if punkte is None \
+                    else f"begruendung (hoechstens {modul.KRITERIUM_GRUND_ZEICHEN} Zeichen)"
+                return None, _FORM, f"kriterium {nr} in Sicht {name}: {feld} ungueltig"
             kriterien.append({"name": kname, "punkte": punkte, "begruendung": kuerzel_ersetzen(grund, titel)})
         summe = sum(k["punkte"] for k in kriterien)
         if _ganz(sicht.get("punkte"), 0, modul.SICHT_MAX) != summe:
             # Die Punkte der Sicht sind die Summe des Rasters; alles andere ist kein MiroFish-Ergebnis.
-            return None, f"Bei {modul.SICHT_NAMEN[name]} passen Punkte und Raster nicht zusammen; gespeichert ist nichts."
+            return None, f"Bei {modul.SICHT_NAMEN[name]} passen Punkte und Raster nicht zusammen; " \
+                         "gespeichert ist nichts.", \
+                f"punkte der Sicht {name} ({str(sicht.get('punkte'))[:10]}) ungleich Summe des Rasters ({summe})"
         urteil = _text(sicht.get("urteil"), modul.URTEIL_ZEICHEN)
         if urteil is None:
-            return None, _FORM
+            return None, _FORM, f"urteil in Sicht {name} fehlt oder ist laenger als {modul.URTEIL_ZEICHEN} Zeichen"
         aus[name] = {"punkte": summe, "urteil": kuerzel_ersetzen(urteil, titel), "kriterien": kriterien}
         liste_todos = sicht.get("todos", [])
         if not isinstance(liste_todos, list):
-            return None, _FORM
+            return None, _FORM, f"todos in Sicht {name} sind keine Liste"
         geprueft_sicht = []
-        for todo in liste_todos[:modul.TODOS_JE_SICHT]:
+        for nr, todo in enumerate(liste_todos[:modul.TODOS_JE_SICHT], start=1):
             geprueft, satz = _todo_pruefen(todo, name, kuerzel, titel, modul)
             if geprueft is None:
                 return None, satz.replace("Der Agent", "MiroFish").replace("es wurde nichts geändert",
-                                                                           "gespeichert ist nichts")
+                                                                           "gespeichert ist nichts"), \
+                    f"todo {nr} in Sicht {name} ungueltig: {_todo_grund(todo, kuerzel, modul)}"
             geprueft_sicht.append(geprueft)
         # Ein To-do bringt hoechstens, was der Sicht fehlt (Kartenregeln, auch wenn MiroFish es schon tut).
         todos += modul.todos_begrenzen(geprueft_sicht, summe)
     lauf = {"sichten": aus, "todos": todos, "gekuerzt": False, "quelle": modul.QUELLE_MIROFISH, "aufrufe": aufrufe}
-    if modul.lauf_fehler(lauf):
-        return None, _FORM
-    return lauf, ""
+    fehler = modul.lauf_fehler(lauf)
+    if fehler:
+        return None, _FORM, f"kartenregeln lehnen den lauf ab: {fehler}"
+    return lauf, "", ""
+
+
+def _todo_grund(todo: Any, kuerzel: Mapping[str, Any], modul: Any) -> str:
+    """Welches Feld eines To-dos nicht passt (nur Feldnamen, Kuerzel und Zahlen; kein Text)."""
+    if not isinstance(todo, Mapping):
+        return "kein Objekt"
+    punkte = todo.get("punkte")
+    if not (isinstance(punkte, int) and not isinstance(punkte, bool) and 1 <= punkte <= modul.SICHT_MAX):
+        return f"punkte {str(punkte)[:10]} ausserhalb 1-{modul.SICHT_MAX}"
+    if todo.get("art") not in modul.TODO_ARTEN:
+        return f"art {str(todo.get('art'))[:30]} unbekannt"
+    karten = todo.get("karten")
+    if not isinstance(karten, list):
+        return "karten keine Liste"
+    fremd = [str(k)[:12] for k in karten if k not in kuerzel]
+    if fremd:
+        return f"unbekannte Kuerzel {', '.join(fremd[:5])}"
+    return "titel oder fehlt ungueltig"
 
 
 # ── 4. Nachfassen ────────────────────────────────────────────────────────────
@@ -378,9 +420,9 @@ def nachfassen(zeile: Mapping[str, Any], *, stand: Http, beanspruchen: Callable[
         return "fehler", False, f"{satz} Gespeichert ist nichts.{kosten}", "failed", mehr
     if zustand != "completed":
         raise RuntimeError("MiroFish: Zustand unbekannt")
-    lauf, satz = ergebnis_pruefen(sicht.get("result"), rueckweg)
+    lauf, satz, ablehnung = ergebnis_grund(sicht.get("result"), rueckweg)
     if lauf is None:
-        return "fehler", False, satz, "result rejected", mehr
+        return "fehler", False, satz, f"result rejected: {ablehnung}", {**mehr, "ablehnung": ablehnung}
     # Erst beanspruchen, dann schreiben: so wird ein Ergebnis nie zweimal gespeichert.
     if not beanspruchen():
         return None
@@ -423,6 +465,10 @@ def runde(tabelle: Any, *, stand: Optional[Http] = None,
             z["mirofish_wartet"] += 1
             continue
         status, verified, meldung, grund, mehr = aus
+        if status == "fertig":
+            logger.info(f"[mirofish-bewertung] Auftrag {auftrag_id[:8]} fertig: {grund}")
+        else:
+            logger.warning(f"[mirofish-bewertung] Auftrag {auftrag_id[:8]} {status}: {grund}")
         if _schliessen(tabelle, auftrag_id, status, verified, meldung, grund, **mehr):
             z["mirofish_fertig" if status == "fertig" else "mirofish_fehler"] += 1
     return z
