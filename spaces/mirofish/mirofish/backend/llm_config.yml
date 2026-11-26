@@ -10,6 +10,7 @@
 
 keys:
   openfang: ${OPENFANG_API_KEY}
+  mirofish_shim: ${LLM_API_KEY}
 
 providers:
   openfang:
@@ -22,6 +23,18 @@ providers:
     # und stellte Wiederholungen hinter den noch laufenden Aufruf. Das Tor am PC wartet 300 s.
     max_retries: 1
     timeout_seconds: 280
+  # 26.11.2026, Entscheidung des Betreibers ("Ja, alles ueber den Shim"): MiroFish holt sein Modell ueber den
+  # eigenen Abo-Shim am PC (scripts/mirofish_shim.py im aeusseren Repo: Schluessel, hoechstens 2 gleichzeitig,
+  # Budget mirofish-simulation). Grund: Der Agentenweg ueber OpenFang reicht nur die letzte Nutzernachricht durch,
+  # gibt keine Werkzeugaufrufe weiter und hakt bei Antworten mit "posted ... twitter" nach (Phantom-Action-Pruefung),
+  # was die Rollenbeschreibungen verfaelscht und die Aufrufe verdoppelt. LLM_BASE_URL und LLM_API_KEY kommen aus
+  # der Betriebs-.env; fehlen sie, scheitert jeder Aufruf (kein Ausweichen auf OpenFang).
+  mirofish_shim:
+    type: openai
+    base_url: ${LLM_BASE_URL}
+    key_ref: mirofish_shim
+    max_retries: 1
+    timeout_seconds: 280
 
 default:
   provider: openfang
@@ -29,6 +42,7 @@ default:
   temperature: 0
 
 roles:
-  space_mirofish: { provider: openfang, model: "openfang:brain-forecaster", temperature: 0.2 }
+  # Abweichung vom zentralen Beispiel (dort openfang:brain-forecaster), siehe Kommentar am Provider mirofish_shim.
+  space_mirofish: { provider: mirofish_shim, model: "claude-code-haiku", temperature: 0.2 }
 
 overrides: {}
