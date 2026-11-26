@@ -790,14 +790,14 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
                           "(mit „Zurück“ holst du ihn wieder), „Ergänzen“ hängt deinen Text an.",
                           wahl={"ersetzen": _ganz_ersetzen(karte, neu), "ergaenzen": _ergaenzen(karte, neu)})
 
-    # ── umbenennen ──
+    # ── umbenennen ("die Notiz" ohne Namen fragt nach der Karte, Entscheidung des Betreibers K17) ──
     for kopf, trenner, fuss in (
         (r"(?:be)?nenne\s+", r"\s+um\s+in\s+", ""),
         (r"(?:be)?nenne\s+", r"\s+in\s+", r"\s+um"),
         (r"(?:ä|ae)ndere\s+den\s+(?:titel|namen)\s+(?:von\s+)?", r"\s+(?:in|zu|auf)\s+", ""),
         (r"gib\s+", r"\s+den\s+(?:titel|namen)\s+", ""),
     ):
-        gefunden = _karte_und_rest(text, kopf, trenner, kontext, fuss)
+        gefunden = _karte_und_rest(text, kopf, trenner, kontext, fuss, nachfragen=True)
         if gefunden:
             karte, neu = gefunden
             neu = neu.strip("\"'„“” ")

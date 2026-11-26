@@ -936,3 +936,30 @@ def test_lauf37_eine_andere_markierte_karte_gilt_weiter() -> None:
     frage = abk.loese("Ändere die Notiz: Samstag statt Sonntag", kontext)
     assert frage["rueckfrage"].startswith("Ersetzen oder ergänzen?") and "„Bühne“" in frage["rueckfrage"]
 
+
+# ── K17: Umbenennen ohne Namen fragt auch nach der Karte ────────────────────────────
+
+@pytest.mark.parametrize("satz", [
+    "Benenne die Notiz in Hauptbühne um",
+    "Nenne die Karte um in Hauptbühne",
+    "Ändere den Titel der Notiz in Hauptbühne",
+    "Gib der Notiz den Titel Hauptbühne",
+])
+def test_umbenennen_ohne_namen_fragt_welche_notiz(satz) -> None:
+    abk._OFFEN.clear()
+    antwort = abk.loese(satz, LAUF37)
+    assert set(antwort) == {"rueckfrage"}, antwort
+    assert antwort["rueckfrage"].startswith("Welche Notiz? 1. „Sponsoren“ (zuletzt bearbeitet); 2. „Bühne“")
+    treffer = abk.loese("2", LAUF37)
+    assert treffer["argumente"] == {"id": "a0000011", "title": "Hauptbühne"}
+
+
+def test_umbenennen_mit_namen_fuerwort_oder_markierung_wie_bisher() -> None:
+    abk._OFFEN.clear()
+    assert abk.loese("Benenne die Notiz Bühne in Hauptbühne um", LAUF37)["argumente"] == {
+        "id": "a0000011", "title": "Hauptbühne"}
+    assert abk.loese("Benenne sie in Hauptbühne um", LAUF37)["argumente"]["id"] == "a0000012"
+    markiert = {**LAUF37, "selection": ["a0000011"]}
+    assert abk.loese("Benenne die Notiz in Hauptbühne um", markiert)["argumente"] == {
+        "id": "a0000011", "title": "Hauptbühne"}
+
