@@ -900,3 +900,39 @@ def test_ohne_offene_bubble_fragt_nicht_nach_karten() -> None:
     antwort = abk.loese("Lösche die Notiz", _mit(bubble=None))
     assert "Welche Notiz?" not in antwort["rueckfrage"]
 
+
+# ── Lauf 37: die App schickt die zuletzt bearbeitete Karte als markiert mit ─────────────
+
+LAUF37 = {
+    "space": "ideas",
+    "bubble": {"id": "b0b1e001", "title": "Probelauf Stadtfest"},
+    "cards": [{"id": "a0000011", "title": "Bühne", "format": "note"},
+              {"id": "a0000012", "title": "Sponsoren", "format": "note"}],
+    # wie im Betrieb: die zuletzt angelegte Karte steht in last_id und zugleich als einzige Auswahl
+    "selection": ["a0000012"],
+    "last_id": "a0000012",
+}
+
+
+@pytest.mark.parametrize("satz", ["Ändere die Notiz: Samstag statt Sonntag", "Lösche die Notiz"])
+def test_lauf37_mitgeschickte_letzte_karte_ist_keine_wahl(satz) -> None:
+    abk._OFFEN.clear()
+    antwort = abk.loese(satz, LAUF37)
+    assert set(antwort) == {"rueckfrage"}, antwort
+    assert antwort["rueckfrage"].startswith("Welche Notiz? 1. „Sponsoren“ (zuletzt bearbeitet); 2. „Bühne“")
+
+
+def test_lauf37_nach_der_wahl_geht_es_weiter() -> None:
+    abk._OFFEN.clear()
+    abk.loese("Lösche die Notiz", LAUF37)
+    treffer = abk.loese("die erste", LAUF37)
+    assert treffer["ereignis"] == "idea.delete" and treffer["argumente"] == {"id": "a0000012"}
+
+
+def test_lauf37_eine_andere_markierte_karte_gilt_weiter() -> None:
+    abk._OFFEN.clear()
+    kontext = {**LAUF37, "selection": ["a0000011"]}
+    assert abk.loese("Lösche die Notiz", kontext)["argumente"] == {"id": "a0000011"}
+    frage = abk.loese("Ändere die Notiz: Samstag statt Sonntag", kontext)
+    assert frage["rueckfrage"].startswith("Ersetzen oder ergänzen?") and "„Bühne“" in frage["rueckfrage"]
+

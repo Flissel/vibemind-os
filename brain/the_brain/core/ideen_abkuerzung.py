@@ -272,7 +272,9 @@ def _karte(name: str, kontext: dict, nachfragen: bool = False) -> dict:
         return gewaehlt[wort]
     if nachfragen and wort in _OHNE_NAMEN:
         auswahl = [i for i in kontext.get("selection") or [] if ist_kennung(i)]
-        if len(auswahl) == 1 and not _bubble_zu(kontext):
+        # Lauf 37: Die App schickt die zuletzt angelegte oder bearbeitete Karte als markiert mit
+        # (selection == [last_id]). Das ist keine Wahl des Menschen; dann wird gefragt, mit ihr vorn.
+        if len(auswahl) == 1 and auswahl[0] != kontext.get("last_id") and not _bubble_zu(kontext):
             return nach_id.get(auswahl[0], {"id": auswahl[0], "title": ""})
         raise _welche_notiz(kontext, wort)
     if wort in ("das", "die", "sie", "es", "diese", "dies", "die letzte", "die letzte notiz", "die letzte karte",
