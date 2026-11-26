@@ -94,3 +94,8 @@ def test_szenen_prompt_nennt_die_verlinkung_nur_bei_einem_konzept():
     mit = video_texte.szenen_prompt({"thema": "Thema", "konzept": konzept}, gliederung,
                                     video_texte.szenen_liste(gliederung), kontext, "Brief")[1]
     assert "- ausgaenge:" not in ohne and "- ausgaenge:" in mit and "Mehr dazu im Video" in mit
+
+
+def test_langes_wort_im_titel_wird_kleiner_statt_umzubrechen():
+    html = html_fuer([S("titel", 0), S("ausgaenge", 1, zurueck="Roast: la_fungus_search")], saetze=SAETZE, dauer=9.0)
+    assert 'style="--s:0.75">Roast: la_fungus_search' in html and 'style="--s:1.00">Embeddings erklärt' in html
