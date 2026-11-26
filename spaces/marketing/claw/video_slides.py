@@ -22,7 +22,7 @@ from spaces.marketing.claw.schriften import REGISTER
 if TYPE_CHECKING:  # nur fuer Typen; zur Laufzeit kein Import des Sprech-Moduls
     from spaces.marketing.workers.video_stimme import Satz
 
-VORLAGEN = ("titel", "stichpunkte", "zahl", "zitat", "vergleich", "agenda", "code")
+VORLAGEN = ("titel", "stichpunkte", "zahl", "zitat", "vergleich", "agenda", "code", "ausgaenge")
 FELDER: dict[str, tuple[str, ...]] = {
     "titel": ("zeile", "unterzeile"),
     "stichpunkte": ("ueberschrift", "punkte"),
@@ -31,12 +31,18 @@ FELDER: dict[str, tuple[str, ...]] = {
     "vergleich": ("links", "rechts"),
     "agenda": ("punkte", "aktiv"),
     "code": ("ueberschrift", "datei", "zeilen", "ab_zeile", "markiert"),
+    "ausgaenge": ("ueberschrift", "tiefer", "seitlich", "zurueck", "zurueck_bei"),
 }
 CODE_ZEILEN_MIN, CODE_ZEILEN_MAX, CODE_ZEILE_MAX, CODE_DATEI_MAX = 2, 14, 92, 80
 SCHRITTE_MIN, SCHRITTE_MAX = 2, 5
 ZEILE_MAX, PUNKT_MAX = 60, 80
 STILL_MAX_S = 4.0                      # laenger steht ein Bild nicht ohne Einblendung still
-EINBLENDEN = ("stichpunkte", "vergleich")   # Vorlagen, deren Inhalt an Satzgrenzen erscheint
+EINBLENDEN = ("stichpunkte", "vergleich", "ausgaenge")   # Vorlagen, deren Inhalt an Satzgrenzen erscheint
+# Verlinkung der Videos untereinander (26.11.2026): die letzte Folie zeigt drei Ausgaenge (tiefer = Beispiel,
+# seitlich = naechster Baustein, zurueck = Hauptvideo, auf Wunsch mit Zeitmarke); an jedem anderen Schritt zeigt
+# das freiwillige Feld `mehr` die Karte "Mehr dazu im Video: <Titel>".
+AUSGAENGE = (("tiefer", "Tiefer", "\u2193"), ("seitlich", "Daneben", "\u2192"), ("zurueck", "Zur\u00fcck", "\u21a9"))
+ZEITMARKE = re.compile(r"\d{1,2}:[0-5]\d(:[0-5]\d)?")
 BLENDE_S = 0.2
 VARIANTEN = 3
 
@@ -122,6 +128,12 @@ def _felder_fehler(vorlage: str, f: dict) -> list[str]:
                 isinstance(m, int) and not isinstance(m, bool) and isinstance(zeilen, list) and 0 <= m < len(zeilen)
                 for m in markiert):
             fehler.append(f"{vorlage}: markiert nennt Zeilen, die es nicht gibt")
+    elif vorlage == "ausgaenge":
+        for name in ("ueberschrift", "tiefer", "seitlich", "zurueck"):
+            _text_fehler(vorlage, name, f.get(name), ZEILE_MAX, fehler)
+        bei = f.get("zurueck_bei")
+        if bei not in (None, "") and not (isinstance(bei, str) and ZEITMARKE.fullmatch(bei)):
+            fehler.append(f"{vorlage}: zurueck_bei ist eine Zeitmarke wie 4:10")
     elif vorlage == "agenda":
         _punkte_fehler(vorlage, "punkte", f.get("punkte"), 3, 3, fehler)
         aktiv = f.get("aktiv")
@@ -129,6 +141,11 @@ def _felder_fehler(vorlage: str, f: dict) -> list[str]:
             fehler.append(f"{vorlage}: aktiv fehlt")
         elif not 1 <= aktiv <= 3:
             fehler.append(f"{vorlage}: aktiv muss 1 bis 3 sein")
+    if "mehr" in f:                      # freiwillig; steht es da, ist es ein kurzer Videotitel
+        if vorlage == "ausgaenge":
+            fehler.append(f"{vorlage}: mehr gibt es auf dieser Folie nicht")
+        else:
+            _text_fehler(vorlage, "mehr", f.get("mehr"), ZEILE_MAX, fehler)
     return fehler
 
 
@@ -365,6 +382,17 @@ def _inhalt(p: Schritt) -> str:
             "rechts_d": f"{rechts_ab:.2f}",
             "links_punkte": _punkte(links, [0.3 + 0.12 * i for i in range(len(links))]),
             "rechts_punkte": _punkte(rechts, [rechts_ab + 0.3 + 0.12 * i for i in range(len(rechts))])})
+    if v == "ausgaenge":
+        zeiten = _punkt_zeiten(len(AUSGAENGE), p)
+        bei = f.get("zurueck_bei") if isinstance(f.get("zurueck_bei"), str) else ""
+        karten = "".join(
+            f'<section class="ausgang {name} rein" style="--d:{z:.2f}s"><p class="richtung"><span class="pfeil">{pfeil}</span>'
+            f'{_e(wort)}</p><h3 class="ziel" style="--s:{_skala(f.get(name), 34, 0.6, 16)}">{_e(f.get(name))}</h3>'
+            + (f'<p class="bei">ab {_e(bei)}</p>' if name == "zurueck" and bei else "") + "</section>"
+            for (name, wort, pfeil), z in zip(AUSGAENGE, zeiten))
+        return _fuellen(_baustein("ausgaenge.html"), {
+            "ueberschrift": _e(f.get("ueberschrift")), "s_ueberschrift": _skala(f.get("ueberschrift"), 40),
+            "karten": karten})
     pk = list(f.get("punkte") or [])
     aktiv = f.get("aktiv") if isinstance(f.get("aktiv"), int) else 1
     zeilen = "".join(
@@ -441,14 +469,19 @@ def komposition(szene: dict, plan: list[Schritt], marke: dict, ton_datei: str, d
             nummer = "" if p.vorlage == "agenda" else f'<div class="nummer">{i + 1:02d}</div>'   # Agenda hat eigene Nummern
             deko = f'<div class="deko">{nummer}</div>'
         zoom = f' class="bewegung zoom" style="--zoom-dauer:{p.dauer_s:.2f}s"' if _steht_still(p) else ' class="bewegung"'
+        mehr = p.felder.get("mehr") if p.vorlage != "ausgaenge" else None
+        karte = (f'<div class="mehr"><span>Mehr dazu im Video</span><b>{_e(mehr)}</b></div>'
+                 if isinstance(mehr, str) and mehr.strip() else "")
         teile.append(
             f'<div id="schritt{i + 1}" class="clip schritt v{variante} t-{p.vorlage}" data-start="{p.start_s:.3f}" '
             f'data-duration="{p.dauer_s:.3f}" data-track-index="1">{deko}'
-            f'<div{zoom}>{_inhalt(p)}</div></div>')
+            f'<div{zoom}>{_inhalt(p)}</div>{karte}</div>')
 
     logo = logo_name(marke)
     erklaer = erklaer if isinstance(erklaer, dict) else None
     if erklaer is not None:
+        if any(p.vorlage == "ausgaenge" for p in plan):   # neben den drei Karten bleibt die Figur klein
+            erklaer = {**erklaer, "figur_gross": False}
         teile.append(_erklaer_rahmen(erklaer, logo))
         logo = ""                 # das Logo steht in der Kopfzeile
     blende = ""

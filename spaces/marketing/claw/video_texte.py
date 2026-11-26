@@ -472,7 +472,9 @@ def szenen_liste(gliederung: dict) -> list[dict]:
     return flach
 
 
-def _bildregeln() -> str:
+def _bildregeln(verlinkung: bool = False) -> str:
+    """Die Vorlagen fuer das Modell. `verlinkung` (nur bei Auftraegen mit Konzept) nennt zusaetzlich die Folie
+    mit drei Ausgaengen und die Karte "Mehr dazu im Video"; ohne sie bleibt der Text wie bisher."""
     z, p = video_slides.ZEILE_MAX, video_slides.PUNKT_MAX
     return (
         f"Das Bild ist `{{\"schritte\": [...]}}` mit {video_slides.SCHRITTE_MIN} bis {video_slides.SCHRITTE_MAX} "
@@ -486,9 +488,19 @@ def _bildregeln() -> str:
         f"- zitat: zitat (höchstens {p}), von (höchstens {z})\n"
         f"- vergleich: links und rechts, je {{\"titel\": höchstens {z} Zeichen, \"punkte\": 1 bis 4 Texte, je höchstens {p}}}\n"
         f"- agenda: punkte (genau 3 Texte, je höchstens {p}), aktiv (1, 2 oder 3: welcher Punkt gerade dran ist)\n"
-        + _coderegel(z) +
-        "Alle Felder sind Pflicht und nicht leer. Beispiel: "
+        + _coderegel(z) + (_linkregel(z) if verlinkung else "") +
+        ("Alle anderen Felder sind Pflicht und nicht leer. Beispiel: " if verlinkung else
+         "Alle Felder sind Pflicht und nicht leer. Beispiel: ") +
         "{\"vorlage\": \"zahl\", \"ab_satz\": 2, \"zahl\": \"40\", \"einheit\": \"%\", \"erklaerung\": \"…\"}")
+
+
+def _linkregel(z: int) -> str:
+    return (f"- ausgaenge: ueberschrift (höchstens {z}), tiefer, seitlich, zurueck (je der Titel eines anderen "
+            f"Videos, höchstens {z}), zurueck_bei (freiwillig, Zeitmarke wie \"4:10\"). Nur als letzter Schritt der "
+            "letzten Szene und nur, wenn das Konzept die drei Ausgänge nennt.\n"
+            f"Freiwilliges Zusatzfeld an jedem anderen Schritt: mehr (Titel eines anderen Videos, höchstens {z}) "
+            "zeigt die Karte „Mehr dazu im Video“. Nur setzen, wo das Konzept auf dieses Video verweist. Erfinde "
+            "keine Videotitel und keine Zeitmarken.\n")
 
 
 def _coderegel(z: int) -> str:
@@ -557,7 +569,7 @@ def szenen_prompt(eingabe: dict, gliederung: dict, szenen: list[dict], kontext: 
         "- Zahlen in einer Folie der Vorlage `zahl` kommen aus den Belegen derselben Szene.\n"
         "- `aendert_text` ist true, wenn der Sprechtext neu oder geändert ist; bei einer zurückgegebenen Szene, "
         "deren Wunsch nur das Bild betrifft, bleibt der Sprechtext Wort für Wort gleich und `aendert_text` ist false.\n"
-        f"- `uebergang` ist {' oder '.join(UEBERGAENGE)}.\n- " + _bildregeln()
+        f"- `uebergang` ist {' oder '.join(UEBERGAENGE)}.\n- " + _bildregeln(bool(konzept))
         + (f"\n- Für diesen Auftrag ist `{KONZEPT}` eine weitere erlaubte `quelle`: für Aussagen, die im Konzept des "
            "Auftraggebers stehen (Kernaussage, Abschluss, Notizen der Szenen)." if konzept else ""),
         "# Antwortform (nur dieses JSON, genau eine Zeile je angefragter Szene, `nr` wie oben)\n" + SZENEN_FORM,
@@ -612,6 +624,7 @@ def _bild_texte(bild: object) -> list[str]:
         return []
     return [t for st in schritte if isinstance(st, dict)
             for k, v in st.items() if k != "vorlage" and not (st.get("vorlage") == "code" and k in _CODE_FELDER)
+            and not (st.get("vorlage") == "ausgaenge" and k == "zurueck_bei")   # Zeitmarke: Verweis, keine Behauptung
             for t in _texte(v)]
 
 

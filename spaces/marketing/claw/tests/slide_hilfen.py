@@ -15,6 +15,8 @@ def S(vorlage, ab, **felder):
         "agenda": {"punkte": ["x", "y", "z"], "aktiv": 1},
         "code": {"ueberschrift": "So sieht es aus", "datei": "corpus.py:84-86",
                  "zeilen": ["def teile(text):", "    return text.split()", ""], "ab_zeile": 84, "markiert": [1]},
+        "ausgaenge": {"ueberschrift": "Wie geht es weiter?", "tiefer": "Chunking am Beispiel",
+                      "seitlich": "Embeddings erklärt", "zurueck": "Der Roast"},
     }[vorlage]
     return {"vorlage": vorlage, "ab_satz": ab, **{**standard, **felder}}
 
