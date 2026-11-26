@@ -645,6 +645,7 @@ Antworte mit genau einem JSON-Objekt und sonst nichts, in EINER Zeile, ohne Code
 {"aktion":"wait","seconds":<0-5>,"warum":"<kurz>"}
 {"aktion":"fertig","ergebnis":"<ein Satz: was jetzt am Bildschirm der Fall ist>"}
 {"aktion":"abbruch","grund":"<ein Satz>"}
+"warum" hat hoechstens 120 Zeichen, "ergebnis" und "grund" hoechstens 300; laenger lehnt das Gehirn ab.
 
 Regeln, die das Gehirn prueft: Klicke nur ein Element aus der Liste ELEMENTE, mit dessen
 Namen und Punkt. "auswahl" nur, wenn der AUFTRAG eine Stelle nennt ("den zweiten Eintrag",

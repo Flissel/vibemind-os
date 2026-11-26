@@ -199,6 +199,22 @@ def test_tipptext_ohne_umbruch_und_steuerzeichen(text):
                                             "text": text, "why": "x"})
 
 
+def test_die_anweisung_nennt_die_laengengrenzen_die_das_gehirn_prueft():
+    # Hermes lehnte im Trockenlauf zweimal ab, weil "warum" laenger war als erlaubt und die ANWEISUNG
+    # nur "<kurz>" sagte. Die Zahlen in der ANWEISUNG muessen die geprueften sein.
+    from core.desktop_schleife_contract import ANWEISUNG, MAX_ERGEBNIS, MAX_WARUM
+
+    assert f'"warum" hat hoechstens {MAX_WARUM} Zeichen' in ANWEISUNG
+    assert f'"ergebnis" und "grund" hoechstens {MAX_ERGEBNIS}' in ANWEISUNG
+    klick = {"aktion": "click", "x": 100, "y": 200, "ziel": "Editor"}
+    assert pruefe_aktion(json.dumps({**klick, "warum": "w" * MAX_WARUM}), auftrag=AUFTRAG, elemente=ELEMENTE)
+    with pytest.raises(AktionAbgelehnt):
+        pruefe_aktion(json.dumps({**klick, "warum": "w" * (MAX_WARUM + 1)}), auftrag=AUFTRAG, elemente=ELEMENTE)
+    assert pruefe_aktion(j(aktion="fertig", ergebnis="e" * MAX_ERGEBNIS), auftrag=AUFTRAG, elemente=ELEMENTE)
+    with pytest.raises(AktionAbgelehnt):
+        pruefe_aktion(j(aktion="fertig", ergebnis="e" * (MAX_ERGEBNIS + 1)), auftrag=AUFTRAG, elemente=ELEMENTE)
+
+
 def test_harmlose_tasten_brauchen_keinen_vorlauf():
     for taste in ("tab", "escape", "backspace", "up", "down", "pagedown", "home"):
         antwort = j(aktion="key", key=taste, warum="x")
