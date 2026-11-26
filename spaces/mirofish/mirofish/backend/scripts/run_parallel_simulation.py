@@ -1038,6 +1038,19 @@ def create_model(config: Dict[str, Any], use_boost: bool = False):
     )
 
 
+def _llm_semaphore() -> int:
+    """Zahl gleichzeitiger Modellaufrufe der Simulation.
+
+    Vorgabe 4 statt der frueheren 30: Ueber das Abo ist jeder Aufruf ein eigener Claude-Prozess am PC;
+    der Shim dort laesst ohnehin nur zwei zugleich laufen, der Rest wartet. Einstellbar 1 bis 30.
+    """
+    try:
+        zahl = int((os.environ.get("MIROFISH_SIM_GLEICHZEITIG") or "4").strip())
+    except ValueError:
+        zahl = 4
+    return max(1, min(zahl, 30))
+
+
 def get_active_agents_for_round(
     env,
     config: Dict[str, Any],
@@ -1157,7 +1170,7 @@ async def run_twitter_simulation(
         agent_graph=result.agent_graph,
         platform=oasis.DefaultPlatformType.TWITTER,
         database_path=db_path,
-        semaphore=30,  # Limit maximum concurrent LLM requests to prevent API overload
+        semaphore=_llm_semaphore(),  # Gleichzeitige Modellaufrufe, Vorgabe 4 (MIROFISH_SIM_GLEICHZEITIG)
     )
     
     await result.env.reset()
@@ -1348,7 +1361,7 @@ async def run_reddit_simulation(
         agent_graph=result.agent_graph,
         platform=oasis.DefaultPlatformType.REDDIT,
         database_path=db_path,
-        semaphore=30,  # Limit maximum concurrent LLM requests to prevent API overload
+        semaphore=_llm_semaphore(),  # Gleichzeitige Modellaufrufe, Vorgabe 4 (MIROFISH_SIM_GLEICHZEITIG)
     )
     
     await result.env.reset()
