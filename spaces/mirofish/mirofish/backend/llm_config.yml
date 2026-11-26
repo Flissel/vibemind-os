@@ -17,8 +17,11 @@ providers:
     base_url: ${OPENFANG_URL}/v1
     key_ref: openfang
     fail_closed: true
-    max_retries: 3
-    timeout_seconds: 30
+    # Ein Abo-Aufruf ueber OpenFang dauert 10 bis ueber 100 s; OpenFang arbeitet Anfragen an denselben
+    # Agenten nacheinander ab. 30 s mit 3 Wiederholungen brach jeden laengeren Aufruf ab ("OpenFang unreachable")
+    # und stellte Wiederholungen hinter den noch laufenden Aufruf. Das Tor am PC wartet 300 s.
+    max_retries: 1
+    timeout_seconds: 280
 
 default:
   provider: openfang
