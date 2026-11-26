@@ -27,7 +27,9 @@ if [ -n "$(git -C "$REPO" status --porcelain --untracked-files=no)" ]; then
 fi
 
 ALT="$(git -C "$REPO" rev-parse --short HEAD)"
-git -C "$REPO" fetch --quiet origin master
+# Ohne Submodule: der Laufzeit-Checkout ist sparse (nur spaces/mirofish); ein Nachziehen der Submodule
+# scheitert dort mit "Could not access submodule" und bricht das Skript vor dem Checkout ab.
+git -C "$REPO" fetch --quiet --no-recurse-submodules origin master
 git -C "$REPO" checkout --quiet --detach origin/master
 NEU="$(git -C "$REPO" rev-parse --short HEAD)"
 echo "Stand: $ALT -> $NEU"
