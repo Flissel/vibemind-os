@@ -14,21 +14,36 @@ ohne Planer:
    abgebrochen -> Fehler mit Grund; fertig -> das Ergebnis lesen und als ``ungeprueft`` abschliessen.
    Die Tests meldet die Engine selbst; unabhaengig geprueft ist das nicht, und das sagt der Satz.
 
-Jeder andere Satz verwirft die offene Rueckfrage. Es gibt keine Faehigkeit dafuer: ein Planer-Plan
-kann keinen Bau starten.
+Es gibt keine Faehigkeit dafuer: ein Planer-Plan kann keinen Bau starten.
+
+Absicherung (K8, 26.11.2026). Port 5000 ist nicht nur vom eigenen Rechner erreichbar, und das Gehirn
+antwortet CORS fuer jeden Ursprung. Darum:
+
+* Riegel: Rueckfrage und Bestaetigung nur mit lokalem Host-Kopf und ohne ``Origin`` und
+  ``Sec-Fetch-Site`` (also nie aus einer Webseite), wie ``POST /api/desktop/hand-klick``.
+* Jede Rueckfrage hat eine eigene ``frage_id``; nur wer sie bekommen hat, kann sie bestaetigen.
+  Andere Saetze verwerfen sie nicht mehr.
+* "Ja, bauen" gilt nur mit ``context.frage_id`` und dem Zeichen der App im Kopf ``X-Vibemind-Eingabe``:
+  ``eingabe_zeichen(VIBEMIND_EINGABE_SCHLUESSEL, "coding-bauen <frage_id>", <unix-sekunden>)``,
+  60 s gueltig, jedes Zeichen einmal. Ohne Schluessel im Gehirn startet nie ein Bau (fail-closed).
+* Schluessel lassen sich als Docker-Secret uebergeben: ``<NAME>_FILE`` (Pfad) geht vor ``<NAME>``.
 """
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
 import re
+import secrets
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
+
+from .geheimnis import geheimnis
 
 logger = logging.getLogger("brain.coding_auftrag")
 
@@ -41,6 +56,10 @@ WARTEN_S = 10.0
 GILT_S = 300
 FRIST_S = 45 * 60                # Zeitgrenze des Dienstes (30 min) plus Luft fuer Warten und Pruefen
 SATZ_MAX = 2000
+OFFEN_MAX = 20                   # hoechstens so viele offene Rueckfragen zugleich (aelteste fliegt)
+BELEG_PRAEFIX = "coding-bauen"   # die App zeichnet "coding-bauen <frage_id>"
+_FRAGE_ID = re.compile(r"^[0-9a-f]{32}$")
+_LOKALE_HOSTS = ("localhost", "127.0.0.1", "[::1]")
 
 _KENNUNG = re.compile(r"^c-\d{8}-[0-9a-f]{8}$")
 
@@ -75,9 +94,14 @@ OHNE_SCHLUESSEL = "Mir fehlt der Schreibschlüssel für den Project Space; gesta
 TABELLE_FEHLT = "Die Auftragstabelle ist nicht erreichbar; ohne sie starte ich keinen Bau."
 NICHT_GESTARTET = "Der Project Space hat den Bau nicht angenommen; geändert habe ich nichts."
 BESCHAEFTIGT = "Der Project Space baut gerade etwas anderes. Versuch es, wenn der Lauf fertig ist."
+NUR_AUS_DER_APP = ("Bauaufträge nehme ich nur aus der VibeMind-App auf diesem Rechner an; "
+                   "gestartet habe ich nichts.")
+NICHT_BELEGT = ("Die Bestätigung kam ohne gültiges Zeichen der App; gestartet habe ich nichts. "
+                "Bestätige den Bau bitte in der VibeMind-App.")
 
 _sperre = threading.Lock()
-_offen: Dict[str, Any] = {}
+_offen: Dict[str, Dict[str, Any]] = {}       # frage_id -> {"satz", "bis"}
+_verbraucht: Dict[str, float] = {}           # Zeichen -> Zeit der Verwendung (jedes Zeichen einmal)
 
 
 class CodingFehler(Exception):
@@ -117,7 +141,7 @@ def gesundheit() -> Tuple[int, Optional[Dict[str, Any]]]:
 
 
 def auftrag_senden(satz: str) -> Tuple[int, Optional[Dict[str, Any]]]:
-    schluessel = (os.environ.get("CODING_DIENST_SCHLUESSEL") or "").strip()
+    schluessel = geheimnis("CODING_DIENST_SCHLUESSEL")
     if not schluessel:
         raise CodingFehler(OHNE_SCHLUESSEL)
     return _anfrage("POST", "/api/auftrag", {"aufgabe": satz, "ohne_npm": True}, {KOPF_SCHLUESSEL: schluessel})
@@ -149,47 +173,133 @@ def _kurz(satz: str, grenze: int = 160) -> str:
     return flach if len(flach) <= grenze else flach[: grenze - 1].rstrip() + "…"
 
 
-def vorschau(satz: str, *, gesund: Optional[Callable[[], Tuple[int, Optional[Dict[str, Any]]]]] = None) -> str:
-    """Rueckfrage formulieren (kein Lauf); merkt den Satz fuer "Ja, bauen"."""
-    verwerfen()
+def riegel_offen(kopf: Mapping[str, Any], umgebung: Optional[Mapping[str, str]] = None) -> bool:
+    """Nur vom eigenen Rechner und nie aus einer Webseite (wie ``/api/desktop/hand-klick``).
+
+    Host-Kopf localhost/127.0.0.1/[::1] (weitere Namen: ``DECISION_GRAPH_HOSTS``) und weder
+    ``Origin`` noch ``Sec-Fetch-Site``: Browser schicken bei fetch immer ``Sec-Fetch-Site`` und bei
+    POST immer ``Origin``. Allein kein Schutz gegen Programme im Netz; der traegt erst das Zeichen.
+    """
+    def wert(name: str) -> str:
+        roh = kopf.get(name)
+        if roh is None:
+            roh = kopf.get(name.lower())
+        return str(roh or "").strip().lower()
+
+    host = wert("Host")
+    name = host.split("]", 1)[0] + "]" if host.startswith("[") else (host.rsplit(":", 1)[0] if ":" in host else host)
+    u = os.environ if umgebung is None else umgebung
+    weitere = tuple(h.strip().lower() for h in (u.get("DECISION_GRAPH_HOSTS") or "").split(",") if h.strip())
+    if not name or name not in _LOKALE_HOSTS + weitere:
+        return False
+    return not wert("Origin") and not wert("Sec-Fetch-Site")
+
+
+def _aufraeumen(jetzt: float) -> None:
+    """Verfallene Rueckfragen und alte Zeichen vergessen (unter ``_sperre`` aufrufen)."""
+    for fid in [f for f, o in _offen.items() if float(o.get("bis", 0)) < jetzt]:
+        del _offen[fid]
+    for z in [z for z, t in _verbraucht.items() if jetzt - t > 4 * 60]:
+        del _verbraucht[z]
+
+
+def rueckfrage(satz: str, *,
+               gesund: Optional[Callable[[], Tuple[int, Optional[Dict[str, Any]]]]] = None) -> Dict[str, Any]:
+    """Rueckfrage formulieren (kein Lauf). ``{"satz": ..., "frage_id": ...}``; ``frage_id`` nur,
+    wenn wirklich eine Rueckfrage offen ist (sonst ``None`` und der Satz sagt, warum nicht)."""
     status, daten = (gesund or gesundheit)()
     if status != 200 or not isinstance(daten, dict) or daten.get("service") != "coding-dienst":
-        return NICHT_ERREICHBAR
+        return {"satz": NICHT_ERREICHBAR, "frage_id": None}
     if daten.get("schreiben") is not True:
-        return NIMMT_NICHTS
-    if not (os.environ.get("CODING_DIENST_SCHLUESSEL") or "").strip():
-        return OHNE_SCHLUESSEL
+        return {"satz": NIMMT_NICHTS, "frage_id": None}
+    if not geheimnis("CODING_DIENST_SCHLUESSEL"):
+        return {"satz": OHNE_SCHLUESSEL, "frage_id": None}
+    frage_id = secrets.token_hex(16)
+    jetzt = _jetzt()
     with _sperre:
-        _offen.update({"satz": satz.strip(), "bis": _jetzt() + GILT_S})
-    return (f"Soll der Project Space das bauen: „{_kurz(satz)}“? Er baut JavaScript auf Node.js mit Tests, "
+        _aufraeumen(jetzt)
+        while len(_offen) >= OFFEN_MAX:
+            del _offen[min(_offen, key=lambda f: float(_offen[f].get("bis", 0)))]
+        _offen[frage_id] = {"satz": satz.strip(), "bis": jetzt + GILT_S}
+    text = (f"Soll der Project Space das bauen: „{_kurz(satz)}“? Er baut JavaScript auf Node.js mit Tests, "
             "die Coding-Engine ruft dafür ein Modell auf (begrenzte Zahl je Auftrag), und es dauert einige "
             "Minuten bis eine halbe Stunde. Sag „Ja, bauen“, dann starte ich.")
+    return {"satz": text, "frage_id": frage_id}
+
+
+def vorschau(satz: str, *, gesund: Optional[Callable[[], Tuple[int, Optional[Dict[str, Any]]]]] = None) -> str:
+    """Nur der Satz der Rueckfrage (siehe ``rueckfrage``)."""
+    return rueckfrage(satz, gesund=gesund)["satz"]
 
 
 def verwerfen() -> None:
     with _sperre:
         _offen.clear()
+        _verbraucht.clear()
+
+
+def etwas_offen(jetzt: Optional[float] = None) -> bool:
+    """Wartet eine Rueckfrage auf "Ja, bauen"? Nur lesen."""
+    grenze = _jetzt() if jetzt is None else jetzt
+    with _sperre:
+        return any(float(o.get("bis", 0)) >= grenze for o in _offen.values())
 
 
 def ist_bestaetigung(satz: Any) -> bool:
     return isinstance(satz, str) and bool(_JA.match(satz))
 
 
-def satz_pruefen(satz: Any) -> Optional[Dict[str, Any]]:
+def beleg_satz(frage_id: str) -> str:
+    """Was die App fuer "Ja, bauen" zeichnet (``desktop_tagesrest.eingabe_zeichen``)."""
+    return f"{BELEG_PRAEFIX} {frage_id}"
+
+
+def _zeichen_gueltig(frage_id: str, zeichen: Any, jetzt: float, umgebung: Optional[Mapping[str, str]]) -> bool:
+    """Zeichen ueber "coding-bauen <frage_id>" mit dem gemeinsamen Schluessel, im Zeitfenster.
+
+    Verbraucht das Zeichen nicht (das macht ``satz_pruefen`` erst, wenn alles passt)."""
+    from .desktop_tagesrest import (
+        SCHLUESSEL_MINDESTLAENGE, SCHLUESSEL_NAME, ZEICHEN_FENSTER_S, eingabe_zeichen,
+    )
+
+    schluessel = geheimnis(SCHLUESSEL_NAME, umgebung)
+    if len(schluessel) < SCHLUESSEL_MINDESTLAENGE or not isinstance(zeichen, str):
+        return False
+    zeit_text, _, _ = zeichen.partition(".")
+    if not zeit_text.isdigit() or len(zeit_text) > 12:
+        return False
+    if abs(jetzt - int(zeit_text)) > ZEICHEN_FENSTER_S:
+        return False
+    return hmac.compare_digest(zeichen, eingabe_zeichen(schluessel, beleg_satz(frage_id), int(zeit_text)))
+
+
+def satz_pruefen(satz: Any, *, frage_id: Any = None, zeichen: Any = None, riegel: bool = False,
+                 umgebung: Optional[Mapping[str, str]] = None) -> Optional[Dict[str, Any]]:
     """Fuer jeden Satz vor allem anderen aufrufen.
 
-    ``None``: keine Bestaetigung; eine offene Rueckfrage verfaellt. ``{"satz": ...}``: "Ja, bauen"
-    ohne gueltige Rueckfrage. ``{"offen": {...}}``: bestaetigt, genau einmal.
+    ``None``: keine Bestaetigung (eine offene Rueckfrage bleibt, sie gehoert dem, der sie bekam).
+    ``{"satz": ...}``: "Ja, bauen", das nichts startet (keine gueltige Rueckfrage, nicht vom eigenen
+    Rechner oder ohne gueltiges Zeichen; dann zusaetzlich ``"grund"``). ``{"offen": {...}}``:
+    bestaetigt, genau einmal. ``riegel``: Ergebnis von ``riegel_offen`` fuer diese Anfrage.
     """
-    jetzt = _jetzt()
-    with _sperre:
-        offen = dict(_offen)
-        _offen.clear()
     if not ist_bestaetigung(satz):
         return None
-    if not offen or offen.get("bis", 0) < jetzt:
-        return {"satz": OHNE_FRAGE}
-    return {"offen": offen}
+    if not riegel:
+        return {"satz": NUR_AUS_DER_APP, "grund": "nur_aus_der_app"}
+    jetzt = _jetzt()
+    fid = frage_id if isinstance(frage_id, str) and _FRAGE_ID.match(frage_id) else None
+    with _sperre:
+        _aufraeumen(jetzt)
+        offen = _offen.get(fid) if fid else None
+        if offen is None:
+            return {"satz": OHNE_FRAGE}
+        if not _zeichen_gueltig(fid, zeichen, jetzt, umgebung):
+            return {"satz": NICHT_BELEGT, "grund": "nicht_belegt"}
+        if zeichen in _verbraucht:
+            return {"satz": NICHT_BELEGT, "grund": "nicht_belegt"}
+        _verbraucht[zeichen] = jetzt
+        del _offen[fid]
+    return {"offen": dict(offen), "frage_id": fid}
 
 
 # ── 2. Start ───────────────────────────────────────────────────────────────

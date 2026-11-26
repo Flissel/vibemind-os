@@ -102,8 +102,9 @@ def herkunft_pruefen(
 
     if plan_vom_aufrufer or not isinstance(kontext, dict) or kontext.get("eingabe") != "getippt":
         return None
-    u = os.environ if umgebung is None else umgebung
-    schluessel = u.get(SCHLUESSEL_NAME) or ""
+    from .geheimnis import geheimnis
+
+    schluessel = geheimnis(SCHLUESSEL_NAME, umgebung)
     if len(schluessel) < SCHLUESSEL_MINDESTLAENGE or not isinstance(zeichen, str) or not satz:
         return None
     zeit_text, _, _ = zeichen.partition(".")

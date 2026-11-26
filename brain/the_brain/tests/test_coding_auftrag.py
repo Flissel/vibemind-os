@@ -27,12 +27,37 @@ SATZ = "Bau mir eine Funktion istSchaltjahr(jahr), mit Tests."
 GESUND = (200, {"status": "ok", "service": "coding-dienst", "schreiben": True})
 
 
+EINGABE = "e" * 40  # erfundener Schluessel der App, nur im Test
+LOKAL = {"Host": "localhost:5000"}
+
+
 @pytest.fixture(autouse=True)
 def _leer(monkeypatch):
     ca.verwerfen()
     monkeypatch.setenv("CODING_DIENST_SCHLUESSEL", "nur-im-test")
+    monkeypatch.setenv("VIBEMIND_EINGABE_SCHLUESSEL", EINGABE)
+    monkeypatch.delenv("VIBEMIND_EINGABE_SCHLUESSEL_FILE", raising=False)
+    monkeypatch.delenv("CODING_DIENST_SCHLUESSEL_FILE", raising=False)
     yield
     ca.verwerfen()
+
+
+def _zeichen(frage_id, zeit=None, schluessel=EINGABE):
+    from core.desktop_tagesrest import eingabe_zeichen
+    return eingabe_zeichen(schluessel, ca.beleg_satz(frage_id), int(ca._jetzt() if zeit is None else zeit))
+
+
+def _frage():
+    return ca.rueckfrage(SATZ, gesund=lambda: GESUND)["frage_id"]
+
+
+def _ja(frage_id, zeichen=None, satz="Ja, bauen", riegel=True):
+    return ca.satz_pruefen(satz, frage_id=frage_id, riegel=riegel,
+                           zeichen=_zeichen(frage_id) if zeichen is None else zeichen)
+
+
+def _bestaetigt():
+    return _ja(_frage())["offen"]
 
 
 class _Tabelle:
@@ -76,8 +101,7 @@ def _angenommen(gesendet=None):
 
 
 def _laufend(tabelle):
-    ca.vorschau(SATZ, gesund=lambda: GESUND)
-    ca.starten(ca.satz_pruefen("Ja, bauen")["offen"], tabelle=tabelle, trace_id="tr_1", senden=_angenommen())
+    ca.starten(_bestaetigt(), tabelle=tabelle, trace_id="tr_1", senden=_angenommen())
     (auftrag_id,) = tabelle.zeilen
     return auftrag_id
 
@@ -113,10 +137,10 @@ def test_andere_saetze_sind_kein_bauauftrag(satz, space) -> None:
 
 
 def test_vorschau_ist_rueckfrage_ohne_lauf_und_wird_gemerkt() -> None:
-    frage = ca.vorschau(SATZ, gesund=lambda: GESUND)
-    assert frage.startswith("Soll der Project Space das bauen: „Bau mir eine Funktion istSchaltjahr")
-    assert "Ja, bauen" in frage
-    assert ca._offen["satz"] == SATZ
+    antwort = ca.rueckfrage(SATZ, gesund=lambda: GESUND)
+    assert antwort["satz"].startswith("Soll der Project Space das bauen: „Bau mir eine Funktion istSchaltjahr")
+    assert "Ja, bauen" in antwort["satz"]
+    assert len(antwort["frage_id"]) == 32 and ca._offen[antwort["frage_id"]]["satz"] == SATZ
 
 
 @pytest.mark.parametrize("gesund,satz", [
@@ -136,22 +160,106 @@ def test_vorschau_ohne_schluessel_fragt_nicht(monkeypatch) -> None:
 
 
 def test_ja_gilt_nur_nach_der_rueckfrage_und_nur_einmal() -> None:
-    assert ca.satz_pruefen("Ja, bauen") == {"satz": ca.OHNE_FRAGE}
-    ca.vorschau(SATZ, gesund=lambda: GESUND)
-    assert ca.satz_pruefen("Ja, bau es!")["offen"]["satz"] == SATZ
-    assert ca.satz_pruefen("Ja, bauen") == {"satz": ca.OHNE_FRAGE}
+    assert _ja("0" * 32) == {"satz": ca.OHNE_FRAGE}
+    fid = _frage()
+    assert _ja(fid, satz="Ja, bau es!")["offen"]["satz"] == SATZ
+    assert _ja(fid) == {"satz": ca.OHNE_FRAGE}
 
 
-def test_anderer_satz_verwirft_die_rueckfrage() -> None:
-    ca.vorschau(SATZ, gesund=lambda: GESUND)
-    assert ca.satz_pruefen("Wie ist der Stand?") is None
-    assert ca.satz_pruefen("Ja, bauen") == {"satz": ca.OHNE_FRAGE}
+def test_anderer_satz_laesst_die_rueckfrage_stehen() -> None:
+    fid = _frage()
+    assert ca.satz_pruefen("Wie ist der Stand?", riegel=True) is None
+    assert _ja(fid)["offen"]["satz"] == SATZ
 
 
 def test_rueckfrage_verfaellt(monkeypatch) -> None:
-    ca.vorschau(SATZ, gesund=lambda: GESUND)
+    fid = _frage()
     monkeypatch.setattr(ca, "_jetzt", lambda: 10 ** 12)
-    assert ca.satz_pruefen("Ja, bauen") == {"satz": ca.OHNE_FRAGE}
+    assert _ja(fid) == {"satz": ca.OHNE_FRAGE}
+
+
+# ── K8: Riegel, Zeichen, Bindung an die Rueckfrage ──────────────────────────
+
+def test_ohne_riegel_startet_nichts_und_die_rueckfrage_bleibt() -> None:
+    fid = _frage()
+    assert _ja(fid, riegel=False) == {"satz": ca.NUR_AUS_DER_APP, "grund": "nur_aus_der_app"}
+    assert _ja(fid)["offen"]["satz"] == SATZ
+
+
+@pytest.mark.parametrize("zeichen", [None, "", "abc", "123.", "kaputt.1234"])
+def test_ohne_gueltiges_zeichen_startet_nichts(zeichen) -> None:
+    fid = _frage()
+    antwort = ca.satz_pruefen("Ja, bauen", frage_id=fid, zeichen=zeichen, riegel=True)
+    assert antwort == {"satz": ca.NICHT_BELEGT, "grund": "nicht_belegt"}
+    assert _ja(fid)["offen"]["satz"] == SATZ, "ein falscher Versuch verbraucht die Rueckfrage nicht"
+
+
+def test_zeichen_fuer_eine_andere_frage_gilt_nicht() -> None:
+    erste, zweite = _frage(), _frage()
+    assert _ja(zweite, zeichen=_zeichen(erste))["grund"] == "nicht_belegt"
+    assert _ja(erste)["offen"] and _ja(zweite)["offen"]
+
+
+def test_zeichen_mit_falschem_schluessel_oder_zu_alt() -> None:
+    fid = _frage()
+    assert _ja(fid, zeichen=_zeichen(fid, schluessel="f" * 40))["grund"] == "nicht_belegt"
+    assert _ja(fid, zeichen=_zeichen(fid, zeit=ca._jetzt() - 120))["grund"] == "nicht_belegt"
+
+
+def test_zeichen_gilt_nur_einmal() -> None:
+    fid = _frage()
+    zeichen = _zeichen(fid)
+    assert _ja(fid, zeichen=zeichen)["offen"]
+    ca._offen[fid] = {"satz": SATZ, "bis": ca._jetzt() + 60}  # dieselbe Frage kuenstlich wieder offen
+    assert _ja(fid, zeichen=zeichen)["grund"] == "nicht_belegt"
+
+
+def test_ohne_schluessel_im_gehirn_nie(monkeypatch) -> None:
+    fid = _frage()
+    monkeypatch.delenv("VIBEMIND_EINGABE_SCHLUESSEL")
+    assert _ja(fid)["grund"] == "nicht_belegt"
+    monkeypatch.setenv("VIBEMIND_EINGABE_SCHLUESSEL", "zu-kurz")
+    assert ca.satz_pruefen("Ja, bauen", frage_id=fid, riegel=True,
+                           zeichen=_zeichen(fid, schluessel="zu-kurz"))["grund"] == "nicht_belegt"
+
+
+def test_unsinnige_frage_id_wird_nicht_gesucht() -> None:
+    _frage()
+    assert _ja("../x") == {"satz": ca.OHNE_FRAGE}
+    assert ca.satz_pruefen("Ja, bauen", frage_id={"a": 1}, zeichen="1.x", riegel=True) == {"satz": ca.OHNE_FRAGE}
+
+
+def test_hoechstens_offen_max_rueckfragen() -> None:
+    ids = [_frage() for _ in range(ca.OFFEN_MAX + 3)]
+    assert len(ca._offen) == ca.OFFEN_MAX and ids[-1] in ca._offen
+
+
+@pytest.mark.parametrize("kopf,erlaubt", [
+    ({"Host": "localhost:5000"}, True),
+    ({"host": "127.0.0.1:5000"}, True),
+    ({"Host": "[::1]:5000"}, True),
+    ({"Host": "brain-core:5000"}, False),
+    ({"Host": "192.0.2.10:5000"}, False),
+    ({}, False),
+    ({"Host": "localhost:5000", "Origin": "https://beispiel.example"}, False),
+    ({"Host": "localhost:5000", "Sec-Fetch-Site": "cross-site"}, False),
+    ({"Host": "localhost:5000", "Sec-Fetch-Site": "same-origin"}, False),
+])
+def test_riegel(kopf, erlaubt) -> None:
+    assert ca.riegel_offen(kopf, umgebung={}) is erlaubt
+
+
+def test_schluessel_als_datei_geht_vor(tmp_path, monkeypatch) -> None:
+    from core.geheimnis import geheimnis
+    datei = tmp_path / "geheim"
+    datei.write_text("aus-der-datei\n", encoding="utf-8")
+    assert geheimnis("X", {"X": "aus-env", "X_FILE": str(datei)}) == "aus-der-datei"
+    assert geheimnis("X", {"X": "aus-env"}) == "aus-env"
+    assert geheimnis("X", {"X": "aus-env", "X_FILE": str(tmp_path / "fehlt")}) == ""
+    monkeypatch.delenv("VIBEMIND_EINGABE_SCHLUESSEL")
+    (tmp_path / "eingabe").write_text(EINGABE, encoding="utf-8")
+    monkeypatch.setenv("VIBEMIND_EINGABE_SCHLUESSEL_FILE", str(tmp_path / "eingabe"))
+    assert _ja(_frage())["offen"]["satz"] == SATZ
 
 
 @pytest.mark.parametrize("satz", ["ja", "Ja, recherchieren", "Ja, erstellen", "ja bauen wir morgen"])
@@ -166,8 +274,7 @@ def test_starten_legt_erst_die_zeile_an_dann_den_auftrag() -> None:
         assert len(tabelle.zeilen) == 1, "die Zeile muss vor dem Start stehen"
         return _angenommen(gesendet)(satz)
 
-    ca.vorschau(SATZ, gesund=lambda: GESUND)
-    felder = ca.starten(ca.satz_pruefen("Ja, bauen")["offen"], tabelle=tabelle, trace_id="tr_1", senden=senden)
+    felder = ca.starten(_bestaetigt(), tabelle=tabelle, trace_id="tr_1", senden=senden)
     (zeile,) = tabelle.zeilen.values()
     assert gesendet == [SATZ]
     assert zeile["status"] == "laeuft" and zeile["capability"] == ca.EREIGNIS_START and zeile["agent"] == ca.AGENT
@@ -179,9 +286,8 @@ def test_starten_legt_erst_die_zeile_an_dann_den_auftrag() -> None:
 
 def test_ohne_tabelle_startet_nichts() -> None:
     gesendet = []
-    ca.vorschau(SATZ, gesund=lambda: GESUND)
     with pytest.raises(ca.CodingFehler) as fehler:
-        ca.starten(ca.satz_pruefen("Ja, bauen")["offen"], tabelle=_Tabelle(anlegen_geht=False), trace_id="t",
+        ca.starten(_bestaetigt(), tabelle=_Tabelle(anlegen_geht=False), trace_id="t",
                    senden=_angenommen(gesendet))
     assert str(fehler.value) == ca.TABELLE_FEHLT and gesendet == []
 
@@ -194,9 +300,8 @@ def test_ohne_tabelle_startet_nichts() -> None:
 ])
 def test_abgelehnter_start_schliesst_die_zeile(antwort, satz) -> None:
     tabelle = _Tabelle()
-    ca.vorschau(SATZ, gesund=lambda: GESUND)
     with pytest.raises(ca.CodingFehler) as fehler:
-        ca.starten(ca.satz_pruefen("Ja, bauen")["offen"], tabelle=tabelle, trace_id="t", senden=lambda s: antwort)
+        ca.starten(_bestaetigt(), tabelle=tabelle, trace_id="t", senden=lambda s: antwort)
     assert str(fehler.value) == satz
     (zeile,) = tabelle.zeilen.values()
     assert zeile["status"] == "fehler" and zeile["pruefung"]["meldung"] == satz
@@ -393,9 +498,17 @@ def _router_client(monkeypatch, tabelle, gesendet):
     app.state.plan_executor = _Ausfuehrer()
     app.state.multihop_planner = _Planer()
     app.state.final_synthesizer = None
-    client = TestClient(app)
-    return client, lambda text: client.post("/api/multihop/execute",
-                                            json={"intent": text, "context": {"space": "projects"}}).json()
+    client = TestClient(app, base_url="http://localhost:5000")
+
+    def satz(text, frage_id=None, kopf=None):
+        kontext = {"space": "projects", **({"frage_id": frage_id} if frage_id else {})}
+        return client.post("/api/multihop/execute", json={"intent": text, "context": kontext},
+                           headers=kopf or {}).json()
+    return client, satz
+
+
+def _zeichen_kopf(frage_id):
+    return {"X-Vibemind-Eingabe": _zeichen(frage_id)}
 
 
 def test_router_rueckfrage_dann_ja_startet_genau_einmal(monkeypatch) -> None:
@@ -404,23 +517,50 @@ def test_router_rueckfrage_dann_ja_startet_genau_einmal(monkeypatch) -> None:
     body = satz(SATZ)
     assert body["rueckfrage"] is True and body["space"] == "projects", body
     assert body["final_text"].startswith("Soll der Project Space das bauen") and gesendet == []
-    body = satz("Ja, bauen")
+    fid = body["frage_id"]
+    body = satz("Ja, bauen", fid, _zeichen_kopf(fid))
     assert body["status"] == "angenommen" and body["ok"] is True and body["pending"] is True, body
     assert gesendet == [SATZ] and len(tabelle.zeilen) == 1
     auftrag_id = body["auftraege"][0]["auftrag_id"]
     stand = client.get(f"/api/agent-auftraege/{auftrag_id}/stand").json()
     assert stand["stand"] == "laeuft", stand
-    body = satz("Ja, bauen")
+    body = satz("Ja, bauen", fid, _zeichen_kopf(fid))
     assert body["final_text"] == ca.OHNE_FRAGE and gesendet == [SATZ]
 
 
-def test_router_anderer_satz_verwirft_die_rueckfrage(monkeypatch) -> None:
+def test_router_anderer_satz_laesst_die_rueckfrage_stehen(monkeypatch) -> None:
     tabelle, gesendet = _Tabelle(), []
     _client, satz = _router_client(monkeypatch, tabelle, gesendet)
-    satz(SATZ)
+    fid = satz(SATZ)["frage_id"]
     satz("Ja, erstellen")
-    body = satz("Ja, bauen")
-    assert body["final_text"] == ca.OHNE_FRAGE and gesendet == [] and tabelle.zeilen == {}
+    body = satz("Ja, bauen", fid, _zeichen_kopf(fid))
+    assert body["status"] == "angenommen" and gesendet == [SATZ]
+
+
+def test_router_ja_ohne_zeichen_startet_nichts(monkeypatch) -> None:
+    tabelle, gesendet = _Tabelle(), []
+    _client, satz = _router_client(monkeypatch, tabelle, gesendet)
+    fid = satz(SATZ)["frage_id"]
+    body = satz("Ja, bauen", fid)
+    assert body["final_text"] == ca.NICHT_BELEGT and body["grund"] == "nicht_belegt"
+    assert gesendet == [] and tabelle.zeilen == {}
+    body = satz("Ja, bauen")  # ohne frage_id: gar keine Rueckfrage
+    assert body["final_text"] == ca.OHNE_FRAGE and gesendet == []
+
+
+@pytest.mark.parametrize("kopf", [
+    {"Origin": "https://beispiel.example"},
+    {"Sec-Fetch-Site": "cross-site"},
+    {"Host": "brain-core:5000"},
+])
+def test_router_aus_webseite_oder_fremdem_host_weder_rueckfrage_noch_start(monkeypatch, kopf) -> None:
+    tabelle, gesendet = _Tabelle(), []
+    _client, satz = _router_client(monkeypatch, tabelle, gesendet)
+    body = satz(SATZ, kopf=kopf)
+    assert body["final_text"] == ca.NUR_AUS_DER_APP and "frage_id" not in body and ca._offen == {}
+    fid = satz(SATZ)["frage_id"]
+    body = satz("Ja, bauen", fid, {**_zeichen_kopf(fid), **kopf})
+    assert body["final_text"] == ca.NUR_AUS_DER_APP and gesendet == [] and tabelle.zeilen == {}
 
 
 # ── Teil 3: echter HTTP-Weg ──────────────────────────────────────────────────
