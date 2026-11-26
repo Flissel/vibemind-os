@@ -77,3 +77,8 @@
 .mehr b { display: block; margin-top: 4px; font-family: var(--schrift-anzeige); font-weight: var(--gewicht-anzeige);
   font-size: 34px; line-height: 1.15; overflow-wrap: anywhere; }
 .erklaer .mehr { right: 160px; top: 40px; }
+
+/* Platz (26.11.2026, am ersten ganzen Film gesehen): die Ueberschrift einer Code-Folie ist kleiner, damit 14 Zeilen
+   unter das Schild der Stufe passen; die zentrierte Variante rueckt im Erklaervideo nach links, weg von der Figur. */
+.t-code .kopf.mittel { font-size: calc(60px * var(--s, 1)); margin-bottom: 36px; }
+.erklaer .v1 .inhalt { margin: 0 auto 0 150px; width: 1340px; }
