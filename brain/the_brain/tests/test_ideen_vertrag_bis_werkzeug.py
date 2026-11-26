@@ -283,18 +283,19 @@ def stufe1(check, db, server, rufe, lies, abk, vertrag, gesehen) -> None:
     gesehen.add("idea.bewertung_speichern")
     check("Bewerten: gespeichert und nachgeprueft", (status, ok) == ("geschrieben", True), f"{grund} {meldung}")
     check("Bewerten: die Meldung nennt Score, Sichten und das To-do mit dem groessten Gewinn",
-          meldung.startswith("Bewertung: 69 von 100 (Coding 10, SWE Design 15, Research 12, Wissenslage 14, "
-                             "Ideas 18).") and "2. Sponsoren füllen (+6" in meldung, meldung)
+          meldung.startswith("Bewertung: 55 von 100 (69 von 125 Punkten: Coding 10, SWE Design 15, "
+                             "Research 12, Wissenslage 14, Ideas 18).") and "2. Sponsoren füllen (+6" in meldung, meldung)
     bubble = next(b for b in db.tabellen["ideas"] if b["id"] == "b0b1e006")
     gespeichert = bubble["metadata"].get("bewertung_lauf") or {}
-    check("Bewerten: ideas.score ist die Summe des Laufs", bubble["score"] == 69 == gespeichert.get("score"),
+    check("Bewerten: ideas.score ist der Lauf in Prozent (69 von 125)",
+          bubble["score"] == 55 == gespeichert.get("score"),
           str(bubble["score"]))
     check("Bewerten: der alte MiroFish-Block ist aus der Beschreibung in lauf.alt gewandert",
           bubble["description"] == "Fest im Park." and str(gespeichert.get("alt", "")).startswith(marke),
           json.dumps(bubble["description"]))
     check("Bewerten: eval_history traegt Zeit, Score und Sichten",
           [(e.get("art"), e.get("score"), (e.get("sichten") or {}).get("rowboat"))
-           for e in bubble["metadata"].get("eval_history") or []] == [("lauf", 69, 14)],
+           for e in bubble["metadata"].get("eval_history") or []] == [("lauf", 55, 14)],
           json.dumps(bubble["metadata"].get("eval_history")))
     check("Bewerten: der Lauf traegt die Quelle agent (Lauf und eval_history), das Gehirn setzt sie",
           gespeichert.get("quelle") == "agent"
@@ -309,7 +310,7 @@ def stufe1(check, db, server, rufe, lies, abk, vertrag, gesehen) -> None:
 
     geprueft = befoerdern_satz()
     check("Befoerdern: unter der Schwelle nennt die Absage Score, Schwelle und die Top-To-dos",
-          geprueft["bestaetigbar"] is False and "69 von 100" in geprueft["satz"] and "ab 95" in geprueft["satz"]
+          geprueft["bestaetigbar"] is False and "55 von 100" in geprueft["satz"] and "ab 95" in geprueft["satz"]
           and "To-do 2 „Sponsoren füllen“ (+6)" in geprueft["satz"], geprueft["satz"])
 
     # To-do erledigen: Rueckfrage, dann Auftrag, Ergebnis schreibt Karten und hakt ab.

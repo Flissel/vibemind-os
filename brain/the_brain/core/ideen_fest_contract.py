@@ -152,7 +152,7 @@ FESTE_EREIGNISSE: dict[str, dict[str, Any]] = {
         "wahl": {"quellen": ("kennungen", 500)},
     },
     # Bewertungslauf (Stufe 1): geschrieben nur vom Gehirn nach dem Rueckweg "bewerten"
-    # (core/ideen_bewertung). Fuenf Sichten mit To-dos, die Summe wird ideas.score; der Server
+    # (core/ideen_bewertung). Fuenf Sichten mit To-dos, die Summe in Prozent wird ideas.score; der Server
     # schreibt nicht, wenn sich die Karten seit dem Lesen geaendert haben (kartenstand).
     "idea.bewertung_speichern": {
         "werkzeug": "bubble_bewertung",
@@ -538,8 +538,11 @@ def nachpruefung(event_id: str, argumente: Any, raw_result: Any) -> tuple[Option
                 "kanten": kanten}, ""
     if event_id == "idea.bewertung_speichern":
         # Quittung: Score, Zeit und kartenstand des gespeicherten Laufs; der Score ist die Summe
-        # der Sichten aus den Argumenten, der kartenstand der beim Lesen gemerkte.
-        soll = sum(argumente["lauf"]["sichten"][name]["punkte"] for name in argumente["lauf"]["sichten"])
+        # der Sichten aus den Argumenten in Prozent (Kartenregeln, Variante A), der kartenstand der
+        # beim Lesen gemerkte.
+        from .ideen_bewertung import _regeln
+        soll = _regeln().score_prozent(
+            sum(argumente["lauf"]["sichten"][name]["punkte"] for name in argumente["lauf"]["sichten"]))
         zeit = inhalt.get("zeit")
         if (inhalt.get("bubble_id") != argumente["bubble_id"] or inhalt.get("score") != soll
                 or inhalt.get("kartenstand") != argumente["kartenstand"] or not isinstance(zeit, str) or not zeit):

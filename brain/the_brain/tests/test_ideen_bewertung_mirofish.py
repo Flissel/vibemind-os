@@ -280,10 +280,10 @@ def test_fertig_wird_gespeichert_mit_quelle_und_aufrufen():
     assert argumente["lauf"]["quelle"] == "mirofish" and argumente["kartenstand"] == rueckweg["kartenstand"]
     (_, status, pruefung), = tabelle.geschlossen
     assert status == "fertig" and pruefung["verified"] is True and pruefung["rueckweg"] == "geschrieben"
-    assert pruefung["meldung"].startswith("Bewertung: 75 von 100 (Coding 15, ")
+    assert pruefung["meldung"].startswith("Bewertung: 60 von 100 (75 von 125 Punkten: Coding 15, ")
     assert "Bewertet von MiroFish mit fünf Rollen, 6 Abo-Aufrufe." in pruefung["meldung"]
     assert "befördert wird erst" not in pruefung["meldung"]
-    assert pruefung["aufrufe"] == 6 and pruefung["score"] == 75
+    assert pruefung["aufrufe"] == 6 and pruefung["score"] == 60
 
 
 def test_schon_beansprucht_wird_nicht_zweimal_geschrieben():

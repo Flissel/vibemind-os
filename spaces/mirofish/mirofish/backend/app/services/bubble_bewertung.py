@@ -316,6 +316,13 @@ def _satz(wert: Any, grenze: int, leer_ok: bool = False) -> Optional[str]:
     return text[:grenze]
 
 
+def score_prozent(summe: int) -> int:
+    """Score in Prozent der 125 moeglichen Punkte, kaufmaennisch gerundet (wie die Kartenregeln)."""
+    gesamt = SICHT_MAX * len(SICHTEN)
+    summe = min(max(int(summe), 0), gesamt)
+    return (summe * 200 + gesamt) // (2 * gesamt)
+
+
 def todo_punkte_umrechnen(punkte: List[int], fehlend: int) -> List[int]:
     """Punkte der To-dos einer Sicht, so umgerechnet, dass ihre Summe hoechstens ``fehlend`` ist.
 
@@ -525,7 +532,7 @@ class BubbleBewertung:
             "aufrufe": zaehler["aufrufe"],
             "graph": graph,
             "sichten": {s: sichten[s] for s in SICHTEN},
-            "score": sum(sichten[s]["punkte"] for s in SICHTEN),
+            "score": score_prozent(sum(sichten[s]["punkte"] for s in SICHTEN)),
         })
 
     def stand(self, task_id: str) -> Optional[Dict[str, Any]]:

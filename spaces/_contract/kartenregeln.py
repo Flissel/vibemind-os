@@ -408,9 +408,27 @@ def todos_begrenzen(todos: Sequence[Mapping[str, Any]], sicht_punkte: int) -> li
     return [{**dict(t), "punkte": p} for t, p in zip(todos, neu) if p > 0]
 
 
-def lauf_score(lauf: Mapping[str, Any]) -> int:
-    """Summe der fuenf Sichten (0-100)."""
+def lauf_summe(lauf: Mapping[str, Any]) -> int:
+    """Rohe Summe der fuenf Sichten (0-125)."""
     return sum(int(lauf["sichten"][name]["punkte"]) for name in SICHTEN)
+
+
+def score_prozent(summe: int) -> int:
+    """Score in Prozent der moeglichen Punkte (0-100), kaufmaennisch gerundet.
+
+    Entscheid des Betreibers (26.11.2026, Variante A): fuenf Sichten zu je 25 ergeben 125 Punkte;
+    der Score ist ``round(Summe * 100 / 125)``, die Schwelle 95 heisst 95 %. Vorher war der Score die
+    rohe Summe, und ein Lauf ueber 100 liess sich nicht mehr lesen (``bewertung_lauf``).
+    Alte Laeufe werden beim Lesen nicht umgerechnet.
+    """
+    gesamt = SICHT_MAX * len(SICHTEN)
+    summe = min(max(int(summe), 0), gesamt)
+    return (summe * 200 + gesamt) // (2 * gesamt)
+
+
+def lauf_score(lauf: Mapping[str, Any]) -> int:
+    """Score des Laufs in Prozent (0-100), siehe ``score_prozent``."""
+    return score_prozent(lauf_summe(lauf))
 
 
 def bewertung_lauf(bubble: Mapping[str, Any]) -> dict[str, Any] | None:
