@@ -22,7 +22,7 @@ from spaces.marketing.claw.schriften import REGISTER
 if TYPE_CHECKING:  # nur fuer Typen; zur Laufzeit kein Import des Sprech-Moduls
     from spaces.marketing.workers.video_stimme import Satz
 
-VORLAGEN = ("titel", "stichpunkte", "zahl", "zitat", "vergleich", "agenda")
+VORLAGEN = ("titel", "stichpunkte", "zahl", "zitat", "vergleich", "agenda", "code")
 FELDER: dict[str, tuple[str, ...]] = {
     "titel": ("zeile", "unterzeile"),
     "stichpunkte": ("ueberschrift", "punkte"),
@@ -30,7 +30,9 @@ FELDER: dict[str, tuple[str, ...]] = {
     "zitat": ("zitat", "von"),
     "vergleich": ("links", "rechts"),
     "agenda": ("punkte", "aktiv"),
+    "code": ("ueberschrift", "datei", "zeilen", "ab_zeile", "markiert"),
 }
+CODE_ZEILEN_MIN, CODE_ZEILEN_MAX, CODE_ZEILE_MAX, CODE_DATEI_MAX = 2, 14, 92, 80
 SCHRITTE_MIN, SCHRITTE_MAX = 2, 5
 ZEILE_MAX, PUNKT_MAX = 60, 80
 STILL_MAX_S = 4.0                      # laenger steht ein Bild nicht ohne Einblendung still
@@ -39,6 +41,9 @@ BLENDE_S = 0.2
 VARIANTEN = 3
 
 _ORDNER = Path(__file__).resolve().parent.parent / "video_werkbank" / "vorlagen"
+FIGUREN_ORDNER = Path(__file__).resolve().parent.parent / "video_werkbank" / "figuren"
+MUNDBILDER = ("zu", "halb", "offen")      # je Figur drei Bilder <ordner>/<figur>/<name>.png
+_FIGUR = re.compile(r"[a-z0-9_]{1,30}")
 SCHRIFTEN = Path(__file__).resolve().parent / "schriftdateien"
 VORGABE_AKZENT = "#4C8DFF"
 VORGABE_SCHRIFT = "manrope"
@@ -99,6 +104,24 @@ def _felder_fehler(vorlage: str, f: dict) -> list[str]:
                 continue
             _text_fehler(vorlage, f"{seite}.titel", s.get("titel"), ZEILE_MAX, fehler)
             _punkte_fehler(vorlage, f"{seite}.punkte", s.get("punkte"), 1, 4, fehler)
+    elif vorlage == "code":
+        _text_fehler(vorlage, "ueberschrift", f.get("ueberschrift"), ZEILE_MAX, fehler)
+        _text_fehler(vorlage, "datei", f.get("datei"), CODE_DATEI_MAX, fehler)
+        zeilen = f.get("zeilen")
+        if not isinstance(zeilen, list) or not CODE_ZEILEN_MIN <= len(zeilen) <= CODE_ZEILEN_MAX:
+            fehler.append(f"{vorlage}: zeilen braucht {CODE_ZEILEN_MIN} bis {CODE_ZEILEN_MAX} Zeilen")
+        elif not all(isinstance(z, str) and len(z) <= CODE_ZEILE_MAX and "\n" not in z and "\r" not in z for z in zeilen):
+            fehler.append(f"{vorlage}: jede Zeile ist Text mit hoechstens {CODE_ZEILE_MAX} Zeichen")
+        elif not any(z.strip() for z in zeilen):
+            fehler.append(f"{vorlage}: zeilen ist leer")
+        ab = f.get("ab_zeile", 1)
+        if isinstance(ab, bool) or not isinstance(ab, int) or not 1 <= ab <= 999_999:
+            fehler.append(f"{vorlage}: ab_zeile muss eine Zeilennummer sein")
+        markiert = f.get("markiert", [])
+        if not isinstance(markiert, list) or not all(
+                isinstance(m, int) and not isinstance(m, bool) and isinstance(zeilen, list) and 0 <= m < len(zeilen)
+                for m in markiert):
+            fehler.append(f"{vorlage}: markiert nennt Zeilen, die es nicht gibt")
     elif vorlage == "agenda":
         _punkte_fehler(vorlage, "punkte", f.get("punkte"), 3, 3, fehler)
         aktiv = f.get("aktiv")
@@ -318,6 +341,19 @@ def _inhalt(p: Schritt) -> str:
     if v == "zitat":
         return _fuellen(_baustein("zitat.html"), {
             "zitat": _e(f.get("zitat")), "von": _e(f.get("von")), "s_zitat": _skala(f.get("zitat"), 70, 0.6, 22)})
+    if v == "code":
+        zeilen = [str(z) for z in (f.get("zeilen") or [])]
+        ab = f.get("ab_zeile") if isinstance(f.get("ab_zeile"), int) and not isinstance(f.get("ab_zeile"), bool) else 1
+        markiert = set(f.get("markiert") or []) if isinstance(f.get("markiert"), list) else set()
+        laengste = max((len(z) for z in zeilen), default=0)
+        skala = min(1.0, 62 / laengste if laengste > 62 else 1.0, 11 / len(zeilen) if len(zeilen) > 11 else 1.0)
+        html_zeilen = "".join(
+            f'<li class="{"markiert" if i in markiert else ""}" style="--d:{0.3 + 0.05 * i:.2f}s">'
+            f'<span class="nr">{ab + i}</span><span class="text">{_e(z) or "&nbsp;"}</span></li>'
+            for i, z in enumerate(zeilen))
+        return _fuellen(_baustein("code.html"), {
+            "ueberschrift": _e(f.get("ueberschrift")), "s_ueberschrift": _skala(f.get("ueberschrift"), 40),
+            "datei": _e(f.get("datei")), "zeilen": html_zeilen, "s_code": f"{max(0.6, skala):.2f}"})
     if v == "vergleich":
         seiten = {s: (f.get(s) if isinstance(f.get(s), dict) else {}) for s in ("links", "rechts")}
         links, rechts = (list(seiten[s].get("punkte") or []) for s in ("links", "rechts"))
@@ -346,9 +382,44 @@ def _als_titel(f: dict) -> dict:
     return {"zeile": "", "unterzeile": ""}
 
 
-def komposition(szene: dict, plan: list[Schritt], marke: dict, ton_datei: str, dauer_s: float) -> str:
+def figur_dateien(figur: object) -> dict[str, Path]:
+    """{Dateiname neben der HTML-Datei: Quelle} der drei Mundbilder einer Figur; leer, wenn es die Figur nicht gibt
+    oder ein Bild fehlt (dann erscheint keine Figur)."""
+    if not isinstance(figur, str) or not _FIGUR.fullmatch(figur):
+        return {}
+    quellen = {f"figur_{name}.png": FIGUREN_ORDNER / figur / f"{name}.png" for name in MUNDBILDER}
+    return quellen if all(q.is_file() for q in quellen.values()) else {}
+
+
+def _erklaer_rahmen(erklaer: dict, logo: str) -> str:
+    """Kopfzeile, Schild der Stufe, Stufenanzeige, Leuchtlinie und Figur des Erklaervideos (alles durch html.escape)."""
+    teile = [f'<div class="kopfzeile"><span class="firma">{_e(erklaer.get("firma"))}</span>'
+             + (f'<img class="logo" src="{_e(logo)}" alt="">' if logo else "") + "</div>"]
+    if erklaer.get("stufe"):
+        teile.append(f'<div class="schild">{_e(erklaer.get("stufe"))}</div>')
+    nr, anzahl = erklaer.get("stufe_nr"), erklaer.get("stufen")
+    if all(isinstance(x, int) and not isinstance(x, bool) for x in (nr, anzahl)) and 1 <= nr <= anzahl <= 12:
+        kaestchen = "".join(f'<i class="{"an" if i < nr else ""}"></i>' for i in range(anzahl))
+        teile.append(f'<div class="stufen"><span>{_e(erklaer.get("titel"))} · Stufe {nr}/{anzahl}</span>{kaestchen}</div>')
+    teile.append('<div class="leuchtlinie"></div>')
+    if figur_dateien(erklaer.get("figur")):
+        gross = " gross" if erklaer.get("figur_gross") else ""
+        teile.append(f'<div class="figur{gross}"><div class="wippe"><img class="m0" src="figur_zu.png" alt="">'
+                     f'<img class="m1" src="figur_halb.png" alt=""><img class="m2" src="figur_offen.png" alt=""></div></div>')
+        name = erklaer.get("figur_name")
+        if name:
+            teile.append(f'<div class="figurname{gross}">{_e(name)} · <b>KI-Figur</b></div>')
+    return "\n".join(teile)
+
+
+def komposition(szene: dict, plan: list[Schritt], marke: dict, ton_datei: str, dauer_s: float,
+                erklaer: dict | None = None, mund_css: str = "") -> str:
     """Komplettes HTML der Szene (siehe README der video_werkbank fuer das Schema). `ton_datei` steht relativ zur
-    HTML-Datei; Schriften unter `schriften/` und das Logo (`logo_name`) liegen ebenfalls daneben."""
+    HTML-Datei; Schriften unter `schriften/` und das Logo (`logo_name`) liegen ebenfalls daneben.
+
+    Mit `erklaer` ({firma, titel, stufe, stufe_nr, stufen, figur, figur_name, figur_gross}) bekommt die Szene den
+    Rahmen des Erklaervideos; die Mundbilder der Figur (`figur_dateien`) liegen dann neben der HTML-Datei und
+    `mund_css` (aus `video_mund.keyframes`) bewegt den Mund im Takt der Stimme. Ohne `erklaer` bleibt alles wie bisher."""
     marke = marke if isinstance(marke, dict) else {}
     plan = list(plan)
     if szene.get("bildart") == "clip" and plan and plan[0].vorlage != "titel":
@@ -376,12 +447,17 @@ def komposition(szene: dict, plan: list[Schritt], marke: dict, ton_datei: str, d
             f'<div{zoom}>{_inhalt(p)}</div></div>')
 
     logo = logo_name(marke)
+    erklaer = erklaer if isinstance(erklaer, dict) else None
+    if erklaer is not None:
+        teile.append(_erklaer_rahmen(erklaer, logo))
+        logo = ""                 # das Logo steht in der Kopfzeile
     blende = ""
     if szene.get("uebergang") == "blende":
         blende = (f'<div class="blende ein"></div>'
                   f'<div class="blende aus" style="animation-delay:{max(0.0, dauer_s - BLENDE_S):.3f}s"></div>')
     return _fuellen(_baustein("rahmen.html"), {
-        "schriften": schriften, "variablen": variablen, "stil": _baustein("stil.css"),
+        "schriften": schriften, "variablen": variablen, "klasse": " erklaer" if erklaer is not None else "",
+        "stil": _baustein("stil.css") + "\n" + _baustein("erklaer.css") + ("\n" + mund_css if erklaer is not None and mund_css else ""),
         "dauer": f"{dauer_s:.3f}", "schritte": "\n".join(teile),
         "fortschritt": f'<div class="fortschritt"><i style="animation-duration:{dauer_s:.3f}s"></i></div>',
         "logo": f'<img class="logo" src="{_e(logo)}" alt="">' if logo else "",
