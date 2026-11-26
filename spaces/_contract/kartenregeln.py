@@ -267,6 +267,14 @@ TODO_FEHLT_ZEICHEN = 400
 TODO_KARTEN_MAX = 20
 URTEIL_ZEICHEN = 600
 BEFOERDERN_SCHWELLE = 95   # Vorgabe; das Gehirn liest die Einstellung VIBEMIND_BEFOERDERN_SCHWELLE
+# Bewertung durch MiroFish (26.11.2026, "Rollen urteilen direkt"): je Sicht ein festes Raster aus
+# Kriterien zu 0-5 Punkten; die Punkte der Sicht sind deren Summe. Dazu die Zahl der Abo-Aufrufe.
+# Beides ist freiwillig; ein Lauf von brain-ideas hat es nicht.
+KRITERIEN_JE_SICHT = 5
+KRITERIUM_MAX = 5
+KRITERIUM_NAME_ZEICHEN = 60
+KRITERIUM_GRUND_ZEICHEN = 300
+AUFRUFE_MAX = 200
 
 
 def kartenstand(karten: Sequence[Mapping[str, Any]], kanten: Sequence[Mapping[str, Any]]) -> str:
@@ -320,18 +328,22 @@ def lauf_fehler(lauf: Any) -> str:
     """"" wenn ``lauf`` die Form eines neuen Bewertungslaufs hat (ohne zeit/kartenstand), sonst der Grund."""
     if not isinstance(lauf, Mapping):
         return "lauf"
-    if set(lauf) - {"sichten", "todos", "gekuerzt", "quelle"}:
+    if set(lauf) - {"sichten", "todos", "gekuerzt", "quelle", "aufrufe"}:
         return "lauf"
     if "quelle" in lauf and lauf["quelle"] not in QUELLEN:
         return "quelle"
+    if "aufrufe" in lauf and not _ganz(lauf["aufrufe"], 0, AUFRUFE_MAX):
+        return "aufrufe"
     sichten = lauf.get("sichten")
     if not isinstance(sichten, Mapping) or set(sichten) != set(SICHTEN):
         return "sichten"
     for name in SICHTEN:
         sicht = sichten[name]
-        if (not isinstance(sicht, Mapping) or set(sicht) != {"punkte", "urteil"}
+        if (not isinstance(sicht, Mapping) or set(sicht) - {"kriterien"} != {"punkte", "urteil"}
                 or not _ganz(sicht["punkte"], 0, SICHT_MAX) or not _text(sicht["urteil"], URTEIL_ZEICHEN, True)):
             return f"sichten.{name}"
+        if "kriterien" in sicht and not _kriterien_gut(sicht["kriterien"], sicht["punkte"]):
+            return f"sichten.{name}.kriterien"
     todos = lauf.get("todos")
     if not isinstance(todos, list) or len(todos) > TODOS_JE_SICHT * len(SICHTEN):
         return "todos"
@@ -351,6 +363,49 @@ def lauf_fehler(lauf: Any) -> str:
     if "gekuerzt" in lauf and not isinstance(lauf["gekuerzt"], bool):
         return "gekuerzt"
     return ""
+
+
+def _kriterien_gut(kriterien: Any, punkte: int) -> bool:
+    """Raster einer Sicht: genau KRITERIEN_JE_SICHT verschiedene Kriterien, Summe = Punkte der Sicht."""
+    if not isinstance(kriterien, list) or len(kriterien) != KRITERIEN_JE_SICHT:
+        return False
+    namen = set()
+    for k in kriterien:
+        if (not isinstance(k, Mapping) or set(k) != {"name", "punkte", "begruendung"}
+                or not _text(k["name"], KRITERIUM_NAME_ZEICHEN) or not _ganz(k["punkte"], 0, KRITERIUM_MAX)
+                or not _text(k["begruendung"], KRITERIUM_GRUND_ZEICHEN, True)):
+            return False
+        namen.add(k["name"].strip().casefold())
+    return len(namen) == KRITERIEN_JE_SICHT and sum(k["punkte"] for k in kriterien) == punkte
+
+
+def todo_punkte_umrechnen(punkte: Sequence[int], fehlend: int) -> list[int]:
+    """Punkte der To-dos einer Sicht, so umgerechnet, dass ihre Summe hoechstens ``fehlend`` ist.
+
+    Erster echter Lauf (26.11.2026): Coding 9 von 25, die fuenf To-dos versprachen zusammen 67. Ein
+    To-do kann nicht mehr bringen, als der Sicht fehlt. Liegt die Summe darueber, wird verhaeltnisgleich
+    verteilt (groesster Rest zuerst, bei Gleichstand das fruehere To-do); die Summe ist dann genau
+    ``fehlend``. Eine 0 heisst: das To-do faellt weg (es bringt rechnerisch nichts mehr).
+    """
+    werte = [max(0, int(p)) for p in punkte]
+    summe = sum(werte)
+    if summe <= max(0, fehlend):
+        return werte
+    if fehlend <= 0:
+        return [0] * len(werte)
+    anteile = [p * fehlend for p in werte]
+    aus = [a // summe for a in anteile]
+    rest = fehlend - sum(aus)
+    reihenfolge = sorted(range(len(werte)), key=lambda i: (-(anteile[i] % summe), i))
+    for i in reihenfolge[:rest]:
+        aus[i] += 1
+    return aus
+
+
+def todos_begrenzen(todos: Sequence[Mapping[str, Any]], sicht_punkte: int) -> list[dict[str, Any]]:
+    """Die To-dos einer Sicht mit umgerechneten Punkten (``todo_punkte_umrechnen``); To-dos mit 0 fallen weg."""
+    neu = todo_punkte_umrechnen([int(t["punkte"]) for t in todos], SICHT_MAX - int(sicht_punkte))
+    return [{**dict(t), "punkte": p} for t, p in zip(todos, neu) if p > 0]
 
 
 def lauf_score(lauf: Mapping[str, Any]) -> int:

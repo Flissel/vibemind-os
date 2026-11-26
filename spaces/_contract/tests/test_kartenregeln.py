@@ -139,3 +139,66 @@ def test_ergaenzte_formatierte_karte_zaehlt_den_text_einmal():
     text = regeln.kartentext(karte)
     assert text == kurz
     assert not regeln.ist_leer(karte) and not regeln.ist_duenn(karte)
+
+
+# ── Lauf von MiroFish: Raster und Zahl der Abo-Aufrufe (26.11.2026) ─────────
+
+def _mf_sicht(punkte=(3, 3, 3, 3, 3)):
+    return {"punkte": sum(punkte), "urteil": "Steht so da.",
+            "kriterien": [{"name": f"Kriterium {n}", "punkte": p, "begruendung": ""}
+                          for n, p in enumerate(punkte, start=1)]}
+
+
+def _mf_lauf(**anders):
+    lauf = {"sichten": {name: _mf_sicht() for name in regeln.SICHTEN}, "todos": [], "gekuerzt": False,
+            "quelle": "mirofish", "aufrufe": 5}
+    lauf.update(anders)
+    return lauf
+
+
+def test_lauf_mit_raster_und_aufrufen_ist_gueltig() -> None:
+    assert regeln.lauf_fehler(_mf_lauf()) == ""
+    ohne = _mf_lauf()
+    del ohne["aufrufe"]
+    for sicht in ohne["sichten"].values():
+        del sicht["kriterien"]
+    assert regeln.lauf_fehler(ohne) == ""      # ein Lauf von brain-ideas hat beides nicht
+
+
+def test_lauf_raster_muss_aufgehen() -> None:
+    lauf = _mf_lauf()
+    lauf["sichten"]["coding"]["punkte"] = 16             # Summe der Kriterien ist 15
+    assert regeln.lauf_fehler(lauf) == "sichten.coding.kriterien"
+    lauf = _mf_lauf()
+    lauf["sichten"]["ideas"]["kriterien"].pop()
+    assert regeln.lauf_fehler(lauf) == "sichten.ideas.kriterien"
+    lauf = _mf_lauf()
+    lauf["sichten"]["research"]["kriterien"][1]["name"] = "Kriterium 1"
+    assert regeln.lauf_fehler(lauf) == "sichten.research.kriterien"
+    lauf = _mf_lauf()
+    lauf["sichten"]["rowboat"]["kriterien"][0]["punkte"] = 6
+    assert regeln.lauf_fehler(lauf) == "sichten.rowboat.kriterien"
+
+
+def test_lauf_aufrufe_in_grenzen() -> None:
+    assert regeln.lauf_fehler(_mf_lauf(aufrufe=regeln.AUFRUFE_MAX + 1)) == "aufrufe"
+    assert regeln.lauf_fehler(_mf_lauf(aufrufe=True)) == "aufrufe"
+    assert regeln.lauf_fehler(_mf_lauf(aufrufe=0)) == ""
+
+
+# ── To-dos bringen hoechstens, was der Sicht fehlt (erster echter Lauf, 26.11.2026) ──
+
+def test_todo_punkte_werden_auf_das_fehlende_umgerechnet() -> None:
+    # Coding 9 von 25: es fehlen 16, die To-dos versprachen 67.
+    assert regeln.todo_punkte_umrechnen([20, 15, 12, 12, 8], 16) == [5, 3, 3, 3, 2]
+    assert sum(regeln.todo_punkte_umrechnen([30, 20, 15, 10, 7], 17)) == 17
+    assert regeln.todo_punkte_umrechnen([4, 3], 10) == [4, 3]          # passt schon: unveraendert
+    assert regeln.todo_punkte_umrechnen([4, 3], 0) == [0, 0]
+    assert regeln.todo_punkte_umrechnen([10, 1, 1], 2) == [2, 0, 0]
+
+
+def test_todos_begrenzen_laesst_nullen_weg() -> None:
+    todos = [{"titel": "A", "punkte": 10}, {"titel": "B", "punkte": 1}, {"titel": "C", "punkte": 1}]
+    assert regeln.todos_begrenzen(todos, 23) == [{"titel": "A", "punkte": 2}]
+    assert regeln.todos_begrenzen(todos, 25) == []
+    assert regeln.todos_begrenzen(todos, 5) == todos
