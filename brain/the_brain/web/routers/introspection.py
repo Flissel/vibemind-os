@@ -3344,14 +3344,22 @@ async def _multihop_execute(request: Request):
                                  "final_text": _rb_antwort["satz"], "trace_id": trace_id})
         if _rb_antwort and _rb_antwort.get("offen"):
             return await asyncio.to_thread(_recherche_starten, pe, trace_id, intent, _rb_antwort["offen"])
-        # Bau im Project Space: "Ja, bauen" gilt nur direkt nach der Rueckfrage
-        # (core/coding_auftrag); jeder andere Satz verwirft sie.
+        # Bau im Project Space: "Ja, bauen" gilt nur fuer die eigene Rueckfrage (context.frage_id),
+        # vom eigenen Rechner, mit dem Zeichen der App ueber "coding-bauen <frage_id>"
+        # (core/coding_auftrag, K8). Andere Saetze lassen die Rueckfrage stehen.
         from core import coding_auftrag as _ca
-        _ca_antwort = _ca.satz_pruefen(intent)
+        from core.desktop_tagesrest import KOPF_EINGABE as _KOPF_EINGABE_CA
+        _ca_kontext = body.get("context") if isinstance(body.get("context"), dict) else {}
+        _ca_antwort = _ca.satz_pruefen(intent, frage_id=_ca_kontext.get("frage_id"),
+                                       zeichen=request.headers.get(_KOPF_EINGABE_CA),
+                                       riegel=_ca.riegel_offen(request.headers))
         if _ca_antwort and _ca_antwort.get("satz"):
             _trace_lite(pe, trace_id, intent, "coding-rueckfrage", _ca_antwort["satz"])
-            return JSONResponse({"ok": False, "rueckfrage": True, "space": _ca.SPACE, "executed": {},
-                                 "final_text": _ca_antwort["satz"], "trace_id": trace_id})
+            _ca_aus = {"ok": False, "rueckfrage": True, "space": _ca.SPACE, "executed": {},
+                       "final_text": _ca_antwort["satz"], "trace_id": trace_id}
+            if _ca_antwort.get("grund"):
+                _ca_aus["grund"] = _ca_antwort["grund"]
+            return JSONResponse(_ca_aus)
         if _ca_antwort and _ca_antwort.get("offen"):
             return await asyncio.to_thread(_coding_starten, pe, trace_id, intent, _ca_antwort["offen"])
         # Antwort auf die Frage nach einer von mehreren gleichnamigen Bubbles (core/verstehen);
@@ -3436,10 +3444,19 @@ async def _multihop_execute(request: Request):
             _sales_fest = plan is not None
         # "Bau mir ...": erst die Rueckfrage, gebaut wird erst nach "Ja, bauen" (core/coding_auftrag).
         if not skip_shortcut and plan is None and not _bubble_wahl and _ca.ist_bauauftrag(intent, _space):
-            _ca_frage = await asyncio.to_thread(_ca.vorschau, intent)
-            _trace_lite(pe, trace_id, intent, "coding-rueckfrage", _ca_frage)
-            return JSONResponse({"ok": False, "rueckfrage": True, "space": _ca.SPACE, "executed": {},
-                                 "final_text": _ca_frage, "trace_id": trace_id, "weg": "coding"})
+            # Nur vom eigenen Rechner und nicht aus einer Webseite (K8); sonst gar keine Rueckfrage.
+            if not _ca.riegel_offen(request.headers):
+                _trace_lite(pe, trace_id, intent, "coding-rueckfrage", _ca.NUR_AUS_DER_APP)
+                return JSONResponse({"ok": False, "rueckfrage": True, "space": _ca.SPACE, "executed": {},
+                                     "final_text": _ca.NUR_AUS_DER_APP, "trace_id": trace_id, "weg": "coding",
+                                     "grund": "nur_aus_der_app"})
+            _ca_frage = await asyncio.to_thread(_ca.rueckfrage, intent)
+            _trace_lite(pe, trace_id, intent, "coding-rueckfrage", _ca_frage["satz"])
+            _ca_aus = {"ok": False, "rueckfrage": True, "space": _ca.SPACE, "executed": {},
+                       "final_text": _ca_frage["satz"], "trace_id": trace_id, "weg": "coding"}
+            if _ca_frage.get("frage_id"):
+                _ca_aus["frage_id"] = _ca_frage["frage_id"]
+            return JSONResponse(_ca_aus)
         if not skip_shortcut and plan is None and not _bubble_wahl:
             _lesen = _verstehen.feste_lesefrage(intent, _space)
             if _lesen and _lesen.get("antwort"):

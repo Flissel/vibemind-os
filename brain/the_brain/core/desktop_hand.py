@@ -91,8 +91,9 @@ def beleg_pruefen(x: Any, y: Any, zeichen: Any, *, umgebung: Optional[Mapping[st
     )
 
     px, py = _ganz(x), _ganz(y)
-    u = os.environ if umgebung is None else umgebung
-    schluessel = u.get(SCHLUESSEL_NAME) or ""
+    from .geheimnis import geheimnis
+
+    schluessel = geheimnis(SCHLUESSEL_NAME, umgebung)
     if px is None or py is None or len(schluessel) < SCHLUESSEL_MINDESTLAENGE or not isinstance(zeichen, str):
         return False
     zeit_text, _, _ = zeichen.partition(".")
