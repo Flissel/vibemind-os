@@ -72,7 +72,7 @@ def test_stichpunkte_zwei_bis_fuenf_und_agenda_drei():
 
 
 def test_jede_vorlage_hat_pflichtfelder_und_html():
-    assert set(FELDER) == set(VORLAGEN) == {"titel", "stichpunkte", "zahl", "zitat", "vergleich", "agenda"}
+    assert set(FELDER) == set(VORLAGEN) == {"titel", "stichpunkte", "zahl", "zitat", "vergleich", "agenda", "code"}
     for v in VORLAGEN:
         html = html_fuer([S("titel", 0), S(v, 1)])
         assert f"t-{v}" in html

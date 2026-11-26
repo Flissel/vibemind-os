@@ -17,7 +17,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from spaces.marketing.claw import video_slides
+from spaces.marketing.claw import video_mund, video_slides
 
 LOG = logging.getLogger("video_rendern")
 
@@ -169,9 +169,18 @@ def szene_rendern(szene: dict, gesprochen, marke: dict, ordner: Path, ziel: Path
     logo = video_slides.logo_name(marke)
     if logo:
         shutil.copyfile(marke["logo"], ordner / logo)
+    # Erklaervideo (szene["erklaer"], vom Arbeiter gesetzt): Rahmen und Figur; der Mund folgt der Tonspur der Szene
+    erklaer = szene.get("erklaer") if isinstance(szene.get("erklaer"), dict) else None
+    mund_css = ""
+    if erklaer is not None:
+        bilder = video_slides.figur_dateien(erklaer.get("figur"))
+        for name, quelle in bilder.items():
+            shutil.copyfile(quelle, ordner / name)
+        if bilder:
+            mund_css = video_mund.keyframes(video_mund.wechsel(gesprochen.wav), gesprochen.dauer_s)
     komposition, roh = ordner / "index.html", ordner / "roh.mp4"
-    komposition.write_text(video_slides.komposition(szene, plan, marke, "ton.wav", gesprochen.dauer_s),
-                           encoding="utf-8")
+    komposition.write_text(video_slides.komposition(szene, plan, marke, "ton.wav", gesprochen.dauer_s,
+                                                    erklaer=erklaer, mund_css=mund_css), encoding="utf-8")
     env = {**os.environ, "DO_NOT_TRACK": "1"}
     spiegel = None
     try:

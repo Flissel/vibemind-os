@@ -556,6 +556,25 @@ def _stimme_bereit(c: _Lauf) -> bool:
     return bereit
 
 
+def erklaer_rahmen(werk: dict, zeile: dict) -> dict | None:
+    """Rahmen des Erklaervideos fuer eine Szene ({firma, titel, stufe, stufe_nr, stufen, figur, ...}) oder None.
+    Eingeschaltet je Auftrag mit eingabe.stil = "erklaer" oder fuer alle mit WERKBANK_ERKLAER=1 (Vorgabe: aus).
+    Die Figur kommt aus eingabe.figur, sonst WERKBANK_FIGUR, sonst "tux"; in der ersten und letzten Szene ist sie gross."""
+    eingabe = werk.get("eingabe") if isinstance(werk.get("eingabe"), dict) else {}
+    if eingabe.get("stil") != "erklaer" and os.environ.get("WERKBANK_ERKLAER", "").strip() != "1":
+        return None
+    gliederung = werk.get("gliederung") if isinstance(werk.get("gliederung"), dict) else {}
+    namen = [str(st.get("name") or st.get("titel") or "") for st in gliederung.get("stufen") or [] if isinstance(st, dict)]
+    stufe = str(zeile.get("stufe") or "")
+    nummern = sorted(int(s["nr"]) for s in werk.get("szenen") or [] if isinstance(s, dict) and isinstance(s.get("nr"), int))
+    figur = str(eingabe.get("figur") or os.environ.get("WERKBANK_FIGUR", "") or "tux").strip().lower()
+    return {"firma": str(eingabe.get("firma") or werk.get("mandant") or "")[:60],
+            "titel": str(gliederung.get("titel") or eingabe.get("thema") or "")[:60],
+            "stufe": stufe[:60], "stufe_nr": namen.index(stufe) + 1 if stufe in namen else None, "stufen": len(namen),
+            "figur": figur, "figur_name": figur.capitalize(),
+            "figur_gross": bool(nummern) and zeile.get("nr") in (nummern[0], nummern[-1])}
+
+
 def _erzeugen(c: _Lauf, werk: dict) -> str | None:
     aid = str(werk["auftrag"])
     _fehler_nachmelden(c, werk)
@@ -579,7 +598,9 @@ def _erzeugen(c: _Lauf, werk: dict) -> str | None:
         gesprochen = c.sprechen(str(zeile.get("sprechtext") or ""), stimme, ordner)
         phase = "rendern"
         ziel = ordner / name
-        dauer = c.rendern(zeile, gesprochen, c.marke(str(werk.get("mandant") or "")), ordner, ziel)
+        rahmen = erklaer_rahmen(werk, zeile)
+        szene = {**zeile, "erklaer": rahmen} if rahmen is not None else zeile
+        dauer = c.rendern(szene, gesprochen, c.marke(str(werk.get("mandant") or "")), ordner, ziel)
         if not isinstance(dauer, (int, float)) or isinstance(dauer, bool):
             dauer = gesprochen.dauer_s
         phase = "hochladen"

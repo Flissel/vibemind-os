@@ -1196,3 +1196,41 @@ def test_wunsch_ohne_bisherige_gliederung_bekommt_nicht_das_konzept_als_unveraen
     f = Fragen()
     ein_durchlauf(api, fragen=f, **F)
     assert "bleiben wie dort" not in f.nachrichten[0] and wa.video_texte.RANGFOLGE_WUNSCH_OHNE_BISHER in f.nachrichten[0]
+
+
+# --- Erklaervideo (Rahmen und Figur je Szene) -------------------------------------------------
+
+def _werk_erklaer(**eingabe):
+    return werk(AID_A, "text_ok", gliederung={"titel": "Chunking erklärt", "stufen": [{"name": "Das Problem"}, {"name": "Die Lösung"}]},
+                szenen=[zeile(1, stufe="Das Problem"), zeile(2, stufe="Die Lösung"), zeile(3, stufe="Die Lösung")],
+                eingabe={"thema": "Chunking", **eingabe})
+
+
+def test_erklaer_rahmen_nur_wenn_eingeschaltet(monkeypatch):
+    from spaces.marketing.workers.werkbank_arbeiter import erklaer_rahmen
+    monkeypatch.delenv("WERKBANK_ERKLAER", raising=False)
+    monkeypatch.delenv("WERKBANK_FIGUR", raising=False)
+    assert erklaer_rahmen(_werk_erklaer(), zeile(2, stufe="Die Lösung")) is None
+    r = erklaer_rahmen(_werk_erklaer(stil="erklaer", firma="Pexon Consulting GmbH"), zeile(2, stufe="Die Lösung"))
+    assert r == {"firma": "Pexon Consulting GmbH", "titel": "Chunking erklärt", "stufe": "Die Lösung", "stufe_nr": 2,
+                 "stufen": 2, "figur": "tux", "figur_name": "Tux", "figur_gross": False}
+    monkeypatch.setenv("WERKBANK_ERKLAER", "1")
+    monkeypatch.setenv("WERKBANK_FIGUR", "Druide")
+    r = erklaer_rahmen(_werk_erklaer(), zeile(1, stufe="Das Problem"))
+    assert r["firma"] == "VibeMind" and r["figur"] == "druide" and r["figur_gross"] is True and r["stufe_nr"] == 1
+    assert erklaer_rahmen(_werk_erklaer(), zeile(3, stufe="Unbekannt"))["stufe_nr"] is None
+
+
+def test_erklaer_rahmen_geht_an_den_render(F, monkeypatch):
+    monkeypatch.delenv("WERKBANK_ERKLAER", raising=False)
+    gesehen = []
+
+    def rendern(szene, gesprochen, marke, ordner, ziel):
+        gesehen.append(szene.get("erklaer"))
+        return rendern_fake(szene, gesprochen, marke, ordner, ziel)
+    w = _werk_erklaer(stil="erklaer")
+    z = zeile(1, stand="wird_erzeugt", stufe="Das Problem", sprechtext=SATZ, bild=BILD)
+    w["szenen"] = [z]
+    api = FakeApi([w], nehmen={AID_A: z})
+    assert ein_durchlauf(api, fragen=Fragen(), **{**F, "rendern": rendern}) == "clip"
+    assert gesehen and gesehen[0]["titel"] == "Chunking erklärt" and gesehen[0]["figur"] == "tux"

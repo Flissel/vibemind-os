@@ -13,6 +13,8 @@ def S(vorlage, ab, **felder):
         "zitat": {"zitat": "Ein Satz", "von": "Jemand"},
         "vergleich": {"links": {"titel": "A", "punkte": ["a"]}, "rechts": {"titel": "B", "punkte": ["b"]}},
         "agenda": {"punkte": ["x", "y", "z"], "aktiv": 1},
+        "code": {"ueberschrift": "So sieht es aus", "datei": "corpus.py:84-86",
+                 "zeilen": ["def teile(text):", "    return text.split()", ""], "ab_zeile": 84, "markiert": [1]},
     }[vorlage]
     return {"vorlage": vorlage, "ab_satz": ab, **{**standard, **felder}}
 
