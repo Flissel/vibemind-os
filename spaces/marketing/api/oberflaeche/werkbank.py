@@ -37,7 +37,7 @@ MIT_CLIP = ("clip_wartet", "fertig")
 AUFTRAG = ("offen", "in_arbeit", "werkbank", "erzeugt", "wartet_freigabe", "fertig", "abgebrochen", "fehler",
            "abgelaufen")
 BILDARTEN = ("slide", "avatar_gross", "avatar_slide", "clip")
-VORLAGEN = ("titel", "stichpunkte", "zahl", "zitat", "vergleich", "agenda")
+VORLAGEN = ("titel", "stichpunkte", "zahl", "zitat", "vergleich", "agenda", "code")
 MELDUNGEN = ("gespeichert", "passt", "nochmal", "versucht", "geoeffnet", "neu", "neu_bauen", "entschieden")
 
 TEXTE = {
@@ -74,7 +74,7 @@ TEXTE = {
         "b_slide": "Slide mit Stimme aus dem Off", "b_avatar_gross": "Avatar im ganzen Bild",
         "b_avatar_slide": "Avatar vor der Slide", "b_clip": "Filmischer Clip",
         "v_titel": "Titel", "v_stichpunkte": "Stichpunkte", "v_zahl": "Zahl", "v_zitat": "Zitat",
-        "v_vergleich": "Vergleich", "v_agenda": "Agenda",
+        "v_vergleich": "Vergleich", "v_agenda": "Agenda", "v_code": "Code",
         "belege": "Belege", "keine_belege": "Keine Belege angegeben.", "wuensche": "Bisherige Wünsche",
         "video": "Das fertige Video", "video_veraltet": "Seit dem Zusammenfügen hat sich eine Szene geändert.",
         "video_titel": "Titel", "beschreibung": "Beschreibung", "zeitmarken": "Zeitmarken für YouTube",
@@ -122,7 +122,7 @@ TEXTE = {
         "b_slide": "Slide with voice-over", "b_avatar_gross": "Avatar full frame",
         "b_avatar_slide": "Avatar in front of the slide", "b_clip": "Cinematic clip",
         "v_titel": "Title", "v_stichpunkte": "Bullet points", "v_zahl": "Number", "v_zitat": "Quote",
-        "v_vergleich": "Comparison", "v_agenda": "Agenda",
+        "v_vergleich": "Comparison", "v_agenda": "Agenda", "v_code": "Code",
         "belege": "Evidence", "keine_belege": "No evidence given.", "wuensche": "Earlier wishes",
         "video": "The finished video", "video_veraltet": "A scene has changed since the video was put together.",
         "video_titel": "Title", "beschreibung": "Description", "zeitmarken": "Timestamps for YouTube",

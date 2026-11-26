@@ -1,0 +1,53 @@
+/* Zusatz-Stil "Erklaervideo" (26.11.2026): Kopfzeile mit Firma und Logo, Schild mit dem Namen der Stufe, Anzeige
+   "Titel - Stufe 2/4", Leuchtlinie, Figur im Kreis unten rechts, Code-Folie. Nur aktiv, wenn die Wurzel die Klasse
+   .erklaer traegt; ohne sie bleibt jede Szene wie bisher. Bewegung nur als CSS-Keyframes. */
+.erklaer .kopfzeile { position: absolute; left: 56px; top: 34px; right: 56px; height: 44px; z-index: 6;
+  display: flex; align-items: center; justify-content: space-between; }
+.erklaer .firma { font-family: var(--schrift-anzeige); font-weight: var(--gewicht-anzeige); font-size: 22px;
+  letter-spacing: .09em; text-transform: uppercase; color: var(--text); }
+.erklaer .kopfzeile .logo { position: static; max-height: 44px; max-width: 240px; opacity: .95; }
+.erklaer > .logo { display: none; }
+.erklaer .schild { position: absolute; left: 160px; top: 104px; z-index: 6; padding: 6px 22px; border-radius: 999px;
+  background: var(--akzent); color: var(--auf-akzent); font-family: var(--schrift-anzeige);
+  font-weight: var(--gewicht-anzeige); font-size: 24px; }
+.erklaer .stufen { position: absolute; right: 160px; top: 108px; z-index: 6; display: flex; align-items: center; gap: 10px;
+  font-size: 20px; letter-spacing: .1em; text-transform: uppercase; color: var(--leise); }
+.erklaer .stufen i { display: block; width: 14px; height: 14px; border: 2px solid var(--linie-stark); }
+.erklaer .stufen i.an { background: var(--akzent); border-color: var(--akzent); }
+.erklaer .leuchtlinie { position: absolute; left: 0; right: 0; bottom: 64px; height: 3px; z-index: 4;
+  background: var(--akzent); opacity: .7; }
+.erklaer .fortschritt { z-index: 7; }
+
+/* Inhalt rueckt unter die Kopfzeile und laesst rechts unten Platz fuer die Figur */
+.erklaer .schritt { top: 120px; bottom: 70px; }
+.erklaer .v0 .inhalt { width: 1380px; }
+.erklaer .v1 .deko { inset: 28px 56px; }
+.erklaer .v2 .deko .nummer { bottom: 60px; }
+
+/* Figur im Kreis: drei Mundbilder uebereinander, sie wippt, solange die Szene laeuft */
+.erklaer .figur { position: absolute; right: 88px; bottom: 150px; width: 230px; height: 230px; z-index: 6;
+  border-radius: 50%; overflow: hidden; border: 4px solid var(--akzent); background: #FBEED3; }
+.erklaer .figur.gross { width: 380px; height: 380px; right: 120px; bottom: 170px; border-width: 5px; }
+.erklaer .figur .wippe { position: absolute; inset: 0; transform-origin: 50% 85%;
+  animation: wippen .85s ease-in-out infinite alternate; }
+.erklaer .figur img { position: absolute; left: -22%; top: -6%; width: 144%; height: 144%; object-fit: cover; }
+.erklaer .figur .m1, .erklaer .figur .m2 { opacity: 0; }
+@keyframes wippen { from { transform: rotate(-2.2deg) translateY(0); } to { transform: rotate(2.2deg) translateY(-5px); } }
+.erklaer .figurname { position: absolute; right: 88px; bottom: 104px; width: 238px; z-index: 6; text-align: center;
+  font-size: 20px; color: var(--text); padding: 4px 0; border-radius: 999px; background: rgba(255,255,255,.08);
+  border: 1px solid var(--linie); }
+.erklaer .figurname b { color: var(--akzent-text); font-weight: inherit; }
+.erklaer .figurname.gross { right: 120px; bottom: 122px; width: 390px; }
+
+/* Code-Folie: Dateiname, Zeilennummern, markierte Zeilen */
+.code .inhalt, .t-code .inhalt { width: 1380px; }
+.codekarte { margin: 0; padding: 28px 34px; border-radius: 18px; background: rgba(255,255,255,.06);
+  border: 1px solid var(--linie); }
+.codekarte .datei { margin: 0 0 18px; font-size: 26px; color: var(--leise); }
+.codezeilen { margin: 0; padding: 0; list-style: none; font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+  font-size: calc(30px * var(--s, 1)); line-height: 1.5; }
+.codezeilen li { display: flex; gap: 22px; white-space: pre; animation: rein .3s ease-out both; animation-delay: var(--d, 0s); }
+.codezeilen .nr { flex: 0 0 70px; text-align: right; color: var(--leise); opacity: .6; }
+.codezeilen li.markiert { background: rgba(255,255,255,.10); box-shadow: inset 5px 0 0 var(--akzent); }
+.codezeilen li.markiert .text { color: var(--akzent-text); }
+.v1 .codekarte { text-align: left; }
