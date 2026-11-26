@@ -242,7 +242,11 @@ $Dienste = @(
         Args = @('-u', '-m', 'spaces.marketing.workers.werkbank_arbeiter')
         Cwd  = $OsRoot
         # WERKBANK_ROWBOAT_QUELLEN: Namen der Rowboat-Wissensquellen, die Videos nutzen duerfen (kommagetrennt, leer = keine)
-        Env  = @{ TON_STIMMEN_ORDNER = 'E:\marketing-stimmen'; WERKBANK_ROWBOAT_QUELLEN = '' }
+        # WERKBANK_ERKLAER: '1' = jede Szene im Rahmen des Erklaervideos (Kopfzeile, Stufe, Figur mit Mund im Takt)
+        # WERKBANK_FIGUR: Figur im Kreis (Ordner video_werkbank\figuren\<name>), Vorgabe tux
+        # WERKBANK_CODE_WURZELN: Code-Ordner fuer Code-Folien, 'name=C:\pfad;name2=D:\pfad' (leer = keine Code-Folien)
+        Env  = @{ TON_STIMMEN_ORDNER = 'E:\marketing-stimmen'; WERKBANK_ROWBOAT_QUELLEN = ''; WERKBANK_ERKLAER = '';
+                  WERKBANK_FIGUR = ''; WERKBANK_CODE_WURZELN = '' }
         Was  = 'Werkbank-Arbeiter (Video-Auftraege: schreibt, spricht, rendert, laedt Clips hoch; fragt ueber :8154)'
     }
 )

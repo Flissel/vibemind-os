@@ -76,6 +76,14 @@ Zustandswechsel ist eine SQL-Funktion `marketing.video_*`.
 
 - Folien: HyperFrames in `video_werkbank/` (sechs Vorlagen, 1920x1080, 30 Bilder/s). Einmalig
   `npm ci` in diesem Ordner.
+- Erklaervideo (seit 26.11.2026, Vorgabe aus): mit `eingabe.stil = "erklaer"` am Auftrag oder `WERKBANK_ERKLAER=1`
+  am Werkbank-Arbeiter bekommt jede Szene eine Kopfzeile mit Firma und Logo, das Schild der Stufe, die Anzeige
+  „Titel · Stufe 2/4" und eine Figur im Kreis. Die Figur hat drei Mundbilder
+  (`video_werkbank/figuren/<name>/zu.png`, `halb.png`, `offen.png`); der Mund folgt der Lautstaerke der Tonspur
+  (`claw/video_mund.py`, ohne Modell). Figur `tux`: Tux von Larry Ewing, die Zeile gehoert in jede Videobeschreibung.
+- Code-Folien (Vorlage `code`): das Modell nennt nur die Stelle (`quelle: {datei, von, bis}`), die Zeilen liest der
+  Arbeiter selbst aus der Datei (`claw/video_code.py`). Erlaubt sind nur die Ordner aus `WERKBANK_CODE_WURZELN`
+  (`name=pfad;...`, leer = keine Code-Folien). Zahlen im Code brauchen keinen Beleg, die Ueberschrift schon.
 - Ablauf: Gliederung, dann je Szene Text und Clip. Jedes Stueck segnet der Betreiber ab (Rowboat
   oder Sales-Seite `/marketing/werkbank`). Sind alle Clips abgenommen, fuegt der Arbeiter das
   Video zusammen (-14 LUFS) und Sales legt es in `/freigaben`.
