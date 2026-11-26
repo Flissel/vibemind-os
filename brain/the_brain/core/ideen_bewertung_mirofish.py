@@ -21,10 +21,11 @@ Ablauf nach dem Muster des Bauauftrags (core/coding_auftrag):
 Kosten: MiroFish nennt beim Start die geschaetzte und die hoechste Zahl der Abo-Aufrufe (heute 5 und 10)
 und im Ergebnis die tatsaechliche; die steht in der Meldung und im Lauf (``aufrufe``).
 
-Einstellungen (alle nachtraeglich aenderbar, Antworten des Betreibers stehen aus):
-- ``VIBEMIND_BEWERTUNG_QUELLE``: ``mirofish`` (Vorgabe) oder ``agent`` (der alte Weg ueber brain-ideas).
-- ``VIBEMIND_SCHNELL_BEWERTEN``: ``1`` laesst "Schnell bewerten" an brain-ideas gehen (schaltet nie frei);
-  Vorgabe aus.
+Entscheid des Betreibers (26.11.2026): ein Knopf, jede Bewertung geht an MiroFish. Der alte Weg ueber
+brain-ideas ist stillgelegt (kein Satz, keine Einstellung fuehrt mehr dorthin); sein Code bleibt, bis der
+neue Weg im Betrieb belegt ist. Ist MiroFish nicht erreichbar, gibt es eine klare Absage, kein Ausweichen.
+
+Einstellungen:
 - ``VIBEMIND_MIROFISH_BEWERTUNG_KB``: Obergrenze der Bubble in KB (Vorgabe 400, wie MiroFish).
 - ``MIROFISH_BASE_URL``: Adresse von MiroFish (wie core/capability_targets).
 """
@@ -42,8 +43,6 @@ from .ideen_rueckweg import RueckwegFehler, _sauber
 
 logger = logging.getLogger(__name__)
 
-QUELLE_EINSTELLUNG = "VIBEMIND_BEWERTUNG_QUELLE"
-SCHNELL_EINSTELLUNG = "VIBEMIND_SCHNELL_BEWERTEN"
 GRENZE_EINSTELLUNG = "VIBEMIND_MIROFISH_BEWERTUNG_KB"
 URL_EINSTELLUNG = "MIROFISH_BASE_URL"
 URL_VORGABE = "http://127.0.0.1:5001"
@@ -79,16 +78,9 @@ def _regeln() -> Any:
 # ── Einstellungen ────────────────────────────────────────────────────────────
 
 def ueber_mirofish(arg: Mapping[str, Any], umgebung: Optional[Mapping[str, str]] = None) -> bool:
-    """Geht diese Bewertung an MiroFish? Nein nur bei "Schnell bewerten" (wenn erlaubt) oder Quelle agent."""
-    umgebung = os.environ if umgebung is None else umgebung
-    if arg.get("schnell") is True and schnell_erlaubt(umgebung):
-        return False
-    return (umgebung.get(QUELLE_EINSTELLUNG) or "mirofish").strip().lower() != "agent"
-
-
-def schnell_erlaubt(umgebung: Optional[Mapping[str, str]] = None) -> bool:
-    umgebung = os.environ if umgebung is None else umgebung
-    return (umgebung.get(SCHNELL_EINSTELLUNG) or "").strip().lower() in ("1", "true", "ja", "yes")
+    """Jede Bewertung geht an MiroFish (Entscheid des Betreibers, 26.11.2026); kein Argument, keine
+    Einstellung fuehrt zurueck zu brain-ideas. Die Signatur bleibt fuer den Plan-Ausfuehrer."""
+    return True
 
 
 def grenze_bytes(umgebung: Optional[Mapping[str, str]] = None) -> int:

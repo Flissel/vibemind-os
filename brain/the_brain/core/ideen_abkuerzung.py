@@ -547,11 +547,6 @@ def loese(satz: Any, kontext: Any) -> Optional[dict]:
         return None
 
 
-def _schnell_erlaubt() -> bool:
-    """Wie ``ideen_bewertung_mirofish.schnell_erlaubt``; hier ohne Import, die Satzerkennung bleibt leicht."""
-    import os
-    return (os.environ.get("VIBEMIND_SCHNELL_BEWERTEN") or "").strip().lower() in ("1", "true", "ja", "yes")
-
 
 def zeilen_text(satz: Any) -> str:
     """Der Satz mit seinen Zeilen: Leerraum je Zeile zusammengezogen, leere Zeilen hoechstens einzeln.
@@ -813,14 +808,6 @@ def _loese(text: str, kontext: dict) -> Optional[dict]:
     # ── Bewertung als fester Weg (Stufe 1, core/ideen_bewertung): ein Lauf mit fuenf Sichten und
     #    To-dos. Mit Zahl ("... mit 70") bleibt es der Handwert (bubble.rate, weiter unten).
     if not re.search(r"\bmit\s+\d", text, _I):
-        # "Schnell bewerten" geht an brain-ideas (schaltet nie frei), nur wenn der Betreiber es erlaubt
-        # (VIBEMIND_SCHNELL_BEWERTEN, core/ideen_bewertung_mirofish); sonst bewertet immer MiroFish.
-        if _schnell_erlaubt() and re.fullmatch(
-                r"(?:(?:diese|die)\s+bubble\s+)?schnell\s+bewerten|bewerte\s+(?:(?:diese|die)\s+bubble\s+)?schnell",
-                text, _I):
-            bubble = _bubble(None, kontext)
-            return _treffer("idea.bewerten", {"bubble_id": bubble["id"], "schnell": True}, "",
-                            capability="idea.bewerten")
         m = (re.fullmatch(r"bewerte\s+(?:(?:diese|die)\s+bubble|die\s+bubble\s+(?P<b>.+?))(?:\s+neu)?", text, _I)
              or re.fullmatch(r"(?:bewerte\s+(?:sie\s+|es\s+)?neu|neu\s+bewerten|(?:diese|die)\s+bubble\s+neu\s+bewerten)",
                              text, _I))

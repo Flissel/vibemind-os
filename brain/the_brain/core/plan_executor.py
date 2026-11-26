@@ -1968,11 +1968,12 @@ class PlanExecutor:
             from . import ideen_dokument as _dokument_mod
             from . import ideen_rueckweg as _rueckweg_mod
             from . import ideen_bewertung_mirofish as _mirofish_mod
-            if (event_id == _mirofish_mod.EREIGNIS and not authoritative_target
+            if (event_id == _mirofish_mod.EREIGNIS
                     and _mirofish_mod.ueber_mirofish(_dokument_mod._argument(rendered_arg))):
                 # Bewertung durch MiroFish (26.11.2026, Entscheidung des Betreibers): kein Agentenauftrag;
                 # das Gehirn gibt MiroFish die Bubble, der Nachfasser holt das Ergebnis und schreibt es
-                # ueber den festen Rueckweg. Kein Ausweichen auf brain-ideas.
+                # ueber den festen Rueckweg. Kein Ausweichen auf brain-ideas, auch nicht bei einem fest
+                # genannten Ziel (der alte Agentenweg fuer idea.bewerten ist stillgelegt).
                 _mf_fehler = None
                 if not _auftragsweg(plan_ctx):
                     _mf_fehler = _mirofish_mod.AUFTRAGSWEG_AUS
