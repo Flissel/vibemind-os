@@ -245,8 +245,10 @@ $Dienste = @(
         # WERKBANK_ERKLAER: '1' = jede Szene im Rahmen des Erklaervideos (Kopfzeile, Stufe, Figur mit Mund im Takt)
         # WERKBANK_FIGUR: Figur im Kreis (Ordner video_werkbank\figuren\<name>), Vorgabe tux
         # WERKBANK_CODE_WURZELN: Code-Ordner fuer Code-Folien, 'name=C:\pfad;name2=D:\pfad' (leer = keine Code-Folien)
-        Env  = @{ TON_STIMMEN_ORDNER = 'E:\marketing-stimmen'; WERKBANK_ROWBOAT_QUELLEN = ''; WERKBANK_ERKLAER = '';
-                  WERKBANK_FIGUR = ''; WERKBANK_CODE_WURZELN = '' }
+        # Eingeschaltet am 26.11.2026 (Felix): Rahmen an, Figur Tux, Code aus dem Checkout von la_fungus_search.
+        Env  = @{ TON_STIMMEN_ORDNER = 'E:\marketing-stimmen'; WERKBANK_ROWBOAT_QUELLEN = ''; WERKBANK_ERKLAER = '1';
+                  WERKBANK_FIGUR = 'tux'
+                  WERKBANK_CODE_WURZELN = 'la_fungus_search=C:\Users\User\ClaudeWork\wt-fungus-gate1' }
         Was  = 'Werkbank-Arbeiter (Video-Auftraege: schreibt, spricht, rendert, laedt Clips hoch; fragt ueber :8154)'
     }
 )
