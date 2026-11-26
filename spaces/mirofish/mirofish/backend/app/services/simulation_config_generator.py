@@ -18,6 +18,7 @@ from datetime import datetime
 
 from vibemind_shared import get_client_sync, get_model
 from ..utils.logger import get_logger
+from ..utils.llm_client import fold_messages
 from .entity_reader import EntityNode
 
 logger = get_logger('mirofish.simulation_config')
@@ -428,10 +429,10 @@ class SimulationConfigGenerator:
         """Make one gateway request; retry policy is owned by Shared."""
         response = self.client.chat.completions.create(
             model=self.model_name,
-            messages=[
+            messages=fold_messages([
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
-            ],
+            ], json_only=True),
             response_format={"type": "json_object"},
             temperature=0.7,
         )

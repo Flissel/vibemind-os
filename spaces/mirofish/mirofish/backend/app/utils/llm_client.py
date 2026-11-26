@@ -12,6 +12,67 @@ from vibemind_shared import get_client_sync, get_model
 
 _MIROFISH_ROLE = "space_mirofish"
 
+# Das OpenFang-Gateway reicht nur die LETZTE Nutzernachricht an den Agenten weiter
+# (openfang-api openai_compat: "Extract the last user message as the input"). Systemnachrichten und
+# fruehere Nachrichten gehen dort verloren, und response_format wird nicht erzwungen. Deshalb falten wir
+# alle Nachrichten in eine einzige Nutzernachricht und verlangen JSON ausdruecklich im Text.
+_JSON_HINWEIS = (
+    "Antworte ausschliesslich mit einem einzigen gueltigen JSON-Objekt. "
+    "Kein Text davor oder danach, keine Erklaerung, keine Markdown-Zaeune. "
+    "Fuehre die Aufgabe aus dem Abschnitt ANWEISUNG aus; beantworte nicht stattdessen die Eingabe."
+)
+_NACHFRAGE = (
+    "Das war kein gueltiges JSON-Objekt. Gib dieselbe Antwort jetzt nur als ein einziges gueltiges "
+    "JSON-Objekt aus, ohne weiteren Text."
+)
+_ABSCHNITT = {"system": "ANWEISUNG", "user": "EINGABE", "assistant": "BISHERIGE ANTWORT"}
+
+
+def fold_messages(messages: List[Dict[str, Any]], json_only: bool = False) -> List[Dict[str, Any]]:
+    """Faltet eine Nachrichtenliste in eine einzige Nutzernachricht fuer das Gateway.
+
+    Eine einzelne Nutzernachricht ohne JSON-Pflicht bleibt unveraendert. Nachrichten, deren Inhalt
+    kein Text ist, werden nicht angefasst (dann gibt es nichts verlustfrei zu falten).
+    """
+    if not messages:
+        return messages
+    if any(not isinstance(m.get("content"), str) for m in messages):
+        return messages
+    if len(messages) == 1 and messages[0].get("role") == "user" and not json_only:
+        return messages
+    teile = []
+    for m in messages:
+        rolle = str(m.get("role") or "user")
+        teile.append(f"### {_ABSCHNITT.get(rolle, rolle.upper())}\n{m['content']}")
+    if json_only:
+        teile.append(f"### AUSGABEFORMAT\n{_JSON_HINWEIS}")
+    return [{"role": "user", "content": "\n\n".join(teile)}]
+
+
+def extract_json(text: str) -> Any:
+    """Liest das erste JSON-Objekt aus einer Modellantwort, auch aus Fliesstext oder Markdown-Zaeunen.
+
+    Wirft ValueError, wenn kein JSON-Objekt enthalten ist.
+    """
+    cleaned = (text or "").strip()
+    cleaned = re.sub(r'^```(?:json)?\s*\n?', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\n?```\s*$', '', cleaned).strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+    decoder = json.JSONDecoder()
+    start = cleaned.find("{")
+    while start != -1:
+        try:
+            wert, _ = decoder.raw_decode(cleaned[start:])
+            if isinstance(wert, dict):
+                return wert
+        except json.JSONDecodeError:
+            pass
+        start = cleaned.find("{", start + 1)
+    raise ValueError("no JSON object in LLM response")
+
 
 class LLMClient:
     """LLM Client"""
@@ -50,7 +111,7 @@ class LLMClient:
         """
         kwargs = {
             "model": self.model,
-            "messages": messages,
+            "messages": fold_messages(messages),
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
@@ -82,18 +143,27 @@ class LLMClient:
             Parsed JSON object
         """
         response = self.chat(
-            messages=messages,
+            messages=fold_messages(messages, json_only=True),
             temperature=temperature,
             max_tokens=max_tokens,
             response_format={"type": "json_object"}
         )
-        # Clean markdown code block markers
-        cleaned_response = response.strip()
-        cleaned_response = re.sub(r'^```(?:json)?\s*\n?', '', cleaned_response, flags=re.IGNORECASE)
-        cleaned_response = re.sub(r'\n?```\s*$', '', cleaned_response)
-        cleaned_response = cleaned_response.strip()
-
         try:
-            return json.loads(cleaned_response)
-        except json.JSONDecodeError:
-            raise ValueError(f"Invalid JSON format from LLM: {cleaned_response}")
+            return extract_json(response)
+        except ValueError:
+            pass
+        # Genau eine Nachfrage: die unbrauchbare Antwort mitgeben und nur das JSON verlangen.
+        nachfrage = list(messages) + [
+            {"role": "assistant", "content": response[:6000]},
+            {"role": "user", "content": _NACHFRAGE},
+        ]
+        zweite = self.chat(
+            messages=fold_messages(nachfrage, json_only=True),
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format={"type": "json_object"}
+        )
+        try:
+            return extract_json(zweite)
+        except ValueError:
+            raise ValueError(f"Invalid JSON format from LLM: {zweite.strip()[:300]}")
