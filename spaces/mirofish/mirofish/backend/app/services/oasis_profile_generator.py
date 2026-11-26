@@ -16,7 +16,7 @@ from datetime import datetime
 
 from vibemind_shared import get_client_sync, get_model
 from ..utils.logger import get_logger
-from ..utils.llm_client import fold_messages
+from ..utils.llm_client import extract_json, fold_messages
 from .entity_reader import EntityNode
 from ..storage import GraphStorage
 
@@ -475,9 +475,11 @@ class OasisProfileGenerator:
             content = self._fix_truncated_json(content)
 
         try:
-            result = json.loads(content)
-        except json.JSONDecodeError:
-            result = self._try_fix_json(content, entity_name, entity_type, entity_summary)
+            result = extract_json(content)
+            if not isinstance(result, dict):
+                raise ValueError("kein JSON-Objekt")
+        except (ValueError, TypeError):
+            result = self._try_fix_json(content or "", entity_name, entity_type, entity_summary)
             if not result.get("_fixed"):
                 raise
             del result["_fixed"]

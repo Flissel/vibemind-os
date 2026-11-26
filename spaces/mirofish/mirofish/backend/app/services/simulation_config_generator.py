@@ -18,7 +18,7 @@ from datetime import datetime
 
 from vibemind_shared import get_client_sync, get_model
 from ..utils.logger import get_logger
-from ..utils.llm_client import fold_messages
+from ..utils.llm_client import extract_json, fold_messages
 from .entity_reader import EntityNode
 
 logger = get_logger('mirofish.simulation_config')
@@ -443,9 +443,12 @@ class SimulationConfigGenerator:
             content = self._fix_truncated_json(content)
 
         try:
-            return json.loads(content)
-        except json.JSONDecodeError:
-            fixed = self._try_fix_config_json(content)
+            wert = extract_json(content)
+            if not isinstance(wert, dict):
+                raise ValueError("kein JSON-Objekt")
+            return wert
+        except (ValueError, TypeError):
+            fixed = self._try_fix_config_json(content or "")
             if fixed:
                 return fixed
             raise
