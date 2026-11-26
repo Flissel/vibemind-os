@@ -27,7 +27,7 @@ from datetime import date
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from spaces.marketing.claw import video_kontext, video_slides, video_texte
+from spaces.marketing.claw import video_code, video_kontext, video_slides, video_texte
 from spaces.marketing.workers.bild_worker import ApiFehler, umgebung_laden
 from spaces.marketing.workers.chat_worker import MODELL, LlmFehler
 from spaces.marketing.workers.video_rendern import szene_rendern
@@ -385,7 +385,8 @@ def _bewerten(zeile: dict, szene: dict | None, auftrag: str, ktx, konzept: str =
         return ["Die Szene fehlt in der Antwort oder ist nicht lesbar."]
     if zeile.get("rueckgabe_von") == "clip" and szene.get("aendert_text") is False:
         szene["sprechtext"] = str(zeile.get("sprechtext") or "")     # nur das Bild ist neu: der Text bleibt, wie er war
-    return video_texte.szene_pruefen(szene, auftrag, ktx, konzept)
+    # Code-Folien: die Zeilen kommen aus der Datei, nicht vom Modell (vor der Pruefung, damit die Form stimmt)
+    return video_code.aufloesen(szene) + video_texte.szene_pruefen(szene, auftrag, ktx, konzept)
 
 
 def _abgeben(c: _Lauf, zeile: dict, szene: dict) -> bool | list[str]:
