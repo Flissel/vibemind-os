@@ -87,28 +87,23 @@ def _vorbereitet(**umgebung):
 
 # ── Einstellungen ────────────────────────────────────────────────────────────
 
-def test_vorgabe_ist_mirofish_und_schnell_nur_wenn_erlaubt():
+def test_jede_bewertung_geht_an_mirofish():
+    # Entscheid des Betreibers (26.11.2026): ein Knopf, der alte Weg ueber brain-ideas ist stillgelegt.
     assert mf.ueber_mirofish({}, {}) is True
-    assert mf.ueber_mirofish({}, {mf.QUELLE_EINSTELLUNG: "agent"}) is False
-    assert mf.ueber_mirofish({"schnell": True}, {}) is True                 # ohne Erlaubnis zaehlt "schnell" nicht
-    assert mf.ueber_mirofish({"schnell": True}, {mf.SCHNELL_EINSTELLUNG: "1"}) is False
+    assert mf.ueber_mirofish({"schnell": True}, {"VIBEMIND_BEWERTUNG_QUELLE": "agent",
+                                                 "VIBEMIND_SCHNELL_BEWERTEN": "1"}) is True
     assert mf.grenze_bytes({}) == 400 * 1024 and mf.grenze_bytes({mf.GRENZE_EINSTELLUNG: "50"}) == 50 * 1024
     assert mf.grenze_bytes({mf.GRENZE_EINSTELLUNG: "viel"}) == 400 * 1024
 
 
-def test_schnell_bewerten_nur_mit_einstellung(monkeypatch):
+def test_schnell_bewerten_gibt_es_nicht_mehr(monkeypatch):
     kontext = {"space": "ideas", "bubble": {"id": "b0b1e001", "title": "Stadtfest"}, "cards": []}
-    monkeypatch.delenv(mf.SCHNELL_EINSTELLUNG, raising=False)
-    assert abk.loese("Schnell bewerten", kontext) is None
-    assert abk.loese("Bewerte diese Bubble", kontext)["argumente"] == {"bubble_id": "b0b1e001"}
-    monkeypatch.setenv(mf.SCHNELL_EINSTELLUNG, "1")
-    for satz in ("Schnell bewerten", "Bewerte diese Bubble schnell", "Diese Bubble schnell bewerten"):
+    monkeypatch.setenv("VIBEMIND_SCHNELL_BEWERTEN", "1")
+    for satz in ("Schnell bewerten", "Bewerte diese Bubble schnell"):
         treffer = abk.loese(satz, kontext)
-        assert treffer["ereignis"] == "idea.bewerten" and treffer["argumente"] == {"bubble_id": "b0b1e001",
-                                                                                     "schnell": True}, satz
-
-
-# ── Anlegen ──────────────────────────────────────────────────────────────────
+        assert treffer is None or "schnell" not in (treffer.get("argumente") or {}), satz
+    treffer = abk.loese("Bewerte diese Bubble", kontext)
+    assert treffer["ereignis"] == "idea.bewerten" and treffer["argumente"] == {"bubble_id": "b0b1e001"}
 
 def test_vorbereiten_gibt_kuerzel_vollen_text_und_kartenstand():
     anfrage, rueckweg = _vorbereitet()
