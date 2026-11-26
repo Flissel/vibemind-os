@@ -824,3 +824,79 @@ def test_ganzen_text_ersetzen_ist_ein_fester_aufruf(satz) -> None:
     treffer = abk.loese(satz, KONTEXT)
     assert treffer["argumente"] == {"id": "a0000001", "content": "Preise ab Februar"}
 
+
+# ── Lauf 35: "die Notiz" ohne Namen raet nicht still die zuletzt bearbeitete Karte ──────
+
+@pytest.mark.parametrize("satz", [
+    "Ändere die Notiz: Preise ab Februar",
+    "Ergänze die Notiz: Preise ab Februar",
+    "Ergänze die Notiz um: Preise ab Februar",
+    "Ergänze bei der Notiz: Preise ab Februar",
+    "Ersetze den Text: Preise ab Februar",
+    "Ersetze den Text der Notiz: Preise ab Februar",
+    "Ersetze den Text von der Notiz durch: Preise ab Februar",
+    "Ersetze in der Notiz: Januar durch Februar",
+    "Lösche die Notiz",
+    "Lösche diese Karte",
+    "Entferne die Karte",
+])
+def test_ohne_namen_fragt_welche_notiz_und_aendert_nichts(satz) -> None:
+    abk._OFFEN.clear()
+    antwort = abk.loese(satz, KONTEXT)
+    assert set(antwort) == {"rueckfrage"}, antwort
+    assert antwort["rueckfrage"].startswith("Welche Notiz? 1. „Druckerei“ (zuletzt bearbeitet); 2. „Preise“")
+    assert "geändert habe ich noch nichts" in antwort["rueckfrage"]
+
+
+def test_antwort_auf_welche_notiz_fuehrt_den_satz_aus() -> None:
+    abk._OFFEN.clear()
+    abk.loese("Ergänze die Notiz: Angebot bis Freitag", KONTEXT)
+    treffer = abk.loese("die erste", KONTEXT)
+    assert treffer["argumente"] == {"id": "a0000002", "content_append": "Angebot bis Freitag"}
+
+    abk.loese("Ersetze den Text: Preise ab Februar", KONTEXT)
+    treffer = abk.loese("Preise", KONTEXT)
+    assert treffer["argumente"] == {"id": "a0000001", "content": "Preise ab Februar"}
+
+    # Aendern: erst die Karte, dann ersetzen oder ergaenzen
+    abk.loese("Ändere die Notiz: Preise ab Februar", KONTEXT)
+    frage = abk.loese("2", KONTEXT)
+    assert frage["rueckfrage"].startswith("Ersetzen oder ergänzen?") and "„Preise“" in frage["rueckfrage"]
+    assert abk.loese("Ergänzen", KONTEXT)["argumente"] == {"id": "a0000001", "content_append": "Preise ab Februar"}
+
+    # Loeschen: die Karte, dann wie immer die Rueckfrage "Ja, löschen" (core/loesch_bestaetigung)
+    abk.loese("Lösche die Notiz", KONTEXT)
+    treffer = abk.loese("die erste", KONTEXT)
+    assert treffer["ereignis"] == "idea.delete" and treffer["argumente"] == {"id": "a0000002"}
+    assert "loeschen" in treffer
+
+
+def test_ohne_namen_mit_einer_markierten_karte_gilt_die_auswahl() -> None:
+    abk._OFFEN.clear()
+    kontext = _mit(selection=["a0000001"])
+    treffer = abk.loese("Ergänze die Notiz: Rabatt fragen", kontext)
+    assert treffer["argumente"] == {"id": "a0000001", "content_append": "Rabatt fragen"}
+    assert abk.loese("Lösche diese Karte", kontext)["argumente"] == {"id": "a0000001"}
+
+
+def test_ohne_namen_bei_einer_einzigen_karte_wird_trotzdem_gefragt_und_gemerkt() -> None:
+    abk._OFFEN.clear()
+    kontext = _mit(cards=[KONTEXT["cards"][0]], last_id="a0000001")
+    frage = abk.loese("Ergänze die Notiz: Rabatt fragen", kontext)
+    assert frage["rueckfrage"].startswith("Welche Notiz? 1. „Preise“ (zuletzt bearbeitet).")
+    assert abk.loese("1", kontext)["argumente"] == {"id": "a0000001", "content_append": "Rabatt fragen"}
+
+
+def test_mit_namen_und_fuerwort_bleibt_es_wie_bisher() -> None:
+    abk._OFFEN.clear()
+    assert abk.loese("Ergänze die Notiz Preise: Rabatt", KONTEXT)["argumente"]["id"] == "a0000001"
+    assert abk.loese("Lösche die Notiz Preise", KONTEXT)["argumente"] == {"id": "a0000001"}
+    # Fuerwoerter ("das", "sie") meinen weiter die zuletzt bearbeitete Karte.
+    assert abk.loese("Ergänze das um: Rabatt", KONTEXT)["argumente"]["id"] == "a0000002"
+
+
+def test_ohne_offene_bubble_fragt_nicht_nach_karten() -> None:
+    abk._OFFEN.clear()
+    antwort = abk.loese("Lösche die Notiz", _mit(bubble=None))
+    assert "Welche Notiz?" not in antwort["rueckfrage"]
+
