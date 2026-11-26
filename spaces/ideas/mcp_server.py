@@ -1954,6 +1954,8 @@ def _bewertung_speichern(arguments: Mapping[str, Any]) -> dict[str, Any]:
                   for nr, todo in enumerate(lauf["todos"], start=1)],
         "kartenstand": stand, "gekuerzt": lauf.get("gekuerzt") is True, "quelle": regeln.lauf_quelle(lauf),
     }
+    if "aufrufe" in lauf:
+        neu["aufrufe"] = lauf["aufrufe"]      # Abo-Aufrufe der Bewertung (MiroFish), fuers Panel
     body: dict[str, Any] = {"score": score}
     beschreibung = bubble.get("description")
     verschoben = isinstance(beschreibung, str) and ALT_BLOCK in beschreibung

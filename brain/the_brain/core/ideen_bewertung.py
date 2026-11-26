@@ -318,11 +318,14 @@ def bewertung_pruefen(roh: Any, kuerzel: Mapping[str, str], kuerzel_titel: Mappi
         liste = sicht.get("todos", [])
         if not isinstance(liste, list):
             return None, _FORM
+        geprueft_sicht = []
         for todo in liste[:modul.TODOS_JE_SICHT]:
             geprueft, satz = _todo_pruefen(todo, name, kuerzel, kuerzel_titel, modul)
             if geprueft is None:
                 return None, satz
-            todos.append(geprueft)
+            geprueft_sicht.append(geprueft)
+        # Ein To-do bringt hoechstens, was der Sicht fehlt (erster echter Lauf, 26.11.2026).
+        todos += modul.todos_begrenzen(geprueft_sicht, punkte)
     # Die Quelle setzt der feste Rueckweg, nicht das Modell (was es selbst dazu schreibt, zaehlt nicht).
     lauf = {"sichten": aus_sichten, "todos": todos, "gekuerzt": bool(gekuerzt), "quelle": modul.QUELLE_AGENT}
     fehler = modul.lauf_fehler(lauf)
@@ -360,6 +363,9 @@ def bewertung_meldung(lauf: Mapping[str, Any], score: int, kuerzung: Optional[Ma
     modul = _regeln()
     teile = ", ".join(f"{modul.SICHT_NAMEN[n]} {lauf['sichten'][n]['punkte']}" for n in modul.SICHTEN)
     satz = f"Bewertung: {score} von 100 ({teile})."
+    if isinstance(lauf.get("aufrufe"), int) and not isinstance(lauf.get("aufrufe"), bool):
+        n = lauf["aufrufe"]
+        satz += f" Bewertet von MiroFish mit fünf Rollen, {n} Abo-Aufruf{'' if n == 1 else 'e'}."
     gekuerzt = kuerzung_satz(kuerzung)
     if gekuerzt:
         satz += " " + gekuerzt

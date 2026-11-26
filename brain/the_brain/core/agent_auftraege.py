@@ -81,6 +81,12 @@ class AuftragsTabelle:
                                         "order": "angelegt.asc", "limit": str(limit),
                                         "select": "id,trace_id,plan_id,angelegt,uebergabe"})
 
+    def mirofish_laufend(self, limit: int = 20) -> List[dict]:
+        """Laufende Bewertungen durch MiroFish (core/ideen_bewertung_mirofish), noch nicht beansprucht."""
+        return self._req("GET", params={"status": "eq.laeuft", "uebergabe->mirofish_bewertung": "not.is.null",
+                                        "pruefung": "is.null", "order": "angelegt.asc", "limit": str(limit),
+                                        "select": "id,trace_id,plan_id,hop_id,angelegt,uebergabe"})
+
     def recherche_abschliessen(self, auftrag_id: str, status: str, pruefung: dict,
                                jetzt_iso: Optional[str] = None) -> bool:
         """Laufende Recherche auf fertig/fehler setzen; False, wenn sie nicht mehr laeuft."""
@@ -199,7 +205,8 @@ def offene_auftraege(exec_result: Any) -> List[dict]:
         res = hop.get("result") if isinstance(hop, dict) else None
         if isinstance(hop, dict) and hop.get("pending") and isinstance(res, dict) and res.get("auftrag_id"):
             aus.append({"auftrag_id": str(res["auftrag_id"]), "agent": res.get("agent"),
-                        "capability": hop.get("capability")})
+                        "capability": hop.get("capability"),
+                        **({"hinweis": res["hinweis"]} if isinstance(res.get("hinweis"), str) else {})})
     return aus
 
 
@@ -210,6 +217,9 @@ def quittung(auftraege: List[dict]) -> str:
     """
     a = auftraege[0]
     zustaendig = a.get("agent") or a.get("capability") or "unbekannt"
+    if isinstance(a.get("hinweis"), str) and a["hinweis"].strip():
+        # Eigener Satz des Ausfuehrers, z. B. die Zahl der Abo-Aufrufe (core/ideen_bewertung_mirofish).
+        return f"Auftrag angenommen, Nr. {str(a['auftrag_id'])[:8]}. {a['hinweis'].strip()[:400]}"
     return (f"Auftrag angenommen, Nr. {str(a['auftrag_id'])[:8]} – zuständig: {zustaendig}. "
             "Das Ergebnis kommt, sobald es geprüft ist.")
 

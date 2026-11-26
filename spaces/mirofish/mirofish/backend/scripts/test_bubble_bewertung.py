@@ -317,3 +317,29 @@ def test_route_falsche_anfrage_und_unbekannte_aufgabe():
     antwort = client.post("/api/bubble/evaluate", json={"titel": "x"})
     assert antwort.status_code == 400 and "kartenstand" in antwort.get_json()["error"]
     assert client.get("/api/bubble/evaluate/unbekannt").status_code == 404
+
+
+# ── To-dos bringen hoechstens, was der Sicht fehlt (erster echter Lauf) ───────
+
+def test_todo_punkte_hoechstens_das_fehlende():
+    todos = [{"titel": f"T{n}", "fehlt": "x", "karten": ["K1"], "punkte": p, "art": "verbindung"}
+             for n, p in enumerate((20, 15, 12, 12, 8))]
+    geprueft = bb.urteil_pruefen("coding", _urteil("coding", punkte=(2, 2, 2, 2, 1), todos=todos), {"K1"})
+    assert geprueft["punkte"] == 9
+    assert [t["punkte"] for t in geprueft["todos"]] == [5, 3, 3, 3, 2]          # zusammen 16 = 25 - 9
+    voll = bb.urteil_pruefen("ideas", _urteil("ideas", punkte=(5, 5, 5, 5, 5)), {"K3"})
+    assert voll["todos"] == []                                                  # nichts fehlt, nichts zu tun
+
+
+@pytest.mark.skipif(not KARTENREGELN.exists(), reason="Kartenregeln nur im Repo, nicht im Abbild")
+def test_umrechnung_wie_in_den_kartenregeln():
+    regeln = _laden("kartenregeln_umrechnen", KARTENREGELN)
+    for punkte, fehlend in (([20, 15, 12, 12, 8], 16), ([30, 20, 15, 10, 7], 17), ([10, 1, 1], 2),
+                            ([3, 3, 3], 4), ([25], 0), ([1, 1], 9)):
+        assert bb.todo_punkte_umrechnen(punkte, fehlend) == regeln.todo_punkte_umrechnen(punkte, fehlend)
+
+
+def test_prompt_nennt_die_grenze_der_todos():
+    anfrage = bb.anfrage_pruefen(_anfrage())
+    system, _ = bb.rollen_nachrichten("coding", anfrage, bb.strukturgraph(anfrage))
+    assert "höchstens das, was der Sicht fehlt" in system["content"]
