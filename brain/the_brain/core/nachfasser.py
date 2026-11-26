@@ -63,7 +63,8 @@ class Nachfasser:
                  rueckweg_anschluss: Optional[Callable[[dict], dict]] = None,
                  dokument_anschluss: Optional[Callable[..., dict]] = None,
                  recherche_anschluss: Optional[Callable[[], dict]] = None,
-                 coding_anschluss: Optional[Callable[[], dict]] = None) -> None:
+                 coding_anschluss: Optional[Callable[[], dict]] = None,
+                 mirofish_anschluss: Optional[Callable[[], dict]] = None) -> None:
         self.tabelle = tabelle
         self._jetzt = jetzt
         self.validator = validator
@@ -78,6 +79,8 @@ class Nachfasser:
         self._recherche_anschluss = recherche_anschluss
         # Bauauftraege an den Project Space (core/coding_auftrag); in Tests eine Attrappe.
         self._coding_anschluss = coding_anschluss
+        # Bewertungen durch MiroFish (core/ideen_bewertung_mirofish); in Tests eine Attrappe.
+        self._mirofish_anschluss = mirofish_anschluss
 
     def runde(self) -> Dict[str, int]:
         z = {"geprueft": 0, "bestaetigt": 0, "abgelehnt_pruefung": 0, "fortgesetzt": 0,
@@ -113,6 +116,7 @@ class Nachfasser:
                 z["fehler"] += 1
         self._recherchen(z)
         self._coding(z)
+        self._mirofish(z)
         try:
             z["abgelaufen"] = int(self.tabelle.abgelaufene_markieren() or 0)
         except Exception:  # noqa: BLE001
@@ -153,6 +157,23 @@ class Nachfasser:
             z["fehler"] += 1
             return
         for name, wert in coding_auftrag.runde(self.tabelle, **anschluss).items():
+            z[name] = z.get(name, 0) + wert
+
+    def _mirofish(self, z: Dict[str, int]) -> None:
+        """Laufende Bewertungen: Stand bei MiroFish fragen, Ergebnis speichern, abschliessen. Wirft nie.
+
+        Wie ``_coding`` vor ``abgelaufene_markieren``.
+        """
+        if not hasattr(self.tabelle, "mirofish_laufend"):
+            return
+        from core import ideen_bewertung_mirofish
+        try:
+            anschluss = self._mirofish_anschluss() if self._mirofish_anschluss else {}
+        except Exception:  # noqa: BLE001
+            logger.exception("MiroFish-Anschluss nicht baubar")
+            z["fehler"] += 1
+            return
+        for name, wert in ideen_bewertung_mirofish.runde(self.tabelle, **anschluss).items():
             z[name] = z.get(name, 0) + wert
 
     def _plan_rest_ausstehend(self, a: dict) -> bool:

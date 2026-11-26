@@ -471,3 +471,10 @@ def test_quelle_setzt_der_rueckweg_nicht_das_modell() -> None:
     assert lauf is not None and lauf["quelle"] == "agent"
     meldung = bew.bewertung_meldung(lauf, 100)
     assert bew.AUSBAU_SATZ in meldung
+
+
+def test_todos_des_agenten_bringen_hoechstens_das_fehlende() -> None:
+    todos = [_todo(titel=f"T{n}", punkte=p) for n, p in enumerate((20, 15, 12, 12, 8))]
+    lauf, _ = bew.bewertung_pruefen(_antwort(coding=_sicht(9, todos), ideas=_sicht(25, [_todo()])), KURZ, TITEL)
+    assert [t["punkte"] for t in lauf["todos"] if t["sicht"] == "coding"] == [5, 3, 3, 3, 2]
+    assert not [t for t in lauf["todos"] if t["sicht"] == "ideas"]      # 25 von 25: nichts mehr zu holen

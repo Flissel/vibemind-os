@@ -1640,6 +1640,7 @@ class PlanExecutor:
         plan_ctx = plan_ctx or {}
         t0 = time.time()
         _ideen_rueckweg: Optional[Dict[str, Any]] = None  # Rueckweg eines Ideen-Modellauftrags
+        _mirofish_exe: Any = None  # Bewertung durch MiroFish (core/ideen_bewertung_mirofish)
         repeat_ctx = getattr(hop, "_repeat_ctx", None)
         rendered_arg = _render_template(hop.arg_template, state, repeat_ctx=repeat_ctx)
 
@@ -1966,7 +1967,36 @@ class PlanExecutor:
             )
             from . import ideen_dokument as _dokument_mod
             from . import ideen_rueckweg as _rueckweg_mod
-            if (assigned_agent and not authoritative_target
+            from . import ideen_bewertung_mirofish as _mirofish_mod
+            if (event_id == _mirofish_mod.EREIGNIS and not authoritative_target
+                    and _mirofish_mod.ueber_mirofish(_dokument_mod._argument(rendered_arg))):
+                # Bewertung durch MiroFish (26.11.2026, Entscheidung des Betreibers): kein Agentenauftrag;
+                # das Gehirn gibt MiroFish die Bubble, der Nachfasser holt das Ergebnis und schreibt es
+                # ueber den festen Rueckweg. Kein Ausweichen auf brain-ideas.
+                _mf_fehler = None
+                if not _auftragsweg(plan_ctx):
+                    _mf_fehler = _mirofish_mod.AUFTRAGSWEG_AUS
+                else:
+                    try:
+                        _mirofish_exe = _mirofish_mod.executor_bauen(
+                            rendered_arg, lesen=_dokument_mod.DatenbankLesen(),
+                            trace_id=str(plan_ctx.get("trace_id", "") or ""),
+                            plan_id=str(plan_ctx.get("plan_id", "") or ""), hop_id=hop.step_id or "",
+                            antwortkanal=plan_ctx.get("antwortkanal"))
+                    except _rueckweg_mod.RueckwegFehler as e:
+                        _mf_fehler = str(e)
+                if _mf_fehler is not None:
+                    return HopResult(
+                        step_id=hop.step_id, ok=False, error=f"mirofish_bewertung: {_mf_fehler}",
+                        capability=hop.capability, target=target,
+                        rendered_arg=rendered_arg, kg_hits=kg_hits,
+                        elapsed_s=time.time() - t0,
+                        contract_pass=False, reward=-1.0,
+                    )
+                target = _mirofish_mod.ZIEL
+                hop.arg_kwarg = None
+                logger.info(f"[plan-executor] {event_id}: Bewertung durch MiroFish")
+            elif (assigned_agent and not authoritative_target
                     and (_rueckweg_mod.ist_modell_ereignis(event_id)
                          or _dokument_mod.ist_dokument_ereignis(event_id))):
                 # Ideen-Modellauftrag mit Rueckweg: der Agent bekommt die Notiz als Daten und
@@ -2221,7 +2251,9 @@ class PlanExecutor:
 
         # Build the right executor for the target prefix (Phase 4)
         try:
-            if _k1_auftrag:
+            if _mirofish_exe is not None:
+                exe = _mirofish_exe
+            elif _k1_auftrag:
                 # K1: nur hier (Plan-Executor, Nutzeranfrage) der Auftragsweg;
                 # build_executor bleibt fuer alle anderen Aufrufer unveraendert.
                 from .capability_targets import AuftragsExecutor
