@@ -1234,3 +1234,51 @@ def test_erklaer_rahmen_geht_an_den_render(F, monkeypatch):
     api = FakeApi([w], nehmen={AID_A: z})
     assert ein_durchlauf(api, fragen=Fragen(), **{**F, "rendern": rendern}) == "clip"
     assert gesehen and gesehen[0]["titel"] == "Chunking erklärt" and gesehen[0]["figur"] == "tux"
+
+
+def _werk_reihe(name):
+    w = _werk_erklaer()
+    w["eingabe"]["konzept"] = {"name": name}
+    return w
+
+
+def test_erklaer_marke_nach_dem_namen_des_konzepts(monkeypatch):
+    from spaces.marketing.workers.werkbank_arbeiter import erklaer_marke, erklaer_rahmen
+    monkeypatch.setenv("WERKBANK_ERKLAER", "1")
+    monkeypatch.delenv("WERKBANK_ERKLAER_MARKEN", raising=False)
+    assert erklaer_marke(_werk_reihe("Technologie 1 Chunking erklärt")) is None
+    monkeypatch.setenv("WERKBANK_ERKLAER_MARKEN", " technologie *=Pexon|Pexon Consulting GmbH ; Roast *=Pexon ;=Leer;kaputt")
+    assert erklaer_marke(_werk_reihe("Technologie 1 Chunking erklärt")) == ("Pexon", "Pexon Consulting GmbH")
+    assert erklaer_marke(_werk_reihe("ROAST 1 la_fungus_search")) == ("Pexon", "Pexon")
+    assert erklaer_marke(_werk_reihe("Newsletter-Agent")) is None
+    assert erklaer_marke(_werk_erklaer()) is None and erklaer_marke({}) is None       # Auftrag ohne Konzept
+    assert erklaer_rahmen(_werk_reihe("Technologie 2 Was sind Embeddings"), zeile(1, stufe="Das Problem"))["firma"] == "Pexon Consulting GmbH"
+    assert erklaer_rahmen(_werk_reihe("Newsletter-Agent"), zeile(1, stufe="Das Problem"))["firma"] == "VibeMind"
+
+
+def test_erklaer_marke_bestimmt_die_marke_im_render(F, monkeypatch):
+    monkeypatch.setenv("WERKBANK_ERKLAER", "1")
+    monkeypatch.setenv("WERKBANK_ERKLAER_MARKEN", "Technologie *=Pexon|Pexon Consulting GmbH")
+    gefragt = []
+
+    def marke(m):
+        gefragt.append(m)
+        return {}
+    for name in ("Technologie 1 Chunking erklärt", "Newsletter-Agent"):
+        w = _werk_reihe(name)
+        z = zeile(1, stand="wird_erzeugt", stufe="Das Problem", sprechtext=SATZ, bild=BILD)
+        w["szenen"] = [z]
+        assert ein_durchlauf(FakeApi([w], nehmen={AID_A: z}), fragen=Fragen(), **{**F, "marke": marke}) == "clip"
+    assert gefragt == ["Pexon", w["mandant"]]
+
+
+def test_ohne_rahmen_bleibt_die_marke_des_mandanten(F, monkeypatch):
+    monkeypatch.delenv("WERKBANK_ERKLAER", raising=False)
+    monkeypatch.setenv("WERKBANK_ERKLAER_MARKEN", "Technologie *=Pexon")
+    gefragt = []
+    w = _werk_reihe("Technologie 1 Chunking erklärt")
+    z = zeile(1, stand="wird_erzeugt", stufe="Das Problem", sprechtext=SATZ, bild=BILD)
+    w["szenen"] = [z]
+    assert ein_durchlauf(FakeApi([w], nehmen={AID_A: z}), fragen=Fragen(),
+                         **{**F, "marke": lambda m: gefragt.append(m) or {}}) == "clip"
+    assert gefragt == [w["mandant"]]

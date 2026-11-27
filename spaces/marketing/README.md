@@ -84,6 +84,10 @@ Zustandswechsel ist eine SQL-Funktion `marketing.video_*`.
 - Code-Folien (Vorlage `code`): das Modell nennt nur die Stelle (`quelle: {datei, von, bis}`), die Zeilen liest der
   Arbeiter selbst aus der Datei (`claw/video_code.py`). Erlaubt sind nur die Ordner aus `WERKBANK_CODE_WURZELN`
   (`name=pfad;...`, leer = keine Code-Folien). Zahlen im Code brauchen keinen Beleg, die Ueberschrift schon.
+- Aussehen einer anderen Firma: `WERKBANK_ERKLAER_MARKEN = "Muster=Firmenordner|Anzeigename;..."` am Werkbank-Arbeiter.
+  Das Muster (`*`, `?`, Gross-/Kleinschreibung egal) passt auf den Namen des Konzepts aus Rowboat
+  (`eingabe.konzept.name`); Farbe, Schriften und Logo kommen dann aus `companys/<Firmenordner>/Marke.md`, der
+  Anzeigename steht in der Kopfzeile. Der Mandant des Auftrags bleibt, wie er ist. Gilt nur im Rahmen des Erklaervideos.
 - Verlinkung der Videos (Vorlage `ausgaenge`, Zusatzfeld `mehr`): die letzte Folie zeigt drei Ausgaenge (`tiefer` =
   Beispiel, `seitlich` = naechster Baustein, `zurueck` = Hauptvideo, auf Wunsch `zurueck_bei` als Zeitmarke wie
   `4:10`); an jedem anderen Schritt zeigt `mehr` die Karte „Mehr dazu im Video: <Titel>". Das Modell erfaehrt davon

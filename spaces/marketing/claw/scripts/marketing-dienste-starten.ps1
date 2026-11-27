@@ -248,7 +248,10 @@ $Dienste = @(
         # Eingeschaltet am 26.11.2026 (Felix): Rahmen an, Figur Tux, Code aus dem Checkout von la_fungus_search.
         Env  = @{ TON_STIMMEN_ORDNER = 'E:\marketing-stimmen'; WERKBANK_ROWBOAT_QUELLEN = ''; WERKBANK_ERKLAER = '1';
                   WERKBANK_FIGUR = 'tux'
-                  WERKBANK_CODE_WURZELN = 'la_fungus_search=C:\Users\User\ClaudeWork\wt-fungus-gate1' }
+                  WERKBANK_CODE_WURZELN = 'la_fungus_search=C:\Users\User\ClaudeWork\wt-fungus-gate1'
+                  # Aussehen einer anderen Firma je Konzeptname (Felix 27.11.2026: die Reihe laeuft im Pexon-Aussehen):
+                  # 'Muster=Firmenordner|Anzeigename;...', Muster passt auf den Namen des Konzepts aus Rowboat.
+                  WERKBANK_ERKLAER_MARKEN = 'Technologie *=Pexon|Pexon Consulting GmbH;Roast *=Pexon|Pexon Consulting GmbH' }
         Was  = 'Werkbank-Arbeiter (Video-Auftraege: schreibt, spricht, rendert, laedt Clips hoch; fragt ueber :8154)'
     }
 )
