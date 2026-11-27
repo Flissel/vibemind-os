@@ -252,8 +252,7 @@ def ergebnis_grund(ergebnis: Any, rueckweg: Mapping[str, Any]) -> tuple[Optional
     Erster Lauf im Betrieb (26.11.2026): die Ablehnung sagte nur "nicht in der vereinbarten Form",
     der Grund stand nirgends. Der Grund nennt Sicht und Feld, nie Karteninhalte.
     """
-    from .ideen_bewertung import _ganz, _text, _todo_pruefen
-    from .ideen_dokument import kuerzel_ersetzen
+    from .ideen_bewertung import _ganz, _text, _todo_pruefen, ersetzt_bis
 
     modul = _regeln()
     if not isinstance(ergebnis, Mapping):
@@ -295,7 +294,8 @@ def ergebnis_grund(ergebnis: Any, rueckweg: Mapping[str, Any]) -> tuple[Optional
                 feld = "name" if kname is None else "punkte (0-%d)" % modul.KRITERIUM_MAX if punkte is None \
                     else f"begruendung (hoechstens {modul.KRITERIUM_GRUND_ZEICHEN} Zeichen)"
                 return None, _FORM, f"kriterium {nr} in Sicht {name}: {feld} ungueltig"
-            kriterien.append({"name": kname, "punkte": punkte, "begruendung": kuerzel_ersetzen(grund, titel)})
+            kriterien.append({"name": kname, "punkte": punkte,
+                              "begruendung": ersetzt_bis(grund, titel, modul.KRITERIUM_GRUND_ZEICHEN)})
         summe = sum(k["punkte"] for k in kriterien)
         if _ganz(sicht.get("punkte"), 0, modul.SICHT_MAX) != summe:
             # Die Punkte der Sicht sind die Summe des Rasters; alles andere ist kein MiroFish-Ergebnis.
@@ -305,7 +305,8 @@ def ergebnis_grund(ergebnis: Any, rueckweg: Mapping[str, Any]) -> tuple[Optional
         urteil = _text(sicht.get("urteil"), modul.URTEIL_ZEICHEN)
         if urteil is None:
             return None, _FORM, f"urteil in Sicht {name} fehlt oder ist laenger als {modul.URTEIL_ZEICHEN} Zeichen"
-        aus[name] = {"punkte": summe, "urteil": kuerzel_ersetzen(urteil, titel), "kriterien": kriterien}
+        aus[name] = {"punkte": summe, "urteil": ersetzt_bis(urteil, titel, modul.URTEIL_ZEICHEN),
+                     "kriterien": kriterien}
         liste_todos = sicht.get("todos", [])
         if not isinstance(liste_todos, list):
             return None, _FORM, f"todos in Sicht {name} sind keine Liste"
