@@ -14,6 +14,7 @@ Regeln, die hier gelten:
   nur a-z, 0-9 und _ enthalten."""
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 import os
@@ -557,6 +558,27 @@ def _stimme_bereit(c: _Lauf) -> bool:
     return bereit
 
 
+def erklaer_marke(werk: dict) -> tuple[str, str] | None:
+    """(Firmenordner, Anzeigename) fuer das Erklaervideo dieses Auftrags, oder None (= Marke des Mandanten).
+
+    WERKBANK_ERKLAER_MARKEN = "Muster=Ordner|Anzeigename;Muster2=Ordner2": das Muster (wie bei Dateinamen, * und ?,
+    ohne Gross-/Kleinschreibung) passt auf den Namen des Konzepts (eingabe.konzept.name), der erste Treffer gilt.
+    Der Ordner ist ein Firmenordner im Markenwissen (companys/<Ordner>/Marke.md); ohne Anzeigename steht der Ordner
+    in der Kopfzeile. So laeuft eine Videoreihe im Aussehen einer anderen Firma, ohne dass der Mandant wechselt."""
+    eingabe = werk.get("eingabe") if isinstance(werk.get("eingabe"), dict) else {}
+    konzept = eingabe.get("konzept") if isinstance(eingabe.get("konzept"), dict) else {}
+    name = str(konzept.get("name") or "").strip().casefold()
+    if not name:
+        return None
+    for teil in os.environ.get("WERKBANK_ERKLAER_MARKEN", "").split(";"):
+        muster, _, ziel = teil.partition("=")
+        ordner, _, anzeige = ziel.partition("|")
+        muster, ordner, anzeige = muster.strip().casefold(), ordner.strip(), anzeige.strip()
+        if muster and ordner and fnmatch.fnmatchcase(name, muster):
+            return ordner, (anzeige or ordner)[:60]
+    return None
+
+
 def erklaer_rahmen(werk: dict, zeile: dict) -> dict | None:
     """Rahmen des Erklaervideos fuer eine Szene ({firma, titel, stufe, stufe_nr, stufen, figur, ...}) oder None.
     Eingeschaltet je Auftrag mit eingabe.stil = "erklaer" oder fuer alle mit WERKBANK_ERKLAER=1 (Vorgabe: aus).
@@ -569,7 +591,8 @@ def erklaer_rahmen(werk: dict, zeile: dict) -> dict | None:
     stufe = str(zeile.get("stufe") or "")
     nummern = sorted(int(s["nr"]) for s in werk.get("szenen") or [] if isinstance(s, dict) and isinstance(s.get("nr"), int))
     figur = str(eingabe.get("figur") or os.environ.get("WERKBANK_FIGUR", "") or "tux").strip().lower()
-    return {"firma": str(eingabe.get("firma") or werk.get("mandant") or "")[:60],
+    marke = erklaer_marke(werk)
+    return {"firma": marke[1] if marke else str(eingabe.get("firma") or werk.get("mandant") or "")[:60],
             "titel": str(gliederung.get("titel") or eingabe.get("thema") or "")[:60],
             "stufe": stufe[:60], "stufe_nr": namen.index(stufe) + 1 if stufe in namen else None, "stufen": len(namen),
             "figur": figur, "figur_name": figur.capitalize(),
@@ -601,7 +624,9 @@ def _erzeugen(c: _Lauf, werk: dict) -> str | None:
         ziel = ordner / name
         rahmen = erklaer_rahmen(werk, zeile)
         szene = {**zeile, "erklaer": rahmen} if rahmen is not None else zeile
-        dauer = c.rendern(szene, gesprochen, c.marke(str(werk.get("mandant") or "")), ordner, ziel)
+        eigene = erklaer_marke(werk) if rahmen is not None else None      # Aussehen einer anderen Firma
+        dauer = c.rendern(szene, gesprochen, c.marke(eigene[0] if eigene else str(werk.get("mandant") or "")),
+                          ordner, ziel)
         if not isinstance(dauer, (int, float)) or isinstance(dauer, bool):
             dauer = gesprochen.dauer_s
         phase = "hochladen"
