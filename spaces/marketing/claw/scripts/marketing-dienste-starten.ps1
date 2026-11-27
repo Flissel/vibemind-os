@@ -250,8 +250,10 @@ $Dienste = @(
                   WERKBANK_FIGUR = 'tux'
                   WERKBANK_CODE_WURZELN = 'la_fungus_search=C:\Users\User\ClaudeWork\wt-fungus-gate1'
                   # Aussehen einer anderen Firma je Konzeptname (Felix 27.11.2026: die Reihe laeuft im Pexon-Aussehen):
-                  # 'Muster=Firmenordner|Anzeigename;...', Muster passt auf den Namen des Konzepts aus Rowboat.
-                  WERKBANK_ERKLAER_MARKEN = 'Technologie *=Pexon|Pexon Consulting GmbH;Roast *=Pexon|Pexon Consulting GmbH' }
+                  # 'Muster=Firmenordner|Anzeigename|Logo-Datei;...', Muster passt auf den Namen des Konzepts aus Rowboat.
+                  # Eigene Logo-Datei, weil companys\Pexon\logo.png am 27.11.2026 ein fremdes Logo war.
+                  WERKBANK_ERKLAER_MARKEN = ('Technologie *=Pexon|Pexon Consulting GmbH|C:\Users\User\AppData\Local\VibeMind\werkbank\pexon-logo-weiss.png;' +
+                                             'Roast *=Pexon|Pexon Consulting GmbH|C:\Users\User\AppData\Local\VibeMind\werkbank\pexon-logo-weiss.png') }
         Was  = 'Werkbank-Arbeiter (Video-Auftraege: schreibt, spricht, rendert, laedt Clips hoch; fragt ueber :8154)'
     }
 )

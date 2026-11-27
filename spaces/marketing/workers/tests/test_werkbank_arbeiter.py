@@ -1248,8 +1248,12 @@ def test_erklaer_marke_nach_dem_namen_des_konzepts(monkeypatch):
     monkeypatch.delenv("WERKBANK_ERKLAER_MARKEN", raising=False)
     assert erklaer_marke(_werk_reihe("Technologie 1 Chunking erklärt")) is None
     monkeypatch.setenv("WERKBANK_ERKLAER_MARKEN", " technologie *=Pexon|Pexon Consulting GmbH ; Roast *=Pexon ;=Leer;kaputt")
-    assert erklaer_marke(_werk_reihe("Technologie 1 Chunking erklärt")) == ("Pexon", "Pexon Consulting GmbH")
-    assert erklaer_marke(_werk_reihe("ROAST 1 la_fungus_search")) == ("Pexon", "Pexon")
+    assert erklaer_marke(_werk_reihe("Technologie 1 Chunking erklärt")) == ("Pexon", "Pexon Consulting GmbH", "")
+    assert erklaer_marke(_werk_reihe("ROAST 1 la_fungus_search")) == ("Pexon", "Pexon", "")
+    monkeypatch.setenv("WERKBANK_ERKLAER_MARKEN", r"Technologie *=Pexon|Pexon GmbH| C:\logos\pexon weiss.png ;Roast *=Pexon||D:\r.png")
+    assert erklaer_marke(_werk_reihe("Technologie 9 x")) == ("Pexon", "Pexon GmbH", r"C:\logos\pexon weiss.png")
+    assert erklaer_marke(_werk_reihe("Roast 1")) == ("Pexon", "Pexon", r"D:\r.png")
+    monkeypatch.setenv("WERKBANK_ERKLAER_MARKEN", " technologie *=Pexon|Pexon Consulting GmbH ; Roast *=Pexon ;=Leer;kaputt")
     assert erklaer_marke(_werk_reihe("Newsletter-Agent")) is None
     assert erklaer_marke(_werk_erklaer()) is None and erklaer_marke({}) is None       # Auftrag ohne Konzept
     assert erklaer_rahmen(_werk_reihe("Technologie 2 Was sind Embeddings"), zeile(1, stufe="Das Problem"))["firma"] == "Pexon Consulting GmbH"
@@ -1282,3 +1286,23 @@ def test_ohne_rahmen_bleibt_die_marke_des_mandanten(F, monkeypatch):
     assert ein_durchlauf(FakeApi([w], nehmen={AID_A: z}), fragen=Fragen(),
                          **{**F, "marke": lambda m: gefragt.append(m) or {}}) == "clip"
     assert gefragt == [w["mandant"]]
+
+
+def test_eigenes_logo_geht_vor_dem_logo_des_markenordners(F, monkeypatch, tmp_path):
+    logo = tmp_path / "pexon weiss.png"
+    logo.write_bytes(b"x")
+    monkeypatch.setenv("WERKBANK_ERKLAER", "1")
+    gesehen = []
+
+    def rendern(szene, gesprochen, marke, ordner, ziel):
+        gesehen.append(marke)
+        return rendern_fake(szene, gesprochen, marke, ordner, ziel)
+    for wert in (f"Technologie *=Pexon|Pexon Consulting GmbH|{logo}", f"Technologie *=Pexon|Pexon Consulting GmbH|{tmp_path / 'fehlt.png'}"):
+        monkeypatch.setenv("WERKBANK_ERKLAER_MARKEN", wert)
+        w = _werk_reihe("Technologie 1 Chunking erklärt")
+        z = zeile(1, stand="wird_erzeugt", stufe="Das Problem", sprechtext=SATZ, bild=BILD)
+        w["szenen"] = [z]
+        assert ein_durchlauf(FakeApi([w], nehmen={AID_A: z}), fragen=Fragen(),
+                             **{**F, "rendern": rendern, "marke": lambda m: {"akzent": "#3ddbca", "logo": "ordner-logo.png"}}) == "clip"
+    assert gesehen[0] == {"akzent": "#3ddbca", "logo": str(logo)}
+    assert gesehen[1] == {"akzent": "#3ddbca", "logo": "ordner-logo.png"}        # Datei fehlt: Logo des Ordners bleibt

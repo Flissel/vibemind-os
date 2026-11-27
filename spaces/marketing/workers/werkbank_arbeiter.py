@@ -558,13 +558,15 @@ def _stimme_bereit(c: _Lauf) -> bool:
     return bereit
 
 
-def erklaer_marke(werk: dict) -> tuple[str, str] | None:
-    """(Firmenordner, Anzeigename) fuer das Erklaervideo dieses Auftrags, oder None (= Marke des Mandanten).
+def erklaer_marke(werk: dict) -> tuple[str, str, str] | None:
+    """(Firmenordner, Anzeigename, Logo-Datei oder "") fuer das Erklaervideo dieses Auftrags, oder None (= Marke des
+    Mandanten).
 
-    WERKBANK_ERKLAER_MARKEN = "Muster=Ordner|Anzeigename;Muster2=Ordner2": das Muster (wie bei Dateinamen, * und ?,
+    WERKBANK_ERKLAER_MARKEN = "Muster=Ordner|Anzeigename|Logo-Datei;Muster2=Ordner2": das Muster (wie bei Dateinamen, * und ?,
     ohne Gross-/Kleinschreibung) passt auf den Namen des Konzepts (eingabe.konzept.name), der erste Treffer gilt.
     Der Ordner ist ein Firmenordner im Markenwissen (companys/<Ordner>/Marke.md); ohne Anzeigename steht der Ordner
-    in der Kopfzeile. So laeuft eine Videoreihe im Aussehen einer anderen Firma, ohne dass der Mandant wechselt."""
+    in der Kopfzeile. Die Logo-Datei (ganzer Pfad, .png oder .jpg) ist freiwillig und geht vor dem Logo des Ordners.
+    So laeuft eine Videoreihe im Aussehen einer anderen Firma, ohne dass der Mandant wechselt."""
     eingabe = werk.get("eingabe") if isinstance(werk.get("eingabe"), dict) else {}
     konzept = eingabe.get("konzept") if isinstance(eingabe.get("konzept"), dict) else {}
     name = str(konzept.get("name") or "").strip().casefold()
@@ -572,10 +574,10 @@ def erklaer_marke(werk: dict) -> tuple[str, str] | None:
         return None
     for teil in os.environ.get("WERKBANK_ERKLAER_MARKEN", "").split(";"):
         muster, _, ziel = teil.partition("=")
-        ordner, _, anzeige = ziel.partition("|")
-        muster, ordner, anzeige = muster.strip().casefold(), ordner.strip(), anzeige.strip()
+        ordner, anzeige, logo = ([x.strip() for x in ziel.split("|", 2)] + ["", ""])[:3]
+        muster = muster.strip().casefold()
         if muster and ordner and fnmatch.fnmatchcase(name, muster):
-            return ordner, (anzeige or ordner)[:60]
+            return ordner, (anzeige or ordner)[:60], logo
     return None
 
 
@@ -625,8 +627,10 @@ def _erzeugen(c: _Lauf, werk: dict) -> str | None:
         rahmen = erklaer_rahmen(werk, zeile)
         szene = {**zeile, "erklaer": rahmen} if rahmen is not None else zeile
         eigene = erklaer_marke(werk) if rahmen is not None else None      # Aussehen einer anderen Firma
-        dauer = c.rendern(szene, gesprochen, c.marke(eigene[0] if eigene else str(werk.get("mandant") or "")),
-                          ordner, ziel)
+        marke = c.marke(eigene[0] if eigene else str(werk.get("mandant") or ""))
+        if eigene and eigene[2] and os.path.isfile(eigene[2]):
+            marke = {**(marke if isinstance(marke, dict) else {}), "logo": eigene[2]}
+        dauer = c.rendern(szene, gesprochen, marke, ordner, ziel)
         if not isinstance(dauer, (int, float)) or isinstance(dauer, bool):
             dauer = gesprochen.dauer_s
         phase = "hochladen"
