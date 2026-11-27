@@ -416,3 +416,47 @@ def test_abgelehntes_ergebnis_steht_mit_grund_in_pruefung_und_protokoll(caplog):
     assert pruefung["ablehnung"].startswith("raster unvollstaendig in Sicht coding")
     assert any("raster unvollstaendig in Sicht coding" in r.getMessage() for r in caplog.records)
 
+
+# ── Kuerzel durch lange Titel ersetzt: kuerzen statt ablehnen (Lauf im Betrieb, 27.11.2026) ──
+
+_LANG = {"K1": "Ausleihe per App mit Anmeldung, Entsperren am Ständer und Rückgabe an jeder Station",
+         "K2": "Wartung und Reparatur der Räder durch die Werkstatt im Depot am Stadtrand",
+         "K3": "Partnerschaft mit den Stadtwerken für Strom und Stellflächen an den Haltestellen"}
+
+
+def _rueckweg_lang():
+    _, rueckweg = _vorbereitet()
+    return {**rueckweg, "kuerzel_titel": dict(_LANG),
+            "kuerzel": {k: f"a000000{n}" for n, k in enumerate(_LANG, start=1)}}
+
+
+def test_begruendung_ueber_der_grenze_erst_nach_dem_ersetzen_wird_gekuerzt():
+    rueckweg = _rueckweg_lang()
+    grund = ("Die Schnittstellen zwischen K1 und K2 sind beschrieben, aber K3 nennt weder Datenformat noch "
+             "Takt der Übergabe; offen bleibt, wer die Belegung der Stellflächen meldet und wie Störungen "
+             "zurückfließen. Ohne die Angaben lässt sich keine verlässliche Anbindung bauen.")
+    assert len(grund) == 263
+    ergebnis = _ergebnis(rueckweg)
+    ergebnis["sichten"]["coding"]["kriterien"][0]["begruendung"] = grund
+    ergebnis["sichten"]["coding"]["urteil"] = ("K1, K2 und K3 tragen die Idee. " * 18).strip()
+    for sicht in ergebnis["sichten"].values():
+        for todo in sicht["todos"]:
+            todo.update(karten=["K1"], titel="K1 mit K2 und K3 verbinden", fehlt="K3 fehlt. " + "K1 und K2. " * 30)
+    lauf, satz, ablehnung = mf.ergebnis_grund(ergebnis, rueckweg)
+    assert lauf is not None and satz == "" and ablehnung == "", ablehnung
+    regeln = mf._regeln()
+    neu = lauf["sichten"]["coding"]["kriterien"][0]["begruendung"]
+    assert len(neu) <= regeln.KRITERIUM_GRUND_ZEICHEN and neu.endswith("…") and "„Ausleihe per App" in neu
+    assert not neu[:-1].endswith(" ")                                   # an einer Wortgrenze, ohne Leerraum
+    assert len(lauf["sichten"]["coding"]["urteil"]) <= regeln.URTEIL_ZEICHEN
+    for todo in lauf["todos"]:
+        assert len(todo["titel"]) <= regeln.TODO_TITEL_ZEICHEN and len(todo["fehlt"]) <= regeln.TODO_FEHLT_ZEICHEN
+    assert regeln.lauf_fehler(lauf) == ""
+
+
+def test_kuerzen_an_der_wortgrenze():
+    from core.ideen_bewertung import kuerzen
+    assert kuerzen("kurz", 10) == "kurz"
+    assert kuerzen("eins zwei drei vier", 12) == "eins zwei…"
+    assert kuerzen("x" * 20, 8) == "xxxxxxx…"                           # keine Wortgrenze: hart
+    assert len(kuerzen("a, b, c, d, e, f", 9)) <= 9

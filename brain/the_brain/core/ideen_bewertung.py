@@ -89,6 +89,35 @@ def _regeln() -> Any:
     return modul
 
 
+def kuerzen(text: str, grenze: int) -> str:
+    """``text`` hoechstens ``grenze`` Zeichen lang; laenger: an der letzten Wortgrenze gekuerzt, mit "…".
+
+    Gibt es in der hinteren Haelfte keine Wortgrenze, wird hart geschnitten. Wirft nie.
+    """
+    text = str(text)
+    if len(text) <= grenze:
+        return text
+    if grenze <= 1:
+        return "…"[:max(grenze, 0)]
+    kopf = text[:grenze - 1]
+    raum = kopf.rfind(" ")
+    if raum >= grenze // 2:
+        kopf = kopf[:raum]
+    return kopf.rstrip(" ,;:–-") + "…"
+
+
+def ersetzt_bis(text: str, kuerzel_titel: Mapping[str, str], grenze: int) -> str:
+    """Kuerzel durch Titel ersetzen und danach auf die Grenze kuerzen (``kuerzen``).
+
+    Lauf im Betrieb (27.11.2026): eine Begruendung hatte roh 263 Zeichen und war nach dem Ersetzen der
+    Kuerzel durch lange Kartentitel ueber 300; die Kartenregeln lehnten den ganzen Lauf ab. Die
+    Rohpruefung gegen die Grenze bleibt (das Modell muss sie einhalten), ueber die Grenze kommt nur,
+    was erst das Ersetzen verlaengert.
+    """
+    from .ideen_dokument import kuerzel_ersetzen
+    return kuerzen(kuerzel_ersetzen(text, kuerzel_titel), grenze)
+
+
 def _ganz(wert: Any, von: int, bis: int) -> Optional[int]:
     """Ganze Zahl im Bereich (auch 7.0), sonst ``None``."""
     if isinstance(wert, bool):
@@ -314,7 +343,7 @@ def bewertung_pruefen(roh: Any, kuerzel: Mapping[str, str], kuerzel_titel: Mappi
         urteil = _text(urteil, modul.URTEIL_ZEICHEN) if urteil not in (None, "") else ""
         if urteil is None:
             return None, _FORM
-        aus_sichten[name] = {"punkte": punkte, "urteil": kuerzel_ersetzen(urteil, kuerzel_titel)}
+        aus_sichten[name] = {"punkte": punkte, "urteil": ersetzt_bis(urteil, kuerzel_titel, modul.URTEIL_ZEICHEN)}
         liste = sicht.get("todos", [])
         if not isinstance(liste, list):
             return None, _FORM
@@ -354,8 +383,8 @@ def _todo_pruefen(todo: Any, sicht: str, kuerzel: Mapping[str, str], kuerzel_tit
             ids.append(kuerzel[m.group(1)])
     if art in ("karte_ergaenzen", "karte_fuellen", "verbindung") and not ids:
         return None, _FORM
-    return {"sicht": sicht, "titel": kuerzel_ersetzen(titel, kuerzel_titel)[:modul.TODO_TITEL_ZEICHEN],
-            "fehlt": kuerzel_ersetzen(fehlt, kuerzel_titel)[:modul.TODO_FEHLT_ZEICHEN],
+    return {"sicht": sicht, "titel": ersetzt_bis(titel, kuerzel_titel, modul.TODO_TITEL_ZEICHEN),
+            "fehlt": ersetzt_bis(fehlt, kuerzel_titel, modul.TODO_FEHLT_ZEICHEN),
             "karten": ids, "punkte": punkte, "art": art}, ""
 
 
