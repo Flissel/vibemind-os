@@ -25,9 +25,26 @@ h1, h2, h3, p { margin: 0; }
 .verbindung { margin-top: 6px; color: var(--orange); }
 .verbindung:empty { display: none; }
 
-main { display: grid; grid-template-columns: minmax(230px, 300px) 1fr; gap: 20px; padding: 10px 24px 32px; }
-@media (max-width: 760px) { main { grid-template-columns: 1fr; padding: 8px 16px 24px; } .kopf { padding: 16px 16px 4px; } }
-nav > h2, section > h2 { margin: 6px 0 10px; font-size: 12px; font-weight: 600; letter-spacing: .1em;
+/* Drei Spalten wie früher im Engine-Dashboard: Läufe · Lauf oder Chat · Live-Vorschau (immer sichtbar). */
+.arbeit { display: grid; grid-template-columns: minmax(210px, 260px) minmax(0, 1fr) minmax(320px, 40%);
+  gap: 18px; padding: 10px 24px 24px; align-items: start; }
+.spalte-mitte { min-width: 0; }
+.spalte-vorschau { position: sticky; top: 10px; display: flex; flex-direction: column; min-width: 0; }
+.spalte-vorschau iframe { width: 100%; height: calc(100vh - 170px); min-height: 360px; border: 1px solid var(--rand);
+  border-radius: 14px; background: #000; }
+.vorschau-kopf { display: flex; align-items: center; justify-content: space-between; }
+.vorschau-satz { color: var(--leise); padding: 18px 16px; border: 1px dashed var(--rand); border-radius: 14px; }
+.leise-knopf { font: inherit; color: var(--leise); background: none; border: 1px solid var(--rand); border-radius: 8px;
+  padding: 2px 9px; cursor: pointer; }
+.leise-knopf:hover { color: var(--text); border-color: var(--rand-violett); }
+.verdeckt { display: none !important; }
+@media (max-width: 1100px) {
+  .arbeit { grid-template-columns: minmax(200px, 240px) minmax(0, 1fr); }
+  .spalte-vorschau { grid-column: 1 / -1; position: static; }
+  .spalte-vorschau iframe { height: 60vh; }
+}
+@media (max-width: 760px) { .arbeit { grid-template-columns: 1fr; padding: 8px 16px 24px; } .kopf { padding: 16px 16px 4px; } }
+nav > h2, section > h2, .vorschau-kopf h2, [role="tabpanel"] > h2 { margin: 6px 0 10px; font-size: 12px; font-weight: 600; letter-spacing: .1em;
   text-transform: uppercase; color: var(--leise); }
 section > h2 { margin-top: 22px; }
 ul, ol { list-style: none; margin: 0; padding: 0; }
@@ -143,4 +160,66 @@ ul, ol { list-style: none; margin: 0; padding: 0; }
 .fremd iframe { display: block; width: 100%; height: calc(100vh - 150px); min-height: 420px; border: 1px solid var(--rand);
   border-radius: 14px; background: #000; }
 @media (max-width: 760px) { .fremd { padding: 8px 16px 16px; } }
+
+/* Fortschritt im Kopf des Laufs */
+.fortschritt { margin-top: 12px; }
+.balken { height: 8px; border-radius: 999px; background: rgba(255, 255, 255, .07); overflow: hidden; }
+.balken span { display: block; height: 100%; width: 0; border-radius: inherit; transition: width .4s ease;
+  background: linear-gradient(90deg, var(--violett-dunkel), var(--violett)); box-shadow: var(--glow); }
+.fortschritt[data-zustand="laeuft"] .balken span { background: linear-gradient(90deg, var(--violett), var(--orange)); }
+.fortschritt[data-zustand="fehlgeschlagen"] .balken span { background: var(--fehler); }
+
+/* Reiter unter den Stufen */
+.reiter { display: flex; gap: 4px; margin: 18px 0 12px; border-bottom: 1px solid var(--rand); }
+.reiter button { font: inherit; font-size: 14px; color: var(--leise); background: none; border: 0; cursor: pointer;
+  padding: 8px 14px; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.reiter button:hover { color: var(--text); }
+.reiter button:focus-visible { outline: 2px solid var(--violett); outline-offset: 2px; }
+.reiter button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--violett); }
+
+/* Aufgaben je Paket */
+.aufgabenpaket + .aufgabenpaket { margin-top: 10px; }
+.aufgabenpaket h3 { font-size: 15px; margin-bottom: 8px; }
+.aufgabenliste li { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; padding: 6px 0;
+  border-top: 1px solid var(--rand); }
+.aufgabenliste li:first-child { border-top: 0; }
+.aufgabenliste .art { font-weight: 600; font-size: 14px; }
+.aufgabe-fehler { flex-basis: 100%; color: var(--fehler); font-size: 13px; overflow-wrap: anywhere; }
+
+/* Protokoll */
+.protokoll-kopf { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 6px; }
+.protokoll { margin: 0; padding: 12px 14px; height: calc(100vh - 430px); min-height: 260px; overflow: auto;
+  white-space: pre-wrap; overflow-wrap: anywhere; background: rgba(0, 0, 0, .45); border: 1px solid var(--rand);
+  border-radius: 12px; color: #d6d1e6; font-size: 12px; }
+.protokoll:focus-visible { outline: 2px solid var(--violett); }
+
+/* Vibe-Coder und das gemeinsame Chatfenster <vm-chat> */
+.vibe-hinweis { color: var(--leise); font-size: 14px; margin: 6px 0 12px; }
+.vibe-hinweis strong { color: var(--orange); font-weight: 600; }
+.vm-chat { display: flex; flex-direction: column; height: calc(100vh - 250px); min-height: 380px;
+  background: var(--flaeche); border: 1px solid var(--rand); border-radius: 14px; overflow: hidden; }
+.vm-chat-kopf { padding: 10px 14px; font-size: 13px; font-weight: 600; color: var(--leise);
+  border-bottom: 1px solid var(--rand); }
+.vm-chat-leer { padding: 18px 14px; color: var(--sehr-leise); }
+.vm-chat-verlauf { flex: 1; overflow: auto; padding: 8px 14px; }
+.vm-chat-paar { padding: 10px 0; border-bottom: 1px solid rgba(255, 255, 255, .04); }
+.vm-chat-satz { font: 13px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace; color: var(--text);
+  white-space: pre-wrap; overflow-wrap: anywhere; }
+.vm-chat-antwort { margin: 6px 0 0 6px; padding-left: 12px; border-left: 2px solid var(--rand-violett); }
+.vm-chat-text { color: #d6d1e6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.vm-chat-marke { display: inline-block; margin-top: 4px; font-size: 12px; color: var(--leise); }
+.vm-chat-marke[data-marke="fertig"] { color: #d8b4fe; }
+.vm-chat-marke[data-marke="fehler"] { color: var(--fehler); }
+.vm-chat-marke[data-marke="rueckfrage"], .vm-chat-marke[data-marke="angenommen"] { color: var(--orange); }
+.vm-chat-status { padding: 0 14px; font-size: 12px; color: var(--orange); }
+.vm-chat-status:empty { display: none; }
+.vm-chat-eingabe { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--rand); }
+.vm-chat-eingabe textarea { flex: 1; resize: none; font: inherit; color: var(--text); background: rgba(0, 0, 0, .35);
+  border: 1px solid var(--rand); border-radius: 10px; padding: 8px 10px; line-height: 1.45; overflow-y: hidden; }
+.vm-chat-eingabe textarea:focus { outline: none; border-color: var(--violett); box-shadow: 0 0 0 3px rgba(168, 85, 247, .18); }
+.vm-chat-eingabe button { font: inherit; color: #fff; cursor: pointer; border: 0; border-radius: 10px; padding: 0 14px;
+  background: linear-gradient(135deg, var(--violett-dunkel), var(--violett)); }
+.vm-chat-eingabe :disabled { opacity: .45; cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) { .balken span { transition: none; } }
+
 [hidden] { display: none !important; }

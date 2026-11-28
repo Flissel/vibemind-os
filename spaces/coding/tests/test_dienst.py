@@ -279,11 +279,15 @@ def test_lesen_seite_health_und_strenge_koepfe(laufend: Tuple[str, dienst.Aufsic
 
 
 def test_seite_setzt_inhalte_nur_als_text() -> None:
-    skript = (Path(dienst.__file__).parent / "seite" / "seite.js").read_text(encoding="utf-8")
-    seite = (Path(dienst.__file__).parent / "seite" / "seite.html").read_text(encoding="utf-8")
-    for verboten in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval("):
-        assert verboten not in skript
-    assert "<script src=\"/seite.js\"></script>" in seite and seite.count("<script") == 1
+    ordner = Path(dienst.__file__).parent / "seite"
+    seite = (ordner / "seite.html").read_text(encoding="utf-8")
+    for datei in ("seite.js", "vm-chat.js"):
+        skript = (ordner / datei).read_text(encoding="utf-8")
+        for verboten in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "attachShadow"):
+            assert verboten not in skript, (datei, verboten)
+    # Nur die eigenen Skripte, keine Inline-Skripte; vm-chat vor seite.js.
+    assert seite.count("<script") == 2
+    assert seite.index('<script src="/vm-chat.js"></script>') < seite.index('<script src="/seite.js"></script>')
     assert "style=" not in seite and "onclick" not in seite
 
 

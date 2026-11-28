@@ -81,7 +81,7 @@ function zeigeListe(daten) {
     zeile.appendChild(pille(a.zustand));
     zeile.appendChild(el("small", laufzeile(a)));
     knopf.appendChild(zeile);
-    knopf.addEventListener("click", () => { gewaehlt = a.auftrag; laden(); });
+    knopf.addEventListener("click", () => { waehle(a.auftrag, a.titel); laden(); });
     const li = el("li");
     li.appendChild(knopf);
     liste.appendChild(li);
@@ -219,11 +219,12 @@ async function laden() {
     const frage = gewaehlt ? `?auftrag=${encodeURIComponent(gewaehlt)}` : "";
     const stand = await holen(`/api/stand${frage}`);
     if (stand.ok) {
-      gewaehlt = gewaehlt || stand.daten.auftrag;
+      if (!gewaehlt) waehle(stand.daten.auftrag, stand.daten.titel);
       const ergebnis = GEBAUT.includes(stand.daten.zustand)
         ? await holen(`/api/ergebnis?auftrag=${encodeURIComponent(stand.daten.auftrag)}`) : null;
       zeigeStand(stand.daten, ergebnis && ergebnis.ok ? ergebnis.daten : null);
       if (liste.ok) zeigeListe(liste.daten);
+      await ladeLaufsicht(stand.daten);
     } else {
       document.getElementById("lauf").hidden = true;
     }
@@ -233,37 +234,197 @@ async function laden() {
   }
 }
 
-// Vier Knoepfe: "auftraege" ist diese Seite, die anderen sind Rahmen auf lokale Adressen,
-// die der Dienst unter /api/oberflaechen nennt. Der Knopf steht im Anker (#vorschau),
-// damit die App einen Knopf direkt oeffnen kann.
+// ── Laufsicht: Fortschritt, Aufgaben, Protokoll (wie früher im Engine-Dashboard, aber aus den Dateien) ──
+
+let gewaehltTitel = "";
+let reiter = "ueberblick";
+let protokollAb = null;          // nächstes Byte des Protokolls; null = von vorn
+let protokollFuer = null;        // für welchen Lauf das Protokoll im Fenster steht
+const PROTOKOLL_MAX = 200000;    // so viele Zeichen bleiben höchstens im Fenster
+const verlaeufe = new Map();     // Vibe-Coder: Verlauf je Lauf, nur im Speicher
+
+function waehle(auftrag, titel) {
+  if (auftrag === gewaehlt) return;
+  gewaehlt = auftrag;
+  gewaehltTitel = titel || "";
+  protokollAb = null;
+  protokollFuer = null;
+  leeren(document.getElementById("protokoll"));
+  zeigeChat();
+}
+
+function zeigeFortschritt(daten, zustand) {
+  const box = document.getElementById("fortschritt");
+  box.hidden = !daten || !daten.gesamt;
+  if (box.hidden) return;
+  const fuellung = document.getElementById("balken-fuellung");
+  fuellung.style.width = `${daten.anteil}%`;
+  document.getElementById("balken").setAttribute("aria-valuenow", String(daten.anteil));
+  box.dataset.zustand = zustand || "";
+  const teile = [`${daten.fertig} von ${daten.gesamt} Aufgaben fertig`];
+  if (daten.laeuft) teile.push(`${daten.laeuft} läuft`);
+  if (daten.fehlgeschlagen) teile.push(`${daten.fehlgeschlagen} gescheitert`);
+  document.getElementById("fortschritt-text").textContent = teile.join(" · ");
+}
+
+function zeigeAufgaben(daten) {
+  const ziel = document.getElementById("aufgaben");
+  leeren(ziel);
+  const pakete = (daten && daten.pakete) || [];
+  document.getElementById("aufgaben-leer").hidden = pakete.some((p) => p.aufgaben.length);
+  for (const paket of pakete) {
+    const karte = el("article", null, "karte aufgabenpaket");
+    karte.appendChild(el("h3", paket.name));
+    const liste = el("ol", null, "aufgabenliste");
+    for (const a of paket.aufgaben) {
+      const li = el("li");
+      li.dataset.zustand = a.zustand;
+      li.appendChild(pille(a.zustand));
+      li.appendChild(el("span", a.art, "art"));
+      if (a.dateien.length) {
+        const chips = el("span", null, "chips");
+        for (const d of a.dateien) chips.appendChild(el("code", d));
+        li.appendChild(chips);
+      }
+      if (a.versuche) li.appendChild(el("small", `${a.versuche + 1}. Versuch`, "leise"));
+      if (a.befehl) li.title = `Befehl: ${a.befehl}`;
+      if (a.fehler) li.appendChild(el("p", a.fehler, "aufgabe-fehler"));
+      liste.appendChild(li);
+    }
+    karte.appendChild(liste);
+    ziel.appendChild(karte);
+  }
+}
+
+async function ladeProtokoll(auftrag) {
+  const fenster = document.getElementById("protokoll");
+  if (protokollFuer !== auftrag) { protokollAb = null; leeren(fenster); protokollFuer = auftrag; }
+  const ab = protokollAb === null ? "" : `&ab=${protokollAb}`;
+  const antwort = await holen(`/api/protokoll?auftrag=${encodeURIComponent(auftrag)}${ab}`);
+  if (!antwort.ok || protokollFuer !== auftrag) return;
+  const d = antwort.daten;
+  if (d.neu) leeren(fenster);
+  if (d.text) fenster.appendChild(document.createTextNode(d.text));
+  if (fenster.textContent.length > PROTOKOLL_MAX) {
+    const rest = fenster.textContent.slice(-PROTOKOLL_MAX);
+    leeren(fenster);
+    fenster.appendChild(document.createTextNode(rest.slice(rest.indexOf("\n") + 1)));
+  }
+  protokollAb = d.weiter;
+  const kb = Math.round((d.groesse || 0) / 1024);
+  document.getElementById("protokoll-satz").textContent = d.satz
+    || (d.gekuerzt ? `Ende des Protokolls (${kb} KB, ältere Zeilen ausgelassen)` : `Protokoll (${kb} KB)`);
+  if (document.getElementById("protokoll-folgen").checked) fenster.scrollTop = fenster.scrollHeight;
+}
+
+let letzteAufgaben = 0;
+async function ladeLaufsicht(stand) {
+  const auftrag = stand.auftrag;
+  const laeuft = stand.zustand === "laeuft" || stand.zustand === "wartet";
+  // Ein fertiger Lauf ändert sich nicht mehr: dann reicht es, alle 10 s nachzusehen.
+  if (laeuft || reiter === "aufgaben" || Date.now() - letzteAufgaben > 10000 || protokollFuer !== auftrag) {
+    const aufgaben = await holen(`/api/aufgaben?auftrag=${encodeURIComponent(auftrag)}`);
+    letzteAufgaben = Date.now();
+    if (aufgaben.ok) {
+      zeigeFortschritt(aufgaben.daten, stand.zustand);
+      zeigeAufgaben(aufgaben.daten);
+    }
+  }
+  if (reiter === "protokoll" && (laeuft || protokollFuer !== auftrag)) await ladeProtokoll(auftrag);
+}
+
+function zeigeReiter(name) {
+  reiter = name;
+  for (const knopf of document.querySelectorAll(".reiter button")) {
+    knopf.setAttribute("aria-selected", String(knopf.dataset.reiter === name));
+  }
+  for (const teil of ["ueberblick", "aufgaben", "protokoll"]) {
+    document.getElementById(`reiter-${teil}`).hidden = teil !== name;
+  }
+  if (name === "protokoll" && gewaehlt) ladeProtokoll(gewaehlt);
+}
+for (const knopf of document.querySelectorAll(".reiter button")) {
+  knopf.addEventListener("click", () => zeigeReiter(knopf.dataset.reiter));
+}
+
+// ── Vibe-Coder (Stufe V1): Chat-Gerüst, noch ohne Modell ──
+
+const chat = document.getElementById("chat");
+const NICHT_ANGESCHLOSSEN = "Nachbessern ist noch nicht angeschlossen. Ich habe deinen Satz nur angezeigt; "
+  + "an der App wurde nichts geändert.";
+
+function zeigeChat() {
+  if (!chat || !chat.verlauf) return;
+  chat.titel = gewaehltTitel ? `Vibe-Coder · ${gewaehltTitel}` : "Vibe-Coder";
+  chat.kontext = { auftrag: gewaehlt };
+  chat.verlauf(verlaeufe.get(gewaehlt) || []);
+  chat.gesperrt = !gewaehlt;
+}
+
+if (chat) {
+  customElements.whenDefined("vm-chat").then(() => {
+    chat.connect({
+      // Stufe V1: kein Modell, kein Aufruf an den Dienst. Die Antwort sagt ehrlich, was geschah.
+      send: async () => ({ text: NICHT_ANGESCHLOSSEN, marke: "fehler" }),
+      kontext: { auftrag: gewaehlt },
+    });
+    chat.addEventListener("vm-chat-paar", (e) => {
+      const auftrag = chat.kontext.auftrag;
+      if (!auftrag) return;
+      const liste = verlaeufe.get(auftrag) || [];
+      liste.push(e.detail);
+      verlaeufe.set(auftrag, liste.slice(-50));
+    });
+    zeigeChat();
+  });
+}
+
+// ── Ansichten: Aufträge und Vibe-Coder sind diese Seite, die Live-Vorschau ist rechts immer dabei ──
+// "vorschau" zeigt sie in voller Breite. Die Ansicht steht im Anker (#vibe), damit die App sie direkt öffnen kann.
+
 let oberflaechen = {};
 let ansicht = "auftraege";
+const ANSICHTEN = ["auftraege", "vibe", "vorschau"];
 
-function zeigeAnsicht(name) {
-  ansicht = oberflaechen[name] || name === "auftraege" ? name : "auftraege";
-  for (const knopf of document.querySelectorAll(".knoepfe button")) {
-    knopf.setAttribute("aria-pressed", String(knopf.dataset.ansicht === ansicht));
-  }
-  const fremd = document.getElementById("fremd");
-  const rahmen = document.getElementById("fremd-rahmen");
-  const satz = document.getElementById("fremd-satz");
-  document.getElementById("auftraege").hidden = ansicht !== "auftraege";
-  fremd.hidden = ansicht === "auftraege";
-  if (ansicht === "auftraege") {
-    if (rahmen.src) rahmen.removeAttribute("src");
+function setzeRahmen(rahmen, satz, eintrag, an) {
+  // Nur ein Rahmen hält die Verbindung zur Vorschau, der andere ist leer.
+  if (!an || !eintrag) {
+    if (rahmen.getAttribute("src")) rahmen.removeAttribute("src");
     rahmen.hidden = true;
+    satz.hidden = true;
     return;
   }
-  const eintrag = oberflaechen[ansicht];
   rahmen.title = eintrag.titel;
   if (eintrag.laeuft) {
     satz.hidden = true;
     if (rahmen.getAttribute("src") !== eintrag.url) rahmen.src = eintrag.url;
     rahmen.hidden = false;
   } else {
+    if (rahmen.getAttribute("src")) rahmen.removeAttribute("src");
     rahmen.hidden = true;
-    if (rahmen.src) rahmen.removeAttribute("src");
     satz.textContent = eintrag.satz_aus;
+    satz.hidden = false;
+  }
+}
+
+function zeigeAnsicht(name) {
+  ansicht = ANSICHTEN.includes(name) ? name : "auftraege";
+  for (const knopf of document.querySelectorAll(".knoepfe button")) {
+    knopf.setAttribute("aria-pressed", String(knopf.dataset.ansicht === ansicht));
+  }
+  const voll = ansicht === "vorschau";
+  document.getElementById("arbeit").hidden = voll;
+  document.getElementById("fremd").hidden = !voll;
+  document.getElementById("lauf").dataset.ansicht = ansicht;
+  document.getElementById("vibe").hidden = ansicht !== "vibe";
+  // "lauf" zeigt zeigeStand(); in der Vibe-Ansicht tritt der Chat an seine Stelle.
+  document.getElementById("lauf").classList.toggle("verdeckt", ansicht !== "auftraege");
+  const vorschau = oberflaechen.vorschau;
+  setzeRahmen(document.getElementById("fremd-rahmen"), document.getElementById("fremd-satz"), vorschau, voll);
+  setzeRahmen(document.getElementById("vorschau-rahmen"), document.getElementById("vorschau-satz"), vorschau, !voll);
+  if (!vorschau && !voll) {
+    const satz = document.getElementById("vorschau-satz");
+    satz.textContent = "Die Live-Vorschau wird gesucht …";
     satz.hidden = false;
   }
 }
@@ -274,24 +435,25 @@ async function ladeOberflaechen() {
     if (!antwort.ok) return;
     oberflaechen = {};
     for (const eintrag of antwort.daten) oberflaechen[eintrag.name] = eintrag;
-    for (const knopf of document.querySelectorAll(".knoepfe button")) {
-      const eintrag = oberflaechen[knopf.dataset.ansicht];
-      if (eintrag) knopf.dataset.laeuft = String(eintrag.laeuft);
-    }
+    const knopf = document.querySelector('.knoepfe button[data-ansicht="vorschau"]');
+    if (oberflaechen.vorschau) knopf.dataset.laeuft = String(oberflaechen.vorschau.laeuft);
     zeigeAnsicht(ansicht);
   } catch (fehler) {
     // Die Verbindungszeile von laden() sagt schon, wenn der Dienst fehlt.
   }
 }
 
-for (const knopf of document.querySelectorAll(".knoepfe button")) {
-  knopf.addEventListener("click", () => {
-    history.replaceState(null, "", knopf.dataset.ansicht === "auftraege" ? "#" : `#${knopf.dataset.ansicht}`);
-    zeigeAnsicht(knopf.dataset.ansicht);
-  });
+function wechsle(name) {
+  history.replaceState(null, "", name === "auftraege" ? "#" : `#${name}`);
+  zeigeAnsicht(name);
 }
+for (const knopf of document.querySelectorAll(".knoepfe button")) {
+  knopf.addEventListener("click", () => wechsle(knopf.dataset.ansicht));
+}
+document.getElementById("vorschau-gross").addEventListener("click", () => wechsle("vorschau"));
 window.addEventListener("hashchange", () => zeigeAnsicht(location.hash.slice(1) || "auftraege"));
 ansicht = location.hash.slice(1) || "auftraege";
+zeigeAnsicht(ansicht);
 
 laden();
 ladeOberflaechen();
