@@ -1361,6 +1361,12 @@ class KnowledgeSynthesizer:
 # MicroAgentPool — LLM-Powered Knowledge Refinement Agents
 # ═══════════════════════════════════════════════════════════════════
 
+def nutzerprofil_nach_rowboat() -> bool:
+    """Schalter ``BRAIN_NUTZERPROFIL_ROWBOAT`` (Vorgabe aus): darf ``analyze_user`` die Notiz
+    People/User_Profile in die Rowboat-Wissensablage schreiben?"""
+    return os.environ.get("BRAIN_NUTZERPROFIL_ROWBOAT", "0").strip().lower() in ("1", "true", "yes")
+
+
 class MicroAgentPool:
     """
     Pool of 10 small LLM micro-agents that iteratively refine knowledge.
@@ -1971,11 +1977,14 @@ class MicroAgentPool:
         if not result:
             return None
 
-        # Persist to Rowboat
-        try:
-            self._write_user_profile(result)
-        except Exception as e:
-            logger.debug(f"Rowboat write failed: {e}")
+        # Persist to Rowboat - nur noch mit Schalter (28.11.2026, Blue Rose Stufe 1): Stimmung,
+        # Beduerfnisse und Interessen des Nutzers gehoeren nicht unverschluesselt und ohne
+        # Einsicht in die Wissensablage. Vorgabe aus; die vorhandene Notiz bleibt unberuehrt.
+        if nutzerprofil_nach_rowboat():
+            try:
+                self._write_user_profile(result)
+            except Exception as e:
+                logger.debug(f"Rowboat write failed: {e}")
 
         return RefinedKnowledge(
             original=history_str[:200],

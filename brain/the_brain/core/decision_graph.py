@@ -1150,6 +1150,34 @@ class DecisionGraph:
             out["count_error"] = str(e)
         return out
 
+    _ZAHLEN_FELDER = ("ts", "weg", "stufe", "ok", "dauer_ms", "bereich", "reiter", "laenge",
+                      "trace_id")
+
+    def entscheidungen_zahlen(self, seit_ts: float, limit: int = 5000) -> Dict[str, Any]:
+        """Je Satz eine Zeile fuer Zaehlungen (Blue Rose, core/blue_rose.py), OHNE Satztext:
+        die Abfrage holt ``s.text`` gar nicht erst. Ohne Neo4j aus dem Spiegel im Speicher."""
+        if self._connected:
+            try:
+                with self._driver.session() as s:
+                    zeilen = s.run(
+                        """
+                        MATCH (s:Satz)-[:ENTSCHIEDEN_DURCH]->(e:Entscheidung)
+                        WHERE e.ts >= $seit
+                        OPTIONAL MATCH (e)-[:WAEHLT]->(b:Bereich)
+                        RETURN e.ts AS ts, e.weg AS weg, e.stufe AS stufe, e.ok AS ok,
+                               e.dauer_ms AS dauer_ms, b.id AS bereich, s.reiter AS reiter,
+                               s.laenge AS laenge, s.id AS trace_id
+                        ORDER BY e.ts DESC LIMIT $limit
+                        """, seit=float(seit_ts), limit=int(limit),
+                    ).data()
+                return {"quelle": "neo4j", "zeilen": zeilen}
+            except Exception as e:
+                self.stats_counters["errors"] += 1
+                logger.debug(f"[decision-graph] entscheidungen_zahlen failed: {type(e).__name__}")
+        zeilen = [{k: w.get(k) for k in self._ZAHLEN_FELDER}
+                  for w in list(self._mem_entscheidungen) if (w.get("ts") or 0) >= seit_ts]
+        return {"quelle": "spiegel", "zeilen": zeilen}
+
     def prune(self, older_than_s: float = NODE_TTL_S) -> Dict[str, int]:
         """Drop ancient nodes so the graph doesn't grow forever."""
         if not self._connected:
