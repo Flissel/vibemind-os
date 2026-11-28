@@ -14,7 +14,7 @@
     { id: 'einordnung',  name: '4 Einordnung',  hinweis: 'Klassifikator und Schwelle' },
     { id: 'planung',     name: '5 Planung',     hinweis: 'Reasoning mit Modell' },
     { id: 'ausfuehrung', name: '6 Ausführung',  hinweis: 'Schritte und Werkzeuge' },
-    { id: 'pruefung',    name: '7 Prüfung',     hinweis: 'Freigabe' },
+    { id: 'pruefung',    name: '7 Prüfung',     hinweis: 'Validator, Freigabe' },
     { id: 'ergebnis',    name: '8 Ergebnis',    hinweis: 'Zielbereich und Ausgang' },
   ];
 
@@ -53,6 +53,33 @@
 
   function zahl(wert) { return typeof wert === 'number' && isFinite(wert) ? wert : null; }
 
+  const KEIN_TREFFER = 'kein-treffer';
+  const PRUEF_FARBE = { 'validator-ok': '#66bb6a', 'freigabe-ok': '#66bb6a', 'validator-offen': '#ffd54f',
+                        'freigabe-offen': '#ffd54f', 'validator-stopp': '#ef5350', 'freigabe-nein': '#ef5350' };
+
+  // Der Weg aus dem Stufen-Protokoll des Gehirns (drei gleich lange Listen), oder null, wenn es
+  // fehlt oder nicht passt. Dauer -1 heisst "nicht gemessen" und wird zu null.
+  function wegAusProtokoll(e, ausgang) {
+    const et = e.stufen_etage, st = e.stufen_station, ms = e.stufen_ms;
+    if (!Array.isArray(et) || !Array.isArray(st) || !Array.isArray(ms)) return null;
+    if (et.length < 2 || et.length !== st.length || et.length !== ms.length) return null;
+    const bekannt = ETAGEN.map(x => x.id);
+    let letzte = -1;
+    const weg = [];
+    for (let i = 0; i < et.length; i++) {
+      const stelle = bekannt.indexOf(et[i]);
+      if (stelle <= letzte) return null;            // unbekannte Etage oder falsche Reihenfolge
+      letzte = stelle;
+      const punkt = { etage: et[i], station: String(st[i] || '?'), ms: zahl(ms[i]) !== null && ms[i] >= 0 ? ms[i] : null };
+      if (punkt.station === KEIN_TREFFER) punkt.ohneTreffer = true;
+      if (punkt.etage === 'pruefung') punkt.farbe = PRUEF_FARBE[punkt.station] || '#ffd54f';
+      if (punkt.etage === 'ergebnis') punkt.farbe = AUSGAENGE[ausgang].farbe;
+      weg.push(punkt);
+    }
+    if (weg[0].etage !== 'eingang' || weg[weg.length - 1].etage !== 'ergebnis') return null;
+    return weg;
+  }
+
   // Befehle aus der Graph-Antwort. Jeder Befehl: Kopf-Daten und `weg` = Liste {etage, station, ms?, farbe?}.
   function befehleAus(antwort) {
     const knoten = {};
@@ -89,16 +116,22 @@
         if (status && status !== 'none' && (!freigabe || status === 'denied' || status === 'deny')) freigabe = status;
       }));
 
-      const weg = [{ etage: 'eingang', station: reiter || 'ohne Reiter' }];
-      weg.push({ etage: etage === 'unbekannt' ? 'einordnung' : etage, station });
-      if (faehigkeit || schritte > 0) {
-        weg.push({ etage: 'ausfuehrung', station: schritte > 1 ? schritte + ' Schritte' : (faehigkeit || '1 Schritt'),
-                   ms: hops.length ? Math.round(hopMs) : null });
+      // Baustufe B: das Gehirn liefert den Weg mit Dauer je Stufe. Aeltere Saetze haben ihn nicht;
+      // fuer sie wird der Weg wie in Baustufe A aus Stufe, Faehigkeit und Schritten gebaut.
+      let weg = wegAusProtokoll(e, ausgang), gemessen = !!weg;
+      if (!weg) {
+        weg = [{ etage: 'eingang', station: reiter || 'ohne Reiter' }];
+        weg.push({ etage: etage === 'unbekannt' ? 'einordnung' : etage, station });
+        if (faehigkeit || schritte > 0) {
+          weg.push({ etage: 'ausfuehrung', station: schritte > 1 ? schritte + ' Schritte' : (faehigkeit || '1 Schritt'),
+                     ms: hops.length ? Math.round(hopMs) : null });
+        }
+        if (freigabe) weg.push({ etage: 'pruefung', station: 'freigabe: ' + freigabe, farbe: FREIGABE_FARBE[freigabe] || '#ffd54f' });
+        weg.push({ etage: 'ergebnis', station: bereich ? bereich : AUSGAENGE[ausgang].name, farbe: AUSGAENGE[ausgang].farbe });
       }
-      if (freigabe) weg.push({ etage: 'pruefung', station: 'freigabe: ' + freigabe, farbe: FREIGABE_FARBE[freigabe] || '#ffd54f' });
-      weg.push({ etage: 'ergebnis', station: bereich ? bereich : AUSGAENGE[ausgang].name, farbe: AUSGAENGE[ausgang].farbe });
 
       liste.push({
+        gemessen,
         id, ts: zahl(e.ts) || zahl(satz.ts) || 0, reiter, bereich, art: etage, station, ausgang,
         text: typeof satz.intent === 'string' ? satz.intent : '',
         faehigkeit, schritte, ok: typeof e.ok === 'boolean' ? e.ok : null,
@@ -123,8 +156,10 @@
   // Gleiche Wege zusammenlegen. Die Faehigkeit gehoert nicht zum Schluessel: ein Muster mit zehn
   // Faehigkeiten bleibt ein Strang, die Faehigkeiten stehen in der Liste der Befehle.
   function schluessel(b) {
-    return [b.reiter, b.art, b.station, b.weg.some(p => p.etage === 'ausfuehrung') ? 'a' : '',
-            b.freigabe, b.ausgang, b.bereich].join('|');
+    // Die Folge der Etagen gehoert dazu: ein Buendel hat einen gemeinsamen Weg durch das Haus.
+    const pruefung = b.weg.find(p => p.etage === 'pruefung');
+    return [b.reiter, b.art, b.station, b.weg.map(p => p.etage).join('>'),
+            pruefung ? pruefung.station : '', b.ausgang, b.bereich].join('|');
   }
   function buendeln(befehle) {
     const gruppen = new Map();
@@ -147,6 +182,16 @@
         stelle.station = namen.length === 1 ? namen[0] : namen.length + ' verschiedene';
         stelle.ms = null;
       }
+      // Je Stufe: mittlere Dauer ueber die Befehle, die dort gemessen sind; Station nur, wenn alle
+      // dieselbe haben (z. B. die Klasse der Einordnung kann je Satz anders sein).
+      g.weg.forEach((p, i) => {
+        if (p.etage === 'ausfuehrung') { const ms = g.befehle.map(b => b.weg[i] && b.weg[i].ms).filter(x => typeof x === 'number');
+          p.ms = ms.length ? Math.round(ms.reduce((s, x) => s + x, 0) / ms.length) : null; return; }
+        const namen = Array.from(new Set(g.befehle.map(b => b.weg[i] && b.weg[i].station)));
+        if (namen.length > 1) p.station = namen.length + ' verschiedene';
+        const ms = g.befehle.map(b => b.weg[i] && b.weg[i].ms).filter(x => typeof x === 'number');
+        p.ms = ms.length ? Math.round(ms.reduce((s, x) => s + x, 0) / ms.length) : null;
+      });
       const mit = g.befehle.filter(b => b.dauerMs !== null);
       g.mittelMs = mit.length ? Math.round(mit.reduce((s, b) => s + b.dauerMs, 0) / mit.length) : null;
     });

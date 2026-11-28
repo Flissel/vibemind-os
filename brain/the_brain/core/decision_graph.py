@@ -517,7 +517,9 @@ class DecisionGraph:
         MERGE (e:Entscheidung {id: $eid})
         SET e.weg = $weg, e.stufe = $stufe, e.ok = $ok, e.dauer_ms = $dauer_ms,
             e.bereich_quelle = $bereich_quelle, e.ts = coalesce(e.ts, $ts),
-            e.faehigkeit = $faehigkeit, e.schritte = $schritte
+            e.faehigkeit = $faehigkeit, e.schritte = $schritte,
+            e.stufen_etage = $stufen_etage, e.stufen_station = $stufen_station,
+            e.stufen_ms = $stufen_ms
         MERGE (s)-[:ENTSCHIEDEN_DURCH]->(e)
         FOREACH (_ IN CASE WHEN $bereich IS NULL THEN [] ELSE [1] END |
             MERGE (b:Bereich {id: $bereich})
@@ -530,6 +532,29 @@ class DecisionGraph:
             ON CREATE SET p.ts = $ts
             MERGE (e)-[:FUEHRT_ZU]->(p))
         """
+
+    @staticmethod
+    def _stufen_listen(quelle: Any) -> Dict[str, List[Any]]:
+        """Das Stufen-Protokoll (core/stufen_protokoll.py) als drei gleich lange Listen:
+        Etage und Station als Text, Dauer als ganze Zahl. Passt etwas nicht, sind alle drei
+        leer - eine halbe Liste wuerde die Ansicht falsch zuordnen."""
+        leer: Dict[str, List[Any]] = {"stufen_etage": [], "stufen_station": [], "stufen_ms": []}
+        try:
+            etagen = quelle.get("stufen_etage")
+            stationen = quelle.get("stufen_station")
+            dauern = quelle.get("stufen_ms")
+            if not (isinstance(etagen, list) and isinstance(stationen, list) and isinstance(dauern, list)):
+                return leer
+            if not etagen or not (len(etagen) == len(stationen) == len(dauern)) or len(etagen) > 32:
+                return leer
+            if not all(isinstance(e, str) for e in etagen) or not all(isinstance(s, str) for s in stationen):
+                return leer
+            if not all(isinstance(d, int) and not isinstance(d, bool) for d in dauern):
+                return leer
+            return {"stufen_etage": list(etagen), "stufen_station": list(stationen),
+                    "stufen_ms": list(dauern)}
+        except Exception:  # noqa: BLE001
+            return leer
 
     def upsert_entscheidung(self, eintrag: Dict[str, Any], timeout_s: float = 2.0) -> bool:
         """Ein Satz und seine Entscheidung (core/entscheidung_graph.py). Satzanfang wie
@@ -558,6 +583,7 @@ class DecisionGraph:
             "text": eintrag.get("text") if isinstance(eintrag.get("text"), str) else None,
             "faehigkeit": eintrag.get("faehigkeit"),
             "schritte": eintrag.get("schritte"),
+            **self._stufen_listen(eintrag),
         }
         self._mem_entscheidungen.append(dict(werte))
         self.stats_counters["writes_entscheidungen"] += 1
@@ -707,6 +733,8 @@ class DecisionGraph:
                 # Etagen-Ansicht: entscheidende Etage und Ausgang, aus Stufe/Weg/ok abgeleitet.
                 "etage": etage_aus(z.get("stufe"), z.get("weg")),
                 "ausgang": ausgang_aus(z.get("weg"), z.get("ok")),
+                # Baustufe B: der Weg durch die Etagen mit Dauer je Stufe (leer bei alten Saetzen).
+                **DecisionGraph._stufen_listen(z),
                 "reiter": z.get("reiter") or "",
                 "bereich_quelle": z.get("bereich_quelle") or "",
                 "dauer_ms": z.get("dauer_ms"),
@@ -991,7 +1019,9 @@ class DecisionGraph:
                            e.dauer_ms AS dauer_ms, e.bereich_quelle AS bereich_quelle,
                            e.ts AS ts, s.reiter AS reiter, b.id AS bereich, p.id AS plan_id,
                            s.id AS trace_id, s.text AS text, s.laenge AS laenge,
-                           e.faehigkeit AS faehigkeit, e.schritte AS schritte
+                           e.faehigkeit AS faehigkeit, e.schritte AS schritte,
+                           e.stufen_etage AS stufen_etage, e.stufen_station AS stufen_station,
+                           e.stufen_ms AS stufen_ms
                     ORDER BY e.ts DESC LIMIT 50
                     """, cutoff=float(cutoff),
                 ).data()

@@ -137,6 +137,67 @@ test('eine einzige Spur oder Bahn liegt in der Mitte', () => {
   assert.equal(L.bahnen(liste).ideas, 0);
 });
 
+// ── Baustufe B: Weg aus dem Stufen-Protokoll des Gehirns ──────────────────
+const PROTOKOLL = {
+  etage: 'planung', stufe: 'planer', weg: 'plan-executor', ausgang: 'erledigt', ok: true, schritte: 3,
+  faehigkeit: 'notiz_suchen', dauer_ms: 9400,
+  stufen_etage: ['eingang', 'gespraech', 'muster', 'einordnung', 'planung', 'ausfuehrung', 'pruefung', 'ergebnis'],
+  stufen_station: ['ideas', 'kein-treffer', 'kein-treffer', 'medium', 'planer', '3-schritte', 'validator-ok', 'ideas'],
+  stufen_ms: [1, 2, 9, 140, 5200, 3100, -1, 900],
+};
+
+test('Protokoll: der Weg kommt mit Dauer je Stufe vom Gehirn', () => {
+  const [b] = L.befehleAus(antwort([{ reiter: 'ideas', bereich: 'ideas', ent: PROTOKOLL }]));
+  assert.equal(b.gemessen, true);
+  assert.deepEqual(b.weg.map(p => p.etage), PROTOKOLL.stufen_etage);
+  assert.deepEqual(b.weg.map(p => p.ms), [1, 2, 9, 140, 5200, 3100, null, 900]);   // -1 = nicht gemessen
+  assert.deepEqual(b.weg.map(p => !!p.ohneTreffer), [false, true, true, false, false, false, false, false]);
+  assert.equal(b.weg[6].farbe, '#66bb6a');                          // Pruefung bestanden
+  assert.equal(b.weg[7].farbe, L.AUSGAENGE.erledigt.farbe);
+  assert.equal(b.art, 'planung');                                   // die Spur bleibt die der Entscheidung
+});
+
+test('Protokoll: Stopp des Validators ist rot', () => {
+  const ent = Object.assign({}, PROTOKOLL, { stufen_station: PROTOKOLL.stufen_station.map(s => s === 'validator-ok' ? 'validator-stopp' : s) });
+  assert.equal(L.befehleAus(antwort([{ ent }]))[0].weg[6].farbe, '#ef5350');
+});
+
+for (const [name, kaputt] of [
+  ['ungleich lange Listen', { stufen_ms: [1, 2] }],
+  ['unbekannte Etage', { stufen_etage: ['eingang', 'keller', 'ergebnis'], stufen_station: ['a', 'b', 'c'], stufen_ms: [1, 2, 3] }],
+  ['falsche Reihenfolge', { stufen_etage: ['eingang', 'planung', 'muster', 'ergebnis'], stufen_station: ['a', 'b', 'c', 'd'], stufen_ms: [1, 2, 3, 4] }],
+  ['ohne Ergebnis am Ende', { stufen_etage: ['eingang', 'muster'], stufen_station: ['a', 'b'], stufen_ms: [1, 2] }],
+  ['leere Listen (alter Satz)', { stufen_etage: [], stufen_station: [], stufen_ms: [] }],
+  ['keine Listen', { stufen_etage: 'eingang', stufen_station: null, stufen_ms: 5 }],
+]) {
+  test('Protokoll: ' + name + ' -> Weg wie in Baustufe A', () => {
+    const [b] = L.befehleAus(antwort([{ reiter: 'ideas', bereich: 'ideas', ent: Object.assign({}, PROTOKOLL, kaputt) }]));
+    assert.equal(b.gemessen, false);
+    assert.deepEqual(b.weg.map(p => p.etage), ['eingang', 'planung', 'ausfuehrung', 'ergebnis']);
+  });
+}
+
+test('Protokoll: Buendel mit mittlerer Dauer je Stufe; verschiedene Klassen werden gezaehlt', () => {
+  const zweiter = Object.assign({}, PROTOKOLL, {
+    stufen_station: PROTOKOLL.stufen_station.map(s => s === 'medium' ? 'hard' : s),
+    stufen_ms: [3, 4, 11, 160, 7200, 2900, -1, 1100], dauer_ms: 11400 });
+  const liste = L.befehleAus(antwort([{ reiter: 'ideas', bereich: 'ideas', ent: PROTOKOLL },
+                                      { reiter: 'ideas', bereich: 'ideas', ent: zweiter }]));
+  const [g] = L.buendeln(liste);
+  assert.equal(g.befehle.length, 2);
+  assert.deepEqual(g.weg.map(p => p.ms), [2, 3, 10, 150, 6200, 3000, null, 1000]);
+  assert.equal(g.weg[3].station, '2 verschiedene');
+  assert.equal(g.weg[4].station, 'planer');
+  assert.equal(liste[0].weg[3].ms + liste[1].weg[3].ms, 300);       // die Befehle selbst bleiben unveraendert
+});
+
+test('Protokoll: gemessene und alte Saetze derselben Stufe sind verschiedene Wege', () => {
+  const alt = Object.assign({}, PROTOKOLL, { stufen_etage: [], stufen_station: [], stufen_ms: [] });
+  const liste = L.befehleAus(antwort([{ reiter: 'ideas', bereich: 'ideas', ent: PROTOKOLL },
+                                      { reiter: 'ideas', bereich: 'ideas', ent: alt }]));
+  assert.equal(L.buendeln(liste).length, 2);
+});
+
 test('Texte fuer Dauer und Alter', () => {
   assert.equal(L.dauerText(850), '850 ms');
   assert.equal(L.dauerText(2500), '2,5 s');

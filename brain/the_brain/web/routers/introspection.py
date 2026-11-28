@@ -2128,7 +2128,9 @@ _SICHERE_FELDER: Dict[str, tuple] = {
                  "incomplete"),
     "satz": ("trace_id", "reiter", "laenge", "ts"),
     "entscheidung": ("ok", "weg", "stufe", "etage", "ausgang", "faehigkeit", "schritte", "reiter",
-                     "bereich_quelle", "dauer_ms", "ts"),
+                     "bereich_quelle", "dauer_ms", "ts",
+                     # Stufen-Protokoll: nur Kennungen und Zahlen (core/stufen_protokoll.kennung).
+                     "stufen_etage", "stufen_station", "stufen_ms"),
     "bereich": (),
 }
 _SICHERE_KANTENFELDER = ("id", "source", "target", "type", "weight", "seq")
@@ -3140,16 +3142,34 @@ async def multihop_execute(request: Request):
     (``hinweis``/``rueckfrage``), und der Ausgang des Satzes zaehlt fuer "Zurück"
     (core/zurueck_vorsicht.satz_merken)."""
     beginn = time.monotonic()
-    antwort = await _multihop_execute(request)
+    # Stufen-Protokoll (core/stufen_protokoll.py): welche Etagen der Satz beruehrt und wie lange.
+    # Nur Marken mit Uhrenwert; wirft nie und haelt den Satz nicht auf.
+    from core import stufen_protokoll as _sp
+
+    def _stufen(funktion, *argumente):
+        # Zweiter Riegel um das Protokoll: was auch immer dort schiefgeht, der Satz laeuft weiter.
+        try:
+            return funktion(*argumente)
+        except Exception:  # noqa: BLE001
+            return None
+
+    _stufen(_sp.beginnen)
+    try:
+        antwort = await _multihop_execute(request)
+    except BaseException:
+        _stufen(_sp.abholen)
+        raise
+    _stufen(_sp.marke, "ergebnis")
     _spur_je_satz(request, antwort)
     kontext_space = await _kontext_space(request)
     fertig = _nachbereiten(antwort, kontext_space)
-    await _entscheidung_melden(request, fertig, kontext_space, (time.monotonic() - beginn) * 1000)
+    await _entscheidung_melden(request, fertig, kontext_space, (time.monotonic() - beginn) * 1000,
+                               stufen=_stufen(_sp.abholen))
     return fertig
 
 
 async def _entscheidung_melden(request: Request, antwort: Any, kontext_space: Optional[str],
-                               dauer_ms: float) -> None:
+                               dauer_ms: float, stufen: Any = None) -> None:
     """Jeder Satz als Entscheidung in den Neo4j-Graphen (core/entscheidung_graph.py).
 
     Kennung, Satzanfang (wie Plan.intent), Reiter, Laenge, Weg, Stufe, ok, Dauer, Bereich und
@@ -3187,7 +3207,7 @@ async def _entscheidung_melden(request: Request, antwort: Any, kontext_space: Op
             routed_via = snap.get("routed_via") if isinstance(snap, dict) else None
         eintrag = _eg.eintrag_bauen(daten, satz=intent, reiter=kontext_space, laenge=laenge,
                                     dauer_ms=dauer_ms, routed_via=routed_via,
-                                    status_code=getattr(antwort, "status_code", 200))
+                                    status_code=getattr(antwort, "status_code", 200), stufen=stufen)
         if graph_an:
             _eg.melden(dg, eintrag)
         if weiche_an:
@@ -3274,6 +3294,7 @@ async def _multihop_execute(request: Request):
     Returns the executed plan summary plus optional final synthesis."""
     import os  # modulweit nicht importiert in dieser Datei — für SoM-Merge-Routing
     from core import verstehen as _verstehen
+    from core import stufen_protokoll as _sp   # Marken je Etage; wirft nie (Baustufe B)
     state = request.app.state
     pe = getattr(state, "plan_executor", None)
     pl = getattr(state, "multihop_planner", None)
@@ -3322,6 +3343,7 @@ async def _multihop_execute(request: Request):
         except Exception as e:
             return JSONResponse({"error": f"invalid plan: {e}", "trace_id": trace_id}, status_code=400)
     elif intent:
+        _sp.marke("gespraech")
         # Gruss, Dank, blosses ja/ok (core/hoeflichkeit): ob eine Rueckfrage offen war, vor dem
         # Verwerfen unten ablesen; die Antwort kommt nach den Bestaetigungen.
         from core import hoeflichkeit as _hf
@@ -3432,6 +3454,7 @@ async def _multihop_execute(request: Request):
         # Space der App (context.space) als Signal: feste Lesesaetze aller Spaces zuerst, egal
         # welcher Reiter (core/verstehen); ehrliche Saetze fuer Spaces ohne laufenden Weg.
         # Ein fester Satz laeuft ohne Planer.
+        _sp.marke("muster")
         _space = _verstehen.space_aus_kontext(body.get("context"))
         # Sales-Space: feste Lesesaetze als Auftrag ins Auftragsbuch (core/sales_saetze), ohne
         # Planer und ohne Modell. Nur lesende Arten; freigegeben und versendet wird nur bei Sales.
@@ -3576,6 +3599,8 @@ async def _multihop_execute(request: Request):
         # schon gegriffen und gelten immer, mit Sprung). Nennt der Satz einen Space ohne
         # laufenden Weg, kommt "Im Bereich ... kann ich das noch nicht" statt eines fremden
         # Ergebnisses (Rundgang: "Wie ist der Stand im SWE Design?" -> Ideen-Statistik).
+        if plan is None:
+            _sp.marke("einordnung")
         _genannt = _verstehen.genannter_space(intent) if plan is None else None
         if plan is None and _genannt in _verstehen.OHNE_WEG and _verstehen.regel_an():
             return await _ehrlich(pe, trace_id, intent, "kein-weg", _verstehen.kein_weg(_genannt), _genannt)
@@ -3609,6 +3634,7 @@ async def _multihop_execute(request: Request):
                     _loop = _asyncio.get_running_loop()
                     cls = await _loop.run_in_executor(None, get_router().classify, intent)
                     level = cls.get("level")
+                    _sp.station("einordnung", level)
                     _unverstanden = _verstehen.unter_schwelle(cls)
                     handler = handler_for(level)
                     logger.info(f"[multihop] difficulty={level} handler={handler} "
@@ -3658,6 +3684,7 @@ async def _multihop_execute(request: Request):
                 # einfache Frage/Smalltalk → direkte Chat-Antwort, KEIN Planer.
                 # brain_chat.send(msg) -> BrainChatResponse (.to_dict()), sync →
                 # im Threadpool, damit der Event-Loop frei bleibt.
+                _sp.marke("planung", "easy-chat")
                 bc = getattr(state, "brain_chat", None)
                 reply = None
                 if bc is not None:
@@ -3689,6 +3716,7 @@ async def _multihop_execute(request: Request):
                 # Team (SelectorGroupChat). async wie SoM (Ergebnis per Telegram).
                 # Default AUS (INSANE_AUTOGEN=0) → insane fällt unten auf SoM zurück
                 # (sicher, solange das Team-Geschütz nicht breit verifiziert ist).
+                _sp.marke("planung", "som-team")
                 try:
                     from core.capability_targets import build_executor
                     ex = build_executor("openfang:som-team")
@@ -3742,6 +3770,7 @@ async def _multihop_execute(request: Request):
                 except Exception:
                     _plan_ctx = None
                 # Phase 11.T.4 — async planning path; falls back to threadpool
+                _sp.marke("planung", "planer")
                 aplan_fn = getattr(pl, "aplan", None)
                 if aplan_fn is not None:
                     plan = await (aplan_fn(intent, context=_plan_ctx) if _plan_ctx else aplan_fn(intent))
@@ -3771,6 +3800,7 @@ async def _multihop_execute(request: Request):
     if plan is None and intent and (
         som_route or os.environ.get("SOM_NOPLAN_FALLBACK", "1") not in ("0", "false", "False")
     ):
+        _sp.marke("planung", "som-planner")
         try:
             from core.capability_targets import build_executor
             ex = build_executor("openfang:som-planner")
@@ -3848,6 +3878,7 @@ async def _multihop_execute(request: Request):
     # "getippt" behauptet nicht der Aufrufer: Die App belegt es je Satz mit einem Zeichen aus dem
     # gemeinsamen Schluessel. Ein mitgebrachter Plan gilt nie als getippt.
     from core.desktop_tagesrest import KOPF_EINGABE as _KOPF_EINGABE, herkunft_pruefen as _herkunft_pruefen
+    _sp.marke("ausfuehrung")
     exec_result = await _asyncio.to_thread(
         pe.execute, plan, antwortkanal=antwortkanal,
         eingabe_herkunft=_herkunft_pruefen(
@@ -3856,6 +3887,7 @@ async def _multihop_execute(request: Request):
             plan_vom_aufrufer=body.get("plan") is not None,
         ),
     )
+    _sp.marke("ergebnis")
     # MH-5a (Phase 0) — top-level plan_id: the reward-capable correlate.
     # POST /api/multihop/plan/{plan_id}/reward and /api/decisions/reward both
     # key on plan_id; the voice bridge reads data.get("plan_id") — nested-only
