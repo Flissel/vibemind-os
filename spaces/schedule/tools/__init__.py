@@ -1,18 +1,6 @@
-"""Schedule Space Tools — Voice-triggered schedule management."""
-from .schedule_tools import (
-    create_scheduled_task,
-    list_scheduled_tasks,
-    cancel_scheduled_task,
-    modify_scheduled_task,
-    get_schedule_status,
-    snooze_scheduled_task,
-)
+"""Leer: der Schedule-Space hat keinen eigenen Werkzeugsatz mehr.
 
-__all__ = [
-    "create_scheduled_task",
-    "list_scheduled_tasks",
-    "cancel_scheduled_task",
-    "modify_scheduled_task",
-    "get_schedule_status",
-    "snooze_scheduled_task",
-]
+Siehe ``schedule_tools.py`` -- dort steht, welcher Weg stattdessen gilt.
+"""
+
+__all__: list[str] = []
