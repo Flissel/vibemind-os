@@ -1696,6 +1696,10 @@ def create_app(testing: bool = False) -> FastAPI:
     from web.routers.desktop_klicks import router as desktop_klicks_router
     app.include_router(desktop_klicks_router)
 
+    # Blue Rose als Personal Space: Zahlen aus dem Graphen, Befinden, Schalter, Loeschen (nur lokal)
+    from web.routers.blue_rose import router as blue_rose_router
+    app.include_router(blue_rose_router)
+
     @app.get("/radial", response_class=HTMLResponse)
     async def radial_dashboard(request: Request):
         return templates.TemplateResponse(request, "radial_dashboard.html")
