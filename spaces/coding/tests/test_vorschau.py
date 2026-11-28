@@ -91,3 +91,26 @@ def test_nach_abnahme_nur_bei_fertig(monkeypatch, wurzel: Path) -> None:
 def test_speicher_messung_liefert_zahl() -> None:
     frei = vorschau.freier_speicher_gb()
     assert frei is None or 0 < frei < 1024
+
+
+def test_lage_liest_zustand_und_eingehaengten_ordner() -> None:
+    import subprocess as sp
+
+    def docker(ausgabe: str, code: int = 0):
+        return lambda argv, **_: sp.CompletedProcess(argv, code, ausgabe, "")
+
+    assert vorschau.lage(docker("true|healthy|C:/arbeit/c-1/out\n")) == {
+        "laeuft": True, "gesund": "healthy", "ordner": "C:/arbeit/c-1/out"}
+    assert vorschau.lage(docker("true||\n")) == {"laeuft": True, "gesund": None, "ordner": None}
+    assert vorschau.lage(docker("false||x\n"))["laeuft"] is False
+    assert vorschau.lage(docker("", code=1))["laeuft"] is False
+
+    def kaputt(argv, **_):
+        raise OSError("kein docker")
+
+    assert vorschau.lage(kaputt)["laeuft"] is False
+
+
+def test_tests_starten_nie_eine_echte_vorschau() -> None:
+    # Die Sperre aus conftest.py gilt, auch wenn am Rechner die Schalterdatei liegt.
+    assert vorschau.an() is False

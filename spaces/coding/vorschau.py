@@ -77,6 +77,24 @@ def befehl(ordner: Path) -> List[str]:
     ]
 
 
+def lage(ausfuehren: Callable[..., Any] = subprocess.run) -> Dict[str, Any]:
+    """Laeuft die Vorschau-Sandbox, und welcher Ordner ist als App eingehaengt? Wirft nie."""
+    leer: Dict[str, Any] = {"laeuft": False, "ordner": None, "gesund": None}
+    try:
+        r = ausfuehren(["docker", "inspect", "-f",
+                        "{{.State.Running}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}|"
+                        '{{range .Mounts}}{{if eq .Destination "/workspace/app"}}{{.Source}}{{end}}{{end}}', NAME],
+                       capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return leer
+    if r.returncode != 0:
+        return leer
+    teile = (r.stdout or "").strip().split("|", 2)
+    if len(teile) != 3 or teile[0] != "true":
+        return leer
+    return {"laeuft": True, "gesund": teile[1] or None, "ordner": teile[2] or None}
+
+
 def _ordner(auftrag: Dict[str, Any]) -> Optional[Path]:
     roh = auftrag.get("zielordner")
     if not roh:
