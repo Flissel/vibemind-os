@@ -668,7 +668,7 @@ class DecisionGraph:
         Satz -entschieden_durch-> Entscheidung -waehlt-> Bereich, Entscheidung -fuehrt_zu->
         Plan. Die Kante zum Plan nur, wenn der Plan schon im Bild ist (sonst zeigt sie ins
         Leere). Gibt die Anzahl der Entscheidungen zurueck."""
-        from core.entscheidung_graph import beschriftung
+        from core.entscheidung_graph import ausgang_aus, beschriftung, etage_aus
 
         vorhanden = {n["data"]["id"] for n in nodes}
         bereiche = set()
@@ -704,6 +704,9 @@ class DecisionGraph:
                 "ok": z.get("ok") if isinstance(z.get("ok"), bool) else None,
                 "weg": z.get("weg") or "",
                 "stufe": z.get("stufe") or "",
+                # Etagen-Ansicht: entscheidende Etage und Ausgang, aus Stufe/Weg/ok abgeleitet.
+                "etage": etage_aus(z.get("stufe"), z.get("weg")),
+                "ausgang": ausgang_aus(z.get("weg"), z.get("ok")),
                 "reiter": z.get("reiter") or "",
                 "bereich_quelle": z.get("bereich_quelle") or "",
                 "dauer_ms": z.get("dauer_ms"),

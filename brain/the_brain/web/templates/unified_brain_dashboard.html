@@ -12,6 +12,9 @@
     <script src="https://cdn.jsdelivr.net/npm/[email protected]/layout-base.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/[email protected]/cose-base.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/[email protected]/cytoscape-fcose.js"></script>
+    <!-- Etagen-Ansicht der Entscheidungen: Logik und Seite; three.js laedt erst beim Oeffnen -->
+    <script src="/static/etagen/etagen-logik.js" defer></script>
+    <script src="/static/etagen/etagen-ansicht.js" defer></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -1275,6 +1278,13 @@
                                cursor:pointer; font-size:12px; font-family:inherit;">
                     Alles zeigen
                 </button>
+                <button id="wsEtagenKnopf" onclick="_wsEtagenUmschalten()"
+                        title="Dieselben Sätze als Etagen in 3D: Höhe = Stufe, Breite = Art des Wegs, Tiefe = Bereich"
+                        style="padding:6px 14px; background:#1e2d3d; color:#4fc3f7;
+                               border:1px solid #2a3f54; border-radius:4px;
+                               cursor:pointer; font-size:12px; font-family:inherit;">
+                    Etagen (3D)
+                </button>
             </div>
         </div>
         <div class="ws-pane-body" id="wsDecisionsBody"
@@ -1284,12 +1294,14 @@
                         background:radial-gradient(circle, #0d1420 0%, #060a14 100%);
                         border-right:1px solid #1e2d3d; position:relative;">
                 <div id="wsDtGraph" style="flex:1; min-height:0;"></div>
+                <!-- Etagen-Ansicht (static/etagen/): entsteht erst beim Oeffnen, wird beim Schliessen freigegeben -->
+                <div id="wsEtagen" style="display:none; flex:1; min-height:0; position:relative;"></div>
                 <div id="wsDtEmpty" class="ws-empty" style="position:absolute;
                      top:50%; left:50%; transform:translate(-50%,-50%);
                      pointer-events:none;">
                     Decision graph populates as plans run.
                 </div>
-                <div style="font-size:9px; color:#546e7a; padding:6px 12px;
+                <div id="wsDtLegende" style="font-size:9px; color:#546e7a; padding:6px 12px;
                             border-top:1px solid #1e2d3d; font-family:monospace;
                             display:flex; gap:14px; justify-content:flex-start;">
                     <span><span style="color:#4fc3f7;">●</span> cluster</span>
@@ -2994,6 +3006,38 @@ function _wsDtAusschnitt() {
     }
 }
 
+// Etagen-Ansicht (static/etagen/etagen-ansicht.js): dieselben Daten wie der Graph, als Etagen in 3D.
+// Solange sie offen ist, sind Graph, Legende und die Liste rechts ausgeblendet; sie bringt ihre
+// eigene Liste mit. Beim Verlassen des Reiters wird sie geschlossen (gibt den Grafikspeicher frei)
+// und beim Wiederkommen neu geoeffnet.
+let _wsEtagenAn = false;
+function _wsEtagenZeigen(an) {
+    const etagen = document.getElementById('wsEtagen');
+    if (!etagen || !window.EtagenAnsicht) return;
+    const zeigen = (id, sichtbar, art) => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = sichtbar ? (art || '') : 'none';
+    };
+    zeigen('wsDtGraph', !an); zeigen('wsDtLegende', !an, 'flex'); zeigen('wsDecisionsList', !an);
+    zeigen('wsDtAllesKnopf', !an);
+    if (an) zeigen('wsDtEmpty', false);
+    etagen.style.display = an ? 'block' : 'none';
+    const body = document.getElementById('wsDecisionsBody');
+    if (body) body.style.gridTemplateColumns = an ? '1fr' : '1fr 420px';
+    const knopf = document.getElementById('wsEtagenKnopf');
+    if (knopf) knopf.textContent = an ? 'Graph (2D)' : 'Etagen (3D)';
+    if (an) window.EtagenAnsicht.oeffnen(etagen);
+    else {
+        window.EtagenAnsicht.schliessen();
+        if (_wsCy) { _wsCy.resize(); _wsDtZoomNoetig = true; }
+    }
+}
+function _wsEtagenUmschalten() {
+    _wsEtagenAn = !_wsEtagenAn;
+    _wsEtagenZeigen(_wsEtagenAn);
+    wsDtPoll();
+}
+
 function _wsDtUmschalten() {
     _wsDtAnsicht = _wsDtAnsicht === 'alles' ? 'neueste' : 'alles';
     _wsDtAusschnitt();
@@ -3960,6 +4004,7 @@ function wsSwitchTab(name) {
     });
     // Stop pollers from previous tab
     try { if (name !== 'decisions') _wsDtPollStop(); } catch (_) {}
+    try { if (name !== 'decisions' && window.EtagenAnsicht) window.EtagenAnsicht.schliessen(); } catch (_) {}
     // Lazy-load per-tab
     try {
         if (name === 'routing')   wsMountRouting();
@@ -3968,6 +4013,7 @@ function wsSwitchTab(name) {
             wsLoadDecisions();
             // Beim Oeffnen auf die neuesten Saetze heranzoomen (Freigabe 24.11.2026).
             _wsDtAnsicht = 'neueste'; _wsDtZoomNoetig = true;
+            if (_wsEtagenAn) _wsEtagenZeigen(true);
             if (_wsDtPollHandle) wsDtPoll(); else _wsDtPollStart();
         }
         if (name === 'self')      wsLoadSelf();
@@ -4163,6 +4209,7 @@ async function wsDtPoll() {
         const badge = document.getElementById('wsBadgeDec');
         if (badge) badge.textContent = stats.entscheidungen || 0;
         _wsSatzListe(data);
+        if (_wsEtagenAn && window.EtagenAnsicht) window.EtagenAnsicht.daten(data);
         const rawNodes = data.nodes || [];
         const rawEdges = data.edges || [];
         if (empty) empty.style.display = rawNodes.length === 0 ? 'block' : 'none';

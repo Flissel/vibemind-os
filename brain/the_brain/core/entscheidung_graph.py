@@ -74,6 +74,62 @@ def stufe_aus_plan(plan_id: Any) -> Optional[str]:
     return "plan"
 
 
+# ── Etagen-Ansicht (Plan 28.11.2026, Baustufe A) ──────────────────────────────────────────
+# Die Ansicht ordnet jeden Satz der Etage zu, die ENTSCHIEDEN hat. Die Zuordnung steht hier
+# und nicht im Skript der Seite, damit sie neben den Wegen gepflegt und geprueft wird.
+#   gespraech   Gespraechszustand: Hoeflichkeit, Bestaetigung, Rueckfrage, Vorschlag
+#   muster      fester Weg per Regex, ohne Modell
+#   einordnung  Klassifikator/Schwelle, wenn dort Schluss war
+#   planung     Planer, SoM oder Chat - mit Modell
+#   unbekannt   Weg, den diese Tabelle nicht kennt (die Ansicht zeigt ihn eigens)
+ETAGEN = ("eingang", "gespraech", "muster", "einordnung", "planung", "ausfuehrung", "pruefung",
+          "ergebnis")
+_ETAGE_MUSTER = frozenset({"abkuerzung-regex", "ideen-fest", "lesesatz-fest", "sales-fest",
+                           "recherche-fest", "desktop-fest", "ideen-lokal", "lesen-fehlt"})
+_ETAGE_PLANUNG = frozenset({"planer", "plan-executor", "som-planner", "som-team", "easy-chat",
+                            "chat"})
+_ETAGE_EINORDNUNG = frozenset({"meta-reject", "no-plan", "nicht-verstanden", "kein-weg"})
+_ETAGE_GESPRAECH = frozenset({"hoeflichkeit", "abgelehnt", "rueckfrage", "hinweis", "angenommen",
+                              "ideen", "sales", "coding", "ideen-vorschlag"})
+_GESPRAECH_ENDEN = ("-rueckfrage", "-gestartet", "-fehler")
+
+_AUSGANG_RUECKFRAGE = frozenset({"rueckfrage", "ideen", "sales", "coding", "ideen-vorschlag"})
+_AUSGANG_ABSAGE = frozenset({"meta-reject", "no-plan", "nicht-verstanden", "kein-weg", "abgelehnt",
+                             "lesen-fehlt"})
+_AUSGANG_ANTWORT = frozenset({"hoeflichkeit", "hinweis", "easy-chat", "chat"})
+
+
+def etage_aus(stufe: Any, weg: Any) -> str:
+    """Die Etage, die entschieden hat. Zuerst die Stufe (aus der plan_id), dann der Weg."""
+    for wert in (stufe, weg):
+        name = str(wert or "")
+        if name in _ETAGE_MUSTER:
+            return "muster"
+        if name in _ETAGE_PLANUNG:
+            return "planung"
+        if name in _ETAGE_EINORDNUNG:
+            return "einordnung"
+        if name in _ETAGE_GESPRAECH or (name and name.endswith(_GESPRAECH_ENDEN)):
+            return "gespraech"
+    return "unbekannt"
+
+
+def ausgang_aus(weg: Any, ok: Any) -> str:
+    """Wie der Satz ausging: rueckfrage, absage, fehler, angenommen, antwort oder erledigt."""
+    name = str(weg or "")
+    if name in _AUSGANG_RUECKFRAGE or name.endswith("-rueckfrage"):
+        return "rueckfrage"
+    if name in _AUSGANG_ABSAGE:
+        return "absage"
+    if ok is False or name == "fehler" or name.endswith("-fehler"):
+        return "fehler"
+    if name == "angenommen" or name.endswith("-gestartet"):
+        return "angenommen"
+    if name in _AUSGANG_ANTWORT:
+        return "antwort"
+    return "erledigt" if ok is True else "antwort"
+
+
 def _kennung(space: Any) -> Optional[str]:
     """Bereichskennung der App zu einem Namen aus Registry, Antwort oder Reiter."""
     try:

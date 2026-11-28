@@ -2127,8 +2127,8 @@ _SICHERE_FELDER: Dict[str, tuple] = {
     "toolcall": ("tool", "kind", "mcp_server", "elapsed_ms", "approval_status", "risk_level",
                  "incomplete"),
     "satz": ("trace_id", "reiter", "laenge", "ts"),
-    "entscheidung": ("ok", "weg", "stufe", "faehigkeit", "schritte", "reiter", "bereich_quelle",
-                     "dauer_ms", "ts"),
+    "entscheidung": ("ok", "weg", "stufe", "etage", "ausgang", "faehigkeit", "schritte", "reiter",
+                     "bereich_quelle", "dauer_ms", "ts"),
     "bereich": (),
 }
 _SICHERE_KANTENFELDER = ("id", "source", "target", "type", "weight", "seq")
