@@ -135,6 +135,44 @@ def test_befinden_eintragen_lesen_loeschen():
     assert _lauf(br.befinden_liste(t))["eintraege"] == []
 
 
+def test_ein_eintrag_von_zweien_wird_geloescht_der_andere_bleibt():
+    """Lauf 43: das Einzel-Loeschen. Die Kennung hat die Form, die die Datenbank vergibt (uuid)."""
+    t = Tabelle()
+    t.zeilen[br.TABELLE_BEFINDEN] = [
+        {"id": "0f8fad5b-d9cb-469f-a165-70867728950e", "stimmung": "calm", "energie": 6},
+        {"id": "7c9e6679-7425-40de-944b-e07fc1f90ae7", "stimmung": "tired", "energie": 3},
+    ]
+    assert _lauf(br.loeschen(t, "befinden", "0f8fad5b-d9cb-469f-a165-70867728950e")) == {"ok": True}
+    rest = _lauf(br.befinden_liste(t))["eintraege"]
+    assert [z["id"] for z in rest] == ["7c9e6679-7425-40de-944b-e07fc1f90ae7"]
+    assert _lauf(br.bestand(t))["befinden"] == 1
+    # dieselbe Kennung noch einmal: nichts mehr da, der andere bleibt weiter stehen
+    assert _lauf(br.loeschen(t, "befinden", "0f8fad5b-d9cb-469f-a165-70867728950e")) == {"ok": True}
+    assert len(_lauf(br.befinden_liste(t))["eintraege"]) == 1
+
+
+def test_einzel_loeschen_ueber_den_endpunkt_mit_dem_zeichen_der_app(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from web.routers import blue_rose as router_modul
+
+    app = FastAPI()
+    app.include_router(router_modul.router)
+    t = Tabelle()
+    t.zeilen[br.TABELLE_BEFINDEN] = [{"id": "aaaa1111-0000-4000-8000-000000000001", "stimmung": "calm"},
+                                     {"id": "aaaa1111-0000-4000-8000-000000000002", "stimmung": "tired"}]
+    monkeypatch.setattr(br, "tabelle_aus_umgebung", lambda: t)
+    monkeypatch.setenv("VIBEMIND_EINGABE_SCHLUESSEL", SCHLUESSEL)
+    monkeypatch.delenv("VIBEMIND_EINGABE_SCHLUESSEL_FILE", raising=False)
+    lokal = TestClient(app, base_url="http://127.0.0.1:5000")
+    pfad = "/api/blue_rose/loeschen"
+    roh = json.dumps({"art": "befinden", "id": "aaaa1111-0000-4000-8000-000000000001"}).encode()
+    antwort = lokal.post(pfad, content=roh, headers=_kopf("POST", pfad, roh))
+    assert antwort.status_code == 200 and antwort.json() == {"ok": True}
+    assert [z["id"] for z in t.zeilen[br.TABELLE_BEFINDEN]] == ["aaaa1111-0000-4000-8000-000000000002"]
+
+
 @pytest.mark.parametrize("stimmung,energie,stunde", [
     ("gluecklich", 5, 10), ("focused", 0, 10), ("focused", 11, 10), ("focused", True, 10),
     ("focused", 5, 24), ("focused", "5", 10), (None, 5, 10),
