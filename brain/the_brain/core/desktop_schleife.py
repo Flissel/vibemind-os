@@ -48,6 +48,37 @@ class AgentBenutzteWerkzeug(RuntimeError):
     """brain-desktop hat im Lauf ein Werkzeug angesetzt; er darf nur Text liefern."""
 
 
+class AgentOhneAntwort(RuntimeError):
+    """Der Lauf von brain-desktop brach ab (Strom mit Fehler oder ohne Abschluss), z. B. weil der
+    Abo-Wrapper mit Code 2 endete. Keine leere Antwort: kein zweiter Versuch, kein Vertragsfehler."""
+
+
+def _in_worten(schritt: Mapping[str, Any], ziel: Any = None) -> str:
+    """Ein geplanter Schritt in Worten fuer den Abschluss eines Trockenlaufs."""
+    art = str(schritt.get("action") or "")
+    if art == "click":
+        name = " ".join(str(ziel or "").split())[:40]
+        return f"auf „{name}“ klicken" if name else f"bei {schritt.get('x')},{schritt.get('y')} klicken"
+    if art == "type":
+        text = " ".join(str(schritt.get("text") or "").split())
+        return f"„{text[:60]}{'…' if len(text) > 60 else ''}“ tippen"
+    if art == "key":
+        return f"Taste {schritt.get('key')} drücken"
+    if art == "hotkey":
+        return "Tasten " + "+".join(str(k) for k in schritt.get("keys") or []) + " drücken"
+    if art == "scroll":
+        return f"{schritt.get('amount')}× nach {schritt.get('direction')} rollen"
+    return art or "unbekannter Schritt"
+
+
+def trocken_abschluss(text: str, geplant: list[str]) -> str:
+    """Was ein Trockenlauf am Ende sagt: dass nichts ausgefuehrt wurde und was er getan haette."""
+    if geplant:
+        schritte = "; ".join(f"{i}. {s}" for i, s in enumerate(geplant, 1))
+        return f"Trockenlauf – nichts ausgeführt. Geplant war: {schritte}. {text}".strip()
+    return f"Trockenlauf – nichts ausgeführt, kein Schritt geplant. {text}".strip()
+
+
 class FreigabeAusstehend(Exception):
     """Ein fester Aufruf wartet auf Freigabe in OpenFang. Bewusst KEIN WerkzeugFehler: Kein
     ``except WerkzeugFehler`` der Schleife darf ihn schlucken; die Schleife haelt an."""
@@ -114,14 +145,19 @@ def fuehre_aufgabe(
     vorher: Optional[str] = None  # Aktion des unmittelbar vorher ausgefuehrten Schritts
     vorher_fenster = ""  # Fenster, in dem dieser Schritt geprueft wurde
     offene_auswahl: Optional[Mapping[str, Any]] = None  # Auswahl, deren Zustand noch zu pruefen ist
+    trocken: Optional[bool] = None  # aus dem Aufgabenbuch (der Werkzeug-Dienst entscheidet)
+    geplant: list[str] = []  # gebuchte Schritte in Worten
 
     def abschluss(zustand: str, grund: str, text: str, *, schon_beendet: bool = False) -> dict[str, Any]:
+        if trocken is True:
+            text = trocken_abschluss(text, geplant)
         if not schon_beendet:
             try:
                 werkzeug("desktop_task_finish", {"task_id": task_id, "state": zustand, "result": text[:500]})
             except (WerkzeugFehler, FreigabeAusstehend):
                 pass  # z. B. inzwischen von aussen beendet; der Stand im Buch gilt
-        return {"task_id": task_id, "zustand": zustand, "grund": grund, "ergebnis": text, "agentenlaeufe": laeufe}
+        return {"task_id": task_id, "zustand": zustand, "grund": grund, "ergebnis": text, "agentenlaeufe": laeufe,
+                "trocken": trocken, "geplant": list(geplant)}
 
     def vermerk(text: str) -> None:
         try:
@@ -146,8 +182,10 @@ def fuehre_aufgabe(
                 return abschluss("fehlgeschlagen", "aufgabenbuch_nicht_lesbar", str(fehler))
             if not isinstance(stand, Mapping) or stand.get("zustand") != "laeuft":
                 zustand = str((stand or {}).get("zustand") or "unbekannt") if isinstance(stand, Mapping) else "unbekannt"
-                return abschluss(zustand, "von_aussen_beendet", "Die Aufgabe wurde ausserhalb der Schleife beendet.",
+                return abschluss(zustand, "von_aussen_beendet", "Die Aufgabe wurde außerhalb der Schleife beendet.",
                                  schon_beendet=True)
+            if isinstance(stand.get("trocken"), bool):
+                trocken = stand["trocken"]
             if uhr() - start > ZEITGRENZE_SEKUNDEN:
                 return abschluss("fehlgeschlagen", "zeitgrenze", f"Zeitgrenze von {ZEITGRENZE_SEKUNDEN} s erreicht.")
 
@@ -183,8 +221,9 @@ def fuehre_aufgabe(
             except AgentBenutzteWerkzeug:
                 return abschluss("abgebrochen", "agent_hat_werkzeug_benutzt",
                                  "brain-desktop hat ein Werkzeug angesetzt; die Schleife wurde beendet.")
-            except Exception as fehler:  # noqa: BLE001 - Agent nicht erreichbar, Budget, Zeit
-                return abschluss("fehlgeschlagen", "agent_nicht_erreichbar", type(fehler).__name__)
+            except Exception:  # noqa: BLE001 - Agent nicht erreichbar, Budget, Zeit, Abo-Lauf gescheitert
+                return abschluss("fehlgeschlagen", "agent_nicht_erreichbar",
+                                 f"{AGENT} hat nicht geantwortet; es wurde kein Schritt ausgeführt.")
 
             try:
                 # Hat sich das Fenster seit dem letzten Schritt geaendert (ein Dialog ist aufgegangen),
@@ -217,6 +256,9 @@ def fuehre_aufgabe(
                 return abschluss("fehlgeschlagen", "schritt_abgelehnt", meldung)
             schritt = (ergebnis or {}).get("schritt") or {}
             _protokolliere(task_id, aktion["schritt"], elemente, schritt.get("ok"), spur, herkunft)
+            if trocken is None and str(schritt.get("meldung") or "").startswith("trocken"):
+                trocken = True
+            geplant.append(_in_worten(aktion["schritt"], _element_name(aktion["schritt"], elemente)))
             if schritt.get("ok") is False:
                 return abschluss("fehlgeschlagen", "schritt_fehlgeschlagen", str(schritt.get("meldung") or ""))
             # Eine Auswahl ist kein Vorlauf fuer Enter/Leertaste: sonst oeffnete Enter, was nur
@@ -233,6 +275,14 @@ def fuehre_aufgabe(
                          "Ein fester Aufruf wartet auf Freigabe; die Aufgabe wurde angehalten.")
 
 
+def _element_name(schritt: Mapping[str, Any], elemente: list) -> Any:
+    """Name des gelesenen Elements genau am Punkt eines Klicks, nie Text des Agenten."""
+    if schritt.get("action") != "click":
+        return None
+    return next((e.get("name") for e in elemente if isinstance(e, Mapping)
+                 and e.get("x") == schritt.get("x") and e.get("y") == schritt.get("y")), None)
+
+
 def _protokolliere(task_id: str, schritt: Mapping[str, Any], elemente: list, ok: Any,
                    spur: Optional[Callable[[str], None]], herkunft: str) -> str:
     """Eine Zeile je ausgefuehrter Desktop-Aktion: Zeit, Agent, Werkzeug, Ziel, Ergebnis.
@@ -240,10 +290,7 @@ def _protokolliere(task_id: str, schritt: Mapping[str, Any], elemente: list, ok:
     Ins Log des Gehirns und, wenn angeschlossen, in die Spur des Satzes. Das Ziel eines Klicks
     ist der Name des gelesenen Elements an genau diesem Punkt, nie Text des Agenten.
     """
-    name = None
-    if schritt.get("action") == "click":
-        name = next((e.get("name") for e in elemente if isinstance(e, Mapping)
-                     and e.get("x") == schritt.get("x") and e.get("y") == schritt.get("y")), None)
+    name = _element_name(schritt, elemente)
     zeile = (f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} agent={AGENT} werkzeug=desktop_task_step "
              f"aufgabe={task_id} ziel={protokoll_ziel(schritt, name)} "
              f"ok={'ja' if ok is True else 'nein' if ok is False else 'offen'} herkunft={herkunft or '?'}")
@@ -352,6 +399,10 @@ def anschluss(*, tagesrest: Callable[[], int], laufzeit: Optional[Mapping[str, A
                 raise AgentBenutzteWerkzeug(f"{denker} hat Werkzeuge benutzt")
             if ergebnis.get("stream") is not True:
                 raise RuntimeError("ohne Stream sind Werkzeugaufrufe des Agenten nicht sichtbar")
+            # Gemessen 28.11.: Der Abo-Wrapper endete mit Code 2, OpenFang schloss den Strom ohne
+            # "done"; das sah aus wie eine leere Antwort und kostete einen zweiten Lauf.
+            if ergebnis.get("stream_fehler") or ergebnis.get("abgeschlossen") is False:
+                raise AgentOhneAntwort(f"{denker}: Lauf ohne Abschluss")
             ergebnis = ergebnis.get("response")
         if not isinstance(ergebnis, str):
             raise RuntimeError(f"{denker} lieferte keinen Text")
@@ -388,6 +439,7 @@ def nach_aufgabenstart(
     hintergrund: bool = False,
     bindungen: Optional[Callable[..., dict]] = None,
     spur: Optional[Callable[[str], None]] = None,
+    ende: Optional[Callable[[Mapping[str, Any]], None]] = None,
 ) -> tuple[bool, Any, Optional[str]]:
     """Der Eingriff im Plan-Ausfuehrer: nach gelungenem ``desktop_task_start`` die Schleife fahren.
 
@@ -440,16 +492,26 @@ def nach_aufgabenstart(
         return ok, ergebnis, None if ok else f"desktop.task: {ergebnis['grund']}"
 
     def lauf() -> None:
+        abschluss: dict[str, Any] = {"task_id": task_id, "zustand": "fehlgeschlagen", "grund": "schleife_abgebrochen",
+                                     "ergebnis": "Die Schleife brach unerwartet ab."}
         try:
-            fuehre_aufgabe(task_id, auftrag, **gebunden)
+            abschluss = fuehre_aufgabe(task_id, auftrag, **gebunden)
         except Exception as fehler:  # noqa: BLE001 - der Faden darf nie still sterben
             logger.warning("[desktop] Schleife %s brach ab: %s", task_id, type(fehler).__name__)
             try:
                 gebunden["werkzeug"]("desktop_task_finish", {
-                    "task_id": task_id, "state": "fehlgeschlagen", "result": "Die Schleife brach unerwartet ab."})
+                    "task_id": task_id, "state": "fehlgeschlagen", "result": abschluss["ergebnis"]})
             except Exception:  # noqa: BLE001
                 pass
         finally:
+            # Nur Stufe und Code ins Log, kein Satztext.
+            logger.info("[desktop] Schleife %s endete: zustand=%s grund=%s trocken=%s", task_id,
+                        abschluss.get("zustand"), abschluss.get("grund"), abschluss.get("trocken"))
+            if ende is not None:
+                try:
+                    ende(abschluss)
+                except Exception:  # noqa: BLE001 - die Meldung darf den Faden nie stoeren
+                    pass
             with _LAUFEND_SPERRE:
                 _LAUFEND.pop(task_id, None)
 
@@ -466,11 +528,13 @@ def nach_aufgabenstart(
                 _LAUFEND.pop(task_id, None)
                 raise
     if besetzt:
-        return abbrechen("schon_eine_aufgabe", "Es laeuft schon eine Desktop-Aufgabe.",
+        return abbrechen("schon_eine_aufgabe", "Es läuft schon eine Desktop-Aufgabe.",
                          "desktop.task: es laeuft schon eine Desktop-Aufgabe")
+    # Angenommen, nicht fertig: Die Standzeile zeigt sonst "fertig in 1,3 s" fuer eine Aufgabe,
+    # die gerade erst anfaengt. Das Ende meldet ``ende`` (berichtigtes plan_completed).
     return True, {
-        "task_id": task_id, "zustand": "laeuft", "auftrag": auftrag,
-        "text": f"Aufgabe laeuft, Kennung {task_id}", "nachweis": nachweis,
+        "task_id": task_id, "zustand": "laeuft", "auftrag": auftrag, "status": "angenommen", "fertig": False,
+        "text": f"Aufgabe läuft, Kennung {task_id}", "nachweis": nachweis,
     }, None
 
 

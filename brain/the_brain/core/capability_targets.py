@@ -750,6 +750,10 @@ class OpenFangExecutor(_BaseRemoteExecutor):
         in_flight: Dict[str, Dict[str, Any]] = {}
         usage_final: Dict[str, Any] = {}
         seq = 0
+        # Ob der Strom sauber endete ("done") oder mit "error"/ohne Abschluss abbrach. Ohne diese
+        # Angabe sah ein gescheiterter Abo-Lauf (Wrapper Code 2) aus wie eine leere Antwort.
+        abgeschlossen = False
+        stream_fehler = False
 
         current_event = None
         for raw_line in resp.iter_lines(decode_unicode=True):
@@ -815,12 +819,14 @@ class OpenFangExecutor(_BaseRemoteExecutor):
                         )
                     tool_calls.append(entry)
                 elif kind == "done":
+                    abgeschlossen = True
                     usage_final = data.get("usage") or {}
                     if data.get("response"):
                         # Some streams send the final concat in 'response'
                         response_text_parts = [str(data["response"])]
                     break
                 elif kind == "error":
+                    stream_fehler = True
                     response_text_parts.append(
                         f"[stream error] {data}"
                     )
@@ -837,6 +843,8 @@ class OpenFangExecutor(_BaseRemoteExecutor):
             "tool_calls": tool_calls,
             "usage": usage_final,
             "stream": True,
+            "abgeschlossen": abgeschlossen,
+            "stream_fehler": stream_fehler,
         }
 
 

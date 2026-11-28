@@ -859,6 +859,29 @@ class PlanExecutor:
             recorder.append_stage(trace_id, "desktop", "brain-desktop/desktop_task_step", zeile)
         return spur
 
+    def _desktop_ende(self, plan_ctx: Optional[Dict[str, Any]], hop: Any) -> Callable[[Dict[str, Any]], None]:
+        """Das Ende einer Desktop-Schleife im Hintergrund als zweites ``plan_completed`` mit
+        ``berichtigt``: Die Standzeile ersetzt damit "angenommen" durch das echte Ergebnis
+        (bei einem Trockenlauf: was er getan haette und dass nichts ausgefuehrt wurde)."""
+        plan_id = str((plan_ctx or {}).get("plan_id") or "")
+        trace_id = str((plan_ctx or {}).get("trace_id") or "")
+        beginn = time.time()
+
+        def ende(abschluss: Dict[str, Any]) -> None:
+            if not plan_id:
+                return
+            zustand = abschluss.get("zustand")
+            self._publish("plan_completed", {
+                "plan_id": plan_id, "trace_id": trace_id, "berichtigt": True,
+                "ok": zustand == "fertig", "space": "desktop",
+                "capability": getattr(hop, "capability", "") or "",
+                "final_text": str(abschluss.get("ergebnis") or ""),
+                "elapsed_s": round(time.time() - beginn, 1),
+                **({"error": str(abschluss.get("grund") or "")} if zustand != "fertig" else {}),
+                **({"trocken": True} if abschluss.get("trocken") is True else {}),
+            })
+        return ende
+
     def _publish(self, kind: str, payload: Dict[str, Any]) -> None:
         if not self._subscribers:
             return
@@ -2418,6 +2441,7 @@ class PlanExecutor:
                     },
                     hintergrund=True,
                     spur=self._desktop_spur(plan_ctx),
+                    ende=self._desktop_ende(plan_ctx, hop),
                 )
         if last.get("pending") is True:
             # Ein angenommener Auftrag (K1) wartet auf den Agenten, nicht auf eine Freigabe:
