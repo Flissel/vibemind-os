@@ -34,6 +34,9 @@ h1, h2, h3, p { margin: 0; }
   border-radius: 14px; background: #000; }
 .vorschau-kopf { display: flex; align-items: center; justify-content: space-between; }
 .vorschau-satz { color: var(--leise); padding: 18px 16px; border: 1px dashed var(--rand); border-radius: 14px; }
+.vorschau-satz strong { display: block; color: var(--text); font-size: 15px; margin-bottom: 6px; }
+.vorschau-satz span { display: block; line-height: 1.5; }
+.vorschau-auftrag { margin: 0 0 8px; font-size: 13px; color: var(--leise); overflow-wrap: anywhere; }
 .leise-knopf { font: inherit; color: var(--leise); background: none; border: 1px solid var(--rand); border-radius: 8px;
   padding: 2px 9px; cursor: pointer; }
 .leise-knopf:hover { color: var(--text); border-color: var(--rand-violett); }

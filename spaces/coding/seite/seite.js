@@ -386,24 +386,42 @@ let oberflaechen = {};
 let ansicht = "auftraege";
 const ANSICHTEN = ["auftraege", "vibe", "vorschau"];
 
-function setzeRahmen(rahmen, satz, eintrag, an) {
+function zeigeKarte(satz, titel, hinweis) {
+  // Eine Karte statt eines Rahmens: Überschrift und ein Satz, wann sich das ändert.
+  while (satz.firstChild) satz.removeChild(satz.firstChild);
+  const kopf = document.createElement("strong");
+  kopf.textContent = titel;
+  satz.appendChild(kopf);
+  if (hinweis) {
+    const text = document.createElement("span");
+    text.textContent = hinweis;
+    satz.appendChild(text);
+  }
+  satz.hidden = false;
+}
+
+function setzeRahmen(rahmen, satz, zeile, eintrag, an) {
   // Nur ein Rahmen hält die Verbindung zur Vorschau, der andere ist leer.
+  // Ein Rahmen nur, wenn die Sandbox die App eines bekannten Laufs zeigt; sonst eine Karte.
   if (!an || !eintrag) {
     if (rahmen.getAttribute("src")) rahmen.removeAttribute("src");
     rahmen.hidden = true;
     satz.hidden = true;
+    zeile.hidden = true;
     return;
   }
   rahmen.title = eintrag.titel;
-  if (eintrag.laeuft) {
+  if (eintrag.laeuft && eintrag.auftrag) {
     satz.hidden = true;
+    zeile.textContent = `Zeigt die App von: ${eintrag.auftrag.titel}`;
+    zeile.hidden = false;
     if (rahmen.getAttribute("src") !== eintrag.url) rahmen.src = eintrag.url;
     rahmen.hidden = false;
   } else {
     if (rahmen.getAttribute("src")) rahmen.removeAttribute("src");
     rahmen.hidden = true;
-    satz.textContent = eintrag.satz_aus;
-    satz.hidden = false;
+    zeile.hidden = true;
+    zeigeKarte(satz, eintrag.satz_aus, eintrag.hinweis);
   }
 }
 
@@ -420,12 +438,12 @@ function zeigeAnsicht(name) {
   // "lauf" zeigt zeigeStand(); in der Vibe-Ansicht tritt der Chat an seine Stelle.
   document.getElementById("lauf").classList.toggle("verdeckt", ansicht !== "auftraege");
   const vorschau = oberflaechen.vorschau;
-  setzeRahmen(document.getElementById("fremd-rahmen"), document.getElementById("fremd-satz"), vorschau, voll);
-  setzeRahmen(document.getElementById("vorschau-rahmen"), document.getElementById("vorschau-satz"), vorschau, !voll);
-  if (!vorschau && !voll) {
-    const satz = document.getElementById("vorschau-satz");
-    satz.textContent = "Die Live-Vorschau wird gesucht …";
-    satz.hidden = false;
+  setzeRahmen(document.getElementById("fremd-rahmen"), document.getElementById("fremd-satz"),
+    document.getElementById("fremd-auftrag"), vorschau, voll);
+  setzeRahmen(document.getElementById("vorschau-rahmen"), document.getElementById("vorschau-satz"),
+    document.getElementById("vorschau-auftrag"), vorschau, !voll);
+  if (!vorschau) {
+    zeigeKarte(document.getElementById(voll ? "fremd-satz" : "vorschau-satz"), "Die Live-Vorschau wird gesucht …", "");
   }
 }
 
@@ -458,4 +476,6 @@ zeigeAnsicht(ansicht);
 laden();
 ladeOberflaechen();
 setInterval(laden, 2000);
+// Die Vorschau kann starten oder wechseln, während die Seite offen ist.
+setInterval(ladeOberflaechen, 10000);
 setInterval(ladeOberflaechen, 5000);
