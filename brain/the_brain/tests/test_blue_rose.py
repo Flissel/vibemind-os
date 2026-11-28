@@ -1,11 +1,25 @@
 """Blue Rose Stufe 1 (core/blue_rose.py, web/routers/blue_rose.py). Nur erfundene Daten."""
 import asyncio
+import json
+import secrets
+import time
 
 import pytest
 
 from core import blue_rose as br
 
 JETZT = 1_800_000_000.0  # fester Zeitpunkt, 00:00 UTC + 8 h
+SCHLUESSEL = "erfundener-testschluessel-0123456789abcdef"  # kein echter Wert
+
+
+def _kopf(methode, pfad, koerper=b"", *, zeit=None, schluessel=SCHLUESSEL):
+    """Die zwei Koepfe, die der Hauptprozess der App mitschickt."""
+    from core.desktop_tagesrest import eingabe_zeichen
+
+    einmal = secrets.token_hex(12)
+    zeit = int(time.time()) if zeit is None else zeit
+    return {"X-Blue-Rose-Einmal": einmal,
+            "X-Vibemind-Eingabe": eingabe_zeichen(schluessel, br.beleg_satz(methode, pfad, koerper, einmal), zeit)}
 
 
 def _zeile(vor_s, **mehr):
@@ -191,25 +205,49 @@ def test_endpunkte_nur_fuer_die_app_am_eigenen_rechner(monkeypatch):
             return {"quelle": "spiegel", "zeilen": []}
 
     app.state.decision_graph = Graph()
+    monkeypatch.setenv("VIBEMIND_EINGABE_SCHLUESSEL", SCHLUESSEL)
+    monkeypatch.delenv("VIBEMIND_EINGABE_SCHLUESSEL_FILE", raising=False)
     lokal = TestClient(app, base_url="http://127.0.0.1:5000")
     fremd = TestClient(app, base_url="http://beispiel.invalid")
+    lesen = "/api/blue_rose/uebersicht"
 
-    assert fremd.get("/api/blue_rose/uebersicht").status_code == 403
-    assert lokal.get("/api/blue_rose/uebersicht", headers={"Origin": "http://x.invalid"}).status_code == 403
-    assert lokal.get("/api/blue_rose/uebersicht",
-                     headers={"Sec-Fetch-Site": "same-origin"}).status_code == 403
-    assert lokal.post("/api/blue_rose/loeschen", json={"art": "alles"},
-                      headers={"Origin": "http://x.invalid"}).status_code == 403
+    def holen(pfad, mehr=None, client=lokal):
+        return client.get(pfad, headers={**_kopf("GET", pfad), **(mehr or {})})
 
-    assert lokal.post("/api/blue_rose/befinden",
-                      json={"stimmung": "calm", "energie": 6, "stunde": 15}).json()["ok"] is True
-    seite = lokal.get("/api/blue_rose/uebersicht?stunde=15").json()
+    def senden(pfad, daten, mehr=None):
+        roh = json.dumps(daten).encode()
+        return lokal.post(pfad, content=roh, headers={**_kopf("POST", pfad, roh), **(mehr or {})})
+
+    # Host, Webseite: auch mit gueltigem Zeichen abgewiesen
+    assert holen(lesen, client=fremd).status_code == 403
+    assert holen(lesen, {"Origin": "http://x.invalid"}).status_code == 403
+    assert holen(lesen, {"Sec-Fetch-Site": "same-origin"}).status_code == 403
+    # Der vorgetaeuschte Host-Kopf allein reicht nicht: ohne Zeichen nichts, auch kein Loeschen
+    assert lokal.get(lesen).json() == {"ok": False, "grund": "nicht_belegt"}
+    assert lokal.post("/api/blue_rose/loeschen", json={"art": "alles"}).status_code == 403
+    # Zeichen fuer eine andere Anfrage, fuer einen anderen Koerper, und zweimal dasselbe
+    assert lokal.get(lesen, headers=_kopf("GET", lesen + "?tage=7")).status_code == 403
+    assert lokal.post("/api/blue_rose/loeschen", content=b'{"art":"alles"}',
+                      headers=_kopf("POST", "/api/blue_rose/loeschen", b'{"art":"befinden"}')).status_code == 403
+    einmal = _kopf("GET", lesen)
+    assert lokal.get(lesen, headers=einmal).status_code == 200
+    assert lokal.get(lesen, headers=einmal).status_code == 403
+    assert lokal.get(lesen, headers=_kopf("GET", lesen, zeit=int(time.time()) - 300)).status_code == 403
+
+    assert senden("/api/blue_rose/befinden", {"stimmung": "calm", "energie": 6, "stunde": 15}).json()["ok"] is True
+    seite = holen(lesen + "?stunde=15").json()
     assert seite["ok"] is True and seite["zahlen"]["ok"] is True
     assert seite["bestand"]["befinden"] == 1
     assert seite["empfehlung"]["grund"] == "befinden_fehlt"  # Testzeile ist von 2026-01-01
 
-    assert lokal.post("/api/blue_rose/einstellungen", json={"analyse": False}).json()["ok"] is True
-    assert lokal.get("/api/blue_rose/uebersicht").json()["zahlen"] == {"ok": False, "grund": "analyse_aus"}
+    assert senden("/api/blue_rose/einstellungen", {"analyse": False}).json()["ok"] is True
+    assert holen(lesen).json()["zahlen"] == {"ok": False, "grund": "analyse_aus"}
+
+    # Ohne Schluessel im Gehirn: nie
+    monkeypatch.delenv("VIBEMIND_EINGABE_SCHLUESSEL")
+    assert holen(lesen).json() == {"ok": False, "grund": "nicht_belegt"}
+    monkeypatch.setenv("VIBEMIND_EINGABE_SCHLUESSEL", "zukurz")
+    assert lokal.get(lesen, headers=_kopf("GET", lesen, schluessel="zukurz")).status_code == 403
 
 
 def test_ohne_service_schluessel_sagt_die_antwort_das(monkeypatch):
@@ -221,8 +259,11 @@ def test_ohne_service_schluessel_sagt_die_antwort_das(monkeypatch):
     app = FastAPI()
     app.include_router(router_modul.router)
     monkeypatch.setattr(br, "tabelle_aus_umgebung", lambda: None)
+    monkeypatch.setenv("VIBEMIND_EINGABE_SCHLUESSEL", SCHLUESSEL)
+    monkeypatch.delenv("VIBEMIND_EINGABE_SCHLUESSEL_FILE", raising=False)
     lokal = TestClient(app, base_url="http://127.0.0.1:5000")
-    assert lokal.get("/api/blue_rose/uebersicht").json() == {"ok": False, "grund": "kein_schluessel"}
+    pfad = "/api/blue_rose/uebersicht"
+    assert lokal.get(pfad, headers=_kopf("GET", pfad)).json() == {"ok": False, "grund": "kein_schluessel"}
 
 
 def test_nutzerprofil_nach_rowboat_ist_aus_bis_der_schalter_gesetzt_ist(monkeypatch):

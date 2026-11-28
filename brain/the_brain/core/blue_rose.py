@@ -12,6 +12,8 @@ Was hier gilt (Plan vom 28.11.2026, Freigabe des Betreibers "ueberall a"):
   sieht sie nicht. Fehlt der Service-Schluessel oder die Tabelle, sagt das die Antwort.
 * Schalter ``analyse``: aus = der Graph wird nicht gelesen. Vorhandenes bleibt sichtbar und
   loeschbar. Ist der Schalter nicht lesbar, gilt er als aus.
+* Jede Anfrage braucht das Zeichen der App (``beleg_pruefen``): der Host-Kopf allein laesst
+  sich vortaeuschen.
 * Protokolle nennen Anzahlen und Fehlerarten, nie Inhalte.
 
 Die alten Flowzen-Tabellen (flowzen_checkins, flowzen_activity, flowzen_diary) werden nur
@@ -19,9 +21,12 @@ gezaehlt und auf Wunsch geleert; geschrieben wird dort nichts mehr.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import os
 import statistics
+import threading
 import time
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
@@ -49,6 +54,57 @@ KATEGORIEN = {
     "social": "Austausch mit anderen",
     "rest": "Pause",
 }
+
+
+# ── Beleg der App ────────────────────────────────────────────────────
+
+_VERBRAUCHT: Dict[str, float] = {}
+_VERBRAUCHT_SPERRE = threading.Lock()
+
+
+def beleg_satz(methode: str, pfad: str, koerper: bytes, einmal: str) -> str:
+    """Was die App je Anfrage zeichnet: Methode, Pfad samt Abfrage, Pruefsumme des Koerpers und
+    ein Einmalwert (zwei gleiche Anfragen in derselben Sekunde bleiben verschieden)."""
+    return f"blue-rose {methode.upper()} {pfad} {hashlib.sha256(koerper or b'').hexdigest()} {einmal}"
+
+
+def beleg_pruefen(methode: Any, pfad: Any, koerper: Any, einmal: Any, zeichen: Any, *,
+                  umgebung: Optional[Mapping[str, str]] = None,
+                  jetzt_ts: Optional[float] = None) -> bool:
+    """Nur eine Anfrage, die der Hauptprozess der App mit dem gemeinsamen Schluessel gezeichnet hat.
+
+    Host-Kopf und fehlendes Origin kann jeder im Netz vortaeuschen, wenn der Port des Gehirns von
+    aussen erreichbar ist (wie core/desktop_hand.beleg_pruefen). Darum zaehlt das Zeichen ueber
+    genau diese Anfrage: Schluessel ``VIBEMIND_EINGABE_SCHLUESSEL``, Fenster 60 s, jedes Zeichen
+    einmal. Ohne Schluessel: nie (fail-closed).
+    """
+    from .desktop_tagesrest import (
+        SCHLUESSEL_MINDESTLAENGE, SCHLUESSEL_NAME, ZEICHEN_FENSTER_S, eingabe_zeichen,
+    )
+    from .geheimnis import geheimnis
+
+    schluessel = geheimnis(SCHLUESSEL_NAME, umgebung)
+    if (len(schluessel) < SCHLUESSEL_MINDESTLAENGE or not isinstance(zeichen, str)
+            or not isinstance(methode, str) or not isinstance(pfad, str)
+            or not isinstance(koerper, (bytes, bytearray))
+            or not isinstance(einmal, str) or not 16 <= len(einmal) <= 64 or not einmal.isalnum()):
+        return False
+    zeit_text, _, _ = zeichen.partition(".")
+    if not zeit_text.isdigit() or len(zeit_text) > 12:
+        return False
+    jetzt = time.time() if jetzt_ts is None else jetzt_ts
+    if abs(jetzt - int(zeit_text)) > ZEICHEN_FENSTER_S:
+        return False
+    erwartet = eingabe_zeichen(schluessel, beleg_satz(methode, pfad, bytes(koerper), einmal), int(zeit_text))
+    if not hmac.compare_digest(zeichen, erwartet):
+        return False
+    with _VERBRAUCHT_SPERRE:
+        for alt in [z for z, t in _VERBRAUCHT.items() if jetzt - t > 2 * ZEICHEN_FENSTER_S]:
+            del _VERBRAUCHT[alt]
+        if zeichen in _VERBRAUCHT:
+            return False
+        _VERBRAUCHT[zeichen] = jetzt
+    return True
 
 
 # ── Zahlen aus dem Graphen (reine Rechnung) ──────────────────────────
