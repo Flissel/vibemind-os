@@ -1050,7 +1050,7 @@ def test_im_hintergrund_antwortet_der_hop_sofort_und_die_schleife_laeuft_weiter(
     ok, ergebnis, fehler = nach_aufgabenstart(_start_umschlag(echt), herkunft="getippt", tagesrest=5,
                                               laufzeit=LAUFZEIT, hintergrund=True, bindungen=bindungen)
     assert (ok, fehler, ergebnis["zustand"]) == (True, None, "laeuft")
-    assert ergebnis["text"] == f"Aufgabe laeuft, Kennung {ergebnis['task_id']}" and ergebnis["auftrag"] == AUFTRAG
+    assert ergebnis["text"] == f"Aufgabe läuft, Kennung {ergebnis['task_id']}" and ergebnis["status"] == "angenommen" and ergebnis["auftrag"] == AUFTRAG
 
     # Eine zweite Aufgabe, solange die erste laeuft: schon der Werkzeug-Dienst oeffnet keine.
     ok2, _, fehler2 = nach_aufgabenstart(_start_umschlag(echt), herkunft="getippt", tagesrest=5, hintergrund=True,
@@ -1742,3 +1742,109 @@ def test_ohne_budgeteintrag_fuer_hermes_bleibt_der_rest_null(tmp_path):
     umgebung = {"VIBEMIND_BUDGET_CONFIG": str(tmp_path / "budget.yaml"), "VIBEMIND_BUDGET_DIR": str(tmp_path)}
     assert tagesrest("brain-desktop", umgebung=umgebung) == 150
     assert tagesrest("hermes-desktop", umgebung=umgebung) == 0
+
+
+# ─── Befund Pruefung 28.11. (Lauf 43): Abo-Lauf gescheitert, Trockenlauf ohne Abschluss ─────
+
+
+def test_ein_strom_ohne_abschluss_ist_keine_leere_antwort(monkeypatch):
+    import core.capability_targets as ziele
+    from core.desktop_schleife import AgentOhneAntwort, anschluss
+
+    antworten = [{"ok": True, "result": {"response": "", "tool_calls": [], "stream": True, "abgeschlossen": False,
+                                         "stream_fehler": False}},
+                 {"ok": True, "result": {"response": "[stream error] x", "tool_calls": [], "stream": True,
+                                         "abgeschlossen": False, "stream_fehler": True}}]
+    monkeypatch.setattr(ziele.OpenFangExecutor, "call_with_arg", lambda self, nachricht: antworten.pop(0))
+    agent = anschluss(tagesrest=lambda: 1, laufzeit=None)["agent"]
+    for _ in range(2):
+        with pytest.raises(AgentOhneAntwort):
+            agent("frage")
+
+
+def test_ein_gescheiterter_abo_lauf_kostet_nur_eine_runde(echt):
+    from core.desktop_schleife import AgentOhneAntwort
+    kennung = echt.start()
+    laeufe = []
+
+    def agent(nachricht):
+        laeufe.append(1)
+        raise AgentOhneAntwort("brain-desktop: Lauf ohne Abschluss")
+
+    ergebnis = echt.lauf(kennung, agent)
+    assert (ergebnis["zustand"], ergebnis["grund"], len(laeufe)) == ("fehlgeschlagen", "agent_nicht_erreichbar", 1)
+    assert ergebnis["ergebnis"] == "brain-desktop hat nicht geantwortet; es wurde kein Schritt ausgeführt."
+
+
+def test_ein_trockenlauf_sagt_was_er_getan_haette(trocken):
+    kennung = trocken.start()
+    ergebnis = trocken.lauf(kennung, trocken.agent_mit(
+        j(aktion="click", x=100, y=200, ziel="Editor", warum="öffnen"),
+        j(aktion="type", text="Hallo Welt", warum="schreiben"),
+        j(aktion="fertig", ergebnis="Im Editor steht Hallo Welt."),
+    ))
+    assert ergebnis["trocken"] is True and trocken.dienst_aufrufe == []
+    assert ergebnis["geplant"][1] == "„Hallo Welt“ tippen"
+    assert ergebnis["ergebnis"].startswith("Trockenlauf – nichts ausgeführt. Geplant war: 1. ")
+    assert "2. „Hallo Welt“ tippen" in ergebnis["ergebnis"]
+    assert trocken.buch(kennung)["ergebnis"].startswith("Trockenlauf – nichts ausgeführt.")
+
+
+def test_ein_trockenlauf_ohne_schritt_sagt_das_auch(trocken):
+    from core.desktop_schleife import AgentOhneAntwort
+    kennung = trocken.start()
+
+    def agent(nachricht):
+        raise AgentOhneAntwort("x")
+
+    ergebnis = trocken.lauf(kennung, agent)
+    assert ergebnis["ergebnis"].startswith("Trockenlauf – nichts ausgeführt, kein Schritt geplant.")
+
+
+def test_echter_lauf_traegt_keinen_trockenlauf_satz(echt):
+    kennung = echt.start()
+    ergebnis = echt.lauf(kennung, echt.agent_mit(j(aktion="fertig", ergebnis="Fertig.")))
+    assert ergebnis["trocken"] is False and ergebnis["ergebnis"] == "Fertig."
+
+
+def test_das_ende_im_hintergrund_wird_gemeldet(echt):
+    import threading as _threading
+
+    from core.desktop_schleife import laufende_schleife
+
+    gemeldet = []
+    fertig = _threading.Event()
+
+    def ende(abschluss):
+        gemeldet.append(abschluss)
+        fertig.set()
+
+    bindungen = lambda tagesrest: {"werkzeug": echt.werkzeug, "agent": echt.agent_mit(  # noqa: E731
+        j(aktion="fertig", ergebnis="Erledigt.")), "budget_rest": tagesrest}
+    ok, ergebnis, _ = nach_aufgabenstart(_start_umschlag(echt), herkunft="getippt", tagesrest=5, laufzeit=LAUFZEIT,
+                                         hintergrund=True, bindungen=bindungen, ende=ende)
+    assert ok is True and ergebnis["status"] == "angenommen" and ergebnis["fertig"] is False
+    assert fertig.wait(5)
+    faden = laufende_schleife()
+    if faden is not None:
+        faden.join(5)
+    assert (gemeldet[0]["zustand"], gemeldet[0]["ergebnis"]) == ("fertig", "Erledigt.")
+
+
+def test_der_plan_ausfuehrer_meldet_das_ende_als_berichtigten_abschluss():
+    from core.plan_executor import PlanExecutor
+
+    gesendet = []
+    pe = PlanExecutor.__new__(PlanExecutor)
+    pe._publish = lambda art, nutzlast: gesendet.append((art, nutzlast))
+
+    class Hop:
+        capability = "desktop_task_start"
+
+    ende = PlanExecutor._desktop_ende(pe, {"plan_id": "p1", "trace_id": "t1"}, Hop())
+    ende({"zustand": "fehlgeschlagen", "grund": "agent_nicht_erreichbar", "ergebnis": "Trockenlauf – x",
+          "trocken": True})
+    art, nutzlast = gesendet[0]
+    assert art == "plan_completed" and nutzlast["berichtigt"] is True and nutzlast["ok"] is False
+    assert (nutzlast["final_text"], nutzlast["error"], nutzlast["trocken"]) == ("Trockenlauf – x",
+                                                                               "agent_nicht_erreichbar", True)
