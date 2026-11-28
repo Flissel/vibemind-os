@@ -1,10 +1,13 @@
-"""Die Oberflaechen neben den Auftraegen: Live-Vorschau, Vibe-Coder, Engine.
+"""Die fremden Oberflaechen der Seite: heute nur die Live-Vorschau (noVNC).
 
-Die Seite des Dienstes zeigt oben vier Knoepfe. "Auftraege" ist die Seite
-selbst, die anderen drei sind Rahmen auf lokale Adressen. Hier steht, welche
-Adresse zu welchem Knopf gehoert und ob dort gerade etwas antwortet. Nur
-Adressen auf diesem Rechner sind erlaubt; alles andere faellt auf die Vorgabe
-zurueck.
+"Auftraege" und "Vibe-Coder" sind Ansichten der Seite selbst; die Live-Vorschau
+ist ein Rahmen auf eine lokale Adresse. Hier steht diese Adresse und ob dort
+gerade etwas antwortet. Nur Adressen auf diesem Rechner sind erlaubt; alles
+andere faellt auf die Vorgabe zurueck.
+
+Bis 28.11. gab es hier noch "Vibe-Coder" und "Engine" als Rahmen auf :5180, die
+fremde Oberflaeche aus ``coding-engine/web-app/front``. Sie lief nicht und wird
+nicht mehr eingebunden (Entscheid des Betreibers, P6 a).
 """
 
 from __future__ import annotations
@@ -18,10 +21,6 @@ VORGABEN = (
     ("vorschau", "Live-Vorschau", "CODING_OBERFLAECHE_VORSCHAU",
      "http://localhost:6090/vnc.html?autoconnect=true&resize=scale&reconnect=true",
      "Die Live-Vorschau läuft nicht. Sie startet, sobald ein Lauf seine App in die Sandbox legt."),
-    ("vibe", "Vibe-Coder", "CODING_OBERFLAECHE_VIBE", "http://localhost:5180/",
-     "Der Vibe-Coder läuft nicht."),
-    ("engine", "Engine", "CODING_OBERFLAECHE_ENGINE", "http://localhost:5180/engine",
-     "Das Engine-Frontend läuft nicht."),
 )
 ERLAUBTE_HOSTS = {"localhost", "127.0.0.1"}
 

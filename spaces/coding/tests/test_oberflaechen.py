@@ -7,20 +7,20 @@ import socket
 from spaces.coding import dienst, oberflaechen
 
 
-def test_vorgaben_und_reihenfolge(monkeypatch) -> None:
-    for variable in ("CODING_OBERFLAECHE_VORSCHAU", "CODING_OBERFLAECHE_VIBE", "CODING_OBERFLAECHE_ENGINE"):
-        monkeypatch.delenv(variable, raising=False)
+def test_nur_die_vorschau_ist_ein_rahmen(monkeypatch) -> None:
+    monkeypatch.delenv("CODING_OBERFLAECHE_VORSCHAU", raising=False)
     namen = [e["name"] for e in oberflaechen.adressen()]
-    assert namen == ["vorschau", "vibe", "engine"]
+    # Vibe-Coder und Engine sind keine Rahmen auf :5180 mehr (P6 a); die fremde Oberflaeche ist nicht eingebunden.
+    assert namen == ["vorschau"]
     assert oberflaechen.adressen()[0]["url"].startswith("http://localhost:6090/vnc.html")
+    assert "5180" not in oberflaechen.rahmen_quellen()
 
 
 def test_nur_lokale_adressen(monkeypatch) -> None:
-    monkeypatch.setenv("CODING_OBERFLAECHE_VIBE", "http://127.0.0.1:5199/")
-    monkeypatch.setenv("CODING_OBERFLAECHE_ENGINE", "https://fremd.example:443/")
-    vibe, engine = oberflaechen.adressen()[1:]
-    assert vibe["url"] == "http://127.0.0.1:5199/"
-    assert engine["url"] == "http://localhost:5180/engine"
+    monkeypatch.setenv("CODING_OBERFLAECHE_VORSCHAU", "http://127.0.0.1:6099/vnc.html")
+    assert oberflaechen.adressen()[0]["url"] == "http://127.0.0.1:6099/vnc.html"
+    monkeypatch.setenv("CODING_OBERFLAECHE_VORSCHAU", "https://fremd.example:443/")
+    assert oberflaechen.adressen()[0]["url"].startswith("http://localhost:6090/")
     assert "fremd.example" not in oberflaechen.rahmen_quellen()
 
 
@@ -38,10 +38,11 @@ def test_antwortet_erkennt_offenen_port() -> None:
 
 
 def test_api_liefert_stand(monkeypatch) -> None:
-    monkeypatch.setattr(oberflaechen, "antwortet", lambda url, warten=0.3: url.startswith("http://localhost:6090"))
+    monkeypatch.delenv("CODING_OBERFLAECHE_VORSCHAU", raising=False)
+    monkeypatch.setattr(oberflaechen, "antwortet", lambda url, warten=0.3: False)
     status, art, koerper = dienst.lesen("/api/oberflaechen")
     assert status == 200 and art.startswith("application/json")
     import json
     daten = {e["name"]: e for e in json.loads(koerper)}
-    assert daten["vorschau"]["laeuft"] is True and daten["vibe"]["laeuft"] is False
-    assert daten["vibe"]["satz_aus"]
+    assert daten["vorschau"]["laeuft"] is False and daten["vorschau"]["satz_aus"]
+    assert set(daten) == {"vorschau"}

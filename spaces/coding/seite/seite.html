@@ -11,30 +11,34 @@
   <p class="marke">VibeMind</p>
   <h1>Project Space</h1>
   <p id="verbindung" class="verbindung" role="status"></p>
-  <nav class="knoepfe" aria-label="Oberflächen">
+  <nav class="knoepfe" aria-label="Ansichten">
     <button type="button" data-ansicht="auftraege" aria-pressed="true">Aufträge</button>
-    <button type="button" data-ansicht="vorschau" aria-pressed="false">Live-Vorschau</button>
     <button type="button" data-ansicht="vibe" aria-pressed="false">Vibe-Coder</button>
-    <button type="button" data-ansicht="engine" aria-pressed="false">Engine</button>
+    <button type="button" data-ansicht="vorschau" aria-pressed="false">Live-Vorschau</button>
   </nav>
 </header>
 <section id="fremd" class="fremd" aria-live="polite" hidden>
   <p id="fremd-satz" class="fremd-satz" hidden></p>
   <iframe id="fremd-rahmen" title="Oberfläche" hidden></iframe>
 </section>
-<main id="auftraege">
-  <nav aria-label="Läufe">
+<main id="arbeit" class="arbeit">
+  <nav aria-label="Läufe" class="spalte-laeufe">
     <h2>Läufe</h2>
     <ul id="liste" class="liste"></ul>
     <p id="leer" class="leer" hidden>Noch kein Lauf. Aufträge kommen aus dem Chat.</p>
   </nav>
-  <section aria-label="Lauf" id="lauf" hidden>
+
+  <section aria-label="Lauf" id="lauf" class="spalte-mitte" hidden>
     <article class="karte zusammenfassung">
       <div class="zeile">
         <h2 id="titel" class="titel"></h2>
         <span id="zustand" class="pille"></span>
       </div>
       <p id="satz" class="satz"></p>
+      <div id="fortschritt" class="fortschritt" hidden>
+        <div class="balken" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="balken"><span id="balken-fuellung"></span></div>
+        <p id="fortschritt-text" class="meta"></p>
+      </div>
       <details id="grund" class="grund" hidden>
         <summary>Meldung der Engine</summary>
         <pre id="grund-text"></pre>
@@ -45,20 +49,57 @@
 
     <ol id="stufen" class="stufen" aria-label="Stufen"></ol>
 
-    <article id="start" class="karte start" hidden>
-      <h3>So startest du die App</h3>
-      <p class="befehl"><code id="start-befehl"></code></p>
-      <details class="leise ordner">
-        <summary>im Ordner der App</summary>
-        <code id="start-ordner"></code>
-      </details>
-      <p id="start-pruefung" class="pruefung"></p>
-    </article>
+    <div class="reiter" role="tablist" aria-label="Sicht auf den Lauf">
+      <button type="button" role="tab" data-reiter="ueberblick" aria-selected="true">Überblick</button>
+      <button type="button" role="tab" data-reiter="aufgaben" aria-selected="false">Aufgaben</button>
+      <button type="button" role="tab" data-reiter="protokoll" aria-selected="false">Protokoll</button>
+    </div>
 
-    <h2 id="pakete-titel">Was gebaut wird</h2>
-    <ol id="pakete" class="pakete"></ol>
+    <div id="reiter-ueberblick" role="tabpanel">
+      <article id="start" class="karte start" hidden>
+        <h3>So startest du die App</h3>
+        <p class="befehl"><code id="start-befehl"></code></p>
+        <details class="leise ordner">
+          <summary>im Ordner der App</summary>
+          <code id="start-ordner"></code>
+        </details>
+        <p id="start-pruefung" class="pruefung"></p>
+      </article>
+      <h2 id="pakete-titel">Was gebaut wird</h2>
+      <ol id="pakete" class="pakete"></ol>
+    </div>
+
+    <div id="reiter-aufgaben" role="tabpanel" hidden>
+      <p id="aufgaben-leer" class="leer" hidden>Für diesen Lauf gibt es noch keine Aufgaben der Engine.</p>
+      <div id="aufgaben" class="aufgaben"></div>
+    </div>
+
+    <div id="reiter-protokoll" role="tabpanel" hidden>
+      <div class="protokoll-kopf">
+        <p id="protokoll-satz" class="meta"></p>
+        <label class="leise"><input type="checkbox" id="protokoll-folgen" checked> ans Ende folgen</label>
+      </div>
+      <pre id="protokoll" class="protokoll" tabindex="0" aria-label="Protokoll des Laufs"></pre>
+    </div>
   </section>
+
+  <section aria-label="Vibe-Coder" id="vibe" class="spalte-mitte" hidden>
+    <p class="vibe-hinweis">Der Vibe-Coder bessert die App des gewählten Laufs nach: Fehler und Oberfläche,
+      Satz für Satz. <strong>Noch nicht angeschlossen</strong>: Sätze werden angezeigt, geändert wird nichts.</p>
+    <vm-chat id="chat" titel="Vibe-Coder" platzhalter="Was soll an der App anders werden?"
+      leer="Wähle links einen Lauf und schreib, was an seiner App anders werden soll."></vm-chat>
+  </section>
+
+  <aside aria-label="Live-Vorschau" class="spalte-vorschau">
+    <div class="vorschau-kopf">
+      <h2>Live-Vorschau</h2>
+      <button type="button" id="vorschau-gross" class="leise-knopf" title="Vorschau in voller Breite">⤢</button>
+    </div>
+    <p id="vorschau-satz" class="vorschau-satz" hidden></p>
+    <iframe id="vorschau-rahmen" title="Live-Vorschau der App" hidden></iframe>
+  </aside>
 </main>
+<script src="/vm-chat.js"></script>
 <script src="/seite.js"></script>
 </body>
 </html>

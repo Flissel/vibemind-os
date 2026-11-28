@@ -3,7 +3,7 @@
 Nur Standardbibliothek. Gebunden an ``127.0.0.1``.
 
 - Lesen (GET): ``/`` (Seite), ``/health`` (ohne Dateizugriff), ``/api/liste``,
-  ``/api/stand``, ``/api/ergebnis``.
+  ``/api/stand``, ``/api/ergebnis``, ``/api/protokoll``, ``/api/aufgaben``.
 - Schreiben (POST): ``/api/auftrag``, ``/api/abbrechen``. Nur mit dem Kopf
   ``X-Coding-Schluessel``, dessen Wert der Dienst aus ``CODING_DIENST_SCHLUESSEL``
   liest. Ist die Variable nicht gesetzt, sind die POST-Wege aus.
@@ -36,7 +36,7 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 from spaces.coding import abnahme as abnahme_modul
 from spaces.coding import vorschau as vorschau_modul
-from spaces.coding import engine_huelle, oberflaechen, pipeline
+from spaces.coding import engine_huelle, laufsicht, oberflaechen, pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,7 @@ STATISCH: Dict[str, Tuple[str, str]] = {
     "/": ("seite.html", "text/html; charset=utf-8"),
     "/seite.js": ("seite.js", "text/javascript; charset=utf-8"),
     "/seite.css": ("seite.css", "text/css; charset=utf-8"),
+    "/vm-chat.js": ("vm-chat.js", "text/javascript; charset=utf-8"),
 }
 # Kein Inline-Skript, kein fremder Ursprung: die Seite laedt nur ihre eigenen Dateien.
 CSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'"
@@ -373,6 +374,11 @@ def lesen(pfad: str) -> Tuple[int, str, bytes]:
             return _json(200, pipeline.stand(frage.get("auftrag")))
         if weg == "/api/ergebnis":
             return _json(200, pipeline.ergebnis(frage.get("auftrag")))
+        if weg == "/api/protokoll":
+            ab = frage.get("ab")
+            return _json(200, laufsicht.protokoll(frage.get("auftrag"), int(ab) if ab not in (None, "") else None))
+        if weg == "/api/aufgaben":
+            return _json(200, laufsicht.aufgaben(frage.get("auftrag")))
         if weg == "/api/oberflaechen":
             return _json(200, oberflaechen.stand())
     except pipeline.PipelineFehler as fehler:
