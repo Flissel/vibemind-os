@@ -276,8 +276,10 @@
         new T.MeshLambertMaterial({ color: L.ARTEN[g.art].farbe, transparent: true, opacity: 0.9 }));
       rohr.userData = { gruppe: g, befehl: b, pkt, marken: [] };
       pkt.forEach(q => {
-        const m = new T.Mesh(new T.SphereGeometry(radius + (b ? 1.2 : 3), 12, 10),
-          new T.MeshLambertMaterial({ color: q.p.farbe || '#e6edf5', transparent: true }));
+        // Etage nur durchlaufen (geprueft, kein Treffer): kleiner dunkler Punkt statt einer Marke.
+        const klein = !!q.p.ohneTreffer;
+        const m = new T.Mesh(new T.SphereGeometry(klein ? Math.max(1.4, radius * 0.8) : radius + (b ? 1.2 : 3), 12, 10),
+          new T.MeshLambertMaterial({ color: klein ? '#5d7696' : (q.p.farbe || '#e6edf5'), transparent: true }));
         m.position.copy(q.ort); m.userData = rohr.userData; d.strangGruppe.add(m); rohr.userData.marken.push(m);
       });
       d.strangGruppe.add(rohr); z.straenge.push(rohr);
@@ -312,7 +314,11 @@
     });
     if (erster) {
       const weg = befehl ? befehl.weg : erster.userData.gruppe.weg;
-      erster.userData.pkt.forEach((q, i) => schild(esc((weg[i] || q.p).station), q.ort, 'wahl', z.wahl));
+      erster.userData.pkt.forEach((q, i) => {
+        const p = weg[i] || q.p;
+        if (p.ohneTreffer) return;                   // durchlaufene Etagen bleiben ohne Schild
+        schild(esc(p.station) + (typeof p.ms === 'number' ? ' · ' + esc(L.dauerText(p.ms)) : ''), q.ort, 'wahl', z.wahl);
+      });
     }
     anfordern();
   }
@@ -357,26 +363,34 @@
     return x.reiter && x.reiter !== ziel ? 'von ' + esc(x.reiter) + ' nach ' + esc(ziel) : 'in ' + esc(ziel);
   }
 
+  // Tabelle eines Wegs: je Etage Station, Dauer und ein Balken im Verhaeltnis zur laengsten Stufe.
+  function wegTabelle(weg, farbe) {
+    const max = Math.max(1, ...weg.filter(p => typeof p.ms === 'number').map(p => p.ms));
+    return '<table>' + weg.map(p => {
+      const e = L.ETAGEN.find(x => x.id === p.etage);
+      const balken = typeof p.ms === 'number'
+        ? '<div style="height:4px;border-radius:2px;margin-top:3px;background:' + (p.ohneTreffer ? '#5d7696' : farbe) +
+          ';width:' + Math.max(2, Math.round(p.ms / max * 100)) + '%"></div>' : '';
+      return '<tr><td' + (p.ohneTreffer ? ' style="opacity:.6"' : '') + '>' + esc(e.name) + '<div class="etg-klein">' +
+        esc(p.ohneTreffer ? 'geprüft, kein Treffer' : p.station) + '</div>' + balken + '</td><td class="r">' +
+        (typeof p.ms === 'number' ? esc(L.dauerText(p.ms)) : '') + '</td></tr>';
+    }).join('') + '</table>';
+  }
+
   function seiteZeigen() {
     if (!z) return;
     const jetzt = Date.now() / 1000, befehl = gewaehlterBefehl(), gruppe = gewaehlteGruppe();
     if (befehl) {
-      const mitMs = befehl.weg.filter(p => typeof p.ms === 'number'), max = Math.max(1, ...mitMs.map(p => p.ms));
       const farbe = L.ARTEN[befehl.art].farbe;
       z.seite.innerHTML = '<a data-zurueck>← zurück</a><h3 style="margin-top:10px">' + satzText(befehl) + '</h3>' +
         '<div class="etg-klein">' + esc(L.alterText(befehl.ts, jetzt)) + ' · ' + vonNach(befehl) + ' · gesamt ' +
         esc(L.dauerText(befehl.dauerMs)) + ' · <span style="color:' + farbe + '">' + esc(L.ARTEN[befehl.art].name) +
-        '</span> · Ausgang: ' + esc(L.AUSGAENGE[befehl.ausgang].name) + '</div><table>' +
-        befehl.weg.map(p => {
-          const e = L.ETAGEN.find(x => x.id === p.etage);
-          const balken = typeof p.ms === 'number'
-            ? '<div style="height:4px;border-radius:2px;margin-top:3px;background:' + farbe + ';width:' + Math.max(2, Math.round(p.ms / max * 100)) + '%"></div>' : '';
-          return '<tr><td>' + esc(e.name) + '<div class="etg-klein">' + esc(p.station) + '</div>' + balken + '</td><td class="r">' +
-            (typeof p.ms === 'number' ? esc(L.dauerText(p.ms)) : '') + '</td></tr>';
-        }).join('') + '</table>' +
+        '</span> · Ausgang: ' + esc(L.AUSGAENGE[befehl.ausgang].name) + '</div>' + wegTabelle(befehl.weg, farbe) +
         (befehl.faehigkeit ? '<p class="etg-klein">Fähigkeit: ' + esc(befehl.faehigkeit) + '</p>' : '') +
         (befehl.nurReiter ? '<p class="etg-klein">Der Bereich ist nur der Reiter; die Antwort nannte kein Ziel.</p>' : '') +
-        '<p class="etg-klein">Etagen ohne Zeile hat der Befehl nicht berührt oder sie sind noch nicht erfasst. Die Dauer je Stufe kommt mit Baustufe B.</p>';
+        '<p class="etg-klein">' + (befehl.gemessen
+          ? 'Dauer je Stufe vom Gehirn gemessen. Die Prüfung läuft innerhalb der Ausführung und hat keine eigene Zeit.'
+          : 'Älterer Satz ohne Stufen-Protokoll: nur die entscheidende Etage ist bekannt, ohne Dauer je Stufe.') + '</p>';
       z.seite.querySelector('[data-zurueck]').onclick = () => { z.befehlId = null; hervorheben(); seiteZeigen(); };
       return;
     }
@@ -386,9 +400,12 @@
     z.seite.innerHTML = (gruppe ? '<a data-alle>← alle Wege</a>' : '<h3>Wege, häufigste zuerst</h3>') + mehr +
       (zeigen.length ? '' : '<div class="etg-klein">Keine Befehle in dieser Auswahl.</div>') +
       zeigen.map(g => '<div class="etg-zeile" data-g="' + z.gruppen.indexOf(g) + '"><span class="etg-punkt" style="background:' +
-        L.ARTEN[g.art].farbe + '"></span><b>' + g.befehle.length + '×</b> ' + g.weg.slice(1).map(p => esc(p.station)).join(' → ') +
+        L.ARTEN[g.art].farbe + '"></span><b>' + g.befehle.length + '×</b> ' + g.weg.slice(1).filter(p => !p.ohneTreffer).map(p => esc(p.station)).join(' → ') +
         '<div class="etg-klein">' + esc(L.ARTEN[g.art].name) + ' · ' + vonNach(g) + ' · ' + esc(L.AUSGAENGE[g.ausgang].name) +
         ' · im Mittel ' + esc(L.dauerText(g.mittelMs)) + '</div></div>' +
+        (gruppe && g.befehle.some(b => b.gemessen)
+          ? '<div class="etg-klein" style="margin-top:8px">Mittlere Dauer je Stufe</div>' + wegTabelle(g.weg, L.ARTEN[g.art].farbe) +
+            '<div class="etg-klein" style="margin:10px 0 4px">Befehle in diesem Weg</div>' : '') +
         (gruppe ? g.befehle.map(b => '<div class="etg-zeile" data-b="' + esc(b.id) + '">' + satzText(b) + '<div class="etg-klein">' +
           esc(L.alterText(b.ts, jetzt)) + ' · ' + esc(L.dauerText(b.dauerMs)) + (b.faehigkeit ? ' · ' + esc(b.faehigkeit) : '') +
           '</div></div>').join('') : '')).join('');

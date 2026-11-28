@@ -85,9 +85,10 @@ def stufe_aus_plan(plan_id: Any) -> Optional[str]:
 ETAGEN = ("eingang", "gespraech", "muster", "einordnung", "planung", "ausfuehrung", "pruefung",
           "ergebnis")
 _ETAGE_MUSTER = frozenset({"abkuerzung-regex", "ideen-fest", "lesesatz-fest", "sales-fest",
-                           "recherche-fest", "desktop-fest", "ideen-lokal", "lesen-fehlt"})
+                           "recherche-fest", "desktop-fest", "ideen-lokal", "lesen-fehlt",
+                           "noch-nicht"})
 _ETAGE_PLANUNG = frozenset({"planer", "plan-executor", "som-planner", "som-team", "easy-chat",
-                            "chat"})
+                            "chat", "mehrdeutig"})
 _ETAGE_EINORDNUNG = frozenset({"meta-reject", "no-plan", "nicht-verstanden", "kein-weg"})
 _ETAGE_GESPRAECH = frozenset({"hoeflichkeit", "abgelehnt", "rueckfrage", "hinweis", "angenommen",
                               "ideen", "sales", "coding", "ideen-vorschlag"})
@@ -95,7 +96,7 @@ _GESPRAECH_ENDEN = ("-rueckfrage", "-gestartet", "-fehler")
 
 _AUSGANG_RUECKFRAGE = frozenset({"rueckfrage", "ideen", "sales", "coding", "ideen-vorschlag"})
 _AUSGANG_ABSAGE = frozenset({"meta-reject", "no-plan", "nicht-verstanden", "kein-weg", "abgelehnt",
-                             "lesen-fehlt"})
+                             "lesen-fehlt", "noch-nicht", "mehrdeutig"})
 _AUSGANG_ANTWORT = frozenset({"hoeflichkeit", "hinweis", "easy-chat", "chat"})
 
 
@@ -234,8 +235,11 @@ def beschriftung(stufe: Any, faehigkeit: Any, schritte: Any) -> str:
 
 def eintrag_bauen(daten: Any, *, satz: Any = None, reiter: Any = None, laenge: Any = None,
                   dauer_ms: Any = None, routed_via: Any = None,
-                  status_code: int = 200) -> Optional[Dict[str, Any]]:
-    """Der Eintrag fuer einen Satz, oder ``None`` (keine trace_id). Satzanfang ja, Antwort nie."""
+                  status_code: int = 200, stufen: Any = None) -> Optional[Dict[str, Any]]:
+    """Der Eintrag fuer einen Satz, oder ``None`` (keine trace_id). Satzanfang ja, Antwort nie.
+
+    ``stufen``: das Protokoll des Satzes aus core/stufen_protokoll.abholen(). Daraus entstehen
+    die drei Listen stufen_etage/stufen_station/stufen_ms (leer ohne Protokoll)."""
     try:
         if not isinstance(daten, Mapping):
             return None
@@ -248,13 +252,25 @@ def eintrag_bauen(daten: Any, *, satz: Any = None, reiter: Any = None, laenge: A
         bereich, quelle = bereich_bestimmen(daten, reiter_kennung)
         ok = daten.get("ok")
         faehigkeit, schritte = _schritte(daten.get("executed"))
+        stufe = stufe_aus_plan(plan_id) or weg
+        # Das Protokoll darf die Entscheidung nie kosten: geht es schief, bleiben die Listen leer.
+        try:
+            from core import stufen_protokoll as _sp
+
+            stufen_listen = _sp.listen(
+                stufen, entschied=etage_aus(stufe, weg), stufe=stufe, reiter=reiter_kennung,
+                bereich=bereich, ausgang=ausgang_aus(weg, ok if isinstance(ok, bool) else None),
+                faehigkeit=faehigkeit, schritte=schritte, executed=daten.get("executed"))
+        except Exception:  # noqa: BLE001
+            stufen_listen = {"stufen_etage": [], "stufen_station": [], "stufen_ms": []}
         return {
+            **stufen_listen,
             "trace_id": trace_id,
             "ts": time.time(),
             "reiter": reiter_kennung,
             "laenge": int(laenge) if isinstance(laenge, int) and laenge >= 0 else None,
             "weg": weg,
-            "stufe": stufe_aus_plan(plan_id) or weg,
+            "stufe": stufe,
             "ok": ok if isinstance(ok, bool) else None,
             "dauer_ms": int(dauer_ms) if isinstance(dauer_ms, (int, float)) and dauer_ms >= 0 else None,
             "bereich": bereich,

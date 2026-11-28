@@ -26,7 +26,9 @@ from web.routers import introspection as intro  # noqa: E402
 
 SATZ = "Plane den Bühnenplan fürs Stadtfest mit der Druckerei"
 ERLAUBT = {"trace_id", "ts", "reiter", "laenge", "weg", "stufe", "ok", "dauer_ms", "bereich",
-           "bereich_quelle", "plan_id", "text", "faehigkeit", "schritte"}
+           "bereich_quelle", "plan_id", "text", "faehigkeit", "schritte",
+           # Stufen-Protokoll (Baustufe B): nur Kennungen und Zahlen, siehe test_stufen_protokoll.py
+           "stufen_etage", "stufen_station", "stufen_ms"}
 
 
 class Attrappe:

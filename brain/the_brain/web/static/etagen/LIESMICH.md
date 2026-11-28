@@ -11,3 +11,7 @@ Unteransicht „Etagen (3D)" im Reiter Decisions der Brain-Seite (`/brain`).
 
 Die Etage, die entschieden hat, und der Ausgang kommen fertig vom Gehirn
 (`core/entscheidung_graph.py`: `etage_aus`, `ausgang_aus`).
+
+Seit Baustufe B liefert das Gehirn je Satz den ganzen Weg mit Dauer je Stufe als drei gleich
+lange Listen (`stufen_etage`, `stufen_station`, `stufen_ms`; `core/stufen_protokoll.py`).
+Die Ansicht nimmt diesen Weg, wenn er passt. Ältere Sätze ohne Protokoll zeigt sie wie zuvor.
